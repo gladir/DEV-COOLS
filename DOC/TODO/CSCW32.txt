@@ -430,7 +430,7 @@
             Fichier test : test23_methods.cs (15 methodes,
               parametres, locales, recursion, void, return).
 
-  TODO 17 - CLASSES ET MEMBRES STATIQUES
+  TODO 17 - CLASSES ET MEMBRES STATIQUES [IMPLEMENTE]
             ParseClassDecl : class Nom { membres }.
               Analyse de la classe : parcourir les declarations
               de champs statiques et methodes statiques.
@@ -454,6 +454,17 @@
               le sous-ensemble minimal (les champs sont
               initialises dans .DATA).
             Plusieurs classes par fichier : supportees.
+            ClassTab : TClassEntry (Name/MangledName/SymIdx/
+              MethStart/MethCount/FieldCount/HasMain).
+              ClassTab[0..63] / ClassCount.
+            FindClass / AddClass : recherche / ajout dans ClassTab.
+            CurClassName : nom de la classe en cours d analyse.
+            IsVisibilityKw / SkipVisibility : qualificateurs de
+              visibilite (public, private, protected, internal)
+              ignores dans le sous-ensemble minimal.
+            Fichier test : test24_classes.cs (7 classes, 19 methodes,
+              champs statiques, acces inter-classes, classe vide,
+              qualificateurs de visibilite).
 
   TODO 18 - ESPACES DE NOMS (namespace)
             ParseNamespaceDecl : namespace Nom { classes }.

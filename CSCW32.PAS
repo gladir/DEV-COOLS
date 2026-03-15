@@ -294,7 +294,7 @@
             MethExitLbl global : accessible depuis ParseStatement
               pour JMP a l epilogue sur return.
 
-  TODO 17 - CLASSES ET MEMBRES STATIQUES
+  TODO 17 - CLASSES ET MEMBRES STATIQUES [IMPLEMENTE]
             ParseClassDecl : class Nom { membres }.
             Membres statiques : champs static et methodes static.
             Portee de classe : acces aux membres par NomClasse.Membre.
@@ -304,6 +304,14 @@
             Visibilite : public, private, internal (stub, non verifie
               dans le sous-ensemble minimal).
             Constructeurs statiques (stub optionnel).
+            ClassTab : TClassEntry (Name/MangledName/SymIdx/MethStart/
+              MethCount/FieldCount/HasMain).
+            FindClass / AddClass : recherche / ajout.
+            CurClassName : nom de la classe en cours d analyse.
+            IsVisibilityKw / SkipVisibility : qualificateurs de
+              visibilite ignores dans le sous-ensemble minimal.
+            Plusieurs classes par fichier : supportees.
+            Fichier test : test24_classes.cs.
 
   TODO 18 - ESPACES DE NOMS (namespace)
             ParseNamespaceDecl : namespace Nom { classes }.
@@ -589,6 +597,27 @@ Var
   MethodTab    : Array[0..MAX_METHODS - 1] Of TMethodEntry;
   MethodCount  : Integer;       { nombre de methodes enregistrees        }
   MethExitLbl  : TString;       { label de sortie de la methode courante }
+
+{ Table des classes declarees (TODO 17) }
+
+Const
+  MAX_CLASSES = 64;             { nombre maximal de classes declarees    }
+
+Type
+  TClassEntry = Record
+    Name        : TString;      { nom C# de la classe                   }
+    MangledName : TString;      { nom ASM mangled (_CSCC_...)            }
+    SymIdx      : Integer;      { indice dans SymTab                     }
+    MethStart   : Integer;      { premier indice dans MethodTab          }
+    MethCount   : Integer;      { nombre de methodes dans la classe      }
+    FieldCount  : Integer;      { nombre de champs statiques             }
+    HasMain     : Boolean;      { True si la classe contient Main()      }
+  End;
+
+Var
+  ClassTab    : Array[0..MAX_CLASSES - 1] Of TClassEntry;
+  ClassCount  : Integer;        { nombre de classes enregistrees         }
+  CurClassName: TString;        { nom de la classe en cours d analyse    }
 
   { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -915,6 +944,11 @@ Procedure ParseSwitchStmt; Forward;
 
 { Forward declarations for TODO 16 }
 Procedure ParseMethodDecl(Const RetType, MName : TString); Forward;
+
+{ Forward declarations for TODO 17 }
+Function  FindClass(Const N : TString) : Integer; Forward;
+Function  AddClass(Const N : TString; SIdx : Integer) : Integer; Forward;
+Procedure ParseClassDecl; Forward;
 
 { ============================================================ }
 { TODO 02 - LEXEUR (TOKENS C#)                                 }
@@ -6089,6 +6123,360 @@ Begin
             '(', ParamCnt, ' params)');
 End;
 
+{ ============================================================ }
+{ TODO 17 - CLASSES ET MEMBRES STATIQUES                         }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+(*                                                               *)
+(*  ParseClassDecl : declaration de classe.                      *)
+(*    [public|private|internal] class Nom { membres }            *)
+(*  Membres statiques :                                          *)
+(*    Champs static : variables globales (.DATA).                *)
+(*      static int count; -> _CSCST_COUNT DD 0.                  *)
+(*    Methodes static : fonctions autonomes.                     *)
+(*      static void Print() { ... } -> _CSCF_PRINT.             *)
+(*  Portee de classe : acces aux membres par NomClasse.Membre.   *)
+(*  Classe Program : classe contenant Main() (point d entree).   *)
+(*  Visibilite : public, private, protected, internal            *)
+(*    (reconnus mais non verifies dans le sous-ensemble minimal). *)
+(*  Plusieurs classes par fichier : supportees.                  *)
+(*  ClassTab : TClassEntry (Name/MangledName/SymIdx/MethStart/   *)
+(*    MethCount/FieldCount/HasMain).                             *)
+(*  FindClass / AddClass : recherche / ajout.                    *)
+(*  CurClassName : nom de la classe en cours d analyse.          *)
+(*                                                               *)
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ FindClass : trouver une classe dans ClassTab                  }
+{   Retourne l indice ou -1 si non trouvee                      }
+{ ------------------------------------------------------------ }
+
+Function FindClass(Const N : TString) : Integer;
+Var I : Integer;
+    UN : TString;
+Begin
+  UN := StrUpperCase(N);
+  FindClass := -1;
+  For I := 0 To ClassCount - 1 Do
+    If StrUpperCase(ClassTab[I].Name) = UN Then
+    Begin
+      FindClass := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddClass : ajouter une classe dans ClassTab                   }
+{   Retourne l indice ou -1 si plein                            }
+{ ------------------------------------------------------------ }
+
+Function AddClass(Const N : TString; SIdx : Integer) : Integer;
+Var CI : Integer;
+Begin
+  If ClassCount >= MAX_CLASSES Then
+  Begin
+    WarnMsg('table des classes pleine');
+    AddClass := -1;
+    Exit;
+  End;
+  CI := ClassCount;
+  ClassTab[CI].Name        := N;
+  ClassTab[CI].MangledName := CSC_CLS_PFX + StrUpperCase(N);
+  ClassTab[CI].SymIdx      := SIdx;
+  ClassTab[CI].MethStart   := MethodCount;
+  ClassTab[CI].MethCount   := 0;
+  ClassTab[CI].FieldCount  := 0;
+  ClassTab[CI].HasMain     := False;
+  AddClass := CI;
+  Inc(ClassCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsVisibilityKw : verifier si le token courant est un          }
+{   qualificateur de visibilite (public, private, protected,    }
+{   internal).                                                  }
+{ ------------------------------------------------------------ }
+
+Function IsVisibilityKw : Boolean;
+Begin
+  IsVisibilityKw :=
+    TokIsKw('public') Or TokIsKw('private') Or
+    TokIsKw('protected') Or TokIsKw('internal');
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipVisibility : consommer les qualificateurs de visibilite   }
+{   (public, private, protected, internal). Dans le sous-       }
+{   ensemble minimal, la visibilite est ignoree (tout est       }
+{   traite comme public).                                       }
+{ ------------------------------------------------------------ }
+
+Procedure SkipVisibility;
+Begin
+  While IsVisibilityKw Do
+    Consume;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseClassDecl : analyser une declaration de classe            }
+{   [visibilite] class Nom (accolade) membres (accolade)         }
+{   Le mot-cle 'class' a deja ete consomme par l appelant.       }
+{   Les membres sont des champs et methodes statiques.           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseClassDecl;
+Var
+  ClsIdx     : Integer;
+  SymIdx     : Integer;
+  Off        : Integer;
+  VarType    : TString;
+  MethName   : TString;
+  MethRetType: TString;
+  InBody     : Boolean;
+  Depth      : Integer;
+  MethStartSave : Integer;
+Begin
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    WarnMsg('nom de classe attendu apres "class"');
+    Exit;
+  End;
+
+  { Enregistrer la classe }
+  CurClassName := CurToken.Val;
+  SymIdx := SymAdd(CurClassName, SC_CLASS, 0);
+  ClsIdx := AddClass(CurClassName, SymIdx);
+  MethStartSave := MethodCount;
+
+  If Opts.Verbose Then
+    WriteLn('  class ', CurClassName);
+  Consume;
+
+  { Attendre l accolade ouvrante }
+  If Not TokIsPunct('{') Then
+  Begin
+    { Pas d accolade : la boucle Run gerera le reste }
+    Exit;
+  End;
+  Consume;
+  SymEnterScope;
+  Depth := 1;
+  InBody := True;
+
+  { Analyser les membres de la classe }
+  While InBody And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { Sauter les qualificateurs de visibilite }
+    SkipVisibility;
+
+    If CurToken.Kind = TK_EOF Then Break;
+
+    { Mot-cle static : champ ou methode statique }
+    If TokIsKw('static') Then
+    Begin
+      Consume;
+      { Lire le type de retour / type de champ }
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        VarType := CurToken.Val;
+        Consume;
+        { Si c est un tableau (int[] etc.) on saute les [] }
+        If TokIsPunct('[') Then
+        Begin
+          Consume;
+          If TokIsPunct(']') Then Consume;
+        End;
+        { Nom du membre }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          MethName := CurToken.Val;
+          MethRetType := VarType;
+          Consume;
+          { Si suivi de ( -> c est une methode statique }
+          If TokIsPunct('(') Then
+          Begin
+            ParseMethodDecl(MethRetType, MethName);
+            { Verifier si c est Main }
+            If StrLowerCase(MethName) = 'main' Then
+            Begin
+              If ClsIdx >= 0 Then
+                ClassTab[ClsIdx].HasMain := True;
+            End;
+            If ClsIdx >= 0 Then
+              Inc(ClassTab[ClsIdx].MethCount);
+            { Parser le corps de la methode }
+            If TokIsPunct('{') Then
+            Begin
+              Inc(Depth);
+              Consume;
+              SymEnterScope;
+              EmitBlankLine;
+              EmitComment('--- method ' + MethName + ' ---');
+              EmitLabel(SymMangle(MethName, SC_METHOD));
+              EmitProlog(METHOD_STACK_SIZE);
+              MethExitLbl := GenLabel;
+              ParseMethodBody;
+              EmitLabel(MethExitLbl);
+              If StrLowerCase(MethName) = 'main' Then
+              Begin
+                EmitInstr('PUSH', '0');
+                EmitInstr('CALL', '_ExitProcess@4');
+              End;
+              EmitEpilog;
+              MethExitLbl := '';
+              { Consommer accolade fermante du corps }
+              If TokIsPunct('}') Then
+              Begin
+                Dec(Depth);
+                SymLeaveScope;
+                Consume;
+              End;
+            End;
+          End
+          Else
+          Begin
+            { C est un champ statique : static type name [= val]; }
+            SymIdx := SymAdd(MethName, SC_STATIC,
+                             TypeFromKeyword(VarType));
+            If SymIdx >= 0 Then
+            Begin
+              SymTab[SymIdx].IsStatic := True;
+              SymTab[SymIdx].IsGlobal := True;
+              Off := DataAddStaticVar(CurClassName, MethName,
+                                      TypeFromKeyword(VarType));
+              { Gerer l initialisation = valeur }
+              If TokIsOp('=') Then
+              Begin
+                Consume;
+                If CurToken.Kind = TK_INTEGER Then
+                Begin
+                  If Off >= 0 Then
+                    DataTab[Off].IntVal := CurToken.IntVal;
+                  Consume;
+                End
+                Else If CurToken.Kind = TK_CHAR Then
+                Begin
+                  If (Off >= 0) And (Length(CurToken.Val) > 0) Then
+                    DataTab[Off].IntVal := Ord(CurToken.Val[1]);
+                  Consume;
+                End
+                Else If CurToken.Kind = TK_STRING Then
+                Begin
+                  AddStrLit(CurToken.Val);
+                  Consume;
+                End
+                Else If TokIsKw('true') Then
+                Begin
+                  If Off >= 0 Then DataTab[Off].IntVal := 1;
+                  Consume;
+                End
+                Else If TokIsKw('false') Then
+                Begin
+                  If Off >= 0 Then DataTab[Off].IntVal := 0;
+                  Consume;
+                End
+                Else If TokIsKw('null') Then
+                Begin
+                  Consume;
+                End
+                Else If TokIsOp('-') Then
+                Begin
+                  Consume;
+                  If CurToken.Kind = TK_INTEGER Then
+                  Begin
+                    If Off >= 0 Then
+                      DataTab[Off].IntVal := -CurToken.IntVal;
+                    Consume;
+                  End;
+                End
+                Else
+                  Consume;
+              End;
+              { Declarations multiples : static int a, b; }
+              While TokIsPunct(',') Do
+              Begin
+                Consume;
+                If CurToken.Kind = TK_IDENT Then
+                Begin
+                  SymIdx := SymAdd(CurToken.Val, SC_STATIC,
+                                   TypeFromKeyword(VarType));
+                  If SymIdx >= 0 Then
+                  Begin
+                    SymTab[SymIdx].IsStatic := True;
+                    SymTab[SymIdx].IsGlobal := True;
+                    DataAddStaticVar(CurClassName, CurToken.Val,
+                                     TypeFromKeyword(VarType));
+                  End;
+                  Consume;
+                End;
+              End;
+              If ClsIdx >= 0 Then
+                Inc(ClassTab[ClsIdx].FieldCount);
+            End;
+            If Opts.DebugMode Then
+              WriteLn('  FIELD_STATIC: ', MethName, ' type=', VarType);
+          End;
+        End;
+      End;
+    End
+    { Declarations const dans la classe }
+    Else If TokIsKw('const') Then
+    Begin
+      Consume;
+      ParseConstDecl;
+    End
+    { Declarations readonly dans la classe }
+    Else If TokIsKw('readonly') Then
+    Begin
+      Consume; { ignorer readonly, traite comme const implicite }
+    End
+    { Declarations de type dans la classe (variables d instance ignorees) }
+    Else If IsTypeKeyword Then
+    Begin
+      VarType := CurToken.Val;
+      Consume;
+      { Sauter [] si tableau }
+      If TokIsPunct('[') Then
+      Begin
+        Consume;
+        If TokIsPunct(']') Then Consume;
+      End;
+      If CurToken.Kind = TK_IDENT Then
+        ParseVarDecl(VarType, True, CurClassName);
+    End
+    { Accolade fermante de la classe }
+    Else If TokIsPunct('}') Then
+    Begin
+      Dec(Depth);
+      If Depth <= 0 Then
+      Begin
+        SymLeaveScope;
+        Consume;
+        InBody := False;
+      End
+      Else
+      Begin
+        SymLeaveScope;
+        Consume;
+      End;
+    End
+    { Accolade ouvrante imbriquee }
+    Else If TokIsPunct('{') Then
+    Begin
+      Inc(Depth);
+      SymEnterScope;
+      Consume;
+    End
+    Else
+      Consume;
+  End;
+
+  { Mettre a jour le nombre de methodes de la classe }
+  If ClsIdx >= 0 Then
+    ClassTab[ClsIdx].MethCount := MethodCount - MethStartSave;
+End;
+
 { ------------------------------------------------------------ }
 { ShowStats (corps)                                             }
 { ------------------------------------------------------------ }
@@ -6106,6 +6494,7 @@ Begin
   WriteLn('Symboles         : ', SymCount);
   WriteLn('Types            : ', TypeCount);
   WriteLn('Methodes         : ', MethodCount);
+  WriteLn('Classes          : ', ClassCount);
   WriteLn('Donnees .DATA    : ', DataCount);
   WriteLn('Taille pile loc  : ', LocalOffset);
   WriteLn('Labels generes   : ', LabelSeq);
@@ -6177,6 +6566,10 @@ Begin
   { Initialiser la table des methodes (TODO 16) }
   MethodCount := 0;
   MethExitLbl := '';
+
+  { Initialiser la table des classes (TODO 17) }
+  ClassCount := 0;
+  CurClassName := '';
 
   { Initialiser le segment de donnees (TODO 08) }
   DataInit;
@@ -6263,19 +6656,28 @@ Begin
         End;
       End;
     End
-    { Reconnaitre les declarations class }
+    { Reconnaitre les declarations class (TODO 17) }
     Else If TokIsKw('class') Then
     Begin
       Consume;
-      If CurToken.Kind = TK_IDENT Then
+      ParseClassDecl;
+    End
+    { Reconnaitre les qualificateurs de visibilite avant class }
+    Else If (TokIsKw('public') Or TokIsKw('private') Or
+             TokIsKw('protected') Or TokIsKw('internal')) Then
+    Begin
+      Consume; { ignorer la visibilite, sous-ensemble minimal }
+      { Si suivi de class -> ParseClassDecl }
+      If TokIsKw('class') Then
       Begin
-        ClsName := CurToken.Val;
-        SymIdx := SymAdd(ClsName, SC_CLASS, 0);
-        InClass := True;
-        ClassDepth := BraceDepth;
-        If Opts.Verbose Then
-          WriteLn('  class ', ClsName);
         Consume;
+        ParseClassDecl;
+      End
+      { Si suivi de static -> c est un champ/methode hors classe }
+      Else If TokIsKw('static') Then
+      Begin
+        { Le code existant pour static gerera le reste }
+        { On ne consomme pas, la branche static ci-dessous le fera }
       End;
     End
     { Reconnaitre les accolades pour la gestion des scopes }
@@ -6493,6 +6895,7 @@ Begin
           TokenCount, ' tokens, ', UsingCount, ' using, ',
           StrLitCount, ' chaines, ', ConstCount, ' constantes, ',
           SymCount, ' symboles, ', TypeCount, ' types, ',
+          ClassCount, ' classes, ',
           MethodCount, ' methodes, ',
           DataCount, ' data)');
 
@@ -6504,7 +6907,7 @@ Begin
   EmitClose;
 
   WriteLn('CSCW32: ASM genere -> ', AsmFileName);
-  WriteLn('CSCW32: Les TODOs 17..25 ne sont pas encore implementes.');
+  WriteLn('CSCW32: Les TODOs 18..25 ne sont pas encore implementes.');
 End;
 
 { ------------------------------------------------------------ }
