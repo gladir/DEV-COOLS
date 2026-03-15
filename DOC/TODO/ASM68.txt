@@ -380,7 +380,7 @@ TODO 17 - Encodage binaire des instructions (passe 2) [IMPLEMENTE]
   - Emission des mots d'extension pour chaque mode d'adressage
   - Calcul de la taille d'instruction pour la passe 1
 
-TODO 18 - Architecture deux passes de l'assembleur
+TODO 18 - Architecture deux passes de l'assembleur [IMPLEMENTE]
   ---------------------------------------------------
   - Passe 1 (resolution des symboles) :
     Parcourir toutes les lignes source

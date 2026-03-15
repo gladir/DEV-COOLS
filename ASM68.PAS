@@ -35,7 +35,7 @@
 { TODO 15 - Instructions de branchement et controle de flux [IMPLEMENTE] }
 { TODO 16 - Instructions BCD et operations speciales [IMPLEMENTE] }
 { TODO 17 - Encodage binaire des instructions (passe 2) [IMPLEMENTE] }
-{ TODO 18 - Architecture deux passes de l'assembleur }
+{ TODO 18 - Architecture deux passes de l'assembleur [IMPLEMENTE] }
 { TODO 19 - Parseur de ligne assembleur }
 { TODO 20 - Generation du fichier objet (format S-Record Motorola) }
 { TODO 21 - Gestion des fichiers INCLUDE et pile de sources }
@@ -344,6 +344,8 @@ Var
 
   { --- Etat de l'assemblage (TODO 08) --- }
   pass_num         : Integer;      { Passe courante (1 ou 2)              }
+  emit_code        : Boolean;      { True si emission code active (p. 2)  }
+  expr_has_fwd_ref : Boolean;      { True si derniere expr a ref. en avant}
   end_source       : Boolean;      { True si directive END rencontree     }
   start_address    : LongInt;      { Adresse de demarrage (END expr)      }
   start_address_set: Boolean;      { True si adresse de demarrage definie }
@@ -1426,6 +1428,7 @@ Begin
  If Opts.ListFile <> '' Then
   WriteLn('Listing        : ', Opts.ListFile);
  WriteLn;
+ WriteLn('Passes         : 2');
  WriteLn('Lignes lues    : ', LineCount);
  WriteLn('Symboles       : ', SymCount);
  WriteLn('Sections       : ', SectionCount);
@@ -1687,12 +1690,14 @@ Begin
     Else
     Begin
      { Symbole pas encore defini (forward) - retourner 0 en passe 1 }
+     expr_has_fwd_ref := True;
      EvalPrimary := 0;
     End;
    End
    Else
    Begin
     { Symbole inconnu : ajouter comme forward reference }
+    expr_has_fwd_ref := True;
     Idx := AddSym(SymName, 0, SEC_CODE, SYM_LABEL, cur_tok_line);
     If Idx <> 0 Then
     Begin
@@ -2794,7 +2799,8 @@ End;
 { ---------- Emission de code (big-endian, Motorola byte order) ---------- }
 
 Procedure Emit8(B: Byte);
-{ Emettre un octet dans la section courante }
+{ Emettre un octet dans la section courante.
+  En passe 1 (emit_code=False), avance CurAddr sans ecrire le buffer. }
 Begin
  If (CurSection < 1) or (CurSection > SectionCount) Then
  Begin
@@ -2807,7 +2813,8 @@ Begin
         IntToStr(MAX_SEC_SIZE) + ' octets max)');
   Exit;
  End;
- Sections[CurSection].Buf^[Sections[CurSection].CurAddr] := B;
+ If emit_code Then
+  Sections[CurSection].Buf^[Sections[CurSection].CurAddr] := B;
  Inc(Sections[CurSection].CurAddr);
  If Sections[CurSection].CurAddr > Sections[CurSection].Size Then
   Sections[CurSection].Size := Sections[CurSection].CurAddr;
@@ -2998,7 +3005,8 @@ End;
 { ---------- EQU / SET : constantes et variables d'assemblage ---------- }
 
 Procedure DirEQU(Const LblName: String);
-{ label EQU expr - definit une constante d'assemblage (non redefinissable) }
+{ label EQU expr - definit une constante d'assemblage (non redefinissable).
+  En passe 2, met a jour la valeur et verifie la coherence de phase. }
 Var V: LongInt;
 Begin
  If LblName = '' Then
@@ -3007,7 +3015,10 @@ Begin
   Exit;
  End;
  V := EvalExpr;
- AddSym(LblName, V, CurSection, SYM_EQU, cur_tok_line);
+ If pass_num = 1 Then
+  AddSym(LblName, V, CurSection, SYM_EQU, cur_tok_line)
+ Else
+  UpdateSym(LblName, V);
 End;
 
 Procedure DirSET(Const LblName: String);
@@ -3205,10 +3216,14 @@ End;
 { ---------- ProcessLabel : gestion des etiquettes ---------- }
 
 Procedure ProcessLabel(Const LblName: String);
-{ Ajoute une etiquette a la table des symboles avec la valeur du PC courant. }
+{ Ajoute une etiquette a la table des symboles avec la valeur du PC courant.
+  En passe 2, met a jour la valeur et verifie la coherence de phase. }
 Begin
  If LblName = '' Then Exit;
- AddSym(LblName, GetPC, CurSection, SYM_LABEL, cur_tok_line);
+ If pass_num = 1 Then
+  AddSym(LblName, GetPC, CurSection, SYM_LABEL, cur_tok_line)
+ Else
+  UpdateSym(LblName, GetPC);
 End;
 
 { ---------- SkipToEOL : sauter jusqu'a la fin de ligne ---------- }
@@ -6570,6 +6585,7 @@ Begin
  End;
 
  { Evaluer l'adresse cible }
+ expr_has_fwd_ref := False;
  TargetVal := EvalExpr;
  InstrPC := GetPC;
 
@@ -6584,9 +6600,15 @@ Begin
   IsShort := False   { Forcement .W par le programmeur }
  Else
  Begin
-  { Automatique : .S si le deplacement tient en 8 bits signes
-    et n'est pas 0 et pas -1 ($FF est reserve pour le 68020) }
-  If (Disp >= -128) and (Disp <= 127) and (Disp <> 0) Then
+  { Automatique : .S si le deplacement tient en 8 bits signes,
+    n'est pas 0 et n'est pas une reference en avant.
+    Les references en avant utilisent .W pour la coherence
+    des tailles entre les deux passes de l'assembleur.
+    En passe 1 : detecte par expr_has_fwd_ref (symbole non defini).
+    En passe 2 : detecte par TargetVal > InstrPC (cible en avant). }
+  If expr_has_fwd_ref or (TargetVal > InstrPC) Then
+   IsShort := False  { Reference en avant : forcer .W }
+  Else If (Disp >= -128) and (Disp <= 127) and (Disp <> 0) Then
    IsShort := True
   Else
    IsShort := False;
@@ -6596,12 +6618,9 @@ Begin
  Begin
   { Deplacement 8 bits }
   If (pass_num = 2) and ((Disp < -128) or (Disp > 127)) Then
-  Begin
    Error(cur_tok_line, cur_tok_col,
          OpName + '.S : deplacement hors limites 8 bits (' +
          IntToStr(Disp) + ')');
-   SkipToEOL; Exit;
-  End;
   InstrW := Word($6000 or (CC shl 8) or (Disp and $FF));
   Emit16(InstrW);
  End
@@ -6609,12 +6628,9 @@ Begin
  Begin
   { Deplacement 16 bits : disp8 = $00, suivi du mot d'extension }
   If (pass_num = 2) and ((Disp < -32768) or (Disp > 32767)) Then
-  Begin
    Error(cur_tok_line, cur_tok_col,
          OpName + '.W : deplacement hors limites 16 bits (' +
          IntToStr(Disp) + ')');
-   SkipToEOL; Exit;
-  End;
   InstrW := Word($6000 or (CC shl 8) or $00);
   Emit16(InstrW);
   Emit16(Word(Disp and $FFFF));
@@ -6679,12 +6695,9 @@ Begin
  Disp := TargetVal - (InstrPC + 2);
 
  If (pass_num = 2) and ((Disp < -32768) or (Disp > 32767)) Then
- Begin
   Error(cur_tok_line, cur_tok_col,
         OpName + ' : deplacement hors limites 16 bits (' +
         IntToStr(Disp) + ')');
-  SkipToEOL; Exit;
- End;
 
  InstrW := Word($50C8 or (CC shl 8) or Reg.Reg);
  Emit16(InstrW);
@@ -7116,7 +7129,7 @@ Begin
  Total := 2; { mot d'instruction de base }
  UpName := OpName;
 
- { Branchements courts : 2 octets ; longs : 4 octets }
+  { Branchements courts : 2 octets ; longs : 4 octets }
  If (UpName = 'BRA') or (UpName = 'BSR') or (UpName = 'BHI')
     or (UpName = 'BLS') or (UpName = 'BCC') or (UpName = 'BCS')
     or (UpName = 'BNE') or (UpName = 'BEQ') or (UpName = 'BVC')
@@ -7124,10 +7137,10 @@ Begin
     or (UpName = 'BGE') or (UpName = 'BLT') or (UpName = 'BGT')
     or (UpName = 'BLE') Then
  Begin
-  If OpSize = SIZE_WORD Then
-   Total := 4  { mot d'instruction + deplacement 16 bits }
-  Else
-   Total := 2; { deplacement 8 bits dans le mot d'instruction }
+   If OpSize = SIZE_WORD Then
+    Total := 4  { mot d'instruction + deplacement 16 bits }
+   Else
+    Total := 2; { deplacement 8 bits dans le mot d'instruction }
   CalcInstrSize := Total;
   Exit;
  End;
@@ -7741,6 +7754,124 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 18 - Architecture deux passes de l'assembleur                          }
+{ ============================================================================ }
+
+Procedure ResetForPass2;
+{ Reinitialise l'etat pour la passe 2 (generation du code).
+  Les symboles restent en memoire (definis en passe 1).
+  Les sections sont videes (CurAddr=0, buffers remis a zero).
+  Les fixups sont remis a zero (regeneres en passe 2). }
+Var I: Integer;
+Begin
+ { Sauvegarder les valeurs de passe 1 pour verification de phase }
+ For I := 1 to SymCount do
+  SymTable[I].Pass1Value := SymTable[I].Value;
+
+ { Reinitialiser les sections : vider les buffers, garder noms/types }
+ For I := 1 to SectionCount do
+ Begin
+  FillChar(Sections[I].Buf^, MAX_SEC_SIZE, 0);
+  Sections[I].CurAddr := 0;
+  Sections[I].Size    := 0;
+  Sections[I].Origin  := 0;
+ End;
+ CurSection := 1;
+
+ { Reinitialiser les fixups }
+ FixupCount := 0;
+
+ { Reinitialiser l'etat de l'assemblage }
+ pass_num          := 2;
+ emit_code         := True;
+ end_source        := False;
+ start_address     := 0;
+ start_address_set := False;
+ cur_label         := '';
+ last_global_sym   := '';
+ expr_pc           := 0;
+ expr_depth        := 0;
+
+ { Reinitialiser l'assemblage conditionnel }
+ cond_depth := 0;
+
+ { Reinitialiser l'etat de l'expansion de macros }
+ macro_expanding := False;
+ macro_narg      := 0;
+ include_depth   := 0;
+End;
+
+Procedure Assemble;
+{ Orchestrer les deux passes de l'assembleur.
+  Passe 1 : parcourir le source, definir les etiquettes, calculer
+            la taille de chaque instruction (sans emettre de code).
+  Passe 2 : parcourir a nouveau, generer le code binaire,
+            resoudre les fixups, verifier la coherence de phase. }
+Var
+ I: Integer;
+ Pass1Lines: LongInt;
+Begin
+ { === PASSE 1 : resolution des symboles === }
+ pass_num  := 1;
+ emit_code := False;
+
+ SrcOpen(Opts.SrcFile);
+ SrcGetLine;
+ NextToken;
+
+ While (cur_tok <> TOK_EOF) and (Not end_source) do
+  ParseLine;
+
+ { Verifier les blocs conditionnels non fermes }
+ If cond_depth > 0 Then
+  Warning(cur_tok_line, cur_tok_col,
+          IntToStr(cond_depth) + ' bloc(s) IF non ferme(s) en passe 1');
+
+ Pass1Lines := LineCount;
+ SrcClose;
+
+ { === PASSE 2 : generation du code === }
+ ResetForPass2;
+ LineCount    := 0;
+ ErrorCount   := 0;
+ WarningCount := 0;
+
+ { Ouvrir le fichier listing (listing en passe 2 uniquement) }
+ ListOpen(Opts.ListFile);
+
+ SrcOpen(Opts.SrcFile);
+ SrcGetLine;
+ NextToken;
+
+ While (cur_tok <> TOK_EOF) and (Not end_source) do
+  ParseLine;
+
+ { Verifier les blocs conditionnels non fermes }
+ If cond_depth > 0 Then
+  Error(cur_tok_line, cur_tok_col,
+        IntToStr(cond_depth) + ' bloc(s) IF non ferme(s) (ENDC/ENDIF manquant)');
+
+ { Resoudre les fixups restants (references en avant) }
+ ResolveFixups;
+
+ { Calculer la taille totale du code genere }
+ CodeSize := 0;
+ For I := 1 to SectionCount do
+  CodeSize := CodeSize + Sections[I].Size;
+
+ { Utiliser le nombre de lignes de passe 1 }
+ LineCount := Pass1Lines;
+
+ SrcClose;
+
+ { Table des symboles dans le listing si demandee }
+ ListSymbolTable;
+
+ { Fermer le fichier listing }
+ ListClose;
+End;
+
+{ ============================================================================ }
 { Procedure Run : programme principal d'assemblage                             }
 { ============================================================================ }
 
@@ -7767,6 +7898,7 @@ Begin
  expr_pc      := 0;
  expr_depth   := 0;
  pass_num     := 1;
+ emit_code    := False;
  end_source   := False;
  start_address := 0;
  start_address_set := False;
@@ -7789,37 +7921,8 @@ Begin
  { Initialiser les sections (TODO 07) }
  InitSections;
 
- { Ouvrir le fichier listing si demande }
- ListOpen(Opts.ListFile);
-
- { Ouvrir le fichier source et lexer }
- SrcOpen(Opts.SrcFile);
- SrcGetLine;
- NextToken;
-
- { Boucle principale : traiter chaque ligne (TODO 08) }
- While (cur_tok <> TOK_EOF) and (Not end_source) do
- Begin
-  ParseLine;
- End;
-
- { Verifier les blocs conditionnels non fermes (TODO 10) }
- If cond_depth > 0 Then
-  Error(cur_tok_line, cur_tok_col,
-        IntToStr(cond_depth) + ' bloc(s) IF non ferme(s) (ENDC/ENDIF manquant)');
-
- { Calculer la taille totale du code genere }
- CodeSize := 0;
- For I := 1 to SectionCount do
-  CodeSize := CodeSize + Sections[I].Size;
-
- SrcClose;
-
- { Table des symboles dans le listing si demandee }
- ListSymbolTable;
-
- { Fermer le fichier listing }
- ListClose;
+ { Assembler en deux passes (TODO 18) }
+ Assemble;
 
  { Afficher le bilan de compilation }
  BilanCompilation;

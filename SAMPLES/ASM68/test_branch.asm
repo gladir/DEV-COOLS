@@ -42,8 +42,10 @@ bra_short:
     BSR       sub1               ; $6100 + disp16
     NOP
 
-    ; BSR.S label
-    BSR.S     sub1               ; $61xx (8 bits)
+    ; BSR.S label (cible proche pour deplacement 8 bits)
+    BSR.S     bsr_short_target   ; $61xx (8 bits)
+    NOP
+bsr_short_target:
     NOP
 
 ; =====================================================================
