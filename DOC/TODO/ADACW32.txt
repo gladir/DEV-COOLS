@@ -228,6 +228,7 @@
               records = somme des champs (alignes sur 4 octets)
 
   TODO 11 - PARSEUR : DECLARATIONS D'OBJETS (VARIABLES ET CONSTANTES)
+            [IMPLEMENTE]
             ParseObjectDecl :
               nom [, nom2 ...] : [CONSTANT] type [:= expr] ;
             Detecter CONSTANT -> IsConst := True, STORE_CONST

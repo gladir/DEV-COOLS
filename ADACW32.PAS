@@ -239,6 +239,7 @@
               records = somme des champs (alignes sur 4 octets)
 
   TODO 11 - PARSEUR : DECLARATIONS D'OBJETS (VARIABLES ET CONSTANTES)
+            [IMPLEMENTE]
             ParseObjectDecl :
               nom [, nom2 ...] : [CONSTANT] type [:= expr] ;
             Detecter CONSTANT -> IsConst := True, STORE_CONST
@@ -3617,6 +3618,299 @@ Begin
   Expect(TOK_SEMI, '`;` attendu en fin de declaration de sous-type');
 End;
 
+{ ============================================================ }
+{ TODO 11 - PARSEUR : DECLARATIONS D'OBJETS                    }
+{ (VARIABLES ET CONSTANTES) - 32 BITS                          }
+{ ============================================================ }
+
+{ ---- ParseConstExpr32 : evaluer une expression constante ----- }
+{ Si l expression est un litteral simple (entier, char, TRUE,     }
+{ FALSE, enum), met la valeur dans Val et retourne True.          }
+{ Sinon, genere du code (ParseExpr) et retourne False             }
+{ (valeur dans EAX a l execution).                                }
+Function ParseConstExpr32(Var Val : LongInt) : Boolean;
+Var
+  Neg : Boolean;
+Begin
+  { Entier negatif }
+  Neg := False;
+  If (CurTokType = TOK_MINUS) Then
+  Begin
+    Neg := True;
+    Consume;
+    If CurTokType = TOK_INTEGER Then
+    Begin
+      Val := -CurTokNum;
+      Consume;
+      ParseConstExpr32 := True;
+      Exit;
+    End;
+    { Pas un entier apres le '-', on genere du code }
+    ParseExpr;
+    Val := 0;
+    ParseConstExpr32 := False;
+    Exit;
+  End;
+  { Litteral entier }
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    Val := CurTokNum;
+    Consume;
+    ParseConstExpr32 := True;
+    Exit;
+  End;
+  { Litteral caractere }
+  If CurTokType = TOK_CHAR Then
+  Begin
+    If Length(CurTokStr) > 0 Then
+      Val := Ord(CurTokStr[1])
+    Else
+      Val := 0;
+    Consume;
+    ParseConstExpr32 := True;
+    Exit;
+  End;
+  { TRUE / FALSE }
+  If (CurTokType = TOK_IDENT) And (CurTokKw = KW_TRUE) Then
+  Begin
+    Val := 1; Consume;
+    ParseConstExpr32 := True;
+    Exit;
+  End;
+  If (CurTokType = TOK_IDENT) And (CurTokKw = KW_FALSE) Then
+  Begin
+    Val := 0; Consume;
+    ParseConstExpr32 := True;
+    Exit;
+  End;
+  { Expression generale : generer du code via ParseExpr }
+  ParseExpr;
+  Val := 0;
+  ParseConstExpr32 := False;
+End;
+
+{ ---- GenVarData32 : emettre la zone .DATA d une variable glob. }
+{ Produit le label ASM suivi de DD/DQ/DB selon le type.           }
+Procedure GenVarData32(SymIdx : Integer);
+Var
+  TI  : Integer;
+  Sz  : Integer;
+  N   : LongInt;
+  K   : Integer;
+Begin
+  TI := SymTab[SymIdx].TypeIdx;
+  Sz := GetSymSize(SymIdx);
+
+  { Label ASM }
+  Emit(SymTab[SymIdx].AsmLabel + ':');
+
+  { Contenu selon le type }
+  If TI = TYPE_FLOAT Then
+  Begin
+    { 8 octets (DQ) - valeur flottante stub, on emet 0 }
+    N := SymTab[SymIdx].InitNum;
+    EmitI('DQ 0');
+  End
+  Else If (TI = TYPE_CHAR) Or (TI = TYPE_BOOL) Then
+  Begin
+    N := SymTab[SymIdx].InitNum;
+    EmitI('DB ' + IntToStr_(N));
+    { Padding pour alignement DWORD }
+    EmitI('DB 0, 0, 0');
+  End
+  Else If TI = TYPE_STR Then
+  Begin
+    N := SymTab[SymIdx].CharLen;
+    If N <= 0 Then N := 1;
+    EmitI('DB ' + IntToStr_(N) + ' DUP(0)');
+  End
+  Else
+  Begin
+    { Verifier si c est un type utilisateur }
+    If (TI > TYPE_VOID) And (TI <= TypeCount) Then
+    Begin
+      K := TypeTab[TI].Kind;
+      If K = TK_ARRAY Then
+      Begin
+        { Tableau : TotalSize octets a zero }
+        If Sz > 0 Then
+        Begin
+          If (Sz Mod 4) = 0 Then
+            EmitI('DD ' + IntToStr_(Sz Div 4) + ' DUP(0)')
+          Else
+            EmitI('DB ' + IntToStr_(Sz) + ' DUP(0)');
+        End
+        Else
+          EmitI('DD 0');
+      End
+      Else If K = TK_RECORD Then
+      Begin
+        If Sz > 0 Then
+          EmitI('DB ' + IntToStr_(Sz) + ' DUP(0)')
+        Else
+          EmitI('DD 0');
+      End
+      Else If K = TK_ENUM Then
+      Begin
+        { Enumere : DWord (4 octets) }
+        N := SymTab[SymIdx].InitNum;
+        EmitI('DD ' + IntToStr_(N));
+      End
+      Else
+      Begin
+        { Range, Derived, Access, ... -> DD }
+        N := SymTab[SymIdx].InitNum;
+        EmitI('DD ' + IntToStr_(N));
+      End;
+    End
+    Else
+    Begin
+      { Scalaire entier / enum / range / pointeur : DD }
+      N := SymTab[SymIdx].InitNum;
+      EmitI('DD ' + IntToStr_(N));
+    End;
+  End;
+End;
+
+{ ---- ParseObjectDecl : parseur d une declaration d objet ------ }
+{ Syntaxe : nom [, nom2 ...] : [CONSTANT] type [:= expr] ;       }
+{ Gere variables globales (.DATA), locales (pile), constantes.    }
+Procedure ParseObjectDecl;
+Var
+  Names    : Array[1..16] of TString;
+  NCount   : Integer;
+  IsConst_ : Boolean;
+  TI       : Integer;
+  SC       : Integer;
+  SymIdx   : Integer;
+  HasInit_ : Boolean;
+  InitVal  : LongInt;
+  GotConst : Boolean;
+  I        : Integer;
+  Sz       : Integer;
+  BaseTI   : Integer;
+Begin
+  { ===== Etape 1 : liste de noms (nom, nom2, ...) ===== }
+  NCount := 0;
+  Repeat
+    If CurTokType <> TOK_IDENT Then
+    Begin Error('Identifiant attendu dans declaration d''objet');
+      Break; End;
+    Inc(NCount);
+    If NCount > 16 Then
+    Begin Error('Trop de noms dans une declaration'); NCount := 16; End;
+    Names[NCount] := StrUpperCase(CurTokStr);
+    Consume;
+    If CurTokType = TOK_COMMA Then Consume Else Break;
+  Until False;
+
+  Expect(TOK_COLON, '`:` attendu apres nom(s) de variable');
+
+  { ===== Etape 2 : EXCEPTION (constante speciale) ===== }
+  If TokIsKw(KW_EXCEPTION) Then
+  Begin
+    Consume; { EXCEPTION }
+    For I := 1 To NCount Do
+    Begin
+      SymIdx := AddSym(Names[I], TYPE_INT, STORE_CONST);
+      If SymIdx > 0 Then
+      Begin
+        SymTab[SymIdx].InitNum := I;
+        SymTab[SymIdx].HasInit := True;
+        SymTab[SymIdx].IsConst := True;
+      End;
+    End;
+    Expect(TOK_SEMI, '`;` attendu apres declaration EXCEPTION');
+    Exit;
+  End;
+
+  { ===== Etape 3 : detecter CONSTANT ===== }
+  IsConst_ := False;
+  If TokIsKw(KW_CONSTANT) Then
+  Begin
+    IsConst_ := True;
+    Consume;
+  End;
+
+  { ===== Etape 4 : parser le type ===== }
+  TI := ParseTypeRef;
+
+  { ===== Etape 5 : classe d entreposage ===== }
+  If IsConst_ Then
+    SC := STORE_CONST
+  Else If ScopeTop = 0 Then
+    SC := STORE_STATIC
+  Else
+    SC := STORE_AUTO;
+
+  { ===== Etape 6 : initialisation optionnelle [:= expr] ===== }
+  HasInit_ := False;
+  InitVal  := 0;
+  GotConst := False;
+  If CurTokType = TOK_COLONASSIGN Then
+  Begin
+    Consume;
+    HasInit_  := True;
+    GotConst  := ParseConstExpr32(InitVal);
+  End;
+
+  { ===== Etape 7 : creer les symboles ===== }
+  For I := 1 To NCount Do
+  Begin
+    SymIdx := AddSym(Names[I], TI, SC);
+    If SymIdx = 0 Then Continue;
+
+    If HasInit_ Then
+    Begin
+      SymTab[SymIdx].HasInit := True;
+      SymTab[SymIdx].InitNum := InitVal;
+    End;
+
+    { ===== Etape 8 : ajuster taille pour tableaux/records/strings }
+    Sz := 4;
+    If (TI > TYPE_VOID) And (TI <= TypeCount) Then
+      Sz := GetTypeSize(TI)
+    Else
+      Sz := PrimTypeSize32(TI);
+
+    { Mise a jour ArraySize / CharLen pour types composites }
+    BaseTI := TI;
+    If (TI > TYPE_VOID) And (TI <= TypeCount) Then
+    Begin
+      If TypeTab[TI].Kind = TK_ARRAY Then
+      Begin
+        SymTab[SymIdx].ArraySize := TypeTab[TI].HiBound -
+                                     TypeTab[TI].LoBound + 1;
+        SymTab[SymIdx].TypeIdx   := TypeTab[TI].ElemType;
+        { Restaurer le TypeIdx au type utilisateur pour GenVarData }
+        SymTab[SymIdx].TypeIdx   := TI;
+      End
+      Else If TypeTab[TI].Kind = TK_RECORD Then
+      Begin
+        { Rien de special, la taille est dans TotalSize }
+      End;
+    End
+    Else If TI = TYPE_STR Then
+    Begin
+      SymTab[SymIdx].CharLen := Sz;
+    End;
+
+    { ===== Etape 9 : allouer espace pile pour variable locale ===== }
+    If SC = STORE_AUTO Then
+    Begin
+      SymTab[SymIdx].BpOffset := AllocLocal(Sz);
+    End;
+
+    { ===== Etape 10 : emettre .DATA pour variable globale ===== }
+    If SC = STORE_STATIC Then
+      GenVarData32(SymIdx);
+    { STORE_CONST : rien a emettre, valeur dans InitNum }
+    { STORE_AUTO  : l espace est reserve par GenPrologue (SUB ESP, n) }
+  End;
+
+  Expect(TOK_SEMI, '`;` attendu en fin de declaration d''objet');
+End;
+
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
 Procedure LexInit;
 Begin
@@ -3840,6 +4134,7 @@ Begin
   InitPkgTable;
   InitScopeStack;
   InitStrTable;
+  GenEnabled := False; { pas de fichier de sortie ouvert encore }
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -3862,8 +4157,17 @@ Begin
       If CurTokKw = KW_TYPE Then ParseTypeDecl
       Else ParseSubtypeDecl;
     End;
-    WriteLn('ADACW32: TODO 11+ non encore implemente - ',
-            'WITH/USE + TYPE/SUBTYPE OK');
+    { TODO 11 : boucle declarations d objets (variables/constantes) }
+    While (CurTokType = TOK_IDENT) And
+          (CurTokKw <> KW_PROCEDURE) And (CurTokKw <> KW_FUNCTION) And
+          (CurTokKw <> KW_PACKAGE) And (CurTokKw <> KW_BEGIN) And
+          (CurTokKw <> KW_TYPE) And (CurTokKw <> KW_SUBTYPE) And
+          (CurTokType <> TOK_EOF) Do
+    Begin
+      ParseObjectDecl;
+    End;
+    WriteLn('ADACW32: TODO 12+ non encore implemente - ',
+            'WITH/USE + TYPE/SUBTYPE + objets OK');
   End;
   LexClose;
   BilanCompilation;
