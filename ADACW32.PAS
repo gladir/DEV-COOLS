@@ -316,25 +316,25 @@
               Get_Line en appelant les helpers runtime Win32
             Boucle PACKAGE dans Run
 
-  TODO 15 - PARSEUR : DISPATCHER PRINCIPAL DES INSTRUCTIONS
+  TODO 15 - PARSEUR : DISPATCHER PRINCIPAL DES INSTRUCTIONS [IMPLEMENTE]
             Procedure ParseStatement
             Dispatcher selon le token courant :
-              Identifiant + ':=' -> ParseAssignment
-              Identifiant + '(' ou sans -> ParseProcedureCall
-              IF           -> ParseIf
-              CASE         -> ParseCase
-              LOOP         -> ParseLoop
-              WHILE        -> ParseWhile
-              FOR          -> ParseFor
-              RETURN       -> ParseReturn
-              RAISE        -> ParseRaise
-              NULL         -> ParseNull
-              EXIT         -> ParseExit
-              BEGIN        -> ParseBeginBlock
-              PRAGMA       -> ParsePragma
-              GOTO         -> ParseGoto
-              DECLARE      -> ParseDeclareBlock
-            ParseSequenceOfStatements : boucle Until IsEndBoundary
+              Identifiant + ':=' -> ParseAssignment (stub skip -> TODO 16)
+              Identifiant + '(' ou sans -> ParseProcedureCall (stub skip -> TODO 16)
+              IF           -> ParseIf (stub skip -> TODO 17)
+              CASE         -> ParseCase (stub skip -> TODO 17)
+              LOOP         -> ParseLoop (stub skip -> TODO 18)
+              WHILE        -> ParseWhile (stub skip -> TODO 18)
+              FOR          -> ParseFor (stub skip -> TODO 18)
+              RETURN       -> ParseReturn (skip expr + ;)
+              RAISE        -> ParseRaise (skip ident + ;)
+              NULL         -> ParseNull (NULL + ;)
+              EXIT         -> ParseExit (skip WHEN + ;)
+              BEGIN        -> ParseBeginBlock (stmts + END ;)
+              PRAGMA       -> ParsePragma (skip to ;)
+              GOTO         -> ParseGoto (ident + ;)
+              DECLARE      -> ParseDeclareBlock (decls + BEGIN stmts END ;)
+            ParseSequenceOfStatements : boucle Until END/EXCEPTION/EOF
             Resynchronisation sur erreur : SkipToSemi
             Gestion du point-virgule terminateur
 
@@ -4183,18 +4183,548 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 15 - PARSEUR : DISPATCHER PRINCIPAL DES INSTRUCTIONS    }
+{ ============================================================ }
+
+{ ---- IsEndBoundary : teste si le token courant est une fin --- }
+{ Renvoie True si le token courant marque la fin d une sequence  }
+{ d instructions : END, EXCEPTION, ELSIF, ELSE, WHEN, ou EOF.   }
+Function IsEndBoundary : Boolean;
+Begin
+  IsEndBoundary :=
+    (CurTokType = TOK_EOF) Or
+    TokIsKw(KW_END) Or
+    TokIsKw(KW_EXCEPTION) Or
+    TokIsKw(KW_ELSIF) Or
+    TokIsKw(KW_ELSE) Or
+    TokIsKw(KW_WHEN);
+End;
+
+{ ---- ParseNull : instruction NULL ; -------------------------  }
+Procedure ParseNull;
+Begin
+  Consume; { NULL }
+  EmitComment('NULL;');
+  Expect(TOK_SEMI, '`;` attendu apres NULL');
+End;
+
+{ ---- ParseReturn : instruction RETURN [expression] ; -------- }
+{ Stub : skip l expression optionnelle avant ';'.                }
+{ La generation de code pour l expression sera en TODO 16+.      }
+Procedure ParseReturn;
+Begin
+  Consume; { RETURN }
+  EmitComment('RETURN ...');
+  { Skip expression optionnelle jusqu au ';' }
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
+        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+    Consume;
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- ParseRaise : instruction RAISE [exception_name] ; ------ }
+{ Stub : skip le nom d exception optionnel + message.            }
+Procedure ParseRaise;
+Begin
+  Consume; { RAISE }
+  EmitComment('RAISE ...');
+  { Skip jusqu au ';' }
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
+        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+    Consume;
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- ParseExit : instruction EXIT [name] [WHEN cond] ; ------ }
+{ Stub : skip le nom optionnel et la condition WHEN.             }
+Procedure ParseExit;
+Begin
+  Consume; { EXIT }
+  EmitComment('EXIT ...');
+  { Skip jusqu au ';' }
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
+        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+    Consume;
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- ParseGoto : instruction GOTO label ; -------------------- }
+Procedure ParseGoto;
+Begin
+  Consume; { GOTO }
+  EmitComment('GOTO ...');
+  { Skip label name + ';' }
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
+        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+    Consume;
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- ParsePragma : instruction PRAGMA ident [(args)] ; ------- }
+Procedure ParsePragma;
+Begin
+  Consume; { PRAGMA }
+  EmitComment('PRAGMA ...');
+  { Skip tout jusqu au ';' }
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
+        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+    Consume;
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- ParseIfStub : instruction IF (stub -> TODO 17) ---------- }
+{ Parcourt le bloc IF/ELSIF/ELSE/END IF correctement.            }
+Procedure ParseIfStub;
+Var Depth : Integer;
+Begin
+  EmitComment('IF ... (stub)');
+  { On consomme IF }
+  Consume; { IF }
+  Depth := 1;
+  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  Begin
+    If TokIsKw(KW_IF) Then
+    Begin
+      { Verifier si c est un END IF }
+      { Non, IF simple imbrique -> on ne l incrementera qu apres THEN }
+    End;
+    If TokIsKw(KW_IF) And (Depth > 0) Then
+    Begin
+      Consume; { IF imbrique }
+      Inc(Depth);
+      Continue;
+    End;
+    If TokIsKw(KW_END) Then
+    Begin
+      Consume; { END }
+      If TokIsKw(KW_IF) Then
+      Begin
+        Consume; { IF }
+        Dec(Depth);
+        If Depth <= 0 Then
+        Begin
+          { Consommer le ';' final }
+          If CurTokType = TOK_SEMI Then Consume;
+          Exit;
+        End;
+        { ';' intermediaire }
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else If TokIsKw(KW_LOOP) Then
+      Begin
+        Consume; { LOOP }
+        Dec(Depth);
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else If TokIsKw(KW_CASE) Then
+      Begin
+        Consume; { CASE }
+        Dec(Depth);
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else
+      Begin
+        { END simple (procedure/function/package) }
+        Dec(Depth);
+        If Depth <= 0 Then Exit;
+        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+          Consume;
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End;
+    End;
+    If TokIsKw(KW_LOOP) Or TokIsKw(KW_CASE) Or
+       TokIsKw(KW_DECLARE) Or TokIsKw(KW_SELECT) Or
+       TokIsKw(KW_BEGIN) Then
+      Inc(Depth);
+    Consume;
+  End;
+End;
+
+{ ---- ParseCaseStub : instruction CASE (stub -> TODO 17) ------ }
+{ Parcourt le bloc CASE/WHEN/END CASE correctement.              }
+Procedure ParseCaseStub;
+Var Depth : Integer;
+Begin
+  EmitComment('CASE ... (stub)');
+  Consume; { CASE }
+  Depth := 1;
+  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  Begin
+    If TokIsKw(KW_END) Then
+    Begin
+      Consume; { END }
+      If TokIsKw(KW_CASE) Then
+      Begin
+        Consume; { CASE }
+        Dec(Depth);
+        If Depth <= 0 Then
+        Begin
+          If CurTokType = TOK_SEMI Then Consume;
+          Exit;
+        End;
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else If TokIsKw(KW_IF) Then
+      Begin
+        Consume; Dec(Depth);
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else If TokIsKw(KW_LOOP) Then
+      Begin
+        Consume; Dec(Depth);
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else
+      Begin
+        Dec(Depth);
+        If Depth <= 0 Then Exit;
+        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+          Consume;
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End;
+    End;
+    If TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or TokIsKw(KW_CASE) Or
+       TokIsKw(KW_DECLARE) Or TokIsKw(KW_SELECT) Or
+       TokIsKw(KW_BEGIN) Then
+      Inc(Depth);
+    Consume;
+  End;
+End;
+
+{ ---- ParseLoopStub : instruction LOOP (stub -> TODO 18) ------ }
+{ Parcourt le bloc LOOP/END LOOP correctement.                    }
+Procedure ParseLoopStub;
+Var Depth : Integer;
+Begin
+  EmitComment('LOOP ... (stub)');
+  { On cherche LOOP keyword pour commencer }
+  While (CurTokType <> TOK_EOF) And (Not TokIsKw(KW_LOOP)) Do
+    Consume;
+  If TokIsKw(KW_LOOP) Then Consume; { LOOP }
+  Depth := 1;
+  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  Begin
+    If TokIsKw(KW_END) Then
+    Begin
+      Consume; { END }
+      If TokIsKw(KW_LOOP) Then
+      Begin
+        Consume; { LOOP }
+        Dec(Depth);
+        If Depth <= 0 Then
+        Begin
+          { Skip nom optionnel + ';' }
+          While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+            Consume;
+          If CurTokType = TOK_SEMI Then Consume;
+          Exit;
+        End;
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else If TokIsKw(KW_IF) Then
+      Begin
+        Consume; Dec(Depth);
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else If TokIsKw(KW_CASE) Then
+      Begin
+        Consume; Dec(Depth);
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else
+      Begin
+        Dec(Depth);
+        If Depth <= 0 Then Exit;
+        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+          Consume;
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End;
+    End;
+    If TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or TokIsKw(KW_CASE) Or
+       TokIsKw(KW_DECLARE) Or TokIsKw(KW_SELECT) Or
+       TokIsKw(KW_BEGIN) Then
+      Inc(Depth);
+    Consume;
+  End;
+End;
+
+{ ---- ParseWhileStub : instruction WHILE (stub -> TODO 18) ---- }
+{ Syntaxe : WHILE cond LOOP stmts END LOOP ;                     }
+Procedure ParseWhileStub;
+Begin
+  EmitComment('WHILE ... LOOP ... (stub)');
+  Consume; { WHILE }
+  ParseLoopStub; { skip a travers cond LOOP ... END LOOP ; }
+End;
+
+{ ---- ParseForStub : instruction FOR (stub -> TODO 18) -------- }
+{ Syntaxe : FOR ident IN [REVERSE] lo .. hi LOOP stmts END LOOP ;}
+Procedure ParseForStub;
+Begin
+  EmitComment('FOR ... LOOP ... (stub)');
+  Consume; { FOR }
+  ParseLoopStub; { skip a travers ident IN ... LOOP ... END LOOP ; }
+End;
+
+{ ---- ParseBeginBlock : bloc BEGIN ... END ; ------------------- }
+{ Bloc anonyme imbrique dans une sequence d instructions.         }
+Procedure ParseBeginBlock;
+Var Depth : Integer;
+Begin
+  EmitComment('BEGIN block ...');
+  Consume; { BEGIN }
+  Depth := 1;
+  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  Begin
+    If TokIsKw(KW_BEGIN) Or TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or
+       TokIsKw(KW_CASE) Or TokIsKw(KW_DECLARE) Or
+       TokIsKw(KW_SELECT) Then
+      Inc(Depth)
+    Else If TokIsKw(KW_END) Then
+    Begin
+      Dec(Depth);
+      If Depth <= 0 Then
+      Begin
+        Consume; { END }
+        { Skip optional name + ';' }
+        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+          Consume;
+        If CurTokType = TOK_SEMI Then Consume;
+        Exit;
+      End;
+    End;
+    Consume;
+  End;
+End;
+
+{ ---- ParseDeclareBlock : DECLARE ... BEGIN ... END ; ---------- }
+{ Bloc avec partie declarative locale.                            }
+{ Structure : DECLARE decls BEGIN stmts END [name] ;              }
+{ Le BEGIN fait partie de la structure DECLARE et ne cree pas      }
+{ un niveau supplementaire.                                        }
+Procedure ParseDeclareBlock;
+Var
+  Depth    : Integer;
+  GotBegin : Boolean;
+Begin
+  EmitComment('DECLARE block ...');
+  Consume; { DECLARE }
+  Depth := 1;
+  GotBegin := False;
+  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  Begin
+    If TokIsKw(KW_BEGIN) And (Not GotBegin) Then
+    Begin
+      { Le BEGIN du DECLARE : ne pas incrementer depth }
+      GotBegin := True;
+      Consume;
+      Continue;
+    End
+    Else If TokIsKw(KW_BEGIN) Or TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or
+       TokIsKw(KW_CASE) Or TokIsKw(KW_DECLARE) Or
+       TokIsKw(KW_SELECT) Then
+      Inc(Depth)
+    Else If TokIsKw(KW_END) Then
+    Begin
+      Dec(Depth);
+      If Depth <= 0 Then
+      Begin
+        Consume; { END }
+        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+          Consume;
+        If CurTokType = TOK_SEMI Then Consume;
+        Exit;
+      End;
+    End;
+    Consume;
+  End;
+End;
+
+{ ---- ParseAssignmentStub : affectation (stub -> TODO 16) ----- }
+{ Syntaxe : target := expr ;                                      }
+{ Pour l instant, on skip le tout jusqu au ';'.                   }
+Procedure ParseAssignmentStub;
+Begin
+  EmitComment('assignment := ... (stub)');
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
+        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+    Consume;
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- ParseProcCallStub : appel de procedure (stub -> TODO 16) - }
+{ Syntaxe : nom [(args)] ;                                         }
+{ Pour l instant, on skip le tout jusqu au ';'.                    }
+Procedure ParseProcCallStub;
+Begin
+  EmitComment('proc call ... (stub)');
+  While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) And
+        (Not TokIsKw(KW_END)) And (Not TokIsKw(KW_EXCEPTION)) Do
+    Consume;
+  If CurTokType = TOK_SEMI Then Consume;
+End;
+
+{ ---- ParseBareLoopStub : LOOP ... END LOOP ; (stub) --------- }
+{ Comme ParseLoopStub mais appele quand LOOP est deja consomme.  }
+Procedure ParseBareLoopStub;
+Var Depth : Integer;
+Begin
+  Depth := 1;
+  While (CurTokType <> TOK_EOF) And (Depth > 0) Do
+  Begin
+    If TokIsKw(KW_END) Then
+    Begin
+      Consume; { END }
+      If TokIsKw(KW_LOOP) Then
+      Begin
+        Consume; { LOOP }
+        Dec(Depth);
+        If Depth <= 0 Then
+        Begin
+          While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+            Consume;
+          If CurTokType = TOK_SEMI Then Consume;
+          Exit;
+        End;
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else If TokIsKw(KW_IF) Then
+      Begin
+        Consume; Dec(Depth);
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else If TokIsKw(KW_CASE) Then
+      Begin
+        Consume; Dec(Depth);
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End
+      Else
+      Begin
+        Dec(Depth);
+        If Depth <= 0 Then Exit;
+        While (CurTokType <> TOK_SEMI) And (CurTokType <> TOK_EOF) Do
+          Consume;
+        If CurTokType = TOK_SEMI Then Consume;
+        Continue;
+      End;
+    End;
+    If TokIsKw(KW_IF) Or TokIsKw(KW_LOOP) Or TokIsKw(KW_CASE) Or
+       TokIsKw(KW_DECLARE) Or TokIsKw(KW_SELECT) Or
+       TokIsKw(KW_BEGIN) Then
+      Inc(Depth);
+    Consume;
+  End;
+End;
+
+{ ---- ParseStatement : dispatcher principal des instructions -- }
+{ Reconnaît le type d instruction selon le token courant et       }
+{ appelle le sous-parseur correspondant.                          }
+Procedure ParseStatement;
+Var
+  SavedName : TString;
+Begin
+  If TokIsKw(KW_NULL) Then
+    ParseNull
+  Else If TokIsKw(KW_RETURN) Then
+    ParseReturn
+  Else If TokIsKw(KW_RAISE) Then
+    ParseRaise
+  Else If TokIsKw(KW_EXIT) Then
+    ParseExit
+  Else If TokIsKw(KW_GOTO) Then
+    ParseGoto
+  Else If TokIsKw(KW_PRAGMA) Then
+    ParsePragma
+  Else If TokIsKw(KW_IF) Then
+    ParseIfStub
+  Else If TokIsKw(KW_CASE) Then
+    ParseCaseStub
+  Else If TokIsKw(KW_LOOP) Then
+  Begin
+    EmitComment('LOOP ... (stub)');
+    Consume; { LOOP }
+    ParseBareLoopStub;
+  End
+  Else If TokIsKw(KW_WHILE) Then
+    ParseWhileStub
+  Else If TokIsKw(KW_FOR) Then
+    ParseForStub
+  Else If TokIsKw(KW_BEGIN) Then
+    ParseBeginBlock
+  Else If TokIsKw(KW_DECLARE) Then
+    ParseDeclareBlock
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    { Identifiant : assignation ou appel de procedure }
+    SavedName := CurTokStr;
+    Consume; { ident }
+    { Verifier si c est une assignation }
+    If CurTokType = TOK_COLONASSIGN Then
+    Begin
+      { Assignation : ident := expr ; }
+      Consume; { := }
+      ParseAssignmentStub;
+    End
+    Else If CurTokType = TOK_DOT Then
+    Begin
+      { Nom qualifie : pkg.proc ou rec.field := ... }
+      { Consommer la qualification }
+      While CurTokType = TOK_DOT Do
+      Begin
+        Consume; { . }
+        If CurTokType = TOK_IDENT Then Consume;
+      End;
+      { Verifier si c est une assignation }
+      If CurTokType = TOK_COLONASSIGN Then
+      Begin
+        Consume; { := }
+        ParseAssignmentStub;
+      End
+      Else
+        ParseProcCallStub;
+    End
+    Else
+    Begin
+      { Appel de procedure : nom [(args)] ; }
+      ParseProcCallStub;
+    End;
+  End
+  Else If CurTokType = TOK_SEMI Then
+  Begin
+    { Point-virgule isole - skip silencieusement }
+    Consume;
+  End
+  Else
+  Begin
+    { Token inattendu : resynchroniser }
+    Error('Instruction inattendue : ' + CurTokStr);
+    SkipToSemi;
+  End;
+End;
+
 { ---- ParseSequenceOfStatements : parser la sequence d instr --- }
-{ Stub pour TODO 13 : reconnaît les instructions de base :         }
-{   NULL ;                                                          }
-{   RETURN [expr] ;                                                 }
-{   identifiant ... ;  (appel ou assignation - skip)                }
-{ Pour les instructions plus complexes, la TODO 15 implementera    }
-{ le dispatcher complet (IF, LOOP, CASE, etc.).                    }
-{ En attendant, on utilise SkipStatements pour traverser le corps. }
+{ Boucle appelant ParseStatement jusqu a rencontrer END,           }
+{ EXCEPTION, ELSIF, ELSE, WHEN ou EOF (IsEndBoundary).            }
 Procedure ParseSequenceOfStatements;
 Begin
-  { Stub : skip les instructions jusqu a END ou EXCEPTION }
-  SkipStatements;
+  While Not IsEndBoundary Do
+    ParseStatement;
 End;
 
 { ---- ParseProcedureBody : corps complet d une PROCEDURE ------ }

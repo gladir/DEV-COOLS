@@ -305,27 +305,29 @@
               Get_Line en appelant les helpers runtime Win32
             Boucle PACKAGE dans Run
 
-  TODO 15 - PARSEUR : DISPATCHER PRINCIPAL DES INSTRUCTIONS
+  TODO 15 - PARSEUR : DISPATCHER PRINCIPAL DES INSTRUCTIONS [IMPLEMENTE]
             Procedure ParseStatement
             Dispatcher selon le token courant :
-              Identifiant + ':=' -> ParseAssignment
-              Identifiant + '(' ou sans -> ParseProcedureCall
-              IF           -> ParseIf
-              CASE         -> ParseCase
-              LOOP         -> ParseLoop
-              WHILE        -> ParseWhile
-              FOR          -> ParseFor
-              RETURN       -> ParseReturn
-              RAISE        -> ParseRaise
-              NULL         -> ParseNull
-              EXIT         -> ParseExit
-              BEGIN        -> ParseBeginBlock
-              PRAGMA       -> ParsePragma
-              GOTO         -> ParseGoto
-              DECLARE      -> ParseDeclareBlock
-            ParseSequenceOfStatements : boucle Until IsEndBoundary
+              Identifiant + ':=' -> ParseAssignmentStub (skip -> TODO 16)
+              Identifiant + '(' ou sans -> ParseProcCallStub (skip -> TODO 16)
+              IF           -> ParseIfStub (skip -> TODO 17)
+              CASE         -> ParseCaseStub (skip -> TODO 17)
+              LOOP         -> ParseBareLoopStub (skip -> TODO 18)
+              WHILE        -> ParseWhileStub (skip -> TODO 18)
+              FOR          -> ParseForStub (skip -> TODO 18)
+              RETURN       -> ParseReturn (skip expr + ;)
+              RAISE        -> ParseRaise (skip ident + ;)
+              NULL         -> ParseNull (NULL + ;)
+              EXIT         -> ParseExit (skip WHEN + ;)
+              BEGIN        -> ParseBeginBlock (stmts + END ;)
+              PRAGMA       -> ParsePragma (skip to ;)
+              GOTO         -> ParseGoto (ident + ;)
+              DECLARE      -> ParseDeclareBlock (decls + BEGIN stmts END ;)
+            IsEndBoundary : END/EXCEPTION/ELSIF/ELSE/WHEN/EOF
+            ParseSequenceOfStatements : boucle While Not IsEndBoundary
             Resynchronisation sur erreur : SkipToSemi
             Gestion du point-virgule terminateur
+            Noms qualifies (pkg.proc) dans identifiant dispatcher
 
   TODO 16 - PARSEUR : AFFECTATION ET APPELS DE PROCEDURE
             ParseAssignment :
