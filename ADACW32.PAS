@@ -117,7 +117,7 @@
             Modes parametres : PARAM_IN, PARAM_OUT, PARAM_INOUT
             GetSymSize(sym_idx) : retourne la taille en octets
 
-  TODO 05 - TABLES DES TYPES ET SOUS-PROGRAMMES (32 BITS)
+  TODO 05 - TABLES DES TYPES ET SOUS-PROGRAMMES (32 BITS) [IMPLEMENTE]
             Type TSubEntry : Name (String[48]), AsmLabel (String[48]),
               RetType (Integer), ParamCount (Integer),
               ParamNames[1..MAX_PARAM] of String[48],
@@ -821,6 +821,45 @@ Type
     HasInit     : Boolean;       { True si initialisation specifiee  }
   End;
 
+  { ---- Entree de la table des sous-programmes (TODO 05) ---- }
+  TSubEntry = Record
+    Name        : String[48];   { Nom Ada (upper-case)               }
+    AsmLabel    : String[48];   { Etiquette ASM : _ADAF_nom          }
+    RetType     : Integer;       { TYPE_xxx (TYPE_VOID si proc)      }
+    ParamCount  : Integer;       { nombre de parametres               }
+    ParamNames  : Array[1..MAX_PARAM] of String[48];
+    ParamTypes  : Array[1..MAX_PARAM] of Integer;
+    ParamModes  : Array[1..MAX_PARAM] of Integer;  { PARAM_xxx       }
+    IsForward   : Boolean;       { True si forward declaration       }
+    IsFunction  : Boolean;       { True si FUNCTION                  }
+    FrameSize   : Integer;       { taille frame locale en octets     }
+  End;
+
+  { ---- Entree de la table des types (TODO 05) -------------- }
+  TTypeEntry = Record
+    Name        : String[48];   { Nom du type Ada (upper-case)       }
+    Kind        : Integer;       { TK_xxx                            }
+    BaseType    : Integer;       { type de base (derives/ranges)     }
+    LoBound     : LongInt;       { borne inferieure (RANGE/ARRAY)    }
+    HiBound     : LongInt;       { borne superieure                  }
+    FieldCount  : Integer;       { nombre de champs (RECORD)         }
+    FieldNames  : Array[1..MAX_FIELD] of String[48];
+    FieldTypes  : Array[1..MAX_FIELD] of Integer;
+    FieldOffs   : Array[1..MAX_FIELD] of Integer;  { offsets octets  }
+    ElemType    : Integer;       { type des elements (ARRAY)         }
+    ElemSize    : Integer;       { taille d un element en octets     }
+    EnumCount   : Integer;       { nombre de litteraux (ENUM)        }
+    EnumNames   : Array[1..MAX_ENUM] of String[48];
+    TotalSize   : Integer;       { taille totale du type en octets   }
+  End;
+
+  { ---- Entree de la table des packages (TODO 05) ----------- }
+  TPkgEntry = Record
+    Name        : String[48];   { Nom du package (upper-case)        }
+    IsStandard  : Boolean;       { True si package standard reconnu  }
+    UseActive   : Boolean;       { True si USE active (acces direct) }
+  End;
+
 { ============================================================ }
 { VARIABLES GLOBALES                                           }
 { ============================================================ }
@@ -854,6 +893,18 @@ Var
   SymTab     : Array[1..MAX_SYM] of TSymEntry;
   SymCount   : Integer;    { nombre de symboles enregistres         }
   ScopeTop   : Integer;    { niveau de scope courant (0 = global)   }
+
+  { Table des types (TODO 05) }
+  TypeTab    : Array[1..MAX_TYPE] of TTypeEntry;
+  TypeCount  : Integer;    { nombre de types enregistres            }
+
+  { Table des sous-programmes (TODO 05) }
+  SubTab     : Array[1..MAX_SUB] of TSubEntry;
+  SubCount   : Integer;    { nombre de sous-programmes enregistres  }
+
+  { Table des packages (TODO 05) }
+  PkgTab     : Array[1..MAX_PKG] of TPkgEntry;
+  PkgCount   : Integer;    { nombre de packages enregistres         }
 
 {$IFDEF FPC}
   { Variables binaires }
@@ -1667,6 +1718,9 @@ Begin
   WriteLn('  Sortie     : ', Opts.OutFile);
   WriteLn('  Lignes     : ', TotalLines);
   WriteLn('  Symboles   : ', SymCount);
+  WriteLn('  Types      : ', TypeCount);
+  WriteLn('  Sous-prog. : ', SubCount);
+  WriteLn('  Packages   : ', PkgCount);
   WriteLn('  Erreurs    : ', ErrorCount);
   WriteLn('  Avertiss.  : ', WarnCount);
   If ErrorCount > 0 Then
@@ -1813,6 +1867,293 @@ Begin
   SymTab[Idx].InitStr    := '';
   SymTab[Idx].HasInit    := False;
   AddSym := Idx;
+End;
+
+{ ============================================================ }
+{ TABLES DES TYPES ET SOUS-PROGRAMMES (TODO 05)                 }
+{ ============================================================ }
+
+{ ---- InitTypeTable : initialiser la table des types ---------- }
+Procedure InitTypeTable;
+Var I, J : Integer;
+Begin
+  TypeCount := 0;
+  For I := 1 To MAX_TYPE Do
+  Begin
+    TypeTab[I].Name       := '';
+    TypeTab[I].Kind       := TK_PREDEF;
+    TypeTab[I].BaseType   := TYPE_UNKNOWN;
+    TypeTab[I].LoBound    := 0;
+    TypeTab[I].HiBound    := 0;
+    TypeTab[I].FieldCount := 0;
+    TypeTab[I].ElemType   := TYPE_UNKNOWN;
+    TypeTab[I].ElemSize   := 4;
+    TypeTab[I].EnumCount  := 0;
+    TypeTab[I].TotalSize  := 4;
+    For J := 1 To MAX_FIELD Do
+    Begin
+      TypeTab[I].FieldNames[J] := '';
+      TypeTab[I].FieldTypes[J] := TYPE_UNKNOWN;
+      TypeTab[I].FieldOffs[J]  := 0;
+    End;
+    For J := 1 To MAX_ENUM Do
+      TypeTab[I].EnumNames[J] := '';
+  End;
+End;
+
+{ ---- RegisterPredefinedTypes : enregistrer les types predefinis }
+{ Occupe les slots TYPE_INT..TYPE_STR (indices 1 a 5).            }
+{ Tailles en 32 bits : Integer=4, Float=8, Boolean=1, Char=1.     }
+Procedure RegisterPredefinedTypes;
+Var I : Integer;
+Begin
+  For I := 1 To 5 Do
+  Begin
+    TypeTab[I].Kind     := TK_PREDEF;
+    TypeTab[I].BaseType := TYPE_UNKNOWN;
+    TypeTab[I].LoBound  := 0;
+    TypeTab[I].HiBound  := 0;
+  End;
+
+  { TYPE_INT = 1 : Integer 32 bits signe }
+  TypeTab[TYPE_INT].Name      := 'INTEGER';
+  TypeTab[TYPE_INT].TotalSize := 4;    { DD 4 octets }
+  TypeTab[TYPE_INT].LoBound   := -2147483648;
+  TypeTab[TYPE_INT].HiBound   :=  2147483647;
+  TypeTab[TYPE_INT].Kind      := TK_RANGE;
+  TypeTab[TYPE_INT].BaseType  := TYPE_INT;
+
+  { TYPE_FLOAT = 2 : Float 64 bits (DQ 8 octets, stub) }
+  TypeTab[TYPE_FLOAT].Name      := 'FLOAT';
+  TypeTab[TYPE_FLOAT].TotalSize := 8;  { DQ 8 octets }
+  TypeTab[TYPE_FLOAT].Kind      := TK_PREDEF;
+
+  { TYPE_BOOL = 3 : Boolean (0=False, 1=True, DB 1 octet) }
+  TypeTab[TYPE_BOOL].Name       := 'BOOLEAN';
+  TypeTab[TYPE_BOOL].TotalSize  := 1;  { DB 1 octet }
+  TypeTab[TYPE_BOOL].Kind       := TK_ENUM;
+  TypeTab[TYPE_BOOL].EnumCount  := 2;
+  TypeTab[TYPE_BOOL].EnumNames[1] := 'FALSE';
+  TypeTab[TYPE_BOOL].EnumNames[2] := 'TRUE';
+
+  { TYPE_CHAR = 4 : Character (ASCII 0..255, DB 1 octet) }
+  TypeTab[TYPE_CHAR].Name      := 'CHARACTER';
+  TypeTab[TYPE_CHAR].TotalSize := 1;   { DB 1 octet }
+  TypeTab[TYPE_CHAR].Kind      := TK_RANGE;
+  TypeTab[TYPE_CHAR].LoBound   := 0;
+  TypeTab[TYPE_CHAR].HiBound   := 255;
+
+  { TYPE_STR = 5 : String (pointeur DD 4 octets en 32 bits) }
+  TypeTab[TYPE_STR].Name      := 'STRING';
+  TypeTab[TYPE_STR].TotalSize := 4;    { pointeur 32 bits }
+  TypeTab[TYPE_STR].Kind      := TK_ARRAY;
+  TypeTab[TYPE_STR].ElemType  := TYPE_CHAR;
+  TypeTab[TYPE_STR].ElemSize  := 1;
+
+  { Les 5 premiers slots sont occupes par les types predefinis }
+  TypeCount := 5;
+End;
+
+{ ---- AddType : ajouter un type dans la table ----------------- }
+{ Retourne l index (1-base, > 5) ou 0 si table pleine.           }
+Function AddType(Const Name : TString; Kind : Integer) : Integer;
+Var
+  U   : TString;
+  Idx : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    Error('Table des types pleine (MAX_TYPE=' +
+          IntToStr_(MAX_TYPE) + ')');
+    AddType := 0;
+    Exit;
+  End;
+  U := StrUpperCase(Name);
+  Inc(TypeCount);
+  Idx := TypeCount;
+  TypeTab[Idx].Name       := U;
+  TypeTab[Idx].Kind       := Kind;
+  TypeTab[Idx].BaseType   := TYPE_UNKNOWN;
+  TypeTab[Idx].LoBound    := 0;
+  TypeTab[Idx].HiBound    := 0;
+  TypeTab[Idx].FieldCount := 0;
+  TypeTab[Idx].ElemType   := TYPE_UNKNOWN;
+  TypeTab[Idx].ElemSize   := 4;
+  TypeTab[Idx].EnumCount  := 0;
+  TypeTab[Idx].TotalSize  := 4;
+  AddType := Idx;
+End;
+
+{ ---- FindType : recherche un type par nom -------------------- }
+{ Retourne l index (1-base) ou 0 si non trouve.                   }
+Function FindType(Const Name : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := TypeCount DownTo 1 Do
+    If TypeTab[I].Name = U Then
+    Begin FindType := I; Exit; End;
+  FindType := 0;
+End;
+
+{ ---- GetTypeSize : taille en octets d un type ---------------- }
+{ Retourne TotalSize du type, ou 4 par defaut si non resolu.     }
+Function GetTypeSize(TypeIdx : Integer) : Integer;
+Var Sz : Integer;
+Begin
+  If (TypeIdx < 1) Or (TypeIdx > TypeCount) Then
+  Begin GetTypeSize := 4; Exit; End;
+
+  Sz := TypeTab[TypeIdx].TotalSize;
+  If Sz <= 0 Then Sz := 4;
+  GetTypeSize := Sz;
+End;
+
+{ ---- InitSubTable : initialiser la table des sous-programmes - }
+Procedure InitSubTable;
+Var I, J : Integer;
+Begin
+  SubCount := 0;
+  For I := 1 To MAX_SUB Do
+  Begin
+    SubTab[I].Name       := '';
+    SubTab[I].AsmLabel   := '';
+    SubTab[I].RetType    := TYPE_VOID;
+    SubTab[I].ParamCount := 0;
+    SubTab[I].IsForward  := False;
+    SubTab[I].IsFunction := False;
+    SubTab[I].FrameSize  := 0;
+    For J := 1 To MAX_PARAM Do
+    Begin
+      SubTab[I].ParamNames[J] := '';
+      SubTab[I].ParamTypes[J] := TYPE_UNKNOWN;
+      SubTab[I].ParamModes[J] := PARAM_IN;
+    End;
+  End;
+End;
+
+{ ---- AddSub : ajouter un sous-programme ---------------------- }
+{ Retourne l index (1-base) ou 0 si table pleine.                 }
+Function AddSub(Const Name : TString;
+                IsFunc : Boolean; RetTy : Integer) : Integer;
+Var
+  U   : TString;
+  Idx : Integer;
+Begin
+  If SubCount >= MAX_SUB Then
+  Begin
+    Error('Table sous-programmes pleine (MAX_SUB=' +
+          IntToStr_(MAX_SUB) + ')');
+    AddSub := 0;
+    Exit;
+  End;
+  U := StrUpperCase(Name);
+  Inc(SubCount);
+  Idx := SubCount;
+  SubTab[Idx].Name       := U;
+  SubTab[Idx].IsFunction := IsFunc;
+  SubTab[Idx].RetType    := RetTy;
+  SubTab[Idx].ParamCount := 0;
+  SubTab[Idx].IsForward  := False;
+  SubTab[Idx].FrameSize  := 0;
+  If IsFunc Then
+    SubTab[Idx].AsmLabel := ADA_FN_PFX + AsmIdent(U)
+  Else
+    SubTab[Idx].AsmLabel := ADA_FN_PFX + AsmIdent(U);
+  AddSub := Idx;
+End;
+
+{ ---- FindSub : recherche un sous-programme par nom ----------- }
+{ Retourne l index (1-base) ou 0 si non trouve.                   }
+Function FindSub(Const Name : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := SubCount DownTo 1 Do
+    If SubTab[I].Name = U Then
+    Begin FindSub := I; Exit; End;
+  FindSub := 0;
+End;
+
+{ ---- SubParamBytes32 : taille totale des params en octets ---- }
+{ Pour le nettoyage de pile (callee-cleanup : RET n) en 32 bits.  }
+{ OUT et INOUT passent par adresse -> toujours 4 octets (ptr 32). }
+Function SubParamBytes32(SubIdx : Integer) : Integer;
+Var
+  I   : Integer;
+  Tot : Integer;
+Begin
+  Tot := 0;
+  If (SubIdx < 1) Or (SubIdx > SubCount) Then
+  Begin SubParamBytes32 := 0; Exit; End;
+  For I := 1 To SubTab[SubIdx].ParamCount Do
+  Begin
+    If (SubTab[SubIdx].ParamModes[I] = PARAM_OUT) Or
+       (SubTab[SubIdx].ParamModes[I] = PARAM_INOUT) Then
+      Inc(Tot, 4)   { adresse 32 bits }
+    Else
+      Inc(Tot, AlignDWord(GetTypeSize(SubTab[SubIdx].ParamTypes[I])));
+  End;
+  SubParamBytes32 := Tot;
+End;
+
+{ ---- InitPkgTable : initialiser la table des packages -------- }
+Procedure InitPkgTable;
+Var I : Integer;
+Begin
+  PkgCount := 0;
+  For I := 1 To MAX_PKG Do
+  Begin
+    PkgTab[I].Name       := '';
+    PkgTab[I].IsStandard := False;
+    PkgTab[I].UseActive  := False;
+  End;
+End;
+
+{ ---- AddPkg : enregistrer un package importe (WITH) ---------- }
+{ Retourne l index (1-base) ou 0 si plein. Si deja present,       }
+{ retourne l index existant.                                       }
+Function AddPkg(Const Name : TString; IsStd : Boolean) : Integer;
+Var
+  U   : TString;
+  I   : Integer;
+  Idx : Integer;
+Begin
+  U := StrUpperCase(Name);
+  { Verifier si deja present }
+  For I := 1 To PkgCount Do
+    If PkgTab[I].Name = U Then
+    Begin AddPkg := I; Exit; End;
+  If PkgCount >= MAX_PKG Then
+  Begin
+    Warning('Table packages pleine, ' + Name + ' ignore');
+    AddPkg := 0;
+    Exit;
+  End;
+  Inc(PkgCount);
+  Idx := PkgCount;
+  PkgTab[Idx].Name       := U;
+  PkgTab[Idx].IsStandard := IsStd;
+  PkgTab[Idx].UseActive  := False;
+  AddPkg := Idx;
+End;
+
+{ ---- FindPkg : recherche un package par nom ------------------ }
+{ Retourne l index (1-base) ou 0 si non trouve.                   }
+Function FindPkg(Const Name : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := 1 To PkgCount Do
+    If PkgTab[I].Name = U Then
+    Begin FindPkg := I; Exit; End;
+  FindPkg := 0;
 End;
 
 { ---- LexInit : ouvrir le fichier source et lire le 1er token }
@@ -2002,6 +2343,9 @@ Begin
   WriteLn('--- Statistiques ---');
   WriteLn('Lignes analysees : ', TotalLines);
   WriteLn('Symboles         : ', SymCount);
+  WriteLn('Types            : ', TypeCount);
+  WriteLn('Sous-programmes  : ', SubCount);
+  WriteLn('Packages         : ', PkgCount);
   WriteLn('Erreurs          : ', ErrorCount);
   WriteLn('Avertissements   : ', WarnCount);
 End;
@@ -2026,6 +2370,10 @@ End;
 Procedure Run;
 Begin
   InitSymTable;
+  InitTypeTable;
+  RegisterPredefinedTypes;
+  InitSubTable;
+  InitPkgTable;
   LexInit;
   If Opts.DebugMode Then
   Begin
@@ -2040,7 +2388,8 @@ Begin
   Else
   Begin
     WriteLn('ADACW32: compilation de ', Opts.SrcFile, ' ...');
-    WriteLn('ADACW32: TODO 05+ non encore implemente - table symboles OK');
+    WriteLn('ADACW32: TODO 06+ non encore implemente - ',
+            'types/sous-prog/packages OK');
   End;
   LexClose;
   BilanCompilation;

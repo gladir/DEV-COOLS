@@ -106,7 +106,7 @@
             Modes parametres : PARAM_IN, PARAM_OUT, PARAM_INOUT
             GetSymSize(sym_idx) : retourne la taille en octets
 
-  TODO 05 - TABLES DES TYPES ET SOUS-PROGRAMMES (32 BITS)
+  TODO 05 - TABLES DES TYPES ET SOUS-PROGRAMMES (32 BITS) [IMPLEMENTE]
             Type TSubEntry : Name (String[48]), AsmLabel (String[48]),
               RetType (Integer), ParamCount (Integer),
               ParamNames[1..MAX_PARAM] of String[48],
