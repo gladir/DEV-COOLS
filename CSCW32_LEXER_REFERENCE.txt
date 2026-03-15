@@ -1,0 +1,355 @@
+================================================================================
+CSCW32 TODO 02 - LEXER IMPLEMENTATION REFERENCE CARD
+================================================================================
+
+EXECUTIVE SUMMARY
+================================================================================
+CSC86.PAS contains a COMPLETE C# LEXER implementation in Turbo Pascal.
+This reference card provides exact code locations and specifications for
+implementing the equivalent lexer in CSCW32 (W32 version).
+
+QUICK START - 3 FILES NEEDED
+================================================================================
+1. CSC86_LEXER_ANALYSIS.txt    - Full code listings with explanations
+2. LEXER_SOURCE_MAP.txt        - Line number index and dependencies
+3. This file                   - Reference card (you are here)
+
+
+CORE DATA STRUCTURES
+================================================================================
+
+TTokenKind Enumeration (9 values, lines 132-142)
+──────────────────────────────────────────────────
+  0. TK_EOF         - End of file
+  1. TK_UNKNOWN     - Unrecognized character
+  2. TK_IDENT       - Identifier (not a keyword)
+  3. TK_INT         - Integer literal
+  4. TK_STRING      - String literal
+  5. TK_CHAR        - Character literal
+  6. TK_KEYWORD     - Reserved keyword
+  7. TK_OP          - Operator
+  8. TK_PUNCT       - Punctuation
+
+TToken Record (5 fields, lines 145-151)
+──────────────────────────────────────────
+  kind    : TTokenKind  - Token type
+  val     : TString     - Text representation (max 128 chars)
+  int_val : LongInt     - Numeric value (for TK_INT)
+  line    : Integer     - Source line number (1-based)
+  col     : Integer     - Source column (1-based)
+
+Global Lexer State (8 variables, lines 244-275)
+──────────────────────────────────────────────────
+  src_file    : Text         - Input file handle
+  lex_line    : String       - Current line buffer
+  lex_pos     : Integer      - Position in lex_line (1-based)
+  lex_lineno  : Integer      - Current line number (1-based)
+  lex_colno   : Integer      - Current column (1-based)
+  lex_cur_tok : TToken       - Current/last consumed token
+  lex_peek_tok: TToken       - Lookahead token buffer
+  lex_has_peek: Boolean      - Is peek_tok valid?
+
+
+C# KEYWORDS (30 TOTAL)
+================================================================================
+Recognized by LexIsKeyword() at lines 365-378:
+
+Basic types:     int, bool, char, string, void
+Control flow:    if, else, while, for, do, break, continue, return
+Literals:        true, false, null, new
+Modifiers:       static, public, private, readonly, const, ref, out
+Namespaces:      using, namespace, class
+
+
+ESCAPE SEQUENCES
+================================================================================
+Processed by LexDecodeEscape() at lines 525-556:
+
+\n     -> Line feed (ASCII 10)
+\r     -> Carriage return (ASCII 13)
+\t     -> Tab (ASCII 9)
+\0     -> Null (ASCII 0)
+\\     -> Backslash
+\"     -> Double quote
+\'     -> Single quote
+\xHH   -> Hexadecimal (1-2 hex digits, e.g., \x41 = 'A')
+(other)-> Preserved as-is
+
+
+OPERATORS AND PUNCTUATION
+================================================================================
+
+Two-Character Operators (13 total, lines 697-709)
+──────────────────────────────────────────────────
+  == != <= >= && || ++ -- += -= *= /= %=
+
+Single-Character Operators (10 total)
+────────────────────────────────────────
+  + - * / % < > = ! &  | ? :
+
+Punctuation (9 total, line 717)
+────────────────────────────────
+  { } ( ) [ ] ; , .
+
+NOT IMPLEMENTED:
+  ?? (null-coalescing)
+  << >> (shift operators)
+  &= |= ^= (compound assignment for bitwise)
+
+
+LEXER INTERFACE - MAIN PROCEDURES
+================================================================================
+
+LexInit(fname: String) [Lines 383-394]
+  Initializes lexer state:
+    - Opens source file
+    - Clears lex_line, lex_cur_tok, lex_peek_tok
+    - Resets lex_pos=1, lex_lineno=0, lex_colno=1
+
+LexClose() [Lines 832-836]
+  Closes source file
+
+LexNext() [Lines 729-775]
+  Main dispatcher - consumes next token:
+    1. Return from peek buffer if valid
+    2. Ensure data available (LexRefill)
+    3. Skip whitespace/comments (LexSkipWS)
+    4. Dispatch by first character:
+       - [a-zA-Z_]  -> LexReadIdent
+       - [0-9]      -> LexReadNumber
+       - " (quote)  -> LexReadString
+       - ' (apos)   -> LexReadChar2
+       - other      -> LexReadOp
+    Result: lex_cur_tok
+
+LexPeek() [Lines 781-789]
+  Lookahead without consuming:
+    - If not cached, calls LexNext and stores in lex_peek_tok
+    - Sets lex_has_peek = True
+    Result: lex_peek_tok
+
+LexExpect(expected_val: String) [Lines 795-804]
+  Consume token and verify its value:
+    - Calls LexNext
+    - Checks lex_cur_tok.val against expected_val
+    - Increments err_count on mismatch
+
+LexExpectKind(kind: TTokenKind) [Lines 810-827]
+  Consume token and verify its kind:
+    - Calls LexNext
+    - Checks lex_cur_tok.kind against kind
+    - Increments err_count on mismatch
+
+
+INTERNAL SCANNER PROCEDURES
+================================================================================
+
+LexReadIdent() [Lines 575-588]
+  Scans identifiers and keywords:
+    - Pattern: [a-zA-Z_][a-zA-Z0-9_]*
+    - Tests against LexIsKeyword()
+    - Returns: TK_KEYWORD or TK_IDENT
+    - Result: r.val = identifier string
+
+LexReadNumber() [Lines 593-628]
+  Scans integer literals:
+    - Decimal: 42, 0, 1234
+    - Hexadecimal: 0xFF, 0x10 (case-insensitive)
+    - Suffixes: u, U, l, L (parsed then discarded)
+    - Result: r.val = text, r.int_val = numeric value
+
+LexReadString() [Lines 634-656]
+  Scans string literals:
+    - Delimited by double-quotes: "..."
+    - Escape sequences via LexDecodeEscape
+    - Truncated to MAX_TOKSTR (128 chars)
+    - Result: r.val = decoded string
+
+LexReadChar2() [Lines 661-680]
+  Scans character literals:
+    - Delimited by single-quotes: '...'
+    - Escape sequences via LexDecodeEscape
+    - Result: r.val = single char, r.int_val = Ord(char)
+
+LexReadOp() [Lines 686-722]
+  Scans operators and punctuation:
+    - Two-char operators: Check LexPeekChar(1)
+    - Punctuation marked as TK_PUNCT
+    - Everything else marked as TK_OP
+
+LexSkipWS() [Lines 475-519]
+  Skips whitespace and comments:
+    - Whitespace: space, tab, CR, LF
+    - Line comments: // (skip to EOL)
+    - Block comments: /* ... */ (multi-line)
+
+LexDecodeEscape() [Lines 525-556]
+  Decodes escape sequences:
+    - Called after seeing backslash
+    - Returns decoded character
+    - Unknown sequences preserved
+
+
+CHARACTER CLASSIFICATION FUNCTIONS
+================================================================================
+
+LexIsAlpha(c: Char): Boolean [Lines 323-326]
+  Returns True for: [a-zA-Z_]
+
+LexIsAlNum(c: Char): Boolean [Lines 331-334]
+  Returns True for: [a-zA-Z0-9_]
+
+LexIsDigit(c: Char): Boolean [Lines 339-342]
+  Returns True for: [0-9]
+
+LexIsHexDigit(c: Char): Boolean [Lines 347-350]
+  Returns True for: [0-9a-fA-F]
+
+LexHexVal(c: Char): Integer [Lines 355-360]
+  Returns: 0-15 for hex digits
+
+
+HELPER FUNCTIONS
+================================================================================
+
+LexCurChar(): Char [Lines 399-405]
+  Returns current character or LEX_EOF_CHAR (#0)
+
+LexPeekChar(offset: Integer): Char [Lines 410-418]
+  Returns character at lex_pos+offset or LEX_EOF_CHAR
+
+LexAdvance() [Lines 423-430]
+  Advances to next character: lex_pos++, lex_colno++
+
+LexReadLine(): Boolean [Lines 436-450]
+  Reads next line from src_file
+  Returns False if EOF
+  Updates: lex_lineno, lex_pos, lex_colno
+
+LexRefill(): Boolean [Lines 457-468]
+  Ensures LexCurChar != LEX_EOF_CHAR
+  Returns False if end of file
+
+LexMakeTok(kind: TTokenKind; val: String; Var r: TToken) [Lines 563-570]
+  Factory function to create token records
+
+
+USAGE PATTERNS
+================================================================================
+
+Pattern 1: Simple Lookahead
+──────────────────────────
+  LexPeek;
+  If (lex_peek_tok.kind = TK_KEYWORD) And (lex_peek_tok.val = 'if') Then
+  Begin
+    LexNext;  { consume the 'if' }
+  End;
+
+Pattern 2: Consume Expected Value
+──────────────────────────────────
+  LexExpect('(');    { consumes '(' or error }
+
+Pattern 3: Get Identifier
+─────────────────────────
+  LexExpectKind(TK_IDENT);
+  name := lex_cur_tok.val;
+
+Pattern 4: Test Token After LexNext
+────────────────────────────────────
+  LexNext;
+  If (lex_cur_tok.kind = TK_INT) Then
+  Begin
+    value := lex_cur_tok.int_val;
+  End;
+
+
+COMPILATION FLOW
+================================================================================
+
+Main Program Sequence:
+  1. InitTables            - Allocate and zero all tables
+  2. ParseCommandLine      - Get src_fname, out_fname, options
+  3. Compile:
+     a. LexInit(src_fname) - Open file, init lexer state
+     b. ParseProgram       - Single-pass parse+codegen
+        (calls LexNext/LexPeek throughout)
+     c. LexClose           - Close file
+     d. Generate ASM       - Output assembly
+  4. FreeTables            - Deallocate memory
+  5. Exit(err_count > 0 ? 1 : 0)
+
+Single-Pass Architecture:
+  - Parsing and code generation interleaved
+  - No separate lexing phase
+  - No multi-token lookahead (only 1 via peek)
+
+
+CONSTANTS
+================================================================================
+
+LEX_EOF_CHAR = #0                    { sentinel for EOL/EOF }
+MAX_TOKSTR = 128                     { max token string length }
+MAX_LINE = 256                       { max line buffer length }
+TString = String[MAX_TOKSTR]         { type for token strings }
+
+
+KNOWN LIMITATIONS
+================================================================================
+
+NOT IMPLEMENTED:
+  • ?? operator (null-coalescing)
+  • << >> operators (bitwise shift)
+  • Compound bitwise assignments (&=, |=, ^=)
+  • Verbatim strings (@"...")
+  • Unicode escapes (\u, \U)
+  • Nested block comments
+  • Floating-point numbers
+  • Raw string literals
+  • String interpolation ($"...")
+  • Var keywords and discards
+  • Contextual keywords
+
+DESIGN DECISIONS:
+  • Global state (no OOP structure)
+  • Line-based input (not character stream)
+  • Single lookahead token
+  • No smart operator table (explicit checks)
+  • Simple boolean comment flag (no nesting)
+  • Turbo Pascal restrictions (no record returns)
+
+
+IMPLEMENTATION DEPENDENCIES
+================================================================================
+
+In order of implementation:
+
+1. Type definitions: TTokenKind, TToken, TString
+2. Constants: LEX_EOF_CHAR, MAX_TOKSTR, MAX_LINE
+3. Global variables: src_file, lex_line, lex_pos, etc.
+4. Character helpers: LexIsAlpha, LexIsDigit, etc.
+5. Keyword list: LexIsKeyword
+6. I/O layer: LexInit, LexClose, LexReadLine, LexRefill
+7. Character access: LexCurChar, LexPeekChar, LexAdvance
+8. Whitespace: LexSkipWS
+9. Escape sequences: LexDecodeEscape
+10. Token factory: LexMakeTok
+11. Scanners: LexReadIdent, LexReadNumber, LexReadString, LexReadChar2, LexReadOp
+12. Main dispatcher: LexNext
+13. Lookahead: LexPeek
+14. Validation: LexExpect, LexExpectKind
+
+
+FOR MORE INFORMATION
+================================================================================
+
+Detailed code:        CSC86_LEXER_ANALYSIS.txt (503 lines)
+Line number index:    LEXER_SOURCE_MAP.txt (192 lines)
+Original source:      /home/runner/work/DEV-COOLS/DEV-COOLS/CSC86.PAS
+
+All sections are complete with exact line numbers and full code listings.
+
+================================================================================
+Generated: 2025-03-15
+Based on: CSC86.PAS (Turbo Pascal C# to 8086 Compiler)
+Target:   CSCW32 TODO 02 (C# to Win32 Lexer Implementation)
+================================================================================
