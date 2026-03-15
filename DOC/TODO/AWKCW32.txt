@@ -330,6 +330,7 @@
             test_functions.awk (15 cas, 18 fonctions, 606 ops gen)
 
   TODO 14 - PARSEUR : REGLES PATTERN-ACTION (BEGIN, END, /regex/, expr)
+            [IMPLEMENTE]
             Type TRuleEntry : Kind (RK_BEGIN, RK_END, RK_PATTERN,
               RK_EXPR, RK_RANGE, RK_ALL), PatternStr, AsmLabel,
               HasAction (Boolean)
@@ -352,6 +353,8 @@
             Support de next (passer a la ligne suivante)
             Support de nextfile (passer au fichier suivant)
             Support de exit [expr] (terminer avec code de sortie)
+            Var RuleDefCount pour les statistiques
+            test_rules.awk (15 cas, 16 regles, 213 ops gen)
 
   TODO 15 - PARSEUR : CHAMPS $0..$NF ET SEPARATEURS FS, RS, OFS, ORS
             Procedure ParseFieldRef

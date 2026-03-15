@@ -328,6 +328,7 @@
             test_functions.awk (15 cas, fonctions, recursion)
 
   TODO 14 - PARSEUR : REGLES PATTERN-ACTION (BEGIN, END, /regex/, expr)
+            [IMPLEMENTE]
             Type TRuleEntry : Kind (RK_BEGIN, RK_END, RK_PATTERN,
               RK_EXPR, RK_RANGE, RK_ALL), PatternStr, AsmLabel,
               HasAction (Boolean)
@@ -350,6 +351,8 @@
             Support de next (passer a la ligne suivante)
             Support de nextfile (passer au fichier suivant)
             Support de exit [expr] (terminer avec code de sortie)
+            Var RuleDefCount pour les statistiques
+            test_rules.awk (15 cas, regles pattern-action)
 
   TODO 15 - PARSEUR : CHAMPS $0..$NF ET SEPARATEURS FS, RS, OFS, ORS
             Procedure ParseFieldRef
@@ -818,6 +821,18 @@ Const
   SK_LOOP     = 4;            { scope boucle (for/while/do)       }
 
 { ============================================================ }
+{ TODO 14 - CONSTANTES DE REGLES PATTERN-ACTION                 }
+{ ============================================================ }
+
+  (* Types de regles pattern-action *)
+  RK_BEGIN   = 0;              (* BEGIN action                     *)
+  RK_END     = 1;              (* END action                       *)
+  RK_PATTERN = 2;              (* /regexp/ action                  *)
+  RK_EXPR    = 3;              (* expression action                *)
+  RK_RANGE   = 4;              (* /deb/,/fin/ action               *)
+  RK_ALL     = 5;              (* action sans pattern              *)
+
+{ ============================================================ }
 { TYPES                                                        }
 { ============================================================ }
 
@@ -884,6 +899,14 @@ Type
     ParamNames : Array[1..MAX_PARAM] Of String[64];
     Defined    : Boolean;       { corps de fonction defini ?        }
     LocalCount : Integer;       { nombre de variables locales       }
+  End;
+
+  (* Entree de la table des regles pattern-action (TODO 14) *)
+  TRuleEntry = Record
+    Kind       : Integer;       (* RK_BEGIN / RK_END / RK_PATTERN *)
+    PatternStr : String[MAX_STR]; (* contenu du pattern            *)
+    AsmLabel   : String[64];    (* label assembleur _AWR_xxxxx     *)
+    HasAction  : Boolean;       (* a un bloc action ?              *)
   End;
 
 { ============================================================ }
@@ -1024,6 +1047,11 @@ Var
 
   { Fonctions utilisateur (TODO 13) }
   FuncDefCount   : Integer;    { nombre de definitions de fonctions }
+
+  { Regles pattern-action (TODO 14) }
+  RuleTab        : Array[0..MAX_RULES - 1] Of TRuleEntry;
+  RuleCount      : Integer;    { nombre de regles enregistrees      }
+  RuleDefCount   : Integer;    { nombre de regles parsees           }
 
 Const
 {$IFDEF FPC}
@@ -1380,6 +1408,7 @@ Begin
   WriteLn('Do-While         : ', DoWhileCount);
   WriteLn('For-In           : ', ForInCount);
   WriteLn('Func definitions : ', FuncDefCount);
+  WriteLn('Rules            : ', RuleDefCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2506,6 +2535,10 @@ Procedure ParseForIn; Forward;
 
 { Forward declarations TODO 13 - Fonctions utilisateur }
 Procedure ParseFunctionDef; Forward;
+
+{ Forward declarations TODO 14 - Regles pattern-action }
+Procedure ParseAction; Forward;
+Procedure ParseProgram; Forward;
 
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
@@ -4549,12 +4582,230 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 14 - PARSEUR : REGLES PATTERN-ACTION (BEGIN, END,       }
+{           /regex/, expr)  [IMPLEMENTE]                        }
+{ ============================================================ }
+
+{ ---- AddRule : enregistrer une nouvelle regle ------------------- }
+Function AddRule(Kind : Integer; Const Pat : String) : Integer;
+Var
+  Lbl : String;
+  Idx : Integer;
+Begin
+  If RuleCount >= MAX_RULES Then
+  Begin
+    FatalError('table des regles pleine');
+    AddRule := -1;
+    Exit;
+  End;
+  Idx := RuleCount;
+  Lbl := GenScopeLabel(AW_RULE_PFX);
+  RuleTab[Idx].Kind       := Kind;
+  RuleTab[Idx].PatternStr := Pat;
+  RuleTab[Idx].AsmLabel   := Lbl;
+  RuleTab[Idx].HasAction  := False;
+  Inc(RuleCount);
+  AddRule := Idx;
+End;
+
+{ ---- ParseAction ------------------------------------------------ }
+(* Parse un bloc action { ... } d une regle pattern-action.         *)
+(* Utilise ParseBlock pour parser le contenu entre accolades.       *)
+Procedure ParseAction;
+Begin
+  SkipNewlines;
+  If IsPunct('{') Then
+    ParseBlock
+  Else
+    ParseStatement;
+End;
+
+{ ---- ParseProgram ----------------------------------------------- }
+(* Parse un programme AWK complet au niveau superieur.              *)
+(* Structure AWK : suite de regles pattern-action :                 *)
+(*   BEGIN { action }           -> bloc d initialisation            *)
+(*   END { action }             -> bloc de finalisation             *)
+(*   /regexp/ { action }        -> filtre par expression reguliere  *)
+(*   /deb/,/fin/ { action }     -> range pattern (debut a fin)      *)
+(*   expression { action }      -> filtre par condition             *)
+(*   { action }                 -> action sans pattern (tout)       *)
+(*   function nom(...) { ... }  -> definition de fonction           *)
+(* Generation de code 80386 :                                       *)
+(*   Chaque regle -> label _AWR_n + test pattern + corps action     *)
+(*   BEGIN execute avant la boucle de lecture                       *)
+(*   END execute apres la boucle de lecture                         *)
+Procedure ParseProgram;
+Var
+  RIdx     : Integer;
+  LblSkip  : TString;
+  PatVal   : TString;
+  PatVal2  : TString;
+  D        : Integer;
+Begin
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    SkipNewlines;
+    If CurToken.Kind = TK_EOF Then Break;
+
+    { Passer les points-virgules isoles }
+    If IsPunct(';') Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    { ---- function : definition de fonction ---- }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.IntVal = KW_FUNCTION) Then
+    Begin
+      ParserAdvance;
+      ParseFunctionDef;
+      Continue;
+    End;
+
+    (* ---- BEGIN action ---- *)
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.IntVal = KW_BEGIN) Then
+    Begin
+      ParserAdvance;
+      Inc(RuleDefCount);
+      RIdx := AddRule(RK_BEGIN, 'BEGIN');
+      If RIdx >= 0 Then
+        RuleTab[RIdx].HasAction := True;
+      EmitComment('--- BEGIN rule ---');
+      EmitLabel(RuleTab[RIdx].AsmLabel);
+      EnterScope(SK_RULE);
+      ParseAction;
+      LeaveScope;
+      EmitComment('--- end BEGIN rule ---');
+      EmitBlank;
+      Continue;
+    End;
+
+    (* ---- END action ---- *)
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.IntVal = KW_END) Then
+    Begin
+      ParserAdvance;
+      Inc(RuleDefCount);
+      RIdx := AddRule(RK_END, 'END');
+      If RIdx >= 0 Then
+        RuleTab[RIdx].HasAction := True;
+      EmitComment('--- END rule ---');
+      EmitLabel(RuleTab[RIdx].AsmLabel);
+      EnterScope(SK_RULE);
+      ParseAction;
+      LeaveScope;
+      EmitComment('--- end END rule ---');
+      EmitBlank;
+      Continue;
+    End;
+
+    (* ---- /regexp/ action ou /deb/,/fin/ action ---- *)
+    If CurToken.Kind = TK_REGEXP Then
+    Begin
+      PatVal := CurToken.Val;
+      ParserAdvance;
+      SkipNewlines;
+
+      { Range pattern : /deb/,/fin/ }
+      If IsPunct(',') Then
+      Begin
+        ParserAdvance;
+        SkipNewlines;
+        If CurToken.Kind = TK_REGEXP Then
+        Begin
+          PatVal2 := CurToken.Val;
+          ParserAdvance;
+          SkipNewlines;
+          Inc(RuleDefCount);
+          RIdx := AddRule(RK_RANGE, PatVal + ',' + PatVal2);
+          If RIdx >= 0 Then
+            RuleTab[RIdx].HasAction := True;
+          EmitComment('--- range pattern /' + PatVal + '/,/' + PatVal2 + '/ ---');
+          EmitLabel(RuleTab[RIdx].AsmLabel);
+          EnterScope(SK_RULE);
+          ParseAction;
+          LeaveScope;
+          EmitComment('--- end range pattern ---');
+          EmitBlank;
+          Continue;
+        End;
+      End;
+
+      { Simple regex pattern }
+      Inc(RuleDefCount);
+      RIdx := AddRule(RK_PATTERN, PatVal);
+      If RIdx >= 0 Then
+        RuleTab[RIdx].HasAction := True;
+      EmitComment('--- pattern /' + PatVal + '/ ---');
+      EmitLabel(RuleTab[RIdx].AsmLabel);
+      LblSkip := NewLabel;
+      { Generer le test : CALL _AWRT_MATCH_LINE + TEST EAX, EAX + JZ skip }
+      EmitComment('  test: match $0 ~ /' + PatVal + '/');
+      EnterScope(SK_RULE);
+      ParseAction;
+      LeaveScope;
+      EmitLabel(LblSkip);
+      EmitComment('--- end pattern ---');
+      EmitBlank;
+      Continue;
+    End;
+
+    (* ---- action sans pattern (toutes les lignes) ---- *)
+    If IsPunct('{') Then
+    Begin
+      Inc(RuleDefCount);
+      RIdx := AddRule(RK_ALL, '');
+      If RIdx >= 0 Then
+        RuleTab[RIdx].HasAction := True;
+      EmitComment('--- rule (all lines) ---');
+      EmitLabel(RuleTab[RIdx].AsmLabel);
+      EnterScope(SK_RULE);
+      ParseAction;
+      LeaveScope;
+      EmitComment('--- end rule (all lines) ---');
+      EmitBlank;
+      Continue;
+    End;
+
+    (* ---- expression action (filtre par condition) ---- *)
+    { ou instruction simple au top-level }
+    If CurToken.Kind <> TK_EOF Then
+    Begin
+      (* Verifier si c est une expression suivie de accolade *)
+      { Sinon, c est une instruction simple au top-level }
+      D := ParseExpr;
+      SkipNewlines;
+      If IsPunct('{') Then
+      Begin
+        { Regle avec expression condition }
+        Inc(RuleDefCount);
+        RIdx := AddRule(RK_EXPR, '(expr)');
+        If RIdx >= 0 Then
+          RuleTab[RIdx].HasAction := True;
+        EmitComment('--- expr rule ---');
+        EmitLabel(RuleTab[RIdx].AsmLabel);
+        LblSkip := NewLabel;
+        { Le resultat de l expression est dans EAX }
+        GenCoerceToBoolean(D);
+        Emit('        TEST    EAX, EAX');
+        Emit('        JZ      ' + LblSkip);
+        EnterScope(SK_RULE);
+        ParseAction;
+        LeaveScope;
+        EmitLabel(LblSkip);
+        EmitComment('--- end expr rule ---');
+        EmitBlank;
+      End;
+      { Sinon c etait une instruction simple (deja parsee par ParseExpr) }
+      Continue;
+    End;
+  End;
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
 Procedure Run;
-Var
-  StmtCount : Integer;
 Begin
   WriteLn('AWKCW32: compilation de ', Opts.SrcFile, ' ...');
   If Opts.FieldSep <> ' ' Then
@@ -4577,6 +4828,8 @@ Begin
   DoWhileCount := 0;
   ForInCount := 0;
   FuncDefCount := 0;
+  RuleCount := 0;
+  RuleDefCount := 0;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -4592,27 +4845,15 @@ Begin
   End
   Else
   Begin
-    { Parser les expressions (TODO 06+10+11+12+13) }
+    { Parser le programme AWK (TODO 06+10+11+12+13+14) }
     ParserAdvance;  { charger le premier token }
-    StmtCount := 0;
-    While CurToken.Kind <> TK_EOF Do
-    Begin
-      SkipNewlines;
-      If CurToken.Kind = TK_EOF Then Break;
-      { Passer les accolades et points-virgules de structure top-level }
-      If IsPunct('{') Or IsPunct('}') Or IsPunct(';') Then
-      Begin
-        ParserAdvance;
-        Continue;
-      End;
-      ParseStatement;
-      Inc(StmtCount);
-    End;
+    ParseProgram;
     WriteLn('AWKCW32: tokenisation terminee, ', TotalLines, ' lignes');
     WriteLn('AWKCW32: ', SymCount, ' symbole(s), ', FuncCount, ' fonction(s), ',
             FuncDefCount, ' definition(s)');
-    WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees, ',
-            StmtCount, ' instruction(s)');
+    WriteLn('AWKCW32: ', RuleDefCount, ' regle(s) pattern-action (',
+            RuleCount, ' enregistree(s))');
+    WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
             ConcatCount, ' concatenation(s) implicite(s)');
     WriteLn('AWKCW32: ', PrintCount, ' print/printf, ',
@@ -4624,7 +4865,7 @@ Begin
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 14..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 15..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;
