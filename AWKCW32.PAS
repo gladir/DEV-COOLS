@@ -308,25 +308,24 @@
             test_forin.awk (15 cas, 10 for-in)
 
   TODO 13 - PARSEUR : FONCTIONS UTILISATEUR (FUNCTION / RETURN)
+            [IMPLEMENTE]
             Procedure ParseFunctionDef
             Syntaxe :
               function nom(param1, param2, ...) { instructions }
             Convention d appel Win32 STDCALL :
-              PUSH args droite a gauche (par valeur 32 bits)
-              CALL _AWF_nom
-              Prologue : PUSH EBP / MOV EBP, ESP / SUB ESP, locales
+              PUSH args gauche a droite + CALL _AWF_nom
+              Prologue : PUSH EBP / MOV EBP, ESP / SUB ESP, 64
               Epilogue : MOV ESP, EBP / POP EBP / RET n
-              Parametres a [EBP+8], [EBP+12], [EBP+16]...
+              Parametres a [EBP+8]...[EBP+4+n*4] (selon position)
               Variables locales a [EBP-4], [EBP-8]...
-            Procedure ParseReturn
+            ParseReturn dans ParseStatement :
               return [expr] -> MOV EAX, val + JMP _AWL_exit
-            Appel de fonction utilisateur :
+            Appel de fonction utilisateur dans ParsePrimaryExpr :
               PUSH args + CALL _AWF_nom
-              Resultat dans EAX
-            Support de la recursion (pile d appels)
-            Variables locales supplementaires declarees comme
-              parametres extra (convention AWK) :
-              function f(a, b,    c, d) -> c et d sont locales
+              Resultat dans EAX (callee cleanup via RET n)
+            Support de la recursion (pile d appels EBP)
+            Var FuncDefCount pour les statistiques
+            test_functions.awk (15 cas, fonctions, recursion)
 
   TODO 14 - PARSEUR : REGLES PATTERN-ACTION (BEGIN, END, /regex/, expr)
             Type TRuleEntry : Kind (RK_BEGIN, RK_END, RK_PATTERN,
@@ -1023,6 +1022,9 @@ Var
   { For-In (TODO 12) }
   ForInCount     : Integer;    { nombre d instructions for-in       }
 
+  { Fonctions utilisateur (TODO 13) }
+  FuncDefCount   : Integer;    { nombre de definitions de fonctions }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1377,6 +1379,7 @@ Begin
   WriteLn('For              : ', ForCount);
   WriteLn('Do-While         : ', DoWhileCount);
   WriteLn('For-In           : ', ForInCount);
+  WriteLn('Func definitions : ', FuncDefCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -2501,6 +2504,9 @@ Procedure ParseDoWhile; Forward;
 { Forward declarations TODO 12 - For-In }
 Procedure ParseForIn; Forward;
 
+{ Forward declarations TODO 13 - Fonctions utilisateur }
+Procedure ParseFunctionDef; Forward;
+
 { ---- Helpers de tokens --------------------------------------- }
 Function IsOp(Const S : String) : Boolean;
 Begin
@@ -2599,20 +2605,23 @@ Begin
     Begin
       IdName := CurToken.Val;
       ParserAdvance;
-      { Appel de fonction utilisateur : ident ( args ) }
+      { Appel de fonction utilisateur : ident ( args ) (TODO 13) }
       If IsPunct('(') Then
       Begin
         ParserAdvance;  { consommer ( }
         ArgC := 0;
+        EmitComment('--- call ' + IdName + ' ---');
         If Not IsPunct(')') Then
         Begin
           D := ParseExpr;
+          GenPushEAX;   { empiler arg sur la pile }
           Inc(ArgC);
           While IsPunct(',') Do
           Begin
             ParserAdvance;  { consommer , }
             SkipNewlines;
             D := ParseExpr;
+            GenPushEAX;   { empiler arg sur la pile }
             Inc(ArgC);
           End;
         End;
@@ -2625,6 +2634,13 @@ Begin
           If FnIdx >= 0 Then
             FuncTab[FnIdx].ParamCount := ArgC;
         End;
+        { Generer l appel : CALL _AWF_nom }
+        If FnIdx >= 0 Then
+          Emit('        CALL    ' + FuncTab[FnIdx].AsmLabel)
+        Else
+          Emit('        CALL    ' + AW_FN_PFX + AsmIdent(IdName));
+        { STDCALL : la callee nettoie la pile (RET n) }
+        { Resultat dans EAX }
         ParsePrimaryExpr := TYK_UNKNOWN;
       End
       { Acces tableau : ident [ expr ] }
@@ -3753,6 +3769,7 @@ Procedure ParseStatement;
 Var
   TK : Integer;
   D  : Integer;
+  RetLbl : TString;
 Begin
   SkipNewlines;
   If (CurToken.Kind = TK_EOF) Or IsPunct('}') Then
@@ -3837,8 +3854,33 @@ Begin
         WarnMsg('continue en dehors d''une boucle');
       Exit;
     End;
-    { return / exit : parser une expression optionnelle }
-    If (TK = KW_RETURN) Or (TK = KW_EXIT) Then
+    { return : evaluer expression optionnelle + JMP exit (TODO 13) }
+    If TK = KW_RETURN Then
+    Begin
+      ParserAdvance;
+      EmitComment('--- return ---');
+      If (CurToken.Kind <> TK_NEWLINE) And
+         (CurToken.Kind <> TK_EOF) And
+         Not IsPunct(';') And Not IsPunct('}') Then
+      Begin
+        D := ParseExpr;
+        { EAX contient deja la valeur de retour }
+      End
+      Else
+      Begin
+        { return sans valeur : retourner 0 }
+        Emit('        XOR     EAX, EAX');
+      End;
+      { Sauter au label de sortie de la fonction }
+      RetLbl := FindExitLabel;
+      If RetLbl <> '' Then
+        Emit('        JMP     ' + RetLbl)
+      Else
+        WarnMsg('return en dehors d''une fonction');
+      Exit;
+    End;
+    { exit : parser une expression optionnelle }
+    If TK = KW_EXIT Then
     Begin
       ParserAdvance;
       If (CurToken.Kind <> TK_NEWLINE) And
@@ -3867,29 +3909,11 @@ Begin
       End;
       Exit;
     End;
-    { function : parser la declaration }
+    { function : parser la definition (TODO 13) }
     If TK = KW_FUNCTION Then
     Begin
       ParserAdvance;
-      If CurToken.Kind = TK_IDENT Then
-      Begin
-        D := AddFunc(CurToken.Val);
-        ParserAdvance;
-      End;
-      If IsPunct('(') Then
-      Begin
-        ParserAdvance;
-        While (CurToken.Kind = TK_IDENT) Do
-        Begin
-          ParserAdvance;
-          If IsPunct(',') Then
-            ParserAdvance;
-        End;
-        If IsPunct(')') Then
-          ParserAdvance;
-      End;
-      { Parser le corps de la fonction }
-      ParseBlock;
+      ParseFunctionDef;
       Exit;
     End;
     { Autres keywords : skip (next, etc.) }
@@ -4390,6 +4414,141 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 13 - PARSEUR : FONCTIONS UTILISATEUR (FUNCTION/RETURN)  }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+{ ---- ParseFunctionDef ---------------------------------------- }
+(* Parse une definition de fonction AWK :                          *)
+(*   function nom(param1, param2, ...) { instructions }            *)
+(* Convention d appel Win32 STDCALL :                               *)
+(*   PUSH args droite a gauche + CALL _AWF_nom                     *)
+(*   Prologue : PUSH EBP / MOV EBP, ESP / SUB ESP, locales        *)
+(*   Epilogue : MOV ESP, EBP / POP EBP / RET n                    *)
+(*   Parametres a [EBP+8], [EBP+12], [EBP+16]...                  *)
+(*   Variables locales a [EBP-4], [EBP-8]...                       *)
+(* AWK extra params -> variables locales (function f(a,b,  c,d))   *)
+Procedure ParseFunctionDef;
+Var
+  FnName    : TString;
+  FnIdx     : Integer;
+  PCount    : Integer;
+  PName     : TString;
+  SymIdx    : Integer;
+  LblExit   : TString;
+  LblSkip   : TString;
+  I         : Integer;
+Begin
+  Inc(FuncDefCount);
+  EmitComment('--- function definition ---');
+
+  { Recuperer le nom de la fonction }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    FatalError('nom de fonction attendu');
+    Exit;
+  End;
+  FnName := CurToken.Val;
+  ParserAdvance;
+
+  { Chercher ou enregistrer la fonction }
+  FnIdx := FindFunc(FnName);
+  If FnIdx < 0 Then
+    FnIdx := AddFunc(FnName);
+  If FnIdx < 0 Then
+  Begin
+    FatalError('table des fonctions pleine');
+    Exit;
+  End;
+
+  { Parser la liste de parametres ( param1, param2, ... ) }
+  PCount := 0;
+  If IsPunct('(') Then
+  Begin
+    ParserAdvance;
+    While (CurToken.Kind = TK_IDENT) And (Not IsPunct(')')) Do
+    Begin
+      If PCount < MAX_PARAM Then
+      Begin
+        Inc(PCount);
+        FuncTab[FnIdx].ParamNames[PCount] := CurToken.Val;
+      End;
+      ParserAdvance;
+      If IsPunct(',') Then
+        ParserAdvance;
+    End;
+    If IsPunct(')') Then
+      ParserAdvance;
+  End;
+  FuncTab[FnIdx].ParamCount := PCount;
+  FuncTab[FnIdx].Defined    := True;
+
+  { Generer un label pour sauter par-dessus la definition }
+  LblSkip := NewLabel;
+  Emit('        JMP     ' + LblSkip);
+  EmitBlank;
+
+  { Emettre le label de la fonction }
+  EmitLabel(FuncTab[FnIdx].AsmLabel);
+
+  { Prologue de la fonction }
+  EmitComment('prologue ' + FnName);
+  Emit('        PUSH    EBP');
+  Emit('        MOV     EBP, ESP');
+
+  { Entrer dans le scope fonction }
+  EnterScope(SK_FUNCTION);
+
+  { Generer le label de sortie }
+  LblExit := NewLabel;
+  SetExitLabel(LblExit);
+
+  { Enregistrer les parametres dans la table des symboles }
+  { Args pushes gauche a droite : param 1 = EBP+4+(PCount*4), param N = EBP+8 }
+  For I := 1 To PCount Do
+  Begin
+    PName := FuncTab[FnIdx].ParamNames[I];
+    SymIdx := AddSym(PName, TYK_UNKNOWN, STORE_PARAM, False);
+    If SymIdx >= 0 Then
+    Begin
+      SymTab[SymIdx].IsParam  := True;
+      SymTab[SymIdx].ParamIdx := I;
+      SymTab[SymIdx].BpOffset := 4 + (PCount - I + 1) * 4;
+    End;
+  End;
+
+  { Reserver de l espace pour les variables locales (reserve max 64 octets) }
+  { Les variables locales seront allouees dynamiquement via AllocLocal }
+  Emit('        SUB     ESP, 64');
+  ScopeStack[ScopeDepth - 1].EbpOffset := -64;
+
+  EmitBlank;
+
+  { Parser le corps de la fonction }
+  ParseBlock;
+
+  { Label de sortie (retour par defaut = 0) }
+  EmitLabel(LblExit);
+
+  { Epilogue de la fonction }
+  EmitComment('epilogue ' + FnName);
+  Emit('        MOV     ESP, EBP');
+  Emit('        POP     EBP');
+  Emit('        RET     ' + IntToStr_(PCount * 4));
+
+  EmitBlank;
+
+  { Quitter le scope fonction }
+  LeaveScope;
+
+  { Label pour sauter par-dessus la definition }
+  EmitLabel(LblSkip);
+
+  EmitComment('--- end function ' + FnName + ' ---');
+  EmitBlank;
+End;
+
+{ ============================================================ }
 { PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
 { ============================================================ }
 
@@ -4417,6 +4576,7 @@ Begin
   ForCount := 0;
   DoWhileCount := 0;
   ForInCount := 0;
+  FuncDefCount := 0;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -4432,7 +4592,7 @@ Begin
   End
   Else
   Begin
-    { Parser les expressions (TODO 06+10+11+12) }
+    { Parser les expressions (TODO 06+10+11+12+13) }
     ParserAdvance;  { charger le premier token }
     StmtCount := 0;
     While CurToken.Kind <> TK_EOF Do
@@ -4449,7 +4609,8 @@ Begin
       Inc(StmtCount);
     End;
     WriteLn('AWKCW32: tokenisation terminee, ', TotalLines, ' lignes');
-    WriteLn('AWKCW32: ', SymCount, ' symbole(s), ', FuncCount, ' fonction(s)');
+    WriteLn('AWKCW32: ', SymCount, ' symbole(s), ', FuncCount, ' fonction(s), ',
+            FuncDefCount, ' definition(s)');
     WriteLn('AWKCW32: ', ExprCount, ' expression(s) parsees, ',
             StmtCount, ' instruction(s)');
     WriteLn('AWKCW32: ', CoercionCount, ' coercition(s), ',
@@ -4463,7 +4624,7 @@ Begin
     WriteLn('AWKCW32: ', GenCount, ' operation(s) code gen, ',
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
-    WriteLn('AWKCW32: TODO 13..25 non encore implementes.');
+    WriteLn('AWKCW32: TODO 14..25 non encore implementes.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;

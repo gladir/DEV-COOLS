@@ -310,25 +310,24 @@
             test_forin.awk (15 cas, 17 for-in, 671 ops gen)
 
   TODO 13 - PARSEUR : FONCTIONS UTILISATEUR (FUNCTION / RETURN)
+            [IMPLEMENTE]
             Procedure ParseFunctionDef
             Syntaxe :
               function nom(param1, param2, ...) { instructions }
             Convention d appel Win32 STDCALL :
-              PUSH args droite a gauche (par valeur 32 bits)
-              CALL _AWF_nom
-              Prologue : PUSH EBP / MOV EBP, ESP / SUB ESP, locales
+              PUSH args gauche a droite + CALL _AWF_nom
+              Prologue : PUSH EBP / MOV EBP, ESP / SUB ESP, 64
               Epilogue : MOV ESP, EBP / POP EBP / RET n
-              Parametres a [EBP+8], [EBP+12], [EBP+16]...
+              Parametres a [EBP+8]...[EBP+4+n*4] (selon position)
               Variables locales a [EBP-4], [EBP-8]...
-            Procedure ParseReturn
+            ParseReturn dans ParseStatement :
               return [expr] -> MOV EAX, val + JMP _AWL_exit
-            Appel de fonction utilisateur :
+            Appel de fonction utilisateur dans ParsePrimaryExpr :
               PUSH args + CALL _AWF_nom
-              Resultat dans EAX
-            Support de la recursion (pile d appels)
-            Variables locales supplementaires declarees comme
-              parametres extra (convention AWK) :
-              function f(a, b,    c, d) -> c et d sont locales
+              Resultat dans EAX (callee cleanup via RET n)
+            Support de la recursion (pile d appels EBP)
+            Var FuncDefCount pour les statistiques
+            test_functions.awk (15 cas, 18 fonctions, 606 ops gen)
 
   TODO 14 - PARSEUR : REGLES PATTERN-ACTION (BEGIN, END, /regex/, expr)
             Type TRuleEntry : Kind (RK_BEGIN, RK_END, RK_PATTERN,
