@@ -20,7 +20,7 @@
 
 { TODO 01 - Infrastructure, options de ligne de commande et constantes [IMPLEMENTE] }
 { TODO 02 - Lexeur : lecture source et tokenisation [IMPLEMENTE] }
-{ TODO 03 - Gestion des erreurs, avertissements et listing }
+{ TODO 03 - Gestion des erreurs, avertissements et listing [IMPLEMENTE] }
 { TODO 04 - Table des symboles : etiquettes, EQU, SET }
 { TODO 05 - Analyseur d'expressions arithmetiques }
 { TODO 06 - Modes d'adressage : analyse et encodage }
@@ -69,6 +69,9 @@ Const
   MAX_DEF_SYMS      = 32;     { Symboles predefinis max (-d)           }
   MAX_INC_PATHS     = 16;     { Repertoires INCLUDE max (-i)           }
   MAX_SEC_SIZE      = 65536;  { Taille max d'une section en octets     }
+  MAX_ERRORS        = 100;    { Erreurs max avant arret                }
+  MAX_LIST_BYTES    = 6;      { Octets max affiches par ligne listing  }
+  LIST_PAGE_SIZE    = 60;     { Lignes par page dans le listing        }
 
   { ------------------------------------------------------------------ }
   { Tailles d'operande (suffixes .B, .W, .L)                           }
@@ -253,6 +256,15 @@ Var
   peek_tok_line: Integer;      { Token en attente (ligne)               }
   peek_tok_col : Integer;      { Token en attente (colonne)             }
   peek_tok_size: Integer;      { Token en attente (suffixe taille)      }
+
+  { --- Etat du listing (TODO 03) --- }
+  list_file     : Text;         { Fichier listing                        }
+  list_opened   : Boolean;      { True si fichier listing ouvert         }
+  list_page_num : Integer;      { Numero de page courante                }
+  list_line_num : Integer;      { Ligne sur la page courante             }
+  list_title    : String;       { Titre du listing (directive TTL)       }
+  list_enabled  : Boolean;      { True si listing actif (LIST/NOLIST)    }
+  list_expand   : Boolean;      { True si expansion macros visible       }
 
 { ============================================================================ }
 { Fonctions utilitaires                                                        }
@@ -1060,6 +1072,202 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 03 - Gestion des erreurs, avertissements et listing                     }
+{ ============================================================================ }
+
+{ ---------- Erreurs et avertissements ---------- }
+
+Procedure Error(Line, Col: Integer; Const Msg: String);
+{ Erreur non fatale : affiche, incremente ErrorCount, arrete a MAX_ERRORS }
+Begin
+ WriteLn('*** Erreur ligne ', Line, ', col ', Col, ': ', Msg);
+ Inc(ErrorCount);
+ If ErrorCount >= MAX_ERRORS Then
+ Begin
+  WriteLn('*** Trop d''erreurs (', MAX_ERRORS, '), assemblage interrompu.');
+  Halt(1);
+ End;
+End;
+
+Procedure Warning(Line, Col: Integer; Const Msg: String);
+{ Avertissement non bloquant, incremente WarningCount }
+Begin
+ If Opts.ShowWarnings Then
+  WriteLn('Avertissement ligne ', Line, ', col ', Col, ': ', Msg);
+ Inc(WarningCount);
+End;
+
+Procedure FatalError(Const Msg: String);
+{ Erreur fatale : affiche et arrete immediatement }
+Begin
+ WriteLn('*** Erreur fatale: ', Msg);
+ Halt(1);
+End;
+
+{ ---------- Fichier listing ---------- }
+
+Procedure ListOpen(Const FileName: String);
+Begin
+ If FileName = '' Then
+ Begin
+  list_opened := False;
+  Exit;
+ End;
+ Assign(list_file, FileName);
+ {$I-} Rewrite(list_file); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  WriteLn('Avertissement: impossible de creer le listing ', FileName);
+  list_opened := False;
+  Exit;
+ End;
+ list_opened   := True;
+ list_page_num := 1;
+ list_line_num := 0;
+ list_title    := '';
+ list_enabled  := True;
+ list_expand   := Opts.ExpandMacros;
+End;
+
+Procedure ListClose;
+Begin
+ If list_opened Then
+ Begin
+  Close(list_file);
+  list_opened := False;
+ End;
+End;
+
+Procedure ListFormFeed;
+{ Saut de page dans le listing }
+Begin
+ If Not list_opened Then Exit;
+ WriteLn(list_file, #12); { form feed }
+ Inc(list_page_num);
+ list_line_num := 0;
+End;
+
+Procedure ListTitle(Const Title: String);
+{ Definit le titre du listing (directive TTL) }
+Begin
+ list_title := Title;
+End;
+
+Procedure ListPageHeader;
+{ Affiche l'en-tete de page dans le listing }
+Begin
+ If Not list_opened Then Exit;
+ WriteLn(list_file, 'ASM68 - Assembleur Motorola 68000');
+ If list_title <> '' Then
+  WriteLn(list_file, list_title);
+ WriteLn(list_file, PadRight('', 70), 'Page ', list_page_num);
+ WriteLn(list_file);
+ list_line_num := 4;
+End;
+
+Procedure ListPage;
+{ Force un saut de page si necessaire }
+Begin
+ If Not list_opened Then Exit;
+ ListFormFeed;
+ ListPageHeader;
+End;
+
+Procedure ListLine(Addr: LongInt; Const Bytes: String; ByteCount: Integer;
+                   Const Source: String);
+{ Affiche une ligne de listing au format :
+  AAAAAA  XX XX XX XX XX XX  source line
+  Addr      = adresse courante (6 hex)
+  Bytes     = octets generes (chaine brute de chars)
+  ByteCount = nombre d'octets dans Bytes
+  Source    = ligne source originale }
+Var
+  Line: String;
+  I: Integer;
+  HexPart: String;
+Begin
+ If Not list_opened Then Exit;
+ If Not list_enabled Then Exit;
+
+ { Pagination }
+ If list_line_num >= LIST_PAGE_SIZE Then
+  ListPage;
+
+ { Formater l'adresse : 6 hex }
+ Line := IntToHex(Addr, 6) + '  ';
+
+ { Formater les octets (jusqu'a MAX_LIST_BYTES) }
+ HexPart := '';
+ For I := 1 to MAX_LIST_BYTES do
+ Begin
+  If I <= ByteCount Then
+   HexPart := HexPart + IntToHex(Ord(Bytes[I]), 2) + ' '
+  Else
+   HexPart := HexPart + '   ';
+ End;
+
+ Line := Line + HexPart + ' ' + Source;
+ WriteLn(list_file, Line);
+ Inc(list_line_num);
+
+ { Si plus de MAX_LIST_BYTES octets, lignes de continuation }
+ I := MAX_LIST_BYTES + 1;
+ While I <= ByteCount do
+ Begin
+  If list_line_num >= LIST_PAGE_SIZE Then
+   ListPage;
+  Line := '        '; { 8 espaces pour aligner }
+  HexPart := '';
+  While (I <= ByteCount) and ((I - 1) mod MAX_LIST_BYTES < MAX_LIST_BYTES) do
+  Begin
+   HexPart := HexPart + IntToHex(Ord(Bytes[I]), 2) + ' ';
+   Inc(I);
+   If (I - 1) mod MAX_LIST_BYTES = 0 Then Break;
+  End;
+  Line := Line + HexPart;
+  WriteLn(list_file, Line);
+  Inc(list_line_num);
+ End;
+End;
+
+Procedure ListSymbolTable;
+{ Affiche la table des symboles triee dans le listing.
+  Stub : sera complete quand la table des symboles sera implementee (TODO 04).
+  Pour l'instant, affiche juste un en-tete. }
+Begin
+ If Not list_opened Then Exit;
+ If Not Opts.IncludeSymTable Then Exit;
+ ListPage;
+ WriteLn(list_file, '--- Table des symboles ---');
+ WriteLn(list_file);
+ WriteLn(list_file, PadRight('Symbole', 24), PadRight('Valeur', 12),
+         PadRight('Type', 10), 'Section');
+ WriteLn(list_file, PadRight('-------', 24), PadRight('------', 12),
+         PadRight('----', 10), '-------');
+ { Les symboles seront ajoutes par TODO 04 }
+ WriteLn(list_file, '(table vide - TODO 04)');
+ WriteLn(list_file);
+End;
+
+{ ---------- Bilan de compilation ---------- }
+
+Procedure BilanCompilation;
+{ Affiche les statistiques de compilation }
+Begin
+ WriteLn;
+ WriteLn('ASM68 - Assembleur Motorola 68000');
+ WriteLn('Source         : ', Opts.SrcFile);
+ WriteLn('Objet          : ', Opts.ObjFile);
+ If Opts.ListFile <> '' Then
+  WriteLn('Listing        : ', Opts.ListFile);
+ WriteLn;
+ WriteLn('Lignes lues    : ', LineCount);
+ WriteLn('Taille code    : ', CodeSize, ' octets');
+ WriteLn('Erreurs        : ', ErrorCount);
+ WriteLn('Avertissements : ', WarningCount);
+End;
+
+{ ============================================================================ }
 { Analyse des options de ligne de commande                                     }
 { ============================================================================ }
 
@@ -1198,14 +1406,16 @@ Begin
 
  If Not FileExists(Opts.SrcFile) Then
  Begin
-  WriteLn('Erreur fatale: fichier source introuvable: ', Opts.SrcFile);
-  Halt(2);
+  FatalError('fichier source introuvable: ' + Opts.SrcFile);
  End;
 
  ErrorCount   := 0;
  WarningCount := 0;
  LineCount    := 0;
  CodeSize     := 0;
+
+ { Ouvrir le fichier listing si demande }
+ ListOpen(Opts.ListFile);
 
  { Ouvrir le fichier source et lexer }
  SrcOpen(Opts.SrcFile);
@@ -1254,17 +1464,14 @@ Begin
 
  SrcClose;
 
- WriteLn;
- WriteLn('ASM68 - Assembleur Motorola 68000');
- WriteLn('Source : ', Opts.SrcFile);
- WriteLn('Objet  : ', Opts.ObjFile);
- If Opts.ListFile <> '' Then
-  WriteLn('Listing: ', Opts.ListFile);
- WriteLn;
- WriteLn('Lignes lues   : ', LineCount);
- WriteLn('Taille code   : ', CodeSize, ' octets');
- WriteLn('Erreurs       : ', ErrorCount);
- WriteLn('Avertissements: ', WarningCount);
+ { Table des symboles dans le listing si demandee }
+ ListSymbolTable;
+
+ { Fermer le fichier listing }
+ ListClose;
+
+ { Afficher le bilan de compilation }
+ BilanCompilation;
 End;
 
 { ============================================================================ }

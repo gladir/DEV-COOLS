@@ -69,7 +69,7 @@ TODO 02 - Lexeur : lecture source et tokenisation [IMPLEMENTE]
   - IsDirective(s) : reconnaitre ORG, DC, DS, EQU, SECTION, etc.
   - Gestion des suffixes de taille : .B, .W, .L, .S apres opcode
 
-TODO 03 - Gestion des erreurs, avertissements et listing
+TODO 03 - Gestion des erreurs, avertissements et listing [IMPLEMENTE]
   ---------------------------------------------------------
   - Error(line, col, msg) : incrementer error_count, afficher avec
     numero de ligne et colonne, continuer (pas de Halt sauf MAX_ERRORS)
