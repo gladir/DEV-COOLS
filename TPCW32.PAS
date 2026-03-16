@@ -3946,6 +3946,7 @@ Begin
   EmitRaw('EXTRN _GetProcessHeap@0:NEAR');
   EmitRaw('EXTRN _HeapAlloc@12:NEAR');
   EmitRaw('EXTRN _HeapFree@12:NEAR');
+  EmitRaw('EXTRN _HeapSize@12:NEAR');
   EmitRaw('EXTRN _CreateFileA@28:NEAR');
   EmitRaw('EXTRN _CloseHandle@4:NEAR');
   EmitRaw('EXTRN _SetFilePointer@16:NEAR');
@@ -8219,6 +8220,232 @@ Begin
       Exit;
     End;
 
+    { GETMEM(p, size) -> HeapAlloc }
+    If Up = 'GETMEM' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then
+        Begin
+          Lbl := TokenPool[EP].Val;
+          Inc(EP);
+          EPMatch(',');
+          ParseExpr(PI);   { taille dans EAX }
+          EmitInstr('PUSH EAX');
+          EmitInstr('PUSH 8');   { HEAP_ZERO_MEMORY }
+          EmitInstr('PUSH DWORD PTR [HHEAP]');
+          EmitInstr('CALL HeapAlloc');
+          GenStoreVar(PI, Lbl);
+        End;
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { FREEMEM(p, size) -> HeapFree }
+    If Up = 'FREEMEM' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then
+        Begin
+          Lbl := TokenPool[EP].Val;
+          Inc(EP);
+          If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+             (TokenPool[EP].Val = ',') Then
+          Begin
+            Inc(EP);
+            ParseExpr(PI);  { ignorer la taille }
+          End;
+          GenLoadVar(PI, Lbl);
+          EmitInstr('PUSH EAX');
+          EmitInstr('PUSH 0');
+          EmitInstr('PUSH DWORD PTR [HHEAP]');
+          EmitInstr('CALL HeapFree');
+        End;
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { MOVE(source, dest, count) -> REP MOVSB }
+    If Up = 'MOVE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);      { source dans EAX }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);      { dest dans EAX }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);      { count dans EAX }
+        EmitInstr('MOV ECX,EAX');
+        EmitInstr('POP EDI');   { dest }
+        EmitInstr('POP ESI');   { source }
+        EmitInstr('CLD');
+        EmitInstr('REP MOVSB');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { FILLCHAR(dest, count, value) -> REP STOSB }
+    If Up = 'FILLCHAR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);      { dest dans EAX }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);      { count dans EAX }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);      { value dans EAX }
+        EmitInstr('POP ECX');   { count }
+        EmitInstr('POP EDI');   { dest }
+        EmitInstr('CLD');
+        EmitInstr('REP STOSB');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { ASSIGNED(p) -> retourne p <> nil (0 ou 1) dans EAX }
+    If Up = 'ASSIGNED' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);      { pointeur dans EAX }
+        EmitInstr('TEST EAX,EAX');
+        EmitInstr('SETNE AL');
+        EmitInstr('MOVZX EAX,AL');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { ADDR(x) -> adresse de la variable x dans EAX }
+    If Up = 'ADDR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then
+        Begin
+          Lbl := TokenPool[EP].Val;
+          Inc(EP);
+          GenLoadAddr(PI, Lbl);
+        End;
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { OFS(x) -> offset = adresse (en mode flat, identique a Addr) }
+    If Up = 'OFS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then
+        Begin
+          Lbl := TokenPool[EP].Val;
+          Inc(EP);
+          GenLoadAddr(PI, Lbl);
+        End;
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { PTR(seg, ofs) -> en Win32 flat, retourne ofs dans EAX }
+    If Up = 'PTR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);      { seg - ignore en flat mode }
+        EPMatch(',');
+        ParseExpr(PI);      { ofs -> resultat dans EAX }
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { MAXAVAIL -> retourne la taille du plus gros bloc libre }
+    { En Win32, utilise HeapSize sur un bloc test ou retourne 1MB }
+    If Up = 'MAXAVAIL' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,1048576');  { 1 MB = valeur raisonnable }
+      Exit;
+    End;
+
+    { MEMAVAIL -> retourne la memoire disponible }
+    { En Win32, retourne une valeur fixe raisonnable }
+    If Up = 'MEMAVAIL' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,16777216');  { 16 MB = valeur raisonnable }
+      Exit;
+    End;
+
+    { MARK(p) -> stub : stocke adresse bidon dans p }
+    If Up = 'MARK' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then
+        Begin
+          Lbl := TokenPool[EP].Val;
+          Inc(EP);
+          EmitInstr('MOV EAX,0');  { stub }
+          GenStoreVar(PI, Lbl);
+        End;
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { RELEASE(p) -> stub : ne fait rien (obsolete en Win32) }
+    If Up = 'RELEASE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then Inc(EP);  { consommer la variable }
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { SETTEXTBUF(f, buf [, size]) -> stub : ne fait rien en Win32 }
+    If Up = 'SETTEXTBUF' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then Inc(EP);  { f }
+        EPMatch(',');
+        If Not EPAtEnd Then Inc(EP);  { buf }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then
+        Begin
+          Inc(EP);
+          ParseExpr(PI);  { size }
+        End;
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
     { ---- TODO 16 : Builtins chaines ---- }
 
     { LENGTH(S) -> longueur String Pascal (S[0]) dans EAX }
@@ -11254,9 +11481,11 @@ Begin
       Exit;
     End;
 
-    { INC/DEC/NEW/DISPOSE comme keywords }
+    { INC/DEC/NEW/DISPOSE/GETMEM/FREEMEM/MOVE/FILLCHAR/MARK/RELEASE/SETTEXTBUF comme keywords }
     If (Up = 'INC') Or (Up = 'DEC') Or (Up = 'NEW') Or
-       (Up = 'DISPOSE') Then
+       (Up = 'DISPOSE') Or (Up = 'GETMEM') Or (Up = 'FREEMEM') Or
+       (Up = 'MOVE') Or (Up = 'FILLCHAR') Or (Up = 'MARK') Or
+       (Up = 'RELEASE') Or (Up = 'SETTEXTBUF') Then
     Begin
       ParseExpr(PI);
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
@@ -11300,9 +11529,11 @@ Begin
       Exit;
     End;
 
-    { INC/DEC/NEW/DISPOSE }
+    { INC/DEC/NEW/DISPOSE/GETMEM/FREEMEM/MOVE/FILLCHAR/MARK/RELEASE/SETTEXTBUF }
     If (Up = 'INC') Or (Up = 'DEC') Or (Up = 'NEW') Or
-       (Up = 'DISPOSE') Then
+       (Up = 'DISPOSE') Or (Up = 'GETMEM') Or (Up = 'FREEMEM') Or
+       (Up = 'MOVE') Or (Up = 'FILLCHAR') Or (Up = 'MARK') Or
+       (Up = 'RELEASE') Or (Up = 'SETTEXTBUF') Then
     Begin
       ParseExpr(PI);
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
@@ -19085,7 +19316,7 @@ Begin
   BcIsImport := (U = 'EXITPROCESS') Or (U = 'GETSTDHANDLE') Or
     (U = 'WRITEFILE') Or (U = 'READFILE') Or
     (U = 'GETPROCESSHEAP') Or (U = 'HEAPALLOC') Or
-    (U = 'HEAPFREE') Or (U = 'CREATEFILEA') Or
+    (U = 'HEAPFREE') Or (U = 'HEAPSIZE') Or (U = 'CREATEFILEA') Or
     (U = 'CLOSEHANDLE') Or (U = 'SETFILEPOINTER') Or
     (U = 'GETFILESIZE') Or (U = 'DELETEFILEA') Or
     (U = 'MOVEFILEA') Or (U = 'FLUSHFILEBUFFERS') Or
