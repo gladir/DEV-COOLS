@@ -2,3 +2,6 @@
 *.obj
 *.ppu
 *.class
+*.exe
+TPCW32
+test_output.txt

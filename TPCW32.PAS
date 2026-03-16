@@ -4118,13 +4118,15 @@ Begin
   EmitBlankLine;
 
   { Variables File I/O }
-  EmitComment('--- Variables File I/O (lecture fichier texte) ---');
+  EmitComment('--- Variables File I/O (lecture/ecriture fichier texte) ---');
   EmitRaw('FILE_NAMEBUF DB 260 DUP(0)');  { buffer nom fichier (MAX_PATH)    }
   EmitRaw('FILE_RDBUF   DB 256 DUP(0)');  { buffer lecture fichier           }
   EmitRaw('FILE_BUFPOS  DD 0');            { position courante dans buffer    }
   EmitRaw('FILE_BUFEND  DD 0');            { octets valides dans buffer       }
   EmitRaw('FILE_EOFFLG  DD 0');            { 1 si EOF atteint                 }
   EmitRaw('FILE_BYTESRD DD 0');            { octets lus par ReadFile          }
+  EmitRaw('FILE_WRHND   DD 0');            { handle ecriture fichier courant  }
+  EmitRaw('FILE_WRFLG   DD 0');            { 1 si ecriture fichier en cours   }
   EmitRaw('STDIN_EOF    DD 0');            { 1 si EOF stdin (Ctrl+Z)          }
   EmitBlankLine;
 
@@ -9908,6 +9910,51 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ EmitFilePrintEAX : emettre le code pour ecrire EAX dans un   }
+{ fichier via _TPRT_FPRINTSTR (FILE_WRHND doit etre positionne).}
+{ Meme logique que EmitPrintEAX mais ecrit dans le fichier.     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitFilePrintEAX(TypeIdx : Integer);
+Var
+  LblFalse, LblDone : TString;
+Begin
+  If TypeIdx = TY_IDX_STRING Then
+  Begin
+    EmitInstr('MOV ESI,EAX');
+    If LastExprIsPascalStr Then
+      EmitInstr('INC ESI');
+    EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR');
+  End
+  Else If TypeIdx = TY_IDX_CHAR Then
+  Begin
+    EmitInstr('MOV BYTE PTR [STRTMP],AL');
+    EmitInstr('MOV BYTE PTR [STRTMP+1],0');
+    EmitInstr('LEA ESI,[STRTMP]');
+    EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR');
+  End
+  Else If TypeIdx = TY_IDX_BOOLEAN Then
+  Begin
+    LblFalse := LabelGen;
+    LblDone  := LabelGen;
+    EmitInstr('TEST EAX,EAX');
+    EmitInstr('JZ ' + LblFalse);
+    EmitInstr('LEA ESI,[TRUE_STR]');
+    EmitInstr('JMP ' + LblDone);
+    EmitLabel(LblFalse);
+    EmitInstr('LEA ESI,[FALSE_STR]');
+    EmitLabel(LblDone);
+    EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR');
+  End
+  Else
+  Begin
+    EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
+    EmitInstr('LEA ESI,[NUMBUF]');
+    EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
 { ParseWriteStmt : parser Write(args) ou WriteLn(args).         }
 { EP pointe apres WRITE/WRITELN deja consomme.                 }
 { Gere plusieurs arguments separes par virgule.                }
@@ -9918,11 +9965,17 @@ Procedure ParseWriteStmt(PI : Integer; IsWriteLn : Boolean);
 Var
   TIdx : Integer;
   FmtWidth : Integer;
+  IsFileWrite : Boolean;
+  FVarTIdx    : Integer;
+  Up          : TString;
+  LI, SI      : Integer;
 Begin
   If IsWriteLn Then
     EmitComment('writeln')
   Else
     EmitComment('write');
+
+  IsFileWrite := False;
 
   { Gerer WriteLn sans arguments -> juste CR+LF }
   If EPAtEnd Then
@@ -9948,6 +10001,42 @@ Begin
 
   { Consommer ( }
   Inc(EP);
+
+  { Detecter si le premier argument est une variable fichier Text }
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+    FVarTIdx := TY_IDX_INTEGER;
+    If PI >= 0 Then
+    Begin
+      LI := FindLocal(PI, Up);
+      If LI >= 0 Then
+        FVarTIdx := ProcTab[PI].Locals[LI].TypeIdx
+      Else
+      Begin
+        LI := FindParam(PI, Up);
+        If LI >= 0 Then FVarTIdx := ProcTab[PI].Params[LI].TypeIdx;
+      End;
+    End;
+    If FVarTIdx <> TY_IDX_TEXT Then
+    Begin
+      SI := SymFind(Up);
+      If SI >= 0 Then FVarTIdx := SymTab[SI].TypeIdx;
+    End;
+    If FVarTIdx = TY_IDX_TEXT Then
+    Begin
+      { Ecriture dans un fichier }
+      IsFileWrite := True;
+      GenLoadAddr(PI, TokenPool[EP].Val);
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [EAX]');    { charger le handle }
+      EmitInstr('MOV DWORD PTR [FILE_WRHND],EAX');
+      { Sauter la virgule si presente }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ',') Then
+        Inc(EP);
+    End;
+  End;
 
   { Boucle sur les arguments }
   While Not EPAtEnd Do
@@ -10010,6 +10099,8 @@ Begin
       EmitInstr('LEA ESI,[NUMBUF]');
       EmitInstr('CALL ' + TP_RT_PFX + 'PADPRINT');
     End
+    Else If IsFileWrite Then
+      EmitFilePrintEAX(TIdx)
     Else
       EmitPrintEAX(TIdx);
 
@@ -10032,7 +10123,10 @@ Begin
   If IsWriteLn Then
   Begin
     EmitInstr('LEA ESI,[CRLF]');
-    EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+    If IsFileWrite Then
+      EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR')
+    Else
+      EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
   End;
 End;
 
@@ -15701,9 +15795,34 @@ Begin
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
-  { ================================================================ }
+  { ------ _TPRT_FPRINTSTR : ecrire chaine ASCIIZ dans fichier - }
+  { Entree : ESI = pointeur vers chaine ASCIIZ                    }
+  { Utilise : WriteFile(FILE_WRHND, ESI, len, &BYTESWR, 0)        }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FPRINTSTR');
+  EmitInstr('PUSHAD');
+  { Calculer la longueur de la chaine }
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'FPS_L');
+  EmitInstr('CMP BYTE PTR [ESI+ECX],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'FPS_G');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FPS_L');
+  EmitLabel(TP_RT_PFX + 'FPS_G');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FPS_D');
+  { Appeler WriteFile(FILE_WRHND, ESI, ECX, &BYTESWR, 0) }
+  EmitInstr('PUSH 0');                     { lpOverlapped         }
+  EmitInstr('PUSH OFFSET BYTESWR');        { lpNumberOfBytesWritten }
+  EmitInstr('PUSH ECX');                   { nNumberOfBytesToWrite }
+  EmitInstr('PUSH ESI');                   { lpBuffer             }
+  EmitInstr('PUSH DWORD PTR [FILE_WRHND]');{ hFile                }
+  EmitInstr('CALL WriteFile');
+  EmitLabel(TP_RT_PFX + 'FPS_D');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
 
-  { ------ _TPRT_PARSECMD : parser la ligne de commande -------- }
+  { ================================================================ }
   { Appele une seule fois, remplit PARAM_PTRS et PARAM_ARGC/COUNT }
   { Gere les guillemets doubles pour les arguments avec espaces   }
   EmitBlankLine;
