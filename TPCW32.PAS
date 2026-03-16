@@ -909,6 +909,12 @@ Var
   TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
   TypeCount : Integer;
 
+  { WITH statement : pile de variables-record en cours }
+  WithVarName  : Array[0..7] Of TString; { nom de la variable record   }
+  WithVarPI    : Array[0..7] Of Integer; { index proc (PI) du WITH     }
+  WithTypeIdx  : Array[0..7] Of Integer; { TypeIdx du record            }
+  WithDepth    : Integer;                { profondeur WITH (0 = aucun)  }
+
 { Forward declarations TODO 06 }
 Procedure TypeInit; Forward;
 Function  TypeSizeofIdx(Idx : Integer) : Integer; Forward;
@@ -3346,6 +3352,7 @@ Procedure TypeInit;
 Var I : Integer;
 Begin
   TypeCount := 0;
+  WithDepth := 0;
 
   { Initialiser toute la table a zero }
   For I := 0 To MAX_TYPE - 1 Do
@@ -6582,6 +6589,12 @@ Var
   FOfs    : Integer;
   FSz     : Integer;
   FC      : Integer;
+  FNames  : Array[0..15] Of TString;  { noms de champs multi (X, Y: Integer) }
+  FNC     : Integer;                   { nombre de noms collectes             }
+  FNI     : Integer;                   { index de boucle noms                 }
+  VarOfs  : Integer;                   { offset debut partie variante         }
+  MaxVarSz: Integer;                   { taille max parmi les variantes       }
+  CurVarSz: Integer;                   { taille variante courante             }
   ArrLo   : LongInt;
   ArrHi   : LongInt;
   ArrElem : LongInt;
@@ -6794,22 +6807,189 @@ Begin
               If (TokenPool[I].Kind = TK_KEYWORD) And
                  (StrUpperCase(TokenPool[I].Val) = 'CASE') Then
               Begin
-                { Variant record: skip to END }
+                { Variant record : CASE [tag :] Type OF val: (fields); ... }
+                Inc(I); { passer CASE }
+                { Lire le champ tag (optionnel) et le type discriminant }
+                { Forme: CASE tag: Type OF  ou  CASE Type OF }
+                If (I < TokenCount) And (TokenPool[I].Kind = TK_IDENT) Then
+                Begin
+                  FName := StrUpperCase(TokenPool[I].Val);
+                  Inc(I);
+                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ':') Then
+                  Begin
+                    { Forme CASE tag: Type OF -> enregistrer le champ tag }
+                    Inc(I); { passer ':' }
+                    FTName := 'INTEGER';
+                    If (I < TokenCount) And
+                       ((TokenPool[I].Kind = TK_IDENT) Or
+                        (TokenPool[I].Kind = TK_KEYWORD)) Then
+                    Begin
+                      FTName := StrUpperCase(TokenPool[I].Val);
+                      Inc(I);
+                    End;
+                    FSz := TPTypeSizeof(FTName);
+                    If FSz < 0 Then FSz := 4;
+                    FTIdx := TypeFindByName(FTName);
+                    If FTIdx < 0 Then FTIdx := TY_IDX_INTEGER;
+                    If (TIdx >= 0) And (FC < MAX_FIELDS) Then
+                    Begin
+                      TypeTab[TIdx].Fields[FC].Name    := FName;
+                      TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
+                      TypeTab[TIdx].Fields[FC].Offset  := FOfs;
+                      Inc(FC);
+                      TypeTab[TIdx].FieldCount := FC;
+                      FOfs := FOfs + FSz;
+                      TypeTab[TIdx].Size := FOfs;
+                    End;
+                  End;
+                  { Sinon c est CASE Type OF -> pas de champ tag }
+                End;
+                { Passer 'OF' }
+                If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+                   (StrUpperCase(TokenPool[I].Val) = 'OF') Then
+                  Inc(I);
+                { Parser les variantes : val: (field: Type; ...); }
+                { Tous les champs partagent le meme offset de depart }
+                VarOfs := FOfs;
+                MaxVarSz := 0;
                 While (I < TokenCount) And
                       Not ((TokenPool[I].Kind = TK_KEYWORD) And
                            (StrUpperCase(TokenPool[I].Val) = 'END')) Do
-                  Inc(I);
+                Begin
+                  { Sauter les labels de cas (nombres/idents) et ':' }
+                  While (I < TokenCount) And
+                        Not ((TokenPool[I].Kind = TK_PUNCT) And
+                             (TokenPool[I].Val = '(')) And
+                        Not ((TokenPool[I].Kind = TK_KEYWORD) And
+                             (StrUpperCase(TokenPool[I].Val) = 'END')) Do
+                    Inc(I);
+                  If (I >= TokenCount) Or
+                     ((TokenPool[I].Kind = TK_KEYWORD) And
+                      (StrUpperCase(TokenPool[I].Val) = 'END')) Then
+                    Break;
+                  Inc(I); { passer '(' }
+                  { Parser les champs de cette variante }
+                  CurVarSz := 0;
+                  While (I < TokenCount) And
+                        Not ((TokenPool[I].Kind = TK_PUNCT) And
+                             (TokenPool[I].Val = ')')) And
+                        Not ((TokenPool[I].Kind = TK_KEYWORD) And
+                             (StrUpperCase(TokenPool[I].Val) = 'END')) Do
+                  Begin
+                    If (TokenPool[I].Kind = TK_IDENT) Then
+                    Begin
+                      { Collecter noms de champs separes par virgules }
+                      FNames[0] := StrUpperCase(TokenPool[I].Val);
+                      FNC := 1;
+                      Inc(I);
+                      While (I < TokenCount) And
+                            (TokenPool[I].Kind = TK_PUNCT) And
+                            (TokenPool[I].Val = ',') Do
+                      Begin
+                        Inc(I);
+                        If (I < TokenCount) And
+                           (TokenPool[I].Kind = TK_IDENT) Then
+                        Begin
+                          If FNC < 16 Then
+                          Begin
+                            FNames[FNC] := StrUpperCase(TokenPool[I].Val);
+                            Inc(FNC);
+                          End;
+                          Inc(I);
+                        End;
+                      End;
+                      { Attendre ':' }
+                      If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT)
+                         And (TokenPool[I].Val = ':') Then
+                      Begin
+                        Inc(I);
+                        FTName := 'INTEGER';
+                        If (I < TokenCount) And
+                           ((TokenPool[I].Kind = TK_IDENT) Or
+                            (TokenPool[I].Kind = TK_KEYWORD)) Then
+                        Begin
+                          FTName := StrUpperCase(TokenPool[I].Val);
+                          Inc(I);
+                        End;
+                        FSz := TPTypeSizeof(FTName);
+                        If FSz < 0 Then
+                        Begin
+                          FTIdx := TypeFindByName(FTName);
+                          If FTIdx >= 0 Then
+                            FSz := TypeTab[FTIdx].Size
+                          Else
+                            FSz := 4;
+                        End;
+                        FTIdx := TypeFindByName(FTName);
+                        If FTIdx < 0 Then FTIdx := TY_IDX_INTEGER;
+                        For FNI := 0 To FNC - 1 Do
+                        Begin
+                          If (TIdx >= 0) And (FC < MAX_FIELDS) Then
+                          Begin
+                            TypeTab[TIdx].Fields[FC].Name    := FNames[FNI];
+                            TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
+                            TypeTab[TIdx].Fields[FC].Offset  := VarOfs + CurVarSz;
+                            Inc(FC);
+                            TypeTab[TIdx].FieldCount := FC;
+                            CurVarSz := CurVarSz + FSz;
+                          End;
+                        End;
+                      End
+                      Else
+                      Begin
+                        { pas de ':', avancer }
+                        Inc(I);
+                      End;
+                    End
+                    Else
+                    Begin
+                      { Sauter les tokens inattendus (';' entre champs) }
+                      Inc(I);
+                    End;
+                  End;
+                  If CurVarSz > MaxVarSz Then
+                    MaxVarSz := CurVarSz;
+                  { Passer ')' et ';' }
+                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ')') Then
+                    Inc(I);
+                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ';') Then
+                    Inc(I);
+                End;
+                { Mettre a jour la taille totale du record }
+                FOfs := VarOfs + MaxVarSz;
+                If TIdx >= 0 Then
+                  TypeTab[TIdx].Size := FOfs;
                 Continue;
               End;
 
-              { Lire le(s) nom(s) de champ }
+              { Lire le(s) nom(s) de champ (supporte X, Y: Integer) }
               If (TokenPool[I].Kind <> TK_IDENT) Then
               Begin
                 Inc(I);
                 Continue;
               End;
-              FName := StrUpperCase(TokenPool[I].Val);
+
+              { Collecter tous les noms de champ separes par des virgules }
+              FNames[0] := StrUpperCase(TokenPool[I].Val);
+              FNC := 1;
               Inc(I);
+              While (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT)
+                    And (TokenPool[I].Val = ',') Do
+              Begin
+                Inc(I); { passer la virgule }
+                If (I < TokenCount) And (TokenPool[I].Kind = TK_IDENT) Then
+                Begin
+                  If FNC < 16 Then
+                  Begin
+                    FNames[FNC] := StrUpperCase(TokenPool[I].Val);
+                    Inc(FNC);
+                  End;
+                  Inc(I);
+                End;
+              End;
 
               { Attendre ':' }
               If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
@@ -6850,16 +7030,19 @@ Begin
               FTIdx := TypeFindByName(FTName);
               If FTIdx < 0 Then FTIdx := TY_IDX_INTEGER;
 
-              { Enregistrer le champ }
-              If (TIdx >= 0) And (FC < MAX_FIELDS) Then
+              { Enregistrer tous les champs collectes }
+              For FNI := 0 To FNC - 1 Do
               Begin
-                TypeTab[TIdx].Fields[FC].Name    := FName;
-                TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
-                TypeTab[TIdx].Fields[FC].Offset  := FOfs;
-                Inc(FC);
-                TypeTab[TIdx].FieldCount := FC;
-                FOfs := FOfs + FSz;
-                TypeTab[TIdx].Size := FOfs;
+                If (TIdx >= 0) And (FC < MAX_FIELDS) Then
+                Begin
+                  TypeTab[TIdx].Fields[FC].Name    := FNames[FNI];
+                  TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
+                  TypeTab[TIdx].Fields[FC].Offset  := FOfs;
+                  Inc(FC);
+                  TypeTab[TIdx].FieldCount := FC;
+                  FOfs := FOfs + FSz;
+                  TypeTab[TIdx].Size := FOfs;
+                End;
               End;
 
               { Passer le ';' entre champs }
@@ -7470,6 +7653,16 @@ Begin
         EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
         Exit;
       End;
+      { Record : copier tout le record (EAX = adresse source) }
+      If (VarTI >= 0) And (VarTI < TypeCount) And
+         (TypeTab[VarTI].Kind = TYK_RECORD) Then
+      Begin
+        EmitInstr('MOV ESI,EAX');
+        EmitInstr('LEA EDI,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
+        EmitInstr('MOV ECX,' + IntToStr_(TypeTab[VarTI].Size));
+        EmitInstr('REP MOVSB');
+        Exit;
+      End;
       If ProcTab[PI].Locals[LI].Size = 1 Then
         EmitInstr('MOV BYTE PTR ' + EBPOfs(ProcTab[PI].Locals[LI].Offset) + ',AL')
       Else
@@ -7509,6 +7702,16 @@ Begin
         EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
         Exit;
       End;
+      { Record : copier tout le record (EAX = adresse source) }
+      If (VarTI >= 0) And (VarTI < TypeCount) And
+         (TypeTab[VarTI].Kind = TYK_RECORD) Then
+      Begin
+        EmitInstr('MOV ESI,EAX');
+        EmitInstr('LEA EDI,[' + Ref + ']');
+        EmitInstr('MOV ECX,' + IntToStr_(TypeTab[VarTI].Size));
+        EmitInstr('REP MOVSB');
+        Exit;
+      End;
       If TypeSizeofIdx(VarTI) = 1 Then
         EmitInstr('MOV BYTE PTR [' + Ref + '],AL')
       Else
@@ -7525,6 +7728,14 @@ Begin
     EmitInstr('MOV ESI,EAX');
     EmitInstr('LEA EDI,[' + TP_VAR_PFX + Up + ']');
     EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
+  End
+  Else If (VarTI >= 0) And (VarTI < TypeCount) And
+          (TypeTab[VarTI].Kind = TYK_RECORD) Then
+  Begin
+    EmitInstr('MOV ESI,EAX');
+    EmitInstr('LEA EDI,[' + TP_VAR_PFX + Up + ']');
+    EmitInstr('MOV ECX,' + IntToStr_(TypeTab[VarTI].Size));
+    EmitInstr('REP MOVSB');
   End
   Else
     EmitInstr('MOV DWORD PTR [' + TP_VAR_PFX + Up + '],EAX');
@@ -7694,6 +7905,10 @@ Var
   SI     : Integer;
   LI     : Integer;
   ParI   : Integer;
+  WI     : Integer;
+  WFOfs  : Integer;
+  WFSize : Integer;
+  WJ     : Integer;
 Begin
   LastPrimaryName := '';
   LastVarTypeIdx := -1;
@@ -9858,6 +10073,49 @@ Begin
       End;
     End;
 
+    { WITH : resoudre champ implicite en lecture }
+    If (WithDepth > 0) Then
+    Begin
+      WI := WithDepth - 1;
+      While WI >= 0 Do
+      Begin
+        WFSize := 4;
+        WFOfs := FindFieldOffset(WithTypeIdx[WI], Up, WFSize);
+        If WFOfs >= 0 Then Break;
+        Dec(WI);
+      End;
+      If (WI >= 0) And (WFOfs >= 0) Then
+      Begin
+        GenLoadAddr(PI, WithVarName[WI]);
+        If WFOfs > 0 Then
+          EmitInstr('ADD EAX,' + IntToStr_(WFOfs));
+        { Mettre a jour le type du champ }
+        LastVarTypeIdx := WithTypeIdx[WI];
+        For WJ := 0 To TypeTab[LastVarTypeIdx].FieldCount - 1 Do
+          If TypeTab[LastVarTypeIdx].Fields[WJ].Name = Up Then
+          Begin
+            LastVarTypeIdx := TypeTab[LastVarTypeIdx].Fields[WJ].TypeIdx;
+            Break;
+          End;
+        If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+           (TypeTab[LastVarTypeIdx].Kind = TYK_STRING) Then
+        Begin
+          LastExprIsPascalStr := True;
+        End
+        Else If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+                ((TypeTab[LastVarTypeIdx].Kind = TYK_RECORD) Or
+                 (TypeTab[LastVarTypeIdx].Kind = TYK_OBJECT)) Then
+          { EAX pointe deja sur le sous-record }
+        Else If WFSize = 1 Then
+          EmitInstr('MOVZX EAX,BYTE PTR [EAX]')
+        Else
+          EmitInstr('MOV EAX,[EAX]');
+        LastPrimaryName := Up;
+        Inc(EP);
+        Exit;
+      End;
+    End;
+
     { Variable ou constante : charger dans EAX }
     LastPrimaryName := Up;
     LastVarTypeIdx := GetVarTypeIdx(PI, Up);
@@ -11689,6 +11947,7 @@ Var
   FOfs    : Integer;
   FSize   : Integer;
   ElemSz  : Integer;
+  WI      : Integer;
 Begin
   If EPAtEnd Then Exit;
 
@@ -11767,22 +12026,55 @@ Begin
     { GOTO }
     If Up = 'GOTO' Then Begin ParseGotoStmt(PI); Exit; End;
 
-    { WITH : consommer jusqu a DO, puis parser le corps }
+    { WITH : resoudre les noms de champs implicitement }
     If Up = 'WITH' Then
     Begin
       EmitComment('with');
       Inc(EP);
-      While Not EPAtEnd Do
+      { Lire le nom de la variable record }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
       Begin
-        If (TokenPool[EP].Kind = TK_KEYWORD) And
-           (StrUpperCase(TokenPool[EP].Val) = 'DO') Then
-        Begin
-          Inc(EP);
-          Break;
-        End;
+        VName := StrUpperCase(TokenPool[EP].Val);
         Inc(EP);
+        { Empiler le contexte WITH }
+        If WithDepth < 8 Then
+        Begin
+          WithVarName[WithDepth] := VName;
+          WithVarPI[WithDepth]   := PI;
+          WithTypeIdx[WithDepth] := GetVarTypeIdx(PI, VName);
+          Inc(WithDepth);
+        End;
+        { Attendre DO }
+        While Not EPAtEnd Do
+        Begin
+          If (TokenPool[EP].Kind = TK_KEYWORD) And
+             (StrUpperCase(TokenPool[EP].Val) = 'DO') Then
+          Begin
+            Inc(EP);
+            Break;
+          End;
+          Inc(EP);
+        End;
+        ParseStmt(PI);
+        { Depiler le contexte WITH }
+        If WithDepth > 0 Then
+          Dec(WithDepth);
+      End
+      Else
+      Begin
+        { Pas de variable, avancer jusqu a DO }
+        While Not EPAtEnd Do
+        Begin
+          If (TokenPool[EP].Kind = TK_KEYWORD) And
+             (StrUpperCase(TokenPool[EP].Val) = 'DO') Then
+          Begin
+            Inc(EP);
+            Break;
+          End;
+          Inc(EP);
+        End;
+        ParseStmt(PI);
       End;
-      ParseStmt(PI);
       Exit;
     End;
 
@@ -14670,6 +14962,63 @@ Begin
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
       Exit;
+    End;
+
+    { WITH : resoudre champ implicite dans le scope WITH }
+    If (WithDepth > 0) Then
+    Begin
+      WI := WithDepth - 1;
+      While WI >= 0 Do
+      Begin
+        FSize := 4;
+        FOfs := FindFieldOffset(WithTypeIdx[WI], Up, FSize);
+        If FOfs >= 0 Then Break;
+        Dec(WI);
+      End;
+      If (WI >= 0) And (FOfs >= 0) Then
+      Begin
+        Inc(EP);
+        { Affectation champ via WITH : field := expr }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+           (TokenPool[EP].Val = ':=') Then
+        Begin
+          Inc(EP);
+          GenLoadAddr(PI, WithVarName[WI]);
+          If FOfs > 0 Then
+            EmitInstr('ADD EAX,' + IntToStr_(FOfs));
+          EmitInstr('PUSH EAX');
+          ParseExpr(PI);
+          EmitInstr('POP EBX');
+          If FSize = 1 Then
+            EmitInstr('MOV BYTE PTR [EBX],AL')
+          Else If (WithTypeIdx[WI] >= 0) And (WithTypeIdx[WI] < TypeCount) Then
+          Begin
+            { Verifier si le champ est un String }
+            LastVarTypeIdx := WithTypeIdx[WI];
+            For ElemSz := 0 To TypeTab[LastVarTypeIdx].FieldCount - 1 Do
+              If TypeTab[LastVarTypeIdx].Fields[ElemSz].Name = Up Then
+              Begin
+                If (TypeTab[LastVarTypeIdx].Fields[ElemSz].TypeIdx >= 0) And
+                   (TypeTab[LastVarTypeIdx].Fields[ElemSz].TypeIdx < TypeCount) And
+                   (TypeTab[TypeTab[LastVarTypeIdx].Fields[ElemSz].TypeIdx].Kind = TYK_STRING) Then
+                Begin
+                  EmitInstr('MOV ESI,EAX');
+                  EmitInstr('MOV EDI,EBX');
+                  EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
+                End
+                Else
+                  EmitInstr('MOV [EBX],EAX');
+                Break;
+              End;
+          End
+          Else
+            EmitInstr('MOV [EBX],EAX');
+        End;
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ';') Then
+          Inc(EP);
+        Exit;
+      End;
     End;
 
     { Affectation ou appel de fonction }
