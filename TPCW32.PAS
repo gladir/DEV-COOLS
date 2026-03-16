@@ -8588,6 +8588,38 @@ Begin
       Exit;
     End;
 
+    { CSEG -> retourne 0 (non significatif en Win32 flat mode) }
+    If Up = 'CSEG' Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { DSEG -> retourne 0 (non significatif en Win32 flat mode) }
+    If Up = 'DSEG' Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { SSEG -> retourne 0 (non significatif en Win32 flat mode) }
+    If Up = 'SSEG' Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { SPTR -> retourne le pointeur de pile courant }
+    If Up = 'SPTR' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,ESP');
+      Exit;
+    End;
+
     { ---- TODO 16 : Builtins chaines ---- }
 
     { LENGTH(S) -> longueur String Pascal (S[0]) dans EAX }
@@ -11565,6 +11597,25 @@ Begin
       Exit;
     End;
 
+    { RUNERROR(N) : appel ExitProcess avec code d erreur }
+    If Up = 'RUNERROR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End
+      Else
+        EmitInstr('MOV EAX,0');
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ExitProcess');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
     { BREAK : saut vers fin de boucle englobante }
     If Up = 'BREAK' Then
     Begin
@@ -11682,6 +11733,55 @@ Begin
        (Up = 'GETDIR') Or (Up = 'INCLUDE') Or (Up = 'EXCLUDE') Then
     Begin
       ParseExpr(PI);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { HALT : appel ExitProcess (identifiant, pas mot-cle) }
+    If Up = 'HALT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End
+      Else
+        EmitInstr('XOR EAX,EAX');
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ExitProcess');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { RUNERROR(N) : appel ExitProcess avec code d erreur (identifiant) }
+    If Up = 'RUNERROR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End
+      Else
+        EmitInstr('MOV EAX,0');
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ExitProcess');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { EXIT : saut au label de retour (identifiant) }
+    If Up = 'EXIT' Then
+    Begin
+      Inc(EP);
+      EmitInstr('JMP ' + RetLbl);
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
