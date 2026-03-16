@@ -58,10 +58,14 @@ class M68KCPU:
 
     def read16(self, addr):
         addr &= 0xFFFFF
+        if addr + 1 >= MEM_SIZE:
+            raise M68KError(f"Lecture 16 bits hors memoire: ${addr:06X}")
         return (self.mem[addr] << 8) | self.mem[addr + 1]
 
     def read32(self, addr):
         addr &= 0xFFFFF
+        if addr + 3 >= MEM_SIZE:
+            raise M68KError(f"Lecture 32 bits hors memoire: ${addr:06X}")
         return (self.mem[addr] << 24) | (self.mem[addr+1] << 16) | \
                (self.mem[addr+2] << 8) | self.mem[addr+3]
 
@@ -71,11 +75,15 @@ class M68KCPU:
 
     def write16(self, addr, val):
         addr &= 0xFFFFF
+        if addr + 1 >= MEM_SIZE:
+            raise M68KError(f"Ecriture 16 bits hors memoire: ${addr:06X}")
         self.mem[addr]     = (val >> 8) & 0xFF
         self.mem[addr + 1] = val & 0xFF
 
     def write32(self, addr, val):
         addr &= 0xFFFFF
+        if addr + 3 >= MEM_SIZE:
+            raise M68KError(f"Ecriture 32 bits hors memoire: ${addr:06X}")
         self.mem[addr]     = (val >> 24) & 0xFF
         self.mem[addr + 1] = (val >> 16) & 0xFF
         self.mem[addr + 2] = (val >>  8) & 0xFF
@@ -559,6 +567,14 @@ class M68KCPU:
             self.A[reg] = addr & 0xFFFFFFFF
             return True
 
+        # SWAP: 0100 1000 0100 0 rrr (must be before PEA)
+        if (opcode & 0xFFF8) == 0x4840:
+            reg = opcode & 7
+            v = self.D[reg]
+            self.D[reg] = ((v & 0xFFFF) << 16) | ((v >> 16) & 0xFFFF)
+            self.set_flags_nzvc(self.D[reg], 4)
+            return True
+
         # PEA: 0100 1000 01 EEE EEE
         if (opcode & 0xFFC0) == 0x4840:
             ea_mode = (opcode >> 3) & 7
@@ -568,8 +584,57 @@ class M68KCPU:
             self.write32(self.A[7], addr)
             return True
 
-        # CLR: 0100 0010 ss EEE EEE
-        if (opcode & 0xFF00) == 0x4200:
+        # NBCD: 0100 1000 00 EEE EEE
+        if (opcode & 0xFFC0) == 0x4800:
+            ea_mode = (opcode >> 3) & 7
+            ea_reg  = opcode & 7
+            val, _ = self.read_ea(ea_mode, ea_reg, 1)
+            x = 1 if self.SR & CCR_X else 0
+            lo = (0 - (val & 0x0F) - x) & 0xFF
+            if lo > 9:
+                lo = (lo - 6) & 0xFF
+            hi = (0 - ((val >> 4) & 0x0F) - (1 if lo > 0x0F else 0)) & 0xFF
+            if hi > 9:
+                hi = (hi - 6) & 0xFF
+            result = ((hi & 0x0F) << 4) | (lo & 0x0F)
+            carry = (val != 0 or x != 0)
+            self.write_ea(ea_mode, ea_reg, result, 1)
+            if result != 0:
+                self.SR &= ~CCR_Z
+            if carry:
+                self.SR |= CCR_C | CCR_X
+            else:
+                self.SR &= ~(CCR_C | CCR_X)
+            return True
+
+        # NEGX: 0100 0000 ss EEE EEE (ss != 11, which is MOVE from SR)
+        if (opcode & 0xFF00) == 0x4000 and ((opcode >> 6) & 3) < 3:
+            sz_bits = (opcode >> 6) & 3
+            size = self.op_size(sz_bits)
+            ea_mode = (opcode >> 3) & 7
+            ea_reg  = opcode & 7
+            val, _ = self.read_ea(ea_mode, ea_reg, size)
+            x = 1 if self.SR & CCR_X else 0
+            mask = {1: 0xFF, 2: 0xFFFF, 4: 0xFFFFFFFF}[size]
+            result = (0 - val - x) & mask
+            self.write_ea(ea_mode, ea_reg, result, size)
+            carry = (val != 0 or x != 0)
+            self.set_flags_nzvc(result, size, carry=carry)
+            if carry:
+                self.SR |= CCR_X
+            if result != 0:
+                self.SR &= ~CCR_Z
+            return True
+
+        # MOVE from CCR: 0100 0010 11 EEE EEE (68010+)
+        if (opcode & 0xFFC0) == 0x42C0:
+            ea_mode = (opcode >> 3) & 7
+            ea_reg  = opcode & 7
+            self.write_ea(ea_mode, ea_reg, self.SR & 0xFF, 2)
+            return True
+
+        # CLR: 0100 0010 ss EEE EEE (ss != 11)
+        if (opcode & 0xFF00) == 0x4200 and ((opcode >> 6) & 3) < 3:
             sz_bits = (opcode >> 6) & 3
             size = self.op_size(sz_bits)
             ea_mode = (opcode >> 3) & 7
@@ -578,8 +643,8 @@ class M68KCPU:
             self.SR = (self.SR & ~(CCR_N | CCR_V | CCR_C)) | CCR_Z
             return True
 
-        # NEG: 0100 0100 ss EEE EEE
-        if (opcode & 0xFF00) == 0x4400:
+        # NEG: 0100 0100 ss EEE EEE (ss != 11, which is MOVE to CCR)
+        if (opcode & 0xFF00) == 0x4400 and ((opcode >> 6) & 3) < 3:
             sz_bits = (opcode >> 6) & 3
             size = self.op_size(sz_bits)
             ea_mode = (opcode >> 3) & 7
@@ -591,8 +656,8 @@ class M68KCPU:
             self.set_flags_nzvc(result, size, carry=(result != 0))
             return True
 
-        # NOT: 0100 0110 ss EEE EEE
-        if (opcode & 0xFF00) == 0x4600:
+        # NOT: 0100 0110 ss EEE EEE (ss != 11, which is MOVE to SR)
+        if (opcode & 0xFF00) == 0x4600 and ((opcode >> 6) & 3) < 3:
             sz_bits = (opcode >> 6) & 3
             size = self.op_size(sz_bits)
             ea_mode = (opcode >> 3) & 7
@@ -604,8 +669,18 @@ class M68KCPU:
             self.set_flags_nzvc(result, size)
             return True
 
-        # TST: 0100 1010 ss EEE EEE
-        if (opcode & 0xFF00) == 0x4A00:
+        # TAS: 0100 1010 11 EEE EEE
+        if (opcode & 0xFFC0) == 0x4AC0:
+            ea_mode = (opcode >> 3) & 7
+            ea_reg  = opcode & 7
+            val, _ = self.read_ea(ea_mode, ea_reg, 1)
+            self.set_flags_nzvc(val, 1)
+            result = val | 0x80
+            self.write_ea(ea_mode, ea_reg, result, 1)
+            return True
+
+        # TST: 0100 1010 ss EEE EEE (ss != 11, which is TAS)
+        if (opcode & 0xFF00) == 0x4A00 and ((opcode >> 6) & 3) < 3:
             sz_bits = (opcode >> 6) & 3
             size = self.op_size(sz_bits)
             ea_mode = (opcode >> 3) & 7
@@ -632,14 +707,6 @@ class M68KCPU:
                 v = v | 0xFFFF0000
             self.D[reg] = v & 0xFFFFFFFF
             self.set_flags_nzvc(v, 4)
-            return True
-
-        # SWAP: 0100 1000 0100 0 rrr
-        if (opcode & 0xFFF8) == 0x4840:
-            reg = opcode & 7
-            v = self.D[reg]
-            self.D[reg] = ((v & 0xFFFF) << 16) | ((v >> 16) & 0xFFFF)
-            self.set_flags_nzvc(self.D[reg], 4)
             return True
 
         # LINK: 0100 1110 0101 0 rrr
@@ -717,6 +784,21 @@ class M68KCPU:
             ea_reg  = opcode & 7
             self.read_ea(ea_mode, ea_reg, 2)  # consume ext words
             return True
+
+        # RESET: 0100 1110 0111 0000
+        if opcode == 0x4E70:
+            return True  # NOP in emulator
+
+        # STOP: 0100 1110 0111 0010
+        if opcode == 0x4E72:
+            self.SR = self.fetch16()
+            self.halted = True
+            self.exit_code = 0
+            return True
+
+        # MOVE USP: 0100 1110 0110 x rrr
+        if (opcode & 0xFFF0) == 0x4E60:
+            return True  # NOP in emulator (no user/supervisor distinction)
 
         raise M68KError(f"Instruction 0100 non implementee: ${opcode:04X}")
 
@@ -846,11 +928,11 @@ class M68KCPU:
         if cc == 1:  # BSR
             self.A[7] = (self.A[7] - 4) & 0xFFFFFFFF
             self.write32(self.A[7], self.PC)
-            self.PC = (self.PC - (0 if disp8 == 0 else 2) + disp) & 0xFFFFFFFF
+            self.PC = (self.PC - (2 if disp8 == 0 else 0) + disp) & 0xFFFFFFFF
             return True
 
         if self.test_cc(cc):
-            self.PC = (self.PC - (0 if disp8 == 0 else 2) + disp) & 0xFFFFFFFF
+            self.PC = (self.PC - (2 if disp8 == 0 else 0) + disp) & 0xFFFFFFFF
         return True
 
     # --- OR/DIV/SBCD (1000) ---
@@ -947,6 +1029,44 @@ class M68KCPU:
                 result = (dn - val) & mask
             self.set_d(reg, result, size)
             self.set_flags_nzvc(result, size)
+            return True
+
+        # ADDX/SUBX: opmode 4,5,6 with bits 5-4=00 (Dn,Dn or -(An),-(An))
+        if opmode in (4, 5, 6) and (opcode & 0x0030) == 0x0000:
+            size = self.op_size(opmode - 4)
+            mask = {1: 0xFF, 2: 0xFFFF, 4: 0xFFFFFFFF}[size]
+            rm = (opcode >> 3) & 1  # 0=Dn, 1=-(An)
+            x = 1 if self.SR & CCR_X else 0
+            if rm == 0:
+                src_val = self.get_d(ea_reg, size)
+                dst_val = self.get_d(reg, size)
+                if is_add:
+                    result = (dst_val + src_val + x) & mask
+                else:
+                    result = (dst_val - src_val - x) & mask
+                self.set_d(reg, result, size)
+            else:
+                dec = {1: 1, 2: 2, 4: 4}[size]
+                if ea_reg == 7 and size == 1: dec = 2
+                if reg == 7 and size == 1: dec = 2
+                self.A[ea_reg] = (self.A[ea_reg] - dec) & 0xFFFFFFFF
+                self.A[reg] = (self.A[reg] - dec) & 0xFFFFFFFF
+                src_val = self.read8(self.A[ea_reg]) if size == 1 else \
+                          (self.read16(self.A[ea_reg]) if size == 2 else self.read32(self.A[ea_reg]))
+                dst_val = self.read8(self.A[reg]) if size == 1 else \
+                          (self.read16(self.A[reg]) if size == 2 else self.read32(self.A[reg]))
+                if is_add:
+                    result = (dst_val + src_val + x) & mask
+                else:
+                    result = (dst_val - src_val - x) & mask
+                if size == 1: self.write8(self.A[reg], result)
+                elif size == 2: self.write16(self.A[reg], result)
+                else: self.write32(self.A[reg], result)
+            carry = (result != (dst_val + src_val + x if is_add else dst_val - src_val - x)) if False else \
+                    bool((result > mask) if is_add else (src_val + x > dst_val))
+            self.set_flags_nzvc(result, size)
+            if result != 0:
+                self.SR &= ~CCR_Z
             return True
 
         # ADD/SUB Dn,<ea> (opmode 4,5,6)
