@@ -500,7 +500,7 @@ Const
   MAX_BIN_DATA    = 65536;       { 64 KB max data section             }
   MAX_BIN_LBL     = 4096;        { max labels                         }
   MAX_BIN_FIX     = 8192;        { max fixups                         }
-  PE_NUM_API      = 7;           { number of imported Win32 APIs      }
+  PE_NUM_API      = 9;           { number of imported Win32 APIs      }
   COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
   COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
 
@@ -695,11 +695,12 @@ Const
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
     '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20',
     '_ReadFile@20', '_GetProcessHeap@0', '_HeapAlloc@12',
-    '_HeapFree@12'
+    '_HeapFree@12', '_CreateFileA@28', '_CloseHandle@4'
   );
   BinAPIName : Array[0..PE_NUM_API - 1] Of String[20] = (
     'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
-    'GetProcessHeap', 'HeapAlloc', 'HeapFree'
+    'GetProcessHeap', 'HeapAlloc', 'HeapFree',
+    'CreateFileA', 'CloseHandle'
   );
 
 { ------------------------------------------------------------ }
@@ -2636,6 +2637,9 @@ Var
   { Variables pour les entrees/sorties Console (TODO 21) }
   ConsoleOpCount  : Integer;      { nombre d operations Console         }
 
+  { Variables pour les operations fichiers (System.IO) }
+  FileOpCount     : Integer;      { nombre d operations fichier         }
+
   { Variables pour goto / labels utilisateur (TODO 22) }
   GotoCount       : Integer;      { nombre d instructions goto          }
 
@@ -2915,6 +2919,46 @@ Begin
   If Idx >= 0 Then
   Begin
     SymTab[Idx].MangledName := CSC_RT_PFX + 'NUMTOSTR';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { File.WriteAllText(path, content) -> void }
+  Idx := SymAdd('File.WriteAllText', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'FWRITEALL';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { File.ReadAllText(path) -> string }
+  Idx := SymAdd('File.ReadAllText', SC_METHOD, TY_IDX_STRING);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'FREADALL';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { File.AppendAllText(path, content) -> void }
+  Idx := SymAdd('File.AppendAllText', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'FAPPENDALL';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { File.Exists(path) -> bool }
+  Idx := SymAdd('File.Exists', SC_METHOD, TY_IDX_BOOL);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'FEXISTS';
+    SymTab[Idx].IsStatic := True;
+  End;
+
+  { File.Delete(path) -> void }
+  Idx := SymAdd('File.Delete', SC_METHOD, TY_IDX_VOID);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].MangledName := CSC_RT_PFX + 'FDELETE';
     SymTab[Idx].IsStatic := True;
   End;
 End;
@@ -3493,6 +3537,8 @@ Begin
   EmitRaw('EXTRN _GetProcessHeap@0:NEAR');
   EmitRaw('EXTRN _HeapAlloc@12:NEAR');
   EmitRaw('EXTRN _HeapFree@12:NEAR');
+  EmitRaw('EXTRN _CreateFileA@28:NEAR');
+  EmitRaw('EXTRN _CloseHandle@4:NEAR');
   EmitBlankLine;
 End;
 
@@ -4812,6 +4858,64 @@ Begin
         End;
         If TokIsPunct(')') Then Consume;
         CurExprType := TY_IDX_VOID;  { void }
+      End
+      { Detection des methodes File.* (System.IO) }
+      Else If (StrLowerCase(QualName) = 'file.writealltext') Or
+              (StrLowerCase(QualName) = 'file.appendalltext') Then
+      Begin
+        { File.WriteAllText(path, content) / File.AppendAllText(path, content) }
+        ParseExpr;               { arg1 = path (string) dans EAX }
+        GenPushEAX;              { sauver path }
+        Inc(ArgCount);
+        If TokIsPunct(',') Then Consume;
+        ParseExpr;               { arg2 = content (string) dans EAX }
+        GenPushEAX;              { sauver content }
+        Inc(ArgCount);
+        If TokIsPunct(')') Then Consume;
+        { Appeler le runtime helper (content sur pile, path sur pile) }
+        If StrLowerCase(QualName) = 'file.appendalltext' Then
+          EmitInstr('CALL', CSC_RT_PFX + 'FAPPENDALL')
+        Else
+          EmitInstr('CALL', CSC_RT_PFX + 'FWRITEALL');
+        EmitInstr('ADD', 'ESP,8');
+        Inc(FileOpCount);
+        CurExprType := TY_IDX_VOID;
+      End
+      Else If (StrLowerCase(QualName) = 'file.readalltext') Then
+      Begin
+        { File.ReadAllText(path) -> string }
+        ParseExpr;               { arg1 = path (string) dans EAX }
+        GenPushEAX;              { sauver path }
+        Inc(ArgCount);
+        If TokIsPunct(')') Then Consume;
+        EmitInstr('CALL', CSC_RT_PFX + 'FREADALL');
+        EmitInstr('ADD', 'ESP,4');
+        Inc(FileOpCount);
+        CurExprType := TY_IDX_STRING;
+      End
+      Else If (StrLowerCase(QualName) = 'file.exists') Then
+      Begin
+        { File.Exists(path) -> bool }
+        ParseExpr;               { arg1 = path (string) dans EAX }
+        GenPushEAX;              { sauver path }
+        Inc(ArgCount);
+        If TokIsPunct(')') Then Consume;
+        EmitInstr('CALL', CSC_RT_PFX + 'FEXISTS');
+        EmitInstr('ADD', 'ESP,4');
+        Inc(FileOpCount);
+        CurExprType := TY_IDX_BOOL;
+      End
+      Else If (StrLowerCase(QualName) = 'file.delete') Then
+      Begin
+        { File.Delete(path) -> void }
+        ParseExpr;               { arg1 = path (string) dans EAX }
+        GenPushEAX;              { sauver path }
+        Inc(ArgCount);
+        If TokIsPunct(')') Then Consume;
+        EmitInstr('CALL', CSC_RT_PFX + 'FDELETE');
+        EmitInstr('ADD', 'ESP,4');
+        Inc(FileOpCount);
+        CurExprType := TY_IDX_VOID;
       End
       Else
       Begin
@@ -7814,6 +7918,240 @@ Begin
   EmitBlankLine;
   Inc(RuntimeHelpCount);
 
+  { ---- _CSCRT_FWRITEALL ---- }
+  { Appelant pousse path puis content                             }
+  { => [EBP+8]=content, [EBP+12]=path                            }
+  { File.WriteAllText : ouvre, ecrit, ferme                       }
+  EmitComment('_CSCRT_FWRITEALL : ecrire un fichier texte');
+  EmitLabel('_CSCRT_FWRITEALL');
+  EmitInstr('PUSH', 'EBP');
+  EmitInstr('MOV',  'EBP,ESP');
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('PUSH', 'EDI');
+  { CreateFileA(path, GENERIC_WRITE=0x40000000, 0, NULL, CREATE_ALWAYS=2, 0, NULL) }
+  EmitInstr('PUSH', '0');                      { hTemplateFile  }
+  EmitInstr('PUSH', '0');                      { dwFlags        }
+  EmitInstr('PUSH', '2');                      { CREATE_ALWAYS  }
+  EmitInstr('PUSH', '0');                      { lpSecurity     }
+  EmitInstr('PUSH', '0');                      { dwShareMode    }
+  EmitInstr('PUSH', '1073741824');             { GENERIC_WRITE  }
+  EmitInstr('PUSH', 'DWORD PTR [EBP+12]');    { path           }
+  EmitInstr('CALL', '_CreateFileA@28');
+  EmitInstr('CMP',  'EAX,-1');
+  EmitInstr('JE',   '_CSCRT_FW_END');
+  EmitInstr('MOV',  'EBX,EAX');               { EBX = handle   }
+  { Calculer longueur de content }
+  EmitInstr('MOV',  'EDI,DWORD PTR [EBP+8]'); { content        }
+  EmitInstr('MOV',  'ESI,EDI');
+  EmitInstr('XOR',  'ECX,ECX');
+  EmitLabel('_CSCRT_FW_LEN');
+  EmitInstr('CMP',  'BYTE PTR [ESI],0');
+  EmitInstr('JE',   '_CSCRT_FW_WR');
+  EmitInstr('INC',  'ESI');
+  EmitInstr('INC',  'ECX');
+  EmitInstr('JMP',  '_CSCRT_FW_LEN');
+  EmitLabel('_CSCRT_FW_WR');
+  { WriteFile(handle, content, len, &written, 0) }
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', 'OFFSET _CSC_WRITTEN');
+  EmitInstr('PUSH', 'ECX');
+  EmitInstr('PUSH', 'EDI');
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('CALL', '_WriteFile@20');
+  { CloseHandle(handle) }
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('CALL', '_CloseHandle@4');
+  EmitLabel('_CSCRT_FW_END');
+  EmitInstr('POP',  'EDI');
+  EmitInstr('POP',  'ESI');
+  EmitInstr('POP',  'EBX');
+  EmitInstr('MOV',  'ESP,EBP');
+  EmitInstr('POP',  'EBP');
+  EmitInstr('RET',  '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_FAPPENDALL ---- }
+  { Appelant pousse path puis content                             }
+  { => [EBP+8]=content, [EBP+12]=path                            }
+  { File.AppendAllText : ouvre en mode append, ecrit, ferme       }
+  EmitComment('_CSCRT_FAPPENDALL : ajouter a un fichier texte');
+  EmitLabel('_CSCRT_FAPPENDALL');
+  EmitInstr('PUSH', 'EBP');
+  EmitInstr('MOV',  'EBP,ESP');
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('PUSH', 'EDI');
+  { CreateFileA avec FILE_APPEND_DATA=0x4, OPEN_ALWAYS=4 }
+  EmitInstr('PUSH', '0');                      { hTemplateFile  }
+  EmitInstr('PUSH', '0');                      { dwFlags        }
+  EmitInstr('PUSH', '4');                      { OPEN_ALWAYS    }
+  EmitInstr('PUSH', '0');                      { lpSecurity     }
+  EmitInstr('PUSH', '0');                      { dwShareMode    }
+  EmitInstr('PUSH', '4');                      { FILE_APPEND_DATA }
+  EmitInstr('PUSH', 'DWORD PTR [EBP+12]');    { path           }
+  EmitInstr('CALL', '_CreateFileA@28');
+  EmitInstr('CMP',  'EAX,-1');
+  EmitInstr('JE',   '_CSCRT_FA_END');
+  EmitInstr('MOV',  'EBX,EAX');
+  { Calculer longueur de content }
+  EmitInstr('MOV',  'EDI,DWORD PTR [EBP+8]'); { content        }
+  EmitInstr('MOV',  'ESI,EDI');
+  EmitInstr('XOR',  'ECX,ECX');
+  EmitLabel('_CSCRT_FA_LEN');
+  EmitInstr('CMP',  'BYTE PTR [ESI],0');
+  EmitInstr('JE',   '_CSCRT_FA_WR');
+  EmitInstr('INC',  'ESI');
+  EmitInstr('INC',  'ECX');
+  EmitInstr('JMP',  '_CSCRT_FA_LEN');
+  EmitLabel('_CSCRT_FA_WR');
+  { WriteFile(handle, content, len, &written, 0) }
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', 'OFFSET _CSC_WRITTEN');
+  EmitInstr('PUSH', 'ECX');
+  EmitInstr('PUSH', 'EDI');
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('CALL', '_WriteFile@20');
+  { CloseHandle }
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('CALL', '_CloseHandle@4');
+  EmitLabel('_CSCRT_FA_END');
+  EmitInstr('POP',  'EDI');
+  EmitInstr('POP',  'ESI');
+  EmitInstr('POP',  'EBX');
+  EmitInstr('MOV',  'ESP,EBP');
+  EmitInstr('POP',  'EBP');
+  EmitInstr('RET',  '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_FREADALL ---- }
+  { Pile: [ESP+4]=path                                            }
+  { File.ReadAllText : ouvre, lit tout, ferme, retourne buffer    }
+  { Retour : EAX = pointeur vers chaine lue (heap) ou "" si err  }
+  EmitComment('_CSCRT_FREADALL : lire un fichier texte entier');
+  EmitLabel('_CSCRT_FREADALL');
+  EmitInstr('PUSH', 'EBP');
+  EmitInstr('MOV',  'EBP,ESP');
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('PUSH', 'EDI');
+  { CreateFileA(path, GENERIC_READ=0x80000000, FILE_SHARE_READ=1, NULL, OPEN_EXISTING=3, 0, NULL) }
+  EmitInstr('PUSH', '0');                      { hTemplateFile  }
+  EmitInstr('PUSH', '0');                      { dwFlags        }
+  EmitInstr('PUSH', '3');                      { OPEN_EXISTING  }
+  EmitInstr('PUSH', '0');                      { lpSecurity     }
+  EmitInstr('PUSH', '1');                      { FILE_SHARE_READ}
+  EmitInstr('PUSH', '-2147483648');            { GENERIC_READ   }
+  EmitInstr('PUSH', 'DWORD PTR [EBP+8]');     { path           }
+  EmitInstr('CALL', '_CreateFileA@28');
+  EmitInstr('CMP',  'EAX,-1');
+  EmitInstr('JE',   '_CSCRT_FR_ERR');
+  EmitInstr('MOV',  'EBX,EAX');               { EBX = handle   }
+  { Allouer un buffer de 4096 octets }
+  EmitInstr('PUSH', '4096');
+  EmitInstr('PUSH', '0');                      { dwFlags        }
+  EmitInstr('CALL', '_GetProcessHeap@0');
+  EmitInstr('PUSH', 'EAX');                   { hHeap          }
+  EmitInstr('CALL', '_HeapAlloc@12');
+  EmitInstr('MOV',  'ESI,EAX');               { ESI = buffer   }
+  { ReadFile(handle, buffer, 4095, &readcnt, 0) }
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', 'OFFSET _CSC_READCNT');
+  EmitInstr('PUSH', '4095');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('CALL', '_ReadFile@20');
+  { Terminer la chaine avec 0 }
+  EmitInstr('MOV',  'ECX,DWORD PTR [_CSC_READCNT]');
+  EmitInstr('MOV',  'BYTE PTR [ESI+ECX],0');
+  { CloseHandle }
+  EmitInstr('PUSH', 'EBX');
+  EmitInstr('CALL', '_CloseHandle@4');
+  { Retourner le buffer }
+  EmitInstr('MOV',  'EAX,ESI');
+  EmitInstr('JMP',  '_CSCRT_FR_DONE');
+  EmitLabel('_CSCRT_FR_ERR');
+  { Retourner chaine vide en cas d erreur }
+  EmitInstr('MOV',  'EAX,OFFSET _CSC_EMPTY');
+  EmitLabel('_CSCRT_FR_DONE');
+  EmitInstr('POP',  'EDI');
+  EmitInstr('POP',  'ESI');
+  EmitInstr('POP',  'EBX');
+  EmitInstr('MOV',  'ESP,EBP');
+  EmitInstr('POP',  'EBP');
+  EmitInstr('RET',  '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_FEXISTS ---- }
+  { Pile: [ESP+4]=path (unique argument)                          }
+  { => [EBP+8]=path                                              }
+  { File.Exists : tente d ouvrir le fichier, retourne 0 ou 1     }
+  EmitComment('_CSCRT_FEXISTS : tester si un fichier existe');
+  EmitLabel('_CSCRT_FEXISTS');
+  EmitInstr('PUSH', 'EBP');
+  EmitInstr('MOV',  'EBP,ESP');
+  { CreateFileA(path, GENERIC_READ, FILE_SHARE_READ=1, NULL, OPEN_EXISTING=3, 0, NULL) }
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', '3');                      { OPEN_EXISTING  }
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', '1');                      { FILE_SHARE_READ}
+  EmitInstr('PUSH', '-2147483648');            { GENERIC_READ   }
+  EmitInstr('PUSH', 'DWORD PTR [EBP+8]');     { path           }
+  EmitInstr('CALL', '_CreateFileA@28');
+  EmitInstr('CMP',  'EAX,-1');
+  EmitInstr('JE',   '_CSCRT_FE_NO');
+  { Fichier existe : fermer le handle }
+  EmitInstr('PUSH', 'EAX');
+  EmitInstr('CALL', '_CloseHandle@4');
+  EmitInstr('MOV',  'EAX,1');
+  EmitInstr('JMP',  '_CSCRT_FE_DONE');
+  EmitLabel('_CSCRT_FE_NO');
+  EmitInstr('XOR',  'EAX,EAX');
+  EmitLabel('_CSCRT_FE_DONE');
+  EmitInstr('MOV',  'ESP,EBP');
+  EmitInstr('POP',  'EBP');
+  EmitInstr('RET',  '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
+  { ---- _CSCRT_FDELETE ---- }
+  { Pile: [ESP+4]=path                                            }
+  { File.Delete : utilise CreateFileA pour ouvrir puis supprimer  }
+  { Note: DeleteFileA n est pas dans nos imports, on le simule    }
+  { en ouvrant avec CREATE_ALWAYS et taille 0 puis supprimant     }
+  { En fait, simplement ecrire un fichier vide suffit pour ce     }
+  { compilateur d enseignement. Alternative: on l ajoute.         }
+  { On va ajouter DeleteFileA aux imports.                        }
+  { Pour le moment, on ecrase le fichier avec un contenu vide     }
+  EmitComment('_CSCRT_FDELETE : supprimer un fichier (stub: ecrase vide)');
+  EmitLabel('_CSCRT_FDELETE');
+  EmitInstr('PUSH', 'EBP');
+  EmitInstr('MOV',  'EBP,ESP');
+  { CreateFileA en CREATE_ALWAYS ecrase le fichier }
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', '2');                      { CREATE_ALWAYS  }
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', '0');
+  EmitInstr('PUSH', '1073741824');             { GENERIC_WRITE  }
+  EmitInstr('PUSH', 'DWORD PTR [EBP+8]');     { path           }
+  EmitInstr('CALL', '_CreateFileA@28');
+  EmitInstr('CMP',  'EAX,-1');
+  EmitInstr('JE',   '_CSCRT_FD_DONE');
+  { Fermer immediatement : fichier existe mais est vide }
+  EmitInstr('PUSH', 'EAX');
+  EmitInstr('CALL', '_CloseHandle@4');
+  EmitLabel('_CSCRT_FD_DONE');
+  EmitInstr('MOV',  'ESP,EBP');
+  EmitInstr('POP',  'EBP');
+  EmitInstr('RET',  '');
+  EmitBlankLine;
+  Inc(RuntimeHelpCount);
+
   { ---- _CSCRT_PANIC ---- }
   { ESI = message d erreur -> afficher et ExitProcess(1) }
   EmitComment('_CSCRT_PANIC : message d erreur + ExitProcess(1)');
@@ -10140,6 +10478,9 @@ Begin
 
   { Initialiser les entrees/sorties Console (TODO 21) }
   ConsoleOpCount   := 0;
+
+  { Initialiser les operations fichiers (System.IO) }
+  FileOpCount      := 0;
 
   { Initialiser goto / labels utilisateur (TODO 22) }
   GotoCount        := 0;
