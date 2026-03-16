@@ -14514,13 +14514,17 @@ Begin
   EmitInstr('TEST ECX,ECX');
   EmitInstr('JZ ' + TP_RT_PFX + 'RL_DN');
   EmitInstr('DEC ECX');
-  EmitInstr('CMP BYTE PTR [INBUF+ECX],13');
+  EmitInstr('LEA EDI,[INBUF]');
+  EmitInstr('ADD EDI,ECX');
+  EmitInstr('CMP BYTE PTR [EDI],13');
   EmitInstr('JE ' + TP_RT_PFX + 'RL_TR');
-  EmitInstr('CMP BYTE PTR [INBUF+ECX],10');
+  EmitInstr('CMP BYTE PTR [EDI],10');
   EmitInstr('JE ' + TP_RT_PFX + 'RL_TR');
   EmitInstr('INC ECX');
   EmitLabel(TP_RT_PFX + 'RL_DN');
-  EmitInstr('MOV BYTE PTR [INBUF+ECX],0');
+  EmitInstr('LEA EDI,[INBUF]');
+  EmitInstr('ADD EDI,ECX');
+  EmitInstr('MOV BYTE PTR [EDI],0');
   EmitInstr('POPAD');
   EmitInstr('RET');
 
@@ -15782,7 +15786,9 @@ Begin
   EmitInstr('CMP AL,13');                      { CR = sauter }
   EmitInstr('JE ' + TP_RT_PFX + 'RF_NX');
   { Stocker le caractere dans INBUF }
-  EmitInstr('MOV BYTE PTR [INBUF+ECX],AL');
+  EmitInstr('LEA EDI,[INBUF]');
+  EmitInstr('ADD EDI,ECX');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
   EmitInstr('INC ECX');
   EmitInstr('CMP ECX,254');
   EmitInstr('JAE ' + TP_RT_PFX + 'RF_DN');
@@ -15790,7 +15796,9 @@ Begin
   EmitLabel(TP_RT_PFX + 'RF_EF');
   EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
   EmitLabel(TP_RT_PFX + 'RF_DN');
-  EmitInstr('MOV BYTE PTR [INBUF+ECX],0');    { terminer par NUL }
+  EmitInstr('LEA EDI,[INBUF]');
+  EmitInstr('ADD EDI,ECX');
+  EmitInstr('MOV BYTE PTR [EDI],0');    { terminer par NUL }
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -18940,7 +18948,8 @@ Begin { BcAssemble }
      (Mnem = 'JZ') Or (Mnem = 'JNZ') Or (Mnem = 'JG') Or
      (Mnem = 'JGE') Or (Mnem = 'JL') Or (Mnem = 'JLE') Or
      (Mnem = 'JA') Or (Mnem = 'JB') Or (Mnem = 'JBE') Or
-     (Mnem = 'JC') Or (Mnem = 'JS') Then
+     (Mnem = 'JAE') Or (Mnem = 'JNC') Or
+     (Mnem = 'JC') Or (Mnem = 'JS') Or (Mnem = 'JNS') Then
   Begin
     If Mnem = 'JMP' Then
     Begin BcEmitB($E9); End
@@ -18955,7 +18964,9 @@ Begin { BcAssemble }
       Else If Mnem = 'JA' Then BcEmitB($87)
       Else If (Mnem = 'JB') Or (Mnem = 'JC') Then BcEmitB($82)
       Else If Mnem = 'JBE' Then BcEmitB($86)
-      Else If Mnem = 'JS' Then BcEmitB($88);
+      Else If (Mnem = 'JAE') Or (Mnem = 'JNC') Then BcEmitB($83)
+      Else If Mnem = 'JS' Then BcEmitB($88)
+      Else If Mnem = 'JNS' Then BcEmitB($89);
     End;
     BcAddFixup(BC_FIX_REL32, Op1, 0);
     BcEmitD(0);
@@ -19280,6 +19291,9 @@ Begin { BcAssemble }
   Begin
     Reg1 := BcParseReg32(Op1);
     If Reg1 >= 0 Then BcEmitB($40 + Reg1)
+    Else If HasDWordPrefix(Op1) Then
+    Begin Tmp := StripSizePrefix(Op1);
+      BcEmitB($FF); BcEmitMemRM(Tmp, 0, DataLbl, DataAdd); End
     Else If HasBytePrefix(Op1) Or StartsWithBracket(Op1) Then
     Begin Tmp := StripSizePrefix(Op1);
       BcEmitB($FE); BcEmitMemRM(Tmp, 0, DataLbl, DataAdd); End;
@@ -19289,6 +19303,9 @@ Begin { BcAssemble }
   Begin
     Reg1 := BcParseReg32(Op1);
     If Reg1 >= 0 Then BcEmitB($48 + Reg1)
+    Else If HasDWordPrefix(Op1) Then
+    Begin Tmp := StripSizePrefix(Op1);
+      BcEmitB($FF); BcEmitMemRM(Tmp, 1, DataLbl, DataAdd); End
     Else If HasBytePrefix(Op1) Or StartsWithBracket(Op1) Then
     Begin Tmp := StripSizePrefix(Op1);
       BcEmitB($FE); BcEmitMemRM(Tmp, 1, DataLbl, DataAdd); End;
@@ -19472,6 +19489,8 @@ Begin
   BcDefineDataLabel('FILE_BUFEND');  BcDataD(0);
   BcDefineDataLabel('FILE_EOFFLG'); BcDataD(0);
   BcDefineDataLabel('FILE_BYTESRD');BcDataD(0);
+  BcDefineDataLabel('FILE_WRHND');  BcDataD(0);
+  BcDefineDataLabel('FILE_WRFLG');  BcDataD(0);
   BcDefineDataLabel('STDIN_EOF');    BcDataD(0);
 
   { Variables ParamStr/ParamCount }
