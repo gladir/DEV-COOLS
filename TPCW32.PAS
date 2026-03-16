@@ -3083,8 +3083,31 @@ Begin
   RegProc('NORMVIDEO');  RegProc('WINDOW');
   RegProc('DELAY');      RegProc('SOUND');
   RegProc('NOSOUND');    RegProc('ASSIGNCRT');
+  RegProc('INSLINE');    RegProc('DELLINE');
+  RegProc('TEXTMODE');
   RegFunc('WHEREX');     RegFunc('WHEREY');
   RegFunc('KEYPRESSED'); RegFunc('READKEY');
+
+  { Constantes CRT : modes video }
+  RegConst('BW40', 0);   RegConst('CO40', 1);
+  RegConst('BW80', 2);   RegConst('CO80', 3);
+  RegConst('MONO', 7);   RegConst('FONT8X8', 256);
+  RegConst('C40', 1);    RegConst('C80', 3);
+
+  { Constantes CRT : couleurs premier plan et arriere-plan }
+  RegConst('BLACK', 0);        RegConst('BLUE', 1);
+  RegConst('GREEN', 2);        RegConst('CYAN', 3);
+  RegConst('RED', 4);          RegConst('MAGENTA', 5);
+  RegConst('BROWN', 6);        RegConst('LIGHTGRAY', 7);
+
+  { Constantes CRT : couleurs premier plan uniquement }
+  RegConst('DARKGRAY', 8);     RegConst('LIGHTBLUE', 9);
+  RegConst('LIGHTGREEN', 10);  RegConst('LIGHTCYAN', 11);
+  RegConst('LIGHTRED', 12);    RegConst('LIGHTMAGENTA', 13);
+  RegConst('YELLOW', 14);      RegConst('WHITE', 15);
+
+  { Constante CRT : clignotement }
+  RegConst('BLINK', 128);
 
   { ---------------------------------------------------------- }
   { Procedures et fonctions de l unite DOS (TODO 19)           }
@@ -4109,6 +4132,8 @@ Begin
   EmitRaw('CRT_INREC DB 20 DUP(0)');   { INPUT_RECORD buffer (20 bytes)         }
   EmitRaw('CRT_NEVT  DD 0');           { nombre d evenements console            }
   EmitRaw('CRT_NWRT  DD 0');           { nombre de cellules ecrites            }
+  EmitRaw('CRT_SCROLL DB 16 DUP(0)');  { SMALL_RECT pour ScrollConsoleScreenBuffer }
+  EmitRaw('CRT_FILL   DD 0,0');        { CHAR_INFO (char + attr) pour scroll fill  }
   EmitBlankLine;
 
   { Variables DOS (TODO 19) }
@@ -12250,6 +12275,46 @@ Begin
       Exit;
     End;
 
+    { INSLINE }
+    If Up = 'INSLINE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'INSLINE');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { DELLINE }
+    If Up = 'DELLINE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'DELLINE');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { TEXTMODE(Mode) }
+    If Up = 'TEXTMODE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'TEXTMODE');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
     { ---- TODO 19 : Procedures DOS comme identifiants ---- }
 
     { GETDATE(Year, Month, Day, DayOfWeek) }
@@ -16177,6 +16242,133 @@ Begin
   EmitInstr('PUSH 200');
   EmitInstr('PUSH DWORD PTR [EBP+8]');
   EmitInstr('CALL Beep');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_INSLINE : inserer une ligne vide a la position du curseur -- }
+  { Deplace les lignes vers le bas depuis la position courante                 }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'INSLINE');
+  EmitInstr('PUSHAD');
+  { GetConsoleScreenBufferInfo(hStdout, &CRT_CSBI) }
+  EmitInstr('PUSH OFFSET CRT_CSBI');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL GetConsoleScreenBufferInfo');
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+6]');   { curY }
+  EmitInstr('MOVZX ECX,WORD PTR [CRT_CSBI+0]');   { cols }
+  EmitInstr('DEC ECX');
+  EmitInstr('MOVZX EDX,WORD PTR [CRT_CSBI+2]');   { rows }
+  EmitInstr('DEC EDX');
+  { SMALL_RECT src: Left=0, Top=curY, Right=cols-1, Bottom=rows-1 }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+0],0');
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+2],AX');
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+4],CX');
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+6],DX');
+  { fill char: space(32) + attribute }
+  EmitInstr('MOV ECX,DWORD PTR [TEXTATTR]');
+  EmitInstr('AND ECX,0FFh');
+  EmitInstr('SHL ECX,16');
+  EmitInstr('OR ECX,32');
+  EmitInstr('MOV DWORD PTR [CRT_FILL],ECX');
+  { dest = (0, curY+1) packed as COORD: X=low word, Y=high word }
+  EmitInstr('INC AX');
+  EmitInstr('SHL EAX,16');
+  EmitInstr('MOV EBX,EAX');
+  { ScrollConsoleScreenBufferA(hOut, lpScroll, lpClip, dwDest, lpFill) }
+  EmitInstr('PUSH OFFSET CRT_FILL');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET CRT_SCROLL');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL ScrollConsoleScreenBufferA');
+  { Fill current line with spaces }
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+6]');   { curY }
+  EmitInstr('SHL EAX,16');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOVZX ECX,WORD PTR [CRT_CSBI+0]');   { cols }
+  EmitInstr('PUSH OFFSET CRT_NWRT');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH 32');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL FillConsoleOutputCharacterA');
+  { Fill attribute on current line }
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+6]');
+  EmitInstr('SHL EAX,16');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('MOVZX ECX,WORD PTR [CRT_CSBI+0]');
+  EmitInstr('PUSH OFFSET CRT_NWRT');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH DWORD PTR [TEXTATTR]');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL FillConsoleOutputAttribute');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_DELLINE : supprimer la ligne a la position du curseur ------ }
+  { Deplace les lignes vers le haut depuis la position courante+1             }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'DELLINE');
+  EmitInstr('PUSHAD');
+  EmitInstr('PUSH OFFSET CRT_CSBI');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL GetConsoleScreenBufferInfo');
+  EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+6]');   { curY }
+  EmitInstr('MOVZX ECX,WORD PTR [CRT_CSBI+0]');   { cols }
+  EmitInstr('DEC ECX');
+  EmitInstr('MOVZX EDX,WORD PTR [CRT_CSBI+2]');   { rows }
+  EmitInstr('DEC EDX');
+  { SMALL_RECT src: Left=0, Top=curY+1, Right=cols-1, Bottom=rows-1 }
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('INC EBX');
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+0],0');
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+2],BX');     { Top=curY+1 }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+4],CX');     { Right=cols-1 }
+  EmitInstr('MOV WORD PTR [CRT_SCROLL+6],DX');     { Bottom=rows-1 }
+  { fill char }
+  EmitInstr('MOV ECX,DWORD PTR [TEXTATTR]');
+  EmitInstr('AND ECX,0FFh');
+  EmitInstr('SHL ECX,16');
+  EmitInstr('OR ECX,32');
+  EmitInstr('MOV DWORD PTR [CRT_FILL],ECX');
+  { dest = (0, curY) }
+  EmitInstr('SHL EAX,16');
+  EmitInstr('MOV EBX,EAX');
+  EmitInstr('PUSH OFFSET CRT_FILL');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET CRT_SCROLL');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL ScrollConsoleScreenBufferA');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_TEXTMODE : changer le mode texte -------------------- }
+  { Parametre : [ESP+4] = mode (CO80=3, BW80=2, etc.)                 }
+  { Reset TEXTATTR, WINDMIN, WINDMAX, appelle ClrScr                  }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'TEXTMODE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EAX');
+  { Sauver le mode courant dans LASTMODE }
+  EmitInstr('MOV EAX,DWORD PTR [LASTMODE]');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('AND EAX,0FFh');                       { ignorer Font8x8 bit }
+  EmitInstr('MOV DWORD PTR [LASTMODE],EAX');
+  { Reset TEXTATTR a $07 (LightGray sur Black) }
+  EmitInstr('MOV DWORD PTR [TEXTATTR],7');
+  { Reset WINDMIN/WINDMAX }
+  EmitInstr('MOV DWORD PTR [WINDMIN],0');
+  EmitInstr('MOV DWORD PTR [WINDMAX],184Fh');      { 24*256+79 }
+  { Appliquer l attribut }
+  EmitInstr('PUSH 7');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL SetConsoleTextAttribute');
+  { Appeler ClrScr }
+  EmitInstr('CALL ' + TP_RT_PFX + 'CLRSCR');
+  EmitInstr('POP EAX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
@@ -20830,6 +21022,8 @@ Begin
   BcDefineDataLabel('CRT_INREC');  BcDataZeros(20);
   BcDefineDataLabel('CRT_NEVT');   BcDataD(0);
   BcDefineDataLabel('CRT_NWRT');   BcDataD(0);
+  BcDefineDataLabel('CRT_SCROLL'); BcDataZeros(16);
+  BcDefineDataLabel('CRT_FILL');   BcDataD(0); BcDataD(0);
 
   { Variables DOS }
   BcDefineDataLabel('DOSERROR');    BcDataD(0);
@@ -21860,6 +22054,7 @@ Begin
     MarkIf('NOSOUND','CRT'); MarkIf('ASSIGNCRT','CRT');
     MarkIf('WHEREX','CRT'); MarkIf('WHEREY','CRT');
     MarkIf('KEYPRESSED','CRT'); MarkIf('READKEY','CRT');
+    MarkIf('INSLINE','CRT'); MarkIf('DELLINE','CRT'); MarkIf('TEXTMODE','CRT');
   End
   Else If Up = 'DOS' Then
   Begin
