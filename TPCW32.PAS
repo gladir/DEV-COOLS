@@ -9585,7 +9585,7 @@ Begin
     If Up = 'GETDRIVERNAME' Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EAX,OFFSET GR_DRVNAME');
+      EmitInstr('LEA EAX,[GR_DRVNAME]');
       Exit;
     End;
 
@@ -9598,7 +9598,7 @@ Begin
         ParseExpr(PI);
         EPMatch(')');
       End;
-      EmitInstr('MOV EAX,OFFSET GR_MODNAME');
+      EmitInstr('LEA EAX,[GR_MODNAME]');
       Exit;
     End;
 
@@ -10976,7 +10976,8 @@ Begin
     { Builtins retournant une chaine }
     If (Up = 'PARAMSTR') Or (Up = 'COPY') Or (Up = 'CONCAT')
        Or (Up = 'GETENV') Or (Up = 'FEXPAND') Or (Up = 'FSEARCH')
-       Or (Up = 'ENVSTR') Then
+       Or (Up = 'ENVSTR') Or (Up = 'GRAPHERRORMSG')
+       Or (Up = 'GETDRIVERNAME') Or (Up = 'GETMODENAME') Then
     Begin
       InferExprType := TY_IDX_STRING;
       Exit;
@@ -13910,9 +13911,13 @@ Begin
         EPMatch(')');
       End;
       EmitInstr('POP ECX');  { Dy }
-      EmitInstr('ADD DWORD PTR [GR_CPY],ECX');
+      EmitInstr('MOV EAX,DWORD PTR [GR_CPY]');
+      EmitInstr('ADD EAX,ECX');
+      EmitInstr('MOV DWORD PTR [GR_CPY],EAX');
       EmitInstr('POP ECX');  { Dx }
-      EmitInstr('ADD DWORD PTR [GR_CPX],ECX');
+      EmitInstr('MOV EAX,DWORD PTR [GR_CPX]');
+      EmitInstr('ADD EAX,ECX');
+      EmitInstr('MOV DWORD PTR [GR_CPX],EAX');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -19487,15 +19492,15 @@ Begin
   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
   EmitInstr('TEST EAX,EAX');
   EmitInstr('JNZ ' + TP_RT_PFX + 'GE_E1');
-  EmitInstr('MOV EAX,OFFSET GR_ERRMSG0');
+  EmitInstr('LEA EAX,[GR_ERRMSG0]');
   EmitInstr('JMP ' + TP_RT_PFX + 'GE_DN');
   EmitLabel(TP_RT_PFX + 'GE_E1');
   EmitInstr('CMP EAX,-2');
   EmitInstr('JNE ' + TP_RT_PFX + 'GE_E2');
-  EmitInstr('MOV EAX,OFFSET GR_ERRMSG2');
+  EmitInstr('LEA EAX,[GR_ERRMSG2]');
   EmitInstr('JMP ' + TP_RT_PFX + 'GE_DN');
   EmitLabel(TP_RT_PFX + 'GE_E2');
-  EmitInstr('MOV EAX,OFFSET GR_ERRMSG1');
+  EmitInstr('LEA EAX,[GR_ERRMSG1]');
   EmitLabel(TP_RT_PFX + 'GE_DN');
   EmitInstr('POP EBP');
   EmitInstr('RET');
