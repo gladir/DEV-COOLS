@@ -2203,20 +2203,44 @@ Procedure EmitExtWords(Const Op: TOperand; OpSize: Integer);
 { Emettre les mots d'extension d'un operande dans la section courante.
   Appele apres l'emission du mot d'instruction principal.
   Les mots d'extension dependent du mode d'adressage :
-  - d16(An), d16(PC) : 1 mot d'extension (deplacement 16 bits)
-  - d8(An,Xn), d8(PC,Xn) : 1 mot d'extension (brief extension word)
+  - d16(An) : 1 mot d'extension (deplacement 16 bits direct)
+  - d16(PC) : 1 mot d'extension (deplacement 16 bits PC-relatif)
+  - d8(An,Xn) : 1 mot d'extension (brief extension word, disp direct)
+  - d8(PC,Xn) : 1 mot d'extension (brief extension word, disp PC-relatif)
   - xxx.W : 1 mot d'extension (adresse 16 bits)
   - xxx.L : 2 mots d'extension (adresse 32 bits)
   - #imm : 1 mot (.B/.W) ou 2 mots (.L) d'extension }
+Var
+ PCDisp: LongInt;
+ ExtW: Integer;
 Begin
  Case Op.Mode of
-  AM_ADDR_IND_DISP,
-  AM_PC_DISP:
+  AM_ADDR_IND_DISP:
    Emit16(Word(Op.Disp and $FFFF));
 
-  AM_ADDR_IND_IDX,
-  AM_PC_IDX:
+  AM_PC_DISP:
+  Begin
+   { Le deplacement PC-relatif = adresse_cible - PC_extension_word.
+     PC = Origin + CurAddr de la section courante (position du mot emis). }
+   PCDisp := Op.Disp -
+     (Sections[CurSection].Origin + Sections[CurSection].CurAddr);
+   Emit16(Word(PCDisp and $FFFF));
+  End;
+
+  AM_ADDR_IND_IDX:
    Emit16(Word(EncodeExtWordIdx(Op)));
+
+  AM_PC_IDX:
+  Begin
+   { Pour d8(PC,Xn), le deplacement 8 bits est PC-relatif.
+     On ajuste Op.Disp avant d'encoder le brief extension word. }
+   PCDisp := Op.Disp -
+     (Sections[CurSection].Origin + Sections[CurSection].CurAddr);
+   ExtW := EncodeExtWordIdx(Op);
+   { Remplacer les bits 7-0 par le deplacement PC-relatif }
+   ExtW := (ExtW and $FF00) or (PCDisp and $FF);
+   Emit16(Word(ExtW));
+  End;
 
   AM_ABS_SHORT:
    Emit16(Word(Op.Disp and $FFFF));
