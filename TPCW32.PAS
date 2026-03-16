@@ -3037,8 +3037,10 @@ Begin
   RegProc('ASSIGN');     RegProc('RESET');
   RegProc('REWRITE');    RegProc('CLOSE');
   RegFunc('EOF');        RegFunc('EOLN');
+  RegFunc('SEEKEOF');    RegFunc('SEEKEOLN');
   RegFunc('IORESULT');   RegProc('SEEK');
   RegFunc('FILEPOS');    RegFunc('FILESIZE');
+  RegProc('TRUNCATE');
   RegProc('RENAME');     RegProc('ERASE');
   RegProc('APPEND');     RegProc('FLUSH');
   RegProc('SETTEXTBUF');
@@ -3951,6 +3953,8 @@ Begin
   EmitRaw('EXTRN _DeleteFileA@4:NEAR');
   EmitRaw('EXTRN _MoveFileA@8:NEAR');
   EmitRaw('EXTRN _FlushFileBuffers@4:NEAR');
+  EmitRaw('EXTRN _SetEndOfFile@4:NEAR');
+  EmitRaw('EXTRN _GetLastError@0:NEAR');
   EmitRaw('EXTRN _CreateDirectoryA@8:NEAR');
   EmitRaw('EXTRN _RemoveDirectoryA@4:NEAR');
   EmitRaw('EXTRN _SetCurrentDirectoryA@4:NEAR');
@@ -4130,6 +4134,7 @@ Begin
   EmitRaw('FILE_BYTESRD DD 0');            { octets lus par ReadFile          }
   EmitRaw('FILE_WRHND   DD 0');            { handle ecriture fichier courant  }
   EmitRaw('FILE_WRFLG   DD 0');            { 1 si ecriture fichier en cours   }
+  EmitRaw('FILE_IOERR   DD 0');            { derniere erreur I/O (IoResult)   }
   EmitRaw('STDIN_EOF    DD 0');            { 1 si EOF stdin (Ctrl+Z)          }
   EmitBlankLine;
 
@@ -7935,7 +7940,7 @@ Begin
       Exit;
     End;
 
-    { EOLN / EOLN(f) : stub, retourne False }
+    { EOLN / EOLN(f) : tester si le caractere courant est CR/LF }
     If Up = 'EOLN' Then
     Begin
       Inc(EP);
@@ -7943,18 +7948,142 @@ Begin
          (TokenPool[EP].Val = '(') Then
       Begin
         Inc(EP);
-        If Not EPAtEnd Then Inc(EP);
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'EOLN_FILE');
+          EmitInstr('ADD ESP,4');
+        End
+        Else
+        Begin
+          { EOLN(Input) ou pas d argument avec parenthese }
+          If Not EPAtEnd Then Inc(EP);
+          EmitInstr('CALL ' + TP_RT_PFX + 'EOLN_STDIN');
+        End;
         EPMatch(')');
+      End
+      Else
+      Begin
+        { EOLN sans argument = EOLN(Input) }
+        EmitInstr('CALL ' + TP_RT_PFX + 'EOLN_STDIN');
       End;
-      EmitInstr('XOR EAX,EAX');  { retourne False }
       Exit;
     End;
 
-    { IORESULT : retourne la derniere erreur I/O (stub=0) }
+    { SEEKEOF / SEEKEOF(f) : sauter blancs/tabs puis tester EOF }
+    If Up = 'SEEKEOF' Then
+    Begin
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '(') Then
+      Begin
+        Inc(EP);
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'SEEKEOF_FILE');
+          EmitInstr('ADD ESP,4');
+        End
+        Else
+        Begin
+          If Not EPAtEnd Then Inc(EP);
+          EmitInstr('MOV EAX,DWORD PTR [STDIN_EOF]');
+        End;
+        EPMatch(')');
+      End
+      Else
+      Begin
+        EmitInstr('MOV EAX,DWORD PTR [STDIN_EOF]');
+      End;
+      Exit;
+    End;
+
+    { SEEKEOLN / SEEKEOLN(f) : sauter blancs/tabs puis tester EOL }
+    If Up = 'SEEKEOLN' Then
+    Begin
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '(') Then
+      Begin
+        Inc(EP);
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'SEEKEOLN_FILE');
+          EmitInstr('ADD ESP,4');
+        End
+        Else
+        Begin
+          If Not EPAtEnd Then Inc(EP);
+          EmitInstr('XOR EAX,EAX');
+        End;
+        EPMatch(')');
+      End
+      Else
+      Begin
+        EmitInstr('XOR EAX,EAX');
+      End;
+      Exit;
+    End;
+
+    { IORESULT : retourne et remet a zero la derniere erreur I/O }
     If Up = 'IORESULT' Then
     Begin
       Inc(EP);
-      EmitInstr('XOR EAX,EAX');  { toujours 0 pour l instant }
+      EmitInstr('MOV EAX,DWORD PTR [FILE_IOERR]');
+      EmitInstr('MOV DWORD PTR [FILE_IOERR],0');
+      Exit;
+    End;
+
+    { FILEPOS(f) : retourne la position courante dans un fichier }
+    If Up = 'FILEPOS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('MOV EAX,DWORD PTR [EAX]');  { handle fichier }
+        EPMatch(')');
+      End;
+      { SetFilePointer(handle, 0, NULL, FILE_CURRENT=1) -> retourne position }
+      EmitInstr('PUSH 1');            { dwMoveMethod = FILE_CURRENT }
+      EmitInstr('PUSH 0');            { lpDistanceToMoveHigh       }
+      EmitInstr('PUSH 0');            { lDistanceToMove = 0        }
+      EmitInstr('PUSH EAX');          { hFile                      }
+      EmitInstr('CALL SetFilePointer');
+      { EAX = position courante }
+      Exit;
+    End;
+
+    { FILESIZE(f) : retourne la taille du fichier }
+    If Up = 'FILESIZE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('MOV EAX,DWORD PTR [EAX]');  { handle fichier }
+        EPMatch(')');
+      End;
+      { GetFileSize(handle, NULL) -> retourne taille }
+      EmitInstr('PUSH 0');            { lpFileSizeHigh }
+      EmitInstr('PUSH EAX');          { hFile          }
+      EmitInstr('CALL GetFileSize');
+      { EAX = taille du fichier }
       Exit;
     End;
 
@@ -11920,6 +12049,29 @@ Begin
       EmitInstr('PUSH ECX');          { lDistanceToMove          }
       EmitInstr('PUSH EBX');          { hFile                    }
       EmitInstr('CALL SetFilePointer');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { TRUNCATE(f) : tronquer un fichier a la position courante }
+    If Up = 'TRUNCATE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('MOV EAX,DWORD PTR [EAX]');  { handle fichier }
+        EPMatch(')');
+      End;
+      { SetEndOfFile(handle) }
+      EmitInstr('PUSH EAX');          { hFile }
+      EmitInstr('CALL SetEndOfFile');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -16097,6 +16249,205 @@ Begin
   EmitInstr('POPAD');
   EmitInstr('RET');
 
+  { ------ _TPRT_EOLN_FILE : tester si char courant est CR/LF --- }
+  { [ESP+4]=adresse variable fichier                                }
+  { Retourne EAX=1 si EOL, EAX=0 sinon                             }
+  { Verifie le buffer de lecture - le prochain caractere est CR/LF  }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'EOLN_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');    { adresse variable fichier }
+  { Verifier s il y a des donnees en buffer }
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BUFPOS]');
+  EmitInstr('CMP EAX,DWORD PTR [FILE_BUFEND]');
+  EmitInstr('JAE ' + TP_RT_PFX + 'EN_RD');
+  { Il y a des donnees : tester le caractere courant }
+  EmitInstr('LEA EDX,[FILE_RDBUF]');
+  EmitInstr('ADD EDX,EAX');
+  EmitInstr('MOVZX EAX,BYTE PTR [EDX]');
+  EmitInstr('CMP AL,13');                      { CR ? }
+  EmitInstr('JE ' + TP_RT_PFX + 'EN_YES');
+  EmitInstr('CMP AL,10');                      { LF ? }
+  EmitInstr('JE ' + TP_RT_PFX + 'EN_YES');
+  EmitInstr('XOR EAX,EAX');                   { pas EOL }
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'EN_RD');
+  { Buffer vide : si EOF => EOL=true, sinon lire }
+  EmitInstr('CMP DWORD PTR [FILE_EOFFLG],1');
+  EmitInstr('JE ' + TP_RT_PFX + 'EN_YES');
+  { Remplir le buffer }
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET FILE_BYTESRD');
+  EmitInstr('PUSH 256');
+  EmitInstr('PUSH OFFSET FILE_RDBUF');
+  EmitInstr('PUSH DWORD PTR [EBX]');           { file handle }
+  EmitInstr('CALL ReadFile');
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'EN_EOF');
+  EmitInstr('MOV DWORD PTR [FILE_BUFEND],EAX');
+  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
+  { Tester le premier caractere }
+  EmitInstr('MOVZX EAX,BYTE PTR [FILE_RDBUF]');
+  EmitInstr('CMP AL,13');
+  EmitInstr('JE ' + TP_RT_PFX + 'EN_YES');
+  EmitInstr('CMP AL,10');
+  EmitInstr('JE ' + TP_RT_PFX + 'EN_YES');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'EN_EOF');
+  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
+  EmitLabel(TP_RT_PFX + 'EN_YES');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_EOLN_STDIN : tester EOL sur stdin -------------- }
+  { Retourne EAX=1 si stdin EOF ou dernier char CR/LF, 0 sinon    }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'EOLN_STDIN');
+  EmitInstr('MOV EAX,DWORD PTR [STDIN_EOF]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'ES_YES');
+  { Pas EOF stdin : pour l instant retourne False }
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'ES_YES');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SEEKEOF_FILE : sauter blancs puis tester EOF --- }
+  { [ESP+4]=adresse variable fichier                                }
+  { Retourne EAX=1 si EOF apres blancs, EAX=0 sinon                }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SEEKEOF_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitLabel(TP_RT_PFX + 'SE_LP');
+  { Verifier le buffer }
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BUFPOS]');
+  EmitInstr('CMP EAX,DWORD PTR [FILE_BUFEND]');
+  EmitInstr('JAE ' + TP_RT_PFX + 'SE_RD');
+  { Tester le caractere courant }
+  EmitInstr('LEA ESI,[FILE_RDBUF]');
+  EmitInstr('ADD ESI,EAX');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('CMP AL,32');                     { espace }
+  EmitInstr('JE ' + TP_RT_PFX + 'SE_SK');
+  EmitInstr('CMP AL,9');                      { tab }
+  EmitInstr('JE ' + TP_RT_PFX + 'SE_SK');
+  EmitInstr('CMP AL,13');                     { CR }
+  EmitInstr('JE ' + TP_RT_PFX + 'SE_SK');
+  EmitInstr('CMP AL,10');                     { LF }
+  EmitInstr('JE ' + TP_RT_PFX + 'SE_SK');
+  { Caractere non-blanc : pas EOF }
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SE_SK');
+  EmitInstr('INC DWORD PTR [FILE_BUFPOS]');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SE_LP');
+  EmitLabel(TP_RT_PFX + 'SE_RD');
+  { Buffer vide : verifier EOF }
+  EmitInstr('CMP DWORD PTR [FILE_EOFFLG],1');
+  EmitInstr('JE ' + TP_RT_PFX + 'SE_YES');
+  { Remplir le buffer }
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET FILE_BYTESRD');
+  EmitInstr('PUSH 256');
+  EmitInstr('PUSH OFFSET FILE_RDBUF');
+  EmitInstr('PUSH DWORD PTR [EBX]');
+  EmitInstr('CALL ReadFile');
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SE_SET');
+  EmitInstr('MOV DWORD PTR [FILE_BUFEND],EAX');
+  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SE_LP');
+  EmitLabel(TP_RT_PFX + 'SE_SET');
+  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
+  EmitLabel(TP_RT_PFX + 'SE_YES');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SEEKEOLN_FILE : sauter blancs puis tester EOL -- }
+  { [ESP+4]=adresse variable fichier                                }
+  { Retourne EAX=1 si EOL apres blancs, EAX=0 sinon                }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SEEKEOLN_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitLabel(TP_RT_PFX + 'SL_LP');
+  { Verifier le buffer }
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BUFPOS]');
+  EmitInstr('CMP EAX,DWORD PTR [FILE_BUFEND]');
+  EmitInstr('JAE ' + TP_RT_PFX + 'SL_RD');
+  { Tester le caractere courant }
+  EmitInstr('LEA ESI,[FILE_RDBUF]');
+  EmitInstr('ADD ESI,EAX');
+  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
+  EmitInstr('CMP AL,32');                     { espace }
+  EmitInstr('JE ' + TP_RT_PFX + 'SL_SK');
+  EmitInstr('CMP AL,9');                      { tab }
+  EmitInstr('JE ' + TP_RT_PFX + 'SL_SK');
+  { Pas espace/tab : est-ce CR/LF ? }
+  EmitInstr('CMP AL,13');                     { CR }
+  EmitInstr('JE ' + TP_RT_PFX + 'SL_YES');
+  EmitInstr('CMP AL,10');                     { LF }
+  EmitInstr('JE ' + TP_RT_PFX + 'SL_YES');
+  { Caractere normal : pas EOLN }
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SL_SK');
+  EmitInstr('INC DWORD PTR [FILE_BUFPOS]');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SL_LP');
+  EmitLabel(TP_RT_PFX + 'SL_RD');
+  { Buffer vide : si EOF => EOL=true }
+  EmitInstr('CMP DWORD PTR [FILE_EOFFLG],1');
+  EmitInstr('JE ' + TP_RT_PFX + 'SL_YES');
+  { Remplir le buffer }
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET FILE_BYTESRD');
+  EmitInstr('PUSH 256');
+  EmitInstr('PUSH OFFSET FILE_RDBUF');
+  EmitInstr('PUSH DWORD PTR [EBX]');
+  EmitInstr('CALL ReadFile');
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SL_SET');
+  EmitInstr('MOV DWORD PTR [FILE_BUFEND],EAX');
+  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SL_LP');
+  EmitLabel(TP_RT_PFX + 'SL_SET');
+  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
+  EmitLabel(TP_RT_PFX + 'SL_YES');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
   { ================================================================ }
   { Appele une seule fois, remplit PARAM_PTRS et PARAM_ARGC/COUNT }
   { Gere les guillemets doubles pour les arguments avec espaces   }
@@ -18783,6 +19134,7 @@ Begin
     (U = 'FLUSHFILEBUFFERS') Or (U = 'LSTRLENA') Or
     (U = 'LSTRCPYA') Or (U = 'LSTRCATA') Or
     (U = 'LSTRCMPA') Or (U = 'LSTRCMPIA') Or
+    (U = 'GETLASTERROR') Or
     (U = 'MESSAGEBOXA');
 End;
 
@@ -19760,6 +20112,7 @@ Begin
   BcDefineDataLabel('FILE_BYTESRD');BcDataD(0);
   BcDefineDataLabel('FILE_WRHND');  BcDataD(0);
   BcDefineDataLabel('FILE_WRFLG');  BcDataD(0);
+  BcDefineDataLabel('FILE_IOERR');  BcDataD(0);
   BcDefineDataLabel('STDIN_EOF');    BcDataD(0);
 
   { Variables ParamStr/ParamCount }
