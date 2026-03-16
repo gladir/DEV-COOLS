@@ -3949,6 +3949,8 @@ Begin
   EmitRaw('EXTRN _SetFilePointer@16:NEAR');
   EmitRaw('EXTRN _GetFileSize@8:NEAR');
   EmitRaw('EXTRN _DeleteFileA@4:NEAR');
+  EmitRaw('EXTRN _MoveFileA@8:NEAR');
+  EmitRaw('EXTRN _FlushFileBuffers@4:NEAR');
   EmitRaw('EXTRN _CreateDirectoryA@8:NEAR');
   EmitRaw('EXTRN _RemoveDirectoryA@4:NEAR');
   EmitRaw('EXTRN _SetCurrentDirectoryA@4:NEAR');
@@ -4120,6 +4122,7 @@ Begin
   { Variables File I/O }
   EmitComment('--- Variables File I/O (lecture/ecriture fichier texte) ---');
   EmitRaw('FILE_NAMEBUF DB 260 DUP(0)');  { buffer nom fichier (MAX_PATH)    }
+  EmitRaw('FILE_RENBUF  DB 260 DUP(0)');  { buffer nouveau nom (Rename)      }
   EmitRaw('FILE_RDBUF   DB 256 DUP(0)');  { buffer lecture fichier           }
   EmitRaw('FILE_BUFPOS  DD 0');            { position courante dans buffer    }
   EmitRaw('FILE_BUFEND  DD 0');            { octets valides dans buffer       }
@@ -11850,6 +11853,102 @@ Begin
       Exit;
     End;
 
+    { RENAME(f, newname) : renommer fichier }
+    If Up = 'RENAME' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        { f : variable fichier - skip, FILE_NAMEBUF has the name from Assign }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+          Inc(EP);
+        EPMatch(',');
+        { newname : expression chaine }
+        ParseExpr(PI);
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');   { Pascal -> ASCIIZ }
+        EmitInstr('PUSH EAX');    { save new name ptr }
+        EPMatch(')');
+      End;
+      { Copier le nouveau nom dans FILE_RENBUF }
+      EmitInstr('POP ESI');                  { source = new name ASCIIZ }
+      EmitInstr('LEA EDI,[FILE_RENBUF]');
+      EmitInstr('MOV ECX,259');
+      EmitLabel(TP_RT_PFX + 'REN_CP');
+      EmitInstr('LODSB');
+      EmitInstr('STOSB');
+      EmitInstr('TEST AL,AL');
+      EmitInstr('JZ ' + TP_RT_PFX + 'REN_GO');
+      EmitInstr('DEC ECX');
+      EmitInstr('JNZ ' + TP_RT_PFX + 'REN_CP');
+      EmitLabel(TP_RT_PFX + 'REN_GO');
+      { MoveFileA(FILE_NAMEBUF, FILE_RENBUF) }
+      EmitInstr('PUSH OFFSET FILE_RENBUF');
+      EmitInstr('PUSH OFFSET FILE_NAMEBUF');
+      EmitInstr('CALL MoveFileA');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { SEEK(f, pos) : positionner dans un fichier binaire }
+    If Up = 'SEEK' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        { f : variable fichier }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('MOV EAX,DWORD PTR [EAX]');  { handle fichier }
+        EmitInstr('PUSH EAX');                  { save handle }
+        EPMatch(',');
+        { pos : expression entiere }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');                  { save position }
+        EPMatch(')');
+      End;
+      { SetFilePointer(handle, pos, NULL, FILE_BEGIN=0) }
+      EmitInstr('POP ECX');           { position }
+      EmitInstr('POP EBX');           { handle   }
+      EmitInstr('PUSH 0');            { dwMoveMethod = FILE_BEGIN }
+      EmitInstr('PUSH 0');            { lpDistanceToMoveHigh     }
+      EmitInstr('PUSH ECX');          { lDistanceToMove          }
+      EmitInstr('PUSH EBX');          { hFile                    }
+      EmitInstr('CALL SetFilePointer');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { FLUSH(f) : vider les tampons d un fichier }
+    If Up = 'FLUSH' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        { f : variable fichier }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('MOV EAX,DWORD PTR [EAX]');  { handle fichier }
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL FlushFileBuffers');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
     { BLOCKWRITE(f, buf, count [, result]) }
     If Up = 'BLOCKWRITE' Then
     Begin
@@ -18638,6 +18737,7 @@ Begin
     (U = 'HEAPFREE') Or (U = 'CREATEFILEA') Or
     (U = 'CLOSEHANDLE') Or (U = 'SETFILEPOINTER') Or
     (U = 'GETFILESIZE') Or (U = 'DELETEFILEA') Or
+    (U = 'MOVEFILEA') Or (U = 'FLUSHFILEBUFFERS') Or
     (U = 'CREATEDIRECTORYA') Or (U = 'REMOVEDIRECTORYA') Or
     (U = 'SETCURRENTDIRECTORYA') Or (U = 'GETCURRENTDIRECTORYA') Or
     (U = 'GETTICKCOUNT') Or (U = 'SLEEP') Or
@@ -19652,6 +19752,7 @@ Begin
 
   { Variables File I/O }
   BcDefineDataLabel('FILE_NAMEBUF'); BcDataZeros(260);
+  BcDefineDataLabel('FILE_RENBUF');  BcDataZeros(260);
   BcDefineDataLabel('FILE_RDBUF');   BcDataZeros(256);
   BcDefineDataLabel('FILE_BUFPOS');  BcDataD(0);
   BcDefineDataLabel('FILE_BUFEND');  BcDataD(0);
