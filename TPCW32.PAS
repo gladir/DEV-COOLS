@@ -4141,6 +4141,8 @@ Begin
   EmitRaw('FILE_IOERR   DD 0');            { derniere erreur I/O (IoResult)   }
   EmitRaw('STDIN_EOF    DD 0');            { 1 si EOF stdin (Ctrl+Z)          }
   EmitRaw('DIR_NAMEBUF  DB 260 DUP(0)');  { buffer repertoire (MAX_PATH)     }
+  EmitRaw('RAND_SEED    DD 12345');          { graine Random (LCG)             }
+  EmitRaw('FP_TMP       DQ 0');              { buffer temporaire FPU 8 octets  }
   EmitBlankLine;
 
   { Variables ParamStr/ParamCount }
@@ -7892,6 +7894,138 @@ Begin
         ParseExpr(PI);
         EmitInstr('XCHG AL,AH');
         EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- Fonctions math/trig : stubs en mode entier, FPU a venir --- }
+
+    { SQRT(x) -> racine carree via FPU }
+    If Up = 'SQRT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SQRT');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { SIN(x) -> sinus via FPU }
+    If Up = 'SIN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SIN');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { COS(x) -> cosinus via FPU }
+    If Up = 'COS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'COS');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { ARCTAN(x) -> arc tangente via FPU }
+    If Up = 'ARCTAN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'ARCTAN');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { EXP(x) -> exponentielle via FPU }
+    If Up = 'EXP' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'EXP');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { LN(x) -> logarithme neperien via FPU }
+    If Up = 'LN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'LN');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { FRAC(x) -> partie fractionnaire (stub: retourne 0 en mode entier) }
+    If Up = 'FRAC' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitComment('FRAC() stub: retourne 0 en mode entier');
+        EmitInstr('XOR EAX,EAX');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { INT(x) -> partie entiere (en mode entier: identite) }
+    If Up = 'INT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        { En mode entier, Int(x) = x }
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { RANDOM / RANDOM(max) -> nombre aleatoire }
+    If Up = 'RANDOM' Then
+    Begin
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '(') Then
+      Begin
+        Inc(EP);  { ( }
+        ParseExpr(PI);  { max dans EAX }
+        EPMatch(')');
+        EmitInstr('PUSH EAX');    { sauver max }
+        EmitInstr('CALL ' + TP_RT_PFX + 'RANDOM');
+        EmitInstr('POP ECX');     { recuperer max }
+        EmitInstr('XOR EDX,EDX');
+        EmitInstr('DIV ECX');     { EAX / max }
+        EmitInstr('MOV EAX,EDX');  { reste = resultat }
+      End
+      Else
+      Begin
+        { Random sans argument -> Random(MaxInt) }
+        EmitInstr('CALL ' + TP_RT_PFX + 'RANDOM');
       End;
       Exit;
     End;
@@ -11782,6 +11916,17 @@ Begin
     Begin
       Inc(EP);
       EmitInstr('JMP ' + RetLbl);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { RANDOMIZE : initialiser la graine aleatoire }
+    If Up = 'RANDOMIZE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'RANDOMIZE');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -17043,6 +17188,99 @@ Begin
   EmitInstr('LEA EAX,[STRTMP]');
   EmitInstr('MOV BYTE PTR [EAX],0');
   EmitInstr('RET');
+
+  { ------ _TPRT_SQRT : racine carree entiere ---------- }
+  { Entree : EAX = valeur. Sortie : EAX = sqrt(EAX)     }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SQRT');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SQ_D');
+  EmitInstr('MOV ECX,EAX');       { n = valeur }
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('SHR EAX,1');         { x = n/2 (approximation initiale) }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SQ_L');
+  EmitInstr('MOV EAX,1');         { si n=1 -> sqrt=1 }
+  EmitInstr('JMP ' + TP_RT_PFX + 'SQ_D');
+  EmitLabel(TP_RT_PFX + 'SQ_L');
+  { Newton-Raphson : x = (x + n/x) / 2 }
+  EmitInstr('MOV EBX,EAX');       { sauver x_old }
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,ECX');       { EAX = n }
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('DIV EBX');           { EAX = n/x_old }
+  EmitInstr('POP EDX');           { EDX = x_old }
+  EmitInstr('ADD EAX,EDX');       { EAX = x_old + n/x_old }
+  EmitInstr('SHR EAX,1');         { EAX = (x_old + n/x_old) / 2 }
+  EmitInstr('CMP EAX,EBX');
+  EmitInstr('JB ' + TP_RT_PFX + 'SQ_L'); { if x < x_old, continue }
+  EmitInstr('MOV EAX,EBX');       { retourner x_old (converge) }
+  EmitLabel(TP_RT_PFX + 'SQ_D');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SIN : stub sinus (retourne 0) ---------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SIN');
+  EmitComment('sin() stub : retourne 0 en mode entier');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_COS : stub cosinus (retourne 1) ---------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'COS');
+  EmitComment('cos() stub : retourne 1 en mode entier');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('RET');
+
+  { ------ _TPRT_ARCTAN : stub arc tangente (retourne 0) ---------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'ARCTAN');
+  EmitComment('arctan() stub : retourne 0 en mode entier');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_EXP : stub exponentielle (retourne 1) ---------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'EXP');
+  EmitComment('exp() stub : retourne 1 en mode entier');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('RET');
+
+  { ------ _TPRT_LN : stub logarithme (retourne 0) ---------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'LN');
+  EmitComment('ln() stub : retourne 0 en mode entier');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_RANDOM : generateur pseudo-aleatoire LCG ------- }
+  { Sortie : EAX = nouveau nombre aleatoire                       }
+  { Constantes LCG de glibc : a=1103515245, c=12345               }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'RANDOM');
+  EmitInstr('MOV EAX,DWORD PTR [RAND_SEED]');
+  EmitInstr('IMUL EAX,EAX,1103515245');
+  EmitInstr('ADD EAX,12345');
+  EmitInstr('MOV DWORD PTR [RAND_SEED],EAX');
+  EmitInstr('SHR EAX,16');         { prendre les bits de poids fort }
+  EmitInstr('AND EAX,7FFFh');      { masquer a 15 bits (0..32767) }
+  EmitInstr('RET');
+
+  { ------ _TPRT_RANDOMIZE : initialiser graine avec GetTickCount --- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'RANDOMIZE');
+  EmitInstr('PUSHAD');
+  EmitInstr('CALL GetTickCount');
+  EmitInstr('MOV DWORD PTR [RAND_SEED],EAX');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
 End;
 
 { ============================================================ }
@@ -20618,6 +20856,8 @@ Begin
   BcDefineDataLabel('FILE_IOERR');  BcDataD(0);
   BcDefineDataLabel('STDIN_EOF');    BcDataD(0);
   BcDefineDataLabel('DIR_NAMEBUF');   For I := 1 To 260 Do BcDataB(0);
+  BcDefineDataLabel('RAND_SEED');   BcDataD(12345);
+  BcDefineDataLabel('FP_TMP');      BcDataD(0); BcDataD(0); { 8 bytes }
 
   { Variables ParamStr/ParamCount }
   BcDefineDataLabel('PARAM_PARSED'); BcDataD(0);
