@@ -11859,7 +11859,7 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        { f : variable fichier - skip, FILE_NAMEBUF has the name from Assign }
+        { f : variable fichier - ignoree, FILE_NAMEBUF contient le nom depuis Assign }
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
           Inc(EP);
         EPMatch(',');
