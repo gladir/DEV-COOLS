@@ -606,7 +606,7 @@
               _AWRT_PRINTF    : formater et afficher
               _AWRT_ERROR     : afficher erreur + ExitProcess(1)
 
-  TODO 24 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE
+  TODO 24 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE [IMPLEMENTE]
             Procedure ParseStatement
             Dispatcher selon le token courant :
               if          -> ParseIf

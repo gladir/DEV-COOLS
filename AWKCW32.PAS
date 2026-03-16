@@ -598,7 +598,7 @@
               _AWRT_PRINTF    : formater et afficher
               _AWRT_ERROR     : afficher erreur + ExitProcess(1)
 
-  TODO 24 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE
+  TODO 24 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE [IMPLEMENTE]
             Procedure ParseStatement
             Dispatcher selon le token courant :
               if          -> ParseIf
@@ -1109,6 +1109,9 @@ Var
   { Point d entree et helpers runtime (TODO 23) }
   RuntimeHelpCount : Integer;  { nombre de helpers runtime emis          }
 
+  { Dispatcher et boucle principale (TODO 24) }
+  DispatchCount  : Integer;    { nombre d instructions exit dispatchees  }
+
 Const
 {$IFDEF FPC}
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
@@ -1474,6 +1477,7 @@ Begin
   WriteLn('Getline ops      : ', GetlineCount);
   WriteLn('Builtin var init : ', BuiltinVarCount);
   WriteLn('Runtime helpers  : ', RuntimeHelpCount);
+  WriteLn('Exit statements  : ', DispatchCount);
   WriteLn('Code gen ops     : ', GenCount);
   WriteLn('Litteraux chaine : ', StringLitCount);
   WriteLn('Scope depth      : ', ScopeDepth);
@@ -5114,14 +5118,26 @@ Begin
         WarnMsg('return en dehors d''une fonction');
       Exit;
     End;
-    { exit : parser une expression optionnelle }
+    { exit : parser une expression optionnelle et generer code sortie }
     If TK = KW_EXIT Then
     Begin
       ParserAdvance;
+      Inc(DispatchCount);
+      EmitComment('--- exit ---');
       If (CurToken.Kind <> TK_NEWLINE) And
          (CurToken.Kind <> TK_EOF) And
          Not IsPunct(';') And Not IsPunct('}') Then
+      Begin
         D := ParseExpr;
+        { EAX contient le code de sortie }
+        Emit('        MOV     DWORD PTR [' + AW_RT_PFX + 'EXITCODE], EAX');
+      End
+      Else
+      Begin
+        { exit sans expression : code 0 }
+        Emit('        MOV     DWORD PTR [' + AW_RT_PFX + 'EXITCODE], 0');
+      End;
+      Emit('        JMP     ' + AW_LBL_PFX + 'exit');
       Exit;
     End;
     { delete : parser ident[expr] (TODO 16 : code gen HASH_DEL/HASH_CLEAR) }
@@ -6214,6 +6230,7 @@ Begin
   Emit(AW_RT_PFX + 'BYTESWR   DD 0');
   Emit(AW_RT_PFX + 'BYTESRD   DD 0');
   Emit(AW_RT_PFX + 'SEED      DD 12345');
+  Emit(AW_RT_PFX + 'EXITCODE  DD 0');
   EmitBlank;
 End;
 
@@ -6316,6 +6333,12 @@ Begin
   Emit('        JMP     ' + AW_LBL_PFX + 'loop');
   EmitBlank;
 
+  { Label exit : sauvegarde du code de sortie et saut vers END (TODO 24) }
+  EmitLabel(AW_LBL_PFX + 'exit');
+  EmitComment('--- exit statement -> run END rules then quit ---');
+  Emit('        JMP     ' + AW_LBL_PFX + 'eof');
+  EmitBlank;
+
   { EOF : executer les regles END }
   EmitLabel(AW_LBL_PFX + 'eof');
   EmitComment('--- Executer les regles END ---');
@@ -6326,8 +6349,8 @@ Begin
   End;
   EmitBlank;
 
-  { Terminer le processus }
-  Emit('        PUSH    0');
+  { Terminer le processus avec le code de sortie }
+  Emit('        PUSH    DWORD PTR [' + AW_RT_PFX + 'EXITCODE]');
   Emit('        CALL    _ExitProcess@4');
   EmitBlank;
 End;
@@ -7244,7 +7267,20 @@ Begin
 End;
 
 { ============================================================ }
-{ PROCEDURE RUN (STUB - sera complete par les TODOs suivants)  }
+{ TODO 24 - PARSEUR : DISPATCHER ET BOUCLE PRINCIPALE          }
+{           ParseStatement complete, ParseBlock, Run finalisee }
+{ ============================================================ }
+
+{ ---- ParseStatement ----------------------------------------- }
+{ Le dispatcher de ParseStatement (lignes 5003+) gere tous      }
+{ les mots-cles AWK : if/while/for/do/break/continue/return/   }
+{ exit/delete/print/printf/getline/next/nextfile, les blocs,    }
+{ les instructions vides, et les expressions arbitraires.        }
+{ Le traitement de exit genere MOV EXITCODE + JMP _AWL_exit.    }
+{ ParseBlock gere les blocs entre accolades et delegation.       }
+
+{ ============================================================ }
+{ PROCEDURE RUN                                                }
 { ============================================================ }
 
 Procedure Run;
@@ -7286,6 +7322,7 @@ Begin
   BuiltinVarCount := 0;
   EmitHeaderDone := False;
   RuntimeHelpCount := 0;
+  DispatchCount := 0;
   HasPushedBack := False;
   LexInit;
   { Mode debug : afficher tous les tokens }
@@ -7345,7 +7382,8 @@ Begin
             StringLitCount, ' litteral(aux) chaine');
     WriteLn('AWKCW32: scope depth=', ScopeDepth, ', loop depth=', LoopDepth);
     WriteLn('AWKCW32: ', RuntimeHelpCount, ' helper(s) runtime emis');
-    WriteLn('AWKCW32: TODO 24..25 non encore implementes.');
+    WriteLn('AWKCW32: ', DispatchCount, ' instruction(s) exit');
+    WriteLn('AWKCW32: TODO 25 non encore implemente.');
     WriteLn('AWKCW32: sortie prevue: ', Opts.OutFile);
   End;
   LexClose;
