@@ -704,7 +704,7 @@ Const
   QPU_HDR_FIXED  = $20;     { partie fixe de l en-tete QPU (32 octets) }
 
   { Table des tailles de types Turbo Pascal (Win32, 32 bits) }
-  MAX_TP_TYPE_SIZES = 18;
+  MAX_TP_TYPE_SIZES = 24;
 
 Type
   { Types d entrees dans le pool de donnees }
@@ -2081,7 +2081,14 @@ Const
     (Name: 'PCHAR';     Size: 4),   { pointeur vers Char                }
     (Name: 'TEXT';      Size: 4),   { handle fichier texte              }
     (Name: 'FILE';      Size: 4),   { handle fichier                    }
-    (Name: 'LONGWORD';  Size: 4)    { mot 32 bits non signe (TP8)       }
+    (Name: 'LONGWORD';  Size: 4),   { mot 32 bits non signe (TP8)       }
+    { Types de l unite Dos }
+    (Name: 'DIRSTR';   Size: 68),  { String[67] + length byte          }
+    (Name: 'NAMESTR';  Size: 9),   { String[8]  + length byte          }
+    (Name: 'EXTSTR';   Size: 5),   { String[4]  + length byte          }
+    (Name: 'PATHSTR';  Size: 80),  { String[79] + length byte          }
+    (Name: 'COMSTR';   Size: 128), { String[127]+ length byte          }
+    (Name: 'DATETIME'; Size: 12)   { record 6 x Word = 12 octets      }
   );
 
 { ---- DataInit : initialiser le pool de donnees ---- }
@@ -2974,6 +2981,11 @@ Begin
     RegType('LONGWORD');
   End;
 
+  { Types de l unite Dos (toujours enregistres) }
+  RegType('DIRSTR');    RegType('NAMESTR');
+  RegType('EXTSTR');    RegType('PATHSTR');
+  RegType('COMSTR');    RegType('DATETIME');
+
   { ---------------------------------------------------------- }
   { Constantes predefinies                                      }
   { ---------------------------------------------------------- }
@@ -3427,6 +3439,13 @@ Begin
   { idx 17 : LongWord (TP8+, 32 bits non signe) }
   TypeAdd(TYK_WORD, 'LONGWORD', 4, 4, True, TY_IDX_WORD);
 
+  { Types chaines de l unite Dos }
+  TypeAdd(TYK_STRING, 'DIRSTR',  68, 1, False, TY_UNKNOWN);   { String[67] }
+  TypeAdd(TYK_STRING, 'NAMESTR',  9, 1, False, TY_UNKNOWN);   { String[8]  }
+  TypeAdd(TYK_STRING, 'EXTSTR',   5, 1, False, TY_UNKNOWN);   { String[4]  }
+  TypeAdd(TYK_STRING, 'PATHSTR', 80, 1, False, TY_UNKNOWN);   { String[79] }
+  TypeAdd(TYK_STRING, 'COMSTR', 128, 1, False, TY_UNKNOWN);   { String[127]}
+
   If Opts.DebugMode Then
     WriteLn('  [TypeInit] ', TypeCount, ' types primitifs enregistres');
 End;
@@ -3490,6 +3509,42 @@ Begin
     TypeTab[TI].Fields[3].TypeIdx := TY_IDX_STRING;
     TypeTab[TI].Fields[3].Offset  := 12;
     SI := SymAdd('SEARCHREC', SK_TYPE, TI);
+    If SI >= 0 Then SymTab[SI].IsGlobal := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterDateTimeType : enregistrer le type DateTime du DOS   }
+{ Layout : Year(2) Month(2) Day(2) Hour(2) Min(2) Sec(2) = 12 }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterDateTimeType;
+Var
+  TI, SI : Integer;
+Begin
+  TI := TypeAdd(TYK_RECORD, 'DATETIME', 12, 2, False, -1);
+  If TI >= 0 Then
+  Begin
+    TypeTab[TI].FieldCount := 6;
+    TypeTab[TI].Fields[0].Name    := 'YEAR';
+    TypeTab[TI].Fields[0].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[0].Offset  := 0;
+    TypeTab[TI].Fields[1].Name    := 'MONTH';
+    TypeTab[TI].Fields[1].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[1].Offset  := 2;
+    TypeTab[TI].Fields[2].Name    := 'DAY';
+    TypeTab[TI].Fields[2].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[2].Offset  := 4;
+    TypeTab[TI].Fields[3].Name    := 'HOUR';
+    TypeTab[TI].Fields[3].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[3].Offset  := 6;
+    TypeTab[TI].Fields[4].Name    := 'MIN';
+    TypeTab[TI].Fields[4].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[4].Offset  := 8;
+    TypeTab[TI].Fields[5].Name    := 'SEC';
+    TypeTab[TI].Fields[5].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[5].Offset  := 10;
+    SI := SymAdd('DATETIME', SK_TYPE, TI);
     If SI >= 0 Then SymTab[SI].IsGlobal := True;
   End;
 End;
@@ -4486,10 +4541,11 @@ Begin
   Sz  := TPTypeSizeof(Up);
   If Sz < 0 Then Sz := 4; { defaut : 32 bits }
 
-  { Chaine (STRING) : DB 256 DUP(0) }
-  If Up = 'STRING' Then
+  { Chaine (STRING) et types chaines du DOS : DB N DUP(0) }
+  If (Up = 'STRING') Or (Up = 'DIRSTR') Or (Up = 'NAMESTR') Or
+     (Up = 'EXTSTR') Or (Up = 'PATHSTR') Or (Up = 'COMSTR') Then
   Begin
-    DataAddGlobalVar := DataAdd(Lbl, DK_ARRAY, 0, '', 256, 1);
+    DataAddGlobalVar := DataAdd(Lbl, DK_ARRAY, 0, '', Sz, 1);
     Exit;
   End;
 
@@ -10877,8 +10933,12 @@ End;
 Procedure EmitPrintEAX(TypeIdx : Integer);
 Var
   LblFalse, LblDone : TString;
+  IsStrType : Boolean;
 Begin
-  If TypeIdx = TY_IDX_STRING Then
+  IsStrType := (TypeIdx = TY_IDX_STRING) Or
+               ((TypeIdx >= 0) And (TypeIdx < TypeCount) And
+                (TypeTab[TypeIdx].Kind = TYK_STRING));
+  If IsStrType Then
   Begin
     { EAX = pointeur vers chaine }
     EmitInstr('MOV ESI,EAX');
@@ -10926,8 +10986,12 @@ End;
 Procedure EmitFilePrintEAX(TypeIdx : Integer);
 Var
   LblFalse, LblDone : TString;
+  IsStrType : Boolean;
 Begin
-  If TypeIdx = TY_IDX_STRING Then
+  IsStrType := (TypeIdx = TY_IDX_STRING) Or
+               ((TypeIdx >= 0) And (TypeIdx < TypeCount) And
+                (TypeTab[TypeIdx].Kind = TYK_STRING));
+  If IsStrType Then
   Begin
     EmitInstr('MOV ESI,EAX');
     If LastExprIsPascalStr Then
@@ -17105,28 +17169,160 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_FSPLIT : decomposer chemin ---------------------- }
-  { Params : [ESP+4]=Path, [ESP+8]=Dir, [ESP+12]=Name, [ESP+16]=Ext }
-  { Toutes des chaines Pascal. Remplit Dir, Name, Ext.               }
+  { Stack (pushed L-to-R) : [EBP+20]=Path, [EBP+16]=Dir,          }
+  {                         [EBP+12]=Name, [EBP+8]=Ext             }
+  { Toutes des chaines Pascal. Remplit Dir, Name, Ext.             }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FSPLIT');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
-  { Pour simplifier, copier le chemin complet dans Dir et vider Name/Ext }
-  { Dir = Path }
-  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { Path source }
-  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');  { Dir dest }
-  EmitInstr('MOVZX ECX,BYTE PTR [ESI]');     { longueur }
-  EmitInstr('MOV BYTE PTR [EDI],CL');
+
+  { ESI = pointeur Path (chaine Pascal : [len][chars]) }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+20]');
+  EmitInstr('MOVZX ECX,BYTE PTR [ESI]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_EMPTY');
+
+  { Copier les chars dans DOS_PATHBUF pour manipulation ASCIIZ }
+  EmitInstr('MOV DWORD PTR [DOS_PATHBUF+260],ECX');   { sauver longueur }
+  EmitInstr('PUSH ECX');
   EmitInstr('INC ESI');
-  EmitInstr('INC EDI');
+  EmitInstr('LEA EDI,[DOS_PATHBUF]');
   EmitInstr('REP MOVSB');
-  { Name = '' }
+  EmitInstr('MOV BYTE PTR [EDI],0');     { NUL terminal }
+  EmitInstr('POP ECX');                   { ECX = longueur totale }
+
+  { Chercher le dernier separateur \ / : depuis la fin }
+  EmitInstr('MOV EDX,-1');                { EDX = position du sep, -1=pas trouve }
+  EmitInstr('MOV EBX,ECX');
+  EmitInstr('DEC EBX');
+  EmitLabel(TP_RT_PFX + 'FSP_SCN');
+  EmitInstr('TEST EBX,EBX');
+  EmitInstr('JS ' + TP_RT_PFX + 'FSP_SDN');
+  EmitInstr('LEA EAX,[DOS_PATHBUF]');
+  EmitInstr('ADD EAX,EBX');
+  EmitInstr('MOVZX EAX,BYTE PTR [EAX]');
+  EmitInstr('CMP AL,92');                 { backslash }
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_SFD');
+  EmitInstr('CMP AL,47');                 { slash }
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_SFD');
+  EmitInstr('CMP AL,58');                 { colon }
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_SFD');
+  EmitInstr('DEC EBX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FSP_SCN');
+  EmitLabel(TP_RT_PFX + 'FSP_SFD');
+  EmitInstr('MOV EDX,EBX');              { EDX = position du dernier sep (0-based) }
+  EmitLabel(TP_RT_PFX + 'FSP_SDN');
+
+  { DirLen = EDX+1 si sep trouve, 0 sinon }
+  EmitInstr('MOV ECX,DWORD PTR [DOS_PATHBUF+260]'); { longueur totale }
+  EmitInstr('CMP EDX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_NODIR');
+  EmitInstr('MOV EBX,EDX');                { EBX = position du dernier sep (0-based) }
+  EmitInstr('INC EBX');                    { EBX = DirLen (incl sep) }
+  EmitInstr('JMP ' + TP_RT_PFX + 'FSP_CDIR');
+  EmitLabel(TP_RT_PFX + 'FSP_NODIR');
+  EmitInstr('XOR EBX,EBX');              { EBX = 0, pas de dir }
+  EmitLabel(TP_RT_PFX + 'FSP_CDIR');
+
+  { Copier Dir (EBX chars depuis DOS_PATHBUF) }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+16]');
+  EmitInstr('MOV BYTE PTR [EDI],BL');
+  EmitInstr('TEST EBX,EBX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_DD');
+  EmitInstr('PUSH ECX');
+  EmitInstr('MOV ECX,EBX');
+  EmitInstr('INC EDI');
+  EmitInstr('LEA ESI,[DOS_PATHBUF]');
+  EmitInstr('REP MOVSB');
+  EmitInstr('POP ECX');
+  EmitLabel(TP_RT_PFX + 'FSP_DD');
+
+  { Reste = filename part : ECX-EBX chars a partir de DOS_PATHBUF+EBX }
+  EmitInstr('SUB ECX,EBX');               { ECX = restLen }
+
+  { Chercher le dernier point dans le reste }
+  EmitInstr('MOV EDX,-1');                { position du point, -1=pas trouve }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_NDP');
+  EmitInstr('PUSH ECX');
+  EmitInstr('DEC ECX');
+  EmitLabel(TP_RT_PFX + 'FSP_DSC');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JS ' + TP_RT_PFX + 'FSP_DNF');
+  EmitInstr('LEA EAX,[DOS_PATHBUF]');
+  EmitInstr('ADD EAX,EBX');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOVZX EAX,BYTE PTR [EAX]');
+  EmitInstr('CMP AL,46');                 { point }
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_DFD');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FSP_DSC');
+  EmitLabel(TP_RT_PFX + 'FSP_DFD');
+  EmitInstr('MOV EDX,ECX');              { EDX = position du point dans le reste }
+  EmitLabel(TP_RT_PFX + 'FSP_DNF');
+  EmitInstr('POP ECX');                   { ECX = restLen }
+  EmitLabel(TP_RT_PFX + 'FSP_NDP');
+
+  { Si point trouve : Name = reste[0..EDX-1], Ext = reste[EDX..end] }
+  { Si pas de point  : Name = tout le reste, Ext = '' }
+  EmitInstr('CMP EDX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_ALLNM');
+  { Name = EDX chars }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
+  EmitInstr('MOV BYTE PTR [EDI],DL');     { Name length }
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_ND');
+  EmitInstr('PUSH ECX');
+  EmitInstr('MOV ECX,EDX');
+  EmitInstr('INC EDI');
+  EmitInstr('LEA ESI,[DOS_PATHBUF]');
+  EmitInstr('ADD ESI,EBX');
+  EmitInstr('REP MOVSB');
+  EmitInstr('POP ECX');
+  EmitLabel(TP_RT_PFX + 'FSP_ND');
+  { Ext = ECX-EDX chars }
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('SUB EAX,EDX');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');     { Ext length }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_ED');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('INC EDI');
+  EmitInstr('LEA ESI,[DOS_PATHBUF]');
+  EmitInstr('ADD ESI,EBX');
+  EmitInstr('ADD ESI,EDX');
+  EmitInstr('REP MOVSB');
+  EmitLabel(TP_RT_PFX + 'FSP_ED');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FSP_RET');
+
+  { Pas de point : Name = tout le reste }
+  EmitLabel(TP_RT_PFX + 'FSP_ALLNM');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
+  EmitInstr('MOV BYTE PTR [EDI],CL');     { Name length = restLen }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_AN');
+  EmitInstr('INC EDI');
+  EmitInstr('LEA ESI,[DOS_PATHBUF]');
+  EmitInstr('ADD ESI,EBX');
+  EmitInstr('REP MOVSB');
+  EmitLabel(TP_RT_PFX + 'FSP_AN');
+  { Ext = '' }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FSP_RET');
+
+  { Chemin vide : Dir='', Name='', Ext='' }
+  EmitLabel(TP_RT_PFX + 'FSP_EMPTY');
   EmitInstr('MOV EDI,DWORD PTR [EBP+16]');
   EmitInstr('MOV BYTE PTR [EDI],0');
-  { Ext = '' }
-  EmitInstr('MOV EDI,DWORD PTR [EBP+20]');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
   EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitLabel(TP_RT_PFX + 'FSP_RET');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -23165,6 +23361,9 @@ Begin
 
   { Enregistrer le type SearchRec apres TypeInit (TypeAdd disponible) }
   RegisterSearchRecType;
+
+  { Enregistrer le type DateTime apres TypeInit }
+  RegisterDateTimeType;
 
   { Initialiser le preprocesseur }
   PPInitDefines;
