@@ -11807,7 +11807,144 @@ Begin
       Exit;
     End;
 
-    { FINDFIRST(Path, Attr, SearchRec) }
+    { APPEND(f) : ouvrir fichier texte en ajout }
+    If Up = 'APPEND' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'APPEND');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { ERASE(f) : supprimer fichier }
+    If Up = 'ERASE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH OFFSET FILE_NAMEBUF');
+      EmitInstr('CALL DeleteFileA');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { BLOCKWRITE(f, buf, count [, result]) }
+    If Up = 'BLOCKWRITE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        { f : file variable }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('MOV EAX,DWORD PTR [EAX]');
+        EmitInstr('MOV DWORD PTR [FILE_WRHND],EAX');
+        EPMatch(',');
+        { buf : buffer address }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');        { save buf addr }
+        EPMatch(',');
+        { count }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');        { save count }
+        { optional result var }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then
+        Begin
+          Inc(EP);
+          { result var - skip for now, use BYTESWR }
+          If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      { WriteFile(FILE_WRHND, buf, count, &BYTESWR, 0) }
+      EmitInstr('POP ECX');           { count }
+      EmitInstr('POP ESI');           { buf addr }
+      EmitInstr('PUSH 0');
+      EmitInstr('PUSH OFFSET BYTESWR');
+      EmitInstr('PUSH ECX');
+      EmitInstr('PUSH ESI');
+      EmitInstr('PUSH DWORD PTR [FILE_WRHND]');
+      EmitInstr('CALL WriteFile');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { BLOCKREAD(f, buf, count [, result]) }
+    If Up = 'BLOCKREAD' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        { f : file variable }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          Inc(EP);
+        End;
+        EmitInstr('MOV EAX,DWORD PTR [EAX]');
+        EmitInstr('PUSH EAX');        { save handle }
+        EPMatch(',');
+        { buf : buffer address }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');        { save buf addr }
+        EPMatch(',');
+        { count }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');        { save count }
+        { optional result var }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then
+        Begin
+          Inc(EP);
+          If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      { ReadFile(handle, buf, count, &FILE_BYTESRD, 0) }
+      EmitInstr('POP ECX');           { count }
+      EmitInstr('POP ESI');           { buf addr }
+      EmitInstr('POP EBX');           { handle }
+      EmitInstr('PUSH 0');
+      EmitInstr('PUSH OFFSET FILE_BYTESRD');
+      EmitInstr('PUSH ECX');
+      EmitInstr('PUSH ESI');
+      EmitInstr('PUSH EBX');
+      EmitInstr('CALL ReadFile');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
     If Up = 'FINDFIRST' Then
     Begin
       Inc(EP);
@@ -15689,6 +15826,37 @@ Begin
   EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
   EmitInstr('MOV DWORD PTR [EDI],-1');
   EmitLabel(TP_RT_PFX + 'CL_DN');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_APPEND : ouvrir fichier texte en ajout ---------- }
+  { [ESP+4]=adresse variable fichier                                }
+  { Ouvre avec OPEN_EXISTING et FILE_APPEND_DATA                    }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'APPEND');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('PUSH 0');                               { hTemplateFile }
+  EmitInstr('PUSH 128');                             { dwFlagsAndAttributes }
+  EmitInstr('PUSH 4');                               { OPEN_ALWAYS }
+  EmitInstr('PUSH 0');                               { lpSecurityAttributes }
+  EmitInstr('PUSH 0');                               { dwShareMode }
+  EmitInstr('PUSH 40000000h');                       { GENERIC_WRITE }
+  EmitInstr('PUSH OFFSET FILE_NAMEBUF');             { lpFileName }
+  EmitInstr('CALL CreateFileA');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV DWORD PTR [EDI],EAX');
+  { Seek to end of file }
+  EmitInstr('PUSH 2');                               { FILE_END }
+  EmitInstr('PUSH 0');                               { lpDistanceToMoveHigh }
+  EmitInstr('PUSH 0');                               { lDistanceToMove }
+  EmitInstr('PUSH EAX');                             { hFile }
+  EmitInstr('CALL SetFilePointer');
+  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
+  EmitInstr('MOV DWORD PTR [FILE_BUFEND],0');
+  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],0');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
   EmitInstr('RET');
