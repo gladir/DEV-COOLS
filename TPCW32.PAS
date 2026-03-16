@@ -3049,6 +3049,9 @@ Begin
   RegProc('MKDIR');      RegProc('RMDIR');
   RegProc('CHDIR');      RegProc('GETDIR');
 
+  { Ensembles (TP7) }
+  RegProc('INCLUDE');    RegProc('EXCLUDE');
+
   { Fonctions de conversion }
   RegFunc('LO');         RegFunc('HI');
   RegFunc('SWAP');
@@ -4137,6 +4140,7 @@ Begin
   EmitRaw('FILE_WRFLG   DD 0');            { 1 si ecriture fichier en cours   }
   EmitRaw('FILE_IOERR   DD 0');            { derniere erreur I/O (IoResult)   }
   EmitRaw('STDIN_EOF    DD 0');            { 1 si EOF stdin (Ctrl+Z)          }
+  EmitRaw('DIR_NAMEBUF  DB 260 DUP(0)');  { buffer repertoire (MAX_PATH)     }
   EmitBlankLine;
 
   { Variables ParamStr/ParamCount }
@@ -8446,6 +8450,144 @@ Begin
       Exit;
     End;
 
+    { CHDIR(path) -> SetCurrentDirectoryA }
+    If Up = 'CHDIR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);        { path dans EAX }
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');   { Pascal -> ASCIIZ }
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL SetCurrentDirectoryA');
+      Exit;
+    End;
+
+    { MKDIR(path) -> CreateDirectoryA }
+    If Up = 'MKDIR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);        { path dans EAX }
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');   { Pascal -> ASCIIZ }
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH 0');        { lpSecurityAttributes = NULL }
+      EmitInstr('PUSH EAX');      { lpPathName }
+      EmitInstr('CALL CreateDirectoryA');
+      Exit;
+    End;
+
+    { RMDIR(path) -> RemoveDirectoryA }
+    If Up = 'RMDIR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);        { path dans EAX }
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EAX');   { Pascal -> ASCIIZ }
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL RemoveDirectoryA');
+      Exit;
+    End;
+
+    { GETDIR(drive, var s) -> GetCurrentDirectoryA }
+    { drive est ignore en Win32 (toujours le lecteur courant) }
+    If Up = 'GETDIR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);    { drive (ignore) }
+        EPMatch(',');
+        { s : variable chaine de destination }
+        If Not EPAtEnd Then
+        Begin
+          Lbl := TokenPool[EP].Val;
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      { GetCurrentDirectoryA(260, DIR_NAMEBUF) }
+      EmitInstr('PUSH OFFSET DIR_NAMEBUF');
+      EmitInstr('PUSH 260');
+      EmitInstr('CALL GetCurrentDirectoryA');
+      { Copier DIR_NAMEBUF -> variable chaine Pascal }
+      EmitInstr('LEA ESI,[DIR_NAMEBUF]');
+      GenLoadAddr(PI, Lbl);
+      EmitInstr('MOV EDI,EAX');
+      { Mesurer longueur de la chaine ASCIIZ }
+      EmitInstr('PUSH EDI');
+      EmitInstr('XOR ECX,ECX');
+      EmitInstr('MOV EDX,ESI');
+      EmitLabel(TP_RT_PFX + 'GDIR_LN');
+      EmitInstr('MOV AL,[ESI]');
+      EmitInstr('TEST AL,AL');
+      EmitInstr('JZ ' + TP_RT_PFX + 'GDIR_CP');
+      EmitInstr('INC ECX');
+      EmitInstr('INC ESI');
+      EmitInstr('JMP ' + TP_RT_PFX + 'GDIR_LN');
+      EmitLabel(TP_RT_PFX + 'GDIR_CP');
+      EmitInstr('POP EDI');
+      EmitInstr('MOV [EDI],CL');     { S[0] = longueur }
+      EmitInstr('INC EDI');
+      EmitInstr('MOV ESI,EDX');       { source = debut DIR_NAMEBUF }
+      EmitInstr('CLD');
+      EmitInstr('REP MOVSB');
+      EmitInstr('MOV BYTE PTR [EDI],0');  { NUL final }
+      Exit;
+    End;
+
+    { INCLUDE(S, I) -> BTS (bit test and set) }
+    If Up = 'INCLUDE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then
+        Begin
+          Lbl := TokenPool[EP].Val;
+          Inc(EP);
+        End;
+        EPMatch(',');
+        ParseExpr(PI);   { I dans EAX }
+        EmitInstr('MOV ECX,EAX');   { element }
+        GenLoadAddr(PI, Lbl);
+        EmitInstr('BTS [EAX],ECX');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { EXCLUDE(S, I) -> BTR (bit test and reset) }
+    If Up = 'EXCLUDE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then
+        Begin
+          Lbl := TokenPool[EP].Val;
+          Inc(EP);
+        End;
+        EPMatch(',');
+        ParseExpr(PI);   { I dans EAX }
+        EmitInstr('MOV ECX,EAX');   { element }
+        GenLoadAddr(PI, Lbl);
+        EmitInstr('BTR [EAX],ECX');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
     { ---- TODO 16 : Builtins chaines ---- }
 
     { LENGTH(S) -> longueur String Pascal (S[0]) dans EAX }
@@ -11481,11 +11623,13 @@ Begin
       Exit;
     End;
 
-    { INC/DEC/NEW/DISPOSE/GETMEM/FREEMEM/MOVE/FILLCHAR/MARK/RELEASE/SETTEXTBUF comme keywords }
+    { INC/DEC/NEW/DISPOSE/GETMEM/FREEMEM/MOVE/FILLCHAR/MARK/RELEASE/SETTEXTBUF/CHDIR/MKDIR/RMDIR/GETDIR/INCLUDE/EXCLUDE comme keywords }
     If (Up = 'INC') Or (Up = 'DEC') Or (Up = 'NEW') Or
        (Up = 'DISPOSE') Or (Up = 'GETMEM') Or (Up = 'FREEMEM') Or
        (Up = 'MOVE') Or (Up = 'FILLCHAR') Or (Up = 'MARK') Or
-       (Up = 'RELEASE') Or (Up = 'SETTEXTBUF') Then
+       (Up = 'RELEASE') Or (Up = 'SETTEXTBUF') Or
+       (Up = 'CHDIR') Or (Up = 'MKDIR') Or (Up = 'RMDIR') Or
+       (Up = 'GETDIR') Or (Up = 'INCLUDE') Or (Up = 'EXCLUDE') Then
     Begin
       ParseExpr(PI);
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
@@ -11529,11 +11673,13 @@ Begin
       Exit;
     End;
 
-    { INC/DEC/NEW/DISPOSE/GETMEM/FREEMEM/MOVE/FILLCHAR/MARK/RELEASE/SETTEXTBUF }
+    { INC/DEC/NEW/DISPOSE/GETMEM/FREEMEM/MOVE/FILLCHAR/MARK/RELEASE/SETTEXTBUF/CHDIR/MKDIR/RMDIR/GETDIR/INCLUDE/EXCLUDE }
     If (Up = 'INC') Or (Up = 'DEC') Or (Up = 'NEW') Or
        (Up = 'DISPOSE') Or (Up = 'GETMEM') Or (Up = 'FREEMEM') Or
        (Up = 'MOVE') Or (Up = 'FILLCHAR') Or (Up = 'MARK') Or
-       (Up = 'RELEASE') Or (Up = 'SETTEXTBUF') Then
+       (Up = 'RELEASE') Or (Up = 'SETTEXTBUF') Or
+       (Up = 'CHDIR') Or (Up = 'MKDIR') Or (Up = 'RMDIR') Or
+       (Up = 'GETDIR') Or (Up = 'INCLUDE') Or (Up = 'EXCLUDE') Then
     Begin
       ParseExpr(PI);
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
@@ -20250,16 +20396,42 @@ Begin { BcAssemble }
     Exit;
   End;
 
-  { ---- BT / BTS ---- }
-  If (Mnem = 'BT') Or (Mnem = 'BTS') Then
+  { ---- BT / BTS / BTR / BTC ---- }
+  If (Mnem = 'BT') Or (Mnem = 'BTS') Or (Mnem = 'BTR') Or (Mnem = 'BTC') Then
   Begin
     Reg1 := BcParseReg32(Op1);
     If (Reg1 >= 0) And BcParseImm(Op2, ImmVal) Then
     Begin
+      { reg, imm8 form: 0F BA /4|/5|/6|/7 ib }
       BcEmitB($0F); BcEmitB($BA);
-      If Mnem = 'BT' Then BcEmitB($E0 + Reg1)
-      Else BcEmitB($E8 + Reg1);
+      If Mnem = 'BT'  Then BcEmitB($E0 + Reg1)
+      Else If Mnem = 'BTS' Then BcEmitB($E8 + Reg1)
+      Else If Mnem = 'BTR' Then BcEmitB($F0 + Reg1)
+      Else BcEmitB($F8 + Reg1);  { BTC }
       BcEmitB(Byte(ImmVal));
+    End
+    Else
+    Begin
+      { [reg1], reg2 form }
+      Reg2 := BcParseReg32(Op2);
+      If (Reg2 >= 0) Then
+      Begin
+        Tmp := Op1;
+        If (Length(Tmp) > 2) And (Tmp[1] = '[') And (Tmp[Length(Tmp)] = ']') Then
+        Begin
+          Tmp := Copy(Tmp, 2, Length(Tmp) - 2);
+          Reg1 := BcParseReg32(Tmp);
+          If Reg1 >= 0 Then
+          Begin
+            BcEmitB($0F);
+            If Mnem = 'BT'  Then BcEmitB($A3)
+            Else If Mnem = 'BTS' Then BcEmitB($AB)
+            Else If Mnem = 'BTR' Then BcEmitB($B3)
+            Else BcEmitB($BB);  { BTC }
+            BcEmitB((Reg2 Shl 3) Or Reg1);  { ModR/M [reg1], reg2 }
+          End;
+        End;
+      End;
     End;
     Exit;
   End;
@@ -20345,6 +20517,7 @@ Begin
   BcDefineDataLabel('FILE_WRFLG');  BcDataD(0);
   BcDefineDataLabel('FILE_IOERR');  BcDataD(0);
   BcDefineDataLabel('STDIN_EOF');    BcDataD(0);
+  BcDefineDataLabel('DIR_NAMEBUF');   For I := 1 To 260 Do BcDataB(0);
 
   { Variables ParamStr/ParamCount }
   BcDefineDataLabel('PARAM_PARSED'); BcDataD(0);
