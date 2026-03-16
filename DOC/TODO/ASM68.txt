@@ -528,7 +528,7 @@ TODO 24 - Programme principal et orchestration complete [IMPLEMENTE]
   - Gestion des erreurs fatales (fichier introuvable, etc.)
   - Code de retour : 0 = succes, 1 = erreurs, 2 = erreur fatale
 
-TODO 25 - Programmes de test et validation (SAMPLES\ASM68\)
+TODO 25 - Programmes de test et validation (SAMPLES\ASM68\) [IMPLEMENTE]
   ------------------------------------------------------------
   - hello.asm : Hello World (TRAP #15 ou convention simulateur)
   - move.asm  : tests des instructions MOVE, MOVEA, MOVEQ, MOVEM,

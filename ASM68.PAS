@@ -42,7 +42,7 @@
 { TODO 22 - Gestion des macros (MACRO/ENDM) [IMPLEMENTE] }
 { TODO 23 - Directives de listing et mise en page [IMPLEMENTE] }
 { TODO 24 - Programme principal et orchestration complete [IMPLEMENTE] }
-{ TODO 25 - Programmes de test et validation (SAMPLES\ASM68\) }
+{ TODO 25 - Programmes de test et validation (SAMPLES\ASM68\) [IMPLEMENTE] }
 
 Program ASM68;
 
