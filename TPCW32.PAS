@@ -3127,6 +3127,13 @@ Begin
   RegProc('SWAPVECTORS'); RegProc('GETINTVEC');
   RegProc('SETINTVEC');
   RegProc('MSDOS');       RegProc('INTR');
+  RegProc('GETCBREAK');  RegProc('SETCBREAK');
+  RegProc('GETVERIFY');  RegProc('SETVERIFY');
+  RegProc('GETFTIME');   RegProc('SETFTIME');
+  RegProc('UNPACKTIME'); RegProc('PACKTIME');
+  RegProc('KEEP');
+  RegFunc('ENVCOUNT');   RegFunc('ENVSTR');
+  RegFunc('DOSEXITCODE');
 
   { Constantes DOS predefinies }
   RegConst('READONLY', $01);
@@ -3136,6 +3143,20 @@ Begin
   RegConst('DIRECTORY',$10);
   RegConst('ARCHIVE',  $20);
   RegConst('ANYFILE',  $3F);
+
+  { Constantes DOS : drapeaux processeur }
+  RegConst('FCARRY',     $0001);
+  RegConst('FPARITY',    $0004);
+  RegConst('FAUXILIARY', $0010);
+  RegConst('FZERO',      $0040);
+  RegConst('FSIGN',      $0080);
+  RegConst('FOVERFLOW',  $0800);
+
+  { Constantes DOS : modes de fichier }
+  RegConst('FMCLOSED', $D7B0);
+  RegConst('FMINPUT',  $D7B1);
+  RegConst('FMOUTPUT', $D7B2);
+  RegConst('FMINOUT',  $D7B3);
 
   { Type SearchRec predefini }
   { Deplace dans le code principal apres TypeInit }
@@ -4009,6 +4030,9 @@ Begin
   EmitRaw('EXTRN _WaitForSingleObject@8:NEAR');
   EmitRaw('EXTRN _GetExitCodeProcess@8:NEAR');
   EmitRaw('EXTRN _GetFullPathNameA@16:NEAR');
+  EmitRaw('EXTRN _GetEnvironmentStringsA@0:NEAR');
+  EmitRaw('EXTRN _GetFileTime@16:NEAR');
+  EmitRaw('EXTRN _FileTimeToDosDateTime@12:NEAR');
   EmitComment('--- Imports Win32 pour unite Graph (TODO 20) ---');
   EmitComment('--- user32.dll ---');
   EmitRaw('EXTRN _RegisterClassA@4:NEAR');
@@ -9074,6 +9098,39 @@ Begin
       Exit;
     End;
 
+    { ENVCOUNT -> nombre de variables d'environnement }
+    If Up = 'ENVCOUNT' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'ENVCOUNT');
+      Exit;
+    End;
+
+    { ENVSTR(Index) -> 'NAME=VALUE' }
+    If Up = 'ENVSTR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'ENVSTR');
+      EmitInstr('ADD ESP,4');
+      LastVarTypeIdx := TY_IDX_STRING;
+      LastExprIsPascalStr := False;
+      Exit;
+    End;
+
+    { DOSEXITCODE -> code retour du dernier Exec }
+    If Up = 'DOSEXITCODE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [DOSEXITCODE]');
+      Exit;
+    End;
+
     { ---- TODO 20 : Fonctions Graph (retournent valeur dans EAX) ---- }
 
     { GETMAXX -> largeur max de l ecran graphique }
@@ -10512,7 +10569,8 @@ Begin
 
     { Builtins retournant une chaine }
     If (Up = 'PARAMSTR') Or (Up = 'COPY') Or (Up = 'CONCAT')
-       Or (Up = 'GETENV') Or (Up = 'FEXPAND') Or (Up = 'FSEARCH') Then
+       Or (Up = 'GETENV') Or (Up = 'FEXPAND') Or (Up = 'FSEARCH')
+       Or (Up = 'ENVSTR') Then
     Begin
       InferExprType := TY_IDX_STRING;
       Exit;
@@ -13077,6 +13135,167 @@ Begin
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
+      Exit;
+    End;
+
+    { GETCBREAK(Var Break : Boolean) }
+    If Up = 'GETCBREAK' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      { Toujours retourner False (Win32 n a pas de Ctrl-Break DOS) }
+      EmitInstr('MOV DWORD PTR [EAX],0');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { SETCBREAK(Break : Boolean) }
+    If Up = 'SETCBREAK' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      { Stub sous Win32 }
+      EmitComment('SetCBreak - stub Win32');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETVERIFY(Var Verify : Boolean) }
+    If Up = 'GETVERIFY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      { Toujours retourner False (Win32 n a pas de verify DOS) }
+      EmitInstr('MOV DWORD PTR [EAX],0');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { SETVERIFY(Verify : Boolean) }
+    If Up = 'SETVERIFY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      { Stub sous Win32 }
+      EmitComment('SetVerify - stub Win32');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETFTIME(Var F; Var Time : LongInt) }
+    If Up = 'GETFTIME' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);              { file var -> addr in EAX }
+        EmitInstr('PUSH EAX');      { save file addr }
+        EPMatch(',');
+        ParseExpr(PI);              { var Time -> addr in EAX }
+        EmitInstr('PUSH EAX');      { push Time addr }
+      End;
+      EPMatch(')');
+      EmitInstr('CALL ' + TP_RT_PFX + 'GETFTIME');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { SETFTIME(Var F; Time : LongInt) }
+    If Up = 'SETFTIME' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);              { file var -> addr in EAX }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);              { Time value in EAX }
+        EmitInstr('PUSH EAX');
+      End;
+      EPMatch(')');
+      EmitInstr('CALL ' + TP_RT_PFX + 'SETFTIME');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { UNPACKTIME(P : LongInt; Var T : DateTime) }
+    If Up = 'UNPACKTIME' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);              { packed time value in EAX }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);              { var T -> addr in EAX }
+        EmitInstr('PUSH EAX');
+      End;
+      EPMatch(')');
+      EmitInstr('CALL ' + TP_RT_PFX + 'UNPACKTIME');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { PACKTIME(Var T : DateTime; Var P : LongInt) }
+    If Up = 'PACKTIME' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);              { var T -> addr in EAX }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);              { var P -> addr in EAX }
+        EmitInstr('PUSH EAX');
+      End;
+      EPMatch(')');
+      EmitInstr('CALL ' + TP_RT_PFX + 'PACKTIME');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { KEEP(ExitCode : Word) }
+    If Up = 'KEEP' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      { Sous Win32, Keep = ExitProcess }
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ExitProcess');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
     End;
 
@@ -17475,6 +17694,201 @@ Begin
   EmitInstr('MOV DWORD PTR [RAND_SEED],EAX');
   EmitInstr('POPAD');
   EmitInstr('RET');
+
+  { ------ _TPRT_ENVCOUNT : nombre de variables d environnement --- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'ENVCOUNT');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL GetEnvironmentStringsA');
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'ENVC_L');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'ENVC_D');
+  EmitInstr('INC ECX');
+  EmitLabel(TP_RT_PFX + 'ENVC_S');
+  EmitInstr('INC ESI');
+  EmitInstr('CMP BYTE PTR [ESI-1],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'ENVC_S');
+  EmitInstr('JMP ' + TP_RT_PFX + 'ENVC_L');
+  EmitLabel(TP_RT_PFX + 'ENVC_D');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_ENVSTR : retourner N-ieme variable d environnement --- }
+  { [ESP+4] = index (1-based), retour EAX = ptr chaine ASCIIZ         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'ENVSTR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL GetEnvironmentStringsA');
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+8]');  { index 1-based }
+  EmitInstr('DEC ECX');                     { 0-based }
+  EmitLabel(TP_RT_PFX + 'ENVS_L');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JLE ' + TP_RT_PFX + 'ENVS_F');
+  EmitInstr('CMP BYTE PTR [ESI],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'ENVS_E');
+  EmitLabel(TP_RT_PFX + 'ENVS_K');
+  EmitInstr('INC ESI');
+  EmitInstr('CMP BYTE PTR [ESI-1],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'ENVS_K');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'ENVS_L');
+  EmitLabel(TP_RT_PFX + 'ENVS_F');
+  EmitInstr('MOV EAX,ESI');       { point to the N-th string }
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'ENVS_E');
+  EmitInstr('MOV EAX,ESI');       { empty string if out of range }
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_UNPACKTIME : decomposer date/heure empaquetee --- }
+  { [ESP+8] = packed LongInt, [ESP+4] = ptr DateTime record       }
+  { DateTime = record Year,Month,Day,Hour,Min,Sec : Word end      }
+  { Packed: bits 0-4=sec/2, 5-10=min, 11-15=hour, 16-20=day,     }
+  {         21-24=month, 25-31=year-1980                           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'UNPACKTIME');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');   { packed time }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');    { ptr to DateTime }
+  { Sec = (bits 0-4) * 2 }
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('AND ECX,1Fh');
+  EmitInstr('SHL ECX,1');
+  EmitInstr('MOV WORD PTR [EDX+10],CX');      { Sec at offset 10 }
+  { Min = bits 5-10 }
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('SHR ECX,5');
+  EmitInstr('AND ECX,3Fh');
+  EmitInstr('MOV WORD PTR [EDX+8],CX');       { Min at offset 8 }
+  { Hour = bits 11-15 }
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('SHR ECX,11');
+  EmitInstr('AND ECX,1Fh');
+  EmitInstr('MOV WORD PTR [EDX+6],CX');       { Hour at offset 6 }
+  { Day = bits 16-20 }
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('SHR ECX,16');
+  EmitInstr('AND ECX,1Fh');
+  EmitInstr('MOV WORD PTR [EDX+4],CX');       { Day at offset 4 }
+  { Month = bits 21-24 }
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('SHR ECX,21');
+  EmitInstr('AND ECX,0Fh');
+  EmitInstr('MOV WORD PTR [EDX+2],CX');       { Month at offset 2 }
+  { Year = (bits 25-31) + 1980 }
+  EmitInstr('SHR EAX,25');
+  EmitInstr('AND EAX,7Fh');
+  EmitInstr('ADD EAX,1980');
+  EmitInstr('MOV WORD PTR [EDX],AX');          { Year at offset 0 }
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_PACKTIME : empaqueter date/heure ---------------  }
+  { [ESP+8] = ptr DateTime record, [ESP+4] = ptr LongInt result   }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PACKTIME');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');   { ptr to DateTime }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');    { ptr to result }
+  { Year }
+  EmitInstr('MOVZX EAX,WORD PTR [ESI]');
+  EmitInstr('SUB EAX,1980');
+  EmitInstr('AND EAX,7Fh');
+  EmitInstr('SHL EAX,25');
+  EmitInstr('MOV EBX,EAX');
+  { Month }
+  EmitInstr('MOVZX EAX,WORD PTR [ESI+2]');
+  EmitInstr('AND EAX,0Fh');
+  EmitInstr('SHL EAX,21');
+  EmitInstr('OR EBX,EAX');
+  { Day }
+  EmitInstr('MOVZX EAX,WORD PTR [ESI+4]');
+  EmitInstr('AND EAX,1Fh');
+  EmitInstr('SHL EAX,16');
+  EmitInstr('OR EBX,EAX');
+  { Hour }
+  EmitInstr('MOVZX EAX,WORD PTR [ESI+6]');
+  EmitInstr('AND EAX,1Fh');
+  EmitInstr('SHL EAX,11');
+  EmitInstr('OR EBX,EAX');
+  { Min }
+  EmitInstr('MOVZX EAX,WORD PTR [ESI+8]');
+  EmitInstr('AND EAX,3Fh');
+  EmitInstr('SHL EAX,5');
+  EmitInstr('OR EBX,EAX');
+  { Sec / 2 }
+  EmitInstr('MOVZX EAX,WORD PTR [ESI+10]');
+  EmitInstr('SHR EAX,1');
+  EmitInstr('AND EAX,1Fh');
+  EmitInstr('OR EBX,EAX');
+  EmitInstr('MOV DWORD PTR [EDI],EBX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_GETFTIME : lire horodatage d un fichier --------- }
+  { [ESP+8] = ptr to file var, [ESP+4] = ptr to Time LongInt       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'GETFTIME');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  { Get handle from FILE_HANDLE global (file handle stored there by runtime) }
+  EmitInstr('MOV EAX,DWORD PTR [FILE_HANDLE]');
+  { GetFileTime(hFile, NULL, NULL, &ftWrite) - use 16 bytes on stack for FILETIME }
+  EmitInstr('SUB ESP,16');
+  EmitInstr('MOV EDI,ESP');
+  EmitInstr('PUSH EDI');           { lpLastWriteTime }
+  EmitInstr('PUSH 0');             { lpLastAccessTime = NULL }
+  EmitInstr('PUSH 0');             { lpCreationTime = NULL }
+  EmitInstr('PUSH EAX');           { hFile }
+  EmitInstr('CALL GetFileTime');
+  { Convert FILETIME to DOS time via FileTimeToDosDateTime }
+  EmitInstr('LEA EAX,[EDI+8]');    { space for DosDate and DosTime (2 words each) }
+  EmitInstr('LEA ECX,[EDI+12]');
+  EmitInstr('PUSH ECX');           { lpFatTime }
+  EmitInstr('PUSH EAX');           { lpFatDate }
+  EmitInstr('PUSH EDI');           { lpFileTime }
+  EmitInstr('CALL FileTimeToDosDateTime');
+  { Combine DosDate (high word) and DosTime (low word) into LongInt }
+  EmitInstr('MOVZX EAX,WORD PTR [EDI+8]');    { DosDate }
+  EmitInstr('SHL EAX,16');
+  EmitInstr('MOVZX ECX,WORD PTR [EDI+12]');   { DosTime }
+  EmitInstr('OR EAX,ECX');
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');     { ptr to Time }
+  EmitInstr('MOV DWORD PTR [EDX],EAX');
+  EmitInstr('ADD ESP,16');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SETFTIME : definir horodatage d un fichier ------- }
+  { [ESP+8] = ptr to file var, [ESP+4] = Time LongInt value        }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETFTIME');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitComment('SetFTime - stub Win32 (complex FILETIME conversion)');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
 End;
 
 { ============================================================ }
@@ -20015,7 +20429,9 @@ Begin
     (U = 'FINDCLOSE') Or (U = 'GETDISKFREESPACEA') Or
     (U = 'GETENVIRONMENTVARIABLEA') Or (U = 'CREATEPROCESSA') Or
     (U = 'WAITFORSINGLEOBJECT') Or (U = 'GETEXITCODEPROCESS') Or
-    (U = 'GETFULLPATHNAMEA') Or (U = 'REGISTERCLASSA') Or
+    (U = 'GETFULLPATHNAMEA') Or (U = 'GETENVIRONMENTSTRINGSA') Or
+    (U = 'GETFILETIME') Or (U = 'FILETIMETODOSDATETIME') Or
+    (U = 'REGISTERCLASSA') Or
     (U = 'CREATEWINDOWEXA') Or (U = 'DESTROYWINDOW') Or
     (U = 'SHOWWINDOW') Or (U = 'UPDATEWINDOW') Or
     (U = 'GETDC') Or (U = 'RELEASEDC') Or
@@ -22067,6 +22483,12 @@ Begin
     MarkIf('EXEC','DOS'); MarkIf('SWAPVECTORS','DOS');
     MarkIf('GETINTVEC','DOS'); MarkIf('SETINTVEC','DOS');
     MarkIf('MSDOS','DOS'); MarkIf('INTR','DOS');
+    MarkIf('GETCBREAK','DOS'); MarkIf('SETCBREAK','DOS');
+    MarkIf('GETVERIFY','DOS'); MarkIf('SETVERIFY','DOS');
+    MarkIf('GETFTIME','DOS'); MarkIf('SETFTIME','DOS');
+    MarkIf('UNPACKTIME','DOS'); MarkIf('PACKTIME','DOS');
+    MarkIf('ENVCOUNT','DOS'); MarkIf('ENVSTR','DOS');
+    MarkIf('DOSEXITCODE','DOS'); MarkIf('KEEP','DOS');
   End
   Else If Up = 'GRAPH' Then
   Begin

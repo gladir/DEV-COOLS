@@ -6,4 +6,6 @@
 TPCW32
 test_output.txt
 *.asm
-tw.txt
+tw.txt*.exe
+*.o
+TPCW32
