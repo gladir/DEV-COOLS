@@ -11022,6 +11022,8 @@ Begin
 
   { Evaluer l expression chaine }
   ParseExpr(PI);
+  If LastExprIsPascalStr Then
+    EmitInstr('INC EAX');   { Pascal -> ASCIIZ : sauter l octet de longueur }
   EmitInstr('MOV ESI,EAX');
 
   { Convertir en nombre }
