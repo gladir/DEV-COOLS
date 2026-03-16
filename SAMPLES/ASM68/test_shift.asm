@@ -240,8 +240,12 @@ start:
     ; ROXR.L Dm, Dn
     ROXR.L    D2, D3
 
+    ; Terminer
+    MOVE.B    #9, D0
+    TRAP      #15
+
     ; ROXR.W ea (memoire)
     ROXR.W    (A0)
     ROXR.W    -(A4)
 
-    END
+    END       start

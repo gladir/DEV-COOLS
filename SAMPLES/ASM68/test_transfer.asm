@@ -132,7 +132,8 @@ start:
     MOVE.W    #$0700, SR
 
     ; Terminer
-    RTS
+    MOVE.B    #9, D0
+    TRAP      #15
 
 buffer:
     DC.L      $DEADBEEF

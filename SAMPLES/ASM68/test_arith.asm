@@ -150,4 +150,8 @@ start:
     TAS       D0
     TAS       (A0)
 
+    ; Terminer
+    MOVE.B    #9, D0
+    TRAP      #15
+
     END       start

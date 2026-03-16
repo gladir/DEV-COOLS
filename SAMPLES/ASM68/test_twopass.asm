@@ -100,4 +100,8 @@ global1:
 org_target:
         NOP
 
+; --- Terminer ---
+        MOVE.B  #9, D0
+        TRAP    #15
+
         END     start

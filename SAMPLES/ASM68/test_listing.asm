@@ -73,5 +73,9 @@ BUFFER_SIZE EQU  256
 ; --- Cas 11 : FAIL (commente pour ne pas bloquer) ---
 ;    FAIL      'Arret volontaire de l assemblage'
 
+; --- Terminer ---
+    MOVE.B    #9, D0
+    TRAP      #15
+
 ; --- Fin ---
     END       start

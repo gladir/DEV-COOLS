@@ -5,3 +5,4 @@
 *.S68
 /JASMIN
 /ASM68
+TESTS/__pycache__/

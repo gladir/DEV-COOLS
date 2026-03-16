@@ -63,6 +63,10 @@ start:
     MOVE.W    D0, SR             ; ecrire SR
     MOVE.W    D1, CCR            ; ecrire CCR
 
+    ; === Terminer ===
+    MOVE.B    #9, D0
+    TRAP      #15
+
     ; === STOP : arreter le processeur ===
     STOP      #$2700             ; STOP avec SR=$2700
 

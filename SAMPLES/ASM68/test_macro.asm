@@ -93,8 +93,9 @@ START:
     ADDQ.L    #1, D5
     ENDR
 
-    ; Fin
-    RTS
+    ; Terminer
+    MOVE.B    #9, D0
+    TRAP      #15
 
 ; --- Donnees ---
 MSG:

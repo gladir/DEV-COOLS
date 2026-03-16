@@ -29,7 +29,7 @@ MSG:
     EVEN                       ; alignement
 
 DONE:
-    MOVE.W  #$4C00,D0       ; 4 octets
-    TRAP    #0               ; 2 octets
+    MOVE.B  #9,D0            ; Terminer
+    TRAP    #15              ; Fin
 
     END     START

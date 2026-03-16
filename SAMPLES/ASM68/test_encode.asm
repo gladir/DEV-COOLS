@@ -66,7 +66,10 @@ next3:  BSR.W   subr            ; branch to subroutine
 
         ; --- Controle ---
         NOP
-        RTS
+
+        ; Terminer
+        MOVE.B  #9, D0
+        TRAP    #15
 
 subr:
         MOVE.L  D0,D1
