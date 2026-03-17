@@ -1,0 +1,900 @@
+============================================================
+SPECIFICATION DU LANGAGE AWK
+Sous-ensemble supporte par AWK86.PAS
+Compilateur AWK -> assembleur 8086
+============================================================
+Compilateur : AWK86.PAS (AWK vers assembleur 8086)
+Cible       : MASM .MODEL SMALL, DOS 16 bits
+Version     : 1.0 - 2026
+
+Reference   : Alfred V. Aho, Brian W. Kernighan, Peter J. Weinberger
+              « The AWK Programming Language » (1988)
+              IEEE Std 1003.1 (POSIX) - awk utility
+
+============================================================
+TABLE DES MATIERES
+============================================================
+
+ 1. PRESENTATION
+ 2. STRUCTURE D'UN PROGRAMME
+ 3. CONVENTIONS LEXICALES
+ 4. TYPES DE DONNEES
+ 5. VARIABLES PREDEFINIES
+ 6. OPERATEURS
+ 7. INSTRUCTIONS ET STRUCTURES DE CONTROLE
+ 8. FONCTIONS PREDEFINIES
+ 9. FONCTIONS UTILISATEUR
+10. TABLEAUX ASSOCIATIFS
+11. ENTREES / SORTIES ET REDIRECTIONS
+12. EXPRESSIONS REGULIERES
+13. LIMITATIONS DE L'IMPLEMENTATION
+14. CIBLE DE COMPILATION
+
+============================================================
+1. PRESENTATION
+============================================================
+
+AWK est un langage de programmation concu pour le traitement de
+fichiers texte et l'extraction de donnees. Il a ete cree en 1977
+par Alfred Aho, Peter Weinberger et Brian Kernighan aux
+laboratoires Bell. Son nom provient des initiales de ses
+trois auteurs.
+
+AWK est un langage interpretatif de haut niveau, oriente vers le
+traitement ligne par ligne de fichiers structures en champs. Il
+combine des capacites de recherche de motifs (pattern matching)
+avec des actions programmables, offrant un outil puissant pour
+la transformation de donnees.
+
+Le compilateur AWK86 implemente un sous-ensemble substantiel du
+langage AWK tel que defini par le standard POSIX, en ciblant le
+processeur Intel 8086 via la generation d'assembleur MASM
+compatible DOS 16 bits.
+
+Paradigme : imperatif, oriente donnees, traitement de texte
+Typage    : dynamique (nombres, chaines, tableaux associatifs)
+
+============================================================
+2. STRUCTURE D'UN PROGRAMME
+============================================================
+
+Un programme AWK est constitue d'une sequence de regles de la
+forme :
+
+    motif { action }
+
+Chaque regle est evaluee pour chaque ligne d'entree. Si le motif
+correspond a la ligne courante, l'action associee est executee.
+
+2.1 Forme generale
+
+    Un programme AWK peut contenir :
+
+    - Des regles BEGIN      : executees avant la lecture de l'entree
+    - Des regles pattern    : executees pour chaque ligne d'entree
+    - Des regles END        : executees apres la lecture de l'entree
+    - Des fonctions         : definitions de fonctions utilisateur
+
+    Exemple complet :
+
+        BEGIN { FS = ":" ; print "Debut" }
+
+        /error/ { erreurs++ }
+
+        NR > 10 { print "Ligne", NR, $0 }
+
+        END { print "Total erreurs:", erreurs }
+
+2.2 Regles BEGIN et END
+
+    Les blocs BEGIN sont executes une seule fois avant la lecture
+    de la premiere ligne d'entree. Ils servent a initialiser les
+    variables, definir les separateurs, afficher des en-tetes.
+
+        BEGIN { FS = "," ; OFS = "\t" }
+
+    Les blocs END sont executes une seule fois apres la lecture de
+    toutes les lignes d'entree. Ils servent a afficher des totaux,
+    des bilans, ou des resultats finaux.
+
+        END { print "Lignes traitees:", NR }
+
+2.3 Regles pattern-action
+
+    Si le motif est omis, l'action s'execute pour chaque ligne :
+
+        { print $1 }
+
+    Si l'action est omise, la ligne entiere est affichee :
+
+        /motif/
+
+2.4 Separateurs d'instructions
+
+    Les instructions dans un bloc sont separees par des points-
+    virgules (;) ou des sauts de ligne :
+
+        { x = 1; y = 2; print x + y }
+
+        {
+            x = 1
+            y = 2
+            print x + y
+        }
+
+============================================================
+3. CONVENTIONS LEXICALES
+============================================================
+
+3.1 Commentaires
+    Un commentaire commence par le caractere # et s'etend jusqu'a
+    la fin de la ligne :
+
+        # Ceci est un commentaire
+        x = 42  # commentaire en fin de ligne
+
+3.2 Identificateurs
+    Un identificateur commence par une lettre (a-z, A-Z) ou un
+    underscore (_), suivi de lettres, chiffres (0-9) ou
+    underscores. Les identificateurs sont sensibles a la casse.
+
+    Exemples : x  total  my_var  NR  _temp  compteur2
+
+3.3 Mots-cles reserves
+    Les mots-cles suivants sont reserves et ne peuvent pas etre
+    utilises comme noms de variables ou de fonctions :
+
+        BEGIN       END         BEGINFILE
+        break       continue    delete
+        do          else        exit
+        for         function    getline
+        if          in          next
+        nextfile    print       printf
+        return      while
+
+3.4 Chaines de caracteres
+    Les chaines sont delimitees par des guillemets doubles :
+
+        "Bonjour le monde"
+        ""
+        "Ligne 1\nLigne 2"
+
+    Sequences d'echappement supportees :
+      \n  saut de ligne           \t  tabulation horizontale
+      \r  retour chariot          \\  backslash
+      \"  guillemet double        \a  alerte (bip)
+      \b  retour arriere          \f  saut de page
+      \v  tabulation verticale    \0  octet nul
+      \/  slash (dans les regex)
+
+3.5 Litteraux numeriques
+    Entiers decimaux    : 0, 42, 255, 32767
+    Entiers octaux      : 0377 (prefixe 0)
+    Entiers hexadecimaux: 0xFF, 0x1A (prefixe 0x ou 0X)
+    Flottants           : 3.14, 1.5e3, 2.0E-4
+
+    Limitation AWK86 : les nombres sont stockes en entiers signes
+    16 bits (-32768 a 32767). Les litteraux flottants sont tronques
+    en entiers.
+
+3.6 Expressions regulieres
+    Les expressions regulieres sont delimitees par des slashs :
+
+        /motif/
+        /^debut/
+        /fin$/
+        /[0-9]+/
+
+============================================================
+4. TYPES DE DONNEES
+============================================================
+
+AWK est un langage a typage dynamique. Les variables n'ont pas de
+type declare ; la conversion entre types est automatique selon le
+contexte d'utilisation.
+
+4.1 Nombres (number)
+    Entiers signes 16 bits dans AWK86 (-32768 a 32767).
+    Un contexte arithmetique force la conversion de chaines en
+    nombres : la chaine "42abc" donne 42, "abc" donne 0.
+
+    Representation interne : mot de 16 bits (DW).
+
+4.2 Chaines de caracteres (string)
+    Sequences d'octets terminees par un octet nul.
+    Longueur maximale : 255 caracteres (MAX_STR).
+    Un contexte de chaine force la conversion de nombres en leur
+    representation decimale.
+
+    Representation interne : pointeur vers le segment DATA.
+
+4.3 Non initialise (uninitialized)
+    Une variable non initialisee vaut 0 dans un contexte numerique
+    et "" (chaine vide) dans un contexte de chaine.
+
+4.4 Expressions regulieres (regexp)
+    Motifs de recherche delimites par /.../ utilises dans les
+    comparaisons de motifs et les fonctions de chaines.
+
+4.5 Tableaux associatifs (array)
+    Collections de paires cle-valeur ou les cles sont des chaines.
+    Les tableaux ne sont pas declares ; ils sont crees implicitement
+    lors de la premiere affectation. Voir section 10.
+
+============================================================
+5. VARIABLES PREDEFINIES
+============================================================
+
+AWK fournit un ensemble de variables predefinies accessibles en
+lecture et en ecriture. Les variables marquees (R/W) peuvent etre
+modifiees ; celles marquees (R) sont en lecture seule.
+
+5.1 Variables de champs et d'enregistrement
+
+    $0        (R/W)  Ligne d'entree courante (enregistrement complet)
+    $1..$NF   (R/W)  Champs individuels de la ligne courante
+    NR        (R)    Nombre total de lignes lues depuis le debut
+    NF        (R)    Nombre de champs dans la ligne courante
+    FNR       (R)    Numero de ligne dans le fichier courant
+    FILENAME  (R)    Nom du fichier d'entree courant
+
+    Exemple :
+        { print NR, $1, $NF }
+
+5.2 Separateurs
+
+    FS        (R/W)  Separateur de champs en entree
+                     Defaut : espace et tabulation
+                     Peut etre un caractere ou une expression reguliere
+    RS        (R/W)  Separateur d'enregistrements en entree
+                     Defaut : saut de ligne (\n)
+    OFS       (R/W)  Separateur de champs en sortie
+                     Defaut : espace
+                     Utilise par print entre les arguments separes
+                     par des virgules
+    ORS       (R/W)  Separateur d'enregistrements en sortie
+                     Defaut : saut de ligne (\n)
+
+    Exemple :
+        BEGIN { FS = ":" ; OFS = "\t" }
+        { print $1, $3 }
+
+5.3 Variables de correspondance de motifs
+
+    RSTART    (R)    Position de debut de la derniere correspondance
+                     etablie par match() (1-base)
+    RLENGTH   (R)    Longueur de la derniere correspondance etablie
+                     par match() (-1 si pas de correspondance)
+
+5.4 Variables de programme
+
+    ARGC      (R)    Nombre d'arguments de la ligne de commande
+    ARGV      (R)    Tableau des arguments de la ligne de commande
+    SUBSEP    (R/W)  Separateur de sous-indices pour les tableaux
+                     multi-dimensionnels (defaut : "\034")
+
+5.5 Variables de formatage
+
+    OFMT      (R/W)  Format de sortie pour les nombres
+                     Defaut : "%.6g"
+    CONVFMT   (R/W)  Format de conversion nombre vers chaine
+                     Defaut : "%.6g"
+
+============================================================
+6. OPERATEURS
+============================================================
+
+6.1 Operateurs arithmetiques
+        +       addition
+        -       soustraction
+        *       multiplication
+        /       division entiere
+        %       modulo (reste de la division)
+        ^       exponentiation (puissance)
+
+    Exemple :
+        { print 2 ^ 10 }       # affiche 1024
+        { print 17 % 5 }       # affiche 2
+
+6.2 Operateurs d'affectation
+        =       affectation simple
+        +=      addition et affectation
+        -=      soustraction et affectation
+        *=      multiplication et affectation
+        /=      division et affectation
+        %=      modulo et affectation
+        ^=      exponentiation et affectation
+
+    Exemple :
+        { total += $1 }
+
+6.3 Operateurs d'increment et de decrement
+        ++      pre-increment
+        --      pre-decrement
+
+    Exemple :
+        { ++compteur }
+
+6.4 Operateurs de comparaison
+        ==      egal a
+        !=      different de
+        <       inferieur a
+        <=      inferieur ou egal a
+        >       superieur a
+        >=      superieur ou egal a
+
+6.5 Operateurs logiques
+        &&      ET logique (evaluation court-circuit)
+        ||      OU logique (evaluation court-circuit)
+        !       NON logique (negation)
+
+    Exemple :
+        NR > 5 && NR < 20 { print }
+
+6.6 Operateurs de correspondance de motifs
+        ~       correspond au motif (match)
+        !~      ne correspond pas au motif (not match)
+
+    Exemple :
+        $1 ~ /^[A-Z]/ { print "Majuscule:", $1 }
+        $0 !~ /error/ { print "OK:", $0 }
+
+6.7 Operateur de reference de champ
+        $       reference de champ ($0, $1, $NF, $expr)
+
+    Exemple :
+        { print $(NF-1) }      # avant-dernier champ
+
+6.8 Operateur ternaire
+        condition ? valeur_vraie : valeur_fausse
+
+    Exemple :
+        { print (x > 0 ? "positif" : "negatif") }
+
+6.9 Operateur d'appartenance a un tableau
+        cle in tableau
+
+    Exemple :
+        if ("nom" in tab) print tab["nom"]
+
+6.10 Concatenation de chaines
+     La concatenation est implicite par juxtaposition :
+
+        { s = "Hello" " " "World" ; print s }
+
+6.11 Operateurs unaires
+        +       plus unaire
+        -       moins unaire (negation)
+
+6.12 Precedence des operateurs (du plus faible au plus fort)
+      1.  = += -= *= /= %= ^=        (affectation)
+      2.  ? :                         (ternaire)
+      3.  ||                          (OU logique)
+      4.  &&                          (ET logique)
+      5.  in                          (appartenance tableau)
+      6.  ~ !~                        (correspondance motif)
+      7.  == != < <= > >=             (comparaison)
+      8.  concatenation               (juxtaposition)
+      9.  + -                         (addition, soustraction)
+     10.  * / %                       (multiplication, division)
+     11.  ^                           (exponentiation, associatif a droite)
+     12.  ! + - ++ -- $               (unaires et reference champ)
+
+============================================================
+7. INSTRUCTIONS ET STRUCTURES DE CONTROLE
+============================================================
+
+7.1 Instruction conditionnelle (if / else)
+
+    if (condition) instruction
+    if (condition) instruction else instruction
+
+    Exemple :
+        if (NF > 3) {
+            print "Beaucoup de champs"
+        } else {
+            print "Peu de champs"
+        }
+
+7.2 Boucle while
+
+    while (condition) instruction
+
+    Exemple :
+        i = 1
+        while (i <= 10) {
+            print i
+            i++
+        }
+
+7.3 Boucle do-while
+
+    do instruction while (condition)
+
+    Exemple :
+        i = 1
+        do {
+            print i
+            i++
+        } while (i <= 10)
+
+7.4 Boucle for (style C)
+
+    for (initialisation; condition; increment) instruction
+
+    Exemple :
+        for (i = 1; i <= NF; i++) {
+            print i, $i
+        }
+
+7.5 Boucle for-in (iteration sur un tableau)
+
+    for (variable in tableau) instruction
+
+    L'ordre d'iteration n'est pas garanti.
+
+    Exemple :
+        for (cle in tab) {
+            print cle, tab[cle]
+        }
+
+7.6 Instructions de controle de boucle
+
+    break       Sortie immediate de la boucle englobante
+    continue    Passe a l'iteration suivante
+
+    Exemple :
+        for (i = 1; i <= 100; i++) {
+            if (i % 7 == 0) continue
+            if (i > 50) break
+            print i
+        }
+
+7.7 Instructions de controle de flux
+
+    next        Arrete le traitement de la ligne courante et
+                passe a la ligne suivante
+    nextfile    Arrete le traitement du fichier courant et
+                passe au fichier suivant
+    exit [code] Termine le programme avec le code de sortie
+                optionnel (defaut : 0). Les blocs END sont
+                executes avant la sortie.
+
+    Exemple :
+        /^#/ { next }          # ignorer les commentaires
+        NR > 1000 { exit 0 }  # arreter apres 1000 lignes
+
+7.8 Bloc d'instructions
+
+    Un bloc est une sequence d'instructions entre accolades :
+
+        { instruction1; instruction2; ... }
+
+============================================================
+8. FONCTIONS PREDEFINIES
+============================================================
+
+8.1 Fonctions de chaines
+
+    length([s])
+        Retourne la longueur de la chaine s.
+        Sans argument, retourne la longueur de $0.
+
+        print length("Bonjour")     # 7
+
+    substr(s, debut [, longueur])
+        Retourne une sous-chaine de s commencant a la position
+        debut (1-base). Si longueur est omise, retourne jusqu'a
+        la fin de la chaine.
+
+        print substr("ABCDEF", 2, 3)   # BCD
+
+    index(s, sous_chaine)
+        Retourne la position de la premiere occurrence de
+        sous_chaine dans s (1-base). Retourne 0 si non trouve.
+
+        print index("Bonjour", "jour")  # 4
+
+    split(s, tableau [, separateur])
+        Decoupe la chaine s en elements stockes dans tableau,
+        en utilisant separateur (defaut : FS). Retourne le
+        nombre d'elements.
+
+        n = split("a:b:c", arr, ":")
+        # arr[1]="a", arr[2]="b", arr[3]="c", n=3
+
+    sub(regex, remplacement [, cible])
+        Remplace la premiere occurrence de regex dans cible
+        (defaut : $0) par remplacement. Retourne le nombre
+        de substitutions effectuees (0 ou 1).
+
+        sub(/ancien/, "nouveau")
+
+    gsub(regex, remplacement [, cible])
+        Remplace toutes les occurrences de regex dans cible
+        (defaut : $0) par remplacement. Retourne le nombre
+        de substitutions effectuees.
+
+        gsub(/[ \t]+/, " ")     # compresser les espaces
+
+    match(s, regex)
+        Recherche la premiere occurrence de regex dans s.
+        Retourne la position de debut (1-base) ou 0 si non
+        trouve. Met a jour RSTART et RLENGTH.
+
+        if (match($0, /[0-9]+/))
+            print substr($0, RSTART, RLENGTH)
+
+    tolower(s)
+        Retourne une copie de s avec toutes les lettres
+        majuscules converties en minuscules.
+
+        print tolower("BONJOUR")    # bonjour
+
+    toupper(s)
+        Retourne une copie de s avec toutes les lettres
+        minuscules converties en majuscules.
+
+        print toupper("bonjour")    # BONJOUR
+
+    sprintf(format, expr, ...)
+        Retourne une chaine formatee selon le format printf.
+
+        s = sprintf("%-10s %5d", nom, age)
+
+8.2 Fonctions mathematiques
+
+    int(x)
+        Retourne la partie entiere de x (troncature vers zero).
+
+        print int(3.9)      # 3
+        print int(-3.9)     # -3
+
+    sqrt(x)
+        Retourne la racine carree de x.
+
+        print sqrt(144)     # 12
+
+    sin(x)
+        Retourne le sinus de x (x en radians).
+
+    cos(x)
+        Retourne le cosinus de x (x en radians).
+
+    atan2(y, x)
+        Retourne l'arctangente de y/x en radians, dans
+        l'intervalle [-pi, pi].
+
+    exp(x)
+        Retourne e eleve a la puissance x (approximation).
+
+    log(x)
+        Retourne le logarithme naturel de x (approximation).
+
+    rand()
+        Retourne un nombre pseudo-aleatoire entre 0 et 1.
+
+    srand([graine])
+        Initialise le generateur de nombres aleatoires avec
+        la graine specifiee. Sans argument, utilise l'heure
+        courante. Retourne la graine precedente.
+
+        Exemple :
+            BEGIN { srand() }
+            { print int(rand() * 100) }
+
+8.3 Fonctions d'entree/sortie
+
+    print [expr, ...]
+        Affiche les expressions separees par OFS, suivies de
+        ORS. Sans argument, affiche $0.
+
+        print $1, $2, $3
+
+    printf(format, expr, ...)
+        Affichage formate. Les specificateurs de format suivants
+        sont supportes :
+          %d    entier decimal
+          %s    chaine de caracteres
+          %x    entier hexadecimal
+          %o    entier octal
+          %c    caractere
+          %%    caractere pourcentage litteral
+        Modificateurs : largeur de champ, alignement a gauche (-)
+
+        printf("%-20s %5d\n", nom, valeur)
+
+    getline [var]
+        Lit la prochaine ligne d'entree. Sans argument, met a
+        jour $0 et les champs $1..$NF. Avec un argument, stocke
+        la ligne dans var sans modifier $0.
+
+        getline ligne < "fichier.txt"
+
+    close(fichier)
+        Ferme le fichier ou la commande ouverte precedemment.
+
+    fflush([fichier])
+        Vide le tampon de sortie du fichier specifie.
+
+============================================================
+9. FONCTIONS UTILISATEUR
+============================================================
+
+9.1 Declaration
+
+    Les fonctions utilisateur sont declarees avec le mot-cle
+    function :
+
+        function nom(param1, param2, ...) {
+            corps
+            return valeur
+        }
+
+    Les fonctions peuvent etre declarees n'importe ou dans le
+    programme (avant ou apres leur utilisation).
+
+9.2 Parametres
+
+    Les parametres sont passes par valeur. Le nombre maximum
+    de parametres est de 32 (MAX_PARAM).
+
+    Les variables locales sont declarees comme parametres
+    supplementaires (convention AWK standard) :
+
+        function ma_fonction(param1, param2,    i, j, temp) {
+            # i, j et temp sont des variables locales
+        }
+
+9.3 Valeur de retour
+
+    L'instruction return termine la fonction et retourne une
+    valeur optionnelle. Si return est omis ou sans valeur, la
+    fonction retourne 0.
+
+        function carre(x) {
+            return x * x
+        }
+
+9.4 Recursivite
+
+    Les fonctions peuvent s'appeler elles-memes recursivement.
+
+        function factorielle(n) {
+            if (n <= 1) return 1
+            return n * factorielle(n - 1)
+        }
+
+        function fibonacci(n) {
+            if (n <= 1) return n
+            return fibonacci(n - 1) + fibonacci(n - 2)
+        }
+
+9.5 Portee des variables
+
+    Les variables dans AWK sont globales par defaut. Les seules
+    variables locales sont les parametres de la fonction (y
+    compris les parametres supplementaires servant de locales).
+
+============================================================
+10. TABLEAUX ASSOCIATIFS
+============================================================
+
+10.1 Generalites
+
+    Les tableaux AWK sont des collections associatives (tables de
+    hachage) ou les indices sont des chaines de caracteres. Ils
+    ne sont pas declares ; ils sont crees implicitement lors de
+    la premiere utilisation.
+
+10.2 Affectation et acces
+
+        tab["cle"] = valeur
+        print tab["cle"]
+
+    Un indice numerique est automatiquement converti en chaine :
+
+        tab[1] = "premier"     # equivalent a tab["1"]
+
+10.3 Test d'appartenance
+
+    L'operateur in teste si une cle existe dans un tableau sans
+    creer d'entree :
+
+        if ("cle" in tab) print "existe"
+
+10.4 Suppression
+
+    L'instruction delete supprime un element ou un tableau entier :
+
+        delete tab["cle"]      # supprime un element
+        delete tab             # supprime tout le tableau
+
+10.5 Parcours
+
+    La boucle for-in permet de parcourir toutes les cles d'un
+    tableau. L'ordre de parcours n'est pas garanti.
+
+        for (cle in tab) {
+            print cle, tab[cle]
+        }
+
+10.6 Tableaux multi-dimensionnels
+
+    AWK simule les tableaux multi-dimensionnels en concatenant
+    les indices avec SUBSEP (defaut : "\034") :
+
+        tab[i, j] = valeur     # equivalent a tab[i SUBSEP j]
+
+    Le test d'appartenance utilise la meme syntaxe :
+
+        if ((i, j) in tab) print tab[i, j]
+
+10.7 Limitations AWK86
+
+    Chaque tableau peut contenir au maximum 64 paires cle-valeur
+    (MAX_HASH_PAIRS). Les cles sont des chaines de caracteres.
+
+============================================================
+11. ENTREES / SORTIES ET REDIRECTIONS
+============================================================
+
+11.1 Entree standard
+
+    Par defaut, AWK lit l'entree ligne par ligne depuis stdin ou
+    depuis les fichiers passes en arguments sur la ligne de
+    commande. Chaque ligne est decoupee en champs selon FS.
+
+11.2 Fichiers multiples
+
+    AWK traite les fichiers d'entree sequentiellement. Les
+    variables FILENAME et FNR permettent de distinguer les
+    fichiers.
+
+        { print FILENAME, FNR, $0 }
+
+11.3 Instruction getline
+
+    getline permet de lire une ligne supplementaire :
+
+        getline              # lit dans $0 depuis l'entree courante
+        getline var          # lit dans var depuis l'entree courante
+        getline var < "f"    # lit dans var depuis le fichier "f"
+
+11.4 Redirection de sortie
+
+    La sortie de print et printf peut etre redirigee :
+
+        print "texte" > "fichier.txt"     # ecriture (ecrasement)
+        print "texte" >> "fichier.txt"    # ajout (append)
+
+11.5 Instruction close
+
+    Les fichiers ouverts doivent etre fermes avec close() :
+
+        close("fichier.txt")
+
+============================================================
+12. EXPRESSIONS REGULIERES
+============================================================
+
+12.1 Syntaxe
+
+    Les expressions regulieres sont delimitees par des slashs :
+
+        /motif/
+
+12.2 Metacaracteres supportes
+
+        .       N'importe quel caractere
+        ^       Debut de chaine
+        $       Fin de chaine
+        *       Zero ou plus du caractere precedent
+        +       Un ou plus du caractere precedent
+        ?       Zero ou un du caractere precedent
+        [...]   Classe de caracteres
+        [^...]  Classe de caracteres inversee
+        |       Alternance (ou)
+        (...)   Groupement
+        \       Echappement du caractere suivant
+
+12.3 Classes de caracteres
+
+        [abc]       a, b ou c
+        [a-z]       Lettre minuscule
+        [A-Z]       Lettre majuscule
+        [0-9]       Chiffre
+        [a-zA-Z]    Lettre quelconque
+        [^0-9]      Tout sauf un chiffre
+
+12.4 Utilisation dans les motifs
+
+    Comme motif de regle :
+        /^[0-9]/ { print "Commence par un chiffre" }
+
+    Avec les operateurs de correspondance :
+        $1 ~ /^[A-Z]/ { print "Majuscule" }
+
+    Dans les fonctions de chaines :
+        gsub(/[[:space:]]+/, " ")
+        if (match($0, /[0-9]+/)) print RSTART
+
+============================================================
+13. LIMITATIONS DE L'IMPLEMENTATION
+============================================================
+
+13.1 Limitations numeriques
+     - Entiers signes 16 bits uniquement (-32768 a 32767)
+     - Pas de nombres flottants natifs (tronques en entiers)
+     - Les fonctions mathematiques utilisent des approximations
+       entieres pour sin, cos, exp, log
+
+13.2 Limitations de chaines
+     - Longueur maximale de chaine : 255 caracteres (MAX_STR)
+
+13.3 Limitations de tableaux
+     - Maximum 64 paires cle-valeur par tableau (MAX_HASH_PAIRS)
+     - Maximum 64 champs par enregistrement (MAX_FIELDS)
+
+13.4 Limitations de programme
+     - Maximum 64 regles pattern-action (MAX_RULES)
+     - Maximum 32 parametres par fonction (MAX_PARAM)
+     - Maximum 16 niveaux d'imbrication de boucles (MAX_LOOP_NEST)
+     - Maximum 16 variables initialisees par -v (MAX_INIT_VARS)
+     - Maximum 30 erreurs de compilation (FPC), 3 (Turbo Pascal)
+
+13.5 Limitations d'architecture
+     - Pile de 1024 octets (STACK_SIZE)
+     - Modele memoire SMALL (64 Ko code + 64 Ko donnees)
+     - Pas de support des tubes (pipes)
+     - system() retourne 0 (non implemente)
+
+13.6 Fonctions non supportees ou partielles
+     - system()   : retourne toujours 0
+     - fflush()   : stub (pas de tampon en DOS)
+     - mktime()   : non implemente
+     - strftime() : non implemente
+
+============================================================
+14. CIBLE DE COMPILATION
+============================================================
+
+14.1 Architecture
+     Processeur Intel 8086 en mode reel 16 bits.
+     Modele memoire : SMALL (.MODEL SMALL).
+     Systeme d'exploitation : MS-DOS.
+     Appels systeme : INT 21h.
+
+14.2 Format de sortie
+     Assembleur compatible MASM (.ASM).
+     Segments : _TEXT (code) et _DATA (donnees).
+     Pile : .STACK 1024.
+
+14.3 Conventions de nommage ASM
+     _AWV_    : variable utilisateur
+     _AWF_    : fonction utilisateur
+     _AWK_    : constante chaine litterale
+     _AWRT_   : routine runtime
+     _AWL_    : label de saut interne
+     _AWA_    : tableau associatif
+     _AWP_    : donnees de motif (pattern)
+     _AWR_    : regle pattern-action
+
+14.4 Options de la ligne de commande
+     -F sep       Definir le separateur de champs (FS)
+     -v var=val   Initialiser une variable avant BEGIN
+     -d           Mode debug (affichage des tokens)
+     -w           Activer les avertissements
+     -h, --help   Afficher l'aide
+     --verbose    Mode verbeux (banniere et statistiques)
+
+14.5 Compilation et execution
+     Le compilateur AWK86.PAS genere un fichier .ASM a partir
+     du code source AWK. Ce fichier est ensuite assemble avec
+     MASM et lie avec LINK pour produire un executable DOS.
+
+     Exemple :
+         AWK86 programme.awk
+         MASM programme.asm;
+         LINK programme.obj;
+         programme.exe < donnees.txt

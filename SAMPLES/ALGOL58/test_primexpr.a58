@@ -1,0 +1,27 @@
+comment Test des expressions primaires (TODO 10) ;
+comment Tableaux, appels de fonctions, parametres par nom, ;
+comment expressions conditionnelles. ;
+
+begin
+  comment --- Booleens dans les expressions --- ;
+  integer bval ;
+  bval := if true then 42 else 0 ;
+
+  comment --- Expression conditionnelle inline --- ;
+  integer x ;
+  integer y ;
+  x := 10 ;
+  y := if x then 1 else 2 ;
+
+  comment --- Parentheses et groupement --- ;
+  integer z ;
+  z := (x + 3) * 2 ;
+
+  comment --- Variables globales et own --- ;
+  own integer counter ;
+  counter := counter + 1 ;
+
+  comment --- Expression conditionnelle imbriquee --- ;
+  integer r ;
+  r := if true then (if false then 10 else 20) else 30
+end

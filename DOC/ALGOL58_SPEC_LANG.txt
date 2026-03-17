@@ -1,0 +1,718 @@
+ALGOL 58 - Specifications du langage
+============================================================
+Compilateur : AL58C86.PAS (Algol 58 vers assembleur 8086)
+Cible       : MASM .MODEL SMALL, DOS 16 bits
+Version     : 1.0 - 2026
+
+============================================================
+1. PRESENTATION
+============================================================
+
+Algol 58, aussi connu sous le nom "IAL" (International Algebraic
+Language), est le premier langage de la famille ALGOL. Il a ete
+concu en 1958 par un comite international reunissant des
+scientifiques europeens et americains. Il est le predecesseur
+d'Algol 60 et a pose les bases de la programmation structuree.
+
+Le compilateur AL58C86 implemente un sous-ensemble pratique
+d'Algol 58 etendu avec quelques fonctionnalites modernes
+(chaines de caracteres, entrees/sorties), en ciblant le
+processeur Intel 8086 via la generation d'assembleur MASM.
+
+============================================================
+2. STRUCTURE D'UN PROGRAMME
+============================================================
+
+Un programme Algol 58 est un bloc englobant :
+
+    begin
+      declarations ;
+      instructions
+    end
+
+Le bloc principal est delimite par begin...end. Les declarations
+de variables precedent les instructions. Chaque instruction est
+separee par un point-virgule ;
+
+Exemple minimal :
+
+    begin
+      integer x ;
+      x := 42 ;
+      writeln(x)
+    end
+
+============================================================
+3. MOTS-CLES
+============================================================
+
+Mots-cles du langage :
+
+  Controle     : begin end if then else for do step until while
+  Branchement  : go to goto
+  Declarations : procedure value integer real boolean array
+                 switch own string label
+  Booleens     : true false
+  Operateurs   : and or not imp eqv div mod
+  Commentaires : comment
+  Intrinseques : abs sign sqrt sin cos arctan ln exp entier
+                 max min
+  Entrees/sort.: write writeln read readln
+
+============================================================
+4. TYPES DE DONNEES
+============================================================
+
+  Type         Taille    Description
+  ---------    --------  ----------------------------------------
+  integer      16 bits   Entier signe (-32768 a 32767)
+  real         16 bits   Reel (tronque en entier, stub 16 bits)
+  boolean      16 bits   Booleen (0 = false, 1 = true dans AX)
+  string       pointeur  Chaine de caracteres (segment DATA)
+  label        adresse   Etiquette pour goto
+  switch       table     Table d'adresses d'etiquettes
+  procedure    code      Sous-programme avec valeur de retour
+
+Remarque : le type real est un stub ; les valeurs reelles sont
+tronquees en entiers car le 8086 ne possede pas de coprocesseur
+mathematique. La notation decimale (3.14) et la notation exposant
+subscript (1.5 @ 3 = 1500) sont reconnues par le lexeur mais
+converties en entiers avec un avertissement.
+
+============================================================
+5. DECLARATIONS DE VARIABLES
+============================================================
+
+5.1 Variables scalaires
+-----------------------
+
+    integer x ;
+    integer x, y, z ;
+    real a, b ;
+    boolean flag ;
+
+Les declarations apparaissent apres begin ou dans les parametres
+des procedures. Le type precede une liste de noms separes par
+des virgules.
+
+5.2 Variables own (statiques)
+-----------------------------
+
+    own integer compteur ;
+    own integer total ;
+
+Le mot-cle own declare une variable persistante. Elle est
+allouee dans le segment DATA (pas sur la pile) et conserve
+sa valeur entre les appels de procedure. Sa portee suit les
+regles normales de visibilite.
+
+============================================================
+6. TABLEAUX (ARRAY)
+============================================================
+
+6.1 Declaration
+---------------
+
+    integer array V[1:10] ;
+    integer array M[1:3, 1:3] ;
+    boolean array drapeaux[0:4] ;
+    integer array W[5:9] ;
+
+Format des bornes : [borne_inf:borne_sup] pour chaque
+dimension, separees par des virgules.
+
+6.2 Acces aux elements
+-----------------------
+
+    V[1] := 100 ;
+    V[j + 1] := 50 ;
+    s := s + V[i] ;
+    M[i, j] := i * 10 + j ;
+
+L'indice peut etre une expression entiere. Le calcul d'offset
+est : (indice - borne_inf) * taille_element. Les tableaux
+multidimensionnels utilisent l'ordre row-major.
+
+Une verification des bornes a l'execution est disponible via
+la routine _A58RT_CHKIDX.
+
+============================================================
+7. EXPRESSIONS ET OPERATEURS
+============================================================
+
+7.1 Operateurs arithmetiques
+-----------------------------
+
+  +       Addition
+  -       Soustraction
+  *       Multiplication (IMUL)
+  /       Division entiere (IDIV, quotient dans AX)
+  div     Division entiere (synonyme de /)
+  mod     Modulo (IDIV, reste dans DX)
+  ^  **   Puissance (appel _A58RT_POW)
+
+7.2 Operateurs relationnels
+----------------------------
+
+  =       Egal
+  #  !=   Different
+  <       Inferieur
+  <=      Inferieur ou egal
+  >       Superieur
+  >=      Superieur ou egal
+
+Resultat : 1 (true) ou 0 (false) dans AX.
+
+7.3 Operateurs logiques
+------------------------
+
+  and     ET logique (court-circuit : si gauche faux, arret)
+  or      OU logique (court-circuit : si gauche vrai, arret)
+  not     Negation logique
+  imp     Implication : a imp b equiv. not a or b
+  eqv     Equivalence : a eqv b equiv. (a and b) or (not a and not b)
+
+7.4 Operateurs unaires
+-----------------------
+
+  +x      Plus unaire (identite)
+  -x      Moins unaire (NEG AX)
+  not x   Negation logique (XOR AX, 1)
+
+7.5 Affectation
+----------------
+
+  x := expression ;
+
+L'operateur d'affectation est :=
+
+7.6 Precedence des operateurs (du plus fort au plus faible)
+-----------------------------------------------------------
+
+  1. not, unaire +, unaire -      (droite)
+  2. ^, **                         (droite)
+  3. *, /, div, mod                (gauche)
+  4. +, -                          (gauche)
+  5. =, #, !=, <, <=, >, >=       (gauche)
+  6. and                           (gauche)
+  7. or                            (gauche)
+  8. imp                           (gauche)
+  9. eqv                           (gauche)
+
+Les parentheses permettent de modifier la priorite :
+  (a + b) * c
+
+Le compilateur effectue du repliement de constantes pour
+les valeurs immediates.
+
+============================================================
+8. STRUCTURES DE CONTROLE
+============================================================
+
+8.1 Conditionnelle if/then/else
+-------------------------------
+
+    if x > 5 then
+      writeln("grand")
+    else
+      writeln("petit") ;
+
+    comment Conditionnelles imbriquees ;
+    if y > 0 then
+      writeln("positif")
+    else if y = 0 then
+      writeln("zero")
+    else
+      writeln("negatif") ;
+
+Le else se rattache au if le plus proche. La branche else
+est optionnelle.
+
+Expression conditionnelle (inline) :
+    y := if x > 5 then 100 else 200 ;
+
+8.2 Boucle for avec step/until
+-------------------------------
+
+    for i := 1 step 1 until 10 do
+      s := s + i ;
+
+    comment Pas negatif (decompte) ;
+    for i := 5 step -1 until 1 do
+      writeln(i) ;
+
+    comment Clause do seule ;
+    for i := 42 do
+      writeln(i) ;
+
+Semantique : la variable de boucle va de la valeur initiale
+jusqu'a la limite (until) en incrementant du pas (step).
+La boucle s'arrete quand la variable depasse la limite.
+
+8.3 Boucle for avec while
+--------------------------
+
+    for i := 1 while i <= 100 do
+    begin
+      s := s + i ;
+      i := i + 1
+    end ;
+
+La variante while continue tant que la condition est vraie.
+
+8.4 Branchement goto et etiquettes
+-----------------------------------
+
+Etiquettes symboliques :
+
+    goto saut ;
+    x := 999 ;
+    saut:
+    writeln(x) ;
+
+Etiquettes numeriques :
+
+    goto 100 ;
+    y := 888 ;
+    100: y := 42 ;
+
+Les etiquettes sont declarees implicitement par la syntaxe
+nom: ou nombre: et sont visibles dans le bloc courant.
+
+============================================================
+9. BLOCS BEGIN...END ET PORTEES
+============================================================
+
+    begin
+      integer x ;
+      x := 10 ;
+
+      begin
+        integer y ;
+        y := 20 ;
+        writeln(y) ;
+        writeln(x)
+      end ;
+
+      writeln(x)
+    end
+
+Chaque bloc begin...end definit une portee. Les variables
+declarees dans un bloc sont locales a ce bloc et a ses
+sous-blocs. A l'entree du bloc, un cadre de pile est cree
+(PUSH BP / MOV BP, SP / SUB SP, taille_locales). A la sortie,
+le cadre est libere.
+
+Les blocs peuvent etre imbriques sans limite (jusqu'a
+MAX_SCOPE niveaux).
+
+============================================================
+10. PROCEDURES ET FONCTIONS
+============================================================
+
+10.1 Procedure simple
+---------------------
+
+    procedure saluer() ;
+      writeln("Bienvenue en Algol 58") ;
+
+    saluer() ;
+
+10.2 Procedure typee (fonction)
+-------------------------------
+
+    integer procedure fact(n) ; value n ; integer n ;
+    begin
+      integer resultat, i ;
+      resultat := 1 ;
+      for i := 2 step 1 until n do
+        resultat := resultat * i ;
+      fact := resultat
+    end ;
+
+    writeln(fact(5)) ;
+
+La valeur de retour est assignee au nom de la procedure
+(ex: fact := resultat). La valeur est retournee dans AX.
+
+10.3 Parametres par valeur (value)
+----------------------------------
+
+    integer procedure pgcd(a, b) ; value a, b ; integer a, b ;
+    begin
+      integer t ;
+      for t := 0 while b > 0 do
+      begin
+        t := b ;
+        b := a mod b ;
+        a := t
+      end ;
+      pgcd := a
+    end ;
+
+La clause value a, b ; indique que les parametres a et b
+sont copies a l'appel. Les modifications n'affectent pas
+les arguments de l'appelant.
+
+10.4 Parametres par nom (call-by-name)
+--------------------------------------
+
+Par defaut, les parametres sont passes par nom (substitution
+textuelle). C'est la semantique originale d'Algol 58.
+
+    procedure affval(x) ; integer x ;
+      writeln(x) ;
+
+    integer v ;
+    v := 42 ;
+    affval(v) ;
+    affval(v + 10) ;
+
+Implementation : chaque argument genere un thunk (sous-
+programme) qui evalue l'expression. A chaque acces au
+parametre, le thunk est appele pour obtenir la valeur
+courante.
+
+Cela permet le "dispositif de Jensen" (Jensen's Device) :
+un parametre passe comme V[i] sera reevalue a chaque
+iteration, reflétant la valeur courante de i.
+
+10.5 Procedures imbriquees
+--------------------------
+
+    integer procedure externe(x) ; value x ; integer x ;
+    begin
+      integer procedure interne(y) ; value y ; integer y ;
+        interne := y * y ;
+      externe := interne(x) + x
+    end ;
+
+Les procedures peuvent etre declarees a l'interieur d'autres
+procedures. Les procedures internes accedent aux variables
+du bloc englobant.
+
+============================================================
+11. DECLARATIONS SWITCH
+============================================================
+
+11.1 Declaration
+----------------
+
+    switch menu := opt1, opt2, opt3 ;
+
+Le switch declare une table de saut associant des indices
+entiers a des etiquettes.
+
+11.2 Utilisation
+----------------
+
+    choix := 2 ;
+    goto menu[choix] ;
+
+    opt1: resultat := 10 ; goto fin ;
+    opt2: resultat := 20 ; goto fin ;
+    opt3: resultat := 30 ; goto fin ;
+    fin: writeln(resultat) ;
+
+L'indice est base a 1. L'expression goto switch[expr]
+effectue un saut indexe dans la table.
+
+============================================================
+12. ENTREES / SORTIES
+============================================================
+
+12.1 Ecriture
+--------------
+
+    write("Hello") ;
+    write(x) ;
+    write("x=", x, " y=", y) ;
+    writeln(x) ;
+    writeln() ;
+
+write affiche un ou plusieurs arguments sans retour a la ligne.
+writeln affiche avec retour a la ligne (CR+LF).
+
+Les arguments peuvent etre :
+  - Chaines de caracteres entre guillemets doubles
+  - Expressions entieres (converties en texte)
+  - Expressions booleennes (affichees comme 0 ou 1)
+
+12.2 Lecture
+-------------
+
+    read(x) ;
+    readln(x) ;
+
+read lit un entier depuis l'entree standard.
+readln lit un entier et consomme le retour a la ligne.
+
+Implementation DOS : INT 21h, AH=0Ah pour la saisie,
+conversion par _A58RT_STRTONUM.
+
+============================================================
+13. COMMENTAIRES
+============================================================
+
+    comment Ceci est un commentaire ;
+    comment Un autre commentaire qui se termine au point-virgule ;
+
+Le mot-cle comment introduit un commentaire qui s'etend
+jusqu'au prochain point-virgule. C'est la seule forme de
+commentaire supportee.
+
+============================================================
+14. EXPRESSIONS BOOLEENNES
+============================================================
+
+14.1 Litteraux booleens
+-----------------------
+
+    b := true ;    comment AX = 1 ;
+    b := false ;   comment AX = 0 ;
+
+14.2 Conjonction (and) - evaluation court-circuit
+-------------------------------------------------
+
+    if true and true then r := 1 ;     comment vrai ;
+    if true and false then r := 1 ;    comment faux ;
+
+Si l'operande gauche est faux, l'operande droit n'est pas
+evalue.
+
+14.3 Disjonction (or) - evaluation court-circuit
+-------------------------------------------------
+
+    if false or true then r := 1 ;     comment vrai ;
+    if false or false then r := 1 ;    comment faux ;
+
+Si l'operande gauche est vrai, l'operande droit n'est pas
+evalue.
+
+14.4 Negation (not)
+--------------------
+
+    if not false then r := 1 ;  comment vrai ;
+    if not true then r := 1 ;   comment faux ;
+
+14.5 Implication (imp)
+----------------------
+
+    comment a imp b est equivalent a (not a) or b ;
+    if false imp false then r := r + 1 ;   comment vrai ;
+    if false imp true then r := r + 1 ;    comment vrai ;
+    if true imp true then r := r + 1 ;     comment vrai ;
+    if true imp false then r := 0 ;        comment faux ;
+
+Table de verite :
+  a      b      a imp b
+  false  false  true
+  false  true   true
+  true   false  false
+  true   true   true
+
+14.6 Equivalence (eqv)
+-----------------------
+
+    comment a eqv b est vrai si a et b ont la meme valeur ;
+    if true eqv true then r := r + 1 ;     comment vrai ;
+    if false eqv false then r := r + 1 ;   comment vrai ;
+    if true eqv false then r := 0 ;        comment faux ;
+
+Table de verite :
+  a      b      a eqv b
+  false  false  true
+  false  true   false
+  true   false  false
+  true   true   true
+
+============================================================
+15. FONCTIONS MATHEMATIQUES INTRINSEQUES
+============================================================
+
+  Fonction    Syntaxe        Description
+  ---------   ------------   -----------------------------------
+  abs         abs(x)         Valeur absolue
+  sign        sign(x)        Signe (-1, 0, ou 1)
+  sqrt        sqrt(x)        Racine carree (Newton-Raphson)
+  max         max(a, b)      Maximum de deux entiers
+  min         min(a, b)      Minimum de deux entiers
+  entier      entier(x)      Troncature en entier (identite)
+  sin         sin(x)         Sinus (stub, retourne 0)
+  cos         cos(x)         Cosinus (stub, retourne 1)
+  arctan      arctan(x)      Arctangente (stub, retourne 0)
+  ln          ln(x)          Logarithme naturel (stub, ret. 0)
+  exp         exp(x)         Exponentielle (stub, retourne 1)
+
+Exemples :
+
+    c := abs(-42) ;         comment resultat : 42 ;
+    c := sign(-8) ;         comment resultat : -1 ;
+    c := sign(0) ;          comment resultat : 0 ;
+    c := sqrt(144) ;        comment resultat : 12 ;
+    c := max(10, 20) ;      comment resultat : 20 ;
+    c := min(10, 20) ;      comment resultat : 10 ;
+
+Remarque : les fonctions transcendantes (sin, cos, arctan,
+ln, exp) sont des stubs car le processeur 8086 n'a pas de
+coprocesseur mathematique. Le compilateur emet un avertissement
+lorsqu'elles sont utilisees.
+
+============================================================
+16. CHAINES DE CARACTERES (EXTENSION)
+============================================================
+
+Les chaines de caracteres sont une extension au langage
+Algol 58 original. Elles sont delimitees par des guillemets
+doubles :
+
+    write("Hello, World") ;
+    write("Valeur = ") ;
+
+Les chaines sont stockees dans le segment DATA avec un label
+de la forme _A58K_n. Elles sont principalement utilisees
+pour les operations d'entree/sortie.
+
+============================================================
+17. CONVENTIONS DE NOMMAGE ASM
+============================================================
+
+Le compilateur utilise les prefixes suivants pour les
+identificateurs assembleur generes :
+
+  Prefixe      Utilisation
+  ----------   -----------------------------------------
+  _A58V_       Variable scalaire
+  _A58P_       Procedure / fonction
+  _A58K_       Constante chaine litterale
+  _A58RT_      Routine runtime
+  _A58L_       Label de saut interne
+  _A58SW_      Table switch
+  _A58OWN_     Variable own (statique)
+  _A58ARR_     Tableau
+  _A58TH_      Thunk (parametre par nom)
+
+============================================================
+18. BIBLIOTHEQUE RUNTIME
+============================================================
+
+Le compilateur genere automatiquement les routines runtime
+suivantes dans le code assembleur :
+
+  _A58RT_STRLEN     Longueur d'une chaine
+  _A58RT_NUMTOSTR   Conversion entier vers chaine
+  _A58RT_STRTONUM   Conversion chaine vers entier
+  _A58RT_PRINT      Affichage d'une chaine (DOS INT 21h)
+  _A58RT_PRINTLN    Affichage avec retour a la ligne
+  _A58RT_ABS        Valeur absolue
+  _A58RT_SIGN       Signe (-1, 0, 1)
+  _A58RT_POW        Puissance (base^exp)
+  _A58RT_SQRT       Racine carree (Newton-Raphson)
+  _A58RT_MAX        Maximum de deux valeurs
+  _A58RT_MIN        Minimum de deux valeurs
+  _A58RT_PANIC      Erreur fatale a l'execution
+  _A58RT_CHKIDX     Verification des bornes de tableau
+
+Les routines transcendantes sont des stubs :
+  _A58RT_SIN        Retourne 0
+  _A58RT_COS        Retourne 1
+  _A58RT_ARCTAN     Retourne 0
+  _A58RT_LN         Retourne 0
+  _A58RT_EXP        Retourne 1
+
+============================================================
+19. LIMITES DU COMPILATEUR
+============================================================
+
+  MAX_SYM       2048   Nombre maximal de symboles
+  MAX_LABEL     2048   Nombre maximal de labels
+  MAX_SCOPE     64     Profondeur maximale d'imbrication
+  MAX_DATA      512    Entrees dans le segment DATA
+  MAX_TYPE      32     Types internes
+  MAX_PARAM     32     Parametres par procedure
+  MAX_LOOP_NEST 16     Imbrication de boucles
+  MAX_ERRORS    30     Erreurs avant abandon
+  STACK_SIZE    1024   Taille de la pile (octets)
+
+============================================================
+20. COMPILATION ET UTILISATION
+============================================================
+
+Compilation du compilateur :
+
+    fpc -Mtp AL58C86.PAS
+
+Utilisation :
+
+    AL58C86 source.a58 [sortie.asm] [-v] [-d] [-w] [-h]
+
+Options :
+  -v     Mode verbeux
+  -d     Mode debug (affichage des tokens)
+  -w     Activer les avertissements
+  -h     Aide en ligne
+
+Extensions de fichiers :
+  .a58   Fichier source Algol 58
+  .alg   Fichier source Algol 58 (alternatif)
+  .asm   Fichier assembleur genere (MASM)
+
+============================================================
+21. EXEMPLE COMPLET
+============================================================
+
+    begin
+      comment Programme de demonstration Algol 58 ;
+      integer i, somme, n ;
+      integer array tab[1:5] ;
+
+      comment Initialisation ;
+      n := 5 ;
+      for i := 1 step 1 until n do
+        tab[i] := i * i ;
+
+      comment Calcul de la somme des carres ;
+      somme := 0 ;
+      for i := 1 step 1 until n do
+        somme := somme + tab[i] ;
+
+      write("Somme des carres de 1 a ") ;
+      write(n) ;
+      write(" = ") ;
+      writeln(somme) ;
+
+      comment Factorielle avec procedure ;
+      integer procedure fact(k) ; value k ; integer k ;
+      begin
+        if k <= 1 then
+          fact := 1
+        else
+          fact := k * fact(k - 1)
+      end ;
+
+      write("5! = ") ;
+      writeln(fact(5)) ;
+
+      comment Expressions booleennes ;
+      if somme > 50 and n = 5 then
+        writeln("Resultat verifie")
+      else
+        writeln("Erreur")
+    end
+
+============================================================
+22. REFERENCES
+============================================================
+
+  - "Preliminary report: International Algebraic Language"
+    Communications of the ACM, Vol. 1 No. 12, Dec. 1958
+
+  - "Report on the Algorithmic Language ALGOL 58"
+    Perlis, A.J. and Samelson, K. (eds.), 1958
+
+  - Knuth, D.E. "The Remaining Trouble Spots in ALGOL 60"
+    Communications of the ACM, Vol. 10, 1967
+
+  - Site web : https://www.gladir.com/dev-cools
+
+============================================================

@@ -1,0 +1,58 @@
+comment Test TODO 15 : tableaux (array) ;
+comment Teste les declarations de tableaux et les acces aux elements ;
+
+begin
+  comment Test 1 : declaration d un tableau entier simple ;
+  integer array A[0:4] ;
+
+  comment Test 2 : affectation d elements ;
+  A[0] := 10 ;
+  A[1] := 20 ;
+  A[2] := 30 ;
+  A[3] := 40 ;
+  A[4] := 50 ;
+
+  comment Test 3 : lecture d element dans une variable ;
+  integer x ;
+  x := A[2] ;
+  writeln(x) ;
+
+  comment Test 4 : ecriture directe d un element ;
+  writeln(A[0]) ;
+  writeln(A[4]) ;
+
+  comment Test 5 : tableau Boolean ;
+  Boolean array flags[1:3] ;
+  flags[1] := true ;
+  flags[2] := false ;
+  flags[3] := true ;
+
+  comment Test 6 : acces tableau avec expression d index ;
+  integer i ;
+  i := 2 ;
+  A[i] := 99 ;
+  writeln(A[2]) ;
+
+  comment Test 7 : tableau a bornes non nulles ;
+  integer array B[5:9] ;
+  B[5] := 100 ;
+  B[6] := 200 ;
+  B[7] := 300 ;
+
+  comment Test 8 : boucle for avec tableau ;
+  for i := 0 step 1 until 4 do
+    A[i] := i * 10 ;
+
+  comment Test 9 : tableau real ;
+  real array R[0:2] ;
+  R[0] := 1 ;
+  R[1] := 2 ;
+  R[2] := 3 ;
+
+  comment Test 10 : tableau bidimensionnel ;
+  integer array M[0:1, 0:1] ;
+  M[0,0] := 1 ;
+  M[0,1] := 2 ;
+  M[1,0] := 3 ;
+  M[1,1] := 4
+end

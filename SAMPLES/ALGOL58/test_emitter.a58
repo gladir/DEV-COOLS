@@ -1,0 +1,11 @@
+comment Test de l emetteur de code ASM (TODO 07);
+comment Verifie EmitHeader, EmitProlog/EmitEpilog, _TEXT SEGMENT;
+
+comment Le programme genere un fichier ASM avec;
+comment _TEXT SEGMENT / _A58P_Main / MOV AX,_DATA / MOV DS,AX;
+comment et un epilogue DOS INT 21h / _TEXT ENDS / END _A58P_Main;
+
+42;
+"hello";
+3 + 4;
+true and false

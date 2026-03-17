@@ -2,7 +2,7 @@
   @created: 2026
   @version: 0.1
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Compilateur ABAP/4 (SAP) vers assembleur 80386 pour Windows 32 bits
   @license: MIT
 }
@@ -10,7 +10,7 @@
 (* ============================================================
   ABAPCW32.PAS - Compilateur ABAP/4 (SAP) vers assembleur
   80386 pour Windows 32 bits
-  Turbo Pascal / Free Pascal (-Mtp)
+  Free Pascal (-Mtp)
   Cible : MASM .386 / .MODEL FLAT, PE Win32
 
   Par defaut produit un fichier .EXE (PE Windows 32 bits).

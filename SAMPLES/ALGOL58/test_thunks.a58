@@ -1,0 +1,106 @@
+comment Test 1 : procedure avec parametre par valeur (reference) ;
+begin
+  procedure showval(v) ; value v ; integer v ;
+    writeln(v) ;
+
+  integer x ;
+  x := 42 ;
+  showval(x) ;
+end
+
+comment Test 2 : procedure avec parametre par nom (thunk) ;
+begin
+  procedure showname(n) ; integer n ;
+    writeln(n) ;
+
+  integer a ;
+  a := 99 ;
+  showname(a) ;
+end
+
+comment Test 3 : expression comme argument par nom ;
+begin
+  procedure showexpr(e) ; integer e ;
+    writeln(e) ;
+
+  integer b ;
+  b := 10 ;
+  showexpr(b + 5) ;
+end
+
+comment Test 4 : deux parametres un par valeur un par nom ;
+begin
+  procedure twoparam(p, q) ; value p ; integer p ; integer q ;
+  begin
+    writeln(p) ;
+    writeln(q)
+  end ;
+
+  integer c ;
+  c := 7 ;
+  twoparam(c, c + 1) ;
+end
+
+comment Test 5 : parametre par nom avec constante ;
+begin
+  procedure showconst(k) ; integer k ;
+    writeln(k) ;
+
+  showconst(123) ;
+end
+
+comment Test 6 : deux parametres par nom ;
+begin
+  procedure twonames(m, n) ; integer m ; integer n ;
+  begin
+    writeln(m) ;
+    writeln(n)
+  end ;
+
+  integer d ;
+  integer e ;
+  d := 20 ;
+  e := 30 ;
+  twonames(d, e) ;
+end
+
+comment Test 7 : parametre par nom avec expression arithmetique ;
+begin
+  procedure compute(expr) ; integer expr ;
+    writeln(expr) ;
+
+  integer f ;
+  f := 3 ;
+  compute(f * f + 1) ;
+end
+
+comment Test 8 : appel avec parametre par valeur (pas de thunk) ;
+begin
+  procedure identity(v) ; value v ; integer v ;
+    writeln(v) ;
+
+  integer g ;
+  g := 55 ;
+  identity(g) ;
+end
+
+comment Test 9 : parametre par nom lu deux fois ;
+begin
+  procedure readtwice(n) ; integer n ;
+  begin
+    writeln(n) ;
+    writeln(n)
+  end ;
+
+  integer h ;
+  h := 100 ;
+  readtwice(h) ;
+end
+
+comment Test 10 : procedure sans parametre (aucun thunk) ;
+begin
+  procedure noparam() ;
+    writeln(77) ;
+
+  noparam() ;
+end

@@ -1,0 +1,65 @@
+comment Algol 58 - Exemple : tableaux ;
+comment Declarations, acces indexe, bornes, multidimensionnel ;
+
+begin
+  comment Tableau simple : 10 elements entiers ;
+  integer array V[1:10] ;
+  integer i, s ;
+
+  comment Initialisation avec boucle for ;
+  for i := 1 step 1 until 10 do
+    V[i] := i * i ;
+
+  comment Affichage des elements ;
+  for i := 1 step 1 until 10 do
+    writeln(V[i]) ;
+
+  comment Somme des elements ;
+  s := 0 ;
+  for i := 1 step 1 until 10 do
+    s := s + V[i] ;
+  writeln(s) ;
+
+  comment Tableau avec bornes non standard ;
+  integer array W[5:9] ;
+  W[5] := 100 ;
+  W[6] := 200 ;
+  W[7] := 300 ;
+  W[8] := 400 ;
+  W[9] := 500 ;
+
+  s := 0 ;
+  for i := 5 step 1 until 9 do
+    s := s + W[i] ;
+  writeln(s) ;
+
+  comment Tableau Boolean ;
+  Boolean array flags[0:4] ;
+  flags[0] := true ;
+  flags[1] := false ;
+  flags[2] := true ;
+  flags[3] := false ;
+  flags[4] := true ;
+
+  comment Acces avec expression comme index ;
+  integer j ;
+  j := 3 ;
+  writeln(V[j + 1]) ;
+
+  comment Tableau bidimensionnel (matrice 3x3) ;
+  integer array M[1:3, 1:3] ;
+  for i := 1 step 1 until 3 do
+    for j := 1 step 1 until 3 do
+      M[i,j] := i * 10 + j ;
+
+  comment Affichage de la diagonale ;
+  for i := 1 step 1 until 3 do
+    writeln(M[i,i]) ;
+
+  comment Recherche du maximum dans un tableau ;
+  integer best ;
+  best := V[1] ;
+  for i := 2 step 1 until 10 do
+    if V[i] > best then best := V[i] ;
+  writeln(best)
+end

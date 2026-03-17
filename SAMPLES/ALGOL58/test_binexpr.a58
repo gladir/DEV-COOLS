@@ -1,0 +1,103 @@
+comment Test des expressions binaires (TODO 11) ;
+comment Arithmetique, comparaisons, logique, precedence ;
+comment avec des variables et des litteraux. ;
+
+begin
+  comment --- Arithmetique entiere avec variables --- ;
+  integer a ;
+  integer b ;
+  integer c ;
+  a := 10 ;
+  b := 3 ;
+
+  comment Addition et soustraction ;
+  c := a + b ;
+  c := a - b ;
+  c := a + 5 ;
+  c := 7 - b ;
+
+  comment Multiplication ;
+  c := a * b ;
+  c := a * 4 ;
+
+  comment Division entiere et modulo ;
+  c := a / b ;
+  c := a div b ;
+  c := a mod b ;
+  c := 42 div 5 ;
+  c := 42 mod 5 ;
+
+  comment Puissance ;
+  c := 2 ^ 10 ;
+  c := a ** 2 ;
+  c := 3 ^ 3 ;
+
+  comment --- Operateurs relationnels avec variables --- ;
+  Boolean p ;
+  Boolean q ;
+  p := a = 10 ;
+  p := a # b ;
+  p := a != b ;
+  p := a < b ;
+  p := a <= b ;
+  p := a > b ;
+  p := a >= b ;
+  p := 5 < 10 ;
+  p := 10 >= 10 ;
+
+  comment --- Operateurs logiques --- ;
+  q := true and true ;
+  q := true and false ;
+  q := false or true ;
+  q := false or false ;
+  q := not true ;
+  q := not false ;
+
+  comment Court-circuit and : si a=0, b non evalue ;
+  q := false and true ;
+  comment Court-circuit or : si a<>0, b non evalue ;
+  q := true or false ;
+
+  comment --- Implication et equivalence --- ;
+  q := true imp true ;
+  q := true imp false ;
+  q := false imp true ;
+  q := false imp false ;
+  q := true eqv true ;
+  q := true eqv false ;
+  q := false eqv false ;
+
+  comment --- Precedence des operateurs --- ;
+  comment * plus fort que + : 2 + 3 * 4 = 14 ;
+  c := 2 + 3 * 4 ;
+  comment Parentheses : (2 + 3) * 4 = 20 ;
+  c := (2 + 3) * 4 ;
+  comment - plus faible que * : 10 - 2 * 3 = 4 ;
+  c := 10 - 2 * 3 ;
+  comment div et mod meme niveau que * ;
+  c := 10 + 20 div 3 ;
+  c := 1 + 10 mod 3 ;
+
+  comment --- Expressions imbriquees complexes --- ;
+  c := (a + b) * (a - b) ;
+  c := a * b + b * a ;
+  c := (a + 1) * (b + 2) ;
+
+  comment --- Comparaisons dans des expressions --- ;
+  p := (a + b) > 10 ;
+  p := (a * 2) = 20 ;
+  q := (a > 5) and (b < 10) ;
+  q := (a = 10) or (b = 3) ;
+  q := (a > 0) imp (b > 0) ;
+  q := (a > 0) eqv (b > 0) ;
+
+  comment --- Pliage de constantes --- ;
+  c := 3 + 4 ;
+  c := 10 * 5 ;
+  c := 100 / 10 ;
+  c := 2 ^ 8 ;
+  p := 5 = 5 ;
+  p := 3 # 4 ;
+  q := true and true ;
+  q := false or false
+end

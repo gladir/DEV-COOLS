@@ -1,0 +1,63 @@
+comment Test TODO 13 - IF / THEN / ELSE (CONDITIONNELLES);
+comment Teste les instructions conditionnelles if/then/else;
+begin
+  integer x;
+  integer y;
+  integer r;
+  Boolean b;
+
+  comment Test 1 : if simple (branche vraie);
+  x := 1;
+  if x = 1 then writeln("T1:OK");
+
+  comment Test 2 : if simple (branche fausse, pas de else);
+  x := 0;
+  if x = 1 then writeln("T2:ERREUR");
+
+  comment Test 3 : if/else (branche vraie);
+  x := 5;
+  if x > 0 then writeln("T3:OK") else writeln("T3:ERREUR");
+
+  comment Test 4 : if/else (branche fausse);
+  x := 0;
+  if x > 0 then writeln("T4:ERREUR") else writeln("T4:OK");
+
+  comment Test 5 : if avec affectation dans then;
+  x := 10;
+  r := 0;
+  if x > 5 then r := 1;
+  writeln(r);
+
+  comment Test 6 : if/else avec affectation;
+  x := 3;
+  if x > 5 then r := 99 else r := 42;
+  writeln(r);
+
+  comment Test 7 : if imbrique (else lie au if le plus proche);
+  x := 1;
+  y := 0;
+  if x > 0 then if y > 0 then writeln("T7:ERREUR") else writeln("T7:OK");
+
+  comment Test 8 : if avec bloc begin/end;
+  x := 10;
+  if x > 5 then
+  begin
+    r := x + 1;
+    writeln(r)
+  end;
+
+  comment Test 9 : if/else avec blocs;
+  x := 2;
+  if x > 5 then
+  begin
+    writeln("T9:ERREUR")
+  end
+  else
+  begin
+    writeln("T9:OK")
+  end;
+
+  comment Test 10 : if avec booleen;
+  b := true;
+  if b then writeln("T10:OK") else writeln("T10:ERREUR")
+end

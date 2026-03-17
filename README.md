@@ -25,6 +25,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur ABAP/4 pour de l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>ABAPCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur ABAP/4 pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>ASC2ABAP.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier ASCII en code source ABAP/4.</td>
 		</tr>	
@@ -319,6 +323,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>ICO2PAS.PAS</b></td>
 			<td>Cette commande permet de transformer un icône (.ICO) en code source Pascal.</td>
+		</tr>
+		<tr>
+			<td><b>JASMIN.PAS</b></td>
+			<td>Cette commande permet d'aassembler un fichier source Jasmin (.j) en fichier .class (bytecode Java) compatible avec la JVM.</td>
 		</tr>
 		<tr>
 			<td><b>JAVAC86.PAS</b></td>
