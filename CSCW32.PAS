@@ -500,7 +500,7 @@ Const
   MAX_BIN_DATA    = 65536;       { 64 KB max data section             }
   MAX_BIN_LBL     = 4096;        { max labels                         }
   MAX_BIN_FIX     = 8192;        { max fixups                         }
-  PE_NUM_API      = 9;           { number of imported Win32 APIs      }
+  PE_NUM_API      = 10;          { number of imported Win32 APIs      }
   COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
   COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
 
@@ -695,12 +695,13 @@ Const
   BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
     '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20',
     '_ReadFile@20', '_GetProcessHeap@0', '_HeapAlloc@12',
-    '_HeapFree@12', '_CreateFileA@28', '_CloseHandle@4'
+    '_HeapFree@12', '_CreateFileA@28', '_CloseHandle@4',
+    '_DeleteFileA@4'
   );
   BinAPIName : Array[0..PE_NUM_API - 1] Of String[20] = (
     'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
     'GetProcessHeap', 'HeapAlloc', 'HeapFree',
-    'CreateFileA', 'CloseHandle'
+    'CreateFileA', 'CloseHandle', 'DeleteFileA'
   );
 
 { ------------------------------------------------------------ }
@@ -3539,6 +3540,7 @@ Begin
   EmitRaw('EXTRN _HeapFree@12:NEAR');
   EmitRaw('EXTRN _CreateFileA@28:NEAR');
   EmitRaw('EXTRN _CloseHandle@4:NEAR');
+  EmitRaw('EXTRN _DeleteFileA@4:NEAR');
   EmitBlankLine;
 End;
 
@@ -3843,6 +3845,7 @@ Begin
   { Tampons I/O }
   DataAddArray('_CSC_INBUF',  256);    { tampon lecture 256 octets       }
   DataAddArray('_CSC_NUMBUF', 16);     { tampon conversion nombre        }
+  DataAddArray('_CSC_FRBUF', 4096);    { tampon lecture fichier 4 Ko     }
 
   { Handles et variables systeme }
   DataAddDWord('_CSC_HSTDOUT', 0);     { handle stdout                   }
@@ -7929,9 +7932,9 @@ Begin
   EmitInstr('PUSH', 'EBX');
   EmitInstr('PUSH', 'ESI');
   EmitInstr('PUSH', 'EDI');
-  { CreateFileA(path, GENERIC_WRITE=0x40000000, 0, NULL, CREATE_ALWAYS=2, 0, NULL) }
+  { CreateFileA(path, GENERIC_WRITE=0x40000000, 0, NULL, CREATE_ALWAYS=2, FILE_ATTRIBUTE_NORMAL=128, NULL) }
   EmitInstr('PUSH', '0');                      { hTemplateFile  }
-  EmitInstr('PUSH', '0');                      { dwFlags        }
+  EmitInstr('PUSH', '128');                    { FILE_ATTRIBUTE_NORMAL }
   EmitInstr('PUSH', '2');                      { CREATE_ALWAYS  }
   EmitInstr('PUSH', '0');                      { lpSecurity     }
   EmitInstr('PUSH', '0');                      { dwShareMode    }
@@ -7985,7 +7988,7 @@ Begin
   EmitInstr('PUSH', 'EDI');
   { CreateFileA avec FILE_APPEND_DATA=0x4, OPEN_ALWAYS=4 }
   EmitInstr('PUSH', '0');                      { hTemplateFile  }
-  EmitInstr('PUSH', '0');                      { dwFlags        }
+  EmitInstr('PUSH', '128');                    { FILE_ATTRIBUTE_NORMAL }
   EmitInstr('PUSH', '4');                      { OPEN_ALWAYS    }
   EmitInstr('PUSH', '0');                      { lpSecurity     }
   EmitInstr('PUSH', '0');                      { dwShareMode    }
@@ -8029,17 +8032,18 @@ Begin
   { ---- _CSCRT_FREADALL ---- }
   { Pile: [ESP+4]=path                                            }
   { File.ReadAllText : ouvre, lit tout, ferme, retourne buffer    }
-  { Retour : EAX = pointeur vers chaine lue (heap) ou "" si err  }
+  { Retour : EAX = pointeur vers buffer statique ou "" si err    }
+  { Utilise buffer local sur la pile (4096 octets max)           }
   EmitComment('_CSCRT_FREADALL : lire un fichier texte entier');
   EmitLabel('_CSCRT_FREADALL');
   EmitInstr('PUSH', 'EBP');
   EmitInstr('MOV',  'EBP,ESP');
+  EmitInstr('SUB',  'ESP,4096');
   EmitInstr('PUSH', 'EBX');
-  EmitInstr('PUSH', 'ESI');
   EmitInstr('PUSH', 'EDI');
-  { CreateFileA(path, GENERIC_READ=0x80000000, FILE_SHARE_READ=1, NULL, OPEN_EXISTING=3, 0, NULL) }
+  { CreateFileA(path, GENERIC_READ=0x80000000, FILE_SHARE_READ=1, NULL, OPEN_EXISTING=3, 128, NULL) }
   EmitInstr('PUSH', '0');                      { hTemplateFile  }
-  EmitInstr('PUSH', '0');                      { dwFlags        }
+  EmitInstr('PUSH', '128');                    { FILE_ATTRIBUTE_NORMAL }
   EmitInstr('PUSH', '3');                      { OPEN_EXISTING  }
   EmitInstr('PUSH', '0');                      { lpSecurity     }
   EmitInstr('PUSH', '1');                      { FILE_SHARE_READ}
@@ -8049,35 +8053,38 @@ Begin
   EmitInstr('CMP',  'EAX,-1');
   EmitInstr('JE',   '_CSCRT_FR_ERR');
   EmitInstr('MOV',  'EBX,EAX');               { EBX = handle   }
-  { Allouer un buffer de 4096 octets }
-  EmitInstr('PUSH', '4096');
-  EmitInstr('PUSH', '0');                      { dwFlags        }
-  EmitInstr('CALL', '_GetProcessHeap@0');
-  EmitInstr('PUSH', 'EAX');                   { hHeap          }
-  EmitInstr('CALL', '_HeapAlloc@12');
-  EmitInstr('MOV',  'ESI,EAX');               { ESI = buffer   }
-  { ReadFile(handle, buffer, 4095, &readcnt, 0) }
+  { ReadFile(handle, buffer_on_stack, 4095, &readcnt, 0) }
+  EmitInstr('LEA',  'EDI,[EBP-4096]');         { EDI = local buffer }
   EmitInstr('PUSH', '0');
   EmitInstr('PUSH', 'OFFSET _CSC_READCNT');
   EmitInstr('PUSH', '4095');
-  EmitInstr('PUSH', 'ESI');
+  EmitInstr('PUSH', 'EDI');
   EmitInstr('PUSH', 'EBX');
   EmitInstr('CALL', '_ReadFile@20');
   { Terminer la chaine avec 0 }
   EmitInstr('MOV',  'ECX,DWORD PTR [_CSC_READCNT]');
-  EmitInstr('MOV',  'BYTE PTR [ESI+ECX],0');
+  EmitInstr('LEA',  'EDI,[EBP-4096]');
+  EmitInstr('MOV',  'BYTE PTR [EDI+ECX],0');
   { CloseHandle }
   EmitInstr('PUSH', 'EBX');
   EmitInstr('CALL', '_CloseHandle@4');
-  { Retourner le buffer }
-  EmitInstr('MOV',  'EAX,ESI');
+  { Copier vers buffer statique et retourner }
+  EmitInstr('LEA',  'EDI,[EBP-4096]');
+  EmitInstr('MOV',  'EAX,OFFSET _CSC_FRBUF');
+  EmitInstr('PUSH', 'ESI');
+  EmitInstr('MOV',  'ESI,EDI');
+  EmitInstr('MOV',  'EDI,EAX');
+  EmitInstr('MOV',  'ECX,DWORD PTR [_CSC_READCNT]');
+  EmitInstr('INC',  'ECX');                    { inclure le null }
+  EmitInstr('REP',  'MOVSB');
+  EmitInstr('POP',  'ESI');
+  EmitInstr('MOV',  'EAX,OFFSET _CSC_FRBUF');
   EmitInstr('JMP',  '_CSCRT_FR_DONE');
   EmitLabel('_CSCRT_FR_ERR');
   { Retourner chaine vide en cas d erreur }
   EmitInstr('MOV',  'EAX,OFFSET _CSC_EMPTY');
   EmitLabel('_CSCRT_FR_DONE');
   EmitInstr('POP',  'EDI');
-  EmitInstr('POP',  'ESI');
   EmitInstr('POP',  'EBX');
   EmitInstr('MOV',  'ESP,EBP');
   EmitInstr('POP',  'EBP');
@@ -8120,31 +8127,13 @@ Begin
 
   { ---- _CSCRT_FDELETE ---- }
   { Pile: [ESP+4]=path                                            }
-  { File.Delete : utilise CreateFileA pour ouvrir puis supprimer  }
-  { Note: DeleteFileA n est pas dans nos imports, on le simule    }
-  { en ouvrant avec CREATE_ALWAYS et taille 0 puis supprimant     }
-  { En fait, simplement ecrire un fichier vide suffit pour ce     }
-  { compilateur d enseignement. Alternative: on l ajoute.         }
-  { On va ajouter DeleteFileA aux imports.                        }
-  { Pour le moment, on ecrase le fichier avec un contenu vide     }
-  EmitComment('_CSCRT_FDELETE : supprimer un fichier (stub: ecrase vide)');
+  { File.Delete : utilise DeleteFileA pour supprimer le fichier   }
+  EmitComment('_CSCRT_FDELETE : supprimer un fichier via DeleteFileA');
   EmitLabel('_CSCRT_FDELETE');
   EmitInstr('PUSH', 'EBP');
   EmitInstr('MOV',  'EBP,ESP');
-  { CreateFileA en CREATE_ALWAYS ecrase le fichier }
-  EmitInstr('PUSH', '0');
-  EmitInstr('PUSH', '0');
-  EmitInstr('PUSH', '2');                      { CREATE_ALWAYS  }
-  EmitInstr('PUSH', '0');
-  EmitInstr('PUSH', '0');
-  EmitInstr('PUSH', '1073741824');             { GENERIC_WRITE  }
   EmitInstr('PUSH', 'DWORD PTR [EBP+8]');     { path           }
-  EmitInstr('CALL', '_CreateFileA@28');
-  EmitInstr('CMP',  'EAX,-1');
-  EmitInstr('JE',   '_CSCRT_FD_DONE');
-  { Fermer immediatement : fichier existe mais est vide }
-  EmitInstr('PUSH', 'EAX');
-  EmitInstr('CALL', '_CloseHandle@4');
+  EmitInstr('CALL', '_DeleteFileA@4');
   EmitLabel('_CSCRT_FD_DONE');
   EmitInstr('MOV',  'ESP,EBP');
   EmitInstr('POP',  'EBP');
