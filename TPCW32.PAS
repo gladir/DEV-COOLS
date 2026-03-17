@@ -13217,6 +13217,28 @@ Begin
       Exit;
     End;
 
+    { READKEY (utilise comme instruction - resultat ignore) }
+    If Up = 'READKEY' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'READKEY');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { KEYPRESSED (utilise comme instruction - resultat ignore) }
+    If Up = 'KEYPRESSED' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'KEYPRESSED');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
     { ---- TODO 19 : Procedures DOS comme identifiants ---- }
 
     { GETDATE(Year, Month, Day, DayOfWeek) }
