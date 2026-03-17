@@ -1,8 +1,8 @@
+*.S68
 *.class
 *.o
 *.obj
 *.ppu
-*.S68
-/JASMIN
 /ASM68
+/JASMIN
 TESTS/__pycache__/
