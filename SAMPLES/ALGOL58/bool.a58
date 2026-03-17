@@ -1,0 +1,83 @@
+comment Algol 58 - Exemple : expressions booleennes ;
+comment and, or, not, imp, eqv, expressions booleennes ;
+
+begin
+  integer r ;
+
+  comment Operateur and (conjonction) ;
+  r := 0 ;
+  if true and true then r := 1 ;
+  writeln(r) ;
+
+  r := 0 ;
+  if true and false then r := 1 ;
+  writeln(r) ;
+
+  comment Operateur or (disjonction) ;
+  r := 0 ;
+  if false or true then r := 1 ;
+  writeln(r) ;
+
+  r := 0 ;
+  if false or false then r := 1 ;
+  writeln(r) ;
+
+  comment Operateur not (negation) ;
+  r := 0 ;
+  if not false then r := 1 ;
+  writeln(r) ;
+
+  r := 0 ;
+  if not true then r := 1 ;
+  writeln(r) ;
+
+  comment Operateur imp (implication) ;
+  comment false imp x est toujours vrai ;
+  r := 0 ;
+  if false imp false then r := r + 1 ;
+  if false imp true then r := r + 1 ;
+  if true imp true then r := r + 1 ;
+  writeln(r) ;
+
+  comment true imp false est faux ;
+  r := 0 ;
+  if true imp false then r := 1 ;
+  writeln(r) ;
+
+  comment Operateur eqv (equivalence) ;
+  r := 0 ;
+  if true eqv true then r := r + 1 ;
+  if false eqv false then r := r + 1 ;
+  writeln(r) ;
+
+  r := 0 ;
+  if true eqv false then r := 1 ;
+  writeln(r) ;
+
+  comment Expressions booleennes combinees ;
+  r := 0 ;
+  if (true and true) or false then r := 1 ;
+  writeln(r) ;
+
+  r := 0 ;
+  if not (true and false) then r := 1 ;
+  writeln(r) ;
+
+  comment Booleans avec comparaisons ;
+  integer a, b ;
+  a := 10 ;
+  b := 20 ;
+  r := 0 ;
+  if a < b and b > 15 then r := 1 ;
+  writeln(r) ;
+
+  r := 0 ;
+  if a > b or a = 10 then r := 1 ;
+  writeln(r) ;
+
+  comment Condition combinee dans un if/else ;
+  if a < b and not (a = 0) then
+    writeln("condition vraie")
+  else
+    writeln("condition fausse")
+end

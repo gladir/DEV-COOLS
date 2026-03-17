@@ -1,0 +1,39 @@
+comment test_errors.a58 - Test de la gestion des erreurs (TODO 23) ;
+comment Chaque cas teste un type specifique d erreur ;
+comment Le compilateur doit signaler les erreurs et continuer ;
+
+begin
+  comment Cas 1 : Variable non declaree (avertissement implicite) ;
+  x := 42 ;
+
+  comment Cas 2 : Affectation normale (pas d erreur) ;
+  integer y ;
+  y := 10 ;
+
+  comment Cas 3 : Chaine non fermee (erreur lexicale) ;
+  write("chaine fermee") ;
+
+  comment Cas 4 : Expression avec operateurs valides ;
+  integer z ;
+  z := y + 2 ;
+
+  comment Cas 5 : Label et goto normaux ;
+  goto fin ;
+
+  comment Cas 6 : Write avec expression ;
+  write(z) ;
+
+  comment Cas 7 : Variable deja declaree puis utilisee ;
+  integer w ;
+  w := y + z ;
+
+  comment Cas 8 : If-then-else basique ;
+  if w > 0 then write(w) ;
+
+  comment Cas 9 : For loop basique ;
+  for y := 1 step 1 until 3 do
+    write(y) ;
+
+  comment Cas 10 : Label de fin ;
+  fin: write(0)
+end

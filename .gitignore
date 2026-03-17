@@ -1,10 +1,5 @@
+*.S68
+*.class
 *.o
 *.obj
 *.ppu
-*.class
-*.exe
-SAMPLES/ADA/*.asm
-SAMPLES/CSHARP/*.asm
-/JASMIN
-/ADACW32
-/CSCW32

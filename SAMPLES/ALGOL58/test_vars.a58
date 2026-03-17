@@ -1,0 +1,35 @@
+comment Test des variables et affectations (TODO 09) ;
+comment Declarations, affectations globales, locales et own ;
+
+begin
+  comment Declaration de variables globales ;
+  integer x ;
+  integer y ;
+  real z ;
+  Boolean b ;
+
+  comment Affectations simples ;
+  x := 42 ;
+  y := x + 10 ;
+  z := 3 ;
+  b := true ;
+
+  comment Declaration de plusieurs variables du meme type ;
+  integer a, c ;
+  a := 1 ;
+  c := 2 ;
+
+  comment Affectation avec expression complexe ;
+  x := a + c * 3 ;
+
+  comment Variable own (persistante dans DATA) ;
+  own integer counter ;
+  counter := counter + 1 ;
+
+  comment Bloc imbrique avec variables locales ;
+  begin
+    integer localvar ;
+    localvar := 99 ;
+    x := localvar
+  end
+end

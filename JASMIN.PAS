@@ -5115,7 +5115,7 @@ Begin
           (arg = '/?') Or (arg = '/h') Or (arg = '/H') Then
   Begin
    WriteLn('JASMIN - ', VERSION);
-   WriteLn('Cette commande permet d''aassembler un fichier source ',
+   WriteLn('Cette commande permet d''assembler un fichier source ',
            'Jasmin (.j) en fichier .class (bytecode Java) compatible ',
            'avec la JVM.');
    WriteLn;

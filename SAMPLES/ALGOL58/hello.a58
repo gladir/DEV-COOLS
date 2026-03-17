@@ -1,0 +1,41 @@
+comment Algol 58 - Programme de test pour le lexeur;
+begin
+  integer x;
+  integer y;
+  real z;
+  Boolean b;
+  x := 42;
+  y := x + 10;
+  z := 3.14;
+  b := true;
+  if x > 0 then
+    writeln("Hello, Algol 58!")
+  else
+    writeln("Negative");
+  for x := 1 step 1 until 10 do
+    y := y + x;
+  comment Test des operateurs booleens;
+  b := true and false;
+  b := true or false;
+  b := not b;
+  b := true imp false;
+  b := true eqv false;
+  comment Puissance et division entiere;
+  x := 2 ^ 5;
+  y := 17 div 3;
+  y := 17 mod 3;
+  comment Tableau;
+  array A[1:10];
+  A[1] := 100;
+  comment Procedure;
+  integer procedure max(a, b);
+    value a, b;
+    integer a, b;
+    max := if a > b then a else b;
+  y := max(x, 42);
+  comment Labels et go to;
+  goto fin;
+  x := 999;
+fin:
+  writeln("Fin du programme")
+end

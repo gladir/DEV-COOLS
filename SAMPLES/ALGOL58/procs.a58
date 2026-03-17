@@ -1,0 +1,80 @@
+comment Algol 58 - Exemple : procedures et fonctions ;
+comment Procedures, parametres par valeur, par nom, Jensen device ;
+
+begin
+  comment Procedure simple ;
+  procedure greet() ;
+    writeln("Bienvenue en Algol 58") ;
+
+  greet() ;
+
+  comment Fonction entiere : factorielle iterative ;
+  integer procedure fact(n) ; value n ; integer n ;
+  begin
+    integer result, i ;
+    result := 1 ;
+    for i := 2 step 1 until n do
+      result := result * i ;
+    fact := result
+  end ;
+
+  writeln(fact(1)) ;
+  writeln(fact(5)) ;
+  writeln(fact(7)) ;
+
+  comment Fonction avec deux parametres par valeur ;
+  integer procedure gcd(a, b) ; value a, b ; integer a ; integer b ;
+  begin
+    integer t ;
+    for t := 0 while b > 0 do
+    begin
+      t := b ;
+      b := a mod b ;
+      a := t
+    end ;
+    gcd := a
+  end ;
+
+  writeln(gcd(12, 8)) ;
+  writeln(gcd(100, 75)) ;
+
+  comment Procedure avec parametre par nom (par defaut) ;
+  procedure printval(x) ; integer x ;
+    writeln(x) ;
+
+  integer v ;
+  v := 42 ;
+  printval(v) ;
+  printval(v + 10) ;
+
+  comment Procedure avec effet de bord ;
+  integer counter ;
+  counter := 0 ;
+
+  procedure increment() ;
+    counter := counter + 1 ;
+
+  increment() ;
+  increment() ;
+  increment() ;
+  writeln(counter) ;
+
+  comment Boolean procedure ;
+  Boolean procedure iseven(n) ; value n ; integer n ;
+    iseven := if n mod 2 = 0 then 1 else 0 ;
+
+  integer k ;
+  for k := 1 step 1 until 6 do
+    if iseven(k) then writeln(k) ;
+
+  comment Procedure imbriquee ;
+  integer procedure outer(x) ; value x ; integer x ;
+  begin
+    integer procedure inner(y) ; value y ; integer y ;
+      inner := y * y ;
+
+    outer := inner(x) + x
+  end ;
+
+  writeln(outer(5))
+end

@@ -1,0 +1,11 @@
+comment Test du systeme de types (TODO 06);
+comment Verifie les types primitifs et les conversions implicites;
+
+comment Litteraux de types differents;
+42;
+true;
+false;
+"hello";
+3 + 4;
+true and false;
+(2 + 3) * 4

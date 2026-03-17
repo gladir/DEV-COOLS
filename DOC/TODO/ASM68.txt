@@ -1,0 +1,557 @@
+{ ---------------------------------------------------------------------------- }
+{  PLAN DE DEVELOPPEMENT - 25 TODOs                                            }
+{  ASM68.PAS - Clone de Motorola Macro Assembler (ASM68)                       }
+{  Assembleur pour la famille Motorola 68000                                   }
+{  Genere du code objet binaire a partir de sources assembleur 68000           }
+{  Syntaxe : asm68 fichier.asm                                                 }
+{  Options : -o fichier  -l fichier  -d symbole  -i repertoire                 }
+{            -e  -w  -s  -n  -x                                                }
+{ ---------------------------------------------------------------------------- }
+
+TODO 01 - Infrastructure, options de ligne de commande et constantes [IMPLEMENTE]
+  -------------------------------------------------------------------
+  - Programme principal ASM68 en Turbo Pascal / Free Pascal
+  - Analyse des options de ligne de commande :
+    -o fichier    nom du fichier objet genere
+    -l fichier    genere un fichier listing
+    -d symbole    definit un symbole pour l'assemblage conditionnel
+    -i repertoire ajoute un repertoire pour les fichiers INCLUDE
+    -e            affiche seulement les erreurs
+    -w            affiche les avertissements
+    -x            active l'expansion des macros dans le listing
+    -s            inclut la table des symboles dans le listing
+    -n            supprime la generation du fichier objet
+  - Record TOptions : SrcFile, ObjFile, ListFile, DefSymbols[],
+    IncludePaths[], ErrorsOnly, ShowWarnings, IncludeSymTable,
+    NoObject, ExpandMacros
+  - Constantes de taille (MAX_SYM, MAX_LABEL, MAX_MACRO, MAX_LINE,
+    MAX_INCLUDE_DEPTH, MAX_SECTIONS, MAX_FIXUP, MAX_EXPR_DEPTH)
+  - Constantes de tailles d'operande : SIZE_BYTE, SIZE_WORD, SIZE_LONG
+  - Constantes de registres :
+    REG_D0..REG_D7 (registres de donnees)
+    REG_A0..REG_A7 (registres d'adresses, A7 = SP)
+    REG_PC, REG_SR, REG_CCR, REG_USP, REG_SSP
+  - Constantes de modes d'adressage (14 modes du 68000) :
+    AM_DATA_REG, AM_ADDR_REG, AM_ADDR_IND, AM_ADDR_IND_POST,
+    AM_ADDR_IND_PRE, AM_ADDR_IND_DISP, AM_ADDR_IND_IDX,
+    AM_ABS_SHORT, AM_ABS_LONG, AM_PC_DISP, AM_PC_IDX,
+    AM_IMMEDIATE, AM_REG_LIST, AM_SR_CCR
+  - Record TOperand : Mode, Reg, Disp, IdxReg, IdxSize,
+    Imm32, SymRef, ExprStr
+  - Types d'erreur (ERR_SYNTAX, ERR_OPERAND, ERR_RANGE,
+    ERR_UNDEFINED, ERR_DUPLICATE, ERR_PHASE, ERR_INTERNAL)
+  - Procedure ParseArgs, ShowHelp, ShowVersion
+  - Fonctions utilitaires : UpCaseStr, IntToHex, HexToInt,
+    Trim, PadRight, FileExists
+
+TODO 02 - Lexeur : lecture source et tokenisation [IMPLEMENTE]
+  --------------------------------------------------
+  - Token types : TOK_IDENT, TOK_INTEGER, TOK_STRING, TOK_CHAR,
+    TOK_REGISTER, TOK_OPCODE, TOK_DIRECTIVE, TOK_LABEL,
+    TOK_COMMA, TOK_LPAREN, TOK_RPAREN, TOK_PLUS, TOK_MINUS,
+    TOK_STAR, TOK_SLASH, TOK_HASH, TOK_DOT, TOK_COLON,
+    TOK_EQUAL, TOK_EOL, TOK_EOF, TOK_UNKNOWN
+  - SrcOpen, SrcClose, SrcGetLine : lecture ligne par ligne
+  - SrcGetChar, SrcPeekChar : lecture caractere par caractere
+  - SkipWhitespace : espaces et tabulations
+  - SkipComment : commentaires commencant par ';' ou '*' en debut de ligne
+  - LexIdent : identifiant, registre (D0-D7, A0-A7, SP, PC, SR, CCR, USP),
+    opcode ou directive (insensible a la casse -> majuscules)
+  - LexNumber : entier decimal, hexadecimal ($xxxx ou 0xFFFF),
+    octal (@nnn ou 0onnn), binaire (%bbbb ou 0bnnnn)
+  - LexString : chaines entre apostrophes ('...') pour DC.B
+  - LexChar : caractere isole entre apostrophes ('A')
+  - NextToken : dispatcher principal -> cur_tok / cur_tok_str /
+    cur_tok_val / cur_tok_line / cur_tok_col
+  - Consume, Expect, PeekToken : helpers de parsing
+  - IsRegister(s) : reconnaitre D0-D7, A0-A7, SP, PC, SR, CCR, USP
+  - IsOpcode(s) : reconnaitre les mnemoniques 68000
+  - IsDirective(s) : reconnaitre ORG, DC, DS, EQU, SECTION, etc.
+  - Gestion des suffixes de taille : .B, .W, .L, .S apres opcode
+
+TODO 03 - Gestion des erreurs, avertissements et listing [IMPLEMENTE]
+  ---------------------------------------------------------
+  - Error(line, col, msg) : incrementer error_count, afficher avec
+    numero de ligne et colonne, continuer (pas de Halt sauf MAX_ERRORS)
+  - Warning(line, col, msg) : avertissement non bloquant, incrementer
+    warning_count
+  - FatalError(msg) : afficher message + Halt(1)
+  - Listing :
+    ListOpen(filename), ListClose
+    ListLine(addr, bytes, source) : afficher adresse, octets generes
+      (jusqu'a 6 octets par ligne), puis la ligne source
+    ListSymbolTable : trier et afficher tous les symboles avec adresses
+    ListTitle, ListPage, ListFormFeed : pagination du listing
+  - Gestion du fichier listing (-l option) avec format :
+    AAAAAA  XX XX XX XX XX XX  source line
+  - Inclusion de la table des symboles si -s active
+  - Expansion des macros dans le listing si -x active
+  - BilancCompilation : afficher stats (lignes, symboles, erreurs,
+    avertissements, taille du code genere)
+
+TODO 04 - Table des symboles : etiquettes, EQU, SET [IMPLEMENTE]
+  ----------------------------------------------------
+  - Record TSymEntry : Name, Value (LongInt 32 bits), Section,
+    SymType (LABEL, EQU_CONST, SET_VAR, EXTERNAL, ENTRY),
+    Defined (Boolean), Referenced (Boolean), Pass1Value,
+    LineNum
+  - SymTable[1..MAX_SYM] / SymCount
+  - InitSymTable : initialisation + symboles predefinis (-d)
+  - AddSym(name, value, section, symtype) : ajout avec detection
+    de doublons (erreur si LABEL redefini, ok pour SET)
+  - FindSym(name) : recherche insensible a la casse
+  - UpdateSym(name, value) : mise a jour pour SET et passe 2
+  - Verification de phase : comparaison des valeurs entre
+    passe 1 et passe 2 (erreur de phase si different)
+  - Export des symboles XDEF/ENTRY dans le fichier objet
+  - Import des symboles XREF/EXTERNAL comme references non resolues
+  - Etiquettes locales (format .label ou @label) avec portee
+    limitee entre deux etiquettes globales
+
+TODO 05 - Analyseur d'expressions arithmetiques [IMPLEMENTE]
+  ------------------------------------------------
+  - Expressions avec operateurs (priorite croissante) :
+    Niveau 1 : | (OR logique bit a bit)
+    Niveau 2 : ^ (XOR bit a bit)
+    Niveau 3 : & (AND bit a bit)
+    Niveau 4 : << >> (decalages gauche/droite)
+    Niveau 5 : + - (addition/soustraction)
+    Niveau 6 : * / % (multiplication/division/modulo)
+    Niveau 7 : ~ - (complement, negation unaire)
+    Niveau 8 : primaire (nombre, symbole, *, parentheses)
+  - EvalExpr(s) -> LongInt : evaluation recursive avec precedence
+  - Gestion des operandes :
+    Nombre litteral (decimal, hex, octal, binaire)
+    Symbole (recherche dans SymTable)
+    * ou $ : adresse courante (PC)
+    Parentheses : (expr)
+  - Types d'expression : absolue, relative (a une section),
+    externe (reference XREF)
+  - Verification des debordements 8/16/32 bits selon le contexte
+  - Expressions differees (fixups) quand symbole pas encore defini
+    en passe 1
+
+TODO 06 - Modes d'adressage : analyse et encodage [IMPLEMENTE]
+  --------------------------------------------------
+  - Analyse des 14 modes d'adressage du 68000 :
+    Dn                    Mode 000, Reg = n  (Data Register Direct)
+    An                    Mode 001, Reg = n  (Address Register Direct)
+    (An)                  Mode 010, Reg = n  (Address Register Indirect)
+    (An)+                 Mode 011, Reg = n  (Post-increment)
+    -(An)                 Mode 100, Reg = n  (Pre-decrement)
+    d16(An)               Mode 101, Reg = n  (Displacement)
+    d8(An,Xn.s)           Mode 110, Reg = n  (Index)
+    xxx.W                 Mode 111, Reg = 000 (Absolute Short)
+    xxx.L                 Mode 111, Reg = 001 (Absolute Long)
+    d16(PC)               Mode 111, Reg = 010 (PC Displacement)
+    d8(PC,Xn.s)           Mode 111, Reg = 011 (PC Index)
+    #imm                  Mode 111, Reg = 100 (Immediate)
+  - ParseOperand(s) -> TOperand : analyser la syntaxe et determiner
+    le mode d'adressage, le registre, le deplacement, l'index
+  - EncodeEA(op) -> mot de 6 bits (mode:3, reg:3)
+  - CalcExtWords(op) -> nombre de mots d'extension (0, 1 ou 2)
+  - EmitExtWords(op) : emettre les mots d'extension dans le code
+  - Validation des modes autorises par instruction (masque de modes)
+  - ParseRegList(s) -> Word : analyser D0-D3/A0-A2 pour MOVEM
+    (masque de 16 bits)
+
+TODO 07 - Generateur de code : emission et sections [IMPLEMENTE]
+  ----------------------------------------------------
+  - Gestion des sections : CODE (text), DATA, BSS
+  - Record TSection : Name, Type (SEC_CODE, SEC_DATA, SEC_BSS),
+    Origin, CurAddr, Buffer[MAX_SEC_SIZE], Size
+  - Sections[1..MAX_SECTIONS] / SectionCount / CurSection
+  - InitSections : creer sections par defaut (CODE, DATA, BSS)
+  - SetSection(name, type) : changer de section courante
+  - Emit8(b) : emettre un octet dans la section courante
+  - Emit16(w) : emettre un mot (big-endian) dans la section courante
+  - Emit32(l) : emettre un long mot (big-endian) dans la section courante
+  - EmitBytes(buf, len) : emettre un bloc d'octets
+  - GetPC : retourner l'adresse courante (section.Origin + section.CurAddr)
+  - AlignPC(n) : aligner l'adresse courante sur une frontiere de n octets
+  - Record TFixup : Section, Offset, Size (8/16/32), SymIdx,
+    FixType (ABSOLUTE, PC_RELATIVE), Addend
+  - Fixups[1..MAX_FIXUP] / FixupCount
+  - AddFixup : enregistrer une reference a resoudre en passe 2
+  - ResolveFixups : resoudre toutes les references en passe 2
+  - Ordre des octets : big-endian (Motorola byte order)
+
+TODO 08 - Directives assembleur de base (ORG, DC, DS, EQU, END) [IMPLEMENTE]
+  ----------------------------------------------------------------
+  - ORG expr : fixer l'adresse d'origine de la section courante
+  - DC.B val[,val,...] : Define Constant (octets, mots, long mots)
+    DC.W val[,val,...]   avec support des chaines ('...') pour DC.B
+    DC.L val[,val,...]
+  - DCB.s count, value : Define Constant Block (repetition)
+  - DS.B count : Define Storage (reserver sans initialiser)
+    DS.W count   (DS.W 0 = alignement sur mot)
+    DS.L count
+  - EQU : symbole EQU expr (constante d'assemblage)
+  - SET : symbole SET expr (variable d'assemblage, redefinissable)
+  - EVEN : aligner sur adresse paire (equivalent DS.W 0)
+  - CNOP offset,alignment : aligner avec offset optionnel
+  - END [expr] : fin du source, expr = adresse de demarrage
+  - Gestion des etiquettes : label: au debut de ligne
+    (avec ou sans ':' selon convention)
+
+TODO 09 - Directives assembleur avancees (SECTION, INCLUDE, macros) [IMPLEMENTE]
+  ------------------------------------------------------------------
+  - SECTION name[,type] : declarer/changer de section
+    Types : CODE, DATA, BSS (ou TEXT, DATA, BSS)
+  - INCLUDE "fichier" : inclusion de fichier source
+    Gestion de la pile d'inclusion (MAX_INCLUDE_DEPTH)
+    Recherche dans les repertoires -i
+  - XDEF sym[,sym,...] / ENTRY sym : exporter un symbole (public)
+  - XREF sym[,sym,...] / EXTERNAL sym : importer un symbole externe
+  - MACRO / ENDM : definition de macro
+    nom MACRO [param1,param2,...]
+      corps avec \1, \2, ... ou \param1, \param2, ...
+      NARG = nombre d'arguments
+    ENDM
+  - Expansion de macro avec arguments positionnels
+  - MEXIT : sortie anticipee d'une macro
+  - Etiquettes locales dans les macros (\@)
+  - Concatenation de symboles dans les macros (\param.suffix)
+
+TODO 10 - Assemblage conditionnel (IF, IFDEF, IFEQ, etc.) [IMPLEMENTE]
+  ----------------------------------------------------------
+  - IFEQ expr / IFNE expr : assembler si expr == 0 / != 0
+  - IFGT expr / IFGE expr : assembler si expr > 0 / >= 0
+  - IFLT expr / IFLE expr : assembler si expr < 0 / <= 0
+  - IFDEF sym / IFNDEF sym : assembler si symbole defini / non defini
+  - IFC str1,str2 / IFNC str1,str2 : comparer des chaines
+  - ELSEIF / ELSE : branche alternative
+  - ENDC / ENDIF : fin de bloc conditionnel
+  - Imbrication des blocs conditionnels (pile de conditions)
+  - Integration avec les symboles predefinis (-d option)
+  - Saut des lignes non assemblees (ne pas generer de code,
+    ne pas definir de symboles)
+
+TODO 11 - Instructions de transfert de donnees [IMPLEMENTE]
+  -----------------------------------------------
+  - MOVE.s  ea, ea    : transfert general (source -> destination)
+  - MOVEA.s ea, An    : transfert vers registre d'adresse
+  - MOVEQ   #imm8, Dn : chargement rapide 8 bits signe-etendu
+  - MOVEM.s liste, ea : sauvegarde/restauration de registres multiples
+    MOVEM.s ea, liste   avec masque de registres 16 bits
+  - MOVEP.s Dn, d16(An) : transfert vers peripherique (octets alternes)
+    MOVEP.s d16(An), Dn
+  - LEA ea, An        : charger adresse effective
+  - PEA ea            : empiler adresse effective
+  - EXG Xn, Xn       : echanger deux registres (32 bits)
+  - SWAP Dn           : echanger les deux moities 16 bits de Dn
+  - LINK An, #disp    : creer cadre de pile
+  - UNLK An           : detruire cadre de pile
+  - Encodage binaire de chaque instruction (format 16 bits + extensions)
+  - Validation des modes d'adressage autorises par instruction
+  - Exemples : SAMPLES\ASM68\move.asm
+
+TODO 12 - Instructions arithmetiques entieres [IMPLEMENTE]
+  ----------------------------------------------
+  - ADD.s  ea, Dn / Dn, ea  : addition
+  - ADDA.s ea, An            : addition sur registre d'adresse
+  - ADDQ.s #imm3, ea        : addition rapide (1-8)
+  - ADDI.s #imm, ea         : addition immediate
+  - ADDX.s Dn, Dn / -(An), -(An) : addition avec X (etendue)
+  - SUB.s  ea, Dn / Dn, ea  : soustraction
+  - SUBA.s ea, An            : soustraction sur registre d'adresse
+  - SUBQ.s #imm3, ea        : soustraction rapide (1-8)
+  - SUBI.s #imm, ea         : soustraction immediate
+  - SUBX.s Dn, Dn / -(An), -(An) : soustraction avec X
+  - MULS.W ea, Dn            : multiplication signee 16x16 -> 32
+  - MULU.W ea, Dn            : multiplication non signee 16x16 -> 32
+  - DIVS.W ea, Dn            : division signee 32/16 -> 16q:16r
+  - DIVU.W ea, Dn            : division non signee 32/16 -> 16q:16r
+  - NEG.s  ea                : negation (complement a deux)
+  - NEGX.s ea                : negation avec X
+  - CLR.s  ea                : mise a zero
+  - EXT.W  Dn / EXT.L Dn    : extension de signe
+  - CMP.s  ea, Dn            : comparaison
+  - CMPA.s ea, An            : comparaison avec registre d'adresse
+  - CMPI.s #imm, ea         : comparaison immediate
+  - CMPM.s (An)+, (An)+     : comparaison memoire a memoire
+  - TST.s  ea                : tester (comparer a zero)
+  - TAS.B  ea                : tester et positionner bit 7
+  - Exemples : SAMPLES\ASM68\arith.asm, test_arith.asm
+
+TODO 13 - Instructions logiques et de manipulation de bits [IMPLEMENTE]
+  -----------------------------------------------------------
+  - AND.s  ea, Dn / Dn, ea  : ET logique
+  - ANDI.s #imm, ea         : ET immediat
+  - ANDI   #imm, CCR        : ET immediat avec CCR
+  - ANDI   #imm, SR         : ET immediat avec SR (privilegie)
+  - OR.s   ea, Dn / Dn, ea  : OU logique
+  - ORI.s  #imm, ea         : OU immediat
+  - ORI    #imm, CCR        : OU immediat avec CCR
+  - ORI    #imm, SR         : OU immediat avec SR (privilegie)
+  - EOR.s  Dn, ea           : OU exclusif
+  - EORI.s #imm, ea         : XOR immediat
+  - EORI   #imm, CCR        : XOR immediat avec CCR
+  - EORI   #imm, SR         : XOR immediat avec SR (privilegie)
+  - NOT.s  ea               : complement a un (inversion bits)
+  - BTST   #imm/Dn, ea     : tester un bit (resultat dans Z)
+  - BSET   #imm/Dn, ea     : tester et positionner un bit
+  - BCLR   #imm/Dn, ea     : tester et effacer un bit
+  - BCHG   #imm/Dn, ea     : tester et inverser un bit
+  - Exemples : SAMPLES\ASM68\logic.asm
+
+TODO 14 - Instructions de decalage et rotation [IMPLEMENTE]
+  ------------------------------------------------
+  - ASL.s  #imm/Dn, Dn     : decalage arithmetique gauche
+    ASL.W  ea               : decalage memoire (1 bit)
+  - ASR.s  #imm/Dn, Dn     : decalage arithmetique droite
+    ASR.W  ea               : decalage memoire (1 bit)
+  - LSL.s  #imm/Dn, Dn     : decalage logique gauche
+    LSL.W  ea               : decalage memoire (1 bit)
+  - LSR.s  #imm/Dn, Dn     : decalage logique droite
+    LSR.W  ea               : decalage memoire (1 bit)
+  - ROL.s  #imm/Dn, Dn     : rotation gauche
+    ROL.W  ea               : rotation memoire (1 bit)
+  - ROR.s  #imm/Dn, Dn     : rotation droite
+    ROR.W  ea               : rotation memoire (1 bit)
+  - ROXL.s #imm/Dn, Dn     : rotation gauche avec X
+    ROXL.W ea               : rotation memoire (1 bit)
+  - ROXR.s #imm/Dn, Dn     : rotation droite avec X
+    ROXR.W ea               : rotation memoire (1 bit)
+  - Encodage : format decalage/rotation (bits 15-12, taille,
+    registre, direction, compteur/registre)
+  - Exemples : SAMPLES\ASM68\shift.asm
+
+TODO 15 - Instructions de branchement et controle de flux [IMPLEMENTE]
+  ----------------------------------------------------------
+  - BRA.s  label           : branchement inconditionnel
+  - BSR.s  label           : branchement vers sous-routine
+  - Bcc.s  label           : branchements conditionnels (14 conditions) :
+    BEQ (Z=1), BNE (Z=0), BCS/BLO (C=1), BCC/BHS (C=0),
+    BMI (N=1), BPL (N=0), BVS (V=1), BVC (V=0),
+    BHI (!C&!Z), BLS (C|Z), BGE (N=V), BLT (N!=V),
+    BGT (!Z&N=V), BLE (Z|(N!=V))
+  - DBcc   Dn, label       : decrementer et brancher si condition fausse
+    (DBRA/DBF = boucle inconditionnelle, DBEQ, DBNE, etc.)
+  - Scc    ea              : positionner octet selon condition
+    (SEQ, SNE, SCS, SCC, SMI, SPL, SVS, SVC, SHI, SLS,
+     SGE, SLT, SGT, SLE, ST, SF)
+  - JMP    ea              : saut inconditionnel (adresse effective)
+  - JSR    ea              : appel sous-routine (adresse effective)
+  - RTS                    : retour de sous-routine
+  - RTE                    : retour d'exception (privilegie)
+  - RTR                    : retour avec restauration CCR
+  - NOP                    : pas d'operation
+  - Gestion des deplacements : .S (8 bits), .W (16 bits), automatique
+  - Exemples : SAMPLES\ASM68\branch.asm
+
+TODO 16 - Instructions BCD et operations speciales [IMPLEMENTE]
+  ---------------------------------------------------
+  - ABCD   Dn, Dn / -(An), -(An) : addition BCD avec X
+  - SBCD   Dn, Dn / -(An), -(An) : soustraction BCD avec X
+  - NBCD   ea                     : negation BCD avec X
+  - CHK.W  ea, Dn                 : verifier bornes (exception si
+    Dn < 0 ou Dn > ea)
+  - TRAP   #vector               : exception logicielle (0-15)
+  - TRAPV                        : exception si overflow (V=1)
+  - MOVE.W SR, ea                : lire registre d'etat
+  - MOVE.W ea, SR                : ecrire registre d'etat (privilegie)
+  - MOVE.W CCR, ea               : lire condition codes (68010+)
+  - MOVE.W ea, CCR               : ecrire condition codes
+  - MOVE.L USP, An               : lire pile utilisateur (privilegie)
+  - MOVE.L An, USP               : ecrire pile utilisateur (privilegie)
+  - STOP   #imm                  : arreter le processeur (privilegie)
+  - RESET                        : reinitialiser les peripheriques (priv.)
+  - ILLEGAL                      : instruction illegale (exception)
+  - Exemples : SAMPLES\ASM68\special.asm
+
+TODO 17 - Encodage binaire des instructions (passe 2) [IMPLEMENTE]
+  -----------------------------------------------------
+  - Format de base de l'instruction 68000 : mot de 16 bits
+    bits 15-12 : code operation principal (4 bits)
+    bits 11-0  : depend de l'instruction (operandes, mode, registre)
+  - Table d'encodage pour chaque groupe d'instructions :
+    MOVE   : 00ss_ddd_mmm_MMM_rrr (taille, dest EA, src EA)
+    Arith  : 1101_rrr_ooo_MMM_rrr (ADD/ADDA/ADDX)
+    Logic  : 1100_rrr_ooo_MMM_rrr (AND/EXG/MULS/MULU)
+    Shift  : 1110_cnt_d_ss_i/r_tt_rrr
+    Branch : 0110_cccc_dddddddd (condition, deplacement 8/16)
+    Bit    : 0000_rrr_bb_MMM_rrr (BTST/BSET/BCLR/BCHG)
+  - EncodeMOVE(size, src, dst) -> Word
+  - EncodeArith(opcode, size, src, dst) -> Word
+  - EncodeShift(type, dir, size, count, reg) -> Word
+  - EncodeBranch(cond, disp) -> Word
+  - EncodeBit(op, src, dst) -> Word
+  - Emission des mots d'extension pour chaque mode d'adressage
+  - Calcul de la taille d'instruction pour la passe 1
+
+TODO 18 - Architecture deux passes de l'assembleur [IMPLEMENTE]
+  ---------------------------------------------------
+  - Passe 1 (resolution des symboles) :
+    Parcourir toutes les lignes source
+    Definir les etiquettes avec leur adresse
+    Calculer la taille de chaque instruction (sans emettre de code)
+    Evaluer les expressions avec symboles deja definis
+    Marquer les references en avant comme fixups
+    Traiter les directives (ORG, SECTION, EQU, SET, DC, DS)
+    Expander les macros, traiter les conditions (IF/ENDIF)
+  - Passe 2 (generation du code) :
+    Parcourir a nouveau toutes les lignes
+    Generer le code binaire de chaque instruction
+    Resoudre les fixups (references en avant maintenant connues)
+    Verifier la coherence des symboles (erreur de phase)
+    Generer le listing si demande (-l)
+  - Gestion de l'adresse courante (PC) par section
+  - Procedure Assemble : orchestrer les deux passes
+  - Detection automatique des deplacements courts/longs
+    pour les branchements (BRA.S vs BRA.W)
+
+TODO 19 - Parseur de ligne assembleur [IMPLEMENTE]
+  --------------------------------------
+  - Format d'une ligne assembleur 68000 :
+    [etiquette:]  [opcode[.s]  [operande1[,operande2]]]  [; commentaire]
+  - ParseLine : decomposer une ligne en ses composants
+    label (si present, se termine par ':' ou debut de colonne 1)
+    opcode + suffixe de taille (.B, .W, .L, .S)
+    operande1, operande2 (separes par virgule)
+    commentaire (apres ';')
+  - ParseOperand : analyser un operande et retourner TOperand
+    avec mode d'adressage, registre(s), deplacement, immediat
+  - ParseRegisterList : pour MOVEM, analyser D0-D3/A0-A2
+  - Gestion des operandes speciaux :
+    #expr      immediate
+    d(An)      deplacement
+    d(An,Xn.s) index
+    d(PC)      relatif PC
+    d(PC,Xn.s) index relatif PC
+    (xxx).W    absolu court
+    (xxx).L    absolu long
+  - AssembleInstruction : dispatcher vers le bon encodeur
+    selon l'opcode reconnu
+
+TODO 20 - Generation du fichier objet (format S-Record Motorola) [IMPLEMENTE]
+  ----------------------------------------------------------------
+  - Format S-Record (SREC) Motorola :
+    S0 : enregistrement d'en-tete (nom du module)
+    S1 : enregistrement de donnees (adresse 16 bits)
+    S2 : enregistrement de donnees (adresse 24 bits)
+    S3 : enregistrement de donnees (adresse 32 bits)
+    S5 : compteur d'enregistrements
+    S7 : fin avec adresse de demarrage (32 bits)
+    S8 : fin avec adresse de demarrage (24 bits)
+    S9 : fin avec adresse de demarrage (16 bits)
+  - Format d'un enregistrement : Sn LL AAAA DD...DD CC
+    n  = type (0-9)
+    LL = longueur en octets (adresse + donnees + checksum)
+    AAAA = adresse (2, 3 ou 4 octets selon type)
+    DD = donnees (0 a 32 octets par enregistrement)
+    CC = checksum (complement a un de la somme LL+AAAA+DD)
+  - GenSRecord(type, addr, data, len) : generer un enregistrement
+  - WriteObjectFile : parcourir les sections et emettre les S-Records
+    S0 en-tete, S1/S2 donnees, S9/S8 terminaison
+  - Calcul du checksum pour chaque enregistrement
+  - Option -n pour supprimer la generation du fichier objet
+
+TODO 21 - Gestion des fichiers INCLUDE et pile de sources [IMPLEMENTE]
+  ----------------------------------------------------------
+  - Record TSourceFile : Filename, FileHandle, LineNum,
+    SavedLine, IsOpen
+  - IncludeStack[1..MAX_INCLUDE_DEPTH] / IncludeDepth
+  - PushInclude(filename) : ouvrir un nouveau fichier source,
+    empiler le contexte courant (nom, ligne, handle)
+  - PopInclude : fermer le fichier courant, restaurer le contexte
+    precedent depuis la pile
+  - Recherche du fichier INCLUDE :
+    1. Repertoire du fichier source courant
+    2. Repertoires specifies par -i (dans l'ordre)
+    3. Repertoire courant
+  - GetNextLine : lire la prochaine ligne en gerant la pile
+    d'inclusion (retour automatique au fichier parent a la fin)
+  - Affichage du nom de fichier et ligne dans les erreurs
+    (format "fichier.asm(42): Error: ...")
+  - INCBIN "fichier" : inclusion binaire (emettre le contenu
+    brut du fichier dans la section courante)
+
+TODO 22 - Gestion des macros (MACRO/ENDM) [IMPLEMENTE]
+  ------------------------------------------
+  - Record TMacro : Name, ParamCount, ParamNames[],
+    Body (tableau de lignes), LineCount
+  - MacroTable[1..MAX_MACRO] / MacroCount
+  - ParseMacroDefinition : lire nom MACRO [params] jusqu'a ENDM,
+    stocker les lignes du corps sans les assembler
+  - ExpandMacro(name, args[]) : substituer \1..\9 ou \paramName
+    par les arguments, generer les lignes expandees
+  - NARG : nombre d'arguments passes a la macro courante
+  - \@ : suffixe unique pour les etiquettes locales dans la macro
+    (incremente a chaque expansion)
+  - MEXIT : sortie anticipee d'une expansion de macro
+  - Macros imbriquees : une macro peut appeler une autre macro
+  - Expansion recursive avec limite de profondeur
+  - Listing des macros expandees si -x active
+  - REPT count / ENDR : repetition de bloc (macro anonyme)
+
+TODO 23 - Directives de listing et mise en page [IMPLEMENTE]
+  ------------------------------------------------
+  - TTL "titre"  / TITLE "titre" : titre du listing (haut de page)
+  - SPC n : inserer n lignes blanches dans le listing
+  - PAGE / EJECT : saut de page dans le listing
+  - LIST / NOLIST : activer/desactiver la generation du listing
+  - OPT options : options d'assemblage (optionnel)
+    OPT L+ / L-  : listing on/off
+    OPT S+ / S-  : table des symboles on/off
+    OPT M+ / M-  : expansion macros on/off
+    OPT W+ / W-  : avertissements on/off
+  - FAIL "message" : emettre une erreur d'assemblage volontaire
+  - INFORM level, "message" : message informatif dans le listing
+  - Format du listing :
+    En-tete : nom du fichier, date, page
+    Corps : adresse(6 hex) octets(12 hex) source
+    Pied : resume (erreurs, avertissements, taille)
+  - Numerotation des pages et lignes
+  - Table des symboles en fin de listing (triee alphabetiquement)
+    avec colonnes : Nom, Valeur (hex), Section, Type
+
+TODO 24 - Programme principal et orchestration complete [IMPLEMENTE]
+  -------------------------------------------------------
+  - Procedure principale Run :
+    1. ParseArgs : valider arguments, remplir TOptions
+    2. Si aucun fichier source -> ShowHelp + Halt
+    3. Ouvrir le fichier source
+    4. InitSymTable, InitSections, InitMacroTable
+    5. Ajouter les symboles predefinis (-d)
+    6. Passe 1 : parcourir le source, definir symboles,
+       calculer tailles, expander macros
+    7. Verifier les symboles non definis (XREF resolus plus tard)
+    8. Passe 2 : parcourir a nouveau, generer le code binaire,
+       resoudre les fixups, generer le listing
+    9. WriteObjectFile (si -n pas active)
+   10. WriteListing (si -l active, inclure table symboles si -s)
+   11. BilancCompilation : afficher resume
+   12. Fermer tous les fichiers
+   13. Halt(0) si pas d'erreur, Halt(1) sinon
+  - Programme principal : Begin Run; End.
+  - Gestion des erreurs fatales (fichier introuvable, etc.)
+  - Code de retour : 0 = succes, 1 = erreurs, 2 = erreur fatale
+
+TODO 25 - Programmes de test et validation (SAMPLES\ASM68\) [IMPLEMENTE]
+  ------------------------------------------------------------
+  - hello.asm : Hello World (TRAP #15 ou convention simulateur)
+  - move.asm  : tests des instructions MOVE, MOVEA, MOVEQ, MOVEM,
+    LEA, PEA, EXG, SWAP, LINK, UNLK
+  - arith.asm : tests ADD, SUB, MULS, MULU, DIVS, DIVU, NEG, CLR,
+    EXT, CMP, TST, ADDQ, SUBQ, ADDI, SUBI, CMPI
+  - logic.asm : tests AND, OR, EOR, NOT, ANDI, ORI, EORI,
+    BTST, BSET, BCLR, BCHG
+  - shift.asm : tests ASL, ASR, LSL, LSR, ROL, ROR, ROXL, ROXR
+  - branch.asm : tests BRA, BSR, Bcc (toutes conditions), DBcc,
+    Scc, JMP, JSR, RTS
+  - special.asm : tests ABCD, SBCD, NBCD, CHK, TRAP, TRAPV,
+    MOVE SR/CCR/USP, STOP, RESET, ILLEGAL
+  - macro.asm : tests MACRO/ENDM, REPT/ENDR, NARG, \@, MEXIT
+  - cond.asm  : tests IFEQ, IFNE, IFDEF, IFNDEF, IFC, IFNC,
+    ELSE, ENDC, imbrication
+  - include.asm + inc_sub.asm : tests INCLUDE, INCBIN
+  - labels.asm : tests etiquettes globales et locales (.label, @label)
+  - expr.asm  : tests expressions arithmetiques complexes,
+    operateurs, bases numeriques (hex, octal, binaire)
+  - sections.asm : tests SECTION CODE/DATA/BSS, ORG, EVEN, CNOP
+  - listing.asm : tests TTL, SPC, PAGE, LIST/NOLIST, OPT
+  - bcd.asm   : tests operations BCD (ABCD, SBCD, NBCD)
+  - Valider chaque fichier : assembler, verifier le code objet
+    genere (S-Records), verifier le listing
+  - Corriger les bugs trouves lors de la validation

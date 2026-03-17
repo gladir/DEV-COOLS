@@ -1,0 +1,39 @@
+comment Test des operateurs et de la precedence Algol 58;
+begin
+  comment Arithmetiques de base;
+  3 + 4;
+  10 - 3;
+  6 * 7;
+  42 / 6;
+
+  comment Puissance;
+  2 ^ 3;
+  2 ** 10;
+
+  comment Unaires;
+  -5;
+  +42;
+  not true;
+
+  comment Relationnels;
+  3 = 3;
+  3 # 4;
+  5 < 10;
+  10 <= 10;
+  7 > 3;
+  7 >= 7;
+
+  comment Logiques;
+  true and false;
+  true or false;
+
+  comment Implication et equivalence;
+  true imp false;
+  true eqv true;
+
+  comment Precedence: * plus fort que +;
+  2 + 3 * 4;
+
+  comment Parentheses;
+  (2 + 3) * 4
+end
