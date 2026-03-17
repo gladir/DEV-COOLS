@@ -1,4 +1,4 @@
-  M68K_EMU.PAS - Emulateur Motorola 68000
+  M68K_EMU.PAS (TESTS/M68K_EMU.PAS) - Emulateur Motorola 68000
   Turbo Pascal / Free Pascal (-Mtp)
   Charge et execute du code objet S-Record genere par ASM68
 
