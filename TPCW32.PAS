@@ -4313,6 +4313,8 @@ Begin
   EmitRaw('EXTRN _FloodFill@16:NEAR');
   EmitRaw('EXTRN _GetStockObject@4:NEAR');
   EmitRaw('EXTRN _PatBlt@24:NEAR');
+  EmitRaw('EXTRN _Polyline@12:NEAR');
+  EmitRaw('EXTRN _Polygon@12:NEAR');
   EmitComment('--- Imports Win32 pour unite Strings (TODO 21) ---');
   EmitComment('--- kernel32.dll ---');
   EmitRaw('EXTRN _lstrlenA@4:NEAR');
@@ -14953,36 +14955,38 @@ Begin
       Exit;
     End;
 
-    { DRAWPOLY(NumPoints, PolyPoints) - stub }
+    { DRAWPOLY(NumPoints, PolyPoints) }
+    { NumPoints = nombre de points, PolyPoints = pointeur vers tableau de PointType }
+    { PointType = record X,Y:Integer (4+4=8 bytes) = POINT Win32 (X:LONG,Y:LONG) }
     If Up = 'DRAWPOLY' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');  { NumPoints }
         EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');  { PolyPoints (adresse) }
         EPMatch(')');
       End;
-      EmitComment('DrawPoly (stub)');
+      EmitInstr('CALL ' + TP_RT_PFX + 'DRAWPOLY');
       EmitInstr('ADD ESP,8');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
     End;
 
-    { FILLPOLY(NumPoints, PolyPoints) - stub }
+    { FILLPOLY(NumPoints, PolyPoints) }
     If Up = 'FILLPOLY' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');  { NumPoints }
         EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');  { PolyPoints (adresse) }
         EPMatch(')');
       End;
-      EmitComment('FillPoly (stub)');
+      EmitInstr('CALL ' + TP_RT_PFX + 'FILLPOLY');
       EmitInstr('ADD ESP,8');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
@@ -19951,6 +19955,19 @@ Begin
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
+  { Si la fenetre est deja ouverte (Graph OU MSGraph), la reutiliser }
+  EmitInstr('CMP DWORD PTR [GR_ACTIVE],0');
+  EmitInstr('JZ ' + TP_RT_PFX + 'IG_CREATE');
+  { Fenetre deja ouverte : juste mettre a jour Gd et Gm }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');   { Gd var }
+  EmitInstr('MOV DWORD PTR [EDX],9');        { VGA = 9 }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');  { Gm var }
+  EmitInstr('MOV DWORD PTR [EDX],2');        { VGAHi = 2 }
+  EmitInstr('MOV DWORD PTR [GR_RESULT],0'); { grOk }
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'IG_CREATE');
   { Obtenir hInstance }
   EmitInstr('PUSH 0');
   EmitInstr('CALL GetModuleHandleA');
@@ -20833,6 +20850,57 @@ Begin
   EmitInstr('PUSH DWORD PTR [EBP+16]');      { x }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL FloodFill');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_DRAWPOLY : dessiner un polygone ouvert (polyline) - }
+  { Parametres (push L-to-R) : NumPoints,[EBP+12]  Points,[EBP+8]  }
+  { PointType = record X,Y:Integer -> 8 bytes = Win32 POINT struct  }
+  { Utilise GDI Polyline(hdc, lppt, cpt)                            }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'DRAWPOLY');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  { Polyline(hdc, lppt, cpt) - stdcall R-to-L }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');      { cpt = NumPoints }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');       { lppt = adresse tableau Points }
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL Polyline');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_FILLPOLY : dessiner et remplir un polygone ferme -- }
+  { Parametres (push L-to-R) : NumPoints,[EBP+12]  Points,[EBP+8]  }
+  { Utilise GDI Polygon(hdc, lppt, cpt) avec brush courant          }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FILLPOLY');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  { Selectionner brush de remplissage }
+  EmitInstr('MOV EAX,DWORD PTR [GR_FILLCOLOR]');
+  EmitInstr('AND EAX,0Fh');
+  EmitInstr('MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL CreateSolidBrush');
+  EmitInstr('MOV ESI,EAX');                  { sauver nouveau brush }
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL SelectObject');
+  EmitInstr('MOV EDI,EAX');                  { sauver ancien brush }
+  { Polygon(hdc, lppt, cpt) - stdcall R-to-L }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');      { cpt = NumPoints }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');      { lppt = adresse Points }
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL Polygon');
+  { Restaurer ancien brush }
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL SelectObject');
+  { Detruire le brush cree }
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL DeleteObject');
+  EmitInstr('POPAD');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 End;
@@ -22592,7 +22660,8 @@ Begin
      (U = 'SETBKCOLOR') Or (U = 'GETTEXTEXTENTPOINT32A') Or
      (U = 'CREATECOMPATIBLEDC') Or (U = 'CREATECOMPATIBLEBITMAP') Or
      (U = 'BITBLT') Or (U = 'DELETEDC') Or
-     (U = 'FLOODFILL') Or (U = 'GETSTOCKOBJECT') Then
+     (U = 'FLOODFILL') Or (U = 'GETSTOCKOBJECT') Or
+     (U = 'PATBLT') Or (U = 'POLYLINE') Or (U = 'POLYGON') Then
     BcApiToDll := 'gdi32.dll'
   Else
     BcApiToDll := 'kernel32.dll';
@@ -22667,7 +22736,7 @@ Begin
     (U = 'CREATECOMPATIBLEDC') Or (U = 'CREATECOMPATIBLEBITMAP') Or
     (U = 'BITBLT') Or (U = 'DELETEDC') Or
     (U = 'FLOODFILL') Or (U = 'GETSTOCKOBJECT') Or
-    (U = 'PATBLT') Or
+    (U = 'PATBLT') Or (U = 'POLYLINE') Or (U = 'POLYGON') Or
     (U = 'GETASYNCKEYSTATE') Or (U = 'GETKEYSTATE') Or
     (U = 'GETCURSORPOS') Or (U = 'GETSYSTEMMETRICS') Or
     (U = 'SHOWCURSOR') Or (U = 'SETCONSOLESCREENBUFFERSIZE') Or
