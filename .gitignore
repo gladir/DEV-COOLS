@@ -1,8 +1,5 @@
+*.S68
+*.class
 *.o
 *.obj
 *.ppu
-*.class
-AWKCW32
-link.res
-*.exe
-SAMPLES/AWK/*.asm

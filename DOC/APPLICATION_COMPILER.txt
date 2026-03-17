@@ -932,9 +932,48 @@ Table des matieres
     -------------- ------------------ --------------------
     CCW32.PAS      _CCRT_             _CCRT_printf
     ABAPCW32.PAS   _ABRT_             _ABRT_PRINTCHR
+    ADACW32.PAS    _ADART_            _ADART_PRINT
     KOTLIN86.PAS   _KTRT_             _KTRT_STRLENAX
     CLIPPER86.PAS  _CLRT_             _CLRT_PRINT
     JAVAC86.PAS    _JCRT_             _JCRT_PRINTLN
+
+  13.5 Routines runtime de ADACW32.PAS
+  ------------------------------------
+
+  Le compilateur Ada ADACW32.PAS (Ada 83/95 pour Win32) fournit les
+  routines suivantes (prefixe _ADART_) :
+
+  Entrees/sorties console :
+    _ADART_PRINT     : ecrire une chaine ASCIIZ sur stdout (WriteFile)
+    _ADART_PRINTINT  : ecrire un entier sur stdout (via NUMTOSTR)
+    _ADART_PRINTCHR  : ecrire un caractere sur stdout
+    _ADART_CRLF      : ecrire CR+LF sur stdout
+    _ADART_READINT   : lire un entier depuis stdin (ReadFile + parsing)
+    _ADART_READSTR   : lire une chaine depuis stdin
+    _ADART_GET       : lire un caractere depuis stdin
+    _ADART_GET_LINE  : lire une ligne depuis stdin
+
+  Entrees/sorties fichiers :
+    _ADART_FCREATE   : creer un fichier en ecriture (CreateFileA)
+    _ADART_FOPEN     : ouvrir un fichier en lecture (CreateFileA)
+    _ADART_FCLOSE    : fermer un fichier (CloseHandle)
+    _ADART_FPUT      : ecrire une chaine dans un fichier (WriteFile)
+    _ADART_FPUT_LINE : ecrire une chaine + CRLF dans un fichier
+    _ADART_FPUT_INT  : ecrire un entier dans un fichier
+    _ADART_FGET_LINE : lire une ligne depuis un fichier (ReadFile)
+
+  Utilitaires :
+    _ADART_NUMTOSTR  : convertir un entier signe en chaine ASCIIZ
+    _ADART_STRLEN    : calculer la longueur d une chaine ASCIIZ
+    _ADART_STRCOPY   : copier une chaine ASCIIZ
+    _ADART_STRCONCAT : concatener deux chaines ASCIIZ
+    _ADART_CHKRANGE  : verifier qu un entier est dans des bornes
+    _ADART_ERROR     : afficher un message d erreur et terminer
+
+  API Win32 importees (kernel32.dll) :
+    ExitProcess, GetStdHandle, WriteFile, ReadFile,
+    GetProcessHeap, HeapAlloc, HeapFree,
+    CreateFileA, CloseHandle
 
 ==============================================================================
   14. Phase 12 : La generation binaire (PE/COFF)
@@ -1458,12 +1497,14 @@ Table des matieres
 
     CCW32.PAS       : compilateur C complet pour Windows 32 bits
     CC8086.PAS      : compilateur C pour 8086 (plus simple)
+    ADACW32.PAS     : compilateur Ada 83/95 pour Windows 32 bits
     JAVAC86.PAS     : compilateur Java pour 8086 (bon exemple)
     KOTLIN86.PAS    : compilateur Kotlin avec classes et null safety
     CLIPPER86.PAS   : compilateur Clipper avec base de donnees
     TPCW32.PAS      : compilateur Turbo Pascal complet
 
     DOC/TODO/CCW32.txt    : feuille de route du compilateur CCW32
+    DOC/TODO/ADACW32.txt  : feuille de route du compilateur ADACW32
     DOC/OBJ_FORMAT.txt    : documentation du format COFF .OBJ
     DOC/LIB_FORMAT.txt    : documentation du format .LIB
 
