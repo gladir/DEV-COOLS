@@ -11126,8 +11126,7 @@ Begin
     If (Prec = 0) Or (Prec < MinPrec) Then Break;
 
     { Detecter si la partie gauche est une chaine }
-    LeftIsStr := (LastVarTypeIdx = TY_IDX_STRING) Or
-                 (LastVarTypeIdx = TY_IDX_PCHAR);
+    LeftIsStr := TypeIsString(LastVarTypeIdx);
     LeftPascal := LastExprIsPascalStr;
 
     Inc(EP); { consommer l operateur }
