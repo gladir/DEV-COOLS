@@ -708,7 +708,7 @@ Const
   QPU_HDR_FIXED  = $20;     { partie fixe de l en-tete QPU (32 octets) }
 
   { Table des tailles de types Turbo Pascal (Win32, 32 bits) }
-  MAX_TP_TYPE_SIZES = 24;
+  MAX_TP_TYPE_SIZES = 25;
 
 Type
   { Types d entrees dans le pool de donnees }
@@ -2092,7 +2092,9 @@ Const
     (Name: 'EXTSTR';   Size: 5),   { String[4]  + length byte          }
     (Name: 'PATHSTR';  Size: 80),  { String[79] + length byte          }
     (Name: 'COMSTR';   Size: 128), { String[127]+ length byte          }
-    (Name: 'DATETIME'; Size: 12)   { record 6 x Word = 12 octets      }
+    (Name: 'DATETIME'; Size: 12),  { record 6 x Word = 12 octets      }
+    { Type QuickPascal }
+    (Name: 'CSTRING';  Size: 256)  { CSTRING : String + nul terminal   }
   );
 
 { ---- DataInit : initialiser le pool de donnees ---- }
@@ -2990,6 +2992,10 @@ Begin
   RegType('EXTSTR');    RegType('PATHSTR');
   RegType('COMSTR');    RegType('DATETIME');
 
+  { Type QuickPascal : CSTRING (String + nul terminal) }
+  If Opts.QuickPascal Then
+    RegType('CSTRING');
+
   { ---------------------------------------------------------- }
   { Constantes predefinies                                      }
   { ---------------------------------------------------------- }
@@ -3608,6 +3614,10 @@ Begin
   TypeAdd(TYK_STRING, 'EXTSTR',   5, 1, False, TY_UNKNOWN);   { String[4]  }
   TypeAdd(TYK_STRING, 'PATHSTR', 80, 1, False, TY_UNKNOWN);   { String[79] }
   TypeAdd(TYK_STRING, 'COMSTR', 128, 1, False, TY_UNKNOWN);   { String[127]}
+
+  { Type QuickPascal : CSTRING (String + nul terminal) }
+  If Opts.QuickPascal Then
+    TypeAdd(TYK_STRING, 'CSTRING', 256, 1, False, TY_UNKNOWN);
 
   If Opts.DebugMode Then
     WriteLn('  [TypeInit] ', TypeCount, ' types primitifs enregistres');
@@ -4713,7 +4723,8 @@ Begin
   If Sz < 0 Then Sz := 4; { defaut : 32 bits }
 
   { Chaine (STRING) et types chaines du DOS : DB N DUP(0) }
-  If (Up = 'STRING') Or (Up = 'DIRSTR') Or (Up = 'NAMESTR') Or
+  If (Up = 'STRING') Or (Up = 'CSTRING') Or (Up = 'DIRSTR') Or
+     (Up = 'NAMESTR') Or
      (Up = 'EXTSTR') Or (Up = 'PATHSTR') Or (Up = 'COMSTR') Then
   Begin
     DataAddGlobalVar := DataAdd(Lbl, DK_ARRAY, 0, '', Sz, 1);
@@ -4759,7 +4770,7 @@ Begin
   If Sz < 0 Then Sz := 4;
 
   { Chaine (STRING) : DB 'contenu',0 }
-  If (Up = 'STRING') Or (Up = 'PCHAR') Then
+  If (Up = 'STRING') Or (Up = 'CSTRING') Or (Up = 'PCHAR') Then
   Begin
     If InitStr <> '' Then
       DataAddTypedConst := DataAdd(Lbl, DK_STR, 0, InitStr, 0, 0)
@@ -4801,7 +4812,7 @@ Begin
   Sz  := TPTypeSizeof(Up);
   If Sz < 0 Then Sz := 4;
 
-  If Up = 'STRING' Then
+  If (Up = 'STRING') Or (Up = 'CSTRING') Then
     DataAdd(Lbl, DK_ARRAY, 0, '', 256, 1)
   Else If Sz = 1 Then
     DataAddByte(Lbl, InitVal)
