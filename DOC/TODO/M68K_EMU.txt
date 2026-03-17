@@ -1,0 +1,61 @@
+  M68K_EMU.PAS - Emulateur Motorola 68000
+  Turbo Pascal / Free Pascal (-Mtp)
+  Charge et execute du code objet S-Record genere par ASM68
+
+  ARCHITECTURE
+  ============================================================
+
+  1. Memoire     : tableau de 1 Mo, acces big-endian (Read8/16/32, Write8/16/32)
+  2. Registres   : D0-D7 (donnees), A0-A7 (adresses), PC, SR
+  3. Decodage    : EA (mode/reg), conditions, tailles (B/W/L)
+  4. Instructions: MOVE, ADD, SUB, CMP, AND, OR, EOR, MULU, MULS, DIVU, DIVS
+                   Shift/Rotate (ASL/ASR/LSL/LSR/ROL/ROR/ROXL/ROXR)
+                   Bcc, BSR, JMP, JSR, RTS, TRAP, MOVEM, LEA, PEA
+                   ADDQ, SUBQ, MOVEQ, CLR, NEG, NOT, EXT, SWAP, TST
+                   LINK, UNLK, NOP, STOP, ILLEGAL, CHK, TAS
+  5. TRAP #15    : convention Easy68k (D0=9 halt, D0=14 print, D0=13 printnum)
+  6. Chargement  : fichier S-Record (S0, S1, S5, S9)
+
+  COMPILATION
+  ============================================================
+
+  fpc -Mtp M68K_EMU.PAS
+  (ou ppc386 -O2 -Mtp M68K_EMU.PAS)
+
+  UTILISATION
+  ============================================================
+
+  M68K_EMU fichier.S68 [--verbose] [--max-cycles N]
+
+    fichier.S68    : fichier S-Record genere par ASM68
+    --verbose      : affiche les registres a la fin de l'execution
+    --max-cycles N : limite le nombre de cycles d'execution (defaut: 100000)
+
+  Code retour :
+    0 = programme termine normalement (TRAP #15 avec D0=9)
+    1 = erreur d'execution (instruction illegale, boucle infinie, etc.)
+
+  TESTS
+  ============================================================
+
+  bash TESTS/test_m68k_emu.sh [--verbose]
+
+  Execute les programmes de test SAMPLES/ASM68/*.asm via ASM68 puis
+  les S-Records generes dans l'emulateur Pascal M68K_EMU.
+
+  FONCTIONNALITES IMPLEMENTEES
+  ============================================================
+
+  - Chargement S-Record (S0/S1/S5/S9)
+  - Memoire big-endian 1 Mo
+  - Registres D0-D7, A0-A7, PC, SR (drapeaux X/N/Z/V/C)
+  - Mode d'adressage : Dn, An, (An), (An)+, -(An), d(An), d(An,Xn), abs.W, abs.L, d(PC), #imm
+  - Instructions de transfert : MOVE, MOVEA, MOVEQ, MOVEM, LEA, PEA, EXG, LINK, UNLK
+  - Instructions arithmetiques : ADD, ADDA, ADDI, ADDQ, SUB, SUBA, SUBI, SUBQ
+  - Instructions arithmetiques : MULU, MULS, DIVU, DIVS, NEG, NEGX, EXT, CLR
+  - Instructions logiques : AND, ANDI, OR, ORI, EOR, EORI, NOT, TST
+  - Instructions de comparaison : CMP, CMPA, CMPI
+  - Instructions de decalage : ASL, ASR, LSL, LSR, ROL, ROR, ROXL, ROXR
+  - Instructions de branchement : Bcc (14 conditions), BRA, BSR, JMP, JSR, RTS, DBcc
+  - Instructions speciales : TRAP, NOP, STOP, SWAP, TAS, CHK, ILLEGAL, BTST, BSET, BCLR, BCHG
+  - TRAP #15 Easy68k : halt (D0=9), print string (D0=14), print number (D0=13)

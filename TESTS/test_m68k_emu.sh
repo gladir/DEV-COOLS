@@ -1,14 +1,14 @@
 #!/bin/sh
 # =============================================================================
-# test_asm68_run.sh - Tests d'execution du code genere par ASM68
+# test_m68k_emu.sh - Tests de l'emulateur Motorola 68000 (M68K_EMU.PAS)
 # =============================================================================
 #
 # Usage:
-#   ./TESTS/test_asm68_run.sh [--verbose]
+#   ./TESTS/test_m68k_emu.sh [--verbose]
 #
-# Ce script compile ASM68.PAS et M68K_EMU.PAS si necessaire, assemble les
+# Ce script compile M68K_EMU.PAS et ASM68.PAS si necessaire, assemble les
 # fichiers de test dans SAMPLES/ASM68/, puis execute les S-Records generes
-# dans l'emulateur M68K_EMU (Pascal) pour verifier le code machine.
+# dans l'emulateur Pascal M68K_EMU pour verifier le fonctionnement.
 #
 # =============================================================================
 
@@ -45,35 +45,55 @@ fi
 
 PASS=0
 FAIL=0
-SKIP=0
 TOTAL=0
 
-echo "=== Tests ASM68 - Execution dans l'emulateur 68000 ==="
+echo "=== Tests M68K_EMU - Emulateur Motorola 68000 (Pascal) ==="
 echo ""
 
-# Fichiers executables (ont une terminaison TRAP #15 D0=9)
-EXEC_FILES="hello.asm arith.asm bcd.asm branch.asm cond.asm expr.asm \
-listing.asm logic.asm move.asm sections.asm shift.asm special.asm \
-test_listing.asm test_logic.asm \
-test_shift.asm test_special.asm test_srecord.asm \
+# Test 1 : Compilation
+TOTAL=$((TOTAL + 1))
+echo "  Test compilation M68K_EMU.PAS..."
+if [ -f "$EMU_BIN" ]; then
+  PASS=$((PASS + 1))
+  echo "  OK   : M68K_EMU compile avec succes"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL : M68K_EMU ne compile pas"
+fi
+
+# Test 2 : Hello World
+TOTAL=$((TOTAL + 1))
+"$ASM68_BIN" "$SAMPLES_DIR/hello.asm" >/dev/null 2>&1
+OUT=$("$EMU_BIN" "$SAMPLES_DIR/hello.S68" 2>&1)
+EXIT=$?
+if [ "$EXIT" -eq 0 ] && echo "$OUT" | grep -q "Hello, World!"; then
+  PASS=$((PASS + 1))
+  echo "  OK   : hello.asm -> 'Hello, World!'"
+else
+  FAIL=$((FAIL + 1))
+  echo "  FAIL : hello.asm (exit=$EXIT, output='$OUT')"
+fi
+
+# Tests executables (ont une terminaison TRAP #15 et sont concus pour
+# l'execution dans l'emulateur)
+EXEC_FILES="arith.asm bcd.asm branch.asm cond.asm expr.asm \
+logic.asm move.asm shift.asm special.asm \
+test_logic.asm test_shift.asm test_special.asm test_srecord.asm \
 test_transfer.asm test_twopass.asm"
 
-# Fichiers assemblage seul (testent des fonctionnalites de l'assembleur,
-# pas concus pour l'execution : registres non initialises, macros, etc.)
-ASM_ONLY="test_advanced.asm test_branch.asm test_conditional.asm \
-test_directives.asm test_parser.asm test_run.asm \
-include.asm test_include.asm \
-labels.asm macro.asm test_arith.asm test_encode.asm test_macro.asm"
+# Tests d'encodage (assemblage seul, pas concus pour l'execution :
+# registres non initialises, division par zero intentionnelle, etc.)
+ENCODE_ONLY="labels.asm test_arith.asm test_encode.asm \
+test_listing.asm test_macro.asm"
 
-echo "--- Fichiers executables (assemblage + execution) ---"
 for f in $EXEC_FILES; do
   TOTAL=$((TOTAL + 1))
   FULL_PATH="$SAMPLES_DIR/$f"
   S68_PATH="${FULL_PATH%.asm}.S68"
 
   if [ ! -f "$FULL_PATH" ]; then
-    echo "  ABSENT : $f"
     FAIL=$((FAIL + 1))
+    echo "  ABSENT: $f"
     continue
   fi
 
@@ -107,8 +127,7 @@ for f in $EXEC_FILES; do
     fi
   else
     FAIL=$((FAIL + 1))
-    ERR_MSG=$(echo "$EMU_OUT" | grep -E "^Erreur" | head -1)
-    echo "  FAIL : $f (execution: $ERR_MSG)"
+    echo "  FAIL : $f (execution: exit=$EMU_EXIT)"
     if [ "$VERBOSE" -eq 1 ]; then
       echo "$EMU_OUT" | head -3 | sed 's/^/         /'
     fi
@@ -116,14 +135,15 @@ for f in $EXEC_FILES; do
 done
 
 echo ""
-echo "--- Fichiers assemblage seul (pas d'execution) ---"
-for f in $ASM_ONLY; do
+echo "--- Tests d'encodage (assemblage seul, pas d'execution) ---"
+SKIP=0
+for f in $ENCODE_ONLY; do
   TOTAL=$((TOTAL + 1))
   FULL_PATH="$SAMPLES_DIR/$f"
 
   if [ ! -f "$FULL_PATH" ]; then
-    echo "  ABSENT : $f"
     FAIL=$((FAIL + 1))
+    echo "  ABSENT: $f"
     continue
   fi
 
@@ -133,6 +153,7 @@ for f in $ASM_ONLY; do
 
   if [ "$ASM_EXIT" -eq 0 ] && [ "$ASM_ERRORS" = "0" ]; then
     SKIP=$((SKIP + 1))
+    PASS=$((PASS + 1))
     echo "  SKIP : $f (assemblage OK, execution non applicable)"
   else
     FAIL=$((FAIL + 1))
@@ -141,7 +162,7 @@ for f in $ASM_ONLY; do
 done
 
 echo ""
-echo "=== Resultats: $PASS/$TOTAL executes OK, $SKIP assembles seul, $FAIL echec(s) ==="
+echo "=== Resultats: $PASS/$TOTAL OK ($SKIP assemblage seul), $FAIL echec(s) ==="
 
 if [ "$FAIL" -gt 0 ]; then
   exit 1

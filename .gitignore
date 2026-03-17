@@ -4,5 +4,6 @@
 *.obj
 *.ppu
 /ASM68
+/M68K_EMU
 /JASMIN
 TESTS/__pycache__/
