@@ -1,0 +1,126 @@
+comment Test TODO 19 - DECLARATIONS SWITCH ;
+comment Ce fichier teste les declarations switch et goto sw[i] ;
+
+begin
+  comment Cas 1 : switch simple avec 3 labels ;
+  integer x ;
+  x := 0 ;
+  switch s1 := cas1a, cas1b, cas1c ;
+  goto s1[2] ;
+  cas1a: x := 1 ;
+  goto fin1 ;
+  cas1b: x := 2 ;
+  goto fin1 ;
+  cas1c: x := 3 ;
+  goto fin1 ;
+  fin1: write(x) ;
+
+  comment Cas 2 : switch avec premier element ;
+  integer y ;
+  y := 0 ;
+  switch s2 := lab2a, lab2b ;
+  goto s2[1] ;
+  lab2a: y := 1 ;
+  goto fin2 ;
+  lab2b: y := 99 ;
+  goto fin2 ;
+  fin2: write(y) ;
+
+  comment Cas 3 : switch avec dernier element ;
+  integer z ;
+  z := 0 ;
+  switch s3 := lab3a, lab3b, lab3c ;
+  goto s3[3] ;
+  lab3a: z := 10 ;
+  goto fin3 ;
+  lab3b: z := 20 ;
+  goto fin3 ;
+  lab3c: z := 3 ;
+  goto fin3 ;
+  fin3: write(z) ;
+
+  comment Cas 4 : switch avec label numerique ;
+  integer a ;
+  a := 0 ;
+  switch s4 := 40, 41 ;
+  goto s4[2] ;
+  40: a := 40 ;
+  goto fin4 ;
+  41: a := 4 ;
+  goto fin4 ;
+  fin4: write(a) ;
+
+  comment Cas 5 : switch avec variable comme index ;
+  integer b ;
+  integer idx ;
+  b := 0 ;
+  idx := 2 ;
+  switch s5 := lab5a, lab5b, lab5c ;
+  goto s5[idx] ;
+  lab5a: b := 10 ;
+  goto fin5 ;
+  lab5b: b := 5 ;
+  goto fin5 ;
+  lab5c: b := 30 ;
+  goto fin5 ;
+  fin5: write(b) ;
+
+  comment Cas 6 : switch avec expression arithmetique comme index ;
+  integer c ;
+  c := 0 ;
+  switch s6 := lab6a, lab6b, lab6c ;
+  goto s6[1 + 1] ;
+  lab6a: c := 10 ;
+  goto fin6 ;
+  lab6b: c := 6 ;
+  goto fin6 ;
+  lab6c: c := 30 ;
+  goto fin6 ;
+  fin6: write(c) ;
+
+  comment Cas 7 : switch avec un seul label ;
+  integer d ;
+  d := 0 ;
+  switch s7 := lab7a ;
+  goto s7[1] ;
+  lab7a: d := 7 ;
+  write(d) ;
+
+  comment Cas 8 : deux switch dans le meme programme ;
+  integer e ;
+  e := 0 ;
+  switch sw8a := dest8a, dest8b ;
+  switch sw8b := dest8c, dest8d ;
+  goto sw8a[1] ;
+  dest8a: goto sw8b[2] ;
+  dest8b: e := 80 ;
+  goto fin8 ;
+  dest8c: e := 81 ;
+  goto fin8 ;
+  dest8d: e := 8 ;
+  goto fin8 ;
+  fin8: write(e) ;
+
+  comment Cas 9 : switch et boucle for ;
+  integer f ;
+  f := 0 ;
+  switch s9 := add9a, add9b, add9c ;
+  goto s9[1] ;
+  add9a: f := f + 1 ;
+  goto s9[2] ;
+  add9b: f := f + 2 ;
+  goto s9[3] ;
+  add9c: f := f + 6 ;
+  write(f) ;
+
+  comment Cas 10 : switch avec forward reference labels ;
+  integer g ;
+  g := 0 ;
+  switch s10 := fwd10a, fwd10b ;
+  goto s10[2] ;
+  fwd10a: g := 99 ;
+  goto done10 ;
+  fwd10b: g := 10 ;
+  goto done10 ;
+  done10: write(g)
+end

@@ -1,0 +1,73 @@
+comment Algol 58 - Exemple : expressions et fonctions mathematiques ;
+comment Expressions arithmetiques, abs, sign, puissance, fonctions ;
+
+begin
+  integer a, b, c ;
+
+  comment Arithmetique de base ;
+  a := 7 ;
+  b := 3 ;
+  c := a + b ;
+  writeln(c) ;
+
+  c := a - b ;
+  writeln(c) ;
+
+  c := a * b ;
+  writeln(c) ;
+
+  c := a div b ;
+  writeln(c) ;
+
+  c := a mod b ;
+  writeln(c) ;
+
+  comment Puissance ;
+  c := 2 ^ 10 ;
+  writeln(c) ;
+
+  c := 3 ^ 3 ;
+  writeln(c) ;
+
+  comment Fonctions intrinseques : abs et sign ;
+  c := abs(-42) ;
+  writeln(c) ;
+
+  c := abs(15) ;
+  writeln(c) ;
+
+  c := sign(-8) ;
+  writeln(c) ;
+
+  c := sign(0) ;
+  writeln(c) ;
+
+  c := sign(99) ;
+  writeln(c) ;
+
+  comment Fonctions intrinseques : sqrt, max, min ;
+  c := sqrt(144) ;
+  writeln(c) ;
+
+  c := max(10, 20) ;
+  writeln(c) ;
+
+  c := min(10, 20) ;
+  writeln(c) ;
+
+  comment Expressions combinees ;
+  a := 5 ;
+  b := 12 ;
+  c := abs(a - b) + max(a, b) ;
+  writeln(c) ;
+
+  c := sqrt(a * a + b * b) ;
+  writeln(c) ;
+
+  comment Expression avec operateurs unaires ;
+  c := -a + b ;
+  writeln(c) ;
+
+  c := -(a - b) ;
+  writeln(c)
+end

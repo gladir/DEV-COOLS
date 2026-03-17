@@ -1,0 +1,54 @@
+comment Test TODO 21 - FONCTIONS MATHEMATIQUES INTRINSEQUES ;
+comment Ce fichier teste les fonctions intrinseques ;
+
+begin
+  comment Cas 1 : abs de valeur positive ;
+  integer a ;
+  a := abs(5) ;
+  write(a) ;
+
+  comment Cas 2 : abs de valeur negative ;
+  integer b ;
+  b := abs(-3) ;
+  write(b) ;
+
+  comment Cas 3 : sign de valeur positive ;
+  integer c ;
+  c := sign(42) ;
+  write(c) ;
+
+  comment Cas 4 : sign de valeur negative ;
+  integer d ;
+  d := sign(-7) ;
+  write(d) ;
+
+  comment Cas 5 : sign de zero ;
+  integer e ;
+  e := sign(0) ;
+  write(e) ;
+
+  comment Cas 6 : entier (identite en mode entier) ;
+  integer f ;
+  f := entier(6) ;
+  write(f) ;
+
+  comment Cas 7 : sqrt entiere ;
+  integer g ;
+  g := sqrt(49) ;
+  write(g) ;
+
+  comment Cas 8 : max de deux valeurs ;
+  integer h ;
+  h := max(3, 8) ;
+  write(h) ;
+
+  comment Cas 9 : min de deux valeurs ;
+  integer i ;
+  i := min(9, 15) ;
+  write(i) ;
+
+  comment Cas 10 : mod (reste de division) ;
+  integer j ;
+  j := mod(17, 5) ;
+  write(j)
+end

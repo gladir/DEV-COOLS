@@ -1,0 +1,109 @@
+comment Test 1 : procedure simple sans parametre ;
+begin
+  procedure hello() ;
+    writeln("Hello from procedure") ;
+
+  hello() ;
+end
+
+comment Test 2 : procedure avec un parametre par valeur ;
+begin
+  procedure greet(x) ; value x ; integer x ;
+    writeln(x) ;
+
+  greet(42) ;
+end
+
+comment Test 3 : integer procedure (fonction) ;
+begin
+  integer procedure double(n) ; value n ; integer n ;
+    double := n * 2 ;
+
+  integer result ;
+  result := double(21) ;
+  writeln(result) ;
+end
+
+comment Test 4 : procedure avec deux parametres par valeur ;
+begin
+  integer procedure add(a, b) ; value a, b ; integer a ; integer b ;
+    add := a + b ;
+
+  integer s ;
+  s := add(10, 25) ;
+  writeln(s) ;
+end
+
+comment Test 5 : procedure appelant une autre procedure ;
+begin
+  procedure printval(v) ; value v ; integer v ;
+    writeln(v) ;
+
+  procedure show() ;
+    printval(99) ;
+
+  show() ;
+end
+
+comment Test 6 : procedure avec variable locale ;
+begin
+  integer procedure square(n) ; value n ; integer n ;
+  begin
+    integer temp ;
+    temp := n * n ;
+    square := temp ;
+  end ;
+
+  writeln(square(7)) ;
+end
+
+comment Test 7 : procedure sans parametres avec effet de bord ;
+begin
+  integer g ;
+  g := 0 ;
+
+  procedure incr() ;
+    g := g + 1 ;
+
+  incr() ;
+  incr() ;
+  incr() ;
+  writeln(g) ;
+end
+
+comment Test 8 : Boolean procedure ;
+begin
+  Boolean procedure ispos(x) ; value x ; integer x ;
+  begin
+    if x > 0 then ispos := 1
+    else ispos := 0 ;
+  end ;
+
+  if ispos(5) then writeln("positive")
+  else writeln("not positive") ;
+end
+
+comment Test 9 : procedure imbriquee ;
+begin
+  integer procedure outer(x) ; value x ; integer x ;
+  begin
+    integer procedure inner(y) ; value y ; integer y ;
+      inner := y + 1 ;
+
+    outer := inner(x) * 2 ;
+  end ;
+
+  writeln(outer(10)) ;
+end
+
+comment Test 10 : procedure avec boucle for ;
+begin
+  procedure countdown(n) ; value n ; integer n ;
+  begin
+    integer i ;
+    for i := n step -1 until 1 do
+      writeln(i) ;
+  end ;
+
+  countdown(3) ;
+end

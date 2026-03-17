@@ -1,0 +1,18 @@
+comment Test du segment de donnees et statiques (TODO 08) ;
+comment Variables globales, chaines, tableaux et heap dans DATA ;
+
+begin
+  comment Variable globale dans DATA ;
+  integer x ;
+  x := 42 ;
+
+  comment Chaine litterale dans DATA ;
+  write ("hello") ;
+
+  comment Tableau global dans DATA ;
+  integer array a[1:10] ;
+  a[1] := 7 ;
+
+  comment Verifie que le segment DATA est genere correctement ;
+  write (x)
+end

@@ -1,0 +1,51 @@
+comment Test TODO 24 - RUNTIME MINIMAL ;
+comment Ce fichier teste les routines du runtime genere ;
+
+begin
+  comment Cas 1 : write entier positif ;
+  integer a ;
+  a := 42 ;
+  write(a) ;
+
+  comment Cas 2 : write entier negatif ;
+  integer b ;
+  b := -7 ;
+  write(b) ;
+
+  comment Cas 3 : write chaine litterale ;
+  write("hello") ;
+
+  comment Cas 4 : abs et affichage ;
+  integer c ;
+  c := abs(-99) ;
+  write(c) ;
+
+  comment Cas 5 : sign ;
+  integer d ;
+  d := sign(-10) ;
+  write(d) ;
+
+  comment Cas 6 : puissance ;
+  integer e ;
+  e := 2 ^ 10 ;
+  write(e) ;
+
+  comment Cas 7 : sqrt entiere ;
+  integer f ;
+  f := sqrt(144) ;
+  write(f) ;
+
+  comment Cas 8 : max et min ;
+  integer g ;
+  g := max(3, 9) ;
+  write(g) ;
+  integer h ;
+  h := min(3, 9) ;
+  write(h) ;
+
+  comment Cas 9 : write booleen ;
+  write(true) ;
+
+  comment Cas 10 : writeln ;
+  writeln("done")
+end
