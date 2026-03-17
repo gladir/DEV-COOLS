@@ -110,6 +110,7 @@ Type
     UnitDirs  : TString;   { -U<path> : repertoires unites            }
     DebugInfo : Boolean;   { -V : infos de debogage dans l EXE        }
     CompDir   : TString;   { -$<sw> : directives compilateur          }
+    QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
   End;
 
 Var
@@ -338,6 +339,7 @@ Begin
   WriteLn('  -tp6           Turbo Pascal 6');
   WriteLn('  -tp7           Turbo Pascal 7 (defaut)');
   WriteLn('  -tp8           Turbo Pascal 8');
+  WriteLn('  --quickpascal  Mode QuickPascal (support de l''unite MSGraph)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -429,6 +431,8 @@ Begin
       Opts.TPVersion := TP_VER_7
     Else If Arg = '-tp8' Then
       Opts.TPVersion := TP_VER_8
+    Else If (Arg = '--quickpascal') Then
+      Opts.QuickPascal := True
     { Options compatibles TPC 7.0 (TODO 25) }
     Else If (UA = '-B') Then
       Opts.BuildAll := True
@@ -704,7 +708,7 @@ Const
   QPU_HDR_FIXED  = $20;     { partie fixe de l en-tete QPU (32 octets) }
 
   { Table des tailles de types Turbo Pascal (Win32, 32 bits) }
-  MAX_TP_TYPE_SIZES = 18;
+  MAX_TP_TYPE_SIZES = 25;
 
 Type
   { Types d entrees dans le pool de donnees }
@@ -2081,7 +2085,16 @@ Const
     (Name: 'PCHAR';     Size: 4),   { pointeur vers Char                }
     (Name: 'TEXT';      Size: 4),   { handle fichier texte              }
     (Name: 'FILE';      Size: 4),   { handle fichier                    }
-    (Name: 'LONGWORD';  Size: 4)    { mot 32 bits non signe (TP8)       }
+    (Name: 'LONGWORD';  Size: 4),   { mot 32 bits non signe (TP8)       }
+    { Types de l unite Dos }
+    (Name: 'DIRSTR';   Size: 68),  { String[67] + length byte          }
+    (Name: 'NAMESTR';  Size: 9),   { String[8]  + length byte          }
+    (Name: 'EXTSTR';   Size: 5),   { String[4]  + length byte          }
+    (Name: 'PATHSTR';  Size: 80),  { String[79] + length byte          }
+    (Name: 'COMSTR';   Size: 128), { String[127]+ length byte          }
+    (Name: 'DATETIME'; Size: 12),  { record 6 x Word = 12 octets      }
+    { Type QuickPascal }
+    (Name: 'CSTRING';  Size: 256)  { CSTRING : String + nul terminal   }
   );
 
 { ---- DataInit : initialiser le pool de donnees ---- }
@@ -2974,6 +2987,15 @@ Begin
     RegType('LONGWORD');
   End;
 
+  { Types de l unite Dos (toujours enregistres) }
+  RegType('DIRSTR');    RegType('NAMESTR');
+  RegType('EXTSTR');    RegType('PATHSTR');
+  RegType('COMSTR');    RegType('DATETIME');
+
+  { Type QuickPascal : CSTRING (String + nul terminal) }
+  If Opts.QuickPascal Then
+    RegType('CSTRING');
+
   { ---------------------------------------------------------- }
   { Constantes predefinies                                      }
   { ---------------------------------------------------------- }
@@ -3208,6 +3230,165 @@ Begin
   RegFunc('INSTALLUSERDRIVER');
   RegFunc('INSTALLUSERFONT');
   RegFunc('TEXTHEIGHT');   RegFunc('TEXTWIDTH');
+  RegFunc('REGISTERBGIDRIVER');  RegFunc('REGISTERBGIFONT');
+  RegFunc('GETGRAPHMODE');       RegFunc('GETPALETTESIZE');
+  RegProc('RESTORECRTMODE');     RegProc('SETGRAPHMODE');
+  RegProc('GRAPHDEFAULTS');      RegProc('SETGRAPHBUFSIZE');
+  RegProc('GETMODERANGE');       RegProc('DRAWPOLY');
+  RegProc('FILLPOLY');           RegProc('SETFILLPATTERN');
+  RegProc('SETALLPALETTE');      RegProc('GETPALETTE');
+  RegProc('GETDEFAULTPALETTE');  RegProc('SETTEXTJUSTIFY');
+  RegProc('SETUSERCHARSIZE');    RegProc('GETTEXTSETTINGS');
+  RegProc('GETLINESETTINGS');    RegProc('GETFILLSETTINGS');
+  RegProc('GETFILLPATTERN');     RegProc('GETVIEWSETTINGS');
+  RegProc('GETARCCOORDS');       RegProc('GETASPECTRATIO');
+  RegProc('CLEARVIEWPORT');
+
+  { Constantes Graph (TODO 20) }
+  RegConst('DETECT', 0);
+  RegConst('CGA', 1);     RegConst('MCGA', 2);
+  RegConst('EGA', 3);     RegConst('EGA64', 4);
+  RegConst('EGAMONO', 5); RegConst('IBM8514', 6);
+  RegConst('HERCMONO', 7);RegConst('ATT400', 8);
+  RegConst('VGA', 9);     RegConst('PC3270', 10);
+  RegConst('VGALO', 0);   RegConst('VGAMED', 1);
+  RegConst('VGAHI', 2);
+  RegConst('GROK', 0);         RegConst('GRNOINITGRAPH', -1);
+  RegConst('GRNOTDETECTED', -2);RegConst('GRFILENOTFOUND', -3);
+  RegConst('GRINVALIDDRIVER', -4);RegConst('GRNOMEM', -5);
+  RegConst('GRINVALIDMODE', -10);RegConst('GRERROR', -11);
+  RegConst('GRIOERROR', -12); RegConst('GRINVALIDFONT', -13);
+  RegConst('GRINVALIDFONTNUM', -14);RegConst('GRINVALIDVERSION', -18);
+  RegConst('SOLIDLN', 0);  RegConst('DOTTEDLN', 1);
+  RegConst('CENTERLN', 2); RegConst('DASHEDLN', 3);
+  RegConst('USERBITLN', 4);
+  RegConst('NORMWIDTH', 1);RegConst('THICKWIDTH', 3);
+  RegConst('SOLIDFILL', 1);RegConst('EMPTYFILL', 0);
+  RegConst('LINEFILL', 2); RegConst('LTSLASHFILL', 3);
+  RegConst('SLASHFILL', 4);RegConst('BKSLASHFILL', 5);
+  RegConst('LTBKSLASHFILL', 6);RegConst('HATCHFILL', 7);
+  RegConst('XHATCHFILL', 8);RegConst('INTERLEAVEFILL', 9);
+  RegConst('WIDEDOTFILL', 10);RegConst('CLOSEDOTFILL', 11);
+  RegConst('USERFILL', 12);
+  RegConst('DEFAULTFONT', 0);RegConst('TRIPLEXFONT', 1);
+  RegConst('SMALLFONT', 2); RegConst('SANSSERIFFONT', 3);
+  RegConst('GOTHICFONT', 4);
+  RegConst('HORIZDIR', 0);  RegConst('VERTDIR', 1);
+  RegConst('LEFTTEXT', 0);  RegConst('CENTERTEXT', 1);
+  RegConst('RIGHTTEXT', 2);
+  RegConst('BOTTOMTEXT', 0);RegConst('TOPTEXT', 2);
+  RegConst('COPYPUT', 0);   RegConst('XORPUT', 1);
+  RegConst('ORPUT', 2);     RegConst('ANDPUT', 3);
+  RegConst('NOTPUT', 4);
+
+  { ---------------------------------------------------------- }
+  { Procedures et fonctions de l unite MSGraph (QuickPascal)    }
+  { Enregistrees si --quickpascal est specifie                  }
+  { ---------------------------------------------------------- }
+  If Opts.QuickPascal Then
+  Begin
+    { Installation / Configuration }
+    RegFunc('_GRSTATUS');         RegFunc('_SETVIDEOMODE');
+    RegFunc('_SETVIDEOMODEROWS'); RegFunc('_GETACTIVEPAGE');
+    RegFunc('_GETVISUALPAGE');
+    RegProc('_SETACTIVEPAGE');    RegProc('_SETVISUALPAGE');
+    RegProc('_GETVIDEOCONFIG');
+    { Coordonnees }
+    RegProc('_SETVIEWORG');       RegProc('_SETVIEWPORT');
+    RegProc('_SETCLIPRGN');      RegProc('_SETWINDOW');
+    RegProc('_GETVIEWCOORD');    RegProc('_GETVIEWCOORD_W');
+    RegProc('_GETVIEWCOORD_WXY');RegProc('_GETPHYSCOORD');
+    RegProc('_GETWINDOWCOORD');  RegProc('_GETCURRENTPOSITION');
+    RegProc('_GETCURRENTPOSITION_WXY');
+    { Sortie graphique }
+    RegProc('_CLEARSCREEN');     RegProc('_MOVETO');
+    RegProc('_MOVETO_W');        RegProc('_LINETO');
+    RegProc('_LINETO_W');        RegProc('_RECTANGLE');
+    RegProc('_RECTANGLE_W');     RegProc('_RECTANGLE_WXY');
+    RegProc('_ELLIPSE');         RegProc('_ELLIPSE_W');
+    RegProc('_ELLIPSE_WXY');     RegProc('_ARC');
+    RegProc('_ARC_WXY');         RegProc('_PIE');
+    RegProc('_PIE_WXY');         RegProc('_FLOODFILL');
+    RegProc('_FLOODFILL_W');
+    RegFunc('_GETARCINFO');
+    { Pixels }
+    RegProc('_SETPIXEL');        RegProc('_SETPIXEL_W');
+    RegFunc('_GETPIXEL');        RegFunc('_GETPIXEL_W');
+    { Couleur / Style }
+    RegProc('_SETCOLOR');        RegFunc('_GETCOLOR');
+    RegProc('_SETLINESTYLE');    RegFunc('_GETLINESTYLE');
+    RegProc('_SETWRITEMODE');    RegFunc('_GETWRITEMODE');
+    RegProc('_SETFILLMASK');     RegFunc('_GETFILLMASK');
+    { Couleur de fond }
+    RegProc('_SETBKCOLOR');      RegFunc('_GETBKCOLOR');
+    { Palette }
+    RegFunc('_REMAPPALETTE');    RegProc('_REMAPALLPALETTE');
+    RegFunc('_SELECTPALETTE');
+    { Texte }
+    RegFunc('_SETTEXTROWS');     RegProc('_SETTEXTWINDOW');
+    RegProc('_GETTEXTWINDOW');   RegProc('_SCROLLTEXTWINDOW');
+    RegProc('_OUTMEM');          RegProc('_OUTTEXT');
+    RegFunc('_WRAPON');          RegFunc('_DISPLAYCURSOR');
+    { Curseur texte }
+    RegProc('_SETTEXTCURSOR');   RegFunc('_GETTEXTCURSOR');
+    { Position texte }
+    RegProc('_SETTEXTPOSITION'); RegProc('_GETTEXTPOSITION');
+    { Couleur texte }
+    RegProc('_SETTEXTCOLOR');    RegFunc('_GETTEXTCOLOR');
+    { Images }
+    RegProc('_GETIMAGE');        RegProc('_GETIMAGE_W');
+    RegProc('_GETIMAGE_WXY');    RegProc('_PUTIMAGE');
+    RegProc('_PUTIMAGE_W');
+    RegFunc('_IMAGESIZE');       RegFunc('_IMAGESIZE_W');
+    RegFunc('_IMAGESIZE_WXY');
+    { Polices graphiques }
+    RegFunc('_REGISTERFONTS');   RegProc('_UNREGISTERFONTS');
+    RegFunc('_SETFONT');         RegProc('_OUTGTEXT');
+    RegFunc('_GETGTEXTEXTENT'); RegFunc('_GETFONTINFO');
+    RegProc('_SETGTEXTVECTOR');  RegProc('_GETGTEXTVECTOR');
+    { Constantes MSGraph - modes video }
+    RegConst('_MAXRESMODE', -3);
+    RegConst('_MAXCOLORMODE', -2);
+    RegConst('_DEFAULTMODE', -1);
+    RegConst('_TEXTBW40', 0);    RegConst('_TEXTC40', 1);
+    RegConst('_TEXTBW80', 2);    RegConst('_TEXTC80', 3);
+    RegConst('_MRES4COLOR', 4);  RegConst('_MRESNOCOLOR', 5);
+    RegConst('_HRESBW', 6);      RegConst('_TEXTMONO', 7);
+    RegConst('_HERCMONO', 8);
+    RegConst('_MRES16COLOR', 13);RegConst('_HRES16COLOR', 14);
+    RegConst('_ERESNOCOLOR', 15);RegConst('_ERESCOLOR', 16);
+    RegConst('_VRES2COLOR', 17); RegConst('_VRES16COLOR', 18);
+    RegConst('_MRES256COLOR', 19);
+    RegConst('_ORESCOLOR', 64);
+    { Constantes MSGraph - action rectangle/ellipse/pie }
+    RegConst('_GBORDER', 2);
+    RegConst('_GFILLINTERIOR', 3);
+    { Constantes MSGraph - ClearScreen }
+    RegConst('_GCLEARSCREEN', 0);
+    RegConst('_GVIEWPORT', 1);
+    RegConst('_GWINDOW', 2);
+    { Constantes MSGraph - codes erreur }
+    RegConst('_GROK', 0);
+    RegConst('_GRERROR', -1);
+    RegConst('_GRMODENOTSUPPORTED', -2);
+    RegConst('_GRNOTINPROPERMODE', -3);
+    RegConst('_GRINVALIDPARAMETER', -4);
+    RegConst('_GRFONTFILENOTFOUND', -5);
+    RegConst('_GRINVALIDFONTFILE', -6);
+    RegConst('_GRCORRUPTEDFONTFILE', -7);
+    RegConst('_GRINSUFFICIENTMEMORY', -8);
+    RegConst('_GRINVALIDIMAGEBUFFER', -9);
+    { Constantes MSGraph - avertissements }
+    RegConst('_GRNOOUTPUT', 1);
+    RegConst('_GRCLIPPED', 2);
+    RegConst('_GRPARAMETERALTERED', 3);
+    { Constantes MSGraph - PutImage }
+    RegConst('_GPSET', 3);
+    RegConst('_GPRESET', 2);
+    RegConst('_GAND', 1);
+    RegConst('_GOR', 0);
+    RegConst('_GXOR', 4);
+  End;
 
   { ---------------------------------------------------------- }
   { Procedures et fonctions de l unite Graph3 (TODO 20)        }
@@ -3427,6 +3608,17 @@ Begin
   { idx 17 : LongWord (TP8+, 32 bits non signe) }
   TypeAdd(TYK_WORD, 'LONGWORD', 4, 4, True, TY_IDX_WORD);
 
+  { Types chaines de l unite Dos }
+  TypeAdd(TYK_STRING, 'DIRSTR',  68, 1, False, TY_UNKNOWN);   { String[67] }
+  TypeAdd(TYK_STRING, 'NAMESTR',  9, 1, False, TY_UNKNOWN);   { String[8]  }
+  TypeAdd(TYK_STRING, 'EXTSTR',   5, 1, False, TY_UNKNOWN);   { String[4]  }
+  TypeAdd(TYK_STRING, 'PATHSTR', 80, 1, False, TY_UNKNOWN);   { String[79] }
+  TypeAdd(TYK_STRING, 'COMSTR', 128, 1, False, TY_UNKNOWN);   { String[127]}
+
+  { Type QuickPascal : CSTRING (String + nul terminal) }
+  If Opts.QuickPascal Then
+    TypeAdd(TYK_STRING, 'CSTRING', 256, 1, False, TY_UNKNOWN);
+
   If Opts.DebugMode Then
     WriteLn('  [TypeInit] ', TypeCount, ' types primitifs enregistres');
 End;
@@ -3490,6 +3682,42 @@ Begin
     TypeTab[TI].Fields[3].TypeIdx := TY_IDX_STRING;
     TypeTab[TI].Fields[3].Offset  := 12;
     SI := SymAdd('SEARCHREC', SK_TYPE, TI);
+    If SI >= 0 Then SymTab[SI].IsGlobal := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterDateTimeType : enregistrer le type DateTime du DOS   }
+{ Layout : Year(2) Month(2) Day(2) Hour(2) Min(2) Sec(2) = 12 }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterDateTimeType;
+Var
+  TI, SI : Integer;
+Begin
+  TI := TypeAdd(TYK_RECORD, 'DATETIME', 12, 2, False, -1);
+  If TI >= 0 Then
+  Begin
+    TypeTab[TI].FieldCount := 6;
+    TypeTab[TI].Fields[0].Name    := 'YEAR';
+    TypeTab[TI].Fields[0].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[0].Offset  := 0;
+    TypeTab[TI].Fields[1].Name    := 'MONTH';
+    TypeTab[TI].Fields[1].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[1].Offset  := 2;
+    TypeTab[TI].Fields[2].Name    := 'DAY';
+    TypeTab[TI].Fields[2].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[2].Offset  := 4;
+    TypeTab[TI].Fields[3].Name    := 'HOUR';
+    TypeTab[TI].Fields[3].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[3].Offset  := 6;
+    TypeTab[TI].Fields[4].Name    := 'MIN';
+    TypeTab[TI].Fields[4].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[4].Offset  := 8;
+    TypeTab[TI].Fields[5].Name    := 'SEC';
+    TypeTab[TI].Fields[5].TypeIdx := TY_IDX_WORD;
+    TypeTab[TI].Fields[5].Offset  := 10;
+    SI := SymAdd('DATETIME', SK_TYPE, TI);
     If SI >= 0 Then SymTab[SI].IsGlobal := True;
   End;
 End;
@@ -4271,6 +4499,14 @@ Begin
   EmitRaw('GR_ERRMSG2  DB ''Graphics hardware not detected'',0');
   EmitRaw('GR_DRVNAME  DB ''EGAVGA'',0'); { nom pilote par defaut                 }
   EmitRaw('GR_MODNAME  DB ''640x480x16'',0'); { nom mode par defaut               }
+  EmitRaw('GR_TXJUST_H DD 0');            { text justify horiz (LeftText=0)        }
+  EmitRaw('GR_TXJUST_V DD 2');            { text justify vert (TopText=2)          }
+  EmitRaw('GR_ARCX     DD 0');            { arc last X                             }
+  EmitRaw('GR_ARCY     DD 0');            { arc last Y                             }
+  EmitRaw('GR_ARCXS    DD 0');            { arc start X                            }
+  EmitRaw('GR_ARCYS    DD 0');            { arc start Y                            }
+  EmitRaw('GR_ARCXE    DD 0');            { arc end X                              }
+  EmitRaw('GR_ARCYE    DD 0');            { arc end Y                              }
   EmitBlankLine;
 
   { Variables Strings / Printer / Overlay (TODO 21) }
@@ -4486,10 +4722,12 @@ Begin
   Sz  := TPTypeSizeof(Up);
   If Sz < 0 Then Sz := 4; { defaut : 32 bits }
 
-  { Chaine (STRING) : DB 256 DUP(0) }
-  If Up = 'STRING' Then
+  { Chaine (STRING) et types chaines du DOS : DB N DUP(0) }
+  If (Up = 'STRING') Or (Up = 'CSTRING') Or (Up = 'DIRSTR') Or
+     (Up = 'NAMESTR') Or
+     (Up = 'EXTSTR') Or (Up = 'PATHSTR') Or (Up = 'COMSTR') Then
   Begin
-    DataAddGlobalVar := DataAdd(Lbl, DK_ARRAY, 0, '', 256, 1);
+    DataAddGlobalVar := DataAdd(Lbl, DK_ARRAY, 0, '', Sz, 1);
     Exit;
   End;
 
@@ -4532,7 +4770,7 @@ Begin
   If Sz < 0 Then Sz := 4;
 
   { Chaine (STRING) : DB 'contenu',0 }
-  If (Up = 'STRING') Or (Up = 'PCHAR') Then
+  If (Up = 'STRING') Or (Up = 'CSTRING') Or (Up = 'PCHAR') Then
   Begin
     If InitStr <> '' Then
       DataAddTypedConst := DataAdd(Lbl, DK_STR, 0, InitStr, 0, 0)
@@ -4574,7 +4812,7 @@ Begin
   Sz  := TPTypeSizeof(Up);
   If Sz < 0 Then Sz := 4;
 
-  If Up = 'STRING' Then
+  If (Up = 'STRING') Or (Up = 'CSTRING') Then
     DataAdd(Lbl, DK_ARRAY, 0, '', 256, 1)
   Else If Sz = 1 Then
     DataAddByte(Lbl, InitVal)
@@ -9471,7 +9709,7 @@ Begin
     If Up = 'GETDRIVERNAME' Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EAX,OFFSET GR_DRVNAME');
+      EmitInstr('LEA EAX,[GR_DRVNAME]');
       Exit;
     End;
 
@@ -9484,7 +9722,7 @@ Begin
         ParseExpr(PI);
         EPMatch(')');
       End;
-      EmitInstr('MOV EAX,OFFSET GR_MODNAME');
+      EmitInstr('LEA EAX,[GR_MODNAME]');
       Exit;
     End;
 
@@ -9548,6 +9786,296 @@ Begin
       EmitInstr('PUSH EAX');
       EmitInstr('CALL ' + TP_RT_PFX + 'TEXTWIDTH');
       EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
+    { REGISTERBGIDRIVER(Driver) -> stub retourne 0 }
+    If Up = 'REGISTERBGIDRIVER' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { REGISTERBGIFONT(Font) -> stub retourne 0 }
+    If Up = 'REGISTERBGIFONT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { GETGRAPHMODE -> retourne GR_MODE }
+    If Up = 'GETGRAPHMODE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [GR_MODE]');
+      Exit;
+    End;
+
+    { GETPALETTESIZE -> retourne 16 (EGA/VGA) }
+    If Up = 'GETPALETTESIZE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,16');
+      Exit;
+    End;
+
+    { ---- MSGraph functions (QuickPascal mode) ---- }
+
+    { _GRSTATUS -> GR_RESULT }
+    If Up = '_GRSTATUS' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [GR_RESULT]');
+      Exit;
+    End;
+
+    { _SETVIDEOMODE(mode) -> stub, retourne mode }
+    If Up = '_SETVIDEOMODE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      Exit;
+    End;
+
+    { _SETVIDEOMODEROWS(mode, rows) -> stub }
+    If Up = '_SETVIDEOMODEROWS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      Exit;
+    End;
+
+    { _GETACTIVEPAGE -> GR_ACTIVE }
+    If Up = '_GETACTIVEPAGE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [GR_ACTIVE]');
+      Exit;
+    End;
+
+    { _GETVISUALPAGE -> 0 (stub) }
+    If Up = '_GETVISUALPAGE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _GETCOLOR -> GR_COLOR }
+    If Up = '_GETCOLOR' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [GR_COLOR]');
+      Exit;
+    End;
+
+    { _GETBKCOLOR -> GR_BKCOLOR }
+    If Up = '_GETBKCOLOR' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [GR_BKCOLOR]');
+      Exit;
+    End;
+
+    { _GETLINESTYLE -> GR_LINESTYLE }
+    If Up = '_GETLINESTYLE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [GR_LINESTYLE]');
+      Exit;
+    End;
+
+    { _GETWRITEMODE -> GR_WRITEMODE }
+    If Up = '_GETWRITEMODE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [GR_WRITEMODE]');
+      Exit;
+    End;
+
+    { _GETPIXEL(x,y) -> same as GETPIXEL }
+    If Up = '_GETPIXEL' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH DWORD PTR [GR_HDC]');
+      EmitInstr('CALL ' + TP_RT_PFX + 'GETPIXEL');
+      EmitInstr('ADD ESP,12');
+      Exit;
+    End;
+
+    { _GETPIXEL_W(wx,wy) -> stub, returns 0 }
+    If Up = '_GETPIXEL_W' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _IMAGESIZE(x1,y1,x2,y2) -> same as IMAGESIZE }
+    If Up = '_IMAGESIZE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'IMAGESIZE');
+      EmitInstr('ADD ESP,16');
+      Exit;
+    End;
+
+    { _IMAGESIZE_W / _IMAGESIZE_WXY -> stub returns 0 }
+    If (Up = '_IMAGESIZE_W') Or (Up = '_IMAGESIZE_WXY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
+        Begin EPMatch(','); ParseExpr(PI); End;
+        EPMatch(')');
+      End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _GETARCINFO(var SP, EP, FP) -> stub returns 0 }
+    If Up = '_GETARCINFO' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _GETFILLMASK(var mask) -> stub returns False (0) }
+    If Up = '_GETFILLMASK' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _REMAPPALETTE(index, value) -> stub returns 0 }
+    If Up = '_REMAPPALETTE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _SELECTPALETTE(n) -> stub returns 0 }
+    If Up = '_SELECTPALETTE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _SETTEXTROWS(rows) -> stub returns rows }
+    If Up = '_SETTEXTROWS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      Exit;
+    End;
+
+    { _WRAPON(opt) -> stub returns 0 }
+    If Up = '_WRAPON' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _DISPLAYCURSOR(toggle) -> stub returns 0 }
+    If Up = '_DISPLAYCURSOR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _GETTEXTCURSOR -> stub returns 0 }
+    If Up = '_GETTEXTCURSOR' Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _GETTEXTCOLOR -> stub returns 15 }
+    If Up = '_GETTEXTCOLOR' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,15');
+      Exit;
+    End;
+
+    { _REGISTERFONTS(path) -> stub returns 0 }
+    If Up = '_REGISTERFONTS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _SETFONT(opts) -> stub returns 0 }
+    If Up = '_SETFONT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _GETGTEXTEXTENT(s) -> stub returns 0 }
+    If Up = '_GETGTEXTEXTENT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { _GETFONTINFO(var finfo) -> stub returns 0 }
+    If Up = '_GETFONTINFO' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('XOR EAX,EAX');
       Exit;
     End;
 
@@ -10598,8 +11126,7 @@ Begin
     If (Prec = 0) Or (Prec < MinPrec) Then Break;
 
     { Detecter si la partie gauche est une chaine }
-    LeftIsStr := (LastVarTypeIdx = TY_IDX_STRING) Or
-                 (LastVarTypeIdx = TY_IDX_PCHAR);
+    LeftIsStr := TypeIsString(LastVarTypeIdx);
     LeftPascal := LastExprIsPascalStr;
 
     Inc(EP); { consommer l operateur }
@@ -10828,7 +11355,8 @@ Begin
     { Builtins retournant une chaine }
     If (Up = 'PARAMSTR') Or (Up = 'COPY') Or (Up = 'CONCAT')
        Or (Up = 'GETENV') Or (Up = 'FEXPAND') Or (Up = 'FSEARCH')
-       Or (Up = 'ENVSTR') Then
+       Or (Up = 'ENVSTR') Or (Up = 'GRAPHERRORMSG')
+       Or (Up = 'GETDRIVERNAME') Or (Up = 'GETMODENAME') Then
     Begin
       InferExprType := TY_IDX_STRING;
       Exit;
@@ -10877,8 +11405,12 @@ End;
 Procedure EmitPrintEAX(TypeIdx : Integer);
 Var
   LblFalse, LblDone : TString;
+  IsStrType : Boolean;
 Begin
-  If TypeIdx = TY_IDX_STRING Then
+  IsStrType := (TypeIdx = TY_IDX_STRING) Or
+               ((TypeIdx >= 0) And (TypeIdx < TypeCount) And
+                (TypeTab[TypeIdx].Kind = TYK_STRING));
+  If IsStrType Then
   Begin
     { EAX = pointeur vers chaine }
     EmitInstr('MOV ESI,EAX');
@@ -10926,8 +11458,12 @@ End;
 Procedure EmitFilePrintEAX(TypeIdx : Integer);
 Var
   LblFalse, LblDone : TString;
+  IsStrType : Boolean;
 Begin
-  If TypeIdx = TY_IDX_STRING Then
+  IsStrType := (TypeIdx = TY_IDX_STRING) Or
+               ((TypeIdx >= 0) And (TypeIdx < TypeCount) And
+                (TypeTab[TypeIdx].Kind = TYK_STRING));
+  If IsStrType Then
   Begin
     EmitInstr('MOV ESI,EAX');
     If LastExprIsPascalStr Then
@@ -13754,9 +14290,13 @@ Begin
         EPMatch(')');
       End;
       EmitInstr('POP ECX');  { Dy }
-      EmitInstr('ADD DWORD PTR [GR_CPY],ECX');
+      EmitInstr('MOV EAX,DWORD PTR [GR_CPY]');
+      EmitInstr('ADD EAX,ECX');
+      EmitInstr('MOV DWORD PTR [GR_CPY],EAX');
       EmitInstr('POP ECX');  { Dx }
-      EmitInstr('ADD DWORD PTR [GR_CPX],ECX');
+      EmitInstr('MOV EAX,DWORD PTR [GR_CPX]');
+      EmitInstr('ADD EAX,ECX');
+      EmitInstr('MOV DWORD PTR [GR_CPX],EAX');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -14308,6 +14848,980 @@ Begin
       End;
       EmitComment('PutImage (stub - bitmap non implemente)');
       EmitInstr('ADD ESP,16');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { RESTORECRTMODE - restaure le mode texte }
+    If Up = 'RESTORECRTMODE' Then
+    Begin
+      Inc(EP);
+      EmitComment('RestoreCrtMode (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { SETGRAPHMODE(Mode) }
+    If Up = 'SETGRAPHMODE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('MOV DWORD PTR [GR_MODE],EAX');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GRAPHDEFAULTS - reinitialise toutes les valeurs par defaut }
+    If Up = 'GRAPHDEFAULTS' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV DWORD PTR [GR_CPX],0');
+      EmitInstr('MOV DWORD PTR [GR_CPY],0');
+      EmitInstr('MOV DWORD PTR [GR_COLOR],15');
+      EmitInstr('MOV DWORD PTR [GR_BKCOLOR],0');
+      EmitInstr('MOV DWORD PTR [GR_FILLSTYLE],1');
+      EmitInstr('MOV DWORD PTR [GR_FILLCOLOR],0');
+      EmitInstr('MOV DWORD PTR [GR_LINESTYLE],0');
+      EmitInstr('MOV DWORD PTR [GR_LINEWIDTH],1');
+      EmitInstr('MOV DWORD PTR [GR_WRITEMODE],0');
+      EmitInstr('MOV DWORD PTR [GR_VPXL],0');
+      EmitInstr('MOV DWORD PTR [GR_VPYT],0');
+      EmitInstr('MOV EAX,DWORD PTR [GR_MAXX]');
+      EmitInstr('MOV DWORD PTR [GR_VPXR],EAX');
+      EmitInstr('MOV EAX,DWORD PTR [GR_MAXY]');
+      EmitInstr('MOV DWORD PTR [GR_VPYB],EAX');
+      EmitInstr('MOV DWORD PTR [GR_VPCLIP],1');
+      EmitInstr('MOV DWORD PTR [GR_TXFONT],0');
+      EmitInstr('MOV DWORD PTR [GR_TXDIR],0');
+      EmitInstr('MOV DWORD PTR [GR_TXSIZE],1');
+      EmitInstr('MOV DWORD PTR [GR_TXJUST_H],0');
+      EmitInstr('MOV DWORD PTR [GR_TXJUST_V],2');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { SETGRAPHBUFSIZE(BufSize) - stub }
+    If Up = 'SETGRAPHBUFSIZE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('SetGraphBufSize (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETMODERANGE(GraphDriver, LoMode, HiMode) }
+    If Up = 'GETMODERANGE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  { GraphDriver - ignored }
+        EPMatch(',');
+        ParseExpr(PI);  { LoMode var addr }
+        EmitInstr('MOV DWORD PTR [EAX],0');
+        EPMatch(',');
+        ParseExpr(PI);  { HiMode var addr }
+        EmitInstr('MOV DWORD PTR [EAX],2');
+        EPMatch(')');
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { DRAWPOLY(NumPoints, PolyPoints) - stub }
+    If Up = 'DRAWPOLY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitComment('DrawPoly (stub)');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { FILLPOLY(NumPoints, PolyPoints) - stub }
+    If Up = 'FILLPOLY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitComment('FillPoly (stub)');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { SETFILLPATTERN(Pattern, Color) }
+    If Up = 'SETFILLPATTERN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  { Pattern - array, ignore }
+        EPMatch(',');
+        ParseExpr(PI);  { Color }
+        EPMatch(')');
+      End;
+      EmitInstr('MOV DWORD PTR [GR_FILLCOLOR],EAX');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { SETALLPALETTE(Palette) - stub }
+    If Up = 'SETALLPALETTE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('SetAllPalette (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETPALETTE(Palette) - stub fills with default values }
+    If Up = 'GETPALETTE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('GetPalette (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETDEFAULTPALETTE(Palette) - stub }
+    If Up = 'GETDEFAULTPALETTE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('GetDefaultPalette (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { SETTEXTJUSTIFY(Horiz, Vert) }
+    If Up = 'SETTEXTJUSTIFY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('MOV DWORD PTR [GR_TXJUST_H],EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('MOV DWORD PTR [GR_TXJUST_V],EAX');
+        EPMatch(')');
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { SETUSERCHARSIZE(MultX, DivX, MultY, DivY) - stub }
+    If Up = 'SETUSERCHARSIZE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EPMatch(',');
+        ParseExpr(PI); EPMatch(',');
+        ParseExpr(PI); EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('SetUserCharSize (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETTEXTSETTINGS(TextInfo) - stub }
+    If Up = 'GETTEXTSETTINGS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('GetTextSettings (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETLINESETTINGS(LineInfo) - stub }
+    If Up = 'GETLINESETTINGS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('GetLineSettings (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETFILLSETTINGS(FillInfo) - stub }
+    If Up = 'GETFILLSETTINGS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('GetFillSettings (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETFILLPATTERN(FillPattern) - stub }
+    If Up = 'GETFILLPATTERN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('GetFillPattern (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETVIEWSETTINGS(ViewPort) - stub }
+    If Up = 'GETVIEWSETTINGS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('GetViewSettings (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETARCCOORDS(ArcCoords) - stub }
+    If Up = 'GETARCCOORDS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('GetArcCoords (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { GETASPECTRATIO(Xasp, Yasp) }
+    If Up = 'GETASPECTRATIO' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);  { Xasp var addr }
+        EmitInstr('MOV DWORD PTR [EAX],10000');
+        EPMatch(',');
+        ParseExpr(PI);  { Yasp var addr }
+        EmitInstr('MOV DWORD PTR [EAX],10000');
+        EPMatch(')');
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { CLEARVIEWPORT }
+    If Up = 'CLEARVIEWPORT' Then
+    Begin
+      Inc(EP);
+      EmitComment('ClearViewPort (stub - same as ClearDevice for now)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { ---- MSGraph procedures (QuickPascal mode) ---- }
+
+    { _SETACTIVEPAGE(page) }
+    If Up = '_SETACTIVEPAGE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_SetActivePage (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETVISUALPAGE(page) }
+    If Up = '_SETVISUALPAGE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_SetVisualPage (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _GETVIDEOCONFIG(var vc) }
+    If Up = '_GETVIDEOCONFIG' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_GetVideoConfig (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETVIEWORG(x, y, var org) }
+    If Up = '_SETVIEWORG' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_SetViewOrg (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETVIEWPORT(x1,y1,x2,y2) }
+    If Up = '_SETVIEWPORT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(',');
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('_SetViewport (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETCLIPRGN(x1,y1,x2,y2) }
+    If Up = '_SETCLIPRGN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(',');
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('_SetClipRgn (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETWINDOW(finvert, x1, y1, x2, y2) }
+    If Up = '_SETWINDOW' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(',');
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('_SetWindow (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _GETVIEWCOORD / _GETVIEWCOORD_W / _GETVIEWCOORD_WXY }
+    If (Up = '_GETVIEWCOORD') Or (Up = '_GETVIEWCOORD_W') Or (Up = '_GETVIEWCOORD_WXY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
+        Begin EPMatch(','); ParseExpr(PI); End;
+        EPMatch(')');
+      End;
+      EmitComment(Up + ' (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _GETPHYSCOORD / _GETWINDOWCOORD }
+    If (Up = '_GETPHYSCOORD') Or (Up = '_GETWINDOWCOORD') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment(Up + ' (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _GETCURRENTPOSITION(var xy) / _GETCURRENTPOSITION_WXY(var wxy) }
+    If (Up = '_GETCURRENTPOSITION') Or (Up = '_GETCURRENTPOSITION_WXY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment(Up + ' (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _CLEARSCREEN(area) }
+    If Up = '_CLEARSCREEN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_ClearScreen (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _MOVETO(x,y) }
+    If Up = '_MOVETO' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('MOV DWORD PTR [GR_CPX],EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('MOV DWORD PTR [GR_CPY],EAX');
+        EPMatch(')');
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _MOVETO_W(wx,wy) -> stub }
+    If Up = '_MOVETO_W' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_MoveTo_w (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _LINETO(x,y) -> maps to LineTo }
+    If Up = '_LINETO' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'LINETO');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _LINETO_W(wx,wy) -> stub }
+    If Up = '_LINETO_W' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_LineTo_w (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _RECTANGLE(control, x1, y1, x2, y2) }
+    If Up = '_RECTANGLE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { control }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitComment('_Rectangle -> Rectangle stub');
+      EmitInstr('ADD ESP,20');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _RECTANGLE_W / _RECTANGLE_WXY -> stubs }
+    If (Up = '_RECTANGLE_W') Or (Up = '_RECTANGLE_WXY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
+        Begin EPMatch(','); ParseExpr(PI); End;
+        EPMatch(')');
+      End;
+      EmitComment(Up + ' (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _ELLIPSE(control, x1,y1,x2,y2) }
+    If Up = '_ELLIPSE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitComment('_Ellipse (stub)');
+      EmitInstr('ADD ESP,20');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _ELLIPSE_W / _ELLIPSE_WXY -> stubs }
+    If (Up = '_ELLIPSE_W') Or (Up = '_ELLIPSE_WXY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
+        Begin EPMatch(','); ParseExpr(PI); End;
+        EPMatch(')');
+      End;
+      EmitComment(Up + ' (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _ARC(x1..x8) / _ARC_WXY(var wxy1..4) }
+    If (Up = '_ARC') Or (Up = '_ARC_WXY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
+        Begin EPMatch(','); ParseExpr(PI); End;
+        EPMatch(')');
+      End;
+      EmitComment(Up + ' (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _PIE / _PIE_WXY }
+    If (Up = '_PIE') Or (Up = '_PIE_WXY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
+        Begin EPMatch(','); ParseExpr(PI); End;
+        EPMatch(')');
+      End;
+      EmitComment(Up + ' (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _FLOODFILL(x,y,boundary) }
+    If Up = '_FLOODFILL' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('_FloodFill (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _FLOODFILL_W(wx,wy,boundary) }
+    If Up = '_FLOODFILL_W' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('_FloodFill_w (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETPIXEL(x,y) }
+    If Up = '_SETPIXEL' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_SetPixel (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETPIXEL_W(wx,wy) }
+    If Up = '_SETPIXEL_W' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_SetPixel_w (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETCOLOR(color) }
+    If Up = '_SETCOLOR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('AND EAX,0Fh');
+      EmitInstr('MOV DWORD PTR [GR_COLOR],EAX');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETBKCOLOR(color) }
+    If Up = '_SETBKCOLOR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('MOV DWORD PTR [GR_BKCOLOR],EAX');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETLINESTYLE(style) }
+    If Up = '_SETLINESTYLE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('MOV DWORD PTR [GR_LINESTYLE],EAX');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETWRITEMODE(wmode) }
+    If Up = '_SETWRITEMODE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitInstr('MOV DWORD PTR [GR_WRITEMODE],EAX');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETFILLMASK(mask) }
+    If Up = '_SETFILLMASK' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_SetFillMask (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _REMAPALLPALETTE(var newpalette) }
+    If Up = '_REMAPALLPALETTE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_RemapAllPalette (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETTEXTWINDOW(r1,c1,r2,c2) }
+    If Up = '_SETTEXTWINDOW' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(',');
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('_SetTextWindow (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _GETTEXTWINDOW(var r1,c1,r2,c2) }
+    If Up = '_GETTEXTWINDOW' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(',');
+        ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('_GetTextWindow (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SCROLLTEXTWINDOW(count) }
+    If Up = '_SCROLLTEXTWINDOW' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_ScrollTextWindow (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _OUTMEM(s, len) }
+    If Up = '_OUTMEM' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_OutMem (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _OUTTEXT(s) }
+    If Up = '_OUTTEXT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_OutText (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETTEXTCURSOR(attr) }
+    If Up = '_SETTEXTCURSOR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_SetTextCursor (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETTEXTPOSITION(r, c) }
+    If Up = '_SETTEXTPOSITION' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_SetTextPosition (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _GETTEXTPOSITION(var r, c) }
+    If Up = '_GETTEXTPOSITION' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_GetTextPosition (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETTEXTCOLOR(color) }
+    If Up = '_SETTEXTCOLOR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_SetTextColor (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _GETIMAGE(x1,y1,x2,y2,var image) }
+    If Up = '_GETIMAGE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
+        Begin EPMatch(','); ParseExpr(PI); End;
+        EPMatch(')');
+      End;
+      EmitComment('_GetImage (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _GETIMAGE_W / _GETIMAGE_WXY }
+    If (Up = '_GETIMAGE_W') Or (Up = '_GETIMAGE_WXY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
+        Begin EPMatch(','); ParseExpr(PI); End;
+        EPMatch(')');
+      End;
+      EmitComment(Up + ' (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _PUTIMAGE(x,y,var image, action) }
+    If Up = '_PUTIMAGE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
+        Begin EPMatch(','); ParseExpr(PI); End;
+        EPMatch(')');
+      End;
+      EmitComment('_PutImage (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _PUTIMAGE_W }
+    If Up = '_PUTIMAGE_W' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        While (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
+        Begin EPMatch(','); ParseExpr(PI); End;
+        EPMatch(')');
+      End;
+      EmitComment('_PutImage_w (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _UNREGISTERFONTS }
+    If Up = '_UNREGISTERFONTS' Then
+    Begin
+      Inc(EP);
+      EmitComment('_UnRegisterFonts (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _OUTGTEXT(s) }
+    If Up = '_OUTGTEXT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_OutGText (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETGTEXTVECTOR(x, y) }
+    If Up = '_SETGTEXTVECTOR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_SetGTextVector (stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _GETGTEXTVECTOR(var x, y) }
+    If Up = '_GETGTEXTVECTOR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      EmitComment('_GetGTextVector (stub)');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -17105,28 +18619,160 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_FSPLIT : decomposer chemin ---------------------- }
-  { Params : [ESP+4]=Path, [ESP+8]=Dir, [ESP+12]=Name, [ESP+16]=Ext }
-  { Toutes des chaines Pascal. Remplit Dir, Name, Ext.               }
+  { Stack (pushed L-to-R) : [EBP+20]=Path, [EBP+16]=Dir,          }
+  {                         [EBP+12]=Name, [EBP+8]=Ext             }
+  { Toutes des chaines Pascal. Remplit Dir, Name, Ext.             }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FSPLIT');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
-  { Pour simplifier, copier le chemin complet dans Dir et vider Name/Ext }
-  { Dir = Path }
-  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { Path source }
-  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');  { Dir dest }
-  EmitInstr('MOVZX ECX,BYTE PTR [ESI]');     { longueur }
-  EmitInstr('MOV BYTE PTR [EDI],CL');
+
+  { ESI = pointeur Path (chaine Pascal : [len][chars]) }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+20]');
+  EmitInstr('MOVZX ECX,BYTE PTR [ESI]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_EMPTY');
+
+  { Copier les chars dans DOS_PATHBUF pour manipulation ASCIIZ }
+  EmitInstr('MOV DWORD PTR [DOS_PATHBUF+260],ECX');   { sauver longueur }
+  EmitInstr('PUSH ECX');
   EmitInstr('INC ESI');
-  EmitInstr('INC EDI');
+  EmitInstr('LEA EDI,[DOS_PATHBUF]');
   EmitInstr('REP MOVSB');
-  { Name = '' }
+  EmitInstr('MOV BYTE PTR [EDI],0');     { NUL terminal }
+  EmitInstr('POP ECX');                   { ECX = longueur totale }
+
+  { Chercher le dernier separateur \ / : depuis la fin }
+  EmitInstr('MOV EDX,-1');                { EDX = position du sep, -1=pas trouve }
+  EmitInstr('MOV EBX,ECX');
+  EmitInstr('DEC EBX');
+  EmitLabel(TP_RT_PFX + 'FSP_SCN');
+  EmitInstr('TEST EBX,EBX');
+  EmitInstr('JS ' + TP_RT_PFX + 'FSP_SDN');
+  EmitInstr('LEA EAX,[DOS_PATHBUF]');
+  EmitInstr('ADD EAX,EBX');
+  EmitInstr('MOVZX EAX,BYTE PTR [EAX]');
+  EmitInstr('CMP AL,92');                 { backslash }
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_SFD');
+  EmitInstr('CMP AL,47');                 { slash }
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_SFD');
+  EmitInstr('CMP AL,58');                 { colon }
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_SFD');
+  EmitInstr('DEC EBX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FSP_SCN');
+  EmitLabel(TP_RT_PFX + 'FSP_SFD');
+  EmitInstr('MOV EDX,EBX');              { EDX = position du dernier sep (0-based) }
+  EmitLabel(TP_RT_PFX + 'FSP_SDN');
+
+  { DirLen = EDX+1 si sep trouve, 0 sinon }
+  EmitInstr('MOV ECX,DWORD PTR [DOS_PATHBUF+260]'); { longueur totale }
+  EmitInstr('CMP EDX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_NODIR');
+  EmitInstr('MOV EBX,EDX');                { EBX = position du dernier sep (0-based) }
+  EmitInstr('INC EBX');                    { EBX = DirLen (incl sep) }
+  EmitInstr('JMP ' + TP_RT_PFX + 'FSP_CDIR');
+  EmitLabel(TP_RT_PFX + 'FSP_NODIR');
+  EmitInstr('XOR EBX,EBX');              { EBX = 0, pas de dir }
+  EmitLabel(TP_RT_PFX + 'FSP_CDIR');
+
+  { Copier Dir (EBX chars depuis DOS_PATHBUF) }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+16]');
+  EmitInstr('MOV BYTE PTR [EDI],BL');
+  EmitInstr('TEST EBX,EBX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_DD');
+  EmitInstr('PUSH ECX');
+  EmitInstr('MOV ECX,EBX');
+  EmitInstr('INC EDI');
+  EmitInstr('LEA ESI,[DOS_PATHBUF]');
+  EmitInstr('REP MOVSB');
+  EmitInstr('POP ECX');
+  EmitLabel(TP_RT_PFX + 'FSP_DD');
+
+  { Reste = filename part : ECX-EBX chars a partir de DOS_PATHBUF+EBX }
+  EmitInstr('SUB ECX,EBX');               { ECX = restLen }
+
+  { Chercher le dernier point dans le reste }
+  EmitInstr('MOV EDX,-1');                { position du point, -1=pas trouve }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_NDP');
+  EmitInstr('PUSH ECX');
+  EmitInstr('DEC ECX');
+  EmitLabel(TP_RT_PFX + 'FSP_DSC');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JS ' + TP_RT_PFX + 'FSP_DNF');
+  EmitInstr('LEA EAX,[DOS_PATHBUF]');
+  EmitInstr('ADD EAX,EBX');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('MOVZX EAX,BYTE PTR [EAX]');
+  EmitInstr('CMP AL,46');                 { point }
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_DFD');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FSP_DSC');
+  EmitLabel(TP_RT_PFX + 'FSP_DFD');
+  EmitInstr('MOV EDX,ECX');              { EDX = position du point dans le reste }
+  EmitLabel(TP_RT_PFX + 'FSP_DNF');
+  EmitInstr('POP ECX');                   { ECX = restLen }
+  EmitLabel(TP_RT_PFX + 'FSP_NDP');
+
+  { Si point trouve : Name = reste[0..EDX-1], Ext = reste[EDX..end] }
+  { Si pas de point  : Name = tout le reste, Ext = '' }
+  EmitInstr('CMP EDX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'FSP_ALLNM');
+  { Name = EDX chars }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
+  EmitInstr('MOV BYTE PTR [EDI],DL');     { Name length }
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_ND');
+  EmitInstr('PUSH ECX');
+  EmitInstr('MOV ECX,EDX');
+  EmitInstr('INC EDI');
+  EmitInstr('LEA ESI,[DOS_PATHBUF]');
+  EmitInstr('ADD ESI,EBX');
+  EmitInstr('REP MOVSB');
+  EmitInstr('POP ECX');
+  EmitLabel(TP_RT_PFX + 'FSP_ND');
+  { Ext = ECX-EDX chars }
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('SUB EAX,EDX');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');     { Ext length }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_ED');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('INC EDI');
+  EmitInstr('LEA ESI,[DOS_PATHBUF]');
+  EmitInstr('ADD ESI,EBX');
+  EmitInstr('ADD ESI,EDX');
+  EmitInstr('REP MOVSB');
+  EmitLabel(TP_RT_PFX + 'FSP_ED');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FSP_RET');
+
+  { Pas de point : Name = tout le reste }
+  EmitLabel(TP_RT_PFX + 'FSP_ALLNM');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
+  EmitInstr('MOV BYTE PTR [EDI],CL');     { Name length = restLen }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FSP_AN');
+  EmitInstr('INC EDI');
+  EmitInstr('LEA ESI,[DOS_PATHBUF]');
+  EmitInstr('ADD ESI,EBX');
+  EmitInstr('REP MOVSB');
+  EmitLabel(TP_RT_PFX + 'FSP_AN');
+  { Ext = '' }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FSP_RET');
+
+  { Chemin vide : Dir='', Name='', Ext='' }
+  EmitLabel(TP_RT_PFX + 'FSP_EMPTY');
   EmitInstr('MOV EDI,DWORD PTR [EBP+16]');
   EmitInstr('MOV BYTE PTR [EDI],0');
-  { Ext = '' }
-  EmitInstr('MOV EDI,DWORD PTR [EBP+20]');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
   EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitLabel(TP_RT_PFX + 'FSP_RET');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -18897,15 +20543,15 @@ Begin
   EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
   EmitInstr('TEST EAX,EAX');
   EmitInstr('JNZ ' + TP_RT_PFX + 'GE_E1');
-  EmitInstr('MOV EAX,OFFSET GR_ERRMSG0');
+  EmitInstr('LEA EAX,[GR_ERRMSG0]');
   EmitInstr('JMP ' + TP_RT_PFX + 'GE_DN');
   EmitLabel(TP_RT_PFX + 'GE_E1');
   EmitInstr('CMP EAX,-2');
   EmitInstr('JNE ' + TP_RT_PFX + 'GE_E2');
-  EmitInstr('MOV EAX,OFFSET GR_ERRMSG2');
+  EmitInstr('LEA EAX,[GR_ERRMSG2]');
   EmitInstr('JMP ' + TP_RT_PFX + 'GE_DN');
   EmitLabel(TP_RT_PFX + 'GE_E2');
-  EmitInstr('MOV EAX,OFFSET GR_ERRMSG1');
+  EmitInstr('LEA EAX,[GR_ERRMSG1]');
   EmitLabel(TP_RT_PFX + 'GE_DN');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -21876,6 +23522,14 @@ Begin
   BcDefineDataLabel('GR_ERRMSG2');  BcDataStr('Graphics hardware not detected');
   BcDefineDataLabel('GR_DRVNAME');  BcDataStr('EGAVGA');
   BcDefineDataLabel('GR_MODNAME');  BcDataStr('640x480x16');
+  BcDefineDataLabel('GR_TXJUST_H'); BcDataD(0);
+  BcDefineDataLabel('GR_TXJUST_V'); BcDataD(2);
+  BcDefineDataLabel('GR_ARCX');     BcDataD(0);
+  BcDefineDataLabel('GR_ARCY');     BcDataD(0);
+  BcDefineDataLabel('GR_ARCXS');    BcDataD(0);
+  BcDefineDataLabel('GR_ARCYS');    BcDataD(0);
+  BcDefineDataLabel('GR_ARCXE');    BcDataD(0);
+  BcDefineDataLabel('GR_ARCYE');    BcDataD(0);
 
   { Variables Strings/Printer/Overlay/Objects }
   BcDefineDataLabel('STR_TMPBUF'); BcDataZeros(256);
@@ -22843,14 +24497,42 @@ Begin
   Begin
     MarkIf('INITGRAPH','GRAPH'); MarkIf('CLOSEGRAPH','GRAPH'); MarkIf('DETECTGRAPH','GRAPH');
     MarkIf('PUTPIXEL','GRAPH'); MarkIf('LINE','GRAPH'); MarkIf('RECTANGLE','GRAPH');
-    MarkIf('BAR','GRAPH'); MarkIf('CIRCLE','GRAPH'); MarkIf('ARC','GRAPH');
+    MarkIf('BAR','GRAPH'); MarkIf('BAR3D','GRAPH');
+    MarkIf('CIRCLE','GRAPH'); MarkIf('ARC','GRAPH');
     MarkIf('ELLIPSE','GRAPH'); MarkIf('FILLELLIPSE','GRAPH');
     MarkIf('SETCOLOR','GRAPH'); MarkIf('SETBKCOLOR','GRAPH');
     MarkIf('OUTTEXTXY','GRAPH'); MarkIf('OUTTEXT','GRAPH');
-    MarkIf('MOVETO','GRAPH'); MarkIf('LINETO','GRAPH');
+    MarkIf('MOVETO','GRAPH'); MarkIf('MOVEREL','GRAPH');
+    MarkIf('LINETO','GRAPH'); MarkIf('LINEREL','GRAPH');
     MarkIf('GETPIXEL','GRAPH'); MarkIf('GETMAXX','GRAPH'); MarkIf('GETMAXY','GRAPH');
-    MarkIf('GRAPHRESULT','GRAPH'); MarkIf('IMAGESIZE','GRAPH');
+    MarkIf('GETX','GRAPH'); MarkIf('GETY','GRAPH');
+    MarkIf('GRAPHRESULT','GRAPH'); MarkIf('GRAPHERRORMSG','GRAPH');
+    MarkIf('IMAGESIZE','GRAPH');
     MarkIf('GETIMAGE','GRAPH'); MarkIf('PUTIMAGE','GRAPH');
+    MarkIf('GETMAXCOLOR','GRAPH'); MarkIf('GETCOLOR','GRAPH'); MarkIf('GETBKCOLOR','GRAPH');
+    MarkIf('GETDRIVERNAME','GRAPH'); MarkIf('GETMODENAME','GRAPH'); MarkIf('GETMAXMODE','GRAPH');
+    MarkIf('SETFILLSTYLE','GRAPH'); MarkIf('SETLINESTYLE','GRAPH');
+    MarkIf('SETTEXTSTYLE','GRAPH'); MarkIf('SETVIEWPORT','GRAPH');
+    MarkIf('CLEARDEVICE','GRAPH'); MarkIf('SETACTIVEPAGE','GRAPH'); MarkIf('SETVISUALPAGE','GRAPH');
+    MarkIf('SETPALETTE','GRAPH'); MarkIf('SETRGBPALETTE','GRAPH');
+    MarkIf('SETASPECTRATIO','GRAPH'); MarkIf('SETWRITEMODE','GRAPH');
+    MarkIf('PIESLICE','GRAPH'); MarkIf('SECTOR','GRAPH'); MarkIf('FLOODFILL','GRAPH');
+    MarkIf('INSTALLUSERDRIVER','GRAPH'); MarkIf('INSTALLUSERFONT','GRAPH');
+    MarkIf('TEXTHEIGHT','GRAPH'); MarkIf('TEXTWIDTH','GRAPH');
+    { Nouvelles fonctions/procedures Graph }
+    MarkIf('REGISTERBGIDRIVER','GRAPH'); MarkIf('REGISTERBGIFONT','GRAPH');
+    MarkIf('RESTORECRTMODE','GRAPH'); MarkIf('SETGRAPHMODE','GRAPH');
+    MarkIf('GETGRAPHMODE','GRAPH'); MarkIf('GRAPHDEFAULTS','GRAPH');
+    MarkIf('SETGRAPHBUFSIZE','GRAPH'); MarkIf('GETMODERANGE','GRAPH');
+    MarkIf('DRAWPOLY','GRAPH'); MarkIf('FILLPOLY','GRAPH');
+    MarkIf('SETFILLPATTERN','GRAPH'); MarkIf('SETALLPALETTE','GRAPH');
+    MarkIf('GETPALETTE','GRAPH'); MarkIf('GETPALETTESIZE','GRAPH');
+    MarkIf('GETDEFAULTPALETTE','GRAPH'); MarkIf('SETTEXTJUSTIFY','GRAPH');
+    MarkIf('SETUSERCHARSIZE','GRAPH'); MarkIf('GETTEXTSETTINGS','GRAPH');
+    MarkIf('GETLINESETTINGS','GRAPH'); MarkIf('GETFILLSETTINGS','GRAPH');
+    MarkIf('GETFILLPATTERN','GRAPH'); MarkIf('GETVIEWSETTINGS','GRAPH');
+    MarkIf('GETARCCOORDS','GRAPH'); MarkIf('GETASPECTRATIO','GRAPH');
+    MarkIf('CLEARVIEWPORT','GRAPH');
   End
   Else If Up = 'STRINGS' Then
   Begin
@@ -22881,6 +24563,56 @@ Begin
     MarkIf('TSTREAM_WRITE','OBJECTS');
     MarkIf('REGISTERTYPE','OBJECTS'); MarkIf('NEWSTR','OBJECTS');
     MarkIf('DISPOSESTR','OBJECTS');
+  End
+  Else If Up = 'MSGRAPH' Then
+  Begin
+    MarkIf('_GRSTATUS','MSGRAPH'); MarkIf('_SETVIDEOMODE','MSGRAPH');
+    MarkIf('_SETVIDEOMODEROWS','MSGRAPH');
+    MarkIf('_SETACTIVEPAGE','MSGRAPH'); MarkIf('_SETVISUALPAGE','MSGRAPH');
+    MarkIf('_GETACTIVEPAGE','MSGRAPH'); MarkIf('_GETVISUALPAGE','MSGRAPH');
+    MarkIf('_GETVIDEOCONFIG','MSGRAPH');
+    MarkIf('_SETVIEWORG','MSGRAPH'); MarkIf('_SETVIEWPORT','MSGRAPH');
+    MarkIf('_SETCLIPRGN','MSGRAPH'); MarkIf('_SETWINDOW','MSGRAPH');
+    MarkIf('_GETVIEWCOORD','MSGRAPH'); MarkIf('_GETVIEWCOORD_W','MSGRAPH');
+    MarkIf('_GETVIEWCOORD_WXY','MSGRAPH'); MarkIf('_GETPHYSCOORD','MSGRAPH');
+    MarkIf('_GETWINDOWCOORD','MSGRAPH');
+    MarkIf('_GETCURRENTPOSITION','MSGRAPH'); MarkIf('_GETCURRENTPOSITION_WXY','MSGRAPH');
+    MarkIf('_CLEARSCREEN','MSGRAPH');
+    MarkIf('_MOVETO','MSGRAPH'); MarkIf('_MOVETO_W','MSGRAPH');
+    MarkIf('_LINETO','MSGRAPH'); MarkIf('_LINETO_W','MSGRAPH');
+    MarkIf('_RECTANGLE','MSGRAPH'); MarkIf('_RECTANGLE_W','MSGRAPH');
+    MarkIf('_RECTANGLE_WXY','MSGRAPH');
+    MarkIf('_ELLIPSE','MSGRAPH'); MarkIf('_ELLIPSE_W','MSGRAPH');
+    MarkIf('_ELLIPSE_WXY','MSGRAPH');
+    MarkIf('_ARC','MSGRAPH'); MarkIf('_ARC_WXY','MSGRAPH');
+    MarkIf('_PIE','MSGRAPH'); MarkIf('_PIE_WXY','MSGRAPH');
+    MarkIf('_FLOODFILL','MSGRAPH'); MarkIf('_FLOODFILL_W','MSGRAPH');
+    MarkIf('_GETARCINFO','MSGRAPH');
+    MarkIf('_SETPIXEL','MSGRAPH'); MarkIf('_SETPIXEL_W','MSGRAPH');
+    MarkIf('_GETPIXEL','MSGRAPH'); MarkIf('_GETPIXEL_W','MSGRAPH');
+    MarkIf('_SETCOLOR','MSGRAPH'); MarkIf('_GETCOLOR','MSGRAPH');
+    MarkIf('_SETLINESTYLE','MSGRAPH'); MarkIf('_GETLINESTYLE','MSGRAPH');
+    MarkIf('_SETWRITEMODE','MSGRAPH'); MarkIf('_GETWRITEMODE','MSGRAPH');
+    MarkIf('_SETFILLMASK','MSGRAPH'); MarkIf('_GETFILLMASK','MSGRAPH');
+    MarkIf('_SETBKCOLOR','MSGRAPH'); MarkIf('_GETBKCOLOR','MSGRAPH');
+    MarkIf('_REMAPPALETTE','MSGRAPH'); MarkIf('_REMAPALLPALETTE','MSGRAPH');
+    MarkIf('_SELECTPALETTE','MSGRAPH');
+    MarkIf('_SETTEXTROWS','MSGRAPH'); MarkIf('_SETTEXTWINDOW','MSGRAPH');
+    MarkIf('_GETTEXTWINDOW','MSGRAPH'); MarkIf('_SCROLLTEXTWINDOW','MSGRAPH');
+    MarkIf('_OUTMEM','MSGRAPH'); MarkIf('_OUTTEXT','MSGRAPH');
+    MarkIf('_WRAPON','MSGRAPH'); MarkIf('_DISPLAYCURSOR','MSGRAPH');
+    MarkIf('_SETTEXTCURSOR','MSGRAPH'); MarkIf('_GETTEXTCURSOR','MSGRAPH');
+    MarkIf('_SETTEXTPOSITION','MSGRAPH'); MarkIf('_GETTEXTPOSITION','MSGRAPH');
+    MarkIf('_SETTEXTCOLOR','MSGRAPH'); MarkIf('_GETTEXTCOLOR','MSGRAPH');
+    MarkIf('_GETIMAGE','MSGRAPH'); MarkIf('_GETIMAGE_W','MSGRAPH');
+    MarkIf('_GETIMAGE_WXY','MSGRAPH');
+    MarkIf('_PUTIMAGE','MSGRAPH'); MarkIf('_PUTIMAGE_W','MSGRAPH');
+    MarkIf('_IMAGESIZE','MSGRAPH'); MarkIf('_IMAGESIZE_W','MSGRAPH');
+    MarkIf('_IMAGESIZE_WXY','MSGRAPH');
+    MarkIf('_REGISTERFONTS','MSGRAPH'); MarkIf('_UNREGISTERFONTS','MSGRAPH');
+    MarkIf('_SETFONT','MSGRAPH'); MarkIf('_OUTGTEXT','MSGRAPH');
+    MarkIf('_GETGTEXTEXTENT','MSGRAPH'); MarkIf('_GETFONTINFO','MSGRAPH');
+    MarkIf('_SETGTEXTVECTOR','MSGRAPH'); MarkIf('_GETGTEXTVECTOR','MSGRAPH');
   End;
 End;
 
@@ -23165,6 +24897,9 @@ Begin
 
   { Enregistrer le type SearchRec apres TypeInit (TypeAdd disponible) }
   RegisterSearchRecType;
+
+  { Enregistrer le type DateTime apres TypeInit }
+  RegisterDateTimeType;
 
   { Initialiser le preprocesseur }
   PPInitDefines;
