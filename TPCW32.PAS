@@ -9833,20 +9833,33 @@ Begin
       Exit;
     End;
 
-    { _SETVIDEOMODE(mode) -> stub, retourne mode }
+    { _SETVIDEOMODE(mode) -> ouvre/ferme fenetre graphique, retourne nb lignes }
     If Up = '_SETVIDEOMODE' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End
+      Else EmitInstr('XOR EAX,EAX');
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+      EmitInstr('ADD ESP,4');
       Exit;
     End;
 
-    { _SETVIDEOMODEROWS(mode, rows) -> stub }
+    { _SETVIDEOMODEROWS(mode, rows) -> appel _TPRT_SETVIDEOMODE, ignore rows }
     If Up = '_SETVIDEOMODEROWS' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
-      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  { rows ignore }
+        EPMatch(')');
+      End
+      Else EmitInstr('PUSH 0');
+      EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+      EmitInstr('ADD ESP,4');
       Exit;
     End;
 
@@ -20613,6 +20626,43 @@ Begin
   EmitInstr('CALL GetTextExtentPoint32A');
   EmitInstr('POPAD');
   EmitInstr('MOV EAX,DWORD PTR [GR_TXSIZE2]');    { cx }
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_SETVIDEOMODE : ouvre/ferme fenetre graphique --- }
+  { Parametre : [ESP+4]=mode (-1=_DefaultMode -> fermer)         }
+  { Retour    : 25 (nb lignes texte) si succes, 0 si echec       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETVIDEOMODE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');    { mode }
+  { Si mode == -1 (_DefaultMode) : fermer la fenetre }
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'SVM_OPEN');
+  EmitInstr('CALL ' + TP_RT_PFX + 'CLOSEGRAPH');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  { Sinon : ouvrir la fenetre si pas deja ouverte }
+  EmitLabel(TP_RT_PFX + 'SVM_OPEN');
+  EmitInstr('CMP DWORD PTR [GR_ACTIVE],0');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SVM_DONE');
+  { Appeler INITGRAPH avec GR_DRIVER et GR_MODE comme var de sortie }
+  EmitInstr('PUSH OFFSET GR_WNDTITLE');       { Path (non utilise) }
+  EmitInstr('PUSH OFFSET GR_MODE');           { Gm var }
+  EmitInstr('PUSH OFFSET GR_DRIVER');         { Gd var }
+  EmitInstr('CALL ' + TP_RT_PFX + 'INITGRAPH');
+  EmitInstr('ADD ESP,12');
+  { Verifier que la fenetre a ete creee }
+  EmitInstr('CMP DWORD PTR [GR_HWND],0');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SVM_FAIL');
+  EmitLabel(TP_RT_PFX + 'SVM_DONE');
+  EmitInstr('MOV EAX,25');                    { 25 lignes texte = succes }
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SVM_FAIL');
+  EmitInstr('XOR EAX,EAX');                  { 0 = mode non supporte }
   EmitInstr('POP EBP');
   EmitInstr('RET');
 End;
