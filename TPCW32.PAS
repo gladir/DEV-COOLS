@@ -4312,6 +4312,7 @@ Begin
   EmitRaw('EXTRN _DeleteDC@4:NEAR');
   EmitRaw('EXTRN _FloodFill@16:NEAR');
   EmitRaw('EXTRN _GetStockObject@4:NEAR');
+  EmitRaw('EXTRN _PatBlt@24:NEAR');
   EmitComment('--- Imports Win32 pour unite Strings (TODO 21) ---');
   EmitComment('--- kernel32.dll ---');
   EmitRaw('EXTRN _lstrlenA@4:NEAR');
@@ -15312,7 +15313,22 @@ Begin
     Begin
       Inc(EP);
       If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
-      EmitComment('_ClearScreen (stub)');
+      { Effacer la fenetre : PatBlt(hdc, 0, 0, MaxX+1, MaxY+1, BLACKNESS=42h) }
+      Lbl := LabelGen;
+      EmitInstr('CMP DWORD PTR [GR_ACTIVE],0');
+      EmitInstr('JZ ' + Lbl);
+      EmitInstr('PUSH 42h');               { BLACKNESS }
+      EmitInstr('MOV EAX,DWORD PTR [GR_MAXY]');
+      EmitInstr('INC EAX');                { MAXY+1 = nHeight }
+      EmitInstr('PUSH EAX');
+      EmitInstr('MOV EAX,DWORD PTR [GR_MAXX]');
+      EmitInstr('INC EAX');                { MAXX+1 = nWidth }
+      EmitInstr('PUSH EAX');
+      EmitInstr('PUSH 0');                 { y = 0 }
+      EmitInstr('PUSH 0');                 { x = 0 }
+      EmitInstr('PUSH DWORD PTR [GR_HDC]');
+      EmitInstr('CALL PatBlt');
+      EmitLabel(Lbl);
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -15386,16 +15402,16 @@ Begin
       Begin
         ParseExpr(PI); EmitInstr('PUSH EAX'); { control }
         EPMatch(',');
-        ParseExpr(PI); EmitInstr('PUSH EAX');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { x1 }
         EPMatch(',');
-        ParseExpr(PI); EmitInstr('PUSH EAX');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { y1 }
         EPMatch(',');
-        ParseExpr(PI); EmitInstr('PUSH EAX');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { x2 }
         EPMatch(',');
-        ParseExpr(PI); EmitInstr('PUSH EAX');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { y2 }
         EPMatch(')');
       End;
-      EmitComment('_Rectangle -> Rectangle stub');
+      EmitInstr('CALL ' + TP_RT_PFX + 'MSGR_RECT');
       EmitInstr('ADD ESP,20');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
@@ -15425,18 +15441,18 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI); EmitInstr('PUSH EAX');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { control }
         EPMatch(',');
-        ParseExpr(PI); EmitInstr('PUSH EAX');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { x1 }
         EPMatch(',');
-        ParseExpr(PI); EmitInstr('PUSH EAX');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { y1 }
         EPMatch(',');
-        ParseExpr(PI); EmitInstr('PUSH EAX');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { x2 }
         EPMatch(',');
-        ParseExpr(PI); EmitInstr('PUSH EAX');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { y2 }
         EPMatch(')');
       End;
-      EmitComment('_Ellipse (stub)');
+      EmitInstr('CALL ' + TP_RT_PFX + 'MSGR_ELLPS');
       EmitInstr('ADD ESP,20');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
@@ -15500,10 +15516,15 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(','); ParseExpr(PI);
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { x }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { y }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { boundary color index }
         EPMatch(')');
       End;
-      EmitComment('_FloodFill (stub)');
+      EmitInstr('CALL ' + TP_RT_PFX + 'MSGR_FLOOD');
+      EmitInstr('ADD ESP,12');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -15529,8 +15550,14 @@ Begin
     Begin
       Inc(EP);
       If EPMatch('(') Then
-      Begin ParseExpr(PI); EPMatch(','); ParseExpr(PI); EPMatch(')'); End;
-      EmitComment('_SetPixel (stub)');
+      Begin
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { x }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { y }
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'MSGR_SETPXL');
+      EmitInstr('ADD ESP,8');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -15555,6 +15582,12 @@ Begin
       If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
       EmitInstr('AND EAX,0Fh');
       EmitInstr('MOV DWORD PTR [GR_COLOR],EAX');
+      { Mettre a jour le stylo si la fenetre est ouverte }
+      Lbl := LabelGen;
+      EmitInstr('CMP DWORD PTR [GR_ACTIVE],0');
+      EmitInstr('JZ ' + Lbl);
+      EmitInstr('CALL ' + TP_RT_PFX + 'UPDATEPEN');
+      EmitLabel(Lbl);
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -20665,6 +20698,143 @@ Begin
   EmitInstr('XOR EAX,EAX');                  { 0 = mode non supporte }
   EmitInstr('POP EBP');
   EmitInstr('RET');
+
+  { ------ _TPR_MSGR_RECT : MSGraph _Rectangle(ctl,x1,y1,x2,y2) -- }
+  { Parametre (push L-to-R) : ctl,[EBP+24] x1,[EBP+20] y1,[EBP+16] }
+  {                           x2,[EBP+12]  y2,[EBP+8]               }
+  { _GBorder=2 -> contour seul, _GFillInterior=3 -> rempli           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'MSGR_RECT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  { Selectionner brush selon controle }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+24]');   { control }
+  EmitInstr('CMP EAX,3');                     { _GFillInterior = 3 }
+  EmitInstr('JE ' + TP_RT_PFX + 'MRR_FILL');
+  { Contour seul : brush null }
+  EmitInstr('PUSH 5');                        { NULL_BRUSH }
+  EmitInstr('CALL GetStockObject');
+  EmitInstr('JMP ' + TP_RT_PFX + 'MRR_SEL');
+  EmitLabel(TP_RT_PFX + 'MRR_FILL');
+  { Rempli : brush avec couleur de dessin courante }
+  EmitInstr('MOV EAX,DWORD PTR [GR_COLOR]');
+  EmitInstr('AND EAX,0Fh');
+  EmitInstr('MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL CreateSolidBrush');
+  EmitLabel(TP_RT_PFX + 'MRR_SEL');
+  EmitInstr('MOV ESI,EAX');                  { sauver brush }
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL SelectObject');
+  EmitInstr('MOV EDI,EAX');                  { sauver ancien brush }
+  { GDI Rectangle(hdc, left, top, right, bottom) - stdcall R-to-L }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');      { y2 = bottom }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');      { x2 = right  }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');      { y1 = top    }
+  EmitInstr('PUSH DWORD PTR [EBP+20]');      { x1 = left   }
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL Rectangle');
+  { Restaurer ancien brush }
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL SelectObject');
+  { Detruire brush cree si rempli }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+24]');
+  EmitInstr('CMP EAX,3');
+  EmitInstr('JNE ' + TP_RT_PFX + 'MRR_DN');
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL DeleteObject');
+  EmitLabel(TP_RT_PFX + 'MRR_DN');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_MSGR_ELLPS : MSGraph _Ellipse(ctl,x1,y1,x2,y2) --- }
+  { Meme convention que MSGR_RECT                                    }
+  { _GBorder=2 -> contour, _GFillInterior=3 -> remplie              }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'MSGR_ELLPS');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+24]');   { control }
+  EmitInstr('CMP EAX,3');
+  EmitInstr('JE ' + TP_RT_PFX + 'MEL_FILL');
+  EmitInstr('PUSH 5');                        { NULL_BRUSH }
+  EmitInstr('CALL GetStockObject');
+  EmitInstr('JMP ' + TP_RT_PFX + 'MEL_SEL');
+  EmitLabel(TP_RT_PFX + 'MEL_FILL');
+  EmitInstr('MOV EAX,DWORD PTR [GR_COLOR]');
+  EmitInstr('AND EAX,0Fh');
+  EmitInstr('MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL CreateSolidBrush');
+  EmitLabel(TP_RT_PFX + 'MEL_SEL');
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL SelectObject');
+  EmitInstr('MOV EDI,EAX');
+  { GDI Ellipse(hdc, left, top, right, bottom) - stdcall R-to-L }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');      { y2 = bottom }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');      { x2 = right  }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');      { y1 = top    }
+  EmitInstr('PUSH DWORD PTR [EBP+20]');      { x1 = left   }
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL Ellipse');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL SelectObject');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+24]');
+  EmitInstr('CMP EAX,3');
+  EmitInstr('JNE ' + TP_RT_PFX + 'MEL_DN');
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL DeleteObject');
+  EmitLabel(TP_RT_PFX + 'MEL_DN');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_MSGR_SETPXL : MSGraph _SetPixel(x,y) ------------ }
+  { Parametre (push L-to-R) : x,[EBP+12]  y,[EBP+8]              }
+  { Utilise GR_COLOR comme couleur courante                        }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'MSGR_SETPXL');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  { COLORREF depuis GR_COLOR }
+  EmitInstr('MOV EAX,DWORD PTR [GR_COLOR]');
+  EmitInstr('AND EAX,0Fh');
+  EmitInstr('MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]');
+  { SetPixel(hdc, x, y, crColor) - stdcall R-to-L: crColor,y,x,hdc }
+  EmitInstr('PUSH EAX');                     { crColor }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');       { y }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');      { x }
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL SetPixel');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_MSGR_FLOOD : MSGraph _FloodFill(x,y,boundary) ---- }
+  { Parametre (push L-to-R) : x,[EBP+16] y,[EBP+12] bnd,[EBP+8]  }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'MSGR_FLOOD');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  { COLORREF frontiere depuis palette }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { boundary color index }
+  EmitInstr('AND EAX,0Fh');
+  EmitInstr('MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]');
+  { FloodFill(hdc, x, y, crColor) - stdcall R-to-L: crColor,y,x,hdc }
+  EmitInstr('PUSH EAX');                     { crColor }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');      { y }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');      { x }
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');
+  EmitInstr('CALL FloodFill');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
 End;
 
 { ============================================================ }
@@ -22497,6 +22667,7 @@ Begin
     (U = 'CREATECOMPATIBLEDC') Or (U = 'CREATECOMPATIBLEBITMAP') Or
     (U = 'BITBLT') Or (U = 'DELETEDC') Or
     (U = 'FLOODFILL') Or (U = 'GETSTOCKOBJECT') Or
+    (U = 'PATBLT') Or
     (U = 'GETASYNCKEYSTATE') Or (U = 'GETKEYSTATE') Or
     (U = 'GETCURSORPOS') Or (U = 'GETSYSTEMMETRICS') Or
     (U = 'SHOWCURSOR') Or (U = 'SETCONSOLESCREENBUFFERSIZE') Or
