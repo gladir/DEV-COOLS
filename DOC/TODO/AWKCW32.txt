@@ -637,7 +637,7 @@
               Afficher statistiques si -v (symboles, fonctions,
               regles, chaines, erreurs)
 
-  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES
+  TODO 25 - GENERATION FINALE : LINKER PE, FICHIERS .OBJ ET EXEMPLES [IMPLEMENTE]
             Procedure EmitClose : finaliser l emission ASM
               EmitRuntimeHelpers + '_TEXT ENDS' + EmitDataSeg +
               'END _AWF_main'
