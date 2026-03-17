@@ -1,11 +1,5 @@
+*.S68
+*.class
 *.o
 *.obj
 *.ppu
-*.class
-*.exe
-TPCW32
-test_output.txt
-*.asm
-tw.txt*.exe
-*.o
-TPCW32
