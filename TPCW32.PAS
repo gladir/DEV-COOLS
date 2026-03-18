@@ -15599,8 +15599,38 @@ Begin
       Exit;
     End;
 
-    { _ARC(x1..x8) / _ARC_WXY(var wxy1..4) }
-    If (Up = '_ARC') Or (Up = '_ARC_WXY') Then
+    { _ARC(x1,y1,x2,y2,x3,y3,x4,y4) }
+    If Up = '_ARC' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { x1 }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { y1 }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { x2 }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { y2 }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { x3 }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { y3 }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { x4 }
+        EPMatch(',');
+        ParseExpr(PI); EmitInstr('PUSH EAX'); { y4 }
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'ARC');
+      EmitInstr('ADD ESP,32');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _ARC_WXY(var wxy1..4) - stub }
+    If Up = '_ARC_WXY' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
@@ -15610,7 +15640,7 @@ Begin
         Begin EPMatch(','); ParseExpr(PI); End;
         EPMatch(')');
       End;
-      EmitComment(Up + ' (stub)');
+      EmitComment('_ARC_WXY (stub)');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -20222,64 +20252,65 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPR_PUTPIXEL : dessiner un pixel ------------------- }
-  { Parametres : [ESP+4]=X, [ESP+8]=Y, [ESP+12]=Color            }
+  { Push L-to-R: X,Y,Color -> [EBP+16]=X [EBP+12]=Y [EBP+8]=Color }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'PUTPIXEL');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   { Convertir couleur palette -> COLORREF }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+16]');  { Color index }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { Color index }
   EmitInstr('AND EAX,0Fh');
   EmitInstr('MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]');
   EmitInstr('PUSH EAX');                    { COLORREF }
   EmitInstr('PUSH DWORD PTR [EBP+12]');    { Y }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');     { X }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');    { X }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL SetPixel');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ------ _TPR_GETPIXEL : lire couleur d un pixel ------------- }
-  { Parametres deja sur la pile : HDC, X, Y                       }
+  { La pile contient (du parseur) : x, y, GR_HDC (inutilise)     }
+  { [EBP+8]=GR_HDC(ignore), [EBP+12]=y, [EBP+16]=x              }
   { Retourne COLORREF dans EAX                                    }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'GETPIXEL');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSH DWORD PTR [EBP+16]');    { Y }
-  EmitInstr('PUSH DWORD PTR [EBP+12]');    { X }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');    { Y }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');    { X }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL GetPixel');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ------ _TPR_LINE : tracer une ligne ------------------------ }
-  { Parametres : [ESP+4]=X1, [ESP+8]=Y1, [ESP+12]=X2, [ESP+16]=Y2 }
+  { Push L-to-R: x1,y1,x2,y2 -> [EBP+20]=x1 [EBP+16]=y1 [EBP+12]=x2 [EBP+8]=y2 }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'LINE');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   { MoveToEx(hdc, x1, y1, NULL) }
   EmitInstr('PUSH 0');
-  EmitInstr('PUSH DWORD PTR [EBP+12]');    { Y1 }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');     { X1 }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');    { Y1 }
+  EmitInstr('PUSH DWORD PTR [EBP+20]');    { X1 }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL MoveToEx');
   { LineTo(hdc, x2, y2) }
-  EmitInstr('PUSH DWORD PTR [EBP+20]');    { Y2 }
-  EmitInstr('PUSH DWORD PTR [EBP+16]');    { X2 }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');     { Y2 }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');    { X2 }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL LineTo');
   { Mettre a jour position courante }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+16]');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
   EmitInstr('MOV DWORD PTR [GR_CPX],EAX');
-  EmitInstr('MOV EAX,DWORD PTR [EBP+20]');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
   EmitInstr('MOV DWORD PTR [GR_CPY],EAX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ------ _TPR_LINETO : tracer ligne depuis position courante -- }
-  { Parametres : [ESP+4]=X, [ESP+8]=Y                             }
+  { Parametres (push L-to-R) : x puis y -> [EBP+12]=x [EBP+8]=y  }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'LINETO');
   EmitInstr('PUSH EBP');
@@ -20289,19 +20320,19 @@ Begin
   EmitInstr('PUSH DWORD PTR [GR_CPX]');
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL MoveToEx');
-  EmitInstr('PUSH DWORD PTR [EBP+12]');    { Y }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');     { X }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');     { Y }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');    { X }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL LineTo');
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
-  EmitInstr('MOV DWORD PTR [GR_CPX],EAX');
   EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV DWORD PTR [GR_CPX],EAX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
   EmitInstr('MOV DWORD PTR [GR_CPY],EAX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ------ _TPR_LINEREL : tracer ligne relative depuis CP ------- }
-  { Parametres : [ESP+4]=Dx, [ESP+8]=Dy                           }
+  { Parametres (push L-to-R) : Dx puis Dy -> [EBP+12]=Dx [EBP+8]=Dy }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'LINEREL');
   EmitInstr('PUSH EBP');
@@ -20312,17 +20343,14 @@ Begin
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL MoveToEx');
   EmitInstr('MOV EAX,DWORD PTR [GR_CPX]');
-  EmitInstr('ADD EAX,DWORD PTR [EBP+8]');   { CPX + Dx }
+  EmitInstr('ADD EAX,DWORD PTR [EBP+12]');  { CPX + Dx }
   EmitInstr('MOV DWORD PTR [GR_CPX],EAX');
-  EmitInstr('PUSH EAX');
+  EmitInstr('MOV ECX,EAX');                  { ECX = new X }
   EmitInstr('MOV EAX,DWORD PTR [GR_CPY]');
-  EmitInstr('ADD EAX,DWORD PTR [EBP+12]');  { CPY + Dy }
+  EmitInstr('ADD EAX,DWORD PTR [EBP+8]');   { CPY + Dy }
   EmitInstr('MOV DWORD PTR [GR_CPY],EAX');
-  EmitInstr('PUSH EAX');                     { new Y }
-  { Corriger l'ordre de la pile : LineTo(hdc, X, Y) }
-  EmitInstr('POP EDX');                      { new Y }
-  EmitInstr('POP ECX');                      { new X - was pushed first }
-  EmitInstr('PUSH EDX');                     { Y }
+  { LineTo(hdc, newX, newY) - stdcall R-to-L: Y, X, hdc }
+  EmitInstr('PUSH EAX');                     { Y }
   EmitInstr('PUSH ECX');                     { X }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL LineTo');
@@ -20330,7 +20358,7 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPR_RECTANGLE : dessiner un rectangle -------------- }
-  { Parametres : [ESP+4]=X1, [ESP+8]=Y1, [ESP+12]=X2, [ESP+16]=Y2 }
+  { Push L-to-R: X1,Y1,X2,Y2 -> [EBP+20]=X1 [EBP+16]=Y1 [EBP+12]=X2 [EBP+8]=Y2 }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'RECTANGLE');
   EmitInstr('PUSH EBP');
@@ -20342,11 +20370,11 @@ Begin
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL SelectObject');
   EmitInstr('PUSH EAX');             { sauver ancien brush }
-  { Rectangle(hdc, x1, y1, x2, y2) }
-  EmitInstr('PUSH DWORD PTR [EBP+20]');    { Y2 }
-  EmitInstr('PUSH DWORD PTR [EBP+16]');    { X2 }
-  EmitInstr('PUSH DWORD PTR [EBP+12]');    { Y1 }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');     { X1 }
+  { Rectangle(hdc, left, top, right, bottom) - stdcall R-to-L }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');     { bottom = Y2 }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');    { right  = X2 }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');    { top    = Y1 }
+  EmitInstr('PUSH DWORD PTR [EBP+20]');    { left   = X1 }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL Rectangle');
   { Restaurer le brush }
@@ -20358,7 +20386,7 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPR_BAR : rectangle rempli ------------------------- }
-  { Parametres : [ESP+4]=X1, [ESP+8]=Y1, [ESP+12]=X2, [ESP+16]=Y2 }
+  { Push L-to-R: X1,Y1,X2,Y2 -> [EBP+20]=X1 [EBP+16]=Y1 [EBP+12]=X2 [EBP+8]=Y2 }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'BAR');
   EmitInstr('PUSH EBP');
@@ -20374,11 +20402,11 @@ Begin
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL SelectObject');
   EmitInstr('PUSH EAX');             { sauver ancien brush }
-  { Rectangle rempli }
-  EmitInstr('PUSH DWORD PTR [EBP+20]');
-  EmitInstr('PUSH DWORD PTR [EBP+16]');
-  EmitInstr('PUSH DWORD PTR [EBP+12]');
-  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  { Rectangle(hdc, left, top, right, bottom) - stdcall R-to-L }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');     { bottom = Y2 }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');    { right  = X2 }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');    { top    = Y1 }
+  EmitInstr('PUSH DWORD PTR [EBP+20]');    { left   = X1 }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL Rectangle');
   { Restaurer ancien brush et supprimer le nouveau }
@@ -20393,25 +20421,26 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPR_BAR3D : barre 3D ------------------------------ }
-  { Parametres : [ESP+4]=X1, [ESP+8]=Y1, [ESP+12]=X2, [ESP+16]=Y2 }
-  {              [ESP+20]=Depth, [ESP+24]=Top                     }
+  { Push L-to-R: X1,Y1,X2,Y2,Depth,Top                           }
+  { -> [EBP+28]=X1 [EBP+24]=Y1 [EBP+20]=X2 [EBP+16]=Y2          }
+  {    [EBP+12]=Depth [EBP+8]=Top                                 }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'BAR3D');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
-  { Dessiner le rectangle principal (face) }
-  EmitInstr('PUSH DWORD PTR [EBP+20]');    { Y2 }
-  EmitInstr('PUSH DWORD PTR [EBP+16]');    { X2 }
-  EmitInstr('PUSH DWORD PTR [EBP+12]');    { Y1 }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');     { X1 }
+  { Dessiner le rectangle principal (face) - push L-to-R: X1,Y1,X2,Y2 }
+  EmitInstr('PUSH DWORD PTR [EBP+28]');    { X1 }
+  EmitInstr('PUSH DWORD PTR [EBP+24]');    { Y1 }
+  EmitInstr('PUSH DWORD PTR [EBP+20]');    { X2 }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');    { Y2 }
   EmitInstr('CALL ' + TP_RT_PFX + 'BAR');
   EmitInstr('ADD ESP,16');
-  { Dessiner le contour du rectangle }
-  EmitInstr('PUSH DWORD PTR [EBP+20]');    { Y2 }
-  EmitInstr('PUSH DWORD PTR [EBP+16]');    { X2 }
-  EmitInstr('PUSH DWORD PTR [EBP+12]');    { Y1 }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');     { X1 }
+  { Dessiner le contour du rectangle - push L-to-R: X1,Y1,X2,Y2 }
+  EmitInstr('PUSH DWORD PTR [EBP+28]');    { X1 }
+  EmitInstr('PUSH DWORD PTR [EBP+24]');    { Y1 }
+  EmitInstr('PUSH DWORD PTR [EBP+20]');    { X2 }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');    { Y2 }
   EmitInstr('CALL ' + TP_RT_PFX + 'RECTANGLE');
   EmitInstr('ADD ESP,16');
   EmitComment('Bar3D top and side simplified (depth lines)');
@@ -20420,7 +20449,7 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPR_CIRCLE : dessiner un cercle -------------------- }
-  { Parametres : [ESP+4]=X, [ESP+8]=Y, [ESP+12]=Radius            }
+  { Push L-to-R: X,Y,Radius -> [EBP+16]=X [EBP+12]=Y [EBP+8]=Radius }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'CIRCLE');
   EmitInstr('PUSH EBP');
@@ -20433,9 +20462,9 @@ Begin
   EmitInstr('CALL SelectObject');
   EmitInstr('PUSH EAX');
   { Ellipse(hdc, X-R, Y-R, X+R, Y+R) }
-  EmitInstr('MOV ECX,DWORD PTR [EBP+8]');   { X }
+  EmitInstr('MOV ECX,DWORD PTR [EBP+16]');  { X }
   EmitInstr('MOV EDX,DWORD PTR [EBP+12]');  { Y }
-  EmitInstr('MOV EBX,DWORD PTR [EBP+16]');  { R }
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');   { R }
   EmitInstr('MOV EAX,EDX');
   EmitInstr('ADD EAX,EBX');
   EmitInstr('PUSH EAX');                     { Y+R (bottom) }
@@ -20459,25 +20488,32 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPR_ARC : dessiner un arc -------------------------- }
-  { Parametres : [ESP+4]=X, [ESP+8]=Y, [ESP+12]=StAngle           }
-  {              [ESP+16]=EndAngle, [ESP+20]=Radius                }
-  { Simplifie : on dessine un Ellipse comme stub                   }
+  { Parametres (push L-to-R) :                                     }
+  {   x1=[EBP+36], y1=[EBP+32], x2=[EBP+28], y2=[EBP+24]         }
+  {   x3=[EBP+20], y3=[EBP+16], x4=[EBP+12], y4=[EBP+8]          }
+  { Appelle Win32 Arc(hdc, x1, y1, x2, y2, x3, y3, x4, y4)       }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'ARC');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
-  EmitComment('Arc simplifie -> cercle (stub angles)');
-  EmitInstr('PUSH DWORD PTR [EBP+24]');    { R }
-  EmitInstr('PUSH DWORD PTR [EBP+12]');    { Y }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');     { X }
-  EmitInstr('CALL ' + TP_RT_PFX + 'CIRCLE');
-  EmitInstr('ADD ESP,12');
+  { Arc stdcall : push R-to-L = y4, x4, y3, x3, y2, x2, y1, x1, hdc }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');     { y4 - nYEndArc }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');    { x4 - nXEndArc }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');    { y3 - nYStartArc }
+  EmitInstr('PUSH DWORD PTR [EBP+20]');    { x3 - nXStartArc }
+  EmitInstr('PUSH DWORD PTR [EBP+24]');    { y2 - nBottomRect }
+  EmitInstr('PUSH DWORD PTR [EBP+28]');    { x2 - nRightRect }
+  EmitInstr('PUSH DWORD PTR [EBP+32]');    { y1 - nTopRect }
+  EmitInstr('PUSH DWORD PTR [EBP+36]');    { x1 - nLeftRect }
+  EmitInstr('PUSH DWORD PTR [GR_HDC]');    { hdc }
+  EmitInstr('CALL Arc');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ------ _TPR_ELLIPSE : dessiner une ellipse ----------------- }
-  { Parametres : [ESP+4]=X, [ESP+8]=Y, [ESP+12]=StAngle           }
-  {              [ESP+16]=EndAngle, [ESP+20]=XR, [ESP+24]=YR      }
+  { Push L-to-R: X,Y,StAngle,EndAngle,XR,YR                      }
+  { -> [EBP+28]=X [EBP+24]=Y [EBP+20]=StAngle [EBP+16]=EndAngle  }
+  {    [EBP+12]=XR [EBP+8]=YR                                     }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'ELLIPSE');
   EmitInstr('PUSH EBP');
@@ -20490,10 +20526,10 @@ Begin
   EmitInstr('CALL SelectObject');
   EmitInstr('PUSH EAX');
   { Ellipse(hdc, X-XR, Y-YR, X+XR, Y+YR) }
-  EmitInstr('MOV ECX,DWORD PTR [EBP+8]');   { X }
-  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');  { Y }
-  EmitInstr('MOV EBX,DWORD PTR [EBP+24]');  { XR }
-  EmitInstr('MOV ESI,DWORD PTR [EBP+28]');  { YR }
+  EmitInstr('MOV ECX,DWORD PTR [EBP+28]');  { X }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+24]');  { Y }
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');  { XR }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { YR }
   EmitInstr('MOV EAX,EDX');
   EmitInstr('ADD EAX,ESI');
   EmitInstr('PUSH EAX');                     { Y+YR }
@@ -20517,7 +20553,7 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPR_FILLELLIPSE : ellipse remplie ------------------ }
-  { Parametres : [ESP+4]=X, [ESP+8]=Y, [ESP+12]=XR, [ESP+16]=YR  }
+  { Push L-to-R: X,Y,XR,YR -> [EBP+20]=X [EBP+16]=Y [EBP+12]=XR [EBP+8]=YR }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FILLELLIPSE');
   EmitInstr('PUSH EBP');
@@ -20534,10 +20570,10 @@ Begin
   EmitInstr('CALL SelectObject');
   EmitInstr('PUSH EAX');
   { Ellipse(hdc, X-XR, Y-YR, X+XR, Y+YR) }
-  EmitInstr('MOV ECX,DWORD PTR [EBP+8]');   { X }
-  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');  { Y }
-  EmitInstr('MOV EBX,DWORD PTR [EBP+16]');  { XR }
-  EmitInstr('MOV ESI,DWORD PTR [EBP+20]');  { YR }
+  EmitInstr('MOV ECX,DWORD PTR [EBP+20]');  { X }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+16]');  { Y }
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');  { XR }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { YR }
   EmitInstr('MOV EAX,EDX');
   EmitInstr('ADD EAX,ESI');
   EmitInstr('PUSH EAX');
@@ -20564,47 +20600,52 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPR_PIESLICE : secteur circulaire rempli ----------- }
+  { Push L-to-R: X,Y,StAngle,EndAngle,Radius                     }
+  { -> [EBP+24]=X [EBP+20]=Y [EBP+16]=StAngle [EBP+12]=EndAngle [EBP+8]=Radius }
   { Simplifie : on appelle CIRCLE comme stub                      }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'PIESLICE');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
-  EmitComment('PieSlice simplifie -> cercle rempli (stub)');
-  EmitInstr('PUSH DWORD PTR [EBP+24]');    { R }
-  EmitInstr('PUSH DWORD PTR [EBP+12]');    { Y }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');     { X }
+  EmitComment('PieSlice simplifie -> cercle (stub)');
+  EmitInstr('PUSH DWORD PTR [EBP+24]');    { X }
+  EmitInstr('PUSH DWORD PTR [EBP+20]');    { Y }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');     { Radius }
   EmitInstr('CALL ' + TP_RT_PFX + 'CIRCLE');
   EmitInstr('ADD ESP,12');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ------ _TPR_SECTOR : secteur elliptique rempli ------------- }
+  { Push L-to-R: X,Y,StAngle,EndAngle,XR,YR                      }
+  { -> [EBP+28]=X [EBP+24]=Y [EBP+20]=StAngle [EBP+16]=EndAngle  }
+  {    [EBP+12]=XR [EBP+8]=YR                                     }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'SECTOR');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitComment('Sector simplifie -> ellipse remplie (stub)');
-  EmitInstr('PUSH DWORD PTR [EBP+28]');    { YR }
-  EmitInstr('PUSH DWORD PTR [EBP+24]');    { XR }
-  EmitInstr('PUSH DWORD PTR [EBP+12]');    { Y }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');     { X }
+  EmitInstr('PUSH DWORD PTR [EBP+28]');    { X }
+  EmitInstr('PUSH DWORD PTR [EBP+24]');    { Y }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');    { XR }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');     { YR }
   EmitInstr('CALL ' + TP_RT_PFX + 'FILLELLIPSE');
   EmitInstr('ADD ESP,16');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ------ _TPR_FLOODFILL : remplissage par inondation --------- }
-  { Parametres : [ESP+4]=X, [ESP+8]=Y, [ESP+12]=Border            }
+  { Push L-to-R: X,Y,Border -> [EBP+16]=X [EBP+12]=Y [EBP+8]=Border }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FLOODFILL');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
-  EmitInstr('MOV EAX,DWORD PTR [EBP+16]');  { Border color index }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { Border color index }
   EmitInstr('AND EAX,0Fh');
   EmitInstr('MOV EAX,DWORD PTR [GR_PALETTE+EAX*4]');
   EmitInstr('PUSH EAX');                     { COLORREF border }
   EmitInstr('PUSH DWORD PTR [EBP+12]');     { Y }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');      { X }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');     { X }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL FloodFill');
   EmitInstr('POP EBP');
@@ -20680,14 +20721,14 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPR_OUTTEXTXY : afficher texte a (X, Y) ----------- }
-  { Parametres : [ESP+4]=X, [ESP+8]=Y, [ESP+12]=ptrString         }
+  { Push L-to-R: X,Y,ptrString -> [EBP+16]=X [EBP+12]=Y [EBP+8]=ptrString }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'OUTTEXTXY');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
   { Calculer longueur chaine (Pascal string: len in byte 0) }
-  EmitInstr('MOV ESI,DWORD PTR [EBP+16]');  { ptr string }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { ptr string }
   EmitInstr('XOR ECX,ECX');
   EmitInstr('MOV CL,BYTE PTR [ESI]');       { longueur Pascal }
   EmitInstr('INC ESI');                      { pointeur vers data }
@@ -20695,7 +20736,7 @@ Begin
   EmitInstr('PUSH ECX');                     { nCount }
   EmitInstr('PUSH ESI');                     { lpString }
   EmitInstr('PUSH DWORD PTR [EBP+12]');     { Y }
-  EmitInstr('PUSH DWORD PTR [EBP+8]');      { X }
+  EmitInstr('PUSH DWORD PTR [EBP+16]');     { X }
   EmitInstr('PUSH DWORD PTR [GR_HDC]');
   EmitInstr('CALL TextOutA');
   EmitInstr('POPAD');
@@ -23114,11 +23155,53 @@ Begin
   End
   Else
   Begin
-    { [label] ou [label+disp] : disp32 direct }
-    BcEmitB($05 Or (RegField Shl 3)); { mod=00, r/m=101 }
+    { [label] ou [label+disp] ou [label+reg*scale] : disp32 }
     DataLbl := Part1;
+    DataAdd := 0;
     If Part2 <> '' Then
     Begin
+      DP2 := Part2;
+      If (DP2[1] = '+') Then Delete(DP2, 1, 1);
+      While (Length(DP2) > 0) And (DP2[1] = ' ') Do Delete(DP2, 1, 1);
+      { Verifier si c est REG*SCALE (adressage indexe) }
+      P := Pos('*', DP2);
+      If P > 0 Then
+      Begin
+        DP := Copy(DP2, 1, P - 1);
+        While (Length(DP) > 0) And (DP[Length(DP)] = ' ') Do
+          Delete(DP, Length(DP), 1);
+        IdxReg := BcParseReg32(DP);
+        If IdxReg >= 0 Then
+        Begin
+          { [label + reg*scale] : SIB avec base=disp32 }
+          DP := Copy(DP2, P + 1, Length(DP2) - P);
+          While (Length(DP) > 0) And (DP[1] = ' ') Do Delete(DP, 1, 1);
+          BcParseImm(DP, Disp);
+          { scale: 1->SS=0, 2->SS=1, 4->SS=2, 8->SS=3 }
+          Case Disp Of
+            1: Disp := 0;
+            2: Disp := 1;
+            4: Disp := 2;
+            8: Disp := 3;
+          Else Disp := 0;
+          End;
+          { ModR/M: mod=00, reg=RegField, rm=100 (SIB) }
+          BcEmitB($04 Or (RegField Shl 3));
+          { SIB: SS=scale, index=IdxReg, base=101 (disp32) }
+          BcEmitB(Byte(Disp Shl 6) Or Byte(IdxReg Shl 3) Or $05);
+          If BcIsImport(DataLbl) Then
+          Begin
+            Idx := BcFindOrAddImport(DataLbl);
+            BcAddFixup(BC_FIX_ABS32_IMP, BcImports[Idx].ApiName, Idx);
+          End
+          Else
+            BcAddFixup(BC_FIX_ABS32_DATA, DataLbl, 0);
+          BcEmitD(0); { placeholder disp32 }
+          BcEmitMemRM := True;
+          Exit;
+        End;
+      End;
+      { Sinon, c est un displacement numerique }
       DP2 := Part2;
       If (DP2[1] = '+') Or (DP2[1] = '-') Then
       Begin
@@ -23129,6 +23212,7 @@ Begin
         Begin If Neg2 Then DataAdd := -DataAdd; End;
       End;
     End;
+    BcEmitB($05 Or (RegField Shl 3)); { mod=00, r/m=101 = disp32 direct }
     If BcIsImport(DataLbl) Then
     Begin
       Idx := BcFindOrAddImport(DataLbl);
