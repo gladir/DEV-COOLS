@@ -20758,7 +20758,7 @@ Begin
   { On divise par 10 en boucle et on compte les divisions            }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'SANE_LOG10');
-  EmitComment('TRANSCEND LOG(x) : log base 10 entier');
+  EmitComment('TRANSCEND LOG(x) : floor(log10(x)), 0 si x<=0');
   EmitInstr('TEST EAX,EAX');
   EmitInstr('JLE ' + TP_RT_PFX + 'SN_LOG10_ZERO');
   EmitInstr('PUSH EBX');
@@ -20791,7 +20791,7 @@ Begin
   { Calcule 10^n par multiplication iterative                         }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'SANE_PWROFTEN');
-  EmitComment('TRANSCEND PwrOfTen(n) : 10^n entier');
+  EmitComment('TRANSCEND PwrOfTen(n) : 10^n entier, 0 si n<0');
   EmitInstr('MOV ECX,EAX');           { ECX = n }
   EmitInstr('TEST ECX,ECX');
   EmitInstr('JS ' + TP_RT_PFX + 'SN_POT_ZERO');  { n<0 -> 0 }
