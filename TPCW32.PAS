@@ -111,6 +111,7 @@ Type
     DebugInfo : Boolean;   { -V : infos de debogage dans l EXE        }
     CompDir   : TString;   { -$<sw> : directives compilateur          }
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
+    ApplePascal : Boolean;   { --applepascal/--sane : mode Apple Pascal (SANE) }
   End;
 
 Var
@@ -308,6 +309,8 @@ Begin
   Opts.UnitDirs    := '';
   Opts.DebugInfo   := False;
   Opts.CompDir     := '';
+  Opts.QuickPascal := False;
+  Opts.ApplePascal := False;
 End;
 
 { ------------------------------------------------------------ }
@@ -340,6 +343,8 @@ Begin
   WriteLn('  -tp7           Turbo Pascal 7 (defaut)');
   WriteLn('  -tp8           Turbo Pascal 8');
   WriteLn('  --quickpascal  Mode QuickPascal (support de l''unite MSGraph)');
+  WriteLn('  --applepascal  Mode Apple Pascal (support de l''unite SANE)');
+  WriteLn('  --sane         Synonyme de --applepascal');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -433,6 +438,8 @@ Begin
       Opts.TPVersion := TP_VER_8
     Else If (Arg = '--quickpascal') Then
       Opts.QuickPascal := True
+    Else If (Arg = '--applepascal') Or (Arg = '--sane') Then
+      Opts.ApplePascal := True
     { Options compatibles TPC 7.0 (TODO 25) }
     Else If (UA = '-B') Then
       Opts.BuildAll := True
@@ -3396,6 +3403,81 @@ Begin
     RegConst('_MONO', 1);     RegConst('_COLOR', 2);
     RegConst('_ENHCOLOR', 3); RegConst('_ANALOGMONO', 5);
     RegConst('_ANALOGCOLOR', 6); RegConst('_ANALOG', 7);
+  End;
+
+  { ---------------------------------------------------------- }
+  { Constantes, procedures et fonctions de l unite SANE         }
+  { (Apple Pascal) - activees si --applepascal ou --sane        }
+  { ---------------------------------------------------------- }
+  If Opts.ApplePascal Then
+  Begin
+    { Constantes SANE }
+    RegConst('DECSTRLEN', 255);
+    RegConst('SIGDIGLEN', 20);
+    RegConst('INVALID', 1);
+    RegConst('UNDERFLOW', 2);
+    RegConst('OVERFLOW', 4);
+    RegConst('DIVBYZERO', 8);
+    RegConst('INEXACT', 16);
+    { Conversion entre types numeriques binaires }
+    RegFunc('NUM2INTEGER');
+    RegFunc('NUM2LONGINT');
+    RegFunc('NUM2REAL');
+    RegFunc('NUM2DOUBLE');
+    RegFunc('NUM2EXTENDED');
+    RegFunc('NUM2COMP');
+    { Conversion entre binaire et decimal }
+    RegProc('NUM2DEC');
+    RegFunc('DEC2NUM');
+    RegProc('NUM2STR');
+    RegFunc('STR2NUM');
+    { Conversion entre formats decimal }
+    RegProc('STR2DEC');
+    RegProc('CSTR2DEC');
+    RegProc('DEC2STR');
+    { Fonctions arithmetique, auxiliaire et elementaire }
+    RegFunc('REMAINDER');
+    RegFunc('RINT');
+    RegFunc('SCALB');
+    RegFunc('LOGB');
+    RegFunc('COPYSIGN');
+    RegFunc('NEXTREAL');
+    RegFunc('NEXTDOUBLE');
+    RegFunc('NEXTEXTENDED');
+    RegFunc('LOG2');
+    RegFunc('LN1');
+    RegFunc('EXP2');
+    RegFunc('EXP1');
+    RegFunc('XPWRI');
+    RegFunc('XPWRY');
+    RegFunc('COMPOUND');
+    RegFunc('ANNUITY');
+    RegFunc('TAN');
+    RegFunc('RANDOMX');
+    { Routines d enquetes }
+    RegFunc('CLASSREAL');
+    RegFunc('CLASSDOUBLE');
+    RegFunc('CLASSCOMP');
+    RegFunc('CLASSEXTENDED');
+    RegFunc('SIGNNUM');
+    RegFunc('NAN');
+    { Routines d acces d environnement }
+    RegProc('SETEXCEPTION');
+    RegFunc('TESTEXCEPTION');
+    RegProc('SETHALT');
+    RegFunc('TESTHALT');
+    RegProc('SETROUND');
+    RegFunc('GETROUND');
+    RegProc('SETPRECISION');
+    RegFunc('GETPRECISION');
+    RegProc('SETENVIRONMENT');
+    RegProc('GETENVIRONMENT');
+    RegProc('PROCENTRY');
+    RegProc('PROCEXIT');
+    RegFunc('GETHALTVECTOR');
+    RegProc('SETHALTVECTOR');
+    { Routine de comparaison }
+    RegFunc('RELATION');
   End;
 
   { ---------------------------------------------------------- }
@@ -25003,7 +25085,8 @@ Begin
     (Up = 'GRAPH') Or (Up = 'GRAPH3') Or (Up = 'STRINGS') Or
     (Up = 'OVERLAY') Or (Up = 'PRINTER') Or (Up = 'WINDOS') Or
     (Up = 'TURBO3') Or (Up = 'OBJECTS') Or
-    (Up = 'MSGRUTIL') Or (Up = 'MSGRAPH');  { Quick Pascal units (TODO 29) }
+    (Up = 'MSGRUTIL') Or (Up = 'MSGRAPH') Or  { Quick Pascal units (TODO 29) }
+    (Up = 'SANE');                              { Apple Pascal SANE unit       }
 End;
 
 Procedure MarkUnitSymbols(Const UName : TString);
@@ -25166,6 +25249,40 @@ Begin
     MarkIf('_SETFONT','MSGRAPH'); MarkIf('_OUTGTEXT','MSGRAPH');
     MarkIf('_GETGTEXTEXTENT','MSGRAPH'); MarkIf('_GETFONTINFO','MSGRAPH');
     MarkIf('_SETGTEXTVECTOR','MSGRAPH'); MarkIf('_GETGTEXTVECTOR','MSGRAPH');
+  End
+  Else If Up = 'SANE' Then
+  Begin
+    MarkIf('DECSTRLEN','SANE'); MarkIf('SIGDIGLEN','SANE');
+    MarkIf('INVALID','SANE'); MarkIf('UNDERFLOW','SANE');
+    MarkIf('OVERFLOW','SANE'); MarkIf('DIVBYZERO','SANE');
+    MarkIf('INEXACT','SANE');
+    MarkIf('NUM2INTEGER','SANE'); MarkIf('NUM2LONGINT','SANE');
+    MarkIf('NUM2REAL','SANE'); MarkIf('NUM2DOUBLE','SANE');
+    MarkIf('NUM2EXTENDED','SANE'); MarkIf('NUM2COMP','SANE');
+    MarkIf('NUM2DEC','SANE'); MarkIf('DEC2NUM','SANE');
+    MarkIf('NUM2STR','SANE'); MarkIf('STR2NUM','SANE');
+    MarkIf('STR2DEC','SANE'); MarkIf('CSTR2DEC','SANE');
+    MarkIf('DEC2STR','SANE');
+    MarkIf('REMAINDER','SANE'); MarkIf('RINT','SANE');
+    MarkIf('SCALB','SANE'); MarkIf('LOGB','SANE');
+    MarkIf('COPYSIGN','SANE'); MarkIf('NEXTREAL','SANE');
+    MarkIf('NEXTDOUBLE','SANE'); MarkIf('NEXTEXTENDED','SANE');
+    MarkIf('LOG2','SANE'); MarkIf('LN1','SANE');
+    MarkIf('EXP2','SANE'); MarkIf('EXP1','SANE');
+    MarkIf('XPWRI','SANE'); MarkIf('XPWRY','SANE');
+    MarkIf('COMPOUND','SANE'); MarkIf('ANNUITY','SANE');
+    MarkIf('TAN','SANE'); MarkIf('RANDOMX','SANE');
+    MarkIf('CLASSREAL','SANE'); MarkIf('CLASSDOUBLE','SANE');
+    MarkIf('CLASSCOMP','SANE'); MarkIf('CLASSEXTENDED','SANE');
+    MarkIf('SIGNNUM','SANE'); MarkIf('NAN','SANE');
+    MarkIf('SETEXCEPTION','SANE'); MarkIf('TESTEXCEPTION','SANE');
+    MarkIf('SETHALT','SANE'); MarkIf('TESTHALT','SANE');
+    MarkIf('SETROUND','SANE'); MarkIf('GETROUND','SANE');
+    MarkIf('SETPRECISION','SANE'); MarkIf('GETPRECISION','SANE');
+    MarkIf('SETENVIRONMENT','SANE'); MarkIf('GETENVIRONMENT','SANE');
+    MarkIf('PROCENTRY','SANE'); MarkIf('PROCEXIT','SANE');
+    MarkIf('GETHALTVECTOR','SANE'); MarkIf('SETHALTVECTOR','SANE');
+    MarkIf('RELATION','SANE');
   End;
 End;
 
