@@ -584,6 +584,8 @@ Begin
   Begin
     If Opts.ObjOnly Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else If Opts.DestTarget = DEST_ATARIST Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.prg')
     Else
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
   End;
@@ -4377,6 +4379,17 @@ Procedure BcAssembleZ80(Const S: TString); Forward;
 Procedure BcAssemble6502(Const S: TString); Forward;
 Procedure BcAssemble6809(Const S: TString); Forward;
 Procedure BcAssemble68000(Const S: TString); Forward;
+
+{ ------------------------------------------------------------ }
+{ Is68kTarget : True si la cible est Motorola 68000            }
+{ ------------------------------------------------------------ }
+
+Function Is68kTarget : Boolean;
+Begin
+  Is68kTarget := (Opts.DestTarget = DEST_68000) Or
+                 (Opts.DestTarget = DEST_ATARIST) Or
+                 (Opts.DestTarget = DEST_AMIGA);
+End;
 
 { ------------------------------------------------------------ }
 { EmitLabel : ecrire un label suivi de ':'                     }
@@ -8446,7 +8459,10 @@ Begin
   { Litteral entier }
   If TokenPool[EP].Kind = TK_INTEGER Then
   Begin
-    EmitInstr('MOV EAX,' + IntToStr_(TokenPool[EP].IntVal));
+    If Is68kTarget Then
+      EmitInstr('MOVE.L #' + IntToStr_(TokenPool[EP].IntVal) + ',D0')
+    Else
+      EmitInstr('MOV EAX,' + IntToStr_(TokenPool[EP].IntVal));
     Inc(EP);
     Exit;
   End;
@@ -8454,7 +8470,10 @@ Begin
   { Litteral caractere }
   If TokenPool[EP].Kind = TK_CHAR Then
   Begin
-    EmitInstr('MOV EAX,' + IntToStr_(TokenPool[EP].IntVal));
+    If Is68kTarget Then
+      EmitInstr('MOVE.L #' + IntToStr_(TokenPool[EP].IntVal) + ',D0')
+    Else
+      EmitInstr('MOV EAX,' + IntToStr_(TokenPool[EP].IntVal));
     Inc(EP);
     Exit;
   End;
@@ -8463,7 +8482,10 @@ Begin
   If TokenPool[EP].Kind = TK_STRING Then
   Begin
     Lbl := DataGetOrAddStr(TokenPool[EP].Val);
-    EmitInstr('LEA EAX,[' + Lbl + ']');
+    If Is68kTarget Then
+      EmitInstr('LEA ' + Lbl + ',A0')
+    Else
+      EmitInstr('LEA EAX,[' + Lbl + ']');
     LastVarTypeIdx := TY_IDX_STRING;
     LastExprIsPascalStr := False;  { literal ASCIIZ, pas format Pascal }
     Inc(EP);
@@ -12076,6 +12098,44 @@ Begin
   IsStrType := (TypeIdx = TY_IDX_STRING) Or
                ((TypeIdx >= 0) And (TypeIdx < TypeCount) And
                 (TypeTab[TypeIdx].Kind = TYK_STRING));
+
+  If Is68kTarget Then
+  Begin
+    { --- Mode 68000 : D0 = valeur, A0 = adresse chaine --- }
+    If IsStrType Then
+    Begin
+      { D0 = pointeur vers chaine ASCIIZ }
+      EmitInstr('MOVE.L D0,A0');
+      EmitInstr('BSR ' + TP_RT_PFX + 'PRINTSTR');
+    End
+    Else If TypeIdx = TY_IDX_CHAR Then
+    Begin
+      EmitInstr('BSR ' + TP_RT_PFX + 'PRINTCHAR');
+    End
+    Else If TypeIdx = TY_IDX_BOOLEAN Then
+    Begin
+      LblFalse := LabelGen;
+      LblDone  := LabelGen;
+      EmitInstr('TST.L D0');
+      EmitInstr('BEQ ' + LblFalse);
+      EmitInstr('LEA TRUE_STR,A0');
+      EmitInstr('BRA ' + LblDone);
+      EmitLabel(LblFalse);
+      EmitInstr('LEA FALSE_STR,A0');
+      EmitLabel(LblDone);
+      EmitInstr('BSR ' + TP_RT_PFX + 'PRINTSTR');
+    End
+    Else
+    Begin
+      { Integer : D0 = valeur -> convertir et afficher }
+      EmitInstr('BSR ' + TP_RT_PFX + 'NUMTOSTR');
+      EmitInstr('LEA NUMBUF,A0');
+      EmitInstr('BSR ' + TP_RT_PFX + 'PRINTSTR');
+    End;
+    Exit;
+  End;
+
+  { --- Mode x86 --- }
   If IsStrType Then
   Begin
     { EAX = pointeur vers chaine }
@@ -12192,8 +12252,16 @@ Begin
   Begin
     If IsWriteLn Then
     Begin
-      EmitInstr('LEA ESI,[CRLF]');
-      EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+      If Is68kTarget Then
+      Begin
+        EmitInstr('LEA CRLF,A0');
+        EmitInstr('BSR ' + TP_RT_PFX + 'PRINTSTR');
+      End
+      Else
+      Begin
+        EmitInstr('LEA ESI,[CRLF]');
+        EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+      End;
     End;
     Exit;
   End;
@@ -12203,8 +12271,16 @@ Begin
   Begin
     If IsWriteLn Then
     Begin
-      EmitInstr('LEA ESI,[CRLF]');
-      EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+      If Is68kTarget Then
+      Begin
+        EmitInstr('LEA CRLF,A0');
+        EmitInstr('BSR ' + TP_RT_PFX + 'PRINTSTR');
+      End
+      Else
+      Begin
+        EmitInstr('LEA ESI,[CRLF]');
+        EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+      End;
     End;
     Exit;
   End;
@@ -12332,11 +12408,19 @@ Begin
   { WriteLn : ajouter CR+LF }
   If IsWriteLn Then
   Begin
-    EmitInstr('LEA ESI,[CRLF]');
-    If IsFileWrite Then
-      EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR')
+    If Is68kTarget And (Not IsFileWrite) Then
+    Begin
+      EmitInstr('LEA CRLF,A0');
+      EmitInstr('BSR ' + TP_RT_PFX + 'PRINTSTR');
+    End
     Else
-      EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+    Begin
+      EmitInstr('LEA ESI,[CRLF]');
+      If IsFileWrite Then
+        EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR')
+      Else
+        EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+    End;
   End;
 End;
 
@@ -18385,6 +18469,11 @@ Begin
       EmitInstr('MOV DS,AX');
       EmitInstr('MOV ES,AX');
     End
+    Else If Is68kTarget Then
+    Begin
+      { Mode 68000 : pas d initialisation speciale }
+      EmitComment('Entree programme 68000');
+    End
     Else
     Begin
       EmitProlog(0);
@@ -18416,6 +18505,13 @@ Begin
       { Sortie DOS via INT 21h }
       EmitInstr('MOV AX,4C00H');
       EmitInstr('INT 21H');
+    End
+    Else If Is68kTarget Then
+    Begin
+      { Sortie Atari ST / 68000 via GEMDOS Pterm0 }
+      EmitComment('GEMDOS Pterm0 (fin du programme)');
+      EmitInstr('CLR.W -(SP)');
+      EmitInstr('TRAP #1');
     End
     Else
     Begin
@@ -21338,6 +21434,98 @@ Begin
 End;
 
 { ============================================================ }
+{ ROUTINES RUNTIME 68000 (GEMDOS/TOS)       [IMPLEMENTE]      }
+{ ============================================================ }
+
+Procedure EmitRuntime68000;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TPCW32 - Motorola 68000 / GEMDOS ===');
+
+  { ------ _TPRT_PRINTSTR : afficher chaine ASCIIZ via GEMDOS Cconws --- }
+  { Entree : A0 = pointeur vers chaine terminee par 0                    }
+  { Utilise : GEMDOS Cconws (fonction $09, TRAP #1)                      }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PRINTSTR');
+  EmitInstr('MOVEM.L D0-D2/A0-A2,-(SP)');
+  EmitComment('GEMDOS Cconws : afficher chaine ASCIIZ');
+  EmitInstr('MOVE.L A0,-(SP)');
+  EmitInstr('MOVE.W #$09,-(SP)');
+  EmitInstr('TRAP #1');
+  EmitInstr('ADDQ.L #6,SP');
+  EmitInstr('MOVEM.L (SP)+,D0-D2/A0-A2');
+  EmitInstr('RTS');
+
+  { ------ _TPRT_PRINTCHAR : afficher un caractere via GEMDOS Cconout -- }
+  { Entree : D0.B = caractere a afficher                                  }
+  { Utilise : GEMDOS Cconout (fonction $02, TRAP #1)                      }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PRINTCHAR');
+  EmitInstr('MOVEM.L D0-D2/A0-A2,-(SP)');
+  EmitInstr('AND.W #$00FF,D0');
+  EmitInstr('MOVE.W D0,-(SP)');
+  EmitInstr('MOVE.W #$02,-(SP)');
+  EmitInstr('TRAP #1');
+  EmitInstr('ADDQ.L #4,SP');
+  EmitInstr('MOVEM.L (SP)+,D0-D2/A0-A2');
+  EmitInstr('RTS');
+
+  { ------ _TPRT_NUMTOSTR : convertir D0.L en chaine decimale ASCIIZ --- }
+  { Entree : D0.L = entier signe 32 bits                                 }
+  { Sortie : chaine dans NUMBUF, terminee par NUL                        }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'NUMTOSTR');
+  EmitInstr('MOVEM.L D0-D4/A0-A1,-(SP)');
+  EmitInstr('LEA NUMBUF,A0');
+  EmitInstr('TST.L D0');
+  EmitInstr('BPL ' + TP_RT_PFX + 'NTS_POS');
+  EmitInstr('MOVE.B #45,(A0)+');
+  EmitInstr('NEG.L D0');
+  EmitLabel(TP_RT_PFX + 'NTS_POS');
+  { empiler les chiffres en ordre inverse }
+  EmitInstr('MOVE.L A0,A1');
+  EmitInstr('CLR.L D3');
+  EmitLabel(TP_RT_PFX + 'NTS_DIV');
+  EmitInstr('MOVE.L #10,D1');
+  EmitComment('division D0/10 -> quotient D0, reste D1');
+  EmitInstr('BSR ' + TP_RT_PFX + 'UDIV32');
+  EmitInstr('ADD.B #48,D1');
+  EmitInstr('MOVE.B D1,-(SP)');
+  EmitInstr('ADDQ.L #1,D3');
+  EmitInstr('TST.L D0');
+  EmitInstr('BNE ' + TP_RT_PFX + 'NTS_DIV');
+  { depiler les chiffres dans l ordre correct }
+  EmitLabel(TP_RT_PFX + 'NTS_POP');
+  EmitInstr('MOVE.B (SP)+,(A1)+');
+  EmitInstr('SUBQ.L #1,D3');
+  EmitInstr('BNE ' + TP_RT_PFX + 'NTS_POP');
+  EmitInstr('CLR.B (A1)');
+  EmitInstr('MOVEM.L (SP)+,D0-D4/A0-A1');
+  EmitInstr('RTS');
+
+  { ------ _TPRT_UDIV32 : division non signee D0 / D1 ----------- }
+  { Entree : D0.L = dividende, D1.L = diviseur                    }
+  { Sortie : D0.L = quotient,  D1.L = reste                       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'UDIV32');
+  EmitInstr('MOVEM.L D2-D3,-(SP)');
+  EmitInstr('CLR.L D2');
+  EmitInstr('MOVE.L #31,D3');
+  EmitLabel(TP_RT_PFX + 'UD_LP');
+  EmitInstr('LSL.L #1,D0');
+  EmitInstr('ROXL.L #1,D2');
+  EmitInstr('CMP.L D1,D2');
+  EmitInstr('BCS ' + TP_RT_PFX + 'UD_SK');
+  EmitInstr('SUB.L D1,D2');
+  EmitInstr('ADDQ.L #1,D0');
+  EmitLabel(TP_RT_PFX + 'UD_SK');
+  EmitInstr('DBRA D3,' + TP_RT_PFX + 'UD_LP');
+  EmitInstr('MOVE.L D2,D1');
+  EmitInstr('MOVEM.L (SP)+,D2-D3');
+  EmitInstr('RTS');
+End;
+
+{ ============================================================ }
 { TODO 20 - ROUTINES RUNTIME GRAPH             [IMPLEMENTE]    }
 { ============================================================ }
 
@@ -23880,6 +24068,8 @@ Const
   BC_FIX_ABS32_IMP  = 3;   { adresse absolue vers IAT entry    }
   BC_FIX_REL16      = 4;   { CALL/JMP rel16 vers label code (DOS) }
   BC_FIX_ABS16_DATA = 5;   { offset 16 bits dans segment data (DOS) }
+  BC_FIX_REL16_BE   = 6;   { BSR/BRA rel16 big-endian (68000) }
+  BC_FIX_ABS32_DATA_BE = 7;{ adresse absolue big-endian vers data (68000) }
 
   { Index de registres x86-32 }
   R_EAX = 0; R_ECX = 1; R_EDX = 2; R_EBX = 3;
@@ -26193,6 +26383,7 @@ Procedure BcAssemble68000(Const S: TString);
 Var
   Line, Mnem, Tmp, Op1, Op2: TString;
   P: Integer;
+  Val: LongInt;
 
   Procedure SplitOps68000(Const Rest: TString);
   Var J: Integer;
@@ -26217,6 +26408,153 @@ Var
       Delete(Op1, Length(Op1), 1);
   End;
 
+  { Emettre un mot 16 bits big-endian }
+  Procedure EmitW_BE(W: Word);
+  Begin BcEmitB(Hi(W)); BcEmitB(Lo(W)); End;
+
+  { Emettre un long mot 32 bits big-endian }
+  Procedure EmitD_BE(D: LongInt);
+  Begin
+    BcEmitB(Byte(D Shr 24)); BcEmitB(Byte(D Shr 16));
+    BcEmitB(Byte(D Shr 8)); BcEmitB(Byte(D));
+  End;
+
+  { Parser un numero de registre Dn ou An }
+  Function ParseDn(Const S: TString): Integer;
+  Begin
+    ParseDn := -1;
+    If (Length(S) = 2) And ((S[1] = 'D') Or (S[1] = 'd')) And
+       (S[2] >= '0') And (S[2] <= '7') Then
+      ParseDn := Ord(S[2]) - Ord('0');
+  End;
+
+  Function ParseAn(Const S: TString): Integer;
+  Begin
+    ParseAn := -1;
+    If (Length(S) = 2) And ((S[1] = 'A') Or (S[1] = 'a')) And
+       (S[2] >= '0') And (S[2] <= '7') Then
+      ParseAn := Ord(S[2]) - Ord('0');
+    If (StrUpperCase(S) = 'SP') Then ParseAn := 7;
+  End;
+
+  { Parser un immediat #xxx }
+  Function ParseImm(Const S: TString; Var V: LongInt): Boolean;
+  Var I: Integer; Neg: Boolean; C: Char;
+  Begin
+    ParseImm := False;
+    If (Length(S) < 2) Or (S[1] <> '#') Then Exit;
+    V := 0;
+    Neg := False;
+    I := 2;
+    If (I <= Length(S)) And (S[I] = '-') Then Begin Neg := True; Inc(I); End;
+    If (I <= Length(S)) And (S[I] = '$') Then
+    Begin
+      Inc(I);
+      While I <= Length(S) Do
+      Begin
+        C := UpCase(S[I]);
+        If (C >= '0') And (C <= '9') Then V := V * 16 + Ord(C) - Ord('0')
+        Else If (C >= 'A') And (C <= 'F') Then V := V * 16 + Ord(C) - Ord('A') + 10
+        Else Break;
+        Inc(I);
+      End;
+    End
+    Else
+    Begin
+      While I <= Length(S) Do
+      Begin
+        If (S[I] >= '0') And (S[I] <= '9') Then V := V * 10 + Ord(S[I]) - Ord('0')
+        Else Break;
+        Inc(I);
+      End;
+    End;
+    If Neg Then V := -V;
+    ParseImm := True;
+  End;
+
+  { Tester si Op est -(SP) ou -(A7) }
+  Function IsPreDecSP(Const S: TString): Boolean;
+  Var U: TString;
+  Begin
+    U := StrUpperCase(S);
+    IsPreDecSP := (U = '-(SP)') Or (U = '-(A7)');
+  End;
+
+  { Tester si Op est (SP)+ ou (A7)+ }
+  Function IsPostIncSP(Const S: TString): Boolean;
+  Var U: TString;
+  Begin
+    U := StrUpperCase(S);
+    IsPostIncSP := (U = '(SP)+') Or (U = '(A7)+');
+  End;
+
+  { Extraire le nom de label (Op1 sans prefixe ni suffixe) }
+  Function IsLabel(Const S: TString): Boolean;
+  Var I: Integer;
+  Begin
+    IsLabel := False;
+    If Length(S) = 0 Then Exit;
+    If (S[1] = '#') Or (S[1] = '(') Or (S[1] = '-') Then Exit;
+    For I := 1 To Length(S) Do
+      If Not ((S[I] >= 'A') And (S[I] <= 'Z') Or
+              (S[I] >= 'a') And (S[I] <= 'z') Or
+              (S[I] >= '0') And (S[I] <= '9') Or
+              (S[I] = '_') Or (S[I] = '.')) Then Exit;
+    IsLabel := True;
+  End;
+
+  { Calculer le masque de registres pour MOVEM }
+  Function ParseRegList(Const S: TString): Word;
+  Var
+    I, J, R1, R2: Integer;
+    Mask: Word;
+    U: TString;
+    Part: TString;
+  Begin
+    Mask := 0;
+    U := StrUpperCase(S);
+    I := 1;
+    While I <= Length(U) Do
+    Begin
+      Part := '';
+      While (I <= Length(U)) And (U[I] <> '/') Do
+      Begin Part := Part + U[I]; Inc(I); End;
+      Inc(I); { sauter / }
+      { Part = Dn-Dm ou Dn ou An-Am ou An }
+      J := Pos('-', Part);
+      If J > 0 Then
+      Begin
+        R1 := ParseDn(Copy(Part, 1, J-1));
+        R2 := ParseDn(Copy(Part, J+1, Length(Part)-J));
+        If (R1 >= 0) And (R2 >= 0) Then
+          While R1 <= R2 Do Begin Mask := Mask Or (1 Shl R1); Inc(R1); End;
+        R1 := ParseAn(Copy(Part, 1, J-1));
+        R2 := ParseAn(Copy(Part, J+1, Length(Part)-J));
+        If (R1 >= 0) And (R2 >= 0) Then
+          While R1 <= R2 Do Begin Mask := Mask Or (1 Shl (R1+8)); Inc(R1); End;
+      End
+      Else
+      Begin
+        R1 := ParseDn(Part);
+        If R1 >= 0 Then Mask := Mask Or (1 Shl R1);
+        R1 := ParseAn(Part);
+        If R1 >= 0 Then Mask := Mask Or (1 Shl (R1 + 8));
+      End;
+    End;
+    ParseRegList := Mask;
+  End;
+
+  { Inverser les bits du masque MOVEM pour predecrement }
+  Function ReverseMask(M: Word): Word;
+  Var I: Integer; R: Word;
+  Begin
+    R := 0;
+    For I := 0 To 15 Do
+      If (M And (1 Shl I)) <> 0 Then
+        R := R Or (1 Shl (15 - I));
+    ReverseMask := R;
+  End;
+
 Begin { BcAssemble68000 }
   Line := S;
   While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
@@ -26237,15 +26575,408 @@ Begin { BcAssemble68000 }
   SplitOps68000(Tmp);
 
   { ---- Instructions implicites (sans operande, 1 mot = 2 octets) ---- }
-  If Mnem = 'NOP'     Then Begin BcEmitB($4E); BcEmitB($71); Exit; End;
-  If Mnem = 'RTS'     Then Begin BcEmitB($4E); BcEmitB($75); Exit; End;
-  If Mnem = 'RTE'     Then Begin BcEmitB($4E); BcEmitB($73); Exit; End;
-  If Mnem = 'RTR'     Then Begin BcEmitB($4E); BcEmitB($77); Exit; End;
-  If Mnem = 'TRAPV'   Then Begin BcEmitB($4E); BcEmitB($76); Exit; End;
-  If Mnem = 'RESET'   Then Begin BcEmitB($4E); BcEmitB($70); Exit; End;
-  If Mnem = 'ILLEGAL' Then Begin BcEmitB($4A); BcEmitB($FC); Exit; End;
+  If Mnem = 'NOP'     Then Begin EmitW_BE($4E71); Exit; End;
+  If Mnem = 'RTS'     Then Begin EmitW_BE($4E75); Exit; End;
+  If Mnem = 'RTE'     Then Begin EmitW_BE($4E73); Exit; End;
+  If Mnem = 'RTR'     Then Begin EmitW_BE($4E77); Exit; End;
+  If Mnem = 'TRAPV'   Then Begin EmitW_BE($4E76); Exit; End;
+  If Mnem = 'RESET'   Then Begin EmitW_BE($4E70); Exit; End;
+  If Mnem = 'ILLEGAL' Then Begin EmitW_BE($4AFC); Exit; End;
 
-  { Instruction non reconnue (stub) }
+  { ---- TRAP #n ---- }
+  If Mnem = 'TRAP' Then
+  Begin
+    If ParseImm(Op1, Val) Then
+      EmitW_BE($4E40 Or (Word(Val) And $0F));
+    Exit;
+  End;
+
+  { ---- CLR.W -(SP) / CLR.B Dn / CLR.L Dn ---- }
+  If (Mnem = 'CLR.W') Then
+  Begin
+    If IsPreDecSP(Op1) Then EmitW_BE($4267) { CLR.W -(A7) }
+    Else If ParseDn(Op1) >= 0 Then EmitW_BE($4240 Or ParseDn(Op1))
+    Else EmitW_BE($4E71); { NOP fallback }
+    Exit;
+  End;
+  If (Mnem = 'CLR.L') Then
+  Begin
+    If ParseDn(Op1) >= 0 Then EmitW_BE($4280 Or ParseDn(Op1))
+    Else EmitW_BE($4E71);
+    Exit;
+  End;
+  If (Mnem = 'CLR.B') Then
+  Begin
+    If ParseDn(Op1) >= 0 Then EmitW_BE($4200 Or ParseDn(Op1))
+    Else EmitW_BE($4E71);
+    Exit;
+  End;
+
+  { ---- MOVE.L #imm,Dn ---- }
+  If (Mnem = 'MOVE.L') Then
+  Begin
+    If ParseImm(Op1, Val) And (ParseDn(Op2) >= 0) Then
+    Begin
+      { MOVE.L #imm,Dn : $203C + long }
+      EmitW_BE($2000 Or (Word(ParseDn(Op2)) Shl 9) Or $003C);
+      EmitD_BE(Val);
+      Exit;
+    End;
+    If ParseImm(Op1, Val) And IsPreDecSP(Op2) Then
+    Begin
+      { MOVE.L #imm,-(SP) : $2F3C + long }
+      EmitW_BE($2F3C);
+      EmitD_BE(Val);
+      Exit;
+    End;
+    If (ParseDn(Op1) >= 0) And (ParseAn(Op2) >= 0) Then
+    Begin
+      { MOVE.L Dn,An : $2040 + ... }
+      EmitW_BE($2000 Or (Word(ParseAn(Op2) + 8) Shl 9) Or Word(ParseDn(Op1)));
+      Exit;
+    End;
+    If (ParseAn(Op1) >= 0) And (ParseDn(Op2) >= 0) Then
+    Begin
+      { MOVE.L An,Dn }
+      EmitW_BE($2000 Or (Word(ParseDn(Op2)) Shl 9) Or $0008 Or Word(ParseAn(Op1)));
+      Exit;
+    End;
+    If (ParseDn(Op1) >= 0) And (ParseDn(Op2) >= 0) Then
+    Begin
+      { MOVE.L Dn,Dm }
+      EmitW_BE($2000 Or (Word(ParseDn(Op2)) Shl 9) Or Word(ParseDn(Op1)));
+      Exit;
+    End;
+    If (ParseDn(Op1) >= 0) And IsPreDecSP(Op2) Then
+    Begin
+      { MOVE.L Dn,-(SP) }
+      EmitW_BE($2F00 Or Word(ParseDn(Op1)));
+      Exit;
+    End;
+    If (ParseAn(Op1) >= 0) And IsPreDecSP(Op2) Then
+    Begin
+      { MOVE.L An,-(SP) }
+      EmitW_BE($2F00 Or $0008 Or Word(ParseAn(Op1)));
+      Exit;
+    End;
+    If IsPostIncSP(Op1) And (ParseDn(Op2) >= 0) Then
+    Begin
+      { MOVE.L (SP)+,Dn }
+      EmitW_BE($2000 Or (Word(ParseDn(Op2)) Shl 9) Or $001F);
+      Exit;
+    End;
+    { MOVE.L label,Dn - adresse absolue long }
+    If IsLabel(Op1) And (ParseDn(Op2) >= 0) Then
+    Begin
+      EmitW_BE($2039 Or (Word(ParseDn(Op2)) Shl 9));
+      BcAddFixup(BC_FIX_ABS32_DATA_BE, Op1, 0);
+      EmitD_BE(0);
+      Exit;
+    End;
+    { MOVE.L label,-(SP) }
+    If IsLabel(Op1) And IsPreDecSP(Op2) Then
+    Begin
+      EmitW_BE($2F39);
+      BcAddFixup(BC_FIX_ABS32_DATA_BE, Op1, 0);
+      EmitD_BE(0);
+      Exit;
+    End;
+  End;
+
+  { ---- MOVE.W #imm,-(SP) / MOVE.W Dn,-(SP) ---- }
+  If (Mnem = 'MOVE.W') Then
+  Begin
+    If ParseImm(Op1, Val) And IsPreDecSP(Op2) Then
+    Begin
+      { MOVE.W #imm,-(SP) : $3F3C + word }
+      EmitW_BE($3F3C);
+      EmitW_BE(Word(Val));
+      Exit;
+    End;
+    If (ParseDn(Op1) >= 0) And (ParseDn(Op2) >= 0) Then
+    Begin
+      EmitW_BE($3000 Or (Word(ParseDn(Op2)) Shl 9) Or Word(ParseDn(Op1)));
+      Exit;
+    End;
+    If (ParseDn(Op1) >= 0) And IsPreDecSP(Op2) Then
+    Begin
+      EmitW_BE($3F00 Or Word(ParseDn(Op1)));
+      Exit;
+    End;
+  End;
+
+  { ---- MOVE.B ---- }
+  If (Mnem = 'MOVE.B') Then
+  Begin
+    If ParseImm(Op1, Val) And (ParseDn(Op2) >= 0) Then
+    Begin
+      EmitW_BE($103C Or (Word(ParseDn(Op2)) Shl 9));
+      EmitW_BE(Word(Val) And $FF);
+      Exit;
+    End;
+    { MOVE.B Dn,(An)+ }
+    If (ParseDn(Op1) >= 0) Then
+    Begin
+      { Generic: MOVE.B Dn,-(SP) or other - emit as NOP }
+      If IsPreDecSP(Op2) Then
+      Begin
+        EmitW_BE($1F00 Or Word(ParseDn(Op1)));
+        Exit;
+      End;
+    End;
+    { MOVE.B (SP)+,(An)+ etc - complex, emit NOP }
+    If IsPostIncSP(Op1) Then
+    Begin
+      { MOVE.B (SP)+,(An)+ -> utilisee dans NUMTOSTR depile }
+      { On emet: move.b (A7)+,dest }
+      If ParseDn(Op2) >= 0 Then
+      Begin
+        EmitW_BE($1000 Or (Word(ParseDn(Op2)) Shl 9) Or $001F);
+        Exit;
+      End;
+    End;
+  End;
+
+  { ---- LEA label,An ---- }
+  If (Mnem = 'LEA') Then
+  Begin
+    If IsLabel(Op1) And (ParseAn(Op2) >= 0) Then
+    Begin
+      { LEA xxx.L,An : $41F9 + long }
+      EmitW_BE($41F9 Or (Word(ParseAn(Op2)) Shl 9));
+      BcAddFixup(BC_FIX_ABS32_DATA_BE, Op1, 0);
+      EmitD_BE(0);
+      Exit;
+    End;
+  End;
+
+  { ---- PEA label ---- }
+  If (Mnem = 'PEA') Then
+  Begin
+    If IsLabel(Op1) Then
+    Begin
+      { PEA xxx.L : $4879 + long }
+      EmitW_BE($4879);
+      BcAddFixup(BC_FIX_ABS32_DATA_BE, Op1, 0);
+      EmitD_BE(0);
+      Exit;
+    End;
+  End;
+
+  { ---- ADDQ.L #imm,An/Dn ---- }
+  If (Mnem = 'ADDQ.L') Then
+  Begin
+    If ParseImm(Op1, Val) Then
+    Begin
+      If (Val >= 1) And (Val <= 8) Then
+      Begin
+        If Val = 8 Then Val := 0; { codage special : 0 = 8 }
+        If ParseAn(Op2) >= 0 Then
+          EmitW_BE($5000 Or (Word(Val) Shl 9) Or $0088 Or Word(ParseAn(Op2)))
+        Else If ParseDn(Op2) >= 0 Then
+          EmitW_BE($5000 Or (Word(Val) Shl 9) Or $0080 Or Word(ParseDn(Op2)))
+        Else If StrUpperCase(Op2) = 'SP' Then
+          EmitW_BE($5000 Or (Word(Val) Shl 9) Or $008F);
+      End;
+      Exit;
+    End;
+  End;
+
+  { ---- SUBQ.L #imm,An/Dn ---- }
+  If (Mnem = 'SUBQ.L') Then
+  Begin
+    If ParseImm(Op1, Val) Then
+    Begin
+      If (Val >= 1) And (Val <= 8) Then
+      Begin
+        If Val = 8 Then Val := 0;
+        If ParseAn(Op2) >= 0 Then
+          EmitW_BE($5100 Or (Word(Val) Shl 9) Or $0088 Or Word(ParseAn(Op2)))
+        Else If ParseDn(Op2) >= 0 Then
+          EmitW_BE($5100 Or (Word(Val) Shl 9) Or $0080 Or Word(ParseDn(Op2)))
+        Else If StrUpperCase(Op2) = 'SP' Then
+          EmitW_BE($5100 Or (Word(Val) Shl 9) Or $008F);
+      End;
+      Exit;
+    End;
+  End;
+
+  { ---- BSR label (branch to subroutine, 16-bit displacement) ---- }
+  If (Mnem = 'BSR') Then
+  Begin
+    EmitW_BE($6100);  { BSR.W avec deplacement 16 bits }
+    BcAddFixup(BC_FIX_REL16_BE, Op1, 0);
+    EmitW_BE(0);
+    Exit;
+  End;
+
+  { ---- BRA label ---- }
+  If (Mnem = 'BRA') Then
+  Begin
+    EmitW_BE($6000);  { BRA.W }
+    BcAddFixup(BC_FIX_REL16_BE, Op1, 0);
+    EmitW_BE(0);
+    Exit;
+  End;
+
+  { ---- BEQ / BNE / BPL / BMI / BCS / BCC / BGE / BLE / BGT / BLT ---- }
+  If (Mnem = 'BEQ') Then Begin EmitW_BE($6700); BcAddFixup(BC_FIX_REL16_BE, Op1, 0); EmitW_BE(0); Exit; End;
+  If (Mnem = 'BNE') Then Begin EmitW_BE($6600); BcAddFixup(BC_FIX_REL16_BE, Op1, 0); EmitW_BE(0); Exit; End;
+  If (Mnem = 'BPL') Then Begin EmitW_BE($6A00); BcAddFixup(BC_FIX_REL16_BE, Op1, 0); EmitW_BE(0); Exit; End;
+  If (Mnem = 'BMI') Then Begin EmitW_BE($6B00); BcAddFixup(BC_FIX_REL16_BE, Op1, 0); EmitW_BE(0); Exit; End;
+  If (Mnem = 'BCS') Then Begin EmitW_BE($6500); BcAddFixup(BC_FIX_REL16_BE, Op1, 0); EmitW_BE(0); Exit; End;
+  If (Mnem = 'BCC') Then Begin EmitW_BE($6400); BcAddFixup(BC_FIX_REL16_BE, Op1, 0); EmitW_BE(0); Exit; End;
+  If (Mnem = 'BGE') Then Begin EmitW_BE($6C00); BcAddFixup(BC_FIX_REL16_BE, Op1, 0); EmitW_BE(0); Exit; End;
+  If (Mnem = 'BLE') Then Begin EmitW_BE($6F00); BcAddFixup(BC_FIX_REL16_BE, Op1, 0); EmitW_BE(0); Exit; End;
+  If (Mnem = 'BGT') Then Begin EmitW_BE($6E00); BcAddFixup(BC_FIX_REL16_BE, Op1, 0); EmitW_BE(0); Exit; End;
+  If (Mnem = 'BLT') Then Begin EmitW_BE($6D00); BcAddFixup(BC_FIX_REL16_BE, Op1, 0); EmitW_BE(0); Exit; End;
+
+  { ---- TST.L Dn ---- }
+  If (Mnem = 'TST.L') Then
+  Begin
+    If ParseDn(Op1) >= 0 Then EmitW_BE($4A80 Or Word(ParseDn(Op1)));
+    Exit;
+  End;
+  If (Mnem = 'TST.W') Then
+  Begin
+    If ParseDn(Op1) >= 0 Then EmitW_BE($4A40 Or Word(ParseDn(Op1)));
+    Exit;
+  End;
+
+  { ---- NEG.L Dn ---- }
+  If (Mnem = 'NEG.L') Then
+  Begin
+    If ParseDn(Op1) >= 0 Then EmitW_BE($4480 Or Word(ParseDn(Op1)));
+    Exit;
+  End;
+
+  { ---- ADD.L Dn,Dm / ADD.B #imm,Dn ---- }
+  If (Mnem = 'ADD.L') Then
+  Begin
+    If (ParseDn(Op1) >= 0) And (ParseDn(Op2) >= 0) Then
+    Begin
+      EmitW_BE($D080 Or (Word(ParseDn(Op2)) Shl 9) Or Word(ParseDn(Op1)));
+      Exit;
+    End;
+    If ParseImm(Op1, Val) And (ParseDn(Op2) >= 0) Then
+    Begin
+      { ADDI.L #imm,Dn : $0680 }
+      EmitW_BE($0680 Or Word(ParseDn(Op2)));
+      EmitD_BE(Val);
+      Exit;
+    End;
+  End;
+  If (Mnem = 'ADD.B') Then
+  Begin
+    If ParseImm(Op1, Val) And (ParseDn(Op2) >= 0) Then
+    Begin
+      { ADDI.B #imm,Dn : $0600 }
+      EmitW_BE($0600 Or Word(ParseDn(Op2)));
+      EmitW_BE(Word(Val) And $FF);
+      Exit;
+    End;
+  End;
+
+  { ---- SUB.L Dn,Dm ---- }
+  If (Mnem = 'SUB.L') Then
+  Begin
+    If (ParseDn(Op1) >= 0) And (ParseDn(Op2) >= 0) Then
+    Begin
+      EmitW_BE($9080 Or (Word(ParseDn(Op2)) Shl 9) Or Word(ParseDn(Op1)));
+      Exit;
+    End;
+  End;
+
+  { ---- CMP.L Dn,Dm ---- }
+  If (Mnem = 'CMP.L') Then
+  Begin
+    If (ParseDn(Op1) >= 0) And (ParseDn(Op2) >= 0) Then
+    Begin
+      EmitW_BE($B080 Or (Word(ParseDn(Op2)) Shl 9) Or Word(ParseDn(Op1)));
+      Exit;
+    End;
+  End;
+
+  { ---- AND.W #imm,Dn ---- }
+  If (Mnem = 'AND.W') Then
+  Begin
+    If ParseImm(Op1, Val) And (ParseDn(Op2) >= 0) Then
+    Begin
+      EmitW_BE($0240 Or Word(ParseDn(Op2)));
+      EmitW_BE(Word(Val));
+      Exit;
+    End;
+  End;
+
+  { ---- LSL.L #1,Dn ---- }
+  If (Mnem = 'LSL.L') Then
+  Begin
+    If ParseImm(Op1, Val) And (ParseDn(Op2) >= 0) Then
+    Begin
+      If Val = 0 Then Val := 8;
+      EmitW_BE($E180 Or (Word(Val) Shl 9) Or $0008 Or Word(ParseDn(Op2)));
+      Exit;
+    End;
+  End;
+
+  { ---- ROXL.L #1,Dn ---- }
+  If (Mnem = 'ROXL.L') Then
+  Begin
+    If ParseImm(Op1, Val) And (ParseDn(Op2) >= 0) Then
+    Begin
+      If Val = 0 Then Val := 8;
+      EmitW_BE($E180 Or (Word(Val) Shl 9) Or $0010 Or Word(ParseDn(Op2)));
+      Exit;
+    End;
+  End;
+
+  { ---- MOVEM.L reglist,-(SP) / MOVEM.L (SP)+,reglist ---- }
+  If (Mnem = 'MOVEM.L') Then
+  Begin
+    If IsPreDecSP(Op2) Then
+    Begin
+      { MOVEM.L reglist,-(A7) : $48E7 + mask (inversee) }
+      EmitW_BE($48E7);
+      EmitW_BE(ReverseMask(ParseRegList(Op1)));
+      Exit;
+    End;
+    If IsPostIncSP(Op1) Then
+    Begin
+      { MOVEM.L (A7)+,reglist : $4CDF + mask }
+      EmitW_BE($4CDF);
+      EmitW_BE(ParseRegList(Op2));
+      Exit;
+    End;
+  End;
+  If (Mnem = 'MOVEM.W') Then
+  Begin
+    If IsPreDecSP(Op2) Then
+    Begin
+      EmitW_BE($48A7);
+      EmitW_BE(ReverseMask(ParseRegList(Op1)));
+      Exit;
+    End;
+    If IsPostIncSP(Op1) Then
+    Begin
+      EmitW_BE($4C9F);
+      EmitW_BE(ParseRegList(Op2));
+      Exit;
+    End;
+  End;
+
+  { ---- DBRA Dn,label ---- }
+  If (Mnem = 'DBRA') Then
+  Begin
+    If ParseDn(Op1) >= 0 Then
+    Begin
+      EmitW_BE($51C8 Or Word(ParseDn(Op1)));
+      BcAddFixup(BC_FIX_REL16_BE, Op2, 0);
+      EmitW_BE(0);
+    End;
+    Exit;
+  End;
+
+  { Instruction non reconnue : emettre un NOP pour garder la structure }
   { WriteLn('BcAssemble68000: non reconnu: [', S, ']'); }
 End;
 
@@ -26254,6 +26985,41 @@ Procedure BcBuildData;
 Var I, J: Integer; S: TString;
 Begin
   BcDataLen := 0; BcDLabelCnt := 0;
+
+  If Is68kTarget Then
+  Begin
+    { Section DATA 68000 : buffers minimaux }
+    BcDefineDataLabel('NUMBUF');    BcDataZeros(32);
+    BcDefineDataLabel('CRLF');      BcDataB(13); BcDataB(10); BcDataB(0);
+    BcDefineDataLabel('STRTMP');    BcDataZeros(256);
+    BcDefineDataLabel('TRUE_STR');  BcDataStr('TRUE');
+    BcDefineDataLabel('FALSE_STR'); BcDataStr('FALSE');
+    { Constantes et donnees utilisateur depuis DataTab }
+    For I := 0 To DataCount - 1 Do
+    Begin
+      BcDefineDataLabel(DataTab[I].LblName);
+      Case DataTab[I].Kind Of
+        DK_STR:
+        Begin
+          For J := 1 To Length(DataTab[I].StrVal) Do
+            BcDataB(Byte(DataTab[I].StrVal[J]));
+          BcDataB(0);
+        End;
+        DK_DWORD: BcDataZeros(4);
+        DK_BYTE: BcDataB(0);
+        DK_ARRAY: BcDataZeros(LongInt(DataTab[I].ElemCount) *
+                              LongInt(DataTab[I].ElemSize));
+        DK_RES: BcDataZeros(DataTab[I].IntVal);
+        DK_STRUCT:
+          If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
+          Else BcDataZeros(4);
+        DK_ZERO:
+          If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
+          Else BcDataZeros(4);
+      End;
+    End;
+    Exit;
+  End;
 
   { Variables runtime HSTDOUT, HSTDIN, HHEAP (les 3 premiers DWORDs) }
   BcDefineDataLabel('HSTDOUT');   BcDataD(0);
@@ -26524,6 +27290,164 @@ Begin
       BcCode[FixOfs + 3] := Byte(Val Shr 24);
     End;
   End;
+End;
+
+{ --- BcResolveFixups68k : resoudre les fixups pour 68000 (big-endian) --- }
+Procedure BcResolveFixups68k(TextBase, DataBase: LongInt);
+Var
+  I: LongInt;
+  TargetOfs, FixOfs: LongInt;
+  Val: LongInt;
+Begin
+  For I := 0 To BcFixupCnt - 1 Do
+  Begin
+    FixOfs := BcFixups[I].CodeOfs;
+    If FixOfs + 1 >= BcCodeLen Then Continue;
+    Case BcFixups[I].Kind Of
+      BC_FIX_REL16_BE:
+      Begin
+        { BSR/BRA/Bcc : deplacement relatif 16 bits big-endian }
+        TargetOfs := BcFindLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+        Begin
+          Val := TargetOfs - (FixOfs);
+          BcCode[FixOfs]     := Byte(Val Shr 8);
+          BcCode[FixOfs + 1] := Byte(Val);
+        End;
+      End;
+      BC_FIX_ABS32_DATA_BE:
+      Begin
+        { Adresse absolue 32 bits big-endian vers la section data }
+        If FixOfs + 3 >= BcCodeLen Then Continue;
+        TargetOfs := BcFindDataLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := DataBase + TargetOfs + BcFixups[I].Addend
+        Else
+          Val := DataBase;
+        BcCode[FixOfs]     := Byte(Val Shr 24);
+        BcCode[FixOfs + 1] := Byte(Val Shr 16);
+        BcCode[FixOfs + 2] := Byte(Val Shr 8);
+        BcCode[FixOfs + 3] := Byte(Val);
+      End;
+    End;
+  End;
+End;
+
+{ --- WritePRGFile : generation d un executable Atari ST (.PRG) --- }
+Procedure WritePRGFile(FileName: TString);
+Var
+  F: File;
+  TextLen, DataLen, BssLen: LongInt;
+  MainOfs: LongInt;
+  TotalCodeLen: LongInt;
+  DataBase: LongInt;
+  I, RelocCount: LongInt;
+  RelocOfs: Array[0..8191] Of LongInt;
+  Prev, Delta: LongInt;
+  B: Byte;
+  Val: LongInt;
+  P: LongInt;
+
+  Procedure WrW_BE(W: Word);
+  Begin
+    B := Hi(W); BlockWrite(F, B, 1);
+    B := Lo(W); BlockWrite(F, B, 1);
+  End;
+
+  Procedure WrD_BE(D: LongInt);
+  Begin
+    B := Byte(D Shr 24); BlockWrite(F, B, 1);
+    B := Byte(D Shr 16); BlockWrite(F, B, 1);
+    B := Byte(D Shr 8);  BlockWrite(F, B, 1);
+    B := Byte(D);         BlockWrite(F, B, 1);
+  End;
+
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+  BssLen  := 0;
+
+  { Calculer l adresse de base de la section DATA apres le code }
+  DataBase := TextLen;
+
+  { Resoudre les fixups avec base TEXT = 0, DATA = TextLen }
+  BcResolveFixups68k(0, DataBase);
+
+  { Collecter les offsets de relocalisation (fixups ABS32 dans le code) }
+  RelocCount := 0;
+  For I := 0 To BcFixupCnt - 1 Do
+  Begin
+    If BcFixups[I].Kind = BC_FIX_ABS32_DATA_BE Then
+    Begin
+      If RelocCount < 8192 Then
+      Begin
+        RelocOfs[RelocCount] := BcFixups[I].CodeOfs;
+        Inc(RelocCount);
+      End;
+    End;
+  End;
+
+  { Trier les offsets de relocalisation (tri par insertion) }
+  For I := 1 To RelocCount - 1 Do
+  Begin
+    Val := RelocOfs[I];
+    P := I - 1;
+    While (P >= 0) And (RelocOfs[P] > Val) Do
+    Begin RelocOfs[P + 1] := RelocOfs[P]; Dec(P); End;
+    RelocOfs[P + 1] := Val;
+  End;
+
+  { Ouvrir le fichier de sortie }
+  Assign(F, FileName);
+  Rewrite(F, 1);
+
+  { ===== En-tete PRG (28 octets) ===== }
+  WrW_BE($601A);     { ph_branch : mot magique }
+  WrD_BE(TextLen);   { ph_tlen  : taille section TEXT }
+  WrD_BE(DataLen);   { ph_dlen  : taille section DATA }
+  WrD_BE(BssLen);    { ph_blen  : taille section BSS }
+  WrD_BE(0);         { ph_slen  : taille table symboles (0 = strippee) }
+  WrD_BE(0);         { ph_res1  : reserve }
+  WrD_BE($0001);     { ph_prgflags : PF_FASTLOAD }
+  WrW_BE(0);         { ph_absflag : 0 = programme relocalisable }
+
+  { ===== Section TEXT (code 68000) ===== }
+  If TextLen > 0 Then
+    BlockWrite(F, BcCode[0], TextLen);
+
+  { ===== Section DATA (donnees) ===== }
+  If DataLen > 0 Then
+    BlockWrite(F, BcData[0], DataLen);
+
+  { ===== Table de relocalisation ===== }
+  If RelocCount > 0 Then
+  Begin
+    { Premier offset en mot long }
+    WrD_BE(RelocOfs[0]);
+    Prev := RelocOfs[0];
+    For I := 1 To RelocCount - 1 Do
+    Begin
+      Delta := RelocOfs[I] - Prev;
+      While Delta > 254 Do
+      Begin
+        B := 1;   { marqueur d espacement : avancer de 254 sans relocaliser }
+        BlockWrite(F, B, 1);
+        Dec(Delta, 254);
+      End;
+      B := Byte(Delta);
+      BlockWrite(F, B, 1);
+      Prev := RelocOfs[I];
+    End;
+    B := 0;  { fin de la table }
+    BlockWrite(F, B, 1);
+  End
+  Else
+  Begin
+    { Aucune relocalisation : ecrire un long mot nul }
+    WrD_BE(0);
+  End;
+
+  Close(F);
 End;
 
 { --- WriteMZFile : generation d un EXE DOS 16 bits (format MZ) --- }
@@ -28036,11 +28960,14 @@ Begin
     { Emettre les routines runtime (TODO 12) }
     If (Opts.DestTarget = DEST_DOSR) Or (Opts.DestTarget = DEST_DOSP) Then
       EmitRuntimeDOS
+    Else If Is68kTarget Then
+      EmitRuntime68000
     Else
       EmitRuntime;
 
-    { Emettre les routines runtime supplementaires (pas en mode DOS) }
-    If (Opts.DestTarget <> DEST_DOSR) And (Opts.DestTarget <> DEST_DOSP) Then
+    { Emettre les routines runtime supplementaires (pas en mode DOS ni 68000) }
+    If (Opts.DestTarget <> DEST_DOSR) And (Opts.DestTarget <> DEST_DOSP) And
+       (Not Is68kTarget) Then
     Begin
       { Emettre les routines runtime Graph (TODO 20) }
       EmitGraphRuntime;
@@ -28092,6 +29019,12 @@ Begin
       WriteMZFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  MZ DOS EXE genere : ', Opts.OutFile);
+    End
+    Else If Is68kTarget Then
+    Begin
+      WritePRGFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  Atari ST PRG genere : ', Opts.OutFile);
     End
     Else
     Begin
