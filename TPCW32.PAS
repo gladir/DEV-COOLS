@@ -20042,7 +20042,10 @@ Begin
   EmitInstr('MOV DWORD PTR [GR_CLSREC+4],EAX');      { lpfnWndProc }
   EmitInstr('MOV EAX,DWORD PTR [GR_HINST]');
   EmitInstr('MOV DWORD PTR [GR_CLSREC+16],EAX');     { hInstance }
-  EmitInstr('MOV DWORD PTR [GR_CLSREC+28],6');       { COLOR_WINDOW+1 = bkg brush }
+  { Brush de fond noir : GetStockObject(BLACK_BRUSH=4) }
+  EmitInstr('PUSH 4');                                { BLACK_BRUSH }
+  EmitInstr('CALL GetStockObject');
+  EmitInstr('MOV DWORD PTR [GR_CLSREC+28],EAX');     { hbrBackground }
   EmitInstr('LEA EAX,[GR_WNDCLASS]');
   EmitInstr('MOV DWORD PTR [GR_CLSREC+36],EAX');     { lpszClassName }
   { RegisterClass }
