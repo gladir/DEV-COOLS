@@ -8689,6 +8689,328 @@ Begin
       Exit;
     End;
 
+    { --- SANE identity functions (single arg, result = arg) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'NUM2INTEGER') Or (Up = 'NUM2LONGINT') Or (Up = 'NUM2REAL') Or
+       (Up = 'NUM2DOUBLE') Or (Up = 'NUM2EXTENDED') Or (Up = 'NUM2COMP') Or
+       (Up = 'RINT') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE stub functions returning 0 (single arg, discarded) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'DEC2NUM') Or (Up = 'LN1') Or (Up = 'NAN') Or
+       (Up = 'TESTEXCEPTION') Or (Up = 'TESTHALT') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { --- SANE stub functions returning 0 (no args) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'GETROUND') Or (Up = 'GETPRECISION') Or
+       (Up = 'GETHALTVECTOR') Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { --- SANE STR2NUM(s) : string to number --- }
+    If Opts.ApplePascal Then
+    If Up = 'STR2NUM' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('MOV ESI,EAX');
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRTONUM');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE LOGB(x) / LOG2(x) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'LOGB') Or (Up = 'LOG2') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_LOG2');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE EXP2(x) --- }
+    If Opts.ApplePascal Then
+    If Up = 'EXP2' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_EXP2');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE EXP1(x) : stub identity (e^x-1 ~ x for integers) --- }
+    If Opts.ApplePascal Then
+    If Up = 'EXP1' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE TAN(x) : stub returns 0 --- }
+    If Opts.ApplePascal Then
+    If Up = 'TAN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitComment('SANE TAN stub : retourne 0 en mode entier');
+        EmitInstr('XOR EAX,EAX');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE SIGNNUM(x) --- }
+    If Opts.ApplePascal Then
+    If Up = 'SIGNNUM' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_SIGNNUM');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE CLASSxxx(x) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'CLASSREAL') Or (Up = 'CLASSDOUBLE') Or
+       (Up = 'CLASSCOMP') Or (Up = 'CLASSEXTENDED') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_CLASSNUM');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE COPYSIGN(x,y) --- }
+    If Opts.ApplePascal Then
+    If Up = 'COPYSIGN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_COPYSIGN');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE NEXTxxx(x,y) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'NEXTREAL') Or (Up = 'NEXTDOUBLE') Or
+       (Up = 'NEXTEXTENDED') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_NEXTNUM');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE XPWRI(x,i) / XPWRY(x,y) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'XPWRI') Or (Up = 'XPWRY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_XPWRI');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE COMPOUND(r,n) --- }
+    If Opts.ApplePascal Then
+    If Up = 'COMPOUND' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_COMPOUND');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE ANNUITY(r,n) --- }
+    If Opts.ApplePascal Then
+    If Up = 'ANNUITY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_ANNUITY');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE RELATION(x,y) --- }
+    If Opts.ApplePascal Then
+    If Up = 'RELATION' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_RELATION');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE SCALB(n,x) --- }
+    If Opts.ApplePascal Then
+    If Up = 'SCALB' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_SCALB');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE REMAINDER(x,y,Var Quo) --- }
+    If Opts.ApplePascal Then
+    If Up = 'REMAINDER' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        { Quo is a VAR param - push address }
+        If Not EPAtEnd Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          EmitInstr('PUSH EAX');
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_REMAINDER');
+      EmitInstr('ADD ESP,12');
+      Exit;
+    End;
+
+    { --- SANE RANDOMX(Var x) --- }
+    If Opts.ApplePascal Then
+    If Up = 'RANDOMX' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        { x is a VAR param - push address }
+        If Not EPAtEnd Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          EmitInstr('PUSH EAX');
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_RANDOMX');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
     { EOF / EOF(f) : tester fin de fichier }
     If Up = 'EOF' Then
     Begin
@@ -12998,6 +13320,139 @@ Begin
     Begin
       Inc(EP);
       EmitInstr('CALL ' + TP_RT_PFX + 'RANDOMIZE');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE SETEXCEPTION(e, b) / SETHALT(e, b) : no-op stubs (2 args) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'SETEXCEPTION') Or (Up = 'SETHALT') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('SANE ' + Up + ' stub : no-op');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE no-op stubs (1 arg, discarded) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'SETROUND') Or (Up = 'SETPRECISION') Or
+       (Up = 'SETENVIRONMENT') Or (Up = 'PROCEXIT') Or
+       (Up = 'SETHALTVECTOR') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('SANE ' + Up + ' stub : no-op');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE GETENVIRONMENT(Var e) / PROCENTRY(Var e) : store 0 --- }
+    If Opts.ApplePascal Then
+    If (Up = 'GETENVIRONMENT') Or (Up = 'PROCENTRY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          EmitInstr('MOV DWORD PTR [EAX],0');
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      EmitComment('SANE ' + Up + ' stub : store 0');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE NUM2STR(f, x, Var s) --- }
+    If Opts.ApplePascal Then
+    If Up = 'NUM2STR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        If Not EPAtEnd Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          EmitInstr('PUSH EAX');
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_NUM2STR');
+      EmitInstr('ADD ESP,12');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE STR2DEC / CSTR2DEC (4 args, no-op) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'STR2DEC') Or (Up = 'CSTR2DEC') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('SANE ' + Up + ' stub : no-op');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE NUM2DEC / DEC2STR (3 args, no-op) --- }
+    If Opts.ApplePascal Then
+    If (Up = 'NUM2DEC') Or (Up = 'DEC2STR') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('SANE ' + Up + ' stub : no-op');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -19947,6 +20402,277 @@ Begin
   EmitLabel(TP_RT_PFX + 'LN');
   EmitComment('ln() stub : retourne 0 en mode entier');
   EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
+  { ====== SANE Runtime Helpers ====== }
+
+  { ------ _TPRT_SANE_SIGNNUM : retourne -1/0/1 selon signe de EAX --- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_SIGNNUM');
+  EmitComment('SANE SIGNNUM(x) : -1 si x<0, 0 si x=0, 1 si x>0');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_SIGN_DONE');
+  EmitInstr('JS ' + TP_RT_PFX + 'SN_SIGN_NEG');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_SIGN_NEG');
+  EmitInstr('MOV EAX,0FFFFFFFFh');
+  EmitLabel(TP_RT_PFX + 'SN_SIGN_DONE');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_CLASSNUM : 3=ZeroNum, 4=NormalNum -------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_CLASSNUM');
+  EmitComment('SANE CLASSxxx(x) : 3 si x=0, 4 sinon');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_CLASS_NORM');
+  EmitInstr('MOV EAX,3');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_CLASS_NORM');
+  EmitInstr('MOV EAX,4');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_COPYSIGN : |x| avec signe de y ---------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_COPYSIGN');
+  EmitComment('SANE COPYSIGN(x,y) : |x| avec signe de y');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('CDQ');
+  EmitInstr('XOR EAX,EDX');
+  EmitInstr('SUB EAX,EDX');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JNS ' + TP_RT_PFX + 'SN_CSIGN_POS');
+  EmitInstr('NEG EAX');
+  EmitLabel(TP_RT_PFX + 'SN_CSIGN_POS');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_LOG2 : log2 entier (BSR) ----------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_LOG2');
+  EmitComment('SANE LOG2/LOGB(x) : position du bit le plus haut');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'SN_LOG2_ZERO');
+  EmitInstr('BSR EAX,EAX');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_LOG2_ZERO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_EXP2 : 2^x via shift -------------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_EXP2');
+  EmitComment('SANE EXP2(x) : 2^x par decalage');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JS ' + TP_RT_PFX + 'SN_EXP2_ZERO');
+  EmitInstr('CMP ECX,30');
+  EmitInstr('JG ' + TP_RT_PFX + 'SN_EXP2_MAX');  { 2^31 depasse signed 32-bit }
+  EmitInstr('MOV EAX,1');
+  EmitInstr('SHL EAX,CL');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_EXP2_MAX');
+  EmitInstr('MOV EAX,7FFFFFFFh');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_EXP2_ZERO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_SCALB : x * 2^n ------------------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_SCALB');
+  EmitComment('SANE SCALB(n,x) : x * 2^n');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ECX,[EBP+12]');
+  EmitInstr('MOV EAX,[EBP+8]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitInstr('JS ' + TP_RT_PFX + 'SN_SCALB_NEG');
+  EmitInstr('CMP ECX,30');
+  EmitInstr('JG ' + TP_RT_PFX + 'SN_SCALB_OVF');  { 2^31 depasse signed 32-bit }
+  EmitInstr('SHL EAX,CL');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_OVF');
+  EmitInstr('MOV EAX,7FFFFFFFh');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_NEG');
+  EmitInstr('NEG ECX');
+  EmitInstr('CMP ECX,31');
+  EmitInstr('JGE ' + TP_RT_PFX + 'SN_SCALB_UND');
+  EmitInstr('SAR EAX,CL');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_UND');
+  EmitInstr('XOR EAX,EAX');
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_XPWRI : x^i par multiplication iterative ------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_XPWRI');
+  EmitComment('SANE XPWRI(x,i) / XPWRY(x,y) : x^i entier');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_XPWRI_ONE');
+  EmitInstr('JS ' + TP_RT_PFX + 'SN_XPWRI_NEG');
+  EmitInstr('MOV EDX,EAX');
+  EmitInstr('DEC ECX');
+  EmitLabel(TP_RT_PFX + 'SN_XPWRI_LOOP');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_XPWRI_DONE');
+  EmitInstr('IMUL EAX,EDX');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_XPWRI_LOOP');
+  EmitLabel(TP_RT_PFX + 'SN_XPWRI_NEG');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_XPWRI_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_XPWRI_ONE');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'SN_XPWRI_DONE');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_NEXTNUM : x+1 si y>x, x-1 si y<x, x si y=x --- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_NEXTNUM');
+  EmitComment('SANE NEXTxxx(x,y) : entier suivant vers y');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('CMP ECX,EAX');
+  EmitInstr('JG ' + TP_RT_PFX + 'SN_NEXT_INC');
+  EmitInstr('JL ' + TP_RT_PFX + 'SN_NEXT_DEC');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_NEXT_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_NEXT_INC');
+  EmitInstr('INC EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_NEXT_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_NEXT_DEC');
+  EmitInstr('DEC EAX');
+  EmitLabel(TP_RT_PFX + 'SN_NEXT_DONE');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_COMPOUND : (1+r)^n ----------------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_COMPOUND');
+  EmitComment('SANE COMPOUND(r,n) : (1+r)^n en entier');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('INC EAX');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'SN_COMP_ONE');
+  EmitInstr('MOV EDX,EAX');
+  EmitInstr('DEC ECX');
+  EmitLabel(TP_RT_PFX + 'SN_COMP_LOOP');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_COMP_DONE');
+  EmitInstr('IMUL EAX,EDX');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_COMP_LOOP');
+  EmitLabel(TP_RT_PFX + 'SN_COMP_ONE');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'SN_COMP_DONE');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_ANNUITY : stub retourne n ---------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_ANNUITY');
+  EmitComment('SANE ANNUITY(r,n) stub : retourne n');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+8]');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_RELATION : 0=GT, 1=LT, 2=EQ ------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_RELATION');
+  EmitComment('SANE RELATION(x,y) : 0 si x>y, 1 si x<y, 2 si x=y');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('CMP EAX,ECX');
+  EmitInstr('JG ' + TP_RT_PFX + 'SN_REL_GT');
+  EmitInstr('JL ' + TP_RT_PFX + 'SN_REL_LT');
+  EmitInstr('MOV EAX,2');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_REL_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_REL_GT');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_REL_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_REL_LT');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'SN_REL_DONE');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_REMAINDER : x MOD y, quotient dans [Quo] ------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_REMAINDER');
+  EmitComment('SANE REMAINDER(x,y,Var Quo) : EAX=x MOD y, [Quo]=x DIV y');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+16]');
+  EmitInstr('MOV ECX,[EBP+12]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_REM_ZERO');
+  EmitInstr('CDQ');
+  EmitInstr('IDIV ECX');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('MOV [ECX],EAX');
+  EmitInstr('MOV EAX,EDX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_REM_ZERO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('MOV DWORD PTR [ECX],0');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_RANDOMX : LCG update via Var x ----------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_RANDOMX');
+  EmitComment('SANE RANDOMX(Var x) : LCG pseudo-aleatoire');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('MOV EAX,[ECX]');
+  EmitInstr('IMUL EAX,EAX,1103515245');  { LCG glibc: a=1103515245, c=12345 }
+  EmitInstr('ADD EAX,12345');
+  EmitInstr('MOV [ECX],EAX');
+  EmitInstr('SHR EAX,16');
+  EmitInstr('AND EAX,7FFFh');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_NUM2STR : conversion entier vers chaine -------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_NUM2STR');
+  EmitComment('SANE NUM2STR(f,x,Var s) : convertit x en chaine dans s');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('MOV EDI,[EBP+8]');
+  EmitLabel(TP_RT_PFX + 'SN_N2S_COPY');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_N2S_COPY');
+  EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ------ _TPRT_RANDOM : generateur pseudo-aleatoire LCG ------- }
