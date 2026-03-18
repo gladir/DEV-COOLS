@@ -12104,8 +12104,7 @@ Begin
     { --- Mode 68000 : D0 = valeur, A0 = adresse chaine --- }
     If IsStrType Then
     Begin
-      { D0 = pointeur vers chaine ASCIIZ }
-      EmitInstr('MOVE.L D0,A0');
+      { A0 = pointeur vers chaine ASCIIZ (charge par LEA dans ParseExpr) }
       EmitInstr('BSR ' + TP_RT_PFX + 'PRINTSTR');
     End
     Else If TypeIdx = TY_IDX_CHAR Then
