@@ -2993,8 +2993,7 @@ Begin
   RegType('COMSTR');    RegType('DATETIME');
 
   { Type QuickPascal : CSTRING (String + nul terminal) }
-  If Opts.QuickPascal Then
-    RegType('CSTRING');
+  If Opts.QuickPascal Then RegType('CSTRING');
 
   { ---------------------------------------------------------- }
   { Constantes predefinies                                      }
@@ -3283,9 +3282,8 @@ Begin
 
   { ---------------------------------------------------------- }
   { Procedures et fonctions de l unite MSGraph (QuickPascal)    }
-  { Enregistrees si --quickpascal est specifie                  }
+  { Toujours enregistrees, activees si Uses MsGraph presente    }
   { ---------------------------------------------------------- }
-  If Opts.QuickPascal Then
   Begin
     { Installation / Configuration }
     RegFunc('_GRSTATUS');         RegFunc('_SETVIDEOMODE');
@@ -3616,8 +3614,7 @@ Begin
   TypeAdd(TYK_STRING, 'COMSTR', 128, 1, False, TY_UNKNOWN);   { String[127]}
 
   { Type QuickPascal : CSTRING (String + nul terminal) }
-  If Opts.QuickPascal Then
-    TypeAdd(TYK_STRING, 'CSTRING', 256, 1, False, TY_UNKNOWN);
+  If Opts.QuickPascal Then TypeAdd(TYK_STRING, 'CSTRING', 256, 1, False, TY_UNKNOWN);
 
   If Opts.DebugMode Then
     WriteLn('  [TypeInit] ', TypeCount, ' types primitifs enregistres');
@@ -15197,6 +15194,40 @@ Begin
 
     { ---- MSGraph procedures (QuickPascal mode) ---- }
 
+    { _SETVIDEOMODE(mode) utilise comme instruction - resultat ignore }
+    If Up = '_SETVIDEOMODE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End
+      Else EmitInstr('XOR EAX,EAX');
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { _SETVIDEOMODEROWS(mode, rows) utilise comme instruction }
+    If Up = '_SETVIDEOMODEROWS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);  { rows ignore }
+        EPMatch(')');
+      End
+      Else EmitInstr('PUSH 0');
+      EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
     { _SETACTIVEPAGE(page) }
     If Up = '_SETACTIVEPAGE' Then
     Begin
@@ -19994,22 +20025,26 @@ Begin
   EmitInstr('PUSH 0');
   EmitInstr('CALL GetModuleHandleA');
   EmitInstr('MOV DWORD PTR [GR_HINST],EAX');
-  { Charger curseur fleche }
-  EmitInstr('PUSH 32512');        { IDC_ARROW }
-  EmitInstr('PUSH 0');
-  EmitInstr('CALL LoadCursorA');
-  EmitInstr('MOV ECX,EAX');       { hCursor }
-  { Remplir WNDCLASS : style=3(CS_HREDRAW|CS_VREDRAW), lpfnWndProc=DefWindowProcA }
+  { Remplir WNDCLASS avec zeros }
   EmitInstr('LEA EDI,[GR_CLSREC]');
   EmitInstr('XOR EAX,EAX');
   EmitInstr('MOV ECX,10');
   EmitInstr('REP STOSD');         { zero fill 40 bytes }
+  { Charger curseur fleche }
+  EmitInstr('PUSH 32512');        { IDC_ARROW }
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL LoadCursorA');
+  EmitInstr('MOV DWORD PTR [GR_CLSREC+24],EAX');     { hCursor }
+  { Remplir WNDCLASS : style=3(CS_HREDRAW|CS_VREDRAW), lpfnWndProc=DefWindowProcA }
   EmitInstr('MOV DWORD PTR [GR_CLSREC+0],3');        { style }
-  EmitInstr('MOV DWORD PTR [GR_CLSREC+4],OFFSET DefWindowProcA'); { lpfnWndProc }
+  { Charger adresse reelle de DefWindowProcA depuis l IAT }
+  EmitInstr('MOV EAX,DWORD PTR [DefWindowProcA]');
+  EmitInstr('MOV DWORD PTR [GR_CLSREC+4],EAX');      { lpfnWndProc }
   EmitInstr('MOV EAX,DWORD PTR [GR_HINST]');
-  EmitInstr('MOV DWORD PTR [GR_CLSREC+20],EAX');     { hInstance }
-  EmitInstr('MOV DWORD PTR [GR_CLSREC+32],6');       { COLOR_WINDOW+1 = bkg brush }
-  EmitInstr('MOV DWORD PTR [GR_CLSREC+36],OFFSET GR_WNDCLASS'); { lpszClassName }
+  EmitInstr('MOV DWORD PTR [GR_CLSREC+16],EAX');     { hInstance }
+  EmitInstr('MOV DWORD PTR [GR_CLSREC+28],6');       { COLOR_WINDOW+1 = bkg brush }
+  EmitInstr('LEA EAX,[GR_WNDCLASS]');
+  EmitInstr('MOV DWORD PTR [GR_CLSREC+36],EAX');     { lpszClassName }
   { RegisterClass }
   EmitInstr('PUSH OFFSET GR_CLSREC');
   EmitInstr('CALL RegisterClassA');
@@ -22988,7 +23023,13 @@ Begin
         Begin If Neg2 Then DataAdd := -DataAdd; End;
       End;
     End;
-    BcAddFixup(BC_FIX_ABS32_DATA, DataLbl, DataAdd);
+    If BcIsImport(DataLbl) Then
+    Begin
+      Idx := BcFindOrAddImport(DataLbl);
+      BcAddFixup(BC_FIX_ABS32_IMP, BcImports[Idx].ApiName, Idx);
+    End
+    Else
+      BcAddFixup(BC_FIX_ABS32_DATA, DataLbl, DataAdd);
     BcEmitD(0); { placeholder, sera resolu }
     BcEmitMemRM := True;
   End;
