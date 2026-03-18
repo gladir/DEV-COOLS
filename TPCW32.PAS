@@ -111,6 +111,8 @@ Type
     DebugInfo : Boolean;   { -V : infos de debogage dans l EXE        }
     CompDir   : TString;   { -$<sw> : directives compilateur          }
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
+    ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
+    Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
   End;
 
 Var
@@ -308,6 +310,9 @@ Begin
   Opts.UnitDirs    := '';
   Opts.DebugInfo   := False;
   Opts.CompDir     := '';
+  Opts.QuickPascal := False;
+  Opts.ApplePascal := False;
+  Opts.Sane        := False;
 End;
 
 { ------------------------------------------------------------ }
@@ -340,6 +345,8 @@ Begin
   WriteLn('  -tp7           Turbo Pascal 7 (defaut)');
   WriteLn('  -tp8           Turbo Pascal 8');
   WriteLn('  --quickpascal  Mode QuickPascal (support de l''unite MSGraph)');
+  WriteLn('  --applepascal  Mode Apple Pascal (support des unites SANE et TRANSCEND)');
+  WriteLn('  --sane         Mode SANE seul (sans l''unite TRANSCEND)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -433,6 +440,10 @@ Begin
       Opts.TPVersion := TP_VER_8
     Else If (Arg = '--quickpascal') Then
       Opts.QuickPascal := True
+    Else If (Arg = '--applepascal') Then
+      Opts.ApplePascal := True
+    Else If (Arg = '--sane') Then
+      Opts.Sane := True
     { Options compatibles TPC 7.0 (TODO 25) }
     Else If (UA = '-B') Then
       Opts.BuildAll := True
@@ -708,7 +719,7 @@ Const
   QPU_HDR_FIXED  = $20;     { partie fixe de l en-tete QPU (32 octets) }
 
   { Table des tailles de types Turbo Pascal (Win32, 32 bits) }
-  MAX_TP_TYPE_SIZES = 25;
+  MAX_TP_TYPE_SIZES = 27;
 
 Type
   { Types d entrees dans le pool de donnees }
@@ -1004,6 +1015,9 @@ Begin
     R :=
       (L = 'inherited')   Or (L = 'constructor') Or
       (L = 'destructor')  Or (L = 'object');
+  { Mot-cle Apple Pascal : SEGMENT (overlay, ignore en Win32) }
+  If (Not R) And Opts.ApplePascal Then
+    R := (L = 'segment');
   IsKeyword := R;
 End;
 
@@ -1956,7 +1970,16 @@ Begin
       WarnMsg('nom de fichier attendu pour $INCLUDE');
   End
   Else If Dir = 'DEFINE' Then
-    DefineAdd(Arg)
+  Begin
+    DefineAdd(Arg);
+    { Activer les options de mode si le symbole correspond }
+    If StrUpperCase(Arg) = 'QUICKPASCAL' Then
+      Opts.QuickPascal := True
+    Else If StrUpperCase(Arg) = 'APPLEPASCAL' Then
+      Opts.ApplePascal := True
+    Else If StrUpperCase(Arg) = 'SANE' Then
+      Opts.Sane := True;
+  End
   Else If Dir = 'UNDEF' Then
     DefineRemove(Arg)
   Else If Dir = 'IFDEF' Then
@@ -2094,7 +2117,10 @@ Const
     (Name: 'COMSTR';   Size: 128), { String[127]+ length byte          }
     (Name: 'DATETIME'; Size: 12),  { record 6 x Word = 12 octets      }
     { Type QuickPascal }
-    (Name: 'CSTRING';  Size: 256)  { CSTRING : String + nul terminal   }
+    (Name: 'CSTRING';  Size: 256), { CSTRING : String + nul terminal   }
+    { Types Apple Pascal }
+    (Name: 'BYTESTREAM'; Size: 256), { ByteStream : Array[0..255] of Char  }
+    (Name: 'WORDSTREAM'; Size: 256)  { WordStream : Array[0..63] of Integer}
   );
 
 { ---- DataInit : initialiser le pool de donnees ---- }
@@ -2995,6 +3021,13 @@ Begin
   { Type QuickPascal : CSTRING (String + nul terminal) }
   If Opts.QuickPascal Then RegType('CSTRING');
 
+  { Types Apple Pascal : ByteStream et WordStream }
+  If Opts.ApplePascal Then
+  Begin
+    RegType('BYTESTREAM');
+    RegType('WORDSTREAM');
+  End;
+
   { ---------------------------------------------------------- }
   { Constantes predefinies                                      }
   { ---------------------------------------------------------- }
@@ -3399,6 +3432,92 @@ Begin
   End;
 
   { ---------------------------------------------------------- }
+  { Constantes, procedures et fonctions de l unite SANE         }
+  { (Apple Pascal) - activees si --applepascal ou --sane        }
+  { ---------------------------------------------------------- }
+  If Opts.ApplePascal Or Opts.Sane Then
+  Begin
+    { Constantes SANE }
+    RegConst('DECSTRLEN', 255);
+    RegConst('SIGDIGLEN', 20);
+    RegConst('INVALID', 1);
+    RegConst('UNDERFLOW', 2);
+    RegConst('OVERFLOW', 4);
+    RegConst('DIVBYZERO', 8);
+    RegConst('INEXACT', 16);
+    { Conversion entre types numeriques binaires }
+    RegFunc('NUM2INTEGER');
+    RegFunc('NUM2LONGINT');
+    RegFunc('NUM2REAL');
+    RegFunc('NUM2DOUBLE');
+    RegFunc('NUM2EXTENDED');
+    RegFunc('NUM2COMP');
+    { Conversion entre binaire et decimal }
+    RegProc('NUM2DEC');
+    RegFunc('DEC2NUM');
+    RegProc('NUM2STR');
+    RegFunc('STR2NUM');
+    { Conversion entre formats decimal }
+    RegProc('STR2DEC');
+    RegProc('CSTR2DEC');
+    RegProc('DEC2STR');
+    { Fonctions arithmetique, auxiliaire et elementaire }
+    RegFunc('REMAINDER');
+    RegFunc('RINT');
+    RegFunc('SCALB');
+    RegFunc('LOGB');
+    RegFunc('COPYSIGN');
+    RegFunc('NEXTREAL');
+    RegFunc('NEXTDOUBLE');
+    RegFunc('NEXTEXTENDED');
+    RegFunc('LOG2');
+    RegFunc('LN1');
+    RegFunc('EXP2');
+    RegFunc('EXP1');
+    RegFunc('XPWRI');
+    RegFunc('XPWRY');
+    RegFunc('COMPOUND');
+    RegFunc('ANNUITY');
+    RegFunc('TAN');
+    RegFunc('RANDOMX');
+    { Routines d enquetes }
+    RegFunc('CLASSREAL');
+    RegFunc('CLASSDOUBLE');
+    RegFunc('CLASSCOMP');
+    RegFunc('CLASSEXTENDED');
+    RegFunc('SIGNNUM');
+    RegFunc('NAN');
+    { Routines d acces d environnement }
+    RegProc('SETEXCEPTION');
+    RegFunc('TESTEXCEPTION');
+    RegProc('SETHALT');
+    RegFunc('TESTHALT');
+    RegProc('SETROUND');
+    RegFunc('GETROUND');
+    RegProc('SETPRECISION');
+    RegFunc('GETPRECISION');
+    RegProc('SETENVIRONMENT');
+    RegProc('GETENVIRONMENT');
+    RegProc('PROCENTRY');
+    RegProc('PROCEXIT');
+    RegFunc('GETHALTVECTOR');
+    RegProc('SETHALTVECTOR');
+    { Routine de comparaison }
+    RegFunc('RELATION');
+  End;
+
+  { ---------------------------------------------------------- }
+  { Fonctions de l unite TRANSCEND (Apple Pascal)               }
+  { Disponible uniquement avec --applepascal (pas --sane)       }
+  { ---------------------------------------------------------- }
+  If Opts.ApplePascal And Not Opts.Sane Then
+  Begin
+    RegFunc('ATAN');          { ATan(r:Real):Real - arc tangente  }
+    RegFunc('LOG');           { Log(n:Real):Real  - log base 10   }
+    RegFunc('PWROFTEN');      { PwrOfTen(n:Integer):Real - 10^n   }
+  End;
+
+  { ---------------------------------------------------------- }
   { Procedures et fonctions de l unite Graph3 (TODO 20)        }
   { Compatibilite Turbo Pascal 3                                }
   { ---------------------------------------------------------- }
@@ -3538,7 +3657,7 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure TypeInit;
-Var I : Integer;
+Var I, TI : Integer;
 Begin
   TypeCount := 0;
   WithDepth := 0;
@@ -3625,6 +3744,15 @@ Begin
 
   { Type QuickPascal : CSTRING (String + nul terminal) }
   If Opts.QuickPascal Then TypeAdd(TYK_STRING, 'CSTRING', 256, 1, False, TY_UNKNOWN);
+
+  { Types Apple Pascal : ByteStream (Array of Char) et WordStream (Array of Integer) }
+  If Opts.ApplePascal Then
+  Begin
+    TI := TypeAdd(TYK_ARRAY, 'BYTESTREAM', 256, 1, False, TY_IDX_CHAR);
+    If TI >= 0 Then Begin TypeTab[TI].Lo := 0; TypeTab[TI].Hi := 255; End;
+    TI := TypeAdd(TYK_ARRAY, 'WORDSTREAM', 256, 4, False, TY_IDX_INTEGER);
+    If TI >= 0 Then Begin TypeTab[TI].Lo := 0; TypeTab[TI].Hi := 63; End;
+  End;
 
   If Opts.DebugMode Then
     WriteLn('  [TypeInit] ', TypeCount, ' types primitifs enregistres');
@@ -4988,7 +5116,8 @@ Begin
             If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
                (Up = 'BEGIN') Or (Up = 'LABEL') Or
-               (Up = 'USES') Or (Up = 'PROGRAM') Then
+               (Up = 'USES') Or (Up = 'PROGRAM') Or
+               (Up = 'SEGMENT') Then
               Break;
           End;
 
@@ -5454,7 +5583,8 @@ Begin
             If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
                (Up = 'BEGIN') Or (Up = 'LABEL') Or
-               (Up = 'USES') Or (Up = 'PROGRAM') Then
+               (Up = 'USES') Or (Up = 'PROGRAM') Or
+               (Up = 'SEGMENT') Then
               Break;
           End;
 
@@ -5650,6 +5780,13 @@ Begin
         End; { while parsing CONST block }
         Continue;
       End; { CONST }
+
+      { --- Section SEGMENT PROCEDURE/FUNCTION (Apple Pascal) : sauter SEGMENT --- }
+      If (Up = 'SEGMENT') And Opts.ApplePascal Then
+      Begin
+        Inc(I); { sauter SEGMENT, la boucle traitera PROCEDURE/FUNCTION }
+        Continue;
+      End;
 
       { --- Section PROCEDURE ou FUNCTION : sauter entierement --- }
       If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
@@ -6008,6 +6145,15 @@ Begin
         Continue;
       End;
 
+      { === Detecter SEGMENT PROCEDURE ou SEGMENT FUNCTION (Apple Pascal) === }
+      If (Up = 'SEGMENT') And Opts.ApplePascal Then
+      Begin
+        { Sauter SEGMENT et continuer pour traiter PROCEDURE/FUNCTION }
+        Inc(I);
+        If I < TokenCount Then
+          Continue;
+      End;
+
       { === Detecter PROCEDURE ou FUNCTION === }
       If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
       Begin
@@ -6247,7 +6393,8 @@ Begin
           Up := StrUpperCase(TokenPool[I].Val);
           If (Up <> 'VAR') And (Up <> 'CONST') And (Up <> 'TYPE') And
              (Up <> 'LABEL') And (Up <> 'BEGIN') And
-             (Up <> 'PROCEDURE') And (Up <> 'FUNCTION') Then
+             (Up <> 'PROCEDURE') And (Up <> 'FUNCTION') And
+             (Up <> 'SEGMENT') Then
           Begin
             { Pas de corps : declaration de type interface/forward implicite }
             ProcTab[PI].IsForward := True;
@@ -6266,9 +6413,10 @@ Begin
               Inc(ProcCount);
             Continue;
           End;
-          { Si PROCEDURE/FUNCTION suit immediatement, scanner en avant }
+          { Si PROCEDURE/FUNCTION/SEGMENT suit immediatement, scanner en avant }
           { pour detecter si un BEGIN existe avant IMPLEMENTATION/END  }
-          If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
+          If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
+             (Up = 'SEGMENT') Then
           Begin
             J := I;
             SIdx := -1;  { reutiliser SIdx comme flag HasBody }
@@ -6339,7 +6487,8 @@ Begin
                 Up := StrUpperCase(TokenPool[I].Val);
                 If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                    (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
-                   (Up = 'FUNCTION') Or (Up = 'LABEL') Then
+                   (Up = 'FUNCTION') Or (Up = 'LABEL') Or
+                   (Up = 'SEGMENT') Then
                   Break;
               End;
 
@@ -6495,11 +6644,17 @@ Begin
                 Up := StrUpperCase(TokenPool[I].Val);
                 If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                    (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
-                   (Up = 'FUNCTION') Or (Up = 'LABEL') Then
+                   (Up = 'FUNCTION') Or (Up = 'LABEL') Or
+                   (Up = 'SEGMENT') Then
                   Break;
               End;
               Inc(I);
             End;
+          End
+          Else If (Up = 'SEGMENT') And Opts.ApplePascal Then
+          Begin
+            { Sauter SEGMENT, la boucle traitera PROCEDURE/FUNCTION }
+            Inc(I);
           End
           Else If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
           Begin
@@ -6682,7 +6837,8 @@ Begin
                           Up := StrUpperCase(TokenPool[I].Val);
                           If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                              (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
-                             (Up = 'FUNCTION') Or (Up = 'LABEL') Then
+                             (Up = 'FUNCTION') Or (Up = 'LABEL') Or
+                             (Up = 'SEGMENT') Then
                             Break;
                         End;
                         If (TokenPool[I].Kind <> TK_IDENT) And
@@ -6751,7 +6907,8 @@ Begin
                           Up := StrUpperCase(TokenPool[I].Val);
                           If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                              (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
-                             (Up = 'FUNCTION') Or (Up = 'LABEL') Then
+                             (Up = 'FUNCTION') Or (Up = 'LABEL') Or
+                             (Up = 'SEGMENT') Then
                             Break;
                         End;
                         Inc(I);
@@ -6961,7 +7118,8 @@ Begin
             If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
                (Up = 'BEGIN') Or (Up = 'LABEL') Or
-               (Up = 'USES') Or (Up = 'PROGRAM') Then
+               (Up = 'USES') Or (Up = 'PROGRAM') Or
+               (Up = 'SEGMENT') Then
               Break;
           End;
 
@@ -7461,7 +7619,7 @@ Begin
               If (Up = 'CONSTRUCTOR') Or (Up = 'DESTRUCTOR') Or
                  (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
                  (Up = 'VIRTUAL') Or (Up = 'PRIVATE') Or
-                 (Up = 'PUBLIC') Then
+                 (Up = 'PUBLIC') Or (Up = 'SEGMENT') Then
               Begin
                 While (I < TokenCount) And
                       Not ((TokenPool[I].Kind = TK_PUNCT) And
@@ -8543,6 +8701,48 @@ Begin
       Exit;
     End;
 
+    { ATAN(x) -> arc tangente (TRANSCEND unit, Apple Pascal) }
+    If Opts.ApplePascal And Not Opts.Sane Then
+    If Up = 'ATAN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'ARCTAN');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { LOG(x) -> logarithme base 10 (TRANSCEND unit, Apple Pascal) }
+    If Opts.ApplePascal And Not Opts.Sane Then
+    If Up = 'LOG' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_LOG10');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { PWROFTEN(n) -> 10^n (TRANSCEND unit, Apple Pascal) }
+    If Opts.ApplePascal And Not Opts.Sane Then
+    If Up = 'PWROFTEN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_PWROFTEN');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
     { FRAC(x) -> partie fractionnaire (stub: retourne 0 en mode entier) }
     If Up = 'FRAC' Then
     Begin
@@ -8604,6 +8804,328 @@ Begin
         ParseExpr(PI);
         EPMatch(')');
       End;
+      Exit;
+    End;
+
+    { --- SANE identity functions (single arg, result = arg) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'NUM2INTEGER') Or (Up = 'NUM2LONGINT') Or (Up = 'NUM2REAL') Or
+       (Up = 'NUM2DOUBLE') Or (Up = 'NUM2EXTENDED') Or (Up = 'NUM2COMP') Or
+       (Up = 'RINT') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE stub functions returning 0 (single arg, discarded) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'DEC2NUM') Or (Up = 'LN1') Or (Up = 'NAN') Or
+       (Up = 'TESTEXCEPTION') Or (Up = 'TESTHALT') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { --- SANE stub functions returning 0 (no args) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'GETROUND') Or (Up = 'GETPRECISION') Or
+       (Up = 'GETHALTVECTOR') Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      Exit;
+    End;
+
+    { --- SANE STR2NUM(s) : string to number --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'STR2NUM' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('MOV ESI,EAX');
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRTONUM');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE LOGB(x) / LOG2(x) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'LOGB') Or (Up = 'LOG2') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_LOG2');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE EXP2(x) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'EXP2' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_EXP2');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE EXP1(x) : stub identity (e^x-1 ~ x for integers) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'EXP1' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE TAN(x) : stub returns 0 --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'TAN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitComment('SANE TAN stub : retourne 0 en mode entier');
+        EmitInstr('XOR EAX,EAX');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE SIGNNUM(x) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'SIGNNUM' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_SIGNNUM');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE CLASSxxx(x) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'CLASSREAL') Or (Up = 'CLASSDOUBLE') Or
+       (Up = 'CLASSCOMP') Or (Up = 'CLASSEXTENDED') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_CLASSNUM');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { --- SANE COPYSIGN(x,y) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'COPYSIGN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_COPYSIGN');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE NEXTxxx(x,y) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'NEXTREAL') Or (Up = 'NEXTDOUBLE') Or
+       (Up = 'NEXTEXTENDED') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_NEXTNUM');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE XPWRI(x,i) / XPWRY(x,y) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'XPWRI') Or (Up = 'XPWRY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_XPWRI');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE COMPOUND(r,n) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'COMPOUND' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_COMPOUND');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE ANNUITY(r,n) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'ANNUITY' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_ANNUITY');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE RELATION(x,y) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'RELATION' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_RELATION');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE SCALB(n,x) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'SCALB' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_SCALB');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { --- SANE REMAINDER(x,y,Var Quo) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'REMAINDER' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        { Quo is a VAR param - push address }
+        If Not EPAtEnd Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          EmitInstr('PUSH EAX');
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_REMAINDER');
+      EmitInstr('ADD ESP,12');
+      Exit;
+    End;
+
+    { --- SANE RANDOMX(Var x) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'RANDOMX' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        { x is a VAR param - push address }
+        If Not EPAtEnd Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          EmitInstr('PUSH EAX');
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_RANDOMX');
+      EmitInstr('ADD ESP,4');
       Exit;
     End;
 
@@ -12916,6 +13438,139 @@ Begin
     Begin
       Inc(EP);
       EmitInstr('CALL ' + TP_RT_PFX + 'RANDOMIZE');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE SETEXCEPTION(e, b) / SETHALT(e, b) : no-op stubs (2 args) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'SETEXCEPTION') Or (Up = 'SETHALT') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('SANE ' + Up + ' stub : no-op');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE no-op stubs (1 arg, discarded) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'SETROUND') Or (Up = 'SETPRECISION') Or
+       (Up = 'SETENVIRONMENT') Or (Up = 'PROCEXIT') Or
+       (Up = 'SETHALTVECTOR') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('SANE ' + Up + ' stub : no-op');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE GETENVIRONMENT(Var e) / PROCENTRY(Var e) : store 0 --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'GETENVIRONMENT') Or (Up = 'PROCENTRY') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          EmitInstr('MOV DWORD PTR [EAX],0');
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      EmitComment('SANE ' + Up + ' stub : store 0');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE NUM2STR(f, x, Var s) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If Up = 'NUM2STR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        If Not EPAtEnd Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
+          EmitInstr('PUSH EAX');
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'SANE_NUM2STR');
+      EmitInstr('ADD ESP,12');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE STR2DEC / CSTR2DEC (4 args, no-op) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'STR2DEC') Or (Up = 'CSTR2DEC') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('SANE ' + Up + ' stub : no-op');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { --- SANE NUM2DEC / DEC2STR (3 args, no-op) --- }
+    If Opts.ApplePascal Or Opts.Sane Then
+    If (Up = 'NUM2DEC') Or (Up = 'DEC2STR') Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('SANE ' + Up + ' stub : no-op');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -19867,6 +20522,354 @@ Begin
   EmitInstr('XOR EAX,EAX');
   EmitInstr('RET');
 
+  { ====== SANE Runtime Helpers ====== }
+
+  { ------ _TPRT_SANE_SIGNNUM : retourne -1/0/1 selon signe de EAX --- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_SIGNNUM');
+  EmitComment('SANE SIGNNUM(x) : -1 si x<0, 0 si x=0, 1 si x>0');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_SIGN_DONE');
+  EmitInstr('JS ' + TP_RT_PFX + 'SN_SIGN_NEG');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_SIGN_NEG');
+  EmitInstr('MOV EAX,0FFFFFFFFh');
+  EmitLabel(TP_RT_PFX + 'SN_SIGN_DONE');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_CLASSNUM : 3=ZeroNum, 4=NormalNum -------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_CLASSNUM');
+  EmitComment('SANE CLASSxxx(x) : 3 si x=0, 4 sinon');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_CLASS_NORM');
+  EmitInstr('MOV EAX,3');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_CLASS_NORM');
+  EmitInstr('MOV EAX,4');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_COPYSIGN : |x| avec signe de y ---------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_COPYSIGN');
+  EmitComment('SANE COPYSIGN(x,y) : |x| avec signe de y');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('CDQ');
+  EmitInstr('XOR EAX,EDX');
+  EmitInstr('SUB EAX,EDX');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JNS ' + TP_RT_PFX + 'SN_CSIGN_POS');
+  EmitInstr('NEG EAX');
+  EmitLabel(TP_RT_PFX + 'SN_CSIGN_POS');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_LOG2 : log2 entier (boucle SHR) ---------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_LOG2');
+  EmitComment('SANE LOG2/LOGB(x) : floor(log2(x)) via boucle SHR');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'SN_LOG2_ZERO');
+  EmitInstr('PUSH ECX');
+  EmitInstr('XOR ECX,ECX');          { ECX = compteur de bits }
+  EmitLabel(TP_RT_PFX + 'SN_LOG2_LP');
+  EmitInstr('SHR EAX,1');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_LOG2_D');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_LOG2_LP');
+  EmitLabel(TP_RT_PFX + 'SN_LOG2_D');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_LOG2_ZERO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_EXP2 : 2^x via boucle -------------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_EXP2');
+  EmitComment('SANE EXP2(x) : 2^x par boucle de decalage');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JS ' + TP_RT_PFX + 'SN_EXP2_ZERO');
+  EmitInstr('CMP ECX,30');
+  EmitInstr('JG ' + TP_RT_PFX + 'SN_EXP2_MAX');  { 2^31 depasse signed 32-bit }
+  EmitInstr('MOV EAX,1');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_EXP2_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_EXP2_LP');
+  EmitInstr('SHL EAX,1');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_EXP2_LP');
+  EmitLabel(TP_RT_PFX + 'SN_EXP2_DONE');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_EXP2_MAX');
+  EmitInstr('MOV EAX,7FFFFFFFh');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_EXP2_ZERO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_SCALB : x * 2^n (boucle) ---------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_SCALB');
+  EmitComment('SANE SCALB(n,x) : x * 2^n par boucle');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV ECX,[EBP+12]');     { n }
+  EmitInstr('MOV EAX,[EBP+8]');      { x }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitInstr('JS ' + TP_RT_PFX + 'SN_SCALB_NEG');
+  EmitInstr('CMP ECX,30');
+  EmitInstr('JG ' + TP_RT_PFX + 'SN_SCALB_OVF');
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_SL');
+  EmitInstr('SHL EAX,1');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_SCALB_SL');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_OVF');
+  EmitInstr('MOV EAX,7FFFFFFFh');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_NEG');
+  EmitInstr('NEG ECX');
+  EmitInstr('CMP ECX,31');
+  EmitInstr('JGE ' + TP_RT_PFX + 'SN_SCALB_UND');
+  EmitInstr('MOV EBX,2');           { diviseur = 2 }
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_SR');
+  EmitInstr('CDQ');                  { sign-extend EAX into EDX:EAX }
+  EmitInstr('IDIV EBX');            { EAX = EAX / 2 (signed) }
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_SCALB_SR');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_UND');
+  EmitInstr('XOR EAX,EAX');
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_XPWRI : x^i par multiplication iterative ------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_XPWRI');
+  EmitComment('SANE XPWRI(x,i) / XPWRY(x,y) : x^i entier');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_XPWRI_ONE');
+  EmitInstr('JS ' + TP_RT_PFX + 'SN_XPWRI_NEG');
+  EmitInstr('MOV EDX,EAX');
+  EmitInstr('DEC ECX');
+  EmitLabel(TP_RT_PFX + 'SN_XPWRI_LOOP');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_XPWRI_DONE');
+  EmitInstr('IMUL EAX,EDX');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_XPWRI_LOOP');
+  EmitLabel(TP_RT_PFX + 'SN_XPWRI_NEG');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_XPWRI_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_XPWRI_ONE');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'SN_XPWRI_DONE');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_NEXTNUM : x+1 si y>x, x-1 si y<x, x si y=x --- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_NEXTNUM');
+  EmitComment('SANE NEXTxxx(x,y) : entier suivant vers y');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('CMP ECX,EAX');
+  EmitInstr('JG ' + TP_RT_PFX + 'SN_NEXT_INC');
+  EmitInstr('JL ' + TP_RT_PFX + 'SN_NEXT_DEC');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_NEXT_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_NEXT_INC');
+  EmitInstr('INC EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_NEXT_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_NEXT_DEC');
+  EmitInstr('DEC EAX');
+  EmitLabel(TP_RT_PFX + 'SN_NEXT_DONE');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_COMPOUND : (1+r)^n ----------------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_COMPOUND');
+  EmitComment('SANE COMPOUND(r,n) : (1+r)^n en entier');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('INC EAX');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'SN_COMP_ONE');
+  EmitInstr('MOV EDX,EAX');
+  EmitInstr('DEC ECX');
+  EmitLabel(TP_RT_PFX + 'SN_COMP_LOOP');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_COMP_DONE');
+  EmitInstr('IMUL EAX,EDX');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_COMP_LOOP');
+  EmitLabel(TP_RT_PFX + 'SN_COMP_ONE');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'SN_COMP_DONE');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_ANNUITY : stub retourne n ---------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_ANNUITY');
+  EmitComment('SANE ANNUITY(r,n) stub : retourne n');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+8]');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_RELATION : 0=GT, 1=LT, 2=EQ ------------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_RELATION');
+  EmitComment('SANE RELATION(x,y) : 0 si x>y, 1 si x<y, 2 si x=y');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('CMP EAX,ECX');
+  EmitInstr('JG ' + TP_RT_PFX + 'SN_REL_GT');
+  EmitInstr('JL ' + TP_RT_PFX + 'SN_REL_LT');
+  EmitInstr('MOV EAX,2');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_REL_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_REL_GT');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_REL_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_REL_LT');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'SN_REL_DONE');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_REMAINDER : x MOD y, quotient dans [Quo] ------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_REMAINDER');
+  EmitComment('SANE REMAINDER(x,y,Var Quo) : EAX=x MOD y, [Quo]=x DIV y');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+16]');
+  EmitInstr('MOV ECX,[EBP+12]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_REM_ZERO');
+  EmitInstr('CDQ');
+  EmitInstr('IDIV ECX');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('MOV [ECX],EAX');
+  EmitInstr('MOV EAX,EDX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_REM_ZERO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('MOV DWORD PTR [ECX],0');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_RANDOMX : LCG update via Var x ----------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_RANDOMX');
+  EmitComment('SANE RANDOMX(Var x) : LCG pseudo-aleatoire');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV ECX,[EBP+8]');
+  EmitInstr('MOV EAX,[ECX]');
+  EmitInstr('IMUL EAX,EAX,1103515245');  { LCG glibc: a=1103515245, c=12345 }
+  EmitInstr('ADD EAX,12345');
+  EmitInstr('MOV [ECX],EAX');
+  EmitInstr('SHR EAX,16');
+  EmitInstr('AND EAX,7FFFh');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_NUM2STR : conversion entier vers chaine -------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_NUM2STR');
+  EmitComment('SANE NUM2STR(f,x,Var s) : convertit x en chaine dans s');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,[EBP+12]');     { x = valeur numerique }
+  EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
+  EmitInstr('LEA ESI,[NUMBUF]');     { source = NUMBUF (ASCIIZ) }
+  EmitInstr('MOV EDI,[EBP+8]');      { dest = adresse de la chaine s }
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_LOG10 : log base 10 entier ------------------- }
+  { En mode entier, log10(x) = floor(log10(x))                       }
+  { On divise par 10 en boucle et on compte les divisions            }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_LOG10');
+  EmitComment('TRANSCEND LOG(x) : floor(log10(x)), 0 si x<=0');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'SN_LOG10_ZERO');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('MOV EBX,EAX');           { EBX = x }
+  EmitInstr('XOR ECX,ECX');           { ECX = compteur }
+  EmitInstr('MOV EAX,10');
+  EmitLabel(TP_RT_PFX + 'SN_LOG10_LP');
+  EmitInstr('CMP EBX,10');
+  EmitInstr('JB ' + TP_RT_PFX + 'SN_LOG10_D');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('MOV EBX,10');
+  EmitInstr('DIV EBX');               { EAX = EBX / 10 }
+  EmitInstr('MOV EBX,EAX');           { EBX = quotient }
+  EmitInstr('POP EAX');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_LOG10_LP');
+  EmitLabel(TP_RT_PFX + 'SN_LOG10_D');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_LOG10_ZERO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_PWROFTEN : 10^n entier ----------------------- }
+  { Calcule 10^n par multiplication iterative                         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_PWROFTEN');
+  EmitComment('TRANSCEND PwrOfTen(n) : 10^n entier, 0 si n<0');
+  EmitInstr('MOV ECX,EAX');           { ECX = n }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JS ' + TP_RT_PFX + 'SN_POT_ZERO');  { n<0 -> 0 }
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_POT_ONE');   { n=0 -> 1 }
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'SN_POT_LP');
+  EmitInstr('IMUL EAX,EAX,10');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_POT_LP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_POT_ONE');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_POT_ZERO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
   { ------ _TPRT_RANDOM : generateur pseudo-aleatoire LCG ------- }
   { Sortie : EAX = nouveau nombre aleatoire                       }
   { Constantes LCG de glibc : a=1103515245, c=12345               }
@@ -23817,6 +24820,10 @@ Begin { BcAssemble }
   Begin Reg1 := BcParseReg32(Op1);
     If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($F0 + Reg1); End;
     Exit; End;
+  If Mnem = 'IDIV' Then
+  Begin Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($F8 + Reg1); End;
+    Exit; End;
   If Mnem = 'IMUL' Then
   Begin
     Reg1 := BcParseReg32(Op1);
@@ -25003,7 +26010,10 @@ Begin
     (Up = 'GRAPH') Or (Up = 'GRAPH3') Or (Up = 'STRINGS') Or
     (Up = 'OVERLAY') Or (Up = 'PRINTER') Or (Up = 'WINDOS') Or
     (Up = 'TURBO3') Or (Up = 'OBJECTS') Or
-    (Up = 'MSGRUTIL') Or (Up = 'MSGRAPH');  { Quick Pascal units (TODO 29) }
+    (Up = 'MSGRUTIL') Or (Up = 'MSGRAPH') Or  { Quick Pascal units (TODO 29) }
+    (Up = 'SANE') Or                           { Apple Pascal SANE unit       }
+    ((Up = 'TRANSCEND') And Opts.ApplePascal And Not Opts.Sane);
+                                               { Apple Pascal TRANSCEND unit  }
 End;
 
 Procedure MarkUnitSymbols(Const UName : TString);
@@ -25166,6 +26176,51 @@ Begin
     MarkIf('_SETFONT','MSGRAPH'); MarkIf('_OUTGTEXT','MSGRAPH');
     MarkIf('_GETGTEXTEXTENT','MSGRAPH'); MarkIf('_GETFONTINFO','MSGRAPH');
     MarkIf('_SETGTEXTVECTOR','MSGRAPH'); MarkIf('_GETGTEXTVECTOR','MSGRAPH');
+  End
+  Else If Up = 'SANE' Then
+  Begin
+    MarkIf('DECSTRLEN','SANE'); MarkIf('SIGDIGLEN','SANE');
+    MarkIf('INVALID','SANE'); MarkIf('UNDERFLOW','SANE');
+    MarkIf('OVERFLOW','SANE'); MarkIf('DIVBYZERO','SANE');
+    MarkIf('INEXACT','SANE');
+    MarkIf('NUM2INTEGER','SANE'); MarkIf('NUM2LONGINT','SANE');
+    MarkIf('NUM2REAL','SANE'); MarkIf('NUM2DOUBLE','SANE');
+    MarkIf('NUM2EXTENDED','SANE'); MarkIf('NUM2COMP','SANE');
+    MarkIf('NUM2DEC','SANE'); MarkIf('DEC2NUM','SANE');
+    MarkIf('NUM2STR','SANE'); MarkIf('STR2NUM','SANE');
+    MarkIf('STR2DEC','SANE'); MarkIf('CSTR2DEC','SANE');
+    MarkIf('DEC2STR','SANE');
+    MarkIf('REMAINDER','SANE'); MarkIf('RINT','SANE');
+    MarkIf('SCALB','SANE'); MarkIf('LOGB','SANE');
+    MarkIf('COPYSIGN','SANE'); MarkIf('NEXTREAL','SANE');
+    MarkIf('NEXTDOUBLE','SANE'); MarkIf('NEXTEXTENDED','SANE');
+    MarkIf('LOG2','SANE'); MarkIf('LN1','SANE');
+    MarkIf('EXP2','SANE'); MarkIf('EXP1','SANE');
+    MarkIf('XPWRI','SANE'); MarkIf('XPWRY','SANE');
+    MarkIf('COMPOUND','SANE'); MarkIf('ANNUITY','SANE');
+    MarkIf('TAN','SANE'); MarkIf('RANDOMX','SANE');
+    MarkIf('CLASSREAL','SANE'); MarkIf('CLASSDOUBLE','SANE');
+    MarkIf('CLASSCOMP','SANE'); MarkIf('CLASSEXTENDED','SANE');
+    MarkIf('SIGNNUM','SANE'); MarkIf('NAN','SANE');
+    MarkIf('SETEXCEPTION','SANE'); MarkIf('TESTEXCEPTION','SANE');
+    MarkIf('SETHALT','SANE'); MarkIf('TESTHALT','SANE');
+    MarkIf('SETROUND','SANE'); MarkIf('GETROUND','SANE');
+    MarkIf('SETPRECISION','SANE'); MarkIf('GETPRECISION','SANE');
+    MarkIf('SETENVIRONMENT','SANE'); MarkIf('GETENVIRONMENT','SANE');
+    MarkIf('PROCENTRY','SANE'); MarkIf('PROCEXIT','SANE');
+    MarkIf('GETHALTVECTOR','SANE'); MarkIf('SETHALTVECTOR','SANE');
+    MarkIf('RELATION','SANE');
+  End
+  Else If Up = 'TRANSCEND' Then
+  Begin
+    { TRANSCEND unit functions - mark standard builtins as TRANSCEND }
+    MarkIf('ATAN','TRANSCEND');
+    MarkIf('COS','TRANSCEND');
+    MarkIf('LN','TRANSCEND');
+    MarkIf('LOG','TRANSCEND');
+    MarkIf('PWROFTEN','TRANSCEND');
+    MarkIf('SIN','TRANSCEND');
+    MarkIf('SQRT','TRANSCEND');
   End;
 End;
 
@@ -25401,7 +26456,8 @@ Begin
     Begin
       Up := StrUpperCase(TokenPool[I].Val);
       If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or (Up = 'PROCEDURE') Or
-         (Up = 'FUNCTION') Or (Up = 'BEGIN') Or (Up = 'LABEL') Then Break;
+         (Up = 'FUNCTION') Or (Up = 'BEGIN') Or (Up = 'LABEL') Or
+         (Up = 'SEGMENT') Then Break;
     End;
     Inc(I);
   End;
