@@ -86,6 +86,7 @@ Const
   DEST_WIN30 = 3;   { -CW  : Windows 3.0          }
   DEST_W32   = 4;   { -CW32 : Windows 32 bits     }
   DEST_Z80   = 5;   { -CZ80 : Zilog Z80           }
+  DEST_6502  = 6;   { -C6502 : MOS 6502           }
 
 Type
   TString = String;
@@ -474,6 +475,8 @@ Begin
       Opts.DestTarget := DEST_WIN30
     Else If (UA = '-CZ80') Then
       Opts.DestTarget := DEST_Z80
+    Else If (UA = '-C6502') Then
+      Opts.DestTarget := DEST_6502
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -4354,6 +4357,7 @@ Procedure BcDefineLabel(Const Nm: TString); Forward;
 Procedure BcAssemble(Const S: TString); Forward;
 Procedure BcAssemble8086(Const S: TString); Forward;
 Procedure BcAssembleZ80(Const S: TString); Forward;
+Procedure BcAssemble6502(Const S: TString); Forward;
 
 { ------------------------------------------------------------ }
 { EmitLabel : ecrire un label suivi de ':'                     }
@@ -4379,6 +4383,8 @@ Begin
   Begin
     If Opts.DestTarget = DEST_Z80 Then
       BcAssembleZ80(S)
+    Else If Opts.DestTarget = DEST_6502 Then
+      BcAssemble6502(S)
     Else If (Opts.DestTarget = DEST_DOSR) Or
             (Opts.DestTarget = DEST_DOSP) Then
       BcAssemble8086(S)
@@ -25280,6 +25286,112 @@ Begin { BcAssembleZ80 }
 
   { Instruction non reconnue (stub) }
   { WriteLn('BcAssembleZ80: non reconnu: [', S, ']'); }
+End;
+
+{ ============================================================ }
+{ BcAssemble6502 - Mini-assembleur MOS 6502                    }
+{ ============================================================ }
+
+Procedure BcAssemble6502(Const S: TString);
+Var
+  Line, Mnem, Tmp, Op1, Op2: TString;
+  P: Integer;
+
+  Procedure SplitOps6502(Const Rest: TString);
+  Var J: Integer;
+  Begin
+    Op1 := ''; Op2 := '';
+    J := 1;
+    While J <= Length(Rest) Do
+    Begin
+      If (Rest[J] = ',') Then
+      Begin
+        Op1 := Copy(Rest, 1, J - 1);
+        Op2 := Copy(Rest, J + 1, Length(Rest) - J);
+        While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+          Delete(Op1, Length(Op1), 1);
+        While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Op1 := Rest;
+    While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+      Delete(Op1, Length(Op1), 1);
+  End;
+
+Begin { BcAssemble6502 }
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+
+  { Extraire le mnemonique }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin
+    Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else Begin Mnem := StrUpperCase(Line); Tmp := ''; End;
+
+  SplitOps6502(Tmp);
+
+  { ---- Instructions implicites (1 octet) ---- }
+  If Mnem = 'BRK' Then Begin BcEmitB($00); Exit; End;
+  If Mnem = 'NOP' Then Begin BcEmitB($EA); Exit; End;
+  If Mnem = 'RTS' Then Begin BcEmitB($60); Exit; End;
+  If Mnem = 'RTI' Then Begin BcEmitB($40); Exit; End;
+
+  { ---- Pile ---- }
+  If Mnem = 'PHA' Then Begin BcEmitB($48); Exit; End;
+  If Mnem = 'PLA' Then Begin BcEmitB($68); Exit; End;
+  If Mnem = 'PHP' Then Begin BcEmitB($08); Exit; End;
+  If Mnem = 'PLP' Then Begin BcEmitB($28); Exit; End;
+
+  { ---- Drapeaux ---- }
+  If Mnem = 'CLC' Then Begin BcEmitB($18); Exit; End;
+  If Mnem = 'SEC' Then Begin BcEmitB($38); Exit; End;
+  If Mnem = 'CLI' Then Begin BcEmitB($58); Exit; End;
+  If Mnem = 'SEI' Then Begin BcEmitB($78); Exit; End;
+  If Mnem = 'CLV' Then Begin BcEmitB($B8); Exit; End;
+  If Mnem = 'CLD' Then Begin BcEmitB($D8); Exit; End;
+  If Mnem = 'SED' Then Begin BcEmitB($F8); Exit; End;
+
+  { ---- Transferts de registres ---- }
+  If Mnem = 'TAX' Then Begin BcEmitB($AA); Exit; End;
+  If Mnem = 'TAY' Then Begin BcEmitB($A8); Exit; End;
+  If Mnem = 'TXA' Then Begin BcEmitB($8A); Exit; End;
+  If Mnem = 'TYA' Then Begin BcEmitB($98); Exit; End;
+  If Mnem = 'TXS' Then Begin BcEmitB($9A); Exit; End;
+  If Mnem = 'TSX' Then Begin BcEmitB($BA); Exit; End;
+
+  { ---- Increments / Decrements registres ---- }
+  If Mnem = 'INX' Then Begin BcEmitB($E8); Exit; End;
+  If Mnem = 'INY' Then Begin BcEmitB($C8); Exit; End;
+  If Mnem = 'DEX' Then Begin BcEmitB($CA); Exit; End;
+  If Mnem = 'DEY' Then Begin BcEmitB($88); Exit; End;
+
+  { ---- Decalages accumulateur ---- }
+  If Mnem = 'ASLA' Then Begin BcEmitB($0A); Exit; End;
+  If Mnem = 'ROLA' Then Begin BcEmitB($2A); Exit; End;
+  If Mnem = 'LSRA' Then Begin BcEmitB($4A); Exit; End;
+  If Mnem = 'RORA' Then Begin BcEmitB($6A); Exit; End;
+
+  { ---- Decalages accumulateur (forme standard ASL A, etc.) ---- }
+  If (Mnem = 'ASL') And (StrUpperCase(Op1) = 'A') Then
+  Begin BcEmitB($0A); Exit; End;
+  If (Mnem = 'ROL') And (StrUpperCase(Op1) = 'A') Then
+  Begin BcEmitB($2A); Exit; End;
+  If (Mnem = 'LSR') And (StrUpperCase(Op1) = 'A') Then
+  Begin BcEmitB($4A); Exit; End;
+  If (Mnem = 'ROR') And (StrUpperCase(Op1) = 'A') Then
+  Begin BcEmitB($6A); Exit; End;
+
+  { Instruction non reconnue (stub) }
+  { WriteLn('BcAssemble6502: non reconnu: [', S, ']'); }
 End;
 
 { --- Construction de la section .data binaire --- }
