@@ -719,7 +719,7 @@ Const
   QPU_HDR_FIXED  = $20;     { partie fixe de l en-tete QPU (32 octets) }
 
   { Table des tailles de types Turbo Pascal (Win32, 32 bits) }
-  MAX_TP_TYPE_SIZES = 25;
+  MAX_TP_TYPE_SIZES = 27;
 
 Type
   { Types d entrees dans le pool de donnees }
@@ -2105,7 +2105,10 @@ Const
     (Name: 'COMSTR';   Size: 128), { String[127]+ length byte          }
     (Name: 'DATETIME'; Size: 12),  { record 6 x Word = 12 octets      }
     { Type QuickPascal }
-    (Name: 'CSTRING';  Size: 256)  { CSTRING : String + nul terminal   }
+    (Name: 'CSTRING';  Size: 256), { CSTRING : String + nul terminal   }
+    { Types Apple Pascal }
+    (Name: 'BYTESTREAM'; Size: 256), { ByteStream : Array of Char      }
+    (Name: 'WORDSTREAM'; Size: 256)  { WordStream : Array of Integer   }
   );
 
 { ---- DataInit : initialiser le pool de donnees ---- }
@@ -3006,6 +3009,13 @@ Begin
   { Type QuickPascal : CSTRING (String + nul terminal) }
   If Opts.QuickPascal Then RegType('CSTRING');
 
+  { Types Apple Pascal : ByteStream et WordStream }
+  If Opts.ApplePascal Then
+  Begin
+    RegType('BYTESTREAM');
+    RegType('WORDSTREAM');
+  End;
+
   { ---------------------------------------------------------- }
   { Constantes predefinies                                      }
   { ---------------------------------------------------------- }
@@ -3635,7 +3645,7 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure TypeInit;
-Var I : Integer;
+Var I, TI : Integer;
 Begin
   TypeCount := 0;
   WithDepth := 0;
@@ -3722,6 +3732,15 @@ Begin
 
   { Type QuickPascal : CSTRING (String + nul terminal) }
   If Opts.QuickPascal Then TypeAdd(TYK_STRING, 'CSTRING', 256, 1, False, TY_UNKNOWN);
+
+  { Types Apple Pascal : ByteStream (Array of Char) et WordStream (Array of Integer) }
+  If Opts.ApplePascal Then
+  Begin
+    TI := TypeAdd(TYK_ARRAY, 'BYTESTREAM', 256, 1, False, TY_IDX_CHAR);
+    If TI >= 0 Then Begin TypeTab[TI].Lo := 0; TypeTab[TI].Hi := 255; End;
+    TI := TypeAdd(TYK_ARRAY, 'WORDSTREAM', 256, 4, False, TY_IDX_INTEGER);
+    If TI >= 0 Then Begin TypeTab[TI].Lo := 0; TypeTab[TI].Hi := 63; End;
+  End;
 
   If Opts.DebugMode Then
     WriteLn('  [TypeInit] ', TypeCount, ' types primitifs enregistres');
