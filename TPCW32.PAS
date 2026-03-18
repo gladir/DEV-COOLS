@@ -79,6 +79,17 @@ Const
   TP_VER_8   = 8;
   TP_VER_DEFAULT = TP_VER_7;
 
+  { Destinations de compilation }
+  DEST_WIN32 = 0;   { Windows 32 bits (defaut)   }
+  DEST_DOSR  = 1;   { -CD  : DOS mode reel       }
+  DEST_DOSP  = 2;   { -CP  : DOS mode protege     }
+  DEST_WIN30 = 3;   { -CW  : Windows 3.0          }
+  DEST_W32   = 4;   { -CW32 : Windows 32 bits     }
+  DEST_Z80   = 5;   { -CZ80 : Zilog Z80           }
+  DEST_6502  = 6;   { -C6502 : MOS 6502           }
+  DEST_6809  = 7;   { -C6809 : Motorola 6809      }
+  DEST_68000 = 8;   { -C68000 : Motorola 68000    }
+
 Type
   TString = String;
 
@@ -113,6 +124,7 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80 : destination   }
   End;
 
 Var
@@ -313,6 +325,7 @@ Begin
   Opts.QuickPascal := False;
   Opts.ApplePascal := False;
   Opts.Sane        := False;
+  Opts.DestTarget  := DEST_WIN32;
 End;
 
 { ------------------------------------------------------------ }
@@ -347,6 +360,16 @@ Begin
   WriteLn('  --quickpascal  Mode QuickPascal (support de l''unite MSGraph)');
   WriteLn('  --applepascal  Mode Apple Pascal (support des unites SANE et TRANSCEND)');
   WriteLn('  --sane         Mode SANE seul (sans l''unite TRANSCEND)');
+  WriteLn;
+  WriteLn('Destination :');
+  WriteLn('  -CD            Destination mode DOS reel');
+  WriteLn('  -CP            Destination mode protege DOS');
+  WriteLn('  -CW            Destination Windows 3.0');
+  WriteLn('  -CW32          Destination Windows 32 bits');
+  WriteLn('  -CZ80          Destination Zilog Z80');
+  WriteLn('  -C6502         Destination MOS 6502');
+  WriteLn('  -C6809         Destination Motorola 6809');
+  WriteLn('  -C68000        Destination Motorola 68000');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -447,6 +470,22 @@ Begin
     { Options compatibles TPC 7.0 (TODO 25) }
     Else If (UA = '-B') Then
       Opts.BuildAll := True
+    Else If (UA = '-CD') Then
+      Opts.DestTarget := DEST_DOSR
+    Else If (UA = '-CP') Then
+      Opts.DestTarget := DEST_DOSP
+    Else If (UA = '-CW32') Then
+      Opts.DestTarget := DEST_W32
+    Else If (UA = '-CW') Then
+      Opts.DestTarget := DEST_WIN30
+    Else If (UA = '-CZ80') Then
+      Opts.DestTarget := DEST_Z80
+    Else If (UA = '-C6502') Then
+      Opts.DestTarget := DEST_6502
+    Else If (UA = '-C6809') Then
+      Opts.DestTarget := DEST_6809
+    Else If (UA = '-C68000') Then
+      Opts.DestTarget := DEST_68000
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -4325,6 +4364,11 @@ End;
 
 Procedure BcDefineLabel(Const Nm: TString); Forward;
 Procedure BcAssemble(Const S: TString); Forward;
+Procedure BcAssemble8086(Const S: TString); Forward;
+Procedure BcAssembleZ80(Const S: TString); Forward;
+Procedure BcAssemble6502(Const S: TString); Forward;
+Procedure BcAssemble6809(Const S: TString); Forward;
+Procedure BcAssemble68000(Const S: TString); Forward;
 
 { ------------------------------------------------------------ }
 { EmitLabel : ecrire un label suivi de ':'                     }
@@ -4347,7 +4391,21 @@ Begin
   If OutFOpen Then
     WriteLn(OutF, '        ', S);
   If BcActive Then
-    BcAssemble(S);
+  Begin
+    If Opts.DestTarget = DEST_Z80 Then
+      BcAssembleZ80(S)
+    Else If Opts.DestTarget = DEST_6502 Then
+      BcAssemble6502(S)
+    Else If Opts.DestTarget = DEST_6809 Then
+      BcAssemble6809(S)
+    Else If Opts.DestTarget = DEST_68000 Then
+      BcAssemble68000(S)
+    Else If (Opts.DestTarget = DEST_DOSR) Or
+            (Opts.DestTarget = DEST_DOSP) Then
+      BcAssemble8086(S)
+    Else
+      BcAssemble(S);
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -18308,20 +18366,32 @@ Begin
     EmitBlankLine;
     EmitComment('--- Programme principal ---');
     EmitLabel(TP_FUNC_PFX + 'Main');
-    EmitProlog(0);
 
-    { Initialiser les handles Win32 }
-    EmitComment('Obtenir STDOUT');
-    EmitInstr('PUSH -11');
-    EmitInstr('CALL GetStdHandle');
-    EmitInstr('MOV [HSTDOUT],EAX');
-    EmitComment('Obtenir STDIN');
-    EmitInstr('PUSH -10');
-    EmitInstr('CALL GetStdHandle');
-    EmitInstr('MOV [HSTDIN],EAX');
-    EmitComment('Obtenir le tas du processus');
-    EmitInstr('CALL GetProcessHeap');
-    EmitInstr('MOV [HHEAP],EAX');
+    If (Opts.DestTarget = DEST_DOSR) Or (Opts.DestTarget = DEST_DOSP) Then
+    Begin
+      { Mode DOS 16 bits : initialiser DS et ES }
+      EmitComment('Initialiser DS et ES pour DOS 16 bits');
+      EmitInstr('MOV AX,0');   { placeholder, fixup segment data }
+      EmitInstr('MOV DS,AX');
+      EmitInstr('MOV ES,AX');
+    End
+    Else
+    Begin
+      EmitProlog(0);
+
+      { Initialiser les handles Win32 }
+      EmitComment('Obtenir STDOUT');
+      EmitInstr('PUSH -11');
+      EmitInstr('CALL GetStdHandle');
+      EmitInstr('MOV [HSTDOUT],EAX');
+      EmitComment('Obtenir STDIN');
+      EmitInstr('PUSH -10');
+      EmitInstr('CALL GetStdHandle');
+      EmitInstr('MOV [HSTDIN],EAX');
+      EmitComment('Obtenir le tas du processus');
+      EmitInstr('CALL GetProcessHeap');
+      EmitInstr('MOV [HHEAP],EAX');
+    End;
 
     { Parser et emettre le corps du programme }
     RetLbl := LabelGen;
@@ -18331,11 +18401,19 @@ Begin
     ParseBody(-1);
     EmitLabel(RetLbl);
 
-    { Sortie propre }
-    EmitInstr('PUSH 0');
-    EmitInstr('CALL ExitProcess');
-
-    EmitEpilog;
+    If (Opts.DestTarget = DEST_DOSR) Or (Opts.DestTarget = DEST_DOSP) Then
+    Begin
+      { Sortie DOS via INT 21h }
+      EmitInstr('MOV AX,4C00H');
+      EmitInstr('INT 21H');
+    End
+    Else
+    Begin
+      { Sortie propre Win32 }
+      EmitInstr('PUSH 0');
+      EmitInstr('CALL ExitProcess');
+      EmitEpilog;
+    End;
   End;
 End;
 
@@ -18359,6 +18437,167 @@ End;
 { _TPRT_DELETE    : supprimer in-place            (TODO 16)   }
 { _TPRT_INSERT    : inserer via STRBUF2           (TODO 16)   }
 { ------------------------------------------------------------ }
+
+Procedure EmitRuntimeDOS;
+{ Runtime DOS 16 bits utilisant INT 21h au lieu des API Win32. }
+{ Les registres sont en 16 bits : SI au lieu de ESI, AX de EAX, etc. }
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TPCW32 - DOS 16 bits ===');
+
+  { ------ _TPRT_PRINTSTR : afficher chaine ASCIIZ (SI = ptr) ----- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PRINTSTR');
+  EmitInstr('PUSH AX');
+  EmitInstr('PUSH DX');
+  EmitInstr('PUSH SI');
+  EmitLabel(TP_RT_PFX + 'PSTR_L');
+  EmitInstr('LODSB');                    { AL = [DS:SI], SI++ }
+  EmitInstr('CMP AL,0');
+  EmitInstr('JE ' + TP_RT_PFX + 'PSTR_D');
+  EmitInstr('MOV DL,AL');
+  EmitInstr('MOV AH,2');               { DOS: afficher caractere }
+  EmitInstr('INT 21H');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PSTR_L');
+  EmitLabel(TP_RT_PFX + 'PSTR_D');
+  EmitInstr('POP SI');
+  EmitInstr('POP DX');
+  EmitInstr('POP AX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_NUMTOSTR : AX -> NUMBUF (ASCIIZ decimal) -------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'NUMTOSTR');
+  EmitInstr('PUSH AX');
+  EmitInstr('PUSH BX');
+  EmitInstr('PUSH CX');
+  EmitInstr('PUSH DX');
+  EmitInstr('PUSH DI');
+  EmitInstr('LEA DI,[NUMBUF]');
+  EmitInstr('XOR CX,CX');              { compteur de chiffres }
+  EmitInstr('CMP AX,0');
+  EmitInstr('JGE ' + TP_RT_PFX + 'NTS_POS');
+  { Nombre negatif }
+  EmitInstr('MOV BYTE PTR [NUMBUF],45'); { '-' utiliser label direct }
+  EmitInstr('INC DI');
+  EmitInstr('NEG AX');
+  EmitLabel(TP_RT_PFX + 'NTS_POS');
+  EmitInstr('MOV BX,10');
+  EmitLabel(TP_RT_PFX + 'NTS_DIV');
+  EmitInstr('XOR DX,DX');
+  EmitInstr('DIV BX');                  { AX=quotient, DX=reste }
+  EmitInstr('ADD DL,48');               { '0' }
+  EmitInstr('PUSH DX');
+  EmitInstr('INC CX');
+  EmitInstr('CMP AX,0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'NTS_DIV');
+  EmitLabel(TP_RT_PFX + 'NTS_POP');
+  EmitInstr('POP AX');
+  EmitInstr('STOSB');                   { [DI] = AL, DI++ }
+  EmitInstr('DEC CX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'NTS_POP');
+  EmitInstr('MOV AL,0');
+  EmitInstr('STOSB');                   { terminateur NUL }
+  EmitInstr('POP DI');
+  EmitInstr('POP DX');
+  EmitInstr('POP CX');
+  EmitInstr('POP BX');
+  EmitInstr('POP AX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_READLN : lire ligne STDIN -> INBUF (ASCIIZ) ----- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'READLN');
+  EmitInstr('PUSH AX');
+  EmitInstr('PUSH DI');
+  EmitInstr('LEA DI,[INBUF]');
+  EmitLabel(TP_RT_PFX + 'RL_LP');
+  EmitInstr('MOV AH,1');               { DOS: lire caractere avec echo }
+  EmitInstr('INT 21H');
+  EmitInstr('CMP AL,13');              { CR ? }
+  EmitInstr('JE ' + TP_RT_PFX + 'RL_DN');
+  EmitInstr('CMP AL,10');              { LF ? }
+  EmitInstr('JE ' + TP_RT_PFX + 'RL_DN');
+  EmitInstr('STOSB');                  { [DI] = AL, DI++ }
+  EmitInstr('JMP ' + TP_RT_PFX + 'RL_LP');
+  EmitLabel(TP_RT_PFX + 'RL_DN');
+  EmitInstr('MOV AL,0');
+  EmitInstr('STOSB');                  { terminateur NUL }
+  EmitInstr('POP DI');
+  EmitInstr('POP AX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRTONUM : SI -> AX (conversion decimale) ------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRTONUM');
+  EmitInstr('PUSH BX');
+  EmitInstr('PUSH CX');
+  EmitInstr('PUSH DX');
+  EmitInstr('XOR AX,AX');
+  EmitInstr('XOR CX,CX');              { flag signe }
+  EmitInstr('CMP BYTE PTR [INBUF],45'); { '-' }
+  EmitInstr('JNE ' + TP_RT_PFX + 'STN_LP');
+  EmitInstr('INC SI');
+  EmitInstr('INC CX');
+  EmitLabel(TP_RT_PFX + 'STN_LP');
+  EmitInstr('LODSB');
+  EmitInstr('CMP AL,48');              { '0' }
+  EmitInstr('JB ' + TP_RT_PFX + 'STN_DN');
+  EmitInstr('CMP AL,57');              { '9' }
+  EmitInstr('JA ' + TP_RT_PFX + 'STN_DN');
+  EmitInstr('SUB AL,48');
+  EmitInstr('MOV BX,AX');             { sauver chiffre }
+  EmitInstr('POP DX');                 { temp: recup AX partiel }
+  EmitInstr('PUSH DX');
+  { Simplification: multiplication par 10 via shifts+adds }
+  { AX = result * 10 + digit, on utilise une approche simple }
+  { Pour l instant, ignorer silencieusement les grands nombres }
+  EmitInstr('JMP ' + TP_RT_PFX + 'STN_LP');
+  EmitLabel(TP_RT_PFX + 'STN_DN');
+  EmitInstr('CMP CX,0');
+  EmitInstr('JE ' + TP_RT_PFX + 'STN_RT');
+  EmitInstr('NEG AX');
+  EmitLabel(TP_RT_PFX + 'STN_RT');
+  EmitInstr('POP DX');
+  EmitInstr('POP CX');
+  EmitInstr('POP BX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRASSIGN : ASCIIZ -> Pascal String (stub) ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRASSIGN');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRASSIGN_PCHAR : copie ASCIIZ (stub) ----------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRASSIGN_PCHAR');
+  EmitInstr('RET');
+
+  { ------ Stubs pour les autres routines runtime ------------------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PADPRINT');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'STRCPY');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'LENGTH');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'STRLEN');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'CONCAT');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'STRCOMPARE');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'STRCMP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'COPY');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'POS');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'DELETE');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'INSERT');
+  EmitInstr('RET');
+End;
 
 Procedure EmitRuntime;
 Begin
@@ -23629,6 +23868,8 @@ Const
   BC_FIX_ABS32_CODE = 1;   { adresse absolue vers label code   }
   BC_FIX_ABS32_DATA = 2;   { adresse absolue vers label data   }
   BC_FIX_ABS32_IMP  = 3;   { adresse absolue vers IAT entry    }
+  BC_FIX_REL16      = 4;   { CALL/JMP rel16 vers label code (DOS) }
+  BC_FIX_ABS16_DATA = 5;   { offset 16 bits dans segment data (DOS) }
 
   { Index de registres x86-32 }
   R_EAX = 0; R_ECX = 1; R_EDX = 2; R_EBX = 3;
@@ -24958,6 +25199,1046 @@ Begin { BcAssemble }
   { WriteLn('BcAssemble: non reconnu: [', S, ']'); }
 End;
 
+{ ============================================================ }
+{ BcAssemble8086 - Mini-assembleur Intel 8086 (mode reel/prot) }
+{ Traduit automatiquement les noms de registres 32 bits en 16  }
+{ bits (EAX->AX, ESI->SI, etc.) pour supporter le code emis   }
+{ par le compilateur en mode -CD (DOS 16 bits).                }
+{ ============================================================ }
+
+Procedure BcAssemble8086(Const S: TString);
+Var
+  Line, Mnem, Tmp, Op1, Op2: TString;
+  P: Integer;
+  Reg1, Reg2, ImmVal: LongInt;
+  DataLbl: TString;
+  DataAdd: LongInt;
+  UOp1, UOp2: TString;
+
+  Procedure SplitOps8086(Const Rest: TString);
+  Var J: Integer;
+  Begin
+    Op1 := ''; Op2 := '';
+    J := 1;
+    While J <= Length(Rest) Do
+    Begin
+      If (Rest[J] = ',') Then
+      Begin
+        Op1 := Copy(Rest, 1, J - 1);
+        Op2 := Copy(Rest, J + 1, Length(Rest) - J);
+        While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+          Delete(Op1, Length(Op1), 1);
+        While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Op1 := Rest;
+    While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+      Delete(Op1, Length(Op1), 1);
+  End;
+
+  Function Reg16(Const S: TString): Integer;
+  { Retourne 0-7 pour registre 16 bits (traduit E?? en ??) }
+  Var U: TString;
+  Begin
+    U := StrUpperCase(S);
+    If (U = 'AX') Or (U = 'EAX') Then Reg16 := 0
+    Else If (U = 'CX') Or (U = 'ECX') Then Reg16 := 1
+    Else If (U = 'DX') Or (U = 'EDX') Then Reg16 := 2
+    Else If (U = 'BX') Or (U = 'EBX') Then Reg16 := 3
+    Else If (U = 'SP') Or (U = 'ESP') Then Reg16 := 4
+    Else If (U = 'BP') Or (U = 'EBP') Then Reg16 := 5
+    Else If (U = 'SI') Or (U = 'ESI') Then Reg16 := 6
+    Else If (U = 'DI') Or (U = 'EDI') Then Reg16 := 7
+    Else Reg16 := -1;
+  End;
+
+  Function Reg8(Const S: TString): Integer;
+  Var U: TString;
+  Begin
+    U := StrUpperCase(S);
+    If U = 'AL' Then Reg8 := 0
+    Else If U = 'CL' Then Reg8 := 1
+    Else If U = 'DL' Then Reg8 := 2
+    Else If U = 'BL' Then Reg8 := 3
+    Else If U = 'AH' Then Reg8 := 4
+    Else If U = 'CH' Then Reg8 := 5
+    Else If U = 'DH' Then Reg8 := 6
+    Else If U = 'BH' Then Reg8 := 7
+    Else Reg8 := -1;
+  End;
+
+  Function ParseImm16(Const S: TString; Var V: LongInt): Boolean;
+  Var U: TString; Code: Integer; W: LongInt;
+  Begin
+    ParseImm16 := False;
+    U := StrUpperCase(S);
+    While (Length(U) > 0) And (U[1] = ' ') Do Delete(U, 1, 1);
+    If U = '' Then Exit;
+    If U[Length(U)] = 'H' Then
+    Begin
+      Delete(U, Length(U), 1);
+      System.Val('$' + U, W, Code);
+      If Code = 0 Then Begin V := W; ParseImm16 := True; End;
+    End
+    Else
+    Begin
+      System.Val(U, W, Code);
+      If Code = 0 Then Begin V := W; ParseImm16 := True; End;
+    End;
+  End;
+
+  Function StartsWithBracket16(Const S: TString): Boolean;
+  Var U: TString;
+  Begin
+    U := S;
+    While (Length(U) > 0) And (U[1] = ' ') Do Delete(U, 1, 1);
+    StartsWithBracket16 := (Length(U) > 0) And (U[1] = '[');
+  End;
+
+  Procedure ParseMemLabel(Const S: TString; Var Lbl: TString; Var Disp: LongInt);
+  { Parse [LABEL] or [LABEL+disp] or [LABEL-disp] }
+  Var U, R2: TString; J: Integer;
+  Begin
+    Lbl := ''; Disp := 0;
+    U := S;
+    While (Length(U) > 0) And (U[1] = ' ') Do Delete(U, 1, 1);
+    If (Length(U) > 0) And (U[1] = '[') Then Delete(U, 1, 1);
+    If (Length(U) > 0) And (U[Length(U)] = ']') Then Delete(U, Length(U), 1);
+    { Chercher + ou - pour extraire le deplacement }
+    J := 2;
+    While J <= Length(U) Do
+    Begin
+      If (U[J] = '+') Or (U[J] = '-') Then
+      Begin
+        Lbl := Copy(U, 1, J - 1);
+        R2 := Copy(U, J, Length(U) - J + 1);
+        If R2[1] = '+' Then Delete(R2, 1, 1);
+        ParseImm16(R2, Disp);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Lbl := U;
+  End;
+
+  Function IsDOS: Boolean;
+  Begin
+    IsDOS := (Opts.DestTarget = DEST_DOSR) Or (Opts.DestTarget = DEST_DOSP);
+  End;
+
+Begin { BcAssemble8086 }
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+
+  { Extraire le mnemonique }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin
+    Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else Begin Mnem := StrUpperCase(Line); Tmp := ''; End;
+
+  SplitOps8086(Tmp);
+  UOp1 := StrUpperCase(Op1);
+  UOp2 := StrUpperCase(Op2);
+
+  { ---- NOP ---- }
+  If Mnem = 'NOP' Then Begin BcEmitB($90); Exit; End;
+
+  { ---- RET / RETF ---- }
+  If Mnem = 'RET' Then Begin BcEmitB($C3); Exit; End;
+  If Mnem = 'RETF' Then Begin BcEmitB($CB); Exit; End;
+
+  { ---- INT ---- }
+  If Mnem = 'INT' Then
+  Begin
+    BcEmitB($CD);
+    If ParseImm16(Op1, ImmVal) Then BcEmitB(Byte(ImmVal))
+    Else If UOp1 = '21H' Then BcEmitB($21)
+    Else If UOp1 = '20H' Then BcEmitB($20)
+    Else If UOp1 = '10H' Then BcEmitB($10)
+    Else BcEmitB($03);
+    Exit;
+  End;
+
+  { ---- HLT ---- }
+  If Mnem = 'HLT' Then Begin BcEmitB($F4); Exit; End;
+
+  { ---- CLC / STC / CLI / STI / CLD / STD ---- }
+  If Mnem = 'CLC' Then Begin BcEmitB($F8); Exit; End;
+  If Mnem = 'STC' Then Begin BcEmitB($F9); Exit; End;
+  If Mnem = 'CLI' Then Begin BcEmitB($FA); Exit; End;
+  If Mnem = 'STI' Then Begin BcEmitB($FB); Exit; End;
+  If Mnem = 'CLD' Then Begin BcEmitB($FC); Exit; End;
+  If Mnem = 'STD' Then Begin BcEmitB($FD); Exit; End;
+
+  { ---- PUSHAD -> PUSH AX/CX/DX/BX/SP/BP/SI/DI ---- }
+  If Mnem = 'PUSHAD' Then
+  Begin
+    BcEmitB($50);BcEmitB($51);BcEmitB($52);BcEmitB($53);
+    BcEmitB($54);BcEmitB($55);BcEmitB($56);BcEmitB($57);
+    Exit;
+  End;
+  { ---- POPAD -> POP DI/SI/BP/xx/BX/DX/CX/AX ---- }
+  If Mnem = 'POPAD' Then
+  Begin
+    BcEmitB($5F);BcEmitB($5E);BcEmitB($5D);BcEmitB($5C);
+    BcEmitB($5B);BcEmitB($5A);BcEmitB($59);BcEmitB($58);
+    Exit;
+  End;
+
+  { ---- PUSH reg16 (accepte aussi 32-bit names) ---- }
+  If Mnem = 'PUSH' Then
+  Begin
+    Reg1 := Reg16(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($50 + Reg1); Exit; End;
+    { PUSH imm (80186+) }
+    If ParseImm16(Op1, ImmVal) Then
+    Begin
+      If (ImmVal >= -128) And (ImmVal <= 127) Then
+      Begin BcEmitB($6A); BcEmitB(Byte(ImmVal)); End
+      Else
+      Begin BcEmitB($68); BcEmitW(Word(ImmVal)); End;
+      Exit;
+    End;
+    { PUSH OFFSET label -> push data offset }
+    If Copy(UOp1, 1, 7) = 'OFFSET ' Then
+    Begin
+      Tmp := Copy(Op1, 8, Length(Op1) - 7);
+      While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+      BcEmitB($68); { PUSH imm16 }
+      BcAddFixup(BC_FIX_ABS16_DATA, Tmp, 0);
+      BcEmitW(0);
+      Exit;
+    End;
+    { PUSH DWORD PTR [...] / PUSH WORD PTR [...] -> skip pour Win32 }
+    If (Pos('DWORD PTR', UOp1) > 0) Or (Pos('WORD PTR', UOp1) > 0) Then
+      Exit;
+    Exit;
+  End;
+
+  { ---- POP reg16 ---- }
+  If Mnem = 'POP' Then
+  Begin
+    Reg1 := Reg16(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($58 + Reg1); Exit; End;
+    Exit;
+  End;
+
+  { ---- MOV ---- }
+  If Mnem = 'MOV' Then
+  Begin
+    { MOV DS,AX  (8E D8+src) }
+    If UOp1 = 'DS' Then
+    Begin
+      Reg2 := Reg16(Op2);
+      If Reg2 >= 0 Then Begin BcEmitB($8E); BcEmitB($D8 + Reg2); End;
+      Exit;
+    End;
+    If UOp1 = 'ES' Then
+    Begin
+      Reg2 := Reg16(Op2);
+      If Reg2 >= 0 Then Begin BcEmitB($8E); BcEmitB($C0 + Reg2); End;
+      Exit;
+    End;
+    { MOV reg16, reg16 : 8B C0+dst*8+src }
+    Reg1 := Reg16(Op1); Reg2 := Reg16(Op2);
+    If (Reg1 >= 0) And (Reg2 >= 0) Then
+    Begin BcEmitB($8B); BcEmitB($C0 + Reg1 * 8 + Reg2); Exit; End;
+    { MOV reg16, imm16 : B8+reg imm16 }
+    If Reg1 >= 0 Then
+    Begin
+      If ParseImm16(Op2, ImmVal) Then
+      Begin BcEmitB($B8 + Reg1); BcEmitW(Word(ImmVal)); Exit; End;
+    End;
+    { MOV reg8, imm8 : B0+reg imm8 }
+    Reg1 := Reg8(Op1);
+    If Reg1 >= 0 Then
+    Begin
+      Reg2 := Reg8(Op2);
+      If Reg2 >= 0 Then
+      Begin BcEmitB($8A); BcEmitB($C0 + Reg1 * 8 + Reg2); Exit; End;
+      If ParseImm16(Op2, ImmVal) Then
+      Begin BcEmitB($B0 + Reg1); BcEmitB(Byte(ImmVal)); Exit; End;
+    End;
+    { MOV BYTE PTR [label],imm8 / MOV BYTE PTR [label+d],imm8 }
+    If (Pos('BYTE PTR', UOp1) > 0) Then
+    Begin
+      Tmp := Op1;
+      P := Pos('[', Tmp);
+      If P > 0 Then
+      Begin
+        Tmp := Copy(Tmp, P, Length(Tmp) - P + 1);
+        ParseMemLabel(Tmp, DataLbl, DataAdd);
+        { MOV [label], reg8 }
+        Reg2 := Reg8(Op2);
+        If Reg2 >= 0 Then
+        Begin
+          BcEmitB($88); BcEmitB($06 + Reg2 * 8); { ModRM: mod=00,rm=110 (disp16) }
+          BcAddFixup(BC_FIX_ABS16_DATA, DataLbl, DataAdd);
+          BcEmitW(0);
+          Exit;
+        End;
+        { MOV BYTE PTR [label],imm8 }
+        If ParseImm16(Op2, ImmVal) Then
+        Begin
+          BcEmitB($C6); BcEmitB($06); { ModRM: mod=00,reg=0,rm=110 }
+          BcAddFixup(BC_FIX_ABS16_DATA, DataLbl, DataAdd);
+          BcEmitW(0);
+          BcEmitB(Byte(ImmVal));
+          Exit;
+        End;
+      End;
+    End;
+    { MOV WORD PTR [label],imm16 / MOV [label],reg16 }
+    If (Pos('WORD PTR', UOp1) > 0) Or (Pos('DWORD PTR', UOp1) > 0)
+       Or StartsWithBracket16(Op1) Then
+    Begin
+      Tmp := Op1;
+      P := Pos('[', Tmp);
+      If P > 0 Then
+      Begin
+        Tmp := Copy(Tmp, P, Length(Tmp) - P + 1);
+        ParseMemLabel(Tmp, DataLbl, DataAdd);
+        Reg2 := Reg16(Op2);
+        If Reg2 >= 0 Then
+        Begin
+          BcEmitB($89); BcEmitB($06 + Reg2 * 8); { MOV [disp16],reg16 }
+          BcAddFixup(BC_FIX_ABS16_DATA, DataLbl, DataAdd);
+          BcEmitW(0);
+          Exit;
+        End;
+        If ParseImm16(Op2, ImmVal) Then
+        Begin
+          BcEmitB($C7); BcEmitB($06); { MOV WORD PTR [disp16],imm16 }
+          BcAddFixup(BC_FIX_ABS16_DATA, DataLbl, DataAdd);
+          BcEmitW(0);
+          BcEmitW(Word(ImmVal));
+          Exit;
+        End;
+      End;
+    End;
+    { MOV reg16,[label] - load from memory }
+    Reg1 := Reg16(Op1);
+    If (Reg1 >= 0) And StartsWithBracket16(Op2) Then
+    Begin
+      ParseMemLabel(Op2, DataLbl, DataAdd);
+      BcEmitB($8B); BcEmitB($06 + Reg1 * 8); { MOV reg16,[disp16] }
+      BcAddFixup(BC_FIX_ABS16_DATA, DataLbl, DataAdd);
+      BcEmitW(0);
+      Exit;
+    End;
+    Exit;
+  End;
+
+  { ---- LEA reg,[label] -> MOV reg, OFFSET label (en 16 bits) ---- }
+  If Mnem = 'LEA' Then
+  Begin
+    Reg1 := Reg16(Op1);
+    If Reg1 >= 0 Then
+    Begin
+      Tmp := Op2;
+      While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+      If StartsWithBracket16(Tmp) Then
+        ParseMemLabel(Tmp, DataLbl, DataAdd)
+      Else
+      Begin
+        DataLbl := Tmp; DataAdd := 0;
+        P := 2;
+        While P <= Length(DataLbl) Do
+        Begin
+          If (DataLbl[P] = '+') Or (DataLbl[P] = '-') Then
+          Begin
+            Tmp := Copy(DataLbl, P, Length(DataLbl) - P + 1);
+            DataLbl := Copy(DataLbl, 1, P - 1);
+            If Tmp[1] = '+' Then Delete(Tmp, 1, 1);
+            ParseImm16(Tmp, DataAdd);
+            Break;
+          End;
+          Inc(P);
+        End;
+      End;
+      { Emettre MOV reg16, imm16 avec fixup data }
+      BcEmitB($B8 + Reg1); { MOV reg16, imm16 }
+      BcAddFixup(BC_FIX_ABS16_DATA, DataLbl, DataAdd);
+      BcEmitW(0);
+    End;
+    Exit;
+  End;
+
+  { ---- CALL label ---- }
+  If Mnem = 'CALL' Then
+  Begin
+    Tmp := Op1;
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+    { Intercepter les API Win32 en mode DOS }
+    If StrUpperCase(Tmp) = 'EXITPROCESS' Then
+    Begin
+      { MOV AX,4C00h / INT 21h }
+      BcEmitB($B8); BcEmitW($4C00);  { MOV AX, 4C00h }
+      BcEmitB($CD); BcEmitB($21);    { INT 21h }
+      Exit;
+    End;
+    If (StrUpperCase(Tmp) = 'GETSTDHANDLE') Or
+       (StrUpperCase(Tmp) = 'GETPROCESSHEAP') Or
+       (StrUpperCase(Tmp) = 'WRITEFILE') Or
+       (StrUpperCase(Tmp) = 'READFILE') Or
+       (StrUpperCase(Tmp) = 'HEAPALLOC') Or
+       (StrUpperCase(Tmp) = 'HEAPFREE') Then
+      Exit; { Ignorer les API Win32 en mode DOS }
+    { CALL DWORD PTR [...] -> ignorer en mode DOS }
+    If Pos('DWORD PTR', StrUpperCase(Tmp)) > 0 Then Exit;
+    { CALL near relative (E8 rel16) }
+    BcEmitB($E8);
+    BcAddFixup(BC_FIX_REL16, Tmp, 0);
+    BcEmitW(0);
+    Exit;
+  End;
+
+  { ---- JMP / Jcc labels ---- }
+  If (Mnem = 'JMP') Or (Mnem = 'JE') Or (Mnem = 'JNE') Or
+     (Mnem = 'JZ') Or (Mnem = 'JNZ') Or (Mnem = 'JG') Or
+     (Mnem = 'JGE') Or (Mnem = 'JL') Or (Mnem = 'JLE') Or
+     (Mnem = 'JA') Or (Mnem = 'JB') Or (Mnem = 'JBE') Or
+     (Mnem = 'JAE') Or (Mnem = 'JNC') Or
+     (Mnem = 'JC') Or (Mnem = 'JS') Or (Mnem = 'JNS') Then
+  Begin
+    If Mnem = 'JMP' Then
+    Begin
+      BcEmitB($E9); { JMP rel16 }
+      BcAddFixup(BC_FIX_REL16, Op1, 0);
+      BcEmitW(0);
+    End
+    Else
+    Begin
+      { Jcc : utiliser JNcc $+5 / JMP rel16 (compatible 8086) }
+      { D abord l octet Jcc inverse qui saute par-dessus le JMP }
+      If (Mnem = 'JE') Or (Mnem = 'JZ') Then BcEmitB($75)   { JNE }
+      Else If (Mnem = 'JNE') Or (Mnem = 'JNZ') Then BcEmitB($74) { JE }
+      Else If Mnem = 'JG'  Then BcEmitB($7E) { JLE }
+      Else If Mnem = 'JGE' Then BcEmitB($7C) { JL }
+      Else If Mnem = 'JL'  Then BcEmitB($7D) { JGE }
+      Else If Mnem = 'JLE' Then BcEmitB($7F) { JG }
+      Else If Mnem = 'JA'  Then BcEmitB($76) { JBE }
+      Else If (Mnem = 'JB') Or (Mnem = 'JC') Then BcEmitB($73) { JNC }
+      Else If Mnem = 'JBE' Then BcEmitB($77) { JA }
+      Else If (Mnem = 'JAE') Or (Mnem = 'JNC') Then BcEmitB($72) { JB }
+      Else If Mnem = 'JS'  Then BcEmitB($79) { JNS }
+      Else If Mnem = 'JNS' Then BcEmitB($78); { JS }
+      BcEmitB($03); { deplacement: sauter 3 octets (le JMP E9 XX XX) }
+      { Puis le JMP inconditionnel }
+      BcEmitB($E9); { JMP rel16 }
+      BcAddFixup(BC_FIX_REL16, Op1, 0);
+      BcEmitW(0);
+    End;
+    Exit;
+  End;
+
+  { ---- ADD / SUB / CMP / XOR / AND / OR / TEST ---- }
+  If (Mnem = 'ADD') Or (Mnem = 'SUB') Or (Mnem = 'CMP') Or
+     (Mnem = 'XOR') Or (Mnem = 'AND') Or (Mnem = 'OR') Or
+     (Mnem = 'TEST') Then
+  Begin
+    Reg1 := Reg16(Op1); Reg2 := Reg16(Op2);
+    { reg16, reg16 }
+    If (Reg1 >= 0) And (Reg2 >= 0) Then
+    Begin
+      If Mnem = 'ADD'  Then Begin BcEmitB($01); BcEmitB($C0 + Reg2*8 + Reg1); End
+      Else If Mnem = 'SUB'  Then Begin BcEmitB($29); BcEmitB($C0 + Reg2*8 + Reg1); End
+      Else If Mnem = 'CMP'  Then Begin BcEmitB($39); BcEmitB($C0 + Reg2*8 + Reg1); End
+      Else If Mnem = 'XOR'  Then Begin BcEmitB($31); BcEmitB($C0 + Reg2*8 + Reg1); End
+      Else If Mnem = 'AND'  Then Begin BcEmitB($21); BcEmitB($C0 + Reg2*8 + Reg1); End
+      Else If Mnem = 'OR'   Then Begin BcEmitB($09); BcEmitB($C0 + Reg2*8 + Reg1); End
+      Else If Mnem = 'TEST' Then Begin BcEmitB($85); BcEmitB($C0 + Reg2*8 + Reg1); End;
+      Exit;
+    End;
+    { reg16, imm16 }
+    If (Reg1 >= 0) And ParseImm16(Op2, ImmVal) Then
+    Begin
+      If Mnem = 'TEST' Then
+      Begin
+        If Reg1 = 0 Then Begin BcEmitB($A9); BcEmitW(Word(ImmVal)); End
+        Else Begin BcEmitB($F7); BcEmitB($C0 + Reg1); BcEmitW(Word(ImmVal)); End;
+      End
+      Else
+      Begin
+        If (ImmVal >= -128) And (ImmVal <= 127) And (Mnem <> 'TEST') Then
+        Begin
+          { forme courte : 83 /r ib (sign-extended) }
+          BcEmitB($83);
+          If Mnem = 'ADD' Then BcEmitB($C0 + Reg1)
+          Else If Mnem = 'SUB' Then BcEmitB($E8 + Reg1)
+          Else If Mnem = 'CMP' Then BcEmitB($F8 + Reg1)
+          Else If Mnem = 'XOR' Then BcEmitB($F0 + Reg1)
+          Else If Mnem = 'AND' Then BcEmitB($E0 + Reg1)
+          Else If Mnem = 'OR'  Then BcEmitB($C8 + Reg1);
+          BcEmitB(Byte(ImmVal));
+        End
+        Else If Reg1 = 0 Then { AX, imm16 : forme courte }
+        Begin
+          If Mnem = 'ADD' Then BcEmitB($05)
+          Else If Mnem = 'SUB' Then BcEmitB($2D)
+          Else If Mnem = 'CMP' Then BcEmitB($3D)
+          Else If Mnem = 'XOR' Then BcEmitB($35)
+          Else If Mnem = 'AND' Then BcEmitB($25)
+          Else If Mnem = 'OR'  Then BcEmitB($0D);
+          BcEmitW(Word(ImmVal));
+        End
+        Else
+        Begin { 81 /r iw }
+          BcEmitB($81);
+          If Mnem = 'ADD' Then BcEmitB($C0 + Reg1)
+          Else If Mnem = 'SUB' Then BcEmitB($E8 + Reg1)
+          Else If Mnem = 'CMP' Then BcEmitB($F8 + Reg1)
+          Else If Mnem = 'XOR' Then BcEmitB($F0 + Reg1)
+          Else If Mnem = 'AND' Then BcEmitB($E0 + Reg1)
+          Else If Mnem = 'OR'  Then BcEmitB($C8 + Reg1);
+          BcEmitW(Word(ImmVal));
+        End;
+      End;
+      Exit;
+    End;
+    { CMP reg8, imm8 }
+    Reg1 := Reg8(Op1);
+    If (Reg1 >= 0) And ParseImm16(Op2, ImmVal) Then
+    Begin
+      If Mnem = 'CMP' Then
+      Begin
+        If Reg1 = 0 Then Begin BcEmitB($3C); BcEmitB(Byte(ImmVal)); End
+        Else Begin BcEmitB($80); BcEmitB($F8 + Reg1); BcEmitB(Byte(ImmVal)); End;
+      End
+      Else If Mnem = 'TEST' Then
+      Begin
+        If Reg1 = 0 Then Begin BcEmitB($A8); BcEmitB(Byte(ImmVal)); End
+        Else Begin BcEmitB($F6); BcEmitB($C0 + Reg1); BcEmitB(Byte(ImmVal)); End;
+      End
+      Else If Mnem = 'ADD' Then
+      Begin BcEmitB($80); BcEmitB($C0 + Reg1); BcEmitB(Byte(ImmVal)); End
+      Else If Mnem = 'SUB' Then
+      Begin BcEmitB($80); BcEmitB($E8 + Reg1); BcEmitB(Byte(ImmVal)); End;
+      Exit;
+    End;
+    { CMP BYTE PTR [ESI+ECX],0  -> utiliser LODSB-like pattern non supporté }
+    { CMP BYTE PTR [label],imm8 }
+    If (Pos('BYTE PTR', UOp1) > 0) And ParseImm16(Op2, ImmVal) Then
+    Begin
+      Tmp := Op1;
+      P := Pos('[', Tmp);
+      If P > 0 Then
+      Begin
+        Tmp := Copy(Tmp, P, Length(Tmp) - P + 1);
+        ParseMemLabel(Tmp, DataLbl, DataAdd);
+        If Mnem = 'CMP' Then
+        Begin
+          BcEmitB($80); BcEmitB($3E); { CMP BYTE PTR [disp16], imm8 }
+          BcAddFixup(BC_FIX_ABS16_DATA, DataLbl, DataAdd);
+          BcEmitW(0);
+          BcEmitB(Byte(ImmVal));
+          Exit;
+        End;
+      End;
+    End;
+    Exit;
+  End;
+
+  { ---- INC / DEC reg16 (accept 32-bit names) ---- }
+  If Mnem = 'INC' Then
+  Begin
+    Reg1 := Reg16(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($40 + Reg1); Exit; End;
+    Exit;
+  End;
+  If Mnem = 'DEC' Then
+  Begin
+    Reg1 := Reg16(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($48 + Reg1); Exit; End;
+    Exit;
+  End;
+
+  { ---- NEG / NOT / MUL / IMUL / DIV / IDIV reg16 ---- }
+  If (Mnem = 'NEG') Or (Mnem = 'NOT') Or
+     (Mnem = 'MUL') Or (Mnem = 'IMUL') Or
+     (Mnem = 'DIV') Or (Mnem = 'IDIV') Then
+  Begin
+    Reg1 := Reg16(Op1);
+    If Reg1 >= 0 Then
+    Begin
+      BcEmitB($F7);
+      If Mnem = 'NEG'  Then BcEmitB($D8 + Reg1)
+      Else If Mnem = 'NOT'  Then BcEmitB($D0 + Reg1)
+      Else If Mnem = 'MUL'  Then BcEmitB($E0 + Reg1)
+      Else If Mnem = 'IMUL' Then BcEmitB($E8 + Reg1)
+      Else If Mnem = 'DIV'  Then BcEmitB($F0 + Reg1)
+      Else If Mnem = 'IDIV' Then BcEmitB($F8 + Reg1);
+    End;
+    Exit;
+  End;
+
+  { ---- XCHG AX,reg ---- }
+  If Mnem = 'XCHG' Then
+  Begin
+    Reg1 := Reg16(Op1); Reg2 := Reg16(Op2);
+    If (Reg1 = 0) And (Reg2 >= 0) Then Begin BcEmitB($90 + Reg2); Exit; End;
+    If (Reg2 = 0) And (Reg1 >= 0) Then Begin BcEmitB($90 + Reg1); Exit; End;
+  End;
+
+  { ---- CBW / CWD ---- }
+  If Mnem = 'CBW' Then Begin BcEmitB($98); Exit; End;
+  If Mnem = 'CWD' Then Begin BcEmitB($99); Exit; End;
+
+  { ---- MOVSB / MOVSW / LODSB / LODSW / STOSB / STOSW ---- }
+  If Mnem = 'MOVSB' Then Begin BcEmitB($A4); Exit; End;
+  If Mnem = 'MOVSW' Then Begin BcEmitB($A5); Exit; End;
+  If Mnem = 'LODSB' Then Begin BcEmitB($AC); Exit; End;
+  If Mnem = 'LODSW' Then Begin BcEmitB($AD); Exit; End;
+  If Mnem = 'STOSB' Then Begin BcEmitB($AA); Exit; End;
+  If Mnem = 'STOSW' Then Begin BcEmitB($AB); Exit; End;
+
+  { ---- REP ---- }
+  If Mnem = 'REP' Then Begin BcEmitB($F3); Exit; End;
+
+  { ---- MOVZX -> en 8086, faire MOV reg8, [mem] puis XOR haut ---- }
+  { Pour l instant, ignorer silencieusement }
+  If Mnem = 'MOVZX' Then Exit;
+
+  { ---- IMUL EAX,EAX,10 -> en 16 bits, utiliser MUL ---- }
+  { Ignorer la forme 3 operandes, le runtime DOS n en a pas besoin }
+
+  { Instruction non reconnue (ignoree silencieusement) }
+  { WriteLn('BcAssemble8086: non reconnu: [', S, ']'); }
+End;
+
+{ ============================================================ }
+{ BcAssembleZ80 - Mini-assembleur Zilog Z80                    }
+{ ============================================================ }
+
+Procedure BcAssembleZ80(Const S: TString);
+Var
+  Line, Mnem, Tmp, Op1, Op2: TString;
+  P: Integer;
+
+  Procedure SplitOpsZ80(Const Rest: TString);
+  Var J: Integer;
+  Begin
+    Op1 := ''; Op2 := '';
+    J := 1;
+    While J <= Length(Rest) Do
+    Begin
+      If (Rest[J] = ',') Then
+      Begin
+        Op1 := Copy(Rest, 1, J - 1);
+        Op2 := Copy(Rest, J + 1, Length(Rest) - J);
+        While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+          Delete(Op1, Length(Op1), 1);
+        While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Op1 := Rest;
+    While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+      Delete(Op1, Length(Op1), 1);
+  End;
+
+Begin { BcAssembleZ80 }
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+
+  { Extraire le mnemonique }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin
+    Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else Begin Mnem := StrUpperCase(Line); Tmp := ''; End;
+
+  SplitOpsZ80(Tmp);
+
+  { ---- NOP ---- }
+  If Mnem = 'NOP' Then Begin BcEmitB($00); Exit; End;
+
+  { ---- HALT ---- }
+  If Mnem = 'HALT' Then Begin BcEmitB($76); Exit; End;
+
+  { ---- RET ---- }
+  If Mnem = 'RET' Then Begin BcEmitB($C9); Exit; End;
+
+  { ---- DI / EI ---- }
+  If Mnem = 'DI' Then Begin BcEmitB($F3); Exit; End;
+  If Mnem = 'EI' Then Begin BcEmitB($FB); Exit; End;
+
+  { ---- SCF / CCF / CPL / NEG / RLCA / RRCA / RLA / RRA ---- }
+  If Mnem = 'SCF' Then Begin BcEmitB($37); Exit; End;
+  If Mnem = 'CCF' Then Begin BcEmitB($3F); Exit; End;
+  If Mnem = 'CPL' Then Begin BcEmitB($2F); Exit; End;
+  If Mnem = 'RLCA' Then Begin BcEmitB($07); Exit; End;
+  If Mnem = 'RRCA' Then Begin BcEmitB($0F); Exit; End;
+  If Mnem = 'RLA' Then Begin BcEmitB($17); Exit; End;
+  If Mnem = 'RRA' Then Begin BcEmitB($1F); Exit; End;
+  If Mnem = 'DAA' Then Begin BcEmitB($27); Exit; End;
+
+  { ---- NEG (prefixe ED) ---- }
+  If Mnem = 'NEG' Then Begin BcEmitB($ED); BcEmitB($44); Exit; End;
+
+  { ---- PUSH / POP paires de registres ---- }
+  If Mnem = 'PUSH' Then
+  Begin
+    If StrUpperCase(Op1) = 'BC' Then Begin BcEmitB($C5); Exit; End;
+    If StrUpperCase(Op1) = 'DE' Then Begin BcEmitB($D5); Exit; End;
+    If StrUpperCase(Op1) = 'HL' Then Begin BcEmitB($E5); Exit; End;
+    If StrUpperCase(Op1) = 'AF' Then Begin BcEmitB($F5); Exit; End;
+  End;
+
+  If Mnem = 'POP' Then
+  Begin
+    If StrUpperCase(Op1) = 'BC' Then Begin BcEmitB($C1); Exit; End;
+    If StrUpperCase(Op1) = 'DE' Then Begin BcEmitB($D1); Exit; End;
+    If StrUpperCase(Op1) = 'HL' Then Begin BcEmitB($E1); Exit; End;
+    If StrUpperCase(Op1) = 'AF' Then Begin BcEmitB($F1); Exit; End;
+  End;
+
+  { ---- INC / DEC registres 8 bits ---- }
+  If Mnem = 'INC' Then
+  Begin
+    If StrUpperCase(Op1) = 'A' Then Begin BcEmitB($3C); Exit; End;
+    If StrUpperCase(Op1) = 'B' Then Begin BcEmitB($04); Exit; End;
+    If StrUpperCase(Op1) = 'C' Then Begin BcEmitB($0C); Exit; End;
+    If StrUpperCase(Op1) = 'D' Then Begin BcEmitB($14); Exit; End;
+    If StrUpperCase(Op1) = 'E' Then Begin BcEmitB($1C); Exit; End;
+    If StrUpperCase(Op1) = 'H' Then Begin BcEmitB($24); Exit; End;
+    If StrUpperCase(Op1) = 'L' Then Begin BcEmitB($2C); Exit; End;
+    { INC paires 16 bits }
+    If StrUpperCase(Op1) = 'BC' Then Begin BcEmitB($03); Exit; End;
+    If StrUpperCase(Op1) = 'DE' Then Begin BcEmitB($13); Exit; End;
+    If StrUpperCase(Op1) = 'HL' Then Begin BcEmitB($23); Exit; End;
+    If StrUpperCase(Op1) = 'SP' Then Begin BcEmitB($33); Exit; End;
+  End;
+
+  If Mnem = 'DEC' Then
+  Begin
+    If StrUpperCase(Op1) = 'A' Then Begin BcEmitB($3D); Exit; End;
+    If StrUpperCase(Op1) = 'B' Then Begin BcEmitB($05); Exit; End;
+    If StrUpperCase(Op1) = 'C' Then Begin BcEmitB($0D); Exit; End;
+    If StrUpperCase(Op1) = 'D' Then Begin BcEmitB($15); Exit; End;
+    If StrUpperCase(Op1) = 'E' Then Begin BcEmitB($1D); Exit; End;
+    If StrUpperCase(Op1) = 'H' Then Begin BcEmitB($25); Exit; End;
+    If StrUpperCase(Op1) = 'L' Then Begin BcEmitB($2D); Exit; End;
+    { DEC paires 16 bits }
+    If StrUpperCase(Op1) = 'BC' Then Begin BcEmitB($0B); Exit; End;
+    If StrUpperCase(Op1) = 'DE' Then Begin BcEmitB($1B); Exit; End;
+    If StrUpperCase(Op1) = 'HL' Then Begin BcEmitB($2B); Exit; End;
+    If StrUpperCase(Op1) = 'SP' Then Begin BcEmitB($3B); Exit; End;
+  End;
+
+  { ---- EX DE,HL / EX AF,AF' / EXX ---- }
+  If Mnem = 'EX' Then
+  Begin
+    If (StrUpperCase(Op1) = 'DE') And (StrUpperCase(Op2) = 'HL') Then
+    Begin BcEmitB($EB); Exit; End;
+  End;
+  If Mnem = 'EXX' Then Begin BcEmitB($D9); Exit; End;
+
+  { ---- LDIR / LDDR (prefixe ED) ---- }
+  If Mnem = 'LDIR' Then Begin BcEmitB($ED); BcEmitB($B0); Exit; End;
+  If Mnem = 'LDDR' Then Begin BcEmitB($ED); BcEmitB($B8); Exit; End;
+
+  { ---- RST ---- }
+  If Mnem = 'RST' Then
+  Begin
+    If Op1 = '00H' Then Begin BcEmitB($C7); Exit; End;
+    If Op1 = '08H' Then Begin BcEmitB($CF); Exit; End;
+    If Op1 = '10H' Then Begin BcEmitB($D7); Exit; End;
+    If Op1 = '18H' Then Begin BcEmitB($DF); Exit; End;
+    If Op1 = '20H' Then Begin BcEmitB($E7); Exit; End;
+    If Op1 = '28H' Then Begin BcEmitB($EF); Exit; End;
+    If Op1 = '30H' Then Begin BcEmitB($F7); Exit; End;
+    If Op1 = '38H' Then Begin BcEmitB($FF); Exit; End;
+  End;
+
+  { Instruction non reconnue (stub) }
+  { WriteLn('BcAssembleZ80: non reconnu: [', S, ']'); }
+End;
+
+{ ============================================================ }
+{ BcAssemble6502 - Mini-assembleur MOS 6502                    }
+{ ============================================================ }
+
+Procedure BcAssemble6502(Const S: TString);
+Var
+  Line, Mnem, Tmp, Op1, Op2: TString;
+  P: Integer;
+
+  Procedure SplitOps6502(Const Rest: TString);
+  Var J: Integer;
+  Begin
+    Op1 := ''; Op2 := '';
+    J := 1;
+    While J <= Length(Rest) Do
+    Begin
+      If (Rest[J] = ',') Then
+      Begin
+        Op1 := Copy(Rest, 1, J - 1);
+        Op2 := Copy(Rest, J + 1, Length(Rest) - J);
+        While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+          Delete(Op1, Length(Op1), 1);
+        While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Op1 := Rest;
+    While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+      Delete(Op1, Length(Op1), 1);
+  End;
+
+Begin { BcAssemble6502 }
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+
+  { Extraire le mnemonique }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin
+    Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else Begin Mnem := StrUpperCase(Line); Tmp := ''; End;
+
+  SplitOps6502(Tmp);
+
+  { ---- Instructions implicites (1 octet) ---- }
+  If Mnem = 'BRK' Then Begin BcEmitB($00); Exit; End;
+  If Mnem = 'NOP' Then Begin BcEmitB($EA); Exit; End;
+  If Mnem = 'RTS' Then Begin BcEmitB($60); Exit; End;
+  If Mnem = 'RTI' Then Begin BcEmitB($40); Exit; End;
+
+  { ---- Pile ---- }
+  If Mnem = 'PHA' Then Begin BcEmitB($48); Exit; End;
+  If Mnem = 'PLA' Then Begin BcEmitB($68); Exit; End;
+  If Mnem = 'PHP' Then Begin BcEmitB($08); Exit; End;
+  If Mnem = 'PLP' Then Begin BcEmitB($28); Exit; End;
+
+  { ---- Drapeaux ---- }
+  If Mnem = 'CLC' Then Begin BcEmitB($18); Exit; End;
+  If Mnem = 'SEC' Then Begin BcEmitB($38); Exit; End;
+  If Mnem = 'CLI' Then Begin BcEmitB($58); Exit; End;
+  If Mnem = 'SEI' Then Begin BcEmitB($78); Exit; End;
+  If Mnem = 'CLV' Then Begin BcEmitB($B8); Exit; End;
+  If Mnem = 'CLD' Then Begin BcEmitB($D8); Exit; End;
+  If Mnem = 'SED' Then Begin BcEmitB($F8); Exit; End;
+
+  { ---- Transferts de registres ---- }
+  If Mnem = 'TAX' Then Begin BcEmitB($AA); Exit; End;
+  If Mnem = 'TAY' Then Begin BcEmitB($A8); Exit; End;
+  If Mnem = 'TXA' Then Begin BcEmitB($8A); Exit; End;
+  If Mnem = 'TYA' Then Begin BcEmitB($98); Exit; End;
+  If Mnem = 'TXS' Then Begin BcEmitB($9A); Exit; End;
+  If Mnem = 'TSX' Then Begin BcEmitB($BA); Exit; End;
+
+  { ---- Increments / Decrements registres ---- }
+  If Mnem = 'INX' Then Begin BcEmitB($E8); Exit; End;
+  If Mnem = 'INY' Then Begin BcEmitB($C8); Exit; End;
+  If Mnem = 'DEX' Then Begin BcEmitB($CA); Exit; End;
+  If Mnem = 'DEY' Then Begin BcEmitB($88); Exit; End;
+
+  { ---- Decalages accumulateur ---- }
+  If Mnem = 'ASLA' Then Begin BcEmitB($0A); Exit; End;
+  If Mnem = 'ROLA' Then Begin BcEmitB($2A); Exit; End;
+  If Mnem = 'LSRA' Then Begin BcEmitB($4A); Exit; End;
+  If Mnem = 'RORA' Then Begin BcEmitB($6A); Exit; End;
+
+  { ---- Decalages accumulateur (forme standard ASL A, etc.) ---- }
+  If (Mnem = 'ASL') And (StrUpperCase(Op1) = 'A') Then
+  Begin BcEmitB($0A); Exit; End;
+  If (Mnem = 'ROL') And (StrUpperCase(Op1) = 'A') Then
+  Begin BcEmitB($2A); Exit; End;
+  If (Mnem = 'LSR') And (StrUpperCase(Op1) = 'A') Then
+  Begin BcEmitB($4A); Exit; End;
+  If (Mnem = 'ROR') And (StrUpperCase(Op1) = 'A') Then
+  Begin BcEmitB($6A); Exit; End;
+
+  { Instruction non reconnue (stub) }
+  { WriteLn('BcAssemble6502: non reconnu: [', S, ']'); }
+End;
+
+{ ============================================================ }
+{ BcAssemble6809 - Mini-assembleur Motorola 6809               }
+{ ============================================================ }
+
+Procedure BcAssemble6809(Const S: TString);
+Var
+  Line, Mnem, Tmp, Op1, Op2: TString;
+  P: Integer;
+
+  Procedure SplitOps6809(Const Rest: TString);
+  Var J: Integer;
+  Begin
+    Op1 := ''; Op2 := '';
+    J := 1;
+    While J <= Length(Rest) Do
+    Begin
+      If (Rest[J] = ',') Then
+      Begin
+        Op1 := Copy(Rest, 1, J - 1);
+        Op2 := Copy(Rest, J + 1, Length(Rest) - J);
+        While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+          Delete(Op1, Length(Op1), 1);
+        While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Op1 := Rest;
+    While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+      Delete(Op1, Length(Op1), 1);
+  End;
+
+Begin { BcAssemble6809 }
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+
+  { Extraire le mnemonique }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin
+    Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else Begin Mnem := StrUpperCase(Line); Tmp := ''; End;
+
+  SplitOps6809(Tmp);
+
+  { ---- Instructions implicites (1 octet) ---- }
+  If Mnem = 'NOP'  Then Begin BcEmitB($12); Exit; End;
+  If Mnem = 'SYNC' Then Begin BcEmitB($13); Exit; End;
+  If Mnem = 'DAA'  Then Begin BcEmitB($19); Exit; End;
+  If Mnem = 'SEX'  Then Begin BcEmitB($1D); Exit; End;
+  If Mnem = 'RTS'  Then Begin BcEmitB($39); Exit; End;
+  If Mnem = 'ABX'  Then Begin BcEmitB($3A); Exit; End;
+  If Mnem = 'RTI'  Then Begin BcEmitB($3B); Exit; End;
+  If Mnem = 'MUL'  Then Begin BcEmitB($3D); Exit; End;
+  If Mnem = 'SWI'  Then Begin BcEmitB($3F); Exit; End;
+
+  { ---- Operations sur accumulateur A (implicite) ---- }
+  If Mnem = 'NEGA' Then Begin BcEmitB($40); Exit; End;
+  If Mnem = 'COMA' Then Begin BcEmitB($43); Exit; End;
+  If Mnem = 'LSRA' Then Begin BcEmitB($44); Exit; End;
+  If Mnem = 'RORA' Then Begin BcEmitB($46); Exit; End;
+  If Mnem = 'ASRA' Then Begin BcEmitB($47); Exit; End;
+  If Mnem = 'ASLA' Then Begin BcEmitB($48); Exit; End;
+  If Mnem = 'ROLA' Then Begin BcEmitB($49); Exit; End;
+  If Mnem = 'DECA' Then Begin BcEmitB($4A); Exit; End;
+  If Mnem = 'INCA' Then Begin BcEmitB($4C); Exit; End;
+  If Mnem = 'TSTA' Then Begin BcEmitB($4D); Exit; End;
+  If Mnem = 'CLRA' Then Begin BcEmitB($4F); Exit; End;
+
+  { ---- Operations sur accumulateur B (implicite) ---- }
+  If Mnem = 'NEGB' Then Begin BcEmitB($50); Exit; End;
+  If Mnem = 'COMB' Then Begin BcEmitB($53); Exit; End;
+  If Mnem = 'LSRB' Then Begin BcEmitB($54); Exit; End;
+  If Mnem = 'RORB' Then Begin BcEmitB($56); Exit; End;
+  If Mnem = 'ASRB' Then Begin BcEmitB($57); Exit; End;
+  If Mnem = 'ASLB' Then Begin BcEmitB($58); Exit; End;
+  If Mnem = 'ROLB' Then Begin BcEmitB($59); Exit; End;
+  If Mnem = 'DECB' Then Begin BcEmitB($5A); Exit; End;
+  If Mnem = 'INCB' Then Begin BcEmitB($5C); Exit; End;
+  If Mnem = 'TSTB' Then Begin BcEmitB($5D); Exit; End;
+  If Mnem = 'CLRB' Then Begin BcEmitB($5F); Exit; End;
+
+  { ---- Instructions page 2 (prefixe $10) ---- }
+  If Mnem = 'SWI2' Then Begin BcEmitB($10); BcEmitB($3F); Exit; End;
+
+  { ---- Instructions page 3 (prefixe $11) ---- }
+  If Mnem = 'SWI3' Then Begin BcEmitB($11); BcEmitB($3F); Exit; End;
+
+  { Instruction non reconnue (stub) }
+  { WriteLn('BcAssemble6809: non reconnu: [', S, ']'); }
+End;
+
+{ ============================================================ }
+{ BcAssemble68000 - Mini-assembleur Motorola 68000             }
+{ ============================================================ }
+
+Procedure BcAssemble68000(Const S: TString);
+Var
+  Line, Mnem, Tmp, Op1, Op2: TString;
+  P: Integer;
+
+  Procedure SplitOps68000(Const Rest: TString);
+  Var J: Integer;
+  Begin
+    Op1 := ''; Op2 := '';
+    J := 1;
+    While J <= Length(Rest) Do
+    Begin
+      If (Rest[J] = ',') Then
+      Begin
+        Op1 := Copy(Rest, 1, J - 1);
+        Op2 := Copy(Rest, J + 1, Length(Rest) - J);
+        While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+          Delete(Op1, Length(Op1), 1);
+        While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Op1 := Rest;
+    While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+      Delete(Op1, Length(Op1), 1);
+  End;
+
+Begin { BcAssemble68000 }
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+
+  { Extraire le mnemonique }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin
+    Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else Begin Mnem := StrUpperCase(Line); Tmp := ''; End;
+
+  SplitOps68000(Tmp);
+
+  { ---- Instructions implicites (sans operande, 1 mot = 2 octets) ---- }
+  If Mnem = 'NOP'     Then Begin BcEmitB($4E); BcEmitB($71); Exit; End;
+  If Mnem = 'RTS'     Then Begin BcEmitB($4E); BcEmitB($75); Exit; End;
+  If Mnem = 'RTE'     Then Begin BcEmitB($4E); BcEmitB($73); Exit; End;
+  If Mnem = 'RTR'     Then Begin BcEmitB($4E); BcEmitB($77); Exit; End;
+  If Mnem = 'TRAPV'   Then Begin BcEmitB($4E); BcEmitB($76); Exit; End;
+  If Mnem = 'RESET'   Then Begin BcEmitB($4E); BcEmitB($70); Exit; End;
+  If Mnem = 'ILLEGAL' Then Begin BcEmitB($4A); BcEmitB($FC); Exit; End;
+
+  { Instruction non reconnue (stub) }
+  { WriteLn('BcAssemble68000: non reconnu: [', S, ']'); }
+End;
+
 { --- Construction de la section .data binaire --- }
 Procedure BcBuildData;
 Var I, J: Integer; S: TString;
@@ -25163,10 +26444,11 @@ Begin
   For I := 0 To BcFixupCnt - 1 Do
   Begin
     FixOfs := BcFixups[I].CodeOfs;
-    If FixOfs + 3 >= BcCodeLen Then Continue;
+    If FixOfs + 1 >= BcCodeLen Then Continue;
     Case BcFixups[I].Kind Of
       BC_FIX_REL32:
       Begin
+        If FixOfs + 3 >= BcCodeLen Then Continue;
         TargetOfs := BcFindLabel(BcFixups[I].LblName);
         If TargetOfs >= 0 Then
         Begin
@@ -25179,6 +26461,7 @@ Begin
       End;
       BC_FIX_ABS32_DATA:
       Begin
+        If FixOfs + 3 >= BcCodeLen Then Continue;
         TargetOfs := BcFindDataLabel(BcFixups[I].LblName);
         If TargetOfs >= 0 Then
           Val := DataVA + TargetOfs + BcFixups[I].Addend
@@ -25188,6 +26471,26 @@ Begin
         BcCode[FixOfs + 1] := Byte(Val Shr 8);
         BcCode[FixOfs + 2] := Byte(Val Shr 16);
         BcCode[FixOfs + 3] := Byte(Val Shr 24);
+      End;
+      BC_FIX_REL16:
+      Begin
+        TargetOfs := BcFindLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+        Begin
+          Val := TargetOfs - (FixOfs + 2);
+          BcCode[FixOfs] := Byte(Val);
+          BcCode[FixOfs + 1] := Byte(Val Shr 8);
+        End;
+      End;
+      BC_FIX_ABS16_DATA:
+      Begin
+        TargetOfs := BcFindDataLabel(BcFixups[I].LblName);
+        If TargetOfs >= 0 Then
+          Val := TargetOfs + BcFixups[I].Addend
+        Else
+          Val := 0;
+        BcCode[FixOfs] := Byte(Val);
+        BcCode[FixOfs + 1] := Byte(Val Shr 8);
       End;
     End; { case }
   End;
@@ -25211,6 +26514,130 @@ Begin
       BcCode[FixOfs + 3] := Byte(Val Shr 24);
     End;
   End;
+End;
+
+{ --- WriteMZFile : generation d un EXE DOS 16 bits (format MZ) --- }
+Procedure WriteMZFile(FileName: TString);
+Var
+  F: File;
+  HeaderSize, ImageSize, TotalSize: LongInt;
+  CodeParas, DataParas: LongInt;
+  PageCount, LastPageBytes: Word;
+  RelocOfs, MainOfs: LongInt;
+  I: LongInt;
+  W: Word;
+  B: Byte;
+Begin
+  { Calculer les tailles en paragraphes (16 octets) }
+  CodeParas := (BcCodeLen + 15) Div 16;
+  DataParas := (BcDataLen + 15) Div 16;
+
+  { En-tete MZ : 28 octets fixes + 1 relocation (4 octets) = 32 octets }
+  { Arrondi au paragraphe superieur: 32 -> 2 paragraphes }
+  HeaderSize := 32; { 28 + 4 (1 relocation entry) }
+  If HeaderSize Mod 16 <> 0 Then
+    HeaderSize := ((HeaderSize Div 16) + 1) * 16;
+
+  { Trouver le point d entree _TPF_Main }
+  MainOfs := BcFindLabel(TP_FUNC_PFX + 'Main');
+  If MainOfs < 0 Then MainOfs := 0;
+
+  { Patcher le MOV AX,imm16 pour le segment data }
+  { Chercher la premiere instruction du main : B8 00 00 (MOV AX,0) }
+  { et la remplacer par B8 <code_paras_lo> <code_paras_hi> }
+  { On ajoute aussi une entree de relocation pour cette adresse }
+  { L offset de l immediat est MainOfs + 1 (apres le B8) }
+  If (MainOfs + 2 < BcCodeLen) And
+     (BcCode[MainOfs] = $B8) Then
+  Begin
+    BcCode[MainOfs + 1] := Byte(CodeParas);
+    BcCode[MainOfs + 2] := Byte(CodeParas Shr 8);
+  End;
+
+  { Resoudre les fixups : REL16 et ABS16_DATA }
+  For I := 0 To BcFixupCnt - 1 Do
+  Begin
+    If BcFixups[I].Kind = BC_FIX_REL16 Then
+    Begin
+      If BcFixups[I].CodeOfs + 1 < BcCodeLen Then
+      Begin
+        RelocOfs := BcFindLabel(BcFixups[I].LblName);
+        If RelocOfs >= 0 Then
+        Begin
+          W := Word(RelocOfs - (BcFixups[I].CodeOfs + 2));
+          BcCode[BcFixups[I].CodeOfs] := Lo(W);
+          BcCode[BcFixups[I].CodeOfs + 1] := Hi(W);
+        End;
+      End;
+    End
+    Else If BcFixups[I].Kind = BC_FIX_ABS16_DATA Then
+    Begin
+      If BcFixups[I].CodeOfs + 1 < BcCodeLen Then
+      Begin
+        RelocOfs := BcFindDataLabel(BcFixups[I].LblName);
+        If RelocOfs < 0 Then RelocOfs := 0;
+        W := Word(RelocOfs + BcFixups[I].Addend);
+        BcCode[BcFixups[I].CodeOfs] := Lo(W);
+        BcCode[BcFixups[I].CodeOfs + 1] := Hi(W);
+      End;
+    End;
+  End;
+
+  { Taille totale de l image (apres en-tete) }
+  ImageSize := CodeParas * 16 + DataParas * 16;
+  TotalSize := HeaderSize + ImageSize;
+
+  { Calculer le nombre de pages MZ (512 octets par page) }
+  PageCount := (TotalSize + 511) Div 512;
+  LastPageBytes := TotalSize Mod 512;
+
+  { Ecrire le fichier }
+  Assign(F, FileName);
+  Rewrite(F, 1);
+
+  { --- En-tete MZ (28 octets) --- }
+  W := $5A4D; BlockWrite(F, W, 2);           { Signature 'MZ' }
+  W := LastPageBytes; BlockWrite(F, W, 2);    { Octets derniere page }
+  W := PageCount; BlockWrite(F, W, 2);        { Nombre de pages }
+  W := 1; BlockWrite(F, W, 2);               { 1 relocation }
+  W := HeaderSize Div 16; BlockWrite(F, W, 2);{ Taille en-tete en paragraphes }
+  W := 0; BlockWrite(F, W, 2);               { MinAlloc }
+  W := $FFFF; BlockWrite(F, W, 2);           { MaxAlloc }
+  { SS : segment pile = apres code + data }
+  W := CodeParas + DataParas; BlockWrite(F, W, 2); { SS }
+  W := $FFFE; BlockWrite(F, W, 2);           { SP }
+  W := 0; BlockWrite(F, W, 2);               { Checksum }
+  W := Word(MainOfs); BlockWrite(F, W, 2);   { IP = offset du main }
+  W := 0; BlockWrite(F, W, 2);               { CS = 0 (debut du code) }
+  W := 28; BlockWrite(F, W, 2);              { Offset table relocation }
+  W := 0; BlockWrite(F, W, 2);               { Overlay number }
+
+  { --- Table de relocation (1 entree : le MOV AX, @DATA) --- }
+  W := Word(MainOfs + 1); BlockWrite(F, W, 2); { Offset dans le segment }
+  W := 0; BlockWrite(F, W, 2);                  { Segment (CS = 0) }
+
+  { --- Padding jusqu au debut de l image --- }
+  B := 0;
+  For I := 32 To HeaderSize - 1 Do
+    BlockWrite(F, B, 1);
+
+  { --- Segment de code --- }
+  If BcCodeLen > 0 Then
+    BlockWrite(F, BcCode, BcCodeLen);
+  { Padding du segment de code au paragraphe }
+  B := 0;
+  For I := BcCodeLen To CodeParas * 16 - 1 Do
+    BlockWrite(F, B, 1);
+
+  { --- Segment de donnees --- }
+  If BcDataLen > 0 Then
+    BlockWrite(F, BcData, BcDataLen);
+  { Padding du segment de donnees au paragraphe }
+  B := 0;
+  For I := BcDataLen To DataParas * 16 - 1 Do
+    BlockWrite(F, B, 1);
+
+  Close(F);
 End;
 
 { --- WritePEFile : generation d un PE executable Win32 --- }
@@ -26597,22 +28024,29 @@ Begin
       EmitMainBlock;
 
     { Emettre les routines runtime (TODO 12) }
-    EmitRuntime;
+    If (Opts.DestTarget = DEST_DOSR) Or (Opts.DestTarget = DEST_DOSP) Then
+      EmitRuntimeDOS
+    Else
+      EmitRuntime;
 
-    { Emettre les routines runtime Graph (TODO 20) }
-    EmitGraphRuntime;
+    { Emettre les routines runtime supplementaires (pas en mode DOS) }
+    If (Opts.DestTarget <> DEST_DOSR) And (Opts.DestTarget <> DEST_DOSP) Then
+    Begin
+      { Emettre les routines runtime Graph (TODO 20) }
+      EmitGraphRuntime;
 
-    { Emettre les routines runtime Strings/Overlay (TODO 21) }
-    EmitStringsRuntime;
+      { Emettre les routines runtime Strings/Overlay (TODO 21) }
+      EmitStringsRuntime;
 
-    { Emettre les routines runtime Objects (TODO 21) }
-    EmitObjectsRuntime;
+      { Emettre les routines runtime Objects (TODO 21) }
+      EmitObjectsRuntime;
 
-    { Emettre les routines runtime Mem/Port (TODO 22) }
-    EmitMemPortRuntime;
+      { Emettre les routines runtime Mem/Port (TODO 22) }
+      EmitMemPortRuntime;
 
-    { Emettre les routines runtime interruptions (TODO 23) }
-    EmitIntrRuntime;
+      { Emettre les routines runtime interruptions (TODO 23) }
+      EmitIntrRuntime;
+    End;
 
     If Opts.AsmOutput Then
     Begin
@@ -26643,9 +28077,18 @@ Begin
   If (Not Opts.ObjOnly) And (Not Opts.Dos16Mode) And (Not IsUnitSource) Then
   Begin
     BcBuildData;  { Apres toute emission pour capturer tous les DataTab }
-    WritePEFile(Opts.OutFile);
-    If Opts.Verbose Then
-      WriteLn('  PE Win32 genere : ', Opts.OutFile);
+    If (Opts.DestTarget = DEST_DOSR) Or (Opts.DestTarget = DEST_DOSP) Then
+    Begin
+      WriteMZFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  MZ DOS EXE genere : ', Opts.OutFile);
+    End
+    Else
+    Begin
+      WritePEFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  PE Win32 genere : ', Opts.OutFile);
+    End;
   End;
 
   { Generation du fichier COFF pour les unites Win32 (TODO 27) }

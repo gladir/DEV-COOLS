@@ -5,3 +5,4 @@
 *.ppu
 /TPCW32
 *.exe
+/TESTS/EMU8086

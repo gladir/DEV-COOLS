@@ -17,14 +17,14 @@ Const
  sfNone=0;         { Aucune faute }
  sfInvalidCode=1;  { Code machine invalide }
  sfHLT=2;          { Instruction machine HLT }
- sfHotBoot=3;      { DÇmarrage Ö chaud }
- sfColdBoot=4;     { DÇmarrage Ö froid }
+ sfHotBoot=3;      { DÔøΩmarrage ÔøΩ chaud }
+ sfColdBoot=4;     { DÔøΩmarrage ÔøΩ froid }
  sfInvalidIntr=5;  { Interruption invalide }
  sfEndProgram=6;   { Fin de programme de l'interruption 20h }
- sfBreakPoint=7;   { Point d'arràt }
+ sfBreakPoint=7;   { Point d'arrÔøΩt }
  sfDivision0=8;    { Division par 0 }
 
- { Les diffÇrents micro-ordinateurs Ö Çmuler }
+ { Les diffÔøΩrents micro-ordinateurs ÔøΩ ÔøΩmuler }
  mcIBMPC=0;
  mcPC_XT=1;
  mcPCJunior=2;
@@ -34,7 +34,7 @@ Const
  mcWang=87;
  mcAmdekSystem88=88;
 
- { Les diffÇrents Micro-Processeur (CPU) }
+ { Les diffÔøΩrents Micro-Processeur (CPU) }
  cpu8088=0;                { Intel 8088 }
  cpu8086=1;                { Intel 8086 }
  cpuV20=2;                 { NEC V20 }
@@ -50,8 +50,8 @@ Const
  cpuPentiumMMX=12;         { Pentium-MMX }
  cpuPentiumII=13;          { Pentium II }
 
-  {Les diffÇrents fabricants du CPU}
- cvIntel=0;                { Intel, par dÇfaut }
+  {Les diffÔøΩrents fabricants du CPU}
+ cvIntel=0;                { Intel, par dÔøΩfaut }
  cvCyrix=1;                { Cyrix }
  cvIBM=2;                  { IBM }
  cvAMD=3;                  { AMD }
@@ -77,17 +77,17 @@ Type
   Sign:Array[0..1]of Char; {  0 - Signature 'MZ' }
   LenN511:Word;            {  2 - Longueur Module 512 (Et binaire 511) }
   LenShr9:Word;            {  4 - Longueur Diviser 512 (Shift Right 9) }
-  NmSeg:Word;              {  6 - Nombre de segment Ö adapter }
-  SizeOfHeader:Word;       {  8 - Taille de l'entàte en paragraphe }
+  NmSeg:Word;              {  6 - Nombre de segment ÔøΩ adapter }
+  SizeOfHeader:Word;       {  8 - Taille de l'entÔøΩte en paragraphe }
   MinParagraph:Word;       { 10 - Nombre minimal de paragraphe }
   MaxParagraph:Word;       { 12 - Nombre maximal de paragraphe }
-  OfsLoadStack:Word;       { 14 - DÇplacement de chargement de module dans la pile }
+  OfsLoadStack:Word;       { 14 - DÔøΩplacement de chargement de module dans la pile }
   SizeOfStack:Word;        { 16 - Taille de la pile (SP) }
-  CheckSum:Word;           { 18 - VÇrificateur de l'entàte du fichier ex,cutable }
-  IP:Word;                 { 20 - Point d'entrÇe d'instruction }
-  OfsLoad:Word;            { 22 - DÇplacement de chargement de module dans le code }
+  CheckSum:Word;           { 18 - VÔøΩrificateur de l'entÔøΩte du fichier ex,cutable }
+  IP:Word;                 { 20 - Point d'entrÔøΩe d'instruction }
+  OfsLoad:Word;            { 22 - DÔøΩplacement de chargement de module dans le code }
   AdrExeTable:Word;        { 24 - Adresse de la table de relogement du programme EXE }
-  NmOvr:Word;              { 26 - NumÇro de recouvrement (0 pour le programme principal) }
+  NmOvr:Word;              { 26 - NumÔøΩro de recouvrement (0 pour le programme principal) }
  End;
 
  PSPRecord=Record Case Byte of
@@ -122,11 +122,11 @@ Var
  FileName,S:String;
  Memory:File;
  ModelComputer:Word;
- Option:Set of (soMath,      { Coprocesseur mathÇmatique activÇ? }
-                soWaitState, { DÇlai entre les instructions? }
-                soMMX,       { Instruction MMX supportÇ? }
-                soCPUID,     { Instruction ÆCPUIDØ supportÇ? }
-                soSETALC);   { Instruction ÆSETALCØ supportÇ? }
+ Option:Set of (soMath,      { Coprocesseur mathÔøΩmatique activÔøΩ? }
+                soWaitState, { DÔøΩlai entre les instructions? }
+                soMMX,       { Instruction MMX supportÔøΩ? }
+                soCPUID,     { Instruction ÔøΩCPUIDÔøΩ supportÔøΩ? }
+                soSETALC);   { Instruction ÔøΩSETALCÔøΩ supportÔøΩ? }
  CPUVendor:Byte; { Fabricant du microprocesseur }
  Segs:Record Case Byte of
   0:(ES,CS,SS,DS:Word);
@@ -152,7 +152,7 @@ Var
  CmosPos:Byte;   { Position dans le CMOS }
  CurrSeg:Byte;   { Segment courant (CS: DS:,..)}
  OldCSeg:Word;   { Ancien segment de code }
- CodeBrk:Integer;     { Code machine de point d'arràt }
+ CodeBrk:Integer;     { Code machine de point d'arrÔøΩt }
  PSP:Word;       { PSP de l'application }
  CurrFilesHandles:Integer;
  FilesHandles:Array[10..25]of File;
@@ -354,7 +354,7 @@ Begin
  {$I-}Assign(Memory,SwapFileMemory);
  Rewrite(Memory,1);{$I+}
  If IOResult<>0 Then Begin
-  WriteLn('Impossible de crÇer un fichier temporaire pour la mÇmoire');
+  WriteLn('Impossible de crÔøΩer un fichier temporaire pour la mÔøΩmoire');
   Halt(1);
  End;
  FillChar(ClrBuffer,SizeOf(ClrBuffer),0);
@@ -362,7 +362,7 @@ Begin
   Seek(Memory,LongInt(J) shl 10);
   BlockWrite(Memory,ClrBuffer,SizeOf(ClrBuffer),ByteWrited);
  End;
-  { Configure le matÇriel }
+  { Configure le matÔøΩriel }
  Case ModelComputer of
   mcIBMPC:Begin
    Include(Option,soSETALC);
@@ -1096,7 +1096,7 @@ Begin
  If(L=Num+1)Then Begin
   If(Debug)Then WriteLn('Interruption ',ByteHex2Str(Num),'h statique');
   Case(Num)of
-   $10:Begin { Emulation de l'interruption vidÇo }
+   $10:Begin { Emulation de l'interruption vidÔøΩo }
     Case(Regs.AH)of
      $02:Begin
       GotoXY(Regs.DL+1,Regs.DH+1);
@@ -1146,9 +1146,9 @@ Begin
       End;
      End;
      $0F:Begin
-      Regs.AL:=3;  { NumÇro de mode vidÇo }
+      Regs.AL:=3;  { NumÔøΩro de mode vidÔøΩo }
       Regs.AH:=80; { Nombre de colonne }
-      Regs.BH:=0;  { NumÇro de page courant }
+      Regs.BH:=0;  { NumÔøΩro de page courant }
      End;
      $1A:If Regs.AL=0Then Begin
 {      Case(GetVideoCardCat)of
@@ -1163,7 +1163,7 @@ Begin
      End;
     End;
    End;
-   $13:Case(Regs.AH)of { Emulation de l'interruption vidÇo }
+   $13:Case(Regs.AH)of { Emulation de l'interruption vidÔøΩo }
     $02..$05,$07,$0A..$0B:Begin
      If(Regs.AH)in[3,5,7,$B]Then ReadBlock(Segs.ES,Regs.BX,Tampon,512);
      If(Regs.AH)in[2,4,$A]Then WriteBlock(Segs.ES,Regs.BX,Tampon,512);
@@ -1198,7 +1198,7 @@ Begin
      If ByteReaded<Length(TamponStr)Then TamponStr[0]:=Char(ByteReaded);
      WriteBlock(Segs.DS,Regs.DX+1,TamponStr,Length(TamponStr)+1);
     End;
-    $0B:Begin { Demande l'Çtat de la console }
+    $0B:Begin { Demande l'ÔøΩtat de la console }
      If(Keypressed)Then Regs.AL:=255
                    Else Regs.AL:=0;
     End;
@@ -1219,7 +1219,7 @@ Begin
       End;
      End;
     End;
-    $0E:Begin { SÇlectionne un disque (Select Disk) }
+    $0E:Begin { SÔøΩlectionne un disque (Select Disk) }
      {$I-}ChDir(Chr(Regs.DL+65)+':');{$I+}
      If IoResult<>0Then Regs.AL:=$FF
                    Else Regs.AL:=0;
@@ -1255,7 +1255,7 @@ Begin
       Regs.DL:=Byte(BoolValue);
      End;
      $01:If Not(ReadOnlyMachine)Then SetCBreak(Boolean(Regs.DL));
-     $05:Regs.DX:=0 {UnitÇ de dÇmarrage};
+     $05:Regs.DX:=0 {UnitÔøΩ de dÔøΩmarrage};
      $06:Begin
       Regs.AL:=$FF;
       Regs.BX:=DOSVersion;
@@ -1279,7 +1279,7 @@ Begin
     End;
     $38:Case Regs.AL of
      $00:Begin
-      WriteWord(Segs.DS,Regs.DX,2); { AnnÇe-Mois-Jour }
+      WriteWord(Segs.DS,Regs.DX,2); { AnnÔøΩe-Mois-Jour }
       WriteWord(Segs.DS,Regs.DX+$02,Byte('$'));
       WriteWord(Segs.DS,Regs.DX+$07,Byte(' '));
       WriteWord(Segs.DS,Regs.DX+$09,Byte(','));
@@ -1332,7 +1332,7 @@ Begin
       Regs.AX:=2;
      End;
     End;
-    $3C:Begin { CrÇe un fichier }
+    $3C:Begin { CrÔøΩe un fichier }
      If(ReadOnlyMachine)Then Begin
       Include(Flags.s,CF);
       Regs.AX:=5;
@@ -1447,7 +1447,7 @@ Begin
      Regs.AX:=5;
     End
      Else
-    Begin { êcriture d'un bloc }
+    Begin { ÔøΩcriture d'un bloc }
      L:=Regs.CX;
      PB:=Regs.DX;
      Regs.AX:=0;
@@ -1470,7 +1470,7 @@ Begin
     $4C:Begin
      Fault:=sfEndProgram;
     End;
-    $50:Begin { DÇfinir PSP actif }
+    $50:Begin { DÔøΩfinir PSP actif }
      PSP:=Regs.BX;
      Regs.AX:=0;
      Exclude(Flags.s,CF);
@@ -2072,7 +2072,7 @@ End;
 
 Procedure PopWordFlags;Begin
  Flags.Base:=PopWordStack;
-  {Effacer les bits appropriÇ...}
+  {Effacer les bits appropriÔøΩ...}
 End;
 
 Procedure PushLongStack(Value:LongInt);
@@ -2204,7 +2204,7 @@ Var
  Ofs:Word;
  IC:Byte;
  OldNextCode:Byte;
- OldValue:Word; { Anciennes valeurs pour les Çchanges }
+ OldValue:Word; { Anciennes valeurs pour les ÔøΩchanges }
 Begin
  NextCode:=S86GetCode(HeadLen);
  OldNextCode:=NextCode;
@@ -2344,7 +2344,7 @@ Procedure WriteByteValue(Value:Byte;HeadLen:Byte);Begin
 End;
 
 Procedure OutPortByte(Addr:Word;Value:Byte);Begin
- { Port d'entrÇe/sortie };
+ { Port d'entrÔøΩe/sortie };
  Case Addr of
   $E0:If ModelComputer=mcAmdekSystem88 Then Begin { CMOS }
    CmosPos:=Value;
@@ -2544,8 +2544,8 @@ Label
  Restart,InvalidOpcode;
 Var
  NC:Byte;
- TW:Word;        { Traåtement temporaire 16 bits }
- TL:LongInt;     { Traåtement temporaire 32 bits }
+ TW:Word;        { TraÔøΩtement temporaire 16 bits }
+ TL:LongInt;     { TraÔøΩtement temporaire 32 bits }
  Code:Byte;
 Begin
  CurrSeg:=$FF;
@@ -2596,18 +2596,18 @@ Restart:
    NC:=(S86GetCode(1)and$3F)shr 3;
    S86AddWord(Regs.AbsWord[NC].Lo,ReadWordValue(1));
   End;
-  $04:If(CPU>=cpu80286)Then Begin { ADD AL,xxh }
+  $04:Begin { ADD AL,xxh }
    S86AddByte(Regs.AL,S86GetCode(1));
    IncCode(2);
-  End
-   Else
-  Goto InvalidOpCode;
-  $05:If(CPU>=cpu80286)Then Begin { ADD AX,xxyyh }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $05:Begin { ADD AX,xxyyh }
    S86AddWord(Regs.AX,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $06:Begin { PUSH ES }
    PushWordStack(Segs.ES);
    IncCode(1);
@@ -2630,18 +2630,18 @@ Restart:
    NC:=(S86GetCode(1)and$3F)shr 3;
    S86OrWord(Regs.AbsWord[NC].Lo,ReadWordValue(1));
   End;
-  $0C:If(CPU>=cpu80286)Then Begin { OR AL,xxh }
+  $0C:Begin { OR AL,xxh }
    S86OrByte(Regs.AL,S86GetCode(1));
    IncCode(2);
-  End
-   Else
-  Goto InvalidOpCode;
-  $0D:If(CPU>=cpu80286)Then Begin { OR AX,xxyyh }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $0D:Begin { OR AX,xxyyh }
    S86OrWord(Regs.AX,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $0E:Begin { PUSH CS }
    PushWordStack(Segs.CS);
    IncCode(1);
@@ -2650,9 +2650,9 @@ Restart:
    $06:If(CPU>=cpu80286)Then Begin { CLTS }
 {    Exclude(Control.s,TS);}
     IncCode(2);
-   End
-    Else
-   Goto InvalidOpCode;
+   End;
+  { removed orphan else }
+  { removed orphan goto }
    $80:If(CPU>=cpui386)Then NearJmp((_OF)in(Flags.s),4) { JO near }
                        Else Goto InvalidOpCode;
    $81:If(CPU>=cpui386)Then NearJmp(Not((_OF)in(Flags.s)),4) { JNO near }
@@ -2688,15 +2688,15 @@ Restart:
    $A0:If(CPU>=cpui386)Then Begin { PUSH FS }
     PushWordStack(FS);
     IncCode(2);
-   End
-    Else
-   Goto InvalidOpCode;
+   End;
+  { removed orphan else }
+  { removed orphan goto }
    $A1:If(CPU>=cpui386)Then Begin { POP FS }
     FS:=PopWordStack;
     IncCode(2);
-   End
-    Else
-   Goto InvalidOpCode;
+   End;
+  { removed orphan else }
+  { removed orphan goto }
    $A2:If(soCPUID)in(Option)Then Begin { CPUID }
     Case(Regs.EAX)of
      0:Case(CPUVendor)of
@@ -2711,27 +2711,27 @@ Restart:
       End;
      End;
      1:Begin
-      Regs.EAX:=0; { DonnÇes divers Ö complÇter...}
+      Regs.EAX:=0; { DonnÔøΩes divers ÔøΩ complÔøΩter...}
       Regs.EBX:=0;
       Regs.ECX:=0;
      End;
     End;
     IncCode(2);
-   End
-    Else
-   Goto InvalidOpCode;
+   End;
+  { removed orphan else }
+  { removed orphan goto }
    $A8:If(CPU>=cpui386)Then Begin { PUSH GS }
     PushWordStack(GS);
     IncCode(2);
-   End
-    Else
-   Goto InvalidOpCode;
+   End;
+  { removed orphan else }
+  { removed orphan goto }
    $A9:If(CPU>=cpui386)Then Begin { POP GS }
     GS:=PopWordStack;
     IncCode(2);
-   End
-    Else
-   Goto InvalidOpCode;
+   End;
+  { removed orphan else }
+  { removed orphan goto }
    $B2:If(CPU>=cpui386)Then Segs.SS:=LoadAddr(2) { LSS }
                        Else Goto InvalidOpCode;
    $B4:If(CPU>=cpui386)Then FS:=LoadAddr(2) { LFS }
@@ -2741,9 +2741,9 @@ Restart:
    $C8..$CF:If(CPU>=cpui486)Then Begin { BSWAP }
     S86BSWAP(Regs.Abs[S86GetCode(1)and 7]);
     IncCode(2);
-   End
-    Else
-   Goto InvalidOpCode;
+   End;
+  { removed orphan else }
+  { removed orphan goto }
    Else Goto InvalidOpCode;
   End;
   $10:Begin { ADC registre 8 bits,registre 8 bits}
@@ -2760,18 +2760,18 @@ Restart:
    NC:=(S86GetCode(1)and$3F)shr 3;
    S86AdcWord(Regs.AbsWord[NC].Lo,ReadWordValue(1));
   End;
-  $14:If(CPU>=cpu80286)Then Begin { ADC AL,xxh }
+  $14:Begin { ADC AL,xxh }
    S86AdcByte(Regs.AL,S86GetCode(1));
    IncCode(2);
-  End
-   Else
-  Goto InvalidOpCode;
-  $15:If(CPU>=cpu80286)Then Begin { ADC AX,xxyyh }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $15:Begin { ADC AX,xxyyh }
    S86AdcWord(Regs.AX,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $16:Begin { PUSH SS }
    PushWordStack(Segs.SS);
    IncCode(1);
@@ -2794,18 +2794,18 @@ Restart:
    NC:=(S86GetCode(1)and$3F)shr 3;
    S86SbbWord(Regs.AbsWord[NC].Lo,ReadWordValue(1));
   End;
-  $1C:If(CPU>=cpu80286)Then Begin { SBB AL,xxh }
+  $1C:Begin { SBB AL,xxh }
    S86SbbByte(Regs.AL,S86GetCode(1));
    IncCode(2);
-  End
-   Else
-  Goto InvalidOpCode;
-  $1D:If(CPU>=cpu80286)Then Begin { SBB AX,xxyyh }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $1D:Begin { SBB AX,xxyyh }
    S86SbbWord(Regs.AX,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $1E:Begin { PUSH DS }
    PushWordStack(Segs.DS);
    IncCode(1);
@@ -2828,18 +2828,18 @@ Restart:
    NC:=(S86GetCode(1)and$3F)shr 3;
    S86AndWord(Regs.AbsWord[NC].Lo,ReadWordValue(1));
   End;
-  $24:If(CPU>=cpu80286)Then Begin { AND AL,xxh }
+  $24:Begin { AND AL,xxh }
    S86AndByte(Regs.AL,S86GetCode(1));
    IncCode(2);
-  End
-   Else
-  Goto InvalidOpCode;
-  $25:If(CPU>=cpu80286)Then Begin { AND AX,xxyyh }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $25:Begin { AND AX,xxyyh }
    S86AndWord(Regs.AX,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $26:Begin { ES: }
    If CurrSeg<>$FFThen Exit;
    CurrSeg:=0;
@@ -2878,18 +2878,18 @@ Restart:
    NC:=(S86GetCode(1)and$3F)shr 3;
    S86SubWord(Regs.AbsWord[NC].Lo,ReadWordValue(1));
   End;
-  $2C:If(CPU>=cpu80286)Then Begin { SUB AL,xxh }
+  $2C:Begin { SUB AL,xxh }
    S86SubByte(Regs.AL,S86GetCode(1));
    IncCode(2);
-  End
-   Else
-  Goto InvalidOpCode;
-  $2D:If(CPU>=cpu80286)Then Begin { SUB AX,xxyyh }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $2D:Begin { SUB AX,xxyyh }
    S86SubWord(Regs.AX,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $2E:Begin { CS: }
    If CurrSeg<>$FFThen Exit;
    CurrSeg:=1;
@@ -2929,18 +2929,18 @@ Restart:
    NC:=(S86GetCode(1)and$3F)shr 3;
    S86XorWord(Regs.AbsWord[NC].Lo,ReadWordValue(1));
   End;
-  $34:If(CPU>=cpu80286)Then Begin { XOR AL,xxh }
+  $34:Begin { XOR AL,xxh }
    S86XorByte(Regs.AL,S86GetCode(1));
    IncCode(2);
-  End
-   Else
-  Goto InvalidOpCode;
-  $35:If(CPU>=cpu80286)Then Begin { XOR AX,xxyyh }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $35:Begin { XOR AX,xxyyh }
    S86XorWord(Regs.AX,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $36:Begin { SS: }
    If CurrSeg<>$FFThen Exit;
    CurrSeg:=2;
@@ -2976,18 +2976,18 @@ Restart:
    NC:=(S86GetCode(1)and$3F)shr 3;
    S86CmpWord(Regs.AbsWord[NC].Lo,ReadWordValue(1));
   End;
-  $3C:If(CPU>=cpu80286)Then Begin { CMP AL,xxh }
+  $3C:Begin { CMP AL,xxh }
    S86CmpByte(Regs.AL,S86GetCode(1));
    IncCode(2);
-  End
-   Else
-  Goto InvalidOpCode;
-  $3D:If(CPU>=cpu80286)Then Begin { CMP AX,xxyyh }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $3D:Begin { CMP AX,xxyyh }
    S86CmpWord(Regs.AX,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $3E:Begin { DS: }
    If CurrSeg<>$FFThen Exit;
    CurrSeg:=3;
@@ -3036,9 +3036,9 @@ Restart:
    PushWordStack(Regs.CX);
    PushWordStack(Regs.AX);
    IncCode(1);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $61:If(CPU>=cpu80286)Then Begin { POPA }
    Regs.AX:=PopWordStack;
    Regs.CX:=PopWordStack;
@@ -3049,25 +3049,25 @@ Restart:
    Regs.SI:=PopWordStack;
    Regs.DI:=PopWordStack;
    IncCode(1);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $64:If(CPU>=cpui386)Then Begin { FS: }
    If CurrSeg<>$FFThen Exit;
    CurrSeg:=4;
    IncCode(1);
    Goto Restart;
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $65:If(CPU>=cpui386)Then Begin { GS: }
    If CurrSeg<>$FFThen Exit;
    CurrSeg:=5;
    IncCode(1);
    Goto Restart;
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $66:If(CPU>=cpui386)Then Case S86GetCode(1)of
    $50..$57:Begin { PUSH registre 32 bits }
     PushLongStack(Regs.Abs[CurrCode and 7]);
@@ -3106,24 +3106,24 @@ Restart:
                  Else IncCode(3);
    End;
    Else Goto InvalidOpcode;
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $67:Goto InvalidOpCode;
-  $68:If(CPU>=cpu80286)Then Begin { PUSH nombre immÇdiat 16 bits }
+  $68:If(CPU>=cpu80286)Then Begin { PUSH nombre immÔøΩdiat 16 bits }
    PushWordStack(GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
-  $6A:If(CPU>=cpu80286)Then Begin { PUSH nombre immÇdiat 8 bits en 16 bits}
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $6A:If(CPU>=cpu80286)Then Begin { PUSH nombre immÔøΩdiat 8 bits en 16 bits}
    NC:=S86GetCode(1);
    If NC>=$80Then PushWordStack($FF00+NC)
              Else PushWordStack(NC);
    IncCode(2);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $70:ShortJmp((_OF)in(Flags.s),2); { JO short }
   $71:ShortJmp(Not((_OF)in(Flags.s)),2); { JNO short }
   $72:ShortJmp((CF)in(Flags.s),2); { JC short }
@@ -3143,9 +3143,41 @@ Restart:
   $80:Begin
    NC:=S86GetCode(1);
    Case NC shr 3 of
-    7,15:Begin{ 80h 38h Ö 80h 3Fh, 80h 78h Ö 80h 7Fh }
+    7,15:Begin{ CMP byte ptr }
      WriteValue(S86GetCode(EstimateSizeOpCodeAddr(1)),1,False,opCmp);
      IncCode(1);
+    End;
+    $18:Begin { ADD registre 8 bits,valeur }
+     S86AddByte(Byte(GetReg8BitsPtr(NC and$07)^),S86GetCode(2));
+     IncCode(3);
+    End;
+    $19:Begin { OR registre 8 bits,valeur }
+     S86OrByte(Byte(GetReg8BitsPtr(NC and$07)^),S86GetCode(2));
+     IncCode(3);
+    End;
+    $1A:Begin { ADC registre 8 bits,valeur }
+     S86AdcByte(Byte(GetReg8BitsPtr(NC and$07)^),S86GetCode(2));
+     IncCode(3);
+    End;
+    $1B:Begin { SBB registre 8 bits,valeur }
+     S86SbbByte(Byte(GetReg8BitsPtr(NC and$07)^),S86GetCode(2));
+     IncCode(3);
+    End;
+    $1C:Begin { AND registre 8 bits,valeur }
+     S86AndByte(Byte(GetReg8BitsPtr(NC and$07)^),S86GetCode(2));
+     IncCode(3);
+    End;
+    $1D:Begin { SUB registre 8 bits,valeur }
+     S86SubByte(Byte(GetReg8BitsPtr(NC and$07)^),S86GetCode(2));
+     IncCode(3);
+    End;
+    $1E:Begin { XOR registre 8 bits,valeur }
+     S86XorByte(Byte(GetReg8BitsPtr(NC and$07)^),S86GetCode(2));
+     IncCode(3);
+    End;
+    $1F:Begin { CMP registre 8 bits,valeur }
+     S86CmpByte(Byte(GetReg8BitsPtr(NC and$07)^),S86GetCode(2));
+     IncCode(3);
     End;
     Else Goto InvalidOpCode;
    End;
@@ -3153,11 +3185,35 @@ Restart:
   $81:Begin
    NC:=S86GetCode(1);
    Case NC shr 3of
-    $1D:Begin
+    $18:Begin { ADD registre 16 bits,valeur }
+     S86AddWord(Regs.AbsWord[NC and$07].Lo,GetCodeWord(2));
+     IncCode(4);
+    End;
+    $19:Begin { OR registre 16 bits,valeur }
+     S86OrWord(Regs.AbsWord[NC and$07].Lo,GetCodeWord(2));
+     IncCode(4);
+    End;
+    $1A:Begin { ADC registre 16 bits,valeur }
+     S86AdcWord(Regs.AbsWord[NC and$07].Lo,GetCodeWord(2));
+     IncCode(4);
+    End;
+    $1B:Begin { SBB registre 16 bits,valeur }
+     S86SbbWord(Regs.AbsWord[NC and$07].Lo,GetCodeWord(2));
+     IncCode(4);
+    End;
+    $1C:Begin { AND registre 16 bits,valeur }
+     S86AndWord(Regs.AbsWord[NC and$07].Lo,GetCodeWord(2));
+     IncCode(4);
+    End;
+    $1D:Begin { SUB registre 16 bits,valeur }
      S86SubWord(Regs.AbsWord[NC and$07].Lo,GetCodeWord(2));
      IncCode(4);
     End;
-    $1F:Begin
+    $1E:Begin { XOR registre 16 bits,valeur }
+     S86XorWord(Regs.AbsWord[NC and$07].Lo,GetCodeWord(2));
+     IncCode(4);
+    End;
+    $1F:Begin { CMP registre 16 bits,valeur }
      S86CmpWord(Regs.AbsWord[NC and$07].Lo,GetCodeWord(2));
      IncCode(4);
     End;
@@ -3178,12 +3234,36 @@ Restart:
       {???Pas certain...}
      WriteValue(S86GetCode(Q,EstimateSizeOpCodeAddr(2)),2,True,opCmp);
     End;*)
-    $18:Begin
+    $18:Begin { ADD registre 16 bits,valeur sign-ext }
      S86AddWord(Regs.AbsWord[NC and$07].Lo,S86GetCode(2));
      IncCode(3);
     End;
-    $1A:Begin { ADC registre 16 bits,valeur}
+    $19:Begin { OR registre 16 bits,valeur sign-ext }
+     S86OrWord(Regs.AbsWord[NC and$07].Lo,S86GetCode(2));
+     IncCode(3);
+    End;
+    $1A:Begin { ADC registre 16 bits,valeur sign-ext }
      S86AdcWord(Regs.AbsWord[NC and$07].Lo,S86GetCode(2));
+     IncCode(3);
+    End;
+    $1B:Begin { SBB registre 16 bits,valeur sign-ext }
+     S86SbbWord(Regs.AbsWord[NC and$07].Lo,S86GetCode(2));
+     IncCode(3);
+    End;
+    $1C:Begin { AND registre 16 bits,valeur sign-ext }
+     S86AndWord(Regs.AbsWord[NC and$07].Lo,S86GetCode(2));
+     IncCode(3);
+    End;
+    $1D:Begin { SUB registre 16 bits,valeur sign-ext }
+     S86SubWord(Regs.AbsWord[NC and$07].Lo,S86GetCode(2));
+     IncCode(3);
+    End;
+    $1E:Begin { XOR registre 16 bits,valeur sign-ext }
+     S86XorWord(Regs.AbsWord[NC and$07].Lo,S86GetCode(2));
+     IncCode(3);
+    End;
+    $1F:Begin { CMP registre 16 bits,valeur sign-ext }
+     S86CmpWord(Regs.AbsWord[NC and$07].Lo,S86GetCode(2));
      IncCode(3);
     End;
     Else Goto InvalidOpCode;
@@ -3293,30 +3373,30 @@ Restart:
    Regs.AH:=Flags.Abs;
    IncCode(1);
   End;
-  $A0:If(CPU>=cpu80286)Then Begin { MOV AL,? }
+  $A0:Begin { MOV AL,? }
    Regs.AL:=ReadWordOfs(GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
-  $A1:If(CPU>=cpu80286)Then Begin { MOV AX,? }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $A1:Begin { MOV AX,? }
    Regs.AX:=ReadWordOfs(GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
-  $A2:If(CPU>=cpu80286)Then Begin { MOV ?,AL }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $A2:Begin { MOV ?,AL }
    WriteByteOfs(Regs.AL,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
-  $A3:If(CPU>=cpu80286)Then Begin { MOV ?,AX }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $A3:Begin { MOV ?,AX }
    WriteWordOfs(Regs.AX,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $A4:Begin { MOVSB }
    S86MoveLeft(Segs.DS,Regs.SI,Segs.ES,Regs.DI,1);
    S86IncCountString(True,True);
@@ -3327,18 +3407,18 @@ Restart:
    S86AddCountString(2,True,True);
    IncCode(1);
   End;
-  $A8:If(CPU>=cpu80286)Then Begin { TEST AL,xxh }
+  $A8:Begin { TEST AL,xxh }
    S86TestByte(Regs.AL,S86GetCode(1));
    IncCode(2);
-  End
-   Else
-  Goto InvalidOpCode;
-  $A9:If(CPU>=cpu80286)Then Begin { TEST AX,xxyyh }
+  End;
+  { removed orphan else }
+  { removed orphan goto }
+  $A9:Begin { TEST AX,xxyyh }
    S86TestByte(Regs.AX,GetCodeWord(1));
    IncCode(3);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $AA:Begin { STOSB }
    WriteBlock(Segs.ES,Regs.DI,Regs.AL,SizeOf(Byte));
    S86IncCountString(False,True);
@@ -3378,9 +3458,9 @@ Restart:
      IncCode(3);
     End;
    End;
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $C2,$C3:Begin { RETN ???? }
    NC:=CurrCode;
    IP:=PopWordStack;
@@ -3392,16 +3472,16 @@ Restart:
   $C5:Segs.DS:=LoadAddr(1); { LDS }
   $C6:Begin
    WriteValue(S86GetCode(EstimateSizeOpCodeAddr(1)),1,False,opMov);
-   IncCode(1); { Saute les donnÇes immÇdiate }
+   IncCode(1); { Saute les donnÔøΩes immÔøΩdiate }
   End;
-  $C7:Begin { MOV adresse,immÇdiat16 }
+  $C7:Begin { MOV adresse,immÔøΩdiat16 }
    WriteValue(S86GetCode(EstimateSizeOpCodeAddr(1)),1,True,opMov);
-   IncCode(2); { Saute les donnÇes immÇdiate }
+   IncCode(2); { Saute les donnÔøΩes immÔøΩdiate }
   End;
   $C9:If(CPU>=cpu80286)Then Begin { LEAVE }
    Regs.SP:=Regs.BP;
    Regs.BP:=PopWordStack;
-   IncCode(1); { Saute les donnÇes immÇdiate }
+   IncCode(1); { Saute les donnÔøΩes immÔøΩdiate }
   End
    Else
   Goto InvalidOpcode;
@@ -3474,21 +3554,21 @@ Restart:
    Regs.AH:=Regs.AL div S86GetCode(1);
    Regs.AL:=Regs.AL mod S86GetCode(1);
    IncCode(1);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $D5:If S86GetCode(1)=$0AThen Begin { AAD }
    Regs.AX:=(Regs.AL+(Regs.AH*S86GetCode(1)))and $FF;
    IncCode(1);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $D6:If(soSETALC)in(Option)Then Begin { SETALC }
    Regs.AL:=Byte((CF)in(Flags.s));
    IncCode(1);
-  End
-   Else
-  Goto InvalidOpCode;
+  End;
+  { removed orphan else }
+  { removed orphan goto }
   $D7:Begin { XLAT }
    CurrSeg:=3;
    Regs.AL:=ReadWordOfs(Regs.BX+Regs.AL);
@@ -3616,7 +3696,7 @@ Restart:
   $F6:Begin
    NC:=S86GetCode(1);
    Case(NC)of
-    $C0..$C7:Begin { TEST registre 8 bits,immÇdiat }
+    $C0..$C7:Begin { TEST registre 8 bits,immÔøΩdiat }
      S86TestByte(Byte(GetReg8BitsPtr(S86GetCode(1))^),GetCodeWord(2));
      IncCode(4);
     End;
@@ -3728,10 +3808,10 @@ Restart:
    NC:=S86GetCode(1);
    Case(NC)of
     $00..$07:Begin { INC registre 8 bits }
-     WriteValue(0{InutilisÇ},1,True,opInc);
+     WriteValue(0{InutilisÔøΩ},1,True,opInc);
     End;
     $08..$0F:Begin { DEC registre 8 bits }
-     WriteValue(0{InutilisÇ},1,True,opDec);
+     WriteValue(0{InutilisÔøΩ},1,True,opDec);
     End;
     $C0..$C7:Begin { INC }
      S86IncByte(Byte(GetReg8BitsPtr(NC)^));
@@ -3800,7 +3880,7 @@ Begin
   Regs.SP:=$FFFE;
   Regs.BP:=$091C;
   IP:=$100;
-   { êcriture des donnÇes du PSP }
+   { ÔøΩcriture des donnÔøΩes du PSP }
   FillChar(PSP,SizeOf(PSP),0);
   PSP.Int20h:=$20CD;
   PSP.EndSegPrg:=$9FFF;
@@ -3818,10 +3898,10 @@ Begin
    Seek(Handle,0);
    BlockRead(Handle,Buffer^,Size,ByteReaded);
    WriteBlock(Segs.CS,IP,Buffer^,Size);
-   If(Verbose)Then WriteLn('Fichier chargÇ en mÇmoire');
+   If(Verbose)Then WriteLn('Fichier chargÔøΩ en mÔøΩmoire');
   End
    Else
-  If(Verbose)Then WriteLn('Manque de mÇmoire pour charger le programme.');
+  If(Verbose)Then WriteLn('Manque de mÔøΩmoire pour charger le programme.');
   FreeMem(Buffer,Size);
   Close(Handle);
  End;
@@ -3845,7 +3925,7 @@ Begin
   Seek(Handle,0);
   BlockRead(Handle,Exe,SizeOf(Exe),ByteReaded);
   If Not((Exe.Sign[0]='M')and(Exe.Sign[1]='Z'))Then Begin
-   WriteLn('Format d''exÇcutable invalide !');
+   WriteLn('Format d''exÔøΩcutable invalide !');
    Halt(10);
   End;
   HeadSize:=Exe.SizeOfHeader*16;
@@ -3858,7 +3938,7 @@ Begin
   Segs.SS:=LoadSeg+Exe.OfsLoadStack;
   Regs.SP:=Exe.SizeOfStack;
   Regs.BP:=$091C;
-   { êcriture des donnÇes du PSP }
+   { ÔøΩcriture des donnÔøΩes du PSP }
   FillChar(PSP,SizeOf(PSP),0);
   PSP.Int20h:=$20CD;
   PSP.EndSegPrg:=$9FFF;
@@ -3877,7 +3957,7 @@ Begin
    WriteAbsBlock(Addr,Buffer,ByteReaded);
    Inc(Addr,ByteReaded);
   End;
-   { Relogement des donnÇes}
+   { Relogement des donnÔøΩes}
   Seek(Handle,Exe.AdrExeTable);
   For I:=1 to Exe.NmSeg do Begin
    BlockRead(Handle,Reloc,SizeOf(Reloc),ByteReaded);
@@ -3901,14 +3981,14 @@ BEGIN
  {$ENDIF}
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
-  WriteLn('RUNIBMPC : Cette commande permet d''exÇcuter du code pour IBM PC (microprocesseur 8086).');
+  WriteLn('RUNIBMPC : Cette commande permet d''exÔøΩcuter du code pour IBM PC (microprocesseur 8086).');
   WriteLn;
   WriteLn('Syntaxe : RUNIBMPC [option] [nomdufichier]');
   WriteLn;
   WriteLn(' nomduficher           Nom du fichier de format COM');
   WriteLn(' /AMDEKSYSTEM88        Simulation du micro-ordinateur Amdek System/88');
   WriteLn(' /CONTERMMAX           Simulation du micro-ordinateur Conterm Max');
-  WriteLn(' /CPU:model            Modäle du microprocesseur : 8086, 8088,...');
+  WriteLn(' /CPU:model            ModÔøΩle du microprocesseur : 8086, 8088,...');
   WriteLn(' /CPUID                Active le support de l''instruction CPUID');
   WriteLn(' /CPUVENDOR:fabricant  Fabricant du microprocesseur : AMD, IBM, INTEL, CYRIX');
   WriteLn(' /IBMPC                Simulation du micro-ordinateur IBM PC original');
@@ -3916,7 +3996,7 @@ BEGIN
   WriteLn(' /PCAT                 Simulation du micro-ordinateur PC AT');
   WriteLn(' /PCJR                 Simulation du micro-ordinateur PC Junior');
   WriteLn(' /PCXT                 Simulation du micro-ordinateur PC XT');
-  WriteLn(' /READONLY             Interdit la modification des donnÇes sur disque');
+  WriteLn(' /READONLY             Interdit la modification des donnÔøΩes sur disque');
   WriteLn(' /SETALC               Active le support de l''instruction SETALC');
   WriteLn(' /WANG                 Simulation du micro-ordinateur WANG');
  End
@@ -3988,23 +4068,23 @@ BEGIN
   If FileName<>''Then Begin
    InitComputer;
    If StrToUpper(Path2Ext(FileName))='.COM'Then Begin
-    If(Verbose)Then WriteLn('Chargement du fichier COM Æ',FileName,'Ø');
+    If(Verbose)Then WriteLn('Chargement du fichier COM ÔøΩ',FileName,'ÔøΩ');
     S86LoadCom(FileName);
    End
     Else
    Begin
-    If(Verbose)Then WriteLn('Chargement du fichier EXE Æ',FileName,'Ø');
+    If(Verbose)Then WriteLn('Chargement du fichier EXE ÔøΩ',FileName,'ÔøΩ');
     S86LoadExe(FileName);
    End;
-   If(Verbose)Then WriteLn('ExÇcution du code');
+   If(Verbose)Then WriteLn('ExÔøΩcution du code');
    Repeat
     Run;
    Until Fault<>0;
-   If(Verbose)Then WriteLn('ExÇcution terminÇ : ',Fault);
+   If(Verbose)Then WriteLn('ExÔøΩcution terminÔøΩ : ',Fault);
    Done;
-   If(Verbose)Then WriteLn('Resource libÇrÇ');
+   If(Verbose)Then WriteLn('Resource libÔøΩrÔøΩ');
   End;
  End
   Else
- WriteLn('Paramätre requis !');
+ WriteLn('ParamÔøΩtre requis !');
 END.
