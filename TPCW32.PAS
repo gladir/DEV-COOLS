@@ -88,6 +88,7 @@ Const
   DEST_Z80   = 5;   { -CZ80 : Zilog Z80           }
   DEST_6502  = 6;   { -C6502 : MOS 6502           }
   DEST_6809  = 7;   { -C6809 : Motorola 6809      }
+  DEST_68000 = 8;   { -C68000 : Motorola 68000    }
 
 Type
   TString = String;
@@ -368,6 +369,7 @@ Begin
   WriteLn('  -CZ80          Destination Zilog Z80');
   WriteLn('  -C6502         Destination MOS 6502');
   WriteLn('  -C6809         Destination Motorola 6809');
+  WriteLn('  -C68000        Destination Motorola 68000');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -482,6 +484,8 @@ Begin
       Opts.DestTarget := DEST_6502
     Else If (UA = '-C6809') Then
       Opts.DestTarget := DEST_6809
+    Else If (UA = '-C68000') Then
+      Opts.DestTarget := DEST_68000
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -4364,6 +4368,7 @@ Procedure BcAssemble8086(Const S: TString); Forward;
 Procedure BcAssembleZ80(Const S: TString); Forward;
 Procedure BcAssemble6502(Const S: TString); Forward;
 Procedure BcAssemble6809(Const S: TString); Forward;
+Procedure BcAssemble68000(Const S: TString); Forward;
 
 { ------------------------------------------------------------ }
 { EmitLabel : ecrire un label suivi de ':'                     }
@@ -4393,6 +4398,8 @@ Begin
       BcAssemble6502(S)
     Else If Opts.DestTarget = DEST_6809 Then
       BcAssemble6809(S)
+    Else If Opts.DestTarget = DEST_68000 Then
+      BcAssemble68000(S)
     Else If (Opts.DestTarget = DEST_DOSR) Or
             (Opts.DestTarget = DEST_DOSP) Then
       BcAssemble8086(S)
@@ -25498,6 +25505,70 @@ Begin { BcAssemble6809 }
 
   { Instruction non reconnue (stub) }
   { WriteLn('BcAssemble6809: non reconnu: [', S, ']'); }
+End;
+
+{ ============================================================ }
+{ BcAssemble68000 - Mini-assembleur Motorola 68000             }
+{ ============================================================ }
+
+Procedure BcAssemble68000(Const S: TString);
+Var
+  Line, Mnem, Tmp, Op1, Op2: TString;
+  P: Integer;
+
+  Procedure SplitOps68000(Const Rest: TString);
+  Var J: Integer;
+  Begin
+    Op1 := ''; Op2 := '';
+    J := 1;
+    While J <= Length(Rest) Do
+    Begin
+      If (Rest[J] = ',') Then
+      Begin
+        Op1 := Copy(Rest, 1, J - 1);
+        Op2 := Copy(Rest, J + 1, Length(Rest) - J);
+        While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+          Delete(Op1, Length(Op1), 1);
+        While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Op1 := Rest;
+    While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+      Delete(Op1, Length(Op1), 1);
+  End;
+
+Begin { BcAssemble68000 }
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+
+  { Extraire le mnemonique }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin
+    Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else Begin Mnem := StrUpperCase(Line); Tmp := ''; End;
+
+  SplitOps68000(Tmp);
+
+  { ---- Instructions implicites (sans operande, 1 mot = 2 octets) ---- }
+  If Mnem = 'NOP'     Then Begin BcEmitB($4E); BcEmitB($71); Exit; End;
+  If Mnem = 'RTS'     Then Begin BcEmitB($4E); BcEmitB($75); Exit; End;
+  If Mnem = 'RTE'     Then Begin BcEmitB($4E); BcEmitB($73); Exit; End;
+  If Mnem = 'RTR'     Then Begin BcEmitB($4E); BcEmitB($77); Exit; End;
+  If Mnem = 'TRAPV'   Then Begin BcEmitB($4E); BcEmitB($76); Exit; End;
+  If Mnem = 'RESET'   Then Begin BcEmitB($4E); BcEmitB($70); Exit; End;
+  If Mnem = 'ILLEGAL' Then Begin BcEmitB($4A); BcEmitB($FC); Exit; End;
+
+  { Instruction non reconnue (stub) }
+  { WriteLn('BcAssemble68000: non reconnu: [', S, ']'); }
 End;
 
 { --- Construction de la section .data binaire --- }
