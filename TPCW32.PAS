@@ -89,6 +89,8 @@ Const
   DEST_6502  = 6;   { -C6502 : MOS 6502           }
   DEST_6809  = 7;   { -C6809 : Motorola 6809      }
   DEST_68000 = 8;   { -C68000 : Motorola 68000    }
+  DEST_ATARIST = 9; { -CATARIST : Atari ST (68000) }
+  DEST_AMIGA = 10;  { -CAMIGA : Amiga (68000)      }
 
 Type
   TString = String;
@@ -124,7 +126,7 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
-    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80 : destination   }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80/-CATARIST/-CAMIGA : destination }
   End;
 
 Var
@@ -370,6 +372,8 @@ Begin
   WriteLn('  -C6502         Destination MOS 6502');
   WriteLn('  -C6809         Destination Motorola 6809');
   WriteLn('  -C68000        Destination Motorola 68000');
+  WriteLn('  -CATARIST      Destination Atari ST (68000)');
+  WriteLn('  -CAMIGA        Destination Amiga (68000)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -486,6 +490,10 @@ Begin
       Opts.DestTarget := DEST_6809
     Else If (UA = '-C68000') Then
       Opts.DestTarget := DEST_68000
+    Else If (UA = '-CATARIST') Then
+      Opts.DestTarget := DEST_ATARIST
+    Else If (UA = '-CAMIGA') Then
+      Opts.DestTarget := DEST_AMIGA
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
@@ -4398,7 +4406,9 @@ Begin
       BcAssemble6502(S)
     Else If Opts.DestTarget = DEST_6809 Then
       BcAssemble6809(S)
-    Else If Opts.DestTarget = DEST_68000 Then
+    Else If (Opts.DestTarget = DEST_68000) Or
+            (Opts.DestTarget = DEST_ATARIST) Or
+            (Opts.DestTarget = DEST_AMIGA) Then
       BcAssemble68000(S)
     Else If (Opts.DestTarget = DEST_DOSR) Or
             (Opts.DestTarget = DEST_DOSP) Then
