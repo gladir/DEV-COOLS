@@ -18369,10 +18369,11 @@ Begin
 
     If (Opts.DestTarget = DEST_DOSR) Or (Opts.DestTarget = DEST_DOSP) Then
     Begin
-      { Mode DOS 16 bits : initialiser DS }
-      EmitComment('Initialiser DS pour DOS 16 bits');
+      { Mode DOS 16 bits : initialiser DS et ES }
+      EmitComment('Initialiser DS et ES pour DOS 16 bits');
       EmitInstr('MOV AX,0');   { placeholder, fixup segment data }
       EmitInstr('MOV DS,AX');
+      EmitInstr('MOV ES,AX');
     End
     Else
     Begin
