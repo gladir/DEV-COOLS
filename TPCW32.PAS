@@ -3386,6 +3386,16 @@ Begin
     RegConst('_GAND', 1);
     RegConst('_GOR', 0);
     RegConst('_GXOR', 4);
+    { Constantes MSGraph - types d adaptateur }
+    RegConst('_MDPA', 1);   RegConst('_CGA', 2);
+    RegConst('_EGA', 3);    RegConst('_VGA', 4);
+    RegConst('_MCGA', 5);   RegConst('_HGC', 6);
+    RegConst('_OCGA', 7);   RegConst('_OEGA', 8);
+    RegConst('_OVGA', 9);
+    { Constantes MSGraph - types de moniteur }
+    RegConst('_MONO', 1);     RegConst('_COLOR', 2);
+    RegConst('_ENHCOLOR', 3); RegConst('_ANALOGMONO', 5);
+    RegConst('_ANALOGCOLOR', 6); RegConst('_ANALOG', 7);
   End;
 
   { ---------------------------------------------------------- }
@@ -3715,6 +3725,57 @@ Begin
     TypeTab[TI].Fields[5].TypeIdx := TY_IDX_WORD;
     TypeTab[TI].Fields[5].Offset  := 10;
     SI := SymAdd('DATETIME', SK_TYPE, TI);
+    If SI >= 0 Then SymTab[SI].IsGlobal := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterVideoConfigType : type _VideoConfig de MSGraph       }
+{ 11 champs Integer (4 octets chacun) = 44 bytes               }
+{ ------------------------------------------------------------ }
+
+Procedure RegisterVideoConfigType;
+Var
+  TI, SI : Integer;
+Begin
+  TI := TypeAdd(TYK_RECORD, '_VIDEOCONFIG', 44, 4, False, -1);
+  If TI >= 0 Then
+  Begin
+    TypeTab[TI].FieldCount := 11;
+    TypeTab[TI].Fields[0].Name    := 'NUMXPIXELS';
+    TypeTab[TI].Fields[0].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[0].Offset  := 0;
+    TypeTab[TI].Fields[1].Name    := 'NUMYPIXELS';
+    TypeTab[TI].Fields[1].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[1].Offset  := 4;
+    TypeTab[TI].Fields[2].Name    := 'NUMTEXTCOLS';
+    TypeTab[TI].Fields[2].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[2].Offset  := 8;
+    TypeTab[TI].Fields[3].Name    := 'NUMTEXTROWS';
+    TypeTab[TI].Fields[3].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[3].Offset  := 12;
+    TypeTab[TI].Fields[4].Name    := 'NUMCOLORS';
+    TypeTab[TI].Fields[4].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[4].Offset  := 16;
+    TypeTab[TI].Fields[5].Name    := 'BITSPERPIXEL';
+    TypeTab[TI].Fields[5].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[5].Offset  := 20;
+    TypeTab[TI].Fields[6].Name    := 'NUMVIDEOPAGES';
+    TypeTab[TI].Fields[6].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[6].Offset  := 24;
+    TypeTab[TI].Fields[7].Name    := 'MODE';
+    TypeTab[TI].Fields[7].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[7].Offset  := 28;
+    TypeTab[TI].Fields[8].Name    := 'ADAPTER';
+    TypeTab[TI].Fields[8].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[8].Offset  := 32;
+    TypeTab[TI].Fields[9].Name    := 'MONITOR';
+    TypeTab[TI].Fields[9].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[9].Offset  := 36;
+    TypeTab[TI].Fields[10].Name    := 'MEMORY';
+    TypeTab[TI].Fields[10].TypeIdx := TY_IDX_INTEGER;
+    TypeTab[TI].Fields[10].Offset  := 40;
+    SI := SymAdd('_VIDEOCONFIG', SK_TYPE, TI);
     If SI >= 0 Then SymTab[SI].IsGlobal := True;
   End;
 End;
@@ -4507,6 +4568,8 @@ Begin
   EmitRaw('GR_ARCYS    DD 0');            { arc start Y                            }
   EmitRaw('GR_ARCXE    DD 0');            { arc end X                              }
   EmitRaw('GR_ARCYE    DD 0');            { arc end Y                              }
+  { _VideoConfig record : 11 x DD = 44 bytes }
+  EmitRaw('GR_VIDCFG   DD 11 DUP(0)');    { _VideoConfig interne                   }
   EmitBlankLine;
 
   { Variables Strings / Printer / Overlay (TODO 21) }
@@ -15255,7 +15318,10 @@ Begin
     Begin
       Inc(EP);
       If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
-      EmitComment('_GetVideoConfig (stub)');
+      { EAX = adresse de la variable VC }
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'GETVIDEOCONFIG');
+      EmitInstr('ADD ESP,4');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -20104,6 +20170,19 @@ Begin
   EmitInstr('MOV DWORD PTR [GR_RESULT],0');  { grOk }
   EmitInstr('MOV DWORD PTR [GR_DRIVER],9');
   EmitInstr('MOV DWORD PTR [GR_MODE],2');
+  { Remplir GR_VIDCFG avec les infos de la configuration video }
+  EmitInstr('LEA EDI,[GR_VIDCFG]');
+  EmitInstr('MOV DWORD PTR [EDI+0],640');    { numxpixels  }
+  EmitInstr('MOV DWORD PTR [EDI+4],480');    { numypixels  }
+  EmitInstr('MOV DWORD PTR [EDI+8],80');     { numtextcols }
+  EmitInstr('MOV DWORD PTR [EDI+12],25');    { numtextrows }
+  EmitInstr('MOV DWORD PTR [EDI+16],16');    { numcolors   }
+  EmitInstr('MOV DWORD PTR [EDI+20],4');     { bitsperpixel}
+  EmitInstr('MOV DWORD PTR [EDI+24],1');     { numvideopages}
+  EmitInstr('MOV DWORD PTR [EDI+28],18');    { mode=_VRes16Color}
+  EmitInstr('MOV DWORD PTR [EDI+32],4');     { adapter=_VGA}
+  EmitInstr('MOV DWORD PTR [EDI+36],7');     { monitor=_Analog}
+  EmitInstr('MOV DWORD PTR [EDI+40],1024');  { memory=1024 KB}
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -20768,11 +20847,35 @@ Begin
   EmitInstr('CMP DWORD PTR [GR_HWND],0');
   EmitInstr('JZ ' + TP_RT_PFX + 'SVM_FAIL');
   EmitLabel(TP_RT_PFX + 'SVM_DONE');
+  { Mettre a jour le champ mode de GR_VIDCFG avec le mode demande }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('LEA EDX,[GR_VIDCFG]');
+  EmitInstr('MOV DWORD PTR [EDX+28],EAX');
   EmitInstr('MOV EAX,25');                    { 25 lignes texte = succes }
   EmitInstr('POP EBP');
   EmitInstr('RET');
   EmitLabel(TP_RT_PFX + 'SVM_FAIL');
   EmitInstr('XOR EAX,EAX');                  { 0 = mode non supporte }
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_GETVIDEOCONFIG : copier GR_VIDCFG vers var param -- }
+  { Parametre : [ESP+4] = adresse de la variable _VideoConfig       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'GETVIDEOCONFIG');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH ECX');
+  EmitInstr('LEA ESI,[GR_VIDCFG]');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');  { dest = adresse VC }
+  EmitInstr('MOV ECX,11');                 { 11 DWORDs }
+  EmitInstr('CLD');
+  EmitInstr('REP MOVSD');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
@@ -23135,8 +23238,17 @@ Begin { BcAssemble }
   If Mnem = 'CDQ' Then Begin BcEmitB($99); Exit; End;
   If Mnem = 'NOP' Then Begin BcEmitB($90); Exit; End;
   If Mnem = 'LODSB' Then Begin BcEmitB($AC); Exit; End;
+  If Mnem = 'LODSD' Then Begin BcEmitB($AD); Exit; End;
   If Mnem = 'STOSB' Then Begin BcEmitB($AA); Exit; End;
+  If Mnem = 'STOSD' Then Begin BcEmitB($AB); Exit; End;
   If Mnem = 'MOVSB' Then Begin BcEmitB($A4); Exit; End;
+  If Mnem = 'MOVSD' Then Begin BcEmitB($A5); Exit; End;
+  If Mnem = 'SCASB' Then Begin BcEmitB($AE); Exit; End;
+  If Mnem = 'SCASD' Then Begin BcEmitB($AF); Exit; End;
+  If Mnem = 'CMPSB' Then Begin BcEmitB($A6); Exit; End;
+  If Mnem = 'CMPSD' Then Begin BcEmitB($A7); Exit; End;
+  If Mnem = 'CLD' Then Begin BcEmitB($FC); Exit; End;
+  If Mnem = 'STD' Then Begin BcEmitB($FD); Exit; End;
   If Mnem = 'REP' Then Begin BcEmitB($F3);
     { Le reste est l instruction suivante }
     If Op1 <> '' Then BcAssemble(Op1);
@@ -23886,6 +23998,7 @@ Begin
   BcDefineDataLabel('GR_ARCYS');    BcDataD(0);
   BcDefineDataLabel('GR_ARCXE');    BcDataD(0);
   BcDefineDataLabel('GR_ARCYE');    BcDataD(0);
+  BcDefineDataLabel('GR_VIDCFG');   BcDataZeros(44);
 
   { Variables Strings/Printer/Overlay/Objects }
   BcDefineDataLabel('STR_TMPBUF'); BcDataZeros(256);
@@ -25256,6 +25369,9 @@ Begin
 
   { Enregistrer le type DateTime apres TypeInit }
   RegisterDateTimeType;
+
+  { Enregistrer le type _VideoConfig de MSGraph }
+  RegisterVideoConfigType;
 
   { Initialiser le preprocesseur }
   PPInitDefines;
