@@ -4352,6 +4352,8 @@ End;
 
 Procedure BcDefineLabel(Const Nm: TString); Forward;
 Procedure BcAssemble(Const S: TString); Forward;
+Procedure BcAssemble8086(Const S: TString); Forward;
+Procedure BcAssembleZ80(Const S: TString); Forward;
 
 { ------------------------------------------------------------ }
 { EmitLabel : ecrire un label suivi de ':'                     }
@@ -4374,7 +4376,15 @@ Begin
   If OutFOpen Then
     WriteLn(OutF, '        ', S);
   If BcActive Then
-    BcAssemble(S);
+  Begin
+    If Opts.DestTarget = DEST_Z80 Then
+      BcAssembleZ80(S)
+    Else If (Opts.DestTarget = DEST_DOSR) Or
+            (Opts.DestTarget = DEST_DOSP) Then
+      BcAssemble8086(S)
+    Else
+      BcAssemble(S);
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -24983,6 +24993,293 @@ Begin { BcAssemble }
 
   { Instruction non reconnue : emettre NOP comme placeholder }
   { WriteLn('BcAssemble: non reconnu: [', S, ']'); }
+End;
+
+{ ============================================================ }
+{ BcAssemble8086 - Mini-assembleur Intel 8086 (mode reel/prot) }
+{ ============================================================ }
+
+Procedure BcAssemble8086(Const S: TString);
+Var
+  Line, Mnem, Tmp, Op1, Op2: TString;
+  P: Integer;
+
+  Procedure SplitOps8086(Const Rest: TString);
+  Var J: Integer;
+  Begin
+    Op1 := ''; Op2 := '';
+    J := 1;
+    While J <= Length(Rest) Do
+    Begin
+      If (Rest[J] = ',') Then
+      Begin
+        Op1 := Copy(Rest, 1, J - 1);
+        Op2 := Copy(Rest, J + 1, Length(Rest) - J);
+        While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+          Delete(Op1, Length(Op1), 1);
+        While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Op1 := Rest;
+    While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+      Delete(Op1, Length(Op1), 1);
+  End;
+
+Begin { BcAssemble8086 }
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+
+  { Extraire le mnemonique }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin
+    Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else Begin Mnem := StrUpperCase(Line); Tmp := ''; End;
+
+  SplitOps8086(Tmp);
+
+  { ---- NOP ---- }
+  If Mnem = 'NOP' Then Begin BcEmitB($90); Exit; End;
+
+  { ---- RET / RETF ---- }
+  If Mnem = 'RET' Then Begin BcEmitB($C3); Exit; End;
+  If Mnem = 'RETF' Then Begin BcEmitB($CB); Exit; End;
+
+  { ---- INT ---- }
+  If Mnem = 'INT' Then
+  Begin
+    BcEmitB($CD);
+    If Op1 = '21H' Then BcEmitB($21)
+    Else If Op1 = '20H' Then BcEmitB($20)
+    Else If Op1 = '10H' Then BcEmitB($10)
+    Else BcEmitB($03);
+    Exit;
+  End;
+
+  { ---- HLT ---- }
+  If Mnem = 'HLT' Then Begin BcEmitB($F4); Exit; End;
+
+  { ---- CLC / STC / CLI / STI / CLD / STD ---- }
+  If Mnem = 'CLC' Then Begin BcEmitB($F8); Exit; End;
+  If Mnem = 'STC' Then Begin BcEmitB($F9); Exit; End;
+  If Mnem = 'CLI' Then Begin BcEmitB($FA); Exit; End;
+  If Mnem = 'STI' Then Begin BcEmitB($FB); Exit; End;
+  If Mnem = 'CLD' Then Begin BcEmitB($FC); Exit; End;
+  If Mnem = 'STD' Then Begin BcEmitB($FD); Exit; End;
+
+  { ---- PUSH / POP registres 16 bits ---- }
+  If Mnem = 'PUSH' Then
+  Begin
+    If StrUpperCase(Op1) = 'AX' Then Begin BcEmitB($50); Exit; End;
+    If StrUpperCase(Op1) = 'CX' Then Begin BcEmitB($51); Exit; End;
+    If StrUpperCase(Op1) = 'DX' Then Begin BcEmitB($52); Exit; End;
+    If StrUpperCase(Op1) = 'BX' Then Begin BcEmitB($53); Exit; End;
+    If StrUpperCase(Op1) = 'SP' Then Begin BcEmitB($54); Exit; End;
+    If StrUpperCase(Op1) = 'BP' Then Begin BcEmitB($55); Exit; End;
+    If StrUpperCase(Op1) = 'SI' Then Begin BcEmitB($56); Exit; End;
+    If StrUpperCase(Op1) = 'DI' Then Begin BcEmitB($57); Exit; End;
+  End;
+
+  If Mnem = 'POP' Then
+  Begin
+    If StrUpperCase(Op1) = 'AX' Then Begin BcEmitB($58); Exit; End;
+    If StrUpperCase(Op1) = 'CX' Then Begin BcEmitB($59); Exit; End;
+    If StrUpperCase(Op1) = 'DX' Then Begin BcEmitB($5A); Exit; End;
+    If StrUpperCase(Op1) = 'BX' Then Begin BcEmitB($5B); Exit; End;
+    If StrUpperCase(Op1) = 'SP' Then Begin BcEmitB($5C); Exit; End;
+    If StrUpperCase(Op1) = 'BP' Then Begin BcEmitB($5D); Exit; End;
+    If StrUpperCase(Op1) = 'SI' Then Begin BcEmitB($5E); Exit; End;
+    If StrUpperCase(Op1) = 'DI' Then Begin BcEmitB($5F); Exit; End;
+  End;
+
+  { ---- XCHG AX,reg ---- }
+  If Mnem = 'XCHG' Then
+  Begin
+    If (StrUpperCase(Op1) = 'AX') And (StrUpperCase(Op2) = 'BX') Then
+    Begin BcEmitB($93); Exit; End;
+  End;
+
+  { ---- CBW / CWD ---- }
+  If Mnem = 'CBW' Then Begin BcEmitB($98); Exit; End;
+  If Mnem = 'CWD' Then Begin BcEmitB($99); Exit; End;
+
+  { ---- MOVSB / MOVSW / LODSB / LODSW / STOSB / STOSW ---- }
+  If Mnem = 'MOVSB' Then Begin BcEmitB($A4); Exit; End;
+  If Mnem = 'MOVSW' Then Begin BcEmitB($A5); Exit; End;
+  If Mnem = 'LODSB' Then Begin BcEmitB($AC); Exit; End;
+  If Mnem = 'LODSW' Then Begin BcEmitB($AD); Exit; End;
+  If Mnem = 'STOSB' Then Begin BcEmitB($AA); Exit; End;
+  If Mnem = 'STOSW' Then Begin BcEmitB($AB); Exit; End;
+
+  { ---- REP ---- }
+  If Mnem = 'REP' Then Begin BcEmitB($F3); Exit; End;
+
+  { Instruction non reconnue (stub) }
+  { WriteLn('BcAssemble8086: non reconnu: [', S, ']'); }
+End;
+
+{ ============================================================ }
+{ BcAssembleZ80 - Mini-assembleur Zilog Z80                    }
+{ ============================================================ }
+
+Procedure BcAssembleZ80(Const S: TString);
+Var
+  Line, Mnem, Tmp, Op1, Op2: TString;
+  P: Integer;
+
+  Procedure SplitOpsZ80(Const Rest: TString);
+  Var J: Integer;
+  Begin
+    Op1 := ''; Op2 := '';
+    J := 1;
+    While J <= Length(Rest) Do
+    Begin
+      If (Rest[J] = ',') Then
+      Begin
+        Op1 := Copy(Rest, 1, J - 1);
+        Op2 := Copy(Rest, J + 1, Length(Rest) - J);
+        While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+          Delete(Op1, Length(Op1), 1);
+        While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+        Exit;
+      End;
+      Inc(J);
+    End;
+    Op1 := Rest;
+    While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do
+      Delete(Op1, Length(Op1), 1);
+  End;
+
+Begin { BcAssembleZ80 }
+  Line := S;
+  While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  While (Length(Line) > 0) And (Line[Length(Line)] = ' ') Do
+    Delete(Line, Length(Line), 1);
+  If Line = '' Then Exit;
+
+  { Extraire le mnemonique }
+  P := Pos(' ', Line);
+  If P > 0 Then
+  Begin
+    Mnem := StrUpperCase(Copy(Line, 1, P - 1));
+    Tmp := Copy(Line, P + 1, Length(Line) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+  End
+  Else Begin Mnem := StrUpperCase(Line); Tmp := ''; End;
+
+  SplitOpsZ80(Tmp);
+
+  { ---- NOP ---- }
+  If Mnem = 'NOP' Then Begin BcEmitB($00); Exit; End;
+
+  { ---- HALT ---- }
+  If Mnem = 'HALT' Then Begin BcEmitB($76); Exit; End;
+
+  { ---- RET ---- }
+  If Mnem = 'RET' Then Begin BcEmitB($C9); Exit; End;
+
+  { ---- DI / EI ---- }
+  If Mnem = 'DI' Then Begin BcEmitB($F3); Exit; End;
+  If Mnem = 'EI' Then Begin BcEmitB($FB); Exit; End;
+
+  { ---- SCF / CCF / CPL / NEG / RLCA / RRCA / RLA / RRA ---- }
+  If Mnem = 'SCF' Then Begin BcEmitB($37); Exit; End;
+  If Mnem = 'CCF' Then Begin BcEmitB($3F); Exit; End;
+  If Mnem = 'CPL' Then Begin BcEmitB($2F); Exit; End;
+  If Mnem = 'RLCA' Then Begin BcEmitB($07); Exit; End;
+  If Mnem = 'RRCA' Then Begin BcEmitB($0F); Exit; End;
+  If Mnem = 'RLA' Then Begin BcEmitB($17); Exit; End;
+  If Mnem = 'RRA' Then Begin BcEmitB($1F); Exit; End;
+  If Mnem = 'DAA' Then Begin BcEmitB($27); Exit; End;
+
+  { ---- NEG (prefixe ED) ---- }
+  If Mnem = 'NEG' Then Begin BcEmitB($ED); BcEmitB($44); Exit; End;
+
+  { ---- PUSH / POP paires de registres ---- }
+  If Mnem = 'PUSH' Then
+  Begin
+    If StrUpperCase(Op1) = 'BC' Then Begin BcEmitB($C5); Exit; End;
+    If StrUpperCase(Op1) = 'DE' Then Begin BcEmitB($D5); Exit; End;
+    If StrUpperCase(Op1) = 'HL' Then Begin BcEmitB($E5); Exit; End;
+    If StrUpperCase(Op1) = 'AF' Then Begin BcEmitB($F5); Exit; End;
+  End;
+
+  If Mnem = 'POP' Then
+  Begin
+    If StrUpperCase(Op1) = 'BC' Then Begin BcEmitB($C1); Exit; End;
+    If StrUpperCase(Op1) = 'DE' Then Begin BcEmitB($D1); Exit; End;
+    If StrUpperCase(Op1) = 'HL' Then Begin BcEmitB($E1); Exit; End;
+    If StrUpperCase(Op1) = 'AF' Then Begin BcEmitB($F1); Exit; End;
+  End;
+
+  { ---- INC / DEC registres 8 bits ---- }
+  If Mnem = 'INC' Then
+  Begin
+    If StrUpperCase(Op1) = 'A' Then Begin BcEmitB($3C); Exit; End;
+    If StrUpperCase(Op1) = 'B' Then Begin BcEmitB($04); Exit; End;
+    If StrUpperCase(Op1) = 'C' Then Begin BcEmitB($0C); Exit; End;
+    If StrUpperCase(Op1) = 'D' Then Begin BcEmitB($14); Exit; End;
+    If StrUpperCase(Op1) = 'E' Then Begin BcEmitB($1C); Exit; End;
+    If StrUpperCase(Op1) = 'H' Then Begin BcEmitB($24); Exit; End;
+    If StrUpperCase(Op1) = 'L' Then Begin BcEmitB($2C); Exit; End;
+    { INC paires 16 bits }
+    If StrUpperCase(Op1) = 'BC' Then Begin BcEmitB($03); Exit; End;
+    If StrUpperCase(Op1) = 'DE' Then Begin BcEmitB($13); Exit; End;
+    If StrUpperCase(Op1) = 'HL' Then Begin BcEmitB($23); Exit; End;
+    If StrUpperCase(Op1) = 'SP' Then Begin BcEmitB($33); Exit; End;
+  End;
+
+  If Mnem = 'DEC' Then
+  Begin
+    If StrUpperCase(Op1) = 'A' Then Begin BcEmitB($3D); Exit; End;
+    If StrUpperCase(Op1) = 'B' Then Begin BcEmitB($05); Exit; End;
+    If StrUpperCase(Op1) = 'C' Then Begin BcEmitB($0D); Exit; End;
+    If StrUpperCase(Op1) = 'D' Then Begin BcEmitB($15); Exit; End;
+    If StrUpperCase(Op1) = 'E' Then Begin BcEmitB($1D); Exit; End;
+    If StrUpperCase(Op1) = 'H' Then Begin BcEmitB($25); Exit; End;
+    If StrUpperCase(Op1) = 'L' Then Begin BcEmitB($2D); Exit; End;
+    { DEC paires 16 bits }
+    If StrUpperCase(Op1) = 'BC' Then Begin BcEmitB($0B); Exit; End;
+    If StrUpperCase(Op1) = 'DE' Then Begin BcEmitB($1B); Exit; End;
+    If StrUpperCase(Op1) = 'HL' Then Begin BcEmitB($2B); Exit; End;
+    If StrUpperCase(Op1) = 'SP' Then Begin BcEmitB($3B); Exit; End;
+  End;
+
+  { ---- EX DE,HL / EX AF,AF' / EXX ---- }
+  If Mnem = 'EX' Then
+  Begin
+    If (StrUpperCase(Op1) = 'DE') And (StrUpperCase(Op2) = 'HL') Then
+    Begin BcEmitB($EB); Exit; End;
+  End;
+  If Mnem = 'EXX' Then Begin BcEmitB($D9); Exit; End;
+
+  { ---- LDIR / LDDR (prefixe ED) ---- }
+  If Mnem = 'LDIR' Then Begin BcEmitB($ED); BcEmitB($B0); Exit; End;
+  If Mnem = 'LDDR' Then Begin BcEmitB($ED); BcEmitB($B8); Exit; End;
+
+  { ---- RST ---- }
+  If Mnem = 'RST' Then
+  Begin
+    If Op1 = '00H' Then Begin BcEmitB($C7); Exit; End;
+    If Op1 = '08H' Then Begin BcEmitB($CF); Exit; End;
+    If Op1 = '10H' Then Begin BcEmitB($D7); Exit; End;
+    If Op1 = '18H' Then Begin BcEmitB($DF); Exit; End;
+    If Op1 = '20H' Then Begin BcEmitB($E7); Exit; End;
+    If Op1 = '28H' Then Begin BcEmitB($EF); Exit; End;
+    If Op1 = '30H' Then Begin BcEmitB($F7); Exit; End;
+    If Op1 = '38H' Then Begin BcEmitB($FF); Exit; End;
+  End;
+
+  { Instruction non reconnue (stub) }
+  { WriteLn('BcAssembleZ80: non reconnu: [', S, ']'); }
 End;
 
 { --- Construction de la section .data binaire --- }
