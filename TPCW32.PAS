@@ -79,6 +79,14 @@ Const
   TP_VER_8   = 8;
   TP_VER_DEFAULT = TP_VER_7;
 
+  { Destinations de compilation }
+  DEST_WIN32 = 0;   { Windows 32 bits (defaut)   }
+  DEST_DOSR  = 1;   { -CD  : DOS mode reel       }
+  DEST_DOSP  = 2;   { -CP  : DOS mode protege     }
+  DEST_WIN30 = 3;   { -CW  : Windows 3.0          }
+  DEST_W32   = 4;   { -CW32 : Windows 32 bits     }
+  DEST_Z80   = 5;   { -CZ80 : Zilog Z80           }
+
 Type
   TString = String;
 
@@ -113,6 +121,7 @@ Type
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
     ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
     Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
+    DestTarget  : Integer;   { -CD/-CP/-CW/-CW32/-CZ80 : destination   }
   End;
 
 Var
@@ -313,6 +322,7 @@ Begin
   Opts.QuickPascal := False;
   Opts.ApplePascal := False;
   Opts.Sane        := False;
+  Opts.DestTarget  := DEST_WIN32;
 End;
 
 { ------------------------------------------------------------ }
@@ -347,6 +357,13 @@ Begin
   WriteLn('  --quickpascal  Mode QuickPascal (support de l''unite MSGraph)');
   WriteLn('  --applepascal  Mode Apple Pascal (support des unites SANE et TRANSCEND)');
   WriteLn('  --sane         Mode SANE seul (sans l''unite TRANSCEND)');
+  WriteLn;
+  WriteLn('Destination :');
+  WriteLn('  -CD            Destination mode DOS reel');
+  WriteLn('  -CP            Destination mode protege DOS');
+  WriteLn('  -CW            Destination Windows 3.0');
+  WriteLn('  -CW32          Destination Windows 32 bits');
+  WriteLn('  -CZ80          Destination Zilog Z80');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -447,6 +464,16 @@ Begin
     { Options compatibles TPC 7.0 (TODO 25) }
     Else If (UA = '-B') Then
       Opts.BuildAll := True
+    Else If (UA = '-CD') Then
+      Opts.DestTarget := DEST_DOSR
+    Else If (UA = '-CP') Then
+      Opts.DestTarget := DEST_DOSP
+    Else If (UA = '-CW32') Then
+      Opts.DestTarget := DEST_W32
+    Else If (UA = '-CW') Then
+      Opts.DestTarget := DEST_WIN30
+    Else If (UA = '-CZ80') Then
+      Opts.DestTarget := DEST_Z80
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-D') Then
       Opts.Defines := Copy(Arg, 3, Length(Arg) - 2)
     Else If (Length(UA) >= 2) And (Copy(UA,1,2) = '-E') Then
