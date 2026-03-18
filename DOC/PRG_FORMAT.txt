@@ -1,0 +1,408 @@
+==============================================================================
+     FORMAT DE FICHIER .PRG - Atari ST Executable
+     Atari / Digital Research - TOS (The Operating System)
+==============================================================================
+
+Document de reference du format binaire .PRG tel que defini par
+Atari Corp. et Digital Research pour le systeme d exploitation TOS
+de l Atari ST. Ce format est la cible du compilateur TPCW32.PAS
+avec l option -CATARIST du projet DEV-COOLS.
+
+Date:       Mars 2026
+Norme:      Atari ST TOS (The Operating System) Executable Format
+            Compatible Atari 260ST, 520ST, 1040ST, Mega ST, TT, Falcon
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1.  Vue d ensemble
+  2.  Structure generale du fichier .PRG
+  3.  En-tete du programme (28 octets)
+  4.  Section TEXT (code executable)
+  5.  Section DATA (donnees initialisees)
+  6.  Section BSS (donnees non-initialisees)
+  7.  Table des symboles
+  8.  Table de relocalisation
+  9.  Extensions et variantes
+  10. Ordre des octets et alignement
+  11. References
+
+==============================================================================
+1. VUE D ENSEMBLE
+==============================================================================
+
+Le format .PRG est le format executable natif de l Atari ST sous
+TOS (The Operating System, base sur CP/M-68K et GEM de Digital Research).
+Il decrit un programme charge en memoire et execute par le processeur
+Motorola 68000.
+
+Le fichier .PRG est un format simple et lineaire :
+
+  +-----------------------------+
+  |  En-tete (28 octets)        |
+  +-----------------------------+
+  |  Section TEXT (code)        |
+  +-----------------------------+
+  |  Section DATA (donnees)     |
+  +-----------------------------+
+  |  Table des symboles         |
+  +-----------------------------+
+  |  Table de relocalisation    |
+  +-----------------------------+
+
+Les extensions de fichier associees sont :
+  .PRG  - Programme executable (Application GEM ou TOS)
+  .TOS  - Programme en mode texte (console TOS)
+  .TTP  - TOS Takes Parameters (programme texte avec arguments)
+  .APP  - Application GEM (identique a .PRG)
+  .GTP  - GEM Takes Parameters (application GEM avec arguments)
+  .ACC  - Accessoire de bureau GEM (Desk Accessory)
+
+Toutes ces extensions partagent le meme format binaire ; seule
+l extension determine le comportement du systeme au chargement.
+
+==============================================================================
+2. STRUCTURE GENERALE DU FICHIER .PRG
+==============================================================================
+
+Le fichier est compose de cinq parties contigues :
+
+  Offset       Contenu                         Taille
+  ----------   ------------------------------  --------------------------
+  $0000        En-tete du programme            28 octets (fixe)
+  $001C        Section TEXT                     ph_tlen octets
+  $001C+T      Section DATA                    ph_dlen octets
+  $001C+T+D    Table des symboles              ph_slen octets
+  $001C+T+D+S  Table de relocalisation         variable
+
+ou :
+  T = ph_tlen  (taille de la section TEXT)
+  D = ph_dlen  (taille de la section DATA)
+  S = ph_slen  (taille de la table des symboles)
+
+La section BSS n est pas stockee dans le fichier ; elle est allouee
+en memoire par le chargeur TOS et initialisee a zero.
+
+==============================================================================
+3. EN-TETE DU PROGRAMME (28 OCTETS)
+==============================================================================
+
+L en-tete est une structure de 28 octets (7 mots longs de 32 bits) :
+
+  Offset  Taille  Champ       Description
+  ------  ------  ----------  -----------------------------------------------
+  $00     2       ph_branch   Mot magique / branchement
+                              $601A = en-tete standard (28 octets)
+                              Peut aussi etre une instruction BRA.S pour
+                              sauter par-dessus l en-tete (rarement utilise)
+  $02     4       ph_tlen     Taille de la section TEXT en octets
+  $06     4       ph_dlen     Taille de la section DATA en octets
+  $0A     4       ph_blen     Taille de la section BSS en octets
+                              (allouee en memoire, pas dans le fichier)
+  $0E     4       ph_slen     Taille de la table des symboles en octets
+                              (0 si le programme est strippe)
+  $12     4       ph_res1     Reserve (doit etre 0)
+  $16     4       ph_prgflags Drapeaux du programme (voir ci-dessous)
+  $1A     2       ph_absflag  Drapeau de relocalisation :
+                              0 = programme relocalisable
+                              (table de relocalisation presente)
+                              <>0 = programme absolu
+                              (pas de table de relocalisation)
+
+Representation en structure Pascal :
+
+  Type
+    TPrgHeader = Record
+      ph_branch   : Word;       { $601A                              }
+      ph_tlen     : LongInt;    { taille TEXT                        }
+      ph_dlen     : LongInt;    { taille DATA                       }
+      ph_blen     : LongInt;    { taille BSS                        }
+      ph_slen     : LongInt;    { taille table symboles             }
+      ph_res1     : LongInt;    { reserve (0)                       }
+      ph_prgflags : LongInt;    { drapeaux du programme             }
+      ph_absflag  : Word;       { 0 = relocalisable                }
+    End;
+
+3.1 DRAPEAUX DU PROGRAMME (ph_prgflags)
+-----------------------------------------
+
+Le champ ph_prgflags est un mot long de 32 bits :
+
+  Bit(s)   Masque      Description
+  -------  ----------  -------------------------------------------------
+  0        $0001       PF_FASTLOAD  - Effacer seulement la section BSS
+                       au lieu de toute la memoire allouee
+                       (chargement plus rapide)
+  1        $0002       PF_TTRAMLOAD - Charger le programme en memoire
+                       TT-RAM (Fast RAM) si disponible
+  2        $0004       PF_TTRAMMEM  - Allouer la memoire (Malloc) en
+                       TT-RAM si disponible
+  3        $0008       Reserve
+  4-7      $00F0       Bits de protection memoire (MiNT/MultiTOS) :
+                       0 = Privee (defaut)
+                       1 = Mode global (accessible a tous les processus)
+                       2 = Mode super (accessible en mode superviseur)
+                       3 = Lecture seule pour les autres processus
+  8-27     ---         Reserves (doivent etre 0)
+  28       $10000000   PF_SHARED_TEXT - Partager la section TEXT entre
+                       plusieurs instances (MiNT)
+  29-31    ---         Reserves
+
+Les bits 1-2 (TT-RAM) ne sont pertinents que sur les machines
+disposant de memoire Fast RAM (Atari TT030, Falcon030, ou
+extensions tierces).
+
+==============================================================================
+4. SECTION TEXT (CODE EXECUTABLE)
+==============================================================================
+
+La section TEXT commence a l offset $001C dans le fichier et contient
+le code machine Motorola 68000. Sa taille est donnee par ph_tlen.
+
+Le point d entree du programme est toujours le premier octet de la
+section TEXT (offset 0 dans la section). Le chargeur TOS place le
+compteur de programme (PC) a l adresse de chargement + $001C apres
+relocalisation.
+
+Le code est du code natif Motorola 68000 (ou 68030 sur TT/Falcon).
+Les appels systeme TOS (GEMDOS, BIOS, XBIOS) sont effectues via
+l instruction TRAP :
+
+  TRAP #1    - Appels GEMDOS (gestion fichiers, memoire, processus)
+  TRAP #13   - Appels BIOS (entrees/sorties bas niveau)
+  TRAP #14   - Appels XBIOS (hardware, graphique, son)
+
+Conventions d appel GEMDOS :
+  - Empiler les parametres de droite a gauche sur la pile
+  - Empiler le numero de fonction (Word)
+  - Executer TRAP #1
+  - Depiler les parametres (ajuster SP)
+
+Exemple - Cconws (afficher une chaine, fonction $09) :
+
+  PEA      chaine         ; adresse de la chaine
+  MOVE.W   #$09, -(SP)    ; numero de fonction GEMDOS
+  TRAP     #1             ; appel systeme
+  ADDQ.L   #6, SP         ; nettoyer la pile (4+2 octets)
+
+Exemple - Pterm0 (terminer le programme, fonction $00) :
+
+  CLR.W    -(SP)          ; fonction $00
+  TRAP     #1             ; appel systeme (ne retourne pas)
+
+==============================================================================
+5. SECTION DATA (DONNEES INITIALISEES)
+==============================================================================
+
+La section DATA suit immediatement la section TEXT dans le fichier.
+Sa taille est donnee par ph_dlen. Elle contient les donnees
+initialisees du programme : chaines de caracteres, constantes
+numeriques, tables de saut, etc.
+
+En memoire, la section DATA est placee immediatement apres la
+section TEXT. Les references a des adresses dans DATA doivent
+etre relocalisees (voir section 8).
+
+==============================================================================
+6. SECTION BSS (DONNEES NON-INITIALISEES)
+==============================================================================
+
+La section BSS (Block Started by Symbol) n est pas stockee dans
+le fichier. Seule sa taille (ph_blen) est enregistree dans l en-tete.
+
+Le chargeur TOS alloue ph_blen octets en memoire immediatement apres
+la section DATA et initialise cette zone a zero (sauf si le drapeau
+PF_FASTLOAD est active, auquel cas seule la section BSS est effacee
+au lieu de toute la memoire allouee au programme).
+
+La section BSS est utilisee pour les variables globales non
+initialisees.
+
+==============================================================================
+7. TABLE DES SYMBOLES
+==============================================================================
+
+La table des symboles est optionnelle. Si ph_slen vaut 0, elle
+est absente (programme strippe). Elle est utilisee principalement
+pour le debogage.
+
+Chaque entree de la table des symboles fait 14 octets :
+
+  Offset  Taille  Champ       Description
+  ------  ------  ----------  -----------------------------------------------
+  $00     8       sym_name    Nom du symbole (8 caracteres ASCII, complete
+                              par des octets nuls si plus court)
+  $08     2       sym_type    Type du symbole (voir ci-dessous)
+  $0A     4       sym_value   Valeur du symbole (adresse ou constante)
+
+Representation en structure Pascal :
+
+  Type
+    TPrgSymbol = Record
+      sym_name  : Array[0..7] of Char;  { nom (8 caracteres max) }
+      sym_type  : Word;                 { type du symbole        }
+      sym_value : LongInt;              { valeur / adresse       }
+    End;
+
+Le nombre de symboles est : ph_slen Div 14.
+
+7.1 TYPES DE SYMBOLES (sym_type)
+----------------------------------
+
+Les bits du champ sym_type sont organises comme suit :
+
+  Bit(s)   Masque   Description
+  -------  ------   ---------------------------------------------------
+  0        $0001    Defini (1) ou non-defini/externe (0)
+  1        $0002    Equate (symbole = valeur constante, pas une adresse)
+  2        $0004    Global (visible pour l editeur de liens)
+  3        $0008    Registre equate (symbole = registre)
+  4        $0010    Reference externe (symbole importe)
+  5        $0020    Reference de donnees (dans DATA ou BSS)
+  6        $0040    Reference de texte (dans TEXT)
+  7        $0080    Reference BSS
+  8-15     ---      Reserves
+
+Combinaisons courantes :
+
+  $0001   - Symbole local defini
+  $0005   - Symbole global defini
+  $0041   - Symbole defini dans TEXT, local
+  $0045   - Symbole defini dans TEXT, global
+  $0021   - Symbole defini dans DATA, local
+  $0025   - Symbole defini dans DATA, global
+  $0081   - Symbole defini dans BSS, local
+  $0085   - Symbole defini dans BSS, global
+  $0010   - Reference externe (symbole importe)
+
+==============================================================================
+8. TABLE DE RELOCALISATION
+==============================================================================
+
+La table de relocalisation permet au chargeur TOS d ajuster toutes
+les adresses absolues dans le programme en fonction de l adresse de
+chargement effective en memoire.
+
+Si ph_absflag est different de zero, le programme est absolu et
+il n y a pas de table de relocalisation.
+
+Si ph_absflag vaut 0, la table de relocalisation est presente apres
+la table des symboles.
+
+8.1 FORMAT DE LA TABLE
+-----------------------
+
+La table commence par un mot long de 32 bits (4 octets, big-endian)
+indiquant l offset de la premiere relocalisation par rapport au
+debut de la section TEXT.
+
+Si ce mot long vaut 0, il n y a aucune relocalisation a effectuer.
+
+Apres ce premier offset, une sequence d octets encode les offsets
+suivants de maniere incrementale :
+
+  Valeur   Signification
+  -------  -------------------------------------------------------------
+  $00      Fin de la table de relocalisation
+  $01      Ajouter 254 a l offset courant sans effectuer de relocalisation
+           (permet d atteindre des offsets eloignes de plus de 254 octets)
+  $02-$FD  Ajouter cette valeur a l offset courant et effectuer
+           la relocalisation du mot long a cette adresse
+  $FE-$FF  Non utilises (reserves)
+
+Note : la valeur $01 est un marqueur d espacement. Elle avance
+l offset de 254 octets sans relocaliser. Plusieurs $01 consecutifs
+peuvent etre utilises pour des espacements superieurs a 254 octets.
+
+8.2 ALGORITHME DE RELOCALISATION
+----------------------------------
+
+En pseudo-code, le chargeur TOS effectue la relocalisation ainsi :
+
+  base := adresse_de_chargement
+  offset := lire_long(table)        { premier offset }
+  Si offset = 0 Alors
+    Sortir                           { aucune relocalisation }
+  adr := base + offset
+  Long[adr] := Long[adr] + base     { relocaliser }
+  Repeter
+    octet := lire_octet(table)
+    Si octet = 0 Alors
+      Sortir                         { fin de table }
+    Sinon Si octet = 1 Alors
+      adr := adr + 254              { espacement sans relocalisation }
+    Sinon
+      adr := adr + octet
+      Long[adr] := Long[adr] + base { relocaliser }
+  Fin Repeter
+
+==============================================================================
+9. EXTENSIONS ET VARIANTES
+==============================================================================
+
+9.1 PROGRAMME OVERLAY
+----------------------
+
+Le format .PRG standard ne supporte pas nativement les overlays.
+Certains langages (comme le GFA BASIC ou le Pure C) implementent
+leur propre mecanisme d overlay au-dessus du format de base.
+
+9.2 FORMAT ETENDU (MiNT / FreeMiNT)
+--------------------------------------
+
+Sous MiNT (systeme multitache pour Atari ST), le format .PRG est
+etendu avec :
+  - Bits supplementaires dans ph_prgflags (protection memoire)
+  - Support de la memoire TT-RAM (bits 1-2 de ph_prgflags)
+  - Flag PF_SHARED_TEXT (bit 28) pour le partage de code
+
+9.3 FORMAT DRI (Digital Research)
+-----------------------------------
+
+Le format .PRG de l Atari ST est derive du format executable
+de CP/M-68K de Digital Research (DRI). La structure de l en-tete
+et le mecanisme de relocalisation sont identiques. Le format DRI
+ajoute une table de symboles supplementaire pour le linkage.
+
+9.4 COMPARAISON AVEC LE FORMAT AMIGA HUNK
+--------------------------------------------
+
+Bien que l Amiga utilise aussi le Motorola 68000, son format
+executable (AmigaOS Hunk) est radicalement different :
+  - Amiga : format a base de blocs (hunks) avec types et tailles
+  - Atari : format lineaire simple avec en-tete fixe
+  - Amiga : relocalisation par listes de mots longs
+  - Atari : relocalisation par offsets incrementaux compacts
+
+==============================================================================
+10. ORDRE DES OCTETS ET ALIGNEMENT
+==============================================================================
+
+Toutes les valeurs multi-octets dans le format .PRG sont en
+big-endian (octet de poids fort en premier), conformement a
+l architecture Motorola 68000.
+
+  Exemple : la valeur $12345678 est stockee comme :
+    Offset +0 : $12  (poids fort)
+    Offset +1 : $34
+    Offset +2 : $56
+    Offset +3 : $78  (poids faible)
+
+Le Motorola 68000 impose un alignement sur mot (2 octets) pour
+les acces en Word et Long. Les sections TEXT et DATA sont
+generalement alignees sur des frontieres de mot pair.
+
+==============================================================================
+11. REFERENCES
+==============================================================================
+
+  - Atari ST Programmer's Reference (Atari Corp., 1986-1988)
+  - Atari ST Internals (Data Becker / Abacus Software, 1986)
+  - Hitchhiker's Guide to the BIOS (Atari Corp.)
+  - Atari Compendium (Scott Sanders, 1993)
+  - Digital Research CP/M-68K Operating System Programmer's Guide (1983)
+  - TOS.HYP - Documentation Hypertexte du systeme TOS
+    (http://toshyp.atari.org)
+
+==============================================================================
