@@ -20450,29 +20450,44 @@ Begin
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
-  { ------ _TPRT_SANE_LOG2 : log2 entier (BSR) ----------------------- }
+  { ------ _TPRT_SANE_LOG2 : log2 entier (boucle SHR) ---------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'SANE_LOG2');
-  EmitComment('SANE LOG2/LOGB(x) : position du bit le plus haut');
+  EmitComment('SANE LOG2/LOGB(x) : floor(log2(x)) via boucle SHR');
   EmitInstr('TEST EAX,EAX');
   EmitInstr('JLE ' + TP_RT_PFX + 'SN_LOG2_ZERO');
-  EmitInstr('BSR EAX,EAX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('XOR ECX,ECX');          { ECX = compteur de bits }
+  EmitLabel(TP_RT_PFX + 'SN_LOG2_LP');
+  EmitInstr('SHR EAX,1');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_LOG2_D');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_LOG2_LP');
+  EmitLabel(TP_RT_PFX + 'SN_LOG2_D');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('POP ECX');
   EmitInstr('RET');
   EmitLabel(TP_RT_PFX + 'SN_LOG2_ZERO');
   EmitInstr('XOR EAX,EAX');
   EmitInstr('RET');
 
-  { ------ _TPRT_SANE_EXP2 : 2^x via shift -------------------------- }
+  { ------ _TPRT_SANE_EXP2 : 2^x via boucle -------------------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'SANE_EXP2');
-  EmitComment('SANE EXP2(x) : 2^x par decalage');
+  EmitComment('SANE EXP2(x) : 2^x par boucle de decalage');
   EmitInstr('MOV ECX,EAX');
   EmitInstr('TEST ECX,ECX');
   EmitInstr('JS ' + TP_RT_PFX + 'SN_EXP2_ZERO');
   EmitInstr('CMP ECX,30');
   EmitInstr('JG ' + TP_RT_PFX + 'SN_EXP2_MAX');  { 2^31 depasse signed 32-bit }
   EmitInstr('MOV EAX,1');
-  EmitInstr('SHL EAX,CL');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_EXP2_DONE');
+  EmitLabel(TP_RT_PFX + 'SN_EXP2_LP');
+  EmitInstr('SHL EAX,1');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_EXP2_LP');
+  EmitLabel(TP_RT_PFX + 'SN_EXP2_DONE');
   EmitInstr('RET');
   EmitLabel(TP_RT_PFX + 'SN_EXP2_MAX');
   EmitInstr('MOV EAX,7FFFFFFFh');
@@ -20481,20 +20496,24 @@ Begin
   EmitInstr('XOR EAX,EAX');
   EmitInstr('RET');
 
-  { ------ _TPRT_SANE_SCALB : x * 2^n ------------------------------- }
+  { ------ _TPRT_SANE_SCALB : x * 2^n (boucle) ---------------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'SANE_SCALB');
-  EmitComment('SANE SCALB(n,x) : x * 2^n');
+  EmitComment('SANE SCALB(n,x) : x * 2^n par boucle');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
-  EmitInstr('MOV ECX,[EBP+12]');
-  EmitInstr('MOV EAX,[EBP+8]');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV ECX,[EBP+12]');     { n }
+  EmitInstr('MOV EAX,[EBP+8]');      { x }
   EmitInstr('TEST ECX,ECX');
   EmitInstr('JZ ' + TP_RT_PFX + 'SN_SCALB_DONE');
   EmitInstr('JS ' + TP_RT_PFX + 'SN_SCALB_NEG');
   EmitInstr('CMP ECX,30');
-  EmitInstr('JG ' + TP_RT_PFX + 'SN_SCALB_OVF');  { 2^31 depasse signed 32-bit }
-  EmitInstr('SHL EAX,CL');
+  EmitInstr('JG ' + TP_RT_PFX + 'SN_SCALB_OVF');
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_SL');
+  EmitInstr('SHL EAX,1');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_SCALB_SL');
   EmitInstr('JMP ' + TP_RT_PFX + 'SN_SCALB_DONE');
   EmitLabel(TP_RT_PFX + 'SN_SCALB_OVF');
   EmitInstr('MOV EAX,7FFFFFFFh');
@@ -20503,11 +20522,17 @@ Begin
   EmitInstr('NEG ECX');
   EmitInstr('CMP ECX,31');
   EmitInstr('JGE ' + TP_RT_PFX + 'SN_SCALB_UND');
-  EmitInstr('SAR EAX,CL');
+  EmitInstr('MOV EBX,2');           { diviseur = 2 }
+  EmitLabel(TP_RT_PFX + 'SN_SCALB_SR');
+  EmitInstr('CDQ');                  { sign-extend EAX into EDX:EAX }
+  EmitInstr('IDIV EBX');            { EAX = EAX / 2 (signed) }
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_SCALB_SR');
   EmitInstr('JMP ' + TP_RT_PFX + 'SN_SCALB_DONE');
   EmitLabel(TP_RT_PFX + 'SN_SCALB_UND');
   EmitInstr('XOR EAX,EAX');
   EmitLabel(TP_RT_PFX + 'SN_SCALB_DONE');
+  EmitInstr('POP EBX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
@@ -20663,15 +20688,11 @@ Begin
   EmitComment('SANE NUM2STR(f,x,Var s) : convertit x en chaine dans s');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
-  EmitInstr('MOV EAX,[EBP+12]');
+  EmitInstr('MOV EAX,[EBP+12]');     { x = valeur numerique }
   EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
-  EmitInstr('MOV ESI,EAX');
-  EmitInstr('MOV EDI,[EBP+8]');
-  EmitLabel(TP_RT_PFX + 'SN_N2S_COPY');
-  EmitInstr('LODSB');
-  EmitInstr('STOSB');
-  EmitInstr('TEST AL,AL');
-  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_N2S_COPY');
+  EmitInstr('LEA ESI,[NUMBUF]');     { source = NUMBUF (ASCIIZ) }
+  EmitInstr('MOV EDI,[EBP+8]');      { dest = adresse de la chaine s }
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
@@ -24624,6 +24645,10 @@ Begin { BcAssemble }
   If Mnem = 'DIV' Then
   Begin Reg1 := BcParseReg32(Op1);
     If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($F0 + Reg1); End;
+    Exit; End;
+  If Mnem = 'IDIV' Then
+  Begin Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($F8 + Reg1); End;
     Exit; End;
   If Mnem = 'IMUL' Then
   Begin
