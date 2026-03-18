@@ -111,7 +111,8 @@ Type
     DebugInfo : Boolean;   { -V : infos de debogage dans l EXE        }
     CompDir   : TString;   { -$<sw> : directives compilateur          }
     QuickPascal : Boolean;   { --quickpascal : mode QuickPascal (MSGraph) }
-    ApplePascal : Boolean;   { --applepascal/--sane : mode Apple Pascal (SANE) }
+    ApplePascal : Boolean;   { --applepascal : mode Apple Pascal (SANE+TRANSCEND) }
+    Sane        : Boolean;   { --sane : mode SANE seul (sans TRANSCEND) }
   End;
 
 Var
@@ -311,6 +312,7 @@ Begin
   Opts.CompDir     := '';
   Opts.QuickPascal := False;
   Opts.ApplePascal := False;
+  Opts.Sane        := False;
 End;
 
 { ------------------------------------------------------------ }
@@ -343,8 +345,8 @@ Begin
   WriteLn('  -tp7           Turbo Pascal 7 (defaut)');
   WriteLn('  -tp8           Turbo Pascal 8');
   WriteLn('  --quickpascal  Mode QuickPascal (support de l''unite MSGraph)');
-  WriteLn('  --applepascal  Mode Apple Pascal (support de l''unite SANE)');
-  WriteLn('  --sane         Synonyme de --applepascal');
+  WriteLn('  --applepascal  Mode Apple Pascal (support des unites SANE et TRANSCEND)');
+  WriteLn('  --sane         Mode SANE seul (sans l''unite TRANSCEND)');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
@@ -438,8 +440,10 @@ Begin
       Opts.TPVersion := TP_VER_8
     Else If (Arg = '--quickpascal') Then
       Opts.QuickPascal := True
-    Else If (Arg = '--applepascal') Or (Arg = '--sane') Then
+    Else If (Arg = '--applepascal') Then
       Opts.ApplePascal := True
+    Else If (Arg = '--sane') Then
+      Opts.Sane := True
     { Options compatibles TPC 7.0 (TODO 25) }
     Else If (UA = '-B') Then
       Opts.BuildAll := True
@@ -3409,7 +3413,7 @@ Begin
   { Constantes, procedures et fonctions de l unite SANE         }
   { (Apple Pascal) - activees si --applepascal ou --sane        }
   { ---------------------------------------------------------- }
-  If Opts.ApplePascal Then
+  If Opts.ApplePascal Or Opts.Sane Then
   Begin
     { Constantes SANE }
     RegConst('DECSTRLEN', 255);
@@ -3478,6 +3482,17 @@ Begin
     RegProc('SETHALTVECTOR');
     { Routine de comparaison }
     RegFunc('RELATION');
+  End;
+
+  { ---------------------------------------------------------- }
+  { Fonctions de l unite TRANSCEND (Apple Pascal)               }
+  { Disponible uniquement avec --applepascal (pas --sane)       }
+  { ---------------------------------------------------------- }
+  If Opts.ApplePascal And Not Opts.Sane Then
+  Begin
+    RegFunc('ATAN');          { ATan(r:Real):Real - arc tangente  }
+    RegFunc('LOG');           { Log(n:Real):Real  - log base 10   }
+    RegFunc('PWROFTEN');      { PwrOfTen(n:Integer):Real - 10^n   }
   End;
 
   { ---------------------------------------------------------- }
@@ -8625,6 +8640,48 @@ Begin
       Exit;
     End;
 
+    { ATAN(x) -> arc tangente (TRANSCEND unit, Apple Pascal) }
+    If Opts.ApplePascal And Not Opts.Sane Then
+    If Up = 'ATAN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'ARCTAN');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { LOG(x) -> logarithme base 10 (TRANSCEND unit, Apple Pascal) }
+    If Opts.ApplePascal And Not Opts.Sane Then
+    If Up = 'LOG' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_LOG10');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
+    { PWROFTEN(n) -> 10^n (TRANSCEND unit, Apple Pascal) }
+    If Opts.ApplePascal And Not Opts.Sane Then
+    If Up = 'PWROFTEN' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('CALL ' + TP_RT_PFX + 'SANE_PWROFTEN');
+        EPMatch(')');
+      End;
+      Exit;
+    End;
+
     { FRAC(x) -> partie fractionnaire (stub: retourne 0 en mode entier) }
     If Up = 'FRAC' Then
     Begin
@@ -8690,7 +8747,7 @@ Begin
     End;
 
     { --- SANE identity functions (single arg, result = arg) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'NUM2INTEGER') Or (Up = 'NUM2LONGINT') Or (Up = 'NUM2REAL') Or
        (Up = 'NUM2DOUBLE') Or (Up = 'NUM2EXTENDED') Or (Up = 'NUM2COMP') Or
        (Up = 'RINT') Then
@@ -8705,7 +8762,7 @@ Begin
     End;
 
     { --- SANE stub functions returning 0 (single arg, discarded) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'DEC2NUM') Or (Up = 'LN1') Or (Up = 'NAN') Or
        (Up = 'TESTEXCEPTION') Or (Up = 'TESTHALT') Then
     Begin
@@ -8720,7 +8777,7 @@ Begin
     End;
 
     { --- SANE stub functions returning 0 (no args) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'GETROUND') Or (Up = 'GETPRECISION') Or
        (Up = 'GETHALTVECTOR') Then
     Begin
@@ -8730,7 +8787,7 @@ Begin
     End;
 
     { --- SANE STR2NUM(s) : string to number --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'STR2NUM' Then
     Begin
       Inc(EP);
@@ -8745,7 +8802,7 @@ Begin
     End;
 
     { --- SANE LOGB(x) / LOG2(x) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'LOGB') Or (Up = 'LOG2') Then
     Begin
       Inc(EP);
@@ -8759,7 +8816,7 @@ Begin
     End;
 
     { --- SANE EXP2(x) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'EXP2' Then
     Begin
       Inc(EP);
@@ -8773,7 +8830,7 @@ Begin
     End;
 
     { --- SANE EXP1(x) : stub identity (e^x-1 ~ x for integers) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'EXP1' Then
     Begin
       Inc(EP);
@@ -8786,7 +8843,7 @@ Begin
     End;
 
     { --- SANE TAN(x) : stub returns 0 --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'TAN' Then
     Begin
       Inc(EP);
@@ -8801,7 +8858,7 @@ Begin
     End;
 
     { --- SANE SIGNNUM(x) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'SIGNNUM' Then
     Begin
       Inc(EP);
@@ -8815,7 +8872,7 @@ Begin
     End;
 
     { --- SANE CLASSxxx(x) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'CLASSREAL') Or (Up = 'CLASSDOUBLE') Or
        (Up = 'CLASSCOMP') Or (Up = 'CLASSEXTENDED') Then
     Begin
@@ -8830,7 +8887,7 @@ Begin
     End;
 
     { --- SANE COPYSIGN(x,y) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'COPYSIGN' Then
     Begin
       Inc(EP);
@@ -8849,7 +8906,7 @@ Begin
     End;
 
     { --- SANE NEXTxxx(x,y) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'NEXTREAL') Or (Up = 'NEXTDOUBLE') Or
        (Up = 'NEXTEXTENDED') Then
     Begin
@@ -8869,7 +8926,7 @@ Begin
     End;
 
     { --- SANE XPWRI(x,i) / XPWRY(x,y) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'XPWRI') Or (Up = 'XPWRY') Then
     Begin
       Inc(EP);
@@ -8888,7 +8945,7 @@ Begin
     End;
 
     { --- SANE COMPOUND(r,n) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'COMPOUND' Then
     Begin
       Inc(EP);
@@ -8907,7 +8964,7 @@ Begin
     End;
 
     { --- SANE ANNUITY(r,n) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'ANNUITY' Then
     Begin
       Inc(EP);
@@ -8926,7 +8983,7 @@ Begin
     End;
 
     { --- SANE RELATION(x,y) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'RELATION' Then
     Begin
       Inc(EP);
@@ -8945,7 +9002,7 @@ Begin
     End;
 
     { --- SANE SCALB(n,x) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'SCALB' Then
     Begin
       Inc(EP);
@@ -8964,7 +9021,7 @@ Begin
     End;
 
     { --- SANE REMAINDER(x,y,Var Quo) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'REMAINDER' Then
     Begin
       Inc(EP);
@@ -8991,7 +9048,7 @@ Begin
     End;
 
     { --- SANE RANDOMX(Var x) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'RANDOMX' Then
     Begin
       Inc(EP);
@@ -13327,7 +13384,7 @@ Begin
     End;
 
     { --- SANE SETEXCEPTION(e, b) / SETHALT(e, b) : no-op stubs (2 args) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'SETEXCEPTION') Or (Up = 'SETHALT') Then
     Begin
       Inc(EP);
@@ -13346,7 +13403,7 @@ Begin
     End;
 
     { --- SANE no-op stubs (1 arg, discarded) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'SETROUND') Or (Up = 'SETPRECISION') Or
        (Up = 'SETENVIRONMENT') Or (Up = 'PROCEXIT') Or
        (Up = 'SETHALTVECTOR') Then
@@ -13365,7 +13422,7 @@ Begin
     End;
 
     { --- SANE GETENVIRONMENT(Var e) / PROCENTRY(Var e) : store 0 --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'GETENVIRONMENT') Or (Up = 'PROCENTRY') Then
     Begin
       Inc(EP);
@@ -13387,7 +13444,7 @@ Begin
     End;
 
     { --- SANE NUM2STR(f, x, Var s) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If Up = 'NUM2STR' Then
     Begin
       Inc(EP);
@@ -13416,7 +13473,7 @@ Begin
     End;
 
     { --- SANE STR2DEC / CSTR2DEC (4 args, no-op) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'STR2DEC') Or (Up = 'CSTR2DEC') Then
     Begin
       Inc(EP);
@@ -13439,7 +13496,7 @@ Begin
     End;
 
     { --- SANE NUM2DEC / DEC2STR (3 args, no-op) --- }
-    If Opts.ApplePascal Then
+    If Opts.ApplePascal Or Opts.Sane Then
     If (Up = 'NUM2DEC') Or (Up = 'DEC2STR') Then
     Begin
       Inc(EP);
@@ -20696,6 +20753,62 @@ Begin
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
+  { ------ _TPRT_SANE_LOG10 : log base 10 entier ------------------- }
+  { En mode entier, log10(x) = floor(log10(x))                       }
+  { On divise par 10 en boucle et on compte les divisions            }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_LOG10');
+  EmitComment('TRANSCEND LOG(x) : log base 10 entier');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'SN_LOG10_ZERO');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('MOV EBX,EAX');           { EBX = x }
+  EmitInstr('XOR ECX,ECX');           { ECX = compteur }
+  EmitInstr('MOV EAX,10');
+  EmitLabel(TP_RT_PFX + 'SN_LOG10_LP');
+  EmitInstr('CMP EBX,10');
+  EmitInstr('JB ' + TP_RT_PFX + 'SN_LOG10_D');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('MOV EBX,10');
+  EmitInstr('DIV EBX');               { EAX = EBX / 10 }
+  EmitInstr('MOV EBX,EAX');           { EBX = quotient }
+  EmitInstr('POP EAX');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SN_LOG10_LP');
+  EmitLabel(TP_RT_PFX + 'SN_LOG10_D');
+  EmitInstr('MOV EAX,ECX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_LOG10_ZERO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_SANE_PWROFTEN : 10^n entier ----------------------- }
+  { Calcule 10^n par multiplication iterative                         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SANE_PWROFTEN');
+  EmitComment('TRANSCEND PwrOfTen(n) : 10^n entier');
+  EmitInstr('MOV ECX,EAX');           { ECX = n }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JS ' + TP_RT_PFX + 'SN_POT_ZERO');  { n<0 -> 0 }
+  EmitInstr('JZ ' + TP_RT_PFX + 'SN_POT_ONE');   { n=0 -> 1 }
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'SN_POT_LP');
+  EmitInstr('IMUL EAX,EAX,10');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SN_POT_LP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_POT_ONE');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'SN_POT_ZERO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('RET');
+
   { ------ _TPRT_RANDOM : generateur pseudo-aleatoire LCG ------- }
   { Sortie : EAX = nouveau nombre aleatoire                       }
   { Constantes LCG de glibc : a=1103515245, c=12345               }
@@ -25837,7 +25950,9 @@ Begin
     (Up = 'OVERLAY') Or (Up = 'PRINTER') Or (Up = 'WINDOS') Or
     (Up = 'TURBO3') Or (Up = 'OBJECTS') Or
     (Up = 'MSGRUTIL') Or (Up = 'MSGRAPH') Or  { Quick Pascal units (TODO 29) }
-    (Up = 'SANE');                              { Apple Pascal SANE unit       }
+    (Up = 'SANE') Or                           { Apple Pascal SANE unit       }
+    ((Up = 'TRANSCEND') And Opts.ApplePascal And Not Opts.Sane);
+                                               { Apple Pascal TRANSCEND unit  }
 End;
 
 Procedure MarkUnitSymbols(Const UName : TString);
@@ -26034,6 +26149,17 @@ Begin
     MarkIf('PROCENTRY','SANE'); MarkIf('PROCEXIT','SANE');
     MarkIf('GETHALTVECTOR','SANE'); MarkIf('SETHALTVECTOR','SANE');
     MarkIf('RELATION','SANE');
+  End
+  Else If Up = 'TRANSCEND' Then
+  Begin
+    { TRANSCEND unit functions - mark standard builtins as TRANSCEND }
+    MarkIf('ATAN','TRANSCEND');
+    MarkIf('COS','TRANSCEND');
+    MarkIf('LN','TRANSCEND');
+    MarkIf('LOG','TRANSCEND');
+    MarkIf('PWROFTEN','TRANSCEND');
+    MarkIf('SIN','TRANSCEND');
+    MarkIf('SQRT','TRANSCEND');
   End;
 End;
 
