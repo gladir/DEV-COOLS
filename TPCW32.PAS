@@ -6828,7 +6828,8 @@ Begin
                           Up := StrUpperCase(TokenPool[I].Val);
                           If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                              (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
-                             (Up = 'FUNCTION') Or (Up = 'LABEL') Then
+                             (Up = 'FUNCTION') Or (Up = 'LABEL') Or
+                             (Up = 'SEGMENT') Then
                             Break;
                         End;
                         If (TokenPool[I].Kind <> TK_IDENT) And
@@ -6897,7 +6898,8 @@ Begin
                           Up := StrUpperCase(TokenPool[I].Val);
                           If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                              (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
-                             (Up = 'FUNCTION') Or (Up = 'LABEL') Then
+                             (Up = 'FUNCTION') Or (Up = 'LABEL') Or
+                             (Up = 'SEGMENT') Then
                             Break;
                         End;
                         Inc(I);
@@ -7107,7 +7109,8 @@ Begin
             If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
                (Up = 'BEGIN') Or (Up = 'LABEL') Or
-               (Up = 'USES') Or (Up = 'PROGRAM') Then
+               (Up = 'USES') Or (Up = 'PROGRAM') Or
+               (Up = 'SEGMENT') Then
               Break;
           End;
 
@@ -7607,7 +7610,7 @@ Begin
               If (Up = 'CONSTRUCTOR') Or (Up = 'DESTRUCTOR') Or
                  (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
                  (Up = 'VIRTUAL') Or (Up = 'PRIVATE') Or
-                 (Up = 'PUBLIC') Then
+                 (Up = 'PUBLIC') Or (Up = 'SEGMENT') Then
               Begin
                 While (I < TokenCount) And
                       Not ((TokenPool[I].Kind = TK_PUNCT) And
@@ -26444,7 +26447,8 @@ Begin
     Begin
       Up := StrUpperCase(TokenPool[I].Val);
       If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or (Up = 'PROCEDURE') Or
-         (Up = 'FUNCTION') Or (Up = 'BEGIN') Or (Up = 'LABEL') Then Break;
+         (Up = 'FUNCTION') Or (Up = 'BEGIN') Or (Up = 'LABEL') Or
+         (Up = 'SEGMENT') Then Break;
     End;
     Inc(I);
   End;
