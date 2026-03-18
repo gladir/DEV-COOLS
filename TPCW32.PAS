@@ -1970,7 +1970,16 @@ Begin
       WarnMsg('nom de fichier attendu pour $INCLUDE');
   End
   Else If Dir = 'DEFINE' Then
-    DefineAdd(Arg)
+  Begin
+    DefineAdd(Arg);
+    { Activer les options de mode si le symbole correspond }
+    If StrUpperCase(Arg) = 'QUICKPASCAL' Then
+      Opts.QuickPascal := True
+    Else If StrUpperCase(Arg) = 'APPLEPASCAL' Then
+      Opts.ApplePascal := True
+    Else If StrUpperCase(Arg) = 'SANE' Then
+      Opts.Sane := True;
+  End
   Else If Dir = 'UNDEF' Then
     DefineRemove(Arg)
   Else If Dir = 'IFDEF' Then
