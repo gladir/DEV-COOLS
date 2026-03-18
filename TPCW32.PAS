@@ -366,6 +366,8 @@ Begin
   WriteLn('  -CW            Destination Windows 3.0');
   WriteLn('  -CW32          Destination Windows 32 bits');
   WriteLn('  -CZ80          Destination Zilog Z80');
+  WriteLn('  -C6502         Destination MOS 6502');
+  WriteLn('  -C6809         Destination Motorola 6809');
   WriteLn;
   WriteLn('Options compatibles TPC 7.0 :');
   WriteLn('  -B             Build all units (DOS 16 bits seulement)');
