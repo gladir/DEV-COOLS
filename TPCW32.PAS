@@ -2107,8 +2107,8 @@ Const
     { Type QuickPascal }
     (Name: 'CSTRING';  Size: 256), { CSTRING : String + nul terminal   }
     { Types Apple Pascal }
-    (Name: 'BYTESTREAM'; Size: 256), { ByteStream : Array of Char      }
-    (Name: 'WORDSTREAM'; Size: 256)  { WordStream : Array of Integer   }
+    (Name: 'BYTESTREAM'; Size: 256), { ByteStream : Array[0..255] of Char  }
+    (Name: 'WORDSTREAM'; Size: 256)  { WordStream : Array[0..63] of Integer}
   );
 
 { ---- DataInit : initialiser le pool de donnees ---- }
