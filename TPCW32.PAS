@@ -1015,6 +1015,9 @@ Begin
     R :=
       (L = 'inherited')   Or (L = 'constructor') Or
       (L = 'destructor')  Or (L = 'object');
+  { Mot-cle Apple Pascal : SEGMENT (overlay, ignore en Win32) }
+  If (Not R) And Opts.ApplePascal Then
+    R := (L = 'segment');
   IsKeyword := R;
 End;
 
@@ -5104,7 +5107,8 @@ Begin
             If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
                (Up = 'BEGIN') Or (Up = 'LABEL') Or
-               (Up = 'USES') Or (Up = 'PROGRAM') Then
+               (Up = 'USES') Or (Up = 'PROGRAM') Or
+               (Up = 'SEGMENT') Then
               Break;
           End;
 
@@ -5570,7 +5574,8 @@ Begin
             If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
                (Up = 'BEGIN') Or (Up = 'LABEL') Or
-               (Up = 'USES') Or (Up = 'PROGRAM') Then
+               (Up = 'USES') Or (Up = 'PROGRAM') Or
+               (Up = 'SEGMENT') Then
               Break;
           End;
 
@@ -5766,6 +5771,13 @@ Begin
         End; { while parsing CONST block }
         Continue;
       End; { CONST }
+
+      { --- Section SEGMENT PROCEDURE/FUNCTION (Apple Pascal) : sauter SEGMENT --- }
+      If (Up = 'SEGMENT') And Opts.ApplePascal Then
+      Begin
+        Inc(I); { sauter SEGMENT, la boucle traitera PROCEDURE/FUNCTION }
+        Continue;
+      End;
 
       { --- Section PROCEDURE ou FUNCTION : sauter entierement --- }
       If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
@@ -6124,6 +6136,15 @@ Begin
         Continue;
       End;
 
+      { === Detecter SEGMENT PROCEDURE ou SEGMENT FUNCTION (Apple Pascal) === }
+      If (Up = 'SEGMENT') And Opts.ApplePascal Then
+      Begin
+        { Sauter SEGMENT et continuer pour traiter PROCEDURE/FUNCTION }
+        Inc(I);
+        If I < TokenCount Then
+          Continue;
+      End;
+
       { === Detecter PROCEDURE ou FUNCTION === }
       If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
       Begin
@@ -6363,7 +6384,8 @@ Begin
           Up := StrUpperCase(TokenPool[I].Val);
           If (Up <> 'VAR') And (Up <> 'CONST') And (Up <> 'TYPE') And
              (Up <> 'LABEL') And (Up <> 'BEGIN') And
-             (Up <> 'PROCEDURE') And (Up <> 'FUNCTION') Then
+             (Up <> 'PROCEDURE') And (Up <> 'FUNCTION') And
+             (Up <> 'SEGMENT') Then
           Begin
             { Pas de corps : declaration de type interface/forward implicite }
             ProcTab[PI].IsForward := True;
@@ -6382,9 +6404,10 @@ Begin
               Inc(ProcCount);
             Continue;
           End;
-          { Si PROCEDURE/FUNCTION suit immediatement, scanner en avant }
+          { Si PROCEDURE/FUNCTION/SEGMENT suit immediatement, scanner en avant }
           { pour detecter si un BEGIN existe avant IMPLEMENTATION/END  }
-          If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
+          If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
+             (Up = 'SEGMENT') Then
           Begin
             J := I;
             SIdx := -1;  { reutiliser SIdx comme flag HasBody }
@@ -6455,7 +6478,8 @@ Begin
                 Up := StrUpperCase(TokenPool[I].Val);
                 If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                    (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
-                   (Up = 'FUNCTION') Or (Up = 'LABEL') Then
+                   (Up = 'FUNCTION') Or (Up = 'LABEL') Or
+                   (Up = 'SEGMENT') Then
                   Break;
               End;
 
@@ -6611,11 +6635,17 @@ Begin
                 Up := StrUpperCase(TokenPool[I].Val);
                 If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
                    (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
-                   (Up = 'FUNCTION') Or (Up = 'LABEL') Then
+                   (Up = 'FUNCTION') Or (Up = 'LABEL') Or
+                   (Up = 'SEGMENT') Then
                   Break;
               End;
               Inc(I);
             End;
+          End
+          Else If (Up = 'SEGMENT') And Opts.ApplePascal Then
+          Begin
+            { Sauter SEGMENT, la boucle traitera PROCEDURE/FUNCTION }
+            Inc(I);
           End
           Else If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
           Begin
