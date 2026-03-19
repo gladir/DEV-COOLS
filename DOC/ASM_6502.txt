@@ -4783,3 +4783,717 @@
     Motorola 6800   ~40                   Non specifie
     Intel 8086      Tres peu              Non specifie
     Motorola 68000  Exceptions ligne A/F  Trap explicite
+
+==============================================================================
+6. GESTION DES INTERRUPTIONS
+==============================================================================
+
+  6.1 Types d'interruptions
+  --------------------------
+
+  Le 6502 possede trois types d'interruptions, plus le signal
+  de reinitialisation (RESET). Contrairement au 68000 (256 vecteurs)
+  ou au 80386 (256 entrees dans l'IDT), le 6502 ne dispose que de
+  trois vecteurs fixes en fin de memoire.
+
+  Les quatre evenements qui interrompent le flux normal d'execution :
+
+    Evenement  Type           Masquable  Vecteur       Priorite
+    ---------  -------------  ---------  ------------  --------
+    RESET      Reinitialise   Non        $FFFC-$FFFD   1 (max)
+    NMI        Materielle     Non        $FFFA-$FFFB   2
+    IRQ        Materielle     Oui (I=1)  $FFFE-$FFFF   3
+    BRK        Logicielle     Oui (I=1)  $FFFE-$FFFF   4 (min)
+
+  Points cles :
+    - IRQ et BRK partagent le meme vecteur ($FFFE-$FFFF)
+    - Le drapeau B du registre P permet de les distinguer
+    - NMI ne peut pas etre masquee par le drapeau I
+    - RESET n'est pas une interruption a proprement parler :
+      il reinitialise le processeur sans sauvegarder de contexte
+    - Le 6502 n'a pas de mode superviseur/utilisateur
+      (contrairement au 68000 et au 80386)
+
+  Comparaison avec d'autres processeurs :
+
+    Processeur     Vecteurs    Masquage     Priorites
+    -------------  ---------   ----------   -------------------
+    MOS 6502       3 fixes     1 bit (I)    Fixe : RESET>NMI>IRQ
+    Zilog Z80      3 modes     EI/DI        3 modes (0,1,2)
+    Intel 8080     8 (RST)     EI/DI        Fixe
+    Motorola 6800  3 fixes     1 bit (I)    Fixe : RESET>NMI>IRQ
+    Motorola 6809  7 vecteurs  2 bits (I,F) RESET>NMI>FIRQ>IRQ>SWI
+    Motorola 68000 256         3 bits IPL   7 niveaux + NMI
+    Intel 80386    256 (IDT)   IF + PIC     Programmable via PIC
+
+  6.2 Interruption materielle (IRQ)
+  -----------------------------------
+
+  L'IRQ (Interrupt Request) est le mecanisme d'interruption
+  principal du 6502. La ligne IRQ est active a l'etat bas
+  (active low) et sensible au niveau (level-triggered).
+
+  6.2.1 Caracteristiques de la ligne IRQ
+
+    Signal       : actif a l'etat bas (0 = demande d'interruption)
+    Type         : sensible au niveau (level-triggered)
+    Masquable    : oui, par le drapeau I du registre P
+    Vecteur      : $FFFE-$FFFF
+    Latence      : 7 cycles minimum
+
+  La ligne IRQ est generalement un bus a collecteur ouvert (open
+  collector / open drain), ce qui permet a plusieurs peripheriques
+  de partager la meme ligne. Quand un peripherique veut interrompre
+  le processeur, il tire la ligne IRQ a l'etat bas. La ligne
+  remonte a l'etat haut (via une resistance de rappel) quand tous
+  les peripheriques ont relache la ligne.
+
+  6.2.2 Sensibilite au niveau
+
+  Puisque la ligne IRQ est sensible au NIVEAU (et non au front),
+  le processeur continue de detecter une demande d'interruption
+  tant que la ligne reste a l'etat bas. Cela implique :
+
+    - Le peripherique doit relacher la ligne IRQ dans le handler
+      (en lisant un registre d'etat ou en ecrivant un accusé
+      de reception)
+    - Si la ligne est encore basse apres RTI, une nouvelle
+      interruption sera declenchee immediatement
+    - Plusieurs peripheriques peuvent partager la meme ligne
+      (le handler doit interroger chaque peripherique)
+
+  Exemple de partage IRQ sur le Commodore 64 :
+
+    IRQ_Handler:
+      ; Verifier quel peripherique a cause l'interruption
+      LDA $D019        ; registre d'etat des interruptions du VIC-II
+      BMI VIC_IRQ      ; bit 7 = 1 si le VIC-II a cause l'IRQ
+      LDA $DC0D        ; registre d'etat du CIA #1
+      BMI CIA1_IRQ     ; bit 7 = 1 si le CIA #1 a cause l'IRQ
+      LDA $DD0D        ; registre d'etat du CIA #2
+      BMI CIA2_IRQ     ; bit 7 = 1 si le CIA #2 a cause l'IRQ
+      JMP Fin_IRQ      ; pas d'interruption identifiee (spurious)
+
+    VIC_IRQ:
+      STA $D019        ; acquitter l'interruption du VIC-II
+      ; ... traiter l'interruption VIC-II ...
+      JMP Fin_IRQ
+
+    CIA1_IRQ:
+      ; (la lecture de $DC0D acquitte automatiquement)
+      ; ... traiter l'interruption CIA #1 ...
+      JMP Fin_IRQ
+
+    CIA2_IRQ:
+      ; (la lecture de $DD0D acquitte automatiquement)
+      ; ... traiter l'interruption CIA #2 ...
+
+    Fin_IRQ:
+      PLA              ; restaurer A (si empile au debut)
+      TAX              ; etc.
+      RTI
+
+  6.2.3 Masquage des IRQ
+
+  Le drapeau I (Interrupt Disable) du registre P controle si
+  les interruptions IRQ sont acceptees :
+
+    I = 0 : IRQ est autorisee (les interruptions sont traitees)
+    I = 1 : IRQ est masquee (les interruptions sont ignorees)
+
+  Instructions pour controler le masquage :
+
+    SEI    ; I := 1 (masquer les IRQ)
+    CLI    ; I := 0 (autoriser les IRQ)
+
+  Lors du traitement d'une interruption (IRQ ou NMI), le
+  processeur met automatiquement I a 1 pour empecher les
+  interruptions imbriquees. Le programmeur peut re-autoriser
+  les interruptions dans le handler avec CLI si les
+  interruptions imbriquees sont desirees.
+
+  Sequence typique de section critique :
+
+    SEI              ; desactiver les IRQ
+    ; ... code critique (pas d'interruption possible) ...
+    LDA compteur     ; lecture atomique d'une variable
+    STA copie        ;   partagee avec le handler
+    CLI              ; re-autoriser les IRQ
+
+  6.2.4 Sources d'IRQ typiques par machine
+
+    Commodore 64 :
+      - CIA #1 ($DC00) : timer A/B, clavier, port serie
+      - CIA #2 ($DD00) : timer A/B, port serie, NMI via
+        RESTORE (le CIA #2 genere aussi des NMI)
+      - VIC-II ($D000) : raster, collision sprites, lightpen
+
+    Apple II :
+      - Peu d'IRQ utilisees en standard
+      - Cartes d'extension : horloge, port serie
+      - ProDOS utilise un mecanisme d'interruption pour les
+        peripheriques
+
+    NES (Nintendo) :
+      - APU (Audio Processing Unit) : fin de trame audio
+      - Mapper de cartouche : compteur de lignes de balayage
+        (certains mappers comme le MMC3)
+
+    Atari 2600 :
+      - Le RIOT (6532) genere des interruptions timer
+      - En pratique, le 2600 utilise peu les IRQ car le
+        programme est synchronise avec le balayage video
+
+  6.3 Interruption non masquable (NMI)
+  --------------------------------------
+
+  La NMI (Non-Maskable Interrupt) est une interruption qui ne
+  peut PAS etre masquee par le drapeau I. Elle est prioritaire
+  sur l'IRQ.
+
+  6.3.1 Caracteristiques de la ligne NMI
+
+    Signal       : actif sur front descendant (edge-triggered)
+    Type         : sensible au front (falling edge)
+    Masquable    : non (le drapeau I est ignore)
+    Vecteur      : $FFFA-$FFFB
+    Latence      : 7 cycles minimum
+
+  Difference cruciale avec l'IRQ : la NMI est detectee sur le
+  FRONT descendant (passage de haut a bas), et non sur le
+  niveau. Cela signifie :
+
+    - Une seule interruption est generee par transition
+    - Pas besoin d'acquitter la NMI dans le handler
+    - La ligne doit revenir a l'etat haut avant qu'une
+      nouvelle NMI puisse etre declenchee
+    - Un signal NMI maintenu en permanence a l'etat bas
+      ne declenche qu'une seule interruption
+
+  6.3.2 Detection du front descendant
+
+  Le 6502 echantillonne la ligne NMI a chaque cycle d'horloge.
+  Le front descendant est detecte quand :
+    - L'echantillon precedent etait a l'etat haut (1)
+    - L'echantillon courant est a l'etat bas (0)
+
+  Cette detection par front a des consequences importantes :
+    - Si la NMI est active pendant le traitement d'une NMI
+      precedente et que la ligne n'est pas revenue a l'etat
+      haut entre-temps, la deuxieme NMI sera perdue
+    - La NMI peut interrompre un handler d'IRQ
+    - La NMI peut meme interrompre le debut du traitement
+      d'une IRQ (voir 6.6.3 pour les cas limites)
+
+  6.3.3 Sources de NMI typiques par machine
+
+    Commodore 64 :
+      - CIA #2 : touche RESTORE sur le clavier
+      - En pratique, la NMI est peu utilisee sur le C64
+        en dehors de la touche RESTORE
+
+    NES (Nintendo) :
+      - VBlank (retour vertical) : le PPU genere une NMI
+        a chaque debut de retour vertical (ligne 241)
+      - C'est le mecanisme principal de synchronisation
+        du programme avec l'affichage
+      - Controlee par le bit 7 du registre PPUCTRL ($2000)
+
+    Apple II :
+      - Pas de source NMI standard
+      - Certaines cartes d'extension utilisent la NMI
+
+    Atari 800/XL/XE :
+      - ANTIC : le co-processeur video genere des NMI
+        pour les Display List Interrupts (DLI) et le VBI
+        (Vertical Blank Interrupt)
+
+  6.3.4 Exemple : handler NMI sur la NES
+
+    NMI_Handler:
+      PHA              ; sauvegarder A
+      TXA
+      PHA              ; sauvegarder X
+      TYA
+      PHA              ; sauvegarder Y
+
+      ; Lire le registre d'etat du PPU pour acquitter la NMI
+      LDA $2002        ; PPUSTATUS - aussi remet le latch d'adresse
+
+      ; Effectuer les mises a jour graphiques pendant le VBlank
+      ; (ecriture OAM, mise a jour de la nametable, etc.)
+      LDA #$00
+      STA $2003        ; OAMADDR = 0
+      LDA #$02
+      STA $4014        ; DMA OAM depuis la page $0200
+
+      ; Mettre a jour le defilement
+      LDA scroll_x
+      STA $2005        ; defilement horizontal
+      LDA scroll_y
+      STA $2005        ; defilement vertical
+
+      ; Restaurer les registres
+      PLA
+      TAY              ; restaurer Y
+      PLA
+      TAX              ; restaurer X
+      PLA              ; restaurer A
+      RTI
+
+  6.4 Interruption logicielle (BRK)
+  -----------------------------------
+
+  L'instruction BRK declenche une interruption logicielle.
+  C'est l'equivalent du TRAP du 68000 ou de l'INT du 80386.
+
+  6.4.1 Comportement de BRK
+
+    Opcode       : $00
+    Taille       : 1 octet (mais consomme 2 octets, voir 6.4.2)
+    Cycles       : 7
+    Vecteur      : $FFFE-$FFFF (meme vecteur que IRQ)
+    Drapeau B    : mis a 1 dans la copie empilee de P
+
+  Sequence d'execution de BRK :
+    1. PC := PC + 2 (saute l'opcode ET l'octet suivant)
+    2. Empiler PCH sur la pile (octet haut de PC)
+    3. Empiler PCL sur la pile (octet bas de PC)
+    4. Mettre le drapeau B a 1
+    5. Empiler P sur la pile (avec B=1)
+    6. Mettre le drapeau I a 1 (masquer les IRQ)
+    7. PCL := [$FFFE]
+    8. PCH := [$FFFF]
+
+  6.4.2 L'octet signature (padding byte)
+
+  BRK avance le PC de 2 (et non de 1), ce qui fait que l'octet
+  immediatement apres BRK est saute. Cet octet est appele
+  "signature byte" ou "padding byte" et peut etre utilise pour
+  transmettre une information au handler :
+
+    BRK
+    .BYTE $01        ; signature : code de la fonction demandee
+
+  Dans le handler, pour recuperer la signature :
+
+    ; Le PC empile pointe sur l'octet APRES la signature
+    ; Donc PC_empile - 1 = adresse de la signature
+    Handler_BRK:
+      PLA              ; recuperer P depuis la pile
+      PHA              ; le remettre
+      TSX              ; X := SP
+      LDA $0102,X      ; lire PCL depuis la pile (SP+2)
+      SEC
+      SBC #$01         ; PCL - 1
+      STA ptr_low
+      LDA $0103,X      ; lire PCH depuis la pile (SP+3)
+      SBC #$00         ; propager le borrow
+      STA ptr_high
+      ; (ptr_low, ptr_high) pointe maintenant sur la signature
+      LDY #$00
+      LDA (ptr_low),Y  ; lire la signature
+      ; Dispatcher selon la valeur de la signature...
+
+  6.4.3 Distinction BRK / IRQ
+
+  Puisque BRK et IRQ partagent le meme vecteur ($FFFE-$FFFF),
+  le handler doit les distinguer en examinant le drapeau B dans
+  la copie de P empilee sur la pile :
+
+    - B = 1 : c'est un BRK (interruption logicielle)
+    - B = 0 : c'est une IRQ (interruption materielle)
+
+  Le drapeau B n'existe pas physiquement dans le registre P ;
+  il n'est present que dans la copie empilee.
+
+  Code typique de distinction :
+
+    IRQ_BRK_Handler:
+      PHA              ; sauvegarder A
+      TXA
+      PHA              ; sauvegarder X
+      TYA
+      PHA              ; sauvegarder Y
+
+      TSX              ; X := SP
+      LDA $0104,X      ; lire la copie de P depuis la pile
+                        ; (offset 4 car on a empile 3 registres)
+      AND #$10         ; tester le bit B (bit 4)
+      BNE Est_BRK      ; si B=1, c'est un BRK
+
+    Est_IRQ:
+      ; ... traiter l'IRQ ...
+      JMP Fin_Handler
+
+    Est_BRK:
+      ; ... traiter le BRK ...
+
+    Fin_Handler:
+      PLA
+      TAY              ; restaurer Y
+      PLA
+      TAX              ; restaurer X
+      PLA              ; restaurer A
+      RTI
+
+  6.4.4 Utilisations de BRK
+
+    - Points d'arret pour le debogage (breakpoints) : un
+      debugger remplace temporairement un opcode par $00 (BRK)
+      pour arreter l'execution a cet endroit
+    - Appels systeme (system calls) : sur certains systemes,
+      BRK + signature est utilise comme mecanisme d'appel
+      au moniteur ou au systeme d'exploitation
+    - Trap pour gestion d'erreurs : similaire au TRAP du 68000
+
+  6.4.5 Bug connu : BRK + IRQ simultanee
+
+  Si une IRQ se produit exactement au meme moment qu'un BRK,
+  le comportement du 6502 NMOS est le suivant :
+    - Le BRK est "avale" : le handler recoit une IRQ normale
+      (le drapeau B est a 0 dans la copie empilee)
+    - Le PC empile pointe 2 octets apres le BRK
+    - Au retour du handler par RTI, l'octet signature est
+      saute mais le BRK n'a pas ete traite
+
+  Ce bug est corrige sur le 65C02 (CMOS).
+
+  6.5 Vecteurs d'interruption
+  -----------------------------
+
+  Les vecteurs d'interruption sont situes aux six derniers
+  octets de l'espace d'adressage, dans la page $FFxx :
+
+    Adresse     Contenu                Evenement
+    ----------  ---------------------  --------------------
+    $FFFA       NMI vector (low byte)  Interruption NMI
+    $FFFB       NMI vector (high byte)
+    $FFFC       RESET vector (low)     Reinitialisation
+    $FFFD       RESET vector (high)
+    $FFFE       IRQ/BRK vector (low)   Interruption IRQ ou BRK
+    $FFFF       IRQ/BRK vector (high)
+
+  Chaque vecteur est une adresse 16 bits stockee en format
+  little-endian (octet de poids faible d'abord).
+
+  6.5.1 Placement des vecteurs en memoire
+
+  Sur la plupart des systemes, les vecteurs se trouvent en ROM
+  (memoire morte) car ils doivent etre disponibles au demarrage
+  avant toute initialisation du systeme.
+
+  Les valeurs typiques des vecteurs par machine :
+
+    Commodore 64 (ROM KERNAL) :
+      $FFFA-$FFFB : $FE43 (NMI -> routine KERNAL NMI)
+      $FFFC-$FFFD : $FCE2 (RESET -> initialisation systeme)
+      $FFFE-$FFFF : $FF48 (IRQ/BRK -> routine KERNAL IRQ)
+
+    Apple II :
+      $FFFA-$FFFB : $0000 (NMI - pas utilise en standard)
+      $FFFC-$FFFD : Varie selon la ROM
+      $FFFE-$FFFF : Pointe vers le handler dans le moniteur
+
+    NES (Nintendo) :
+      Les vecteurs sont dans la ROM de la cartouche.
+      Chaque jeu definit ses propres vecteurs.
+      Exemple typique (assembleur) :
+        .ORG $FFFA
+        .WORD NMI_Handler    ; adresse du handler NMI
+        .WORD RESET_Handler  ; adresse du handler RESET
+        .WORD IRQ_Handler    ; adresse du handler IRQ/BRK
+
+    Atari 2600 :
+      $FFFA-$FFFB : Adresse du handler NMI (pas utilise)
+      $FFFC-$FFFD : Adresse du point d'entree du programme
+      $FFFE-$FFFF : Adresse du handler IRQ/BRK
+
+  6.5.2 Redirection des vecteurs (vectoring par RAM)
+
+  Puisque les vecteurs sont en ROM, il est impossible de les
+  modifier directement. La plupart des systemes utilisent un
+  mecanisme de redirection par RAM : le handler en ROM lit une
+  adresse en RAM et saute a cette adresse avec un JMP indirect.
+
+  Exemple sur le Commodore 64 :
+
+    Le handler IRQ en ROM ($FF48) fait :
+      PHA
+      TXA
+      PHA
+      TYA
+      PHA
+      TSX
+      LDA $0104,X    ; lire P empile
+      AND #$10       ; tester bit B
+      BNE BRK_entry  ; si BRK, aller au handler BRK
+      JMP ($0314)    ; sinon, sauter au vecteur RAM IRQ
+
+    Les vecteurs RAM du C64 sont :
+      $0314-$0315 : vecteur IRQ (defaut = $EA31, routine KERNAL)
+      $0316-$0317 : vecteur BRK (defaut = $FE66, routine KERNAL)
+      $0318-$0319 : vecteur NMI (defaut = $FE47, routine KERNAL)
+
+    Pour installer un handler IRQ personnalise :
+      SEI              ; desactiver les IRQ
+      LDA #<Mon_IRQ    ; low byte de l'adresse du handler
+      STA $0314
+      LDA #>Mon_IRQ    ; high byte
+      STA $0315
+      CLI              ; re-autoriser les IRQ
+
+    Mon_IRQ:
+      ; ... code personnalise ...
+      JMP $EA31        ; chainer avec le handler par defaut
+                        ; (ou JMP $EA81 pour sauter le scan clavier)
+
+  6.6 Sequence de traitement d'une interruption
+  ------------------------------------------------
+
+  6.6.1 Sequence IRQ (7 cycles)
+
+  Quand le processeur detecte une demande IRQ et que I=0 :
+
+    Cycle  Action
+    -----  --------------------------------------------------
+    1      Lecture de l'opcode a PC (instruction interrompue
+           est terminee avant de traiter l'IRQ)
+    2      Lecture de l'octet suivant (ignore)
+    3      Empiler PCH a l'adresse $0100+SP, SP := SP-1
+    4      Empiler PCL a l'adresse $0100+SP, SP := SP-1
+    5      Empiler P a l'adresse $0100+SP (avec B=0),
+           SP := SP-1, mettre I := 1
+    6      Lire PCL := [$FFFE]
+    7      Lire PCH := [$FFFF]
+
+  Etat de la pile apres le traitement :
+
+    Adresse       Contenu
+    -----------   ------------------
+    $0100+SP+3    PCH (octet haut de l'adresse de retour)
+    $0100+SP+2    PCL (octet bas de l'adresse de retour)
+    $0100+SP+1    P (registre d'etat, avec B=0 pour IRQ)
+
+    Le PC empile pointe sur l'instruction qui aurait ete
+    executee si l'interruption n'avait pas eu lieu.
+
+  6.6.2 Sequence NMI (7 cycles)
+
+  La sequence NMI est identique a celle de l'IRQ, sauf :
+    - Elle n'est pas affectee par le drapeau I
+    - Elle lit le vecteur a $FFFA-$FFFB au lieu de $FFFE-$FFFF
+    - Le drapeau B empile est a 0
+
+    Cycle  Action
+    -----  --------------------------------------------------
+    1      Lecture de l'opcode a PC (ignore)
+    2      Lecture de l'octet suivant (ignore)
+    3      Empiler PCH a l'adresse $0100+SP, SP := SP-1
+    4      Empiler PCL a l'adresse $0100+SP, SP := SP-1
+    5      Empiler P a l'adresse $0100+SP (avec B=0),
+           SP := SP-1, mettre I := 1
+    6      Lire PCL := [$FFFA]
+    7      Lire PCH := [$FFFB]
+
+  6.6.3 Sequence BRK (7 cycles)
+
+  La sequence BRK est similaire a celle de l'IRQ, mais :
+    - PC est incremente de 2 (saute l'opcode + signature)
+    - Le drapeau B empile est a 1
+
+    Cycle  Action
+    -----  --------------------------------------------------
+    1      Lecture de l'opcode ($00) a PC
+    2      Lecture de l'octet suivant (signature), PC := PC+2
+    3      Empiler PCH a l'adresse $0100+SP, SP := SP-1
+    4      Empiler PCL a l'adresse $0100+SP, SP := SP-1
+    5      Empiler P a l'adresse $0100+SP (avec B=1),
+           SP := SP-1, mettre I := 1
+    6      Lire PCL := [$FFFE]
+    7      Lire PCH := [$FFFF]
+
+  6.6.4 Sequence RESET
+
+  Le RESET est different des autres interruptions : il ne
+  sauvegarde pas de contexte sur la pile. Il reinitialise
+  le processeur a un etat connu.
+
+    Cycle  Action
+    -----  --------------------------------------------------
+    1-6    Le processeur effectue des cycles internes
+           (similarres a une interruption mais les ecritures
+           sur la pile sont transformees en lectures)
+           SP := SP - 3 (le pointeur de pile est decremente
+           mais rien n'est ecrit)
+    7      Mettre I := 1 (masquer les IRQ)
+           Mettre D := 0 (desactiver le mode decimal sur 65C02)
+    8      Lire PCL := [$FFFC]
+    9      Lire PCH := [$FFFD]
+
+  Etat du processeur apres RESET :
+    - A, X, Y : inchanges (contenu aleatoire au premier RESET)
+    - SP : decremente de 3 (mais pas de donnees ecrites)
+    - P : I=1, les autres bits sont indetermines
+      (sur le 65C02 : D est remis a 0)
+    - PC : charge depuis le vecteur $FFFC-$FFFD
+
+  Note : le RESET ne reinitialise PAS les registres A, X, Y
+  ni le contenu de la RAM. Seuls le PC (charge depuis le
+  vecteur), le drapeau I (mis a 1) et le SP (decremente) sont
+  affectes. Le code d'initialisation au vecteur RESET doit
+  initialiser explicitement tous les registres et la memoire.
+
+  Code typique d'initialisation au RESET :
+
+    RESET_Handler:
+      SEI              ; masquer les IRQ (deja fait par le RESET
+                        ; mais par securite)
+      CLD              ; desactiver le mode decimal
+      LDX #$FF
+      TXS              ; initialiser le pointeur de pile a $FF
+
+      ; Initialiser la RAM a zero
+      LDA #$00
+      TAX
+    Clear_RAM:
+      STA $0000,X
+      STA $0100,X
+      STA $0200,X
+      STA $0300,X
+      STA $0400,X
+      STA $0500,X
+      STA $0600,X
+      STA $0700,X
+      INX
+      BNE Clear_RAM
+
+      ; Initialiser le materiel
+      ; ... (depend du systeme) ...
+
+      CLI              ; autoriser les IRQ
+      JMP Main         ; sauter au programme principal
+
+  6.6.5 Sequence RTI (6 cycles)
+
+  L'instruction RTI (Return from Interrupt) restaure le contexte
+  sauvegarde et reprend l'execution interrompue :
+
+    Cycle  Action
+    -----  --------------------------------------------------
+    1      Lecture de l'opcode ($40) a PC
+    2      Lecture de l'octet suivant (ignore)
+    3      SP := SP + 1 (ajuster SP)
+    4      Lire P := [$0100+SP], SP := SP + 1
+    5      Lire PCL := [$0100+SP], SP := SP + 1
+    6      Lire PCH := [$0100+SP]
+
+  Notes importantes :
+    - RTI restaure le registre P complet, y compris le
+      drapeau I. Si le handler a modifie I (par exemple
+      avec CLI pour permettre les interruptions imbriquees),
+      la valeur originale de I est restauree par RTI.
+    - Contrairement a RTS, RTI ne fait PAS PC := PC + 1
+      apres la restauration. L'adresse empilee est exacte.
+    - RTI restaure aussi le drapeau D. Si le handler utilise
+      le mode decimal, le CLD dans le handler n'affecte pas
+      le programme interrompu.
+
+  Comparaison RTI vs RTS :
+
+    Instruction  Registres restaures  PC apres retour
+    -----------  -------------------  -------------------------
+    RTI          P, PCL, PCH          Valeur exacte empilee
+    RTS          PCL, PCH             Valeur empilee + 1
+
+    La difference de PC s'explique par le fait que JSR empile
+    PC-1 (derniere adresse de l'instruction JSR), tandis que
+    les interruptions empilent l'adresse exacte de la prochaine
+    instruction a executer.
+
+  6.6.6 Cas limites et interactions
+
+  Plusieurs situations peuvent creer des comportements subtils :
+
+  NMI pendant le traitement d'une IRQ :
+    Si une NMI arrive pendant que le processeur empile le
+    contexte d'une IRQ, la NMI est mise en attente et sera
+    traitee apres l'IRQ. Le processeur ne peut pas etre
+    interrompu au milieu d'une sequence d'empilement.
+    Cependant, une fois le handler IRQ en cours d'execution,
+    une NMI peut l'interrompre normalement.
+
+  IRQ pendant le traitement d'une NMI :
+    Le handler NMI commence avec I=1 (IRQ masquees). Si le
+    handler ne fait pas CLI, les IRQ sont masquees pendant
+    toute la duree de la NMI. RTI restaure l'ancien P,
+    ce qui re-autorise les IRQ si elles etaient autorisees
+    avant la NMI.
+
+  NMI qui hijack le vecteur IRQ/BRK :
+    Bug du 6502 NMOS : si une NMI arrive pendant les cycles
+    6-7 d'une sequence IRQ/BRK (lecture du vecteur), le
+    processeur peut lire un octet du vecteur IRQ et un
+    octet du vecteur NMI, resultant en une adresse incorrecte.
+    Ce bug est corrige sur le 65C02.
+
+  Double NMI :
+    Si la ligne NMI revient a l'etat haut puis redescend
+    pendant le traitement d'une NMI, une deuxieme NMI sera
+    mise en attente. Elle sera traitee apres le RTI de la
+    premiere NMI.
+
+  6.6.7 Resume du comportement de la pile
+
+  Etat de la pile dans chaque cas :
+
+  Avant l'interruption :     SP pointe sur la derniere donnee
+                              empilee (ou sur $FF si la pile
+                              est vide)
+
+  Pendant une interruption : 3 octets sont empiles
+    $0100 + SP_ancien     -> PCH
+    $0100 + SP_ancien - 1 -> PCL
+    $0100 + SP_ancien - 2 -> P (avec B=0 pour IRQ/NMI,
+                                     B=1 pour BRK)
+    SP := SP_ancien - 3
+
+  Apres RTI :               3 octets sont depiles
+    P   := [$0100 + SP + 1]
+    PCL := [$0100 + SP + 2]
+    PCH := [$0100 + SP + 3]
+    SP  := SP + 3
+
+  6.6.8 Diagramme temporel des interruptions
+
+  Ligne de temps typique pour une IRQ :
+
+    Horloge :  |  1  |  2  |  3  |  4  |  5  |  6  |  7  |
+    -----------+-----+-----+-----+-----+-----+-----+-----+
+    PC         | cur | cur+1 | -  | -   | -   | lo  | hi  |
+    Action     |fetch|fetch|push |push |push |read |read |
+               | op  | op  | PCH | PCL | P   |$FFFE|$FFFF|
+    SP         | SP  | SP  |SP-1 |SP-2 |SP-3 |SP-3 |SP-3 |
+    Drapeaux   |     |     |     |     |I:=1 |     |     |
+    -----------+-----+-----+-----+-----+-----+-----+-----+
+
+  Apres le cycle 7, le processeur commence a executer
+  l'instruction a l'adresse lue depuis le vecteur.
+
+  6.6.9 Comparaison avec d'autres processeurs
+
+    Processeur      Contexte sauvegarde     Cycles  Pile
+    -------------   ---------------------   ------  ----------
+    MOS 6502        P, PCL, PCH (3 octets)  7       $0100-$01FF
+    Zilog Z80       PC (2 octets)           ~13     Quelconque
+    Intel 8080      PC (2 octets)           ~11     Quelconque
+    Motorola 6800   PC,X,A,B,CC (7 octets)  12      Quelconque
+    Motorola 6809   Tous registres (12 oct)  19      Quelconque
+    Motorola 68000  SR, PC (6 octets min)    ~44     Superviseur
+    Intel 80386     EFLAGS, CS, EIP (+err)   Variable  TSS/pile
+
+  Le 6502 sauvegarde le minimum sur la pile (seulement P et PC),
+  ce qui rend l'entree en interruption rapide (7 cycles) mais
+  oblige le handler a sauvegarder manuellement A, X et Y si
+  necessaire. Le 6809, en revanche, sauvegarde automatiquement
+  tous les registres (12 octets) mais au prix de 19 cycles.
