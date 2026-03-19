@@ -302,6 +302,46 @@ Begin
  BlockWrite(Memory,Value,4,ByteWrited);
 End;
 
+  { TODO 7 : Pile 32 bits (PUSH/POP) avec ESP et SS adressant
+    tout l'espace 16 Mo. PUSH decremente ESP puis ecrit la valeur,
+    POP lit la valeur puis incremente ESP. }
+
+Procedure Push32(Value:LongInt);
+Var
+ Addr:LongInt;
+Begin
+ Regs.ESP:=Regs.ESP-4;
+ Addr:=SelOfsToLinear(Segs.SS,Regs.ESP);
+ WriteDWord(Addr,Value);
+End;
+
+Function Pop32:LongInt;
+Var
+ Addr:LongInt;
+Begin
+ Addr:=SelOfsToLinear(Segs.SS,Regs.ESP);
+ Pop32:=ReadDWord(Addr);
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+Procedure Push16(Value:Word);
+Var
+ Addr:LongInt;
+Begin
+ Regs.ESP:=Regs.ESP-2;
+ Addr:=SelOfsToLinear(Segs.SS,Regs.ESP);
+ WriteWord(Addr,Value);
+End;
+
+Function Pop16:Word;
+Var
+ Addr:LongInt;
+Begin
+ Addr:=SelOfsToLinear(Segs.SS,Regs.ESP);
+ Pop16:=ReadWord(Addr);
+ Regs.ESP:=Regs.ESP+2;
+End;
+
 Procedure Init;
 Var
  J:LongInt;
