@@ -3,6 +3,7 @@
 *.o
 *.obj
 *.ppu
+*.prg
 /TPCW32
 *.exe
 /TESTS/EMU8086
