@@ -6470,3 +6470,940 @@
     Motorola 6809  Pile (2 oct)    Registres       PSHS/PULS multi
     Motorola 68000 Pile (4 oct)    Regs ou pile    MOVEM.L
     Intel 80386    Pile (4 oct)    Pile (conv. C)  PUSHA/POPA
+
+==============================================================================
+8. DIRECTIVES ASSEMBLEUR (ASM6502.PAS)
+==============================================================================
+
+  Les directives assembleur (aussi appelees pseudo-instructions ou
+  pseudo-opcodes) ne generent pas de code machine directement mais
+  controlent le processus d'assemblage : definition de donnees,
+  organisation memoire, symboles, macros et generation de listing.
+
+  Cette section documente les directives supportees par l'assembleur
+  ASM6502.PAS inclus dans le projet DEV-COOLS. Les conventions de
+  syntaxe sont proches de celles des assembleurs Motorola et Atari,
+  avec des synonymes provenant de differentes traditions (Motorola,
+  MOS Technology, Commodore, Apple, etc.).
+
+  8.1 Vue d'ensemble (ASM6502.PAS)
+  -----------------------------------
+
+  ASM6502.PAS est un assembleur 6502 a deux passes ecrit en Pascal.
+  Il accepte un fichier source en entree et produit un listing et
+  un fichier objet binaire en sortie.
+
+  Syntaxe d'invocation :
+
+    ASM6502 [options] fichier_source [options]
+
+  L'assembleur effectue :
+    - Passe 1 : resolution des symboles et calcul des adresses
+    - Passe 2 : generation du code et du listing
+
+  Format d'une ligne source :
+
+    [etiquette]  [opcode/directive]  [operandes]  [; commentaire]
+
+  Regles de formatage :
+    - Une etiquette doit commencer en colonne 1 (aucun espace avant)
+    - Si la ligne commence par un espace ou une tabulation, il n'y a
+      pas d'etiquette
+    - Une ligne commencant par '*' en colonne 1 est un commentaire
+    - Un ';' debute un commentaire jusqu'a la fin de la ligne
+    - Les opcodes et directives sont insensibles a la casse
+    - Une etiquette peut etre suivie de ':' (optionnel)
+
+  Exemple de programme minimal :
+
+            ORG  $C000        ; adresse de debut
+    start:  LDA  #$41         ; charger 'A' dans l'accumulateur
+            JSR  $FFD2        ; appeler la routine d'affichage
+            RTS               ; retour
+            END               ; fin du source
+
+  Recapitulatif des directives supportees :
+
+    Directive    Synonymes      Type           Description
+    -----------  -------------  -------------  ----------------------------
+    DB           FCB, BYTE      Donnees        Definir octet(s)
+    DW           FDB, WORD      Donnees        Definir mot(s) 16 bits
+    DS           RMB, BLKB      Donnees        Reserver de l'espace
+    FCC          -              Donnees        Chaine de caracteres
+    EQU          =              Controle       Definir symbole constant
+    SET          -              Controle       Definir symbole modifiable
+    ORG          AORG           Controle       Adresse absolue d'assemblage
+    RORG         -              Controle       Adresse relative d'assemblage
+    END          -              Controle       Fin du source
+    LIST         -              Listing        Controle du listing
+    OPT          -              Listing        Options de listing
+    MACRO        -              Macros         Debut de definition de macro
+    ENDM         -              Macros         Fin de definition de macro
+
+  8.2 Directives de donnees
+  ---------------------------
+
+  8.2.1 DB / FCB / BYTE - Define Byte (Definir octet)
+
+  Reserve et initialise un ou plusieurs octets en memoire.
+  Les trois mnemoniques sont synonymes :
+    - DB   : notation Intel/Zilog
+    - FCB  : Form Constant Byte (notation Motorola)
+    - BYTE : notation generique
+
+  Syntaxe :
+
+    [etiquette]  DB   valeur[,valeur,...]
+    [etiquette]  FCB  valeur[,valeur,...]
+    [etiquette]  BYTE valeur[,valeur,...]
+
+  Chaque valeur peut etre :
+    - Une constante numerique (8 bits, 0-255 ou -128..127)
+    - Une expression arithmetique
+    - Une chaine de caracteres entre apostrophes
+
+  Exemples :
+
+    octet1   DB   $41           ; un octet = 65 = 'A'
+    octets   DB   1,2,3,4,5    ; cinq octets consecutifs
+    mixte    DB   'A',0,$FF    ; caractere, zero, $FF
+    chaine   DB   'Hello',0    ; chaine terminee par zero
+    expr     DB   base+3       ; expression evaluee a l'assemblage
+    negatif  DB   -1           ; un octet = $FF
+
+  Les chaines entre apostrophes sont decomposees en octets ASCII
+  individuels. Pour inclure une apostrophe dans une chaine, la
+  doubler : DB 'l''art'  produit les octets $6C,$27,$61,$72,$74.
+
+  Codage memoire de DB 'AB',0,$FF :
+
+    Adresse    Contenu    Description
+    --------   -------    -----------
+    $xxxx      $41        'A'
+    $xxxx+1    $42        'B'
+    $xxxx+2    $00        zero
+    $xxxx+3    $FF        $FF
+
+  8.2.2 DW / FDB / WORD - Define Word (Definir mot 16 bits)
+
+  Reserve et initialise un ou plusieurs mots de 16 bits en memoire.
+  Les mots sont stockes en format little-endian (octet de poids
+  faible en premier), conformement a l'architecture du 6502.
+
+  Les trois mnemoniques sont synonymes :
+    - DW   : notation Intel/Zilog
+    - FDB  : Form Double Byte (notation Motorola)
+    - WORD : notation generique
+
+  Syntaxe :
+
+    [etiquette]  DW   valeur[,valeur,...]
+    [etiquette]  FDB  valeur[,valeur,...]
+    [etiquette]  WORD valeur[,valeur,...]
+
+  Chaque valeur est une expression 16 bits (0-65535 ou -32768..32767).
+
+  Exemples :
+
+    adresse  DW   $C000         ; un mot = $C000
+    vecteur  DW   start         ; adresse du symbole 'start'
+    table    DW   sub1,sub2,sub3 ; table de 3 adresses
+    calcul   DW   fin-debut     ; expression (difference d'adresses)
+
+  Codage memoire de DW $1234,$ABCD :
+
+    Adresse    Contenu    Description
+    --------   -------    -----------
+    $xxxx      $34        octet bas de $1234
+    $xxxx+1    $12        octet haut de $1234
+    $xxxx+2    $CD        octet bas de $ABCD
+    $xxxx+3    $AB        octet haut de $ABCD
+
+  Utilisation typique - table de vecteurs :
+
+    ; Table de saut pour un menu a 4 choix
+    JmpTable:
+      DW  Option0        ; adresse du handler 0
+      DW  Option1        ; adresse du handler 1
+      DW  Option2        ; adresse du handler 2
+      DW  Option3        ; adresse du handler 3
+
+    ; Vecteurs d'interruption (a placer a $FFFA)
+            ORG  $FFFA
+            DW   NMI_Handler   ; vecteur NMI ($FFFA-$FFFB)
+            DW   Reset_Handler ; vecteur RESET ($FFFC-$FFFD)
+            DW   IRQ_Handler   ; vecteur IRQ/BRK ($FFFE-$FFFF)
+
+  8.2.3 DS / RMB / BLKB - Define Storage (Reserver de l'espace)
+
+  Reserve un bloc de memoire sans l'initialiser. L'assembleur
+  avance simplement le compteur d'adresses de la taille specifiee
+  sans generer d'octets dans le fichier de sortie.
+
+  Les trois mnemoniques sont synonymes :
+    - DS   : Define Storage
+    - RMB  : Reserve Memory Bytes (notation Motorola)
+    - BLKB : Block Bytes
+
+  Syntaxe :
+
+    [etiquette]  DS   nombre_octets
+    [etiquette]  RMB  nombre_octets
+    [etiquette]  BLKB nombre_octets
+
+  Le nombre_octets est une expression constante.
+
+  Exemples :
+
+    buffer   DS   256         ; reserver 256 octets
+    tampon   RMB  64          ; reserver 64 octets
+    espace   BLKB 128         ; reserver 128 octets
+    var1     DS   1           ; reserver 1 octet (variable)
+    var16    DS   2           ; reserver 2 octets (variable 16 bits)
+
+  Dans le listing, DS affiche la taille reservee entre parentheses
+  au lieu du contenu memoire :
+
+    C100:  (0100)          buffer   DS   256
+
+  Notes :
+    - L'espace reserve n'est pas initialise (contenu indetermine)
+    - Utile pour les variables en RAM
+    - Ne produit aucun octet dans le fichier binaire de sortie
+    - En ROM, les octets reserves auront la valeur $FF (typiquement)
+
+  8.2.4 FCC - Form Constant Character string (Chaine de caracteres)
+
+  FCC definit une chaine de caracteres en utilisant un delimiteur
+  choisi par le programmeur. Le premier caractere apres FCC (et
+  les espaces) sert de delimiteur ; la chaine se termine au
+  prochain occurrence de ce delimiteur.
+
+  Syntaxe :
+
+    [etiquette]  FCC  delimiteur texte delimiteur
+
+  Le delimiteur peut etre n'importe quel caractere. Les delimiteurs
+  courants sont /, ", |, !, etc.
+
+  Exemples :
+
+    msg1   FCC  /Hello, World!/     ; delimiteur '/'
+    msg2   FCC  "Bonjour"           ; delimiteur '"'
+    msg3   FCC  |Texte|             ; delimiteur '|'
+    msg4   FCC  !Test!              ; delimiteur '!'
+
+  Pour inclure le caractere delimiteur dans la chaine, le doubler :
+
+    msg5   FCC  /Fichier d//entree/  ; produit : Fichier d/entree
+
+  FCC produit un octet par caractere (code ASCII). Contrairement
+  a DB avec une chaine, FCC ne permet pas de melanger des valeurs
+  numeriques et des caracteres dans la meme directive.
+
+  Codage memoire de FCC /ABC/ :
+
+    Adresse    Contenu    Description
+    --------   -------    -----------
+    $xxxx      $41        'A'
+    $xxxx+1    $42        'B'
+    $xxxx+2    $43        'C'
+
+  Utilisation typique :
+
+    message  FCC  /Appuyez sur une touche.../
+             DB   $0D,$0A,0    ; retour chariot + saut de ligne + zero
+
+  Comparaison DB vs FCC :
+
+    Directive   Avantage                    Limitation
+    ----------  --------------------------  ---------------------------
+    DB          Melange octets et chaines   Chaines entre apostrophes
+    FCC         Delimiteur libre            Chaines uniquement
+
+  8.3 Directives de controle
+  ----------------------------
+
+  8.3.1 ORG / AORG - Origin (Adresse absolue d'assemblage)
+
+  ORG definit l'adresse a laquelle le code ou les donnees suivants
+  seront assembles. AORG (Absolute Origin) est un synonyme.
+
+  Syntaxe :
+
+    ORG   adresse
+    AORG  adresse
+
+  L'adresse est une expression constante (16 bits, $0000-$FFFF).
+
+  Exemples :
+
+    ORG   $C000          ; assembler a partir de $C000
+    ORG   $FFFA          ; vecteurs d'interruption
+
+    ; Programme complet avec ORG
+            ORG  $0600         ; zone libre sur beaucoup de systemes
+    start:  LDA  #$00
+            STA  $D020         ; couleur de bordure (C64)
+            RTS
+            ORG  $FFFC
+            DW   start          ; vecteur RESET
+
+  Notes :
+    - ORG peut apparaitre plusieurs fois dans un source
+    - Chaque ORG redefinit l'adresse d'assemblage courante
+    - Si aucun ORG n'est specifie, l'assemblage commence a $0000
+    - ORG ne genere pas de code, il positionne le compteur
+    - AORG est identique a ORG (synonyme pour compatibilite)
+
+  8.3.2 RORG - Relative Origin (Adresse relative d'assemblage)
+
+  RORG definit une adresse relative (offset) pour le code suivant.
+  Le code est genere a la position courante dans le fichier de
+  sortie, mais les references d'adresses sont calculees comme
+  si le code etait a l'adresse specifiee.
+
+  Syntaxe :
+
+    RORG  adresse
+
+  Cela permet de generer du code relocalisable qui sera charge
+  a une adresse differente de celle d'assemblage.
+
+  Exemple :
+
+    ; Code assemble dans le fichier a la suite du code precedent,
+    ; mais avec des adresses calculees pour $8000
+    RORG  $8000
+    ; Les references symboliques utiliseront des adresses $8000+
+
+  Dans le listing, RORG affiche les deux adresses :
+
+    8000 = 0200              RORG  $8000
+
+  (adresse logique $8000, position physique $0200 dans le fichier)
+
+  8.3.3 EQU / = - Equate (Definir symbole constant)
+
+  EQU definit un symbole avec une valeur constante. Le symbole '='
+  est un synonyme de EQU.
+
+  Syntaxe :
+
+    etiquette  EQU  expression
+    etiquette  =    expression
+
+  L'etiquette est OBLIGATOIRE (une erreur est generee sinon).
+  La valeur est une expression 16 bits resolue a l'assemblage.
+  Un symbole defini par EQU ne peut PAS etre redefini.
+
+  Exemples :
+
+    CHROUT   EQU  $FFD2         ; adresse de la routine KERNAL
+    SCREEN   EQU  $0400         ; adresse de la memoire ecran
+    BORDER   EQU  $D020         ; registre de couleur bordure
+    MAXLEN   EQU  80            ; constante numerique
+    BUFSIZE  EQU  MAXLEN+2      ; expression
+    CR       =    $0D           ; retour chariot
+    LF       =    $0A           ; saut de ligne
+    CRLF     =    CR*256+LF     ; les deux combines
+
+  Utilisation typique :
+
+    ; Definir les adresses du materiel (Commodore 64)
+    VIC_BASE EQU  $D000
+    VIC_CTRL EQU  VIC_BASE+$11  ; registre de controle ($D011)
+    VIC_RSTR EQU  VIC_BASE+$12  ; registre raster ($D012)
+    CIA1     EQU  $DC00
+    CIA2     EQU  $DD00
+
+    ; Utilisation dans le code
+            LDA  VIC_RSTR       ; lire la position du raster
+            CMP  #$80
+            BNE  wait
+
+  Dans le listing, EQU affiche la valeur avec '=' :
+
+          = D020              BORDER   EQU  $D020
+
+  Notes :
+    - Une tentative de redefinition d'un symbole EQU genere une erreur
+    - Le symbole est marque 'E' dans la table des symboles
+    - EQU est evalue en passe 1 ; les references avant sont
+      autorisees si elles sont resolues en passe 2
+
+  8.3.4 SET - Definir symbole modifiable
+
+  SET est similaire a EQU mais permet de redefinir le symbole
+  avec une nouvelle valeur plus tard dans le source.
+
+  Syntaxe :
+
+    etiquette  SET  expression
+
+  Exemples :
+
+    compteur SET  0             ; valeur initiale
+             DB   compteur      ; genere 0
+    compteur SET  compteur+1    ; incrementer
+             DB   compteur      ; genere 1
+    compteur SET  compteur+1    ; incrementer encore
+             DB   compteur      ; genere 2
+
+  Notes :
+    - SET est utile pour creer des compteurs ou des variables
+      d'assemblage
+    - Le symbole est marque 'S' dans la table des symboles
+    - A la difference de EQU, la redefinition est autorisee
+
+  Comparaison EQU vs SET :
+
+    Propriete          EQU          SET
+    ----------------   ----------   ----------
+    Redefinition       Interdite    Autorisee
+    Marqueur symbole   E            S
+    Usage typique      Constantes   Compteurs
+
+  8.3.5 END - Fin du source
+
+  END signale la fin du fichier source. Tout ce qui suit la
+  directive END est ignore par l'assembleur (sauf les directives
+  LIST et OPT).
+
+  Syntaxe :
+
+    END  [adresse_execution]
+
+  Si une adresse d'execution est specifiee, elle est enregistree
+  comme point d'entree du programme dans le fichier objet.
+
+  Exemples :
+
+    END               ; fin du source, pas d'adresse d'execution
+    END  start        ; fin du source, execution a 'start'
+    END  $C000        ; fin du source, execution a $C000
+
+  Dans le listing avec adresse d'execution :
+
+          (C000)              END  $C000
+
+  Notes :
+    - END est optionnel ; l'assembleur traite aussi la fin
+      physique du fichier comme fin du source
+    - Apres END, seules les directives LIST et OPT sont traitees
+    - END n'est pas autorise a l'interieur d'une macro
+
+  8.4 Directives de listing
+  ---------------------------
+
+  8.4.1 LIST - Controle du listing
+
+  LIST controle la generation du fichier listing pendant
+  l'assemblage (passe 2).
+
+  Syntaxe :
+
+    LIST  ON|OFF|MACRO|NOMACRO
+
+  Options :
+
+    Option     Effet
+    ---------  ------------------------------------------------
+    ON         Active la generation du listing
+    OFF        Desactive la generation du listing
+    MACRO      Active le listing des expansions de macros
+    NOMACRO    Desactive le listing des expansions de macros
+
+  Exemples :
+
+    LIST  OFF             ; desactiver le listing
+    ; ... code qui ne sera pas liste ...
+    LIST  ON              ; reactiver le listing
+
+    LIST  MACRO           ; montrer l'expansion des macros
+    ; ... appels de macros avec expansion visible ...
+    LIST  NOMACRO         ; masquer l'expansion des macros
+
+  Notes :
+    - Par defaut, le listing est ON et les macros sont NOMACRO
+    - La directive LIST elle-meme est toujours listee, meme si
+      le listing etait desactive (pour montrer le changement)
+    - LIST ne prend pas d'etiquette
+
+  8.4.2 OPT - Options de listing
+
+  OPT est une directive alternative pour controler le listing,
+  compatible avec la syntaxe Motorola.
+
+  Syntaxe :
+
+    OPT  LIST|NOLIST
+
+  Options :
+
+    Option     Effet
+    ---------  ------------------------------------------------
+    LIST       Active la generation du listing (= LIST ON)
+    NOLIST     Desactive la generation du listing (= LIST OFF)
+
+  Exemples :
+
+    OPT  NOLIST           ; desactiver le listing
+    ; ... tables de donnees volumineuses ...
+    OPT  LIST             ; reactiver le listing
+
+  Notes :
+    - OPT est un synonyme partiel de LIST
+    - OPT ne supporte pas les options MACRO/NOMACRO
+    - OPT ne prend pas d'etiquette
+    - La directive OPT elle-meme est toujours listee
+
+  Comparaison LIST vs OPT :
+
+    Fonctionnalite       LIST         OPT
+    -------------------  -----------  ----------
+    Activer listing      LIST ON      OPT LIST
+    Desactiver listing   LIST OFF     OPT NOLIST
+    Activer macros       LIST MACRO   (non supporte)
+    Desactiver macros    LIST NOMACRO (non supporte)
+
+  8.5 Macros (MACRO, ENDM)
+  ---------------------------
+
+  8.5.1 MACRO - Debut de definition de macro
+
+  MACRO definit une macro-instruction qui peut etre ensuite
+  appelee comme un opcode ordinaire. Lors de l'appel, le corps
+  de la macro est expanse (substitue) dans le code source.
+
+  Syntaxe :
+
+    nom  MACRO  [param1[,param2[,...]]]
+         ; corps de la macro (instructions et directives)
+         ENDM
+
+  Le nom de la macro est l'etiquette de la ligne MACRO. Les
+  parametres sont des noms symboliques qui seront remplaces
+  par les arguments lors de l'appel.
+
+  Exemple de definition :
+
+    ; Macro pour charger un mot 16 bits dans A:X
+    LOAD16  MACRO  addr
+            LDA    addr       ; octet bas dans A
+            LDX    addr+1     ; octet haut dans X
+            ENDM
+
+    ; Macro pour sauvegarder un mot 16 bits
+    STORE16 MACRO  addr
+            STA    addr       ; stocker octet bas
+            STX    addr+1     ; stocker octet haut
+            ENDM
+
+  Utilisation (appel de macro) :
+
+    LOAD16  $0080             ; expanse en LDA $0080 / LDX $0081
+    STORE16 $0082             ; expanse en STA $0082 / STX $0083
+
+  8.5.2 Parametres de macros
+
+  Les parametres sont substitues textuellement lors de l'expansion.
+  Chaque occurrence du nom de parametre dans le corps de la macro
+  est remplacee par l'argument correspondant.
+
+  Exemple avec plusieurs parametres :
+
+    ; Macro pour additionner deux octets et stocker le resultat
+    ADD_STORE MACRO  src1,src2,dest
+              CLC
+              LDA    src1
+              ADC    src2
+              STA    dest
+              ENDM
+
+    ; Appel
+    ADD_STORE  score_lo,bonus_lo,total_lo
+
+    ; Se developpe en :
+    ;         CLC
+    ;         LDA    score_lo
+    ;         ADC    bonus_lo
+    ;         STA    total_lo
+
+  Regles :
+    - Les arguments sont separes par des virgules
+    - Le nombre d'arguments doit correspondre au nombre de parametres
+    - La substitution est purement textuelle
+    - Les macros imbriquees ne sont pas prises en charge (une erreur
+      est generee si un appel de macro est rencontre pendant
+      l'expansion d'une autre macro)
+
+  8.5.3 ENDM - Fin de definition de macro
+
+  ENDM signale la fin du corps de la macro. Un ENDM sans MACRO
+  correspondant genere une erreur.
+
+  Notes sur les macros :
+    - Une macro peut contenir n'importe quelle instruction ou
+      directive, sauf END
+    - Une macro ne peut pas etre definie a l'interieur d'une
+      autre macro
+    - La directive END n'est pas autorisee dans le corps d'une macro
+    - Les etiquettes dans les macros devraient utiliser des
+      etiquettes locales (@) pour eviter les conflits de noms
+      lors d'appels multiples
+    - Avec LIST MACRO, l'expansion complete est visible dans
+      le listing
+    - Avec LIST NOMACRO (defaut), seule la ligne d'appel apparait
+
+  8.5.4 Exemple complet avec macros
+
+    ; Definir des macros utilitaires
+    PUSH_AXY MACRO
+             PHA
+             TXA
+             PHA
+             TYA
+             PHA
+             ENDM
+
+    PULL_AXY MACRO
+             PLA
+             TAY
+             PLA
+             TAX
+             PLA
+             ENDM
+
+    INC16    MACRO  var
+             INC    var
+             BNE    @skip
+             INC    var+1
+    @skip
+             ENDM
+
+    ; Utilisation dans le code
+             ORG    $C000
+    handler: PUSH_AXY           ; sauvegarder les registres
+             INC16  counter     ; incrementer un compteur 16 bits
+             PULL_AXY           ; restaurer les registres
+             RTS
+
+    counter: DW     0
+             END
+
+  8.6 Etiquettes et symboles
+  ----------------------------
+
+  8.6.1 Etiquettes standard
+
+  Une etiquette est un nom symbolique associe a une adresse
+  memoire. Elle commence en colonne 1 de la ligne source et
+  peut etre suivie de ':' (optionnel).
+
+  Syntaxe :
+
+    etiquette   opcode  operande
+    etiquette:  opcode  operande
+
+  Regles de nommage :
+    - Commence par une lettre (A-Z, a-z), '@' ou '_'
+    - Contient des lettres, chiffres (0-9), '@' ou '_'
+    - Longueur maximale : limitee par la taille du type SymStr
+    - Insensible a la casse (convertie en majuscules)
+
+  Exemples :
+
+    start    LDA #$00        ; 'start' = adresse de cette instruction
+    loop:    INX              ; 'loop' = adresse de cette instruction
+    data     DB  1,2,3       ; 'data' = adresse du premier octet
+    _temp    DS  4           ; '_temp' est une etiquette valide
+
+  Une etiquette seule sur une ligne (sans opcode) est valide :
+
+    ma_routine
+             PHA              ; 'ma_routine' = adresse du PHA
+             ; ...
+             RTS
+
+  8.6.2 Etiquettes locales (@)
+
+  Les etiquettes commencant par '@' sont des etiquettes locales.
+  Elles sont automatiquement prefixees par la derniere etiquette
+  globale rencontree, ce qui evite les conflits de noms.
+
+  Syntaxe :
+
+    @nom_local
+
+  Mecanisme interne : si la derniere etiquette globale est
+  'ROUTINE', alors '@loop' est stocke comme 'ROUTINE@loop'
+  dans la table des symboles.
+
+  Exemple :
+
+    routine1
+             LDX  #$10
+    @loop    DEX              ; stocke comme 'routine1@loop'
+             BNE  @loop       ; reference 'routine1@loop'
+             RTS
+
+    routine2
+             LDY  #$20
+    @loop    DEY              ; stocke comme 'routine2@loop'
+             BNE  @loop       ; reference 'routine2@loop'
+             RTS
+
+  Sans etiquettes locales, il faudrait utiliser des noms
+  differents (loop1, loop2) pour eviter l'erreur de
+  definition multiple.
+
+  8.6.3 Table des symboles
+
+  L'assembleur maintient une table des symboles contenant :
+    - Le nom du symbole
+    - Sa valeur (adresse ou constante, 16 bits)
+    - Des drapeaux : defini/non defini, EQU, SET, multi-defini
+
+  La table des symboles est affichee a la fin du listing, triee
+  par ordre alphabetique :
+
+    NOM_SYMBOLE     VALEUR  FLAGS
+    --------------- ------  -----
+    BORDER          D020    E        ; E = symbole EQU
+    COMPTEUR        0003    S        ; S = symbole SET
+    HANDLER         C000             ; (pas de flag = etiquette)
+    INCONNU         0000    U        ; U = non defini (erreur)
+    MULTI           C010    M        ; M = definition multiple
+
+  Drapeaux :
+    U : symbole reference mais jamais defini (erreur)
+    M : symbole defini plusieurs fois (erreur si pas SET)
+    S : symbole defini par SET (redefinition autorisee)
+    E : symbole defini par EQU (constante)
+
+  8.7 Expressions et operateurs
+  --------------------------------
+
+  L'assembleur supporte des expressions arithmetiques et
+  logiques dans les operandes et les directives. Les expressions
+  sont evaluees en arithmetique 16 bits signee.
+
+  8.7.1 Operateurs arithmetiques
+
+    Operateur  Precedence  Description         Exemple
+    ---------  ----------  ------------------  ------------------
+    -          (unaire)    Negation             -1 = $FFFF
+    +          (unaire)    Positif (no-op)      +5 = 5
+    ~          (unaire)    Complement a un      ~$FF = $FF00
+    *          haute       Multiplication       3*4 = 12
+    /          haute       Division entiere     10/3 = 3
+    %          haute       Modulo (reste)       10%3 = 1
+    +          basse       Addition             $10+$20 = $30
+    -          basse       Soustraction         $20-$10 = $10
+
+  8.7.2 Operateurs binaires (bit a bit)
+
+    Operateur  Precedence  Description         Exemple
+    ---------  ----------  ------------------  ------------------
+    &          tres basse  ET binaire (AND)     $FF&$0F = $0F
+    |          tres basse  OU binaire (OR)      $F0|$0F = $FF
+    <<         tres basse  Decalage a gauche    $01<<4 = $10
+    >>         tres basse  Decalage a droite    $80>>4 = $08
+
+  8.7.3 Operateurs de selection d'octet (unaires)
+
+    Operateur  Description                    Exemple
+    ---------  -----------------------------  ------------------
+    <          Octet de poids faible (low)    <$1234 = $34
+    >          Octet de poids fort (high)     >$1234 = $12
+
+  Ces operateurs sont essentiels pour charger les parties
+  basse et haute d'une adresse 16 bits dans des registres 8 bits :
+
+    LDA  #<adresse     ; charger l'octet bas de 'adresse' dans A
+    LDX  #>adresse     ; charger l'octet haut de 'adresse' dans X
+
+  Exemple complet :
+
+    ptr      EQU  $80          ; pointeur en page zero
+    target   EQU  $C000        ; adresse cible
+
+    ; Initialiser le pointeur 16 bits
+             LDA  #<target     ; A = $00 (octet bas de $C000)
+             STA  ptr          ; stocker l'octet bas
+             LDA  #>target     ; A = $C0 (octet haut de $C000)
+             STA  ptr+1        ; stocker l'octet haut
+
+  8.7.4 Symbole special : compteur d'adresses
+
+  Les symboles '.' (point) et '*' (etoile) representent la valeur
+  courante du compteur d'adresses (location counter).
+
+  Exemples :
+
+    HERE     EQU  *           ; HERE = adresse courante
+    LENGTH   EQU  *-start     ; longueur depuis 'start'
+
+    ; Boucle infinie
+    loop     JMP  *           ; sauter a soi-meme (= JMP loop)
+
+    ; Table avec calcul de taille
+    table    DB   1,2,3,4,5
+    tablen   EQU  *-table     ; tablen = 5
+
+  Note : '*' en colonne 1 est un commentaire ; '*' dans une
+  expression est le compteur d'adresses. Le contexte determine
+  l'interpretation.
+
+  8.7.5 Parentheses
+
+  Les parentheses '(' et ')' permettent de regrouper des
+  sous-expressions pour controler l'ordre d'evaluation :
+
+    LDA  #(3+4)*2       ; = 14 (sans parentheses : 3+8 = 11)
+    DB   (fin-debut)/2  ; moitie de la taille
+
+  Note : dans le contexte des modes d'adressage du 6502, les
+  parentheses ont aussi un sens syntaxique (adressage indirect).
+  L'assembleur distingue le contexte selon la position :
+
+    LDA  ($80),Y         ; adressage indirect indexe Y
+    LDA  #($80+$10)      ; expression parenthesee = $90
+
+  8.7.6 Ordre de precedence complet
+
+  Du plus prioritaire au moins prioritaire :
+
+    1. Operateurs unaires : - + ~ < >
+    2. Multiplication, division, modulo : * / %
+    3. Addition, soustraction : + -
+    4. Operateurs binaires : & | << >>
+
+  Les parentheses outrepassent l'ordre de precedence.
+
+  8.7.7 Caracteres litteraux
+
+  Un caractere entre apostrophes est evalue comme sa valeur
+  ASCII :
+
+    LDA  #'A'           ; equivalent a LDA #$41
+    CMP  #'0'           ; equivalent a CMP #$30
+    DB   'Z'            ; equivalent a DB $5A
+
+  8.8 Formats numeriques
+  -------------------------
+
+  L'assembleur ASM6502.PAS supporte quatre bases numeriques
+  pour les constantes, avec deux notations possibles pour
+  chacune (prefixe ou suffixe).
+
+  8.8.1 Decimal (base 10)
+
+  Le format par defaut. Pas de prefixe ni suffixe requis,
+  mais le suffixe 'D' peut etre utilise pour la clarte.
+
+  Syntaxe :
+
+    nombre        ; decimal par defaut
+    nombreD       ; decimal explicite (suffixe D)
+
+  Exemples :
+
+    LDA  #100            ; decimal implicite
+    LDA  #100D           ; decimal explicite
+    DB   0,127,255       ; decimaux implicites
+    DW   1000            ; decimal implicite
+    DW   65535           ; valeur maximale 16 bits
+
+  Plage : 0 a 65535 (non signe) ou -32768 a 32767 (signe).
+
+  8.8.2 Hexadecimal (base 16)
+
+  Prefixe '$' (notation Motorola/MOS) ou suffixe 'H'.
+
+  Syntaxe :
+
+    $nombre       ; prefixe $ (Motorola)
+    nombreH       ; suffixe H
+    $             ; sans nombre = compteur d'adresses (locPtr)
+
+  Exemples :
+
+    LDA  #$FF            ; prefixe $
+    LDA  #0FFH           ; suffixe H (le 0 initial est recommande)
+    STA  $D020           ; adresse hexadecimale
+    DW   $FFFC           ; vecteur RESET
+    DB   $0A,$0D         ; LF, CR
+
+  Notes :
+    - Les chiffres hexadecimaux sont A-F (ou a-f)
+    - Avec le suffixe H, il est recommande de commencer par un
+      chiffre (0FFH au lieu de FFH) pour eviter la confusion
+      avec un nom de symbole
+    - '$' seul (sans chiffres) represente le compteur d'adresses
+
+  8.8.3 Binaire (base 2)
+
+  Prefixe '%' ou suffixe 'B'.
+
+  Syntaxe :
+
+    %nombre       ; prefixe %
+    nombreB       ; suffixe B
+
+  Exemples :
+
+    LDA  #%10110011      ; prefixe %
+    LDA  #10110011B      ; suffixe B
+    AND  #%11110000      ; masquer les 4 bits de poids faible
+    ORA  #%00000001      ; mettre le bit 0 a 1
+    DB   %01010101       ; motif alterne
+
+  Le binaire est particulierement utile pour :
+    - Les masques de bits : AND #%11110000
+    - Les registres hardware : LDA #%10000000
+    - Les sprites et graphiques : DB %11111111
+
+  8.8.4 Octal (base 8)
+
+  Suffixe 'O'.
+
+  Syntaxe :
+
+    nombreO       ; suffixe O
+
+  Exemples :
+
+    LDA  #377O           ; octal 377 = decimal 255 = $FF
+    DB   101O            ; octal 101 = decimal 65 = 'A'
+    DW   177777O         ; octal 177777 = $FFFF
+
+  L'octal est rarement utilise en programmation 6502, mais il
+  est supporte pour la compatibilite avec certains sources
+  assembleur historiques.
+
+  8.8.5 Recapitulatif des formats numeriques
+
+    Base         Prefixe    Suffixe    Exemples
+    -----------  ---------  ---------  -----------------------
+    Decimal      (aucun)    D          42, 255, 100D
+    Hexadecimal  $          H          $FF, $1234, 0FFH
+    Binaire      %          B          %10101010, 10101010B
+    Octal        (aucun)    O          377O, 101O
+
+  8.8.6 Equivalences entre assembleurs
+
+  Les differents assembleurs 6502 utilisent des conventions
+  variees pour les formats numeriques :
+
+    Format       ASM6502   ACME    CA65    DASM    Merlin
+    -----------  --------  ------  ------  ------  ------
+    Decimal      42        42      42      42      42
+    Hexadecimal  $FF       $FF     $FF     $FF     $FF
+    Binaire      %1010     %1010   %1010   %1010   %1010
+    Octal        377O      -       -       -       -
+    Caractere    'A'       'A'     'A'     "A"     "A"
+
+  La notation prefixe '$' pour l'hexadecimal et '%' pour le
+  binaire est quasi-universelle parmi les assembleurs 6502.
