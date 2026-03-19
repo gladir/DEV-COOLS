@@ -128,10 +128,22 @@ Const
   { Nombre de blocs de 1 Ko pour couvrir 16 Mo }
  ClearBlockCount=MemorySize div ClearBufferSize;  { 16384 }
 
+  { TODO 4 : Nombre d'entrees dans la LDT }
+ LDTSize=256;
+
 Type
   { TODO 2 : Registres 32 bits du 80386 }
  LongRec=Record
   Lo,Hi:Word;
+ End;
+
+  { TODO 4 : Descripteur de segment pour la LDT }
+ TDescriptor=Record
+  BaseAddr:LongInt;  { Adresse de base 32 bits }
+  Limit:LongInt;     { Limite du segment (20 bits effectifs) }
+  AccessType:Byte;   { Type d'acces (P, DPL, S, Type) }
+  Granularity:Byte;  { Bit G (granularite 4 Ko), D/B, L, AVL }
+  InUse:Boolean;     { Indique si le descripteur est alloue }
  End;
 
 Var
@@ -154,6 +166,9 @@ Var
   0:(ES,CS,SS,DS,FS,GS:Word);
   1:(Abs:Array[0..5]of Word);
  End;
+
+  { TODO 4 : Table des descripteurs locaux (LDT) }
+ LDT:Array[0..LDTSize-1]of TDescriptor;
 
   { Pointeur d'instruction 32 bits }
  EIP:LongInt;
@@ -189,6 +204,9 @@ Begin
   End;
  End;
  WriteLn('Fichier d''echange de 16 Mo cree avec succes.');
+  { TODO 4 : Initialisation de la LDT (tous les descripteurs libres) }
+ FillChar(LDT,SizeOf(LDT),0);
+ WriteLn('LDT initialisee (',LDTSize,' descripteurs).');
 End;
 
 Procedure Done;Begin
