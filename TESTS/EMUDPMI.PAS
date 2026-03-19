@@ -111,7 +111,61 @@
 
 Program EMUDPMI;
 
+{$A-}
+
+Uses DOS;
+
+Const
+  { TODO 1 : Fichier d'echange de 16 Mo pour la memoire lineaire }
+ SwapFileMemory='EMUDPMI.$$$';
+
+  { Taille totale de la memoire lineaire : 16 Mo }
+ MemorySize=16*1024*1024;  { 16 777 216 octets }
+
+  { Taille du tampon de nettoyage pour l'initialisation }
+ ClearBufferSize=1024;
+
+  { Nombre de blocs de 1 Ko pour couvrir 16 Mo }
+ ClearBlockCount=MemorySize div ClearBufferSize;  { 16384 }
+
+Var
+ Memory:File;
+ ClrBuffer:Array[0..ClearBufferSize-1]of Byte;
+
+Procedure Init;
+Var
+ J:LongInt;
+ ByteWrited:Word;
+Begin
+ {$I-}Assign(Memory,SwapFileMemory);
+ Rewrite(Memory,1);{$I+}
+ If IOResult<>0 Then Begin
+  WriteLn('Impossible de creer un fichier temporaire pour la memoire');
+  Halt(1);
+ End;
+ WriteLn('Creation du fichier d''echange de 16 Mo...');
+ FillChar(ClrBuffer,SizeOf(ClrBuffer),0);
+ For J:=0 to ClearBlockCount-1 do Begin
+  Seek(Memory,J*LongInt(ClearBufferSize));
+  BlockWrite(Memory,ClrBuffer,ClearBufferSize,ByteWrited);
+  If ByteWrited<>ClearBufferSize Then Begin
+   WriteLn('Erreur d''ecriture lors de l''initialisation de la memoire');
+   Close(Memory);
+   Halt(1);
+  End;
+ End;
+ WriteLn('Fichier d''echange de 16 Mo cree avec succes.');
+End;
+
+Procedure Done;Begin
+ Close(Memory);
+ {$I-}Assign(Memory,SwapFileMemory);
+ Erase(Memory);{$I+}
+End;
+
 BEGIN
- WriteLn('EMUDPMI : Programme non encore implemente.');
- WriteLn('Consultez la liste TODO dans le code source.');
+ Init;
+ WriteLn('EMUDPMI : Memoire lineaire de 16 Mo initialisee.');
+ Done;
+ WriteLn('EMUDPMI : Fichier d''echange supprime.');
 END.
