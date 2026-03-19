@@ -9617,99 +9617,281 @@ Begin
       Exit;
     End;
 
-    { MOVE(source, dest, count) -> REP MOVSB }
+    { MOVE(source, dest, count) -> copie memoire }
     If Up = 'MOVE' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        If Is68kTarget Then
-        Begin
-          { --- Mode 68000 : D0 = resultat ParseExpr --- }
-          ParseExpr(PI);               { source dans D0 }
-          EmitInstr('MOVE.L D0,-(SP)');
-          EPMatch(',');
-          ParseExpr(PI);               { dest dans D0 }
-          EmitInstr('MOVE.L D0,-(SP)');
-          EPMatch(',');
-          ParseExpr(PI);               { count dans D0 }
-          EmitInstr('MOVE.L D0,D2');   { D2 = count }
-          EmitInstr('MOVE.L (SP)+,A1');{ A1 = dest }
-          EmitInstr('MOVE.L (SP)+,A0');{ A0 = source }
-          LblDone := LabelGen;
-          LblLoop := LabelGen;
-          EmitInstr('TST.L D2');
-          EmitInstr('BEQ ' + LblDone);
-          EmitLabel(LblLoop);
-          EmitInstr('MOVE.B (A0)+,(A1)+');
-          EmitInstr('SUBQ.L #1,D2');
-          EmitInstr('BNE ' + LblLoop);
-          EmitLabel(LblDone);
-        End
-        Else
-        Begin
-          { --- Mode x86 --- }
-          ParseExpr(PI);      { source dans EAX }
-          EmitInstr('PUSH EAX');
-          EPMatch(',');
-          ParseExpr(PI);      { dest dans EAX }
-          EmitInstr('PUSH EAX');
-          EPMatch(',');
-          ParseExpr(PI);      { count dans EAX }
-          EmitInstr('MOV ECX,EAX');
-          EmitInstr('POP EDI');   { dest }
-          EmitInstr('POP ESI');   { source }
-          EmitInstr('CLD');
-          EmitInstr('REP MOVSB');
-        End;
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 --- }
+            ParseExpr(PI);               { source dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);               { dest dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);               { count dans D0 }
+            EmitInstr('MOVE.L D0,D2');   { D2 = count }
+            EmitInstr('MOVE.L (SP)+,A1');{ A1 = dest }
+            EmitInstr('MOVE.L (SP)+,A0');{ A0 = source }
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('TST.L D2');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('MOVE.B (A0)+,(A1)+');
+            EmitInstr('SUBQ.L #1,D2');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 (DOS 16 bits) --- }
+            ParseExpr(PI);      { source dans AX }
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);      { dest dans AX }
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);      { count dans AX }
+            EmitInstr('MOV CX,AX');
+            EmitInstr('POP DI');    { dest }
+            EmitInstr('POP SI');    { source }
+            EmitInstr('CLD');
+            EmitInstr('REP');
+            EmitInstr('MOVSB');
+          End;
+          DEST_Z80:
+          Begin
+            { --- Zilog Z80 --- }
+            ParseExpr(PI);      { source dans HL }
+            EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);      { dest dans HL }
+            EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);      { count dans HL }
+            EmitInstr('LD B,H');
+            EmitInstr('LD C,L');   { BC = count }
+            EmitInstr('POP DE');   { DE = dest }
+            EmitInstr('POP HL');   { HL = source }
+            LblDone := LabelGen;
+            EmitInstr('LD A,B');
+            EmitInstr('OR C');
+            EmitInstr('JR Z,' + LblDone);
+            EmitInstr('LDIR');
+            EmitLabel(LblDone);
+          End;
+          DEST_6502:
+          Begin
+            { --- MOS 6502 --- }
+            ParseExpr(PI);      { source }
+            EmitInstr('STA $00');  { zero-page ptr source low }
+            EmitInstr('STX $01');  { zero-page ptr source high }
+            EPMatch(',');
+            ParseExpr(PI);      { dest }
+            EmitInstr('STA $02');  { zero-page ptr dest low }
+            EmitInstr('STX $03');  { zero-page ptr dest high }
+            EPMatch(',');
+            ParseExpr(PI);      { count dans A }
+            EmitInstr('TAX');     { X = count }
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('LDY #0');
+            EmitInstr('CPX #0');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('LDA ($00),Y');
+            EmitInstr('STA ($02),Y');
+            EmitInstr('INY');
+            EmitInstr('DEX');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+          End;
+          DEST_6809:
+          Begin
+            { --- Motorola 6809 --- }
+            ParseExpr(PI);      { source }
+            EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);      { dest }
+            EmitInstr('TFR D,X');  { X = dest }
+            EPMatch(',');
+            ParseExpr(PI);      { count }
+            EmitInstr('TFR D,Y');  { Y = count }
+            EmitInstr('PULS U');   { U = source }
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('CMPY #0');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('LDA ,U+');
+            EmitInstr('STA ,X+');
+            EmitInstr('LEAY -1,Y');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) --- }
+            ParseExpr(PI);      { source dans EAX }
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);      { dest dans EAX }
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);      { count dans EAX }
+            EmitInstr('MOV ECX,EAX');
+            EmitInstr('POP EDI');   { dest }
+            EmitInstr('POP ESI');   { source }
+            EmitInstr('CLD');
+            EmitInstr('REP MOVSB');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       Exit;
     End;
 
-    { FILLCHAR(dest, count, value) -> REP STOSB }
+    { FILLCHAR(dest, count, value) -> remplissage memoire }
     If Up = 'FILLCHAR' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        If Is68kTarget Then
-        Begin
-          { --- Mode 68000 : D0 = resultat ParseExpr --- }
-          ParseExpr(PI);               { dest dans D0 }
-          EmitInstr('MOVE.L D0,-(SP)');
-          EPMatch(',');
-          ParseExpr(PI);               { count dans D0 }
-          EmitInstr('MOVE.L D0,-(SP)');
-          EPMatch(',');
-          ParseExpr(PI);               { value dans D0 }
-          EmitInstr('MOVE.L (SP)+,D1');{ D1 = count }
-          EmitInstr('MOVE.L (SP)+,A0');{ A0 = dest }
-          LblDone := LabelGen;
-          LblLoop := LabelGen;
-          EmitInstr('TST.L D1');
-          EmitInstr('BEQ ' + LblDone);
-          EmitLabel(LblLoop);
-          EmitInstr('MOVE.B D0,(A0)+');
-          EmitInstr('SUBQ.L #1,D1');
-          EmitInstr('BNE ' + LblLoop);
-          EmitLabel(LblDone);
-        End
-        Else
-        Begin
-          { --- Mode x86 --- }
-          ParseExpr(PI);      { dest dans EAX }
-          EmitInstr('PUSH EAX');
-          EPMatch(',');
-          ParseExpr(PI);      { count dans EAX }
-          EmitInstr('PUSH EAX');
-          EPMatch(',');
-          ParseExpr(PI);      { value dans EAX }
-          EmitInstr('POP ECX');   { count }
-          EmitInstr('POP EDI');   { dest }
-          EmitInstr('CLD');
-          EmitInstr('REP STOSB');
-        End;
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 --- }
+            ParseExpr(PI);               { dest dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);               { count dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);               { value dans D0 }
+            EmitInstr('MOVE.L (SP)+,D1');{ D1 = count }
+            EmitInstr('MOVE.L (SP)+,A0');{ A0 = dest }
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('TST.L D1');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('MOVE.B D0,(A0)+');
+            EmitInstr('SUBQ.L #1,D1');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 (DOS 16 bits) --- }
+            ParseExpr(PI);      { dest dans AX }
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);      { count dans AX }
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);      { value dans AX (AL = valeur) }
+            EmitInstr('POP CX');    { count }
+            EmitInstr('POP DI');    { dest }
+            EmitInstr('CLD');
+            EmitInstr('REP');
+            EmitInstr('STOSB');
+          End;
+          DEST_Z80:
+          Begin
+            { --- Zilog Z80 --- }
+            ParseExpr(PI);      { dest dans HL }
+            EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);      { count dans HL }
+            EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);      { value dans L }
+            EmitInstr('LD A,L');   { A = value }
+            EmitInstr('POP BC');   { BC = count }
+            EmitInstr('POP HL');   { HL = dest }
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('LD E,A');   { sauvegarder value dans E }
+            EmitInstr('LD A,B');
+            EmitInstr('OR C');
+            EmitInstr('JR Z,' + LblDone);
+            EmitInstr('LD A,E');   { restaurer value }
+            EmitLabel(LblLoop);
+            EmitInstr('LD (HL),A');
+            EmitInstr('INC HL');
+            EmitInstr('DEC BC');
+            EmitInstr('LD E,A');   { sauvegarder A }
+            EmitInstr('LD A,B');
+            EmitInstr('OR C');
+            EmitInstr('LD A,E');   { restaurer A }
+            EmitInstr('JR NZ,' + LblLoop);
+            EmitLabel(LblDone);
+          End;
+          DEST_6502:
+          Begin
+            { --- MOS 6502 --- }
+            ParseExpr(PI);      { dest }
+            EmitInstr('STA $00');  { zero-page ptr dest low }
+            EmitInstr('STX $01');  { zero-page ptr dest high }
+            EPMatch(',');
+            ParseExpr(PI);      { count }
+            EmitInstr('TAX');     { X = count }
+            EPMatch(',');
+            ParseExpr(PI);      { value dans A }
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('LDY #0');
+            EmitInstr('CPX #0');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('STA ($00),Y');
+            EmitInstr('INY');
+            EmitInstr('DEX');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+          End;
+          DEST_6809:
+          Begin
+            { --- Motorola 6809 --- }
+            ParseExpr(PI);      { dest }
+            EmitInstr('TFR D,X');  { X = dest }
+            EPMatch(',');
+            ParseExpr(PI);      { count }
+            EmitInstr('TFR D,Y');  { Y = count }
+            EPMatch(',');
+            ParseExpr(PI);      { value dans B (low byte de D) }
+            EmitInstr('TFR B,A');  { A = value }
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('CMPY #0');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('STA ,X+');
+            EmitInstr('LEAY -1,Y');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) --- }
+            ParseExpr(PI);      { dest dans EAX }
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);      { count dans EAX }
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);      { value dans EAX }
+            EmitInstr('POP ECX');   { count }
+            EmitInstr('POP EDI');   { dest }
+            EmitInstr('CLD');
+            EmitInstr('REP STOSB');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       Exit;
