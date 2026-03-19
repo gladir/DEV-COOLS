@@ -8285,3 +8285,561 @@
     9.4      Multiplication 16 bits    LSR, ROR, ADC, BCC, DEX
     9.5      Routine de delai          DEY, BNE, NOP, DEC
     9.6      Copie de bloc memoire     LDA (zp),Y / STA (zp),Y
+
+==============================================================================
+10. CONVERSION DE CODE 6502 EN 80386
+==============================================================================
+
+  Cette section presente les techniques de conversion de programmes
+  ecrits en assembleur MOS 6502 vers l'assembleur Intel 80386. Elle
+  couvre les correspondances de registres, la conversion des modes
+  d'adressage, et les pieges a eviter lors du portage.
+
+  10.1 Principes generaux
+  --------------------------
+
+  Avant de convertir du code 6502 en 80386, il est essentiel de
+  comprendre les differences architecturales majeures entre les
+  deux processeurs.
+
+  Critere                  MOS 6502              Intel 80386
+  -----------------------  --------------------  --------------------
+  Largeur de bus donnees   8 bits                32 bits
+  Largeur de bus adresses  16 bits               32 bits
+  Ordre des octets         Little-endian         Little-endian
+  Registres generaux       1 (A)                 8 (EAX..EDI)
+  Registres d'index        2 (X, Y)              6 (EBX,ECX,ESI,EDI,EBP,ESP)
+  Pointeur de pile         S (8 bits, page 1)    ESP (32 bits, flexible)
+  Compteur ordinal         PC (16 bits)          EIP (32 bits)
+  Flags                    P (8 bits: NV-BDIZC)  EFLAGS (32 bits)
+  Espace d'adressage       64 Ko                 4 Go (mode protege)
+  Pile                     Page $0100-$01FF      Toute la memoire
+  Taille des instructions  1-3 octets            1-15 octets
+  Modes d'adressage        13                    ~20
+  Multiplication native    Non                   Oui (MUL, IMUL)
+  Division native          Non                   Oui (DIV, IDIV)
+  Registres de segment     Non                   6 (CS,DS,ES,FS,GS,SS)
+
+  Avantages du portage vers 80386 :
+
+  a) Registres beaucoup plus larges (32 bits vs 8 bits) :
+     Les operations 16 bits et 32 bits qui necessite de multiples
+     octets et instructions sur le 6502 se font en une seule
+     instruction sur le 80386.
+
+  b) Pile sans restriction :
+     La pile du 6502 est limitee a 256 octets ($0100-$01FF) avec
+     un pointeur de pile de 8 bits. Le 80386 utilise ESP (32 bits)
+     sans restriction d'espace.
+
+  c) Operations arithmetiques natives :
+     Le 6502 n'a pas de MUL/DIV et necessite des routines logicielles.
+     Le 80386 a MUL, IMUL, DIV, IDIV integres.
+
+  d) Meme ordre des octets (endianness) :
+     Les deux processeurs sont little-endian, ce qui simplifie
+     la conversion des donnees multi-octets en memoire.
+
+  Pieges a eviter :
+
+  a) Le flag Carry a un sens inverse pour la soustraction :
+     Sur le 6502, SEC (Carry=1) signifie "pas d'emprunt" avant SBC.
+     Sur le 80386, CF=0 signifie "pas d'emprunt" apres SUB/SBB.
+     Consequence : CMC (complement Carry) peut etre necessaire
+     lors de la conversion de sequences ADC/SBC.
+
+  b) Le mode decimal (BCD) du 6502 :
+     Le flag D du 6502 force les operations ADC/SBC en BCD.
+     Le 80386 utilise des instructions separees (DAA, DAS, AAA, AAS)
+     pour ajuster les resultats en BCD apres l'operation.
+
+  c) La page zero :
+     Les adresses $00-$FF du 6502 (page zero) sont utilisees comme
+     pseudo-registres rapides. Sur le 80386, utiliser des registres
+     reels ou des variables en memoire.
+
+  d) Les adresses absolues materielles :
+     Le code 6502 accede souvent a des adresses materielles fixes
+     ($D020 pour la bordure C64, $C000 pour l'Apple II, etc.).
+     Ces adresses n'ont pas d'equivalent sur le 80386 et doivent
+     etre remplacees par des appels systeme ou d'E/S.
+
+  10.2 Correspondance des registres
+  ------------------------------------
+
+  Le 6502 a tres peu de registres par rapport au 80386. Voici une
+  correspondance couramment utilisee pour le portage :
+
+  Registre 6502   Equivalent 80386      Notes
+  --------------  --------------------  ----------------------------------
+  A               AL                    Accumulateur (8 bits)
+  X               CL ou BL             Index X (8 bits)
+  Y               DL ou BH             Index Y (8 bits)
+  S               (ESP)                Pointeur de pile (8 bits -> 32 bits)
+  P               EFLAGS (partiel)     Registre d'etat
+  PC              EIP                  Compteur ordinal
+
+  La correspondance peut aussi etre etendue en 16/32 bits si le
+  code 6502 utilise des paires d'octets comme valeurs 16 bits :
+
+  Paire 6502           80386
+  -------------------  --------------------------------
+  A (8 bits)           AL ou AX si etendu a 16 bits
+  X (8 bits)           CL ou CX si etendu a 16 bits
+  Y (8 bits)           DL ou DX si etendu a 16 bits
+  Page zero (2 oct.)   Registre 16/32 bits (SI, DI, etc.)
+  Pile 6502            Pile 80386 (ESP, PUSH/POP)
+
+  Correspondance des flags :
+
+  Flag 6502    Bit   Flag 80386     Bit     Notes
+  ----------   ----  -----------    ------  ----------------------------
+  C (Carry)    0     CF (Carry)     0       Meme semantique pour ADC
+                                            INVERSE pour SBC (voir 10.1)
+  Z (Zero)     1     ZF (Zero)     6       Meme semantique
+  I (IRQ dis.) 2     IF (Int.flag) 9       Meme concept (CLI/STI)
+  D (Decimal)  3     (aucun)       -       Pas de mode BCD automatique
+  B (Break)    4     (aucun)       -       Specifique au 6502
+  V (Overflow) 6     OF (Overflow) 11      Meme semantique
+  N (Negative) 7     SF (Sign)     7       Meme semantique
+
+  10.3 Conversion des modes d'adressage
+  ----------------------------------------
+
+  Le 6502 possede 13 modes d'adressage, dont certains n'ont pas
+  d'equivalent direct sur le 80386 mais peuvent etre emules.
+
+  Mode 6502                   Exemple 6502        Equivalent 80386
+  --------------------------  ------------------  ---------------------------
+  Implicite                   CLC                 CLC
+  Accumulateur                ASL A               SHL AL, 1
+  Immediat                    LDA #$42            MOV AL, 42h
+  Page zero                   LDA $10             MOV AL, [10h]
+  Page zero,X                 LDA $10,X           MOV AL, [10h+ECX]
+                                                  ; (ECX contient X, etendu)
+  Page zero,Y                 LDX $10,Y           MOV CL, [10h+EDX]
+                                                  ; (EDX contient Y, etendu)
+  Absolu                      LDA $1234           MOV AL, [1234h]
+  Absolu,X                    LDA $1234,X         MOV AL, [1234h+ECX]
+  Absolu,Y                    LDA $1234,Y         MOV AL, [1234h+EDX]
+  Indirect                    JMP ($1234)         MOV EAX, [1234h]
+                                                  JMP EAX
+  (Indirect,X)                LDA ($10,X)         ; Voir ci-dessous
+  (Indirect),Y                LDA ($10),Y         ; Voir ci-dessous
+  Relatif                     BEQ label           JE label
+
+  Conversion de l'adressage indirect indexe pre-indexe (Indirect,X) :
+
+  Le mode (Indirect,X) du 6502 lit une adresse 16 bits dans la
+  page zero a l'offset calcule, puis accede a cette adresse.
+
+  ; 6502 : LDA ($10,X)   ; Adresse = [$10+X] (page zero, 16 bits)
+  ;
+  ; 80386 :
+    MOVZX   EBX, BYTE PTR [10h+ECX]     ; Octet bas de l'adresse
+    MOV     BH, BYTE PTR [10h+ECX+1]    ; Octet haut de l'adresse
+    MOV     AL, [EBX]                    ; Charger la donnee
+
+  ; Ou plus simplement si la page zero est un tableau :
+    MOVZX   EBX, WORD PTR [pagezero+ECX+10h]  ; Adresse 16 bits
+    MOV     AL, [EBX]                          ; Charger la donnee
+
+  Conversion de l'adressage indirect post-indexe (Indirect),Y :
+
+  Le mode (Indirect),Y lit une adresse 16 bits dans la page zero,
+  puis ajoute Y comme offset.
+
+  ; 6502 : LDA ($10),Y   ; Adresse = [$10] + Y
+  ;
+  ; 80386 :
+    MOVZX   EBX, WORD PTR [pagezero+10h]  ; Adresse de base (16 bits)
+    MOVZX   EDX, DL                        ; Etendre Y a 32 bits
+    MOV     AL, [EBX+EDX]                  ; Charger la donnee
+
+  Note sur le "bug" du JMP indirect du 6502 :
+
+  Sur le 6502 original (NMOS), JMP ($xxFF) a un bug : si l'adresse
+  basse est $FF, l'octet haut est lu a $xx00 au lieu de $xx00+$100.
+  Ce bug n'existe pas sur le 80386. Si le code 6502 depend de ce
+  bug (rare), il faut l'emuler explicitement.
+
+  10.4 Conversion des instructions
+  -----------------------------------
+
+  10.4.1 Instructions de transfert de donnees
+
+  6502                          80386
+  ----------------------------  -----------------------------------
+  LDA #imm                      MOV AL, imm
+  LDA addr                      MOV AL, [addr]
+  LDA addr,X                    MOV AL, [addr+ECX]
+  LDA addr,Y                    MOV AL, [addr+EDX]
+  LDX #imm                      MOV CL, imm
+  LDX addr                      MOV CL, [addr]
+  LDY #imm                      MOV DL, imm
+  LDY addr                      MOV DL, [addr]
+  STA addr                      MOV [addr], AL
+  STA addr,X                    MOV [addr+ECX], AL
+  STA addr,Y                    MOV [addr+EDX], AL
+  STX addr                      MOV [addr], CL
+  STY addr                      MOV [addr], DL
+  TAX                           MOV CL, AL
+  TAY                           MOV DL, AL
+  TXA                           MOV AL, CL
+  TYA                           MOV AL, DL
+  TSX                           ; ESP est deja le pointeur de pile
+  TXS                           ; (pas d'equivalent direct)
+
+  10.4.2 Instructions arithmetiques
+
+  6502                          80386
+  ----------------------------  -----------------------------------
+  ADC #imm                      ADC AL, imm
+                                ; ATTENTION : CF inverse pour SBC!
+  ADC addr                      ADC AL, [addr]
+  SBC #imm                      ; Voir note ci-dessous
+  SBC addr                      ; Voir note ci-dessous
+  INC addr                      INC BYTE PTR [addr]
+  INC addr,X                    INC BYTE PTR [addr+ECX]
+  DEC addr                      DEC BYTE PTR [addr]
+  DEC addr,X                    DEC BYTE PTR [addr+ECX]
+  INX                           INC CL
+  INY                           INC DL
+  DEX                           DEC CL
+  DEY                           DEC DL
+
+  Conversion de SBC (soustraction avec emprunt) :
+
+  Le 6502 utilise SEC/SBC ou Carry=1 signifie "pas d'emprunt"
+  (logique inversee). Le 80386 utilise SBB ou CF=0 signifie
+  "pas d'emprunt". Pour convertir correctement :
+
+  ; 6502 :            ; 80386 :
+  ; SEC               ; CLC              (pas d'emprunt = CF=0)
+  ; SBC #$10          ; SBB AL, 10h
+  ;
+  ; Ou plus simplement pour une soustraction simple :
+  ; SEC               ; (rien)
+  ; SBC #$10          ; SUB AL, 10h
+  ;
+  ; Pour une chaine de SBC avec propagation d'emprunt :
+  ; SBC suite         ; CMC              (inverser le Carry)
+  ;                   ; SBB AL, [suite]
+
+  Conversion de ADC (addition avec retenue) :
+
+  Le flag Carry a la meme semantique pour l'addition, donc la
+  conversion est directe :
+
+  ; 6502 :            ; 80386 :
+  ; CLC               ; CLC
+  ; ADC #$10          ; ADC AL, 10h
+  ;
+  ; Pour une addition simple sans retenue precedente :
+  ; CLC               ; (rien)
+  ; ADC #$10          ; ADD AL, 10h
+
+  Addition 16 bits (6502 -> 80386) :
+
+  Le 6502 additionne des valeurs 16 bits en deux etapes (octet
+  par octet). Le 80386 le fait en une seule instruction :
+
+  ; 6502 (addition 16 bits) :    ; 80386 :
+  ; CLC                           ;
+  ; LDA num1_lo                   ; MOV AX, [num1]    ; 16 bits
+  ; ADC num1_hi (via page zero)   ; ADD AX, [num2]    ; 16 bits
+  ; LDA num2_lo                   ;
+  ; ADC num2_hi                   ; ; Resultat dans AX
+  ; STA result_lo                 ; MOV [result], AX
+  ; LDA result_hi                 ;
+  ; STA result_hi                 ;
+
+  10.4.3 Instructions logiques
+
+  6502                          80386
+  ----------------------------  -----------------------------------
+  AND #imm                      AND AL, imm
+  AND addr                      AND AL, [addr]
+  ORA #imm                      OR  AL, imm
+  ORA addr                      OR  AL, [addr]
+  EOR #imm                      XOR AL, imm
+  EOR addr                      XOR AL, [addr]
+  BIT addr                      TEST AL, [addr]
+                                ; (BIT positionne N et V aussi)
+
+  Note sur BIT :
+  L'instruction BIT du 6502 effectue un AND entre A et la memoire
+  sans modifier A, et positionne Z d'apres le resultat, N d'apres
+  le bit 7 de la memoire, et V d'apres le bit 6 de la memoire.
+  TEST sur le 80386 ne positionne que ZF, SF, PF.
+  Pour emuler completement BIT :
+
+  ; 6502 : BIT $1234       ; 80386 :
+  ;                         MOV BL, [1234h]   ; Charger la memoire
+  ;                         TEST AL, BL        ; Z flag
+  ;                         ; Si N et V sont necessaires :
+  ;                         TEST BL, 80h       ; N = bit 7
+  ;                         ; (BT BL, 6 pour tester V = bit 6)
+
+  10.4.4 Instructions de decalage et rotation
+
+  6502                          80386
+  ----------------------------  -----------------------------------
+  ASL A                         SHL AL, 1
+  ASL addr                      SHL BYTE PTR [addr], 1
+  LSR A                         SHR AL, 1
+  LSR addr                      SHR BYTE PTR [addr], 1
+  ROL A                         RCL AL, 1    ; Via Carry, comme 6502
+  ROL addr                      RCL BYTE PTR [addr], 1
+  ROR A                         RCR AL, 1    ; Via Carry, comme 6502
+  ROR addr                      RCR BYTE PTR [addr], 1
+
+  Note importante sur ROL/ROR :
+
+  Sur le 6502, ROL et ROR font une rotation a travers le flag
+  Carry (rotation 9 bits). Cela correspond a RCL/RCR sur le 80386
+  (rotation a travers CF), PAS a ROL/ROR du 80386 (qui est une
+  rotation pure 8 bits sans Carry).
+
+  ; 6502 : ROL A          ; 80386 : RCL AL, 1  (PAS ROL AL, 1)
+  ; 6502 : ROR A          ; 80386 : RCR AL, 1  (PAS ROR AL, 1)
+
+  Decalage 16 bits (6502 -> 80386) :
+
+  ; 6502 (decalage 16 bits a gauche) :
+  ; ASL low_byte           ; SHL WORD PTR [value], 1
+  ; ROL high_byte          ; ; (une seule instruction 16 bits)
+
+  ; 6502 (decalage 16 bits a droite) :
+  ; LSR high_byte          ; SHR WORD PTR [value], 1
+  ; ROR low_byte           ; ; (une seule instruction 16 bits)
+
+  10.4.5 Instructions de comparaison et branchement
+
+  6502                          80386
+  ----------------------------  -----------------------------------
+  CMP #imm                      CMP AL, imm
+  CMP addr                      CMP AL, [addr]
+  CPX #imm                      CMP CL, imm
+  CPX addr                      CMP CL, [addr]
+  CPY #imm                      CMP DL, imm
+  CPY addr                      CMP DL, [addr]
+
+  BEQ label                     JE  label    (ou JZ)
+  BNE label                     JNE label    (ou JNZ)
+  BCS label                     JC  label    (ou JB)
+  BCC label                     JNC label    (ou JAE)
+  BMI label                     JS  label
+  BPL label                     JNS label
+  BVS label                     JO  label
+  BVC label                     JNO label
+
+  Notes :
+  - CMP sur le 6502 effectue A - operande et positionne N, Z, C.
+    Sur le 80386, CMP fait pareil (AL - operande -> flags).
+  - La portee des branchements est differente : sur le 6502, les
+    branches ont une portee de -128 a +127 octets (deplacement
+    relatif 8 bits). Sur le 80386, les sauts conditionnels courts
+    (Jcc short) ont la meme limite, mais les sauts proches (Jcc near)
+    peuvent aller n'importe ou dans le segment.
+  - Pour convertir un branchement hors de portee du 6502 :
+
+  ; 6502 (branchement hors portee) :
+  ; BEQ far_label          ; Probleme si > 127 octets
+  ; =>
+  ; BNE skip               ; Inverser la condition
+  ; JMP far_label           ; Saut long
+  ; skip:
+  ;
+  ; 80386 : JE far_label    ; Pas de limite de portee (near jump)
+
+  10.4.6 Instructions de pile
+
+  6502                          80386
+  ----------------------------  -----------------------------------
+  PHA                           PUSH AX   ; ou PUSH EAX (32 bits)
+                                ; Note : le 80386 empile 16 ou 32 bits
+                                ; Pour empiler un seul octet :
+                                ; MOVZX AX, AL / PUSH AX
+  PLA                           POP AX
+                                MOV AL, AH  ; (si on ne veut que AL)
+                                ; Ou: POP AX, garder AL
+  PHP                           PUSHF
+  PLP                           POPF
+  PHX (65C02)                   PUSH CX   ; (ECX si 32 bits)
+  PLX (65C02)                   POP CX
+  PHY (65C02)                   PUSH DX   ; (EDX si 32 bits)
+  PLY (65C02)                   POP DX
+
+  Note : La pile du 6502 manipule des octets un par un. Le 80386
+  empile des mots (16 bits) ou des double-mots (32 bits). Il faut
+  donc adapter la taille lors du portage.
+
+  10.4.7 Instructions de controle de flags
+
+  6502                          80386
+  ----------------------------  -----------------------------------
+  CLC                           CLC
+  SEC                           STC
+  CLD                           CLD
+  SED                           STD      ; (Note : sens different)
+  CLI                           CLI      ; (mode superviseur)
+  SEI                           STI      ; (mode superviseur : inverse!)
+  CLV                           ; Pas d'equivalent direct
+                                ; (OF est efface par certaines instr.)
+
+  Attention aux inversions :
+  - CLI sur le 6502 autorise les interruptions (I=0).
+    CLI sur le 80386 desactive les interruptions (IF=0).
+    SEI sur le 6502 desactive les interruptions (I=1).
+    STI sur le 80386 autorise les interruptions (IF=1).
+    Les mnemoniques sont inverses !
+
+  ; 6502 : CLI (autoriser IRQ)   -> 80386 : STI
+  ; 6502 : SEI (bloquer IRQ)     -> 80386 : CLI
+
+  - CLD sur le 6502 desactive le mode BCD.
+    CLD sur le 80386 efface le Direction Flag (DF=0, incrementer
+    SI/DI dans les operations de chaine). Ce sont deux choses
+    completement differentes malgre le meme mnemonique.
+
+  - SED sur le 6502 active le mode BCD.
+    STD sur le 80386 active le Direction Flag (DF=1, decrementer).
+    Pas du tout la meme chose.
+
+  10.4.8 Instructions de saut et sous-routine
+
+  6502                          80386
+  ----------------------------  -----------------------------------
+  JMP addr                      JMP addr
+  JMP (addr)                    JMP [addr]       ; Saut indirect
+  JSR addr                      CALL addr
+  RTS                           RET
+  BRK                           INT 3            ; Point d'arret
+  RTI                           IRET
+  NOP                           NOP
+
+  Note sur JSR/RTS :
+  Le 6502 empile l'adresse de retour - 1 (pour des raisons
+  historiques). Le 80386 empile l'adresse de retour exacte.
+  Cela n'affecte pas la conversion sauf si le code 6502 manipule
+  l'adresse de retour sur la pile.
+
+  10.4.9 Exemples de conversion complete
+
+  Exemple 1 : Copie de memoire
+
+  ; 6502 :                       ; 80386 :
+  ;   LDY #0                     ;   MOV ECX, 128     ; Longueur
+  ; loop:                        ;   MOV ESI, source  ; Source
+  ;   LDA (src),Y                ;   MOV EDI, dest    ; Destination
+  ;   STA (dst),Y                ;   REP MOVSB        ; Copier!
+  ;   INY                        ;
+  ;   CPY #128                   ;
+  ;   BNE loop                   ;
+
+  Exemple 2 : Multiplication 8x8 -> 16 bits
+
+  ; 6502 (routine logicielle) :  ; 80386 (instruction native) :
+  ;   LDA multiplicande          ;   MOV AL, [multiplicande]
+  ;   LDX #8                     ;   MUL BYTE PTR [multiplieur]
+  ; loop:                        ;   ; Resultat dans AX (16 bits)
+  ;   LSR multiplieur            ;   MOV [resultat], AX
+  ;   BCC noadd                  ;
+  ;   CLC                        ;
+  ;   ADC multiplicande          ;
+  ; noadd:                       ;
+  ;   ROR A                      ;
+  ;   ROR resultat               ;
+  ;   DEX                        ;
+  ;   BNE loop                   ;
+  ;   STA resultat+1             ;
+
+  Exemple 3 : Recherche d'un octet dans un tableau
+
+  ; 6502 :                       ; 80386 :
+  ;   LDX #0                     ;   MOV AL, valeur   ; Octet cherche
+  ; loop:                        ;   MOV ECX, taille  ; Longueur
+  ;   LDA table,X                ;   MOV EDI, table   ; Adresse tableau
+  ;   CMP valeur                 ;   REPNE SCASB      ; Chercher!
+  ;   BEQ found                  ;   JE found         ; Trouve ?
+  ;   INX                        ;
+  ;   CPX taille                 ;
+  ;   BNE loop                   ;
+  ;   ; non trouve               ;   ; non trouve
+
+  Exemple 4 : Addition 32 bits
+
+  ; 6502 (4 octets, 4 ADC) :    ; 80386 (une seule instruction) :
+  ;   CLC                        ;   MOV EAX, [num1]
+  ;   LDA num1+0                 ;   ADD EAX, [num2]
+  ;   ADC num2+0                 ;   MOV [result], EAX
+  ;   STA result+0               ;
+  ;   LDA num1+1                 ;
+  ;   ADC num2+1                 ;
+  ;   STA result+1               ;
+  ;   LDA num1+2                 ;
+  ;   ADC num2+2                 ;
+  ;   STA result+2               ;
+  ;   LDA num1+3                 ;
+  ;   ADC num2+3                 ;
+  ;   STA result+3               ;
+
+  10.4.10 Recapitulatif des conversions
+
+    6502          80386          Notes
+    ----------    ----------     --------------------------------
+    LDA           MOV AL         Chargement accumulateur
+    LDX           MOV CL         Chargement index X
+    LDY           MOV DL         Chargement index Y
+    STA           MOV [..],AL    Stockage accumulateur
+    STX           MOV [..],CL    Stockage index X
+    STY           MOV [..],DL    Stockage index Y
+    TAX           MOV CL,AL      Transfert A -> X
+    TAY           MOV DL,AL      Transfert A -> Y
+    TXA           MOV AL,CL      Transfert X -> A
+    TYA           MOV AL,DL      Transfert Y -> A
+    ADC           ADC AL         Addition avec retenue
+    SBC           SBB AL         Soustraction (CF inverse!)
+    AND           AND AL         ET logique
+    ORA           OR AL          OU logique
+    EOR           XOR AL         OU exclusif
+    CMP           CMP AL         Comparaison A
+    CPX           CMP CL         Comparaison X
+    CPY           CMP DL         Comparaison Y
+    INC           INC BYTE       Incrementer memoire
+    DEC           DEC BYTE       Decrementer memoire
+    INX           INC CL         Incrementer X
+    INY           INC DL         Incrementer Y
+    DEX           DEC CL         Decrementer X
+    DEY           DEC DL         Decrementer Y
+    ASL           SHL            Decalage gauche
+    LSR           SHR            Decalage droit logique
+    ROL           RCL            Rotation gauche via Carry
+    ROR           RCR            Rotation droite via Carry
+    BIT           TEST           Test de bits
+    JMP           JMP            Saut inconditionnel
+    JSR           CALL           Appel sous-routine
+    RTS           RET            Retour de sous-routine
+    BRK           INT 3          Interruption logicielle
+    RTI           IRET           Retour d'interruption
+    NOP           NOP            Pas d'operation
+    PHA           PUSH AX        Empiler A
+    PLA           POP AX         Depiler A
+    PHP           PUSHF          Empiler flags
+    PLP           POPF           Depiler flags
+    CLC           CLC            Effacer Carry
+    SEC           STC            Positionner Carry
+    CLI           STI            Autoriser IRQ (INVERSE!)
+    SEI           CLI            Bloquer IRQ (INVERSE!)
+    CLV           (aucun)        Effacer Overflow
+    CLD           (aucun)        Mode BCD off (different de CLD x86)
+    SED           (aucun)        Mode BCD on (different de STD x86)
+    BEQ           JE             Brancher si egal
+    BNE           JNE            Brancher si different
+    BCS           JC             Brancher si Carry
+    BCC           JNC            Brancher si pas Carry
+    BMI           JS             Brancher si negatif
+    BPL           JNS            Brancher si positif
+    BVS           JO             Brancher si Overflow
+    BVC           JNO            Brancher si pas Overflow
