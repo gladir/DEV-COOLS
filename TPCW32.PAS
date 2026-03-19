@@ -9661,8 +9661,7 @@ Begin
             EmitInstr('POP DI');    { dest }
             EmitInstr('POP SI');    { source }
             EmitInstr('CLD');
-            EmitInstr('REP');
-            EmitInstr('MOVSB');
+            EmitInstr('REP MOVSB');
           End;
           DEST_Z80:
           Begin
@@ -9798,8 +9797,7 @@ Begin
             EmitInstr('POP CX');    { count }
             EmitInstr('POP DI');    { dest }
             EmitInstr('CLD');
-            EmitInstr('REP');
-            EmitInstr('STOSB');
+            EmitInstr('REP STOSB');
           End;
           DEST_Z80:
           Begin
@@ -26616,7 +26614,9 @@ Begin { BcAssemble8086 }
   If Mnem = 'STOSW' Then Begin BcEmitB($AB); Exit; End;
 
   { ---- REP ---- }
-  If Mnem = 'REP' Then Begin BcEmitB($F3); Exit; End;
+  If Mnem = 'REP' Then Begin BcEmitB($F3);
+    If Op1 <> '' Then BcAssemble8086(Op1);
+    Exit; End;
 
   { ---- MOVZX -> en 8086, faire MOV reg8, [mem] puis XOR haut ---- }
   { Pour l instant, ignorer silencieusement }
