@@ -13968,13 +13968,60 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Dest }
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Source }
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');  { Dest }
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');  { Source }
+            EmitInstr('BSR ' + TP_RT_PFX + 'STRCAT');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRCAT');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRCAT');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRCAT');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRCAT');
+            EmitInstr('LEAS 4,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRCAT');
+            EmitInstr('ADD ESP,8');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRCAT');
-      EmitInstr('ADD ESP,8');
       Exit;
     End;
 
@@ -13984,13 +14031,60 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('MOV EDI,EAX');
-        EmitInstr('POP ESI');
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'STRCMP');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRCMP');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRCMP');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRCMP');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRCMP');
+            EmitInstr('LEAS 4,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOV EDI,EAX');
+            EmitInstr('POP ESI');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRCMP');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRCMP');
       Exit;
     End;
 
@@ -14000,12 +14094,59 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'STRICOMP');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRICOMP');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRICOMP');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRICOMP');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRICOMP');
+            EmitInstr('LEAS 4,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EmitInstr('CALL lstrcmpiA');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('CALL lstrcmpiA');
       Exit;
     End;
 
@@ -14015,15 +14156,74 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'STRLICOMP');
+            EmitInstr('LEA 12(SP),SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRLICOMP');
+            EmitInstr('ADD SP,6');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRLICOMP');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRLICOMP');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRLICOMP');
+            EmitInstr('LEAS 6,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRLICOMP');
+            EmitInstr('ADD ESP,12');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRLICOMP');
-      EmitInstr('ADD ESP,12');
       Exit;
     End;
 
@@ -14033,13 +14233,60 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'STRPOS');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRPOS');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRPOS');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRPOS');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRPOS');
+            EmitInstr('LEAS 4,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRPOS');
+            EmitInstr('ADD ESP,8');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRPOS');
-      EmitInstr('ADD ESP,8');
       Exit;
     End;
 
@@ -14049,13 +14296,60 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'STRSCAN');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRSCAN');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRSCAN');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRSCAN');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRSCAN');
+            EmitInstr('LEAS 4,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRSCAN');
+            EmitInstr('ADD ESP,8');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRSCAN');
-      EmitInstr('ADD ESP,8');
       Exit;
     End;
 
@@ -14065,13 +14359,60 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'STRRSCAN');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRRSCAN');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRRSCAN');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRRSCAN');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRRSCAN');
+            EmitInstr('LEAS 4,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRRSCAN');
+            EmitInstr('ADD ESP,8');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRRSCAN');
-      EmitInstr('ADD ESP,8');
       Exit;
     End;
 
@@ -14084,9 +14425,44 @@ Begin
         ParseExpr(PI);
         EPMatch(')');
       End;
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ' + TP_RT_PFX + 'STREND');
-      EmitInstr('ADD ESP,4');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+        Begin
+          EmitInstr('MOVE.L D0,-(SP)');
+          EmitInstr('BSR ' + TP_RT_PFX + 'STREND');
+          EmitInstr('ADDQ.L #4,SP');
+        End;
+        DEST_DOSR, DEST_DOSP:
+        Begin
+          EmitInstr('PUSH AX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STREND');
+          EmitInstr('ADD SP,2');
+        End;
+        DEST_Z80:
+        Begin
+          EmitInstr('PUSH HL');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STREND');
+          EmitInstr('POP BC');
+        End;
+        DEST_6502:
+        Begin
+          EmitInstr('PHA');
+          EmitInstr('JSR ' + TP_RT_PFX + 'STREND');
+          EmitInstr('PLA');
+        End;
+        DEST_6809:
+        Begin
+          EmitInstr('PSHS D');
+          EmitInstr('JSR ' + TP_RT_PFX + 'STREND');
+          EmitInstr('LEAS 2,S');
+        End;
+        Else
+        Begin
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STREND');
+          EmitInstr('ADD ESP,4');
+        End;
+      End;
       Exit;
     End;
 
@@ -14096,15 +14472,74 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'STRMOVE');
+            EmitInstr('LEA 12(SP),SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRMOVE');
+            EmitInstr('ADD SP,6');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRMOVE');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRMOVE');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRMOVE');
+            EmitInstr('LEAS 6,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRMOVE');
+            EmitInstr('ADD ESP,12');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRMOVE');
-      EmitInstr('ADD ESP,12');
       Exit;
     End;
 
@@ -14117,9 +14552,44 @@ Begin
         ParseExpr(PI);
         EPMatch(')');
       End;
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRNEW');
-      EmitInstr('ADD ESP,4');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+        Begin
+          EmitInstr('MOVE.L D0,-(SP)');
+          EmitInstr('BSR ' + TP_RT_PFX + 'STRNEW');
+          EmitInstr('ADDQ.L #4,SP');
+        End;
+        DEST_DOSR, DEST_DOSP:
+        Begin
+          EmitInstr('PUSH AX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRNEW');
+          EmitInstr('ADD SP,2');
+        End;
+        DEST_Z80:
+        Begin
+          EmitInstr('PUSH HL');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRNEW');
+          EmitInstr('POP BC');
+        End;
+        DEST_6502:
+        Begin
+          EmitInstr('PHA');
+          EmitInstr('JSR ' + TP_RT_PFX + 'STRNEW');
+          EmitInstr('PLA');
+        End;
+        DEST_6809:
+        Begin
+          EmitInstr('PSHS D');
+          EmitInstr('JSR ' + TP_RT_PFX + 'STRNEW');
+          EmitInstr('LEAS 2,S');
+        End;
+        Else
+        Begin
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRNEW');
+          EmitInstr('ADD ESP,4');
+        End;
+      End;
       Exit;
     End;
 
@@ -14132,9 +14602,44 @@ Begin
         ParseExpr(PI);
         EPMatch(')');
       End;
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRPAS');
-      EmitInstr('ADD ESP,4');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+        Begin
+          EmitInstr('MOVE.L D0,-(SP)');
+          EmitInstr('BSR ' + TP_RT_PFX + 'STRPAS');
+          EmitInstr('ADDQ.L #4,SP');
+        End;
+        DEST_DOSR, DEST_DOSP:
+        Begin
+          EmitInstr('PUSH AX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRPAS');
+          EmitInstr('ADD SP,2');
+        End;
+        DEST_Z80:
+        Begin
+          EmitInstr('PUSH HL');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRPAS');
+          EmitInstr('POP BC');
+        End;
+        DEST_6502:
+        Begin
+          EmitInstr('PHA');
+          EmitInstr('JSR ' + TP_RT_PFX + 'STRPAS');
+          EmitInstr('PLA');
+        End;
+        DEST_6809:
+        Begin
+          EmitInstr('PSHS D');
+          EmitInstr('JSR ' + TP_RT_PFX + 'STRPAS');
+          EmitInstr('LEAS 2,S');
+        End;
+        Else
+        Begin
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRPAS');
+          EmitInstr('ADD ESP,4');
+        End;
+      End;
       Exit;
     End;
 
@@ -14144,13 +14649,60 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'STRPCOPY');
+            EmitInstr('ADDQ.L #8,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRPCOPY');
+            EmitInstr('ADD SP,4');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRPCOPY');
+            EmitInstr('POP BC');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);  EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRPCOPY');
+            EmitInstr('PLA');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'STRPCOPY');
+            EmitInstr('LEAS 4,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRPCOPY');
+            EmitInstr('ADD ESP,8');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRPCOPY');
-      EmitInstr('ADD ESP,8');
       Exit;
     End;
 
@@ -14163,9 +14715,44 @@ Begin
         ParseExpr(PI);
         EPMatch(')');
       End;
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRUPPER');
-      EmitInstr('ADD ESP,4');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+        Begin
+          EmitInstr('MOVE.L D0,-(SP)');
+          EmitInstr('BSR ' + TP_RT_PFX + 'STRUPPER');
+          EmitInstr('ADDQ.L #4,SP');
+        End;
+        DEST_DOSR, DEST_DOSP:
+        Begin
+          EmitInstr('PUSH AX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRUPPER');
+          EmitInstr('ADD SP,2');
+        End;
+        DEST_Z80:
+        Begin
+          EmitInstr('PUSH HL');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRUPPER');
+          EmitInstr('POP BC');
+        End;
+        DEST_6502:
+        Begin
+          EmitInstr('PHA');
+          EmitInstr('JSR ' + TP_RT_PFX + 'STRUPPER');
+          EmitInstr('PLA');
+        End;
+        DEST_6809:
+        Begin
+          EmitInstr('PSHS D');
+          EmitInstr('JSR ' + TP_RT_PFX + 'STRUPPER');
+          EmitInstr('LEAS 2,S');
+        End;
+        Else
+        Begin
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRUPPER');
+          EmitInstr('ADD ESP,4');
+        End;
+      End;
       Exit;
     End;
 
