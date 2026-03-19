@@ -8130,7 +8130,13 @@ Begin
           (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_SET) Or
           (TypeTab[SymTab[SI].TypeIdx].Kind = TYK_STRING)) Then
       Begin
-        EmitInstr('LEA EAX,[' + Ref + ']');
+        If Is68kTarget Then
+        Begin
+          EmitInstr('LEA ' + Ref + ',A0');
+          EmitInstr('MOVE.L A0,D0');
+        End
+        Else
+          EmitInstr('LEA EAX,[' + Ref + ']');
         If TypeTab[SymTab[SI].TypeIdx].Kind = TYK_STRING Then
           LastExprIsPascalStr := True;
         Exit;
@@ -8151,7 +8157,13 @@ Begin
       (TypeTab[LastVarTypeIdx].Kind = TYK_SET) Or
       (TypeTab[LastVarTypeIdx].Kind = TYK_STRING)) Then
   Begin
-    EmitInstr('LEA EAX,[' + TP_VAR_PFX + Up + ']');
+    If Is68kTarget Then
+    Begin
+      EmitInstr('LEA ' + TP_VAR_PFX + Up + ',A0');
+      EmitInstr('MOVE.L A0,D0');
+    End
+    Else
+      EmitInstr('LEA EAX,[' + TP_VAR_PFX + Up + ']');
     If TypeTab[LastVarTypeIdx].Kind = TYK_STRING Then
       LastExprIsPascalStr := True;
   End
@@ -8323,12 +8335,24 @@ Begin
   Begin
     If (SymTab[SI].Kind = SK_VAR) Then
     Begin
-      EmitInstr('LEA EAX,[' + SymTab[SI].MangledName + ']');
+      If Is68kTarget Then
+      Begin
+        EmitInstr('LEA ' + SymTab[SI].MangledName + ',A0');
+        EmitInstr('MOVE.L A0,D0');
+      End
+      Else
+        EmitInstr('LEA EAX,[' + SymTab[SI].MangledName + ']');
       Exit;
     End;
   End;
 
-  EmitInstr('LEA EAX,[' + TP_VAR_PFX + Up + ']');
+  If Is68kTarget Then
+  Begin
+    EmitInstr('LEA ' + TP_VAR_PFX + Up + ',A0');
+    EmitInstr('MOVE.L A0,D0');
+  End
+  Else
+    EmitInstr('LEA EAX,[' + TP_VAR_PFX + Up + ']');
 End;
 
 { ------------------------------------------------------------ }
@@ -8455,6 +8479,8 @@ Var
   WFOfs  : Integer;
   WFSize : Integer;
   WJ     : Integer;
+  LblDone : TString;
+  LblLoop : TString;
 Begin
   LastPrimaryName := '';
   LastVarTypeIdx := -1;
@@ -9597,18 +9623,45 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);      { source dans EAX }
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);      { dest dans EAX }
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);      { count dans EAX }
-        EmitInstr('MOV ECX,EAX');
-        EmitInstr('POP EDI');   { dest }
-        EmitInstr('POP ESI');   { source }
-        EmitInstr('CLD');
-        EmitInstr('REP MOVSB');
+        If Is68kTarget Then
+        Begin
+          { --- Mode 68000 : D0 = resultat ParseExpr --- }
+          ParseExpr(PI);               { source dans D0 }
+          EmitInstr('MOVE.L D0,-(SP)');
+          EPMatch(',');
+          ParseExpr(PI);               { dest dans D0 }
+          EmitInstr('MOVE.L D0,-(SP)');
+          EPMatch(',');
+          ParseExpr(PI);               { count dans D0 }
+          EmitInstr('MOVE.L D0,D2');   { D2 = count }
+          EmitInstr('MOVE.L (SP)+,A1');{ A1 = dest }
+          EmitInstr('MOVE.L (SP)+,A0');{ A0 = source }
+          LblDone := LabelGen;
+          LblLoop := LabelGen;
+          EmitInstr('TST.L D2');
+          EmitInstr('BEQ ' + LblDone);
+          EmitLabel(LblLoop);
+          EmitInstr('MOVE.B (A0)+,(A1)+');
+          EmitInstr('SUBQ.L #1,D2');
+          EmitInstr('BNE ' + LblLoop);
+          EmitLabel(LblDone);
+        End
+        Else
+        Begin
+          { --- Mode x86 --- }
+          ParseExpr(PI);      { source dans EAX }
+          EmitInstr('PUSH EAX');
+          EPMatch(',');
+          ParseExpr(PI);      { dest dans EAX }
+          EmitInstr('PUSH EAX');
+          EPMatch(',');
+          ParseExpr(PI);      { count dans EAX }
+          EmitInstr('MOV ECX,EAX');
+          EmitInstr('POP EDI');   { dest }
+          EmitInstr('POP ESI');   { source }
+          EmitInstr('CLD');
+          EmitInstr('REP MOVSB');
+        End;
         EPMatch(')');
       End;
       Exit;
@@ -9620,17 +9673,43 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);      { dest dans EAX }
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);      { count dans EAX }
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);      { value dans EAX }
-        EmitInstr('POP ECX');   { count }
-        EmitInstr('POP EDI');   { dest }
-        EmitInstr('CLD');
-        EmitInstr('REP STOSB');
+        If Is68kTarget Then
+        Begin
+          { --- Mode 68000 : D0 = resultat ParseExpr --- }
+          ParseExpr(PI);               { dest dans D0 }
+          EmitInstr('MOVE.L D0,-(SP)');
+          EPMatch(',');
+          ParseExpr(PI);               { count dans D0 }
+          EmitInstr('MOVE.L D0,-(SP)');
+          EPMatch(',');
+          ParseExpr(PI);               { value dans D0 }
+          EmitInstr('MOVE.L (SP)+,D1');{ D1 = count }
+          EmitInstr('MOVE.L (SP)+,A0');{ A0 = dest }
+          LblDone := LabelGen;
+          LblLoop := LabelGen;
+          EmitInstr('TST.L D1');
+          EmitInstr('BEQ ' + LblDone);
+          EmitLabel(LblLoop);
+          EmitInstr('MOVE.B D0,(A0)+');
+          EmitInstr('SUBQ.L #1,D1');
+          EmitInstr('BNE ' + LblLoop);
+          EmitLabel(LblDone);
+        End
+        Else
+        Begin
+          { --- Mode x86 --- }
+          ParseExpr(PI);      { dest dans EAX }
+          EmitInstr('PUSH EAX');
+          EPMatch(',');
+          ParseExpr(PI);      { count dans EAX }
+          EmitInstr('PUSH EAX');
+          EPMatch(',');
+          ParseExpr(PI);      { value dans EAX }
+          EmitInstr('POP ECX');   { count }
+          EmitInstr('POP EDI');   { dest }
+          EmitInstr('CLD');
+          EmitInstr('REP STOSB');
+        End;
         EPMatch(')');
       End;
       Exit;
