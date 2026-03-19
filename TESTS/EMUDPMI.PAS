@@ -884,10 +884,9 @@ Var
 Begin
  Count:=Count and $1F;
  If Count=0 Then Begin ShiftShl32:=Value;Exit;End;
- If Count<=31 Then Begin
-  If(Value shr(32-Count))and 1<>0 Then Include(EFlags.s,CF)
-  Else Exclude(EFlags.s,CF);
- End;
+  { CF = bit (32-Count) de la valeur originale, extraction non signee }
+ If(LongInt((QWord(Value)and $FFFFFFFF)shr(32-Count)))and 1<>0 Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
  R:=Value shl Count;
  If Count=1 Then Begin
    { OF = MSB du resultat XOR CF }
