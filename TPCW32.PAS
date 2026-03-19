@@ -8300,13 +8300,14 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ GenLoadAddr : generer LEA EAX, [variable]                    }
+{ GenLoadAddr : charger l adresse d une variable               }
 { ------------------------------------------------------------ }
 
 Procedure GenLoadAddr(PI : Integer; Const Name : TString);
 Var
   LI, ParI, SI : Integer;
   Up           : TString;
+  VarRef       : TString;
 Begin
   Up := StrUpperCase(Name);
 
@@ -8315,44 +8316,64 @@ Begin
     LI := FindLocal(PI, Up);
     If LI >= 0 Then
     Begin
-      EmitInstr('LEA EAX,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
+      Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('LEA AX,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
+        Else
+          EmitInstr('LEA EAX,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
+      End;
       Exit;
     End;
 
     ParI := FindParam(PI, Up);
     If ParI >= 0 Then
     Begin
-      If ProcTab[PI].Params[ParI].IsVar Then
-        EmitInstr('MOV EAX,DWORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset))
-      Else
-        EmitInstr('LEA EAX,' + EBPOfs(ProcTab[PI].Params[ParI].Offset));
+      Case Opts.DestTarget Of
+        DEST_DOSR, DEST_DOSP:
+        Begin
+          If ProcTab[PI].Params[ParI].IsVar Then
+            EmitInstr('MOV AX,WORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset))
+          Else
+            EmitInstr('LEA AX,' + EBPOfs(ProcTab[PI].Params[ParI].Offset));
+        End;
+        Else
+        Begin
+          If ProcTab[PI].Params[ParI].IsVar Then
+            EmitInstr('MOV EAX,DWORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset))
+          Else
+            EmitInstr('LEA EAX,' + EBPOfs(ProcTab[PI].Params[ParI].Offset));
+        End;
+      End;
       Exit;
     End;
   End;
 
   SI := SymFind(Up);
   If SI >= 0 Then
-  Begin
-    If (SymTab[SI].Kind = SK_VAR) Then
-    Begin
-      If Is68kTarget Then
-      Begin
-        EmitInstr('LEA ' + SymTab[SI].MangledName + ',A0');
-        EmitInstr('MOVE.L A0,D0');
-      End
-      Else
-        EmitInstr('LEA EAX,[' + SymTab[SI].MangledName + ']');
-      Exit;
-    End;
-  End;
-
-  If Is68kTarget Then
-  Begin
-    EmitInstr('LEA ' + TP_VAR_PFX + Up + ',A0');
-    EmitInstr('MOVE.L A0,D0');
-  End
+    VarRef := SymTab[SI].MangledName
   Else
-    EmitInstr('LEA EAX,[' + TP_VAR_PFX + Up + ']');
+    VarRef := TP_VAR_PFX + Up;
+
+  Case Opts.DestTarget Of
+    DEST_68000, DEST_ATARIST, DEST_AMIGA:
+    Begin
+      EmitInstr('LEA ' + VarRef + ',A0');
+      EmitInstr('MOVE.L A0,D0');
+    End;
+    DEST_DOSR, DEST_DOSP:
+      EmitInstr('MOV AX,OFFSET ' + VarRef);
+    DEST_Z80:
+      EmitInstr('LD HL,' + VarRef);
+    DEST_6502:
+    Begin
+      EmitInstr('LDA #<' + VarRef);
+      EmitInstr('LDX #>' + VarRef);
+    End;
+    DEST_6809:
+      EmitInstr('LDD #' + VarRef);
+    Else
+      EmitInstr('LEA EAX,[' + VarRef + ']');
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -9895,16 +9916,88 @@ Begin
       Exit;
     End;
 
-    { ASSIGNED(p) -> retourne p <> nil (0 ou 1) dans EAX }
+    { ASSIGNED(p) -> retourne p <> nil (0 ou 1) }
     If Up = 'ASSIGNED' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);      { pointeur dans EAX }
-        EmitInstr('TEST EAX,EAX');
-        EmitInstr('SETNE AL');
-        EmitInstr('MOVZX EAX,AL');
+        ParseExpr(PI);
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 --- }
+            LblDone := LabelGen;
+            Lbl := LabelGen;
+            EmitInstr('TST.L D0');
+            EmitInstr('BNE ' + Lbl);
+            EmitInstr('MOVEQ #0,D0');
+            EmitInstr('BRA ' + LblDone);
+            EmitLabel(Lbl);
+            EmitInstr('MOVEQ #1,D0');
+            EmitLabel(LblDone);
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 (DOS 16 bits) --- }
+            LblDone := LabelGen;
+            Lbl := LabelGen;
+            EmitInstr('TEST AX,AX');
+            EmitInstr('JNE ' + Lbl);
+            EmitInstr('XOR AX,AX');
+            EmitInstr('JMP ' + LblDone);
+            EmitLabel(Lbl);
+            EmitInstr('MOV AX,1');
+            EmitLabel(LblDone);
+          End;
+          DEST_Z80:
+          Begin
+            { --- Zilog Z80 --- }
+            LblDone := LabelGen;
+            Lbl := LabelGen;
+            EmitInstr('LD A,H');
+            EmitInstr('OR L');
+            EmitInstr('JR NZ,' + Lbl);
+            EmitInstr('LD HL,0');
+            EmitInstr('JR ' + LblDone);
+            EmitLabel(Lbl);
+            EmitInstr('LD HL,1');
+            EmitLabel(LblDone);
+          End;
+          DEST_6502:
+          Begin
+            { --- MOS 6502 --- }
+            LblDone := LabelGen;
+            Lbl := LabelGen;
+            EmitInstr('CMP #0');
+            EmitInstr('BNE ' + Lbl);
+            EmitInstr('LDA #0');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(Lbl);
+            EmitInstr('LDA #1');
+            EmitLabel(LblDone);
+          End;
+          DEST_6809:
+          Begin
+            { --- Motorola 6809 --- }
+            LblDone := LabelGen;
+            Lbl := LabelGen;
+            EmitInstr('CMPD #0');
+            EmitInstr('BNE ' + Lbl);
+            EmitInstr('LDD #0');
+            EmitInstr('BRA ' + LblDone);
+            EmitLabel(Lbl);
+            EmitInstr('LDD #1');
+            EmitLabel(LblDone);
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) --- }
+            EmitInstr('TEST EAX,EAX');
+            EmitInstr('SETNE AL');
+            EmitInstr('MOVZX EAX,AL');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       Exit;
@@ -9944,35 +10037,59 @@ Begin
       Exit;
     End;
 
-    { PTR(seg, ofs) -> en Win32 flat, retourne ofs dans EAX }
+    { PTR(seg, ofs) -> retourne ofs (segment ignore en mode flat) }
     If Up = 'PTR' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);      { seg - ignore en flat mode }
+        ParseExpr(PI);      { seg - ignore en mode flat/non-segmente }
         EPMatch(',');
-        ParseExpr(PI);      { ofs -> resultat dans EAX }
+        ParseExpr(PI);      { ofs -> resultat dans le registre cible }
         EPMatch(')');
       End;
       Exit;
     End;
 
     { MAXAVAIL -> retourne la taille du plus gros bloc libre }
-    { En Win32, utilise HeapSize sur un bloc test ou retourne 1MB }
     If Up = 'MAXAVAIL' Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EAX,1048576');  { 1 MB = valeur raisonnable }
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          EmitInstr('MOVE.L #1048576,D0');
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('MOV AX,65535');       { 64 KB max en DOS 16 bits }
+        DEST_Z80:
+          EmitInstr('LD HL,32768');        { 32 KB raisonnable Z80 }
+        DEST_6502:
+          EmitInstr('LDA #255');           { 255 octets max 6502 }
+        DEST_6809:
+          EmitInstr('LDD #32768');         { 32 KB raisonnable 6809 }
+        Else
+          EmitInstr('MOV EAX,1048576');    { 1 MB en Win32 }
+      End;
       Exit;
     End;
 
     { MEMAVAIL -> retourne la memoire disponible }
-    { En Win32, retourne une valeur fixe raisonnable }
     If Up = 'MEMAVAIL' Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EAX,16777216');  { 16 MB = valeur raisonnable }
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          EmitInstr('MOVE.L #16777216,D0');
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('MOV AX,65535');       { 64 KB max en DOS 16 bits }
+        DEST_Z80:
+          EmitInstr('LD HL,49152');        { 48 KB raisonnable Z80 }
+        DEST_6502:
+          EmitInstr('LDA #255');           { 255 octets max 6502 }
+        DEST_6809:
+          EmitInstr('LDD #49152');         { 48 KB raisonnable 6809 }
+        Else
+          EmitInstr('MOV EAX,16777216');   { 16 MB en Win32 }
+      End;
       Exit;
     End;
 
@@ -9986,7 +10103,20 @@ Begin
         Begin
           Lbl := TokenPool[EP].Val;
           Inc(EP);
-          EmitInstr('MOV EAX,0');  { stub }
+          Case Opts.DestTarget Of
+            DEST_68000, DEST_ATARIST, DEST_AMIGA:
+              EmitInstr('MOVEQ #0,D0');
+            DEST_DOSR, DEST_DOSP:
+              EmitInstr('XOR AX,AX');
+            DEST_Z80:
+              EmitInstr('LD HL,0');
+            DEST_6502:
+              EmitInstr('LDA #0');
+            DEST_6809:
+              EmitInstr('LDD #0');
+            Else
+              EmitInstr('MOV EAX,0');
+          End;
           GenStoreVar(PI, Lbl);
         End;
         EPMatch(')');
@@ -9994,7 +10124,7 @@ Begin
       Exit;
     End;
 
-    { RELEASE(p) -> stub : ne fait rien (obsolete en Win32) }
+    { RELEASE(p) -> stub : ne fait rien (obsolete) }
     If Up = 'RELEASE' Then
     Begin
       Inc(EP);
