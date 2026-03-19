@@ -10135,129 +10135,471 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        If Not EPAtEnd Then Inc(EP);  { consommer la variable }
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { stub no-op }
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { stub no-op }
+          End;
+          DEST_Z80:
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { stub no-op }
+          End;
+          DEST_6502:
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { stub no-op }
+          End;
+          DEST_6809:
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { stub no-op }
+          End;
+          Else
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { stub no-op }
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       Exit;
     End;
 
-    { SETTEXTBUF(f, buf [, size]) -> stub : ne fait rien en Win32 }
+    { SETTEXTBUF(f, buf [, size]) -> stub : ne fait rien }
     If Up = 'SETTEXTBUF' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        If Not EPAtEnd Then Inc(EP);  { f }
-        EPMatch(',');
-        If Not EPAtEnd Then Inc(EP);  { buf }
-        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
-           (TokenPool[EP].Val = ',') Then
-        Begin
-          Inc(EP);
-          ParseExpr(PI);  { size }
-        End;
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { f }
+            EPMatch(',');
+            If Not EPAtEnd Then Inc(EP);  { buf }
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ',') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);  { size }
+            End;
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { f }
+            EPMatch(',');
+            If Not EPAtEnd Then Inc(EP);  { buf }
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ',') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);  { size }
+            End;
+          End;
+          DEST_Z80:
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { f }
+            EPMatch(',');
+            If Not EPAtEnd Then Inc(EP);  { buf }
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ',') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);  { size }
+            End;
+          End;
+          DEST_6502:
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { f }
+            EPMatch(',');
+            If Not EPAtEnd Then Inc(EP);  { buf }
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ',') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);  { size }
+            End;
+          End;
+          DEST_6809:
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { f }
+            EPMatch(',');
+            If Not EPAtEnd Then Inc(EP);  { buf }
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ',') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);  { size }
+            End;
+          End;
+          Else
+          Begin
+            If Not EPAtEnd Then Inc(EP);  { f }
+            EPMatch(',');
+            If Not EPAtEnd Then Inc(EP);  { buf }
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ',') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);  { size }
+            End;
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       Exit;
     End;
 
-    { CHDIR(path) -> SetCurrentDirectoryA }
+    { CHDIR(path) -> changer repertoire courant }
     If Up = 'CHDIR' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);        { path dans EAX }
-        If LastExprIsPascalStr Then
-          EmitInstr('INC EAX');   { Pascal -> ASCIIZ }
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 : GEMDOS Dsetpath ($3B) --- }
+            ParseExpr(PI);        { path dans D0 }
+            If LastExprIsPascalStr Then
+              EmitInstr('ADDQ.L #1,D0');   { Pascal -> ASCIIZ }
+            EmitInstr('MOVE.L D0,-(SP)');  { push path pointer }
+            EmitInstr('MOVE.W #$3B,-(SP)');{ GEMDOS Dsetpath }
+            EmitInstr('TRAP #1');
+            EmitInstr('ADDQ.L #6,SP');     { nettoyer pile }
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 : DOS INT 21h AH=3Bh --- }
+            ParseExpr(PI);        { path dans AX }
+            If LastExprIsPascalStr Then
+              EmitInstr('INC AX');         { Pascal -> ASCIIZ }
+            EmitInstr('MOV DX,AX');        { DS:DX = path }
+            EmitInstr('MOV AH,$3B');       { fonction 3Bh }
+            EmitInstr('INT 21H');
+          End;
+          DEST_Z80:
+          Begin
+            { --- Z80 : stub no-op (pas de systeme de fichiers) --- }
+            ParseExpr(PI);
+          End;
+          DEST_6502:
+          Begin
+            { --- 6502 : stub no-op (pas de systeme de fichiers) --- }
+            ParseExpr(PI);
+          End;
+          DEST_6809:
+          Begin
+            { --- 6809 : stub no-op (pas de systeme de fichiers) --- }
+            ParseExpr(PI);
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) : SetCurrentDirectoryA --- }
+            ParseExpr(PI);        { path dans EAX }
+            If LastExprIsPascalStr Then
+              EmitInstr('INC EAX');        { Pascal -> ASCIIZ }
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL SetCurrentDirectoryA');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL SetCurrentDirectoryA');
       Exit;
     End;
 
-    { MKDIR(path) -> CreateDirectoryA }
+    { MKDIR(path) -> creer repertoire }
     If Up = 'MKDIR' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);        { path dans EAX }
-        If LastExprIsPascalStr Then
-          EmitInstr('INC EAX');   { Pascal -> ASCIIZ }
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 : GEMDOS Dcreate ($39) --- }
+            ParseExpr(PI);        { path dans D0 }
+            If LastExprIsPascalStr Then
+              EmitInstr('ADDQ.L #1,D0');   { Pascal -> ASCIIZ }
+            EmitInstr('MOVE.L D0,-(SP)');  { push path pointer }
+            EmitInstr('MOVE.W #$39,-(SP)');{ GEMDOS Dcreate }
+            EmitInstr('TRAP #1');
+            EmitInstr('ADDQ.L #6,SP');     { nettoyer pile }
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 : DOS INT 21h AH=39h --- }
+            ParseExpr(PI);        { path dans AX }
+            If LastExprIsPascalStr Then
+              EmitInstr('INC AX');         { Pascal -> ASCIIZ }
+            EmitInstr('MOV DX,AX');        { DS:DX = path }
+            EmitInstr('MOV AH,$39');       { fonction 39h }
+            EmitInstr('INT 21H');
+          End;
+          DEST_Z80:
+          Begin
+            { --- Z80 : stub no-op (pas de systeme de fichiers) --- }
+            ParseExpr(PI);
+          End;
+          DEST_6502:
+          Begin
+            { --- 6502 : stub no-op (pas de systeme de fichiers) --- }
+            ParseExpr(PI);
+          End;
+          DEST_6809:
+          Begin
+            { --- 6809 : stub no-op (pas de systeme de fichiers) --- }
+            ParseExpr(PI);
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) : CreateDirectoryA --- }
+            ParseExpr(PI);        { path dans EAX }
+            If LastExprIsPascalStr Then
+              EmitInstr('INC EAX');        { Pascal -> ASCIIZ }
+            EmitInstr('PUSH 0');           { lpSecurityAttributes = NULL }
+            EmitInstr('PUSH EAX');         { lpPathName }
+            EmitInstr('CALL CreateDirectoryA');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('PUSH 0');        { lpSecurityAttributes = NULL }
-      EmitInstr('PUSH EAX');      { lpPathName }
-      EmitInstr('CALL CreateDirectoryA');
       Exit;
     End;
 
-    { RMDIR(path) -> RemoveDirectoryA }
+    { RMDIR(path) -> supprimer repertoire }
     If Up = 'RMDIR' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);        { path dans EAX }
-        If LastExprIsPascalStr Then
-          EmitInstr('INC EAX');   { Pascal -> ASCIIZ }
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 : GEMDOS Ddelete ($3A) --- }
+            ParseExpr(PI);        { path dans D0 }
+            If LastExprIsPascalStr Then
+              EmitInstr('ADDQ.L #1,D0');   { Pascal -> ASCIIZ }
+            EmitInstr('MOVE.L D0,-(SP)');  { push path pointer }
+            EmitInstr('MOVE.W #$3A,-(SP)');{ GEMDOS Ddelete }
+            EmitInstr('TRAP #1');
+            EmitInstr('ADDQ.L #6,SP');     { nettoyer pile }
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 : DOS INT 21h AH=3Ah --- }
+            ParseExpr(PI);        { path dans AX }
+            If LastExprIsPascalStr Then
+              EmitInstr('INC AX');         { Pascal -> ASCIIZ }
+            EmitInstr('MOV DX,AX');        { DS:DX = path }
+            EmitInstr('MOV AH,$3A');       { fonction 3Ah }
+            EmitInstr('INT 21H');
+          End;
+          DEST_Z80:
+          Begin
+            { --- Z80 : stub no-op (pas de systeme de fichiers) --- }
+            ParseExpr(PI);
+          End;
+          DEST_6502:
+          Begin
+            { --- 6502 : stub no-op (pas de systeme de fichiers) --- }
+            ParseExpr(PI);
+          End;
+          DEST_6809:
+          Begin
+            { --- 6809 : stub no-op (pas de systeme de fichiers) --- }
+            ParseExpr(PI);
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) : RemoveDirectoryA --- }
+            ParseExpr(PI);        { path dans EAX }
+            If LastExprIsPascalStr Then
+              EmitInstr('INC EAX');        { Pascal -> ASCIIZ }
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL RemoveDirectoryA');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL RemoveDirectoryA');
       Exit;
     End;
 
-    { GETDIR(drive, var s) -> GetCurrentDirectoryA }
-    { drive est ignore en Win32 (toujours le lecteur courant) }
+    { GETDIR(drive, var s) -> obtenir repertoire courant }
     If Up = 'GETDIR' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);    { drive (ignore) }
-        EPMatch(',');
-        { s : variable chaine de destination }
-        If Not EPAtEnd Then
-        Begin
-          Lbl := TokenPool[EP].Val;
-          Inc(EP);
-        End;
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 : GEMDOS Dgetpath ($47) --- }
+            ParseExpr(PI);    { drive dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');  { sauvegarder drive }
+            EPMatch(',');
+            If Not EPAtEnd Then
+            Begin Lbl := TokenPool[EP].Val; Inc(EP); End;
+            { GEMDOS Dgetpath(DIR_NAMEBUF, drive) }
+            EmitInstr('MOVE.L (SP)+,D0');  { restaurer drive }
+            EmitInstr('MOVE.W D0,-(SP)');  { push drive }
+            EmitInstr('PEA DIR_NAMEBUF');  { push buffer ptr }
+            EmitInstr('MOVE.W #$47,-(SP)');{ GEMDOS Dgetpath }
+            EmitInstr('TRAP #1');
+            EmitInstr('ADDQ.L #8,SP');     { nettoyer pile (2+4+2) }
+            { Copier DIR_NAMEBUF -> variable chaine Pascal }
+            GenLoadAddr(PI, Lbl);          { D0 = adresse dest }
+            EmitInstr('MOVE.L D0,A1');     { A1 = dest }
+            EmitInstr('LEA DIR_NAMEBUF,A0');{ A0 = source }
+            { Mesurer longueur }
+            LblLoop := LabelGen;
+            LblDone := LabelGen;
+            EmitInstr('CLR.L D1');         { D1 = compteur longueur }
+            EmitInstr('MOVE.L A0,A2');     { sauvegarder debut source }
+            EmitLabel(LblLoop);
+            EmitInstr('TST.B (A0)+');
+            EmitInstr('BEQ ' + LblDone);
+            EmitInstr('ADDQ.L #1,D1');
+            EmitInstr('BRA ' + LblLoop);
+            EmitLabel(LblDone);
+            { D1 = longueur, A2 = debut source, A1 = dest }
+            EmitInstr('MOVE.B D1,(A1)+');  { S[0] = longueur }
+            EmitInstr('MOVE.L A2,A0');     { A0 = debut source }
+            LblLoop := LabelGen;
+            LblDone := LabelGen;
+            EmitInstr('TST.L D1');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('MOVE.B (A0)+,(A1)+');
+            EmitInstr('SUBQ.L #1,D1');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+            EmitInstr('CLR.B (A1)');       { NUL final }
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 : DOS INT 21h AH=47h --- }
+            ParseExpr(PI);    { drive dans AX }
+            EmitInstr('PUSH AX');          { sauvegarder drive }
+            EPMatch(',');
+            If Not EPAtEnd Then
+            Begin Lbl := TokenPool[EP].Val; Inc(EP); End;
+            { INT 21h AH=47h : DL=drive, DS:SI=buffer }
+            EmitInstr('POP AX');           { restaurer drive }
+            EmitInstr('MOV DL,AL');        { DL = drive }
+            EmitInstr('LEA SI,[DIR_NAMEBUF]');
+            EmitInstr('MOV AH,$47');       { fonction 47h }
+            EmitInstr('INT 21H');
+            { Copier DIR_NAMEBUF -> variable chaine Pascal }
+            GenLoadAddr(PI, Lbl);          { AX = adresse dest }
+            EmitInstr('MOV DI,AX');        { DI = dest }
+            EmitInstr('LEA SI,[DIR_NAMEBUF]');
+            { Mesurer longueur }
+            EmitInstr('PUSH DI');
+            EmitInstr('XOR CX,CX');
+            EmitInstr('MOV BX,SI');
+            LblLoop := LabelGen;
+            LblDone := LabelGen;
+            EmitLabel(LblLoop);
+            EmitInstr('LODSB');
+            EmitInstr('TEST AL,AL');
+            EmitInstr('JZ ' + LblDone);
+            EmitInstr('INC CX');
+            EmitInstr('JMP ' + LblLoop);
+            EmitLabel(LblDone);
+            EmitInstr('POP DI');
+            EmitInstr('MOV [DI],CL');      { S[0] = longueur }
+            EmitInstr('INC DI');
+            EmitInstr('MOV SI,BX');        { source = debut }
+            EmitInstr('CLD');
+            EmitInstr('REP MOVSB');
+            EmitInstr('MOV BYTE PTR [DI],0'); { NUL final }
+          End;
+          DEST_Z80:
+          Begin
+            { --- Z80 : stub - chaine vide --- }
+            ParseExpr(PI);    { drive (ignore) }
+            EPMatch(',');
+            If Not EPAtEnd Then
+            Begin Lbl := TokenPool[EP].Val; Inc(EP); End;
+            GenLoadAddr(PI, Lbl);  { HL = adresse dest }
+            EmitInstr('LD (HL),0');        { S[0] = 0 (longueur) }
+            EmitInstr('INC HL');
+            EmitInstr('LD (HL),0');        { NUL final }
+          End;
+          DEST_6502:
+          Begin
+            { --- 6502 : stub - chaine vide --- }
+            ParseExpr(PI);    { drive (ignore) }
+            EPMatch(',');
+            If Not EPAtEnd Then
+            Begin Lbl := TokenPool[EP].Val; Inc(EP); End;
+            GenLoadAddr(PI, Lbl);  { A/X = adresse dest }
+            EmitInstr('STA $00');          { ptr low }
+            EmitInstr('STX $01');          { ptr high }
+            EmitInstr('LDA #0');
+            EmitInstr('LDY #0');
+            EmitInstr('STA ($00),Y');      { S[0] = 0 }
+            EmitInstr('INY');
+            EmitInstr('STA ($00),Y');      { NUL final }
+          End;
+          DEST_6809:
+          Begin
+            { --- 6809 : stub - chaine vide --- }
+            ParseExpr(PI);    { drive (ignore) }
+            EPMatch(',');
+            If Not EPAtEnd Then
+            Begin Lbl := TokenPool[EP].Val; Inc(EP); End;
+            GenLoadAddr(PI, Lbl);  { D = adresse dest }
+            EmitInstr('TFR D,X');
+            EmitInstr('CLR ,X');           { S[0] = 0 }
+            EmitInstr('CLR 1,X');          { NUL final }
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) : GetCurrentDirectoryA --- }
+            ParseExpr(PI);    { drive (ignore) }
+            EPMatch(',');
+            If Not EPAtEnd Then
+            Begin Lbl := TokenPool[EP].Val; Inc(EP); End;
+            { GetCurrentDirectoryA(260, DIR_NAMEBUF) }
+            EmitInstr('PUSH OFFSET DIR_NAMEBUF');
+            EmitInstr('PUSH 260');
+            EmitInstr('CALL GetCurrentDirectoryA');
+            { Copier DIR_NAMEBUF -> variable chaine Pascal }
+            EmitInstr('LEA ESI,[DIR_NAMEBUF]');
+            GenLoadAddr(PI, Lbl);
+            EmitInstr('MOV EDI,EAX');
+            { Mesurer longueur de la chaine ASCIIZ }
+            EmitInstr('PUSH EDI');
+            EmitInstr('XOR ECX,ECX');
+            EmitInstr('MOV EDX,ESI');
+            LblLoop := LabelGen;
+            LblDone := LabelGen;
+            EmitLabel(LblLoop);
+            EmitInstr('MOV AL,[ESI]');
+            EmitInstr('TEST AL,AL');
+            EmitInstr('JZ ' + LblDone);
+            EmitInstr('INC ECX');
+            EmitInstr('INC ESI');
+            EmitInstr('JMP ' + LblLoop);
+            EmitLabel(LblDone);
+            EmitInstr('POP EDI');
+            EmitInstr('MOV [EDI],CL');     { S[0] = longueur }
+            EmitInstr('INC EDI');
+            EmitInstr('MOV ESI,EDX');      { source = debut DIR_NAMEBUF }
+            EmitInstr('CLD');
+            EmitInstr('REP MOVSB');
+            EmitInstr('MOV BYTE PTR [EDI],0');  { NUL final }
+          End;
+        End; { Case }
         EPMatch(')');
       End;
-      { GetCurrentDirectoryA(260, DIR_NAMEBUF) }
-      EmitInstr('PUSH OFFSET DIR_NAMEBUF');
-      EmitInstr('PUSH 260');
-      EmitInstr('CALL GetCurrentDirectoryA');
-      { Copier DIR_NAMEBUF -> variable chaine Pascal }
-      EmitInstr('LEA ESI,[DIR_NAMEBUF]');
-      GenLoadAddr(PI, Lbl);
-      EmitInstr('MOV EDI,EAX');
-      { Mesurer longueur de la chaine ASCIIZ }
-      EmitInstr('PUSH EDI');
-      EmitInstr('XOR ECX,ECX');
-      EmitInstr('MOV EDX,ESI');
-      EmitLabel(TP_RT_PFX + 'GDIR_LN');
-      EmitInstr('MOV AL,[ESI]');
-      EmitInstr('TEST AL,AL');
-      EmitInstr('JZ ' + TP_RT_PFX + 'GDIR_CP');
-      EmitInstr('INC ECX');
-      EmitInstr('INC ESI');
-      EmitInstr('JMP ' + TP_RT_PFX + 'GDIR_LN');
-      EmitLabel(TP_RT_PFX + 'GDIR_CP');
-      EmitInstr('POP EDI');
-      EmitInstr('MOV [EDI],CL');     { S[0] = longueur }
-      EmitInstr('INC EDI');
-      EmitInstr('MOV ESI,EDX');       { source = debut DIR_NAMEBUF }
-      EmitInstr('CLD');
-      EmitInstr('REP MOVSB');
-      EmitInstr('MOV BYTE PTR [EDI],0');  { NUL final }
       Exit;
     End;
 
-    { INCLUDE(S, I) -> BTS (bit test and set) }
+    { INCLUDE(S, I) -> ajouter element a l'ensemble }
     If Up = 'INCLUDE' Then
     Begin
       Inc(EP);
@@ -10269,16 +10611,145 @@ Begin
           Inc(EP);
         End;
         EPMatch(',');
-        ParseExpr(PI);   { I dans EAX }
-        EmitInstr('MOV ECX,EAX');   { element }
-        GenLoadAddr(PI, Lbl);
-        EmitInstr('BTS [EAX],ECX');
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 : BSET --- }
+            ParseExpr(PI);   { I dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');  { sauvegarder element }
+            GenLoadAddr(PI, Lbl);          { D0 = adresse ensemble }
+            EmitInstr('MOVE.L (SP)+,D1');  { D1 = element }
+            EmitInstr('MOVE.L D1,D2');
+            EmitInstr('LSR.L #3,D2');      { D2 = byte offset }
+            EmitInstr('MOVE.L D0,A0');
+            EmitInstr('ADDA.L D2,A0');     { A0 = &set[byte_offset] }
+            EmitInstr('AND.L #7,D1');      { D1 = bit position }
+            EmitInstr('BSET.B D1,(A0)');   { positionner le bit }
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 : manipulation manuelle de bits --- }
+            ParseExpr(PI);   { I dans AX }
+            EmitInstr('PUSH AX');          { sauvegarder element }
+            GenLoadAddr(PI, Lbl);          { AX = adresse ensemble }
+            EmitInstr('MOV BX,AX');        { BX = set base }
+            EmitInstr('POP AX');           { AX = element }
+            EmitInstr('MOV CX,AX');        { CX = element (save) }
+            EmitInstr('SHR AX,1');
+            EmitInstr('SHR AX,1');
+            EmitInstr('SHR AX,1');         { AX = byte offset }
+            EmitInstr('ADD BX,AX');        { BX = &set[byte_offset] }
+            EmitInstr('AND CL,7');         { CL = bit position }
+            EmitInstr('MOV AL,1');
+            EmitInstr('SHL AL,CL');        { AL = bit mask }
+            EmitInstr('OR [BX],AL');       { positionner le bit }
+          End;
+          DEST_Z80:
+          Begin
+            { --- Z80 : manipulation manuelle de bits --- }
+            ParseExpr(PI);   { I dans HL (L = element) }
+            EmitInstr('PUSH HL');          { sauvegarder element }
+            GenLoadAddr(PI, Lbl);          { HL = adresse ensemble }
+            EmitInstr('POP DE');           { E = element }
+            EmitInstr('LD A,E');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');            { A = byte offset }
+            EmitInstr('LD C,A');
+            EmitInstr('LD B,0');           { BC = byte offset }
+            EmitInstr('ADD HL,BC');        { HL = &set[byte_offset] }
+            EmitInstr('LD A,E');
+            EmitInstr('AND 7');            { A = bit position, Z si 0 }
+            EmitInstr('LD B,A');
+            EmitInstr('LD A,1');
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('JR Z,' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('SLA A');
+            EmitInstr('DJNZ ' + LblLoop);
+            EmitLabel(LblDone);
+            EmitInstr('OR (HL)');
+            EmitInstr('LD (HL),A');        { positionner le bit }
+          End;
+          DEST_6502:
+          Begin
+            { --- 6502 : manipulation manuelle de bits --- }
+            ParseExpr(PI);   { I dans A }
+            EmitInstr('PHA');              { sauvegarder element }
+            GenLoadAddr(PI, Lbl);          { A/X = adresse ensemble }
+            EmitInstr('STA $00');          { ptr low }
+            EmitInstr('STX $01');          { ptr high }
+            EmitInstr('PLA');              { A = element }
+            EmitInstr('TAY');              { Y = element (save) }
+            EmitInstr('LSR A');
+            EmitInstr('LSR A');
+            EmitInstr('LSR A');            { A = byte offset }
+            EmitInstr('CLC');
+            EmitInstr('ADC $00');
+            EmitInstr('STA $00');
+            EmitInstr('LDA #0');
+            EmitInstr('ADC $01');
+            EmitInstr('STA $01');          { ($00) = &set[byte_offset] }
+            EmitInstr('TYA');              { A = element }
+            EmitInstr('AND #$07');         { A = bit position }
+            EmitInstr('TAX');              { X = bit position }
+            EmitInstr('LDA #1');
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('CPX #0');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('ASL A');
+            EmitInstr('DEX');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+            EmitInstr('LDY #0');
+            EmitInstr('ORA ($00),Y');      { A = mask | old }
+            EmitInstr('STA ($00),Y');      { positionner le bit }
+          End;
+          DEST_6809:
+          Begin
+            { --- 6809 : manipulation manuelle de bits --- }
+            ParseExpr(PI);   { I dans D (B = low) }
+            EmitInstr('PSHS D');           { sauvegarder element }
+            GenLoadAddr(PI, Lbl);          { D = adresse ensemble }
+            EmitInstr('TFR D,X');          { X = set base }
+            EmitInstr('PULS D');           { B = element }
+            EmitInstr('TFR B,A');          { A = element (save) }
+            EmitInstr('LSRB');
+            EmitInstr('LSRB');
+            EmitInstr('LSRB');             { B = byte offset }
+            EmitInstr('ABX');              { X += B = &set[byte_offset] }
+            EmitInstr('ANDA #7');          { A = bit position }
+            EmitInstr('LDB #1');
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('TSTA');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('LSLB');
+            EmitInstr('DECA');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+            EmitInstr('ORB ,X');           { B = mask | old }
+            EmitInstr('STB ,X');           { positionner le bit }
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) : BTS --- }
+            ParseExpr(PI);   { I dans EAX }
+            EmitInstr('MOV ECX,EAX');      { element }
+            GenLoadAddr(PI, Lbl);
+            EmitInstr('BTS [EAX],ECX');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       Exit;
     End;
 
-    { EXCLUDE(S, I) -> BTR (bit test and reset) }
+    { EXCLUDE(S, I) -> retirer element de l'ensemble }
     If Up = 'EXCLUDE' Then
     Begin
       Inc(EP);
@@ -10290,10 +10761,143 @@ Begin
           Inc(EP);
         End;
         EPMatch(',');
-        ParseExpr(PI);   { I dans EAX }
-        EmitInstr('MOV ECX,EAX');   { element }
-        GenLoadAddr(PI, Lbl);
-        EmitInstr('BTR [EAX],ECX');
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            { --- Motorola 68000 : BCLR --- }
+            ParseExpr(PI);   { I dans D0 }
+            EmitInstr('MOVE.L D0,-(SP)');  { sauvegarder element }
+            GenLoadAddr(PI, Lbl);          { D0 = adresse ensemble }
+            EmitInstr('MOVE.L (SP)+,D1');  { D1 = element }
+            EmitInstr('MOVE.L D1,D2');
+            EmitInstr('LSR.L #3,D2');      { D2 = byte offset }
+            EmitInstr('MOVE.L D0,A0');
+            EmitInstr('ADDA.L D2,A0');     { A0 = &set[byte_offset] }
+            EmitInstr('AND.L #7,D1');      { D1 = bit position }
+            EmitInstr('BCLR.B D1,(A0)');   { effacer le bit }
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            { --- Intel 8086 : manipulation manuelle de bits --- }
+            ParseExpr(PI);   { I dans AX }
+            EmitInstr('PUSH AX');          { sauvegarder element }
+            GenLoadAddr(PI, Lbl);          { AX = adresse ensemble }
+            EmitInstr('MOV BX,AX');        { BX = set base }
+            EmitInstr('POP AX');           { AX = element }
+            EmitInstr('MOV CX,AX');        { CX = element (save) }
+            EmitInstr('SHR AX,1');
+            EmitInstr('SHR AX,1');
+            EmitInstr('SHR AX,1');         { AX = byte offset }
+            EmitInstr('ADD BX,AX');        { BX = &set[byte_offset] }
+            EmitInstr('AND CL,7');         { CL = bit position }
+            EmitInstr('MOV AL,1');
+            EmitInstr('SHL AL,CL');        { AL = bit mask }
+            EmitInstr('NOT AL');           { AL = complement }
+            EmitInstr('AND [BX],AL');      { effacer le bit }
+          End;
+          DEST_Z80:
+          Begin
+            { --- Z80 : manipulation manuelle de bits --- }
+            ParseExpr(PI);   { I dans HL (L = element) }
+            EmitInstr('PUSH HL');          { sauvegarder element }
+            GenLoadAddr(PI, Lbl);          { HL = adresse ensemble }
+            EmitInstr('POP DE');           { E = element }
+            EmitInstr('LD A,E');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');
+            EmitInstr('SRL A');            { A = byte offset }
+            EmitInstr('LD C,A');
+            EmitInstr('LD B,0');           { BC = byte offset }
+            EmitInstr('ADD HL,BC');        { HL = &set[byte_offset] }
+            EmitInstr('LD A,E');
+            EmitInstr('AND 7');            { A = bit position, Z si 0 }
+            EmitInstr('LD B,A');
+            EmitInstr('LD A,1');
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('JR Z,' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('SLA A');
+            EmitInstr('DJNZ ' + LblLoop);
+            EmitLabel(LblDone);
+            EmitInstr('CPL');              { A = complement du masque }
+            EmitInstr('AND (HL)');
+            EmitInstr('LD (HL),A');        { effacer le bit }
+          End;
+          DEST_6502:
+          Begin
+            { --- 6502 : manipulation manuelle de bits --- }
+            ParseExpr(PI);   { I dans A }
+            EmitInstr('PHA');              { sauvegarder element }
+            GenLoadAddr(PI, Lbl);          { A/X = adresse ensemble }
+            EmitInstr('STA $00');          { ptr low }
+            EmitInstr('STX $01');          { ptr high }
+            EmitInstr('PLA');              { A = element }
+            EmitInstr('TAY');              { Y = element (save) }
+            EmitInstr('LSR A');
+            EmitInstr('LSR A');
+            EmitInstr('LSR A');            { A = byte offset }
+            EmitInstr('CLC');
+            EmitInstr('ADC $00');
+            EmitInstr('STA $00');
+            EmitInstr('LDA #0');
+            EmitInstr('ADC $01');
+            EmitInstr('STA $01');          { ($00) = &set[byte_offset] }
+            EmitInstr('TYA');              { A = element }
+            EmitInstr('AND #$07');         { A = bit position }
+            EmitInstr('TAX');              { X = bit position }
+            EmitInstr('LDA #1');
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('CPX #0');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('ASL A');
+            EmitInstr('DEX');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+            EmitInstr('EOR #$FF');         { A = complement du masque }
+            EmitInstr('LDY #0');
+            EmitInstr('AND ($00),Y');      { A = ~mask & old }
+            EmitInstr('STA ($00),Y');      { effacer le bit }
+          End;
+          DEST_6809:
+          Begin
+            { --- 6809 : manipulation manuelle de bits --- }
+            ParseExpr(PI);   { I dans D (B = low) }
+            EmitInstr('PSHS D');           { sauvegarder element }
+            GenLoadAddr(PI, Lbl);          { D = adresse ensemble }
+            EmitInstr('TFR D,X');          { X = set base }
+            EmitInstr('PULS D');           { B = element }
+            EmitInstr('TFR B,A');          { A = element (save) }
+            EmitInstr('LSRB');
+            EmitInstr('LSRB');
+            EmitInstr('LSRB');             { B = byte offset }
+            EmitInstr('ABX');              { X += B = &set[byte_offset] }
+            EmitInstr('ANDA #7');          { A = bit position }
+            EmitInstr('LDB #1');
+            LblDone := LabelGen;
+            LblLoop := LabelGen;
+            EmitInstr('TSTA');
+            EmitInstr('BEQ ' + LblDone);
+            EmitLabel(LblLoop);
+            EmitInstr('LSLB');
+            EmitInstr('DECA');
+            EmitInstr('BNE ' + LblLoop);
+            EmitLabel(LblDone);
+            EmitInstr('COMB');             { B = complement du masque }
+            EmitInstr('ANDB ,X');          { B = ~mask & old }
+            EmitInstr('STB ,X');           { effacer le bit }
+          End;
+          Else
+          Begin
+            { --- Intel 80386 (Win32) : BTR --- }
+            ParseExpr(PI);   { I dans EAX }
+            EmitInstr('MOV ECX,EAX');      { element }
+            GenLoadAddr(PI, Lbl);
+            EmitInstr('BTR [EAX],ECX');
+          End;
+        End; { Case }
         EPMatch(')');
       End;
       Exit;
