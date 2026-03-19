@@ -12911,7 +12911,23 @@ Begin
     Begin
       Inc(EP);
       If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End;
-      EmitInstr('XOR EAX,EAX');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          EmitInstr('MOVEQ #0,D0');
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('XOR AX,AX');
+        DEST_Z80:
+          EmitInstr('LD HL,0');
+        DEST_6502:
+          EmitInstr('LDA #0');
+        DEST_6809:
+        Begin
+          EmitInstr('CLRA');
+          EmitInstr('CLRB');
+        End;
+        Else
+          EmitInstr('XOR EAX,EAX');
+      End;
       Exit;
     End;
 
@@ -12919,7 +12935,20 @@ Begin
     If Up = 'GETGRAPHMODE' Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EAX,DWORD PTR [GR_MODE]');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          EmitInstr('MOVE.L GR_MODE,D0');
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('MOV AX,[GR_MODE]');
+        DEST_Z80:
+          EmitInstr('LD HL,(GR_MODE)');
+        DEST_6502:
+          EmitInstr('LDA GR_MODE');
+        DEST_6809:
+          EmitInstr('LDD GR_MODE');
+        Else
+          EmitInstr('MOV EAX,DWORD PTR [GR_MODE]');
+      End;
       Exit;
     End;
 
@@ -12927,7 +12956,20 @@ Begin
     If Up = 'GETPALETTESIZE' Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EAX,16');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          EmitInstr('MOVEQ #16,D0');
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('MOV AX,16');
+        DEST_Z80:
+          EmitInstr('LD HL,16');
+        DEST_6502:
+          EmitInstr('LDA #16');
+        DEST_6809:
+          EmitInstr('LDD #16');
+        Else
+          EmitInstr('MOV EAX,16');
+      End;
       Exit;
     End;
 
@@ -12937,7 +12979,20 @@ Begin
     If Up = '_GRSTATUS' Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EAX,DWORD PTR [GR_RESULT]');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          EmitInstr('MOVE.L GR_RESULT,D0');
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('MOV AX,[GR_RESULT]');
+        DEST_Z80:
+          EmitInstr('LD HL,(GR_RESULT)');
+        DEST_6502:
+          EmitInstr('LDA GR_RESULT');
+        DEST_6809:
+          EmitInstr('LDD GR_RESULT');
+        Else
+          EmitInstr('MOV EAX,DWORD PTR [GR_RESULT]');
+      End;
       Exit;
     End;
 
@@ -12945,11 +13000,74 @@ Begin
     If Up = '_SETVIDEOMODE' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End
-      Else EmitInstr('XOR EAX,EAX');
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
-      EmitInstr('ADD ESP,4');
+      If EPMatch('(') Then
+      Begin
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADDQ.L #4,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD SP,2');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('LEAS 2,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD ESP,4');
+          End;
+        End; { Case }
+        EPMatch(')');
+      End
+      Else
+      Begin
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+            EmitInstr('MOVEQ #0,D0');
+          DEST_DOSR, DEST_DOSP:
+            EmitInstr('XOR AX,AX');
+          DEST_Z80:
+            EmitInstr('LD HL,0');
+          DEST_6502:
+            EmitInstr('LDA #0');
+          DEST_6809:
+          Begin
+            EmitInstr('CLRA');
+            EmitInstr('CLRB');
+          End;
+          Else
+            EmitInstr('XOR EAX,EAX');
+        End;
+      End;
       Exit;
     End;
 
@@ -12959,15 +13077,109 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  { rows ignore }
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('BSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADDQ.L #4,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD SP,2');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('LEAS 2,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD ESP,4');
+          End;
+        End; { Case }
         EPMatch(')');
       End
-      Else EmitInstr('PUSH 0');
-      EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
-      EmitInstr('ADD ESP,4');
+      Else
+      Begin
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            EmitInstr('CLR.L -(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADDQ.L #4,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            EmitInstr('PUSH 0');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD SP,2');
+          End;
+          DEST_Z80:
+          Begin
+            EmitInstr('LD HL,0');
+            EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            EmitInstr('LDA #0');
+            EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            EmitInstr('CLRA');
+            EmitInstr('CLRB');
+            EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('LEAS 2,S');
+          End;
+          Else
+          Begin
+            EmitInstr('PUSH 0');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD ESP,4');
+          End;
+        End;
+      End;
       Exit;
     End;
 
@@ -12975,7 +13187,20 @@ Begin
     If Up = '_GETACTIVEPAGE' Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EAX,DWORD PTR [GR_ACTIVE]');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          EmitInstr('MOVE.L GR_ACTIVE,D0');
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('MOV AX,[GR_ACTIVE]');
+        DEST_Z80:
+          EmitInstr('LD HL,(GR_ACTIVE)');
+        DEST_6502:
+          EmitInstr('LDA GR_ACTIVE');
+        DEST_6809:
+          EmitInstr('LDD GR_ACTIVE');
+        Else
+          EmitInstr('MOV EAX,DWORD PTR [GR_ACTIVE]');
+      End;
       Exit;
     End;
 
@@ -12983,7 +13208,23 @@ Begin
     If Up = '_GETVISUALPAGE' Then
     Begin
       Inc(EP);
-      EmitInstr('XOR EAX,EAX');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          EmitInstr('MOVEQ #0,D0');
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('XOR AX,AX');
+        DEST_Z80:
+          EmitInstr('LD HL,0');
+        DEST_6502:
+          EmitInstr('LDA #0');
+        DEST_6809:
+        Begin
+          EmitInstr('CLRA');
+          EmitInstr('CLRB');
+        End;
+        Else
+          EmitInstr('XOR EAX,EAX');
+      End;
       Exit;
     End;
 
@@ -12991,7 +13232,20 @@ Begin
     If Up = '_GETCOLOR' Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EAX,DWORD PTR [GR_COLOR]');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          EmitInstr('MOVE.L GR_COLOR,D0');
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('MOV AX,[GR_COLOR]');
+        DEST_Z80:
+          EmitInstr('LD HL,(GR_COLOR)');
+        DEST_6502:
+          EmitInstr('LDA GR_COLOR');
+        DEST_6809:
+          EmitInstr('LDD GR_COLOR');
+        Else
+          EmitInstr('MOV EAX,DWORD PTR [GR_COLOR]');
+      End;
       Exit;
     End;
 
@@ -12999,7 +13253,20 @@ Begin
     If Up = '_GETBKCOLOR' Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EAX,DWORD PTR [GR_BKCOLOR]');
+      Case Opts.DestTarget Of
+        DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          EmitInstr('MOVE.L GR_BKCOLOR,D0');
+        DEST_DOSR, DEST_DOSP:
+          EmitInstr('MOV AX,[GR_BKCOLOR]');
+        DEST_Z80:
+          EmitInstr('LD HL,(GR_BKCOLOR)');
+        DEST_6502:
+          EmitInstr('LDA GR_BKCOLOR');
+        DEST_6809:
+          EmitInstr('LDD GR_BKCOLOR');
+        Else
+          EmitInstr('MOV EAX,DWORD PTR [GR_BKCOLOR]');
+      End;
       Exit;
     End;
 
@@ -18542,11 +18809,74 @@ Begin
     If Up = '_SETVIDEOMODE' Then
     Begin
       Inc(EP);
-      If EPMatch('(') Then Begin ParseExpr(PI); EPMatch(')'); End
-      Else EmitInstr('XOR EAX,EAX');
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
-      EmitInstr('ADD ESP,4');
+      If EPMatch('(') Then
+      Begin
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADDQ.L #4,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD SP,2');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('LEAS 2,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD ESP,4');
+          End;
+        End; { Case }
+        EPMatch(')');
+      End
+      Else
+      Begin
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+            EmitInstr('MOVEQ #0,D0');
+          DEST_DOSR, DEST_DOSP:
+            EmitInstr('XOR AX,AX');
+          DEST_Z80:
+            EmitInstr('LD HL,0');
+          DEST_6502:
+            EmitInstr('LDA #0');
+          DEST_6809:
+          Begin
+            EmitInstr('CLRA');
+            EmitInstr('CLRB');
+          End;
+          Else
+            EmitInstr('XOR EAX,EAX');
+        End;
+      End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -18558,15 +18888,109 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);
-        EmitInstr('PUSH EAX');
-        EPMatch(',');
-        ParseExpr(PI);  { rows ignore }
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('BSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADDQ.L #4,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD SP,2');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('LEAS 2,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EPMatch(',');
+            ParseExpr(PI);  { rows ignore }
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD ESP,4');
+          End;
+        End; { Case }
         EPMatch(')');
       End
-      Else EmitInstr('PUSH 0');
-      EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
-      EmitInstr('ADD ESP,4');
+      Else
+      Begin
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            EmitInstr('CLR.L -(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADDQ.L #4,SP');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            EmitInstr('PUSH 0');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD SP,2');
+          End;
+          DEST_Z80:
+          Begin
+            EmitInstr('LD HL,0');
+            EmitInstr('PUSH HL');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('POP BC');
+          End;
+          DEST_6502:
+          Begin
+            EmitInstr('LDA #0');
+            EmitInstr('PHA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('PLA');
+          End;
+          DEST_6809:
+          Begin
+            EmitInstr('CLRA');
+            EmitInstr('CLRB');
+            EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('LEAS 2,S');
+          End;
+          Else
+          Begin
+            EmitInstr('PUSH 0');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETVIDEOMODE');
+            EmitInstr('ADD ESP,4');
+          End;
+        End;
+      End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
