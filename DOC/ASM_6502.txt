@@ -9522,3 +9522,831 @@
     BPL           BPL            Brancher si positif
     BVS           BVS            Brancher si Overflow
     BVC           BVC            Brancher si pas Overflow
+
+==============================================================================
+12. CONVERSION DE CODE 6502 EN Z80
+==============================================================================
+
+  Cette section presente les techniques de conversion de programmes
+  ecrits en assembleur MOS 6502 vers l'assembleur Zilog Z80. Elle
+  couvre les correspondances de registres, la conversion des modes
+  d'adressage, et les pieges a eviter lors du portage.
+
+  12.1 Principes generaux
+  --------------------------
+
+  Le MOS 6502 et le Zilog Z80 sont deux processeurs 8 bits de la meme
+  epoque (milieu des annees 1970) avec des espaces d'adressage de 64 Ko
+  identiques. La conversion est donc plus directe que vers un processeur
+  16/32 bits comme le 68000 ou le 80386.
+
+  Critere                  MOS 6502              Zilog Z80
+  -----------------------  --------------------  --------------------
+  Largeur de bus donnees   8 bits                8 bits
+  Largeur de bus adresses  16 bits               16 bits
+  Ordre des octets         Little-endian         Little-endian
+  Accumulateur             1 (A)                 1 (A) + jeu alternatif
+  Registres 8 bits         A, X, Y               A, B, C, D, E, H, L
+  Registres alternatifs    Aucun                 A', F', B', C', D', E',
+                                                 H', L' (EXX/EX AF,AF')
+  Paires 16 bits           Aucune                BC, DE, HL, IX, IY
+  Registres d'index        X, Y (8 bits)         IX, IY (16 bits)
+  Pointeur de pile         S (8 bits, page 1)    SP (16 bits)
+  Compteur ordinal         PC (16 bits)          PC (16 bits)
+  Flags                    P (NV-BDIZC)          F (SZ-H-PNC)
+  Espace d'adressage       64 Ko                 64 Ko
+  Pile                     Page $0100-$01FF      Toute la memoire (SP)
+  Taille des instructions  1-3 octets            1-4 octets
+  Alignement memoire       Non requis            Non requis
+  Multiplication native    Non                   Non (sauf Z180)
+  Division native          Non                   Non (sauf Z180)
+  Ports d'E/S              Memoire mappee        Bus I/O separe (IN/OUT)
+  Instructions de bloc     Non                   Oui (LDIR, CPIR, etc.)
+
+  Avantages du portage vers Z80 :
+
+  a) Registres plus nombreux :
+     Le 6502 n'a que A, X, Y (3 registres 8 bits). Le Z80 a A, B, C,
+     D, E, H, L (7 registres 8 bits) plus un jeu alternatif complet
+     accessible via EXX et EX AF,AF'.
+
+  b) Paires de registres 16 bits :
+     Le Z80 peut combiner ses registres en paires 16 bits (BC, DE, HL)
+     pour les operations d'adressage et d'arithmetique 16 bits.
+     HL sert de pointeur memoire universel via (HL).
+
+  c) Registres d'index 16 bits :
+     IX et IY sont des registres d'index 16 bits avec deplacement
+     signe de -128 a +127, similaires a l'adressage page zero indexe
+     du 6502 mais sans la limitation a 256 octets.
+
+  d) Pile sans restriction :
+     La pile du 6502 est limitee a 256 octets ($0100-$01FF). La pile
+     du Z80 utilise SP (16 bits) et peut etre placee n'importe ou
+     dans l'espace d'adressage de 64 Ko.
+
+  e) Instructions de bloc :
+     LDIR (copie memoire), LDDR (copie inverse), CPIR (recherche),
+     CPDR (recherche inverse), INIR/OTIR (E/S bloc) sont des
+     instructions puissantes sans equivalent sur le 6502.
+
+  f) Meme endianness :
+     Les deux processeurs sont little-endian. Aucune conversion
+     d'ordre des octets n'est necessaire pour les donnees multi-octets.
+
+  Pieges a eviter :
+
+  a) Pas de mode page zero :
+     Le 6502 utilise la page zero ($00-$FF) comme pseudo-registres
+     rapides. Le Z80 n'a pas d'equivalent direct. Utiliser les
+     registres du Z80 (B, C, D, E, H, L) ou les paires de registres
+     pour remplacer les variables de page zero.
+
+  b) Le flag Carry a un sens inverse pour la soustraction :
+     Sur le 6502, Carry=1 signifie "pas d'emprunt" (SEC avant SBC).
+     Sur le Z80, Carry=0 signifie "pas d'emprunt" (meme convention
+     que le 68000 et le 80386). La logique est inversee.
+
+  c) Ports d'entree/sortie :
+     Le 6502 utilise des E/S mappees en memoire (les peripheriques
+     sont vus comme des adresses memoire). Le Z80 a un bus d'E/S
+     separe avec les instructions IN et OUT. Le code 6502 qui
+     accede a des adresses materielles doit etre reecrit avec IN/OUT
+     sur le Z80, ou mapper les peripheriques en memoire.
+
+  d) Les modes d'adressage indirect :
+     Le 6502 a (Indirect,X) et (Indirect),Y qui n'ont pas d'equivalent
+     direct sur le Z80. L'adressage indirect du Z80 se fait via (HL),
+     (BC), (DE), (IX+d) ou (IY+d).
+
+  e) Le flag H (Half-Carry) :
+     Le Z80 a un flag H (Half-Carry) pour les ajustements BCD (DAA).
+     Ce flag n'a pas d'equivalent sur le 6502, mais le flag D (Decimal)
+     du 6502 est absent du Z80. L'instruction DAA du Z80 remplace
+     le mode BCD du 6502.
+
+  f) L'instruction ADC sur le Z80 :
+     Sur le 6502, ADC utilise le Carry. Sur le Z80, ADC utilise aussi
+     le Carry. Cependant, la soustraction avec retenue (SBC) a la
+     logique inversee par rapport au 6502.
+
+  12.2 Correspondance des registres
+  ------------------------------------
+
+  Registre 6502   Equivalent Z80       Notes
+  --------------  -------------------  ----------------------------------
+  A               A                    Accumulateur (8 bits)
+  X               B (ou C)             Index X -> registre general
+  Y               C (ou B)             Index Y -> registre general
+  S               SP                   Pointeur de pile (8 -> 16 bits)
+  P               F                    Registre d'etat (flags)
+  PC              PC                   Compteur ordinal
+
+  Les registres restants du Z80 (D, E, H, L, IX, IY) sont libres pour
+  optimiser le code converti. Par exemple :
+  - H, L (ou HL) servent de pointeur memoire pour les acces indirects
+  - D, E (ou DE) servent de second pointeur ou compteur 16 bits
+  - IX, IY peuvent contenir des adresses de base pour les structures
+  - Le jeu alternatif (A', B', C', D', E', H', L') fournit des
+    registres supplementaires accessibles via EXX et EX AF,AF'
+
+  Correspondance etendue pour code optimise :
+
+  Usage 6502                   Z80
+  --------------------------   --------------------------------
+  A (8 bits)                   A
+  X (8 bits)                   B (ou autre registre 8 bits)
+  Y (8 bits)                   C (ou autre registre 8 bits)
+  Page zero (pointeur 16b)     HL, DE ou BC (paire de registres)
+  Page zero (variable 8b)      D, E, H, L ou registre alternatif
+  Pile 6502                    Pile Z80 (PUSH/POP via SP)
+
+  Correspondance des flags :
+
+  Flag 6502    Bit   Flag Z80       Bit     Notes
+  ----------   ----  -----------    ------  ----------------------------
+  C (Carry)    0     C (Carry)      0       Meme semantique pour ADC
+                                            INVERSE pour SBC (voir 12.1)
+  Z (Zero)     1     Z (Zero)       6       Meme semantique
+  I (IRQ dis.) 2     IFF1/IFF2      -       DI/EI (pas dans F)
+  D (Decimal)  3     H (Half-C.)    4       Pas d'equiv. direct
+                                            (DAA pour BCD)
+  B (Break)    4     (aucun)        -       Specifique au 6502
+  V (Overflow) 6     P/V (Par/Ovf)  2       Partage avec parite
+  N (Negative) 7     S (Sign)       7       Meme semantique
+
+  Note : Le bit P/V du Z80 (bit 2 du registre F) a un double role :
+  apres des operations arithmetiques, il indique l'overflow (V), comme
+  le flag V du 6502. Apres des operations logiques (AND, OR, XOR),
+  il indique la parite du resultat (P). Le flag N du Z80 (bit 1)
+  est un flag interne qui indique si la derniere operation etait une
+  addition (N=0) ou une soustraction (N=1), utilise par DAA.
+
+  12.3 Conversion des modes d'adressage
+  ----------------------------------------
+
+  Le 6502 possede 13 modes d'adressage, dont la plupart trouvent un
+  equivalent naturel sur le Z80. L'endianness identique simplifie
+  grandement la conversion par rapport au 68000.
+
+  Mode 6502                   Exemple 6502        Equivalent Z80
+  --------------------------  ------------------  ---------------------------
+  Implicite                   CLC                 SCF / CCF  ; ou AND A
+  Accumulateur                ASL A               SLA A
+  Immediat                    LDA #$42            LD A,$42
+  Page zero                   LDA $10             LD A,($10) ; adresse 8 bits
+                                                  ; etendue a 16 bits : $0010
+  Page zero,X                 LDA $10,X           ; Voir ci-dessous
+  Page zero,Y                 LDX $10,Y           ; Voir ci-dessous
+  Absolu                      LDA $1234           LD A,($1234)
+  Absolu,X                    LDA $1234,X         ; Voir ci-dessous
+  Absolu,Y                    LDA $1234,Y         ; Voir ci-dessous
+  Indirect                    JMP ($1234)         LD HL,($1234)
+                                                  JP (HL)
+  (Indirect,X)                LDA ($10,X)         ; Voir ci-dessous
+  (Indirect),Y                LDA ($10),Y         ; Voir ci-dessous
+  Relatif                     BEQ label           JR Z,label
+
+  Conversion de l'adressage page zero indexe (Zero Page,X) :
+
+  Le 6502 ajoute X a l'adresse de la page zero (avec wraparound
+  dans la page zero). Le Z80 n'a pas d'equivalent direct.
+
+  ; 6502 : LDA $10,X   ; A = mem[$0010 + X] (page zero)
+  ;
+  ; Z80 (B = X) :
+  ;   LD L,B              ; L = X
+  ;   LD H,0              ; H = 0 (page zero)
+  ;   LD A,(HL)           ; A = mem[HL] ; si base = $00
+  ;   ; Pour ajouter l'offset $10 :
+  ;   LD L,B              ; L = X
+  ;   LD H,0
+  ;   LD DE,$0010          ; DE = offset
+  ;   ADD HL,DE            ; HL = X + $10
+  ;   LD A,(HL)
+
+  ; Version avec IX (plus compact) :
+  ;   LD IX,$0010          ; IX = adresse de base
+  ;   LD A,(IX+0)          ; A = mem[IX+0] (pas d'index dynamique)
+  ;   ; Note : IX+d a un deplacement fixe, pas un registre.
+  ;   ; Pour un index dynamique, utiliser HL.
+
+  Conversion de l'adressage absolu indexe (Absolute,X) :
+
+  ; 6502 : LDA $1234,X  ; A = mem[$1234 + X]
+  ;
+  ; Z80 (B = X) :
+  ;   LD L,B              ; L = X
+  ;   LD H,0              ; H = 0
+  ;   LD DE,$1234          ; DE = adresse de base
+  ;   ADD HL,DE            ; HL = $1234 + X
+  ;   LD A,(HL)
+
+  ; Pour l'adressage absolu indexe Y (B=X, C=Y) :
+  ; 6502 : LDA $1234,Y  ; A = mem[$1234 + Y]
+  ;   LD L,C              ; L = Y
+  ;   LD H,0
+  ;   LD DE,$1234
+  ;   ADD HL,DE
+  ;   LD A,(HL)
+
+  Conversion de l'adressage indirect pre-indexe (Indirect,X) :
+
+  Le mode (Indirect,X) du 6502 lit une adresse 16 bits dans la
+  page zero a l'offset calcule, puis accede a cette adresse.
+
+  ; 6502 : LDA ($10,X)   ; Adresse = [$10+X] (page zero, 16 bits)
+  ;
+  ; Z80 (B = X) :
+  ;   LD L,B              ; L = X
+  ;   LD H,0
+  ;   LD DE,$0010
+  ;   ADD HL,DE            ; HL = $10 + X
+  ;   LD E,(HL)            ; E = octet bas de l'adresse
+  ;   INC HL
+  ;   LD D,(HL)            ; D = octet haut de l'adresse
+  ;   LD A,(DE)            ; A = mem[adresse pointee]
+
+  ; Note : Pas de conversion d'endianness necessaire car le 6502
+  ; et le Z80 sont tous les deux little-endian.
+
+  Conversion de l'adressage indirect post-indexe (Indirect),Y :
+
+  Le mode (Indirect),Y lit une adresse 16 bits dans la page zero,
+  puis ajoute Y comme offset.
+
+  ; 6502 : LDA ($10),Y   ; Adresse = [$10] + Y
+  ;
+  ; Z80 (C = Y) :
+  ;   LD HL,$0010          ; HL = adresse en page zero
+  ;   LD E,(HL)            ; E = octet bas
+  ;   INC HL
+  ;   LD D,(HL)            ; D = octet haut
+  ;   LD L,C               ; L = Y
+  ;   LD H,0
+  ;   ADD HL,DE            ; HL = [adresse] + Y
+  ;   LD A,(HL)            ; A = mem[adresse + Y]
+
+  ; Version optimisee si l'adresse est deja dans DE :
+  ;   LD L,C               ; L = Y
+  ;   LD H,0
+  ;   ADD HL,DE            ; HL = adresse + Y
+  ;   LD A,(HL)
+
+  Note sur les branchements relatifs :
+
+  Le 6502 a des branchements conditionnels avec une portee de -128
+  a +127 octets. Le Z80 a JR (Jump Relative) avec la meme portee
+  pour les conditions Z, NZ, C, NC. Pour les autres conditions
+  (PE/PO, P/M), seul JP conditionnel (saut absolu) est disponible.
+
+  12.4 Conversion des instructions
+  -----------------------------------
+
+  12.4.1 Instructions de transfert de donnees
+
+  6502                          Z80
+  ----------------------------  -----------------------------------
+  LDA #imm                      LD    A, imm
+  LDA addr                      LD    A, (addr)
+  LDA addr,X                    ; LD HL via calcul, puis LD A,(HL)
+  LDA addr,Y                    ; LD HL via calcul, puis LD A,(HL)
+  LDX #imm                      LD    B, imm       ; B = X
+  LDX addr                      LD    A, (addr)    ; A = mem[addr]
+                                 LD    B, A          ; B = X = mem
+  LDY #imm                      LD    C, imm       ; C = Y
+  LDY addr                      LD    A, (addr)
+                                 LD    C, A          ; C = Y = mem
+  STA addr                      LD    (addr), A
+  STA addr,X                    ; LD HL via calcul, puis LD (HL),A
+  STA addr,Y                    ; LD HL via calcul, puis LD (HL),A
+  STX addr                      LD    A, B          ; A = X
+                                 LD    (addr), A     ; mem = X
+  STY addr                      LD    A, C          ; A = Y
+                                 LD    (addr), A     ; mem = Y
+  TAX                           LD    B, A          ; X = A
+  TAY                           LD    C, A          ; Y = A
+  TXA                           LD    A, B          ; A = X
+  TYA                           LD    A, C          ; A = Y
+  TSX                           LD    HL, 0
+                                 ADD   HL, SP        ; HL = SP
+  TXS                           LD    SP, HL        ; SP = HL
+
+  Note : Sur le 6502, LDA/LDX/LDY positionnent les flags N et Z.
+  Sur le Z80, LD n'affecte PAS les flags. Si le code 6502 depend
+  des flags apres un chargement, ajouter un test explicite :
+
+  ; 6502 : LDA $1234    ; Positionne N et Z
+  ;        BEQ label    ; Branche si A = 0
+  ;
+  ; Z80 :  LD A,($1234)  ; PAS de flags modifies
+  ;        OR A           ; Positionne Z et S sans modifier A
+  ;        JR Z,label     ; Branche si A = 0
+
+  Note : STX et STY necessitent de passer par A sur le Z80 car
+  seul l'accumulateur peut etre stocke directement en memoire
+  absolue avec LD (addr),A. Alternative : utiliser HL.
+
+  ; Alternative pour STX sans passer par A :
+  ;   LD L,B          ; L = X
+  ;   LD H,0
+  ;   LD ($addr),HL   ; (necessite que H soit correct)
+
+  12.4.2 Instructions arithmetiques
+
+  6502                          Z80
+  ----------------------------  -----------------------------------
+  ADC #imm                      ADC   A, imm       ; A += imm + Carry
+  ADC addr                      LD    H, A          ; sauvegarder A
+                                 LD    A, (addr)     ; charger operande
+                                 LD    L, A
+                                 LD    A, H          ; restaurer A
+                                 ADC   A, L          ; A += mem + C
+                                 ; ou si l'adresse est dans HL :
+                                 ; ADC A, (HL)
+  SBC #imm                      SBC   A, imm       ; A -= imm - Carry
+  SBC addr                      ; Similaire a ADC addr
+  INC addr                      LD    HL, addr
+                                 INC   (HL)
+  INC addr,X                    ; Calculer HL = addr+X, puis INC (HL)
+  DEC addr                      LD    HL, addr
+                                 DEC   (HL)
+  DEC addr,X                    ; Calculer HL = addr+X, puis DEC (HL)
+  INX                           INC   B            ; B = X
+  INY                           INC   C            ; C = Y
+  DEX                           DEC   B
+  DEY                           DEC   C
+
+  Conversion de ADC (addition avec retenue) :
+
+  Le flag Carry fonctionne de maniere identique pour ADC sur les deux
+  processeurs. La conversion est directe.
+
+  ; 6502 :            ; Z80 :
+  ; CLC               ; OR A               ; Effacer Carry
+  ;                   ; ou AND A            ; Effacer Carry
+  ; ADC #$10          ; ADC A, $10
+
+  ; Pour une addition simple sans retenue :
+  ; CLC               ; (rien)
+  ; ADC #$10          ; ADD A, $10          ; ADD = sans Carry
+
+  Conversion de SBC (soustraction avec emprunt) :
+
+  Le 6502 utilise SEC/SBC ou Carry=1 signifie "pas d'emprunt".
+  Le Z80 utilise SBC ou Carry=0 signifie "pas d'emprunt".
+  La logique est inversee :
+
+  ; 6502 :            ; Z80 :
+  ; SEC               ; OR A               ; Effacer Carry (pas d'emprunt)
+  ; SBC #$10          ; SBC A, $10
+
+  ; Pour une soustraction simple :
+  ; SEC               ; (rien)
+  ; SBC #$10          ; SUB $10             ; SUB = sans Carry
+
+  ; Attention : SEC positionne C=1 (pas d'emprunt sur 6502),
+  ; ce qui correspond a C=0 (pas d'emprunt sur Z80).
+  ; CCF (Complement Carry Flag) peut etre utile pour inverser.
+
+  Addition 16 bits (6502 -> Z80) :
+
+  ; 6502 (addition 16 bits) :    ; Z80 :
+  ; CLC                           ; LD HL, (num1)    ; 16 bits
+  ; LDA num1_lo                   ; LD DE, (num2)
+  ; ADC num2_lo                   ; ADD HL, DE        ; HL += DE
+  ; STA result_lo                 ; LD (result), HL
+  ; LDA num1_hi                   ;
+  ; ADC num2_hi                   ; ; ADD HL,DE remplace 6 instructions
+  ; STA result_hi                 ;
+
+  Addition 16 bits avec retenue (6502 -> Z80) :
+
+  ; 6502 (avec retenue) :        ; Z80 :
+  ; LDA num1_lo                   ; LD HL, (num1)
+  ; ADC num2_lo                   ; LD DE, (num2)
+  ; STA result_lo                 ; ADC HL, DE       ; HL += DE + Carry
+  ; LDA num1_hi                   ; LD (result), HL
+  ; ADC num2_hi                   ;
+  ; STA result_hi                 ;
+
+  Note sur INC/DEC :
+  Sur le 6502, INC et DEC n'existent que pour la memoire et les
+  index (INX, INY, DEX, DEY), pas pour l'accumulateur A.
+  Sur le Z80, INC et DEC fonctionnent sur tous les registres 8 bits
+  (A, B, C, D, E, H, L) et sur (HL), (IX+d), (IY+d).
+  Important : INC et DEC sur le Z80 n'affectent PAS le flag Carry,
+  comme sur le 6502 (INC/DEC n'affectent pas C non plus).
+  Ce comportement identique facilite la conversion.
+
+  12.4.3 Instructions logiques
+
+  6502                          Z80
+  ----------------------------  -----------------------------------
+  AND #imm                      AND   imm          ; A &= imm
+  AND addr                      LD    HL, addr
+                                 AND   (HL)          ; A &= mem[addr]
+  ORA #imm                      OR    imm           ; A |= imm
+  ORA addr                      LD    HL, addr
+                                 OR    (HL)
+  EOR #imm                      XOR   imm           ; A ^= imm
+  EOR addr                      LD    HL, addr
+                                 XOR   (HL)
+  BIT addr                      ; Voir ci-dessous
+
+  Note : Sur le Z80, AND, OR et XOR operent directement entre A
+  et un registre 8 bits, une valeur immediate, ou (HL)/(IX+d)/(IY+d).
+  L'adressage absolu n'est pas directement supporte ; il faut charger
+  l'adresse dans HL d'abord.
+
+  Note sur AND et le flag H :
+  Sur le Z80, AND positionne le flag H (Half-Carry) a 1, tandis
+  que OR et XOR le mettent a 0. Ce flag n'existe pas sur le 6502
+  et n'affecte pas la logique de conversion sauf si DAA est utilise.
+
+  Conversion de BIT :
+
+  L'instruction BIT du 6502 effectue AND entre A et la memoire,
+  positionne Z d'apres le resultat, N d'apres bit 7 et V d'apres
+  bit 6 de la memoire.
+
+  Le Z80 a une instruction BIT n,r qui teste un bit specifique.
+  Pour emuler le BIT du 6502 :
+
+  ; 6502 : BIT $1234       ; Z80 :
+  ;                         LD HL,$1234
+  ;                         LD D,(HL)          ; D = mem[$1234]
+  ;                         LD E,A             ; Sauvegarder A
+  ;                         AND D              ; Z = (A AND mem) == 0
+  ;                         LD A,E             ; Restaurer A
+  ;                         ; Pour N : tester bit 7 de D
+  ;                         BIT 7,D            ; Z=0 si bit 7 = 1
+  ;                         ; Pour V : tester bit 6 de D
+  ;                         BIT 6,D            ; Z=0 si bit 6 = 1
+
+  12.4.4 Instructions de decalage et rotation
+
+  6502                          Z80
+  ----------------------------  -----------------------------------
+  ASL A                         SLA   A            ; Shift Left Arithmetic
+  ASL addr                      LD    HL, addr
+                                 SLA   (HL)
+  LSR A                         SRL   A            ; Shift Right Logical
+  LSR addr                      LD    HL, addr
+                                 SRL   (HL)
+  ROL A                         RLA                ; Rotation via Carry (9 bits)
+  ROL addr                      LD    HL, addr
+                                 RL    (HL)
+  ROR A                         RRA                ; Rotation via Carry (9 bits)
+  ROR addr                      LD    HL, addr
+                                 RR    (HL)
+
+  Note importante sur ROL/ROR :
+
+  Sur le 6502, ROL et ROR font une rotation a travers le flag
+  Carry (rotation 9 bits). Cela correspond a RL/RR sur le Z80
+  (rotation a travers le Carry), PAS a RLC/RRC (rotation pure
+  8 bits sans Carry).
+
+  ; 6502 : ROL A    ; Z80 : RLA        (ou RL A avec prefixe CB)
+  ; 6502 : ROR A    ; Z80 : RRA        (ou RR A avec prefixe CB)
+
+  Difference entre RLA et RL A :
+  - RLA (1 octet, 4 T-states) : rotation a travers Carry, mais ne
+    modifie que les flags C, H, N (pas S ni Z)
+  - RL A (2 octets CB17, 8 T-states) : meme rotation, mais modifie
+    TOUS les flags (S, Z, H, P/V, N, C)
+  Utiliser RLA si les flags S et Z ne sont pas necessaires (plus
+  rapide). Utiliser RL A si le code 6502 depend de N ou Z apres ROL.
+
+  Meme distinction pour RRA vs RR A, RLCA vs RLC A, RRCA vs RRC A.
+
+  Decalage 16 bits (6502 -> Z80) :
+
+  ; 6502 (decalage 16 bits a gauche) :
+  ; ASL low_byte     ; SLA L / RL H       ; Si la valeur est dans HL
+  ; ROL high_byte    ; ou ADD HL, HL       ; Equivalent a shift left 16b
+
+  ; 6502 (decalage 16 bits a droite) :
+  ; LSR high_byte    ; SRL H / RR L        ; Si la valeur est dans HL
+  ; ROR low_byte     ;
+
+  Note : ADD HL,HL est l'equivalent d'un shift left 16 bits en une
+  seule instruction et est plus rapide que SLA L suivi de RL H.
+
+  12.4.5 Instructions de comparaison et branchement
+
+  6502                          Z80
+  ----------------------------  -----------------------------------
+  CMP #imm                      CP    imm          ; A - imm -> flags
+  CMP addr                      LD    HL, addr
+                                 CP    (HL)
+  CPX #imm                      LD    A, B          ; A = X
+                                 CP    imm
+  CPX addr                      LD    A, B
+                                 LD    HL, addr
+                                 CP    (HL)
+  CPY #imm                      LD    A, C          ; A = Y
+                                 CP    imm
+  CPY addr                      LD    A, C
+                                 LD    HL, addr
+                                 CP    (HL)
+
+  BEQ label                     JR    Z, label     ; ou JP Z, label
+  BNE label                     JR    NZ, label    ; ou JP NZ, label
+  BCS label                     JR    C, label     ; ou JP C, label
+  BCC label                     JR    NC, label    ; ou JP NC, label
+  BMI label                     JP    M, label     ; (pas de JR M)
+  BPL label                     JP    P, label     ; (pas de JR P)
+  BVS label                     JP    PE, label    ; Parity/Overflow
+  BVC label                     JP    PO, label    ; Parity/Overflow
+
+  Notes :
+  - CP sur le Z80 effectue A - operande et positionne les flags
+    (S, Z, H, P/V, N, C) sans modifier A, identique a CMP du 6502.
+  - JR (Jump Relative) n'existe que pour Z, NZ, C, NC. Pour M, P,
+    PE, PO, il faut utiliser JP (Jump absolu).
+  - La portee de JR est -128 a +127 octets, identique aux branches
+    du 6502. JP n'a pas de limite de portee.
+  - CPX et CPY necessitent de deplacer X ou Y dans A d'abord, car
+    CP ne fonctionne qu'avec l'accumulateur A sur le Z80.
+  - Attention : si le code original utilise A apres CPX/CPY, il
+    faut sauvegarder et restaurer A.
+
+  ; 6502 : CPX #$10 / BEQ label  (A n'est pas modifie)
+  ; Z80 :
+  ;   LD D,A             ; Sauvegarder A
+  ;   LD A,B             ; A = X
+  ;   CP $10             ; Comparer
+  ;   LD A,D             ; Restaurer A
+  ;   JR Z,label
+
+  ; 6502 : branchement "superieur non signe" (A > valeur)
+  ; BEQ skip      ; Si egal, pas superieur
+  ; BCS label     ; Si Carry=1, A >= valeur (et A != valeur)
+  ; skip:
+  ;
+  ; Z80 :
+  ;   JR Z,skip    ; Si egal, sauter
+  ;   JR NC,label  ; Si pas de Carry, A > valeur
+  ; skip:
+  ;
+  ; Note : le Carry est INVERSE entre 6502 et Z80 apres CMP/CP !
+  ; Sur le 6502, CMP positionne C=1 si A >= operande.
+  ; Sur le Z80, CP positionne C=0 si A >= operande.
+  ; Donc BCS (6502) correspond a JR NC (Z80) et vice versa.
+
+  ATTENTION - Carry inverse apres CMP/CP :
+
+  Le comportement du Carry apres une comparaison est INVERSE
+  entre le 6502 et le Z80 :
+
+  6502 : CMP => C=1 si A >= operande, C=0 si A < operande
+  Z80  : CP  => C=0 si A >= operande, C=1 si A < operande
+
+  Par consequent :
+  - BCS (6502, C=1, A >= op) => JR NC (Z80, C=0, A >= op)
+  - BCC (6502, C=0, A < op)  => JR C  (Z80, C=1, A < op)
+
+  Cette inversion s'applique aussi apres ADC/SBC :
+  - 6502 SEC+SBC : C=1 signifie "pas d'emprunt"
+  - Z80 SBC : C=0 signifie "pas d'emprunt"
+
+  12.4.6 Instructions de pile
+
+  6502                          Z80
+  ----------------------------  -----------------------------------
+  PHA                           PUSH  AF           ; Empile A et F
+                                 ; ou DEC SP / LD (SP),A pour octet
+  PLA                           POP   AF           ; Depile A et F
+                                 ; ou LD A,(SP) / INC SP pour octet
+  PHP                           PUSH  AF           ; Empile A et F
+  PLP                           POP   AF           ; Depile A et F
+
+  Note : Sur le Z80, la pile fonctionne par paires de registres
+  (16 bits). PUSH AF empile A (octet haut) et F (octet bas) ensemble.
+  POP AF depile les deux ensemble. Il n'y a pas de PUSH ou POP
+  d'un seul octet comme PHA ou PHP du 6502.
+
+  Consequence : PHA et PHP du 6502 empilent un seul octet chacun.
+  Sur le Z80, PUSH AF empile toujours 2 octets (A et F). Si le code
+  6502 fait PHA suivi de PHP (ou vice versa), un seul PUSH AF sur le
+  Z80 ne suffit pas. Il faut adapter :
+
+  ; 6502 : PHA / PHP     ; Z80 (empiler A et F separement) :
+  ;                        PUSH AF           ; Empile A + F (2 octets)
+  ;                        ; Si on a besoin de les separer apres :
+
+  ; 6502 : PLA / PLP     ; Z80 :
+  ;                        POP AF            ; Restaure A + F
+
+  ; Si le code 6502 ne fait que PHA/PLA (sans PHP/PLP) :
+  ;   ; Option 1 : utiliser un registre de sauvegarde
+  ;   LD D,A              ; Sauvegarder A (comme PHA)
+  ;   ...
+  ;   LD A,D              ; Restaurer A (comme PLA)
+  ;   OR A                ; Positionner les flags Z et S
+
+  ; Alternative avec les paires :
+  ;   PUSH BC             ; ou PUSH DE pour sauvegarder des registres
+  ;   POP BC              ; Restaurer
+
+  PHX (65C02)                   PUSH  BC           ; Empile B(=X) et C(=Y)
+  PLX (65C02)                   POP   BC
+  PHY (65C02)                   ; (utiliser PUSH BC qui empile B et C)
+  PLY (65C02)                   ; (utiliser POP BC)
+
+  12.4.7 Instructions de controle de flags
+
+  6502                          Z80
+  ----------------------------  -----------------------------------
+  CLC                           OR    A            ; C=0 (efface aussi H)
+                                 ; ou AND A         ; C=0
+                                 ; ou SCF / CCF     ; SCF: C=1, CCF: C=~C
+  SEC                           SCF                ; C=1
+  CLD                           ; Pas d'equivalent (pas de mode BCD auto)
+                                 ; (utiliser DAA manuellement si besoin)
+  SED                           ; Pas d'equivalent
+  CLI                           EI                 ; Autoriser interruptions
+  SEI                           DI                 ; Bloquer interruptions
+  CLV                           ; Pas d'equivalent direct
+                                 ; Le flag V (P/V) ne peut pas etre
+                                 ; efface isolement. Workaround :
+                                 ; LD A,0 / AND A (ou OR A) -> P/V=parite
+
+  Notes :
+  - CLC/SEC : pour effacer le Carry, OR A ou AND A positionne C=0.
+    Pour positionner le Carry, SCF (Set Carry Flag) met C=1.
+    CCF (Complement Carry Flag) inverse le Carry.
+  - CLI/SEI : EI et DI du Z80 sont directs. Cependant, le Z80 a
+    un systeme d'interruptions plus complexe (modes IM 0, IM 1, IM 2).
+    EI active les interruptions, DI les desactive.
+  - CLD/SED : le Z80 n'a pas de mode BCD automatique. L'instruction
+    DAA ajuste le resultat en BCD apres une addition/soustraction.
+  - CLV : le flag P/V du Z80 ne peut pas etre modifie directement.
+    Il faut une operation qui le positionne au resultat voulu.
+
+  12.4.8 Instructions de saut et sous-routine
+
+  6502                          Z80
+  ----------------------------  -----------------------------------
+  JMP addr                      JP    addr
+  JMP (addr)                    LD    HL, (addr)   ; Charger adresse
+                                 JP    (HL)          ; Saut indirect
+  JSR addr                      CALL  addr
+  RTS                           RET
+  BRK                           RST   $38          ; ou RST $08, etc.
+  RTI                           RETI               ; ou RETN (NMI)
+  NOP                           NOP
+
+  Note sur JSR/RTS :
+  Le 6502 empile l'adresse de retour - 1. Le Z80 empile l'adresse
+  de retour exacte (16 bits). Cela n'affecte pas la conversion sauf
+  si le code 6502 manipule l'adresse de retour sur la pile.
+
+  Note sur CALL vs JSR :
+  Le Z80 a des CALL conditionnels (CALL Z, CALL NZ, CALL C, etc.)
+  qui n'existent pas sur le 6502. Cela peut simplifier le code :
+
+  ; 6502 :                ; Z80 :
+  ; BNE skip              ; CALL Z, subroutine
+  ; JSR subroutine        ;
+  ; skip:
+
+  De meme, le Z80 a des RET conditionnels (RET Z, RET NZ, etc.) :
+
+  ; 6502 :                ; Z80 :
+  ; BEQ skip              ; RET NZ
+  ; RTS                   ;
+  ; skip:
+
+  Note sur BRK/RTI :
+  BRK sur le 6502 genere une interruption logicielle (vecteur $FFFE).
+  Sur le Z80, RST n genere un appel a l'adresse n (0, 8, $10, $18,
+  $20, $28, $30, $38). RST est un CALL en un seul octet.
+  RETI (Return from Interrupt) signale la fin d'une interruption
+  aux peripheriques. RETN retourne d'une NMI.
+
+  12.4.9 Exemples de conversion complete
+
+  Exemple 1 : Copie de memoire
+
+  ; 6502 :                       ; Z80 :
+  ;   LDY #0                     ;   LD HL, source
+  ; loop:                        ;   LD DE, dest
+  ;   LDA (src),Y                ;   LD BC, 128       ; 128 octets
+  ;   STA (dst),Y                ;   LDIR              ; Copie automatique
+  ;   INY                        ;
+  ;   CPY #128                   ;   ; LDIR remplace toute la boucle!
+  ;   BNE loop                   ;
+
+  Note : LDIR (Load, Increment, Repeat) copie BC octets de (HL) vers
+  (DE) en une seule instruction. C'est l'une des instructions les plus
+  puissantes du Z80 sans equivalent sur le 6502.
+
+  Exemple 2 : Recherche d'un octet dans un tableau
+
+  ; 6502 :                       ; Z80 :
+  ;   LDX #0                     ;   LD HL, table
+  ; loop:                        ;   LD BC, taille
+  ;   LDA table,X                ;   LD A, valeur
+  ;   CMP valeur                 ;   CPIR              ; Cherche A dans (HL)
+  ;   BEQ found                  ;   JR Z, found       ; Trouve si Z=1
+  ;   INX                        ;   ; non trouve
+  ;   CPX taille                 ;
+  ;   BNE loop                   ;
+  ;   ; non trouve               ;
+
+  Note : CPIR (Compare, Increment, Repeat) compare A avec le contenu
+  pointe par HL, incremente HL, decremente BC, et repete tant que
+  BC != 0 et que la comparaison ne donne pas Z=1.
+
+  Exemple 3 : Effacement d'un bloc memoire
+
+  ; 6502 :                       ; Z80 :
+  ;   LDA #0                     ;   LD HL, buffer
+  ;   LDX #0                     ;   LD (HL), 0       ; Premier octet = 0
+  ; loop:                        ;   LD DE, buffer+1
+  ;   STA buffer,X               ;   LD BC, 255       ; 256 - 1 octets
+  ;   INX                        ;   LDIR              ; Copie 0 en cascade
+  ;   BNE loop  ; 256 octets     ;
+
+  Note : L'astuce de mettre le premier octet a 0, puis utiliser LDIR
+  pour copier chaque octet vers le suivant, efface tout le bloc.
+
+  Exemple 4 : Addition 32 bits
+
+  ; 6502 (4 octets, 8 instr.) :  ; Z80 :
+  ;   CLC                        ;   LD HL, (num1)    ; Mots bas
+  ;   LDA num1+0                 ;   LD DE, (num2)
+  ;   ADC num2+0                 ;   ADD HL, DE
+  ;   STA result+0               ;   LD (result), HL
+  ;   LDA num1+1                 ;   LD HL, (num1+2)  ; Mots hauts
+  ;   ADC num2+1                 ;   LD DE, (num2+2)
+  ;   STA result+1               ;   ADC HL, DE        ; Avec retenue
+  ;   LDA num1+2                 ;   LD (result+2), HL
+  ;   ADC num2+2                 ;
+  ;   STA result+2               ;   ; 8 instructions Z80 au lieu de 14
+  ;   LDA num1+3                 ;   ; (ou 8 avec ADD/ADC HL,DE)
+  ;   ADC num2+3                 ;
+  ;   STA result+3               ;
+
+  12.4.10 Recapitulatif des conversions
+
+    6502          Z80            Notes
+    ----------    ----------     --------------------------------
+    LDA           LD A,..        Chargement accumulateur
+    LDX           LD B,..        Chargement index X (B=X)
+    LDY           LD C,..        Chargement index Y (C=Y)
+    STA           LD (..),A      Stockage accumulateur
+    STX           LD A,B/LD(..)  Stockage X (via A)
+    STY           LD A,C/LD(..)  Stockage Y (via A)
+    TAX           LD B,A         Transfert A -> X
+    TAY           LD C,A         Transfert A -> Y
+    TXA           LD A,B         Transfert X -> A
+    TYA           LD A,C         Transfert Y -> A
+    ADC           ADC A,..       Addition avec retenue
+    SBC           SBC A,..       Soustraction (C INVERSE!)
+    AND           AND ..         ET logique
+    ORA           OR ..          OU logique
+    EOR           XOR ..         OU exclusif
+    CMP           CP ..          Comparaison A (C INVERSE!)
+    CPX           LD A,B/CP ..   Comparaison X (via A)
+    CPY           LD A,C/CP ..   Comparaison Y (via A)
+    INC addr      INC (HL)       Incrementer memoire
+    DEC addr      DEC (HL)       Decrementer memoire
+    INX           INC B          Incrementer X
+    INY           INC C          Incrementer Y
+    DEX           DEC B          Decrementer X
+    DEY           DEC C          Decrementer Y
+    ASL           SLA A          Decalage gauche
+    LSR           SRL A          Decalage droit logique
+    ROL           RLA / RL A     Rotation gauche via C (PAS RLC!)
+    ROR           RRA / RR A     Rotation droite via C (PAS RRC!)
+    BIT           AND+BIT n,r    Test de bits (emulation)
+    JMP           JP             Saut inconditionnel
+    JMP (addr)    LD HL,(..)/JP  Saut indirect
+    JSR           CALL           Appel sous-routine
+    RTS           RET            Retour de sous-routine
+    BRK           RST n          Interruption logicielle
+    RTI           RETI / RETN    Retour d'interruption
+    NOP           NOP            Pas d'operation
+    PHA           PUSH AF        Empiler A (et F)
+    PLA           POP AF         Depiler A (et F)
+    PHP           PUSH AF        Empiler flags (et A)
+    PLP           POP AF         Depiler flags (et A)
+    CLC           OR A / AND A   Effacer Carry (C=0)
+    SEC           SCF            Positionner Carry (C=1)
+    CLI           EI             Autoriser interruptions
+    SEI           DI             Bloquer interruptions
+    CLV           (aucun direct) Effacer Overflow (workaround)
+    CLD           (aucun)        Mode BCD off (utiliser DAA)
+    SED           (aucun)        Mode BCD on (utiliser DAA)
+    BEQ           JR Z           Brancher si egal
+    BNE           JR NZ          Brancher si different
+    BCS           JR NC          Brancher si C=1 (6502) = NC (Z80)!
+    BCC           JR C           Brancher si C=0 (6502) = C (Z80)!
+    BMI           JP M           Brancher si negatif (pas de JR)
+    BPL           JP P           Brancher si positif (pas de JR)
+    BVS           JP PE          Brancher si Overflow
+    BVC           JP PO          Brancher si pas Overflow
