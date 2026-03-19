@@ -2412,3 +2412,1640 @@
   manipuler des pointeurs 16 bits avec seulement des registres de
   8 bits, ce qui est l'une des innovations cles de l'architecture
   du 6502.
+
+==============================================================================
+4. JEU D'INSTRUCTIONS (OPCODES)
+==============================================================================
+
+  4.1 Vue d'ensemble
+  ------------------
+
+  Le 6502 possede un jeu de 56 instructions officielles. Malgre
+  ce nombre reduit, le processeur est capable de realiser des
+  programmes complets et performants grace a l'utilisation
+  combinee de ses modes d'adressage varies.
+
+  Chaque instruction est codee sur un octet (opcode). Selon le
+  mode d'adressage, l'instruction complete occupe 1, 2 ou 3
+  octets en memoire. Le nombre total d'opcodes valides est de
+  151 (sur 256 combinaisons possibles).
+
+  Le jeu d'instructions se divise en categories :
+    - Transfert de donnees (chargement, stockage, transfert
+      entre registres)
+    - Arithmetique (addition, soustraction, increment, decrement)
+    - Operations logiques (ET, OU, OU exclusif)
+    - Decalages et rotations
+    - Comparaison et test de bits
+    - Branchements conditionnels
+    - Sauts et appels de sous-programmes
+    - Operations de pile
+    - Controle des drapeaux
+    - Instruction NOP
+
+  Conventions de notation utilisees dans cette section :
+    A       : Accumulateur
+    X       : Registre d'index X
+    Y       : Registre d'index Y
+    SP      : Pointeur de pile
+    PC      : Compteur programme
+    P       : Registre d'etat du processeur
+    M       : Contenu de l'emplacement memoire adresse
+    nn      : Valeur 8 bits (operande immediat ou adresse page zero)
+    nnnn    : Valeur 16 bits (adresse absolue)
+    [CCR]   : Drapeaux affectes (N, V, -, B, D, I, Z, C)
+    ->      : Affectation (resultat vers destination)
+    $       : Prefixe hexadecimal
+    #       : Prefixe immediat (la valeur elle-meme, pas une adresse)
+
+  Pour chaque instruction, les informations suivantes sont donnees :
+    - Mnemonique et description
+    - Modes d'adressage disponibles avec l'opcode correspondant
+    - Taille de l'instruction en octets
+    - Nombre de cycles d'execution
+    - Drapeaux affectes
+
+  4.2 Instructions de transfert de donnees
+  -----------------------------------------
+
+  Ces instructions copient des donnees entre les registres et la
+  memoire, ou entre les registres eux-memes.
+
+  4.2.1 LDA - Load Accumulator (Charger l'accumulateur)
+
+  Charge une valeur dans l'accumulateur A.
+
+  Operation : A <- M
+
+  Drapeaux affectes : N, Z
+    N = 1 si le bit 7 du resultat est 1
+    Z = 1 si le resultat est 0
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          LDA #$nn      $A9     2       2
+    Page zero         LDA $nn       $A5     2       3
+    Page zero,X       LDA $nn,X     $B5     2       4
+    Absolu            LDA $nnnn     $AD     3       4
+    Absolu,X          LDA $nnnn,X   $BD     3       4(+1)
+    Absolu,Y          LDA $nnnn,Y   $B9     3       4(+1)
+    (Indirect,X)      LDA ($nn,X)   $A1     2       6
+    (Indirect),Y      LDA ($nn),Y   $B1     2       5(+1)
+
+    (+1) = +1 cycle si franchissement de page (page boundary crossing)
+
+  Exemples :
+    LDA #$42          ; A := $42 (immediat)
+    LDA $80           ; A := contenu de l'adresse $0080
+    LDA $2000         ; A := contenu de l'adresse $2000
+    LDA $2000,X       ; A := contenu de l'adresse $2000+X
+    LDA ($80),Y       ; A := contenu de l'adresse [($80)]+Y
+
+  4.2.2 LDX - Load X Register (Charger le registre X)
+
+  Charge une valeur dans le registre d'index X.
+
+  Operation : X <- M
+
+  Drapeaux affectes : N, Z
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          LDX #$nn      $A2     2       2
+    Page zero         LDX $nn       $A6     2       3
+    Page zero,Y       LDX $nn,Y     $B6     2       4
+    Absolu            LDX $nnnn     $AE     3       4
+    Absolu,Y          LDX $nnnn,Y   $BE     3       4(+1)
+
+  Exemples :
+    LDX #$00          ; X := 0
+    LDX $80           ; X := contenu de $0080
+    LDX Table,Y       ; X := contenu de Table+Y
+
+  Remarque :
+    - LDX utilise Zero Page,Y (et non Zero Page,X), car indexer
+      le chargement de X par X serait un conflit logique
+
+  4.2.3 LDY - Load Y Register (Charger le registre Y)
+
+  Charge une valeur dans le registre d'index Y.
+
+  Operation : Y <- M
+
+  Drapeaux affectes : N, Z
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          LDY #$nn      $A0     2       2
+    Page zero         LDY $nn       $A4     2       3
+    Page zero,X       LDY $nn,X     $B4     2       4
+    Absolu            LDY $nnnn     $AC     3       4
+    Absolu,X          LDY $nnnn,X   $BC     3       4(+1)
+
+  Exemples :
+    LDY #$09          ; Y := 9
+    LDY $80,X         ; Y := contenu de ($80+X) AND $FF
+    LDY Table,X       ; Y := contenu de Table+X
+
+  4.2.4 STA - Store Accumulator (Stocker l'accumulateur)
+
+  Stocke le contenu de l'accumulateur A en memoire.
+
+  Operation : M <- A
+
+  Drapeaux affectes : aucun
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Page zero         STA $nn       $85     2       3
+    Page zero,X       STA $nn,X     $95     2       4
+    Absolu            STA $nnnn     $8D     3       4
+    Absolu,X          STA $nnnn,X   $9D     3       5
+    Absolu,Y          STA $nnnn,Y   $99     3       5
+    (Indirect,X)      STA ($nn,X)   $81     2       6
+    (Indirect),Y      STA ($nn),Y   $91     2       6
+
+  Exemples :
+    STA $80           ; stocker A a l'adresse $0080
+    STA $2000         ; stocker A a l'adresse $2000
+    STA $0400,X       ; stocker A a l'adresse $0400+X
+    STA ($80),Y       ; stocker A a l'adresse [($80)]+Y
+
+  Remarques :
+    - STA n'a pas de mode immediat (on ne peut pas stocker dans
+      une constante)
+    - Les modes indexes prennent toujours le meme nombre de
+      cycles, sans penalite de franchissement de page
+      (contrairement a LDA)
+
+  4.2.5 STX - Store X Register (Stocker le registre X)
+
+  Stocke le contenu du registre X en memoire.
+
+  Operation : M <- X
+
+  Drapeaux affectes : aucun
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Page zero         STX $nn       $86     2       3
+    Page zero,Y       STX $nn,Y     $96     2       4
+    Absolu            STX $nnnn     $8E     3       4
+
+  Exemples :
+    STX $80           ; stocker X a l'adresse $0080
+    STX $2000         ; stocker X a l'adresse $2000
+
+  4.2.6 STY - Store Y Register (Stocker le registre Y)
+
+  Stocke le contenu du registre Y en memoire.
+
+  Operation : M <- Y
+
+  Drapeaux affectes : aucun
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Page zero         STY $nn       $84     2       3
+    Page zero,X       STY $nn,X     $94     2       4
+    Absolu            STY $nnnn     $8C     3       4
+
+  Exemples :
+    STY $80           ; stocker Y a l'adresse $0080
+    STY $2000         ; stocker Y a l'adresse $2000
+
+  4.2.7 Transferts entre registres
+
+  Ces instructions copient une valeur d'un registre vers un autre.
+  Elles n'ont pas d'operande (mode implicite), occupent 1 octet et
+  s'executent en 2 cycles.
+
+  TAX  ($AA)  : A -> X    Drapeaux : N, Z
+  TAY  ($A8)  : A -> Y    Drapeaux : N, Z
+  TXA  ($8A)  : X -> A    Drapeaux : N, Z
+  TYA  ($98)  : Y -> A    Drapeaux : N, Z
+  TSX  ($BA)  : SP -> X   Drapeaux : N, Z
+  TXS  ($9A)  : X -> SP   Drapeaux : aucun
+
+  Exemples :
+
+    ; Copier A dans X pour utiliser X comme index
+    TAX               ; X := A
+
+    ; Sauvegarder le pointeur de pile dans X
+    TSX               ; X := SP
+
+    ; Initialiser le pointeur de pile
+    LDX #$FF
+    TXS               ; SP := $FF (pile pleine)
+
+    ; Echanger A et X (pas d'instruction directe)
+    TAX               ; sauver A dans X
+    ; ... (utiliser A pour autre chose)
+    TXA               ; restaurer A depuis X
+
+  Remarques :
+    - TXS est la SEULE instruction de transfert qui ne modifie
+      pas les drapeaux. Ceci permet d'initialiser la pile sans
+      perturber l'etat des drapeaux.
+    - TSX transfere le pointeur de pile (8 bits) dans X.
+      Le pointeur de pile va de $00 a $FF, representant les
+      adresses $0100 a $01FF.
+    - Il n'existe pas d'instruction directe pour echanger deux
+      registres (pas de SWAP, EXG ou XCHG).
+
+  4.3 Instructions arithmetiques
+  -------------------------------
+
+  Le 6502 dispose d'instructions d'addition et de soustraction
+  avec retenue, ainsi que d'instructions d'increment et de
+  decrement.
+
+  4.3.1 ADC - Add with Carry (Addition avec retenue)
+
+  Ajoute la valeur de l'operande et du drapeau de retenue (C) a
+  l'accumulateur.
+
+  Operation : A <- A + M + C
+
+  Drapeaux affectes : N, V, Z, C
+    N = 1 si le bit 7 du resultat est 1
+    V = 1 si debordement signe (le resultat sort de -128..+127)
+    Z = 1 si le resultat est 0
+    C = 1 si le resultat depasse 255 (retenue sortante)
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          ADC #$nn      $69     2       2
+    Page zero         ADC $nn       $65     2       3
+    Page zero,X       ADC $nn,X     $75     2       4
+    Absolu            ADC $nnnn     $6D     3       4
+    Absolu,X          ADC $nnnn,X   $7D     3       4(+1)
+    Absolu,Y          ADC $nnnn,Y   $79     3       4(+1)
+    (Indirect,X)      ADC ($nn,X)   $61     2       6
+    (Indirect),Y      ADC ($nn),Y   $71     2       5(+1)
+
+  Exemples :
+
+    ; Addition simple 8 bits : A = $30 + $10
+    CLC               ; TOUJOURS effacer C avant une addition
+    LDA #$30
+    ADC #$10          ; A = $40, C = 0
+
+    ; Addition 16 bits : resultat = $80/$81 + $82/$83
+    CLC               ; effacer la retenue
+    LDA $80           ; poids faible de la 1ere valeur
+    ADC $82           ; + poids faible de la 2e valeur
+    STA $84           ; stocker le poids faible du resultat
+    LDA $81           ; poids fort de la 1ere valeur
+    ADC $83           ; + poids fort + retenue de l'addition precedente
+    STA $85           ; stocker le poids fort du resultat
+
+    ; Addition 8 bits avec retenue entrante
+    ; (par ex. pour une chaine d'additions multi-precision)
+    ADC $90           ; A = A + [$90] + C
+
+  Mode decimal (BCD) :
+    Si le drapeau D est positionne (SED), ADC effectue une addition
+    en decimal code binaire (BCD). Chaque octet represente deux
+    chiffres decimaux (0-9 dans chaque quartet).
+
+    SED               ; activer le mode BCD
+    CLC
+    LDA #$15          ; 15 en BCD
+    ADC #$27          ; + 27 en BCD
+    ; A = $42 (42 en BCD), C = 0
+    CLD               ; desactiver le mode BCD
+
+  Remarques :
+    - Il faut TOUJOURS effacer C (CLC) avant la premiere addition
+      d'une sequence, sinon un '1' residuel dans C faussera le
+      resultat
+    - Le 6502 n'a PAS d'instruction ADD sans retenue. ADC est la
+      seule instruction d'addition.
+    - Le drapeau V (overflow) detecte les debordements en
+      arithmetique signee (complement a deux)
+    - Le comportement du drapeau N apres une ADC en mode BCD
+      est indetermine sur le 6502 NMOS. Le 65C02 (CMOS)
+      corrige ce comportement.
+
+  4.3.2 SBC - Subtract with Carry (Soustraction avec retenue)
+
+  Soustrait la valeur de l'operande et le complement du drapeau
+  de retenue (borrow) de l'accumulateur.
+
+  Operation : A <- A - M - NOT(C)
+    (equivalent a : A <- A - M - (1 - C))
+
+  Drapeaux affectes : N, V, Z, C
+    N = 1 si le bit 7 du resultat est 1
+    V = 1 si debordement signe
+    Z = 1 si le resultat est 0
+    C = 0 si emprunt (le resultat est negatif en non signe)
+    C = 1 si pas d'emprunt
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          SBC #$nn      $E9     2       2
+    Page zero         SBC $nn       $E5     2       3
+    Page zero,X       SBC $nn,X     $F5     2       4
+    Absolu            SBC $nnnn     $ED     3       4
+    Absolu,X          SBC $nnnn,X   $FD     3       4(+1)
+    Absolu,Y          SBC $nnnn,Y   $F9     3       4(+1)
+    (Indirect,X)      SBC ($nn,X)   $E1     2       6
+    (Indirect),Y      SBC ($nn),Y   $F1     2       5(+1)
+
+  Exemples :
+
+    ; Soustraction simple 8 bits : A = $50 - $10
+    SEC               ; TOUJOURS positionner C avant une soustraction
+    LDA #$50
+    SBC #$10          ; A = $40, C = 1 (pas d'emprunt)
+
+    ; Soustraction 16 bits : resultat = $80/$81 - $82/$83
+    SEC               ; positionner la retenue (pas d'emprunt)
+    LDA $80           ; poids faible de la 1ere valeur
+    SBC $82           ; - poids faible de la 2e valeur
+    STA $84           ; stocker le poids faible du resultat
+    LDA $81           ; poids fort de la 1ere valeur
+    SBC $83           ; - poids fort - emprunt eventuel
+    STA $85           ; stocker le poids fort du resultat
+
+    ; Negation (complement a deux) : A = 0 - A
+    EOR #$FF          ; complement a un
+    CLC
+    ADC #$01          ; + 1 = complement a deux
+
+  Remarques :
+    - Il faut TOUJOURS positionner C (SEC) avant la premiere
+      soustraction d'une sequence (C=1 signifie "pas d'emprunt")
+    - Le sens du drapeau C est INVERSE par rapport a l'emprunt :
+      C=1 apres SBC signifie PAS d'emprunt (resultat >= 0)
+      C=0 apres SBC signifie emprunt (resultat < 0 en non signe)
+    - Le 6502 n'a PAS d'instruction SUB sans retenue
+    - En mode BCD (drapeau D), SBC effectue une soustraction
+      en decimal code binaire
+
+  4.3.3 INC - Increment Memory (Incrementer la memoire)
+
+  Incremente de 1 la valeur a l'emplacement memoire specifie.
+
+  Operation : M <- M + 1
+
+  Drapeaux affectes : N, Z
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Page zero         INC $nn       $E6     2       5
+    Page zero,X       INC $nn,X     $F6     2       6
+    Absolu            INC $nnnn     $EE     3       6
+    Absolu,X          INC $nnnn,X   $FE     3       7
+
+  Exemples :
+    INC $80           ; incrementer le contenu de $0080
+    INC $2000         ; incrementer le contenu de $2000
+    INC $2000,X       ; incrementer le contenu de $2000+X
+
+  Remarque :
+    - INC ne peut pas operer directement sur l'accumulateur A.
+      Pour incrementer A, utiliser CLC + ADC #$01 (ou INA sur
+      le 65C02 qui ajoute l'instruction INC A).
+    - INC ne modifie pas le drapeau C (retenue). Si la valeur
+      passe de $FF a $00, seul Z est positionne.
+
+  4.3.4 INX - Increment X Register (Incrementer X)
+
+  Incremente de 1 le registre X.
+
+  Operation : X <- X + 1
+
+  Drapeaux affectes : N, Z
+
+  Opcode : $E8    Taille : 1 octet    Cycles : 2
+
+  Exemple :
+    INX               ; X := X + 1
+
+  4.3.5 INY - Increment Y Register (Incrementer Y)
+
+  Incremente de 1 le registre Y.
+
+  Operation : Y <- Y + 1
+
+  Drapeaux affectes : N, Z
+
+  Opcode : $C8    Taille : 1 octet    Cycles : 2
+
+  Exemple :
+    INY               ; Y := Y + 1
+
+  4.3.6 DEC - Decrement Memory (Decrementer la memoire)
+
+  Decremente de 1 la valeur a l'emplacement memoire specifie.
+
+  Operation : M <- M - 1
+
+  Drapeaux affectes : N, Z
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Page zero         DEC $nn       $C6     2       5
+    Page zero,X       DEC $nn,X     $D6     2       6
+    Absolu            DEC $nnnn     $CE     3       6
+    Absolu,X          DEC $nnnn,X   $DE     3       7
+
+  Exemples :
+    DEC $80           ; decrementer le contenu de $0080
+    DEC Compteur      ; decrementer la variable Compteur
+
+  Remarque :
+    - Comme INC, DEC ne peut pas operer sur A directement.
+      Utiliser SEC + SBC #$01 (ou DEC A / DEA sur le 65C02).
+
+  4.3.7 DEX - Decrement X Register (Decrementer X)
+
+  Decremente de 1 le registre X.
+
+  Operation : X <- X - 1
+
+  Drapeaux affectes : N, Z
+
+  Opcode : $CA    Taille : 1 octet    Cycles : 2
+
+  Exemple :
+    ; Boucle simple avec X comme compteur
+    LDX #$10          ; X := 16
+  Boucle:
+    DEX               ; X := X - 1
+    BNE Boucle        ; boucler tant que X != 0
+
+  4.3.8 DEY - Decrement Y Register (Decrementer Y)
+
+  Decremente de 1 le registre Y.
+
+  Operation : Y <- Y - 1
+
+  Drapeaux affectes : N, Z
+
+  Opcode : $88    Taille : 1 octet    Cycles : 2
+
+  Exemple :
+    ; Boucle simple avec Y comme compteur
+    LDY #$08          ; Y := 8
+  Boucle:
+    DEY               ; Y := Y - 1
+    BNE Boucle        ; boucler tant que Y != 0
+
+  4.4 Instructions logiques
+  --------------------------
+
+  Le 6502 dispose de trois operations logiques bit a bit qui
+  operent sur l'accumulateur A.
+
+  4.4.1 AND - Logical AND (ET logique)
+
+  Effectue un ET logique bit a bit entre l'accumulateur et
+  l'operande.
+
+  Operation : A <- A AND M
+
+  Drapeaux affectes : N, Z
+
+  Table de verite :
+    A  M  Resultat
+    0  0     0
+    0  1     0
+    1  0     0
+    1  1     1
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          AND #$nn      $29     2       2
+    Page zero         AND $nn       $25     2       3
+    Page zero,X       AND $nn,X     $35     2       4
+    Absolu            AND $nnnn     $2D     3       4
+    Absolu,X          AND $nnnn,X   $3D     3       4(+1)
+    Absolu,Y          AND $nnnn,Y   $39     3       4(+1)
+    (Indirect,X)      AND ($nn,X)   $21     2       6
+    (Indirect),Y      AND ($nn),Y   $31     2       5(+1)
+
+  Exemples :
+    AND #$0F          ; masquer les 4 bits de poids fort (garder 0-F)
+    AND #$F0          ; masquer les 4 bits de poids faible
+    AND #%11110000    ; equivalent en binaire
+    AND #$FE          ; effacer le bit 0
+
+  Utilisation typique :
+    - Masquage de bits (isoler certains bits)
+    - Tester si un bit est positionne (AND + BEQ/BNE)
+    - Effacer des bits specifiques
+
+  4.4.2 ORA - Logical Inclusive OR (OU inclusif logique)
+
+  Effectue un OU logique bit a bit entre l'accumulateur et
+  l'operande.
+
+  Operation : A <- A OR M
+
+  Drapeaux affectes : N, Z
+
+  Table de verite :
+    A  M  Resultat
+    0  0     0
+    0  1     1
+    1  0     1
+    1  1     1
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          ORA #$nn      $09     2       2
+    Page zero         ORA $nn       $05     2       3
+    Page zero,X       ORA $nn,X     $15     2       4
+    Absolu            ORA $nnnn     $0D     3       4
+    Absolu,X          ORA $nnnn,X   $1D     3       4(+1)
+    Absolu,Y          ORA $nnnn,Y   $19     3       4(+1)
+    (Indirect,X)      ORA ($nn,X)   $01     2       6
+    (Indirect),Y      ORA ($nn),Y   $11     2       5(+1)
+
+  Exemples :
+    ORA #$80          ; forcer le bit 7 a 1
+    ORA #$01          ; forcer le bit 0 a 1
+    ORA #%00001111    ; forcer les 4 bits de poids faible a 1
+
+  Utilisation typique :
+    - Positionner (mettre a 1) des bits specifiques
+    - Combiner des valeurs masquees
+    - Construire un octet bit par bit
+
+  4.4.3 EOR - Exclusive OR (OU exclusif logique)
+
+  Effectue un OU exclusif (XOR) bit a bit entre l'accumulateur et
+  l'operande.
+
+  Operation : A <- A XOR M
+
+  Drapeaux affectes : N, Z
+
+  Table de verite :
+    A  M  Resultat
+    0  0     0
+    0  1     1
+    1  0     1
+    1  1     0
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          EOR #$nn      $49     2       2
+    Page zero         EOR $nn       $45     2       3
+    Page zero,X       EOR $nn,X     $55     2       4
+    Absolu            EOR $nnnn     $4D     3       4
+    Absolu,X          EOR $nnnn,X   $5D     3       4(+1)
+    Absolu,Y          EOR $nnnn,Y   $59     3       4(+1)
+    (Indirect,X)      EOR ($nn,X)   $41     2       6
+    (Indirect),Y      EOR ($nn),Y   $51     2       5(+1)
+
+  Exemples :
+    EOR #$FF          ; inverser tous les bits (complement a 1)
+    EOR #$80          ; inverser le bit 7 (changer le signe)
+    EOR #$01          ; inverser le bit 0 (basculer un flag)
+
+  Utilisation typique :
+    - Inverser (basculer) des bits specifiques
+    - Complement a 1 (EOR #$FF)
+    - Clignotement d'un caractere a l'ecran (EOR avec un masque)
+    - Cryptage simple (XOR avec une cle)
+    - Tester si deux valeurs sont egales (EOR + BEQ)
+
+  4.5 Instructions de decalage et rotation
+  ------------------------------------------
+
+  Ces instructions decalent ou font tourner les bits d'un octet
+  vers la gauche ou la droite. Elles peuvent operer sur
+  l'accumulateur A ou directement sur un emplacement memoire.
+
+  4.5.1 ASL - Arithmetic Shift Left (Decalage arithmetique a gauche)
+
+  Decale tous les bits d'une position vers la gauche. Le bit 7
+  sort dans C et un 0 entre dans le bit 0.
+
+  Operation : C <- [76543210] <- 0
+
+  Drapeaux affectes : N, Z, C
+    C = ancien bit 7
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Accumulateur      ASL A         $0A     1       2
+    Page zero         ASL $nn       $06     2       5
+    Page zero,X       ASL $nn,X     $16     2       6
+    Absolu            ASL $nnnn     $0E     3       6
+    Absolu,X          ASL $nnnn,X   $1E     3       7
+
+  Exemples :
+    ASL A             ; A = A * 2 (decalage a gauche)
+    ASL $80           ; contenu de $0080 *= 2
+    ; Multiplier A par 8 :
+    ASL A             ; A * 2
+    ASL A             ; A * 4
+    ASL A             ; A * 8
+
+  4.5.2 LSR - Logical Shift Right (Decalage logique a droite)
+
+  Decale tous les bits d'une position vers la droite. Un 0 entre
+  dans le bit 7 et le bit 0 sort dans C.
+
+  Operation : 0 -> [76543210] -> C
+
+  Drapeaux affectes : N (toujours 0), Z, C
+    C = ancien bit 0
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Accumulateur      LSR A         $4A     1       2
+    Page zero         LSR $nn       $46     2       5
+    Page zero,X       LSR $nn,X     $56     2       6
+    Absolu            LSR $nnnn     $4E     3       6
+    Absolu,X          LSR $nnnn,X   $5E     3       7
+
+  Exemples :
+    LSR A             ; A = A / 2 (division entiere non signee)
+    ; Diviser A par 4 :
+    LSR A             ; A / 2
+    LSR A             ; A / 4
+
+    ; Tester le bit 0 de A :
+    LSR A             ; bit 0 -> C
+    BCS BitEstUn      ; brancher si le bit 0 etait 1
+
+  4.5.3 ROL - Rotate Left (Rotation a gauche via C)
+
+  Fait tourner tous les bits d'une position vers la gauche a
+  travers le drapeau C. Le bit 7 sort dans C et l'ancien C entre
+  dans le bit 0.
+
+  Operation : C <- [76543210] <- C
+
+  Drapeaux affectes : N, Z, C
+    C = ancien bit 7
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Accumulateur      ROL A         $2A     1       2
+    Page zero         ROL $nn       $26     2       5
+    Page zero,X       ROL $nn,X     $36     2       6
+    Absolu            ROL $nnnn     $2E     3       6
+    Absolu,X          ROL $nnnn,X   $3E     3       7
+
+  Exemples :
+    ; Rotation 16 bits a gauche de la valeur $80/$81
+    ASL $80           ; decaler le poids faible, bit 7 -> C
+    ROL $81           ; rotation du poids fort, C -> bit 0
+
+    ; Lecture serie bit par bit dans C
+    ROL A             ; injecter C dans le bit 0, bit 7 -> C
+
+  4.5.4 ROR - Rotate Right (Rotation a droite via C)
+
+  Fait tourner tous les bits d'une position vers la droite a
+  travers le drapeau C. Le bit 0 sort dans C et l'ancien C entre
+  dans le bit 7.
+
+  Operation : C -> [76543210] -> C
+
+  Drapeaux affectes : N, Z, C
+    C = ancien bit 0
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Accumulateur      ROR A         $6A     1       2
+    Page zero         ROR $nn       $66     2       5
+    Page zero,X       ROR $nn,X     $76     2       6
+    Absolu            ROR $nnnn     $6E     3       6
+    Absolu,X          ROR $nnnn,X   $7E     3       7
+
+  Exemples :
+    ; Rotation 16 bits a droite de la valeur $80/$81
+    LSR $81           ; decaler le poids fort, bit 0 -> C
+    ROR $80           ; rotation du poids faible, C -> bit 7
+
+    ; Division signee par 2 (conserver le signe)
+    CMP #$80          ; copier le bit 7 (signe) dans C
+    ROR A             ; diviser par 2 en conservant le signe
+
+  Note historique :
+    L'instruction ROR n'existait pas dans les premieres revisions
+    du 6502 (avant juin 1976). Elle a ete ajoutee plus tard. Les
+    premieres documentations de MOS Technology ne la mentionnaient
+    pas, et elle fonctionnait de maniere erratique sur les
+    premiers exemplaires du processeur.
+
+  4.6 Instructions de comparaison
+  --------------------------------
+
+  Ces instructions comparent un registre avec une valeur en memoire
+  en effectuant une soustraction interne sans modifier le registre.
+  Seuls les drapeaux sont affectes.
+
+  4.6.1 CMP - Compare Accumulator (Comparer avec A)
+
+  Compare l'accumulateur avec la valeur en memoire.
+
+  Operation : A - M (resultat non conserve)
+
+  Drapeaux affectes : N, Z, C
+    N = 1 si le bit 7 du resultat (A-M) est 1
+    Z = 1 si A = M
+    C = 1 si A >= M (non signe)
+    C = 0 si A < M (non signe)
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          CMP #$nn      $C9     2       2
+    Page zero         CMP $nn       $C5     2       3
+    Page zero,X       CMP $nn,X     $D5     2       4
+    Absolu            CMP $nnnn     $CD     3       4
+    Absolu,X          CMP $nnnn,X   $DD     3       4(+1)
+    Absolu,Y          CMP $nnnn,Y   $D9     3       4(+1)
+    (Indirect,X)      CMP ($nn,X)   $C1     2       6
+    (Indirect),Y      CMP ($nn),Y   $D1     2       5(+1)
+
+  Exemples et idiomes :
+
+    ; Tester si A = $42
+    CMP #$42
+    BEQ Egal          ; brancher si A = $42
+
+    ; Tester si A < $20 (non signe)
+    CMP #$20
+    BCC Inferieur     ; brancher si A < $20
+
+    ; Tester si A >= $80 (non signe)
+    CMP #$80
+    BCS SupOuEgal     ; brancher si A >= $80
+
+    ; Tester si A est dans la plage 'A'-'Z'
+    CMP #'A'
+    BCC PasLettre     ; A < 'A'
+    CMP #'Z'+1
+    BCS PasLettre     ; A > 'Z'
+    ; Ici, A est une lettre majuscule
+
+  4.6.2 CPX - Compare X Register (Comparer avec X)
+
+  Compare le registre X avec la valeur en memoire.
+
+  Operation : X - M (resultat non conserve)
+
+  Drapeaux affectes : N, Z, C (memes regles que CMP)
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          CPX #$nn      $E0     2       2
+    Page zero         CPX $nn       $E4     2       3
+    Absolu            CPX $nnnn     $EC     3       4
+
+  Exemples :
+    CPX #$10
+    BEQ XEstSeize     ; brancher si X = 16
+    CPX #$00
+    BEQ XEstZero      ; brancher si X = 0
+
+  4.6.3 CPY - Compare Y Register (Comparer avec Y)
+
+  Compare le registre Y avec la valeur en memoire.
+
+  Operation : Y - M (resultat non conserve)
+
+  Drapeaux affectes : N, Z, C (memes regles que CMP)
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Immediat          CPY #$nn      $C0     2       2
+    Page zero         CPY $nn       $C4     2       3
+    Absolu            CPY $nnnn     $CC     3       4
+
+  Exemples :
+    CPY #$18          ; comparer Y avec 24
+    BCS SupOuEgal     ; brancher si Y >= 24
+
+  4.6.4 BIT - Test Bits (Test de bits)
+
+  Teste des bits en memoire contre l'accumulateur sans modifier
+  ni A ni M. C'est une instruction unique qui positionne trois
+  drapeaux de manieres differentes.
+
+  Operation :
+    Z = 1 si (A AND M) = 0 (resultat du masquage est zero)
+    N = bit 7 de M (copie directe, sans tenir compte de A)
+    V = bit 6 de M (copie directe, sans tenir compte de A)
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Page zero         BIT $nn       $24     2       3
+    Absolu            BIT $nnnn     $2C     3       4
+
+  Exemples :
+
+    ; Tester si le bit 7 d'un registre materiel est positionne
+    BIT $D011         ; lire le registre VIC-II
+    BMI BitSept       ; brancher si bit 7 = 1 (N = bit 7 de M)
+
+    ; Tester si le bit 6 est positionne
+    BIT $D011
+    BVS BitSix        ; brancher si bit 6 = 1 (V = bit 6 de M)
+
+    ; Tester si certains bits sont a 1 dans un registre
+    LDA #%00001100    ; masque : bits 2 et 3
+    BIT Registre      ; tester
+    BNE AuMoinsUnBit  ; au moins un des bits 2 ou 3 est a 1
+
+    ; Attendre qu'un peripherique soit pret (polling)
+  Attendre:
+    BIT StatutPerif   ; tester le registre de statut
+    BPL Attendre      ; boucler tant que bit 7 = 0
+
+  Remarques :
+    - BIT est tres utile pour tester des registres materiels
+      (memory-mapped I/O) sans modifier l'accumulateur
+    - Le comportement de N et V est unique : ils recoivent
+      directement les bits 7 et 6 de l'operande memoire,
+      independamment de la valeur de A
+    - Le 65C02 ajoute le mode immediat (BIT #$nn) ou seul Z
+      est affecte (N et V ne sont pas modifies)
+
+  4.7 Instructions de branchement
+  --------------------------------
+
+  Les instructions de branchement effectuent un saut relatif
+  conditionnel. Elles testent un drapeau du registre d'etat et,
+  si la condition est vraie, ajoutent un deplacement signe de 8
+  bits au compteur programme.
+
+  Toutes les instructions de branchement :
+    - Font 2 octets (opcode + deplacement)
+    - Prennent 2 cycles si le branchement n'est pas pris
+    - Prennent 3 cycles si le branchement est pris (meme page)
+    - Prennent 4 cycles si le branchement est pris avec
+      franchissement de page
+
+  4.7.1 BCC - Branch if Carry Clear (Brancher si C = 0)
+
+  Branche si le drapeau de retenue est efface.
+
+  Opcode : $90
+
+  Utilisation : apres CMP/CPX/CPY pour tester "inferieur a"
+                (comparaison non signee)
+
+  Exemple :
+    CMP #$80
+    BCC InferieurA128 ; brancher si A < $80
+
+  4.7.2 BCS - Branch if Carry Set (Brancher si C = 1)
+
+  Branche si le drapeau de retenue est positionne.
+
+  Opcode : $B0
+
+  Utilisation : apres CMP/CPX/CPY pour tester "superieur ou egal"
+                (comparaison non signee)
+
+  Exemple :
+    CMP #$80
+    BCS SupOuEgalA128 ; brancher si A >= $80
+
+  4.7.3 BEQ - Branch if Equal (Brancher si Z = 1)
+
+  Branche si le drapeau zero est positionne (resultat egal a zero).
+
+  Opcode : $F0
+
+  Utilisation : apres CMP pour tester "egal a", apres LDA/LDX/LDY
+                pour tester si la valeur chargee est zero
+
+  Exemples :
+    CMP #'A'
+    BEQ EstUnA        ; brancher si A = 'A'
+
+    LDA $80
+    BEQ EstZero       ; brancher si le contenu de $80 est 0
+
+    DEX
+    BEQ XEstZero      ; brancher si X est devenu 0
+
+  4.7.4 BNE - Branch if Not Equal (Brancher si Z = 0)
+
+  Branche si le drapeau zero est efface (resultat non nul).
+
+  Opcode : $D0
+
+  Utilisation : apres CMP pour tester "different de", comme
+                condition de boucle (compteur != 0)
+
+  Exemples :
+    ; Boucle standard avec compteur X
+    LDX #$10
+  Boucle:
+    ; ... code de la boucle ...
+    DEX
+    BNE Boucle        ; boucler tant que X != 0
+
+    CMP #$0D
+    BNE PasReturn     ; brancher si A != $0D (retour chariot)
+
+  4.7.5 BMI - Branch if Minus (Brancher si N = 1)
+
+  Branche si le drapeau negatif est positionne (bit 7 du resultat
+  est 1).
+
+  Opcode : $30
+
+  Utilisation : tester le signe d'une valeur, tester le bit 7
+
+  Exemples :
+    LDA Temperature
+    BMI Negatif       ; brancher si la temperature est negative
+
+    BIT $D011
+    BMI Pret          ; brancher si bit 7 du registre = 1
+
+  4.7.6 BPL - Branch if Plus (Brancher si N = 0)
+
+  Branche si le drapeau negatif est efface (bit 7 du resultat
+  est 0).
+
+  Opcode : $10
+
+  Utilisation : tester le signe d'une valeur, polling de
+                peripheriques
+
+  Exemples :
+    ; Attendre que le bit 7 d'un registre passe a 1
+  Attendre:
+    BIT Registre
+    BPL Attendre      ; boucler tant que bit 7 = 0
+
+    LDA Valeur
+    BPL Positif       ; brancher si >= 0 (en signe)
+
+  4.7.7 BVC - Branch if Overflow Clear (Brancher si V = 0)
+
+  Branche si le drapeau de debordement est efface.
+
+  Opcode : $50
+
+  Utilisation : rarement utilise, principalement pour
+                l'arithmetique signee
+
+  Exemple :
+    ADC Valeur
+    BVC PasDebordement ; brancher si pas de debordement signe
+
+  4.7.8 BVS - Branch if Overflow Set (Brancher si V = 1)
+
+  Branche si le drapeau de debordement est positionne.
+
+  Opcode : $70
+
+  Utilisation : detection de debordement en arithmetique signee,
+                lecture du pin SO (Set Overflow) de certains
+                peripheriques
+
+  Exemple :
+    ADC Valeur
+    BVS Debordement   ; brancher si debordement signe
+
+  Remarques generales sur les branchements :
+    - Le deplacement est un entier signe de 8 bits : -128 a +127
+      par rapport a l'instruction suivant le branchement
+    - Portee effective : -126 a +129 octets par rapport a
+      l'instruction de branchement elle-meme
+    - Si la cible est hors de portee, utiliser un saut
+      intermediaire (trampoline) via JMP
+    - Le 65C02 ajoute BRA (branch always, branchement
+      inconditionnel relatif)
+    - Le 6502 n'a PAS de branchements "branch if greater",
+      "branch if less" en arithmetique signee en une seule
+      instruction. Il faut combiner CMP + BCC/BCS/BEQ/BMI/BPL.
+
+  4.8 Instructions de saut et d'appel
+  -------------------------------------
+
+  Ces instructions modifient le compteur programme (PC) pour
+  effectuer des sauts inconditionnels ou des appels de sous-
+  programmes.
+
+  4.8.1 JMP - Jump (Saut inconditionnel)
+
+  Charge une nouvelle adresse dans le compteur programme.
+
+  Operation : PC <- adresse
+
+  Drapeaux affectes : aucun
+
+  Modes d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Absolu            JMP $nnnn     $4C     3       3
+    Indirect          JMP ($nnnn)   $6C     3       5
+
+  Exemples :
+    JMP $C000         ; sauter a l'adresse $C000
+    JMP Suite         ; sauter a l'etiquette Suite
+    JMP ($FFFC)       ; saut indirect via le vecteur RESET
+    JMP (VecteurJmp)  ; saut indirect via un pointeur en memoire
+
+  Remarque :
+    - Voir la section 3.11 pour le bug de JMP indirect sur
+      limite de page du 6502 NMOS
+
+  4.8.2 JSR - Jump to Subroutine (Appel de sous-programme)
+
+  Empile l'adresse de retour (PC - 1) sur la pile, puis saute a
+  l'adresse specifiee.
+
+  Operation : PUSH (PC - 1), PC <- adresse
+    (PC - 1 car le 6502 empile l'adresse du DERNIER octet de
+    l'instruction JSR, pas l'adresse de l'instruction suivante.
+    RTS ajoutera 1 pour obtenir la bonne adresse de retour.)
+
+  Drapeaux affectes : aucun
+
+  Mode d'adressage :
+
+    Mode              Syntaxe       Opcode  Octets  Cycles
+    ----------------  -----------   ------  ------  ------
+    Absolu            JSR $nnnn     $20     3       6
+
+  Exemples :
+    JSR SousRoutine   ; appeler SousRoutine
+    JSR $FFD2         ; appeler CHROUT du Kernal C64
+
+  Detail de l'empilage :
+    1. SP pointe sur l'emplacement libre en haut de pile
+    2. L'octet de poids fort de (PC-1) est empile : [$0100+SP] = PCH
+       SP := SP - 1
+    3. L'octet de poids faible de (PC-1) est empile : [$0100+SP] = PCL
+       SP := SP - 1
+    4. PC := adresse cible
+
+  4.8.3 RTS - Return from Subroutine (Retour de sous-programme)
+
+  Depile l'adresse de retour de la pile et y ajoute 1 pour
+  continuer l'execution apres l'instruction JSR correspondante.
+
+  Operation : PULL PC, PC <- PC + 1
+
+  Drapeaux affectes : aucun
+
+  Opcode : $60    Taille : 1 octet    Cycles : 6
+
+  Detail du depilage :
+    1. SP := SP + 1
+    2. PCL := [$0100+SP] (poids faible)
+    3. SP := SP + 1
+    4. PCH := [$0100+SP] (poids fort)
+    5. PC := PC + 1
+
+  Exemple :
+    JSR MaRoutine     ; appel
+    ; ... continue ici apres RTS ...
+
+  MaRoutine:
+    ; ... code ...
+    RTS               ; retour a l'appelant
+
+  Astuce : JMP indirect simule par PUSH + RTS :
+    ; Pour simuler un JMP indirect via un pointeur en page zero :
+    LDA $81           ; poids fort de l'adresse cible
+    PHA
+    LDA $80           ; poids faible de l'adresse cible
+    PHA
+    RTS               ; "retourner" a l'adresse ($80)/$81
+    ; Note : empiler (adresse - 1) car RTS ajoute 1
+
+  4.8.4 RTI - Return from Interrupt (Retour d'interruption)
+
+  Depile le registre d'etat puis l'adresse de retour depuis la
+  pile. Contrairement a RTS, RTI ne modifie PAS l'adresse depilee
+  (pas de +1), car lors d'une interruption, le PC exact est empile.
+
+  Operation : PULL P, PULL PC
+
+  Drapeaux affectes : tous (restaures depuis la pile)
+
+  Opcode : $40    Taille : 1 octet    Cycles : 6
+
+  Detail du depilage :
+    1. SP := SP + 1
+    2. P := [$0100+SP] (registre d'etat)
+    3. SP := SP + 1
+    4. PCL := [$0100+SP]
+    5. SP := SP + 1
+    6. PCH := [$0100+SP]
+
+  Exemple :
+    ; Gestionnaire d'interruption IRQ
+  GestionnaireIRQ:
+    PHA               ; sauvegarder A
+    TXA
+    PHA               ; sauvegarder X
+    TYA
+    PHA               ; sauvegarder Y
+
+    ; ... traitement de l'interruption ...
+
+    PLA
+    TAY               ; restaurer Y
+    PLA
+    TAX               ; restaurer X
+    PLA               ; restaurer A
+    RTI               ; retourner de l'interruption
+
+  Remarques :
+    - RTI restaure completement le registre P, y compris le
+      drapeau I (Interrupt Disable)
+    - La difference entre RTS et RTI est importante : RTS ajoute
+      1 a l'adresse depilee, RTI non. Utiliser l'un a la place
+      de l'autre causerait une erreur d'un octet.
+    - Le drapeau B (Break) dans le P empile est positionne pour
+      BRK et efface pour les interruptions materielles
+
+  4.8.5 BRK - Break (Interruption logicielle)
+
+  Genere une interruption logicielle. Empile PC+2 et P sur la
+  pile, positionne le drapeau I, et saute au vecteur d'interruption
+  IRQ/BRK ($FFFE-$FFFF).
+
+  Operation :
+    PC := PC + 2 (pointe apres BRK + octet de signature)
+    PUSH PCH
+    PUSH PCL
+    PUSH P (avec B = 1)
+    I := 1
+    PC := [$FFFE]:[$FFFF]
+
+  Drapeaux affectes : I est positionne. B est positionne dans la
+    copie empilee de P (mais pas dans P lui-meme).
+
+  Opcode : $00    Taille : 1 octet*   Cycles : 7
+
+  * Note : BRK est formellement une instruction de 1 octet, mais
+    le PC empile pointe 2 octets APRES le BRK. L'octet suivant
+    le BRK est considere comme un "octet de signature" (padding
+    byte) qui est saute. Cet octet peut etre utilise par le
+    gestionnaire d'interruption pour identifier la raison du BRK.
+
+  Exemples :
+
+    ; Interruption logicielle simple
+    BRK               ; declencher une interruption logicielle
+    .BYTE $01         ; signature (optionnel, utilise par le handler)
+
+    ; Dans le gestionnaire d'interruption, distinguer BRK de IRQ :
+  GestionnaireIRQ:
+    ; ... sauvegarder les registres ...
+    PLA               ; recuperer P de la pile
+    PHA               ; le remettre
+    AND #$10          ; tester le bit B (Break)
+    BNE EstBRK        ; si B=1, c'est un BRK
+    ; Sinon, c'est une IRQ materielle
+    ; ...
+  EstBRK:
+    ; Traiter le BRK
+    ; ...
+
+  Remarques :
+    - BRK utilise le meme vecteur que IRQ ($FFFE-$FFFF)
+    - Pour distinguer BRK de IRQ, examiner le drapeau B dans
+      la copie de P empilee sur la pile
+    - BRK est souvent utilise comme point d'arret (breakpoint)
+      par les debogueurs et les moniteurs
+    - Certains systemes utilisent BRK + signature comme appel
+      systeme (l'octet de signature identifie le service)
+    - Sur le 6502 NMOS, si un NMI survient en meme temps qu'un
+      BRK, le BRK peut etre "avale" (race condition connue)
+
+  4.9 Instructions de pile
+  -------------------------
+
+  Ces instructions empilent ou depilent des valeurs sur la pile
+  situee en page 1 ($0100-$01FF).
+
+  4.9.1 PHA - Push Accumulator (Empiler A)
+
+  Empile le contenu de l'accumulateur sur la pile.
+
+  Operation : [$0100+SP] <- A, SP <- SP - 1
+
+  Drapeaux affectes : aucun
+
+  Opcode : $48    Taille : 1 octet    Cycles : 3
+
+  Exemple :
+    PHA               ; sauvegarder A sur la pile
+
+  4.9.2 PLA - Pull Accumulator (Depiler A)
+
+  Depile une valeur de la pile dans l'accumulateur.
+
+  Operation : SP <- SP + 1, A <- [$0100+SP]
+
+  Drapeaux affectes : N, Z
+
+  Opcode : $68    Taille : 1 octet    Cycles : 4
+
+  Exemple :
+    PLA               ; restaurer A depuis la pile
+
+  Remarque : PLA affecte N et Z, contrairement a PHA.
+
+  4.9.3 PHP - Push Processor Status (Empiler P)
+
+  Empile le registre d'etat du processeur sur la pile.
+
+  Operation : [$0100+SP] <- P (avec B=1), SP <- SP - 1
+
+  Drapeaux affectes : aucun
+
+  Opcode : $08    Taille : 1 octet    Cycles : 3
+
+  Remarque : PHP empile TOUJOURS P avec le drapeau B positionne
+    a 1 et le bit 5 (inutilise) a 1.
+
+  4.9.4 PLP - Pull Processor Status (Depiler P)
+
+  Depile une valeur de la pile dans le registre d'etat.
+
+  Operation : SP <- SP + 1, P <- [$0100+SP]
+
+  Drapeaux affectes : tous (restaures depuis la valeur depilee)
+
+  Opcode : $28    Taille : 1 octet    Cycles : 4
+
+  Exemple :
+    ; Sauvegarder et restaurer les drapeaux
+    PHP               ; sauvegarder P
+    ; ... code qui modifie les drapeaux ...
+    PLP               ; restaurer P (tous les drapeaux)
+
+  Remarques :
+    - PLP restaure tous les drapeaux, y compris I et D
+    - Ceci peut etre utilise pour activer/desactiver les
+      interruptions de maniere atomique
+    - Les bits B (bit 4) et le bit 5 (inutilise) sont ignores
+      par PLP et toujours lus comme 1
+
+  Exemple : sauvegarder X et Y via la pile :
+    ; Le 6502 n'a pas de PHX/PHY (ajoutes sur le 65C02)
+    ; Pour sauvegarder X :
+    TXA               ; A := X
+    PHA               ; empiler A (qui contient X)
+    ; Pour restaurer X :
+    PLA               ; depiler dans A
+    TAX               ; X := A
+    ; Idem pour Y avec TYA/PHA et PLA/TAY
+
+  4.10 Instructions de controle des drapeaux
+  -------------------------------------------
+
+  Ces instructions modifient directement les drapeaux du registre
+  d'etat P. Elles sont en mode implicite (1 octet, 2 cycles).
+
+  4.10.1 CLC - Clear Carry Flag (Effacer la retenue)
+
+  Operation : C <- 0
+
+  Opcode : $18    Taille : 1 octet    Cycles : 2
+
+  Utilisation : OBLIGATOIRE avant ADC pour eviter une retenue
+    parasite dans l'addition
+
+  Exemple :
+    CLC
+    LDA #$30
+    ADC #$10          ; A = $40 (et non $41 si C etait 1)
+
+  4.10.2 SEC - Set Carry Flag (Positionner la retenue)
+
+  Operation : C <- 1
+
+  Opcode : $38    Taille : 1 octet    Cycles : 2
+
+  Utilisation : OBLIGATOIRE avant SBC pour eviter un emprunt
+    parasite dans la soustraction
+
+  Exemple :
+    SEC
+    LDA #$50
+    SBC #$20          ; A = $30 (et non $2F si C etait 0)
+
+  4.10.3 CLD - Clear Decimal Mode (Desactiver le mode decimal)
+
+  Operation : D <- 0
+
+  Opcode : $D8    Taille : 1 octet    Cycles : 2
+
+  Utilisation : revenir en mode binaire apres des calculs BCD,
+    ou en debut de programme pour s'assurer du mode binaire
+
+  Exemple :
+    CLD               ; s'assurer que le mode binaire est actif
+    ; ... code arithmetique normal ...
+
+  Remarque : le 6502 NMOS ne definit pas l'etat du drapeau D
+    apres un RESET ou une IRQ. Il est recommande de faire CLD
+    au debut de tout programme et de tout gestionnaire
+    d'interruption.
+
+  4.10.4 SED - Set Decimal Mode (Activer le mode decimal)
+
+  Operation : D <- 1
+
+  Opcode : $F8    Taille : 1 octet    Cycles : 2
+
+  Utilisation : activer le mode BCD pour ADC et SBC
+
+  Exemple :
+    SED               ; activer le mode BCD
+    CLC
+    LDA #$15
+    ADC #$27          ; A = $42 (15 + 27 = 42 en decimal)
+    CLD               ; revenir en mode binaire
+
+  Remarque : en mode BCD, seuls ADC et SBC sont affectes.
+    Les autres instructions (INC, DEC, etc.) continuent a
+    fonctionner en binaire.
+
+  4.10.5 CLI - Clear Interrupt Disable (Autoriser les interruptions)
+
+  Operation : I <- 0
+
+  Opcode : $58    Taille : 1 octet    Cycles : 2
+
+  Utilisation : re-autoriser les interruptions IRQ apres les
+    avoir desactivees
+
+  Exemple :
+    CLI               ; autoriser les interruptions IRQ
+
+  Remarque : les interruptions NMI ne sont PAS affectees par le
+    drapeau I. Elles sont toujours actives.
+
+  4.10.6 SEI - Set Interrupt Disable (Masquer les interruptions)
+
+  Operation : I <- 1
+
+  Opcode : $78    Taille : 1 octet    Cycles : 2
+
+  Utilisation : desactiver les interruptions IRQ pendant une
+    section critique du code
+
+  Exemple :
+    SEI               ; desactiver les interruptions IRQ
+    ; ... section critique ...
+    ; ... modifier des donnees partagees avec l'IRQ ...
+    CLI               ; re-autoriser les interruptions
+
+  4.10.7 CLV - Clear Overflow Flag (Effacer le debordement)
+
+  Operation : V <- 0
+
+  Opcode : $B8    Taille : 1 octet    Cycles : 2
+
+  Utilisation : effacer le drapeau de debordement. Rarement
+    utilise en pratique.
+
+  Remarques :
+    - Il n'existe PAS d'instruction SEV (Set Overflow).
+    - Le drapeau V peut etre positionne par le pin SO (Set
+      Overflow) du processeur, utilise par certains
+      peripheriques (lecteur de disquette du Commodore 1541)
+    - V est automatiquement positionne par ADC/SBC en cas de
+      debordement signe, et par BIT (bit 6 de M -> V)
+
+  Resume des instructions de controle des drapeaux :
+
+    Instruction  Opcode  Operation     Utilisation principale
+    -----------  ------  ----------    --------------------------------
+    CLC          $18     C <- 0        Avant ADC
+    SEC          $38     C <- 1        Avant SBC
+    CLD          $D8     D <- 0        Mode binaire (debut programme)
+    SED          $F8     D <- 1        Mode BCD
+    CLI          $58     I <- 0        Autoriser les IRQ
+    SEI          $78     I <- 1        Masquer les IRQ
+    CLV          $B8     V <- 0        Effacer le debordement
+
+  4.11 Instruction NOP
+  ---------------------
+
+  NOP - No Operation (Pas d'operation)
+
+  Ne fait rien. Le processeur consomme du temps et de l'espace
+  sans modifier l'etat du processeur (aucun registre ni drapeau
+  modifie).
+
+  Operation : aucune
+
+  Drapeaux affectes : aucun
+
+  Opcode : $EA    Taille : 1 octet    Cycles : 2
+
+  Utilisations :
+    - Ajustement de timing (chaque NOP consomme 2 cycles)
+    - Reserve d'espace pour des corrections futures (patcher
+      du code avec des NOP)
+    - Remplacement d'instructions supprimees (NOP-out)
+    - Alignement de code
+    - Debogage
+
+  Exemples :
+
+    ; Delai precis de 10 cycles
+    NOP               ; 2 cycles
+    NOP               ; 2 cycles
+    NOP               ; 2 cycles
+    NOP               ; 2 cycles
+    NOP               ; 2 cycles (total : 10 cycles)
+
+    ; Patcher du code : remplacer un JSR par des NOP
+    ; Avant : JSR $C000 (3 octets: $20 $00 $C0)
+    ; Apres : NOP NOP NOP (3 octets: $EA $EA $EA)
+
+  4.12 Resume et tableau recapitulatif
+  --------------------------------------
+
+  Le 6502 possede 56 instructions officielles reparties en 11
+  categories. Voici le tableau recapitulatif complet :
+
+  4.12.1 Instructions de transfert de donnees (12 instructions)
+
+    Mnemo  Description                     Drapeaux
+    -----  ----------------------------    --------
+    LDA    Charger A depuis la memoire     N, Z
+    LDX    Charger X depuis la memoire     N, Z
+    LDY    Charger Y depuis la memoire     N, Z
+    STA    Stocker A en memoire            -
+    STX    Stocker X en memoire            -
+    STY    Stocker Y en memoire            -
+    TAX    Transferer A vers X             N, Z
+    TAY    Transferer A vers Y             N, Z
+    TXA    Transferer X vers A             N, Z
+    TYA    Transferer Y vers A             N, Z
+    TSX    Transferer SP vers X            N, Z
+    TXS    Transferer X vers SP            -
+
+  4.12.2 Instructions arithmetiques (8 instructions)
+
+    Mnemo  Description                     Drapeaux
+    -----  ----------------------------    --------
+    ADC    Addition avec retenue           N, V, Z, C
+    SBC    Soustraction avec retenue       N, V, Z, C
+    INC    Incrementer la memoire          N, Z
+    INX    Incrementer X                   N, Z
+    INY    Incrementer Y                   N, Z
+    DEC    Decrementer la memoire          N, Z
+    DEX    Decrementer X                   N, Z
+    DEY    Decrementer Y                   N, Z
+
+  4.12.3 Instructions logiques (3 instructions)
+
+    Mnemo  Description                     Drapeaux
+    -----  ----------------------------    --------
+    AND    ET logique avec A               N, Z
+    ORA    OU logique avec A               N, Z
+    EOR    OU exclusif avec A              N, Z
+
+  4.12.4 Instructions de decalage/rotation (4 instructions)
+
+    Mnemo  Description                     Drapeaux
+    -----  ----------------------------    --------
+    ASL    Decalage a gauche               N, Z, C
+    LSR    Decalage logique a droite       N, Z, C
+    ROL    Rotation a gauche via C         N, Z, C
+    ROR    Rotation a droite via C         N, Z, C
+
+  4.12.5 Instructions de comparaison (4 instructions)
+
+    Mnemo  Description                     Drapeaux
+    -----  ----------------------------    --------
+    CMP    Comparer A avec la memoire      N, Z, C
+    CPX    Comparer X avec la memoire      N, Z, C
+    CPY    Comparer Y avec la memoire      N, Z, C
+    BIT    Tester des bits en memoire      N, V, Z
+
+  4.12.6 Instructions de branchement (8 instructions)
+
+    Mnemo  Description                     Condition
+    -----  ----------------------------    ---------
+    BCC    Brancher si C = 0               C = 0
+    BCS    Brancher si C = 1               C = 1
+    BEQ    Brancher si Z = 1 (egal)        Z = 1
+    BNE    Brancher si Z = 0 (different)   Z = 0
+    BMI    Brancher si N = 1 (negatif)     N = 1
+    BPL    Brancher si N = 0 (positif)     N = 0
+    BVC    Brancher si V = 0               V = 0
+    BVS    Brancher si V = 1               V = 1
+
+  4.12.7 Instructions de saut et d'appel (5 instructions)
+
+    Mnemo  Description                     Drapeaux
+    -----  ----------------------------    --------
+    JMP    Saut inconditionnel              -
+    JSR    Appel de sous-programme          -
+    RTS    Retour de sous-programme         -
+    RTI    Retour d'interruption            tous
+    BRK    Interruption logicielle          I
+
+  4.12.8 Instructions de pile (4 instructions)
+
+    Mnemo  Description                     Drapeaux
+    -----  ----------------------------    --------
+    PHA    Empiler A                        -
+    PLA    Depiler A                        N, Z
+    PHP    Empiler P                        -
+    PLP    Depiler P                        tous
+
+  4.12.9 Instructions de controle des drapeaux (7 instructions)
+
+    Mnemo  Description                     Operation
+    -----  ----------------------------    ---------
+    CLC    Effacer la retenue              C <- 0
+    SEC    Positionner la retenue          C <- 1
+    CLD    Desactiver le mode decimal      D <- 0
+    SED    Activer le mode decimal         D <- 1
+    CLI    Autoriser les interruptions     I <- 0
+    SEI    Masquer les interruptions       I <- 1
+    CLV    Effacer le debordement          V <- 0
+
+  4.12.10 Instruction NOP (1 instruction)
+
+    Mnemo  Description                     Drapeaux
+    -----  ----------------------------    --------
+    NOP    Pas d'operation                  -
+
+  Total : 56 instructions, 151 opcodes valides (sur 256 possibles)
+
+  Les 105 opcodes restants sont non documentes ("illegal opcodes").
+  Certains produisent des effets utiles exploites par les
+  programmeurs (voir section 5.4).
+
+  Comparaison avec d'autres processeurs :
+
+    Processeur          Instructions  Opcodes valides  Registres
+    ------------------  ------------  ---------------  ---------
+    MOS 6502            56            151              3 (A,X,Y)
+    Zilog Z80           158           694 (avec CB/DD) 14
+    Intel 8080          78            244              7
+    Motorola 6800       72            197              2 (A,B)
+    Motorola 6809       86            ~210             6
+    Motorola 68000      56+           ~140 base        16 (D0-D7,A0-A7)
+    Intel 8086          ~100          ~300             8 GPR
+
+  Le 6502, avec ses 56 instructions, est l'un des processeurs les
+  plus simples de sa generation. Malgre ce minimalisme, la richesse
+  de ses modes d'adressage (13 modes) et l'utilisation creative de
+  la page zero permettent d'ecrire du code compact et performant.
