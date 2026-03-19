@@ -482,3 +482,782 @@
     Section 10 : Conversion de code 6502 en 80386
     Section 11 : Conversion de code 6502 en 68000
     Section 12 : Conversion de code 6502 en Z80
+
+==============================================================================
+2. ARCHITECTURE ET REGISTRES
+==============================================================================
+
+  2.1 Vue d'ensemble de l'architecture
+  -------------------------------------
+
+  Le 6502 est un microprocesseur 8 bits a architecture CISC simplifiee.
+  Concu par Chuck Peddle et Bill Mensch chez MOS Technology en 1975,
+  il se distingue par une conception extremement efficace avec un
+  nombre minimal de transistors (environ 3 510), ce qui a permis un
+  cout de fabrication tres bas.
+
+  L'architecture interne comprend :
+
+    - Une ALU (Arithmetic Logic Unit) de 8 bits
+    - Un accumulateur de 8 bits (A), seul registre arithmetique
+    - Deux registres d'index de 8 bits (X et Y)
+    - Un pointeur de pile de 8 bits (SP), limitant la pile a 256
+      octets dans la page 1 ($0100-$01FF)
+    - Un compteur programme de 16 bits (PC)
+    - Un registre d'etat de 8 bits (P) contenant les drapeaux
+    - Un pipeline simplifie a 2 etages (fetch / execute) permettant
+      un chevauchement partiel entre le chargement de l'instruction
+      suivante et l'execution de l'instruction courante
+    - Un bus de donnees de 8 bits
+    - Un bus d'adresses de 16 bits (64 Ko adressables)
+    - Un controleur de bus synchrone cadence par une horloge
+      externe (PHI0/PHI1/PHI2)
+
+  Le 6502 ne dispose pas de registres de segment ni de mecanisme de
+  protection memoire. L'espace d'adressage est un espace plat de
+  64 Ko directement accessible.
+
+  Caracteristiques techniques du 6502 original :
+
+    Frequence d'horloge  : 1 MHz (6502), 2 MHz (6502A), 3 MHz (6502B)
+    Transistors          : environ 3 510 (NMOS)
+    Boitier              : DIP 40 broches
+    Technologie          : NMOS (puis CMOS pour le 65C02)
+    Alimentation         : +5V (une seule tension)
+    Jeu d'instructions   : 56 instructions de base (151 opcodes valides)
+    Modes d'adressage    : 13
+    Largeur des donnees  : 8 bits
+    Largeur des adresses : 16 bits
+    Espace adressable    : 64 Ko
+    Taille de la pile    : 256 octets (page 1)
+
+  Le 6502 se distingue des processeurs concurrents (8080, Z80, 6800)
+  par son nombre de registres reduit, compense par l'acces rapide a
+  la page zero ($0000-$00FF) qui fonctionne comme un ensemble de 256
+  pseudo-registres de 8 bits (ou 128 pseudo-registres de 16 bits
+  pour les pointeurs indirects).
+
+  2.2 Accumulateur (A)
+  --------------------
+
+  L'accumulateur est le registre central du 6502. C'est le seul
+  registre capable d'effectuer des operations arithmetiques et
+  logiques.
+
+  Taille : 8 bits (valeurs de $00 a $FF)
+
+  Operations supportees :
+
+    Transfert de donnees :
+      LDA  : Charger l'accumulateur depuis la memoire
+      STA  : Stocker l'accumulateur en memoire
+      TAX  : Transferer A vers X
+      TAY  : Transferer A vers Y
+      TXA  : Transferer X vers A
+      TYA  : Transferer Y vers A
+
+    Arithmetique :
+      ADC  : Addition avec retenue (A := A + operande + C)
+      SBC  : Soustraction avec retenue (A := A - operande - NOT(C))
+
+    Logique :
+      AND  : ET logique (A := A AND operande)
+      ORA  : OU logique (A := A OR operande)
+      EOR  : OU exclusif (A := A XOR operande)
+
+    Decalage et rotation (mode accumulateur) :
+      ASL A : Decalage a gauche (bit 7 -> C, 0 -> bit 0)
+      LSR A : Decalage a droite (bit 0 -> C, 0 -> bit 7)
+      ROL A : Rotation a gauche via C (bit 7 -> C, C -> bit 0)
+      ROR A : Rotation a droite via C (bit 0 -> C, C -> bit 7)
+
+    Comparaison :
+      CMP  : Comparer A avec un operande (positionne N, Z, C)
+
+    Pile :
+      PHA  : Empiler A (Push Accumulator)
+      PLA  : Depiler A (Pull Accumulator)
+
+  Particularites :
+
+    - Le mode BCD (Binary Coded Decimal) est disponible pour ADC
+      et SBC quand le drapeau D est a 1. Dans ce mode, chaque
+      quartet (4 bits) represente un chiffre decimal (0-9).
+      Exemple : $42 represente le nombre decimal 42.
+    - Sur le 6502 NMOS original, les drapeaux N et Z ne sont pas
+      correctement positionnes en mode BCD. Le 65C02 (CMOS)
+      corrige ce comportement.
+    - Le Ricoh 2A03 (NES) n'implemente PAS le mode BCD; le
+      drapeau D est ignore.
+
+  Exemples :
+
+    LDA #$42          ; A = $42 (chargement immediat)
+    LDA $80           ; A = contenu de l'adresse $0080 (page zero)
+    LDA $1234         ; A = contenu de l'adresse $1234 (absolu)
+    STA $0400         ; stocker A a l'adresse $0400
+    ADC #$10          ; A = A + $10 + C
+    AND #$0F          ; masquer les 4 bits hauts (A = A AND $0F)
+    ASL A             ; decaler A a gauche (multiplication par 2)
+    CMP #$80          ; comparer A avec $80
+
+  2.3 Registres d'index (X et Y)
+  ------------------------------
+
+  Le 6502 dispose de deux registres d'index de 8 bits, X et Y.
+  Bien qu'ils partagent certaines fonctions, ils ne sont pas
+  entierement interchangeables car chacun supporte des modes
+  d'adressage differents.
+
+  Taille : 8 bits chacun (valeurs de $00 a $FF)
+
+  Registre X :
+  ------------
+
+    Modes d'adressage supportes :
+      - Page zero indexe par X :     LDA $80,X
+      - Absolu indexe par X :        LDA $1234,X
+      - Indirect indexe par X :      LDA ($80,X)
+
+    Instructions specifiques :
+      LDX  : Charger X depuis la memoire
+      STX  : Stocker X en memoire
+      TAX  : Transferer A vers X
+      TXA  : Transferer X vers A
+      TSX  : Transferer SP vers X
+      TXS  : Transferer X vers SP
+      INX  : Incrementer X (X := X + 1)
+      DEX  : Decrementer X (X := X - 1)
+      CPX  : Comparer X avec un operande
+
+    Utilisation typique :
+      - Compteur de boucle
+      - Index pour parcourir des tableaux
+      - Initialisation du pointeur de pile (via TXS)
+      - Acces indirect indexe pre-indexe (Indexed Indirect)
+
+  Registre Y :
+  ------------
+
+    Modes d'adressage supportes :
+      - Page zero indexe par Y :     LDX $80,Y   (uniquement LDX/STX)
+      - Absolu indexe par Y :        LDA $1234,Y
+      - Indirect indexe par Y :      LDA ($80),Y
+
+    Instructions specifiques :
+      LDY  : Charger Y depuis la memoire
+      STY  : Stocker Y en memoire
+      TAY  : Transferer A vers Y
+      TYA  : Transferer Y vers A
+      INY  : Incrementer Y (Y := Y + 1)
+      DEY  : Decrementer Y (Y := Y - 1)
+      CPY  : Comparer Y avec un operande
+
+    Utilisation typique :
+      - Compteur de boucle
+      - Index pour parcourir des tableaux
+      - Acces indirect indexe post-indexe (Indirect Indexed)
+      - Compteur secondaire quand X est deja utilise
+
+  Differences entre X et Y :
+
+    Fonctionnalite                     X           Y
+    ---------------------------------  ----------  ----------
+    Page zero indexe (LDA/STA/etc.)    Oui (,X)    Non *
+    Page zero indexe (LDX/STX)         Non **      Oui (,Y)
+    Absolu indexe                      Oui (,X)    Oui (,Y)
+    Indirect pre-indexe (IND,X)        Oui         Non
+    Indirect post-indexe (IND),Y       Non         Oui
+    Transfert depuis/vers SP           Oui (TSX/   Non
+                                       TXS)
+
+    * LDX $ZP,Y et STX $ZP,Y sont les seules instructions qui
+      supportent le mode page zero indexe par Y.
+    ** LDY $ZP,X et STY $ZP,X utilisent le mode page zero indexe
+       par X pour LDY/STY.
+
+  Exemples :
+
+    LDX #$00          ; X = 0
+    LDY #$05          ; Y = 5
+    LDA Table,X       ; A = contenu de Table + X
+    STA Buffer,Y      ; stocker A a Buffer + Y
+    INX               ; X = X + 1
+    DEY               ; Y = Y - 1
+    CPX #$10          ; comparer X avec $10
+    BNE Loop          ; boucler si X != $10
+    LDA ($80,X)       ; indirect pre-indexe par X
+    LDA ($80),Y       ; indirect post-indexe par Y
+
+  2.4 Pointeur de pile (SP, Stack Pointer)
+  ----------------------------------------
+
+  Le pointeur de pile du 6502 est un registre de 8 bits qui pointe
+  vers le prochain emplacement libre dans la pile. Contrairement
+  aux processeurs comme le Z80 ou le 68000 qui ont un pointeur de
+  pile de 16 bits, le SP du 6502 est limite a 8 bits, ce qui
+  restreint la pile a une zone fixe de 256 octets.
+
+  Taille : 8 bits (valeurs de $00 a $FF)
+
+  Emplacement de la pile :
+    - La pile est situee en page 1 de la memoire, aux adresses
+      $0100 a $01FF
+    - L'adresse effective de pile est toujours $0100 + SP
+    - L'octet de poids fort de l'adresse est toujours $01
+      (cable en dur)
+
+  Fonctionnement :
+    - La pile croit vers le bas (vers les adresses decroissantes)
+    - SP pointe vers le prochain emplacement libre (pas vers le
+      dernier element empile)
+    - Lors d'un PUSH : ecriture a $0100+SP, puis SP := SP - 1
+    - Lors d'un PULL : SP := SP + 1, puis lecture de $0100+SP
+    - Le SP "wrappe" naturellement : si SP = $00 et qu'on empile,
+      SP passe a $FF (pas de detection de debordement de pile)
+
+  Initialisation :
+    - Apres un RESET, SP est initialise a $FD (convention commune)
+    - Le programmeur peut initialiser SP a n'importe quelle valeur
+      via les instructions LDX / TXS :
+
+        LDX #$FF        ; X = $FF
+        TXS             ; SP = X = $FF (pile vide, sommet a $01FF)
+
+  Instructions utilisant la pile :
+
+    Empilage/depilage explicite :
+      PHA  : Empiler A          ([$0100+SP] := A, SP := SP - 1)
+      PLA  : Depiler A          (SP := SP + 1, A := [$0100+SP])
+      PHP  : Empiler P (status) ([$0100+SP] := P, SP := SP - 1)
+      PLP  : Depiler P (status) (SP := SP + 1, P := [$0100+SP])
+
+    Empilage/depilage implicite :
+      JSR  : Appel de sous-routine - empile PC-1 (2 octets, poids
+             fort puis poids faible)
+      RTS  : Retour de sous-routine - depile PC-1 puis ajoute 1
+      BRK  : Interruption logicielle - empile PC+1 puis P
+      RTI  : Retour d'interruption - depile P puis PC
+      IRQ  : Interruption materielle - empile PC puis P
+      NMI  : Interruption non masquable - empile PC puis P
+
+  Transfert avec le registre X :
+      TSX  : Transferer SP vers X (X := SP, positionne N et Z)
+      TXS  : Transferer X vers SP (SP := X, ne modifie PAS les
+             drapeaux)
+
+  Utilisation de la pile par JSR/RTS :
+
+    L'instruction JSR empile l'adresse de retour MOINS 1 (c'est-
+    a-dire l'adresse du dernier octet de l'instruction JSR, et non
+    l'adresse de l'instruction suivante). L'instruction RTS depile
+    cette adresse et lui ajoute 1 pour obtenir l'adresse de la
+    prochaine instruction a executer.
+
+    Exemple : si JSR se trouve a l'adresse $1000 (3 octets : $20
+    low high), l'adresse empilee est $1002, et RTS chargera
+    PC = $1002 + 1 = $1003.
+
+    Sequence JSR a $1000 :
+      [$0100+SP]   := $10 (poids fort de $1002)
+      SP := SP - 1
+      [$0100+SP]   := $02 (poids faible de $1002)
+      SP := SP - 1
+      PC := adresse cible
+
+  Note sur la capacite de la pile :
+    - Avec 256 octets, la pile peut contenir au maximum :
+      * 128 adresses de retour (JSR utilise 2 octets chacune)
+      * 256 octets de donnees (PHA utilise 1 octet chacun)
+      * Ou une combinaison des deux
+    - Il n'y a pas de detection materielle de debordement de pile
+    - Un debordement de pile ecrase silencieusement le debut de la
+      page 1 ($0100) et peut corrompre le programme
+
+  2.5 Compteur programme (PC, Program Counter)
+  ---------------------------------------------
+
+  Le compteur programme est le seul registre 16 bits du 6502. Il
+  contient l'adresse de la prochaine instruction a executer.
+
+  Taille : 16 bits (adresses de $0000 a $FFFF)
+
+  Caracteristiques :
+
+    - Non accessible directement par les instructions de transfert
+      (pas de "LDA PC" ou "STA PC")
+    - Automatiquement incremente lors du chargement des octets de
+      l'instruction courante
+    - Modifie par les instructions de saut et de branchement :
+        JMP  : Saut absolu ou indirect (PC := adresse cible)
+        JSR  : Appel de sous-routine (empile PC-1, PC := cible)
+        RTS  : Retour de sous-routine (PC := depile + 1)
+        RTI  : Retour d'interruption (PC := depile)
+        BCC, BCS, BEQ, BNE, BMI, BPL, BVC, BVS :
+               Branchement conditionnel relatif
+               (PC := PC + deplacement signe si condition vraie)
+    - Initialise au demarrage (RESET) a partir du vecteur de
+      reinitialisation :
+        PC_low  := [$FFFC]
+        PC_high := [$FFFD]
+
+  Le 6502 stocke les adresses en format little-endian (poids faible
+  en premier). Le PC est charge depuis la memoire dans cet ordre :
+  l'octet a l'adresse la plus basse contient le poids faible, et
+  l'octet a l'adresse suivante contient le poids fort.
+
+  Branchements relatifs :
+    - Les instructions de branchement conditionnel (Bxx) utilisent
+      un deplacement signe de 8 bits (-128 a +127) relatif a
+      l'adresse de l'instruction SUIVANT le branchement
+    - Portee effective : PC - 126 a PC + 129 (par rapport a
+      l'adresse du branchement lui-meme, qui fait 2 octets)
+    - Pour les sauts hors de cette portee, il faut utiliser JMP
+      avec un branchement inverse :
+
+        ; Au lieu de BEQ FarTarget (hors portee) :
+        BNE Skip
+        JMP FarTarget
+        Skip:
+
+  2.6 Registre d'etat du processeur (P, Processor Status)
+  --------------------------------------------------------
+
+  Le registre d'etat est un registre de 8 bits contenant les
+  drapeaux de condition et de controle du processeur.
+
+  Taille : 8 bits
+
+  Organisation :
+
+    Bit  Sigle  Nom           Description
+    ---  -----  ----------    ----------------------------------------
+     7   N      Negative      1 si le bit 7 du resultat est a 1
+                              (le resultat est negatif en complement
+                              a deux)
+     6   V      Overflow      1 si debordement en complement a deux
+                              (le signe du resultat est incorrect)
+     5   -      (inutilise)   Toujours lu comme 1
+     4   B      Break         1 si l'interruption est causee par BRK,
+                              0 si c'est une interruption materielle
+                              (IRQ/NMI). N'existe pas physiquement
+                              dans le registre; n'est visible que sur
+                              la pile apres PHP ou BRK.
+     3   D      Decimal       Active le mode BCD pour ADC et SBC
+                              (0 = binaire, 1 = BCD)
+     2   I      Interrupt     Masque les interruptions IRQ quand a 1
+                              (les NMI ne sont PAS masquees)
+     1   Z      Zero          1 si le resultat est zero ($00)
+     0   C      Carry         Retenue pour l'arithmetique et les
+                              decalages/rotations
+
+  Schema visuel :
+
+    Bit:   7   6   5   4   3   2   1   0
+           N   V   -   B   D   I   Z   C
+           |   |   |   |   |   |   |   |
+           |   |   |   |   |   |   |   +-- Carry (retenue)
+           |   |   |   |   |   |   +------ Zero
+           |   |   |   |   |   +---------- Interrupt disable
+           |   |   |   |   +-------------- Decimal mode
+           |   |   |   +------------------ Break command
+           |   |   +---------------------- (toujours 1)
+           |   +-------------------------- Overflow
+           +------------------------------ Negative
+
+  Detail de chaque drapeau :
+
+  C (Carry, bit 0) :
+    - Mis a 1 si une addition (ADC) produit une retenue au-dela
+      du bit 7, ou si une soustraction (SBC) ne produit PAS
+      d'emprunt
+    - Utilise par ADC/SBC pour l'arithmetique multi-octet :
+        ADC additionne A + operande + C
+        SBC soustrait A - operande - NOT(C)
+    - Recoit le bit sortant lors des decalages et rotations :
+        ASL : bit 7 -> C
+        LSR : bit 0 -> C
+        ROL : bit 7 -> C, ancien C -> bit 0
+        ROR : bit 0 -> C, ancien C -> bit 7
+    - Positionne par CMP/CPX/CPY :
+        C = 1 si registre >= operande (comparaison non signee)
+        C = 0 si registre < operande
+    - Instructions de controle :
+        CLC : C := 0 (Clear Carry)
+        SEC : C := 1 (Set Carry)
+    - IMPORTANT : Toujours initialiser C avant une sequence
+      arithmetique :
+        CLC avant ADC pour une addition simple
+        SEC avant SBC pour une soustraction simple
+
+  Z (Zero, bit 1) :
+    - Mis a 1 si le resultat de la derniere operation est $00
+    - Mis a 0 sinon
+    - Positionne par la plupart des instructions : LDA, LDX, LDY,
+      ADC, SBC, AND, ORA, EOR, ASL, LSR, ROL, ROR, INC, DEC,
+      INX, INY, DEX, DEY, TAX, TAY, TXA, TYA, TSX, PLA, PLP,
+      CMP, CPX, CPY, BIT
+    - N'est PAS modifie par : STA, STX, STY, PHA, PHP, TXS,
+      CLC, SEC, CLD, SED, CLI, SEI, CLV, JMP, JSR, RTS, RTI,
+      BRK, NOP, ni les branchements Bxx
+
+  I (Interrupt Disable, bit 2) :
+    - Quand I = 1, les interruptions IRQ sont masquees (ignorees)
+    - Quand I = 0, les interruptions IRQ sont autorisees
+    - Les NMI (Non-Maskable Interrupts) ne sont PAS affectees par I
+    - Mis a 1 automatiquement par le processeur :
+        * Au RESET
+        * Lors du traitement d'une IRQ
+        * Lors du traitement d'une NMI
+        * Lors de l'execution de BRK
+    - Instructions de controle :
+        CLI : I := 0 (autoriser les IRQ)
+        SEI : I := 1 (masquer les IRQ)
+    - Note : l'instruction PLP (restaurer P depuis la pile)
+      peut aussi modifier I
+
+  D (Decimal, bit 3) :
+    - Quand D = 1, ADC et SBC operent en mode BCD (Binary Coded
+      Decimal) au lieu du mode binaire
+    - En mode BCD, chaque octet represente deux chiffres decimaux :
+        $09 + $01 = $10 (et non $0A comme en binaire)
+        $99 + $01 = $00 avec C = 1 (depassement BCD)
+    - Instructions de controle :
+        CLD : D := 0 (mode binaire)
+        SED : D := 1 (mode BCD)
+    - Le mode BCD est utile pour les affichages de scores, les
+      calculs financiers et toute application ou une representation
+      decimale exacte est necessaire
+    - IMPORTANT : Le drapeau D n'est PAS automatiquement remis a 0
+      apres un RESET sur le 6502 NMOS. Il est bonne pratique
+      d'executer CLD au debut de tout programme et dans les
+      gestionnaires d'interruption.
+    - Sur le 65C02 (CMOS), D est remis a 0 automatiquement apres
+      un RESET, un IRQ, un NMI et un BRK.
+    - Sur le Ricoh 2A03/2A07 (NES), le mode BCD est desactive
+      en permanence (D n'a aucun effet).
+
+  B (Break, bit 4) :
+    - Le drapeau B n'existe pas physiquement dans le registre P
+    - Il n'est visible que dans la copie de P empilee sur la pile :
+        * PHP et BRK empilent P avec B = 1
+        * IRQ et NMI empilent P avec B = 0
+    - Permet au gestionnaire d'interruption de distinguer un
+      BRK (interruption logicielle) d'une IRQ (interruption
+      materielle), car les deux utilisent le meme vecteur ($FFFE)
+    - Verification typique dans un gestionnaire d'interruption :
+
+        IRQ_Handler:
+          PHA             ; sauvegarder A
+          TXA
+          PHA             ; sauvegarder X
+          TSX
+          LDA $0103,X     ; lire la copie de P sur la pile
+          AND #$10        ; tester le bit B
+          BNE Is_BRK      ; si B=1, c'est un BRK
+          ; ... traiter l'IRQ ...
+        Is_BRK:
+          ; ... traiter le BRK ...
+
+  V (Overflow, bit 6) :
+    - Mis a 1 si une operation ADC ou SBC produit un resultat
+      incorrect en arithmetique signee (complement a deux)
+    - Concretement, V = 1 quand :
+        * ADC : deux operandes positifs donnent un resultat negatif
+        * ADC : deux operandes negatifs donnent un resultat positif
+        * SBC : equivalent (via la soustraction en complement a 2)
+    - L'instruction BIT positionne V avec le bit 6 de l'operande
+      memoire (utile pour tester un registre d'etat materiel)
+    - Instruction de controle :
+        CLV : V := 0 (Clear Overflow)
+    - Il n'y a PAS d'instruction "SEV" (Set Overflow) sur le 6502
+    - Certains systemes utilisent la ligne SO (Set Overflow) du
+      6502, une broche d'entree qui met V a 1 sur un front
+      descendant (utilisee par le Commodore 1541 pour la
+      synchronisation du lecteur de disquettes)
+
+  N (Negative, bit 7) :
+    - Copie du bit 7 du resultat de la derniere operation
+    - En arithmetique signee (complement a deux), bit 7 = 1
+      signifie que la valeur est negative
+    - Plage des valeurs signees sur 8 bits :
+        $00 a $7F = 0 a +127
+        $80 a $FF = -128 a -1
+    - L'instruction BIT positionne N avec le bit 7 de l'operande
+      memoire (comme V est positionne avec le bit 6)
+    - Positionne par les memes instructions que Z
+
+  Bit 5 (inutilise) :
+    - Toujours lu comme 1 lors d'un PHP ou d'un empilage de P
+    - N'a aucune fonction et ne peut pas etre modifie
+    - Parfois appele "expansion bit" dans la documentation
+      originale de MOS Technology
+
+  Instructions agissant sur P :
+
+    PHP  : Empiler P sur la pile (avec B=1 et bit 5=1)
+    PLP  : Depiler P depuis la pile (restaure tous les drapeaux)
+    RTI  : Depiler P puis PC depuis la pile (retour d'interruption)
+
+    CLC  : C := 0       SEC  : C := 1
+    CLD  : D := 0       SED  : D := 1
+    CLI  : I := 0       SEI  : I := 1
+    CLV  : V := 0       (pas de SEV)
+
+  2.7 Organisation de la memoire
+  ------------------------------
+
+  Le 6502 possede un espace d'adressage lineaire de 64 Ko (16 bits
+  d'adresses, $0000 a $FFFF). Cet espace est divise en 256 pages
+  de 256 octets chacune. Certaines pages ont des roles particuliers
+  imposes par le materiel.
+
+  Carte memoire generale :
+
+    Adresse       Page    Contenu
+    -----------   -----   ----------------------------------------
+    $0000-$00FF   Page 0  Page zero (Zero Page) - Acces rapide,
+                          pseudo-registres, pointeurs indirects
+    $0100-$01FF   Page 1  Pile (Stack) - Utilisee par PHA/PLA,
+                          PHP/PLP, JSR/RTS, BRK/RTI, IRQ, NMI
+    $0200-$FFEF   2-254   Memoire libre (RAM, ROM, E/S selon le
+                          systeme)
+    $FFF0-$FFF9   255     (generalement ROM, selon le systeme)
+    $FFFA-$FFFB   255     Vecteur NMI (adresse du gestionnaire NMI)
+    $FFFC-$FFFD   255     Vecteur RESET (adresse de demarrage)
+    $FFFE-$FFFF   255     Vecteur IRQ/BRK (adresse du gestionnaire)
+
+  Page zero ($0000-$00FF) :
+  -------------------------
+
+    La page zero est la region de memoire la plus importante pour
+    la programmation du 6502. Elle beneficie de modes d'adressage
+    specifiques qui sont :
+      - Plus rapides : 3 cycles au lieu de 4 pour un acces absolu
+      - Plus compacts : 2 octets d'instruction au lieu de 3
+
+    La page zero est utilisee pour :
+      - Stocker des variables frequemment accedees
+      - Stocker des pointeurs de 16 bits pour l'adressage indirect
+        (chaque pointeur occupe 2 octets consecutifs en page zero)
+      - Servir de pseudo-registres supplementaires compensant le
+        faible nombre de registres du processeur
+
+    Modes d'adressage specifiques a la page zero :
+      LDA $80         ; Zero Page          (2 octets, 3 cycles)
+      LDA $80,X       ; Zero Page,X        (2 octets, 4 cycles)
+      LDA ($80,X)     ; Indexed Indirect   (2 octets, 6 cycles)
+      LDA ($80),Y     ; Indirect Indexed   (2 octets, 5 cycles*)
+
+    Pour comparaison, les equivalents en adressage absolu :
+      LDA $0080       ; Absolute           (3 octets, 4 cycles)
+      LDA $0080,X     ; Absolute,X         (3 octets, 4 cycles*)
+
+    (* : +1 cycle si le franchissement de page se produit)
+
+    Exemple de pointeur en page zero :
+      ; Stocker un pointeur vers $8000 dans la page zero a $80-$81
+      LDA #$00
+      STA $80         ; poids faible a $80
+      LDA #$80
+      STA $81         ; poids fort a $81
+      ; Utiliser le pointeur pour lire des donnees
+      LDY #$00
+      LDA ($80),Y     ; A = contenu de $8000 + Y
+
+    Sur de nombreux systemes, une partie de la page zero est
+    reservee par le systeme d'exploitation ou le moniteur :
+      - Apple II : $00-$4F reserves par le moniteur et Applesoft
+      - Commodore 64 : $00-$01 reserves (port du 6510),
+        $02-$8F utilises par le BASIC et le Kernal
+      - Atari 800 : $00-$7F reserves par le systeme
+      - NES : toute la page zero est disponible pour le programme
+
+  Page 1 - Pile ($0100-$01FF) :
+  -----------------------------
+
+    La page 1 est entierement dediee a la pile. Le pointeur de
+    pile (SP) est un registre de 8 bits qui est combine avec le
+    prefixe fixe $01 pour former l'adresse 16 bits de pile.
+    Voir la section 2.4 pour les details de fonctionnement.
+
+  Vecteurs d'interruption ($FFFA-$FFFF) :
+  ----------------------------------------
+
+    Les 6 derniers octets de l'espace d'adressage contiennent
+    les trois vecteurs d'interruption, stockes en format
+    little-endian (poids faible en premier) :
+
+      Adresse    Vecteur        Description
+      --------   ------------   ----------------------------------
+      $FFFA-FB   NMI Vector     Adresse du gestionnaire NMI
+      $FFFC-FD   RESET Vector   Adresse de demarrage apres RESET
+      $FFFE-FF   IRQ/BRK Vector Adresse du gestionnaire IRQ et BRK
+
+    Ces vecteurs doivent pointer vers de la ROM ou de la memoire
+    contenant du code valide. Le processeur lit automatiquement
+    le vecteur appropriate lors d'un RESET, d'une NMI ou d'une
+    IRQ/BRK.
+
+  Pas de separation entre memoire et E/S :
+  -----------------------------------------
+
+    Le 6502 utilise un modele d'entrees/sorties mappe en memoire
+    (memory-mapped I/O). Il n'y a PAS d'instructions d'E/S
+    separees (contrairement au Z80 avec IN/OUT ou au x86 avec
+    IN/OUT). Les peripheriques sont accedes par des lectures et
+    ecritures a des adresses memoire specifiques.
+
+    Exemples sur des systemes courants :
+      Commodore 64 :
+        $D000-$D3FF : VIC-II (graphiques)
+        $D400-$D7FF : SID (son)
+        $D800-$DBFF : Memoire couleur
+        $DC00-$DCFF : CIA 1 (clavier, joystick)
+        $DD00-$DDFF : CIA 2 (port serie, banque VIC)
+      Apple II :
+        $C000-$C0FF : Peripheriques internes (clavier, etc.)
+        $C100-$C7FF : ROM des cartes d'extension (slots 1-7)
+      NES :
+        $2000-$2007 : PPU (graphiques)
+        $4000-$4017 : APU (son) et E/S
+      Atari 2600 :
+        $00-$7F    : TIA (Television Interface Adaptor)
+        $0280-$0297 : RIOT (RAM-I/O-Timer)
+
+  2.8 La pile (Stack)
+  -------------------
+
+  La pile du 6502 est une structure de donnees LIFO (Last In, First
+  Out) implementee en materiel dans la page 1 de la memoire. Son
+  fonctionnement est controle par le registre SP (Stack Pointer).
+
+  Emplacement physique :
+    Adresses $0100 a $01FF (page 1, 256 octets)
+
+  Direction de croissance :
+    La pile croit vers le bas (des adresses hautes vers les basses).
+    SP commence typiquement a $FF (sommet de la page 1) et
+    decroit a chaque empilage.
+
+  Format d'empilage (Push) :
+    1. Ecrire la donnee a l'adresse $0100 + SP
+    2. Decrementer SP (SP := SP - 1)
+
+  Format de depilage (Pull) :
+    1. Incrementer SP (SP := SP + 1)
+    2. Lire la donnee a l'adresse $0100 + SP
+
+  Debordement de pile :
+    - Il n'y a aucune detection materielle de debordement
+    - Si SP passe de $00 a $FF (empilage excessif), la pile
+      "wrappe" et les anciennes donnees sont ecrasees
+    - Si SP passe de $FF a $00 (depilage excessif), des donnees
+      invalides sont lues
+    - Le programmeur est responsable de gerer la profondeur de pile
+
+  Utilisation de la pile par les interruptions :
+
+    Lors d'une interruption (IRQ, NMI) ou d'un BRK, le processeur
+    empile automatiquement 3 octets dans cet ordre :
+
+      1. PC poids fort (PCH)   -> [$0100+SP], SP := SP - 1
+      2. PC poids faible (PCL) -> [$0100+SP], SP := SP - 1
+      3. Registre P (status)   -> [$0100+SP], SP := SP - 1
+
+    Puis il charge PC depuis le vecteur d'interruption appropriate.
+
+    L'instruction RTI depile dans l'ordre inverse :
+      1. P     <- [$0100+SP+1], SP := SP + 1
+      2. PCL   <- [$0100+SP+1], SP := SP + 1
+      3. PCH   <- [$0100+SP+1], SP := SP + 1
+
+  Utilisation de la pile par JSR/RTS :
+
+    JSR empile l'adresse de retour MOINS 1 (2 octets) :
+      1. PCH de (adresse de retour - 1) -> [$0100+SP], SP := SP - 1
+      2. PCL de (adresse de retour - 1) -> [$0100+SP], SP := SP - 1
+
+    RTS depile et ajoute 1 :
+      1. PCL <- [$0100+SP+1], SP := SP + 1
+      2. PCH <- [$0100+SP+1], SP := SP + 1
+      3. PC  := PC + 1
+
+  Techniques courantes avec la pile :
+
+    Sauvegarde/restauration de registres dans une sous-routine :
+
+      MaRoutine:
+        PHA             ; sauvegarder A
+        TXA
+        PHA             ; sauvegarder X
+        TYA
+        PHA             ; sauvegarder Y
+        ; ... code de la routine ...
+        PLA
+        TAY             ; restaurer Y
+        PLA
+        TAX             ; restaurer X
+        PLA             ; restaurer A
+        RTS
+
+    Passage de parametres par la pile :
+
+      ; Empiler un parametre
+        LDA #$42
+        PHA
+      ; Appeler la routine
+        JSR MaRoutine
+      ; Dans la routine, acceder au parametre :
+        TSX
+        LDA $0103,X     ; $0103 car : SP+1=retPCL, +2=retPCH,
+                        ;              +3=parametre
+
+  2.9 Resume des registres
+  ------------------------
+
+  Registre              Taille    Description
+  --------------------  --------  ----------------------------------------
+  A (Accumulateur)      8 bits    Seul registre arithmetique/logique
+  X (Index X)           8 bits    Registre d'index, modes (ZP,X) (ABS,X)
+                                  (IND,X), transfert SP
+  Y (Index Y)           8 bits    Registre d'index, modes (ZP,Y) (ABS,Y)
+                                  (IND),Y
+  SP (Stack Pointer)    8 bits    Pointeur de pile (page 1, $0100+SP)
+  PC (Program Counter)  16 bits   Compteur programme
+  P (Processor Status)  8 bits    Drapeaux : N V - B D I Z C
+  --------------------  --------  ----------------------------------------
+  Total                           5 registres de 8 bits + 1 de 16 bits
+
+  Comparaison avec d'autres processeurs 8 bits :
+
+    Aspect                  6502             Z80              6800
+    ----------------------  ---------------  ---------------  ---------------
+    Accumulateur            A (8 bits)       A (8 bits)       A, B (8 bits)
+    Registres d'index       X, Y (8 bits)    IX, IY (16 bits) X (16 bits)
+    Registres generaux      -                B,C,D,E,H,L     -
+    Pointeur de pile        SP (8 bits)      SP (16 bits)     SP (16 bits)
+    Compteur programme      PC (16 bits)     PC (16 bits)     PC (16 bits)
+    Drapeaux                P (8 bits)       F (8 bits)       CC (8 bits)
+    Registre de rafraich.   -                R (7 bits)       -
+    Registre d'interrupt    -                I (8 bits)       -
+    Jeu alternatif          -                AF', BC', etc.   -
+    Taille pile             256 octets       64 Ko            64 Ko
+    Page zero               Oui (256 oct.)   Non              Non (Direct
+                                                              Page sur 6809)
+
+  Comparaison avec le Motorola 68000 :
+
+    Aspect                  6502             68000
+    ----------------------  ---------------  ------------------
+    Largeur                 8 bits           16/32 bits
+    Registres generaux      A, X, Y          D0-D7 (32 bits)
+    Registres d'adresses    -                A0-A7 (32 bits)
+    Pointeur de pile        SP (8 bits)      A7/USP/SSP (32b)
+    Compteur programme      PC (16 bits)     PC (32 bits)
+    Espace adressable       64 Ko            16 Mo
+    Endianness              Little-endian    Big-endian
+    Taille pile             256 octets       Illimitee (RAM)
+    Modes d'adressage       13               14
+    Instructions            56               56+
+    Page zero               Oui              Non
