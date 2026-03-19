@@ -482,6 +482,555 @@ Begin
   WriteDWord(Addr,Imm);
 End;
 
+  { TODO 9 : Instructions arithmetiques 32 bits : ADD, SUB, ADC, SBB,
+    CMP, INC, DEC, NEG, MUL, IMUL, DIV, IDIV sur des operandes 32 bits
+    avec mise a jour correcte des drapeaux (CF, ZF, SF, OF, AF, PF). }
+
+  { Calcul de la parite : True si le nombre de bits a 1 dans
+    l'octet est pair (PF doit etre mis a 1) }
+Function CalcParity(B:Byte):Boolean;
+Var
+ V:Byte;
+Begin
+ V:=B xor(B shr 4);
+ V:=V xor(V shr 2);
+ V:=V xor(V shr 1);
+ CalcParity:=(V and 1)=0;
+End;
+
+  { Mise a jour des drapeaux ZF, SF, PF d'apres un resultat 32 bits }
+Procedure SetFlagsZSP32(Res:LongInt);
+Begin
+ If Res=0 Then Include(EFlags.s,ZF)
+ Else Exclude(EFlags.s,ZF);
+ If Res<0 Then Include(EFlags.s,SF)
+ Else Exclude(EFlags.s,SF);
+ If CalcParity(Byte(Res and $FF))Then Include(EFlags.s,PF)
+ Else Exclude(EFlags.s,PF);
+End;
+
+  { ADD 32 bits avec mise a jour complete des drapeaux }
+Function DoAdd32(A,B:LongInt):LongInt;
+Var
+ Res:LongInt;
+Begin
+ Res:=A+B;
+  { CF : report du bit 31 }
+ If((A and B)or((A xor B)and not Res))<0 Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+  { OF : depassement signe }
+ If((not(A xor B))and(A xor Res))<0 Then Include(EFlags.s,_OF)
+ Else Exclude(EFlags.s,_OF);
+  { AF : report du bit 3 }
+ If((A xor B xor Res)and $10)<>0 Then Include(EFlags.s,AF)
+ Else Exclude(EFlags.s,AF);
+ SetFlagsZSP32(Res);
+ DoAdd32:=Res;
+End;
+
+  { SUB 32 bits avec mise a jour complete des drapeaux }
+Function DoSub32(A,B:LongInt):LongInt;
+Var
+ Res:LongInt;
+Begin
+ Res:=A-B;
+  { CF : emprunt (unsigned A < unsigned B) }
+ If((not A and B)or((not(A xor B))and Res))<0 Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+  { OF : depassement signe }
+ If((A xor B)and(A xor Res))<0 Then Include(EFlags.s,_OF)
+ Else Exclude(EFlags.s,_OF);
+  { AF : emprunt du bit 3 }
+ If((A xor B xor Res)and $10)<>0 Then Include(EFlags.s,AF)
+ Else Exclude(EFlags.s,AF);
+ SetFlagsZSP32(Res);
+ DoSub32:=Res;
+End;
+
+  { ADC 32 bits : A + B + CF }
+Function DoAdc32(A,B:LongInt):LongInt;
+Var
+ CarryIn:LongInt;
+ Res1,Res:LongInt;
+ CF1:Boolean;
+Begin
+ If CF in EFlags.s Then CarryIn:=1 Else CarryIn:=0;
+ Res1:=A+B;
+ CF1:=((A and B)or((A xor B)and not Res1))<0;
+ Res:=Res1+CarryIn;
+ If CF1 or((CarryIn=1)and(Res1=-1))Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+ If((not(A xor B))and(A xor Res))<0 Then Include(EFlags.s,_OF)
+ Else Exclude(EFlags.s,_OF);
+ If((A xor B xor Res)and $10)<>0 Then Include(EFlags.s,AF)
+ Else Exclude(EFlags.s,AF);
+ SetFlagsZSP32(Res);
+ DoAdc32:=Res;
+End;
+
+  { SBB 32 bits : A - B - CF }
+Function DoSbb32(A,B:LongInt):LongInt;
+Var
+ BorrowIn:LongInt;
+ Res1,Res:LongInt;
+ CF1:Boolean;
+Begin
+ If CF in EFlags.s Then BorrowIn:=1 Else BorrowIn:=0;
+ Res1:=A-B;
+ CF1:=((not A and B)or((not(A xor B))and Res1))<0;
+ Res:=Res1-BorrowIn;
+ If CF1 or((BorrowIn=1)and(Res1=0))Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+ If((A xor B)and(A xor Res))<0 Then Include(EFlags.s,_OF)
+ Else Exclude(EFlags.s,_OF);
+ If((A xor B xor Res)and $10)<>0 Then Include(EFlags.s,AF)
+ Else Exclude(EFlags.s,AF);
+ SetFlagsZSP32(Res);
+ DoSbb32:=Res;
+End;
+
+  { ADD r/m32, reg32 - opcode $01 }
+Procedure ExecADD_Rm32_Reg32;
+Var
+ RegField,RmField:Byte;
+ Addr,Val:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RmField,DoAdd32(GetReg32(RmField),GetReg32(RegField)))
+ Else Begin
+  Val:=ReadDWord(Addr);
+  WriteDWord(Addr,DoAdd32(Val,GetReg32(RegField)));
+ End;
+End;
+
+  { ADD reg32, r/m32 - opcode $03 }
+Procedure ExecADD_Reg32_Rm32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RegField,DoAdd32(GetReg32(RegField),GetReg32(RmField)))
+ Else
+  SetReg32(RegField,DoAdd32(GetReg32(RegField),ReadDWord(Addr)));
+End;
+
+  { ADD EAX, imm32 - opcode $05 }
+Procedure ExecADD_EAX_Imm32;
+Begin
+ Regs.EAX:=DoAdd32(Regs.EAX,FetchDWord);
+End;
+
+  { ADC r/m32, reg32 - opcode $11 }
+Procedure ExecADC_Rm32_Reg32;
+Var
+ RegField,RmField:Byte;
+ Addr,Val:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RmField,DoAdc32(GetReg32(RmField),GetReg32(RegField)))
+ Else Begin
+  Val:=ReadDWord(Addr);
+  WriteDWord(Addr,DoAdc32(Val,GetReg32(RegField)));
+ End;
+End;
+
+  { ADC reg32, r/m32 - opcode $13 }
+Procedure ExecADC_Reg32_Rm32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RegField,DoAdc32(GetReg32(RegField),GetReg32(RmField)))
+ Else
+  SetReg32(RegField,DoAdc32(GetReg32(RegField),ReadDWord(Addr)));
+End;
+
+  { ADC EAX, imm32 - opcode $15 }
+Procedure ExecADC_EAX_Imm32;
+Begin
+ Regs.EAX:=DoAdc32(Regs.EAX,FetchDWord);
+End;
+
+  { SBB r/m32, reg32 - opcode $19 }
+Procedure ExecSBB_Rm32_Reg32;
+Var
+ RegField,RmField:Byte;
+ Addr,Val:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RmField,DoSbb32(GetReg32(RmField),GetReg32(RegField)))
+ Else Begin
+  Val:=ReadDWord(Addr);
+  WriteDWord(Addr,DoSbb32(Val,GetReg32(RegField)));
+ End;
+End;
+
+  { SBB reg32, r/m32 - opcode $1B }
+Procedure ExecSBB_Reg32_Rm32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RegField,DoSbb32(GetReg32(RegField),GetReg32(RmField)))
+ Else
+  SetReg32(RegField,DoSbb32(GetReg32(RegField),ReadDWord(Addr)));
+End;
+
+  { SBB EAX, imm32 - opcode $1D }
+Procedure ExecSBB_EAX_Imm32;
+Begin
+ Regs.EAX:=DoSbb32(Regs.EAX,FetchDWord);
+End;
+
+  { SUB r/m32, reg32 - opcode $29 }
+Procedure ExecSUB_Rm32_Reg32;
+Var
+ RegField,RmField:Byte;
+ Addr,Val:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RmField,DoSub32(GetReg32(RmField),GetReg32(RegField)))
+ Else Begin
+  Val:=ReadDWord(Addr);
+  WriteDWord(Addr,DoSub32(Val,GetReg32(RegField)));
+ End;
+End;
+
+  { SUB reg32, r/m32 - opcode $2B }
+Procedure ExecSUB_Reg32_Rm32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RegField,DoSub32(GetReg32(RegField),GetReg32(RmField)))
+ Else
+  SetReg32(RegField,DoSub32(GetReg32(RegField),ReadDWord(Addr)));
+End;
+
+  { SUB EAX, imm32 - opcode $2D }
+Procedure ExecSUB_EAX_Imm32;
+Begin
+ Regs.EAX:=DoSub32(Regs.EAX,FetchDWord);
+End;
+
+  { CMP r/m32, reg32 - opcode $39 }
+Procedure ExecCMP_Rm32_Reg32;
+Var
+ RegField,RmField:Byte;
+ Addr,Val:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  DoSub32(GetReg32(RmField),GetReg32(RegField))
+ Else Begin
+  Val:=ReadDWord(Addr);
+  DoSub32(Val,GetReg32(RegField));
+ End;
+End;
+
+  { CMP reg32, r/m32 - opcode $3B }
+Procedure ExecCMP_Reg32_Rm32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  DoSub32(GetReg32(RegField),GetReg32(RmField))
+ Else
+  DoSub32(GetReg32(RegField),ReadDWord(Addr));
+End;
+
+  { CMP EAX, imm32 - opcode $3D }
+Procedure ExecCMP_EAX_Imm32;
+Begin
+ DoSub32(Regs.EAX,FetchDWord);
+End;
+
+  { INC reg32 - opcodes $40..$47 (ne modifie pas CF) }
+Procedure ExecINC_Reg32(RegIdx:Byte);
+Var
+ OldCF:Boolean;
+Begin
+ OldCF:=CF in EFlags.s;
+ SetReg32(RegIdx,DoAdd32(GetReg32(RegIdx),1));
+ If OldCF Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+End;
+
+  { DEC reg32 - opcodes $48..$4F (ne modifie pas CF) }
+Procedure ExecDEC_Reg32(RegIdx:Byte);
+Var
+ OldCF:Boolean;
+Begin
+ OldCF:=CF in EFlags.s;
+ SetReg32(RegIdx,DoSub32(GetReg32(RegIdx),1));
+ If OldCF Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+End;
+
+  { NEG r/m32 : 0 - operande, CF=1 si operande<>0 }
+Procedure ExecNEG_Rm32(RmField:Byte;Addr:LongInt);
+Var
+ Val,Res:LongInt;
+Begin
+ If Addr=-1 Then Val:=GetReg32(RmField)
+ Else Val:=ReadDWord(Addr);
+ Res:=DoSub32(0,Val);
+ If Val<>0 Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+ If Addr=-1 Then SetReg32(RmField,Res)
+ Else WriteDWord(Addr,Res);
+End;
+
+  { Multiplication non signee 32x32 -> 64 bits (HiPart:LoPart) }
+Procedure UMul32x32(A,B:LongInt;Var HiPart,LoPart:LongInt);
+Var
+ AL_,AH_,BL_,BH_:LongInt;
+ P0,P1,P2,P3:LongInt;
+ Col0,Col1,Col2,Col3:LongInt;
+Begin
+ AL_:=A and $FFFF;
+ AH_:=(A shr 16) and $FFFF;
+ BL_:=B and $FFFF;
+ BH_:=(B shr 16) and $FFFF;
+ P0:=AL_*BL_;
+ P1:=AL_*BH_;
+ P2:=AH_*BL_;
+ P3:=AH_*BH_;
+ Col0:=P0 and $FFFF;
+ Col1:=((P0 shr 16) and $FFFF)+(P1 and $FFFF)+(P2 and $FFFF);
+ Col2:=((Col1 shr 16) and $FFFF)+((P1 shr 16) and $FFFF)+
+       ((P2 shr 16) and $FFFF)+(P3 and $FFFF);
+ Col3:=((Col2 shr 16) and $FFFF)+((P3 shr 16) and $FFFF);
+ LoPart:=Col0 or((Col1 and $FFFF) shl 16);
+ HiPart:=(Col2 and $FFFF)or((Col3 and $FFFF) shl 16);
+End;
+
+  { Negation d'un nombre 64 bits (HiPart:LoPart) }
+Procedure Negate64(Var HiPart,LoPart:LongInt);
+Var
+ OldLo:LongInt;
+Begin
+ OldLo:=LoPart;
+ LoPart:=(not LoPart)+1;
+ If OldLo=0 Then HiPart:=(not HiPart)+1
+ Else HiPart:=not HiPart;
+End;
+
+  { MUL r/m32 - opcode $F7 /4 : EDX:EAX = EAX * r/m32 (non signe) }
+Procedure ExecMUL_Rm32(RmField:Byte;Addr:LongInt);
+Var
+ Val,HiPart,LoPart:LongInt;
+Begin
+ If Addr=-1 Then Val:=GetReg32(RmField)
+ Else Val:=ReadDWord(Addr);
+ UMul32x32(Regs.EAX,Val,HiPart,LoPart);
+ Regs.EAX:=LoPart;
+ Regs.EDX:=HiPart;
+ If HiPart<>0 Then Begin
+  Include(EFlags.s,CF);Include(EFlags.s,_OF);
+ End Else Begin
+  Exclude(EFlags.s,CF);Exclude(EFlags.s,_OF);
+ End;
+ SetFlagsZSP32(LoPart);
+End;
+
+  { IMUL r/m32 - opcode $F7 /5 : EDX:EAX = EAX * r/m32 (signe) }
+Procedure ExecIMUL_Rm32(RmField:Byte;Addr:LongInt);
+Var
+ Val,HiPart,LoPart:LongInt;
+ NegResult:Boolean;
+ A,B:LongInt;
+Begin
+ If Addr=-1 Then Val:=GetReg32(RmField)
+ Else Val:=ReadDWord(Addr);
+ A:=Regs.EAX;
+ B:=Val;
+ NegResult:=False;
+ If A<0 Then Begin A:=-A;NegResult:=not NegResult;End;
+ If B<0 Then Begin B:=-B;NegResult:=not NegResult;End;
+ UMul32x32(A,B,HiPart,LoPart);
+ If NegResult Then Negate64(HiPart,LoPart);
+ Regs.EAX:=LoPart;
+ Regs.EDX:=HiPart;
+  { CF=OF=1 si le resultat ne tient pas dans 32 bits signes }
+ If((LoPart>=0)and(HiPart<>0))or
+   ((LoPart<0)and(HiPart<>-1))Then Begin
+  Include(EFlags.s,CF);Include(EFlags.s,_OF);
+ End Else Begin
+  Exclude(EFlags.s,CF);Exclude(EFlags.s,_OF);
+ End;
+ SetFlagsZSP32(LoPart);
+End;
+
+  { Division non signee 64 / 32 bits.
+    Algorithme de division binaire restaurante bit a bit. }
+Procedure UDiv64x32(DivHi,DivLo,Divisor:LongInt;
+                    Var Quotient,Remainder:LongInt);
+Var
+ I:Integer;
+ R:LongInt;
+ RHigh:Boolean;
+Begin
+ If Divisor=0 Then Begin
+  WriteLn('Erreur: division par zero');
+  Quotient:=0;Remainder:=0;
+  Exit;
+ End;
+ R:=0;RHigh:=False;
+ Quotient:=0;
+ For I:=63 downto 0 do Begin
+   { Decaler le reste a gauche de 1 bit }
+  RHigh:=R<0;
+  R:=R shl 1;
+   { Injecter le prochain bit du dividende }
+  If I>=32 Then Begin
+   If(DivHi and(LongInt(1) shl(I-32)))<>0 Then R:=R or 1;
+  End Else Begin
+   If(DivLo and(LongInt(1) shl I))<>0 Then R:=R or 1;
+  End;
+   { Si reste >= diviseur (comparaison non signee via XOR $80000000
+     qui convertit la comparaison signee en non signee), soustraire }
+  If RHigh or(((R xor LongInt($80000000))>=(Divisor xor LongInt($80000000))))Then Begin
+   R:=R-Divisor;
+   RHigh:=False;
+   If I<32 Then Quotient:=Quotient or(LongInt(1) shl I);
+  End;
+ End;
+ Remainder:=R;
+End;
+
+  { DIV r/m32 - opcode $F7 /6 :
+    EAX = EDX:EAX / r/m32 (quotient),
+    EDX = EDX:EAX mod r/m32 (reste) }
+Procedure ExecDIV_Rm32(RmField:Byte;Addr:LongInt);
+Var
+ Val,Quot,Rem:LongInt;
+Begin
+ If Addr=-1 Then Val:=GetReg32(RmField)
+ Else Val:=ReadDWord(Addr);
+ If Val=0 Then Begin
+  WriteLn('Erreur: division par zero (DIV)');
+  Exit;
+ End;
+ UDiv64x32(Regs.EDX,Regs.EAX,Val,Quot,Rem);
+ Regs.EAX:=Quot;
+ Regs.EDX:=Rem;
+End;
+
+  { IDIV r/m32 - opcode $F7 /7 :
+    EAX = EDX:EAX / r/m32 (quotient signe),
+    EDX = EDX:EAX mod r/m32 (reste, signe du dividende) }
+Procedure ExecIDIV_Rm32(RmField:Byte;Addr:LongInt);
+Var
+ Val,Quot,Rem:LongInt;
+ DivHi,DivLo:LongInt;
+ NegQuot,NegRem:Boolean;
+Begin
+ If Addr=-1 Then Val:=GetReg32(RmField)
+ Else Val:=ReadDWord(Addr);
+ If Val=0 Then Begin
+  WriteLn('Erreur: division par zero (IDIV)');
+  Exit;
+ End;
+ DivHi:=Regs.EDX;DivLo:=Regs.EAX;
+ NegQuot:=False;NegRem:=False;
+ If DivHi<0 Then Begin
+  NegQuot:=not NegQuot;NegRem:=True;
+  Negate64(DivHi,DivLo);
+ End;
+ If Val<0 Then Begin
+  NegQuot:=not NegQuot;
+  Val:=-Val;
+ End;
+ UDiv64x32(DivHi,DivLo,Val,Quot,Rem);
+ If NegQuot Then Quot:=-Quot;
+ If NegRem Then Rem:=-Rem;
+ Regs.EAX:=Quot;
+ Regs.EDX:=Rem;
+End;
+
+  { Groupe $F7 : NEG/MUL/IMUL/DIV/IDIV r/m32 }
+Procedure ExecGrp3_32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ Case RegField of
+  3:ExecNEG_Rm32(RmField,Addr);
+  4:ExecMUL_Rm32(RmField,Addr);
+  5:ExecIMUL_Rm32(RmField,Addr);
+  6:ExecDIV_Rm32(RmField,Addr);
+  7:ExecIDIV_Rm32(RmField,Addr);
+ Else
+  WriteLn('Erreur: opcode $F7 /',RegField,' non implemente');
+ End;
+End;
+
+  { Groupe $81 : ADD/ADC/SBB/SUB/CMP r/m32, imm32 }
+Procedure ExecGrp1_Rm32_Imm32;
+Var
+ RegField,RmField:Byte;
+ Addr,Val,Imm:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ Imm:=FetchDWord;
+ If Addr=-1 Then Val:=GetReg32(RmField)
+ Else Val:=ReadDWord(Addr);
+ Case RegField of
+  0:Val:=DoAdd32(Val,Imm);
+  2:Val:=DoAdc32(Val,Imm);
+  3:Val:=DoSbb32(Val,Imm);
+  5:Val:=DoSub32(Val,Imm);
+  7:Begin DoSub32(Val,Imm);Exit;End;
+ Else Begin
+  WriteLn('Erreur: opcode $81 /',RegField,' non implemente');
+  Exit;
+ End;
+ End;
+ If Addr=-1 Then SetReg32(RmField,Val)
+ Else WriteDWord(Addr,Val);
+End;
+
+  { Groupe $83 : ADD/ADC/SBB/SUB/CMP r/m32, imm8 (signe etendu) }
+Procedure ExecGrp1_Rm32_Imm8;
+Var
+ RegField,RmField:Byte;
+ Addr,Val,Imm:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ Imm:=ShortInt(FetchByte);
+ If Addr=-1 Then Val:=GetReg32(RmField)
+ Else Val:=ReadDWord(Addr);
+ Case RegField of
+  0:Val:=DoAdd32(Val,Imm);
+  2:Val:=DoAdc32(Val,Imm);
+  3:Val:=DoSbb32(Val,Imm);
+  5:Val:=DoSub32(Val,Imm);
+  7:Begin DoSub32(Val,Imm);Exit;End;
+ Else Begin
+  WriteLn('Erreur: opcode $83 /',RegField,' non implemente');
+  Exit;
+ End;
+ End;
+ If Addr=-1 Then SetReg32(RmField,Val)
+ Else WriteDWord(Addr,Val);
+End;
+
 Procedure Init;
 Var
  J:LongInt;
