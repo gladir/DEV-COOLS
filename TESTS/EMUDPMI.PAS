@@ -342,6 +342,146 @@ Begin
  Regs.ESP:=Regs.ESP+2;
 End;
 
+  { TODO 8 : Instructions de transfert de donnees 32 bits
+    MOV reg32,reg32 / MOV reg32,imm32 / MOV reg32,[mem] /
+    MOV [mem],reg32 avec decodage du ModR/M en mode 32 bits. }
+
+  { Lecture d'un octet a CS:EIP et avancement de EIP }
+Function FetchByte:Byte;
+Var
+ Addr:LongInt;
+Begin
+ Addr:=SelOfsToLinear(Segs.CS,EIP);
+ FetchByte:=ReadByte(Addr);
+ Inc(EIP);
+End;
+
+  { Lecture d'un mot 16 bits a CS:EIP et avancement de EIP }
+Function FetchWord:Word;
+Var
+ Addr:LongInt;
+Begin
+ Addr:=SelOfsToLinear(Segs.CS,EIP);
+ FetchWord:=ReadWord(Addr);
+ Inc(EIP,2);
+End;
+
+  { Lecture d'un double mot 32 bits a CS:EIP et avancement de EIP }
+Function FetchDWord:LongInt;
+Var
+ Addr:LongInt;
+Begin
+ Addr:=SelOfsToLinear(Segs.CS,EIP);
+ FetchDWord:=ReadDWord(Addr);
+ Inc(EIP,4);
+End;
+
+  { Lecture d'un registre 32 bits par index (0=EAX..7=EDI) }
+Function GetReg32(Idx:Byte):LongInt;
+Begin
+ GetReg32:=Regs.Abs[Idx and 7];
+End;
+
+  { Ecriture d'un registre 32 bits par index (0=EAX..7=EDI) }
+Procedure SetReg32(Idx:Byte;Value:LongInt);
+Begin
+ Regs.Abs[Idx and 7]:=Value;
+End;
+
+  { Decodage du ModR/M en mode 32 bits. Retourne l'adresse effective
+    lineaire si Mod<>11b, ou -1 si l'operande est un registre (Mod=11b).
+    RegField recoit le champ reg (bits 5..3).
+    RmField recoit le champ r/m (bits 2..0). }
+Function DecodeModRM32(Var RegField,RmField:Byte):LongInt;
+Var
+ ModRM,_Mod,SIB,Base,Index,Scale:Byte;
+ Addr:LongInt;
+Begin
+ ModRM:=FetchByte;
+ _Mod:=(ModRM shr 6) and 3;
+ RegField:=(ModRM shr 3) and 7;
+ RmField:=ModRM and 7;
+ If _Mod=3 Then Begin
+   { Operande registre, pas d'adresse memoire }
+  DecodeModRM32:=-1;
+  Exit;
+ End;
+  { Calcul de l'adresse effective }
+ Addr:=0;
+ If RmField=4 Then Begin
+   { SIB byte present }
+  SIB:=FetchByte;
+  Base:=SIB and 7;
+  Index:=(SIB shr 3) and 7;
+  Scale:=(SIB shr 6) and 3;
+   { Adresse de base }
+  If(Base=5)and(_Mod=0)Then
+   Addr:=FetchDWord  { [disp32+scaled index] }
+  Else
+   Addr:=GetReg32(Base);
+   { Index echelonne (sauf si index=4 => pas d'index) }
+  If Index<>4 Then
+   Addr:=Addr+(GetReg32(Index) shl Scale);
+ End Else If(RmField=5)and(_Mod=0)Then
+  Addr:=FetchDWord  { [disp32] direct }
+ Else
+  Addr:=GetReg32(RmField);
+  { Deplacement }
+ Case _Mod of
+  1:Addr:=Addr+ShortInt(FetchByte);  { disp8 signe }
+  2:Addr:=Addr+FetchDWord;            { disp32 }
+ End;
+  { Conversion en adresse lineaire via DS par defaut }
+ DecodeModRM32:=SelOfsToLinear(Segs.DS,Addr);
+End;
+
+  { MOV r/m32, reg32 - opcode $89 }
+Procedure ExecMOV_Rm32_Reg32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RmField,GetReg32(RegField))
+ Else
+  WriteDWord(Addr,GetReg32(RegField));
+End;
+
+  { MOV reg32, r/m32 - opcode $8B }
+Procedure ExecMOV_Reg32_Rm32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RegField,GetReg32(RmField))
+ Else
+  SetReg32(RegField,ReadDWord(Addr));
+End;
+
+  { MOV reg32, imm32 - opcodes $B8..$BF }
+Procedure ExecMOV_Reg32_Imm32(RegIdx:Byte);
+Begin
+ SetReg32(RegIdx,FetchDWord);
+End;
+
+  { MOV r/m32, imm32 - opcode $C7 /0 }
+Procedure ExecMOV_Rm32_Imm32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+ Imm:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ Imm:=FetchDWord;
+ If Addr=-1 Then
+  SetReg32(RmField,Imm)
+ Else
+  WriteDWord(Addr,Imm);
+End;
+
 Procedure Init;
 Var
  J:LongInt;
