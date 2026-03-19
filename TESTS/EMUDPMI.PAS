@@ -149,6 +149,12 @@ Var
   4:(AbsWord:Array[0..7]of LongRec);
  End;
 
+  { TODO 3 : Registres de segment en mode protege (selecteurs 16 bits) }
+ Segs:Record Case Byte of
+  0:(ES,CS,SS,DS,FS,GS:Word);
+  1:(Abs:Array[0..5]of Word);
+ End;
+
   { Pointeur d'instruction 32 bits }
  EIP:LongInt;
 
