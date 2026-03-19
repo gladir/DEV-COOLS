@@ -812,6 +812,236 @@ Begin
  Regs.EDX:=LongInt(Remainder);
 End;
 
+  { TODO 10 : Instructions logiques et de decalage 32 bits :
+    AND, OR, XOR, NOT, TEST, SHL, SHR, SAR, ROL, ROR, RCL, RCR
+    sur des operandes 32 bits. }
+
+  { AND 32 bits : CF=OF=0, AF indefini, ZF/SF/PF mis a jour }
+Function LogicAnd32(Dest,Source:LongInt):LongInt;
+Var
+ R:LongInt;
+Begin
+ R:=Dest and Source;
+ Exclude(EFlags.s,CF);
+ Exclude(EFlags.s,_OF);
+ SetZFD(R);
+ SetSFD(R);
+ SetPFD(R);
+ LogicAnd32:=R;
+End;
+
+  { OR 32 bits : CF=OF=0, AF indefini, ZF/SF/PF mis a jour }
+Function LogicOr32(Dest,Source:LongInt):LongInt;
+Var
+ R:LongInt;
+Begin
+ R:=Dest or Source;
+ Exclude(EFlags.s,CF);
+ Exclude(EFlags.s,_OF);
+ SetZFD(R);
+ SetSFD(R);
+ SetPFD(R);
+ LogicOr32:=R;
+End;
+
+  { XOR 32 bits : CF=OF=0, AF indefini, ZF/SF/PF mis a jour }
+Function LogicXor32(Dest,Source:LongInt):LongInt;
+Var
+ R:LongInt;
+Begin
+ R:=Dest xor Source;
+ Exclude(EFlags.s,CF);
+ Exclude(EFlags.s,_OF);
+ SetZFD(R);
+ SetSFD(R);
+ SetPFD(R);
+ LogicXor32:=R;
+End;
+
+  { NOT 32 bits : pas de modification des drapeaux }
+Function LogicNot32(Value:LongInt):LongInt;
+Begin
+ LogicNot32:=not Value;
+End;
+
+  { TEST 32 bits : identique a AND mais sans stocker le resultat }
+Procedure LogicTest32(Dest,Source:LongInt);
+Var
+ R:LongInt;
+Begin
+ R:=Dest and Source;
+ Exclude(EFlags.s,CF);
+ Exclude(EFlags.s,_OF);
+ SetZFD(R);
+ SetSFD(R);
+ SetPFD(R);
+End;
+
+  { SHL/SAL 32 bits : decalage a gauche, CF=dernier bit sorti }
+Function ShiftShl32(Value:LongInt;Count:Byte):LongInt;
+Var
+ R:LongInt;
+Begin
+ Count:=Count and $1F;
+ If Count=0 Then Begin ShiftShl32:=Value;Exit;End;
+ If Count<=31 Then Begin
+  If(Value shr(32-Count))and 1<>0 Then Include(EFlags.s,CF)
+  Else Exclude(EFlags.s,CF);
+ End;
+ R:=Value shl Count;
+ If Count=1 Then Begin
+   { OF = MSB du resultat XOR CF }
+  If(R<0)xor(CF in EFlags.s)Then Include(EFlags.s,_OF)
+  Else Exclude(EFlags.s,_OF);
+ End;
+ SetZFD(R);
+ SetSFD(R);
+ SetPFD(R);
+ ShiftShl32:=R;
+End;
+
+  { SHR 32 bits : decalage logique a droite, CF=dernier bit sorti }
+Function ShiftShr32(Value:LongInt;Count:Byte):LongInt;
+Var
+ V:LongInt;
+ R:LongInt;
+Begin
+ Count:=Count and $1F;
+ If Count=0 Then Begin ShiftShr32:=Value;Exit;End;
+ V:=Value;
+  { CF = bit (Count-1) de la valeur originale }
+ If(V shr(Count-1))and 1<>0 Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+  { Decalage logique (non signe) }
+ R:=LongInt((LongInt(V)shr Count)and(LongInt($FFFFFFFF)shr Count));
+  { Pour un decalage logique : forcer les bits hauts a 0 }
+ If Count<32 Then
+  R:=LongInt((QWord(V)and QWord($FFFFFFFF))shr Count)
+ Else
+  R:=0;
+ If Count=1 Then Begin
+   { OF = MSB de la valeur originale }
+  If V<0 Then Include(EFlags.s,_OF)
+  Else Exclude(EFlags.s,_OF);
+ End;
+ SetZFD(R);
+ SetSFD(R);
+ SetPFD(R);
+ ShiftShr32:=R;
+End;
+
+  { SAR 32 bits : decalage arithmetique a droite (sign-extend),
+    CF=dernier bit sorti }
+Function ShiftSar32(Value:LongInt;Count:Byte):LongInt;
+Var
+ R:LongInt;
+Begin
+ Count:=Count and $1F;
+ If Count=0 Then Begin ShiftSar32:=Value;Exit;End;
+  { CF = bit (Count-1) }
+ If(Value shr(Count-1))and 1<>0 Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+  { Le SAR en Pascal/FPC sur LongInt est arithmetique (signe propage) }
+ R:=SarLongInt(Value,Count);
+ If Count=1 Then
+  Exclude(EFlags.s,_OF); { OF=0 pour SAR avec count=1 }
+ SetZFD(R);
+ SetSFD(R);
+ SetPFD(R);
+ ShiftSar32:=R;
+End;
+
+  { ROL 32 bits : rotation a gauche, CF=bit 0 du resultat }
+Function ShiftRol32(Value:LongInt;Count:Byte):LongInt;
+Var
+ R:LongInt;
+ C:Byte;
+Begin
+ C:=Count and $1F;
+ If C=0 Then Begin ShiftRol32:=Value;Exit;End;
+ R:=LongInt(
+  (QWord(Value)and $FFFFFFFF)shl C or
+  ((QWord(Value)and $FFFFFFFF)shr(32-C))
+ );
+  { CF = bit 0 du resultat }
+ If R and 1<>0 Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+ If Count=1 Then Begin
+   { OF = MSB xor CF }
+  If(R<0)xor(CF in EFlags.s)Then Include(EFlags.s,_OF)
+  Else Exclude(EFlags.s,_OF);
+ End;
+ ShiftRol32:=R;
+End;
+
+  { ROR 32 bits : rotation a droite, CF=MSB du resultat }
+Function ShiftRor32(Value:LongInt;Count:Byte):LongInt;
+Var
+ R:LongInt;
+ C:Byte;
+Begin
+ C:=Count and $1F;
+ If C=0 Then Begin ShiftRor32:=Value;Exit;End;
+ R:=LongInt(
+  ((QWord(Value)and $FFFFFFFF)shr C)or
+  ((QWord(Value)and $FFFFFFFF)shl(32-C))
+ );
+  { CF = MSB du resultat (bit 31) }
+ If R<0 Then Include(EFlags.s,CF)
+ Else Exclude(EFlags.s,CF);
+ If Count=1 Then Begin
+   { OF = MSB xor bit 30 du resultat }
+  If((R shr 31)xor(R shr 30))and 1<>0 Then Include(EFlags.s,_OF)
+  Else Exclude(EFlags.s,_OF);
+ End;
+ ShiftRor32:=R;
+End;
+
+  { RCL 32 bits : rotation a gauche a travers CF (33 bits) }
+Function ShiftRcl32(Value:LongInt;Count:Byte):LongInt;
+Var
+ I:Integer;
+ TmpCF:Boolean;
+ V:LongInt;
+Begin
+ Count:=Count mod 33;
+ V:=Value;
+ For I:=1 to Count do Begin
+  TmpCF:=(V<0); { bit 31 }
+  V:=LongInt((QWord(V)and $FFFFFFFF)shl 1);
+  If CF in EFlags.s Then V:=V or 1;
+  If TmpCF Then Include(EFlags.s,CF) Else Exclude(EFlags.s,CF);
+ End;
+ If Count=1 Then Begin
+  If(V<0)xor(CF in EFlags.s)Then Include(EFlags.s,_OF)
+  Else Exclude(EFlags.s,_OF);
+ End;
+ ShiftRcl32:=V;
+End;
+
+  { RCR 32 bits : rotation a droite a travers CF (33 bits) }
+Function ShiftRcr32(Value:LongInt;Count:Byte):LongInt;
+Var
+ I:Integer;
+ TmpCF:Boolean;
+ V:LongInt;
+Begin
+ Count:=Count mod 33;
+ V:=Value;
+ If Count=1 Then Begin
+   { OF = MSB xor CF avant la rotation }
+  If(V<0)xor(CF in EFlags.s)Then Include(EFlags.s,_OF)
+  Else Exclude(EFlags.s,_OF);
+ End;
+ For I:=1 to Count do Begin
+  TmpCF:=(V and 1<>0); { bit 0 }
+  V:=LongInt((QWord(V)and $FFFFFFFF)shr 1);
+  If CF in EFlags.s Then V:=V or LongInt($80000000);
+  If TmpCF Then Include(EFlags.s,CF) Else Exclude(EFlags.s,CF);
+ End;
+ ShiftRcr32:=V;
+End;
+
   { --- Procedures Exec pour les opcodes arithmetiques 32 bits --- }
 
   { ADD r/m32, reg32 - opcode $01 }
@@ -986,10 +1216,216 @@ Begin
  SetReg32(RegIdx,ArithDec32(GetReg32(RegIdx)));
 End;
 
+  { --- Procedures Exec pour les opcodes logiques 32 bits (TODO 10) --- }
+
+  { OR r/m32, reg32 - opcode $09 }
+Procedure ExecOR_Rm32_Reg32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RmField,LogicOr32(GetReg32(RmField),GetReg32(RegField)))
+ Else
+  WriteDWord(Addr,LogicOr32(ReadDWord(Addr),GetReg32(RegField)));
+End;
+
+  { OR reg32, r/m32 - opcode $0B }
+Procedure ExecOR_Reg32_Rm32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RegField,LogicOr32(GetReg32(RegField),GetReg32(RmField)))
+ Else
+  SetReg32(RegField,LogicOr32(GetReg32(RegField),ReadDWord(Addr)));
+End;
+
+  { OR EAX, imm32 - opcode $0D }
+Procedure ExecOR_EAX_Imm32;
+Begin
+ Regs.EAX:=LogicOr32(Regs.EAX,FetchDWord);
+End;
+
+  { AND r/m32, reg32 - opcode $21 }
+Procedure ExecAND_Rm32_Reg32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RmField,LogicAnd32(GetReg32(RmField),GetReg32(RegField)))
+ Else
+  WriteDWord(Addr,LogicAnd32(ReadDWord(Addr),GetReg32(RegField)));
+End;
+
+  { AND reg32, r/m32 - opcode $23 }
+Procedure ExecAND_Reg32_Rm32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RegField,LogicAnd32(GetReg32(RegField),GetReg32(RmField)))
+ Else
+  SetReg32(RegField,LogicAnd32(GetReg32(RegField),ReadDWord(Addr)));
+End;
+
+  { AND EAX, imm32 - opcode $25 }
+Procedure ExecAND_EAX_Imm32;
+Begin
+ Regs.EAX:=LogicAnd32(Regs.EAX,FetchDWord);
+End;
+
+  { XOR r/m32, reg32 - opcode $31 }
+Procedure ExecXOR_Rm32_Reg32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RmField,LogicXor32(GetReg32(RmField),GetReg32(RegField)))
+ Else
+  WriteDWord(Addr,LogicXor32(ReadDWord(Addr),GetReg32(RegField)));
+End;
+
+  { XOR reg32, r/m32 - opcode $33 }
+Procedure ExecXOR_Reg32_Rm32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  SetReg32(RegField,LogicXor32(GetReg32(RegField),GetReg32(RmField)))
+ Else
+  SetReg32(RegField,LogicXor32(GetReg32(RegField),ReadDWord(Addr)));
+End;
+
+  { XOR EAX, imm32 - opcode $35 }
+Procedure ExecXOR_EAX_Imm32;
+Begin
+ Regs.EAX:=LogicXor32(Regs.EAX,FetchDWord);
+End;
+
+  { TEST r/m32, reg32 - opcode $85 }
+Procedure ExecTEST_Rm32_Reg32;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then
+  LogicTest32(GetReg32(RmField),GetReg32(RegField))
+ Else
+  LogicTest32(ReadDWord(Addr),GetReg32(RegField));
+End;
+
+  { TEST EAX, imm32 - opcode $A9 }
+Procedure ExecTEST_EAX_Imm32;
+Begin
+ LogicTest32(Regs.EAX,FetchDWord);
+End;
+
+  { --- Procedures Exec pour les decalages et rotations (TODO 10) --- }
+
+  { Groupe 2 : r/m32, imm8 - opcode $C1
+    Le champ reg du ModR/M determine l'operation :
+    /0=ROL, /1=ROR, /2=RCL, /3=RCR, /4=SHL, /5=SHR, /7=SAR }
+Procedure ExecGrp2_Rm32_Imm8;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+ Val:LongInt;
+ Cnt:Byte;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ Cnt:=FetchByte;
+ If Addr=-1 Then Val:=GetReg32(RmField)
+            Else Val:=ReadDWord(Addr);
+ Case RegField of
+  0:Val:=ShiftRol32(Val,Cnt);
+  1:Val:=ShiftRor32(Val,Cnt);
+  2:Val:=ShiftRcl32(Val,Cnt);
+  3:Val:=ShiftRcr32(Val,Cnt);
+  4:Val:=ShiftShl32(Val,Cnt);
+  5:Val:=ShiftShr32(Val,Cnt);
+  7:Val:=ShiftSar32(Val,Cnt);
+ Else Begin
+  WriteLn('Erreur: Grp2/$C1 reg=',RegField,' non implemente');
+  Exit;
+ End;
+ End;
+ If Addr=-1 Then SetReg32(RmField,Val)
+            Else WriteDWord(Addr,Val);
+End;
+
+  { Groupe 2 : r/m32, 1 - opcode $D1
+    Decalage/rotation de 1 position }
+Procedure ExecGrp2_Rm32_1;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+ Val:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then Val:=GetReg32(RmField)
+            Else Val:=ReadDWord(Addr);
+ Case RegField of
+  0:Val:=ShiftRol32(Val,1);
+  1:Val:=ShiftRor32(Val,1);
+  2:Val:=ShiftRcl32(Val,1);
+  3:Val:=ShiftRcr32(Val,1);
+  4:Val:=ShiftShl32(Val,1);
+  5:Val:=ShiftShr32(Val,1);
+  7:Val:=ShiftSar32(Val,1);
+ Else Begin
+  WriteLn('Erreur: Grp2/$D1 reg=',RegField,' non implemente');
+  Exit;
+ End;
+ End;
+ If Addr=-1 Then SetReg32(RmField,Val)
+            Else WriteDWord(Addr,Val);
+End;
+
+  { Groupe 2 : r/m32, CL - opcode $D3
+    Decalage/rotation de CL positions }
+Procedure ExecGrp2_Rm32_CL;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+ Val:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ If Addr=-1 Then Val:=GetReg32(RmField)
+            Else Val:=ReadDWord(Addr);
+ Case RegField of
+  0:Val:=ShiftRol32(Val,Regs.CL);
+  1:Val:=ShiftRor32(Val,Regs.CL);
+  2:Val:=ShiftRcl32(Val,Regs.CL);
+  3:Val:=ShiftRcr32(Val,Regs.CL);
+  4:Val:=ShiftShl32(Val,Regs.CL);
+  5:Val:=ShiftShr32(Val,Regs.CL);
+  7:Val:=ShiftSar32(Val,Regs.CL);
+ Else Begin
+  WriteLn('Erreur: Grp2/$D3 reg=',RegField,' non implemente');
+  Exit;
+ End;
+ End;
+ If Addr=-1 Then SetReg32(RmField,Val)
+            Else WriteDWord(Addr,Val);
+End;
+
   { Groupe 1 : r/m32, imm32 - opcode $81
     Le champ reg du ModR/M determine l'operation :
-    /0=ADD, /1=OR(TODO10), /2=ADC, /3=SBB,
-    /4=AND(TODO10), /5=SUB, /6=XOR(TODO10), /7=CMP }
+    /0=ADD, /1=OR, /2=ADC, /3=SBB,
+    /4=AND, /5=SUB, /6=XOR, /7=CMP }
 Procedure ExecGrp1_Rm32_Imm32;
 Var
  RegField,RmField:Byte;
@@ -1002,14 +1438,13 @@ Begin
             Else Val:=ReadDWord(Addr);
  Case RegField of
   0:Val:=ArithAdd32(Val,Imm);
+  1:Val:=LogicOr32(Val,Imm);
   2:Val:=ArithAdc32(Val,Imm);
   3:Val:=ArithSbb32(Val,Imm);
+  4:Val:=LogicAnd32(Val,Imm);
   5:Val:=ArithSub32(Val,Imm);
+  6:Val:=LogicXor32(Val,Imm);
   7:Begin ArithCmp32(Val,Imm);Exit;End;
- Else Begin
-  WriteLn('Erreur: Grp1/$81 reg=',RegField,' non implemente (TODO 10)');
-  Exit;
- End;
  End;
  If Addr=-1 Then SetReg32(RmField,Val)
             Else WriteDWord(Addr,Val);
@@ -1029,14 +1464,13 @@ Begin
             Else Val:=ReadDWord(Addr);
  Case RegField of
   0:Val:=ArithAdd32(Val,Imm);
+  1:Val:=LogicOr32(Val,Imm);
   2:Val:=ArithAdc32(Val,Imm);
   3:Val:=ArithSbb32(Val,Imm);
+  4:Val:=LogicAnd32(Val,Imm);
   5:Val:=ArithSub32(Val,Imm);
+  6:Val:=LogicXor32(Val,Imm);
   7:Begin ArithCmp32(Val,Imm);Exit;End;
- Else Begin
-  WriteLn('Erreur: Grp1/$83 reg=',RegField,' non implemente (TODO 10)');
-  Exit;
- End;
  End;
  If Addr=-1 Then SetReg32(RmField,Val)
             Else WriteDWord(Addr,Val);
@@ -1044,7 +1478,7 @@ End;
 
   { Groupe 3 : r/m32 - opcode $F7
     Le champ reg du ModR/M determine l'operation :
-    /0=TEST(TODO10), /1=TEST(TODO10), /2=NOT(TODO10), /3=NEG,
+    /0=TEST, /1=TEST, /2=NOT, /3=NEG,
     /4=MUL, /5=IMUL, /6=DIV, /7=IDIV }
 Procedure ExecGrp3_Rm32;
 Var
@@ -1056,6 +1490,12 @@ Begin
  If Addr=-1 Then Val:=GetReg32(RmField)
             Else Val:=ReadDWord(Addr);
  Case RegField of
+  0,1:LogicTest32(Val,FetchDWord);
+  2:Begin
+    Val:=LogicNot32(Val);
+    If Addr=-1 Then SetReg32(RmField,Val)
+               Else WriteDWord(Addr,Val);
+   End;
   3:Begin
     Val:=ArithNeg32(Val);
     If Addr=-1 Then SetReg32(RmField,Val)
@@ -1065,8 +1505,6 @@ Begin
   5:ArithIMul32(Val);
   6:ArithDiv32(Val);
   7:ArithIDiv32(Val);
- Else
-  WriteLn('Erreur: Grp3/$F7 reg=',RegField,' non implemente (TODO 10)');
  End;
 End;
 
