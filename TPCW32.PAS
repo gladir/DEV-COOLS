@@ -586,6 +586,8 @@ Begin
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
     Else If Opts.DestTarget = DEST_ATARIST Then
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.prg')
+    Else If Opts.DestTarget = DEST_AMIGA Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe')
     Else
       Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
   End;
@@ -18468,9 +18470,24 @@ Begin
       EmitInstr('MOV DS,AX');
       EmitInstr('MOV ES,AX');
     End
+    Else If Opts.DestTarget = DEST_AMIGA Then
+    Begin
+      { Mode Amiga : ouvrir dos.library, obtenir stdout }
+      EmitComment('Entree programme Amiga');
+      EmitInstr('MOVEM.L D0-D7/A0-A6,-(SP)');
+      EmitInstr('MOVE.L 4.W,A6');       { ExecBase : adresse fixe Amiga Kickstart }
+      EmitInstr('LEA DOS_NAME,A1');
+      EmitInstr('MOVEQ #0,D0');
+      EmitInstr('JSR -552(A6)');         { exec OpenLibrary() }
+      EmitInstr('MOVE.L D0,DOS_BASE');
+      EmitInstr('BEQ ' + TP_RT_PFX + 'EXIT_FAIL');
+      EmitInstr('MOVE.L D0,A6');
+      EmitInstr('JSR -60(A6)');          { dos Output() -> stdout handle }
+      EmitInstr('MOVE.L D0,STDOUT');
+    End
     Else If Is68kTarget Then
     Begin
-      { Mode 68000 : pas d initialisation speciale }
+      { Mode 68000 / Atari ST : pas d initialisation speciale }
       EmitComment('Entree programme 68000');
     End
     Else
@@ -18504,6 +18521,18 @@ Begin
       { Sortie DOS via INT 21h }
       EmitInstr('MOV AX,4C00H');
       EmitInstr('INT 21H');
+    End
+    Else If Opts.DestTarget = DEST_AMIGA Then
+    Begin
+      { Sortie Amiga : fermer dos.library et retourner }
+      EmitComment('Sortie AmigaDOS');
+      EmitInstr('MOVE.L 4.W,A6');         { ExecBase }
+      EmitInstr('MOVE.L DOS_BASE,A1');
+      EmitInstr('JSR -414(A6)');         { exec CloseLibrary() }
+      EmitLabel(TP_RT_PFX + 'EXIT_FAIL');
+      EmitInstr('MOVEM.L (SP)+,D0-D7/A0-A6');
+      EmitInstr('MOVEQ #0,D0');
+      EmitInstr('RTS');
     End
     Else If Is68kTarget Then
     Begin
@@ -21505,6 +21534,108 @@ Begin
   { ------ _TPRT_UDIV32 : division non signee D0 / D1 ----------- }
   { Entree : D0.L = dividende, D1.L = diviseur                    }
   { Sortie : D0.L = quotient,  D1.L = reste                       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'UDIV32');
+  EmitInstr('MOVEM.L D2-D3,-(SP)');
+  EmitInstr('CLR.L D2');
+  EmitInstr('MOVE.L #31,D3');
+  EmitLabel(TP_RT_PFX + 'UD_LP');
+  EmitInstr('LSL.L #1,D0');
+  EmitInstr('ROXL.L #1,D2');
+  EmitInstr('CMP.L D1,D2');
+  EmitInstr('BCS ' + TP_RT_PFX + 'UD_SK');
+  EmitInstr('SUB.L D1,D2');
+  EmitInstr('ADDQ.L #1,D0');
+  EmitLabel(TP_RT_PFX + 'UD_SK');
+  EmitInstr('DBRA D3,' + TP_RT_PFX + 'UD_LP');
+  EmitInstr('MOVE.L D2,D1');
+  EmitInstr('MOVEM.L (SP)+,D2-D3');
+  EmitInstr('RTS');
+End;
+
+{ ---- EmitRuntimeAmiga : routines runtime AmigaDOS (dos.library) ---- }
+{ Meme interface que EmitRuntime68000 mais utilise dos.library Write() }
+{ au lieu de GEMDOS TRAP #1.                                           }
+Procedure EmitRuntimeAmiga;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Routines runtime TPCW32 - Motorola 68000 / AmigaDOS ===');
+
+  { ------ _TPRT_PRINTSTR : afficher chaine ASCIIZ via dos.library Write --- }
+  { Entree : A0 = pointeur vers chaine terminee par 0                        }
+  { Utilise : dos.library Write() (offset -48 depuis dos base)               }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PRINTSTR');
+  EmitInstr('MOVEM.L D0-D3/A0-A3/A6,-(SP)');
+  EmitComment('Calculer la longueur de la chaine');
+  EmitInstr('MOVE.L A0,A1');
+  EmitInstr('CLR.L D3');
+  EmitLabel(TP_RT_PFX + 'PS_LEN');
+  EmitInstr('TST.B (A1)+');
+  EmitInstr('BEQ ' + TP_RT_PFX + 'PS_WR');
+  EmitInstr('ADDQ.L #1,D3');
+  EmitInstr('BRA ' + TP_RT_PFX + 'PS_LEN');
+  EmitLabel(TP_RT_PFX + 'PS_WR');
+  EmitInstr('TST.L D3');
+  EmitInstr('BEQ ' + TP_RT_PFX + 'PS_END');
+  EmitComment('dos.library Write(stdout, buffer, length)');
+  EmitInstr('MOVE.L DOS_BASE,A6');
+  EmitInstr('MOVE.L STDOUT,D1');
+  EmitInstr('MOVE.L A0,D2');
+  EmitComment('D3 = longueur');
+  EmitInstr('JSR -48(A6)');              { dos Write(fh, buf, len) }
+  EmitLabel(TP_RT_PFX + 'PS_END');
+  EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A3/A6');
+  EmitInstr('RTS');
+
+  { ------ _TPRT_PRINTCHAR : afficher un caractere via dos.library Write -- }
+  { Entree : D0.B = caractere a afficher                                    }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PRINTCHAR');
+  EmitInstr('MOVEM.L D0-D3/A0-A3/A6,-(SP)');
+  EmitInstr('AND.W #$00FF,D0');
+  EmitInstr('MOVE.B D0,CHRBUF');
+  EmitComment('dos.library Write(stdout, chrbuf, 1)');
+  EmitInstr('MOVE.L DOS_BASE,A6');
+  EmitInstr('MOVE.L STDOUT,D1');
+  EmitInstr('LEA CHRBUF,A0');
+  EmitInstr('MOVE.L A0,D2');
+  EmitInstr('MOVEQ #1,D3');
+  EmitInstr('JSR -48(A6)');              { dos Write(fh, buf, len) }
+  EmitInstr('MOVEM.L (SP)+,D0-D3/A0-A3/A6');
+  EmitInstr('RTS');
+
+  { ------ _TPRT_NUMTOSTR : convertir D0.L en chaine decimale ASCIIZ --- }
+  { Meme implementation que pour Atari ST (pas de syscall)                }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'NUMTOSTR');
+  EmitInstr('MOVEM.L D0-D4/A0-A1,-(SP)');
+  EmitInstr('LEA NUMBUF,A0');
+  EmitInstr('TST.L D0');
+  EmitInstr('BPL ' + TP_RT_PFX + 'NTS_POS');
+  EmitInstr('MOVE.B #45,(A0)+');
+  EmitInstr('NEG.L D0');
+  EmitLabel(TP_RT_PFX + 'NTS_POS');
+  EmitInstr('MOVE.L A0,A1');
+  EmitInstr('CLR.L D3');
+  EmitLabel(TP_RT_PFX + 'NTS_DIV');
+  EmitInstr('MOVE.L #10,D1');
+  EmitComment('division D0/10 -> quotient D0, reste D1');
+  EmitInstr('BSR ' + TP_RT_PFX + 'UDIV32');
+  EmitInstr('ADD.B #48,D1');
+  EmitInstr('MOVE.B D1,-(SP)');
+  EmitInstr('ADDQ.L #1,D3');
+  EmitInstr('TST.L D0');
+  EmitInstr('BNE ' + TP_RT_PFX + 'NTS_DIV');
+  EmitLabel(TP_RT_PFX + 'NTS_POP');
+  EmitInstr('MOVE.B (SP)+,(A1)+');
+  EmitInstr('SUBQ.L #1,D3');
+  EmitInstr('BNE ' + TP_RT_PFX + 'NTS_POP');
+  EmitInstr('CLR.B (A1)');
+  EmitInstr('MOVEM.L (SP)+,D0-D4/A0-A1');
+  EmitInstr('RTS');
+
+  { ------ _TPRT_UDIV32 : division non signee D0 / D1 --------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'UDIV32');
   EmitInstr('MOVEM.L D2-D3,-(SP)');
@@ -26590,6 +26721,51 @@ Begin { BcAssemble68000 }
     Exit;
   End;
 
+  { ---- MOVEQ #imm8,Dn ---- }
+  If (Mnem = 'MOVEQ') Then
+  Begin
+    If ParseImm(Op1, Val) And (ParseDn(Op2) >= 0) Then
+      EmitW_BE($7000 Or (Word(ParseDn(Op2)) Shl 9) Or (Word(Val) And $00FF));
+    Exit;
+  End;
+
+  { ---- JSR d16(An) / JSR label ---- }
+  If (Mnem = 'JSR') Then
+  Begin
+    { Tester d abord le mode deplacement : JSR offset(An) }
+    P := Pos('(', Op1);
+    If P > 1 Then
+    Begin
+      Tmp := Copy(Op1, P + 1, Length(Op1) - P);
+      If (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ')') Then
+        Delete(Tmp, Length(Tmp), 1);
+      Val := 0;
+      If P > 1 Then
+      Begin
+        Tmp := StrUpperCase(Tmp);
+        { Parser le deplacement (partie avant la parenthese) }
+        Mnem := Copy(Op1, 1, P - 1);
+        ParseImm('#' + Mnem, Val);
+        { Parser le registre An }
+        If ParseAn(Tmp) >= 0 Then
+        Begin
+          EmitW_BE($4EA8 Or Word(ParseAn(Tmp)));
+          EmitW_BE(Word(Val));
+          Mnem := 'JSR';
+          Exit;
+        End;
+      End;
+    End;
+    { JSR label (adresse absolue long) }
+    If IsLabel(Op1) Then
+    Begin
+      EmitW_BE($4EB9);
+      BcAddFixup(BC_FIX_ABS32_DATA_BE, Op1, 0);
+      EmitD_BE(0);
+    End;
+    Exit;
+  End;
+
   { ---- CLR.W -(SP) / CLR.B Dn / CLR.L Dn ---- }
   If (Mnem = 'CLR.W') Then
   Begin
@@ -26606,8 +26782,18 @@ Begin { BcAssemble68000 }
   End;
   If (Mnem = 'CLR.B') Then
   Begin
-    If ParseDn(Op1) >= 0 Then EmitW_BE($4200 Or ParseDn(Op1))
-    Else EmitW_BE($4E71);
+    If ParseDn(Op1) >= 0 Then
+    Begin EmitW_BE($4200 Or ParseDn(Op1)); Exit; End;
+    { CLR.B (An) - indirect }
+    Tmp := StrUpperCase(Op1);
+    If (Length(Tmp) = 4) And (Tmp[1] = '(') And (Tmp[2] = 'A') And
+       (Tmp[3] >= '0') And (Tmp[3] <= '7') And (Tmp[4] = ')') Then
+    Begin
+      P := Ord(Tmp[3]) - Ord('0');
+      EmitW_BE($4210 Or Word(P));
+      Exit;
+    End;
+    EmitW_BE($4E71);
     Exit;
   End;
 
@@ -26680,6 +26866,41 @@ Begin { BcAssemble68000 }
       EmitD_BE(0);
       Exit;
     End;
+    { MOVE.L An,Am (MOVEA.L) }
+    If (ParseAn(Op1) >= 0) And (ParseAn(Op2) >= 0) Then
+    Begin
+      EmitW_BE($2048 Or (Word(ParseAn(Op2)) Shl 9) Or Word(ParseAn(Op1)));
+      Exit;
+    End;
+    { MOVE.L label,An (MOVEA.L abs.L,An) }
+    If IsLabel(Op1) And (ParseAn(Op2) >= 0) Then
+    Begin
+      EmitW_BE($2079 Or (Word(ParseAn(Op2)) Shl 9));
+      BcAddFixup(BC_FIX_ABS32_DATA_BE, Op1, 0);
+      EmitD_BE(0);
+      Exit;
+    End;
+    { MOVE.L Dn,label (abs.L) }
+    If (ParseDn(Op1) >= 0) And IsLabel(Op2) Then
+    Begin
+      EmitW_BE($23C0 Or Word(ParseDn(Op1)));
+      BcAddFixup(BC_FIX_ABS32_DATA_BE, Op2, 0);
+      EmitD_BE(0);
+      Exit;
+    End;
+    { MOVE.L N.W,An (MOVEA.L abs.W,An) - ex: MOVE.L 4.W,A6 }
+    P := Pos('.W', StrUpperCase(Op1));
+    If (P > 1) And (ParseAn(Op2) >= 0) Then
+    Begin
+      Tmp := Copy(Op1, 1, P - 1);
+      Val := 0;
+      If ParseImm('#' + Tmp, Val) Then
+      Begin
+        EmitW_BE($2078 Or (Word(ParseAn(Op2)) Shl 9));
+        EmitW_BE(Word(Val));
+        Exit;
+      End;
+    End;
   End;
 
   { ---- MOVE.W #imm,-(SP) / MOVE.W Dn,-(SP) ---- }
@@ -26713,24 +26934,48 @@ Begin { BcAssemble68000 }
       EmitW_BE(Word(Val) And $FF);
       Exit;
     End;
-    { MOVE.B Dn,(An)+ }
-    If (ParseDn(Op1) >= 0) Then
+    { MOVE.B #imm,(An)+ - ex: MOVE.B #45,(A0)+ }
+    If ParseImm(Op1, Val) Then
     Begin
-      { Generic: MOVE.B Dn,-(SP) or other - emit as NOP }
-      If IsPreDecSP(Op2) Then
+      Tmp := StrUpperCase(Op2);
+      If (Length(Tmp) = 5) And (Tmp[1] = '(') And (Tmp[2] = 'A') And
+         (Tmp[3] >= '0') And (Tmp[3] <= '7') And (Tmp[4] = ')') And (Tmp[5] = '+') Then
       Begin
-        EmitW_BE($1F00 Or Word(ParseDn(Op1)));
+        P := Ord(Tmp[3]) - Ord('0');
+        EmitW_BE($10FC Or (Word(P) Shl 9));
+        EmitW_BE(Word(Val) And $FF);
         Exit;
       End;
     End;
-    { MOVE.B (SP)+,(An)+ etc - complex, emit NOP }
+    { MOVE.B Dn,-(SP) }
+    If (ParseDn(Op1) >= 0) And IsPreDecSP(Op2) Then
+    Begin
+      EmitW_BE($1F00 Or Word(ParseDn(Op1)));
+      Exit;
+    End;
+    { MOVE.B Dn,label (abs.L) - ex: MOVE.B D0,CHRBUF }
+    If (ParseDn(Op1) >= 0) And IsLabel(Op2) Then
+    Begin
+      EmitW_BE($13C0 Or Word(ParseDn(Op1)));
+      BcAddFixup(BC_FIX_ABS32_DATA_BE, Op2, 0);
+      EmitD_BE(0);
+      Exit;
+    End;
+    { MOVE.B (SP)+,Dn }
+    If IsPostIncSP(Op1) And (ParseDn(Op2) >= 0) Then
+    Begin
+      EmitW_BE($1000 Or (Word(ParseDn(Op2)) Shl 9) Or $001F);
+      Exit;
+    End;
+    { MOVE.B (SP)+,(An)+ - ex: MOVE.B (SP)+,(A1)+ }
     If IsPostIncSP(Op1) Then
     Begin
-      { MOVE.B (SP)+,(An)+ -> utilisee dans NUMTOSTR depile }
-      { On emet: move.b (A7)+,dest }
-      If ParseDn(Op2) >= 0 Then
+      Tmp := StrUpperCase(Op2);
+      If (Length(Tmp) = 5) And (Tmp[1] = '(') And (Tmp[2] = 'A') And
+         (Tmp[3] >= '0') And (Tmp[3] <= '7') And (Tmp[4] = ')') And (Tmp[5] = '+') Then
       Begin
-        EmitW_BE($1000 Or (Word(ParseDn(Op2)) Shl 9) Or $001F);
+        P := Ord(Tmp[3]) - Ord('0');
+        EmitW_BE($10DF Or (Word(P) Shl 9));
         Exit;
       End;
     End;
@@ -26839,6 +27084,22 @@ Begin { BcAssemble68000 }
   If (Mnem = 'TST.W') Then
   Begin
     If ParseDn(Op1) >= 0 Then EmitW_BE($4A40 Or Word(ParseDn(Op1)));
+    Exit;
+  End;
+  { ---- TST.B Dn / TST.B (An)+ ---- }
+  If (Mnem = 'TST.B') Then
+  Begin
+    If ParseDn(Op1) >= 0 Then
+    Begin EmitW_BE($4A00 Or Word(ParseDn(Op1))); Exit; End;
+    { TST.B (An)+ - post-increment }
+    Tmp := StrUpperCase(Op1);
+    If (Length(Tmp) = 5) And (Tmp[1] = '(') And (Tmp[2] = 'A') And
+       (Tmp[3] >= '0') And (Tmp[3] <= '7') And (Tmp[4] = ')') And (Tmp[5] = '+') Then
+    Begin
+      P := Ord(Tmp[3]) - Ord('0');
+      EmitW_BE($4A18 Or Word(P));
+      Exit;
+    End;
     Exit;
   End;
 
@@ -26988,6 +27249,14 @@ Begin
   If Is68kTarget Then
   Begin
     { Section DATA 68000 : buffers minimaux }
+    If Opts.DestTarget = DEST_AMIGA Then
+    Begin
+      { Donnees specifiques Amiga }
+      BcDefineDataLabel('DOS_NAME');  BcDataStr('dos.library');
+      BcDefineDataLabel('DOS_BASE'); BcDataZeros(4);
+      BcDefineDataLabel('STDOUT');   BcDataZeros(4);
+      BcDefineDataLabel('CHRBUF');   BcDataZeros(4);
+    End;
     BcDefineDataLabel('NUMBUF');    BcDataZeros(32);
     BcDefineDataLabel('CRLF');      BcDataB(13); BcDataB(10); BcDataB(0);
     BcDefineDataLabel('STRTMP');    BcDataZeros(256);
@@ -27445,6 +27714,136 @@ Begin
     { Aucune relocalisation : ecrire un long mot nul }
     WrD_BE(0);
   End;
+
+  Close(F);
+End;
+
+{ --- WriteAmigaHunkFile : generation d un executable Amiga (format Hunk) --- }
+{ Format Hunk AmigaDOS :                                                      }
+{ HUNK_HEADER ($000003F3) + table des hunks                                   }
+{ HUNK_CODE ($000003E9) + code 68000                                          }
+{ HUNK_RELOC32 ($000003EC) + table de relocalisation                          }
+{ HUNK_END ($000003F2)                                                        }
+{ HUNK_DATA ($000003EA) + donnees initialisees                                }
+{ HUNK_END ($000003F2)                                                        }
+Procedure WriteAmigaHunkFile(FileName: TString);
+Const
+  HUNK_HEADER  = $000003F3;
+  HUNK_CODE    = $000003E9;
+  HUNK_DATA    = $000003EA;
+  HUNK_RELOC32 = $000003EC;
+  HUNK_END     = $000003F2;
+Var
+  F: File;
+  TextLen, DataLen: LongInt;
+  TextLW, DataLW: LongInt;
+  DataBase: LongInt;
+  I, RelocCount: LongInt;
+  RelocOfs: Array[0..8191] Of LongInt;
+  Val: LongInt;
+  P: LongInt;
+  B: Byte;
+  PadLen: LongInt;
+  PadByte: Byte;
+
+  Procedure WrD_BE(D: LongInt);
+  Begin
+    B := Byte(D Shr 24); BlockWrite(F, B, 1);
+    B := Byte(D Shr 16); BlockWrite(F, B, 1);
+    B := Byte(D Shr 8);  BlockWrite(F, B, 1);
+    B := Byte(D);         BlockWrite(F, B, 1);
+  End;
+
+Begin
+  TextLen := BcCodeLen;
+  DataLen := BcDataLen;
+
+  { Taille en mots longs (arrondie au superieur) }
+  TextLW := (TextLen + 3) Div 4;
+  DataLW := (DataLen + 3) Div 4;
+
+  { Calculer l adresse de base de la section DATA apres le code }
+  DataBase := TextLen;
+
+  { Resoudre les fixups avec base TEXT = 0, DATA = TextLen }
+  BcResolveFixups68k(0, DataBase);
+
+  { Collecter les offsets de relocalisation (fixups ABS32 dans le code) }
+  RelocCount := 0;
+  For I := 0 To BcFixupCnt - 1 Do
+  Begin
+    If BcFixups[I].Kind = BC_FIX_ABS32_DATA_BE Then
+    Begin
+      If RelocCount < 8192 Then
+      Begin
+        RelocOfs[RelocCount] := BcFixups[I].CodeOfs;
+        Inc(RelocCount);
+      End;
+    End;
+  End;
+
+  { Trier les offsets de relocalisation (tri par insertion) }
+  For I := 1 To RelocCount - 1 Do
+  Begin
+    Val := RelocOfs[I];
+    P := I - 1;
+    While (P >= 0) And (RelocOfs[P] > Val) Do
+    Begin RelocOfs[P + 1] := RelocOfs[P]; Dec(P); End;
+    RelocOfs[P + 1] := Val;
+  End;
+
+  { Ouvrir le fichier de sortie }
+  Assign(F, FileName);
+  Rewrite(F, 1);
+
+  PadByte := 0;
+
+  { ===== HUNK_HEADER ===== }
+  WrD_BE(HUNK_HEADER);   { type de bloc }
+  WrD_BE(0);              { pas de noms de bibliotheques residentes }
+  WrD_BE(2);              { table_size : 2 hunks (CODE + DATA) }
+  WrD_BE(0);              { first_hunk }
+  WrD_BE(1);              { last_hunk }
+  WrD_BE(TextLW);         { taille du hunk 0 (CODE) en mots longs }
+  WrD_BE(DataLW);         { taille du hunk 1 (DATA) en mots longs }
+
+  { ===== HUNK_CODE (hunk 0) ===== }
+  WrD_BE(HUNK_CODE);
+  WrD_BE(TextLW);         { taille en mots longs }
+  If TextLen > 0 Then
+    BlockWrite(F, BcCode[0], TextLen);
+  { Padding pour aligner a un mot long }
+  PadLen := (TextLW * 4) - TextLen;
+  While PadLen > 0 Do
+  Begin BlockWrite(F, PadByte, 1); Dec(PadLen); End;
+
+  { ===== HUNK_RELOC32 (relocalisations du code vers data) ===== }
+  If RelocCount > 0 Then
+  Begin
+    WrD_BE(HUNK_RELOC32);
+    { Toutes les relocalisations ciblent le hunk 1 (DATA) }
+    WrD_BE(RelocCount);   { nombre de relocalisations }
+    WrD_BE(1);             { hunk cible = 1 (DATA) }
+    For I := 0 To RelocCount - 1 Do
+      WrD_BE(RelocOfs[I]);
+    WrD_BE(0);             { fin des blocs de relocalisation }
+  End;
+
+  { ===== HUNK_END (fin du hunk CODE) ===== }
+  WrD_BE(HUNK_END);
+
+  { ===== HUNK_DATA (hunk 1) ===== }
+  WrD_BE(HUNK_DATA);
+  WrD_BE(DataLW);         { taille en mots longs }
+  If DataLen > 0 Then
+    BlockWrite(F, BcData[0], DataLen);
+  { Padding pour aligner a un mot long }
+  PadLen := (DataLW * 4) - DataLen;
+  While PadLen > 0 Do
+  Begin BlockWrite(F, PadByte, 1); Dec(PadLen); End;
+
+  { ===== HUNK_END (fin du hunk DATA) ===== }
+  WrD_BE(HUNK_END);
 
   Close(F);
 End;
@@ -28959,6 +29358,8 @@ Begin
     { Emettre les routines runtime (TODO 12) }
     If (Opts.DestTarget = DEST_DOSR) Or (Opts.DestTarget = DEST_DOSP) Then
       EmitRuntimeDOS
+    Else If Opts.DestTarget = DEST_AMIGA Then
+      EmitRuntimeAmiga
     Else If Is68kTarget Then
       EmitRuntime68000
     Else
@@ -29018,6 +29419,12 @@ Begin
       WriteMZFile(Opts.OutFile);
       If Opts.Verbose Then
         WriteLn('  MZ DOS EXE genere : ', Opts.OutFile);
+    End
+    Else If Opts.DestTarget = DEST_AMIGA Then
+    Begin
+      WriteAmigaHunkFile(Opts.OutFile);
+      If Opts.Verbose Then
+        WriteLn('  Amiga Hunk genere : ', Opts.OutFile);
     End
     Else If Is68kTarget Then
     Begin
