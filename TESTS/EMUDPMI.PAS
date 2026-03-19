@@ -1507,6 +1507,151 @@ Begin
  End;
 End;
 
+  { TODO 11 : Instructions de chaines 32 bits : MOVSD, STOSD,
+    LODSD, CMPSD, SCASD avec le prefixe REP/REPE/REPNE
+    utilisant ECX comme compteur.
+    DF (Direction Flag) determine le sens : si DF=0, ESI/EDI sont
+    incrementes de 4 ; si DF=1, ils sont decrementes de 4. }
+
+  { Calcul du pas de direction pour les instructions de chaine 32 bits }
+Function StringStep32:LongInt;
+Begin
+ If DF in EFlags.s Then StringStep32:=-4
+                   Else StringStep32:=4;
+End;
+
+  { MOVSD : Copie un DWord de DS:ESI vers ES:EDI, ajuste ESI et EDI }
+Procedure ExecMOVSD;
+Var
+ SrcAddr,DstAddr:LongInt;
+ Val:LongInt;
+Begin
+ SrcAddr:=SelOfsToLinear(Segs.DS,Regs.ESI);
+ DstAddr:=SelOfsToLinear(Segs.ES,Regs.EDI);
+ Val:=ReadDWord(SrcAddr);
+ WriteDWord(DstAddr,Val);
+ Regs.ESI:=Regs.ESI+StringStep32;
+ Regs.EDI:=Regs.EDI+StringStep32;
+End;
+
+  { STOSD : Ecrit EAX dans ES:EDI, ajuste EDI }
+Procedure ExecSTOSD;
+Var
+ DstAddr:LongInt;
+Begin
+ DstAddr:=SelOfsToLinear(Segs.ES,Regs.EDI);
+ WriteDWord(DstAddr,Regs.EAX);
+ Regs.EDI:=Regs.EDI+StringStep32;
+End;
+
+  { LODSD : Charge un DWord de DS:ESI dans EAX, ajuste ESI }
+Procedure ExecLODSD;
+Var
+ SrcAddr:LongInt;
+Begin
+ SrcAddr:=SelOfsToLinear(Segs.DS,Regs.ESI);
+ Regs.EAX:=ReadDWord(SrcAddr);
+ Regs.ESI:=Regs.ESI+StringStep32;
+End;
+
+  { CMPSD : Compare le DWord a DS:ESI avec le DWord a ES:EDI
+    (comme SUB sans stockage du resultat), ajuste ESI et EDI }
+Procedure ExecCMPSD;
+Var
+ SrcAddr,DstAddr:LongInt;
+ SrcVal,DstVal:LongInt;
+Begin
+ SrcAddr:=SelOfsToLinear(Segs.DS,Regs.ESI);
+ DstAddr:=SelOfsToLinear(Segs.ES,Regs.EDI);
+ SrcVal:=ReadDWord(SrcAddr);
+ DstVal:=ReadDWord(DstAddr);
+ ArithCmp32(SrcVal,DstVal);
+ Regs.ESI:=Regs.ESI+StringStep32;
+ Regs.EDI:=Regs.EDI+StringStep32;
+End;
+
+  { SCASD : Compare EAX avec le DWord a ES:EDI
+    (comme CMP EAX,[ES:EDI] sans stockage), ajuste EDI }
+Procedure ExecSCASD;
+Var
+ DstAddr:LongInt;
+ DstVal:LongInt;
+Begin
+ DstAddr:=SelOfsToLinear(Segs.ES,Regs.EDI);
+ DstVal:=ReadDWord(DstAddr);
+ ArithCmp32(Regs.EAX,DstVal);
+ Regs.EDI:=Regs.EDI+StringStep32;
+End;
+
+  { --- Prefixes REP / REPE / REPNE pour les instructions de chaine --- }
+
+  { REP MOVSD : Repete MOVSD ECX fois }
+Procedure ExecREP_MOVSD;
+Begin
+ While Regs.ECX<>0 do Begin
+  ExecMOVSD;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { REP STOSD : Repete STOSD ECX fois }
+Procedure ExecREP_STOSD;
+Begin
+ While Regs.ECX<>0 do Begin
+  ExecSTOSD;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { REP LODSD : Repete LODSD ECX fois (EAX contient le dernier DWord lu) }
+Procedure ExecREP_LODSD;
+Begin
+ While Regs.ECX<>0 do Begin
+  ExecLODSD;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { REPE/REPZ CMPSD : Repete CMPSD tant que ECX<>0 et ZF=1 }
+Procedure ExecREPE_CMPSD;
+Begin
+ While Regs.ECX<>0 do Begin
+  ExecCMPSD;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { REPNE/REPNZ CMPSD : Repete CMPSD tant que ECX<>0 et ZF=0 }
+Procedure ExecREPNE_CMPSD;
+Begin
+ While Regs.ECX<>0 do Begin
+  ExecCMPSD;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { REPE/REPZ SCASD : Repete SCASD tant que ECX<>0 et ZF=1 }
+Procedure ExecREPE_SCASD;
+Begin
+ While Regs.ECX<>0 do Begin
+  ExecSCASD;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { REPNE/REPNZ SCASD : Repete SCASD tant que ECX<>0 et ZF=0 }
+Procedure ExecREPNE_SCASD;
+Begin
+ While Regs.ECX<>0 do Begin
+  ExecSCASD;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
 Procedure Init;
 Var
  J:LongInt;
