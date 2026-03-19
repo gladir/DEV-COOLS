@@ -1652,6 +1652,121 @@ Begin
  End;
 End;
 
+  { TODO 12 : Instructions de saut conditionnel 32 bits (Jcc near
+    avec deplacement 32 bits, prefixe 0Fh) et sauts inconditionnels
+    JMP near/far en mode protege.
+    Les 16 conditions x86 sont testees via TestCondition(cc):
+      0=O, 1=NO, 2=B/C, 3=NB/NC, 4=E/Z, 5=NE/NZ, 6=BE/NA,
+      7=A/NBE, 8=S, 9=NS, A=P/PE, B=NP/PO, C=L/NGE, D=GE/NL,
+      E=LE/NG, F=G/NLE. }
+
+  { Teste une condition x86 (cc = 0..15) selon les drapeaux }
+Function TestCondition(cc:Byte):Boolean;
+Var
+ R:Boolean;
+Begin
+ R:=False;
+ Case cc and $0F of
+  $0:R:=(_OF in EFlags.s);                    { JO : OF=1 }
+  $1:R:=Not(_OF in EFlags.s);                 { JNO : OF=0 }
+  $2:R:=(CF in EFlags.s);                     { JB/JC/JNAE : CF=1 }
+  $3:R:=Not(CF in EFlags.s);                  { JNB/JNC/JAE : CF=0 }
+  $4:R:=(ZF in EFlags.s);                     { JE/JZ : ZF=1 }
+  $5:R:=Not(ZF in EFlags.s);                  { JNE/JNZ : ZF=0 }
+  $6:R:=(CF in EFlags.s)or(ZF in EFlags.s);   { JBE/JNA : CF=1 ou ZF=1 }
+  $7:R:=Not(CF in EFlags.s)and Not(ZF in EFlags.s); { JA/JNBE : CF=0 et ZF=0 }
+  $8:R:=(SF in EFlags.s);                     { JS : SF=1 }
+  $9:R:=Not(SF in EFlags.s);                  { JNS : SF=0 }
+  $A:R:=(PF in EFlags.s);                     { JP/JPE : PF=1 }
+  $B:R:=Not(PF in EFlags.s);                  { JNP/JPO : PF=0 }
+  $C:R:=(SF in EFlags.s)<>(_OF in EFlags.s);  { JL/JNGE : SF<>OF }
+  $D:R:=(SF in EFlags.s)=(_OF in EFlags.s);   { JGE/JNL : SF=OF }
+  $E:R:=((SF in EFlags.s)<>(_OF in EFlags.s))or(ZF in EFlags.s); { JLE/JNG : SF<>OF ou ZF=1 }
+  $F:R:=((SF in EFlags.s)=(_OF in EFlags.s))and Not(ZF in EFlags.s); { JG/JNLE : SF=OF et ZF=0 }
+ End;
+ TestCondition:=R;
+End;
+
+  { Jcc short (rel8) - opcodes $70..$7F : saut conditionnel court }
+Procedure ExecJcc_Short(cc:Byte);
+Var
+ Rel:ShortInt;
+Begin
+ Rel:=ShortInt(FetchByte);
+ If TestCondition(cc)Then
+  EIP:=EIP+Rel;
+End;
+
+  { Jcc near (rel32) - opcodes $0F $80..$0F $8F : saut conditionnel
+    near avec deplacement 32 bits }
+Procedure ExecJcc_Near32(cc:Byte);
+Var
+ Rel:LongInt;
+Begin
+ Rel:=FetchDWord;
+ If TestCondition(cc)Then
+  EIP:=EIP+Rel;
+End;
+
+  { JMP short (rel8) - opcode $EB : saut inconditionnel court }
+Procedure ExecJMP_Short;
+Var
+ Rel:ShortInt;
+Begin
+ Rel:=ShortInt(FetchByte);
+ EIP:=EIP+Rel;
+End;
+
+  { JMP near (rel32) - opcode $E9 : saut inconditionnel near 32 bits }
+Procedure ExecJMP_Near32;
+Var
+ Rel:LongInt;
+Begin
+ Rel:=FetchDWord;
+ EIP:=EIP+Rel;
+End;
+
+  { JMP far (ptr16:32) - opcode $EA : saut inconditionnel far
+    en mode protege (charge un nouveau CS et EIP) }
+Procedure ExecJMP_Far;
+Var
+ NewEIP:LongInt;
+ NewCS:Word;
+Begin
+ NewEIP:=FetchDWord;
+ NewCS:=FetchWord;
+ EIP:=NewEIP;
+ Segs.CS:=NewCS;
+End;
+
+  { JMP r/m32 - opcode $FF /4 : saut indirect near via registre ou memoire
+    JMP m16:32 - opcode $FF /5 : saut indirect far via memoire }
+Procedure ExecGrp5_JMP;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ Case RegField of
+  4:Begin { JMP r/m32 - near indirect }
+     If Addr=-1 Then
+      EIP:=GetReg32(RmField)
+     Else
+      EIP:=ReadDWord(Addr);
+    End;
+  5:Begin { JMP m16:32 - far indirect }
+     If Addr=-1 Then Begin
+      WriteLn('Erreur: JMP far indirect ne peut pas utiliser un registre');
+      Exit;
+     End;
+     EIP:=ReadDWord(Addr);
+     Segs.CS:=ReadWord(Addr+4);
+    End;
+  Else
+   WriteLn('Erreur: opcode $FF /',RegField,' non gere par ExecGrp5_JMP');
+ End;
+End;
+
 Procedure Init;
 Var
  J:LongInt;
