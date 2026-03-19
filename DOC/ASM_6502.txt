@@ -4049,3 +4049,737 @@
   plus simples de sa generation. Malgre ce minimalisme, la richesse
   de ses modes d'adressage (13 modes) et l'utilisation creative de
   la page zero permettent d'ecrire du code compact et performant.
+
+==============================================================================
+5. CODAGE DES INSTRUCTIONS (FORMAT BINAIRE)
+==============================================================================
+
+  5.1 Structure generale de l'encodage
+  --------------------------------------
+
+  Chaque instruction du 6502 est codee en binaire sous la forme d'une
+  sequence de 1, 2 ou 3 octets. Le format general est :
+
+  +--------+-------------------+-------------------+
+  | Opcode | Operande bas      | Operande haut     |
+  | 1 oct  | 0 ou 1 octet      | 0 ou 1 octet      |
+  +--------+-------------------+-------------------+
+
+  Le premier octet est toujours l'opcode, qui identifie a la fois
+  l'instruction et le mode d'adressage. Les octets suivants sont
+  l'operande (adresse ou valeur immediate), si necessaire.
+
+  Proprietes fondamentales du codage 6502 :
+    - Pas de prefixes : l'opcode est toujours le premier octet
+    - Pas d'alignement : les instructions peuvent commencer a
+      n'importe quelle adresse
+    - Format little-endian : l'octet de poids faible d'une
+      adresse 16 bits est stocke en premier
+    - La taille d'une instruction est entierement determinee
+      par l'opcode (1, 2 ou 3 octets)
+    - Sur les 256 opcodes possibles ($00-$FF), seuls 151 sont
+      officiellement definis
+
+  Taille des instructions selon le mode d'adressage :
+
+    1 octet  : modes implicite et accumulateur
+               (pas d'operande)
+    2 octets : modes immediat, page zero, page zero indexe
+               (X ou Y), relatif, indirect indexe
+               (operande 8 bits)
+    3 octets : modes absolu, absolu indexe (X ou Y), indirect
+               (operande 16 bits en little-endian)
+
+  Exemples de codage en memoire :
+
+    CLC              -> $18             (1 octet)
+    LDA #$42         -> $A9 $42         (2 octets)
+    LDA $80          -> $A5 $80         (2 octets)
+    LDA $80,X        -> $B5 $80         (2 octets)
+    BEQ $FD          -> $F0 $FD         (2 octets, depl. = -3)
+    LDA $2000        -> $AD $00 $20     (3 octets, little-endian)
+    LDA $2000,X      -> $BD $00 $20     (3 octets)
+    JMP ($FFFC)      -> $6C $FC $FF     (3 octets)
+
+  5.1.1 Structure de l'octet opcode
+
+  L'opcode du 6502 encode simultanement l'instruction et le mode
+  d'adressage. Contrairement au 68000 ou au 80386, il n'y a pas
+  de champs reguliers dans l'opcode : le decodage est effectue
+  par une table de correspondance (lookup table) dans le processeur.
+
+  Cependant, il existe un schema partiel dans la structure des
+  opcodes. En decomposant un opcode en trois champs de bits :
+
+    7  6  5  4  3  2  1  0
+  +--+--+--+--+--+--+--+--+
+  |  aaa  |  bbb  |  cc   |
+  +--+--+--+--+--+--+--+--+
+
+  Ou :
+    cc  (bits 1-0) : identifie le "groupe" d'instructions
+    bbb (bits 4-2) : identifie le mode d'adressage
+    aaa (bits 7-5) : identifie l'instruction dans le groupe
+
+  Groupe cc = 01 (instructions ALU principales) :
+
+    Les instructions du groupe 01 sont les plus regulieres.
+    Le champ bbb determine le mode d'adressage :
+
+    bbb  Mode d'adressage
+    ---  --------------------------
+    000  (Indirect,X)  ($nn,X)
+    001  Page zero      $nn
+    010  Immediat       #$nn
+    011  Absolu         $nnnn
+    100  (Indirect),Y  ($nn),Y
+    101  Page zero,X    $nn,X
+    110  Absolu,Y       $nnnn,Y
+    111  Absolu,X       $nnnn,X
+
+    Le champ aaa determine l'instruction :
+
+    aaa  Instruction
+    ---  -----------
+    000  ORA
+    001  AND
+    010  EOR
+    011  ADC
+    100  STA
+    101  LDA
+    110  CMP
+    111  SBC
+
+    Exemples de decodage (groupe 01) :
+    $A9 = 101 010 01 -> aaa=101 (LDA), bbb=010 (immediat), cc=01
+    $6D = 011 011 01 -> aaa=011 (ADC), bbb=011 (absolu), cc=01
+    $D1 = 110 100 01 -> aaa=110 (CMP), bbb=100 ((Ind),Y), cc=01
+    $85 = 100 001 01 -> aaa=100 (STA), bbb=001 (page zero), cc=01
+
+    Exception : STA (aaa=100) n'a pas de mode immediat (bbb=010).
+    L'opcode $89 n'est pas defini officiellement.
+
+  Groupe cc = 10 (decalages, chargements X/Y) :
+
+    bbb  Mode d'adressage
+    ---  --------------------------
+    000  Immediat       #$nn
+    001  Page zero      $nn
+    010  Accumulateur   A (ou implicite)
+    011  Absolu         $nnnn
+    101  Page zero,X    $nn,X  (ou Page zero,Y pour LDX/STX)
+    111  Absolu,X       $nnnn,X (ou Absolu,Y pour LDX)
+
+    aaa  Instruction
+    ---  -----------
+    000  ASL
+    001  ROL
+    010  LSR
+    011  ROR
+    100  STX (modes limites)
+    101  LDX
+    110  DEC
+    111  INC
+
+    Note : ce groupe est moins regulier que le groupe 01.
+    Certaines combinaisons aaa/bbb ne sont pas definies.
+    STX et LDX utilisent l'indexation par Y au lieu de X
+    (Page zero,Y et Absolu,Y).
+
+  Groupe cc = 00 (branchements, comparaisons, divers) :
+
+    Ce groupe est le moins regulier. Il contient les instructions
+    de branchement, BIT, CPX, CPY, STY, LDY et les instructions
+    de controle.
+
+    bbb  Mode d'adressage (quand applicable)
+    ---  --------------------------
+    000  Immediat       #$nn
+    001  Page zero      $nn
+    011  Absolu         $nnnn
+    101  Page zero,X    $nn,X
+    111  Absolu,X       $nnnn,X
+
+    Les branchements conditionnels suivent un schema separe :
+    $10, $30, $50, $70, $90, $B0, $D0, $F0
+    soit aaa = 000 a 111, bbb = 100, cc = 00
+
+    aaa  Branchement     Condition
+    ---  -----------     ---------
+    000  BPL             N = 0
+    001  BMI             N = 1
+    010  BVC             V = 0
+    011  BVS             V = 1
+    100  BCC             C = 0
+    101  BCS             C = 1
+    110  BNE             Z = 0
+    111  BEQ             Z = 1
+
+  5.2 Table complete des opcodes
+  -------------------------------
+
+  La table suivante liste les 256 opcodes possibles du 6502.
+  Les opcodes non documentes sont marques "---" (voir 5.4 pour
+  les details sur les opcodes non documentes).
+
+  Format : les colonnes representent le quartet de poids faible
+  (bits 3-0), les lignes representent le quartet de poids fort
+  (bits 7-4).
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $0x  BRK     ORA     ---     ---     ---     ORA     ASL     ---
+       impl    (ind,X)                 zp      zp      zp
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $0x  PHP     ORA     ASL     ---     ---     ORA     ASL     ---
+       impl    #imm    A                       abs     abs
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $1x  BPL     ORA     ---     ---     ---     ORA     ASL     ---
+       rel     (ind),Y                 zp,X    zp,X    zp,X
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $1x  CLC     ORA     ---     ---     ---     ORA     ASL     ---
+       impl    abs,Y                           abs,X   abs,X
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $2x  JSR     AND     ---     ---     BIT     AND     ROL     ---
+       abs     (ind,X)                 zp      zp      zp
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $2x  PLP     AND     ROL     ---     BIT     AND     ROL     ---
+       impl    #imm    A               abs     abs     abs
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $3x  BMI     AND     ---     ---     ---     AND     ROL     ---
+       rel     (ind),Y                 zp,X    zp,X    zp,X
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $3x  SEC     AND     ---     ---     ---     AND     ROL     ---
+       impl    abs,Y                           abs,X   abs,X
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $4x  RTI     EOR     ---     ---     ---     EOR     LSR     ---
+       impl    (ind,X)                 zp      zp      zp
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $4x  PHA     EOR     LSR     ---     JMP     EOR     LSR     ---
+       impl    #imm    A               abs     abs     abs
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $5x  BVC     EOR     ---     ---     ---     EOR     LSR     ---
+       rel     (ind),Y                 zp,X    zp,X    zp,X
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $5x  CLI     EOR     ---     ---     ---     EOR     LSR     ---
+       impl    abs,Y                           abs,X   abs,X
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $6x  RTS     ADC     ---     ---     ---     ADC     ROR     ---
+       impl    (ind,X)                 zp      zp      zp
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $6x  PLA     ADC     ROR     ---     JMP     ADC     ROR     ---
+       impl    #imm    A               (ind)   abs     abs
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $7x  BVS     ADC     ---     ---     ---     ADC     ROR     ---
+       rel     (ind),Y                 zp,X    zp,X    zp,X
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $7x  SEI     ADC     ---     ---     ---     ADC     ROR     ---
+       impl    abs,Y                           abs,X   abs,X
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $8x  ---     STA     ---     ---     STY     STA     STX     ---
+               (ind,X)                 zp      zp      zp
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $8x  DEY     ---     TXA     ---     STY     STA     STX     ---
+       impl            impl            abs     abs     abs
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $9x  BCC     STA     ---     ---     STY     STA     STX     ---
+       rel     (ind),Y                 zp,X    zp,X    zp,Y
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $9x  TYA     STA     TXS     ---     ---     STA     ---     ---
+       impl    abs,Y   impl                    abs,X
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $Ax  LDY     LDA     LDX     ---     LDY     LDA     LDX     ---
+       #imm    (ind,X) #imm            zp      zp      zp
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $Ax  TAY     LDA     TAX     ---     LDY     LDA     LDX     ---
+       impl    #imm    impl            abs     abs     abs
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $Bx  BCS     LDA     ---     ---     LDY     LDA     LDX     ---
+       rel     (ind),Y                 zp,X    zp,X    zp,Y
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $Bx  CLV     LDA     TSX     ---     LDY     LDA     LDX     ---
+       impl    abs,Y   impl            abs,X   abs,X   abs,Y
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $Cx  CPY     CMP     ---     ---     CPY     CMP     DEC     ---
+       #imm    (ind,X)                 zp      zp      zp
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $Cx  INY     CMP     DEX     ---     CPY     CMP     DEC     ---
+       impl    #imm    impl            abs     abs     abs
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $Dx  BNE     CMP     ---     ---     ---     CMP     DEC     ---
+       rel     (ind),Y                 zp,X    zp,X    zp,X
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $Dx  CLD     CMP     ---     ---     ---     CMP     DEC     ---
+       impl    abs,Y                           abs,X   abs,X
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $Ex  CPX     SBC     ---     ---     CPX     SBC     INC     ---
+       #imm    (ind,X)                 zp      zp      zp
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $Ex  INX     SBC     NOP     ---     CPX     SBC     INC     ---
+       impl    #imm    impl            abs     abs     abs
+
+       $x0     $x1     $x2     $x3     $x4     $x5     $x6     $x7
+  $Fx  BEQ     SBC     ---     ---     ---     SBC     INC     ---
+       rel     (ind),Y                 zp,X    zp,X    zp,X
+
+       $x8     $x9     $xA     $xB     $xC     $xD     $xE     $xF
+  $Fx  SED     SBC     ---     ---     ---     SBC     INC     ---
+       impl    abs,Y                           abs,X   abs,X
+
+  Resume statistique des opcodes :
+    - Opcodes definis   : 151
+    - Opcodes indefinis : 105
+    - Les colonnes $x3, $x7, $xB et $xF sont entierement
+      indefinies (sauf quelques opcodes non documentes)
+    - La colonne $x2 est presque entierement indefinie
+      (sauf $A2 = LDX #imm)
+
+  5.3 Calcul de la taille des instructions
+  ------------------------------------------
+
+  La taille d'une instruction du 6502 est entierement determinee
+  par son opcode. Contrairement au 80386, il n'y a pas de prefixes
+  ni de champs modulaires a decoder.
+
+  5.3.1 Tableau de la taille par opcode
+
+  La taille de chaque instruction peut etre stockee dans une table
+  de 256 octets indexee par l'opcode :
+
+  Taille 1 (1 octet : opcode seul) :
+    Toutes les instructions implicites et accumulateur :
+    $00 BRK*   $08 PHP    $0A ASL A  $18 CLC    $28 PLP
+    $2A ROL A  $38 SEC    $40 RTI    $48 PHA    $4A LSR A
+    $58 CLI    $60 RTS    $68 PLA    $6A ROR A  $78 SEI
+    $88 DEY    $8A TXA    $98 TYA    $9A TXS    $A8 TAY
+    $AA TAX    $B8 CLV    $BA TSX    $C8 INY    $CA DEX
+    $D8 CLD    $E8 INX    $EA NOP    $F8 SED
+
+    * BRK est officiellement 1 octet mais consomme 2 octets
+      (l'octet suivant est saute, voir section 4.8.5)
+
+  Taille 2 (2 octets : opcode + operande 8 bits) :
+    Toutes les instructions avec mode immediat (#$nn),
+    page zero ($nn), page zero indexe ($nn,X ou $nn,Y),
+    indirect indexe (($nn,X) et ($nn),Y), et relatif :
+    $01 $05 $06 $09 $10 $11 $15 $16 $19 $21 $24 $25 $26
+    $29 $30 $31 $35 $36 $39 $41 $45 $46 $49 $50 $51 $55
+    $56 $59 $61 $65 $66 $69 $70 $71 $75 $76 $79 $81 $84
+    $85 $86 $90 $91 $94 $95 $96 $A0 $A1 $A2 $A4 $A5 $A6
+    $A9 $B0 $B1 $B4 $B5 $B6 $B9 $C0 $C1 $C4 $C5 $C6 $C9
+    $D0 $D1 $D5 $D6 $D9 $E0 $E1 $E4 $E5 $E6 $E9 $F0 $F1
+    $F5 $F6 $F9
+
+  Taille 3 (3 octets : opcode + adresse 16 bits little-endian) :
+    Toutes les instructions avec mode absolu ($nnnn),
+    absolu indexe ($nnnn,X et $nnnn,Y), et indirect (($nnnn)) :
+    $0D $0E $19 $1D $1E $20 $2C $2D $2E $39 $3D $3E $4C
+    $4D $4E $59 $5D $5E $6C $6D $6E $79 $7D $7E $8C $8D
+    $8E $99 $9D $AC $AD $AE $B9 $BC $BD $BE $CC $CD $CE
+    $D9 $DD $DE $EC $ED $EE $F9 $FD $FE
+
+  5.3.2 Determination rapide de la taille
+
+  Pour un desassembleur ou un decodeur, la taille peut etre
+  determinee par une simple table de correspondance :
+
+    taille[opcode] := table_256_octets[opcode]
+
+  Si on ne dispose pas d'une table, on peut utiliser le schema
+  des groupes decrit en 5.1.1 :
+
+    Pour le groupe cc=01 :
+      - bbb=000,001,100,101 : taille 2 (operande 8 bits)
+      - bbb=010             : taille 2 (immediat 8 bits)
+      - bbb=011,110,111     : taille 3 (operande 16 bits)
+
+    Pour les branchements (bbb=100, cc=00) :
+      - Toujours taille 2 (opcode + deplacement 8 bits)
+
+    Pour les instructions implicites/accumulateur :
+      - Toujours taille 1
+
+  5.3.3 Format de l'operande 16 bits (little-endian)
+
+  Lorsqu'une instruction contient une adresse 16 bits, elle est
+  stockee en format little-endian (poids faible d'abord) :
+
+    Octet 1 : opcode
+    Octet 2 : poids faible de l'adresse (bits 7-0)
+    Octet 3 : poids fort de l'adresse (bits 15-8)
+
+  Exemples :
+
+    LDA $1234   s'encode : $AD $34 $12
+      $AD = opcode LDA absolu
+      $34 = poids faible de $1234
+      $12 = poids fort de $1234
+
+    JMP $C000   s'encode : $4C $00 $C0
+      $4C = opcode JMP absolu
+      $00 = poids faible de $C000
+      $C0 = poids fort de $C000
+
+    JSR $FFD2   s'encode : $20 $D2 $FF
+      $20 = opcode JSR absolu
+      $D2 = poids faible de $FFD2
+      $FF = poids fort de $FFD2
+
+  5.3.4 Format du deplacement relatif
+
+  Pour les instructions de branchement, l'operande est un
+  deplacement relatif signe sur 8 bits (-128 a +127).
+
+  Le deplacement est calcule a partir de l'adresse de
+  l'instruction SUIVANT le branchement (PC + 2, car le
+  branchement fait 2 octets).
+
+  Formule :
+    Adresse cible = (adresse du branchement) + 2 + deplacement
+
+  Exemples :
+
+    A l'adresse $1000 :
+      BEQ $1010   s'encode : $F0 $0E
+        deplacement = $1010 - ($1000 + 2) = $0E (+14)
+
+    A l'adresse $1000 :
+      BNE $0FF0   s'encode : $D0 $EE
+        deplacement = $0FF0 - ($1000 + 2) = -$12 = $EE (-18)
+
+    A l'adresse $1000 :
+      BEQ $1002   s'encode : $F0 $00
+        deplacement = 0 (sauter a l'instruction suivante)
+
+    A l'adresse $1000 :
+      BNE $1000   s'encode : $D0 $FE
+        deplacement = $1000 - ($1000 + 2) = -2 = $FE
+        (boucle infinie si la condition est vraie)
+
+  Portee maximale :
+    En arriere : -128 octets -> adresse - 126
+    En avant   : +127 octets -> adresse + 129
+
+  5.4 Opcodes non documentes (illegal opcodes)
+  -----------------------------------------------
+
+  Sur les 256 opcodes possibles ($00-$FF), 105 ne sont pas
+  officiellement definis par MOS Technology. Cependant, sur le
+  6502 NMOS, ces opcodes produisent des effets determines (bien
+  que non garantis) qui resultent de la logique interne du
+  decodeur d'instructions.
+
+  Le 65C02 (CMOS) transforme la plupart de ces opcodes en NOP
+  de differentes tailles.
+
+  5.4.1 Pourquoi existent-ils ?
+
+  Le decodeur d'instructions du 6502 utilise un PLA (Programmable
+  Logic Array) qui decode l'opcode en signaux de controle. Les
+  opcodes non definis activent des combinaisons imprevues de ces
+  signaux, ce qui produit des comportements resultant de la
+  superposition de plusieurs operations.
+
+  Par exemple :
+    - LAX = LDA + LDX (charge A et X en meme temps)
+    - SAX = STA AND STX (stocke A AND X)
+    - DCP = DEC + CMP (decremente et compare)
+
+  5.4.2 Opcodes non documentes les plus utilises
+
+  Les opcodes suivants sont les plus fiables et les plus
+  frequemment utilises par les programmeurs :
+
+  LAX (Load A and X) - opcodes : $A3, $A7, $AF, $B3, $B7, $BF
+    Charge simultanement A et X avec la meme valeur.
+    Equivalent a : LDA val / TAX (mais en un seul opcode)
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    (Indirect,X)      $A3     2       6
+    Page zero         $A7     2       3
+    Absolu            $AF     3       4
+    (Indirect),Y      $B3     2       5(+1)
+    Page zero,Y       $B7     2       4
+    Absolu,Y          $BF     3       4(+1)
+
+  SAX (Store A AND X) - opcodes : $83, $87, $8F, $97
+    Stocke le resultat de A AND X en memoire, sans modifier
+    ni A ni X ni les drapeaux.
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    (Indirect,X)      $83     2       6
+    Page zero         $87     2       3
+    Absolu            $8F     3       4
+    Page zero,Y       $97     2       4
+
+  DCP (Decrement and Compare) - opcodes : $C3, $C7, $CF, $D3,
+      $D7, $DB, $DF
+    Decremente la memoire puis compare le resultat avec A.
+    Equivalent a : DEC val / CMP val
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    (Indirect,X)      $C3     2       8
+    Page zero         $C7     2       5
+    Absolu            $CF     3       6
+    (Indirect),Y      $D3     2       8
+    Page zero,X       $D7     2       6
+    Absolu,Y          $DB     3       7
+    Absolu,X          $DF     3       7
+
+  ISC / ISB (Increment and Subtract) - opcodes : $E3, $E7, $EF,
+      $F3, $F7, $FB, $FF
+    Incremente la memoire puis soustrait le resultat de A (avec
+    retenue). Equivalent a : INC val / SBC val
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    (Indirect,X)      $E3     2       8
+    Page zero         $E7     2       5
+    Absolu            $EF     3       6
+    (Indirect),Y      $F3     2       8
+    Page zero,X       $F7     2       6
+    Absolu,Y          $FB     3       7
+    Absolu,X          $FF     3       7
+
+  SLO (Shift Left and OR) - opcodes : $03, $07, $0F, $13, $17,
+      $1B, $1F
+    Effectue un ASL sur la memoire puis un ORA avec A.
+    Equivalent a : ASL val / ORA val
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    (Indirect,X)      $03     2       8
+    Page zero         $07     2       5
+    Absolu            $0F     3       6
+    (Indirect),Y      $13     2       8
+    Page zero,X       $17     2       6
+    Absolu,Y          $1B     3       7
+    Absolu,X          $1F     3       7
+
+  RLA (Rotate Left and AND) - opcodes : $23, $27, $2F, $33, $37,
+      $3B, $3F
+    Effectue un ROL sur la memoire puis un AND avec A.
+    Equivalent a : ROL val / AND val
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    (Indirect,X)      $23     2       8
+    Page zero         $27     2       5
+    Absolu            $2F     3       6
+    (Indirect),Y      $33     2       8
+    Page zero,X       $37     2       6
+    Absolu,Y          $3B     3       7
+    Absolu,X          $3F     3       7
+
+  SRE (Shift Right and EOR) - opcodes : $43, $47, $4F, $53, $57,
+      $5B, $5F
+    Effectue un LSR sur la memoire puis un EOR avec A.
+    Equivalent a : LSR val / EOR val
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    (Indirect,X)      $43     2       8
+    Page zero         $47     2       5
+    Absolu            $4F     3       6
+    (Indirect),Y      $53     2       8
+    Page zero,X       $57     2       6
+    Absolu,Y          $5B     3       7
+    Absolu,X          $5F     3       7
+
+  RRA (Rotate Right and Add) - opcodes : $63, $67, $6F, $73, $77,
+      $7B, $7F
+    Effectue un ROR sur la memoire puis un ADC avec A.
+    Equivalent a : ROR val / ADC val
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    (Indirect,X)      $63     2       8
+    Page zero         $67     2       5
+    Absolu            $6F     3       6
+    (Indirect),Y      $73     2       8
+    Page zero,X       $77     2       6
+    Absolu,Y          $7B     3       7
+    Absolu,X          $7F     3       7
+
+  ANC (AND + set Carry) - opcodes : $0B, $2B
+    Effectue un AND immediat puis copie le bit 7 du resultat
+    dans le drapeau C. Equivalent a : AND #val, suivre N -> C
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    Immediat          $0B     2       2
+    Immediat          $2B     2       2
+
+  ALR / ASR (AND + LSR) - opcode : $4B
+    Effectue un AND immediat puis un LSR sur A.
+    Equivalent a : AND #val / LSR A
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    Immediat          $4B     2       2
+
+  ARR (AND + ROR) - opcode : $6B
+    Effectue un AND immediat puis un ROR sur A, avec un
+    positionnement particulier des drapeaux C et V.
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    Immediat          $6B     2       2
+
+  SBX / AXS (A AND X - operande -> X) - opcode : $CB
+    Calcule (A AND X) - operande immediat et stocke dans X.
+    Le drapeau C est positionne comme pour une comparaison.
+
+    Mode              Opcode  Octets  Cycles
+    ----------------  ------  ------  ------
+    Immediat          $CB     2       2
+
+  5.4.3 Opcodes instables et dangereux
+
+  Certains opcodes non documentes ont un comportement instable
+  qui depend de l'etat du bus de donnees, du timing, ou de la
+  revision du processeur :
+
+  SHA ($93, $9F) - Stocke A AND X AND (adresse haute + 1)
+    Comportement imprevisible dans certaines conditions de timing.
+
+  SHX ($9E) - Stocke X AND (adresse haute + 1)
+  SHY ($9C) - Stocke Y AND (adresse haute + 1)
+    Meme probleme de stabilite que SHA.
+
+  TAS / SHS ($9B) - SP := A AND X, stocke SP AND (adresse haute + 1)
+    Modifie le pointeur de pile de maniere imprevisible.
+
+  LAS ($BB) - A := X := SP := M AND SP
+    Comportement dependant de la valeur courante de SP.
+
+  ANE / XAA ($8B) - A := (A OR constante) AND X AND operande
+    La "constante" depend de la revision du processeur et de
+    la temperature ! Totalement imprevisible sur certaines
+    revisions.
+
+  5.4.4 L'opcode "KIL" / "JAM" / "HLT"
+
+  Les opcodes $02, $12, $22, $32, $42, $52, $62, $72, $82, $92,
+  $B2, $D2, $F2 provoquent le blocage du processeur. Le 6502
+  entre dans un etat ou il repete infiniment le meme cycle de
+  lecture sans avancer le compteur programme. Seul un signal
+  RESET peut sortir le processeur de cet etat.
+
+  Ces opcodes sont parfois utilises comme mecanisme de protection
+  anti-copie dans les jeux : si le code est modifie, l'execution
+  atteint un KIL et la machine se bloque.
+
+  5.4.5 NOP non documentes
+
+  Plusieurs opcodes agissent comme des NOP de differentes tailles :
+
+    Opcode  Taille  Cycles  Description
+    ------  ------  ------  --------------------------------
+    $1A     1       2       NOP implicite (comme $EA)
+    $3A     1       2       NOP implicite
+    $5A     1       2       NOP implicite
+    $7A     1       2       NOP implicite
+    $DA     1       2       NOP implicite
+    $FA     1       2       NOP implicite
+    $80     2       2       NOP immediat (saute 1 octet)
+    $82     2       2       NOP immediat
+    $89     2       2       NOP immediat
+    $C2     2       2       NOP immediat
+    $E2     2       2       NOP immediat
+    $04     2       3       NOP page zero (saute 1 octet)
+    $44     2       3       NOP page zero
+    $64     2       3       NOP page zero
+    $14     2       4       NOP page zero,X
+    $34     2       4       NOP page zero,X
+    $54     2       4       NOP page zero,X
+    $74     2       4       NOP page zero,X
+    $D4     2       4       NOP page zero,X
+    $F4     2       4       NOP page zero,X
+    $0C     3       4       NOP absolu (saute 2 octets)
+    $1C     3       4(+1)   NOP absolu,X
+    $3C     3       4(+1)   NOP absolu,X
+    $5C     3       4(+1)   NOP absolu,X
+    $7C     3       4(+1)   NOP absolu,X
+    $DC     3       4(+1)   NOP absolu,X
+    $FC     3       4(+1)   NOP absolu,X
+
+  Ces NOP sont utiles pour :
+    - Sauter un nombre precis d'octets sans modifier l'etat
+    - Ajuster le timing avec des couts en cycles differents
+    - Patcher du code existant sans decaler les adresses
+
+  5.4.6 Compatibilite avec le 65C02
+
+  Le 65C02 (version CMOS) ne supporte PAS les opcodes non
+  documentes du 6502 NMOS. Sur le 65C02 :
+    - La plupart des opcodes indefinis sont traites comme des
+      NOP de 1, 2 ou 3 octets
+    - Les opcodes KIL ne bloquent plus le processeur
+    - Les effets combinees (LAX, SAX, DCP, etc.) ne fonctionnent
+      plus
+    - Le 65C02 ajoute ses propres nouvelles instructions a la
+      place de certains opcodes indefinis (BRA, PHX, PHY, PLX,
+      PLY, STZ, TRB, TSB, BBR, BBS)
+
+  Resume des opcodes non documentes par fiabilite :
+
+    Fiabilite    Opcodes
+    -----------  -----------------------------------------------
+    Fiable       LAX, SAX, DCP, ISC, SLO, RLA, SRE, RRA,
+                 ANC, ALR, ARR, SBX
+    Instable     SHA, SHX, SHY, TAS, LAS
+    Imprevisible ANE/XAA
+    Bloquant     KIL/JAM/HLT ($x2 sauf $A2)
+
+  Avertissement : l'utilisation d'opcodes non documentes n'est
+  recommandee que pour la programmation sur du materiel 6502 NMOS
+  reel. Certains emulateurs ne les supportent pas correctement,
+  et ils sont incompatibles avec le 65C02/65C816.
+
+  5.4.7 Comparaison avec d'autres processeurs
+
+  L'existence d'opcodes non documentes est specifique aux
+  processeurs de cette epoque :
+
+    Processeur      Opcodes indefinis     Comportement
+    -------------   ------------------    -------------------------
+    MOS 6502 NMOS   105 sur 256           Effets determines mais
+                                          non garantis
+    WDC 65C02       0 (reduit)            Nouveaux opcodes + NOP
+    Zilog Z80       ~19 (prefixes CB/DD)  Effets previsibles
+    Intel 8080      ~12                   Non specifie
+    Motorola 6800   ~40                   Non specifie
+    Intel 8086      Tres peu              Non specifie
+    Motorola 68000  Exceptions ligne A/F  Trap explicite
