@@ -9968,12 +9968,8 @@ Begin
           Begin
             { --- MOS 6502 --- }
             LblDone := LabelGen;
-            Lbl := LabelGen;
             EmitInstr('CMP #0');
-            EmitInstr('BNE ' + Lbl);
-            EmitInstr('LDA #0');
             EmitInstr('BEQ ' + LblDone);
-            EmitLabel(Lbl);
             EmitInstr('LDA #1');
             EmitLabel(LblDone);
           End;
@@ -10063,7 +10059,10 @@ Begin
         DEST_Z80:
           EmitInstr('LD HL,32768');        { 32 KB raisonnable Z80 }
         DEST_6502:
+        Begin
           EmitInstr('LDA #255');           { 255 octets max 6502 }
+          EmitInstr('LDX #0');
+        End;
         DEST_6809:
           EmitInstr('LDD #32768');         { 32 KB raisonnable 6809 }
         Else
@@ -10084,7 +10083,10 @@ Begin
         DEST_Z80:
           EmitInstr('LD HL,49152');        { 48 KB raisonnable Z80 }
         DEST_6502:
+        Begin
           EmitInstr('LDA #255');           { 255 octets max 6502 }
+          EmitInstr('LDX #0');
+        End;
         DEST_6809:
           EmitInstr('LDD #49152');         { 48 KB raisonnable 6809 }
         Else
@@ -10111,7 +10113,10 @@ Begin
             DEST_Z80:
               EmitInstr('LD HL,0');
             DEST_6502:
+            Begin
               EmitInstr('LDA #0');
+              EmitInstr('LDX #0');
+            End;
             DEST_6809:
               EmitInstr('LDD #0');
             Else
