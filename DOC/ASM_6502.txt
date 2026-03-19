@@ -1,0 +1,484 @@
+==============================================================================
+     ASSEMBLEUR 6502 - Jeu d'instructions et architecture
+     MOS Technology 6502 - Documentation de reference
+==============================================================================
+
+  Document de reference sur le processeur MOS Technology 6502, son
+  architecture, son jeu d'instructions, ses modes d'adressage et les
+  techniques de programmation en langage assembleur associees.
+
+  Date:       Mars 2026
+  Processeur: MOS Technology 6502 (1975), 8 bits
+  Norme:      MOS Technology 6502 Programming Manual
+
+==============================================================================
+  SOMMAIRE
+==============================================================================
+
+  1.  INTRODUCTION
+      1.1  Presentation generale
+      1.2  Variantes de la famille 6502
+      1.3  Contexte historique
+      1.4  Comparaison avec les autres processeurs de l'epoque
+      1.5  Modele de programmation
+      1.6  Ordre des octets (Endianness)
+      1.7  Organisation du document
+
+  2.  ARCHITECTURE ET REGISTRES
+      2.1  Vue d'ensemble de l'architecture
+      2.2  Accumulateur (A)
+      2.3  Registres d'index (X et Y)
+      2.4  Pointeur de pile (SP)
+      2.5  Compteur programme (PC)
+      2.6  Registre d'etat du processeur (P)
+      2.7  Organisation de la memoire
+      2.8  La pile (Stack)
+
+  3.  MODES D'ADRESSAGE
+      3.1  Vue d'ensemble
+      3.2  Adressage implicite (Implied)
+      3.3  Adressage par accumulateur (Accumulator)
+      3.4  Adressage immediat (Immediate)
+      3.5  Adressage page zero (Zero Page)
+      3.6  Adressage page zero indexe par X (Zero Page,X)
+      3.7  Adressage page zero indexe par Y (Zero Page,Y)
+      3.8  Adressage absolu (Absolute)
+      3.9  Adressage absolu indexe par X (Absolute,X)
+      3.10 Adressage absolu indexe par Y (Absolute,Y)
+      3.11 Adressage indirect (Indirect)
+      3.12 Adressage indirect indexe par X (Indexed Indirect, (Ind,X))
+      3.13 Adressage indirect indexe par Y (Indirect Indexed, (Ind),Y)
+      3.14 Adressage relatif (Relative)
+
+  4.  JEU D'INSTRUCTIONS (OPCODES)
+      4.1  Vue d'ensemble
+      4.2  Instructions de transfert de donnees (LDA, LDX, LDY,
+           STA, STX, STY, TAX, TAY, TXA, TYA, TSX, TXS)
+      4.3  Instructions arithmetiques (ADC, SBC, INC, INX, INY,
+           DEC, DEX, DEY)
+      4.4  Instructions logiques (AND, ORA, EOR)
+      4.5  Instructions de decalage et rotation (ASL, LSR, ROL, ROR)
+      4.6  Instructions de comparaison (CMP, CPX, CPY, BIT)
+      4.7  Instructions de branchement (BCC, BCS, BEQ, BNE, BMI,
+           BPL, BVC, BVS)
+      4.8  Instructions de saut et d'appel (JMP, JSR, RTS, RTI, BRK)
+      4.9  Instructions de pile (PHA, PLA, PHP, PLP)
+      4.10 Instructions de controle des drapeaux (CLC, SEC, CLD,
+           SED, CLI, SEI, CLV)
+      4.11 Instruction NOP
+
+  5.  CODAGE DES INSTRUCTIONS (FORMAT BINAIRE)
+      5.1  Structure generale de l'encodage
+      5.2  Table complete des opcodes
+      5.3  Calcul de la taille des instructions
+      5.4  Opcodes non documentes (illegal opcodes)
+
+  6.  GESTION DES INTERRUPTIONS
+      6.1  Types d'interruptions
+      6.2  Interruption materielle (IRQ)
+      6.3  Interruption non masquable (NMI)
+      6.4  Interruption logicielle (BRK)
+      6.5  Vecteurs d'interruption
+      6.6  Sequence de traitement d'une interruption
+
+  7.  TECHNIQUES DE PROGRAMMATION
+      7.1  Arithmetique 16 bits et multi-precision
+      7.2  Multiplication et division en logiciel
+      7.3  Manipulation de chaines de caracteres
+      7.4  Tables de saut
+      7.5  Code auto-modifiant
+      7.6  Optimisations courantes
+      7.7  Sous-routines et conventions d'appel
+
+  8.  DIRECTIVES ASSEMBLEUR
+      8.1  Vue d'ensemble (ASM6502.PAS)
+      8.2  Directives de donnees (DB/FCB/BYTE, DW/FDB/WORD, DS/RMB/BLKB,
+           FCC)
+      8.3  Directives de controle (ORG/AORG, RORG, END, EQU, SET)
+      8.4  Directives de listing (LIST, OPT)
+      8.5  Macros (MACRO, ENDM)
+      8.6  Etiquettes et symboles
+      8.7  Expressions et operateurs
+      8.8  Formats numeriques (decimal, hexadecimal, binaire, octal)
+
+  9.  EXEMPLES DE CODE
+      9.1  Hello World
+      9.2  Calcul de factorielle
+      9.3  Tri a bulles
+      9.4  Multiplication 16 bits
+      9.5  Routine de delai (temporisation)
+      9.6  Copie de bloc memoire
+
+  10. CONVERSION DE CODE 6502 EN 80386
+      10.1 Principes generaux
+      10.2 Correspondance des registres
+      10.3 Conversion des modes d'adressage
+      10.4 Conversion des instructions
+
+  11. CONVERSION DE CODE 6502 EN 68000
+      11.1 Principes generaux
+      11.2 Correspondance des registres
+      11.3 Conversion des modes d'adressage
+      11.4 Conversion des instructions
+
+  12. CONVERSION DE CODE 6502 EN Z80
+      12.1 Principes generaux
+      12.2 Correspondance des registres
+      12.3 Conversion des modes d'adressage
+      12.4 Conversion des instructions
+
+==============================================================================
+1. INTRODUCTION
+==============================================================================
+
+  1.1 Presentation generale
+  -------------------------
+
+  Le processeur MOS Technology 6502, commercialise en 1975 au prix
+  revolutionnaire de 25 dollars (contre environ 200 dollars pour les
+  processeurs concurrents de l'epoque), est un microprocesseur 8 bits
+  qui a joue un role fondamental dans la revolution de la micro-
+  informatique. Concu par Chuck Peddle et son equipe chez MOS
+  Technology, il est derive conceptuellement du Motorola 6800, dont
+  plusieurs des concepteurs du 6502 etaient les createurs.
+
+  Le 6502 se distingue par :
+
+    - Une architecture 8 bits avec un bus de donnees de 8 bits
+    - Un bus d'adresses de 16 bits (espace adressable de 64 Ko)
+    - Un jeu de registres minimaliste : un accumulateur (A),
+      deux registres d'index (X et Y), un pointeur de pile (SP)
+      et un registre d'etat (P)
+    - 13 modes d'adressage, dont le puissant adressage par
+      page zero (zero page), qui offre un acces rapide aux 256
+      premiers octets de la memoire
+    - Un pipeline simplifie a 2 etages permettant un bon debit
+      d'instructions malgre la simplicite du circuit
+    - Un jeu de 56 instructions de base
+    - Un cout de fabrication extremement bas grace a un nombre
+      reduit de transistors (environ 3 510)
+    - Un fonctionnement a des frequences de 1 a 3 MHz selon
+      les variantes
+
+  Malgre sa simplicite apparente, le 6502 est remarquablement
+  efficace. Son utilisation intensive de la page zero comme un
+  ensemble de pseudo-registres compense le faible nombre de
+  registres internes, et ses modes d'adressage indirect permettent
+  une manipulation flexible des pointeurs et des structures de
+  donnees.
+
+  1.2 Variantes de la famille 6502
+  ---------------------------------
+
+  MOS Technology et ses licenseurs ont produit de nombreuses
+  variantes du 6502 :
+
+    6502    : Version originale, 1 MHz (1975)
+    6502A   : Version amelioree, 2 MHz (1977)
+    6502B   : Version haute vitesse, 3 MHz (1982)
+    6503    : Variante avec bus d'adresses reduit a 12 bits
+              (4 Ko adressables), boitier 28 broches
+    6504    : Variante avec bus d'adresses reduit a 13 bits
+              (8 Ko adressables), boitier 28 broches
+    6505    : Variante 28 broches, bus d'adresses 12 bits, pas
+              de ligne RDY
+    6507    : Variante 28 broches, bus d'adresses 13 bits, pas
+              de lignes d'interruption (utilisee dans l'Atari 2600)
+    6510    : Variante avec port d'entree/sortie integre de 6 bits,
+              utilisee dans le Commodore 64
+    6512    : Version du 6502 compatible avec le bus du 6500/1
+    7501    : Variante utilisee dans le Commodore 16 et Plus/4
+              (procede HMOS)
+    8500    : Version HMOS du 6510, utilisee dans les Commodore 64C
+              tardifs
+    8502    : Variante cadencee a 2 MHz, utilisee dans le
+              Commodore 128
+
+  Des versions CMOS ameliorees ont ete produites par d'autres
+  fabricants :
+
+    65C02 (WDC)   : Version CMOS avec corrections de bugs et
+                    ajout de nouvelles instructions (BRA, PHX,
+                    PHY, PLX, PLY, STZ, TRB, TSB, BBR, BBS,
+                    RMB, SMB). Faible consommation. (1983)
+    65SC02        : Version sans les instructions specifiques
+                    Rockwell (BBR, BBS, RMB, SMB)
+    65CE02 (CSG)  : Version etendue avec registre Z supplementaire,
+                    mode 16 bits partiel, et nouvelles instructions.
+                    Utilisee dans le Commodore 65 (prototype).
+    65816 (WDC)   : Extension 16 bits du 6502, retrocompatible.
+                    Bus d'adresses 24 bits (16 Mo). Utilisee dans
+                    le Super Nintendo (Ricoh 5A22) et l'Apple IIGS.
+    65802 (WDC)   : Version du 65816 compatible broche a broche
+                    avec le 6502 (bus d'adresses 16 bits seulement)
+    2A03 (Ricoh)  : Variante du 6502 sans mode BCD, avec generateur
+                    audio et controleur DMA integres, utilisee dans
+                    la Nintendo NES/Famicom
+    2A07 (Ricoh)  : Version PAL du 2A03
+
+  Toutes les variantes de la famille partagent le jeu d'instructions
+  de base du 6502. Les versions CMOS (65C02, 65816) ajoutent de
+  nouvelles instructions mais restent retrocompatibles avec le code
+  6502 original. Ce document se concentre sur le 6502 original
+  (NMOS), qui constitue le denominateur commun de toute la famille.
+
+  1.3 Contexte historique
+  -----------------------
+
+  Le 6502 est ne d'une equipe d'ingenieurs de Motorola, menes par
+  Chuck Peddle, qui avaient travaille sur le Motorola 6800 (1974).
+  Insatisfaits du prix eleve du 6800 (environ 175 dollars) et
+  desireux de creer un processeur abordable, ils quitterent
+  Motorola pour rejoindre MOS Technology en 1974. Le 6502 fut
+  presente au Wescon trade show en septembre 1975, ou il pouvait
+  etre achete directement au comptoir pour 25 dollars, un prix
+  qui stupefie l'industrie.
+
+  Le 6502 a ete adopte dans un nombre remarquable de systemes
+  emblematiques :
+
+  Ordinateurs personnels :
+    - Apple I (1976) : le premier ordinateur d'Apple, concu par
+      Steve Wozniak autour d'un 6502 a 1 MHz. Wozniak a choisi
+      le 6502 en raison de son prix bas.
+    - Apple II (1977) : l'un des premiers ordinateurs personnels
+      a connaitre un succes commercial massif. 6502 a 1,023 MHz.
+      L'Apple IIe (1983) et l'Apple IIc (1984) utilisent le 65C02.
+      L'Apple IIGS (1986) utilise le 65C816 a 2,8 MHz.
+    - Commodore PET (1977) : premier ordinateur de Commodore,
+      6502 a 1 MHz
+    - Commodore VIC-20 (1980) : 6502A a 1,1 MHz, premier
+      ordinateur vendu a plus d'un million d'exemplaires
+    - Commodore 64 (1982) : l'ordinateur personnel le plus vendu
+      de tous les temps (environ 17 millions d'unites), utilisant
+      un 6510 (variante du 6502) a 1,023 MHz (NTSC)
+    - Commodore 128 (1985) : 8502 a 1/2 MHz
+    - Atari 400 et 800 (1979) : 6502 a 1,79 MHz
+    - Atari XL/XE (1983-1985) : serie de successeurs des 400/800,
+      toujours bases sur le 6502
+    - BBC Micro (1981) : ordinateur educatif tres repandu au
+      Royaume-Uni, 6502A a 2 MHz
+    - Acorn Electron (1983) : version economique du BBC Micro
+    - Oric-1 et Oric Atmos (1983) : 6502A a 1 MHz
+    - Ohio Scientific (1977) : gamme d'ordinateurs bases sur le 6502
+
+  Consoles de jeux :
+    - Atari 2600 (1977) : console de jeux legendaire, utilisant un
+      6507 (variante du 6502 avec bus d'adresses 13 bits) a 1,19 MHz
+    - Nintendo NES / Famicom (1983) : la console 8 bits la plus
+      vendue au monde, utilisant un Ricoh 2A03 (clone du 6502 sans
+      mode BCD) a 1,79 MHz (NTSC) / 1,66 MHz (PAL)
+    - Atari 7800 (1986) : variante du 6502C (Sally) a 1,79 MHz
+    - Atari Lynx (1989) : console portable, 65C02 a 4 MHz
+    - Super Nintendo / Super Famicom (1990) : Ricoh 5A22 (base sur
+      le 65C816) a 3,58 MHz
+
+  Peripheriques et systemes embarques :
+    - Lecteurs de disquettes Commodore (1541, 1571) : contiennent
+      leur propre 6502 comme controleur
+    - Imprimantes Commodore
+    - Controleurs de disques Apple II (Disk II)
+    - Nombreux systemes de controle industriel
+    - Bornes d'arcade (Atari, Namco, etc.)
+    - Instruments de musique electronique (Elektron SIDstation)
+
+  Le 6502 reste extremement populaire dans la communaute retro-
+  informatique et parmi les amateurs d'electronique. Ben Eater a
+  popularise la construction d'ordinateurs 8 bits autour du 65C02
+  sur breadboard, et le WDC 65C02 et 65C816 sont toujours
+  fabriques et vendus aujourd'hui (2026) par Western Design Center.
+
+  L'assembleur 6502 reste pertinent car :
+    - De tres nombreux systemes retro utilisent le 6502
+    - L'emulation de systemes 6502 (C64, NES, Apple II, Atari)
+      est extremement populaire
+    - Le 6502 est largement enseigne comme introduction a
+      l'architecture des processeurs et a l'assembleur
+    - Le WDC 65C02/65C816 est toujours fabrique pour l'embarque
+    - Le projet DEV-COOLS cible le 6502 dans son compilateur
+      multi-cible (TPCW32.PAS) et dispose d'un assembleur dedie
+      (ASM6502.PAS), d'un compilateur C (CC6502.PAS) et d'un
+      desassembleur (DIS6502.PAS)
+
+  1.4 Comparaison avec les autres processeurs de l'epoque
+  --------------------------------------------------------
+
+  Le 6502 etait en concurrence directe avec l'Intel 8080/8085,
+  le Zilog Z80 et le Motorola 6800 :
+
+    Caracteristique        6502           8080           Z80            6800
+    -------------------------------------------------------------------------
+    Annee                  1975           1974           1976           1974
+    Architecture           8 bits         8 bits         8 bits         8 bits
+    Bus donnees            8 bits         8 bits         8 bits         8 bits
+    Bus adresses           16 bits        16 bits        16 bits        16 bits
+    Espace adressable      64 Ko          64 Ko          64 Ko          64 Ko
+    Registres generaux     A, X, Y        A, B, C,       A, B, C,       A, B
+                                          D, E, H, L     D, E, H, L
+                                                         + jeu alt.
+    Modes d'adressage      13             4              10             6
+    Transistors            ~3 510         ~4 500         ~8 500         ~4 100
+    Frequence typique      1-2 MHz        2 MHz          2,5-4 MHz      1-2 MHz
+    Prix initial           25 $           ~150 $         ~25 $ (1978)   ~175 $
+    Endianness             Little         Little         Little         Big
+    Pile                   Page 1         Memoire        Memoire        Memoire
+                           (256 octets)   (16 bits)      (16 bits)      (16 bits)
+
+  Le 6502 se distingue par :
+    - Son prix extremement bas a sa sortie (25 $ vs 150-175 $)
+    - Son nombre reduit de transistors (conception tres efficace)
+    - Ses modes d'adressage page zero, qui compensent le faible
+      nombre de registres en offrant un acces rapide a 256 octets
+    - Son pipeline simplifie a 2 etages, qui lui permet d'executer
+      de nombreuses instructions en moins de cycles que ses
+      concurrents malgre une frequence d'horloge plus basse
+    - Sa pile limitee a 256 octets (page 1, adresses $0100-$01FF)
+    - L'absence de registres de 16 bits (pas d'arithmetique 16 bits
+      native, contrairement au Z80 avec HL, BC, DE)
+
+  En termes de performances effectives, le 6502 a 1 MHz est
+  souvent comparable au Z80 a 4 MHz pour de nombreuses taches,
+  grace a son pipeline et a ses modes d'adressage efficaces.
+
+  1.5 Modele de programmation
+  ---------------------------
+
+  Le 6502 offre un modele de programmation minimaliste mais
+  efficace, compense par des modes d'adressage puissants :
+
+  Accumulateur (A) :
+    - Registre de 8 bits
+    - Seul registre pouvant effectuer des operations arithmetiques
+      (ADC, SBC) et logiques (AND, ORA, EOR)
+    - Destination et source principale pour les transferts de
+      donnees (LDA, STA)
+    - Cible des operations de decalage et rotation (ASL A, LSR A,
+      ROL A, ROR A)
+
+  Registre d'index X :
+    - Registre de 8 bits
+    - Utilise comme index dans de nombreux modes d'adressage :
+      page zero indexe (ZPG,X), absolu indexe (ABS,X),
+      indirect indexe ((IND,X))
+    - Peut etre incremente (INX) et decremente (DEX)
+    - Peut etre compare (CPX)
+    - Peut etre transfere vers/depuis l'accumulateur (TAX, TXA)
+      et vers/depuis le pointeur de pile (TSX, TXS)
+
+  Registre d'index Y :
+    - Registre de 8 bits
+    - Utilise comme index dans les modes d'adressage :
+      page zero indexe (ZPG,Y), absolu indexe (ABS,Y),
+      indirect indexe ((IND),Y)
+    - Peut etre incremente (INY) et decremente (DEY)
+    - Peut etre compare (CPY)
+    - Peut etre transfere vers/depuis l'accumulateur (TAY, TYA)
+
+  Pointeur de pile (SP, Stack Pointer) :
+    - Registre de 8 bits
+    - Pointe vers le prochain emplacement libre dans la pile
+    - La pile est situee en page 1 (adresses $0100 a $01FF)
+    - L'adresse effective de pile est toujours $0100 + SP
+    - La pile croit vers le bas (SP decremente lors d'un PUSH)
+    - Initialement a $FD apres un RESET (convention courante)
+    - Peut etre initialise via TXS (transfert de X vers SP)
+
+  Compteur programme (PC, Program Counter) :
+    - Registre de 16 bits
+    - Pointe vers la prochaine instruction a executer
+    - Initialise a partir du vecteur RESET ($FFFC-$FFFD) au
+      demarrage
+    - Automatiquement incremente lors de l'execution des
+      instructions
+    - Modifie par les instructions de saut (JMP), d'appel
+      de sous-routine (JSR), de retour (RTS, RTI) et de
+      branchement conditionnel (BCC, BCS, BEQ, BNE, etc.)
+
+  Registre d'etat du processeur (P, Processor Status) :
+    - Registre de 8 bits contenant les drapeaux de condition
+      et de controle :
+
+        Bit 7 : N (Negative)  - mis a 1 si le resultat est negatif
+                                (bit 7 du resultat = 1)
+        Bit 6 : V (Overflow)  - mis a 1 en cas de debordement de
+                                complement a deux
+        Bit 5 : (inutilise)   - toujours a 1
+        Bit 4 : B (Break)     - mis a 1 si l'interruption provient
+                                d'une instruction BRK
+        Bit 3 : D (Decimal)   - active le mode BCD (Binary Coded
+                                Decimal) pour ADC et SBC
+        Bit 2 : I (Interrupt) - masque les interruptions IRQ quand
+                                mis a 1
+        Bit 1 : Z (Zero)      - mis a 1 si le resultat est zero
+        Bit 0 : C (Carry)     - retenue pour l'arithmetique, aussi
+                                utilisee par les decalages/rotations
+
+      Representation :
+
+        Bit:   7   6   5   4   3   2   1   0
+               N   V   -   B   D   I   Z   C
+               |   |   |   |   |   |   |   |
+               |   |   |   |   |   |   |   +-- Carry (retenue)
+               |   |   |   |   |   |   +------ Zero
+               |   |   |   |   |   +---------- Interrupt disable
+               |   |   |   |   +-------------- Decimal mode
+               |   |   |   +------------------ Break
+               |   |   +---------------------- (toujours 1)
+               |   +-------------------------- Overflow
+               +------------------------------ Negative
+
+  Le faible nombre de registres du 6502 est compense par
+  l'utilisation de la page zero ($0000-$00FF) comme un ensemble
+  de 256 pseudo-registres accessibles en seulement 2 cycles
+  d'horloge (au lieu de 4 pour un adressage absolu). Les
+  programmeurs 6502 utilisent couramment la page zero pour
+  stocker des pointeurs, des compteurs et des variables
+  temporaires.
+
+  1.6 Ordre des octets (Endianness)
+  ----------------------------------
+
+  Le 6502 utilise l'ordre little-endian (poids faible en premier) :
+
+    - L'octet de poids faible est stocke a l'adresse la plus basse
+    - Pour un mot de 16 bits $1234 a l'adresse $1000 :
+        $1000 : $34 (octet de poids faible, Low Byte)
+        $1001 : $12 (octet de poids fort, High Byte)
+
+  Cet ordre s'applique partout dans le 6502 :
+    - Les adresses 16 bits dans les instructions (format low-high)
+    - Les vecteurs d'interruption ($FFFA-$FFFF)
+    - L'adresse de retour empilee par JSR et les interruptions
+    - Les pointeurs en page zero utilises par les modes d'adressage
+      indirect
+
+  Exemples :
+    - L'instruction JMP $1234 est encodee : $4C $34 $12
+      (opcode, low byte, high byte)
+    - Le vecteur RESET aux adresses $FFFC-$FFFD :
+        $FFFC : $00 (low byte)  -> adresse de demarrage = $F000
+        $FFFD : $F0 (high byte)
+    - Un pointeur en page zero aux adresses $80-$81 :
+        $0080 : $00 (low byte)  -> pointe vers $8000
+        $0081 : $80 (high byte)
+
+  C'est le meme ordre que l'Intel 8080/8085, le Z80 et les x86.
+  C'est l'ordre inverse du Motorola 6800 et du 68000 (big-endian),
+  bien que le 6502 soit un descendant conceptuel du 6800.
+
+  1.7 Organisation du document
+  ----------------------------
+
+  Ce document est organise comme suit :
+
+    Section 2  : Architecture et registres du 6502
+    Section 3  : Modes d'adressage
+    Section 4  : Jeu d'instructions (opcodes)
+    Section 5  : Codage des instructions (format binaire)
+    Section 6  : Gestion des interruptions
+    Section 7  : Techniques de programmation
+    Section 8  : Directives assembleur (ASM6502.PAS)
+    Section 9  : Exemples de code
+    Section 10 : Conversion de code 6502 en 80386
+    Section 11 : Conversion de code 6502 en 68000
+    Section 12 : Conversion de code 6502 en Z80
