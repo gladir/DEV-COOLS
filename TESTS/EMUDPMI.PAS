@@ -181,6 +181,44 @@ Var
   3:(DataByte:Byte);
  End;
 
+  { TODO 5 : Conversion d'adresse selecteur:offset en adresse lineaire
+    32 bits. Le selecteur contient l'index LDT dans les bits 15..3
+    (bits 1..0 = RPL, bit 2 = TI). L'adresse lineaire est calculee
+    comme BaseAddr + Offset au lieu de Segment*16+Offset du mode reel. }
+Function SelOfsToLinear(Sel:Word;Ofs:LongInt):LongInt;
+Var
+ Idx:Word;
+Begin
+ Idx:=Sel shr 3;
+ If Idx>=LDTSize Then Begin
+  WriteLn('Erreur: selecteur $',HexStr(Sel,4),' hors limites LDT');
+  SelOfsToLinear:=0;
+  Exit;
+ End;
+ If Not LDT[Idx].InUse Then Begin
+  WriteLn('Erreur: selecteur $',HexStr(Sel,4),' non alloue');
+  SelOfsToLinear:=0;
+  Exit;
+ End;
+  { Verifier que l'offset est dans la limite du segment }
+ If(LDT[Idx].Granularity and $80)<>0 Then Begin
+   { Bit G=1 : limite en pages de 4 Ko }
+  If Ofs>(LDT[Idx].Limit*4096+4095)Then Begin
+   WriteLn('Erreur: offset $',HexStr(Ofs,8),' depasse la limite du segment');
+   SelOfsToLinear:=0;
+   Exit;
+  End;
+ End Else Begin
+   { Bit G=0 : limite en octets }
+  If Ofs>LDT[Idx].Limit Then Begin
+   WriteLn('Erreur: offset $',HexStr(Ofs,8),' depasse la limite du segment');
+   SelOfsToLinear:=0;
+   Exit;
+  End;
+ End;
+ SelOfsToLinear:=LDT[Idx].BaseAddr+Ofs;
+End;
+
 Procedure Init;
 Var
  J:LongInt;
