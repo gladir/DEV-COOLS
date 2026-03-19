@@ -5497,3 +5497,976 @@
   oblige le handler a sauvegarder manuellement A, X et Y si
   necessaire. Le 6809, en revanche, sauvegarde automatiquement
   tous les registres (12 octets) mais au prix de 19 cycles.
+
+==============================================================================
+7. TECHNIQUES DE PROGRAMMATION
+==============================================================================
+
+  Cette section presente les techniques de programmation courantes
+  en assembleur 6502, incluant l'arithmetique multi-precision,
+  la multiplication/division logicielle, la manipulation de chaines,
+  les tables de saut, le code auto-modifiant, les optimisations
+  et les conventions d'appel de sous-routines.
+
+  7.1 Arithmetique 16 bits et multi-precision
+  ----------------------------------------------
+
+  Le 6502 est un processeur 8 bits. Toute arithmetique sur des
+  valeurs de plus de 8 bits doit etre effectuee manuellement,
+  octet par octet, en utilisant le drapeau C (Carry) pour
+  propager la retenue entre les octets.
+
+  7.1.1 Addition 16 bits
+
+  Pour additionner deux valeurs 16 bits, on additionne d'abord
+  les octets de poids faible (low bytes) avec ADC, puis les
+  octets de poids fort (high bytes) avec ADC. Le drapeau Carry
+  propage automatiquement la retenue.
+
+    ; Resultat := Operande1 + Operande2 (16 bits)
+    ; Operande1 stocke en OP1_LO / OP1_HI
+    ; Operande2 stocke en OP2_LO / OP2_HI
+    ; Resultat  stocke en RES_LO / RES_HI
+
+    CLC              ; effacer la retenue avant l'addition
+    LDA OP1_LO       ; charger l'octet bas de l'operande 1
+    ADC OP2_LO       ; additionner l'octet bas de l'operande 2
+    STA RES_LO       ; stocker l'octet bas du resultat
+    LDA OP1_HI       ; charger l'octet haut de l'operande 1
+    ADC OP2_HI       ; additionner l'octet haut + retenue
+    STA RES_HI       ; stocker l'octet haut du resultat
+
+  Si C=1 apres la deuxieme ADC, il y a un debordement (le resultat
+  depasse 16 bits).
+
+  7.1.2 Soustraction 16 bits
+
+    ; Resultat := Operande1 - Operande2 (16 bits)
+    SEC              ; mettre la retenue a 1 avant la soustraction
+    LDA OP1_LO
+    SBC OP2_LO
+    STA RES_LO
+    LDA OP1_HI
+    SBC OP2_HI
+    STA RES_HI
+
+  Si C=0 apres la deuxieme SBC, le resultat est negatif
+  (emprunt non satisfait).
+
+  7.1.3 Incrementation 16 bits
+
+  Le 6502 n'a pas d'instruction INC 16 bits. On peut utiliser
+  l'addition avec 1 :
+
+    ; VAR := VAR + 1 (16 bits)
+    INC VAR_LO       ; incrementer l'octet bas
+    BNE Skip         ; si pas de debordement (!=0), termine
+    INC VAR_HI       ; sinon incrementer l'octet haut
+  Skip:
+
+  Cette technique est plus rapide (5-8 cycles) que l'addition
+  16 bits complete (18 cycles).
+
+  7.1.4 Decrementation 16 bits
+
+    ; VAR := VAR - 1 (16 bits)
+    LDA VAR_LO       ; charger l'octet bas
+    BNE Skip2        ; si != 0, pas besoin de toucher l'octet haut
+    DEC VAR_HI       ; decrementer l'octet haut (emprunt)
+  Skip2:
+    DEC VAR_LO       ; decrementer l'octet bas
+
+  7.1.5 Comparaison 16 bits
+
+  Le 6502 n'a pas de CMP 16 bits. On compare d'abord les
+  octets de poids fort, puis les octets de poids faible si
+  les octets hauts sont egaux :
+
+    ; Comparer OP1 (16 bits) avec OP2 (16 bits)
+    LDA OP1_HI
+    CMP OP2_HI
+    BNE Done_Cmp     ; si octets hauts differents, flags valides
+    LDA OP1_LO
+    CMP OP2_LO       ; comparer les octets bas
+  Done_Cmp:
+    ; A ce point, les drapeaux C, Z, N sont corrects
+    ; BCC = OP1 < OP2 (non signe)
+    ; BCS = OP1 >= OP2 (non signe)
+    ; BEQ = OP1 == OP2
+
+  7.1.6 Decalage 16 bits
+
+  Decalage a gauche (multiplication par 2) :
+
+    ASL VAR_LO       ; decaler l'octet bas a gauche
+    ROL VAR_HI       ; decaler l'octet haut avec la retenue
+
+  Decalage a droite (division par 2, non signe) :
+
+    LSR VAR_HI       ; decaler l'octet haut a droite
+    ROR VAR_LO       ; decaler l'octet bas avec la retenue
+
+  Decalage a droite arithmetique (division par 2, signe) :
+
+    LDA VAR_HI       ; charger l'octet haut
+    ASL A             ; mettre le bit de signe dans C
+    ROR VAR_HI       ; decaler en preservant le signe
+    ROR VAR_LO       ; propager vers l'octet bas
+
+  7.1.7 Negation 16 bits (complement a deux)
+
+    ; VAR := -VAR (16 bits)
+    ; Methode : NOT(VAR) + 1
+
+    SEC              ; C := 1 pour l'addition de 1
+    LDA #$00
+    SBC VAR_LO       ; A := 0 - VAR_LO - ~C = ~VAR_LO + 1
+    STA VAR_LO
+    LDA #$00
+    SBC VAR_HI       ; A := 0 - VAR_HI - ~C
+    STA VAR_HI
+
+  7.1.8 Arithmetique multi-precision (24 bits, 32 bits, ...)
+
+  Le principe s'etend a n'importe quelle taille. Il suffit de
+  chainer les operations ADC/SBC sur chaque octet supplementaire.
+
+    ; Addition 32 bits : RES := OP1 + OP2
+    CLC
+    LDA OP1+0        ; octet 0 (poids faible)
+    ADC OP2+0
+    STA RES+0
+    LDA OP1+1        ; octet 1
+    ADC OP2+1
+    STA RES+1
+    LDA OP1+2        ; octet 2
+    ADC OP2+2
+    STA RES+2
+    LDA OP1+3        ; octet 3 (poids fort)
+    ADC OP2+3
+    STA RES+3
+
+  Cout en cycles : environ 6 cycles par octet supplementaire
+  (LDA + ADC + STA = 3+3+3 = 9 cycles si en page zero).
+
+  7.2 Multiplication et division en logiciel
+  --------------------------------------------
+
+  Le 6502 ne possede aucune instruction de multiplication ou
+  de division. Ces operations doivent etre implementees en
+  logiciel, a l'aide de decalages et d'additions.
+
+  7.2.1 Multiplication 8x8 -> 16 bits
+
+  Algorithme de multiplication par decalage-et-addition (shift
+  and add). On examine chaque bit du multiplicateur ; quand un
+  bit est a 1, on additionne le multiplicande au resultat.
+
+    ; RESULT (16 bits) := MCAND * MPLIER (8 bits chacun)
+    ; MCAND   = multiplicande (page zero)
+    ; MPLIER  = multiplicateur (page zero)
+    ; RESULT  = resultat 16 bits (RES_LO, RES_HI, page zero)
+
+  Multiply_8x8:
+    LDA #$00
+    STA RES_HI       ; initialiser le resultat haut a 0
+    LDX #$08         ; compteur de bits (8 bits)
+  Mult_Loop:
+    LSR MPLIER       ; decaler le multiplicateur a droite
+                      ; le bit de poids faible va dans C
+    BCC No_Add       ; si C=0, ne pas additionner
+    CLC
+    ADC MCAND        ; additionner le multiplicande (A = RES_LO)
+    BCC No_Add
+    INC RES_HI       ; propager la retenue dans l'octet haut
+  No_Add:
+    ROR RES_HI       ; decaler le resultat 16 bits a droite
+    ROR A             ;   (RES_HI:A) >> 1
+    DEX
+    BNE Mult_Loop
+    STA RES_LO       ; stocker l'octet bas du resultat
+    RTS
+
+  Complexite : toujours 8 iterations, environ 100-150 cycles.
+
+  7.2.2 Multiplication par une constante
+
+  Pour des constantes specifiques, il est souvent plus rapide
+  d'utiliser des decalages et des additions :
+
+    ; A := A * 2
+    ASL A             ; 1 instruction, 2 cycles
+
+    ; A := A * 4
+    ASL A
+    ASL A             ; 2 instructions, 4 cycles
+
+    ; A := A * 3 (= A + A*2)
+    STA temp          ; sauvegarder A
+    ASL A             ; A := A * 2
+    CLC
+    ADC temp          ; A := A*2 + A = A*3
+
+    ; A := A * 5 (= A + A*4)
+    STA temp
+    ASL A
+    ASL A             ; A := A * 4
+    CLC
+    ADC temp          ; A := A*4 + A = A*5
+
+    ; A := A * 10 (= (A*4 + A) * 2 = A*5*2)
+    ASL A             ; A := A * 2
+    STA temp
+    ASL A
+    ASL A             ; A := A * 8
+    CLC
+    ADC temp          ; A := A*8 + A*2 = A*10
+
+    ; X := X * 40 (utile pour les ecrans 40 colonnes)
+    ; 40 = 8 * 5 = 8 * (4 + 1)
+    TXA
+    ASL A
+    ASL A
+    ASL A             ; A := X * 8
+    STA temp
+    ASL A
+    ASL A             ; A := X * 32
+    CLC
+    ADC temp          ; A := X*32 + X*8 = X*40
+
+  7.2.3 Division 16/8 -> 8 bits quotient, 8 bits reste
+
+    ; DIVIDEND (16 bits) / DIVISOR (8 bits)
+    ; -> QUOTIENT (8 bits), REMAINDER (8 bits)
+
+  Divide_16_8:
+    LDA #$00          ; initialiser le reste
+    LDX #$08          ; compteur de bits
+  Div_Loop:
+    ASL DIVIDEND_LO   ; decaler le dividende 16 bits a gauche
+    ROL DIVIDEND_HI
+    ROL A             ; le bit sortant entre dans le reste (A)
+    CMP DIVISOR       ; reste >= diviseur ?
+    BCC Div_Skip      ; non, passer
+    SBC DIVISOR       ; oui, soustraire le diviseur
+    INC DIVIDEND_LO   ; mettre le bit de quotient a 1
+  Div_Skip:
+    DEX
+    BNE Div_Loop
+    STA REMAINDER     ; stocker le reste
+    ; Le quotient est dans DIVIDEND_LO
+    RTS
+
+  7.2.4 Division par une puissance de 2
+
+  Diviser par une puissance de 2 est un simple decalage a droite :
+
+    ; A := A / 2
+    LSR A             ; 1 instruction, 2 cycles
+
+    ; A := A / 4
+    LSR A
+    LSR A
+
+    ; A := A / 16
+    LSR A
+    LSR A
+    LSR A
+    LSR A
+
+  7.2.5 Modulo par une puissance de 2
+
+  Le reste d'une division par une puissance de 2 est obtenu
+  par un AND avec le masque (puissance - 1) :
+
+    ; A := A MOD 8 (= A AND 7)
+    AND #$07
+
+    ; A := A MOD 16
+    AND #$0F
+
+    ; A := A MOD 32
+    AND #$1F
+
+  7.3 Manipulation de chaines de caracteres
+  -------------------------------------------
+
+  Le 6502 n'a pas d'instructions de chaines dediees (contrairement
+  au 80386 avec REP MOVSB). Les chaines sont manipulees via des
+  boucles utilisant l'adressage indexe ou indirect indexe.
+
+  Deux conventions de chaines sont courantes :
+
+    - Chaines Pascal : le premier octet contient la longueur
+      (0-255), suivie des caracteres. Utilisee par le Turbo Pascal.
+    - Chaines ASCIIZ : terminees par un octet nul ($00).
+      Utilisee par le C et les appels systeme.
+
+  7.3.1 Copie de chaine ASCIIZ
+
+    ; Copier la chaine a l'adresse (SRC) vers (DST)
+    ; SRC et DST sont des pointeurs 16 bits en page zero
+
+  StrCopy:
+    LDY #$00
+  CopyLoop:
+    LDA (SRC),Y       ; charger un caractere
+    STA (DST),Y       ; stocker dans la destination
+    BEQ CopyDone      ; si c'est le zero final, termine
+    INY
+    BNE CopyLoop      ; continuer (max 256 caracteres)
+  CopyDone:
+    RTS
+
+  7.3.2 Longueur de chaine ASCIIZ
+
+    ; Retourner la longueur de la chaine a (STR) dans Y
+  StrLen:
+    LDY #$FF
+  LenLoop:
+    INY
+    LDA (STR),Y
+    BNE LenLoop       ; continuer tant que non zero
+    ; Y contient la longueur
+    RTS
+
+  7.3.3 Comparaison de chaines ASCIIZ
+
+    ; Comparer (STR1) et (STR2)
+    ; Resultat : Z=1 si egales, Z=0 si differentes
+  StrCmp:
+    LDY #$00
+  CmpLoop:
+    LDA (STR1),Y
+    CMP (STR2),Y
+    BNE CmpDiff       ; caracteres differents
+    CMP #$00
+    BEQ CmpDone       ; fin des deux chaines (egales)
+    INY
+    BNE CmpLoop
+  CmpDiff:
+    ; Z=0 (chaines differentes), C indique l'ordre
+  CmpDone:
+    RTS
+
+  7.3.4 Recherche d'un caractere dans une chaine
+
+    ; Chercher le caractere dans A dans la chaine a (STR)
+    ; Si trouve : C=1, Y = position
+    ; Si non trouve : C=0
+  StrChr:
+    STA temp          ; sauvegarder le caractere cherche
+    LDY #$00
+  ChrLoop:
+    LDA (STR),Y
+    BEQ ChrNotFound   ; fin de chaine, pas trouve
+    CMP temp
+    BEQ ChrFound      ; trouve !
+    INY
+    BNE ChrLoop
+  ChrNotFound:
+    CLC               ; C=0 : pas trouve
+    RTS
+  ChrFound:
+    SEC               ; C=1 : trouve, Y = position
+    RTS
+
+  7.3.5 Concatenation de chaines ASCIIZ
+
+    ; Concatener (STR2) a la fin de (STR1)
+    ; STR1 doit avoir assez d'espace
+  StrCat:
+    LDY #$00
+  FindEnd:
+    LDA (STR1),Y      ; trouver la fin de STR1
+    BEQ CatCopy
+    INY
+    BNE FindEnd
+  CatCopy:
+    LDX #$00
+  CatLoop:
+    LDA (STR2,X)      ; lire depuis STR2
+    STA (STR1),Y      ; ecrire a la fin de STR1
+    BEQ CatDone       ; zero final copie
+    INX
+    INY
+    BNE CatLoop
+  CatDone:
+    RTS
+
+  7.3.6 Conversion majuscules
+
+    ; Convertir la chaine a (STR) en majuscules
+  StrUpper:
+    LDY #$00
+  UpperLoop:
+    LDA (STR),Y
+    BEQ UpperDone
+    CMP #'a'
+    BCC UpperSkip     ; < 'a', pas une minuscule
+    CMP #'z'+1
+    BCS UpperSkip     ; > 'z', pas une minuscule
+    SEC
+    SBC #$20          ; convertir en majuscule (a-z -> A-Z)
+    STA (STR),Y
+  UpperSkip:
+    INY
+    BNE UpperLoop
+  UpperDone:
+    RTS
+
+  7.4 Tables de saut
+  --------------------
+
+  Les tables de saut (jump tables) permettent d'implementer
+  des structures switch/case ou des dispatchers efficaces.
+
+  7.4.1 Table de saut simple avec JMP indirect
+
+  On peut utiliser un index pour calculer l'adresse dans une
+  table et effectuer un saut indirect :
+
+    ; A contient le numero de commande (0, 1, 2, ...)
+    ASL A             ; A := A * 2 (chaque adresse fait 2 octets)
+    TAX               ; transferer dans X pour l'indexation
+    LDA JmpTable,X    ; lire l'octet bas de l'adresse
+    STA JmpAddr
+    LDA JmpTable+1,X  ; lire l'octet haut
+    STA JmpAddr+1
+    JMP (JmpAddr)     ; saut indirect
+
+  JmpTable:
+    .WORD Cmd_0       ; adresse du handler pour la commande 0
+    .WORD Cmd_1       ; adresse du handler pour la commande 1
+    .WORD Cmd_2       ; adresse du handler pour la commande 2
+    .WORD Cmd_3       ; adresse du handler pour la commande 3
+
+  7.4.2 Table de saut avec RTS (technique "RTS trick")
+
+  Une technique classique du 6502 consiste a empiler une adresse
+  sur la pile puis utiliser RTS pour sauter. RTS depile l'adresse
+  et y ajoute 1, donc on stocke (adresse - 1) dans la table.
+
+    ; A contient le numero de commande (0, 1, 2, ...)
+    ASL A             ; A := A * 2
+    TAX
+    LDA JmpTableHi,X  ; octet haut de (adresse - 1)
+    PHA               ; empiler
+    LDA JmpTableLo,X  ; octet bas de (adresse - 1)
+    PHA               ; empiler
+    RTS               ; sauter a l'adresse empilee + 1
+
+  JmpTableLo:
+    .BYTE <(Cmd_0-1), <(Cmd_1-1), <(Cmd_2-1), <(Cmd_3-1)
+  JmpTableHi:
+    .BYTE >(Cmd_0-1), >(Cmd_1-1), >(Cmd_2-1), >(Cmd_3-1)
+
+  Avantages de la technique RTS :
+    - Pas besoin de pointeur temporaire en page zero
+    - Les tables Lo et Hi separees permettent l'indexation directe
+    - Plus rapide que le JMP indirect (evite le pointeur temporaire)
+
+  7.4.3 Table de saut avec JMP ($xxFF) - Bug du 6502 NMOS
+
+  Attention : sur le 6502 NMOS, l'instruction JMP indirect
+  a un bug quand l'adresse du vecteur est a la fin d'une page
+  ($xxFF). Au lieu de lire l'octet haut a $xx00 de la page
+  suivante, il le lit a $xx00 de la MEME page.
+
+  Exemple :
+    JMP ($02FF)  lit l'octet bas a $02FF
+                  et l'octet haut a $0200 (au lieu de $0300)
+
+  Ce bug est corrige sur le 65C02. Sur le 6502 NMOS, eviter
+  de placer des pointeurs a des adresses de fin de page.
+
+  7.5 Code auto-modifiant
+  -------------------------
+
+  Le code auto-modifiant (self-modifying code, SMC) est une
+  technique ou le programme modifie ses propres instructions
+  pendant l'execution. Sur le 6502, c'est une technique courante
+  et souvent necessaire pour contourner les limitations du
+  processeur.
+
+  7.5.1 Pourquoi le code auto-modifiant ?
+
+  Le 6502 n'a que 3 registres 8 bits (A, X, Y) et des modes
+  d'adressage limites. Le code auto-modifiant permet de :
+
+    - Simuler des modes d'adressage inexistants
+    - Creer des pointeurs 16 bits sans utiliser la page zero
+    - Optimiser des boucles internes
+    - Implementer des sous-routines parametrables
+
+  7.5.2 Modification d'une adresse
+
+  La technique la plus courante consiste a modifier l'adresse
+  d'une instruction LDA/STA/etc. :
+
+    ; Lire une valeur a une adresse calculee
+    LDA addr_lo
+    STA Load+1        ; modifier l'octet bas de l'adresse
+    LDA addr_hi
+    STA Load+2        ; modifier l'octet haut de l'adresse
+  Load:
+    LDA $0000         ; cette instruction sera modifiee
+
+  Ici, Load+1 est l'octet bas de l'adresse dans l'instruction
+  LDA absolue (opcode $AD suivi de l'adresse en little-endian).
+
+  7.5.3 Copie de bloc memoire rapide
+
+  En utilisant le code auto-modifiant, on peut creer une copie
+  de bloc sans pointeurs en page zero :
+
+  CopyBlock:
+    LDX #$00
+  CopyBLoop:
+  ReadAddr:
+    LDA $1000,X       ; l'adresse sera modifiee
+  WriteAddr:
+    STA $2000,X       ; l'adresse sera modifiee
+    INX
+    BNE CopyBLoop
+    ; Pour copier plus de 256 octets, incrementer les octets
+    ; hauts des adresses :
+    INC ReadAddr+2    ; incrementer la page source
+    INC WriteAddr+2   ; incrementer la page destination
+    ; ... continuer selon le nombre de pages ...
+    RTS
+
+  7.5.4 Precautions avec le code auto-modifiant
+
+    - Le code doit etre en RAM (pas en ROM)
+    - Sur les processeurs avec cache (65C816), il peut y avoir
+      des problemes de coherence de cache
+    - Le code est plus difficile a lire et a deboguer
+    - Il est impossible de mettre le code en ROM/EPROM
+    - Certains systemes d'exploitation modernes interdisent
+      l'ecriture dans le segment de code (W^X), mais les
+      systemes 8 bits n'ont pas cette restriction
+
+  7.6 Optimisations courantes
+  -----------------------------
+
+  7.6.1 Utiliser la page zero
+
+  Les acces en page zero sont plus rapides (1 cycle de moins)
+  et les instructions sont plus courtes (1 octet de moins pour
+  l'adresse). Placer les variables frequemment utilisees en
+  page zero.
+
+    LDA $00           ; page zero : 3 cycles, 2 octets
+    LDA $0100         ; absolu : 4 cycles, 3 octets
+
+  7.6.2 Derouler les boucles (loop unrolling)
+
+  Au lieu d'une boucle avec branchement, repeter le corps
+  de la boucle pour eliminer le cout du branchement :
+
+    ; Boucle normale (effacer 4 octets) :
+    LDA #$00
+    LDX #$03
+  ClearLoop:
+    STA $0400,X
+    DEX
+    BPL ClearLoop     ; 4 iterations * (4+2+3) = 36 cycles
+
+    ; Version deroulee :
+    LDA #$00
+    STA $0400         ; 4 cycles
+    STA $0401         ; 4 cycles
+    STA $0402         ; 4 cycles
+    STA $0403         ; 4 cycles = 16 cycles total
+
+  Le deroulement est efficace quand la taille du code n'est
+  pas un facteur limitant.
+
+  7.6.3 Utiliser X et Y au lieu de la memoire
+
+  Les registres X et Y sont rapides pour les compteurs :
+
+    ; Avec variable en memoire :
+    DEC counter       ; 5 cycles
+    BNE Loop          ; 3 cycles = 8 cycles
+
+    ; Avec registre X :
+    DEX               ; 2 cycles
+    BNE Loop          ; 3 cycles = 5 cycles
+
+  7.6.4 Tester un bit sans charger la valeur
+
+  L'instruction BIT teste les bits 7 et 6 directement sans
+  modifier A :
+
+    BIT $D011         ; teste le registre du VIC-II
+    BPL Wait          ; branche si bit 7 = 0
+    BVS Skip          ; branche si bit 6 = 1
+
+  7.6.5 Utiliser TXA/TYA au lieu de LDA
+
+  Si la valeur est deja dans X ou Y, un transfert est plus
+  rapide qu'un chargement memoire :
+
+    TXA               ; 2 cycles
+    ; vs
+    LDA variable      ; 3-4 cycles
+
+  7.6.6 Remplacer CMP #$00 par des tests implicites
+
+  Beaucoup d'instructions mettent deja a jour les drapeaux N
+  et Z. Un CMP #$00 supplementaire est inutile :
+
+    ; Inutile :
+    LDA value
+    CMP #$00
+    BEQ IsZero
+
+    ; Mieux :
+    LDA value         ; Z est deja mis a jour par LDA
+    BEQ IsZero
+
+  Les instructions qui mettent a jour N et Z :
+    LDA, LDX, LDY, TAX, TAY, TXA, TYA, TSX, PLA,
+    AND, ORA, EOR, ADC, SBC, INC, DEC, INX, INY, DEX, DEY,
+    ASL, LSR, ROL, ROR
+
+  7.6.7 Utiliser DEC/BNE au lieu de CMP pour les boucles
+
+  Quand on compte vers zero, DEC suivi de BNE est plus compact
+  que CMP + BNE :
+
+    ; Au lieu de :
+    LDX #$05
+  Loop1:
+    ; ... corps ...
+    DEX
+    CPX #$00
+    BNE Loop1
+
+    ; Utiliser :
+    LDX #$05
+  Loop2:
+    ; ... corps ...
+    DEX
+    BNE Loop2         ; DEX met Z a 1 quand X atteint 0
+
+  7.6.8 Multiplier/diviser par des puissances de 2
+
+  Utiliser les decalages ASL/LSR au lieu de routines de
+  multiplication/division pour les puissances de 2 :
+
+    ASL A    ; * 2
+    ASL A    ; * 4
+    ASL A    ; * 8   (3 instructions, 6 cycles)
+
+    ; vs multiplication generique : 100+ cycles
+
+  7.6.9 Exploiter le wraparound de la pile
+
+  La pile du 6502 fait 256 octets ($0100-$01FF) et enveloppe
+  automatiquement (wraparound). On peut utiliser la pile comme
+  un buffer en anneau sans verification de debordement pour
+  certaines applications.
+
+  7.6.10 Eviter les branchements quand possible
+
+  Les branchements pris coutent un cycle de plus (3 cycles au
+  lieu de 2) et un cycle supplementaire s'ils traversent une
+  frontiere de page. Organiser le code pour que le cas le plus
+  frequent ne branche pas :
+
+    ; Si value est generalement non-zero :
+    LDA value
+    BEQ RareCase      ; branchement rarement pris (2 cycles)
+    ; ... code frequent ...
+
+  7.6.11 Utiliser le mode decimal avec precaution
+
+  Le mode decimal (SED/CLD) est utile pour l'affichage de
+  scores et de compteurs BCD, mais :
+    - Il ralentit les operations ADC/SBC d'un cycle sur le 65C02
+    - Le comportement des drapeaux N et V est indefini en mode
+      decimal sur le 6502 NMOS (corrige sur le 65C02)
+    - Toujours faire CLD dans le code d'initialisation et dans
+      les handlers d'interruption
+
+  7.6.12 Tableau recapitulatif des couts en cycles
+
+    Operation                  Cycles  Notes
+    -------------------------  ------  -------------------------
+    LDA immediate              2       La plus rapide
+    LDA page zero              3       Economique
+    LDA absolu                 4       Standard
+    LDA absolu,X / absolu,Y   4-5     +1 si traversee de page
+    LDA (indirect),Y           5-6     +1 si traversee de page
+    LDA (indirect,X)           6       Toujours 6 cycles
+    STA page zero              3
+    STA absolu                 4
+    ASL A                      2       Rapide pour multiplier
+    INC page zero              5       Plus lent que INC registre
+    INX / INY                  2       Rapide
+    JSR                        6       Appel de sous-routine
+    RTS                        6       Retour
+    BEQ/BNE (pris)             3-4     +1 si traversee de page
+    BEQ/BNE (non pris)         2       Rapide
+    JMP absolu                 3       Saut direct
+    JMP indirect               5       6502 uniquement
+
+  7.7 Sous-routines et conventions d'appel
+  ------------------------------------------
+
+  7.7.1 Appel et retour de base
+
+  L'instruction JSR (Jump to Subroutine) empile l'adresse de
+  retour moins 1 (PC-1, soit le dernier octet de l'instruction
+  JSR) sur la pile et transfere le controle au sous-programme.
+  RTS (Return from Subroutine) depile cette adresse, l'incremente
+  de 1 et reprend l'execution.
+
+    JSR ma_routine     ; appel : empile (PC-1), saute
+    ; ... execution continue ici apres RTS ...
+
+  ma_routine:
+    ; ... corps du sous-programme ...
+    RTS                ; retour : depile PC, PC := PC + 1
+
+  Etat de la pile lors de l'appel :
+
+    Avant JSR :    SP -> [ancien contenu]
+    Apres JSR :    SP -> [PCL (adresse retour - 1, octet bas)]
+                          [PCH (adresse retour - 1, octet haut)]
+                          [ancien contenu]
+
+  Note : JSR empile PC-1, pas PC. C'est pourquoi RTS fait PC := PC+1
+  apres le depilage. C'est une difference importante avec le 68000
+  (BSR/JSR empilent le PC exact) et le 80386 (CALL empile EIP exact).
+
+  7.7.2 Passage de parametres par registre
+
+  La methode la plus simple et la plus rapide. Les parametres
+  sont places dans A, X, Y avant l'appel. Le resultat est
+  generalement retourne dans A (ou A/X pour 16 bits).
+
+    ; Appel : resultat = Max(a, b)
+    LDA a             ; premier parametre dans A
+    LDX b             ; deuxieme parametre dans X
+    JSR Max
+    ; A contient le resultat
+
+  Max:
+    STX temp
+    CMP temp          ; comparer A avec X
+    BCS MaxDone       ; si A >= X (non signe), A est deja le max
+    TXA               ; sinon, X est le max
+  MaxDone:
+    RTS
+
+  Conventions courantes pour les registres :
+
+    Registre   Usage typique
+    ---------  ---------------------------------
+    A          Parametre principal / valeur de retour
+    X          Parametre secondaire / index
+    Y          Parametre tertiaire / index
+    C (Carry)  Indicateur d'erreur (C=1 souvent = erreur)
+               ou retour booleen (C=1 = vrai)
+    A:X        Valeur de retour 16 bits (A=haut, X=bas)
+               ou (X=haut, A=bas) selon la convention
+
+  7.7.3 Passage de parametres par la pile
+
+  Pour les sous-routines avec plus de 3 parametres, ou pour
+  la compatibilite avec du code genere par un compilateur,
+  on peut passer les parametres par la pile :
+
+    ; Appel : resultat = ma_fonction(arg1, arg2, arg3)
+    LDA arg3
+    PHA               ; empiler arg3
+    LDA arg2
+    PHA               ; empiler arg2
+    LDA arg1
+    PHA               ; empiler arg1
+    JSR ma_fonction
+    ; Nettoyer la pile apres l'appel :
+    PLA               ; depiler arg1
+    PLA               ; depiler arg2
+    PLA               ; depiler arg3
+    ; A contient le resultat
+
+  Etat de la pile dans le sous-programme :
+
+    SP+5 -> [arg3]
+    SP+4 -> [arg2]
+    SP+3 -> [arg1]
+    SP+2 -> [PCH (adresse retour)]
+    SP+1 -> [PCL (adresse retour)]
+    SP   -> [sommet de pile]
+
+  Acces aux parametres dans le sous-programme (via TSX) :
+
+  ma_fonction:
+    TSX               ; X := SP
+    LDA $0103,X       ; arg1 (SP+3)
+    ; ... utiliser les parametres ...
+    RTS
+
+  Attention : les offsets sont calcules par rapport a $0100+SP,
+  car la pile se trouve dans la page $01.
+
+  7.7.4 Passage de parametres inline (apres le JSR)
+
+  Une technique elegante du 6502 : les parametres sont places
+  immediatement apres l'instruction JSR dans le code. Le
+  sous-programme lit les parametres en modifiant l'adresse de
+  retour sur la pile.
+
+    JSR PrintString
+    .BYTE "Hello, World!", $00  ; chaine inline
+
+    ; L'execution continue ici apres le RTS
+
+  PrintString:
+    ; L'adresse de retour sur la pile pointe sur
+    ; le dernier octet du JSR, donc (adresse retour) + 1
+    ; pointe sur le premier caractere de la chaine.
+    PLA               ; depiler PCL
+    STA ptr_lo
+    PLA               ; depiler PCH
+    STA ptr_hi
+    ; ptr pointe maintenant sur (adresse retour - 1)
+    ; Il faut incrementer de 1 pour pointer sur les donnees
+    INC ptr_lo
+    BNE NoCarry
+    INC ptr_hi
+  NoCarry:
+    LDY #$00
+  PrintLoop:
+    LDA (ptr_lo),Y
+    BEQ PrintDone     ; zero final
+    JSR OutputChar    ; afficher le caractere
+    INY
+    BNE PrintLoop
+  PrintDone:
+    ; Ajuster l'adresse de retour pour sauter les donnees
+    ; ptr + Y pointe sur le zero final
+    ; RTS attend (adresse - 1), donc on empile ptr + Y
+    CLC
+    TYA
+    ADC ptr_lo
+    TAX               ; X = (ptr + Y) bas
+    LDA #$00
+    ADC ptr_hi        ; A = (ptr + Y) haut
+    PHA               ; empiler PCH ajuste
+    TXA
+    PHA               ; empiler PCL ajuste
+    RTS               ; sauter apres les donnees inline
+
+  7.7.5 Sauvegarde et restauration des registres
+
+  Le 6502 n'a pas d'instruction MOVEM comme le 68000 ou PUSHA
+  comme le 80386. La sauvegarde/restauration est manuelle :
+
+    ma_routine:
+      PHA              ; sauvegarder A
+      TXA
+      PHA              ; sauvegarder X
+      TYA
+      PHA              ; sauvegarder Y
+
+      ; ... corps du sous-programme ...
+
+      PLA
+      TAY              ; restaurer Y
+      PLA
+      TAX              ; restaurer X
+      PLA              ; restaurer A
+      RTS
+
+  Important : les registres doivent etre depiles dans l'ordre
+  INVERSE de l'empilement (LIFO).
+
+  Cout de la sauvegarde/restauration complete :
+    PHA + TXA + PHA + TYA + PHA = 3+2+3+2+3 = 13 cycles
+    PLA + TAY + PLA + TAX + PLA = 4+2+4+2+4 = 16 cycles
+    Total = 29 cycles de surcharge
+
+  Pour les routines tres courtes, il est souvent preferable de
+  ne sauvegarder que les registres effectivement modifies.
+
+  7.7.6 Conventions d'appel par systeme
+
+  Chaque systeme a ses propres conventions :
+
+    Commodore 64 (KERNAL) :
+      - Les routines du KERNAL utilisent A, X, Y pour les
+        parametres et les retours
+      - Le Carry indique souvent une erreur (C=1 = erreur)
+      - Exemple : CHROUT ($FFD2) - A = caractere a afficher
+      - Exemple : CHRIN ($FFCF) - retourne le caractere dans A
+      - Exemple : SETLFS ($FFBA) - A=numero logique, X=device,
+                                    Y=adresse secondaire
+
+    Apple II (moniteur) :
+      - Les routines du moniteur sont a $F800-$FFFF
+      - COUT ($FDED) : afficher le caractere dans A
+      - RDKEY ($FD0C) : lire une touche, retour dans A
+
+    NES :
+      - Pas de routines systeme en ROM
+      - Chaque jeu definit ses propres conventions
+      - Convention commune : parametres en page zero
+
+  7.7.7 Recursivite sur le 6502
+
+  La recursivite est possible mais limitee par la taille de la
+  pile (256 octets). Chaque appel JSR consomme 2 octets (adresse
+  de retour) plus les registres sauvegardes.
+
+    ; Factorielle(n) : n dans A, resultat dans A
+    ; Limitation : n <= ~40 (debordement pile et 8 bits)
+
+  Factorielle:
+    CMP #$01
+    BCS FactRecurse   ; si A > 1, recurser
+    LDA #$01          ; factorielle(0) = factorielle(1) = 1
+    RTS
+  FactRecurse:
+    PHA               ; sauvegarder n sur la pile
+    SEC
+    SBC #$01          ; A := n - 1
+    JSR Factorielle   ; appel recursif
+    ; A contient factorielle(n-1)
+    STA temp
+    PLA               ; recuperer n
+    ; Multiplier A * temp (simplification pour petit n)
+    TAX
+    LDA #$00
+  FactMult:
+    CLC
+    ADC temp          ; A := A + factorielle(n-1)
+    DEX
+    BNE FactMult      ; repeter n fois
+    RTS
+
+  Profondeur de pile typique par appel :
+    - JSR : 2 octets
+    - PHA (registres) : 1-3 octets
+    - Total par niveau : 3-5 octets
+    - Profondeur maximale : 256 / 5 = ~50 niveaux
+
+  En pratique, la recursivite profonde est deconseille sur le
+  6502. Preferer les solutions iteratives quand c'est possible.
+
+  7.7.8 Comparaison des conventions d'appel
+
+    Processeur     Sauveg. retour  Passage params  Sauveg. regs
+    -------------  --------------  --------------  ----------------
+    MOS 6502       Pile (2 oct)    A, X, Y         Manuel PHA/PLA
+    Zilog Z80      Pile (2 oct)    Registres       PUSH/POP paires
+    Intel 8080     Pile (2 oct)    Registres       PUSH/POP paires
+    Motorola 6800  Pile (2 oct)    A, B            PSHA/PSHB
+    Motorola 6809  Pile (2 oct)    Registres       PSHS/PULS multi
+    Motorola 68000 Pile (4 oct)    Regs ou pile    MOVEM.L
+    Intel 80386    Pile (4 oct)    Pile (conv. C)  PUSHA/POPA
