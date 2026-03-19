@@ -1,0 +1,230 @@
+==============================================================================
+    FORMAT AMIGA HUNK - Documentation du format executable Amiga
+==============================================================================
+
+Le format Hunk est le format d executable natif d AmigaOS. Il est utilise
+par le chargeur de programmes d AmigaDOS pour charger et executer les
+programmes sur les ordinateurs Commodore Amiga.
+
+==============================================================================
+1. VUE D ENSEMBLE
+==============================================================================
+
+Un executable Amiga Hunk est compose de blocs (hunks) concatenes.
+Chaque bloc commence par un identifiant de type (longword big-endian)
+suivi de donnees specifiques au type.
+
+Structure typique :
+  +-------------------+
+  | HUNK_HEADER       |  En-tete avec table des hunks
+  +-------------------+
+  | HUNK_CODE         |  Code 68000 (section TEXT)
+  | HUNK_RELOC32      |  Relocalisations 32 bits (optionnel)
+  | HUNK_END          |  Fin du hunk CODE
+  +-------------------+
+  | HUNK_DATA         |  Donnees initialisees (section DATA)
+  | HUNK_END          |  Fin du hunk DATA
+  +-------------------+
+
+==============================================================================
+2. TYPES DE HUNKS
+==============================================================================
+
+  Identifiant     Valeur      Description
+  -----------     ----------  -------------------------------------------
+  HUNK_HEADER     $000003F3   En-tete de l executable
+  HUNK_CODE       $000003E9   Section de code executable
+  HUNK_DATA       $000003EA   Section de donnees initialisees
+  HUNK_BSS        $000003EB   Section de donnees non initialisees
+  HUNK_RELOC32    $000003EC   Table de relocalisation 32 bits
+  HUNK_END        $000003F2   Fin d un hunk
+
+==============================================================================
+3. HUNK_HEADER (en-tete)
+==============================================================================
+
+  Offset  Taille    Description
+  ------  --------  -----------------------------------------
+  +0      LongWord  $000003F3 (identifiant HUNK_HEADER)
+  +4      LongWord  0 = pas de noms de bibliotheques residentes
+  +8      LongWord  table_size : nombre total de hunks
+  +12     LongWord  first_hunk : indice du premier hunk (typiquement 0)
+  +16     LongWord  last_hunk : indice du dernier hunk (table_size - 1)
+  +20     LongWord  taille du hunk 0 en mots longs (longwords)
+  +24     LongWord  taille du hunk 1 en mots longs
+  ...     ...       tailles des hunks suivants
+
+Les bits de poids fort de chaque taille de hunk peuvent indiquer
+le type de memoire requise :
+  Bit 30 : MEMF_CHIP (memoire chip Amiga)
+  Bit 31 : MEMF_FAST (memoire fast)
+  Bits 30-31 a 0 : pas de preference (any memory)
+
+==============================================================================
+4. HUNK_CODE ($000003E9)
+==============================================================================
+
+  Offset  Taille    Description
+  ------  --------  -----------------------------------------
+  +0      LongWord  $000003E9 (identifiant HUNK_CODE)
+  +4      LongWord  taille du code en mots longs
+  +8      n*4 oct.  code machine 68000
+
+Le code est padde a un multiple de 4 octets (alignement longword).
+Le point d entree du programme est au debut du hunk CODE (offset 0).
+
+==============================================================================
+5. HUNK_DATA ($000003EA)
+==============================================================================
+
+  Offset  Taille    Description
+  ------  --------  -----------------------------------------
+  +0      LongWord  $000003EA (identifiant HUNK_DATA)
+  +4      LongWord  taille des donnees en mots longs
+  +8      n*4 oct.  donnees initialisees
+
+Les donnees sont paddees a un multiple de 4 octets.
+
+==============================================================================
+6. HUNK_BSS ($000003EB)
+==============================================================================
+
+  Offset  Taille    Description
+  ------  --------  -----------------------------------------
+  +0      LongWord  $000003EB (identifiant HUNK_BSS)
+  +4      LongWord  taille de la zone BSS en mots longs
+
+La zone BSS n est pas stockee dans le fichier. Le chargeur
+alloue la memoire et l initialise a zero.
+
+==============================================================================
+7. HUNK_RELOC32 ($000003EC)
+==============================================================================
+
+La table de relocalisation 32 bits permet au chargeur de corriger
+les adresses absolues dans le code lorsque les hunks sont charges
+a des adresses arbitraires en memoire.
+
+  Structure :
+  +0      LongWord  nombre de relocalisations pour le hunk cible N
+  +4      LongWord  numero du hunk cible (N)
+  +8      LongWord  offset 1 (dans le hunk courant)
+  +12     LongWord  offset 2
+  ...
+  +n      LongWord  nombre de relocalisations pour le hunk cible M
+  +n+4    LongWord  numero du hunk cible M
+  ...
+  +end    LongWord  0 (fin de la table de relocalisation)
+
+Pour chaque groupe de relocalisations :
+  - Le nombre indique combien d offsets suivent
+  - Le hunk cible est le hunk dont l adresse de base sera ajoutee
+  - Chaque offset pointe vers un mot long dans le hunk courant
+    qui contient une adresse relative au hunk cible
+
+Exemple : si le code (hunk 0) contient LEA data_label,A0
+  et data_label est dans le hunk DATA (hunk 1),
+  le loader ajoutera l adresse de chargement du hunk 1
+  au mot long a l offset indique dans le hunk 0.
+
+==============================================================================
+8. HUNK_END ($000003F2)
+==============================================================================
+
+Termine un hunk. Doit apparaitre apres chaque hunk CODE, DATA ou BSS
+(et apres les eventuels HUNK_RELOC32).
+
+  +0      LongWord  $000003F2 (identifiant HUNK_END)
+
+==============================================================================
+9. ORDRE DES OCTETS
+==============================================================================
+
+Toutes les valeurs sont en big-endian (Motorola 68000).
+Les mots longs (longwords) font 4 octets, les mots (words) 2 octets.
+
+==============================================================================
+10. GENERATION PAR TPCW32
+==============================================================================
+
+Le compilateur TPCW32 avec le parametre -CAMIGA genere un executable
+Amiga Hunk avec la structure suivante :
+
+  HUNK_HEADER
+    table_size = 2 (CODE + DATA)
+    tailles des 2 hunks en mots longs
+
+  HUNK_CODE
+    Code 68000 : initialisation AmigaDOS
+      - Sauvegarde registres (MOVEM.L)
+      - Ouverture dos.library via exec.library OpenLibrary (-552)
+      - Obtention du handle stdout via dos.library Output (-60)
+    Code utilisateur (programme Pascal compile)
+    Code de sortie :
+      - Fermeture dos.library via exec.library CloseLibrary (-414)
+      - Restauration registres
+      - MOVEQ #0,D0 (code retour)
+      - RTS (retour a AmigaDOS)
+    Routines runtime :
+      - _TPRT_PRINTSTR : affichage chaine via dos.library Write (-48)
+      - _TPRT_PRINTCHAR : affichage caractere via Write
+      - _TPRT_NUMTOSTR : conversion entier vers chaine ASCII
+      - _TPRT_UDIV32 : division non signee 32 bits
+
+  HUNK_RELOC32 (si des adresses absolues vers DATA existent)
+    Relocalisations du hunk CODE vers le hunk DATA
+
+  HUNK_END
+
+  HUNK_DATA
+    Donnees specifiques Amiga :
+      DOS_NAME  : "dos.library" (chaine ASCIIZ)
+      DOS_BASE  : adresse de base dos.library (4 octets)
+      STDOUT    : handle de sortie standard (4 octets)
+      CHRBUF    : buffer caractere (4 octets)
+    Donnees partagees 68000 :
+      NUMBUF    : buffer de conversion numerique (32 octets)
+      CRLF      : retour a la ligne CR+LF+NUL
+      STRTMP    : buffer temporaire (256 octets)
+      TRUE_STR  : "TRUE" (chaine ASCIIZ)
+      FALSE_STR : "FALSE" (chaine ASCIIZ)
+    Constantes et variables du programme Pascal
+
+  HUNK_END
+
+==============================================================================
+11. APPELS SYSTEME AMIGADOS
+==============================================================================
+
+Le runtime Amiga utilise les appels suivants :
+
+  Bibliotheque    Fonction      Offset   Description
+  -------------   -----------   ------   ---------------------------
+  exec.library    OpenLibrary   -552     Ouvrir une bibliotheque
+  exec.library    CloseLibrary  -414     Fermer une bibliotheque
+  dos.library     Output        -60      Obtenir handle stdout
+  dos.library     Write         -48      Ecrire sur un handle
+
+  exec.library est toujours accessible via l adresse absolue 4
+  (ExecBase = *(LongWord *)4).
+
+  Convention d appel :
+    - A6 = pointeur de base de la bibliotheque
+    - Parametres dans les registres (D0-D3, A0-A1)
+    - Resultat dans D0
+
+==============================================================================
+12. DIFFERENCES AVEC LE FORMAT ATARI ST (.PRG)
+==============================================================================
+
+  Caracteristique     Atari ST (.PRG)         Amiga (Hunk)
+  ----------------    --------------------    --------------------
+  Magic               $601A                   $000003F3
+  Structure            Lineaire (header +     Blocs (hunks) avec
+                       TEXT + DATA + reloc)   identifiants de type
+  Relocalisations     Delta-encode (octets)   Offsets explicites 32b
+  Appels systeme      GEMDOS TRAP #1         dos.library via A6
+  Sortie programme    Pterm0 (TRAP #1)       RTS (retour AmigaDOS)
+  Extension fichier   .prg                   .exe (ou sans extension)
+
+==============================================================================
