@@ -15404,23 +15404,87 @@ Begin
          (TokenPool[EP].Val = '[') Then
       Begin
         Inc(EP);
-        ParseExpr(PI);           { EAX = Seg }
-        EmitInstr('PUSH EAX');   { sauvegarder Seg }
-        { Attendre ':' separateur Seg:Ofs }
-        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
-           (TokenPool[EP].Val = ':') Then
-          Inc(EP);
-        ParseExpr(PI);           { EAX = Ofs }
-        EmitInstr('MOV EDX,EAX');  { EDX = Ofs }
-        EmitInstr('POP EAX');      { EAX = Seg }
-        { Appeler _TPRT_READMEM : EAX=seg, EDX=ofs -> resultat dans EAX }
-        EmitInstr('CALL ' + TP_RT_PFX + 'READMEM');
-        { Masquer selon la taille }
-        If Up = 'MEM' Then
-          EmitInstr('AND EAX,0FFh')       { octet : 8 bits }
-        Else If Up = 'MEMW' Then
-          EmitInstr('AND EAX,0FFFFh');     { mot : 16 bits }
-        { MEML : pas de masque, 32 bits complet }
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,D1');
+            EmitInstr('MOVE.L (SP)+,D0');
+            EmitInstr('BSR ' + TP_RT_PFX + 'READMEM');
+            If Up = 'MEM' Then
+              EmitInstr('AND.L #$FF,D0')
+            Else If Up = 'MEMW' Then
+              EmitInstr('AND.L #$FFFF,D0');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('MOV DX,AX');
+            EmitInstr('POP AX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'READMEM');
+            If Up = 'MEM' Then
+              EmitInstr('AND AX,00FFh')
+            Else If Up = 'MEMW' Then
+              EmitComment('MEMW : 16 bits, pas de masque');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('POP DE');
+            EmitInstr('CALL ' + TP_RT_PFX + 'READMEM');
+            If Up = 'MEM' Then
+              EmitInstr('LD H,0');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('TAX');
+            EmitInstr('PLA');
+            EmitInstr('JSR ' + TP_RT_PFX + 'READMEM');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('TFR D,X');
+            EmitInstr('PULS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'READMEM');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('MOV EDX,EAX');
+            EmitInstr('POP EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'READMEM');
+            If Up = 'MEM' Then
+              EmitInstr('AND EAX,0FFh')
+            Else If Up = 'MEMW' Then
+              EmitInstr('AND EAX,0FFFFh');
+          End;
+        End; { Case }
         EPMatch(']');
       End;
       Exit;
@@ -15434,13 +15498,57 @@ Begin
          (TokenPool[EP].Val = '[') Then
       Begin
         Inc(EP);
-        ParseExpr(PI);           { EAX = numero de port }
-        { Appeler _TPRT_INPORT : EAX=port -> resultat dans EAX }
-        EmitInstr('CALL ' + TP_RT_PFX + 'INPORT');
-        If Up = 'PORT' Then
-          EmitInstr('AND EAX,0FFh')       { octet }
-        Else
-          EmitInstr('AND EAX,0FFFFh');     { mot 16 bits }
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EmitInstr('BSR ' + TP_RT_PFX + 'INPORT');
+            EmitInstr('ADDQ.L #4,SP');
+            If Up = 'PORT' Then
+              EmitInstr('AND.L #$FF,D0')
+            Else
+              EmitInstr('AND.L #$FFFF,D0');
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOV DX,AX');
+            If Up = 'PORT' Then
+              EmitInstr('IN AL,DX')
+            Else
+              EmitInstr('IN AX,DX');
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('LD C,L');
+            EmitInstr('IN A,(C)');
+            EmitInstr('LD L,A');
+            EmitInstr('LD H,0');
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('JSR ' + TP_RT_PFX + 'INPORT');
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EmitInstr('JSR ' + TP_RT_PFX + 'INPORT');
+            EmitInstr('LEAS 2,S');
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('CALL ' + TP_RT_PFX + 'INPORT');
+            If Up = 'PORT' Then
+              EmitInstr('AND EAX,0FFh')
+            Else
+              EmitInstr('AND EAX,0FFFFh');
+          End;
+        End; { Case }
         EPMatch(']');
       End;
       Exit;
@@ -21779,27 +21887,130 @@ Begin
          (TokenPool[EP].Val = '[') Then
       Begin
         Inc(EP);
-        ParseExpr(PI);           { EAX = Seg }
-        EmitInstr('PUSH EAX');   { sauvegarder Seg }
-        { Attendre ':' separateur Seg:Ofs }
-        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
-           (TokenPool[EP].Val = ':') Then
-          Inc(EP);
-        ParseExpr(PI);           { EAX = Ofs }
-        EmitInstr('PUSH EAX');   { sauvegarder Ofs }
-        EPMatch(']');
-        { Attendre ':=' }
-        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
-           (TokenPool[EP].Val = ':=') Then
-        Begin
-          Inc(EP);
-          ParseExpr(PI);         { EAX = valeur a ecrire }
-          EmitInstr('MOV ECX,EAX');  { ECX = val }
-          EmitInstr('POP EDX');      { EDX = Ofs }
-          EmitInstr('POP EAX');      { EAX = Seg }
-          { Appeler _TPRT_WRITEMEM : EAX=seg, EDX=ofs, ECX=val }
-          EmitInstr('CALL ' + TP_RT_PFX + 'WRITEMEM');
-        End;
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('MOVE.L D0,D2');
+              EmitInstr('MOVE.L (SP)+,D1');
+              EmitInstr('MOVE.L (SP)+,D0');
+              EmitInstr('BSR ' + TP_RT_PFX + 'WRITEMEM');
+            End;
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('MOV CX,AX');
+              EmitInstr('POP DX');
+              EmitInstr('POP AX');
+              EmitInstr('CALL ' + TP_RT_PFX + 'WRITEMEM');
+            End;
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('LD C,L');
+              EmitInstr('POP DE');
+              EmitInstr('POP HL');
+              EmitInstr('CALL ' + TP_RT_PFX + 'WRITEMEM');
+            End;
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('TAX');
+              EmitInstr('PLA');
+              EmitInstr('TAY');
+              EmitInstr('PLA');
+              EmitInstr('JSR ' + TP_RT_PFX + 'WRITEMEM');
+            End;
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('TFR D,U');
+              EmitInstr('PULS D');
+              EmitInstr('TFR D,X');
+              EmitInstr('PULS D');
+              EmitInstr('JSR ' + TP_RT_PFX + 'WRITEMEM');
+            End;
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ':') Then Inc(EP);
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('MOV ECX,EAX');
+              EmitInstr('POP EDX');
+              EmitInstr('POP EAX');
+              EmitInstr('CALL ' + TP_RT_PFX + 'WRITEMEM');
+            End;
+          End;
+        End; { Case }
       End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
@@ -21815,20 +22026,102 @@ Begin
          (TokenPool[EP].Val = '[') Then
       Begin
         Inc(EP);
-        ParseExpr(PI);           { EAX = numero de port }
-        EmitInstr('PUSH EAX');   { sauvegarder port }
-        EPMatch(']');
-        { Attendre ':=' }
-        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
-           (TokenPool[EP].Val = ':=') Then
-        Begin
-          Inc(EP);
-          ParseExpr(PI);         { EAX = valeur a ecrire }
-          EmitInstr('MOV EDX,EAX');  { EDX = val }
-          EmitInstr('POP EAX');      { EAX = port }
-          { Appeler _TPRT_OUTPORT : EAX=port, EDX=val }
-          EmitInstr('CALL ' + TP_RT_PFX + 'OUTPORT');
-        End;
+        Case Opts.DestTarget Of
+          DEST_68000, DEST_ATARIST, DEST_AMIGA:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('MOVE.L D0,-(SP)');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('MOVE.L D0,D1');
+              EmitInstr('MOVE.L (SP)+,D0');
+              EmitInstr('BSR ' + TP_RT_PFX + 'OUTPORT');
+            End;
+          End;
+          DEST_DOSR, DEST_DOSP:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH AX');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('MOV DX,AX');  { DX = val }
+              EmitInstr('POP AX');     { AX = port }
+              EmitInstr('XCHG AX,DX');
+              If Up = 'PORT' Then
+                EmitInstr('OUT DX,AL')
+              Else
+                EmitInstr('OUT DX,AX');
+            End;
+          End;
+          DEST_Z80:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH HL');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('LD A,L');
+              EmitInstr('POP BC');
+              EmitInstr('OUT (C),A');
+            End;
+          End;
+          DEST_6502:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PHA');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('TAX');
+              EmitInstr('PLA');
+              EmitInstr('JSR ' + TP_RT_PFX + 'OUTPORT');
+            End;
+          End;
+          DEST_6809:
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PSHS D');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('TFR D,X');
+              EmitInstr('PULS D');
+              EmitInstr('JSR ' + TP_RT_PFX + 'OUTPORT');
+            End;
+          End;
+          Else
+          Begin
+            ParseExpr(PI);
+            EmitInstr('PUSH EAX');
+            EPMatch(']');
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+               (TokenPool[EP].Val = ':=') Then
+            Begin
+              Inc(EP);
+              ParseExpr(PI);
+              EmitInstr('MOV EDX,EAX');
+              EmitInstr('POP EAX');
+              EmitInstr('CALL ' + TP_RT_PFX + 'OUTPORT');
+            End;
+          End;
+        End; { Case }
       End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
