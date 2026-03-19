@@ -1261,3 +1261,1154 @@
     Modes d'adressage       13               14
     Instructions            56               56+
     Page zero               Oui              Non
+
+==============================================================================
+3. MODES D'ADRESSAGE
+==============================================================================
+
+  3.1 Vue d'ensemble
+  ------------------
+
+  Le 6502 dispose de 13 modes d'adressage qui, malgre l'apparente
+  simplicite du processeur, offrent une grande flexibilite pour
+  acceder aux donnees en memoire. Ces modes d'adressage sont l'une
+  des forces du 6502 par rapport a ses concurrents 8 bits.
+
+  Les modes d'adressage du 6502 se repartissent en plusieurs
+  categories :
+
+    Modes sans operande memoire :
+      - Implicite (Implied) : l'instruction agit sur un registre
+        ou un etat interne sans operande explicite
+      - Accumulateur (Accumulator) : l'instruction agit sur A
+
+    Modes avec operande immediat :
+      - Immediat (Immediate) : la valeur est codee dans
+        l'instruction elle-meme
+
+    Modes avec acces a la page zero ($0000-$00FF) :
+      - Page zero (Zero Page) : adresse sur 8 bits
+      - Page zero indexe par X (Zero Page,X)
+      - Page zero indexe par Y (Zero Page,Y)
+
+    Modes avec acces absolu ($0000-$FFFF) :
+      - Absolu (Absolute) : adresse sur 16 bits
+      - Absolu indexe par X (Absolute,X)
+      - Absolu indexe par Y (Absolute,Y)
+
+    Modes indirects (via un pointeur en page zero) :
+      - Indirect (Indirect) : utilise uniquement par JMP
+      - Indirect indexe par X (Indexed Indirect, (Ind,X))
+      - Indirect indexe par Y (Indirect Indexed, (Ind),Y)
+
+    Modes de branchement :
+      - Relatif (Relative) : deplacement signe de 8 bits par
+        rapport au PC, utilise par les branchements conditionnels
+
+  L'adresse effective (Effective Address, EA) est l'adresse finale
+  en memoire a laquelle le processeur accede pour lire ou ecrire
+  une donnee. Le mode d'adressage determine comment cette adresse
+  est calculee.
+
+  Le choix du mode d'adressage affecte :
+    - La taille de l'instruction (1, 2 ou 3 octets)
+    - Le nombre de cycles d'execution
+    - L'opcode (chaque combinaison instruction + mode d'adressage
+      a un opcode unique)
+
+  Codage de l'opcode :
+    La plupart des instructions du 6502 suivent un schema de
+    codage ou les 3 bits du milieu de l'opcode (bits 2-4)
+    determinent le mode d'adressage :
+
+    Bits 4-2  Mode d'adressage
+    --------  --------------------------------
+    000       (Indexed Indirect,X)  - ($ZP,X)
+    001       Zero Page             - $ZP
+    010       Immediate             - #$nn
+    011       Absolute              - $nnnn
+    100       (Indirect Indexed),Y  - ($ZP),Y
+    101       Zero Page,X           - $ZP,X
+    110       Absolute,Y            - $nnnn,Y
+    111       Absolute,X            - $nnnn,X
+
+    Ce schema s'applique aux instructions du groupe "a" (ORA, AND,
+    EOR, ADC, STA, LDA, CMP, SBC). Les autres groupes suivent des
+    schemas differents avec un sous-ensemble de ces modes.
+
+  3.2 Adressage implicite (Implied)
+  ---------------------------------
+
+  L'instruction n'a pas d'operande explicite. Elle agit sur un
+  registre ou un etat interne specifique du processeur. L'operande
+  est implicitement determine par l'opcode.
+
+  Taille de l'instruction : 1 octet (opcode seul)
+  Nombre de cycles : 2
+
+  Instructions utilisant ce mode :
+
+    Transferts de registres :
+      TAX  ($AA)  : A -> X
+      TAY  ($A8)  : A -> Y
+      TXA  ($8A)  : X -> A
+      TYA  ($98)  : Y -> A
+      TSX  ($BA)  : SP -> X
+      TXS  ($9A)  : X -> SP
+
+    Incrementation/decrementation de registres :
+      INX  ($E8)  : X := X + 1
+      INY  ($C8)  : Y := Y + 1
+      DEX  ($CA)  : X := X - 1
+      DEY  ($88)  : Y := Y - 1
+
+    Operations sur la pile :
+      PHA  ($48)  : empiler A          (3 cycles)
+      PLA  ($68)  : depiler A          (4 cycles)
+      PHP  ($08)  : empiler P          (3 cycles)
+      PLP  ($28)  : depiler P          (4 cycles)
+
+    Controle des drapeaux :
+      CLC  ($18)  : C := 0
+      SEC  ($38)  : C := 1
+      CLD  ($D8)  : D := 0
+      SED  ($F8)  : D := 1
+      CLI  ($58)  : I := 0
+      SEI  ($78)  : I := 1
+      CLV  ($B8)  : V := 0
+
+    Controle du flux :
+      RTS  ($60)  : retour de sous-routine    (6 cycles)
+      RTI  ($40)  : retour d'interruption     (6 cycles)
+      BRK  ($00)  : interruption logicielle   (7 cycles)
+      NOP  ($EA)  : pas d'operation            (2 cycles)
+
+  Exemples :
+
+    CLC               ; effacer la retenue avant une addition
+    ADC #$10          ; A = A + $10 + 0
+
+    INX               ; X = X + 1
+    DEY               ; Y = Y - 1
+
+    PHA               ; sauvegarder A sur la pile
+    ; ... code ...
+    PLA               ; restaurer A depuis la pile
+
+  Remarques :
+    - Les instructions de pile (PHA/PLA/PHP/PLP) prennent 3 ou 4
+      cycles au lieu de 2, car elles effectuent un acces memoire
+      a la pile
+    - Les instructions de retour (RTS/RTI) prennent 6 cycles car
+      elles effectuent plusieurs acces memoire a la pile
+    - BRK prend 7 cycles car il empile PC et P puis lit le vecteur
+      d'interruption
+    - TXS est la seule instruction de transfert qui ne modifie
+      PAS les drapeaux
+
+  3.3 Adressage par accumulateur (Accumulator)
+  ---------------------------------------------
+
+  L'instruction agit directement sur le registre A (accumulateur).
+  Ce mode est utilise uniquement par les instructions de decalage
+  et de rotation. Il est parfois considere comme un cas particulier
+  de l'adressage implicite.
+
+  Notation assembleur : A (ou parfois rien apres l'instruction)
+
+  Taille de l'instruction : 1 octet (opcode seul)
+  Nombre de cycles : 2
+
+  Instructions utilisant ce mode :
+
+    ASL A  ($0A) : decalage arithmetique a gauche de A
+                   C <- [76543210] <- 0
+    LSR A  ($4A) : decalage logique a droite de A
+                   0 -> [76543210] -> C
+    ROL A  ($2A) : rotation a gauche via C
+                   C <- [76543210] <- C
+    ROR A  ($6A) : rotation a droite via C
+                   C -> [76543210] -> C
+
+  Schema des operations de decalage et rotation :
+
+    ASL A :
+      +---+   +---+---+---+---+---+---+---+---+
+      | C | <- | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 | <- 0
+      +---+   +---+---+---+---+---+---+---+---+
+
+    LSR A :
+              +---+---+---+---+---+---+---+---+   +---+
+      0 ->  | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 | -> | C |
+              +---+---+---+---+---+---+---+---+   +---+
+
+    ROL A :
+      +---+   +---+---+---+---+---+---+---+---+
+      | C | <- | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 | <- C
+      +---+   +---+---+---+---+---+---+---+---+
+        |                                          |
+        +------------------------------------------+
+
+    ROR A :
+      +---+---+---+---+---+---+---+---+   +---+
+      | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 | -> | C |
+      +---+---+---+---+---+---+---+---+   +---+
+        ^                                    |
+        +------------------------------------+
+
+  Exemples :
+
+    ; Multiplier A par 2
+    ASL A             ; A = A * 2 (C recoit le bit de poids fort)
+
+    ; Diviser A par 2 (non signe)
+    LSR A             ; A = A / 2 (C recoit le bit de poids faible)
+
+    ; Multiplier A par 4
+    ASL A             ; A = A * 2
+    ASL A             ; A = A * 4
+
+    ; Rotation 16 bits a gauche (poids fort dans $81, poids faible dans $80)
+    ASL $80           ; decaler poids faible, bit 7 -> C
+    ROL $81           ; decaler poids fort, C -> bit 0
+
+    ; Tester le bit 7 de A
+    ASL A             ; bit 7 -> C
+    BCS BitEstUn      ; brancher si C = 1
+
+  Remarques :
+    - Ces 4 instructions existent aussi en mode page zero, page
+      zero indexe par X, absolu et absolu indexe par X, ou elles
+      operent directement sur un emplacement memoire
+    - En mode accumulateur, l'operation est plus rapide (2 cycles)
+      que sur un emplacement memoire (5-7 cycles)
+    - La notation "ASL A" est la plus courante; certains
+      assembleurs acceptent "ASL" sans operande
+
+  3.4 Adressage immediat (Immediate)
+  -----------------------------------
+
+  L'operande est une constante de 8 bits codee directement dans
+  l'instruction, immediatement apres l'opcode. La valeur n'est pas
+  une adresse memoire mais la donnee elle-meme.
+
+  Notation assembleur : #valeur (le prefixe # indique l'immediat)
+
+  Taille de l'instruction : 2 octets (opcode + valeur 8 bits)
+  Nombre de cycles : 2
+
+  Formule : operande = octet suivant l'opcode
+
+  Instructions utilisant ce mode :
+
+    Chargement :
+      LDA #nn  ($A9) : A := nn
+      LDX #nn  ($A2) : X := nn
+      LDY #nn  ($A0) : Y := nn
+
+    Arithmetique :
+      ADC #nn  ($69) : A := A + nn + C
+      SBC #nn  ($E9) : A := A - nn - NOT(C)
+
+    Logique :
+      AND #nn  ($29) : A := A AND nn
+      ORA #nn  ($09) : A := A OR nn
+      EOR #nn  ($49) : A := A XOR nn
+
+    Comparaison :
+      CMP #nn  ($C9) : comparer A avec nn (positionne N, Z, C)
+      CPX #nn  ($E0) : comparer X avec nn
+      CPY #nn  ($C0) : comparer Y avec nn
+
+  Exemples :
+
+    LDA #$42          ; A = $42 (66 en decimal)
+    LDX #0            ; X = 0
+    LDY #255          ; Y = $FF
+
+    AND #$0F          ; masquer les 4 bits de poids fort
+    ORA #$80          ; forcer le bit 7 a 1
+    EOR #$FF          ; inverser tous les bits (complement a 1)
+
+    CMP #'A'          ; comparer A avec le code ASCII de 'A'
+    BEQ EstUnA        ; brancher si A = 'A'
+
+    ADC #$01          ; A = A + 1 + C
+    SBC #$10          ; A = A - $10 - NOT(C)
+
+  Formats numeriques acceptes par les assembleurs :
+
+    #$FF              ; hexadecimal (prefixe $)
+    #%10110011        ; binaire (prefixe %)
+    #255              ; decimal (pas de prefixe)
+    #'A'              ; caractere ASCII
+    #<$1234           ; poids faible ($34) de l'adresse $1234
+    #>$1234           ; poids fort ($12) de l'adresse $1234
+
+  Remarques :
+    - L'adressage immediat ne peut etre utilise qu'en lecture
+      (source). Il est impossible de stocker avec ce mode
+      (pas de STA #nn).
+    - La valeur est toujours un octet (8 bits, 0 a 255 ou
+      -128 a +127 en signe)
+    - Les operateurs < et > sont fournis par l'assembleur pour
+      extraire les octets d'une adresse 16 bits
+    - C'est le mode le plus rapide avec l'implicite (2 cycles)
+
+  3.5 Adressage page zero (Zero Page)
+  ------------------------------------
+
+  L'operande est un octet en page zero ($0000-$00FF). Seul l'octet
+  de poids faible de l'adresse est specifie dans l'instruction;
+  l'octet de poids fort est implicitement $00.
+
+  Notation assembleur : $nn (adresse 8 bits sans prefixe #)
+
+  Taille de l'instruction : 2 octets (opcode + adresse 8 bits)
+  Nombre de cycles : 3 (lecture), 3 (ecriture), 5 (lecture-
+    modification-ecriture : ASL, LSR, ROL, ROR, INC, DEC)
+
+  Formule : EA = $00nn
+
+  Instructions utilisant ce mode (exemples) :
+
+    Chargement/stockage :
+      LDA $nn  ($A5) : A := [$00nn]
+      LDX $nn  ($A6) : X := [$00nn]
+      LDY $nn  ($A4) : Y := [$00nn]
+      STA $nn  ($85) : [$00nn] := A
+      STX $nn  ($86) : [$00nn] := X
+      STY $nn  ($84) : [$00nn] := Y
+
+    Arithmetique :
+      ADC $nn  ($65) : A := A + [$00nn] + C
+      SBC $nn  ($E5) : A := A - [$00nn] - NOT(C)
+
+    Logique :
+      AND $nn  ($25) : A := A AND [$00nn]
+      ORA $nn  ($05) : A := A OR [$00nn]
+      EOR $nn  ($45) : A := A XOR [$00nn]
+
+    Comparaison :
+      CMP $nn  ($C5) : comparer A avec [$00nn]
+      CPX $nn  ($E4) : comparer X avec [$00nn]
+      CPY $nn  ($C4) : comparer Y avec [$00nn]
+
+    Modification memoire :
+      INC $nn  ($E6) : [$00nn] := [$00nn] + 1
+      DEC $nn  ($C6) : [$00nn] := [$00nn] - 1
+      ASL $nn  ($06) : decalage a gauche de [$00nn]
+      LSR $nn  ($46) : decalage a droite de [$00nn]
+      ROL $nn  ($26) : rotation a gauche de [$00nn]
+      ROR $nn  ($66) : rotation a droite de [$00nn]
+
+    Test de bits :
+      BIT $nn  ($24) : teste les bits de [$00nn]
+                       Z := A AND [$00nn] = 0
+                       N := bit 7 de [$00nn]
+                       V := bit 6 de [$00nn]
+
+  Exemples :
+
+    LDA $80           ; A = contenu de l'adresse $0080
+    STA $90           ; stocker A a l'adresse $0090
+    INC $FF           ; incrementer le contenu de $00FF
+    BIT $20           ; tester les bits a l'adresse $0020
+
+    ; Utiliser la page zero comme pseudo-registres
+    LDA $80           ; charger le "pseudo-registre" a $80
+    ADC $81           ; additionner avec le "pseudo-registre" a $81
+    STA $82           ; stocker le resultat dans $82
+
+  Avantages par rapport a l'adressage absolu :
+    - 1 octet de moins par instruction (2 au lieu de 3)
+    - 1 cycle de moins (3 au lieu de 4 pour LDA/STA)
+    - Economies cumulees significatives dans le code
+
+  Remarques :
+    - La page zero est limitee a 256 octets, c'est une ressource
+      precieuse qui doit etre geree avec soin
+    - Sur la plupart des systemes, une partie de la page zero est
+      reservee par le systeme d'exploitation ou le moniteur
+    - L'adressage page zero est le mode le plus utilise pour les
+      variables frequemment accedees
+    - L'adressage "zero page" est equivalent au "direct page" du
+      6809, mais la page du 6809 peut etre repositionnee dans
+      l'espace d'adressage, tandis que la page zero du 6502 est
+      toujours fixe a $0000-$00FF
+
+  3.6 Adressage page zero indexe par X (Zero Page,X)
+  ---------------------------------------------------
+
+  L'adresse effective est calculee en ajoutant le contenu du
+  registre X a l'adresse de base en page zero. Le resultat est
+  tronque a 8 bits (modulo 256), ce qui signifie que l'adresse
+  reste TOUJOURS en page zero, meme en cas de debordement.
+
+  Notation assembleur : $nn,X
+
+  Taille de l'instruction : 2 octets (opcode + adresse 8 bits)
+  Nombre de cycles : 4 (lecture/ecriture), 6 (lecture-modification-
+    ecriture)
+
+  Formule : EA = ($nn + X) AND $FF
+    (le resultat est toujours en page zero)
+
+  Instructions utilisant ce mode :
+
+    LDA $nn,X  ($B5) : A := [($nn + X) AND $FF]
+    STA $nn,X  ($95) : [($nn + X) AND $FF] := A
+    LDY $nn,X  ($B4) : Y := [($nn + X) AND $FF]
+    STY $nn,X  ($94) : [($nn + X) AND $FF] := Y
+    ADC $nn,X  ($75) : A := A + [($nn + X) AND $FF] + C
+    SBC $nn,X  ($F5) : A := A - [($nn + X) AND $FF] - NOT(C)
+    AND $nn,X  ($35) : A := A AND [($nn + X) AND $FF]
+    ORA $nn,X  ($15) : A := A OR [($nn + X) AND $FF]
+    EOR $nn,X  ($55) : A := A XOR [($nn + X) AND $FF]
+    CMP $nn,X  ($D5) : comparer A avec [($nn + X) AND $FF]
+    INC $nn,X  ($F6) : [($nn + X) AND $FF] += 1
+    DEC $nn,X  ($D6) : [($nn + X) AND $FF] -= 1
+    ASL $nn,X  ($16) : decalage a gauche de [($nn + X) AND $FF]
+    LSR $nn,X  ($56) : decalage a droite de [($nn + X) AND $FF]
+    ROL $nn,X  ($36) : rotation a gauche de [($nn + X) AND $FF]
+    ROR $nn,X  ($76) : rotation a droite de [($nn + X) AND $FF]
+
+  Exemples :
+
+    ; Tableau de 8 octets a partir de $80 en page zero
+    LDX #$03          ; index = 3
+    LDA $80,X         ; A = contenu de $0083 (= $80 + 3)
+    STA $88,X         ; stocker A a $008B (= $88 + 3)
+
+    ; Boucle sur un tableau en page zero
+    LDX #$07          ; X = 7 (dernier element)
+  Boucle:
+    LDA $80,X         ; lire l'element X du tableau
+    STA $90,X         ; copier dans un autre tableau
+    DEX               ; X = X - 1
+    BPL Boucle        ; boucler tant que X >= 0
+
+    ; Debordement silencieux (wrapping)
+    LDX #$80          ; X = $80 (128)
+    LDA $C0,X         ; EA = ($C0 + $80) AND $FF = $40
+                      ; lit a l'adresse $0040, PAS $0140
+
+  Remarques :
+    - Le "wrapping" a $FF est un comportement specifique au 6502
+      qui peut surprendre. L'adresse ne deborde JAMAIS en page 1.
+    - Ce mode prend un cycle de plus que le mode page zero simple
+      car le processeur doit additionner X a l'adresse de base
+    - LDX $nn,X n'existe pas (ce serait redondant); a la place,
+      utiliser LDX $nn,Y (voir section 3.7)
+
+  3.7 Adressage page zero indexe par Y (Zero Page,Y)
+  ---------------------------------------------------
+
+  Similaire au mode Zero Page,X mais utilise le registre Y comme
+  index. Ce mode n'est disponible que pour les instructions LDX
+  et STX. C'est un mode specialise pour les cas ou X est deja
+  utilise comme index et ou l'on veut indexer LDX/STX par Y.
+
+  Notation assembleur : $nn,Y
+
+  Taille de l'instruction : 2 octets (opcode + adresse 8 bits)
+  Nombre de cycles : 4
+
+  Formule : EA = ($nn + Y) AND $FF
+
+  Instructions utilisant ce mode :
+
+    LDX $nn,Y  ($B6) : X := [($nn + Y) AND $FF]
+    STX $nn,Y  ($96) : [($nn + Y) AND $FF] := X
+
+  Exemples :
+
+    ; Charger X depuis un tableau en page zero, indexe par Y
+    LDY #$02          ; Y = 2
+    LDX $80,Y         ; X = contenu de $0082 (= $80 + 2)
+
+    ; Stocker X dans un tableau en page zero, indexe par Y
+    LDY #$05
+    STX $A0,Y         ; [$A0 + 5] = X, soit $00A5
+
+  Remarques :
+    - Seules LDX et STX utilisent ce mode. Pour les autres
+      instructions, utiliser Zero Page,X
+    - Le wrapping a $FF s'applique comme pour Zero Page,X
+    - Ce mode existe car LDX ne peut pas utiliser X comme index
+      (ce serait un conflit : on chargerait X en utilisant X
+      pour calculer l'adresse)
+
+  3.8 Adressage absolu (Absolute)
+  --------------------------------
+
+  L'operande se trouve a une adresse 16 bits quelconque dans
+  l'espace d'adressage de 64 Ko. L'adresse complete (2 octets)
+  est codee dans l'instruction en format little-endian (poids
+  faible d'abord, poids fort ensuite).
+
+  Notation assembleur : $nnnn (adresse 16 bits)
+
+  Taille de l'instruction : 3 octets (opcode + adresse 16 bits)
+  Nombre de cycles : 4 (lecture/ecriture), 6 (lecture-modification-
+    ecriture), 3 (JMP), 6 (JSR)
+
+  Formule : EA = $hhll (ou ll = poids faible, hh = poids fort)
+
+  Codage en memoire :
+    Adresse n   : opcode
+    Adresse n+1 : poids faible de l'adresse (ll)
+    Adresse n+2 : poids fort de l'adresse (hh)
+
+  Instructions utilisant ce mode (exemples) :
+
+    Chargement/stockage :
+      LDA $nnnn  ($AD) : A := [$nnnn]
+      LDX $nnnn  ($AE) : X := [$nnnn]
+      LDY $nnnn  ($AC) : Y := [$nnnn]
+      STA $nnnn  ($8D) : [$nnnn] := A
+      STX $nnnn  ($8E) : [$nnnn] := X
+      STY $nnnn  ($8C) : [$nnnn] := Y
+
+    Arithmetique et logique :
+      ADC $nnnn  ($6D) : A := A + [$nnnn] + C
+      SBC $nnnn  ($ED) : A := A - [$nnnn] - NOT(C)
+      AND $nnnn  ($2D) : A := A AND [$nnnn]
+      ORA $nnnn  ($0D) : A := A OR [$nnnn]
+      EOR $nnnn  ($4D) : A := A XOR [$nnnn]
+
+    Comparaison :
+      CMP $nnnn  ($CD) : comparer A avec [$nnnn]
+      CPX $nnnn  ($EC) : comparer X avec [$nnnn]
+      CPY $nnnn  ($CC) : comparer Y avec [$nnnn]
+
+    Modification memoire :
+      INC $nnnn  ($EE) : [$nnnn] := [$nnnn] + 1
+      DEC $nnnn  ($CE) : [$nnnn] := [$nnnn] - 1
+      ASL $nnnn  ($0E) : decalage a gauche de [$nnnn]
+      LSR $nnnn  ($4E) : decalage a droite de [$nnnn]
+      ROL $nnnn  ($2E) : rotation a gauche de [$nnnn]
+      ROR $nnnn  ($6E) : rotation a droite de [$nnnn]
+
+    Test de bits :
+      BIT $nnnn  ($2C) : teste les bits de [$nnnn]
+
+    Controle du flux :
+      JMP $nnnn  ($4C) : PC := $nnnn (saut absolu, 3 cycles)
+      JSR $nnnn  ($20) : empiler PC-1, PC := $nnnn (6 cycles)
+
+  Exemples :
+
+    LDA $1234         ; A = contenu de l'adresse $1234
+    STA $D020         ; stocker A dans le registre de couleur
+                      ; de bordure du C64 (VIC-II)
+    INC $0400         ; incrementer l'octet a l'adresse $0400
+    JMP $C000         ; sauter a l'adresse $C000
+    JSR $FFD2         ; appeler la routine CHROUT du Kernal C64
+
+    ; Codage de "LDA $1234" en memoire :
+    ;   $AD $34 $12
+    ;   (opcode, poids faible, poids fort = little-endian)
+
+  Remarques :
+    - L'adressage absolu est le mode le plus general, il permet
+      d'acceder a toute la memoire de 64 Ko
+    - Il est 1 octet plus long et 1 cycle plus lent que le mode
+      page zero equivalent
+    - JMP et JSR n'existent qu'en mode absolu (et indirect pour
+      JMP)
+    - L'assembleur choisit automatiquement entre le mode page
+      zero et le mode absolu en fonction de la valeur de
+      l'adresse : si l'adresse est dans $00-$FF, le mode page
+      zero est selectionne pour optimiser la taille et la vitesse
+
+  3.9 Adressage absolu indexe par X (Absolute,X)
+  ------------------------------------------------
+
+  L'adresse effective est calculee en ajoutant le contenu du
+  registre X a une adresse de base de 16 bits. Contrairement au
+  mode Zero Page,X, le resultat n'est pas tronque : l'addition
+  se fait sur 16 bits.
+
+  Notation assembleur : $nnnn,X
+
+  Taille de l'instruction : 3 octets (opcode + adresse 16 bits)
+  Nombre de cycles : 4* (lecture), 5 (ecriture), 7 (lecture-
+    modification-ecriture)
+    * : +1 cycle si le franchissement de page se produit
+        (page boundary crossing)
+
+  Formule : EA = $nnnn + X  (addition 16 bits)
+
+  Franchissement de page (page boundary crossing) :
+    Une "page" dans le contexte du 6502 est un bloc de 256 octets
+    aligne ($xx00 a $xxFF). Un franchissement de page se produit
+    quand l'ajout de X fait passer l'adresse dans la page suivante
+    (l'octet de poids fort de l'adresse change).
+
+    Exemple sans franchissement :
+      Base = $10F0, X = $05 -> EA = $10F5 (meme page $10xx)
+      -> pas de cycle supplementaire
+
+    Exemple avec franchissement :
+      Base = $10F0, X = $20 -> EA = $1110 (page $11xx, differente)
+      -> +1 cycle supplementaire
+
+    Le cycle supplementaire est du au fait que le 6502 calcule
+    d'abord l'adresse avec l'octet de poids faible seul. Si une
+    retenue se produit vers l'octet de poids fort, un cycle
+    supplementaire est necessaire pour corriger l'adresse.
+
+  Instructions utilisant ce mode :
+
+    LDA $nnnn,X  ($BD) : A := [$nnnn + X]
+    STA $nnnn,X  ($9D) : [$nnnn + X] := A     (toujours 5 cycles)
+    LDY $nnnn,X  ($BC) : Y := [$nnnn + X]
+    ADC $nnnn,X  ($7D) : A := A + [$nnnn + X] + C
+    SBC $nnnn,X  ($FD) : A := A - [$nnnn + X] - NOT(C)
+    AND $nnnn,X  ($3D) : A := A AND [$nnnn + X]
+    ORA $nnnn,X  ($1D) : A := A OR [$nnnn + X]
+    EOR $nnnn,X  ($5D) : A := A XOR [$nnnn + X]
+    CMP $nnnn,X  ($DD) : comparer A avec [$nnnn + X]
+    INC $nnnn,X  ($FE) : [$nnnn + X] += 1     (toujours 7 cycles)
+    DEC $nnnn,X  ($DE) : [$nnnn + X] -= 1
+    ASL $nnnn,X  ($1E) : decalage a gauche de [$nnnn + X]
+    LSR $nnnn,X  ($5E) : decalage a droite de [$nnnn + X]
+    ROL $nnnn,X  ($3E) : rotation a gauche de [$nnnn + X]
+    ROR $nnnn,X  ($7E) : rotation a droite de [$nnnn + X]
+
+  Exemples :
+
+    ; Parcourir un tableau de 256 octets a partir de $2000
+    LDX #$00
+  Boucle:
+    LDA $2000,X       ; lire l'octet X du tableau
+    STA $0400,X       ; copier vers l'ecran (C64)
+    INX
+    BNE Boucle        ; boucler tant que X != 0
+
+    ; Acces a un tableau de plus de 256 elements avec index
+    ; sur 16 bits (poids faible dans X, poids fort ajoute a l'adresse)
+    ; Lire l'element a l'offset $0103 du tableau :
+    LDA Table+$01,X   ; ou X = $03, Table est la base
+                      ; EA = Table + $0100 + $03 = Table + $0103
+
+  Remarques :
+    - Les instructions d'ecriture (STA) et de lecture-modification-
+      ecriture (INC, DEC, ASL, etc.) prennent toujours le cycle
+      supplementaire, meme sans franchissement de page
+    - LDX $nnnn,X n'existe pas (meme raison que pour Zero Page,X)
+    - Ce mode est tres utilise pour parcourir des tableaux et des
+      buffers d'ecran
+
+  3.10 Adressage absolu indexe par Y (Absolute,Y)
+  -------------------------------------------------
+
+  Identique a Absolute,X mais utilise le registre Y comme index.
+  Ce mode est disponible pour un sous-ensemble d'instructions plus
+  restreint que Absolute,X.
+
+  Notation assembleur : $nnnn,Y
+
+  Taille de l'instruction : 3 octets (opcode + adresse 16 bits)
+  Nombre de cycles : 4* (lecture), 5 (ecriture)
+    * : +1 cycle si franchissement de page
+
+  Formule : EA = $nnnn + Y  (addition 16 bits)
+
+  Instructions utilisant ce mode :
+
+    LDA $nnnn,Y  ($B9) : A := [$nnnn + Y]
+    STA $nnnn,Y  ($99) : [$nnnn + Y] := A     (toujours 5 cycles)
+    LDX $nnnn,Y  ($BE) : X := [$nnnn + Y]
+    ADC $nnnn,Y  ($79) : A := A + [$nnnn + Y] + C
+    SBC $nnnn,Y  ($F9) : A := A - [$nnnn + Y] - NOT(C)
+    AND $nnnn,Y  ($39) : A := A AND [$nnnn + Y]
+    ORA $nnnn,Y  ($19) : A := A OR [$nnnn + Y]
+    EOR $nnnn,Y  ($59) : A := A XOR [$nnnn + Y]
+    CMP $nnnn,Y  ($D9) : comparer A avec [$nnnn + Y]
+
+  Exemples :
+
+    ; Copier 256 octets de $2000 vers $3000
+    LDY #$00
+  Boucle:
+    LDA $2000,Y       ; lire depuis la source
+    STA $3000,Y       ; ecrire vers la destination
+    INY
+    BNE Boucle        ; boucler tant que Y != 0
+
+    ; Charger X depuis un tableau indexe par Y
+    LDX Table,Y       ; X = Table[Y]
+
+  Remarques :
+    - Ce mode n'est PAS disponible pour les instructions de
+      modification memoire (INC, DEC, ASL, LSR, ROL, ROR)
+    - LDY $nnnn,Y n'existe pas (conflit d'usage)
+    - Le franchissement de page fonctionne de la meme maniere
+      que pour Absolute,X
+    - Ce mode est utile quand X est deja occupe comme compteur
+      ou index
+
+  3.11 Adressage indirect (Indirect)
+  -----------------------------------
+
+  L'adresse effective est lue depuis un emplacement memoire de 16
+  bits. Le processeur lit d'abord un pointeur (2 octets) a
+  l'adresse specifiee, puis utilise cette valeur comme adresse
+  effective. Ce mode n'est utilise que par l'instruction JMP.
+
+  Notation assembleur : ($nnnn)
+
+  Taille de l'instruction : 3 octets (opcode + adresse 16 bits)
+  Nombre de cycles : 5
+
+  Formule : EA = [[$nnnn+1] << 8 | [$nnnn]]
+    (lire un pointeur 16 bits little-endian a l'adresse $nnnn)
+
+  Instructions utilisant ce mode :
+
+    JMP ($nnnn)  ($6C) : PC := [[$nnnn+1]:[$nnnn]]
+
+  Exemples :
+
+    ; Saut indirect via un vecteur en memoire
+    JMP ($FFFC)       ; sauter a l'adresse contenue dans le
+                      ; vecteur de RESET ($FFFC-$FFFD)
+
+    ; Table de saut
+    ; En memoire :
+    ;   $2000 : $00 $C0  -> pointe vers $C000
+    ;   $2002 : $00 $D0  -> pointe vers $D000
+    JMP ($2000)       ; PC := $C000
+
+    ; Vecteur de saut modifiable
+    LDA #<Routine     ; poids faible de l'adresse de Routine
+    STA VecteurJmp
+    LDA #>Routine     ; poids fort de l'adresse de Routine
+    STA VecteurJmp+1
+    JMP (VecteurJmp)  ; sauter a Routine
+
+  BUG IMPORTANT du 6502 NMOS (JMP indirect sur limite de page) :
+
+    Si l'adresse du pointeur se trouve en fin de page (octet de
+    poids faible = $FF), le 6502 NMOS ne franchit PAS la page
+    pour lire l'octet de poids fort du pointeur. Au lieu de lire
+    l'octet suivant a la page suivante, il lit l'octet au debut
+    de la MEME page.
+
+    Exemple du bug :
+      $30FF : $80   (poids faible du pointeur)
+      $3100 : $40   (poids fort attendu - IGNORE par le 6502 !)
+      $3000 : $50   (lu a la place par le 6502 NMOS)
+
+      JMP ($30FF) :
+        - Attendu : EA = $4080 (lit $30FF et $3100)
+        - Reel    : EA = $5080 (lit $30FF et $3000 !)
+
+    Ce bug affecte TOUS les 6502 NMOS (y compris le 6510 du C64
+    et le 2A03 de la NES). Il est corrige sur le 65C02 (CMOS).
+
+    Contournement :
+      - Ne jamais placer un vecteur JMP indirect a une adresse
+        dont l'octet de poids faible est $FF
+      - Aligner les tables de vecteurs sur des limites de pages
+
+  Remarques :
+    - C'est le seul mode d'adressage indirect "pur" du 6502
+    - Il n'est disponible que pour JMP (pas pour JSR ni pour
+      les acces aux donnees)
+    - Pour un JSR indirect, la technique courante est :
+        ; Pousser l'adresse - 1 sur la pile puis faire RTS
+        LDA #>(Routine-1)
+        PHA
+        LDA #<(Routine-1)
+        PHA
+        RTS               ; simule un JSR indirect
+
+  3.12 Adressage indirect indexe par X (Indexed Indirect, (Ind,X))
+  -----------------------------------------------------------------
+
+  Aussi appele "Indexed Indirect" ou "Pre-Indexed Indirect".
+  Le registre X est ajoute a une adresse en page zero, et le
+  resultat (tronque a 8 bits) pointe vers un emplacement en page
+  zero contenant l'adresse effective 16 bits (le pointeur).
+
+  Notation assembleur : ($nn,X)
+
+  Taille de l'instruction : 2 octets (opcode + adresse page zero)
+  Nombre de cycles : 6
+
+  Formule :
+    pointeur = ($nn + X) AND $FF
+    EA = [[$0000 + pointeur + 1] << 8 | [$0000 + pointeur]]
+
+  Etapes detaillees :
+    1. Ajouter X a l'adresse de page zero : ptr = ($nn + X) AND $FF
+    2. Lire l'octet de poids faible a $00:ptr
+    3. Lire l'octet de poids fort a $00:(ptr+1) AND $FF
+    4. Combiner pour former l'adresse effective 16 bits
+    5. Acceder a la donnee a cette adresse
+
+  Instructions utilisant ce mode :
+
+    LDA ($nn,X)  ($A1) : A := [[($nn + X) AND $FF]]
+    STA ($nn,X)  ($81) : [[($nn + X) AND $FF]] := A
+    ADC ($nn,X)  ($61) : A := A + [[($nn + X) AND $FF]] + C
+    SBC ($nn,X)  ($E1) : A := A - [[($nn + X) AND $FF]] - NOT(C)
+    AND ($nn,X)  ($21) : A := A AND [[($nn + X) AND $FF]]
+    ORA ($nn,X)  ($01) : A := A OR [[($nn + X) AND $FF]]
+    EOR ($nn,X)  ($41) : A := A XOR [[($nn + X) AND $FF]]
+    CMP ($nn,X)  ($C1) : comparer A avec [[($nn + X) AND $FF]]
+
+  Exemples :
+
+    ; Table de pointeurs en page zero
+    ; $80-$81 : pointeur 0 = $2000
+    ; $82-$83 : pointeur 1 = $3000
+    ; $84-$85 : pointeur 2 = $4000
+    LDX #$02          ; index = 1 (2 octets par pointeur)
+    LDA ($80,X)       ; ptr = ($80+2) AND $FF = $82
+                      ; lit le pointeur a $82-$83 = $3000
+                      ; A = contenu de $3000
+
+    ; Avec X = 0, equivalent a de l'indirect simple
+    LDX #$00
+    LDA ($80,X)       ; ptr = $80, lit pointeur a $80-$81
+                      ; A = contenu de l'adresse pointee par $80-$81
+
+    ; Parcourir une table de pointeurs
+    LDX #$00
+  Boucle:
+    LDA ($80,X)       ; lire la donnee pointee par le pointeur X/2
+    ; ... traitement ...
+    INX
+    INX               ; X += 2 (avancer au pointeur suivant)
+    CPX #$06          ; 3 pointeurs * 2 octets = 6
+    BNE Boucle
+
+  Schema memoire (exemple avec $80,X ou X=$02) :
+
+    Page zero :
+      $80 : $00 $20   ; pointeur 0 -> $2000
+      $82 : $00 $30   ; pointeur 1 -> $3000  <- selectionne (X=2)
+      $84 : $00 $40   ; pointeur 2 -> $4000
+
+    Memoire :
+      $3000 : $42      ; <- donnee lue par LDA ($80,X)
+
+  Remarques :
+    - Ce mode est relativement lent (6 cycles) car il necessite
+      plusieurs acces memoire successifs
+    - Le wrapping s'applique : si ptr = $FF, le poids faible est
+      lu a $FF et le poids fort a $00 (pas a $0100)
+    - Ce mode est principalement utile pour les tables de
+      pointeurs ou le choix du pointeur depend d'un index
+    - En pratique, ce mode est moins utilise que (Ind),Y car il
+      est plus couteux et moins flexible
+
+  3.13 Adressage indirect indexe par Y (Indirect Indexed, (Ind),Y)
+  -----------------------------------------------------------------
+
+  Aussi appele "Indirect Indexed" ou "Post-Indexed Indirect".
+  C'est l'un des modes d'adressage les plus importants du 6502.
+  Un pointeur 16 bits est d'abord lu depuis la page zero, puis le
+  registre Y est ajoute a cette adresse pour former l'adresse
+  effective.
+
+  Notation assembleur : ($nn),Y
+
+  Taille de l'instruction : 2 octets (opcode + adresse page zero)
+  Nombre de cycles : 5* (lecture), 6 (ecriture)
+    * : +1 cycle si franchissement de page
+
+  Formule :
+    base = [[$0000 + $nn + 1] << 8 | [$0000 + $nn]]
+    EA = base + Y  (addition 16 bits)
+
+  Etapes detaillees :
+    1. Lire l'octet de poids faible du pointeur a $00:$nn
+    2. Lire l'octet de poids fort du pointeur a $00:($nn+1) AND $FF
+    3. Combiner pour former l'adresse de base 16 bits
+    4. Ajouter Y pour obtenir l'adresse effective
+    5. Acceder a la donnee a cette adresse
+
+  Instructions utilisant ce mode :
+
+    LDA ($nn),Y  ($B1) : A := [[$nn] + Y]  (pointeur en page zero)
+    STA ($nn),Y  ($91) : [[$nn] + Y] := A  (toujours 6 cycles)
+    ADC ($nn),Y  ($71) : A := A + [[$nn] + Y] + C
+    SBC ($nn),Y  ($F1) : A := A - [[$nn] + Y] - NOT(C)
+    AND ($nn),Y  ($31) : A := A AND [[$nn] + Y]
+    ORA ($nn),Y  ($11) : A := A OR [[$nn] + Y]
+    EOR ($nn),Y  ($51) : A := A XOR [[$nn] + Y]
+    CMP ($nn),Y  ($D1) : comparer A avec [[$nn] + Y]
+
+  Exemples :
+
+    ; Pointeur vers un buffer a $80-$81
+    ; $80 = $00, $81 = $20 -> pointeur = $2000
+    LDY #$05
+    LDA ($80),Y       ; lit le pointeur $2000 a $80-$81
+                      ; A = contenu de $2000 + $05 = $2005
+
+    ; Copier un bloc de memoire avec pointeur source et destination
+    ; $80-$81 = pointeur source
+    ; $82-$83 = pointeur destination
+    LDY #$00
+  Boucle:
+    LDA ($80),Y       ; lire un octet depuis la source
+    STA ($82),Y       ; ecrire a la destination
+    INY
+    CPY #$40          ; copier 64 octets
+    BNE Boucle
+
+    ; Parcourir une chaine ASCIIZ pointee par $80-$81
+    LDY #$00
+  Boucle:
+    LDA ($80),Y       ; lire le caractere courant
+    BEQ Fin           ; si zero, fin de chaine
+    JSR AfficherChar  ; afficher le caractere
+    INY
+    BNE Boucle        ; boucler (max 256 caracteres)
+  Fin:
+
+    ; Copier un bloc de plus de 256 octets
+    ; (incrementer le poids fort du pointeur)
+    LDY #$00
+    LDX #$04          ; 4 pages = 1024 octets
+  BouclePage:
+    LDA ($80),Y       ; lire depuis la source
+    STA ($82),Y       ; ecrire vers la destination
+    INY
+    BNE BouclePage    ; boucle interne (256 octets)
+    INC $81           ; page suivante (source)
+    INC $83           ; page suivante (destination)
+    DEX
+    BNE BouclePage    ; boucle externe (pages)
+
+  Schema memoire (exemple avec ($80),Y ou Y=$05) :
+
+    Page zero :
+      $80 : $00        ; poids faible du pointeur
+      $81 : $20        ; poids fort du pointeur -> $2000
+
+    Memoire :
+      $2000 : ...
+      $2005 : $42      ; <- donnee lue (base $2000 + Y $05)
+
+  Remarques :
+    - C'est le mode d'adressage le plus polyvalent du 6502 pour
+      acceder a la memoire via des pointeurs
+    - Il est l'equivalent approximatif de [An] + deplacement sur
+      le 68000, ou de [reg + offset] sur le x86
+    - Le cycle supplementaire pour le franchissement de page
+      s'applique en lecture mais PAS en ecriture (STA prend
+      toujours 6 cycles)
+    - Comme pour (Ind,X), le wrapping s'applique en page zero :
+      si $nn = $FF, le poids faible est lu a $FF et le poids
+      fort a $00
+    - Ce mode est massivement utilise en programmation 6502 pour
+      toute manipulation de donnees via pointeurs
+
+  Difference entre ($nn,X) et ($nn),Y :
+
+    ($nn,X) : Pre-indexe  -> X selectionne QUEL pointeur utiliser
+              EA = [table_de_pointeurs + X]
+              Utile pour : tables de pointeurs, dispatch
+
+    ($nn),Y : Post-indexe -> Y est un OFFSET dans les donnees
+              EA = [pointeur] + Y
+              Utile pour : parcours de tableaux, acces a des
+              structures via un pointeur de base
+
+  3.14 Adressage relatif (Relative)
+  ---------------------------------
+
+  L'adresse effective est calculee en ajoutant un deplacement signe
+  de 8 bits a l'adresse de l'instruction SUIVANT le branchement.
+  Ce mode est utilise exclusivement par les instructions de
+  branchement conditionnel.
+
+  Notation assembleur : label (l'assembleur calcule le deplacement)
+
+  Taille de l'instruction : 2 octets (opcode + deplacement 8 bits)
+  Nombre de cycles : 2 (branchement non pris), 3 (branchement pris,
+    meme page), 4 (branchement pris, franchissement de page)
+
+  Formule : EA = PC + deplacement_signe
+    (ou PC est l'adresse de l'instruction suivant le branchement,
+    c'est-a-dire l'adresse du branchement + 2)
+
+  Deplacement :
+    - Valeur signee de 8 bits : -128 ($80) a +127 ($7F)
+    - Portee effective par rapport a l'instruction de branchement :
+      En arriere : -126 octets (deplacement -128 + 2 = -126)
+      En avant   : +129 octets (deplacement +127 + 2 = +129)
+
+  Instructions utilisant ce mode :
+
+    BCC  ($90) : brancher si C = 0 (Carry Clear)
+    BCS  ($B0) : brancher si C = 1 (Carry Set)
+    BEQ  ($F0) : brancher si Z = 1 (Equal / Zero)
+    BNE  ($D0) : brancher si Z = 0 (Not Equal / Not Zero)
+    BMI  ($30) : brancher si N = 1 (Minus / Negative)
+    BPL  ($10) : brancher si N = 0 (Plus / Positive)
+    BVC  ($50) : brancher si V = 0 (Overflow Clear)
+    BVS  ($70) : brancher si V = 1 (Overflow Set)
+
+  Utilisation pour les comparaisons :
+
+    CMP #val / BCC label  : brancher si A < val  (non signe)
+    CMP #val / BCS label  : brancher si A >= val (non signe)
+    CMP #val / BEQ label  : brancher si A = val
+    CMP #val / BNE label  : brancher si A != val
+    CMP #val / BMI label  : brancher si A < val  (signe, approx.)
+    CMP #val / BPL label  : brancher si A >= val (signe, approx.)
+
+  Exemples :
+
+    ; Boucle simple
+        LDX #$10        ; X = 16
+    Boucle:
+        DEX             ; X = X - 1
+        BNE Boucle      ; boucler tant que X != 0
+
+    ; Test et branchement
+        LDA Score
+        CMP #100        ; score >= 100 ?
+        BCS NiveauSuivant  ; oui, passer au niveau suivant
+
+    ; Branchement hors de portee (contournement)
+    ; Si la cible est trop loin pour un deplacement de 8 bits :
+        BEQ ProcheLabel ; si egal, sauter a ProcheLabel
+        JMP Suite       ; sinon, continuer
+    ProcheLabel:
+        JMP LoinLabel   ; sauter a la cible eloignee
+    Suite:
+        ; ... code ...
+
+    ; Equivalent de "BRA" (branchement inconditionnel) sur 6502 :
+    ; Le 6502 n'a PAS d'instruction BRA. On peut simuler :
+        CLC
+        BCC Toujours    ; BCC apres CLC branche toujours
+    ; Ou :
+        JMP Toujours    ; mais prend 3 octets au lieu de 2
+
+  Calcul du deplacement par l'assembleur :
+
+    L'assembleur calcule automatiquement le deplacement :
+      deplacement = adresse_cible - (adresse_branchement + 2)
+
+    Exemple : branchement a $1000 depuis $0FF0
+      deplacement = $1000 - ($0FF0 + 2) = $1000 - $0FF2 = $0E
+      -> BNE $0E (deplacement positif de 14)
+
+    Exemple : branchement a $0FE0 depuis $1000
+      deplacement = $0FE0 - ($1000 + 2) = $0FE0 - $1002 = $FFDE
+      -> En signe 8 bits : $DE = -34
+      -> BNE $DE (deplacement negatif de 34)
+
+  Timing des branchements :
+    - 2 cycles si le branchement n'est pas pris (la condition
+      est fausse) : le processeur passe simplement a
+      l'instruction suivante
+    - 3 cycles si le branchement est pris et que la cible est
+      dans la meme page de 256 octets
+    - 4 cycles si le branchement est pris et que la cible est
+      dans une page differente (franchissement de page)
+
+    Ce comportement asymetrique est important pour l'optimisation :
+    - Placer le cas le plus frequent dans le chemin "non pris"
+    - Aligner les boucles pour eviter les franchissements de page
+
+  Remarques :
+    - Le 6502 original n'a PAS d'instruction de branchement
+      inconditionnel relatif (BRA). Le 65C02 ajoute BRA ($80).
+    - La portee limitee a -126/+129 octets oblige parfois a
+      utiliser des sauts intermediaires (trampolines)
+    - Les branchements relatifs produisent du code relogeable
+      (position-independent) car ils ne codent pas d'adresse
+      absolue
+    - Le 65C16 (65816) ajoute des branchements relatifs longs
+      (BRL) avec un deplacement de 16 bits
+
+  3.15 Resume et tableau comparatif
+  ----------------------------------
+
+  Les 13 modes d'adressage du 6502 :
+
+  No  Mode                  Syntaxe       Taille  Formule EA
+  --  --------------------  -----------   ------  -------------------------
+   1  Implicite             (aucune)      1 oct.  (pas d'EA)
+   2  Accumulateur          A             1 oct.  (pas d'EA, agit sur A)
+   3  Immediat              #$nn          2 oct.  operande = nn
+   4  Page zero             $nn           2 oct.  EA = $00nn
+   5  Page zero,X           $nn,X         2 oct.  EA = ($nn+X) AND $FF
+   6  Page zero,Y           $nn,Y         2 oct.  EA = ($nn+Y) AND $FF
+   7  Absolu                $nnnn         3 oct.  EA = $nnnn
+   8  Absolu,X              $nnnn,X       3 oct.  EA = $nnnn + X
+   9  Absolu,Y              $nnnn,Y       3 oct.  EA = $nnnn + Y
+  10  Indirect              ($nnnn)       3 oct.  EA = [$nnnn]
+  11  Indirect indexe X     ($nn,X)       2 oct.  EA = [($nn+X) AND $FF]
+  12  Indirect indexe Y     ($nn),Y       2 oct.  EA = [$nn] + Y
+  13  Relatif               $rr           2 oct.  EA = PC + deplacement
+
+  Nombre de cycles par mode (lecture) :
+
+  Mode                  Cycles    Cycles (ecriture)  Page cross
+  --------------------  --------  -----------------  ----------
+  Implicite             2         -                  -
+  Accumulateur          2         -                  -
+  Immediat              2         -                  -
+  Page zero             3         3                  -
+  Page zero,X           4         4                  -
+  Page zero,Y           4         4                  -
+  Absolu                4         4                  -
+  Absolu,X              4(+1)     5                  +1 cycle
+  Absolu,Y              4(+1)     5                  +1 cycle
+  Indirect              -         -                  -
+  Indirect indexe X     6         6                  -
+  Indirect indexe Y     5(+1)     6                  +1 cycle
+  Relatif (pris)        3(+1)     -                  +1 cycle
+  Relatif (non pris)    2         -                  -
+
+  Comparaison avec le Z80 :
+
+  Aspect                  6502                Z80
+  ----------------------  ------------------  ----------------------
+  Nombre de modes         13                  ~10
+  Page zero / directe     Oui ($00-$FF)       Non
+  Indexe avec offset      Non (sauf indirects) Oui (IX+d, IY+d)
+  Indirect registre       Via page zero       (HL), (BC), (DE)
+  Post-increment          Non                 Non (sauf LDI/LDD)
+  Pre-decrement           Non                 Non (sauf LDI/LDD)
+  Relatif (donnees)       Non                 Non
+  Relatif (branchements)  Oui (8 bits signe)  Oui (8 bits signe)
+  Immediat 16 bits        Non                 Oui (LD rr,nn)
+  Bit indexation           Non                 Oui (BIT/SET/RES)
+  Espace adressable       64 Ko               64 Ko
+
+  Comparaison avec le 68000 :
+
+  Aspect                  6502                68000
+  ----------------------  ------------------  ----------------------
+  Nombre de modes         13                  14
+  Auto-increment          Non                 (An)+
+  Auto-decrement          Non                 -(An)
+  Indirect registre       Via page zero       (An)
+  Indirect + offset       ($nn),Y (8 bits)    d16(An)
+  Indirect indexe         ($nn,X), ($nn),Y    d8(An,Xn)
+  Absolu court            Page zero (8 bits)  (xxx).W (16 bits)
+  Absolu long             16 bits             32 bits
+  PC-relatif (donnees)    Non                 d16(PC), d8(PC,Xn)
+  PC-relatif (branches)   Oui (8 bits)        Oui (8/16/32 bits)
+  Immediat                8 bits              8/16/32 bits
+  Page zero               Oui (256 octets)    Non
+
+  Le 6502 compense son faible nombre de registres par l'utilisation
+  intensive de la page zero comme extension des registres internes.
+  Les modes d'adressage indirects via la page zero permettent de
+  manipuler des pointeurs 16 bits avec seulement des registres de
+  8 bits, ce qui est l'une des innovations cles de l'architecture
+  du 6502.
