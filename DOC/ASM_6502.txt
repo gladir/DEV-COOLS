@@ -8843,3 +8843,682 @@
     BPL           JNS            Brancher si positif
     BVS           JO             Brancher si Overflow
     BVC           JNO            Brancher si pas Overflow
+
+==============================================================================
+11. CONVERSION DE CODE 6502 EN 68000
+==============================================================================
+
+  Cette section presente les techniques de conversion de programmes
+  ecrits en assembleur MOS 6502 vers l'assembleur Motorola 68000. Elle
+  couvre les correspondances de registres, la conversion des modes
+  d'adressage, et les pieges a eviter lors du portage.
+
+  11.1 Principes generaux
+  --------------------------
+
+  Avant de convertir du code 6502 en 68000, il est essentiel de
+  comprendre les differences architecturales majeures entre les
+  deux processeurs.
+
+  Critere                  MOS 6502              Motorola 68000
+  -----------------------  --------------------  --------------------
+  Largeur de bus donnees   8 bits                16 bits (32 int.)
+  Largeur de bus adresses  16 bits               24 bits (32 int.)
+  Ordre des octets         Little-endian         Big-endian
+  Registres generaux       1 (A)                 8 (D0-D7)
+  Registres d'index        2 (X, Y)              8 (A0-A7)
+  Registres d'adresse      Aucun                 8 (A0-A7/SP)
+  Pointeur de pile         S (8 bits, page 1)    A7/SP (32 bits)
+  Compteur ordinal         PC (16 bits)          PC (32 bits)
+  Flags                    P (8 bits: NV-BDIZC)  CCR (8 bits: XNZVC)
+  Espace d'adressage       64 Ko                 16 Mo (68000)
+  Pile                     Page $0100-$01FF      Toute la memoire
+  Taille des instructions  1-3 octets            2-10 octets (paires)
+  Alignement memoire       Non requis            Mots sur adresses paires
+  Modes d'adressage        13                    ~14
+  Multiplication native    Non                   Oui (MULU, MULS)
+  Division native          Non                   Oui (DIVU, DIVS)
+
+  Avantages du portage vers 68000 :
+
+  a) Registres nombreux et larges (32 bits) :
+     Le 6502 n'a qu'un accumulateur 8 bits (A) et deux index 8 bits
+     (X, Y). Le 68000 offre 8 registres de donnees 32 bits (D0-D7)
+     et 8 registres d'adresse 32 bits (A0-A7). Les variables de la
+     page zero du 6502 peuvent etre assignees a des registres du 68000.
+
+  b) Pile sans restriction :
+     La pile du 6502 est limitee a 256 octets ($0100-$01FF) avec
+     un pointeur de pile de 8 bits. Le 68000 utilise A7/SP (32 bits)
+     sans restriction d'espace.
+
+  c) Operations arithmetiques natives :
+     Le 6502 n'a pas de MUL/DIV et necessite des routines logicielles.
+     Le 68000 a MULU, MULS, DIVU, DIVS integres.
+
+  d) Operations 16 et 32 bits natives :
+     Les operations multi-octets qui necessitent de multiples
+     instructions sur le 6502 (ADC octet par octet) se font en une
+     seule instruction sur le 68000 avec les suffixes .W ou .L.
+
+  Pieges a eviter :
+
+  a) Ordre des octets (endianness) different :
+     Le 6502 est little-endian : le mot $1234 est stocke $34, $12.
+     Le 68000 est big-endian : le mot $1234 est stocke $12, $34.
+     Consequence : toute lecture/ecriture de valeurs multi-octets
+     en memoire doit etre adaptee. Les fichiers binaires et les
+     protocoles reseau doivent etre convertis.
+
+  b) Alignement memoire :
+     Le 68000 exige que les acces mot (.W) et long mot (.L) soient
+     sur des adresses paires. Le 6502 n'a aucune contrainte
+     d'alignement. Utiliser EVEN ou ALIGN 2 dans les donnees.
+
+  c) Le flag Carry a un sens inverse pour la soustraction :
+     Sur le 6502, SEC (Carry=1) signifie "pas d'emprunt" avant SBC.
+     Sur le 68000, C=0 signifie "pas d'emprunt" apres SUB/SUBX.
+     Le 68000 a un flag X (eXtend) separe du flag C pour les
+     operations multi-precision (ADDX, SUBX, ROXL, ROXR).
+
+  d) La page zero :
+     Les adresses $00-$FF du 6502 (page zero) sont utilisees comme
+     pseudo-registres rapides. Sur le 68000, utiliser les registres
+     D0-D7 et A0-A6 directement, qui sont bien plus nombreux et
+     plus rapides.
+
+  e) Les adresses absolues materielles :
+     Le code 6502 accede souvent a des adresses materielles fixes
+     ($D020 pour la bordure C64, $C000 pour l'Apple II, etc.).
+     Sur le 68000, les adresses peripheriques sont differentes
+     (Atari ST : $FFxxxx, Amiga : $DFFxxx pour les registres custom).
+
+  11.2 Correspondance des registres
+  ------------------------------------
+
+  Le 6502 a tres peu de registres par rapport au 68000. Voici une
+  correspondance couramment utilisee pour le portage :
+
+  Registre 6502   Equivalent 68000     Notes
+  --------------  -------------------  ----------------------------------
+  A               D0.B                 Accumulateur (8 bits)
+  X               D1.B                 Index X (8 bits)
+  Y               D2.B                 Index Y (8 bits)
+  S               A7 (SP)              Pointeur de pile (8 -> 32 bits)
+  P               CCR (partiel)        Registre d'etat
+  PC              PC                   Compteur ordinal
+
+  Les registres restants du 68000 (D3-D7, A0-A6) sont libres pour
+  optimiser le code converti. Par exemple :
+  - D3-D7 peuvent contenir des variables de page zero frequemment
+    utilisees, eliminant les acces memoire.
+  - A0-A5 peuvent contenir des pointeurs de base pour les
+    structures de donnees ou les tables.
+  - A6 peut servir de pointeur de cadre (frame pointer).
+
+  Correspondance etendue pour code optimise :
+
+  Usage 6502            68000
+  -------------------   --------------------------------
+  A (8 bits)            D0.B (ou D0.W/.L si etendu)
+  X (8 bits)            D1.B (ou D1.W/.L si etendu)
+  Y (8 bits)            D2.B (ou D2.W/.L si etendu)
+  Page zero (2 oct.)    Registre d'adresse (A0-A5)
+  Page zero (1 oct.)    Registre de donnees (D3-D7)
+  Pile 6502             Pile 68000 (A7, MOVE -(SP) / (SP)+)
+
+  Correspondance des flags :
+
+  Flag 6502    Bit   Flag 68000     Bit     Notes
+  ----------   ----  -----------    ------  ----------------------------
+  C (Carry)    0     C (Carry)      0       Meme semantique pour ADC
+                                            INVERSE pour SBC (voir 11.1)
+  Z (Zero)     1     Z (Zero)       2       Meme semantique
+  I (IRQ dis.) 2     I (dans SR)    8+      Mode superviseur uniquement
+  D (Decimal)  3     (aucun)        -       Pas de mode BCD automatique
+  B (Break)    4     (aucun)        -       Specifique au 6502
+  V (Overflow) 6     V (Overflow)   1       Meme semantique
+  N (Negative) 7     N (Negative)   3       Meme semantique
+
+  Note : Le 68000 a un flag supplementaire X (eXtend, bit 4 du CCR)
+  qui est une copie du Carry utilisee par ADDX, SUBX, ROXL, ROXR.
+  Ce flag permet les operations multi-precision sans que les
+  instructions de test (CMP, TST) ne l'affectent.
+
+  11.3 Conversion des modes d'adressage
+  ----------------------------------------
+
+  Le 6502 possede 13 modes d'adressage, dont certains n'ont pas
+  d'equivalent direct sur le 68000 mais peuvent etre emules.
+
+  Mode 6502                   Exemple 6502        Equivalent 68000
+  --------------------------  ------------------  ---------------------------
+  Implicite                   CLC                 ANDI #$FE,CCR  ; ou MOVE
+  Accumulateur                ASL A               LSL.B #1,D0
+  Immediat                    LDA #$42            MOVE.B #$42,D0
+  Page zero                   LDA $10             MOVE.B $10,D0
+                                                  ; ou MOVE.B (A0),D0 si A0
+                                                  ; pointe sur la page zero
+  Page zero,X                 LDA $10,X           MOVE.B 0(A0,D1.W),D0
+                                                  ; A0 = base page zero + $10
+  Page zero,Y                 LDX $10,Y           MOVE.B 0(A0,D2.W),D1
+  Absolu                      LDA $1234           MOVE.B $1234,D0
+  Absolu,X                    LDA $1234,X         MOVE.B 0(A1,D1.W),D0
+                                                  ; A1 = $1234
+  Absolu,Y                    LDA $1234,Y         MOVE.B 0(A1,D2.W),D0
+                                                  ; A1 = $1234
+  Indirect                    JMP ($1234)         MOVEA.L $1234,A0
+                                                  JMP (A0)
+  (Indirect,X)                LDA ($10,X)         ; Voir ci-dessous
+  (Indirect),Y                LDA ($10),Y         ; Voir ci-dessous
+  Relatif                     BEQ label           BEQ label
+
+  Conversion de l'adressage indirect pre-indexe (Indirect,X) :
+
+  Le mode (Indirect,X) du 6502 lit une adresse 16 bits dans la
+  page zero a l'offset calcule, puis accede a cette adresse.
+
+  ; 6502 : LDA ($10,X)   ; Adresse = [$10+X] (page zero, 16 bits)
+  ;
+  ; 68000 (D1.B = X, A0 = base page zero) :
+  ;   Note : l'adresse en page zero est en little-endian sur 6502
+  ;   mais le 68000 est big-endian -> conversion necessaire
+    MOVEQ     #0,D3              ; Etendre X a 16 bits
+    MOVE.B    D1,D3
+    LEA       $10(A0,D3.W),A1   ; A1 pointe dans la page zero
+    MOVE.B    (A1)+,D3           ; Octet bas de l'adresse
+    MOVE.B    (A1),D4            ; Octet haut de l'adresse
+    LSL.W     #8,D4              ; Mettre l'octet haut en position
+    OR.B      D3,D4              ; Combiner pour former l'adresse
+    MOVEA.W   D4,A1              ; A1 = adresse cible
+    MOVE.B    (A1),D0            ; Charger la donnee
+
+  ; Version simplifiee si la page zero est deja en big-endian :
+    MOVEQ     #0,D3
+    MOVE.B    D1,D3
+    MOVEA.W   $10(A0,D3.W),A1   ; Charger l'adresse (big-endian)
+    MOVE.B    (A1),D0
+
+  Conversion de l'adressage indirect post-indexe (Indirect),Y :
+
+  Le mode (Indirect),Y lit une adresse 16 bits dans la page zero,
+  puis ajoute Y comme offset.
+
+  ; 6502 : LDA ($10),Y   ; Adresse = [$10] + Y
+  ;
+  ; 68000 (D2.B = Y, A0 = base page zero) :
+    MOVE.B    1(A0),D3           ; Octet haut [$11] (little-endian)
+    LSL.W     #8,D3
+    MOVE.B    (A0),D3            ; Octet bas [$10]
+    MOVEA.W   D3,A1              ; A1 = adresse de base
+    MOVEQ     #0,D3
+    MOVE.B    D2,D3              ; Etendre Y a 16 bits
+    MOVE.B    0(A1,D3.W),D0     ; Charger la donnee
+
+  ; Version simplifiee si l'adresse est deja dans un registre :
+    MOVEQ     #0,D3
+    MOVE.B    D2,D3              ; Etendre Y
+    MOVE.B    0(A1,D3.W),D0     ; A1 contient deja l'adresse de base
+
+  Note sur l'endianness :
+
+  La conversion des adresses stockees en memoire est le point le
+  plus delicat. Sur le 6502, une adresse 16 bits $1234 est stockee
+  en memoire comme $34 (octet bas), $12 (octet haut). Sur le 68000,
+  cette meme adresse serait stockee $12, $34.
+  Si les donnees en page zero sont converties au format big-endian,
+  les modes indirects deviennent beaucoup plus simples.
+
+  11.4 Conversion des instructions
+  -----------------------------------
+
+  11.4.1 Instructions de transfert de donnees
+
+  6502                          68000
+  ----------------------------  -----------------------------------
+  LDA #imm                      MOVE.B  #imm, D0
+  LDA addr                      MOVE.B  addr, D0
+  LDA addr,X                    MOVE.B  0(A1,D1.W), D0
+  LDA addr,Y                    MOVE.B  0(A1,D2.W), D0
+  LDX #imm                      MOVE.B  #imm, D1
+  LDX addr                      MOVE.B  addr, D1
+  LDY #imm                      MOVE.B  #imm, D2
+  LDY addr                      MOVE.B  addr, D2
+  STA addr                      MOVE.B  D0, addr
+  STA addr,X                    MOVE.B  D0, 0(A1,D1.W)
+  STA addr,Y                    MOVE.B  D0, 0(A1,D2.W)
+  STX addr                      MOVE.B  D1, addr
+  STY addr                      MOVE.B  D2, addr
+  TAX                           MOVE.B  D0, D1
+  TAY                           MOVE.B  D0, D2
+  TXA                           MOVE.B  D1, D0
+  TYA                           MOVE.B  D2, D0
+  TSX                           MOVE.L  SP, A0   ; (different : 32 bits)
+  TXS                           MOVE.L  A0, SP   ; (different : 32 bits)
+
+  Note : MOVE sur le 68000 positionne les flags N et Z
+  automatiquement, tout comme LDA/LDX/LDY sur le 6502.
+  Cependant, MOVEA (vers un registre d'adresse) ne modifie PAS
+  les flags.
+
+  11.4.2 Instructions arithmetiques
+
+  6502                          68000
+  ----------------------------  -----------------------------------
+  ADC #imm                      ADDX.B  #imm, D0  ; si X=C precedent
+                                ; ou ADD.B #imm, D0 si pas de retenue
+  ADC addr                      ADDX.B  addr, D0
+  SBC #imm                      SUBX.B  #imm, D0  ; si X=C precedent
+                                ; ou SUB.B #imm, D0 si pas d'emprunt
+  SBC addr                      SUBX.B  addr, D0
+  INC addr                      ADDQ.B  #1, addr
+  INC addr,X                    ADDQ.B  #1, 0(A1,D1.W)
+  DEC addr                      SUBQ.B  #1, addr
+  DEC addr,X                    SUBQ.B  #1, 0(A1,D1.W)
+  INX                           ADDQ.B  #1, D1
+  INY                           ADDQ.B  #1, D2
+  DEX                           SUBQ.B  #1, D1
+  DEY                           SUBQ.B  #1, D2
+
+  Conversion de ADC (addition avec retenue) :
+
+  Le flag Carry du 6502 correspond au flag X (eXtend) du 68000
+  pour les operations multi-precision. Le 68000 utilise ADDX
+  (Add with eXtend) :
+
+  ; 6502 :            ; 68000 :
+  ; CLC               ; ANDI #$EF,CCR     ; Effacer X (et C)
+  ;                   ; ou MOVE #0,CCR     ; Effacer tous les flags
+  ; ADC #$10          ; ADDX.B #$10, D0
+  ;
+  ; Pour une addition simple sans retenue precedente :
+  ; CLC               ; (rien)
+  ; ADC #$10          ; ADD.B #$10, D0
+
+  Conversion de SBC (soustraction avec emprunt) :
+
+  Le 6502 utilise SEC/SBC ou Carry=1 signifie "pas d'emprunt".
+  Le 68000 utilise SUBX ou X=0 signifie "pas d'emprunt".
+  La logique est inversee :
+
+  ; 6502 :            ; 68000 :
+  ; SEC               ; ANDI #$EF,CCR     ; X=0 (pas d'emprunt)
+  ; SBC #$10          ; SUBX.B #$10, D0
+  ;
+  ; Pour une soustraction simple :
+  ; SEC               ; (rien)
+  ; SBC #$10          ; SUB.B #$10, D0
+
+  Addition 16 bits (6502 -> 68000) :
+
+  ; 6502 (addition 16 bits) :    ; 68000 :
+  ; CLC                           ;
+  ; LDA num1_lo                   ; MOVE.W num1, D0   ; 16 bits
+  ; ADC num2_lo                   ; ADD.W  num2, D0   ; 16 bits
+  ; STA result_lo                 ; MOVE.W D0, result
+  ; LDA num1_hi                   ;
+  ; ADC num2_hi                   ; ; Une seule instruction 16 bits
+  ; STA result_hi                 ; ; remplace 6 instructions 6502
+
+  Addition 32 bits (6502 -> 68000) :
+
+  ; 6502 (4 octets, 8 instructions) :  ; 68000 :
+  ; CLC                                 ; MOVE.L num1, D0
+  ; LDA num1+0                          ; ADD.L  num2, D0
+  ; ADC num2+0                          ; MOVE.L D0, result
+  ; STA result+0                        ;
+  ; LDA num1+1                          ; ; Une seule instruction 32 bits!
+  ; ADC num2+1                          ;
+  ; ...etc pour +2 et +3               ;
+
+  Note sur INC/DEC :
+  Sur le 6502, INC et DEC n'existent que pour la memoire (pas pour
+  l'accumulateur A sur le 6502 original ; INX/INY pour X/Y).
+  Sur le 68000, ADDQ #1 et SUBQ #1 fonctionnent sur n'importe quel
+  registre de donnees ou adresse memoire. ADDQ/SUBQ sont optimises
+  pour les valeurs 1-8.
+
+  11.4.3 Instructions logiques
+
+  6502                          68000
+  ----------------------------  -----------------------------------
+  AND #imm                      AND.B   #imm, D0
+  AND addr                      AND.B   addr, D0
+  ORA #imm                      OR.B    #imm, D0
+  ORA addr                      OR.B    addr, D0
+  EOR #imm                      EOR.B   #imm, D0
+                                ; Note : sur 68000, EOR immediat
+                                ; s'ecrit EORI
+  EOR addr                      ; Pas d'EOR mem,Dn sur 68000
+                                ; -> MOVE.B addr, D3
+                                ;    EOR.B D3, D0
+  BIT addr                      ; Pas d'equivalent direct :
+                                MOVE.B  addr, D3   ; Charger memoire
+                                BTST    #7, D3     ; N = bit 7
+                                BTST    #6, D3     ; V = bit 6
+                                AND.B   D3, D0     ; Z flag (sans stocker)
+                                ; Voir note ci-dessous
+
+  Note sur BIT :
+  L'instruction BIT du 6502 effectue un AND entre A et la memoire
+  sans modifier A, et positionne Z d'apres le resultat, N d'apres
+  le bit 7 de la memoire, et V d'apres le bit 6 de la memoire.
+  Pour emuler completement BIT sur le 68000 :
+
+  ; 6502 : BIT $1234       ; 68000 :
+  ;                         MOVE.B  $1234, D3   ; Charger la memoire
+  ;                         MOVE.B  D0, D4      ; Sauvegarder A
+  ;                         AND.B   D3, D4      ; Z = (A AND mem) == 0
+  ;                         ; N et V : tester bits 7 et 6 de D3
+  ;                         ; (les flags N et V du resultat AND ne
+  ;                         ;  correspondent pas a ceux du BIT 6502)
+  ;                         BTST    #7, D3      ; Tester bit 7 pour N
+  ;                         BTST    #6, D3      ; Tester bit 6 pour V
+
+  Note sur EOR :
+  Sur le 68000, EOR ne peut operer que Dn vers <ea>, pas <ea> vers
+  Dn. Pour EOR memoire vers registre, charger d'abord en registre
+  temporaire puis utiliser EOR.
+
+  11.4.4 Instructions de decalage et rotation
+
+  6502                          68000
+  ----------------------------  -----------------------------------
+  ASL A                         LSL.B   #1, D0
+  ASL addr                      LSL.B   #1, addr   ; (adresse mot)
+                                ; ou MOVE.B addr,D3 / LSL.B #1,D3
+                                ;    MOVE.B D3,addr
+  LSR A                         LSR.B   #1, D0
+  LSR addr                      LSR.B   #1, addr
+  ROL A                         ROXL.B  #1, D0     ; Via X, comme 6502
+  ROL addr                      ROXL.B  #1, addr
+  ROR A                         ROXR.B  #1, D0     ; Via X, comme 6502
+  ROR addr                      ROXR.B  #1, addr
+
+  Note importante sur ROL/ROR :
+
+  Sur le 6502, ROL et ROR font une rotation a travers le flag
+  Carry (rotation 9 bits). Cela correspond a ROXL/ROXR sur le 68000
+  (rotation a travers le flag X), PAS a ROL/ROR du 68000 (qui est
+  une rotation pure 8 bits sans le flag eXtend).
+
+  ; 6502 : ROL A          ; 68000 : ROXL.B #1, D0  (PAS ROL.B #1, D0)
+  ; 6502 : ROR A          ; 68000 : ROXR.B #1, D0  (PAS ROR.B #1, D0)
+
+  Attention : le flag X du 68000 doit etre correctement positionne
+  avant ROXL/ROXR pour que la rotation soit equivalente. Les
+  instructions de test (CMP, TST) ne modifient pas X, ce qui est
+  un avantage pour les chaines de rotations.
+
+  Decalage 16 bits (6502 -> 68000) :
+
+  ; 6502 (decalage 16 bits a gauche) :
+  ; ASL low_byte           ; LSL.W #1, D3      ; Une seule instruction
+  ; ROL high_byte          ; ; (si la valeur 16 bits est dans D3.W)
+
+  ; 6502 (decalage 16 bits a droite) :
+  ; LSR high_byte          ; LSR.W #1, D3
+  ; ROR low_byte           ;
+
+  Note sur les decalages memoire :
+  Sur le 68000, LSL/LSR/ROL/ROR/ROXL/ROXR en memoire ne travaillent
+  que sur des mots (.W) et ne decalent que de 1 bit a la fois.
+  Pour un decalage d'octet en memoire, charger en registre d'abord.
+
+  11.4.5 Instructions de comparaison et branchement
+
+  6502                          68000
+  ----------------------------  -----------------------------------
+  CMP #imm                      CMP.B   #imm, D0
+                                ; ou CMPI.B #imm, D0
+  CMP addr                      CMP.B   addr, D0
+  CPX #imm                      CMP.B   #imm, D1
+  CPX addr                      CMP.B   addr, D1
+  CPY #imm                      CMP.B   #imm, D2
+  CPY addr                      CMP.B   addr, D2
+
+  BEQ label                     BEQ     label
+  BNE label                     BNE     label
+  BCS label                     BCS     label    (ou BLO)
+  BCC label                     BCC     label    (ou BHS)
+  BMI label                     BMI     label
+  BPL label                     BPL     label
+  BVS label                     BVS     label
+  BVC label                     BVC     label
+
+  Notes :
+  - Les branchements conditionnels du 68000 utilisent les memes
+    mnemoniques que le 6502 pour BEQ/BNE/BCS/BCC/BMI/BPL/BVS/BVC.
+    La conversion est donc tres directe.
+  - CMP sur le 6502 effectue A - operande et positionne N, Z, C.
+    CMP sur le 68000 fait pareil (Dn - source -> flags).
+  - La portee des branchements est differente : sur le 6502, les
+    branches ont une portee de -128 a +127 octets. Sur le 68000,
+    BCC.S a la meme limite, mais BCC.W permet un deplacement de
+    -32768 a +32767 octets.
+  - Le 68000 offre des branchements signes supplementaires :
+    BGT (>), BGE (>=), BLT (<), BLE (<=), BHI (> non signe),
+    BLS (<= non signe) qui n'existent pas sur le 6502.
+
+  ; 6502 : branchement "superieur non signe" (A > valeur)
+  ; BEQ skip      ; Si egal, pas superieur
+  ; BCS label     ; Si Carry=1, A >= valeur (et A != valeur)
+  ; skip:
+  ;
+  ; 68000 : BHI label   ; (une seule instruction)
+
+  11.4.6 Instructions de pile
+
+  6502                          68000
+  ----------------------------  -----------------------------------
+  PHA                           MOVE.B  D0, -(SP)
+                                ; ou MOVE.W D0, -(SP) pour 16 bits
+  PLA                           MOVE.B  (SP)+, D0
+  PHP                           MOVE.W  SR, -(SP)  ; mode superviseur
+                                ; ou MOVE.B CCR, D3 / MOVE.B D3, -(SP)
+  PLP                           MOVE.B  (SP)+, D3
+                                MOVE.B  D3, CCR
+                                ; ou MOVE.W (SP)+, SR  ; superviseur
+  PHX (65C02)                   MOVE.B  D1, -(SP)
+  PLX (65C02)                   MOVE.B  (SP)+, D1
+  PHY (65C02)                   MOVE.B  D2, -(SP)
+  PLY (65C02)                   MOVE.B  (SP)+, D2
+
+  Note : La pile du 6502 manipule des octets un par un et croit
+  vers le bas dans la page $0100-$01FF. La pile du 68000 utilise
+  la pre-decrementation -(SP) pour empiler et la post-incrementation
+  (SP)+ pour depiler, et peut empiler des octets (.B), des mots (.W)
+  ou des longs mots (.L).
+
+  Important : Sur le 68000, les acces pile en mode .B a une adresse
+  impaire peuvent causer une exception d'adresse. Il est plus sur
+  d'empiler des mots (.W) meme pour des valeurs 8 bits :
+
+  ; Version sure :
+  ; PHA ->  MOVE.W D0, -(SP)     ; Empiler comme mot (aligne)
+  ; PLA ->  MOVE.W (SP)+, D0     ; Depiler comme mot
+
+  11.4.7 Instructions de controle de flags
+
+  6502                          68000
+  ----------------------------  -----------------------------------
+  CLC                           ANDI.B  #$FE, CCR  ; C=0
+                                ; ou MOVE #0, CCR    ; tout a 0
+  SEC                           ORI.B   #$01, CCR   ; C=1
+  CLD                           ; Pas d'equivalent (pas de mode BCD auto)
+  SED                           ; Pas d'equivalent
+  CLI                           ANDI.W  #$F8FF, SR  ; I=0 (superviseur)
+  SEI                           ORI.W   #$0700, SR  ; I=7 (superviseur)
+  CLV                           ; Pas d'equivalent direct
+                                ; ANDI.B #$FD, CCR    ; V=0
+
+  Attention aux differences :
+  - CLI sur le 6502 autorise les interruptions (I=0).
+    Sur le 68000, le masque d'interruption est un champ de 3 bits
+    (I2-I1-I0) dans le registre d'etat SR (mode superviseur).
+    ANDI.W #$F8FF, SR met le masque a 0 (toutes les interruptions
+    autorisees, equivalent de CLI).
+  - SEI sur le 6502 bloque les IRQ (I=1).
+    Sur le 68000, ORI.W #$0700, SR met le masque a 7 (toutes les
+    interruptions masquees, equivalent de SEI).
+  - CLD/SED n'ont pas d'equivalent sur le 68000 car il n'y a pas
+    de mode BCD automatique. Le 68000 a des instructions BCD
+    separees : ABCD, SBCD, NBCD.
+  - CLC/SEC : le 68000 manipule les flags individuels du CCR avec
+    ANDI/ORI sur le CCR.
+
+  11.4.8 Instructions de saut et sous-routine
+
+  6502                          68000
+  ----------------------------  -----------------------------------
+  JMP addr                      JMP     addr
+  JMP (addr)                    MOVEA.L addr, A0   ; Charger adresse
+                                JMP     (A0)        ; Saut indirect
+                                ; ou LEA addr, A0 / JMP (A0)
+  JSR addr                      BSR     addr        ; ou JSR addr
+  RTS                           RTS
+  BRK                           TRAP    #0          ; ou ILLEGAL
+  RTI                           RTE                 ; mode superviseur
+  NOP                           NOP
+
+  Note sur JSR/RTS :
+  Le 6502 empile l'adresse de retour - 1 (pour des raisons
+  historiques). Le 68000 empile l'adresse de retour exacte (32 bits).
+  Cela n'affecte pas la conversion sauf si le code 6502 manipule
+  l'adresse de retour sur la pile.
+
+  Note sur BSR vs JSR :
+  BSR (Branch to SubRoutine) utilise un deplacement relatif et est
+  plus compact. JSR utilise une adresse absolue. Les deux empilent
+  l'adresse de retour et RTS depile. BSR est prefere pour le code
+  relocalisable.
+
+  Note sur BRK/RTI :
+  BRK sur le 6502 genere une interruption logicielle (vecteur $FFFE).
+  Sur le 68000, TRAP #n genere une exception logicielle (vecteur dans
+  la table d'exceptions). RTI du 6502 correspond a RTE du 68000, mais
+  RTE est une instruction superviseur et depile le SR en plus du PC.
+
+  11.4.9 Exemples de conversion complete
+
+  Exemple 1 : Copie de memoire
+
+  ; 6502 :                       ; 68000 :
+  ;   LDY #0                     ;   LEA     source, A0
+  ; loop:                        ;   LEA     dest, A1
+  ;   LDA (src),Y                ;   MOVEQ   #127, D3  ; 128 octets
+  ;   STA (dst),Y                ; loop:
+  ;   INY                        ;   MOVE.B  (A0)+, (A1)+
+  ;   CPY #128                   ;   DBRA    D3, loop
+  ;   BNE loop                   ;
+
+  Note : Le 68000 offre aussi MOVEM pour copier plusieurs registres
+  d'un coup, mais pour des copies memoire simples, la boucle
+  MOVE.B (A0)+,(A1)+ avec DBRA est idiomatique et efficace.
+
+  Exemple 2 : Multiplication 8x8 -> 16 bits
+
+  ; 6502 (routine logicielle) :  ; 68000 (instruction native) :
+  ;   LDA multiplicande          ;   MOVEQ   #0, D0
+  ;   LDX #8                     ;   MOVE.B  multiplicande, D0
+  ; loop:                        ;   MULU.W  multiplieur, D0
+  ;   LSR multiplieur            ;   ; Resultat dans D0.L (32 bits)
+  ;   BCC noadd                  ;   MOVE.W  D0, resultat
+  ;   CLC                        ;
+  ;   ADC multiplicande          ;
+  ; noadd:                       ;
+  ;   ROR A                      ;
+  ;   ROR resultat               ;
+  ;   DEX                        ;
+  ;   BNE loop                   ;
+  ;   STA resultat+1             ;
+
+  Exemple 3 : Recherche d'un octet dans un tableau
+
+  ; 6502 :                       ; 68000 :
+  ;   LDX #0                     ;   LEA     table, A0
+  ; loop:                        ;   MOVEQ   #0, D3
+  ;   LDA table,X                ;   MOVE.B  taille, D3
+  ;   CMP valeur                 ;   SUBQ.W  #1, D3
+  ;   BEQ found                  ;   MOVE.B  valeur, D4
+  ;   INX                        ; loop:
+  ;   CPX taille                 ;   CMP.B   (A0)+, D4
+  ;   BNE loop                   ;   BEQ     found
+  ;   ; non trouve               ;   DBRA    D3, loop
+  ;                               ;   ; non trouve
+
+  Exemple 4 : Addition 32 bits
+
+  ; 6502 (4 octets, 8 ADC) :    ; 68000 (une seule instruction) :
+  ;   CLC                        ;   MOVE.L  num1, D0
+  ;   LDA num1+0                 ;   ADD.L   num2, D0
+  ;   ADC num2+0                 ;   MOVE.L  D0, result
+  ;   STA result+0               ;
+  ;   LDA num1+1                 ;
+  ;   ADC num2+1                 ;
+  ;   STA result+1               ;
+  ;   LDA num1+2                 ;
+  ;   ADC num2+2                 ;
+  ;   STA result+2               ;
+  ;   LDA num1+3                 ;
+  ;   ADC num2+3                 ;
+  ;   STA result+3               ;
+
+  11.4.10 Recapitulatif des conversions
+
+    6502          68000          Notes
+    ----------    ----------     --------------------------------
+    LDA           MOVE.B ..,D0   Chargement accumulateur
+    LDX           MOVE.B ..,D1   Chargement index X
+    LDY           MOVE.B ..,D2   Chargement index Y
+    STA           MOVE.B D0,..   Stockage accumulateur
+    STX           MOVE.B D1,..   Stockage index X
+    STY           MOVE.B D2,..   Stockage index Y
+    TAX           MOVE.B D0,D1   Transfert A -> X
+    TAY           MOVE.B D0,D2   Transfert A -> Y
+    TXA           MOVE.B D1,D0   Transfert X -> A
+    TYA           MOVE.B D2,D0   Transfert Y -> A
+    ADC           ADDX.B / ADD.B Addition avec retenue
+    SBC           SUBX.B / SUB.B Soustraction (X inverse!)
+    AND           AND.B          ET logique
+    ORA           OR.B           OU logique
+    EOR           EOR.B          OU exclusif (via registre)
+    CMP           CMP.B ..,D0    Comparaison A
+    CPX           CMP.B ..,D1    Comparaison X
+    CPY           CMP.B ..,D2    Comparaison Y
+    INC           ADDQ.B #1      Incrementer memoire
+    DEC           SUBQ.B #1      Decrementer memoire
+    INX           ADDQ.B #1,D1   Incrementer X
+    INY           ADDQ.B #1,D2   Incrementer Y
+    DEX           SUBQ.B #1,D1   Decrementer X
+    DEY           SUBQ.B #1,D2   Decrementer Y
+    ASL           LSL.B #1       Decalage gauche
+    LSR           LSR.B #1       Decalage droit logique
+    ROL           ROXL.B #1      Rotation gauche via X (PAS ROL!)
+    ROR           ROXR.B #1      Rotation droite via X (PAS ROR!)
+    BIT           AND+BTST       Test de bits (emulation)
+    JMP           JMP            Saut inconditionnel
+    JSR           BSR / JSR      Appel sous-routine
+    RTS           RTS            Retour de sous-routine
+    BRK           TRAP #n        Interruption logicielle
+    RTI           RTE            Retour d'interruption (superviseur)
+    NOP           NOP            Pas d'operation
+    PHA           MOVE.B D0,-(SP) Empiler A
+    PLA           MOVE.B (SP)+,D0 Depiler A
+    PHP           MOVE SR,-(SP)  Empiler flags (superviseur)
+    PLP           MOVE (SP)+,SR  Depiler flags (superviseur)
+    CLC           ANDI #$FE,CCR  Effacer Carry
+    SEC           ORI  #$01,CCR  Positionner Carry
+    CLI           ANDI SR (sup.) Autoriser IRQ
+    SEI           ORI  SR (sup.) Bloquer IRQ
+    CLV           ANDI #$FD,CCR  Effacer Overflow
+    CLD           (aucun)        Mode BCD off (pas d'equiv.)
+    SED           (aucun)        Mode BCD on (utiliser ABCD/SBCD)
+    BEQ           BEQ            Brancher si egal
+    BNE           BNE            Brancher si different
+    BCS           BCS            Brancher si Carry
+    BCC           BCC            Brancher si pas Carry
+    BMI           BMI            Brancher si negatif
+    BPL           BPL            Brancher si positif
+    BVS           BVS            Brancher si Overflow
+    BVC           BVC            Brancher si pas Overflow
