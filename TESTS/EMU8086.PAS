@@ -3981,9 +3981,9 @@ BEGIN
  {$ENDIF}
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
-  WriteLn('RUNIBMPC : Cette commande permet d''ex�cuter du code pour IBM PC (microprocesseur 8086).');
+  WriteLn('EMU8086 : Cette commande permet d''ex�cuter du code pour IBM PC (microprocesseur 8086).');
   WriteLn;
-  WriteLn('Syntaxe : RUNIBMPC [option] [nomdufichier]');
+  WriteLn('Syntaxe : EMU8086 [option] [nomdufichier]');
   WriteLn;
   WriteLn(' nomduficher           Nom du fichier de format COM');
   WriteLn(' /AMDEKSYSTEM88        Simulation du micro-ordinateur Amdek System/88');
