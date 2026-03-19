@@ -4550,6 +4550,7 @@ Begin
   EmitRaw('EXTRN _GetClientRect@8:NEAR');
   EmitRaw('EXTRN _InvalidateRect@12:NEAR');
   EmitRaw('EXTRN _PeekMessageA@20:NEAR');
+  EmitRaw('EXTRN _GetMessageA@16:NEAR');
   EmitRaw('EXTRN _DispatchMessageA@4:NEAR');
   EmitRaw('EXTRN _TranslateMessage@4:NEAR');
   EmitRaw('EXTRN _PostQuitMessage@4:NEAR');
@@ -4781,6 +4782,9 @@ Begin
   EmitRaw('GR_ARCYE    DD 0');            { arc end Y                              }
   { _VideoConfig record : 11 x DD = 44 bytes }
   EmitRaw('GR_VIDCFG   DD 11 DUP(0)');    { _VideoConfig interne                   }
+  EmitRaw('GR_KEYBUF   DB 256 DUP(0)');  { ring buffer clavier fenetre graphique  }
+  EmitRaw('GR_KEYHEAD  DD 0');            { index lecture ring buffer               }
+  EmitRaw('GR_KEYTAIL  DD 0');            { index ecriture ring buffer              }
   EmitBlankLine;
 
   { Variables Strings / Printer / Overlay (TODO 21) }
@@ -15035,15 +15039,31 @@ Begin
 
     { ---- TODO 20 : Procedures Graph comme identifiants ---- }
 
-    { INITGRAPH(Gd, Gm, Path) }
+    { INITGRAPH(Gd, Gm, Path) - Gd et Gm sont des parametres var }
     If Up = 'INITGRAPH' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Gd (var) }
+        { Gd : parametre var -> pousser l adresse }
+        If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          EmitInstr('LEA EAX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
+          Inc(EP);
+        End
+        Else
+          ParseExpr(PI);
+        EmitInstr('PUSH EAX');
         EPMatch(',');
-        ParseExpr(PI);  EmitInstr('PUSH EAX');  { Gm (var) }
+        { Gm : parametre var -> pousser l adresse }
+        If (EP < TokenCount) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          EmitInstr('LEA EAX,[' + GenVarAddr(PI, TokenPool[EP].Val) + ']');
+          Inc(EP);
+        End
+        Else
+          ParseExpr(PI);
+        EmitInstr('PUSH EAX');
         EPMatch(',');
         ParseExpr(PI);  EmitInstr('PUSH EAX');  { Path }
         EPMatch(')');
@@ -18878,9 +18898,14 @@ Begin
   { ------ _TPRT_READLN : lire une ligne de STDIN ----------- }
   { Sortie : INBUF contient la ligne lue, terminee par NUL    }
   { BYTESRD = nombre d octets lus                              }
+  { Si fenetre graphique ouverte, lit depuis le ring buffer     }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'READLN');
   EmitInstr('PUSHAD');
+  { Si mode graphique actif, utiliser la fenetre }
+  EmitInstr('CMP DWORD PTR [GR_ACTIVE],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RL_GR');
+  { --- Chemin console (inchange) --- }
   { ReadFile(HSTDIN, INBUF, 255, &BYTESRD, 0) }
   EmitInstr('PUSH 0');                     { lpOverlapped         }
   EmitInstr('PUSH OFFSET BYTESRD');        { lpNumberOfBytesRead  }
@@ -18910,6 +18935,65 @@ Begin
   EmitLabel(TP_RT_PFX + 'RL_DN');
   EmitInstr('LEA EDI,[INBUF]');
   EmitInstr('ADD EDI,ECX');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+  { --- Chemin fenetre graphique --- }
+  { Lit les caracteres via le ring buffer jusqu a Enter (13) }
+  EmitLabel(TP_RT_PFX + 'RL_GR');
+  EmitInstr('LEA EDI,[INBUF]');
+  EmitInstr('XOR ECX,ECX');              { ECX = nb caracteres lus }
+  EmitLabel(TP_RT_PFX + 'RL_GLP');
+  { Verifier si le ring buffer contient un caractere }
+  EmitInstr('MOV EAX,DWORD PTR [GR_KEYHEAD]');
+  EmitInstr('CMP EAX,DWORD PTR [GR_KEYTAIL]');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RL_GRD');
+  { Buffer vide : pomper un message (bloquant) }
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH 0');                   { wMsgFilterMax }
+  EmitInstr('PUSH 0');                   { wMsgFilterMin }
+  EmitInstr('PUSH 0');                   { hWnd=NULL }
+  EmitInstr('PUSH OFFSET GR_MSG');
+  EmitInstr('CALL GetMessageA');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'RL_GQT');  { WM_QUIT }
+  EmitInstr('PUSH OFFSET GR_MSG');
+  EmitInstr('CALL TranslateMessage');
+  EmitInstr('PUSH OFFSET GR_MSG');
+  EmitInstr('CALL DispatchMessageA');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RL_GLP');
+  EmitLabel(TP_RT_PFX + 'RL_GQT');
+  { WM_QUIT recu : terminer la ligne }
+  EmitInstr('POP EDI');
+  EmitInstr('POP ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RL_GDN');
+  EmitLabel(TP_RT_PFX + 'RL_GRD');
+  { Lire un caractere du ring buffer }
+  EmitInstr('MOVZX EAX,BYTE PTR [GR_KEYBUF+EAX*1]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,DWORD PTR [GR_KEYHEAD]');
+  EmitInstr('INC EAX');
+  EmitInstr('AND EAX,0FFh');
+  EmitInstr('MOV DWORD PTR [GR_KEYHEAD],EAX');
+  EmitInstr('POP EAX');
+  { Verifier si Enter (CR=13) }
+  EmitInstr('CMP AL,13');
+  EmitInstr('JE ' + TP_RT_PFX + 'RL_GDN');
+  { Ignorer LF (10) }
+  EmitInstr('CMP AL,10');
+  EmitInstr('JE ' + TP_RT_PFX + 'RL_GLP');
+  { Stocker le caractere dans INBUF si pas depasse 254 }
+  EmitInstr('CMP ECX,254');
+  EmitInstr('JGE ' + TP_RT_PFX + 'RL_GLP');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('INC EDI');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RL_GLP');
+  EmitLabel(TP_RT_PFX + 'RL_GDN');
+  { Terminer la chaine par NUL }
   EmitInstr('MOV BYTE PTR [EDI],0');
   EmitInstr('POPAD');
   EmitInstr('RET');
@@ -19473,10 +19557,15 @@ Begin
 
   { ------ _TPRT_KEYPRESSED : touche disponible -> EAX ---------- }
   { Retourne 1 (True) si une touche est disponible, 0 sinon       }
+  { Si fenetre graphique ouverte, pompe les messages + ring buffer  }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'KEYPRESSED');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
+  { Si mode graphique actif, utiliser la fenetre }
+  EmitInstr('CMP DWORD PTR [GR_ACTIVE],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'KP_GR');
+  { --- Chemin console (inchange) --- }
   { GetNumberOfConsoleInputEvents(hStdin, &count) }
   EmitInstr('PUSH OFFSET CRT_NEVT');
   EmitInstr('PUSH DWORD PTR [HSTDIN]');
@@ -19513,13 +19602,45 @@ Begin
   EmitInstr('POP EDX');
   EmitInstr('POP ECX');
   EmitInstr('RET');
+  { --- Chemin fenetre graphique --- }
+  EmitLabel(TP_RT_PFX + 'KP_GR');
+  { Pomper tous les messages en attente (non bloquant) }
+  EmitLabel(TP_RT_PFX + 'KP_GP');
+  EmitInstr('PUSH 1');                   { PM_REMOVE }
+  EmitInstr('PUSH 0');                   { wMsgFilterMax }
+  EmitInstr('PUSH 0');                   { wMsgFilterMin }
+  EmitInstr('PUSH 0');                   { hWnd=NULL (tous) }
+  EmitInstr('PUSH OFFSET GR_MSG');
+  EmitInstr('CALL PeekMessageA');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'KP_GC');
+  EmitInstr('PUSH OFFSET GR_MSG');
+  EmitInstr('CALL TranslateMessage');
+  EmitInstr('PUSH OFFSET GR_MSG');
+  EmitInstr('CALL DispatchMessageA');
+  EmitInstr('JMP ' + TP_RT_PFX + 'KP_GP');
+  EmitLabel(TP_RT_PFX + 'KP_GC');
+  { Verifier si le ring buffer contient une touche }
+  EmitInstr('MOV EAX,DWORD PTR [GR_KEYHEAD]');
+  EmitInstr('CMP EAX,DWORD PTR [GR_KEYTAIL]');
+  EmitInstr('JE ' + TP_RT_PFX + 'KP_G0');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('JMP ' + TP_RT_PFX + 'KP_DN');
+  EmitLabel(TP_RT_PFX + 'KP_G0');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'KP_DN');
 
   { ------ _TPRT_READKEY : lire une touche -> EAX --------------- }
   { Retourne le code ASCII de la touche pressee                    }
+  { Si fenetre graphique ouverte, lit depuis le ring buffer         }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'READKEY');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
+  { Si mode graphique actif, utiliser la fenetre }
+  EmitInstr('CMP DWORD PTR [GR_ACTIVE],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RK_GR');
+  { --- Chemin console (inchange) --- }
   EmitLabel(TP_RT_PFX + 'RK_LP');
   { ReadConsoleInputA(hStdin, &rec, 1, &count) }
   EmitInstr('PUSH OFFSET CRT_NEVT');
@@ -19537,6 +19658,45 @@ Begin
   EmitInstr('JZ ' + TP_RT_PFX + 'RK_LP');
   { Retourner AsciiChar (offset 14 dans INPUT_RECORD) }
   EmitInstr('MOVZX EAX,BYTE PTR [CRT_INREC+14]');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+  { --- Chemin fenetre graphique --- }
+  EmitLabel(TP_RT_PFX + 'RK_GR');
+  { Boucle : verifier ring buffer, sinon pomper messages }
+  EmitLabel(TP_RT_PFX + 'RK_GL');
+  { Verifier si le ring buffer contient une touche }
+  EmitInstr('MOV EAX,DWORD PTR [GR_KEYHEAD]');
+  EmitInstr('CMP EAX,DWORD PTR [GR_KEYTAIL]');
+  EmitInstr('JE ' + TP_RT_PFX + 'RK_GM');
+  { Consommer le caractere du ring buffer }
+  EmitInstr('MOVZX EAX,BYTE PTR [GR_KEYBUF+EAX*1]');
+  EmitInstr('PUSH EAX');
+  EmitInstr('MOV EAX,DWORD PTR [GR_KEYHEAD]');
+  EmitInstr('INC EAX');
+  EmitInstr('AND EAX,0FFh');
+  EmitInstr('MOV DWORD PTR [GR_KEYHEAD],EAX');
+  EmitInstr('POP EAX');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'RK_GM');
+  { GetMessageA bloque jusqu'a reception d un message }
+  EmitInstr('PUSH 0');                   { wMsgFilterMax }
+  EmitInstr('PUSH 0');                   { wMsgFilterMin }
+  EmitInstr('PUSH 0');                   { hWnd=NULL }
+  EmitInstr('PUSH OFFSET GR_MSG');
+  EmitInstr('CALL GetMessageA');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'RK_GQ');   { WM_QUIT -> retourner 0 }
+  EmitInstr('PUSH OFFSET GR_MSG');
+  EmitInstr('CALL TranslateMessage');
+  EmitInstr('PUSH OFFSET GR_MSG');
+  EmitInstr('CALL DispatchMessageA');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RK_GL');
+  EmitLabel(TP_RT_PFX + 'RK_GQ');
+  { WM_QUIT recu : retourner 0 }
+  EmitInstr('XOR EAX,EAX');
   EmitInstr('POP EDX');
   EmitInstr('POP ECX');
   EmitInstr('RET');
@@ -21666,6 +21826,61 @@ Begin
   EmitComment(' RUNTIME GRAPH : routines d emulation graphique Windows     ');
   EmitComment('============================================================');
 
+  { ------ GR_WNDPROC : procedure de fenetre graphique (callback Win32) -- }
+  { stdcall(hWnd, uMsg, wParam, lParam) -> LRESULT in EAX                  }
+  { Capture WM_CHAR dans un ring buffer pour ReadKey/KeyPressed/ReadLn      }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'GR_WNDPROC');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  { [EBP+8]=hWnd, [EBP+12]=uMsg, [EBP+16]=wParam, [EBP+20]=lParam }
+  { Verifier WM_CHAR (0x0102) }
+  EmitInstr('CMP DWORD PTR [EBP+12],0102h');
+  EmitInstr('JE ' + TP_RT_PFX + 'WP_CHAR');
+  { Verifier WM_CLOSE (0x0010) }
+  EmitInstr('CMP DWORD PTR [EBP+12],010h');
+  EmitInstr('JE ' + TP_RT_PFX + 'WP_CLOSE');
+  { Verifier WM_DESTROY (0x0002) }
+  EmitInstr('CMP DWORD PTR [EBP+12],2');
+  EmitInstr('JE ' + TP_RT_PFX + 'WP_DESTR');
+  { Defaut : appeler DefWindowProcA(hWnd, uMsg, wParam, lParam) }
+  EmitInstr('PUSH DWORD PTR [EBP+20]');
+  EmitInstr('PUSH DWORD PTR [EBP+16]');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL DefWindowProcA');
+  EmitInstr('POP EBP');
+  EmitInstr('RET 16');
+  { WM_CHAR : stocker le caractere dans le ring buffer }
+  EmitLabel(TP_RT_PFX + 'WP_CHAR');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EAX,DWORD PTR [GR_KEYTAIL]');
+  EmitInstr('MOV BL,BYTE PTR [EBP+16]');   { wParam = caractere }
+  EmitInstr('MOV BYTE PTR [GR_KEYBUF+EAX*1],BL');
+  EmitInstr('INC EAX');
+  EmitInstr('AND EAX,0FFh');
+  EmitInstr('MOV DWORD PTR [GR_KEYTAIL],EAX');
+  EmitInstr('POP EBX');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET 16');
+  { WM_CLOSE : detruire la fenetre }
+  EmitLabel(TP_RT_PFX + 'WP_CLOSE');
+  EmitInstr('PUSH DWORD PTR [EBP+8]');
+  EmitInstr('CALL DestroyWindow');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET 16');
+  { WM_DESTROY : signal de fermeture }
+  EmitLabel(TP_RT_PFX + 'WP_DESTR');
+  EmitInstr('MOV DWORD PTR [GR_ACTIVE],0');
+  EmitInstr('MOV DWORD PTR [GR_HWND],0');
+  EmitInstr('PUSH 0');
+  EmitInstr('CALL PostQuitMessage');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET 16');
+
   { ------ _TPR_INITGRAPH : initialiser mode graphique --------- }
   { Parametres : [ESP+4]=Gd (var), [ESP+8]=Gm (var), [ESP+12]=Path }
   { Cree une fenetre Windows avec zone client 640x480              }
@@ -21701,10 +21916,10 @@ Begin
   EmitInstr('PUSH 0');
   EmitInstr('CALL LoadCursorA');
   EmitInstr('MOV DWORD PTR [GR_CLSREC+24],EAX');     { hCursor }
-  { Remplir WNDCLASS : style=3(CS_HREDRAW|CS_VREDRAW), lpfnWndProc=DefWindowProcA }
+  { Remplir WNDCLASS : style=3(CS_HREDRAW|CS_VREDRAW), lpfnWndProc=GR_WNDPROC }
   EmitInstr('MOV DWORD PTR [GR_CLSREC+0],3');        { style }
-  { Charger adresse reelle de DefWindowProcA depuis l IAT }
-  EmitInstr('MOV EAX,DWORD PTR [DefWindowProcA]');
+  { Utiliser notre propre WndProc pour capturer les touches clavier }
+  EmitInstr('LEA EAX,[' + TP_RT_PFX + 'GR_WNDPROC]');
   EmitInstr('MOV DWORD PTR [GR_CLSREC+4],EAX');      { lpfnWndProc }
   EmitInstr('MOV EAX,DWORD PTR [GR_HINST]');
   EmitInstr('MOV DWORD PTR [GR_CLSREC+16],EAX');     { hInstance }
@@ -24418,8 +24633,8 @@ Begin
      (U = 'UPDATEWINDOW') Or (U = 'GETDC') Or
      (U = 'RELEASEDC') Or (U = 'DEFWINDOWPROCA') Or
      (U = 'GETCLIENTRECT') Or (U = 'INVALIDATERECT') Or
-     (U = 'PEEKMESSAGEA') Or (U = 'DISPATCHMESSAGEA') Or
-     (U = 'TRANSLATEMESSAGE') Or (U = 'POSTQUITMESSAGE') Or
+     (U = 'PEEKMESSAGEA') Or (U = 'GETMESSAGEA') Or
+     (U = 'DISPATCHMESSAGEA') Or (U = 'TRANSLATEMESSAGE') Or (U = 'POSTQUITMESSAGE') Or
      (U = 'LOADCURSORA') Or
      (U = 'FILLRECT') Or (U = 'GETASYNCKEYSTATE') Or
      (U = 'GETKEYSTATE') Or (U = 'GETCURSORPOS') Or
@@ -24499,6 +24714,7 @@ Begin
     (U = 'GETDC') Or (U = 'RELEASEDC') Or
     (U = 'DEFWINDOWPROCA') Or (U = 'GETCLIENTRECT') Or
     (U = 'INVALIDATERECT') Or (U = 'PEEKMESSAGEA') Or
+    (U = 'GETMESSAGEA') Or
     (U = 'DISPATCHMESSAGEA') Or (U = 'TRANSLATEMESSAGE') Or
     (U = 'POSTQUITMESSAGE') Or (U = 'LOADCURSORA') Or
     (U = 'GETMODULEHANDLEA') Or (U = 'FILLRECT') Or
@@ -24890,7 +25106,14 @@ Begin { BcAssemble }
   SplitOps(Tmp);
 
   { ---- Instructions sans operandes ---- }
-  If Mnem = 'RET' Then Begin BcEmitB($C3); Exit; End;
+  If Mnem = 'RET' Then
+  Begin
+    If (Op1 <> '') And BcParseImm(Op1, ImmVal) Then
+    Begin BcEmitB($C2); BcEmitB(Byte(ImmVal)); BcEmitB(Byte(ImmVal Shr 8)); End
+    Else
+      BcEmitB($C3);
+    Exit;
+  End;
   If Mnem = 'PUSHAD' Then Begin BcEmitB($60); Exit; End;
   If Mnem = 'POPAD' Then Begin BcEmitB($61); Exit; End;
   If Mnem = 'CDQ' Then Begin BcEmitB($99); Exit; End;
@@ -27415,6 +27638,9 @@ Begin
   BcDefineDataLabel('GR_ARCXE');    BcDataD(0);
   BcDefineDataLabel('GR_ARCYE');    BcDataD(0);
   BcDefineDataLabel('GR_VIDCFG');   BcDataZeros(44);
+  BcDefineDataLabel('GR_KEYBUF');    BcDataZeros(256);
+  BcDefineDataLabel('GR_KEYHEAD');   BcDataD(0);
+  BcDefineDataLabel('GR_KEYTAIL');   BcDataD(0);
 
   { Variables Strings/Printer/Overlay/Objects }
   BcDefineDataLabel('STR_TMPBUF'); BcDataZeros(256);
@@ -27510,7 +27736,18 @@ Begin
         If TargetOfs >= 0 Then
           Val := DataVA + TargetOfs + BcFixups[I].Addend
         Else
-          Val := DataVA;
+        Begin
+          { Fallback : chercher comme label code (pour LEA reg,[code_label]) }
+          TargetOfs := BcFindLabel(BcFixups[I].LblName);
+          If TargetOfs >= 0 Then
+          Begin
+            Val := (PE_IMG_BASE + PE_TEXT_RVA) + TargetOfs + BcFixups[I].Addend;
+          End
+          Else
+          Begin
+            Val := DataVA;
+          End;
+        End;
         BcCode[FixOfs] := Byte(Val);
         BcCode[FixOfs + 1] := Byte(Val Shr 8);
         BcCode[FixOfs + 2] := Byte(Val Shr 16);
