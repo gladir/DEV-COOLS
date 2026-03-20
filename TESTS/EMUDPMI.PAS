@@ -1963,6 +1963,80 @@ Begin
  Regs.ESP:=Regs.ESP+Imm;
 End;
 
+  { TODO 15 : INT 31h fonction 0000h - Allocate LDT Descriptors.
+    Alloue un nombre contigu de selecteurs dans la LDT.
+    Entree : CX = nombre de descripteurs a allouer.
+    Sortie : si succes, CF=0 et AX = selecteur de base du premier
+             descripteur alloue (bits 15..3 = index LDT, bit 2 = TI=1
+             pour LDT, bits 1..0 = RPL=11b).
+             si echec, CF=1. }
+Function DPMI_AllocLDTDescriptors(Count:Word):LongInt;
+Var
+ I,J:Word;
+ Found:Boolean;
+ StartIdx:Word;
+Begin
+ If Count=0 Then Begin
+  DPMI_AllocLDTDescriptors:=-1;
+  Exit;
+ End;
+  { Recherche d'un bloc contigu de 'Count' descripteurs libres.
+    On commence a l'index 1 car l'index 0 est le selecteur nul. }
+ For I:=1 to LDTSize-Count do Begin
+  Found:=True;
+  For J:=0 to Count-1 do Begin
+   If LDT[I+J].InUse Then Begin
+    Found:=False;
+    Break;
+   End;
+  End;
+  If Found Then Begin
+    { Marquer les descripteurs comme alloues }
+   For J:=0 to Count-1 do Begin
+    LDT[I+J].InUse:=True;
+    LDT[I+J].BaseAddr:=0;
+    LDT[I+J].Limit:=$FFFF;
+    LDT[I+J].AccessType:=$F2;  { P=1, DPL=3, S=1, Type=2 (Data R/W) }
+    LDT[I+J].Granularity:=0;
+   End;
+    { Construire le selecteur : index*8 + TI(bit2=1) + RPL(bits1:0=11b) }
+   StartIdx:=I;
+   DPMI_AllocLDTDescriptors:=LongInt(StartIdx shl 3) or $07;  { TI=1 (bit 2) + RPL=3 (bits 1:0) }
+   Exit;
+  End;
+ End;
+  { Pas de bloc contigu disponible }
+ DPMI_AllocLDTDescriptors:=-1;
+End;
+
+  { TODO 15 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
+    AX contient le numero de fonction DPMI.
+    Actuellement seule la fonction 0000h (Allocate LDT Descriptors) est geree. }
+Procedure ExecINT31h;
+Var
+ Func:Word;
+ Res:LongInt;
+Begin
+ Func:=Regs.AX;
+ Case Func of
+  $0000:Begin { Allocate LDT Descriptors }
+    Res:=DPMI_AllocLDTDescriptors(Regs.CX);
+    If Res>=0 Then Begin
+      { Succes : CF=0, AX = selecteur de base }
+     Exclude(EFlags.s,CF);
+     Regs.AX:=Word(Res);
+    End Else Begin
+      { Echec : CF=1 }
+     Include(EFlags.s,CF);
+    End;
+   End;
+  Else Begin
+   WriteLn('INT 31h: fonction $',HexStr(Func,4),' non implementee');
+   Include(EFlags.s,CF);
+  End;
+ End;
+End;
+
 Procedure Init;
 Var
  J:LongInt;
