@@ -2139,6 +2139,9 @@ Begin
   DPMI_AllocMemoryBlock:=False;
   Exit;
  End;
+  { Aligner NextLinearAddr sur 4 Ko avant l'allocation }
+ If(NextLinearAddr and $FFF)<>0 Then
+  NextLinearAddr:=(NextLinearAddr or $FFF)+1;
   { Verifier qu'il reste assez de memoire lineaire }
  If NextLinearAddr+BlockSize>MemorySize Then Begin
   DPMI_AllocMemoryBlock:=False;
@@ -2153,9 +2156,6 @@ Begin
    MemBlocks[I].Handle:=NextHandle;
    MemBlocks[I].InUse:=True;
    NextLinearAddr:=NextLinearAddr+BlockSize;
-    { Aligner sur 4 Ko }
-   If(NextLinearAddr and $FFF)<>0 Then
-    NextLinearAddr:=(NextLinearAddr or $FFF)+1;
    AddrHi:=Word(Addr shr 16);
    AddrLo:=Word(Addr and $FFFF);
    HandleHi:=Word(NextHandle shr 16);
@@ -2177,6 +2177,7 @@ Procedure ExecINT31h;
 Var
  Func:Word;
  Res:LongInt;
+ TmpAddrHi,TmpAddrLo,TmpHandleHi,TmpHandleLo:Word;
 Begin
  Func:=Regs.AX;
  Case Func of
@@ -2222,9 +2223,13 @@ Begin
      Include(EFlags.s,CF);
    End;
   $0501:Begin { Allocate Memory Block }
-    If DPMI_AllocMemoryBlock(Regs.BX,Regs.CX,Regs.BX,Regs.CX,Regs.SI,Regs.DI) Then
-     Exclude(EFlags.s,CF)
-    Else
+    If DPMI_AllocMemoryBlock(Regs.BX,Regs.CX,TmpAddrHi,TmpAddrLo,TmpHandleHi,TmpHandleLo) Then Begin
+     Regs.BX:=TmpAddrHi;
+     Regs.CX:=TmpAddrLo;
+     Regs.SI:=TmpHandleHi;
+     Regs.DI:=TmpHandleLo;
+     Exclude(EFlags.s,CF);
+    End Else
      Include(EFlags.s,CF);
    End;
   Else Begin
