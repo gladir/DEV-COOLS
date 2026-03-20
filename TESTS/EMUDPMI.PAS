@@ -134,6 +134,9 @@ Const
   { TODO 19 : Nombre maximum de blocs memoire allouables }
  MaxMemBlocks=128;
 
+  { TODO 21 : Nombre maximum de fichiers DOS ouverts simultanement }
+ MaxDosFiles=20;
+
 Type
   { TODO 2 : Registres 32 bits du 80386 }
  LongRec=Record
@@ -154,6 +157,12 @@ Type
   BaseAddr:LongInt;  { Adresse lineaire du bloc }
   Size:LongInt;      { Taille du bloc en octets }
   Handle:LongInt;    { Handle unique du bloc }
+  InUse:Boolean;     { Indique si l'entree est utilisee }
+ End;
+
+  { TODO 21 : Fichier DOS ouvert en mode protege DPMI }
+ TDosFile=Record
+  F:File;            { Handle de fichier Pascal }
   InUse:Boolean;     { Indique si l'entree est utilisee }
  End;
 
@@ -188,6 +197,11 @@ Var
  MemBlocks:Array[0..MaxMemBlocks-1]of TMemBlock;
  NextLinearAddr:LongInt;  { Prochaine adresse lineaire disponible }
  NextHandle:LongInt;      { Prochain handle a attribuer }
+
+  { TODO 21 : Table des fichiers DOS ouverts et drapeau de terminaison }
+ DosFiles:Array[0..MaxDosFiles-1]of TDosFile;
+ DosExitCode:Byte;        { Code de retour du programme emule }
+ Terminated:Boolean;       { True quand INT 21h/4Ch est appelee }
 
   { Pointeur d'instruction 32 bits }
  EIP:LongInt;
@@ -2267,6 +2281,219 @@ Begin
  DPMI_ResizeMemoryBlock:=False;
 End;
 
+  { TODO 21 : Gestionnaire INT 21h (services DOS) en mode protege DPMI.
+    AH contient le numero de service DOS.
+    Les adresses selecteur:offset sont traduites en adresses lineaires
+    pour l'acces aux tampons memoire via le fichier d'echange.
+    Services geres : $02 (afficher caractere), $09 (afficher chaine $),
+    $3C (creer fichier), $3D (ouvrir fichier), $3E (fermer fichier),
+    $3F (lire fichier), $40 (ecrire fichier), $4C (terminer programme). }
+Procedure ExecINT21h;
+Var
+ Func:Byte;
+ Addr:LongInt;
+ B:Byte;
+ I:Integer;
+ FileName:String;
+ Handle:Word;
+ Count:Word;
+ BytesTransferred:Word;
+ IOBuffer:Array[0..1023]of Byte;
+ ChunkSize:Word;
+ Remaining:Word;
+Begin
+ Func:=Regs.AH;
+ Case Func of
+  $02:Begin { Display Character - DL = character }
+    Write(Chr(Regs.DL));
+    Regs.AL:=Regs.DL;
+    Exclude(EFlags.s,CF);
+   End;
+  $09:Begin { Display String - DS:EDX -> '$'-terminated string }
+    Addr:=SelOfsToLinear(Segs.DS,Regs.EDX);
+    If Addr>=0 Then Begin
+     Repeat
+      B:=ReadByte(Addr);
+      If B<>Ord('$') Then Begin
+       Write(Chr(B));
+       Inc(Addr);
+      End;
+     Until B=Ord('$');
+     Regs.AL:=Ord('$');
+     Exclude(EFlags.s,CF);
+    End Else
+     Include(EFlags.s,CF);
+   End;
+  $3C:Begin { Create File - DS:EDX -> ASCIIZ filename, CX = attributes }
+     { Lire le nom de fichier ASCIIZ depuis la memoire lineaire }
+    Addr:=SelOfsToLinear(Segs.DS,Regs.EDX);
+    FileName:='';
+    If Addr>=0 Then Begin
+     B:=ReadByte(Addr);
+     While (B<>0)and(Length(FileName)<255) do Begin
+      FileName:=FileName+Chr(B);
+      Inc(Addr);
+      B:=ReadByte(Addr);
+     End;
+      { Trouver un slot libre dans la table des fichiers }
+     Handle:=$FFFF;
+     For I:=5 to MaxDosFiles-1 do Begin  { 0-4 reservees (stdin/out/err/aux/prn) }
+      If not DosFiles[I].InUse Then Begin
+       Handle:=I;
+       Break;
+      End;
+     End;
+     If Handle<>$FFFF Then Begin
+      {$I-}Assign(DosFiles[Handle].F,FileName);
+      Rewrite(DosFiles[Handle].F,1);{$I+}
+      If IOResult=0 Then Begin
+       DosFiles[Handle].InUse:=True;
+       Regs.AX:=Handle;
+       Exclude(EFlags.s,CF);
+      End Else Begin
+       Regs.AX:=5;  { Acces refuse }
+       Include(EFlags.s,CF);
+      End;
+     End Else Begin
+      Regs.AX:=4;  { Trop de fichiers ouverts }
+      Include(EFlags.s,CF);
+     End;
+    End Else Begin
+     Regs.AX:=2;  { Fichier non trouve }
+     Include(EFlags.s,CF);
+    End;
+   End;
+  $3D:Begin { Open File - DS:EDX -> ASCIIZ filename, AL = mode }
+    Addr:=SelOfsToLinear(Segs.DS,Regs.EDX);
+    FileName:='';
+    If Addr>=0 Then Begin
+     B:=ReadByte(Addr);
+     While (B<>0)and(Length(FileName)<255) do Begin
+      FileName:=FileName+Chr(B);
+      Inc(Addr);
+      B:=ReadByte(Addr);
+     End;
+     Handle:=$FFFF;
+     For I:=5 to MaxDosFiles-1 do Begin
+      If not DosFiles[I].InUse Then Begin
+       Handle:=I;
+       Break;
+      End;
+     End;
+     If Handle<>$FFFF Then Begin
+      {$I-}Assign(DosFiles[Handle].F,FileName);
+      Reset(DosFiles[Handle].F,1);{$I+}
+      If IOResult=0 Then Begin
+       DosFiles[Handle].InUse:=True;
+       Regs.AX:=Handle;
+       Exclude(EFlags.s,CF);
+      End Else Begin
+       Regs.AX:=2;  { Fichier non trouve }
+       Include(EFlags.s,CF);
+      End;
+     End Else Begin
+      Regs.AX:=4;  { Trop de fichiers ouverts }
+      Include(EFlags.s,CF);
+     End;
+    End Else Begin
+     Regs.AX:=2;
+     Include(EFlags.s,CF);
+    End;
+   End;
+  $3E:Begin { Close File - BX = handle }
+    Handle:=Regs.BX;
+    If (Handle>=5)and(Handle<MaxDosFiles)and DosFiles[Handle].InUse Then Begin
+     {$I-}Close(DosFiles[Handle].F);{$I+}
+     If IOResult=0 Then Begin End;  { Ignorer erreur de fermeture }
+     DosFiles[Handle].InUse:=False;
+     Exclude(EFlags.s,CF);
+    End Else Begin
+     Regs.AX:=6;  { Handle invalide }
+     Include(EFlags.s,CF);
+    End;
+   End;
+  $3F:Begin { Read File - BX = handle, CX = count, DS:EDX -> buffer }
+    Handle:=Regs.BX;
+    Count:=Regs.CX;
+    Addr:=SelOfsToLinear(Segs.DS,Regs.EDX);
+    If (Handle>=5)and(Handle<MaxDosFiles)and DosFiles[Handle].InUse
+       and(Addr>=0) Then Begin
+     Remaining:=Count;
+     Regs.AX:=0;
+     Exclude(EFlags.s,CF);
+     While Remaining>0 do Begin
+      If Remaining>SizeOf(IOBuffer) Then
+       ChunkSize:=SizeOf(IOBuffer)
+      Else
+       ChunkSize:=Remaining;
+      {$I-}BlockRead(DosFiles[Handle].F,IOBuffer,ChunkSize,BytesTransferred);{$I+}
+      If IOResult<>0 Then Begin
+       Regs.AX:=5;  { Erreur de lecture }
+       Include(EFlags.s,CF);
+       Break;
+      End;
+      For I:=0 to BytesTransferred-1 do
+       WriteByte(Addr+I,IOBuffer[I]);
+      Addr:=Addr+BytesTransferred;
+      Regs.AX:=Regs.AX+BytesTransferred;
+      Dec(Remaining,BytesTransferred);
+      If BytesTransferred<ChunkSize Then Break;  { Fin de fichier }
+     End;
+    End Else Begin
+     Regs.AX:=6;  { Handle invalide }
+     Include(EFlags.s,CF);
+    End;
+   End;
+  $40:Begin { Write File - BX = handle, CX = count, DS:EDX -> buffer }
+    Handle:=Regs.BX;
+    Count:=Regs.CX;
+    Addr:=SelOfsToLinear(Segs.DS,Regs.EDX);
+    If (Addr>=0)and(
+       ((Handle=1)or(Handle=2))or
+       ((Handle>=5)and(Handle<MaxDosFiles)and DosFiles[Handle].InUse)
+       ) Then Begin
+     Remaining:=Count;
+     Regs.AX:=0;
+     Exclude(EFlags.s,CF);
+     While Remaining>0 do Begin
+      If Remaining>SizeOf(IOBuffer) Then
+       ChunkSize:=SizeOf(IOBuffer)
+      Else
+       ChunkSize:=Remaining;
+      For I:=0 to ChunkSize-1 do
+       IOBuffer[I]:=ReadByte(Addr+I);
+      If (Handle=1)or(Handle=2) Then Begin  { stdout/stderr -> ecrire sur console }
+       For I:=0 to ChunkSize-1 do Write(Chr(IOBuffer[I]));
+       BytesTransferred:=ChunkSize;
+      End Else Begin
+       {$I-}BlockWrite(DosFiles[Handle].F,IOBuffer,ChunkSize,BytesTransferred);{$I+}
+       If IOResult<>0 Then Begin
+        Regs.AX:=5;  { Erreur d'ecriture }
+        Include(EFlags.s,CF);
+        Break;
+       End;
+      End;
+      Addr:=Addr+BytesTransferred;
+      Regs.AX:=Regs.AX+BytesTransferred;
+      Dec(Remaining,BytesTransferred);
+      If BytesTransferred<ChunkSize Then Break;
+     End;
+    End Else Begin
+     Regs.AX:=6;  { Handle invalide }
+     Include(EFlags.s,CF);
+    End;
+   End;
+  $4C:Begin { Terminate Program - AL = exit code }
+    DosExitCode:=Regs.AL;
+    Terminated:=True;
+   End;
+  Else Begin
+   WriteLn('INT 21h: service $',HexStr(Func,2),' non implemente');
+   Include(EFlags.s,CF);
+  End;
+ End;
+End;
+
   { TODO 15-20 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
     AX contient le numero de fonction DPMI.
     Fonctions gerees : 0000h (Allocate LDT), 0001h (Free LDT), 0007h (Set Base),
@@ -2386,13 +2613,29 @@ Begin
  NextLinearAddr:=$100000;  { Debut de l'allocation a 1 Mo }
  NextHandle:=1;
  WriteLn('Gestionnaire memoire initialise (',MaxMemBlocks,' blocs max).');
+  { TODO 21 : Initialisation de la table des fichiers DOS }
+ FillChar(DosFiles,SizeOf(DosFiles),0);
+ DosExitCode:=0;
+ Terminated:=False;
+ WriteLn('Table fichiers DOS initialisee (',MaxDosFiles,' handles max).');
   { TODO 9 : Initialisation de la table de parite }
  InitParityTable;
   { TODO 14 : Initialisation des prefixes }
  ResetPrefixes;
 End;
 
-Procedure Done;Begin
+Procedure Done;
+Var
+ I:Integer;
+Begin
+  { TODO 21 : Fermer tous les fichiers DOS ouverts }
+ For I:=5 to MaxDosFiles-1 do Begin
+  If DosFiles[I].InUse Then Begin
+   {$I-}Close(DosFiles[I].F);{$I+}
+   If IOResult=0 Then Begin End;
+   DosFiles[I].InUse:=False;
+  End;
+ End;
  Close(Memory);
  {$I-}Assign(Memory,SwapFileMemory);
  Erase(Memory);{$I+}
