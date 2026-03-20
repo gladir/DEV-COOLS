@@ -2615,6 +2615,8 @@ Begin
  WriteLn('Gestionnaire memoire initialise (',MaxMemBlocks,' blocs max).');
   { TODO 21 : Initialisation de la table des fichiers DOS }
  FillChar(DosFiles,SizeOf(DosFiles),0);
+  { Handles 0-4 reserves (stdin/stdout/stderr/aux/prn) }
+ For J:=0 to 4 do DosFiles[J].InUse:=True;
  DosExitCode:=0;
  Terminated:=False;
  WriteLn('Table fichiers DOS initialisee (',MaxDosFiles,' handles max).');
@@ -2632,7 +2634,7 @@ Begin
  For I:=5 to MaxDosFiles-1 do Begin
   If DosFiles[I].InUse Then Begin
    {$I-}Close(DosFiles[I].F);{$I+}
-   If IOResult=0 Then Begin End;
+   If IOResult=0 Then Begin End;  { Consommer IOResult }
    DosFiles[I].InUse:=False;
   End;
  End;
