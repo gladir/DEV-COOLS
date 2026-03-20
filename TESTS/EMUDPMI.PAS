@@ -2067,9 +2067,46 @@ Begin
   DPMI_GetSegmentBaseAddress:=False;
 End;
 
-  { TODO 15-17 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
+  { TODO 18 : INT 31h fonction 0009h - Set Descriptor Access Rights.
+    Modifie les droits d'acces et la granularite d'un descripteur.
+    Entree : BX = selecteur, CL = octet des droits d'acces, CH = octet etendu (G, D/B).
+    Sortie : si succes, CF=0.
+             si echec (selecteur invalide ou non alloue), CF=1. }
+Function DPMI_SetDescriptorAccessRights(Selector:Word;AccRights,ExtRights:Byte):Boolean;
+Var
+ Idx:Word;
+Begin
+ Idx:=Selector shr 3;
+ If(Idx>=1)and(Idx<LDTSize)and(LDT[Idx].InUse)Then Begin
+  LDT[Idx].AccessType:=AccRights;
+  LDT[Idx].Granularity:=ExtRights;
+  DPMI_SetDescriptorAccessRights:=True;
+ End Else
+  DPMI_SetDescriptorAccessRights:=False;
+End;
+
+  { TODO 18 : INT 31h fonction 000Ah - Get Descriptor Access Rights.
+    Lit les droits d'acces et la granularite d'un descripteur.
+    Entree : BX = selecteur.
+    Sortie : si succes, CF=0 et CL = octet des droits d'acces, CH = octet etendu.
+             si echec (selecteur invalide ou non alloue), CF=1. }
+Function DPMI_GetDescriptorAccessRights(Selector:Word;Var AccRights,ExtRights:Byte):Boolean;
+Var
+ Idx:Word;
+Begin
+ Idx:=Selector shr 3;
+ If(Idx>=1)and(Idx<LDTSize)and(LDT[Idx].InUse)Then Begin
+  AccRights:=LDT[Idx].AccessType;
+  ExtRights:=LDT[Idx].Granularity;
+  DPMI_GetDescriptorAccessRights:=True;
+ End Else
+  DPMI_GetDescriptorAccessRights:=False;
+End;
+
+  { TODO 15-18 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
     AX contient le numero de fonction DPMI.
-    Fonctions gerees : 0000h (Allocate), 0001h (Free), 0007h (Set Base), 0008h (Get Base). }
+    Fonctions gerees : 0000h (Allocate), 0001h (Free), 0007h (Set Base),
+    0008h (Get Base), 0009h (Set Access Rights), 000Ah (Get Access Rights). }
 Procedure ExecINT31h;
 Var
  Func:Word;
@@ -2102,6 +2139,18 @@ Begin
    End;
   $0008:Begin { Get Segment Base Address }
     If DPMI_GetSegmentBaseAddress(Regs.BX,Regs.CX,Regs.DX) Then
+     Exclude(EFlags.s,CF)
+    Else
+     Include(EFlags.s,CF);
+   End;
+  $0009:Begin { Set Descriptor Access Rights }
+    If DPMI_SetDescriptorAccessRights(Regs.BX,Regs.CL,Regs.CH) Then
+     Exclude(EFlags.s,CF)
+    Else
+     Include(EFlags.s,CF);
+   End;
+  $000A:Begin { Get Descriptor Access Rights }
+    If DPMI_GetDescriptorAccessRights(Regs.BX,Regs.CL,Regs.CH) Then
      Exclude(EFlags.s,CF)
     Else
      Include(EFlags.s,CF);
