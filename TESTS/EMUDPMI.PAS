@@ -2032,9 +2032,44 @@ Begin
   DPMI_FreeLDTDescriptor:=False;
 End;
 
-  { TODO 15-16 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
+  { TODO 17 : INT 31h fonction 0007h - Set Segment Base Address.
+    Modifie l'adresse de base d'un descripteur dans la LDT.
+    Entree : BX = selecteur, CX:DX = adresse de base 32 bits (CX = mot haut, DX = mot bas).
+    Sortie : si succes, CF=0.
+             si echec (selecteur invalide ou non alloue), CF=1. }
+Function DPMI_SetSegmentBaseAddress(Selector:Word;BaseHi,BaseLo:Word):Boolean;
+Var
+ Idx:Word;
+Begin
+ Idx:=Selector shr 3;
+ If(Idx>=1)and(Idx<LDTSize)and(LDT[Idx].InUse)Then Begin
+  LDT[Idx].BaseAddr:=LongInt(BaseHi) shl 16 + BaseLo;
+  DPMI_SetSegmentBaseAddress:=True;
+ End Else
+  DPMI_SetSegmentBaseAddress:=False;
+End;
+
+  { TODO 17 : INT 31h fonction 0008h - Get Segment Base Address.
+    Lit l'adresse de base d'un descripteur dans la LDT.
+    Entree : BX = selecteur.
+    Sortie : si succes, CF=0 et CX:DX = adresse de base 32 bits.
+             si echec (selecteur invalide ou non alloue), CF=1. }
+Function DPMI_GetSegmentBaseAddress(Selector:Word;Var BaseHi,BaseLo:Word):Boolean;
+Var
+ Idx:Word;
+Begin
+ Idx:=Selector shr 3;
+ If(Idx>=1)and(Idx<LDTSize)and(LDT[Idx].InUse)Then Begin
+  BaseHi:=Word(LDT[Idx].BaseAddr shr 16);
+  BaseLo:=Word(LDT[Idx].BaseAddr and $FFFF);
+  DPMI_GetSegmentBaseAddress:=True;
+ End Else
+  DPMI_GetSegmentBaseAddress:=False;
+End;
+
+  { TODO 15-17 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
     AX contient le numero de fonction DPMI.
-    Fonctions gerees : 0000h (Allocate), 0001h (Free). }
+    Fonctions gerees : 0000h (Allocate), 0001h (Free), 0007h (Set Base), 0008h (Get Base). }
 Procedure ExecINT31h;
 Var
  Func:Word;
@@ -2055,6 +2090,18 @@ Begin
    End;
   $0001:Begin { Free LDT Descriptor }
     If DPMI_FreeLDTDescriptor(Regs.BX) Then
+     Exclude(EFlags.s,CF)
+    Else
+     Include(EFlags.s,CF);
+   End;
+  $0007:Begin { Set Segment Base Address }
+    If DPMI_SetSegmentBaseAddress(Regs.BX,Regs.CX,Regs.DX) Then
+     Exclude(EFlags.s,CF)
+    Else
+     Include(EFlags.s,CF);
+   End;
+  $0008:Begin { Get Segment Base Address }
+    If DPMI_GetSegmentBaseAddress(Regs.BX,Regs.CX,Regs.DX) Then
      Exclude(EFlags.s,CF)
     Else
      Include(EFlags.s,CF);
