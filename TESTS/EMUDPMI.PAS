@@ -2009,9 +2009,32 @@ Begin
  DPMI_AllocLDTDescriptors:=-1;
 End;
 
-  { TODO 15 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
+  { TODO 16 : INT 31h fonction 0001h - Free LDT Descriptor.
+    Libere un selecteur precedemment alloue dans la LDT.
+    Entree : BX = selecteur a liberer.
+    Sortie : si succes, CF=0.
+             si echec (selecteur invalide ou non alloue), CF=1. }
+Function DPMI_FreeLDTDescriptor(Selector:Word):Boolean;
+Var
+ Idx:Word;
+Begin
+  { Extraire l'index LDT du selecteur (bits 15..3) }
+ Idx:=Selector shr 3;
+  { Verifier que l'index est valide et que le descripteur est alloue }
+ If(Idx>=1)and(Idx<LDTSize)and(LDT[Idx].InUse)Then Begin
+  LDT[Idx].InUse:=False;
+  LDT[Idx].BaseAddr:=0;
+  LDT[Idx].Limit:=0;
+  LDT[Idx].AccessType:=0;
+  LDT[Idx].Granularity:=0;
+  DPMI_FreeLDTDescriptor:=True;
+ End Else
+  DPMI_FreeLDTDescriptor:=False;
+End;
+
+  { TODO 15-16 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
     AX contient le numero de fonction DPMI.
-    Actuellement seule la fonction 0000h (Allocate LDT Descriptors) est geree. }
+    Fonctions gerees : 0000h (Allocate), 0001h (Free). }
 Procedure ExecINT31h;
 Var
  Func:Word;
@@ -2029,6 +2052,12 @@ Begin
       { Echec : CF=1 }
      Include(EFlags.s,CF);
     End;
+   End;
+  $0001:Begin { Free LDT Descriptor }
+    If DPMI_FreeLDTDescriptor(Regs.BX) Then
+     Exclude(EFlags.s,CF)
+    Else
+     Include(EFlags.s,CF);
    End;
   Else Begin
    WriteLn('INT 31h: fonction $',HexStr(Func,4),' non implementee');
