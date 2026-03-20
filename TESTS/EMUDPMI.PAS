@@ -1767,6 +1767,106 @@ Begin
  End;
 End;
 
+  { TODO 13 : CALL near/far et RET/RETF en mode protege 32 bits,
+    avec empilement/depilement de EIP et CS sur la pile 32 bits. }
+
+  { CALL near (rel32) - opcode $E8 : appel relatif near 32 bits }
+Procedure ExecCALL_Near32;
+Var
+ Rel:LongInt;
+Begin
+ Rel:=FetchDWord;
+ Push32(EIP);
+ EIP:=EIP+Rel;
+End;
+
+  { CALL far (ptr16:32) - opcode $9A : appel direct far,
+    empile CS puis EIP, puis charge le nouveau CS:EIP }
+Procedure ExecCALL_Far;
+Var
+ NewEIP:LongInt;
+ NewCS:Word;
+Begin
+ NewEIP:=FetchDWord;
+ NewCS:=FetchWord;
+ Push32(LongInt(Segs.CS));
+ Push32(EIP);
+ EIP:=NewEIP;
+ Segs.CS:=NewCS;
+End;
+
+  { CALL r/m32 - opcode $FF /2 : appel indirect near via registre ou memoire
+    CALL m16:32 - opcode $FF /3 : appel indirect far via memoire }
+Procedure ExecGrp5_CALL;
+Var
+ RegField,RmField:Byte;
+ Addr:LongInt;
+ NewEIP:LongInt;
+ NewCS:Word;
+Begin
+ Addr:=DecodeModRM32(RegField,RmField);
+ Case RegField of
+  2:Begin { CALL r/m32 - near indirect }
+     If Addr=-1 Then
+      NewEIP:=GetReg32(RmField)
+     Else
+      NewEIP:=ReadDWord(Addr);
+     Push32(EIP);
+     EIP:=NewEIP;
+    End;
+  3:Begin { CALL m16:32 - far indirect }
+     If Addr=-1 Then Begin
+      WriteLn('Erreur: CALL far indirect ne peut pas utiliser un registre');
+      Exit;
+     End;
+     NewEIP:=ReadDWord(Addr);
+     NewCS:=ReadWord(Addr+4);
+     Push32(LongInt(Segs.CS));
+     Push32(EIP);
+     EIP:=NewEIP;
+     Segs.CS:=NewCS;
+    End;
+  Else
+   WriteLn('Erreur: opcode $FF /',RegField,' non gere par ExecGrp5_CALL');
+ End;
+End;
+
+  { RET near - opcode $C3 : retour near (depile EIP) }
+Procedure ExecRET;
+Begin
+ EIP:=Pop32;
+End;
+
+  { RET near imm16 - opcode $C2 : retour near avec liberation de
+    parametres sur la pile (depile EIP, puis ESP += imm16) }
+Procedure ExecRET_Imm16;
+Var
+ Imm:Word;
+Begin
+ Imm:=FetchWord;
+ EIP:=Pop32;
+ Regs.ESP:=Regs.ESP+Imm;
+End;
+
+  { RETF - opcode $CB : retour far (depile EIP puis CS) }
+Procedure ExecRETF;
+Begin
+ EIP:=Pop32;
+ Segs.CS:=Word(Pop32);
+End;
+
+  { RETF imm16 - opcode $CA : retour far avec liberation de
+    parametres sur la pile (depile EIP, depile CS, ESP += imm16) }
+Procedure ExecRETF_Imm16;
+Var
+ Imm:Word;
+Begin
+ Imm:=FetchWord;
+ EIP:=Pop32;
+ Segs.CS:=Word(Pop32);
+ Regs.ESP:=Regs.ESP+Imm;
+End;
+
 Procedure Init;
 Var
  J:LongInt;
