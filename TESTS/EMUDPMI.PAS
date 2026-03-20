@@ -131,6 +131,9 @@ Const
   { TODO 4 : Nombre d'entrees dans la LDT }
  LDTSize=256;
 
+  { TODO 19 : Nombre maximum de blocs memoire allouables }
+ MaxMemBlocks=128;
+
 Type
   { TODO 2 : Registres 32 bits du 80386 }
  LongRec=Record
@@ -144,6 +147,14 @@ Type
   AccessType:Byte;   { Type d'acces (P, DPL, S, Type) }
   Granularity:Byte;  { Bit G (granularite 4 Ko), D/B, L, AVL }
   InUse:Boolean;     { Indique si le descripteur est alloue }
+ End;
+
+  { TODO 19 : Bloc memoire lineaire alloue via INT 31h fonction 0501h }
+ TMemBlock=Record
+  BaseAddr:LongInt;  { Adresse lineaire du bloc }
+  Size:LongInt;      { Taille du bloc en octets }
+  Handle:LongInt;    { Handle unique du bloc }
+  InUse:Boolean;     { Indique si l'entree est utilisee }
  End;
 
 Var
@@ -172,6 +183,11 @@ Var
 
   { TODO 4 : Table des descripteurs locaux (LDT) }
  LDT:Array[0..LDTSize-1]of TDescriptor;
+
+  { TODO 19 : Table des blocs memoire alloues }
+ MemBlocks:Array[0..MaxMemBlocks-1]of TMemBlock;
+ NextLinearAddr:LongInt;  { Prochaine adresse lineaire disponible }
+ NextHandle:LongInt;      { Prochain handle a attribuer }
 
   { Pointeur d'instruction 32 bits }
  EIP:LongInt;
@@ -2107,10 +2123,56 @@ Begin
   DPMI_GetSegmentLimitAndRights:=False;
 End;
 
-  { TODO 15-18 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
+  { TODO 19 : INT 31h fonction 0501h - Allocate Memory Block.
+    Alloue un bloc de memoire lineaire dans l'espace de 16 Mo.
+    Entree : BX:CX = taille du bloc en octets (BX = mot haut, CX = mot bas).
+    Sortie : si succes, CF=0, BX:CX = adresse lineaire du bloc,
+             SI:DI = handle du bloc.
+             si echec (plus de memoire ou plus d'entrees libres), CF=1. }
+Function DPMI_AllocMemoryBlock(SizeHi,SizeLo:Word;Var AddrHi,AddrLo,HandleHi,HandleLo:Word):Boolean;
+Var
+ BlockSize,Addr:LongInt;
+ I:Integer;
+Begin
+ BlockSize:=LongInt(SizeHi) shl 16 + SizeLo;
+ If BlockSize<=0 Then Begin
+  DPMI_AllocMemoryBlock:=False;
+  Exit;
+ End;
+  { Verifier qu'il reste assez de memoire lineaire }
+ If NextLinearAddr+BlockSize>MemorySize Then Begin
+  DPMI_AllocMemoryBlock:=False;
+  Exit;
+ End;
+  { Chercher une entree libre dans la table des blocs }
+ For I:=0 to MaxMemBlocks-1 do Begin
+  If Not MemBlocks[I].InUse Then Begin
+   Addr:=NextLinearAddr;
+   MemBlocks[I].BaseAddr:=Addr;
+   MemBlocks[I].Size:=BlockSize;
+   MemBlocks[I].Handle:=NextHandle;
+   MemBlocks[I].InUse:=True;
+   NextLinearAddr:=NextLinearAddr+BlockSize;
+    { Aligner sur 4 Ko }
+   If(NextLinearAddr and $FFF)<>0 Then
+    NextLinearAddr:=(NextLinearAddr or $FFF)+1;
+   AddrHi:=Word(Addr shr 16);
+   AddrLo:=Word(Addr and $FFFF);
+   HandleHi:=Word(NextHandle shr 16);
+   HandleLo:=Word(NextHandle and $FFFF);
+   Inc(NextHandle);
+   DPMI_AllocMemoryBlock:=True;
+   Exit;
+  End;
+ End;
+ DPMI_AllocMemoryBlock:=False;
+End;
+
+  { TODO 15-19 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
     AX contient le numero de fonction DPMI.
-    Fonctions gerees : 0000h (Allocate), 0001h (Free), 0007h (Set Base),
-    0008h (Get Base), 0009h (Set Limit+Rights), 000Ah (Get Limit+Rights). }
+    Fonctions gerees : 0000h (Allocate LDT), 0001h (Free LDT), 0007h (Set Base),
+    0008h (Get Base), 0009h (Set Limit+Rights), 000Ah (Get Limit+Rights),
+    0501h (Allocate Memory Block). }
 Procedure ExecINT31h;
 Var
  Func:Word;
@@ -2159,6 +2221,12 @@ Begin
     Else
      Include(EFlags.s,CF);
    End;
+  $0501:Begin { Allocate Memory Block }
+    If DPMI_AllocMemoryBlock(Regs.BX,Regs.CX,Regs.BX,Regs.CX,Regs.SI,Regs.DI) Then
+     Exclude(EFlags.s,CF)
+    Else
+     Include(EFlags.s,CF);
+   End;
   Else Begin
    WriteLn('INT 31h: fonction $',HexStr(Func,4),' non implementee');
    Include(EFlags.s,CF);
@@ -2192,6 +2260,11 @@ Begin
   { TODO 4 : Initialisation de la LDT (tous les descripteurs libres) }
  FillChar(LDT,SizeOf(LDT),0);
  WriteLn('LDT initialisee (',LDTSize,' descripteurs).');
+  { TODO 19 : Initialisation du gestionnaire de blocs memoire }
+ FillChar(MemBlocks,SizeOf(MemBlocks),0);
+ NextLinearAddr:=$100000;  { Debut de l'allocation a 1 Mo }
+ NextHandle:=1;
+ WriteLn('Gestionnaire memoire initialise (',MaxMemBlocks,' blocs max).');
   { TODO 9 : Initialisation de la table de parite }
  InitParityTable;
   { TODO 14 : Initialisation des prefixes }
