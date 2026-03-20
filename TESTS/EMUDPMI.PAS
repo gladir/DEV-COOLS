@@ -2067,46 +2067,50 @@ Begin
   DPMI_GetSegmentBaseAddress:=False;
 End;
 
-  { TODO 18 : INT 31h fonction 0009h - Set Descriptor Access Rights.
-    Modifie les droits d'acces et la granularite d'un descripteur.
-    Entree : BX = selecteur, CL = octet des droits d'acces, CH = octet etendu (G, D/B).
+  { TODO 18 : INT 31h fonction 0009h - Set Segment Limit and Descriptor Access Rights.
+    Modifie la limite du segment, les droits d'acces et la granularite d'un descripteur.
+    Entree : BX = selecteur, CX:DX = limite 32 bits (CX = mot haut, DX = mot bas),
+             SI = droits d'acces (octet bas = AccessType, octet haut = Granularity).
     Sortie : si succes, CF=0.
              si echec (selecteur invalide ou non alloue), CF=1. }
-Function DPMI_SetDescriptorAccessRights(Selector:Word;AccRights,ExtRights:Byte):Boolean;
+Function DPMI_SetSegmentLimitAndRights(Selector:Word;LimitHi,LimitLo,Rights:Word):Boolean;
 Var
  Idx:Word;
 Begin
  Idx:=Selector shr 3;
  If(Idx>=1)and(Idx<LDTSize)and(LDT[Idx].InUse)Then Begin
-  LDT[Idx].AccessType:=AccRights;
-  LDT[Idx].Granularity:=ExtRights;
-  DPMI_SetDescriptorAccessRights:=True;
+  LDT[Idx].Limit:=LongInt(LimitHi) shl 16 + LimitLo;
+  LDT[Idx].AccessType:=Lo(Rights);
+  LDT[Idx].Granularity:=Hi(Rights);
+  DPMI_SetSegmentLimitAndRights:=True;
  End Else
-  DPMI_SetDescriptorAccessRights:=False;
+  DPMI_SetSegmentLimitAndRights:=False;
 End;
 
-  { TODO 18 : INT 31h fonction 000Ah - Get Descriptor Access Rights.
-    Lit les droits d'acces et la granularite d'un descripteur.
+  { TODO 18 : INT 31h fonction 000Ah - Get Segment Limit and Descriptor Access Rights.
+    Lit la limite du segment, les droits d'acces et la granularite d'un descripteur.
     Entree : BX = selecteur.
-    Sortie : si succes, CF=0 et CL = octet des droits d'acces, CH = octet etendu.
+    Sortie : si succes, CF=0, CX:DX = limite 32 bits, SI = droits d'acces
+             (octet bas = AccessType, octet haut = Granularity).
              si echec (selecteur invalide ou non alloue), CF=1. }
-Function DPMI_GetDescriptorAccessRights(Selector:Word;Var AccRights,ExtRights:Byte):Boolean;
+Function DPMI_GetSegmentLimitAndRights(Selector:Word;Var LimitHi,LimitLo,Rights:Word):Boolean;
 Var
  Idx:Word;
 Begin
  Idx:=Selector shr 3;
  If(Idx>=1)and(Idx<LDTSize)and(LDT[Idx].InUse)Then Begin
-  AccRights:=LDT[Idx].AccessType;
-  ExtRights:=LDT[Idx].Granularity;
-  DPMI_GetDescriptorAccessRights:=True;
+  LimitHi:=Word(LDT[Idx].Limit shr 16);
+  LimitLo:=Word(LDT[Idx].Limit and $FFFF);
+  Rights:=Word(LDT[Idx].AccessType) or (Word(LDT[Idx].Granularity) shl 8);
+  DPMI_GetSegmentLimitAndRights:=True;
  End Else
-  DPMI_GetDescriptorAccessRights:=False;
+  DPMI_GetSegmentLimitAndRights:=False;
 End;
 
   { TODO 15-18 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
     AX contient le numero de fonction DPMI.
     Fonctions gerees : 0000h (Allocate), 0001h (Free), 0007h (Set Base),
-    0008h (Get Base), 0009h (Set Access Rights), 000Ah (Get Access Rights). }
+    0008h (Get Base), 0009h (Set Limit+Rights), 000Ah (Get Limit+Rights). }
 Procedure ExecINT31h;
 Var
  Func:Word;
@@ -2143,14 +2147,14 @@ Begin
     Else
      Include(EFlags.s,CF);
    End;
-  $0009:Begin { Set Descriptor Access Rights }
-    If DPMI_SetDescriptorAccessRights(Regs.BX,Regs.CL,Regs.CH) Then
+  $0009:Begin { Set Segment Limit and Descriptor Access Rights }
+    If DPMI_SetSegmentLimitAndRights(Regs.BX,Regs.CX,Regs.DX,Regs.SI) Then
      Exclude(EFlags.s,CF)
     Else
      Include(EFlags.s,CF);
    End;
-  $000A:Begin { Get Descriptor Access Rights }
-    If DPMI_GetDescriptorAccessRights(Regs.BX,Regs.CL,Regs.CH) Then
+  $000A:Begin { Get Segment Limit and Descriptor Access Rights }
+    If DPMI_GetSegmentLimitAndRights(Regs.BX,Regs.CX,Regs.DX,Regs.SI) Then
      Exclude(EFlags.s,CF)
     Else
      Include(EFlags.s,CF);
