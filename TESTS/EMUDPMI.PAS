@@ -329,6 +329,27 @@ Begin
  BlockWrite(Memory,Value,4,ByteWrited);
 End;
 
+  { TODO 20 : Copie d'un bloc dans le fichier d'echange.
+    Copie Count octets de l'adresse SrcAddr vers DestAddr dans le
+    fichier de memoire lineaire, par blocs de ClearBufferSize octets. }
+Procedure CopySwapBlock(SrcAddr,DestAddr,Count:LongInt);
+Var
+ Chunk:LongInt;
+ ByteRead,ByteWrited:Word;
+Begin
+ While Count>0 do Begin
+  Chunk:=Count;
+  If Chunk>ClearBufferSize Then Chunk:=ClearBufferSize;
+  Seek(Memory,SrcAddr);
+  BlockRead(Memory,ClrBuffer,Chunk,ByteRead);
+  Seek(Memory,DestAddr);
+  BlockWrite(Memory,ClrBuffer,Chunk,ByteWrited);
+  Inc(SrcAddr,Chunk);
+  Inc(DestAddr,Chunk);
+  Dec(Count,Chunk);
+ End;
+End;
+
   { TODO 7 : Pile 32 bits (PUSH/POP) avec ESP et SS adressant
     tout l'espace 16 Mo. PUSH decremente ESP puis ecrit la valeur,
     POP lit la valeur puis incremente ESP. }
@@ -2168,11 +2189,90 @@ Begin
  DPMI_AllocMemoryBlock:=False;
 End;
 
-  { TODO 15-19 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
+  { TODO 20 : INT 31h fonction 0502h - Free Memory Block.
+    Libere un bloc de memoire alloue par la fonction 0501h.
+    Entree : SI:DI = handle du bloc a liberer.
+    Sortie : si succes, CF=0. Si handle invalide, CF=1. }
+Function DPMI_FreeMemoryBlock(HandleHi,HandleLo:Word):Boolean;
+Var
+ Handle:LongInt;
+ I:Integer;
+Begin
+ Handle:=LongInt(HandleHi) shl 16 + HandleLo;
+ For I:=0 to MaxMemBlocks-1 do Begin
+  If MemBlocks[I].InUse and(MemBlocks[I].Handle=Handle)Then Begin
+   MemBlocks[I].InUse:=False;
+   DPMI_FreeMemoryBlock:=True;
+   Exit;
+  End;
+ End;
+ DPMI_FreeMemoryBlock:=False;
+End;
+
+  { TODO 20 : INT 31h fonction 0503h - Resize Memory Block.
+    Redimensionne un bloc de memoire existant.
+    Entree : BX:CX = nouvelle taille en octets,
+             SI:DI = handle du bloc a redimensionner.
+    Sortie : si succes, CF=0, BX:CX = nouvelle adresse lineaire,
+             SI:DI = nouveau handle du bloc.
+             si echec, CF=1. }
+Function DPMI_ResizeMemoryBlock(NewSizeHi,NewSizeLo,HandleHi,HandleLo:Word;
+                                Var AddrHi,AddrLo,NewHandleHi,NewHandleLo:Word):Boolean;
+Var
+ Handle,NewSize,NewAddr:LongInt;
+ I:Integer;
+Begin
+ Handle:=LongInt(HandleHi) shl 16 + HandleLo;
+ NewSize:=LongInt(NewSizeHi) shl 16 + NewSizeLo;
+ If NewSize<=0 Then Begin
+  DPMI_ResizeMemoryBlock:=False;
+  Exit;
+ End;
+ For I:=0 to MaxMemBlocks-1 do Begin
+  If MemBlocks[I].InUse and(MemBlocks[I].Handle=Handle)Then Begin
+    { Si la nouvelle taille tient dans l'ancien bloc, ajuster sur place }
+   If NewSize<=MemBlocks[I].Size Then Begin
+    MemBlocks[I].Size:=NewSize;
+    AddrHi:=Word(MemBlocks[I].BaseAddr shr 16);
+    AddrLo:=Word(MemBlocks[I].BaseAddr and $FFFF);
+    NewHandleHi:=HandleHi;
+    NewHandleLo:=HandleLo;
+    DPMI_ResizeMemoryBlock:=True;
+    Exit;
+   End;
+    { Sinon, allouer un nouveau bloc et liberer l'ancien }
+   If(NextLinearAddr and $FFF)<>0 Then
+    NextLinearAddr:=(NextLinearAddr or $FFF)+1;
+   If NextLinearAddr+NewSize>MemorySize Then Begin
+    DPMI_ResizeMemoryBlock:=False;
+    Exit;
+   End;
+   NewAddr:=NextLinearAddr;
+   NextLinearAddr:=NextLinearAddr+NewSize;
+    { Copier l'ancien contenu via le fichier d'echange }
+   CopySwapBlock(MemBlocks[I].BaseAddr,NewAddr,MemBlocks[I].Size);
+    { Mettre a jour l'entree du bloc }
+   MemBlocks[I].BaseAddr:=NewAddr;
+   MemBlocks[I].Size:=NewSize;
+   MemBlocks[I].Handle:=NextHandle;
+   AddrHi:=Word(NewAddr shr 16);
+   AddrLo:=Word(NewAddr and $FFFF);
+   NewHandleHi:=Word(NextHandle shr 16);
+   NewHandleLo:=Word(NextHandle and $FFFF);
+   Inc(NextHandle);
+   DPMI_ResizeMemoryBlock:=True;
+   Exit;
+  End;
+ End;
+ DPMI_ResizeMemoryBlock:=False;
+End;
+
+  { TODO 15-20 : Gestionnaire INT 31h (DPMI) - dispatch par numero de fonction.
     AX contient le numero de fonction DPMI.
     Fonctions gerees : 0000h (Allocate LDT), 0001h (Free LDT), 0007h (Set Base),
     0008h (Get Base), 0009h (Set Limit+Rights), 000Ah (Get Limit+Rights),
-    0501h (Allocate Memory Block). }
+    0501h (Allocate Memory Block), 0502h (Free Memory Block),
+    0503h (Resize Memory Block). }
 Procedure ExecINT31h;
 Var
  Func:Word;
@@ -2224,6 +2324,22 @@ Begin
    End;
   $0501:Begin { Allocate Memory Block }
     If DPMI_AllocMemoryBlock(Regs.BX,Regs.CX,TmpAddrHi,TmpAddrLo,TmpHandleHi,TmpHandleLo) Then Begin
+     Regs.BX:=TmpAddrHi;
+     Regs.CX:=TmpAddrLo;
+     Regs.SI:=TmpHandleHi;
+     Regs.DI:=TmpHandleLo;
+     Exclude(EFlags.s,CF);
+    End Else
+     Include(EFlags.s,CF);
+   End;
+  $0502:Begin { Free Memory Block }
+    If DPMI_FreeMemoryBlock(Regs.SI,Regs.DI) Then
+     Exclude(EFlags.s,CF)
+    Else
+     Include(EFlags.s,CF);
+   End;
+  $0503:Begin { Resize Memory Block }
+    If DPMI_ResizeMemoryBlock(Regs.BX,Regs.CX,Regs.SI,Regs.DI,TmpAddrHi,TmpAddrLo,TmpHandleHi,TmpHandleLo) Then Begin
      Regs.BX:=TmpAddrHi;
      Regs.CX:=TmpAddrLo;
      Regs.SI:=TmpHandleHi;
