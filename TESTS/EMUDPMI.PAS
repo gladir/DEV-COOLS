@@ -176,6 +176,14 @@ Var
   { Pointeur d'instruction 32 bits }
  EIP:LongInt;
 
+  { TODO 14 : Prefixes de remplacement de segment et de taille d'adresse.
+    SegOverride contient le selecteur de segment courant pour l'acces
+    memoire (ES, CS, SS, DS, FS, GS), ou -1 si aucun prefixe n'est actif.
+    AddrSizeOverride vaut True quand le prefixe 67h a ete detecte,
+    pour basculer du mode d'adressage 32 bits vers 16 bits. }
+ SegOverride:LongInt;
+ AddrSizeOverride:Boolean;
+
   { Drapeaux du processeur }
  EFlags:Record Case Byte of
   0:(s:Set of(CF,bit1,PF,bit3,AF,bit5,ZF,SF,TF,_IF,DF,_OF));
@@ -391,14 +399,27 @@ Begin
  Regs.Abs[Idx and 7]:=Value;
 End;
 
+  { Retourne le selecteur de segment effectif pour l'acces memoire.
+    Si un prefixe de remplacement de segment est actif (SegOverride>=0),
+    il est utilise. Sinon, le segment par defaut est utilise. }
+Function GetEffectiveSeg(DefaultSeg:Word):Word;
+Begin
+ If SegOverride>=0 Then
+  GetEffectiveSeg:=Word(SegOverride)
+ Else
+  GetEffectiveSeg:=DefaultSeg;
+End;
+
   { Decodage du ModR/M en mode 32 bits. Retourne l'adresse effective
     lineaire si Mod<>11b, ou -1 si l'operande est un registre (Mod=11b).
     RegField recoit le champ reg (bits 5..3).
-    RmField recoit le champ r/m (bits 2..0). }
+    RmField recoit le champ r/m (bits 2..0).
+    Utilise SS par defaut si la base est EBP ou ESP, sinon DS. }
 Function DecodeModRM32(Var RegField,RmField:Byte):LongInt;
 Var
  ModRM,_Mod,SIB,Base,Index,Scale:Byte;
  Addr:LongInt;
+ UseSS:Boolean;
 Begin
  ModRM:=FetchByte;
  _Mod:=(ModRM shr 6) and 3;
@@ -411,6 +432,7 @@ Begin
  End;
   { Calcul de l'adresse effective }
  Addr:=0;
+ UseSS:=False;
  If RmField=4 Then Begin
    { SIB byte present }
   SIB:=FetchByte;
@@ -420,22 +442,96 @@ Begin
    { Adresse de base }
   If(Base=5)and(_Mod=0)Then
    Addr:=FetchDWord  { [disp32+scaled index] }
-  Else
+  Else Begin
    Addr:=GetReg32(Base);
+    { SS par defaut si base = EBP (5) ou ESP (4) }
+   If(Base=4)or(Base=5)Then UseSS:=True;
+  End;
    { Index echelonne (sauf si index=4 => pas d'index) }
   If Index<>4 Then
    Addr:=Addr+(GetReg32(Index) shl Scale);
  End Else If(RmField=5)and(_Mod=0)Then
   Addr:=FetchDWord  { [disp32] direct }
- Else
+ Else Begin
   Addr:=GetReg32(RmField);
+   { SS par defaut si r/m = EBP (5) }
+  If RmField=5 Then UseSS:=True;
+ End;
   { Deplacement }
  Case _Mod of
-  1:Addr:=Addr+ShortInt(FetchByte);  { disp8 signe }
-  2:Addr:=Addr+FetchDWord;            { disp32 }
+  1:Begin
+    Addr:=Addr+ShortInt(FetchByte);  { disp8 signe }
+     { Mod=01 avec r/m=5 => base EBP, utilise SS }
+    If RmField=5 Then UseSS:=True;
+   End;
+  2:Begin
+    Addr:=Addr+FetchDWord;            { disp32 }
+    If RmField=5 Then UseSS:=True;
+   End;
  End;
-  { Conversion en adresse lineaire via DS par defaut }
- DecodeModRM32:=SelOfsToLinear(Segs.DS,Addr);
+  { Conversion en adresse lineaire via le segment effectif }
+ If UseSS Then
+  DecodeModRM32:=SelOfsToLinear(GetEffectiveSeg(Segs.SS),Addr)
+ Else
+  DecodeModRM32:=SelOfsToLinear(GetEffectiveSeg(Segs.DS),Addr);
+End;
+
+  { TODO 14 : Decodage du ModR/M en mode d'adressage 16 bits
+    (actif lorsque le prefixe 67h est detecte en mode protege 32 bits).
+    Les modes d'adressage 16 bits utilisent BX, BP, SI, DI. }
+Function DecodeModRM16(Var RegField,RmField:Byte):LongInt;
+Var
+ ModRM,_Mod:Byte;
+ Addr:LongInt;
+ UseSS:Boolean;
+Begin
+ ModRM:=FetchByte;
+ _Mod:=(ModRM shr 6) and 3;
+ RegField:=(ModRM shr 3) and 7;
+ RmField:=ModRM and 7;
+ If _Mod=3 Then Begin
+  DecodeModRM16:=-1;
+  Exit;
+ End;
+ Addr:=0;
+ UseSS:=False;
+ Case RmField of
+  0:Addr:=LongInt(Regs.BX)+LongInt(Regs.SI);
+  1:Addr:=LongInt(Regs.BX)+LongInt(Regs.DI);
+  2:Begin Addr:=LongInt(Regs.BP)+LongInt(Regs.SI);UseSS:=True;End;
+  3:Begin Addr:=LongInt(Regs.BP)+LongInt(Regs.DI);UseSS:=True;End;
+  4:Addr:=LongInt(Regs.SI);
+  5:Addr:=LongInt(Regs.DI);
+  6:If _Mod=0 Then
+    Addr:=LongInt(FetchWord)
+   Else Begin
+    Addr:=LongInt(Regs.BP);
+    UseSS:=True;
+   End;
+  7:Addr:=LongInt(Regs.BX);
+ End;
+ Case _Mod of
+  1:Begin
+    Addr:=Addr+ShortInt(FetchByte);
+    If(RmField=6)Then UseSS:=True;
+   End;
+  2:Begin
+    Addr:=Addr+SmallInt(FetchWord);
+    If(RmField=6)Then UseSS:=True;
+   End;
+ End;
+ Addr:=Addr and $FFFF;
+ If UseSS Then
+  DecodeModRM16:=SelOfsToLinear(GetEffectiveSeg(Segs.SS),Addr)
+ Else
+  DecodeModRM16:=SelOfsToLinear(GetEffectiveSeg(Segs.DS),Addr);
+End;
+
+  { TODO 14 : Reinitialisation des prefixes apres chaque instruction }
+Procedure ResetPrefixes;
+Begin
+ SegOverride:=-1;
+ AddrSizeOverride:=False;
 End;
 
   { MOV r/m32, reg32 - opcode $89 }
@@ -1895,6 +1991,8 @@ Begin
  WriteLn('LDT initialisee (',LDTSize,' descripteurs).');
   { TODO 9 : Initialisation de la table de parite }
  InitParityTable;
+  { TODO 14 : Initialisation des prefixes }
+ ResetPrefixes;
 End;
 
 Procedure Done;Begin
