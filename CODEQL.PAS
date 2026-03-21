@@ -113,7 +113,7 @@
       validees), detection de debordement de tampon (acces a un
       tableau avec un indice non verifie), detection de fuites de
       ressources (fichiers ouverts non fermes), detection
-      d'utilisation de variables non initialisees.
+      d'utilisation de variables non initialisees. [IMPLEMENTE]
 
   18. Implementer la sortie au format SARIF (Static Analysis Results
       Interchange Format) : generation d'un fichier JSON conforme
@@ -214,6 +214,10 @@ Const
   MAX_REC_DEPS    = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};
   MAX_REC_STRATA  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_REC_ITERS   = {$IFDEF FPC}1000{$ELSE}100{$ENDIF};
+
+  { TODO 17 : Requetes de securite integrees }
+  MAX_SEC_ALERTS  = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_SEC_LEAKS   = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -869,6 +873,33 @@ Type
     Stable   : Boolean;        { True si OldRows = NewRows            }
   End;
 
+  { TODO 17 : Requetes de securite integrees pour Pascal }
+  TSecQueryKind = (
+    SQK_NONE,            { inconnu                                 }
+    SQK_CMD_INJECTION,   { injection de commandes (Exec)            }
+    SQK_BUFFER_OVERFLOW, { debordement de tampon (index tableau)    }
+    SQK_RESOURCE_LEAK,   { fuite de ressources (fichier non ferme)  }
+    SQK_UNINIT_VAR       { utilisation de variable non initialisee  }
+  );
+
+  TSecAlert = Record
+    Kind     : TSecQueryKind; { type de la requete de securite       }
+    ASTIndex : Integer;       { noeud AST concerne                   }
+    VarIdx   : Integer;       { index de la variable (DfVars) ou -1  }
+    Line     : Integer;       { ligne source                         }
+    Col      : Integer;       { colonne source                       }
+    Message  : TString;       { message descriptif                   }
+    Severity : TDbSeverity;   { niveau de severite                   }
+  End;
+
+  TSecResLeak = Record
+    VarIdx   : Integer;       { index de la variable fichier         }
+    OpenAST  : Integer;       { noeud AST de l ouverture (Reset/Rw)  }
+    CloseAST : Integer;       { noeud AST de la fermeture (-1=absent)}
+    OpenLine : Integer;       { ligne de l ouverture                 }
+    FuncIdx  : Integer;       { index de la fonction englobante      }
+  End;
+
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -996,6 +1027,12 @@ Var
   RecFPCount   : Integer;
   RecTotalIter : Integer;
   RecPredSCC   : Array[0..MAX_REC_PREDS - 1] Of Integer; { SCC id par pred }
+
+  { Requetes de securite (TODO 17) }
+  SecAlerts     : Array[0..MAX_SEC_ALERTS - 1] Of TSecAlert;
+  SecAlertCount : Integer;
+  SecLeaks      : Array[0..MAX_SEC_LEAKS - 1] Of TSecResLeak;
+  SecLeakCount  : Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -10913,6 +10950,459 @@ Begin
                 TaintSinks[TaintAlerts[I].SinkIdx].Col);
       WriteLn;
     End;
+  WriteLn;
+End;
+
+{ ============================================================
+  TODO 17 - REQUETES DE SECURITE INTEGREES POUR PASCAL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Initialiser les requetes de securite ------------------- }
+
+Procedure InitSecQueries;
+Var
+  I : Integer;
+Begin
+  SecAlertCount := 0;
+  SecLeakCount  := 0;
+  For I := 0 To MAX_SEC_ALERTS - 1 Do
+  Begin
+    SecAlerts[I].Kind     := SQK_NONE;
+    SecAlerts[I].ASTIndex := -1;
+    SecAlerts[I].VarIdx   := -1;
+    SecAlerts[I].Line     := 0;
+    SecAlerts[I].Col      := 0;
+    SecAlerts[I].Message  := '';
+    SecAlerts[I].Severity := DSEV_NOTE;
+  End;
+  For I := 0 To MAX_SEC_LEAKS - 1 Do
+  Begin
+    SecLeaks[I].VarIdx   := -1;
+    SecLeaks[I].OpenAST  := -1;
+    SecLeaks[I].CloseAST := -1;
+    SecLeaks[I].OpenLine := 0;
+    SecLeaks[I].FuncIdx  := -1;
+  End;
+End;
+
+{ ---- Nom du type de requete de securite --------------------- }
+
+Function SecQueryKindName(K : TSecQueryKind) : TString;
+Begin
+  Case K Of
+    SQK_NONE:            SecQueryKindName := 'none';
+    SQK_CMD_INJECTION:   SecQueryKindName := 'command-injection';
+    SQK_BUFFER_OVERFLOW: SecQueryKindName := 'buffer-overflow';
+    SQK_RESOURCE_LEAK:   SecQueryKindName := 'resource-leak';
+    SQK_UNINIT_VAR:      SecQueryKindName := 'uninitialized-variable';
+  Else
+    SecQueryKindName := '?';
+  End;
+End;
+
+{ ---- Ajouter une alerte de securite ------------------------- }
+
+Function AddSecAlert(AKind : TSecQueryKind; AAST, AVar,
+                     ALine, ACol : Integer;
+                     Const AMsg : TString;
+                     ASev : TDbSeverity) : Integer;
+Begin
+  If SecAlertCount >= MAX_SEC_ALERTS Then
+  Begin
+    AddSecAlert := -1;
+    Exit;
+  End;
+  SecAlerts[SecAlertCount].Kind     := AKind;
+  SecAlerts[SecAlertCount].ASTIndex := AAST;
+  SecAlerts[SecAlertCount].VarIdx   := AVar;
+  SecAlerts[SecAlertCount].Line     := ALine;
+  SecAlerts[SecAlertCount].Col      := ACol;
+  SecAlerts[SecAlertCount].Message  := AMsg;
+  SecAlerts[SecAlertCount].Severity := ASev;
+  AddSecAlert := SecAlertCount;
+  Inc(SecAlertCount);
+End;
+
+{ ---- Ajouter un suivi de fuite de ressource ----------------- }
+
+Function AddSecLeak(AVar, AOpenAST, AOpenLine,
+                    AFunc : Integer) : Integer;
+Begin
+  If SecLeakCount >= MAX_SEC_LEAKS Then
+  Begin
+    AddSecLeak := -1;
+    Exit;
+  End;
+  SecLeaks[SecLeakCount].VarIdx   := AVar;
+  SecLeaks[SecLeakCount].OpenAST  := AOpenAST;
+  SecLeaks[SecLeakCount].CloseAST := -1;
+  SecLeaks[SecLeakCount].OpenLine := AOpenLine;
+  SecLeaks[SecLeakCount].FuncIdx  := AFunc;
+  AddSecLeak := SecLeakCount;
+  Inc(SecLeakCount);
+End;
+
+{ ---- Detection d injection de commandes (Exec) -------------- }
+{ Parcours l AST source a la recherche d appels a Exec dont     }
+{ l argument provient d une source de donnees non fiable (taint).}
+
+Procedure CheckCmdInjection;
+Var
+  I, ArgVar : Integer;
+  NName     : TString;
+  IsExec    : Boolean;
+Begin
+  For I := 0 To SrcNodeCount - 1 Do
+  Begin
+    If (SrcNodes[I].Kind = SNK_CALL) Or
+       (SrcNodes[I].Kind = SNK_EXPR_CALL) Then
+    Begin
+      NName := SrcNodes[I].Name;
+      { Comparer en minuscules }
+      IsExec := False;
+      If Length(NName) = 4 Then
+        If (NName[1] In ['E','e']) And
+           (NName[2] In ['X','x']) And
+           (NName[3] In ['E','e']) And
+           (NName[4] In ['C','c']) Then
+          IsExec := True;
+      If Not IsExec Then
+        Continue;
+
+      { Verifier si un argument provient d une variable teintee }
+      If SrcNodes[I].Left >= 0 Then
+      Begin
+        If SrcNodes[SrcNodes[I].Left].Kind = SNK_EXPR_IDENT Then
+        Begin
+          { Chercher la variable dans DfVars par nom }
+          If DfVarCount > 0 Then
+          Begin
+            For ArgVar := 0 To DfVarCount - 1 Do
+              If DfVars[ArgVar].Name = SrcNodes[SrcNodes[I].Left].Name Then
+              Begin
+                If TaintVarState[ArgVar] Then
+                Begin
+                  AddSecAlert(SQK_CMD_INJECTION, I, ArgVar,
+                    SrcNodes[I].Line, SrcNodes[I].Col,
+                    'Exec with tainted argument: ' +
+                    SrcNodes[SrcNodes[I].Left].Name,
+                    DSEV_ERROR);
+                End;
+                Break;
+              End;
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ---- Detection de debordement de tampon (index tableau) ------ }
+{ Parcours l AST a la recherche d acces a un tableau (EXPR_INDEX)}
+{ dont l indice provient d une source non fiable.                }
+
+Procedure CheckBufferOverflow;
+Var
+  I, IdxVar : Integer;
+  IdxNode   : Integer;
+Begin
+  For I := 0 To SrcNodeCount - 1 Do
+  Begin
+    If SrcNodes[I].Kind = SNK_EXPR_INDEX Then
+    Begin
+      { Le sous-noeud Right est l expression d indice }
+      IdxNode := SrcNodes[I].Right;
+      If IdxNode < 0 Then
+        Continue;
+      If SrcNodes[IdxNode].Kind = SNK_EXPR_IDENT Then
+      Begin
+        { Chercher la variable dans DfVars }
+        For IdxVar := 0 To DfVarCount - 1 Do
+        Begin
+          If DfVars[IdxVar].Name = SrcNodes[IdxNode].Name Then
+          Begin
+            If TaintVarState[IdxVar] Then
+            Begin
+              AddSecAlert(SQK_BUFFER_OVERFLOW, I, IdxVar,
+                SrcNodes[I].Line, SrcNodes[I].Col,
+                'Array access with tainted index: ' +
+                SrcNodes[IdxNode].Name,
+                DSEV_WARNING);
+            End;
+            Break;
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ---- Detection de fuites de ressources (fichiers) ----------- }
+{ Parcours l AST a la recherche d appels Reset/Rewrite sans     }
+{ Close correspondant dans la meme fonction.                    }
+
+Procedure CheckResourceLeak;
+Var
+  I, J, K, LeakIdx : Integer;
+  NName        : TString;
+  IsOpen       : Boolean;
+  IsClose      : Boolean;
+  VarName      : TString;
+  FuncId       : Integer;
+Begin
+  { Premiere passe : collecter les ouvertures (Reset/Rewrite) }
+  For I := 0 To SrcNodeCount - 1 Do
+  Begin
+    If (SrcNodes[I].Kind = SNK_CALL) Or
+       (SrcNodes[I].Kind = SNK_EXPR_CALL) Then
+    Begin
+      NName := SrcNodes[I].Name;
+      IsOpen := False;
+      If Length(NName) >= 5 Then
+      Begin
+        If (NName[1] In ['R','r']) And
+           (NName[2] In ['E','e']) And
+           (NName[3] In ['S','s']) And
+           (NName[4] In ['E','e']) And
+           (NName[5] In ['T','t']) Then
+          IsOpen := True;
+      End;
+      If (Not IsOpen) And (Length(NName) >= 7) Then
+      Begin
+        If (NName[1] In ['R','r']) And
+           (NName[2] In ['E','e']) And
+           (NName[3] In ['W','w']) And
+           (NName[4] In ['R','r']) And
+           (NName[5] In ['I','i']) And
+           (NName[6] In ['T','t']) And
+           (NName[7] In ['E','e']) Then
+          IsOpen := True;
+      End;
+      If Not IsOpen Then
+        Continue;
+
+      { Recuperer le nom de la variable fichier (premier argument) }
+      VarName := '';
+      If SrcNodes[I].Left >= 0 Then
+        If SrcNodes[SrcNodes[I].Left].Kind = SNK_EXPR_IDENT Then
+          VarName := SrcNodes[SrcNodes[I].Left].Name;
+      If VarName = '' Then
+        Continue;
+
+      { Trouver la fonction englobante }
+      FuncId := -1;
+      For J := 0 To DbFunctionCnt - 1 Do
+      Begin
+        If (DbFunctions[J].LocId >= 0) And
+           (DbFunctions[J].LocId < DbLocationCnt) Then
+        Begin
+          If (SrcNodes[I].Line >= DbLocations[DbFunctions[J].LocId].StartLine) And
+             (SrcNodes[I].Line <= DbLocations[DbFunctions[J].LocId].EndLine) Then
+          Begin
+            FuncId := J;
+            Break;
+          End;
+        End;
+      End;
+
+      { Enregistrer l ouverture }
+      LeakIdx := AddSecLeak(-1, I, SrcNodes[I].Line, FuncId);
+      If LeakIdx >= 0 Then
+      Begin
+        { Chercher l index de la variable dans DfVars }
+        For K := 0 To DfVarCount - 1 Do
+          If DfVars[K].Name = VarName Then
+          Begin
+            SecLeaks[LeakIdx].VarIdx := K;
+            Break;
+          End;
+      End;
+    End;
+  End;
+
+  { Deuxieme passe : chercher les fermetures (Close/CloseFile) }
+  For I := 0 To SrcNodeCount - 1 Do
+  Begin
+    If (SrcNodes[I].Kind = SNK_CALL) Or
+       (SrcNodes[I].Kind = SNK_EXPR_CALL) Then
+    Begin
+      NName := SrcNodes[I].Name;
+      IsClose := False;
+      If Length(NName) = 5 Then
+      Begin
+        If (NName[1] In ['C','c']) And
+           (NName[2] In ['L','l']) And
+           (NName[3] In ['O','o']) And
+           (NName[4] In ['S','s']) And
+           (NName[5] In ['E','e']) Then
+          IsClose := True;
+      End;
+      If (Not IsClose) And (Length(NName) = 9) Then
+      Begin
+        If (NName[1] In ['C','c']) And
+           (NName[2] In ['L','l']) And
+           (NName[3] In ['O','o']) And
+           (NName[4] In ['S','s']) And
+           (NName[5] In ['E','e']) And
+           (NName[6] In ['F','f']) And
+           (NName[7] In ['I','i']) And
+           (NName[8] In ['L','l']) And
+           (NName[9] In ['E','e']) Then
+          IsClose := True;
+      End;
+      If Not IsClose Then
+        Continue;
+
+      { Recuperer le nom de la variable fichier (premier argument) }
+      VarName := '';
+      If SrcNodes[I].Left >= 0 Then
+        If SrcNodes[SrcNodes[I].Left].Kind = SNK_EXPR_IDENT Then
+          VarName := SrcNodes[SrcNodes[I].Left].Name;
+      If VarName = '' Then
+        Continue;
+
+      { Marquer la fermeture dans les fuites correspondantes }
+      For J := 0 To SecLeakCount - 1 Do
+      Begin
+        If SecLeaks[J].CloseAST < 0 Then { pas encore ferme }
+        Begin
+          If SecLeaks[J].VarIdx >= 0 Then
+          Begin
+            If DfVars[SecLeaks[J].VarIdx].Name = VarName Then
+              SecLeaks[J].CloseAST := I;
+          End;
+        End;
+      End;
+    End;
+  End;
+
+  { Troisieme passe : signaler les fichiers ouverts non fermes }
+  For J := 0 To SecLeakCount - 1 Do
+  Begin
+    If SecLeaks[J].CloseAST < 0 Then
+    Begin
+      VarName := '';
+      If SecLeaks[J].VarIdx >= 0 Then
+        VarName := DfVars[SecLeaks[J].VarIdx].Name;
+      If VarName = '' Then
+        VarName := '(unknown)';
+      AddSecAlert(SQK_RESOURCE_LEAK,
+        SecLeaks[J].OpenAST, SecLeaks[J].VarIdx,
+        SecLeaks[J].OpenLine, 1,
+        'File opened but not closed: ' + VarName,
+        DSEV_WARNING);
+    End;
+  End;
+End;
+
+{ ---- Detection de variables non initialisees ----------------- }
+{ Utilise les chaines def-use de l analyse de flot de donnees    }
+{ pour trouver des utilisations sans definition prealable.       }
+
+Procedure CheckUninitVar;
+Var
+  I, J     : Integer;
+  HasDef   : Boolean;
+  VarName  : TString;
+Begin
+  { Pour chaque utilisation dans DfUses, verifier s il y a au   }
+  { moins une definition atteignante.                            }
+  For I := 0 To DfUseCount - 1 Do
+  Begin
+    HasDef := False;
+    { Parcourir les chaines def-use pour voir si une definition
+      atteint cette utilisation }
+    For J := 0 To DfChainCount - 1 Do
+    Begin
+      If DfChains[J].UseIdx = I Then
+      Begin
+        HasDef := True;
+        Break;
+      End;
+    End;
+
+    If Not HasDef Then
+    Begin
+      VarName := '';
+      If (DfUses[I].VarIdx >= 0) And
+         (DfUses[I].VarIdx < DfVarCount) Then
+        VarName := DfVars[DfUses[I].VarIdx].Name;
+      If VarName = '' Then
+        Continue;
+      If (DfUses[I].ASTIndex >= 0) And
+         (DfUses[I].ASTIndex < SrcNodeCount) Then
+        AddSecAlert(SQK_UNINIT_VAR,
+          DfUses[I].ASTIndex,
+          DfUses[I].VarIdx,
+          SrcNodes[DfUses[I].ASTIndex].Line,
+          SrcNodes[DfUses[I].ASTIndex].Col,
+          'Possibly uninitialized variable: ' + VarName,
+          DSEV_WARNING);
+    End;
+  End;
+End;
+
+{ ---- Point d entree des requetes de securite ---------------- }
+
+Procedure RunSecurityQueries;
+Begin
+  InitSecQueries;
+  CheckCmdInjection;
+  CheckBufferOverflow;
+  CheckResourceLeak;
+  CheckUninitVar;
+End;
+
+{ ---- Affichage debug des alertes de securite ---------------- }
+
+Procedure DumpSecurityAlerts;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== Requetes de Securite (Security Queries) ===');
+  WriteLn('Alertes : ', SecAlertCount);
+  WriteLn('Fuites  : ', SecLeakCount);
+  WriteLn;
+
+  { Afficher les fuites de ressources detectees }
+  If SecLeakCount > 0 Then
+  Begin
+    WriteLn('--- Suivi des ressources fichier ---');
+    For I := 0 To SecLeakCount - 1 Do
+    Begin
+      Write('  R', I);
+      If SecLeaks[I].VarIdx >= 0 Then
+        Write(' var="', DfVars[SecLeaks[I].VarIdx].Name, '"')
+      Else
+        Write(' var=?');
+      Write(' open=L', SecLeaks[I].OpenLine);
+      If SecLeaks[I].CloseAST >= 0 Then
+        Write(' [closed]')
+      Else
+        Write(' [LEAKED]');
+      WriteLn;
+    End;
+    WriteLn;
+  End;
+
+  { Afficher toutes les alertes de securite }
+  If SecAlertCount = 0 Then
+    WriteLn('  (aucune alerte de securite)')
+  Else
+  Begin
+    WriteLn('--- Alertes de securite ---');
+    For I := 0 To SecAlertCount - 1 Do
+    Begin
+      Write('  SEC #', I);
+      Write(' [', SecQueryKindName(SecAlerts[I].Kind), ']');
+      Write(' ', DbSeverityName(SecAlerts[I].Severity));
+      Write(' L', SecAlerts[I].Line, ':', SecAlerts[I].Col);
+      If SecAlerts[I].VarIdx >= 0 Then
+        Write(' var="', DfVars[SecAlerts[I].VarIdx].Name, '"');
+      WriteLn;
+      WriteLn('    ', SecAlerts[I].Message);
+    End;
+  End;
   WriteLn;
 End;
 
