@@ -102,7 +102,7 @@
               TOK_RPAREN, TOK_COMMA, TOK_DOT, TOK_SEMICOL,
               TOK_AT, TOK_EOF
 
-  TODO 08 - RECONNAISSANCE DES MOTS-CLES SQL SERVER
+  TODO 08 - RECONNAISSANCE DES MOTS-CLES SQL SERVER [IMPLEMENTE]
             Function IsKeyword(Const s: String): Integer
             Mots-cles DML : SELECT, INSERT, UPDATE, DELETE,
               MERGE, TRUNCATE, BULK INSERT
@@ -790,9 +790,125 @@ Const
   TOK_PIPE_EQ     = 40;      { |=                                 }
   TOK_CARET_EQ    = 41;      { ^=                                 }
   TOK_DELIM_IDENT = 42;      { identificateur delimite [nom]      }
+  TOK_KEYWORD     = 43;      { mot-cle SQL Server reconnu          }
 
   { Taille max du texte d un token }
   MAX_TOK_LEN     = 255;
+
+  { ---- Constantes mots-cles SQL Server (TODO 08) -------------- }
+  { Nombre total de mots-cles }
+  MAX_KEYWORDS    = 100;
+
+  { IDs des mots-cles SQL Server (base 1) }
+  { -- DML -- }
+  KW_SELECT       = 1;
+  KW_INSERT       = 2;
+  KW_UPDATE       = 3;
+  KW_DELETE       = 4;
+  KW_MERGE        = 5;
+  KW_TRUNCATE     = 6;
+  KW_BULK         = 7;
+  { -- DDL -- }
+  KW_CREATE       = 8;
+  KW_ALTER        = 9;
+  KW_DROP         = 10;
+  KW_TABLE        = 11;
+  KW_VIEW         = 12;
+  KW_INDEX        = 13;
+  KW_PROCEDURE    = 14;
+  KW_FUNCTION     = 15;
+  KW_TRIGGER      = 16;
+  KW_DATABASE     = 17;
+  KW_SCHEMA       = 18;
+  KW_SEQUENCE     = 19;
+  KW_TYPE         = 20;
+  KW_SYNONYM      = 21;
+  { -- Clauses -- }
+  KW_FROM         = 22;
+  KW_WHERE        = 23;
+  KW_GROUP        = 24;
+  KW_HAVING       = 25;
+  KW_ORDER        = 26;
+  KW_BY           = 27;
+  KW_JOIN         = 28;
+  KW_INNER        = 29;
+  KW_LEFT         = 30;
+  KW_RIGHT        = 31;
+  KW_FULL         = 32;
+  KW_OUTER        = 33;
+  KW_CROSS        = 34;
+  KW_ON           = 35;
+  KW_AS           = 36;
+  KW_INTO         = 37;
+  KW_VALUES       = 38;
+  KW_SET          = 39;
+  KW_TOP          = 40;
+  KW_DISTINCT     = 41;
+  KW_ALL          = 42;
+  KW_UNION        = 43;
+  KW_INTERSECT    = 44;
+  KW_EXCEPT       = 45;
+  KW_WITH         = 46;
+  KW_OVER         = 47;
+  KW_PARTITION    = 48;
+  KW_ROWS         = 49;
+  KW_RANGE        = 50;
+  KW_BETWEEN      = 51;
+  KW_AND          = 52;
+  KW_OR           = 53;
+  KW_NOT          = 54;
+  KW_IN           = 55;
+  KW_EXISTS       = 56;
+  KW_LIKE         = 57;
+  KW_IS           = 58;
+  KW_NULL         = 59;
+  KW_CASE         = 60;
+  KW_WHEN         = 61;
+  KW_THEN         = 62;
+  KW_ELSE         = 63;
+  KW_END          = 64;
+  KW_CAST         = 65;
+  KW_CONVERT      = 66;
+  KW_COLLATE      = 67;
+  KW_PIVOT        = 68;
+  KW_UNPIVOT      = 69;
+  KW_APPLY        = 70;
+  KW_OFFSET       = 71;
+  KW_FETCH        = 72;
+  KW_NEXT         = 73;
+  KW_ONLY         = 74;
+  KW_PERCENT      = 75;
+  KW_TIES         = 76;
+  { -- Controle -- }
+  KW_BEGIN        = 77;
+  KW_IF           = 78;
+  KW_WHILE        = 79;
+  KW_BREAK        = 80;
+  KW_CONTINUE     = 81;
+  KW_GOTO         = 82;
+  KW_RETURN       = 83;
+  KW_WAITFOR      = 84;
+  KW_THROW        = 85;
+  KW_TRY          = 86;
+  KW_CATCH        = 87;
+  KW_RAISERROR    = 88;
+  KW_PRINT        = 89;
+  KW_EXEC         = 90;
+  KW_EXECUTE      = 91;
+  KW_DECLARE      = 92;
+  KW_USE          = 93;
+  KW_GO           = 94;
+  { -- Transaction -- }
+  KW_COMMIT       = 95;
+  KW_ROLLBACK     = 96;
+  KW_SAVE         = 97;
+  KW_TRANSACTION  = 98;
+  { -- DCL -- }
+  KW_GRANT        = 99;
+  KW_REVOKE       = 100;
+  KW_DENY         = 101;
+
+  KW_COUNT        = 101;     { nombre total de mots-cles definis  }
 
 { ============================================================
   TYPES
@@ -982,6 +1098,7 @@ Type
     Text   : TTokenText;       { texte brut du token                  }
     Line   : Integer;          { numero de ligne (base 1)             }
     Col    : Integer;          { numero de colonne (base 1)           }
+    KwId   : Integer;          { KW_xxx si Kind=TOK_KEYWORD, 0 sinon }
   End;
 
   { ---- Options de la ligne de commande ---------------------- }
@@ -3828,6 +3945,7 @@ Begin
   LexCurTok.Text := '';
   LexCurTok.Line := 1;
   LexCurTok.Col  := 1;
+  LexCurTok.KwId := 0;
 End;
 
 { ---- Caractere courant (ou #0 si fin) ----------------------- }
@@ -4201,11 +4319,16 @@ Begin
   End;
 End;
 
+{ ---- Declaration forward de IsKeyword (TODO 08) -------------- }
+
+Function IsKeyword(Const S : TString) : Integer; Forward;
+
 { ---- Lire le prochain token SQL ------------------------------ }
 
 Procedure LexNextToken;
 Var
   C, C2 : Char;
+  KwId  : Integer;
 Begin
   LexSkipWhiteAndComments;
 
@@ -4213,6 +4336,7 @@ Begin
   LexCurTok.Col  := LexCol;
   LexCurTok.Text := '';
   LexCurTok.Kind := TOK_EOF;
+  LexCurTok.KwId := 0;
 
   If LexPos > LexLen Then Exit;
 
@@ -4234,7 +4358,16 @@ Begin
       LexCurTok.Kind := TOK_NSTRING;
     End
     Else
+    Begin
       LexScanIdent;
+      { Verifier si l identificateur est un mot-cle SQL Server }
+      KwId := IsKeyword(LexCurTok.Text);
+      If KwId > 0 Then
+      Begin
+        LexCurTok.Kind := TOK_KEYWORD;
+        LexCurTok.KwId := KwId;
+      End;
+    End;
     Exit;
   End;
 
@@ -4628,8 +4761,244 @@ Begin
     TOK_PIPE_EQ     : TokKindName := '|=';
     TOK_CARET_EQ    : TokKindName := '^=';
     TOK_DELIM_IDENT : TokKindName := 'DELIM_IDENT';
+    TOK_KEYWORD     : TokKindName := 'KEYWORD';
   Else
     TokKindName := '?';
+  End;
+End;
+
+{ ============================================================
+  TODO 08 - RECONNAISSANCE DES MOTS-CLES SQL SERVER [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Table des mots-cles SQL Server -------------------------- }
+{ Retourne l ID du mot-cle (KW_xxx, >= 1) ou 0 si non reconnu.   }
+{ La comparaison est insensible a la casse.                       }
+
+Function IsKeyword(Const S : TString) : Integer;
+Var
+  U : TString;
+Begin
+  U := StrUpperCase(S);
+  { -- DML -- }
+  If U = 'SELECT'       Then Begin IsKeyword := KW_SELECT;      Exit; End;
+  If U = 'INSERT'       Then Begin IsKeyword := KW_INSERT;      Exit; End;
+  If U = 'UPDATE'       Then Begin IsKeyword := KW_UPDATE;      Exit; End;
+  If U = 'DELETE'       Then Begin IsKeyword := KW_DELETE;      Exit; End;
+  If U = 'MERGE'        Then Begin IsKeyword := KW_MERGE;       Exit; End;
+  If U = 'TRUNCATE'     Then Begin IsKeyword := KW_TRUNCATE;    Exit; End;
+  If U = 'BULK'         Then Begin IsKeyword := KW_BULK;        Exit; End;
+  { -- DDL -- }
+  If U = 'CREATE'       Then Begin IsKeyword := KW_CREATE;      Exit; End;
+  If U = 'ALTER'        Then Begin IsKeyword := KW_ALTER;       Exit; End;
+  If U = 'DROP'         Then Begin IsKeyword := KW_DROP;        Exit; End;
+  If U = 'TABLE'        Then Begin IsKeyword := KW_TABLE;       Exit; End;
+  If U = 'VIEW'         Then Begin IsKeyword := KW_VIEW;        Exit; End;
+  If U = 'INDEX'        Then Begin IsKeyword := KW_INDEX;       Exit; End;
+  If U = 'PROCEDURE'    Then Begin IsKeyword := KW_PROCEDURE;   Exit; End;
+  If U = 'FUNCTION'     Then Begin IsKeyword := KW_FUNCTION;    Exit; End;
+  If U = 'TRIGGER'      Then Begin IsKeyword := KW_TRIGGER;     Exit; End;
+  If U = 'DATABASE'     Then Begin IsKeyword := KW_DATABASE;    Exit; End;
+  If U = 'SCHEMA'       Then Begin IsKeyword := KW_SCHEMA;      Exit; End;
+  If U = 'SEQUENCE'     Then Begin IsKeyword := KW_SEQUENCE;    Exit; End;
+  If U = 'TYPE'         Then Begin IsKeyword := KW_TYPE;        Exit; End;
+  If U = 'SYNONYM'      Then Begin IsKeyword := KW_SYNONYM;     Exit; End;
+  { -- Clauses -- }
+  If U = 'FROM'         Then Begin IsKeyword := KW_FROM;        Exit; End;
+  If U = 'WHERE'        Then Begin IsKeyword := KW_WHERE;       Exit; End;
+  If U = 'GROUP'        Then Begin IsKeyword := KW_GROUP;       Exit; End;
+  If U = 'HAVING'       Then Begin IsKeyword := KW_HAVING;      Exit; End;
+  If U = 'ORDER'        Then Begin IsKeyword := KW_ORDER;       Exit; End;
+  If U = 'BY'           Then Begin IsKeyword := KW_BY;          Exit; End;
+  If U = 'JOIN'         Then Begin IsKeyword := KW_JOIN;        Exit; End;
+  If U = 'INNER'        Then Begin IsKeyword := KW_INNER;       Exit; End;
+  If U = 'LEFT'         Then Begin IsKeyword := KW_LEFT;        Exit; End;
+  If U = 'RIGHT'        Then Begin IsKeyword := KW_RIGHT;       Exit; End;
+  If U = 'FULL'         Then Begin IsKeyword := KW_FULL;        Exit; End;
+  If U = 'OUTER'        Then Begin IsKeyword := KW_OUTER;       Exit; End;
+  If U = 'CROSS'        Then Begin IsKeyword := KW_CROSS;       Exit; End;
+  If U = 'ON'           Then Begin IsKeyword := KW_ON;          Exit; End;
+  If U = 'AS'           Then Begin IsKeyword := KW_AS;          Exit; End;
+  If U = 'INTO'         Then Begin IsKeyword := KW_INTO;        Exit; End;
+  If U = 'VALUES'       Then Begin IsKeyword := KW_VALUES;      Exit; End;
+  If U = 'SET'          Then Begin IsKeyword := KW_SET;         Exit; End;
+  If U = 'TOP'          Then Begin IsKeyword := KW_TOP;         Exit; End;
+  If U = 'DISTINCT'     Then Begin IsKeyword := KW_DISTINCT;    Exit; End;
+  If U = 'ALL'          Then Begin IsKeyword := KW_ALL;         Exit; End;
+  If U = 'UNION'        Then Begin IsKeyword := KW_UNION;       Exit; End;
+  If U = 'INTERSECT'    Then Begin IsKeyword := KW_INTERSECT;   Exit; End;
+  If U = 'EXCEPT'       Then Begin IsKeyword := KW_EXCEPT;      Exit; End;
+  If U = 'WITH'         Then Begin IsKeyword := KW_WITH;        Exit; End;
+  If U = 'OVER'         Then Begin IsKeyword := KW_OVER;        Exit; End;
+  If U = 'PARTITION'    Then Begin IsKeyword := KW_PARTITION;   Exit; End;
+  If U = 'ROWS'         Then Begin IsKeyword := KW_ROWS;        Exit; End;
+  If U = 'RANGE'        Then Begin IsKeyword := KW_RANGE;       Exit; End;
+  If U = 'BETWEEN'      Then Begin IsKeyword := KW_BETWEEN;     Exit; End;
+  If U = 'AND'          Then Begin IsKeyword := KW_AND;         Exit; End;
+  If U = 'OR'           Then Begin IsKeyword := KW_OR;          Exit; End;
+  If U = 'NOT'          Then Begin IsKeyword := KW_NOT;         Exit; End;
+  If U = 'IN'           Then Begin IsKeyword := KW_IN;          Exit; End;
+  If U = 'EXISTS'       Then Begin IsKeyword := KW_EXISTS;      Exit; End;
+  If U = 'LIKE'         Then Begin IsKeyword := KW_LIKE;        Exit; End;
+  If U = 'IS'           Then Begin IsKeyword := KW_IS;          Exit; End;
+  If U = 'NULL'         Then Begin IsKeyword := KW_NULL;        Exit; End;
+  If U = 'CASE'         Then Begin IsKeyword := KW_CASE;        Exit; End;
+  If U = 'WHEN'         Then Begin IsKeyword := KW_WHEN;        Exit; End;
+  If U = 'THEN'         Then Begin IsKeyword := KW_THEN;        Exit; End;
+  If U = 'ELSE'         Then Begin IsKeyword := KW_ELSE;        Exit; End;
+  If U = 'END'          Then Begin IsKeyword := KW_END;         Exit; End;
+  If U = 'CAST'         Then Begin IsKeyword := KW_CAST;        Exit; End;
+  If U = 'CONVERT'      Then Begin IsKeyword := KW_CONVERT;     Exit; End;
+  If U = 'COLLATE'      Then Begin IsKeyword := KW_COLLATE;     Exit; End;
+  If U = 'PIVOT'        Then Begin IsKeyword := KW_PIVOT;       Exit; End;
+  If U = 'UNPIVOT'      Then Begin IsKeyword := KW_UNPIVOT;     Exit; End;
+  If U = 'APPLY'        Then Begin IsKeyword := KW_APPLY;       Exit; End;
+  If U = 'OFFSET'       Then Begin IsKeyword := KW_OFFSET;      Exit; End;
+  If U = 'FETCH'        Then Begin IsKeyword := KW_FETCH;       Exit; End;
+  If U = 'NEXT'         Then Begin IsKeyword := KW_NEXT;        Exit; End;
+  If U = 'ONLY'         Then Begin IsKeyword := KW_ONLY;        Exit; End;
+  If U = 'PERCENT'      Then Begin IsKeyword := KW_PERCENT;     Exit; End;
+  If U = 'TIES'         Then Begin IsKeyword := KW_TIES;        Exit; End;
+  { -- Controle -- }
+  If U = 'BEGIN'        Then Begin IsKeyword := KW_BEGIN;       Exit; End;
+  If U = 'IF'           Then Begin IsKeyword := KW_IF;          Exit; End;
+  If U = 'WHILE'        Then Begin IsKeyword := KW_WHILE;       Exit; End;
+  If U = 'BREAK'        Then Begin IsKeyword := KW_BREAK;       Exit; End;
+  If U = 'CONTINUE'     Then Begin IsKeyword := KW_CONTINUE;    Exit; End;
+  If U = 'GOTO'         Then Begin IsKeyword := KW_GOTO;        Exit; End;
+  If U = 'RETURN'       Then Begin IsKeyword := KW_RETURN;      Exit; End;
+  If U = 'WAITFOR'      Then Begin IsKeyword := KW_WAITFOR;     Exit; End;
+  If U = 'THROW'        Then Begin IsKeyword := KW_THROW;       Exit; End;
+  If U = 'TRY'          Then Begin IsKeyword := KW_TRY;         Exit; End;
+  If U = 'CATCH'        Then Begin IsKeyword := KW_CATCH;       Exit; End;
+  If U = 'RAISERROR'    Then Begin IsKeyword := KW_RAISERROR;   Exit; End;
+  If U = 'PRINT'        Then Begin IsKeyword := KW_PRINT;       Exit; End;
+  If U = 'EXEC'         Then Begin IsKeyword := KW_EXEC;        Exit; End;
+  If U = 'EXECUTE'      Then Begin IsKeyword := KW_EXECUTE;     Exit; End;
+  If U = 'DECLARE'      Then Begin IsKeyword := KW_DECLARE;     Exit; End;
+  If U = 'USE'          Then Begin IsKeyword := KW_USE;         Exit; End;
+  If U = 'GO'           Then Begin IsKeyword := KW_GO;          Exit; End;
+  { -- Transaction -- }
+  If U = 'COMMIT'       Then Begin IsKeyword := KW_COMMIT;      Exit; End;
+  If U = 'ROLLBACK'     Then Begin IsKeyword := KW_ROLLBACK;    Exit; End;
+  If U = 'SAVE'         Then Begin IsKeyword := KW_SAVE;        Exit; End;
+  If U = 'TRANSACTION'  Then Begin IsKeyword := KW_TRANSACTION; Exit; End;
+  { -- DCL -- }
+  If U = 'GRANT'        Then Begin IsKeyword := KW_GRANT;       Exit; End;
+  If U = 'REVOKE'       Then Begin IsKeyword := KW_REVOKE;      Exit; End;
+  If U = 'DENY'         Then Begin IsKeyword := KW_DENY;        Exit; End;
+
+  IsKeyword := 0;
+End;
+
+{ ---- Nom textuel d un mot-cle (debug) ----------------------- }
+
+Function KeywordName(KwId : Integer) : TString;
+Begin
+  Case KwId Of
+    KW_SELECT       : KeywordName := 'SELECT';
+    KW_INSERT       : KeywordName := 'INSERT';
+    KW_UPDATE       : KeywordName := 'UPDATE';
+    KW_DELETE       : KeywordName := 'DELETE';
+    KW_MERGE        : KeywordName := 'MERGE';
+    KW_TRUNCATE     : KeywordName := 'TRUNCATE';
+    KW_BULK         : KeywordName := 'BULK';
+    KW_CREATE       : KeywordName := 'CREATE';
+    KW_ALTER        : KeywordName := 'ALTER';
+    KW_DROP         : KeywordName := 'DROP';
+    KW_TABLE        : KeywordName := 'TABLE';
+    KW_VIEW         : KeywordName := 'VIEW';
+    KW_INDEX        : KeywordName := 'INDEX';
+    KW_PROCEDURE    : KeywordName := 'PROCEDURE';
+    KW_FUNCTION     : KeywordName := 'FUNCTION';
+    KW_TRIGGER      : KeywordName := 'TRIGGER';
+    KW_DATABASE     : KeywordName := 'DATABASE';
+    KW_SCHEMA       : KeywordName := 'SCHEMA';
+    KW_SEQUENCE     : KeywordName := 'SEQUENCE';
+    KW_TYPE         : KeywordName := 'TYPE';
+    KW_SYNONYM      : KeywordName := 'SYNONYM';
+    KW_FROM         : KeywordName := 'FROM';
+    KW_WHERE        : KeywordName := 'WHERE';
+    KW_GROUP        : KeywordName := 'GROUP';
+    KW_HAVING       : KeywordName := 'HAVING';
+    KW_ORDER        : KeywordName := 'ORDER';
+    KW_BY           : KeywordName := 'BY';
+    KW_JOIN         : KeywordName := 'JOIN';
+    KW_INNER        : KeywordName := 'INNER';
+    KW_LEFT         : KeywordName := 'LEFT';
+    KW_RIGHT        : KeywordName := 'RIGHT';
+    KW_FULL         : KeywordName := 'FULL';
+    KW_OUTER        : KeywordName := 'OUTER';
+    KW_CROSS        : KeywordName := 'CROSS';
+    KW_ON           : KeywordName := 'ON';
+    KW_AS           : KeywordName := 'AS';
+    KW_INTO         : KeywordName := 'INTO';
+    KW_VALUES       : KeywordName := 'VALUES';
+    KW_SET          : KeywordName := 'SET';
+    KW_TOP          : KeywordName := 'TOP';
+    KW_DISTINCT     : KeywordName := 'DISTINCT';
+    KW_ALL          : KeywordName := 'ALL';
+    KW_UNION        : KeywordName := 'UNION';
+    KW_INTERSECT    : KeywordName := 'INTERSECT';
+    KW_EXCEPT       : KeywordName := 'EXCEPT';
+    KW_WITH         : KeywordName := 'WITH';
+    KW_OVER         : KeywordName := 'OVER';
+    KW_PARTITION    : KeywordName := 'PARTITION';
+    KW_ROWS         : KeywordName := 'ROWS';
+    KW_RANGE        : KeywordName := 'RANGE';
+    KW_BETWEEN      : KeywordName := 'BETWEEN';
+    KW_AND          : KeywordName := 'AND';
+    KW_OR           : KeywordName := 'OR';
+    KW_NOT          : KeywordName := 'NOT';
+    KW_IN           : KeywordName := 'IN';
+    KW_EXISTS       : KeywordName := 'EXISTS';
+    KW_LIKE         : KeywordName := 'LIKE';
+    KW_IS           : KeywordName := 'IS';
+    KW_NULL         : KeywordName := 'NULL';
+    KW_CASE         : KeywordName := 'CASE';
+    KW_WHEN         : KeywordName := 'WHEN';
+    KW_THEN         : KeywordName := 'THEN';
+    KW_ELSE         : KeywordName := 'ELSE';
+    KW_END          : KeywordName := 'END';
+    KW_CAST         : KeywordName := 'CAST';
+    KW_CONVERT      : KeywordName := 'CONVERT';
+    KW_COLLATE      : KeywordName := 'COLLATE';
+    KW_PIVOT        : KeywordName := 'PIVOT';
+    KW_UNPIVOT      : KeywordName := 'UNPIVOT';
+    KW_APPLY        : KeywordName := 'APPLY';
+    KW_OFFSET       : KeywordName := 'OFFSET';
+    KW_FETCH        : KeywordName := 'FETCH';
+    KW_NEXT         : KeywordName := 'NEXT';
+    KW_ONLY         : KeywordName := 'ONLY';
+    KW_PERCENT      : KeywordName := 'PERCENT';
+    KW_TIES         : KeywordName := 'TIES';
+    KW_BEGIN        : KeywordName := 'BEGIN';
+    KW_IF           : KeywordName := 'IF';
+    KW_WHILE        : KeywordName := 'WHILE';
+    KW_BREAK        : KeywordName := 'BREAK';
+    KW_CONTINUE     : KeywordName := 'CONTINUE';
+    KW_GOTO         : KeywordName := 'GOTO';
+    KW_RETURN       : KeywordName := 'RETURN';
+    KW_WAITFOR      : KeywordName := 'WAITFOR';
+    KW_THROW        : KeywordName := 'THROW';
+    KW_TRY          : KeywordName := 'TRY';
+    KW_CATCH        : KeywordName := 'CATCH';
+    KW_RAISERROR    : KeywordName := 'RAISERROR';
+    KW_PRINT        : KeywordName := 'PRINT';
+    KW_EXEC         : KeywordName := 'EXEC';
+    KW_EXECUTE      : KeywordName := 'EXECUTE';
+    KW_DECLARE      : KeywordName := 'DECLARE';
+    KW_USE          : KeywordName := 'USE';
+    KW_GO           : KeywordName := 'GO';
+    KW_COMMIT       : KeywordName := 'COMMIT';
+    KW_ROLLBACK     : KeywordName := 'ROLLBACK';
+    KW_SAVE         : KeywordName := 'SAVE';
+    KW_TRANSACTION  : KeywordName := 'TRANSACTION';
+    KW_GRANT        : KeywordName := 'GRANT';
+    KW_REVOKE       : KeywordName := 'REVOKE';
+    KW_DENY         : KeywordName := 'DENY';
+  Else
+    KeywordName := '?';
   End;
 End;
 
