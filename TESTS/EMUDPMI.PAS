@@ -2694,6 +2694,281 @@ Begin
  LoadFlatBinary:=True;
 End;
 
+  { TODO 23 : Boucle principale d'execution (Procedure Run).
+    Decode le flux d'instructions depuis CS:EIP, gere les prefixes
+    (66h, 67h, segments, REP/REPE/REPNE), et dispatche vers les
+    procedures d'emulation de chaque opcode.
+    La boucle s'arrete quand Terminated est mis a True (par INT 21h/4Ch)
+    ou quand un opcode non gere est rencontre. }
+Procedure Run;
+Var
+ Op,Op2:Byte;
+ HasRep:Boolean;
+ RepType:Byte;
+ PeekMod:Byte;
+ RegF,RmF:Byte;
+ Addr:LongInt;
+ Val:LongInt;
+Begin
+ While Not Terminated do Begin
+  ResetPrefixes;
+  HasRep:=False;
+  RepType:=0;
+   { Phase 1 : Decodage des prefixes }
+  Repeat
+   Op:=FetchByte;
+   Case Op of
+    $26:SegOverride:=LongInt(Segs.ES);  { ES: }
+    $2E:SegOverride:=LongInt(Segs.CS);  { CS: }
+    $36:SegOverride:=LongInt(Segs.SS);  { SS: }
+    $3E:SegOverride:=LongInt(Segs.DS);  { DS: }
+    $64:SegOverride:=LongInt(Segs.FS);  { FS: }
+    $65:SegOverride:=LongInt(Segs.GS);  { GS: }
+    $66:;  { Prefixe de taille d'operande }
+    $67:AddrSizeOverride:=True;
+    $F2:Begin HasRep:=True;RepType:=$F2;End;  { REPNE/REPNZ }
+    $F3:Begin HasRep:=True;RepType:=$F3;End;  { REP/REPE/REPZ }
+   Else
+    Break;
+   End;
+  Until False;
+   { Phase 2 : Dispatch de l'opcode }
+  Case Op of
+    { --- Arithmetique : ADD --- }
+   $01:ExecADD_Rm32_Reg32;
+   $03:ExecADD_Reg32_Rm32;
+   $05:ExecADD_EAX_Imm32;
+    { --- Logique : OR --- }
+   $09:ExecOR_Rm32_Reg32;
+   $0B:ExecOR_Reg32_Rm32;
+   $0D:ExecOR_EAX_Imm32;
+    { --- Opcodes a deux octets (prefixe $0F) --- }
+   $0F:Begin
+     Op2:=FetchByte;
+     Case Op2 of
+      $80..$8F:ExecJcc_Near32(Op2-$80);  { Jcc near rel32 }
+     Else Begin
+      WriteLn('Opcode 2 octets non gere: $0F $',HexStr(Op2,2),
+              ' a EIP=$',HexStr(EIP,8));
+      Terminated:=True;
+     End;
+     End;
+    End;
+    { --- Arithmetique : ADC --- }
+   $11:ExecADC_Rm32_Reg32;
+   $13:ExecADC_Reg32_Rm32;
+   $15:ExecADC_EAX_Imm32;
+    { --- Arithmetique : SBB --- }
+   $19:ExecSBB_Rm32_Reg32;
+   $1B:ExecSBB_Reg32_Rm32;
+   $1D:ExecSBB_EAX_Imm32;
+    { --- Logique : AND --- }
+   $21:ExecAND_Rm32_Reg32;
+   $23:ExecAND_Reg32_Rm32;
+   $25:ExecAND_EAX_Imm32;
+    { --- Arithmetique : SUB --- }
+   $29:ExecSUB_Rm32_Reg32;
+   $2B:ExecSUB_Reg32_Rm32;
+   $2D:ExecSUB_EAX_Imm32;
+    { --- Logique : XOR --- }
+   $31:ExecXOR_Rm32_Reg32;
+   $33:ExecXOR_Reg32_Rm32;
+   $35:ExecXOR_EAX_Imm32;
+    { --- Arithmetique : CMP --- }
+   $39:ExecCMP_Rm32_Reg32;
+   $3B:ExecCMP_Reg32_Rm32;
+   $3D:ExecCMP_EAX_Imm32;
+    { --- INC reg32 ($40..$47) / DEC reg32 ($48..$4F) --- }
+   $40..$47:ExecINC_Reg32(Op-$40);
+   $48..$4F:ExecDEC_Reg32(Op-$48);
+    { --- PUSH reg32 ($50..$57) / POP reg32 ($58..$5F) --- }
+   $50..$57:Push32(GetReg32(Op-$50));
+   $58..$5F:SetReg32(Op-$58,Pop32);
+    { --- PUSH imm32 / PUSH imm8 --- }
+   $68:Push32(FetchDWord);
+   $6A:Push32(LongInt(ShortInt(FetchByte)));
+    { --- Jcc short rel8 ($70..$7F) --- }
+   $70..$7F:ExecJcc_Short(Op-$70);
+    { --- Grp1 r/m32 --- }
+   $81:ExecGrp1_Rm32_Imm32;
+   $83:ExecGrp1_Rm32_Imm8;
+    { --- TEST r/m32, reg32 --- }
+   $85:ExecTEST_Rm32_Reg32;
+    { --- XCHG r/m32, reg32 --- }
+   $87:Begin
+     Addr:=DecodeModRM32(RegF,RmF);
+     If Addr=-1 Then Begin
+      Val:=GetReg32(RmF);
+      SetReg32(RmF,GetReg32(RegF));
+      SetReg32(RegF,Val);
+     End Else Begin
+      Val:=ReadDWord(Addr);
+      WriteDWord(Addr,GetReg32(RegF));
+      SetReg32(RegF,Val);
+     End;
+    End;
+    { --- MOV --- }
+   $89:ExecMOV_Rm32_Reg32;
+   $8B:ExecMOV_Reg32_Rm32;
+    { --- LEA reg32, m --- }
+   $8D:Begin
+     Addr:=DecodeModRM32(RegF,RmF);
+     If Addr<>-1 Then
+      SetReg32(RegF,Addr)
+     Else
+      SetReg32(RegF,GetReg32(RmF));
+    End;
+    { --- NOP / XCHG EAX, reg32 --- }
+   $90:; { NOP }
+   $91..$97:Begin
+     Val:=Regs.EAX;
+     Regs.EAX:=GetReg32(Op-$90);
+     SetReg32(Op-$90,Val);
+    End;
+    { --- CDQ : sign-extend EAX into EDX:EAX --- }
+   $99:Begin
+     If Regs.EAX<0 Then Regs.EDX:=LongInt(-1)
+     Else Regs.EDX:=0;
+    End;
+    { --- CALL far ptr16:32 --- }
+   $9A:ExecCALL_Far;
+    { --- MOV EAX, moffs32 --- }
+   $A1:Begin
+     Addr:=SelOfsToLinear(GetEffectiveSeg(Segs.DS),FetchDWord);
+     Regs.EAX:=ReadDWord(Addr);
+    End;
+    { --- MOV moffs32, EAX --- }
+   $A3:Begin
+     Addr:=SelOfsToLinear(GetEffectiveSeg(Segs.DS),FetchDWord);
+     WriteDWord(Addr,Regs.EAX);
+    End;
+    { --- MOVSD (avec REP optionnel) --- }
+   $A5:Begin
+     If HasRep and(RepType=$F3)Then ExecREP_MOVSD
+     Else ExecMOVSD;
+    End;
+    { --- CMPSD (avec REPE/REPNE optionnel) --- }
+   $A7:Begin
+     If HasRep Then Begin
+      If RepType=$F3 Then ExecREPE_CMPSD
+      Else ExecREPNE_CMPSD;
+     End Else ExecCMPSD;
+    End;
+    { --- TEST EAX, imm32 --- }
+   $A9:ExecTEST_EAX_Imm32;
+    { --- STOSD (avec REP optionnel) --- }
+   $AB:Begin
+     If HasRep and(RepType=$F3)Then ExecREP_STOSD
+     Else ExecSTOSD;
+    End;
+    { --- LODSD (avec REP optionnel) --- }
+   $AD:Begin
+     If HasRep and(RepType=$F3)Then ExecREP_LODSD
+     Else ExecLODSD;
+    End;
+    { --- SCASD (avec REPE/REPNE optionnel) --- }
+   $AF:Begin
+     If HasRep Then Begin
+      If RepType=$F3 Then ExecREPE_SCASD
+      Else ExecREPNE_SCASD;
+     End Else ExecSCASD;
+    End;
+    { --- MOV reg32, imm32 ($B8..$BF) --- }
+   $B8..$BF:ExecMOV_Reg32_Imm32(Op-$B8);
+    { --- Grp2 : decalages/rotations r/m32, imm8 --- }
+   $C1:ExecGrp2_Rm32_Imm8;
+    { --- RET near imm16 / RET near --- }
+   $C2:ExecRET_Imm16;
+   $C3:ExecRET;
+    { --- MOV r/m32, imm32 --- }
+   $C7:ExecMOV_Rm32_Imm32;
+    { --- LEAVE --- }
+   $C9:Begin
+     Regs.ESP:=Regs.EBP;
+     Regs.EBP:=Pop32;
+    End;
+    { --- RETF imm16 / RETF --- }
+   $CA:ExecRETF_Imm16;
+   $CB:ExecRETF;
+    { --- INT 3 (breakpoint) --- }
+   $CC:Begin
+     WriteLn('INT 3 (breakpoint) a EIP=$',HexStr(EIP,8));
+     Terminated:=True;
+    End;
+    { --- INT nn --- }
+   $CD:Begin
+     Op2:=FetchByte;
+     Case Op2 of
+      $21:ExecINT21h;
+      $31:ExecINT31h;
+     Else Begin
+      WriteLn('INT $',HexStr(Op2,2),' non geree a EIP=$',HexStr(EIP,8));
+      Terminated:=True;
+     End;
+     End;
+    End;
+    { --- Grp2 : decalages/rotations r/m32, 1 --- }
+   $D1:ExecGrp2_Rm32_1;
+    { --- Grp2 : decalages/rotations r/m32, CL --- }
+   $D3:ExecGrp2_Rm32_CL;
+    { --- CALL near rel32 --- }
+   $E8:ExecCALL_Near32;
+    { --- JMP near rel32 --- }
+   $E9:ExecJMP_Near32;
+    { --- JMP far ptr16:32 --- }
+   $EA:ExecJMP_Far;
+    { --- JMP short rel8 --- }
+   $EB:ExecJMP_Short;
+    { --- CMC : complement carry flag --- }
+   $F5:Begin
+     If CF in EFlags.s Then Exclude(EFlags.s,CF)
+     Else Include(EFlags.s,CF);
+    End;
+    { --- Grp3 : TEST/NOT/NEG/MUL/IMUL/DIV/IDIV r/m32 --- }
+   $F7:ExecGrp3_Rm32;
+    { --- CLC / STC / CLI / STI / CLD / STD --- }
+   $F8:Exclude(EFlags.s,CF);  { CLC }
+   $F9:Include(EFlags.s,CF);  { STC }
+   $FA:Exclude(EFlags.s,_IF); { CLI }
+   $FB:Include(EFlags.s,_IF); { STI }
+   $FC:Exclude(EFlags.s,DF);  { CLD }
+   $FD:Include(EFlags.s,DF);  { STD }
+    { --- Grp5 : INC/DEC/CALL/JMP/PUSH r/m32 ($FF) --- }
+   $FF:Begin
+     PeekMod:=ReadByte(SelOfsToLinear(Segs.CS,EIP));
+     Case(PeekMod shr 3)and 7 of
+      0:Begin { INC r/m32 }
+        Addr:=DecodeModRM32(RegF,RmF);
+        If Addr=-1 Then SetReg32(RmF,ArithInc32(GetReg32(RmF)))
+        Else WriteDWord(Addr,ArithInc32(ReadDWord(Addr)));
+       End;
+      1:Begin { DEC r/m32 }
+        Addr:=DecodeModRM32(RegF,RmF);
+        If Addr=-1 Then SetReg32(RmF,ArithDec32(GetReg32(RmF)))
+        Else WriteDWord(Addr,ArithDec32(ReadDWord(Addr)));
+       End;
+      2,3:ExecGrp5_CALL;  { CALL r/m32 / CALL m16:32 }
+      4,5:ExecGrp5_JMP;   { JMP r/m32 / JMP m16:32 }
+      6:Begin { PUSH r/m32 }
+        Addr:=DecodeModRM32(RegF,RmF);
+        If Addr=-1 Then Push32(GetReg32(RmF))
+        Else Push32(ReadDWord(Addr));
+       End;
+     Else Begin
+      WriteLn('Opcode $FF /',(PeekMod shr 3)and 7,
+              ' non gere a EIP=$',HexStr(EIP,8));
+      Terminated:=True;
+     End;
+     End;
+    End;
+  Else Begin
+   WriteLn('Opcode non gere: $',HexStr(Op,2),' a EIP=$',HexStr(EIP,8));
+   Terminated:=True;
+  End;
+  End; { Case Op }
+ End; { While Not Terminated }
+End;
+
 Procedure Init;
 Var
  J:LongInt;
@@ -2761,9 +3036,12 @@ BEGIN
   { TODO 22 : Charger un programme binaire plat si un nom de fichier
     est passe en parametre de la ligne de commande }
  If ParamCount>=1 Then Begin
-  If LoadFlatBinary(ParamStr(1)) Then
-   WriteLn('EMUDPMI : Programme charge avec succes.')
-  Else
+  If LoadFlatBinary(ParamStr(1)) Then Begin
+   WriteLn('EMUDPMI : Programme charge avec succes.');
+    { TODO 23 : Executer le programme charge }
+   Run;
+   WriteLn('EMUDPMI : Execution terminee (code de sortie: ',DosExitCode,').');
+  End Else
    WriteLn('EMUDPMI : Erreur de chargement du programme.');
  End;
  Done;
