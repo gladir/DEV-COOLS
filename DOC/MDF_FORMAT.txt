@@ -1,0 +1,1314 @@
+==============================================================================
+     FORMAT DE FICHIER MDF - Microsoft SQL Server Primary Data File
+     Microsoft Corporation
+==============================================================================
+
+Document de reference du format binaire .MDF (Master Data File) tel
+qu utilise par Microsoft SQL Server pour stocker les bases de donnees.
+Ce format est la cible du programme SQLCMD.PAS du projet DEV-COOLS
+qui lit directement les fichiers .MDF sans necessiter d instance
+SQL Server.
+
+Date:       Mars 2026
+Editeur:    Microsoft Corporation
+Versions:   SQL Server 7.0 (1998) a SQL Server 2022
+Extensions: .mdf (fichier primaire), .ndf (fichier secondaire),
+            .ldf (journal de transactions)
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1.  Vue d ensemble
+  2.  Organisation physique du fichier
+  3.  Structure d une page (8 Ko)
+      3.1  En-tete de page (96 octets)
+      3.2  Corps de la page (donnees)
+      3.3  Tableau des emplacements (Slot Array)
+  4.  Types de pages
+  5.  Pages speciales fixes
+      5.1  Page 0 - File Header Page
+      5.2  Page 1 - PFS (Page Free Space) premiere page
+      5.3  Page 2 - GAM (Global Allocation Map)
+      5.4  Page 3 - SGAM (Shared Global Allocation Map)
+      5.5  Page 6 - DCM (Differential Changed Map)
+      5.6  Page 7 - BCM (Bulk Changed Map)
+      5.7  Page 9 - Boot Page
+  6.  Gestion de l espace : Extents
+      6.1  Extents uniformes et mixtes
+      6.2  GAM et SGAM : fonctionnement
+      6.3  IAM (Index Allocation Map)
+      6.4  PFS (Page Free Space) en detail
+  7.  Format des enregistrements (Row Format)
+      7.1  Enregistrement de donnees (Data Row)
+      7.2  Bits de statut (StatusBits A et B)
+      7.3  Partie fixe (colonnes de taille fixe)
+      7.4  Bitmap de NULLs
+      7.5  Partie variable (colonnes de taille variable)
+      7.6  Enregistrement de transfert (Forwarding Record)
+      7.7  Enregistrement fantome (Ghost Record)
+  8.  Index B-Tree
+      8.1  Index clustered (type 1)
+      8.2  Index non-clustered (type 2)
+      8.3  Heap (type 0)
+      8.4  Structure des pages d index
+      8.5  Enregistrement d index (Index Row)
+  9.  Catalogue systeme (System Base Tables)
+      9.1  sys.sysschobjs - Objets du schema
+      9.2  sys.syscolpars - Colonnes et parametres
+      9.3  sys.sysscalartypes - Types scalaires
+      9.4  sys.sysidxstats - Statistiques d index
+      9.5  sys.sysiscols - Colonnes d index
+      9.6  sys.sysrowsets - Ensembles de lignes
+      9.7  sys.sysallocunits - Unites d allocation
+      9.8  sys.syshobtcolumns - Colonnes de heap/B-Tree
+  10. Types de donnees et leur stockage binaire
+      10.1  Types entiers
+      10.2  Types decimaux et monetaires
+      10.3  Types a virgule flottante
+      10.4  Types caracteres
+      10.5  Types Unicode
+      10.6  Types date et heure
+      10.7  Types binaires
+      10.8  Types speciaux
+  11. Donnees LOB (Large Object)
+      11.1  Donnees en ligne (In-Row)
+      11.2  Donnees hors ligne (Row-Overflow)
+      11.3  Pages Text/Image (LOB Tree)
+  12. Compression de donnees
+      12.1  Compression de ligne (ROW)
+      12.2  Compression de page (PAGE)
+      12.3  En-tete CI (Column Descriptor)
+  13. Ordre des octets et encodage
+  14. Differences entre versions de SQL Server
+  15. Lien avec le projet DEV-COOLS
+  16. References
+
+==============================================================================
+1. VUE D ENSEMBLE
+==============================================================================
+
+Un fichier .MDF (Master Data File) est le fichier de donnees principal
+d une base de donnees Microsoft SQL Server. Il contient toutes les tables,
+les index, les procedures stockees, les vues et les metadonnees de la
+base de donnees.
+
+Chaque base de donnees SQL Server est composee d au moins :
+  - Un fichier primaire (.mdf) : contient les metadonnees et les donnees
+  - Zero ou plusieurs fichiers secondaires (.ndf) : donnees supplementaires
+  - Un ou plusieurs fichiers journal (.ldf) : journal de transactions
+
+Le fichier .MDF est organise en pages de taille fixe (8192 octets = 8 Ko).
+Les pages sont groupees en extents de 8 pages contiguees (64 Ko).
+Les pages sont numerotees de 0 a N-1, ou N est le nombre total de pages.
+
+Representation generale du fichier :
+
+  +------------------------------------------------------------------+
+  | Page 0  | Page 1  | Page 2  | Page 3  | ...  | Page 7  |  <- Extent 0
+  |---------+---------+---------+---------+------+---------|
+  | File    | PFS     | GAM     | SGAM    | ...  | BCM     |
+  | Header  |         |         |         |      |         |
+  +------------------------------------------------------------------+
+  | Page 8  | Page 9  | Page 10 | Page 11 | ...  | Page 15 |  <- Extent 1
+  |---------+---------+---------+---------+------+---------|
+  |         | Boot    |         |         |      |         |
+  |         | Page    |         |         |      |         |
+  +------------------------------------------------------------------+
+  | Page 16 | Page 17 | ...                                |  <- Extent 2+
+  |---------+---------+                                    |
+  | Donnees utilisateur, index, metadonnees systeme, ...   |
+  +------------------------------------------------------------------+
+
+==============================================================================
+2. ORGANISATION PHYSIQUE DU FICHIER
+==============================================================================
+
+Le fichier est divise en pages de 8192 octets (8 Ko).
+Chaque page est identifiee par un numero de page (PageID) commencant a 0.
+L adresse physique d une page dans le fichier est :
+
+  Offset = PageID * 8192
+
+Les pages sont groupees en extents de 8 pages contiguees :
+
+  Extent N contient les pages N*8 a N*8+7.
+  Taille d un extent : 8 * 8192 = 65536 octets (64 Ko).
+
+Chaque fichier de donnees est identifie par un File ID (FileID).
+Le fichier primaire (.mdf) a le FileID = 1. Les fichiers secondaires
+(.ndf) sont numerotes a partir de 2.
+
+Un identifiant de page complet est un couple (FileID:PageID).
+Par exemple, (1:42) designe la page 42 du fichier primaire.
+
+==============================================================================
+3. STRUCTURE D UNE PAGE (8 Ko)
+==============================================================================
+
+Chaque page de 8192 octets est composee de trois parties :
+
+  +-----------------------------------------------------------+
+  |              En-tete de page (96 octets)                   |  Offset +0
+  +-----------------------------------------------------------+
+  |                                                           |
+  |              Corps de la page (donnees)                    |  Offset +96
+  |              (8096 octets maximum)                         |
+  |                                                           |
+  +-----------------------------------------------------------+
+  |              Tableau des emplacements (Slot Array)         |  Fin de page
+  |              (2 octets par emplacement, croissance vers    |
+  |               le haut depuis la fin de la page)            |
+  +-----------------------------------------------------------+
+
+L espace disponible pour les donnees est :
+  8192 - 96 (en-tete) - 2*SlotCount (slot array) = espace libre
+
+3.1 EN-TETE DE PAGE (96 OCTETS)
+---------------------------------
+
+  Offset  Taille    Nom         Description
+  ------  --------  ----------  ----------------------------------------
+  +0      1 octet   headerVer   Version de l en-tete (toujours 1)
+  +1      1 octet   type        Type de page (voir section 4)
+  +2      1 octet   typeFlagBits Drapeaux de type de page
+  +3      1 octet   level       Niveau dans le B-Tree (0 = feuille)
+  +4      2 octets  flagBits    Drapeaux de page :
+                                  Bit 0 : page a des enregistrements
+                                           de taille variable
+                                  Bit 5 : page comprimee
+                                  Bit 8 : page torn (ecriture incomplete)
+  +6      2 octets  indexId     ID de l index (deprecated SQL 2005+,
+                                  remplace par AllocUnitId)
+  +8      4 octets  prevPage    Numero de la page precedente dans
+                    (PageID)      la liste chainee (0 = aucune)
+  +12     2 octets  prevFile    FileID de la page precedente
+          (FileID)
+  +14     2 octets  pminlen     Taille fixe minimale d un enregistrement
+  +16     4 octets  nextPage    Numero de la page suivante dans
+                    (PageID)      la liste chainee (0 = aucune)
+  +20     2 octets  nextFile    FileID de la page suivante
+          (FileID)
+  +22     2 octets  slotCnt     Nombre d emplacements (slots) dans
+                                  le Slot Array
+  +24     4 octets  objId       Object ID (deprecated, remplace par
+                                  AllocUnitId en SQL 2005+)
+  +28     2 octets  freeCnt     Nombre d octets libres dans la page
+  +30     2 octets  freeData    Offset du premier octet libre apres
+                                  les donnees (relatif au debut de page)
+  +32     2 octets  reservedCnt Nombre d octets reserves par les
+                                  transactions actives
+  +34     2 octets  padding     Remplissage (reserve)
+  +36     6 octets  lsn         Log Sequence Number (LSN) :
+                                  identifiant de la derniere modification
+                                  dans le journal de transactions
+                                  Format : (VLF:Block:Slot)
+  +42     2 octets  xactReserved Reserve pour les transactions
+  +44     4 octets  xdesId      ID de la transaction (partie 1)
+  +48     2 octets  xdesId2     ID de la transaction (partie 2)
+  +50     2 octets  ghostRecCnt Nombre d enregistrements fantomes
+                                  (supprimes mais pas encore nettoyes)
+  +52     4 octets  tornBits    Bits de detection d ecriture incomplete
+                                  (torn page detection) ou checksum
+  +56     8 octets  fragmentId  Identifiant de fragment (pour les
+                                  operations de partition)
+  +64     24 octets padding2    Remplissage (reserve a zero)
+  +88     4 octets  allocUnitId Unite d allocation (partie basse)
+  +92     2 octets  allocUnitHi Unite d allocation (partie haute)
+  +94     2 octets  padding3    Remplissage
+
+  Taille totale de l en-tete : 96 octets.
+
+3.2 CORPS DE LA PAGE (DONNEES)
+--------------------------------
+
+Les donnees commencent a l offset 96 et croissent vers le bas de la
+page. Le contenu depend du type de page :
+  - Pages de donnees (type 1) : enregistrements de lignes de table
+  - Pages d index (type 2) : enregistrements de cles d index
+  - Pages text/image (type 3) : donnees LOB (Large Object)
+  - Pages de carte (types 8-11) : bitmaps d allocation
+
+3.3 TABLEAU DES EMPLACEMENTS (SLOT ARRAY)
+--------------------------------------------
+
+Le Slot Array est un tableau de mots de 2 octets (Little-Endian)
+situe a la fin de la page. Il croit vers le haut (de la fin de page
+vers le debut).
+
+  Offset du Slot[i] dans la page = 8192 - 2 * (i + 1)
+
+Chaque entree contient l offset (relatif au debut de la page) de
+l enregistrement correspondant dans le corps de la page.
+
+Exemple pour une page avec 3 enregistrements :
+
+  Offset dans la page    Contenu
+  --------------------   --------------------------
+  8186 (= 8192 - 2*3)   Slot[2] -> offset du record 2
+  8188 (= 8192 - 2*2)   Slot[1] -> offset du record 1
+  8190 (= 8192 - 2*1)   Slot[0] -> offset du record 0
+
+Le nombre d emplacements est donne par slotCnt dans l en-tete.
+
+==============================================================================
+4. TYPES DE PAGES
+==============================================================================
+
+  Type  Nom                 Description
+  ----  ------------------  -----------------------------------------------
+  1     Data Page           Page de donnees (lignes de table)
+  2     Index Page          Page d index (cles B-Tree)
+  3     Text/Image Page     Page LOB (Large Object) : text, image,
+                              varchar(max), varbinary(max), xml
+  4     Text Tree Page      Page intermediaire de l arbre LOB (niveaux
+                              intermediaires des textes volumineux)
+  7     Sort Page           Page temporaire de tri (operations ORDER BY,
+                              GROUP BY, creation d index)
+  8     GAM Page            Global Allocation Map : bitmap indiquant
+                              quels extents sont alloues (1 = libre)
+  9     SGAM Page           Shared GAM : bitmap indiquant quels extents
+                              mixtes ont au moins une page libre
+  10    IAM Page            Index Allocation Map : bitmap des extents
+                              alloues a un objet specifique
+  11    PFS Page            Page Free Space : tableau d octets indiquant
+                              le taux de remplissage de chaque page
+  13    Boot Page           Page de demarrage de la base de donnees
+  15    File Header Page    Page d en-tete du fichier de donnees
+  16    Diff Map Page       Differential Changed Map (DCM) : bitmap
+                              des extents modifies depuis le dernier
+                              backup complet
+  17    Bulk Changed Map    BCM : bitmap des extents modifies par
+                              des operations bulk depuis le dernier
+                              backup du journal
+
+==============================================================================
+5. PAGES SPECIALES FIXES
+==============================================================================
+
+Les premieres pages du fichier ont des roles fixes et sont toujours
+situees aux memes positions.
+
+5.1 PAGE 0 - FILE HEADER PAGE
+--------------------------------
+
+La page 0 (type 15) contient les metadonnees du fichier de donnees :
+
+  - Signature du fichier MDF
+  - Version du format de stockage
+  - Taille du fichier en pages
+  - FileID (1 pour .mdf, 2+ pour .ndf)
+  - Nom logique du fichier
+  - Parametres d auto-croissance (autogrow)
+  - Groupe de fichiers (filegroup)
+
+Cette page est critique pour identifier un fichier .MDF valide.
+La signature attendue peut etre validee en verifiant :
+  - Le champ type de l en-tete de page doit etre 15
+  - Le contenu doit contenir les metadonnees de la base
+
+5.2 PAGE 1 - PFS (PAGE FREE SPACE) PREMIERE PAGE
+---------------------------------------------------
+
+La premiere page PFS (type 11) couvre les pages 0 a 8087 du fichier.
+Chaque octet du PFS represente une page et contient :
+
+  Bits  Signification
+  ----  --------------------------------------------------
+  0-2   Taux de remplissage de la page :
+          000 = vide (0%)
+          001 = 1-50% plein
+          010 = 51-80% plein
+          011 = 81-95% plein
+          100 = 96-100% plein
+  3     Page contient des enregistrements fantomes (ghost)
+  4     Page est une page IAM
+  5     Page est un extent mixte
+  6     Page est allouee
+  7     Reserve
+
+Les pages PFS supplementaires apparaissent toutes les 8088 pages :
+  Page 1, Page 8088, Page 16176, Page 24264, ...
+
+5.3 PAGE 2 - GAM (GLOBAL ALLOCATION MAP)
+-------------------------------------------
+
+La page GAM (type 8) est un bitmap de 8000 octets (= 64000 bits)
+couvrant 64000 extents (= 512000 pages = environ 4 Go).
+
+  Bit = 1 : l extent est LIBRE (non alloue)
+  Bit = 0 : l extent est ALLOUE
+
+Les pages GAM supplementaires apparaissent toutes les 511232 pages
+(environ tous les 4 Go) :
+  Page 2, Page 511232, Page 1022464, ...
+
+Pour trouver le statut de l extent E :
+  Page GAM = 2 + (E / 64000) * 511232
+  Octet dans la page = 96 + (E % 64000) / 8
+  Bit dans l octet = (E % 64000) % 8
+
+5.4 PAGE 3 - SGAM (SHARED GLOBAL ALLOCATION MAP)
+---------------------------------------------------
+
+La page SGAM (type 9) a le meme format que le GAM mais avec une
+semantique differente :
+
+  Bit = 1 : l extent est un extent MIXTE avec au moins une page libre
+  Bit = 0 : l extent est un extent UNIFORME, ou un extent MIXTE
+             completement plein, ou non alloue
+
+La combinaison GAM + SGAM indique :
+
+  GAM  SGAM  Signification
+  ---  ----  ----------------------------------------------
+   1    0    Extent libre (non alloue)
+   0    0    Extent uniforme OU extent mixte plein
+   0    1    Extent mixte avec pages disponibles
+
+Les pages SGAM sont aux memes intervalles que le GAM :
+  Page 3, Page 511233, Page 1022465, ...
+
+5.5 PAGE 6 - DCM (DIFFERENTIAL CHANGED MAP)
+----------------------------------------------
+
+La page DCM (type 16) est un bitmap identique en structure au GAM.
+Chaque bit indique si l extent a ete modifie depuis le dernier
+backup complet de la base :
+
+  Bit = 1 : l extent a ete modifie
+  Bit = 0 : l extent n a pas ete modifie
+
+Utilise par les sauvegardes differentielles pour determiner quels
+extents doivent etre sauvegardes.
+
+5.6 PAGE 7 - BCM (BULK CHANGED MAP)
+--------------------------------------
+
+La page BCM (type 17) est un bitmap de meme structure. Chaque bit
+indique si l extent a ete modifie par une operation en mode bulk
+(BULK INSERT, BCP, SELECT INTO) depuis le dernier backup du journal :
+
+  Bit = 1 : l extent a ete modifie en mode bulk
+  Bit = 0 : l extent n a pas ete modifie en mode bulk
+
+5.7 PAGE 9 - BOOT PAGE
+-------------------------
+
+La page de demarrage (type 13) contient les metadonnees essentielles
+de la base de donnees. Elle est situee a la page 9 du fichier
+primaire (.mdf) et contient :
+
+  - Nom de la base de donnees (128 caracteres Unicode)
+  - DBID (Database ID)
+  - Status de la base (en ligne, hors ligne, suspect, etc.)
+  - Niveau de compatibilite (80, 90, 100, 110, 120, 130, 140, 150, 160)
+  - Collation par defaut de la base
+  - Date de creation de la base
+  - Premiere page du catalogue systeme (sys.sysschobjs)
+  - Premiere page de sys.sysallocunits
+  - Version du moteur de stockage
+
+C est le point d entree pour la lecture de la base : a partir de la
+Boot Page, on peut localiser les tables systeme qui decrivent tous
+les objets de la base.
+
+==============================================================================
+6. GESTION DE L ESPACE : EXTENTS
+==============================================================================
+
+6.1 EXTENTS UNIFORMES ET MIXTES
+----------------------------------
+
+SQL Server gere l espace en extents de 8 pages contiguees (64 Ko) :
+
+  - Extent uniforme : les 8 pages appartiennent au meme objet.
+    Utilise quand un objet grossit au-dela de 8 pages.
+
+  - Extent mixte : les 8 pages peuvent appartenir a des objets
+    differents. Utilise pour les petits objets (moins de 8 pages)
+    afin d eviter le gaspillage.
+
+Quand un objet est cree, ses premieres pages sont allouees dans
+des extents mixtes. Quand il depasse 8 pages, SQL Server lui
+alloue des extents uniformes.
+
+6.2 GAM ET SGAM : FONCTIONNEMENT
+-----------------------------------
+
+Pour allouer un nouvel extent uniforme :
+  1. Lire le GAM et trouver un bit = 1 (extent libre)
+  2. Mettre le bit a 0 dans le GAM
+  3. L extent est maintenant alloue a un seul objet
+
+Pour allouer une page dans un extent mixte :
+  1. Lire le SGAM et trouver un bit = 1 (extent mixte avec espace)
+  2. Lire le PFS pour trouver une page libre dans cet extent
+  3. Si aucune page libre : convertir un extent libre en mixte
+     (GAM bit 1 -> 0, SGAM bit -> 1)
+
+6.3 IAM (INDEX ALLOCATION MAP)
+---------------------------------
+
+Chaque objet (table ou index) possede une ou plusieurs pages IAM
+(type 10) qui indiquent quels extents lui sont alloues.
+
+Structure d une page IAM :
+
+  Offset    Taille   Description
+  --------  -------  --------------------------------------------------
+  +96       4 oct.   sequenceNumber
+  +100      4 oct.   status
+  +104      4+2 oct. PageID du prochain IAM dans la chaine
+  +110      4+2 oct. start_pg : premier extent couvert par ce IAM
+  +116      8 oct.   Slots pour les pages de l extent mixte initial
+                       (jusqu a 8 pages individuelles dans des extents
+                        mixtes, identifiees par PageID)
+  +148      8000 oct. Bitmap d extents (64000 bits)
+                       Bit = 1 : l extent est alloue a cet objet
+                       Bit = 0 : l extent n est PAS alloue a cet objet
+
+Chaque page IAM couvre environ 4 Go de fichier. Les pages IAM sont
+chainees entre elles pour couvrir des fichiers plus grands.
+
+Pour scanner toutes les pages d un objet :
+  1. Trouver la premiere page IAM de l objet (via sys.sysrowsets
+     ou sys.sysallocunits)
+  2. Lire les pages individuelles du slot mixte (pages 116..147)
+  3. Lire le bitmap et deduire tous les extents uniformes
+  4. Suivre la chaine IAM (nextPage) pour les IAM supplementaires
+
+6.4 PFS (PAGE FREE SPACE) EN DETAIL
+--------------------------------------
+
+Le PFS permet de localiser rapidement des pages avec de l espace
+libre pour inserer de nouvelles lignes.
+
+Chaque page PFS couvre 8088 pages. Le corps de la page contient
+8088 octets, un par page couverte. La structure de chaque octet
+est decrite en section 5.2.
+
+L algorithme d insertion utilise le PFS :
+  1. Estimer la taille de la ligne a inserer
+  2. Scanner le PFS pour trouver une page dont le taux de
+     remplissage est compatible avec la taille requise
+  3. Si aucune page n est trouvee : allouer une nouvelle page
+     (via GAM/SGAM)
+
+==============================================================================
+7. FORMAT DES ENREGISTREMENTS (ROW FORMAT)
+==============================================================================
+
+7.1 ENREGISTREMENT DE DONNEES (DATA ROW)
+-------------------------------------------
+
+Un enregistrement dans une page de donnees (type 1) a la structure
+suivante :
+
+  +-------+-------+------------------+----------+--------+---------+-------+
+  | StatA | StatB | Donnees fixes    | NbCols   | Bitmap | NbVar   | Offsets|
+  |(1 oct)|(1 oct)| (pminlen octets) | (2 oct)  | NULLs  | (2 oct) | Var   |
+  |       |       |                  |          |(N bits) |         |(2*V o)|
+  +-------+-------+------------------+----------+--------+---------+-------+
+  | Donnees variables (taille variable)                                    |
+  +------------------------------------------------------------------------+
+
+  Legende :
+    StatA    = StatusBits A (1 octet)
+    StatB    = StatusBits B (1 octet)
+    NbCols   = Nombre total de colonnes (Word, 2 octets)
+    Bitmap NULLs = Ceil(NbCols/8) octets, un bit par colonne
+    NbVar    = Nombre de colonnes de taille variable (Word)
+    Offsets Var = Tableau de NbVar mots (2 octets chacun)
+                  Chaque entree = offset de fin de la colonne variable
+
+7.2 BITS DE STATUT (STATUSBITS A ET B)
+-----------------------------------------
+
+StatusBits A (octet a l offset 0 de l enregistrement) :
+
+  Bits  Signification
+  ----  --------------------------------------------------
+  0     Reserve (toujours 0)
+  1-3   Type d enregistrement :
+          000 = Enregistrement de donnees primaire
+          001 = Enregistrement de transfert (forwarded)
+          010 = Stub de transfert (forwarding stub)
+          011 = Enregistrement d index
+          100 = Enregistrement blob/LOB
+          101 = Enregistrement fantome de transfert
+          110 = Enregistrement fantome d index
+  4     Possede un bitmap de NULLs (presque toujours 1)
+  5     Possede des colonnes de taille variable
+  6     Reserve
+  7     Enregistrement fantome (ghost record)
+
+StatusBits B (octet a l offset 1) :
+
+  Bits  Signification
+  ----  --------------------------------------------------
+  0     Reserve
+  1     Enregistrement a un back-pointer (forwarded record)
+  2-7   Reserve
+
+7.3 PARTIE FIXE (COLONNES DE TAILLE FIXE)
+--------------------------------------------
+
+Les colonnes de taille fixe sont stockees immediatement apres les
+deux octets de statut. Leur taille totale est donnee par le champ
+pminlen de l en-tete de page.
+
+L ordre des colonnes correspond a l ordre interne des colonnes
+dans sys.syscolpars (column_id), qui peut differer de l ordre
+de creation SQL si des ALTER TABLE ADD COLUMN ont ete effectues.
+
+Types de taille fixe et leur stockage :
+
+  Type SQL Server     Taille   Encodage
+  -----------------   -------  ----------------------------------------
+  TINYINT             1 octet  Entier non signe 0..255
+  SMALLINT            2 octets Entier signe Little-Endian
+  INT                 4 octets Entier signe Little-Endian
+  BIGINT              8 octets Entier signe Little-Endian
+  BIT                 1 octet  Bit-packing : 8 colonnes BIT par octet
+  SMALLMONEY          4 octets Entier signe * 10000
+  MONEY               8 octets Entier signe * 10000
+  REAL                4 octets IEEE 754 simple precision
+  FLOAT               8 octets IEEE 754 double precision
+  SMALLDATETIME       4 octets 2 oct. jours depuis 1900-01-01 +
+                                2 oct. minutes depuis minuit
+  DATETIME            8 octets 4 oct. jours depuis 1900-01-01 +
+                                4 oct. 1/300emes de seconde
+  UNIQUEIDENTIFIER   16 octets GUID (format mixte-endian Microsoft)
+  CHAR(n)             n octets Caracteres paddes avec des espaces
+  NCHAR(n)            2*n oct. Caracteres Unicode UTF-16LE paddes
+  BINARY(n)           n octets Octets paddes avec des zeros
+  DATE                3 octets Jours depuis 0001-01-01
+  TIME(p)             3-5 oct. Intervalles depuis minuit (precision p)
+  DATETIME2(p)        6-8 oct. TIME(p) + DATE concatenes
+  DATETIMEOFFSET(p)   8-10 oct. DATETIME2(p) + offset fuseau (2 oct.)
+
+7.4 BITMAP DE NULLS
+----------------------
+
+Apres les donnees fixes, le bitmap de NULLs indique quelles colonnes
+contiennent une valeur NULL pour cet enregistrement.
+
+  - Taille : Ceil(NbCols / 8) octets
+  - Bit = 1 : la colonne est NULL
+  - Bit = 0 : la colonne a une valeur
+  - Le bit 0 de l octet 0 correspond a la colonne 1
+  - Le bit 7 de l octet 0 correspond a la colonne 8, etc.
+
+Le bitmap est present meme si aucune colonne n est nullable
+(StatusBits A bit 4 est typiquement toujours a 1).
+
+7.5 PARTIE VARIABLE (COLONNES DE TAILLE VARIABLE)
+----------------------------------------------------
+
+Si StatusBits A bit 5 = 1, l enregistrement a des colonnes variables.
+
+Apres le bitmap de NULLs :
+  1. NbVar (Word) : nombre de colonnes variables
+  2. Tableau d offsets : NbVar mots de 2 octets
+     Chaque offset indique la position de FIN de la colonne variable
+     (relatif au debut de l enregistrement)
+     Le bit 15 (bit de poids fort) peut etre mis a 1 pour indiquer
+     que la colonne est stockee dans un LOB hors-ligne
+  3. Donnees variables : les valeurs des colonnes de taille variable
+     concatenees
+
+Pour extraire la colonne variable i :
+  - Debut = Offset[i-1] si i > 0, sinon debut du bloc variable
+  - Fin = Offset[i] (masquer le bit 15 si present)
+  - Taille = Fin - Debut
+
+Types de taille variable :
+
+  Type SQL Server      Encodage
+  ------------------   ----------------------------------------
+  VARCHAR(n)           Chaine de caracteres ANSI (selon collation)
+  NVARCHAR(n)          Chaine Unicode UTF-16LE
+  VARBINARY(n)         Octets bruts
+  SQL_VARIANT          En-tete de type (4 oct.) + donnees
+  XML                  Document XML serialise en binaire
+
+7.6 ENREGISTREMENT DE TRANSFERT (FORWARDING RECORD)
+------------------------------------------------------
+
+Quand une ligne dans un heap (table sans index clustered) est mise
+a jour et ne rentre plus dans sa page d origine, SQL Server deplace
+la ligne vers une nouvelle page et laisse un stub de transfert
+(forwarding stub) a l emplacement original.
+
+Le stub de transfert contient :
+  - StatusBits A avec type = 010 (forwarding stub)
+  - L identifiant complet de la nouvelle position : (FileID:PageID:SlotID)
+
+L enregistrement deplace a StatusBits B bit 1 = 1 (back-pointer).
+
+7.7 ENREGISTREMENT FANTOME (GHOST RECORD)
+--------------------------------------------
+
+Un enregistrement fantome est un enregistrement marque pour suppression
+mais pas encore nettoye physiquement (StatusBits A bit 7 = 1).
+
+SQL Server utilise un processus de nettoyage en arriere-plan
+(ghost cleanup task) pour supprimer physiquement ces enregistrements.
+Le compteur ghostRecCnt dans l en-tete de page indique combien
+d enregistrements fantomes sont presents.
+
+==============================================================================
+8. INDEX B-TREE
+==============================================================================
+
+8.1 INDEX CLUSTERED (TYPE 1)
+-------------------------------
+
+Un index clustered definit l ordre physique des lignes de la table.
+Les pages feuilles de l index clustered SONT les pages de donnees
+de la table elle-meme.
+
+Structure du B-Tree clustered :
+
+  Niveau 2+ : Pages d index racine/intermediaires (type 2)
+                 |
+  Niveau 1  : Pages d index intermediaires (type 2)
+                 |
+  Niveau 0  : Pages de donnees (type 1) = feuilles
+                 Les lignes sont triees selon la cle de l index
+
+Les pages de chaque niveau sont chainees entre elles via les
+champs prevPage/nextPage de l en-tete de page.
+
+8.2 INDEX NON-CLUSTERED (TYPE 2)
+-----------------------------------
+
+Un index non-clustered est un B-Tree separe dont les feuilles
+contiennent les cles d index et un pointeur vers la ligne reelle.
+
+Si la table a un index clustered, le pointeur est la cle clustered.
+Si la table est un heap, le pointeur est un RID (Row IDentifier) :
+
+  RID = (FileID:PageID:SlotID) sur 8 octets :
+    PageID  : 4 octets (Little-Endian)
+    FileID  : 2 octets (Little-Endian)
+    SlotID  : 2 octets (Little-Endian)
+
+8.3 HEAP (TYPE 0)
+--------------------
+
+Un heap est une table sans index clustered. Les lignes n ont pas
+d ordre physique garanti. Les nouvelles lignes sont inserees dans
+la premiere page avec suffisamment d espace (selon le PFS).
+
+L acces aux donnees d un heap se fait via les pages IAM qui
+repertorient tous les extents alloues a la table.
+
+8.4 STRUCTURE DES PAGES D INDEX
+----------------------------------
+
+Les pages d index (type 2) ont la meme structure generale que les
+pages de donnees, avec un en-tete de 96 octets et un Slot Array.
+
+Chaque enregistrement dans une page d index contient :
+  - La valeur de la cle d index
+  - Un pointeur vers la page enfant (niveaux intermediaires)
+    ou un pointeur vers la ligne de donnees (niveau feuille)
+
+Le champ level de l en-tete de page indique le niveau :
+  - level = 0 : page feuille
+  - level > 0 : page intermediaire ou racine
+
+8.5 ENREGISTREMENT D INDEX (INDEX ROW)
+-----------------------------------------
+
+Format d un enregistrement d index (page non-feuille) :
+
+  +-------+-------+-------------------+---------+
+  | StatA | StatB | Cle d index       | ChildPage|
+  |(1 oct)|(1 oct)| (taille variable) | (6 oct) |
+  +-------+-------+-------------------+---------+
+
+  ChildPage = (PageID:FileID) pointant vers la page enfant
+
+Format d un enregistrement d index feuille (non-clustered) :
+
+  +-------+-------+-------------------+-----------+
+  | StatA | StatB | Cle d index       | Bookmark  |
+  |(1 oct)|(1 oct)| (taille variable) | (variable)|
+  +-------+-------+-------------------+-----------+
+
+  Bookmark :
+    - Si table a index clustered : cle clustered (taille variable)
+    - Si table est un heap : RID sur 8 octets (PageID+FileID+SlotID)
+
+==============================================================================
+9. CATALOGUE SYSTEME (SYSTEM BASE TABLES)
+==============================================================================
+
+Le catalogue systeme est un ensemble de tables internes qui decrivent
+tous les objets de la base de donnees. Ces tables ne sont pas
+directement accessibles par SQL (sauf via des vues systeme comme
+sys.objects, sys.columns, etc.).
+
+Pour lire un fichier MDF sans SQL Server, il faut naviguer
+directement dans ces tables de base.
+
+9.1 sys.sysschobjs - OBJETS DU SCHEMA
+----------------------------------------
+
+Contient la definition de tous les objets : tables, vues, procedures,
+fonctions, triggers, contraintes, etc.
+
+  Colonne     Type        Description
+  ----------  ----------  -----------------------------------------
+  id          INT         Object ID unique
+  name        NVARCHAR    Nom de l objet
+  nsid        INT         ID du namespace/schema
+  nsclass     TINYINT     Classe de namespace
+  status      INT         Drapeaux de statut
+  type        CHAR(2)     Type d objet :
+                            U  = Table utilisateur
+                            V  = Vue
+                            P  = Procedure stockee
+                            FN = Fonction scalaire
+                            IF = Fonction table en ligne
+                            TF = Fonction table multi-instructions
+                            TR = Trigger
+                            C  = Contrainte CHECK
+                            D  = Contrainte DEFAULT
+                            F  = Cle etrangere (FOREIGN KEY)
+                            PK = Cle primaire (PRIMARY KEY)
+                            UQ = Contrainte UNIQUE
+                            SQ = Sequence
+                            SN = Synonyme
+                            IT = Table interne
+                            S  = Table systeme
+  pid         INT         Parent Object ID
+  pclass      TINYINT     Classe du parent
+  intprop     INT         Propriete interne
+  created     DATETIME    Date de creation
+  modified    DATETIME    Date de derniere modification
+
+9.2 sys.syscolpars - COLONNES ET PARAMETRES
+----------------------------------------------
+
+Decrit les colonnes de chaque table et les parametres de chaque
+procedure/fonction.
+
+  Colonne     Type        Description
+  ----------  ----------  -----------------------------------------
+  id          INT         Object ID de la table/procedure
+  number      SMALLINT    Sous-numero (0 pour les tables)
+  colid       INT         Column ID (ordre interne)
+  name        NVARCHAR    Nom de la colonne
+  xtype       TINYINT     ID du type de donnees (sys.sysscalartypes)
+  utype       INT         ID du type utilisateur
+  length      SMALLINT    Longueur maximale en octets
+  prec        TINYINT     Precision (pour DECIMAL/NUMERIC)
+  scale       TINYINT     Echelle (pour DECIMAL/NUMERIC)
+  collationid INT         ID de collation (pour types caracteres)
+  status      INT         Drapeaux :
+                            Bit 0 : colonne nullable
+                            Bit 2 : colonne calculee
+                            Bit 3 : colonne IDENTITY
+                            Bit 4 : colonne ROWGUIDCOL
+
+9.3 sys.sysscalartypes - TYPES SCALAIRES
+-------------------------------------------
+
+Table des types de donnees du systeme.
+
+  Colonne     Type        Description
+  ----------  ----------  -----------------------------------------
+  id          INT         Type ID
+  schid       INT         Schema ID
+  name        NVARCHAR    Nom du type (int, varchar, datetime, etc.)
+  xtype       TINYINT     Identifiant interne du type
+  length      SMALLINT    Longueur par defaut
+  prec        TINYINT     Precision par defaut
+  scale       TINYINT     Echelle par defaut
+  collationid INT         Collation par defaut
+  status      INT         Drapeaux
+
+Identifiants des types systeme (xtype) :
+
+  xtype  Nom SQL Server        Taille fixe
+  -----  --------------------  -----------
+  34     IMAGE                 variable
+  35     TEXT                  variable
+  36     UNIQUEIDENTIFIER      16
+  40     DATE                  3
+  41     TIME                  3-5
+  42     DATETIME2             6-8
+  43     DATETIMEOFFSET        8-10
+  48     TINYINT               1
+  52     SMALLINT              2
+  56     INT                   4
+  58     SMALLDATETIME         4
+  59     REAL                  4
+  60     MONEY                 8
+  61     DATETIME              8
+  62     FLOAT                 8
+  99     NTEXT                 variable
+  104    BIT                   1
+  106    DECIMAL               5-17
+  108    NUMERIC               5-17
+  122    SMALLMONEY            4
+  127    BIGINT                8
+  165    VARBINARY             variable
+  167    VARCHAR               variable
+  173    BINARY                fixe (n)
+  175    CHAR                  fixe (n)
+  189    TIMESTAMP/ROWVERSION  8
+  231    NVARCHAR              variable
+  239    NCHAR                 fixe (2*n)
+  241    XML                   variable
+
+9.4 sys.sysidxstats - STATISTIQUES D INDEX
+---------------------------------------------
+
+Decrit les index de chaque table.
+
+  Colonne     Type        Description
+  ----------  ----------  -----------------------------------------
+  id          INT         Object ID de la table
+  indid       INT         Index ID :
+                            0 = heap (pas d index clustered)
+                            1 = index clustered
+                            2+ = index non-clustered
+  name        NVARCHAR    Nom de l index
+  status      INT         Drapeaux (unique, primary key, etc.)
+  type        TINYINT     0=heap, 1=clustered, 2=nonclustered
+  rowset      BIGINT      Rowset ID (lien vers sys.sysrowsets)
+
+9.5 sys.sysiscols - COLONNES D INDEX
+---------------------------------------
+
+Associe les colonnes aux index.
+
+  Colonne     Type        Description
+  ----------  ----------  -----------------------------------------
+  idmajor     INT         Object ID de la table
+  idminor     INT         Index ID
+  subid       INT         Numero de position dans la cle (1, 2, ...)
+  colid       INT         Column ID (correspond a syscolpars.colid)
+  status      INT         Drapeaux :
+                            Bit indiquant colonne descendante
+
+9.6 sys.sysrowsets - ENSEMBLES DE LIGNES
+-------------------------------------------
+
+Chaque index ou heap d une table a un rowset associe.
+
+  Colonne     Type        Description
+  ----------  ----------  -----------------------------------------
+  rowsetid    BIGINT      Rowset ID unique
+  ownerid     INT         Object ID de la table
+  idmajor     INT         Index ID
+  status      INT         Drapeaux
+  maxleaf     INT         Nombre max de colonnes dans les feuilles
+  maxint      SMALLINT    Nombre max de colonnes intermediaires
+  rcrows      BIGINT      Nombre approximatif de lignes
+
+9.7 sys.sysallocunits - UNITES D ALLOCATION
+----------------------------------------------
+
+Chaque rowset peut avoir jusqu a 3 unites d allocation :
+
+  Colonne     Type        Description
+  ----------  ----------  -----------------------------------------
+  auid        BIGINT      Allocation Unit ID
+  type        TINYINT     Type d unite :
+                            1 = IN_ROW_DATA (donnees en ligne)
+                            2 = LOB_DATA (donnees LOB)
+                            3 = ROW_OVERFLOW_DATA (debordement)
+  ownerid     BIGINT      Rowset ID proprietaire
+  status      INT         Drapeaux
+  fgid        SMALLINT    Filegroup ID
+  pgfirst     BIGINT      Premiere page IAM
+  pgroot      BIGINT      Page racine (si B-Tree) ou premiere page
+  pgfirstiam  BIGINT      Premiere page IAM
+  pcused      BIGINT      Nombre de pages utilisees
+  pcdata      BIGINT      Nombre de pages de donnees
+  pcreserved  BIGINT      Nombre de pages reservees
+
+Le champ pgfirstiam est le point d entree pour scanner toutes les
+pages d un objet via la chaine IAM.
+
+9.8 sys.syshobtcolumns - COLONNES DE HEAP/B-TREE
+----------------------------------------------------
+
+Informations supplementaires sur le stockage physique des colonnes :
+
+  Colonne     Type        Description
+  ----------  ----------  -----------------------------------------
+  hobtid      BIGINT      Heap-or-BTree ID
+  colid       INT         Column ID
+  ti          INT         Type Info interne
+  offset      SMALLINT    Offset dans l enregistrement
+  nullbit     SMALLINT    Position dans le bitmap de NULLs
+
+==============================================================================
+10. TYPES DE DONNEES ET LEUR STOCKAGE BINAIRE
+==============================================================================
+
+10.1 TYPES ENTIERS
+--------------------
+
+  Type         Octets  Plage                     Encodage
+  -----------  ------  ------------------------  ----------------------
+  TINYINT      1       0 a 255                   Entier non signe
+  SMALLINT     2       -32768 a 32767            Complement a 2, LE
+  INT          4       -2^31 a 2^31-1            Complement a 2, LE
+  BIGINT       8       -2^63 a 2^63-1            Complement a 2, LE
+  BIT          *       0 ou 1                    Bit-packing (voir ci-dessous)
+
+  * Les colonnes BIT sont compactees : jusqu a 8 colonnes BIT partagent
+    un seul octet dans la partie fixe de l enregistrement.
+
+10.2 TYPES DECIMAUX ET MONETAIRES
+------------------------------------
+
+  Type         Octets  Encodage
+  -----------  ------  ----------------------------------------------------
+  DECIMAL(p,s) 5-17    1 octet signe (0=positif, 1=negatif) +
+  NUMERIC(p,s)           4 a 16 octets entier non signe Little-Endian
+                         Precision p: 1-9 -> 5 oct, 10-19 -> 9 oct,
+                                     20-28 -> 13 oct, 29-38 -> 17 oct
+                         Valeur reelle = entier / 10^s
+  SMALLMONEY   4       Entier signe LE, diviser par 10000
+  MONEY        8       Entier signe LE (hi:lo), diviser par 10000
+
+10.3 TYPES A VIRGULE FLOTTANTE
+---------------------------------
+
+  Type     Octets  Encodage
+  -------  ------  ------------------------------------------------
+  REAL     4       IEEE 754 simple precision (binary32), LE
+  FLOAT    8       IEEE 754 double precision (binary64), LE
+
+10.4 TYPES CARACTERES
+------------------------
+
+  Type         Octets     Encodage
+  -----------  ---------  -----------------------------------------------
+  CHAR(n)      n          Caracteres ANSI selon la collation de la colonne
+                          Paddes a droite avec des espaces ($20)
+  VARCHAR(n)   0 a n      Caracteres ANSI, taille variable (pas de padding)
+  TEXT         variable   Stocke en pages LOB (Text/Image, type 3)
+
+  La collation determine la page de code et les regles de tri.
+
+10.5 TYPES UNICODE
+--------------------
+
+  Type          Octets     Encodage
+  ------------  ---------  -----------------------------------------------
+  NCHAR(n)      2*n        UTF-16LE, padde a droite avec des espaces U+0020
+  NVARCHAR(n)   0 a 2*n   UTF-16LE, taille variable
+  NTEXT         variable   UTF-16LE, stocke en pages LOB
+
+10.6 TYPES DATE ET HEURE
+---------------------------
+
+  Type              Octets  Encodage
+  ----------------  ------  -----------------------------------------------
+  SMALLDATETIME     4       2 oct. : jours depuis 1900-01-01
+                            2 oct. : minutes depuis minuit (0..1439)
+  DATETIME          8       4 oct. : jours depuis 1900-01-01 (signe)
+                            4 oct. : 1/300emes de seconde depuis minuit
+  DATE              3       Jours depuis 0001-01-01 (entier 3 octets LE)
+  TIME(p)           3-5     Intervalles depuis minuit :
+                              p=0-2 : 3 oct., p=3-4 : 4 oct., p=5-7 : 5 oct.
+                              Unite = 10^(-p) secondes
+  DATETIME2(p)      6-8     TIME(p) concatene avec DATE (3 oct.)
+  DATETIMEOFFSET(p) 8-10    DATETIME2(p) + 2 oct. offset fuseau en minutes
+                              (signe, -840 a +840)
+
+10.7 TYPES BINAIRES
+----------------------
+
+  Type            Octets    Encodage
+  --------------  --------  -----------------------------------------------
+  BINARY(n)       n         Octets bruts, paddes avec $00
+  VARBINARY(n)    0 a n     Octets bruts, taille variable
+  TIMESTAMP       8         Valeur binaire incrementale automatique
+  IMAGE           variable  Stocke en pages LOB
+
+10.8 TYPES SPECIAUX
+----------------------
+
+  Type                Octets  Encodage
+  ------------------  ------  -----------------------------------------------
+  UNIQUEIDENTIFIER    16      GUID Microsoft (format mixte-endian) :
+                                Octets 0-3 : Little-Endian (Data1)
+                                Octets 4-5 : Little-Endian (Data2)
+                                Octets 6-7 : Little-Endian (Data3)
+                                Octets 8-15 : Big-Endian (Data4)
+  SQL_VARIANT         variable En-tete : BaseType (1 oct.) + PropBytes (1 oct.)
+                                + Proprietes (variable) + Donnees
+  XML                 variable Document XML serialise en format binaire interne
+  HIERARCHYID         variable Chemin hierarchique encode en binaire
+  GEOGRAPHY/GEOMETRY  variable Donnees spatiales au format CLR serialise
+
+==============================================================================
+11. DONNEES LOB (LARGE OBJECT)
+==============================================================================
+
+Les types de donnees volumineux (TEXT, NTEXT, IMAGE, VARCHAR(MAX),
+NVARCHAR(MAX), VARBINARY(MAX), XML) peuvent etre stockes de trois
+facons differentes.
+
+11.1 DONNEES EN LIGNE (IN-ROW)
+---------------------------------
+
+Si la valeur est suffisamment courte (moins d environ 8000 octets),
+elle est stockee directement dans l enregistrement comme une colonne
+de taille variable normale.
+
+11.2 DONNEES HORS LIGNE (ROW-OVERFLOW)
+-----------------------------------------
+
+Si la valeur depasse la taille maximale de ligne (~8060 octets),
+elle est deplacee dans une page de type Row-Overflow (unite
+d allocation type 3). L enregistrement original contient un
+pointeur de 24 octets vers les donnees hors-ligne :
+
+  Offset  Taille  Description
+  ------  ------  -----------------------------------------------
+  +0      1 oct.  Type de pointeur (2 = row-overflow)
+  +1      1 oct.  Niveau (0 pour donnees directes)
+  +2      2 oct.  Reserve
+  +4      4 oct.  Timestamp interne
+  +8      4 oct.  PageID de la page contenant les donnees
+  +12     2 oct.  FileID
+  +14     2 oct.  SlotID
+  +16     4 oct.  Longueur totale des donnees
+  +20     4 oct.  Reserve
+
+11.3 PAGES TEXT/IMAGE (LOB TREE)
+----------------------------------
+
+Pour les types TEXT, NTEXT et IMAGE (ou les valeurs VARCHAR(MAX)
+tres volumineuses), les donnees sont stockees dans un arbre de
+pages LOB (unite d allocation type 2).
+
+L arbre LOB a la structure suivante :
+  - Page racine : contient des pointeurs vers les pages intermediaires
+    ou directement vers les pages de donnees
+  - Pages intermediaires (type 4) : pointeurs vers d autres pages
+  - Pages feuilles (type 3) : contiennent les donnees brutes
+
+L enregistrement dans la page de donnees contient un pointeur LOB :
+  - Type de pointeur = 0 (LOB inline) ou 1 (LOB tree)
+  - Timestamp
+  - PageID + FileID de la racine de l arbre LOB
+  - Taille totale des donnees
+
+==============================================================================
+12. COMPRESSION DE DONNEES
+==============================================================================
+
+SQL Server 2008+ supporte deux niveaux de compression pour reduire
+la taille des donnees sur disque.
+
+12.1 COMPRESSION DE LIGNE (ROW)
+----------------------------------
+
+La compression de ligne modifie le format d enregistrement :
+  - Les colonnes de taille fixe sont stockees en taille variable
+    (les zeros de tete/fin sont supprimes)
+  - Les valeurs NULL et 0 ne prennent aucun espace
+  - Un en-tete CD (Column Descriptor) remplace le format standard
+
+Format de l enregistrement comprime :
+
+  +-------+-------+--------+-------------------+-------------------+
+  | StatA | StatB | CD     | Court descripteurs| Donnees colonnes  |
+  |(1 oct)|(1 oct)|longueur| (4 bits par col)  | (taille variable) |
+  +-------+-------+--------+-------------------+-------------------+
+
+Le CD (Column Descriptor) contient 4 bits par colonne :
+
+  Valeur  Signification
+  ------  --------------------------------------------------
+  0000    Colonne NULL
+  0001    Colonne vide (longueur zero)
+  0010    Valeur de 1 octet
+  0011    Valeur de 2 octets
+  0100    Valeur de 3 octets
+  0101    Valeur de 4 octets
+  0110    Valeur de 5 octets
+  0111    Valeur de 6 octets
+  1000    Valeur de 7 octets
+  1001    Valeur de 8 octets
+  1010    Valeur longue (taille dans le flux)
+  1011    Reserve
+  1100    Reserve
+  1101    Reserve
+  1110    Reserve
+  1111    Reserve
+
+12.2 COMPRESSION DE PAGE (PAGE)
+----------------------------------
+
+La compression de page ajoute deux techniques supplementaires
+au-dessus de la compression de ligne :
+
+  1. Compression de prefixe (Prefix Compression) :
+     Un prefixe commun est extrait pour chaque colonne et stocke
+     une seule fois dans un enregistrement d ancrage (Anchor Record)
+     en haut de la page. Chaque enregistrement ne stocke que
+     la partie differente du prefixe.
+
+  2. Compression de dictionnaire (Dictionary Compression) :
+     Les valeurs repetees dans la page sont remplacees par un
+     indice dans un dictionnaire stocke en bas de la page.
+
+Structure d une page avec compression de page :
+
+  +------------------------------------------------------------+
+  | En-tete de page (96 octets)                                |
+  +------------------------------------------------------------+
+  | CI Record (Column Information / Anchor Record)             |
+  +------------------------------------------------------------+
+  | Enregistrement 1 (comprime)                                |
+  | Enregistrement 2 (comprime)                                |
+  | ...                                                        |
+  +------------------------------------------------------------+
+  | Dictionnaire de compression (en bas de page)               |
+  +------------------------------------------------------------+
+  | Slot Array                                                 |
+  +------------------------------------------------------------+
+
+12.3 EN-TETE CI (COLUMN DESCRIPTOR)
+--------------------------------------
+
+L enregistrement CI (premier slot de la page) contient la valeur
+de prefixe pour chaque colonne. Les enregistrements suivants
+contiennent un CD modifie ou :
+
+  Valeur CD  Signification avec compression de page
+  ---------  ------------------------------------------------
+  0000       La colonne a la meme valeur que le prefixe CI
+  0001       La colonne est NULL (meme semantique)
+  0010-1010  Longueur de la partie differente du prefixe
+  1011       Valeur du dictionnaire (1 octet d index)
+  1100       Valeur du dictionnaire (2 octets d index)
+
+==============================================================================
+13. ORDRE DES OCTETS ET ENCODAGE
+==============================================================================
+
+Le format MDF utilise l ordre des octets Little-Endian (Intel) pour
+tous les champs numeriques :
+
+  - Les mots de 2 octets sont stockes octet faible en premier
+  - Les mots de 4 octets sont stockes octet faible en premier
+  - Les mots de 8 octets sont stockes octet faible en premier
+
+Exceptions :
+  - Les champs texte NCHAR/NVARCHAR sont en UTF-16LE
+  - Les champs CHAR/VARCHAR utilisent la page de code de la collation
+  - Le GUID (UNIQUEIDENTIFIER) utilise un format mixte-endian
+
+Le format ne contient pas de BOM (Byte Order Mark). Le fichier est
+toujours Little-Endian, quel que soit la plateforme.
+
+==============================================================================
+14. DIFFERENCES ENTRE VERSIONS DE SQL SERVER
+==============================================================================
+
+Le format MDF a evolue entre les versions de SQL Server :
+
+  Version SQL Server  Annee  Version de fichier  Changements
+  ------------------  -----  ------------------  ---------------------------
+  SQL Server 7.0      1998   515                 Format initial page 8 Ko
+  SQL Server 2000     2000   539                 Ameliorations mineures
+  SQL Server 2005     2005   611/612             AllocUnitId remplace
+                                                   indexId/objId dans les
+                                                   en-tetes de page
+                                                 Nouvelles tables systeme
+                                                 MAX types (VARCHAR(MAX))
+                                                 Format XML natif
+  SQL Server 2008     2008   655                 Types DATE, TIME, DATETIME2,
+                                                   DATETIMEOFFSET
+                                                 Compression ROW et PAGE
+                                                 FILESTREAM
+                                                 Sparse columns
+  SQL Server 2008 R2  2010   660/661             Meme format que 2008
+  SQL Server 2012     2012   706                 Columnstore indexes
+                                                 Sequences
+                                                 Contained databases
+  SQL Server 2014     2014   782                 In-memory OLTP
+                                                 (Hekaton - format separe)
+                                                 Clustered columnstore
+  SQL Server 2016     2016   852                 Temporal tables
+                                                 JSON support
+                                                 Row-level security
+                                                 Always Encrypted
+  SQL Server 2017     2017   868/869             Ameliorations mineures
+                                                 Linux support (meme format)
+  SQL Server 2019     2019   895/904             Accelerated Database Recovery
+                                                 Persistent version store
+  SQL Server 2022     2022   957+                Ledger tables
+                                                 Ameliorations columnstore
+
+La version de fichier est stockee dans la Boot Page (page 9) et dans
+le File Header (page 0). Les anciennes versions de SQL Server ne
+peuvent pas lire les fichiers de versions plus recentes.
+
+==============================================================================
+15. LIEN AVEC LE PROJET DEV-COOLS
+==============================================================================
+
+Le programme SQLCMD.PAS du projet DEV-COOLS implemente un clone de
+la commande sqlcmd de SQL Server qui lit directement les fichiers
+.MDF sans necessiter d instance SQL Server.
+
+La feuille de route de SQLCMD.PAS couvre :
+  - Lecture de l en-tete MDF et de la Boot Page (TODO 01-02)
+  - Gestion des pages et des allocation maps (TODO 03)
+  - Decodage des pages de donnees et des enregistrements (TODO 04)
+  - Lecture du catalogue systeme (TODO 05)
+  - Decodage des types de donnees (TODO 06)
+  - Parseur SQL complet pour interroger les donnees (TODO 07-14)
+  - Moteur d execution de requetes (TODO 15-18)
+  - Fonctions scalaires built-in (TODO 19-23)
+  - Index B-Tree et optimiseur de requetes (TODO 24-25)
+  - Curseurs, procedures stockees, transactions (TODO 26-28)
+  - Formatage de sortie et tests (TODO 29-30)
+
+Ce document sert de reference pour l implementation des TODO 02 a 06
+(lecture et decodage du format MDF).
+
+==============================================================================
+16. REFERENCES
+==============================================================================
+
+  [1] Microsoft Docs - Database File Pages
+      https://docs.microsoft.com/sql/relational-databases/pages-and-extents-architecture-guide
+
+  [2] Microsoft Docs - SQL Server Data Types
+      https://docs.microsoft.com/sql/t-sql/data-types/data-types-transact-sql
+
+  [3] Paul Randal - Inside the Storage Engine
+      https://www.sqlskills.com/blogs/paul/
+
+  [4] Kalen Delaney - SQL Server Internals
+      Microsoft Press (Inside SQL Server series)
+
+  [5] Microsoft Docs - sys.allocation_units
+      https://docs.microsoft.com/sql/relational-databases/system-catalog-views/sys-allocation-units-transact-sql
+
+  [6] Microsoft Docs - DBCC PAGE
+      https://docs.microsoft.com/sql/t-sql/database-console-commands/dbcc-page-transact-sql
+
+  [7] Dmitri Korotkevitch - Pro SQL Server Internals
+      Apress (2nd edition, 2016)
+
+==============================================================================
+  Fin du document - MDF_FORMAT.txt
+==============================================================================
