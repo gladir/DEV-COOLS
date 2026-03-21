@@ -31,7 +31,7 @@
       (int, float, string, boolean, date), types de reference vers les
       noeuds de l'AST source (@locatable, @expr, @stmt, @function,
       @class), verification des types dans les predicats et les
-      expressions.
+      expressions. [IMPLEMENTE]
 
   5.  Implementer le lexeur pour le langage source cible (Pascal) :
       TSourceTokenKind, reconnaissance des mots-cles Pascal (program,
@@ -178,6 +178,7 @@ Const
   MAX_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_ERRORS = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_NODES  = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
+  MAX_TYPES  = {$IFDEF FPC}256{$ELSE}64{$ENDIF};
 
   { Codes de sortie }
   EXIT_OK    = 0;
@@ -290,6 +291,33 @@ Type
     Right    : Integer;     { enfant droit   (-1 = aucun)        }
     Extra    : Integer;     { enfant extra   (-1 = aucun)        }
     Next     : Integer;     { frere suivant  (-1 = aucun)        }
+    TypeIdx  : Integer;     { index type resolu (-1 = inconnu)   }
+  End;
+
+  { TODO 4 : Systeme de types du langage QL }
+  TQLTypeKind = (
+    QTK_NONE,        { type non resolu / inconnu               }
+    QTK_INT,         { type primitif int                       }
+    QTK_FLOAT,       { type primitif float                     }
+    QTK_STRING,      { type primitif string                    }
+    QTK_BOOLEAN,     { type primitif boolean                   }
+    QTK_DATE,        { type primitif date                      }
+    QTK_VOID,        { type void (predicat sans resultat)      }
+    QTK_LOCATABLE,   { reference @locatable (noeud source)     }
+    QTK_EXPR,        { reference @expr (expression source)     }
+    QTK_STMT,        { reference @stmt (instruction source)    }
+    QTK_FUNCTION,    { reference @function (fonction source)   }
+    QTK_CLASS,       { reference @class (classe source)        }
+    QTK_VARIABLE,    { reference @variable (variable source)   }
+    QTK_TYPE,        { reference @type (type source)           }
+    QTK_USER         { type defini par l utilisateur (classe)  }
+  );
+
+  TQLType = Record
+    Kind     : TQLTypeKind;  { categorie du type                 }
+    Name     : TString;      { nom du type (int, string, etc.)   }
+    BaseType : Integer;      { index du type parent (-1 = aucun) }
+    IsRef    : Boolean;      { True si type reference (@...)     }
   End;
 
 { ============================================================
@@ -315,6 +343,11 @@ Var
   Nodes      : Array[0..MAX_NODES - 1] Of TASTNode;
   NodeCount  : Integer;      { nombre de noeuds alloues           }
   RootNode   : Integer;      { index du noeud racine (module)     }
+
+  { Systeme de types QL (TODO 4) }
+  TypeTable  : Array[0..MAX_TYPES - 1] Of TQLType;
+  TypeCount  : Integer;      { nombre de types enregistres        }
+  TypeErrors : Integer;      { nombre d erreurs de type           }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1165,6 +1198,7 @@ Begin
   Nodes[NodeCount].Right    := -1;
   Nodes[NodeCount].Extra    := -1;
   Nodes[NodeCount].Next     := -1;
+  Nodes[NodeCount].TypeIdx  := -1;
   NewNode := NodeCount;
   Inc(NodeCount);
 End;
@@ -2092,6 +2126,591 @@ Begin
     DumpAST(Nodes[Idx].Extra, Depth + 1);
 End;
 
+{ ============================================================
+  TODO 04 - SYSTEME DE TYPES DU LANGAGE QL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Enregistrer un type dans la table ----------------------- }
+
+Function RegisterType(Kind : TQLTypeKind;
+                      Const AName : TString;
+                      ABase : Integer;
+                      AIsRef : Boolean) : Integer;
+Begin
+  If TypeCount >= MAX_TYPES Then
+    FatalError('TypeSystem: depassement MAX_TYPES');
+  TypeTable[TypeCount].Kind     := Kind;
+  TypeTable[TypeCount].Name     := AName;
+  TypeTable[TypeCount].BaseType := ABase;
+  TypeTable[TypeCount].IsRef    := AIsRef;
+  RegisterType := TypeCount;
+  Inc(TypeCount);
+End;
+
+{ ---- Initialiser le systeme de types built-in ---------------- }
+
+Procedure InitTypeSystem;
+Begin
+  TypeCount  := 0;
+  TypeErrors := 0;
+
+  { Index 0 : type inconnu / non resolu }
+  RegisterType(QTK_NONE,    '<none>',    -1, False);
+
+  { Types primitifs (indices 1 a 6) }
+  RegisterType(QTK_INT,     'int',       -1, False);
+  RegisterType(QTK_FLOAT,   'float',     -1, False);
+  RegisterType(QTK_STRING,  'string',    -1, False);
+  RegisterType(QTK_BOOLEAN, 'boolean',   -1, False);
+  RegisterType(QTK_DATE,    'date',      -1, False);
+  RegisterType(QTK_VOID,    'void',      -1, False);
+
+  { Types de reference vers les noeuds de l AST source (indices 7+) }
+  RegisterType(QTK_LOCATABLE, '@locatable', -1, True);
+  RegisterType(QTK_EXPR,      '@expr',      7,  True);
+  RegisterType(QTK_STMT,      '@stmt',      7,  True);
+  RegisterType(QTK_FUNCTION,  '@function',  7,  True);
+  RegisterType(QTK_CLASS,     '@class',     7,  True);
+  RegisterType(QTK_VARIABLE,  '@variable',  7,  True);
+  RegisterType(QTK_TYPE,      '@type',      7,  True);
+End;
+
+{ ---- Chercher un type par nom -------------------------------- }
+
+Function FindType(Const AName : TString) : Integer;
+Var
+  I   : Integer;
+  Low : TString;
+Begin
+  Low := StrLowerCase(AName);
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    If StrLowerCase(TypeTable[I].Name) = Low Then
+    Begin
+      FindType := I;
+      Exit;
+    End;
+  End;
+  FindType := -1;
+End;
+
+{ ---- Enregistrer un type utilisateur (classe QL) ------------- }
+
+Function RegisterUserType(Const AName : TString;
+                          ABase : Integer) : Integer;
+Begin
+  RegisterUserType := RegisterType(QTK_USER, AName, ABase, False);
+End;
+
+{ ---- Verifier si TypeA est compatible avec TypeB ------------- }
+
+Function TypeIsCompatible(TypeA, TypeB : Integer) : Boolean;
+Var Cur : Integer;
+Begin
+  If (TypeA < 0) Or (TypeB < 0) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  If TypeA = TypeB Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  If TypeA = 0 Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  Cur := TypeA;
+  While Cur >= 0 Do
+  Begin
+    If Cur = TypeB Then
+    Begin
+      TypeIsCompatible := True;
+      Exit;
+    End;
+    Cur := TypeTable[Cur].BaseType;
+  End;
+  Cur := TypeB;
+  While Cur >= 0 Do
+  Begin
+    If Cur = TypeA Then
+    Begin
+      TypeIsCompatible := True;
+      Exit;
+    End;
+    Cur := TypeTable[Cur].BaseType;
+  End;
+  TypeIsCompatible := False;
+End;
+
+{ ---- Nom textuel d un TQLTypeKind ---------------------------- }
+
+Function TypeKindName(K : TQLTypeKind) : TString;
+Begin
+  Case K Of
+    QTK_NONE     : TypeKindName := 'none';
+    QTK_INT      : TypeKindName := 'int';
+    QTK_FLOAT    : TypeKindName := 'float';
+    QTK_STRING   : TypeKindName := 'string';
+    QTK_BOOLEAN  : TypeKindName := 'boolean';
+    QTK_DATE     : TypeKindName := 'date';
+    QTK_VOID     : TypeKindName := 'void';
+    QTK_LOCATABLE: TypeKindName := '@locatable';
+    QTK_EXPR     : TypeKindName := '@expr';
+    QTK_STMT     : TypeKindName := '@stmt';
+    QTK_FUNCTION : TypeKindName := '@function';
+    QTK_CLASS    : TypeKindName := '@class';
+    QTK_VARIABLE : TypeKindName := '@variable';
+    QTK_TYPE     : TypeKindName := '@type';
+    QTK_USER     : TypeKindName := 'user';
+  End;
+End;
+
+{ ---- Nom complet du type par index --------------------------- }
+
+Function TypeName(Idx : Integer) : TString;
+Begin
+  If (Idx < 0) Or (Idx >= TypeCount) Then
+    TypeName := '<unknown>'
+  Else
+    TypeName := TypeTable[Idx].Name;
+End;
+
+{ ---- Emettre une erreur de type ------------------------------ }
+
+Procedure TypeErrorMsg(ALine, ACol : Integer; Const Msg : TString);
+Begin
+  WriteLn('CODEQL: type error ligne ', ALine, ' col ', ACol,
+          ': ', Msg);
+  Inc(TypeErrors);
+  Inc(ErrorCount);
+End;
+
+{ ---- ResolveNodeType : deduire le type d un noeud AST -------- }
+
+Procedure ResolveNodeType(Idx : Integer); Forward;
+
+Procedure ResolveNodeType;
+Var
+  LT, RT, TI : Integer;
+  Cur        : Integer;
+Begin
+  If Idx < 0 Then Exit;
+  If Nodes[Idx].TypeIdx >= 0 Then Exit;
+
+  Case Nodes[Idx].Kind Of
+
+    NK_EXPR_INT:
+      Nodes[Idx].TypeIdx := FindType('int');
+
+    NK_EXPR_FLOAT:
+      Nodes[Idx].TypeIdx := FindType('float');
+
+    NK_EXPR_STRING:
+      Nodes[Idx].TypeIdx := FindType('string');
+
+    NK_EXPR_THIS, NK_EXPR_SUPER, NK_EXPR_RESULT:
+      Nodes[Idx].TypeIdx := 0;
+
+    NK_EXPR_IDENT:
+    Begin
+      TI := FindType(Nodes[Idx].Name);
+      If TI >= 0 Then
+        Nodes[Idx].TypeIdx := TI
+      Else
+        Nodes[Idx].TypeIdx := 0;
+    End;
+
+    NK_EXPR_CALL:
+    Begin
+      Cur := Nodes[Idx].Left;
+      While Cur >= 0 Do
+      Begin
+        ResolveNodeType(Cur);
+        Cur := Nodes[Cur].Next;
+      End;
+      If Nodes[Idx].Right >= 0 Then
+        ResolveNodeType(Nodes[Idx].Right);
+      Nodes[Idx].TypeIdx := 0;
+    End;
+
+    NK_EXPR_MEMBER:
+    Begin
+      If Nodes[Idx].Left >= 0 Then
+        ResolveNodeType(Nodes[Idx].Left);
+      Nodes[Idx].TypeIdx := 0;
+    End;
+
+    NK_EXPR_BINOP:
+    Begin
+      If Nodes[Idx].Left >= 0 Then
+        ResolveNodeType(Nodes[Idx].Left);
+      If Nodes[Idx].Right >= 0 Then
+        ResolveNodeType(Nodes[Idx].Right);
+      LT := -1;
+      RT := -1;
+      If Nodes[Idx].Left >= 0 Then
+        LT := Nodes[Nodes[Idx].Left].TypeIdx;
+      If Nodes[Idx].Right >= 0 Then
+        RT := Nodes[Nodes[Idx].Right].TypeIdx;
+      If (Nodes[Idx].Name = '=') Or (Nodes[Idx].Name = '!=') Or
+         (Nodes[Idx].Name = '<') Or (Nodes[Idx].Name = '>') Or
+         (Nodes[Idx].Name = '<=') Or (Nodes[Idx].Name = '>=') Then
+        Nodes[Idx].TypeIdx := FindType('boolean')
+      Else If (LT > 0) And (LT = RT) Then
+        Nodes[Idx].TypeIdx := LT
+      Else If (LT > 0) Then
+        Nodes[Idx].TypeIdx := LT
+      Else If (RT > 0) Then
+        Nodes[Idx].TypeIdx := RT
+      Else
+        Nodes[Idx].TypeIdx := 0;
+    End;
+
+    NK_EXPR_UNOP:
+    Begin
+      If Nodes[Idx].Left >= 0 Then
+      Begin
+        ResolveNodeType(Nodes[Idx].Left);
+        Nodes[Idx].TypeIdx := Nodes[Nodes[Idx].Left].TypeIdx;
+      End
+      Else
+        Nodes[Idx].TypeIdx := 0;
+    End;
+
+    NK_EXPR_INSTANCEOF:
+      Nodes[Idx].TypeIdx := FindType('boolean');
+
+    NK_EXPR_IN:
+    Begin
+      If Nodes[Idx].Left >= 0 Then
+        ResolveNodeType(Nodes[Idx].Left);
+      If Nodes[Idx].Right >= 0 Then
+        ResolveNodeType(Nodes[Idx].Right);
+      Nodes[Idx].TypeIdx := FindType('boolean');
+    End;
+
+    NK_EXPR_RANGE:
+    Begin
+      If Nodes[Idx].Left >= 0 Then
+      Begin
+        ResolveNodeType(Nodes[Idx].Left);
+        Nodes[Idx].TypeIdx := Nodes[Nodes[Idx].Left].TypeIdx;
+      End
+      Else
+        Nodes[Idx].TypeIdx := FindType('int');
+    End;
+
+    NK_EXPR_AGGR:
+    Begin
+      If Nodes[Idx].Name = 'count' Then
+        Nodes[Idx].TypeIdx := FindType('int')
+      Else
+        Nodes[Idx].TypeIdx := 0;
+    End;
+
+    NK_FORMULA_AND, NK_FORMULA_OR, NK_FORMULA_NOT,
+    NK_FORMULA_IMPLIES, NK_FORMULA_EXISTS, NK_FORMULA_FORALL,
+    NK_FORMULA_IF:
+    Begin
+      If Nodes[Idx].Left >= 0 Then
+        ResolveNodeType(Nodes[Idx].Left);
+      If Nodes[Idx].Right >= 0 Then
+        ResolveNodeType(Nodes[Idx].Right);
+      If Nodes[Idx].Extra >= 0 Then
+        ResolveNodeType(Nodes[Idx].Extra);
+      Nodes[Idx].TypeIdx := FindType('boolean');
+    End;
+
+    NK_VAR_DECL:
+    Begin
+      If Nodes[Idx].Left >= 0 Then
+      Begin
+        TI := FindType(Nodes[Nodes[Idx].Left].Name);
+        If TI >= 0 Then
+          Nodes[Idx].TypeIdx := TI
+        Else
+          Nodes[Idx].TypeIdx := 0;
+      End
+      Else
+        Nodes[Idx].TypeIdx := 0;
+    End;
+
+    NK_PRED_DECL:
+    Begin
+      Cur := Nodes[Idx].Left;
+      While Cur >= 0 Do
+      Begin
+        ResolveNodeType(Cur);
+        Cur := Nodes[Cur].Next;
+      End;
+      If Nodes[Idx].Right >= 0 Then
+      Begin
+        Cur := Nodes[Idx].Right;
+        While Cur >= 0 Do
+        Begin
+          ResolveNodeType(Cur);
+          Cur := Nodes[Cur].Next;
+        End;
+      End;
+      Nodes[Idx].TypeIdx := FindType('void');
+    End;
+
+    NK_CLASS_DECL:
+    Begin
+      TI := FindType(Nodes[Idx].Name);
+      If TI < 0 Then
+      Begin
+        LT := -1;
+        If Nodes[Idx].Extra >= 0 Then
+          LT := FindType(Nodes[Nodes[Idx].Extra].Name);
+        TI := RegisterUserType(Nodes[Idx].Name, LT);
+      End;
+      Nodes[Idx].TypeIdx := TI;
+      Cur := Nodes[Idx].Left;
+      While Cur >= 0 Do
+      Begin
+        ResolveNodeType(Cur);
+        Cur := Nodes[Cur].Next;
+      End;
+    End;
+
+    NK_SELECT:
+    Begin
+      Cur := Nodes[Idx].Left;
+      While Cur >= 0 Do
+      Begin
+        ResolveNodeType(Cur);
+        Cur := Nodes[Cur].Next;
+      End;
+      If Nodes[Idx].Right >= 0 Then
+        ResolveNodeType(Nodes[Idx].Right);
+      If Nodes[Idx].Extra >= 0 Then
+      Begin
+        Cur := Nodes[Idx].Extra;
+        While Cur >= 0 Do
+        Begin
+          ResolveNodeType(Cur);
+          Cur := Nodes[Cur].Next;
+        End;
+      End;
+      Nodes[Idx].TypeIdx := 0;
+    End;
+
+    NK_MODULE:
+    Begin
+      Cur := Nodes[Idx].Left;
+      While Cur >= 0 Do
+      Begin
+        ResolveNodeType(Cur);
+        Cur := Nodes[Cur].Next;
+      End;
+      Nodes[Idx].TypeIdx := 0;
+    End;
+
+    NK_IMPORT, NK_ANNOTATION:
+      Nodes[Idx].TypeIdx := 0;
+
+  Else
+    Nodes[Idx].TypeIdx := 0;
+  End;
+End;
+
+{ ---- TypeCheckNode : verifier la coherence des types --------- }
+
+Procedure TypeCheckNode(Idx : Integer);
+Var
+  LT, RT : Integer;
+  Cur    : Integer;
+Begin
+  If Idx < 0 Then Exit;
+
+  Case Nodes[Idx].Kind Of
+
+    NK_EXPR_BINOP:
+    Begin
+      TypeCheckNode(Nodes[Idx].Left);
+      TypeCheckNode(Nodes[Idx].Right);
+      If (Nodes[Idx].Left >= 0) And (Nodes[Idx].Right >= 0) Then
+      Begin
+        LT := Nodes[Nodes[Idx].Left].TypeIdx;
+        RT := Nodes[Nodes[Idx].Right].TypeIdx;
+        If (LT > 0) And (RT > 0) Then
+        Begin
+          If (Nodes[Idx].Name = '+') Or (Nodes[Idx].Name = '-') Or
+             (Nodes[Idx].Name = '*') Or (Nodes[Idx].Name = '/') Or
+             (Nodes[Idx].Name = '%') Then
+          Begin
+            If Not TypeIsCompatible(LT, RT) Then
+              TypeErrorMsg(Nodes[Idx].Line, Nodes[Idx].Col,
+                'operandes incompatibles: ' + TypeName(LT) +
+                ' ' + Nodes[Idx].Name + ' ' + TypeName(RT));
+          End;
+          If (Nodes[Idx].Name = '=') Or (Nodes[Idx].Name = '!=') Then
+          Begin
+            If Not TypeIsCompatible(LT, RT) Then
+              TypeErrorMsg(Nodes[Idx].Line, Nodes[Idx].Col,
+                'comparaison entre types incompatibles: ' +
+                TypeName(LT) + ' et ' + TypeName(RT));
+          End;
+        End;
+      End;
+    End;
+
+    NK_FORMULA_AND, NK_FORMULA_OR, NK_FORMULA_IMPLIES:
+    Begin
+      TypeCheckNode(Nodes[Idx].Left);
+      TypeCheckNode(Nodes[Idx].Right);
+    End;
+
+    NK_FORMULA_NOT:
+      TypeCheckNode(Nodes[Idx].Left);
+
+    NK_FORMULA_EXISTS, NK_FORMULA_FORALL:
+    Begin
+      TypeCheckNode(Nodes[Idx].Left);
+      TypeCheckNode(Nodes[Idx].Right);
+      If Nodes[Idx].Extra >= 0 Then
+        TypeCheckNode(Nodes[Idx].Extra);
+    End;
+
+    NK_FORMULA_IF:
+    Begin
+      TypeCheckNode(Nodes[Idx].Left);
+      TypeCheckNode(Nodes[Idx].Right);
+      If Nodes[Idx].Extra >= 0 Then
+        TypeCheckNode(Nodes[Idx].Extra);
+    End;
+
+    NK_EXPR_CALL:
+    Begin
+      Cur := Nodes[Idx].Left;
+      While Cur >= 0 Do
+      Begin
+        TypeCheckNode(Cur);
+        Cur := Nodes[Cur].Next;
+      End;
+      If Nodes[Idx].Right >= 0 Then
+        TypeCheckNode(Nodes[Idx].Right);
+    End;
+
+    NK_PRED_DECL:
+    Begin
+      Cur := Nodes[Idx].Left;
+      While Cur >= 0 Do
+      Begin
+        If (Nodes[Cur].Left >= 0) Then
+        Begin
+          LT := FindType(Nodes[Nodes[Cur].Left].Name);
+          If LT < 0 Then
+            TypeErrorMsg(Nodes[Cur].Line, Nodes[Cur].Col,
+              'type inconnu: ' + Nodes[Nodes[Cur].Left].Name);
+        End;
+        TypeCheckNode(Cur);
+        Cur := Nodes[Cur].Next;
+      End;
+      If Nodes[Idx].Right >= 0 Then
+      Begin
+        Cur := Nodes[Idx].Right;
+        While Cur >= 0 Do
+        Begin
+          TypeCheckNode(Cur);
+          Cur := Nodes[Cur].Next;
+        End;
+      End;
+    End;
+
+    NK_CLASS_DECL:
+    Begin
+      If Nodes[Idx].Extra >= 0 Then
+      Begin
+        LT := FindType(Nodes[Nodes[Idx].Extra].Name);
+        If LT < 0 Then
+          TypeErrorMsg(Nodes[Idx].Line, Nodes[Idx].Col,
+            'classe de base inconnue: ' +
+            Nodes[Nodes[Idx].Extra].Name);
+      End;
+      Cur := Nodes[Idx].Left;
+      While Cur >= 0 Do
+      Begin
+        TypeCheckNode(Cur);
+        Cur := Nodes[Cur].Next;
+      End;
+    End;
+
+    NK_SELECT:
+    Begin
+      Cur := Nodes[Idx].Left;
+      While Cur >= 0 Do
+      Begin
+        If (Nodes[Cur].Left >= 0) Then
+        Begin
+          LT := FindType(Nodes[Nodes[Cur].Left].Name);
+          If LT < 0 Then
+            TypeErrorMsg(Nodes[Cur].Line, Nodes[Cur].Col,
+              'type from inconnu: ' +
+              Nodes[Nodes[Cur].Left].Name);
+        End;
+        TypeCheckNode(Cur);
+        Cur := Nodes[Cur].Next;
+      End;
+      If Nodes[Idx].Right >= 0 Then
+        TypeCheckNode(Nodes[Idx].Right);
+      If Nodes[Idx].Extra >= 0 Then
+      Begin
+        Cur := Nodes[Idx].Extra;
+        While Cur >= 0 Do
+        Begin
+          TypeCheckNode(Cur);
+          Cur := Nodes[Cur].Next;
+        End;
+      End;
+    End;
+
+    NK_MODULE:
+    Begin
+      Cur := Nodes[Idx].Left;
+      While Cur >= 0 Do
+      Begin
+        TypeCheckNode(Cur);
+        Cur := Nodes[Cur].Next;
+      End;
+    End;
+
+  End;
+End;
+
+{ ---- TypeCheckAST : parcourir l AST et verifier les types ---- }
+
+Procedure TypeCheckAST;
+Begin
+  If RootNode < 0 Then Exit;
+  TypeErrors := 0;
+  ResolveNodeType(RootNode);
+  TypeCheckNode(RootNode);
+End;
+
+{ ---- DumpTypes : affichage de la table des types ------------- }
+
+Procedure DumpTypes;
+Var I : Integer;
+Begin
+  WriteLn('--- Table des types (', TypeCount, ' types) ---');
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    Write('  [', I, '] ', TypeTable[I].Name,
+          ' (', TypeKindName(TypeTable[I].Kind), ')');
+    If TypeTable[I].BaseType >= 0 Then
+      Write(' extends ', TypeTable[TypeTable[I].BaseType].Name);
+    If TypeTable[I].IsRef Then
+      Write(' [ref]');
+    WriteLn;
+  End;
+  WriteLn;
+End;
+
 { ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
 
 Procedure RunDatabaseCreate;
@@ -2140,12 +2759,23 @@ Begin
     LexOpened := True;
     LexInit;
     ASTInit;
+    InitTypeSystem;
     RootNode := ParseModule;
     WriteLn('Parsing termine : ', NodeCount, ' noeuds AST');
     WriteLn('Lignes lues     : ', TotalLines);
     WriteLn;
+
+    { TODO 4 : verification des types }
+    TypeCheckAST;
+    WriteLn('Types resolus   : ', TypeCount, ' types enregistres');
+    WriteLn('Erreurs de type : ', TypeErrors);
+    WriteLn;
+
     If Opts.DebugMode Then
+    Begin
+      DumpTypes;
       DumpAST(RootNode, 0);
+    End;
     LexClose;
   End
   Else
