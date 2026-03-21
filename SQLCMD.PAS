@@ -24,7 +24,7 @@
             Boucle REPL interactive (mode par defaut si pas de -q/-i)
             Affichage de l aide (-h) et version
 
-  TODO 02 - LECTURE DU FORMAT DE FICHIER MDF (EN-TETE)
+  TODO 02 - LECTURE DU FORMAT DE FICHIER MDF (EN-TETE) [IMPLEMENTE]
             Ouvrir le fichier .MDF en mode binaire (BlockRead)
             Lire le File Header (page 0) : signature, version,
               taille de page (8 Ko par defaut), nombre de pages
@@ -538,11 +538,86 @@ Const
   { Taille de ligne REPL }
   MAX_INPUT  = 4096;
 
+  { ---- Constantes MDF (TODO 02) ------------------------------ }
+  MDF_PAGE_SIZE      = 8192;   { taille d une page MDF en octets     }
+  MDF_PAGE_HDR_SIZE  = 96;     { taille de l en-tete de page         }
+  MDF_FILE_HDR_PAGE  = 0;      { numero de la page File Header       }
+  MDF_BOOT_PAGE      = 9;      { numero de la page Boot              }
+
+  { Types de pages MDF }
+  MDF_PT_DATA        = 1;      { Data Page                           }
+  MDF_PT_INDEX       = 2;      { Index Page                          }
+  MDF_PT_TEXTIMAGE   = 3;      { Text/Image (LOB) Page               }
+  MDF_PT_TEXTTREE    = 4;      { Text Tree Page                      }
+  MDF_PT_SORT        = 7;      { Sort Page                           }
+  MDF_PT_GAM         = 8;      { Global Allocation Map               }
+  MDF_PT_SGAM        = 9;      { Shared GAM                          }
+  MDF_PT_IAM         = 10;     { Index Allocation Map                }
+  MDF_PT_PFS         = 11;     { Page Free Space                     }
+  MDF_PT_BOOT        = 13;     { Boot Page                           }
+  MDF_PT_FILEHDR     = 15;     { File Header Page                    }
+  MDF_PT_DCM         = 16;     { Differential Changed Map            }
+  MDF_PT_BCM         = 17;     { Bulk Changed Map                    }
+
+  { Offsets dans l en-tete de page (96 octets) }
+  MDF_HDR_HEADERVER  = 0;      { 1 oct : version en-tete (=1)        }
+  MDF_HDR_TYPE       = 1;      { 1 oct : type de page                }
+  MDF_HDR_TYPEFLAG   = 2;      { 1 oct : drapeaux de type            }
+  MDF_HDR_LEVEL      = 3;      { 1 oct : niveau B-Tree (0=feuille)   }
+  MDF_HDR_FLAGBITS   = 4;      { 2 oct : drapeaux de page            }
+  MDF_HDR_INDEXID    = 6;      { 2 oct : ID index (deprecated)       }
+  MDF_HDR_PREVPAGE   = 8;      { 4 oct : page precedente (PageID)    }
+  MDF_HDR_PREVFILE   = 12;     { 2 oct : FileID page precedente      }
+  MDF_HDR_PMINLEN    = 14;     { 2 oct : taille fixe min record      }
+  MDF_HDR_NEXTPAGE   = 16;     { 4 oct : page suivante (PageID)      }
+  MDF_HDR_NEXTFILE   = 20;     { 2 oct : FileID page suivante        }
+  MDF_HDR_SLOTCNT    = 22;     { 2 oct : nombre de slots             }
+  MDF_HDR_OBJID      = 24;     { 4 oct : Object ID (deprecated)      }
+  MDF_HDR_FREECNT    = 28;     { 2 oct : octets libres               }
+  MDF_HDR_FREEDATA   = 30;     { 2 oct : offset 1er octet libre      }
+  MDF_HDR_RESERVEDCNT= 32;     { 2 oct : octets reserves             }
+
+  { Taille max du nom de base dans la Boot Page }
+  MDF_DBNAME_MAX     = 128;
+
 { ============================================================
   TYPES
   ============================================================ }
 Type
   TString = String[MAX_STR];
+
+  { ---- Buffer d une page MDF --------------------------------- }
+  TMdfPageBuf = Array[0..MDF_PAGE_SIZE - 1] Of Byte;
+
+  { ---- En-tete de page MDF decode (96 octets) ---------------- }
+  TMdfPageHeader = Record
+    HeaderVer   : Byte;        { +0  : version (toujours 1)          }
+    PageType    : Byte;        { +1  : type de page                  }
+    TypeFlagBits: Byte;        { +2  : drapeaux de type              }
+    Level       : Byte;        { +3  : niveau B-Tree                 }
+    FlagBits    : Word;        { +4  : drapeaux de page              }
+    IndexId     : Word;        { +6  : ID index                      }
+    PrevPage    : LongInt;     { +8  : page precedente               }
+    PrevFile    : Word;        { +12 : FileID page precedente        }
+    PMinLen     : Word;        { +14 : taille fixe min               }
+    NextPage    : LongInt;     { +16 : page suivante                 }
+    NextFile    : Word;        { +20 : FileID page suivante          }
+    SlotCnt     : Word;        { +22 : nombre de slots               }
+    ObjId       : LongInt;     { +24 : Object ID                     }
+    FreeCnt     : Word;        { +28 : octets libres                 }
+    FreeData    : Word;        { +30 : offset 1er libre              }
+    ReservedCnt : Word;        { +32 : octets reserves               }
+  End;
+
+  { ---- Informations de la Boot Page (page 9) ----------------- }
+  TMdfBootInfo = Record
+    DbName       : String[MDF_DBNAME_MAX]; { nom de la base          }
+    DBID         : Word;       { Database ID                          }
+    Status       : LongInt;    { status de la base                    }
+    CompatLevel  : Word;       { niveau de compatibilite              }
+    CreateDate   : LongInt;    { date de creation (raw)               }
+    Valid        : Boolean;    { True si boot page lue avec succes    }
+  End;
 
   { ---- Options de la ligne de commande ---------------------- }
   TOptions = Record
@@ -564,6 +639,12 @@ Var
   WarnCount  : Integer;
   OutF       : Text;
   OutFOpen   : Boolean;
+  { ---- MDF (TODO 02) ----------------------------------------- }
+  MdfF       : File;           { fichier MDF ouvert en binaire       }
+  MdfOpen    : Boolean;        { True si fichier MDF ouvert          }
+  MdfPageCnt : LongInt;        { nombre total de pages dans le MDF   }
+  PageBuf    : TMdfPageBuf;    { buffer de lecture d une page         }
+  BootInfo   : TMdfBootInfo;   { infos extraites de la Boot Page     }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -804,6 +885,258 @@ Begin
     WriteLn(S);
 End;
 
+{ ============================================================
+  TODO 02 - LECTURE DU FORMAT MDF (EN-TETE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Utilitaires de lecture Little-Endian -------------------- }
+
+Function ReadWord(Const Buf : TMdfPageBuf; Ofs : Integer) : Word;
+Begin
+  ReadWord := Buf[Ofs] Or (Word(Buf[Ofs + 1]) Shl 8);
+End;
+
+Function ReadLong(Const Buf : TMdfPageBuf; Ofs : Integer) : LongInt;
+Begin
+  ReadLong := LongInt(Buf[Ofs])
+           Or (LongInt(Buf[Ofs + 1]) Shl 8)
+           Or (LongInt(Buf[Ofs + 2]) Shl 16)
+           Or (LongInt(Buf[Ofs + 3]) Shl 24);
+End;
+
+{ ---- Decoder l en-tete de page (96 octets) ------------------- }
+
+Procedure ParsePageHeader(Const Buf : TMdfPageBuf;
+                          Var Hdr : TMdfPageHeader);
+Begin
+  Hdr.HeaderVer    := Buf[MDF_HDR_HEADERVER];
+  Hdr.PageType     := Buf[MDF_HDR_TYPE];
+  Hdr.TypeFlagBits := Buf[MDF_HDR_TYPEFLAG];
+  Hdr.Level        := Buf[MDF_HDR_LEVEL];
+  Hdr.FlagBits     := ReadWord(Buf, MDF_HDR_FLAGBITS);
+  Hdr.IndexId      := ReadWord(Buf, MDF_HDR_INDEXID);
+  Hdr.PrevPage     := ReadLong(Buf, MDF_HDR_PREVPAGE);
+  Hdr.PrevFile     := ReadWord(Buf, MDF_HDR_PREVFILE);
+  Hdr.PMinLen      := ReadWord(Buf, MDF_HDR_PMINLEN);
+  Hdr.NextPage     := ReadLong(Buf, MDF_HDR_NEXTPAGE);
+  Hdr.NextFile     := ReadWord(Buf, MDF_HDR_NEXTFILE);
+  Hdr.SlotCnt      := ReadWord(Buf, MDF_HDR_SLOTCNT);
+  Hdr.ObjId        := ReadLong(Buf, MDF_HDR_OBJID);
+  Hdr.FreeCnt      := ReadWord(Buf, MDF_HDR_FREECNT);
+  Hdr.FreeData     := ReadWord(Buf, MDF_HDR_FREEDATA);
+  Hdr.ReservedCnt  := ReadWord(Buf, MDF_HDR_RESERVEDCNT);
+End;
+
+{ ---- Nom de type de page (pour affichage) -------------------- }
+
+Function PageTypeName(PT : Byte) : TString;
+Begin
+  Case PT Of
+    MDF_PT_DATA      : PageTypeName := 'Data';
+    MDF_PT_INDEX     : PageTypeName := 'Index';
+    MDF_PT_TEXTIMAGE : PageTypeName := 'Text/Image';
+    MDF_PT_TEXTTREE  : PageTypeName := 'TextTree';
+    MDF_PT_SORT      : PageTypeName := 'Sort';
+    MDF_PT_GAM       : PageTypeName := 'GAM';
+    MDF_PT_SGAM      : PageTypeName := 'SGAM';
+    MDF_PT_IAM       : PageTypeName := 'IAM';
+    MDF_PT_PFS       : PageTypeName := 'PFS';
+    MDF_PT_BOOT      : PageTypeName := 'Boot';
+    MDF_PT_FILEHDR   : PageTypeName := 'FileHeader';
+    MDF_PT_DCM       : PageTypeName := 'DCM';
+    MDF_PT_BCM       : PageTypeName := 'BCM';
+  Else
+    PageTypeName := 'Unknown(' + IntToStr(PT) + ')';
+  End;
+End;
+
+{ ---- Lire une page par numero -------------------------------- }
+
+Function ReadPage(PageNum : LongInt;
+                  Var Buf : TMdfPageBuf) : Boolean;
+Var
+  BytesRead : {$IFDEF FPC}LongInt{$ELSE}Word{$ENDIF};
+  TargetOfs : LongInt;
+Begin
+  ReadPage := False;
+  If Not MdfOpen Then Exit;
+
+  TargetOfs := PageNum * MDF_PAGE_SIZE;
+  Seek(MdfF, TargetOfs);
+  If IOResult <> 0 Then Exit;
+
+  FillChar(Buf, SizeOf(Buf), 0);
+  BlockRead(MdfF, Buf, MDF_PAGE_SIZE, BytesRead);
+  If IOResult <> 0 Then Exit;
+
+  ReadPage := (BytesRead = MDF_PAGE_SIZE);
+End;
+
+{ ---- Ouvrir le fichier MDF ----------------------------------- }
+
+Procedure OpenMdfFile(Const FileName : TString);
+Var
+  Hdr     : TMdfPageHeader;
+  FileSz  : LongInt;
+Begin
+  MdfOpen := False;
+
+  Assign(MdfF, FileName);
+  Reset(MdfF, 1);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le fichier MDF: ' + FileName);
+  MdfOpen := True;
+
+  { Determiner la taille du fichier et le nombre de pages }
+  FileSz := FileSize(MdfF);
+  If IOResult <> 0 Then
+    FatalError('impossible de lire la taille du fichier MDF');
+  MdfPageCnt := FileSz Div MDF_PAGE_SIZE;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('  Taille fichier : ', FileSz, ' octets');
+    WriteLn('  Nombre de pages: ', MdfPageCnt);
+  End;
+
+  { Verifier taille minimale : au moins 10 pages (0..9) pour
+    contenir le File Header (0) et la Boot Page (9) }
+  If MdfPageCnt < 10 Then
+    FatalError('fichier MDF trop petit (' + IntToStr(MdfPageCnt) +
+               ' pages, minimum 10)');
+
+  { Lire la page 0 (File Header Page) et valider }
+  If Not ReadPage(MDF_FILE_HDR_PAGE, PageBuf) Then
+    FatalError('impossible de lire la page 0 (File Header)');
+
+  ParsePageHeader(PageBuf, Hdr);
+
+  If Hdr.PageType <> MDF_PT_FILEHDR Then
+    FatalError('page 0 : type attendu ' +
+               IntToStr(MDF_PT_FILEHDR) + ' (FileHeader), obtenu ' +
+               IntToStr(Hdr.PageType) + ' (' +
+               PageTypeName(Hdr.PageType) + ')');
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('  Page 0 (File Header) :');
+    WriteLn('    headerVer  = ', Hdr.HeaderVer);
+    WriteLn('    type       = ', Hdr.PageType,
+            ' (', PageTypeName(Hdr.PageType), ')');
+    WriteLn('    flagBits   = $', IntToStr(Hdr.FlagBits));
+    WriteLn('    slotCnt    = ', Hdr.SlotCnt);
+    WriteLn('    objId      = ', Hdr.ObjId);
+    WriteLn('    freeCnt    = ', Hdr.FreeCnt);
+    WriteLn('    freeData   = ', Hdr.FreeData);
+  End;
+End;
+
+{ ---- Extraire une chaine Unicode (UTF-16 LE) depuis le buf --- }
+
+Function ExtractUnicodeStr(Const Buf : TMdfPageBuf;
+                           Ofs, MaxChars : Integer) : TString;
+Var
+  I   : Integer;
+  Lo  : Byte;
+  S   : TString;
+Begin
+  S := '';
+  For I := 0 To MaxChars - 1 Do
+  Begin
+    Lo := Buf[Ofs + I * 2];
+    { Ignorer l octet haut (ASCII seulement) }
+    If Lo = 0 Then Break;      { fin de chaine }
+    If Length(S) < MAX_STR Then
+      S := S + Chr(Lo);
+  End;
+  ExtractUnicodeStr := S;
+End;
+
+{ ---- Lire la Boot Page (page 9, type 13) --------------------- }
+
+Procedure ReadBootPage;
+Var
+  Hdr : TMdfPageHeader;
+Begin
+  BootInfo.Valid := False;
+  BootInfo.DbName := '';
+  BootInfo.DBID := 0;
+  BootInfo.Status := 0;
+  BootInfo.CompatLevel := 0;
+  BootInfo.CreateDate := 0;
+
+  If Not MdfOpen Then Exit;
+
+  If Not ReadPage(MDF_BOOT_PAGE, PageBuf) Then
+  Begin
+    WarnMsg('impossible de lire la page 9 (Boot Page)');
+    Exit;
+  End;
+
+  ParsePageHeader(PageBuf, Hdr);
+
+  If Hdr.PageType <> MDF_PT_BOOT Then
+  Begin
+    WarnMsg('page 9 : type attendu ' + IntToStr(MDF_PT_BOOT) +
+            ' (Boot), obtenu ' + IntToStr(Hdr.PageType));
+    Exit;
+  End;
+
+  { Le corps de la Boot Page commence a l offset 96.
+    Les offsets ci-dessous sont des offsets typiques observes
+    dans les fichiers MDF de SQL Server 2005+.
+
+    Offset 96+0  : dbi_version (4 octets)
+    Offset 96+4  : dbi_createVersion (4 octets)
+    Offset 96+24 : dbi_status (4 octets)
+    Offset 96+100: dbi_dbname (128 caracteres Unicode = 256 octets)
+    Offset 96+356: dbi_dbid (2 octets)
+    Offset 96+396: dbi_cmptlevel (2 octets)
+  }
+
+  { Version du moteur de stockage }
+  { BootInfo.EngineVer := ReadLong(PageBuf, 96); }
+
+  { Status de la base }
+  BootInfo.Status := ReadLong(PageBuf, 96 + 24);
+
+  { Nom de la base de donnees (Unicode UTF-16 LE) }
+  BootInfo.DbName := ExtractUnicodeStr(PageBuf, 96 + 100,
+                                        MDF_DBNAME_MAX);
+
+  { Database ID }
+  BootInfo.DBID := ReadWord(PageBuf, 96 + 356);
+
+  { Niveau de compatibilite }
+  BootInfo.CompatLevel := ReadWord(PageBuf, 96 + 396);
+
+  BootInfo.Valid := True;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('  Page 9 (Boot Page) :');
+    WriteLn('    type       = ', Hdr.PageType,
+            ' (', PageTypeName(Hdr.PageType), ')');
+    WriteLn('    slotCnt    = ', Hdr.SlotCnt);
+    WriteLn('    dbName     = ', BootInfo.DbName);
+    WriteLn('    dbId       = ', BootInfo.DBID);
+    WriteLn('    status     = $', IntToStr(BootInfo.Status));
+    WriteLn('    cmptLevel  = ', BootInfo.CompatLevel);
+  End;
+End;
+
+{ ---- Fermer le fichier MDF ----------------------------------- }
+
+Procedure CloseMdfFile;
+Begin
+  If MdfOpen Then
+  Begin
+    Close(MdfF);
+    If IOResult <> 0 Then ; { ignorer les erreurs a la fermeture }
+    MdfOpen := False;
+  End;
+End;
+
 { ---- Execution d une requete SQL ----------------------------- }
 
 Procedure ExecuteQuery(Const SQL : TString);
@@ -905,6 +1238,7 @@ End;
 
 Procedure Cleanup;
 Begin
+  CloseMdfFile;
   If OutFOpen Then
   Begin
     Close(OutF);
@@ -919,6 +1253,9 @@ Begin
   ErrorCount := 0;
   WarnCount  := 0;
   OutFOpen   := False;
+  MdfOpen    := False;
+  MdfPageCnt := 0;
+  BootInfo.Valid := False;
 
   ParseArgs;
 
@@ -927,6 +1264,18 @@ Begin
 
   If Opts.Verbose Then
     WriteLn('  Fichier MDF : ', Opts.MdfFile);
+
+  { Ouvrir et lire l en-tete du fichier MDF (TODO 02) }
+  OpenMdfFile(Opts.MdfFile);
+  ReadBootPage;
+
+  If BootInfo.Valid Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('  Base de donnees : ', BootInfo.DbName);
+  End
+  Else
+    WarnMsg('boot page non valide, fonctionnement degrade');
 
   { Executer selon le mode }
   If Opts.Query <> '' Then
