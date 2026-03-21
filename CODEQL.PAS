@@ -39,6 +39,7 @@
       if, then, else, while, for, repeat, case, with, record, array,
       string, integer, boolean, real), gestion des commentaires
       (accolades, parenthese-etoile, double-barre oblique).
+      [IMPLEMENTE]
 
   6.  Implementer l'analyseur syntaxique du langage source (Pascal) :
       construction de l'AST complet du programme source avec les
@@ -320,6 +321,29 @@ Type
     IsRef    : Boolean;      { True si type reference (@...)     }
   End;
 
+  { TODO 5 : Tokens du langage source Pascal }
+  TSourceTokenKind = (
+    STK_EOF,         { fin de fichier                         }
+    STK_INTEGER,     { literal entier 42 $FF                  }
+    STK_FLOAT,       { literal flottant 3.14 1.5e3            }
+    STK_STRING,      { literal chaine 'abc'                   }
+    STK_IDENT,       { identificateur (non-mot-cle)           }
+    STK_KEYWORD,     { mot-cle Pascal reconnu                 }
+    STK_OP,          { operateur + - * / := = <> < > etc.     }
+    STK_PUNCT,       { ponctuation , ( ) : ; . [ ] ^          }
+    STK_COMMENT,     (* commentaire accolades, paren-etoile, // *)
+    STK_DIRECTIVE    (* directive de compilation $...           *)
+  );
+
+  TSourceToken = Record
+    Kind     : TSourceTokenKind;
+    Val      : TString;     { valeur textuelle brute              }
+    IntVal   : LongInt;     { valeur entiere (STK_INTEGER)        }
+    FloatVal : Real;        { valeur flottante (STK_FLOAT)        }
+    Line     : Integer;     { ligne source (1-base)               }
+    Col      : Integer;     { colonne source (1-base)             }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -348,6 +372,17 @@ Var
   TypeTable  : Array[0..MAX_TYPES - 1] Of TQLType;
   TypeCount  : Integer;      { nombre de types enregistres        }
   TypeErrors : Integer;      { nombre d erreurs de type           }
+
+  { Lexeur source Pascal (TODO 5) }
+  SrcLexF      : Text;        { handle du fichier source Pascal    }
+  SrcLexOpened : Boolean;      { fichier ouvert ?                   }
+  SrcLine      : TString;     { ligne courante                     }
+  SrcLineNo    : Integer;     { numero de ligne courante           }
+  SrcColNo     : Integer;     { colonne courante dans SrcLine      }
+  SrcEOF       : Boolean;     { fin de fichier atteinte ?          }
+  SrcToken     : TSourceToken; { token courant                     }
+  SrcTokenCount: LongInt;     { nombre total de tokens produits    }
+  SrcTotalLines: LongInt;     { nombre total de lignes lues        }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2709,6 +2744,714 @@ Begin
     WriteLn;
   End;
   WriteLn;
+End;
+
+{ ============================================================
+  TODO 05 - LEXEUR PASCAL (SOURCE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Reconnaissance des mots-cles Pascal -------------------- }
+
+Function IsPascalKeyword(Const S : TString) : Boolean;
+Var Low : TString;
+Begin
+  Low := StrLowerCase(S);
+  IsPascalKeyword :=
+    (Low = 'program')   Or (Low = 'unit')      Or (Low = 'uses')     Or
+    (Low = 'const')     Or (Low = 'type')      Or (Low = 'var')      Or
+    (Low = 'procedure') Or (Low = 'function')  Or (Low = 'begin')    Or
+    (Low = 'end')       Or (Low = 'if')        Or (Low = 'then')     Or
+    (Low = 'else')      Or (Low = 'while')     Or (Low = 'for')      Or
+    (Low = 'repeat')    Or (Low = 'until')     Or (Low = 'do')       Or
+    (Low = 'case')      Or (Low = 'with')      Or (Low = 'record')   Or
+    (Low = 'array')     Or (Low = 'string')    Or (Low = 'integer')  Or
+    (Low = 'boolean')   Or (Low = 'real')      Or (Low = 'of')       Or
+    (Low = 'to')        Or (Low = 'downto')    Or (Low = 'div')      Or
+    (Low = 'mod')       Or (Low = 'and')       Or (Low = 'or')       Or
+    (Low = 'not')       Or (Low = 'xor')       Or (Low = 'shl')      Or
+    (Low = 'shr')       Or (Low = 'nil')       Or (Low = 'set')      Or
+    (Low = 'file')      Or (Low = 'object')    Or (Low = 'class')    Or
+    (Low = 'interface') Or (Low = 'implementation') Or
+    (Low = 'inherited') Or (Low = 'in')        Or (Low = 'is')       Or
+    (Low = 'as')        Or (Low = 'try')       Or (Low = 'except')   Or
+    (Low = 'finally')   Or (Low = 'raise')     Or (Low = 'goto')     Or
+    (Low = 'label')     Or (Low = 'packed')    Or (Low = 'inline')   Or
+    (Low = 'forward')   Or (Low = 'external');
+End;
+
+{ ---- Lire la prochaine ligne source Pascal ------------------- }
+
+Procedure SrcLexNextLine;
+Begin
+  If SrcEOF Then Exit;
+  If EOF(SrcLexF) Then
+  Begin
+    SrcEOF   := True;
+    SrcLine  := '';
+    SrcColNo := 1;
+  End
+  Else
+  Begin
+    {$I-}
+    ReadLn(SrcLexF, SrcLine);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      SrcEOF   := True;
+      SrcLine  := '';
+      SrcColNo := 1;
+      Exit;
+    End;
+    Inc(SrcLineNo);
+    Inc(SrcTotalLines);
+    SrcColNo := 1;
+  End;
+End;
+
+{ ---- Initialiser le lexeur source Pascal --------------------- }
+
+Procedure SrcLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- Fermer le lexeur source Pascal -------------------------- }
+
+Procedure SrcLexClose;
+Begin
+  If SrcLexOpened Then
+  Begin
+    {$I-}
+    Close(SrcLexF);
+    {$I+}
+    If IOResult <> 0 Then { ignorer };
+    SrcLexOpened := False;
+  End;
+End;
+
+{ ---- Scanner un identificateur ou mot-cle Pascal ------------- }
+
+Procedure SrcLexScanIdent;
+Var S : TString;
+Begin
+  S := '';
+  While (SrcColNo <= Length(SrcLine)) And
+        IsIdentCont(SrcLine[SrcColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  SrcToken.Val    := S;
+  SrcToken.IntVal := 0;
+  If IsPascalKeyword(S) Then
+    SrcToken.Kind := STK_KEYWORD
+  Else
+    SrcToken.Kind := STK_IDENT;
+End;
+
+{ ---- Scanner un nombre Pascal (entier ou flottant) ----------- }
+
+Procedure SrcLexScanNumber;
+Var
+  N       : LongInt;
+  Ch      : Char;
+  NumStr  : TString;
+  IsFloat : Boolean;
+  Code    : Integer;
+Begin
+  N       := 0;
+  NumStr  := '';
+  IsFloat := False;
+  Ch      := SrcLine[SrcColNo];
+
+  { Hexadecimal Pascal : $FF }
+  If Ch = '$' Then
+  Begin
+    NumStr := '$';
+    Inc(SrcColNo);
+    While (SrcColNo <= Length(SrcLine)) And
+          IsHexDigit(SrcLine[SrcColNo]) Do
+    Begin
+      N := N * 16 + HexVal(SrcLine[SrcColNo]);
+      NumStr := NumStr + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+    SrcToken.Kind     := STK_INTEGER;
+    SrcToken.Val      := NumStr;
+    SrcToken.IntVal   := N;
+    SrcToken.FloatVal := 0.0;
+    Exit;
+  End;
+
+  { Decimal }
+  While (SrcColNo <= Length(SrcLine)) And
+        IsDigit(SrcLine[SrcColNo]) Do
+  Begin
+    N := N * 10 + (Ord(SrcLine[SrcColNo]) - Ord('0'));
+    NumStr := NumStr + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+
+  { Partie fractionnaire .ddd }
+  If (SrcColNo <= Length(SrcLine)) And
+     (SrcLine[SrcColNo] = '.') And
+     (SrcColNo < Length(SrcLine)) And
+     IsDigit(SrcLine[SrcColNo + 1]) Then
+  Begin
+    IsFloat := True;
+    NumStr := NumStr + '.';
+    Inc(SrcColNo);
+    While (SrcColNo <= Length(SrcLine)) And
+          IsDigit(SrcLine[SrcColNo]) Do
+    Begin
+      NumStr := NumStr + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+  End;
+
+  { Exposant E[+-]ddd }
+  If (SrcColNo <= Length(SrcLine)) And
+     ((SrcLine[SrcColNo] = 'e') Or (SrcLine[SrcColNo] = 'E')) Then
+  Begin
+    IsFloat := True;
+    NumStr := NumStr + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+    If (SrcColNo <= Length(SrcLine)) And
+       ((SrcLine[SrcColNo] = '+') Or (SrcLine[SrcColNo] = '-')) Then
+    Begin
+      NumStr := NumStr + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+    While (SrcColNo <= Length(SrcLine)) And
+          IsDigit(SrcLine[SrcColNo]) Do
+    Begin
+      NumStr := NumStr + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+  End;
+
+  If IsFloat Then
+  Begin
+    SrcToken.Kind   := STK_FLOAT;
+    SrcToken.Val    := NumStr;
+    SrcToken.IntVal := N;
+    Val(NumStr, SrcToken.FloatVal, Code);
+    If Code <> 0 Then
+      SrcToken.FloatVal := N;
+  End
+  Else
+  Begin
+    SrcToken.Kind     := STK_INTEGER;
+    SrcToken.Val      := NumStr;
+    SrcToken.IntVal   := N;
+    SrcToken.FloatVal := 0.0;
+  End;
+End;
+
+{ ---- Scanner une chaine Pascal entre apostrophes ------------- }
+
+Procedure SrcLexScanString;
+Var
+  S        : TString;
+  CharCode : Integer;
+Begin
+  S := '';
+  Inc(SrcColNo);  { sauter l apostrophe ouvrante }
+  While SrcColNo <= Length(SrcLine) Do
+  Begin
+    If SrcLine[SrcColNo] = '''' Then
+    Begin
+      { Apostrophe double '' = apostrophe dans la chaine }
+      If (SrcColNo < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 1] = '''') Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + '''';
+        Inc(SrcColNo, 2);
+      End
+      Else
+      Begin
+        Inc(SrcColNo);  { sauter l apostrophe fermante }
+        Break;
+      End;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+  End;
+  { Concatenation avec #nn (caractere code ASCII) }
+  While (SrcColNo <= Length(SrcLine)) And
+        (SrcLine[SrcColNo] = '#') Do
+  Begin
+    Inc(SrcColNo);
+    { Lire le code numerique }
+    If (SrcColNo <= Length(SrcLine)) And
+       IsDigit(SrcLine[SrcColNo]) Then
+    Begin
+      CharCode := 0;
+      While (SrcColNo <= Length(SrcLine)) And
+            IsDigit(SrcLine[SrcColNo]) Do
+      Begin
+        CharCode := CharCode * 10 +
+                    (Ord(SrcLine[SrcColNo]) - Ord('0'));
+        Inc(SrcColNo);
+      End;
+      If (CharCode >= 0) And (CharCode <= 255) And
+         (Length(S) < MAX_STR) Then
+        S := S + Chr(CharCode);
+    End;
+    { Si une autre chaine suit directement }
+    If (SrcColNo <= Length(SrcLine)) And
+       (SrcLine[SrcColNo] = '''') Then
+    Begin
+      Inc(SrcColNo);
+      While SrcColNo <= Length(SrcLine) Do
+      Begin
+        If SrcLine[SrcColNo] = '''' Then
+        Begin
+          If (SrcColNo < Length(SrcLine)) And
+             (SrcLine[SrcColNo + 1] = '''') Then
+          Begin
+            If Length(S) < MAX_STR Then
+              S := S + '''';
+            Inc(SrcColNo, 2);
+          End
+          Else
+          Begin
+            Inc(SrcColNo);
+            Break;
+          End;
+        End
+        Else
+        Begin
+          If Length(S) < MAX_STR Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End;
+    End;
+  End;
+  SrcToken.Kind   := STK_STRING;
+  SrcToken.Val    := S;
+  SrcToken.IntVal := 0;
+End;
+
+{ ---- Scanner un caractere # code (hors chaine) --------------- }
+
+Procedure SrcLexScanCharCode;
+Var
+  S        : TString;
+  CharCode : Integer;
+Begin
+  S := '';
+  Inc(SrcColNo);  { sauter le # }
+  CharCode := 0;
+  If (SrcColNo <= Length(SrcLine)) And
+     (SrcLine[SrcColNo] = '$') Then
+  Begin
+    { #$xx : code hexadecimal }
+    Inc(SrcColNo);
+    While (SrcColNo <= Length(SrcLine)) And
+          IsHexDigit(SrcLine[SrcColNo]) Do
+    Begin
+      CharCode := CharCode * 16 + HexVal(SrcLine[SrcColNo]);
+      Inc(SrcColNo);
+    End;
+  End
+  Else
+  Begin
+    { #nn : code decimal }
+    While (SrcColNo <= Length(SrcLine)) And
+          IsDigit(SrcLine[SrcColNo]) Do
+    Begin
+      CharCode := CharCode * 10 +
+                  (Ord(SrcLine[SrcColNo]) - Ord('0'));
+      Inc(SrcColNo);
+    End;
+  End;
+  If (CharCode >= 0) And (CharCode <= 255) Then
+    S := Chr(CharCode)
+  Else
+    S := '?';
+  SrcToken.Kind   := STK_STRING;
+  SrcToken.Val    := S;
+  SrcToken.IntVal := CharCode;
+End;
+
+(* ---- Sauter un commentaire accolades ----- *)
+
+Procedure SrcLexSkipBraceComment;
+Var S : TString;
+Begin
+  S := '';
+  Inc(SrcColNo);  (* sauter l accolade ouvrante *)
+  (* Verifier si c est une directive $... *)
+  If (SrcColNo <= Length(SrcLine)) And
+     (SrcLine[SrcColNo] = '$') Then
+  Begin
+    { Directive de compilation }
+    While (Not SrcEOF) Do
+    Begin
+      If SrcColNo > Length(SrcLine) Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + ' ';
+        SrcLexNextLine;
+      End
+      Else If SrcLine[SrcColNo] = '}' Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_DIRECTIVE;
+        SrcToken.Val  := S;
+        Exit;
+      End
+      Else
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+    End;
+    SrcToken.Kind := STK_DIRECTIVE;
+    SrcToken.Val  := S;
+    Exit;
+  End;
+
+  { Commentaire normal }
+  While Not SrcEOF Do
+  Begin
+    If SrcColNo > Length(SrcLine) Then
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + ' ';
+      SrcLexNextLine;
+    End
+    Else If SrcLine[SrcColNo] = '}' Then
+    Begin
+      Inc(SrcColNo);
+      SrcToken.Kind := STK_COMMENT;
+      SrcToken.Val  := S;
+      Exit;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+  End;
+  SrcToken.Kind := STK_COMMENT;
+  SrcToken.Val  := S;
+End;
+
+{ ---- Sauter un commentaire parenthese-etoile (* ... *) ------- }
+
+Procedure SrcLexSkipParenStarComment;
+Var S : TString;
+Begin
+  S := '';
+  Inc(SrcColNo, 2);  { sauter (* }
+  While Not SrcEOF Do
+  Begin
+    If SrcColNo > Length(SrcLine) Then
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + ' ';
+      SrcLexNextLine;
+    End
+    Else If (SrcLine[SrcColNo] = '*') And
+            (SrcColNo < Length(SrcLine)) And
+            (SrcLine[SrcColNo + 1] = ')') Then
+    Begin
+      Inc(SrcColNo, 2);
+      SrcToken.Kind := STK_COMMENT;
+      SrcToken.Val  := S;
+      Exit;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+  End;
+  SrcToken.Kind := STK_COMMENT;
+  SrcToken.Val  := S;
+End;
+
+{ ---- Sauter un commentaire de ligne // ----------------------- }
+
+Procedure SrcLexSkipLineComment;
+Var S : TString;
+Begin
+  S := Copy(SrcLine, SrcColNo + 2, Length(SrcLine) - SrcColNo - 1);
+  SrcToken.Kind := STK_COMMENT;
+  SrcToken.Val  := S;
+  SrcColNo := Length(SrcLine) + 1;
+End;
+
+{ ---- SrcLexNextToken : dispatcher principal du lexeur Pascal - }
+
+Procedure SrcLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Avancer a la ligne suivante si fin de ligne courante }
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    { Fin de fichier }
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      SrcToken.Line := SrcLineNo;
+      SrcToken.Col  := SrcColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    Scanning := False;
+
+    (* Commentaire accolades ou directive *)
+    If Ch = '{' Then
+    Begin
+      SrcLexSkipBraceComment;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Commentaire parenthese-etoile (* ... *) ou affectation }
+    If (Ch = '(') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      SrcLexSkipParenStarComment;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Commentaire de ligne // }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      SrcLexSkipLineComment;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines entre apostrophes }
+    If Ch = '''' Then
+    Begin
+      SrcLexScanString;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Caractere code #nn }
+    If Ch = '#' Then
+    Begin
+      SrcLexScanCharCode;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Identificateurs et mots-cles }
+    If IsIdentStart(Ch) Then
+    Begin
+      SrcLexScanIdent;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Nombres (decimaux ou hexadecimaux $FF) }
+    If IsDigit(Ch) Or (Ch = '$') Then
+    Begin
+      SrcLexScanNumber;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs multi-caracteres }
+    If (Ch = ':') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := ':=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    If (Ch = '.') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '.') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '..';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs simples }
+    If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+       (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or (Ch = '@') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := Ch;
+      Inc(SrcColNo);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Ponctuation }
+    If (Ch = '(') Or (Ch = ')') Or (Ch = '[') Or (Ch = ']') Or
+       (Ch = ',') Or (Ch = ';') Or (Ch = ':') Or (Ch = '.') Or
+       (Ch = '^') Then
+    Begin
+      SrcToken.Kind := STK_PUNCT;
+      SrcToken.Val  := Ch;
+      Inc(SrcColNo);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Caractere inconnu : emettre comme ponctuation }
+    SrcToken.Kind := STK_PUNCT;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- Nom textuel d un type de token source Pascal ------------ }
+
+Function SrcTokenKindName(K : TSourceTokenKind) : TString;
+Begin
+  Case K Of
+    STK_EOF       : SrcTokenKindName := 'EOF';
+    STK_INTEGER   : SrcTokenKindName := 'INT';
+    STK_FLOAT     : SrcTokenKindName := 'FLOAT';
+    STK_STRING    : SrcTokenKindName := 'STR';
+    STK_IDENT     : SrcTokenKindName := 'IDENT';
+    STK_KEYWORD   : SrcTokenKindName := 'KW';
+    STK_OP        : SrcTokenKindName := 'OP';
+    STK_PUNCT     : SrcTokenKindName := 'PUNCT';
+    STK_COMMENT   : SrcTokenKindName := 'COMMENT';
+    STK_DIRECTIVE : SrcTokenKindName := 'DIR';
+  Else
+    SrcTokenKindName := '?';
+  End;
+End;
+
+{ ---- Affichage debug d un token source Pascal ---------------- }
+
+Procedure PrintSrcToken(Const T : TSourceToken);
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', T.Line, ',', T.Col, '] ');
+  Case T.Kind Of
+    STK_EOF       : Write('EOF');
+    STK_INTEGER   : Write('INT(', T.IntVal, ')');
+    STK_FLOAT     : Write('FLOAT(', T.Val, ')');
+    STK_STRING    : Write('STR(''', T.Val, ''')');
+    STK_IDENT     : Write('IDENT(', T.Val, ')');
+    STK_KEYWORD   : Write('KW(', T.Val, ')');
+    STK_OP        : Write('OP(', T.Val, ')');
+    STK_PUNCT     : Write('PUNCT(', T.Val, ')');
+    STK_COMMENT   : Write('COMMENT(', T.Val, ')');
+    STK_DIRECTIVE : Write('DIR(', T.Val, ')');
+  End;
+  WriteLn;
+End;
+
+{ ---- Dump complet de tous les tokens d un fichier Pascal ----- }
+
+Procedure DumpSrcTokens(Const FileName : TString);
+Begin
+  Assign(SrcLexF, FileName);
+  {$I-}
+  Reset(SrcLexF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('CODEQL: impossible d''ouvrir le fichier source: ', FileName);
+    Exit;
+  End;
+  SrcLexOpened := True;
+  SrcLexInit;
+  WriteLn('--- Tokens source Pascal : ', FileName, ' ---');
+  Repeat
+    SrcLexNextToken;
+    PrintSrcToken(SrcToken);
+  Until SrcToken.Kind = STK_EOF;
+  WriteLn('--- ', SrcTokenCount, ' tokens, ',
+          SrcTotalLines, ' lignes ---');
+  WriteLn;
+  SrcLexClose;
 End;
 
 { ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
