@@ -120,7 +120,7 @@
       au schema SARIF v2.1.0 avec les runs, les resultats, les
       locations (fichier, ligne, colonne), les messages, les
       niveaux de severite (error, warning, note), et les
-      codeFlows pour le suivi de teinte.
+      codeFlows pour le suivi de teinte. [IMPLEMENTE]
 
   19. Implementer la sortie au format CSV et texte : generation de
       tableaux de resultats formattes avec les colonnes selectionnees,
@@ -11404,6 +11404,427 @@ Begin
     End;
   End;
   WriteLn;
+End;
+
+{ ============================================================
+  TODO 18 - SORTIE AU FORMAT SARIF v2.1.0 [IMPLEMENTE]
+  ============================================================ }
+
+{ Echapper une chaine pour JSON : guillemets, antislash, retour
+  chariot. Conforme a RFC 8259.                                  }
+Function SarifEscStr(Const S : TString) : TString;
+Var
+  R : TString;
+  I : Integer;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    Case S[I] Of
+      '"' : R := R + '\"';
+      '\' : R := R + '\\';
+      #8  : R := R + '\b';
+      #9  : R := R + '\t';
+      #10 : R := R + '\n';
+      #12 : R := R + '\f';
+      #13 : R := R + '\r';
+    Else
+      If Ord(S[I]) < 32 Then
+        { caracteres de controle non imprimables : ignorer }
+      Else
+        R := R + S[I];
+    End;
+  End;
+  SarifEscStr := R;
+End;
+
+{ Convertir un TDbSeverity en niveau SARIF (error/warning/note) }
+Function SarifSeverity(S : TDbSeverity) : TString;
+Begin
+  Case S Of
+    DSEV_ERROR   : SarifSeverity := 'error';
+    DSEV_WARNING : SarifSeverity := 'warning';
+    DSEV_NOTE    : SarifSeverity := 'note';
+  Else
+    SarifSeverity := 'note';
+  End;
+End;
+
+{ Convertir un TSecQueryKind en identifiant de regle SARIF }
+Function SarifRuleId(K : TSecQueryKind) : TString;
+Begin
+  Case K Of
+    SQK_CMD_INJECTION   : SarifRuleId := 'pascal/command-injection';
+    SQK_BUFFER_OVERFLOW : SarifRuleId := 'pascal/buffer-overflow';
+    SQK_RESOURCE_LEAK   : SarifRuleId := 'pascal/resource-leak';
+    SQK_UNINIT_VAR      : SarifRuleId := 'pascal/uninitialized-variable';
+  Else
+    SarifRuleId := 'pascal/unknown';
+  End;
+End;
+
+{ Description courte d une regle de securite }
+Function SarifRuleDesc(K : TSecQueryKind) : TString;
+Begin
+  Case K Of
+    SQK_CMD_INJECTION   : SarifRuleDesc := 'Command injection vulnerability';
+    SQK_BUFFER_OVERFLOW : SarifRuleDesc := 'Potential buffer overflow';
+    SQK_RESOURCE_LEAK   : SarifRuleDesc := 'Resource leak detected';
+    SQK_UNINIT_VAR      : SarifRuleDesc := 'Use of uninitialized variable';
+  Else
+    SarifRuleDesc := 'Unknown security issue';
+  End;
+End;
+
+{ Ecrire le rapport SARIF v2.1.0 complet dans un fichier ou la console.
+  Genere un JSON conforme au schema SARIF :
+    - $schema + version
+    - runs[] avec tool.driver (name, version, rules[])
+    - results[] avec ruleId, level, message, locations[], codeFlows[]
+}
+Procedure WriteSarifReport(Const FileName : TString);
+Var
+  F           : Text;
+  ToFile      : Boolean;
+  I, J        : Integer;
+  A           : TSecAlert;
+  LocFile     : TString;
+  RulesWritten: Array[0..4] Of Boolean;
+  NeedComma   : Boolean;
+  TA          : TTaintAlert;
+  Src         : TTaintSource;
+  Snk         : TTaintSink;
+Begin
+  ToFile := (FileName <> '');
+  If ToFile Then
+  Begin
+    Assign(F, FileName);
+    {$I-}
+    Rewrite(F);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      WriteLn('SARIF: impossible d''ouvrir: ', FileName);
+      Exit;
+    End;
+  End;
+
+  { --- Helper: ecrire vers fichier ou stdout --- }
+  { On utilise F si ToFile, sinon Output          }
+
+  { ---- En-tete SARIF ---- }
+  If ToFile Then
+  Begin
+    WriteLn(F, '{');
+    WriteLn(F, '  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",');
+    WriteLn(F, '  "version": "2.1.0",');
+    WriteLn(F, '  "runs": [');
+    WriteLn(F, '    {');
+    WriteLn(F, '      "tool": {');
+    WriteLn(F, '        "driver": {');
+    WriteLn(F, '          "name": "codeql-pascal",');
+    WriteLn(F, '          "version": "1.0.0",');
+    WriteLn(F, '          "informationUri": "https://www.gladir.com/dev-cools",');
+  End
+  Else
+  Begin
+    WriteLn('{');
+    WriteLn('  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",');
+    WriteLn('  "version": "2.1.0",');
+    WriteLn('  "runs": [');
+    WriteLn('    {');
+    WriteLn('      "tool": {');
+    WriteLn('        "driver": {');
+    WriteLn('          "name": "codeql-pascal",');
+    WriteLn('          "version": "1.0.0",');
+    WriteLn('          "informationUri": "https://www.gladir.com/dev-cools",');
+  End;
+
+  { ---- rules[] ---- }
+  For I := 0 To 4 Do
+    RulesWritten[I] := False;
+  { Determiner quelles regles sont utilisees }
+  For I := 0 To SecAlertCount - 1 Do
+    RulesWritten[Ord(SecAlerts[I].Kind)] := True;
+
+  If ToFile Then
+    Write(F, '          "rules": [')
+  Else
+    Write('          "rules": [');
+
+  NeedComma := False;
+  For I := 1 To 4 Do { SQK_CMD_INJECTION..SQK_UNINIT_VAR }
+  Begin
+    If RulesWritten[I] Then
+    Begin
+      If NeedComma Then
+      Begin
+        If ToFile Then WriteLn(F, ',') Else WriteLn(',');
+      End
+      Else
+      Begin
+        If ToFile Then WriteLn(F) Else WriteLn;
+      End;
+      If ToFile Then
+      Begin
+        WriteLn(F, '            {');
+        WriteLn(F, '              "id": "', SarifRuleId(TSecQueryKind(I)), '",');
+        WriteLn(F, '              "shortDescription": {');
+        WriteLn(F, '                "text": "', SarifEscStr(SarifRuleDesc(TSecQueryKind(I))), '"');
+        WriteLn(F, '              },');
+        WriteLn(F, '              "defaultConfiguration": {');
+        WriteLn(F, '                "level": "warning"');
+        WriteLn(F, '              }');
+        Write(F,   '            }');
+      End
+      Else
+      Begin
+        WriteLn('            {');
+        WriteLn('              "id": "', SarifRuleId(TSecQueryKind(I)), '",');
+        WriteLn('              "shortDescription": {');
+        WriteLn('                "text": "', SarifEscStr(SarifRuleDesc(TSecQueryKind(I))), '"');
+        WriteLn('              },');
+        WriteLn('              "defaultConfiguration": {');
+        WriteLn('                "level": "warning"');
+        WriteLn('              }');
+        Write(  '            }');
+      End;
+      NeedComma := True;
+    End;
+  End;
+  If ToFile Then
+  Begin
+    WriteLn(F);
+    WriteLn(F, '          ]');
+    WriteLn(F, '        }');
+    WriteLn(F, '      },');
+  End
+  Else
+  Begin
+    WriteLn;
+    WriteLn('          ]');
+    WriteLn('        }');
+    WriteLn('      },');
+  End;
+
+  { ---- results[] ---- }
+  If ToFile Then
+    Write(F, '      "results": [')
+  Else
+    Write('      "results": [');
+
+  For I := 0 To SecAlertCount - 1 Do
+  Begin
+    A := SecAlerts[I];
+    If I > 0 Then
+    Begin
+      If ToFile Then WriteLn(F, ',') Else WriteLn(',');
+    End
+    Else
+    Begin
+      If ToFile Then WriteLn(F) Else WriteLn;
+    End;
+
+    { Determiner le nom du fichier source }
+    If DbFileCnt > 0 Then
+      LocFile := SarifEscStr(DbFiles[0].Name)
+    Else
+      LocFile := 'unknown.pas';
+
+    If ToFile Then
+    Begin
+      WriteLn(F, '        {');
+      WriteLn(F, '          "ruleId": "', SarifRuleId(A.Kind), '",');
+      WriteLn(F, '          "level": "', SarifSeverity(A.Severity), '",');
+      WriteLn(F, '          "message": {');
+      WriteLn(F, '            "text": "', SarifEscStr(A.Message), '"');
+      WriteLn(F, '          },');
+      WriteLn(F, '          "locations": [');
+      WriteLn(F, '            {');
+      WriteLn(F, '              "physicalLocation": {');
+      WriteLn(F, '                "artifactLocation": {');
+      WriteLn(F, '                  "uri": "', LocFile, '"');
+      WriteLn(F, '                },');
+      WriteLn(F, '                "region": {');
+      WriteLn(F, '                  "startLine": ', A.Line, ',');
+      WriteLn(F, '                  "startColumn": ', A.Col);
+      WriteLn(F, '                }');
+      WriteLn(F, '              }');
+      WriteLn(F, '            }');
+      WriteLn(F, '          ]');
+    End
+    Else
+    Begin
+      WriteLn('        {');
+      WriteLn('          "ruleId": "', SarifRuleId(A.Kind), '",');
+      WriteLn('          "level": "', SarifSeverity(A.Severity), '",');
+      WriteLn('          "message": {');
+      WriteLn('            "text": "', SarifEscStr(A.Message), '"');
+      WriteLn('          },');
+      WriteLn('          "locations": [');
+      WriteLn('            {');
+      WriteLn('              "physicalLocation": {');
+      WriteLn('                "artifactLocation": {');
+      WriteLn('                  "uri": "', LocFile, '"');
+      WriteLn('                },');
+      WriteLn('                "region": {');
+      WriteLn('                  "startLine": ', A.Line, ',');
+      WriteLn('                  "startColumn": ', A.Col);
+      WriteLn('                }');
+      WriteLn('              }');
+      WriteLn('            }');
+      WriteLn('          ]');
+    End;
+
+    { ---- codeFlows[] pour les alertes de type injection de commandes
+           (SQK_CMD_INJECTION) : on cherche un TTaintAlert correspondant. }
+    If A.Kind = SQK_CMD_INJECTION Then
+    Begin
+      For J := 0 To TaintAlertCount - 1 Do
+      Begin
+        TA := TaintAlerts[J];
+        Src := TaintSources[TA.SrcIdx];
+        Snk := TaintSinks[TA.SinkIdx];
+        { Verifier que le puits correspond a la meme ligne }
+        If (Snk.Line = A.Line) And (Snk.Kind = TNK_EXEC) Then
+        Begin
+          If ToFile Then
+          Begin
+            WriteLn(F, ',');
+            WriteLn(F, '          "codeFlows": [');
+            WriteLn(F, '            {');
+            WriteLn(F, '              "threadFlows": [');
+            WriteLn(F, '                {');
+            WriteLn(F, '                  "locations": [');
+            { Source }
+            WriteLn(F, '                    {');
+            WriteLn(F, '                      "location": {');
+            WriteLn(F, '                        "physicalLocation": {');
+            WriteLn(F, '                          "artifactLocation": {');
+            WriteLn(F, '                            "uri": "', LocFile, '"');
+            WriteLn(F, '                          },');
+            WriteLn(F, '                          "region": {');
+            WriteLn(F, '                            "startLine": ', Src.Line, ',');
+            WriteLn(F, '                            "startColumn": ', Src.Col);
+            WriteLn(F, '                          }');
+            WriteLn(F, '                        },');
+            WriteLn(F, '                        "message": {');
+            WriteLn(F, '                          "text": "Taint source"');
+            WriteLn(F, '                        }');
+            WriteLn(F, '                      }');
+            WriteLn(F, '                    },');
+            { Sink }
+            WriteLn(F, '                    {');
+            WriteLn(F, '                      "location": {');
+            WriteLn(F, '                        "physicalLocation": {');
+            WriteLn(F, '                          "artifactLocation": {');
+            WriteLn(F, '                            "uri": "', LocFile, '"');
+            WriteLn(F, '                          },');
+            WriteLn(F, '                          "region": {');
+            WriteLn(F, '                            "startLine": ', Snk.Line, ',');
+            WriteLn(F, '                            "startColumn": ', Snk.Col);
+            WriteLn(F, '                          }');
+            WriteLn(F, '                        },');
+            WriteLn(F, '                        "message": {');
+            WriteLn(F, '                          "text": "Taint sink"');
+            WriteLn(F, '                        }');
+            WriteLn(F, '                      }');
+            WriteLn(F, '                    }');
+            WriteLn(F, '                  ]');
+            WriteLn(F, '                }');
+            WriteLn(F, '              ]');
+            WriteLn(F, '            }');
+            WriteLn(F, '          ]');
+          End
+          Else
+          Begin
+            WriteLn(',');
+            WriteLn('          "codeFlows": [');
+            WriteLn('            {');
+            WriteLn('              "threadFlows": [');
+            WriteLn('                {');
+            WriteLn('                  "locations": [');
+            WriteLn('                    {');
+            WriteLn('                      "location": {');
+            WriteLn('                        "physicalLocation": {');
+            WriteLn('                          "artifactLocation": {');
+            WriteLn('                            "uri": "', LocFile, '"');
+            WriteLn('                          },');
+            WriteLn('                          "region": {');
+            WriteLn('                            "startLine": ', Src.Line, ',');
+            WriteLn('                            "startColumn": ', Src.Col);
+            WriteLn('                          }');
+            WriteLn('                        },');
+            WriteLn('                        "message": {');
+            WriteLn('                          "text": "Taint source"');
+            WriteLn('                        }');
+            WriteLn('                      }');
+            WriteLn('                    },');
+            WriteLn('                    {');
+            WriteLn('                      "location": {');
+            WriteLn('                        "physicalLocation": {');
+            WriteLn('                          "artifactLocation": {');
+            WriteLn('                            "uri": "', LocFile, '"');
+            WriteLn('                          },');
+            WriteLn('                          "region": {');
+            WriteLn('                            "startLine": ', Snk.Line, ',');
+            WriteLn('                            "startColumn": ', Snk.Col);
+            WriteLn('                          }');
+            WriteLn('                        },');
+            WriteLn('                        "message": {');
+            WriteLn('                          "text": "Taint sink"');
+            WriteLn('                        }');
+            WriteLn('                      }');
+            WriteLn('                    }');
+            WriteLn('                  ]');
+            WriteLn('                }');
+            WriteLn('              ]');
+            WriteLn('            }');
+            WriteLn('          ]');
+          End;
+          Break; { un seul codeFlow par resultat }
+        End;
+      End; { for J }
+    End; { if CMD_INJECTION }
+
+    { Fermer le result }
+    If ToFile Then
+      Write(F, '        }')
+    Else
+      Write('        }');
+  End; { for I }
+
+  { ---- Pied de page SARIF ---- }
+  If ToFile Then
+  Begin
+    WriteLn(F);
+    WriteLn(F, '      ]');
+    WriteLn(F, '    }');
+    WriteLn(F, '  ]');
+    WriteLn(F, '}');
+  End
+  Else
+  Begin
+    WriteLn;
+    WriteLn('      ]');
+    WriteLn('    }');
+    WriteLn('  ]');
+    WriteLn('}');
+  End;
+
+  If ToFile Then
+  Begin
+    Close(F);
+    WriteLn('SARIF: rapport ecrit dans ', FileName);
+  End;
+End;
+
+{ Procedure d entree pour la generation SARIF.
+  Utilise le fichier de sortie configure dans les options
+  ou ecrit sur la sortie standard.                         }
+Procedure DumpSarif;
+Begin
+  WriteSarifReport(Opts.OutputFile);
 End;
 
 { ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
