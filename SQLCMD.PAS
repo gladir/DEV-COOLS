@@ -43,7 +43,7 @@
             Lire le Page Free Space (PFS) pour l espace libre
             Naviguer dans les IAM chains pour chaque objet
 
-  TODO 04 - LECTURE DES PAGES DE DONNEES (DATA PAGES)
+  TODO 04 - LECTURE DES PAGES DE DONNEES (DATA PAGES) [IMPLEMENTE]
             Decoder le Page Header : pageId, type, level,
               flagBits, indexId, objectId, prevPage, nextPage,
               slotCnt, freeData, freeCnt, reservedCnt, lsn
@@ -610,6 +610,31 @@ Const
   MDF_PFS_MIXED_EXT  = $20;    { bit 5 : extent mixte                }
   MDF_PFS_ALLOCATED  = $40;    { bit 6 : page allouee                }
 
+  { ---- Constantes pages de donnees (TODO 04) ----------------- }
+  MDF_SLOT_ENTRY_SIZE = 2;      { taille d un slot (2 octets)         }
+  MDF_ROW_STATUSBITS  = 0;      { offset StatusBits A dans le row     }
+  MDF_ROW_STATUSB     = 1;      { offset StatusBits B dans le row     }
+  MDF_ROW_FIXEDLEN    = 2;      { offset taille fixe (2 oct.)         }
+
+  { Masques StatusBits A }
+  MDF_REC_TYPE_MASK   = $0E;    { bits 1-3 : type d enregistrement    }
+  MDF_REC_HAS_NULL    = $10;    { bit 4 : bitmap NULL present         }
+  MDF_REC_HAS_VAR     = $20;    { bit 5 : colonnes variables          }
+  MDF_REC_HAS_VERSION = $40;    { bit 6 : versioning tag              }
+
+  { Types d enregistrement (bits 1-3 de StatusBits A, decales) }
+  MDF_RECTYPE_PRIMARY    = 0;   { enregistrement principal            }
+  MDF_RECTYPE_FORWARDED  = 1;   { forwarded record                    }
+  MDF_RECTYPE_FWDSTUB    = 2;   { forwarding stub                     }
+  MDF_RECTYPE_INDEX      = 3;   { index record                        }
+  MDF_RECTYPE_BLOB       = 4;   { blob fragment                       }
+  MDF_RECTYPE_GHOST_IDX  = 5;   { ghost index record                  }
+  MDF_RECTYPE_GHOST_DATA = 6;   { ghost data record                   }
+  MDF_RECTYPE_GHOST_VER  = 7;   { ghost version record                }
+
+  { Nombre maximum de slots par page }
+  MDF_MAX_SLOTS      = 1000;    { max theorique de slots par page     }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -673,6 +698,33 @@ Type
     SinglePages : Array[0..MDF_IAM_SLOT_COUNT - 1] Of TMdfPageRef;
                                { pages individuelles (extent mixte)   }
     Valid       : Boolean;     { True si page IAM lue avec succes     }
+  End;
+
+  { ---- Slot Array d une page de donnees (TODO 04) ------------- }
+  TMdfSlotArray = Array[0..MDF_MAX_SLOTS - 1] Of Word;
+
+  { ---- En-tete d enregistrement decode (TODO 04) -------------- }
+  TMdfRowHeader = Record
+    StatusA     : Byte;        { StatusBits A                         }
+    StatusB     : Byte;        { StatusBits B                         }
+    RecType     : Byte;        { type d enregistrement (bits 1-3)     }
+    HasNullBmp  : Boolean;     { bit 4 : bitmap NULL present          }
+    HasVarCols  : Boolean;     { bit 5 : colonnes variables           }
+    HasVersion  : Boolean;     { bit 6 : versioning tag               }
+    FixedLen    : Word;        { taille donnees fixes (incl. status)  }
+    ColCount    : Word;        { nombre de colonnes                   }
+    NullBmpSize : Word;        { taille du bitmap NULL en octets      }
+    VarColCount : Word;        { nombre de colonnes variables         }
+    RowSize     : Word;        { taille totale de l enregistrement    }
+    Valid       : Boolean;     { True si decode avec succes           }
+  End;
+
+  { ---- Information d une page de donnees (TODO 04) ------------ }
+  TMdfDataPageInfo = Record
+    Header      : TMdfPageHeader; { en-tete de page                  }
+    SlotCnt     : Word;        { nombre de slots                      }
+    Slots       : TMdfSlotArray; { offsets des enregistrements        }
+    Valid       : Boolean;     { True si page lue avec succes         }
   End;
 
   { ---- Options de la ligne de commande ---------------------- }
@@ -1614,6 +1666,377 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 04 - LECTURE DES PAGES DE DONNEES (DATA PAGES) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Conversion d un octet en hexadecimal -------------------- }
+
+Function ByteToHex(B : Byte) : TString;
+Const
+  HexDigits : Array[0..15] Of Char = '0123456789ABCDEF';
+Begin
+  ByteToHex := HexDigits[B Shr 4] + HexDigits[B And $0F];
+End;
+
+{ ---- Nom du type d enregistrement (StatusBits A bits 1-3) ---- }
+
+Function RecTypeName(RT : Byte) : TString;
+Begin
+  Case RT Of
+    MDF_RECTYPE_PRIMARY    : RecTypeName := 'Primary';
+    MDF_RECTYPE_FORWARDED  : RecTypeName := 'Forwarded';
+    MDF_RECTYPE_FWDSTUB    : RecTypeName := 'FwdStub';
+    MDF_RECTYPE_INDEX      : RecTypeName := 'Index';
+    MDF_RECTYPE_BLOB       : RecTypeName := 'Blob';
+    MDF_RECTYPE_GHOST_IDX  : RecTypeName := 'GhostIdx';
+    MDF_RECTYPE_GHOST_DATA : RecTypeName := 'GhostData';
+    MDF_RECTYPE_GHOST_VER  : RecTypeName := 'GhostVer';
+  Else
+    RecTypeName := 'Unknown(' + IntToStr(RT) + ')';
+  End;
+End;
+
+{ ---- Lire le slot array d une page de donnees ---------------- }
+{ Le slot array est situe en fin de page, croissant vers le      }
+{ debut. Slot[0] est a offset PageSize-2, Slot[1] a PageSize-4. }
+{ Chaque entree est un Word (2 octets, Little Endian) indiquant  }
+{ l offset du debut de l enregistrement dans la page.            }
+
+Procedure ReadSlotArray(Const Buf : TMdfPageBuf;
+                        SlotCnt : Word;
+                        Var Slots : TMdfSlotArray);
+Var
+  I   : Integer;
+  Ofs : Integer;
+  SC  : Word;
+Begin
+  FillChar(Slots, SizeOf(Slots), 0);
+  SC := SlotCnt;
+  If SC > MDF_MAX_SLOTS Then
+    SC := MDF_MAX_SLOTS;
+  For I := 0 To SC - 1 Do
+  Begin
+    Ofs := MDF_PAGE_SIZE - MDF_SLOT_ENTRY_SIZE * (I + 1);
+    If (Ofs >= MDF_PAGE_HDR_SIZE) And (Ofs + 1 < MDF_PAGE_SIZE) Then
+      Slots[I] := ReadWord(Buf, Ofs)
+    Else
+      Slots[I] := 0;
+  End;
+End;
+
+{ ---- Decoder l en-tete d un enregistrement -------------------- }
+{ Lit les StatusBits, la taille fixe, le nombre de colonnes,     }
+{ le bitmap NULL, et les informations sur les colonnes variables. }
+
+Procedure ParseRowHeader(Const Buf : TMdfPageBuf;
+                          RowOfs : Word;
+                          Var RH : TMdfRowHeader);
+Var
+  NullBmpOfs : Word;
+  VarOfs     : Word;
+  LastVarEnd : Word;
+Begin
+  RH.Valid       := False;
+  RH.StatusA     := 0;
+  RH.StatusB     := 0;
+  RH.RecType     := 0;
+  RH.HasNullBmp  := False;
+  RH.HasVarCols  := False;
+  RH.HasVersion  := False;
+  RH.FixedLen    := 0;
+  RH.ColCount    := 0;
+  RH.NullBmpSize := 0;
+  RH.VarColCount := 0;
+  RH.RowSize     := 0;
+
+  { Verifier les limites minimales : 4 octets min }
+  If RowOfs + 4 > MDF_PAGE_SIZE Then Exit;
+
+  { StatusBits A et B }
+  RH.StatusA := Buf[RowOfs + MDF_ROW_STATUSBITS];
+  RH.StatusB := Buf[RowOfs + MDF_ROW_STATUSB];
+
+  { Type d enregistrement (bits 1-3 de StatusA, decales a droite) }
+  RH.RecType := (RH.StatusA And MDF_REC_TYPE_MASK) Shr 1;
+
+  { Drapeaux de l enregistrement }
+  RH.HasNullBmp := (RH.StatusA And MDF_REC_HAS_NULL) <> 0;
+  RH.HasVarCols := (RH.StatusA And MDF_REC_HAS_VAR) <> 0;
+  RH.HasVersion := (RH.StatusA And MDF_REC_HAS_VERSION) <> 0;
+
+  { Taille des donnees fixes (offset de fin de zone fixe) }
+  RH.FixedLen := ReadWord(Buf, RowOfs + MDF_ROW_FIXEDLEN);
+
+  { Validation : FixedLen minimum = 4 (status + fixedlen) }
+  If RH.FixedLen < 4 Then
+    RH.FixedLen := 4;
+  If RowOfs + RH.FixedLen > MDF_PAGE_SIZE Then Exit;
+
+  { Apres les donnees fixes : nombre de colonnes (2 octets) }
+  NullBmpOfs := RowOfs + RH.FixedLen;
+  If NullBmpOfs + 2 > MDF_PAGE_SIZE Then
+  Begin
+    RH.RowSize := RH.FixedLen;
+    RH.Valid := True;
+    Exit;
+  End;
+
+  RH.ColCount := ReadWord(Buf, NullBmpOfs);
+
+  { Bitmap NULL : ceil(ColCount / 8) octets }
+  If RH.HasNullBmp And (RH.ColCount > 0) Then
+    RH.NullBmpSize := (RH.ColCount + 7) Div 8
+  Else
+    RH.NullBmpSize := 0;
+
+  { Taille de base : fixe + colcount(2) + null bitmap }
+  RH.RowSize := RH.FixedLen + 2 + RH.NullBmpSize;
+
+  { Colonnes a longueur variable }
+  If RH.HasVarCols Then
+  Begin
+    VarOfs := NullBmpOfs + 2 + RH.NullBmpSize;
+    If VarOfs + 2 <= MDF_PAGE_SIZE Then
+    Begin
+      RH.VarColCount := ReadWord(Buf, VarOfs);
+      { Ajouter 2 octets pour le compteur de colonnes variables }
+      RH.RowSize := RH.FixedLen + 2 + RH.NullBmpSize + 2;
+
+      If (RH.VarColCount > 0) And
+         (VarOfs + 2 + LongInt(RH.VarColCount) * 2 <=
+          MDF_PAGE_SIZE) Then
+      Begin
+        { Le dernier offset variable donne la taille totale du row }
+        LastVarEnd := ReadWord(Buf,
+          VarOfs + 2 + (RH.VarColCount - 1) * 2);
+        { Masquer le bit de poids fort (indicateur complexe) }
+        LastVarEnd := LastVarEnd And $7FFF;
+        If LastVarEnd > RH.RowSize Then
+          RH.RowSize := LastVarEnd;
+      End
+      Else
+      Begin
+        { Ajouter l espace du tableau d offsets variables }
+        RH.RowSize := RH.RowSize + RH.VarColCount * 2;
+      End;
+    End;
+  End;
+
+  RH.Valid := True;
+End;
+
+{ ---- Extraire les donnees brutes d un enregistrement ---------- }
+{ Copie les octets d un row dans un buffer de sortie.            }
+{ Retourne la taille effective copiee.                            }
+
+Function ExtractRow(Const SrcBuf : TMdfPageBuf;
+                     RowOfs : Word;
+                     RowSize : Word;
+                     Var RowBuf : TMdfPageBuf) : Word;
+Var
+  CopyLen : Word;
+  I       : Word;
+Begin
+  ExtractRow := 0;
+  FillChar(RowBuf, SizeOf(RowBuf), 0);
+  If RowOfs >= MDF_PAGE_SIZE Then Exit;
+
+  CopyLen := RowSize;
+  If RowOfs + CopyLen > MDF_PAGE_SIZE Then
+    CopyLen := MDF_PAGE_SIZE - RowOfs;
+
+  For I := 0 To CopyLen - 1 Do
+    RowBuf[I] := SrcBuf[RowOfs + I];
+
+  ExtractRow := CopyLen;
+End;
+
+{ ---- Lire une page de donnees --------------------------------- }
+{ Lit la page, verifie le type Data (1), extrait le slot array.  }
+
+Function ReadDataPage(PageNum : LongInt;
+                       Var DPI : TMdfDataPageInfo) : Boolean;
+Var
+  TmpBuf : TMdfPageBuf;
+Begin
+  ReadDataPage := False;
+  DPI.Valid := False;
+  DPI.SlotCnt := 0;
+  FillChar(DPI.Slots, SizeOf(DPI.Slots), 0);
+
+  If Not SeekPage(PageNum, TmpBuf) Then Exit;
+
+  ParsePageHeader(TmpBuf, DPI.Header);
+
+  If DPI.Header.PageType <> MDF_PT_DATA Then Exit;
+
+  DPI.SlotCnt := DPI.Header.SlotCnt;
+  If DPI.SlotCnt > MDF_MAX_SLOTS Then
+    DPI.SlotCnt := MDF_MAX_SLOTS;
+
+  ReadSlotArray(TmpBuf, DPI.SlotCnt, DPI.Slots);
+
+  DPI.Valid := True;
+  ReadDataPage := True;
+End;
+
+{ ---- Afficher les donnees d une page (mode verbose) ----------- }
+{ Affiche l en-tete, le slot array et decode chaque row.         }
+
+Procedure DumpDataPage(PageNum : LongInt);
+Var
+  TmpBuf   : TMdfPageBuf;
+  Hdr      : TMdfPageHeader;
+  Slots    : TMdfSlotArray;
+  RH       : TMdfRowHeader;
+  SC       : Word;
+  I        : Integer;
+  J        : Integer;
+  RowOfs   : Word;
+  HexStr   : TString;
+  MaxDump  : Integer;
+Begin
+  If Not SeekPage(PageNum, TmpBuf) Then
+  Begin
+    WriteLn('  Page ', PageNum, ' : impossible a lire');
+    Exit;
+  End;
+
+  ParsePageHeader(TmpBuf, Hdr);
+
+  If Hdr.PageType <> MDF_PT_DATA Then
+  Begin
+    WriteLn('  Page ', PageNum, ' : type=', Hdr.PageType,
+            ' (', PageTypeName(Hdr.PageType),
+            '), pas une page de donnees');
+    Exit;
+  End;
+
+  SC := Hdr.SlotCnt;
+  If SC > MDF_MAX_SLOTS Then SC := MDF_MAX_SLOTS;
+
+  WriteLn('  Page ', PageNum, ' (Data Page) :');
+  WriteLn('    type       = ', Hdr.PageType,
+          ' (', PageTypeName(Hdr.PageType), ')');
+  WriteLn('    level      = ', Hdr.Level);
+  WriteLn('    flagBits   = $', IntToStr(Hdr.FlagBits));
+  WriteLn('    indexId    = ', Hdr.IndexId);
+  WriteLn('    objId      = ', Hdr.ObjId);
+  WriteLn('    prevPage   = ', Hdr.PrevFile, ':', Hdr.PrevPage);
+  WriteLn('    nextPage   = ', Hdr.NextFile, ':', Hdr.NextPage);
+  WriteLn('    slotCnt    = ', SC);
+  WriteLn('    pMinLen    = ', Hdr.PMinLen);
+  WriteLn('    freeCnt    = ', Hdr.FreeCnt);
+  WriteLn('    freeData   = ', Hdr.FreeData);
+  WriteLn('    reservedCnt= ', Hdr.ReservedCnt);
+
+  { Lire le slot array }
+  ReadSlotArray(TmpBuf, SC, Slots);
+
+  WriteLn('    Slot Array (', SC, ' enregistrements) :');
+  For I := 0 To SC - 1 Do
+  Begin
+    RowOfs := Slots[I];
+    Write('      Slot[', I, '] offset=', RowOfs);
+
+    { Decoder l en-tete de l enregistrement }
+    If (RowOfs >= MDF_PAGE_HDR_SIZE) And
+       (RowOfs < MDF_PAGE_SIZE) Then
+    Begin
+      ParseRowHeader(TmpBuf, RowOfs, RH);
+      If RH.Valid Then
+      Begin
+        WriteLn(' recType=', RH.RecType,
+                '(', RecTypeName(RH.RecType), ')',
+                ' fixLen=', RH.FixedLen,
+                ' cols=', RH.ColCount,
+                ' varCols=', RH.VarColCount,
+                ' rowSz=', RH.RowSize);
+        WriteLn('        statusA=$', ByteToHex(RH.StatusA),
+                ' statusB=$', ByteToHex(RH.StatusB),
+                ' hasNull=', RH.HasNullBmp,
+                ' hasVar=', RH.HasVarCols,
+                ' hasVer=', RH.HasVersion,
+                ' nullBmp=', RH.NullBmpSize, 'o');
+
+        { Afficher les premiers octets bruts en hexadecimal }
+        MaxDump := RH.RowSize;
+        If MaxDump > 32 Then MaxDump := 32;
+        If MaxDump > 0 Then
+        Begin
+          HexStr := '';
+          For J := 0 To MaxDump - 1 Do
+          Begin
+            If RowOfs + J < MDF_PAGE_SIZE Then
+              HexStr := HexStr + ByteToHex(TmpBuf[RowOfs + J])
+                        + ' ';
+          End;
+          WriteLn('        hex: ', HexStr);
+        End;
+      End
+      Else
+      Begin
+        WriteLn;
+        WriteLn('        (enregistrement invalide)');
+      End;
+    End
+    Else
+    Begin
+      WriteLn;
+      WriteLn('        (offset hors limites)');
+    End;
+  End;
+End;
+
+{ ---- Scanner les pages de donnees ----------------------------- }
+{ Parcourt les pages du fichier MDF pour identifier les pages    }
+{ de donnees (type 1) et afficher leurs details en mode verbose. }
+
+Procedure ScanDataPages;
+Var
+  TmpBuf    : TMdfPageBuf;
+  Hdr       : TMdfPageHeader;
+  I         : LongInt;
+  DataCount : LongInt;
+  MaxDetail : LongInt;
+Begin
+  If Not MdfOpen Then Exit;
+
+  DataCount := 0;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn;
+    WriteLn('  Data Pages (TODO 04) :');
+  End;
+
+  { Limiter l affichage detaille aux 10 premieres pages }
+  MaxDetail := 10;
+
+  For I := 0 To MdfPageCnt - 1 Do
+  Begin
+    If SeekPage(I, TmpBuf) Then
+    Begin
+      ParsePageHeader(TmpBuf, Hdr);
+      If Hdr.PageType = MDF_PT_DATA Then
+      Begin
+        Inc(DataCount);
+        If Opts.Verbose And (DataCount <= MaxDetail) Then
+          DumpDataPage(I);
+      End;
+    End;
+  End;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('    Total pages de donnees : ', DataCount);
+    If DataCount > MaxDetail Then
+      WriteLn('    (affichage limite aux ', MaxDetail,
+              ' premieres pages)');
+  End;
+End;
+
 { ---- Execution d une requete SQL ----------------------------- }
 
 Procedure ExecuteQuery(Const SQL : TString);
@@ -1756,6 +2179,9 @@ Begin
 
   { Lire les allocation maps (TODO 03) }
   ReadAllocationMaps;
+
+  { Scanner les pages de donnees (TODO 04) }
+  ScanDataPages;
 
   { Executer selon le mode }
   If Opts.Query <> '' Then
