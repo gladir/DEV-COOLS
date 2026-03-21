@@ -24,9 +24,9 @@
       lineaire 32 bits via le fichier de 16 Mo, en utilisant un
       modele d'adressage plat (flat) typique de Win32.
 
-  4.  Implementer la pile 32 bits (PUSH/POP en mode 32 bits) avec
-      ESP adressant la memoire lineaire, et allouer une pile par
-      defaut (par exemple 1 Mo) dans l'espace de 16 Mo.
+  4.  [IMPLEMENTE] Implementer la pile 32 bits (PUSH/POP en mode 32
+      bits) avec ESP adressant la memoire lineaire, et allouer une
+      pile par defaut (par exemple 1 Mo) dans l'espace de 16 Mo.
 
   5.  Implementer le chargeur de fichiers PE (Portable Executable) :
       lecture de l'entete MZ/DOS stub, de la signature PE, de
@@ -149,6 +149,14 @@ Const
 
   { Nombre de blocs de 1 Ko pour couvrir 16 Mo }
  ClearBlockCount=MemorySize div ClearBufferSize;  { 16384 }
+
+  { TODO 4 : Taille de la pile par defaut : 1 Mo }
+ StackSize=1024*1024;  { 1 048 576 octets }
+
+  { TODO 4 : Adresse de base de la pile dans l'espace lineaire.
+    La pile occupe le dernier 1 Mo de l'espace de 16 Mo,
+    soit de $F00000 a $FFFFFF (croissance vers le bas). }
+ StackBase=MemorySize-StackSize;  { $F00000 = 15 Mo }
 
 Type
   { TODO 2 : Registres 32 bits du 80386 }
@@ -277,6 +285,42 @@ Begin
  BlockWrite(Memory,Value,4,ByteWrited);
 End;
 
+  { TODO 4 : Empiler un double mot 32 bits sur la pile.
+    Decremente ESP de 4, puis ecrit la valeur 32 bits a l'adresse
+    pointee par ESP dans la memoire lineaire plate. }
+Procedure Push32(Value:LongInt);
+Begin
+ Regs.ESP:=Regs.ESP-4;
+ WriteDWord(Regs.ESP,Value);
+End;
+
+  { TODO 4 : Depiler un double mot 32 bits de la pile.
+    Lit la valeur 32 bits a l'adresse pointee par ESP, puis
+    incremente ESP de 4. }
+Function Pop32:LongInt;
+Begin
+ Pop32:=ReadDWord(Regs.ESP);
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 4 : Empiler un mot 16 bits sur la pile.
+    Decremente ESP de 2, puis ecrit la valeur 16 bits a l'adresse
+    pointee par ESP dans la memoire lineaire plate. }
+Procedure Push16(Value:Word);
+Begin
+ Regs.ESP:=Regs.ESP-2;
+ WriteWord(Regs.ESP,Value);
+End;
+
+  { TODO 4 : Depiler un mot 16 bits de la pile.
+    Lit la valeur 16 bits a l'adresse pointee par ESP, puis
+    incremente ESP de 2. }
+Function Pop16:Word;
+Begin
+ Pop16:=ReadWord(Regs.ESP);
+ Regs.ESP:=Regs.ESP+2;
+End;
+
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
     Cree le fichier d'echange de 16 Mo (EMUW32.$$$) et le remplit
     de zeros pour simuler un espace d'adressage plat Win32. }
@@ -303,6 +347,15 @@ Begin
   End;
  End;
  WriteLn('Fichier d''echange de 16 Mo cree avec succes.');
+  { TODO 4 : Initialiser les registres et le pointeur de pile.
+    ESP pointe au sommet de la zone de pile (MemorySize = 16 Mo).
+    La pile croit vers le bas de MemorySize vers StackBase. }
+ FillChar(Regs,SizeOf(Regs),0);
+ EIP:=0;
+ EFlags.Abs:=0;
+ Regs.ESP:=MemorySize;  { Sommet de pile : 16 Mo }
+ WriteLn('Pile de 1 Mo allouee (ESP=$',HexStr(Regs.ESP,8),
+         ', base=$',HexStr(StackBase,8),').');
 End;
 
 BEGIN
