@@ -28,9 +28,9 @@
       bits) avec ESP adressant la memoire lineaire, et allouer une
       pile par defaut (par exemple 1 Mo) dans l'espace de 16 Mo.
 
-  5.  Implementer le chargeur de fichiers PE (Portable Executable) :
-      lecture de l'entete MZ/DOS stub, de la signature PE, de
-      l'entete COFF (IMAGE_FILE_HEADER), de l'entete optionnel
+  5.  [IMPLEMENTE] Implementer le chargeur de fichiers PE (Portable
+      Executable) : lecture de l'entete MZ/DOS stub, de la signature
+      PE, de l'entete COFF (IMAGE_FILE_HEADER), de l'entete optionnel
       (IMAGE_OPTIONAL_HEADER32) incluant AddressOfEntryPoint,
       ImageBase, SectionAlignment et SizeOfStackReserve.
 
@@ -164,6 +164,75 @@ Type
   Lo,Hi:Word;
  End;
 
+  { TODO 5 : En-tete DOS MZ (64 octets) }
+ TImageDosHeader=Record
+  e_magic:Word;                     { Signature MZ = $5A4D }
+  e_cblp:Word;                      { Octets dans la derniere page }
+  e_cp:Word;                        { Pages dans le fichier }
+  e_crlc:Word;                      { Relocalisations }
+  e_cparhdr:Word;                   { Taille de l'en-tete en paragraphes }
+  e_minalloc:Word;                  { Memoire minimum supplementaire }
+  e_maxalloc:Word;                  { Memoire maximum supplementaire }
+  e_ss:Word;                        { Valeur initiale SS }
+  e_sp:Word;                        { Valeur initiale SP }
+  e_csum:Word;                      { Checksum }
+  e_ip:Word;                        { Valeur initiale IP }
+  e_cs:Word;                        { Valeur initiale CS }
+  e_lfarlc:Word;                    { Offset table de relocalisation }
+  e_ovno:Word;                      { Numero d'overlay }
+  e_res:Array[0..3]of Word;         { Reserves }
+  e_oemid:Word;                     { Identifiant OEM }
+  e_oeminfo:Word;                   { Information OEM }
+  e_res2:Array[0..9]of Word;        { Reserves }
+  e_lfanew:LongInt;                 { Offset vers l'en-tete PE }
+ End;
+
+  { TODO 5 : En-tete COFF (IMAGE_FILE_HEADER, 20 octets) }
+ TImageFileHeader=Record
+  Machine:Word;                     { Architecture cible ($014C = i386) }
+  NumberOfSections:Word;            { Nombre de sections }
+  TimeDateStamp:LongInt;            { Horodatage de creation }
+  PointerToSymbolTable:LongInt;     { Offset table de symboles }
+  NumberOfSymbols:LongInt;          { Nombre de symboles }
+  SizeOfOptionalHeader:Word;        { Taille de l'en-tete optionnel }
+  Characteristics:Word;             { Drapeaux du fichier }
+ End;
+
+  { TODO 5 : En-tete optionnel PE32 (IMAGE_OPTIONAL_HEADER32, 96 octets
+    pour les champs standard, sans les repertoires de donnees) }
+ TImageOptionalHeader32=Record
+  Magic:Word;                       { $010B = PE32 }
+  MajorLinkerVersion:Byte;          { Version majeure du lieur }
+  MinorLinkerVersion:Byte;          { Version mineure du lieur }
+  SizeOfCode:LongInt;               { Taille totale du code }
+  SizeOfInitializedData:LongInt;    { Taille des donnees initialisees }
+  SizeOfUninitializedData:LongInt;  { Taille des donnees non initialisees }
+  AddressOfEntryPoint:LongInt;      { RVA du point d'entree }
+  BaseOfCode:LongInt;               { RVA de la base du code }
+  BaseOfData:LongInt;               { RVA de la base des donnees }
+  ImageBase:LongInt;                { Adresse de base preferee }
+  SectionAlignment:LongInt;         { Alignement des sections en memoire }
+  FileAlignment:LongInt;            { Alignement des sections dans le fichier }
+  MajorOperatingSystemVersion:Word; { Version majeure du SE requise }
+  MinorOperatingSystemVersion:Word; { Version mineure du SE requise }
+  MajorImageVersion:Word;           { Version majeure de l'image }
+  MinorImageVersion:Word;           { Version mineure de l'image }
+  MajorSubsystemVersion:Word;      { Version majeure du sous-systeme }
+  MinorSubsystemVersion:Word;      { Version mineure du sous-systeme }
+  Win32VersionValue:LongInt;        { Reserve, doit etre 0 }
+  SizeOfImage:LongInt;              { Taille totale de l'image en memoire }
+  SizeOfHeaders:LongInt;            { Taille combinee des en-tetes }
+  CheckSum:LongInt;                 { Somme de controle de l'image }
+  Subsystem:Word;                   { Sous-systeme requis (3=CONSOLE) }
+  DllCharacteristics:Word;          { Drapeaux DLL }
+  SizeOfStackReserve:LongInt;       { Taille de la pile reservee }
+  SizeOfStackCommit:LongInt;        { Taille de la pile initialement allouee }
+  SizeOfHeapReserve:LongInt;        { Taille du tas reserve }
+  SizeOfHeapCommit:LongInt;         { Taille du tas initialement alloue }
+  LoaderFlags:LongInt;              { Drapeaux du chargeur (obsolete) }
+  NumberOfRvaAndSizes:LongInt;      { Nombre de repertoires de donnees }
+ End;
+
 Var
   { TODO 1 : Fichier d'echange }
  Memory:File;
@@ -189,6 +258,12 @@ Var
   2:(Abs:LongInt);
   3:(DataByte:Byte);
  End;
+
+  { TODO 5 : En-tetes PE charges par LoadPE }
+ PEDosHeader:TImageDosHeader;
+ PEFileHeader:TImageFileHeader;
+ PEOptHeader:TImageOptionalHeader32;
+ PELoaded:Boolean;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -319,6 +394,128 @@ Function Pop16:Word;
 Begin
  Pop16:=ReadWord(Regs.ESP);
  Regs.ESP:=Regs.ESP+2;
+End;
+
+  { TODO 5 : Chargeur de fichiers PE (Portable Executable).
+    Lit l'en-tete MZ/DOS stub, la signature PE, l'en-tete COFF
+    (IMAGE_FILE_HEADER) et l'en-tete optionnel (IMAGE_OPTIONAL_HEADER32)
+    incluant AddressOfEntryPoint, ImageBase, SectionAlignment et
+    SizeOfStackReserve. Retourne True si le fichier est un PE valide. }
+Function LoadPE(FileName:String):Boolean;
+Var
+ F:File;
+ PESig:LongInt;
+ ByteRead:Word;
+Begin
+ LoadPE:=False;
+ PELoaded:=False;
+  { Ouvrir le fichier PE }
+ {$I-}Assign(F,FileName);
+ Reset(F,1);{$I+}
+ If IOResult<>0 Then Begin
+  WriteLn('LoadPE: impossible d''ouvrir "',FileName,'"');
+  Exit;
+ End;
+  { Verifier que le fichier est assez grand pour l'en-tete DOS }
+ If FileSize(F)<SizeOf(TImageDosHeader)Then Begin
+  WriteLn('LoadPE: fichier trop petit pour un en-tete DOS MZ');
+  Close(F);
+  Exit;
+ End;
+  { Lire l'en-tete DOS MZ (64 octets) }
+ BlockRead(F,PEDosHeader,SizeOf(TImageDosHeader),ByteRead);
+ If ByteRead<>SizeOf(TImageDosHeader)Then Begin
+  WriteLn('LoadPE: erreur de lecture de l''en-tete DOS');
+  Close(F);
+  Exit;
+ End;
+  { Verifier la signature MZ }
+ If PEDosHeader.e_magic<>$5A4D Then Begin
+  WriteLn('LoadPE: signature MZ invalide ($',HexStr(PEDosHeader.e_magic,4),
+          ' au lieu de $5A4D)');
+  Close(F);
+  Exit;
+ End;
+ WriteLn('LoadPE: En-tete DOS MZ valide, e_lfanew=$',
+         HexStr(PEDosHeader.e_lfanew,8));
+  { Verifier que e_lfanew pointe vers une position valide }
+ If(PEDosHeader.e_lfanew<$40)or
+   (PEDosHeader.e_lfanew>=FileSize(F)-4)Then Begin
+  WriteLn('LoadPE: e_lfanew invalide ($',HexStr(PEDosHeader.e_lfanew,8),')');
+  Close(F);
+  Exit;
+ End;
+  { Se positionner a l'offset de la signature PE }
+ Seek(F,PEDosHeader.e_lfanew);
+  { Lire la signature PE (4 octets : 'PE\0\0' = $00004550) }
+ BlockRead(F,PESig,4,ByteRead);
+ If ByteRead<>4 Then Begin
+  WriteLn('LoadPE: erreur de lecture de la signature PE');
+  Close(F);
+  Exit;
+ End;
+ If PESig<>$00004550 Then Begin
+  WriteLn('LoadPE: signature PE invalide ($',HexStr(PESig,8),
+          ' au lieu de $00004550)');
+  Close(F);
+  Exit;
+ End;
+ WriteLn('LoadPE: Signature PE valide.');
+  { Lire l'en-tete COFF (IMAGE_FILE_HEADER, 20 octets) }
+ BlockRead(F,PEFileHeader,SizeOf(TImageFileHeader),ByteRead);
+ If ByteRead<>SizeOf(TImageFileHeader)Then Begin
+  WriteLn('LoadPE: erreur de lecture de l''en-tete COFF');
+  Close(F);
+  Exit;
+ End;
+  { Verifier que c'est bien une machine i386 }
+ If PEFileHeader.Machine<>$014C Then Begin
+  WriteLn('LoadPE: machine non supportee ($',HexStr(PEFileHeader.Machine,4),
+          ', attendu $014C pour i386)');
+  Close(F);
+  Exit;
+ End;
+ WriteLn('LoadPE: En-tete COFF - Machine=i386, Sections=',
+         PEFileHeader.NumberOfSections,
+         ', OptHdrSize=',PEFileHeader.SizeOfOptionalHeader);
+  { Verifier que l'en-tete optionnel est present et assez grand }
+ If PEFileHeader.SizeOfOptionalHeader<SizeOf(TImageOptionalHeader32)Then Begin
+  WriteLn('LoadPE: en-tete optionnel trop petit (',
+          PEFileHeader.SizeOfOptionalHeader,' octets, minimum ',
+          SizeOf(TImageOptionalHeader32),')');
+  Close(F);
+  Exit;
+ End;
+  { Lire l'en-tete optionnel PE32 (IMAGE_OPTIONAL_HEADER32, 96 octets) }
+ BlockRead(F,PEOptHeader,SizeOf(TImageOptionalHeader32),ByteRead);
+ If ByteRead<>SizeOf(TImageOptionalHeader32)Then Begin
+  WriteLn('LoadPE: erreur de lecture de l''en-tete optionnel');
+  Close(F);
+  Exit;
+ End;
+  { Verifier la signature PE32 }
+ If PEOptHeader.Magic<>$010B Then Begin
+  WriteLn('LoadPE: magic optionnel invalide ($',HexStr(PEOptHeader.Magic,4),
+          ', attendu $010B pour PE32)');
+  Close(F);
+  Exit;
+ End;
+  { Afficher les champs principaux de l'en-tete optionnel }
+ WriteLn('LoadPE: En-tete optionnel PE32 :');
+ WriteLn('  AddressOfEntryPoint = $',HexStr(PEOptHeader.AddressOfEntryPoint,8));
+ WriteLn('  ImageBase           = $',HexStr(PEOptHeader.ImageBase,8));
+ WriteLn('  SectionAlignment    = $',HexStr(PEOptHeader.SectionAlignment,8));
+ WriteLn('  FileAlignment       = $',HexStr(PEOptHeader.FileAlignment,8));
+ WriteLn('  SizeOfImage         = $',HexStr(PEOptHeader.SizeOfImage,8));
+ WriteLn('  SizeOfHeaders       = $',HexStr(PEOptHeader.SizeOfHeaders,8));
+ WriteLn('  SizeOfStackReserve  = $',HexStr(PEOptHeader.SizeOfStackReserve,8));
+ WriteLn('  SizeOfStackCommit   = $',HexStr(PEOptHeader.SizeOfStackCommit,8));
+ WriteLn('  Subsystem           = ',PEOptHeader.Subsystem);
+ WriteLn('  NumberOfRvaAndSizes = ',PEOptHeader.NumberOfRvaAndSizes);
+ Close(F);
+ PELoaded:=True;
+ LoadPE:=True;
+ WriteLn('LoadPE: Fichier PE charge avec succes.');
 End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
