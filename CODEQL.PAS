@@ -47,7 +47,7 @@
       procedures, fonctions, unites), les instructions (affectation,
       appel, if, while, for, repeat, case, with, try) et les
       expressions (arithmetiques, logiques, relationnelles, acces
-      aux tableaux, acces aux champs de records).
+      aux tableaux, acces aux champs de records). [IMPLEMENTE]
 
   7.  Implementer la representation de la base de donnees relationnelle
       CodeQL : schema des tables (programs, files, locations, exprs,
@@ -180,6 +180,7 @@ Const
   MAX_ERRORS = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_NODES  = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
   MAX_TYPES  = {$IFDEF FPC}256{$ELSE}64{$ENDIF};
+  MAX_SRC_NODES = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
 
   { Codes de sortie }
   EXIT_OK    = 0;
@@ -344,6 +345,37 @@ Type
     Col      : Integer;     { colonne source (1-base)             }
   End;
 
+  { TODO 6 : Noeuds de l AST source Pascal }
+  TSrcNodeKind = (
+    SNK_NONE,
+    SNK_PROGRAM, SNK_UNIT, SNK_USES, SNK_USES_ITEM,
+    SNK_CONST_DECL, SNK_TYPE_DECL, SNK_VAR_DECL, SNK_PARAM_DECL,
+    SNK_PROC_DECL, SNK_FUNC_DECL, SNK_BLOCK,
+    SNK_ASSIGN, SNK_CALL, SNK_IF, SNK_WHILE, SNK_FOR, SNK_REPEAT,
+    SNK_CASE, SNK_CASE_ITEM, SNK_WITH, SNK_TRY, SNK_EXCEPT,
+    SNK_FINALLY, SNK_RAISE, SNK_GOTO, SNK_LABEL_DECL, SNK_COMPOUND,
+    SNK_EXPR_BINOP, SNK_EXPR_UNOP, SNK_EXPR_INT, SNK_EXPR_FLOAT,
+    SNK_EXPR_STRING, SNK_EXPR_IDENT, SNK_EXPR_CALL, SNK_EXPR_INDEX,
+    SNK_EXPR_FIELD, SNK_EXPR_DEREF, SNK_EXPR_ADDR, SNK_EXPR_NIL,
+    SNK_EXPR_SET, SNK_EXPR_RANGE,
+    SNK_TYPE_IDENT, SNK_TYPE_ARRAY, SNK_TYPE_RECORD, SNK_TYPE_POINTER,
+    SNK_TYPE_SET, SNK_TYPE_FILE, SNK_TYPE_RANGE, SNK_TYPE_ENUM,
+    SNK_TYPE_STRING, SNK_FIELD_DECL, SNK_RECORD_SECTION
+  );
+
+  TSrcASTNode = Record
+    Kind     : TSrcNodeKind;
+    Name     : TString;
+    IntVal   : LongInt;
+    FloatVal : Real;
+    Line     : Integer;
+    Col      : Integer;
+    Left     : Integer;     { enfant gauche  (-1 = aucun) }
+    Right    : Integer;     { enfant droit   (-1 = aucun) }
+    Extra    : Integer;     { enfant extra   (-1 = aucun) }
+    Next     : Integer;     { frere suivant  (-1 = aucun) }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -383,6 +415,11 @@ Var
   SrcToken     : TSourceToken; { token courant                     }
   SrcTokenCount: LongInt;     { nombre total de tokens produits    }
   SrcTotalLines: LongInt;     { nombre total de lignes lues        }
+
+  { Parser source Pascal (TODO 6) }
+  SrcNodes     : Array[0..MAX_SRC_NODES - 1] Of TSrcASTNode;
+  SrcNodeCount : Integer;
+  SrcRootNode  : Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3450,6 +3487,1352 @@ Begin
   Until SrcToken.Kind = STK_EOF;
   WriteLn('--- ', SrcTokenCount, ' tokens, ',
           SrcTotalLines, ' lignes ---');
+  WriteLn;
+  SrcLexClose;
+End;
+
+{ ============================================================
+  TODO 06 - ANALYSEUR SYNTAXIQUE PASCAL (SOURCE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Allocation d un noeud AST source ----------------------- }
+
+Function SrcNewNode(K : TSrcNodeKind) : Integer;
+Begin
+  If SrcNodeCount >= MAX_SRC_NODES Then
+  Begin
+    WriteLn('CODEQL: trop de noeuds AST source');
+    SrcNewNode := -1;
+    Exit;
+  End;
+  SrcNodes[SrcNodeCount].Kind     := K;
+  SrcNodes[SrcNodeCount].Name     := '';
+  SrcNodes[SrcNodeCount].IntVal   := 0;
+  SrcNodes[SrcNodeCount].FloatVal := 0.0;
+  SrcNodes[SrcNodeCount].Line     := SrcToken.Line;
+  SrcNodes[SrcNodeCount].Col      := SrcToken.Col;
+  SrcNodes[SrcNodeCount].Left     := -1;
+  SrcNodes[SrcNodeCount].Right    := -1;
+  SrcNodes[SrcNodeCount].Extra    := -1;
+  SrcNodes[SrcNodeCount].Next     := -1;
+  SrcNewNode := SrcNodeCount;
+  Inc(SrcNodeCount);
+End;
+
+{ ---- Initialisation du parser source ------------------------ }
+
+Procedure SrcASTInit;
+Begin
+  SrcNodeCount := 0;
+  SrcRootNode  := -1;
+End;
+
+{ ---- Consommer le prochain token non-commentaire ------------ }
+
+Procedure SrcConsume;
+Begin
+  Repeat
+    SrcLexNextToken;
+  Until (SrcToken.Kind <> STK_COMMENT) And
+        (SrcToken.Kind <> STK_DIRECTIVE);
+End;
+
+{ ---- Tester la valeur du token courant ---------------------- }
+
+Function SrcTokIs(Const S : TString) : Boolean;
+Begin
+  SrcTokIs := (SrcToken.Val = S);
+End;
+
+{ ---- Tester si le token courant est un mot-cle -------------- }
+
+Function SrcTokIsKw(Const S : TString) : Boolean;
+Begin
+  SrcTokIsKw := (SrcToken.Kind = STK_KEYWORD) And
+                (StrLowerCase(SrcToken.Val) = S);
+End;
+
+{ ---- Tester si le token courant est un operateur ------------ }
+
+Function SrcTokIsOp(Const S : TString) : Boolean;
+Begin
+  SrcTokIsOp := (SrcToken.Kind = STK_OP) And (SrcToken.Val = S);
+End;
+
+{ ---- Tester si le token courant est une ponctuation --------- }
+
+Function SrcTokIsPunct(Const S : TString) : Boolean;
+Begin
+  SrcTokIsPunct := (SrcToken.Kind = STK_PUNCT) And (SrcToken.Val = S);
+End;
+
+{ ---- Attendre un token et le consommer ---------------------- }
+
+Procedure SrcExpect(Const S : TString);
+Begin
+  If (StrLowerCase(SrcToken.Val) <> S) Then
+    WriteLn('CODEQL: attendu ''', S, ''' a la ligne ', SrcToken.Line,
+            ', colonne ', SrcToken.Col, ', trouve ''', SrcToken.Val, '''');
+  SrcConsume;
+End;
+
+{ ---- Ajouter un noeud a la fin d une liste chainee ---------- }
+
+Procedure SrcAppendToList(Var Head : Integer; N : Integer);
+Var Cur : Integer;
+Begin
+  If Head = -1 Then
+    Head := N
+  Else
+  Begin
+    Cur := Head;
+    While SrcNodes[Cur].Next <> -1 Do
+      Cur := SrcNodes[Cur].Next;
+    SrcNodes[Cur].Next := N;
+  End;
+End;
+
+{ ---- Declarations Forward ----------------------------------- }
+
+Function  SrcParseExpr      : Integer; Forward;
+Function  SrcParsePrimary   : Integer; Forward;
+Function  SrcParseStatement : Integer; Forward;
+Function  SrcParseBlock     : Integer; Forward;
+Function  SrcParseType      : Integer; Forward;
+
+{ ---- Parsing d une expression primaire ---------------------- }
+
+Function SrcParsePrimary : Integer;
+Var N, Sub, Head, Arg : Integer;
+Begin
+  SrcParsePrimary := -1;
+  Case SrcToken.Kind Of
+    STK_INTEGER:
+      Begin
+        N := SrcNewNode(SNK_EXPR_INT);
+        SrcNodes[N].IntVal := SrcToken.IntVal;
+        SrcNodes[N].Name   := SrcToken.Val;
+        SrcConsume;
+        SrcParsePrimary := N;
+      End;
+    STK_FLOAT:
+      Begin
+        N := SrcNewNode(SNK_EXPR_FLOAT);
+        SrcNodes[N].FloatVal := SrcToken.FloatVal;
+        SrcNodes[N].Name     := SrcToken.Val;
+        SrcConsume;
+        SrcParsePrimary := N;
+      End;
+    STK_STRING:
+      Begin
+        N := SrcNewNode(SNK_EXPR_STRING);
+        SrcNodes[N].Name := SrcToken.Val;
+        SrcConsume;
+        SrcParsePrimary := N;
+      End;
+    STK_KEYWORD:
+      Begin
+        If SrcTokIsKw('nil') Then
+        Begin
+          N := SrcNewNode(SNK_EXPR_NIL);
+          SrcConsume;
+          SrcParsePrimary := N;
+        End
+        Else
+        Begin
+          { mot-cle utilise comme identifiant (ex: string, integer) }
+          N := SrcNewNode(SNK_EXPR_IDENT);
+          SrcNodes[N].Name := SrcToken.Val;
+          SrcConsume;
+          SrcParsePrimary := N;
+        End;
+      End;
+    STK_IDENT:
+      Begin
+        N := SrcNewNode(SNK_EXPR_IDENT);
+        SrcNodes[N].Name := SrcToken.Val;
+        SrcConsume;
+        SrcParsePrimary := N;
+      End;
+    STK_PUNCT:
+      Begin
+        If SrcTokIsPunct('(') Then
+        Begin
+          SrcConsume;
+          N := SrcParseExpr;
+          If SrcTokIsPunct(')') Then
+            SrcConsume;
+          SrcParsePrimary := N;
+        End
+        Else If SrcTokIsPunct('[') Then
+        Begin
+          { constructeur d ensemble [a, b, c..d] }
+          N := SrcNewNode(SNK_EXPR_SET);
+          SrcConsume;
+          Head := -1;
+          If Not SrcTokIsPunct(']') Then
+          Begin
+            Sub := SrcParseExpr;
+            If SrcTokIsOp('..') Then
+            Begin
+              Arg := SrcNewNode(SNK_EXPR_RANGE);
+              SrcNodes[Arg].Left := Sub;
+              SrcConsume;
+              SrcNodes[Arg].Right := SrcParseExpr;
+              Sub := Arg;
+            End;
+            SrcAppendToList(Head, Sub);
+            While SrcTokIsPunct(',') Do
+            Begin
+              SrcConsume;
+              Sub := SrcParseExpr;
+              If SrcTokIsOp('..') Then
+              Begin
+                Arg := SrcNewNode(SNK_EXPR_RANGE);
+                SrcNodes[Arg].Left := Sub;
+                SrcConsume;
+                SrcNodes[Arg].Right := SrcParseExpr;
+                Sub := Arg;
+              End;
+              SrcAppendToList(Head, Sub);
+            End;
+          End;
+          SrcNodes[N].Left := Head;
+          If SrcTokIsPunct(']') Then
+            SrcConsume;
+          SrcParsePrimary := N;
+        End;
+      End;
+  End;
+
+  { postfixes : .field  ^deref  [index]  (args) }
+  N := SrcParsePrimary;
+  While True Do
+  Begin
+    If SrcTokIsPunct('.') Then
+    Begin
+      SrcConsume;
+      Sub := SrcNewNode(SNK_EXPR_FIELD);
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[Sub].Name := SrcToken.Val;
+        SrcConsume;
+      End;
+      SrcNodes[Sub].Left := N;
+      N := Sub;
+    End
+    Else If SrcTokIsPunct('^') Then
+    Begin
+      Sub := SrcNewNode(SNK_EXPR_DEREF);
+      SrcNodes[Sub].Left := N;
+      SrcConsume;
+      N := Sub;
+    End
+    Else If SrcTokIsPunct('[') Then
+    Begin
+      Sub := SrcNewNode(SNK_EXPR_INDEX);
+      SrcNodes[Sub].Left := N;
+      SrcConsume;
+      Head := -1;
+      Arg := SrcParseExpr;
+      SrcAppendToList(Head, Arg);
+      While SrcTokIsPunct(',') Do
+      Begin
+        SrcConsume;
+        Arg := SrcParseExpr;
+        SrcAppendToList(Head, Arg);
+      End;
+      SrcNodes[Sub].Right := Head;
+      If SrcTokIsPunct(']') Then
+        SrcConsume;
+      N := Sub;
+    End
+    Else If SrcTokIsPunct('(') Then
+    Begin
+      Sub := SrcNewNode(SNK_EXPR_CALL);
+      SrcNodes[Sub].Left := N;
+      SrcConsume;
+      Head := -1;
+      If Not SrcTokIsPunct(')') Then
+      Begin
+        Arg := SrcParseExpr;
+        SrcAppendToList(Head, Arg);
+        While SrcTokIsPunct(',') Do
+        Begin
+          SrcConsume;
+          Arg := SrcParseExpr;
+          SrcAppendToList(Head, Arg);
+        End;
+      End;
+      SrcNodes[Sub].Right := Head;
+      If SrcTokIsPunct(')') Then
+        SrcConsume;
+      N := Sub;
+    End
+    Else
+      Break;
+  End;
+  SrcParsePrimary := N;
+End;
+
+{ ---- Parsing unaire ----------------------------------------- }
+
+Function SrcParseUnary : Integer;
+Var N : Integer;
+Begin
+  If SrcTokIsKw('not') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_UNOP);
+    SrcNodes[N].Name := 'not';
+    SrcConsume;
+    SrcNodes[N].Left := SrcParsePrimary;
+    SrcParseUnary := N;
+  End
+  Else If SrcTokIsOp('@') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_ADDR);
+    SrcConsume;
+    SrcNodes[N].Left := SrcParsePrimary;
+    SrcParseUnary := N;
+  End
+  Else If SrcTokIsOp('-') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_UNOP);
+    SrcNodes[N].Name := '-';
+    SrcConsume;
+    SrcNodes[N].Left := SrcParsePrimary;
+    SrcParseUnary := N;
+  End
+  Else If SrcTokIsOp('+') Then
+  Begin
+    SrcConsume;
+    SrcParseUnary := SrcParsePrimary;
+  End
+  Else
+    SrcParseUnary := SrcParsePrimary;
+End;
+
+{ ---- Parsing facteur (meme que unaire) ---------------------- }
+
+Function SrcParseFactor : Integer;
+Begin
+  SrcParseFactor := SrcParseUnary;
+End;
+
+{ ---- Parsing terme (* / div mod and shl shr) ---------------- }
+
+Function SrcParseTerm : Integer;
+Var N, Op : Integer;
+    OpName : TString;
+Begin
+  N := SrcParseFactor;
+  While SrcTokIsOp('*') Or SrcTokIsOp('/') Or
+        SrcTokIsKw('div') Or SrcTokIsKw('mod') Or
+        SrcTokIsKw('and') Or SrcTokIsKw('shl') Or
+        SrcTokIsKw('shr') Do
+  Begin
+    OpName := StrLowerCase(SrcToken.Val);
+    Op := SrcNewNode(SNK_EXPR_BINOP);
+    SrcNodes[Op].Name := OpName;
+    SrcConsume;
+    SrcNodes[Op].Left  := N;
+    SrcNodes[Op].Right := SrcParseFactor;
+    N := Op;
+  End;
+  SrcParseTerm := N;
+End;
+
+{ ---- Parsing expression simple (+ - or xor) ----------------- }
+
+Function SrcParseSimpleExpr : Integer;
+Var N, Op : Integer;
+    OpName : TString;
+Begin
+  N := SrcParseTerm;
+  While SrcTokIsOp('+') Or SrcTokIsOp('-') Or
+        SrcTokIsKw('or') Or SrcTokIsKw('xor') Do
+  Begin
+    OpName := StrLowerCase(SrcToken.Val);
+    Op := SrcNewNode(SNK_EXPR_BINOP);
+    SrcNodes[Op].Name := OpName;
+    SrcConsume;
+    SrcNodes[Op].Left  := N;
+    SrcNodes[Op].Right := SrcParseTerm;
+    N := Op;
+  End;
+  SrcParseSimpleExpr := N;
+End;
+
+{ ---- Parsing expression (relationnels, in, is, as) ---------- }
+
+Function SrcParseExpr : Integer;
+Var N, Op : Integer;
+    OpName : TString;
+Begin
+  N := SrcParseSimpleExpr;
+  While SrcTokIsOp('=') Or SrcTokIsOp('<>') Or
+        SrcTokIsOp('<') Or SrcTokIsOp('>') Or
+        SrcTokIsOp('<=') Or SrcTokIsOp('>=') Or
+        SrcTokIsKw('in') Or SrcTokIsKw('is') Or
+        SrcTokIsKw('as') Do
+  Begin
+    OpName := StrLowerCase(SrcToken.Val);
+    Op := SrcNewNode(SNK_EXPR_BINOP);
+    SrcNodes[Op].Name := OpName;
+    SrcConsume;
+    SrcNodes[Op].Left  := N;
+    SrcNodes[Op].Right := SrcParseSimpleExpr;
+    N := Op;
+  End;
+  SrcParseExpr := N;
+End;
+
+{ ---- Parsing d un type Pascal ------------------------------- }
+
+Function SrcParseType : Integer;
+Var N, Sub, Head : Integer;
+Begin
+  SrcParseType := -1;
+
+  If SrcTokIsKw('array') Then
+  Begin
+    N := SrcNewNode(SNK_TYPE_ARRAY);
+    SrcConsume;
+    If SrcTokIsPunct('[') Then
+    Begin
+      SrcConsume;
+      SrcNodes[N].Left := SrcParseExpr;
+      If SrcTokIsOp('..') Then
+      Begin
+        Sub := SrcNewNode(SNK_EXPR_RANGE);
+        SrcNodes[Sub].Left := SrcNodes[N].Left;
+        SrcConsume;
+        SrcNodes[Sub].Right := SrcParseExpr;
+        SrcNodes[N].Left := Sub;
+      End;
+      While SrcTokIsPunct(',') Do
+      Begin
+        SrcConsume;
+        Sub := SrcParseExpr;
+        If SrcTokIsOp('..') Then
+        Begin
+          Head := SrcNewNode(SNK_EXPR_RANGE);
+          SrcNodes[Head].Left := Sub;
+          SrcConsume;
+          SrcNodes[Head].Right := SrcParseExpr;
+          Sub := Head;
+        End;
+        SrcAppendToList(SrcNodes[N].Left, Sub);
+      End;
+      If SrcTokIsPunct(']') Then
+        SrcConsume;
+    End;
+    If SrcTokIsKw('of') Then
+      SrcConsume;
+    SrcNodes[N].Right := SrcParseType;
+    SrcParseType := N;
+  End
+  Else If SrcTokIsKw('record') Then
+  Begin
+    N := SrcNewNode(SNK_TYPE_RECORD);
+    SrcConsume;
+    Head := -1;
+    While (Not SrcTokIsKw('end')) And (SrcToken.Kind <> STK_EOF) Do
+    Begin
+      If SrcTokIsKw('case') Then
+      Begin
+        { variante record : on saute jusqu a end }
+        Sub := SrcNewNode(SNK_RECORD_SECTION);
+        SrcNodes[Sub].Name := 'case';
+        SrcConsume;
+        SrcNodes[Sub].Left := SrcParseExpr;
+        If SrcTokIsKw('of') Then
+          SrcConsume;
+        { sauter les variantes simplement }
+        While (Not SrcTokIsKw('end')) And (SrcToken.Kind <> STK_EOF) Do
+          SrcConsume;
+        SrcAppendToList(Head, Sub);
+      End
+      Else If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        Sub := SrcNewNode(SNK_FIELD_DECL);
+        SrcNodes[Sub].Name := SrcToken.Val;
+        SrcConsume;
+        While SrcTokIsPunct(',') Do
+        Begin
+          SrcConsume;
+          If (SrcToken.Kind = STK_IDENT) Or
+             (SrcToken.Kind = STK_KEYWORD) Then
+            SrcConsume;
+        End;
+        If SrcTokIsPunct(':') Then
+        Begin
+          SrcConsume;
+          SrcNodes[Sub].Left := SrcParseType;
+        End;
+        If SrcTokIsPunct(';') Then
+          SrcConsume;
+        SrcAppendToList(Head, Sub);
+      End
+      Else
+        SrcConsume;
+    End;
+    SrcNodes[N].Left := Head;
+    If SrcTokIsKw('end') Then
+      SrcConsume;
+    SrcParseType := N;
+  End
+  Else If SrcTokIsPunct('^') Then
+  Begin
+    N := SrcNewNode(SNK_TYPE_POINTER);
+    SrcConsume;
+    SrcNodes[N].Left := SrcParseType;
+    SrcParseType := N;
+  End
+  Else If SrcTokIsKw('set') Then
+  Begin
+    N := SrcNewNode(SNK_TYPE_SET);
+    SrcConsume;
+    If SrcTokIsKw('of') Then
+      SrcConsume;
+    SrcNodes[N].Left := SrcParseType;
+    SrcParseType := N;
+  End
+  Else If SrcTokIsKw('file') Then
+  Begin
+    N := SrcNewNode(SNK_TYPE_FILE);
+    SrcConsume;
+    If SrcTokIsKw('of') Then
+    Begin
+      SrcConsume;
+      SrcNodes[N].Left := SrcParseType;
+    End;
+    SrcParseType := N;
+  End
+  Else If SrcTokIsKw('string') Then
+  Begin
+    N := SrcNewNode(SNK_TYPE_STRING);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcConsume;
+    If SrcTokIsPunct('[') Then
+    Begin
+      SrcConsume;
+      SrcNodes[N].Left := SrcParseExpr;
+      If SrcTokIsPunct(']') Then
+        SrcConsume;
+    End;
+    SrcParseType := N;
+  End
+  Else If SrcTokIsPunct('(') Then
+  Begin
+    { type enumere (a, b, c) }
+    N := SrcNewNode(SNK_TYPE_ENUM);
+    SrcConsume;
+    Head := -1;
+    If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      Sub := SrcNewNode(SNK_EXPR_IDENT);
+      SrcNodes[Sub].Name := SrcToken.Val;
+      SrcConsume;
+      SrcAppendToList(Head, Sub);
+      While SrcTokIsPunct(',') Do
+      Begin
+        SrcConsume;
+        If (SrcToken.Kind = STK_IDENT) Or
+           (SrcToken.Kind = STK_KEYWORD) Then
+        Begin
+          Sub := SrcNewNode(SNK_EXPR_IDENT);
+          SrcNodes[Sub].Name := SrcToken.Val;
+          SrcConsume;
+          SrcAppendToList(Head, Sub);
+        End;
+      End;
+    End;
+    SrcNodes[N].Left := Head;
+    If SrcTokIsPunct(')') Then
+      SrcConsume;
+    SrcParseType := N;
+  End
+  Else If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    N := SrcNewNode(SNK_TYPE_IDENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcConsume;
+    { sous-type intervalle : lo..hi }
+    If SrcTokIsOp('..') Then
+    Begin
+      Sub := SrcNewNode(SNK_TYPE_RANGE);
+      SrcNodes[Sub].Left := N;
+      SrcConsume;
+      SrcNodes[Sub].Right := SrcParseExpr;
+      SrcParseType := Sub;
+    End
+    Else
+      SrcParseType := N;
+  End
+  Else If SrcToken.Kind = STK_INTEGER Then
+  Begin
+    { intervalle numerique : 0..255 }
+    N := SrcNewNode(SNK_EXPR_INT);
+    SrcNodes[N].IntVal := SrcToken.IntVal;
+    SrcNodes[N].Name   := SrcToken.Val;
+    SrcConsume;
+    If SrcTokIsOp('..') Then
+    Begin
+      Sub := SrcNewNode(SNK_TYPE_RANGE);
+      SrcNodes[Sub].Left := N;
+      SrcConsume;
+      SrcNodes[Sub].Right := SrcParseExpr;
+      SrcParseType := Sub;
+    End
+    Else
+      SrcParseType := N;
+  End;
+End;
+
+{ ---- Section const ------------------------------------------ }
+
+Procedure SrcParseConstSection(Var Head : Integer);
+Var N : Integer;
+Begin
+  SrcConsume; { consomme 'const' }
+  While (SrcToken.Kind = STK_IDENT) And
+        (Not SrcTokIsKw('type')) And (Not SrcTokIsKw('var')) And
+        (Not SrcTokIsKw('procedure')) And (Not SrcTokIsKw('function')) And
+        (Not SrcTokIsKw('begin')) And (Not SrcTokIsKw('end')) And
+        (SrcToken.Kind <> STK_EOF) Do
+  Begin
+    N := SrcNewNode(SNK_CONST_DECL);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcConsume;
+    If SrcTokIsPunct(':') Then
+    Begin
+      SrcConsume;
+      SrcNodes[N].Left := SrcParseType;
+    End;
+    If SrcTokIsOp('=') Then
+    Begin
+      SrcConsume;
+      SrcNodes[N].Right := SrcParseExpr;
+    End;
+    If SrcTokIsPunct(';') Then
+      SrcConsume;
+    SrcAppendToList(Head, N);
+  End;
+End;
+
+{ ---- Section type ------------------------------------------- }
+
+Procedure SrcParseTypeSection(Var Head : Integer);
+Var N : Integer;
+Begin
+  SrcConsume; { consomme 'type' }
+  While (SrcToken.Kind = STK_IDENT) And
+        (Not SrcTokIsKw('const')) And (Not SrcTokIsKw('var')) And
+        (Not SrcTokIsKw('procedure')) And (Not SrcTokIsKw('function')) And
+        (Not SrcTokIsKw('begin')) And (Not SrcTokIsKw('end')) And
+        (SrcToken.Kind <> STK_EOF) Do
+  Begin
+    N := SrcNewNode(SNK_TYPE_DECL);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcConsume;
+    If SrcTokIsOp('=') Then
+      SrcConsume;
+    SrcNodes[N].Left := SrcParseType;
+    If SrcTokIsPunct(';') Then
+      SrcConsume;
+    SrcAppendToList(Head, N);
+  End;
+End;
+
+{ ---- Section var -------------------------------------------- }
+
+Procedure SrcParseVarSection(Var Head : Integer);
+Var N : Integer;
+Begin
+  SrcConsume; { consomme 'var' }
+  While ((SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD)) And
+        (Not SrcTokIsKw('const')) And (Not SrcTokIsKw('type')) And
+        (Not SrcTokIsKw('procedure')) And (Not SrcTokIsKw('function')) And
+        (Not SrcTokIsKw('begin')) And (Not SrcTokIsKw('end')) And
+        (SrcToken.Kind <> STK_EOF) Do
+  Begin
+    N := SrcNewNode(SNK_VAR_DECL);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcConsume;
+    While SrcTokIsPunct(',') Do
+    Begin
+      SrcConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+        SrcConsume;
+    End;
+    If SrcTokIsPunct(':') Then
+    Begin
+      SrcConsume;
+      SrcNodes[N].Left := SrcParseType;
+    End;
+    If SrcTokIsOp('=') Then
+    Begin
+      SrcConsume;
+      SrcNodes[N].Right := SrcParseExpr;
+    End;
+    If SrcTokIsPunct(';') Then
+      SrcConsume;
+    SrcAppendToList(Head, N);
+  End;
+End;
+
+{ ---- Liste de parametres (a, b : T; var c : U) -------------- }
+
+Function SrcParseParamList : Integer;
+Var Head, N : Integer;
+    IsVar   : Boolean;
+Begin
+  Head := -1;
+  If Not SrcTokIsPunct('(') Then
+  Begin
+    SrcParseParamList := -1;
+    Exit;
+  End;
+  SrcConsume; { consomme '(' }
+  While (Not SrcTokIsPunct(')')) And (SrcToken.Kind <> STK_EOF) Do
+  Begin
+    IsVar := False;
+    If SrcTokIsKw('var') Or SrcTokIsKw('const') Then
+    Begin
+      IsVar := True;
+      SrcConsume;
+    End;
+    N := SrcNewNode(SNK_PARAM_DECL);
+    If IsVar Then
+      SrcNodes[N].IntVal := 1;
+    If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      SrcConsume;
+    End;
+    While SrcTokIsPunct(',') Do
+    Begin
+      SrcConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+        SrcConsume;
+    End;
+    If SrcTokIsPunct(':') Then
+    Begin
+      SrcConsume;
+      SrcNodes[N].Left := SrcParseType;
+    End;
+    SrcAppendToList(Head, N);
+    If SrcTokIsPunct(';') Then
+      SrcConsume;
+  End;
+  If SrcTokIsPunct(')') Then
+    SrcConsume;
+  SrcParseParamList := Head;
+End;
+
+{ ---- Declaration de procedure ------------------------------- }
+
+Function SrcParseProcDecl : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_PROC_DECL);
+  SrcConsume; { consomme 'procedure' }
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcConsume;
+  End;
+  If SrcTokIsPunct('(') Then
+    SrcNodes[N].Left := SrcParseParamList;
+  If SrcTokIsPunct(';') Then
+    SrcConsume;
+  { forward ou external => pas de corps }
+  If SrcTokIsKw('forward') Or SrcTokIsKw('external') Then
+  Begin
+    SrcConsume;
+    If SrcTokIsPunct(';') Then
+      SrcConsume;
+  End
+  Else
+    SrcNodes[N].Right := SrcParseBlock;
+  If SrcTokIsPunct(';') Then
+    SrcConsume;
+  SrcParseProcDecl := N;
+End;
+
+{ ---- Declaration de fonction -------------------------------- }
+
+Function SrcParseFuncDecl : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_FUNC_DECL);
+  SrcConsume; { consomme 'function' }
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcConsume;
+  End;
+  If SrcTokIsPunct('(') Then
+    SrcNodes[N].Left := SrcParseParamList;
+  If SrcTokIsPunct(':') Then
+  Begin
+    SrcConsume;
+    SrcNodes[N].Extra := SrcParseType;
+  End;
+  If SrcTokIsPunct(';') Then
+    SrcConsume;
+  { forward ou external => pas de corps }
+  If SrcTokIsKw('forward') Or SrcTokIsKw('external') Then
+  Begin
+    SrcConsume;
+    If SrcTokIsPunct(';') Then
+      SrcConsume;
+  End
+  Else
+    SrcNodes[N].Right := SrcParseBlock;
+  If SrcTokIsPunct(';') Then
+    SrcConsume;
+  SrcParseFuncDecl := N;
+End;
+
+{ ---- Liste d instructions separees par ; -------------------- }
+
+Function SrcParseStatementList : Integer;
+Var Head, S : Integer;
+Begin
+  Head := -1;
+  S := SrcParseStatement;
+  If S <> -1 Then
+    SrcAppendToList(Head, S);
+  While SrcTokIsPunct(';') Do
+  Begin
+    SrcConsume;
+    If SrcTokIsKw('end') Or SrcTokIsKw('until') Or
+       SrcTokIsKw('else') Or SrcTokIsKw('except') Or
+       SrcTokIsKw('finally') Or (SrcToken.Kind = STK_EOF) Then
+      Break;
+    S := SrcParseStatement;
+    If S <> -1 Then
+      SrcAppendToList(Head, S);
+  End;
+  SrcParseStatementList := Head;
+End;
+
+{ ---- Instruction composee begin...end ----------------------- }
+
+Function SrcParseCompound : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_COMPOUND);
+  SrcConsume; { consomme 'begin' }
+  SrcNodes[N].Left := SrcParseStatementList;
+  If SrcTokIsKw('end') Then
+    SrcConsume;
+  SrcParseCompound := N;
+End;
+
+{ ---- Parsing d une instruction ------------------------------ }
+
+Function SrcParseStatement : Integer;
+Var N, E, SaveIdx : Integer;
+Begin
+  SrcParseStatement := -1;
+
+  If SrcToken.Kind = STK_EOF Then
+    Exit;
+
+  If SrcTokIsKw('begin') Then
+  Begin
+    SrcParseStatement := SrcParseCompound;
+    Exit;
+  End;
+
+  If SrcTokIsKw('if') Then
+  Begin
+    N := SrcNewNode(SNK_IF);
+    SrcConsume;
+    SrcNodes[N].Left := SrcParseExpr;
+    If SrcTokIsKw('then') Then
+      SrcConsume;
+    SrcNodes[N].Right := SrcParseStatement;
+    If SrcTokIsKw('else') Then
+    Begin
+      SrcConsume;
+      SrcNodes[N].Extra := SrcParseStatement;
+    End;
+    SrcParseStatement := N;
+    Exit;
+  End;
+
+  If SrcTokIsKw('while') Then
+  Begin
+    N := SrcNewNode(SNK_WHILE);
+    SrcConsume;
+    SrcNodes[N].Left := SrcParseExpr;
+    If SrcTokIsKw('do') Then
+      SrcConsume;
+    SrcNodes[N].Right := SrcParseStatement;
+    SrcParseStatement := N;
+    Exit;
+  End;
+
+  If SrcTokIsKw('for') Then
+  Begin
+    N := SrcNewNode(SNK_FOR);
+    SrcConsume;
+    If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      SrcConsume;
+    End;
+    If SrcTokIsOp(':=') Then
+      SrcConsume;
+    SrcNodes[N].Left := SrcParseExpr;
+    If SrcTokIsKw('to') Or SrcTokIsKw('downto') Then
+      SrcConsume;
+    SrcNodes[N].Right := SrcParseExpr;
+    If SrcTokIsKw('do') Then
+      SrcConsume;
+    SrcNodes[N].Extra := SrcParseStatement;
+    SrcParseStatement := N;
+    Exit;
+  End;
+
+  If SrcTokIsKw('repeat') Then
+  Begin
+    N := SrcNewNode(SNK_REPEAT);
+    SrcConsume;
+    SrcNodes[N].Left := SrcParseStatementList;
+    If SrcTokIsKw('until') Then
+      SrcConsume;
+    SrcNodes[N].Right := SrcParseExpr;
+    SrcParseStatement := N;
+    Exit;
+  End;
+
+  If SrcTokIsKw('case') Then
+  Begin
+    N := SrcNewNode(SNK_CASE);
+    SrcConsume;
+    SrcNodes[N].Left := SrcParseExpr;
+    If SrcTokIsKw('of') Then
+      SrcConsume;
+    E := -1;
+    While (Not SrcTokIsKw('end')) And (Not SrcTokIsKw('else')) And
+          (SrcToken.Kind <> STK_EOF) Do
+    Begin
+      SaveIdx := SrcNewNode(SNK_CASE_ITEM);
+      SrcNodes[SaveIdx].Left := SrcParseExpr;
+      While SrcTokIsPunct(',') Do
+      Begin
+        SrcConsume;
+        SrcParseExpr; { extra labels, simplified }
+      End;
+      If SrcTokIsPunct(':') Then
+        SrcConsume;
+      SrcNodes[SaveIdx].Right := SrcParseStatement;
+      If SrcTokIsPunct(';') Then
+        SrcConsume;
+      SrcAppendToList(E, SaveIdx);
+    End;
+    SrcNodes[N].Right := E;
+    If SrcTokIsKw('else') Then
+    Begin
+      SrcConsume;
+      SrcNodes[N].Extra := SrcParseStatementList;
+    End;
+    If SrcTokIsKw('end') Then
+      SrcConsume;
+    SrcParseStatement := N;
+    Exit;
+  End;
+
+  If SrcTokIsKw('with') Then
+  Begin
+    N := SrcNewNode(SNK_WITH);
+    SrcConsume;
+    SrcNodes[N].Left := SrcParseExpr;
+    While SrcTokIsPunct(',') Do
+    Begin
+      SrcConsume;
+      SrcParseExpr;
+    End;
+    If SrcTokIsKw('do') Then
+      SrcConsume;
+    SrcNodes[N].Right := SrcParseStatement;
+    SrcParseStatement := N;
+    Exit;
+  End;
+
+  If SrcTokIsKw('try') Then
+  Begin
+    N := SrcNewNode(SNK_TRY);
+    SrcConsume;
+    SrcNodes[N].Left := SrcParseStatementList;
+    If SrcTokIsKw('except') Then
+    Begin
+      E := SrcNewNode(SNK_EXCEPT);
+      SrcConsume;
+      SrcNodes[E].Left := SrcParseStatementList;
+      SrcNodes[N].Right := E;
+    End
+    Else If SrcTokIsKw('finally') Then
+    Begin
+      E := SrcNewNode(SNK_FINALLY);
+      SrcConsume;
+      SrcNodes[E].Left := SrcParseStatementList;
+      SrcNodes[N].Right := E;
+    End;
+    If SrcTokIsKw('end') Then
+      SrcConsume;
+    SrcParseStatement := N;
+    Exit;
+  End;
+
+  If SrcTokIsKw('raise') Then
+  Begin
+    N := SrcNewNode(SNK_RAISE);
+    SrcConsume;
+    If (SrcToken.Kind <> STK_EOF) And (Not SrcTokIsPunct(';')) Then
+      SrcNodes[N].Left := SrcParseExpr;
+    SrcParseStatement := N;
+    Exit;
+  End;
+
+  If SrcTokIsKw('goto') Then
+  Begin
+    N := SrcNewNode(SNK_GOTO);
+    SrcConsume;
+    If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_INTEGER) Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      SrcConsume;
+    End;
+    SrcParseStatement := N;
+    Exit;
+  End;
+
+  { instruction vide ou mot-cle de fermeture }
+  If SrcTokIsKw('end') Or SrcTokIsKw('until') Or
+     SrcTokIsKw('else') Or SrcTokIsKw('except') Or
+     SrcTokIsKw('finally') Then
+    Exit;
+
+  { identifiant : affectation ou appel }
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    E := SrcParseExpr;
+    If SrcTokIsOp(':=') Then
+    Begin
+      N := SrcNewNode(SNK_ASSIGN);
+      SrcNodes[N].Left := E;
+      SrcConsume;
+      SrcNodes[N].Right := SrcParseExpr;
+      SrcParseStatement := N;
+    End
+    Else
+    Begin
+      { appel de procedure (l expression elle-meme) }
+      If (E >= 0) And ((SrcNodes[E].Kind = SNK_EXPR_CALL) Or
+         (SrcNodes[E].Kind = SNK_EXPR_IDENT) Or
+         (SrcNodes[E].Kind = SNK_EXPR_FIELD)) Then
+      Begin
+        N := SrcNewNode(SNK_CALL);
+        SrcNodes[N].Left := E;
+        SrcParseStatement := N;
+      End
+      Else
+        SrcParseStatement := E;
+    End;
+    Exit;
+  End;
+End;
+
+{ ---- Parsing d un bloc -------------------------------------- }
+
+Function SrcParseBlock : Integer;
+Var N : Integer;
+    DeclHead : Integer;
+Begin
+  N := SrcNewNode(SNK_BLOCK);
+  DeclHead := -1;
+
+  While True Do
+  Begin
+    If SrcTokIsKw('const') Then
+      SrcParseConstSection(DeclHead)
+    Else If SrcTokIsKw('type') Then
+      SrcParseTypeSection(DeclHead)
+    Else If SrcTokIsKw('var') Then
+      SrcParseVarSection(DeclHead)
+    Else If SrcTokIsKw('label') Then
+    Begin
+      SrcConsume;
+      While (SrcToken.Kind = STK_IDENT) Or
+            (SrcToken.Kind = STK_INTEGER) Do
+      Begin
+        SrcConsume;
+        If SrcTokIsPunct(',') Then
+          SrcConsume;
+      End;
+      If SrcTokIsPunct(';') Then
+        SrcConsume;
+    End
+    Else If SrcTokIsKw('procedure') Then
+    Begin
+      SrcAppendToList(DeclHead, SrcParseProcDecl);
+    End
+    Else If SrcTokIsKw('function') Then
+    Begin
+      SrcAppendToList(DeclHead, SrcParseFuncDecl);
+    End
+    Else
+      Break;
+  End;
+
+  SrcNodes[N].Left := DeclHead;
+
+  If SrcTokIsKw('begin') Then
+    SrcNodes[N].Right := SrcParseCompound;
+
+  SrcParseBlock := N;
+End;
+
+{ ---- Clause uses -------------------------------------------- }
+
+Function SrcParseUsesClause : Integer;
+Var N, Item, Head : Integer;
+Begin
+  N := SrcNewNode(SNK_USES);
+  SrcConsume; { consomme 'uses' }
+  Head := -1;
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    Item := SrcNewNode(SNK_USES_ITEM);
+    SrcNodes[Item].Name := SrcToken.Val;
+    SrcConsume;
+    SrcAppendToList(Head, Item);
+    While SrcTokIsPunct(',') Do
+    Begin
+      SrcConsume;
+      If (SrcToken.Kind = STK_IDENT) Or
+         (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        Item := SrcNewNode(SNK_USES_ITEM);
+        SrcNodes[Item].Name := SrcToken.Val;
+        SrcConsume;
+        SrcAppendToList(Head, Item);
+      End;
+    End;
+  End;
+  SrcNodes[N].Left := Head;
+  If SrcTokIsPunct(';') Then
+    SrcConsume;
+  SrcParseUsesClause := N;
+End;
+
+{ ---- Programme principal ------------------------------------ }
+
+Function SrcParseProgram : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_PROGRAM);
+  SrcConsume; { consomme 'program' }
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcConsume;
+  End;
+  { parametres optionnels de programme (input, output) }
+  If SrcTokIsPunct('(') Then
+  Begin
+    While (Not SrcTokIsPunct(')')) And (SrcToken.Kind <> STK_EOF) Do
+      SrcConsume;
+    If SrcTokIsPunct(')') Then
+      SrcConsume;
+  End;
+  If SrcTokIsPunct(';') Then
+    SrcConsume;
+  If SrcTokIsKw('uses') Then
+    SrcNodes[N].Left := SrcParseUsesClause;
+  SrcNodes[N].Right := SrcParseBlock;
+  If SrcTokIsPunct('.') Then
+    SrcConsume;
+  SrcParseProgram := N;
+End;
+
+{ ---- Unite (unit) ------------------------------------------- }
+
+Function SrcParseUnit : Integer;
+Var N, DeclHead : Integer;
+Begin
+  N := SrcNewNode(SNK_UNIT);
+  SrcConsume; { consomme 'unit' }
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcConsume;
+  End;
+  If SrcTokIsPunct(';') Then
+    SrcConsume;
+  DeclHead := -1;
+  { interface / implementation : on parse les sections }
+  While (Not SrcTokIsKw('end')) And (SrcToken.Kind <> STK_EOF) And
+        (Not SrcTokIsPunct('.')) Do
+  Begin
+    If SrcTokIsKw('interface') Or SrcTokIsKw('implementation') Then
+      SrcConsume
+    Else If SrcTokIsKw('uses') Then
+      SrcAppendToList(DeclHead, SrcParseUsesClause)
+    Else If SrcTokIsKw('const') Then
+      SrcParseConstSection(DeclHead)
+    Else If SrcTokIsKw('type') Then
+      SrcParseTypeSection(DeclHead)
+    Else If SrcTokIsKw('var') Then
+      SrcParseVarSection(DeclHead)
+    Else If SrcTokIsKw('procedure') Then
+      SrcAppendToList(DeclHead, SrcParseProcDecl)
+    Else If SrcTokIsKw('function') Then
+      SrcAppendToList(DeclHead, SrcParseFuncDecl)
+    Else If SrcTokIsKw('begin') Then
+    Begin
+      SrcAppendToList(DeclHead, SrcParseCompound);
+      Break;
+    End
+    Else
+      SrcConsume;
+  End;
+  SrcNodes[N].Left := DeclHead;
+  If SrcTokIsKw('end') Then
+    SrcConsume;
+  If SrcTokIsPunct('.') Then
+    SrcConsume;
+  SrcParseUnit := N;
+End;
+
+{ ---- Point d entree du module ------------------------------- }
+
+Function SrcParseModule : Integer;
+Begin
+  SrcConsume; { lire le premier token }
+  If SrcTokIsKw('program') Then
+    SrcParseModule := SrcParseProgram
+  Else If SrcTokIsKw('unit') Then
+    SrcParseModule := SrcParseUnit
+  Else
+  Begin
+    { pas de mot-cle program/unit => on traite comme un programme }
+    SrcParseModule := SrcParseBlock;
+  End;
+End;
+
+{ ---- Nom d un type de noeud --------------------------------- }
+
+Function SrcNodeKindName(K : TSrcNodeKind) : TString;
+Begin
+  Case K Of
+    SNK_NONE         : SrcNodeKindName := 'NONE';
+    SNK_PROGRAM      : SrcNodeKindName := 'PROGRAM';
+    SNK_UNIT         : SrcNodeKindName := 'UNIT';
+    SNK_USES         : SrcNodeKindName := 'USES';
+    SNK_USES_ITEM    : SrcNodeKindName := 'USES_ITEM';
+    SNK_CONST_DECL   : SrcNodeKindName := 'CONST_DECL';
+    SNK_TYPE_DECL    : SrcNodeKindName := 'TYPE_DECL';
+    SNK_VAR_DECL     : SrcNodeKindName := 'VAR_DECL';
+    SNK_PARAM_DECL   : SrcNodeKindName := 'PARAM_DECL';
+    SNK_PROC_DECL    : SrcNodeKindName := 'PROC_DECL';
+    SNK_FUNC_DECL    : SrcNodeKindName := 'FUNC_DECL';
+    SNK_BLOCK        : SrcNodeKindName := 'BLOCK';
+    SNK_ASSIGN       : SrcNodeKindName := 'ASSIGN';
+    SNK_CALL         : SrcNodeKindName := 'CALL';
+    SNK_IF           : SrcNodeKindName := 'IF';
+    SNK_WHILE        : SrcNodeKindName := 'WHILE';
+    SNK_FOR          : SrcNodeKindName := 'FOR';
+    SNK_REPEAT       : SrcNodeKindName := 'REPEAT';
+    SNK_CASE         : SrcNodeKindName := 'CASE';
+    SNK_CASE_ITEM    : SrcNodeKindName := 'CASE_ITEM';
+    SNK_WITH         : SrcNodeKindName := 'WITH';
+    SNK_TRY          : SrcNodeKindName := 'TRY';
+    SNK_EXCEPT       : SrcNodeKindName := 'EXCEPT';
+    SNK_FINALLY      : SrcNodeKindName := 'FINALLY';
+    SNK_RAISE        : SrcNodeKindName := 'RAISE';
+    SNK_GOTO         : SrcNodeKindName := 'GOTO';
+    SNK_LABEL_DECL   : SrcNodeKindName := 'LABEL_DECL';
+    SNK_COMPOUND     : SrcNodeKindName := 'COMPOUND';
+    SNK_EXPR_BINOP   : SrcNodeKindName := 'EXPR_BINOP';
+    SNK_EXPR_UNOP    : SrcNodeKindName := 'EXPR_UNOP';
+    SNK_EXPR_INT     : SrcNodeKindName := 'EXPR_INT';
+    SNK_EXPR_FLOAT   : SrcNodeKindName := 'EXPR_FLOAT';
+    SNK_EXPR_STRING  : SrcNodeKindName := 'EXPR_STRING';
+    SNK_EXPR_IDENT   : SrcNodeKindName := 'EXPR_IDENT';
+    SNK_EXPR_CALL    : SrcNodeKindName := 'EXPR_CALL';
+    SNK_EXPR_INDEX   : SrcNodeKindName := 'EXPR_INDEX';
+    SNK_EXPR_FIELD   : SrcNodeKindName := 'EXPR_FIELD';
+    SNK_EXPR_DEREF   : SrcNodeKindName := 'EXPR_DEREF';
+    SNK_EXPR_ADDR    : SrcNodeKindName := 'EXPR_ADDR';
+    SNK_EXPR_NIL     : SrcNodeKindName := 'EXPR_NIL';
+    SNK_EXPR_SET     : SrcNodeKindName := 'EXPR_SET';
+    SNK_EXPR_RANGE   : SrcNodeKindName := 'EXPR_RANGE';
+    SNK_TYPE_IDENT   : SrcNodeKindName := 'TYPE_IDENT';
+    SNK_TYPE_ARRAY   : SrcNodeKindName := 'TYPE_ARRAY';
+    SNK_TYPE_RECORD  : SrcNodeKindName := 'TYPE_RECORD';
+    SNK_TYPE_POINTER : SrcNodeKindName := 'TYPE_POINTER';
+    SNK_TYPE_SET     : SrcNodeKindName := 'TYPE_SET';
+    SNK_TYPE_FILE    : SrcNodeKindName := 'TYPE_FILE';
+    SNK_TYPE_RANGE   : SrcNodeKindName := 'TYPE_RANGE';
+    SNK_TYPE_ENUM    : SrcNodeKindName := 'TYPE_ENUM';
+    SNK_TYPE_STRING  : SrcNodeKindName := 'TYPE_STRING';
+    SNK_FIELD_DECL   : SrcNodeKindName := 'FIELD_DECL';
+    SNK_RECORD_SECTION : SrcNodeKindName := 'RECORD_SECTION';
+  Else
+    SrcNodeKindName := '???';
+  End;
+End;
+
+{ ---- Dump recursif de l AST source -------------------------- }
+
+Procedure DumpSrcAST(Idx : Integer; Depth : Integer);
+Var I : Integer;
+Begin
+  If Idx < 0 Then Exit;
+  For I := 1 To Depth Do
+    Write('  ');
+  Write(SrcNodeKindName(SrcNodes[Idx].Kind));
+  If SrcNodes[Idx].Name <> '' Then
+    Write(' "', SrcNodes[Idx].Name, '"');
+  If SrcNodes[Idx].Kind = SNK_EXPR_INT Then
+    Write(' =', SrcNodes[Idx].IntVal);
+  WriteLn(' [', SrcNodes[Idx].Line, ':', SrcNodes[Idx].Col, ']');
+  DumpSrcAST(SrcNodes[Idx].Left,  Depth + 1);
+  DumpSrcAST(SrcNodes[Idx].Right, Depth + 1);
+  DumpSrcAST(SrcNodes[Idx].Extra, Depth + 1);
+  DumpSrcAST(SrcNodes[Idx].Next,  Depth);
+End;
+
+{ ---- Parser complet d un fichier Pascal ---------------------- }
+
+Procedure ParseSrcFile(Const FileName : TString);
+Begin
+  Assign(SrcLexF, FileName);
+  {$I-}
+  Reset(SrcLexF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('CODEQL: impossible d''ouvrir le fichier source: ', FileName);
+    Exit;
+  End;
+  SrcLexOpened := True;
+  SrcLexInit;
+  SrcASTInit;
+  SrcRootNode := SrcParseModule;
+  WriteLn('--- AST source Pascal : ', FileName, ' ---');
+  WriteLn('  Noeuds: ', SrcNodeCount);
+  WriteLn('  Tokens: ', SrcTokenCount);
+  WriteLn('  Lignes: ', SrcTotalLines);
+  If Opts.Verbose Then
+    DumpSrcAST(SrcRootNode, 0);
   WriteLn;
   SrcLexClose;
 End;
