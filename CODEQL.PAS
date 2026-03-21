@@ -71,6 +71,7 @@
       des classes de base et des classes derivees, gestion du mot-cle
       extends, methodes heritees et surchargees (override), predicats
       caracteristiques (characteristic predicates), classes abstraites.
+      [IMPLEMENTE]
 
   11. Implementer le moteur d'evaluation des predicats QL : evaluation
       des predicats non-recursifs, liaison des variables (binding),
@@ -184,6 +185,8 @@ Const
   MAX_SRC_NODES = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
   MAX_DB_ROWS   = {$IFDEF FPC}8192{$ELSE}1024{$ENDIF};
   MAX_DB_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_QL_CLASSES = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
+  MAX_QL_PREDS   = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -572,6 +575,39 @@ Type
     FileId   : Integer;       { cle etrangere vers files         }
     LocId    : Integer;       { cle etrangere vers locations     }
   End;
+
+  { TODO 10 : Hierarchie de classes QL }
+
+  { Drapeaux de predicat QL }
+  TQLPredFlag = (
+    QPF_NONE,         { predicat normal                      }
+    QPF_OVERRIDE,     { surcharge un predicat parent         }
+    QPF_ABSTRACT,     { predicat abstrait (pas de corps)     }
+    QPF_PRIVATE,      { predicat prive                       }
+    QPF_CHARACTERISTIC { predicat caracteristique            }
+  );
+
+  { Enregistrement d un predicat de classe QL }
+  TQLPredInfo = Record
+    Name       : TString;      { nom du predicat               }
+    ClassIdx   : Integer;      { index de la classe proprietaire}
+    Flag       : TQLPredFlag;  { drapeau (override, abstract)  }
+    NodeIdx    : Integer;      { index dans l AST QL           }
+    RetTypeIdx : Integer;      { type de retour (-1 = void)    }
+    ParamCount : Integer;      { nombre de parametres          }
+  End;
+
+  { Enregistrement d une classe QL }
+  TQLClassInfo = Record
+    Name       : TString;      { nom de la classe              }
+    TypeIdx    : Integer;      { index dans TypeTable           }
+    BaseIdx    : Integer;      { index de la classe parent (-1) }
+    NodeIdx    : Integer;      { index dans l AST QL           }
+    IsAbstract : Boolean;      { True si classe abstraite      }
+    PredStart  : Integer;      { debut des predicats dans table }
+    PredCount  : Integer;      { nombre de predicats propres   }
+  End;
+
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -639,6 +675,12 @@ Var
   DbCommentCnt : Integer;
   DbDiags      : Array[0..MAX_DB_ROWS - 1] Of TDbDiagnostic;
   DbDiagCnt    : Integer;
+
+  { Hierarchie de classes QL (TODO 10) }
+  QLClasses    : Array[0..MAX_QL_CLASSES - 1] Of TQLClassInfo;
+  QLClassCount : Integer;
+  QLPreds      : Array[0..MAX_QL_PREDS - 1] Of TQLPredInfo;
+  QLPredCount  : Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -6622,6 +6664,408 @@ Begin
   WriteLn('  acces       : ', DbAccessCnt);
   WriteLn('  commentaires: ', DbCommentCnt);
   WriteLn('  diagnostics : ', DbDiagCnt);
+  WriteLn;
+End;
+
+{ ============================================================
+  TODO 10 - HIERARCHIE DE CLASSES QL ET HERITAGE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Initialisation de la table des classes QL ---------------- }
+
+Procedure InitClassHierarchy;
+Begin
+  QLClassCount := 0;
+  QLPredCount  := 0;
+End;
+
+{ ---- Nom textuel d un drapeau de predicat --------------------- }
+
+Function PredFlagName(F : TQLPredFlag) : TString;
+Begin
+  Case F Of
+    QPF_NONE           : PredFlagName := '';
+    QPF_OVERRIDE       : PredFlagName := 'override';
+    QPF_ABSTRACT       : PredFlagName := 'abstract';
+    QPF_PRIVATE        : PredFlagName := 'private';
+    QPF_CHARACTERISTIC : PredFlagName := 'characteristic';
+  End;
+End;
+
+{ ---- Enregistrer une classe QL -------------------------------- }
+
+Function RegisterQLClass(Const AName : TString;
+                         ATypeIdx, ANodeIdx : Integer;
+                         AIsAbstract : Boolean) : Integer;
+Begin
+  If QLClassCount >= MAX_QL_CLASSES Then
+  Begin
+    WarnMsg('ClassHierarchy: depassement MAX_QL_CLASSES');
+    RegisterQLClass := -1;
+    Exit;
+  End;
+  QLClasses[QLClassCount].Name       := AName;
+  QLClasses[QLClassCount].TypeIdx    := ATypeIdx;
+  QLClasses[QLClassCount].BaseIdx    := -1;
+  QLClasses[QLClassCount].NodeIdx    := ANodeIdx;
+  QLClasses[QLClassCount].IsAbstract := AIsAbstract;
+  QLClasses[QLClassCount].PredStart  := QLPredCount;
+  QLClasses[QLClassCount].PredCount  := 0;
+  RegisterQLClass := QLClassCount;
+  Inc(QLClassCount);
+End;
+
+{ ---- Enregistrer un predicat de classe QL --------------------- }
+
+Function RegisterQLPred(Const AName : TString;
+                        AClassIdx, ANodeIdx : Integer;
+                        AFlag : TQLPredFlag) : Integer;
+Begin
+  If QLPredCount >= MAX_QL_PREDS Then
+  Begin
+    WarnMsg('ClassHierarchy: depassement MAX_QL_PREDS');
+    RegisterQLPred := -1;
+    Exit;
+  End;
+  QLPreds[QLPredCount].Name       := AName;
+  QLPreds[QLPredCount].ClassIdx   := AClassIdx;
+  QLPreds[QLPredCount].Flag       := AFlag;
+  QLPreds[QLPredCount].NodeIdx    := ANodeIdx;
+  QLPreds[QLPredCount].RetTypeIdx := -1;
+  QLPreds[QLPredCount].ParamCount := 0;
+  RegisterQLPred := QLPredCount;
+  Inc(QLPredCount);
+  If (AClassIdx >= 0) And (AClassIdx < QLClassCount) Then
+    Inc(QLClasses[AClassIdx].PredCount);
+End;
+
+{ ---- Rechercher une classe QL par nom ------------------------- }
+
+Function FindQLClass(Const AName : TString) : Integer;
+Var
+  I   : Integer;
+  Low : TString;
+Begin
+  Low := StrLowerCase(AName);
+  For I := 0 To QLClassCount - 1 Do
+  Begin
+    If StrLowerCase(QLClasses[I].Name) = Low Then
+    Begin
+      FindQLClass := I;
+      Exit;
+    End;
+  End;
+  FindQLClass := -1;
+End;
+
+{ ---- Rechercher un predicat dans une classe ------------------- }
+
+Function FindQLPredInClass(AClassIdx : Integer;
+                           Const AName : TString) : Integer;
+Var
+  I, Start, Limit : Integer;
+  Low : TString;
+Begin
+  FindQLPredInClass := -1;
+  If (AClassIdx < 0) Or (AClassIdx >= QLClassCount) Then Exit;
+  Low   := StrLowerCase(AName);
+  Start := QLClasses[AClassIdx].PredStart;
+  Limit := Start + QLClasses[AClassIdx].PredCount;
+  For I := Start To Limit - 1 Do
+  Begin
+    If StrLowerCase(QLPreds[I].Name) = Low Then
+    Begin
+      FindQLPredInClass := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ---- Resoudre la classe de base (extends) --------------------- }
+
+Procedure ResolveBaseClass(CIdx : Integer);
+Var BaseCI : Integer;
+Begin
+  If (CIdx < 0) Or (CIdx >= QLClassCount) Then Exit;
+  If QLClasses[CIdx].NodeIdx < 0 Then Exit;
+  { La classe de base est stockee dans Extra du noeud NK_CLASS_DECL }
+  If Nodes[QLClasses[CIdx].NodeIdx].Extra >= 0 Then
+  Begin
+    BaseCI := FindQLClass(
+      Nodes[Nodes[QLClasses[CIdx].NodeIdx].Extra].Name);
+    If BaseCI >= 0 Then
+      QLClasses[CIdx].BaseIdx := BaseCI
+    Else
+    Begin
+      { Verifier si c est un type de reference intrinseque }
+      If FindType(
+        Nodes[Nodes[QLClasses[CIdx].NodeIdx].Extra].Name) >= 0 Then
+        QLClasses[CIdx].BaseIdx := -1
+      Else
+        WarnMsg('classe "' + QLClasses[CIdx].Name +
+                '": classe de base introuvable "' +
+                Nodes[Nodes[QLClasses[CIdx].NodeIdx].Extra].Name +
+                '"');
+    End;
+  End;
+End;
+
+{ ---- Detecter les cycles d heritage --------------------------- }
+
+Function HasInheritanceCycle(CIdx : Integer) : Boolean;
+Var
+  Slow, Fast : Integer;
+Begin
+  HasInheritanceCycle := False;
+  If (CIdx < 0) Or (CIdx >= QLClassCount) Then Exit;
+  { Algorithme de Floyd (tortue et lievre) }
+  Slow := CIdx;
+  Fast := CIdx;
+  While True Do
+  Begin
+    { La tortue avance d un pas }
+    If QLClasses[Slow].BaseIdx >= 0 Then
+      Slow := QLClasses[Slow].BaseIdx
+    Else
+      Exit;
+    { Le lievre avance de deux pas }
+    If QLClasses[Fast].BaseIdx >= 0 Then
+      Fast := QLClasses[Fast].BaseIdx
+    Else
+      Exit;
+    If QLClasses[Fast].BaseIdx >= 0 Then
+      Fast := QLClasses[Fast].BaseIdx
+    Else
+      Exit;
+    If Slow = Fast Then
+    Begin
+      HasInheritanceCycle := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ ---- Valider l heritage (cycles et coherence) ----------------- }
+
+Procedure ValidateInheritance;
+Var I : Integer;
+Begin
+  For I := 0 To QLClassCount - 1 Do
+  Begin
+    If HasInheritanceCycle(I) Then
+      WarnMsg('classe "' + QLClasses[I].Name +
+              '": cycle d''heritage detecte');
+  End;
+End;
+
+{ ---- Verifier les predicats override -------------------------- }
+
+Procedure CheckOverrides;
+Var
+  I, CIdx, ParentIdx, ParentPred : Integer;
+Begin
+  For I := 0 To QLPredCount - 1 Do
+  Begin
+    If QLPreds[I].Flag = QPF_OVERRIDE Then
+    Begin
+      CIdx := QLPreds[I].ClassIdx;
+      If (CIdx < 0) Or (CIdx >= QLClassCount) Then Continue;
+      ParentIdx := QLClasses[CIdx].BaseIdx;
+      If ParentIdx < 0 Then
+      Begin
+        WarnMsg('override "' + QLPreds[I].Name +
+                '" dans "' + QLClasses[CIdx].Name +
+                '": pas de classe parent');
+        Continue;
+      End;
+      { Chercher le predicat dans la chaine d heritage }
+      ParentPred := -1;
+      While (ParentIdx >= 0) And (ParentPred < 0) Do
+      Begin
+        ParentPred := FindQLPredInClass(ParentIdx,
+                                         QLPreds[I].Name);
+        If ParentPred < 0 Then
+          ParentIdx := QLClasses[ParentIdx].BaseIdx;
+      End;
+      If ParentPred < 0 Then
+        WarnMsg('override "' + QLPreds[I].Name +
+                '" dans "' + QLClasses[CIdx].Name +
+                '": predicat parent introuvable');
+    End;
+  End;
+End;
+
+{ ---- Verifier les predicats abstraits ------------------------- }
+
+Procedure CheckAbstractPredicates;
+Var
+  I, J, Start, Limit : Integer;
+Begin
+  For I := 0 To QLClassCount - 1 Do
+  Begin
+    If QLClasses[I].IsAbstract Then Continue;
+    { Pour les classes non abstraites, verifier que tous les
+      predicats abstraits herites sont implementes }
+    If QLClasses[I].BaseIdx < 0 Then Continue;
+    Start := QLClasses[QLClasses[I].BaseIdx].PredStart;
+    Limit := Start + QLClasses[QLClasses[I].BaseIdx].PredCount;
+    For J := Start To Limit - 1 Do
+    Begin
+      If QLPreds[J].Flag = QPF_ABSTRACT Then
+      Begin
+        If FindQLPredInClass(I, QLPreds[J].Name) < 0 Then
+          WarnMsg('classe "' + QLClasses[I].Name +
+                  '": predicat abstrait "' + QLPreds[J].Name +
+                  '" non implemente');
+      End;
+    End;
+  End;
+End;
+
+{ ---- Identifier les predicats caracteristiques ---------------- }
+
+Procedure ProcessCharPredicates;
+Var
+  I, Start, Limit, J : Integer;
+Begin
+  For I := 0 To QLClassCount - 1 Do
+  Begin
+    Start := QLClasses[I].PredStart;
+    Limit := Start + QLClasses[I].PredCount;
+    For J := Start To Limit - 1 Do
+    Begin
+      { Un predicat portant le meme nom que la classe est
+        un predicat caracteristique }
+      If StrLowerCase(QLPreds[J].Name) =
+         StrLowerCase(QLClasses[I].Name) Then
+        QLPreds[J].Flag := QPF_CHARACTERISTIC;
+    End;
+  End;
+End;
+
+{ ---- Compter les predicats herites d une classe --------------- }
+
+Function CountInheritedPreds(CIdx : Integer) : Integer;
+Var
+  Cnt, ParIdx, Start, Limit, J : Integer;
+Begin
+  Cnt := 0;
+  If (CIdx < 0) Or (CIdx >= QLClassCount) Then
+  Begin
+    CountInheritedPreds := 0;
+    Exit;
+  End;
+  ParIdx := QLClasses[CIdx].BaseIdx;
+  While ParIdx >= 0 Do
+  Begin
+    Start := QLClasses[ParIdx].PredStart;
+    Limit := Start + QLClasses[ParIdx].PredCount;
+    For J := Start To Limit - 1 Do
+    Begin
+      { Compter seulement s il n est pas surcharge localement }
+      If FindQLPredInClass(CIdx, QLPreds[J].Name) < 0 Then
+        Inc(Cnt);
+    End;
+    ParIdx := QLClasses[ParIdx].BaseIdx;
+  End;
+  CountInheritedPreds := Cnt;
+End;
+
+{ ---- Construire la hierarchie a partir de l AST QL ------------ }
+
+Procedure BuildClassHierarchy;
+Var
+  Cur, MemberCur, CIdx : Integer;
+  IsAbstract : Boolean;
+  PFlag      : TQLPredFlag;
+Begin
+  InitClassHierarchy;
+  If RootNode < 0 Then Exit;
+
+  { Premiere passe : enregistrer toutes les classes }
+  Cur := Nodes[RootNode].Left;
+  While Cur >= 0 Do
+  Begin
+    If Nodes[Cur].Kind = NK_CLASS_DECL Then
+    Begin
+      { Detecter abstract class : si le premier membre est
+        annote abstract, on considere la classe abstraite }
+      IsAbstract := False;
+      MemberCur := Nodes[Cur].Left;
+      While MemberCur >= 0 Do
+      Begin
+        If (Nodes[MemberCur].Kind = NK_PRED_DECL) And
+           (Nodes[MemberCur].Name = 'abstract') Then
+          IsAbstract := True;
+        MemberCur := Nodes[MemberCur].Next;
+      End;
+      CIdx := RegisterQLClass(Nodes[Cur].Name,
+                                Nodes[Cur].TypeIdx,
+                                Cur, IsAbstract);
+      { Enregistrer les predicats membres }
+      If CIdx >= 0 Then
+      Begin
+        MemberCur := Nodes[Cur].Left;
+        While MemberCur >= 0 Do
+        Begin
+          If Nodes[MemberCur].Kind = NK_PRED_DECL Then
+          Begin
+            PFlag := QPF_NONE;
+            RegisterQLPred(Nodes[MemberCur].Name,
+                            CIdx, MemberCur, PFlag);
+          End;
+          MemberCur := Nodes[MemberCur].Next;
+        End;
+      End;
+    End;
+    Cur := Nodes[Cur].Next;
+  End;
+
+  { Deuxieme passe : resoudre les classes de base }
+  For CIdx := 0 To QLClassCount - 1 Do
+    ResolveBaseClass(CIdx);
+
+  { Troisieme passe : identifier les predicats caracteristiques }
+  ProcessCharPredicates;
+
+  { Quatrieme passe : valider l heritage }
+  ValidateInheritance;
+  CheckOverrides;
+  CheckAbstractPredicates;
+End;
+
+{ ---- Afficher la hierarchie de classes pour debug -------------- }
+
+Procedure DumpClassHierarchy;
+Var
+  I, J, Start, Limit, InhCnt : Integer;
+Begin
+  WriteLn('=== Hierarchie de classes QL ===');
+  WriteLn('Classes : ', QLClassCount);
+  WriteLn('Predicats: ', QLPredCount);
+  WriteLn;
+  For I := 0 To QLClassCount - 1 Do
+  Begin
+    Write('  class ', QLClasses[I].Name);
+    If QLClasses[I].IsAbstract Then
+      Write(' [abstract]');
+    If QLClasses[I].BaseIdx >= 0 Then
+      Write(' extends ', QLClasses[QLClasses[I].BaseIdx].Name);
+    WriteLn;
+    Write('    type=', QLClasses[I].TypeIdx);
+    InhCnt := CountInheritedPreds(I);
+    WriteLn(' preds=', QLClasses[I].PredCount,
+            ' inherited=', InhCnt);
+    Start := QLClasses[I].PredStart;
+    Limit := Start + QLClasses[I].PredCount;
+    For J := Start To Limit - 1 Do
+    Begin
+      Write('      predicate ', QLPreds[J].Name);
+      If QLPreds[J].Flag <> QPF_NONE Then
+        Write(' [', PredFlagName(QLPreds[J].Flag), ']');
+      WriteLn;
+    End;
+  End;
   WriteLn;
 End;
 
