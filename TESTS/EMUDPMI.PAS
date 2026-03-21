@@ -3119,21 +3119,64 @@ Begin
  ResetPrefixes;
 End;
 
+  { TODO 25 : Procedure de nettoyage. Ferme et supprime le fichier
+    d'echange de 16 Mo, et libere toutes les ressources (handles de
+    fichiers ouverts, descripteurs LDT, blocs memoire). }
 Procedure Done;
 Var
  I:Integer;
+ ClosedFiles:Integer;
+ FreedDesc:Integer;
+ FreedBlocks:Integer;
 Begin
-  { TODO 21 : Fermer tous les fichiers DOS ouverts }
+  { Etape 1 : Fermer tous les fichiers DOS ouverts (handles 5+) }
+ ClosedFiles:=0;
  For I:=5 to MaxDosFiles-1 do Begin
   If DosFiles[I].InUse Then Begin
    {$I-}Close(DosFiles[I].F);{$I+}
-   If IOResult=0 Then Begin End;  { Consommer IOResult }
+   If IOResult<>0 Then Begin End; { Consommer IOResult pour eviter erreur sur la prochaine operation I/O }
    DosFiles[I].InUse:=False;
+   Inc(ClosedFiles);
   End;
  End;
- Close(Memory);
+ If VerboseMode and(ClosedFiles>0)Then
+  WriteLn('EMUDPMI : ',ClosedFiles,' fichier(s) DOS ferme(s).');
+  { Etape 2 : Liberer tous les descripteurs LDT alloues }
+ FreedDesc:=0;
+ For I:=0 to LDTSize-1 do Begin
+  If LDT[I].InUse Then Begin
+   LDT[I].InUse:=False;
+   LDT[I].BaseAddr:=0;
+   LDT[I].Limit:=0;
+   LDT[I].AccessType:=0;
+   LDT[I].Granularity:=0;
+   Inc(FreedDesc);
+  End;
+ End;
+ If VerboseMode and(FreedDesc>0)Then
+  WriteLn('EMUDPMI : ',FreedDesc,' descripteur(s) LDT libere(s).');
+  { Etape 3 : Liberer tous les blocs memoire alloues }
+ FreedBlocks:=0;
+ For I:=0 to MaxMemBlocks-1 do Begin
+  If MemBlocks[I].InUse Then Begin
+   MemBlocks[I].InUse:=False;
+   MemBlocks[I].BaseAddr:=0;
+   MemBlocks[I].Size:=0;
+   MemBlocks[I].Handle:=0;
+   Inc(FreedBlocks);
+  End;
+ End;
+ If VerboseMode and(FreedBlocks>0)Then
+  WriteLn('EMUDPMI : ',FreedBlocks,' bloc(s) memoire libere(s).');
+  { Etape 4 : Fermer le fichier d'echange }
+ {$I-}Close(Memory);{$I+}
+ If IOResult<>0 Then
+  WriteLn('EMUDPMI : Avertissement - erreur lors de la fermeture du fichier d''echange.');
+  { Etape 5 : Supprimer le fichier d'echange }
  {$I-}Assign(Memory,SwapFileMemory);
  Erase(Memory);{$I+}
+ If IOResult<>0 Then
+  WriteLn('EMUDPMI : Avertissement - impossible de supprimer le fichier d''echange.');
 End;
 
 BEGIN
