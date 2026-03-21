@@ -10,7 +10,7 @@
       commande : sous-commandes (database create, database analyze,
       query run, database interpret-results), options -v, -d, -h,
       --search-path, --format, TOptions, ParseArgs, FatalError,
-      WarnMsg, ShowBanner, ShowUsage.
+      WarnMsg, ShowBanner, ShowUsage. [IMPLEMENTE]
 
   2.  Implementer le lexeur pour le langage de requete QL : TTokenKind
       (TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING, TK_IDENT, TK_KEYWORD,
@@ -165,6 +165,415 @@ Program CODEQL;
  {$MODE TP}
  {$H-}
 {$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES GLOBALES
+  ============================================================ }
+Const
+  CODEQL_VERSION = '1.0';
+  CODEQL_DATE    = '2026-03-21';
+
+  MAX_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_ERRORS = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { TODO 1 : Sous-commandes CodeQL }
+  TSubCommand = (
+    CMD_NONE,
+    CMD_DATABASE_CREATE,
+    CMD_DATABASE_ANALYZE,
+    CMD_QUERY_RUN,
+    CMD_DB_INTERPRET_RESULTS
+  );
+
+  { TODO 1 : Formats de sortie }
+  TOutputFormat = (
+    FMT_SARIF,
+    FMT_CSV,
+    FMT_TEXT
+  );
+
+  { TODO 1 : Options de la ligne de commande }
+  TOptions = Record
+    SubCmd       : TSubCommand;  { sous-commande active               }
+    Verbose      : Boolean;      { -v : banniere et messages verbeux  }
+    DebugMode    : Boolean;      { -d : affichage de debug            }
+    SearchPath   : TString;      { --search-path : chemin QL libs     }
+    Format       : TOutputFormat;{ --format : sarif, csv, text        }
+    DatabasePath : TString;      { chemin vers le repertoire de la BD }
+    QueryFile    : TString;      { fichier .ql ou .qls                }
+    SourceDir    : TString;      { repertoire source pour db create   }
+    OutputFile   : TString;      { fichier de sortie des resultats    }
+    Language     : TString;      { --language : langage source        }
+    Interactive  : Boolean;      { --interactive : mode REPL          }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  Opts       : TOptions;
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Conversion en minuscules ------------------------------ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+{ ---- Messages d erreur et d avertissement ------------------ }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('CODEQL: FATAL: ', Msg);
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('CODEQL: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Banniere ---------------------------------------------- }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('CODEQL v', CODEQL_VERSION, ' (', CODEQL_DATE, ')');
+  WriteLn('Clone CodeQL - Analyse statique de code Pascal');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+{ ---- Aide en ligne ----------------------------------------- }
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: CODEQL <commande> [options]');
+  WriteLn;
+  WriteLn('Commandes :');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal]');
+  WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
+  WriteLn('  query run         --database=<db> <query.ql>');
+  WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
+  WriteLn;
+  WriteLn('Options globales :');
+  WriteLn('  -v, --verbose       Mode verbeux');
+  WriteLn('  -d                  Mode debug');
+  WriteLn('  -h, --help          Afficher cette aide');
+  WriteLn('  --search-path=<p>   Chemin vers les bibliotheques QL');
+  WriteLn('  --format=<fmt>      Format de sortie : sarif, csv, text');
+  WriteLn('  --output=<file>     Fichier de sortie des resultats');
+  WriteLn('  --interactive       Mode REPL (query run)');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  CODEQL database create mydb --source-root=src');
+  WriteLn('  CODEQL database analyze mydb security.qls --format=sarif');
+  WriteLn('  CODEQL query run --database=mydb find_bugs.ql');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+{ ---- Initialisation des options ----------------------------- }
+
+Procedure InitOptions;
+Begin
+  Opts.SubCmd       := CMD_NONE;
+  Opts.Verbose      := False;
+  Opts.DebugMode    := False;
+  Opts.SearchPath   := '';
+  Opts.Format       := FMT_SARIF;
+  Opts.DatabasePath := '';
+  Opts.QueryFile    := '';
+  Opts.SourceDir    := '';
+  Opts.OutputFile   := '';
+  Opts.Language     := 'pascal';
+  Opts.Interactive  := False;
+  ErrorCount        := 0;
+  WarnCount         := 0;
+End;
+
+{ ---- Verifie si S commence par Prefix ---------------------- }
+
+Function StartsWith(Const S, Prefix : TString) : Boolean;
+Begin
+  If Length(Prefix) > Length(S) Then
+    StartsWith := False
+  Else
+    StartsWith := (Copy(S, 1, Length(Prefix)) = Prefix);
+End;
+
+{ ---- Extrait la valeur apres le signe = -------------------- }
+
+Function ExtractValue(Const S : TString) : TString;
+Var
+  P : Integer;
+Begin
+  P := Pos('=', S);
+  If P > 0 Then
+    ExtractValue := Copy(S, P + 1, Length(S) - P)
+  Else
+    ExtractValue := '';
+End;
+
+{ ---- Analyse des arguments de la ligne de commande --------- }
+
+Procedure ParseArgs;
+Var
+  I     : Integer;
+  Arg   : TString;
+  LArg  : TString;
+  Val   : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg  := ParamStr(I);
+    LArg := StrLowerCase(Arg);
+
+    { Options globales }
+    If (LArg = '-h') Or (LArg = '--help') Or (LArg = '/?') Then
+      ShowUsage
+    Else If (LArg = '-v') Or (LArg = '--verbose') Then
+      Opts.Verbose := True
+    Else If LArg = '-d' Then
+      Opts.DebugMode := True
+    Else If LArg = '--interactive' Then
+      Opts.Interactive := True
+    Else If StartsWith(LArg, '--search-path=') Then
+      Opts.SearchPath := ExtractValue(Arg)
+    Else If StartsWith(LArg, '--format=') Then
+    Begin
+      Val := StrLowerCase(ExtractValue(Arg));
+      If Val = 'sarif' Then
+        Opts.Format := FMT_SARIF
+      Else If Val = 'csv' Then
+        Opts.Format := FMT_CSV
+      Else If Val = 'text' Then
+        Opts.Format := FMT_TEXT
+      Else
+      Begin
+        WriteLn('CODEQL: format inconnu: ', Val);
+        ShowUsage;
+      End;
+    End
+    Else If StartsWith(LArg, '--output=') Then
+      Opts.OutputFile := ExtractValue(Arg)
+    Else If StartsWith(LArg, '--source-root=') Then
+      Opts.SourceDir := ExtractValue(Arg)
+    Else If StartsWith(LArg, '--language=') Then
+      Opts.Language := StrLowerCase(ExtractValue(Arg))
+    Else If StartsWith(LArg, '--database=') Then
+      Opts.DatabasePath := ExtractValue(Arg)
+
+    { Sous-commande : database }
+    Else If (LArg = 'database') And (Opts.SubCmd = CMD_NONE) Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+      Begin
+        WriteLn('CODEQL: sous-commande database incomplete');
+        ShowUsage;
+      End;
+      Val := StrLowerCase(ParamStr(I));
+      If Val = 'create' Then
+        Opts.SubCmd := CMD_DATABASE_CREATE
+      Else If Val = 'analyze' Then
+        Opts.SubCmd := CMD_DATABASE_ANALYZE
+      Else If Val = 'interpret-results' Then
+        Opts.SubCmd := CMD_DB_INTERPRET_RESULTS
+      Else
+      Begin
+        WriteLn('CODEQL: sous-commande database inconnue: ', ParamStr(I));
+        ShowUsage;
+      End;
+    End
+
+    { Sous-commande : query }
+    Else If (LArg = 'query') And (Opts.SubCmd = CMD_NONE) Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+      Begin
+        WriteLn('CODEQL: sous-commande query incomplete');
+        ShowUsage;
+      End;
+      Val := StrLowerCase(ParamStr(I));
+      If Val = 'run' Then
+        Opts.SubCmd := CMD_QUERY_RUN
+      Else
+      Begin
+        WriteLn('CODEQL: sous-commande query inconnue: ', ParamStr(I));
+        ShowUsage;
+      End;
+    End
+
+    { Arguments positionnels }
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('CODEQL: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else
+    Begin
+      Case Opts.SubCmd Of
+        CMD_DATABASE_CREATE,
+        CMD_DATABASE_ANALYZE,
+        CMD_DB_INTERPRET_RESULTS:
+        Begin
+          If Opts.DatabasePath = '' Then
+            Opts.DatabasePath := Arg
+          Else If Opts.QueryFile = '' Then
+            Opts.QueryFile := Arg
+          Else
+          Begin
+            WriteLn('CODEQL: argument inattendu: ', Arg);
+            ShowUsage;
+          End;
+        End;
+        CMD_QUERY_RUN:
+        Begin
+          If Opts.QueryFile = '' Then
+            Opts.QueryFile := Arg
+          Else
+          Begin
+            WriteLn('CODEQL: argument inattendu: ', Arg);
+            ShowUsage;
+          End;
+        End;
+      Else
+        WriteLn('CODEQL: commande attendue, recu: ', Arg);
+        ShowUsage;
+      End;
+    End;
+
+    Inc(I);
+  End;
+
+  { Validation }
+  If Opts.SubCmd = CMD_NONE Then
+  Begin
+    WriteLn('CODEQL: aucune commande specifiee');
+    ShowUsage;
+  End;
+
+  Case Opts.SubCmd Of
+    CMD_DATABASE_CREATE:
+    Begin
+      If Opts.DatabasePath = '' Then
+        FatalError('chemin de la base de donnees requis');
+      If Opts.SourceDir = '' Then
+        FatalError('--source-root requis pour database create');
+    End;
+    CMD_DATABASE_ANALYZE:
+    Begin
+      If Opts.DatabasePath = '' Then
+        FatalError('chemin de la base de donnees requis');
+    End;
+    CMD_QUERY_RUN:
+    Begin
+      If Opts.DatabasePath = '' Then
+        FatalError('--database requis pour query run');
+      If (Opts.QueryFile = '') And (Not Opts.Interactive) Then
+        FatalError('fichier .ql requis ou --interactive');
+    End;
+    CMD_DB_INTERPRET_RESULTS:
+    Begin
+      If Opts.DatabasePath = '' Then
+        FatalError('chemin de la base de donnees requis');
+    End;
+  End;
+End;
+
+{ ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
+
+Procedure RunDatabaseCreate;
+Begin
+  If Opts.Verbose Then
+    ShowBanner;
+  WriteLn('database create: ', Opts.DatabasePath);
+  WriteLn('  source-root: ', Opts.SourceDir);
+  WriteLn('  language: ', Opts.Language);
+  WriteLn('(non implemente)');
+End;
+
+Procedure RunDatabaseAnalyze;
+Begin
+  If Opts.Verbose Then
+    ShowBanner;
+  WriteLn('database analyze: ', Opts.DatabasePath);
+  If Opts.QueryFile <> '' Then
+    WriteLn('  suite: ', Opts.QueryFile);
+  WriteLn('  format: ', Ord(Opts.Format));
+  WriteLn('(non implemente)');
+End;
+
+Procedure RunQueryRun;
+Begin
+  If Opts.Verbose Then
+    ShowBanner;
+  If Opts.Interactive Then
+    WriteLn('query run: mode interactif (REPL)')
+  Else
+    WriteLn('query run: ', Opts.QueryFile);
+  WriteLn('  database: ', Opts.DatabasePath);
+  WriteLn('(non implemente)');
+End;
+
+Procedure RunInterpretResults;
+Begin
+  If Opts.Verbose Then
+    ShowBanner;
+  WriteLn('database interpret-results: ', Opts.DatabasePath);
+  WriteLn('(non implemente)');
+End;
+
+{ ---- Dispatch de la sous-commande -------------------------- }
+
+Procedure Run;
+Begin
+  Case Opts.SubCmd Of
+    CMD_DATABASE_CREATE         : RunDatabaseCreate;
+    CMD_DATABASE_ANALYZE        : RunDatabaseAnalyze;
+    CMD_QUERY_RUN               : RunQueryRun;
+    CMD_DB_INTERPRET_RESULTS    : RunInterpretResults;
+  End;
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
 
 Begin
+  ParseArgs;
+  Run;
 End.
