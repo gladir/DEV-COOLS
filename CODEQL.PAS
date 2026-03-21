@@ -89,6 +89,7 @@
       definitions atteignantes (reaching definitions), chaines
       definition-utilisation (def-use chains), analyse de vivacite
       (liveness), propagation avant et arriere sur le CFG.
+      [IMPLEMENTE]
 
   14. Implementer le suivi de teinte (taint tracking) : definition des
       sources de donnees non fiables (entrees utilisateur : ReadLn,
@@ -194,6 +195,11 @@ Const
   MAX_RESULT_ROWS = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
   MAX_CFG_NODES   = {$IFDEF FPC}8192{$ELSE}1024{$ENDIF};
   MAX_CFG_EDGES   = {$IFDEF FPC}16384{$ELSE}2048{$ENDIF};
+  MAX_DF_VARS     = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_DF_DEFS     = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};
+  MAX_DF_USES     = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
+  MAX_DF_BITS     = {$IFDEF FPC}256{$ELSE}32{$ENDIF};  { taille du bitset en octets = MAX_DF_DEFS/8 }
+  MAX_DF_CHAINS   = {$IFDEF FPC}8192{$ELSE}1024{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -688,6 +694,45 @@ Type
     NextEdge : Integer;      { arete suivante meme source (-1)  }
   End;
 
+  { TODO 13 : Analyse de flot de donnees (data flow) }
+  TDFBitSet = Array[0..MAX_DF_BITS - 1] Of Byte;
+
+  TDFVarInfo = Record
+    Name     : TString;      { nom de la variable                 }
+    ASTIndex : Integer;      { index du noeud de declaration      }
+    FuncId   : Integer;      { -1 = globale, sinon index func     }
+  End;
+
+  TDFDefInfo = Record
+    VarIdx   : Integer;      { index dans DfVars                  }
+    CfgNode  : Integer;      { noeud CFG contenant la definition  }
+    ASTIndex : Integer;      { index du noeud AST (assign/decl)   }
+    DefId    : Integer;      { identifiant unique de definition   }
+  End;
+
+  TDFUseInfo = Record
+    VarIdx   : Integer;      { index dans DfVars                  }
+    CfgNode  : Integer;      { noeud CFG contenant l'utilisation  }
+    ASTIndex : Integer;      { index du noeud AST (expr ident)    }
+    UseId    : Integer;      { identifiant unique d'utilisation   }
+  End;
+
+  TDFNodeInfo = Record
+    Gen      : TDFBitSet;    { definitions generees par ce noeud  }
+    Kill     : TDFBitSet;    { definitions tuees par ce noeud     }
+    RDIn     : TDFBitSet;    { reaching defs en entree            }
+    RDOut    : TDFBitSet;    { reaching defs en sortie            }
+    LiveIn   : TDFBitSet;    { variables vivantes en entree       }
+    LiveOut  : TDFBitSet;    { variables vivantes en sortie       }
+    UseSet   : TDFBitSet;    { variables utilisees dans ce noeud  }
+    DefSet   : TDFBitSet;    { variables definies dans ce noeud   }
+  End;
+
+  TDefUseLink = Record
+    DefIdx   : Integer;      { index dans DfDefs                  }
+    UseIdx   : Integer;      { index dans DfUses                  }
+  End;
+
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -772,6 +817,17 @@ Var
   CfgNodeCount : Integer;
   CfgEdges     : Array[0..MAX_CFG_EDGES - 1] Of TCFGEdge;
   CfgEdgeCount : Integer;
+
+  { Analyse de flot de donnees (TODO 13) }
+  DfVars       : Array[0..MAX_DF_VARS - 1] Of TDFVarInfo;
+  DfVarCount   : Integer;
+  DfDefs       : Array[0..MAX_DF_DEFS - 1] Of TDFDefInfo;
+  DfDefCount   : Integer;
+  DfUses       : Array[0..MAX_DF_USES - 1] Of TDFUseInfo;
+  DfUseCount   : Integer;
+  DfNodeInfo   : Array[0..MAX_CFG_NODES - 1] Of TDFNodeInfo;
+  DfChains     : Array[0..MAX_DF_CHAINS - 1] Of TDefUseLink;
+  DfChainCount : Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -8392,6 +8448,624 @@ Begin
               CfgEdgeKindName(CfgEdges[E].Kind), ']');
       E := CfgEdges[E].NextEdge;
     End;
+  End;
+  WriteLn;
+End;
+
+{ ============================================================
+  TODO 13 - ANALYSE DE FLOT DE DONNEES (DATA FLOW) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Initialisation de l'analyse de flot de donnees -------- }
+
+Procedure InitDataFlow;
+Var
+  I, J : Integer;
+Begin
+  DfVarCount   := 0;
+  DfDefCount   := 0;
+  DfUseCount   := 0;
+  DfChainCount := 0;
+  For I := 0 To CfgNodeCount - 1 Do
+  Begin
+    For J := 0 To MAX_DF_BITS - 1 Do
+    Begin
+      DfNodeInfo[I].Gen[J]     := 0;
+      DfNodeInfo[I].Kill[J]    := 0;
+      DfNodeInfo[I].RDIn[J]    := 0;
+      DfNodeInfo[I].RDOut[J]   := 0;
+      DfNodeInfo[I].LiveIn[J]  := 0;
+      DfNodeInfo[I].LiveOut[J] := 0;
+      DfNodeInfo[I].UseSet[J]  := 0;
+      DfNodeInfo[I].DefSet[J]  := 0;
+    End;
+  End;
+End;
+
+{ ---- Operations sur les ensembles de bits (bitset) --------- }
+
+Procedure DfBitSetInit(Var S : TDFBitSet);
+Var
+  I : Integer;
+Begin
+  For I := 0 To MAX_DF_BITS - 1 Do
+    S[I] := 0;
+End;
+
+Procedure DfBitSetSet(Var S : TDFBitSet; Bit : Integer);
+Begin
+  If (Bit >= 0) And (Bit < MAX_DF_BITS * 8) Then
+    S[Bit Div 8] := S[Bit Div 8] Or (1 Shl (Bit Mod 8));
+End;
+
+Procedure DfBitSetClear(Var S : TDFBitSet; Bit : Integer);
+Begin
+  If (Bit >= 0) And (Bit < MAX_DF_BITS * 8) Then
+    S[Bit Div 8] := S[Bit Div 8] And Not (1 Shl (Bit Mod 8));
+End;
+
+Function DfBitSetTest(Const S : TDFBitSet; Bit : Integer) : Boolean;
+Begin
+  If (Bit >= 0) And (Bit < MAX_DF_BITS * 8) Then
+    DfBitSetTest := (S[Bit Div 8] And (1 Shl (Bit Mod 8))) <> 0
+  Else
+    DfBitSetTest := False;
+End;
+
+Procedure DfBitSetUnion(Var Dst : TDFBitSet; Const Src : TDFBitSet);
+Var
+  I : Integer;
+Begin
+  For I := 0 To MAX_DF_BITS - 1 Do
+    Dst[I] := Dst[I] Or Src[I];
+End;
+
+Procedure DfBitSetIntersect(Var Dst : TDFBitSet;
+                             Const Src : TDFBitSet);
+Var
+  I : Integer;
+Begin
+  For I := 0 To MAX_DF_BITS - 1 Do
+    Dst[I] := Dst[I] And Src[I];
+End;
+
+Procedure DfBitSetDiff(Var Dst : TDFBitSet;
+                        Const Src : TDFBitSet);
+Var
+  I : Integer;
+Begin
+  For I := 0 To MAX_DF_BITS - 1 Do
+    Dst[I] := Dst[I] And Not Src[I];
+End;
+
+Function DfBitSetEqual(Const A, B : TDFBitSet) : Boolean;
+Var
+  I : Integer;
+Begin
+  DfBitSetEqual := True;
+  For I := 0 To MAX_DF_BITS - 1 Do
+    If A[I] <> B[I] Then
+    Begin
+      DfBitSetEqual := False;
+      Exit;
+    End;
+End;
+
+Procedure DfBitSetCopy(Var Dst : TDFBitSet; Const Src : TDFBitSet);
+Var
+  I : Integer;
+Begin
+  For I := 0 To MAX_DF_BITS - 1 Do
+    Dst[I] := Src[I];
+End;
+
+{ ---- Gestion des variables DF ------------------------------ }
+
+Function DfFindVar(Const VarName : TString) : Integer;
+Var
+  I : Integer;
+  LowName : TString;
+Begin
+  LowName := StrLowerCase(VarName);
+  DfFindVar := -1;
+  For I := 0 To DfVarCount - 1 Do
+    If StrLowerCase(DfVars[I].Name) = LowName Then
+    Begin
+      DfFindVar := I;
+      Exit;
+    End;
+End;
+
+Function DfAddVar(Const VarName : TString; ASTIdx, FuncId : Integer)
+                  : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DfFindVar(VarName);
+  If Idx >= 0 Then
+  Begin
+    DfAddVar := Idx;
+    Exit;
+  End;
+  If DfVarCount >= MAX_DF_VARS Then
+  Begin
+    DfAddVar := -1;
+    Exit;
+  End;
+  Idx := DfVarCount;
+  DfVars[Idx].Name     := VarName;
+  DfVars[Idx].ASTIndex := ASTIdx;
+  DfVars[Idx].FuncId   := FuncId;
+  Inc(DfVarCount);
+  DfAddVar := Idx;
+End;
+
+Function DfAddDef(VarIdx, CfgNd, ASTIdx : Integer) : Integer;
+Begin
+  If DfDefCount >= MAX_DF_DEFS Then
+  Begin
+    DfAddDef := -1;
+    Exit;
+  End;
+  DfDefs[DfDefCount].VarIdx   := VarIdx;
+  DfDefs[DfDefCount].CfgNode  := CfgNd;
+  DfDefs[DfDefCount].ASTIndex := ASTIdx;
+  DfDefs[DfDefCount].DefId    := DfDefCount;
+  DfAddDef := DfDefCount;
+  Inc(DfDefCount);
+End;
+
+Function DfAddUse(VarIdx, CfgNd, ASTIdx : Integer) : Integer;
+Begin
+  If DfUseCount >= MAX_DF_USES Then
+  Begin
+    DfAddUse := -1;
+    Exit;
+  End;
+  DfUses[DfUseCount].VarIdx   := VarIdx;
+  DfUses[DfUseCount].CfgNode  := CfgNd;
+  DfUses[DfUseCount].ASTIndex := ASTIdx;
+  DfUses[DfUseCount].UseId    := DfUseCount;
+  DfAddUse := DfUseCount;
+  Inc(DfUseCount);
+End;
+
+{ ---- Trouver le noeud CFG pour un noeud AST ---------------- }
+
+Function FindCfgNodeForAST(ASTIdx : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  FindCfgNodeForAST := -1;
+  For I := 0 To CfgNodeCount - 1 Do
+    If CfgNodes[I].ASTIndex = ASTIdx Then
+    Begin
+      FindCfgNodeForAST := I;
+      Exit;
+    End;
+  { Si non trouve, chercher le noeud CFG parent le plus proche }
+  If (ASTIdx >= 0) And (ASTIdx < SrcNodeCount) Then
+  Begin
+    For I := 0 To CfgNodeCount - 1 Do
+      If CfgNodes[I].ASTIndex >= 0 Then
+        If CfgNodes[I].Kind = CFG_BLOCK Then
+        Begin
+          FindCfgNodeForAST := I;
+          Exit;
+        End;
+  End;
+End;
+
+{ ---- Collecter les definitions et utilisations ------------- }
+
+Procedure CollectDefsUses;
+Var
+  I, VarIdx, CfgNd : Integer;
+Begin
+  For I := 0 To SrcNodeCount - 1 Do
+  Begin
+    Case SrcNodes[I].Kind Of
+
+      { Declarations de variables : c'est une definition initiale }
+      SNK_VAR_DECL:
+      Begin
+        If SrcNodes[I].Name <> '' Then
+        Begin
+          VarIdx := DfAddVar(SrcNodes[I].Name, I, -1);
+          If VarIdx >= 0 Then
+          Begin
+            CfgNd := FindCfgNodeForAST(I);
+            If CfgNd < 0 Then CfgNd := 0;
+            DfAddDef(VarIdx, CfgNd, I);
+          End;
+        End;
+      End;
+
+      { Declarations de parametres : definition a l'entree }
+      SNK_PARAM_DECL:
+      Begin
+        If SrcNodes[I].Name <> '' Then
+        Begin
+          VarIdx := DfAddVar(SrcNodes[I].Name, I, -1);
+          If VarIdx >= 0 Then
+          Begin
+            CfgNd := FindCfgNodeForAST(I);
+            If CfgNd < 0 Then CfgNd := 0;
+            DfAddDef(VarIdx, CfgNd, I);
+          End;
+        End;
+      End;
+
+      { Affectations : la partie gauche est une definition }
+      SNK_ASSIGN:
+      Begin
+        If SrcNodes[I].Left >= 0 Then
+        Begin
+          If SrcNodes[SrcNodes[I].Left].Kind = SNK_EXPR_IDENT Then
+          Begin
+            VarIdx := DfAddVar(
+              SrcNodes[SrcNodes[I].Left].Name,
+              SrcNodes[I].Left, -1);
+            If VarIdx >= 0 Then
+            Begin
+              CfgNd := FindCfgNodeForAST(I);
+              If CfgNd < 0 Then CfgNd := 0;
+              DfAddDef(VarIdx, CfgNd, I);
+            End;
+          End;
+        End;
+        { La partie droite contient des utilisations }
+        If SrcNodes[I].Right >= 0 Then
+        Begin
+          If SrcNodes[SrcNodes[I].Right].Kind = SNK_EXPR_IDENT Then
+          Begin
+            VarIdx := DfFindVar(
+              SrcNodes[SrcNodes[I].Right].Name);
+            If VarIdx >= 0 Then
+            Begin
+              CfgNd := FindCfgNodeForAST(I);
+              If CfgNd < 0 Then CfgNd := 0;
+              DfAddUse(VarIdx, CfgNd, SrcNodes[I].Right);
+            End;
+          End;
+        End;
+      End;
+
+      { Identifiants dans les expressions : utilisation }
+      SNK_EXPR_IDENT:
+      Begin
+        If SrcNodes[I].Name <> '' Then
+        Begin
+          VarIdx := DfFindVar(SrcNodes[I].Name);
+          If VarIdx >= 0 Then
+          Begin
+            CfgNd := FindCfgNodeForAST(I);
+            If CfgNd < 0 Then CfgNd := 0;
+            DfAddUse(VarIdx, CfgNd, I);
+          End;
+        End;
+      End;
+
+      { Boucle for : la variable de boucle est definie }
+      SNK_FOR:
+      Begin
+        If SrcNodes[I].Name <> '' Then
+        Begin
+          VarIdx := DfAddVar(SrcNodes[I].Name, I, -1);
+          If VarIdx >= 0 Then
+          Begin
+            CfgNd := FindCfgNodeForAST(I);
+            If CfgNd < 0 Then CfgNd := 0;
+            DfAddDef(VarIdx, CfgNd, I);
+          End;
+        End;
+      End;
+
+    End; { case }
+  End;
+End;
+
+{ ---- Calculer les ensembles Gen et Kill -------------------- }
+
+Procedure ComputeGenKill;
+Var
+  D, K, CfgNd, VarIdx : Integer;
+Begin
+  { Gen[n] = ensemble des definitions generees dans le noeud n }
+  { Kill[n] = ensemble des definitions tuees par le noeud n    }
+  For D := 0 To DfDefCount - 1 Do
+  Begin
+    CfgNd := DfDefs[D].CfgNode;
+    If (CfgNd >= 0) And (CfgNd < CfgNodeCount) Then
+    Begin
+      { Cette definition est generee dans ce noeud }
+      DfBitSetSet(DfNodeInfo[CfgNd].Gen, D);
+
+      { Marquer la variable comme definie dans ce noeud }
+      VarIdx := DfDefs[D].VarIdx;
+      If (VarIdx >= 0) And (VarIdx < DfVarCount) Then
+        DfBitSetSet(DfNodeInfo[CfgNd].DefSet, VarIdx);
+
+      { Kill : toutes les autres definitions de la meme variable }
+      For K := 0 To DfDefCount - 1 Do
+      Begin
+        If (K <> D) And (DfDefs[K].VarIdx = VarIdx) Then
+          DfBitSetSet(DfNodeInfo[CfgNd].Kill, K);
+      End;
+    End;
+  End;
+
+  { UseSet : ensemble des variables utilisees dans chaque noeud }
+  For D := 0 To DfUseCount - 1 Do
+  Begin
+    CfgNd := DfUses[D].CfgNode;
+    If (CfgNd >= 0) And (CfgNd < CfgNodeCount) Then
+    Begin
+      VarIdx := DfUses[D].VarIdx;
+      If (VarIdx >= 0) And (VarIdx < DfVarCount) Then
+        DfBitSetSet(DfNodeInfo[CfgNd].UseSet, VarIdx);
+    End;
+  End;
+End;
+
+{ ---- Trouver les predecesseurs d'un noeud CFG -------------- }
+
+Procedure GetCfgPredecessors(NodeIdx : Integer;
+                              Var Preds : Array Of Integer;
+                              Var PredCount : Integer);
+Var
+  I, E : Integer;
+Begin
+  PredCount := 0;
+  For I := 0 To CfgNodeCount - 1 Do
+  Begin
+    E := CfgNodes[I].FirstEdge;
+    While E >= 0 Do
+    Begin
+      If CfgEdges[E].Dst = NodeIdx Then
+      Begin
+        If PredCount < MAX_CFG_NODES Then
+        Begin
+          Preds[PredCount] := I;
+          Inc(PredCount);
+        End;
+      End;
+      E := CfgEdges[E].NextEdge;
+    End;
+  End;
+End;
+
+{ ---- Trouver les successeurs d'un noeud CFG ---------------- }
+
+Procedure GetCfgSuccessors(NodeIdx : Integer;
+                            Var Succs : Array Of Integer;
+                            Var SuccCount : Integer);
+Var
+  E : Integer;
+Begin
+  SuccCount := 0;
+  E := CfgNodes[NodeIdx].FirstEdge;
+  While E >= 0 Do
+  Begin
+    If SuccCount < MAX_CFG_NODES Then
+    Begin
+      Succs[SuccCount] := CfgEdges[E].Dst;
+      Inc(SuccCount);
+    End;
+    E := CfgEdges[E].NextEdge;
+  End;
+End;
+
+{ ---- Definitions atteignantes (propagation avant) ---------- }
+
+Procedure ComputeReachingDefs;
+Var
+  Changed : Boolean;
+  I, J, PredCount : Integer;
+  OldOut, Temp : TDFBitSet;
+  Preds : Array[0..255] Of Integer;
+Begin
+  { Initialiser OUT[n] = Gen[n] pour chaque noeud }
+  For I := 0 To CfgNodeCount - 1 Do
+    DfBitSetCopy(DfNodeInfo[I].RDOut, DfNodeInfo[I].Gen);
+
+  { Iteration point fixe }
+  Repeat
+    Changed := False;
+    For I := 0 To CfgNodeCount - 1 Do
+    Begin
+      { IN[n] = union des OUT des predecesseurs }
+      DfBitSetInit(DfNodeInfo[I].RDIn);
+      GetCfgPredecessors(I, Preds, PredCount);
+      For J := 0 To PredCount - 1 Do
+        DfBitSetUnion(DfNodeInfo[I].RDIn,
+                       DfNodeInfo[Preds[J]].RDOut);
+
+      { OUT[n] = Gen[n] union (IN[n] - Kill[n]) }
+      DfBitSetCopy(OldOut, DfNodeInfo[I].RDOut);
+      DfBitSetCopy(Temp, DfNodeInfo[I].RDIn);
+      DfBitSetDiff(Temp, DfNodeInfo[I].Kill);
+      DfBitSetCopy(DfNodeInfo[I].RDOut, DfNodeInfo[I].Gen);
+      DfBitSetUnion(DfNodeInfo[I].RDOut, Temp);
+
+      If Not DfBitSetEqual(OldOut, DfNodeInfo[I].RDOut) Then
+        Changed := True;
+    End;
+  Until Not Changed;
+End;
+
+{ ---- Analyse de vivacite (propagation arriere) ------------- }
+
+Procedure ComputeLiveness;
+Var
+  Changed : Boolean;
+  I, J, SuccCount : Integer;
+  OldIn, Temp : TDFBitSet;
+  Succs : Array[0..255] Of Integer;
+Begin
+  { Initialiser LiveIn[n] = UseSet[n] }
+  For I := 0 To CfgNodeCount - 1 Do
+    DfBitSetCopy(DfNodeInfo[I].LiveIn, DfNodeInfo[I].UseSet);
+
+  { Iteration point fixe (parcours arriere) }
+  Repeat
+    Changed := False;
+    For I := CfgNodeCount - 1 DownTo 0 Do
+    Begin
+      { OUT[n] = union des IN des successeurs }
+      DfBitSetInit(DfNodeInfo[I].LiveOut);
+      GetCfgSuccessors(I, Succs, SuccCount);
+      For J := 0 To SuccCount - 1 Do
+        DfBitSetUnion(DfNodeInfo[I].LiveOut,
+                       DfNodeInfo[Succs[J]].LiveIn);
+
+      { IN[n] = Use[n] union (OUT[n] - Def[n]) }
+      DfBitSetCopy(OldIn, DfNodeInfo[I].LiveIn);
+      DfBitSetCopy(Temp, DfNodeInfo[I].LiveOut);
+      DfBitSetDiff(Temp, DfNodeInfo[I].DefSet);
+      DfBitSetCopy(DfNodeInfo[I].LiveIn, DfNodeInfo[I].UseSet);
+      DfBitSetUnion(DfNodeInfo[I].LiveIn, Temp);
+
+      If Not DfBitSetEqual(OldIn, DfNodeInfo[I].LiveIn) Then
+        Changed := True;
+    End;
+  Until Not Changed;
+End;
+
+{ ---- Construire les chaines definition-utilisation ---------- }
+
+Procedure BuildDefUseChains;
+Var
+  D, U, CfgNd : Integer;
+Begin
+  DfChainCount := 0;
+  For U := 0 To DfUseCount - 1 Do
+  Begin
+    CfgNd := DfUses[U].CfgNode;
+    If (CfgNd < 0) Or (CfgNd >= CfgNodeCount) Then Continue;
+
+    { Une definition atteint cette utilisation si elle est dans
+      RDIn du noeud CFG de l'utilisation et concerne la meme
+      variable }
+    For D := 0 To DfDefCount - 1 Do
+    Begin
+      If DfDefs[D].VarIdx <> DfUses[U].VarIdx Then Continue;
+      If DfBitSetTest(DfNodeInfo[CfgNd].RDIn, D) Or
+         DfBitSetTest(DfNodeInfo[CfgNd].Gen, D) Then
+      Begin
+        If DfChainCount < MAX_DF_CHAINS Then
+        Begin
+          DfChains[DfChainCount].DefIdx := D;
+          DfChains[DfChainCount].UseIdx := U;
+          Inc(DfChainCount);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ---- Point d'entree de l'analyse de flot de donnees -------- }
+
+Procedure RunDataFlowAnalysis;
+Begin
+  InitDataFlow;
+  CollectDefsUses;
+  ComputeGenKill;
+  ComputeReachingDefs;
+  ComputeLiveness;
+  BuildDefUseChains;
+End;
+
+{ ---- Affichage debug de l'analyse de flot de donnees ------- }
+
+Procedure DumpDataFlow;
+Var
+  I, J : Integer;
+Begin
+  WriteLn('=== Analyse de Flot de Donnees ===');
+  WriteLn('Variables : ', DfVarCount);
+  WriteLn('Definitions : ', DfDefCount);
+  WriteLn('Utilisations : ', DfUseCount);
+  WriteLn('Chaines def-use : ', DfChainCount);
+  WriteLn;
+
+  { Afficher les variables }
+  WriteLn('--- Variables ---');
+  For I := 0 To DfVarCount - 1 Do
+  Begin
+    Write('  V', I, ' "', DfVars[I].Name, '"');
+    If DfVars[I].ASTIndex >= 0 Then
+      Write(' ast=', DfVars[I].ASTIndex);
+    WriteLn;
+  End;
+  WriteLn;
+
+  { Afficher les definitions }
+  WriteLn('--- Definitions ---');
+  For I := 0 To DfDefCount - 1 Do
+  Begin
+    Write('  D', I, ' var=V', DfDefs[I].VarIdx);
+    If DfDefs[I].VarIdx >= 0 Then
+      Write(' "', DfVars[DfDefs[I].VarIdx].Name, '"');
+    Write(' cfg=N', DfDefs[I].CfgNode);
+    Write(' ast=', DfDefs[I].ASTIndex);
+    WriteLn;
+  End;
+  WriteLn;
+
+  { Afficher les utilisations }
+  WriteLn('--- Utilisations ---');
+  For I := 0 To DfUseCount - 1 Do
+  Begin
+    Write('  U', I, ' var=V', DfUses[I].VarIdx);
+    If DfUses[I].VarIdx >= 0 Then
+      Write(' "', DfVars[DfUses[I].VarIdx].Name, '"');
+    Write(' cfg=N', DfUses[I].CfgNode);
+    Write(' ast=', DfUses[I].ASTIndex);
+    WriteLn;
+  End;
+  WriteLn;
+
+  { Afficher les definitions atteignantes par noeud CFG }
+  WriteLn('--- Definitions atteignantes ---');
+  For I := 0 To CfgNodeCount - 1 Do
+  Begin
+    Write('  N', I, ' RDIn={');
+    For J := 0 To DfDefCount - 1 Do
+      If DfBitSetTest(DfNodeInfo[I].RDIn, J) Then
+        Write('D', J, ' ');
+    Write('} RDOut={');
+    For J := 0 To DfDefCount - 1 Do
+      If DfBitSetTest(DfNodeInfo[I].RDOut, J) Then
+        Write('D', J, ' ');
+    WriteLn('}');
+  End;
+  WriteLn;
+
+  { Afficher l'analyse de vivacite par noeud CFG }
+  WriteLn('--- Vivacite (liveness) ---');
+  For I := 0 To CfgNodeCount - 1 Do
+  Begin
+    Write('  N', I, ' LiveIn={');
+    For J := 0 To DfVarCount - 1 Do
+      If DfBitSetTest(DfNodeInfo[I].LiveIn, J) Then
+        Write('V', J, ' ');
+    Write('} LiveOut={');
+    For J := 0 To DfVarCount - 1 Do
+      If DfBitSetTest(DfNodeInfo[I].LiveOut, J) Then
+        Write('V', J, ' ');
+    WriteLn('}');
+  End;
+  WriteLn;
+
+  { Afficher les chaines definition-utilisation }
+  WriteLn('--- Chaines def-use ---');
+  For I := 0 To DfChainCount - 1 Do
+  Begin
+    Write('  D', DfChains[I].DefIdx);
+    Write(' "', DfVars[DfDefs[DfChains[I].DefIdx].VarIdx].Name, '"');
+    Write(' -> U', DfChains[I].UseIdx);
+    WriteLn;
   End;
   WriteLn;
 End;
