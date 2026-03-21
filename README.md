@@ -443,7 +443,11 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
     	<tr>
 			<td><b>TOKEN2BAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de TOKEN (GWBASIC, CoCo,...) de BASIC en BASIC ASCII.</td>
-		</tr>	
+		</tr>
+		<tr>
+			<td><b>TPCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Turbo Pascal pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
 		<tr>
 			<td><b>TP2JS.PAS</b></td>
 			<td>Cette commande permet de compiler un fichier Turbo Pascal en code JavaScript.</td>
