@@ -6,11 +6,12 @@
 
 { TODO - Liste des 25 points a implementer pour l'emulateur Windows 32 bits :
 
-  1.  Creer le fichier d'echange de 16 Mo (EMUW32.$$$) servant de
-      memoire lineaire pour l'espace d'adressage virtuel Win32,
-      similaire au SwapFileMemory d'EMU8086.PAS et d'EMUDPMI.PAS
-      mais avec un espace plat de 16 777 216 octets (16 Mo) pour
-      emuler l'espace utilisateur d'un processus Windows 32 bits.
+  1.  [IMPLEMENTE] Creer le fichier d'echange de 16 Mo (EMUW32.$$$)
+      servant de memoire lineaire pour l'espace d'adressage virtuel
+      Win32, similaire au SwapFileMemory d'EMU8086.PAS et
+      d'EMUDPMI.PAS mais avec un espace plat de 16 777 216 octets
+      (16 Mo) pour emuler l'espace utilisateur d'un processus
+      Windows 32 bits.
 
   2.  Definir les registres 32 bits du 80386 : EAX, EBX, ECX, EDX,
       ESI, EDI, EBP, ESP, EIP avec un acces aux sous-parties 16 bits
@@ -129,5 +130,67 @@
       sortie (code de retour du processus emule, statistiques).
 }
 
+Program EMUW32;
+
+{$A-}
+
+Uses DOS;
+
+Const
+  { TODO 1 : Fichier d'echange de 16 Mo pour la memoire lineaire }
+ SwapFileMemory='EMUW32.$$$';
+
+  { Taille totale de la memoire lineaire : 16 Mo }
+ MemorySize=16*1024*1024;  { 16 777 216 octets }
+
+  { Taille du tampon de nettoyage pour l'initialisation }
+ ClearBufferSize=1024;
+
+  { Nombre de blocs de 1 Ko pour couvrir 16 Mo }
+ ClearBlockCount=MemorySize div ClearBufferSize;  { 16384 }
+
+Var
+  { TODO 1 : Fichier d'echange }
+ Memory:File;
+ ClrBuffer:Array[0..ClearBufferSize-1]of Byte;
+
+  { TODO 1 : Procedure d'initialisation de la memoire lineaire.
+    Cree le fichier d'echange de 16 Mo (EMUW32.$$$) et le remplit
+    de zeros pour simuler un espace d'adressage plat Win32. }
+Procedure Init;
+Var
+ J:LongInt;
+ ByteWrited:Word;
+Begin
+ {$I-}Assign(Memory,SwapFileMemory);
+ Rewrite(Memory,1);{$I+}
+ If IOResult<>0 Then Begin
+  WriteLn('Impossible de creer un fichier temporaire pour la memoire');
+  Halt(1);
+ End;
+ WriteLn('Creation du fichier d''echange de 16 Mo...');
+ FillChar(ClrBuffer,SizeOf(ClrBuffer),0);
+ For J:=0 to ClearBlockCount-1 do Begin
+  Seek(Memory,J*LongInt(ClearBufferSize));
+  BlockWrite(Memory,ClrBuffer,ClearBufferSize,ByteWrited);
+  If ByteWrited<>ClearBufferSize Then Begin
+   WriteLn('Erreur d''ecriture lors de l''initialisation de la memoire');
+   Close(Memory);
+   Halt(1);
+  End;
+ End;
+ WriteLn('Fichier d''echange de 16 Mo cree avec succes.');
+End;
+
 BEGIN
+ Init;
+ WriteLn('EMUW32 : Memoire lineaire de 16 Mo initialisee.');
+  { Fermer et supprimer le fichier d'echange }
+ {$I-}Close(Memory);{$I+}
+ If IOResult<>0 Then
+  WriteLn('EMUW32 : Avertissement - erreur lors de la fermeture du fichier d''echange.');
+ {$I-}Assign(Memory,SwapFileMemory);
+ Erase(Memory);{$I+}
+ If IOResult<>0 Then
+  WriteLn('EMUW32 : Avertissement - impossible de supprimer le fichier d''echange.');
 END.
