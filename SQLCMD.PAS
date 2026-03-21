@@ -66,7 +66,7 @@
             Lire sys.sysrowsets : allocation_unit, partition
             Reconstruire le schema complet de chaque table
 
-  TODO 06 - DECODAGE DES TYPES DE DONNEES SQL SERVER
+  TODO 06 - DECODAGE DES TYPES DE DONNEES SQL SERVER [IMPLEMENTE]
             Types entiers : TINYINT (1o), SMALLINT (2o),
               INT (4o), BIGINT (8o), BIT
             Types decimaux : DECIMAL(p,s), NUMERIC(p,s),
@@ -693,6 +693,58 @@ Const
   MAX_SYS_IDXCOLS = {$IFDEF FPC}500{$ELSE}60{$ENDIF};
   MAX_SYS_ROWSETS = {$IFDEF FPC}200{$ELSE}30{$ENDIF};
 
+  { ---- Constantes types de donnees SQL Server (TODO 06) ------ }
+  { xtype IDs des types systeme SQL Server                        }
+  XT_IMAGE           = 34;     { IMAGE                             }
+  XT_TEXT            = 35;     { TEXT                              }
+  XT_UNIQUEID        = 36;     { UNIQUEIDENTIFIER (16 octets)      }
+  XT_DATE            = 40;     { DATE (3 octets)                   }
+  XT_TIME            = 41;     { TIME (3-5 octets selon scale)     }
+  XT_DATETIME2       = 42;     { DATETIME2 (6-8 oct. selon scale)  }
+  XT_DATETIMEOFFSET  = 43;     { DATETIMEOFFSET (8-10 oct.)        }
+  XT_TINYINT         = 48;     { TINYINT (1 octet)                 }
+  XT_SMALLINT        = 52;     { SMALLINT (2 octets)               }
+  XT_INT             = 56;     { INT (4 octets)                    }
+  XT_SMALLDATETIME   = 58;     { SMALLDATETIME (4 octets)          }
+  XT_REAL            = 59;     { REAL (4 octets)                   }
+  XT_MONEY           = 60;     { MONEY (8 octets)                  }
+  XT_DATETIME        = 61;     { DATETIME (8 octets)               }
+  XT_FLOAT           = 62;     { FLOAT (8 octets)                  }
+  XT_SQL_VARIANT     = 98;     { SQL_VARIANT (variable)            }
+  XT_NTEXT           = 99;     { NTEXT (variable LOB)              }
+  XT_BIT             = 104;    { BIT (1 octet)                     }
+  XT_DECIMAL         = 106;    { DECIMAL(p,s) (5-17 oct.)          }
+  XT_NUMERIC         = 108;    { NUMERIC(p,s) (5-17 oct.)          }
+  XT_SMALLMONEY      = 122;    { SMALLMONEY (4 octets)             }
+  XT_BIGINT          = 127;    { BIGINT (8 octets)                 }
+  XT_HIERARCHYID     = 128;    { HIERARCHYID (variable)            }
+  XT_VARBINARY       = 165;    { VARBINARY(n) (variable)           }
+  XT_VARCHAR         = 167;    { VARCHAR(n) (variable)             }
+  XT_BINARY          = 173;    { BINARY(n) (fixe)                  }
+  XT_CHAR            = 175;    { CHAR(n) (fixe)                    }
+  XT_TIMESTAMP       = 189;    { TIMESTAMP/ROWVERSION (8 oct.)     }
+  XT_NVARCHAR        = 231;    { NVARCHAR(n) (variable)            }
+  XT_NCHAR           = 239;    { NCHAR(n) (fixe)                   }
+  XT_CLR             = 240;    { CLR types (GEOGRAPHY,GEOMETRY)    }
+  XT_XML             = 241;    { XML (variable LOB)                }
+
+  { Categories de types de donnees }
+  SQLCAT_UNKNOWN     = 0;      { type inconnu                      }
+  SQLCAT_INTEGER     = 1;      { entiers : TINYINT..BIGINT, BIT    }
+  SQLCAT_DECIMAL     = 2;      { decimaux : DECIMAL, NUMERIC,      }
+                               {   FLOAT, REAL, MONEY, SMALLMONEY  }
+  SQLCAT_STRING      = 3;      { chaines : CHAR, VARCHAR, NCHAR,   }
+                               {   NVARCHAR, TEXT, NTEXT            }
+  SQLCAT_DATETIME    = 4;      { date/heure : DATE, TIME,          }
+                               {   DATETIME, DATETIME2, etc.       }
+  SQLCAT_BINARY      = 5;      { binaires : BINARY, VARBINARY,     }
+                               {   IMAGE, TIMESTAMP                }
+  SQLCAT_SPECIAL     = 6;      { speciaux : UNIQUEIDENTIFIER, XML, }
+                               {   SQL_VARIANT, CLR, HIERARCHYID   }
+
+  { Taille max d une valeur SQL decodee en chaine }
+  MAX_SQL_VALUE_STR = 120;
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -843,6 +895,34 @@ Type
     ObjectId  : LongInt;       { object_id                            }
     IndexId   : LongInt;       { index_id                             }
     Valid     : Boolean;
+  End;
+
+  { ---- Chaine valeur SQL decodee (TODO 06) -------------------- }
+  TSqlValueStr = String[MAX_SQL_VALUE_STR];
+
+  { ---- Valeur SQL decodee (TODO 06) --------------------------- }
+  { Represente une valeur extraite d un enregistrement MDF         }
+  { apres decodage du type de donnees SQL Server.                  }
+  TSqlValue = Record
+    IsNull    : Boolean;       { True si la valeur est NULL            }
+    Category  : Byte;          { SQLCAT_xxx                            }
+    XType     : Byte;          { type systeme original                 }
+    IntVal    : LongInt;       { valeur entiere (TINYINT..INT)         }
+    HiVal     : LongInt;       { partie haute (BIGINT, MONEY)          }
+    FloatVal  : Real;          { valeur flottante (FLOAT, REAL)        }
+    StrVal    : TSqlValueStr;  { valeur chaine (CHAR, VARCHAR, etc.)   }
+    BinLen    : Word;          { longueur donnees binaires             }
+    Year      : Word;          { annee (pour DATE/DATETIME)            }
+    Month     : Byte;          { mois                                  }
+    Day       : Byte;          { jour                                  }
+    Hour      : Byte;          { heure                                 }
+    Minute    : Byte;          { minute                                }
+    Second    : Byte;          { seconde                               }
+    Frac      : LongInt;       { fractions de seconde                  }
+    Scale     : Byte;          { echelle (pour TIME, DATETIME2)        }
+    Prec      : Byte;          { precision (pour DECIMAL, NUMERIC)     }
+    Sign      : Byte;          { signe (0=negatif, 1=positif)          }
+    Valid     : Boolean;       { True si decode avec succes            }
   End;
 
   { ---- Options de la ligne de commande ---------------------- }
@@ -2714,6 +2794,955 @@ Begin
   { Afficher le schema si le catalogue est valide }
   If CatalogValid And Opts.Verbose Then
     DumpCatalog;
+End;
+
+{ ============================================================
+  TODO 06 - DECODAGE DES TYPES DE DONNEES SQL SERVER [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Categorie d un type SQL Server par xtype ---------------- }
+
+Function SqlTypeCategory(XT : Byte) : Byte;
+Begin
+  Case XT Of
+    XT_TINYINT, XT_SMALLINT, XT_INT, XT_BIGINT, XT_BIT :
+      SqlTypeCategory := SQLCAT_INTEGER;
+    XT_DECIMAL, XT_NUMERIC, XT_FLOAT, XT_REAL,
+    XT_MONEY, XT_SMALLMONEY :
+      SqlTypeCategory := SQLCAT_DECIMAL;
+    XT_CHAR, XT_VARCHAR, XT_NCHAR, XT_NVARCHAR,
+    XT_TEXT, XT_NTEXT :
+      SqlTypeCategory := SQLCAT_STRING;
+    XT_DATE, XT_TIME, XT_DATETIME, XT_DATETIME2,
+    XT_DATETIMEOFFSET, XT_SMALLDATETIME :
+      SqlTypeCategory := SQLCAT_DATETIME;
+    XT_BINARY, XT_VARBINARY, XT_IMAGE, XT_TIMESTAMP :
+      SqlTypeCategory := SQLCAT_BINARY;
+    XT_UNIQUEID, XT_XML, XT_SQL_VARIANT,
+    XT_CLR, XT_HIERARCHYID :
+      SqlTypeCategory := SQLCAT_SPECIAL;
+  Else
+    SqlTypeCategory := SQLCAT_UNKNOWN;
+  End;
+End;
+
+{ ---- Taille fixe d un type SQL Server (0 si variable) -------- }
+
+Function SqlTypeFixedSize(XT : Byte) : Word;
+Begin
+  Case XT Of
+    XT_BIT         : SqlTypeFixedSize := 1;
+    XT_TINYINT     : SqlTypeFixedSize := 1;
+    XT_SMALLINT    : SqlTypeFixedSize := 2;
+    XT_INT         : SqlTypeFixedSize := 4;
+    XT_BIGINT      : SqlTypeFixedSize := 8;
+    XT_REAL        : SqlTypeFixedSize := 4;
+    XT_FLOAT       : SqlTypeFixedSize := 8;
+    XT_SMALLMONEY  : SqlTypeFixedSize := 4;
+    XT_MONEY       : SqlTypeFixedSize := 8;
+    XT_SMALLDATETIME : SqlTypeFixedSize := 4;
+    XT_DATETIME    : SqlTypeFixedSize := 8;
+    XT_DATE        : SqlTypeFixedSize := 3;
+    XT_UNIQUEID    : SqlTypeFixedSize := 16;
+    XT_TIMESTAMP   : SqlTypeFixedSize := 8;
+  Else
+    SqlTypeFixedSize := 0;  { variable ou depend de precision }
+  End;
+End;
+
+{ ---- Type a longueur variable ? ------------------------------ }
+
+Function SqlTypeIsVariable(XT : Byte) : Boolean;
+Begin
+  Case XT Of
+    XT_VARCHAR, XT_NVARCHAR, XT_VARBINARY,
+    XT_TEXT, XT_NTEXT, XT_IMAGE, XT_XML,
+    XT_SQL_VARIANT, XT_HIERARCHYID, XT_CLR :
+      SqlTypeIsVariable := True;
+  Else
+    SqlTypeIsVariable := False;
+  End;
+End;
+
+{ ---- Initialiser une valeur SQL a NULL ----------------------- }
+
+Procedure InitSqlValue(Var V : TSqlValue);
+Begin
+  V.IsNull   := True;
+  V.Category := SQLCAT_UNKNOWN;
+  V.XType    := 0;
+  V.IntVal   := 0;
+  V.HiVal    := 0;
+  V.FloatVal := 0.0;
+  V.StrVal   := '';
+  V.BinLen   := 0;
+  V.Year     := 0;
+  V.Month    := 0;
+  V.Day      := 0;
+  V.Hour     := 0;
+  V.Minute   := 0;
+  V.Second   := 0;
+  V.Frac     := 0;
+  V.Scale    := 0;
+  V.Prec     := 0;
+  V.Sign     := 1;
+  V.Valid    := False;
+End;
+
+{ ---- Decoder un type entier ---------------------------------- }
+{ TINYINT (1o), SMALLINT (2o), INT (4o), BIGINT (8o), BIT       }
+
+Procedure DecodeInt(Const Buf : TMdfPageBuf;
+                    Ofs : Word; XT : Byte;
+                    Var V : TSqlValue);
+Begin
+  InitSqlValue(V);
+  V.XType    := XT;
+  V.Category := SQLCAT_INTEGER;
+
+  Case XT Of
+    XT_BIT :
+    Begin
+      If Ofs >= MDF_PAGE_SIZE Then Exit;
+      V.IntVal := Buf[Ofs] And 1;
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_TINYINT :
+    Begin
+      If Ofs >= MDF_PAGE_SIZE Then Exit;
+      V.IntVal := Buf[Ofs];
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_SMALLINT :
+    Begin
+      If Ofs + 1 >= MDF_PAGE_SIZE Then Exit;
+      V.IntVal := SmallInt(ReadWord(Buf, Ofs));
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_INT :
+    Begin
+      If Ofs + 3 >= MDF_PAGE_SIZE Then Exit;
+      V.IntVal := ReadLong(Buf, Ofs);
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_BIGINT :
+    Begin
+      If Ofs + 7 >= MDF_PAGE_SIZE Then Exit;
+      { BIGINT = 8 octets : partie basse dans IntVal,           }
+      {                      partie haute dans HiVal             }
+      V.IntVal := ReadLong(Buf, Ofs);
+      V.HiVal  := ReadLong(Buf, Ofs + 4);
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+  End;
+End;
+
+{ ---- Decoder un type decimal/flottant ------------------------ }
+{ DECIMAL(p,s), NUMERIC(p,s), FLOAT, REAL, MONEY, SMALLMONEY   }
+
+Procedure DecodeDecimal(Const Buf : TMdfPageBuf;
+                        Ofs : Word; XT : Byte;
+                        ColPrec, ColScale : Byte;
+                        Var V : TSqlValue);
+Var
+  Money4  : LongInt;
+  MoneyLo : LongInt;
+  MoneyHi : LongInt;
+  FloatRec : Record
+    Case Byte Of
+      0: (S : Single);
+      1: (D : Double);
+      2: (B : Array[0..7] Of Byte);
+  End;
+  I : Integer;
+Begin
+  InitSqlValue(V);
+  V.XType    := XT;
+  V.Category := SQLCAT_DECIMAL;
+  V.Prec     := ColPrec;
+  V.Scale    := ColScale;
+
+  Case XT Of
+    XT_REAL :
+    Begin
+      If Ofs + 3 >= MDF_PAGE_SIZE Then Exit;
+      For I := 0 To 3 Do
+        FloatRec.B[I] := Buf[Ofs + I];
+      V.FloatVal := FloatRec.S;
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_FLOAT :
+    Begin
+      If Ofs + 7 >= MDF_PAGE_SIZE Then Exit;
+      For I := 0 To 7 Do
+        FloatRec.B[I] := Buf[Ofs + I];
+      V.FloatVal := FloatRec.D;
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_SMALLMONEY :
+    Begin
+      If Ofs + 3 >= MDF_PAGE_SIZE Then Exit;
+      Money4 := ReadLong(Buf, Ofs);
+      { SMALLMONEY = entier / 10000 }
+      V.IntVal := Money4;
+      V.Scale  := 4;
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_MONEY :
+    Begin
+      If Ofs + 7 >= MDF_PAGE_SIZE Then Exit;
+      { MONEY = 8 octets (hi:lo en format special SQL Server) }
+      MoneyHi := ReadLong(Buf, Ofs);
+      MoneyLo := ReadLong(Buf, Ofs + 4);
+      V.IntVal := MoneyLo;
+      V.HiVal  := MoneyHi;
+      V.Scale  := 4;
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_DECIMAL, XT_NUMERIC :
+    Begin
+      { DECIMAL/NUMERIC : 1 octet signe + 4/8/12/16 octets val }
+      If Ofs >= MDF_PAGE_SIZE Then Exit;
+      V.Sign := Buf[Ofs];
+      If Ofs + 4 >= MDF_PAGE_SIZE Then Exit;
+      V.IntVal := ReadLong(Buf, Ofs + 1);
+      If ColPrec > 9 Then
+      Begin
+        If Ofs + 8 < MDF_PAGE_SIZE Then
+          V.HiVal := ReadLong(Buf, Ofs + 5);
+      End;
+      V.Prec   := ColPrec;
+      V.Scale  := ColScale;
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+  End;
+End;
+
+{ ---- Decoder un type chaine ---------------------------------- }
+{ CHAR(n), VARCHAR(n), NCHAR(n), NVARCHAR(n), TEXT, NTEXT       }
+{ Pour CHAR/NCHAR la longueur est fixe (MaxLen).                 }
+{ Pour VARCHAR/NVARCHAR la longueur est donnee par DataLen.      }
+
+Procedure DecodeString(Const Buf : TMdfPageBuf;
+                       Ofs : Word; DataLen : Word;
+                       XT : Byte;
+                       Var V : TSqlValue);
+Var
+  I   : Integer;
+  Len : Word;
+  Lo  : Byte;
+Begin
+  InitSqlValue(V);
+  V.XType    := XT;
+  V.Category := SQLCAT_STRING;
+
+  If Ofs >= MDF_PAGE_SIZE Then Exit;
+  If DataLen = 0 Then
+  Begin
+    V.StrVal := '';
+    V.IsNull := False;
+    V.Valid  := True;
+    Exit;
+  End;
+
+  Len := DataLen;
+  If Ofs + Len > MDF_PAGE_SIZE Then
+    Len := MDF_PAGE_SIZE - Ofs;
+
+  Case XT Of
+    XT_CHAR, XT_VARCHAR, XT_TEXT :
+    Begin
+      { Chaines ASCII (1 octet par caractere) }
+      V.StrVal := '';
+      I := 0;
+      While (I < Len) And (Length(V.StrVal) < MAX_SQL_VALUE_STR) Do
+      Begin
+        V.StrVal := V.StrVal + Chr(Buf[Ofs + I]);
+        Inc(I);
+      End;
+      { Supprimer les espaces de fin pour CHAR }
+      If XT = XT_CHAR Then
+      Begin
+        While (Length(V.StrVal) > 0) And
+              (V.StrVal[Length(V.StrVal)] = ' ') Do
+          Dec(V.StrVal[0]);
+      End;
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_NCHAR, XT_NVARCHAR, XT_NTEXT :
+    Begin
+      { Chaines Unicode UTF-16 LE (2 octets par caractere) }
+      V.StrVal := '';
+      I := 0;
+      While (I * 2 + 1 < Len) And
+            (Length(V.StrVal) < MAX_SQL_VALUE_STR) Do
+      Begin
+        Lo := Buf[Ofs + I * 2];
+        If Lo = 0 Then Break;
+        V.StrVal := V.StrVal + Chr(Lo);
+        Inc(I);
+      End;
+      { Supprimer les espaces de fin pour NCHAR }
+      If XT = XT_NCHAR Then
+      Begin
+        While (Length(V.StrVal) > 0) And
+              (V.StrVal[Length(V.StrVal)] = ' ') Do
+          Dec(V.StrVal[0]);
+      End;
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+  End;
+End;
+
+{ ---- Decoder un type date/heure ------------------------------ }
+{ DATE, TIME, DATETIME, DATETIME2, DATETIMEOFFSET, SMALLDATETIME}
+
+Procedure DecodeDateTime(Const Buf : TMdfPageBuf;
+                         Ofs : Word; XT : Byte;
+                         ColScale : Byte;
+                         Var V : TSqlValue);
+Var
+  Days     : LongInt;
+  TimeTicks: LongInt;
+  DateVal  : LongInt;
+  TimeVal  : LongInt;
+  Y, M, D  : Word;
+  TotalDays: LongInt;
+  DaysInM  : Word;
+  Leap     : Boolean;
+Begin
+  InitSqlValue(V);
+  V.XType    := XT;
+  V.Category := SQLCAT_DATETIME;
+  V.Scale    := ColScale;
+
+  Case XT Of
+    XT_DATETIME :
+    Begin
+      { DATETIME = 8 octets : 4 oct. jours depuis 1900-01-01      }
+      {            + 4 oct. ticks de 1/300e de seconde depuis minuit}
+      If Ofs + 7 >= MDF_PAGE_SIZE Then Exit;
+      Days      := ReadLong(Buf, Ofs);
+      TimeTicks := ReadLong(Buf, Ofs + 4);
+
+      { Convertir les jours en Y/M/D depuis 1900-01-01 }
+      TotalDays := Days;
+      Y := 1900;
+      While TotalDays > 0 Do
+      Begin
+        Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or
+                (Y Mod 400 = 0);
+        If Leap Then
+        Begin
+          If TotalDays >= 366 Then
+          Begin Dec(TotalDays, 366); Inc(Y); End
+          Else Break;
+        End
+        Else
+        Begin
+          If TotalDays >= 365 Then
+          Begin Dec(TotalDays, 365); Inc(Y); End
+          Else Break;
+        End;
+      End;
+
+      M := 1;
+      While (M <= 12) And (TotalDays > 0) Do
+      Begin
+        Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or
+                (Y Mod 400 = 0);
+        Case M Of
+          1, 3, 5, 7, 8, 10, 12 : DaysInM := 31;
+          4, 6, 9, 11            : DaysInM := 30;
+          2 : If Leap Then DaysInM := 29 Else DaysInM := 28;
+        Else DaysInM := 30;
+        End;
+        If TotalDays >= DaysInM Then
+        Begin Dec(TotalDays, DaysInM); Inc(M); End
+        Else Break;
+      End;
+      D := TotalDays + 1;
+
+      V.Year   := Y;
+      V.Month  := M;
+      V.Day    := D;
+
+      { Convertir les ticks en H:M:S (1 tick = 1/300 sec) }
+      V.Second := (TimeTicks Div 300) Mod 60;
+      V.Minute := ((TimeTicks Div 300) Div 60) Mod 60;
+      V.Hour   := (TimeTicks Div 300) Div 3600;
+      V.Frac   := (TimeTicks Mod 300) * 3333;  { ~millisecondes }
+
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_SMALLDATETIME :
+    Begin
+      { SMALLDATETIME = 4 octets : 2 oct. jours depuis 1900-01-01 }
+      {                 + 2 oct. minutes depuis minuit              }
+      If Ofs + 3 >= MDF_PAGE_SIZE Then Exit;
+      Days := ReadWord(Buf, Ofs);
+      TimeTicks := ReadWord(Buf, Ofs + 2);
+
+      TotalDays := Days;
+      Y := 1900;
+      While TotalDays > 0 Do
+      Begin
+        Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or
+                (Y Mod 400 = 0);
+        If Leap Then
+        Begin
+          If TotalDays >= 366 Then
+          Begin Dec(TotalDays, 366); Inc(Y); End
+          Else Break;
+        End
+        Else
+        Begin
+          If TotalDays >= 365 Then
+          Begin Dec(TotalDays, 365); Inc(Y); End
+          Else Break;
+        End;
+      End;
+
+      M := 1;
+      While (M <= 12) And (TotalDays > 0) Do
+      Begin
+        Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or
+                (Y Mod 400 = 0);
+        Case M Of
+          1, 3, 5, 7, 8, 10, 12 : DaysInM := 31;
+          4, 6, 9, 11            : DaysInM := 30;
+          2 : If Leap Then DaysInM := 29 Else DaysInM := 28;
+        Else DaysInM := 30;
+        End;
+        If TotalDays >= DaysInM Then
+        Begin Dec(TotalDays, DaysInM); Inc(M); End
+        Else Break;
+      End;
+      D := TotalDays + 1;
+
+      V.Year   := Y;
+      V.Month  := M;
+      V.Day    := D;
+      V.Hour   := TimeTicks Div 60;
+      V.Minute := TimeTicks Mod 60;
+      V.Second := 0;
+
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_DATE :
+    Begin
+      { DATE = 3 octets : jours depuis 0001-01-01 }
+      If Ofs + 2 >= MDF_PAGE_SIZE Then Exit;
+      DateVal := LongInt(Buf[Ofs])
+              Or (LongInt(Buf[Ofs + 1]) Shl 8)
+              Or (LongInt(Buf[Ofs + 2]) Shl 16);
+
+      TotalDays := DateVal;
+      Y := 1;
+      While TotalDays > 0 Do
+      Begin
+        Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or
+                (Y Mod 400 = 0);
+        If Leap Then
+        Begin
+          If TotalDays >= 366 Then
+          Begin Dec(TotalDays, 366); Inc(Y); End
+          Else Break;
+        End
+        Else
+        Begin
+          If TotalDays >= 365 Then
+          Begin Dec(TotalDays, 365); Inc(Y); End
+          Else Break;
+        End;
+      End;
+
+      M := 1;
+      While (M <= 12) And (TotalDays > 0) Do
+      Begin
+        Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or
+                (Y Mod 400 = 0);
+        Case M Of
+          1, 3, 5, 7, 8, 10, 12 : DaysInM := 31;
+          4, 6, 9, 11            : DaysInM := 30;
+          2 : If Leap Then DaysInM := 29 Else DaysInM := 28;
+        Else DaysInM := 30;
+        End;
+        If TotalDays >= DaysInM Then
+        Begin Dec(TotalDays, DaysInM); Inc(M); End
+        Else Break;
+      End;
+      D := TotalDays + 1;
+
+      V.Year  := Y;
+      V.Month := M;
+      V.Day   := D;
+
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_TIME :
+    Begin
+      { TIME = 3-5 octets selon scale (ticks depuis minuit) }
+      If Ofs + 2 >= MDF_PAGE_SIZE Then Exit;
+      TimeVal := LongInt(Buf[Ofs])
+              Or (LongInt(Buf[Ofs + 1]) Shl 8)
+              Or (LongInt(Buf[Ofs + 2]) Shl 16);
+
+      { Pour scale 0-2, les ticks sont en fractions de seconde }
+      { Simplification : on divise par 10^scale pour obtenir sec }
+      V.Scale  := ColScale;
+      V.Frac   := TimeVal;
+      { Convertir en H:M:S approximatif }
+      If ColScale <= 2 Then
+      Begin
+        V.Second := TimeVal Mod 60;
+        V.Minute := (TimeVal Div 60) Mod 60;
+        V.Hour   := TimeVal Div 3600;
+      End
+      Else
+      Begin
+        { Valeur brute stockee, conversion approx }
+        V.Second := (TimeVal Div 10000000) Mod 60;
+        V.Minute := ((TimeVal Div 10000000) Div 60) Mod 60;
+        V.Hour   := (TimeVal Div 10000000) Div 3600;
+      End;
+
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_DATETIME2 :
+    Begin
+      { DATETIME2 = time (3-5 oct.) + date (3 oct.) }
+      { Simplification : lire les 3 derniers octets comme DATE }
+      If Ofs + 5 >= MDF_PAGE_SIZE Then Exit;
+      { Les 3 derniers octets sont la partie date }
+      DateVal := LongInt(Buf[Ofs + 3])
+              Or (LongInt(Buf[Ofs + 4]) Shl 8)
+              Or (LongInt(Buf[Ofs + 5]) Shl 16);
+
+      TotalDays := DateVal;
+      Y := 1;
+      While TotalDays > 0 Do
+      Begin
+        Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or
+                (Y Mod 400 = 0);
+        If Leap Then
+        Begin
+          If TotalDays >= 366 Then
+          Begin Dec(TotalDays, 366); Inc(Y); End
+          Else Break;
+        End
+        Else
+        Begin
+          If TotalDays >= 365 Then
+          Begin Dec(TotalDays, 365); Inc(Y); End
+          Else Break;
+        End;
+      End;
+
+      M := 1;
+      While (M <= 12) And (TotalDays > 0) Do
+      Begin
+        Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or
+                (Y Mod 400 = 0);
+        Case M Of
+          1, 3, 5, 7, 8, 10, 12 : DaysInM := 31;
+          4, 6, 9, 11            : DaysInM := 30;
+          2 : If Leap Then DaysInM := 29 Else DaysInM := 28;
+        Else DaysInM := 30;
+        End;
+        If TotalDays >= DaysInM Then
+        Begin Dec(TotalDays, DaysInM); Inc(M); End
+        Else Break;
+      End;
+      D := TotalDays + 1;
+
+      V.Year  := Y;
+      V.Month := M;
+      V.Day   := D;
+
+      { Partie temps (3 premiers octets) }
+      TimeVal := LongInt(Buf[Ofs])
+              Or (LongInt(Buf[Ofs + 1]) Shl 8)
+              Or (LongInt(Buf[Ofs + 2]) Shl 16);
+      V.Frac   := TimeVal;
+      V.Scale  := ColScale;
+
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_DATETIMEOFFSET :
+    Begin
+      { DATETIMEOFFSET = time + date + 2 oct. offset en minutes }
+      If Ofs + 7 >= MDF_PAGE_SIZE Then Exit;
+      { Similaire a DATETIME2 + 2 oct. offset }
+      DateVal := LongInt(Buf[Ofs + 3])
+              Or (LongInt(Buf[Ofs + 4]) Shl 8)
+              Or (LongInt(Buf[Ofs + 5]) Shl 16);
+
+      TotalDays := DateVal;
+      Y := 1;
+      While TotalDays > 0 Do
+      Begin
+        Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or
+                (Y Mod 400 = 0);
+        If Leap Then
+        Begin
+          If TotalDays >= 366 Then
+          Begin Dec(TotalDays, 366); Inc(Y); End
+          Else Break;
+        End
+        Else
+        Begin
+          If TotalDays >= 365 Then
+          Begin Dec(TotalDays, 365); Inc(Y); End
+          Else Break;
+        End;
+      End;
+
+      M := 1;
+      While (M <= 12) And (TotalDays > 0) Do
+      Begin
+        Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or
+                (Y Mod 400 = 0);
+        Case M Of
+          1, 3, 5, 7, 8, 10, 12 : DaysInM := 31;
+          4, 6, 9, 11            : DaysInM := 30;
+          2 : If Leap Then DaysInM := 29 Else DaysInM := 28;
+        Else DaysInM := 30;
+        End;
+        If TotalDays >= DaysInM Then
+        Begin Dec(TotalDays, DaysInM); Inc(M); End
+        Else Break;
+      End;
+      D := TotalDays + 1;
+
+      V.Year  := Y;
+      V.Month := M;
+      V.Day   := D;
+
+      TimeVal := LongInt(Buf[Ofs])
+              Or (LongInt(Buf[Ofs + 1]) Shl 8)
+              Or (LongInt(Buf[Ofs + 2]) Shl 16);
+      V.Frac  := TimeVal;
+      V.Scale := ColScale;
+
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+  End;
+End;
+
+{ ---- Decoder un type binaire --------------------------------- }
+{ BINARY(n), VARBINARY(n), IMAGE, TIMESTAMP                     }
+
+Procedure DecodeBinary(Const Buf : TMdfPageBuf;
+                       Ofs : Word; DataLen : Word;
+                       XT : Byte;
+                       Var V : TSqlValue);
+Var
+  I   : Integer;
+  Len : Word;
+Begin
+  InitSqlValue(V);
+  V.XType    := XT;
+  V.Category := SQLCAT_BINARY;
+
+  If Ofs >= MDF_PAGE_SIZE Then Exit;
+
+  Len := DataLen;
+  If Ofs + Len > MDF_PAGE_SIZE Then
+    Len := MDF_PAGE_SIZE - Ofs;
+  V.BinLen := Len;
+
+  { Convertir en representation hexadecimale dans StrVal }
+  V.StrVal := '0x';
+  I := 0;
+  While (I < Len) And (Length(V.StrVal) + 2 <= MAX_SQL_VALUE_STR) Do
+  Begin
+    V.StrVal := V.StrVal + ByteToHex(Buf[Ofs + I]);
+    Inc(I);
+  End;
+  If I < Len Then
+    V.StrVal := V.StrVal + '...';
+
+  V.IsNull := False;
+  V.Valid  := True;
+End;
+
+{ ---- Decoder un type special --------------------------------- }
+{ UNIQUEIDENTIFIER, XML, SQL_VARIANT, TIMESTAMP, CLR            }
+
+Procedure DecodeSpecial(Const Buf : TMdfPageBuf;
+                        Ofs : Word; DataLen : Word;
+                        XT : Byte;
+                        Var V : TSqlValue);
+Var
+  I : Integer;
+Begin
+  InitSqlValue(V);
+  V.XType    := XT;
+  V.Category := SQLCAT_SPECIAL;
+
+  If Ofs >= MDF_PAGE_SIZE Then Exit;
+
+  Case XT Of
+    XT_UNIQUEID :
+    Begin
+      { UNIQUEIDENTIFIER = 16 octets (GUID)                      }
+      { Format : DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD           }
+      { Octets 0-3 en Little-Endian, 4-5 LE, 6-7 LE,            }
+      { 8-9 Big-Endian, 10-15 Big-Endian                         }
+      If Ofs + 15 >= MDF_PAGE_SIZE Then Exit;
+      V.StrVal :=
+        ByteToHex(Buf[Ofs + 3]) + ByteToHex(Buf[Ofs + 2]) +
+        ByteToHex(Buf[Ofs + 1]) + ByteToHex(Buf[Ofs + 0]) + '-' +
+        ByteToHex(Buf[Ofs + 5]) + ByteToHex(Buf[Ofs + 4]) + '-' +
+        ByteToHex(Buf[Ofs + 7]) + ByteToHex(Buf[Ofs + 6]) + '-' +
+        ByteToHex(Buf[Ofs + 8]) + ByteToHex(Buf[Ofs + 9]) + '-' +
+        ByteToHex(Buf[Ofs + 10]) + ByteToHex(Buf[Ofs + 11]) +
+        ByteToHex(Buf[Ofs + 12]) + ByteToHex(Buf[Ofs + 13]) +
+        ByteToHex(Buf[Ofs + 14]) + ByteToHex(Buf[Ofs + 15]);
+      V.BinLen := 16;
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+    XT_XML, XT_SQL_VARIANT, XT_CLR, XT_HIERARCHYID :
+    Begin
+      { Types speciaux : representation hexadecimale brute }
+      If DataLen = 0 Then
+      Begin
+        V.StrVal := '(empty)';
+        V.IsNull := False;
+        V.Valid  := True;
+        Exit;
+      End;
+      V.BinLen := DataLen;
+      V.StrVal := '0x';
+      I := 0;
+      While (I < DataLen) And (Ofs + I < MDF_PAGE_SIZE) And
+            (Length(V.StrVal) + 2 <= MAX_SQL_VALUE_STR) Do
+      Begin
+        V.StrVal := V.StrVal + ByteToHex(Buf[Ofs + I]);
+        Inc(I);
+      End;
+      If I < DataLen Then
+        V.StrVal := V.StrVal + '...';
+      V.IsNull := False;
+      V.Valid  := True;
+    End;
+  Else
+    { Type inconnu : hex dump }
+    V.BinLen := DataLen;
+    V.StrVal := '0x';
+    I := 0;
+    While (I < DataLen) And (Ofs + I < MDF_PAGE_SIZE) And
+          (Length(V.StrVal) + 2 <= MAX_SQL_VALUE_STR) Do
+    Begin
+      V.StrVal := V.StrVal + ByteToHex(Buf[Ofs + I]);
+      Inc(I);
+    End;
+    V.IsNull := False;
+    V.Valid  := True;
+  End;
+End;
+
+{ ---- Dispatch principal de decodage d une valeur SQL ---------- }
+{ Decode les octets bruts a l offset Ofs dans Buf selon le type   }
+{ xtype. DataLen est la longueur pour les types variables.        }
+{ ColPrec et ColScale proviennent du catalogue systeme.           }
+
+Procedure DecodeSqlValue(Const Buf : TMdfPageBuf;
+                         Ofs : Word; DataLen : Word;
+                         XT : Byte;
+                         ColPrec, ColScale : Byte;
+                         Var V : TSqlValue);
+Begin
+  Case SqlTypeCategory(XT) Of
+    SQLCAT_INTEGER :
+      DecodeInt(Buf, Ofs, XT, V);
+    SQLCAT_DECIMAL :
+      DecodeDecimal(Buf, Ofs, XT, ColPrec, ColScale, V);
+    SQLCAT_STRING :
+      DecodeString(Buf, Ofs, DataLen, XT, V);
+    SQLCAT_DATETIME :
+      DecodeDateTime(Buf, Ofs, XT, ColScale, V);
+    SQLCAT_BINARY :
+      DecodeBinary(Buf, Ofs, DataLen, XT, V);
+    SQLCAT_SPECIAL :
+      DecodeSpecial(Buf, Ofs, DataLen, XT, V);
+  Else
+    Begin
+      InitSqlValue(V);
+      V.XType    := XT;
+      V.Category := SQLCAT_UNKNOWN;
+      V.StrVal   := '(unknown xtype ' + IntToStr(XT) + ')';
+      V.Valid    := True;
+    End;
+  End;
+End;
+
+{ ---- Convertir une valeur SQL en chaine Pascal --------------- }
+{ Retourne la representation textuelle de la valeur.             }
+
+Function SqlValueToStr(Const V : TSqlValue) : TSqlValueStr;
+Var
+  S     : TSqlValueStr;
+  Ms, Md : String[4];
+  Ds     : String[2];
+  Whole  : LongInt;
+  Frac4  : LongInt;
+  FStr   : String[4];
+Begin
+  If V.IsNull Then
+  Begin
+    SqlValueToStr := 'NULL';
+    Exit;
+  End;
+
+  If Not V.Valid Then
+  Begin
+    SqlValueToStr := '(invalid)';
+    Exit;
+  End;
+
+  Case V.Category Of
+    SQLCAT_INTEGER :
+    Begin
+      If V.XType = XT_BIT Then
+      Begin
+        If V.IntVal = 0 Then S := '0'
+        Else S := '1';
+      End
+      Else If V.XType = XT_BIGINT Then
+      Begin
+        { BIGINT : afficher HiVal:IntVal si HiVal <> 0 }
+        If V.HiVal <> 0 Then
+          S := IntToStr(V.HiVal) + ':' + IntToStr(V.IntVal)
+        Else
+          S := IntToStr(V.IntVal);
+      End
+      Else
+        S := IntToStr(V.IntVal);
+    End;
+    SQLCAT_DECIMAL :
+    Begin
+      Case V.XType Of
+        XT_REAL, XT_FLOAT :
+        Begin
+          Str(V.FloatVal:0:6, S);
+          { Supprimer les zeros de fin }
+          While (Length(S) > 1) And (S[Length(S)] = '0') And
+                (S[Length(S) - 1] <> '.') Do
+            Dec(S[0]);
+        End;
+        XT_SMALLMONEY :
+        Begin
+          { SMALLMONEY = IntVal / 10000 }
+          If V.IntVal < 0 Then
+          Begin
+            Whole := -(V.IntVal Div 10000);
+            Frac4 := -(V.IntVal Mod 10000);
+            Str(Frac4:4, FStr);
+            While (Length(FStr) > 0) And (FStr[1] = ' ') Do
+              Delete(FStr, 1, 1);
+            While Length(FStr) < 4 Do FStr := '0' + FStr;
+            S := '-' + IntToStr(Whole) + '.' + FStr;
+          End
+          Else
+          Begin
+            Whole := V.IntVal Div 10000;
+            Frac4 := V.IntVal Mod 10000;
+            Str(Frac4:4, FStr);
+            While (Length(FStr) > 0) And (FStr[1] = ' ') Do
+              Delete(FStr, 1, 1);
+            While Length(FStr) < 4 Do FStr := '0' + FStr;
+            S := IntToStr(Whole) + '.' + FStr;
+          End;
+        End;
+        XT_MONEY :
+        Begin
+          { MONEY = HiVal:IntVal combine / 10000 }
+          If V.HiVal <> 0 Then
+            S := IntToStr(V.HiVal) + ':' + IntToStr(V.IntVal)
+          Else
+          Begin
+            Whole := V.IntVal Div 10000;
+            Frac4 := V.IntVal Mod 10000;
+            If Frac4 < 0 Then Frac4 := -Frac4;
+            Str(Frac4:4, FStr);
+            While (Length(FStr) > 0) And (FStr[1] = ' ') Do
+              Delete(FStr, 1, 1);
+            While Length(FStr) < 4 Do FStr := '0' + FStr;
+            S := IntToStr(Whole) + '.' + FStr;
+          End;
+        End;
+        XT_DECIMAL, XT_NUMERIC :
+        Begin
+          If V.Sign = 0 Then S := '-'
+          Else S := '';
+          If V.HiVal <> 0 Then
+            S := S + IntToStr(V.HiVal) + ':' + IntToStr(V.IntVal)
+          Else
+            S := S + IntToStr(V.IntVal);
+          If V.Scale > 0 Then
+            S := S + ' (scale=' + IntToStr(V.Scale) + ')';
+        End;
+      Else
+        S := IntToStr(V.IntVal);
+      End;
+    End;
+    SQLCAT_STRING :
+      S := V.StrVal;
+    SQLCAT_DATETIME :
+    Begin
+      { Formater YYYY-MM-DD HH:MM:SS }
+      Str(V.Year:4, S);
+      While (Length(S) > 0) And (S[1] = ' ') Do Delete(S, 1, 1);
+      While Length(S) < 4 Do S := '0' + S;
+
+      Str(V.Month:2, Ms);
+      If Ms[1] = ' ' Then Ms[1] := '0';
+      Str(V.Day:2, Ds);
+      If Ds[1] = ' ' Then Ds[1] := '0';
+
+      S := S + '-' + Ms + '-' + Ds;
+
+      If (V.XType <> XT_DATE) Then
+      Begin
+        Str(V.Hour:2, Ms);
+        If Ms[1] = ' ' Then Ms[1] := '0';
+        Str(V.Minute:2, Md);
+        If Md[1] = ' ' Then Md[1] := '0';
+        Str(V.Second:2, Ds);
+        If Ds[1] = ' ' Then Ds[1] := '0';
+        S := S + ' ' + Ms + ':' + Md + ':' + Ds;
+      End;
+    End;
+    SQLCAT_BINARY :
+      S := V.StrVal;  { deja en format 0xHEX }
+    SQLCAT_SPECIAL :
+      S := V.StrVal;  { deja en format texte }
+  Else
+    S := V.StrVal;
+  End;
+
+  SqlValueToStr := S;
 End;
 
 { ---- Execution d une requete SQL ----------------------------- }
