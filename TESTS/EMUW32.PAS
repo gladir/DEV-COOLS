@@ -39,8 +39,8 @@
       respectant les VirtualAddress et VirtualSize de chaque
       IMAGE_SECTION_HEADER, et remplir les zones .bss de zeros.
 
-  7.  Implementer le traitement de la table d'importation (Import
-      Directory Table / IAT) pour resoudre les appels aux DLL
+  7.  [IMPLEMENTE] Implementer le traitement de la table d'importation
+      (Import Directory Table / IAT) pour resoudre les appels aux DLL
       importees, en particulier KERNEL32.DLL, en remplissant la
       Import Address Table avec des adresses de thunks internes
       emulant chaque fonction.
@@ -161,6 +161,17 @@ Const
   { TODO 6 : Nombre maximum de sections PE supportees }
  MaxPESections=96;
 
+  { TODO 7 : Zone des thunks d'importation dans la memoire lineaire.
+    Les thunks occupent la zone de $E00000 a $EFFFFF (1 Mo),
+    juste en dessous de la pile ($F00000-$FFFFFF). }
+ ThunkBase=$E00000;
+
+  { TODO 7 : Nombre maximum de fonctions importees supportees }
+ MaxImportFuncs=1024;
+
+  { TODO 7 : Nombre maximum de repertoires de donnees PE }
+ MaxDataDirs=16;
+
 Type
   { TODO 2 : Registres 32 bits du 80386 }
  LongRec=Record
@@ -250,6 +261,31 @@ Type
   Characteristics:LongInt;           { Drapeaux de la section }
  End;
 
+  { TODO 7 : Repertoire de donnees PE (IMAGE_DATA_DIRECTORY, 8 octets) }
+ TImageDataDirectory=Record
+  VirtualAddress:LongInt;            { RVA du repertoire de donnees }
+  Size:LongInt;                      { Taille du repertoire de donnees }
+ End;
+
+  { TODO 7 : Descripteur d'importation PE (IMAGE_IMPORT_DESCRIPTOR,
+    20 octets) }
+ TImageImportDescriptor=Record
+  OriginalFirstThunk:LongInt;        { RVA de l'Import Lookup Table }
+  TimeDateStamp:LongInt;             { Horodatage (0 si non lie) }
+  ForwarderChain:LongInt;            { Chaine de redirection }
+  Name:LongInt;                      { RVA du nom de la DLL }
+  FirstThunk:LongInt;                { RVA de l'Import Address Table }
+ End;
+
+  { TODO 7 : Entree dans la table d'importation resolue }
+ TImportEntry=Record
+  DLLName:String[63];                { Nom de la DLL importee }
+  FuncName:String[127];              { Nom de la fonction importee }
+  Ordinal:Word;                      { Numero d'ordinal (si import par ordinal) }
+  ByOrdinal:Boolean;                 { True si import par ordinal }
+  ThunkAddr:LongInt;                 { Adresse du thunk dans la memoire }
+ End;
+
 Var
   { TODO 1 : Fichier d'echange }
  Memory:File;
@@ -285,6 +321,14 @@ Var
   { TODO 6 : Table des en-tetes de section PE }
  PESections:Array[0..MaxPESections-1]of TImageSectionHeader;
  PENumSections:Word;
+
+  { TODO 7 : Repertoires de donnees PE (lus depuis l'en-tete optionnel) }
+ PEDataDirs:Array[0..MaxDataDirs-1]of TImageDataDirectory;
+ PENumDataDirs:LongInt;
+
+  { TODO 7 : Table des fonctions importees resolues }
+ ImportEntries:Array[0..MaxImportFuncs-1]of TImportEntry;
+ ImportCount:Word;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -417,6 +461,41 @@ Begin
  Regs.ESP:=Regs.ESP+2;
 End;
 
+  { TODO 7 : Lecture d'une chaine ASCII terminee par un zero
+    depuis la memoire lineaire 32 bits. Retourne une String Pascal
+    (max 255 caracteres). }
+Function ReadStringFromMem(Addr:LongInt):String;
+Var
+ S:String;
+ B:Byte;
+ I:Integer;
+Begin
+ S:='';
+ I:=0;
+ While I<255 do Begin
+  B:=ReadByte(Addr+LongInt(I));
+  If B=0 Then Break;
+  S:=S+Chr(B);
+  Inc(I);
+ End;
+ ReadStringFromMem:=S;
+End;
+
+  { TODO 7 : Recherche d'une entree d'importation par son adresse
+    de thunk dans la memoire lineaire. Retourne l'index dans
+    ImportEntries ou -1 si non trouvee. }
+Function FindImportByAddr(Addr:LongInt):Integer;
+Var
+ I:Integer;
+Begin
+ FindImportByAddr:=-1;
+ For I:=0 to ImportCount-1 do
+  If ImportEntries[I].ThunkAddr=Addr Then Begin
+   FindImportByAddr:=I;
+   Exit;
+  End;
+End;
+
   { TODO 6 : Chargement des sections PE dans la memoire lineaire.
     Lit les en-tetes IMAGE_SECTION_HEADER et copie les donnees de
     chaque section (.text, .data, .rdata, .idata) a l'adresse
@@ -524,6 +603,132 @@ Begin
  End;
  LoadPESections:=True;
  WriteLn('LoadPESections: ',PENumSections,' section(s) chargee(s).');
+End;
+
+  { TODO 7 : Lecture des repertoires de donnees PE depuis le fichier.
+    Les repertoires (IMAGE_DATA_DIRECTORY, 8 octets chacun) suivent
+    immediatement les champs standard de l'en-tete optionnel PE32.
+    Ils incluent notamment le repertoire d'importation (index 1). }
+Function LoadPEDataDirs(Var F:File):Boolean;
+Var
+ I:Integer;
+ ByteRead:Word;
+Begin
+ LoadPEDataDirs:=False;
+ PENumDataDirs:=PEOptHeader.NumberOfRvaAndSizes;
+ If PENumDataDirs>MaxDataDirs Then PENumDataDirs:=MaxDataDirs;
+ If PENumDataDirs<=0 Then Begin
+  WriteLn('LoadPEDataDirs: pas de repertoire de donnees');
+  LoadPEDataDirs:=True;
+  Exit;
+ End;
+ For I:=0 to PENumDataDirs-1 do Begin
+  BlockRead(F,PEDataDirs[I],SizeOf(TImageDataDirectory),ByteRead);
+  If ByteRead<>SizeOf(TImageDataDirectory)Then Begin
+   WriteLn('LoadPEDataDirs: erreur lecture repertoire ',I);
+   Exit;
+  End;
+ End;
+ WriteLn('LoadPEDataDirs: ',PENumDataDirs,' repertoire(s) lu(s).');
+ If PENumDataDirs>=2 Then
+  WriteLn('  Import Directory: RVA=$',HexStr(PEDataDirs[1].VirtualAddress,8),
+          ' Size=',PEDataDirs[1].Size);
+ LoadPEDataDirs:=True;
+End;
+
+  { TODO 7 : Traitement de la table d'importation PE.
+    Parcourt l'Import Directory Table dans la memoire lineaire chargee,
+    lit chaque IMAGE_IMPORT_DESCRIPTOR, extrait les noms de DLL et de
+    fonctions (ou les numeros d'ordinal), et remplit l'Import Address
+    Table (IAT) avec des adresses de thunks internes. Chaque thunk
+    est une adresse unique dans la zone ThunkBase qui sera interceptee
+    par la boucle d'execution pour rediriger vers l'emulation. }
+Function ProcessImports:Boolean;
+Var
+ ImportRVA,ImportSize:LongInt;
+ ImpAddr:LongInt;
+ DLLName:String;
+ ThunkRVA,LookupRVA:LongInt;
+ ThunkVal:LongInt;
+ HintAddr:LongInt;
+ FuncName:String;
+ NextThunk:LongInt;
+Begin
+ ProcessImports:=False;
+ ImportCount:=0;
+  { Verifier que le repertoire d'importation existe (index 1) }
+ If PENumDataDirs<2 Then Begin
+  WriteLn('ProcessImports: pas de repertoire d''importation');
+  ProcessImports:=True;
+  Exit;
+ End;
+ ImportRVA:=PEDataDirs[1].VirtualAddress;
+ ImportSize:=PEDataDirs[1].Size;
+ If(ImportRVA=0)or(ImportSize=0)Then Begin
+  WriteLn('ProcessImports: table d''importation vide');
+  ProcessImports:=True;
+  Exit;
+ End;
+ WriteLn('ProcessImports: Import Directory RVA=$',HexStr(ImportRVA,8),
+         ' Size=',ImportSize);
+ NextThunk:=ThunkBase;
+ ImpAddr:=PEOptHeader.ImageBase+ImportRVA;
+  { Parcourir les IMAGE_IMPORT_DESCRIPTOR (20 octets chacun)
+    jusqu'a un descripteur entierement nul }
+ Repeat
+   { Lire les champs du descripteur depuis la memoire lineaire }
+  ThunkVal:=ReadDWord(ImpAddr);      { OriginalFirstThunk }
+  LookupRVA:=ThunkVal;
+  ThunkVal:=ReadDWord(ImpAddr+12);   { Name }
+  If(ThunkVal=0)Then Break;          { Fin de la table }
+  ThunkRVA:=ReadDWord(ImpAddr+16);   { FirstThunk }
+  If(ThunkRVA=0)Then Break;
+   { Lire le nom de la DLL }
+  DLLName:=ReadStringFromMem(PEOptHeader.ImageBase+ThunkVal);
+  WriteLn('ProcessImports: DLL "',DLLName,'"');
+   { Utiliser OriginalFirstThunk (ILT) si disponible, sinon FirstThunk }
+  If LookupRVA=0 Then LookupRVA:=ThunkRVA;
+   { Parcourir les entrees de la table d'importation }
+  While True do Begin
+   ThunkVal:=ReadDWord(PEOptHeader.ImageBase+LookupRVA);
+   If ThunkVal=0 Then Break;  { Fin de la liste }
+   If ImportCount>=MaxImportFuncs Then Begin
+    WriteLn('ProcessImports: trop de fonctions importees');
+    Exit;
+   End;
+   ImportEntries[ImportCount].DLLName:=DLLName;
+    { Verifier si c'est un import par ordinal (bit 31 = signe negatif) }
+   If ThunkVal<0 Then Begin
+    ImportEntries[ImportCount].Ordinal:=Word(ThunkVal and $FFFF);
+    ImportEntries[ImportCount].ByOrdinal:=True;
+    ImportEntries[ImportCount].FuncName:='';
+    WriteLn('  Ordinal #',ImportEntries[ImportCount].Ordinal);
+   End
+   Else Begin
+     { Import par nom : ThunkVal est un RVA vers IMAGE_IMPORT_BY_NAME }
+    HintAddr:=PEOptHeader.ImageBase+ThunkVal;
+    FuncName:=ReadStringFromMem(HintAddr+2);
+    ImportEntries[ImportCount].Ordinal:=ReadWord(HintAddr);
+    ImportEntries[ImportCount].ByOrdinal:=False;
+    ImportEntries[ImportCount].FuncName:=FuncName;
+    WriteLn('  ',FuncName,' (hint=',ImportEntries[ImportCount].Ordinal,')');
+   End;
+    { Assigner un thunk interne }
+   ImportEntries[ImportCount].ThunkAddr:=NextThunk;
+    { Ecrire l'adresse du thunk dans la IAT en memoire }
+   WriteDWord(PEOptHeader.ImageBase+ThunkRVA,NextThunk);
+    { Ecrire INT3 ($CC) + RET ($C3) au thunk pour pieger l'appel }
+   WriteByte(NextThunk,$CC);
+   WriteByte(NextThunk+1,$C3);
+   Inc(ImportCount);
+   NextThunk:=NextThunk+16;  { Espacement de 16 octets entre thunks }
+   LookupRVA:=LookupRVA+4;
+   ThunkRVA:=ThunkRVA+4;
+  End;
+  ImpAddr:=ImpAddr+20;  { Prochain descripteur }
+ Until False;
+ ProcessImports:=True;
+ WriteLn('ProcessImports: ',ImportCount,' fonction(s) importee(s) resolue(s).');
 End;
 
   { TODO 5 : Chargeur de fichiers PE (Portable Executable).
@@ -642,6 +847,12 @@ Begin
  WriteLn('  SizeOfStackCommit   = $',HexStr(PEOptHeader.SizeOfStackCommit,8));
  WriteLn('  Subsystem           = ',PEOptHeader.Subsystem);
  WriteLn('  NumberOfRvaAndSizes = ',PEOptHeader.NumberOfRvaAndSizes);
+  { TODO 7 : Lire les repertoires de donnees PE }
+ If Not LoadPEDataDirs(F)Then Begin
+  WriteLn('LoadPE: echec de la lecture des repertoires de donnees');
+  Close(F);
+  Exit;
+ End;
   { TODO 6 : Charger les sections PE dans la memoire lineaire }
  If Not LoadPESections(F)Then Begin
   WriteLn('LoadPE: echec du chargement des sections');
@@ -649,6 +860,13 @@ Begin
   Exit;
  End;
  Close(F);
+  { TODO 7 : Traiter la table d'importation }
+ If Not ProcessImports Then Begin
+  WriteLn('LoadPE: echec du traitement des importations');
+  PELoaded:=False;
+  LoadPE:=False;
+  Exit;
+ End;
  PELoaded:=True;
  LoadPE:=True;
  WriteLn('LoadPE: Fichier PE charge avec succes.');
