@@ -77,6 +77,7 @@
       des predicats non-recursifs, liaison des variables (binding),
       jointures entre les tables de la base de donnees, filtrage par
       les formules where, retour des tuples de resultats.
+      [IMPLEMENTE]
 
   12. Implementer le graphe de flot de controle (CFG) : construction du
       graphe a partir de l'AST source avec les noeuds de base (blocs,
@@ -187,6 +188,9 @@ Const
   MAX_DB_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_QL_CLASSES = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_QL_PREDS   = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_BINDINGS   = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_RESULT_COLS = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_RESULT_ROWS = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -608,6 +612,41 @@ Type
     PredCount  : Integer;      { nombre de predicats propres   }
   End;
 
+  { TODO 11 : Moteur d evaluation des predicats QL }
+  TBindingKind = (
+    BK_NONE,       { valeur non initialisee     }
+    BK_INT,        { valeur entiere             }
+    BK_FLOAT,      { valeur flottante           }
+    BK_STRING,     { valeur chaine              }
+    BK_DBREF       { reference vers un enreg DB }
+  );
+
+  TBindingValue = Record
+    Kind     : TBindingKind; { type de la valeur                  }
+    IntVal   : LongInt;      { si BK_INT                          }
+    FloatVal : Real;         { si BK_FLOAT                        }
+    StrVal   : TString;      { si BK_STRING                       }
+    RefTable : TString;      { nom de la table si BK_DBREF        }
+    RefId    : Integer;       { id dans la table si BK_DBREF       }
+  End;
+
+  TBinding = Record
+    Name  : TString;        { nom de la variable liee            }
+    Value : TBindingValue;  { valeur courante                    }
+  End;
+
+  TResultTuple = Record
+    Cols : Array[0..MAX_RESULT_COLS - 1] Of TBindingValue;
+    NCols: Integer;         { nombre de colonnes dans ce tuple   }
+  End;
+
+  TResultSet = Record
+    ColNames : Array[0..MAX_RESULT_COLS - 1] Of TString;
+    Rows     : Array[0..MAX_RESULT_ROWS - 1] Of TResultTuple;
+    NCols    : Integer;     { nombre de colonnes                 }
+    NRows    : Integer;     { nombre de tuples                   }
+  End;
+
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -681,6 +720,11 @@ Var
   QLClassCount : Integer;
   QLPreds      : Array[0..MAX_QL_PREDS - 1] Of TQLPredInfo;
   QLPredCount  : Integer;
+
+  { Moteur d evaluation QL (TODO 11) }
+  EvalBindings  : Array[0..MAX_BINDINGS - 1] Of TBinding;
+  EvalBindCount : Integer;
+  EvalResults   : TResultSet;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -7066,6 +7110,757 @@ Begin
       WriteLn;
     End;
   End;
+  WriteLn;
+End;
+
+{ ============================================================
+  TODO 11 - MOTEUR D'EVALUATION DES PREDICATS QL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Initialisation de l'environnement de liaisons --------- }
+
+Procedure InitBindings;
+Begin
+  EvalBindCount := 0;
+End;
+
+{ ---- Lier une variable a une valeur ------------------------ }
+
+Function BindVar(Const AName : TString; AValue : TBindingValue) : Boolean;
+Begin
+  If EvalBindCount >= MAX_BINDINGS Then
+  Begin
+    BindVar := False;
+    Exit;
+  End;
+  EvalBindings[EvalBindCount].Name  := AName;
+  EvalBindings[EvalBindCount].Value := AValue;
+  Inc(EvalBindCount);
+  BindVar := True;
+End;
+
+{ ---- Rechercher une variable dans l'environnement ---------- }
+
+Function LookupVar(Const AName : TString; Var AValue : TBindingValue) : Boolean;
+Var
+  I : Integer;
+  N : TString;
+Begin
+  N := StrLowerCase(AName);
+  For I := EvalBindCount - 1 DownTo 0 Do
+    If StrLowerCase(EvalBindings[I].Name) = N Then
+    Begin
+      AValue := EvalBindings[I].Value;
+      LookupVar := True;
+      Exit;
+    End;
+  LookupVar := False;
+End;
+
+{ ---- Creer une valeur de liaison --------------------------- }
+
+Function MakeIntBinding(V : LongInt) : TBindingValue;
+Var
+  R : TBindingValue;
+Begin
+  R.Kind     := BK_INT;
+  R.IntVal   := V;
+  R.FloatVal := 0.0;
+  R.StrVal   := '';
+  R.RefTable := '';
+  R.RefId    := -1;
+  MakeIntBinding := R;
+End;
+
+Function MakeFloatBinding(V : Real) : TBindingValue;
+Var
+  R : TBindingValue;
+Begin
+  R.Kind     := BK_FLOAT;
+  R.IntVal   := 0;
+  R.FloatVal := V;
+  R.StrVal   := '';
+  R.RefTable := '';
+  R.RefId    := -1;
+  MakeFloatBinding := R;
+End;
+
+Function MakeStrBinding(Const V : TString) : TBindingValue;
+Var
+  R : TBindingValue;
+Begin
+  R.Kind     := BK_STRING;
+  R.IntVal   := 0;
+  R.FloatVal := 0.0;
+  R.StrVal   := V;
+  R.RefTable := '';
+  R.RefId    := -1;
+  MakeStrBinding := R;
+End;
+
+Function MakeDbRefBinding(Const ATable : TString; AId : Integer) : TBindingValue;
+Var
+  R : TBindingValue;
+Begin
+  R.Kind     := BK_DBREF;
+  R.IntVal   := AId;
+  R.FloatVal := 0.0;
+  R.StrVal   := '';
+  R.RefTable := ATable;
+  R.RefId    := AId;
+  MakeDbRefBinding := R;
+End;
+
+Function MakeNoneBinding : TBindingValue;
+Var
+  R : TBindingValue;
+Begin
+  R.Kind     := BK_NONE;
+  R.IntVal   := 0;
+  R.FloatVal := 0.0;
+  R.StrVal   := '';
+  R.RefTable := '';
+  R.RefId    := -1;
+  MakeNoneBinding := R;
+End;
+
+{ ---- Convertir une valeur en chaine pour affichage --------- }
+
+Function BindingToStr(Const V : TBindingValue) : TString;
+Var
+  S : String[20];
+Begin
+  Case V.Kind Of
+    BK_INT:
+    Begin
+      Str(V.IntVal, S);
+      BindingToStr := S;
+    End;
+    BK_FLOAT:
+    Begin
+      Str(V.FloatVal:0:4, S);
+      BindingToStr := S;
+    End;
+    BK_STRING:
+      BindingToStr := '"' + V.StrVal + '"';
+    BK_DBREF:
+    Begin
+      Str(V.RefId, S);
+      BindingToStr := V.RefTable + '#' + S;
+    End;
+  Else
+    BindingToStr := '(none)';
+  End;
+End;
+
+{ ---- Comparer deux valeurs de liaison ---------------------- }
+
+Function BindingEqual(Const A, B : TBindingValue) : Boolean;
+Begin
+  If A.Kind <> B.Kind Then
+  Begin
+    BindingEqual := False;
+    Exit;
+  End;
+  Case A.Kind Of
+    BK_INT:    BindingEqual := (A.IntVal = B.IntVal);
+    BK_FLOAT:  BindingEqual := (Abs(A.FloatVal - B.FloatVal) < 1E-9);
+    BK_STRING: BindingEqual := (A.StrVal = B.StrVal);
+    BK_DBREF:  BindingEqual := (A.RefTable = B.RefTable) And
+                               (A.RefId = B.RefId);
+  Else
+    BindingEqual := True;
+  End;
+End;
+
+{ ---- Initialisation du jeu de resultats -------------------- }
+
+Procedure InitResultSet;
+Var
+  I : Integer;
+Begin
+  EvalResults.NCols := 0;
+  EvalResults.NRows := 0;
+  For I := 0 To MAX_RESULT_COLS - 1 Do
+    EvalResults.ColNames[I] := '';
+End;
+
+{ ---- Ajouter un nom de colonne au jeu de resultats --------- }
+
+Procedure AddResultCol(Const AName : TString);
+Begin
+  If EvalResults.NCols < MAX_RESULT_COLS Then
+  Begin
+    EvalResults.ColNames[EvalResults.NCols] := AName;
+    Inc(EvalResults.NCols);
+  End;
+End;
+
+{ ---- Ajouter un tuple au jeu de resultats ------------------ }
+
+Function AddResultTuple(Const T : TResultTuple) : Boolean;
+Begin
+  If EvalResults.NRows >= MAX_RESULT_ROWS Then
+  Begin
+    AddResultTuple := False;
+    Exit;
+  End;
+  EvalResults.Rows[EvalResults.NRows] := T;
+  Inc(EvalResults.NRows);
+  AddResultTuple := True;
+End;
+
+{ ---- Afficher le jeu de resultats -------------------------- }
+
+Procedure DumpResultSet;
+Var
+  I, J : Integer;
+Begin
+  WriteLn('--- Resultats : ', EvalResults.NRows, ' tuples, ',
+          EvalResults.NCols, ' colonnes ---');
+  { en-tete }
+  For J := 0 To EvalResults.NCols - 1 Do
+  Begin
+    If J > 0 Then Write(' | ');
+    Write(EvalResults.ColNames[J]);
+  End;
+  WriteLn;
+  For J := 0 To EvalResults.NCols - 1 Do
+  Begin
+    If J > 0 Then Write('-+-');
+    Write('----------');
+  End;
+  WriteLn;
+  { lignes }
+  For I := 0 To EvalResults.NRows - 1 Do
+  Begin
+    For J := 0 To EvalResults.Rows[I].NCols - 1 Do
+    Begin
+      If J > 0 Then Write(' | ');
+      Write(BindingToStr(EvalResults.Rows[I].Cols[J]));
+    End;
+    WriteLn;
+  End;
+  WriteLn;
+End;
+
+{ ---- Nombre de lignes dans une table DB par nom ------------ }
+
+Function TableRowCount(Const TName : TString) : Integer;
+Var
+  N : TString;
+Begin
+  N := StrLowerCase(TName);
+  If N = 'functions'   Then TableRowCount := DbFunctionCnt
+  Else If N = 'variables' Then TableRowCount := DbVariableCnt
+  Else If N = 'types'     Then TableRowCount := DbTypeCnt
+  Else If N = 'exprs'     Then TableRowCount := DbExprCnt
+  Else If N = 'stmts'     Then TableRowCount := DbStmtCnt
+  Else If N = 'programs'  Then TableRowCount := DbProgramCnt
+  Else If N = 'files'     Then TableRowCount := DbFileCnt
+  Else If N = 'locations' Then TableRowCount := DbLocationCnt
+  Else If N = 'calls'     Then TableRowCount := DbCallCnt
+  Else If N = 'accesses'  Then TableRowCount := DbAccessCnt
+  Else If N = 'comments'  Then TableRowCount := DbCommentCnt
+  Else If N = 'diagnostics' Then TableRowCount := DbDiagCnt
+  Else TableRowCount := 0;
+End;
+
+{ ---- Recuperer un champ d un enregistrement DB ------------- }
+
+Function GetDbField(Const TName : TString; RowIdx : Integer;
+                    Const FName : TString) : TBindingValue;
+Var
+  NT, NF : TString;
+Begin
+  NT := StrLowerCase(TName);
+  NF := StrLowerCase(FName);
+  GetDbField := MakeNoneBinding;
+
+  If NT = 'functions' Then
+  Begin
+    If (RowIdx < 0) Or (RowIdx >= DbFunctionCnt) Then Exit;
+    If NF = 'id'           Then GetDbField := MakeIntBinding(DbFunctions[RowIdx].Id)
+    Else If NF = 'name'    Then GetDbField := MakeStrBinding(DbFunctions[RowIdx].Name)
+    Else If NF = 'parentid' Then GetDbField := MakeIntBinding(DbFunctions[RowIdx].ParentId)
+    Else If NF = 'locid'   Then GetDbField := MakeIntBinding(DbFunctions[RowIdx].LocId)
+    Else If NF = 'returntypeid' Then GetDbField := MakeIntBinding(DbFunctions[RowIdx].ReturnTypeId)
+    Else If NF = 'numparams' Then GetDbField := MakeIntBinding(DbFunctions[RowIdx].NumParams);
+  End
+  Else If NT = 'variables' Then
+  Begin
+    If (RowIdx < 0) Or (RowIdx >= DbVariableCnt) Then Exit;
+    If NF = 'id'           Then GetDbField := MakeIntBinding(DbVariables[RowIdx].Id)
+    Else If NF = 'name'    Then GetDbField := MakeStrBinding(DbVariables[RowIdx].Name)
+    Else If NF = 'parentid' Then GetDbField := MakeIntBinding(DbVariables[RowIdx].ParentId)
+    Else If NF = 'locid'   Then GetDbField := MakeIntBinding(DbVariables[RowIdx].LocId)
+    Else If NF = 'typeid'  Then GetDbField := MakeIntBinding(DbVariables[RowIdx].TypeId);
+  End
+  Else If NT = 'types' Then
+  Begin
+    If (RowIdx < 0) Or (RowIdx >= DbTypeCnt) Then Exit;
+    If NF = 'id'            Then GetDbField := MakeIntBinding(DbTypes[RowIdx].Id)
+    Else If NF = 'name'     Then GetDbField := MakeStrBinding(DbTypes[RowIdx].Name)
+    Else If NF = 'kind'     Then GetDbField := MakeIntBinding(Ord(DbTypes[RowIdx].Kind))
+    Else If NF = 'basetypeid' Then GetDbField := MakeIntBinding(DbTypes[RowIdx].BaseTypeId);
+  End
+  Else If NT = 'exprs' Then
+  Begin
+    If (RowIdx < 0) Or (RowIdx >= DbExprCnt) Then Exit;
+    If NF = 'id'           Then GetDbField := MakeIntBinding(DbExprs[RowIdx].Id)
+    Else If NF = 'kind'    Then GetDbField := MakeIntBinding(Ord(DbExprs[RowIdx].Kind))
+    Else If NF = 'parentid' Then GetDbField := MakeIntBinding(DbExprs[RowIdx].ParentId)
+    Else If NF = 'locid'   Then GetDbField := MakeIntBinding(DbExprs[RowIdx].LocId)
+    Else If NF = 'typeid'  Then GetDbField := MakeIntBinding(DbExprs[RowIdx].TypeId)
+    Else If NF = 'value'   Then GetDbField := MakeStrBinding(DbExprs[RowIdx].Value);
+  End
+  Else If NT = 'stmts' Then
+  Begin
+    If (RowIdx < 0) Or (RowIdx >= DbStmtCnt) Then Exit;
+    If NF = 'id'            Then GetDbField := MakeIntBinding(DbStmts[RowIdx].Id)
+    Else If NF = 'kind'     Then GetDbField := MakeIntBinding(Ord(DbStmts[RowIdx].Kind))
+    Else If NF = 'parentid' Then GetDbField := MakeIntBinding(DbStmts[RowIdx].ParentId)
+    Else If NF = 'locid'    Then GetDbField := MakeIntBinding(DbStmts[RowIdx].LocId);
+  End
+  Else If NT = 'programs' Then
+  Begin
+    If (RowIdx < 0) Or (RowIdx >= DbProgramCnt) Then Exit;
+    If NF = 'id'            Then GetDbField := MakeIntBinding(DbPrograms[RowIdx].Id)
+    Else If NF = 'name'     Then GetDbField := MakeStrBinding(DbPrograms[RowIdx].Name)
+    Else If NF = 'filename' Then GetDbField := MakeStrBinding(DbPrograms[RowIdx].FileName);
+  End
+  Else If NT = 'files' Then
+  Begin
+    If (RowIdx < 0) Or (RowIdx >= DbFileCnt) Then Exit;
+    If NF = 'id'            Then GetDbField := MakeIntBinding(DbFiles[RowIdx].Id)
+    Else If NF = 'name'     Then GetDbField := MakeStrBinding(DbFiles[RowIdx].Name)
+    Else If NF = 'numlines' Then GetDbField := MakeIntBinding(DbFiles[RowIdx].NumLines);
+  End
+  Else If NT = 'calls' Then
+  Begin
+    If (RowIdx < 0) Or (RowIdx >= DbCallCnt) Then Exit;
+    If NF = 'id'            Then GetDbField := MakeIntBinding(DbCalls[RowIdx].Id)
+    Else If NF = 'callerid' Then GetDbField := MakeIntBinding(DbCalls[RowIdx].CallerId)
+    Else If NF = 'targetid' Then GetDbField := MakeIntBinding(DbCalls[RowIdx].TargetId)
+    Else If NF = 'locid'    Then GetDbField := MakeIntBinding(DbCalls[RowIdx].LocId)
+    Else If NF = 'numargs'  Then GetDbField := MakeIntBinding(DbCalls[RowIdx].NumArgs);
+  End;
+End;
+
+{ ---- Mapper un nom de type QL vers un nom de table DB ------ }
+
+Function QLTypeToTable(Const TName : TString) : TString;
+Var
+  N : TString;
+Begin
+  N := StrLowerCase(TName);
+  If (N = 'function') Or (N = '@function') Then QLTypeToTable := 'functions'
+  Else If (N = 'variable') Or (N = '@variable') Then QLTypeToTable := 'variables'
+  Else If (N = 'type') Or (N = '@type') Then QLTypeToTable := 'types'
+  Else If (N = 'expr') Or (N = '@expr') Then QLTypeToTable := 'exprs'
+  Else If (N = 'stmt') Or (N = '@stmt') Then QLTypeToTable := 'stmts'
+  Else If (N = 'call') Then QLTypeToTable := 'calls'
+  Else If (N = 'file') Then QLTypeToTable := 'files'
+  Else If (N = 'program') Then QLTypeToTable := 'programs'
+  Else If (N = 'comment') Then QLTypeToTable := 'comments'
+  Else If (N = 'diagnostic') Then QLTypeToTable := 'diagnostics'
+  Else QLTypeToTable := N;
+End;
+
+{ ---- Evaluer une expression QL en TBindingValue ------------ }
+
+Function EvalExprValue(NIdx : Integer) : TBindingValue;
+Var
+  LVal, RVal : TBindingValue;
+  BV         : TBindingValue;
+Begin
+  EvalExprValue := MakeNoneBinding;
+  If (NIdx < 0) Or (NIdx >= NodeCount) Then Exit;
+  Case Nodes[NIdx].Kind Of
+    NK_EXPR_INT:
+      EvalExprValue := MakeIntBinding(Nodes[NIdx].IntVal);
+    NK_EXPR_FLOAT:
+      EvalExprValue := MakeFloatBinding(Nodes[NIdx].FloatVal);
+    NK_EXPR_STRING:
+      EvalExprValue := MakeStrBinding(Nodes[NIdx].Name);
+    NK_EXPR_IDENT:
+    Begin
+      If LookupVar(Nodes[NIdx].Name, BV) Then
+        EvalExprValue := BV
+      Else
+        EvalExprValue := MakeStrBinding(Nodes[NIdx].Name);
+    End;
+    NK_EXPR_MEMBER:
+    Begin
+      { obj.field : evaluer obj, puis recuperer le champ }
+      LVal := EvalExprValue(Nodes[NIdx].Left);
+      If LVal.Kind = BK_DBREF Then
+        EvalExprValue := GetDbField(LVal.RefTable, LVal.RefId,
+                                    Nodes[NIdx].Name)
+      Else
+        EvalExprValue := MakeNoneBinding;
+    End;
+    NK_EXPR_BINOP:
+    Begin
+      LVal := EvalExprValue(Nodes[NIdx].Left);
+      RVal := EvalExprValue(Nodes[NIdx].Right);
+      If (LVal.Kind = BK_INT) And (RVal.Kind = BK_INT) Then
+      Begin
+        If Nodes[NIdx].Name = '+' Then
+          EvalExprValue := MakeIntBinding(LVal.IntVal + RVal.IntVal)
+        Else If Nodes[NIdx].Name = '-' Then
+          EvalExprValue := MakeIntBinding(LVal.IntVal - RVal.IntVal)
+        Else If Nodes[NIdx].Name = '*' Then
+          EvalExprValue := MakeIntBinding(LVal.IntVal * RVal.IntVal)
+        Else If Nodes[NIdx].Name = '=' Then
+        Begin
+          If LVal.IntVal = RVal.IntVal Then
+            EvalExprValue := MakeIntBinding(1)
+          Else
+            EvalExprValue := MakeIntBinding(0);
+        End
+        Else If Nodes[NIdx].Name = '!=' Then
+        Begin
+          If LVal.IntVal <> RVal.IntVal Then
+            EvalExprValue := MakeIntBinding(1)
+          Else
+            EvalExprValue := MakeIntBinding(0);
+        End
+        Else If Nodes[NIdx].Name = '<' Then
+        Begin
+          If LVal.IntVal < RVal.IntVal Then
+            EvalExprValue := MakeIntBinding(1)
+          Else
+            EvalExprValue := MakeIntBinding(0);
+        End
+        Else If Nodes[NIdx].Name = '>' Then
+        Begin
+          If LVal.IntVal > RVal.IntVal Then
+            EvalExprValue := MakeIntBinding(1)
+          Else
+            EvalExprValue := MakeIntBinding(0);
+        End;
+      End
+      Else If (LVal.Kind = BK_STRING) And (RVal.Kind = BK_STRING) Then
+      Begin
+        If Nodes[NIdx].Name = '=' Then
+        Begin
+          If LVal.StrVal = RVal.StrVal Then
+            EvalExprValue := MakeIntBinding(1)
+          Else
+            EvalExprValue := MakeIntBinding(0);
+        End
+        Else If Nodes[NIdx].Name = '!=' Then
+        Begin
+          If LVal.StrVal <> RVal.StrVal Then
+            EvalExprValue := MakeIntBinding(1)
+          Else
+            EvalExprValue := MakeIntBinding(0);
+        End
+        Else If Nodes[NIdx].Name = '+' Then
+          EvalExprValue := MakeStrBinding(LVal.StrVal + RVal.StrVal);
+      End;
+    End;
+    NK_EXPR_CALL:
+    Begin
+      { count(...) retourne le nombre de lignes dans la table }
+      If StrLowerCase(Nodes[NIdx].Name) = 'count' Then
+      Begin
+        LVal := EvalExprValue(Nodes[NIdx].Left);
+        If LVal.Kind = BK_STRING Then
+          EvalExprValue := MakeIntBinding(TableRowCount(
+                              QLTypeToTable(LVal.StrVal)))
+        Else
+          EvalExprValue := MakeIntBinding(0);
+      End;
+    End;
+    NK_EXPR_THIS:
+    Begin
+      If LookupVar('this', BV) Then
+        EvalExprValue := BV;
+    End;
+    NK_EXPR_RESULT:
+    Begin
+      If LookupVar('result', BV) Then
+        EvalExprValue := BV;
+    End;
+  End;
+End;
+
+{ ---- Tester si une formule where est satisfaite ------------ }
+
+Function MatchesFilter(NIdx : Integer) : Boolean;
+Var
+  LVal       : TBindingValue;
+  BV         : TBindingValue;
+  SavedCount : Integer;
+  I, Cnt     : Integer;
+  TblName    : TString;
+Begin
+  MatchesFilter := True;
+  If (NIdx < 0) Or (NIdx >= NodeCount) Then Exit;
+
+  Case Nodes[NIdx].Kind Of
+    NK_FORMULA_AND:
+    Begin
+      MatchesFilter := MatchesFilter(Nodes[NIdx].Left) And
+                        MatchesFilter(Nodes[NIdx].Right);
+    End;
+    NK_FORMULA_OR:
+    Begin
+      MatchesFilter := MatchesFilter(Nodes[NIdx].Left) Or
+                        MatchesFilter(Nodes[NIdx].Right);
+    End;
+    NK_FORMULA_NOT:
+    Begin
+      MatchesFilter := Not MatchesFilter(Nodes[NIdx].Left);
+    End;
+    NK_FORMULA_EXISTS:
+    Begin
+      { exists(Type v | formula) : verifier s il existe au moins un v }
+      MatchesFilter := False;
+      If Nodes[NIdx].Left >= 0 Then
+      Begin
+        TblName := QLTypeToTable(Nodes[Nodes[NIdx].Left].Name);
+        Cnt := TableRowCount(TblName);
+        SavedCount := EvalBindCount;
+        For I := 0 To Cnt - 1 Do
+        Begin
+          EvalBindCount := SavedCount;
+          BV := MakeDbRefBinding(TblName, I);
+          If Nodes[Nodes[NIdx].Left].Kind = NK_VAR_DECL Then
+            BindVar(Nodes[Nodes[NIdx].Left].Name, BV);
+          If MatchesFilter(Nodes[NIdx].Right) Then
+          Begin
+            MatchesFilter := True;
+            EvalBindCount := SavedCount;
+            Exit;
+          End;
+        End;
+        EvalBindCount := SavedCount;
+      End;
+    End;
+    NK_FORMULA_FORALL:
+    Begin
+      { forall(Type v | guard | formula) : verifier pour tous }
+      MatchesFilter := True;
+      If Nodes[NIdx].Left >= 0 Then
+      Begin
+        TblName := QLTypeToTable(Nodes[Nodes[NIdx].Left].Name);
+        Cnt := TableRowCount(TblName);
+        SavedCount := EvalBindCount;
+        For I := 0 To Cnt - 1 Do
+        Begin
+          EvalBindCount := SavedCount;
+          BV := MakeDbRefBinding(TblName, I);
+          If Nodes[Nodes[NIdx].Left].Kind = NK_VAR_DECL Then
+            BindVar(Nodes[Nodes[NIdx].Left].Name, BV);
+          If MatchesFilter(Nodes[NIdx].Extra) Then
+          Begin
+            If Not MatchesFilter(Nodes[NIdx].Right) Then
+            Begin
+              MatchesFilter := False;
+              EvalBindCount := SavedCount;
+              Exit;
+            End;
+          End;
+        End;
+        EvalBindCount := SavedCount;
+      End;
+    End;
+    NK_EXPR_BINOP,
+    NK_EXPR_CALL:
+    Begin
+      LVal := EvalExprValue(NIdx);
+      MatchesFilter := (LVal.Kind = BK_INT) And (LVal.IntVal <> 0);
+    End;
+  Else
+    { expression quelconque : evaluer comme booleen }
+    LVal := EvalExprValue(NIdx);
+    If LVal.Kind = BK_INT Then
+      MatchesFilter := (LVal.IntVal <> 0)
+    Else
+      MatchesFilter := (LVal.Kind <> BK_NONE);
+  End;
+End;
+
+{ ---- Evaluer les jointures from d un select ---------------- }
+
+Procedure EvalFromJoin(SelectIdx : Integer;
+                       FromList  : Integer;
+                       WhereIdx  : Integer;
+                       SelectExprs : Integer);
+
+  Procedure CollectSelectExprs(NIdx : Integer; Var T : TResultTuple);
+  Var
+    V : TBindingValue;
+    Cur : Integer;
+  Begin
+    T.NCols := 0;
+    Cur := NIdx;
+    While (Cur >= 0) And (Cur < NodeCount) Do
+    Begin
+      V := EvalExprValue(Cur);
+      If T.NCols < MAX_RESULT_COLS Then
+      Begin
+        T.Cols[T.NCols] := V;
+        Inc(T.NCols);
+      End;
+      Cur := Nodes[Cur].Next;
+    End;
+  End;
+
+  Procedure JoinRecursive(FromIdx : Integer);
+  Var
+    TblName : TString;
+    VarName : TString;
+    I, Cnt  : Integer;
+    SavedBind : Integer;
+    BV : TBindingValue;
+    T  : TResultTuple;
+  Begin
+    If (FromIdx < 0) Or (FromIdx >= NodeCount) Then
+    Begin
+      { toutes les variables from sont liees : tester le where }
+      If MatchesFilter(WhereIdx) Then
+      Begin
+        { collecter les expressions select }
+        CollectSelectExprs(SelectExprs, T);
+        AddResultTuple(T);
+      End;
+      Exit;
+    End;
+
+    { FromIdx pointe vers un NK_FROM_DECL ou NK_VAR_DECL }
+    TblName := QLTypeToTable(Nodes[FromIdx].Name);
+    Cnt := TableRowCount(TblName);
+
+    { Le nom de la variable est dans le fils gauche (NK_VAR_DECL) }
+    If Nodes[FromIdx].Left >= 0 Then
+      VarName := Nodes[Nodes[FromIdx].Left].Name
+    Else
+      VarName := Nodes[FromIdx].Name;
+
+    SavedBind := EvalBindCount;
+    For I := 0 To Cnt - 1 Do
+    Begin
+      EvalBindCount := SavedBind;
+      BV := MakeDbRefBinding(TblName, I);
+      BindVar(VarName, BV);
+      JoinRecursive(Nodes[FromIdx].Next);
+    End;
+    EvalBindCount := SavedBind;
+  End;
+
+Begin
+  JoinRecursive(FromList);
+End;
+
+{ ---- Evaluer un noeud select-from-where -------------------- }
+
+Procedure EvalSelect(NIdx : Integer);
+Var
+  FromList, WhereIdx, SelectExprs : Integer;
+  Cur, ColIdx : Integer;
+Begin
+  If (NIdx < 0) Or (NIdx >= NodeCount) Then Exit;
+  If Nodes[NIdx].Kind <> NK_SELECT Then Exit;
+
+  InitResultSet;
+  InitBindings;
+
+  { Structure du NK_SELECT :
+    Left  = premier NK_FROM_DECL (chaine via Next)
+    Right = formule where (-1 si absente)
+    Extra = premier expression select (chaine via Next) }
+  FromList    := Nodes[NIdx].Left;
+  WhereIdx    := Nodes[NIdx].Right;
+  SelectExprs := Nodes[NIdx].Extra;
+
+  { collecter les noms de colonnes a partir des expressions select }
+  ColIdx := 0;
+  Cur := SelectExprs;
+  While (Cur >= 0) And (Cur < NodeCount) Do
+  Begin
+    If ColIdx < MAX_RESULT_COLS Then
+    Begin
+      If Nodes[Cur].Name <> '' Then
+        AddResultCol(Nodes[Cur].Name)
+      Else
+        AddResultCol('col' + Chr(Ord('0') + ColIdx));
+      Inc(ColIdx);
+    End;
+    Cur := Nodes[Cur].Next;
+  End;
+
+  { evaluer les jointures et collecter les resultats }
+  EvalFromJoin(NIdx, FromList, WhereIdx, SelectExprs);
+End;
+
+{ ---- Evaluer un predicat non-recursif ---------------------- }
+
+Function EvalPredicate(PredIdx : Integer) : Boolean;
+Var
+  Body : Integer;
+Begin
+  EvalPredicate := False;
+  If (PredIdx < 0) Or (PredIdx >= NodeCount) Then Exit;
+  If Nodes[PredIdx].Kind <> NK_PRED_DECL Then Exit;
+
+  { Le corps du predicat est dans Extra (formule ou select) }
+  Body := Nodes[PredIdx].Extra;
+  If Body < 0 Then Exit;
+
+  If Nodes[Body].Kind = NK_SELECT Then
+    EvalSelect(Body)
+  Else
+  Begin
+    { predicat booleen : evaluer la formule }
+    InitResultSet;
+    InitBindings;
+    EvalPredicate := MatchesFilter(Body);
+  End;
+  EvalPredicate := True;
+End;
+
+{ ---- Point d'entree : evaluer une requete QL --------------- }
+
+Procedure EvalQuery(RootIdx : Integer);
+Var
+  Cur : Integer;
+Begin
+  If (RootIdx < 0) Or (RootIdx >= NodeCount) Then Exit;
+
+  { Parcourir les enfants du module pour trouver les select }
+  Cur := Nodes[RootIdx].Left;
+  While (Cur >= 0) And (Cur < NodeCount) Do
+  Begin
+    Case Nodes[Cur].Kind Of
+      NK_SELECT:
+      Begin
+        EvalSelect(Cur);
+        DumpResultSet;
+      End;
+      NK_PRED_DECL:
+      Begin
+        { Evaluer uniquement si le predicat est marque comme requete }
+        { (dans un vrai CodeQL, seul le select principal est evalue) }
+      End;
+    End;
+    Cur := Nodes[Cur].Next;
+  End;
+End;
+
+{ ---- Afficher les liaisons courantes pour debug ------------ }
+
+Procedure DumpBindings;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Liaisons : ', EvalBindCount, ' variables ---');
+  For I := 0 To EvalBindCount - 1 Do
+    WriteLn('  ', EvalBindings[I].Name, ' = ',
+            BindingToStr(EvalBindings[I].Value));
   WriteLn;
 End;
 
