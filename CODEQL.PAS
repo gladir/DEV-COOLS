@@ -65,6 +65,7 @@
       source Pascal et insertion des enregistrements dans les tables de
       la base de donnees (un enregistrement par noeud AST, avec les
       positions source, les types resolus, les relations parent-enfant).
+      [IMPLEMENTE]
 
   10. Implementer la hierarchie de classes QL et l'heritage : resolution
       des classes de base et des classes derivees, gestion du mot-cle
@@ -6297,6 +6298,331 @@ Begin
   BlockWrite(F, Rec, SizeOf(TDbFunction));
   Close(F);
   DbWriteFunctionAt := True;
+End;
+
+{ ============================================================
+  TODO 09 - EXTRACTEUR : AST SOURCE -> BASE DE DONNEES [IMPLEMENTE]
+  ============================================================ }
+
+{ Variables globales de l extracteur }
+Var
+  ExtFileId   : Integer;   { identifiant du fichier courant      }
+  ExtProgramId: Integer;   { identifiant du programme courant     }
+
+{ ---- Creation d un enregistrement de position source ---------- }
+
+Function ExtractLocation(Idx : Integer) : Integer;
+Begin
+  If (Idx < 0) Or (Idx >= SrcNodeCount) Then
+    ExtractLocation := -1
+  Else
+    ExtractLocation := DbAddLocation(ExtFileId,
+      SrcNodes[Idx].Line, SrcNodes[Idx].Col,
+      SrcNodes[Idx].Line, SrcNodes[Idx].Col);
+End;
+
+{ ---- Conversion TSrcNodeKind expression -> TDbExprKind -------- }
+
+Function SrcExprKindToDb(K : TSrcNodeKind) : TDbExprKind;
+Begin
+  Case K Of
+    SNK_EXPR_INT    : SrcExprKindToDb := DEK_INT_LIT;
+    SNK_EXPR_FLOAT  : SrcExprKindToDb := DEK_FLOAT_LIT;
+    SNK_EXPR_STRING : SrcExprKindToDb := DEK_STR_LIT;
+    SNK_EXPR_IDENT  : SrcExprKindToDb := DEK_IDENT;
+    SNK_EXPR_BINOP  : SrcExprKindToDb := DEK_BINOP;
+    SNK_EXPR_UNOP   : SrcExprKindToDb := DEK_UNOP;
+    SNK_EXPR_CALL   : SrcExprKindToDb := DEK_CALL;
+    SNK_EXPR_INDEX  : SrcExprKindToDb := DEK_INDEX;
+    SNK_EXPR_FIELD  : SrcExprKindToDb := DEK_FIELD;
+    SNK_EXPR_DEREF  : SrcExprKindToDb := DEK_DEREF;
+    SNK_EXPR_ADDR   : SrcExprKindToDb := DEK_ADDR;
+    SNK_EXPR_NIL    : SrcExprKindToDb := DEK_NIL;
+    SNK_EXPR_SET    : SrcExprKindToDb := DEK_SET;
+    SNK_EXPR_RANGE  : SrcExprKindToDb := DEK_RANGE;
+  Else
+    SrcExprKindToDb := DEK_NONE;
+  End;
+End;
+
+{ ---- Conversion TSrcNodeKind instruction -> TDbStmtKind ------- }
+
+Function SrcStmtKindToDb(K : TSrcNodeKind) : TDbStmtKind;
+Begin
+  Case K Of
+    SNK_ASSIGN   : SrcStmtKindToDb := DSK_ASSIGN;
+    SNK_CALL     : SrcStmtKindToDb := DSK_CALL;
+    SNK_IF       : SrcStmtKindToDb := DSK_IF;
+    SNK_WHILE    : SrcStmtKindToDb := DSK_WHILE;
+    SNK_FOR      : SrcStmtKindToDb := DSK_FOR;
+    SNK_REPEAT   : SrcStmtKindToDb := DSK_REPEAT;
+    SNK_CASE     : SrcStmtKindToDb := DSK_CASE;
+    SNK_WITH     : SrcStmtKindToDb := DSK_WITH;
+    SNK_TRY      : SrcStmtKindToDb := DSK_TRY;
+    SNK_RAISE    : SrcStmtKindToDb := DSK_RAISE;
+    SNK_GOTO     : SrcStmtKindToDb := DSK_GOTO;
+    SNK_COMPOUND : SrcStmtKindToDb := DSK_COMPOUND;
+    SNK_BLOCK    : SrcStmtKindToDb := DSK_BLOCK;
+  Else
+    SrcStmtKindToDb := DSK_NONE;
+  End;
+End;
+
+{ ---- Conversion TSrcNodeKind type -> TDbTypeKind -------------- }
+
+Function SrcTypeKindToDb(K : TSrcNodeKind) : TDbTypeKind;
+Begin
+  Case K Of
+    SNK_TYPE_IDENT   : SrcTypeKindToDb := DTK_ALIAS;
+    SNK_TYPE_ARRAY   : SrcTypeKindToDb := DTK_ARRAY;
+    SNK_TYPE_RECORD  : SrcTypeKindToDb := DTK_RECORD;
+    SNK_TYPE_POINTER : SrcTypeKindToDb := DTK_POINTER;
+    SNK_TYPE_SET     : SrcTypeKindToDb := DTK_SET;
+    SNK_TYPE_FILE    : SrcTypeKindToDb := DTK_FILE;
+    SNK_TYPE_RANGE   : SrcTypeKindToDb := DTK_RANGE;
+    SNK_TYPE_ENUM    : SrcTypeKindToDb := DTK_ENUM;
+    SNK_TYPE_STRING  : SrcTypeKindToDb := DTK_STRING;
+  Else
+    SrcTypeKindToDb := DTK_NONE;
+  End;
+End;
+
+{ ---- Teste si un noeud est une expression --------------------- }
+
+Function IsExprNode(K : TSrcNodeKind) : Boolean;
+Begin
+  IsExprNode := (K >= SNK_EXPR_BINOP) And (K <= SNK_EXPR_RANGE);
+End;
+
+{ ---- Teste si un noeud est une instruction -------------------- }
+
+Function IsStmtNode(K : TSrcNodeKind) : Boolean;
+Begin
+  IsStmtNode := (K >= SNK_ASSIGN) And (K <= SNK_COMPOUND);
+End;
+
+{ ---- Teste si un noeud est un type ---------------------------- }
+
+Function IsTypeNode(K : TSrcNodeKind) : Boolean;
+Begin
+  IsTypeNode := (K >= SNK_TYPE_IDENT) And (K <= SNK_TYPE_STRING);
+End;
+
+{ ---- Forward declaration pour l extraction recursive ---------- }
+
+Function ExtractNode(Idx, ParentId : Integer) : Integer; Forward;
+
+{ ---- Extraction d une expression ------------------------------ }
+
+Function ExtractExpr(Idx, ParentId : Integer) : Integer;
+Var LocId, ExprId : Integer;
+    Val : TString;
+Begin
+  ExtractExpr := -1;
+  If (Idx < 0) Or (Idx >= SrcNodeCount) Then Exit;
+  LocId := ExtractLocation(Idx);
+  Val := SrcNodes[Idx].Name;
+  ExprId := DbAddExpr(SrcExprKindToDb(SrcNodes[Idx].Kind),
+                       ParentId, LocId, -1, Val);
+  { Extraire les sous-expressions enfants }
+  If SrcNodes[Idx].Left >= 0 Then
+    ExtractNode(SrcNodes[Idx].Left, ExprId);
+  If SrcNodes[Idx].Right >= 0 Then
+    ExtractNode(SrcNodes[Idx].Right, ExprId);
+  If SrcNodes[Idx].Extra >= 0 Then
+    ExtractNode(SrcNodes[Idx].Extra, ExprId);
+  ExtractExpr := ExprId;
+End;
+
+{ ---- Extraction d une instruction ----------------------------- }
+
+Function ExtractStmt(Idx, ParentId : Integer) : Integer;
+Var LocId, StmtId : Integer;
+Begin
+  ExtractStmt := -1;
+  If (Idx < 0) Or (Idx >= SrcNodeCount) Then Exit;
+  LocId := ExtractLocation(Idx);
+  StmtId := DbAddStmt(SrcStmtKindToDb(SrcNodes[Idx].Kind),
+                        ParentId, LocId);
+  { Extraire les enfants }
+  If SrcNodes[Idx].Left >= 0 Then
+    ExtractNode(SrcNodes[Idx].Left, StmtId);
+  If SrcNodes[Idx].Right >= 0 Then
+    ExtractNode(SrcNodes[Idx].Right, StmtId);
+  If SrcNodes[Idx].Extra >= 0 Then
+    ExtractNode(SrcNodes[Idx].Extra, StmtId);
+  ExtractStmt := StmtId;
+End;
+
+{ ---- Extraction d une declaration de type --------------------- }
+
+Function ExtractTypeDecl(Idx, ParentId : Integer) : Integer;
+Var TypeId : Integer;
+    K      : TDbTypeKind;
+Begin
+  ExtractTypeDecl := -1;
+  If (Idx < 0) Or (Idx >= SrcNodeCount) Then Exit;
+  If SrcNodes[Idx].Kind = SNK_TYPE_DECL Then
+  Begin
+    K := DTK_ALIAS;
+    { Si l enfant gauche est un noeud de type, utiliser sa sorte }
+    If (SrcNodes[Idx].Left >= 0) And
+       IsTypeNode(SrcNodes[SrcNodes[Idx].Left].Kind) Then
+      K := SrcTypeKindToDb(SrcNodes[SrcNodes[Idx].Left].Kind);
+    TypeId := DbAddType(SrcNodes[Idx].Name, K, -1);
+    If SrcNodes[Idx].Left >= 0 Then
+      ExtractNode(SrcNodes[Idx].Left, TypeId);
+  End
+  Else If IsTypeNode(SrcNodes[Idx].Kind) Then
+  Begin
+    K := SrcTypeKindToDb(SrcNodes[Idx].Kind);
+    TypeId := DbAddType(SrcNodes[Idx].Name, K, -1);
+    If SrcNodes[Idx].Left >= 0 Then
+      ExtractNode(SrcNodes[Idx].Left, TypeId);
+    If SrcNodes[Idx].Right >= 0 Then
+      ExtractNode(SrcNodes[Idx].Right, TypeId);
+  End
+  Else
+    TypeId := -1;
+  ExtractTypeDecl := TypeId;
+End;
+
+{ ---- Extraction d une declaration de variable ----------------- }
+
+Function ExtractVarDecl(Idx, ParentId : Integer) : Integer;
+Var LocId, VarId : Integer;
+    IsPar        : Boolean;
+Begin
+  ExtractVarDecl := -1;
+  If (Idx < 0) Or (Idx >= SrcNodeCount) Then Exit;
+  LocId := ExtractLocation(Idx);
+  IsPar := (SrcNodes[Idx].Kind = SNK_PARAM_DECL);
+  VarId := DbAddVariable(SrcNodes[Idx].Name,
+                           ParentId, LocId, -1, IsPar);
+  { Extraire le type de la variable si present }
+  If SrcNodes[Idx].Left >= 0 Then
+    ExtractNode(SrcNodes[Idx].Left, VarId);
+  ExtractVarDecl := VarId;
+End;
+
+{ ---- Extraction d une declaration de procedure/fonction ------- }
+
+Function ExtractFuncDecl(Idx, ParentId : Integer) : Integer;
+Var LocId, FuncId, NParams, ParamIdx : Integer;
+    RetType : Integer;
+Begin
+  ExtractFuncDecl := -1;
+  If (Idx < 0) Or (Idx >= SrcNodeCount) Then Exit;
+  LocId := ExtractLocation(Idx);
+  { Compter les parametres dans la liste Left (chainage par Next) }
+  NParams := 0;
+  ParamIdx := SrcNodes[Idx].Left;
+  While (ParamIdx >= 0) And (ParamIdx < SrcNodeCount) Do
+  Begin
+    If SrcNodes[ParamIdx].Kind = SNK_PARAM_DECL Then
+      Inc(NParams);
+    ParamIdx := SrcNodes[ParamIdx].Next;
+  End;
+  RetType := -1;
+  If SrcNodes[Idx].Kind = SNK_FUNC_DECL Then
+    RetType := 0;
+  FuncId := DbAddFunction(SrcNodes[Idx].Name,
+                            ParentId, LocId, RetType, NParams);
+  { Extraire les parametres }
+  If SrcNodes[Idx].Left >= 0 Then
+    ExtractNode(SrcNodes[Idx].Left, FuncId);
+  { Extraire le corps (Right = bloc) }
+  If SrcNodes[Idx].Right >= 0 Then
+    ExtractNode(SrcNodes[Idx].Right, FuncId);
+  { Extraire le type de retour (Extra) }
+  If SrcNodes[Idx].Extra >= 0 Then
+    ExtractNode(SrcNodes[Idx].Extra, FuncId);
+  ExtractFuncDecl := FuncId;
+End;
+
+{ ---- Extraction d une constante ------------------------------- }
+
+Function ExtractConstDecl(Idx, ParentId : Integer) : Integer;
+Var LocId, VarId : Integer;
+Begin
+  ExtractConstDecl := -1;
+  If (Idx < 0) Or (Idx >= SrcNodeCount) Then Exit;
+  LocId := ExtractLocation(Idx);
+  VarId := DbAddVariable(SrcNodes[Idx].Name,
+                           ParentId, LocId, -1, False);
+  If SrcNodes[Idx].Left >= 0 Then
+    ExtractNode(SrcNodes[Idx].Left, VarId);
+  ExtractConstDecl := VarId;
+End;
+
+{ ---- Extraction recursive d un noeud AST quelconque ----------- }
+
+Function ExtractNode(Idx, ParentId : Integer) : Integer;
+Var Id, SibIdx : Integer;
+    K          : TSrcNodeKind;
+Begin
+  ExtractNode := -1;
+  If (Idx < 0) Or (Idx >= SrcNodeCount) Then Exit;
+  K := SrcNodes[Idx].Kind;
+
+  { Dispatcher selon le type de noeud }
+  If IsExprNode(K) Then
+    Id := ExtractExpr(Idx, ParentId)
+  Else If IsStmtNode(K) Or (K = SNK_BLOCK) Then
+    Id := ExtractStmt(Idx, ParentId)
+  Else If (K = SNK_PROC_DECL) Or (K = SNK_FUNC_DECL) Then
+    Id := ExtractFuncDecl(Idx, ParentId)
+  Else If (K = SNK_VAR_DECL) Or (K = SNK_PARAM_DECL) Then
+    Id := ExtractVarDecl(Idx, ParentId)
+  Else If (K = SNK_TYPE_DECL) Or IsTypeNode(K) Then
+    Id := ExtractTypeDecl(Idx, ParentId)
+  Else If K = SNK_CONST_DECL Then
+    Id := ExtractConstDecl(Idx, ParentId)
+  Else
+  Begin
+    { Noeuds generiques : program, unit, uses, case_item, etc. }
+    Id := ParentId;
+    If SrcNodes[Idx].Left >= 0 Then
+      ExtractNode(SrcNodes[Idx].Left, Id);
+    If SrcNodes[Idx].Right >= 0 Then
+      ExtractNode(SrcNodes[Idx].Right, Id);
+    If SrcNodes[Idx].Extra >= 0 Then
+      ExtractNode(SrcNodes[Idx].Extra, Id);
+  End;
+
+  { Traiter le frere suivant (chainage par Next) }
+  SibIdx := SrcNodes[Idx].Next;
+  If (SibIdx >= 0) And (SibIdx < SrcNodeCount) Then
+    ExtractNode(SibIdx, ParentId);
+
+  ExtractNode := Id;
+End;
+
+{ ---- Point d entree : extraction complete de l AST ------------ }
+
+Procedure ExtractSourceAST(Const FileName : TString);
+Var LocId : Integer;
+Begin
+  InitDatabase;
+  ExtProgramId := DbAddProgram(SrcNodes[SrcRootNode].Name, FileName);
+  ExtFileId := DbAddFile(FileName, SrcTotalLines);
+  LocId := DbAddLocation(ExtFileId, 1, 1,
+                           SrcTotalLines, 1);
+  ExtractNode(SrcRootNode, ExtProgramId);
+  WriteLn('Extraction terminee :');
+  WriteLn('  programmes  : ', DbProgramCnt);
+  WriteLn('  fichiers    : ', DbFileCnt);
+  WriteLn('  positions   : ', DbLocationCnt);
+  WriteLn('  expressions : ', DbExprCnt);
+  WriteLn('  instructions: ', DbStmtCnt);
+  WriteLn('  fonctions   : ', DbFunctionCnt);
+  WriteLn('  variables   : ', DbVariableCnt);
+  WriteLn('  types       : ', DbTypeCnt);
+  WriteLn('  appels      : ', DbCallCnt);
+  WriteLn('  acces       : ', DbAccessCnt);
+  WriteLn('  commentaires: ', DbCommentCnt);
+  WriteLn('  diagnostics : ', DbDiagCnt);
+  WriteLn;
 End;
 
 { ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
