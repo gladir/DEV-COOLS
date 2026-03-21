@@ -2705,7 +2705,6 @@ Var
  Op,Op2:Byte;
  HasRep:Boolean;
  RepType:Byte;
- PeekMod:Byte;
  RegF,RmF:Byte;
  Addr:LongInt;
  Val:LongInt;
@@ -2724,7 +2723,8 @@ Begin
     $3E:SegOverride:=LongInt(Segs.DS);  { DS: }
     $64:SegOverride:=LongInt(Segs.FS);  { FS: }
     $65:SegOverride:=LongInt(Segs.GS);  { GS: }
-    $66:;  { Prefixe de taille d'operande }
+    $66:;  { Prefixe de taille d'operande (16 bits dans mode 32 bits) -
+             reconnu mais pas encore exploite pour le dispatch 16 bits }
     $67:AddrSizeOverride:=True;
     $F2:Begin HasRep:=True;RepType:=$F2;End;  { REPNE/REPNZ }
     $F3:Begin HasRep:=True;RepType:=$F3;End;  { REP/REPE/REPZ }
@@ -2935,27 +2935,51 @@ Begin
    $FD:Include(EFlags.s,DF);  { STD }
     { --- Grp5 : INC/DEC/CALL/JMP/PUSH r/m32 ($FF) --- }
    $FF:Begin
-     PeekMod:=ReadByte(SelOfsToLinear(Segs.CS,EIP));
-     Case(PeekMod shr 3)and 7 of
+     Addr:=DecodeModRM32(RegF,RmF);
+     Case RegF of
       0:Begin { INC r/m32 }
-        Addr:=DecodeModRM32(RegF,RmF);
         If Addr=-1 Then SetReg32(RmF,ArithInc32(GetReg32(RmF)))
         Else WriteDWord(Addr,ArithInc32(ReadDWord(Addr)));
        End;
       1:Begin { DEC r/m32 }
-        Addr:=DecodeModRM32(RegF,RmF);
         If Addr=-1 Then SetReg32(RmF,ArithDec32(GetReg32(RmF)))
         Else WriteDWord(Addr,ArithDec32(ReadDWord(Addr)));
        End;
-      2,3:ExecGrp5_CALL;  { CALL r/m32 / CALL m16:32 }
-      4,5:ExecGrp5_JMP;   { JMP r/m32 / JMP m16:32 }
+      2:Begin { CALL r/m32 - near indirect }
+        If Addr=-1 Then Val:=GetReg32(RmF)
+        Else Val:=ReadDWord(Addr);
+        Push32(EIP);
+        EIP:=Val;
+       End;
+      3:Begin { CALL m16:32 - far indirect }
+        If Addr=-1 Then
+         WriteLn('Erreur: CALL far indirect requiert un operande memoire')
+        Else Begin
+         Val:=ReadDWord(Addr);
+         Push32(LongInt(Segs.CS));
+         Push32(EIP);
+         EIP:=Val;
+         Segs.CS:=ReadWord(Addr+4);
+        End;
+       End;
+      4:Begin { JMP r/m32 - near indirect }
+        If Addr=-1 Then EIP:=GetReg32(RmF)
+        Else EIP:=ReadDWord(Addr);
+       End;
+      5:Begin { JMP m16:32 - far indirect }
+        If Addr=-1 Then
+         WriteLn('Erreur: JMP far indirect requiert un operande memoire')
+        Else Begin
+         EIP:=ReadDWord(Addr);
+         Segs.CS:=ReadWord(Addr+4);
+        End;
+       End;
       6:Begin { PUSH r/m32 }
-        Addr:=DecodeModRM32(RegF,RmF);
         If Addr=-1 Then Push32(GetReg32(RmF))
         Else Push32(ReadDWord(Addr));
        End;
      Else Begin
-      WriteLn('Opcode $FF /',(PeekMod shr 3)and 7,
+      WriteLn('Opcode $FF /',RegF,
               ' non gere a EIP=$',HexStr(EIP,8));
       Terminated:=True;
      End;
