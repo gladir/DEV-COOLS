@@ -2582,6 +2582,116 @@ Begin
  End;
 End;
 
+  { TODO 22 : Chargeur de programme binaire plat (flat binary).
+    Charge un fichier executable dans la memoire lineaire a l'adresse
+    de base LoadBase, initialise quatre selecteurs CS, DS, ES, SS avec
+    des descripteurs couvrant tout l'espace de 16 Mo (base=0, limite=
+    $FFFFFF, granularite page 4 Ko), initialise la pile (ESP pointe en
+    haut de la memoire lineaire) et fixe EIP au point d'entree.
+    Retourne True si le chargement a reussi, False sinon. }
+Function LoadFlatBinary(FileName:String):Boolean;
+Const
+  LoadBase=$100000;    { Adresse de chargement : 1 Mo }
+  StackTop=MemorySize; { Sommet de pile : 16 Mo }
+  LoadBufSize=4096;    { Taille du tampon de lecture }
+Var
+ F:File;
+ FileLen,Pos:LongInt;
+ LoadBuf:Array[0..LoadBufSize-1]of Byte;
+ BytesRead:Word;
+ SelCode,SelData:LongInt;
+ IdxCode,IdxData:Word;
+Begin
+ LoadFlatBinary:=False;
+  { Ouvrir le fichier binaire }
+ {$I-}Assign(F,FileName);
+ Reset(F,1);{$I+}
+ If IOResult<>0 Then Begin
+  WriteLn('LoadFlatBinary: impossible d''ouvrir "',FileName,'"');
+  Exit;
+ End;
+  { Taille du fichier }
+ FileLen:=FileSize(F);
+ If FileLen<=0 Then Begin
+  WriteLn('LoadFlatBinary: fichier vide');
+  Close(F);
+  Exit;
+ End;
+ If FileLen>LongInt(MemorySize)-LoadBase Then Begin
+  WriteLn('LoadFlatBinary: fichier trop grand (',FileLen,' octets)');
+  Close(F);
+  Exit;
+ End;
+  { Charger le fichier en memoire lineaire a l'adresse LoadBase }
+ Pos:=LoadBase;
+ While Not Eof(F) do Begin
+  {$I-}BlockRead(F,LoadBuf,LoadBufSize,BytesRead);{$I+}
+  If IOResult<>0 Then Begin
+   WriteLn('LoadFlatBinary: erreur de lecture');
+   Close(F);
+   Exit;
+  End;
+  If BytesRead>0 Then Begin
+   Seek(Memory,Pos);
+   BlockWrite(Memory,LoadBuf,BytesRead);
+   Pos:=Pos+LongInt(BytesRead);
+  End;
+ End;
+ Close(F);
+ WriteLn('LoadFlatBinary: ',FileLen,' octets charges a l''adresse $',HexStr(LoadBase,8));
+  { Allouer un selecteur pour le segment de code (CS) }
+ SelCode:=DPMI_AllocLDTDescriptors(1);
+ If SelCode<0 Then Begin
+  WriteLn('LoadFlatBinary: impossible d''allouer un selecteur CS');
+  Exit;
+ End;
+ IdxCode:=Word(SelCode) shr 3;
+  { Configurer le descripteur de code : base=0, limite=16 Mo, granularite
+    page 4 Ko (G=1), segment 32 bits (D=1), code execute/read }
+ LDT[IdxCode].BaseAddr:=0;
+ LDT[IdxCode].Limit:=$FFFFFF;       { 16 Mo en pages de 4 Ko : (FFFFFF+1)*4096=16Go > on utilise taille brute }
+ LDT[IdxCode].AccessType:=$FA;      { P=1, DPL=3, S=1, Type=$A (code exec/read) }
+ LDT[IdxCode].Granularity:=$C0;     { G=1 (bit7), D=1 (bit6) = segment 32 bits avec granularite 4 Ko }
+  { Allouer un selecteur pour les segments de donnees (DS/ES/SS) }
+ SelData:=DPMI_AllocLDTDescriptors(1);
+ If SelData<0 Then Begin
+  WriteLn('LoadFlatBinary: impossible d''allouer un selecteur DS');
+  Exit;
+ End;
+ IdxData:=Word(SelData) shr 3;
+  { Configurer le descripteur de donnees : base=0, limite=16 Mo,
+    granularite page 4 Ko (G=1), segment 32 bits (B=1), data read/write }
+ LDT[IdxData].BaseAddr:=0;
+ LDT[IdxData].Limit:=$FFFFFF;
+ LDT[IdxData].AccessType:=$F2;      { P=1, DPL=3, S=1, Type=$2 (data read/write) }
+ LDT[IdxData].Granularity:=$C0;     { G=1, B=1 }
+  { Initialiser les registres de segment }
+ Segs.CS:=Word(SelCode);
+ Segs.DS:=Word(SelData);
+ Segs.ES:=Word(SelData);
+ Segs.SS:=Word(SelData);
+ Segs.FS:=Word(SelData);
+ Segs.GS:=Word(SelData);
+  { Initialiser les registres generaux }
+ FillChar(Regs,SizeOf(Regs),0);
+ Regs.ESP:=StackTop;  { Pile en haut de la memoire lineaire }
+  { Initialiser le pointeur d'instruction au point d'entree }
+ EIP:=LoadBase;
+  { Initialiser les drapeaux }
+ EFlags.Abs:=0;
+ Include(EFlags.s,bit1);  { Bit 1 toujours a 1 en x86 }
+ Include(EFlags.s,_IF);   { Interruptions activees }
+  { Reinitialiser l'etat d'execution }
+ Terminated:=False;
+ DosExitCode:=0;
+ ResetPrefixes;
+ WriteLn('LoadFlatBinary: CS=$',HexStr(Word(SelCode),4),
+         ' DS=ES=SS=$',HexStr(Word(SelData),4),
+         ' EIP=$',HexStr(LoadBase,8),
+         ' ESP=$',HexStr(StackTop,8));
+ LoadFlatBinary:=True;
+End;
+
 Procedure Init;
 Var
  J:LongInt;
@@ -2646,6 +2756,14 @@ End;
 BEGIN
  Init;
  WriteLn('EMUDPMI : Memoire lineaire de 16 Mo initialisee.');
+  { TODO 22 : Charger un programme binaire plat si un nom de fichier
+    est passe en parametre de la ligne de commande }
+ If ParamCount>=1 Then Begin
+  If LoadFlatBinary(ParamStr(1)) Then
+   WriteLn('EMUDPMI : Programme charge avec succes.')
+  Else
+   WriteLn('EMUDPMI : Erreur de chargement du programme.');
+ End;
  Done;
  WriteLn('EMUDPMI : Fichier d''echange supprime.');
 END.
