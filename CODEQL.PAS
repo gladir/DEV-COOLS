@@ -83,6 +83,7 @@
       graphe a partir de l'AST source avec les noeuds de base (blocs,
       branchements, boucles), aretes de flot normal et de flot
       exceptionnel, identification des points d'entree et de sortie.
+      [IMPLEMENTE]
 
   13. Implementer l'analyse de flot de donnees (data flow) : calcul des
       definitions atteignantes (reaching definitions), chaines
@@ -191,6 +192,8 @@ Const
   MAX_BINDINGS   = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_RESULT_COLS = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_RESULT_ROWS = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
+  MAX_CFG_NODES   = {$IFDEF FPC}8192{$ELSE}1024{$ENDIF};
+  MAX_CFG_EDGES   = {$IFDEF FPC}16384{$ELSE}2048{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -647,6 +650,44 @@ Type
     NRows    : Integer;     { nombre de tuples                   }
   End;
 
+  { TODO 12 : Graphe de flot de controle (CFG) }
+  TCFGNodeKind = (
+    CFG_ENTRY,       { point d'entree de la fonction       }
+    CFG_EXIT,        { point de sortie de la fonction      }
+    CFG_BLOCK,       { bloc d'instructions sequentielles   }
+    CFG_BRANCH,      { branchement conditionnel (if/case)  }
+    CFG_LOOP_HEAD,   { tete de boucle (while/for/repeat)   }
+    CFG_LOOP_END,    { fin de boucle                       }
+    CFG_TRY,         { debut bloc try                      }
+    CFG_EXCEPT,      { gestionnaire d'exception            }
+    CFG_FINALLY,     { bloc finally                        }
+    CFG_RAISE        { levee d'exception                   }
+  );
+
+  TCFGEdgeKind = (
+    CFG_EDGE_NORMAL,   { flot sequentiel normal              }
+    CFG_EDGE_TRUE,     { branche vrai d'un if/while          }
+    CFG_EDGE_FALSE,    { branche faux d'un if/while          }
+    CFG_EDGE_EXCEPT,   { flot exceptionnel (vers except)     }
+    CFG_EDGE_FINALLY,  { flot vers finally                   }
+    CFG_EDGE_BACK      { arete de retour (boucle)            }
+  );
+
+  TCFGNode = Record
+    Kind     : TCFGNodeKind; { type du noeud CFG                }
+    ASTIndex : Integer;      { index dans SrcNodes (-1=aucun)   }
+    FuncId   : Integer;      { id de la fonction proprietaire   }
+    FirstEdge: Integer;      { premiere arete sortante (-1)     }
+    Label_   : TString;      { etiquette descriptive            }
+  End;
+
+  TCFGEdge = Record
+    Kind     : TCFGEdgeKind; { type de l'arete                  }
+    Src      : Integer;      { index du noeud source            }
+    Dst      : Integer;      { index du noeud destination       }
+    NextEdge : Integer;      { arete suivante meme source (-1)  }
+  End;
+
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -725,6 +766,12 @@ Var
   EvalBindings  : Array[0..MAX_BINDINGS - 1] Of TBinding;
   EvalBindCount : Integer;
   EvalResults   : TResultSet;
+
+  { Graphe de flot de controle (TODO 12) }
+  CfgNodes     : Array[0..MAX_CFG_NODES - 1] Of TCFGNode;
+  CfgNodeCount : Integer;
+  CfgEdges     : Array[0..MAX_CFG_EDGES - 1] Of TCFGEdge;
+  CfgEdgeCount : Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -7861,6 +7908,491 @@ Begin
   For I := 0 To EvalBindCount - 1 Do
     WriteLn('  ', EvalBindings[I].Name, ' = ',
             BindingToStr(EvalBindings[I].Value));
+  WriteLn;
+End;
+
+{ ============================================================
+  TODO 12 - GRAPHE DE FLOT DE CONTROLE (CFG) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Initialiser le graphe CFG ----------------------------- }
+
+Procedure InitCFG;
+Var
+  I : Integer;
+Begin
+  CfgNodeCount := 0;
+  CfgEdgeCount := 0;
+  For I := 0 To MAX_CFG_NODES - 1 Do
+  Begin
+    CfgNodes[I].Kind      := CFG_BLOCK;
+    CfgNodes[I].ASTIndex  := -1;
+    CfgNodes[I].FuncId    := -1;
+    CfgNodes[I].FirstEdge := -1;
+    CfgNodes[I].Label_    := '';
+  End;
+End;
+
+{ ---- Creer un nouveau noeud CFG ---------------------------- }
+
+Function CfgNewNode(K : TCFGNodeKind; AST : Integer;
+                    Func : Integer; Lbl : TString) : Integer;
+Begin
+  If CfgNodeCount >= MAX_CFG_NODES Then
+  Begin
+    CfgNewNode := -1;
+    Exit;
+  End;
+  CfgNodes[CfgNodeCount].Kind      := K;
+  CfgNodes[CfgNodeCount].ASTIndex  := AST;
+  CfgNodes[CfgNodeCount].FuncId    := Func;
+  CfgNodes[CfgNodeCount].FirstEdge := -1;
+  CfgNodes[CfgNodeCount].Label_    := Lbl;
+  CfgNewNode := CfgNodeCount;
+  Inc(CfgNodeCount);
+End;
+
+{ ---- Creer une nouvelle arete CFG -------------------------- }
+
+Function CfgNewEdge(K : TCFGEdgeKind;
+                    S, D : Integer) : Integer;
+Begin
+  If CfgEdgeCount >= MAX_CFG_EDGES Then
+  Begin
+    CfgNewEdge := -1;
+    Exit;
+  End;
+  CfgEdges[CfgEdgeCount].Kind     := K;
+  CfgEdges[CfgEdgeCount].Src      := S;
+  CfgEdges[CfgEdgeCount].Dst      := D;
+  CfgEdges[CfgEdgeCount].NextEdge := -1;
+  CfgNewEdge := CfgEdgeCount;
+  Inc(CfgEdgeCount);
+End;
+
+{ ---- Ajouter une arete au noeud source --------------------- }
+
+Procedure CfgAddEdge(K : TCFGEdgeKind; Src, Dst : Integer);
+Var
+  EIdx, Cur : Integer;
+Begin
+  If (Src < 0) Or (Src >= CfgNodeCount) Then Exit;
+  If (Dst < 0) Or (Dst >= CfgNodeCount) Then Exit;
+  EIdx := CfgNewEdge(K, Src, Dst);
+  If EIdx < 0 Then Exit;
+  If CfgNodes[Src].FirstEdge < 0 Then
+    CfgNodes[Src].FirstEdge := EIdx
+  Else
+  Begin
+    Cur := CfgNodes[Src].FirstEdge;
+    While CfgEdges[Cur].NextEdge >= 0 Do
+      Cur := CfgEdges[Cur].NextEdge;
+    CfgEdges[Cur].NextEdge := EIdx;
+  End;
+End;
+
+{ ---- Nom d'un type de noeud CFG ---------------------------- }
+
+Function CfgNodeKindName(K : TCFGNodeKind) : TString;
+Begin
+  Case K Of
+    CFG_ENTRY    : CfgNodeKindName := 'ENTRY';
+    CFG_EXIT     : CfgNodeKindName := 'EXIT';
+    CFG_BLOCK    : CfgNodeKindName := 'BLOCK';
+    CFG_BRANCH   : CfgNodeKindName := 'BRANCH';
+    CFG_LOOP_HEAD: CfgNodeKindName := 'LOOP_HEAD';
+    CFG_LOOP_END : CfgNodeKindName := 'LOOP_END';
+    CFG_TRY      : CfgNodeKindName := 'TRY';
+    CFG_EXCEPT   : CfgNodeKindName := 'EXCEPT';
+    CFG_FINALLY  : CfgNodeKindName := 'FINALLY';
+    CFG_RAISE    : CfgNodeKindName := 'RAISE';
+    Else           CfgNodeKindName := '???';
+  End;
+End;
+
+{ ---- Nom d'un type d'arete CFG ----------------------------- }
+
+Function CfgEdgeKindName(K : TCFGEdgeKind) : TString;
+Begin
+  Case K Of
+    CFG_EDGE_NORMAL  : CfgEdgeKindName := 'NORMAL';
+    CFG_EDGE_TRUE    : CfgEdgeKindName := 'TRUE';
+    CFG_EDGE_FALSE   : CfgEdgeKindName := 'FALSE';
+    CFG_EDGE_EXCEPT  : CfgEdgeKindName := 'EXCEPT';
+    CFG_EDGE_FINALLY : CfgEdgeKindName := 'FINALLY';
+    CFG_EDGE_BACK    : CfgEdgeKindName := 'BACK';
+    Else               CfgEdgeKindName := '???';
+  End;
+End;
+
+{ ---- Declarations forward pour BuildCfgForStmt ------------- }
+
+Function BuildCfgForStmt(StmtIdx : Integer;
+                         FuncId  : Integer;
+                         ExitNode: Integer) : Integer; Forward;
+
+{ ---- Construire le CFG pour un bloc compound --------------- }
+{  Retourne l'index du premier noeud du bloc.                  }
+{  PrevNode est le noeud precedent a connecter (-1 = aucun).   }
+
+Function BuildCfgForBlock(BlockIdx : Integer;
+                          FuncId   : Integer;
+                          ExitNode : Integer) : Integer;
+Var
+  Cur, First, Prev, Nd : Integer;
+Begin
+  BuildCfgForBlock := -1;
+  If (BlockIdx < 0) Or (BlockIdx >= SrcNodeCount) Then Exit;
+
+  First := -1;
+  Prev  := -1;
+  Cur   := SrcNodes[BlockIdx].Left; { premier enfant }
+
+  While (Cur >= 0) And (Cur < SrcNodeCount) Do
+  Begin
+    Nd := BuildCfgForStmt(Cur, FuncId, ExitNode);
+    If Nd >= 0 Then
+    Begin
+      If First < 0 Then
+        First := Nd;
+      If Prev >= 0 Then
+        CfgAddEdge(CFG_EDGE_NORMAL, Prev, Nd);
+      Prev := Nd;
+    End;
+    Cur := SrcNodes[Cur].Next;
+  End;
+
+  BuildCfgForBlock := First;
+End;
+
+{ ---- Construire le CFG pour une instruction ----------------- }
+{  Retourne l'index du noeud CFG cree pour cette instruction.   }
+
+Function BuildCfgForStmt(StmtIdx : Integer;
+                         FuncId  : Integer;
+                         ExitNode: Integer) : Integer;
+Var
+  Nd, Cond, TrueNd, FalseNd : Integer;
+  LoopHead, LoopEnd, BodyFirst : Integer;
+  TryNd, ExceptNd, FinallyNd, BodyBlock : Integer;
+  CaseItem, CaseNd : Integer;
+Begin
+  BuildCfgForStmt := -1;
+  If (StmtIdx < 0) Or (StmtIdx >= SrcNodeCount) Then Exit;
+
+  Case SrcNodes[StmtIdx].Kind Of
+
+    { --- IF : branchement conditionnel ---------------------- }
+    SNK_IF:
+    Begin
+      Cond := CfgNewNode(CFG_BRANCH, StmtIdx, FuncId, 'if');
+      TrueNd := -1;
+      FalseNd := -1;
+
+      { branche then }
+      If SrcNodes[StmtIdx].Left >= 0 Then
+        TrueNd := BuildCfgForStmt(SrcNodes[StmtIdx].Left,
+                                   FuncId, ExitNode);
+
+      { branche else }
+      If SrcNodes[StmtIdx].Right >= 0 Then
+        FalseNd := BuildCfgForStmt(SrcNodes[StmtIdx].Right,
+                                    FuncId, ExitNode);
+
+      If TrueNd >= 0 Then
+        CfgAddEdge(CFG_EDGE_TRUE, Cond, TrueNd)
+      Else
+        CfgAddEdge(CFG_EDGE_TRUE, Cond, ExitNode);
+
+      If FalseNd >= 0 Then
+        CfgAddEdge(CFG_EDGE_FALSE, Cond, FalseNd)
+      Else
+        CfgAddEdge(CFG_EDGE_FALSE, Cond, ExitNode);
+
+      BuildCfgForStmt := Cond;
+    End;
+
+    { --- WHILE : boucle avec condition en tete -------------- }
+    SNK_WHILE:
+    Begin
+      LoopHead := CfgNewNode(CFG_LOOP_HEAD, StmtIdx, FuncId,
+                              'while');
+      LoopEnd  := CfgNewNode(CFG_LOOP_END, StmtIdx, FuncId,
+                              'end_while');
+
+      { corps de la boucle }
+      BodyFirst := -1;
+      If SrcNodes[StmtIdx].Left >= 0 Then
+        BodyFirst := BuildCfgForStmt(SrcNodes[StmtIdx].Left,
+                                      FuncId, ExitNode);
+
+      { condition vraie -> corps }
+      If BodyFirst >= 0 Then
+      Begin
+        CfgAddEdge(CFG_EDGE_TRUE, LoopHead, BodyFirst);
+        CfgAddEdge(CFG_EDGE_BACK, BodyFirst, LoopHead);
+      End
+      Else
+        CfgAddEdge(CFG_EDGE_TRUE, LoopHead, LoopHead);
+
+      { condition fausse -> fin de boucle }
+      CfgAddEdge(CFG_EDGE_FALSE, LoopHead, LoopEnd);
+
+      BuildCfgForStmt := LoopHead;
+    End;
+
+    { --- FOR : boucle for ----------------------------------- }
+    SNK_FOR:
+    Begin
+      LoopHead := CfgNewNode(CFG_LOOP_HEAD, StmtIdx, FuncId,
+                              'for');
+      LoopEnd  := CfgNewNode(CFG_LOOP_END, StmtIdx, FuncId,
+                              'end_for');
+
+      BodyFirst := -1;
+      If SrcNodes[StmtIdx].Left >= 0 Then
+        BodyFirst := BuildCfgForStmt(SrcNodes[StmtIdx].Left,
+                                      FuncId, ExitNode);
+
+      If BodyFirst >= 0 Then
+      Begin
+        CfgAddEdge(CFG_EDGE_TRUE, LoopHead, BodyFirst);
+        CfgAddEdge(CFG_EDGE_BACK, BodyFirst, LoopHead);
+      End
+      Else
+        CfgAddEdge(CFG_EDGE_TRUE, LoopHead, LoopHead);
+
+      CfgAddEdge(CFG_EDGE_FALSE, LoopHead, LoopEnd);
+
+      BuildCfgForStmt := LoopHead;
+    End;
+
+    { --- REPEAT : boucle avec condition en fin --------------- }
+    SNK_REPEAT:
+    Begin
+      LoopHead := CfgNewNode(CFG_LOOP_HEAD, StmtIdx, FuncId,
+                              'repeat');
+      LoopEnd  := CfgNewNode(CFG_LOOP_END, StmtIdx, FuncId,
+                              'end_repeat');
+
+      BodyFirst := -1;
+      If SrcNodes[StmtIdx].Left >= 0 Then
+        BodyFirst := BuildCfgForStmt(SrcNodes[StmtIdx].Left,
+                                      FuncId, ExitNode);
+
+      { entree -> corps (ou tete directe) }
+      If BodyFirst >= 0 Then
+        CfgAddEdge(CFG_EDGE_NORMAL, LoopHead, BodyFirst)
+      Else
+        CfgAddEdge(CFG_EDGE_NORMAL, LoopHead, LoopEnd);
+
+      { fin corps -> condition : faux -> retour, vrai -> fin }
+      CfgAddEdge(CFG_EDGE_FALSE, LoopEnd, LoopHead);
+      { si condition vraie -> sortie apres la boucle }
+      BuildCfgForStmt := LoopHead;
+    End;
+
+    { --- CASE : branchement multiple ------------------------ }
+    SNK_CASE:
+    Begin
+      Nd := CfgNewNode(CFG_BRANCH, StmtIdx, FuncId, 'case');
+      CaseItem := SrcNodes[StmtIdx].Left;
+      While (CaseItem >= 0) And (CaseItem < SrcNodeCount) Do
+      Begin
+        CaseNd := BuildCfgForStmt(CaseItem, FuncId, ExitNode);
+        If CaseNd >= 0 Then
+          CfgAddEdge(CFG_EDGE_NORMAL, Nd, CaseNd);
+        CaseItem := SrcNodes[CaseItem].Next;
+      End;
+      BuildCfgForStmt := Nd;
+    End;
+
+    { --- TRY : gestion d'exceptions ------------------------- }
+    SNK_TRY:
+    Begin
+      TryNd := CfgNewNode(CFG_TRY, StmtIdx, FuncId, 'try');
+
+      { bloc try corps }
+      BodyBlock := -1;
+      If SrcNodes[StmtIdx].Left >= 0 Then
+        BodyBlock := BuildCfgForStmt(SrcNodes[StmtIdx].Left,
+                                      FuncId, ExitNode);
+      If BodyBlock >= 0 Then
+        CfgAddEdge(CFG_EDGE_NORMAL, TryNd, BodyBlock);
+
+      { bloc except }
+      ExceptNd := -1;
+      If SrcNodes[StmtIdx].Right >= 0 Then
+      Begin
+        ExceptNd := CfgNewNode(CFG_EXCEPT, SrcNodes[StmtIdx].Right,
+                                FuncId, 'except');
+        CfgAddEdge(CFG_EDGE_EXCEPT, TryNd, ExceptNd);
+        If BodyBlock >= 0 Then
+          CfgAddEdge(CFG_EDGE_EXCEPT, BodyBlock, ExceptNd);
+      End;
+
+      { bloc finally }
+      FinallyNd := -1;
+      If SrcNodes[StmtIdx].Extra >= 0 Then
+      Begin
+        FinallyNd := CfgNewNode(CFG_FINALLY, SrcNodes[StmtIdx].Extra,
+                                 FuncId, 'finally');
+        CfgAddEdge(CFG_EDGE_FINALLY, TryNd, FinallyNd);
+        If BodyBlock >= 0 Then
+          CfgAddEdge(CFG_EDGE_FINALLY, BodyBlock, FinallyNd);
+        If ExceptNd >= 0 Then
+          CfgAddEdge(CFG_EDGE_FINALLY, ExceptNd, FinallyNd);
+      End;
+
+      BuildCfgForStmt := TryNd;
+    End;
+
+    { --- RAISE : levee d'exception -------------------------- }
+    SNK_RAISE:
+    Begin
+      Nd := CfgNewNode(CFG_RAISE, StmtIdx, FuncId, 'raise');
+      CfgAddEdge(CFG_EDGE_EXCEPT, Nd, ExitNode);
+      BuildCfgForStmt := Nd;
+    End;
+
+    { --- COMPOUND : bloc begin..end ------------------------- }
+    SNK_COMPOUND:
+    Begin
+      Nd := BuildCfgForBlock(StmtIdx, FuncId, ExitNode);
+      BuildCfgForStmt := Nd;
+    End;
+
+    { --- Instructions simples (assign, call, goto, etc) ----- }
+    Else
+    Begin
+      Nd := CfgNewNode(CFG_BLOCK, StmtIdx, FuncId,
+                        SrcNodes[StmtIdx].Name);
+      BuildCfgForStmt := Nd;
+    End;
+
+  End; { case }
+End;
+
+{ ---- Construire le CFG pour une fonction/procedure --------- }
+
+Procedure BuildCfgForFunction(FuncIdx : Integer);
+Var
+  EntryNd, ExitNd, BodyNd : Integer;
+  BodyAST : Integer;
+Begin
+  If (FuncIdx < 0) Or (FuncIdx >= SrcNodeCount) Then Exit;
+  If (SrcNodes[FuncIdx].Kind <> SNK_PROC_DECL) And
+     (SrcNodes[FuncIdx].Kind <> SNK_FUNC_DECL) Then Exit;
+
+  EntryNd := CfgNewNode(CFG_ENTRY, FuncIdx, FuncIdx,
+                          'entry:' + SrcNodes[FuncIdx].Name);
+  ExitNd  := CfgNewNode(CFG_EXIT, FuncIdx, FuncIdx,
+                          'exit:' + SrcNodes[FuncIdx].Name);
+
+  { Le corps est dans Extra (bloc compound) }
+  BodyAST := SrcNodes[FuncIdx].Extra;
+  If BodyAST >= 0 Then
+  Begin
+    BodyNd := BuildCfgForStmt(BodyAST, FuncIdx, ExitNd);
+    If BodyNd >= 0 Then
+    Begin
+      CfgAddEdge(CFG_EDGE_NORMAL, EntryNd, BodyNd);
+      CfgAddEdge(CFG_EDGE_NORMAL, BodyNd, ExitNd);
+    End
+    Else
+      CfgAddEdge(CFG_EDGE_NORMAL, EntryNd, ExitNd);
+  End
+  Else
+    CfgAddEdge(CFG_EDGE_NORMAL, EntryNd, ExitNd);
+End;
+
+{ ---- Construire le CFG pour le programme principal --------- }
+
+Procedure BuildCfgForProgram(RootIdx : Integer);
+Var
+  EntryNd, ExitNd, BodyNd : Integer;
+  BodyAST : Integer;
+Begin
+  If (RootIdx < 0) Or (RootIdx >= SrcNodeCount) Then Exit;
+
+  EntryNd := CfgNewNode(CFG_ENTRY, RootIdx, -1,
+                          'entry:main');
+  ExitNd  := CfgNewNode(CFG_EXIT, RootIdx, -1,
+                          'exit:main');
+
+  { Le corps principal est dans Extra }
+  BodyAST := SrcNodes[RootIdx].Extra;
+  If BodyAST >= 0 Then
+  Begin
+    BodyNd := BuildCfgForStmt(BodyAST, -1, ExitNd);
+    If BodyNd >= 0 Then
+    Begin
+      CfgAddEdge(CFG_EDGE_NORMAL, EntryNd, BodyNd);
+      CfgAddEdge(CFG_EDGE_NORMAL, BodyNd, ExitNd);
+    End
+    Else
+      CfgAddEdge(CFG_EDGE_NORMAL, EntryNd, ExitNd);
+  End
+  Else
+    CfgAddEdge(CFG_EDGE_NORMAL, EntryNd, ExitNd);
+End;
+
+{ ---- Parcourir l'AST pour construire tous les CFGs --------- }
+
+Procedure BuildCFG;
+Var
+  I : Integer;
+Begin
+  InitCFG;
+
+  { Construire le CFG pour chaque fonction/procedure trouvee }
+  For I := 0 To SrcNodeCount - 1 Do
+  Begin
+    If (SrcNodes[I].Kind = SNK_PROC_DECL) Or
+       (SrcNodes[I].Kind = SNK_FUNC_DECL) Then
+      BuildCfgForFunction(I);
+  End;
+
+  { Construire le CFG pour le programme principal }
+  If SrcNodeCount > 0 Then
+  Begin
+    If (SrcNodes[SrcRootNode].Kind = SNK_PROGRAM) Or
+       (SrcNodes[SrcRootNode].Kind = SNK_UNIT) Then
+      BuildCfgForProgram(SrcRootNode);
+  End;
+End;
+
+{ ---- Afficher le graphe CFG pour debug --------------------- }
+
+Procedure DumpCFG;
+Var
+  I, E : Integer;
+Begin
+  WriteLn('=== Graphe de Flot de Controle (CFG) ===');
+  WriteLn('Noeuds : ', CfgNodeCount);
+  WriteLn('Aretes : ', CfgEdgeCount);
+  WriteLn;
+
+  For I := 0 To CfgNodeCount - 1 Do
+  Begin
+    Write('  N', I, ' [', CfgNodeKindName(CfgNodes[I].Kind), ']');
+    If CfgNodes[I].Label_ <> '' Then
+      Write(' "', CfgNodes[I].Label_, '"');
+    If CfgNodes[I].ASTIndex >= 0 Then
+      Write(' ast=', CfgNodes[I].ASTIndex);
+    If CfgNodes[I].FuncId >= 0 Then
+      Write(' func=', CfgNodes[I].FuncId);
+    WriteLn;
+
+    { Afficher les aretes sortantes }
+    E := CfgNodes[I].FirstEdge;
+    While E >= 0 Do
+    Begin
+      WriteLn('    -> N', CfgEdges[E].Dst, ' [',
+              CfgEdgeKindName(CfgEdges[E].Kind), ']');
+      E := CfgEdges[E].NextEdge;
+    End;
+  End;
   WriteLn;
 End;
 
