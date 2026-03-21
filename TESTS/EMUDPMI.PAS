@@ -2337,8 +2337,7 @@ Begin
   $3C:Begin { Create File - DS:EDX -> ASCIIZ filename, CX = attributes }
       { TODO 24 : Interdire la creation de fichier en mode /READONLY }
      If ReadOnlyMode Then Begin
-      If VerboseMode Then
-       WriteLn('INT 21h/$3C: ecriture refusee (mode /READONLY)');
+      WriteLn('INT 21h/$3C: ecriture refusee (mode /READONLY)');
       Regs.AX:=5;  { Acces refuse }
       Include(EFlags.s,CF);
      End Else Begin
@@ -2467,8 +2466,7 @@ Begin
      { TODO 24 : Interdire les ecritures sur fichier en mode /READONLY
        (les handles 1 et 2 = stdout/stderr restent autorises) }
     If ReadOnlyMode and(Handle>=5) Then Begin
-     If VerboseMode Then
-      WriteLn('INT 21h/$40: ecriture refusee (mode /READONLY)');
+     WriteLn('INT 21h/$40: ecriture refusee (mode /READONLY)');
      Regs.AX:=5;  { Acces refuse }
      Include(EFlags.s,CF);
     End Else Begin
