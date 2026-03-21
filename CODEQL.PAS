@@ -185,7 +185,7 @@ Const
   MAX_DB_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
-  DB_SIGNATURE  = $51444243;  { signature 'CBDQ' en little-endian  }
+  DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
   DB_VERSION    = 1;          { version du format binaire           }
   DB_FILE_PROGRAMS  = 'programs.dat';
   DB_FILE_FILES     = 'files.dat';
