@@ -217,6 +217,13 @@ Var
  SegOverride:LongInt;
  AddrSizeOverride:Boolean;
 
+  { TODO 24 : Options de ligne de commande }
+ DebugMode:Boolean;     { /DEBUG : affiche l'etat des registres a chaque instruction }
+ VerboseMode:Boolean;   { /VERBOSE : affiche les messages informatifs }
+ ReadOnlyMode:Boolean;  { /READONLY : interdit les ecritures sur disque }
+ ProgramFile:String;    { Nom du fichier programme a charger }
+ ParamIdx:Integer;      { Index de parcours des parametres }
+
   { Drapeaux du processeur }
  EFlags:Record Case Byte of
   0:(s:Set of(CF,bit1,PF,bit3,AF,bit5,ZF,SF,TF,_IF,DF,_OF));
@@ -2328,8 +2335,15 @@ Begin
      Include(EFlags.s,CF);
    End;
   $3C:Begin { Create File - DS:EDX -> ASCIIZ filename, CX = attributes }
-     { Lire le nom de fichier ASCIIZ depuis la memoire lineaire }
-    Addr:=SelOfsToLinear(Segs.DS,Regs.EDX);
+      { TODO 24 : Interdire la creation de fichier en mode /READONLY }
+     If ReadOnlyMode Then Begin
+      If VerboseMode Then
+       WriteLn('INT 21h/$3C: ecriture refusee (mode /READONLY)');
+      Regs.AX:=5;  { Acces refuse }
+      Include(EFlags.s,CF);
+     End Else Begin
+      { Lire le nom de fichier ASCIIZ depuis la memoire lineaire }
+     Addr:=SelOfsToLinear(Segs.DS,Regs.EDX);
     FileName:='';
     If Addr>=0 Then Begin
      B:=ReadByte(Addr);
@@ -2365,6 +2379,7 @@ Begin
      Regs.AX:=2;  { Fichier non trouve }
      Include(EFlags.s,CF);
     End;
+     End; { Else ReadOnlyMode }
    End;
   $3D:Begin { Open File - DS:EDX -> ASCIIZ filename, AL = mode }
     Addr:=SelOfsToLinear(Segs.DS,Regs.EDX);
@@ -2449,6 +2464,14 @@ Begin
    End;
   $40:Begin { Write File - BX = handle, CX = count, DS:EDX -> buffer }
     Handle:=Regs.BX;
+     { TODO 24 : Interdire les ecritures sur fichier en mode /READONLY
+       (les handles 1 et 2 = stdout/stderr restent autorises) }
+    If ReadOnlyMode and(Handle>=5) Then Begin
+     If VerboseMode Then
+      WriteLn('INT 21h/$40: ecriture refusee (mode /READONLY)');
+     Regs.AX:=5;  { Acces refuse }
+     Include(EFlags.s,CF);
+    End Else Begin
     Count:=Regs.CX;
     Addr:=SelOfsToLinear(Segs.DS,Regs.EDX);
     If (Addr>=0)and(
@@ -2485,6 +2508,7 @@ Begin
      Regs.AX:=6;  { Handle invalide }
      Include(EFlags.s,CF);
     End;
+    End; { Else ReadOnlyMode }
    End;
   $4C:Begin { Terminate Program - AL = exit code }
     DosExitCode:=Regs.AL;
@@ -2694,6 +2718,52 @@ Begin
  LoadFlatBinary:=True;
 End;
 
+  { TODO 24 : Affichage de l'etat des registres pour le mode debogage.
+    Appele a chaque instruction quand /DEBUG est active. }
+Procedure DumpRegisters;
+Begin
+ WriteLn('  EAX=$',HexStr(Regs.EAX,8),
+         ' EBX=$',HexStr(Regs.EBX,8),
+         ' ECX=$',HexStr(Regs.ECX,8),
+         ' EDX=$',HexStr(Regs.EDX,8));
+ WriteLn('  ESI=$',HexStr(Regs.ESI,8),
+         ' EDI=$',HexStr(Regs.EDI,8),
+         ' EBP=$',HexStr(Regs.EBP,8),
+         ' ESP=$',HexStr(Regs.ESP,8));
+ WriteLn('  CS=$',HexStr(Segs.CS,4),
+         ' DS=$',HexStr(Segs.DS,4),
+         ' ES=$',HexStr(Segs.ES,4),
+         ' SS=$',HexStr(Segs.SS,4),
+         ' FS=$',HexStr(Segs.FS,4),
+         ' GS=$',HexStr(Segs.GS,4),
+         ' EIP=$',HexStr(EIP,8),
+         ' FL=$',HexStr(EFlags.Base,4));
+End;
+
+  { TODO 24 : Analyse des options de ligne de commande.
+    Reconnait /DEBUG, /VERBOSE et /READONLY (insensible a la casse).
+    Les options sont separees du nom de fichier programme. }
+Procedure ParseCommandLine;
+Var
+ I,J:Integer;
+ S:String;
+Begin
+ DebugMode:=False;
+ VerboseMode:=False;
+ ReadOnlyMode:=False;
+ For I:=1 to ParamCount do Begin
+  S:=ParamStr(I);
+   { Convertir en majuscules pour comparaison insensible a la casse }
+  For J:=1 to Length(S) do S[J]:=UpCase(S[J]);
+  If S='/DEBUG' Then
+   DebugMode:=True
+  Else If S='/VERBOSE' Then
+   VerboseMode:=True
+  Else If S='/READONLY' Then
+   ReadOnlyMode:=True;
+ End;
+End;
+
   { TODO 23 : Boucle principale d'execution (Procedure Run).
     Decode le flux d'instructions depuis CS:EIP, gere les prefixes
     (66h, 67h, segments, REP/REPE/REPNE), et dispatche vers les
@@ -2708,11 +2778,14 @@ Var
  RegF,RmF:Byte;
  Addr:LongInt;
  Val:LongInt;
+ SavedEIP:LongInt;
 Begin
  While Not Terminated do Begin
   ResetPrefixes;
   HasRep:=False;
   RepType:=0;
+   { TODO 24 : Sauvegarder EIP avant le decodage pour l'affichage debug }
+  SavedEIP:=EIP;
    { Phase 1 : Decodage des prefixes }
   Repeat
    Op:=FetchByte;
@@ -2732,6 +2805,12 @@ Begin
     Break;
    End;
   Until False;
+   { TODO 24 : Affichage debug de l'opcode et des registres }
+  If DebugMode Then Begin
+   WriteLn('[DEBUG] CS:EIP=$',HexStr(Segs.CS,4),':$',HexStr(SavedEIP,8),
+           ' Op=$',HexStr(Op,2));
+   DumpRegisters;
+  End;
    { Phase 2 : Dispatch de l'opcode }
   Case Op of
     { --- Arithmetique : ADD --- }
@@ -3004,7 +3083,8 @@ Begin
   WriteLn('Impossible de creer un fichier temporaire pour la memoire');
   Halt(1);
  End;
- WriteLn('Creation du fichier d''echange de 16 Mo...');
+ If VerboseMode Then
+  WriteLn('Creation du fichier d''echange de 16 Mo...');
  FillChar(ClrBuffer,SizeOf(ClrBuffer),0);
  For J:=0 to ClearBlockCount-1 do Begin
   Seek(Memory,J*LongInt(ClearBufferSize));
@@ -3015,22 +3095,26 @@ Begin
    Halt(1);
   End;
  End;
- WriteLn('Fichier d''echange de 16 Mo cree avec succes.');
+ If VerboseMode Then
+  WriteLn('Fichier d''echange de 16 Mo cree avec succes.');
   { TODO 4 : Initialisation de la LDT (tous les descripteurs libres) }
  FillChar(LDT,SizeOf(LDT),0);
- WriteLn('LDT initialisee (',LDTSize,' descripteurs).');
+ If VerboseMode Then
+  WriteLn('LDT initialisee (',LDTSize,' descripteurs).');
   { TODO 19 : Initialisation du gestionnaire de blocs memoire }
  FillChar(MemBlocks,SizeOf(MemBlocks),0);
  NextLinearAddr:=$100000;  { Debut de l'allocation a 1 Mo }
  NextHandle:=1;
- WriteLn('Gestionnaire memoire initialise (',MaxMemBlocks,' blocs max).');
+ If VerboseMode Then
+  WriteLn('Gestionnaire memoire initialise (',MaxMemBlocks,' blocs max).');
   { TODO 21 : Initialisation de la table des fichiers DOS }
  FillChar(DosFiles,SizeOf(DosFiles),0);
   { Handles 0-4 reserves (stdin/stdout/stderr/aux/prn) }
  For J:=0 to 4 do DosFiles[J].InUse:=True;
  DosExitCode:=0;
  Terminated:=False;
- WriteLn('Table fichiers DOS initialisee (',MaxDosFiles,' handles max).');
+ If VerboseMode Then
+  WriteLn('Table fichiers DOS initialisee (',MaxDosFiles,' handles max).');
   { TODO 9 : Initialisation de la table de parite }
  InitParityTable;
   { TODO 14 : Initialisation des prefixes }
@@ -3055,19 +3139,40 @@ Begin
 End;
 
 BEGIN
+  { TODO 24 : Analyser les options de ligne de commande en premier }
+ ParseCommandLine;
  Init;
- WriteLn('EMUDPMI : Memoire lineaire de 16 Mo initialisee.');
+ If VerboseMode Then
+  WriteLn('EMUDPMI : Memoire lineaire de 16 Mo initialisee.');
+ If DebugMode Then
+  WriteLn('EMUDPMI : Mode debogage active.');
+ If VerboseMode Then
+  WriteLn('EMUDPMI : Mode verbeux active.');
+ If ReadOnlyMode Then
+  WriteLn('EMUDPMI : Mode lecture seule active.');
   { TODO 22 : Charger un programme binaire plat si un nom de fichier
-    est passe en parametre de la ligne de commande }
+    est passe en parametre de la ligne de commande.
+    TODO 24 : Ignorer les parametres commencant par '/' (options). }
  If ParamCount>=1 Then Begin
-  If LoadFlatBinary(ParamStr(1)) Then Begin
-   WriteLn('EMUDPMI : Programme charge avec succes.');
-    { TODO 23 : Executer le programme charge }
-   Run;
-   WriteLn('EMUDPMI : Execution terminee (code de sortie: ',DosExitCode,').');
-  End Else
-   WriteLn('EMUDPMI : Erreur de chargement du programme.');
+  ProgramFile:='';
+  For ParamIdx:=1 to ParamCount do Begin
+   If ParamStr(ParamIdx)[1]<>'/' Then Begin
+    ProgramFile:=ParamStr(ParamIdx);
+    Break;
+   End;
+  End;
+  If ProgramFile<>'' Then Begin
+   If LoadFlatBinary(ProgramFile) Then Begin
+    If VerboseMode Then
+     WriteLn('EMUDPMI : Programme charge avec succes.');
+     { TODO 23 : Executer le programme charge }
+    Run;
+    WriteLn('EMUDPMI : Execution terminee (code de sortie: ',DosExitCode,').');
+   End Else
+    WriteLn('EMUDPMI : Erreur de chargement du programme.');
+  End;
  End;
  Done;
- WriteLn('EMUDPMI : Fichier d''echange supprime.');
+ If VerboseMode Then
+  WriteLn('EMUDPMI : Fichier d''echange supprime.');
 END.
