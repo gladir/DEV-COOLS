@@ -81,7 +81,7 @@
               XML, SQL_VARIANT, HIERARCHYID, GEOGRAPHY, GEOMETRY
             Conversion interne vers representation Pascal
 
-  TODO 07 - TOKENISEUR SQL (LEXER)
+  TODO 07 - TOKENISEUR SQL (LEXER) [IMPLEMENTE]
             LexInit : ouvrir le flux SQL (chaine ou fichier)
             LexNextToken : reconnaitre les tokens SQL Server :
               - Identificateurs : [a-zA-Z_][a-zA-Z0-9_@#$]*
@@ -745,6 +745,55 @@ Const
   { Taille max d une valeur SQL decodee en chaine }
   MAX_SQL_VALUE_STR = 120;
 
+  { ---- Constantes tokeniseur SQL (TODO 07) -------------------- }
+  { Types de tokens }
+  TOK_EOF         = 0;       { fin de flux                        }
+  TOK_IDENT       = 1;       { identificateur simple              }
+  TOK_NUMBER      = 2;       { nombre entier                      }
+  TOK_FLOAT       = 3;       { nombre flottant                    }
+  TOK_STRING      = 4;       { chaine 'texte'                     }
+  TOK_NSTRING     = 5;       { chaine Unicode N'texte'            }
+  TOK_HEX         = 6;       { hexadecimal 0x1A2B                 }
+  TOK_VARIABLE    = 7;       { variable @nom                      }
+  TOK_TEMPOBJ     = 8;       { objet temporaire #nom              }
+  TOK_PARAM       = 9;       { parametre ?                        }
+  TOK_PLUS        = 10;      { +                                  }
+  TOK_MINUS       = 11;      { -                                  }
+  TOK_STAR        = 12;      { *                                  }
+  TOK_SLASH       = 13;      { /                                  }
+  TOK_PERCENT     = 14;      { %                                  }
+  TOK_EQ          = 15;      { =                                  }
+  TOK_NE          = 16;      { <> ou !=                           }
+  TOK_LT          = 17;      { <                                  }
+  TOK_GT          = 18;      { >                                  }
+  TOK_LE          = 19;      { <=                                 }
+  TOK_GE          = 20;      { >=                                 }
+  TOK_LPAREN      = 21;      { (                                  }
+  TOK_RPAREN      = 22;      { )                                  }
+  TOK_COMMA       = 23;      { ,                                  }
+  TOK_DOT         = 24;      { .                                  }
+  TOK_SEMICOL     = 25;      { ;                                  }
+  TOK_AT          = 26;      { @ (seul, sans suite)               }
+  TOK_COLON       = 27;      { ::                                 }
+  TOK_AMPERSAND   = 28;      { &                                  }
+  TOK_PIPE        = 29;      { |                                  }
+  TOK_CARET       = 30;      { ^                                  }
+  TOK_TILDE       = 31;      { ~                                  }
+  TOK_BANG_LT     = 32;      { !<                                 }
+  TOK_BANG_GT     = 33;      { !>                                 }
+  TOK_PLUS_EQ     = 34;      { +=                                 }
+  TOK_MINUS_EQ    = 35;      { -=                                 }
+  TOK_STAR_EQ     = 36;      { *=                                 }
+  TOK_SLASH_EQ    = 37;      { /=                                 }
+  TOK_PERCENT_EQ  = 38;      { %=                                 }
+  TOK_AMP_EQ      = 39;      { &=                                 }
+  TOK_PIPE_EQ     = 40;      { |=                                 }
+  TOK_CARET_EQ    = 41;      { ^=                                 }
+  TOK_DELIM_IDENT = 42;      { identificateur delimite [nom]      }
+
+  { Taille max du texte d un token }
+  MAX_TOK_LEN     = 255;
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -925,6 +974,16 @@ Type
     Valid     : Boolean;       { True si decode avec succes            }
   End;
 
+  { ---- Token SQL (TODO 07) ------------------------------------ }
+  TTokenText = String[MAX_TOK_LEN];
+
+  TToken = Record
+    Kind   : Byte;             { TOK_xxx                              }
+    Text   : TTokenText;       { texte brut du token                  }
+    Line   : Integer;          { numero de ligne (base 1)             }
+    Col    : Integer;          { numero de colonne (base 1)           }
+  End;
+
   { ---- Options de la ligne de commande ---------------------- }
   TOptions = Record
     MdfFile    : TString;   { -S : fichier .MDF principal          }
@@ -963,6 +1022,13 @@ Var
   SysRowSets  : Array[0..MAX_SYS_ROWSETS - 1] Of TSysRowSet;
   SysRsCount  : Integer;
   CatalogValid : Boolean;
+  { ---- Lexer SQL (TODO 07) ------------------------------------- }
+  LexSrc      : TString;        { source SQL en cours d analyse       }
+  LexPos      : Integer;        { position courante dans LexSrc (1..) }
+  LexLen      : Integer;        { longueur de LexSrc                  }
+  LexLine     : Integer;        { ligne courante (base 1)             }
+  LexCol      : Integer;        { colonne courante (base 1)           }
+  LexCurTok   : TToken;         { dernier token lu                    }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3743,6 +3809,828 @@ Begin
   End;
 
   SqlValueToStr := S;
+End;
+
+{ ============================================================
+  TODO 07 - TOKENISEUR SQL (LEXER) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Initialiser le lexer depuis une chaine SQL -------------- }
+
+Procedure LexInit(Const SQL : TString);
+Begin
+  LexSrc  := SQL;
+  LexLen  := Length(SQL);
+  LexPos  := 1;
+  LexLine := 1;
+  LexCol  := 1;
+  LexCurTok.Kind := TOK_EOF;
+  LexCurTok.Text := '';
+  LexCurTok.Line := 1;
+  LexCurTok.Col  := 1;
+End;
+
+{ ---- Caractere courant (ou #0 si fin) ----------------------- }
+
+Function LexPeek : Char;
+Begin
+  If LexPos <= LexLen Then
+    LexPeek := LexSrc[LexPos]
+  Else
+    LexPeek := #0;
+End;
+
+{ ---- Caractere suivant (LexPos+1, ou #0) -------------------- }
+
+Function LexPeek2 : Char;
+Begin
+  If LexPos + 1 <= LexLen Then
+    LexPeek2 := LexSrc[LexPos + 1]
+  Else
+    LexPeek2 := #0;
+End;
+
+{ ---- Avancer d un caractere ---------------------------------- }
+
+Procedure LexAdvance;
+Begin
+  If LexPos <= LexLen Then
+  Begin
+    If LexSrc[LexPos] = #10 Then
+    Begin
+      Inc(LexLine);
+      LexCol := 1;
+    End
+    Else
+      Inc(LexCol);
+    Inc(LexPos);
+  End;
+End;
+
+{ ---- Sauter les espaces blancs ------------------------------- }
+
+Procedure LexSkipWhite;
+Var
+  C : Char;
+Begin
+  While LexPos <= LexLen Do
+  Begin
+    C := LexSrc[LexPos];
+    If (C = ' ') Or (C = #9) Or (C = #13) Or (C = #10) Then
+      LexAdvance
+    Else
+      Break;
+  End;
+End;
+
+{ ---- Sauter un commentaire ligne (-- ...) -------------------- }
+
+Function LexSkipLineComment : Boolean;
+Begin
+  LexSkipLineComment := False;
+  If (LexPeek = '-') And (LexPeek2 = '-') Then
+  Begin
+    LexAdvance; LexAdvance;  { sauter -- }
+    While (LexPos <= LexLen) And (LexSrc[LexPos] <> #10) Do
+      LexAdvance;
+    LexSkipLineComment := True;
+  End;
+End;
+
+{ ---- Sauter un commentaire bloc (* ... *) ------------------- }
+
+Function LexSkipBlockComment : Boolean;
+Var
+  Depth : Integer;
+Begin
+  LexSkipBlockComment := False;
+  If (LexPeek = '/') And (LexPeek2 = '*') Then
+  Begin
+    LexAdvance; LexAdvance;  { sauter /* }
+    Depth := 1;
+    While (LexPos <= LexLen) And (Depth > 0) Do
+    Begin
+      If (LexSrc[LexPos] = '/') And
+         (LexPos + 1 <= LexLen) And (LexSrc[LexPos + 1] = '*') Then
+      Begin
+        Inc(Depth);
+        LexAdvance; LexAdvance;
+      End
+      Else If (LexSrc[LexPos] = '*') And
+              (LexPos + 1 <= LexLen) And (LexSrc[LexPos + 1] = '/') Then
+      Begin
+        Dec(Depth);
+        LexAdvance; LexAdvance;
+      End
+      Else
+        LexAdvance;
+    End;
+    LexSkipBlockComment := True;
+  End;
+End;
+
+{ ---- Sauter espaces et commentaires -------------------------- }
+
+Procedure LexSkipWhiteAndComments;
+Var
+  Again : Boolean;
+Begin
+  Repeat
+    LexSkipWhite;
+    Again := False;
+    If LexSkipLineComment Then Again := True;
+    If LexSkipBlockComment Then Again := True;
+  Until Not Again;
+End;
+
+{ ---- Scanner un identificateur ------------------------------- }
+{ [a-zA-Z_][a-zA-Z0-9_@#$]*                                      }
+
+Procedure LexScanIdent;
+Var
+  C : Char;
+Begin
+  LexCurTok.Kind := TOK_IDENT;
+  LexCurTok.Text := '';
+  While LexPos <= LexLen Do
+  Begin
+    C := LexSrc[LexPos];
+    If ((C >= 'A') And (C <= 'Z')) Or
+       ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or
+       (C = '_') Or (C = '@') Or (C = '#') Or (C = '$') Then
+    Begin
+      If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+        LexCurTok.Text := LexCurTok.Text + C;
+      LexAdvance;
+    End
+    Else
+      Break;
+  End;
+End;
+
+{ ---- Scanner un identificateur delimite [nom] ou "nom" ------- }
+
+Procedure LexScanDelimIdent(Delim : Char);
+Var
+  CloseC : Char;
+  C      : Char;
+Begin
+  LexCurTok.Kind := TOK_DELIM_IDENT;
+  LexCurTok.Text := '';
+  If Delim = '[' Then
+    CloseC := ']'
+  Else
+    CloseC := Delim;  { " ... " }
+
+  LexAdvance;  { sauter le delimiteur ouvrant }
+  While LexPos <= LexLen Do
+  Begin
+    C := LexSrc[LexPos];
+    If C = CloseC Then
+    Begin
+      { Double delimiteur = echappement }
+      If (LexPos + 1 <= LexLen) And (LexSrc[LexPos + 1] = CloseC) Then
+      Begin
+        If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+          LexCurTok.Text := LexCurTok.Text + C;
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexAdvance;  { sauter le delimiteur fermant }
+        Break;
+      End;
+    End
+    Else
+    Begin
+      If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+        LexCurTok.Text := LexCurTok.Text + C;
+      LexAdvance;
+    End;
+  End;
+End;
+
+{ ---- Scanner un nombre (entier, flottant, hex) --------------- }
+{ 123, 1.5, 1E3, 1.5E-2, 0x1A2B                                 }
+
+Procedure LexScanNumber;
+Var
+  C      : Char;
+  HasDot : Boolean;
+  HasExp : Boolean;
+Begin
+  LexCurTok.Kind := TOK_NUMBER;
+  LexCurTok.Text := '';
+  HasDot := False;
+  HasExp := False;
+
+  { Cas special : 0x... (hexadecimal) }
+  If (LexSrc[LexPos] = '0') And
+     (LexPos + 1 <= LexLen) And
+     ((LexSrc[LexPos + 1] = 'x') Or (LexSrc[LexPos + 1] = 'X')) Then
+  Begin
+    LexCurTok.Kind := TOK_HEX;
+    LexCurTok.Text := '0x';
+    LexAdvance; LexAdvance;  { sauter 0x }
+    While LexPos <= LexLen Do
+    Begin
+      C := LexSrc[LexPos];
+      If ((C >= '0') And (C <= '9')) Or
+         ((C >= 'A') And (C <= 'F')) Or
+         ((C >= 'a') And (C <= 'f')) Then
+      Begin
+        If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+          LexCurTok.Text := LexCurTok.Text + C;
+        LexAdvance;
+      End
+      Else
+        Break;
+    End;
+    Exit;
+  End;
+
+  { Nombre decimal normal }
+  While LexPos <= LexLen Do
+  Begin
+    C := LexSrc[LexPos];
+    If (C >= '0') And (C <= '9') Then
+    Begin
+      If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+        LexCurTok.Text := LexCurTok.Text + C;
+      LexAdvance;
+    End
+    Else If (C = '.') And (Not HasDot) And (Not HasExp) Then
+    Begin
+      { Verifier que c est un point decimal, pas un separateur }
+      If (LexPos + 1 <= LexLen) And
+         (LexSrc[LexPos + 1] >= '0') And (LexSrc[LexPos + 1] <= '9') Then
+      Begin
+        HasDot := True;
+        LexCurTok.Kind := TOK_FLOAT;
+        If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+          LexCurTok.Text := LexCurTok.Text + C;
+        LexAdvance;
+      End
+      Else
+        Break;
+    End
+    Else If ((C = 'E') Or (C = 'e')) And (Not HasExp) Then
+    Begin
+      HasExp := True;
+      LexCurTok.Kind := TOK_FLOAT;
+      If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+        LexCurTok.Text := LexCurTok.Text + C;
+      LexAdvance;
+      { Signe optionnel apres E }
+      If (LexPos <= LexLen) And
+         ((LexSrc[LexPos] = '+') Or (LexSrc[LexPos] = '-')) Then
+      Begin
+        If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+          LexCurTok.Text := LexCurTok.Text + LexSrc[LexPos];
+        LexAdvance;
+      End;
+    End
+    Else
+      Break;
+  End;
+End;
+
+{ ---- Scanner une chaine 'texte' ------------------------------ }
+{ Apostrophe doublee '' = echappement                              }
+
+Procedure LexScanString;
+Var
+  C : Char;
+Begin
+  LexCurTok.Kind := TOK_STRING;
+  LexCurTok.Text := '';
+  LexAdvance;  { sauter le ' ouvrant }
+  While LexPos <= LexLen Do
+  Begin
+    C := LexSrc[LexPos];
+    If C = '''' Then
+    Begin
+      { Apostrophe doublee ? }
+      If (LexPos + 1 <= LexLen) And (LexSrc[LexPos + 1] = '''') Then
+      Begin
+        If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+          LexCurTok.Text := LexCurTok.Text + '''';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexAdvance;  { sauter le ' fermant }
+        Break;
+      End;
+    End
+    Else
+    Begin
+      If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+        LexCurTok.Text := LexCurTok.Text + C;
+      LexAdvance;
+    End;
+  End;
+End;
+
+{ ---- Scanner une variable @nom ou @@nom --------------------- }
+
+Procedure LexScanVariable;
+Var
+  C : Char;
+Begin
+  LexCurTok.Kind := TOK_VARIABLE;
+  LexCurTok.Text := '@';
+  LexAdvance;  { sauter le premier @ }
+  { Double @@ pour les variables globales }
+  If (LexPos <= LexLen) And (LexSrc[LexPos] = '@') Then
+  Begin
+    LexCurTok.Text := '@@';
+    LexAdvance;
+  End;
+  { Lire le nom de la variable }
+  While LexPos <= LexLen Do
+  Begin
+    C := LexSrc[LexPos];
+    If ((C >= 'A') And (C <= 'Z')) Or
+       ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or
+       (C = '_') Or (C = '#') Or (C = '$') Then
+    Begin
+      If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+        LexCurTok.Text := LexCurTok.Text + C;
+      LexAdvance;
+    End
+    Else
+      Break;
+  End;
+  { Si seul @ sans nom, c est TOK_AT }
+  If LexCurTok.Text = '@' Then
+    LexCurTok.Kind := TOK_AT;
+End;
+
+{ ---- Scanner un objet temporaire #nom ou ##nom --------------- }
+
+Procedure LexScanTempObj;
+Var
+  C : Char;
+Begin
+  LexCurTok.Kind := TOK_TEMPOBJ;
+  LexCurTok.Text := '#';
+  LexAdvance;  { sauter le premier # }
+  { Double ## pour les tables temporaires globales }
+  If (LexPos <= LexLen) And (LexSrc[LexPos] = '#') Then
+  Begin
+    LexCurTok.Text := '##';
+    LexAdvance;
+  End;
+  While LexPos <= LexLen Do
+  Begin
+    C := LexSrc[LexPos];
+    If ((C >= 'A') And (C <= 'Z')) Or
+       ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or
+       (C = '_') Then
+    Begin
+      If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+        LexCurTok.Text := LexCurTok.Text + C;
+      LexAdvance;
+    End
+    Else
+      Break;
+  End;
+End;
+
+{ ---- Lire le prochain token SQL ------------------------------ }
+
+Procedure LexNextToken;
+Var
+  C, C2 : Char;
+Begin
+  LexSkipWhiteAndComments;
+
+  LexCurTok.Line := LexLine;
+  LexCurTok.Col  := LexCol;
+  LexCurTok.Text := '';
+  LexCurTok.Kind := TOK_EOF;
+
+  If LexPos > LexLen Then Exit;
+
+  C := LexSrc[LexPos];
+  If LexPos + 1 <= LexLen Then
+    C2 := LexSrc[LexPos + 1]
+  Else
+    C2 := #0;
+
+  { Identificateur ou mot-cle }
+  If ((C >= 'A') And (C <= 'Z')) Or
+     ((C >= 'a') And (C <= 'z')) Or (C = '_') Then
+  Begin
+    { N'...' = chaine Unicode }
+    If ((C = 'N') Or (C = 'n')) And (C2 = '''') Then
+    Begin
+      LexAdvance;  { sauter le N }
+      LexScanString;
+      LexCurTok.Kind := TOK_NSTRING;
+    End
+    Else
+      LexScanIdent;
+    Exit;
+  End;
+
+  { Nombre }
+  If (C >= '0') And (C <= '9') Then
+  Begin
+    LexScanNumber;
+    Exit;
+  End;
+
+  { Chaine simple 'texte' }
+  If C = '''' Then
+  Begin
+    LexScanString;
+    Exit;
+  End;
+
+  { Identificateur delimite [nom] }
+  If C = '[' Then
+  Begin
+    LexScanDelimIdent('[');
+    Exit;
+  End;
+
+  { Identificateur delimite "nom" }
+  If C = '"' Then
+  Begin
+    LexScanDelimIdent('"');
+    Exit;
+  End;
+
+  { Variable @nom ou @@nom }
+  If C = '@' Then
+  Begin
+    LexScanVariable;
+    Exit;
+  End;
+
+  { Objet temporaire #nom ou ##nom }
+  If C = '#' Then
+  Begin
+    LexScanTempObj;
+    Exit;
+  End;
+
+  { Parametre ? }
+  If C = '?' Then
+  Begin
+    LexCurTok.Kind := TOK_PARAM;
+    LexCurTok.Text := '?';
+    LexAdvance;
+    Exit;
+  End;
+
+  { Operateurs composes et simples }
+  Case C Of
+    '+' :
+    Begin
+      If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_PLUS_EQ;
+        LexCurTok.Text := '+=';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_PLUS;
+        LexCurTok.Text := '+';
+        LexAdvance;
+      End;
+    End;
+    '-' :
+    Begin
+      If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_MINUS_EQ;
+        LexCurTok.Text := '-=';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_MINUS;
+        LexCurTok.Text := '-';
+        LexAdvance;
+      End;
+    End;
+    '*' :
+    Begin
+      If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_STAR_EQ;
+        LexCurTok.Text := '*=';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_STAR;
+        LexCurTok.Text := '*';
+        LexAdvance;
+      End;
+    End;
+    '/' :
+    Begin
+      If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_SLASH_EQ;
+        LexCurTok.Text := '/=';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_SLASH;
+        LexCurTok.Text := '/';
+        LexAdvance;
+      End;
+    End;
+    '%' :
+    Begin
+      If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_PERCENT_EQ;
+        LexCurTok.Text := '%=';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_PERCENT;
+        LexCurTok.Text := '%';
+        LexAdvance;
+      End;
+    End;
+    '=' :
+    Begin
+      LexCurTok.Kind := TOK_EQ;
+      LexCurTok.Text := '=';
+      LexAdvance;
+    End;
+    '<' :
+    Begin
+      If C2 = '>' Then
+      Begin
+        LexCurTok.Kind := TOK_NE;
+        LexCurTok.Text := '<>';
+        LexAdvance; LexAdvance;
+      End
+      Else If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_LE;
+        LexCurTok.Text := '<=';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_LT;
+        LexCurTok.Text := '<';
+        LexAdvance;
+      End;
+    End;
+    '>' :
+    Begin
+      If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_GE;
+        LexCurTok.Text := '>=';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_GT;
+        LexCurTok.Text := '>';
+        LexAdvance;
+      End;
+    End;
+    '!' :
+    Begin
+      If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_NE;
+        LexCurTok.Text := '!=';
+        LexAdvance; LexAdvance;
+      End
+      Else If C2 = '<' Then
+      Begin
+        LexCurTok.Kind := TOK_BANG_LT;
+        LexCurTok.Text := '!<';
+        LexAdvance; LexAdvance;
+      End
+      Else If C2 = '>' Then
+      Begin
+        LexCurTok.Kind := TOK_BANG_GT;
+        LexCurTok.Text := '!>';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        { ! seul - traiter comme erreur, avancer }
+        LexCurTok.Kind := TOK_EOF;
+        LexCurTok.Text := '!';
+        LexAdvance;
+      End;
+    End;
+    '&' :
+    Begin
+      If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_AMP_EQ;
+        LexCurTok.Text := '&=';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_AMPERSAND;
+        LexCurTok.Text := '&';
+        LexAdvance;
+      End;
+    End;
+    '|' :
+    Begin
+      If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_PIPE_EQ;
+        LexCurTok.Text := '|=';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_PIPE;
+        LexCurTok.Text := '|';
+        LexAdvance;
+      End;
+    End;
+    '^' :
+    Begin
+      If C2 = '=' Then
+      Begin
+        LexCurTok.Kind := TOK_CARET_EQ;
+        LexCurTok.Text := '^=';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_CARET;
+        LexCurTok.Text := '^';
+        LexAdvance;
+      End;
+    End;
+    '~' :
+    Begin
+      LexCurTok.Kind := TOK_TILDE;
+      LexCurTok.Text := '~';
+      LexAdvance;
+    End;
+    '(' :
+    Begin
+      LexCurTok.Kind := TOK_LPAREN;
+      LexCurTok.Text := '(';
+      LexAdvance;
+    End;
+    ')' :
+    Begin
+      LexCurTok.Kind := TOK_RPAREN;
+      LexCurTok.Text := ')';
+      LexAdvance;
+    End;
+    ',' :
+    Begin
+      LexCurTok.Kind := TOK_COMMA;
+      LexCurTok.Text := ',';
+      LexAdvance;
+    End;
+    '.' :
+    Begin
+      { .123 = nombre flottant commencant par point }
+      If (C2 >= '0') And (C2 <= '9') Then
+      Begin
+        LexCurTok.Kind := TOK_FLOAT;
+        LexCurTok.Text := '.';
+        LexAdvance;  { sauter le point }
+        While (LexPos <= LexLen) And
+              (LexSrc[LexPos] >= '0') And (LexSrc[LexPos] <= '9') Do
+        Begin
+          If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+            LexCurTok.Text := LexCurTok.Text + LexSrc[LexPos];
+          LexAdvance;
+        End;
+        { Exposant optionnel }
+        If (LexPos <= LexLen) And
+           ((LexSrc[LexPos] = 'E') Or (LexSrc[LexPos] = 'e')) Then
+        Begin
+          If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+            LexCurTok.Text := LexCurTok.Text + LexSrc[LexPos];
+          LexAdvance;
+          If (LexPos <= LexLen) And
+             ((LexSrc[LexPos] = '+') Or (LexSrc[LexPos] = '-')) Then
+          Begin
+            If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+              LexCurTok.Text := LexCurTok.Text + LexSrc[LexPos];
+            LexAdvance;
+          End;
+          While (LexPos <= LexLen) And
+                (LexSrc[LexPos] >= '0') And (LexSrc[LexPos] <= '9') Do
+          Begin
+            If Length(LexCurTok.Text) < MAX_TOK_LEN Then
+              LexCurTok.Text := LexCurTok.Text + LexSrc[LexPos];
+            LexAdvance;
+          End;
+        End;
+      End
+      Else
+      Begin
+        LexCurTok.Kind := TOK_DOT;
+        LexCurTok.Text := '.';
+        LexAdvance;
+      End;
+    End;
+    ';' :
+    Begin
+      LexCurTok.Kind := TOK_SEMICOL;
+      LexCurTok.Text := ';';
+      LexAdvance;
+    End;
+    ':' :
+    Begin
+      If C2 = ':' Then
+      Begin
+        LexCurTok.Kind := TOK_COLON;
+        LexCurTok.Text := '::';
+        LexAdvance; LexAdvance;
+      End
+      Else
+      Begin
+        { : seul - avancer }
+        LexCurTok.Kind := TOK_COLON;
+        LexCurTok.Text := ':';
+        LexAdvance;
+      End;
+    End;
+  Else
+    { Caractere inconnu : avancer }
+    LexCurTok.Kind := TOK_EOF;
+    LexCurTok.Text := C;
+    LexAdvance;
+  End;
+End;
+
+{ ---- Nom textuel d un type de token (debug) ------------------ }
+
+Function TokKindName(K : Byte) : TString;
+Begin
+  Case K Of
+    TOK_EOF         : TokKindName := 'EOF';
+    TOK_IDENT       : TokKindName := 'IDENT';
+    TOK_NUMBER      : TokKindName := 'NUMBER';
+    TOK_FLOAT       : TokKindName := 'FLOAT';
+    TOK_STRING      : TokKindName := 'STRING';
+    TOK_NSTRING     : TokKindName := 'NSTRING';
+    TOK_HEX         : TokKindName := 'HEX';
+    TOK_VARIABLE    : TokKindName := 'VARIABLE';
+    TOK_TEMPOBJ     : TokKindName := 'TEMPOBJ';
+    TOK_PARAM       : TokKindName := 'PARAM';
+    TOK_PLUS        : TokKindName := '+';
+    TOK_MINUS       : TokKindName := '-';
+    TOK_STAR        : TokKindName := '*';
+    TOK_SLASH       : TokKindName := '/';
+    TOK_PERCENT     : TokKindName := '%';
+    TOK_EQ          : TokKindName := '=';
+    TOK_NE          : TokKindName := '<>';
+    TOK_LT          : TokKindName := '<';
+    TOK_GT          : TokKindName := '>';
+    TOK_LE          : TokKindName := '<=';
+    TOK_GE          : TokKindName := '>=';
+    TOK_LPAREN      : TokKindName := '(';
+    TOK_RPAREN      : TokKindName := ')';
+    TOK_COMMA       : TokKindName := ',';
+    TOK_DOT         : TokKindName := '.';
+    TOK_SEMICOL     : TokKindName := ';';
+    TOK_AT          : TokKindName := '@';
+    TOK_COLON       : TokKindName := '::';
+    TOK_AMPERSAND   : TokKindName := '&';
+    TOK_PIPE        : TokKindName := '|';
+    TOK_CARET       : TokKindName := '^';
+    TOK_TILDE       : TokKindName := '~';
+    TOK_BANG_LT     : TokKindName := '!<';
+    TOK_BANG_GT     : TokKindName := '!>';
+    TOK_PLUS_EQ     : TokKindName := '+=';
+    TOK_MINUS_EQ    : TokKindName := '-=';
+    TOK_STAR_EQ     : TokKindName := '*=';
+    TOK_SLASH_EQ    : TokKindName := '/=';
+    TOK_PERCENT_EQ  : TokKindName := '%=';
+    TOK_AMP_EQ      : TokKindName := '&=';
+    TOK_PIPE_EQ     : TokKindName := '|=';
+    TOK_CARET_EQ    : TokKindName := '^=';
+    TOK_DELIM_IDENT : TokKindName := 'DELIM_IDENT';
+  Else
+    TokKindName := '?';
+  End;
 End;
 
 { ---- Execution d une requete SQL ----------------------------- }
