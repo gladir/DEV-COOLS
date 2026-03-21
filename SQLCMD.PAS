@@ -33,7 +33,7 @@
             Valider la signature MDF et la version du format
             Supporter les tailles de page 8192 octets (standard)
 
-  TODO 03 - GESTIONNAIRE DE PAGES ET ALLOCATION MAP
+  TODO 03 - GESTIONNAIRE DE PAGES ET ALLOCATION MAP [IMPLEMENTE]
             Lire les pages par numero (SeekPage / ReadPage)
             Decoder les types de pages : Data (1), Index (2),
               Text/Image (3), GAM (8), SGAM (9), IAM (10),
@@ -580,6 +580,36 @@ Const
   { Taille max du nom de base dans la Boot Page }
   MDF_DBNAME_MAX     = 128;
 
+  { ---- Constantes gestionnaire de pages (TODO 03) ------------ }
+  MDF_PAGES_PER_EXTENT = 8;    { pages par extent                    }
+  MDF_GAM_PAGE       = 2;      { premiere page GAM                   }
+  MDF_SGAM_PAGE      = 3;      { premiere page SGAM                  }
+  MDF_PFS_PAGE       = 1;      { premiere page PFS                   }
+  MDF_GAM_INTERVAL   = 511232; { intervalle entre pages GAM          }
+  MDF_PFS_INTERVAL   = 8088;   { intervalle entre pages PFS          }
+  MDF_GAM_BITMAP_OFS = 96;     { debut du bitmap dans la page GAM    }
+  MDF_GAM_BITMAP_SZ  = 8000;   { taille du bitmap GAM en octets      }
+  MDF_GAM_MAX_EXTENTS= 64000;  { extents couverts par une page GAM   }
+  MDF_PFS_DATA_OFS   = 96;     { debut des octets PFS dans la page   }
+  MDF_PFS_COVERAGE   = 8088;   { pages couvertes par une page PFS    }
+
+  { Offsets dans le corps de la page IAM (apres en-tete 96 oct.)  }
+  MDF_IAM_SEQNUM     = 96;     { 4 oct. : sequenceNumber             }
+  MDF_IAM_STATUS     = 100;    { 4 oct. : status                     }
+  MDF_IAM_NEXTPG     = 104;    { 4+2 oct.: PageID + FileID du next   }
+  MDF_IAM_STARTPG    = 110;    { 4+2 oct.: start_pg premier extent   }
+  MDF_IAM_SLOTS      = 116;    { 8*6=48 oct.: pages mixtes initiales }
+  MDF_IAM_BITMAP     = 148;    { 8000 oct.: bitmap d extents         }
+  MDF_IAM_SLOT_COUNT = 8;      { nombre de slots de pages mixtes     }
+  MDF_IAM_SLOT_SIZE  = 6;      { taille d un slot (PageID+FileID)    }
+
+  { Masques PFS }
+  MDF_PFS_FULLNESS   = $07;    { bits 0-2 : taux de remplissage      }
+  MDF_PFS_GHOST      = $08;    { bit 3 : ghost records               }
+  MDF_PFS_IAM_PG     = $10;    { bit 4 : page IAM                    }
+  MDF_PFS_MIXED_EXT  = $20;    { bit 5 : extent mixte                }
+  MDF_PFS_ALLOCATED  = $40;    { bit 6 : page allouee                }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -617,6 +647,32 @@ Type
     CompatLevel  : Word;       { niveau de compatibilite              }
     CreateDate   : LongInt;    { date de creation (raw)               }
     Valid        : Boolean;    { True si boot page lue avec succes    }
+  End;
+
+  { ---- Informations PFS decodees (TODO 03) -------------------- }
+  TMdfPFSInfo = Record
+    Fullness    : Byte;        { 0-4 : taux de remplissage           }
+    HasGhost    : Boolean;     { bit 3 : ghost records presents       }
+    IsIAM       : Boolean;     { bit 4 : page IAM                    }
+    IsMixedExt  : Boolean;     { bit 5 : extent mixte                }
+    IsAllocated : Boolean;     { bit 6 : page allouee                }
+  End;
+
+  { ---- Reference de page (PageID + FileID) -------------------- }
+  TMdfPageRef = Record
+    PageId      : LongInt;     { numero de page                       }
+    FileId      : Word;        { ID du fichier                        }
+  End;
+
+  { ---- Page IAM decodee (TODO 03) ----------------------------- }
+  TMdfIAMInfo = Record
+    SeqNum      : LongInt;     { sequenceNumber                       }
+    Status      : LongInt;     { status                               }
+    NextPage    : TMdfPageRef; { page IAM suivante dans la chaine     }
+    StartPg     : TMdfPageRef; { premier extent couvert               }
+    SinglePages : Array[0..MDF_IAM_SLOT_COUNT - 1] Of TMdfPageRef;
+                               { pages individuelles (extent mixte)   }
+    Valid       : Boolean;     { True si page IAM lue avec succes     }
   End;
 
   { ---- Options de la ligne de commande ---------------------- }
@@ -1137,6 +1193,427 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 03 - GESTIONNAIRE DE PAGES ET ALLOCATION MAP [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SeekPage : lire une page avec validation ---------------- }
+
+Function SeekPage(PageNum : LongInt;
+                  Var Buf : TMdfPageBuf) : Boolean;
+Begin
+  SeekPage := False;
+  If Not MdfOpen Then Exit;
+  If (PageNum < 0) Or (PageNum >= MdfPageCnt) Then Exit;
+  SeekPage := ReadPage(PageNum, Buf);
+End;
+
+{ ---- Lire un bit du GAM pour un extent donne ----------------- }
+{  GAM page = 2 + (Ext / 64000) * 511232                        }
+{  Offset octet = 96 + (Ext mod 64000) / 8                      }
+{  Bit = (Ext mod 64000) mod 8                                   }
+{  Bit=1 => extent libre, Bit=0 => extent alloue                }
+
+Function ReadGAMBit(ExtentNum : LongInt) : Integer;
+Var
+  GamPageNum : LongInt;
+  LocalExt   : LongInt;
+  ByteOfs    : Integer;
+  BitPos     : Byte;
+  TmpBuf     : TMdfPageBuf;
+Begin
+  ReadGAMBit := -1;
+  GamPageNum := MDF_GAM_PAGE +
+                (ExtentNum Div MDF_GAM_MAX_EXTENTS) * MDF_GAM_INTERVAL;
+  If Not SeekPage(GamPageNum, TmpBuf) Then Exit;
+
+  LocalExt := ExtentNum Mod MDF_GAM_MAX_EXTENTS;
+  ByteOfs  := MDF_GAM_BITMAP_OFS + (LocalExt Div 8);
+  BitPos   := LocalExt Mod 8;
+
+  If (TmpBuf[ByteOfs] And (1 Shl BitPos)) <> 0 Then
+    ReadGAMBit := 1
+  Else
+    ReadGAMBit := 0;
+End;
+
+{ ---- Lire un bit du SGAM pour un extent donne ---------------- }
+{  SGAM page = 3 + (Ext / 64000) * 511232                       }
+{  Bit=1 => extent mixte avec page(s) libre(s)                  }
+{  Bit=0 => extent uniforme ou mixte plein ou non alloue         }
+
+Function ReadSGAMBit(ExtentNum : LongInt) : Integer;
+Var
+  SgamPageNum : LongInt;
+  LocalExt    : LongInt;
+  ByteOfs     : Integer;
+  BitPos      : Byte;
+  TmpBuf      : TMdfPageBuf;
+Begin
+  ReadSGAMBit := -1;
+  SgamPageNum := MDF_SGAM_PAGE +
+                 (ExtentNum Div MDF_GAM_MAX_EXTENTS) * MDF_GAM_INTERVAL;
+  If Not SeekPage(SgamPageNum, TmpBuf) Then Exit;
+
+  LocalExt := ExtentNum Mod MDF_GAM_MAX_EXTENTS;
+  ByteOfs  := MDF_GAM_BITMAP_OFS + (LocalExt Div 8);
+  BitPos   := LocalExt Mod 8;
+
+  If (TmpBuf[ByteOfs] And (1 Shl BitPos)) <> 0 Then
+    ReadSGAMBit := 1
+  Else
+    ReadSGAMBit := 0;
+End;
+
+{ ---- Verifier si un extent est libre (GAM=1) ----------------- }
+
+Function IsExtentFree(ExtentNum : LongInt) : Boolean;
+Begin
+  IsExtentFree := (ReadGAMBit(ExtentNum) = 1);
+End;
+
+{ ---- Verifier si un extent est alloue (GAM=0) ---------------- }
+
+Function IsExtentAllocated(ExtentNum : LongInt) : Boolean;
+Begin
+  IsExtentAllocated := (ReadGAMBit(ExtentNum) = 0);
+End;
+
+{ ---- Verifier si un extent est mixte (GAM=0, SGAM=1) --------- }
+
+Function IsExtentMixed(ExtentNum : LongInt) : Boolean;
+Begin
+  IsExtentMixed := (ReadGAMBit(ExtentNum) = 0) And
+                   (ReadSGAMBit(ExtentNum) = 1);
+End;
+
+{ ---- Lire l octet PFS pour une page donnee ------------------- }
+{  PFS page = 1 + (PageNum / 8088) * 8088                       }
+{  Offset   = 96 + (PageNum mod 8088)                            }
+
+Function ReadPFSByte(PageNum : LongInt) : Integer;
+Var
+  PfsPageNum : LongInt;
+  LocalPage  : LongInt;
+  ByteOfs    : Integer;
+  TmpBuf     : TMdfPageBuf;
+Begin
+  ReadPFSByte := -1;
+  PfsPageNum := MDF_PFS_PAGE +
+                (PageNum Div MDF_PFS_COVERAGE) * MDF_PFS_COVERAGE;
+  If Not SeekPage(PfsPageNum, TmpBuf) Then Exit;
+
+  LocalPage := PageNum Mod MDF_PFS_COVERAGE;
+  ByteOfs   := MDF_PFS_DATA_OFS + LocalPage;
+
+  If ByteOfs >= MDF_PAGE_SIZE Then Exit;
+  ReadPFSByte := TmpBuf[ByteOfs];
+End;
+
+{ ---- Decoder un octet PFS en informations lisibles ----------- }
+
+Procedure DecodePFS(PfsByte : Byte; Var Info : TMdfPFSInfo);
+Begin
+  Info.Fullness    := PfsByte And MDF_PFS_FULLNESS;
+  Info.HasGhost    := (PfsByte And MDF_PFS_GHOST) <> 0;
+  Info.IsIAM       := (PfsByte And MDF_PFS_IAM_PG) <> 0;
+  Info.IsMixedExt  := (PfsByte And MDF_PFS_MIXED_EXT) <> 0;
+  Info.IsAllocated := (PfsByte And MDF_PFS_ALLOCATED) <> 0;
+End;
+
+{ ---- Texte du taux de remplissage PFS ------------------------ }
+
+Function PFSFullnessStr(F : Byte) : TString;
+Begin
+  Case F Of
+    0 : PFSFullnessStr := 'vide (0%)';
+    1 : PFSFullnessStr := '1-50%';
+    2 : PFSFullnessStr := '51-80%';
+    3 : PFSFullnessStr := '81-95%';
+    4 : PFSFullnessStr := '96-100%';
+  Else
+    PFSFullnessStr := '?(' + IntToStr(F) + ')';
+  End;
+End;
+
+{ ---- Decoder une page IAM ------------------------------------ }
+
+Procedure ParseIAMPage(Const Buf : TMdfPageBuf;
+                       Var IAM : TMdfIAMInfo);
+Var
+  I, Ofs : Integer;
+  Hdr    : TMdfPageHeader;
+Begin
+  IAM.Valid := False;
+  ParsePageHeader(Buf, Hdr);
+
+  If Hdr.PageType <> MDF_PT_IAM Then Exit;
+
+  IAM.SeqNum     := ReadLong(Buf, MDF_IAM_SEQNUM);
+  IAM.Status     := ReadLong(Buf, MDF_IAM_STATUS);
+  IAM.NextPage.PageId := ReadLong(Buf, MDF_IAM_NEXTPG);
+  IAM.NextPage.FileId := ReadWord(Buf, MDF_IAM_NEXTPG + 4);
+  IAM.StartPg.PageId  := ReadLong(Buf, MDF_IAM_STARTPG);
+  IAM.StartPg.FileId  := ReadWord(Buf, MDF_IAM_STARTPG + 4);
+
+  For I := 0 To MDF_IAM_SLOT_COUNT - 1 Do
+  Begin
+    Ofs := MDF_IAM_SLOTS + I * MDF_IAM_SLOT_SIZE;
+    IAM.SinglePages[I].PageId := ReadLong(Buf, Ofs);
+    IAM.SinglePages[I].FileId := ReadWord(Buf, Ofs + 4);
+  End;
+
+  IAM.Valid := True;
+End;
+
+{ ---- Tester si un extent est alloue dans le bitmap IAM ------- }
+
+Function IAMBitmapBit(Const Buf : TMdfPageBuf;
+                      ExtentIndex : LongInt) : Boolean;
+Var
+  ByteOfs : Integer;
+  BitPos  : Byte;
+Begin
+  IAMBitmapBit := False;
+  If (ExtentIndex < 0) Or (ExtentIndex >= MDF_GAM_MAX_EXTENTS) Then
+    Exit;
+  ByteOfs := MDF_IAM_BITMAP + (ExtentIndex Div 8);
+  BitPos  := ExtentIndex Mod 8;
+  If ByteOfs >= MDF_PAGE_SIZE Then Exit;
+  IAMBitmapBit := (Buf[ByteOfs] And (1 Shl BitPos)) <> 0;
+End;
+
+{ ---- Suivre la chaine IAM depuis une page IAM donnee --------- }
+{  Appelle une callback conceptuelle (ici : affichage verbose)   }
+{  Retourne le nombre d extents trouves pour l objet             }
+
+Function FollowIAMChain(FirstIAMPage : LongInt) : LongInt;
+Var
+  IAM       : TMdfIAMInfo;
+  TmpBuf    : TMdfPageBuf;
+  CurrPage  : LongInt;
+  Count     : LongInt;
+  ExtIdx    : LongInt;
+  I         : Integer;
+  MaxIter   : Integer;
+Begin
+  FollowIAMChain := 0;
+  Count := 0;
+  CurrPage := FirstIAMPage;
+  MaxIter := 100;  { protection contre boucle infinie }
+
+  While (CurrPage > 0) And (MaxIter > 0) Do
+  Begin
+    Dec(MaxIter);
+    If Not SeekPage(CurrPage, TmpBuf) Then Break;
+
+    ParseIAMPage(TmpBuf, IAM);
+    If Not IAM.Valid Then Break;
+
+    If Opts.Verbose Then
+    Begin
+      WriteLn('    IAM page ', CurrPage, ' :');
+      WriteLn('      seqNum   = ', IAM.SeqNum);
+      WriteLn('      startPg  = ', IAM.StartPg.FileId,
+              ':', IAM.StartPg.PageId);
+      WriteLn('      nextPage = ', IAM.NextPage.FileId,
+              ':', IAM.NextPage.PageId);
+    End;
+
+    { Compter les pages individuelles (slots mixtes) }
+    For I := 0 To MDF_IAM_SLOT_COUNT - 1 Do
+    Begin
+      If IAM.SinglePages[I].PageId <> 0 Then
+      Begin
+        Inc(Count);
+        If Opts.Verbose Then
+          WriteLn('      slot[', I, '] = ',
+                  IAM.SinglePages[I].FileId, ':',
+                  IAM.SinglePages[I].PageId);
+      End;
+    End;
+
+    { Compter les extents dans le bitmap }
+    For ExtIdx := 0 To MDF_GAM_MAX_EXTENTS - 1 Do
+    Begin
+      If IAMBitmapBit(TmpBuf, ExtIdx) Then
+        Inc(Count, MDF_PAGES_PER_EXTENT);
+    End;
+
+    { Suivre la chaine }
+    If IAM.NextPage.PageId > 0 Then
+      CurrPage := IAM.NextPage.PageId
+    Else
+      CurrPage := 0;
+  End;
+
+  FollowIAMChain := Count;
+End;
+
+{ ---- Afficher les informations d une page (mode verbose) ----- }
+
+Procedure DumpPageInfo(PageNum : LongInt);
+Var
+  Hdr     : TMdfPageHeader;
+  TmpBuf  : TMdfPageBuf;
+  PfsByte : Integer;
+  PfsInfo : TMdfPFSInfo;
+  ExtNum  : LongInt;
+  GamBit  : Integer;
+  SgamBit : Integer;
+Begin
+  If Not SeekPage(PageNum, TmpBuf) Then
+  Begin
+    WriteLn('  Page ', PageNum, ' : impossible a lire');
+    Exit;
+  End;
+
+  ParsePageHeader(TmpBuf, Hdr);
+  ExtNum  := PageNum Div MDF_PAGES_PER_EXTENT;
+  GamBit  := ReadGAMBit(ExtNum);
+  SgamBit := ReadSGAMBit(ExtNum);
+  PfsByte := ReadPFSByte(PageNum);
+
+  WriteLn('  Page ', PageNum, ' :');
+  WriteLn('    type       = ', Hdr.PageType,
+          ' (', PageTypeName(Hdr.PageType), ')');
+  WriteLn('    level      = ', Hdr.Level);
+  WriteLn('    flagBits   = $', IntToStr(Hdr.FlagBits));
+  WriteLn('    slotCnt    = ', Hdr.SlotCnt);
+  WriteLn('    objId      = ', Hdr.ObjId);
+  WriteLn('    prevPage   = ', Hdr.PrevFile, ':', Hdr.PrevPage);
+  WriteLn('    nextPage   = ', Hdr.NextFile, ':', Hdr.NextPage);
+  WriteLn('    freeCnt    = ', Hdr.FreeCnt);
+  WriteLn('    freeData   = ', Hdr.FreeData);
+  WriteLn('    extent     = ', ExtNum);
+
+  If GamBit >= 0 Then
+  Begin
+    Write('    GAM        = ', GamBit);
+    If GamBit = 1 Then WriteLn(' (libre)')
+    Else WriteLn(' (alloue)');
+  End;
+  If SgamBit >= 0 Then
+  Begin
+    Write('    SGAM       = ', SgamBit);
+    If SgamBit = 1 Then WriteLn(' (mixte, pages libres)')
+    Else WriteLn(' (uniforme/plein)');
+  End;
+
+  If PfsByte >= 0 Then
+  Begin
+    DecodePFS(Byte(PfsByte), PfsInfo);
+    WriteLn('    PFS        = $', IntToStr(PfsByte));
+    WriteLn('      fullness   = ', PfsInfo.Fullness,
+            ' (', PFSFullnessStr(PfsInfo.Fullness), ')');
+    WriteLn('      allocated  = ', PfsInfo.IsAllocated);
+    WriteLn('      mixedExt   = ', PfsInfo.IsMixedExt);
+    WriteLn('      isIAM      = ', PfsInfo.IsIAM);
+    WriteLn('      hasGhost   = ', PfsInfo.HasGhost);
+  End;
+End;
+
+{ ---- Lire et afficher les allocation maps (mode verbose) ------ }
+
+Procedure ReadAllocationMaps;
+Var
+  TmpBuf  : TMdfPageBuf;
+  Hdr     : TMdfPageHeader;
+  NumExt  : LongInt;
+  AllocCnt: LongInt;
+  FreeCnt : LongInt;
+  MixedCnt: LongInt;
+  I       : LongInt;
+  G, S    : Integer;
+  PByte   : Integer;
+  PfsInfo : TMdfPFSInfo;
+  AllocPg : LongInt;
+Begin
+  If Not MdfOpen Then Exit;
+
+  NumExt := MdfPageCnt Div MDF_PAGES_PER_EXTENT;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn;
+    WriteLn('  Allocation Maps (TODO 03) :');
+    WriteLn('    Nombre total d''extents : ', NumExt);
+  End;
+
+  { Verifier que la page GAM (2) et SGAM (3) existent }
+  If Not SeekPage(MDF_GAM_PAGE, TmpBuf) Then
+  Begin
+    WarnMsg('impossible de lire la page GAM (page 2)');
+    Exit;
+  End;
+  ParsePageHeader(TmpBuf, Hdr);
+  If Opts.Verbose Then
+    WriteLn('    Page 2 (GAM)  : type=', Hdr.PageType,
+            ' (', PageTypeName(Hdr.PageType), ')');
+
+  If Not SeekPage(MDF_SGAM_PAGE, TmpBuf) Then
+  Begin
+    WarnMsg('impossible de lire la page SGAM (page 3)');
+    Exit;
+  End;
+  ParsePageHeader(TmpBuf, Hdr);
+  If Opts.Verbose Then
+    WriteLn('    Page 3 (SGAM) : type=', Hdr.PageType,
+            ' (', PageTypeName(Hdr.PageType), ')');
+
+  { Scanner les extents avec GAM et SGAM }
+  AllocCnt := 0;
+  FreeCnt  := 0;
+  MixedCnt := 0;
+
+  For I := 0 To NumExt - 1 Do
+  Begin
+    G := ReadGAMBit(I);
+    S := ReadSGAMBit(I);
+    If G = 1 Then
+      Inc(FreeCnt)
+    Else
+    Begin
+      Inc(AllocCnt);
+      If S = 1 Then
+        Inc(MixedCnt);
+    End;
+  End;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('    Extents alloues : ', AllocCnt);
+    WriteLn('    Extents libres  : ', FreeCnt);
+    WriteLn('    Extents mixtes  : ', MixedCnt);
+  End;
+
+  { Scanner la page PFS pour les pages allouees }
+  If Opts.Verbose Then
+  Begin
+    If Not SeekPage(MDF_PFS_PAGE, TmpBuf) Then
+    Begin
+      WarnMsg('impossible de lire la page PFS (page 1)');
+      Exit;
+    End;
+    ParsePageHeader(TmpBuf, Hdr);
+    WriteLn('    Page 1 (PFS)  : type=', Hdr.PageType,
+            ' (', PageTypeName(Hdr.PageType), ')');
+
+    AllocPg := 0;
+    For I := 0 To MdfPageCnt - 1 Do
+    Begin
+      PByte := ReadPFSByte(I);
+      If PByte >= 0 Then
+      Begin
+        DecodePFS(Byte(PByte), PfsInfo);
+        If PfsInfo.IsAllocated Then
+          Inc(AllocPg);
+      End;
+    End;
+    WriteLn('    Pages allouees (PFS) : ', AllocPg, ' / ', MdfPageCnt);
+  End;
+End;
+
 { ---- Execution d une requete SQL ----------------------------- }
 
 Procedure ExecuteQuery(Const SQL : TString);
@@ -1276,6 +1753,9 @@ Begin
   End
   Else
     WarnMsg('boot page non valide, fonctionnement degrade');
+
+  { Lire les allocation maps (TODO 03) }
+  ReadAllocationMaps;
 
   { Executer selon le mode }
   If Opts.Query <> '' Then
