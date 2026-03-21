@@ -126,7 +126,7 @@
       tableaux de resultats formattes avec les colonnes selectionnees,
       option --format=csv pour le format separe par des virgules,
       option --format=text pour l'affichage tabule en console, avec
-      tri et pagination des resultats.
+      tri et pagination des resultats. [IMPLEMENTE]
 
   20. Implementer le systeme d'import et de modules QL : resolution des
       chemins d'import (import pascal, import semmle.code.pascal),
@@ -218,6 +218,11 @@ Const
   { TODO 17 : Requetes de securite integrees }
   MAX_SEC_ALERTS  = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
   MAX_SEC_LEAKS   = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+
+  { TODO 19 : Sortie CSV / Text }
+  CSV_PAGE_SIZE   = {$IFDEF FPC}50{$ELSE}20{$ENDIF};
+  TEXT_COL_MIN    = 6;     { largeur minimale d une colonne texte  }
+  TEXT_COL_MAX    = 40;    { largeur maximale d une colonne texte  }
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -11825,6 +11830,447 @@ End;
 Procedure DumpSarif;
 Begin
   WriteSarifReport(Opts.OutputFile);
+End;
+
+{ ============================================================
+  TODO 19 - SORTIE AU FORMAT CSV ET TEXTE [IMPLEMENTE]
+  ============================================================ }
+
+{ Echapper un champ CSV conformement a la RFC 4180 :
+  - encadrer par des guillemets si le champ contient une virgule,
+    un guillemet ou un saut de ligne
+  - doubler chaque guillemet interne                              }
+Function CsvEscField(Const S : TString) : TString;
+Var
+  NeedQuote : Boolean;
+  R : TString;
+  I : Integer;
+Begin
+  NeedQuote := False;
+  For I := 1 To Length(S) Do
+    If (S[I] = ',') Or (S[I] = '"') Or (S[I] = #10) Or (S[I] = #13) Then
+      NeedQuote := True;
+
+  If Not NeedQuote Then
+  Begin
+    CsvEscField := S;
+    Exit;
+  End;
+
+  R := '"';
+  For I := 1 To Length(S) Do
+  Begin
+    If S[I] = '"' Then
+      R := R + '""'
+    Else
+      R := R + S[I];
+  End;
+  R := R + '"';
+  CsvEscField := R;
+End;
+
+{ Convertir une valeur de liaison en chaine brute (sans guillemets
+  autour des chaines) pour la sortie CSV.                          }
+Function BindingToRawStr(Const V : TBindingValue) : TString;
+Var
+  S : String[20];
+Begin
+  Case V.Kind Of
+    BK_INT:
+    Begin
+      Str(V.IntVal, S);
+      BindingToRawStr := S;
+    End;
+    BK_FLOAT:
+    Begin
+      Str(V.FloatVal:0:4, S);
+      BindingToRawStr := S;
+    End;
+    BK_STRING:
+      BindingToRawStr := V.StrVal;
+    BK_DBREF:
+    Begin
+      Str(V.RefId, S);
+      BindingToRawStr := V.RefTable + '#' + S;
+    End;
+  Else
+    BindingToRawStr := '';
+  End;
+End;
+
+{ ---- Ecrire les resultats de requete au format CSV ----------- }
+
+Procedure WriteResultCSV(Const FileName : TString);
+Var
+  F       : Text;
+  ToFile  : Boolean;
+  I, J    : Integer;
+  SrcFile : TString;
+Begin
+  If DbFileCnt > 0 Then
+    SrcFile := DbFiles[0].Name
+  Else
+    SrcFile := 'unknown.pas';
+  ToFile := (FileName <> '');
+  If ToFile Then
+  Begin
+    Assign(F, FileName);
+    {$I-}
+    Rewrite(F);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      WriteLn('CSV: impossible de creer: ', FileName);
+      ToFile := False;
+    End;
+  End;
+
+  { En-tete CSV }
+  If ToFile Then
+  Begin
+    For J := 0 To EvalResults.NCols - 1 Do
+    Begin
+      If J > 0 Then Write(F, ',');
+      Write(F, CsvEscField(EvalResults.ColNames[J]));
+    End;
+    WriteLn(F);
+  End
+  Else
+  Begin
+    For J := 0 To EvalResults.NCols - 1 Do
+    Begin
+      If J > 0 Then Write(',');
+      Write(CsvEscField(EvalResults.ColNames[J]));
+    End;
+    WriteLn;
+  End;
+
+  { Lignes de donnees }
+  For I := 0 To EvalResults.NRows - 1 Do
+  Begin
+    If ToFile Then
+    Begin
+      For J := 0 To EvalResults.Rows[I].NCols - 1 Do
+      Begin
+        If J > 0 Then Write(F, ',');
+        Write(F, CsvEscField(
+          BindingToRawStr(EvalResults.Rows[I].Cols[J])));
+      End;
+      WriteLn(F);
+    End
+    Else
+    Begin
+      For J := 0 To EvalResults.Rows[I].NCols - 1 Do
+      Begin
+        If J > 0 Then Write(',');
+        Write(CsvEscField(
+          BindingToRawStr(EvalResults.Rows[I].Cols[J])));
+      End;
+      WriteLn;
+    End;
+  End;
+
+  { Alertes de securite en CSV }
+  If SecAlertCount > 0 Then
+  Begin
+    If ToFile Then
+    Begin
+      WriteLn(F);
+      WriteLn(F, 'rule,severity,file,line,col,message');
+      For I := 0 To SecAlertCount - 1 Do
+      Begin
+        Write(F, CsvEscField(SecQueryKindName(SecAlerts[I].Kind)));
+        Write(F, ',');
+        Write(F, CsvEscField(DbSeverityName(SecAlerts[I].Severity)));
+        Write(F, ',');
+        Write(F, CsvEscField(SrcFile));
+        Write(F, ',', SecAlerts[I].Line);
+        Write(F, ',', SecAlerts[I].Col);
+        Write(F, ',');
+        Write(F, CsvEscField(SecAlerts[I].Message));
+        WriteLn(F);
+      End;
+    End
+    Else
+    Begin
+      WriteLn;
+      WriteLn('rule,severity,file,line,col,message');
+      For I := 0 To SecAlertCount - 1 Do
+      Begin
+        Write(CsvEscField(SecQueryKindName(SecAlerts[I].Kind)));
+        Write(',');
+        Write(CsvEscField(DbSeverityName(SecAlerts[I].Severity)));
+        Write(',');
+        Write(CsvEscField(SrcFile));
+        Write(',', SecAlerts[I].Line);
+        Write(',', SecAlerts[I].Col);
+        Write(',');
+        Write(CsvEscField(SecAlerts[I].Message));
+        WriteLn;
+      End;
+    End;
+  End;
+
+  If ToFile Then
+  Begin
+    Close(F);
+    WriteLn('CSV: rapport ecrit dans ', FileName);
+  End;
+End;
+
+{ ---- Fonctions utilitaires pour le format texte tabule ------- }
+
+{ Repeter un caractere N fois }
+Function RepeatCh(C : Char; N : Integer) : TString;
+Var
+  R : TString;
+  I : Integer;
+Begin
+  R := '';
+  If N > MAX_STR Then N := MAX_STR;
+  For I := 1 To N Do
+    R := R + C;
+  RepeatCh := R;
+End;
+
+{ Completer une chaine a droite avec des espaces pour atteindre
+  une largeur W.  Tronquer si elle depasse.                      }
+Function PadRight(Const S : TString; W : Integer) : TString;
+Var
+  R : TString;
+  I : Integer;
+Begin
+  If Length(S) >= W Then
+  Begin
+    R := Copy(S, 1, W);
+    PadRight := R;
+    Exit;
+  End;
+  R := S;
+  For I := Length(S) + 1 To W Do
+    R := R + ' ';
+  PadRight := R;
+End;
+
+{ ---- Ecrire les resultats de requete au format texte tabule -- }
+
+Procedure WriteResultText(Const FileName : TString);
+Var
+  F        : Text;
+  ToFile   : Boolean;
+  I, J, W  : Integer;
+  ColW     : Array[0..MAX_RESULT_COLS - 1] Of Integer;
+  CellStr  : TString;
+  SrcFile  : TString;
+  PageNo   : Integer;
+  RowInPage: Integer;
+Begin
+  If DbFileCnt > 0 Then
+    SrcFile := DbFiles[0].Name
+  Else
+    SrcFile := 'unknown.pas';
+  ToFile := (FileName <> '');
+  If ToFile Then
+  Begin
+    Assign(F, FileName);
+    {$I-}
+    Rewrite(F);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      WriteLn('TEXT: impossible de creer: ', FileName);
+      ToFile := False;
+    End;
+  End;
+
+  { Calculer les largeurs de colonnes }
+  For J := 0 To EvalResults.NCols - 1 Do
+  Begin
+    ColW[J] := Length(EvalResults.ColNames[J]);
+    If ColW[J] < TEXT_COL_MIN Then ColW[J] := TEXT_COL_MIN;
+  End;
+
+  For I := 0 To EvalResults.NRows - 1 Do
+  Begin
+    For J := 0 To EvalResults.Rows[I].NCols - 1 Do
+    Begin
+      CellStr := BindingToRawStr(EvalResults.Rows[I].Cols[J]);
+      W := Length(CellStr);
+      If (J < EvalResults.NCols) And (W > ColW[J]) Then
+        ColW[J] := W;
+    End;
+  End;
+
+  { Limiter a TEXT_COL_MAX }
+  For J := 0 To EvalResults.NCols - 1 Do
+    If ColW[J] > TEXT_COL_MAX Then ColW[J] := TEXT_COL_MAX;
+
+  { Afficher avec pagination }
+  PageNo    := 1;
+  RowInPage := 0;
+
+  { ---- En-tete ---- }
+  If ToFile Then
+  Begin
+    For J := 0 To EvalResults.NCols - 1 Do
+    Begin
+      If J > 0 Then Write(F, ' | ');
+      Write(F, PadRight(EvalResults.ColNames[J], ColW[J]));
+    End;
+    WriteLn(F);
+    For J := 0 To EvalResults.NCols - 1 Do
+    Begin
+      If J > 0 Then Write(F, '-+-');
+      Write(F, RepeatCh('-', ColW[J]));
+    End;
+    WriteLn(F);
+  End
+  Else
+  Begin
+    For J := 0 To EvalResults.NCols - 1 Do
+    Begin
+      If J > 0 Then Write(' | ');
+      Write(PadRight(EvalResults.ColNames[J], ColW[J]));
+    End;
+    WriteLn;
+    For J := 0 To EvalResults.NCols - 1 Do
+    Begin
+      If J > 0 Then Write('-+-');
+      Write(RepeatCh('-', ColW[J]));
+    End;
+    WriteLn;
+  End;
+
+  { ---- Lignes de donnees ---- }
+  For I := 0 To EvalResults.NRows - 1 Do
+  Begin
+    If ToFile Then
+    Begin
+      For J := 0 To EvalResults.Rows[I].NCols - 1 Do
+      Begin
+        If J > 0 Then Write(F, ' | ');
+        CellStr := BindingToRawStr(EvalResults.Rows[I].Cols[J]);
+        If J < EvalResults.NCols Then
+          Write(F, PadRight(CellStr, ColW[J]))
+        Else
+          Write(F, CellStr);
+      End;
+      WriteLn(F);
+    End
+    Else
+    Begin
+      For J := 0 To EvalResults.Rows[I].NCols - 1 Do
+      Begin
+        If J > 0 Then Write(' | ');
+        CellStr := BindingToRawStr(EvalResults.Rows[I].Cols[J]);
+        If J < EvalResults.NCols Then
+          Write(PadRight(CellStr, ColW[J]))
+        Else
+          Write(CellStr);
+      End;
+      WriteLn;
+    End;
+
+    Inc(RowInPage);
+    If (RowInPage >= CSV_PAGE_SIZE) And
+       (I < EvalResults.NRows - 1) Then
+    Begin
+      { Separateur de page }
+      If ToFile Then
+        WriteLn(F, '--- Page ', PageNo, ' ---')
+      Else
+        WriteLn('--- Page ', PageNo, ' ---');
+      Inc(PageNo);
+      RowInPage := 0;
+    End;
+  End;
+
+  { ---- Pied ---- }
+  If ToFile Then
+  Begin
+    WriteLn(F);
+    WriteLn(F, '(', EvalResults.NRows, ' lignes)');
+  End
+  Else
+  Begin
+    WriteLn;
+    WriteLn('(', EvalResults.NRows, ' lignes)');
+  End;
+
+  { ---- Alertes de securite en texte tabule ---- }
+  If SecAlertCount > 0 Then
+  Begin
+    If ToFile Then
+    Begin
+      WriteLn(F);
+      WriteLn(F, PadRight('Rule', 20), ' | ',
+                 PadRight('Sev', 8), ' | ',
+                 PadRight('File', 20), ' | ',
+                 PadRight('Line', 6), ' | ',
+                 'Message');
+      WriteLn(F, RepeatCh('-', 20), '-+-',
+                 RepeatCh('-', 8), '-+-',
+                 RepeatCh('-', 20), '-+-',
+                 RepeatCh('-', 6), '-+-',
+                 RepeatCh('-', 30));
+      For I := 0 To SecAlertCount - 1 Do
+      Begin
+        CellStr := '';
+        Str(SecAlerts[I].Line, CellStr);
+        WriteLn(F, PadRight(SecQueryKindName(SecAlerts[I].Kind), 20), ' | ',
+                   PadRight(DbSeverityName(SecAlerts[I].Severity), 8), ' | ',
+                   PadRight(SrcFile, 20), ' | ',
+                   PadRight(CellStr, 6), ' | ',
+                   SecAlerts[I].Message);
+      End;
+    End
+    Else
+    Begin
+      WriteLn;
+      WriteLn(PadRight('Rule', 20), ' | ',
+              PadRight('Sev', 8), ' | ',
+              PadRight('File', 20), ' | ',
+              PadRight('Line', 6), ' | ',
+              'Message');
+      WriteLn(RepeatCh('-', 20), '-+-',
+              RepeatCh('-', 8), '-+-',
+              RepeatCh('-', 20), '-+-',
+              RepeatCh('-', 6), '-+-',
+              RepeatCh('-', 30));
+      For I := 0 To SecAlertCount - 1 Do
+      Begin
+        CellStr := '';
+        Str(SecAlerts[I].Line, CellStr);
+        WriteLn(PadRight(SecQueryKindName(SecAlerts[I].Kind), 20), ' | ',
+                PadRight(DbSeverityName(SecAlerts[I].Severity), 8), ' | ',
+                PadRight(SrcFile, 20), ' | ',
+                PadRight(CellStr, 6), ' | ',
+                SecAlerts[I].Message);
+      End;
+    End;
+  End;
+
+  If ToFile Then
+  Begin
+    Close(F);
+    WriteLn('TEXT: rapport ecrit dans ', FileName);
+  End;
+End;
+
+{ Procedure d entree pour la generation CSV.
+  Utilise le fichier de sortie configure dans les options
+  ou ecrit sur la sortie standard.                         }
+Procedure DumpCSV;
+Begin
+  WriteResultCSV(Opts.OutputFile);
+End;
+
+{ Procedure d entree pour la generation texte tabule.
+  Utilise le fichier de sortie configure dans les options
+  ou ecrit sur la sortie standard.                         }
+Procedure DumpText;
+Begin
+  WriteResultText(Opts.OutputFile);
 End;
 
 { ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
