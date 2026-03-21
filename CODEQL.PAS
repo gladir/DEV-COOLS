@@ -53,7 +53,7 @@
       CodeQL : schema des tables (programs, files, locations, exprs,
       stmts, functions, variables, types, calls, accesses, comments,
       diagnostics), definition des colonnes et des cles primaires,
-      relations entre les tables.
+      relations entre les tables. [IMPLEMENTE]
 
   8.  Implementer le stockage de la base de donnees sur disque : format
       de fichier binaire pour les tables, index sur les colonnes cles,
@@ -181,6 +181,8 @@ Const
   MAX_NODES  = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
   MAX_TYPES  = {$IFDEF FPC}256{$ELSE}64{$ENDIF};
   MAX_SRC_NODES = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
+  MAX_DB_ROWS   = {$IFDEF FPC}8192{$ELSE}1024{$ENDIF};
+  MAX_DB_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
 
   { Codes de sortie }
   EXIT_OK    = 0;
@@ -376,9 +378,183 @@ Type
     Next     : Integer;     { frere suivant  (-1 = aucun) }
   End;
 
-{ ============================================================
-  VARIABLES GLOBALES
-  ============================================================ }
+  { TODO 7 : Base de donnees relationnelle CodeQL }
+
+  { Table des programmes }
+  TDbProgram = Record
+    Id       : Integer;     { cle primaire                       }
+    Name     : TString;     { nom du programme ou de l unite     }
+    FileName : TString;     { chemin du fichier source           }
+  End;
+
+  { Table des fichiers }
+  TDbFile = Record
+    Id       : Integer;     { cle primaire                       }
+    Name     : TString;     { chemin du fichier                  }
+    NumLines : Integer;     { nombre de lignes                   }
+  End;
+
+  { Table des positions source }
+  TDbLocation = Record
+    Id       : Integer;     { cle primaire                       }
+    FileId   : Integer;     { cle etrangere vers files           }
+    StartLine: Integer;     { ligne de debut (1-base)            }
+    StartCol : Integer;     { colonne de debut (1-base)          }
+    EndLine  : Integer;     { ligne de fin                       }
+    EndCol   : Integer;     { colonne de fin                     }
+  End;
+
+  { Sortes d expressions pour la table exprs }
+  TDbExprKind = (
+    DEK_NONE,      { inconnu                    }
+    DEK_INT_LIT,   { litteral entier            }
+    DEK_FLOAT_LIT, { litteral flottant          }
+    DEK_STR_LIT,   { litteral chaine            }
+    DEK_IDENT,     { reference a un ident       }
+    DEK_BINOP,     { operation binaire          }
+    DEK_UNOP,      { operation unaire           }
+    DEK_CALL,      { appel de fonction          }
+    DEK_INDEX,     { acces tableau a[i]         }
+    DEK_FIELD,     { acces champ r.f            }
+    DEK_DEREF,     { dereference p^             }
+    DEK_ADDR,      { adresse @x                 }
+    DEK_NIL,       { nil                        }
+    DEK_SET,       { constructeur d ensemble    }
+    DEK_RANGE      { intervalle a..b            }
+  );
+
+  { Table des expressions }
+  TDbExpr = Record
+    Id       : Integer;     { cle primaire                       }
+    Kind     : TDbExprKind; { sorte d expression                 }
+    ParentId : Integer;     { cle etrangere vers exprs/stmts     }
+    LocId    : Integer;     { cle etrangere vers locations       }
+    TypeId   : Integer;     { cle etrangere vers types           }
+    Value    : TString;     { valeur textuelle (litteral, op)    }
+  End;
+
+  { Sortes d instructions pour la table stmts }
+  TDbStmtKind = (
+    DSK_NONE,      { inconnu                    }
+    DSK_ASSIGN,    { affectation :=             }
+    DSK_CALL,      { appel de procedure         }
+    DSK_IF,        { if-then-else               }
+    DSK_WHILE,     { while-do                   }
+    DSK_FOR,       { for-to/downto-do           }
+    DSK_REPEAT,    { repeat-until               }
+    DSK_CASE,      { case-of                    }
+    DSK_WITH,      { with-do                    }
+    DSK_TRY,       { try-except/finally         }
+    DSK_RAISE,     { raise                      }
+    DSK_GOTO,      { goto                       }
+    DSK_COMPOUND,  { begin-end                  }
+    DSK_BLOCK      { bloc de declarations       }
+  );
+
+  { Table des instructions }
+  TDbStmt = Record
+    Id       : Integer;     { cle primaire                       }
+    Kind     : TDbStmtKind; { sorte d instruction                }
+    ParentId : Integer;     { cle etrangere vers stmts/functions }
+    LocId    : Integer;     { cle etrangere vers locations       }
+  End;
+
+  { Table des fonctions et procedures }
+  TDbFunction = Record
+    Id          : Integer;  { cle primaire                       }
+    Name        : TString;  { nom de la fonction/procedure       }
+    ParentId    : Integer;  { cle etrangere vers programs/funcs  }
+    LocId       : Integer;  { cle etrangere vers locations       }
+    ReturnTypeId: Integer;  { cle etrangere vers types (-1=proc) }
+    NumParams   : Integer;  { nombre de parametres               }
+  End;
+
+  { Table des variables }
+  TDbVariable = Record
+    Id       : Integer;     { cle primaire                       }
+    Name     : TString;     { nom de la variable                 }
+    ParentId : Integer;     { cle etrangere vers functions/progs }
+    LocId    : Integer;     { cle etrangere vers locations       }
+    TypeId   : Integer;     { cle etrangere vers types           }
+    IsParam  : Boolean;     { True si parametre de fonction      }
+  End;
+
+  { Sortes de types pour la table types }
+  TDbTypeKind = (
+    DTK_NONE,      { inconnu                    }
+    DTK_INTEGER,   { type entier                }
+    DTK_REAL,      { type reel                  }
+    DTK_STRING,    { type chaine                }
+    DTK_BOOLEAN,   { type booleen               }
+    DTK_CHAR,      { type caractere             }
+    DTK_ARRAY,     { type tableau               }
+    DTK_RECORD,    { type enregistrement        }
+    DTK_POINTER,   { type pointeur              }
+    DTK_SET,       { type ensemble              }
+    DTK_FILE,      { type fichier               }
+    DTK_ENUM,      { type enumere               }
+    DTK_RANGE,     { type intervalle            }
+    DTK_ALIAS,     { alias de type              }
+    DTK_VOID       { type void (procedure)      }
+  );
+
+  { Table des types }
+  TDbType = Record
+    Id       : Integer;     { cle primaire                       }
+    Name     : TString;     { nom du type                        }
+    Kind     : TDbTypeKind; { sorte de type                      }
+    BaseTypeId: Integer;    { cle etrangere vers types (-1=aucun)}
+  End;
+
+  { Table des appels }
+  TDbCall = Record
+    Id       : Integer;     { cle primaire                       }
+    CallerId : Integer;     { cle etrangere vers functions       }
+    TargetId : Integer;     { cle etrangere vers functions       }
+    LocId    : Integer;     { cle etrangere vers locations       }
+    NumArgs  : Integer;     { nombre d arguments                 }
+  End;
+
+  { Sortes d acces pour la table accesses }
+  TDbAccessKind = (
+    DAK_NONE,      { inconnu                    }
+    DAK_READ,      { lecture de variable         }
+    DAK_WRITE,     { ecriture de variable        }
+    DAK_READWRITE  { lecture et ecriture (var)    }
+  );
+
+  { Table des acces aux variables }
+  TDbAccess = Record
+    Id       : Integer;       { cle primaire                     }
+    Kind     : TDbAccessKind; { sorte d acces                    }
+    ExprId   : Integer;       { cle etrangere vers exprs         }
+    TargetId : Integer;       { cle etrangere vers variables     }
+    LocId    : Integer;       { cle etrangere vers locations     }
+  End;
+
+  { Table des commentaires }
+  TDbComment = Record
+    Id       : Integer;     { cle primaire                       }
+    FileId   : Integer;     { cle etrangere vers files           }
+    LocId    : Integer;     { cle etrangere vers locations       }
+    Text     : TString;     { contenu du commentaire             }
+  End;
+
+  { Niveaux de severite pour la table diagnostics }
+  TDbSeverity = (
+    DSEV_NOTE,     { note informative            }
+    DSEV_WARNING,  { avertissement               }
+    DSEV_ERROR     { erreur                      }
+  );
+
+  { Table des diagnostics }
+  TDbDiagnostic = Record
+    Id       : Integer;       { cle primaire                     }
+    Severity : TDbSeverity;   { niveau de severite               }
+    Message  : TString;       { message de diagnostic            }
+    FileId   : Integer;       { cle etrangere vers files         }
+    LocId    : Integer;       { cle etrangere vers locations     }
+  End;
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -420,6 +596,32 @@ Var
   SrcNodes     : Array[0..MAX_SRC_NODES - 1] Of TSrcASTNode;
   SrcNodeCount : Integer;
   SrcRootNode  : Integer;
+
+  { Base de donnees relationnelle (TODO 7) }
+  DbPrograms   : Array[0..MAX_DB_ROWS - 1] Of TDbProgram;
+  DbProgramCnt : Integer;
+  DbFiles      : Array[0..MAX_DB_ROWS - 1] Of TDbFile;
+  DbFileCnt    : Integer;
+  DbLocations  : Array[0..MAX_DB_ROWS - 1] Of TDbLocation;
+  DbLocationCnt: Integer;
+  DbExprs      : Array[0..MAX_DB_ROWS - 1] Of TDbExpr;
+  DbExprCnt    : Integer;
+  DbStmts      : Array[0..MAX_DB_ROWS - 1] Of TDbStmt;
+  DbStmtCnt    : Integer;
+  DbFunctions  : Array[0..MAX_DB_ROWS - 1] Of TDbFunction;
+  DbFunctionCnt: Integer;
+  DbVariables  : Array[0..MAX_DB_ROWS - 1] Of TDbVariable;
+  DbVariableCnt: Integer;
+  DbTypes      : Array[0..MAX_DB_ROWS - 1] Of TDbType;
+  DbTypeCnt    : Integer;
+  DbCalls      : Array[0..MAX_DB_ROWS - 1] Of TDbCall;
+  DbCallCnt    : Integer;
+  DbAccesses   : Array[0..MAX_DB_ROWS - 1] Of TDbAccess;
+  DbAccessCnt  : Integer;
+  DbComments   : Array[0..MAX_DB_ROWS - 1] Of TDbComment;
+  DbCommentCnt : Integer;
+  DbDiags      : Array[0..MAX_DB_ROWS - 1] Of TDbDiagnostic;
+  DbDiagCnt    : Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -4835,6 +5037,701 @@ Begin
     DumpSrcAST(SrcRootNode, 0);
   WriteLn;
   SrcLexClose;
+End;
+
+{ ============================================================
+  TODO 07 - BASE DE DONNEES RELATIONNELLE CODEQL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Noms textuels des sortes -------------------------------- }
+
+Function DbExprKindName(K : TDbExprKind) : TString;
+Begin
+  Case K Of
+    DEK_NONE      : DbExprKindName := 'none';
+    DEK_INT_LIT   : DbExprKindName := 'int_literal';
+    DEK_FLOAT_LIT : DbExprKindName := 'float_literal';
+    DEK_STR_LIT   : DbExprKindName := 'string_literal';
+    DEK_IDENT     : DbExprKindName := 'identifier';
+    DEK_BINOP     : DbExprKindName := 'binary_op';
+    DEK_UNOP      : DbExprKindName := 'unary_op';
+    DEK_CALL      : DbExprKindName := 'call';
+    DEK_INDEX     : DbExprKindName := 'index';
+    DEK_FIELD     : DbExprKindName := 'field_access';
+    DEK_DEREF     : DbExprKindName := 'dereference';
+    DEK_ADDR      : DbExprKindName := 'address_of';
+    DEK_NIL       : DbExprKindName := 'nil';
+    DEK_SET       : DbExprKindName := 'set_constructor';
+    DEK_RANGE     : DbExprKindName := 'range';
+  Else
+    DbExprKindName := '?';
+  End;
+End;
+
+Function DbStmtKindName(K : TDbStmtKind) : TString;
+Begin
+  Case K Of
+    DSK_NONE     : DbStmtKindName := 'none';
+    DSK_ASSIGN   : DbStmtKindName := 'assignment';
+    DSK_CALL     : DbStmtKindName := 'call';
+    DSK_IF       : DbStmtKindName := 'if';
+    DSK_WHILE    : DbStmtKindName := 'while';
+    DSK_FOR      : DbStmtKindName := 'for';
+    DSK_REPEAT   : DbStmtKindName := 'repeat';
+    DSK_CASE     : DbStmtKindName := 'case';
+    DSK_WITH     : DbStmtKindName := 'with';
+    DSK_TRY      : DbStmtKindName := 'try';
+    DSK_RAISE    : DbStmtKindName := 'raise';
+    DSK_GOTO     : DbStmtKindName := 'goto';
+    DSK_COMPOUND : DbStmtKindName := 'compound';
+    DSK_BLOCK    : DbStmtKindName := 'block';
+  Else
+    DbStmtKindName := '?';
+  End;
+End;
+
+Function DbTypeKindName(K : TDbTypeKind) : TString;
+Begin
+  Case K Of
+    DTK_NONE    : DbTypeKindName := 'none';
+    DTK_INTEGER : DbTypeKindName := 'integer';
+    DTK_REAL    : DbTypeKindName := 'real';
+    DTK_STRING  : DbTypeKindName := 'string';
+    DTK_BOOLEAN : DbTypeKindName := 'boolean';
+    DTK_CHAR    : DbTypeKindName := 'char';
+    DTK_ARRAY   : DbTypeKindName := 'array';
+    DTK_RECORD  : DbTypeKindName := 'record';
+    DTK_POINTER : DbTypeKindName := 'pointer';
+    DTK_SET     : DbTypeKindName := 'set';
+    DTK_FILE    : DbTypeKindName := 'file';
+    DTK_ENUM    : DbTypeKindName := 'enum';
+    DTK_RANGE   : DbTypeKindName := 'range';
+    DTK_ALIAS   : DbTypeKindName := 'alias';
+    DTK_VOID    : DbTypeKindName := 'void';
+  Else
+    DbTypeKindName := '?';
+  End;
+End;
+
+Function DbAccessKindName(K : TDbAccessKind) : TString;
+Begin
+  Case K Of
+    DAK_NONE      : DbAccessKindName := 'none';
+    DAK_READ      : DbAccessKindName := 'read';
+    DAK_WRITE     : DbAccessKindName := 'write';
+    DAK_READWRITE : DbAccessKindName := 'readwrite';
+  Else
+    DbAccessKindName := '?';
+  End;
+End;
+
+Function DbSeverityName(S : TDbSeverity) : TString;
+Begin
+  Case S Of
+    DSEV_NOTE    : DbSeverityName := 'note';
+    DSEV_WARNING : DbSeverityName := 'warning';
+    DSEV_ERROR   : DbSeverityName := 'error';
+  Else
+    DbSeverityName := '?';
+  End;
+End;
+
+{ ---- Initialiser la base de donnees (vider toutes les tables) }
+
+Procedure InitDatabase;
+Begin
+  DbProgramCnt  := 0;
+  DbFileCnt     := 0;
+  DbLocationCnt := 0;
+  DbExprCnt     := 0;
+  DbStmtCnt     := 0;
+  DbFunctionCnt := 0;
+  DbVariableCnt := 0;
+  DbTypeCnt     := 0;
+  DbCallCnt     := 0;
+  DbAccessCnt   := 0;
+  DbCommentCnt  := 0;
+  DbDiagCnt     := 0;
+End;
+
+{ ---- Ajouter un programme ------------------------------------ }
+
+Function DbAddProgram(Const AName, AFileName : TString) : Integer;
+Begin
+  If DbProgramCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB programs table overflow');
+    DbAddProgram := -1;
+    Exit;
+  End;
+  DbPrograms[DbProgramCnt].Id       := DbProgramCnt;
+  DbPrograms[DbProgramCnt].Name     := AName;
+  DbPrograms[DbProgramCnt].FileName := AFileName;
+  DbAddProgram := DbProgramCnt;
+  Inc(DbProgramCnt);
+End;
+
+{ ---- Ajouter un fichier -------------------------------------- }
+
+Function DbAddFile(Const AName : TString; ANumLines : Integer) : Integer;
+Begin
+  If DbFileCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB files table overflow');
+    DbAddFile := -1;
+    Exit;
+  End;
+  DbFiles[DbFileCnt].Id       := DbFileCnt;
+  DbFiles[DbFileCnt].Name     := AName;
+  DbFiles[DbFileCnt].NumLines := ANumLines;
+  DbAddFile := DbFileCnt;
+  Inc(DbFileCnt);
+End;
+
+{ ---- Ajouter une position source ----------------------------- }
+
+Function DbAddLocation(AFileId, ASLine, ASCol,
+                        AELine, AECol : Integer) : Integer;
+Begin
+  If DbLocationCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB locations table overflow');
+    DbAddLocation := -1;
+    Exit;
+  End;
+  DbLocations[DbLocationCnt].Id        := DbLocationCnt;
+  DbLocations[DbLocationCnt].FileId    := AFileId;
+  DbLocations[DbLocationCnt].StartLine := ASLine;
+  DbLocations[DbLocationCnt].StartCol  := ASCol;
+  DbLocations[DbLocationCnt].EndLine   := AELine;
+  DbLocations[DbLocationCnt].EndCol    := AECol;
+  DbAddLocation := DbLocationCnt;
+  Inc(DbLocationCnt);
+End;
+
+{ ---- Ajouter une expression ---------------------------------- }
+
+Function DbAddExpr(AKind : TDbExprKind; AParentId, ALocId,
+                    ATypeId : Integer;
+                    Const AValue : TString) : Integer;
+Begin
+  If DbExprCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB exprs table overflow');
+    DbAddExpr := -1;
+    Exit;
+  End;
+  DbExprs[DbExprCnt].Id       := DbExprCnt;
+  DbExprs[DbExprCnt].Kind     := AKind;
+  DbExprs[DbExprCnt].ParentId := AParentId;
+  DbExprs[DbExprCnt].LocId    := ALocId;
+  DbExprs[DbExprCnt].TypeId   := ATypeId;
+  DbExprs[DbExprCnt].Value    := AValue;
+  DbAddExpr := DbExprCnt;
+  Inc(DbExprCnt);
+End;
+
+{ ---- Ajouter une instruction --------------------------------- }
+
+Function DbAddStmt(AKind : TDbStmtKind;
+                    AParentId, ALocId : Integer) : Integer;
+Begin
+  If DbStmtCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB stmts table overflow');
+    DbAddStmt := -1;
+    Exit;
+  End;
+  DbStmts[DbStmtCnt].Id       := DbStmtCnt;
+  DbStmts[DbStmtCnt].Kind     := AKind;
+  DbStmts[DbStmtCnt].ParentId := AParentId;
+  DbStmts[DbStmtCnt].LocId    := ALocId;
+  DbAddStmt := DbStmtCnt;
+  Inc(DbStmtCnt);
+End;
+
+{ ---- Ajouter une fonction ou procedure ----------------------- }
+
+Function DbAddFunction(Const AName : TString;
+                        AParentId, ALocId,
+                        ARetTypeId, ANumParams : Integer) : Integer;
+Begin
+  If DbFunctionCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB functions table overflow');
+    DbAddFunction := -1;
+    Exit;
+  End;
+  DbFunctions[DbFunctionCnt].Id           := DbFunctionCnt;
+  DbFunctions[DbFunctionCnt].Name         := AName;
+  DbFunctions[DbFunctionCnt].ParentId     := AParentId;
+  DbFunctions[DbFunctionCnt].LocId        := ALocId;
+  DbFunctions[DbFunctionCnt].ReturnTypeId := ARetTypeId;
+  DbFunctions[DbFunctionCnt].NumParams    := ANumParams;
+  DbAddFunction := DbFunctionCnt;
+  Inc(DbFunctionCnt);
+End;
+
+{ ---- Ajouter une variable ------------------------------------ }
+
+Function DbAddVariable(Const AName : TString;
+                        AParentId, ALocId, ATypeId : Integer;
+                        AIsParam : Boolean) : Integer;
+Begin
+  If DbVariableCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB variables table overflow');
+    DbAddVariable := -1;
+    Exit;
+  End;
+  DbVariables[DbVariableCnt].Id       := DbVariableCnt;
+  DbVariables[DbVariableCnt].Name     := AName;
+  DbVariables[DbVariableCnt].ParentId := AParentId;
+  DbVariables[DbVariableCnt].LocId    := ALocId;
+  DbVariables[DbVariableCnt].TypeId   := ATypeId;
+  DbVariables[DbVariableCnt].IsParam  := AIsParam;
+  DbAddVariable := DbVariableCnt;
+  Inc(DbVariableCnt);
+End;
+
+{ ---- Ajouter un type ----------------------------------------- }
+
+Function DbAddType(Const AName : TString;
+                    AKind : TDbTypeKind;
+                    ABaseTypeId : Integer) : Integer;
+Begin
+  If DbTypeCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB types table overflow');
+    DbAddType := -1;
+    Exit;
+  End;
+  DbTypes[DbTypeCnt].Id         := DbTypeCnt;
+  DbTypes[DbTypeCnt].Name       := AName;
+  DbTypes[DbTypeCnt].Kind       := AKind;
+  DbTypes[DbTypeCnt].BaseTypeId := ABaseTypeId;
+  DbAddType := DbTypeCnt;
+  Inc(DbTypeCnt);
+End;
+
+{ ---- Ajouter un appel ---------------------------------------- }
+
+Function DbAddCall(ACallerId, ATargetId, ALocId,
+                    ANumArgs : Integer) : Integer;
+Begin
+  If DbCallCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB calls table overflow');
+    DbAddCall := -1;
+    Exit;
+  End;
+  DbCalls[DbCallCnt].Id       := DbCallCnt;
+  DbCalls[DbCallCnt].CallerId := ACallerId;
+  DbCalls[DbCallCnt].TargetId := ATargetId;
+  DbCalls[DbCallCnt].LocId    := ALocId;
+  DbCalls[DbCallCnt].NumArgs  := ANumArgs;
+  DbAddCall := DbCallCnt;
+  Inc(DbCallCnt);
+End;
+
+{ ---- Ajouter un acces a une variable ------------------------- }
+
+Function DbAddAccess(AKind : TDbAccessKind;
+                      AExprId, ATargetId, ALocId : Integer) : Integer;
+Begin
+  If DbAccessCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB accesses table overflow');
+    DbAddAccess := -1;
+    Exit;
+  End;
+  DbAccesses[DbAccessCnt].Id       := DbAccessCnt;
+  DbAccesses[DbAccessCnt].Kind     := AKind;
+  DbAccesses[DbAccessCnt].ExprId   := AExprId;
+  DbAccesses[DbAccessCnt].TargetId := ATargetId;
+  DbAccesses[DbAccessCnt].LocId    := ALocId;
+  DbAddAccess := DbAccessCnt;
+  Inc(DbAccessCnt);
+End;
+
+{ ---- Ajouter un commentaire ---------------------------------- }
+
+Function DbAddComment(AFileId, ALocId : Integer;
+                       Const AText : TString) : Integer;
+Begin
+  If DbCommentCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB comments table overflow');
+    DbAddComment := -1;
+    Exit;
+  End;
+  DbComments[DbCommentCnt].Id     := DbCommentCnt;
+  DbComments[DbCommentCnt].FileId := AFileId;
+  DbComments[DbCommentCnt].LocId  := ALocId;
+  DbComments[DbCommentCnt].Text   := AText;
+  DbAddComment := DbCommentCnt;
+  Inc(DbCommentCnt);
+End;
+
+{ ---- Ajouter un diagnostic ----------------------------------- }
+
+Function DbAddDiagnostic(ASeverity : TDbSeverity;
+                          Const AMessage : TString;
+                          AFileId, ALocId : Integer) : Integer;
+Begin
+  If DbDiagCnt >= MAX_DB_ROWS Then
+  Begin
+    WriteLn('CODEQL: DB diagnostics table overflow');
+    DbAddDiagnostic := -1;
+    Exit;
+  End;
+  DbDiags[DbDiagCnt].Id       := DbDiagCnt;
+  DbDiags[DbDiagCnt].Severity := ASeverity;
+  DbDiags[DbDiagCnt].Message  := AMessage;
+  DbDiags[DbDiagCnt].FileId   := AFileId;
+  DbDiags[DbDiagCnt].LocId    := ALocId;
+  DbAddDiagnostic := DbDiagCnt;
+  Inc(DbDiagCnt);
+End;
+
+{ ---- Recherche par nom dans la table functions --------------- }
+
+Function DbFindFunction(Const AName : TString) : Integer;
+Var I : Integer;
+    Low : TString;
+Begin
+  Low := StrLowerCase(AName);
+  DbFindFunction := -1;
+  For I := 0 To DbFunctionCnt - 1 Do
+    If StrLowerCase(DbFunctions[I].Name) = Low Then
+    Begin
+      DbFindFunction := I;
+      Exit;
+    End;
+End;
+
+{ ---- Recherche par nom dans la table variables --------------- }
+
+Function DbFindVariable(Const AName : TString) : Integer;
+Var I : Integer;
+    Low : TString;
+Begin
+  Low := StrLowerCase(AName);
+  DbFindVariable := -1;
+  For I := 0 To DbVariableCnt - 1 Do
+    If StrLowerCase(DbVariables[I].Name) = Low Then
+    Begin
+      DbFindVariable := I;
+      Exit;
+    End;
+End;
+
+{ ---- Recherche par nom dans la table types ------------------- }
+
+Function DbFindType(Const AName : TString) : Integer;
+Var I : Integer;
+    Low : TString;
+Begin
+  Low := StrLowerCase(AName);
+  DbFindType := -1;
+  For I := 0 To DbTypeCnt - 1 Do
+    If StrLowerCase(DbTypes[I].Name) = Low Then
+    Begin
+      DbFindType := I;
+      Exit;
+    End;
+End;
+
+{ ---- Recherche par nom dans la table files ------------------- }
+
+Function DbFindFile(Const AName : TString) : Integer;
+Var I : Integer;
+Begin
+  DbFindFile := -1;
+  For I := 0 To DbFileCnt - 1 Do
+    If DbFiles[I].Name = AName Then
+    Begin
+      DbFindFile := I;
+      Exit;
+    End;
+End;
+
+{ ---- Affichage du schema de la base de donnees --------------- }
+
+Procedure DumpDbSchema;
+Begin
+  WriteLn('=== Schema de la base de donnees CodeQL ===');
+  WriteLn;
+  WriteLn('TABLE programs (');
+  WriteLn('  id       INTEGER PRIMARY KEY,');
+  WriteLn('  name     VARCHAR(', MAX_DB_STR, '),');
+  WriteLn('  filename VARCHAR(', MAX_DB_STR, ')');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE files (');
+  WriteLn('  id       INTEGER PRIMARY KEY,');
+  WriteLn('  name     VARCHAR(', MAX_DB_STR, '),');
+  WriteLn('  numlines INTEGER');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE locations (');
+  WriteLn('  id        INTEGER PRIMARY KEY,');
+  WriteLn('  file_id   INTEGER REFERENCES files(id),');
+  WriteLn('  startline INTEGER,');
+  WriteLn('  startcol  INTEGER,');
+  WriteLn('  endline   INTEGER,');
+  WriteLn('  endcol    INTEGER');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE exprs (');
+  WriteLn('  id        INTEGER PRIMARY KEY,');
+  WriteLn('  kind      INTEGER,');
+  WriteLn('  parent_id INTEGER,');
+  WriteLn('  loc_id    INTEGER REFERENCES locations(id),');
+  WriteLn('  type_id   INTEGER REFERENCES types(id),');
+  WriteLn('  value     VARCHAR(', MAX_DB_STR, ')');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE stmts (');
+  WriteLn('  id        INTEGER PRIMARY KEY,');
+  WriteLn('  kind      INTEGER,');
+  WriteLn('  parent_id INTEGER,');
+  WriteLn('  loc_id    INTEGER REFERENCES locations(id)');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE functions (');
+  WriteLn('  id             INTEGER PRIMARY KEY,');
+  WriteLn('  name           VARCHAR(', MAX_DB_STR, '),');
+  WriteLn('  parent_id      INTEGER,');
+  WriteLn('  loc_id         INTEGER REFERENCES locations(id),');
+  WriteLn('  return_type_id INTEGER REFERENCES types(id),');
+  WriteLn('  numparams      INTEGER');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE variables (');
+  WriteLn('  id        INTEGER PRIMARY KEY,');
+  WriteLn('  name      VARCHAR(', MAX_DB_STR, '),');
+  WriteLn('  parent_id INTEGER,');
+  WriteLn('  loc_id    INTEGER REFERENCES locations(id),');
+  WriteLn('  type_id   INTEGER REFERENCES types(id),');
+  WriteLn('  is_param  BOOLEAN');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE types (');
+  WriteLn('  id           INTEGER PRIMARY KEY,');
+  WriteLn('  name         VARCHAR(', MAX_DB_STR, '),');
+  WriteLn('  kind         INTEGER,');
+  WriteLn('  base_type_id INTEGER REFERENCES types(id)');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE calls (');
+  WriteLn('  id        INTEGER PRIMARY KEY,');
+  WriteLn('  caller_id INTEGER REFERENCES functions(id),');
+  WriteLn('  target_id INTEGER REFERENCES functions(id),');
+  WriteLn('  loc_id    INTEGER REFERENCES locations(id),');
+  WriteLn('  numargs   INTEGER');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE accesses (');
+  WriteLn('  id        INTEGER PRIMARY KEY,');
+  WriteLn('  kind      INTEGER,');
+  WriteLn('  expr_id   INTEGER REFERENCES exprs(id),');
+  WriteLn('  target_id INTEGER REFERENCES variables(id),');
+  WriteLn('  loc_id    INTEGER REFERENCES locations(id)');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE comments (');
+  WriteLn('  id      INTEGER PRIMARY KEY,');
+  WriteLn('  file_id INTEGER REFERENCES files(id),');
+  WriteLn('  loc_id  INTEGER REFERENCES locations(id),');
+  WriteLn('  text    VARCHAR(', MAX_DB_STR, ')');
+  WriteLn(');');
+  WriteLn;
+  WriteLn('TABLE diagnostics (');
+  WriteLn('  id       INTEGER PRIMARY KEY,');
+  WriteLn('  severity INTEGER,');
+  WriteLn('  message  VARCHAR(', MAX_DB_STR, '),');
+  WriteLn('  file_id  INTEGER REFERENCES files(id),');
+  WriteLn('  loc_id   INTEGER REFERENCES locations(id)');
+  WriteLn(');');
+  WriteLn;
+End;
+
+{ ---- Affichage du contenu de la base de donnees -------------- }
+
+Procedure DumpDatabase;
+Var I : Integer;
+Begin
+  WriteLn('=== Contenu de la base de donnees CodeQL ===');
+  WriteLn;
+
+  If DbProgramCnt > 0 Then
+  Begin
+    WriteLn('--- programs (', DbProgramCnt, ' lignes) ---');
+    For I := 0 To DbProgramCnt - 1 Do
+      WriteLn('  [', DbPrograms[I].Id, '] ',
+              DbPrograms[I].Name, ' file="',
+              DbPrograms[I].FileName, '"');
+    WriteLn;
+  End;
+
+  If DbFileCnt > 0 Then
+  Begin
+    WriteLn('--- files (', DbFileCnt, ' lignes) ---');
+    For I := 0 To DbFileCnt - 1 Do
+      WriteLn('  [', DbFiles[I].Id, '] ',
+              DbFiles[I].Name, ' lines=',
+              DbFiles[I].NumLines);
+    WriteLn;
+  End;
+
+  If DbLocationCnt > 0 Then
+  Begin
+    WriteLn('--- locations (', DbLocationCnt, ' lignes) ---');
+    For I := 0 To DbLocationCnt - 1 Do
+      WriteLn('  [', DbLocations[I].Id, '] file=',
+              DbLocations[I].FileId, ' ',
+              DbLocations[I].StartLine, ':',
+              DbLocations[I].StartCol, '-',
+              DbLocations[I].EndLine, ':',
+              DbLocations[I].EndCol);
+    WriteLn;
+  End;
+
+  If DbTypeCnt > 0 Then
+  Begin
+    WriteLn('--- types (', DbTypeCnt, ' lignes) ---');
+    For I := 0 To DbTypeCnt - 1 Do
+    Begin
+      Write('  [', DbTypes[I].Id, '] ',
+            DbTypes[I].Name, ' kind=',
+            DbTypeKindName(DbTypes[I].Kind));
+      If DbTypes[I].BaseTypeId >= 0 Then
+        Write(' base=', DbTypes[I].BaseTypeId);
+      WriteLn;
+    End;
+    WriteLn;
+  End;
+
+  If DbFunctionCnt > 0 Then
+  Begin
+    WriteLn('--- functions (', DbFunctionCnt, ' lignes) ---');
+    For I := 0 To DbFunctionCnt - 1 Do
+    Begin
+      Write('  [', DbFunctions[I].Id, '] ',
+            DbFunctions[I].Name,
+            ' parent=', DbFunctions[I].ParentId,
+            ' loc=', DbFunctions[I].LocId,
+            ' params=', DbFunctions[I].NumParams);
+      If DbFunctions[I].ReturnTypeId >= 0 Then
+        Write(' ret=', DbFunctions[I].ReturnTypeId);
+      WriteLn;
+    End;
+    WriteLn;
+  End;
+
+  If DbVariableCnt > 0 Then
+  Begin
+    WriteLn('--- variables (', DbVariableCnt, ' lignes) ---');
+    For I := 0 To DbVariableCnt - 1 Do
+    Begin
+      Write('  [', DbVariables[I].Id, '] ',
+            DbVariables[I].Name,
+            ' parent=', DbVariables[I].ParentId,
+            ' loc=', DbVariables[I].LocId,
+            ' type=', DbVariables[I].TypeId);
+      If DbVariables[I].IsParam Then
+        Write(' [param]');
+      WriteLn;
+    End;
+    WriteLn;
+  End;
+
+  If DbExprCnt > 0 Then
+  Begin
+    WriteLn('--- exprs (', DbExprCnt, ' lignes) ---');
+    For I := 0 To DbExprCnt - 1 Do
+      WriteLn('  [', DbExprs[I].Id, '] ',
+              DbExprKindName(DbExprs[I].Kind),
+              ' parent=', DbExprs[I].ParentId,
+              ' loc=', DbExprs[I].LocId,
+              ' type=', DbExprs[I].TypeId,
+              ' val="', DbExprs[I].Value, '"');
+    WriteLn;
+  End;
+
+  If DbStmtCnt > 0 Then
+  Begin
+    WriteLn('--- stmts (', DbStmtCnt, ' lignes) ---');
+    For I := 0 To DbStmtCnt - 1 Do
+      WriteLn('  [', DbStmts[I].Id, '] ',
+              DbStmtKindName(DbStmts[I].Kind),
+              ' parent=', DbStmts[I].ParentId,
+              ' loc=', DbStmts[I].LocId);
+    WriteLn;
+  End;
+
+  If DbCallCnt > 0 Then
+  Begin
+    WriteLn('--- calls (', DbCallCnt, ' lignes) ---');
+    For I := 0 To DbCallCnt - 1 Do
+      WriteLn('  [', DbCalls[I].Id, '] caller=',
+              DbCalls[I].CallerId,
+              ' target=', DbCalls[I].TargetId,
+              ' loc=', DbCalls[I].LocId,
+              ' args=', DbCalls[I].NumArgs);
+    WriteLn;
+  End;
+
+  If DbAccessCnt > 0 Then
+  Begin
+    WriteLn('--- accesses (', DbAccessCnt, ' lignes) ---');
+    For I := 0 To DbAccessCnt - 1 Do
+      WriteLn('  [', DbAccesses[I].Id, '] ',
+              DbAccessKindName(DbAccesses[I].Kind),
+              ' expr=', DbAccesses[I].ExprId,
+              ' target=', DbAccesses[I].TargetId,
+              ' loc=', DbAccesses[I].LocId);
+    WriteLn;
+  End;
+
+  If DbCommentCnt > 0 Then
+  Begin
+    WriteLn('--- comments (', DbCommentCnt, ' lignes) ---');
+    For I := 0 To DbCommentCnt - 1 Do
+      WriteLn('  [', DbComments[I].Id, '] file=',
+              DbComments[I].FileId,
+              ' loc=', DbComments[I].LocId,
+              ' "', DbComments[I].Text, '"');
+    WriteLn;
+  End;
+
+  If DbDiagCnt > 0 Then
+  Begin
+    WriteLn('--- diagnostics (', DbDiagCnt, ' lignes) ---');
+    For I := 0 To DbDiagCnt - 1 Do
+      WriteLn('  [', DbDiags[I].Id, '] ',
+              DbSeverityName(DbDiags[I].Severity),
+              ' file=', DbDiags[I].FileId,
+              ' loc=', DbDiags[I].LocId,
+              ' "', DbDiags[I].Message, '"');
+    WriteLn;
+  End;
+
+  WriteLn('--- Resume ---');
+  WriteLn('  programs   : ', DbProgramCnt);
+  WriteLn('  files      : ', DbFileCnt);
+  WriteLn('  locations  : ', DbLocationCnt);
+  WriteLn('  types      : ', DbTypeCnt);
+  WriteLn('  functions  : ', DbFunctionCnt);
+  WriteLn('  variables  : ', DbVariableCnt);
+  WriteLn('  exprs      : ', DbExprCnt);
+  WriteLn('  stmts      : ', DbStmtCnt);
+  WriteLn('  calls      : ', DbCallCnt);
+  WriteLn('  accesses   : ', DbAccessCnt);
+  WriteLn('  comments   : ', DbCommentCnt);
+  WriteLn('  diagnostics: ', DbDiagCnt);
+  WriteLn;
 End;
 
 { ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
