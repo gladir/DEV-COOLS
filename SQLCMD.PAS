@@ -54,7 +54,7 @@
               bitmap NULL, nombre de colonnes variables,
               tableau d offsets variables, donnees variables
 
-  TODO 05 - CATALOGUE SYSTEME (METADATA)
+  TODO 05 - CATALOGUE SYSTEME (METADATA) [IMPLEMENTE]
             Lire sys.sysschobjs (page 1:34) : object_id, name,
               type (U=table, V=vue, P=procedure, FN=fonction,
               TR=trigger, C=contrainte, D=default)
@@ -635,6 +635,64 @@ Const
   { Nombre maximum de slots par page }
   MDF_MAX_SLOTS      = 1000;    { max theorique de slots par page     }
 
+  { ---- Constantes catalogue systeme (TODO 05) ---------------- }
+  { Object IDs des tables systeme internes SQL Server }
+  MDF_SYSOBJ_SYSSCHOBJS = 34;   { sys.sysschobjs - objets          }
+  MDF_SYSOBJ_SYSCOLPARS = 41;   { sys.syscolpars - colonnes        }
+  MDF_SYSOBJ_SYSIDXSTATS= 54;   { sys.sysidxstats - index          }
+  MDF_SYSOBJ_SYSISCOLS  = 55;   { sys.sysiscols - colonnes index   }
+  MDF_SYSOBJ_SYSROWSETS = 5;    { sys.sysrowsets - rowsets          }
+
+  { Offsets partie fixe du row sysschobjs (apres StatusBits) }
+  MDF_SCHOBJ_ID      = 4;       { object_id (4 oct. LongInt)       }
+  MDF_SCHOBJ_NSID    = 8;       { schema namespace ID (4 oct.)     }
+  MDF_SCHOBJ_NSCLASS = 12;      { namespace class (1 oct.)         }
+  MDF_SCHOBJ_STATUS  = 13;      { status (4 oct.)                  }
+  MDF_SCHOBJ_TYPE    = 17;      { type code (2 oct. char)          }
+  MDF_SCHOBJ_PID     = 19;      { parent object_id (4 oct.)        }
+
+  { Offsets partie fixe du row syscolpars }
+  MDF_COLPAR_ID      = 4;       { parent object_id (4 oct.)        }
+  MDF_COLPAR_NUMBER  = 8;       { parameter number (2 oct.)        }
+  MDF_COLPAR_COLID   = 10;      { column_id (4 oct.)               }
+  MDF_COLPAR_XTYPE   = 14;      { system type ID (1 oct.)          }
+  MDF_COLPAR_UTYPE   = 15;      { user type (4 oct.)               }
+  MDF_COLPAR_LENGTH  = 19;      { max length (2 oct.)              }
+  MDF_COLPAR_PREC    = 21;      { precision (1 oct.)               }
+  MDF_COLPAR_SCALE   = 22;      { scale (1 oct.)                   }
+  MDF_COLPAR_COLLID  = 23;      { collation ID (4 oct.)            }
+  MDF_COLPAR_STATUS  = 27;      { status bits (4 oct.)             }
+
+  { Offsets partie fixe du row sysidxstats }
+  MDF_IDXST_ID       = 4;       { object_id (4 oct.)               }
+  MDF_IDXST_INDID    = 8;       { index_id (4 oct.)                }
+  MDF_IDXST_STATUS   = 12;      { status (4 oct.)                  }
+  MDF_IDXST_TYPE     = 20;      { index type (1 oct.)              }
+
+  { Offsets partie fixe du row sysiscols }
+  MDF_ISCOL_IDMAJOR  = 4;       { object_id (4 oct.)               }
+  MDF_ISCOL_IDMINOR  = 8;       { index_id (4 oct.)                }
+  MDF_ISCOL_SUBID    = 12;      { ordinal dans l index (4 oct.)    }
+  MDF_ISCOL_STATUS   = 16;      { status (4 oct.)                  }
+  MDF_ISCOL_INTPROP  = 20;      { column_id reference (4 oct.)     }
+
+  { Offsets partie fixe du row sysrowsets }
+  MDF_ROWSET_RSLO    = 4;       { rowset_id low (4 oct.)           }
+  MDF_ROWSET_RSHI    = 8;       { rowset_id high (4 oct.)          }
+  MDF_ROWSET_OWNERID = 12;      { owner HOBT (4 oct.)              }
+  MDF_ROWSET_IDMAJOR = 16;      { object_id (4 oct.)               }
+  MDF_ROWSET_IDMINOR = 20;      { index_id (4 oct.)                }
+
+  { Taille max du nom dans les tables systeme }
+  MAX_CATNAME = 60;
+
+  { Taille max des tableaux catalogue }
+  MAX_SYS_OBJECTS = {$IFDEF FPC}200{$ELSE}30{$ENDIF};
+  MAX_SYS_COLUMNS = {$IFDEF FPC}500{$ELSE}60{$ENDIF};
+  MAX_SYS_INDEXES = {$IFDEF FPC}200{$ELSE}30{$ENDIF};
+  MAX_SYS_IDXCOLS = {$IFDEF FPC}500{$ELSE}60{$ENDIF};
+  MAX_SYS_ROWSETS = {$IFDEF FPC}200{$ELSE}30{$ENDIF};
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -727,6 +785,66 @@ Type
     Valid       : Boolean;     { True si page lue avec succes         }
   End;
 
+  { ---- Nom catalogue systeme (TODO 05) ------------------------ }
+  TCatName = String[MAX_CATNAME];
+
+  { ---- Objet systeme (sys.sysschobjs) (TODO 05) -------------- }
+  TSysObject = Record
+    ObjectId  : LongInt;       { object_id                            }
+    Name      : TCatName;      { nom de l objet                       }
+    ObjType   : String[2];     { type (U,V,P,FN,TR,C,D,S,IT...)      }
+    ParentId  : LongInt;       { parent object_id                     }
+    SchemaId  : LongInt;       { schema namespace ID                  }
+    Status    : LongInt;       { status                               }
+    Valid     : Boolean;
+  End;
+
+  { ---- Colonne systeme (sys.syscolpars) (TODO 05) ------------- }
+  TSysColumn = Record
+    ObjectId  : LongInt;       { parent object_id                     }
+    ColumnId  : LongInt;       { column_id                            }
+    ColNum    : Word;          { numero de colonne                    }
+    Name      : TCatName;      { nom de la colonne                    }
+    XType     : Byte;          { system type ID                       }
+    MaxLen    : Word;          { longueur maximale                    }
+    Prec      : Byte;          { precision                            }
+    Scale     : Byte;          { echelle                              }
+    CollId    : LongInt;       { collation ID                         }
+    Status    : LongInt;       { status bits                          }
+    Nullable  : Boolean;       { True si nullable                     }
+    Valid     : Boolean;
+  End;
+
+  { ---- Index systeme (sys.sysidxstats) (TODO 05) -------------- }
+  TSysIndex = Record
+    ObjectId  : LongInt;       { object_id                            }
+    IndexId   : LongInt;       { index_id                             }
+    Name      : TCatName;      { nom de l index                       }
+    IdxType   : Byte;          { 0=heap, 1=clustered, 2=nonclust      }
+    Status    : LongInt;       { status                               }
+    Valid     : Boolean;
+  End;
+
+  { ---- Colonne d index (sys.sysiscols) (TODO 05) -------------- }
+  TSysIdxCol = Record
+    ObjectId  : LongInt;       { object_id                            }
+    IndexId   : LongInt;       { index_id                             }
+    SubId     : LongInt;       { ordinal dans l index                 }
+    ColumnId  : LongInt;       { column_id reference                  }
+    Status    : LongInt;       { status                               }
+    Valid     : Boolean;
+  End;
+
+  { ---- Rowset (sys.sysrowsets) (TODO 05) ---------------------- }
+  TSysRowSet = Record
+    RowSetLo  : LongInt;       { rowset_id (partie basse)             }
+    RowSetHi  : LongInt;       { rowset_id (partie haute)             }
+    OwnerId   : LongInt;       { owner HOBT                           }
+    ObjectId  : LongInt;       { object_id                            }
+    IndexId   : LongInt;       { index_id                             }
+    Valid     : Boolean;
+  End;
+
   { ---- Options de la ligne de commande ---------------------- }
   TOptions = Record
     MdfFile    : TString;   { -S : fichier .MDF principal          }
@@ -753,6 +871,18 @@ Var
   MdfPageCnt : LongInt;        { nombre total de pages dans le MDF   }
   PageBuf    : TMdfPageBuf;    { buffer de lecture d une page         }
   BootInfo   : TMdfBootInfo;   { infos extraites de la Boot Page     }
+  { ---- Catalogue systeme (TODO 05) ----------------------------- }
+  SysObjects  : Array[0..MAX_SYS_OBJECTS - 1] Of TSysObject;
+  SysObjCount : Integer;
+  SysColumns  : Array[0..MAX_SYS_COLUMNS - 1] Of TSysColumn;
+  SysColCount : Integer;
+  SysIndexes  : Array[0..MAX_SYS_INDEXES - 1] Of TSysIndex;
+  SysIdxCount : Integer;
+  SysIdxCols  : Array[0..MAX_SYS_IDXCOLS - 1] Of TSysIdxCol;
+  SysIcCount  : Integer;
+  SysRowSets  : Array[0..MAX_SYS_ROWSETS - 1] Of TSysRowSet;
+  SysRsCount  : Integer;
+  CatalogValid : Boolean;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2037,6 +2167,555 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 05 - CATALOGUE SYSTEME (METADATA) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Extraire une colonne variable Unicode d un row ----------- }
+{ Lit la colonne variable a l index VarIdx (base 0) et la        }
+{ convertit de UTF-16 LE en chaine ASCII (octets bas uniquement) }
+
+Function ExtractRowVarUnicode(Const Buf : TMdfPageBuf;
+                               RowOfs : Word;
+                               VarIdx : Integer) : TCatName;
+Var
+  StatusA    : Byte;
+  HasNull    : Boolean;
+  HasVar     : Boolean;
+  FixedLen   : Word;
+  ColCount   : Word;
+  NullBmpSz  : Word;
+  VarCnt     : Word;
+  VarOfs     : Word;
+  OfsArrOfs  : Word;
+  OfsEnd     : Word;
+  DataStart  : Word;
+  DataEnd    : Word;
+  PrevEnd    : Word;
+  I          : Integer;
+  Lo         : Byte;
+  S          : TCatName;
+Begin
+  S := '';
+  ExtractRowVarUnicode := S;
+
+  If RowOfs + 4 > MDF_PAGE_SIZE Then Exit;
+
+  StatusA := Buf[RowOfs];
+  HasNull := (StatusA And MDF_REC_HAS_NULL) <> 0;
+  HasVar  := (StatusA And MDF_REC_HAS_VAR) <> 0;
+  If Not HasVar Then Exit;
+
+  FixedLen := ReadWord(Buf, RowOfs + 2);
+  If FixedLen < 4 Then FixedLen := 4;
+  If RowOfs + FixedLen + 2 > MDF_PAGE_SIZE Then Exit;
+
+  ColCount := ReadWord(Buf, RowOfs + FixedLen);
+  If HasNull And (ColCount > 0) Then
+    NullBmpSz := (ColCount + 7) Div 8
+  Else
+    NullBmpSz := 0;
+
+  VarOfs := RowOfs + FixedLen + 2 + NullBmpSz;
+  If VarOfs + 2 > MDF_PAGE_SIZE Then Exit;
+
+  VarCnt := ReadWord(Buf, VarOfs);
+  If VarIdx >= VarCnt Then Exit;
+
+  OfsArrOfs := VarOfs + 2;
+  If OfsArrOfs + LongInt(VarCnt) * 2 > MDF_PAGE_SIZE Then Exit;
+
+  OfsEnd := ReadWord(Buf, OfsArrOfs + VarIdx * 2) And $7FFF;
+
+  If VarIdx = 0 Then
+    DataStart := OfsArrOfs + VarCnt * 2
+  Else
+  Begin
+    PrevEnd := ReadWord(Buf, OfsArrOfs + (VarIdx - 1) * 2) And $7FFF;
+    DataStart := RowOfs + PrevEnd;
+  End;
+
+  DataEnd := RowOfs + OfsEnd;
+  If DataStart >= DataEnd Then Exit;
+  If DataEnd > MDF_PAGE_SIZE Then DataEnd := MDF_PAGE_SIZE;
+
+  { Convertir UTF-16 LE en ASCII (octets bas) }
+  I := 0;
+  While (DataStart + I * 2 + 1 < DataEnd) And
+        (Length(S) < MAX_CATNAME) Do
+  Begin
+    Lo := Buf[DataStart + I * 2];
+    If Lo = 0 Then Break;
+    S := S + Chr(Lo);
+    Inc(I);
+  End;
+
+  ExtractRowVarUnicode := S;
+End;
+
+{ ---- Nom du type d objet SQL Server -------------------------- }
+
+Function ObjTypeName(Const T : String) : TCatName;
+Var
+  U : String[2];
+Begin
+  U := '';
+  If Length(T) >= 1 Then
+  Begin
+    U := T[1];
+    If (Length(T) >= 2) And (T[2] <> ' ') Then
+      U := U + T[2];
+  End;
+
+  If U = 'U' Then ObjTypeName := 'User Table'
+  Else If U = 'V' Then ObjTypeName := 'View'
+  Else If U = 'P' Then ObjTypeName := 'Procedure'
+  Else If U = 'C' Then ObjTypeName := 'Check Constraint'
+  Else If U = 'D' Then ObjTypeName := 'Default'
+  Else If U = 'S' Then ObjTypeName := 'System Table'
+  Else If U = 'FN' Then ObjTypeName := 'Scalar Function'
+  Else If U = 'IF' Then ObjTypeName := 'Inline Function'
+  Else If U = 'TF' Then ObjTypeName := 'Table Function'
+  Else If U = 'TR' Then ObjTypeName := 'Trigger'
+  Else If U = 'IT' Then ObjTypeName := 'Internal Table'
+  Else If U = 'PK' Then ObjTypeName := 'Primary Key'
+  Else If U = 'UQ' Then ObjTypeName := 'Unique Constraint'
+  Else If U = 'F' Then ObjTypeName := 'Foreign Key'
+  Else If U = 'SQ' Then ObjTypeName := 'Service Queue'
+  Else ObjTypeName := 'Type(' + U + ')';
+End;
+
+{ ---- Nom d un type systeme SQL Server (xtype) ---------------- }
+
+Function XTypeName(XT : Byte) : TCatName;
+Begin
+  Case XT Of
+    34  : XTypeName := 'IMAGE';
+    35  : XTypeName := 'TEXT';
+    36  : XTypeName := 'UNIQUEIDENTIFIER';
+    40  : XTypeName := 'DATE';
+    41  : XTypeName := 'TIME';
+    42  : XTypeName := 'DATETIME2';
+    43  : XTypeName := 'DATETIMEOFFSET';
+    48  : XTypeName := 'TINYINT';
+    52  : XTypeName := 'SMALLINT';
+    56  : XTypeName := 'INT';
+    58  : XTypeName := 'SMALLDATETIME';
+    59  : XTypeName := 'REAL';
+    60  : XTypeName := 'MONEY';
+    61  : XTypeName := 'DATETIME';
+    62  : XTypeName := 'FLOAT';
+    98  : XTypeName := 'SQL_VARIANT';
+    99  : XTypeName := 'NTEXT';
+    104 : XTypeName := 'BIT';
+    106 : XTypeName := 'DECIMAL';
+    108 : XTypeName := 'NUMERIC';
+    122 : XTypeName := 'SMALLMONEY';
+    127 : XTypeName := 'BIGINT';
+    165 : XTypeName := 'VARBINARY';
+    167 : XTypeName := 'VARCHAR';
+    173 : XTypeName := 'BINARY';
+    175 : XTypeName := 'CHAR';
+    189 : XTypeName := 'TIMESTAMP';
+    231 : XTypeName := 'NVARCHAR';
+    239 : XTypeName := 'NCHAR';
+    240 : XTypeName := 'CLR/GEOGRAPHY';
+    241 : XTypeName := 'XML';
+  Else
+    XTypeName := 'xtype(' + IntToStr(XT) + ')';
+  End;
+End;
+
+{ ---- Nom d un type d index ----------------------------------- }
+
+Function IdxTypeName(IT : Byte) : TCatName;
+Begin
+  Case IT Of
+    0 : IdxTypeName := 'Heap';
+    1 : IdxTypeName := 'Clustered';
+    2 : IdxTypeName := 'Nonclustered';
+    3 : IdxTypeName := 'XML';
+    4 : IdxTypeName := 'Spatial';
+    5 : IdxTypeName := 'Clustered Columnstore';
+    6 : IdxTypeName := 'Nonclustered Columnstore';
+    7 : IdxTypeName := 'Nonclustered Hash';
+  Else
+    IdxTypeName := 'idxtype(' + IntToStr(IT) + ')';
+  End;
+End;
+
+{ ---- Trouver le nom d un objet par son object_id ------------- }
+
+Function FindObjectName(ObjId : LongInt) : TCatName;
+Var
+  I : Integer;
+Begin
+  For I := 0 To SysObjCount - 1 Do
+  Begin
+    If SysObjects[I].ObjectId = ObjId Then
+    Begin
+      FindObjectName := SysObjects[I].Name;
+      Exit;
+    End;
+  End;
+  FindObjectName := '(obj#' + IntToStr(ObjId) + ')';
+End;
+
+{ ---- Parser un row sysschobjs -------------------------------- }
+
+Procedure ParseSysSchObjRow(Const Buf : TMdfPageBuf;
+                            RowOfs : Word);
+Var
+  ObjId   : LongInt;
+  SchId   : LongInt;
+  ParId   : LongInt;
+  Status  : LongInt;
+  ObjType : String[2];
+  ObjName : TCatName;
+Begin
+  If SysObjCount >= MAX_SYS_OBJECTS Then Exit;
+  If RowOfs + MDF_SCHOBJ_PID + 4 > MDF_PAGE_SIZE Then Exit;
+
+  ObjId  := ReadLong(Buf, RowOfs + MDF_SCHOBJ_ID);
+  SchId  := ReadLong(Buf, RowOfs + MDF_SCHOBJ_NSID);
+  Status := ReadLong(Buf, RowOfs + MDF_SCHOBJ_STATUS);
+
+  ObjType := Chr(Buf[RowOfs + MDF_SCHOBJ_TYPE]);
+  If RowOfs + MDF_SCHOBJ_TYPE + 1 < MDF_PAGE_SIZE Then
+    ObjType := ObjType + Chr(Buf[RowOfs + MDF_SCHOBJ_TYPE + 1]);
+
+  ParId := ReadLong(Buf, RowOfs + MDF_SCHOBJ_PID);
+
+  { Extraire le nom (premiere colonne variable, UTF-16 LE) }
+  ObjName := ExtractRowVarUnicode(Buf, RowOfs, 0);
+
+  If ObjId <> 0 Then
+  Begin
+    SysObjects[SysObjCount].ObjectId  := ObjId;
+    SysObjects[SysObjCount].Name      := ObjName;
+    SysObjects[SysObjCount].ObjType   := ObjType;
+    SysObjects[SysObjCount].ParentId  := ParId;
+    SysObjects[SysObjCount].SchemaId  := SchId;
+    SysObjects[SysObjCount].Status    := Status;
+    SysObjects[SysObjCount].Valid     := True;
+    Inc(SysObjCount);
+  End;
+End;
+
+{ ---- Parser un row syscolpars -------------------------------- }
+
+Procedure ParseSysColParRow(Const Buf : TMdfPageBuf;
+                            RowOfs : Word);
+Var
+  ObjId   : LongInt;
+  ColId   : LongInt;
+  ColNum  : Word;
+  XType   : Byte;
+  MaxLen  : Word;
+  Prec    : Byte;
+  Scale   : Byte;
+  CollId  : LongInt;
+  Status  : LongInt;
+  ColName : TCatName;
+Begin
+  If SysColCount >= MAX_SYS_COLUMNS Then Exit;
+  If RowOfs + MDF_COLPAR_STATUS + 4 > MDF_PAGE_SIZE Then Exit;
+
+  ObjId  := ReadLong(Buf, RowOfs + MDF_COLPAR_ID);
+  ColNum := ReadWord(Buf, RowOfs + MDF_COLPAR_NUMBER);
+  ColId  := ReadLong(Buf, RowOfs + MDF_COLPAR_COLID);
+  XType  := Buf[RowOfs + MDF_COLPAR_XTYPE];
+  MaxLen := ReadWord(Buf, RowOfs + MDF_COLPAR_LENGTH);
+  Prec   := Buf[RowOfs + MDF_COLPAR_PREC];
+  Scale  := Buf[RowOfs + MDF_COLPAR_SCALE];
+  CollId := ReadLong(Buf, RowOfs + MDF_COLPAR_COLLID);
+  Status := ReadLong(Buf, RowOfs + MDF_COLPAR_STATUS);
+
+  { Extraire le nom (premiere colonne variable) }
+  ColName := ExtractRowVarUnicode(Buf, RowOfs, 0);
+
+  If ObjId <> 0 Then
+  Begin
+    SysColumns[SysColCount].ObjectId  := ObjId;
+    SysColumns[SysColCount].ColumnId  := ColId;
+    SysColumns[SysColCount].ColNum    := ColNum;
+    SysColumns[SysColCount].Name      := ColName;
+    SysColumns[SysColCount].XType     := XType;
+    SysColumns[SysColCount].MaxLen    := MaxLen;
+    SysColumns[SysColCount].Prec      := Prec;
+    SysColumns[SysColCount].Scale     := Scale;
+    SysColumns[SysColCount].CollId    := CollId;
+    SysColumns[SysColCount].Status    := Status;
+    { Bit 0 du status indique nullable }
+    SysColumns[SysColCount].Nullable  := (Status And 1) <> 0;
+    SysColumns[SysColCount].Valid     := True;
+    Inc(SysColCount);
+  End;
+End;
+
+{ ---- Parser un row sysidxstats ------------------------------- }
+
+Procedure ParseSysIdxStatRow(Const Buf : TMdfPageBuf;
+                             RowOfs : Word);
+Var
+  ObjId   : LongInt;
+  IndId   : LongInt;
+  Status  : LongInt;
+  IdxType : Byte;
+  IdxName : TCatName;
+Begin
+  If SysIdxCount >= MAX_SYS_INDEXES Then Exit;
+  If RowOfs + MDF_IDXST_TYPE + 1 > MDF_PAGE_SIZE Then Exit;
+
+  ObjId   := ReadLong(Buf, RowOfs + MDF_IDXST_ID);
+  IndId   := ReadLong(Buf, RowOfs + MDF_IDXST_INDID);
+  Status  := ReadLong(Buf, RowOfs + MDF_IDXST_STATUS);
+  IdxType := Buf[RowOfs + MDF_IDXST_TYPE];
+
+  { Extraire le nom (premiere colonne variable) }
+  IdxName := ExtractRowVarUnicode(Buf, RowOfs, 0);
+
+  If ObjId <> 0 Then
+  Begin
+    SysIndexes[SysIdxCount].ObjectId := ObjId;
+    SysIndexes[SysIdxCount].IndexId  := IndId;
+    SysIndexes[SysIdxCount].Name     := IdxName;
+    SysIndexes[SysIdxCount].IdxType  := IdxType;
+    SysIndexes[SysIdxCount].Status   := Status;
+    SysIndexes[SysIdxCount].Valid    := True;
+    Inc(SysIdxCount);
+  End;
+End;
+
+{ ---- Parser un row sysiscols --------------------------------- }
+
+Procedure ParseSysIsColRow(Const Buf : TMdfPageBuf;
+                           RowOfs : Word);
+Var
+  ObjId   : LongInt;
+  IndId   : LongInt;
+  SubId   : LongInt;
+  ColId   : LongInt;
+  Status  : LongInt;
+Begin
+  If SysIcCount >= MAX_SYS_IDXCOLS Then Exit;
+  If RowOfs + MDF_ISCOL_INTPROP + 4 > MDF_PAGE_SIZE Then Exit;
+
+  ObjId  := ReadLong(Buf, RowOfs + MDF_ISCOL_IDMAJOR);
+  IndId  := ReadLong(Buf, RowOfs + MDF_ISCOL_IDMINOR);
+  SubId  := ReadLong(Buf, RowOfs + MDF_ISCOL_SUBID);
+  Status := ReadLong(Buf, RowOfs + MDF_ISCOL_STATUS);
+  ColId  := ReadLong(Buf, RowOfs + MDF_ISCOL_INTPROP);
+
+  If ObjId <> 0 Then
+  Begin
+    SysIdxCols[SysIcCount].ObjectId := ObjId;
+    SysIdxCols[SysIcCount].IndexId  := IndId;
+    SysIdxCols[SysIcCount].SubId    := SubId;
+    SysIdxCols[SysIcCount].ColumnId := ColId;
+    SysIdxCols[SysIcCount].Status   := Status;
+    SysIdxCols[SysIcCount].Valid    := True;
+    Inc(SysIcCount);
+  End;
+End;
+
+{ ---- Parser un row sysrowsets -------------------------------- }
+
+Procedure ParseSysRowSetRow(Const Buf : TMdfPageBuf;
+                            RowOfs : Word);
+Var
+  RsLo    : LongInt;
+  RsHi    : LongInt;
+  OwnId   : LongInt;
+  ObjId   : LongInt;
+  IndId   : LongInt;
+Begin
+  If SysRsCount >= MAX_SYS_ROWSETS Then Exit;
+  If RowOfs + MDF_ROWSET_IDMINOR + 4 > MDF_PAGE_SIZE Then Exit;
+
+  RsLo  := ReadLong(Buf, RowOfs + MDF_ROWSET_RSLO);
+  RsHi  := ReadLong(Buf, RowOfs + MDF_ROWSET_RSHI);
+  OwnId := ReadLong(Buf, RowOfs + MDF_ROWSET_OWNERID);
+  ObjId := ReadLong(Buf, RowOfs + MDF_ROWSET_IDMAJOR);
+  IndId := ReadLong(Buf, RowOfs + MDF_ROWSET_IDMINOR);
+
+  If (RsLo <> 0) Or (RsHi <> 0) Then
+  Begin
+    SysRowSets[SysRsCount].RowSetLo := RsLo;
+    SysRowSets[SysRsCount].RowSetHi := RsHi;
+    SysRowSets[SysRsCount].OwnerId  := OwnId;
+    SysRowSets[SysRsCount].ObjectId := ObjId;
+    SysRowSets[SysRsCount].IndexId  := IndId;
+    SysRowSets[SysRsCount].Valid    := True;
+    Inc(SysRsCount);
+  End;
+End;
+
+{ ---- Afficher le catalogue systeme (mode verbose) ------------- }
+{ Affiche les objets, leurs colonnes et leurs index.             }
+
+Procedure DumpCatalog;
+Var
+  I, J   : Integer;
+  ObjId  : LongInt;
+  ColStr : TCatName;
+  OType  : String[2];
+Begin
+  WriteLn;
+  WriteLn('  Schema de la base de donnees :');
+  WriteLn('  =============================');
+
+  For I := 0 To SysObjCount - 1 Do
+  Begin
+    If SysObjects[I].Valid Then
+    Begin
+      OType := SysObjects[I].ObjType;
+      WriteLn;
+      Write('    [');
+      { Afficher le type sans espaces de fin }
+      If Length(OType) >= 1 Then Write(OType[1]);
+      If (Length(OType) >= 2) And (OType[2] <> ' ') Then
+        Write(OType[2]);
+      Write('] ', SysObjects[I].Name);
+      WriteLn(' (id=', SysObjects[I].ObjectId,
+              ', ', ObjTypeName(OType), ')');
+
+      ObjId := SysObjects[I].ObjectId;
+
+      { Colonnes pour les tables (U) et tables systeme (S) }
+      If (Length(OType) >= 1) And
+         ((OType[1] = 'U') Or (OType[1] = 'S')) Then
+      Begin
+        For J := 0 To SysColCount - 1 Do
+        Begin
+          If SysColumns[J].Valid And
+             (SysColumns[J].ObjectId = ObjId) Then
+          Begin
+            ColStr := XTypeName(SysColumns[J].XType);
+            Write('      col[', SysColumns[J].ColumnId, '] ',
+                  SysColumns[J].Name, ' : ', ColStr);
+            If SysColumns[J].MaxLen > 0 Then
+              Write('(', SysColumns[J].MaxLen, ')');
+            If SysColumns[J].Prec > 0 Then
+              Write(' prec=', SysColumns[J].Prec);
+            If SysColumns[J].Scale > 0 Then
+              Write(' scale=', SysColumns[J].Scale);
+            If SysColumns[J].Nullable Then
+              Write(' NULL')
+            Else
+              Write(' NOT NULL');
+            WriteLn;
+          End;
+        End;
+
+        { Index de l objet }
+        For J := 0 To SysIdxCount - 1 Do
+        Begin
+          If SysIndexes[J].Valid And
+             (SysIndexes[J].ObjectId = ObjId) Then
+          Begin
+            WriteLn('      idx[', SysIndexes[J].IndexId, '] ',
+                    SysIndexes[J].Name,
+                    ' (', IdxTypeName(SysIndexes[J].IdxType), ')');
+          End;
+        End;
+      End;
+    End;
+  End;
+  WriteLn;
+End;
+
+{ ---- Lire le catalogue systeme complet ------------------------ }
+{ Scan unique de toutes les pages pour extraire les metadata      }
+{ des 5 tables systeme internes.                                  }
+
+Procedure ReadSystemCatalog;
+Var
+  TmpBuf    : TMdfPageBuf;
+  Hdr       : TMdfPageHeader;
+  Slots     : TMdfSlotArray;
+  I         : LongInt;
+  J         : Integer;
+  RowOfs    : Word;
+  SC        : Word;
+  IsSysPg   : Boolean;
+Begin
+  SysObjCount  := 0;
+  SysColCount  := 0;
+  SysIdxCount  := 0;
+  SysIcCount   := 0;
+  SysRsCount   := 0;
+  CatalogValid := False;
+
+  If Not MdfOpen Then Exit;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn;
+    WriteLn('  Catalogue systeme (TODO 05) :');
+  End;
+
+  { Scanner toutes les pages pour trouver les pages systeme }
+  For I := 0 To MdfPageCnt - 1 Do
+  Begin
+    If SeekPage(I, TmpBuf) Then
+    Begin
+      ParsePageHeader(TmpBuf, Hdr);
+
+      If Hdr.PageType = MDF_PT_DATA Then
+      Begin
+        { Verifier si la page appartient a une table systeme }
+        IsSysPg := (Hdr.ObjId = MDF_SYSOBJ_SYSSCHOBJS) Or
+                   (Hdr.ObjId = MDF_SYSOBJ_SYSCOLPARS) Or
+                   (Hdr.ObjId = MDF_SYSOBJ_SYSIDXSTATS) Or
+                   (Hdr.ObjId = MDF_SYSOBJ_SYSISCOLS) Or
+                   (Hdr.ObjId = MDF_SYSOBJ_SYSROWSETS);
+
+        If IsSysPg Then
+        Begin
+          SC := Hdr.SlotCnt;
+          If SC > MDF_MAX_SLOTS Then SC := MDF_MAX_SLOTS;
+          ReadSlotArray(TmpBuf, SC, Slots);
+
+          For J := 0 To SC - 1 Do
+          Begin
+            RowOfs := Slots[J];
+            If (RowOfs >= MDF_PAGE_HDR_SIZE) And
+               (RowOfs < MDF_PAGE_SIZE - 4) Then
+            Begin
+              If Hdr.ObjId = MDF_SYSOBJ_SYSSCHOBJS Then
+                ParseSysSchObjRow(TmpBuf, RowOfs)
+              Else If Hdr.ObjId = MDF_SYSOBJ_SYSCOLPARS Then
+                ParseSysColParRow(TmpBuf, RowOfs)
+              Else If Hdr.ObjId = MDF_SYSOBJ_SYSIDXSTATS Then
+                ParseSysIdxStatRow(TmpBuf, RowOfs)
+              Else If Hdr.ObjId = MDF_SYSOBJ_SYSISCOLS Then
+                ParseSysIsColRow(TmpBuf, RowOfs)
+              Else If Hdr.ObjId = MDF_SYSOBJ_SYSROWSETS Then
+                ParseSysRowSetRow(TmpBuf, RowOfs);
+            End;
+          End;
+        End;
+      End;
+    End;
+  End;
+
+  CatalogValid := (SysObjCount > 0);
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('    Objets trouves   : ', SysObjCount);
+    WriteLn('    Colonnes trouvees: ', SysColCount);
+    WriteLn('    Index trouves    : ', SysIdxCount);
+    WriteLn('    Index cols       : ', SysIcCount);
+    WriteLn('    Rowsets trouves  : ', SysRsCount);
+  End;
+
+  { Afficher le schema si le catalogue est valide }
+  If CatalogValid And Opts.Verbose Then
+    DumpCatalog;
+End;
+
 { ---- Execution d une requete SQL ----------------------------- }
 
 Procedure ExecuteQuery(Const SQL : TString);
@@ -2156,6 +2835,12 @@ Begin
   MdfOpen    := False;
   MdfPageCnt := 0;
   BootInfo.Valid := False;
+  SysObjCount  := 0;
+  SysColCount  := 0;
+  SysIdxCount  := 0;
+  SysIcCount   := 0;
+  SysRsCount   := 0;
+  CatalogValid := False;
 
   ParseArgs;
 
@@ -2182,6 +2867,9 @@ Begin
 
   { Scanner les pages de donnees (TODO 04) }
   ScanDataPages;
+
+  { Lire le catalogue systeme (TODO 05) }
+  ReadSystemCatalog;
 
   { Executer selon le mode }
   If Opts.Query <> '' Then
