@@ -25,7 +25,7 @@
       construction de l'arbre syntaxique abstrait (AST) des requetes,
       gestion des classes, des predicats, des formules logiques
       (conjonction, disjonction, negation, quantificateurs exists et
-      forall), expressions select-from-where.
+      forall), expressions select-from-where. [IMPLEMENTE]
 
   4.  Implementer le systeme de types du langage QL : types primitifs
       (int, float, string, boolean, date), types de reference vers les
@@ -177,6 +177,7 @@ Const
 
   MAX_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_ERRORS = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_NODES  = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
 
   { Codes de sortie }
   EXIT_OK    = 0;
@@ -243,6 +244,54 @@ Type
     Col      : Integer;     { colonne source (1-base)             }
   End;
 
+  { TODO 3 : Noeuds de l arbre syntaxique abstrait (AST) QL }
+  TNodeKind = (
+    NK_NONE,            { noeud vide / non utilise              }
+    NK_MODULE,          { module QL (fichier racine)            }
+    NK_IMPORT,          { declaration import                    }
+    NK_CLASS_DECL,      { declaration de classe                 }
+    NK_PRED_DECL,       { declaration de predicat               }
+    NK_SELECT,          { expression select-from-where          }
+    NK_FROM_DECL,       { declaration from (type var)           }
+    NK_VAR_DECL,        { declaration de variable typee         }
+    NK_FORMULA_AND,     { conjonction (and)                     }
+    NK_FORMULA_OR,      { disjonction (or)                      }
+    NK_FORMULA_NOT,     { negation (not)                        }
+    NK_FORMULA_IMPLIES, { implication (implies)                 }
+    NK_FORMULA_EXISTS,  { quantificateur exists                 }
+    NK_FORMULA_FORALL,  { quantificateur forall                 }
+    NK_FORMULA_IF,      { formule if-then-else                  }
+    NK_EXPR_CALL,       { appel predicat/methode f(...)         }
+    NK_EXPR_MEMBER,     { acces membre obj.field                }
+    NK_EXPR_BINOP,      { operation binaire + - * / = != < >    }
+    NK_EXPR_UNOP,       { operation unaire - not                }
+    NK_EXPR_IDENT,      { reference a un identificateur         }
+    NK_EXPR_INT,        { literal entier                        }
+    NK_EXPR_FLOAT,      { literal flottant                      }
+    NK_EXPR_STRING,     { literal chaine                        }
+    NK_EXPR_THIS,       { reference this                        }
+    NK_EXPR_SUPER,      { reference super                       }
+    NK_EXPR_RESULT,     { reference result                      }
+    NK_EXPR_INSTANCEOF, { test instanceof                       }
+    NK_EXPR_IN,         { test d appartenance (in)              }
+    NK_EXPR_RANGE,      { intervalle a..b                       }
+    NK_EXPR_AGGR,       { agregation count/any/none             }
+    NK_ANNOTATION       { annotation @kind etc.                 }
+  );
+
+  TASTNode = Record
+    Kind     : TNodeKind;   { type du noeud                      }
+    Name     : TString;     { nom (ident, operateur, valeur)     }
+    IntVal   : LongInt;     { valeur entiere (NK_EXPR_INT)       }
+    FloatVal : Real;        { valeur flottante (NK_EXPR_FLOAT)   }
+    Line     : Integer;     { ligne source                       }
+    Col      : Integer;     { colonne source                     }
+    Left     : Integer;     { enfant gauche  (-1 = aucun)        }
+    Right    : Integer;     { enfant droit   (-1 = aucun)        }
+    Extra    : Integer;     { enfant extra   (-1 = aucun)        }
+    Next     : Integer;     { frere suivant  (-1 = aucun)        }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -261,6 +310,11 @@ Var
   CurToken   : TToken;      { token courant                      }
   TokenCount : LongInt;     { nombre total de tokens produits    }
   TotalLines : LongInt;     { nombre total de lignes lues        }
+
+  { AST QL (TODO 3) }
+  Nodes      : Array[0..MAX_NODES - 1] Of TASTNode;
+  NodeCount  : Integer;      { nombre de noeuds alloues           }
+  RootNode   : Integer;      { index du noeud racine (module)     }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1091,6 +1145,953 @@ Begin
   WriteLn;
 End;
 
+{ ============================================================
+  TODO 03 - ANALYSEUR SYNTAXIQUE QL (PARSER / AST) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Allocation d un noeud AST ------------------------------ }
+
+Function NewNode(Kind : TNodeKind) : Integer;
+Begin
+  If NodeCount >= MAX_NODES Then
+    FatalError('AST: depassement MAX_NODES');
+  Nodes[NodeCount].Kind     := Kind;
+  Nodes[NodeCount].Name     := '';
+  Nodes[NodeCount].IntVal   := 0;
+  Nodes[NodeCount].FloatVal := 0.0;
+  Nodes[NodeCount].Line     := CurToken.Line;
+  Nodes[NodeCount].Col      := CurToken.Col;
+  Nodes[NodeCount].Left     := -1;
+  Nodes[NodeCount].Right    := -1;
+  Nodes[NodeCount].Extra    := -1;
+  Nodes[NodeCount].Next     := -1;
+  NewNode := NodeCount;
+  Inc(NodeCount);
+End;
+
+{ ---- Initialiser l AST -------------------------------------- }
+
+Procedure ASTInit;
+Begin
+  NodeCount := 0;
+  RootNode  := -1;
+End;
+
+{ ---- Avancer : consommer le prochain token non-commentaire --- }
+
+Procedure Consume;
+Begin
+  Repeat
+    LexNextToken;
+  Until CurToken.Kind <> TK_COMMENT;
+  PrintToken(CurToken);
+End;
+
+{ ---- Verifier le token courant ------------------------------ }
+
+Function TokIs(Const S : TString) : Boolean;
+Begin
+  TokIs := (CurToken.Val = S);
+End;
+
+Function TokIsKw(Const S : TString) : Boolean;
+Begin
+  TokIsKw := (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = S);
+End;
+
+Function TokIsOp(Const S : TString) : Boolean;
+Begin
+  TokIsOp := (CurToken.Kind = TK_OP) And (CurToken.Val = S);
+End;
+
+Function TokIsPunct(Const S : TString) : Boolean;
+Begin
+  TokIsPunct := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = S);
+End;
+
+{ ---- Attendre un token precis ------------------------------- }
+
+Procedure Expect(Const S : TString);
+Begin
+  If CurToken.Val <> S Then
+  Begin
+    WriteLn('CODEQL: erreur ligne ', CurToken.Line, ' col ',
+            CurToken.Col, ': attendu ''', S, ''' lu ''',
+            CurToken.Val, '''');
+    Inc(ErrorCount);
+  End;
+  Consume;
+End;
+
+{ ---- Forward declarations du parser ------------------------- }
+
+Function ParseFormula   : Integer; Forward;
+Function ParseExpr      : Integer; Forward;
+Function ParsePrimary   : Integer; Forward;
+
+{ ---- Chainer deux noeuds en liste (via Next) ---------------- }
+
+Procedure AppendToList(Var Head : Integer; N : Integer);
+Var Cur : Integer;
+Begin
+  If Head < 0 Then
+    Head := N
+  Else
+  Begin
+    Cur := Head;
+    While Nodes[Cur].Next >= 0 Do
+      Cur := Nodes[Cur].Next;
+    Nodes[Cur].Next := N;
+  End;
+End;
+
+{ ---- ParseImport : import <path> ---------------------------- }
+
+Function ParseImport : Integer;
+Var
+  N    : Integer;
+  Path : TString;
+Begin
+  N := NewNode(NK_IMPORT);
+  Consume;  { sauter 'import' }
+  Path := '';
+  While (CurToken.Kind = TK_IDENT) Or TokIsPunct('.') Do
+  Begin
+    Path := Path + CurToken.Val;
+    Consume;
+  End;
+  Nodes[N].Name := Path;
+  ParseImport := N;
+End;
+
+{ ---- ParseVarDecl : Type varname ----------------------------- }
+
+Function ParseVarDecl : Integer;
+Var N : Integer;
+    TypeName : TString;
+Begin
+  N := NewNode(NK_VAR_DECL);
+  TypeName := CurToken.Val;
+  Consume;  { type name or single name }
+  { Si le token suivant est un ident, c est Type varname }
+  If (CurToken.Kind = TK_IDENT) Then
+  Begin
+    Nodes[N].Name := CurToken.Val;
+    Nodes[N].Left := NewNode(NK_EXPR_IDENT);
+    Nodes[Nodes[N].Left].Name := TypeName;
+    Consume;  { variable name }
+  End
+  Else
+  Begin
+    { Un seul token (ex: result) : c est juste un nom }
+    Nodes[N].Name := TypeName;
+  End;
+  ParseVarDecl := N;
+End;
+
+{ ---- ParseExprList : liste d expressions separees par , ------ }
+
+Function ParseExprList : Integer;
+Var Head, E : Integer;
+Begin
+  Head := -1;
+  E := ParseExpr;
+  AppendToList(Head, E);
+  While TokIsPunct(',') Do
+  Begin
+    Consume;  { sauter , }
+    E := ParseExpr;
+    AppendToList(Head, E);
+  End;
+  ParseExprList := Head;
+End;
+
+{ ---- ParsePrimary : litteraux, ident, this, appels, etc ------ }
+
+Function ParsePrimary : Integer;
+Var
+  N, Args, Body, VDecl : Integer;
+Begin
+  { Entier }
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    N := NewNode(NK_EXPR_INT);
+    Nodes[N].Name   := CurToken.Val;
+    Nodes[N].IntVal := CurToken.IntVal;
+    Consume;
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { Flottant }
+  If CurToken.Kind = TK_FLOAT Then
+  Begin
+    N := NewNode(NK_EXPR_FLOAT);
+    Nodes[N].Name     := CurToken.Val;
+    Nodes[N].FloatVal := CurToken.FloatVal;
+    Consume;
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { Chaine }
+  If CurToken.Kind = TK_STRING Then
+  Begin
+    N := NewNode(NK_EXPR_STRING);
+    Nodes[N].Name := CurToken.Val;
+    Consume;
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { this }
+  If TokIsKw('this') Then
+  Begin
+    N := NewNode(NK_EXPR_THIS);
+    Nodes[N].Name := 'this';
+    Consume;
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { super }
+  If TokIsKw('super') Then
+  Begin
+    N := NewNode(NK_EXPR_SUPER);
+    Nodes[N].Name := 'super';
+    Consume;
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { result }
+  If TokIsKw('result') Then
+  Begin
+    N := NewNode(NK_EXPR_RESULT);
+    Nodes[N].Name := 'result';
+    Consume;
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { exists( Type var | formula ) }
+  If TokIsKw('exists') Then
+  Begin
+    N := NewNode(NK_FORMULA_EXISTS);
+    Consume;  { sauter exists }
+    Expect('(');
+    VDecl := ParseVarDecl;
+    Nodes[N].Left := VDecl;
+    If TokIsPunct('|') Then
+      Consume;
+    Body := ParseFormula;
+    Nodes[N].Right := Body;
+    Expect(')');
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { forall( Type var | formula | formula ) }
+  If TokIsKw('forall') Then
+  Begin
+    N := NewNode(NK_FORMULA_FORALL);
+    Consume;  { sauter forall }
+    Expect('(');
+    VDecl := ParseVarDecl;
+    Nodes[N].Left := VDecl;
+    If TokIsPunct('|') Then
+      Consume;
+    Body := ParseFormula;
+    Nodes[N].Right := Body;
+    If TokIsPunct('|') Then
+    Begin
+      Consume;
+      Nodes[N].Extra := ParseFormula;
+    End;
+    Expect(')');
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { if formula then formula else formula }
+  If TokIsKw('if') Then
+  Begin
+    N := NewNode(NK_FORMULA_IF);
+    Consume;  { sauter if }
+    Nodes[N].Left := ParseFormula;
+    If TokIsKw('then') Then
+      Consume;
+    Nodes[N].Right := ParseFormula;
+    If TokIsKw('else') Then
+    Begin
+      Consume;
+      Nodes[N].Extra := ParseFormula;
+    End;
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { count/any/none(Type var | formula) or count(expr) }
+  If TokIsKw('count') Or TokIsKw('any') Or TokIsKw('none') Then
+  Begin
+    N := NewNode(NK_EXPR_AGGR);
+    Nodes[N].Name := CurToken.Val;
+    Consume;
+    Expect('(');
+    If Not TokIsPunct(')') Then
+    Begin
+      { Heuristique : si IDENT suivi d'un IDENT -> Type var | formula }
+      VDecl := ParseVarDecl;
+      Nodes[N].Left := VDecl;
+      If TokIsPunct('|') Then
+      Begin
+        Consume;
+        Nodes[N].Right := ParseFormula;
+      End;
+    End;
+    Expect(')');
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { Ensemble/range entre crochets : [expr] ou [lo..hi] }
+  If TokIsPunct('[') Then
+  Begin
+    Consume;
+    N := ParseExpr;
+    If TokIsPunct(']') Then
+      Consume;
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { Sous-expression parenthesee }
+  If TokIsPunct('(') Then
+  Begin
+    Consume;  { sauter ( }
+    N := ParseFormula;
+    Expect(')');
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { Identificateur (eventuellement suivi de . ou () ) }
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+  Begin
+    N := NewNode(NK_EXPR_IDENT);
+    Nodes[N].Name := CurToken.Val;
+    Consume;
+
+    { Appel de fonction/predicat : ident( args ) }
+    If TokIsPunct('(') Then
+    Begin
+      Consume;  { sauter ( }
+      Args := -1;
+      If Not TokIsPunct(')') Then
+        Args := ParseExprList;
+      Expect(')');
+      Nodes[N].Kind := NK_EXPR_CALL;
+      Nodes[N].Left := Args;
+    End;
+
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { Annotation }
+  If CurToken.Kind = TK_ANNOTATION Then
+  Begin
+    N := NewNode(NK_ANNOTATION);
+    Nodes[N].Name := CurToken.Val;
+    Consume;
+    ParsePrimary := N;
+    Exit;
+  End;
+
+  { Fallback : noeud vide }
+  N := NewNode(NK_NONE);
+  Nodes[N].Name := CurToken.Val;
+  If CurToken.Kind <> TK_EOF Then
+    Consume;
+  ParsePrimary := N;
+End;
+
+{ ---- ParsePostfix : acces membre et appels de methode -------- }
+
+Function ParsePostfix : Integer;
+Var N, M, Args : Integer;
+    MethName : TString;
+Begin
+  N := ParsePrimary;
+  While TokIsPunct('.') Do
+  Begin
+    Consume;  { sauter . }
+    MethName := '';
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      MethName := CurToken.Val;
+      Consume;
+    End;
+    { Appel de methode : .name( args ) }
+    If TokIsPunct('(') Then
+    Begin
+      Consume;
+      Args := -1;
+      If Not TokIsPunct(')') Then
+        Args := ParseExprList;
+      Expect(')');
+      M := NewNode(NK_EXPR_CALL);
+      Nodes[M].Name  := MethName;
+      Nodes[M].Left  := Args;
+      Nodes[M].Right := N;
+    End
+    Else
+    Begin
+      { Acces membre simple : obj.field }
+      M := NewNode(NK_EXPR_MEMBER);
+      Nodes[M].Name := MethName;
+      Nodes[M].Left := N;
+    End;
+    N := M;
+  End;
+  ParsePostfix := N;
+End;
+
+{ ---- ParseUnary : -expr, not expr ---------------------------- }
+
+Function ParseUnary : Integer;
+Var N : Integer;
+Begin
+  If TokIsOp('-') Then
+  Begin
+    N := NewNode(NK_EXPR_UNOP);
+    Nodes[N].Name := '-';
+    Consume;
+    Nodes[N].Left := ParseUnary;
+    ParseUnary := N;
+    Exit;
+  End;
+  If TokIsKw('not') Then
+  Begin
+    N := NewNode(NK_FORMULA_NOT);
+    Consume;
+    Nodes[N].Left := ParseUnary;
+    ParseUnary := N;
+    Exit;
+  End;
+  ParseUnary := ParsePostfix;
+End;
+
+{ ---- ParseMulDiv : expr * expr, expr / expr, expr % expr ----- }
+
+Function ParseMulDiv : Integer;
+Var N, R : Integer;
+    Op   : TString;
+Begin
+  N := ParseUnary;
+  While TokIsOp('*') Or TokIsOp('/') Or TokIsOp('%') Do
+  Begin
+    Op := CurToken.Val;
+    Consume;
+    R := NewNode(NK_EXPR_BINOP);
+    Nodes[R].Name  := Op;
+    Nodes[R].Left  := N;
+    Nodes[R].Right := ParseUnary;
+    N := R;
+  End;
+  ParseMulDiv := N;
+End;
+
+{ ---- ParseAddSub : expr + expr, expr - expr ------------------ }
+
+Function ParseAddSub : Integer;
+Var N, R : Integer;
+    Op   : TString;
+Begin
+  N := ParseMulDiv;
+  While TokIsOp('+') Or TokIsOp('-') Do
+  Begin
+    Op := CurToken.Val;
+    Consume;
+    R := NewNode(NK_EXPR_BINOP);
+    Nodes[R].Name  := Op;
+    Nodes[R].Left  := N;
+    Nodes[R].Right := ParseMulDiv;
+    N := R;
+  End;
+  ParseAddSub := N;
+End;
+
+{ ---- ParseRange : expr .. expr ------------------------------- }
+
+Function ParseRange : Integer;
+Var N, R : Integer;
+Begin
+  N := ParseAddSub;
+  If TokIsOp('..') Then
+  Begin
+    Consume;
+    R := NewNode(NK_EXPR_RANGE);
+    Nodes[R].Left  := N;
+    Nodes[R].Right := ParseAddSub;
+    N := R;
+  End;
+  ParseRange := N;
+End;
+
+{ ---- ParseComparison : expr = != < > <= >= expr -------------- }
+
+Function ParseComparison : Integer;
+Var N, R : Integer;
+    Op   : TString;
+Begin
+  N := ParseRange;
+  If TokIsOp('=') Or TokIsOp('!=') Or TokIsOp('<') Or
+     TokIsOp('>') Or TokIsOp('<=') Or TokIsOp('>=') Then
+  Begin
+    Op := CurToken.Val;
+    Consume;
+    R := NewNode(NK_EXPR_BINOP);
+    Nodes[R].Name  := Op;
+    Nodes[R].Left  := N;
+    Nodes[R].Right := ParseRange;
+    N := R;
+  End;
+
+  { instanceof }
+  If TokIsKw('instanceof') Then
+  Begin
+    Consume;
+    R := NewNode(NK_EXPR_INSTANCEOF);
+    Nodes[R].Left := N;
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      Nodes[R].Name := CurToken.Val;
+      Consume;
+    End;
+    N := R;
+  End;
+
+  { in }
+  If TokIsKw('in') Then
+  Begin
+    Consume;
+    R := NewNode(NK_EXPR_IN);
+    Nodes[R].Left  := N;
+    Nodes[R].Right := ParseRange;
+    N := R;
+  End;
+
+  ParseComparison := N;
+End;
+
+{ ---- ParseExpr : point d entree expression ------------------- }
+
+Function ParseExpr : Integer;
+Begin
+  ParseExpr := ParseComparison;
+End;
+
+{ ---- ParseNegation : not formula ----------------------------- }
+
+Function ParseNegation : Integer;
+Var N : Integer;
+Begin
+  If TokIsKw('not') Then
+  Begin
+    N := NewNode(NK_FORMULA_NOT);
+    Consume;
+    Nodes[N].Left := ParseNegation;
+    ParseNegation := N;
+  End
+  Else
+    ParseNegation := ParseExpr;
+End;
+
+{ ---- ParseConjunction : formula and formula ------------------ }
+
+Function ParseConjunction : Integer;
+Var N, R : Integer;
+Begin
+  N := ParseNegation;
+  While TokIsKw('and') Do
+  Begin
+    Consume;
+    R := NewNode(NK_FORMULA_AND);
+    Nodes[R].Left  := N;
+    Nodes[R].Right := ParseNegation;
+    N := R;
+  End;
+  ParseConjunction := N;
+End;
+
+{ ---- ParseDisjunction : formula or formula ------------------- }
+
+Function ParseDisjunction : Integer;
+Var N, R : Integer;
+Begin
+  N := ParseConjunction;
+  While TokIsKw('or') Do
+  Begin
+    Consume;
+    R := NewNode(NK_FORMULA_OR);
+    Nodes[R].Left  := N;
+    Nodes[R].Right := ParseConjunction;
+    N := R;
+  End;
+  ParseDisjunction := N;
+End;
+
+{ ---- ParseImplication : formula implies formula -------------- }
+
+Function ParseImplication : Integer;
+Var N, R : Integer;
+Begin
+  N := ParseDisjunction;
+  If TokIsKw('implies') Then
+  Begin
+    Consume;
+    R := NewNode(NK_FORMULA_IMPLIES);
+    Nodes[R].Left  := N;
+    Nodes[R].Right := ParseDisjunction;
+    N := R;
+  End;
+  ParseImplication := N;
+End;
+
+{ ---- ParseFormula : point d entree formule QL ---------------- }
+
+Function ParseFormula : Integer;
+Begin
+  ParseFormula := ParseImplication;
+End;
+
+(* ---- ParsePredBody : corps de predicat (formulas) ----------- *)
+
+Function ParsePredBody : Integer;
+Var Head, F : Integer;
+Begin
+  Head := -1;
+  If TokIsPunct('{') Then
+  Begin
+    Consume;  (* sauter accolade ouvrante *)
+    While (Not TokIsPunct('}')) And (CurToken.Kind <> TK_EOF) Do
+    Begin
+      F := ParseFormula;
+      AppendToList(Head, F);
+    End;
+    Expect('}');
+  End;
+  ParsePredBody := Head;
+End;
+
+(* ---- ParsePredDecl : predicate name(params) (body) ---------- *)
+
+Function ParsePredDecl : Integer;
+Var
+  N, ParamList, Param, Body : Integer;
+Begin
+  N := NewNode(NK_PRED_DECL);
+  Consume;  { sauter 'predicate' }
+  Nodes[N].Name := CurToken.Val;
+  Consume;  { nom du predicat }
+
+  { Parametres }
+  ParamList := -1;
+  If TokIsPunct('(') Then
+  Begin
+    Consume;
+    While (Not TokIsPunct(')')) And (CurToken.Kind <> TK_EOF) Do
+    Begin
+      Param := ParseVarDecl;
+      AppendToList(ParamList, Param);
+      If TokIsPunct(',') Then
+        Consume;
+    End;
+    Expect(')');
+  End;
+  Nodes[N].Left := ParamList;
+
+  { Corps }
+  Body := ParsePredBody;
+  Nodes[N].Right := Body;
+
+  ParsePredDecl := N;
+End;
+
+(* ---- ParseClassDecl : class Name extends Base (members) ----- *)
+
+Function ParseClassDecl : Integer;
+Var
+  N, MemberList, Member : Integer;
+Begin
+  N := NewNode(NK_CLASS_DECL);
+  Consume;  { sauter 'class' }
+  Nodes[N].Name := CurToken.Val;
+  Consume;  { nom de la classe }
+
+  { extends }
+  If TokIsKw('extends') Then
+  Begin
+    Consume;
+    Nodes[N].Extra := NewNode(NK_EXPR_IDENT);
+    Nodes[Nodes[N].Extra].Name := CurToken.Val;
+    Consume;
+  End;
+
+  { Corps de la classe }
+  MemberList := -1;
+  If TokIsPunct('{') Then
+  Begin
+    Consume;
+    While (Not TokIsPunct('}')) And (CurToken.Kind <> TK_EOF) Do
+    Begin
+      { override predicate ... }
+      If TokIsKw('override') Then
+      Begin
+        Consume;
+        If TokIsKw('predicate') Then
+        Begin
+          Member := ParsePredDecl;
+          AppendToList(MemberList, Member);
+        End;
+      End
+      Else If TokIsKw('predicate') Then
+      Begin
+        Member := ParsePredDecl;
+        AppendToList(MemberList, Member);
+      End
+      Else If TokIsKw('abstract') Then
+      Begin
+        Consume;
+        If TokIsKw('predicate') Then
+        Begin
+          Member := ParsePredDecl;
+          AppendToList(MemberList, Member);
+        End;
+      End
+      Else If TokIsKw('private') Then
+      Begin
+        Consume;
+        If TokIsKw('predicate') Then
+        Begin
+          Member := ParsePredDecl;
+          AppendToList(MemberList, Member);
+        End;
+      End
+      Else
+      Begin
+        { Autre membre : consommer pour avancer }
+        Member := ParseFormula;
+        AppendToList(MemberList, Member);
+      End;
+    End;
+    Expect('}');
+  End;
+  Nodes[N].Left := MemberList;
+
+  ParseClassDecl := N;
+End;
+
+{ ---- ParseSelect : from ... where ... select ... ------------- }
+
+Function ParseSelect : Integer;
+Var
+  N, FromList, FDecl, WhereF, SelList : Integer;
+Begin
+  N := NewNode(NK_SELECT);
+  FromList := -1;
+  WhereF   := -1;
+  SelList  := -1;
+
+  { from Type var, Type var, ... }
+  If TokIsKw('from') Then
+  Begin
+    Consume;
+    While (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Do
+    Begin
+      FDecl := ParseVarDecl;
+      AppendToList(FromList, FDecl);
+      If TokIsPunct(',') Then
+        Consume
+      Else
+        Break;
+    End;
+  End;
+  Nodes[N].Left := FromList;
+
+  { where formula }
+  If TokIsKw('where') Then
+  Begin
+    Consume;
+    WhereF := ParseFormula;
+  End;
+  Nodes[N].Right := WhereF;
+
+  { select exprList }
+  If TokIsKw('select') Then
+  Begin
+    Consume;
+    SelList := ParseExprList;
+  End;
+  Nodes[N].Extra := SelList;
+
+  ParseSelect := N;
+End;
+
+{ ---- ParseModule : racine du fichier QL ---------------------- }
+
+Function ParseModule : Integer;
+Var
+  N, Child : Integer;
+Begin
+  N := NewNode(NK_MODULE);
+  Nodes[N].Name := 'module';
+
+  { Premier token }
+  Consume;
+
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    { Annotations : sauter }
+    If CurToken.Kind = TK_ANNOTATION Then
+    Begin
+      Child := NewNode(NK_ANNOTATION);
+      Nodes[Child].Name := CurToken.Val;
+      AppendToList(Nodes[N].Left, Child);
+      Consume;
+      Continue;
+    End;
+
+    { import }
+    If TokIsKw('import') Then
+    Begin
+      Child := ParseImport;
+      AppendToList(Nodes[N].Left, Child);
+      Continue;
+    End;
+
+    { class }
+    If TokIsKw('class') Then
+    Begin
+      Child := ParseClassDecl;
+      AppendToList(Nodes[N].Left, Child);
+      Continue;
+    End;
+
+    { predicate }
+    If TokIsKw('predicate') Then
+    Begin
+      Child := ParsePredDecl;
+      AppendToList(Nodes[N].Left, Child);
+      Continue;
+    End;
+
+    { module }
+    If TokIsKw('module') Then
+    Begin
+      Child := NewNode(NK_MODULE);
+      Consume;
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        Nodes[Child].Name := CurToken.Val;
+        Consume;
+      End;
+      If TokIsPunct('{') Then
+        Nodes[Child].Left := ParsePredBody;
+      AppendToList(Nodes[N].Left, Child);
+      Continue;
+    End;
+
+    { select-from-where (from ou select en top-level) }
+    If TokIsKw('from') Or TokIsKw('select') Then
+    Begin
+      Child := ParseSelect;
+      AppendToList(Nodes[N].Left, Child);
+      Continue;
+    End;
+
+    { Autre : avancer pour ne pas boucler }
+    Consume;
+  End;
+
+  ParseModule := N;
+End;
+
+{ ---- NodeKindName : nom textuel d un TNodeKind --------------- }
+
+Function NodeKindName(K : TNodeKind) : TString;
+Begin
+  Case K Of
+    NK_NONE            : NodeKindName := 'NONE';
+    NK_MODULE          : NodeKindName := 'MODULE';
+    NK_IMPORT          : NodeKindName := 'IMPORT';
+    NK_CLASS_DECL      : NodeKindName := 'CLASS';
+    NK_PRED_DECL       : NodeKindName := 'PREDICATE';
+    NK_SELECT          : NodeKindName := 'SELECT';
+    NK_FROM_DECL       : NodeKindName := 'FROM';
+    NK_VAR_DECL        : NodeKindName := 'VAR_DECL';
+    NK_FORMULA_AND     : NodeKindName := 'AND';
+    NK_FORMULA_OR      : NodeKindName := 'OR';
+    NK_FORMULA_NOT     : NodeKindName := 'NOT';
+    NK_FORMULA_IMPLIES : NodeKindName := 'IMPLIES';
+    NK_FORMULA_EXISTS  : NodeKindName := 'EXISTS';
+    NK_FORMULA_FORALL  : NodeKindName := 'FORALL';
+    NK_FORMULA_IF      : NodeKindName := 'IF';
+    NK_EXPR_CALL       : NodeKindName := 'CALL';
+    NK_EXPR_MEMBER     : NodeKindName := 'MEMBER';
+    NK_EXPR_BINOP      : NodeKindName := 'BINOP';
+    NK_EXPR_UNOP       : NodeKindName := 'UNOP';
+    NK_EXPR_IDENT      : NodeKindName := 'IDENT';
+    NK_EXPR_INT        : NodeKindName := 'INT';
+    NK_EXPR_FLOAT      : NodeKindName := 'FLOAT';
+    NK_EXPR_STRING     : NodeKindName := 'STRING';
+    NK_EXPR_THIS       : NodeKindName := 'THIS';
+    NK_EXPR_SUPER      : NodeKindName := 'SUPER';
+    NK_EXPR_RESULT     : NodeKindName := 'RESULT';
+    NK_EXPR_INSTANCEOF : NodeKindName := 'INSTANCEOF';
+    NK_EXPR_IN         : NodeKindName := 'IN';
+    NK_EXPR_RANGE      : NodeKindName := 'RANGE';
+    NK_EXPR_AGGR       : NodeKindName := 'AGGR';
+    NK_ANNOTATION      : NodeKindName := 'ANNOTATION';
+  End;
+End;
+
+{ ---- DumpAST : affichage recursif de l AST ------------------- }
+
+Procedure DumpAST(Idx, Depth : Integer);
+Var
+  I   : Integer;
+  Spc : TString;
+  Cur : Integer;
+Begin
+  If Idx < 0 Then Exit;
+  Spc := '';
+  For I := 1 To Depth * 2 Do
+    If Length(Spc) < MAX_STR Then
+      Spc := Spc + ' ';
+  Write(Spc, NodeKindName(Nodes[Idx].Kind));
+  If Nodes[Idx].Name <> '' Then
+    Write(' "', Nodes[Idx].Name, '"');
+  If Nodes[Idx].Kind = NK_EXPR_INT Then
+    Write(' =', Nodes[Idx].IntVal);
+  WriteLn(' [', Nodes[Idx].Line, ',', Nodes[Idx].Col, ']');
+  { Enfants }
+  If Nodes[Idx].Left >= 0 Then
+  Begin
+    Cur := Nodes[Idx].Left;
+    While Cur >= 0 Do
+    Begin
+      DumpAST(Cur, Depth + 1);
+      Cur := Nodes[Cur].Next;
+    End;
+  End;
+  If Nodes[Idx].Right >= 0 Then
+    DumpAST(Nodes[Idx].Right, Depth + 1);
+  If Nodes[Idx].Extra >= 0 Then
+    DumpAST(Nodes[Idx].Extra, Depth + 1);
+End;
+
 { ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
 
 Procedure RunDatabaseCreate;
@@ -1123,7 +2124,32 @@ Begin
   Else
     WriteLn('query run: ', Opts.QueryFile);
   WriteLn('  database: ', Opts.DatabasePath);
-  WriteLn('(non implemente)');
+
+  { TODO 3 : parser le fichier QL si specifie }
+  If Opts.QueryFile <> '' Then
+  Begin
+    Assign(LexSrcF, Opts.QueryFile);
+    {$I-}
+    Reset(LexSrcF);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      WriteLn('CODEQL: impossible d''ouvrir: ', Opts.QueryFile);
+      Exit;
+    End;
+    LexOpened := True;
+    LexInit;
+    ASTInit;
+    RootNode := ParseModule;
+    WriteLn('Parsing termine : ', NodeCount, ' noeuds AST');
+    WriteLn('Lignes lues     : ', TotalLines);
+    WriteLn;
+    If Opts.DebugMode Then
+      DumpAST(RootNode, 0);
+    LexClose;
+  End
+  Else
+    WriteLn('(non implemente)');
 End;
 
 Procedure RunInterpretResults;
