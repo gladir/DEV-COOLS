@@ -19,8 +19,8 @@
       par des records variants, ainsi que le registre EFLAGS complet
       32 bits.
 
-  3.  Implementer les procedures ReadByte/ReadWord/ReadDWord et
-      WriteByte/WriteWord/WriteDWord pour l'acces a la memoire
+  3.  [IMPLEMENTE] Implementer les procedures ReadByte/ReadWord/ReadDWord
+      et WriteByte/WriteWord/WriteDWord pour l'acces a la memoire
       lineaire 32 bits via le fichier de 16 Mo, en utilisant un
       modele d'adressage plat (flat) typique de Win32.
 
@@ -181,6 +181,101 @@ Var
   2:(Abs:LongInt);
   3:(DataByte:Byte);
  End;
+
+  { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
+    L'adresse est une adresse lineaire plate (flat) dans l'espace
+    de 16 Mo. Retourne 0 si l'adresse est hors limites. }
+Function ReadByte(Addr:LongInt):Byte;
+Var
+ B:Byte;
+ ByteRead:Word;
+Begin
+ If(Addr<0)or(Addr>=MemorySize)Then Begin
+  WriteLn('Erreur: ReadByte adresse $',HexStr(Addr,8),' hors limites');
+  ReadByte:=0;
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockRead(Memory,B,1,ByteRead);
+ ReadByte:=B;
+End;
+
+  { TODO 3 : Lecture d'un mot 16 bits dans la memoire lineaire.
+    Lit 2 octets consecutifs en little-endian a l'adresse donnee. }
+Function ReadWord(Addr:LongInt):Word;
+Var
+ W:Word;
+ ByteRead:Word;
+Begin
+ If(Addr<0)or(Addr>MemorySize-2)Then Begin
+  WriteLn('Erreur: ReadWord adresse $',HexStr(Addr,8),' hors limites');
+  ReadWord:=0;
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockRead(Memory,W,2,ByteRead);
+ ReadWord:=W;
+End;
+
+  { TODO 3 : Lecture d'un double mot 32 bits dans la memoire lineaire.
+    Lit 4 octets consecutifs en little-endian a l'adresse donnee. }
+Function ReadDWord(Addr:LongInt):LongInt;
+Var
+ D:LongInt;
+ ByteRead:Word;
+Begin
+ If(Addr<0)or(Addr>MemorySize-4)Then Begin
+  WriteLn('Erreur: ReadDWord adresse $',HexStr(Addr,8),' hors limites');
+  ReadDWord:=0;
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockRead(Memory,D,4,ByteRead);
+ ReadDWord:=D;
+End;
+
+  { TODO 3 : Ecriture d'un octet dans la memoire lineaire 32 bits.
+    L'adresse est une adresse lineaire plate (flat) dans l'espace
+    de 16 Mo. }
+Procedure WriteByte(Addr:LongInt;Value:Byte);
+Var
+ ByteWrited:Word;
+Begin
+ If(Addr<0)or(Addr>=MemorySize)Then Begin
+  WriteLn('Erreur: WriteByte adresse $',HexStr(Addr,8),' hors limites');
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockWrite(Memory,Value,1,ByteWrited);
+End;
+
+  { TODO 3 : Ecriture d'un mot 16 bits dans la memoire lineaire.
+    Ecrit 2 octets consecutifs en little-endian a l'adresse donnee. }
+Procedure WriteWord(Addr:LongInt;Value:Word);
+Var
+ ByteWrited:Word;
+Begin
+ If(Addr<0)or(Addr>MemorySize-2)Then Begin
+  WriteLn('Erreur: WriteWord adresse $',HexStr(Addr,8),' hors limites');
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockWrite(Memory,Value,2,ByteWrited);
+End;
+
+  { TODO 3 : Ecriture d'un double mot 32 bits dans la memoire lineaire.
+    Ecrit 4 octets consecutifs en little-endian a l'adresse donnee. }
+Procedure WriteDWord(Addr:LongInt;Value:LongInt);
+Var
+ ByteWrited:Word;
+Begin
+ If(Addr<0)or(Addr>MemorySize-4)Then Begin
+  WriteLn('Erreur: WriteDWord adresse $',HexStr(Addr,8),' hors limites');
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockWrite(Memory,Value,4,ByteWrited);
+End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
     Cree le fichier d'echange de 16 Mo (EMUW32.$$$) et le remplit
