@@ -14,7 +14,7 @@
   necessiter d instance SQL Server.
   Supporte les instructions SQL Server built-in.
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS DE LA LIGNE DE COMMANDE
+  TODO 01 - INFRASTRUCTURE ET OPTIONS DE LA LIGNE DE COMMANDE [IMPLEMENTE]
             ParseArgs : analyser argv
               sqlcmd -S fichier.mdf [-d database] [-q "requete"]
               [-i script.sql] [-o sortie.txt] [-v] [-h]
@@ -268,7 +268,7 @@
             CROSS APPLY / OUTER APPLY
 
   TODO 17 - FONCTIONS D AGREGATION ET GROUP BY
-            COUNT(*), COUNT(col), COUNT(DISTINCT col)
+            COUNT(etoile), COUNT(col), COUNT(DISTINCT col)
             SUM(col), AVG(col), MIN(col), MAX(col)
             STDEV(col), STDEVP(col), VAR(col), VARP(col)
             STRING_AGG(col, separateur) [WITHIN GROUP ORDER BY]
@@ -514,7 +514,448 @@
 
 Program SQLCMD;
 
-BEGIN
- WriteLn('SQLCMD - Clone SQL Server');
- WriteLn('En cours de developpement');
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  SQLCMD_VERSION = '1.0';
+  SQLCMD_DATE    = '2026-03-21';
+
+  MAX_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_ERRORS = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Taille de ligne REPL }
+  MAX_INPUT  = 4096;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de la ligne de commande ---------------------- }
+  TOptions = Record
+    MdfFile    : TString;   { -S : fichier .MDF principal          }
+    Database   : TString;   { -d : base de donnees                 }
+    Query      : TString;   { -q : requete SQL a executer          }
+    ScriptFile : TString;   { -i : fichier script SQL en entree    }
+    OutputFile : TString;   { -o : fichier de sortie               }
+    Verbose    : Boolean;   { -v : mode verbeux                    }
+    Interactive: Boolean;   { REPL interactif (si pas -q/-i)       }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  Opts       : TOptions;
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  OutF       : Text;
+  OutFOpen   : Boolean;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Utilitaires chaines ------------------------------------ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot,
+                                     Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ ---- Messages d erreur et d avertissement -------------------- }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('SQLCMD: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  WriteLn('SQLCMD:warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Banniere et aide ---------------------------------------- }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('SQLCMD v', SQLCMD_VERSION, ' (', SQLCMD_DATE, ')');
+  WriteLn('Clone SQL Server - lecture directe des fichiers .MDF');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: SQLCMD -S <fichier.mdf> [options]');
+  WriteLn;
+  WriteLn('  -S fichier.mdf : fichier MDF a ouvrir (obligatoire)');
+  WriteLn('  -d database    : nom de la base de donnees');
+  WriteLn('  -q "requete"   : executer une requete et quitter');
+  WriteLn('  -i script.sql  : executer un script SQL et quitter');
+  WriteLn('  -o sortie.txt  : rediriger la sortie vers un fichier');
+  WriteLn('  -v             : mode verbeux');
+  WriteLn('  -h             : afficher cette aide');
+  WriteLn;
+  WriteLn('Mode interactif (REPL) par defaut si -q et -i absents.');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowHelp;
+Begin
+  WriteLn('SQLCMD v', SQLCMD_VERSION,
+          ' - Clone SQL Server en ligne de commande');
+  WriteLn;
+  ShowUsage;
+End;
+
+{ ---- Initialisation des options ------------------------------ }
+
+Procedure InitOptions;
+Begin
+  Opts.MdfFile    := '';
+  Opts.Database   := '';
+  Opts.Query      := '';
+  Opts.ScriptFile := '';
+  Opts.OutputFile := '';
+  Opts.Verbose    := False;
+  Opts.Interactive := False;
+End;
+
+{ ---- Analyse des arguments de la ligne de commande ----------- }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowHelp
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If (Arg = '-S') Or (Arg = '-s') Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('option -S requiert un argument (fichier .MDF)');
+      Opts.MdfFile := ParamStr(I);
+    End
+    Else If (Arg = '-d') Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('option -d requiert un argument (nom de base)');
+      Opts.Database := ParamStr(I);
+    End
+    Else If (Arg = '-q') Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('option -q requiert un argument (requete SQL)');
+      Opts.Query := ParamStr(I);
+    End
+    Else If (Arg = '-i') Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('option -i requiert un argument (fichier .SQL)');
+      Opts.ScriptFile := ParamStr(I);
+    End
+    Else If (Arg = '-o') Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('option -o requiert un argument (fichier sortie)');
+      Opts.OutputFile := ParamStr(I);
+    End
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('SQLCMD: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else
+    Begin
+      { Argument positionnel : traiter comme fichier .MDF }
+      If Opts.MdfFile = '' Then
+        Opts.MdfFile := Arg
+      Else
+      Begin
+        WriteLn('SQLCMD: argument inattendu: ', Arg);
+        ShowUsage;
+      End;
+    End;
+
+    Inc(I);
+  End;
+
+  { Valider le fichier MDF obligatoire }
+  If Opts.MdfFile = '' Then
+  Begin
+    WriteLn('SQLCMD: fichier .MDF manquant (option -S)');
+    ShowUsage;
+  End;
+
+  { Verifier l extension }
+  Ext := ExtractExt(Opts.MdfFile);
+  If (Ext <> '.mdf') Then
+    WarnMsg('extension attendue .mdf, obtenu ' + Ext);
+
+  { Determiner le mode interactif }
+  If (Opts.Query = '') And (Opts.ScriptFile = '') Then
+    Opts.Interactive := True;
+
+  { Ouvrir le fichier de sortie si specifie }
+  If Opts.OutputFile <> '' Then
+  Begin
+    Assign(OutF, Opts.OutputFile);
+    Rewrite(OutF);
+    If IOResult <> 0 Then
+      FatalError('impossible d''ouvrir le fichier de sortie: '
+                  + Opts.OutputFile);
+    OutFOpen := True;
+  End;
+End;
+
+{ ---- Ecriture vers sortie (ecran ou fichier) ----------------- }
+
+Procedure OutputLine(Const S : String);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S)
+  Else
+    WriteLn(S);
+End;
+
+{ ---- Execution d une requete SQL ----------------------------- }
+
+Procedure ExecuteQuery(Const SQL : TString);
+Begin
+  { TODO 07..15 : tokeniser, parser, executer la requete }
+  OutputLine('-- Requete recue : ' + SQL);
+  OutputLine('-- (moteur non encore implemente)');
+End;
+
+{ ---- Execution d un script SQL ------------------------------- }
+
+Procedure ExecuteScript(Const FileName : TString);
+Var
+  F    : Text;
+  Line : TString;
+  Buf  : TString;
+Begin
+  Assign(F, FileName);
+  Reset(F);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le script: ' + FileName);
+
+  Buf := '';
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    { GO = separateur de batch }
+    If StrUpperCase(Line) = 'GO' Then
+    Begin
+      If Buf <> '' Then
+      Begin
+        ExecuteQuery(Buf);
+        Buf := '';
+      End;
+    End
+    Else
+    Begin
+      If Buf <> '' Then
+        Buf := Buf + ' ';
+      Buf := Buf + Line;
+    End;
+  End;
+  Close(F);
+
+  { Executer le dernier batch s il reste du contenu }
+  If Buf <> '' Then
+    ExecuteQuery(Buf);
+End;
+
+{ ---- Boucle REPL interactive --------------------------------- }
+
+Procedure RunREPL;
+Var
+  Line : TString;
+  Buf  : TString;
+Begin
+  WriteLn('SQLCMD v', SQLCMD_VERSION,
+          ' - tapez vos requetes SQL, GO pour executer, EXIT pour quitter.');
+  WriteLn;
+
+  Buf := '';
+  Repeat
+    If Buf = '' Then
+      Write('1> ')
+    Else
+      Write(IntToStr(Length(Buf) Div 40 + 2), '> ');
+
+    ReadLn(Line);
+    If IOResult <> 0 Then
+    Begin
+      WriteLn;
+      Exit;  { Ctrl+Z / EOF }
+    End;
+
+    { Commande EXIT / QUIT }
+    If (StrUpperCase(Line) = 'EXIT') Or
+       (StrUpperCase(Line) = 'QUIT') Then
+      Exit;
+
+    { GO = executer le batch accumule }
+    If StrUpperCase(Line) = 'GO' Then
+    Begin
+      If Buf <> '' Then
+      Begin
+        ExecuteQuery(Buf);
+        Buf := '';
+      End;
+    End
+    Else
+    Begin
+      If Buf <> '' Then
+        Buf := Buf + ' ';
+      Buf := Buf + Line;
+    End;
+  Until False;
+End;
+
+{ ---- Nettoyage ----------------------------------------------- }
+
+Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  ErrorCount := 0;
+  WarnCount  := 0;
+  OutFOpen   := False;
+
+  ParseArgs;
+
+  If Opts.Verbose Then
+    ShowBanner;
+
+  If Opts.Verbose Then
+    WriteLn('  Fichier MDF : ', Opts.MdfFile);
+
+  { Executer selon le mode }
+  If Opts.Query <> '' Then
+  Begin
+    { Mode requete unique (-q) }
+    ExecuteQuery(Opts.Query);
+  End
+  Else If Opts.ScriptFile <> '' Then
+  Begin
+    { Mode script (-i) }
+    ExecuteScript(Opts.ScriptFile);
+  End
+  Else If Opts.Interactive Then
+  Begin
+    { Mode REPL interactif }
+    RunREPL;
+  End;
+
+  Cleanup;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn;
+    WriteLn('  Erreurs        : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+  End;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
 END.

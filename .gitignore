@@ -8,3 +8,4 @@
 *.exe
 /TESTS/EMU8086
 ASM68
+/SQLCMD
