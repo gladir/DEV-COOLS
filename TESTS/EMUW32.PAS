@@ -34,9 +34,9 @@
       (IMAGE_OPTIONAL_HEADER32) incluant AddressOfEntryPoint,
       ImageBase, SectionAlignment et SizeOfStackReserve.
 
-  6.  Implementer le chargement des sections PE (.text, .data,
-      .rdata, .bss, .idata) dans la memoire lineaire en respectant
-      les VirtualAddress et VirtualSize de chaque
+  6.  [IMPLEMENTE] Implementer le chargement des sections PE (.text,
+      .data, .rdata, .bss, .idata) dans la memoire lineaire en
+      respectant les VirtualAddress et VirtualSize de chaque
       IMAGE_SECTION_HEADER, et remplir les zones .bss de zeros.
 
   7.  Implementer le traitement de la table d'importation (Import
@@ -158,6 +158,9 @@ Const
     soit de $F00000 a $FFFFFF (croissance vers le bas). }
  StackBase=MemorySize-StackSize;  { $F00000 = 15 Mo }
 
+  { TODO 6 : Nombre maximum de sections PE supportees }
+ MaxPESections=96;
+
 Type
   { TODO 2 : Registres 32 bits du 80386 }
  LongRec=Record
@@ -233,6 +236,20 @@ Type
   NumberOfRvaAndSizes:LongInt;      { Nombre de repertoires de donnees }
  End;
 
+  { TODO 6 : En-tete de section PE (IMAGE_SECTION_HEADER, 40 octets) }
+ TImageSectionHeader=Record
+  Name:Array[0..7]of Char;          { Nom de la section (8 caracteres) }
+  VirtualSize:LongInt;               { Taille en memoire de la section }
+  VirtualAddress:LongInt;            { RVA de la section en memoire }
+  SizeOfRawData:LongInt;             { Taille des donnees dans le fichier }
+  PointerToRawData:LongInt;          { Offset des donnees dans le fichier }
+  PointerToRelocations:LongInt;      { Offset des relocalisations }
+  PointerToLinenumbers:LongInt;      { Offset des numeros de ligne }
+  NumberOfRelocations:Word;          { Nombre de relocalisations }
+  NumberOfLinenumbers:Word;          { Nombre de numeros de ligne }
+  Characteristics:LongInt;           { Drapeaux de la section }
+ End;
+
 Var
   { TODO 1 : Fichier d'echange }
  Memory:File;
@@ -264,6 +281,10 @@ Var
  PEFileHeader:TImageFileHeader;
  PEOptHeader:TImageOptionalHeader32;
  PELoaded:Boolean;
+
+  { TODO 6 : Table des en-tetes de section PE }
+ PESections:Array[0..MaxPESections-1]of TImageSectionHeader;
+ PENumSections:Word;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -396,6 +417,115 @@ Begin
  Regs.ESP:=Regs.ESP+2;
 End;
 
+  { TODO 6 : Chargement des sections PE dans la memoire lineaire.
+    Lit les en-tetes IMAGE_SECTION_HEADER et copie les donnees de
+    chaque section (.text, .data, .rdata, .idata) a l'adresse
+    ImageBase + VirtualAddress. Les sections .bss (donnees non
+    initialisees, Characteristics bit $80) sont remplies de zeros.
+    Si VirtualSize > SizeOfRawData, le surplus est mis a zero. }
+Function LoadPESections(Var F:File):Boolean;
+Const
+ LoadBufSize=4096;
+Var
+ I:Integer;
+ SecName:String;
+ LoadAddr,Remaining:LongInt;
+ ChunkSize:Word;
+ LoadBuf:Array[0..LoadBufSize-1]of Byte;
+ ByteRead,ByteWrited:Word;
+ J,K:LongInt;
+Begin
+ LoadPESections:=False;
+ PENumSections:=PEFileHeader.NumberOfSections;
+ If PENumSections>MaxPESections Then Begin
+  WriteLn('LoadPESections: trop de sections (',PENumSections,')');
+  Exit;
+ End;
+  { Se positionner au debut de la table des en-tetes de section.
+    Position = e_lfanew + 4 (signature PE) + 20 (COFF header) +
+    SizeOfOptionalHeader (en-tete optionnel complet avec repertoires) }
+ Seek(F,PEDosHeader.e_lfanew+4+SizeOf(TImageFileHeader)+
+        LongInt(PEFileHeader.SizeOfOptionalHeader));
+  { Lire les en-tetes de section }
+ For I:=0 to PENumSections-1 do Begin
+  BlockRead(F,PESections[I],SizeOf(TImageSectionHeader),ByteRead);
+  If ByteRead<>SizeOf(TImageSectionHeader)Then Begin
+   WriteLn('LoadPESections: erreur lecture en-tete section ',I);
+   Exit;
+  End;
+ End;
+  { Charger chaque section dans la memoire lineaire }
+ For I:=0 to PENumSections-1 do Begin
+   { Extraire le nom de la section (max 8 caracteres, termine par #0) }
+  SecName:='';
+  For K:=0 to 7 do Begin
+   If PESections[I].Name[K]=#0 Then Break;
+   SecName:=SecName+PESections[I].Name[K];
+  End;
+   { Adresse de chargement = ImageBase + RVA de la section }
+  LoadAddr:=PEOptHeader.ImageBase+PESections[I].VirtualAddress;
+  WriteLn('LoadPESections: "',SecName,
+          '" RVA=$',HexStr(PESections[I].VirtualAddress,8),
+          ' VSize=$',HexStr(PESections[I].VirtualSize,8),
+          ' Raw=$',HexStr(PESections[I].SizeOfRawData,8),
+          ' -> $',HexStr(LoadAddr,8));
+   { Verifier que la section tient dans l'espace de 16 Mo }
+  If(LoadAddr<0)or(LoadAddr+PESections[I].VirtualSize>MemorySize)Then Begin
+   WriteLn('LoadPESections: section "',SecName,'" depasse la memoire');
+   Exit;
+  End;
+   { Section .bss (donnees non initialisees) : remplir de zeros }
+  If(PESections[I].Characteristics and $00000080)<>0 Then Begin
+   WriteLn('LoadPESections: "',SecName,'" (bss) remplissage zeros');
+   FillChar(LoadBuf,SizeOf(LoadBuf),0);
+   Remaining:=PESections[I].VirtualSize;
+   J:=LoadAddr;
+   While Remaining>0 do Begin
+    If Remaining>LoadBufSize Then ChunkSize:=LoadBufSize
+    Else ChunkSize:=Word(Remaining);
+    Seek(Memory,J);
+    BlockWrite(Memory,LoadBuf,ChunkSize,ByteWrited);
+    J:=J+LongInt(ChunkSize);
+    Remaining:=Remaining-LongInt(ChunkSize);
+   End;
+  End
+  Else If PESections[I].SizeOfRawData>0 Then Begin
+    { Copier les donnees brutes du fichier vers la memoire lineaire }
+   Seek(F,PESections[I].PointerToRawData);
+   Remaining:=PESections[I].SizeOfRawData;
+   J:=LoadAddr;
+   While Remaining>0 do Begin
+    If Remaining>LoadBufSize Then ChunkSize:=LoadBufSize
+    Else ChunkSize:=Word(Remaining);
+    BlockRead(F,LoadBuf,ChunkSize,ByteRead);
+    If ByteRead<>ChunkSize Then Begin
+     WriteLn('LoadPESections: erreur lecture "',SecName,'"');
+     Exit;
+    End;
+    Seek(Memory,J);
+    BlockWrite(Memory,LoadBuf,ChunkSize,ByteWrited);
+    J:=J+LongInt(ChunkSize);
+    Remaining:=Remaining-LongInt(ChunkSize);
+   End;
+    { Si VirtualSize > SizeOfRawData, remplir le reste de zeros }
+   If PESections[I].VirtualSize>PESections[I].SizeOfRawData Then Begin
+    FillChar(LoadBuf,SizeOf(LoadBuf),0);
+    Remaining:=PESections[I].VirtualSize-PESections[I].SizeOfRawData;
+    While Remaining>0 do Begin
+     If Remaining>LoadBufSize Then ChunkSize:=LoadBufSize
+     Else ChunkSize:=Word(Remaining);
+     Seek(Memory,J);
+     BlockWrite(Memory,LoadBuf,ChunkSize,ByteWrited);
+     J:=J+LongInt(ChunkSize);
+     Remaining:=Remaining-LongInt(ChunkSize);
+    End;
+   End;
+  End;
+ End;
+ LoadPESections:=True;
+ WriteLn('LoadPESections: ',PENumSections,' section(s) chargee(s).');
+End;
+
   { TODO 5 : Chargeur de fichiers PE (Portable Executable).
     Lit l'en-tete MZ/DOS stub, la signature PE, l'en-tete COFF
     (IMAGE_FILE_HEADER) et l'en-tete optionnel (IMAGE_OPTIONAL_HEADER32)
@@ -512,6 +642,12 @@ Begin
  WriteLn('  SizeOfStackCommit   = $',HexStr(PEOptHeader.SizeOfStackCommit,8));
  WriteLn('  Subsystem           = ',PEOptHeader.Subsystem);
  WriteLn('  NumberOfRvaAndSizes = ',PEOptHeader.NumberOfRvaAndSizes);
+  { TODO 6 : Charger les sections PE dans la memoire lineaire }
+ If Not LoadPESections(F)Then Begin
+  WriteLn('LoadPE: echec du chargement des sections');
+  Close(F);
+  Exit;
+ End;
  Close(F);
  PELoaded:=True;
  LoadPE:=True;
