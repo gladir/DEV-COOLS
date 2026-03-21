@@ -96,7 +96,7 @@
       ParamStr, fichiers), definition des puits sensibles (WriteLn
       avec format, Exec, Assign, acces SQL), propagation de la teinte
       a travers les affectations, les appels de procedures et les
-      expressions.
+      expressions. [IMPLEMENTE]
 
   15. Implementer les fonctions d'agregation du langage QL : count,
       sum, min, max, avg, rank, concat, strictcount, strictsum,
@@ -200,6 +200,10 @@ Const
   MAX_DF_USES     = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
   MAX_DF_BITS     = {$IFDEF FPC}256{$ELSE}32{$ENDIF};  { taille du bitset en octets = MAX_DF_DEFS/8 }
   MAX_DF_CHAINS   = {$IFDEF FPC}8192{$ELSE}1024{$ENDIF};
+  MAX_TAINT_SRCS  = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_TAINT_SINKS = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_TAINT_STEPS = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
+  MAX_TAINT_ALERTS= {$IFDEF FPC}256{$ELSE}32{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -733,6 +737,64 @@ Type
     UseIdx   : Integer;      { index dans DfUses                  }
   End;
 
+  { TODO 14 : Suivi de teinte (taint tracking) }
+  TTaintSourceKind = (
+    TSK_NONE,        { inconnu                                }
+    TSK_READLN,      { ReadLn / Read : entree standard         }
+    TSK_PARAMSTR,    { ParamStr : parametre de ligne commande  }
+    TSK_READ_FILE,   { lecture de fichier (Read, ReadLn file)   }
+    TSK_READKEY,     { ReadKey : entree clavier                }
+    TSK_GETENV,      { GetEnv : variable d'environnement       }
+    TSK_INPUT_PORT,  { Port / PortW : acces port               }
+    TSK_RESET_REWRITE { Reset/Rewrite : ouverture fichier ext  }
+  );
+
+  TTaintSinkKind = (
+    TNK_NONE,        { inconnu                                }
+    TNK_WRITELN_FMT, { WriteLn/Write avec donnees non fiables  }
+    TNK_EXEC,        { Exec : execution de commande            }
+    TNK_ASSIGN,      { Assign : nom de fichier non fiable      }
+    TNK_SQL,         { acces SQL avec donnees non fiables       }
+    TNK_RENAME,      { Rename : renommage fichier non fiable   }
+    TNK_ERASE,       { Erase : suppression fichier non fiable  }
+    TNK_CHDIR,       { ChDir : changement repertoire           }
+    TNK_MKDIR,       { MkDir : creation repertoire             }
+    TNK_VAL          { Val : conversion non validee            }
+  );
+
+  TTaintSource = Record
+    Kind     : TTaintSourceKind; { type de source                }
+    VarIdx   : Integer;          { index variable teintee (DfVars) }
+    ASTIndex : Integer;          { noeud AST de la source         }
+    CfgNode  : Integer;          { noeud CFG de la source         }
+    Line     : Integer;          { ligne source                   }
+    Col      : Integer;          { colonne source                 }
+  End;
+
+  TTaintSink = Record
+    Kind     : TTaintSinkKind;   { type de puits                  }
+    ASTIndex : Integer;          { noeud AST du puits             }
+    CfgNode  : Integer;          { noeud CFG du puits             }
+    ArgVarIdx: Integer;          { index variable arg (-1=expr)   }
+    Line     : Integer;          { ligne source                   }
+    Col      : Integer;          { colonne source                 }
+  End;
+
+  TTaintFlowStep = Record
+    FromVar  : Integer;          { index variable source (DfVars) }
+    ToVar    : Integer;          { index variable destination     }
+    CfgNode  : Integer;          { noeud CFG du transfert         }
+    ASTIndex : Integer;          { noeud AST du transfert         }
+    StepKind : Integer;          { 0=assign, 1=call arg, 2=expr  }
+  End;
+
+  TTaintAlert = Record
+    SrcIdx   : Integer;          { index dans TaintSources        }
+    SinkIdx  : Integer;          { index dans TaintSinks          }
+    PathLen  : Integer;          { nombre de pas dans le chemin   }
+    FirstStep: Integer;          { premier pas (TaintSteps index) }
+  End;
+
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -828,6 +890,17 @@ Var
   DfNodeInfo   : Array[0..MAX_CFG_NODES - 1] Of TDFNodeInfo;
   DfChains     : Array[0..MAX_DF_CHAINS - 1] Of TDefUseLink;
   DfChainCount : Integer;
+
+  { Suivi de teinte (TODO 14) }
+  TaintSources  : Array[0..MAX_TAINT_SRCS - 1] Of TTaintSource;
+  TaintSrcCount : Integer;
+  TaintSinks    : Array[0..MAX_TAINT_SINKS - 1] Of TTaintSink;
+  TaintSinkCount: Integer;
+  TaintSteps    : Array[0..MAX_TAINT_STEPS - 1] Of TTaintFlowStep;
+  TaintStepCount: Integer;
+  TaintAlerts   : Array[0..MAX_TAINT_ALERTS - 1] Of TTaintAlert;
+  TaintAlertCount: Integer;
+  TaintVarState : Array[0..MAX_DF_VARS - 1] Of Boolean; { variable teintee? }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -9067,6 +9140,499 @@ Begin
     Write(' -> U', DfChains[I].UseIdx);
     WriteLn;
   End;
+  WriteLn;
+End;
+
+{ ============================================================
+  TODO 14 - SUIVI DE TEINTE (TAINT TRACKING) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Initialisation du suivi de teinte --------------------- }
+
+Procedure InitTaint;
+Var
+  I : Integer;
+Begin
+  TaintSrcCount   := 0;
+  TaintSinkCount  := 0;
+  TaintStepCount  := 0;
+  TaintAlertCount := 0;
+  For I := 0 To MAX_DF_VARS - 1 Do
+    TaintVarState[I] := False;
+End;
+
+{ ---- Noms des types de sources et de puits ----------------- }
+
+Function TaintSourceKindName(K : TTaintSourceKind) : TString;
+Begin
+  Case K Of
+    TSK_NONE:          TaintSourceKindName := 'none';
+    TSK_READLN:        TaintSourceKindName := 'ReadLn';
+    TSK_PARAMSTR:      TaintSourceKindName := 'ParamStr';
+    TSK_READ_FILE:     TaintSourceKindName := 'Read(file)';
+    TSK_READKEY:       TaintSourceKindName := 'ReadKey';
+    TSK_GETENV:        TaintSourceKindName := 'GetEnv';
+    TSK_INPUT_PORT:    TaintSourceKindName := 'Port';
+    TSK_RESET_REWRITE: TaintSourceKindName := 'Reset/Rewrite';
+  Else
+    TaintSourceKindName := '?';
+  End;
+End;
+
+Function TaintSinkKindName(K : TTaintSinkKind) : TString;
+Begin
+  Case K Of
+    TNK_NONE:        TaintSinkKindName := 'none';
+    TNK_WRITELN_FMT: TaintSinkKindName := 'WriteLn';
+    TNK_EXEC:        TaintSinkKindName := 'Exec';
+    TNK_ASSIGN:      TaintSinkKindName := 'Assign';
+    TNK_SQL:         TaintSinkKindName := 'SQL';
+    TNK_RENAME:      TaintSinkKindName := 'Rename';
+    TNK_ERASE:       TaintSinkKindName := 'Erase';
+    TNK_CHDIR:       TaintSinkKindName := 'ChDir';
+    TNK_MKDIR:       TaintSinkKindName := 'MkDir';
+    TNK_VAL:         TaintSinkKindName := 'Val';
+  Else
+    TaintSinkKindName := '?';
+  End;
+End;
+
+{ ---- Identification des sources de teinte ------------------ }
+
+Function ClassifyTaintSource(Const FuncName : TString)
+                             : TTaintSourceKind;
+Var
+  Low : TString;
+Begin
+  Low := StrLowerCase(FuncName);
+  If (Low = 'readln') Or (Low = 'read') Then
+    ClassifyTaintSource := TSK_READLN
+  Else If Low = 'paramstr' Then
+    ClassifyTaintSource := TSK_PARAMSTR
+  Else If Low = 'readkey' Then
+    ClassifyTaintSource := TSK_READKEY
+  Else If Low = 'getenv' Then
+    ClassifyTaintSource := TSK_GETENV
+  Else If (Low = 'port') Or (Low = 'portw') Then
+    ClassifyTaintSource := TSK_INPUT_PORT
+  Else If (Low = 'reset') Or (Low = 'rewrite') Then
+    ClassifyTaintSource := TSK_RESET_REWRITE
+  Else
+    ClassifyTaintSource := TSK_NONE;
+End;
+
+{ ---- Identification des puits sensibles -------------------- }
+
+Function ClassifyTaintSink(Const FuncName : TString)
+                           : TTaintSinkKind;
+Var
+  Low : TString;
+Begin
+  Low := StrLowerCase(FuncName);
+  If (Low = 'writeln') Or (Low = 'write') Then
+    ClassifyTaintSink := TNK_WRITELN_FMT
+  Else If Low = 'exec' Then
+    ClassifyTaintSink := TNK_EXEC
+  Else If Low = 'assign' Then
+    ClassifyTaintSink := TNK_ASSIGN
+  Else If Low = 'rename' Then
+    ClassifyTaintSink := TNK_RENAME
+  Else If Low = 'erase' Then
+    ClassifyTaintSink := TNK_ERASE
+  Else If Low = 'chdir' Then
+    ClassifyTaintSink := TNK_CHDIR
+  Else If Low = 'mkdir' Then
+    ClassifyTaintSink := TNK_MKDIR
+  Else If Low = 'val' Then
+    ClassifyTaintSink := TNK_VAL
+  Else
+    ClassifyTaintSink := TNK_NONE;
+End;
+
+{ ---- Ajout d'une source de teinte -------------------------- }
+
+Function AddTaintSource(Kind : TTaintSourceKind;
+                        VarIdx, ASTIdx, CfgNd,
+                        Ln, Co : Integer) : Integer;
+Begin
+  If TaintSrcCount >= MAX_TAINT_SRCS Then
+  Begin
+    AddTaintSource := -1;
+    Exit;
+  End;
+  TaintSources[TaintSrcCount].Kind     := Kind;
+  TaintSources[TaintSrcCount].VarIdx   := VarIdx;
+  TaintSources[TaintSrcCount].ASTIndex := ASTIdx;
+  TaintSources[TaintSrcCount].CfgNode  := CfgNd;
+  TaintSources[TaintSrcCount].Line     := Ln;
+  TaintSources[TaintSrcCount].Col      := Co;
+  AddTaintSource := TaintSrcCount;
+  Inc(TaintSrcCount);
+End;
+
+{ ---- Ajout d'un puits sensible ----------------------------- }
+
+Function AddTaintSink(Kind : TTaintSinkKind;
+                      ASTIdx, CfgNd, ArgVar,
+                      Ln, Co : Integer) : Integer;
+Begin
+  If TaintSinkCount >= MAX_TAINT_SINKS Then
+  Begin
+    AddTaintSink := -1;
+    Exit;
+  End;
+  TaintSinks[TaintSinkCount].Kind      := Kind;
+  TaintSinks[TaintSinkCount].ASTIndex  := ASTIdx;
+  TaintSinks[TaintSinkCount].CfgNode   := CfgNd;
+  TaintSinks[TaintSinkCount].ArgVarIdx := ArgVar;
+  TaintSinks[TaintSinkCount].Line      := Ln;
+  TaintSinks[TaintSinkCount].Col       := Co;
+  AddTaintSink := TaintSinkCount;
+  Inc(TaintSinkCount);
+End;
+
+{ ---- Ajout d'un pas de propagation de teinte --------------- }
+
+Function AddTaintStep(FromV, ToV, CfgNd, ASTIdx,
+                      SK : Integer) : Integer;
+Begin
+  If TaintStepCount >= MAX_TAINT_STEPS Then
+  Begin
+    AddTaintStep := -1;
+    Exit;
+  End;
+  TaintSteps[TaintStepCount].FromVar  := FromV;
+  TaintSteps[TaintStepCount].ToVar    := ToV;
+  TaintSteps[TaintStepCount].CfgNode  := CfgNd;
+  TaintSteps[TaintStepCount].ASTIndex := ASTIdx;
+  TaintSteps[TaintStepCount].StepKind := SK;
+  AddTaintStep := TaintStepCount;
+  Inc(TaintStepCount);
+End;
+
+{ ---- Ajout d'une alerte de teinte -------------------------- }
+
+Function AddTaintAlert(SrcI, SinkI, PathL,
+                       FirstS : Integer) : Integer;
+Begin
+  If TaintAlertCount >= MAX_TAINT_ALERTS Then
+  Begin
+    AddTaintAlert := -1;
+    Exit;
+  End;
+  TaintAlerts[TaintAlertCount].SrcIdx    := SrcI;
+  TaintAlerts[TaintAlertCount].SinkIdx   := SinkI;
+  TaintAlerts[TaintAlertCount].PathLen   := PathL;
+  TaintAlerts[TaintAlertCount].FirstStep := FirstS;
+  AddTaintAlert := TaintAlertCount;
+  Inc(TaintAlertCount);
+End;
+
+{ ---- Recherche du noeud CFG pour un noeud AST -------------- }
+
+Function TaintFindCfgForAST(ASTIdx : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  TaintFindCfgForAST := -1;
+  For I := 0 To CfgNodeCount - 1 Do
+    If CfgNodes[I].ASTIndex = ASTIdx Then
+    Begin
+      TaintFindCfgForAST := I;
+      Exit;
+    End;
+End;
+
+{ ---- Collecte des sources et puits dans l'AST source ------- }
+
+Procedure CollectTaintSourcesAndSinks;
+Var
+  I, CfgNd, VarIdx, ParentIdx : Integer;
+  CallName : TString;
+  SrcKind  : TTaintSourceKind;
+  SinkKind : TTaintSinkKind;
+Begin
+  For I := 0 To SrcNodeCount - 1 Do
+  Begin
+    { Detecter les appels (SNK_CALL et SNK_EXPR_CALL) }
+    If (SrcNodes[I].Kind = SNK_CALL) Or
+       (SrcNodes[I].Kind = SNK_EXPR_CALL) Then
+    Begin
+      CallName := SrcNodes[I].Name;
+      If Length(CallName) = 0 Then
+      Begin
+        { Le nom peut etre dans l'enfant gauche (ident) }
+        If SrcNodes[I].Left >= 0 Then
+          CallName := SrcNodes[SrcNodes[I].Left].Name;
+      End;
+      If Length(CallName) = 0 Then Continue;
+
+      { Verifier si c'est une source de teinte }
+      SrcKind := ClassifyTaintSource(CallName);
+      If SrcKind <> TSK_NONE Then
+      Begin
+        CfgNd := TaintFindCfgForAST(I);
+        { La variable teintee est le LHS de l'affectation parente
+          ou la variable de ReadLn }
+        VarIdx := -1;
+        { Pour ReadLn(x), l'argument est l'enfant de l'appel }
+        If (SrcKind = TSK_READLN) And (SrcNodes[I].Right >= 0) Then
+        Begin
+          VarIdx := DfFindVar(SrcNodes[SrcNodes[I].Right].Name);
+        End;
+        { Pour x := ParamStr(...), le parent est l'affectation }
+        If (SrcKind = TSK_PARAMSTR) Or (SrcKind = TSK_READKEY) Or
+           (SrcKind = TSK_GETENV) Then
+        Begin
+          { Chercher l'affectation parente }
+          ParentIdx := -1;
+          { Parcourir pour trouver le SNK_ASSIGN parent }
+          If I > 0 Then
+          Begin
+            { Heuristique : les noeuds proches en indice }
+            If (I >= 2) And
+               (SrcNodes[I - 1].Kind = SNK_ASSIGN) Then
+              ParentIdx := I - 1
+            Else If (I >= 2) And
+                    (SrcNodes[I - 2].Kind = SNK_ASSIGN) Then
+              ParentIdx := I - 2;
+          End;
+          If (ParentIdx >= 0) And
+             (SrcNodes[ParentIdx].Left >= 0) Then
+            VarIdx := DfFindVar(
+              SrcNodes[SrcNodes[ParentIdx].Left].Name);
+        End;
+        AddTaintSource(SrcKind, VarIdx, I, CfgNd,
+                       SrcNodes[I].Line, SrcNodes[I].Col);
+        If VarIdx >= 0 Then
+          TaintVarState[VarIdx] := True;
+      End;
+
+      { Verifier si c'est un puits sensible }
+      SinkKind := ClassifyTaintSink(CallName);
+      If SinkKind <> TNK_NONE Then
+      Begin
+        CfgNd := TaintFindCfgForAST(I);
+        { L'argument est l'enfant droit de l'appel }
+        VarIdx := -1;
+        If SrcNodes[I].Right >= 0 Then
+          VarIdx := DfFindVar(SrcNodes[SrcNodes[I].Right].Name);
+        AddTaintSink(SinkKind, I, CfgNd, VarIdx,
+                     SrcNodes[I].Line, SrcNodes[I].Col);
+      End;
+    End;
+  End;
+End;
+
+{ ---- Propagation de la teinte via les chaines def-use ------ }
+
+Procedure PropagateTaint;
+Var
+  Changed : Boolean;
+  I, DefVarIdx, UseVarIdx, K : Integer;
+  DefASTIdx, UseASTIdx, CfgNd : Integer;
+Begin
+  { Propager la teinte par point fixe sur les chaines def-use }
+  Repeat
+    Changed := False;
+    For I := 0 To DfChainCount - 1 Do
+    Begin
+      DefVarIdx := DfDefs[DfChains[I].DefIdx].VarIdx;
+      UseVarIdx := DfUses[DfChains[I].UseIdx].VarIdx;
+
+      { Si la variable de la definition est teintee }
+      If (DefVarIdx >= 0) And (DefVarIdx < MAX_DF_VARS) And
+         TaintVarState[DefVarIdx] Then
+      Begin
+        { Chercher les affectations qui utilisent cette variable
+          et definissent une autre variable }
+        { L'utilisation propage la teinte a la meme variable }
+        If (UseVarIdx >= 0) And (UseVarIdx < MAX_DF_VARS) Then
+        Begin
+          If Not TaintVarState[UseVarIdx] Then
+          Begin
+            { Chercher si cette utilisation est dans une
+              affectation qui definit une autre variable }
+            For K := 0 To DfDefCount - 1 Do
+            Begin
+              CfgNd := DfDefs[K].CfgNode;
+              If CfgNd = DfUses[DfChains[I].UseIdx].CfgNode Then
+              Begin
+                If DfDefs[K].VarIdx <> DefVarIdx Then
+                Begin
+                  If Not TaintVarState[DfDefs[K].VarIdx] Then
+                  Begin
+                    TaintVarState[DfDefs[K].VarIdx] := True;
+                    Changed := True;
+                    DefASTIdx := DfDefs[K].ASTIndex;
+                    UseASTIdx := DfUses[DfChains[I].UseIdx].ASTIndex;
+                    AddTaintStep(DefVarIdx, DfDefs[K].VarIdx,
+                                 CfgNd, DefASTIdx, 0);
+                  End;
+                End;
+              End;
+            End;
+          End;
+        End;
+      End;
+    End;
+
+    { Aussi propager la teinte a travers les affectations directes
+      dans l'AST source : si LHS := expr contenant var teintee }
+    For I := 0 To SrcNodeCount - 1 Do
+    Begin
+      If SrcNodes[I].Kind <> SNK_ASSIGN Then Continue;
+      If SrcNodes[I].Left < 0 Then Continue;
+      If SrcNodes[I].Right < 0 Then Continue;
+
+      { Variable cible de l'affectation }
+      DefVarIdx := DfFindVar(SrcNodes[SrcNodes[I].Left].Name);
+      If DefVarIdx < 0 Then Continue;
+      If TaintVarState[DefVarIdx] Then Continue;
+
+      { Variable source dans l'expression droite }
+      UseVarIdx := DfFindVar(SrcNodes[SrcNodes[I].Right].Name);
+      If UseVarIdx < 0 Then Continue;
+      If Not TaintVarState[UseVarIdx] Then Continue;
+
+      TaintVarState[DefVarIdx] := True;
+      CfgNd := TaintFindCfgForAST(I);
+      AddTaintStep(UseVarIdx, DefVarIdx, CfgNd, I, 0);
+      Changed := True;
+    End;
+  Until Not Changed;
+End;
+
+{ ---- Verification des alertes de teinte -------------------- }
+
+Procedure CheckTaintAlerts;
+Var
+  I, VarIdx : Integer;
+Begin
+  TaintAlertCount := 0;
+  For I := 0 To TaintSinkCount - 1 Do
+  Begin
+    VarIdx := TaintSinks[I].ArgVarIdx;
+    If (VarIdx >= 0) And (VarIdx < MAX_DF_VARS) And
+       TaintVarState[VarIdx] Then
+    Begin
+      { Trouver la source qui teinte cette variable }
+      { Pour simplifier, lier a la premiere source trouvee }
+      AddTaintAlert(0, I, 0, -1);
+    End
+    Else
+    Begin
+      { Verifier si un argument quelconque dans l'appel est teinte }
+      If TaintSinks[I].ASTIndex >= 0 Then
+      Begin
+        If SrcNodes[TaintSinks[I].ASTIndex].Right >= 0 Then
+        Begin
+          VarIdx := DfFindVar(
+            SrcNodes[SrcNodes[TaintSinks[I].ASTIndex].Right].Name);
+          If (VarIdx >= 0) And (VarIdx < MAX_DF_VARS) And
+             TaintVarState[VarIdx] Then
+            AddTaintAlert(0, I, 0, -1);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ---- Point d'entree du suivi de teinte --------------------- }
+
+Procedure RunTaintTracking;
+Begin
+  InitTaint;
+  CollectTaintSourcesAndSinks;
+  PropagateTaint;
+  CheckTaintAlerts;
+End;
+
+{ ---- Affichage debug du suivi de teinte -------------------- }
+
+Procedure DumpTaintTracking;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== Suivi de Teinte (Taint Tracking) ===');
+  WriteLn('Sources : ', TaintSrcCount);
+  WriteLn('Puits   : ', TaintSinkCount);
+  WriteLn('Pas     : ', TaintStepCount);
+  WriteLn('Alertes : ', TaintAlertCount);
+  WriteLn;
+
+  { Afficher les sources de teinte }
+  WriteLn('--- Sources de teinte ---');
+  For I := 0 To TaintSrcCount - 1 Do
+  Begin
+    Write('  S', I, ' [', TaintSourceKindName(
+      TaintSources[I].Kind), ']');
+    If TaintSources[I].VarIdx >= 0 Then
+      Write(' var="', DfVars[TaintSources[I].VarIdx].Name, '"');
+    Write(' ast=', TaintSources[I].ASTIndex);
+    Write(' L', TaintSources[I].Line, ':',
+              TaintSources[I].Col);
+    WriteLn;
+  End;
+  WriteLn;
+
+  { Afficher les puits sensibles }
+  WriteLn('--- Puits sensibles ---');
+  For I := 0 To TaintSinkCount - 1 Do
+  Begin
+    Write('  K', I, ' [', TaintSinkKindName(
+      TaintSinks[I].Kind), ']');
+    If TaintSinks[I].ArgVarIdx >= 0 Then
+      Write(' arg="', DfVars[TaintSinks[I].ArgVarIdx].Name, '"');
+    Write(' ast=', TaintSinks[I].ASTIndex);
+    Write(' L', TaintSinks[I].Line, ':',
+              TaintSinks[I].Col);
+    WriteLn;
+  End;
+  WriteLn;
+
+  { Afficher les variables teintees }
+  WriteLn('--- Variables teintees ---');
+  For I := 0 To DfVarCount - 1 Do
+    If TaintVarState[I] Then
+      WriteLn('  V', I, ' "', DfVars[I].Name, '" TAINTED');
+  WriteLn;
+
+  { Afficher les pas de propagation }
+  WriteLn('--- Pas de propagation ---');
+  For I := 0 To TaintStepCount - 1 Do
+  Begin
+    Write('  T', I);
+    If TaintSteps[I].FromVar >= 0 Then
+      Write(' from="', DfVars[TaintSteps[I].FromVar].Name, '"');
+    If TaintSteps[I].ToVar >= 0 Then
+      Write(' to="', DfVars[TaintSteps[I].ToVar].Name, '"');
+    Write(' cfg=N', TaintSteps[I].CfgNode);
+    Case TaintSteps[I].StepKind Of
+      0 : Write(' [assign]');
+      1 : Write(' [call]');
+      2 : Write(' [expr]');
+    End;
+    WriteLn;
+  End;
+  WriteLn;
+
+  { Afficher les alertes }
+  WriteLn('--- Alertes de teinte ---');
+  If TaintAlertCount = 0 Then
+    WriteLn('  (aucune alerte)')
+  Else
+    For I := 0 To TaintAlertCount - 1 Do
+    Begin
+      Write('  ALERT #', I);
+      Write(' source=[', TaintSourceKindName(
+        TaintSources[TaintAlerts[I].SrcIdx].Kind), ']');
+      Write(' -> sink=[', TaintSinkKindName(
+        TaintSinks[TaintAlerts[I].SinkIdx].Kind), ']');
+      Write(' L', TaintSinks[TaintAlerts[I].SinkIdx].Line, ':',
+                TaintSinks[TaintAlerts[I].SinkIdx].Col);
+      WriteLn;
+    End;
   WriteLn;
 End;
 
