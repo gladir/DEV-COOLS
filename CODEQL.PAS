@@ -101,7 +101,7 @@
   15. Implementer les fonctions d'agregation du langage QL : count,
       sum, min, max, avg, rank, concat, strictcount, strictsum,
       strictconcat, avec gestion des clauses group by et order by
-      dans les expressions select.
+      dans les expressions select. [IMPLEMENTE]
 
   16. Implementer l'evaluation des requetes recursives : detection des
       predicats mutuellement recursifs, evaluation par point fixe
@@ -204,6 +204,10 @@ Const
   MAX_TAINT_SINKS = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
   MAX_TAINT_STEPS = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
   MAX_TAINT_ALERTS= {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+
+  { TODO 15 : Fonctions d agregation }
+  MAX_AGGR_GROUPS = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_ORDER_BY    = {$IFDEF FPC}8{$ELSE}4{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -795,6 +799,43 @@ Type
     FirstStep: Integer;          { premier pas (TaintSteps index) }
   End;
 
+  { TODO 15 : Fonctions d agregation QL }
+  TAggrKind = (
+    AGG_COUNT,         { count(...)                            }
+    AGG_SUM,           { sum(...)                              }
+    AGG_MIN,           { min(...)                              }
+    AGG_MAX,           { max(...)                              }
+    AGG_AVG,           { avg(...)                              }
+    AGG_RANK,          { rank(...)                             }
+    AGG_CONCAT,        { concat(...)                           }
+    AGG_STRICTCOUNT,   { strictcount(...)                      }
+    AGG_STRICTSUM,     { strictsum(...)                        }
+    AGG_STRICTCONCAT   { strictconcat(...)                     }
+  );
+
+  TAggrAccum = Record
+    Kind      : TAggrKind;  { type de l agregation               }
+    IntSum    : LongInt;     { accumulateur entier (sum/count)    }
+    FloatSum  : Real;        { accumulateur flottant (avg)        }
+    IntMin    : LongInt;     { minimum entier                     }
+    IntMax    : LongInt;     { maximum entier                     }
+    StrAccum  : TString;     { accumulateur chaine (concat)       }
+    Count     : LongInt;     { nombre d elements accumules        }
+    HasValue  : Boolean;     { au moins une valeur accumulee ?    }
+    Separator : TString;     { separateur pour concat             }
+    RankPos   : LongInt;     { position courante pour rank        }
+  End;
+
+  TGroupByKey = Record
+    Cols : Array[0..MAX_RESULT_COLS - 1] Of TBindingValue;
+    NCols: Integer;
+  End;
+
+  TOrderByEntry = Record
+    ColIdx    : Integer;     { index de la colonne de tri         }
+    Ascending : Boolean;     { True = ASC, False = DESC           }
+  End;
+
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -901,6 +942,15 @@ Var
   TaintAlerts   : Array[0..MAX_TAINT_ALERTS - 1] Of TTaintAlert;
   TaintAlertCount: Integer;
   TaintVarState : Array[0..MAX_DF_VARS - 1] Of Boolean; { variable teintee? }
+
+  { Fonctions d agregation (TODO 15) }
+  AggrAccums   : Array[0..MAX_AGGR_GROUPS - 1] Of TAggrAccum;
+  AggrGroupCnt : Integer;
+  AggrGroupKeys: Array[0..MAX_AGGR_GROUPS - 1] Of TGroupByKey;
+  OrderByCols  : Array[0..MAX_ORDER_BY - 1] Of TOrderByEntry;
+  OrderByCount : Integer;
+  GroupByExprs : Array[0..MAX_ORDER_BY - 1] Of Integer;
+  GroupByCount : Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1246,7 +1296,11 @@ Begin
     (S = 'module')     Or (S = 'override')  Or (S = 'abstract') Or
     (S = 'private')    Or (S = 'this')      Or (S = 'super')    Or
     (S = 'instanceof') Or (S = 'any')       Or (S = 'none')     Or
-    (S = 'count');
+    (S = 'count')      Or (S = 'sum')       Or (S = 'min')      Or
+    (S = 'max')        Or (S = 'avg')       Or (S = 'rank')     Or
+    (S = 'concat')     Or (S = 'strictcount') Or (S = 'strictsum') Or
+    (S = 'strictconcat') Or (S = 'order')   Or (S = 'by')       Or
+    (S = 'group')      Or (S = 'asc')       Or (S = 'desc');
 End;
 
 { ---- Lire la prochaine ligne source ------------------------- }
@@ -2018,8 +2072,12 @@ Begin
     Exit;
   End;
 
-  { count/any/none(Type var | formula) or count(expr) }
-  If TokIsKw('count') Or TokIsKw('any') Or TokIsKw('none') Then
+  { count/any/none/sum/min/max/avg/rank/concat/strictcount/strictsum/strictconcat }
+  If TokIsKw('count') Or TokIsKw('any') Or TokIsKw('none') Or
+     TokIsKw('sum') Or TokIsKw('min') Or TokIsKw('max') Or
+     TokIsKw('avg') Or TokIsKw('rank') Or TokIsKw('concat') Or
+     TokIsKw('strictcount') Or TokIsKw('strictsum') Or
+     TokIsKw('strictconcat') Then
   Begin
     N := NewNode(NK_EXPR_AGGR);
     Nodes[N].Name := CurToken.Val;
@@ -2485,11 +2543,16 @@ End;
 Function ParseSelect : Integer;
 Var
   N, FromList, FDecl, WhereF, SelList : Integer;
+  OBIdx : Integer;
 Begin
   N := NewNode(NK_SELECT);
   FromList := -1;
   WhereF   := -1;
   SelList  := -1;
+
+  { Reinitialiser les infos group by / order by }
+  GroupByCount := 0;
+  OrderByCount := 0;
 
   { from Type var, Type var, ... }
   If TokIsKw('from') Then
@@ -2522,6 +2585,51 @@ Begin
     SelList := ParseExprList;
   End;
   Nodes[N].Extra := SelList;
+
+  { group by expr, expr, ... }
+  If TokIsKw('group') Then
+  Begin
+    Consume;  { sauter group }
+    If TokIsKw('by') Then
+      Consume;  { sauter by }
+    While (GroupByCount < MAX_ORDER_BY) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      GroupByExprs[GroupByCount] := ParseExpr;
+      Inc(GroupByCount);
+      If TokIsPunct(',') Then
+        Consume
+      Else
+        Break;
+    End;
+  End;
+
+  { order by expr [asc|desc], expr [asc|desc], ... }
+  If TokIsKw('order') Then
+  Begin
+    Consume;  { sauter order }
+    If TokIsKw('by') Then
+      Consume;  { sauter by }
+    While (OrderByCount < MAX_ORDER_BY) And
+          (CurToken.Kind <> TK_EOF) Do
+    Begin
+      OBIdx := ParseExpr;
+      OrderByCols[OrderByCount].ColIdx := OBIdx;
+      OrderByCols[OrderByCount].Ascending := True;
+      If TokIsKw('desc') Then
+      Begin
+        OrderByCols[OrderByCount].Ascending := False;
+        Consume;
+      End
+      Else If TokIsKw('asc') Then
+        Consume;
+      Inc(OrderByCount);
+      If TokIsPunct(',') Then
+        Consume
+      Else
+        Break;
+    End;
+  End;
 
   ParseSelect := N;
 End;
@@ -2958,8 +3066,28 @@ Begin
 
     NK_EXPR_AGGR:
     Begin
-      If Nodes[Idx].Name = 'count' Then
+      If (Nodes[Idx].Name = 'count') Or
+         (Nodes[Idx].Name = 'strictcount') Or
+         (Nodes[Idx].Name = 'rank') Then
         Nodes[Idx].TypeIdx := FindType('int')
+      Else If (Nodes[Idx].Name = 'sum') Or
+              (Nodes[Idx].Name = 'strictsum') Or
+              (Nodes[Idx].Name = 'min') Or
+              (Nodes[Idx].Name = 'max') Then
+      Begin
+        If Nodes[Idx].Left >= 0 Then
+        Begin
+          ResolveNodeType(Nodes[Idx].Left);
+          Nodes[Idx].TypeIdx := Nodes[Nodes[Idx].Left].TypeIdx;
+        End
+        Else
+          Nodes[Idx].TypeIdx := FindType('int');
+      End
+      Else If Nodes[Idx].Name = 'avg' Then
+        Nodes[Idx].TypeIdx := FindType('float')
+      Else If (Nodes[Idx].Name = 'concat') Or
+              (Nodes[Idx].Name = 'strictconcat') Then
+        Nodes[Idx].TypeIdx := FindType('string')
       Else
         Nodes[Idx].TypeIdx := 0;
     End;
@@ -7643,6 +7771,470 @@ Begin
   Else QLTypeToTable := N;
 End;
 
+{ ---- Forward declarations pour les fonctions d agregation -- }
+
+Function EvalExprValue(NIdx : Integer) : TBindingValue; Forward;
+Function MatchesFilter(NIdx : Integer) : Boolean; Forward;
+
+{ ============================================================
+  TODO 15 - FONCTIONS D AGREGATION QL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Nom textuel d un type d agregation -------------------- }
+
+Function AggrKindName(K : TAggrKind) : TString;
+Begin
+  Case K Of
+    AGG_COUNT       : AggrKindName := 'count';
+    AGG_SUM         : AggrKindName := 'sum';
+    AGG_MIN         : AggrKindName := 'min';
+    AGG_MAX         : AggrKindName := 'max';
+    AGG_AVG         : AggrKindName := 'avg';
+    AGG_RANK        : AggrKindName := 'rank';
+    AGG_CONCAT      : AggrKindName := 'concat';
+    AGG_STRICTCOUNT : AggrKindName := 'strictcount';
+    AGG_STRICTSUM   : AggrKindName := 'strictsum';
+    AGG_STRICTCONCAT: AggrKindName := 'strictconcat';
+  Else
+    AggrKindName := '?aggr?';
+  End;
+End;
+
+{ ---- Convertir un nom en TAggrKind ------------------------- }
+
+Function ParseAggrKindStr(Const S : TString) : TAggrKind;
+Var
+  N : TString;
+Begin
+  N := StrLowerCase(S);
+  If N = 'count'       Then ParseAggrKindStr := AGG_COUNT
+  Else If N = 'sum'         Then ParseAggrKindStr := AGG_SUM
+  Else If N = 'min'         Then ParseAggrKindStr := AGG_MIN
+  Else If N = 'max'         Then ParseAggrKindStr := AGG_MAX
+  Else If N = 'avg'         Then ParseAggrKindStr := AGG_AVG
+  Else If N = 'rank'        Then ParseAggrKindStr := AGG_RANK
+  Else If N = 'concat'      Then ParseAggrKindStr := AGG_CONCAT
+  Else If N = 'strictcount' Then ParseAggrKindStr := AGG_STRICTCOUNT
+  Else If N = 'strictsum'   Then ParseAggrKindStr := AGG_STRICTSUM
+  Else If N = 'strictconcat'Then ParseAggrKindStr := AGG_STRICTCONCAT
+  Else ParseAggrKindStr := AGG_COUNT;
+End;
+
+{ ---- Initialiser un accumulateur d agregation -------------- }
+
+Procedure AggrAccumInit(Var Acc : TAggrAccum; K : TAggrKind);
+Begin
+  Acc.Kind     := K;
+  Acc.IntSum   := 0;
+  Acc.FloatSum := 0.0;
+  Acc.IntMin   := MaxLongInt;
+  Acc.IntMax   := -MaxLongInt;
+  Acc.StrAccum := '';
+  Acc.Count    := 0;
+  Acc.HasValue := False;
+  Acc.Separator:= ', ';
+  Acc.RankPos  := 0;
+End;
+
+{ ---- Alimenter un accumulateur avec une valeur ------------- }
+
+Procedure AggrAccumFeed(Var Acc : TAggrAccum;
+                        Const V : TBindingValue);
+Begin
+  If V.Kind = BK_NONE Then
+  Begin
+    { strict* : BK_NONE invalide l accumulateur }
+    If (Acc.Kind = AGG_STRICTCOUNT) Or
+       (Acc.Kind = AGG_STRICTSUM) Or
+       (Acc.Kind = AGG_STRICTCONCAT) Then
+    Begin
+      Acc.HasValue := False;
+      Acc.Count    := -1;
+    End;
+    Exit;
+  End;
+
+  If Acc.Count < 0 Then Exit;  { deja invalide par strict }
+
+  Inc(Acc.Count);
+  Acc.HasValue := True;
+
+  Case Acc.Kind Of
+    AGG_COUNT, AGG_STRICTCOUNT:
+      Inc(Acc.IntSum);
+
+    AGG_SUM, AGG_STRICTSUM:
+    Begin
+      If V.Kind = BK_INT Then
+        Acc.IntSum := Acc.IntSum + V.IntVal
+      Else If V.Kind = BK_FLOAT Then
+        Acc.FloatSum := Acc.FloatSum + V.FloatVal;
+    End;
+
+    AGG_MIN:
+    Begin
+      If V.Kind = BK_INT Then
+      Begin
+        If V.IntVal < Acc.IntMin Then
+          Acc.IntMin := V.IntVal;
+      End
+      Else If V.Kind = BK_FLOAT Then
+      Begin
+        If V.FloatVal < Acc.FloatSum Then
+          Acc.FloatSum := V.FloatVal
+        Else If Not Acc.HasValue Then
+          Acc.FloatSum := V.FloatVal;
+      End;
+    End;
+
+    AGG_MAX:
+    Begin
+      If V.Kind = BK_INT Then
+      Begin
+        If V.IntVal > Acc.IntMax Then
+          Acc.IntMax := V.IntVal;
+      End
+      Else If V.Kind = BK_FLOAT Then
+      Begin
+        If V.FloatVal > Acc.FloatSum Then
+          Acc.FloatSum := V.FloatVal
+        Else If Not Acc.HasValue Then
+          Acc.FloatSum := V.FloatVal;
+      End;
+    End;
+
+    AGG_AVG:
+    Begin
+      If V.Kind = BK_INT Then
+        Acc.FloatSum := Acc.FloatSum + V.IntVal
+      Else If V.Kind = BK_FLOAT Then
+        Acc.FloatSum := Acc.FloatSum + V.FloatVal;
+    End;
+
+    AGG_RANK:
+      Inc(Acc.RankPos);
+
+    AGG_CONCAT, AGG_STRICTCONCAT:
+    Begin
+      If V.Kind = BK_STRING Then
+      Begin
+        If Acc.StrAccum <> '' Then
+          Acc.StrAccum := Acc.StrAccum + Acc.Separator;
+        Acc.StrAccum := Acc.StrAccum + V.StrVal;
+      End
+      Else
+      Begin
+        If Acc.StrAccum <> '' Then
+          Acc.StrAccum := Acc.StrAccum + Acc.Separator;
+        Acc.StrAccum := Acc.StrAccum + BindingToStr(V);
+      End;
+    End;
+  End;
+End;
+
+{ ---- Finaliser un accumulateur et retourner le resultat ---- }
+
+Function AggrAccumFinalize(Const Acc : TAggrAccum) : TBindingValue;
+Begin
+  If (Not Acc.HasValue) Or (Acc.Count < 0) Then
+  Begin
+    AggrAccumFinalize := MakeNoneBinding;
+    Exit;
+  End;
+
+  Case Acc.Kind Of
+    AGG_COUNT, AGG_STRICTCOUNT:
+      AggrAccumFinalize := MakeIntBinding(Acc.IntSum);
+
+    AGG_SUM, AGG_STRICTSUM:
+    Begin
+      If Acc.FloatSum <> 0.0 Then
+        AggrAccumFinalize := MakeFloatBinding(
+                               Acc.FloatSum + Acc.IntSum)
+      Else
+        AggrAccumFinalize := MakeIntBinding(Acc.IntSum);
+    End;
+
+    AGG_MIN:
+    Begin
+      If Acc.IntMin < MaxLongInt Then
+        AggrAccumFinalize := MakeIntBinding(Acc.IntMin)
+      Else
+        AggrAccumFinalize := MakeFloatBinding(Acc.FloatSum);
+    End;
+
+    AGG_MAX:
+    Begin
+      If Acc.IntMax > -MaxLongInt Then
+        AggrAccumFinalize := MakeIntBinding(Acc.IntMax)
+      Else
+        AggrAccumFinalize := MakeFloatBinding(Acc.FloatSum);
+    End;
+
+    AGG_AVG:
+    Begin
+      If Acc.Count > 0 Then
+        AggrAccumFinalize := MakeFloatBinding(
+                               Acc.FloatSum / Acc.Count)
+      Else
+        AggrAccumFinalize := MakeNoneBinding;
+    End;
+
+    AGG_RANK:
+      AggrAccumFinalize := MakeIntBinding(Acc.RankPos);
+
+    AGG_CONCAT, AGG_STRICTCONCAT:
+      AggrAccumFinalize := MakeStrBinding(Acc.StrAccum);
+  Else
+    AggrAccumFinalize := MakeNoneBinding;
+  End;
+End;
+
+{ ---- Evaluer une expression d agregation (NK_EXPR_AGGR) ---- }
+
+Function EvalAggrExpr(NIdx : Integer) : TBindingValue;
+Var
+  Acc  : TAggrAccum;
+  Kind : TAggrKind;
+  LVal : TBindingValue;
+  TblRows : LongInt;
+  TblName : TString;
+Begin
+  EvalAggrExpr := MakeNoneBinding;
+  If (NIdx < 0) Or (NIdx >= NodeCount) Then Exit;
+
+  Kind := ParseAggrKindStr(Nodes[NIdx].Name);
+  AggrAccumInit(Acc, Kind);
+
+  { Si l agregation porte sur un sous-arbre (Left = variable decl) }
+  If Nodes[NIdx].Left >= 0 Then
+  Begin
+    { Evaluer l expression enfant }
+    LVal := EvalExprValue(Nodes[NIdx].Left);
+
+    { count/strictcount sur un type -> nombre de lignes }
+    If (Kind = AGG_COUNT) Or (Kind = AGG_STRICTCOUNT) Then
+    Begin
+      If LVal.Kind = BK_STRING Then
+      Begin
+        TblName := QLTypeToTable(LVal.StrVal);
+        TblRows := TableRowCount(TblName);
+        EvalAggrExpr := MakeIntBinding(TblRows);
+        Exit;
+      End;
+    End;
+
+    { Pour les autres : accumuler la valeur unique }
+    AggrAccumFeed(Acc, LVal);
+
+    { Si un filtre (Right) est present et satisfait, accumuler }
+    If Nodes[NIdx].Right >= 0 Then
+    Begin
+      If MatchesFilter(Nodes[NIdx].Right) Then
+        AggrAccumFeed(Acc, LVal);
+    End;
+
+    EvalAggrExpr := AggrAccumFinalize(Acc);
+  End
+  Else
+  Begin
+    { count() sans argument -> 0 }
+    If (Kind = AGG_COUNT) Or (Kind = AGG_STRICTCOUNT) Then
+      EvalAggrExpr := MakeIntBinding(0)
+    Else
+      EvalAggrExpr := MakeNoneBinding;
+  End;
+End;
+
+{ ---- Initialiser les structures d agregation --------------- }
+
+Procedure InitAggregation;
+Var
+  I : Integer;
+Begin
+  AggrGroupCnt := 0;
+  OrderByCount := 0;
+  GroupByCount := 0;
+  For I := 0 To MAX_AGGR_GROUPS - 1 Do
+    AggrAccumInit(AggrAccums[I], AGG_COUNT);
+  For I := 0 To MAX_ORDER_BY - 1 Do
+  Begin
+    OrderByCols[I].ColIdx    := -1;
+    OrderByCols[I].Ascending := True;
+    GroupByExprs[I]          := -1;
+  End;
+End;
+
+{ ---- Tester si deux cles group by sont identiques ---------- }
+
+Function GroupByMatch(Const A, B : TGroupByKey) : Boolean;
+Var
+  I : Integer;
+Begin
+  GroupByMatch := False;
+  If A.NCols <> B.NCols Then Exit;
+  For I := 0 To A.NCols - 1 Do
+    If Not BindingEqual(A.Cols[I], B.Cols[I]) Then Exit;
+  GroupByMatch := True;
+End;
+
+{ ---- Trier le jeu de resultats selon order by -------------- }
+
+Procedure SortResultSet;
+Var
+  I, J, K   : Integer;
+  Swapped   : Boolean;
+  TmpRow    : TResultTuple;
+  OIdx, CIdx: Integer;
+  VA, VB    : TBindingValue;
+  Cmp       : Integer;
+Begin
+  If OrderByCount = 0 Then Exit;
+  If EvalResults.NRows <= 1 Then Exit;
+
+  { Tri a bulles stable }
+  For I := 0 To EvalResults.NRows - 2 Do
+  Begin
+    Swapped := False;
+    For J := 0 To EvalResults.NRows - 2 - I Do
+    Begin
+      Cmp := 0;
+      For K := 0 To OrderByCount - 1 Do
+      Begin
+        OIdx := OrderByCols[K].ColIdx;
+        { OIdx est un index AST; on l utilise comme index de colonne }
+        If (OIdx >= 0) And (OIdx < NodeCount) Then
+          CIdx := K
+        Else
+          CIdx := K;
+        If CIdx >= EvalResults.NCols Then CIdx := 0;
+
+        VA := EvalResults.Rows[J].Cols[CIdx];
+        VB := EvalResults.Rows[J + 1].Cols[CIdx];
+
+        If (VA.Kind = BK_INT) And (VB.Kind = BK_INT) Then
+        Begin
+          If VA.IntVal < VB.IntVal Then Cmp := -1
+          Else If VA.IntVal > VB.IntVal Then Cmp := 1
+          Else Cmp := 0;
+        End
+        Else If (VA.Kind = BK_FLOAT) And (VB.Kind = BK_FLOAT) Then
+        Begin
+          If VA.FloatVal < VB.FloatVal Then Cmp := -1
+          Else If VA.FloatVal > VB.FloatVal Then Cmp := 1
+          Else Cmp := 0;
+        End
+        Else If (VA.Kind = BK_STRING) And (VB.Kind = BK_STRING) Then
+        Begin
+          If VA.StrVal < VB.StrVal Then Cmp := -1
+          Else If VA.StrVal > VB.StrVal Then Cmp := 1
+          Else Cmp := 0;
+        End;
+
+        If Not OrderByCols[K].Ascending Then
+          Cmp := -Cmp;
+
+        If Cmp <> 0 Then Break;
+      End;
+
+      If Cmp > 0 Then
+      Begin
+        TmpRow := EvalResults.Rows[J];
+        EvalResults.Rows[J] := EvalResults.Rows[J + 1];
+        EvalResults.Rows[J + 1] := TmpRow;
+        Swapped := True;
+      End;
+    End;
+    If Not Swapped Then Break;
+  End;
+End;
+
+{ ---- Appliquer le group by avec agregation ----------------- }
+
+Procedure ApplyGroupBy;
+Var
+  I, J, GIdx : Integer;
+  Key        : TGroupByKey;
+  Found      : Boolean;
+  SrcRow     : TResultTuple;
+  GrpRows    : Array[0..MAX_AGGR_GROUPS - 1] Of TResultTuple;
+  GrpCount   : Integer;
+Begin
+  If GroupByCount = 0 Then Exit;
+  If EvalResults.NRows = 0 Then Exit;
+
+  GrpCount := 0;
+
+  For I := 0 To EvalResults.NRows - 1 Do
+  Begin
+    SrcRow := EvalResults.Rows[I];
+
+    { Construire la cle group by }
+    Key.NCols := GroupByCount;
+    For J := 0 To GroupByCount - 1 Do
+    Begin
+      If J < SrcRow.NCols Then
+        Key.Cols[J] := SrcRow.Cols[J]
+      Else
+        Key.Cols[J] := MakeNoneBinding;
+    End;
+
+    { Chercher un groupe existant }
+    Found := False;
+    For GIdx := 0 To GrpCount - 1 Do
+    Begin
+      If GroupByMatch(Key, AggrGroupKeys[GIdx]) Then
+      Begin
+        Found := True;
+        { Incrementer le compteur du groupe }
+        AggrAccumFeed(AggrAccums[GIdx], MakeIntBinding(1));
+        Break;
+      End;
+    End;
+
+    { Nouveau groupe }
+    If (Not Found) And (GrpCount < MAX_AGGR_GROUPS) Then
+    Begin
+      AggrGroupKeys[GrpCount] := Key;
+      AggrAccumInit(AggrAccums[GrpCount], AGG_COUNT);
+      AggrAccumFeed(AggrAccums[GrpCount], MakeIntBinding(1));
+      GrpRows[GrpCount] := SrcRow;
+      Inc(GrpCount);
+    End;
+  End;
+
+  { Remplacer le result set par les groupes }
+  EvalResults.NRows := GrpCount;
+  For I := 0 To GrpCount - 1 Do
+    EvalResults.Rows[I] := GrpRows[I];
+End;
+
+{ ---- Appliquer order by au jeu de resultats ---------------- }
+
+Procedure ApplyOrderBy;
+Begin
+  If OrderByCount > 0 Then
+    SortResultSet;
+End;
+
+{ ---- Afficher les parametres d agregation (debug) ---------- }
+
+Procedure DumpAggregations;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Agregations ---');
+  WriteLn('  GroupByCount : ', GroupByCount);
+  WriteLn('  OrderByCount : ', OrderByCount);
+  WriteLn('  AggrGroupCnt : ', AggrGroupCnt);
+  For I := 0 To AggrGroupCnt - 1 Do
+    WriteLn('  G', I, ' ', AggrKindName(AggrAccums[I].Kind),
+            ' cnt=', AggrAccums[I].Count,
+            ' sum=', AggrAccums[I].IntSum,
+            ' has=', AggrAccums[I].HasValue);
+  WriteLn;
+End;
+
 { ---- Evaluer une expression QL en TBindingValue ------------ }
 
 Function EvalExprValue(NIdx : Integer) : TBindingValue;
@@ -7749,6 +8341,10 @@ Begin
         Else
           EvalExprValue := MakeIntBinding(0);
       End;
+    End;
+    NK_EXPR_AGGR:
+    Begin
+      EvalExprValue := EvalAggrExpr(NIdx);
     End;
     NK_EXPR_THIS:
     Begin
@@ -7944,6 +8540,7 @@ Begin
 
   InitResultSet;
   InitBindings;
+  InitAggregation;
 
   { Structure du NK_SELECT :
     Left  = premier NK_FROM_DECL (chaine via Next)
@@ -7971,6 +8568,10 @@ Begin
 
   { evaluer les jointures et collecter les resultats }
   EvalFromJoin(NIdx, FromList, WhereIdx, SelectExprs);
+
+  { appliquer group by puis order by (TODO 15) }
+  ApplyGroupBy;
+  ApplyOrderBy;
 End;
 
 { ---- Evaluer un predicat non-recursif ---------------------- }
