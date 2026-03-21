@@ -106,7 +106,7 @@
   16. Implementer l'evaluation des requetes recursives : detection des
       predicats mutuellement recursifs, evaluation par point fixe
       (iteration jusqu'a stabilisation), gestion de la negation
-      stratifiee pour eviter les cycles negatifs.
+      stratifiee pour eviter les cycles negatifs. [IMPLEMENTE]
 
   17. Implementer les requetes de securite integrees pour Pascal :
       detection d'injection de commandes (Exec avec donnees non
@@ -208,6 +208,12 @@ Const
   { TODO 15 : Fonctions d agregation }
   MAX_AGGR_GROUPS = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
   MAX_ORDER_BY    = {$IFDEF FPC}8{$ELSE}4{$ENDIF};
+
+  { TODO 16 : Requetes recursives }
+  MAX_REC_PREDS   = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_REC_DEPS    = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};
+  MAX_REC_STRATA  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_REC_ITERS   = {$IFDEF FPC}1000{$ELSE}100{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -836,6 +842,33 @@ Type
     Ascending : Boolean;     { True = ASC, False = DESC           }
   End;
 
+  { TODO 16 : Requetes recursives - dependances entre predicats }
+  TRecPredDep = Record
+    FromPred : Integer;      { index du predicat appelant (QLPreds)}
+    ToPred   : Integer;      { index du predicat appele (QLPreds) }
+    IsNeg    : Boolean;       { True si appel sous negation        }
+  End;
+
+  TRecSCCInfo = Record
+    SCCId     : Integer;      { identifiant du composant connexe   }
+    IsRecurs  : Boolean;       { True si le SCC a plus de 1 noeud
+                                  ou un arc reflexif               }
+  End;
+
+  TRecStratum = Record
+    Preds    : Array[0..MAX_REC_PREDS - 1] Of Integer; { indices QLPreds }
+    PredCnt  : Integer;       { nombre de predicats dans cette strate }
+    Level    : Integer;       { niveau de stratification (0 = base)  }
+    HasNeg   : Boolean;        { True si strate contient negation     }
+  End;
+
+  TRecFixPoint = Record
+    PredIdx  : Integer;       { index du predicat dans QLPreds       }
+    OldRows  : Integer;       { nombre de tuples a l iteration N-1   }
+    NewRows  : Integer;       { nombre de tuples a l iteration N     }
+    Stable   : Boolean;        { True si OldRows = NewRows            }
+  End;
+
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -951,6 +984,18 @@ Var
   OrderByCount : Integer;
   GroupByExprs : Array[0..MAX_ORDER_BY - 1] Of Integer;
   GroupByCount : Integer;
+
+  { Requetes recursives (TODO 16) }
+  RecDeps      : Array[0..MAX_REC_DEPS - 1] Of TRecPredDep;
+  RecDepCount  : Integer;
+  RecSCCs      : Array[0..MAX_REC_PREDS - 1] Of TRecSCCInfo;
+  RecSCCCount  : Integer;
+  RecStrata    : Array[0..MAX_REC_STRATA - 1] Of TRecStratum;
+  RecStrataCnt : Integer;
+  RecFP        : Array[0..MAX_REC_PREDS - 1] Of TRecFixPoint;
+  RecFPCount   : Integer;
+  RecTotalIter : Integer;
+  RecPredSCC   : Array[0..MAX_REC_PREDS - 1] Of Integer; { SCC id par pred }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -8639,6 +8684,640 @@ Begin
     WriteLn('  ', EvalBindings[I].Name, ' = ',
             BindingToStr(EvalBindings[I].Value));
   WriteLn;
+End;
+
+{ ============================================================
+  TODO 16 - REQUETES RECURSIVES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Initialiser les structures de recursion ---------------- }
+
+Procedure InitRecursion;
+Var
+  I : Integer;
+Begin
+  RecDepCount  := 0;
+  RecSCCCount  := 0;
+  RecStrataCnt := 0;
+  RecFPCount   := 0;
+  RecTotalIter := 0;
+  For I := 0 To MAX_REC_PREDS - 1 Do
+  Begin
+    RecSCCs[I].SCCId    := -1;
+    RecSCCs[I].IsRecurs := False;
+    RecPredSCC[I]       := -1;
+  End;
+  For I := 0 To MAX_REC_DEPS - 1 Do
+  Begin
+    RecDeps[I].FromPred := -1;
+    RecDeps[I].ToPred   := -1;
+    RecDeps[I].IsNeg    := False;
+  End;
+  For I := 0 To MAX_REC_STRATA - 1 Do
+  Begin
+    RecStrata[I].PredCnt := 0;
+    RecStrata[I].Level   := 0;
+    RecStrata[I].HasNeg  := False;
+  End;
+End;
+
+{ ---- Ajouter une dependance entre deux predicats ------------ }
+
+Procedure AddRecDep(FromP, ToP : Integer; Neg : Boolean);
+Begin
+  If RecDepCount >= MAX_REC_DEPS Then Exit;
+  RecDeps[RecDepCount].FromPred := FromP;
+  RecDeps[RecDepCount].ToPred   := ToP;
+  RecDeps[RecDepCount].IsNeg    := Neg;
+  Inc(RecDepCount);
+End;
+
+{ ---- Trouver un predicat par nom dans QLPreds --------------- }
+
+Function RecFindPredByName(Const AName : TString) : Integer;
+Var
+  I : Integer;
+  N : TString;
+Begin
+  RecFindPredByName := -1;
+  N := StrLowerCase(AName);
+  For I := 0 To QLPredCount - 1 Do
+    If StrLowerCase(QLPreds[I].Name) = N Then
+    Begin
+      RecFindPredByName := I;
+      Exit;
+    End;
+End;
+
+{ ---- Scanner un noeud AST pour trouver les appels ----------- }
+{ Parcourt l AST QL et detecte les NK_EXPR_CALL qui referent   }
+{ a des predicats enregistres. UnderNeg indique si on est sous }
+{ une negation (NOT).                                           }
+
+Procedure ScanCallsInNode(PredOwner, NIdx : Integer; UnderNeg : Boolean);
+Var
+  CalledPred : Integer;
+  Child      : Integer;
+Begin
+  If (NIdx < 0) Or (NIdx >= NodeCount) Then Exit;
+
+  Case Nodes[NIdx].Kind Of
+    NK_EXPR_CALL:
+    Begin
+      { Verifier si le nom de la fonction appelee est un predicat connu }
+      CalledPred := RecFindPredByName(Nodes[NIdx].Name);
+      If CalledPred >= 0 Then
+        AddRecDep(PredOwner, CalledPred, UnderNeg);
+      { scanner aussi les arguments }
+      Child := Nodes[NIdx].Left;
+      While (Child >= 0) And (Child < NodeCount) Do
+      Begin
+        ScanCallsInNode(PredOwner, Child, UnderNeg);
+        Child := Nodes[Child].Next;
+      End;
+    End;
+
+    NK_FORMULA_NOT:
+    Begin
+      { Sous negation : inverser le drapeau }
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Left, True);
+    End;
+
+    NK_FORMULA_AND, NK_FORMULA_OR, NK_FORMULA_IMPLIES:
+    Begin
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Left, UnderNeg);
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Right, UnderNeg);
+    End;
+
+    NK_FORMULA_EXISTS, NK_FORMULA_FORALL, NK_FORMULA_IF:
+    Begin
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Left, UnderNeg);
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Right, UnderNeg);
+      If Nodes[NIdx].Extra >= 0 Then
+        ScanCallsInNode(PredOwner, Nodes[NIdx].Extra, UnderNeg);
+    End;
+
+    NK_SELECT:
+    Begin
+      { Scanner from, where et select }
+      Child := Nodes[NIdx].Left;
+      While (Child >= 0) And (Child < NodeCount) Do
+      Begin
+        ScanCallsInNode(PredOwner, Child, UnderNeg);
+        Child := Nodes[Child].Next;
+      End;
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Right, UnderNeg);
+      Child := Nodes[NIdx].Extra;
+      While (Child >= 0) And (Child < NodeCount) Do
+      Begin
+        ScanCallsInNode(PredOwner, Child, UnderNeg);
+        Child := Nodes[Child].Next;
+      End;
+    End;
+
+    NK_EXPR_BINOP, NK_EXPR_MEMBER:
+    Begin
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Left, UnderNeg);
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Right, UnderNeg);
+    End;
+
+    NK_EXPR_UNOP:
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Left, UnderNeg);
+
+    NK_EXPR_AGGR:
+    Begin
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Left, UnderNeg);
+      ScanCallsInNode(PredOwner, Nodes[NIdx].Right, UnderNeg);
+      If Nodes[NIdx].Extra >= 0 Then
+        ScanCallsInNode(PredOwner, Nodes[NIdx].Extra, UnderNeg);
+    End;
+  End; { case }
+End;
+
+{ ---- Construire le graphe de dependances entre predicats ---- }
+
+Procedure BuildPredDepGraph;
+Var
+  I    : Integer;
+  Body : Integer;
+Begin
+  RecDepCount := 0;
+  For I := 0 To QLPredCount - 1 Do
+  Begin
+    { Retrouver le corps du predicat via le noeud AST }
+    If QLPreds[I].NodeIdx < 0 Then Continue;
+    If QLPreds[I].NodeIdx >= NodeCount Then Continue;
+    Body := Nodes[QLPreds[I].NodeIdx].Right;
+    If Body < 0 Then
+      Body := Nodes[QLPreds[I].NodeIdx].Extra;
+    If Body >= 0 Then
+      ScanCallsInNode(I, Body, False);
+  End;
+End;
+
+{ ---- Algorithme de Tarjan pour trouver les SCC -------------- }
+{ (Strongly Connected Components : composantes fortement        }
+{  connexes dans le graphe de dependances)                      }
+
+Var
+  TarjStack    : Array[0..MAX_REC_PREDS - 1] Of Integer;
+  TarjStackTop : Integer;
+  TarjIndex    : Array[0..MAX_REC_PREDS - 1] Of Integer;
+  TarjLowLink  : Array[0..MAX_REC_PREDS - 1] Of Integer;
+  TarjOnStack  : Array[0..MAX_REC_PREDS - 1] Of Boolean;
+  TarjCounter  : Integer;
+  TarjSCCId    : Integer;
+
+Procedure TarjPush(V : Integer);
+Begin
+  If TarjStackTop < MAX_REC_PREDS Then
+  Begin
+    TarjStack[TarjStackTop] := V;
+    Inc(TarjStackTop);
+    TarjOnStack[V] := True;
+  End;
+End;
+
+Function TarjPop : Integer;
+Begin
+  If TarjStackTop > 0 Then
+  Begin
+    Dec(TarjStackTop);
+    TarjPop := TarjStack[TarjStackTop];
+    TarjOnStack[TarjStack[TarjStackTop]] := False;
+  End
+  Else
+    TarjPop := -1;
+End;
+
+Procedure TarjStrongConnect(V : Integer); Forward;
+
+Procedure TarjStrongConnect(V : Integer);
+Var
+  I, W : Integer;
+  MemberCount : Integer;
+Begin
+  TarjIndex[V]   := TarjCounter;
+  TarjLowLink[V] := TarjCounter;
+  Inc(TarjCounter);
+  TarjPush(V);
+
+  { Parcourir les successeurs de V dans le graphe de dependances }
+  For I := 0 To RecDepCount - 1 Do
+  Begin
+    If RecDeps[I].FromPred <> V Then Continue;
+    W := RecDeps[I].ToPred;
+    If (W < 0) Or (W >= QLPredCount) Then Continue;
+
+    If TarjIndex[W] < 0 Then
+    Begin
+      { W n a pas encore ete visite }
+      TarjStrongConnect(W);
+      If TarjLowLink[W] < TarjLowLink[V] Then
+        TarjLowLink[V] := TarjLowLink[W];
+    End
+    Else If TarjOnStack[W] Then
+    Begin
+      { W est sur la pile => dans le SCC courant }
+      If TarjIndex[W] < TarjLowLink[V] Then
+        TarjLowLink[V] := TarjIndex[W];
+    End;
+  End;
+
+  { Si V est la racine d un SCC }
+  If TarjLowLink[V] = TarjIndex[V] Then
+  Begin
+    MemberCount := 0;
+    Repeat
+      W := TarjPop;
+      If W < 0 Then Break;
+      RecPredSCC[W] := TarjSCCId;
+      Inc(MemberCount);
+    Until W = V;
+
+    { Enregistrer le SCC }
+    If TarjSCCId < MAX_REC_PREDS Then
+    Begin
+      RecSCCs[TarjSCCId].SCCId    := TarjSCCId;
+      RecSCCs[TarjSCCId].IsRecurs := (MemberCount > 1);
+      Inc(RecSCCCount);
+    End;
+
+    { Un SCC de taille 1 peut etre recursif s il y a un arc reflexif }
+    If MemberCount = 1 Then
+    Begin
+      For I := 0 To RecDepCount - 1 Do
+        If (RecDeps[I].FromPred = V) And (RecDeps[I].ToPred = V) Then
+        Begin
+          RecSCCs[TarjSCCId].IsRecurs := True;
+          Break;
+        End;
+    End;
+
+    Inc(TarjSCCId);
+  End;
+End;
+
+Procedure FindSCCs;
+Var
+  I : Integer;
+Begin
+  TarjStackTop := 0;
+  TarjCounter  := 0;
+  TarjSCCId    := 0;
+  RecSCCCount  := 0;
+  For I := 0 To QLPredCount - 1 Do
+  Begin
+    TarjIndex[I]   := -1;
+    TarjLowLink[I] := -1;
+    TarjOnStack[I] := False;
+    RecPredSCC[I]  := -1;
+  End;
+
+  For I := 0 To QLPredCount - 1 Do
+    If TarjIndex[I] < 0 Then
+      TarjStrongConnect(I);
+End;
+
+{ ---- Stratification par negation ---------------------------- }
+{ Les predicats sont organises en strates : une strate ne peut  }
+{ utiliser la negation que sur des predicats de strates          }
+{ inferieures. Cela evite les cycles negatifs.                  }
+
+Procedure ComputeStrata;
+Var
+  I, J, K      : Integer;
+  StratLevel   : Array[0..MAX_REC_PREDS - 1] Of Integer;
+  Changed      : Boolean;
+  MaxLevel     : Integer;
+  DepLevel     : Integer;
+Begin
+  RecStrataCnt := 0;
+
+  { Initialiser tous les predicats au niveau 0 }
+  For I := 0 To QLPredCount - 1 Do
+    StratLevel[I] := 0;
+
+  { Propagation : si P depend negativement de Q, alors        }
+  { level(P) >= level(Q) + 1                                   }
+  { Si P depend positivement de Q (meme SCC), level(P) = level(Q) }
+  Repeat
+    Changed := False;
+    For I := 0 To RecDepCount - 1 Do
+    Begin
+      If (RecDeps[I].FromPred < 0) Or (RecDeps[I].ToPred < 0) Then
+        Continue;
+      If RecDeps[I].IsNeg Then
+      Begin
+        { Dependance negative : la strate de FromPred doit etre
+          strictement superieure a celle de ToPred }
+        DepLevel := StratLevel[RecDeps[I].ToPred] + 1;
+        If DepLevel > StratLevel[RecDeps[I].FromPred] Then
+        Begin
+          StratLevel[RecDeps[I].FromPred] := DepLevel;
+          Changed := True;
+        End;
+      End
+      Else
+      Begin
+        { Dependance positive dans le meme SCC : meme niveau }
+        If RecPredSCC[RecDeps[I].FromPred] =
+           RecPredSCC[RecDeps[I].ToPred] Then
+        Begin
+          If StratLevel[RecDeps[I].ToPred] >
+             StratLevel[RecDeps[I].FromPred] Then
+          Begin
+            StratLevel[RecDeps[I].FromPred] :=
+              StratLevel[RecDeps[I].ToPred];
+            Changed := True;
+          End;
+        End
+        Else
+        Begin
+          { Dependance positive hors SCC : au moins le meme niveau }
+          If StratLevel[RecDeps[I].ToPred] >
+             StratLevel[RecDeps[I].FromPred] Then
+          Begin
+            StratLevel[RecDeps[I].FromPred] :=
+              StratLevel[RecDeps[I].ToPred];
+            Changed := True;
+          End;
+        End;
+      End;
+    End;
+  Until Not Changed;
+
+  { Verifier qu il n y a pas de cycle negatif (niveau > MAX_REC_STRATA) }
+  For I := 0 To QLPredCount - 1 Do
+    If StratLevel[I] >= MAX_REC_STRATA Then
+    Begin
+      WarnMsg('Recursion: cycle negatif detecte pour predicat ' +
+              QLPreds[I].Name);
+      StratLevel[I] := MAX_REC_STRATA - 1;
+    End;
+
+  { Trouver le niveau maximum }
+  MaxLevel := 0;
+  For I := 0 To QLPredCount - 1 Do
+    If StratLevel[I] > MaxLevel Then
+      MaxLevel := StratLevel[I];
+
+  { Construire les strates }
+  For K := 0 To MaxLevel Do
+  Begin
+    If RecStrataCnt >= MAX_REC_STRATA Then Break;
+    RecStrata[RecStrataCnt].PredCnt := 0;
+    RecStrata[RecStrataCnt].Level   := K;
+    RecStrata[RecStrataCnt].HasNeg  := False;
+    For I := 0 To QLPredCount - 1 Do
+    Begin
+      If StratLevel[I] = K Then
+      Begin
+        J := RecStrata[RecStrataCnt].PredCnt;
+        If J < MAX_REC_PREDS Then
+        Begin
+          RecStrata[RecStrataCnt].Preds[J] := I;
+          Inc(RecStrata[RecStrataCnt].PredCnt);
+        End;
+        { Verifier si ce predicat utilise la negation }
+        For J := 0 To RecDepCount - 1 Do
+          If (RecDeps[J].FromPred = I) And RecDeps[J].IsNeg Then
+          Begin
+            RecStrata[RecStrataCnt].HasNeg := True;
+            Break;
+          End;
+      End;
+    End;
+    If RecStrata[RecStrataCnt].PredCnt > 0 Then
+      Inc(RecStrataCnt);
+  End;
+End;
+
+{ ---- Evaluation par point fixe d une strate ----------------- }
+{ Evalue les predicats recursifs d une strate en iterant        }
+{ jusqu a ce que le nombre de tuples se stabilise.              }
+
+Procedure EvalStrataFixPoint(StrataIdx : Integer);
+Var
+  I, PIdx, Iter : Integer;
+  AllStable     : Boolean;
+  Body          : Integer;
+Begin
+  If (StrataIdx < 0) Or (StrataIdx >= RecStrataCnt) Then Exit;
+
+  { Initialiser le suivi de point fixe pour chaque predicat }
+  RecFPCount := RecStrata[StrataIdx].PredCnt;
+  For I := 0 To RecFPCount - 1 Do
+  Begin
+    RecFP[I].PredIdx := RecStrata[StrataIdx].Preds[I];
+    RecFP[I].OldRows := -1;
+    RecFP[I].NewRows := 0;
+    RecFP[I].Stable  := False;
+  End;
+
+  { Iteration jusqu a stabilisation }
+  Iter := 0;
+  Repeat
+    AllStable := True;
+    For I := 0 To RecFPCount - 1 Do
+    Begin
+      PIdx := RecFP[I].PredIdx;
+      If (PIdx < 0) Or (PIdx >= QLPredCount) Then Continue;
+
+      { Sauvegarder le nombre de resultats precedent }
+      RecFP[I].OldRows := RecFP[I].NewRows;
+
+      { Evaluer le predicat }
+      If QLPreds[PIdx].NodeIdx >= 0 Then
+      Begin
+        Body := Nodes[QLPreds[PIdx].NodeIdx].Right;
+        If Body < 0 Then
+          Body := Nodes[QLPreds[PIdx].NodeIdx].Extra;
+        If Body >= 0 Then
+        Begin
+          If Nodes[Body].Kind = NK_SELECT Then
+            EvalSelect(Body)
+          Else
+          Begin
+            InitResultSet;
+            InitBindings;
+            MatchesFilter(Body);
+          End;
+        End;
+      End;
+
+      { Comparer le nombre de resultats }
+      RecFP[I].NewRows := EvalResults.NRows;
+      RecFP[I].Stable  := (RecFP[I].NewRows = RecFP[I].OldRows);
+      If Not RecFP[I].Stable Then
+        AllStable := False;
+    End;
+
+    Inc(Iter);
+    Inc(RecTotalIter);
+  Until AllStable Or (Iter >= MAX_REC_ITERS);
+
+  { Avertir si on a atteint la limite d iterations }
+  If Not AllStable Then
+    WarnMsg('Recursion: point fixe non atteint apres ' +
+            Chr(Ord('0') + (Iter Div 100) Mod 10) +
+            Chr(Ord('0') + (Iter Div 10) Mod 10) +
+            Chr(Ord('0') + Iter Mod 10) + ' iterations (strate ' +
+            Chr(Ord('0') + StrataIdx) + ')');
+End;
+
+{ ---- Detecter les predicats mutuellement recursifs ---------- }
+
+Function CountRecursivePredicates : Integer;
+Var
+  I, Cnt : Integer;
+Begin
+  Cnt := 0;
+  For I := 0 To RecSCCCount - 1 Do
+    If RecSCCs[I].IsRecurs Then
+      Inc(Cnt);
+  CountRecursivePredicates := Cnt;
+End;
+
+{ ---- Point d entree : evaluation des requetes recursives ---- }
+
+Procedure RunRecursiveEval;
+Var
+  I, J    : Integer;
+  HasRecur: Boolean;
+Begin
+  InitRecursion;
+
+  { Etape 1 : construire le graphe de dependances }
+  BuildPredDepGraph;
+
+  { Etape 2 : trouver les composantes fortement connexes (SCC) }
+  FindSCCs;
+
+  { Etape 3 : verifier s il y a des predicats recursifs }
+  HasRecur := False;
+  For I := 0 To RecSCCCount - 1 Do
+    If RecSCCs[I].IsRecurs Then
+    Begin
+      HasRecur := True;
+      Break;
+    End;
+
+  { Etape 4 : stratification par negation }
+  ComputeStrata;
+
+  { Etape 5 : evaluation par point fixe, strate par strate }
+  If HasRecur Then
+  Begin
+    For I := 0 To RecStrataCnt - 1 Do
+    Begin
+      { Verifier si cette strate contient des predicats recursifs }
+      For J := 0 To RecStrata[I].PredCnt - 1 Do
+      Begin
+        If RecPredSCC[RecStrata[I].Preds[J]] >= 0 Then
+        Begin
+          If RecSCCs[RecPredSCC[RecStrata[I].Preds[J]]].IsRecurs Then
+          Begin
+            EvalStrataFixPoint(I);
+            Break;
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ---- Afficher les informations de recursion (debug) --------- }
+
+Procedure DumpRecursiveInfo;
+Var
+  I, J : Integer;
+Begin
+  WriteLn('--- Recursion : dependances entre predicats ---');
+  WriteLn('  Nombre de dependances  : ', RecDepCount);
+  WriteLn('  Nombre de SCC          : ', RecSCCCount);
+  WriteLn('  Nombre de strates      : ', RecStrataCnt);
+  WriteLn('  Iterations point fixe  : ', RecTotalIter);
+  WriteLn;
+
+  If RecDepCount > 0 Then
+  Begin
+    WriteLn('  Dependances :');
+    For I := 0 To RecDepCount - 1 Do
+    Begin
+      If (RecDeps[I].FromPred >= 0) And
+         (RecDeps[I].FromPred < QLPredCount) And
+         (RecDeps[I].ToPred >= 0) And
+         (RecDeps[I].ToPred < QLPredCount) Then
+      Begin
+        Write('    ', QLPreds[RecDeps[I].FromPred].Name, ' -> ',
+              QLPreds[RecDeps[I].ToPred].Name);
+        If RecDeps[I].IsNeg Then
+          Write(' [NEG]');
+        WriteLn;
+      End;
+    End;
+    WriteLn;
+  End;
+
+  If RecSCCCount > 0 Then
+  Begin
+    WriteLn('  Composantes fortement connexes :');
+    For I := 0 To RecSCCCount - 1 Do
+    Begin
+      Write('    SCC ', RecSCCs[I].SCCId);
+      If RecSCCs[I].IsRecurs Then
+        Write(' [RECURSIF]')
+      Else
+        Write(' [non-recursif]');
+      Write(' : ');
+      For J := 0 To QLPredCount - 1 Do
+        If RecPredSCC[J] = I Then
+          Write(QLPreds[J].Name, ' ');
+      WriteLn;
+    End;
+    WriteLn;
+  End;
+
+  If RecStrataCnt > 0 Then
+  Begin
+    WriteLn('  Strates (negation stratifiee) :');
+    For I := 0 To RecStrataCnt - 1 Do
+    Begin
+      Write('    Strate ', RecStrata[I].Level);
+      If RecStrata[I].HasNeg Then
+        Write(' [negation]');
+      Write(' : ');
+      For J := 0 To RecStrata[I].PredCnt - 1 Do
+      Begin
+        If (RecStrata[I].Preds[J] >= 0) And
+           (RecStrata[I].Preds[J] < QLPredCount) Then
+          Write(QLPreds[RecStrata[I].Preds[J]].Name, ' ');
+      End;
+      WriteLn;
+    End;
+    WriteLn;
+  End;
+
+  If RecFPCount > 0 Then
+  Begin
+    WriteLn('  Point fixe :');
+    For I := 0 To RecFPCount - 1 Do
+    Begin
+      If (RecFP[I].PredIdx >= 0) And
+         (RecFP[I].PredIdx < QLPredCount) Then
+      Begin
+        Write('    ', QLPreds[RecFP[I].PredIdx].Name);
+        Write(' rows=', RecFP[I].NewRows);
+        If RecFP[I].Stable Then
+          Write(' [stable]')
+        Else
+          Write(' [instable]');
+        WriteLn;
+      End;
+    End;
+    WriteLn;
+  End;
 End;
 
 { ============================================================
