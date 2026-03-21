@@ -59,7 +59,7 @@
       de fichier binaire pour les tables, index sur les colonnes cles,
       lecture et ecriture sequentielle et aleatoire des enregistrements,
       gestion d'un repertoire de base de donnees avec un fichier par
-      table.
+      table. [IMPLEMENTE]
 
   9.  Implementer l'extraction (extracteur) : parcours de l'AST du code
       source Pascal et insertion des enregistrements dans les tables de
@@ -183,6 +183,22 @@ Const
   MAX_SRC_NODES = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
   MAX_DB_ROWS   = {$IFDEF FPC}8192{$ELSE}1024{$ENDIF};
   MAX_DB_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+
+  { TODO 8 : Noms de fichiers des tables sur disque }
+  DB_SIGNATURE  = $51444243;  { signature 'CBDQ' en little-endian  }
+  DB_VERSION    = 1;          { version du format binaire           }
+  DB_FILE_PROGRAMS  = 'programs.dat';
+  DB_FILE_FILES     = 'files.dat';
+  DB_FILE_LOCATIONS = 'locations.dat';
+  DB_FILE_EXPRS     = 'exprs.dat';
+  DB_FILE_STMTS     = 'stmts.dat';
+  DB_FILE_FUNCTIONS = 'functions.dat';
+  DB_FILE_VARIABLES = 'variables.dat';
+  DB_FILE_TYPES     = 'types.dat';
+  DB_FILE_CALLS     = 'calls.dat';
+  DB_FILE_ACCESSES  = 'accesses.dat';
+  DB_FILE_COMMENTS  = 'comments.dat';
+  DB_FILE_DIAGS     = 'diagnostics.dat';
 
   { Codes de sortie }
   EXIT_OK    = 0;
@@ -5732,6 +5748,555 @@ Begin
   WriteLn('  comments   : ', DbCommentCnt);
   WriteLn('  diagnostics: ', DbDiagCnt);
   WriteLn;
+End;
+
+{ ============================================================
+  TODO 08 - STOCKAGE DE LA BASE DE DONNEES SUR DISQUE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Creation du repertoire de la base de donnees ------------ }
+
+Procedure DbCreateDir(Const DirPath : TString);
+Begin
+  {$I-}
+  MkDir(DirPath);
+  {$I+}
+  If (IOResult <> 0) Then
+  Begin
+    { Le repertoire existe peut-etre deja, on ignore l erreur }
+  End;
+End;
+
+{ ---- Ecriture de l en-tete binaire d un fichier table -------- }
+
+Procedure DbWriteHeader(Var F : File; RowCount : Integer);
+Var
+  Sig : LongInt;
+  Ver : Integer;
+Begin
+  Sig := DB_SIGNATURE;
+  Ver := DB_VERSION;
+  BlockWrite(F, Sig, SizeOf(Sig));
+  BlockWrite(F, Ver, SizeOf(Ver));
+  BlockWrite(F, RowCount, SizeOf(RowCount));
+End;
+
+{ ---- Lecture de l en-tete binaire d un fichier table ---------- }
+
+Function DbReadHeader(Var F : File; Var RowCount : Integer) : Boolean;
+Var
+  Sig : LongInt;
+  Ver : Integer;
+Begin
+  DbReadHeader := False;
+  BlockRead(F, Sig, SizeOf(Sig));
+  If Sig <> DB_SIGNATURE Then
+  Begin
+    WriteLn('CODEQL: signature invalide dans le fichier table');
+    Exit;
+  End;
+  BlockRead(F, Ver, SizeOf(Ver));
+  If Ver <> DB_VERSION Then
+  Begin
+    WriteLn('CODEQL: version incompatible (', Ver, ' vs ', DB_VERSION, ')');
+    Exit;
+  End;
+  BlockRead(F, RowCount, SizeOf(RowCount));
+  DbReadHeader := True;
+End;
+
+{ ---- Sauvegarde de la table programs ------------------------- }
+
+Procedure DbSavePrograms(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_PROGRAMS);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbProgramCnt);
+  For I := 0 To DbProgramCnt - 1 Do
+    BlockWrite(F, DbPrograms[I], SizeOf(TDbProgram));
+  Close(F);
+End;
+
+{ ---- Chargement de la table programs ------------------------- }
+
+Procedure DbLoadPrograms(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_PROGRAMS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbProgramCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbProgramCnt - 1 Do
+    BlockRead(F, DbPrograms[I], SizeOf(TDbProgram));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table files ---------------------------- }
+
+Procedure DbSaveFiles(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_FILES);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbFileCnt);
+  For I := 0 To DbFileCnt - 1 Do
+    BlockWrite(F, DbFiles[I], SizeOf(TDbFile));
+  Close(F);
+End;
+
+{ ---- Chargement de la table files ---------------------------- }
+
+Procedure DbLoadFiles(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_FILES);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbFileCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbFileCnt - 1 Do
+    BlockRead(F, DbFiles[I], SizeOf(TDbFile));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table locations ------------------------ }
+
+Procedure DbSaveLocations(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_LOCATIONS);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbLocationCnt);
+  For I := 0 To DbLocationCnt - 1 Do
+    BlockWrite(F, DbLocations[I], SizeOf(TDbLocation));
+  Close(F);
+End;
+
+{ ---- Chargement de la table locations ------------------------ }
+
+Procedure DbLoadLocations(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_LOCATIONS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbLocationCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbLocationCnt - 1 Do
+    BlockRead(F, DbLocations[I], SizeOf(TDbLocation));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table exprs ---------------------------- }
+
+Procedure DbSaveExprs(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_EXPRS);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbExprCnt);
+  For I := 0 To DbExprCnt - 1 Do
+    BlockWrite(F, DbExprs[I], SizeOf(TDbExpr));
+  Close(F);
+End;
+
+{ ---- Chargement de la table exprs ---------------------------- }
+
+Procedure DbLoadExprs(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_EXPRS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbExprCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbExprCnt - 1 Do
+    BlockRead(F, DbExprs[I], SizeOf(TDbExpr));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table stmts ---------------------------- }
+
+Procedure DbSaveStmts(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_STMTS);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbStmtCnt);
+  For I := 0 To DbStmtCnt - 1 Do
+    BlockWrite(F, DbStmts[I], SizeOf(TDbStmt));
+  Close(F);
+End;
+
+{ ---- Chargement de la table stmts ---------------------------- }
+
+Procedure DbLoadStmts(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_STMTS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbStmtCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbStmtCnt - 1 Do
+    BlockRead(F, DbStmts[I], SizeOf(TDbStmt));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table functions ------------------------ }
+
+Procedure DbSaveFunctions(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_FUNCTIONS);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbFunctionCnt);
+  For I := 0 To DbFunctionCnt - 1 Do
+    BlockWrite(F, DbFunctions[I], SizeOf(TDbFunction));
+  Close(F);
+End;
+
+{ ---- Chargement de la table functions ------------------------ }
+
+Procedure DbLoadFunctions(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_FUNCTIONS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbFunctionCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbFunctionCnt - 1 Do
+    BlockRead(F, DbFunctions[I], SizeOf(TDbFunction));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table variables ------------------------ }
+
+Procedure DbSaveVariables(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_VARIABLES);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbVariableCnt);
+  For I := 0 To DbVariableCnt - 1 Do
+    BlockWrite(F, DbVariables[I], SizeOf(TDbVariable));
+  Close(F);
+End;
+
+{ ---- Chargement de la table variables ------------------------ }
+
+Procedure DbLoadVariables(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_VARIABLES);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbVariableCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbVariableCnt - 1 Do
+    BlockRead(F, DbVariables[I], SizeOf(TDbVariable));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table types ---------------------------- }
+
+Procedure DbSaveTypes(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_TYPES);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbTypeCnt);
+  For I := 0 To DbTypeCnt - 1 Do
+    BlockWrite(F, DbTypes[I], SizeOf(TDbType));
+  Close(F);
+End;
+
+{ ---- Chargement de la table types ---------------------------- }
+
+Procedure DbLoadTypes(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_TYPES);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbTypeCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbTypeCnt - 1 Do
+    BlockRead(F, DbTypes[I], SizeOf(TDbType));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table calls ---------------------------- }
+
+Procedure DbSaveCalls(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_CALLS);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbCallCnt);
+  For I := 0 To DbCallCnt - 1 Do
+    BlockWrite(F, DbCalls[I], SizeOf(TDbCall));
+  Close(F);
+End;
+
+{ ---- Chargement de la table calls ---------------------------- }
+
+Procedure DbLoadCalls(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_CALLS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbCallCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbCallCnt - 1 Do
+    BlockRead(F, DbCalls[I], SizeOf(TDbCall));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table accesses ------------------------- }
+
+Procedure DbSaveAccesses(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_ACCESSES);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbAccessCnt);
+  For I := 0 To DbAccessCnt - 1 Do
+    BlockWrite(F, DbAccesses[I], SizeOf(TDbAccess));
+  Close(F);
+End;
+
+{ ---- Chargement de la table accesses ------------------------- }
+
+Procedure DbLoadAccesses(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_ACCESSES);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbAccessCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbAccessCnt - 1 Do
+    BlockRead(F, DbAccesses[I], SizeOf(TDbAccess));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table comments ------------------------- }
+
+Procedure DbSaveComments(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_COMMENTS);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbCommentCnt);
+  For I := 0 To DbCommentCnt - 1 Do
+    BlockWrite(F, DbComments[I], SizeOf(TDbComment));
+  Close(F);
+End;
+
+{ ---- Chargement de la table comments ------------------------- }
+
+Procedure DbLoadComments(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_COMMENTS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbCommentCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbCommentCnt - 1 Do
+    BlockRead(F, DbComments[I], SizeOf(TDbComment));
+  Close(F);
+End;
+
+{ ---- Sauvegarde de la table diagnostics ---------------------- }
+
+Procedure DbSaveDiagnostics(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_DIAGS);
+  Rewrite(F, 1);
+  DbWriteHeader(F, DbDiagCnt);
+  For I := 0 To DbDiagCnt - 1 Do
+    BlockWrite(F, DbDiags[I], SizeOf(TDbDiagnostic));
+  Close(F);
+End;
+
+{ ---- Chargement de la table diagnostics ---------------------- }
+
+Procedure DbLoadDiagnostics(Const DirPath : TString);
+Var F : File; I : Integer;
+Begin
+  Assign(F, DirPath + '/' + DB_FILE_DIAGS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, DbDiagCnt) Then Begin Close(F); Exit; End;
+  For I := 0 To DbDiagCnt - 1 Do
+    BlockRead(F, DbDiags[I], SizeOf(TDbDiagnostic));
+  Close(F);
+End;
+
+{ ---- Sauvegarde complete de la base de donnees --------------- }
+
+Procedure DbSaveDatabase(Const DirPath : TString);
+Begin
+  DbCreateDir(DirPath);
+  DbSavePrograms(DirPath);
+  DbSaveFiles(DirPath);
+  DbSaveLocations(DirPath);
+  DbSaveExprs(DirPath);
+  DbSaveStmts(DirPath);
+  DbSaveFunctions(DirPath);
+  DbSaveVariables(DirPath);
+  DbSaveTypes(DirPath);
+  DbSaveCalls(DirPath);
+  DbSaveAccesses(DirPath);
+  DbSaveComments(DirPath);
+  DbSaveDiagnostics(DirPath);
+  WriteLn('Base de donnees sauvegardee dans: ', DirPath);
+  WriteLn('  12 tables, ',
+          DbProgramCnt + DbFileCnt + DbLocationCnt +
+          DbExprCnt + DbStmtCnt + DbFunctionCnt +
+          DbVariableCnt + DbTypeCnt + DbCallCnt +
+          DbAccessCnt + DbCommentCnt + DbDiagCnt,
+          ' enregistrements au total');
+End;
+
+{ ---- Chargement complet de la base de donnees ---------------- }
+
+Procedure DbLoadDatabase(Const DirPath : TString);
+Begin
+  InitDatabase;
+  DbLoadPrograms(DirPath);
+  DbLoadFiles(DirPath);
+  DbLoadLocations(DirPath);
+  DbLoadExprs(DirPath);
+  DbLoadStmts(DirPath);
+  DbLoadFunctions(DirPath);
+  DbLoadVariables(DirPath);
+  DbLoadTypes(DirPath);
+  DbLoadCalls(DirPath);
+  DbLoadAccesses(DirPath);
+  DbLoadComments(DirPath);
+  DbLoadDiagnostics(DirPath);
+  WriteLn('Base de donnees chargee depuis: ', DirPath);
+  WriteLn('  12 tables, ',
+          DbProgramCnt + DbFileCnt + DbLocationCnt +
+          DbExprCnt + DbStmtCnt + DbFunctionCnt +
+          DbVariableCnt + DbTypeCnt + DbCallCnt +
+          DbAccessCnt + DbCommentCnt + DbDiagCnt,
+          ' enregistrements au total');
+End;
+
+{ ---- Lecture aleatoire d un enregistrement par index --------- }
+
+Function DbReadProgramAt(Const DirPath : TString;
+                          Idx : Integer;
+                          Var Rec : TDbProgram) : Boolean;
+Var F : File; Cnt : Integer; Ofs : LongInt;
+Begin
+  DbReadProgramAt := False;
+  Assign(F, DirPath + '/' + DB_FILE_PROGRAMS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, Cnt) Then Begin Close(F); Exit; End;
+  If (Idx < 0) Or (Idx >= Cnt) Then Begin Close(F); Exit; End;
+  Ofs := SizeOf(LongInt) + SizeOf(Integer) + SizeOf(Integer)
+       + LongInt(Idx) * SizeOf(TDbProgram);
+  Seek(F, Ofs);
+  BlockRead(F, Rec, SizeOf(TDbProgram));
+  Close(F);
+  DbReadProgramAt := True;
+End;
+
+Function DbReadFunctionAt(Const DirPath : TString;
+                            Idx : Integer;
+                            Var Rec : TDbFunction) : Boolean;
+Var F : File; Cnt : Integer; Ofs : LongInt;
+Begin
+  DbReadFunctionAt := False;
+  Assign(F, DirPath + '/' + DB_FILE_FUNCTIONS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, Cnt) Then Begin Close(F); Exit; End;
+  If (Idx < 0) Or (Idx >= Cnt) Then Begin Close(F); Exit; End;
+  Ofs := SizeOf(LongInt) + SizeOf(Integer) + SizeOf(Integer)
+       + LongInt(Idx) * SizeOf(TDbFunction);
+  Seek(F, Ofs);
+  BlockRead(F, Rec, SizeOf(TDbFunction));
+  Close(F);
+  DbReadFunctionAt := True;
+End;
+
+Function DbReadVariableAt(Const DirPath : TString;
+                            Idx : Integer;
+                            Var Rec : TDbVariable) : Boolean;
+Var F : File; Cnt : Integer; Ofs : LongInt;
+Begin
+  DbReadVariableAt := False;
+  Assign(F, DirPath + '/' + DB_FILE_VARIABLES);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, Cnt) Then Begin Close(F); Exit; End;
+  If (Idx < 0) Or (Idx >= Cnt) Then Begin Close(F); Exit; End;
+  Ofs := SizeOf(LongInt) + SizeOf(Integer) + SizeOf(Integer)
+       + LongInt(Idx) * SizeOf(TDbVariable);
+  Seek(F, Ofs);
+  BlockRead(F, Rec, SizeOf(TDbVariable));
+  Close(F);
+  DbReadVariableAt := True;
+End;
+
+Function DbReadTypeAt(Const DirPath : TString;
+                       Idx : Integer;
+                       Var Rec : TDbType) : Boolean;
+Var F : File; Cnt : Integer; Ofs : LongInt;
+Begin
+  DbReadTypeAt := False;
+  Assign(F, DirPath + '/' + DB_FILE_TYPES);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, Cnt) Then Begin Close(F); Exit; End;
+  If (Idx < 0) Or (Idx >= Cnt) Then Begin Close(F); Exit; End;
+  Ofs := SizeOf(LongInt) + SizeOf(Integer) + SizeOf(Integer)
+       + LongInt(Idx) * SizeOf(TDbType);
+  Seek(F, Ofs);
+  BlockRead(F, Rec, SizeOf(TDbType));
+  Close(F);
+  DbReadTypeAt := True;
+End;
+
+{ ---- Ecriture aleatoire d un enregistrement par index -------- }
+
+Function DbWriteProgramAt(Const DirPath : TString;
+                            Idx : Integer;
+                            Const Rec : TDbProgram) : Boolean;
+Var F : File; Cnt : Integer; Ofs : LongInt;
+Begin
+  DbWriteProgramAt := False;
+  Assign(F, DirPath + '/' + DB_FILE_PROGRAMS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, Cnt) Then Begin Close(F); Exit; End;
+  If (Idx < 0) Or (Idx >= Cnt) Then Begin Close(F); Exit; End;
+  Ofs := SizeOf(LongInt) + SizeOf(Integer) + SizeOf(Integer)
+       + LongInt(Idx) * SizeOf(TDbProgram);
+  Seek(F, Ofs);
+  BlockWrite(F, Rec, SizeOf(TDbProgram));
+  Close(F);
+  DbWriteProgramAt := True;
+End;
+
+Function DbWriteFunctionAt(Const DirPath : TString;
+                             Idx : Integer;
+                             Const Rec : TDbFunction) : Boolean;
+Var F : File; Cnt : Integer; Ofs : LongInt;
+Begin
+  DbWriteFunctionAt := False;
+  Assign(F, DirPath + '/' + DB_FILE_FUNCTIONS);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  If Not DbReadHeader(F, Cnt) Then Begin Close(F); Exit; End;
+  If (Idx < 0) Or (Idx >= Cnt) Then Begin Close(F); Exit; End;
+  Ofs := SizeOf(LongInt) + SizeOf(Integer) + SizeOf(Integer)
+       + LongInt(Idx) * SizeOf(TDbFunction);
+  Seek(F, Ofs);
+  BlockWrite(F, Rec, SizeOf(TDbFunction));
+  Close(F);
+  DbWriteFunctionAt := True;
 End;
 
 { ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
