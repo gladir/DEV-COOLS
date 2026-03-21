@@ -910,6 +910,51 @@ Const
 
   KW_COUNT        = 101;     { nombre total de mots-cles definis  }
 
+  { ---- Constantes AST noeud parseur SQL (TODO 09) ------------- }
+  { Types de noeuds dans l arbre d expression }
+  ND_NONE         = 0;       { noeud vide / invalide                }
+  ND_INT_LIT      = 1;       { litteral entier : 42                 }
+  ND_FLOAT_LIT    = 2;       { litteral flottant : 3.14             }
+  ND_STR_LIT      = 3;       { litteral chaine : 'texte'            }
+  ND_NSTR_LIT     = 4;       { litteral Unicode : N'texte'          }
+  ND_HEX_LIT      = 5;       { litteral hexa : 0x1A2B               }
+  ND_NULL_LIT     = 6;       { NULL                                 }
+  ND_DEFAULT_LIT  = 7;       { DEFAULT                              }
+  ND_VARIABLE     = 8;       { @variable ou @@variable              }
+  ND_IDENT        = 9;       { identificateur simple (colonne)      }
+  ND_DELIM_IDENT  = 10;      { identificateur delimite [nom]        }
+  ND_STAR         = 11;      { *  (dans SELECT *)                   }
+  ND_PARAM        = 12;      { parametre ?                          }
+  ND_BINOP        = 13;      { operation binaire (+,-,*,/,%,&,|,^)  }
+  ND_UNARY        = 14;      { operation unaire (+,-,~,NOT)          }
+  ND_COMPARE      = 15;      { comparaison (=,<>,<,>,<=,>=,!=,!<,!>)}
+  ND_AND          = 16;      { AND logique                          }
+  ND_OR           = 17;      { OR logique                           }
+  ND_NOT          = 18;      { NOT logique                          }
+  ND_BETWEEN      = 19;      { expr BETWEEN lo AND hi               }
+  ND_IN           = 20;      { expr IN (liste)                      }
+  ND_LIKE         = 21;      { expr LIKE pattern                    }
+  ND_IS_NULL      = 22;      { expr IS NULL                         }
+  ND_IS_NOT_NULL  = 23;      { expr IS NOT NULL                     }
+  ND_EXISTS       = 24;      { EXISTS (sous-requete)                }
+  ND_FUNC_CALL    = 25;      { fonction(args...)                    }
+  ND_CASE_WHEN    = 26;      { CASE WHEN c THEN r [ELSE e] END     }
+  ND_CASE_EXPR    = 27;      { CASE expr WHEN v THEN r [ELSE e] END}
+  ND_CAST         = 28;      { CAST(expr AS type)                   }
+  ND_CONVERT      = 29;      { CONVERT(type, expr [,style])         }
+  ND_COLLATE      = 30;      { expr COLLATE collation_name          }
+  ND_SUBQUERY     = 31;      { (SELECT ...) sous-requete scalaire   }
+  ND_WHEN_ITEM    = 32;      { paire WHEN/THEN dans un CASE         }
+  ND_ARG_LIST     = 33;      { liste d arguments (IN, fonctions)    }
+  ND_DOT_REF      = 34;      { reference pointee (a.b.c)            }
+  ND_TYPE_REF     = 35;      { reference de type pour CAST/CONVERT  }
+
+  { Taille max du pool de noeuds AST }
+  MAX_AST_NODES   = 512;
+
+  { Taille max des enfants par noeud }
+  MAX_AST_CHILDREN = 8;
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1101,6 +1146,17 @@ Type
     KwId   : Integer;          { KW_xxx si Kind=TOK_KEYWORD, 0 sinon }
   End;
 
+  { ---- Noeud AST expressions SQL (TODO 09) ------------------- }
+  TASTNode = Record
+    Kind     : Byte;           { ND_xxx                               }
+    Text     : TTokenText;     { texte du token (litteral, ident, op) }
+    Children : Array[0..MAX_AST_CHILDREN - 1] Of Integer;
+                               { indices enfants dans ASTPool (-1=nil)}
+    ChildCnt : Integer;        { nombre d enfants utilises            }
+    Line     : Integer;        { ligne source (pour messages erreur)  }
+    Col      : Integer;        { colonne source                       }
+  End;
+
   { ---- Options de la ligne de commande ---------------------- }
   TOptions = Record
     MdfFile    : TString;   { -S : fichier .MDF principal          }
@@ -1146,6 +1202,10 @@ Var
   LexLine     : Integer;        { ligne courante (base 1)             }
   LexCol      : Integer;        { colonne courante (base 1)           }
   LexCurTok   : TToken;         { dernier token lu                    }
+  { ---- AST expressions SQL (TODO 09) --------------------------- }
+  ASTPool     : Array[0..MAX_AST_NODES - 1] Of TASTNode;
+  ASTCount    : Integer;         { nombre de noeuds alloues             }
+  ParseOk     : Boolean;         { False si erreur de syntaxe           }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
