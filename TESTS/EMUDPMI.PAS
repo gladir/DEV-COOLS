@@ -137,6 +137,9 @@ Const
   { TODO 21 : Nombre maximum de fichiers DOS ouverts simultanement }
  MaxDosFiles=20;
 
+  { TODO 22 : Adresse de base pour le chargement de programme binaire plat }
+ FlatLoadBase=$100000;  { 1 Mo }
+
 Type
   { TODO 2 : Registres 32 bits du 80386 }
  LongRec=Record
@@ -2584,14 +2587,13 @@ End;
 
   { TODO 22 : Chargeur de programme binaire plat (flat binary).
     Charge un fichier executable dans la memoire lineaire a l'adresse
-    de base LoadBase, initialise quatre selecteurs CS, DS, ES, SS avec
+    de base FlatLoadBase, initialise quatre selecteurs CS, DS, ES, SS avec
     des descripteurs couvrant tout l'espace de 16 Mo (base=0, limite=
     $FFFFFF, granularite page 4 Ko), initialise la pile (ESP pointe en
     haut de la memoire lineaire) et fixe EIP au point d'entree.
     Retourne True si le chargement a reussi, False sinon. }
 Function LoadFlatBinary(FileName:String):Boolean;
 Const
-  LoadBase=$100000;    { Adresse de chargement : 1 Mo }
   StackTop=MemorySize; { Sommet de pile : 16 Mo }
   LoadBufSize=4096;    { Taille du tampon de lecture }
 Var
@@ -2617,13 +2619,13 @@ Begin
   Close(F);
   Exit;
  End;
- If FileLen>LongInt(MemorySize)-LoadBase Then Begin
+ If FileLen>LongInt(MemorySize)-FlatLoadBase Then Begin
   WriteLn('LoadFlatBinary: fichier trop grand (',FileLen,' octets)');
   Close(F);
   Exit;
  End;
-  { Charger le fichier en memoire lineaire a l'adresse LoadBase }
- Pos:=LoadBase;
+  { Charger le fichier en memoire lineaire a l'adresse FlatLoadBase }
+ Pos:=FlatLoadBase;
  While Not Eof(F) do Begin
   {$I-}BlockRead(F,LoadBuf,LoadBufSize,BytesRead);{$I+}
   If IOResult<>0 Then Begin
@@ -2638,7 +2640,7 @@ Begin
   End;
  End;
  Close(F);
- WriteLn('LoadFlatBinary: ',FileLen,' octets charges a l''adresse $',HexStr(LoadBase,8));
+ WriteLn('LoadFlatBinary: ',FileLen,' octets charges a l''adresse $',HexStr(FlatLoadBase,8));
   { Allouer un selecteur pour le segment de code (CS) }
  SelCode:=DPMI_AllocLDTDescriptors(1);
  If SelCode<0 Then Begin
@@ -2649,7 +2651,7 @@ Begin
   { Configurer le descripteur de code : base=0, limite=16 Mo, granularite
     page 4 Ko (G=1), segment 32 bits (D=1), code execute/read }
  LDT[IdxCode].BaseAddr:=0;
- LDT[IdxCode].Limit:=$FFFFFF;       { 16 Mo en pages de 4 Ko : (FFFFFF+1)*4096=16Go > on utilise taille brute }
+ LDT[IdxCode].Limit:=$FFFFFF;       { Limite brute en valeur de page : couvre tout l'espace }
  LDT[IdxCode].AccessType:=$FA;      { P=1, DPL=3, S=1, Type=$A (code exec/read) }
  LDT[IdxCode].Granularity:=$C0;     { G=1 (bit7), D=1 (bit6) = segment 32 bits avec granularite 4 Ko }
   { Allouer un selecteur pour les segments de donnees (DS/ES/SS) }
@@ -2676,7 +2678,7 @@ Begin
  FillChar(Regs,SizeOf(Regs),0);
  Regs.ESP:=StackTop;  { Pile en haut de la memoire lineaire }
   { Initialiser le pointeur d'instruction au point d'entree }
- EIP:=LoadBase;
+ EIP:=FlatLoadBase;
   { Initialiser les drapeaux }
  EFlags.Abs:=0;
  Include(EFlags.s,bit1);  { Bit 1 toujours a 1 en x86 }
@@ -2687,7 +2689,7 @@ Begin
  ResetPrefixes;
  WriteLn('LoadFlatBinary: CS=$',HexStr(Word(SelCode),4),
          ' DS=ES=SS=$',HexStr(Word(SelData),4),
-         ' EIP=$',HexStr(LoadBase,8),
+         ' EIP=$',HexStr(FlatLoadBase,8),
          ' ESP=$',HexStr(StackTop,8));
  LoadFlatBinary:=True;
 End;
