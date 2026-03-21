@@ -13,10 +13,11 @@
       (16 Mo) pour emuler l'espace utilisateur d'un processus
       Windows 32 bits.
 
-  2.  Definir les registres 32 bits du 80386 : EAX, EBX, ECX, EDX,
-      ESI, EDI, EBP, ESP, EIP avec un acces aux sous-parties 16 bits
-      (AX, BX, ...) et 8 bits (AL, AH, ...) par des records variants,
-      ainsi que le registre EFLAGS complet 32 bits.
+  2.  [IMPLEMENTE] Definir les registres 32 bits du 80386 : EAX, EBX,
+      ECX, EDX, ESI, EDI, EBP, ESP, EIP avec un acces aux
+      sous-parties 16 bits (AX, BX, ...) et 8 bits (AL, AH, ...)
+      par des records variants, ainsi que le registre EFLAGS complet
+      32 bits.
 
   3.  Implementer les procedures ReadByte/ReadWord/ReadDWord et
       WriteByte/WriteWord/WriteDWord pour l'acces a la memoire
@@ -149,10 +150,37 @@ Const
   { Nombre de blocs de 1 Ko pour couvrir 16 Mo }
  ClearBlockCount=MemorySize div ClearBufferSize;  { 16384 }
 
+Type
+  { TODO 2 : Registres 32 bits du 80386 }
+ LongRec=Record
+  Lo,Hi:Word;
+ End;
+
 Var
   { TODO 1 : Fichier d'echange }
  Memory:File;
  ClrBuffer:Array[0..ClearBufferSize-1]of Byte;
+
+  { TODO 2 : Registres generaux 32 bits du 80386 avec acces aux
+    sous-parties 16 bits (AX, BX, ...) et 8 bits (AL, AH, ...) }
+ Regs:Record Case Byte of
+  0:(EAX,ECX,EDX,EBX,ESP,EBP,ESI,EDI:LongInt);
+  1:(AX,EAH,CX,ECH,DX,EDH,BX,EBH,SP,SPH,BP,BPH,SI,SIH,DI,DIH:Word);
+  2:(AL,AH,HAL,HAH,CL,CH,HCL,HCH,DL,DH,HDL,HDH,BL,BH,HBL,HBH:Byte);
+  3:(Abs:Array[0..7]of LongInt);
+  4:(AbsWord:Array[0..7]of LongRec);
+ End;
+
+  { TODO 2 : Pointeur d'instruction 32 bits }
+ EIP:LongInt;
+
+  { TODO 2 : Drapeaux du processeur (EFLAGS complet 32 bits) }
+ EFlags:Record Case Byte of
+  0:(s:Set of(CF,bit1,PF,bit3,AF,bit5,ZF,SF,TF,_IF,DF,_OF));
+  1:(Base:Word);
+  2:(Abs:LongInt);
+  3:(DataByte:Byte);
+ End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
     Cree le fichier d'echange de 16 Mo (EMUW32.$$$) et le remplit
