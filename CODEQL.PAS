@@ -143,7 +143,7 @@
       complete de la creation de la base de donnees a partir d'un
       repertoire de sources Pascal (parcours recursif des fichiers
       .pas et .pp, extraction de chaque fichier, ecriture de la base
-      de donnees dans le repertoire de sortie specifie).
+      de donnees dans le repertoire de sortie specifie). [IMPLEMENTE]
 
   23. Implementer la commande "codeql database analyze" : chargement
       de la base de donnees, chargement et compilation des suites de
@@ -173,6 +173,8 @@ Program CODEQL;
  {$H-}
 {$ENDIF}
 {$I-}
+
+Uses Dos;
 
 { ============================================================
   CONSTANTES GLOBALES
@@ -231,6 +233,9 @@ Const
   { TODO 21 : Bibliotheque standard de predicats QL }
   MAX_STDLIB_PREDS = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   STDLIB_NUM_CLASSES = 10;  { Element,Locatable,Expr,Stmt,Function,Variable,Type,Call,Access,Comment }
+
+  { TODO 22 : codeql database create }
+  MAX_SRC_FILES = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -1107,6 +1112,10 @@ Var
   StdPredCount  : Integer;
   StdLibBuilt   : Boolean;    { True apres BuildStdLibrary }
 
+  { Liste de fichiers sources a extraire (TODO 22) }
+  SrcFileList   : Array[0..MAX_SRC_FILES - 1] Of TString;
+  SrcFileCount  : Integer;
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1394,7 +1403,7 @@ Begin
   End;
 End;
 
-{ ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
+{ ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
 
 { ============================================================
   TODO 02 - LEXEUR QL (TOKENS) [IMPLEMENTE]
@@ -13462,16 +13471,231 @@ Begin
   WriteLn;
 End;
 
-{ ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
+{ ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
+
+{ ============================================================
+  TODO 22 - COMMANDE "codeql database create" [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- StrEndsWith : tester si S se termine par Suf ---------- }
+
+Function StrEndsWith(Const S, Suf : TString) : Boolean;
+Var LS, LSuf, I : Integer;
+    SLow, SufLow : TString;
+Begin
+  LS   := Length(S);
+  LSuf := Length(Suf);
+  StrEndsWith := False;
+  If LSuf > LS Then Exit;
+  SLow := StrLowerCase(S);
+  SufLow := StrLowerCase(Suf);
+  For I := 1 To LSuf Do
+    If SLow[LS - LSuf + I] <> SufLow[I] Then Exit;
+  StrEndsWith := True;
+End;
+
+{ ---- IsPascalSource : verifier si le fichier est .pas ou .pp }
+
+Function IsPascalSource(Const FName : TString) : Boolean;
+Begin
+  IsPascalSource := StrEndsWith(FName, '.pas') Or
+                    StrEndsWith(FName, '.pp');
+End;
+
+{ ---- AddSrcFile : ajouter un fichier a la liste ------------ }
+
+Procedure AddSrcFile(Const FName : TString);
+Begin
+  If SrcFileCount >= MAX_SRC_FILES Then
+  Begin
+    WriteLn('CODEQL: trop de fichiers sources (max=', MAX_SRC_FILES, ')');
+    Exit;
+  End;
+  SrcFileList[SrcFileCount] := FName;
+  Inc(SrcFileCount);
+End;
+
+{ ---- EnsureTrailingSep : ajouter / ou \ si absent ---------- }
+
+Function EnsureTrailingSep(Const Dir : TString) : TString;
+Var Last : Char;
+Begin
+  If Length(Dir) = 0 Then
+  Begin
+    EnsureTrailingSep := '';
+    Exit;
+  End;
+  Last := Dir[Length(Dir)];
+  {$IFDEF LINUX}
+  If Last <> '/' Then
+    EnsureTrailingSep := Dir + '/'
+  Else
+    EnsureTrailingSep := Dir;
+  {$ELSE}
+  If (Last <> '\') And (Last <> '/') Then
+    EnsureTrailingSep := Dir + '\'
+  Else
+    EnsureTrailingSep := Dir;
+  {$ENDIF}
+End;
+
+{ ---- CollectSourceFiles : parcours recursif d un repertoire  }
+
+Procedure CollectSourceFiles(Const Dir : TString);
+Var
+  SR     : SearchRec;
+  Prefix : TString;
+Begin
+  Prefix := EnsureTrailingSep(Dir);
+  { Collecter les fichiers Pascal dans ce repertoire }
+  FindFirst(Prefix + '*.*', AnyFile, SR);
+  While DosError = 0 Do
+  Begin
+    If (SR.Attr And Directory) = 0 Then
+    Begin
+      If IsPascalSource(SR.Name) Then
+        AddSrcFile(Prefix + SR.Name);
+    End;
+    FindNext(SR);
+  End;
+  { Parcours recursif des sous-repertoires }
+  FindFirst(Prefix + '*.*', Directory, SR);
+  While DosError = 0 Do
+  Begin
+    If (SR.Attr And Directory) <> 0 Then
+    Begin
+      If (SR.Name <> '.') And (SR.Name <> '..') Then
+        CollectSourceFiles(Prefix + SR.Name);
+    End;
+    FindNext(SR);
+  End;
+End;
+
+{ ---- RunDatabaseCreate : orchestration complete ------------- }
 
 Procedure RunDatabaseCreate;
+Var
+  I           : Integer;
+  TotalNodes  : LongInt;
+  TotalFiles  : Integer;
 Begin
   If Opts.Verbose Then
     ShowBanner;
-  WriteLn('database create: ', Opts.DatabasePath);
-  WriteLn('  source-root: ', Opts.SourceDir);
-  WriteLn('  language: ', Opts.Language);
-  WriteLn('(non implemente)');
+  WriteLn('=== codeql database create ===');
+  WriteLn('  base de donnees : ', Opts.DatabasePath);
+  WriteLn('  source-root     : ', Opts.SourceDir);
+  WriteLn('  language        : ', Opts.Language);
+  WriteLn;
+
+  { Etape 1 : Collecter les fichiers sources }
+  SrcFileCount := 0;
+  CollectSourceFiles(Opts.SourceDir);
+  WriteLn('Fichiers sources trouves : ', SrcFileCount);
+  If SrcFileCount = 0 Then
+  Begin
+    WriteLn('CODEQL: aucun fichier .pas ou .pp trouve dans: ', Opts.SourceDir);
+    Exit;
+  End;
+  If Opts.Verbose Then
+    For I := 0 To SrcFileCount - 1 Do
+      WriteLn('  [', I + 1, '] ', SrcFileList[I]);
+  WriteLn;
+
+  { Etape 2 : Initialiser la base de donnees }
+  InitDatabase;
+
+  { Etape 3 : Parser et extraire chaque fichier source }
+  TotalNodes := 0;
+  TotalFiles := 0;
+  For I := 0 To SrcFileCount - 1 Do
+  Begin
+    WriteLn('--- Extraction [', I + 1, '/', SrcFileCount, '] : ',
+            SrcFileList[I], ' ---');
+    { Parser le fichier source Pascal }
+    Assign(SrcLexF, SrcFileList[I]);
+    {$I-}
+    Reset(SrcLexF);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      WriteLn('  ERREUR: impossible d''ouvrir: ', SrcFileList[I]);
+      Continue;
+    End;
+    SrcLexOpened := True;
+    SrcLexInit;
+    SrcASTInit;
+    SrcRootNode := SrcParseModule;
+    WriteLn('  noeuds AST : ', SrcNodeCount);
+    WriteLn('  lignes     : ', SrcTotalLines);
+    TotalNodes := TotalNodes + SrcNodeCount;
+    Inc(TotalFiles);
+
+    { Extraire dans la base de donnees relationnelle }
+    ExtProgramId := DbAddProgram(SrcNodes[SrcRootNode].Name,
+                                 SrcFileList[I]);
+    ExtFileId := DbAddFile(SrcFileList[I], SrcTotalLines);
+    DbAddLocation(ExtFileId, 1, 1, SrcTotalLines, 1);
+    ExtractNode(SrcRootNode, ExtProgramId);
+    WriteLn('  expressions : ', DbExprCnt,
+            '  instructions: ', DbStmtCnt,
+            '  fonctions   : ', DbFunctionCnt);
+
+    SrcLexClose;
+  End;
+  WriteLn;
+  WriteLn('Extraction terminee :');
+  WriteLn('  fichiers traites : ', TotalFiles, ' / ', SrcFileCount);
+  WriteLn('  noeuds AST total : ', TotalNodes);
+  WriteLn('  programmes  : ', DbProgramCnt);
+  WriteLn('  fichiers    : ', DbFileCnt);
+  WriteLn('  positions   : ', DbLocationCnt);
+  WriteLn('  expressions : ', DbExprCnt);
+  WriteLn('  instructions: ', DbStmtCnt);
+  WriteLn('  fonctions   : ', DbFunctionCnt);
+  WriteLn('  variables   : ', DbVariableCnt);
+  WriteLn('  types       : ', DbTypeCnt);
+  WriteLn('  appels      : ', DbCallCnt);
+  WriteLn('  acces       : ', DbAccessCnt);
+  WriteLn('  commentaires: ', DbCommentCnt);
+  WriteLn('  diagnostics : ', DbDiagCnt);
+  WriteLn;
+
+  { Etape 4 : Construire le graphe de flot de controle }
+  WriteLn('Construction du CFG...');
+  InitCFG;
+  BuildCFG;
+  WriteLn('  noeuds CFG : ', CfgNodeCount);
+  WriteLn('  aretes CFG : ', CfgEdgeCount);
+  WriteLn;
+
+  { Etape 5 : Analyse de flot de donnees }
+  WriteLn('Analyse de flot de donnees...');
+  RunDataFlowAnalysis;
+  WriteLn('  variables : ', DfVarCount);
+  WriteLn('  definitions: ', DfDefCount);
+  WriteLn('  utilisations: ', DfUseCount);
+  WriteLn('  chaines def-use: ', DfChainCount);
+  WriteLn;
+
+  { Etape 6 : Suivi de teinte }
+  WriteLn('Suivi de teinte (taint tracking)...');
+  RunTaintTracking;
+  WriteLn('  sources  : ', TaintSrcCount);
+  WriteLn('  puits    : ', TaintSinkCount);
+  WriteLn('  alertes  : ', TaintAlertCount);
+  WriteLn;
+
+  { Etape 7 : Requetes de securite integrees }
+  WriteLn('Requetes de securite...');
+  RunSecurityQueries;
+  WriteLn('  alertes securite : ', SecAlertCount);
+  WriteLn;
+
+  { Etape 8 : Sauvegarder la base de donnees sur disque }
+  WriteLn('Sauvegarde de la base de donnees...');
+  DbSaveDatabase(Opts.DatabasePath);
+  WriteLn;
+  WriteLn('=== database create terminee ===');
 End;
 
 Procedure RunDatabaseAnalyze;
