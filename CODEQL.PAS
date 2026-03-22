@@ -149,7 +149,7 @@
       de la base de donnees, chargement et compilation des suites de
       requetes (.ql et .qls), execution sequentielle de toutes les
       requetes, collecte et fusion des resultats, generation du
-      rapport final au format choisi (SARIF, CSV, texte).
+      rapport final au format choisi (SARIF, CSV, texte). [IMPLEMENTE]
 
   24. Implementer la commande "codeql query run" : chargement de la
       base de donnees, compilation et execution d'une seule requete
@@ -236,6 +236,9 @@ Const
 
   { TODO 22 : codeql database create }
   MAX_SRC_FILES = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+
+  { TODO 23 : codeql database analyze }
+  MAX_SUITE_QUERIES = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -1115,6 +1118,10 @@ Var
   { Liste de fichiers sources a extraire (TODO 22) }
   SrcFileList   : Array[0..MAX_SRC_FILES - 1] Of TString;
   SrcFileCount  : Integer;
+
+  { Liste de requetes d une suite (TODO 23) }
+  SuiteQueries  : Array[0..MAX_SUITE_QUERIES - 1] Of TString;
+  SuiteQueryCount : Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -13698,15 +13705,221 @@ Begin
   WriteLn('=== database create terminee ===');
 End;
 
+{ ============================================================
+  TODO 23 - COMMANDE "codeql database analyze" [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- TrimStr : supprimer les espaces en debut et fin ------- }
+
+Function TrimStr(Const S : TString) : TString;
+Var I, J : Integer;
+    R : TString;
+Begin
+  I := 1;
+  While (I <= Length(S)) And (S[I] = ' ') Do Inc(I);
+  J := Length(S);
+  While (J >= I) And (S[J] = ' ') Do Dec(J);
+  R := '';
+  While I <= J Do
+  Begin
+    R := R + S[I];
+    Inc(I);
+  End;
+  TrimStr := R;
+End;
+
+{ ---- LoadQuerySuite : charger une suite .qls --------------- }
+{   Un fichier .qls contient un nom de fichier .ql par ligne.
+    Les lignes vides et les lignes commencant par # sont ignorees. }
+
+Procedure LoadQuerySuite(Const SuiteFile : TString);
+Var
+  F : Text;
+  Line, Trimmed : TString;
+Begin
+  SuiteQueryCount := 0;
+  Assign(F, SuiteFile);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('CODEQL: impossible d''ouvrir la suite: ', SuiteFile);
+    Exit;
+  End;
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Trimmed := TrimStr(Line);
+    If (Length(Trimmed) = 0) Or (Trimmed[1] = '#') Then
+      Continue;
+    If SuiteQueryCount >= MAX_SUITE_QUERIES Then
+    Begin
+      WriteLn('CODEQL: trop de requetes dans la suite (max=',
+              MAX_SUITE_QUERIES, ')');
+      Break;
+    End;
+    SuiteQueries[SuiteQueryCount] := Trimmed;
+    Inc(SuiteQueryCount);
+  End;
+  Close(F);
+End;
+
+{ ---- CompileAndRunQuery : compiler et executer une requete -- }
+
+Procedure CompileAndRunQuery(Const QLFile : TString);
+Begin
+  WriteLn('  --- Compilation : ', QLFile, ' ---');
+  Assign(LexSrcF, QLFile);
+  {$I-}
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('  ERREUR: impossible d''ouvrir: ', QLFile);
+    Exit;
+  End;
+  LexOpened := True;
+  LexInit;
+  ASTInit;
+  InitTypeSystem;
+  RootNode := ParseModule;
+  WriteLn('    noeuds AST : ', NodeCount);
+
+  { Verification des types }
+  TypeCheckAST;
+  WriteLn('    types      : ', TypeCount);
+
+  { Resolution des imports }
+  RunImportResolution;
+
+  { Bibliotheque standard }
+  BuildStdLibrary;
+
+  { Evaluation de la requete }
+  InitBindings;
+  InitResultSet;
+  EvalQuery(RootNode);
+  WriteLn('    resultats  : ', EvalResults.NRows, ' lignes');
+
+  If Opts.DebugMode Then
+  Begin
+    DumpAST(RootNode, 0);
+    DumpBindings;
+  End;
+  LexClose;
+  WriteLn;
+End;
+
+{ ---- FormatName : nom textuel du format de sortie ---------- }
+
+Function FormatName(F : TOutputFormat) : TString;
+Begin
+  Case F Of
+    FMT_SARIF : FormatName := 'SARIF';
+    FMT_CSV   : FormatName := 'CSV';
+    FMT_TEXT  : FormatName := 'Text';
+  Else
+    FormatName := 'unknown';
+  End;
+End;
+
+{ ---- RunDatabaseAnalyze : orchestration complete ------------ }
+
 Procedure RunDatabaseAnalyze;
+Var
+  I : Integer;
 Begin
   If Opts.Verbose Then
     ShowBanner;
-  WriteLn('database analyze: ', Opts.DatabasePath);
+  WriteLn('=== codeql database analyze ===');
+  WriteLn('  base de donnees : ', Opts.DatabasePath);
   If Opts.QueryFile <> '' Then
-    WriteLn('  suite: ', Opts.QueryFile);
-  WriteLn('  format: ', Ord(Opts.Format));
-  WriteLn('(non implemente)');
+    WriteLn('  suite/requete   : ', Opts.QueryFile);
+  WriteLn('  format de sortie: ', FormatName(Opts.Format));
+  WriteLn;
+
+  { Etape 1 : Charger la base de donnees depuis le disque }
+  WriteLn('Chargement de la base de donnees...');
+  DbLoadDatabase(Opts.DatabasePath);
+  WriteLn('  programmes  : ', DbProgramCnt);
+  WriteLn('  fichiers    : ', DbFileCnt);
+  WriteLn('  expressions : ', DbExprCnt);
+  WriteLn('  instructions: ', DbStmtCnt);
+  WriteLn('  fonctions   : ', DbFunctionCnt);
+  WriteLn('  variables   : ', DbVariableCnt);
+  WriteLn('  types       : ', DbTypeCnt);
+  WriteLn;
+
+  { Etape 2 : Construire le CFG a partir des donnees chargees }
+  WriteLn('Construction du CFG...');
+  InitCFG;
+  BuildCFG;
+  WriteLn('  noeuds CFG : ', CfgNodeCount);
+  WriteLn('  aretes CFG : ', CfgEdgeCount);
+  WriteLn;
+
+  { Etape 3 : Analyse de flot de donnees }
+  WriteLn('Analyse de flot de donnees...');
+  RunDataFlowAnalysis;
+  WriteLn('  chaines def-use: ', DfChainCount);
+  WriteLn;
+
+  { Etape 4 : Suivi de teinte }
+  WriteLn('Suivi de teinte...');
+  RunTaintTracking;
+  WriteLn('  alertes teinte : ', TaintAlertCount);
+  WriteLn;
+
+  { Etape 5 : Requetes de securite integrees }
+  WriteLn('Requetes de securite integrees...');
+  RunSecurityQueries;
+  WriteLn('  alertes securite : ', SecAlertCount);
+  WriteLn;
+
+  { Etape 6 : Charger et executer les requetes QL utilisateur }
+  If Opts.QueryFile <> '' Then
+  Begin
+    If StrEndsWith(Opts.QueryFile, '.qls') Then
+    Begin
+      WriteLn('Chargement de la suite de requetes...');
+      LoadQuerySuite(Opts.QueryFile);
+      WriteLn('  requetes dans la suite : ', SuiteQueryCount);
+      WriteLn;
+      For I := 0 To SuiteQueryCount - 1 Do
+        CompileAndRunQuery(SuiteQueries[I]);
+    End
+    Else
+    Begin
+      WriteLn('Execution de la requete...');
+      CompileAndRunQuery(Opts.QueryFile);
+    End;
+  End
+  Else
+    WriteLn('Aucune requete utilisateur specifiee, utilisation des requetes integrees.');
+  WriteLn;
+
+  { Etape 7 : Generation du rapport final }
+  WriteLn('Generation du rapport...');
+  Case Opts.Format Of
+    FMT_SARIF :
+    Begin
+      DumpSarif;
+      WriteLn('  format: SARIF v2.1.0');
+    End;
+    FMT_CSV :
+    Begin
+      DumpCSV;
+      WriteLn('  format: CSV');
+    End;
+    FMT_TEXT :
+    Begin
+      DumpText;
+      WriteLn('  format: texte tabule');
+    End;
+  End;
+  WriteLn;
+  WriteLn('=== database analyze terminee ===');
 End;
 
 Procedure RunQueryRun;
