@@ -216,6 +216,19 @@
       detection des fichiers .java,
       integration dans database create avec --language=java.
       [IMPLEMENTE]
+  31. Implementer le support du langage JavaScript : lexeur JavaScript
+      (mots-cles JavaScript break/case/catch/class/const/continue/
+      debugger/default/delete/do/else/export/extends/finally/for/
+      function/if/import/in/instanceof/let/new/return/super/switch/
+      this/throw/try/typeof/var/void/while/with/yield/async/await/
+      of/static/from/as/get/set),
+      parseur JavaScript (imports, exports, classes, fonctions,
+      arrow functions, methodes, destructuring, template literals,
+      try/catch/finally, for-in/for-of, switch, async/await,
+      generators, modules),
+      detection des fichiers .js et .mjs,
+      integration dans database create avec --language=javascript.
+      [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -528,7 +541,15 @@ Type
     SNK_JAVA_METHOD, SNK_JAVA_CONSTRUCTOR,
     SNK_JAVA_FIELD, SNK_JAVA_ANNOTATION,
     SNK_JAVA_TRY_CATCH, SNK_JAVA_THROW,
-    SNK_JAVA_SYNCHRONIZED, SNK_JAVA_FOREACH
+    SNK_JAVA_SYNCHRONIZED, SNK_JAVA_FOREACH,
+    { JavaScript node kinds }
+    SNK_JS_TRANSLATION_UNIT, SNK_JS_IMPORT,
+    SNK_JS_EXPORT, SNK_JS_CLASS_DECL,
+    SNK_JS_FUNCTION_DECL, SNK_JS_ARROW_FUNC,
+    SNK_JS_METHOD, SNK_JS_VARIABLE_DECL,
+    SNK_JS_TRY_CATCH, SNK_JS_THROW,
+    SNK_JS_FOR_IN, SNK_JS_FOR_OF,
+    SNK_JS_TEMPLATE_LITERAL, SNK_JS_DESTRUCTURING
   );
 
   TSrcASTNode = Record
@@ -1267,7 +1288,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1541,8 +1562,9 @@ Begin
 
   If (Opts.Language <> 'pascal') And (Opts.Language <> 'c') And
      (Opts.Language <> 'cpp') And (Opts.Language <> 'csharp') And
-     (Opts.Language <> 'go') And (Opts.Language <> 'java') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go ou java)');
+     (Opts.Language <> 'go') And (Opts.Language <> 'java') And
+     (Opts.Language <> 'javascript') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java ou javascript)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -5770,6 +5792,20 @@ Begin
     SNK_JAVA_THROW            : SrcNodeKindName := 'JAVA_THROW';
     SNK_JAVA_SYNCHRONIZED     : SrcNodeKindName := 'JAVA_SYNCHRONIZED';
     SNK_JAVA_FOREACH          : SrcNodeKindName := 'JAVA_FOREACH';
+    SNK_JS_TRANSLATION_UNIT   : SrcNodeKindName := 'JS_TRANSLATION_UNIT';
+    SNK_JS_IMPORT             : SrcNodeKindName := 'JS_IMPORT';
+    SNK_JS_EXPORT             : SrcNodeKindName := 'JS_EXPORT';
+    SNK_JS_CLASS_DECL         : SrcNodeKindName := 'JS_CLASS_DECL';
+    SNK_JS_FUNCTION_DECL      : SrcNodeKindName := 'JS_FUNCTION_DECL';
+    SNK_JS_ARROW_FUNC         : SrcNodeKindName := 'JS_ARROW_FUNC';
+    SNK_JS_METHOD             : SrcNodeKindName := 'JS_METHOD';
+    SNK_JS_VARIABLE_DECL      : SrcNodeKindName := 'JS_VARIABLE_DECL';
+    SNK_JS_TRY_CATCH          : SrcNodeKindName := 'JS_TRY_CATCH';
+    SNK_JS_THROW              : SrcNodeKindName := 'JS_THROW';
+    SNK_JS_FOR_IN             : SrcNodeKindName := 'JS_FOR_IN';
+    SNK_JS_FOR_OF             : SrcNodeKindName := 'JS_FOR_OF';
+    SNK_JS_TEMPLATE_LITERAL   : SrcNodeKindName := 'JS_TEMPLATE_LITERAL';
+    SNK_JS_DESTRUCTURING      : SrcNodeKindName := 'JS_DESTRUCTURING';
   Else
     SrcNodeKindName := '???';
   End;
@@ -20288,6 +20324,856 @@ End;
 
 { ---- Fin TODO 30 --------------------------------------------- }
 
+{ ============================================================
+  TODO 31 - SUPPORT DU LANGAGE JAVASCRIPT [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsJSKeyword : reconnaissance des mots-cles JavaScript --- }
+
+Function IsJSKeyword(Const W : TString) : Boolean;
+Begin
+  IsJSKeyword :=
+    (W = 'break')       Or (W = 'case')        Or (W = 'catch')     Or
+    (W = 'class')       Or (W = 'const')       Or (W = 'continue')  Or
+    (W = 'debugger')    Or (W = 'default')     Or (W = 'delete')    Or
+    (W = 'do')          Or (W = 'else')        Or (W = 'export')    Or
+    (W = 'extends')     Or (W = 'finally')     Or (W = 'for')       Or
+    (W = 'function')    Or (W = 'if')          Or (W = 'import')    Or
+    (W = 'in')          Or (W = 'instanceof')  Or (W = 'let')       Or
+    (W = 'new')         Or (W = 'return')      Or (W = 'super')     Or
+    (W = 'switch')      Or (W = 'this')        Or (W = 'throw')     Or
+    (W = 'try')         Or (W = 'typeof')      Or (W = 'var')       Or
+    (W = 'void')        Or (W = 'while')       Or (W = 'with')      Or
+    (W = 'yield')       Or (W = 'async')       Or (W = 'await')     Or
+    (W = 'of')          Or (W = 'static')      Or (W = 'from')      Or
+    (W = 'as')          Or (W = 'get')         Or (W = 'set');
+End;
+
+{ ---- JSLexScanIdent : lire un identifiant/mot-cle JS -------- }
+
+Procedure JSLexScanIdent;
+Var S : TString;
+Begin
+  S := '';
+  While (SrcColNo <= Length(SrcLine)) And
+        (IsIdentCont(SrcLine[SrcColNo]) Or (SrcLine[SrcColNo] = '$')) Do
+  Begin
+    If Length(S) < 255 Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  If IsJSKeyword(S) Then
+    SrcToken.Kind := STK_KEYWORD
+  Else
+    SrcToken.Kind := STK_IDENT;
+  SrcToken.Val := S;
+End;
+
+{ ---- JSLexScanTemplateLiteral : scanner un template literal ` --- }
+
+Procedure JSLexScanTemplateLiteral;
+Var S : TString;
+Begin
+  S := '';
+  Inc(SrcColNo); { sauter le backtick ouvrant }
+  While Not SrcEOF Do
+  Begin
+    If SrcColNo > Length(SrcLine) Then
+    Begin
+      If Length(S) < 255 Then S := S + #10;
+      SrcLexNextLine;
+      Continue;
+    End;
+    If SrcLine[SrcColNo] = '`' Then
+    Begin
+      Inc(SrcColNo);
+      Break;
+    End;
+    If SrcLine[SrcColNo] = '\' Then
+    Begin
+      Inc(SrcColNo);
+      If SrcColNo <= Length(SrcLine) Then
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+    End
+    Else
+    Begin
+      If Length(S) < 255 Then
+        S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+  End;
+  SrcToken.Kind := STK_STRING;
+  SrcToken.Val  := S;
+End;
+
+{ ---- JSLexInit : initialiser le lexeur JavaScript ------------ }
+
+Procedure JSLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- JSLexNextToken : lire le prochain token JavaScript ------ }
+
+Procedure JSLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Found    : Boolean;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      SrcToken.Line := SrcLineNo;
+      SrcToken.Col  := SrcColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    Scanning := False;
+
+    { Commentaire // }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Commentaire /* ... */ }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      Inc(SrcColNo, 2);
+      Found := False;
+      While (Not SrcEOF) And (Not Found) Do
+      Begin
+        While (SrcColNo <= Length(SrcLine)) And (Not Found) Do
+        Begin
+          If (SrcLine[SrcColNo] = '*') And
+             (SrcColNo < Length(SrcLine)) And
+             (SrcLine[SrcColNo + 1] = '/') Then
+          Begin
+            Inc(SrcColNo, 2);
+            Found := True;
+          End
+          Else
+            Inc(SrcColNo);
+        End;
+        If Not Found Then
+          SrcLexNextLine;
+      End;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Identifiants et mots-cles }
+    If IsIdentStart(Ch) Or (Ch = '_') Or (Ch = '$') Then
+    Begin
+      JSLexScanIdent;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Nombres }
+    If IsDigit(Ch) Then
+    Begin
+      CLexScanNumber;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines de caracteres "..." }
+    If Ch = '"' Then
+    Begin
+      CLexScanString;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Caracteres '...' }
+    If Ch = '''' Then
+    Begin
+      CLexScanChar;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Template literals `...` }
+    If Ch = '`' Then
+    Begin
+      JSLexScanTemplateLiteral;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs multi-caracteres }
+    If SrcColNo < Length(SrcLine) Then
+    Begin
+      S := Ch + SrcLine[SrcColNo + 1];
+
+      { Triple-char operators === !== >>> ... **= <<= >>= &&= ||= ??= }
+      If SrcColNo + 1 < Length(SrcLine) Then
+      Begin
+        If (S = '==') And (SrcLine[SrcColNo + 2] = '=') Then
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '===';
+          Inc(SrcColNo, 3);
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (S = '!=') And (SrcLine[SrcColNo + 2] = '=') Then
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '!==';
+          Inc(SrcColNo, 3);
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (S = '>>') And (SrcLine[SrcColNo + 2] = '>') Then
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '>>>';
+          Inc(SrcColNo, 3);
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (Ch = '.') And (SrcLine[SrcColNo + 1] = '.') And
+           (SrcLine[SrcColNo + 2] = '.') Then
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '...';
+          Inc(SrcColNo, 3);
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (S = '**') And (SrcLine[SrcColNo + 2] = '=') Then
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '**=';
+          Inc(SrcColNo, 3);
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+      End;
+
+      { Double-char operators }
+      If (S = '=>') Or (S = '==') Or (S = '!=') Or (S = '<=') Or
+         (S = '>=') Or (S = '&&') Or (S = '||') Or (S = '??') Or
+         (S = '++') Or (S = '--') Or (S = '**') Or
+         (S = '+=') Or (S = '-=') Or (S = '*=') Or (S = '/=') Or
+         (S = '%=') Or (S = '&=') Or (S = '|=') Or (S = '^=') Or
+         (S = '<<') Or (S = '>>') Or (S = '?.') Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := S;
+        Inc(SrcColNo, 2);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+    End;
+
+    { Operateur ou delimiteur simple }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- JSConsume : avancer d un token JavaScript --------------- }
+
+Procedure JSConsume;
+Begin
+  JSLexNextToken;
+End;
+
+{ ---- JSTokenIs / JSKwIs / JSExpect : helpers JavaScript ------ }
+
+Function JSTokIs(Const V : TString) : Boolean;
+Begin
+  JSTokIs := (SrcToken.Val = V);
+End;
+
+Function JSTokKind : TSourceTokenKind;
+Begin
+  JSTokKind := SrcToken.Kind;
+End;
+
+Function JSKwIs(Const W : TString) : Boolean;
+Begin
+  JSKwIs := (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = W);
+End;
+
+Procedure JSExpect(Const V : TString);
+Begin
+  If SrcToken.Val <> V Then
+    WriteLn('CODEQL: JS attendu ''', V, ''' a la ligne ', SrcToken.Line,
+            ':', SrcToken.Col, ' (lu: ''', SrcToken.Val, ''')');
+  JSConsume;
+End;
+
+{ ---- JSSkipBlock : passer un bloc entre accolades ------------ }
+
+Procedure JSSkipBlock; Forward;
+
+Procedure JSSkipBlock;
+Var Depth : Integer;
+Begin
+  If SrcToken.Val <> '{' Then Exit;
+  Depth := 1;
+  JSConsume;
+  While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+  Begin
+    If SrcToken.Val = '{' Then Inc(Depth)
+    Else If SrcToken.Val = '}' Then Dec(Depth);
+    If Depth > 0 Then JSConsume;
+  End;
+  If SrcToken.Val = '}' Then JSConsume;
+End;
+
+{ ---- JSSkipParens : passer ( ... ) --------------------------- }
+
+Procedure JSSkipParens;
+Var Depth : Integer;
+Begin
+  If SrcToken.Val <> '(' Then Exit;
+  Depth := 1;
+  JSConsume;
+  While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+  Begin
+    If SrcToken.Val = '(' Then Inc(Depth)
+    Else If SrcToken.Val = ')' Then Dec(Depth);
+    If Depth > 0 Then JSConsume;
+  End;
+  If SrcToken.Val = ')' Then JSConsume;
+End;
+
+{ ---- JSSkipBrackets : passer [ ... ] ------------------------- }
+
+Procedure JSSkipBrackets;
+Var Depth : Integer;
+Begin
+  If SrcToken.Val <> '[' Then Exit;
+  Depth := 1;
+  JSConsume;
+  While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+  Begin
+    If SrcToken.Val = '[' Then Inc(Depth)
+    Else If SrcToken.Val = ']' Then Dec(Depth);
+    If Depth > 0 Then JSConsume;
+  End;
+  If SrcToken.Val = ']' Then JSConsume;
+End;
+
+{ ---- JSParseExpression : passer une expression JS ------------ }
+
+Procedure JSParseExpression;
+Var Depth : Integer;
+Begin
+  Depth := 0;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    If (SrcToken.Val = '(') Or (SrcToken.Val = '[') Or
+       (SrcToken.Val = '{') Then
+      Inc(Depth)
+    Else If (SrcToken.Val = ')') Or (SrcToken.Val = ']') Or
+            (SrcToken.Val = '}') Then
+    Begin
+      If Depth = 0 Then Exit;
+      Dec(Depth);
+    End
+    Else If (Depth = 0) And
+            ((SrcToken.Val = ';') Or (SrcToken.Val = ',')) Then
+      Exit;
+    JSConsume;
+  End;
+End;
+
+{ ---- JSParseBlock : parser un bloc entre accolades ----------- }
+
+Function JSParseBlock : Integer; Forward;
+Function JSParseStatement : Integer; Forward;
+
+Function JSParseBlock : Integer;
+Var N, Child, Last : Integer;
+Begin
+  N := SrcNewNode(SNK_BLOCK);
+  SrcNodes[N].Name := 'JS_BLOCK';
+  Last := -1;
+  If SrcToken.Val = '{' Then
+  Begin
+    JSConsume;
+    While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> '}') Do
+    Begin
+      Child := JSParseStatement;
+      If Child >= 0 Then
+      Begin
+        If SrcNodes[N].Left = -1 Then
+          SrcNodes[N].Left := Child
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := Child;
+        Last := Child;
+      End;
+    End;
+    If SrcToken.Val = '}' Then JSConsume;
+  End;
+  JSParseBlock := N;
+End;
+
+{ ---- JSParseStatement : parser une instruction JS ------------ }
+
+Function JSParseStatement : Integer;
+Var N, Body : Integer;
+    Name    : TString;
+Begin
+  JSParseStatement := -1;
+
+  { import ... }
+  If JSKwIs('import') Then
+  Begin
+    N := SrcNewNode(SNK_JS_IMPORT);
+    SrcNodes[N].Name := 'import';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ';') And
+          (SrcToken.Kind <> STK_KEYWORD) Do
+    Begin
+      If SrcToken.Val = '{' Then
+        JSSkipBlock
+      Else
+        JSConsume;
+    End;
+    If SrcToken.Val = ';' Then JSConsume;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { export ... }
+  If JSKwIs('export') Then
+  Begin
+    N := SrcNewNode(SNK_JS_EXPORT);
+    SrcNodes[N].Name := 'export';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    If JSKwIs('default') Then JSConsume;
+    Body := JSParseStatement;
+    If Body >= 0 Then
+      SrcNodes[N].Left := Body;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { class ... }
+  If JSKwIs('class') Then
+  Begin
+    N := SrcNewNode(SNK_JS_CLASS_DECL);
+    JSConsume;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      JSConsume;
+    End
+    Else
+      SrcNodes[N].Name := '<anonymous>';
+    SrcNodes[N].Line := SrcToken.Line;
+    If JSKwIs('extends') Then
+    Begin
+      JSConsume;
+      If SrcToken.Kind = STK_IDENT Then JSConsume;
+      While SrcToken.Val = '.' Do
+      Begin
+        JSConsume;
+        If SrcToken.Kind = STK_IDENT Then JSConsume;
+      End;
+    End;
+    If SrcToken.Val = '{' Then
+      SrcNodes[N].Left := JSParseBlock;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { function et async function }
+  If JSKwIs('async') Or JSKwIs('function') Then
+  Begin
+    N := SrcNewNode(SNK_JS_FUNCTION_DECL);
+    SrcNodes[N].Line := SrcToken.Line;
+    If JSKwIs('async') Then JSConsume;
+    If JSKwIs('function') Then
+    Begin
+      JSConsume;
+      If SrcToken.Val = '*' Then JSConsume; { generator }
+    End;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      JSConsume;
+    End
+    Else
+      SrcNodes[N].Name := '<anonymous>';
+    If SrcToken.Val = '(' Then JSSkipParens;
+    If SrcToken.Val = '{' Then
+      SrcNodes[N].Left := JSParseBlock;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { var / let / const }
+  If JSKwIs('var') Or JSKwIs('let') Or JSKwIs('const') Then
+  Begin
+    N := SrcNewNode(SNK_JS_VARIABLE_DECL);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    JSParseExpression;
+    If SrcToken.Val = ';' Then JSConsume;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { try / catch / finally }
+  If JSKwIs('try') Then
+  Begin
+    N := SrcNewNode(SNK_JS_TRY_CATCH);
+    SrcNodes[N].Name := 'try';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    If SrcToken.Val = '{' Then
+      SrcNodes[N].Left := JSParseBlock;
+    If JSKwIs('catch') Then
+    Begin
+      JSConsume;
+      If SrcToken.Val = '(' Then JSSkipParens;
+      If SrcToken.Val = '{' Then JSSkipBlock;
+    End;
+    If JSKwIs('finally') Then
+    Begin
+      JSConsume;
+      If SrcToken.Val = '{' Then JSSkipBlock;
+    End;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { throw }
+  If JSKwIs('throw') Then
+  Begin
+    N := SrcNewNode(SNK_JS_THROW);
+    SrcNodes[N].Name := 'throw';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    JSParseExpression;
+    If SrcToken.Val = ';' Then JSConsume;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { for ... in / for ... of / for }
+  If JSKwIs('for') Then
+  Begin
+    JSConsume;
+    If SrcToken.Val = '(' Then
+    Begin
+      JSConsume;
+      Name := '';
+      If JSKwIs('var') Or JSKwIs('let') Or JSKwIs('const') Then
+      Begin
+        Name := SrcToken.Val;
+        JSConsume;
+      End;
+      If (SrcToken.Kind = STK_IDENT) Then
+      Begin
+        If Name = '' Then Name := SrcToken.Val
+        Else Name := Name + ' ' + SrcToken.Val;
+        JSConsume;
+      End;
+      If JSKwIs('in') Then
+      Begin
+        N := SrcNewNode(SNK_JS_FOR_IN);
+        SrcNodes[N].Name := 'for-in';
+        SrcNodes[N].Line := SrcToken.Line;
+        JSConsume;
+        While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ')') Do
+          JSConsume;
+        If SrcToken.Val = ')' Then JSConsume;
+        If SrcToken.Val = '{' Then
+          SrcNodes[N].Left := JSParseBlock
+        Else Begin
+          Body := JSParseStatement;
+          If Body >= 0 Then SrcNodes[N].Left := Body;
+        End;
+        JSParseStatement := N;
+        Exit;
+      End
+      Else If JSKwIs('of') Then
+      Begin
+        N := SrcNewNode(SNK_JS_FOR_OF);
+        SrcNodes[N].Name := 'for-of';
+        SrcNodes[N].Line := SrcToken.Line;
+        JSConsume;
+        While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ')') Do
+          JSConsume;
+        If SrcToken.Val = ')' Then JSConsume;
+        If SrcToken.Val = '{' Then
+          SrcNodes[N].Left := JSParseBlock
+        Else Begin
+          Body := JSParseStatement;
+          If Body >= 0 Then SrcNodes[N].Left := Body;
+        End;
+        JSParseStatement := N;
+        Exit;
+      End
+      Else
+      Begin
+        N := SrcNewNode(SNK_FOR);
+        SrcNodes[N].Name := 'for';
+        SrcNodes[N].Line := SrcToken.Line;
+        While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ')') Do
+          JSConsume;
+        If SrcToken.Val = ')' Then JSConsume;
+        If SrcToken.Val = '{' Then
+          SrcNodes[N].Left := JSParseBlock
+        Else Begin
+          Body := JSParseStatement;
+          If Body >= 0 Then SrcNodes[N].Left := Body;
+        End;
+        JSParseStatement := N;
+        Exit;
+      End;
+    End;
+    JSParseStatement := -1;
+    Exit;
+  End;
+
+  { if }
+  If JSKwIs('if') Then
+  Begin
+    N := SrcNewNode(SNK_IF);
+    SrcNodes[N].Name := 'if';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    If SrcToken.Val = '(' Then JSSkipParens;
+    If SrcToken.Val = '{' Then
+      SrcNodes[N].Left := JSParseBlock
+    Else Begin
+      Body := JSParseStatement;
+      If Body >= 0 Then SrcNodes[N].Left := Body;
+    End;
+    If JSKwIs('else') Then
+    Begin
+      JSConsume;
+      If SrcToken.Val = '{' Then
+        SrcNodes[N].Right := JSParseBlock
+      Else Begin
+        Body := JSParseStatement;
+        If Body >= 0 Then SrcNodes[N].Right := Body;
+      End;
+    End;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { while }
+  If JSKwIs('while') Then
+  Begin
+    N := SrcNewNode(SNK_WHILE);
+    SrcNodes[N].Name := 'while';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    If SrcToken.Val = '(' Then JSSkipParens;
+    If SrcToken.Val = '{' Then
+      SrcNodes[N].Left := JSParseBlock
+    Else Begin
+      Body := JSParseStatement;
+      If Body >= 0 Then SrcNodes[N].Left := Body;
+    End;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { do ... while }
+  If JSKwIs('do') Then
+  Begin
+    N := SrcNewNode(SNK_C_DO_WHILE);
+    SrcNodes[N].Name := 'do-while';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    If SrcToken.Val = '{' Then
+      SrcNodes[N].Left := JSParseBlock
+    Else Begin
+      Body := JSParseStatement;
+      If Body >= 0 Then SrcNodes[N].Left := Body;
+    End;
+    If JSKwIs('while') Then
+    Begin
+      JSConsume;
+      If SrcToken.Val = '(' Then JSSkipParens;
+    End;
+    If SrcToken.Val = ';' Then JSConsume;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { switch }
+  If JSKwIs('switch') Then
+  Begin
+    N := SrcNewNode(SNK_C_SWITCH);
+    SrcNodes[N].Name := 'switch';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    If SrcToken.Val = '(' Then JSSkipParens;
+    If SrcToken.Val = '{' Then JSSkipBlock;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { return }
+  If JSKwIs('return') Then
+  Begin
+    N := SrcNewNode(SNK_C_RETURN);
+    SrcNodes[N].Name := 'return';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    If (SrcToken.Val <> ';') And (SrcToken.Val <> '}') And
+       (SrcToken.Kind <> STK_EOF) Then
+      JSParseExpression;
+    If SrcToken.Val = ';' Then JSConsume;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { break / continue / debugger }
+  If JSKwIs('break') Or JSKwIs('continue') Or JSKwIs('debugger') Then
+  Begin
+    N := SrcNewNode(SNK_C_BREAK);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    If (SrcToken.Kind = STK_IDENT) Then JSConsume;
+    If SrcToken.Val = ';' Then JSConsume;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { with }
+  If JSKwIs('with') Then
+  Begin
+    N := SrcNewNode(SNK_WITH);
+    SrcNodes[N].Name := 'with';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSConsume;
+    If SrcToken.Val = '(' Then JSSkipParens;
+    If SrcToken.Val = '{' Then
+      SrcNodes[N].Left := JSParseBlock
+    Else Begin
+      Body := JSParseStatement;
+      If Body >= 0 Then SrcNodes[N].Left := Body;
+    End;
+    JSParseStatement := N;
+    Exit;
+  End;
+
+  { Bloc entre accolades }
+  If SrcToken.Val = '{' Then
+  Begin
+    JSParseStatement := JSParseBlock;
+    Exit;
+  End;
+
+  { Instruction vide ; }
+  If SrcToken.Val = ';' Then
+  Begin
+    JSConsume;
+    JSParseStatement := -1;
+    Exit;
+  End;
+
+  { Expression-statement par defaut }
+  If SrcToken.Kind <> STK_EOF Then
+  Begin
+    N := SrcNewNode(SNK_CALL);
+    SrcNodes[N].Name := 'expr';
+    SrcNodes[N].Line := SrcToken.Line;
+    JSParseExpression;
+    If SrcToken.Val = ';' Then JSConsume;
+    JSParseStatement := N;
+    Exit;
+  End;
+End;
+
+{ ---- JSParseTopLevel : parser un element de niveau superieur - }
+
+Function JSParseTopLevel : Integer;
+Begin
+  JSParseTopLevel := JSParseStatement;
+End;
+
+{ ---- JSParseTranslationUnit : parser un fichier JS complet --- }
+
+Function JSParseTranslationUnit : Integer;
+Var Root, N, Last : Integer;
+Begin
+  JSConsume;
+  Root := SrcNewNode(SNK_JS_TRANSLATION_UNIT);
+  SrcNodes[Root].Name := 'JS_TU';
+  Last := -1;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    N := JSParseTopLevel;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+  End;
+  JSParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 31 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -20355,6 +21241,13 @@ Begin
   IsJavaSource := StrEndsWith(FName, '.java');
 End;
 
+{ ---- IsJSSource : verifier si le fichier est .js ou .mjs ----- }
+
+Function IsJSSource(Const FName : TString) : Boolean;
+Begin
+  IsJSSource := StrEndsWith(FName, '.js') Or StrEndsWith(FName, '.mjs');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -20411,7 +21304,8 @@ Begin
          ((Opts.Language = 'cpp') And IsCppSource(SR.Name)) Or
          ((Opts.Language = 'csharp') And IsCSharpSource(SR.Name)) Or
          ((Opts.Language = 'go') And IsGoSource(SR.Name)) Or
-         ((Opts.Language = 'java') And IsJavaSource(SR.Name)) Then
+         ((Opts.Language = 'java') And IsJavaSource(SR.Name)) Or
+          ((Opts.Language = 'javascript') And IsJSSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -20514,6 +21408,12 @@ Begin
       JavaLexInit;
       SrcASTInit;
       SrcRootNode := JavaParseTranslationUnit;
+    End
+    Else If Opts.Language = 'javascript' Then
+    Begin
+      JSLexInit;
+      SrcASTInit;
+      SrcRootNode := JSParseTranslationUnit;
     End
     Else
     Begin
