@@ -156,6 +156,7 @@
       QL specifiee en argument, affichage des resultats sur la
       sortie standard, mode interactif (REPL) avec l'option
       --interactive pour executer des requetes une par une.
+      [IMPLEMENTE]
 
   25. Implementer la generation finale et les fichiers exemples :
       creation de 10 requetes exemples dans un repertoire SAMPLES
@@ -163,7 +164,7 @@
       de tampon, injection de commandes, code mort, complexite
       cyclomatique, convention de nommage, parametres inutilises,
       code duplique, utilisation de Goto), documentation d'aide,
-      nettoyage des ressources.
+      nettoyage des ressources. [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -240,6 +241,15 @@ Const
   { TODO 23 : codeql database analyze }
   MAX_SUITE_QUERIES = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
 
+  { TODO 24 : codeql query run - mode REPL }
+  MAX_REPL_LINE    = 255;     { longueur max d une ligne REPL        }
+  REPL_PROMPT      = 'ql> ';  { invite de commande REPL              }
+  REPL_TMPFILE     = '_repl_tmp.ql'; { fichier temporaire REPL       }
+
+  { TODO 25 : repertoire des exemples }
+  SAMPLES_DIR      = 'SAMPLES';
+  NUM_SAMPLE_QUERIES = 10;    { nombre de requetes exemples          }
+
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
   DB_VERSION    = 1;          { version du format binaire           }
@@ -273,7 +283,8 @@ Type
     CMD_DATABASE_CREATE,
     CMD_DATABASE_ANALYZE,
     CMD_QUERY_RUN,
-    CMD_DB_INTERPRET_RESULTS
+    CMD_DB_INTERPRET_RESULTS,
+    CMD_GENERATE_SAMPLES
   );
 
   { TODO 1 : Formats de sortie }
@@ -1175,8 +1186,9 @@ Begin
   WriteLn('Commandes :');
   WriteLn('  database create   <db> --source-root=<dir> [--language=pascal]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
-  WriteLn('  query run         --database=<db> <query.ql>');
+  WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
+  WriteLn('  generate samples  [<dir>]');
   WriteLn;
   WriteLn('Options globales :');
   WriteLn('  -v, --verbose       Mode verbeux');
@@ -1191,6 +1203,8 @@ Begin
   WriteLn('  CODEQL database create mydb --source-root=src');
   WriteLn('  CODEQL database analyze mydb security.qls --format=sarif');
   WriteLn('  CODEQL query run --database=mydb find_bugs.ql');
+  WriteLn('  CODEQL query run --database=mydb --interactive');
+  WriteLn('  CODEQL generate samples');
   WriteLn;
   Halt(EXIT_USAGE);
 End;
@@ -1333,6 +1347,25 @@ Begin
       End;
     End
 
+    { Sous-commande : generate }
+    Else If (LArg = 'generate') And (Opts.SubCmd = CMD_NONE) Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+      Begin
+        WriteLn('CODEQL: sous-commande generate incomplete');
+        ShowUsage;
+      End;
+      Val := StrLowerCase(ParamStr(I));
+      If Val = 'samples' Then
+        Opts.SubCmd := CMD_GENERATE_SAMPLES
+      Else
+      Begin
+        WriteLn('CODEQL: sous-commande generate inconnue: ', ParamStr(I));
+        ShowUsage;
+      End;
+    End
+
     { Arguments positionnels }
     Else If Arg[1] = '-' Then
     Begin
@@ -1360,6 +1393,16 @@ Begin
         Begin
           If Opts.QueryFile = '' Then
             Opts.QueryFile := Arg
+          Else
+          Begin
+            WriteLn('CODEQL: argument inattendu: ', Arg);
+            ShowUsage;
+          End;
+        End;
+        CMD_GENERATE_SAMPLES:
+        Begin
+          If Opts.OutputFile = '' Then
+            Opts.OutputFile := Arg
           Else
           Begin
             WriteLn('CODEQL: argument inattendu: ', Arg);
@@ -1406,6 +1449,10 @@ Begin
     Begin
       If Opts.DatabasePath = '' Then
         FatalError('chemin de la base de donnees requis');
+    End;
+    CMD_GENERATE_SAMPLES:
+    Begin
+      { Le repertoire de sortie est optionnel, SAMPLES par defaut }
     End;
   End;
 End;
@@ -13923,65 +13970,152 @@ Begin
 End;
 
 Procedure RunQueryRun;
+Var
+  ReplLine : TString;
+  TmpF     : Text;
 Begin
   If Opts.Verbose Then
     ShowBanner;
+  WriteLn('=== codeql query run ===');
+  WriteLn('  base de donnees : ', Opts.DatabasePath);
   If Opts.Interactive Then
-    WriteLn('query run: mode interactif (REPL)')
+    WriteLn('  mode            : REPL interactif')
   Else
-    WriteLn('query run: ', Opts.QueryFile);
-  WriteLn('  database: ', Opts.DatabasePath);
+    WriteLn('  requete         : ', Opts.QueryFile);
+  WriteLn;
 
-  { TODO 3 : parser le fichier QL si specifie }
-  If Opts.QueryFile <> '' Then
+  { Etape 1 : Charger la base de donnees }
+  WriteLn('Chargement de la base de donnees...');
+  DbLoadDatabase(Opts.DatabasePath);
+  WriteLn('  programmes  : ', DbProgramCnt);
+  WriteLn('  fichiers    : ', DbFileCnt);
+  WriteLn('  expressions : ', DbExprCnt);
+  WriteLn('  instructions: ', DbStmtCnt);
+  WriteLn('  fonctions   : ', DbFunctionCnt);
+  WriteLn('  variables   : ', DbVariableCnt);
+  WriteLn('  types       : ', DbTypeCnt);
+  WriteLn;
+
+  { Etape 2 : Construire le CFG }
+  WriteLn('Construction du CFG...');
+  InitCFG;
+  BuildCFG;
+  WriteLn('  noeuds CFG : ', CfgNodeCount);
+  WriteLn('  aretes CFG : ', CfgEdgeCount);
+  WriteLn;
+
+  { Etape 3 : Analyse de flot de donnees }
+  WriteLn('Analyse de flot de donnees...');
+  RunDataFlowAnalysis;
+  WriteLn('  chaines def-use: ', DfChainCount);
+  WriteLn;
+
+  { Etape 4 : Suivi de teinte }
+  WriteLn('Suivi de teinte...');
+  RunTaintTracking;
+  WriteLn('  alertes teinte : ', TaintAlertCount);
+  WriteLn;
+
+  { Etape 5 : Requetes de securite integrees }
+  WriteLn('Requetes de securite...');
+  RunSecurityQueries;
+  WriteLn('  alertes securite : ', SecAlertCount);
+  WriteLn;
+
+  If Not Opts.Interactive Then
   Begin
-    Assign(LexSrcF, Opts.QueryFile);
-    {$I-}
-    Reset(LexSrcF);
-    {$I+}
-    If IOResult <> 0 Then
-    Begin
-      WriteLn('CODEQL: impossible d''ouvrir: ', Opts.QueryFile);
-      Exit;
-    End;
-    LexOpened := True;
-    LexInit;
-    ASTInit;
-    InitTypeSystem;
-    RootNode := ParseModule;
-    WriteLn('Parsing termine : ', NodeCount, ' noeuds AST');
-    WriteLn('Lignes lues     : ', TotalLines);
+    { Mode fichier : compiler et executer la requete specifiee }
+    WriteLn('Compilation et execution de la requete...');
+    CompileAndRunQuery(Opts.QueryFile);
     WriteLn;
-
-    { TODO 4 : verification des types }
-    TypeCheckAST;
-    WriteLn('Types resolus   : ', TypeCount, ' types enregistres');
-    WriteLn('Erreurs de type : ', TypeErrors);
-    WriteLn;
-
-    { TODO 20 : resolution des imports et modules }
-    RunImportResolution;
-    WriteLn('Modules QL      : ', QLModuleCount, ' enregistres');
-    WriteLn('Imports QL      : ', QLImportCount, ' (', CountResolvedImports, ' resolus)');
-    WriteLn;
-
-    { TODO 21 : bibliotheque standard de predicats QL }
-    BuildStdLibrary;
-    WriteLn('Stdlib classes  : ', CountStdLibClasses);
-    WriteLn('Stdlib predicats: ', CountStdLibPreds);
-    WriteLn;
-
-    If Opts.DebugMode Then
-    Begin
-      DumpModules;
-      DumpStdLibrary;
-      DumpTypes;
-      DumpAST(RootNode, 0);
-    End;
-    LexClose;
+    WriteLn('=== query run terminee ===');
   End
   Else
-    WriteLn('(non implemente)');
+  Begin
+    { Mode REPL interactif }
+    WriteLn('Mode REPL interactif. Tapez une requete QL et validez');
+    WriteLn('avec une ligne vide. Commandes speciales :');
+    WriteLn('  :quit, :q, :exit  Quitter le REPL');
+    WriteLn('  :help             Afficher l''aide REPL');
+    WriteLn('  :db               Afficher les statistiques de la BD');
+    WriteLn('  :debug            Basculer le mode debug');
+    WriteLn;
+    Repeat
+      Write(REPL_PROMPT);
+      ReadLn(ReplLine);
+      ReplLine := TrimStr(ReplLine);
+
+      { Commandes speciales }
+      If (ReplLine = ':quit') Or (ReplLine = ':q') Or
+         (ReplLine = ':exit') Then
+        Break
+      Else If ReplLine = ':help' Then
+      Begin
+        WriteLn('Aide REPL :');
+        WriteLn('  Entrez une requete QL complete (ex: select v from');
+        WriteLn('  Variable v where v.hasName("x")).');
+        WriteLn('  Validez avec une ligne vide pour executer.');
+        WriteLn('  Commandes : :quit :help :db :debug');
+        WriteLn;
+      End
+      Else If ReplLine = ':db' Then
+      Begin
+        WriteLn('Statistiques de la base de donnees :');
+        WriteLn('  programmes  : ', DbProgramCnt);
+        WriteLn('  fichiers    : ', DbFileCnt);
+        WriteLn('  expressions : ', DbExprCnt);
+        WriteLn('  instructions: ', DbStmtCnt);
+        WriteLn('  fonctions   : ', DbFunctionCnt);
+        WriteLn('  variables   : ', DbVariableCnt);
+        WriteLn('  types       : ', DbTypeCnt);
+        WriteLn('  noeuds CFG  : ', CfgNodeCount);
+        WriteLn('  alertes     : ', SecAlertCount);
+        WriteLn;
+      End
+      Else If ReplLine = ':debug' Then
+      Begin
+        Opts.DebugMode := Not Opts.DebugMode;
+        If Opts.DebugMode Then
+          WriteLn('Mode debug active.')
+        Else
+          WriteLn('Mode debug desactive.');
+        WriteLn;
+      End
+      Else If Length(ReplLine) > 0 Then
+      Begin
+        { Ecrire la requete dans un fichier temporaire }
+        Assign(TmpF, REPL_TMPFILE);
+        {$I-}
+        Rewrite(TmpF);
+        {$I+}
+        If IOResult <> 0 Then
+        Begin
+          WriteLn('ERREUR: impossible de creer le fichier temporaire');
+          Continue;
+        End;
+        WriteLn(TmpF, ReplLine);
+        { Lire les lignes suivantes jusqu a une ligne vide }
+        Repeat
+          Write('...  ');
+          ReadLn(ReplLine);
+          If Length(TrimStr(ReplLine)) = 0 Then Break;
+          WriteLn(TmpF, ReplLine);
+        Until False;
+        Close(TmpF);
+        { Compiler et executer la requete temporaire }
+        CompileAndRunQuery(REPL_TMPFILE);
+        { Supprimer le fichier temporaire }
+        Assign(TmpF, REPL_TMPFILE);
+        {$I-}
+        Erase(TmpF);
+        {$I+}
+        If IOResult <> 0 Then { ignorer };
+        WriteLn;
+      End;
+    Until False;
+    WriteLn;
+    WriteLn('=== REPL termine ===');
+  End;
 End;
 
 Procedure RunInterpretResults;
@@ -13990,6 +14124,482 @@ Begin
     ShowBanner;
   WriteLn('database interpret-results: ', Opts.DatabasePath);
   WriteLn('(non implemente)');
+End;
+
+{ ============================================================
+  TODO 24 - COMMANDE "codeql query run" [IMPLEMENTE]
+  ============================================================ }
+
+{ (Integre dans RunQueryRun ci-dessus : chargement BD, analyses,
+   execution d une requete QL unique, mode REPL interactif.) }
+
+{ ============================================================
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- WriteSampleFile : ecrire un fichier texte --------------- }
+
+Procedure WriteSampleFile(Const FilePath : TString;
+                          Const Lines : Array Of TString);
+Var
+  F : Text;
+  I : Integer;
+Begin
+  Assign(F, FilePath);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('ERREUR: impossible de creer: ', FilePath);
+    Exit;
+  End;
+  For I := 0 To High(Lines) Do
+    WriteLn(F, Lines[I]);
+  Close(F);
+  WriteLn('  cree: ', FilePath);
+End;
+
+{ ---- GenerateSample01 : Variables non initialisees ---------- }
+
+Procedure GenerateSample01(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/01_uninit_var.ql', [
+    '/**',
+    ' * @name Detection de variables non initialisees',
+    ' * @description Trouve les variables locales utilisees avant',
+    ' *              d''etre initialisees.',
+    ' * @kind problem',
+    ' * @problem.severity warning',
+    ' * @id pascal/uninit-variable',
+    ' */',
+    '',
+    'import pascal',
+    '',
+    'from Variable v, Access a',
+    'where v.getAnAccess() = a',
+    '  and not exists(Assignment assign |',
+    '    assign.getTarget() = v and',
+    '    assign.getLocation().getLine() < a.getLocation().getLine())',
+    'select v, "La variable " + v.getName() + " est utilisee sans etre initialisee"'
+  ]);
+End;
+
+{ ---- GenerateSample02 : Fichiers non fermes ----------------- }
+
+Procedure GenerateSample02(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/02_unclosed_file.ql', [
+    '/**',
+    ' * @name Detection de fichiers non fermes',
+    ' * @description Trouve les fichiers ouverts avec Reset/Rewrite',
+    ' *              qui ne sont jamais fermes avec Close.',
+    ' * @kind problem',
+    ' * @problem.severity warning',
+    ' * @id pascal/unclosed-file',
+    ' */',
+    '',
+    'import pascal',
+    '',
+    'from Variable f, Call openCall',
+    'where (openCall.getTarget().hasName("Reset") or',
+    '       openCall.getTarget().hasName("Rewrite"))',
+    '  and openCall.getAnArgument() = f.getAnAccess()',
+    '  and not exists(Call closeCall |',
+    '    closeCall.getTarget().hasName("Close") and',
+    '    closeCall.getAnArgument() = f.getAnAccess())',
+    'select f, "Le fichier " + f.getName() + " est ouvert mais jamais ferme"'
+  ]);
+End;
+
+{ ---- GenerateSample03 : Debordement de tampon --------------- }
+
+Procedure GenerateSample03(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/03_buffer_overflow.ql', [
+    '/**',
+    ' * @name Detection de debordement de tampon',
+    ' * @description Trouve les acces a un tableau avec un indice',
+    ' *              qui pourrait depasser les bornes.',
+    ' * @kind problem',
+    ' * @problem.severity error',
+    ' * @id pascal/buffer-overflow',
+    ' */',
+    '',
+    'import pascal',
+    '',
+    'from Access a, Variable arr, Expr idx',
+    'where a.getTarget() = arr',
+    '  and arr.getType().getName() = "array"',
+    '  and idx = a.getAChild()',
+    '  and not exists(Stmt guard |',
+    '    guard.getLocation().getLine() < a.getLocation().getLine() and',
+    '    guard instanceof Stmt)',
+    'select a, "Acces potentiel hors bornes au tableau " + arr.getName()'
+  ]);
+End;
+
+{ ---- GenerateSample04 : Injection de commandes -------------- }
+
+Procedure GenerateSample04(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/04_cmd_injection.ql', [
+    '/**',
+    ' * @name Detection d''injection de commandes',
+    ' * @description Trouve les appels a Exec avec des donnees',
+    ' *              provenant de l''utilisateur sans validation.',
+    ' * @kind path-problem',
+    ' * @problem.severity error',
+    ' * @id pascal/command-injection',
+    ' */',
+    '',
+    'import pascal',
+    '',
+    'from Call execCall, Expr arg, Call readCall',
+    'where execCall.getTarget().hasName("Exec")',
+    '  and arg = execCall.getAnArgument()',
+    '  and readCall.getTarget().hasName("ReadLn")',
+    '  and arg.flowsTo(readCall)',
+    'select execCall, "Injection de commande : donnees de ReadLn vers Exec"'
+  ]);
+End;
+
+{ ---- GenerateSample05 : Code mort --------------------------- }
+
+Procedure GenerateSample05(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/05_dead_code.ql', [
+    '/**',
+    ' * @name Detection de code mort',
+    ' * @description Trouve les fonctions et procedures declarees',
+    ' *              mais jamais appelees dans le programme.',
+    ' * @kind problem',
+    ' * @problem.severity recommendation',
+    ' * @id pascal/dead-code',
+    ' */',
+    '',
+    'import pascal',
+    '',
+    'from Function f',
+    'where not f.hasName("main")',
+    '  and not exists(Call c | c.getTarget() = f)',
+    'select f, "La fonction " + f.getName() + " n''est jamais appelee"'
+  ]);
+End;
+
+{ ---- GenerateSample06 : Complexite cyclomatique ------------- }
+
+Procedure GenerateSample06(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/06_cyclomatic.ql', [
+    '/**',
+    ' * @name Complexite cyclomatique elevee',
+    ' * @description Trouve les fonctions dont la complexite',
+    ' *              cyclomatique depasse un seuil (>10 branches).',
+    ' * @kind problem',
+    ' * @problem.severity recommendation',
+    ' * @id pascal/high-cyclomatic-complexity',
+    ' */',
+    '',
+    'import pascal',
+    '',
+    'from Function f, int branches',
+    'where branches = count(Stmt s |',
+    '  s.getEnclosingFunction() = f and',
+    '  (s instanceof Stmt))',
+    '  and branches > 10',
+    'select f, "La fonction " + f.getName() +',
+    '  " a une complexite cyclomatique elevee (" +',
+    '  branches.toString() + " branches)"'
+  ]);
+End;
+
+{ ---- GenerateSample07 : Convention de nommage --------------- }
+
+Procedure GenerateSample07(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/07_naming_convention.ql', [
+    '/**',
+    ' * @name Violation de convention de nommage',
+    ' * @description Trouve les variables dont le nom ne commence',
+    ' *              pas par une lettre minuscule, et les types qui',
+    ' *              ne commencent pas par T.',
+    ' * @kind problem',
+    ' * @problem.severity recommendation',
+    ' * @id pascal/naming-convention',
+    ' */',
+    '',
+    'import pascal',
+    '',
+    'from Variable v',
+    'where v.getName().charAt(0) >= "A"',
+    '  and v.getName().charAt(0) <= "Z"',
+    '  and not v.getName().charAt(0) = "T"',
+    'select v, "La variable " + v.getName() +',
+    '  " devrait commencer par une minuscule"'
+  ]);
+End;
+
+{ ---- GenerateSample08 : Parametres inutilises --------------- }
+
+Procedure GenerateSample08(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/08_unused_param.ql', [
+    '/**',
+    ' * @name Parametres inutilises',
+    ' * @description Trouve les parametres de fonctions ou procedures',
+    ' *              qui ne sont jamais utilises dans le corps.',
+    ' * @kind problem',
+    ' * @problem.severity recommendation',
+    ' * @id pascal/unused-parameter',
+    ' */',
+    '',
+    'import pascal',
+    '',
+    'from Function f, Variable param',
+    'where param = f.getAnArgument()',
+    '  and not exists(Access a |',
+    '    a.getTarget() = param and',
+    '    a.getEnclosingFunction() = f)',
+    'select param, "Le parametre " + param.getName() +',
+    '  " de " + f.getName() + " n''est jamais utilise"'
+  ]);
+End;
+
+{ ---- GenerateSample09 : Code duplique ----------------------- }
+
+Procedure GenerateSample09(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/09_duplicated_code.ql', [
+    '/**',
+    ' * @name Detection de code duplique',
+    ' * @description Trouve les blocs d''instructions identiques',
+    ' *              apparaissant dans plusieurs fonctions.',
+    ' * @kind problem',
+    ' * @problem.severity recommendation',
+    ' * @id pascal/duplicated-code',
+    ' */',
+    '',
+    'import pascal',
+    '',
+    'from Stmt s1, Stmt s2, Function f1, Function f2',
+    'where s1.getEnclosingFunction() = f1',
+    '  and s2.getEnclosingFunction() = f2',
+    '  and not f1 = f2',
+    '  and s1.toString() = s2.toString()',
+    '  and s1.getLocation().getLine() < s2.getLocation().getLine()',
+    'select s1, "Bloc duplique entre " + f1.getName() +',
+    '  " et " + f2.getName()'
+  ]);
+End;
+
+{ ---- GenerateSample10 : Utilisation de Goto ----------------- }
+
+Procedure GenerateSample10(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/10_goto_usage.ql', [
+    '/**',
+    ' * @name Utilisation de Goto',
+    ' * @description Trouve les instructions Goto qui rendent',
+    ' *              le code difficile a lire et a maintenir.',
+    ' * @kind problem',
+    ' * @problem.severity recommendation',
+    ' * @id pascal/goto-usage',
+    ' */',
+    '',
+    'import pascal',
+    '',
+    'from Stmt s',
+    'where s.getType() = "goto"',
+    'select s, "Utilisation de Goto a la ligne " +',
+    '  s.getLocation().getLine().toString() +',
+    '  " : envisager une restructuration du code"'
+  ]);
+End;
+
+{ ---- GenerateReadme : documentation d aide ------------------ }
+
+Procedure GenerateReadme(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/README.txt', [
+    '================================================================',
+    ' CODEQL pour Pascal - Requetes exemples',
+    '================================================================',
+    '',
+    'Ce repertoire contient 10 requetes QL exemples pour l''analyse',
+    'statique de code Pascal.',
+    '',
+    'Requetes disponibles :',
+    '  01_uninit_var.ql       Variables non initialisees',
+    '  02_unclosed_file.ql    Fichiers non fermes',
+    '  03_buffer_overflow.ql  Debordement de tampon',
+    '  04_cmd_injection.ql    Injection de commandes',
+    '  05_dead_code.ql        Code mort (fonctions inutilisees)',
+    '  06_cyclomatic.ql       Complexite cyclomatique elevee',
+    '  07_naming_convention.ql Convention de nommage',
+    '  08_unused_param.ql     Parametres inutilises',
+    '  09_duplicated_code.ql  Code duplique',
+    '  10_goto_usage.ql       Utilisation de Goto',
+    '',
+    'Utilisation :',
+    '  1. Creer une base de donnees :',
+    '     CODEQL database create mydb --source-root=src',
+    '',
+    '  2. Analyser avec une requete :',
+    '     CODEQL query run --database=mydb SAMPLES/01_uninit_var.ql',
+    '',
+    '  3. Analyser avec toutes les requetes :',
+    '     CODEQL database analyze mydb SAMPLES/all.qls --format=sarif',
+    '',
+    '  4. Mode interactif :',
+    '     CODEQL query run --database=mydb --interactive',
+    '',
+    'Suite de requetes :',
+    '  Le fichier all.qls contient la liste de toutes les requetes',
+    '  et peut etre utilise avec "database analyze".',
+    '',
+    '================================================================'
+  ]);
+End;
+
+{ ---- GenerateQuerySuite : fichier .qls avec toutes les queries }
+
+Procedure GenerateQuerySuite(Const Dir : TString);
+Begin
+  WriteSampleFile(Dir + '/all.qls', [
+    '# Suite de requetes CodeQL pour Pascal',
+    '# Chaque ligne contient le chemin vers un fichier .ql',
+    '',
+    Dir + '/01_uninit_var.ql',
+    Dir + '/02_unclosed_file.ql',
+    Dir + '/03_buffer_overflow.ql',
+    Dir + '/04_cmd_injection.ql',
+    Dir + '/05_dead_code.ql',
+    Dir + '/06_cyclomatic.ql',
+    Dir + '/07_naming_convention.ql',
+    Dir + '/08_unused_param.ql',
+    Dir + '/09_duplicated_code.ql',
+    Dir + '/10_goto_usage.ql'
+  ]);
+End;
+
+{ ---- RunGenerateSamples : orchestration complete ------------- }
+
+Procedure RunGenerateSamples;
+Var
+  Dir : TString;
+Begin
+  If Opts.Verbose Then
+    ShowBanner;
+  WriteLn('=== codeql generate samples ===');
+  WriteLn;
+
+  { Determiner le repertoire de sortie }
+  If Opts.OutputFile <> '' Then
+    Dir := Opts.OutputFile
+  Else
+    Dir := SAMPLES_DIR;
+
+  WriteLn('Repertoire de sortie : ', Dir);
+  WriteLn;
+
+  { Creer le repertoire (ignore si deja existant) }
+  {$I-}
+  MkDir(Dir);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    { Le repertoire existe peut-etre deja, on continue }
+  End;
+
+  { Generer les 10 requetes exemples }
+  WriteLn('Generation de ', NUM_SAMPLE_QUERIES, ' requetes exemples...');
+  GenerateSample01(Dir);
+  GenerateSample02(Dir);
+  GenerateSample03(Dir);
+  GenerateSample04(Dir);
+  GenerateSample05(Dir);
+  GenerateSample06(Dir);
+  GenerateSample07(Dir);
+  GenerateSample08(Dir);
+  GenerateSample09(Dir);
+  GenerateSample10(Dir);
+  WriteLn;
+
+  { Generer la documentation }
+  WriteLn('Generation de la documentation...');
+  GenerateReadme(Dir);
+  WriteLn;
+
+  { Generer la suite de requetes }
+  WriteLn('Generation de la suite de requetes...');
+  GenerateQuerySuite(Dir);
+  WriteLn;
+
+  WriteLn(NUM_SAMPLE_QUERIES, ' requetes exemples generees dans ', Dir, '/');
+  WriteLn('=== generation terminee ===');
+End;
+
+{ ---- DumpExtendedHelp : documentation etendue --------------- }
+
+Procedure DumpExtendedHelp;
+Begin
+  WriteLn('================================================================');
+  WriteLn(' CODEQL pour Pascal v', CODEQL_VERSION, ' - Documentation');
+  WriteLn('================================================================');
+  WriteLn;
+  WriteLn('Description :');
+  WriteLn('  Clone de CodeQL pour l''analyse statique de code Pascal.');
+  WriteLn('  Supporte la creation de bases de donnees relationnelles,');
+  WriteLn('  l''analyse de flot de donnees, le suivi de teinte, et');
+  WriteLn('  l''execution de requetes QL.');
+  WriteLn;
+  WriteLn('Architecture :');
+  WriteLn('  - Lexeur et parseur QL pour les requetes');
+  WriteLn('  - Lexeur et parseur Pascal pour le code source');
+  WriteLn('  - Base de donnees relationnelle (12 tables)');
+  WriteLn('  - Graphe de flot de controle (CFG)');
+  WriteLn('  - Analyse de flot de donnees (reaching defs, liveness)');
+  WriteLn('  - Suivi de teinte (taint tracking)');
+  WriteLn('  - Requetes de securite integrees');
+  WriteLn('  - Sortie SARIF, CSV et texte');
+  WriteLn('  - Systeme d''import et de modules QL');
+  WriteLn('  - Bibliotheque standard de predicats');
+  WriteLn('  - Mode REPL interactif');
+  WriteLn;
+  WriteLn('Workflow typique :');
+  WriteLn('  1. CODEQL database create mydb --source-root=src');
+  WriteLn('  2. CODEQL database analyze mydb security.qls --format=sarif');
+  WriteLn('  3. CODEQL generate samples');
+  WriteLn;
+  WriteLn('Pour plus d''aide : CODEQL -h');
+  WriteLn('================================================================');
+End;
+
+{ ---- CleanupResources : nettoyage des ressources ------------ }
+
+Procedure CleanupResources;
+Var
+  TmpF : Text;
+Begin
+  { Fermer le lexeur QL s il est ouvert }
+  If LexOpened Then
+    LexClose;
+  { Fermer le lexeur source s il est ouvert }
+  If SrcLexOpened Then
+  Begin
+    {$I-}
+    Close(SrcLexF);
+    {$I+}
+    If IOResult <> 0 Then { ignorer };
+    SrcLexOpened := False;
+  End;
+  { Supprimer le fichier temporaire REPL s il existe }
+  Assign(TmpF, REPL_TMPFILE);
+  {$I-}
+  Erase(TmpF);
+  {$I+}
+  If IOResult <> 0 Then { ignorer };
 End;
 
 { ---- Dispatch de la sous-commande -------------------------- }
@@ -14001,6 +14611,7 @@ Begin
     CMD_DATABASE_ANALYZE        : RunDatabaseAnalyze;
     CMD_QUERY_RUN               : RunQueryRun;
     CMD_DB_INTERPRET_RESULTS    : RunInterpretResults;
+    CMD_GENERATE_SAMPLES        : RunGenerateSamples;
   End;
 End;
 
@@ -14011,4 +14622,5 @@ End;
 Begin
   ParseArgs;
   Run;
+  CleanupResources;
 End.
