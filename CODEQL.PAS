@@ -229,6 +229,18 @@
       detection des fichiers .js et .mjs,
       integration dans database create avec --language=javascript.
       [IMPLEMENTE]
+  32. Implementer le support du langage Python : lexeur Python
+      (mots-cles Python False/None/True/and/as/assert/async/await/
+      break/class/continue/def/del/elif/else/except/finally/for/
+      from/global/if/import/in/is/lambda/nonlocal/not/or/pass/
+      raise/return/try/while/with/yield),
+      parseur Python (imports, classes, fonctions, decorateurs,
+      async/await, for/while/if/elif/else, try/except/finally,
+      with, assert, raise, yield, del, global, nonlocal, pass,
+      lambda, comprehensions),
+      detection des fichiers .py et .pyw,
+      integration dans database create avec --language=python.
+      [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -549,7 +561,16 @@ Type
     SNK_JS_METHOD, SNK_JS_VARIABLE_DECL,
     SNK_JS_TRY_CATCH, SNK_JS_THROW,
     SNK_JS_FOR_IN, SNK_JS_FOR_OF,
-    SNK_JS_TEMPLATE_LITERAL, SNK_JS_DESTRUCTURING
+    SNK_JS_TEMPLATE_LITERAL, SNK_JS_DESTRUCTURING,
+    { Python node kinds }
+    SNK_PY_TRANSLATION_UNIT, SNK_PY_IMPORT,
+    SNK_PY_FROM_IMPORT, SNK_PY_CLASS_DECL,
+    SNK_PY_FUNCTION_DECL, SNK_PY_DECORATOR,
+    SNK_PY_ASSIGNMENT, SNK_PY_TRY_EXCEPT,
+    SNK_PY_RAISE, SNK_PY_WITH,
+    SNK_PY_ASSERT, SNK_PY_YIELD,
+    SNK_PY_DEL, SNK_PY_GLOBAL,
+    SNK_PY_LAMBDA, SNK_PY_FOR_IN
   );
 
   TSrcASTNode = Record
@@ -1288,7 +1309,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1563,8 +1584,8 @@ Begin
   If (Opts.Language <> 'pascal') And (Opts.Language <> 'c') And
      (Opts.Language <> 'cpp') And (Opts.Language <> 'csharp') And
      (Opts.Language <> 'go') And (Opts.Language <> 'java') And
-     (Opts.Language <> 'javascript') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java ou javascript)');
+     (Opts.Language <> 'javascript') And (Opts.Language <> 'python') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript ou python)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -5806,6 +5827,23 @@ Begin
     SNK_JS_FOR_OF             : SrcNodeKindName := 'JS_FOR_OF';
     SNK_JS_TEMPLATE_LITERAL   : SrcNodeKindName := 'JS_TEMPLATE_LITERAL';
     SNK_JS_DESTRUCTURING      : SrcNodeKindName := 'JS_DESTRUCTURING';
+    { Python }
+    SNK_PY_TRANSLATION_UNIT   : SrcNodeKindName := 'PY_TRANSLATION_UNIT';
+    SNK_PY_IMPORT             : SrcNodeKindName := 'PY_IMPORT';
+    SNK_PY_FROM_IMPORT        : SrcNodeKindName := 'PY_FROM_IMPORT';
+    SNK_PY_CLASS_DECL         : SrcNodeKindName := 'PY_CLASS_DECL';
+    SNK_PY_FUNCTION_DECL      : SrcNodeKindName := 'PY_FUNCTION_DECL';
+    SNK_PY_DECORATOR          : SrcNodeKindName := 'PY_DECORATOR';
+    SNK_PY_ASSIGNMENT         : SrcNodeKindName := 'PY_ASSIGNMENT';
+    SNK_PY_TRY_EXCEPT         : SrcNodeKindName := 'PY_TRY_EXCEPT';
+    SNK_PY_RAISE              : SrcNodeKindName := 'PY_RAISE';
+    SNK_PY_WITH               : SrcNodeKindName := 'PY_WITH';
+    SNK_PY_ASSERT             : SrcNodeKindName := 'PY_ASSERT';
+    SNK_PY_YIELD              : SrcNodeKindName := 'PY_YIELD';
+    SNK_PY_DEL                : SrcNodeKindName := 'PY_DEL';
+    SNK_PY_GLOBAL             : SrcNodeKindName := 'PY_GLOBAL';
+    SNK_PY_LAMBDA             : SrcNodeKindName := 'PY_LAMBDA';
+    SNK_PY_FOR_IN             : SrcNodeKindName := 'PY_FOR_IN';
   Else
     SrcNodeKindName := '???';
   End;
@@ -21174,6 +21212,806 @@ End;
 
 { ---- Fin TODO 31 --------------------------------------------- }
 
+{ ============================================================
+  TODO 32 - SUPPORT DU LANGAGE PYTHON [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsPythonKeyword : verifier si un mot est un mot-cle Python }
+
+Function IsPythonKeyword(Const W : TString) : Boolean;
+Begin
+  IsPythonKeyword :=
+    (W = 'False')      Or (W = 'None')       Or (W = 'True')      Or
+    (W = 'and')        Or (W = 'as')         Or (W = 'assert')    Or
+    (W = 'async')      Or (W = 'await')      Or (W = 'break')     Or
+    (W = 'class')      Or (W = 'continue')   Or (W = 'def')       Or
+    (W = 'del')        Or (W = 'elif')       Or (W = 'else')      Or
+    (W = 'except')     Or (W = 'finally')    Or (W = 'for')       Or
+    (W = 'from')       Or (W = 'global')     Or (W = 'if')        Or
+    (W = 'import')     Or (W = 'in')         Or (W = 'is')        Or
+    (W = 'lambda')     Or (W = 'nonlocal')   Or (W = 'not')       Or
+    (W = 'or')         Or (W = 'pass')       Or (W = 'raise')     Or
+    (W = 'return')     Or (W = 'try')        Or (W = 'while')     Or
+    (W = 'with')       Or (W = 'yield');
+End;
+
+{ ---- PyLexScanIdent : scanner un identificateur Python ------- }
+
+Procedure PyLexScanIdent;
+Var S : TString;
+Begin
+  S := '';
+  While (SrcColNo <= Length(SrcLine)) And
+        (IsIdentCont(SrcLine[SrcColNo]) Or (SrcLine[SrcColNo] = '_')) Do
+  Begin
+    If Length(S) < 255 Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  If IsPythonKeyword(S) Then
+    SrcToken.Kind := STK_KEYWORD
+  Else
+    SrcToken.Kind := STK_IDENT;
+  SrcToken.Val := S;
+End;
+
+{ ---- PyLexScanString : scanner une chaine Python ------------- }
+
+Procedure PyLexScanString;
+Var S      : TString;
+    Quote  : Char;
+    Triple : Boolean;
+Begin
+  S := '';
+  Quote := SrcLine[SrcColNo];
+  Inc(SrcColNo);
+  Triple := False;
+  { Verifier triple quotes }
+  If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = Quote) Then
+  Begin
+    Inc(SrcColNo);
+    If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = Quote) Then
+    Begin
+      Inc(SrcColNo);
+      Triple := True;
+    End
+    Else
+    Begin
+      { Chaine vide }
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := '';
+      Exit;
+    End;
+  End;
+  If Triple Then
+  Begin
+    While Not SrcEOF Do
+    Begin
+      If SrcColNo > Length(SrcLine) Then
+      Begin
+        If Length(S) < 255 Then S := S + #10;
+        SrcLexNextLine;
+        Continue;
+      End;
+      If (SrcLine[SrcColNo] = Quote) And
+         (SrcColNo + 1 <= Length(SrcLine)) And
+         (SrcLine[SrcColNo + 1] = Quote) And
+         (SrcColNo + 2 <= Length(SrcLine)) And
+         (SrcLine[SrcColNo + 2] = Quote) Then
+      Begin
+        Inc(SrcColNo, 3);
+        Break;
+      End;
+      If SrcLine[SrcColNo] = '\' Then
+      Begin
+        Inc(SrcColNo);
+        If SrcColNo <= Length(SrcLine) Then
+        Begin
+          If Length(S) < 255 Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      Else
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+    End;
+  End
+  Else
+  Begin
+    While (SrcColNo <= Length(SrcLine)) And
+          (SrcLine[SrcColNo] <> Quote) Do
+    Begin
+      If SrcLine[SrcColNo] = '\' Then
+      Begin
+        Inc(SrcColNo);
+        If SrcColNo <= Length(SrcLine) Then
+        Begin
+          If Length(S) < 255 Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      Else
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+    End;
+    If (SrcColNo <= Length(SrcLine)) And
+       (SrcLine[SrcColNo] = Quote) Then
+      Inc(SrcColNo);
+  End;
+  SrcToken.Kind := STK_STRING;
+  SrcToken.Val  := S;
+End;
+
+{ ---- PyLexInit : initialiser le lexeur Python ---------------- }
+
+Procedure PyLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- PyLexNextToken : scanner le prochain token Python ------- }
+
+Procedure PyLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      SrcToken.Line := SrcLineNo;
+      SrcToken.Col  := SrcColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    Scanning := False;
+
+    { Commentaire # }
+    If Ch = '#' Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Identifiants et mots-cles }
+    If IsIdentStart(Ch) Or (Ch = '_') Then
+    Begin
+      { Prefixes de chaines r/b/f/u }
+      If ((Ch = 'r') Or (Ch = 'R') Or (Ch = 'b') Or (Ch = 'B') Or
+          (Ch = 'f') Or (Ch = 'F') Or (Ch = 'u') Or (Ch = 'U')) And
+         (SrcColNo < Length(SrcLine)) And
+         ((SrcLine[SrcColNo + 1] = '''') Or
+          (SrcLine[SrcColNo + 1] = '"')) Then
+      Begin
+        Inc(SrcColNo);
+        PyLexScanString;
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      PyLexScanIdent;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Nombres }
+    If IsDigit(Ch) Then
+    Begin
+      CLexScanNumber;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines de caracteres }
+    If (Ch = '"') Or (Ch = '''') Then
+    Begin
+      PyLexScanString;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs multi-caracteres }
+    If SrcColNo < Length(SrcLine) Then
+    Begin
+      S := Ch + SrcLine[SrcColNo + 1];
+
+      { Triple-char operators **= //= <<= >>= }
+      If SrcColNo + 1 < Length(SrcLine) Then
+      Begin
+        If (S = '**') And (SrcLine[SrcColNo + 2] = '=') Then
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '**=';
+          Inc(SrcColNo, 3);
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (S = '//') And (SrcLine[SrcColNo + 2] = '=') Then
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '//=';
+          Inc(SrcColNo, 3);
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (S = '<<') And (SrcLine[SrcColNo + 2] = '=') Then
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '<<=';
+          Inc(SrcColNo, 3);
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (S = '>>') And (SrcLine[SrcColNo + 2] = '=') Then
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '>>=';
+          Inc(SrcColNo, 3);
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (Ch = '.') And (SrcLine[SrcColNo + 1] = '.') And
+           (SrcLine[SrcColNo + 2] = '.') Then
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '...';
+          Inc(SrcColNo, 3);
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+      End;
+
+      { Double-char operators }
+      If (S = '==') Or (S = '!=') Or (S = '<=') Or (S = '>=') Or
+         (S = '**') Or (S = '//') Or (S = '<<') Or (S = '>>') Or
+         (S = '+=') Or (S = '-=') Or (S = '*=') Or (S = '/=') Or
+         (S = '%=') Or (S = '&=') Or (S = '|=') Or (S = '^=') Or
+         (S = '->') Or (S = ':=') Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := S;
+        Inc(SrcColNo, 2);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+    End;
+
+    { Continuation de ligne }
+    If (Ch = '\') And (SrcColNo = Length(SrcLine)) Then
+    Begin
+      SrcLexNextLine;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Operateur ou delimiteur simple }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- PyConsume : avancer au token suivant -------------------- }
+
+Procedure PyConsume;
+Begin
+  PyLexNextToken;
+End;
+
+{ ---- PyTokIs / PyKwIs / PyExpect : helpers Python ------------ }
+
+Function PyKwIs(Const W : TString) : Boolean;
+Begin
+  PyKwIs := (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = W);
+End;
+
+Procedure PyExpect(Const V : TString);
+Begin
+  If SrcToken.Val <> V Then
+    WriteLn('CODEQL: PY attendu ''', V, ''' a la ligne ', SrcToken.Line,
+            ':', SrcToken.Col, ' (lu: ''', SrcToken.Val, ''')');
+  PyConsume;
+End;
+
+{ ---- PySkipToColon : avancer jusqu au : ---------------------- }
+
+Procedure PySkipToColon;
+Var Depth : Integer;
+Begin
+  Depth := 0;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    If (SrcToken.Val = '(') Or (SrcToken.Val = '[') Or
+       (SrcToken.Val = '{') Then
+      Inc(Depth)
+    Else If (SrcToken.Val = ')') Or (SrcToken.Val = ']') Or
+            (SrcToken.Val = '}') Then
+    Begin
+      If Depth > 0 Then Dec(Depth);
+    End
+    Else If (Depth = 0) And (SrcToken.Val = ':') Then
+    Begin
+      PyConsume;
+      Exit;
+    End;
+    PyConsume;
+  End;
+End;
+
+{ ---- PySkipToNewline : avancer jusqu a la fin de la ligne ----- }
+
+Procedure PySkipToNewline;
+Var StartLine : Integer;
+    Depth     : Integer;
+Begin
+  StartLine := SrcToken.Line;
+  Depth := 0;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    If (SrcToken.Val = '(') Or (SrcToken.Val = '[') Or
+       (SrcToken.Val = '{') Then
+      Inc(Depth)
+    Else If (SrcToken.Val = ')') Or (SrcToken.Val = ']') Or
+            (SrcToken.Val = '}') Then
+    Begin
+      If Depth > 0 Then Dec(Depth);
+    End;
+    If (Depth = 0) And (SrcToken.Line > StartLine) Then Exit;
+    PyConsume;
+  End;
+End;
+
+{ ---- PyParseBlock / PyParseStatement : parseur Python --------- }
+
+Function PyParseBlock : Integer; Forward;
+Function PyParseStatement : Integer; Forward;
+
+Function PyParseBlock : Integer;
+Var N, Child, Last : Integer;
+Begin
+  N := SrcNewNode(SNK_BLOCK);
+  SrcNodes[N].Name := 'PY_BLOCK';
+  Last := -1;
+  If SrcToken.Val = ':' Then PyConsume;
+  While (SrcToken.Kind <> STK_EOF) And
+        (Not PyKwIs('elif')) And (Not PyKwIs('else')) And
+        (Not PyKwIs('except')) And (Not PyKwIs('finally')) Do
+  Begin
+    If (SrcToken.Kind = STK_KEYWORD) Or (SrcToken.Kind = STK_IDENT) Or
+       (SrcToken.Kind = STK_STRING) Or (SrcToken.Kind = STK_INTEGER) Or
+       (SrcToken.Kind = STK_FLOAT) Or
+       (SrcToken.Val = '@') Or (SrcToken.Val = '(') Or
+       (SrcToken.Val = '[') Or (SrcToken.Val = '{') Then
+    Begin
+      Child := PyParseStatement;
+      If Child >= 0 Then
+      Begin
+        If SrcNodes[N].Left = -1 Then
+          SrcNodes[N].Left := Child
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := Child;
+        Last := Child;
+      End;
+    End
+    Else
+      Break;
+  End;
+  PyParseBlock := N;
+End;
+
+{ ---- PyParseStatement : parser une instruction Python --------- }
+
+Function PyParseStatement : Integer;
+Var N, Body : Integer;
+Begin
+  PyParseStatement := -1;
+
+  { Decorateur @ }
+  If SrcToken.Val = '@' Then
+  Begin
+    N := SrcNewNode(SNK_PY_DECORATOR);
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      PyConsume;
+    End
+    Else
+      SrcNodes[N].Name := '@';
+    While SrcToken.Val = '.' Do
+    Begin
+      PyConsume;
+      If SrcToken.Kind = STK_IDENT Then PyConsume;
+    End;
+    If SrcToken.Val = '(' Then
+    Begin
+      PyConsume;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ')') Do
+        PyConsume;
+      If SrcToken.Val = ')' Then PyConsume;
+    End;
+    Body := PyParseStatement;
+    If Body >= 0 Then SrcNodes[N].Left := Body;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { import ... }
+  If PyKwIs('import') Then
+  Begin
+    N := SrcNewNode(SNK_PY_IMPORT);
+    SrcNodes[N].Name := 'import';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToNewline;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { from ... import ... }
+  If PyKwIs('from') Then
+  Begin
+    N := SrcNewNode(SNK_PY_FROM_IMPORT);
+    SrcNodes[N].Name := 'from_import';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToNewline;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { class ... }
+  If PyKwIs('class') Then
+  Begin
+    N := SrcNewNode(SNK_PY_CLASS_DECL);
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      PyConsume;
+    End
+    Else
+      SrcNodes[N].Name := '<anonymous>';
+    If SrcToken.Val = '(' Then
+    Begin
+      PyConsume;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ')') Do
+        PyConsume;
+      If SrcToken.Val = ')' Then PyConsume;
+    End;
+    If SrcToken.Val = ':' Then
+      SrcNodes[N].Left := PyParseBlock;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { def / async def }
+  If PyKwIs('def') Or PyKwIs('async') Then
+  Begin
+    N := SrcNewNode(SNK_PY_FUNCTION_DECL);
+    SrcNodes[N].Line := SrcToken.Line;
+    If PyKwIs('async') Then PyConsume;
+    If PyKwIs('def') Then PyConsume;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      PyConsume;
+    End
+    Else
+      SrcNodes[N].Name := '<anonymous>';
+    If SrcToken.Val = '(' Then
+    Begin
+      PyConsume;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ')') Do
+        PyConsume;
+      If SrcToken.Val = ')' Then PyConsume;
+    End;
+    { Type de retour -> }
+    If SrcToken.Val = '->' Then
+    Begin
+      PyConsume;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ':') Do
+        PyConsume;
+    End;
+    If SrcToken.Val = ':' Then
+      SrcNodes[N].Left := PyParseBlock;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { try / except / finally }
+  If PyKwIs('try') Then
+  Begin
+    N := SrcNewNode(SNK_PY_TRY_EXCEPT);
+    SrcNodes[N].Name := 'try';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    If SrcToken.Val = ':' Then
+      SrcNodes[N].Left := PyParseBlock;
+    While PyKwIs('except') Do
+    Begin
+      PyConsume;
+      PySkipToColon;
+      PyParseBlock;
+    End;
+    If PyKwIs('else') Then
+    Begin
+      PyConsume;
+      If SrcToken.Val = ':' Then PyConsume;
+      PyParseBlock;
+    End;
+    If PyKwIs('finally') Then
+    Begin
+      PyConsume;
+      If SrcToken.Val = ':' Then PyConsume;
+      PyParseBlock;
+    End;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { raise }
+  If PyKwIs('raise') Then
+  Begin
+    N := SrcNewNode(SNK_PY_RAISE);
+    SrcNodes[N].Name := 'raise';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToNewline;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { with }
+  If PyKwIs('with') Then
+  Begin
+    N := SrcNewNode(SNK_PY_WITH);
+    SrcNodes[N].Name := 'with';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToColon;
+    SrcNodes[N].Left := PyParseBlock;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { assert }
+  If PyKwIs('assert') Then
+  Begin
+    N := SrcNewNode(SNK_PY_ASSERT);
+    SrcNodes[N].Name := 'assert';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToNewline;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { yield }
+  If PyKwIs('yield') Then
+  Begin
+    N := SrcNewNode(SNK_PY_YIELD);
+    SrcNodes[N].Name := 'yield';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToNewline;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { del }
+  If PyKwIs('del') Then
+  Begin
+    N := SrcNewNode(SNK_PY_DEL);
+    SrcNodes[N].Name := 'del';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToNewline;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { global / nonlocal }
+  If PyKwIs('global') Or PyKwIs('nonlocal') Then
+  Begin
+    N := SrcNewNode(SNK_PY_GLOBAL);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToNewline;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { lambda }
+  If PyKwIs('lambda') Then
+  Begin
+    N := SrcNewNode(SNK_PY_LAMBDA);
+    SrcNodes[N].Name := 'lambda';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToNewline;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { for ... in ... : }
+  If PyKwIs('for') Then
+  Begin
+    N := SrcNewNode(SNK_PY_FOR_IN);
+    SrcNodes[N].Name := 'for';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToColon;
+    SrcNodes[N].Left := PyParseBlock;
+    If PyKwIs('else') Then
+    Begin
+      PyConsume;
+      If SrcToken.Val = ':' Then PyConsume;
+      PyParseBlock;
+    End;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { while ... : }
+  If PyKwIs('while') Then
+  Begin
+    N := SrcNewNode(SNK_WHILE);
+    SrcNodes[N].Name := 'while';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToColon;
+    SrcNodes[N].Left := PyParseBlock;
+    If PyKwIs('else') Then
+    Begin
+      PyConsume;
+      If SrcToken.Val = ':' Then PyConsume;
+      PyParseBlock;
+    End;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { if / elif / else }
+  If PyKwIs('if') Then
+  Begin
+    N := SrcNewNode(SNK_IF);
+    SrcNodes[N].Name := 'if';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToColon;
+    SrcNodes[N].Left := PyParseBlock;
+    While PyKwIs('elif') Do
+    Begin
+      PyConsume;
+      PySkipToColon;
+      PyParseBlock;
+    End;
+    If PyKwIs('else') Then
+    Begin
+      PyConsume;
+      If SrcToken.Val = ':' Then PyConsume;
+      SrcNodes[N].Right := PyParseBlock;
+    End;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { return }
+  If PyKwIs('return') Then
+  Begin
+    N := SrcNewNode(SNK_C_RETURN);
+    SrcNodes[N].Name := 'return';
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PySkipToNewline;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { break / continue / pass }
+  If PyKwIs('break') Or PyKwIs('continue') Or PyKwIs('pass') Then
+  Begin
+    N := SrcNewNode(SNK_C_BREAK);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    PyConsume;
+    PyParseStatement := N;
+    Exit;
+  End;
+
+  { Expression-statement par defaut }
+  If SrcToken.Kind <> STK_EOF Then
+  Begin
+    N := SrcNewNode(SNK_CALL);
+    SrcNodes[N].Name := 'expr';
+    SrcNodes[N].Line := SrcToken.Line;
+    PySkipToNewline;
+    PyParseStatement := N;
+    Exit;
+  End;
+End;
+
+{ ---- PyParseTopLevel : parser une instruction de haut niveau -- }
+
+Function PyParseTopLevel : Integer;
+Begin
+  PyParseTopLevel := PyParseStatement;
+End;
+
+{ ---- PyParseTranslationUnit : parser un fichier Python -------- }
+
+Function PyParseTranslationUnit : Integer;
+Var Root, N, Last : Integer;
+Begin
+  PyConsume;
+  Root := SrcNewNode(SNK_PY_TRANSLATION_UNIT);
+  SrcNodes[Root].Name := 'PY_TU';
+  Last := -1;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    N := PyParseTopLevel;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+  End;
+  PyParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 32 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -21248,6 +22086,14 @@ Begin
   IsJSSource := StrEndsWith(FName, '.js') Or StrEndsWith(FName, '.mjs');
 End;
 
+{ ---- IsPythonSource : verifier si le fichier est .py ou .pyw -- }
+
+Function IsPythonSource(Const FName : TString) : Boolean;
+Begin
+  IsPythonSource := StrEndsWith(FName, '.py') Or
+                    StrEndsWith(FName, '.pyw');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -21305,7 +22151,8 @@ Begin
          ((Opts.Language = 'csharp') And IsCSharpSource(SR.Name)) Or
          ((Opts.Language = 'go') And IsGoSource(SR.Name)) Or
          ((Opts.Language = 'java') And IsJavaSource(SR.Name)) Or
-          ((Opts.Language = 'javascript') And IsJSSource(SR.Name)) Then
+          ((Opts.Language = 'javascript') And IsJSSource(SR.Name)) Or
+          ((Opts.Language = 'python') And IsPythonSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -21414,6 +22261,12 @@ Begin
       JSLexInit;
       SrcASTInit;
       SrcRootNode := JSParseTranslationUnit;
+    End
+    Else If Opts.Language = 'python' Then
+    Begin
+      PyLexInit;
+      SrcASTInit;
+      SrcRootNode := PyParseTranslationUnit;
     End
     Else
     Begin
