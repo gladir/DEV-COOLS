@@ -183,6 +183,17 @@
       new/delete, operateur ::), detection des fichiers .cpp/.cc/.cxx/
       .hpp/.hh/.hxx, integration dans database create avec --language=cpp.
       [IMPLEMENTE]
+  28. Implementer le support du langage C# : lexeur C# (mots-cles C#
+      using/namespace/class/struct/interface/enum/delegate/event/
+      async/await/yield/var/dynamic/is/as/new/override/virtual/
+      abstract/sealed/partial/readonly/ref/out/in/params/
+      get/set/value/where/select/from/orderby/group/into/join/let),
+      parseur C# (classes, interfaces, structs, enums, proprietes,
+      attributs, namespaces, using directives, expressions LINQ,
+      async/await, try/catch/finally, foreach, lock),
+      detection des fichiers .cs,
+      integration dans database create avec --language=csharp.
+      [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -474,7 +485,14 @@ Type
     SNK_CPP_NAMESPACE, SNK_CPP_TEMPLATE,
     SNK_CPP_ACCESS_SPEC, SNK_CPP_TRY, SNK_CPP_CATCH,
     SNK_CPP_THROW, SNK_CPP_NEW, SNK_CPP_DELETE,
-    SNK_CPP_USING, SNK_CPP_SCOPE_RES
+    SNK_CPP_USING, SNK_CPP_SCOPE_RES,
+    SNK_CSHARP_TRANSLATION_UNIT, SNK_CSHARP_CLASS_DECL,
+    SNK_CSHARP_INTERFACE_DECL, SNK_CSHARP_STRUCT_DECL,
+    SNK_CSHARP_ENUM_DECL, SNK_CSHARP_DELEGATE_DECL,
+    SNK_CSHARP_NAMESPACE, SNK_CSHARP_USING,
+    SNK_CSHARP_PROPERTY, SNK_CSHARP_ATTRIBUTE,
+    SNK_CSHARP_ASYNC, SNK_CSHARP_AWAIT,
+    SNK_CSHARP_FOREACH, SNK_CSHARP_LOCK
   );
 
   TSrcASTNode = Record
@@ -1213,7 +1231,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1486,8 +1504,8 @@ Begin
   End;
 
   If (Opts.Language <> 'pascal') And (Opts.Language <> 'c') And
-     (Opts.Language <> 'cpp') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c ou cpp)');
+     (Opts.Language <> 'cpp') And (Opts.Language <> 'csharp') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp ou csharp)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -16661,6 +16679,1354 @@ End;
 
 { ---- Fin TODO 27 --------------------------------------------- }
 
+{ ============================================================
+  TODO 28 - LEXEUR ET PARSEUR C# [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsCSharpKeyword : reconnaissance des mots-cles C# ------ }
+
+Function IsCSharpKeyword(Const W : TString) : Boolean;
+Begin
+  IsCSharpKeyword :=
+    (W = 'abstract')  Or (W = 'as')         Or (W = 'base')      Or
+    (W = 'bool')      Or (W = 'break')      Or (W = 'byte')      Or
+    (W = 'case')      Or (W = 'catch')      Or (W = 'char')      Or
+    (W = 'checked')   Or (W = 'class')      Or (W = 'const')     Or
+    (W = 'continue')  Or (W = 'decimal')    Or (W = 'default')   Or
+    (W = 'delegate')  Or (W = 'do')         Or (W = 'double')    Or
+    (W = 'else')      Or (W = 'enum')       Or (W = 'event')     Or
+    (W = 'explicit')  Or (W = 'extern')     Or (W = 'false')     Or
+    (W = 'finally')   Or (W = 'fixed')      Or (W = 'float')     Or
+    (W = 'for')       Or (W = 'foreach')    Or (W = 'goto')      Or
+    (W = 'if')        Or (W = 'implicit')   Or (W = 'in')        Or
+    (W = 'int')       Or (W = 'interface')  Or (W = 'internal')  Or
+    (W = 'is')        Or (W = 'lock')       Or (W = 'long')      Or
+    (W = 'namespace') Or (W = 'new')        Or (W = 'null')      Or
+    (W = 'object')    Or (W = 'operator')   Or (W = 'out')       Or
+    (W = 'override')  Or (W = 'params')     Or (W = 'private')   Or
+    (W = 'protected') Or (W = 'public')     Or (W = 'readonly')  Or
+    (W = 'ref')       Or (W = 'return')     Or (W = 'sbyte')     Or
+    (W = 'sealed')    Or (W = 'short')      Or (W = 'sizeof')    Or
+    (W = 'stackalloc') Or (W = 'static')   Or (W = 'string')    Or
+    (W = 'struct')    Or (W = 'switch')     Or (W = 'this')      Or
+    (W = 'throw')     Or (W = 'true')       Or (W = 'try')       Or
+    (W = 'typeof')    Or (W = 'uint')       Or (W = 'ulong')     Or
+    (W = 'unchecked') Or (W = 'unsafe')     Or (W = 'ushort')    Or
+    (W = 'using')     Or (W = 'virtual')    Or (W = 'void')      Or
+    (W = 'volatile')  Or (W = 'while')      Or
+    { mots-cles contextuels }
+    (W = 'add')       Or (W = 'alias')      Or (W = 'ascending') Or
+    (W = 'async')     Or (W = 'await')      Or (W = 'by')        Or
+    (W = 'descending') Or (W = 'dynamic')   Or (W = 'equals')    Or
+    (W = 'from')      Or (W = 'get')        Or (W = 'global')    Or
+    (W = 'group')     Or (W = 'into')       Or (W = 'join')      Or
+    (W = 'let')       Or (W = 'nameof')     Or (W = 'on')        Or
+    (W = 'orderby')   Or (W = 'partial')    Or (W = 'remove')    Or
+    (W = 'select')    Or (W = 'set')        Or (W = 'value')     Or
+    (W = 'var')       Or (W = 'when')       Or (W = 'where')     Or
+    (W = 'yield');
+End;
+
+{ ---- CSharpLexScanIdent : scanner un identificateur ou mot-cle C# }
+
+Procedure CSharpLexScanIdent;
+Var S : TString;
+Begin
+  S := '';
+  While (SrcColNo <= Length(SrcLine)) And
+        IsIdentCont(SrcLine[SrcColNo]) Do
+  Begin
+    If Length(S) < 255 Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  If IsCSharpKeyword(S) Then
+    SrcToken.Kind := STK_KEYWORD
+  Else
+    SrcToken.Kind := STK_IDENT;
+  SrcToken.Val := S;
+End;
+
+{ ---- CSharpLexInit : initialiser le lexeur C# ---------------- }
+
+Procedure CSharpLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- CSharpLexNextToken : obtenir le prochain token C# ------- }
+
+Procedure CSharpLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Found    : Boolean;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      SrcToken.Line := SrcLineNo;
+      SrcToken.Col  := SrcColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    Scanning := False;
+
+    { Commentaires // }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Commentaires /* ... */ }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      Inc(SrcColNo, 2);
+      Found := False;
+      While (Not SrcEOF) And (Not Found) Do
+      Begin
+        While (SrcColNo <= Length(SrcLine)) And (Not Found) Do
+        Begin
+          If (SrcLine[SrcColNo] = '*') And
+             (SrcColNo < Length(SrcLine)) And
+             (SrcLine[SrcColNo + 1] = '/') Then
+          Begin
+            Inc(SrcColNo, 2);
+            Found := True;
+          End
+          Else
+            Inc(SrcColNo);
+        End;
+        If Not Found Then
+          SrcLexNextLine;
+      End;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Directives preprocesseur # }
+    If Ch = '#' Then
+    Begin
+      SrcToken.Kind := STK_DIRECTIVE;
+      S := '';
+      While SrcColNo <= Length(SrcLine) Do
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Val := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Identificateurs et mots-cles }
+    If IsIdentStart(Ch) Or (Ch = '@') Then
+    Begin
+      If Ch = '@' Then Inc(SrcColNo); { verbatim identifier }
+      CSharpLexScanIdent;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Nombres }
+    If IsDigit(Ch) Then
+    Begin
+      CLexScanNumber;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines de caracteres "..." }
+    If (Ch = '"') Then
+    Begin
+      CLexScanString;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines verbatim @"..." }
+    If (Ch = '@') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '"') Then
+    Begin
+      Inc(SrcColNo);
+      CLexScanString;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines interpolees $"..." }
+    If (Ch = '$') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '"') Then
+    Begin
+      Inc(SrcColNo);
+      CLexScanString;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Caracteres '...' }
+    If (Ch = '''') Then
+    Begin
+      CLexScanChar;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs multi-caracteres }
+    If SrcColNo < Length(SrcLine) Then
+    Begin
+      S := Ch + SrcLine[SrcColNo + 1];
+      If (S = '==') Or (S = '!=') Or (S = '<=') Or (S = '>=') Or
+         (S = '&&') Or (S = '||') Or (S = '++') Or (S = '--') Or
+         (S = '+=') Or (S = '-=') Or (S = '*=') Or (S = '/=') Or
+         (S = '%=') Or (S = '&=') Or (S = '|=') Or (S = '^=') Or
+         (S = '<<') Or (S = '>>') Or (S = '??') Or (S = '=>') Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := S;
+        Inc(SrcColNo, 2);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      { Operateur ?.  (null-conditional) }
+      If S = '?.' Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := S;
+        Inc(SrcColNo, 2);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+    End;
+
+    { Operateurs simples }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- Helpers de parsing C# ---------------------------------- }
+
+Var
+  CSharpTok : TSourceToken; { copy locale pour look-ahead C# }
+
+Procedure CSharpConsume;
+Begin
+  CSharpLexNextToken;
+End;
+
+Function CSharpTokIs(Const V : TString) : Boolean;
+Begin
+  CSharpTokIs := (SrcToken.Val = V);
+End;
+
+Function CSharpTokKind : TSourceTokenKind;
+Begin
+  CSharpTokKind := SrcToken.Kind;
+End;
+
+Function CSharpKwIs(Const V : TString) : Boolean;
+Begin
+  CSharpKwIs := (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = V);
+End;
+
+Procedure CSharpExpect(Const V : TString);
+Begin
+  If SrcToken.Val <> V Then
+    WriteLn('CODEQL: C# attendu ''', V, ''' a la ligne ', SrcToken.Line,
+            ':', SrcToken.Col, ' (lu: ''', SrcToken.Val, ''')');
+  CSharpConsume;
+End;
+
+{ ---- Forward declarations C# parser ------------------------- }
+
+Function CSharpParseExpr : Integer; Forward;
+Function CSharpParseStatement : Integer; Forward;
+Function CSharpParseBlock : Integer; Forward;
+Function CSharpParseTypeDecl : Integer; Forward;
+Function CSharpParseTopLevel : Integer; Forward;
+
+{ ---- CSharpParsePrimary : expression primaire C# ------------- }
+
+Function CSharpParsePrimary : Integer;
+Var N : Integer;
+Begin
+  N := -1;
+  If (SrcToken.Kind = STK_INTEGER) Or (SrcToken.Kind = STK_FLOAT) Or
+     (SrcToken.Kind = STK_STRING) Then
+  Begin
+    If SrcToken.Kind = STK_INTEGER Then
+      N := SrcNewNode(SNK_EXPR_INT)
+    Else If SrcToken.Kind = STK_FLOAT Then
+      N := SrcNewNode(SNK_EXPR_FLOAT)
+    Else
+      N := SrcNewNode(SNK_EXPR_STRING);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+  End
+  Else If CSharpKwIs('true') Or CSharpKwIs('false') Or CSharpKwIs('null') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_IDENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+  End
+  Else If CSharpKwIs('new') Then
+  Begin
+    N := SrcNewNode(SNK_CALL);
+    SrcNodes[N].Name := 'new';
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    { Type name }
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := 'new ' + SrcToken.Val;
+      CSharpConsume;
+    End;
+    { Generic args or parens or braces }
+    If CSharpTokIs('(') Then
+    Begin
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(')')) Do
+        CSharpConsume;
+      If CSharpTokIs(')') Then CSharpConsume;
+    End;
+    If CSharpTokIs('{') Then
+    Begin
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('}')) Do
+        CSharpConsume;
+      If CSharpTokIs('}') Then CSharpConsume;
+    End;
+  End
+  Else If CSharpKwIs('typeof') Or CSharpKwIs('sizeof') Or
+          CSharpKwIs('nameof') Then
+  Begin
+    N := SrcNewNode(SNK_CALL);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If CSharpTokIs('(') Then
+    Begin
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(')')) Do
+        CSharpConsume;
+      If CSharpTokIs(')') Then CSharpConsume;
+    End;
+  End
+  Else If CSharpTokIs('(') Then
+  Begin
+    CSharpConsume;
+    N := CSharpParseExpr;
+    If CSharpTokIs(')') Then CSharpConsume;
+  End
+  Else If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_IDENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    { Acces membre . et appels }
+    While CSharpTokIs('.') Or CSharpTokIs('(') Or CSharpTokIs('[') Or
+          CSharpTokIs('?.') Do
+    Begin
+      If CSharpTokIs('.') Or CSharpTokIs('?.') Then
+      Begin
+        CSharpConsume;
+        If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+        Begin
+          SrcNodes[N].Name := SrcNodes[N].Name + '.' + SrcToken.Val;
+          CSharpConsume;
+        End;
+      End
+      Else If CSharpTokIs('(') Then
+      Begin
+        CSharpConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(')')) Do
+        Begin
+          CSharpParseExpr;
+          If CSharpTokIs(',') Then CSharpConsume;
+        End;
+        If CSharpTokIs(')') Then CSharpConsume;
+      End
+      Else If CSharpTokIs('[') Then
+      Begin
+        CSharpConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(']')) Do
+          CSharpConsume;
+        If CSharpTokIs(']') Then CSharpConsume;
+      End;
+    End;
+  End
+  Else
+  Begin
+    { Token inconnu, avancer }
+    N := SrcNewNode(SNK_EXPR_IDENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+  End;
+  CSharpParsePrimary := N;
+End;
+
+{ ---- CSharpParseUnary : expression unaire C# ----------------- }
+
+Function CSharpParseUnary : Integer;
+Var N : Integer;
+Begin
+  If CSharpTokIs('!') Or CSharpTokIs('-') Or CSharpTokIs('~') Or
+     CSharpTokIs('++') Or CSharpTokIs('--') Or
+     CSharpKwIs('await') Then
+  Begin
+    N := SrcNewNode(SNK_CSHARP_AWAIT);
+    If CSharpKwIs('await') Then
+      SrcNodes[N].Kind := SNK_CSHARP_AWAIT
+    Else
+      SrcNodes[N].Kind := SNK_EXPR_UNOP;
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    SrcNodes[N].Left := CSharpParseUnary;
+    CSharpParseUnary := N;
+  End
+  Else
+    CSharpParseUnary := CSharpParsePrimary;
+End;
+
+{ ---- CSharpParseBinary : expression binaire C# (precedence) - }
+
+Function CSharpParseBinary(MinPrec : Integer) : Integer;
+Var N, Op, Right : Integer;
+    Prec         : Integer;
+Begin
+  N := CSharpParseUnary;
+  While True Do
+  Begin
+    Prec := 0;
+    If CSharpTokIs('*') Or CSharpTokIs('/') Or CSharpTokIs('%') Then
+      Prec := 12
+    Else If CSharpTokIs('+') Or CSharpTokIs('-') Then
+      Prec := 11
+    Else If CSharpTokIs('<<') Or CSharpTokIs('>>') Then
+      Prec := 10
+    Else If CSharpTokIs('<') Or CSharpTokIs('>') Or
+            CSharpTokIs('<=') Or CSharpTokIs('>=') Or
+            CSharpKwIs('is') Or CSharpKwIs('as') Then
+      Prec := 9
+    Else If CSharpTokIs('==') Or CSharpTokIs('!=') Then
+      Prec := 8
+    Else If CSharpTokIs('&') And (Not CSharpTokIs('&&')) Then
+      Prec := 7
+    Else If CSharpTokIs('^') Then
+      Prec := 6
+    Else If CSharpTokIs('|') And (Not CSharpTokIs('||')) Then
+      Prec := 5
+    Else If CSharpTokIs('&&') Then
+      Prec := 4
+    Else If CSharpTokIs('||') Then
+      Prec := 3
+    Else If CSharpTokIs('??') Then
+      Prec := 2;
+
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+
+    Op := SrcNewNode(SNK_EXPR_BINOP);
+    SrcNodes[Op].Name := SrcToken.Val;
+    SrcNodes[Op].Line := SrcToken.Line;
+    SrcNodes[Op].Col  := SrcToken.Col;
+    CSharpConsume;
+    Right := CSharpParseBinary(Prec + 1);
+    SrcNodes[Op].Left  := N;
+    SrcNodes[Op].Right := Right;
+    N := Op;
+  End;
+  CSharpParseBinary := N;
+End;
+
+{ ---- CSharpParseAssign : expression d'assignation C# -------- }
+
+Function CSharpParseAssign : Integer;
+Var N, Op : Integer;
+Begin
+  N := CSharpParseBinary(1);
+  If CSharpTokIs('=') Or CSharpTokIs('+=') Or CSharpTokIs('-=') Or
+     CSharpTokIs('*=') Or CSharpTokIs('/=') Or CSharpTokIs('%=') Or
+     CSharpTokIs('&=') Or CSharpTokIs('|=') Or CSharpTokIs('^=') Then
+  Begin
+    Op := SrcNewNode(SNK_ASSIGN);
+    SrcNodes[Op].Name := SrcToken.Val;
+    SrcNodes[Op].Line := SrcToken.Line;
+    SrcNodes[Op].Col  := SrcToken.Col;
+    CSharpConsume;
+    SrcNodes[Op].Left  := N;
+    SrcNodes[Op].Right := CSharpParseAssign;
+    N := Op;
+  End;
+  CSharpParseAssign := N;
+End;
+
+{ ---- CSharpParseExpr : expression C# complete ---------------- }
+
+Function CSharpParseExpr : Integer;
+Begin
+  CSharpParseExpr := CSharpParseAssign;
+End;
+
+{ ---- CSharpParseBlock : bloc d instructions C# --------------- }
+
+Function CSharpParseBlock : Integer;
+Var Root, N, Last : Integer;
+Begin
+  Root := SrcNewNode(SNK_BLOCK);
+  SrcNodes[Root].Line := SrcToken.Line;
+  SrcNodes[Root].Col  := SrcToken.Col;
+  If CSharpTokIs('{') Then CSharpConsume;
+  Last := -1;
+  While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('}')) Do
+  Begin
+    N := CSharpParseStatement;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+  End;
+  If CSharpTokIs('}') Then CSharpConsume;
+  CSharpParseBlock := Root;
+End;
+
+{ ---- CSharpParseStatement : instruction C# ------------------- }
+
+Function CSharpParseStatement : Integer;
+Var N : Integer;
+Begin
+  N := -1;
+
+  { Bloc }
+  If CSharpTokIs('{') Then
+  Begin
+    N := CSharpParseBlock;
+  End
+  { if }
+  Else If CSharpKwIs('if') Then
+  Begin
+    N := SrcNewNode(SNK_IF);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If CSharpTokIs('(') Then
+    Begin
+      CSharpConsume;
+      SrcNodes[N].Left := CSharpParseExpr;
+      If CSharpTokIs(')') Then CSharpConsume;
+    End;
+    SrcNodes[N].Right := CSharpParseStatement;
+    If CSharpKwIs('else') Then
+    Begin
+      CSharpConsume;
+      SrcNodes[N].Extra := CSharpParseStatement;
+    End;
+  End
+  { while }
+  Else If CSharpKwIs('while') Then
+  Begin
+    N := SrcNewNode(SNK_WHILE);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If CSharpTokIs('(') Then
+    Begin
+      CSharpConsume;
+      SrcNodes[N].Left := CSharpParseExpr;
+      If CSharpTokIs(')') Then CSharpConsume;
+    End;
+    SrcNodes[N].Right := CSharpParseStatement;
+  End
+  { for }
+  Else If CSharpKwIs('for') Then
+  Begin
+    N := SrcNewNode(SNK_FOR);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If CSharpTokIs('(') Then
+    Begin
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(')')) Do
+        CSharpConsume;
+      If CSharpTokIs(')') Then CSharpConsume;
+    End;
+    SrcNodes[N].Right := CSharpParseStatement;
+  End
+  { foreach }
+  Else If CSharpKwIs('foreach') Then
+  Begin
+    N := SrcNewNode(SNK_CSHARP_FOREACH);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If CSharpTokIs('(') Then
+    Begin
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(')')) Do
+        CSharpConsume;
+      If CSharpTokIs(')') Then CSharpConsume;
+    End;
+    SrcNodes[N].Right := CSharpParseStatement;
+  End
+  { do...while }
+  Else If CSharpKwIs('do') Then
+  Begin
+    N := SrcNewNode(SNK_C_DO_WHILE);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    SrcNodes[N].Right := CSharpParseStatement;
+    If CSharpKwIs('while') Then
+    Begin
+      CSharpConsume;
+      If CSharpTokIs('(') Then
+      Begin
+        CSharpConsume;
+        SrcNodes[N].Left := CSharpParseExpr;
+        If CSharpTokIs(')') Then CSharpConsume;
+      End;
+    End;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  { switch }
+  Else If CSharpKwIs('switch') Then
+  Begin
+    N := SrcNewNode(SNK_C_SWITCH);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If CSharpTokIs('(') Then
+    Begin
+      CSharpConsume;
+      SrcNodes[N].Left := CSharpParseExpr;
+      If CSharpTokIs(')') Then CSharpConsume;
+    End;
+    If CSharpTokIs('{') Then
+    Begin
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('}')) Do
+        CSharpConsume;
+      If CSharpTokIs('}') Then CSharpConsume;
+    End;
+  End
+  { return }
+  Else If CSharpKwIs('return') Then
+  Begin
+    N := SrcNewNode(SNK_C_RETURN);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If Not CSharpTokIs(';') Then
+      SrcNodes[N].Left := CSharpParseExpr;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  { break / continue }
+  Else If CSharpKwIs('break') Or CSharpKwIs('continue') Then
+  Begin
+    If CSharpKwIs('break') Then
+      N := SrcNewNode(SNK_C_BREAK)
+    Else
+      N := SrcNewNode(SNK_C_CONTINUE);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  { throw }
+  Else If CSharpKwIs('throw') Then
+  Begin
+    N := SrcNewNode(SNK_CPP_THROW);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If Not CSharpTokIs(';') Then
+      SrcNodes[N].Left := CSharpParseExpr;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  { try ... catch ... finally }
+  Else If CSharpKwIs('try') Then
+  Begin
+    N := SrcNewNode(SNK_CPP_TRY);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    SrcNodes[N].Left := CSharpParseBlock;
+    If CSharpKwIs('catch') Then
+    Begin
+      CSharpConsume;
+      If CSharpTokIs('(') Then
+      Begin
+        CSharpConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(')')) Do
+          CSharpConsume;
+        If CSharpTokIs(')') Then CSharpConsume;
+      End;
+      SrcNodes[N].Right := CSharpParseBlock;
+    End;
+    If CSharpKwIs('finally') Then
+    Begin
+      CSharpConsume;
+      SrcNodes[N].Extra := CSharpParseBlock;
+    End;
+  End
+  { lock }
+  Else If CSharpKwIs('lock') Then
+  Begin
+    N := SrcNewNode(SNK_CSHARP_LOCK);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If CSharpTokIs('(') Then
+    Begin
+      CSharpConsume;
+      SrcNodes[N].Left := CSharpParseExpr;
+      If CSharpTokIs(')') Then CSharpConsume;
+    End;
+    SrcNodes[N].Right := CSharpParseStatement;
+  End
+  { using (statement) }
+  Else If CSharpKwIs('using') And
+    (SrcColNo <= Length(SrcLine)) And
+    (SrcLine[SrcColNo] <> ' ') Then
+  Begin
+    { Could be using statement or using directive - check for ( }
+    N := SrcNewNode(SNK_CSHARP_USING);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If CSharpTokIs('(') Then
+    Begin
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(')')) Do
+        CSharpConsume;
+      If CSharpTokIs(')') Then CSharpConsume;
+      SrcNodes[N].Right := CSharpParseStatement;
+    End
+    Else
+    Begin
+      { using directive at statement level }
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(';')) Do
+        CSharpConsume;
+      If CSharpTokIs(';') Then CSharpConsume;
+    End;
+  End
+  { yield return / yield break }
+  Else If CSharpKwIs('yield') Then
+  Begin
+    N := SrcNewNode(SNK_C_RETURN);
+    SrcNodes[N].Name := 'yield';
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    If CSharpKwIs('return') Then
+    Begin
+      CSharpConsume;
+      If Not CSharpTokIs(';') Then
+        SrcNodes[N].Left := CSharpParseExpr;
+    End
+    Else If CSharpKwIs('break') Then
+      CSharpConsume;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  { Expression statement }
+  Else
+  Begin
+    N := CSharpParseExpr;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End;
+  CSharpParseStatement := N;
+End;
+
+{ ---- CSharpSkipAttributes : sauter les attributs [xxx] ------- }
+
+Procedure CSharpSkipAttributes;
+Begin
+  While CSharpTokIs('[') Do
+  Begin
+    CSharpConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(']')) Do
+      CSharpConsume;
+    If CSharpTokIs(']') Then CSharpConsume;
+  End;
+End;
+
+{ ---- CSharpSkipModifiers : sauter les modificateurs ---------- }
+
+Procedure CSharpSkipModifiers;
+Begin
+  While CSharpKwIs('public') Or CSharpKwIs('private') Or
+        CSharpKwIs('protected') Or CSharpKwIs('internal') Or
+        CSharpKwIs('static') Or CSharpKwIs('virtual') Or
+        CSharpKwIs('override') Or CSharpKwIs('abstract') Or
+        CSharpKwIs('sealed') Or CSharpKwIs('new') Or
+        CSharpKwIs('readonly') Or CSharpKwIs('volatile') Or
+        CSharpKwIs('extern') Or CSharpKwIs('unsafe') Or
+        CSharpKwIs('async') Or CSharpKwIs('partial') Do
+    CSharpConsume;
+End;
+
+{ ---- CSharpSkipGenericArgs : sauter <T, U, ...> -------------- }
+
+Procedure CSharpSkipGenericArgs;
+Var Depth : Integer;
+Begin
+  If CSharpTokIs('<') Then
+  Begin
+    Depth := 1;
+    CSharpConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+    Begin
+      If CSharpTokIs('<') Then Inc(Depth)
+      Else If CSharpTokIs('>') Then Dec(Depth);
+      If Depth > 0 Then CSharpConsume;
+    End;
+    If CSharpTokIs('>') Then CSharpConsume;
+  End;
+End;
+
+{ ---- CSharpParseTypeName : parser un nom de type ------------- }
+
+Function CSharpParseTypeName : TString;
+Var S : TString;
+Begin
+  S := '';
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    S := SrcToken.Val;
+    CSharpConsume;
+    While CSharpTokIs('.') Do
+    Begin
+      CSharpConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        S := S + '.' + SrcToken.Val;
+        CSharpConsume;
+      End;
+    End;
+    CSharpSkipGenericArgs;
+    { Arrays }
+    While CSharpTokIs('[') Do
+    Begin
+      S := S + '[]';
+      CSharpConsume;
+      If CSharpTokIs(']') Then CSharpConsume;
+    End;
+    { Nullable }
+    If CSharpTokIs('?') Then
+    Begin
+      S := S + '?';
+      CSharpConsume;
+    End;
+  End;
+  CSharpParseTypeName := S;
+End;
+
+{ ---- CSharpParseMethodBody : parser un corps de methode ------ }
+
+Procedure CSharpParseMethodBody(N : Integer);
+Begin
+  If CSharpTokIs('{') Then
+    SrcNodes[N].Right := CSharpParseBlock
+  Else If CSharpTokIs('=>') Then
+  Begin
+    CSharpConsume;
+    SrcNodes[N].Right := CSharpParseExpr;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  Else If CSharpTokIs(';') Then
+    CSharpConsume;
+End;
+
+{ ---- CSharpParseMemberDecl : parser un membre de type -------- }
+
+Function CSharpParseMemberDecl : Integer;
+Var N : Integer;
+    TypeName, MemberName : TString;
+Begin
+  N := -1;
+  CSharpSkipAttributes;
+  CSharpSkipModifiers;
+
+  { Constructeur ou methode ou propriete ou champ }
+  If CSharpKwIs('event') Then
+  Begin
+    N := SrcNewNode(SNK_CSHARP_DELEGATE_DECL);
+    SrcNodes[N].Name := 'event';
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(';')) And
+          (Not CSharpTokIs('{')) Do
+      CSharpConsume;
+    If CSharpTokIs(';') Then CSharpConsume
+    Else If CSharpTokIs('{') Then
+    Begin
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('}')) Do
+        CSharpConsume;
+      If CSharpTokIs('}') Then CSharpConsume;
+    End;
+  End
+  Else If CSharpKwIs('class') Or CSharpKwIs('struct') Or
+          CSharpKwIs('interface') Or CSharpKwIs('enum') Then
+  Begin
+    { Nested type declaration }
+    N := CSharpParseTypeDecl;
+  End
+  Else If CSharpKwIs('delegate') Then
+  Begin
+    N := SrcNewNode(SNK_CSHARP_DELEGATE_DECL);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    { Return type + name }
+    TypeName := CSharpParseTypeName;
+    If (SrcToken.Kind = STK_IDENT) Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      CSharpConsume;
+    End
+    Else
+      SrcNodes[N].Name := TypeName;
+    CSharpSkipGenericArgs;
+    If CSharpTokIs('(') Then
+    Begin
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(')')) Do
+        CSharpConsume;
+      If CSharpTokIs(')') Then CSharpConsume;
+    End;
+    While CSharpKwIs('where') Do
+    Begin
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(';')) And
+            (Not CSharpKwIs('where')) Do
+        CSharpConsume;
+    End;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  Else If CSharpKwIs('const') Then
+  Begin
+    N := SrcNewNode(SNK_CONST_DECL);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    TypeName := CSharpParseTypeName;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      CSharpConsume;
+    End;
+    While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(';')) Do
+      CSharpConsume;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  Else
+  Begin
+    { Method, property, field, or constructor }
+    TypeName := CSharpParseTypeName;
+    If TypeName = '' Then
+    Begin
+      { Skip unknown token }
+      CSharpConsume;
+      CSharpParseMemberDecl := -1;
+      Exit;
+    End;
+
+    { Check if this is a constructor (typeName matches class, followed by '(') }
+    If CSharpTokIs('(') Then
+    Begin
+      { Constructor }
+      N := SrcNewNode(SNK_FUNC_DECL);
+      SrcNodes[N].Name := TypeName;
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Col  := SrcToken.Col;
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(')')) Do
+        CSharpConsume;
+      If CSharpTokIs(')') Then CSharpConsume;
+      { Base/this call }
+      If CSharpTokIs(':') Then
+      Begin
+        CSharpConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('{')) And
+              (Not CSharpTokIs(';')) Do
+          CSharpConsume;
+      End;
+      CSharpParseMethodBody(N);
+    End
+    Else If (SrcToken.Kind = STK_IDENT) Then
+    Begin
+      MemberName := SrcToken.Val;
+      CSharpConsume;
+      CSharpSkipGenericArgs;
+      If CSharpTokIs('(') Then
+      Begin
+        { Method }
+        N := SrcNewNode(SNK_FUNC_DECL);
+        SrcNodes[N].Name := MemberName;
+        SrcNodes[N].Line := SrcToken.Line;
+        SrcNodes[N].Col  := SrcToken.Col;
+        CSharpConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(')')) Do
+          CSharpConsume;
+        If CSharpTokIs(')') Then CSharpConsume;
+        { where clauses }
+        While CSharpKwIs('where') Do
+        Begin
+          While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('{')) And
+                (Not CSharpTokIs(';')) And (Not CSharpTokIs('=>')) And
+                (Not CSharpKwIs('where')) Do
+            CSharpConsume;
+        End;
+        CSharpParseMethodBody(N);
+      End
+      Else If CSharpTokIs('{') Then
+      Begin
+        { Property }
+        N := SrcNewNode(SNK_CSHARP_PROPERTY);
+        SrcNodes[N].Name := MemberName;
+        SrcNodes[N].Line := SrcToken.Line;
+        SrcNodes[N].Col  := SrcToken.Col;
+        CSharpConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('}')) Do
+          CSharpConsume;
+        If CSharpTokIs('}') Then CSharpConsume;
+        { Auto property initializer }
+        If CSharpTokIs('=') Then
+        Begin
+          CSharpConsume;
+          CSharpParseExpr;
+          If CSharpTokIs(';') Then CSharpConsume;
+        End;
+      End
+      Else
+      Begin
+        { Field }
+        N := SrcNewNode(SNK_VAR_DECL);
+        SrcNodes[N].Name := MemberName;
+        SrcNodes[N].Line := SrcToken.Line;
+        SrcNodes[N].Col  := SrcToken.Col;
+        While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(';')) Do
+          CSharpConsume;
+        If CSharpTokIs(';') Then CSharpConsume;
+      End;
+    End
+    Else If CSharpTokIs(';') Then
+    Begin
+      { Simple declaration like "int;" (unlikely but safe) }
+      CSharpConsume;
+    End
+    Else
+    Begin
+      (* Unknown, skip to next ; or } *)
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(';')) And
+            (Not CSharpTokIs('}')) Do
+        CSharpConsume;
+      If CSharpTokIs(';') Then CSharpConsume;
+    End;
+  End;
+  CSharpParseMemberDecl := N;
+End;
+
+{ ---- CSharpParseTypeBody : parser le corps d un type --------- }
+
+Procedure CSharpParseTypeBody(Root : Integer);
+Var N, Last : Integer;
+Begin
+  If CSharpTokIs('{') Then CSharpConsume;
+  Last := -1;
+  While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('}')) Do
+  Begin
+    N := CSharpParseMemberDecl;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+  End;
+  If CSharpTokIs('}') Then CSharpConsume;
+End;
+
+{ ---- CSharpParseTypeDecl : parser une declaration de type ---- }
+
+Function CSharpParseTypeDecl : Integer;
+Var N    : Integer;
+    Kind : TSrcNodeKind;
+Begin
+  N := -1;
+  If CSharpKwIs('class') Then
+    Kind := SNK_CSHARP_CLASS_DECL
+  Else If CSharpKwIs('struct') Then
+    Kind := SNK_CSHARP_STRUCT_DECL
+  Else If CSharpKwIs('interface') Then
+    Kind := SNK_CSHARP_INTERFACE_DECL
+  Else
+    Kind := SNK_CSHARP_ENUM_DECL;
+
+  N := SrcNewNode(Kind);
+  SrcNodes[N].Line := SrcToken.Line;
+  SrcNodes[N].Col  := SrcToken.Col;
+  CSharpConsume; { class/struct/interface/enum }
+
+  If (SrcToken.Kind = STK_IDENT) Then
+  Begin
+    SrcNodes[N].Name := SrcToken.Val;
+    CSharpConsume;
+  End;
+  CSharpSkipGenericArgs;
+
+  { Heritage : base classes }
+  If CSharpTokIs(':') Then
+  Begin
+    CSharpConsume;
+    CSharpParseTypeName;
+    While CSharpTokIs(',') Do
+    Begin
+      CSharpConsume;
+      CSharpParseTypeName;
+    End;
+  End;
+
+  { where clauses }
+  While CSharpKwIs('where') Do
+  Begin
+    CSharpConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('{')) And
+          (Not CSharpKwIs('where')) Do
+      CSharpConsume;
+  End;
+
+  If Kind = SNK_CSHARP_ENUM_DECL Then
+  Begin
+    { Enum body }
+    If CSharpTokIs('{') Then
+    Begin
+      CSharpConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('}')) Do
+        CSharpConsume;
+      If CSharpTokIs('}') Then CSharpConsume;
+    End;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  Else
+    CSharpParseTypeBody(N);
+
+  CSharpParseTypeDecl := N;
+End;
+
+{ ---- CSharpParseNamespace : parser un namespace C# ----------- }
+
+Function CSharpParseNamespace : Integer;
+Var N, Child, Last : Integer;
+Begin
+  N := SrcNewNode(SNK_CSHARP_NAMESPACE);
+  SrcNodes[N].Line := SrcToken.Line;
+  SrcNodes[N].Col  := SrcToken.Col;
+  CSharpConsume; { namespace }
+
+  { Namespace name (could be dotted) }
+  If (SrcToken.Kind = STK_IDENT) Then
+  Begin
+    SrcNodes[N].Name := SrcToken.Val;
+    CSharpConsume;
+    While CSharpTokIs('.') Do
+    Begin
+      CSharpConsume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcNodes[N].Name + '.' + SrcToken.Val;
+        CSharpConsume;
+      End;
+    End;
+  End;
+
+  { File-scoped namespace (C# 10) }
+  If CSharpTokIs(';') Then
+  Begin
+    CSharpConsume;
+    { File-scoped: rest of file is in this namespace }
+    Last := -1;
+    While SrcToken.Kind <> STK_EOF Do
+    Begin
+      Child := CSharpParseTopLevel;
+      If Child >= 0 Then
+      Begin
+        If SrcNodes[N].Left = -1 Then
+          SrcNodes[N].Left := Child
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := Child;
+        Last := Child;
+      End;
+    End;
+  End
+  Else If CSharpTokIs('{') Then
+  Begin
+    CSharpConsume;
+    Last := -1;
+    While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs('}')) Do
+    Begin
+      Child := CSharpParseTopLevel;
+      If Child >= 0 Then
+      Begin
+        If SrcNodes[N].Left = -1 Then
+          SrcNodes[N].Left := Child
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := Child;
+        Last := Child;
+      End;
+    End;
+    If CSharpTokIs('}') Then CSharpConsume;
+  End;
+  CSharpParseNamespace := N;
+End;
+
+{ ---- CSharpParseTopLevel : parser un element de premier niveau }
+
+Function CSharpParseTopLevel : Integer;
+Var N : Integer;
+Begin
+  N := -1;
+  CSharpSkipAttributes;
+  CSharpSkipModifiers;
+
+  If CSharpKwIs('using') Then
+  Begin
+    N := SrcNewNode(SNK_CSHARP_USING);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    { using static, using alias = type }
+    If CSharpKwIs('static') Then CSharpConsume;
+    SrcNodes[N].Name := '';
+    While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(';')) Do
+    Begin
+      If SrcNodes[N].Name <> '' Then
+        SrcNodes[N].Name := SrcNodes[N].Name + SrcToken.Val
+      Else
+        SrcNodes[N].Name := SrcToken.Val;
+      CSharpConsume;
+    End;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  Else If CSharpKwIs('namespace') Then
+  Begin
+    N := CSharpParseNamespace;
+  End
+  Else If CSharpKwIs('class') Or CSharpKwIs('struct') Or
+          CSharpKwIs('interface') Or CSharpKwIs('enum') Then
+  Begin
+    N := CSharpParseTypeDecl;
+  End
+  Else If CSharpKwIs('delegate') Then
+  Begin
+    N := SrcNewNode(SNK_CSHARP_DELEGATE_DECL);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    CSharpConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not CSharpTokIs(';')) Do
+      CSharpConsume;
+    If CSharpTokIs(';') Then CSharpConsume;
+  End
+  Else If SrcToken.Kind = STK_EOF Then
+  Begin
+    { Fin de fichier }
+  End
+  Else
+  Begin
+    { Declaration globale inconnue, avancer }
+    CSharpConsume;
+  End;
+  CSharpParseTopLevel := N;
+End;
+
+{ ---- CSharpParseTranslationUnit : unite de traduction C# ----- }
+
+Function CSharpParseTranslationUnit : Integer;
+Var Root, N, Last : Integer;
+Begin
+  CSharpConsume; { lire le premier token }
+  Root := SrcNewNode(SNK_CSHARP_TRANSLATION_UNIT);
+  SrcNodes[Root].Name := 'CSHARP_TU';
+  Last := -1;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    N := CSharpParseTopLevel;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+  End;
+  CSharpParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 28 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -16705,6 +18071,13 @@ Begin
                  StrEndsWith(FName, '.hh')  Or
                  StrEndsWith(FName, '.hxx') Or
                  StrEndsWith(FName, '.h');
+End;
+
+{ ---- IsCSharpSource : verifier si le fichier est .cs --------- }
+
+Function IsCSharpSource(Const FName : TString) : Boolean;
+Begin
+  IsCSharpSource := StrEndsWith(FName, '.cs');
 End;
 
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
@@ -16760,7 +18133,8 @@ Begin
     Begin
       If ((Opts.Language = 'pascal') And IsPascalSource(SR.Name)) Or
          ((Opts.Language = 'c') And IsCSource(SR.Name)) Or
-         ((Opts.Language = 'cpp') And IsCppSource(SR.Name)) Then
+         ((Opts.Language = 'cpp') And IsCppSource(SR.Name)) Or
+         ((Opts.Language = 'csharp') And IsCSharpSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -16845,6 +18219,12 @@ Begin
       CppLexInit;
       SrcASTInit;
       SrcRootNode := CppParseTranslationUnit;
+    End
+    Else If Opts.Language = 'csharp' Then
+    Begin
+      CSharpLexInit;
+      SrcASTInit;
+      SrcRootNode := CSharpParseTranslationUnit;
     End
     Else
     Begin
