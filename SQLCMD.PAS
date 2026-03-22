@@ -161,7 +161,7 @@
             FOR JSON PATH|AUTO
             OPTION (query hints)
 
-  TODO 11 - PARSEUR INSERT / UPDATE / DELETE / MERGE
+  TODO 11 - PARSEUR INSERT / UPDATE / DELETE / MERGE [IMPLEMENTE]
             INSERT [INTO] table [(colonnes)] VALUES (v1,..)
             INSERT INTO table SELECT ...
             INSERT INTO table DEFAULT VALUES
@@ -797,7 +797,7 @@ Const
 
   { ---- Constantes mots-cles SQL Server (TODO 08) -------------- }
   { Nombre total de mots-cles }
-  MAX_KEYWORDS    = 100;
+  MAX_KEYWORDS    = 110;
 
   { IDs des mots-cles SQL Server (base 1) }
   { -- DML -- }
@@ -908,7 +908,11 @@ Const
   KW_REVOKE       = 100;
   KW_DENY         = 101;
 
-  KW_COUNT        = 101;     { nombre total de mots-cles definis  }
+  { -- Mots-cles supplementaires (TODO 11) -- }
+  KW_OUTPUT       = 102;
+  KW_USING        = 103;
+
+  KW_COUNT        = 103;     { nombre total de mots-cles definis  }
 
   { ---- Constantes AST noeud parseur SQL (TODO 09) ------------- }
   { Types de noeuds dans l arbre d expression }
@@ -972,6 +976,23 @@ Const
   ND_FOR_XML      = 55;      { FOR XML PATH|RAW|AUTO|EXPLICIT       }
   ND_FOR_JSON     = 56;      { FOR JSON PATH|AUTO                   }
   ND_ALIAS        = 57;      { alias de colonne ou table             }
+
+  { ---- Constantes AST noeud parseur DML (TODO 11) -------------- }
+  ND_INSERT_STMT  = 58;      { INSERT [INTO] table ...              }
+  ND_COL_LIST     = 59;      { liste de colonnes (col1, col2, ...)  }
+  ND_VALUES_CLAUSE= 60;      { VALUES (v1,...) [,(v1,...)]           }
+  ND_VALUES_ROW   = 61;      { une rangee de valeurs (v1, v2, ...)  }
+  ND_UPDATE_STMT  = 62;      { UPDATE table SET ...                 }
+  ND_SET_CLAUSE   = 63;      { SET col=expr, col=expr, ...          }
+  ND_SET_ITEM     = 64;      { col = expr                           }
+  ND_DELETE_STMT  = 65;      { DELETE [FROM] table [WHERE ...]      }
+  ND_TRUNCATE_STMT= 66;      { TRUNCATE TABLE table                 }
+  ND_MERGE_STMT   = 67;      { MERGE INTO target USING source ON ...}
+  ND_MERGE_WHEN   = 68;      { WHEN MATCHED/NOT MATCHED THEN ...    }
+  ND_OUTPUT_CLAUSE= 69;      { OUTPUT INSERTED.*, DELETED.*         }
+  ND_OUTPUT_ITEM  = 70;      { item dans la clause OUTPUT            }
+  ND_DEFAULT_VALUES = 71;    { DEFAULT VALUES                       }
+  ND_EXEC_INSERT  = 72;      { INSERT ... EXEC procedure            }
 
   { Taille max du pool de noeuds AST }
   MAX_AST_NODES   = 1024;
@@ -4971,6 +4992,9 @@ Begin
   If U = 'GRANT'        Then Begin IsKeyword := KW_GRANT;       Exit; End;
   If U = 'REVOKE'       Then Begin IsKeyword := KW_REVOKE;      Exit; End;
   If U = 'DENY'         Then Begin IsKeyword := KW_DENY;        Exit; End;
+  { TODO 11 }
+  If U = 'OUTPUT'       Then Begin IsKeyword := KW_OUTPUT;      Exit; End;
+  If U = 'USING'        Then Begin IsKeyword := KW_USING;       Exit; End;
 
   IsKeyword := 0;
 End;
@@ -5081,6 +5105,8 @@ Begin
     KW_GRANT        : KeywordName := 'GRANT';
     KW_REVOKE       : KeywordName := 'REVOKE';
     KW_DENY         : KeywordName := 'DENY';
+    KW_OUTPUT       : KeywordName := 'OUTPUT';
+    KW_USING        : KeywordName := 'USING';
   Else
     KeywordName := '?';
   End;
@@ -5206,6 +5232,21 @@ Begin
     ND_FOR_XML     : NodeKindName := 'FOR_XML';
     ND_FOR_JSON    : NodeKindName := 'FOR_JSON';
     ND_ALIAS       : NodeKindName := 'ALIAS';
+    ND_INSERT_STMT : NodeKindName := 'INSERT_STMT';
+    ND_COL_LIST    : NodeKindName := 'COL_LIST';
+    ND_VALUES_CLAUSE:NodeKindName := 'VALUES_CLAUSE';
+    ND_VALUES_ROW  : NodeKindName := 'VALUES_ROW';
+    ND_UPDATE_STMT : NodeKindName := 'UPDATE_STMT';
+    ND_SET_CLAUSE  : NodeKindName := 'SET_CLAUSE';
+    ND_SET_ITEM    : NodeKindName := 'SET_ITEM';
+    ND_DELETE_STMT : NodeKindName := 'DELETE_STMT';
+    ND_TRUNCATE_STMT:NodeKindName := 'TRUNCATE_STMT';
+    ND_MERGE_STMT  : NodeKindName := 'MERGE_STMT';
+    ND_MERGE_WHEN  : NodeKindName := 'MERGE_WHEN';
+    ND_OUTPUT_CLAUSE:NodeKindName := 'OUTPUT_CLAUSE';
+    ND_OUTPUT_ITEM : NodeKindName := 'OUTPUT_ITEM';
+    ND_DEFAULT_VALUES:NodeKindName:= 'DEFAULT_VALUES';
+    ND_EXEC_INSERT : NodeKindName := 'EXEC_INSERT';
   Else
     NodeKindName := '?';
   End;
@@ -6837,6 +6878,1107 @@ Begin
   ParseSelectStmt := Sel;
 End;
 
+{ ============================================================
+  TODO 11 - PARSEUR INSERT / UPDATE / DELETE / MERGE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Forward declarations ------------------------------------ }
+
+Function ParseInsertStmt : Integer; Forward;
+Function ParseUpdateStmt : Integer; Forward;
+Function ParseDeleteStmt : Integer; Forward;
+Function ParseTruncateStmt : Integer; Forward;
+Function ParseMergeStmt : Integer; Forward;
+
+{ ---- ParseOutputClause : OUTPUT INSERTED.*, DELETED.* -------- }
+{ OUTPUT col1, INSERTED.col2, DELETED.col3 [INTO @table|table]   }
+
+Function ParseOutputClause : Integer;
+Var
+  N, Item, E : Integer;
+  Prefix     : TString;
+Begin
+  ParseOutputClause := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_OUTPUT) Then Exit;
+
+  N := NewNode(ND_OUTPUT_CLAUSE, 'OUTPUT', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip OUTPUT }
+
+  { Liste d items OUTPUT }
+  Repeat
+    Item := NewNode(ND_OUTPUT_ITEM, '', LexCurTok.Line, LexCurTok.Col);
+    { INSERTED.col, DELETED.col, ou expression }
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      Prefix := StrUpperCase(LexCurTok.Text);
+      If (Prefix = 'INSERTED') Or (Prefix = 'DELETED') Then
+      Begin
+        ASTPool[Item].Text := Prefix;
+        Advance;
+        If TokIs(TOK_DOT) Then
+        Begin
+          Advance;
+          If TokIs(TOK_STAR) Then
+          Begin
+            ASTPool[Item].Text := Prefix + '.*';
+            Advance;
+          End
+          Else If (LexCurTok.Kind = TOK_IDENT) Or
+                  (LexCurTok.Kind = TOK_KEYWORD) Or
+                  (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+          Begin
+            ASTPool[Item].Text := Prefix + '.' + LexCurTok.Text;
+            Advance;
+          End;
+        End;
+      End
+      Else
+      Begin
+        E := ParseSqlExpr;
+        AddChild(Item, E);
+      End;
+    End
+    Else
+    Begin
+      E := ParseSqlExpr;
+      AddChild(Item, E);
+    End;
+
+    { Alias optionnel : AS alias }
+    If KwIs(KW_AS) Then
+    Begin
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+         (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+      Begin
+        ASTPool[Item].Text := ASTPool[Item].Text + ' AS ' + LexCurTok.Text;
+        Advance;
+      End;
+    End;
+
+    AddChild(N, Item);
+
+    If TokIs(TOK_COMMA) Then
+      Advance
+    Else
+      Break;
+  Until Not ParseOk;
+
+  { INTO @table_var | table optionnel }
+  If KwIs(KW_INTO) Then
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_VARIABLE) Or (LexCurTok.Kind = TOK_IDENT) Or
+       (LexCurTok.Kind = TOK_KEYWORD) Or (LexCurTok.Kind = TOK_TEMPOBJ) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+    Begin
+      ASTPool[N].Text := 'OUTPUT INTO ' + LexCurTok.Text;
+      Advance;
+      { Liste de colonnes optionnelle }
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        While ParseOk And (Not TokIs(TOK_RPAREN)) And
+              (Not TokIs(TOK_EOF)) Do
+        Begin
+          Advance;
+          If TokIs(TOK_COMMA) Then Advance;
+        End;
+        If TokIs(TOK_RPAREN) Then Advance;
+      End;
+    End;
+  End;
+
+  ParseOutputClause := N;
+End;
+
+{ ---- ParseColList : (col1, col2, col3) ----------------------- }
+
+Function ParseColList : Integer;
+Var
+  N, C : Integer;
+Begin
+  ParseColList := -1;
+  If Not ParseOk Then Exit;
+  If Not TokIs(TOK_LPAREN) Then Exit;
+
+  N := NewNode(ND_COL_LIST, '', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip ( }
+
+  While ParseOk And (Not TokIs(TOK_RPAREN)) And (Not TokIs(TOK_EOF)) Do
+  Begin
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+    Begin
+      C := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line, LexCurTok.Col);
+      AddChild(N, C);
+      Advance;
+    End
+    Else
+    Begin
+      ParseError('nom de colonne attendu');
+      Exit;
+    End;
+    If TokIs(TOK_COMMA) Then
+      Advance
+    Else
+      Break;
+  End;
+
+  If TokIs(TOK_RPAREN) Then
+    Advance
+  Else
+    ParseError(') attendu apres liste de colonnes');
+
+  ParseColList := N;
+End;
+
+{ ---- ParseTableName : nom de table (dotted) ------------------ }
+{ Supporte: table, schema.table, db.schema.table, server.db.schema.table }
+
+Function ParseTableName : Integer;
+Var
+  N    : Integer;
+  Name : TString;
+Begin
+  ParseTableName := -1;
+  If Not ParseOk Then Exit;
+
+  If (LexCurTok.Kind <> TOK_IDENT) And (LexCurTok.Kind <> TOK_KEYWORD) And
+     (LexCurTok.Kind <> TOK_DELIM_IDENT) And
+     (LexCurTok.Kind <> TOK_TEMPOBJ) And
+     (LexCurTok.Kind <> TOK_VARIABLE) Then
+  Begin
+    ParseError('nom de table attendu');
+    Exit;
+  End;
+
+  Name := LexCurTok.Text;
+  N := NewNode(ND_TABLE_REF, Name, LexCurTok.Line, LexCurTok.Col);
+  Advance;
+
+  { Dotted name: schema.table, db.schema.table }
+  While TokIs(TOK_DOT) And ParseOk Do
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+    Begin
+      Name := Name + '.' + LexCurTok.Text;
+      ASTPool[N].Text := Name;
+      Advance;
+    End
+    Else
+      Break;
+  End;
+
+  { Alias optionnel }
+  If KwIs(KW_AS) Then
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+    Begin
+      ASTPool[N].Text := ASTPool[N].Text + ' AS ' + LexCurTok.Text;
+      Advance;
+    End;
+  End;
+
+  ParseTableName := N;
+End;
+
+{ ---- ParseInsertStmt ----------------------------------------- }
+{ INSERT [INTO] table [(cols)] VALUES (...) | SELECT ... |       }
+{ DEFAULT VALUES | EXEC procedure                                }
+
+Function ParseInsertStmt : Integer;
+Var
+  Ins, Tbl, Cols, Vals, Row, E, Sub, N : Integer;
+Begin
+  ParseInsertStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_INSERT) Then
+  Begin
+    ParseError('INSERT attendu');
+    Exit;
+  End;
+
+  Ins := NewNode(ND_INSERT_STMT, 'INSERT', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip INSERT }
+
+  { TOP (n) optionnel }
+  If KwIs(KW_TOP) Then
+  Begin
+    Advance;
+    N := NewNode(ND_TOP_CLAUSE, 'TOP', LexCurTok.Line, LexCurTok.Col);
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      Advance;
+      E := ParseSqlExpr;
+      AddChild(N, E);
+      If TokIs(TOK_RPAREN) Then
+        Advance
+      Else
+        ParseError(') attendu apres TOP(n)');
+    End
+    Else
+    Begin
+      E := ParseSqlExpr;
+      AddChild(N, E);
+    End;
+    If KwIs(KW_PERCENT) Then
+    Begin
+      ASTPool[N].Text := 'TOP PERCENT';
+      Advance;
+    End;
+    AddChild(Ins, N);
+  End;
+
+  { INTO optionnel }
+  If KwIs(KW_INTO) Then
+    Advance;
+
+  { Nom de la table cible }
+  Tbl := ParseTableName;
+  AddChild(Ins, Tbl);
+
+  { Table hint WITH (...) optionnel }
+  If KwIs(KW_WITH) Then
+  Begin
+    Advance;
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      N := NewNode(ND_TABLE_HINT, '', LexCurTok.Line, LexCurTok.Col);
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        ASTPool[N].Text := StrUpperCase(LexCurTok.Text);
+        Advance;
+      End;
+      If TokIs(TOK_RPAREN) Then Advance;
+      AddChild(Ins, N);
+    End;
+  End;
+
+  { Liste de colonnes optionnelle (col1, col2, ...) }
+  If TokIs(TOK_LPAREN) Then
+  Begin
+    { Attention: on doit distinguer (col_list) de VALUES (...) }
+    { Si le token apres ( est un ident suivi de , ou ), c est une col list }
+    { On utilise ParseColList }
+    Cols := ParseColList;
+    AddChild(Ins, Cols);
+  End;
+
+  { OUTPUT clause optionnelle }
+  If KwIs(KW_OUTPUT) Then
+  Begin
+    N := ParseOutputClause;
+    AddChild(Ins, N);
+  End;
+
+  { VALUES (...) | SELECT ... | DEFAULT VALUES | EXEC procedure }
+  If KwIs(KW_VALUES) Then
+  Begin
+    Vals := NewNode(ND_VALUES_CLAUSE, 'VALUES', LexCurTok.Line,
+                    LexCurTok.Col);
+    Advance; { skip VALUES }
+
+    { Supporter plusieurs rangees : VALUES (v1,v2),(v3,v4) }
+    Repeat
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Row := NewNode(ND_VALUES_ROW, '', LexCurTok.Line, LexCurTok.Col);
+        Advance; { skip ( }
+        { Liste de valeurs }
+        While ParseOk And (Not TokIs(TOK_RPAREN)) And
+              (Not TokIs(TOK_EOF)) Do
+        Begin
+          If (LexCurTok.Kind = TOK_IDENT) And
+             (StrUpperCase(LexCurTok.Text) = 'DEFAULT') Then
+          Begin
+            E := NewNode(ND_DEFAULT_LIT, 'DEFAULT', LexCurTok.Line,
+                         LexCurTok.Col);
+            Advance;
+          End
+          Else
+            E := ParseSqlExpr;
+          AddChild(Row, E);
+          If TokIs(TOK_COMMA) Then
+            Advance
+          Else
+            Break;
+        End;
+        If TokIs(TOK_RPAREN) Then
+          Advance
+        Else
+          ParseError(') attendu apres VALUES (...)');
+        AddChild(Vals, Row);
+      End
+      Else
+        Break;
+
+      If TokIs(TOK_COMMA) Then
+        Advance
+      Else
+        Break;
+    Until Not ParseOk;
+
+    AddChild(Ins, Vals);
+  End
+  Else If (LexCurTok.Kind = TOK_IDENT) And
+          (StrUpperCase(LexCurTok.Text) = 'DEFAULT') Then
+  Begin
+    { DEFAULT VALUES }
+    Advance;
+    If KwIs(KW_VALUES) Then
+      Advance
+    Else
+      ParseError('VALUES attendu apres DEFAULT');
+    N := NewNode(ND_DEFAULT_VALUES, 'DEFAULT VALUES', LexCurTok.Line,
+                 LexCurTok.Col);
+    AddChild(Ins, N);
+  End
+  Else If KwIs(KW_SELECT) Or KwIs(KW_WITH) Then
+  Begin
+    { INSERT INTO table SELECT ... }
+    Sub := ParseSelectStmt;
+    AddChild(Ins, Sub);
+  End
+  Else If KwIs(KW_EXEC) Or KwIs(KW_EXECUTE) Then
+  Begin
+    { INSERT INTO table EXEC procedure }
+    N := NewNode(ND_EXEC_INSERT, LexCurTok.Text, LexCurTok.Line,
+                 LexCurTok.Col);
+    Advance; { skip EXEC/EXECUTE }
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+    Begin
+      ASTPool[N].Text := 'EXEC ' + LexCurTok.Text;
+      Advance;
+      { Arguments optionnels }
+      While ParseOk And (Not TokIs(TOK_SEMICOL)) And
+            (Not TokIs(TOK_EOF)) And (Not KwIs(KW_OUTPUT)) Do
+      Begin
+        E := ParseSqlExpr;
+        AddChild(N, E);
+        If TokIs(TOK_COMMA) Then
+          Advance
+        Else
+          Break;
+      End;
+    End
+    Else If TokIs(TOK_LPAREN) Then
+    Begin
+      { EXEC('dynamic SQL') }
+      ASTPool[N].Text := 'EXEC';
+      Advance;
+      E := ParseSqlExpr;
+      AddChild(N, E);
+      If TokIs(TOK_RPAREN) Then Advance;
+    End;
+    AddChild(Ins, N);
+  End;
+
+  { OUTPUT clause finale optionnelle (si pas deja parsee) }
+  If KwIs(KW_OUTPUT) Then
+  Begin
+    N := ParseOutputClause;
+    AddChild(Ins, N);
+  End;
+
+  ParseInsertStmt := Ins;
+End;
+
+{ ---- ParseUpdateStmt ----------------------------------------- }
+{ UPDATE [TOP(n)] table SET col=expr,... [OUTPUT ...] [FROM ...] }
+{   [WHERE ...] }
+
+Function ParseUpdateStmt : Integer;
+Var
+  Upd, Tbl, SetC, Item, E, N, Sub : Integer;
+Begin
+  ParseUpdateStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_UPDATE) Then
+  Begin
+    ParseError('UPDATE attendu');
+    Exit;
+  End;
+
+  Upd := NewNode(ND_UPDATE_STMT, 'UPDATE', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip UPDATE }
+
+  { TOP (n) optionnel }
+  If KwIs(KW_TOP) Then
+  Begin
+    Advance;
+    N := NewNode(ND_TOP_CLAUSE, 'TOP', LexCurTok.Line, LexCurTok.Col);
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      Advance;
+      E := ParseSqlExpr;
+      AddChild(N, E);
+      If TokIs(TOK_RPAREN) Then
+        Advance
+      Else
+        ParseError(') attendu apres TOP(n)');
+    End
+    Else
+    Begin
+      E := ParseSqlExpr;
+      AddChild(N, E);
+    End;
+    If KwIs(KW_PERCENT) Then
+    Begin
+      ASTPool[N].Text := 'TOP PERCENT';
+      Advance;
+    End;
+    AddChild(Upd, N);
+  End;
+
+  { Nom de la table cible }
+  Tbl := ParseTableName;
+  AddChild(Upd, Tbl);
+
+  { SET clause }
+  If Not KwIs(KW_SET) Then
+  Begin
+    ParseError('SET attendu apres UPDATE table');
+    ParseUpdateStmt := Upd;
+    Exit;
+  End;
+  Advance; { skip SET }
+
+  SetC := NewNode(ND_SET_CLAUSE, 'SET', LexCurTok.Line, LexCurTok.Col);
+
+  Repeat
+    { colonne = expression }
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Or
+       (LexCurTok.Kind = TOK_VARIABLE) Then
+    Begin
+      Item := NewNode(ND_SET_ITEM, LexCurTok.Text, LexCurTok.Line,
+                      LexCurTok.Col);
+      Advance;
+      { dotted : table.col }
+      If TokIs(TOK_DOT) Then
+      Begin
+        Advance;
+        If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+           (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+        Begin
+          ASTPool[Item].Text := ASTPool[Item].Text + '.' + LexCurTok.Text;
+          Advance;
+        End;
+      End;
+      { Operateurs d assignation : =, +=, -=, *=, /=, %=, &=, |=, ^= }
+      If TokIs(TOK_EQ) Then
+        Advance
+      Else
+      Begin
+        { Supporter +=, -=, etc. (combines en un seul token ou 2) }
+        If (LexCurTok.Kind = TOK_PLUS) Or (LexCurTok.Kind = TOK_MINUS) Or
+           (LexCurTok.Kind = TOK_STAR) Or (LexCurTok.Kind = TOK_SLASH) Or
+           (LexCurTok.Kind = TOK_PERCENT) Then
+        Begin
+          ASTPool[Item].Text := ASTPool[Item].Text + ' ' + LexCurTok.Text;
+          Advance;
+          If TokIs(TOK_EQ) Then
+            Advance;
+        End
+        Else
+          ParseError('= attendu dans SET colonne = expression');
+      End;
+      { Valeur }
+      E := ParseSqlExpr;
+      AddChild(Item, E);
+      AddChild(SetC, Item);
+    End
+    Else
+    Begin
+      ParseError('colonne attendue dans SET');
+      Break;
+    End;
+
+    If TokIs(TOK_COMMA) Then
+      Advance
+    Else
+      Break;
+  Until Not ParseOk;
+
+  AddChild(Upd, SetC);
+
+  { OUTPUT clause optionnelle }
+  If KwIs(KW_OUTPUT) Then
+  Begin
+    N := ParseOutputClause;
+    AddChild(Upd, N);
+  End;
+
+  { FROM clause optionnelle (UPDATE ... SET ... FROM ...) }
+  If KwIs(KW_FROM) Then
+  Begin
+    Advance;
+    Sub := NewNode(ND_FROM_CLAUSE, 'FROM', LexCurTok.Line, LexCurTok.Col);
+    N := ParseTableName;
+    AddChild(Sub, N);
+
+    { Jointures optionnelles dans FROM }
+    While ParseOk And
+          (KwIs(KW_JOIN) Or KwIs(KW_INNER) Or KwIs(KW_LEFT) Or
+           KwIs(KW_RIGHT) Or KwIs(KW_FULL) Or KwIs(KW_CROSS)) Do
+    Begin
+      Item := NewNode(ND_JOIN, '', LexCurTok.Line, LexCurTok.Col);
+      { Determiner le type de jointure }
+      If KwIs(KW_INNER) Then
+      Begin
+        ASTPool[Item].Text := 'INNER JOIN';
+        Advance;
+        If KwIs(KW_JOIN) Then Advance;
+      End
+      Else If KwIs(KW_LEFT) Then
+      Begin
+        ASTPool[Item].Text := 'LEFT JOIN';
+        Advance;
+        If KwIs(KW_OUTER) Then Advance;
+        If KwIs(KW_JOIN) Then Advance;
+      End
+      Else If KwIs(KW_RIGHT) Then
+      Begin
+        ASTPool[Item].Text := 'RIGHT JOIN';
+        Advance;
+        If KwIs(KW_OUTER) Then Advance;
+        If KwIs(KW_JOIN) Then Advance;
+      End
+      Else If KwIs(KW_FULL) Then
+      Begin
+        ASTPool[Item].Text := 'FULL JOIN';
+        Advance;
+        If KwIs(KW_OUTER) Then Advance;
+        If KwIs(KW_JOIN) Then Advance;
+      End
+      Else If KwIs(KW_CROSS) Then
+      Begin
+        ASTPool[Item].Text := 'CROSS JOIN';
+        Advance;
+        If KwIs(KW_JOIN) Then Advance;
+      End
+      Else If KwIs(KW_JOIN) Then
+      Begin
+        ASTPool[Item].Text := 'JOIN';
+        Advance;
+      End;
+      { Table de jointure }
+      N := ParseTableName;
+      AddChild(Item, N);
+      { ON condition }
+      If KwIs(KW_ON) Then
+      Begin
+        Advance;
+        E := ParseSqlExpr;
+        AddChild(Item, E);
+      End;
+      AddChild(Sub, Item);
+    End;
+
+    AddChild(Upd, Sub);
+  End;
+
+  { WHERE clause optionnelle }
+  If KwIs(KW_WHERE) Then
+  Begin
+    Advance;
+    N := NewNode(ND_WHERE_CLAUSE, 'WHERE', LexCurTok.Line, LexCurTok.Col);
+    E := ParseSqlExpr;
+    AddChild(N, E);
+    AddChild(Upd, N);
+  End;
+
+  ParseUpdateStmt := Upd;
+End;
+
+{ ---- ParseDeleteStmt ----------------------------------------- }
+{ DELETE [TOP(n)] [FROM] table [OUTPUT ...] [FROM ...] [WHERE ...] }
+
+Function ParseDeleteStmt : Integer;
+Var
+  Del, Tbl, N, E, Sub, Item : Integer;
+Begin
+  ParseDeleteStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_DELETE) Then
+  Begin
+    ParseError('DELETE attendu');
+    Exit;
+  End;
+
+  Del := NewNode(ND_DELETE_STMT, 'DELETE', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip DELETE }
+
+  { TOP (n) optionnel }
+  If KwIs(KW_TOP) Then
+  Begin
+    Advance;
+    N := NewNode(ND_TOP_CLAUSE, 'TOP', LexCurTok.Line, LexCurTok.Col);
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      Advance;
+      E := ParseSqlExpr;
+      AddChild(N, E);
+      If TokIs(TOK_RPAREN) Then
+        Advance
+      Else
+        ParseError(') attendu apres TOP(n)');
+    End
+    Else
+    Begin
+      E := ParseSqlExpr;
+      AddChild(N, E);
+    End;
+    If KwIs(KW_PERCENT) Then
+    Begin
+      ASTPool[N].Text := 'TOP PERCENT';
+      Advance;
+    End;
+    AddChild(Del, N);
+  End;
+
+  { FROM optionnel (DELETE FROM table ou DELETE table) }
+  If KwIs(KW_FROM) Then
+    Advance;
+
+  { Nom de la table cible }
+  Tbl := ParseTableName;
+  AddChild(Del, Tbl);
+
+  { Table hint WITH (...) optionnel }
+  If KwIs(KW_WITH) Then
+  Begin
+    Advance;
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      N := NewNode(ND_TABLE_HINT, '', LexCurTok.Line, LexCurTok.Col);
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        ASTPool[N].Text := StrUpperCase(LexCurTok.Text);
+        Advance;
+      End;
+      If TokIs(TOK_RPAREN) Then Advance;
+      AddChild(Del, N);
+    End;
+  End;
+
+  { OUTPUT clause optionnelle }
+  If KwIs(KW_OUTPUT) Then
+  Begin
+    N := ParseOutputClause;
+    AddChild(Del, N);
+  End;
+
+  { FROM clause optionnelle (DELETE ... FROM ... JOIN ...) }
+  If KwIs(KW_FROM) Then
+  Begin
+    Advance;
+    Sub := NewNode(ND_FROM_CLAUSE, 'FROM', LexCurTok.Line, LexCurTok.Col);
+    N := ParseTableName;
+    AddChild(Sub, N);
+
+    { Jointures dans FROM }
+    While ParseOk And
+          (KwIs(KW_JOIN) Or KwIs(KW_INNER) Or KwIs(KW_LEFT) Or
+           KwIs(KW_RIGHT) Or KwIs(KW_FULL) Or KwIs(KW_CROSS)) Do
+    Begin
+      Item := NewNode(ND_JOIN, '', LexCurTok.Line, LexCurTok.Col);
+      If KwIs(KW_INNER) Then
+      Begin
+        ASTPool[Item].Text := 'INNER JOIN';
+        Advance;
+        If KwIs(KW_JOIN) Then Advance;
+      End
+      Else If KwIs(KW_LEFT) Then
+      Begin
+        ASTPool[Item].Text := 'LEFT JOIN';
+        Advance;
+        If KwIs(KW_OUTER) Then Advance;
+        If KwIs(KW_JOIN) Then Advance;
+      End
+      Else If KwIs(KW_RIGHT) Then
+      Begin
+        ASTPool[Item].Text := 'RIGHT JOIN';
+        Advance;
+        If KwIs(KW_OUTER) Then Advance;
+        If KwIs(KW_JOIN) Then Advance;
+      End
+      Else If KwIs(KW_FULL) Then
+      Begin
+        ASTPool[Item].Text := 'FULL JOIN';
+        Advance;
+        If KwIs(KW_OUTER) Then Advance;
+        If KwIs(KW_JOIN) Then Advance;
+      End
+      Else If KwIs(KW_CROSS) Then
+      Begin
+        ASTPool[Item].Text := 'CROSS JOIN';
+        Advance;
+        If KwIs(KW_JOIN) Then Advance;
+      End
+      Else If KwIs(KW_JOIN) Then
+      Begin
+        ASTPool[Item].Text := 'JOIN';
+        Advance;
+      End;
+      N := ParseTableName;
+      AddChild(Item, N);
+      If KwIs(KW_ON) Then
+      Begin
+        Advance;
+        E := ParseSqlExpr;
+        AddChild(Item, E);
+      End;
+      AddChild(Sub, Item);
+    End;
+
+    AddChild(Del, Sub);
+  End;
+
+  { WHERE clause optionnelle }
+  If KwIs(KW_WHERE) Then
+  Begin
+    Advance;
+    N := NewNode(ND_WHERE_CLAUSE, 'WHERE', LexCurTok.Line, LexCurTok.Col);
+    E := ParseSqlExpr;
+    AddChild(N, E);
+    AddChild(Del, N);
+  End;
+
+  ParseDeleteStmt := Del;
+End;
+
+{ ---- ParseTruncateStmt --------------------------------------- }
+{ TRUNCATE TABLE table_name                                       }
+
+Function ParseTruncateStmt : Integer;
+Var
+  N, Tbl : Integer;
+Begin
+  ParseTruncateStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_TRUNCATE) Then
+  Begin
+    ParseError('TRUNCATE attendu');
+    Exit;
+  End;
+
+  N := NewNode(ND_TRUNCATE_STMT, 'TRUNCATE TABLE', LexCurTok.Line,
+               LexCurTok.Col);
+  Advance; { skip TRUNCATE }
+
+  { TABLE optionnel (TRUNCATE TABLE est la syntaxe standard) }
+  If KwIs(KW_TABLE) Then
+    Advance;
+
+  { Nom de la table }
+  Tbl := ParseTableName;
+  AddChild(N, Tbl);
+
+  ParseTruncateStmt := N;
+End;
+
+{ ---- ParseMergeStmt ------------------------------------------ }
+{ MERGE [INTO] target [AS alias]                                   }
+{   USING source [AS alias] ON condition                           }
+{   WHEN MATCHED [AND condition] THEN UPDATE SET ...               }
+{   WHEN NOT MATCHED [BY TARGET] [AND cond] THEN INSERT ...       }
+{   WHEN NOT MATCHED BY SOURCE [AND cond] THEN DELETE              }
+{   [OUTPUT ...]                                                   }
+
+Function ParseMergeStmt : Integer;
+Var
+  Mrg, Tbl, Src, W, N, E, Sub, SetC, Item, Vals, Row : Integer;
+  WhenText : TString;
+Begin
+  ParseMergeStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_MERGE) Then
+  Begin
+    ParseError('MERGE attendu');
+    Exit;
+  End;
+
+  Mrg := NewNode(ND_MERGE_STMT, 'MERGE', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip MERGE }
+
+  { TOP (n) optionnel }
+  If KwIs(KW_TOP) Then
+  Begin
+    Advance;
+    N := NewNode(ND_TOP_CLAUSE, 'TOP', LexCurTok.Line, LexCurTok.Col);
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      Advance;
+      E := ParseSqlExpr;
+      AddChild(N, E);
+      If TokIs(TOK_RPAREN) Then
+        Advance
+      Else
+        ParseError(') attendu apres TOP(n)');
+    End
+    Else
+    Begin
+      E := ParseSqlExpr;
+      AddChild(N, E);
+    End;
+    AddChild(Mrg, N);
+  End;
+
+  { INTO optionnel }
+  If KwIs(KW_INTO) Then
+    Advance;
+
+  { Table cible }
+  Tbl := ParseTableName;
+  AddChild(Mrg, Tbl);
+
+  { USING source }
+  If Not KwIs(KW_USING) Then
+  Begin
+    ParseError('USING attendu apres MERGE INTO table');
+    ParseMergeStmt := Mrg;
+    Exit;
+  End;
+  Advance; { skip USING }
+
+  { Source : table ou sous-requete }
+  If TokIs(TOK_LPAREN) Then
+  Begin
+    { Sous-requete comme source }
+    Advance;
+    Sub := ParseSelectStmt;
+    Src := NewNode(ND_SUBQUERY, 'USING', LexCurTok.Line, LexCurTok.Col);
+    AddChild(Src, Sub);
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu apres sous-requete USING');
+    { Alias optionnel }
+    If KwIs(KW_AS) Then
+    Begin
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        ASTPool[Src].Text := 'USING AS ' + LexCurTok.Text;
+        Advance;
+      End;
+    End
+    Else If (LexCurTok.Kind = TOK_IDENT) And (Not KwIs(KW_ON)) Then
+    Begin
+      ASTPool[Src].Text := 'USING AS ' + LexCurTok.Text;
+      Advance;
+    End;
+    AddChild(Mrg, Src);
+  End
+  Else
+  Begin
+    Src := ParseTableName;
+    AddChild(Mrg, Src);
+  End;
+
+  { ON condition }
+  If Not KwIs(KW_ON) Then
+  Begin
+    ParseError('ON attendu apres MERGE ... USING ...');
+    ParseMergeStmt := Mrg;
+    Exit;
+  End;
+  Advance; { skip ON }
+  E := ParseSqlExpr;
+  N := NewNode(ND_COMPARE, 'ON', LexCurTok.Line, LexCurTok.Col);
+  AddChild(N, E);
+  AddChild(Mrg, N);
+
+  { WHEN clauses (une ou plusieurs) }
+  While KwIs(KW_WHEN) And ParseOk Do
+  Begin
+    W := NewNode(ND_MERGE_WHEN, '', LexCurTok.Line, LexCurTok.Col);
+    Advance; { skip WHEN }
+
+    WhenText := 'WHEN ';
+
+    { MATCHED | NOT MATCHED [BY TARGET|SOURCE] }
+    If KwIs(KW_NOT) Then
+    Begin
+      WhenText := WhenText + 'NOT ';
+      Advance;
+    End;
+
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      If StrUpperCase(LexCurTok.Text) = 'MATCHED' Then
+      Begin
+        WhenText := WhenText + 'MATCHED';
+        Advance;
+        { BY TARGET | BY SOURCE }
+        If KwIs(KW_BY) Then
+        Begin
+          Advance;
+          If (LexCurTok.Kind = TOK_IDENT) Or
+             (LexCurTok.Kind = TOK_KEYWORD) Then
+          Begin
+            WhenText := WhenText + ' BY ' + StrUpperCase(LexCurTok.Text);
+            Advance;
+          End;
+        End;
+      End
+      Else
+      Begin
+        WhenText := WhenText + StrUpperCase(LexCurTok.Text);
+        Advance;
+      End;
+    End;
+
+    ASTPool[W].Text := WhenText;
+
+    { AND condition optionnelle }
+    If KwIs(KW_AND) Then
+    Begin
+      Advance;
+      E := ParseSqlExpr;
+      AddChild(W, E);
+    End;
+
+    { THEN action }
+    If KwIs(KW_THEN) Then
+      Advance
+    Else
+      ParseError('THEN attendu dans clause WHEN');
+
+    { Action : UPDATE SET ... | INSERT [(cols)] VALUES (...) | DELETE }
+    If KwIs(KW_UPDATE) Then
+    Begin
+      Advance; { skip UPDATE }
+      If KwIs(KW_SET) Then
+        Advance; { skip SET }
+      SetC := NewNode(ND_SET_CLAUSE, 'UPDATE SET', LexCurTok.Line,
+                      LexCurTok.Col);
+      Repeat
+        If (LexCurTok.Kind = TOK_IDENT) Or
+           (LexCurTok.Kind = TOK_KEYWORD) Or
+           (LexCurTok.Kind = TOK_DELIM_IDENT) Or
+           (LexCurTok.Kind = TOK_VARIABLE) Then
+        Begin
+          Item := NewNode(ND_SET_ITEM, LexCurTok.Text, LexCurTok.Line,
+                          LexCurTok.Col);
+          Advance;
+          { dotted reference }
+          If TokIs(TOK_DOT) Then
+          Begin
+            Advance;
+            If (LexCurTok.Kind = TOK_IDENT) Or
+               (LexCurTok.Kind = TOK_KEYWORD) Or
+               (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+            Begin
+              ASTPool[Item].Text := ASTPool[Item].Text + '.' +
+                                    LexCurTok.Text;
+              Advance;
+            End;
+          End;
+          If TokIs(TOK_EQ) Then Advance;
+          E := ParseSqlExpr;
+          AddChild(Item, E);
+          AddChild(SetC, Item);
+        End
+        Else
+          Break;
+        If TokIs(TOK_COMMA) Then
+          Advance
+        Else
+          Break;
+      Until Not ParseOk;
+      AddChild(W, SetC);
+    End
+    Else If KwIs(KW_INSERT) Then
+    Begin
+      Advance; { skip INSERT }
+      Sub := NewNode(ND_INSERT_STMT, 'MERGE INSERT', LexCurTok.Line,
+                     LexCurTok.Col);
+      { Liste de colonnes optionnelle }
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        N := ParseColList;
+        AddChild(Sub, N);
+      End;
+      { VALUES (...) }
+      If KwIs(KW_VALUES) Then
+      Begin
+        Advance;
+        If TokIs(TOK_LPAREN) Then
+        Begin
+          Vals := NewNode(ND_VALUES_CLAUSE, 'VALUES', LexCurTok.Line,
+                          LexCurTok.Col);
+          Row := NewNode(ND_VALUES_ROW, '', LexCurTok.Line, LexCurTok.Col);
+          Advance; { skip ( }
+          While ParseOk And (Not TokIs(TOK_RPAREN)) And
+                (Not TokIs(TOK_EOF)) Do
+          Begin
+            If (LexCurTok.Kind = TOK_IDENT) And
+               (StrUpperCase(LexCurTok.Text) = 'DEFAULT') Then
+            Begin
+              E := NewNode(ND_DEFAULT_LIT, 'DEFAULT', LexCurTok.Line,
+                           LexCurTok.Col);
+              Advance;
+            End
+            Else
+              E := ParseSqlExpr;
+            AddChild(Row, E);
+            If TokIs(TOK_COMMA) Then
+              Advance
+            Else
+              Break;
+          End;
+          If TokIs(TOK_RPAREN) Then Advance;
+          AddChild(Vals, Row);
+          AddChild(Sub, Vals);
+        End;
+      End
+      Else If (LexCurTok.Kind = TOK_IDENT) And
+              (StrUpperCase(LexCurTok.Text) = 'DEFAULT') Then
+      Begin
+        Advance;
+        If KwIs(KW_VALUES) Then Advance;
+        N := NewNode(ND_DEFAULT_VALUES, 'DEFAULT VALUES', LexCurTok.Line,
+                     LexCurTok.Col);
+        AddChild(Sub, N);
+      End;
+      AddChild(W, Sub);
+    End
+    Else If KwIs(KW_DELETE) Then
+    Begin
+      N := NewNode(ND_DELETE_STMT, 'MERGE DELETE', LexCurTok.Line,
+                   LexCurTok.Col);
+      Advance; { skip DELETE }
+      AddChild(W, N);
+    End;
+
+    AddChild(Mrg, W);
+  End;
+
+  { OUTPUT clause optionnelle }
+  If KwIs(KW_OUTPUT) Then
+  Begin
+    N := ParseOutputClause;
+    AddChild(Mrg, N);
+  End;
+
+  { Point-virgule optionnel (MERGE requiert ; en SQL Server) }
+  If TokIs(TOK_SEMICOL) Then
+    Advance;
+
+  ParseMergeStmt := Mrg;
+End;
+
 { ---- Execution d une requete SQL ----------------------------- }
 
 Procedure ExecuteQuery(Const SQL : TString);
@@ -6846,9 +7988,19 @@ Begin
   LexInit(SQL);
   LexNextToken;
   ASTInit;
-  { Detecter si c est un SELECT }
+  { Detecter le type d instruction }
   If KwIs(KW_SELECT) Or KwIs(KW_WITH) Then
     Root := ParseSelectStmt
+  Else If KwIs(KW_INSERT) Then
+    Root := ParseInsertStmt
+  Else If KwIs(KW_UPDATE) Then
+    Root := ParseUpdateStmt
+  Else If KwIs(KW_DELETE) Then
+    Root := ParseDeleteStmt
+  Else If KwIs(KW_TRUNCATE) Then
+    Root := ParseTruncateStmt
+  Else If KwIs(KW_MERGE) Then
+    Root := ParseMergeStmt
   Else
     Root := ParseSqlExpr;
   If ParseOk And (Root >= 0) Then
