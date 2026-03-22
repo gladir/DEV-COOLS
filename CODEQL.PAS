@@ -241,6 +241,18 @@
       detection des fichiers .py et .pyw,
       integration dans database create avec --language=python.
       [IMPLEMENTE]
+   33. Implementer le support du langage Ruby : lexeur Ruby
+       (mots-cles Ruby BEGIN/END/alias/and/begin/break/case/class/
+       def/defined?/do/else/elsif/end/ensure/false/for/if/in/
+       module/next/nil/not/or/redo/rescue/retry/return/self/super/
+       then/true/undef/unless/until/when/while/yield),
+       parseur Ruby (require, include, module, class, def, blocks,
+       if/elsif/else/unless, while/until, for/in, case/when,
+       begin/rescue/ensure/retry, yield, lambda, proc,
+       attr_reader/attr_writer/attr_accessor),
+       detection des fichiers .rb et .rbw,
+       integration dans database create avec --language=ruby.
+       [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -570,7 +582,16 @@ Type
     SNK_PY_RAISE, SNK_PY_WITH,
     SNK_PY_ASSERT, SNK_PY_YIELD,
     SNK_PY_DEL, SNK_PY_GLOBAL,
-    SNK_PY_LAMBDA, SNK_PY_FOR_IN
+    SNK_PY_LAMBDA, SNK_PY_FOR_IN,
+    { Ruby node kinds }
+    SNK_RB_TRANSLATION_UNIT, SNK_RB_REQUIRE,
+    SNK_RB_MODULE_DECL, SNK_RB_CLASS_DECL,
+    SNK_RB_METHOD_DECL, SNK_RB_BLOCK,
+    SNK_RB_IF, SNK_RB_UNLESS,
+    SNK_RB_WHILE, SNK_RB_UNTIL,
+    SNK_RB_FOR_IN, SNK_RB_CASE_WHEN,
+    SNK_RB_BEGIN_RESCUE, SNK_RB_YIELD,
+    SNK_RB_LAMBDA, SNK_RB_ASSIGNMENT
   );
 
   TSrcASTNode = Record
@@ -1309,7 +1330,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1584,8 +1605,9 @@ Begin
   If (Opts.Language <> 'pascal') And (Opts.Language <> 'c') And
      (Opts.Language <> 'cpp') And (Opts.Language <> 'csharp') And
      (Opts.Language <> 'go') And (Opts.Language <> 'java') And
-     (Opts.Language <> 'javascript') And (Opts.Language <> 'python') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript ou python)');
+     (Opts.Language <> 'javascript') And (Opts.Language <> 'python') And
+     (Opts.Language <> 'ruby') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python ou ruby)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -5844,6 +5866,23 @@ Begin
     SNK_PY_GLOBAL             : SrcNodeKindName := 'PY_GLOBAL';
     SNK_PY_LAMBDA             : SrcNodeKindName := 'PY_LAMBDA';
     SNK_PY_FOR_IN             : SrcNodeKindName := 'PY_FOR_IN';
+    { Ruby }
+    SNK_RB_TRANSLATION_UNIT   : SrcNodeKindName := 'RB_TRANSLATION_UNIT';
+    SNK_RB_REQUIRE            : SrcNodeKindName := 'RB_REQUIRE';
+    SNK_RB_MODULE_DECL        : SrcNodeKindName := 'RB_MODULE_DECL';
+    SNK_RB_CLASS_DECL         : SrcNodeKindName := 'RB_CLASS_DECL';
+    SNK_RB_METHOD_DECL        : SrcNodeKindName := 'RB_METHOD_DECL';
+    SNK_RB_BLOCK              : SrcNodeKindName := 'RB_BLOCK';
+    SNK_RB_IF                 : SrcNodeKindName := 'RB_IF';
+    SNK_RB_UNLESS             : SrcNodeKindName := 'RB_UNLESS';
+    SNK_RB_WHILE              : SrcNodeKindName := 'RB_WHILE';
+    SNK_RB_UNTIL              : SrcNodeKindName := 'RB_UNTIL';
+    SNK_RB_FOR_IN             : SrcNodeKindName := 'RB_FOR_IN';
+    SNK_RB_CASE_WHEN          : SrcNodeKindName := 'RB_CASE_WHEN';
+    SNK_RB_BEGIN_RESCUE       : SrcNodeKindName := 'RB_BEGIN_RESCUE';
+    SNK_RB_YIELD              : SrcNodeKindName := 'RB_YIELD';
+    SNK_RB_LAMBDA             : SrcNodeKindName := 'RB_LAMBDA';
+    SNK_RB_ASSIGNMENT         : SrcNodeKindName := 'RB_ASSIGNMENT';
   Else
     SrcNodeKindName := '???';
   End;
@@ -22012,6 +22051,1082 @@ End;
 
 { ---- Fin TODO 32 --------------------------------------------- }
 
+{ ============================================================
+  TODO 33 - SUPPORT DU LANGAGE RUBY [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsRubyKeyword : tester si un mot est un mot-cle Ruby --- }
+
+Function IsRubyKeyword(Const W : TString) : Boolean;
+Begin
+  IsRubyKeyword :=
+    (W = 'BEGIN')     Or (W = 'END')        Or (W = 'alias')     Or
+    (W = 'and')       Or (W = 'begin')      Or (W = 'break')     Or
+    (W = 'case')      Or (W = 'class')      Or (W = 'def')       Or
+    (W = 'defined?')  Or (W = 'do')         Or (W = 'else')      Or
+    (W = 'elsif')     Or (W = 'end')        Or (W = 'ensure')    Or
+    (W = 'false')     Or (W = 'for')        Or (W = 'if')        Or
+    (W = 'in')        Or (W = 'module')     Or (W = 'next')      Or
+    (W = 'nil')       Or (W = 'not')        Or (W = 'or')        Or
+    (W = 'redo')      Or (W = 'rescue')     Or (W = 'retry')     Or
+    (W = 'return')    Or (W = 'self')       Or (W = 'super')     Or
+    (W = 'then')      Or (W = 'true')       Or (W = 'undef')     Or
+    (W = 'unless')    Or (W = 'until')      Or (W = 'when')      Or
+    (W = 'while')     Or (W = 'yield')      Or (W = '__FILE__')  Or
+    (W = '__LINE__')  Or (W = '__ENCODING__');
+End;
+
+{ ---- RbLexScanIdent : scanner un identificateur Ruby --------- }
+
+Procedure RbLexScanIdent;
+Var S : TString;
+Begin
+  S := '';
+  While (SrcColNo <= Length(SrcLine)) And
+        (IsIdentCont(SrcLine[SrcColNo]) Or (SrcLine[SrcColNo] = '_')) Do
+  Begin
+    If Length(S) < 255 Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  { Ruby permet ? et ! a la fin des identifiants de methode }
+  If (SrcColNo <= Length(SrcLine)) And
+     ((SrcLine[SrcColNo] = '?') Or (SrcLine[SrcColNo] = '!')) Then
+  Begin
+    If Length(S) < 255 Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  If IsRubyKeyword(S) Then
+    SrcToken.Kind := STK_KEYWORD
+  Else
+    SrcToken.Kind := STK_IDENT;
+  SrcToken.Val := S;
+End;
+
+{ ---- RbLexScanString : scanner une chaine Ruby --------------- }
+
+Procedure RbLexScanString;
+Var S     : TString;
+    Quote : Char;
+Begin
+  S := '';
+  Quote := SrcLine[SrcColNo];
+  Inc(SrcColNo);
+  If Quote = '''' Then
+  Begin
+    { Chaine simple : pas d interpolation, seuls \\ et \' }
+    While (SrcColNo <= Length(SrcLine)) And
+          (SrcLine[SrcColNo] <> '''') Do
+    Begin
+      If (SrcLine[SrcColNo] = '\') And
+         (SrcColNo + 1 <= Length(SrcLine)) And
+         ((SrcLine[SrcColNo + 1] = '\') Or
+          (SrcLine[SrcColNo + 1] = '''')) Then
+      Begin
+        Inc(SrcColNo);
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End
+      Else
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+    End;
+    If (SrcColNo <= Length(SrcLine)) And
+       (SrcLine[SrcColNo] = '''') Then
+      Inc(SrcColNo);
+  End
+  Else
+  Begin
+    { Chaine double : interpolation et escapes }
+    While (SrcColNo <= Length(SrcLine)) And
+          (SrcLine[SrcColNo] <> '"') Do
+    Begin
+      If SrcLine[SrcColNo] = '\' Then
+      Begin
+        Inc(SrcColNo);
+        If SrcColNo <= Length(SrcLine) Then
+        Begin
+          If Length(S) < 255 Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      Else
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+    End;
+    If (SrcColNo <= Length(SrcLine)) And
+       (SrcLine[SrcColNo] = '"') Then
+      Inc(SrcColNo);
+  End;
+  SrcToken.Kind := STK_STRING;
+  SrcToken.Val  := S;
+End;
+
+{ ---- RbLexInit : initialiser le lexeur Ruby ------------------ }
+
+Procedure RbLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- RbLexNextToken : scanner le prochain token Ruby --------- }
+
+Procedure RbLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      SrcToken.Line := SrcLineNo;
+      SrcToken.Col  := SrcColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    Scanning := False;
+
+    { Commentaire # (sauf #{ interpolation dans chaines) }
+    If Ch = '#' Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Commentaire multi-lignes =begin ... =end }
+    If (SrcColNo = 1) And (Length(SrcLine) >= 6) And
+       (Copy(SrcLine, 1, 6) = '=begin') Then
+    Begin
+      SrcLexNextLine;
+      While Not SrcEOF Do
+      Begin
+        If (Length(SrcLine) >= 4) And (Copy(SrcLine, 1, 4) = '=end') Then
+        Begin
+          SrcLexNextLine;
+          Break;
+        End;
+        SrcLexNextLine;
+      End;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Identificateurs et mots-cles }
+    If IsIdentStart(Ch) Or (Ch = '_') Then
+    Begin
+      RbLexScanIdent;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { Symboles :nom }
+    If (Ch = ':') And (SrcColNo + 1 <= Length(SrcLine)) And
+       (IsIdentStart(SrcLine[SrcColNo + 1]) Or
+        (SrcLine[SrcColNo + 1] = '_')) Then
+    Begin
+      Inc(SrcColNo);
+      S := ':';
+      While (SrcColNo <= Length(SrcLine)) And
+            (IsIdentCont(SrcLine[SrcColNo]) Or
+             (SrcLine[SrcColNo] = '_')) Do
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { Nombres }
+    If (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And
+            (((SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '9')) Or
+             (SrcLine[SrcColNo] = '.') Or (SrcLine[SrcColNo] = '_') Or
+             (SrcLine[SrcColNo] = 'e') Or (SrcLine[SrcColNo] = 'E') Or
+             (SrcLine[SrcColNo] = 'x') Or (SrcLine[SrcColNo] = 'X') Or
+             (SrcLine[SrcColNo] = 'b') Or (SrcLine[SrcColNo] = 'B') Or
+             (SrcLine[SrcColNo] = 'o') Or (SrcLine[SrcColNo] = 'O') Or
+             ((SrcLine[SrcColNo] >= 'a') And (SrcLine[SrcColNo] <= 'f')) Or
+             ((SrcLine[SrcColNo] >= 'A') And (SrcLine[SrcColNo] <= 'F'))) Do
+      Begin
+        If (SrcLine[SrcColNo] <> '_') And (Length(S) < 255) Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_INTEGER;
+      SrcToken.Val  := S;
+      Val(S, SrcToken.IntVal, SrcToken.IntVal);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { Chaines }
+    If (Ch = '''') Or (Ch = '"') Then
+    Begin
+      RbLexScanString;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { Variables globales $, d instance @ et de classe @@ }
+    If Ch = '$' Then
+    Begin
+      S := '$';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            (IsIdentCont(SrcLine[SrcColNo]) Or
+             (SrcLine[SrcColNo] = '_')) Do
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_IDENT;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+    If Ch = '@' Then
+    Begin
+      S := '@';
+      Inc(SrcColNo);
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '@') Then
+      Begin
+        S := '@@';
+        Inc(SrcColNo);
+      End;
+      While (SrcColNo <= Length(SrcLine)) And
+            (IsIdentCont(SrcLine[SrcColNo]) Or
+             (SrcLine[SrcColNo] = '_')) Do
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_IDENT;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { Operateurs multi-caracteres }
+    If (Ch = '=') Then
+    Begin
+      Inc(SrcColNo);
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '=') Then
+      Begin
+        Inc(SrcColNo);
+        If (SrcColNo <= Length(SrcLine)) And
+           (SrcLine[SrcColNo] = '=') Then
+        Begin
+          Inc(SrcColNo);
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '===';
+        End
+        Else
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '==';
+        End;
+      End
+      Else If (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] = '~') Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '=~';
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '=';
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '<') Then
+    Begin
+      Inc(SrcColNo);
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '=') Then
+      Begin
+        Inc(SrcColNo);
+        If (SrcColNo <= Length(SrcLine)) And
+           (SrcLine[SrcColNo] = '>') Then
+        Begin
+          Inc(SrcColNo);
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '<=>';
+        End
+        Else
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '<=';
+        End;
+      End
+      Else If (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] = '<') Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '<<';
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '<';
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '>') Then
+    Begin
+      Inc(SrcColNo);
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '=') Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '>=';
+      End
+      Else If (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] = '>') Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '>>';
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '>';
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '!') Then
+    Begin
+      Inc(SrcColNo);
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '=') Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '!=';
+      End
+      Else If (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] = '~') Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '!~';
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '!';
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '&') Then
+    Begin
+      Inc(SrcColNo);
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '&') Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '&&';
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '&';
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '|') Then
+    Begin
+      Inc(SrcColNo);
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '|') Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '||';
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '|';
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '*') Then
+    Begin
+      Inc(SrcColNo);
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '*') Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '**';
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '*';
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '.') Then
+    Begin
+      Inc(SrcColNo);
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '.') Then
+      Begin
+        Inc(SrcColNo);
+        If (SrcColNo <= Length(SrcLine)) And
+           (SrcLine[SrcColNo] = '.') Then
+        Begin
+          Inc(SrcColNo);
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '...';
+        End
+        Else
+        Begin
+          SrcToken.Kind := STK_OP;
+          SrcToken.Val  := '..';
+        End;
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '.';
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '-') Then
+    Begin
+      Inc(SrcColNo);
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '>') Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '->';
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '-';
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { Symboles simples }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+    Break;
+  End;
+End;
+
+{ ---- RbConsume : avancer d un token Ruby --------------------- }
+
+Procedure RbConsume;
+Begin
+  RbLexNextToken;
+End;
+
+{ ---- RbExpect : verifier et consommer un token --------------- }
+
+Function RbExpect(Const V : TString) : Boolean;
+Begin
+  If SrcToken.Val = V Then
+  Begin
+    RbConsume;
+    RbExpect := True;
+  End
+  Else
+    RbExpect := False;
+End;
+
+{ ---- RbSkipNewlines : ignorer les separateurs de ligne ------- }
+
+Procedure RbSkipNewlines;
+Begin
+  While (SrcToken.Kind = STK_OP) And
+        ((SrcToken.Val = ';') Or (SrcToken.Val = #10)) Do
+    RbConsume;
+End;
+
+{ ---- RbSkipUntilEnd : sauter jusqu a end/elsif/else/ensure/rescue/when -- }
+
+Procedure RbSkipUntilEnd;
+Var Depth : Integer;
+Begin
+  Depth := 1;
+  While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+  Begin
+    If (SrcToken.Kind = STK_KEYWORD) And
+       ((SrcToken.Val = 'if') Or (SrcToken.Val = 'unless') Or
+        (SrcToken.Val = 'while') Or (SrcToken.Val = 'until') Or
+        (SrcToken.Val = 'for') Or (SrcToken.Val = 'case') Or
+        (SrcToken.Val = 'begin') Or (SrcToken.Val = 'def') Or
+        (SrcToken.Val = 'class') Or (SrcToken.Val = 'module') Or
+        (SrcToken.Val = 'do')) Then
+      Inc(Depth)
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            (SrcToken.Val = 'end') Then
+      Dec(Depth);
+    If Depth > 0 Then
+      RbConsume;
+  End;
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'end') Then
+    RbConsume;
+End;
+
+{ ---- RbParseBlock : parser un bloc Ruby ---------------------- }
+
+Function RbParseBlock : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_RB_BLOCK);
+  SrcNodes[N].Name := 'block';
+  RbSkipUntilEnd;
+  RbParseBlock := N;
+End;
+
+{ ---- RbParseStatement : parser une instruction Ruby ---------- }
+
+Function RbParseStatement : Integer;
+Var N : Integer;
+Begin
+  RbSkipNewlines;
+  RbParseStatement := -1;
+
+  If SrcToken.Kind = STK_EOF Then Exit;
+
+  { require / require_relative / load }
+  If (SrcToken.Kind = STK_IDENT) And
+     ((SrcToken.Val = 'require') Or
+      (SrcToken.Val = 'require_relative') Or
+      (SrcToken.Val = 'load')) Then
+  Begin
+    N := SrcNewNode(SNK_RB_REQUIRE);
+    SrcNodes[N].Name := SrcToken.Val;
+    RbConsume;
+    If SrcToken.Kind = STK_STRING Then
+    Begin
+      SrcNodes[N].Name := SrcNodes[N].Name + ' ' + SrcToken.Val;
+      RbConsume;
+    End;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { include / extend / prepend }
+  If (SrcToken.Kind = STK_IDENT) And
+     ((SrcToken.Val = 'include') Or
+      (SrcToken.Val = 'extend') Or
+      (SrcToken.Val = 'prepend')) Then
+  Begin
+    N := SrcNewNode(SNK_RB_REQUIRE);
+    SrcNodes[N].Name := SrcToken.Val;
+    RbConsume;
+    If (SrcToken.Kind = STK_IDENT) Or
+       (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      SrcNodes[N].Name := SrcNodes[N].Name + ' ' + SrcToken.Val;
+      RbConsume;
+    End;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { attr_reader / attr_writer / attr_accessor }
+  If (SrcToken.Kind = STK_IDENT) And
+     ((SrcToken.Val = 'attr_reader') Or
+      (SrcToken.Val = 'attr_writer') Or
+      (SrcToken.Val = 'attr_accessor')) Then
+  Begin
+    N := SrcNewNode(SNK_RB_ASSIGNMENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    RbConsume;
+    While (SrcToken.Kind = STK_STRING) Or
+          (SrcToken.Kind = STK_IDENT) Or
+          ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ',')) Do
+      RbConsume;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { module }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'module') Then
+  Begin
+    N := SrcNewNode(SNK_RB_MODULE_DECL);
+    RbConsume;
+    If (SrcToken.Kind = STK_IDENT) Or
+       (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      RbConsume;
+      { Gerer les noms qualifies Module::Sous }
+      While (SrcToken.Kind = STK_OP) And
+            (SrcToken.Val = ':') Do
+      Begin
+        RbConsume;
+        If (SrcToken.Kind = STK_OP) And
+           (SrcToken.Val = ':') Then
+          RbConsume;
+        If (SrcToken.Kind = STK_IDENT) Or
+           (SrcToken.Kind = STK_KEYWORD) Then
+        Begin
+          SrcNodes[N].Name := SrcNodes[N].Name + '::' + SrcToken.Val;
+          RbConsume;
+        End;
+      End;
+    End;
+    N := SrcNewNode(SNK_RB_MODULE_DECL);
+    SrcNodes[N].Name := 'module';
+    SrcNodes[N].Left := RbParseBlock;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { class }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'class') Then
+  Begin
+    N := SrcNewNode(SNK_RB_CLASS_DECL);
+    RbConsume;
+    If (SrcToken.Kind = STK_IDENT) Or
+       (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      RbConsume;
+      { Heritage avec < }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+      Begin
+        RbConsume;
+        If (SrcToken.Kind = STK_IDENT) Or
+           (SrcToken.Kind = STK_KEYWORD) Then
+        Begin
+          SrcNodes[N].Name := SrcNodes[N].Name + ' < ' + SrcToken.Val;
+          RbConsume;
+        End;
+      End;
+    End;
+    SrcNodes[N].Left := RbParseBlock;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { def }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'def') Then
+  Begin
+    N := SrcNewNode(SNK_RB_METHOD_DECL);
+    RbConsume;
+    If (SrcToken.Kind = STK_IDENT) Or
+       (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      RbConsume;
+      { self.methode }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '.') Then
+      Begin
+        RbConsume;
+        If (SrcToken.Kind = STK_IDENT) Or
+           (SrcToken.Kind = STK_KEYWORD) Then
+        Begin
+          SrcNodes[N].Name := SrcNodes[N].Name + '.' + SrcToken.Val;
+          RbConsume;
+        End;
+      End;
+    End;
+    { Parametres optionnels entre parentheses }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+    Begin
+      RbConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 (SrcToken.Val = ')')) Do
+        RbConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+        RbConsume;
+    End;
+    SrcNodes[N].Left := RbParseBlock;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { if }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'if') Then
+  Begin
+    N := SrcNewNode(SNK_RB_IF);
+    SrcNodes[N].Name := 'if';
+    RbConsume;
+    { Condition }
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And
+               ((SrcToken.Val = 'then') Or
+                (SrcToken.Val = 'end') Or
+                (SrcToken.Val = 'else') Or
+                (SrcToken.Val = 'elsif'))) And
+          Not ((SrcToken.Kind = STK_OP) And
+               (SrcToken.Val = ';')) Do
+      RbConsume;
+    If (SrcToken.Kind = STK_KEYWORD) And
+       (SrcToken.Val = 'then') Then
+      RbConsume;
+    SrcNodes[N].Left := RbParseBlock;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { unless }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'unless') Then
+  Begin
+    N := SrcNewNode(SNK_RB_UNLESS);
+    SrcNodes[N].Name := 'unless';
+    RbConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And
+               ((SrcToken.Val = 'then') Or
+                (SrcToken.Val = 'end') Or
+                (SrcToken.Val = 'else'))) And
+          Not ((SrcToken.Kind = STK_OP) And
+               (SrcToken.Val = ';')) Do
+      RbConsume;
+    If (SrcToken.Kind = STK_KEYWORD) And
+       (SrcToken.Val = 'then') Then
+      RbConsume;
+    SrcNodes[N].Left := RbParseBlock;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { while }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'while') Then
+  Begin
+    N := SrcNewNode(SNK_RB_WHILE);
+    SrcNodes[N].Name := 'while';
+    RbConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And
+               ((SrcToken.Val = 'do') Or
+                (SrcToken.Val = 'end'))) And
+          Not ((SrcToken.Kind = STK_OP) And
+               (SrcToken.Val = ';')) Do
+      RbConsume;
+    If (SrcToken.Kind = STK_KEYWORD) And
+       (SrcToken.Val = 'do') Then
+      RbConsume;
+    SrcNodes[N].Left := RbParseBlock;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { until }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'until') Then
+  Begin
+    N := SrcNewNode(SNK_RB_UNTIL);
+    SrcNodes[N].Name := 'until';
+    RbConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And
+               ((SrcToken.Val = 'do') Or
+                (SrcToken.Val = 'end'))) And
+          Not ((SrcToken.Kind = STK_OP) And
+               (SrcToken.Val = ';')) Do
+      RbConsume;
+    If (SrcToken.Kind = STK_KEYWORD) And
+       (SrcToken.Val = 'do') Then
+      RbConsume;
+    SrcNodes[N].Left := RbParseBlock;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { for }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'for') Then
+  Begin
+    N := SrcNewNode(SNK_RB_FOR_IN);
+    SrcNodes[N].Name := 'for';
+    RbConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And
+               ((SrcToken.Val = 'do') Or
+                (SrcToken.Val = 'end'))) And
+          Not ((SrcToken.Kind = STK_OP) And
+               (SrcToken.Val = ';')) Do
+      RbConsume;
+    If (SrcToken.Kind = STK_KEYWORD) And
+       (SrcToken.Val = 'do') Then
+      RbConsume;
+    SrcNodes[N].Left := RbParseBlock;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { case }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'case') Then
+  Begin
+    N := SrcNewNode(SNK_RB_CASE_WHEN);
+    SrcNodes[N].Name := 'case';
+    RbConsume;
+    SrcNodes[N].Left := RbParseBlock;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { begin }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'begin') Then
+  Begin
+    N := SrcNewNode(SNK_RB_BEGIN_RESCUE);
+    SrcNodes[N].Name := 'begin';
+    RbConsume;
+    SrcNodes[N].Left := RbParseBlock;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { yield }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'yield') Then
+  Begin
+    N := SrcNewNode(SNK_RB_YIELD);
+    SrcNodes[N].Name := 'yield';
+    RbConsume;
+    { Argument optionnel }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+    Begin
+      RbConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 (SrcToken.Val = ')')) Do
+        RbConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+        RbConsume;
+    End;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { return / break / next / redo / retry }
+  If (SrcToken.Kind = STK_KEYWORD) And
+     ((SrcToken.Val = 'return') Or (SrcToken.Val = 'break') Or
+      (SrcToken.Val = 'next') Or (SrcToken.Val = 'redo') Or
+      (SrcToken.Val = 'retry')) Then
+  Begin
+    N := SrcNewNode(SNK_RB_YIELD);
+    SrcNodes[N].Name := SrcToken.Val;
+    RbConsume;
+    { Valeur de retour optionnelle }
+    While (SrcToken.Kind <> STK_EOF) And
+          (SrcToken.Kind <> STK_KEYWORD) And
+          Not ((SrcToken.Kind = STK_OP) And
+               ((SrcToken.Val = ';') Or (SrcToken.Val = #10))) Do
+      RbConsume;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { lambda -> brace or lambda do end }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '->') Then
+  Begin
+    N := SrcNewNode(SNK_RB_LAMBDA);
+    SrcNodes[N].Name := 'lambda';
+    RbConsume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+    Begin
+      RbConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 (SrcToken.Val = ')')) Do
+        RbConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+        RbConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+    Begin
+      RbConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 (SrcToken.Val = '}')) Do
+        RbConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+        RbConsume;
+    End
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            (SrcToken.Val = 'do') Then
+    Begin
+      RbConsume;
+      SrcNodes[N].Left := RbParseBlock;
+    End;
+    RbParseStatement := N;
+    Exit;
+  End;
+
+  { Mots-cles elsif, else, when, rescue, ensure, end : fin de bloc }
+  If (SrcToken.Kind = STK_KEYWORD) And
+     ((SrcToken.Val = 'elsif') Or (SrcToken.Val = 'else') Or
+      (SrcToken.Val = 'when') Or (SrcToken.Val = 'rescue') Or
+      (SrcToken.Val = 'ensure') Or (SrcToken.Val = 'end')) Then
+  Begin
+    RbParseStatement := -1;
+    Exit;
+  End;
+
+  { Expression ou assignation par defaut }
+  N := SrcNewNode(SNK_RB_ASSIGNMENT);
+  SrcNodes[N].Name := SrcToken.Val;
+  RbConsume;
+  { Consommer le reste de l instruction jusqu au prochain separateur }
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_KEYWORD) And
+             ((SrcToken.Val = 'if') Or (SrcToken.Val = 'unless') Or
+              (SrcToken.Val = 'while') Or (SrcToken.Val = 'until') Or
+              (SrcToken.Val = 'for') Or (SrcToken.Val = 'case') Or
+              (SrcToken.Val = 'begin') Or (SrcToken.Val = 'def') Or
+              (SrcToken.Val = 'class') Or (SrcToken.Val = 'module') Or
+              (SrcToken.Val = 'do') Or (SrcToken.Val = 'end') Or
+              (SrcToken.Val = 'elsif') Or (SrcToken.Val = 'else') Or
+              (SrcToken.Val = 'rescue') Or (SrcToken.Val = 'ensure') Or
+              (SrcToken.Val = 'when'))) And
+        Not ((SrcToken.Kind = STK_OP) And
+             (SrcToken.Val = ';')) Do
+  Begin
+    (* Gerer les blocs inline do...end et brace blocks *)
+    If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'do') Then
+    Begin
+      RbConsume;
+      RbParseBlock;
+      Break;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+    Begin
+      RbConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 (SrcToken.Val = '}')) Do
+        RbConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+        RbConsume;
+      Break;
+    End;
+    RbConsume;
+  End;
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+    RbConsume;
+  RbParseStatement := N;
+End;
+
+{ ---- RbParseTopLevel : parser un element top-level Ruby ------ }
+
+Function RbParseTopLevel : Integer;
+Begin
+  RbParseTopLevel := RbParseStatement;
+End;
+
+{ ---- RbParseTranslationUnit : parser un fichier Ruby complet - }
+
+Function RbParseTranslationUnit : Integer;
+Var Root, N, Last : Integer;
+Begin
+  RbConsume;
+  Root := SrcNewNode(SNK_RB_TRANSLATION_UNIT);
+  SrcNodes[Root].Name := 'RB_TU';
+  Last := -1;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    N := RbParseTopLevel;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End
+    Else
+    Begin
+      { Token non reconnu, avancer pour eviter boucle infinie }
+      If SrcToken.Kind <> STK_EOF Then
+        RbConsume;
+    End;
+  End;
+  RbParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 33 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -22094,6 +23209,14 @@ Begin
                     StrEndsWith(FName, '.pyw');
 End;
 
+{ ---- IsRubySource : verifier si le fichier est .rb ou .rbw --- }
+
+Function IsRubySource(Const FName : TString) : Boolean;
+Begin
+  IsRubySource := StrEndsWith(FName, '.rb') Or
+                   StrEndsWith(FName, '.rbw');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -22152,7 +23275,8 @@ Begin
          ((Opts.Language = 'go') And IsGoSource(SR.Name)) Or
          ((Opts.Language = 'java') And IsJavaSource(SR.Name)) Or
           ((Opts.Language = 'javascript') And IsJSSource(SR.Name)) Or
-          ((Opts.Language = 'python') And IsPythonSource(SR.Name)) Then
+          ((Opts.Language = 'python') And IsPythonSource(SR.Name)) Or
+           ((Opts.Language = 'ruby') And IsRubySource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -22267,6 +23391,12 @@ Begin
       PyLexInit;
       SrcASTInit;
       SrcRootNode := PyParseTranslationUnit;
+    End
+    Else If Opts.Language = 'ruby' Then
+    Begin
+      RbLexInit;
+      SrcASTInit;
+      SrcRootNode := RbParseTranslationUnit;
     End
     Else
     Begin
