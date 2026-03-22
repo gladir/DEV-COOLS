@@ -4,7 +4,7 @@
   @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
 }
 
-{ TODO - Liste des 25 points a implementer pour le clone de CodeQL :
+{ TODO - Liste des 26 points a implementer pour le clone de CodeQL :
 
   1.  Implementer l'infrastructure de base et les options de ligne de
       commande : sous-commandes (database create, database analyze,
