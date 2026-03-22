@@ -203,6 +203,19 @@
       detection des fichiers .go,
       integration dans database create avec --language=go.
       [IMPLEMENTE]
+  30. Implementer le support du langage Java : lexeur Java (mots-cles Java
+      abstract/assert/boolean/break/byte/case/catch/char/class/const/
+      continue/default/do/double/else/enum/extends/final/finally/float/
+      for/goto/if/implements/import/instanceof/int/interface/long/native/
+      new/package/private/protected/public/return/short/static/strictfp/
+      super/switch/synchronized/this/throw/throws/transient/try/void/
+      volatile/while),
+      parseur Java (packages, imports, classes, interfaces, enums,
+      annotations, methodes, constructeurs, champs, try/catch/finally,
+      for-each, switch, throw, synchronized, generics),
+      detection des fichiers .java,
+      integration dans database create avec --language=java.
+      [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -507,7 +520,15 @@ Type
     SNK_GO_STRUCT_DECL, SNK_GO_INTERFACE_DECL,
     SNK_GO_METHOD, SNK_GO_GOROUTINE,
     SNK_GO_CHANNEL, SNK_GO_SELECT,
-    SNK_GO_DEFER, SNK_GO_RANGE
+    SNK_GO_DEFER, SNK_GO_RANGE,
+    { Java node kinds }
+    SNK_JAVA_TRANSLATION_UNIT, SNK_JAVA_PACKAGE,
+    SNK_JAVA_IMPORT, SNK_JAVA_CLASS_DECL,
+    SNK_JAVA_INTERFACE_DECL, SNK_JAVA_ENUM_DECL,
+    SNK_JAVA_METHOD, SNK_JAVA_CONSTRUCTOR,
+    SNK_JAVA_FIELD, SNK_JAVA_ANNOTATION,
+    SNK_JAVA_TRY_CATCH, SNK_JAVA_THROW,
+    SNK_JAVA_SYNCHRONIZED, SNK_JAVA_FOREACH
   );
 
   TSrcASTNode = Record
@@ -1246,7 +1267,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1520,8 +1541,8 @@ Begin
 
   If (Opts.Language <> 'pascal') And (Opts.Language <> 'c') And
      (Opts.Language <> 'cpp') And (Opts.Language <> 'csharp') And
-     (Opts.Language <> 'go') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp ou go)');
+     (Opts.Language <> 'go') And (Opts.Language <> 'java') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go ou java)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -5735,6 +5756,20 @@ Begin
     SNK_GO_SELECT             : SrcNodeKindName := 'GO_SELECT';
     SNK_GO_DEFER              : SrcNodeKindName := 'GO_DEFER';
     SNK_GO_RANGE              : SrcNodeKindName := 'GO_RANGE';
+    SNK_JAVA_TRANSLATION_UNIT : SrcNodeKindName := 'JAVA_TRANSLATION_UNIT';
+    SNK_JAVA_PACKAGE          : SrcNodeKindName := 'JAVA_PACKAGE';
+    SNK_JAVA_IMPORT           : SrcNodeKindName := 'JAVA_IMPORT';
+    SNK_JAVA_CLASS_DECL       : SrcNodeKindName := 'JAVA_CLASS_DECL';
+    SNK_JAVA_INTERFACE_DECL   : SrcNodeKindName := 'JAVA_INTERFACE_DECL';
+    SNK_JAVA_ENUM_DECL        : SrcNodeKindName := 'JAVA_ENUM_DECL';
+    SNK_JAVA_METHOD           : SrcNodeKindName := 'JAVA_METHOD';
+    SNK_JAVA_CONSTRUCTOR      : SrcNodeKindName := 'JAVA_CONSTRUCTOR';
+    SNK_JAVA_FIELD            : SrcNodeKindName := 'JAVA_FIELD';
+    SNK_JAVA_ANNOTATION       : SrcNodeKindName := 'JAVA_ANNOTATION';
+    SNK_JAVA_TRY_CATCH        : SrcNodeKindName := 'JAVA_TRY_CATCH';
+    SNK_JAVA_THROW            : SrcNodeKindName := 'JAVA_THROW';
+    SNK_JAVA_SYNCHRONIZED     : SrcNodeKindName := 'JAVA_SYNCHRONIZED';
+    SNK_JAVA_FOREACH          : SrcNodeKindName := 'JAVA_FOREACH';
   Else
     SrcNodeKindName := '???';
   End;
@@ -19097,6 +19132,1162 @@ End;
 
 { ---- Fin TODO 29 --------------------------------------------- }
 
+{ ============================================================
+  TODO 30 - LEXEUR ET PARSEUR Java [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsJavaKeyword : reconnaissance des mots-cles Java ------- }
+
+Function IsJavaKeyword(Const W : TString) : Boolean;
+Begin
+  IsJavaKeyword :=
+    (W = 'abstract')     Or (W = 'assert')      Or (W = 'boolean')   Or
+    (W = 'break')        Or (W = 'byte')         Or (W = 'case')      Or
+    (W = 'catch')        Or (W = 'char')         Or (W = 'class')     Or
+    (W = 'const')        Or (W = 'continue')     Or (W = 'default')   Or
+    (W = 'do')           Or (W = 'double')       Or (W = 'else')      Or
+    (W = 'enum')         Or (W = 'extends')      Or (W = 'final')     Or
+    (W = 'finally')      Or (W = 'float')        Or (W = 'for')       Or
+    (W = 'goto')         Or (W = 'if')           Or (W = 'implements') Or
+    (W = 'import')       Or (W = 'instanceof')   Or (W = 'int')       Or
+    (W = 'interface')    Or (W = 'long')         Or (W = 'native')    Or
+    (W = 'new')          Or (W = 'package')      Or (W = 'private')   Or
+    (W = 'protected')    Or (W = 'public')       Or (W = 'return')    Or
+    (W = 'short')        Or (W = 'static')       Or (W = 'strictfp')  Or
+    (W = 'super')        Or (W = 'switch')       Or (W = 'synchronized') Or
+    (W = 'this')         Or (W = 'throw')        Or (W = 'throws')    Or
+    (W = 'transient')    Or (W = 'try')          Or (W = 'void')      Or
+    (W = 'volatile')     Or (W = 'while');
+End;
+
+{ ---- JavaLexScanIdent : scanner un identificateur ou mot-cle Java }
+
+Procedure JavaLexScanIdent;
+Var S : TString;
+Begin
+  S := '';
+  While (SrcColNo <= Length(SrcLine)) And
+        IsIdentCont(SrcLine[SrcColNo]) Do
+  Begin
+    If Length(S) < 255 Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  If IsJavaKeyword(S) Then
+    SrcToken.Kind := STK_KEYWORD
+  Else
+    SrcToken.Kind := STK_IDENT;
+  SrcToken.Val := S;
+End;
+
+{ ---- JavaLexInit : initialiser le lexeur Java ------------------- }
+
+Procedure JavaLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- JavaLexNextToken : obtenir le prochain token Java ---------- }
+
+Procedure JavaLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Found    : Boolean;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      SrcToken.Line := SrcLineNo;
+      SrcToken.Col  := SrcColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    Scanning := False;
+
+    { Commentaires // }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Commentaires /* ... */ }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      Inc(SrcColNo, 2);
+      Found := False;
+      While (Not SrcEOF) And (Not Found) Do
+      Begin
+        While (SrcColNo <= Length(SrcLine)) And (Not Found) Do
+        Begin
+          If (SrcLine[SrcColNo] = '*') And
+             (SrcColNo < Length(SrcLine)) And
+             (SrcLine[SrcColNo + 1] = '/') Then
+          Begin
+            Inc(SrcColNo, 2);
+            Found := True;
+          End
+          Else
+            Inc(SrcColNo);
+        End;
+        If Not Found Then
+          SrcLexNextLine;
+      End;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Annotations @ }
+    If Ch = '@' Then
+    Begin
+      Inc(SrcColNo);
+      S := '@';
+      While (SrcColNo <= Length(SrcLine)) And
+            IsIdentCont(SrcLine[SrcColNo]) Do
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_IDENT;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Identificateurs et mots-cles }
+    If IsIdentStart(Ch) Or (Ch = '_') Then
+    Begin
+      JavaLexScanIdent;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Nombres }
+    If IsDigit(Ch) Then
+    Begin
+      CLexScanNumber;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines de caracteres "..." }
+    If (Ch = '"') Then
+    Begin
+      CLexScanString;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Caracteres '...' }
+    If (Ch = '''') Then
+    Begin
+      CLexScanChar;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs multi-caracteres }
+    If SrcColNo < Length(SrcLine) Then
+    Begin
+      S := Ch + SrcLine[SrcColNo + 1];
+      If (S = '==') Or (S = '!=') Or (S = '<=') Or (S = '>=') Or
+         (S = '&&') Or (S = '||') Or (S = '++') Or (S = '--') Or
+         (S = '+=') Or (S = '-=') Or (S = '*=') Or (S = '/=') Or
+         (S = '%=') Or (S = '&=') Or (S = '|=') Or (S = '^=') Or
+         (S = '<<') Or (S = '>>') Or (S = '->') Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := S;
+        Inc(SrcColNo, 2);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      { >>> operator }
+      If (S = '>>') And (SrcColNo + 1 < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 2] = '>') Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '>>>';
+        Inc(SrcColNo, 3);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      { :: method reference }
+      If S = '::' Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '::';
+        Inc(SrcColNo, 2);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+    End;
+
+    { Operateurs simples }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- Helpers de parsing Java ---------------------------------- }
+
+Var
+  JavaTok : TSourceToken; { copy locale pour look-ahead Java }
+
+Procedure JavaConsume;
+Begin
+  JavaLexNextToken;
+End;
+
+Function JavaTokIs(Const V : TString) : Boolean;
+Begin
+  JavaTokIs := (SrcToken.Val = V);
+End;
+
+Function JavaTokKind : TSourceTokenKind;
+Begin
+  JavaTokKind := SrcToken.Kind;
+End;
+
+Function JavaKwIs(Const V : TString) : Boolean;
+Begin
+  JavaKwIs := (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = V);
+End;
+
+Procedure JavaExpect(Const V : TString);
+Begin
+  If SrcToken.Val <> V Then
+    WriteLn('CODEQL: Java attendu ''', V, ''' a la ligne ', SrcToken.Line,
+            ':', SrcToken.Col, ' (lu: ''', SrcToken.Val, ''')');
+  JavaConsume;
+End;
+
+{ ---- Forward declarations Java parser ------------------------- }
+
+Function JavaParseExpr : Integer; Forward;
+Function JavaParseStatement : Integer; Forward;
+Function JavaParseBlock : Integer; Forward;
+Function JavaParseTopLevel : Integer; Forward;
+
+{ ---- JavaParsePrimary : expression primaire Java --------------- }
+
+Function JavaParsePrimary : Integer;
+Var N : Integer;
+Begin
+  N := -1;
+  If (SrcToken.Kind = STK_INTEGER) Or (SrcToken.Kind = STK_FLOAT) Or
+     (SrcToken.Kind = STK_STRING) Then
+  Begin
+    If SrcToken.Kind = STK_INTEGER Then
+      N := SrcNewNode(SNK_EXPR_INT)
+    Else If SrcToken.Kind = STK_FLOAT Then
+      N := SrcNewNode(SNK_EXPR_FLOAT)
+    Else
+      N := SrcNewNode(SNK_EXPR_STRING);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+  End
+  Else If JavaKwIs('true') Or JavaKwIs('false') Or JavaKwIs('null') Or
+          JavaKwIs('this') Or JavaKwIs('super') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_IDENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+  End
+  Else If JavaTokIs('(') Then
+  Begin
+    JavaConsume;
+    N := JavaParseExpr;
+    If JavaTokIs(')') Then JavaConsume;
+  End
+  Else If JavaKwIs('new') Then
+  Begin
+    N := SrcNewNode(SNK_CALL);
+    SrcNodes[N].Name := 'new';
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    { Type name }
+    If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      SrcNodes[N].Name := 'new ' + SrcToken.Val;
+      JavaConsume;
+    End;
+    { Generic type arguments <...> }
+    If JavaTokIs('<') Then
+    Begin
+      JavaConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('>')) Do
+        JavaConsume;
+      If JavaTokIs('>') Then JavaConsume;
+    End;
+    { Constructor arguments (...) }
+    If JavaTokIs('(') Then
+    Begin
+      JavaConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(')')) Do
+        JavaConsume;
+      If JavaTokIs(')') Then JavaConsume;
+    End;
+    { Array initializer [...] or anonymous class body (...) }
+    If JavaTokIs('[') Then
+    Begin
+      JavaConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(']')) Do
+        JavaConsume;
+      If JavaTokIs(']') Then JavaConsume;
+    End;
+    If JavaTokIs('{') Then
+    Begin
+      JavaConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('}')) Do
+        JavaConsume;
+      If JavaTokIs('}') Then JavaConsume;
+    End;
+  End
+  Else If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_IDENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    { Chaine d'acces par point (a.b.c) }
+    While JavaTokIs('.') Do
+    Begin
+      JavaConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcNodes[N].Name + '.' + SrcToken.Val;
+        JavaConsume;
+      End;
+    End;
+    { Generic type arguments <...> }
+    If JavaTokIs('<') Then
+    Begin
+      JavaConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('>')) Do
+        JavaConsume;
+      If JavaTokIs('>') Then JavaConsume;
+    End;
+    { Appel de methode f(...) }
+    If JavaTokIs('(') Then
+    Begin
+      SrcNodes[N].Kind := SNK_CALL;
+      JavaConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(')')) Do
+        JavaConsume;
+      If JavaTokIs(')') Then JavaConsume;
+    End;
+    { Indexation a[...] }
+    If JavaTokIs('[') Then
+    Begin
+      JavaConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(']')) Do
+        JavaConsume;
+      If JavaTokIs(']') Then JavaConsume;
+    End;
+  End;
+  JavaParsePrimary := N;
+End;
+
+{ ---- JavaParseUnary : expression unaire Java ------------------- }
+
+Function JavaParseUnary : Integer;
+Var N : Integer;
+Begin
+  If JavaTokIs('+') Or JavaTokIs('-') Or JavaTokIs('!') Or
+     JavaTokIs('~') Or JavaTokIs('++') Or JavaTokIs('--') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_UNOP);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    SrcNodes[N].Left := JavaParsePrimary;
+    JavaParseUnary := N;
+  End
+  Else
+    JavaParseUnary := JavaParsePrimary;
+End;
+
+{ ---- JavaParseBinary : expression binaire Java (precedence climbing) }
+
+Function JavaParseBinary(MinPrec : Integer) : Integer;
+Var L, R, Op : Integer;
+    Prec     : Integer;
+    OpVal    : TString;
+Begin
+  L := JavaParseUnary;
+  While (SrcToken.Kind = STK_OP) Do
+  Begin
+    OpVal := SrcToken.Val;
+    Prec := 0;
+    If (OpVal = '||') Then Prec := 1
+    Else If (OpVal = '&&') Then Prec := 2
+    Else If (OpVal = '|') Then Prec := 3
+    Else If (OpVal = '^') Then Prec := 4
+    Else If (OpVal = '&') Then Prec := 5
+    Else If (OpVal = '==') Or (OpVal = '!=') Then Prec := 6
+    Else If (OpVal = '<') Or (OpVal = '>') Or
+            (OpVal = '<=') Or (OpVal = '>=') Then Prec := 7
+    Else If (OpVal = '<<') Or (OpVal = '>>') Or (OpVal = '>>>') Then Prec := 8
+    Else If (OpVal = '+') Or (OpVal = '-') Then Prec := 9
+    Else If (OpVal = '*') Or (OpVal = '/') Or (OpVal = '%') Then Prec := 10;
+    If Prec < MinPrec Then Break;
+    Op := SrcNewNode(SNK_EXPR_BINOP);
+    SrcNodes[Op].Name := OpVal;
+    SrcNodes[Op].Line := SrcToken.Line;
+    SrcNodes[Op].Col  := SrcToken.Col;
+    JavaConsume;
+    R := JavaParseBinary(Prec + 1);
+    SrcNodes[Op].Left  := L;
+    SrcNodes[Op].Right := R;
+    L := Op;
+  End;
+  JavaParseBinary := L;
+End;
+
+{ ---- JavaParseExpr : expression Java ---------------------------- }
+
+Function JavaParseExpr : Integer;
+Begin
+  JavaParseExpr := JavaParseBinary(1);
+End;
+
+{ ---- JavaParseBlock : bloc Java --------------------------------- }
+
+Function JavaParseBlock : Integer;
+Var N, Child, Last : Integer;
+Begin
+  N := SrcNewNode(SNK_COMPOUND);
+  SrcNodes[N].Line := SrcToken.Line;
+  SrcNodes[N].Col  := SrcToken.Col;
+  JavaExpect('{');
+  Last := -1;
+  While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('}')) Do
+  Begin
+    Child := JavaParseStatement;
+    If Child >= 0 Then
+    Begin
+      If SrcNodes[N].Left = -1 Then
+        SrcNodes[N].Left := Child
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := Child;
+      Last := Child;
+    End;
+  End;
+  If JavaTokIs('}') Then JavaConsume;
+  JavaParseBlock := N;
+End;
+
+{ ---- JavaParseStatement : instruction Java ---------------------- }
+
+Function JavaParseStatement : Integer;
+Var N, Cond, Body, ElsePart, CatchNode : Integer;
+Begin
+  N := -1;
+
+  { if ... else }
+  If JavaKwIs('if') Then
+  Begin
+    N := SrcNewNode(SNK_IF);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    If JavaTokIs('(') Then
+    Begin
+      JavaConsume;
+      Cond := JavaParseExpr;
+      SrcNodes[N].Left := Cond;
+      If JavaTokIs(')') Then JavaConsume;
+    End;
+    Body := JavaParseBlock;
+    SrcNodes[N].Right := Body;
+    If JavaKwIs('else') Then
+    Begin
+      JavaConsume;
+      If JavaKwIs('if') Then
+        ElsePart := JavaParseStatement
+      Else
+        ElsePart := JavaParseBlock;
+      SrcNodes[N].Extra := ElsePart;
+    End;
+  End
+
+  { for / for-each }
+  Else If JavaKwIs('for') Then
+  Begin
+    N := SrcNewNode(SNK_FOR);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    If JavaTokIs('(') Then
+    Begin
+      JavaConsume;
+      { Check for enhanced for (for-each) - just consume all until ')' }
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(')')) Do
+      Begin
+        If JavaTokIs(':') Then
+          SrcNodes[N].Kind := SNK_JAVA_FOREACH;
+        JavaConsume;
+      End;
+      If JavaTokIs(')') Then JavaConsume;
+    End;
+    If JavaTokIs('{') Then
+      SrcNodes[N].Right := JavaParseBlock
+    Else
+    Begin
+      SrcNodes[N].Right := JavaParseStatement;
+    End;
+  End
+
+  { while }
+  Else If JavaKwIs('while') Then
+  Begin
+    N := SrcNewNode(SNK_WHILE);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    If JavaTokIs('(') Then
+    Begin
+      JavaConsume;
+      SrcNodes[N].Left := JavaParseExpr;
+      If JavaTokIs(')') Then JavaConsume;
+    End;
+    If JavaTokIs('{') Then
+      SrcNodes[N].Right := JavaParseBlock
+    Else
+      SrcNodes[N].Right := JavaParseStatement;
+  End
+
+  { do ... while }
+  Else If JavaKwIs('do') Then
+  Begin
+    N := SrcNewNode(SNK_REPEAT);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    SrcNodes[N].Right := JavaParseBlock;
+    If JavaKwIs('while') Then
+    Begin
+      JavaConsume;
+      If JavaTokIs('(') Then
+      Begin
+        JavaConsume;
+        SrcNodes[N].Left := JavaParseExpr;
+        If JavaTokIs(')') Then JavaConsume;
+      End;
+    End;
+    If JavaTokIs(';') Then JavaConsume;
+  End
+
+  { switch }
+  Else If JavaKwIs('switch') Then
+  Begin
+    N := SrcNewNode(SNK_CASE);
+    SrcNodes[N].Name := 'switch';
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    If JavaTokIs('(') Then
+    Begin
+      JavaConsume;
+      SrcNodes[N].Left := JavaParseExpr;
+      If JavaTokIs(')') Then JavaConsume;
+    End;
+    If JavaTokIs('{') Then
+    Begin
+      JavaConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('}')) Do
+        JavaConsume;
+      If JavaTokIs('}') Then JavaConsume;
+    End;
+  End
+
+  { try ... catch ... finally }
+  Else If JavaKwIs('try') Then
+  Begin
+    N := SrcNewNode(SNK_JAVA_TRY_CATCH);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    { try-with-resources }
+    If JavaTokIs('(') Then
+    Begin
+      JavaConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(')')) Do
+        JavaConsume;
+      If JavaTokIs(')') Then JavaConsume;
+    End;
+    SrcNodes[N].Left := JavaParseBlock;
+    While JavaKwIs('catch') Do
+    Begin
+      CatchNode := SrcNewNode(SNK_JAVA_TRY_CATCH);
+      SrcNodes[CatchNode].Name := 'catch';
+      SrcNodes[CatchNode].Line := SrcToken.Line;
+      SrcNodes[CatchNode].Col  := SrcToken.Col;
+      JavaConsume;
+      If JavaTokIs('(') Then
+      Begin
+        JavaConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(')')) Do
+          JavaConsume;
+        If JavaTokIs(')') Then JavaConsume;
+      End;
+      SrcNodes[CatchNode].Right := JavaParseBlock;
+      SrcNodes[N].Right := CatchNode;
+    End;
+    If JavaKwIs('finally') Then
+    Begin
+      JavaConsume;
+      SrcNodes[N].Extra := JavaParseBlock;
+    End;
+  End
+
+  { throw }
+  Else If JavaKwIs('throw') Then
+  Begin
+    N := SrcNewNode(SNK_JAVA_THROW);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    SrcNodes[N].Left := JavaParseExpr;
+    If JavaTokIs(';') Then JavaConsume;
+  End
+
+  { return [expr]; }
+  Else If JavaKwIs('return') Then
+  Begin
+    N := SrcNewNode(SNK_C_RETURN);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    If (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(';')) And
+       (Not JavaTokIs('}')) Then
+      SrcNodes[N].Left := JavaParseExpr;
+    If JavaTokIs(';') Then JavaConsume;
+  End
+
+  { synchronized (expr) block }
+  Else If JavaKwIs('synchronized') Then
+  Begin
+    N := SrcNewNode(SNK_JAVA_SYNCHRONIZED);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    If JavaTokIs('(') Then
+    Begin
+      JavaConsume;
+      SrcNodes[N].Left := JavaParseExpr;
+      If JavaTokIs(')') Then JavaConsume;
+    End;
+    SrcNodes[N].Right := JavaParseBlock;
+  End
+
+  { break / continue }
+  Else If JavaKwIs('break') Or JavaKwIs('continue') Then
+  Begin
+    N := SrcNewNode(SNK_GOTO);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcNodes[N].Name + ' ' + SrcToken.Val;
+      JavaConsume;
+    End;
+    If JavaTokIs(';') Then JavaConsume;
+  End
+
+  { assert }
+  Else If JavaKwIs('assert') Then
+  Begin
+    N := SrcNewNode(SNK_CALL);
+    SrcNodes[N].Name := 'assert';
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    SrcNodes[N].Left := JavaParseExpr;
+    If JavaTokIs(':') Then
+    Begin
+      JavaConsume;
+      JavaParseExpr;
+    End;
+    If JavaTokIs(';') Then JavaConsume;
+  End
+
+  { Block }
+  Else If JavaTokIs('{') Then
+    N := JavaParseBlock
+
+  { semicolons }
+  Else If JavaTokIs(';') Then
+    JavaConsume
+
+  { Expression statement }
+  Else
+  Begin
+    N := JavaParseExpr;
+    { Handle assignment operators }
+    If JavaTokIs('=') Or JavaTokIs('+=') Or JavaTokIs('-=') Or
+       JavaTokIs('*=') Or JavaTokIs('/=') Or JavaTokIs('%=') Or
+       JavaTokIs('&=') Or JavaTokIs('|=') Or JavaTokIs('^=') Then
+    Begin
+      JavaConsume;
+      JavaParseExpr;
+    End;
+    If JavaTokIs(';') Then JavaConsume;
+  End;
+
+  JavaParseStatement := N;
+End;
+
+{ ---- JavaParseModifiers : sauter les modificateurs Java -------- }
+
+Procedure JavaParseModifiers;
+Begin
+  While JavaKwIs('public') Or JavaKwIs('private') Or JavaKwIs('protected') Or
+        JavaKwIs('static') Or JavaKwIs('final') Or JavaKwIs('abstract') Or
+        JavaKwIs('native') Or JavaKwIs('synchronized') Or
+        JavaKwIs('transient') Or JavaKwIs('volatile') Or
+        JavaKwIs('strictfp') Or JavaKwIs('default') Or
+        ((SrcToken.Kind = STK_IDENT) And (SrcToken.Val[1] = '@')) Do
+    JavaConsume;
+End;
+
+{ ---- JavaParseClassBody : corps d'une classe Java --------------- }
+
+Procedure JavaParseClassBody(ClassNode : Integer);
+Var N, Last, Body : Integer;
+    MemberName : TString;
+    StartLine  : Integer;
+Begin
+  JavaExpect('{');
+  Last := -1;
+  While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('}')) Do
+  Begin
+    N := -1;
+    StartLine := SrcToken.Line;
+
+    { Skip annotations }
+    While (SrcToken.Kind = STK_IDENT) And (SrcToken.Val[1] = '@') Do
+    Begin
+      N := SrcNewNode(SNK_JAVA_ANNOTATION);
+      SrcNodes[N].Name := SrcToken.Val;
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Col  := SrcToken.Col;
+      JavaConsume;
+      If JavaTokIs('(') Then
+      Begin
+        JavaConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(')')) Do
+          JavaConsume;
+        If JavaTokIs(')') Then JavaConsume;
+      End;
+      If N >= 0 Then
+      Begin
+        If SrcNodes[ClassNode].Left = -1 Then
+          SrcNodes[ClassNode].Left := N
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := N;
+        Last := N;
+      End;
+      N := -1;
+    End;
+
+    { Modifiers }
+    JavaParseModifiers;
+
+    { Inner class }
+    If JavaKwIs('class') Then
+    Begin
+      N := SrcNewNode(SNK_JAVA_CLASS_DECL);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Col  := SrcToken.Col;
+      JavaConsume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        JavaConsume;
+      End;
+      { Skip generic params, extends, implements }
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('{')) Do
+        JavaConsume;
+      If JavaTokIs('{') Then
+        JavaParseClassBody(N);
+    End
+
+    { Inner interface }
+    Else If JavaKwIs('interface') Then
+    Begin
+      N := SrcNewNode(SNK_JAVA_INTERFACE_DECL);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Col  := SrcToken.Col;
+      JavaConsume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        JavaConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('{')) Do
+        JavaConsume;
+      If JavaTokIs('{') Then
+        JavaParseClassBody(N);
+    End
+
+    { Inner enum }
+    Else If JavaKwIs('enum') Then
+    Begin
+      N := SrcNewNode(SNK_JAVA_ENUM_DECL);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Col  := SrcToken.Col;
+      JavaConsume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        JavaConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('{')) Do
+        JavaConsume;
+      If JavaTokIs('{') Then
+      Begin
+        JavaConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('}')) Do
+          JavaConsume;
+        If JavaTokIs('}') Then JavaConsume;
+      End;
+    End
+
+    { Static initializer block }
+    Else If JavaTokIs('{') Then
+    Begin
+      N := JavaParseBlock;
+    End
+
+    { Constructor or method or field }
+    Else If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      MemberName := '';
+      { Read type and name - skip through generic params }
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('(')) And
+            (Not JavaTokIs(';')) And (Not JavaTokIs('=')) And
+            (Not JavaTokIs('{')) And (Not JavaTokIs('}')) Do
+      Begin
+        MemberName := SrcToken.Val;
+        JavaConsume;
+        If JavaTokIs('<') Then
+        Begin
+          JavaConsume;
+          While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('>')) Do
+            JavaConsume;
+          If JavaTokIs('>') Then JavaConsume;
+        End;
+        If JavaTokIs('[') Then
+        Begin
+          JavaConsume;
+          If JavaTokIs(']') Then JavaConsume;
+        End;
+      End;
+
+      { Method or constructor: has (...) }
+      If JavaTokIs('(') Then
+      Begin
+        N := SrcNewNode(SNK_JAVA_METHOD);
+        SrcNodes[N].Name := MemberName;
+        SrcNodes[N].Line := StartLine;
+        SrcNodes[N].Col  := 1;
+        JavaConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(')')) Do
+          JavaConsume;
+        If JavaTokIs(')') Then JavaConsume;
+        { throws clause }
+        If JavaKwIs('throws') Then
+        Begin
+          JavaConsume;
+          While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('{')) And
+                (Not JavaTokIs(';')) Do
+            JavaConsume;
+        End;
+        { Method body or abstract/interface method }
+        If JavaTokIs('{') Then
+        Begin
+          Body := JavaParseBlock;
+          SrcNodes[N].Right := Body;
+        End
+        Else If JavaTokIs(';') Then
+          JavaConsume;
+      End
+
+      { Field: ends with ; or = expr ; }
+      Else If JavaTokIs('=') Or JavaTokIs(';') Then
+      Begin
+        N := SrcNewNode(SNK_JAVA_FIELD);
+        SrcNodes[N].Name := MemberName;
+        SrcNodes[N].Line := StartLine;
+        SrcNodes[N].Col  := 1;
+        If JavaTokIs('=') Then
+        Begin
+          JavaConsume;
+          { Skip initializer }
+          While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(';')) Do
+          Begin
+            If JavaTokIs('{') Then
+            Begin
+              JavaConsume;
+              While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('}')) Do
+                JavaConsume;
+              If JavaTokIs('}') Then JavaConsume;
+            End
+            Else
+              JavaConsume;
+          End;
+        End;
+        If JavaTokIs(';') Then JavaConsume;
+      End
+      Else
+      Begin
+        { Unknown - skip to next semicolon or closing brace }
+        While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(';')) And
+              (Not JavaTokIs('}')) Do
+          JavaConsume;
+        If JavaTokIs(';') Then JavaConsume;
+      End;
+    End
+    Else
+    Begin
+      { Unknown token - skip }
+      JavaConsume;
+    End;
+
+    If N >= 0 Then
+    Begin
+      If SrcNodes[ClassNode].Left = -1 Then
+        SrcNodes[ClassNode].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+  End;
+  If JavaTokIs('}') Then JavaConsume;
+End;
+
+{ ---- JavaParseTopLevel : declaration de niveau superieur Java -- }
+
+Function JavaParseTopLevel : Integer;
+Var N : Integer;
+Begin
+  N := -1;
+
+  { Annotations at top level }
+  While (SrcToken.Kind = STK_IDENT) And (Length(SrcToken.Val) > 0) And
+        (SrcToken.Val[1] = '@') Do
+  Begin
+    N := SrcNewNode(SNK_JAVA_ANNOTATION);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    If JavaTokIs('(') Then
+    Begin
+      JavaConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(')')) Do
+        JavaConsume;
+      If JavaTokIs(')') Then JavaConsume;
+    End;
+    JavaParseTopLevel := N;
+    Exit;
+  End;
+
+  { package declaration }
+  If JavaKwIs('package') Then
+  Begin
+    N := SrcNewNode(SNK_JAVA_PACKAGE);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(';')) Do
+    Begin
+      SrcNodes[N].Name := SrcNodes[N].Name + SrcToken.Val;
+      JavaConsume;
+    End;
+    If JavaTokIs(';') Then JavaConsume;
+  End
+
+  { import declarations }
+  Else If JavaKwIs('import') Then
+  Begin
+    N := SrcNewNode(SNK_JAVA_IMPORT);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    JavaConsume;
+    { static import }
+    If JavaKwIs('static') Then
+    Begin
+      SrcNodes[N].Name := 'static ';
+      JavaConsume;
+    End;
+    While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs(';')) Do
+    Begin
+      SrcNodes[N].Name := SrcNodes[N].Name + SrcToken.Val;
+      JavaConsume;
+    End;
+    If JavaTokIs(';') Then JavaConsume;
+  End
+
+  Else
+  Begin
+    { Modifiers }
+    JavaParseModifiers;
+
+    { class declaration }
+    If JavaKwIs('class') Then
+    Begin
+      N := SrcNewNode(SNK_JAVA_CLASS_DECL);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Col  := SrcToken.Col;
+      JavaConsume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        JavaConsume;
+      End;
+      { Skip generic params <...>, extends, implements }
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('{')) Do
+        JavaConsume;
+      If JavaTokIs('{') Then
+        JavaParseClassBody(N);
+    End
+
+    { interface declaration }
+    Else If JavaKwIs('interface') Then
+    Begin
+      N := SrcNewNode(SNK_JAVA_INTERFACE_DECL);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Col  := SrcToken.Col;
+      JavaConsume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        JavaConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('{')) Do
+        JavaConsume;
+      If JavaTokIs('{') Then
+        JavaParseClassBody(N);
+    End
+
+    { enum declaration }
+    Else If JavaKwIs('enum') Then
+    Begin
+      N := SrcNewNode(SNK_JAVA_ENUM_DECL);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Col  := SrcToken.Col;
+      JavaConsume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        JavaConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('{')) Do
+        JavaConsume;
+      If JavaTokIs('{') Then
+      Begin
+        JavaConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not JavaTokIs('}')) Do
+          JavaConsume;
+        If JavaTokIs('}') Then JavaConsume;
+      End;
+    End
+
+    { end of file }
+    Else If SrcToken.Kind = STK_EOF Then
+    Begin
+      { nothing }
+    End
+    Else
+    Begin
+      { Unknown top-level, advance }
+      JavaConsume;
+    End;
+  End;
+
+  JavaParseTopLevel := N;
+End;
+
+{ ---- JavaParseTranslationUnit : unite de traduction Java ------- }
+
+Function JavaParseTranslationUnit : Integer;
+Var Root, N, Last : Integer;
+Begin
+  JavaConsume; { lire le premier token }
+  Root := SrcNewNode(SNK_JAVA_TRANSLATION_UNIT);
+  SrcNodes[Root].Name := 'JAVA_TU';
+  Last := -1;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    N := JavaParseTopLevel;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+  End;
+  JavaParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 30 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -19157,6 +20348,13 @@ Begin
   IsGoSource := StrEndsWith(FName, '.go');
 End;
 
+{ ---- IsJavaSource : verifier si le fichier est .java ----------- }
+
+Function IsJavaSource(Const FName : TString) : Boolean;
+Begin
+  IsJavaSource := StrEndsWith(FName, '.java');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -19212,7 +20410,8 @@ Begin
          ((Opts.Language = 'c') And IsCSource(SR.Name)) Or
          ((Opts.Language = 'cpp') And IsCppSource(SR.Name)) Or
          ((Opts.Language = 'csharp') And IsCSharpSource(SR.Name)) Or
-         ((Opts.Language = 'go') And IsGoSource(SR.Name)) Then
+         ((Opts.Language = 'go') And IsGoSource(SR.Name)) Or
+         ((Opts.Language = 'java') And IsJavaSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -19309,6 +20508,12 @@ Begin
       GoLexInit;
       SrcASTInit;
       SrcRootNode := GoParseTranslationUnit;
+    End
+    Else If Opts.Language = 'java' Then
+    Begin
+      JavaLexInit;
+      SrcASTInit;
+      SrcRootNode := JavaParseTranslationUnit;
     End
     Else
     Begin
