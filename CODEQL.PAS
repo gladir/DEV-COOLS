@@ -194,6 +194,15 @@
       detection des fichiers .cs,
       integration dans database create avec --language=csharp.
       [IMPLEMENTE]
+  29. Implementer le support du langage Go : lexeur Go (mots-cles Go
+      package/import/func/var/const/type/struct/interface/map/chan/
+      go/select/defer/range/fallthrough/break/continue/return/
+      if/else/for/switch/case/default/goto),
+      parseur Go (packages, imports, fonctions, structures, interfaces,
+      methodes, goroutines, channels, select, defer, slices, maps),
+      detection des fichiers .go,
+      integration dans database create avec --language=go.
+      [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -492,7 +501,13 @@ Type
     SNK_CSHARP_NAMESPACE, SNK_CSHARP_USING,
     SNK_CSHARP_PROPERTY, SNK_CSHARP_ATTRIBUTE,
     SNK_CSHARP_ASYNC, SNK_CSHARP_AWAIT,
-    SNK_CSHARP_FOREACH, SNK_CSHARP_LOCK
+    SNK_CSHARP_FOREACH, SNK_CSHARP_LOCK,
+    SNK_GO_TRANSLATION_UNIT, SNK_GO_PACKAGE,
+    SNK_GO_IMPORT, SNK_GO_FUNC_DECL,
+    SNK_GO_STRUCT_DECL, SNK_GO_INTERFACE_DECL,
+    SNK_GO_METHOD, SNK_GO_GOROUTINE,
+    SNK_GO_CHANNEL, SNK_GO_SELECT,
+    SNK_GO_DEFER, SNK_GO_RANGE
   );
 
   TSrcASTNode = Record
@@ -1231,7 +1246,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1504,8 +1519,9 @@ Begin
   End;
 
   If (Opts.Language <> 'pascal') And (Opts.Language <> 'c') And
-     (Opts.Language <> 'cpp') And (Opts.Language <> 'csharp') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp ou csharp)');
+     (Opts.Language <> 'cpp') And (Opts.Language <> 'csharp') And
+     (Opts.Language <> 'go') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp ou go)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -5707,6 +5723,18 @@ Begin
     SNK_CSHARP_AWAIT          : SrcNodeKindName := 'CSHARP_AWAIT';
     SNK_CSHARP_FOREACH        : SrcNodeKindName := 'CSHARP_FOREACH';
     SNK_CSHARP_LOCK           : SrcNodeKindName := 'CSHARP_LOCK';
+    SNK_GO_TRANSLATION_UNIT   : SrcNodeKindName := 'GO_TRANSLATION_UNIT';
+    SNK_GO_PACKAGE            : SrcNodeKindName := 'GO_PACKAGE';
+    SNK_GO_IMPORT             : SrcNodeKindName := 'GO_IMPORT';
+    SNK_GO_FUNC_DECL          : SrcNodeKindName := 'GO_FUNC_DECL';
+    SNK_GO_STRUCT_DECL        : SrcNodeKindName := 'GO_STRUCT_DECL';
+    SNK_GO_INTERFACE_DECL     : SrcNodeKindName := 'GO_INTERFACE_DECL';
+    SNK_GO_METHOD             : SrcNodeKindName := 'GO_METHOD';
+    SNK_GO_GOROUTINE          : SrcNodeKindName := 'GO_GOROUTINE';
+    SNK_GO_CHANNEL            : SrcNodeKindName := 'GO_CHANNEL';
+    SNK_GO_SELECT             : SrcNodeKindName := 'GO_SELECT';
+    SNK_GO_DEFER              : SrcNodeKindName := 'GO_DEFER';
+    SNK_GO_RANGE              : SrcNodeKindName := 'GO_RANGE';
   Else
     SrcNodeKindName := '???';
   End;
@@ -18053,6 +18081,1022 @@ End;
 
 { ---- Fin TODO 28 --------------------------------------------- }
 
+{ ============================================================
+  TODO 29 - LEXEUR ET PARSEUR Go [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsGoKeyword : reconnaissance des mots-cles Go ---------- }
+
+Function IsGoKeyword(Const W : TString) : Boolean;
+Begin
+  IsGoKeyword :=
+    (W = 'break')       Or (W = 'case')        Or (W = 'chan')       Or
+    (W = 'const')       Or (W = 'continue')    Or (W = 'default')   Or
+    (W = 'defer')       Or (W = 'else')        Or (W = 'fallthrough') Or
+    (W = 'for')         Or (W = 'func')        Or (W = 'go')        Or
+    (W = 'goto')        Or (W = 'if')          Or (W = 'import')    Or
+    (W = 'interface')   Or (W = 'map')         Or (W = 'package')   Or
+    (W = 'range')       Or (W = 'return')      Or (W = 'select')    Or
+    (W = 'struct')      Or (W = 'switch')      Or (W = 'type')      Or
+    (W = 'var');
+End;
+
+{ ---- GoLexScanIdent : scanner un identificateur ou mot-cle Go }
+
+Procedure GoLexScanIdent;
+Var S : TString;
+Begin
+  S := '';
+  While (SrcColNo <= Length(SrcLine)) And
+        IsIdentCont(SrcLine[SrcColNo]) Do
+  Begin
+    If Length(S) < 255 Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  If IsGoKeyword(S) Then
+    SrcToken.Kind := STK_KEYWORD
+  Else
+    SrcToken.Kind := STK_IDENT;
+  SrcToken.Val := S;
+End;
+
+{ ---- GoLexInit : initialiser le lexeur Go -------------------- }
+
+Procedure GoLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- GoLexNextToken : obtenir le prochain token Go ----------- }
+
+Procedure GoLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Found    : Boolean;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      SrcToken.Line := SrcLineNo;
+      SrcToken.Col  := SrcColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    Scanning := False;
+
+    { Commentaires // }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Commentaires /* ... */ }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      Inc(SrcColNo, 2);
+      Found := False;
+      While (Not SrcEOF) And (Not Found) Do
+      Begin
+        While (SrcColNo <= Length(SrcLine)) And (Not Found) Do
+        Begin
+          If (SrcLine[SrcColNo] = '*') And
+             (SrcColNo < Length(SrcLine)) And
+             (SrcLine[SrcColNo + 1] = '/') Then
+          Begin
+            Inc(SrcColNo, 2);
+            Found := True;
+          End
+          Else
+            Inc(SrcColNo);
+        End;
+        If Not Found Then
+          SrcLexNextLine;
+      End;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Identificateurs et mots-cles }
+    If IsIdentStart(Ch) Or (Ch = '_') Then
+    Begin
+      GoLexScanIdent;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Nombres }
+    If IsDigit(Ch) Then
+    Begin
+      CLexScanNumber;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines de caracteres "..." }
+    If (Ch = '"') Then
+    Begin
+      CLexScanString;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines brutes `...` (raw string literals) }
+    If (Ch = '`') Then
+    Begin
+      Inc(SrcColNo);
+      S := '';
+      Found := False;
+      While (Not SrcEOF) And (Not Found) Do
+      Begin
+        While (SrcColNo <= Length(SrcLine)) And (Not Found) Do
+        Begin
+          If SrcLine[SrcColNo] = '`' Then
+          Begin
+            Inc(SrcColNo);
+            Found := True;
+          End
+          Else
+          Begin
+            If Length(S) < 255 Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+        If Not Found Then
+        Begin
+          If Length(S) < 255 Then
+            S := S + #10;
+          SrcLexNextLine;
+        End;
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Caracteres '...' (rune literals) }
+    If (Ch = '''') Then
+    Begin
+      CLexScanChar;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs multi-caracteres }
+    If SrcColNo < Length(SrcLine) Then
+    Begin
+      S := Ch + SrcLine[SrcColNo + 1];
+      If (S = ':=') Or (S = '==') Or (S = '!=') Or (S = '<=') Or
+         (S = '>=') Or (S = '&&') Or (S = '||') Or (S = '++') Or
+         (S = '--') Or (S = '+=') Or (S = '-=') Or (S = '*=') Or
+         (S = '/=') Or (S = '%=') Or (S = '&=') Or (S = '|=') Or
+         (S = '^=') Or (S = '<<') Or (S = '>>') Or (S = '<-') Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := S;
+        Inc(SrcColNo, 2);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      If S = '...' Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '...';
+        Inc(SrcColNo, 3);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+    End;
+
+    { Operateurs simples }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- Helpers de parsing Go ----------------------------------- }
+
+Var
+  GoTok : TSourceToken; { copy locale pour look-ahead Go }
+
+Procedure GoConsume;
+Begin
+  GoLexNextToken;
+End;
+
+Function GoTokIs(Const V : TString) : Boolean;
+Begin
+  GoTokIs := (SrcToken.Val = V);
+End;
+
+Function GoTokKind : TSourceTokenKind;
+Begin
+  GoTokKind := SrcToken.Kind;
+End;
+
+Function GoKwIs(Const V : TString) : Boolean;
+Begin
+  GoKwIs := (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = V);
+End;
+
+Procedure GoExpect(Const V : TString);
+Begin
+  If SrcToken.Val <> V Then
+    WriteLn('CODEQL: Go attendu ''', V, ''' a la ligne ', SrcToken.Line,
+            ':', SrcToken.Col, ' (lu: ''', SrcToken.Val, ''')');
+  GoConsume;
+End;
+
+{ ---- Forward declarations Go parser -------------------------- }
+
+Function GoParseExpr : Integer; Forward;
+Function GoParseStatement : Integer; Forward;
+Function GoParseBlock : Integer; Forward;
+Function GoParseTopLevel : Integer; Forward;
+
+{ ---- GoParsePrimary : expression primaire Go ------------------ }
+
+Function GoParsePrimary : Integer;
+Var N : Integer;
+Begin
+  N := -1;
+  If (SrcToken.Kind = STK_INTEGER) Or (SrcToken.Kind = STK_FLOAT) Or
+     (SrcToken.Kind = STK_STRING) Then
+  Begin
+    If SrcToken.Kind = STK_INTEGER Then
+      N := SrcNewNode(SNK_EXPR_INT)
+    Else If SrcToken.Kind = STK_FLOAT Then
+      N := SrcNewNode(SNK_EXPR_FLOAT)
+    Else
+      N := SrcNewNode(SNK_EXPR_STRING);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+  End
+  Else If GoKwIs('true') Or GoKwIs('false') Or GoKwIs('nil') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_IDENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+  End
+  Else If GoTokIs('(') Then
+  Begin
+    GoConsume;
+    N := GoParseExpr;
+    If GoTokIs(')') Then GoConsume;
+  End
+  Else If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_IDENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    { Chaine d'acces par point (a.b.c) }
+    While GoTokIs('.') Do
+    Begin
+      GoConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcNodes[N].Name + '.' + SrcToken.Val;
+        GoConsume;
+      End;
+    End;
+    { Appel de fonction f(...) }
+    If GoTokIs('(') Then
+    Begin
+      SrcNodes[N].Kind := SNK_CALL;
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(')')) Do
+        GoConsume;
+      If GoTokIs(')') Then GoConsume;
+    End;
+    { Indexation a[...] }
+    If GoTokIs('[') Then
+    Begin
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(']')) Do
+        GoConsume;
+      If GoTokIs(']') Then GoConsume;
+    End;
+  End
+  Else If GoTokIs('&') Or GoTokIs('*') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_UNOP);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    SrcNodes[N].Left := GoParsePrimary;
+  End;
+  GoParsePrimary := N;
+End;
+
+{ ---- GoParseUnary : expression unaire Go ---------------------- }
+
+Function GoParseUnary : Integer;
+Var N : Integer;
+Begin
+  If GoTokIs('+') Or GoTokIs('-') Or GoTokIs('!') Or GoTokIs('^') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_UNOP);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    SrcNodes[N].Left := GoParsePrimary;
+    GoParseUnary := N;
+  End
+  Else
+    GoParseUnary := GoParsePrimary;
+End;
+
+{ ---- GoParseBinary : expression binaire Go (precedence climbing) }
+
+Function GoParseBinary(MinPrec : Integer) : Integer;
+Var L, R, Op : Integer;
+    Prec     : Integer;
+    OpVal    : TString;
+Begin
+  L := GoParseUnary;
+  While (SrcToken.Kind = STK_OP) Do
+  Begin
+    OpVal := SrcToken.Val;
+    Prec := 0;
+    If (OpVal = '||') Then Prec := 1
+    Else If (OpVal = '&&') Then Prec := 2
+    Else If (OpVal = '==') Or (OpVal = '!=') Or
+            (OpVal = '<') Or (OpVal = '>') Or
+            (OpVal = '<=') Or (OpVal = '>=') Then Prec := 3
+    Else If (OpVal = '+') Or (OpVal = '-') Or
+            (OpVal = '|') Or (OpVal = '^') Then Prec := 4
+    Else If (OpVal = '*') Or (OpVal = '/') Or
+            (OpVal = '%') Or (OpVal = '&') Or
+            (OpVal = '<<') Or (OpVal = '>>') Then Prec := 5;
+    If Prec < MinPrec Then Break;
+    Op := SrcNewNode(SNK_EXPR_BINOP);
+    SrcNodes[Op].Name := OpVal;
+    SrcNodes[Op].Line := SrcToken.Line;
+    SrcNodes[Op].Col  := SrcToken.Col;
+    GoConsume;
+    R := GoParseBinary(Prec + 1);
+    SrcNodes[Op].Left  := L;
+    SrcNodes[Op].Right := R;
+    L := Op;
+  End;
+  GoParseBinary := L;
+End;
+
+{ ---- GoParseExpr : expression Go ------------------------------- }
+
+Function GoParseExpr : Integer;
+Begin
+  GoParseExpr := GoParseBinary(1);
+End;
+
+{ ---- GoParseBlock : bloc Go ------------------------------------ }
+
+Function GoParseBlock : Integer;
+Var N, Child, Last : Integer;
+Begin
+  N := SrcNewNode(SNK_COMPOUND);
+  SrcNodes[N].Line := SrcToken.Line;
+  SrcNodes[N].Col  := SrcToken.Col;
+  GoExpect('{');
+  Last := -1;
+  While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs('}')) Do
+  Begin
+    Child := GoParseStatement;
+    If Child >= 0 Then
+    Begin
+      If SrcNodes[N].Left = -1 Then
+        SrcNodes[N].Left := Child
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := Child;
+      Last := Child;
+    End;
+  End;
+  If GoTokIs('}') Then GoConsume;
+  GoParseBlock := N;
+End;
+
+{ ---- GoParseStatement : instruction Go ------------------------- }
+
+Function GoParseStatement : Integer;
+Var N, Cond, Body, ElsePart : Integer;
+Begin
+  N := -1;
+
+  { if ... else }
+  If GoKwIs('if') Then
+  Begin
+    N := SrcNewNode(SNK_IF);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    { simple statement before condition }
+    Cond := GoParseExpr;
+    SrcNodes[N].Left := Cond;
+    If GoTokIs(';') Then
+    Begin
+      GoConsume;
+      SrcNodes[N].Left := GoParseExpr;
+    End;
+    Body := GoParseBlock;
+    SrcNodes[N].Right := Body;
+    If GoKwIs('else') Then
+    Begin
+      GoConsume;
+      If GoKwIs('if') Then
+        ElsePart := GoParseStatement
+      Else
+        ElsePart := GoParseBlock;
+      SrcNodes[N].Extra := ElsePart;
+    End;
+  End
+
+  { for ... }
+  Else If GoKwIs('for') Then
+  Begin
+    N := SrcNewNode(SNK_FOR);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    { range clause }
+    If GoKwIs('range') Then
+    Begin
+      N := SrcNewNode(SNK_GO_RANGE);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Col  := SrcToken.Col;
+      GoConsume;
+      SrcNodes[N].Left := GoParseExpr;
+      SrcNodes[N].Right := GoParseBlock;
+    End
+    Else If Not GoTokIs('{') Then
+    Begin
+      SrcNodes[N].Left := GoParseExpr;
+      { Check for range keyword after := or = or , }
+      If GoKwIs('range') Then
+      Begin
+        GoConsume;
+        SrcNodes[N].Left := GoParseExpr;
+      End
+      Else
+      Begin
+        If GoTokIs(';') Then GoConsume;
+        If Not GoTokIs('{') Then
+        Begin
+          SrcNodes[N].Right := GoParseExpr;
+          If GoTokIs(';') Then GoConsume;
+          If Not GoTokIs('{') Then
+            GoParseExpr; { post statement }
+        End;
+      End;
+      SrcNodes[N].Right := GoParseBlock;
+    End
+    Else
+      SrcNodes[N].Right := GoParseBlock;
+  End
+
+  { switch ... }
+  Else If GoKwIs('switch') Then
+  Begin
+    N := SrcNewNode(SNK_CASE);
+    SrcNodes[N].Name := 'switch';
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    If Not GoTokIs('{') Then
+      SrcNodes[N].Left := GoParseExpr;
+    If GoTokIs('{') Then
+    Begin
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs('}')) Do
+        GoConsume;
+      If GoTokIs('}') Then GoConsume;
+    End;
+  End
+
+  { select }
+  Else If GoKwIs('select') Then
+  Begin
+    N := SrcNewNode(SNK_GO_SELECT);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    If GoTokIs('{') Then
+    Begin
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs('}')) Do
+        GoConsume;
+      If GoTokIs('}') Then GoConsume;
+    End;
+  End
+
+  { return [expr] }
+  Else If GoKwIs('return') Then
+  Begin
+    N := SrcNewNode(SNK_C_RETURN);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    If (SrcToken.Kind <> STK_EOF) And (Not GoTokIs('}')) And
+       (Not GoKwIs('case')) And (Not GoKwIs('default')) Then
+      SrcNodes[N].Left := GoParseExpr;
+  End
+
+  { go expr }
+  Else If GoKwIs('go') Then
+  Begin
+    N := SrcNewNode(SNK_GO_GOROUTINE);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    SrcNodes[N].Left := GoParseExpr;
+  End
+
+  { defer expr }
+  Else If GoKwIs('defer') Then
+  Begin
+    N := SrcNewNode(SNK_GO_DEFER);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    SrcNodes[N].Left := GoParseExpr;
+  End
+
+  { var declarations }
+  Else If GoKwIs('var') Then
+  Begin
+    N := SrcNewNode(SNK_VAR_DECL);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    If GoTokIs('(') Then
+    Begin
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(')')) Do
+        GoConsume;
+      If GoTokIs(')') Then GoConsume;
+    End
+    Else
+    Begin
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        GoConsume;
+      End;
+      { type and optional assignment }
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not GoTokIs('}')) And (Not GoKwIs('var')) And
+            (Not GoKwIs('func')) And (Not GoKwIs('type')) And
+            (Not GoKwIs('const')) And (Not GoKwIs('if')) And
+            (Not GoKwIs('for')) And (Not GoKwIs('return')) And
+            (Not GoKwIs('go')) And (Not GoKwIs('defer')) And
+            (Not GoKwIs('switch')) And (Not GoKwIs('select')) And
+            (SrcToken.Line = SrcNodes[N].Line) Do
+        GoConsume;
+    End;
+  End
+
+  { const declarations }
+  Else If GoKwIs('const') Then
+  Begin
+    N := SrcNewNode(SNK_CONST_DECL);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    If GoTokIs('(') Then
+    Begin
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(')')) Do
+        GoConsume;
+      If GoTokIs(')') Then GoConsume;
+    End
+    Else
+    Begin
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        GoConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not GoTokIs('}')) And
+            (SrcToken.Line = SrcNodes[N].Line) Do
+        GoConsume;
+    End;
+  End
+
+  { break / continue / fallthrough / goto }
+  Else If GoKwIs('break') Or GoKwIs('continue') Or
+          GoKwIs('fallthrough') Or GoKwIs('goto') Then
+  Begin
+    N := SrcNewNode(SNK_GOTO);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcNodes[N].Name + ' ' + SrcToken.Val;
+      GoConsume;
+    End;
+  End
+
+  { Block }
+  Else If GoTokIs('{') Then
+    N := GoParseBlock
+
+  { semicolons }
+  Else If GoTokIs(';') Then
+    GoConsume
+
+  { Expression statement (assignments, function calls, etc.) }
+  Else
+  Begin
+    N := GoParseExpr;
+    { Handle short variable declaration := }
+    If GoTokIs(':=') Or GoTokIs('=') Or GoTokIs('+=') Or
+       GoTokIs('-=') Or GoTokIs('*=') Or GoTokIs('/=') Then
+    Begin
+      GoConsume;
+      GoParseExpr;
+    End;
+    { Consume optional ; }
+    If GoTokIs(';') Then GoConsume;
+  End;
+
+  GoParseStatement := N;
+End;
+
+{ ---- GoParseTypeDecl : declaration de type Go ----------------- }
+
+Function GoParseTypeDecl : Integer;
+Var N, Last, Field : Integer;
+Begin
+  N := -1;
+  GoConsume; { 'type' }
+
+  If GoTokIs('(') Then
+  Begin
+    GoConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(')')) Do
+      GoConsume;
+    If GoTokIs(')') Then GoConsume;
+    GoParseTypeDecl := -1;
+    Exit;
+  End;
+
+  If SrcToken.Kind = STK_IDENT Then
+  Begin
+    If GoKwIs('struct') Then
+    Begin
+      { type Name struct }
+      N := SrcNewNode(SNK_GO_STRUCT_DECL);
+    End
+    Else
+      N := SrcNewNode(SNK_TYPE_DECL);
+    SrcNodes[N].Name := SrcToken.Val;
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+
+    { struct or interface keyword }
+    If GoKwIs('struct') Then
+    Begin
+      SrcNodes[N].Kind := SNK_GO_STRUCT_DECL;
+      GoConsume;
+      If GoTokIs('{') Then
+      Begin
+        GoConsume;
+        Last := -1;
+        While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs('}')) Do
+        Begin
+          If SrcToken.Kind = STK_IDENT Then
+          Begin
+            Field := SrcNewNode(SNK_VAR_DECL);
+            SrcNodes[Field].Name := SrcToken.Val;
+            SrcNodes[Field].Line := SrcToken.Line;
+            SrcNodes[Field].Col  := SrcToken.Col;
+            GoConsume;
+            { skip type }
+            While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs('}')) And
+                  (SrcToken.Line = SrcNodes[Field].Line) Do
+              GoConsume;
+            If SrcNodes[N].Left = -1 Then
+              SrcNodes[N].Left := Field
+            Else If Last >= 0 Then
+              SrcNodes[Last].Next := Field;
+            Last := Field;
+          End
+          Else
+            GoConsume;
+        End;
+        If GoTokIs('}') Then GoConsume;
+      End;
+    End
+    Else If GoKwIs('interface') Then
+    Begin
+      SrcNodes[N].Kind := SNK_GO_INTERFACE_DECL;
+      GoConsume;
+      If GoTokIs('{') Then
+      Begin
+        GoConsume;
+        Last := -1;
+        While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs('}')) Do
+        Begin
+          If SrcToken.Kind = STK_IDENT Then
+          Begin
+            Field := SrcNewNode(SNK_FUNC_DECL);
+            SrcNodes[Field].Name := SrcToken.Val;
+            SrcNodes[Field].Line := SrcToken.Line;
+            SrcNodes[Field].Col  := SrcToken.Col;
+            GoConsume;
+            { skip method signature }
+            While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs('}')) And
+                  (SrcToken.Line = SrcNodes[Field].Line) Do
+              GoConsume;
+            If SrcNodes[N].Left = -1 Then
+              SrcNodes[N].Left := Field
+            Else If Last >= 0 Then
+              SrcNodes[Last].Next := Field;
+            Last := Field;
+          End
+          Else
+            GoConsume;
+        End;
+        If GoTokIs('}') Then GoConsume;
+      End;
+    End
+    Else
+    Begin
+      { type alias or other type }
+      While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs('}')) And
+            (Not GoKwIs('func')) And (Not GoKwIs('type')) And
+            (Not GoKwIs('var')) And (Not GoKwIs('const')) And
+            (Not GoKwIs('package')) And (Not GoKwIs('import')) And
+            (SrcToken.Line = SrcNodes[N].Line) Do
+        GoConsume;
+    End;
+  End;
+
+  GoParseTypeDecl := N;
+End;
+
+{ ---- GoParseFuncDecl : declaration de fonction Go ------------- }
+
+Function GoParseFuncDecl : Integer;
+Var N, Body : Integer;
+    IsMethod : Boolean;
+Begin
+  N := SrcNewNode(SNK_GO_FUNC_DECL);
+  SrcNodes[N].Line := SrcToken.Line;
+  SrcNodes[N].Col  := SrcToken.Col;
+  GoConsume; { 'func' }
+
+  IsMethod := False;
+
+  { Method receiver (t T) }
+  If GoTokIs('(') Then
+  Begin
+    IsMethod := True;
+    SrcNodes[N].Kind := SNK_GO_METHOD;
+    GoConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(')')) Do
+      GoConsume;
+    If GoTokIs(')') Then GoConsume;
+  End;
+
+  { Function name }
+  If SrcToken.Kind = STK_IDENT Then
+  Begin
+    SrcNodes[N].Name := SrcToken.Val;
+    GoConsume;
+  End;
+
+  { Parameters }
+  If GoTokIs('(') Then
+  Begin
+    GoConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(')')) Do
+      GoConsume;
+    If GoTokIs(')') Then GoConsume;
+  End;
+
+  { Return types }
+  If GoTokIs('(') Then
+  Begin
+    GoConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(')')) Do
+      GoConsume;
+    If GoTokIs(')') Then GoConsume;
+  End
+  Else If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    { single return type - skip tokens on same line before opening brace }
+    While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs('{')) And
+          (SrcToken.Line = SrcNodes[N].Line) Do
+      GoConsume;
+  End;
+
+  { Body }
+  If GoTokIs('{') Then
+  Begin
+    Body := GoParseBlock;
+    SrcNodes[N].Right := Body;
+  End;
+
+  GoParseFuncDecl := N;
+End;
+
+{ ---- GoParseTopLevel : declaration de niveau superieur Go ----- }
+
+Function GoParseTopLevel : Integer;
+Var N : Integer;
+Begin
+  N := -1;
+
+  { package declaration }
+  If GoKwIs('package') Then
+  Begin
+    N := SrcNewNode(SNK_GO_PACKAGE);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      GoConsume;
+    End;
+  End
+
+  { import declarations }
+  Else If GoKwIs('import') Then
+  Begin
+    N := SrcNewNode(SNK_GO_IMPORT);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    If GoTokIs('(') Then
+    Begin
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(')')) Do
+      Begin
+        If SrcToken.Kind = STK_STRING Then
+          SrcNodes[N].Name := SrcNodes[N].Name + SrcToken.Val + ' ';
+        GoConsume;
+      End;
+      If GoTokIs(')') Then GoConsume;
+    End
+    Else If SrcToken.Kind = STK_STRING Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      GoConsume;
+    End;
+  End
+
+  { func declarations }
+  Else If GoKwIs('func') Then
+    N := GoParseFuncDecl
+
+  { type declarations }
+  Else If GoKwIs('type') Then
+    N := GoParseTypeDecl
+
+  { var declarations }
+  Else If GoKwIs('var') Then
+  Begin
+    N := SrcNewNode(SNK_VAR_DECL);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    If GoTokIs('(') Then
+    Begin
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(')')) Do
+        GoConsume;
+      If GoTokIs(')') Then GoConsume;
+    End
+    Else If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            (SrcToken.Line = SrcNodes[N].Line) Do
+        GoConsume;
+    End;
+  End
+
+  { const declarations }
+  Else If GoKwIs('const') Then
+  Begin
+    N := SrcNewNode(SNK_CONST_DECL);
+    SrcNodes[N].Line := SrcToken.Line;
+    SrcNodes[N].Col  := SrcToken.Col;
+    GoConsume;
+    If GoTokIs('(') Then
+    Begin
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not GoTokIs(')')) Do
+        GoConsume;
+      If GoTokIs(')') Then GoConsume;
+    End
+    Else If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      GoConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            (SrcToken.Line = SrcNodes[N].Line) Do
+        GoConsume;
+    End;
+  End
+
+  { end of file }
+  Else If SrcToken.Kind = STK_EOF Then
+  Begin
+    { nothing }
+  End
+  Else
+  Begin
+    { Unknown top-level, advance }
+    GoConsume;
+  End;
+  GoParseTopLevel := N;
+End;
+
+{ ---- GoParseTranslationUnit : unite de traduction Go ---------- }
+
+Function GoParseTranslationUnit : Integer;
+Var Root, N, Last : Integer;
+Begin
+  GoConsume; { lire le premier token }
+  Root := SrcNewNode(SNK_GO_TRANSLATION_UNIT);
+  SrcNodes[Root].Name := 'GO_TU';
+  Last := -1;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    N := GoParseTopLevel;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+  End;
+  GoParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 29 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -18104,6 +19148,13 @@ End;
 Function IsCSharpSource(Const FName : TString) : Boolean;
 Begin
   IsCSharpSource := StrEndsWith(FName, '.cs');
+End;
+
+{ ---- IsGoSource : verifier si le fichier est .go ------------- }
+
+Function IsGoSource(Const FName : TString) : Boolean;
+Begin
+  IsGoSource := StrEndsWith(FName, '.go');
 End;
 
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
@@ -18160,7 +19211,8 @@ Begin
       If ((Opts.Language = 'pascal') And IsPascalSource(SR.Name)) Or
          ((Opts.Language = 'c') And IsCSource(SR.Name)) Or
          ((Opts.Language = 'cpp') And IsCppSource(SR.Name)) Or
-         ((Opts.Language = 'csharp') And IsCSharpSource(SR.Name)) Then
+         ((Opts.Language = 'csharp') And IsCSharpSource(SR.Name)) Or
+         ((Opts.Language = 'go') And IsGoSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -18251,6 +19303,12 @@ Begin
       CSharpLexInit;
       SrcASTInit;
       SrcRootNode := CSharpParseTranslationUnit;
+    End
+    Else If Opts.Language = 'go' Then
+    Begin
+      GoLexInit;
+      SrcASTInit;
+      SrcRootNode := GoParseTranslationUnit;
     End
     Else
     Begin
