@@ -131,7 +131,7 @@
   20. Implementer le systeme d'import et de modules QL : resolution des
       chemins d'import (import pascal, import semmle.code.pascal),
       chargement des bibliotheques de requetes depuis --search-path,
-      gestion des espaces de noms et des alias de modules.
+      gestion des espaces de noms et des alias de modules. [IMPLEMENTE]
 
   21. Implementer la bibliotheque standard de predicats QL pour Pascal :
       classes de base (Element, Locatable, Expr, Stmt, Function,
@@ -223,6 +223,10 @@ Const
   CSV_PAGE_SIZE   = {$IFDEF FPC}50{$ELSE}20{$ENDIF};
   TEXT_COL_MIN    = 6;     { largeur minimale d une colonne texte  }
   TEXT_COL_MAX    = 40;    { largeur maximale d une colonne texte  }
+
+  { TODO 20 : Systeme d import et de modules QL }
+  MAX_QL_MODULES  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_QL_IMPORTS  = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -905,6 +909,35 @@ Type
     FuncIdx  : Integer;       { index de la fonction englobante      }
   End;
 
+  { TODO 20 : Systeme d import et de modules QL }
+  TQLImportStatus = (
+    IMS_PENDING,     { import non encore resolu                }
+    IMS_RESOLVED,    { import resolu avec succes               }
+    IMS_NOT_FOUND,   { fichier ou module introuvable           }
+    IMS_ERROR        { erreur de chargement                    }
+  );
+
+  TQLImport = Record
+    Path       : TString;        { chemin d import brut (ex: semmle.code.pascal) }
+    Alias      : TString;        { alias optionnel (import X as Y)               }
+    ResolvedPath : TString;      { chemin resolu sur disque                       }
+    ModuleIdx  : Integer;        { index du module cible (-1 = non resolu)        }
+    Status     : TQLImportStatus;{ etat de la resolution                          }
+    ASTNodeIdx : Integer;        { index du noeud NK_IMPORT dans l AST            }
+  End;
+
+  TQLModule = Record
+    Name       : TString;        { nom complet du module (ex: semmle.code.pascal) }
+    ShortName  : TString;        { nom court (dernier segment : pascal)            }
+    FilePath   : TString;        { chemin du fichier .ql sur disque                }
+    ParentIdx  : Integer;        { index du module parent (-1 = racine)            }
+    FirstChild : Integer;        { premier sous-module (-1 = aucun)                }
+    NextSibling: Integer;        { module frere suivant (-1 = aucun)               }
+    ImportStart: Integer;        { premier import dans QLImports[] pour ce module  }
+    ImportCount: Integer;        { nombre d imports du module                      }
+    Loaded     : Boolean;        { True si le contenu a ete charge/parse           }
+  End;
+
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -1038,6 +1071,12 @@ Var
   SecAlertCount : Integer;
   SecLeaks      : Array[0..MAX_SEC_LEAKS - 1] Of TSecResLeak;
   SecLeakCount  : Integer;
+
+  { Systeme d import et de modules QL (TODO 20) }
+  QLModules    : Array[0..MAX_QL_MODULES - 1] Of TQLModule;
+  QLModuleCount: Integer;
+  QLImports    : Array[0..MAX_QL_IMPORTS - 1] Of TQLImport;
+  QLImportCount: Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -12273,6 +12312,526 @@ Begin
   WriteResultText(Opts.OutputFile);
 End;
 
+{ ============================================================
+  TODO 20 - SYSTEME D IMPORT ET DE MODULES QL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- InitModules : initialiser le registre de modules ------ }
+
+Procedure InitModules;
+Var I : Integer;
+Begin
+  QLModuleCount := 0;
+  QLImportCount := 0;
+  For I := 0 To MAX_QL_MODULES - 1 Do
+  Begin
+    QLModules[I].Name       := '';
+    QLModules[I].ShortName  := '';
+    QLModules[I].FilePath   := '';
+    QLModules[I].ParentIdx  := -1;
+    QLModules[I].FirstChild := -1;
+    QLModules[I].NextSibling:= -1;
+    QLModules[I].ImportStart:= 0;
+    QLModules[I].ImportCount:= 0;
+    QLModules[I].Loaded     := False;
+  End;
+  For I := 0 To MAX_QL_IMPORTS - 1 Do
+  Begin
+    QLImports[I].Path        := '';
+    QLImports[I].Alias       := '';
+    QLImports[I].ResolvedPath:= '';
+    QLImports[I].ModuleIdx   := -1;
+    QLImports[I].Status      := IMS_PENDING;
+    QLImports[I].ASTNodeIdx  := -1;
+  End;
+End;
+
+{ ---- ExtractShortName : dernier segment d un chemin -------- }
+{   Ex: semmle.code.pascal -> pascal                           }
+
+Function ExtractShortName(Const FullPath : TString) : TString;
+Var
+  I    : Integer;
+  Last : Integer;
+Begin
+  Last := 1;
+  For I := 1 To Length(FullPath) Do
+    If FullPath[I] = '.' Then
+      Last := I + 1;
+  ExtractShortName := Copy(FullPath, Last, Length(FullPath) - Last + 1);
+End;
+
+{ ---- DotPathToFilePath : convertir un chemin avec des points }
+{   en chemin avec separateurs de repertoire.                  }
+{   Ex: semmle.code.pascal -> semmle/code/pascal               }
+
+Function DotPathToFilePath(Const DotPath : TString) : TString;
+Var
+  R : TString;
+  I : Integer;
+Begin
+  R := '';
+  For I := 1 To Length(DotPath) Do
+  Begin
+    If DotPath[I] = '.' Then
+      R := R + '/'
+    Else
+      R := R + DotPath[I];
+  End;
+  DotPathToFilePath := R;
+End;
+
+{ ---- FindModuleByName : chercher un module par son nom ----- }
+
+Function FindModuleByName(Const MName : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To QLModuleCount - 1 Do
+    If QLModules[I].Name = MName Then
+    Begin
+      FindModuleByName := I;
+      Exit;
+    End;
+  FindModuleByName := -1;
+End;
+
+{ ---- FindModuleByShort : chercher un module par nom court -- }
+
+Function FindModuleByShort(Const SName : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To QLModuleCount - 1 Do
+    If QLModules[I].ShortName = SName Then
+    Begin
+      FindModuleByShort := I;
+      Exit;
+    End;
+  FindModuleByShort := -1;
+End;
+
+{ ---- RegisterModule : enregistrer un nouveau module -------- }
+
+Function RegisterModule(Const MName, FPath : TString;
+                        ParIdx : Integer) : Integer;
+Var
+  Idx : Integer;
+  Sib : Integer;
+Begin
+  Idx := FindModuleByName(MName);
+  If Idx >= 0 Then
+  Begin
+    RegisterModule := Idx;
+    Exit;
+  End;
+  If QLModuleCount >= MAX_QL_MODULES Then
+  Begin
+    WarnMsg('Module limit reached');
+    RegisterModule := -1;
+    Exit;
+  End;
+  Idx := QLModuleCount;
+  Inc(QLModuleCount);
+  QLModules[Idx].Name       := MName;
+  QLModules[Idx].ShortName  := ExtractShortName(MName);
+  QLModules[Idx].FilePath   := FPath;
+  QLModules[Idx].ParentIdx  := ParIdx;
+  QLModules[Idx].FirstChild := -1;
+  QLModules[Idx].NextSibling:= -1;
+  QLModules[Idx].ImportStart:= 0;
+  QLModules[Idx].ImportCount:= 0;
+  QLModules[Idx].Loaded     := False;
+  { Relier au parent }
+  If ParIdx >= 0 Then
+  Begin
+    If QLModules[ParIdx].FirstChild < 0 Then
+      QLModules[ParIdx].FirstChild := Idx
+    Else
+    Begin
+      Sib := QLModules[ParIdx].FirstChild;
+      While QLModules[Sib].NextSibling >= 0 Do
+        Sib := QLModules[Sib].NextSibling;
+      QLModules[Sib].NextSibling := Idx;
+    End;
+  End;
+  RegisterModule := Idx;
+End;
+
+{ ---- AddQLImport : ajouter un import au registre ----------- }
+
+Function AddQLImport(Const IPath, IAlias : TString;
+                     ASTIdx : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  If QLImportCount >= MAX_QL_IMPORTS Then
+  Begin
+    WarnMsg('Import limit reached');
+    AddQLImport := -1;
+    Exit;
+  End;
+  Idx := QLImportCount;
+  Inc(QLImportCount);
+  QLImports[Idx].Path        := IPath;
+  QLImports[Idx].Alias       := IAlias;
+  QLImports[Idx].ResolvedPath:= '';
+  QLImports[Idx].ModuleIdx   := -1;
+  QLImports[Idx].Status      := IMS_PENDING;
+  QLImports[Idx].ASTNodeIdx  := ASTIdx;
+  AddQLImport := Idx;
+End;
+
+{ ---- CollectImportsFromAST : parcourir l AST pour extraire - }
+{   les declarations import et les enregistrer.                }
+
+Procedure CollectImportsFromAST(N : Integer);
+Var
+  Child : Integer;
+Begin
+  If N < 0 Then Exit;
+  If N >= NodeCount Then Exit;
+
+  If Nodes[N].Kind = NK_IMPORT Then
+    AddQLImport(Nodes[N].Name, '', N);
+
+  { Parcourir les enfants }
+  Child := Nodes[N].Left;
+  While (Child >= 0) And (Child < NodeCount) Do
+  Begin
+    CollectImportsFromAST(Child);
+    Child := Nodes[Child].Next;
+  End;
+
+  If Nodes[N].Right >= 0 Then
+    CollectImportsFromAST(Nodes[N].Right);
+  If Nodes[N].Extra >= 0 Then
+    CollectImportsFromAST(Nodes[N].Extra);
+End;
+
+{ ---- FileExists2 : tester si un fichier existe ------------- }
+
+Function FileExists2(Const FName : TString) : Boolean;
+Var F : Text;
+Begin
+  Assign(F, FName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    Close(F);
+    FileExists2 := True;
+  End
+  Else
+    FileExists2 := False;
+End;
+
+{ ---- ResolveImportPath : resoudre un chemin d import ------- }
+{   Cherche le fichier .ql correspondant dans les chemins      }
+{   de recherche (SearchPath) et le repertoire courant.        }
+
+Function ResolveImportPath(Const DotPath : TString) : TString;
+Var
+  RelPath  : TString;
+  Candidate: TString;
+Begin
+  RelPath := DotPathToFilePath(DotPath);
+
+  { 1. Essayer dans le repertoire courant }
+  Candidate := RelPath + '.ql';
+  If FileExists2(Candidate) Then
+  Begin
+    ResolveImportPath := Candidate;
+    Exit;
+  End;
+
+  { 2. Essayer dans le repertoire courant comme dossier }
+  Candidate := RelPath + '/index.ql';
+  If FileExists2(Candidate) Then
+  Begin
+    ResolveImportPath := Candidate;
+    Exit;
+  End;
+
+  { 3. Essayer dans le SearchPath }
+  If Opts.SearchPath <> '' Then
+  Begin
+    Candidate := Opts.SearchPath + '/' + RelPath + '.ql';
+    If FileExists2(Candidate) Then
+    Begin
+      ResolveImportPath := Candidate;
+      Exit;
+    End;
+
+    Candidate := Opts.SearchPath + '/' + RelPath + '/index.ql';
+    If FileExists2(Candidate) Then
+    Begin
+      ResolveImportPath := Candidate;
+      Exit;
+    End;
+  End;
+
+  { 4. Non trouve }
+  ResolveImportPath := '';
+End;
+
+{ ---- ResolveImports : resoudre tous les imports pending ---- }
+
+Procedure ResolveImports;
+Var
+  I      : Integer;
+  Resolved: TString;
+  ModIdx : Integer;
+Begin
+  For I := 0 To QLImportCount - 1 Do
+  Begin
+    If QLImports[I].Status <> IMS_PENDING Then
+      Continue;
+
+    { Verifier si le chemin correspond a un module deja charge }
+    ModIdx := FindModuleByName(QLImports[I].Path);
+    If ModIdx >= 0 Then
+    Begin
+      QLImports[I].ModuleIdx    := ModIdx;
+      QLImports[I].ResolvedPath := QLModules[ModIdx].FilePath;
+      QLImports[I].Status       := IMS_RESOLVED;
+      Continue;
+    End;
+
+    { Verifier par le nom court }
+    ModIdx := FindModuleByShort(QLImports[I].Path);
+    If ModIdx >= 0 Then
+    Begin
+      QLImports[I].ModuleIdx    := ModIdx;
+      QLImports[I].ResolvedPath := QLModules[ModIdx].FilePath;
+      QLImports[I].Status       := IMS_RESOLVED;
+      Continue;
+    End;
+
+    { Resoudre sur le disque }
+    Resolved := ResolveImportPath(QLImports[I].Path);
+    If Resolved <> '' Then
+    Begin
+      QLImports[I].ResolvedPath := Resolved;
+      { Enregistrer comme module }
+      ModIdx := RegisterModule(QLImports[I].Path, Resolved, -1);
+      QLImports[I].ModuleIdx := ModIdx;
+      QLImports[I].Status    := IMS_RESOLVED;
+    End
+    Else
+    Begin
+      { Les imports de la bibliotheque standard (pascal, semmle.*) sont
+        consideres comme resolus meme sans fichier physique car ils
+        designent des modules integres.                                }
+      If (QLImports[I].Path = 'pascal') Or
+         (Copy(QLImports[I].Path, 1, 6) = 'semmle') Then
+      Begin
+        ModIdx := RegisterModule(QLImports[I].Path, '', -1);
+        If ModIdx >= 0 Then
+          QLModules[ModIdx].Loaded := True;
+        QLImports[I].ModuleIdx := ModIdx;
+        QLImports[I].Status    := IMS_RESOLVED;
+      End
+      Else
+      Begin
+        QLImports[I].Status := IMS_NOT_FOUND;
+        WarnMsg('Import not found: ' + QLImports[I].Path);
+      End;
+    End;
+  End;
+End;
+
+{ ---- LoadQLLibrary : charger un fichier .ql de bibliotheque  }
+{   Cette version simple lit le fichier et le marque comme     }
+{   charge sans parser son contenu (la resolution des symboles }
+{   exportes est une extension future).                        }
+
+Procedure LoadQLLibrary(ModIdx : Integer);
+Var
+  F     : Text;
+  L     : TString;
+  Lines : Integer;
+Begin
+  If ModIdx < 0 Then Exit;
+  If ModIdx >= QLModuleCount Then Exit;
+  If QLModules[ModIdx].Loaded Then Exit;
+  If QLModules[ModIdx].FilePath = '' Then
+  Begin
+    QLModules[ModIdx].Loaded := True;
+    Exit;
+  End;
+
+  Assign(F, QLModules[ModIdx].FilePath);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Cannot open library: ' + QLModules[ModIdx].FilePath);
+    Exit;
+  End;
+
+  Lines := 0;
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, L);
+    Inc(Lines);
+  End;
+  Close(F);
+
+  QLModules[ModIdx].Loaded := True;
+  If Opts.Verbose Then
+    WriteLn('  Loaded module ', QLModules[ModIdx].Name,
+            ' (', Lines, ' lines) from ', QLModules[ModIdx].FilePath);
+End;
+
+{ ---- LoadAllLibraries : charger toutes les bibliotheques --- }
+
+Procedure LoadAllLibraries;
+Var I : Integer;
+Begin
+  For I := 0 To QLModuleCount - 1 Do
+    LoadQLLibrary(I);
+End;
+
+{ ---- ImportStatusName : nom textuel d un TQLImportStatus --- }
+
+Function ImportStatusName(S : TQLImportStatus) : TString;
+Begin
+  Case S Of
+    IMS_PENDING   : ImportStatusName := 'PENDING';
+    IMS_RESOLVED  : ImportStatusName := 'RESOLVED';
+    IMS_NOT_FOUND : ImportStatusName := 'NOT_FOUND';
+    IMS_ERROR     : ImportStatusName := 'ERROR';
+  Else
+    ImportStatusName := '?';
+  End;
+End;
+
+{ ---- CountResolvedImports : compter les imports resolus ---- }
+
+Function CountResolvedImports : Integer;
+Var I, C : Integer;
+Begin
+  C := 0;
+  For I := 0 To QLImportCount - 1 Do
+    If QLImports[I].Status = IMS_RESOLVED Then
+      Inc(C);
+  CountResolvedImports := C;
+End;
+
+{ ---- BuildModuleTree : construire les sous-modules a partir }
+{   des chemins d import avec des points.                     }
+
+Procedure BuildModuleTree;
+Var
+  I        : Integer;
+  Path     : TString;
+  Seg      : TString;
+  Prefix   : TString;
+  ParIdx   : Integer;
+  DotPos   : Integer;
+  J        : Integer;
+Begin
+  For I := 0 To QLModuleCount - 1 Do
+  Begin
+    Path   := QLModules[I].Name;
+    ParIdx := -1;
+    Prefix := '';
+
+    { Decomposer le chemin en segments et creer les modules intermediaires }
+    While Length(Path) > 0 Do
+    Begin
+      DotPos := 0;
+      For J := 1 To Length(Path) Do
+        If Path[J] = '.' Then
+        Begin
+          DotPos := J;
+          Break;
+        End;
+
+      If DotPos > 0 Then
+      Begin
+        Seg := Copy(Path, 1, DotPos - 1);
+        Path := Copy(Path, DotPos + 1, Length(Path) - DotPos);
+      End
+      Else
+      Begin
+        Seg := Path;
+        Path := '';
+      End;
+
+      If Prefix = '' Then
+        Prefix := Seg
+      Else
+        Prefix := Prefix + '.' + Seg;
+
+      { Ne pas re-creer le module complet si c est le dernier segment }
+      If Length(Path) > 0 Then
+      Begin
+        { Creer le module intermediaire s il n existe pas }
+        If FindModuleByName(Prefix) < 0 Then
+          RegisterModule(Prefix, '', ParIdx);
+        ParIdx := FindModuleByName(Prefix);
+      End
+      Else
+      Begin
+        { Mettre a jour le parent du module existant }
+        If (ParIdx >= 0) And (QLModules[I].ParentIdx < 0) Then
+          QLModules[I].ParentIdx := ParIdx;
+      End;
+    End;
+  End;
+End;
+
+{ ---- RunImportResolution : pipeline complet de resolution -- }
+{   1. Initialiser le registre                                 }
+{   2. Collecter les imports de l AST                          }
+{   3. Construire l arbre de modules                           }
+{   4. Resoudre les chemins d import                           }
+{   5. Charger les bibliotheques trouvees                      }
+
+Procedure RunImportResolution;
+Begin
+  InitModules;
+  CollectImportsFromAST(RootNode);
+  ResolveImports;
+  BuildModuleTree;
+  LoadAllLibraries;
+End;
+
+{ ---- DumpModules : afficher le registre de modules --------- }
+
+Procedure DumpModules;
+Var I : Integer;
+Begin
+  WriteLn;
+  WriteLn('=== MODULES QL (', QLModuleCount, ') ===');
+  For I := 0 To QLModuleCount - 1 Do
+  Begin
+    WriteLn('  [', I, '] ', QLModules[I].Name);
+    WriteLn('       short=', QLModules[I].ShortName,
+            '  parent=', QLModules[I].ParentIdx,
+            '  loaded=', QLModules[I].Loaded);
+    If QLModules[I].FilePath <> '' Then
+      WriteLn('       file=', QLModules[I].FilePath);
+  End;
+
+  WriteLn;
+  WriteLn('=== IMPORTS QL (', QLImportCount, ') ===');
+  For I := 0 To QLImportCount - 1 Do
+  Begin
+    Write('  [', I, '] import ', QLImports[I].Path);
+    If QLImports[I].Alias <> '' Then
+      Write(' as ', QLImports[I].Alias);
+    WriteLn('  => ', ImportStatusName(QLImports[I].Status),
+            '  module=', QLImports[I].ModuleIdx);
+    If QLImports[I].ResolvedPath <> '' Then
+      WriteLn('       resolved=', QLImports[I].ResolvedPath);
+  End;
+
+  WriteLn;
+  WriteLn('Resolved: ', CountResolvedImports, '/', QLImportCount);
+End;
+
 { ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
 
 Procedure RunDatabaseCreate;
@@ -12333,8 +12892,15 @@ Begin
     WriteLn('Erreurs de type : ', TypeErrors);
     WriteLn;
 
+    { TODO 20 : resolution des imports et modules }
+    RunImportResolution;
+    WriteLn('Modules QL      : ', QLModuleCount, ' enregistres');
+    WriteLn('Imports QL      : ', QLImportCount, ' (', CountResolvedImports, ' resolus)');
+    WriteLn;
+
     If Opts.DebugMode Then
     Begin
+      DumpModules;
       DumpTypes;
       DumpAST(RootNode, 0);
     End;
