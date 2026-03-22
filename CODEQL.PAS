@@ -137,7 +137,7 @@
       classes de base (Element, Locatable, Expr, Stmt, Function,
       Variable, Type, Call, Access, Comment), predicats utilitaires
       (hasName, getType, getAChild, getLocation, getEnclosingFunction,
-      getAnArgument, getTarget, flowsTo).
+      getAnArgument, getTarget, flowsTo). [IMPLEMENTE]
 
   22. Implementer la commande "codeql database create" : orchestration
       complete de la creation de la base de donnees a partir d'un
@@ -227,6 +227,10 @@ Const
   { TODO 20 : Systeme d import et de modules QL }
   MAX_QL_MODULES  = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_QL_IMPORTS  = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+
+  { TODO 21 : Bibliotheque standard de predicats QL }
+  MAX_STDLIB_PREDS = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
+  STDLIB_NUM_CLASSES = 10;  { Element,Locatable,Expr,Stmt,Function,Variable,Type,Call,Access,Comment }
 
   { TODO 8 : Noms de fichiers des tables sur disque }
   DB_SIGNATURE  = $51444243;  { signature 'QBDC' en little-endian  }
@@ -938,6 +942,26 @@ Type
     Loaded     : Boolean;        { True si le contenu a ete charge/parse           }
   End;
 
+  { TODO 21 : Bibliotheque standard de predicats QL }
+  TStdPredKind = (
+    SPK_NONE,                { inconnu                             }
+    SPK_HAS_NAME,            { hasName(name) : boolean             }
+    SPK_GET_TYPE,            { getType() : Type                    }
+    SPK_GET_A_CHILD,         { getAChild() : Element               }
+    SPK_GET_LOCATION,        { getLocation() : Location            }
+    SPK_GET_ENCLOSING_FUNC,  { getEnclosingFunction() : Function   }
+    SPK_GET_AN_ARGUMENT,     { getAnArgument() : Expr              }
+    SPK_GET_TARGET,          { getTarget() : Variable / Function   }
+    SPK_FLOWS_TO             { flowsTo(target) : boolean           }
+  );
+
+  TStdPredInfo = Record
+    Name       : TString;        { nom du predicat (ex: hasName)   }
+    Kind       : TStdPredKind;   { type du predicat                }
+    ClassIdx   : Integer;        { index de la classe proprietaire }
+    QLPredIdx  : Integer;        { index dans QLPreds[]            }
+  End;
+
 Var
   Opts       : TOptions;
   ErrorCount : Integer;
@@ -1077,6 +1101,11 @@ Var
   QLModuleCount: Integer;
   QLImports    : Array[0..MAX_QL_IMPORTS - 1] Of TQLImport;
   QLImportCount: Integer;
+
+  { Bibliotheque standard QL (TODO 21) }
+  StdPreds      : Array[0..MAX_STDLIB_PREDS - 1] Of TStdPredInfo;
+  StdPredCount  : Integer;
+  StdLibBuilt   : Boolean;    { True apres BuildStdLibrary }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -12832,6 +12861,607 @@ Begin
   WriteLn('Resolved: ', CountResolvedImports, '/', QLImportCount);
 End;
 
+{ ============================================================
+  TODO 21 - BIBLIOTHEQUE STANDARD DE PREDICATS QL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- InitStdLib : initialiser la bibliotheque standard ------ }
+
+Procedure InitStdLib;
+Var I : Integer;
+Begin
+  StdPredCount := 0;
+  StdLibBuilt  := False;
+  For I := 0 To MAX_STDLIB_PREDS - 1 Do
+  Begin
+    StdPreds[I].Name     := '';
+    StdPreds[I].Kind     := SPK_NONE;
+    StdPreds[I].ClassIdx := -1;
+    StdPreds[I].QLPredIdx:= -1;
+  End;
+End;
+
+{ ---- Nom textuel d un type de predicat stdlib --------------- }
+
+Function StdPredKindName(K : TStdPredKind) : TString;
+Begin
+  Case K Of
+    SPK_NONE              : StdPredKindName := 'none';
+    SPK_HAS_NAME          : StdPredKindName := 'hasName';
+    SPK_GET_TYPE           : StdPredKindName := 'getType';
+    SPK_GET_A_CHILD        : StdPredKindName := 'getAChild';
+    SPK_GET_LOCATION       : StdPredKindName := 'getLocation';
+    SPK_GET_ENCLOSING_FUNC : StdPredKindName := 'getEnclosingFunction';
+    SPK_GET_AN_ARGUMENT    : StdPredKindName := 'getAnArgument';
+    SPK_GET_TARGET         : StdPredKindName := 'getTarget';
+    SPK_FLOWS_TO           : StdPredKindName := 'flowsTo';
+  End;
+End;
+
+{ ---- Enregistrer un predicat standard ----------------------- }
+
+Function AddStdPred(Const AName : TString; AKind : TStdPredKind;
+                    ACIdx, AQLPIdx : Integer) : Integer;
+Begin
+  If StdPredCount >= MAX_STDLIB_PREDS Then
+  Begin
+    WarnMsg('StdLib: depassement MAX_STDLIB_PREDS');
+    AddStdPred := -1;
+    Exit;
+  End;
+  StdPreds[StdPredCount].Name      := AName;
+  StdPreds[StdPredCount].Kind      := AKind;
+  StdPreds[StdPredCount].ClassIdx  := ACIdx;
+  StdPreds[StdPredCount].QLPredIdx := AQLPIdx;
+  AddStdPred := StdPredCount;
+  Inc(StdPredCount);
+End;
+
+{ ---- FindStdPred : trouver un predicat standard par nom et classe }
+
+Function FindStdPred(AClassIdx : Integer;
+                     Const AName : TString) : Integer;
+Var
+  I   : Integer;
+  LN  : TString;
+Begin
+  LN := StrLowerCase(AName);
+  FindStdPred := -1;
+  For I := 0 To StdPredCount - 1 Do
+  Begin
+    If (StdPreds[I].ClassIdx = AClassIdx) And
+       (StrLowerCase(StdPreds[I].Name) = LN) Then
+    Begin
+      FindStdPred := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ---- FindStdPredByQLIdx : trouver par index QLPred ---------- }
+
+Function FindStdPredByQLIdx(AQLPIdx : Integer) : Integer;
+Var I : Integer;
+Begin
+  FindStdPredByQLIdx := -1;
+  For I := 0 To StdPredCount - 1 Do
+    If StdPreds[I].QLPredIdx = AQLPIdx Then
+    Begin
+      FindStdPredByQLIdx := I;
+      Exit;
+    End;
+End;
+
+{ ---- EvalStdPredHasName : predicat hasName(name) ------------ }
+{ Retourne True si l element de la base de donnees a le nom donne }
+
+Function EvalStdPredHasName(Const TableName : TString;
+                            RowIdx : Integer;
+                            Const ArgName : TString) : Boolean;
+Var
+  BV : TBindingValue;
+Begin
+  EvalStdPredHasName := False;
+  BV := GetDbField(TableName, RowIdx, 'name');
+  If BV.Kind = BK_STRING Then
+    EvalStdPredHasName := (StrLowerCase(BV.StrVal) =
+                           StrLowerCase(ArgName));
+End;
+
+{ ---- EvalStdPredGetType : predicat getType() ---------------- }
+{ Retourne une reference vers le type de l element }
+
+Function EvalStdPredGetType(Const TableName : TString;
+                            RowIdx : Integer) : TBindingValue;
+Var
+  BV : TBindingValue;
+  TId : LongInt;
+Begin
+  EvalStdPredGetType := MakeNoneBinding;
+  BV := GetDbField(TableName, RowIdx, 'typeid');
+  If BV.Kind = BK_INT Then
+  Begin
+    TId := BV.IntVal;
+    If (TId >= 0) And (TId < DbTypeCnt) Then
+      EvalStdPredGetType := MakeDbRefBinding('types', TId);
+  End;
+  { Pour les fonctions, on utilise returntypeid }
+  If (BV.Kind = BK_NONE) And
+     (StrLowerCase(TableName) = 'functions') Then
+  Begin
+    BV := GetDbField(TableName, RowIdx, 'returntypeid');
+    If BV.Kind = BK_INT Then
+    Begin
+      TId := BV.IntVal;
+      If (TId >= 0) And (TId < DbTypeCnt) Then
+        EvalStdPredGetType := MakeDbRefBinding('types', TId);
+    End;
+  End;
+End;
+
+{ ---- EvalStdPredGetAChild : predicat getAChild() ------------ }
+{ Retourne le premier enfant (premier element avec parentid = id) }
+
+Function EvalStdPredGetAChild(Const TableName : TString;
+                              RowIdx : Integer) : TBindingValue;
+Var
+  NT   : TString;
+  MyId : LongInt;
+  BV   : TBindingValue;
+  I    : Integer;
+Begin
+  EvalStdPredGetAChild := MakeNoneBinding;
+  NT := StrLowerCase(TableName);
+  BV := GetDbField(TableName, RowIdx, 'id');
+  If BV.Kind <> BK_INT Then Exit;
+  MyId := BV.IntVal;
+
+  { Chercher un enfant dans exprs }
+  For I := 0 To DbExprCnt - 1 Do
+    If DbExprs[I].ParentId = MyId Then
+    Begin
+      EvalStdPredGetAChild := MakeDbRefBinding('exprs', I);
+      Exit;
+    End;
+  { Chercher un enfant dans stmts }
+  For I := 0 To DbStmtCnt - 1 Do
+    If DbStmts[I].ParentId = MyId Then
+    Begin
+      EvalStdPredGetAChild := MakeDbRefBinding('stmts', I);
+      Exit;
+    End;
+  { Chercher un enfant dans variables }
+  For I := 0 To DbVariableCnt - 1 Do
+    If DbVariables[I].ParentId = MyId Then
+    Begin
+      EvalStdPredGetAChild := MakeDbRefBinding('variables', I);
+      Exit;
+    End;
+  { Chercher un enfant dans functions }
+  For I := 0 To DbFunctionCnt - 1 Do
+    If DbFunctions[I].ParentId = MyId Then
+    Begin
+      EvalStdPredGetAChild := MakeDbRefBinding('functions', I);
+      Exit;
+    End;
+End;
+
+{ ---- EvalStdPredGetLocation : predicat getLocation() -------- }
+{ Retourne la location associee a l element }
+
+Function EvalStdPredGetLocation(Const TableName : TString;
+                                RowIdx : Integer) : TBindingValue;
+Var
+  BV   : TBindingValue;
+  LId  : LongInt;
+Begin
+  EvalStdPredGetLocation := MakeNoneBinding;
+  BV := GetDbField(TableName, RowIdx, 'locid');
+  If BV.Kind = BK_INT Then
+  Begin
+    LId := BV.IntVal;
+    If (LId >= 0) And (LId < DbLocationCnt) Then
+      EvalStdPredGetLocation := MakeDbRefBinding('locations', LId);
+  End;
+End;
+
+{ ---- EvalStdPredGetEnclosingFunction : predicat getEnclosingFunction() }
+{ Retourne la fonction englobante via parentid }
+
+Function EvalStdPredGetEnclosingFunc(Const TableName : TString;
+                                     RowIdx : Integer) : TBindingValue;
+Var
+  BV   : TBindingValue;
+  PId  : LongInt;
+  NT   : TString;
+  I    : Integer;
+Begin
+  EvalStdPredGetEnclosingFunc := MakeNoneBinding;
+  NT := StrLowerCase(TableName);
+
+  { Si c est deja une fonction, retourner elle-meme }
+  If NT = 'functions' Then
+  Begin
+    EvalStdPredGetEnclosingFunc := MakeDbRefBinding('functions', RowIdx);
+    Exit;
+  End;
+
+  { Sinon, chercher via parentid }
+  BV := GetDbField(TableName, RowIdx, 'parentid');
+  If BV.Kind <> BK_INT Then Exit;
+  PId := BV.IntVal;
+
+  { Chercher dans les fonctions celle avec cet Id }
+  For I := 0 To DbFunctionCnt - 1 Do
+    If DbFunctions[I].Id = PId Then
+    Begin
+      EvalStdPredGetEnclosingFunc := MakeDbRefBinding('functions', I);
+      Exit;
+    End;
+
+  { Si le parentid pointe vers un stmt, remonter encore }
+  For I := 0 To DbStmtCnt - 1 Do
+    If DbStmts[I].Id = PId Then
+    Begin
+      EvalStdPredGetEnclosingFunc :=
+        EvalStdPredGetEnclosingFunc('stmts', I);
+      Exit;
+    End;
+End;
+
+{ ---- EvalStdPredGetAnArgument : predicat getAnArgument() ---- }
+{ Pour un appel (Call), retourne le premier argument (expr enfant) }
+
+Function EvalStdPredGetAnArgument(Const TableName : TString;
+                                  RowIdx : Integer) : TBindingValue;
+Var
+  NT   : TString;
+  BV   : TBindingValue;
+  MyId : LongInt;
+  I    : Integer;
+Begin
+  EvalStdPredGetAnArgument := MakeNoneBinding;
+  NT := StrLowerCase(TableName);
+  If (NT <> 'calls') And (NT <> 'exprs') Then Exit;
+
+  BV := GetDbField(TableName, RowIdx, 'id');
+  If BV.Kind <> BK_INT Then Exit;
+  MyId := BV.IntVal;
+
+  { Pour un Call, chercher les expressions enfants }
+  For I := 0 To DbExprCnt - 1 Do
+    If DbExprs[I].ParentId = MyId Then
+    Begin
+      EvalStdPredGetAnArgument := MakeDbRefBinding('exprs', I);
+      Exit;
+    End;
+End;
+
+{ ---- EvalStdPredGetTarget : predicat getTarget() ------------ }
+{ Pour un acces, retourne la variable cible;
+  pour un appel, retourne la fonction cible }
+
+Function EvalStdPredGetTarget(Const TableName : TString;
+                              RowIdx : Integer) : TBindingValue;
+Var
+  NT   : TString;
+  BV   : TBindingValue;
+  TId  : LongInt;
+  I    : Integer;
+Begin
+  EvalStdPredGetTarget := MakeNoneBinding;
+  NT := StrLowerCase(TableName);
+
+  If NT = 'accesses' Then
+  Begin
+    If (RowIdx < 0) Or (RowIdx >= DbAccessCnt) Then Exit;
+    TId := DbAccesses[RowIdx].TargetId;
+    For I := 0 To DbVariableCnt - 1 Do
+      If DbVariables[I].Id = TId Then
+      Begin
+        EvalStdPredGetTarget := MakeDbRefBinding('variables', I);
+        Exit;
+      End;
+  End
+  Else If NT = 'calls' Then
+  Begin
+    If (RowIdx < 0) Or (RowIdx >= DbCallCnt) Then Exit;
+    TId := DbCalls[RowIdx].TargetId;
+    For I := 0 To DbFunctionCnt - 1 Do
+      If DbFunctions[I].Id = TId Then
+      Begin
+        EvalStdPredGetTarget := MakeDbRefBinding('functions', I);
+        Exit;
+      End;
+  End;
+End;
+
+{ ---- EvalStdPredFlowsTo : predicat flowsTo(target) ---------- }
+{ Verifie si un element tainted atteint la cible via le taint tracking }
+
+Function EvalStdPredFlowsTo(Const SrcTable : TString;
+                            SrcRow : Integer;
+                            Const DstTable : TString;
+                            DstRow : Integer) : Boolean;
+Var
+  SrcBV, DstBV : TBindingValue;
+  SrcId, DstId : LongInt;
+  I            : Integer;
+Begin
+  EvalStdPredFlowsTo := False;
+  SrcBV := GetDbField(SrcTable, SrcRow, 'id');
+  DstBV := GetDbField(DstTable, DstRow, 'id');
+  If (SrcBV.Kind <> BK_INT) Or (DstBV.Kind <> BK_INT) Then Exit;
+  SrcId := SrcBV.IntVal;
+  DstId := DstBV.IntVal;
+
+  { Verifier dans les alertes de teinte si une source atteint un puits }
+  For I := 0 To TaintAlertCount - 1 Do
+  Begin
+    If (TaintAlerts[I].SrcIdx >= 0) And
+       (TaintAlerts[I].SrcIdx < TaintSrcCount) And
+       (TaintAlerts[I].SinkIdx >= 0) And
+       (TaintAlerts[I].SinkIdx < TaintSinkCount) Then
+    Begin
+      If (TaintSources[TaintAlerts[I].SrcIdx].ASTIndex = SrcId) And
+         (TaintSinks[TaintAlerts[I].SinkIdx].ASTIndex = DstId) Then
+      Begin
+        EvalStdPredFlowsTo := True;
+        Exit;
+      End;
+    End;
+  End;
+
+  { Cas simple : meme identifiant = trivially flows to itself }
+  If (StrLowerCase(SrcTable) = StrLowerCase(DstTable)) And
+     (SrcId = DstId) Then
+    EvalStdPredFlowsTo := True;
+End;
+
+{ ---- EvalStdPred : evaluer un predicat standard --------------- }
+{ Retourne le resultat d un predicat standard en fonction de son type }
+
+Function EvalStdPred(StdIdx : Integer;
+                     Const TableName : TString;
+                     RowIdx : Integer) : TBindingValue;
+Begin
+  EvalStdPred := MakeNoneBinding;
+  If (StdIdx < 0) Or (StdIdx >= StdPredCount) Then Exit;
+
+  Case StdPreds[StdIdx].Kind Of
+    SPK_GET_TYPE:
+      EvalStdPred := EvalStdPredGetType(TableName, RowIdx);
+    SPK_GET_A_CHILD:
+      EvalStdPred := EvalStdPredGetAChild(TableName, RowIdx);
+    SPK_GET_LOCATION:
+      EvalStdPred := EvalStdPredGetLocation(TableName, RowIdx);
+    SPK_GET_ENCLOSING_FUNC:
+      EvalStdPred := EvalStdPredGetEnclosingFunc(TableName, RowIdx);
+    SPK_GET_AN_ARGUMENT:
+      EvalStdPred := EvalStdPredGetAnArgument(TableName, RowIdx);
+    SPK_GET_TARGET:
+      EvalStdPred := EvalStdPredGetTarget(TableName, RowIdx);
+  Else
+    EvalStdPred := MakeNoneBinding;
+  End;
+End;
+
+{ ---- RegisterStdClassPreds : enregistrer les predicats d une classe stdlib }
+
+Procedure RegisterStdClassPreds(CIdx : Integer;
+                                Const CName : TString);
+Var
+  PIdx : Integer;
+  NT   : TString;
+Begin
+  NT := StrLowerCase(CName);
+
+  { hasName : disponible pour toutes les classes sauf Element }
+  If (NT <> 'element') Then
+  Begin
+    PIdx := RegisterQLPred('hasName', CIdx, -1, QPF_NONE);
+    If PIdx >= 0 Then
+      AddStdPred('hasName', SPK_HAS_NAME, CIdx, PIdx);
+  End;
+
+  { getLocation : disponible pour Locatable et toutes ses sous-classes }
+  If (NT = 'locatable') Or (NT = 'expr') Or (NT = 'stmt') Or
+     (NT = 'function') Or (NT = 'variable') Or (NT = 'type') Or
+     (NT = 'call') Or (NT = 'access') Or (NT = 'comment') Then
+  Begin
+    PIdx := RegisterQLPred('getLocation', CIdx, -1, QPF_NONE);
+    If PIdx >= 0 Then
+      AddStdPred('getLocation', SPK_GET_LOCATION, CIdx, PIdx);
+  End;
+
+  { getType : pour Expr, Variable, Function }
+  If (NT = 'expr') Or (NT = 'variable') Or (NT = 'function') Or
+     (NT = 'call') Or (NT = 'access') Then
+  Begin
+    PIdx := RegisterQLPred('getType', CIdx, -1, QPF_NONE);
+    If PIdx >= 0 Then
+      AddStdPred('getType', SPK_GET_TYPE, CIdx, PIdx);
+  End;
+
+  { getAChild : pour Element et toutes les classes }
+  Begin
+    PIdx := RegisterQLPred('getAChild', CIdx, -1, QPF_NONE);
+    If PIdx >= 0 Then
+      AddStdPred('getAChild', SPK_GET_A_CHILD, CIdx, PIdx);
+  End;
+
+  { getEnclosingFunction : pour Expr, Stmt, Variable }
+  If (NT = 'expr') Or (NT = 'stmt') Or (NT = 'variable') Or
+     (NT = 'call') Or (NT = 'access') Then
+  Begin
+    PIdx := RegisterQLPred('getEnclosingFunction', CIdx, -1, QPF_NONE);
+    If PIdx >= 0 Then
+      AddStdPred('getEnclosingFunction', SPK_GET_ENCLOSING_FUNC, CIdx, PIdx);
+  End;
+
+  { getAnArgument : pour Call }
+  If (NT = 'call') Then
+  Begin
+    PIdx := RegisterQLPred('getAnArgument', CIdx, -1, QPF_NONE);
+    If PIdx >= 0 Then
+      AddStdPred('getAnArgument', SPK_GET_AN_ARGUMENT, CIdx, PIdx);
+  End;
+
+  { getTarget : pour Call et Access }
+  If (NT = 'call') Or (NT = 'access') Then
+  Begin
+    PIdx := RegisterQLPred('getTarget', CIdx, -1, QPF_NONE);
+    If PIdx >= 0 Then
+      AddStdPred('getTarget', SPK_GET_TARGET, CIdx, PIdx);
+  End;
+
+  { flowsTo : pour Expr }
+  If (NT = 'expr') Or (NT = 'variable') Then
+  Begin
+    PIdx := RegisterQLPred('flowsTo', CIdx, -1, QPF_NONE);
+    If PIdx >= 0 Then
+      AddStdPred('flowsTo', SPK_FLOWS_TO, CIdx, PIdx);
+  End;
+End;
+
+{ ---- BuildStdLibrary : construire la bibliotheque standard --- }
+
+Procedure BuildStdLibrary;
+Var
+  CIdx : Integer;
+  BaseLocatable : Integer;
+  BaseElement   : Integer;
+Begin
+  InitStdLib;
+
+  { 1. Enregistrer la classe racine : Element }
+  BaseElement := RegisterQLClass('Element', -1, -1, True);
+  If BaseElement >= 0 Then
+    RegisterStdClassPreds(BaseElement, 'Element');
+
+  { 2. Enregistrer Locatable extends Element }
+  BaseLocatable := RegisterQLClass('Locatable', -1, -1, True);
+  If BaseLocatable >= 0 Then
+  Begin
+    QLClasses[BaseLocatable].BaseIdx := BaseElement;
+    RegisterStdClassPreds(BaseLocatable, 'Locatable');
+  End;
+
+  { 3. Enregistrer Expr extends Locatable }
+  CIdx := RegisterQLClass('Expr', -1, -1, False);
+  If CIdx >= 0 Then
+  Begin
+    QLClasses[CIdx].BaseIdx := BaseLocatable;
+    RegisterStdClassPreds(CIdx, 'Expr');
+  End;
+
+  { 4. Enregistrer Stmt extends Locatable }
+  CIdx := RegisterQLClass('Stmt', -1, -1, False);
+  If CIdx >= 0 Then
+  Begin
+    QLClasses[CIdx].BaseIdx := BaseLocatable;
+    RegisterStdClassPreds(CIdx, 'Stmt');
+  End;
+
+  { 5. Enregistrer Function extends Locatable }
+  CIdx := RegisterQLClass('Function', -1, -1, False);
+  If CIdx >= 0 Then
+  Begin
+    QLClasses[CIdx].BaseIdx := BaseLocatable;
+    RegisterStdClassPreds(CIdx, 'Function');
+  End;
+
+  { 6. Enregistrer Variable extends Locatable }
+  CIdx := RegisterQLClass('Variable', -1, -1, False);
+  If CIdx >= 0 Then
+  Begin
+    QLClasses[CIdx].BaseIdx := BaseLocatable;
+    RegisterStdClassPreds(CIdx, 'Variable');
+  End;
+
+  { 7. Enregistrer Type extends Locatable }
+  CIdx := RegisterQLClass('Type', -1, -1, False);
+  If CIdx >= 0 Then
+  Begin
+    QLClasses[CIdx].BaseIdx := BaseLocatable;
+    RegisterStdClassPreds(CIdx, 'Type');
+  End;
+
+  { 8. Enregistrer Call extends Expr }
+  CIdx := RegisterQLClass('Call', -1, -1, False);
+  If CIdx >= 0 Then
+  Begin
+    CIdx := FindQLClass('Call');
+    If CIdx >= 0 Then
+      QLClasses[CIdx].BaseIdx := FindQLClass('Expr');
+    RegisterStdClassPreds(CIdx, 'Call');
+  End;
+
+  { 9. Enregistrer Access extends Expr }
+  CIdx := RegisterQLClass('Access', -1, -1, False);
+  If CIdx >= 0 Then
+  Begin
+    CIdx := FindQLClass('Access');
+    If CIdx >= 0 Then
+      QLClasses[CIdx].BaseIdx := FindQLClass('Expr');
+    RegisterStdClassPreds(CIdx, 'Access');
+  End;
+
+  { 10. Enregistrer Comment extends Locatable }
+  CIdx := RegisterQLClass('Comment', -1, -1, False);
+  If CIdx >= 0 Then
+  Begin
+    QLClasses[CIdx].BaseIdx := BaseLocatable;
+    RegisterStdClassPreds(CIdx, 'Comment');
+  End;
+
+  StdLibBuilt := True;
+End;
+
+{ ---- CountStdLibPreds : nombre de predicats standard --------- }
+
+Function CountStdLibPreds : Integer;
+Begin
+  CountStdLibPreds := StdPredCount;
+End;
+
+{ ---- CountStdLibClasses : nombre de classes standard ---------- }
+
+Function CountStdLibClasses : Integer;
+Var
+  I, Cnt : Integer;
+Begin
+  Cnt := 0;
+  For I := 0 To QLClassCount - 1 Do
+    If QLClasses[I].NodeIdx = -1 Then
+      Inc(Cnt);
+  CountStdLibClasses := Cnt;
+End;
+
+{ ---- DumpStdLibrary : afficher la bibliotheque standard ------- }
+
+Procedure DumpStdLibrary;
+Var
+  I : Integer;
+Begin
+  WriteLn;
+  WriteLn('=== BIBLIOTHEQUE STANDARD QL ===');
+  WriteLn('Classes stdlib : ', CountStdLibClasses);
+  WriteLn('Predicats stdlib: ', StdPredCount);
+  WriteLn;
+
+  For I := 0 To StdPredCount - 1 Do
+  Begin
+    Write('  [', I, '] ');
+    If StdPreds[I].ClassIdx >= 0 Then
+      Write(QLClasses[StdPreds[I].ClassIdx].Name, '.');
+    WriteLn(StdPreds[I].Name,
+            '  (', StdPredKindName(StdPreds[I].Kind), ')',
+            '  qlpred=', StdPreds[I].QLPredIdx);
+  End;
+  WriteLn;
+End;
+
 { ---- Stubs des sous-commandes (TODO 22-24) ----------------- }
 
 Procedure RunDatabaseCreate;
@@ -12898,9 +13528,16 @@ Begin
     WriteLn('Imports QL      : ', QLImportCount, ' (', CountResolvedImports, ' resolus)');
     WriteLn;
 
+    { TODO 21 : bibliotheque standard de predicats QL }
+    BuildStdLibrary;
+    WriteLn('Stdlib classes  : ', CountStdLibClasses);
+    WriteLn('Stdlib predicats: ', CountStdLibPreds);
+    WriteLn;
+
     If Opts.DebugMode Then
     Begin
       DumpModules;
+      DumpStdLibrary;
       DumpTypes;
       DumpAST(RootNode, 0);
     End;
