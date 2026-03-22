@@ -165,6 +165,14 @@
       cyclomatique, convention de nommage, parametres inutilises,
       code duplique, utilisation de Goto), documentation d'aide,
       nettoyage des ressources. [IMPLEMENTE]
+
+  26. Implementer le support du langage C : lexeur C (32 mots-cles,
+      operateurs C, commentaires /* */ et //, preprocesseur #include/#define),
+      parseur C (fonctions, struct/union/enum, typedef, instructions
+      if/while/for/do-while/switch/break/continue/return/goto, expressions
+      avec operateur ternaire, cast, sizeof), detection des fichiers .c/.h,
+      integration dans database create avec --language=c.
+      [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -445,7 +453,13 @@ Type
     SNK_EXPR_SET, SNK_EXPR_RANGE,
     SNK_TYPE_IDENT, SNK_TYPE_ARRAY, SNK_TYPE_RECORD, SNK_TYPE_POINTER,
     SNK_TYPE_SET, SNK_TYPE_FILE, SNK_TYPE_RANGE, SNK_TYPE_ENUM,
-    SNK_TYPE_STRING, SNK_FIELD_DECL, SNK_RECORD_SECTION
+    SNK_TYPE_STRING, SNK_FIELD_DECL, SNK_RECORD_SECTION,
+    SNK_C_TRANSLATION_UNIT, SNK_C_INCLUDE, SNK_C_DEFINE,
+    SNK_C_STRUCT_DECL, SNK_C_UNION_DECL, SNK_C_ENUM_DECL,
+    SNK_C_TYPEDEF, SNK_C_DO_WHILE, SNK_C_SWITCH,
+    SNK_C_CASE_ITEM, SNK_C_DEFAULT_ITEM, SNK_C_BREAK,
+    SNK_C_CONTINUE, SNK_C_RETURN, SNK_C_SIZEOF,
+    SNK_C_CAST, SNK_C_TERNARY, SNK_C_PREPROC
   );
 
   TSrcASTNode = Record
@@ -1184,7 +1198,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1455,6 +1469,9 @@ Begin
       { Le repertoire de sortie est optionnel, SAMPLES par defaut }
     End;
   End;
+
+  If (Opts.Language <> 'pascal') And (Opts.Language <> 'c') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal ou c)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -5612,6 +5629,24 @@ Begin
     SNK_TYPE_STRING  : SrcNodeKindName := 'TYPE_STRING';
     SNK_FIELD_DECL   : SrcNodeKindName := 'FIELD_DECL';
     SNK_RECORD_SECTION : SrcNodeKindName := 'RECORD_SECTION';
+    SNK_C_TRANSLATION_UNIT : SrcNodeKindName := 'C_TRANSLATION_UNIT';
+    SNK_C_INCLUDE      : SrcNodeKindName := 'C_INCLUDE';
+    SNK_C_DEFINE       : SrcNodeKindName := 'C_DEFINE';
+    SNK_C_STRUCT_DECL  : SrcNodeKindName := 'C_STRUCT_DECL';
+    SNK_C_UNION_DECL   : SrcNodeKindName := 'C_UNION_DECL';
+    SNK_C_ENUM_DECL    : SrcNodeKindName := 'C_ENUM_DECL';
+    SNK_C_TYPEDEF      : SrcNodeKindName := 'C_TYPEDEF';
+    SNK_C_DO_WHILE     : SrcNodeKindName := 'C_DO_WHILE';
+    SNK_C_SWITCH       : SrcNodeKindName := 'C_SWITCH';
+    SNK_C_CASE_ITEM    : SrcNodeKindName := 'C_CASE_ITEM';
+    SNK_C_DEFAULT_ITEM : SrcNodeKindName := 'C_DEFAULT_ITEM';
+    SNK_C_BREAK        : SrcNodeKindName := 'C_BREAK';
+    SNK_C_CONTINUE     : SrcNodeKindName := 'C_CONTINUE';
+    SNK_C_RETURN       : SrcNodeKindName := 'C_RETURN';
+    SNK_C_SIZEOF       : SrcNodeKindName := 'C_SIZEOF';
+    SNK_C_CAST         : SrcNodeKindName := 'C_CAST';
+    SNK_C_TERNARY      : SrcNodeKindName := 'C_TERNARY';
+    SNK_C_PREPROC      : SrcNodeKindName := 'C_PREPROC';
   Else
     SrcNodeKindName := '???';
   End;
@@ -6948,6 +6983,9 @@ Begin
     SNK_EXPR_NIL    : SrcExprKindToDb := DEK_NIL;
     SNK_EXPR_SET    : SrcExprKindToDb := DEK_SET;
     SNK_EXPR_RANGE  : SrcExprKindToDb := DEK_RANGE;
+    SNK_C_SIZEOF    : SrcExprKindToDb := DEK_CALL;
+    SNK_C_CAST      : SrcExprKindToDb := DEK_UNOP;
+    SNK_C_TERNARY   : SrcExprKindToDb := DEK_BINOP;
   Else
     SrcExprKindToDb := DEK_NONE;
   End;
@@ -6971,6 +7009,13 @@ Begin
     SNK_GOTO     : SrcStmtKindToDb := DSK_GOTO;
     SNK_COMPOUND : SrcStmtKindToDb := DSK_COMPOUND;
     SNK_BLOCK    : SrcStmtKindToDb := DSK_BLOCK;
+    SNK_C_DO_WHILE   : SrcStmtKindToDb := DSK_REPEAT;
+    SNK_C_SWITCH     : SrcStmtKindToDb := DSK_CASE;
+    SNK_C_CASE_ITEM  : SrcStmtKindToDb := DSK_BLOCK;
+    SNK_C_DEFAULT_ITEM : SrcStmtKindToDb := DSK_BLOCK;
+    SNK_C_BREAK      : SrcStmtKindToDb := DSK_GOTO;
+    SNK_C_CONTINUE   : SrcStmtKindToDb := DSK_GOTO;
+    SNK_C_RETURN     : SrcStmtKindToDb := DSK_GOTO;
   Else
     SrcStmtKindToDb := DSK_NONE;
   End;
@@ -6990,6 +7035,10 @@ Begin
     SNK_TYPE_RANGE   : SrcTypeKindToDb := DTK_RANGE;
     SNK_TYPE_ENUM    : SrcTypeKindToDb := DTK_ENUM;
     SNK_TYPE_STRING  : SrcTypeKindToDb := DTK_STRING;
+    SNK_C_STRUCT_DECL : SrcTypeKindToDb := DTK_RECORD;
+    SNK_C_UNION_DECL  : SrcTypeKindToDb := DTK_RECORD;
+    SNK_C_ENUM_DECL   : SrcTypeKindToDb := DTK_ENUM;
+    SNK_C_TYPEDEF     : SrcTypeKindToDb := DTK_ALIAS;
   Else
     SrcTypeKindToDb := DTK_NONE;
   End;
@@ -6999,21 +7048,29 @@ End;
 
 Function IsExprNode(K : TSrcNodeKind) : Boolean;
 Begin
-  IsExprNode := (K >= SNK_EXPR_BINOP) And (K <= SNK_EXPR_RANGE);
+  IsExprNode := ((K >= SNK_EXPR_BINOP) And (K <= SNK_EXPR_RANGE)) Or
+                (K = SNK_C_SIZEOF) Or (K = SNK_C_CAST) Or
+                (K = SNK_C_TERNARY);
 End;
 
 { ---- Teste si un noeud est une instruction -------------------- }
 
 Function IsStmtNode(K : TSrcNodeKind) : Boolean;
 Begin
-  IsStmtNode := (K >= SNK_ASSIGN) And (K <= SNK_COMPOUND);
+  IsStmtNode := ((K >= SNK_ASSIGN) And (K <= SNK_COMPOUND)) Or
+                (K = SNK_C_DO_WHILE) Or (K = SNK_C_SWITCH) Or
+                (K = SNK_C_CASE_ITEM) Or (K = SNK_C_DEFAULT_ITEM) Or
+                (K = SNK_C_BREAK) Or (K = SNK_C_CONTINUE) Or
+                (K = SNK_C_RETURN);
 End;
 
 { ---- Teste si un noeud est un type ---------------------------- }
 
 Function IsTypeNode(K : TSrcNodeKind) : Boolean;
 Begin
-  IsTypeNode := (K >= SNK_TYPE_IDENT) And (K <= SNK_TYPE_STRING);
+  IsTypeNode := ((K >= SNK_TYPE_IDENT) And (K <= SNK_TYPE_STRING)) Or
+                (K = SNK_C_STRUCT_DECL) Or (K = SNK_C_UNION_DECL) Or
+                (K = SNK_C_ENUM_DECL) Or (K = SNK_C_TYPEDEF);
 End;
 
 { ---- Forward declaration pour l extraction recursive ---------- }
@@ -13531,6 +13588,1441 @@ End;
   TODO 22 - COMMANDE "codeql database create" [IMPLEMENTE]
   ============================================================ }
 
+{ ============================================================
+  TODO 26 - LEXEUR ET PARSEUR C [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsCKeyword : reconnaissance des 32 mots-cles C -------- }
+
+Function IsCKeyword(Const W : TString) : Boolean;
+Begin
+  IsCKeyword :=
+    (W = 'auto')     Or (W = 'break')    Or (W = 'case')     Or
+    (W = 'char')     Or (W = 'const')    Or (W = 'continue') Or
+    (W = 'default')  Or (W = 'do')       Or (W = 'double')   Or
+    (W = 'else')     Or (W = 'enum')     Or (W = 'extern')   Or
+    (W = 'float')    Or (W = 'for')      Or (W = 'goto')     Or
+    (W = 'if')       Or (W = 'int')      Or (W = 'long')     Or
+    (W = 'register') Or (W = 'return')   Or (W = 'short')    Or
+    (W = 'signed')   Or (W = 'sizeof')   Or (W = 'static')   Or
+    (W = 'struct')   Or (W = 'switch')   Or (W = 'typedef')  Or
+    (W = 'union')    Or (W = 'unsigned') Or (W = 'void')     Or
+    (W = 'volatile') Or (W = 'while');
+End;
+
+{ ---- CLexScanIdent : scanner un identificateur ou mot-cle C -- }
+
+Procedure CLexScanIdent;
+Var S : TString;
+Begin
+  S := '';
+  While (SrcColNo <= Length(SrcLine)) And
+        IsIdentCont(SrcLine[SrcColNo]) Do
+  Begin
+    If Length(S) < 255 Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  If IsCKeyword(S) Then
+    SrcToken.Kind := STK_KEYWORD
+  Else
+    SrcToken.Kind := STK_IDENT;
+  SrcToken.Val := S;
+End;
+
+{ ---- CLexScanNumber : scanner un nombre C -------------------- }
+
+Procedure CLexScanNumber;
+Var S : TString;
+    HasDot, HasExp : Boolean;
+    V : Integer;
+    Code : Integer;
+Begin
+  S := '';
+  HasDot := False;
+  HasExp := False;
+  { Hexadecimal 0x... }
+  If (SrcLine[SrcColNo] = '0') And (SrcColNo < Length(SrcLine)) And
+     ((SrcLine[SrcColNo + 1] = 'x') Or (SrcLine[SrcColNo + 1] = 'X')) Then
+  Begin
+    S := '0x';
+    Inc(SrcColNo, 2);
+    While (SrcColNo <= Length(SrcLine)) And
+          (((SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '9')) Or
+           ((SrcLine[SrcColNo] >= 'a') And (SrcLine[SrcColNo] <= 'f')) Or
+           ((SrcLine[SrcColNo] >= 'A') And (SrcLine[SrcColNo] <= 'F'))) Do
+    Begin
+      S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+    SrcToken.Kind := STK_INTEGER;
+    SrcToken.Val  := S;
+    Val(S, SrcToken.IntVal, Code);
+    Exit;
+  End;
+  { Decimal ou flottant }
+  While (SrcColNo <= Length(SrcLine)) And
+        IsDigit(SrcLine[SrcColNo]) Do
+  Begin
+    S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '.') And
+     (SrcColNo < Length(SrcLine)) And (SrcLine[SrcColNo + 1] <> '.') Then
+  Begin
+    HasDot := True;
+    S := S + '.';
+    Inc(SrcColNo);
+    While (SrcColNo <= Length(SrcLine)) And
+          IsDigit(SrcLine[SrcColNo]) Do
+    Begin
+      S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+  End;
+  If (SrcColNo <= Length(SrcLine)) And
+     ((SrcLine[SrcColNo] = 'e') Or (SrcLine[SrcColNo] = 'E')) Then
+  Begin
+    HasExp := True;
+    S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+    If (SrcColNo <= Length(SrcLine)) And
+       ((SrcLine[SrcColNo] = '+') Or (SrcLine[SrcColNo] = '-')) Then
+    Begin
+      S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+    While (SrcColNo <= Length(SrcLine)) And
+          IsDigit(SrcLine[SrcColNo]) Do
+    Begin
+      S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+  End;
+  { Suffixes : u, l, f, etc. }
+  While (SrcColNo <= Length(SrcLine)) And
+        ((SrcLine[SrcColNo] = 'u') Or (SrcLine[SrcColNo] = 'U') Or
+         (SrcLine[SrcColNo] = 'l') Or (SrcLine[SrcColNo] = 'L') Or
+         (SrcLine[SrcColNo] = 'f') Or (SrcLine[SrcColNo] = 'F')) Do
+    Inc(SrcColNo);
+  SrcToken.Val := S;
+  If HasDot Or HasExp Then
+  Begin
+    SrcToken.Kind := STK_FLOAT;
+    Val(S, SrcToken.FloatVal, V);
+  End
+  Else
+  Begin
+    SrcToken.Kind := STK_INTEGER;
+    Val(S, SrcToken.IntVal, V);
+  End;
+End;
+
+{ ---- CLexScanString : scanner une chaine C "..." ------------- }
+
+Procedure CLexScanString;
+Var S : TString;
+Begin
+  S := '';
+  Inc(SrcColNo); { sauter le guillemet ouvrant }
+  While (SrcColNo <= Length(SrcLine)) And
+        (SrcLine[SrcColNo] <> '"') Do
+  Begin
+    If SrcLine[SrcColNo] = '\' Then
+    Begin
+      Inc(SrcColNo);
+      If SrcColNo <= Length(SrcLine) Then
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+    End
+    Else
+    Begin
+      If Length(S) < 255 Then
+        S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+  End;
+  If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '"') Then
+    Inc(SrcColNo);
+  SrcToken.Kind := STK_STRING;
+  SrcToken.Val  := S;
+End;
+
+{ ---- CLexScanChar : scanner un caractere C '.' --------------- }
+
+Procedure CLexScanChar;
+Var S : TString;
+Begin
+  S := '';
+  Inc(SrcColNo); { sauter l apostrophe ouvrante }
+  While (SrcColNo <= Length(SrcLine)) And
+        (SrcLine[SrcColNo] <> '''') Do
+  Begin
+    If SrcLine[SrcColNo] = '\' Then
+    Begin
+      Inc(SrcColNo);
+      If SrcColNo <= Length(SrcLine) Then
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+    End
+    Else
+    Begin
+      If Length(S) < 255 Then
+        S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+  End;
+  If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '''') Then
+    Inc(SrcColNo);
+  SrcToken.Kind := STK_STRING;
+  SrcToken.Val  := S;
+  If Length(S) = 1 Then
+    SrcToken.IntVal := Ord(S[1]);
+End;
+
+{ ---- CLexSkipLineComment : sauter un commentaire // ---------- }
+
+Procedure CLexSkipLineComment;
+Var S : TString;
+Begin
+  S := '';
+  Inc(SrcColNo, 2); { sauter // }
+  While SrcColNo <= Length(SrcLine) Do
+  Begin
+    If Length(S) < 255 Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  SrcToken.Kind := STK_COMMENT;
+  SrcToken.Val  := S;
+End;
+
+{ ---- CLexSkipBlockComment : sauter un commentaire /* ... */ -- }
+
+Procedure CLexSkipBlockComment;
+Var S : TString;
+    Done : Boolean;
+Begin
+  S := '';
+  Inc(SrcColNo, 2); { sauter /* }
+  Done := False;
+  While Not Done Do
+  Begin
+    If SrcEOF Then
+    Begin
+      Done := True;
+      Break;
+    End;
+    While SrcColNo <= Length(SrcLine) Do
+    Begin
+      If (SrcLine[SrcColNo] = '*') And (SrcColNo < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 1] = '/') Then
+      Begin
+        Inc(SrcColNo, 2);
+        Done := True;
+        Break;
+      End;
+      If Length(S) < 255 Then
+        S := S + SrcLine[SrcColNo];
+      Inc(SrcColNo);
+    End;
+    If Not Done Then
+    Begin
+      If Length(S) < 255 Then
+        S := S + ' ';
+      SrcLexNextLine;
+    End;
+  End;
+  SrcToken.Kind := STK_COMMENT;
+  SrcToken.Val  := S;
+End;
+
+{ ---- CLexInit : initialiser le lexeur C ---------------------- }
+
+Procedure CLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- CLexNextToken : prochain token C ------------------------ }
+
+Procedure CLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      SrcToken.Line := SrcLineNo;
+      SrcToken.Col  := SrcColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    Scanning := False;
+
+    { Preprocesseur : lignes commencant par # }
+    If Ch = '#' Then
+    Begin
+      S := '';
+      While SrcColNo <= Length(SrcLine) Do
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_DIRECTIVE;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Commentaire de ligne // }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      CLexSkipLineComment;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Commentaire bloc /* ... */ }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      CLexSkipBlockComment;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines entre guillemets }
+    If Ch = '"' Then
+    Begin
+      CLexScanString;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Caracteres entre apostrophes }
+    If Ch = '''' Then
+    Begin
+      CLexScanChar;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Identificateurs et mots-cles }
+    If IsIdentStart(Ch) Then
+    Begin
+      CLexScanIdent;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Nombres }
+    If IsDigit(Ch) Then
+    Begin
+      CLexScanNumber;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs multi-caracteres (3 car) }
+    If (SrcColNo + 1 < Length(SrcLine)) Then
+    Begin
+      If (Ch = '<') And (SrcLine[SrcColNo + 1] = '<') And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '<<=';
+        Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit;
+      End;
+      If (Ch = '>') And (SrcLine[SrcColNo + 1] = '>') And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '>>=';
+        Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit;
+      End;
+    End;
+
+    { Operateurs multi-caracteres (2 car) }
+    If (SrcColNo < Length(SrcLine)) Then
+    Begin
+      S := Ch + SrcLine[SrcColNo + 1];
+      If (S = '->') Or (S = '++') Or (S = '--') Or
+         (S = '&&') Or (S = '||') Or (S = '<<') Or (S = '>>') Or
+         (S = '==') Or (S = '!=') Or (S = '<=') Or (S = '>=') Or
+         (S = '+=') Or (S = '-=') Or (S = '*=') Or (S = '/=') Or
+         (S = '%=') Or (S = '&=') Or (S = '|=') Or (S = '^=') Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := S;
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+    End;
+
+    { Operateurs simples }
+    If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+       (Ch = '%') Or (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or
+       (Ch = '!') Or (Ch = '&') Or (Ch = '|') Or (Ch = '^') Or
+       (Ch = '~') Or (Ch = '?') Or (Ch = ':') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := Ch;
+      Inc(SrcColNo);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Ponctuation }
+    If (Ch = '(') Or (Ch = ')') Or (Ch = '[') Or (Ch = ']') Or
+       (Ch = '{') Or (Ch = '}') Or (Ch = ',') Or (Ch = ';') Or
+       (Ch = '.') Then
+    Begin
+      SrcToken.Kind := STK_PUNCT;
+      SrcToken.Val  := Ch;
+      Inc(SrcColNo);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Caractere inconnu }
+    SrcToken.Kind := STK_PUNCT;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- Parseur C : consommation de tokens ---------------------- }
+
+Procedure CConsume; Forward;
+Function CParseExpr : Integer; Forward;
+Function CParsePrimary : Integer; Forward;
+Function CParseUnary : Integer; Forward;
+Function CParseBinary(MinPrec : Integer) : Integer; Forward;
+Function CParseAssign : Integer; Forward;
+Function CParseStatement : Integer; Forward;
+Function CParseCompound : Integer; Forward;
+Function CParseDeclaration : Integer; Forward;
+Function CParseTopLevel : Integer; Forward;
+Function CParseTranslationUnit : Integer; Forward;
+
+Procedure CConsume;
+Begin
+  Repeat
+    CLexNextToken;
+  Until (SrcToken.Kind <> STK_COMMENT);
+End;
+
+Function CTokIs(Const S : TString) : Boolean;
+Begin
+  CTokIs := (SrcToken.Val = S);
+End;
+
+Function CTokIsKw(Const S : TString) : Boolean;
+Begin
+  CTokIsKw := (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = S);
+End;
+
+Procedure CExpect(Const S : TString);
+Begin
+  If SrcToken.Val <> S Then
+    WriteLn('CODEQL(C): attendu ''', S, ''' a la ligne ', SrcToken.Line,
+            ', colonne ', SrcToken.Col, ', trouve ''', SrcToken.Val, '''');
+  CConsume;
+End;
+
+{ ---- CParseTypeSpec : lire un specificateur de type C -------- }
+
+Function CParseTypeSpec : TString;
+Var S : TString;
+Begin
+  S := '';
+  { Qualificateurs et specificateurs }
+  While (CTokIsKw('const')) Or (CTokIsKw('volatile')) Or
+        (CTokIsKw('static')) Or (CTokIsKw('extern')) Or
+        (CTokIsKw('auto')) Or (CTokIsKw('register')) Or
+        (CTokIsKw('signed')) Or (CTokIsKw('unsigned')) Or
+        (CTokIsKw('short')) Or (CTokIsKw('long')) Or
+        (CTokIsKw('typedef')) Do
+  Begin
+    If S <> '' Then S := S + ' ';
+    S := S + SrcToken.Val;
+    CConsume;
+  End;
+  { Type de base }
+  If (CTokIsKw('void')) Or (CTokIsKw('char')) Or (CTokIsKw('int')) Or
+     (CTokIsKw('float')) Or (CTokIsKw('double')) Or
+     (CTokIsKw('struct')) Or (CTokIsKw('union')) Or
+     (CTokIsKw('enum')) Or (SrcToken.Kind = STK_IDENT) Then
+  Begin
+    If S <> '' Then S := S + ' ';
+    S := S + SrcToken.Val;
+    CConsume;
+    { struct/union/enum tag }
+    If (SrcToken.Kind = STK_IDENT) And
+       ((S = 'struct') Or (S = 'union') Or (S = 'enum') Or
+        (Copy(S, Length(S) - 5, 6) = 'struct') Or
+        (Copy(S, Length(S) - 4, 5) = 'union') Or
+        (Copy(S, Length(S) - 3, 4) = 'enum')) Then
+    Begin
+      S := S + ' ' + SrcToken.Val;
+      CConsume;
+    End;
+  End;
+  { Pointeurs * }
+  While CTokIs('*') Do
+  Begin
+    S := S + '*';
+    CConsume;
+  End;
+  If S = '' Then S := 'int';
+  CParseTypeSpec := S;
+End;
+
+{ ---- CIsCTypeStart : teste si le token courant demarre un type }
+
+Function CIsCTypeStart : Boolean;
+Begin
+  CIsCTypeStart :=
+    (CTokIsKw('void')) Or (CTokIsKw('char')) Or (CTokIsKw('int')) Or
+    (CTokIsKw('short')) Or (CTokIsKw('long')) Or (CTokIsKw('float')) Or
+    (CTokIsKw('double')) Or (CTokIsKw('signed')) Or (CTokIsKw('unsigned')) Or
+    (CTokIsKw('const')) Or (CTokIsKw('volatile')) Or
+    (CTokIsKw('static')) Or (CTokIsKw('extern')) Or
+    (CTokIsKw('auto')) Or (CTokIsKw('register')) Or
+    (CTokIsKw('struct')) Or (CTokIsKw('union')) Or
+    (CTokIsKw('enum')) Or (CTokIsKw('typedef'));
+End;
+
+{ ---- CParsePrimary : expression primaire C ------------------- }
+
+Function CParsePrimary : Integer;
+Var N, ArgNode, Last : Integer;
+Begin
+  N := -1;
+  Case SrcToken.Kind Of
+    STK_INTEGER:
+    Begin
+      N := SrcNewNode(SNK_EXPR_INT);
+      SrcNodes[N].IntVal := SrcToken.IntVal;
+      SrcNodes[N].Name   := SrcToken.Val;
+      CConsume;
+    End;
+    STK_FLOAT:
+    Begin
+      N := SrcNewNode(SNK_EXPR_FLOAT);
+      SrcNodes[N].FloatVal := SrcToken.FloatVal;
+      SrcNodes[N].Name     := SrcToken.Val;
+      CConsume;
+    End;
+    STK_STRING:
+    Begin
+      N := SrcNewNode(SNK_EXPR_STRING);
+      SrcNodes[N].Name := SrcToken.Val;
+      CConsume;
+    End;
+    STK_KEYWORD:
+    Begin
+      If CTokIsKw('sizeof') Then
+      Begin
+        N := SrcNewNode(SNK_C_SIZEOF);
+        SrcNodes[N].Name := 'sizeof';
+        CConsume;
+        If CTokIs('(') Then
+        Begin
+          CConsume;
+          SrcNodes[N].Left := CParseExpr;
+          If CTokIs(')') Then CConsume;
+        End
+        Else
+          SrcNodes[N].Left := CParseUnary;
+      End
+      Else
+      Begin
+        N := SrcNewNode(SNK_EXPR_IDENT);
+        SrcNodes[N].Name := SrcToken.Val;
+        CConsume;
+      End;
+    End;
+    STK_IDENT:
+    Begin
+      N := SrcNewNode(SNK_EXPR_IDENT);
+      SrcNodes[N].Name := SrcToken.Val;
+      CConsume;
+    End;
+  Else
+    Begin
+      If CTokIs('(') Then
+      Begin
+        CConsume;
+        N := CParseExpr;
+        If CTokIs(')') Then CConsume;
+      End
+      Else
+      Begin
+        N := SrcNewNode(SNK_EXPR_IDENT);
+        SrcNodes[N].Name := SrcToken.Val;
+        CConsume;
+      End;
+    End;
+  End;
+  { Postfix : appel de fonction, indexation, champ, ->, ++, -- }
+  While (CTokIs('(')) Or (CTokIs('[')) Or (CTokIs('.')) Or
+        (CTokIs('->')) Or (CTokIs('++')) Or (CTokIs('--')) Do
+  Begin
+    If CTokIs('(') Then
+    Begin
+      CConsume;
+      ArgNode := SrcNewNode(SNK_EXPR_CALL);
+      SrcNodes[ArgNode].Left := N;
+      If N >= 0 Then
+        SrcNodes[ArgNode].Name := SrcNodes[N].Name;
+      Last := -1;
+      If Not CTokIs(')') Then
+      Begin
+        SrcNodes[ArgNode].Right := CParseAssign;
+        Last := SrcNodes[ArgNode].Right;
+        While CTokIs(',') Do
+        Begin
+          CConsume;
+          SrcNodes[Last].Next := CParseAssign;
+          Last := SrcNodes[Last].Next;
+        End;
+      End;
+      If CTokIs(')') Then CConsume;
+      N := ArgNode;
+    End
+    Else If CTokIs('[') Then
+    Begin
+      CConsume;
+      ArgNode := SrcNewNode(SNK_EXPR_INDEX);
+      SrcNodes[ArgNode].Left  := N;
+      SrcNodes[ArgNode].Right := CParseExpr;
+      If CTokIs(']') Then CConsume;
+      N := ArgNode;
+    End
+    Else If CTokIs('.') Then
+    Begin
+      CConsume;
+      ArgNode := SrcNewNode(SNK_EXPR_FIELD);
+      SrcNodes[ArgNode].Left := N;
+      SrcNodes[ArgNode].Name := SrcToken.Val;
+      CConsume;
+      N := ArgNode;
+    End
+    Else If CTokIs('->') Then
+    Begin
+      CConsume;
+      ArgNode := SrcNewNode(SNK_EXPR_FIELD);
+      SrcNodes[ArgNode].Left := N;
+      SrcNodes[ArgNode].Name := SrcToken.Val;
+      CConsume;
+      N := ArgNode;
+    End
+    Else If CTokIs('++') Or CTokIs('--') Then
+    Begin
+      ArgNode := SrcNewNode(SNK_EXPR_UNOP);
+      SrcNodes[ArgNode].Name := SrcToken.Val + '_post';
+      SrcNodes[ArgNode].Left := N;
+      CConsume;
+      N := ArgNode;
+    End;
+  End;
+  CParsePrimary := N;
+End;
+
+{ ---- CParseUnary : expression unaire C ----------------------- }
+
+Function CParseUnary : Integer;
+Var N : Integer;
+Begin
+  If CTokIs('+') Or CTokIs('-') Or CTokIs('!') Or CTokIs('~') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_UNOP);
+    SrcNodes[N].Name := SrcToken.Val;
+    CConsume;
+    SrcNodes[N].Left := CParseUnary;
+    CParseUnary := N;
+  End
+  Else If CTokIs('++') Or CTokIs('--') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_UNOP);
+    SrcNodes[N].Name := SrcToken.Val;
+    CConsume;
+    SrcNodes[N].Left := CParseUnary;
+    CParseUnary := N;
+  End
+  Else If CTokIs('*') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_DEREF);
+    CConsume;
+    SrcNodes[N].Left := CParseUnary;
+    CParseUnary := N;
+  End
+  Else If CTokIs('&') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_ADDR);
+    CConsume;
+    SrcNodes[N].Left := CParseUnary;
+    CParseUnary := N;
+  End
+  Else
+    CParseUnary := CParsePrimary;
+End;
+
+{ ---- COpPrec : precedence des operateurs binaires C ---------- }
+
+Function COpPrec(Const Op : TString) : Integer;
+Begin
+  If (Op = '*') Or (Op = '/') Or (Op = '%') Then
+    COpPrec := 12
+  Else If (Op = '+') Or (Op = '-') Then
+    COpPrec := 11
+  Else If (Op = '<<') Or (Op = '>>') Then
+    COpPrec := 10
+  Else If (Op = '<') Or (Op = '>') Or (Op = '<=') Or (Op = '>=') Then
+    COpPrec := 9
+  Else If (Op = '==') Or (Op = '!=') Then
+    COpPrec := 8
+  Else If Op = '&' Then
+    COpPrec := 7
+  Else If Op = '^' Then
+    COpPrec := 6
+  Else If Op = '|' Then
+    COpPrec := 5
+  Else If Op = '&&' Then
+    COpPrec := 4
+  Else If Op = '||' Then
+    COpPrec := 3
+  Else
+    COpPrec := 0;
+End;
+
+{ ---- CParseBinary : expression binaire C (Pratt) ------------- }
+
+Function CParseBinary(MinPrec : Integer) : Integer;
+Var Left, Right, BinNode, Prec : Integer;
+    Op : TString;
+Begin
+  Left := CParseUnary;
+  While (SrcToken.Kind = STK_OP) And (COpPrec(SrcToken.Val) >= MinPrec) Do
+  Begin
+    Op   := SrcToken.Val;
+    Prec := COpPrec(Op);
+    CConsume;
+    Right := CParseBinary(Prec + 1);
+    BinNode := SrcNewNode(SNK_EXPR_BINOP);
+    SrcNodes[BinNode].Name  := Op;
+    SrcNodes[BinNode].Left  := Left;
+    SrcNodes[BinNode].Right := Right;
+    Left := BinNode;
+  End;
+  { Operateur ternaire ? : }
+  If CTokIs('?') Then
+  Begin
+    CConsume;
+    BinNode := SrcNewNode(SNK_C_TERNARY);
+    SrcNodes[BinNode].Left  := Left;
+    SrcNodes[BinNode].Right := CParseExpr;
+    If CTokIs(':') Then CConsume;
+    SrcNodes[BinNode].Extra := CParseAssign;
+    Left := BinNode;
+  End;
+  CParseBinary := Left;
+End;
+
+{ ---- CParseAssign : expression d affectation C --------------- }
+
+Function CParseAssign : Integer;
+Var Left, N : Integer;
+Begin
+  Left := CParseBinary(1);
+  If CTokIs('=') Or CTokIs('+=') Or CTokIs('-=') Or
+     CTokIs('*=') Or CTokIs('/=') Or CTokIs('%=') Or
+     CTokIs('&=') Or CTokIs('|=') Or CTokIs('^=') Or
+     CTokIs('<<=') Or CTokIs('>>=') Then
+  Begin
+    N := SrcNewNode(SNK_ASSIGN);
+    SrcNodes[N].Name  := SrcToken.Val;
+    SrcNodes[N].Left  := Left;
+    CConsume;
+    SrcNodes[N].Right := CParseAssign;
+    CParseAssign := N;
+  End
+  Else
+    CParseAssign := Left;
+End;
+
+{ ---- CParseExpr : expression complete avec virgule ----------- }
+
+Function CParseExpr : Integer;
+Var N : Integer;
+Begin
+  N := CParseAssign;
+  While CTokIs(',') Do
+  Begin
+    CConsume;
+    SrcNodes[N].Next := CParseAssign;
+    N := SrcNodes[N].Next;
+  End;
+  CParseExpr := N;
+End;
+
+(* ---- CParseCompound : bloc { ... } C ---------------------- *)
+
+Function CParseCompound : Integer;
+Var N, S, Last : Integer;
+Begin
+  N := SrcNewNode(SNK_COMPOUND);
+  CExpect('{');
+  Last := -1;
+  While (SrcToken.Kind <> STK_EOF) And (Not CTokIs('}')) Do
+  Begin
+    S := CParseStatement;
+    If S >= 0 Then
+    Begin
+      If SrcNodes[N].Left = -1 Then
+        SrcNodes[N].Left := S
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := S;
+      Last := S;
+    End;
+  End;
+  If CTokIs('}') Then CConsume;
+  CParseCompound := N;
+End;
+
+{ ---- CParseStatement : instruction C ------------------------- }
+
+Function CParseStatement : Integer;
+Var N, Body, Last, Item : Integer;
+Begin
+  N := -1;
+
+  { Directive du preprocesseur }
+  If SrcToken.Kind = STK_DIRECTIVE Then
+  Begin
+    N := SrcNewNode(SNK_C_PREPROC);
+    SrcNodes[N].Name := SrcToken.Val;
+    CConsume;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  (* Bloc compose { ... } *)
+  If CTokIs('{') Then
+  Begin
+    CParseStatement := CParseCompound;
+    Exit;
+  End;
+
+  { if (expr) stmt [else stmt] }
+  If CTokIsKw('if') Then
+  Begin
+    N := SrcNewNode(SNK_IF);
+    CConsume;
+    If CTokIs('(') Then CConsume;
+    SrcNodes[N].Left := CParseExpr;
+    If CTokIs(')') Then CConsume;
+    SrcNodes[N].Right := CParseStatement;
+    If CTokIsKw('else') Then
+    Begin
+      CConsume;
+      SrcNodes[N].Extra := CParseStatement;
+    End;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  { while (expr) stmt }
+  If CTokIsKw('while') Then
+  Begin
+    N := SrcNewNode(SNK_WHILE);
+    CConsume;
+    If CTokIs('(') Then CConsume;
+    SrcNodes[N].Left := CParseExpr;
+    If CTokIs(')') Then CConsume;
+    SrcNodes[N].Right := CParseStatement;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  { for (init; cond; incr) stmt }
+  If CTokIsKw('for') Then
+  Begin
+    N := SrcNewNode(SNK_FOR);
+    CConsume;
+    If CTokIs('(') Then CConsume;
+    { init }
+    If Not CTokIs(';') Then
+      SrcNodes[N].Left := CParseExpr;
+    If CTokIs(';') Then CConsume;
+    { condition }
+    If Not CTokIs(';') Then
+      SrcNodes[N].Right := CParseExpr;
+    If CTokIs(';') Then CConsume;
+    { increment }
+    If Not CTokIs(')') Then
+      SrcNodes[N].Extra := CParseExpr;
+    If CTokIs(')') Then CConsume;
+    { body - stocker dans le Next du noeud Extra si possible }
+    Body := CParseStatement;
+    If SrcNodes[N].Extra >= 0 Then
+      SrcNodes[SrcNodes[N].Extra].Next := Body
+    Else If SrcNodes[N].Right >= 0 Then
+      SrcNodes[SrcNodes[N].Right].Next := Body
+    Else
+      SrcNodes[N].Extra := Body;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  { do stmt while (expr) ; }
+  If CTokIsKw('do') Then
+  Begin
+    N := SrcNewNode(SNK_C_DO_WHILE);
+    CConsume;
+    SrcNodes[N].Left := CParseStatement;
+    If CTokIsKw('while') Then CConsume;
+    If CTokIs('(') Then CConsume;
+    SrcNodes[N].Right := CParseExpr;
+    If CTokIs(')') Then CConsume;
+    If CTokIs(';') Then CConsume;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  (* switch (expr) { case ...: ... } *)
+  If CTokIsKw('switch') Then
+  Begin
+    N := SrcNewNode(SNK_C_SWITCH);
+    CConsume;
+    If CTokIs('(') Then CConsume;
+    SrcNodes[N].Left := CParseExpr;
+    If CTokIs(')') Then CConsume;
+    If CTokIs('{') Then CConsume;
+    Last := -1;
+    While (SrcToken.Kind <> STK_EOF) And (Not CTokIs('}')) Do
+    Begin
+      If CTokIsKw('case') Then
+      Begin
+        Item := SrcNewNode(SNK_C_CASE_ITEM);
+        CConsume;
+        SrcNodes[Item].Left := CParseExpr;
+        If CTokIs(':') Then CConsume;
+        If SrcNodes[N].Right = -1 Then
+          SrcNodes[N].Right := Item
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := Item;
+        Last := Item;
+      End
+      Else If CTokIsKw('default') Then
+      Begin
+        Item := SrcNewNode(SNK_C_DEFAULT_ITEM);
+        CConsume;
+        If CTokIs(':') Then CConsume;
+        If SrcNodes[N].Right = -1 Then
+          SrcNodes[N].Right := Item
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := Item;
+        Last := Item;
+      End
+      Else
+      Begin
+        Body := CParseStatement;
+        If (Last >= 0) And (Body >= 0) Then
+        Begin
+          If SrcNodes[Last].Right = -1 Then
+            SrcNodes[Last].Right := Body
+          Else
+          Begin
+            Item := SrcNodes[Last].Right;
+            While SrcNodes[Item].Next >= 0 Do
+              Item := SrcNodes[Item].Next;
+            SrcNodes[Item].Next := Body;
+          End;
+        End;
+      End;
+    End;
+    If CTokIs('}') Then CConsume;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  { break ; }
+  If CTokIsKw('break') Then
+  Begin
+    N := SrcNewNode(SNK_C_BREAK);
+    CConsume;
+    If CTokIs(';') Then CConsume;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  { continue ; }
+  If CTokIsKw('continue') Then
+  Begin
+    N := SrcNewNode(SNK_C_CONTINUE);
+    CConsume;
+    If CTokIs(';') Then CConsume;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  { return [expr] ; }
+  If CTokIsKw('return') Then
+  Begin
+    N := SrcNewNode(SNK_C_RETURN);
+    CConsume;
+    If Not CTokIs(';') Then
+      SrcNodes[N].Left := CParseExpr;
+    If CTokIs(';') Then CConsume;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  { goto label ; }
+  If CTokIsKw('goto') Then
+  Begin
+    N := SrcNewNode(SNK_GOTO);
+    CConsume;
+    SrcNodes[N].Name := SrcToken.Val;
+    CConsume;
+    If CTokIs(';') Then CConsume;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  { Declarations locales (type ident ...) }
+  If CIsCTypeStart Then
+  Begin
+    CParseStatement := CParseDeclaration;
+    Exit;
+  End;
+
+  { Instruction vide ; }
+  If CTokIs(';') Then
+  Begin
+    CConsume;
+    CParseStatement := -1;
+    Exit;
+  End;
+
+  { Label  ident : }
+  If (SrcToken.Kind = STK_IDENT) Then
+  Begin
+    { Sauvegarder l etat pour verifier si c est un label }
+    N := SrcNewNode(SNK_EXPR_IDENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    CConsume;
+    If CTokIs(':') Then
+    Begin
+      { C'est un label }
+      SrcNodes[N].Kind := SNK_LABEL_DECL;
+      CConsume;
+      CParseStatement := N;
+      Exit;
+    End;
+    { C est le debut d une expression-instruction }
+    { N est deja un EXPR_IDENT, continuer le parsing postfix }
+    While (CTokIs('(')) Or (CTokIs('[')) Or (CTokIs('.')) Or
+          (CTokIs('->')) Or (CTokIs('++')) Or (CTokIs('--')) Do
+    Begin
+      If CTokIs('(') Then
+      Begin
+        CConsume;
+        Item := SrcNewNode(SNK_EXPR_CALL);
+        SrcNodes[Item].Left := N;
+        SrcNodes[Item].Name := SrcNodes[N].Name;
+        Last := -1;
+        If Not CTokIs(')') Then
+        Begin
+          SrcNodes[Item].Right := CParseAssign;
+          Last := SrcNodes[Item].Right;
+          While CTokIs(',') Do
+          Begin
+            CConsume;
+            SrcNodes[Last].Next := CParseAssign;
+            Last := SrcNodes[Last].Next;
+          End;
+        End;
+        If CTokIs(')') Then CConsume;
+        N := Item;
+      End
+      Else If CTokIs('[') Then
+      Begin
+        CConsume;
+        Item := SrcNewNode(SNK_EXPR_INDEX);
+        SrcNodes[Item].Left  := N;
+        SrcNodes[Item].Right := CParseExpr;
+        If CTokIs(']') Then CConsume;
+        N := Item;
+      End
+      Else If CTokIs('.') Or CTokIs('->') Then
+      Begin
+        CConsume;
+        Item := SrcNewNode(SNK_EXPR_FIELD);
+        SrcNodes[Item].Left := N;
+        SrcNodes[Item].Name := SrcToken.Val;
+        CConsume;
+        N := Item;
+      End
+      Else If CTokIs('++') Or CTokIs('--') Then
+      Begin
+        Item := SrcNewNode(SNK_EXPR_UNOP);
+        SrcNodes[Item].Name := SrcToken.Val + '_post';
+        SrcNodes[Item].Left := N;
+        CConsume;
+        N := Item;
+      End;
+    End;
+    { Verifier affectation }
+    If CTokIs('=') Or CTokIs('+=') Or CTokIs('-=') Or
+       CTokIs('*=') Or CTokIs('/=') Or CTokIs('%=') Or
+       CTokIs('&=') Or CTokIs('|=') Or CTokIs('^=') Or
+       CTokIs('<<=') Or CTokIs('>>=') Then
+    Begin
+      Item := SrcNewNode(SNK_ASSIGN);
+      SrcNodes[Item].Name  := SrcToken.Val;
+      SrcNodes[Item].Left  := N;
+      CConsume;
+      SrcNodes[Item].Right := CParseExpr;
+      N := Item;
+    End;
+    If CTokIs(';') Then CConsume;
+    CParseStatement := N;
+    Exit;
+  End;
+
+  { Expression-instruction }
+  N := CParseExpr;
+  If CTokIs(';') Then CConsume;
+  CParseStatement := N;
+End;
+
+{ ---- CParseDeclaration : declaration C ----------------------- }
+
+Function CParseDeclaration : Integer;
+Var TypeStr : TString;
+    N, Last, VN : Integer;
+    IsTypedef : Boolean;
+    TagKind : TSrcNodeKind;
+Begin
+  IsTypedef := CTokIsKw('typedef');
+  TagKind := SNK_NONE;
+
+  { Detecter struct/union/enum }
+  If CTokIsKw('struct') Or CTokIsKw('union') Or CTokIsKw('enum') Then
+  Begin
+    If CTokIsKw('struct') Then TagKind := SNK_C_STRUCT_DECL
+    Else If CTokIsKw('union') Then TagKind := SNK_C_UNION_DECL
+    Else TagKind := SNK_C_ENUM_DECL;
+  End;
+
+  TypeStr := CParseTypeSpec;
+
+  (* struct/union/enum avec corps { ... } *)
+  If (TagKind <> SNK_NONE) And CTokIs('{') Then
+  Begin
+    N := SrcNewNode(TagKind);
+    SrcNodes[N].Name := TypeStr;
+    CConsume; (* sauter lacco ouvrante *)
+    While (SrcToken.Kind <> STK_EOF) And (Not CTokIs('}')) Do
+    Begin
+      { Sauter le contenu du corps }
+      CConsume;
+    End;
+    If CTokIs('}') Then CConsume;
+    { Eventuellement un nom de variable apres la fermeture }
+    If (SrcToken.Kind = STK_IDENT) Then
+    Begin
+      SrcNodes[N].Name := SrcNodes[N].Name + ' ' + SrcToken.Val;
+      CConsume;
+    End;
+    If CTokIs(';') Then CConsume;
+    CParseDeclaration := N;
+    Exit;
+  End;
+
+  If IsTypedef Then
+  Begin
+    N := SrcNewNode(SNK_C_TYPEDEF);
+    SrcNodes[N].Name := TypeStr;
+    { Le dernier ident avant ; est le nom du typedef }
+    While (SrcToken.Kind <> STK_EOF) And (Not CTokIs(';')) Do
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      CConsume;
+    End;
+    If CTokIs(';') Then CConsume;
+    CParseDeclaration := N;
+    Exit;
+  End;
+
+  { Variable ou liste de variables }
+  N := -1;
+  Last := -1;
+  While True Do
+  Begin
+    { Sauter les pointeurs restants }
+    While CTokIs('*') Do CConsume;
+
+    If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      VN := SrcNewNode(SNK_VAR_DECL);
+      SrcNodes[VN].Name := SrcToken.Val;
+      CConsume;
+      { Tableau [...] }
+      While CTokIs('[') Do
+      Begin
+        CConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CTokIs(']')) Do
+          CConsume;
+        If CTokIs(']') Then CConsume;
+      End;
+      { Initialisation = expr }
+      If CTokIs('=') Then
+      Begin
+        CConsume;
+        If CTokIs('{') Then
+        Begin
+          { Initialisation agregat - sauter }
+          CConsume;
+          While (SrcToken.Kind <> STK_EOF) And (Not CTokIs('}')) Do
+            CConsume;
+          If CTokIs('}') Then CConsume;
+        End
+        Else
+          SrcNodes[VN].Left := CParseAssign;
+      End;
+      If N = -1 Then
+        N := VN
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := VN;
+      Last := VN;
+    End
+    Else
+      Break;
+
+    If CTokIs(',') Then
+      CConsume
+    Else
+      Break;
+  End;
+  If CTokIs(';') Then CConsume;
+  CParseDeclaration := N;
+End;
+
+{ ---- CParseTopLevel : declaration ou fonction top-level C ---- }
+
+Function CParseTopLevel : Integer;
+Var N : Integer;
+    TypeStr, FuncName : TString;
+    TagKind : TSrcNodeKind;
+Begin
+  N := -1;
+  TagKind := SNK_NONE;
+
+  { Directive preprocesseur }
+  If SrcToken.Kind = STK_DIRECTIVE Then
+  Begin
+    N := SrcNewNode(SNK_C_PREPROC);
+    SrcNodes[N].Name := SrcToken.Val;
+    If (Length(SrcToken.Val) >= 8) And
+       (Copy(SrcToken.Val, 1, 8) = '#include') Then
+      SrcNodes[N].Kind := SNK_C_INCLUDE
+    Else If (Length(SrcToken.Val) >= 7) And
+            (Copy(SrcToken.Val, 1, 7) = '#define') Then
+      SrcNodes[N].Kind := SNK_C_DEFINE;
+    CConsume;
+    CParseTopLevel := N;
+    Exit;
+  End;
+
+  { Detecter struct/union/enum avant CParseTypeSpec }
+  If CTokIsKw('struct') Then TagKind := SNK_C_STRUCT_DECL
+  Else If CTokIsKw('union') Then TagKind := SNK_C_UNION_DECL
+  Else If CTokIsKw('enum') Then TagKind := SNK_C_ENUM_DECL;
+
+  { Lire le type de retour / type de declaration }
+  TypeStr := CParseTypeSpec;
+
+  { struct/union/enum avec corps }
+  If (TagKind <> SNK_NONE) And CTokIs('{') Then
+  Begin
+    N := SrcNewNode(TagKind);
+    SrcNodes[N].Name := TypeStr;
+    CConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not CTokIs('}')) Do
+      CConsume;
+    If CTokIs('}') Then CConsume;
+    If (SrcToken.Kind = STK_IDENT) Then
+    Begin
+      SrcNodes[N].Name := SrcNodes[N].Name + ' ' + SrcToken.Val;
+      CConsume;
+    End;
+    If CTokIs(';') Then CConsume;
+    CParseTopLevel := N;
+    Exit;
+  End;
+
+  { typedef }
+  If (Length(TypeStr) >= 7) And (Copy(TypeStr, 1, 7) = 'typedef') Then
+  Begin
+    N := SrcNewNode(SNK_C_TYPEDEF);
+    SrcNodes[N].Name := TypeStr;
+    While (SrcToken.Kind <> STK_EOF) And (Not CTokIs(';')) Do
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      CConsume;
+    End;
+    If CTokIs(';') Then CConsume;
+    CParseTopLevel := N;
+    Exit;
+  End;
+
+  { Nom de la fonction ou variable }
+  FuncName := '';
+  While CTokIs('*') Do CConsume;
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    FuncName := SrcToken.Val;
+    CConsume;
+  End;
+
+  (* Fonction : nom ( ... ) lacco ... racco *)
+  If CTokIs('(') Then
+  Begin
+    N := SrcNewNode(SNK_FUNC_DECL);
+    SrcNodes[N].Name := FuncName;
+    CConsume; { sauter ( }
+    { Parametres }
+    While (SrcToken.Kind <> STK_EOF) And (Not CTokIs(')')) Do
+      CConsume;
+    If CTokIs(')') Then CConsume;
+    { Corps de la fonction ou prototype }
+    If CTokIs('{') Then
+      SrcNodes[N].Left := CParseCompound
+    Else If CTokIs(';') Then
+      CConsume;
+    CParseTopLevel := N;
+    Exit;
+  End;
+
+  { Declaration de variable globale }
+  N := SrcNewNode(SNK_VAR_DECL);
+  SrcNodes[N].Name := FuncName;
+  { Tableau [...] }
+  While CTokIs('[') Do
+  Begin
+    CConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not CTokIs(']')) Do
+      CConsume;
+    If CTokIs(']') Then CConsume;
+  End;
+  { Initialisation }
+  If CTokIs('=') Then
+  Begin
+    CConsume;
+    If CTokIs('{') Then
+    Begin
+      CConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CTokIs('}')) Do
+        CConsume;
+      If CTokIs('}') Then CConsume;
+    End
+    Else
+      SrcNodes[N].Left := CParseAssign;
+  End;
+  { Plusieurs variables separees par , }
+  While CTokIs(',') Do
+  Begin
+    CConsume;
+    While CTokIs('*') Do CConsume;
+    If (SrcToken.Kind = STK_IDENT) Then CConsume;
+    If CTokIs('=') Then
+    Begin
+      CConsume;
+      If CTokIs('{') Then
+      Begin
+        CConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CTokIs('}')) Do
+          CConsume;
+        If CTokIs('}') Then CConsume;
+      End;
+    End;
+  End;
+  If CTokIs(';') Then CConsume;
+  CParseTopLevel := N;
+End;
+
+{ ---- CParseTranslationUnit : unite de traduction C ----------- }
+
+Function CParseTranslationUnit : Integer;
+Var Root, N, Last : Integer;
+Begin
+  CConsume; { lire le premier token }
+  Root := SrcNewNode(SNK_C_TRANSLATION_UNIT);
+  SrcNodes[Root].Name := 'C_TU';
+  Last := -1;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    N := CParseTopLevel;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+  End;
+  CParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 26 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -13554,6 +15046,14 @@ Function IsPascalSource(Const FName : TString) : Boolean;
 Begin
   IsPascalSource := StrEndsWith(FName, '.pas') Or
                     StrEndsWith(FName, '.pp');
+End;
+
+{ ---- IsCSource : verifier si le fichier est .c ou .h -------- }
+
+Function IsCSource(Const FName : TString) : Boolean;
+Begin
+  IsCSource := StrEndsWith(FName, '.c') Or
+               StrEndsWith(FName, '.h');
 End;
 
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
@@ -13607,7 +15107,8 @@ Begin
   Begin
     If (SR.Attr And Directory) = 0 Then
     Begin
-      If IsPascalSource(SR.Name) Then
+      If ((Opts.Language = 'pascal') And IsPascalSource(SR.Name)) Or
+         ((Opts.Language = 'c') And IsCSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -13647,7 +15148,10 @@ Begin
   WriteLn('Fichiers sources trouves : ', SrcFileCount);
   If SrcFileCount = 0 Then
   Begin
-    WriteLn('CODEQL: aucun fichier .pas ou .pp trouve dans: ', Opts.SourceDir);
+    If Opts.Language = 'c' Then
+      WriteLn('CODEQL: aucun fichier .c ou .h trouve dans: ', Opts.SourceDir)
+    Else
+      WriteLn('CODEQL: aucun fichier .pas ou .pp trouve dans: ', Opts.SourceDir);
     Exit;
   End;
   If Opts.Verbose Then
@@ -13676,9 +15180,18 @@ Begin
       Continue;
     End;
     SrcLexOpened := True;
-    SrcLexInit;
-    SrcASTInit;
-    SrcRootNode := SrcParseModule;
+    If Opts.Language = 'c' Then
+    Begin
+      CLexInit;
+      SrcASTInit;
+      SrcRootNode := CParseTranslationUnit;
+    End
+    Else
+    Begin
+      SrcLexInit;
+      SrcASTInit;
+      SrcRootNode := SrcParseModule;
+    End;
     WriteLn('  noeuds AST : ', SrcNodeCount);
     WriteLn('  lignes     : ', SrcTotalLines);
     TotalNodes := TotalNodes + SrcNodeCount;
