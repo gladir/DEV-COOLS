@@ -126,7 +126,7 @@
               SAVE, TRANSACTION
             Mots-cles DCL : GRANT, REVOKE, DENY
 
-  TODO 09 - PARSEUR D EXPRESSIONS SQL
+  TODO 09 - PARSEUR D EXPRESSIONS SQL [IMPLEMENTE]
             ParseExpr : expressions arithmetiques (+, -, *, /, %)
             ParseCompare : =, <>, <, >, <=, >=, !=, !<, !>
             ParseLogical : AND, OR, NOT, BETWEEN, IN, EXISTS,
@@ -5062,13 +5062,972 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 09 - PARSEUR D EXPRESSIONS SQL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Initialisation du pool de noeuds AST -------------------- }
+
+Procedure ASTInit;
+Var
+  I : Integer;
+Begin
+  ASTCount := 0;
+  ParseOk  := True;
+  For I := 0 To MAX_AST_NODES - 1 Do
+  Begin
+    ASTPool[I].Kind     := ND_NONE;
+    ASTPool[I].Text     := '';
+    ASTPool[I].ChildCnt := 0;
+    ASTPool[I].Line     := 0;
+    ASTPool[I].Col      := 0;
+  End;
+End;
+
+{ ---- Allouer un nouveau noeud AST ---------------------------- }
+
+Function NewNode(Kind : Byte; Const Txt : TTokenText;
+                 Ln, Co : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  If ASTCount >= MAX_AST_NODES Then
+  Begin
+    ParseOk := False;
+    NewNode := -1;
+    Exit;
+  End;
+  NewNode := ASTCount;
+  ASTPool[ASTCount].Kind     := Kind;
+  ASTPool[ASTCount].Text     := Txt;
+  ASTPool[ASTCount].ChildCnt := 0;
+  ASTPool[ASTCount].Line     := Ln;
+  ASTPool[ASTCount].Col      := Co;
+  For I := 0 To MAX_AST_CHILDREN - 1 Do
+    ASTPool[ASTCount].Children[I] := -1;
+  Inc(ASTCount);
+End;
+
+{ ---- Ajouter un enfant a un noeud AST ----------------------- }
+
+Procedure AddChild(Parent, Child : Integer);
+Begin
+  If (Parent < 0) Or (Parent >= ASTCount) Then Exit;
+  If Child < 0 Then Exit;
+  If ASTPool[Parent].ChildCnt >= MAX_AST_CHILDREN Then Exit;
+  ASTPool[Parent].Children[ASTPool[Parent].ChildCnt] := Child;
+  Inc(ASTPool[Parent].ChildCnt);
+End;
+
+{ ---- Nom textuel d un type de noeud AST ---------------------- }
+
+Function NodeKindName(K : Byte) : TString;
+Begin
+  Case K Of
+    ND_NONE        : NodeKindName := 'NONE';
+    ND_INT_LIT     : NodeKindName := 'INT_LIT';
+    ND_FLOAT_LIT   : NodeKindName := 'FLOAT_LIT';
+    ND_STR_LIT     : NodeKindName := 'STR_LIT';
+    ND_NSTR_LIT    : NodeKindName := 'NSTR_LIT';
+    ND_HEX_LIT     : NodeKindName := 'HEX_LIT';
+    ND_NULL_LIT    : NodeKindName := 'NULL_LIT';
+    ND_DEFAULT_LIT : NodeKindName := 'DEFAULT_LIT';
+    ND_VARIABLE    : NodeKindName := 'VARIABLE';
+    ND_IDENT       : NodeKindName := 'IDENT';
+    ND_DELIM_IDENT : NodeKindName := 'DELIM_IDENT';
+    ND_STAR        : NodeKindName := 'STAR';
+    ND_PARAM       : NodeKindName := 'PARAM';
+    ND_BINOP       : NodeKindName := 'BINOP';
+    ND_UNARY       : NodeKindName := 'UNARY';
+    ND_COMPARE     : NodeKindName := 'COMPARE';
+    ND_AND         : NodeKindName := 'AND';
+    ND_OR          : NodeKindName := 'OR';
+    ND_NOT         : NodeKindName := 'NOT';
+    ND_BETWEEN     : NodeKindName := 'BETWEEN';
+    ND_IN          : NodeKindName := 'IN';
+    ND_LIKE        : NodeKindName := 'LIKE';
+    ND_IS_NULL     : NodeKindName := 'IS_NULL';
+    ND_IS_NOT_NULL : NodeKindName := 'IS_NOT_NULL';
+    ND_EXISTS      : NodeKindName := 'EXISTS';
+    ND_FUNC_CALL   : NodeKindName := 'FUNC_CALL';
+    ND_CASE_WHEN   : NodeKindName := 'CASE_WHEN';
+    ND_CASE_EXPR   : NodeKindName := 'CASE_EXPR';
+    ND_CAST        : NodeKindName := 'CAST';
+    ND_CONVERT     : NodeKindName := 'CONVERT';
+    ND_COLLATE     : NodeKindName := 'COLLATE';
+    ND_SUBQUERY    : NodeKindName := 'SUBQUERY';
+    ND_WHEN_ITEM   : NodeKindName := 'WHEN_ITEM';
+    ND_ARG_LIST    : NodeKindName := 'ARG_LIST';
+    ND_DOT_REF     : NodeKindName := 'DOT_REF';
+    ND_TYPE_REF    : NodeKindName := 'TYPE_REF';
+  Else
+    NodeKindName := '?';
+  End;
+End;
+
+{ ---- Helpers du parseur -------------------------------------- }
+
+Function TokIs(K : Byte) : Boolean;
+Begin
+  TokIs := (LexCurTok.Kind = K);
+End;
+
+Function KwIs(K : Integer) : Boolean;
+Begin
+  KwIs := (LexCurTok.Kind = TOK_KEYWORD) And (LexCurTok.KwId = K);
+End;
+
+Procedure Advance;
+Begin
+  LexNextToken;
+End;
+
+Procedure ParseError(Const Msg : TString);
+Begin
+  If ParseOk Then
+  Begin
+    WarnMsg('ligne ' + IntToStr(LexCurTok.Line) + ' col ' +
+            IntToStr(LexCurTok.Col) + ': ' + Msg);
+    ParseOk := False;
+  End;
+End;
+
+{ ---- Declarations forward du parseur d expressions ----------- }
+
+Function ParseSqlExpr : Integer; Forward;
+
+{ ---- ParseTypeRef : reference de type (pour CAST/CONVERT) ---- }
+{ Formes supportees : INT, VARCHAR(50), DECIMAL(18,2), NVARCHAR(MAX) }
+
+Function ParseTypeRef : Integer;
+Var
+  N, Arg : Integer;
+Begin
+  ParseTypeRef := -1;
+  If Not ParseOk Then Exit;
+  If (LexCurTok.Kind <> TOK_IDENT) And (LexCurTok.Kind <> TOK_KEYWORD) Then
+  Begin
+    ParseError('type attendu');
+    Exit;
+  End;
+  N := NewNode(ND_TYPE_REF, LexCurTok.Text, LexCurTok.Line, LexCurTok.Col);
+  Advance;
+  { Parametres optionnels : (n) ou (n,m) ou (MAX) }
+  If TokIs(TOK_LPAREN) Then
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_NUMBER) Or (LexCurTok.Kind = TOK_IDENT) Or
+       (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      Arg := NewNode(ND_INT_LIT, LexCurTok.Text, LexCurTok.Line,
+                     LexCurTok.Col);
+      AddChild(N, Arg);
+      Advance;
+      If TokIs(TOK_COMMA) Then
+      Begin
+        Advance;
+        If LexCurTok.Kind = TOK_NUMBER Then
+        Begin
+          Arg := NewNode(ND_INT_LIT, LexCurTok.Text, LexCurTok.Line,
+                         LexCurTok.Col);
+          AddChild(N, Arg);
+          Advance;
+        End;
+      End;
+    End;
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu apres type');
+  End;
+  ParseTypeRef := N;
+End;
+
+{ ---- ParseAtom : atomes de l expression SQL ------------------ }
+{ nombre, chaine, N'...', variable, NULL, DEFAULT, ?, *,         }
+{ (sous-expression), (SELECT ...), fonction(args),               }
+{ CASE WHEN ... END, CASE expr WHEN ... END,                     }
+{ CAST(expr AS type), CONVERT(type, expr [, style]),             }
+{ EXISTS(SELECT ...)                                             }
+
+Function ParseAtom : Integer;
+Var
+  N, E, W, C, T : Integer;
+  FnName : TTokenText;
+Begin
+  ParseAtom := -1;
+  If Not ParseOk Then Exit;
+
+  { Litteral entier }
+  If TokIs(TOK_NUMBER) Then
+  Begin
+    N := NewNode(ND_INT_LIT, LexCurTok.Text, LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { Litteral flottant }
+  If TokIs(TOK_FLOAT) Then
+  Begin
+    N := NewNode(ND_FLOAT_LIT, LexCurTok.Text, LexCurTok.Line,
+                 LexCurTok.Col);
+    Advance;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { Litteral chaine }
+  If TokIs(TOK_STRING) Then
+  Begin
+    N := NewNode(ND_STR_LIT, LexCurTok.Text, LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { Litteral Unicode N'...' }
+  If TokIs(TOK_NSTRING) Then
+  Begin
+    N := NewNode(ND_NSTR_LIT, LexCurTok.Text, LexCurTok.Line,
+                 LexCurTok.Col);
+    Advance;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { Litteral hexa 0x... }
+  If TokIs(TOK_HEX) Then
+  Begin
+    N := NewNode(ND_HEX_LIT, LexCurTok.Text, LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { Variable @nom ou @@nom }
+  If TokIs(TOK_VARIABLE) Then
+  Begin
+    N := NewNode(ND_VARIABLE, LexCurTok.Text, LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { Parametre ? }
+  If TokIs(TOK_PARAM) Then
+  Begin
+    N := NewNode(ND_PARAM, '?', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { * (pour SELECT * ou table.*) }
+  If TokIs(TOK_STAR) Then
+  Begin
+    N := NewNode(ND_STAR, '*', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { NULL }
+  If KwIs(KW_NULL) Then
+  Begin
+    N := NewNode(ND_NULL_LIT, 'NULL', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { DEFAULT }
+  If (LexCurTok.Kind = TOK_IDENT) And
+     (StrUpperCase(LexCurTok.Text) = 'DEFAULT') Then
+  Begin
+    N := NewNode(ND_DEFAULT_LIT, 'DEFAULT', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { EXISTS (sous-requete) }
+  If KwIs(KW_EXISTS) Then
+  Begin
+    N := NewNode(ND_EXISTS, 'EXISTS', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      Advance;
+      { Sous-requete simplifiee : on consomme tout jusqu a ')' }
+      E := NewNode(ND_SUBQUERY, 'SELECT', LexCurTok.Line, LexCurTok.Col);
+      While (Not TokIs(TOK_RPAREN)) And (Not TokIs(TOK_EOF)) And ParseOk Do
+        Advance;
+      If TokIs(TOK_RPAREN) Then
+        Advance
+      Else
+        ParseError(') attendu apres EXISTS');
+      AddChild(N, E);
+    End
+    Else
+      ParseError('( attendu apres EXISTS');
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { CASE WHEN ... END / CASE expr WHEN ... END }
+  If KwIs(KW_CASE) Then
+  Begin
+    Advance;
+    { CASE WHEN form vs CASE expr WHEN form }
+    If KwIs(KW_WHEN) Then
+    Begin
+      { Searched CASE : CASE WHEN cond THEN result ... END }
+      N := NewNode(ND_CASE_WHEN, 'CASE', LexCurTok.Line, LexCurTok.Col);
+      While KwIs(KW_WHEN) And ParseOk Do
+      Begin
+        Advance; { skip WHEN }
+        W := NewNode(ND_WHEN_ITEM, 'WHEN', LexCurTok.Line, LexCurTok.Col);
+        C := ParseSqlExpr;
+        AddChild(W, C);
+        If KwIs(KW_THEN) Then
+          Advance
+        Else
+          ParseError('THEN attendu');
+        E := ParseSqlExpr;
+        AddChild(W, E);
+        AddChild(N, W);
+      End;
+      If KwIs(KW_ELSE) Then
+      Begin
+        Advance;
+        E := ParseSqlExpr;
+        AddChild(N, E);
+      End;
+      If KwIs(KW_END) Then
+        Advance
+      Else
+        ParseError('END attendu');
+    End
+    Else
+    Begin
+      { Simple CASE : CASE expr WHEN val THEN result ... END }
+      N := NewNode(ND_CASE_EXPR, 'CASE', LexCurTok.Line, LexCurTok.Col);
+      E := ParseSqlExpr;
+      AddChild(N, E); { expression de test }
+      While KwIs(KW_WHEN) And ParseOk Do
+      Begin
+        Advance; { skip WHEN }
+        W := NewNode(ND_WHEN_ITEM, 'WHEN', LexCurTok.Line, LexCurTok.Col);
+        C := ParseSqlExpr;
+        AddChild(W, C);
+        If KwIs(KW_THEN) Then
+          Advance
+        Else
+          ParseError('THEN attendu');
+        E := ParseSqlExpr;
+        AddChild(W, E);
+        AddChild(N, W);
+      End;
+      If KwIs(KW_ELSE) Then
+      Begin
+        Advance;
+        E := ParseSqlExpr;
+        AddChild(N, E);
+      End;
+      If KwIs(KW_END) Then
+        Advance
+      Else
+        ParseError('END attendu');
+    End;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { CAST(expr AS type) }
+  If KwIs(KW_CAST) Then
+  Begin
+    N := NewNode(ND_CAST, 'CAST', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    If TokIs(TOK_LPAREN) Then
+      Advance
+    Else
+      ParseError('( attendu apres CAST');
+    E := ParseSqlExpr;
+    AddChild(N, E);
+    If KwIs(KW_AS) Then
+      Advance
+    Else
+      ParseError('AS attendu dans CAST');
+    T := ParseTypeRef;
+    AddChild(N, T);
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu apres CAST');
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { CONVERT(type, expr [, style]) }
+  If KwIs(KW_CONVERT) Then
+  Begin
+    N := NewNode(ND_CONVERT, 'CONVERT', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    If TokIs(TOK_LPAREN) Then
+      Advance
+    Else
+      ParseError('( attendu apres CONVERT');
+    T := ParseTypeRef;
+    AddChild(N, T);
+    If TokIs(TOK_COMMA) Then
+      Advance
+    Else
+      ParseError(', attendu dans CONVERT');
+    E := ParseSqlExpr;
+    AddChild(N, E);
+    { Style optionnel }
+    If TokIs(TOK_COMMA) Then
+    Begin
+      Advance;
+      E := ParseSqlExpr;
+      AddChild(N, E);
+    End;
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu apres CONVERT');
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { Sous-expression parenthesee ou sous-requete scalaire }
+  If TokIs(TOK_LPAREN) Then
+  Begin
+    Advance;
+    { Sous-requete scalaire : (SELECT ...) }
+    If KwIs(KW_SELECT) Then
+    Begin
+      N := NewNode(ND_SUBQUERY, 'SELECT', LexCurTok.Line, LexCurTok.Col);
+      { Consomme tout jusqu a la parenthese fermante }
+      T := 1; { profondeur parentheses }
+      While (T > 0) And (Not TokIs(TOK_EOF)) And ParseOk Do
+      Begin
+        If TokIs(TOK_LPAREN) Then
+          Inc(T)
+        Else If TokIs(TOK_RPAREN) Then
+          Dec(T);
+        If T > 0 Then
+          Advance;
+      End;
+      If TokIs(TOK_RPAREN) Then
+        Advance
+      Else
+        ParseError(') attendu apres sous-requete');
+      ParseAtom := N;
+      Exit;
+    End;
+    { Sous-expression parenthesee normale }
+    N := ParseSqlExpr;
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu');
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { Identificateur delimite [nom] }
+  If TokIs(TOK_DELIM_IDENT) Then
+  Begin
+    N := NewNode(ND_DELIM_IDENT, LexCurTok.Text, LexCurTok.Line,
+                 LexCurTok.Col);
+    Advance;
+    { Reference pointee : [schema].[table].[col] }
+    While TokIs(TOK_DOT) And ParseOk Do
+    Begin
+      E := N;
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+         (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+      Begin
+        C := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line,
+                     LexCurTok.Col);
+        If LexCurTok.Kind = TOK_DELIM_IDENT Then
+          ASTPool[C].Kind := ND_DELIM_IDENT;
+        Advance;
+      End
+      Else If TokIs(TOK_STAR) Then
+      Begin
+        C := NewNode(ND_STAR, '*', LexCurTok.Line, LexCurTok.Col);
+        Advance;
+      End
+      Else
+      Begin
+        ParseError('identificateur attendu apres .');
+        C := -1;
+      End;
+      N := NewNode(ND_DOT_REF, '.', ASTPool[E].Line, ASTPool[E].Col);
+      AddChild(N, E);
+      AddChild(N, C);
+    End;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { Identificateur ou mot-cle utilise comme nom + appel de fonction }
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    FnName := LexCurTok.Text;
+    N := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    { Reference pointee : schema.table.colonne ou table.* }
+    While TokIs(TOK_DOT) And ParseOk Do
+    Begin
+      E := N;
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+         (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+      Begin
+        C := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line,
+                     LexCurTok.Col);
+        If LexCurTok.Kind = TOK_DELIM_IDENT Then
+          ASTPool[C].Kind := ND_DELIM_IDENT;
+        FnName := LexCurTok.Text;
+        Advance;
+      End
+      Else If TokIs(TOK_STAR) Then
+      Begin
+        C := NewNode(ND_STAR, '*', LexCurTok.Line, LexCurTok.Col);
+        Advance;
+      End
+      Else
+      Begin
+        ParseError('identificateur attendu apres .');
+        C := -1;
+      End;
+      N := NewNode(ND_DOT_REF, '.', ASTPool[E].Line, ASTPool[E].Col);
+      AddChild(N, E);
+      AddChild(N, C);
+    End;
+    { Appel de fonction : nom(...) }
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      E := N;
+      N := NewNode(ND_FUNC_CALL, FnName, ASTPool[E].Line, ASTPool[E].Col);
+      AddChild(N, E); { nom de la fonction }
+      Advance; { skip ( }
+      If Not TokIs(TOK_RPAREN) Then
+      Begin
+        C := ParseSqlExpr;
+        AddChild(N, C);
+        While TokIs(TOK_COMMA) And ParseOk Do
+        Begin
+          Advance;
+          C := ParseSqlExpr;
+          AddChild(N, C);
+        End;
+      End;
+      If TokIs(TOK_RPAREN) Then
+        Advance
+      Else
+        ParseError(') attendu apres arguments');
+    End;
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { Rien de reconnu }
+  ParseError('expression attendue, trouve: ' + LexCurTok.Text);
+End;
+
+{ ---- ParseUnary : operateurs unaires +, -, ~, NOT ----------- }
+
+Function ParseUnary : Integer;
+Var
+  N, E : Integer;
+  Op   : TTokenText;
+Begin
+  ParseUnary := -1;
+  If Not ParseOk Then Exit;
+
+  { NOT expr }
+  If KwIs(KW_NOT) Then
+  Begin
+    Op := 'NOT';
+    Advance;
+    E := ParseUnary;
+    N := NewNode(ND_NOT, Op, LexCurTok.Line, LexCurTok.Col);
+    AddChild(N, E);
+    ParseUnary := N;
+    Exit;
+  End;
+
+  { + expr (unaire positif) }
+  If TokIs(TOK_PLUS) Then
+  Begin
+    Advance;
+    ParseUnary := ParseUnary;
+    Exit;
+  End;
+
+  { - expr (unaire negatif) }
+  If TokIs(TOK_MINUS) Then
+  Begin
+    Op := '-';
+    Advance;
+    E := ParseUnary;
+    N := NewNode(ND_UNARY, Op, LexCurTok.Line, LexCurTok.Col);
+    AddChild(N, E);
+    ParseUnary := N;
+    Exit;
+  End;
+
+  { ~ expr (bitwise NOT) }
+  If TokIs(TOK_TILDE) Then
+  Begin
+    Op := '~';
+    Advance;
+    E := ParseUnary;
+    N := NewNode(ND_UNARY, Op, LexCurTok.Line, LexCurTok.Col);
+    AddChild(N, E);
+    ParseUnary := N;
+    Exit;
+  End;
+
+  ParseUnary := ParseAtom;
+End;
+
+{ ---- ParseMulExpr : *, /, %, & ------------------------------- }
+
+Function ParseMulExpr : Integer;
+Var
+  Left, Right, BinNode : Integer;
+  Op : TTokenText;
+Begin
+  ParseMulExpr := -1;
+  If Not ParseOk Then Exit;
+  Left := ParseUnary;
+  While ParseOk And
+        (TokIs(TOK_STAR) Or TokIs(TOK_SLASH) Or TokIs(TOK_PERCENT) Or
+         TokIs(TOK_AMPERSAND)) Do
+  Begin
+    Op := LexCurTok.Text;
+    Advance;
+    Right := ParseUnary;
+    BinNode := NewNode(ND_BINOP, Op, ASTPool[Left].Line, ASTPool[Left].Col);
+    AddChild(BinNode, Left);
+    AddChild(BinNode, Right);
+    Left := BinNode;
+  End;
+  ParseMulExpr := Left;
+End;
+
+Function ParseAddExpr : Integer;
+Var
+  Left, Right, BinNode : Integer;
+  Op : TTokenText;
+Begin
+  ParseAddExpr := -1;
+  If Not ParseOk Then Exit;
+  Left := ParseMulExpr;
+  While ParseOk And
+        (TokIs(TOK_PLUS) Or TokIs(TOK_MINUS) Or TokIs(TOK_PIPE) Or
+         TokIs(TOK_CARET)) Do
+  Begin
+    Op := LexCurTok.Text;
+    Advance;
+    Right := ParseMulExpr;
+    BinNode := NewNode(ND_BINOP, Op, ASTPool[Left].Line, ASTPool[Left].Col);
+    AddChild(BinNode, Left);
+    AddChild(BinNode, Right);
+    Left := BinNode;
+  End;
+  ParseAddExpr := Left;
+End;
+
+{ ---- ParseCompare : operateurs de comparaison ---------------- }
+
+Function ParseCompare : Integer;
+Var
+  Left, Right, CmpNode : Integer;
+  Op : TTokenText;
+Begin
+  ParseCompare := -1;
+  If Not ParseOk Then Exit;
+  Left := ParseAddExpr;
+  If ParseOk And (TokIs(TOK_EQ) Or TokIs(TOK_NE) Or TokIs(TOK_LT) Or
+     TokIs(TOK_GT) Or TokIs(TOK_LE) Or TokIs(TOK_GE) Or
+     TokIs(TOK_BANG_LT) Or TokIs(TOK_BANG_GT)) Then
+  Begin
+    Op := LexCurTok.Text;
+    Advance;
+    Right := ParseAddExpr;
+    CmpNode := NewNode(ND_COMPARE, Op, ASTPool[Left].Line,
+                       ASTPool[Left].Col);
+    AddChild(CmpNode, Left);
+    AddChild(CmpNode, Right);
+    Left := CmpNode;
+  End;
+  ParseCompare := Left;
+End;
+
+{ ---- ParseLogical : AND, OR, BETWEEN, IN, LIKE, IS [NOT] NULL, }
+{      COLLATE, NOT                                               }
+
+Function ParseLogical : Integer;
+Var
+  Left, Right, N, Lo, Hi, ListNode : Integer;
+  Negated : Boolean;
+Begin
+  ParseLogical := -1;
+  If Not ParseOk Then Exit;
+  Left := ParseCompare;
+  If Not ParseOk Then Begin ParseLogical := Left; Exit; End;
+
+  { Postfix : expr IS [NOT] NULL }
+  If KwIs(KW_IS) Then
+  Begin
+    Advance;
+    If KwIs(KW_NOT) Then
+    Begin
+      Advance;
+      If KwIs(KW_NULL) Then
+        Advance
+      Else
+        ParseError('NULL attendu apres IS NOT');
+      N := NewNode(ND_IS_NOT_NULL, 'IS NOT NULL', ASTPool[Left].Line,
+                   ASTPool[Left].Col);
+      AddChild(N, Left);
+      Left := N;
+    End
+    Else
+    Begin
+      If KwIs(KW_NULL) Then
+        Advance
+      Else
+        ParseError('NULL attendu apres IS');
+      N := NewNode(ND_IS_NULL, 'IS NULL', ASTPool[Left].Line,
+                   ASTPool[Left].Col);
+      AddChild(N, Left);
+      Left := N;
+    End;
+  End;
+
+  { Postfix : [NOT] BETWEEN lo AND hi }
+  Negated := False;
+  If KwIs(KW_NOT) Then
+  Begin
+    { Regarder si BETWEEN, IN ou LIKE suit }
+    Negated := True;
+    Advance;
+  End;
+
+  If KwIs(KW_BETWEEN) And ParseOk Then
+  Begin
+    Advance;
+    Lo := ParseAddExpr;
+    If KwIs(KW_AND) Then
+      Advance
+    Else
+      ParseError('AND attendu dans BETWEEN');
+    Hi := ParseAddExpr;
+    N := NewNode(ND_BETWEEN, 'BETWEEN', ASTPool[Left].Line,
+                 ASTPool[Left].Col);
+    AddChild(N, Left);
+    AddChild(N, Lo);
+    AddChild(N, Hi);
+    If Negated Then
+    Begin
+      Left := NewNode(ND_NOT, 'NOT', ASTPool[N].Line, ASTPool[N].Col);
+      AddChild(Left, N);
+    End
+    Else
+      Left := N;
+    Negated := False;
+  End;
+
+  { Postfix : [NOT] IN (liste | sous-requete) }
+  If KwIs(KW_IN) And ParseOk Then
+  Begin
+    Advance;
+    N := NewNode(ND_IN, 'IN', ASTPool[Left].Line, ASTPool[Left].Col);
+    AddChild(N, Left);
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      Advance;
+      { Sous-requete ou liste de valeurs }
+      If KwIs(KW_SELECT) Then
+      Begin
+        Right := NewNode(ND_SUBQUERY, 'SELECT', LexCurTok.Line,
+                         LexCurTok.Col);
+        While (Not TokIs(TOK_RPAREN)) And (Not TokIs(TOK_EOF)) And
+              ParseOk Do
+          Advance;
+        AddChild(N, Right);
+      End
+      Else
+      Begin
+        ListNode := NewNode(ND_ARG_LIST, 'IN_LIST', LexCurTok.Line,
+                            LexCurTok.Col);
+        Right := ParseSqlExpr;
+        AddChild(ListNode, Right);
+        While TokIs(TOK_COMMA) And ParseOk Do
+        Begin
+          Advance;
+          Right := ParseSqlExpr;
+          AddChild(ListNode, Right);
+        End;
+        AddChild(N, ListNode);
+      End;
+      If TokIs(TOK_RPAREN) Then
+        Advance
+      Else
+        ParseError(') attendu apres IN');
+    End
+    Else
+      ParseError('( attendu apres IN');
+    If Negated Then
+    Begin
+      Left := NewNode(ND_NOT, 'NOT', ASTPool[N].Line, ASTPool[N].Col);
+      AddChild(Left, N);
+    End
+    Else
+      Left := N;
+    Negated := False;
+  End;
+
+  { Postfix : [NOT] LIKE pattern }
+  If KwIs(KW_LIKE) And ParseOk Then
+  Begin
+    Advance;
+    Right := ParseAddExpr;
+    N := NewNode(ND_LIKE, 'LIKE', ASTPool[Left].Line, ASTPool[Left].Col);
+    AddChild(N, Left);
+    AddChild(N, Right);
+    If Negated Then
+    Begin
+      Left := NewNode(ND_NOT, 'NOT', ASTPool[N].Line, ASTPool[N].Col);
+      AddChild(Left, N);
+    End
+    Else
+      Left := N;
+    Negated := False;
+  End;
+
+  { Si NOT a ete consomme mais pas utilise, envelopper }
+  If Negated Then
+  Begin
+    N := NewNode(ND_NOT, 'NOT', ASTPool[Left].Line, ASTPool[Left].Col);
+    AddChild(N, Left);
+    Left := N;
+  End;
+
+  { COLLATE collation_name }
+  If KwIs(KW_COLLATE) And ParseOk Then
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      N := NewNode(ND_COLLATE, LexCurTok.Text, ASTPool[Left].Line,
+                   ASTPool[Left].Col);
+      AddChild(N, Left);
+      Advance;
+      Left := N;
+    End
+    Else
+      ParseError('nom de collation attendu');
+  End;
+
+  ParseLogical := Left;
+End;
+
+{ ---- ParseAndExpr : AND -------------------------------------- }
+
+Function ParseAndExpr : Integer;
+Var
+  Left, Right, N : Integer;
+Begin
+  ParseAndExpr := -1;
+  If Not ParseOk Then Exit;
+  Left := ParseLogical;
+  While KwIs(KW_AND) And ParseOk Do
+  Begin
+    Advance;
+    Right := ParseLogical;
+    N := NewNode(ND_AND, 'AND', ASTPool[Left].Line, ASTPool[Left].Col);
+    AddChild(N, Left);
+    AddChild(N, Right);
+    Left := N;
+  End;
+  ParseAndExpr := Left;
+End;
+
+{ ---- ParseOrExpr : OR ---------------------------------------- }
+
+Function ParseOrExpr : Integer;
+Var
+  Left, Right, N : Integer;
+Begin
+  ParseOrExpr := -1;
+  If Not ParseOk Then Exit;
+  Left := ParseAndExpr;
+  While KwIs(KW_OR) And ParseOk Do
+  Begin
+    Advance;
+    Right := ParseAndExpr;
+    N := NewNode(ND_OR, 'OR', ASTPool[Left].Line, ASTPool[Left].Col);
+    AddChild(N, Left);
+    AddChild(N, Right);
+    Left := N;
+  End;
+  ParseOrExpr := Left;
+End;
+
+{ ---- ParseSqlExpr : point d entree principal ----------------- }
+
+Function ParseSqlExpr : Integer;
+Begin
+  ParseSqlExpr := ParseOrExpr;
+End;
+
+{ ---- DumpExpr : affichage recursif de l AST d expression ----- }
+
+Procedure DumpExpr(Idx : Integer; Indent : Integer);
+Var
+  I  : Integer;
+  Sp : TString;
+Begin
+  If Idx < 0 Then Exit;
+  If Idx >= ASTCount Then Exit;
+  Sp := '';
+  For I := 1 To Indent Do
+    Sp := Sp + '  ';
+  WriteLn(Sp, NodeKindName(ASTPool[Idx].Kind), ' [', ASTPool[Idx].Text, ']');
+  For I := 0 To ASTPool[Idx].ChildCnt - 1 Do
+    DumpExpr(ASTPool[Idx].Children[I], Indent + 1);
+End;
+
 { ---- Execution d une requete SQL ----------------------------- }
 
 Procedure ExecuteQuery(Const SQL : TString);
+Var
+  Root : Integer;
 Begin
-  { TODO 07..15 : tokeniser, parser, executer la requete }
-  OutputLine('-- Requete recue : ' + SQL);
-  OutputLine('-- (moteur non encore implemente)');
+  LexInit(SQL);
+  LexNextToken;
+  ASTInit;
+  Root := ParseSqlExpr;
+  If ParseOk And (Root >= 0) Then
+  Begin
+    If Opts.Verbose Then
+    Begin
+      OutputLine('-- AST de l''expression :');
+      DumpExpr(Root, 0);
+    End;
+  End
+  Else
+    OutputLine('-- Erreur de syntaxe dans : ' + SQL);
 End;
 
 { ---- Execution d un script SQL ------------------------------- }
