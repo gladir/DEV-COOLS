@@ -173,6 +173,16 @@
       avec operateur ternaire, cast, sizeof), detection des fichiers .c/.h,
       integration dans database create avec --language=c.
       [IMPLEMENTE]
+
+  27. Implementer le support du langage C++ : lexeur C++ (mots-cles C++
+      supplementaires class/namespace/template/virtual/public/private/
+      protected/try/catch/throw/new/delete/bool/true/false/using/
+      operator/friend/inline/explicit/mutable/typeid/typename/
+      dynamic_cast/static_cast/reinterpret_cast/const_cast/nullptr),
+      parseur C++ (classes, namespaces, templates, heritage, try/catch,
+      new/delete, operateur ::), detection des fichiers .cpp/.cc/.cxx/
+      .hpp/.hh/.hxx, integration dans database create avec --language=cpp.
+      [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -459,7 +469,12 @@ Type
     SNK_C_TYPEDEF, SNK_C_DO_WHILE, SNK_C_SWITCH,
     SNK_C_CASE_ITEM, SNK_C_DEFAULT_ITEM, SNK_C_BREAK,
     SNK_C_CONTINUE, SNK_C_RETURN, SNK_C_SIZEOF,
-    SNK_C_CAST, SNK_C_TERNARY, SNK_C_PREPROC
+    SNK_C_CAST, SNK_C_TERNARY, SNK_C_PREPROC,
+    SNK_CPP_TRANSLATION_UNIT, SNK_CPP_CLASS_DECL,
+    SNK_CPP_NAMESPACE, SNK_CPP_TEMPLATE,
+    SNK_CPP_ACCESS_SPEC, SNK_CPP_TRY, SNK_CPP_CATCH,
+    SNK_CPP_THROW, SNK_CPP_NEW, SNK_CPP_DELETE,
+    SNK_CPP_USING, SNK_CPP_SCOPE_RES
   );
 
   TSrcASTNode = Record
@@ -1198,7 +1213,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1470,8 +1485,9 @@ Begin
     End;
   End;
 
-  If (Opts.Language <> 'pascal') And (Opts.Language <> 'c') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal ou c)');
+  If (Opts.Language <> 'pascal') And (Opts.Language <> 'c') And
+     (Opts.Language <> 'cpp') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c ou cpp)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -15023,6 +15039,1628 @@ End;
 
 { ---- Fin TODO 26 --------------------------------------------- }
 
+{ ============================================================
+  TODO 27 - LEXEUR ET PARSEUR C++ [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsCppKeyword : reconnaissance des mots-cles C++ -------- }
+
+Function IsCppKeyword(Const W : TString) : Boolean;
+Begin
+  IsCppKeyword :=
+    IsCKeyword(W) Or
+    (W = 'class')     Or (W = 'namespace')  Or (W = 'template')  Or
+    (W = 'virtual')   Or (W = 'public')     Or (W = 'private')   Or
+    (W = 'protected') Or (W = 'try')        Or (W = 'catch')     Or
+    (W = 'throw')     Or (W = 'new')        Or (W = 'delete')    Or
+    (W = 'bool')      Or (W = 'true')       Or (W = 'false')     Or
+    (W = 'using')     Or (W = 'operator')   Or (W = 'friend')    Or
+    (W = 'inline')    Or (W = 'explicit')   Or (W = 'mutable')   Or
+    (W = 'typeid')    Or (W = 'typename')   Or (W = 'nullptr')   Or
+    (W = 'dynamic_cast')     Or (W = 'static_cast') Or
+    (W = 'reinterpret_cast') Or (W = 'const_cast')  Or
+    (W = 'override')  Or (W = 'final')      Or (W = 'noexcept')  Or
+    (W = 'constexpr') Or (W = 'decltype')   Or (W = 'auto');
+End;
+
+{ ---- CppLexScanIdent : scanner un identificateur ou mot-cle C++ }
+
+Procedure CppLexScanIdent;
+Var S : TString;
+Begin
+  S := '';
+  While (SrcColNo <= Length(SrcLine)) And
+        IsIdentCont(SrcLine[SrcColNo]) Do
+  Begin
+    If Length(S) < 255 Then
+      S := S + SrcLine[SrcColNo];
+    Inc(SrcColNo);
+  End;
+  If IsCppKeyword(S) Then
+    SrcToken.Kind := STK_KEYWORD
+  Else
+    SrcToken.Kind := STK_IDENT;
+  SrcToken.Val := S;
+End;
+
+{ ---- CppLexInit : initialiser le lexeur C++ ------------------ }
+
+Procedure CppLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- CppLexNextToken : prochain token C++ -------------------- }
+
+Procedure CppLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      SrcToken.Line := SrcLineNo;
+      SrcToken.Col  := SrcColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    Scanning := False;
+
+    { Preprocesseur : lignes commencant par # }
+    If Ch = '#' Then
+    Begin
+      S := '';
+      While SrcColNo <= Length(SrcLine) Do
+      Begin
+        If Length(S) < 255 Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_DIRECTIVE;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Commentaire de ligne // }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      CLexSkipLineComment;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Commentaire bloc /* ... */ }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      CLexSkipBlockComment;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaines entre guillemets }
+    If Ch = '"' Then
+    Begin
+      CLexScanString;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Caracteres entre apostrophes }
+    If Ch = '''' Then
+    Begin
+      CLexScanChar;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Identificateurs et mots-cles }
+    If IsIdentStart(Ch) Then
+    Begin
+      CppLexScanIdent;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Nombres }
+    If IsDigit(Ch) Then
+    Begin
+      CLexScanNumber;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs multi-caracteres (3 car) }
+    If (SrcColNo + 1 < Length(SrcLine)) Then
+    Begin
+      If (Ch = '<') And (SrcLine[SrcColNo + 1] = '<') And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '<<=';
+        Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit;
+      End;
+      If (Ch = '>') And (SrcLine[SrcColNo + 1] = '>') And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '>>=';
+        Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit;
+      End;
+    End;
+
+    { Operateurs multi-caracteres (2 car) }
+    If (SrcColNo < Length(SrcLine)) Then
+    Begin
+      S := Ch + SrcLine[SrcColNo + 1];
+      If (S = '->') Or (S = '++') Or (S = '--') Or
+         (S = '&&') Or (S = '||') Or (S = '<<') Or (S = '>>') Or
+         (S = '==') Or (S = '!=') Or (S = '<=') Or (S = '>=') Or
+         (S = '+=') Or (S = '-=') Or (S = '*=') Or (S = '/=') Or
+         (S = '%=') Or (S = '&=') Or (S = '|=') Or (S = '^=') Or
+         (S = '::') Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := S;
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+    End;
+
+    { Operateurs simples }
+    If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+       (Ch = '%') Or (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or
+       (Ch = '!') Or (Ch = '&') Or (Ch = '|') Or (Ch = '^') Or
+       (Ch = '~') Or (Ch = '?') Or (Ch = ':') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := Ch;
+      Inc(SrcColNo);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Ponctuation }
+    If (Ch = '(') Or (Ch = ')') Or (Ch = '[') Or (Ch = ']') Or
+       (Ch = '{') Or (Ch = '}') Or (Ch = ',') Or (Ch = ';') Or
+       (Ch = '.') Then
+    Begin
+      SrcToken.Kind := STK_PUNCT;
+      SrcToken.Val  := Ch;
+      Inc(SrcColNo);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Caractere inconnu }
+    SrcToken.Kind := STK_PUNCT;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- Parseur C++ : consommation de tokens -------------------- }
+
+Procedure CppConsume; Forward;
+Function CppParseExpr : Integer; Forward;
+Function CppParsePrimary : Integer; Forward;
+Function CppParseUnary : Integer; Forward;
+Function CppParseBinary(MinPrec : Integer) : Integer; Forward;
+Function CppParseAssign : Integer; Forward;
+Function CppParseStatement : Integer; Forward;
+Function CppParseCompound : Integer; Forward;
+Function CppParseDeclaration : Integer; Forward;
+Function CppParseTopLevel : Integer; Forward;
+Function CppParseTranslationUnit : Integer; Forward;
+
+Procedure CppConsume;
+Begin
+  Repeat
+    CppLexNextToken;
+  Until (SrcToken.Kind <> STK_COMMENT);
+End;
+
+Function CppTokIs(Const S : TString) : Boolean;
+Begin
+  CppTokIs := (SrcToken.Val = S);
+End;
+
+Function CppTokIsKw(Const S : TString) : Boolean;
+Begin
+  CppTokIsKw := (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = S);
+End;
+
+Procedure CppExpect(Const S : TString);
+Begin
+  If SrcToken.Val <> S Then
+    WriteLn('CODEQL(C++): attendu ''', S, ''' a la ligne ', SrcToken.Line,
+            ', colonne ', SrcToken.Col, ', trouve ''', SrcToken.Val, '''');
+  CppConsume;
+End;
+
+{ ---- CppParseTypeSpec : lire un specificateur de type C++ ---- }
+
+Function CppParseTypeSpec : TString;
+Var S : TString;
+Begin
+  S := '';
+  { Qualificateurs et specificateurs }
+  While (CppTokIsKw('const')) Or (CppTokIsKw('volatile')) Or
+        (CppTokIsKw('static')) Or (CppTokIsKw('extern')) Or
+        (CppTokIsKw('auto')) Or (CppTokIsKw('register')) Or
+        (CppTokIsKw('signed')) Or (CppTokIsKw('unsigned')) Or
+        (CppTokIsKw('short')) Or (CppTokIsKw('long')) Or
+        (CppTokIsKw('typedef')) Or (CppTokIsKw('inline')) Or
+        (CppTokIsKw('virtual')) Or (CppTokIsKw('explicit')) Or
+        (CppTokIsKw('mutable')) Or (CppTokIsKw('constexpr')) Do
+  Begin
+    If S <> '' Then S := S + ' ';
+    S := S + SrcToken.Val;
+    CppConsume;
+  End;
+  { Type de base }
+  If (CppTokIsKw('void')) Or (CppTokIsKw('char')) Or (CppTokIsKw('int')) Or
+     (CppTokIsKw('float')) Or (CppTokIsKw('double')) Or
+     (CppTokIsKw('bool')) Or
+     (CppTokIsKw('struct')) Or (CppTokIsKw('union')) Or
+     (CppTokIsKw('enum')) Or (CppTokIsKw('class')) Or
+     (CppTokIsKw('typename')) Or
+     (SrcToken.Kind = STK_IDENT) Then
+  Begin
+    If S <> '' Then S := S + ' ';
+    S := S + SrcToken.Val;
+    CppConsume;
+    { Scope resolution :: }
+    While CppTokIs('::') Do
+    Begin
+      S := S + '::';
+      CppConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        S := S + SrcToken.Val;
+        CppConsume;
+      End;
+    End;
+    { struct/union/enum/class tag }
+    If (SrcToken.Kind = STK_IDENT) And
+       ((S = 'struct') Or (S = 'union') Or (S = 'enum') Or
+        (S = 'class') Or
+        (Copy(S, Length(S) - 5, 6) = 'struct') Or
+        (Copy(S, Length(S) - 4, 5) = 'union') Or
+        (Copy(S, Length(S) - 3, 4) = 'enum') Or
+        (Copy(S, Length(S) - 4, 5) = 'class')) Then
+    Begin
+      S := S + ' ' + SrcToken.Val;
+      CppConsume;
+    End;
+    { Template arguments < ... > }
+    If CppTokIs('<') Then
+    Begin
+      S := S + '<';
+      CppConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('>')) Do
+      Begin
+        S := S + SrcToken.Val;
+        CppConsume;
+      End;
+      If CppTokIs('>') Then
+      Begin
+        S := S + '>';
+        CppConsume;
+      End;
+    End;
+  End;
+  { Reference & et && }
+  While CppTokIs('&') Do
+  Begin
+    S := S + '&';
+    CppConsume;
+  End;
+  { Pointeurs * }
+  While CppTokIs('*') Do
+  Begin
+    S := S + '*';
+    CppConsume;
+  End;
+  If S = '' Then S := 'int';
+  CppParseTypeSpec := S;
+End;
+
+{ ---- CppIsCTypeStart : teste si le token demarre un type C++ - }
+
+Function CppIsCTypeStart : Boolean;
+Begin
+  CppIsCTypeStart :=
+    (CppTokIsKw('void')) Or (CppTokIsKw('char')) Or (CppTokIsKw('int')) Or
+    (CppTokIsKw('short')) Or (CppTokIsKw('long')) Or (CppTokIsKw('float')) Or
+    (CppTokIsKw('double')) Or (CppTokIsKw('signed')) Or
+    (CppTokIsKw('unsigned')) Or (CppTokIsKw('bool')) Or
+    (CppTokIsKw('const')) Or (CppTokIsKw('volatile')) Or
+    (CppTokIsKw('static')) Or (CppTokIsKw('extern')) Or
+    (CppTokIsKw('auto')) Or (CppTokIsKw('register')) Or
+    (CppTokIsKw('struct')) Or (CppTokIsKw('union')) Or
+    (CppTokIsKw('enum')) Or (CppTokIsKw('typedef')) Or
+    (CppTokIsKw('class')) Or (CppTokIsKw('typename')) Or
+    (CppTokIsKw('inline')) Or (CppTokIsKw('virtual')) Or
+    (CppTokIsKw('explicit')) Or (CppTokIsKw('constexpr'));
+End;
+
+{ ---- CppParsePrimary : expression primaire C++ --------------- }
+
+Function CppParsePrimary : Integer;
+Var N, ArgNode, Last : Integer;
+Begin
+  N := -1;
+  Case SrcToken.Kind Of
+    STK_INTEGER:
+    Begin
+      N := SrcNewNode(SNK_EXPR_INT);
+      SrcNodes[N].IntVal := SrcToken.IntVal;
+      SrcNodes[N].Name   := SrcToken.Val;
+      CppConsume;
+    End;
+    STK_FLOAT:
+    Begin
+      N := SrcNewNode(SNK_EXPR_FLOAT);
+      SrcNodes[N].FloatVal := SrcToken.FloatVal;
+      SrcNodes[N].Name     := SrcToken.Val;
+      CppConsume;
+    End;
+    STK_STRING:
+    Begin
+      N := SrcNewNode(SNK_EXPR_STRING);
+      SrcNodes[N].Name := SrcToken.Val;
+      CppConsume;
+    End;
+    STK_KEYWORD:
+    Begin
+      If CppTokIsKw('sizeof') Then
+      Begin
+        N := SrcNewNode(SNK_C_SIZEOF);
+        SrcNodes[N].Name := 'sizeof';
+        CppConsume;
+        If CppTokIs('(') Then
+        Begin
+          CppConsume;
+          SrcNodes[N].Left := CppParseExpr;
+          If CppTokIs(')') Then CppConsume;
+        End
+        Else
+          SrcNodes[N].Left := CppParseUnary;
+      End
+      Else If CppTokIsKw('new') Then
+      Begin
+        N := SrcNewNode(SNK_CPP_NEW);
+        SrcNodes[N].Name := 'new';
+        CppConsume;
+        { new Type ou new Type(...) ou new Type[...] }
+        If SrcToken.Kind <> STK_EOF Then
+        Begin
+          SrcNodes[N].Name := 'new ' + SrcToken.Val;
+          CppConsume;
+        End;
+        If CppTokIs('(') Then
+        Begin
+          CppConsume;
+          If Not CppTokIs(')') Then
+            SrcNodes[N].Left := CppParseExpr;
+          If CppTokIs(')') Then CppConsume;
+        End
+        Else If CppTokIs('[') Then
+        Begin
+          CppConsume;
+          SrcNodes[N].Left := CppParseExpr;
+          If CppTokIs(']') Then CppConsume;
+        End;
+      End
+      Else If CppTokIsKw('delete') Then
+      Begin
+        N := SrcNewNode(SNK_CPP_DELETE);
+        SrcNodes[N].Name := 'delete';
+        CppConsume;
+        If CppTokIs('[') Then
+        Begin
+          CppConsume;
+          If CppTokIs(']') Then CppConsume;
+          SrcNodes[N].Name := 'delete[]';
+        End;
+        SrcNodes[N].Left := CppParseUnary;
+      End
+      Else If CppTokIsKw('true') Or CppTokIsKw('false') Then
+      Begin
+        N := SrcNewNode(SNK_EXPR_INT);
+        If CppTokIsKw('true') Then
+          SrcNodes[N].IntVal := 1
+        Else
+          SrcNodes[N].IntVal := 0;
+        SrcNodes[N].Name := SrcToken.Val;
+        CppConsume;
+      End
+      Else If CppTokIsKw('nullptr') Then
+      Begin
+        N := SrcNewNode(SNK_EXPR_NIL);
+        SrcNodes[N].Name := 'nullptr';
+        CppConsume;
+      End
+      Else If CppTokIsKw('static_cast') Or CppTokIsKw('dynamic_cast') Or
+              CppTokIsKw('reinterpret_cast') Or CppTokIsKw('const_cast') Then
+      Begin
+        N := SrcNewNode(SNK_C_CAST);
+        SrcNodes[N].Name := SrcToken.Val;
+        CppConsume;
+        { <Type> }
+        If CppTokIs('<') Then
+        Begin
+          CppConsume;
+          While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('>')) Do
+            CppConsume;
+          If CppTokIs('>') Then CppConsume;
+        End;
+        { (expr) }
+        If CppTokIs('(') Then
+        Begin
+          CppConsume;
+          SrcNodes[N].Left := CppParseExpr;
+          If CppTokIs(')') Then CppConsume;
+        End;
+      End
+      Else If CppTokIsKw('typeid') Then
+      Begin
+        N := SrcNewNode(SNK_EXPR_CALL);
+        SrcNodes[N].Name := 'typeid';
+        CppConsume;
+        If CppTokIs('(') Then
+        Begin
+          CppConsume;
+          SrcNodes[N].Left := CppParseExpr;
+          If CppTokIs(')') Then CppConsume;
+        End;
+      End
+      Else If CppTokIsKw('throw') Then
+      Begin
+        N := SrcNewNode(SNK_CPP_THROW);
+        SrcNodes[N].Name := 'throw';
+        CppConsume;
+        If (SrcToken.Kind <> STK_EOF) And (Not CppTokIs(';')) Then
+          SrcNodes[N].Left := CppParseAssign;
+      End
+      Else
+      Begin
+        N := SrcNewNode(SNK_EXPR_IDENT);
+        SrcNodes[N].Name := SrcToken.Val;
+        CppConsume;
+      End;
+    End;
+    STK_IDENT:
+    Begin
+      N := SrcNewNode(SNK_EXPR_IDENT);
+      SrcNodes[N].Name := SrcToken.Val;
+      CppConsume;
+      { Scope resolution :: }
+      While CppTokIs('::') Do
+      Begin
+        SrcNodes[N].Name := SrcNodes[N].Name + '::';
+        CppConsume;
+        If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+        Begin
+          SrcNodes[N].Name := SrcNodes[N].Name + SrcToken.Val;
+          CppConsume;
+        End;
+      End;
+    End;
+  Else
+    Begin
+      If CppTokIs('(') Then
+      Begin
+        CppConsume;
+        N := CppParseExpr;
+        If CppTokIs(')') Then CppConsume;
+      End
+      Else If CppTokIs('::') Then
+      Begin
+        N := SrcNewNode(SNK_CPP_SCOPE_RES);
+        SrcNodes[N].Name := '::';
+        CppConsume;
+        If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+        Begin
+          SrcNodes[N].Name := '::' + SrcToken.Val;
+          CppConsume;
+        End;
+      End
+      Else
+      Begin
+        N := SrcNewNode(SNK_EXPR_IDENT);
+        SrcNodes[N].Name := SrcToken.Val;
+        CppConsume;
+      End;
+    End;
+  End;
+  { Postfix : appel, indexation, champ, ->, ++, --, :: }
+  While (CppTokIs('(')) Or (CppTokIs('[')) Or (CppTokIs('.')) Or
+        (CppTokIs('->')) Or (CppTokIs('++')) Or (CppTokIs('--')) Do
+  Begin
+    If CppTokIs('(') Then
+    Begin
+      CppConsume;
+      ArgNode := SrcNewNode(SNK_EXPR_CALL);
+      SrcNodes[ArgNode].Left := N;
+      If N >= 0 Then
+        SrcNodes[ArgNode].Name := SrcNodes[N].Name;
+      Last := -1;
+      If Not CppTokIs(')') Then
+      Begin
+        SrcNodes[ArgNode].Right := CppParseAssign;
+        Last := SrcNodes[ArgNode].Right;
+        While CppTokIs(',') Do
+        Begin
+          CppConsume;
+          SrcNodes[Last].Next := CppParseAssign;
+          Last := SrcNodes[Last].Next;
+        End;
+      End;
+      If CppTokIs(')') Then CppConsume;
+      N := ArgNode;
+    End
+    Else If CppTokIs('[') Then
+    Begin
+      CppConsume;
+      ArgNode := SrcNewNode(SNK_EXPR_INDEX);
+      SrcNodes[ArgNode].Left  := N;
+      SrcNodes[ArgNode].Right := CppParseExpr;
+      If CppTokIs(']') Then CppConsume;
+      N := ArgNode;
+    End
+    Else If CppTokIs('.') Then
+    Begin
+      CppConsume;
+      ArgNode := SrcNewNode(SNK_EXPR_FIELD);
+      SrcNodes[ArgNode].Left := N;
+      SrcNodes[ArgNode].Name := SrcToken.Val;
+      CppConsume;
+      N := ArgNode;
+    End
+    Else If CppTokIs('->') Then
+    Begin
+      CppConsume;
+      ArgNode := SrcNewNode(SNK_EXPR_FIELD);
+      SrcNodes[ArgNode].Left := N;
+      SrcNodes[ArgNode].Name := SrcToken.Val;
+      CppConsume;
+      N := ArgNode;
+    End
+    Else If CppTokIs('++') Or CppTokIs('--') Then
+    Begin
+      ArgNode := SrcNewNode(SNK_EXPR_UNOP);
+      SrcNodes[ArgNode].Name := SrcToken.Val + '_post';
+      SrcNodes[ArgNode].Left := N;
+      CppConsume;
+      N := ArgNode;
+    End;
+  End;
+  CppParsePrimary := N;
+End;
+
+{ ---- CppParseUnary : expression unaire C++ ------------------- }
+
+Function CppParseUnary : Integer;
+Var N : Integer;
+Begin
+  If CppTokIs('+') Or CppTokIs('-') Or CppTokIs('!') Or CppTokIs('~') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_UNOP);
+    SrcNodes[N].Name := SrcToken.Val;
+    CppConsume;
+    SrcNodes[N].Left := CppParseUnary;
+    CppParseUnary := N;
+  End
+  Else If CppTokIs('++') Or CppTokIs('--') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_UNOP);
+    SrcNodes[N].Name := SrcToken.Val;
+    CppConsume;
+    SrcNodes[N].Left := CppParseUnary;
+    CppParseUnary := N;
+  End
+  Else If CppTokIs('*') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_DEREF);
+    CppConsume;
+    SrcNodes[N].Left := CppParseUnary;
+    CppParseUnary := N;
+  End
+  Else If CppTokIs('&') Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_ADDR);
+    CppConsume;
+    SrcNodes[N].Left := CppParseUnary;
+    CppParseUnary := N;
+  End
+  Else
+    CppParseUnary := CppParsePrimary;
+End;
+
+{ ---- CppParseBinary : expression binaire C++ (Pratt) --------- }
+
+Function CppParseBinary(MinPrec : Integer) : Integer;
+Var Left, Right, BinNode, Prec : Integer;
+    Op : TString;
+Begin
+  Left := CppParseUnary;
+  While (SrcToken.Kind = STK_OP) And (COpPrec(SrcToken.Val) >= MinPrec) Do
+  Begin
+    Op   := SrcToken.Val;
+    Prec := COpPrec(Op);
+    CppConsume;
+    Right := CppParseBinary(Prec + 1);
+    BinNode := SrcNewNode(SNK_EXPR_BINOP);
+    SrcNodes[BinNode].Name  := Op;
+    SrcNodes[BinNode].Left  := Left;
+    SrcNodes[BinNode].Right := Right;
+    Left := BinNode;
+  End;
+  { Operateur ternaire ? : }
+  If CppTokIs('?') Then
+  Begin
+    CppConsume;
+    BinNode := SrcNewNode(SNK_C_TERNARY);
+    SrcNodes[BinNode].Left  := Left;
+    SrcNodes[BinNode].Right := CppParseExpr;
+    If CppTokIs(':') Then CppConsume;
+    SrcNodes[BinNode].Extra := CppParseAssign;
+    Left := BinNode;
+  End;
+  CppParseBinary := Left;
+End;
+
+{ ---- CppParseAssign : expression d affectation C++ ----------- }
+
+Function CppParseAssign : Integer;
+Var Left, N : Integer;
+Begin
+  Left := CppParseBinary(1);
+  If CppTokIs('=') Or CppTokIs('+=') Or CppTokIs('-=') Or
+     CppTokIs('*=') Or CppTokIs('/=') Or CppTokIs('%=') Or
+     CppTokIs('&=') Or CppTokIs('|=') Or CppTokIs('^=') Or
+     CppTokIs('<<=') Or CppTokIs('>>=') Then
+  Begin
+    N := SrcNewNode(SNK_ASSIGN);
+    SrcNodes[N].Name  := SrcToken.Val;
+    SrcNodes[N].Left  := Left;
+    CppConsume;
+    SrcNodes[N].Right := CppParseAssign;
+    CppParseAssign := N;
+  End
+  Else
+    CppParseAssign := Left;
+End;
+
+{ ---- CppParseExpr : expression complete avec virgule --------- }
+
+Function CppParseExpr : Integer;
+Var N : Integer;
+Begin
+  N := CppParseAssign;
+  While CppTokIs(',') Do
+  Begin
+    CppConsume;
+    SrcNodes[N].Next := CppParseAssign;
+    N := SrcNodes[N].Next;
+  End;
+  CppParseExpr := N;
+End;
+
+(* ---- CppParseCompound : bloc lacco ... racco C++ ----------- *)
+
+Function CppParseCompound : Integer;
+Var N, S, Last : Integer;
+Begin
+  N := SrcNewNode(SNK_COMPOUND);
+  CppExpect('{');
+  Last := -1;
+  While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('}')) Do
+  Begin
+    S := CppParseStatement;
+    If S >= 0 Then
+    Begin
+      If SrcNodes[N].Left = -1 Then
+        SrcNodes[N].Left := S
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := S;
+      Last := S;
+    End;
+  End;
+  If CppTokIs('}') Then CppConsume;
+  CppParseCompound := N;
+End;
+
+{ ---- CppParseStatement : instruction C++ --------------------- }
+
+Function CppParseStatement : Integer;
+Var N, Body, Last, Item : Integer;
+Begin
+  N := -1;
+
+  { Directive du preprocesseur }
+  If SrcToken.Kind = STK_DIRECTIVE Then
+  Begin
+    N := SrcNewNode(SNK_C_PREPROC);
+    SrcNodes[N].Name := SrcToken.Val;
+    CppConsume;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  (* Bloc compose lacco ... racco *)
+  If CppTokIs('{') Then
+  Begin
+    CppParseStatement := CppParseCompound;
+    Exit;
+  End;
+
+  { if (expr) stmt [else stmt] }
+  If CppTokIsKw('if') Then
+  Begin
+    N := SrcNewNode(SNK_IF);
+    CppConsume;
+    If CppTokIs('(') Then CppConsume;
+    SrcNodes[N].Left := CppParseExpr;
+    If CppTokIs(')') Then CppConsume;
+    SrcNodes[N].Right := CppParseStatement;
+    If CppTokIsKw('else') Then
+    Begin
+      CppConsume;
+      SrcNodes[N].Extra := CppParseStatement;
+    End;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { while (expr) stmt }
+  If CppTokIsKw('while') Then
+  Begin
+    N := SrcNewNode(SNK_WHILE);
+    CppConsume;
+    If CppTokIs('(') Then CppConsume;
+    SrcNodes[N].Left := CppParseExpr;
+    If CppTokIs(')') Then CppConsume;
+    SrcNodes[N].Right := CppParseStatement;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { for (init; cond; incr) stmt }
+  If CppTokIsKw('for') Then
+  Begin
+    N := SrcNewNode(SNK_FOR);
+    CppConsume;
+    If CppTokIs('(') Then CppConsume;
+    If Not CppTokIs(';') Then
+      SrcNodes[N].Left := CppParseExpr;
+    If CppTokIs(';') Then CppConsume;
+    If Not CppTokIs(';') Then
+      SrcNodes[N].Right := CppParseExpr;
+    If CppTokIs(';') Then CppConsume;
+    If Not CppTokIs(')') Then
+      SrcNodes[N].Extra := CppParseExpr;
+    If CppTokIs(')') Then CppConsume;
+    Body := CppParseStatement;
+    If SrcNodes[N].Extra >= 0 Then
+      SrcNodes[SrcNodes[N].Extra].Next := Body
+    Else If SrcNodes[N].Right >= 0 Then
+      SrcNodes[SrcNodes[N].Right].Next := Body
+    Else
+      SrcNodes[N].Extra := Body;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { do stmt while (expr) ; }
+  If CppTokIsKw('do') Then
+  Begin
+    N := SrcNewNode(SNK_C_DO_WHILE);
+    CppConsume;
+    SrcNodes[N].Left := CppParseStatement;
+    If CppTokIsKw('while') Then CppConsume;
+    If CppTokIs('(') Then CppConsume;
+    SrcNodes[N].Right := CppParseExpr;
+    If CppTokIs(')') Then CppConsume;
+    If CppTokIs(';') Then CppConsume;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  (* switch (expr) lacco case ...: ... racco *)
+  If CppTokIsKw('switch') Then
+  Begin
+    N := SrcNewNode(SNK_C_SWITCH);
+    CppConsume;
+    If CppTokIs('(') Then CppConsume;
+    SrcNodes[N].Left := CppParseExpr;
+    If CppTokIs(')') Then CppConsume;
+    If CppTokIs('{') Then CppConsume;
+    Last := -1;
+    While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('}')) Do
+    Begin
+      If CppTokIsKw('case') Then
+      Begin
+        Item := SrcNewNode(SNK_C_CASE_ITEM);
+        CppConsume;
+        SrcNodes[Item].Left := CppParseExpr;
+        If CppTokIs(':') Then CppConsume;
+        If SrcNodes[N].Right = -1 Then
+          SrcNodes[N].Right := Item
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := Item;
+        Last := Item;
+      End
+      Else If CppTokIsKw('default') Then
+      Begin
+        Item := SrcNewNode(SNK_C_DEFAULT_ITEM);
+        CppConsume;
+        If CppTokIs(':') Then CppConsume;
+        If SrcNodes[N].Right = -1 Then
+          SrcNodes[N].Right := Item
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := Item;
+        Last := Item;
+      End
+      Else
+      Begin
+        Body := CppParseStatement;
+        If (Last >= 0) And (Body >= 0) Then
+        Begin
+          If SrcNodes[Last].Right = -1 Then
+            SrcNodes[Last].Right := Body
+          Else
+          Begin
+            Item := SrcNodes[Last].Right;
+            While SrcNodes[Item].Next >= 0 Do
+              Item := SrcNodes[Item].Next;
+            SrcNodes[Item].Next := Body;
+          End;
+        End;
+      End;
+    End;
+    If CppTokIs('}') Then CppConsume;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  (* try lacco ... racco catch (...) lacco ... racco *)
+  If CppTokIsKw('try') Then
+  Begin
+    N := SrcNewNode(SNK_CPP_TRY);
+    SrcNodes[N].Name := 'try';
+    CppConsume;
+    SrcNodes[N].Left := CppParseCompound;
+    Last := -1;
+    While CppTokIsKw('catch') Do
+    Begin
+      Item := SrcNewNode(SNK_CPP_CATCH);
+      CppConsume;
+      If CppTokIs('(') Then
+      Begin
+        CppConsume;
+        SrcNodes[Item].Name := '';
+        While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs(')')) Do
+        Begin
+          If SrcNodes[Item].Name <> '' Then
+            SrcNodes[Item].Name := SrcNodes[Item].Name + ' ';
+          SrcNodes[Item].Name := SrcNodes[Item].Name + SrcToken.Val;
+          CppConsume;
+        End;
+        If CppTokIs(')') Then CppConsume;
+      End;
+      SrcNodes[Item].Left := CppParseCompound;
+      If SrcNodes[N].Right = -1 Then
+        SrcNodes[N].Right := Item
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := Item;
+      Last := Item;
+    End;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { throw [expr] ; }
+  If CppTokIsKw('throw') Then
+  Begin
+    N := SrcNewNode(SNK_CPP_THROW);
+    SrcNodes[N].Name := 'throw';
+    CppConsume;
+    If Not CppTokIs(';') Then
+      SrcNodes[N].Left := CppParseExpr;
+    If CppTokIs(';') Then CppConsume;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { break ; }
+  If CppTokIsKw('break') Then
+  Begin
+    N := SrcNewNode(SNK_C_BREAK);
+    CppConsume;
+    If CppTokIs(';') Then CppConsume;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { continue ; }
+  If CppTokIsKw('continue') Then
+  Begin
+    N := SrcNewNode(SNK_C_CONTINUE);
+    CppConsume;
+    If CppTokIs(';') Then CppConsume;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { return [expr] ; }
+  If CppTokIsKw('return') Then
+  Begin
+    N := SrcNewNode(SNK_C_RETURN);
+    CppConsume;
+    If Not CppTokIs(';') Then
+      SrcNodes[N].Left := CppParseExpr;
+    If CppTokIs(';') Then CppConsume;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { goto label ; }
+  If CppTokIsKw('goto') Then
+  Begin
+    N := SrcNewNode(SNK_GOTO);
+    CppConsume;
+    SrcNodes[N].Name := SrcToken.Val;
+    CppConsume;
+    If CppTokIs(';') Then CppConsume;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { delete [[] ] expr ; }
+  If CppTokIsKw('delete') Then
+  Begin
+    N := SrcNewNode(SNK_CPP_DELETE);
+    SrcNodes[N].Name := 'delete';
+    CppConsume;
+    If CppTokIs('[') Then
+    Begin
+      CppConsume;
+      If CppTokIs(']') Then CppConsume;
+      SrcNodes[N].Name := 'delete[]';
+    End;
+    SrcNodes[N].Left := CppParseExpr;
+    If CppTokIs(';') Then CppConsume;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { Declarations locales }
+  If CppIsCTypeStart Then
+  Begin
+    CppParseStatement := CppParseDeclaration;
+    Exit;
+  End;
+
+  { Instruction vide ; }
+  If CppTokIs(';') Then
+  Begin
+    CppConsume;
+    CppParseStatement := -1;
+    Exit;
+  End;
+
+  { Label  ident : }
+  If (SrcToken.Kind = STK_IDENT) Then
+  Begin
+    N := SrcNewNode(SNK_EXPR_IDENT);
+    SrcNodes[N].Name := SrcToken.Val;
+    CppConsume;
+    { Scope resolution :: }
+    While CppTokIs('::') Do
+    Begin
+      SrcNodes[N].Name := SrcNodes[N].Name + '::';
+      CppConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcNodes[N].Name + SrcToken.Val;
+        CppConsume;
+      End;
+    End;
+    If CppTokIs(':') Then
+    Begin
+      SrcNodes[N].Kind := SNK_LABEL_DECL;
+      CppConsume;
+      CppParseStatement := N;
+      Exit;
+    End;
+    { Postfix }
+    While (CppTokIs('(')) Or (CppTokIs('[')) Or (CppTokIs('.')) Or
+          (CppTokIs('->')) Or (CppTokIs('++')) Or (CppTokIs('--')) Do
+    Begin
+      If CppTokIs('(') Then
+      Begin
+        CppConsume;
+        Item := SrcNewNode(SNK_EXPR_CALL);
+        SrcNodes[Item].Left := N;
+        SrcNodes[Item].Name := SrcNodes[N].Name;
+        Last := -1;
+        If Not CppTokIs(')') Then
+        Begin
+          SrcNodes[Item].Right := CppParseAssign;
+          Last := SrcNodes[Item].Right;
+          While CppTokIs(',') Do
+          Begin
+            CppConsume;
+            SrcNodes[Last].Next := CppParseAssign;
+            Last := SrcNodes[Last].Next;
+          End;
+        End;
+        If CppTokIs(')') Then CppConsume;
+        N := Item;
+      End
+      Else If CppTokIs('[') Then
+      Begin
+        CppConsume;
+        Item := SrcNewNode(SNK_EXPR_INDEX);
+        SrcNodes[Item].Left  := N;
+        SrcNodes[Item].Right := CppParseExpr;
+        If CppTokIs(']') Then CppConsume;
+        N := Item;
+      End
+      Else If CppTokIs('.') Or CppTokIs('->') Then
+      Begin
+        CppConsume;
+        Item := SrcNewNode(SNK_EXPR_FIELD);
+        SrcNodes[Item].Left := N;
+        SrcNodes[Item].Name := SrcToken.Val;
+        CppConsume;
+        N := Item;
+      End
+      Else If CppTokIs('++') Or CppTokIs('--') Then
+      Begin
+        Item := SrcNewNode(SNK_EXPR_UNOP);
+        SrcNodes[Item].Name := SrcToken.Val + '_post';
+        SrcNodes[Item].Left := N;
+        CppConsume;
+        N := Item;
+      End;
+    End;
+    { Affectation }
+    If CppTokIs('=') Or CppTokIs('+=') Or CppTokIs('-=') Or
+       CppTokIs('*=') Or CppTokIs('/=') Or CppTokIs('%=') Or
+       CppTokIs('&=') Or CppTokIs('|=') Or CppTokIs('^=') Or
+       CppTokIs('<<=') Or CppTokIs('>>=') Then
+    Begin
+      Item := SrcNewNode(SNK_ASSIGN);
+      SrcNodes[Item].Name  := SrcToken.Val;
+      SrcNodes[Item].Left  := N;
+      CppConsume;
+      SrcNodes[Item].Right := CppParseExpr;
+      N := Item;
+    End;
+    If CppTokIs(';') Then CppConsume;
+    CppParseStatement := N;
+    Exit;
+  End;
+
+  { Expression-instruction }
+  N := CppParseExpr;
+  If CppTokIs(';') Then CppConsume;
+  CppParseStatement := N;
+End;
+
+{ ---- CppParseDeclaration : declaration C++ ------------------- }
+
+Function CppParseDeclaration : Integer;
+Var TypeStr : TString;
+    N, Last, VN : Integer;
+    IsTypedef : Boolean;
+    TagKind : TSrcNodeKind;
+Begin
+  IsTypedef := CppTokIsKw('typedef');
+  TagKind := SNK_NONE;
+
+  If CppTokIsKw('struct') Or CppTokIsKw('union') Or CppTokIsKw('enum') Or
+     CppTokIsKw('class') Then
+  Begin
+    If CppTokIsKw('struct') Then TagKind := SNK_C_STRUCT_DECL
+    Else If CppTokIsKw('union') Then TagKind := SNK_C_UNION_DECL
+    Else If CppTokIsKw('enum') Then TagKind := SNK_C_ENUM_DECL
+    Else TagKind := SNK_CPP_CLASS_DECL;
+  End;
+
+  TypeStr := CppParseTypeSpec;
+
+  (* struct/union/enum/class avec corps lacco ... racco *)
+  If (TagKind <> SNK_NONE) And CppTokIs('{') Then
+  Begin
+    N := SrcNewNode(TagKind);
+    SrcNodes[N].Name := TypeStr;
+    CppConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('}')) Do
+      CppConsume;
+    If CppTokIs('}') Then CppConsume;
+    If (SrcToken.Kind = STK_IDENT) Then
+    Begin
+      SrcNodes[N].Name := SrcNodes[N].Name + ' ' + SrcToken.Val;
+      CppConsume;
+    End;
+    If CppTokIs(';') Then CppConsume;
+    CppParseDeclaration := N;
+    Exit;
+  End;
+
+  If IsTypedef Then
+  Begin
+    N := SrcNewNode(SNK_C_TYPEDEF);
+    SrcNodes[N].Name := TypeStr;
+    While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs(';')) Do
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      CppConsume;
+    End;
+    If CppTokIs(';') Then CppConsume;
+    CppParseDeclaration := N;
+    Exit;
+  End;
+
+  { Variable ou liste de variables }
+  N := -1;
+  Last := -1;
+  While True Do
+  Begin
+    While CppTokIs('*') Or CppTokIs('&') Do CppConsume;
+    If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      VN := SrcNewNode(SNK_VAR_DECL);
+      SrcNodes[VN].Name := SrcToken.Val;
+      CppConsume;
+      While CppTokIs('[') Do
+      Begin
+        CppConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs(']')) Do
+          CppConsume;
+        If CppTokIs(']') Then CppConsume;
+      End;
+      If CppTokIs('=') Then
+      Begin
+        CppConsume;
+        If CppTokIs('{') Then
+        Begin
+          CppConsume;
+          While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('}')) Do
+            CppConsume;
+          If CppTokIs('}') Then CppConsume;
+        End
+        Else
+          SrcNodes[VN].Left := CppParseAssign;
+      End;
+      If N = -1 Then
+        N := VN
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := VN;
+      Last := VN;
+    End
+    Else
+      Break;
+    If CppTokIs(',') Then
+      CppConsume
+    Else
+      Break;
+  End;
+  If CppTokIs(';') Then CppConsume;
+  CppParseDeclaration := N;
+End;
+
+{ ---- CppParseClassBody : corps d une classe C++ -------------- }
+
+Procedure CppParseClassBody(ClassNode : Integer);
+Var N, Last : Integer;
+Begin
+  CppExpect('{');
+  Last := -1;
+  While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('}')) Do
+  Begin
+    { Specificateurs d acces public:/private:/protected: }
+    If CppTokIsKw('public') Or CppTokIsKw('private') Or
+       CppTokIsKw('protected') Then
+    Begin
+      N := SrcNewNode(SNK_CPP_ACCESS_SPEC);
+      SrcNodes[N].Name := SrcToken.Val;
+      CppConsume;
+      If CppTokIs(':') Then CppConsume;
+      If SrcNodes[ClassNode].Left = -1 Then
+        SrcNodes[ClassNode].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End
+    Else
+    Begin
+      N := CppParseTopLevel;
+      If N >= 0 Then
+      Begin
+        If SrcNodes[ClassNode].Left = -1 Then
+          SrcNodes[ClassNode].Left := N
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := N;
+        Last := N;
+      End;
+    End;
+  End;
+  If CppTokIs('}') Then CppConsume;
+End;
+
+{ ---- CppParseTopLevel : declaration top-level C++ ------------ }
+
+Function CppParseTopLevel : Integer;
+Var N : Integer;
+    TypeStr, FuncName : TString;
+    TagKind : TSrcNodeKind;
+Begin
+  N := -1;
+  TagKind := SNK_NONE;
+
+  { Directive preprocesseur }
+  If SrcToken.Kind = STK_DIRECTIVE Then
+  Begin
+    N := SrcNewNode(SNK_C_PREPROC);
+    SrcNodes[N].Name := SrcToken.Val;
+    If (Length(SrcToken.Val) >= 8) And
+       (Copy(SrcToken.Val, 1, 8) = '#include') Then
+      SrcNodes[N].Kind := SNK_C_INCLUDE
+    Else If (Length(SrcToken.Val) >= 7) And
+            (Copy(SrcToken.Val, 1, 7) = '#define') Then
+      SrcNodes[N].Kind := SNK_C_DEFINE;
+    CppConsume;
+    CppParseTopLevel := N;
+    Exit;
+  End;
+
+  { using namespace ... ; ou using ... ; }
+  If CppTokIsKw('using') Then
+  Begin
+    N := SrcNewNode(SNK_CPP_USING);
+    SrcNodes[N].Name := '';
+    CppConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs(';')) Do
+    Begin
+      If SrcNodes[N].Name <> '' Then
+        SrcNodes[N].Name := SrcNodes[N].Name + ' ';
+      SrcNodes[N].Name := SrcNodes[N].Name + SrcToken.Val;
+      CppConsume;
+    End;
+    If CppTokIs(';') Then CppConsume;
+    CppParseTopLevel := N;
+    Exit;
+  End;
+
+  (* namespace ident lacco ... racco *)
+  If CppTokIsKw('namespace') Then
+  Begin
+    N := SrcNewNode(SNK_CPP_NAMESPACE);
+    CppConsume;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      CppConsume;
+    End
+    Else
+      SrcNodes[N].Name := '<anonymous>';
+    If CppTokIs('{') Then
+    Begin
+      CppConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('}')) Do
+      Begin
+        SrcNodes[N].Left := CppParseTopLevel;
+      End;
+      If CppTokIs('}') Then CppConsume;
+    End;
+    CppParseTopLevel := N;
+    Exit;
+  End;
+
+  { template < ... > }
+  If CppTokIsKw('template') Then
+  Begin
+    N := SrcNewNode(SNK_CPP_TEMPLATE);
+    SrcNodes[N].Name := 'template';
+    CppConsume;
+    If CppTokIs('<') Then
+    Begin
+      SrcNodes[N].Name := 'template<';
+      CppConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('>')) Do
+      Begin
+        SrcNodes[N].Name := SrcNodes[N].Name + SrcToken.Val;
+        CppConsume;
+      End;
+      If CppTokIs('>') Then
+      Begin
+        SrcNodes[N].Name := SrcNodes[N].Name + '>';
+        CppConsume;
+      End;
+    End;
+    SrcNodes[N].Left := CppParseTopLevel;
+    CppParseTopLevel := N;
+    Exit;
+  End;
+
+  (* extern "C" lacco ... racco *)
+  If CppTokIsKw('extern') And (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    CppConsume;
+    If (SrcToken.Kind = STK_STRING) And (SrcToken.Val = 'C') Then
+    Begin
+      CppConsume;
+      If CppTokIs('{') Then
+      Begin
+        N := SrcNewNode(SNK_CPP_NAMESPACE);
+        SrcNodes[N].Name := 'extern "C"';
+        CppConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('}')) Do
+          SrcNodes[N].Left := CppParseTopLevel;
+        If CppTokIs('}') Then CppConsume;
+        CppParseTopLevel := N;
+        Exit;
+      End
+      Else
+      Begin
+        { extern "C" single declaration }
+        CppParseTopLevel := CppParseTopLevel;
+        Exit;
+      End;
+    End;
+    { extern was a storage class - rewind mentally: treat as type start }
+  End;
+
+  { Detecter struct/union/enum/class }
+  If CppTokIsKw('struct') Then TagKind := SNK_C_STRUCT_DECL
+  Else If CppTokIsKw('union') Then TagKind := SNK_C_UNION_DECL
+  Else If CppTokIsKw('enum') Then TagKind := SNK_C_ENUM_DECL
+  Else If CppTokIsKw('class') Then TagKind := SNK_CPP_CLASS_DECL;
+
+  TypeStr := CppParseTypeSpec;
+
+  { class/struct avec corps et heritage }
+  If (TagKind = SNK_CPP_CLASS_DECL) Or (TagKind = SNK_C_STRUCT_DECL) Then
+  Begin
+    { Heritage : public/private/protected Base }
+    If CppTokIs(':') Then
+    Begin
+      CppConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('{')) Do
+        CppConsume;
+    End;
+    If CppTokIs('{') Then
+    Begin
+      N := SrcNewNode(TagKind);
+      SrcNodes[N].Name := TypeStr;
+      CppParseClassBody(N);
+      If (SrcToken.Kind = STK_IDENT) Then
+      Begin
+        SrcNodes[N].Name := SrcNodes[N].Name + ' ' + SrcToken.Val;
+        CppConsume;
+      End;
+      If CppTokIs(';') Then CppConsume;
+      CppParseTopLevel := N;
+      Exit;
+    End;
+  End;
+
+  { union/enum avec corps }
+  If (TagKind = SNK_C_UNION_DECL) Or (TagKind = SNK_C_ENUM_DECL) Then
+  Begin
+    If CppTokIs('{') Then
+    Begin
+      N := SrcNewNode(TagKind);
+      SrcNodes[N].Name := TypeStr;
+      CppConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('}')) Do
+        CppConsume;
+      If CppTokIs('}') Then CppConsume;
+      If (SrcToken.Kind = STK_IDENT) Then
+      Begin
+        SrcNodes[N].Name := SrcNodes[N].Name + ' ' + SrcToken.Val;
+        CppConsume;
+      End;
+      If CppTokIs(';') Then CppConsume;
+      CppParseTopLevel := N;
+      Exit;
+    End;
+  End;
+
+  { typedef }
+  If (Length(TypeStr) >= 7) And (Copy(TypeStr, 1, 7) = 'typedef') Then
+  Begin
+    N := SrcNewNode(SNK_C_TYPEDEF);
+    SrcNodes[N].Name := TypeStr;
+    While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs(';')) Do
+    Begin
+      SrcNodes[N].Name := SrcToken.Val;
+      CppConsume;
+    End;
+    If CppTokIs(';') Then CppConsume;
+    CppParseTopLevel := N;
+    Exit;
+  End;
+
+  { Nom de la fonction ou variable }
+  FuncName := '';
+  While CppTokIs('*') Or CppTokIs('&') Do CppConsume;
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    FuncName := SrcToken.Val;
+    CppConsume;
+    { Scope resolution Class::method }
+    While CppTokIs('::') Do
+    Begin
+      FuncName := FuncName + '::';
+      CppConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        FuncName := FuncName + SrcToken.Val;
+        CppConsume;
+      End;
+      { Operateur surcharge }
+      If CppTokIsKw('operator') Then
+      Begin
+        FuncName := FuncName + 'operator';
+        CppConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('(')) Do
+        Begin
+          FuncName := FuncName + SrcToken.Val;
+          CppConsume;
+        End;
+      End;
+    End;
+  End;
+
+  (* Fonction : nom ( ... ) [const] [noexcept] [override] lacco ... racco *)
+  If CppTokIs('(') Then
+  Begin
+    N := SrcNewNode(SNK_FUNC_DECL);
+    SrcNodes[N].Name := FuncName;
+    CppConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs(')')) Do
+      CppConsume;
+    If CppTokIs(')') Then CppConsume;
+    { Qualificateurs de methode }
+    While CppTokIsKw('const') Or CppTokIsKw('noexcept') Or
+          CppTokIsKw('override') Or CppTokIsKw('final') Do
+      CppConsume;
+    { Initializer list : init1(val), init2(val) }
+    If CppTokIs(':') Then
+    Begin
+      CppConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('{')) And
+            (Not CppTokIs(';')) Do
+        CppConsume;
+    End;
+    { Corps ou prototype }
+    If CppTokIs('{') Then
+      SrcNodes[N].Left := CppParseCompound
+    Else If CppTokIs(';') Then
+      CppConsume;
+    { Pure virtual = 0 }
+    If CppTokIs('=') Then
+    Begin
+      CppConsume;
+      If CppTokIs('0') Or (SrcToken.Val = '0') Then CppConsume;
+      If CppTokIs(';') Then CppConsume;
+    End;
+    CppParseTopLevel := N;
+    Exit;
+  End;
+
+  { Declaration de variable globale }
+  N := SrcNewNode(SNK_VAR_DECL);
+  SrcNodes[N].Name := FuncName;
+  While CppTokIs('[') Do
+  Begin
+    CppConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs(']')) Do
+      CppConsume;
+    If CppTokIs(']') Then CppConsume;
+  End;
+  If CppTokIs('=') Then
+  Begin
+    CppConsume;
+    If CppTokIs('{') Then
+    Begin
+      CppConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('}')) Do
+        CppConsume;
+      If CppTokIs('}') Then CppConsume;
+    End
+    Else
+      SrcNodes[N].Left := CppParseAssign;
+  End;
+  While CppTokIs(',') Do
+  Begin
+    CppConsume;
+    While CppTokIs('*') Or CppTokIs('&') Do CppConsume;
+    If (SrcToken.Kind = STK_IDENT) Then CppConsume;
+    If CppTokIs('=') Then
+    Begin
+      CppConsume;
+      If CppTokIs('{') Then
+      Begin
+        CppConsume;
+        While (SrcToken.Kind <> STK_EOF) And (Not CppTokIs('}')) Do
+          CppConsume;
+        If CppTokIs('}') Then CppConsume;
+      End;
+    End;
+  End;
+  If CppTokIs(';') Then CppConsume;
+  CppParseTopLevel := N;
+End;
+
+{ ---- CppParseTranslationUnit : unite de traduction C++ ------- }
+
+Function CppParseTranslationUnit : Integer;
+Var Root, N, Last : Integer;
+Begin
+  CppConsume; { lire le premier token }
+  Root := SrcNewNode(SNK_CPP_TRANSLATION_UNIT);
+  SrcNodes[Root].Name := 'CPP_TU';
+  Last := -1;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    N := CppParseTopLevel;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+  End;
+  CppParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 27 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -15054,6 +16692,19 @@ Function IsCSource(Const FName : TString) : Boolean;
 Begin
   IsCSource := StrEndsWith(FName, '.c') Or
                StrEndsWith(FName, '.h');
+End;
+
+{ ---- IsCppSource : verifier si le fichier est .cpp/.cc/.cxx/.hpp/.hh/.hxx }
+
+Function IsCppSource(Const FName : TString) : Boolean;
+Begin
+  IsCppSource := StrEndsWith(FName, '.cpp') Or
+                 StrEndsWith(FName, '.cc')  Or
+                 StrEndsWith(FName, '.cxx') Or
+                 StrEndsWith(FName, '.hpp') Or
+                 StrEndsWith(FName, '.hh')  Or
+                 StrEndsWith(FName, '.hxx') Or
+                 StrEndsWith(FName, '.h');
 End;
 
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
@@ -15108,7 +16759,8 @@ Begin
     If (SR.Attr And Directory) = 0 Then
     Begin
       If ((Opts.Language = 'pascal') And IsPascalSource(SR.Name)) Or
-         ((Opts.Language = 'c') And IsCSource(SR.Name)) Then
+         ((Opts.Language = 'c') And IsCSource(SR.Name)) Or
+         ((Opts.Language = 'cpp') And IsCppSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -15150,6 +16802,8 @@ Begin
   Begin
     If Opts.Language = 'c' Then
       WriteLn('CODEQL: aucun fichier .c ou .h trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'cpp' Then
+      WriteLn('CODEQL: aucun fichier .cpp/.cc/.cxx/.hpp/.hh/.hxx trouve dans: ', Opts.SourceDir)
     Else
       WriteLn('CODEQL: aucun fichier .pas ou .pp trouve dans: ', Opts.SourceDir);
     Exit;
@@ -15185,6 +16839,12 @@ Begin
       CLexInit;
       SrcASTInit;
       SrcRootNode := CParseTranslationUnit;
+    End
+    Else If Opts.Language = 'cpp' Then
+    Begin
+      CppLexInit;
+      SrcASTInit;
+      SrcRootNode := CppParseTranslationUnit;
     End
     Else
     Begin
