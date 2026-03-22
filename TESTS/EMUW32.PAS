@@ -45,7 +45,7 @@
       Import Address Table avec des adresses de thunks internes
       emulant chaque fonction.
 
-  8.  Implementer les instructions de transfert de donnees 32 bits :
+  8.  [IMPLEMENTE] Implementer les instructions de transfert de donnees 32 bits :
       MOV reg32,reg32 / MOV reg32,imm32 / MOV reg32,[mem] /
       MOV [mem],reg32 / MOVZX / MOVSX / LEA / XCHG / BSWAP
       avec les modes d'adressage ModR/M et SIB du 80386.
@@ -870,6 +870,436 @@ Begin
  PELoaded:=True;
  LoadPE:=True;
  WriteLn('LoadPE: Fichier PE charge avec succes.');
+End;
+
+  { TODO 8 : Acces aux registres generaux 32 bits par index (0-7).
+    Codage x86 : 0=EAX, 1=ECX, 2=EDX, 3=EBX, 4=ESP, 5=EBP,
+    6=ESI, 7=EDI. Correspond directement a Regs.Abs[0..7]. }
+Function GetReg32(Index:Byte):LongInt;
+Begin
+ GetReg32:=Regs.Abs[Index];
+End;
+
+Procedure SetReg32(Index:Byte;Value:LongInt);
+Begin
+ Regs.Abs[Index]:=Value;
+End;
+
+  { TODO 8 : Acces aux registres 16 bits par index (0-7).
+    Codage x86 : 0=AX, 1=CX, 2=DX, 3=BX, 4=SP, 5=BP, 6=SI, 7=DI.
+    Correspond a la partie basse (Lo) de Regs.AbsWord[0..7]. }
+Function GetReg16(Index:Byte):Word;
+Begin
+ GetReg16:=Regs.AbsWord[Index].Lo;
+End;
+
+Procedure SetReg16(Index:Byte;Value:Word);
+Begin
+ Regs.AbsWord[Index].Lo:=Value;
+End;
+
+  { TODO 8 : Acces aux registres 8 bits par index (0-7).
+    Codage x86 : 0=AL, 1=CL, 2=DL, 3=BL, 4=AH, 5=CH, 6=DH, 7=BH }
+Function GetReg8(Index:Byte):Byte;
+Begin
+ Case Index of
+  0:GetReg8:=Regs.AL;
+  1:GetReg8:=Regs.CL;
+  2:GetReg8:=Regs.DL;
+  3:GetReg8:=Regs.BL;
+  4:GetReg8:=Regs.AH;
+  5:GetReg8:=Regs.CH;
+  6:GetReg8:=Regs.DH;
+  7:GetReg8:=Regs.BH;
+  Else GetReg8:=0;
+ End;
+End;
+
+Procedure SetReg8(Index:Byte;Value:Byte);
+Begin
+ Case Index of
+  0:Regs.AL:=Value;
+  1:Regs.CL:=Value;
+  2:Regs.DL:=Value;
+  3:Regs.BL:=Value;
+  4:Regs.AH:=Value;
+  5:Regs.CH:=Value;
+  6:Regs.DH:=Value;
+  7:Regs.BH:=Value;
+ End;
+End;
+
+  { TODO 8 : Decodage de l'octet ModR/M et calcul de l'adresse effective.
+    Lit l'octet ModR/M a l'adresse EIP, avance EIP, et retourne
+    les champs mod (bits 7-6), reg (bits 5-3) et r/m (bits 2-0).
+    Si necessaire, lit l'octet SIB et/ou un deplacement (disp8/disp32).
+    EffAddr contient l'adresse memoire calculee si mod <> 11.
+    IsMemory est True si l'operande r/m est une reference memoire. }
+Procedure DecodeModRM(Var ModField,RegField,RMField:Byte;
+                      Var EffAddr:LongInt;Var IsMemory:Boolean);
+Var
+ ModRM,SIBByte:Byte;
+ Base,Index,Scale:Byte;
+ BaseVal,IndexVal:LongInt;
+ Disp8:ShortInt;
+ Disp32:LongInt;
+Begin
+ ModRM:=ReadByte(EIP);
+ Inc(EIP);
+ ModField:=(ModRM shr 6) and 3;
+ RegField:=(ModRM shr 3) and 7;
+ RMField:=ModRM and 7;
+ EffAddr:=0;
+ IsMemory:=(ModField<>3);
+ If ModField=3 Then Exit;  { Registre a registre, pas d'adresse effective }
+  { Mode memoire : calculer l'adresse effective }
+ If RMField=4 Then Begin
+   { Octet SIB present (r/m=100 en mode memoire) }
+  SIBByte:=ReadByte(EIP);
+  Inc(EIP);
+  Scale:=(SIBByte shr 6) and 3;
+  Index:=(SIBByte shr 3) and 7;
+  Base:=SIBByte and 7;
+   { Calculer la valeur du registre de base.
+     Si base=5 et mod=00, pas de registre de base (disp32 suit). }
+  If(Base=5)and(ModField=0)Then
+   BaseVal:=0
+  Else
+   BaseVal:=GetReg32(Base);
+   { Calculer la valeur du registre d'index.
+     Index=4 (ESP) signifie qu'il n'y a pas d'index. }
+  If Index=4 Then
+   IndexVal:=0
+  Else Begin
+   IndexVal:=GetReg32(Index);
+   Case Scale of
+    1:IndexVal:=IndexVal*2;
+    2:IndexVal:=IndexVal*4;
+    3:IndexVal:=IndexVal*8;
+   End;
+  End;
+  EffAddr:=BaseVal+IndexVal;
+   { Ajouter le deplacement selon le champ mod }
+  If(Base=5)and(ModField=0)Then Begin
+    { SIB avec base=5 et mod=00 : disp32 sans registre de base }
+   Disp32:=ReadDWord(EIP);
+   Inc(EIP,4);
+   EffAddr:=EffAddr+Disp32;
+  End
+  Else If ModField=1 Then Begin
+   Disp8:=ShortInt(ReadByte(EIP));
+   Inc(EIP);
+   EffAddr:=EffAddr+LongInt(Disp8);
+  End
+  Else If ModField=2 Then Begin
+   Disp32:=ReadDWord(EIP);
+   Inc(EIP,4);
+   EffAddr:=EffAddr+Disp32;
+  End;
+ End
+ Else Begin
+   { Pas de SIB }
+  If(ModField=0)and(RMField=5)Then Begin
+    { mod=00, r/m=101 : adresse directe disp32 }
+   Disp32:=ReadDWord(EIP);
+   Inc(EIP,4);
+   EffAddr:=Disp32;
+  End
+  Else Begin
+   EffAddr:=GetReg32(RMField);
+   If ModField=1 Then Begin
+    Disp8:=ShortInt(ReadByte(EIP));
+    Inc(EIP);
+    EffAddr:=EffAddr+LongInt(Disp8);
+   End
+   Else If ModField=2 Then Begin
+    Disp32:=ReadDWord(EIP);
+    Inc(EIP,4);
+    EffAddr:=EffAddr+Disp32;
+   End;
+  End;
+ End;
+End;
+
+  { TODO 8 : MOV r/m8, r8 (opcode $88).
+    Copie le registre 8 bits reg dans r/m8 (registre ou memoire). }
+Procedure OpMovRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  WriteByte(Eff,GetReg8(RegF))
+ Else
+  SetReg8(RMF,GetReg8(RegF));
+End;
+
+  { TODO 8 : MOV r8, r/m8 (opcode $8A).
+    Copie r/m8 (registre ou memoire) dans le registre 8 bits reg. }
+Procedure OpMovR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  SetReg8(RegF,ReadByte(Eff))
+ Else
+  SetReg8(RegF,GetReg8(RMF));
+End;
+
+  { TODO 8 : MOV r/m32, r32 (opcode $89).
+    Copie le registre 32 bits reg dans r/m32 (registre ou memoire).
+    Gere les modes d'adressage ModR/M et SIB du 80386. }
+Procedure OpMovRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  WriteDWord(Eff,GetReg32(RegF))
+ Else
+  SetReg32(RMF,GetReg32(RegF));
+End;
+
+  { TODO 8 : MOV r32, r/m32 (opcode $8B).
+    Copie r/m32 (registre ou memoire) dans le registre 32 bits reg.
+    Gere les modes d'adressage ModR/M et SIB du 80386. }
+Procedure OpMovR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  SetReg32(RegF,ReadDWord(Eff))
+ Else
+  SetReg32(RegF,GetReg32(RMF));
+End;
+
+  { TODO 8 : MOV r/m8, imm8 (opcode $C6 /0).
+    Charge une valeur immediate 8 bits dans r/m8. }
+Procedure OpMovRM8Imm8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Imm:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ If IsMem Then
+  WriteByte(Eff,Imm)
+ Else
+  SetReg8(RMF,Imm);
+End;
+
+  { TODO 8 : MOV r/m32, imm32 (opcode $C7 /0).
+    Charge une valeur immediate 32 bits dans r/m32. }
+Procedure OpMovRM32Imm32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Imm:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ If IsMem Then
+  WriteDWord(Eff,Imm)
+ Else
+  SetReg32(RMF,Imm);
+End;
+
+  { TODO 8 : MOV r8, imm8 (opcode $B0+r).
+    Charge une valeur immediate 8 bits dans le registre r8. }
+Procedure OpMovR8Imm8(RegIdx:Byte);
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ SetReg8(RegIdx,Imm);
+End;
+
+  { TODO 8 : MOV r32, imm32 (opcode $B8+r).
+    Charge une valeur immediate 32 bits dans le registre r32. }
+Procedure OpMovR32Imm32(RegIdx:Byte);
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ SetReg32(RegIdx,Imm);
+End;
+
+  { TODO 8 : MOVZX r32, r/m8 (opcode $0F $B6).
+    Extension a zero d'un octet vers un double mot 32 bits.
+    Lit un operande 8 bits et l'etend a 32 bits sans signe. }
+Procedure OpMovzxR32RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  Val:=ReadByte(Eff)
+ Else
+  Val:=GetReg8(RMF);
+ SetReg32(RegF,LongInt(Val));
+End;
+
+  { TODO 8 : MOVZX r32, r/m16 (opcode $0F $B7).
+    Extension a zero d'un mot 16 bits vers un double mot 32 bits.
+    Lit un operande 16 bits et l'etend a 32 bits sans signe. }
+Procedure OpMovzxR32RM16;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:Word;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  Val:=ReadWord(Eff)
+ Else
+  Val:=GetReg16(RMF);
+ SetReg32(RegF,LongInt(Val));
+End;
+
+  { TODO 8 : MOVSX r32, r/m8 (opcode $0F $BE).
+    Extension de signe d'un octet vers un double mot 32 bits.
+    Lit un operande 8 bits signe et l'etend a 32 bits avec signe. }
+Procedure OpMovsxR32RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  Val:=ShortInt(ReadByte(Eff))
+ Else
+  Val:=ShortInt(GetReg8(RMF));
+ SetReg32(RegF,LongInt(Val));
+End;
+
+  { TODO 8 : MOVSX r32, r/m16 (opcode $0F $BF).
+    Extension de signe d'un mot 16 bits vers un double mot 32 bits.
+    Lit un operande 16 bits signe et l'etend a 32 bits avec signe. }
+Procedure OpMovsxR32RM16;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:Integer;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  Val:=Integer(ReadWord(Eff))
+ Else
+  Val:=Integer(GetReg16(RMF));
+ SetReg32(RegF,LongInt(Val));
+End;
+
+  { TODO 8 : LEA r32, m (opcode $8D).
+    Load Effective Address : calcule l'adresse effective de l'operande
+    memoire r/m et la charge dans le registre reg32, sans acceder
+    a la memoire. }
+Procedure OpLea;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ SetReg32(RegF,Eff);
+End;
+
+  { TODO 8 : XCHG r/m32, r32 (opcode $87).
+    Echange le contenu du registre reg32 avec r/m32 (registre ou
+    memoire). Operation atomique sur le bus memoire en x86 reel. }
+Procedure OpXchgRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Tmp:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  Tmp:=ReadDWord(Eff);
+  WriteDWord(Eff,GetReg32(RegF));
+  SetReg32(RegF,Tmp);
+ End
+ Else Begin
+  Tmp:=GetReg32(RMF);
+  SetReg32(RMF,GetReg32(RegF));
+  SetReg32(RegF,Tmp);
+ End;
+End;
+
+  { TODO 8 : XCHG EAX, r32 (opcode $90+r).
+    Echange le contenu de EAX avec le registre r32 specifie.
+    Le cas special $90 (r=0, XCHG EAX,EAX) est traite comme NOP. }
+Procedure OpXchgEAXR32(RegIdx:Byte);
+Var
+ Tmp:LongInt;
+Begin
+ If RegIdx=0 Then Exit;  { NOP : XCHG EAX,EAX }
+ Tmp:=Regs.EAX;
+ Regs.EAX:=GetReg32(RegIdx);
+ SetReg32(RegIdx,Tmp);
+End;
+
+  { TODO 8 : BSWAP r32 (opcode $0F $C8+r).
+    Byte Swap : inverse l'ordre des 4 octets d'un registre 32 bits.
+    Convertit entre big-endian et little-endian. }
+Procedure OpBswap(RegIdx:Byte);
+Var
+ Val:LongInt;
+ B0,B1,B2,B3:Byte;
+Begin
+ Val:=GetReg32(RegIdx);
+ B0:=Byte(Val);
+ B1:=Byte(Val shr 8);
+ B2:=Byte(Val shr 16);
+ B3:=Byte(Val shr 24);
+ SetReg32(RegIdx,(LongInt(B0) shl 24) or (LongInt(B1) shl 16) or
+                 (LongInt(B2) shl 8) or LongInt(B3));
+End;
+
+  { TODO 8 : XCHG r/m8, r8 (opcode $86).
+    Echange le contenu du registre r8 avec r/m8 (registre ou memoire). }
+Procedure OpXchgRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Tmp:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  Tmp:=ReadByte(Eff);
+  WriteByte(Eff,GetReg8(RegF));
+  SetReg8(RegF,Tmp);
+ End
+ Else Begin
+  Tmp:=GetReg8(RMF);
+  SetReg8(RMF,GetReg8(RegF));
+  SetReg8(RegF,Tmp);
+ End;
 End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
