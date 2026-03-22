@@ -141,7 +141,7 @@
             Sous-requetes scalaires : (SELECT ...)
             Operateur LIKE avec wildcards %, _, [abc], [^abc]
 
-  TODO 10 - PARSEUR SELECT (REQUETES DE LECTURE)
+  TODO 10 - PARSEUR SELECT (REQUETES DE LECTURE) [IMPLEMENTE]
             SELECT [ALL|DISTINCT] [TOP n [PERCENT] [WITH TIES]]
               liste_colonnes | *
             FROM table [AS alias] [WITH (NOLOCK|...)]
@@ -949,11 +949,35 @@ Const
   ND_DOT_REF      = 34;      { reference pointee (a.b.c)            }
   ND_TYPE_REF     = 35;      { reference de type pour CAST/CONVERT  }
 
+  { ---- Constantes AST noeud parseur SELECT (TODO 10) ----------- }
+  ND_SELECT_STMT  = 36;      { requete SELECT complete              }
+  ND_SELECT_ITEM  = 37;      { item de la liste SELECT (expr AS al) }
+  ND_FROM_CLAUSE  = 38;      { clause FROM                          }
+  ND_TABLE_REF    = 39;      { reference de table (nom [AS alias])  }
+  ND_JOIN         = 40;      { jointure (type, table, ON condition) }
+  ND_WHERE_CLAUSE = 41;      { clause WHERE                         }
+  ND_GROUP_BY     = 42;      { clause GROUP BY                      }
+  ND_HAVING       = 43;      { clause HAVING                        }
+  ND_ORDER_BY     = 44;      { clause ORDER BY                      }
+  ND_ORDER_ITEM   = 45;      { item ORDER BY (expr ASC|DESC)        }
+  ND_TOP_CLAUSE   = 46;      { TOP n [PERCENT] [WITH TIES]          }
+  ND_OFFSET       = 47;      { OFFSET n ROWS FETCH NEXT m ROWS ONLY }
+  ND_UNION        = 48;      { UNION [ALL]                          }
+  ND_INTERSECT_OP = 49;      { INTERSECT                            }
+  ND_EXCEPT_OP    = 50;      { EXCEPT                               }
+  ND_CTE          = 51;      { WITH cte AS (SELECT ...)             }
+  ND_SELECT_INTO  = 52;      { SELECT INTO table                    }
+  ND_TABLE_HINT   = 53;      { WITH (NOLOCK|...)                    }
+  ND_APPLY        = 54;      { CROSS/OUTER APPLY                    }
+  ND_FOR_XML      = 55;      { FOR XML PATH|RAW|AUTO|EXPLICIT       }
+  ND_FOR_JSON     = 56;      { FOR JSON PATH|AUTO                   }
+  ND_ALIAS        = 57;      { alias de colonne ou table             }
+
   { Taille max du pool de noeuds AST }
-  MAX_AST_NODES   = 512;
+  MAX_AST_NODES   = 1024;
 
   { Taille max des enfants par noeud }
-  MAX_AST_CHILDREN = 8;
+  MAX_AST_CHILDREN = 16;
 
 { ============================================================
   TYPES
@@ -5160,6 +5184,28 @@ Begin
     ND_ARG_LIST    : NodeKindName := 'ARG_LIST';
     ND_DOT_REF     : NodeKindName := 'DOT_REF';
     ND_TYPE_REF    : NodeKindName := 'TYPE_REF';
+    ND_SELECT_STMT : NodeKindName := 'SELECT_STMT';
+    ND_SELECT_ITEM : NodeKindName := 'SELECT_ITEM';
+    ND_FROM_CLAUSE : NodeKindName := 'FROM_CLAUSE';
+    ND_TABLE_REF   : NodeKindName := 'TABLE_REF';
+    ND_JOIN        : NodeKindName := 'JOIN';
+    ND_WHERE_CLAUSE: NodeKindName := 'WHERE_CLAUSE';
+    ND_GROUP_BY    : NodeKindName := 'GROUP_BY';
+    ND_HAVING      : NodeKindName := 'HAVING';
+    ND_ORDER_BY    : NodeKindName := 'ORDER_BY';
+    ND_ORDER_ITEM  : NodeKindName := 'ORDER_ITEM';
+    ND_TOP_CLAUSE  : NodeKindName := 'TOP_CLAUSE';
+    ND_OFFSET      : NodeKindName := 'OFFSET';
+    ND_UNION       : NodeKindName := 'UNION';
+    ND_INTERSECT_OP: NodeKindName := 'INTERSECT';
+    ND_EXCEPT_OP   : NodeKindName := 'EXCEPT';
+    ND_CTE         : NodeKindName := 'CTE';
+    ND_SELECT_INTO : NodeKindName := 'SELECT_INTO';
+    ND_TABLE_HINT  : NodeKindName := 'TABLE_HINT';
+    ND_APPLY       : NodeKindName := 'APPLY';
+    ND_FOR_XML     : NodeKindName := 'FOR_XML';
+    ND_FOR_JSON    : NodeKindName := 'FOR_JSON';
+    ND_ALIAS       : NodeKindName := 'ALIAS';
   Else
     NodeKindName := '?';
   End;
@@ -6008,6 +6054,789 @@ Begin
     DumpExpr(ASTPool[Idx].Children[I], Indent + 1);
 End;
 
+{ ============================================================
+  TODO 10 - PARSEUR SELECT (REQUETES DE LECTURE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Forward declaration ------------------------------------- }
+
+Function ParseSelectStmt : Integer; Forward;
+
+{ ---- ParseSelectItem : expression [AS alias] | * ------------- }
+
+Function ParseSelectItem : Integer;
+Var
+  N, E, A : Integer;
+Begin
+  ParseSelectItem := -1;
+  If Not ParseOk Then Exit;
+
+  N := NewNode(ND_SELECT_ITEM, '', LexCurTok.Line, LexCurTok.Col);
+  E := ParseSqlExpr;
+  AddChild(N, E);
+
+  { Alias optionnel : AS alias | alias (sans AS) }
+  If KwIs(KW_AS) Then
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Or (LexCurTok.Kind = TOK_STRING)
+    Then
+    Begin
+      A := NewNode(ND_ALIAS, LexCurTok.Text, LexCurTok.Line, LexCurTok.Col);
+      AddChild(N, A);
+      Advance;
+    End
+    Else
+      ParseError('alias attendu apres AS');
+  End
+  Else If (LexCurTok.Kind = TOK_IDENT) And (Not KwIs(KW_FROM)) And
+          (Not KwIs(KW_WHERE)) And (Not KwIs(KW_GROUP)) And
+          (Not KwIs(KW_HAVING)) And (Not KwIs(KW_ORDER)) And
+          (Not KwIs(KW_UNION)) And (Not KwIs(KW_INTERSECT)) And
+          (Not KwIs(KW_EXCEPT)) And (Not KwIs(KW_INTO)) And
+          (Not TokIs(TOK_COMMA)) And (Not TokIs(TOK_EOF)) Then
+  Begin
+    { Alias implicite (sans AS) - seulement si c est un identifiant simple }
+    A := NewNode(ND_ALIAS, LexCurTok.Text, LexCurTok.Line, LexCurTok.Col);
+    AddChild(N, A);
+    Advance;
+  End;
+
+  ParseSelectItem := N;
+End;
+
+{ ---- ParseTableHint : WITH (NOLOCK | READUNCOMMITTED | ...) - }
+
+Function ParseTableHint : Integer;
+Var
+  N : Integer;
+Begin
+  ParseTableHint := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_WITH) Then Exit;
+  Advance;
+  If TokIs(TOK_LPAREN) Then
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      N := NewNode(ND_TABLE_HINT, LexCurTok.Text, LexCurTok.Line,
+                   LexCurTok.Col);
+      Advance;
+      { Consommer les hints supplementaires separes par virgule }
+      While TokIs(TOK_COMMA) And ParseOk Do
+      Begin
+        Advance;
+        If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD)
+        Then
+          Advance;
+      End;
+    End
+    Else
+    Begin
+      N := NewNode(ND_TABLE_HINT, '', LexCurTok.Line, LexCurTok.Col);
+    End;
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu apres table hint');
+    ParseTableHint := N;
+  End
+  Else
+    ParseError('( attendu apres WITH');
+End;
+
+{ ---- ParseTableRef : nom_table [AS alias] [WITH (...)] ------- }
+
+Function ParseTableRef : Integer;
+Var
+  N, A, H, Sub : Integer;
+  Depth : Integer;
+Begin
+  ParseTableRef := -1;
+  If Not ParseOk Then Exit;
+
+  { Sous-requete derivee : (SELECT ...) [AS alias] }
+  If TokIs(TOK_LPAREN) Then
+  Begin
+    Advance;
+    If KwIs(KW_SELECT) Then
+    Begin
+      Sub := ParseSelectStmt;
+      N := NewNode(ND_TABLE_REF, '(subquery)', LexCurTok.Line,
+                   LexCurTok.Col);
+      AddChild(N, Sub);
+    End
+    Else
+    Begin
+      { Simple parenthesage de table ref }
+      N := NewNode(ND_TABLE_REF, '()', LexCurTok.Line, LexCurTok.Col);
+      { Consommer jusqu a ) }
+      Depth := 1;
+      While (Depth > 0) And (Not TokIs(TOK_EOF)) And ParseOk Do
+      Begin
+        If TokIs(TOK_LPAREN) Then Inc(Depth)
+        Else If TokIs(TOK_RPAREN) Then Dec(Depth);
+        If Depth > 0 Then Advance;
+      End;
+    End;
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu apres sous-requete');
+    { Alias optionnel }
+    If KwIs(KW_AS) Then
+    Begin
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+         (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+      Begin
+        A := NewNode(ND_ALIAS, LexCurTok.Text, LexCurTok.Line,
+                     LexCurTok.Col);
+        AddChild(N, A);
+        Advance;
+      End;
+    End
+    Else If (LexCurTok.Kind = TOK_IDENT) And (Not KwIs(KW_ON)) And
+            (Not KwIs(KW_WHERE)) And (Not KwIs(KW_JOIN)) And
+            (Not KwIs(KW_INNER)) And (Not KwIs(KW_LEFT)) And
+            (Not KwIs(KW_RIGHT)) And (Not KwIs(KW_FULL)) And
+            (Not KwIs(KW_CROSS)) And (Not KwIs(KW_GROUP)) And
+            (Not KwIs(KW_ORDER)) And (Not KwIs(KW_HAVING)) And
+            (Not KwIs(KW_UNION)) Then
+    Begin
+      A := NewNode(ND_ALIAS, LexCurTok.Text, LexCurTok.Line,
+                   LexCurTok.Col);
+      AddChild(N, A);
+      Advance;
+    End;
+    ParseTableRef := N;
+    Exit;
+  End;
+
+  { Table simple : [schema.]table ou [delimited] }
+  If (LexCurTok.Kind <> TOK_IDENT) And (LexCurTok.Kind <> TOK_KEYWORD) And
+     (LexCurTok.Kind <> TOK_DELIM_IDENT) And (LexCurTok.Kind <> TOK_TEMPOBJ)
+  Then
+  Begin
+    ParseError('nom de table attendu');
+    Exit;
+  End;
+
+  N := NewNode(ND_TABLE_REF, LexCurTok.Text, LexCurTok.Line, LexCurTok.Col);
+  Advance;
+
+  { References pointees : schema.table ou database.schema.table }
+  While TokIs(TOK_DOT) And ParseOk Do
+  Begin
+    ASTPool[N].Text := ASTPool[N].Text + '.';
+    Advance;
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+    Begin
+      ASTPool[N].Text := ASTPool[N].Text + LexCurTok.Text;
+      Advance;
+    End;
+  End;
+
+  { Alias optionnel : AS alias ou alias implicite }
+  If KwIs(KW_AS) Then
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+    Begin
+      A := NewNode(ND_ALIAS, LexCurTok.Text, LexCurTok.Line,
+                   LexCurTok.Col);
+      AddChild(N, A);
+      Advance;
+    End;
+  End
+  Else If (LexCurTok.Kind = TOK_IDENT) And (Not KwIs(KW_ON)) And
+          (Not KwIs(KW_WHERE)) And (Not KwIs(KW_JOIN)) And
+          (Not KwIs(KW_INNER)) And (Not KwIs(KW_LEFT)) And
+          (Not KwIs(KW_RIGHT)) And (Not KwIs(KW_FULL)) And
+          (Not KwIs(KW_CROSS)) And (Not KwIs(KW_GROUP)) And
+          (Not KwIs(KW_ORDER)) And (Not KwIs(KW_HAVING)) And
+          (Not KwIs(KW_UNION)) And (Not KwIs(KW_WITH)) And
+          (Not KwIs(KW_SET)) And (Not KwIs(KW_APPLY)) And
+          (Not KwIs(KW_PIVOT)) And (Not KwIs(KW_UNPIVOT)) Then
+  Begin
+    A := NewNode(ND_ALIAS, LexCurTok.Text, LexCurTok.Line,
+                 LexCurTok.Col);
+    AddChild(N, A);
+    Advance;
+  End;
+
+  { Table hint : WITH (NOLOCK) }
+  If KwIs(KW_WITH) Then
+  Begin
+    H := ParseTableHint;
+    If H >= 0 Then
+      AddChild(N, H);
+  End;
+
+  ParseTableRef := N;
+End;
+
+{ ---- ParseJoinType : retourne le texte du type de jointure --- }
+
+Function ParseJoinType : TTokenText;
+Var
+  JT : TTokenText;
+Begin
+  JT := '';
+  If KwIs(KW_INNER) Then
+  Begin
+    JT := 'INNER';
+    Advance;
+  End
+  Else If KwIs(KW_LEFT) Then
+  Begin
+    JT := 'LEFT';
+    Advance;
+    If KwIs(KW_OUTER) Then
+    Begin
+      JT := 'LEFT OUTER';
+      Advance;
+    End;
+  End
+  Else If KwIs(KW_RIGHT) Then
+  Begin
+    JT := 'RIGHT';
+    Advance;
+    If KwIs(KW_OUTER) Then
+    Begin
+      JT := 'RIGHT OUTER';
+      Advance;
+    End;
+  End
+  Else If KwIs(KW_FULL) Then
+  Begin
+    JT := 'FULL';
+    Advance;
+    If KwIs(KW_OUTER) Then
+    Begin
+      JT := 'FULL OUTER';
+      Advance;
+    End;
+  End
+  Else If KwIs(KW_CROSS) Then
+  Begin
+    JT := 'CROSS';
+    Advance;
+    { CROSS APPLY }
+    If KwIs(KW_APPLY) Then
+    Begin
+      ParseJoinType := 'CROSS APPLY';
+      Advance;
+      Exit;
+    End;
+  End;
+  { JOIN keyword }
+  If KwIs(KW_JOIN) Then
+  Begin
+    If JT = '' Then JT := 'INNER';
+    Advance;
+  End;
+  ParseJoinType := JT;
+End;
+
+{ ---- IsJoinKeyword : verifie si le token courant debute un JOIN }
+
+Function IsJoinKeyword : Boolean;
+Begin
+  IsJoinKeyword := KwIs(KW_JOIN) Or KwIs(KW_INNER) Or KwIs(KW_LEFT) Or
+                   KwIs(KW_RIGHT) Or KwIs(KW_FULL) Or KwIs(KW_CROSS);
+End;
+
+{ ---- ParseFromClause : FROM table_refs [joins ...] ----------- }
+
+Function ParseFromClause : Integer;
+Var
+  N, T, J, Cond : Integer;
+  JType : TTokenText;
+Begin
+  ParseFromClause := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_FROM) Then Exit;
+
+  N := NewNode(ND_FROM_CLAUSE, 'FROM', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip FROM }
+
+  { Premiere reference de table }
+  T := ParseTableRef;
+  AddChild(N, T);
+
+  { Tables supplementaires separees par virgule }
+  While TokIs(TOK_COMMA) And ParseOk Do
+  Begin
+    Advance;
+    T := ParseTableRef;
+    AddChild(N, T);
+  End;
+
+  { Jointures }
+  While IsJoinKeyword And ParseOk Do
+  Begin
+    JType := ParseJoinType;
+
+    { CROSS/OUTER APPLY }
+    If (JType = 'CROSS APPLY') Or (JType = 'OUTER APPLY') Then
+    Begin
+      J := NewNode(ND_APPLY, JType, LexCurTok.Line, LexCurTok.Col);
+      T := ParseTableRef;
+      AddChild(J, T);
+      AddChild(N, J);
+    End
+    Else
+    Begin
+      J := NewNode(ND_JOIN, JType, LexCurTok.Line, LexCurTok.Col);
+      T := ParseTableRef;
+      AddChild(J, T);
+
+      { ON condition (sauf pour CROSS JOIN) }
+      If KwIs(KW_ON) Then
+      Begin
+        Advance;
+        Cond := ParseSqlExpr;
+        AddChild(J, Cond);
+      End;
+
+      AddChild(N, J);
+    End;
+  End;
+
+  { OUTER APPLY }
+  If KwIs(KW_OUTER) Then
+  Begin
+    Advance;
+    If KwIs(KW_APPLY) Then
+    Begin
+      Advance;
+      J := NewNode(ND_APPLY, 'OUTER APPLY', LexCurTok.Line, LexCurTok.Col);
+      T := ParseTableRef;
+      AddChild(J, T);
+      AddChild(N, J);
+    End;
+  End;
+
+  ParseFromClause := N;
+End;
+
+{ ---- ParseWhereClause : WHERE condition ---------------------- }
+
+Function ParseWhereClause : Integer;
+Var
+  N, Cond : Integer;
+Begin
+  ParseWhereClause := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_WHERE) Then Exit;
+
+  N := NewNode(ND_WHERE_CLAUSE, 'WHERE', LexCurTok.Line, LexCurTok.Col);
+  Advance;
+  Cond := ParseSqlExpr;
+  AddChild(N, Cond);
+  ParseWhereClause := N;
+End;
+
+{ ---- ParseGroupBy : GROUP BY col1, col2 ... ------------------ }
+
+Function ParseGroupBy : Integer;
+Var
+  N, E : Integer;
+Begin
+  ParseGroupBy := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_GROUP) Then Exit;
+
+  N := NewNode(ND_GROUP_BY, 'GROUP BY', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip GROUP }
+  If KwIs(KW_BY) Then
+    Advance
+  Else
+    ParseError('BY attendu apres GROUP');
+
+  E := ParseSqlExpr;
+  AddChild(N, E);
+  While TokIs(TOK_COMMA) And ParseOk Do
+  Begin
+    Advance;
+    E := ParseSqlExpr;
+    AddChild(N, E);
+  End;
+
+  { WITH ROLLUP | WITH CUBE (ignorer pour le moment) }
+  If KwIs(KW_WITH) Then
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      ASTPool[N].Text := ASTPool[N].Text + ' WITH ' +
+                         StrUpperCase(LexCurTok.Text);
+      Advance;
+    End;
+  End;
+
+  ParseGroupBy := N;
+End;
+
+{ ---- ParseHaving : HAVING condition -------------------------- }
+
+Function ParseHaving : Integer;
+Var
+  N, Cond : Integer;
+Begin
+  ParseHaving := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_HAVING) Then Exit;
+
+  N := NewNode(ND_HAVING, 'HAVING', LexCurTok.Line, LexCurTok.Col);
+  Advance;
+  Cond := ParseSqlExpr;
+  AddChild(N, Cond);
+  ParseHaving := N;
+End;
+
+{ ---- ParseOrderBy : ORDER BY expr [ASC|DESC], ... ------------ }
+
+Function ParseOrderBy : Integer;
+Var
+  N, Item, E : Integer;
+  Dir : TTokenText;
+Begin
+  ParseOrderBy := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_ORDER) Then Exit;
+
+  N := NewNode(ND_ORDER_BY, 'ORDER BY', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip ORDER }
+  If KwIs(KW_BY) Then
+    Advance
+  Else
+    ParseError('BY attendu apres ORDER');
+
+  E := ParseSqlExpr;
+  Dir := 'ASC'; { defaut }
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    If StrUpperCase(LexCurTok.Text) = 'ASC' Then
+    Begin
+      Dir := 'ASC';
+      Advance;
+    End
+    Else If StrUpperCase(LexCurTok.Text) = 'DESC' Then
+    Begin
+      Dir := 'DESC';
+      Advance;
+    End;
+  End;
+  Item := NewNode(ND_ORDER_ITEM, Dir, LexCurTok.Line, LexCurTok.Col);
+  AddChild(Item, E);
+  AddChild(N, Item);
+  While TokIs(TOK_COMMA) And ParseOk Do
+  Begin
+    Advance;
+    E := ParseSqlExpr;
+    Dir := 'ASC';
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      If StrUpperCase(LexCurTok.Text) = 'ASC' Then
+      Begin
+        Dir := 'ASC';
+        Advance;
+      End
+      Else If StrUpperCase(LexCurTok.Text) = 'DESC' Then
+      Begin
+        Dir := 'DESC';
+        Advance;
+      End;
+    End;
+    Item := NewNode(ND_ORDER_ITEM, Dir, LexCurTok.Line, LexCurTok.Col);
+    AddChild(Item, E);
+    AddChild(N, Item);
+  End;
+
+  { OFFSET n ROWS FETCH NEXT m ROWS ONLY }
+  If KwIs(KW_OFFSET) Then
+  Begin
+    Advance;
+    E := ParseSqlExpr;
+    Item := NewNode(ND_OFFSET, 'OFFSET', LexCurTok.Line, LexCurTok.Col);
+    AddChild(Item, E);
+    { ROWS }
+    If KwIs(KW_ROWS) Then Advance;
+    { FETCH NEXT m ROWS ONLY }
+    If KwIs(KW_FETCH) Then
+    Begin
+      Advance;
+      If KwIs(KW_NEXT) Then Advance;
+      E := ParseSqlExpr;
+      AddChild(Item, E);
+      If KwIs(KW_ROWS) Then Advance;
+      If KwIs(KW_ONLY) Then Advance;
+    End;
+    AddChild(N, Item);
+  End;
+
+  ParseOrderBy := N;
+End;
+
+{ ---- ParseSelectStmt : SELECT complet ------------------------ }
+
+Function ParseSelectStmt : Integer;
+Var
+  Sel, Item, T, N, Sub, CteNode : Integer;
+Begin
+  ParseSelectStmt := -1;
+  If Not ParseOk Then Exit;
+
+  { WITH cte_name AS (SELECT ...) ... SELECT ... }
+  If KwIs(KW_WITH) Then
+  Begin
+    Sel := NewNode(ND_SELECT_STMT, 'WITH', LexCurTok.Line, LexCurTok.Col);
+    While KwIs(KW_WITH) And ParseOk Do
+    Begin
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        CteNode := NewNode(ND_CTE, LexCurTok.Text, LexCurTok.Line,
+                           LexCurTok.Col);
+        Advance;
+        If KwIs(KW_AS) Then
+          Advance
+        Else
+          ParseError('AS attendu dans CTE');
+        If TokIs(TOK_LPAREN) Then
+        Begin
+          Advance;
+          Sub := ParseSelectStmt;
+          AddChild(CteNode, Sub);
+          If TokIs(TOK_RPAREN) Then
+            Advance
+          Else
+            ParseError(') attendu apres CTE');
+        End;
+        AddChild(Sel, CteNode);
+      End;
+      If TokIs(TOK_COMMA) Then
+        Advance { CTE supplementaire }
+      Else
+        Break; { sortir de la boucle WITH }
+    End;
+    { Le SELECT principal suit }
+    If KwIs(KW_SELECT) Then
+    Begin
+      Sub := ParseSelectStmt;
+      AddChild(Sel, Sub);
+    End
+    Else
+      ParseError('SELECT attendu apres WITH ... AS (...)');
+    ParseSelectStmt := Sel;
+    Exit;
+  End;
+
+  { SELECT }
+  If Not KwIs(KW_SELECT) Then
+  Begin
+    ParseError('SELECT attendu');
+    Exit;
+  End;
+
+  Sel := NewNode(ND_SELECT_STMT, 'SELECT', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip SELECT }
+
+  { ALL | DISTINCT }
+  If KwIs(KW_ALL) Then
+  Begin
+    ASTPool[Sel].Text := 'SELECT ALL';
+    Advance;
+  End
+  Else If KwIs(KW_DISTINCT) Then
+  Begin
+    ASTPool[Sel].Text := 'SELECT DISTINCT';
+    Advance;
+  End;
+
+  { TOP n [PERCENT] [WITH TIES] }
+  If KwIs(KW_TOP) Then
+  Begin
+    Advance;
+    T := NewNode(ND_TOP_CLAUSE, 'TOP', LexCurTok.Line, LexCurTok.Col);
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      Advance;
+      N := ParseSqlExpr;
+      AddChild(T, N);
+      If TokIs(TOK_RPAREN) Then
+        Advance
+      Else
+        ParseError(') attendu apres TOP(n)');
+    End
+    Else
+    Begin
+      N := ParseSqlExpr;
+      AddChild(T, N);
+    End;
+    If KwIs(KW_PERCENT) Then
+    Begin
+      ASTPool[T].Text := 'TOP PERCENT';
+      Advance;
+    End;
+    If KwIs(KW_WITH) Then
+    Begin
+      Advance;
+      If KwIs(KW_TIES) Then
+      Begin
+        ASTPool[T].Text := ASTPool[T].Text + ' WITH TIES';
+        Advance;
+      End;
+    End;
+    AddChild(Sel, T);
+  End;
+
+  { Liste de colonnes SELECT }
+  Item := ParseSelectItem;
+  AddChild(Sel, Item);
+  While TokIs(TOK_COMMA) And ParseOk Do
+  Begin
+    Advance;
+    Item := ParseSelectItem;
+    AddChild(Sel, Item);
+  End;
+
+  { INTO table (SELECT INTO) }
+  If KwIs(KW_INTO) Then
+  Begin
+    Advance;
+    N := NewNode(ND_SELECT_INTO, '', LexCurTok.Line, LexCurTok.Col);
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_TEMPOBJ) Or (LexCurTok.Kind = TOK_DELIM_IDENT)
+    Then
+    Begin
+      ASTPool[N].Text := LexCurTok.Text;
+      Advance;
+    End;
+    AddChild(Sel, N);
+  End;
+
+  { FROM }
+  If KwIs(KW_FROM) Then
+  Begin
+    N := ParseFromClause;
+    AddChild(Sel, N);
+  End;
+
+  { WHERE }
+  If KwIs(KW_WHERE) Then
+  Begin
+    N := ParseWhereClause;
+    AddChild(Sel, N);
+  End;
+
+  { GROUP BY }
+  If KwIs(KW_GROUP) Then
+  Begin
+    N := ParseGroupBy;
+    AddChild(Sel, N);
+  End;
+
+  { HAVING }
+  If KwIs(KW_HAVING) Then
+  Begin
+    N := ParseHaving;
+    AddChild(Sel, N);
+  End;
+
+  { ORDER BY }
+  If KwIs(KW_ORDER) Then
+  Begin
+    N := ParseOrderBy;
+    AddChild(Sel, N);
+  End;
+
+  { FOR XML | FOR JSON }
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    If StrUpperCase(LexCurTok.Text) = 'FOR' Then
+    Begin
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        If StrUpperCase(LexCurTok.Text) = 'XML' Then
+        Begin
+          N := NewNode(ND_FOR_XML, 'FOR XML', LexCurTok.Line,
+                       LexCurTok.Col);
+          Advance;
+          { Mode : PATH, RAW, AUTO, EXPLICIT }
+          If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD)
+          Then
+          Begin
+            ASTPool[N].Text := 'FOR XML ' + StrUpperCase(LexCurTok.Text);
+            Advance;
+          End;
+          AddChild(Sel, N);
+        End
+        Else If StrUpperCase(LexCurTok.Text) = 'JSON' Then
+        Begin
+          N := NewNode(ND_FOR_JSON, 'FOR JSON', LexCurTok.Line,
+                       LexCurTok.Col);
+          Advance;
+          If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD)
+          Then
+          Begin
+            ASTPool[N].Text := 'FOR JSON ' + StrUpperCase(LexCurTok.Text);
+            Advance;
+          End;
+          AddChild(Sel, N);
+        End;
+      End;
+    End;
+  End;
+
+  { UNION [ALL] / INTERSECT / EXCEPT }
+  If KwIs(KW_UNION) Then
+  Begin
+    Advance;
+    N := NewNode(ND_UNION, 'UNION', LexCurTok.Line, LexCurTok.Col);
+    If KwIs(KW_ALL) Then
+    Begin
+      ASTPool[N].Text := 'UNION ALL';
+      Advance;
+    End;
+    AddChild(N, Sel);
+    Sub := ParseSelectStmt;
+    AddChild(N, Sub);
+    ParseSelectStmt := N;
+    Exit;
+  End;
+  If KwIs(KW_INTERSECT) Then
+  Begin
+    Advance;
+    N := NewNode(ND_INTERSECT_OP, 'INTERSECT', LexCurTok.Line,
+                 LexCurTok.Col);
+    AddChild(N, Sel);
+    Sub := ParseSelectStmt;
+    AddChild(N, Sub);
+    ParseSelectStmt := N;
+    Exit;
+  End;
+  If KwIs(KW_EXCEPT) Then
+  Begin
+    Advance;
+    N := NewNode(ND_EXCEPT_OP, 'EXCEPT', LexCurTok.Line, LexCurTok.Col);
+    AddChild(N, Sel);
+    Sub := ParseSelectStmt;
+    AddChild(N, Sub);
+    ParseSelectStmt := N;
+    Exit;
+  End;
+
+  ParseSelectStmt := Sel;
+End;
+
 { ---- Execution d une requete SQL ----------------------------- }
 
 Procedure ExecuteQuery(Const SQL : TString);
@@ -6017,12 +6846,16 @@ Begin
   LexInit(SQL);
   LexNextToken;
   ASTInit;
-  Root := ParseSqlExpr;
+  { Detecter si c est un SELECT }
+  If KwIs(KW_SELECT) Or KwIs(KW_WITH) Then
+    Root := ParseSelectStmt
+  Else
+    Root := ParseSqlExpr;
   If ParseOk And (Root >= 0) Then
   Begin
     If Opts.Verbose Then
     Begin
-      OutputLine('-- AST de l''expression :');
+      OutputLine('-- AST :');
       DumpExpr(Root, 0);
     End;
   End
