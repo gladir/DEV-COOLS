@@ -95,7 +95,7 @@
       HeapAlloc, HeapFree, HeapReAlloc, GlobalAlloc, GlobalFree,
       LocalAlloc, LocalFree dans l'espace de 16 Mo.
 
-  19. Implementer l'emulation de KERNEL32.DLL - Chaines et
+  19. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Chaines et
       environnement : GetEnvironmentVariableA, GetEnvironmentStringsA,
       FreeEnvironmentStringsA, lstrlenA, lstrcpyA, lstrcmpA,
       lstrcmpiA, lstrcatA, GetModuleFileNameA, GetModuleHandleA.
@@ -258,6 +258,9 @@ Const
  HeapBase=$C00000;
  HeapSize=1024*1024;  { 1 Mo }
  EMU_HEAP_HANDLE=$C00000;
+
+  { TODO 19 : Constante MAX_PATH Win32 pour GetModuleFileNameA. }
+ MAX_PATH=260;
 
 Type
   { TODO 2 : Registres 32 bits du 80386 }
@@ -445,6 +448,12 @@ Var
     HeapCreated indique si le heap par defaut a ete cree (via GetProcessHeap). }
  HeapNextAddr:LongInt;
  HeapCreated:Boolean;
+
+  { TODO 19 : Adresses en memoire lineaire du bloc d'environnement
+    et du nom du fichier module emule. EnvBlockAddr pointe vers un
+    bloc de chaines KEY=VALUE\0 termine par \0\0. }
+ EnvBlockAddr:LongInt;
+ ModuleFileNameAddr:LongInt;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -4893,6 +4902,7 @@ Var
  CmdLine:String;
  NextAddr:LongInt;
  I:Integer;
+ EnvEntry:String;
 Begin
   { Construire la chaine de commande a partir des parametres reels }
  CmdLine:=ParamStr(0);
@@ -4917,6 +4927,29 @@ Begin
  For I:=0 to STARTUPINFOA_SIZE-1 do
   WriteByte(StartupInfoAddr+LongInt(I),0);
  WriteDWord(StartupInfoAddr,STARTUPINFOA_SIZE);
+ NextAddr:=StartupInfoAddr+STARTUPINFOA_SIZE;
+  { Aligner sur 4 octets }
+ If(NextAddr and 3)<>0 Then
+  NextAddr:=(NextAddr or 3)+1;
+  { TODO 19 : Ecrire le bloc d'environnement en memoire.
+    Chaque variable d'environnement est une chaine KEY=VALUE\0.
+    Le bloc se termine par un \0 supplementaire. }
+ EnvBlockAddr:=NextAddr;
+ For I:=1 to EnvCount do Begin
+  EnvEntry:=EnvStr(I);
+  NextAddr:=WriteStringToMem(NextAddr,EnvEntry);
+ End;
+ WriteByte(NextAddr,0);  { Double \0 terminal }
+ Inc(NextAddr);
+  { Aligner sur 4 octets }
+ If(NextAddr and 3)<>0 Then
+  NextAddr:=(NextAddr or 3)+1;
+  { TODO 19 : Ecrire le nom du fichier module en memoire. }
+ ModuleFileNameAddr:=NextAddr;
+ NextAddr:=WriteStringToMem(NextAddr,DefaultExeName);
+  { Aligner sur 4 octets }
+ If(NextAddr and 3)<>0 Then
+  NextAddr:=(NextAddr or 3)+1;
   { Initialiser les variables d'etat du processus }
  EmuExitCode:=0;
  EmuRunning:=True;
@@ -5924,6 +5957,270 @@ Begin
  Regs.ESP:=Regs.ESP+4;
 End;
 
+  { TODO 19 : Emulation de GetEnvironmentVariableA (KERNEL32.DLL).
+    DWORD WINAPI GetEnvironmentVariableA(LPCSTR lpName,
+                                          LPSTR lpBuffer,
+                                          DWORD nSize);
+    Convention STDCALL : 3 parametres (12 octets).
+    Lit le nom de la variable depuis lpName, appelle GetEnv du systeme
+    hote, ecrit la valeur dans lpBuffer si nSize est suffisant.
+    Retourne la longueur de la valeur, ou 0 si non trouvee. }
+Procedure EmuGetEnvironmentVariableA;
+Var
+ lpName,lpBuffer,nSize:LongInt;
+ VarName,VarValue:String;
+ I:Integer;
+Begin
+ lpName:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ nSize:=ReadDWord(Regs.ESP+12);
+ VarName:=ReadStringFromMem(lpName);
+ VarValue:=GetEnv(VarName);
+ If VarValue='' Then Begin
+  Regs.EAX:=0;
+ End
+ Else Begin
+  If LongInt(Length(VarValue)+1)<=nSize Then Begin
+   For I:=1 to Length(VarValue) do
+    WriteByte(lpBuffer+LongInt(I-1),Byte(VarValue[I]));
+   WriteByte(lpBuffer+LongInt(Length(VarValue)),0);
+   Regs.EAX:=LongInt(Length(VarValue));
+  End
+  Else Begin
+    { Buffer trop petit : retourner la taille necessaire }
+   Regs.EAX:=LongInt(Length(VarValue)+1);
+  End;
+ End;
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 19 : Emulation de GetEnvironmentStringsA (KERNEL32.DLL).
+    LPCH WINAPI GetEnvironmentStringsA(void);
+    Convention STDCALL : 0 parametre (0 octets).
+    Retourne un pointeur vers le bloc d'environnement en memoire
+    (chaines KEY=VALUE\0 terminees par un \0 supplementaire). }
+Procedure EmuGetEnvironmentStringsA;
+Begin
+ Regs.EAX:=EnvBlockAddr;
+End;
+
+  { TODO 19 : Emulation de FreeEnvironmentStringsA (KERNEL32.DLL).
+    BOOL WINAPI FreeEnvironmentStringsA(LPCH lpszEnvironmentBlock);
+    Convention STDCALL : 1 parametre (4 octets).
+    Emulation simplifiee : retourne toujours TRUE (1). }
+Procedure EmuFreeEnvironmentStringsA;
+Var
+ lpEnv:LongInt;
+Begin
+ lpEnv:=ReadDWord(Regs.ESP+4);
+ Regs.EAX:=1;  { TRUE = succes }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 19 : Emulation de lstrlenA (KERNEL32.DLL).
+    int WINAPI lstrlenA(LPCSTR lpString);
+    Convention STDCALL : 1 parametre (4 octets).
+    Retourne la longueur de la chaine pointee par lpString,
+    ou 0 si le pointeur est NULL. }
+Procedure EmulstrlenA;
+Var
+ lpString:LongInt;
+ Len:LongInt;
+Begin
+ lpString:=ReadDWord(Regs.ESP+4);
+ If lpString=0 Then Begin
+  Regs.EAX:=0;
+ End
+ Else Begin
+  Len:=0;
+  While(Len<65535)and(ReadByte(lpString+Len)<>0)do
+   Inc(Len);
+  Regs.EAX:=Len;
+ End;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 19 : Emulation de lstrcpyA (KERNEL32.DLL).
+    LPSTR WINAPI lstrcpyA(LPSTR lpString1, LPCSTR lpString2);
+    Convention STDCALL : 2 parametres (8 octets).
+    Copie la chaine source lpString2 vers la destination lpString1.
+    Retourne lpString1. }
+Procedure EmulstrcpyA;
+Var
+ lpDst,lpSrc:LongInt;
+ B:Byte;
+ I:LongInt;
+Begin
+ lpDst:=ReadDWord(Regs.ESP+4);
+ lpSrc:=ReadDWord(Regs.ESP+8);
+ I:=0;
+ Repeat
+  B:=ReadByte(lpSrc+I);
+  WriteByte(lpDst+I,B);
+  Inc(I);
+ Until B=0;
+ Regs.EAX:=lpDst;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 19 : Emulation de lstrcmpA (KERNEL32.DLL).
+    int WINAPI lstrcmpA(LPCSTR lpString1, LPCSTR lpString2);
+    Convention STDCALL : 2 parametres (8 octets).
+    Compare deux chaines sensible a la casse.
+    Retourne <0, 0 ou >0 selon le resultat. }
+Procedure EmulstrcmpA;
+Var
+ lp1,lp2:LongInt;
+ B1,B2:Byte;
+ I:LongInt;
+Begin
+ lp1:=ReadDWord(Regs.ESP+4);
+ lp2:=ReadDWord(Regs.ESP+8);
+ I:=0;
+ Repeat
+  B1:=ReadByte(lp1+I);
+  B2:=ReadByte(lp2+I);
+  If B1<B2 Then Begin
+   Regs.EAX:=LongInt(-1);
+   Regs.ESP:=Regs.ESP+8;
+   Exit;
+  End;
+  If B1>B2 Then Begin
+   Regs.EAX:=1;
+   Regs.ESP:=Regs.ESP+8;
+   Exit;
+  End;
+  Inc(I);
+ Until B1=0;
+ Regs.EAX:=0;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 19 : Emulation de lstrcmpiA (KERNEL32.DLL).
+    int WINAPI lstrcmpiA(LPCSTR lpString1, LPCSTR lpString2);
+    Convention STDCALL : 2 parametres (8 octets).
+    Compare deux chaines sans tenir compte de la casse.
+    Retourne <0, 0 ou >0 selon le resultat. }
+Procedure EmulstrcmpiA;
+Var
+ lp1,lp2:LongInt;
+ B1,B2:Byte;
+ C1,C2:Char;
+ I:LongInt;
+Begin
+ lp1:=ReadDWord(Regs.ESP+4);
+ lp2:=ReadDWord(Regs.ESP+8);
+ I:=0;
+ Repeat
+  B1:=ReadByte(lp1+I);
+  B2:=ReadByte(lp2+I);
+  C1:=UpCase(Chr(B1));
+  C2:=UpCase(Chr(B2));
+  If C1<C2 Then Begin
+   Regs.EAX:=LongInt(-1);
+   Regs.ESP:=Regs.ESP+8;
+   Exit;
+  End;
+  If C1>C2 Then Begin
+   Regs.EAX:=1;
+   Regs.ESP:=Regs.ESP+8;
+   Exit;
+  End;
+  Inc(I);
+ Until B1=0;
+ Regs.EAX:=0;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 19 : Emulation de lstrcatA (KERNEL32.DLL).
+    LPSTR WINAPI lstrcatA(LPSTR lpString1, LPCSTR lpString2);
+    Convention STDCALL : 2 parametres (8 octets).
+    Concatene lpString2 a la fin de lpString1.
+    Retourne lpString1. }
+Procedure EmulstrcatA;
+Var
+ lpDst,lpSrc:LongInt;
+ B:Byte;
+ DstLen,I:LongInt;
+Begin
+ lpDst:=ReadDWord(Regs.ESP+4);
+ lpSrc:=ReadDWord(Regs.ESP+8);
+  { Trouver la fin de lpString1 }
+ DstLen:=0;
+ While ReadByte(lpDst+DstLen)<>0 do
+  Inc(DstLen);
+  { Copier lpString2 a la suite }
+ I:=0;
+ Repeat
+  B:=ReadByte(lpSrc+I);
+  WriteByte(lpDst+DstLen+I,B);
+  Inc(I);
+ Until B=0;
+ Regs.EAX:=lpDst;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 19 : Emulation de GetModuleFileNameA (KERNEL32.DLL).
+    DWORD WINAPI GetModuleFileNameA(HMODULE hModule,
+                                     LPSTR lpFilename,
+                                     DWORD nSize);
+    Convention STDCALL : 3 parametres (12 octets).
+    Si hModule est 0 ou le handle du module courant, copie le nom
+    du fichier executable dans lpFilename.
+    Retourne le nombre de caracteres copies. }
+Procedure EmuGetModuleFileNameA;
+Var
+ hModule,lpFilename,nSize:LongInt;
+ ModName:String;
+ CopyLen,I:Integer;
+Begin
+ hModule:=ReadDWord(Regs.ESP+4);
+ lpFilename:=ReadDWord(Regs.ESP+8);
+ nSize:=ReadDWord(Regs.ESP+12);
+ ModName:=DefaultExeName;
+ CopyLen:=Length(ModName);
+ If LongInt(CopyLen)>=nSize Then
+  CopyLen:=Integer(nSize)-1;
+ If CopyLen<0 Then CopyLen:=0;
+ For I:=1 to CopyLen do
+  WriteByte(lpFilename+LongInt(I-1),Byte(ModName[I]));
+ WriteByte(lpFilename+LongInt(CopyLen),0);
+ Regs.EAX:=LongInt(CopyLen);
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 19 : Emulation de GetModuleHandleA (KERNEL32.DLL).
+    HMODULE WINAPI GetModuleHandleA(LPCSTR lpModuleName);
+    Convention STDCALL : 1 parametre (4 octets).
+    Si lpModuleName est NULL, retourne le handle du module courant
+    (ImageBase du PE charge). Sinon, retourne 0 (module non trouve). }
+Procedure EmuGetModuleHandleA;
+Var
+ lpModuleName:LongInt;
+ ModName:String;
+Begin
+ lpModuleName:=ReadDWord(Regs.ESP+4);
+ If lpModuleName=0 Then
+  Regs.EAX:=PEOptHeader.ImageBase
+ Else Begin
+  ModName:=ReadStringFromMem(lpModuleName);
+  If StrIComp(ModName,DefaultExeName) Then
+   Regs.EAX:=PEOptHeader.ImageBase
+  Else
+   Regs.EAX:=0;
+ End;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
   { TODO 15 : Dispatche un appel a une fonction de KERNEL32.DLL.
     Recoit l'index de l'entree d'importation dans ImportEntries
     et appelle la procedure d'emulation correspondante.
@@ -6003,6 +6300,27 @@ Begin
   EmuLocalAlloc
  Else If StrIComp(FName,'LocalFree') Then
   EmuLocalFree
+  { TODO 19 : Chaines et environnement }
+ Else If StrIComp(FName,'GetEnvironmentVariableA') Then
+  EmuGetEnvironmentVariableA
+ Else If StrIComp(FName,'GetEnvironmentStringsA') Then
+  EmuGetEnvironmentStringsA
+ Else If StrIComp(FName,'FreeEnvironmentStringsA') Then
+  EmuFreeEnvironmentStringsA
+ Else If StrIComp(FName,'lstrlenA') Then
+  EmulstrlenA
+ Else If StrIComp(FName,'lstrcpyA') Then
+  EmulstrcpyA
+ Else If StrIComp(FName,'lstrcmpA') Then
+  EmulstrcmpA
+ Else If StrIComp(FName,'lstrcmpiA') Then
+  EmulstrcmpiA
+ Else If StrIComp(FName,'lstrcatA') Then
+  EmulstrcatA
+ Else If StrIComp(FName,'GetModuleFileNameA') Then
+  EmuGetModuleFileNameA
+ Else If StrIComp(FName,'GetModuleHandleA') Then
+  EmuGetModuleHandleA
  Else Begin
   WriteLn('KERNEL32: fonction non emulée: ',FName);
   DispatchKernel32:=False;
