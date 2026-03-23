@@ -115,7 +115,7 @@
       la pile, la valeur de retour est dans EAX. Detecter les
       CALL vers les thunks IAT et rediriger vers les emulations.
 
-  23. Implementer la boucle principale d'execution (Procedure Run)
+  23. [IMPLEMENTE] Implementer la boucle principale d'execution (Procedure Run)
       avec decodage du flux d'instructions 80386, gestion des
       prefixes (66h, 67h, 0Fh pour les opcodes etendus, F2h/F3h
       pour REP) et dispatch vers les procedures d'emulation.
@@ -7267,6 +7267,629 @@ Begin
   WriteLn('DetectAndDispatchThunk: DLL non emulée: ',
           ImportEntries[Idx].DLLName,'!',
           ImportEntries[Idx].FuncName);
+End;
+
+  { TODO 23 : Boucle principale d'execution (Procedure Run).
+    Decodage du flux d'instructions 80386 avec gestion des prefixes
+    (66h operand-size, 67h address-size, 0Fh opcodes etendus,
+    F2h/F3h pour REP/REPNE) et dispatch vers les procedures
+    d'emulation definies dans les TODOs 8-14.
+    La boucle tourne tant que EmuRunning est True et que EIP est
+    valide. A chaque iteration, on verifie si EIP pointe vers un
+    thunk IAT (zone $E00000-$EFFFFF) pour dispatcher les appels
+    Win32 via DetectAndDispatchThunk (TODO 22), sinon on decode
+    l'instruction x86 courante. }
+Procedure Run;
+Var
+ OpCode,ExtOp,PeekByte,RegExt:Byte;
+ HasPrefix66,HasPrefixF2,HasPrefixF3:Boolean;
+ GrpModF,GrpRegF,GrpRMF:Byte;
+ GrpEff,GrpVal32,GrpImm32,GrpRes32:LongInt;
+ GrpIsMem:Boolean;
+ GrpVal8,GrpImm8,GrpRes8:Byte;
+Begin
+ While EmuRunning do Begin
+   { Verifier la validite de EIP }
+  If(EIP<=0)or(EIP>=MemorySize)Then Begin
+   If EmuRunning Then
+    WriteLn('Run: EIP invalide $',HexStr(EIP,8),' - arret.');
+   EmuRunning:=False;
+  End
+  Else If IsThunkAddress(EIP)Then Begin
+    { EIP pointe vers un thunk IAT : dispatcher l'appel emule }
+   If Not DetectAndDispatchThunk(EIP)Then Begin
+    WriteLn('Run: thunk non gere a EIP=$',HexStr(EIP,8));
+    EmuRunning:=False;
+   End;
+  End
+  Else Begin
+    { Reinitialiser les drapeaux de prefixe }
+   HasPrefix66:=False;
+   HasPrefixF2:=False;
+   HasPrefixF3:=False;
+    { Lire l'octet d'opcode }
+   OpCode:=ReadByte(EIP);
+   Inc(EIP);
+    { Boucle de consommation des prefixes }
+   While(OpCode=$66)or(OpCode=$67)or
+        (OpCode=$F2)or(OpCode=$F3)do Begin
+    If OpCode=$66 Then HasPrefix66:=True
+    Else If OpCode=$F2 Then HasPrefixF2:=True
+    Else If OpCode=$F3 Then HasPrefixF3:=True;
+     { $67 address-size override ignore en mode plat 32 bits }
+    OpCode:=ReadByte(EIP);
+    Inc(EIP);
+   End;
+    { Dispatch de l'opcode principal }
+   Case OpCode of
+     { === ADD === }
+    $00:OpAddRM8R8;
+    $01:OpAddRM32R32;
+    $02:OpAddR8RM8;
+    $03:OpAddR32RM32;
+    $04:OpAddALImm8;
+    $05:OpAddEAXImm32;
+     { === OR === }
+    $08:OpOrRM8R8;
+    $09:OpOrRM32R32;
+    $0A:OpOrR8RM8;
+    $0B:OpOrR32RM32;
+    $0C:OpOrALImm8;
+    $0D:OpOrEAXImm32;
+     { === Opcodes etendus $0F === }
+    $0F:Begin
+     ExtOp:=ReadByte(EIP);
+     Inc(EIP);
+     Case ExtOp of
+       { CMOVcc r32,r/m32 }
+      $40,$41,$42,$43,$44,$45,$46,$47,
+      $48,$49,$4A,$4B,$4C,$4D,$4E,$4F:
+       OpCMOVcc(ExtOp-$40);
+       { Jcc near rel32 }
+      $80,$81,$82,$83,$84,$85,$86,$87,
+      $88,$89,$8A,$8B,$8C,$8D,$8E,$8F:
+       OpJccNear(ExtOp-$80);
+       { SETcc r/m8 }
+      $90,$91,$92,$93,$94,$95,$96,$97,
+      $98,$99,$9A,$9B,$9C,$9D,$9E,$9F:
+       OpSETcc(ExtOp-$90);
+       { BT r/m32,r32 }
+      $A3:OpBtRM32R32;
+       { BTS r/m32,r32 }
+      $AB:OpBtsRM32R32;
+       { IMUL r32,r/m32 }
+      $AF:OpImulR32RM32;
+       { BTR r/m32,r32 }
+      $B3:OpBtrRM32R32;
+       { MOVZX r32,r/m8 }
+      $B6:OpMovzxR32RM8;
+       { MOVZX r32,r/m16 }
+      $B7:OpMovzxR32RM16;
+       { BT/BTS/BTR/BTC r/m32,imm8 - dispatch par champ reg }
+      $BA:Begin
+       PeekByte:=ReadByte(EIP);
+       RegExt:=(PeekByte shr 3)and 7;
+       Case RegExt of
+        4:OpBtRM32Imm;
+        5:OpBtsRM32Imm;
+        6:OpBtrRM32Imm;
+        7:OpBtcRM32Imm;
+        Else Begin
+         WriteLn('Run: $0F $BA reg=',RegExt,' non implemente');
+         EmuRunning:=False;
+        End;
+       End;
+      End;
+       { BTC r/m32,r32 }
+      $BB:OpBtcRM32R32;
+       { BSF r32,r/m32 }
+      $BC:OpBsfR32RM32;
+       { BSR r32,r/m32 }
+      $BD:OpBsrR32RM32;
+       { MOVSX r32,r/m8 }
+      $BE:OpMovsxR32RM8;
+       { MOVSX r32,r/m16 }
+      $BF:OpMovsxR32RM16;
+       { BSWAP r32 }
+      $C8,$C9,$CA,$CB,$CC,$CD,$CE,$CF:
+       OpBswap(ExtOp-$C8);
+      Else Begin
+       WriteLn('Run: opcode etendu $0F $',HexStr(ExtOp,2),
+               ' non implemente a EIP=$',HexStr(EIP-2,8));
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === ADC === }
+    $10:OpAdcRM8R8;
+    $11:OpAdcRM32R32;
+    $12:OpAdcR8RM8;
+    $13:OpAdcR32RM32;
+    $14:OpAdcALImm8;
+    $15:OpAdcEAXImm32;
+     { === SBB === }
+    $18:OpSbbRM8R8;
+    $19:OpSbbRM32R32;
+    $1A:OpSbbR8RM8;
+    $1B:OpSbbR32RM32;
+    $1C:OpSbbALImm8;
+    $1D:OpSbbEAXImm32;
+     { === AND === }
+    $20:OpAndRM8R8;
+    $21:OpAndRM32R32;
+    $22:OpAndR8RM8;
+    $23:OpAndR32RM32;
+    $24:OpAndALImm8;
+    $25:OpAndEAXImm32;
+     { === SUB === }
+    $28:OpSubRM8R8;
+    $29:OpSubRM32R32;
+    $2A:OpSubR8RM8;
+    $2B:OpSubR32RM32;
+    $2C:OpSubALImm8;
+    $2D:OpSubEAXImm32;
+     { === XOR === }
+    $30:OpXorRM8R8;
+    $31:OpXorRM32R32;
+    $32:OpXorR8RM8;
+    $33:OpXorR32RM32;
+    $34:OpXorALImm8;
+    $35:OpXorEAXImm32;
+     { === CMP === }
+    $38:OpCmpRM8R8;
+    $39:OpCmpRM32R32;
+    $3A:OpCmpR8RM8;
+    $3B:OpCmpR32RM32;
+    $3C:OpCmpALImm8;
+    $3D:OpCmpEAXImm32;
+     { === INC r32 ($40-$47) === }
+    $40,$41,$42,$43,$44,$45,$46,$47:
+     OpIncR32(OpCode-$40);
+     { === DEC r32 ($48-$4F) === }
+    $48,$49,$4A,$4B,$4C,$4D,$4E,$4F:
+     OpDecR32(OpCode-$48);
+     { === PUSH r32 ($50-$57) === }
+    $50,$51,$52,$53,$54,$55,$56,$57:
+     Push32(GetReg32(OpCode-$50));
+     { === POP r32 ($58-$5F) === }
+    $58,$59,$5A,$5B,$5C,$5D,$5E,$5F:
+     SetReg32(OpCode-$58,Pop32);
+     { === PUSHAD ($60) === }
+    $60:Begin
+     GrpVal32:=Regs.ESP;
+     Push32(Regs.EAX);
+     Push32(Regs.ECX);
+     Push32(Regs.EDX);
+     Push32(Regs.EBX);
+     Push32(GrpVal32);
+     Push32(Regs.EBP);
+     Push32(Regs.ESI);
+     Push32(Regs.EDI);
+    End;
+     { === POPAD ($61) === }
+    $61:Begin
+     Regs.EDI:=Pop32;
+     Regs.ESI:=Pop32;
+     Regs.EBP:=Pop32;
+     Pop32; { ESP ignore }
+     Regs.EBX:=Pop32;
+     Regs.EDX:=Pop32;
+     Regs.ECX:=Pop32;
+     Regs.EAX:=Pop32;
+    End;
+     { === PUSH imm32 ($68) === }
+    $68:Begin
+     GrpImm32:=ReadDWord(EIP);
+     Inc(EIP,4);
+     Push32(GrpImm32);
+    End;
+     { === IMUL r32,r/m32,imm32 ($69) === }
+    $69:OpImulR32RM32Imm32;
+     { === PUSH imm8 sign-extended ($6A) === }
+    $6A:Begin
+     GrpImm8:=ReadByte(EIP);
+     Inc(EIP);
+     Push32(LongInt(ShortInt(GrpImm8)));
+    End;
+     { === IMUL r32,r/m32,imm8 ($6B) === }
+    $6B:OpImulR32RM32Imm8;
+     { === Jcc short rel8 ($70-$7F) === }
+    $70,$71,$72,$73,$74,$75,$76,$77,
+    $78,$79,$7A,$7B,$7C,$7D,$7E,$7F:
+     OpJccShort(OpCode-$70);
+     { === Group 1 : ALU r/m8, imm8 ($80) === }
+    $80:Begin
+     DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+     If GrpIsMem Then GrpVal8:=ReadByte(GrpEff)
+     Else GrpVal8:=GetReg8(GrpRMF);
+     GrpImm8:=ReadByte(EIP);
+     Inc(EIP);
+     Case GrpRegF of
+      0:GrpRes8:=ArithAdd8(GrpVal8,GrpImm8);
+      1:Begin GrpRes8:=GrpVal8 or GrpImm8;LogicFlags8(GrpRes8);End;
+      2:GrpRes8:=ArithAdc8(GrpVal8,GrpImm8);
+      3:GrpRes8:=ArithSbb8(GrpVal8,GrpImm8);
+      4:Begin GrpRes8:=GrpVal8 and GrpImm8;LogicFlags8(GrpRes8);End;
+      5:GrpRes8:=ArithSub8(GrpVal8,GrpImm8);
+      6:Begin GrpRes8:=GrpVal8 xor GrpImm8;LogicFlags8(GrpRes8);End;
+      7:GrpRes8:=ArithSub8(GrpVal8,GrpImm8); { CMP }
+     End;
+     If GrpRegF<>7 Then Begin
+      If GrpIsMem Then WriteByte(GrpEff,GrpRes8)
+      Else SetReg8(GrpRMF,GrpRes8);
+     End;
+    End;
+     { === Group 1 : ALU r/m32, imm32 ($81) === }
+    $81:Begin
+     DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+     If GrpIsMem Then GrpVal32:=ReadDWord(GrpEff)
+     Else GrpVal32:=GetReg32(GrpRMF);
+     GrpImm32:=ReadDWord(EIP);
+     Inc(EIP,4);
+     Case GrpRegF of
+      0:GrpRes32:=ArithAdd32(GrpVal32,GrpImm32);
+      1:Begin GrpRes32:=GrpVal32 or GrpImm32;LogicFlags32(GrpRes32);End;
+      2:GrpRes32:=ArithAdc32(GrpVal32,GrpImm32);
+      3:GrpRes32:=ArithSbb32(GrpVal32,GrpImm32);
+      4:Begin GrpRes32:=GrpVal32 and GrpImm32;LogicFlags32(GrpRes32);End;
+      5:GrpRes32:=ArithSub32(GrpVal32,GrpImm32);
+      6:Begin GrpRes32:=GrpVal32 xor GrpImm32;LogicFlags32(GrpRes32);End;
+      7:GrpRes32:=ArithSub32(GrpVal32,GrpImm32); { CMP }
+     End;
+     If GrpRegF<>7 Then Begin
+      If GrpIsMem Then WriteDWord(GrpEff,GrpRes32)
+      Else SetReg32(GrpRMF,GrpRes32);
+     End;
+    End;
+     { === Group 1 : ALU r/m32, sign-extended imm8 ($83) === }
+    $83:Begin
+     DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+     If GrpIsMem Then GrpVal32:=ReadDWord(GrpEff)
+     Else GrpVal32:=GetReg32(GrpRMF);
+     GrpImm32:=LongInt(ShortInt(ReadByte(EIP)));
+     Inc(EIP);
+     Case GrpRegF of
+      0:GrpRes32:=ArithAdd32(GrpVal32,GrpImm32);
+      1:Begin GrpRes32:=GrpVal32 or GrpImm32;LogicFlags32(GrpRes32);End;
+      2:GrpRes32:=ArithAdc32(GrpVal32,GrpImm32);
+      3:GrpRes32:=ArithSbb32(GrpVal32,GrpImm32);
+      4:Begin GrpRes32:=GrpVal32 and GrpImm32;LogicFlags32(GrpRes32);End;
+      5:GrpRes32:=ArithSub32(GrpVal32,GrpImm32);
+      6:Begin GrpRes32:=GrpVal32 xor GrpImm32;LogicFlags32(GrpRes32);End;
+      7:GrpRes32:=ArithSub32(GrpVal32,GrpImm32); { CMP }
+     End;
+     If GrpRegF<>7 Then Begin
+      If GrpIsMem Then WriteDWord(GrpEff,GrpRes32)
+      Else SetReg32(GrpRMF,GrpRes32);
+     End;
+    End;
+     { === TEST === }
+    $84:OpTestRM8R8;
+    $85:OpTestRM32R32;
+     { === XCHG === }
+    $86:OpXchgRM8R8;
+    $87:OpXchgRM32R32;
+     { === MOV === }
+    $88:OpMovRM8R8;
+    $89:OpMovRM32R32;
+    $8A:OpMovR8RM8;
+    $8B:OpMovR32RM32;
+     { === LEA r32,m === }
+    $8D:OpLea;
+     { === POP r/m32 ($8F) === }
+    $8F:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     If RegExt=0 Then Begin
+      DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+      GrpVal32:=Pop32;
+      If GrpIsMem Then WriteDWord(GrpEff,GrpVal32)
+      Else SetReg32(GrpRMF,GrpVal32);
+     End
+     Else Begin
+      WriteLn('Run: opcode $8F reg=',RegExt,' non implemente');
+      EmuRunning:=False;
+     End;
+    End;
+     { === NOP ($90) / XCHG EAX,r32 ($91-$97) === }
+    $90:OpNop;
+    $91,$92,$93,$94,$95,$96,$97:
+     OpXchgEAXR32(OpCode-$90);
+     { === CWDE ($98) ou CBW avec prefixe $66 === }
+    $98:If HasPrefix66 Then OpCbw Else OpCwde;
+     { === CDQ ($99) === }
+    $99:OpCdq;
+     { === PUSHFD ($9C) === }
+    $9C:Push32(EFlags.Abs);
+     { === POPFD ($9D) === }
+    $9D:EFlags.Abs:=Pop32;
+     { === Instructions de chaines avec gestion REP/REPE/REPNE === }
+     { MOVSB / REP MOVSB }
+    $A4:If HasPrefixF3 Then OpRepMovsB Else OpMovsB;
+     { MOVSD/MOVSW / REP MOVSD/MOVSW }
+    $A5:If HasPrefixF3 Then Begin
+         If HasPrefix66 Then OpRepMovsW Else OpRepMovsD;
+        End
+        Else Begin
+         If HasPrefix66 Then OpMovsW Else OpMovsD;
+        End;
+     { CMPSB / REPE CMPSB / REPNE CMPSB }
+    $A6:If HasPrefixF3 Then OpRepeCmpsB
+        Else If HasPrefixF2 Then OpRepneCmpsB
+        Else OpCmpsB;
+     { CMPSD/CMPSW / REPE/REPNE CMPSD/CMPSW }
+    $A7:If HasPrefixF3 Then Begin
+         If HasPrefix66 Then OpRepeCmpsW Else OpRepeCmpsD;
+        End
+        Else If HasPrefixF2 Then Begin
+         If HasPrefix66 Then OpRepneCmpsW Else OpRepneCmpsD;
+        End
+        Else Begin
+         If HasPrefix66 Then OpCmpsW Else OpCmpsD;
+        End;
+     { TEST AL,imm8 }
+    $A8:OpTestALImm8;
+     { TEST EAX,imm32 }
+    $A9:OpTestEAXImm32;
+     { STOSB / REP STOSB }
+    $AA:If HasPrefixF3 Then OpRepStosB Else OpStosB;
+     { STOSD/STOSW / REP STOSD/STOSW }
+    $AB:If HasPrefixF3 Then Begin
+         If HasPrefix66 Then OpRepStosW Else OpRepStosD;
+        End
+        Else Begin
+         If HasPrefix66 Then OpStosW Else OpStosD;
+        End;
+     { LODSB / REP LODSB }
+    $AC:If HasPrefixF3 Then OpRepLodsB Else OpLodsB;
+     { LODSD/LODSW / REP LODSD/LODSW }
+    $AD:If HasPrefixF3 Then Begin
+         If HasPrefix66 Then OpRepLodsW Else OpRepLodsD;
+        End
+        Else Begin
+         If HasPrefix66 Then OpLodsW Else OpLodsD;
+        End;
+     { SCASB / REPE SCASB / REPNE SCASB }
+    $AE:If HasPrefixF3 Then OpRepeScasB
+        Else If HasPrefixF2 Then OpRepneScasB
+        Else OpScasB;
+     { SCASD/SCASW / REPE/REPNE SCASD/SCASW }
+    $AF:If HasPrefixF3 Then Begin
+         If HasPrefix66 Then OpRepeScasW Else OpRepeScasD;
+        End
+        Else If HasPrefixF2 Then Begin
+         If HasPrefix66 Then OpRepneScasW Else OpRepneScasD;
+        End
+        Else Begin
+         If HasPrefix66 Then OpScasW Else OpScasD;
+        End;
+     { === MOV r8, imm8 ($B0-$B7) === }
+    $B0,$B1,$B2,$B3,$B4,$B5,$B6,$B7:
+     OpMovR8Imm8(OpCode-$B0);
+     { === MOV r32, imm32 ($B8-$BF) === }
+    $B8,$B9,$BA,$BB,$BC,$BD,$BE,$BF:
+     OpMovR32Imm32(OpCode-$B8);
+     { === Group 2 : shifts/rotates r/m8, imm8 ($C0) === }
+    $C0:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      4:OpShlRM8Imm;
+      5:OpShrRM8Imm;
+      6:OpShlRM8Imm; { SAL = SHL }
+      7:OpSarRM8Imm;
+      Else Begin
+       WriteLn('Run: opcode $C0 reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === Group 2 : shifts/rotates r/m32, imm8 ($C1) === }
+    $C1:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      4:OpShlRM32Imm;
+      5:OpShrRM32Imm;
+      6:OpShlRM32Imm; { SAL = SHL }
+      7:OpSarRM32Imm;
+      Else Begin
+       WriteLn('Run: opcode $C1 reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === RET imm16 ($C2) === }
+    $C2:OpRetImm16;
+     { === RET ($C3) === }
+    $C3:OpRet;
+     { === MOV r/m8, imm8 ($C6) === }
+    $C6:OpMovRM8Imm8;
+     { === MOV r/m32, imm32 ($C7) === }
+    $C7:OpMovRM32Imm32;
+     { === ENTER imm16, imm8 ($C8) === }
+    $C8:OpEnter;
+     { === LEAVE ($C9) === }
+    $C9:OpLeave;
+     { === INT3 ($CC) === }
+    $CC:OpInt3;
+     { === Group 2 : shifts/rotates r/m8, 1 ($D0) === }
+    $D0:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpRolRM8By1;
+      1:OpRorRM8By1;
+      2:OpRclRM8By1;
+      3:OpRcrRM8By1;
+      4:OpShlRM8By1;
+      5:OpShrRM8By1;
+      6:OpShlRM8By1; { SAL = SHL }
+      7:OpSarRM8By1;
+     End;
+    End;
+     { === Group 2 : shifts/rotates r/m32, 1 ($D1) === }
+    $D1:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpRolRM32By1;
+      1:OpRorRM32By1;
+      2:OpRclRM32By1;
+      3:OpRcrRM32By1;
+      4:OpShlRM32By1;
+      5:OpShrRM32By1;
+      6:OpShlRM32By1; { SAL = SHL }
+      7:OpSarRM32By1;
+     End;
+    End;
+     { === Group 2 : shifts/rotates r/m8, CL ($D2) === }
+    $D2:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpRolRM8ByCL;
+      1:OpRorRM8ByCL;
+      2:OpRclRM8ByCL;
+      3:OpRcrRM8ByCL;
+      4:OpShlRM8ByCL;
+      5:OpShrRM8ByCL;
+      6:OpShlRM8ByCL; { SAL = SHL }
+      7:OpSarRM8ByCL;
+     End;
+    End;
+     { === Group 2 : shifts/rotates r/m32, CL ($D3) === }
+    $D3:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpRolRM32ByCL;
+      1:OpRorRM32ByCL;
+      2:OpRclRM32ByCL;
+      3:OpRcrRM32ByCL;
+      4:OpShlRM32ByCL;
+      5:OpShrRM32ByCL;
+      6:OpShlRM32ByCL; { SAL = SHL }
+      7:OpSarRM32ByCL;
+     End;
+    End;
+     { === LOOPNE ($E0) === }
+    $E0:OpLoopne;
+     { === LOOPE ($E1) === }
+    $E1:OpLoope;
+     { === LOOP ($E2) === }
+    $E2:OpLoop;
+     { === JECXZ ($E3) === }
+    $E3:OpJecxz;
+     { === CALL near rel32 ($E8) === }
+    $E8:OpCallNear;
+     { === JMP near rel32 ($E9) === }
+    $E9:OpJmpNear;
+     { === JMP short rel8 ($EB) === }
+    $EB:OpJmpShort;
+     { === CMC ($F5) === }
+    $F5:OpCmc;
+     { === Group 3 : unary r/m8 ($F6) === }
+    $F6:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:Begin { TEST r/m8, imm8 }
+       DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+       If GrpIsMem Then GrpVal8:=ReadByte(GrpEff)
+       Else GrpVal8:=GetReg8(GrpRMF);
+       GrpImm8:=ReadByte(EIP);
+       Inc(EIP);
+       GrpRes8:=GrpVal8 and GrpImm8;
+       LogicFlags8(GrpRes8);
+      End;
+      2:OpNotRM8;
+      3:OpNegRM8;
+      4:OpMulRM8;
+      5:OpImulRM8;
+      6:OpDivRM8;
+      7:OpIdivRM8;
+      Else Begin
+       WriteLn('Run: opcode $F6 reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === Group 3 : unary r/m32 ($F7) === }
+    $F7:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:Begin { TEST r/m32, imm32 }
+       DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+       If GrpIsMem Then GrpVal32:=ReadDWord(GrpEff)
+       Else GrpVal32:=GetReg32(GrpRMF);
+       GrpImm32:=ReadDWord(EIP);
+       Inc(EIP,4);
+       GrpRes32:=GrpVal32 and GrpImm32;
+       LogicFlags32(GrpRes32);
+      End;
+      2:OpNotRM32;
+      3:OpNegRM32;
+      4:OpMulRM32;
+      5:OpImulRM32;
+      6:OpDivRM32;
+      7:OpIdivRM32;
+      Else Begin
+       WriteLn('Run: opcode $F7 reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === CLC ($F8) === }
+    $F8:OpClc;
+     { === STC ($F9) === }
+    $F9:OpStc;
+     { === CLD ($FC) === }
+    $FC:OpCld;
+     { === STD ($FD) === }
+    $FD:OpStd;
+     { === Group 4 : INC/DEC r/m8 ($FE) === }
+    $FE:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpIncRM8;
+      1:OpDecRM8;
+      Else Begin
+       WriteLn('Run: opcode $FE reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === Group 5 : INC/DEC/CALL/JMP/PUSH r/m32 ($FF) === }
+    $FF:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpIncRM32;
+      1:OpDecRM32;
+      2:OpCallRM32;
+      4:OpJmpRM32;
+      6:Begin { PUSH r/m32 }
+       DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+       If GrpIsMem Then Push32(ReadDWord(GrpEff))
+       Else Push32(GetReg32(GrpRMF));
+      End;
+      Else Begin
+       WriteLn('Run: opcode $FF reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+    Else Begin
+     WriteLn('Run: opcode $',HexStr(OpCode,2),
+             ' non implemente a EIP=$',HexStr(EIP-1,8));
+     EmuRunning:=False;
+    End;
+   End; { Case OpCode }
+  End; { Else }
+ End; { While EmuRunning }
 End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
