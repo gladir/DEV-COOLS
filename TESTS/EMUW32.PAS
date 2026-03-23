@@ -4828,7 +4828,7 @@ Begin
 End;
 
   { TODO 17 : Initialisation de la table des fichiers emules.
-    Marque tous les slots comme inactifs. }
+    Marque tous les emplacements comme inactifs. }
 Procedure InitEmuFiles;
 Var
  I:Integer;
@@ -4839,8 +4839,8 @@ Begin
  End;
 End;
 
-  { TODO 17 : Trouve un slot libre dans la table des fichiers.
-    Retourne l'index (0..MAX_EMU_FILES-1) ou -1 si aucun slot libre. }
+  { TODO 17 : Trouve un emplacement libre dans la table des fichiers.
+    Retourne l'index (0..MAX_EMU_FILES-1) ou -1 si aucun emplacement libre. }
 Function FindFreeFileSlot:Integer;
 Var
  I:Integer;
