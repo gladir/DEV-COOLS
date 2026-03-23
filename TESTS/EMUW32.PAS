@@ -105,7 +105,7 @@
       QueryPerformanceCounter, GetSystemInfo, GetVersion,
       GetVersionExA, Sleep, GetLastError, SetLastError.
 
-  21. Implementer l'emulation de KERNEL32.DLL - Synchronisation et
+  21. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Synchronisation et
       divers : GetCurrentDirectoryA, SetCurrentDirectoryA,
       FindFirstFileA, FindNextFileA, FindClose,
       GetTempPathA, GetTempFileNameA, MoveFileA, CopyFileA.
@@ -269,6 +269,14 @@ Const
  SYSTEMTIME_SIZE=16;
  SYSTEM_INFO_SIZE=36;
  OSVERSIONINFOA_SIZE=148;
+
+  { TODO 21 : Constantes pour l'emulation FindFirstFileA/FindNextFileA.
+    WIN32_FIND_DATAA_SIZE = 320 octets (attributs, dates, taille, noms).
+    MAX_EMU_FIND_HANDLES = nombre maximal de recherches simultanees.
+    EMU_FIND_HANDLE_BASE = base des handles de recherche emules. }
+ WIN32_FIND_DATAA_SIZE=320;
+ MAX_EMU_FIND_HANDLES=8;
+ EMU_FIND_HANDLE_BASE=$100;
 
 Type
   { TODO 2 : Registres 32 bits du 80386 }
@@ -465,6 +473,11 @@ Var
 
   { TODO 20 : Code de la derniere erreur Win32 pour Get/SetLastError. }
  EmuLastError:LongInt;
+
+  { TODO 21 : Table des recherches FindFirstFileA/FindNextFileA.
+    Chaque slot contient un SearchRec actif pour iterer les fichiers. }
+ EmuFindActive:Array[0..MAX_EMU_FIND_HANDLES-1] of Boolean;
+ EmuFindSR:Array[0..MAX_EMU_FIND_HANDLES-1] of SearchRec;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -4905,6 +4918,52 @@ Begin
   End;
 End;
 
+  { TODO 21 : Initialisation de la table des recherches FindFirst/FindNext. }
+Procedure InitEmuFind;
+Var
+ I:Integer;
+Begin
+ For I:=0 to MAX_EMU_FIND_HANDLES-1 do
+  EmuFindActive[I]:=False;
+End;
+
+  { TODO 21 : Trouve un emplacement libre dans la table des recherches.
+    Retourne l'index (0..MAX_EMU_FIND_HANDLES-1) ou -1 si aucun. }
+Function FindFreeFindSlot:Integer;
+Var
+ I:Integer;
+Begin
+ FindFreeFindSlot:=-1;
+ For I:=0 to MAX_EMU_FIND_HANDLES-1 do
+  If Not EmuFindActive[I] Then Begin
+   FindFreeFindSlot:=I;
+   Exit;
+  End;
+End;
+
+  { TODO 21 : Ecrit une structure WIN32_FIND_DATAA dans la memoire emulée
+    a partir d'un SearchRec du DOS. Remplit dwFileAttributes, nFileSizeLow,
+    cFileName. Les champs FILETIME sont mis a zero (non supportes). }
+Procedure WriteFindDataToMem(Addr:LongInt;Var SR:SearchRec);
+Var
+ I:Integer;
+ FN:String;
+Begin
+  { Remplir la structure de zeros d'abord }
+ For I:=0 to WIN32_FIND_DATAA_SIZE-1 do
+  WriteByte(Addr+LongInt(I),0);
+  { dwFileAttributes (offset 0) }
+ WriteDWord(Addr,LongInt(SR.Attr));
+  { nFileSizeHigh (offset 28) = 0 }
+  { nFileSizeLow (offset 32) }
+ WriteDWord(Addr+32,SR.Size);
+  { cFileName (offset 44, MAX_PATH=260 chars) }
+ FN:=SR.Name;
+ For I:=1 to Length(FN) do
+  WriteByte(Addr+44+LongInt(I-1),Byte(FN[I]));
+ WriteByte(Addr+44+LongInt(Length(FN)),0);
+End;
+
   { TODO 15 : Initialisation des donnees du processus emule.
     Ecrit la chaine de commande ASCII et Unicode, et la structure
     STARTUPINFOA dans la zone ProcessDataBase ($D00000). }
@@ -4972,6 +5031,8 @@ Begin
  InitEmuFiles;
   { TODO 20 : Initialiser le code d'erreur Win32 }
  EmuLastError:=0;
+  { TODO 21 : Initialiser la table des recherches FindFirst/FindNext }
+ InitEmuFind;
 End;
 
   { TODO 15 : Emulation de GetStdHandle (KERNEL32.DLL).
@@ -6463,6 +6524,353 @@ Begin
  Regs.ESP:=Regs.ESP+4;
 End;
 
+  { TODO 21 : Emulation de GetCurrentDirectoryA (KERNEL32.DLL).
+    DWORD WINAPI GetCurrentDirectoryA(DWORD nBufferLength, LPSTR lpBuffer);
+    Convention STDCALL : 2 parametres (8 octets).
+    Retourne la longueur du repertoire courant (sans le \0 terminal). }
+Procedure EmuGetCurrentDirectoryA;
+Var
+ nBufLen,lpBuffer:LongInt;
+ Dir:String;
+ I:Integer;
+Begin
+ nBufLen:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ GetDir(0,Dir);
+ If LongInt(Length(Dir)+1)>nBufLen Then Begin
+    { Buffer trop petit : retourner la taille necessaire }
+  Regs.EAX:=LongInt(Length(Dir)+1);
+ End
+ Else Begin
+  For I:=1 to Length(Dir) do
+   WriteByte(lpBuffer+LongInt(I-1),Byte(Dir[I]));
+  WriteByte(lpBuffer+LongInt(Length(Dir)),0);
+  Regs.EAX:=LongInt(Length(Dir));
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 21 : Emulation de SetCurrentDirectoryA (KERNEL32.DLL).
+    BOOL WINAPI SetCurrentDirectoryA(LPCSTR lpPathName);
+    Convention STDCALL : 1 parametre (4 octets).
+    Change le repertoire courant. }
+Procedure EmuSetCurrentDirectoryA;
+Var
+ lpPathName:LongInt;
+ Dir:String;
+Begin
+ lpPathName:=ReadDWord(Regs.ESP+4);
+ Dir:=ReadStringFromMem(lpPathName);
+ {$I-}ChDir(Dir);{$I+}
+ If IOResult=0 Then
+  Regs.EAX:=1  { TRUE }
+ Else
+  Regs.EAX:=0; { FALSE }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 21 : Emulation de FindFirstFileA (KERNEL32.DLL).
+    HANDLE WINAPI FindFirstFileA(LPCSTR lpFileName,
+                                  LPWIN32_FIND_DATAA lpFindFileData);
+    Convention STDCALL : 2 parametres (8 octets).
+    Demarre une recherche de fichiers. Retourne un handle de recherche
+    ou INVALID_HANDLE_VALUE si aucun fichier trouve. }
+Procedure EmuFindFirstFileA;
+Var
+ lpFileName,lpFindData:LongInt;
+ Pattern:String;
+ Slot:Integer;
+Begin
+ lpFileName:=ReadDWord(Regs.ESP+4);
+ lpFindData:=ReadDWord(Regs.ESP+8);
+ Pattern:=ReadStringFromMem(lpFileName);
+ Slot:=FindFreeFindSlot;
+ If Slot<0 Then Begin
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+  Regs.ESP:=Regs.ESP+8;
+  Exit;
+ End;
+ {$I-}FindFirst(Pattern,AnyFile,EmuFindSR[Slot]);{$I+}
+ If DosError=0 Then Begin
+  EmuFindActive[Slot]:=True;
+  WriteFindDataToMem(lpFindData,EmuFindSR[Slot]);
+  Regs.EAX:=LongInt(EMU_FIND_HANDLE_BASE+Slot);
+ End
+ Else Begin
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+  EmuLastError:=2; { ERROR_FILE_NOT_FOUND }
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 21 : Emulation de FindNextFileA (KERNEL32.DLL).
+    BOOL WINAPI FindNextFileA(HANDLE hFindFile,
+                               LPWIN32_FIND_DATAA lpFindFileData);
+    Convention STDCALL : 2 parametres (8 octets).
+    Continue une recherche de fichiers. }
+Procedure EmuFindNextFileA;
+Var
+ hFind,lpFindData:LongInt;
+ Slot:Integer;
+Begin
+ hFind:=ReadDWord(Regs.ESP+4);
+ lpFindData:=ReadDWord(Regs.ESP+8);
+ Slot:=hFind-EMU_FIND_HANDLE_BASE;
+ If(Slot>=0)and(Slot<MAX_EMU_FIND_HANDLES)and EmuFindActive[Slot] Then Begin
+  {$I-}FindNext(EmuFindSR[Slot]);{$I+}
+  If DosError=0 Then Begin
+   WriteFindDataToMem(lpFindData,EmuFindSR[Slot]);
+   Regs.EAX:=1; { TRUE }
+  End
+  Else Begin
+   Regs.EAX:=0; { FALSE }
+   EmuLastError:=18; { ERROR_NO_MORE_FILES }
+  End;
+ End
+ Else Begin
+  Regs.EAX:=0; { FALSE }
+  EmuLastError:=6; { ERROR_INVALID_HANDLE }
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 21 : Emulation de FindClose (KERNEL32.DLL).
+    BOOL WINAPI FindClose(HANDLE hFindFile);
+    Convention STDCALL : 1 parametre (4 octets).
+    Ferme un handle de recherche. }
+Procedure EmuFindCloseProc;
+Var
+ hFind:LongInt;
+ Slot:Integer;
+Begin
+ hFind:=ReadDWord(Regs.ESP+4);
+ Slot:=hFind-EMU_FIND_HANDLE_BASE;
+ If(Slot>=0)and(Slot<MAX_EMU_FIND_HANDLES)and EmuFindActive[Slot] Then Begin
+  {$I-}FindClose(EmuFindSR[Slot]);{$I+}
+  If IOResult=0 Then;
+  EmuFindActive[Slot]:=False;
+  Regs.EAX:=1; { TRUE }
+ End
+ Else Begin
+  Regs.EAX:=0; { FALSE }
+  EmuLastError:=6; { ERROR_INVALID_HANDLE }
+ End;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 21 : Emulation de GetTempPathA (KERNEL32.DLL).
+    DWORD WINAPI GetTempPathA(DWORD nBufferLength, LPSTR lpBuffer);
+    Convention STDCALL : 2 parametres (8 octets).
+    Retourne le chemin du repertoire temporaire. }
+Procedure EmuGetTempPathA;
+Var
+ nBufLen,lpBuffer:LongInt;
+ TmpDir:String;
+ I:Integer;
+Begin
+ nBufLen:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ TmpDir:=GetEnv('TEMP');
+ If TmpDir='' Then TmpDir:=GetEnv('TMP');
+ If TmpDir='' Then TmpDir:='.';
+  { Ajouter un separateur final si absent }
+ If(Length(TmpDir)>0)and(TmpDir[Length(TmpDir)]<>'\')and
+   (TmpDir[Length(TmpDir)]<>'/')Then
+  TmpDir:=TmpDir+'\';
+ If LongInt(Length(TmpDir)+1)>nBufLen Then Begin
+  Regs.EAX:=LongInt(Length(TmpDir)+1);
+ End
+ Else Begin
+  For I:=1 to Length(TmpDir) do
+   WriteByte(lpBuffer+LongInt(I-1),Byte(TmpDir[I]));
+  WriteByte(lpBuffer+LongInt(Length(TmpDir)),0);
+  Regs.EAX:=LongInt(Length(TmpDir));
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 21 : Emulation de GetTempFileNameA (KERNEL32.DLL).
+    UINT WINAPI GetTempFileNameA(LPCSTR lpPathName,
+                                  LPCSTR lpPrefixString,
+                                  UINT uUnique,
+                                  LPSTR lpTempFileName);
+    Convention STDCALL : 4 parametres (16 octets).
+    Genere un nom de fichier temporaire unique. }
+Procedure EmuGetTempFileNameA;
+Var
+ lpPath,lpPrefix,lpTempFN:LongInt;
+ uUnique:LongInt;
+ PathStr,PrefixStr,TempName:String;
+ Unique:LongInt;
+ I:Integer;
+ F:File;
+ HexPart:String;
+Begin
+ lpPath:=ReadDWord(Regs.ESP+4);
+ lpPrefix:=ReadDWord(Regs.ESP+8);
+ uUnique:=ReadDWord(Regs.ESP+12);
+ lpTempFN:=ReadDWord(Regs.ESP+16);
+ PathStr:=ReadStringFromMem(lpPath);
+ PrefixStr:=ReadStringFromMem(lpPrefix);
+  { Tronquer le prefixe a 3 caracteres }
+ If Length(PrefixStr)>3 Then PrefixStr:=Copy(PrefixStr,1,3);
+ If uUnique<>0 Then
+  Unique:=uUnique
+ Else
+  Unique:=LongInt(Length(PathStr)*256+Length(PrefixStr)) xor $1234;
+  { Construire le nom : path + prefix + hex(unique) + .tmp }
+ HexPart:=HexStr(Unique and $FFFF,4);
+ TempName:=PathStr;
+ If(Length(TempName)>0)and(TempName[Length(TempName)]<>'\')and
+   (TempName[Length(TempName)]<>'/')Then
+  TempName:=TempName+'\';
+ TempName:=TempName+PrefixStr+HexPart+'.tmp';
+ If uUnique=0 Then Begin
+    { S'assurer que le fichier est unique en incrementant }
+  While Unique<$FFFF do Begin
+   HexPart:=HexStr(Unique and $FFFF,4);
+   TempName:=PathStr;
+   If(Length(TempName)>0)and(TempName[Length(TempName)]<>'\')and
+     (TempName[Length(TempName)]<>'/')Then
+    TempName:=TempName+'\';
+   TempName:=TempName+PrefixStr+HexPart+'.tmp';
+   {$I-}Assign(F,TempName);
+   Reset(F,1);{$I+}
+   If IOResult<>0 Then Begin
+      { Fichier n'existe pas : creer le fichier vide }
+    {$I-}Rewrite(F,1);{$I+}
+    If IOResult=0 Then Begin
+     {$I-}Close(F);{$I+}
+     If IOResult=0 Then;
+    End;
+    Break;
+   End;
+   {$I-}Close(F);{$I+}
+   If IOResult=0 Then;
+   Inc(Unique);
+  End;
+ End;
+  { Ecrire le nom dans le buffer }
+ For I:=1 to Length(TempName) do
+  WriteByte(lpTempFN+LongInt(I-1),Byte(TempName[I]));
+ WriteByte(lpTempFN+LongInt(Length(TempName)),0);
+ Regs.EAX:=Unique and $FFFF;
+  { Nettoyer la pile : 4 parametres }
+ Regs.ESP:=Regs.ESP+16;
+End;
+
+  { TODO 21 : Emulation de MoveFileA (KERNEL32.DLL).
+    BOOL WINAPI MoveFileA(LPCSTR lpExistingFileName,
+                           LPCSTR lpNewFileName);
+    Convention STDCALL : 2 parametres (8 octets).
+    Deplace (renomme) un fichier. }
+Procedure EmuMoveFileA;
+Var
+ lpExisting,lpNew:LongInt;
+ OldName,NewName:String;
+ F:File;
+Begin
+ lpExisting:=ReadDWord(Regs.ESP+4);
+ lpNew:=ReadDWord(Regs.ESP+8);
+ OldName:=ReadStringFromMem(lpExisting);
+ NewName:=ReadStringFromMem(lpNew);
+ {$I-}Assign(F,OldName);
+ Rename(F,NewName);{$I+}
+ If IOResult=0 Then
+  Regs.EAX:=1  { TRUE }
+ Else
+  Regs.EAX:=0; { FALSE }
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 21 : Emulation de CopyFileA (KERNEL32.DLL).
+    BOOL WINAPI CopyFileA(LPCSTR lpExistingFileName,
+                           LPCSTR lpNewFileName,
+                           BOOL bFailIfExists);
+    Convention STDCALL : 3 parametres (12 octets).
+    Copie un fichier. Si bFailIfExists<>0 et que le fichier
+    destination existe deja, echoue. }
+Procedure EmuCopyFileA;
+Var
+ lpExisting,lpNew,bFail:LongInt;
+ SrcName,DstName:String;
+ Src,Dst:File;
+ CopyBuf:Array[0..511] of Byte;
+ BytesRead:Word;
+ IORes:Integer;
+Begin
+ lpExisting:=ReadDWord(Regs.ESP+4);
+ lpNew:=ReadDWord(Regs.ESP+8);
+ bFail:=ReadDWord(Regs.ESP+12);
+ SrcName:=ReadStringFromMem(lpExisting);
+ DstName:=ReadStringFromMem(lpNew);
+  { Ouvrir le fichier source }
+ {$I-}Assign(Src,SrcName);
+ Reset(Src,1);{$I+}
+ IORes:=IOResult;
+ If IORes<>0 Then Begin
+  Regs.EAX:=0; { FALSE }
+  Regs.ESP:=Regs.ESP+12;
+  Exit;
+ End;
+  { Si bFailIfExists, verifier que la destination n'existe pas }
+ If bFail<>0 Then Begin
+  {$I-}Assign(Dst,DstName);
+  Reset(Dst,1);{$I+}
+  IORes:=IOResult;
+  If IORes=0 Then Begin
+    { Le fichier existe deja : echouer }
+   {$I-}Close(Dst);{$I+}
+   If IOResult=0 Then;
+   {$I-}Close(Src);{$I+}
+   If IOResult=0 Then;
+   Regs.EAX:=0; { FALSE }
+   Regs.ESP:=Regs.ESP+12;
+   Exit;
+  End;
+ End;
+  { Creer/ecraser le fichier destination }
+ {$I-}Assign(Dst,DstName);
+ Rewrite(Dst,1);{$I+}
+ IORes:=IOResult;
+ If IORes<>0 Then Begin
+  {$I-}Close(Src);{$I+}
+  If IOResult=0 Then;
+  Regs.EAX:=0; { FALSE }
+  Regs.ESP:=Regs.ESP+12;
+  Exit;
+ End;
+  { Copier le contenu }
+ Repeat
+  {$I-}BlockRead(Src,CopyBuf,SizeOf(CopyBuf),BytesRead);{$I+}
+  If IOResult<>0 Then Begin
+   BytesRead:=0;
+   Break;
+  End;
+  If BytesRead>0 Then Begin
+   {$I-}BlockWrite(Dst,CopyBuf,BytesRead);{$I+}
+   If IOResult<>0 Then Begin
+    BytesRead:=0;
+    Break;
+   End;
+  End;
+ Until BytesRead=0;
+ {$I-}Close(Src);{$I+}
+ If IOResult=0 Then;
+ {$I-}Close(Dst);{$I+}
+ If IOResult=0 Then;
+ Regs.EAX:=1; { TRUE }
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
   { TODO 15 : Dispatche un appel a une fonction de KERNEL32.DLL.
     Recoit l'index de l'entree d'importation dans ImportEntries
     et appelle la procedure d'emulation correspondante.
@@ -6584,6 +6992,25 @@ Begin
   EmuGetLastError
  Else If StrIComp(FName,'SetLastError') Then
   EmuSetLastError
+  { TODO 21 : Synchronisation et divers }
+ Else If StrIComp(FName,'GetCurrentDirectoryA') Then
+  EmuGetCurrentDirectoryA
+ Else If StrIComp(FName,'SetCurrentDirectoryA') Then
+  EmuSetCurrentDirectoryA
+ Else If StrIComp(FName,'FindFirstFileA') Then
+  EmuFindFirstFileA
+ Else If StrIComp(FName,'FindNextFileA') Then
+  EmuFindNextFileA
+ Else If StrIComp(FName,'FindClose') Then
+  EmuFindCloseProc
+ Else If StrIComp(FName,'GetTempPathA') Then
+  EmuGetTempPathA
+ Else If StrIComp(FName,'GetTempFileNameA') Then
+  EmuGetTempFileNameA
+ Else If StrIComp(FName,'MoveFileA') Then
+  EmuMoveFileA
+ Else If StrIComp(FName,'CopyFileA') Then
+  EmuCopyFileA
  Else Begin
   WriteLn('KERNEL32: fonction non emulée: ',FName);
   DispatchKernel32:=False;
