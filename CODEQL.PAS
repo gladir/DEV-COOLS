@@ -288,6 +288,19 @@
          detection des fichiers .kt et .kts,
          integration dans database create avec --language=kotlin.
          [IMPLEMENTE]
+ 36. Implementer le support du langage Oberon : lexeur Oberon
+     (mots-cles Oberon ARRAY/BEGIN/BY/CASE/CONST/DIV/DO/ELSE/
+     ELSIF/END/EXIT/FALSE/FOR/IF/IMPORT/IN/IS/LOOP/MOD/MODULE/
+     NIL/OF/OR/POINTER/PROCEDURE/RECORD/REPEAT/RETURN/SET/THEN/
+     TO/TRUE/TYPE/UNTIL/VAR/WHILE/WITH),
+     parseur Oberon (MODULE, IMPORT, CONST, TYPE, VAR,
+     PROCEDURE, BEGIN/END, IF/THEN/ELSIF/ELSE,
+     WHILE/DO, REPEAT/UNTIL, FOR/TO/BY/DO,
+     CASE/OF, WITH/DO, LOOP, EXIT, RETURN,
+     RECORD, ARRAY, POINTER, SET),
+     detection des fichiers .mod et .ob2,
+     integration dans database create avec --language=oberon.
+     [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -644,7 +657,16 @@ Type
     SNK_KT_IF, SNK_KT_WHEN,
     SNK_KT_FOR, SNK_KT_WHILE,
     SNK_KT_DO_WHILE, SNK_KT_TRY_CATCH,
-    SNK_KT_RETURN, SNK_KT_INIT
+    SNK_KT_RETURN, SNK_KT_INIT,
+    { Oberon node kinds }
+    SNK_OB_MODULE, SNK_OB_IMPORT,
+    SNK_OB_CONST_DECL, SNK_OB_TYPE_DECL,
+    SNK_OB_VAR_DECL, SNK_OB_PROC_DECL,
+    SNK_OB_IF, SNK_OB_WHILE,
+    SNK_OB_REPEAT, SNK_OB_FOR,
+    SNK_OB_CASE, SNK_OB_WITH,
+    SNK_OB_LOOP, SNK_OB_RETURN,
+    SNK_OB_RECORD, SNK_OB_ASSIGN
   );
 
   TSrcASTNode = Record
@@ -1383,7 +1405,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1660,8 +1682,8 @@ Begin
      (Opts.Language <> 'go') And (Opts.Language <> 'java') And
      (Opts.Language <> 'javascript') And (Opts.Language <> 'python') And
      (Opts.Language <> 'ruby') And (Opts.Language <> 'swift') And
-     (Opts.Language <> 'kotlin') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift ou kotlin)');
+     (Opts.Language <> 'kotlin') And (Opts.Language <> 'oberon') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin ou oberon)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -5971,6 +5993,23 @@ Begin
     SNK_KT_TRY_CATCH          : SrcNodeKindName := 'KT_TRY_CATCH';
     SNK_KT_RETURN             : SrcNodeKindName := 'KT_RETURN';
     SNK_KT_INIT               : SrcNodeKindName := 'KT_INIT';
+    { Oberon node kinds }
+    SNK_OB_MODULE             : SrcNodeKindName := 'OB_MODULE';
+    SNK_OB_IMPORT             : SrcNodeKindName := 'OB_IMPORT';
+    SNK_OB_CONST_DECL         : SrcNodeKindName := 'OB_CONST_DECL';
+    SNK_OB_TYPE_DECL          : SrcNodeKindName := 'OB_TYPE_DECL';
+    SNK_OB_VAR_DECL           : SrcNodeKindName := 'OB_VAR_DECL';
+    SNK_OB_PROC_DECL          : SrcNodeKindName := 'OB_PROC_DECL';
+    SNK_OB_IF                 : SrcNodeKindName := 'OB_IF';
+    SNK_OB_WHILE              : SrcNodeKindName := 'OB_WHILE';
+    SNK_OB_REPEAT             : SrcNodeKindName := 'OB_REPEAT';
+    SNK_OB_FOR                : SrcNodeKindName := 'OB_FOR';
+    SNK_OB_CASE               : SrcNodeKindName := 'OB_CASE';
+    SNK_OB_WITH               : SrcNodeKindName := 'OB_WITH';
+    SNK_OB_LOOP               : SrcNodeKindName := 'OB_LOOP';
+    SNK_OB_RETURN             : SrcNodeKindName := 'OB_RETURN';
+    SNK_OB_RECORD             : SrcNodeKindName := 'OB_RECORD';
+    SNK_OB_ASSIGN             : SrcNodeKindName := 'OB_ASSIGN';
   Else
     SrcNodeKindName := '???';
   End;
@@ -25717,6 +25756,959 @@ End;
 
 { ---- Fin TODO 35 --------------------------------------------- }
 
+{ ============================================================
+  TODO 36 - SUPPORT DU LANGAGE OBERON [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsOberonKeyword : tester si un mot est un mot-cle Oberon - }
+
+Function IsOberonKeyword(Const W : TString) : Boolean;
+Var U : TString;
+    I : Integer;
+Begin
+  U := '';
+  For I := 1 To Length(W) Do
+    If (W[I] >= 'a') And (W[I] <= 'z') Then
+      U := U + Chr(Ord(W[I]) - 32)
+    Else
+      U := U + W[I];
+  IsOberonKeyword :=
+    (U = 'ARRAY')     Or (U = 'BEGIN')     Or (U = 'BY')        Or
+    (U = 'CASE')      Or (U = 'CONST')     Or (U = 'DIV')       Or
+    (U = 'DO')        Or (U = 'ELSE')      Or (U = 'ELSIF')     Or
+    (U = 'END')       Or (U = 'EXIT')      Or (U = 'FALSE')     Or
+    (U = 'FOR')       Or (U = 'IF')        Or (U = 'IMPORT')    Or
+    (U = 'IN')        Or (U = 'IS')        Or (U = 'LOOP')      Or
+    (U = 'MOD')       Or (U = 'MODULE')    Or (U = 'NIL')       Or
+    (U = 'OF')        Or (U = 'OR')        Or (U = 'POINTER')   Or
+    (U = 'PROCEDURE') Or (U = 'RECORD')    Or (U = 'REPEAT')    Or
+    (U = 'RETURN')    Or (U = 'SET')       Or (U = 'THEN')      Or
+    (U = 'TO')        Or (U = 'TRUE')      Or (U = 'TYPE')      Or
+    (U = 'UNTIL')     Or (U = 'VAR')       Or (U = 'WHILE')     Or
+    (U = 'WITH');
+End;
+
+{ ---- Utilitaires du lexeur Oberon ----------------------------- }
+
+{ ObIsAlpha : lettre ou underscore }
+Function ObIsAlpha(Ch : Char) : Boolean;
+Begin
+  ObIsAlpha := ((Ch >= 'A') And (Ch <= 'Z')) Or
+               ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_');
+End;
+
+{ ObIsDigit : chiffre decimal }
+Function ObIsDigit(Ch : Char) : Boolean;
+Begin
+  ObIsDigit := (Ch >= '0') And (Ch <= '9');
+End;
+
+{ ObIsAlNum : lettre, chiffre ou underscore }
+Function ObIsAlNum(Ch : Char) : Boolean;
+Begin
+  ObIsAlNum := ObIsAlpha(Ch) Or ObIsDigit(Ch);
+End;
+
+{ ObIsHexDigit : chiffre hexadecimal }
+Function ObIsHexDigit(Ch : Char) : Boolean;
+Begin
+  ObIsHexDigit := ObIsDigit(Ch) Or
+    ((Ch >= 'A') And (Ch <= 'F')) Or
+    ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+{ ---- ObLexInit : initialiser le lexeur Oberon ----------------- }
+
+Procedure ObLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- ObLexNextToken : scanner le prochain token Oberon -------- }
+
+Procedure ObLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Depth    : Integer;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      Exit;
+    End;
+
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Scanning := False;
+
+    { Commentaire Oberon (* ... *) avec imbrication }
+    If (Ch = '(') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      Inc(SrcColNo, 2);
+      Depth := 1;
+      While Depth > 0 Do
+      Begin
+        If SrcColNo > Length(SrcLine) Then
+        Begin
+          SrcLexNextLine;
+          If SrcEOF Then Break;
+        End
+        Else If (SrcLine[SrcColNo] = '(') And (SrcColNo < Length(SrcLine))
+                And (SrcLine[SrcColNo + 1] = '*') Then
+        Begin
+          Inc(Depth);
+          Inc(SrcColNo, 2);
+        End
+        Else If (SrcLine[SrcColNo] = '*') And (SrcColNo < Length(SrcLine))
+                And (SrcLine[SrcColNo + 1] = ')') Then
+        Begin
+          Dec(Depth);
+          Inc(SrcColNo, 2);
+        End
+        Else
+          Inc(SrcColNo);
+      End;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Identifiant ou mot-cle }
+    If ObIsAlpha(Ch) Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And ObIsAlNum(SrcLine[SrcColNo]) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If IsOberonKeyword(S) Then
+        SrcToken.Kind := STK_KEYWORD
+      Else
+        SrcToken.Kind := STK_IDENT;
+      SrcToken.Val := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Nombre (decimal ou hexadecimal avec suffixe H) }
+    If ObIsDigit(Ch) Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And ObIsHexDigit(SrcLine[SrcColNo]) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      { Suffixe H pour hexadecimal }
+      If (SrcColNo <= Length(SrcLine)) And
+         ((SrcLine[SrcColNo] = 'H') Or (SrcLine[SrcColNo] = 'h')) Then
+      Begin
+        S := S + 'H';
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_INTEGER;
+        SrcToken.Val  := S;
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      { Suffixe X pour caractere }
+      If (SrcColNo <= Length(SrcLine)) And
+         ((SrcLine[SrcColNo] = 'X') Or (SrcLine[SrcColNo] = 'x')) Then
+      Begin
+        S := S + 'X';
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_STRING;
+        SrcToken.Val  := S;
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      { Partie decimale }
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '.') Then
+      Begin
+        S := S + '.';
+        Inc(SrcColNo);
+        While (SrcColNo <= Length(SrcLine)) And ObIsDigit(SrcLine[SrcColNo]) Do
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        { Exposant E/D }
+        If (SrcColNo <= Length(SrcLine)) And
+           ((SrcLine[SrcColNo] = 'E') Or (SrcLine[SrcColNo] = 'D') Or
+            (SrcLine[SrcColNo] = 'e') Or (SrcLine[SrcColNo] = 'd')) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          If (SrcColNo <= Length(SrcLine)) And
+             ((SrcLine[SrcColNo] = '+') Or (SrcLine[SrcColNo] = '-')) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          While (SrcColNo <= Length(SrcLine)) And ObIsDigit(SrcLine[SrcColNo]) Do
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+      End;
+      SrcToken.Kind := STK_INTEGER;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaine double guillemets "..." }
+    If Ch = '"' Then
+    Begin
+      Inc(SrcColNo);
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] <> '"') Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If SrcColNo <= Length(SrcLine) Then
+        Inc(SrcColNo); { skip closing " }
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaine simple guillemets '...' }
+    If Ch = '''' Then
+    Begin
+      Inc(SrcColNo);
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] <> '''') Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If SrcColNo <= Length(SrcLine) Then
+        Inc(SrcColNo); { skip closing ' }
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs multi-caracteres }
+
+    { := affectation }
+    If (Ch = ':') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := ':=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    { <= >= # .. }
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '<=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '>=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '.') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '.') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '..';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    { Operateur ou ponctuation simple }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- ObConsume : consommer un token Oberon -------------------- }
+
+Procedure ObConsume;
+Begin
+  ObLexNextToken;
+End;
+
+{ ---- ObUpperVal : renvoyer le token en majuscules ------------- }
+
+Function ObUpperVal : TString;
+Var R : TString;
+    I : Integer;
+Begin
+  R := '';
+  For I := 1 To Length(SrcToken.Val) Do
+    If (SrcToken.Val[I] >= 'a') And (SrcToken.Val[I] <= 'z') Then
+      R := R + Chr(Ord(SrcToken.Val[I]) - 32)
+    Else
+      R := R + SrcToken.Val[I];
+  ObUpperVal := R;
+End;
+
+{ ---- ObSkipBlock : sauter un bloc BEGIN..END ou un seul statement }
+
+Procedure ObSkipStatementSeq; Forward;
+
+Procedure ObSkipBlock;
+Var UV : TString;
+    Depth : Integer;
+Begin
+  UV := ObUpperVal;
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'BEGIN') Then
+  Begin
+    ObConsume;
+    ObSkipStatementSeq;
+    UV := ObUpperVal;
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+      ObConsume;
+  End;
+End;
+
+{ ---- ObSkipType : sauter une declaration de type -------------- }
+
+Procedure ObSkipType;
+Var UV : TString;
+    Depth : Integer;
+Begin
+  UV := ObUpperVal;
+  { ARRAY ... OF Type }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'ARRAY') Then
+  Begin
+    ObConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And (ObUpperVal = 'OF')) Do
+      ObConsume;
+    If SrcToken.Kind <> STK_EOF Then ObConsume;
+    ObSkipType;
+    Exit;
+  End;
+  { RECORD ... END }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'RECORD') Then
+  Begin
+    Depth := 1;
+    ObConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+    Begin
+      UV := ObUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And
+         ((UV = 'RECORD') Or (UV = 'BEGIN')) Then
+        Inc(Depth)
+      Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+        Dec(Depth);
+      If Depth > 0 Then ObConsume;
+    End;
+    If (SrcToken.Kind = STK_KEYWORD) And (ObUpperVal = 'END') Then
+      ObConsume;
+    Exit;
+  End;
+  { POINTER TO Type }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'POINTER') Then
+  Begin
+    ObConsume;
+    UV := ObUpperVal;
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'TO') Then
+      ObConsume;
+    ObSkipType;
+    Exit;
+  End;
+  { SET }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'SET') Then
+  Begin
+    ObConsume;
+    Exit;
+  End;
+  { PROCEDURE type }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'PROCEDURE') Then
+  Begin
+    ObConsume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+    Begin
+      Depth := 1;
+      ObConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+          Inc(Depth)
+        Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+          Dec(Depth);
+        If Depth > 0 Then ObConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+        ObConsume;
+    End;
+    { Return type : Type }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+    Begin
+      ObConsume;
+      ObSkipType;
+    End;
+    Exit;
+  End;
+  { Qualified identifier or simple type name }
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    ObConsume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '.') Then
+    Begin
+      ObConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+        ObConsume;
+    End;
+  End;
+End;
+
+{ ---- ObSkipStatementSeq : sauter une sequence de statements --- }
+
+Procedure ObSkipStatementSeq;
+Var UV : TString;
+    Depth : Integer;
+Begin
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    UV := ObUpperVal;
+    { Statement terminators }
+    If (SrcToken.Kind = STK_KEYWORD) And
+       ((UV = 'END') Or (UV = 'ELSE') Or (UV = 'ELSIF') Or
+        (UV = 'UNTIL')) Then
+      Exit;
+    { Skip semicolons }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+    Begin
+      ObConsume;
+      Continue;
+    End;
+    { IF ... THEN ... ELSIF ... ELSE ... END }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'IF') Then
+    Begin
+      ObConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_KEYWORD) And (ObUpperVal = 'THEN')) Do
+        ObConsume;
+      If SrcToken.Kind <> STK_EOF Then ObConsume; { THEN }
+      ObSkipStatementSeq;
+      UV := ObUpperVal;
+      While (SrcToken.Kind = STK_KEYWORD) And (UV = 'ELSIF') Do
+      Begin
+        ObConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_KEYWORD) And (ObUpperVal = 'THEN')) Do
+          ObConsume;
+        If SrcToken.Kind <> STK_EOF Then ObConsume; { THEN }
+        ObSkipStatementSeq;
+        UV := ObUpperVal;
+      End;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'ELSE') Then
+      Begin
+        ObConsume;
+        ObSkipStatementSeq;
+        UV := ObUpperVal;
+      End;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+        ObConsume;
+      Continue;
+    End;
+    { WHILE ... DO ... END }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'WHILE') Then
+    Begin
+      ObConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_KEYWORD) And (ObUpperVal = 'DO')) Do
+        ObConsume;
+      If SrcToken.Kind <> STK_EOF Then ObConsume; { DO }
+      ObSkipStatementSeq;
+      UV := ObUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+        ObConsume;
+      Continue;
+    End;
+    { REPEAT ... UNTIL }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'REPEAT') Then
+    Begin
+      ObConsume;
+      ObSkipStatementSeq;
+      UV := ObUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'UNTIL') Then
+      Begin
+        ObConsume;
+        { Skip condition }
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) And
+              Not ((SrcToken.Kind = STK_KEYWORD) And
+                   ((ObUpperVal = 'END') Or (ObUpperVal = 'ELSE') Or
+                    (ObUpperVal = 'ELSIF') Or (ObUpperVal = 'UNTIL'))) Do
+          ObConsume;
+      End;
+      Continue;
+    End;
+    { FOR ... TO ... BY ... DO ... END }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'FOR') Then
+    Begin
+      ObConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_KEYWORD) And (ObUpperVal = 'DO')) Do
+        ObConsume;
+      If SrcToken.Kind <> STK_EOF Then ObConsume; { DO }
+      ObSkipStatementSeq;
+      UV := ObUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+        ObConsume;
+      Continue;
+    End;
+    { CASE ... OF ... END }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'CASE') Then
+    Begin
+      ObConsume;
+      Depth := 1;
+      While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+      Begin
+        UV := ObUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And
+           ((UV = 'CASE') Or (UV = 'IF') Or (UV = 'WHILE') Or
+            (UV = 'FOR') Or (UV = 'LOOP') Or (UV = 'WITH') Or
+            (UV = 'BEGIN')) Then
+          Inc(Depth)
+        Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+          Dec(Depth);
+        If Depth > 0 Then ObConsume;
+      End;
+      If (SrcToken.Kind = STK_KEYWORD) And (ObUpperVal = 'END') Then
+        ObConsume;
+      Continue;
+    End;
+    { WITH ... DO ... END }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'WITH') Then
+    Begin
+      ObConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_KEYWORD) And (ObUpperVal = 'DO')) Do
+        ObConsume;
+      If SrcToken.Kind <> STK_EOF Then ObConsume; { DO }
+      ObSkipStatementSeq;
+      UV := ObUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+        ObConsume;
+      Continue;
+    End;
+    { LOOP ... END }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'LOOP') Then
+    Begin
+      ObConsume;
+      ObSkipStatementSeq;
+      UV := ObUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+        ObConsume;
+      Continue;
+    End;
+    { BEGIN ... END }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'BEGIN') Then
+    Begin
+      ObConsume;
+      ObSkipStatementSeq;
+      UV := ObUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+        ObConsume;
+      Continue;
+    End;
+    { Other tokens - skip }
+    ObConsume;
+  End;
+End;
+
+{ ---- ObParseDecl : parser une declaration de niveau superieur -- }
+
+Function ObParseDecl : Integer;
+Var
+  N, Body, Last : Integer;
+  Name : TString;
+  UV   : TString;
+  Depth : Integer;
+Begin
+  ObParseDecl := -1;
+  UV := ObUpperVal;
+
+  { IMPORT list }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'IMPORT') Then
+  Begin
+    ObConsume;
+    Last := -1;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+    Begin
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        Name := SrcToken.Val;
+        ObConsume;
+        { aliased import: alias := module }
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':=') Then
+        Begin
+          ObConsume;
+          If SrcToken.Kind = STK_IDENT Then
+          Begin
+            Name := Name + ':=' + SrcToken.Val;
+            ObConsume;
+          End;
+        End;
+        N := SrcNewNode(SNK_OB_IMPORT);
+        SrcNodes[N].Name := Name;
+        If Last < 0 Then
+          ObParseDecl := N
+        Else
+          SrcNodes[Last].Next := N;
+        Last := N;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ',') Then
+        ObConsume
+      Else
+        ObConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+      ObConsume;
+    Exit;
+  End;
+
+  { CONST section }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'CONST') Then
+  Begin
+    ObConsume;
+    Last := -1;
+    While (SrcToken.Kind = STK_IDENT) Do
+    Begin
+      Name := SrcToken.Val;
+      { Export mark * }
+      ObConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '*') Then
+        ObConsume;
+      { Skip = expr ; }
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+        ObConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        ObConsume;
+      N := SrcNewNode(SNK_OB_CONST_DECL);
+      SrcNodes[N].Name := Name;
+      If Last < 0 Then
+        ObParseDecl := N
+      Else
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+    Exit;
+  End;
+
+  { TYPE section }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'TYPE') Then
+  Begin
+    ObConsume;
+    Last := -1;
+    While (SrcToken.Kind = STK_IDENT) Do
+    Begin
+      Name := SrcToken.Val;
+      ObConsume;
+      { Export mark * }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '*') Then
+        ObConsume;
+      { = Type ; }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '=') Then
+      Begin
+        ObConsume;
+        ObSkipType;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        ObConsume;
+      N := SrcNewNode(SNK_OB_TYPE_DECL);
+      SrcNodes[N].Name := Name;
+      If Last < 0 Then
+        ObParseDecl := N
+      Else
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+    Exit;
+  End;
+
+  { VAR section }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'VAR') Then
+  Begin
+    ObConsume;
+    Last := -1;
+    While (SrcToken.Kind = STK_IDENT) Do
+    Begin
+      Name := SrcToken.Val;
+      ObConsume;
+      { Export mark * }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '*') Then
+        ObConsume;
+      { Collect multiple names: a, b, c : Type }
+      While (SrcToken.Kind = STK_OP) And (SrcToken.Val = ',') Do
+      Begin
+        ObConsume;
+        If SrcToken.Kind = STK_IDENT Then
+        Begin
+          Name := Name + ',' + SrcToken.Val;
+          ObConsume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '*') Then
+            ObConsume;
+        End;
+      End;
+      { : Type }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+      Begin
+        ObConsume;
+        ObSkipType;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        ObConsume;
+      N := SrcNewNode(SNK_OB_VAR_DECL);
+      SrcNodes[N].Name := Name;
+      If Last < 0 Then
+        ObParseDecl := N
+      Else
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End;
+    Exit;
+  End;
+
+  { PROCEDURE declaration }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'PROCEDURE') Then
+  Begin
+    ObConsume;
+    Name := '';
+    { Receiver (VAR v: Type) for type-bound procedures }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+    Begin
+      Depth := 1;
+      ObConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+          Inc(Depth)
+        Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+          Dec(Depth);
+        If Depth > 0 Then ObConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+        ObConsume;
+    End;
+    { Procedure name }
+    If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      Name := SrcToken.Val;
+      ObConsume;
+    End;
+    { Export mark * }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '*') Then
+      ObConsume;
+    N := SrcNewNode(SNK_OB_PROC_DECL);
+    SrcNodes[N].Name := Name;
+
+    { Formal parameters }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+    Begin
+      Depth := 1;
+      ObConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+          Inc(Depth)
+        Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+          Dec(Depth);
+        If Depth > 0 Then ObConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+        ObConsume;
+    End;
+
+    { Return type }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+    Begin
+      ObConsume;
+      ObSkipType;
+    End;
+
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+      ObConsume;
+
+    { Procedure body: nested declarations + BEGIN..END }
+    Last := -1;
+    UV := ObUpperVal;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And
+               ((UV = 'BEGIN') Or (UV = 'END'))) Do
+    Begin
+      Body := ObParseDecl;
+      If Body >= 0 Then
+      Begin
+        If SrcNodes[N].Left = -1 Then
+          SrcNodes[N].Left := Body
+        Else If Last >= 0 Then
+          SrcNodes[Last].Next := Body;
+        While (Body >= 0) And (SrcNodes[Body].Next >= 0) Do
+          Body := SrcNodes[Body].Next;
+        Last := Body;
+      End
+      Else
+      Begin
+        If SrcToken.Kind <> STK_EOF Then
+          ObConsume;
+      End;
+      UV := ObUpperVal;
+    End;
+
+    { BEGIN ... END }
+    UV := ObUpperVal;
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'BEGIN') Then
+    Begin
+      ObConsume;
+      ObSkipStatementSeq;
+    End;
+    UV := ObUpperVal;
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+    Begin
+      ObConsume;
+      { End name }
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+        ObConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+      ObConsume;
+
+    ObParseDecl := N;
+    Exit;
+  End;
+
+  { Semicolons }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+  Begin
+    ObConsume;
+    ObParseDecl := -1;
+    Exit;
+  End;
+End;
+
+{ ---- ObParseTranslationUnit : parser un fichier Oberon -------- }
+
+Function ObParseTranslationUnit : Integer;
+Var Root, N, Last, Body : Integer;
+    Name : TString;
+    UV   : TString;
+Begin
+  ObConsume;
+  Root := SrcNewNode(SNK_OB_MODULE);
+
+  UV := ObUpperVal;
+  { MODULE name ; }
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'MODULE') Then
+  Begin
+    ObConsume;
+    Name := '';
+    If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+    Begin
+      Name := SrcToken.Val;
+      ObConsume;
+    End;
+    SrcNodes[Root].Name := Name;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+      ObConsume;
+  End
+  Else
+    SrcNodes[Root].Name := 'OB_MODULE';
+
+  { Declarations }
+  Last := -1;
+  UV := ObUpperVal;
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_KEYWORD) And
+             ((UV = 'BEGIN') Or (UV = 'END'))) Do
+  Begin
+    N := ObParseDecl;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      { Advance Last to end of chain (imports return chains) }
+      Body := N;
+      While (Body >= 0) And (SrcNodes[Body].Next >= 0) Do
+        Body := SrcNodes[Body].Next;
+      Last := Body;
+    End
+    Else
+    Begin
+      If SrcToken.Kind <> STK_EOF Then
+        ObConsume;
+    End;
+    UV := ObUpperVal;
+  End;
+
+  { Module body: BEGIN ... END }
+  UV := ObUpperVal;
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'BEGIN') Then
+  Begin
+    ObConsume;
+    ObSkipStatementSeq;
+  End;
+
+  { END name . }
+  UV := ObUpperVal;
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+  Begin
+    ObConsume;
+    { Module name after END }
+    If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      ObConsume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '.') Then
+      ObConsume;
+  End;
+
+  ObParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 36 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -25822,6 +26814,15 @@ Begin
                     StrEndsWith(FName, '.kts');
 End;
 
+{ ---- IsOberonSource : verifier si le fichier est .mod ou .ob2 -- }
+
+Function IsOberonSource(Const FName : TString) : Boolean;
+Begin
+  IsOberonSource := StrEndsWith(FName, '.mod') Or
+                    StrEndsWith(FName, '.ob2') Or
+                    StrEndsWith(FName, '.obn');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -25883,7 +26884,8 @@ Begin
           ((Opts.Language = 'python') And IsPythonSource(SR.Name)) Or
            ((Opts.Language = 'ruby') And IsRubySource(SR.Name)) Or
            ((Opts.Language = 'swift') And IsSwiftSource(SR.Name)) Or
-           ((Opts.Language = 'kotlin') And IsKotlinSource(SR.Name)) Then
+           ((Opts.Language = 'kotlin') And IsKotlinSource(SR.Name)) Or
+            ((Opts.Language = 'oberon') And IsOberonSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -26016,6 +27018,12 @@ Begin
       KtLexInit;
       SrcASTInit;
       SrcRootNode := KtParseTranslationUnit;
+    End
+    Else If Opts.Language = 'oberon' Then
+    Begin
+      ObLexInit;
+      SrcASTInit;
+      SrcRootNode := ObParseTranslationUnit;
     End
     Else
     Begin
