@@ -253,6 +253,23 @@
        detection des fichiers .rb et .rbw,
        integration dans database create avec --language=ruby.
        [IMPLEMENTE]
+    34. Implementer le support du langage Swift : lexeur Swift
+        (mots-cles Swift class/deinit/enum/extension/func/import/init/
+        internal/let/operator/private/protocol/public/static/struct/
+        subscript/typealias/var/break/case/continue/default/defer/do/
+        else/fallthrough/for/guard/if/in/repeat/return/switch/where/
+        while/as/catch/is/rethrows/super/self/Self/throw/throws/try/
+        associatedtype/inout/fileprivate/open/mutating/nonmutating/
+        override/required/convenience/dynamic/final/lazy/optional/
+        unowned/weak/willSet/didSet/indirect/nil/true/false/Any/
+        async/await/some/any/macro/consuming/borrowing/nonisolated),
+        parseur Swift (import, class, struct, enum, protocol, extension,
+        func, init/deinit, var/let, if/else, guard, switch/case,
+        for-in, while, repeat-while, do-catch, defer, return,
+        typealias, subscript, operator, property observers),
+        detection des fichiers .swift,
+        integration dans database create avec --language=swift.
+        [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -591,7 +608,16 @@ Type
     SNK_RB_WHILE, SNK_RB_UNTIL,
     SNK_RB_FOR_IN, SNK_RB_CASE_WHEN,
     SNK_RB_BEGIN_RESCUE, SNK_RB_YIELD,
-    SNK_RB_LAMBDA, SNK_RB_ASSIGNMENT
+    SNK_RB_LAMBDA, SNK_RB_ASSIGNMENT,
+    { Swift node kinds }
+    SNK_SW_TRANSLATION_UNIT, SNK_SW_IMPORT,
+    SNK_SW_CLASS_DECL, SNK_SW_STRUCT_DECL,
+    SNK_SW_ENUM_DECL, SNK_SW_PROTOCOL_DECL,
+    SNK_SW_EXTENSION_DECL, SNK_SW_FUNC_DECL,
+    SNK_SW_VAR_DECL, SNK_SW_IF,
+    SNK_SW_GUARD, SNK_SW_SWITCH,
+    SNK_SW_FOR_IN, SNK_SW_WHILE,
+    SNK_SW_DO_CATCH, SNK_SW_RETURN
   );
 
   TSrcASTNode = Record
@@ -1330,7 +1356,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1606,8 +1632,8 @@ Begin
      (Opts.Language <> 'cpp') And (Opts.Language <> 'csharp') And
      (Opts.Language <> 'go') And (Opts.Language <> 'java') And
      (Opts.Language <> 'javascript') And (Opts.Language <> 'python') And
-     (Opts.Language <> 'ruby') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python ou ruby)');
+     (Opts.Language <> 'ruby') And (Opts.Language <> 'swift') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby ou swift)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -5883,6 +5909,23 @@ Begin
     SNK_RB_YIELD              : SrcNodeKindName := 'RB_YIELD';
     SNK_RB_LAMBDA             : SrcNodeKindName := 'RB_LAMBDA';
     SNK_RB_ASSIGNMENT         : SrcNodeKindName := 'RB_ASSIGNMENT';
+    { Swift node kinds }
+    SNK_SW_TRANSLATION_UNIT   : SrcNodeKindName := 'SW_TRANSLATION_UNIT';
+    SNK_SW_IMPORT             : SrcNodeKindName := 'SW_IMPORT';
+    SNK_SW_CLASS_DECL         : SrcNodeKindName := 'SW_CLASS_DECL';
+    SNK_SW_STRUCT_DECL        : SrcNodeKindName := 'SW_STRUCT_DECL';
+    SNK_SW_ENUM_DECL          : SrcNodeKindName := 'SW_ENUM_DECL';
+    SNK_SW_PROTOCOL_DECL      : SrcNodeKindName := 'SW_PROTOCOL_DECL';
+    SNK_SW_EXTENSION_DECL     : SrcNodeKindName := 'SW_EXTENSION_DECL';
+    SNK_SW_FUNC_DECL          : SrcNodeKindName := 'SW_FUNC_DECL';
+    SNK_SW_VAR_DECL           : SrcNodeKindName := 'SW_VAR_DECL';
+    SNK_SW_IF                 : SrcNodeKindName := 'SW_IF';
+    SNK_SW_GUARD              : SrcNodeKindName := 'SW_GUARD';
+    SNK_SW_SWITCH             : SrcNodeKindName := 'SW_SWITCH';
+    SNK_SW_FOR_IN             : SrcNodeKindName := 'SW_FOR_IN';
+    SNK_SW_WHILE              : SrcNodeKindName := 'SW_WHILE';
+    SNK_SW_DO_CATCH           : SrcNodeKindName := 'SW_DO_CATCH';
+    SNK_SW_RETURN             : SrcNodeKindName := 'SW_RETURN';
   Else
     SrcNodeKindName := '???';
   End;
@@ -23127,6 +23170,1319 @@ End;
 
 { ---- Fin TODO 33 --------------------------------------------- }
 
+{ ============================================================
+  TODO 34 - SUPPORT DU LANGAGE SWIFT [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsSwiftKeyword : tester si un mot est un mot-cle Swift -- }
+
+Function IsSwiftKeyword(Const W : TString) : Boolean;
+Begin
+  IsSwiftKeyword :=
+    (W = 'associatedtype') Or (W = 'class')     Or (W = 'deinit')    Or
+    (W = 'enum')       Or (W = 'extension')  Or (W = 'fileprivate') Or
+    (W = 'func')       Or (W = 'import')     Or (W = 'init')       Or
+    (W = 'inout')      Or (W = 'internal')   Or (W = 'let')        Or
+    (W = 'open')       Or (W = 'operator')   Or (W = 'private')    Or
+    (W = 'protocol')   Or (W = 'public')     Or (W = 'rethrows')   Or
+    (W = 'static')     Or (W = 'struct')     Or (W = 'subscript')  Or
+    (W = 'typealias')  Or (W = 'var')        Or (W = 'break')      Or
+    (W = 'case')       Or (W = 'continue')   Or (W = 'default')    Or
+    (W = 'defer')      Or (W = 'do')         Or (W = 'else')       Or
+    (W = 'fallthrough') Or (W = 'for')       Or (W = 'guard')      Or
+    (W = 'if')         Or (W = 'in')         Or (W = 'repeat')     Or
+    (W = 'return')     Or (W = 'switch')     Or (W = 'where')      Or
+    (W = 'while')      Or (W = 'as')         Or (W = 'Any')        Or
+    (W = 'catch')      Or (W = 'false')      Or (W = 'is')         Or
+    (W = 'nil')        Or (W = 'super')      Or (W = 'self')       Or
+    (W = 'Self')       Or (W = 'throw')      Or (W = 'throws')     Or
+    (W = 'true')       Or (W = 'try')        Or (W = 'async')      Or
+    (W = 'await')      Or (W = 'some')       Or (W = 'any')        Or
+    (W = 'mutating')   Or (W = 'nonmutating') Or (W = 'override')  Or
+    (W = 'required')   Or (W = 'convenience') Or (W = 'dynamic')   Or
+    (W = 'final')      Or (W = 'lazy')       Or (W = 'optional')   Or
+    (W = 'unowned')    Or (W = 'weak')       Or (W = 'willSet')    Or
+    (W = 'didSet')     Or (W = 'indirect')   Or (W = 'consuming')  Or
+    (W = 'borrowing')  Or (W = 'nonisolated') Or (W = 'macro')     Or
+    (W = 'get')        Or (W = 'set')        Or (W = 'Type')       Or
+    (W = 'Protocol');
+End;
+
+{ ---- Utilitaires du lexeur Swift ------------------------------ }
+
+{ SwIsAlpha : lettre ou underscore }
+Function SwIsAlpha(Ch : Char) : Boolean;
+Begin
+  SwIsAlpha := ((Ch >= 'A') And (Ch <= 'Z')) Or
+               ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_');
+End;
+
+{ SwIsDigit : chiffre decimal }
+Function SwIsDigit(Ch : Char) : Boolean;
+Begin
+  SwIsDigit := (Ch >= '0') And (Ch <= '9');
+End;
+
+{ SwIsAlNum : lettre, chiffre ou underscore }
+Function SwIsAlNum(Ch : Char) : Boolean;
+Begin
+  SwIsAlNum := SwIsAlpha(Ch) Or SwIsDigit(Ch);
+End;
+
+{ ---- SwLexInit : initialiser le lexeur Swift ------------------ }
+
+Procedure SwLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- SwLexNextToken : scanner le prochain token Swift --------- }
+
+Procedure SwLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Depth    : Integer;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      SrcToken.Line := SrcLineNo;
+      SrcToken.Col  := SrcColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces et tabulations }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    Scanning := False;
+
+    { Commentaire // jusqu a fin de ligne }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Commentaire multi-lignes imbriques /* ... */ }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      Inc(SrcColNo, 2);
+      Depth := 1;
+      While (Not SrcEOF) And (Depth > 0) Do
+      Begin
+        If SrcColNo > Length(SrcLine) Then
+        Begin
+          SrcLexNextLine;
+          Continue;
+        End;
+        If (SrcLine[SrcColNo] = '/') And (SrcColNo < Length(SrcLine)) And
+           (SrcLine[SrcColNo + 1] = '*') Then
+        Begin
+          Inc(Depth);
+          Inc(SrcColNo, 2);
+        End
+        Else If (SrcLine[SrcColNo] = '*') And (SrcColNo < Length(SrcLine)) And
+                (SrcLine[SrcColNo + 1] = '/') Then
+        Begin
+          Dec(Depth);
+          Inc(SrcColNo, 2);
+        End
+        Else
+          Inc(SrcColNo);
+      End;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Chaines de caracteres entre guillemets doubles }
+    If Ch = '"' Then
+    Begin
+      Inc(SrcColNo);
+      S := '';
+      { Chaines multi-lignes triple quotes }
+      If (SrcColNo <= Length(SrcLine) - 1) And
+         (SrcLine[SrcColNo] = '"') And (SrcLine[SrcColNo + 1] = '"') Then
+      Begin
+        Inc(SrcColNo, 2);
+        While Not SrcEOF Do
+        Begin
+          If SrcColNo > Length(SrcLine) Then
+          Begin
+            S := S + #10;
+            SrcLexNextLine;
+            Continue;
+          End;
+          If (SrcLine[SrcColNo] = '"') And
+             (SrcColNo < Length(SrcLine) - 1) And
+             (SrcLine[SrcColNo + 1] = '"') And
+             (SrcLine[SrcColNo + 2] = '"') Then
+          Begin
+            Inc(SrcColNo, 3);
+            Break;
+          End;
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      Else
+      Begin
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] <> '"') Do
+        Begin
+          If (SrcLine[SrcColNo] = '\') And
+             (SrcColNo < Length(SrcLine)) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End
+          Else
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+        If SrcColNo <= Length(SrcLine) Then
+          Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { Identificateurs et mots-cles }
+    If SwIsAlpha(Ch) Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And
+            SwIsAlNum(SrcLine[SrcColNo]) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If IsSwiftKeyword(S) Then
+        SrcToken.Kind := STK_KEYWORD
+      Else
+        SrcToken.Kind := STK_IDENT;
+      SrcToken.Val := S;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { Nombres }
+    If SwIsDigit(Ch) Then
+    Begin
+      S := '';
+      { Hexadecimal 0x }
+      If (Ch = '0') And (SrcColNo < Length(SrcLine)) And
+         ((SrcLine[SrcColNo + 1] = 'x') Or (SrcLine[SrcColNo + 1] = 'X')) Then
+      Begin
+        S := '0x';
+        Inc(SrcColNo, 2);
+        While (SrcColNo <= Length(SrcLine)) And
+              (((SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '9')) Or
+               ((SrcLine[SrcColNo] >= 'a') And (SrcLine[SrcColNo] <= 'f')) Or
+               ((SrcLine[SrcColNo] >= 'A') And (SrcLine[SrcColNo] <= 'F')) Or
+               (SrcLine[SrcColNo] = '_')) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      { Binaire 0b }
+      Else If (Ch = '0') And (SrcColNo < Length(SrcLine)) And
+              ((SrcLine[SrcColNo + 1] = 'b') Or (SrcLine[SrcColNo + 1] = 'B')) Then
+      Begin
+        S := '0b';
+        Inc(SrcColNo, 2);
+        While (SrcColNo <= Length(SrcLine)) And
+              ((SrcLine[SrcColNo] = '0') Or (SrcLine[SrcColNo] = '1') Or
+               (SrcLine[SrcColNo] = '_')) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      { Octal 0o }
+      Else If (Ch = '0') And (SrcColNo < Length(SrcLine)) And
+              ((SrcLine[SrcColNo + 1] = 'o') Or (SrcLine[SrcColNo + 1] = 'O')) Then
+      Begin
+        S := '0o';
+        Inc(SrcColNo, 2);
+        While (SrcColNo <= Length(SrcLine)) And
+              (((SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '7')) Or
+               (SrcLine[SrcColNo] = '_')) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      Else
+      Begin
+        { Nombre decimal, possiblement flottant }
+        While (SrcColNo <= Length(SrcLine)) And
+              (SwIsDigit(SrcLine[SrcColNo]) Or (SrcLine[SrcColNo] = '_')) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '.') And
+           (SrcColNo < Length(SrcLine)) And SwIsDigit(SrcLine[SrcColNo + 1]) Then
+        Begin
+          S := S + '.';
+          Inc(SrcColNo);
+          While (SrcColNo <= Length(SrcLine)) And
+                (SwIsDigit(SrcLine[SrcColNo]) Or (SrcLine[SrcColNo] = '_')) Do
+          Begin
+            If SrcLine[SrcColNo] <> '_' Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+        { Exposant e/E }
+        If (SrcColNo <= Length(SrcLine)) And
+           ((SrcLine[SrcColNo] = 'e') Or (SrcLine[SrcColNo] = 'E')) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          If (SrcColNo <= Length(SrcLine)) And
+             ((SrcLine[SrcColNo] = '+') Or (SrcLine[SrcColNo] = '-')) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          While (SrcColNo <= Length(SrcLine)) And
+                SwIsDigit(SrcLine[SrcColNo]) Do
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+      End;
+      SrcToken.Kind := STK_INTEGER;
+      SrcToken.Val  := S;
+      Val(S, SrcToken.IntVal, Depth);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { @ attributs }
+    If Ch = '@' Then
+    Begin
+      Inc(SrcColNo);
+      S := '@';
+      While (SrcColNo <= Length(SrcLine)) And
+            SwIsAlNum(SrcLine[SrcColNo]) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_IDENT;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { # directives }
+    If Ch = '#' Then
+    Begin
+      Inc(SrcColNo);
+      S := '#';
+      While (SrcColNo <= Length(SrcLine)) And
+            SwIsAlNum(SrcLine[SrcColNo]) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_IDENT;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { Operateurs multi-caracteres }
+
+    { ... ellipsis et ..< range }
+    If (Ch = '.') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '.') Then
+    Begin
+      If (SrcColNo < Length(SrcLine) - 1) And
+         (SrcLine[SrcColNo + 2] = '.') Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '...';
+        Inc(SrcColNo, 3);
+      End
+      Else If (SrcColNo < Length(SrcLine) - 1) And
+              (SrcLine[SrcColNo + 2] = '<') Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '..<';
+        Inc(SrcColNo, 3);
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '..';
+        Inc(SrcColNo, 2);
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { -> fleche de retour }
+    If (Ch = '-') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '->';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { => }
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '=>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { == != <= >= }
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      If (SrcColNo < Length(SrcLine) - 1) And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '===';
+        Inc(SrcColNo, 3);
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '==';
+        Inc(SrcColNo, 2);
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '!') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      If (SrcColNo < Length(SrcLine) - 1) And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '!==';
+        Inc(SrcColNo, 3);
+      End
+      Else
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '!=';
+        Inc(SrcColNo, 2);
+      End;
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { && et || }
+    If (Ch = '&') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '&') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '&&';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '|') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '|') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '||';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { ?? nil coalescing }
+    If (Ch = '?') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '?') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '??';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { << >> shift }
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '<') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<<';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { += -= *= /= %= &= |= ^= }
+    If (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') And
+       ((Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+        (Ch = '%') Or (Ch = '&') Or (Ch = '|') Or (Ch = '^')) Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := Ch + '=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Break;
+    End;
+
+    { Symboles simples }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+    Break;
+  End;
+End;
+
+{ ---- Parseur Swift ------------------------------------------- }
+
+Var SwLookAhead : Boolean;
+
+{ SwConsume : avancer d un token Swift }
+Procedure SwConsume;
+Begin
+  SwLexNextToken;
+  SwLookAhead := True;
+End;
+
+{ SwExpect : verifier et consommer un token }
+Function SwExpect(Kind : TSourceTokenKind; Const Val : TString) : Boolean;
+Var R : Boolean;
+Begin
+  R := (SrcToken.Kind = Kind) And (SrcToken.Val = Val);
+  SwExpect := R;
+  If R Then
+    SwConsume;
+End;
+
+{ SwSkipSemicolons : sauter les points-virgules optionnels }
+Procedure SwSkipSemicolons;
+Begin
+  While (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Do
+    SwConsume;
+End;
+
+(* SwSkipBlock : sauter un bloc { ... } avec imbrication *)
+Procedure SwSkipBlock;
+Var Depth : Integer;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+  Begin
+    SwConsume;
+    Depth := 1;
+    While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        Inc(Depth)
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+        Dec(Depth);
+      If Depth > 0 Then
+        SwConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+      SwConsume;
+  End;
+End;
+
+{ SwSkipParens : sauter un groupe ( ... ) avec imbrication }
+Procedure SwSkipParens;
+Var Depth : Integer;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+  Begin
+    SwConsume;
+    Depth := 1;
+    While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        Inc(Depth)
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+        Dec(Depth);
+      If Depth > 0 Then
+        SwConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+      SwConsume;
+  End;
+End;
+
+{ SwSkipGenericParams : sauter les parametres generiques <...> }
+Procedure SwSkipGenericParams;
+Var Depth : Integer;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+  Begin
+    SwConsume;
+    Depth := 1;
+    While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+        Inc(Depth)
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '>') Then
+        Dec(Depth);
+      If Depth > 0 Then
+        SwConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '>') Then
+      SwConsume;
+  End;
+End;
+
+{ SwSkipTypeAnnotation : sauter une annotation de type apres : }
+Procedure SwSkipTypeAnnotation;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+  Begin
+    SwConsume;
+    { Sauter le type - peut etre complexe avec generiques, optionnels, etc. }
+    While (SrcToken.Kind <> STK_EOF) And
+          (SrcToken.Kind <> STK_OP) Or
+          ((SrcToken.Val <> '{') And (SrcToken.Val <> '=') And
+           (SrcToken.Val <> ',') And (SrcToken.Val <> ')') And
+           (SrcToken.Val <> ';')) Do
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+        SwSkipGenericParams
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        SwSkipParens
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '->') Then
+      Begin
+        SwConsume;
+        { Continue pour parser le type de retour }
+      End
+      Else
+        SwConsume;
+      { Verifier les terminaisons }
+      If (SrcToken.Kind = STK_OP) And
+         ((SrcToken.Val = '{') Or (SrcToken.Val = '=') Or
+          (SrcToken.Val = ',') Or (SrcToken.Val = ')') Or
+          (SrcToken.Val = ';')) Then
+        Break;
+      If SrcToken.Kind = STK_KEYWORD Then
+      Begin
+        If (SrcToken.Val = 'where') Or (SrcToken.Val = 'func') Or
+           (SrcToken.Val = 'var') Or (SrcToken.Val = 'let') Or
+           (SrcToken.Val = 'class') Or (SrcToken.Val = 'struct') Then
+          Break;
+      End;
+    End;
+  End;
+End;
+
+{ SwParseImport : parser une declaration import }
+Function SwParseImport : Integer;
+Var N : Integer;
+    S : TString;
+Begin
+  N := SrcNewNode(SNK_SW_IMPORT);
+  SwConsume; { consommer 'import' }
+  S := '';
+  If SrcToken.Kind = STK_IDENT Then
+  Begin
+    S := SrcToken.Val;
+    SwConsume;
+    While (SrcToken.Kind = STK_OP) And (SrcToken.Val = '.') Do
+    Begin
+      SwConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        S := S + '.' + SrcToken.Val;
+        SwConsume;
+      End;
+    End;
+  End;
+  SrcNodes[N].Name := S;
+  SwSkipSemicolons;
+  SwParseImport := N;
+End;
+
+{ SwParseFunc : parser une declaration func }
+Function SwParseFunc : Integer;
+Var N : Integer;
+    FName : TString;
+Begin
+  N := SrcNewNode(SNK_SW_FUNC_DECL);
+  SwConsume; { consommer 'func' }
+  FName := '';
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+     (SrcToken.Kind = STK_OP) Then
+  Begin
+    FName := SrcToken.Val;
+    SwConsume;
+  End;
+  SrcNodes[N].Name := FName;
+  { Generiques optionnels }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+    SwSkipGenericParams;
+  { Parametres }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+    SwSkipParens;
+  { throws / rethrows / async }
+  While (SrcToken.Kind = STK_KEYWORD) And
+        ((SrcToken.Val = 'throws') Or (SrcToken.Val = 'rethrows') Or
+         (SrcToken.Val = 'async')) Do
+    SwConsume;
+  { Type de retour -> Type }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '->') Then
+  Begin
+    SwConsume;
+    { Sauter le type de retour }
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where')) Do
+      SwConsume;
+  End;
+  { Clause where optionnelle }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where') Then
+  Begin
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+      SwConsume;
+  End;
+  { Corps de la fonction }
+  SwSkipBlock;
+  SwParseFunc := N;
+End;
+
+{ SwParseVarLet : parser une declaration var/let }
+Function SwParseVarLet : Integer;
+Var N : Integer;
+    VName : TString;
+Begin
+  N := SrcNewNode(SNK_SW_VAR_DECL);
+  SrcNodes[N].Name := SrcToken.Val; { 'var' ou 'let' }
+  SwConsume;
+  VName := '';
+  If SrcToken.Kind = STK_IDENT Then
+  Begin
+    VName := SrcToken.Val;
+    SwConsume;
+  End;
+  SrcNodes[N].Name := VName;
+  { Annotation de type optionnelle }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+    SwSkipTypeAnnotation;
+  { Initialisation optionnelle }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '=') Then
+  Begin
+    SwConsume;
+    { Sauter la valeur initiale }
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And
+               ((SrcToken.Val = ';') Or (SrcToken.Val = '}') Or
+                (SrcToken.Val = '{'))) And
+          Not (SrcToken.Kind = STK_KEYWORD) Do
+      SwConsume;
+  End;
+  (* Property observers willSet/didSet/get/set *)
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+    SwSkipBlock;
+  SwSkipSemicolons;
+  SwParseVarLet := N;
+End;
+
+{ SwParseClass : parser une declaration class }
+Function SwParseClass : Integer;
+Var N : Integer;
+    CName : TString;
+Begin
+  N := SrcNewNode(SNK_SW_CLASS_DECL);
+  SwConsume; { consommer 'class' }
+  CName := '';
+  If SrcToken.Kind = STK_IDENT Then
+  Begin
+    CName := SrcToken.Val;
+    SwConsume;
+  End;
+  SrcNodes[N].Name := CName;
+  { Generiques optionnels }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+    SwSkipGenericParams;
+  { Heritage : TypeParent, Protocol }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+  Begin
+    SwConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where')) Do
+      SwConsume;
+  End;
+  { Clause where }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where') Then
+  Begin
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+      SwConsume;
+  End;
+  { Corps de la classe }
+  SwSkipBlock;
+  SwParseClass := N;
+End;
+
+{ SwParseStruct : parser une declaration struct }
+Function SwParseStruct : Integer;
+Var N : Integer;
+    SName : TString;
+Begin
+  N := SrcNewNode(SNK_SW_STRUCT_DECL);
+  SwConsume; { consommer 'struct' }
+  SName := '';
+  If SrcToken.Kind = STK_IDENT Then
+  Begin
+    SName := SrcToken.Val;
+    SwConsume;
+  End;
+  SrcNodes[N].Name := SName;
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+    SwSkipGenericParams;
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+  Begin
+    SwConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where')) Do
+      SwConsume;
+  End;
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where') Then
+  Begin
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+      SwConsume;
+  End;
+  SwSkipBlock;
+  SwParseStruct := N;
+End;
+
+{ SwParseEnum : parser une declaration enum }
+Function SwParseEnum : Integer;
+Var N : Integer;
+    EName : TString;
+Begin
+  N := SrcNewNode(SNK_SW_ENUM_DECL);
+  SwConsume; { consommer 'enum' }
+  EName := '';
+  If SrcToken.Kind = STK_IDENT Then
+  Begin
+    EName := SrcToken.Val;
+    SwConsume;
+  End;
+  SrcNodes[N].Name := EName;
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+    SwSkipGenericParams;
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+  Begin
+    SwConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where')) Do
+      SwConsume;
+  End;
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where') Then
+  Begin
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+      SwConsume;
+  End;
+  SwSkipBlock;
+  SwParseEnum := N;
+End;
+
+{ SwParseProtocol : parser une declaration protocol }
+Function SwParseProtocol : Integer;
+Var N : Integer;
+    PName : TString;
+Begin
+  N := SrcNewNode(SNK_SW_PROTOCOL_DECL);
+  SwConsume; { consommer 'protocol' }
+  PName := '';
+  If SrcToken.Kind = STK_IDENT Then
+  Begin
+    PName := SrcToken.Val;
+    SwConsume;
+  End;
+  SrcNodes[N].Name := PName;
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+  Begin
+    SwConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where')) Do
+      SwConsume;
+  End;
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where') Then
+  Begin
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+      SwConsume;
+  End;
+  SwSkipBlock;
+  SwParseProtocol := N;
+End;
+
+{ SwParseExtension : parser une declaration extension }
+Function SwParseExtension : Integer;
+Var N : Integer;
+    EName : TString;
+Begin
+  N := SrcNewNode(SNK_SW_EXTENSION_DECL);
+  SwConsume; { consommer 'extension' }
+  EName := '';
+  If SrcToken.Kind = STK_IDENT Then
+  Begin
+    EName := SrcToken.Val;
+    SwConsume;
+  End;
+  SrcNodes[N].Name := EName;
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+  Begin
+    SwConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where')) Do
+      SwConsume;
+  End;
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where') Then
+  Begin
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+      SwConsume;
+  End;
+  SwSkipBlock;
+  SwParseExtension := N;
+End;
+
+{ SwParseIf : parser une instruction if }
+Function SwParseIf : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_SW_IF);
+  SwConsume; { consommer 'if' }
+  SrcNodes[N].Name := 'if';
+  { Sauter la condition (jusqu au { ) }
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+    SwConsume;
+  SwSkipBlock;
+  { else if / else }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'else') Then
+  Begin
+    SwConsume;
+    If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'if') Then
+    Begin
+      { else if - recursif, on saute simplement }
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+        SwConsume;
+      SwSkipBlock;
+      { Possible else supplementaire }
+      If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'else') Then
+      Begin
+        SwConsume;
+        SwSkipBlock;
+      End;
+    End
+    Else
+      SwSkipBlock;
+  End;
+  SwParseIf := N;
+End;
+
+{ SwParseGuard : parser une instruction guard }
+Function SwParseGuard : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_SW_GUARD);
+  SwConsume; { consommer 'guard' }
+  SrcNodes[N].Name := 'guard';
+  { Sauter la condition (jusqu au 'else') }
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'else')) Do
+    SwConsume;
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'else') Then
+    SwConsume;
+  SwSkipBlock;
+  SwParseGuard := N;
+End;
+
+{ SwParseSwitch : parser une instruction switch }
+Function SwParseSwitch : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_SW_SWITCH);
+  SwConsume; { consommer 'switch' }
+  SrcNodes[N].Name := 'switch';
+  { Sauter l expression (jusqu au { ) }
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+    SwConsume;
+  SwSkipBlock;
+  SwParseSwitch := N;
+End;
+
+{ SwParseForIn : parser une boucle for-in }
+Function SwParseForIn : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_SW_FOR_IN);
+  SwConsume; { consommer 'for' }
+  SrcNodes[N].Name := 'for';
+  { Sauter la clause for (jusqu au { ) }
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+    SwConsume;
+  SwSkipBlock;
+  SwParseForIn := N;
+End;
+
+{ SwParseWhile : parser une boucle while ou repeat-while }
+Function SwParseWhile(IsRepeat : Boolean) : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_SW_WHILE);
+  If IsRepeat Then
+  Begin
+    SwConsume; { consommer 'repeat' }
+    SrcNodes[N].Name := 'repeat';
+    SwSkipBlock;
+    { while condition }
+    If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'while') Then
+    Begin
+      SwConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 ((SrcToken.Val = ';') Or (SrcToken.Val = '}'))) And
+            Not (SrcToken.Kind = STK_KEYWORD) Do
+        SwConsume;
+    End;
+  End
+  Else
+  Begin
+    SwConsume; { consommer 'while' }
+    SrcNodes[N].Name := 'while';
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+      SwConsume;
+    SwSkipBlock;
+  End;
+  SwSkipSemicolons;
+  SwParseWhile := N;
+End;
+
+{ SwParseDoCatch : parser un bloc do-catch }
+Function SwParseDoCatch : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_SW_DO_CATCH);
+  SwConsume; { consommer 'do' }
+  SrcNodes[N].Name := 'do';
+  SwSkipBlock;
+  While (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'catch') Do
+  Begin
+    SwConsume;
+    { Pattern optionnel du catch }
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+      SwConsume;
+    SwSkipBlock;
+  End;
+  SwParseDoCatch := N;
+End;
+
+{ SwParseReturn : parser un return }
+Function SwParseReturn : Integer;
+Var N : Integer;
+Begin
+  N := SrcNewNode(SNK_SW_RETURN);
+  SwConsume; { consommer 'return' }
+  SrcNodes[N].Name := 'return';
+  { Sauter l expression de retour optionnelle }
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_OP) And
+             ((SrcToken.Val = ';') Or (SrcToken.Val = '}'))) And
+        Not ((SrcToken.Kind = STK_KEYWORD) And
+             ((SrcToken.Val = 'func') Or (SrcToken.Val = 'var') Or
+              (SrcToken.Val = 'let') Or (SrcToken.Val = 'class') Or
+              (SrcToken.Val = 'case') Or (SrcToken.Val = 'default'))) Do
+    SwConsume;
+  SwSkipSemicolons;
+  SwParseReturn := N;
+End;
+
+{ SwParseTopLevel : parser une declaration top-level Swift }
+Function SwParseTopLevel : Integer;
+Begin
+  SwParseTopLevel := -1;
+  SwSkipSemicolons;
+
+  { Sauter les modificateurs d acces et attributs }
+  While (SrcToken.Kind = STK_KEYWORD) And
+        ((SrcToken.Val = 'public') Or (SrcToken.Val = 'private') Or
+         (SrcToken.Val = 'internal') Or (SrcToken.Val = 'fileprivate') Or
+         (SrcToken.Val = 'open') Or (SrcToken.Val = 'static') Or
+         (SrcToken.Val = 'final') Or (SrcToken.Val = 'override') Or
+         (SrcToken.Val = 'required') Or (SrcToken.Val = 'convenience') Or
+         (SrcToken.Val = 'mutating') Or (SrcToken.Val = 'nonmutating') Or
+         (SrcToken.Val = 'dynamic') Or (SrcToken.Val = 'lazy') Or
+         (SrcToken.Val = 'weak') Or (SrcToken.Val = 'unowned') Or
+         (SrcToken.Val = 'optional') Or (SrcToken.Val = 'indirect') Or
+         (SrcToken.Val = 'async') Or (SrcToken.Val = 'nonisolated')) Do
+    SwConsume;
+
+  { Sauter les attributs @ }
+  While (SrcToken.Kind = STK_IDENT) And (Length(SrcToken.Val) > 0) And
+        (SrcToken.Val[1] = '@') Do
+    SwConsume;
+
+  If SrcToken.Kind = STK_EOF Then
+    Exit;
+
+  If SrcToken.Kind = STK_KEYWORD Then
+  Begin
+    If SrcToken.Val = 'import' Then
+      SwParseTopLevel := SwParseImport
+    Else If SrcToken.Val = 'func' Then
+      SwParseTopLevel := SwParseFunc
+    Else If (SrcToken.Val = 'var') Or (SrcToken.Val = 'let') Then
+      SwParseTopLevel := SwParseVarLet
+    Else If SrcToken.Val = 'class' Then
+      SwParseTopLevel := SwParseClass
+    Else If SrcToken.Val = 'struct' Then
+      SwParseTopLevel := SwParseStruct
+    Else If SrcToken.Val = 'enum' Then
+      SwParseTopLevel := SwParseEnum
+    Else If SrcToken.Val = 'protocol' Then
+      SwParseTopLevel := SwParseProtocol
+    Else If SrcToken.Val = 'extension' Then
+      SwParseTopLevel := SwParseExtension
+    Else If SrcToken.Val = 'if' Then
+      SwParseTopLevel := SwParseIf
+    Else If SrcToken.Val = 'guard' Then
+      SwParseTopLevel := SwParseGuard
+    Else If SrcToken.Val = 'switch' Then
+      SwParseTopLevel := SwParseSwitch
+    Else If SrcToken.Val = 'for' Then
+      SwParseTopLevel := SwParseForIn
+    Else If SrcToken.Val = 'while' Then
+      SwParseTopLevel := SwParseWhile(False)
+    Else If SrcToken.Val = 'repeat' Then
+      SwParseTopLevel := SwParseWhile(True)
+    Else If SrcToken.Val = 'do' Then
+      SwParseTopLevel := SwParseDoCatch
+    Else If SrcToken.Val = 'return' Then
+      SwParseTopLevel := SwParseReturn
+    Else If SrcToken.Val = 'defer' Then
+    Begin
+      SwConsume;
+      SwSkipBlock;
+    End
+    Else If SrcToken.Val = 'typealias' Then
+    Begin
+      SwConsume;
+      { Sauter jusqu au point-virgule ou fin de ligne }
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 ((SrcToken.Val = ';') Or (SrcToken.Val = '}'))) And
+            Not (SrcToken.Kind = STK_KEYWORD) Do
+        SwConsume;
+      SwSkipSemicolons;
+    End
+    Else If (SrcToken.Val = 'init') Or (SrcToken.Val = 'deinit') Then
+    Begin
+      SwConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '?') Then
+        SwConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        SwSkipParens;
+      { throws }
+      While (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'throws') Or (SrcToken.Val = 'rethrows')) Do
+        SwConsume;
+      SwSkipBlock;
+    End
+    Else If SrcToken.Val = 'subscript' Then
+    Begin
+      SwConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        SwSkipParens;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '->') Then
+      Begin
+        SwConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+          SwConsume;
+      End;
+      SwSkipBlock;
+    End
+    Else If (SrcToken.Val = 'break') Or (SrcToken.Val = 'continue') Or
+            (SrcToken.Val = 'fallthrough') Then
+    Begin
+      SwConsume;
+      SwSkipSemicolons;
+    End
+    Else If SrcToken.Val = 'throw' Then
+    Begin
+      SwConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 ((SrcToken.Val = ';') Or (SrcToken.Val = '}'))) Do
+        SwConsume;
+      SwSkipSemicolons;
+    End
+    Else If SrcToken.Val = 'case' Then
+    Begin
+      SwConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ':')) Do
+        SwConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+        SwConsume;
+    End
+    Else If SrcToken.Val = 'default' Then
+    Begin
+      SwConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+        SwConsume;
+    End
+    Else
+      SwConsume;
+  End
+  Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+  Begin
+    { Ne pas consommer - le bloc parent le gerera }
+    SwParseTopLevel := -1;
+  End
+  Else
+    SwConsume;
+End;
+
+{ ---- SwParseTranslationUnit : parser un fichier Swift complet - }
+
+Function SwParseTranslationUnit : Integer;
+Var Root, N, Last : Integer;
+Begin
+  SwConsume;
+  Root := SrcNewNode(SNK_SW_TRANSLATION_UNIT);
+  SrcNodes[Root].Name := 'SW_TU';
+  Last := -1;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    N := SwParseTopLevel;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End
+    Else
+    Begin
+      { Token non reconnu, avancer pour eviter boucle infinie }
+      If SrcToken.Kind <> STK_EOF Then
+        SwConsume;
+    End;
+  End;
+  SwParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 34 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -23217,6 +24573,13 @@ Begin
                    StrEndsWith(FName, '.rbw');
 End;
 
+{ ---- IsSwiftSource : verifier si le fichier est .swift ------- }
+
+Function IsSwiftSource(Const FName : TString) : Boolean;
+Begin
+  IsSwiftSource := StrEndsWith(FName, '.swift');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -23276,7 +24639,8 @@ Begin
          ((Opts.Language = 'java') And IsJavaSource(SR.Name)) Or
           ((Opts.Language = 'javascript') And IsJSSource(SR.Name)) Or
           ((Opts.Language = 'python') And IsPythonSource(SR.Name)) Or
-           ((Opts.Language = 'ruby') And IsRubySource(SR.Name)) Then
+           ((Opts.Language = 'ruby') And IsRubySource(SR.Name)) Or
+           ((Opts.Language = 'swift') And IsSwiftSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -23397,6 +24761,12 @@ Begin
       RbLexInit;
       SrcASTInit;
       SrcRootNode := RbParseTranslationUnit;
+    End
+    Else If Opts.Language = 'swift' Then
+    Begin
+      SwLexInit;
+      SrcASTInit;
+      SrcRootNode := SwParseTranslationUnit;
     End
     Else
     Begin
