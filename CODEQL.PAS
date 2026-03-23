@@ -723,7 +723,15 @@ Type
     SNK_PERL_FOREACH, SNK_PERL_UNLESS,
     SNK_PERL_UNTIL, SNK_PERL_EVAL,
     SNK_PERL_MY, SNK_PERL_LOCAL,
-    SNK_PERL_RETURN, SNK_PERL_ASSIGN
+    SNK_PERL_RETURN, SNK_PERL_ASSIGN,
+    SNK_RAKU_FILE, SNK_RAKU_MODULE,
+    SNK_RAKU_USE, SNK_RAKU_SUB,
+    SNK_RAKU_METHOD, SNK_RAKU_CLASS,
+    SNK_RAKU_ROLE, SNK_RAKU_GRAMMAR,
+    SNK_RAKU_IF, SNK_RAKU_ELSIF,
+    SNK_RAKU_WHILE, SNK_RAKU_FOR,
+    SNK_RAKU_LOOP, SNK_RAKU_GIVEN,
+    SNK_RAKU_RETURN, SNK_RAKU_MY
   );
 
   TSrcASTNode = Record
@@ -1462,7 +1470,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php|modula2|rust|perl]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php|modula2|rust|perl|raku]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1742,8 +1750,8 @@ Begin
      (Opts.Language <> 'kotlin') And (Opts.Language <> 'oberon') And
      (Opts.Language <> 'ada') And (Opts.Language <> 'php') And
      (Opts.Language <> 'modula2') And (Opts.Language <> 'rust') And
-     (Opts.Language <> 'perl') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon, ada, php, modula2, rust ou perl)');
+     (Opts.Language <> 'perl') And (Opts.Language <> 'raku') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon, ada, php, modula2, rust, perl ou raku)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -6151,6 +6159,22 @@ Begin
     SNK_PERL_LOCAL            : SrcNodeKindName := 'PERL_LOCAL';
     SNK_PERL_RETURN           : SrcNodeKindName := 'PERL_RETURN';
     SNK_PERL_ASSIGN           : SrcNodeKindName := 'PERL_ASSIGN';
+    SNK_RAKU_FILE             : SrcNodeKindName := 'RAKU_FILE';
+    SNK_RAKU_MODULE           : SrcNodeKindName := 'RAKU_MODULE';
+    SNK_RAKU_USE              : SrcNodeKindName := 'RAKU_USE';
+    SNK_RAKU_SUB              : SrcNodeKindName := 'RAKU_SUB';
+    SNK_RAKU_METHOD           : SrcNodeKindName := 'RAKU_METHOD';
+    SNK_RAKU_CLASS            : SrcNodeKindName := 'RAKU_CLASS';
+    SNK_RAKU_ROLE             : SrcNodeKindName := 'RAKU_ROLE';
+    SNK_RAKU_GRAMMAR          : SrcNodeKindName := 'RAKU_GRAMMAR';
+    SNK_RAKU_IF               : SrcNodeKindName := 'RAKU_IF';
+    SNK_RAKU_ELSIF            : SrcNodeKindName := 'RAKU_ELSIF';
+    SNK_RAKU_WHILE            : SrcNodeKindName := 'RAKU_WHILE';
+    SNK_RAKU_FOR              : SrcNodeKindName := 'RAKU_FOR';
+    SNK_RAKU_LOOP             : SrcNodeKindName := 'RAKU_LOOP';
+    SNK_RAKU_GIVEN            : SrcNodeKindName := 'RAKU_GIVEN';
+    SNK_RAKU_RETURN           : SrcNodeKindName := 'RAKU_RETURN';
+    SNK_RAKU_MY               : SrcNodeKindName := 'RAKU_MY';
   Else
     SrcNodeKindName := '???';
   End;
@@ -32687,6 +32711,913 @@ Begin
   PerlParseTranslationUnit := Root;
 End;
 
+{ ============================================================
+  TODO 42 - LANGAGE RAKU [IMPLEMENTE]
+  ============================================================ }
+
+Function IsRakuKeyword(Const W : TString) : Boolean;
+Begin
+  IsRakuKeyword :=
+    (W = 'my') Or (W = 'our') Or (W = 'has') Or
+    (W = 'sub') Or (W = 'method') Or (W = 'multi') Or
+    (W = 'proto') Or (W = 'only') Or (W = 'class') Or
+    (W = 'role') Or (W = 'grammar') Or (W = 'token') Or
+    (W = 'rule') Or (W = 'regex') Or (W = 'module') Or
+    (W = 'package') Or (W = 'enum') Or (W = 'subset') Or
+    (W = 'if') Or (W = 'elsif') Or (W = 'else') Or
+    (W = 'unless') Or (W = 'with') Or (W = 'without') Or
+    (W = 'while') Or (W = 'until') Or (W = 'repeat') Or
+    (W = 'for') Or (W = 'loop') Or (W = 'given') Or
+    (W = 'when') Or (W = 'default') Or (W = 'do') Or
+    (W = 'use') Or (W = 'need') Or (W = 'require') Or
+    (W = 'import') Or (W = 'unit') Or (W = 'return') Or
+    (W = 'last') Or (W = 'next') Or (W = 'redo') Or
+    (W = 'die') Or (W = 'warn') Or (W = 'fail') Or
+    (W = 'try') Or (W = 'CATCH') Or (W = 'CONTROL') Or
+    (W = 'say') Or (W = 'print') Or (W = 'put') Or
+    (W = 'self') Or (W = 'is') Or (W = 'does') Or
+    (W = 'but') Or (W = 'true') Or (W = 'True') Or
+    (W = 'false') Or (W = 'False') Or (W = 'Bool') Or
+    (W = 'Int') Or (W = 'Str') Or (W = 'Num') Or
+    (W = 'Rat') Or (W = 'Array') Or (W = 'Hash') Or
+    (W = 'Nil') Or (W = 'Any') Or (W = 'Mu') Or
+    (W = 'BEGIN') Or (W = 'END') Or (W = 'INIT') Or
+    (W = 'CHECK') Or (W = 'ENTER') Or (W = 'LEAVE') Or
+    (W = 'KEEP') Or (W = 'UNDO') Or (W = 'FIRST') Or
+    (W = 'NEXT') Or (W = 'LAST') Or (W = 'PRE') Or
+    (W = 'POST') Or (W = 'QUIT') Or (W = 'CLOSE') Or
+    (W = 'supply') Or (W = 'react') Or (W = 'whenever') Or
+    (W = 'await') Or (W = 'start') Or (W = 'gather') Or
+    (W = 'take') Or (W = 'lazy') Or (W = 'eager') Or
+    (W = 'not') Or (W = 'and') Or (W = 'or') Or
+    (W = 'xor') Or (W = 'so') Or (W = 'dd') Or
+    (W = 'let') Or (W = 'temp') Or (W = 'constant') Or
+    (W = 'state') Or (W = 'make') Or (W = 'made');
+End;
+
+Procedure RakuLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+Procedure RakuLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Code     : Integer;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Skip whitespace }
+    While (Not SrcEOF) And (SrcColNo <= Length(SrcLine)) And
+          ((SrcLine[SrcColNo] = ' ') Or (SrcLine[SrcColNo] = #9)) Do
+      Inc(SrcColNo);
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      Exit;
+    End;
+
+    If SrcColNo > Length(SrcLine) Then
+    Begin
+      SrcLexNextLine;
+      If SrcEOF Then
+      Begin
+        SrcToken.Kind := STK_EOF;
+        SrcToken.Val  := '';
+        Exit;
+      End;
+      Continue;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+    Scanning := False;
+
+    { Line comments # (but not #` which starts embedded comment) }
+    If (Ch = '#') And Not ((SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '`')) Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Embedded comments #`(...) - skip to matching close }
+    If (Ch = '#') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '`') Then
+    Begin
+      Inc(SrcColNo, 2); { skip #` }
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '(') Then
+      Begin
+        Inc(SrcColNo);
+        While (Not SrcEOF) And (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] <> ')') Do
+          Inc(SrcColNo);
+        If (SrcColNo <= Length(SrcLine)) Then
+          Inc(SrcColNo);
+      End;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Single-quoted strings }
+    If Ch = '''' Then
+    Begin
+      S := '''';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] <> '''') Do
+      Begin
+        If (SrcLine[SrcColNo] = '\') And (SrcColNo < Length(SrcLine)) And
+           (SrcLine[SrcColNo + 1] In ['''','\']) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End
+        Else
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End;
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '''') Then
+      Begin
+        S := S + '''';
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Double-quoted strings }
+    If Ch = '"' Then
+    Begin
+      S := '"';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] <> '"') Do
+      Begin
+        If SrcLine[SrcColNo] = '\' Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          If SrcColNo <= Length(SrcLine) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End
+        Else
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End;
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '"') Then
+      Begin
+        S := S + '"';
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Variables: $, @, %, &, :: twigils }
+    If Ch In ['$','@','%','&'] Then
+    Begin
+      S := Ch;
+      Inc(SrcColNo);
+      { Handle twigils: . ! ^ * + ? = ~ }
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] In ['.','!','^','*','+','?','=','~']) Then
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] In ['A'..'Z','a'..'z','0'..'9','_','-']) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_IDENT;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Numbers: integer, hex 0x, octal 0o, binary 0b, radix :10<42>, underscore separators }
+    If Ch In ['0'..'9'] Then
+    Begin
+      S := Ch;
+      Inc(SrcColNo);
+      If (Ch = '0') And (SrcColNo <= Length(SrcLine)) Then
+      Begin
+        If SrcLine[SrcColNo] In ['x','X'] Then
+        Begin
+          S := S + SrcLine[SrcColNo]; Inc(SrcColNo);
+          While (SrcColNo <= Length(SrcLine)) And
+                (SrcLine[SrcColNo] In ['0'..'9','A'..'F','a'..'f','_']) Do
+          Begin S := S + SrcLine[SrcColNo]; Inc(SrcColNo); End;
+          SrcToken.Kind := STK_INTEGER;
+          SrcToken.Val  := S;
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If SrcLine[SrcColNo] In ['o','O'] Then
+        Begin
+          S := S + SrcLine[SrcColNo]; Inc(SrcColNo);
+          While (SrcColNo <= Length(SrcLine)) And
+                (SrcLine[SrcColNo] In ['0'..'7','_']) Do
+          Begin S := S + SrcLine[SrcColNo]; Inc(SrcColNo); End;
+          SrcToken.Kind := STK_INTEGER;
+          SrcToken.Val  := S;
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If SrcLine[SrcColNo] In ['b','B'] Then
+        Begin
+          S := S + SrcLine[SrcColNo]; Inc(SrcColNo);
+          While (SrcColNo <= Length(SrcLine)) And
+                (SrcLine[SrcColNo] In ['0','1','_']) Do
+          Begin S := S + SrcLine[SrcColNo]; Inc(SrcColNo); End;
+          SrcToken.Kind := STK_INTEGER;
+          SrcToken.Val  := S;
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+      End;
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] In ['0'..'9','_']) Do
+      Begin S := S + SrcLine[SrcColNo]; Inc(SrcColNo); End;
+      { Decimal point }
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '.') And
+         (SrcColNo + 1 <= Length(SrcLine)) And
+         (SrcLine[SrcColNo + 1] In ['0'..'9']) Then
+      Begin
+        S := S + '.';
+        Inc(SrcColNo);
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] In ['0'..'9','_']) Do
+        Begin S := S + SrcLine[SrcColNo]; Inc(SrcColNo); End;
+        { Exponent }
+        If (SrcColNo <= Length(SrcLine)) And
+           (SrcLine[SrcColNo] In ['e','E']) Then
+        Begin
+          S := S + SrcLine[SrcColNo]; Inc(SrcColNo);
+          If (SrcColNo <= Length(SrcLine)) And
+             (SrcLine[SrcColNo] In ['+','-']) Then
+          Begin S := S + SrcLine[SrcColNo]; Inc(SrcColNo); End;
+          While (SrcColNo <= Length(SrcLine)) And
+                (SrcLine[SrcColNo] In ['0'..'9','_']) Do
+          Begin S := S + SrcLine[SrcColNo]; Inc(SrcColNo); End;
+        End;
+        SrcToken.Kind := STK_FLOAT;
+        SrcToken.Val  := S;
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      SrcToken.Kind := STK_INTEGER;
+      SrcToken.Val  := S;
+      Val(S, SrcToken.IntVal, Code);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Identifiers and keywords }
+    If Ch In ['A'..'Z','a'..'z','_'] Then
+    Begin
+      S := Ch;
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] In ['A'..'Z','a'..'z','0'..'9','_','-']) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If IsRakuKeyword(S) Then
+        SrcToken.Kind := STK_KEYWORD
+      Else
+        SrcToken.Kind := STK_IDENT;
+      SrcToken.Val := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Multi-character operators }
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If SrcLine[SrcColNo + 1] = '=' Then
+      Begin
+        If (SrcColNo + 1 < Length(SrcLine)) And (SrcLine[SrcColNo + 2] = '=') Then
+        Begin SrcToken.Kind := STK_OP; SrcToken.Val := '==='; Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit; End;
+        SrcToken.Kind := STK_OP; SrcToken.Val := '=='; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+      If SrcLine[SrcColNo + 1] = '>' Then
+      Begin SrcToken.Kind := STK_OP; SrcToken.Val := '=>'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+      If SrcLine[SrcColNo + 1] = '~' Then
+      Begin SrcToken.Kind := STK_OP; SrcToken.Val := '=~'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+    End;
+
+    If (Ch = '!') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If SrcLine[SrcColNo + 1] = '=' Then
+      Begin
+        If (SrcColNo + 1 < Length(SrcLine)) And (SrcLine[SrcColNo + 2] = '=') Then
+        Begin SrcToken.Kind := STK_OP; SrcToken.Val := '!=='; Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit; End;
+        SrcToken.Kind := STK_OP; SrcToken.Val := '!='; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+      If SrcLine[SrcColNo + 1] = '~' Then
+      Begin SrcToken.Kind := STK_OP; SrcToken.Val := '!~'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+    End;
+
+    If (Ch = '*') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin SrcToken.Kind := STK_OP; SrcToken.Val := '**'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+
+    If (Ch = '-') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin SrcToken.Kind := STK_OP; SrcToken.Val := '->'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If SrcLine[SrcColNo + 1] = '=' Then
+      Begin
+        If (SrcColNo + 1 < Length(SrcLine)) And (SrcLine[SrcColNo + 2] = '>') Then
+        Begin SrcToken.Kind := STK_OP; SrcToken.Val := '<=>'; Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit; End;
+        SrcToken.Kind := STK_OP; SrcToken.Val := '<='; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+      If SrcLine[SrcColNo + 1] = '<' Then
+      Begin SrcToken.Kind := STK_OP; SrcToken.Val := '<<'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+    End;
+
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If SrcLine[SrcColNo + 1] = '=' Then
+      Begin SrcToken.Kind := STK_OP; SrcToken.Val := '>='; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+      If SrcLine[SrcColNo + 1] = '>' Then
+      Begin SrcToken.Kind := STK_OP; SrcToken.Val := '>>'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+    End;
+
+    If (Ch = '.') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '.') Then
+    Begin
+      If (SrcColNo + 1 < Length(SrcLine)) And (SrcLine[SrcColNo + 2] = '.') Then
+      Begin SrcToken.Kind := STK_OP; SrcToken.Val := '...'; Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit; End;
+      If (SrcColNo + 1 < Length(SrcLine)) And (SrcLine[SrcColNo + 2] = '^') Then
+      Begin SrcToken.Kind := STK_OP; SrcToken.Val := '..^'; Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit; End;
+      SrcToken.Kind := STK_OP; SrcToken.Val := '..'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    If (Ch = '~') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '~') Then
+    Begin SrcToken.Kind := STK_OP; SrcToken.Val := '~~'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+
+    If (Ch = '|') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '|') Then
+    Begin SrcToken.Kind := STK_OP; SrcToken.Val := '||'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+
+    If (Ch = '&') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '&') Then
+    Begin SrcToken.Kind := STK_OP; SrcToken.Val := '&&'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin SrcToken.Kind := STK_OP; SrcToken.Val := '//'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+
+    If (Ch = ':') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = ':') Then
+    Begin SrcToken.Kind := STK_OP; SrcToken.Val := '::'; Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit; End;
+
+    { Single-character tokens }
+    SrcToken.Kind := STK_PUNCT;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- Raku Parser ------------------------------------------- }
+
+Procedure RakuConsume;
+Begin
+  RakuLexNextToken;
+End;
+
+Procedure RakuExpect(Const S : TString);
+Begin
+  If SrcToken.Val <> S Then
+  Begin
+    WriteLn('CODEQL: erreur syntaxe Raku ligne ', SrcToken.Line,
+            ' col ', SrcToken.Col, ': attendu "', S, '", lu "',
+            SrcToken.Val, '"');
+  End;
+  RakuConsume;
+End;
+
+Procedure RakuSkipBlock; Forward;
+Procedure RakuParseStatements(Parent : Integer); Forward;
+
+Procedure RakuSkipBlock;
+Var Depth : Integer;
+Begin
+  If SrcToken.Val <> '{' Then Exit;
+  Depth := 1;
+  RakuConsume;
+  While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+  Begin
+    If SrcToken.Val = '{' Then Inc(Depth)
+    Else If SrcToken.Val = '}' Then Dec(Depth);
+    If Depth > 0 Then RakuConsume;
+  End;
+  If SrcToken.Val = '}' Then RakuConsume;
+End;
+
+Procedure RakuParseStatements(Parent : Integer);
+Var N, Prev : Integer;
+Begin
+  Prev := -1;
+  While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> '}') Do
+  Begin
+    N := -1;
+
+    { use / need / require }
+    If (SrcToken.Kind = STK_KEYWORD) And
+       ((SrcToken.Val = 'use') Or (SrcToken.Val = 'need') Or
+        (SrcToken.Val = 'require')) Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_USE);
+      SrcNodes[N].Line := SrcToken.Line;
+      RakuConsume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RakuConsume;
+      End
+      Else If SrcToken.Kind = STK_KEYWORD Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RakuConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ';') And
+            (SrcToken.Val <> '}') Do
+        RakuConsume;
+      If SrcToken.Val = ';' Then RakuConsume;
+    End
+
+    { module / unit }
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'module') Or (SrcToken.Val = 'unit')) Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_MODULE);
+      SrcNodes[N].Line := SrcToken.Line;
+      RakuConsume;
+      { unit module Name; }
+      If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'module') Then
+        RakuConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RakuConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ';') And
+            (SrcToken.Val <> '{') Do
+        RakuConsume;
+      If SrcToken.Val = ';' Then RakuConsume
+      Else If SrcToken.Val = '{' Then
+      Begin
+        RakuConsume;
+        RakuParseStatements(N);
+        If SrcToken.Val = '}' Then RakuConsume;
+      End;
+    End
+
+    { class }
+    Else If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'class') Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_CLASS);
+      SrcNodes[N].Line := SrcToken.Line;
+      RakuConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RakuConsume;
+      End;
+      { is / does clauses }
+      While (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'is') Or (SrcToken.Val = 'does')) Do
+      Begin
+        RakuConsume;
+        If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+          RakuConsume;
+      End;
+      If SrcToken.Val = '{' Then
+      Begin
+        RakuConsume;
+        RakuParseStatements(N);
+        If SrcToken.Val = '}' Then RakuConsume;
+      End
+      Else If SrcToken.Val = ';' Then RakuConsume;
+    End
+
+    { role }
+    Else If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'role') Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_ROLE);
+      SrcNodes[N].Line := SrcToken.Line;
+      RakuConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RakuConsume;
+      End;
+      While (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'is') Or (SrcToken.Val = 'does')) Do
+      Begin
+        RakuConsume;
+        If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+          RakuConsume;
+      End;
+      If SrcToken.Val = '{' Then
+      Begin
+        RakuConsume;
+        RakuParseStatements(N);
+        If SrcToken.Val = '}' Then RakuConsume;
+      End
+      Else If SrcToken.Val = ';' Then RakuConsume;
+    End
+
+    { grammar }
+    Else If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'grammar') Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_GRAMMAR);
+      SrcNodes[N].Line := SrcToken.Line;
+      RakuConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RakuConsume;
+      End;
+      While (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'is') Or (SrcToken.Val = 'does')) Do
+      Begin
+        RakuConsume;
+        If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+          RakuConsume;
+      End;
+      If SrcToken.Val = '{' Then
+      Begin
+        RakuConsume;
+        RakuParseStatements(N);
+        If SrcToken.Val = '}' Then RakuConsume;
+      End
+      Else If SrcToken.Val = ';' Then RakuConsume;
+    End
+
+    { sub / method / multi / proto / only / token / rule / regex }
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'sub') Or (SrcToken.Val = 'method') Or
+             (SrcToken.Val = 'multi') Or (SrcToken.Val = 'proto') Or
+             (SrcToken.Val = 'only') Or (SrcToken.Val = 'token') Or
+             (SrcToken.Val = 'rule') Or (SrcToken.Val = 'regex')) Then
+    Begin
+      If (SrcToken.Val = 'method') Or (SrcToken.Val = 'token') Or
+         (SrcToken.Val = 'rule') Or (SrcToken.Val = 'regex') Then
+        N := SrcNewNode(SNK_RAKU_METHOD)
+      Else
+        N := SrcNewNode(SNK_RAKU_SUB);
+      SrcNodes[N].Line := SrcToken.Line;
+      RakuConsume;
+      { multi sub name / multi method name }
+      If (SrcToken.Kind = STK_KEYWORD) And
+         ((SrcToken.Val = 'sub') Or (SrcToken.Val = 'method') Or
+          (SrcToken.Val = 'token') Or (SrcToken.Val = 'rule') Or
+          (SrcToken.Val = 'regex')) Then
+      Begin
+        If (SrcToken.Val = 'method') Or (SrcToken.Val = 'token') Or
+           (SrcToken.Val = 'rule') Or (SrcToken.Val = 'regex') Then
+          SrcNodes[N].Kind := SNK_RAKU_METHOD;
+        RakuConsume;
+      End;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RakuConsume;
+      End;
+      { Skip signature (params) }
+      If SrcToken.Val = '(' Then
+      Begin
+        RakuConsume;
+        While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ')') Do
+          RakuConsume;
+        If SrcToken.Val = ')' Then RakuConsume;
+      End;
+      { Return type / traits }
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> '{') And
+            (SrcToken.Val <> ';') Do
+        RakuConsume;
+      If SrcToken.Val = '{' Then
+      Begin
+        RakuConsume;
+        RakuParseStatements(N);
+        If SrcToken.Val = '}' Then RakuConsume;
+      End
+      Else If SrcToken.Val = ';' Then RakuConsume;
+    End
+
+    { if / unless / with / without }
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'if') Or (SrcToken.Val = 'unless') Or
+             (SrcToken.Val = 'with') Or (SrcToken.Val = 'without')) Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_IF);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Name := SrcToken.Val;
+      RakuConsume;
+      { condition }
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> '{') Do
+        RakuConsume;
+      If SrcToken.Val = '{' Then
+      Begin
+        RakuConsume;
+        RakuParseStatements(N);
+        If SrcToken.Val = '}' Then RakuConsume;
+      End;
+      { elsif / orwith chains }
+      While (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'elsif') Or (SrcToken.Val = 'else')) Do
+      Begin
+        If SrcToken.Val = 'elsif' Then
+        Begin
+          N := SrcNewNode(SNK_RAKU_ELSIF);
+          SrcNodes[N].Line := SrcToken.Line;
+          RakuConsume;
+          While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> '{') Do
+            RakuConsume;
+        End
+        Else
+          RakuConsume; { else }
+        If SrcToken.Val = '{' Then
+        Begin
+          RakuConsume;
+          RakuParseStatements(N);
+          If SrcToken.Val = '}' Then RakuConsume;
+        End;
+      End;
+    End
+
+    { while / until / repeat }
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'while') Or (SrcToken.Val = 'until') Or
+             (SrcToken.Val = 'repeat')) Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_WHILE);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Name := SrcToken.Val;
+      RakuConsume;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> '{') Do
+        RakuConsume;
+      If SrcToken.Val = '{' Then
+      Begin
+        RakuConsume;
+        RakuParseStatements(N);
+        If SrcToken.Val = '}' Then RakuConsume;
+      End;
+      { repeat ... while / until }
+      If (SrcToken.Kind = STK_KEYWORD) And
+         ((SrcToken.Val = 'while') Or (SrcToken.Val = 'until')) Then
+      Begin
+        RakuConsume;
+        While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ';') Do
+          RakuConsume;
+        If SrcToken.Val = ';' Then RakuConsume;
+      End;
+    End
+
+    { for }
+    Else If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'for') Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_FOR);
+      SrcNodes[N].Line := SrcToken.Line;
+      RakuConsume;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> '{') Do
+        RakuConsume;
+      If SrcToken.Val = '{' Then
+      Begin
+        RakuConsume;
+        RakuParseStatements(N);
+        If SrcToken.Val = '}' Then RakuConsume;
+      End;
+    End
+
+    { loop }
+    Else If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'loop') Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_LOOP);
+      SrcNodes[N].Line := SrcToken.Line;
+      RakuConsume;
+      (* loop (init; cond; incr) *)
+      If SrcToken.Val = '(' Then
+      Begin
+        RakuConsume;
+        While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ')') Do
+          RakuConsume;
+        If SrcToken.Val = ')' Then RakuConsume;
+      End;
+      If SrcToken.Val = '{' Then
+      Begin
+        RakuConsume;
+        RakuParseStatements(N);
+        If SrcToken.Val = '}' Then RakuConsume;
+      End;
+    End
+
+    { given / when }
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'given') Or (SrcToken.Val = 'when') Or
+             (SrcToken.Val = 'default')) Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_GIVEN);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Name := SrcToken.Val;
+      RakuConsume;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> '{') And
+            (SrcToken.Val <> ';') Do
+        RakuConsume;
+      If SrcToken.Val = '{' Then
+      Begin
+        RakuConsume;
+        RakuParseStatements(N);
+        If SrcToken.Val = '}' Then RakuConsume;
+      End
+      Else If SrcToken.Val = ';' Then RakuConsume;
+    End
+
+    { my / our / has / state / constant / let / temp }
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'my') Or (SrcToken.Val = 'our') Or
+             (SrcToken.Val = 'has') Or (SrcToken.Val = 'state') Or
+             (SrcToken.Val = 'constant') Or (SrcToken.Val = 'let') Or
+             (SrcToken.Val = 'temp')) Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_MY);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Name := SrcToken.Val;
+      RakuConsume;
+      { Type annotation }
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        { Check if next is a sigiled variable }
+        If Not (SrcToken.Val[1] In ['$','@','%','&']) Then
+          RakuConsume; { skip type }
+      End;
+      { Variable name }
+      If (SrcToken.Kind = STK_IDENT) And (Length(SrcToken.Val) > 0) And
+         (SrcToken.Val[1] In ['$','@','%','&']) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RakuConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ';') And
+            (SrcToken.Val <> '}') Do
+        RakuConsume;
+      If SrcToken.Val = ';' Then RakuConsume;
+    End
+
+    { return }
+    Else If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'return') Then
+    Begin
+      N := SrcNewNode(SNK_RAKU_RETURN);
+      SrcNodes[N].Line := SrcToken.Line;
+      RakuConsume;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ';') And
+            (SrcToken.Val <> '}') Do
+        RakuConsume;
+      If SrcToken.Val = ';' Then RakuConsume;
+    End
+
+    { try / CATCH / CONTROL }
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'try') Or (SrcToken.Val = 'CATCH') Or
+             (SrcToken.Val = 'CONTROL')) Then
+    Begin
+      RakuConsume;
+      If SrcToken.Val = '{' Then
+        RakuSkipBlock;
+    End
+
+    { supply / react / gather }
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'supply') Or (SrcToken.Val = 'react') Or
+             (SrcToken.Val = 'gather')) Then
+    Begin
+      RakuConsume;
+      If SrcToken.Val = '{' Then
+        RakuSkipBlock;
+    End
+
+    { Phaser blocks BEGIN/END/INIT/CHECK/ENTER/LEAVE/KEEP/UNDO/FIRST/NEXT/LAST/PRE/POST/QUIT/CLOSE }
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((SrcToken.Val = 'BEGIN') Or (SrcToken.Val = 'END') Or
+             (SrcToken.Val = 'INIT') Or (SrcToken.Val = 'CHECK') Or
+             (SrcToken.Val = 'ENTER') Or (SrcToken.Val = 'LEAVE') Or
+             (SrcToken.Val = 'KEEP') Or (SrcToken.Val = 'UNDO') Or
+             (SrcToken.Val = 'FIRST') Or (SrcToken.Val = 'NEXT') Or
+             (SrcToken.Val = 'LAST') Or (SrcToken.Val = 'PRE') Or
+             (SrcToken.Val = 'POST') Or (SrcToken.Val = 'QUIT') Or
+             (SrcToken.Val = 'CLOSE')) Then
+    Begin
+      RakuConsume;
+      If SrcToken.Val = '{' Then
+        RakuSkipBlock;
+    End
+
+    { enum }
+    Else If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'enum') Then
+    Begin
+      RakuConsume;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ';') And
+            (SrcToken.Val <> '}') Do
+        RakuConsume;
+      If SrcToken.Val = ';' Then RakuConsume;
+    End
+
+    { Expression statement / fallback }
+    Else
+    Begin
+      N := SrcNewNode(SNK_RAKU_MY);
+      SrcNodes[N].Kind := SNK_RAKU_RETURN; { reuse as expression stmt }
+      SrcNodes[N].Line := SrcToken.Line;
+      RakuConsume;
+      While (SrcToken.Kind <> STK_EOF) And (SrcToken.Val <> ';') And
+            (SrcToken.Val <> '}') Do
+        RakuConsume;
+      If SrcToken.Val = ';' Then RakuConsume;
+    End;
+
+    { Link to parent }
+    If N >= 0 Then
+    Begin
+      If Prev < 0 Then
+        SrcNodes[Parent].Left := N
+      Else
+        SrcNodes[Prev].Next := N;
+      Prev := N;
+    End;
+  End;
+End;
+
+Function RakuParseTranslationUnit : Integer;
+Var Root : Integer;
+Begin
+  RakuConsume; { prime the lexer }
+
+  Root := SrcNewNode(SNK_RAKU_FILE);
+  SrcNodes[Root].Line := 1;
+  SrcNodes[Root].Name := 'file';
+
+  RakuParseStatements(Root);
+
+  RakuParseTranslationUnit := Root;
+End;
+
+Function IsRakuSource(Const FName : TString) : Boolean;
+Begin
+  IsRakuSource := StrEndsWith(FName, '.raku') Or
+                  StrEndsWith(FName, '.rakumod') Or
+                  StrEndsWith(FName, '.rakutest') Or
+                  StrEndsWith(FName, '.p6') Or
+                  StrEndsWith(FName, '.pm6') Or
+                  StrEndsWith(FName, '.t6');
+End;
+
 Function IsPerlSource(Const FName : TString) : Boolean;
 Begin
   IsPerlSource := StrEndsWith(FName, '.pl') Or
@@ -32761,7 +33692,8 @@ Begin
              ((Opts.Language = 'php') And IsPhpSource(SR.Name)) Or
               ((Opts.Language = 'modula2') And IsM2Source(SR.Name)) Or
                ((Opts.Language = 'rust') And IsRustSource(SR.Name)) Or
-                ((Opts.Language = 'perl') And IsPerlSource(SR.Name)) Then
+                ((Opts.Language = 'perl') And IsPerlSource(SR.Name)) Or
+                 ((Opts.Language = 'raku') And IsRakuSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -32930,6 +33862,12 @@ Begin
       PerlLexInit;
       SrcASTInit;
       SrcRootNode := PerlParseTranslationUnit;
+    End
+    Else If Opts.Language = 'raku' Then
+    Begin
+      RakuLexInit;
+      SrcASTInit;
+      SrcRootNode := RakuParseTranslationUnit;
     End
     Else
     Begin
