@@ -4575,8 +4575,8 @@ End;
   { TODO 14 : CMOVcc r32,r/m32 (opcodes $0F $40-$4F).
     Deplacement conditionnel : copie la source dans le registre
     destination 32 bits seulement si la condition cc est satisfaite.
-    Instruction du Pentium Pro (P6). Le ModR/M encode la destination
-    dans le champ reg et la source dans le champ r/m. }
+    Instruction du Pentium Pro (architecture P6). Le ModR/M encode
+    la destination dans le champ reg et la source dans le champ r/m. }
 Procedure OpCMOVcc(cc:Byte);
 Var
  ModField,RegField,RMField:Byte;
