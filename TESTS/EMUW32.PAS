@@ -80,7 +80,7 @@
       GetCommandLineW, GetCurrentProcessId, GetCurrentProcess,
       GetExitCodeProcess, GetStartupInfoA.
 
-  16. Implementer l'emulation de KERNEL32.DLL - Entrees/sorties
+  16. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Entrees/sorties
       console : WriteConsoleA, ReadConsoleA, WriteFile, ReadFile
       sur les handles STD_INPUT_HANDLE, STD_OUTPUT_HANDLE et
       STD_ERROR_HANDLE, SetConsoleMode, GetConsoleMode.
@@ -197,6 +197,14 @@ Const
 
   { TODO 15 : Nom par defaut du programme emule }
  DefaultExeName='EMUW32.EXE';
+
+  { TODO 16 : Modes par defaut de la console Win32.
+    ENABLE_PROCESSED_INPUT=$0001, ENABLE_LINE_INPUT=$0002,
+    ENABLE_ECHO_INPUT=$0004 => stdin default = $0007.
+    ENABLE_PROCESSED_OUTPUT=$0001, ENABLE_WRAP_AT_EOL_OUTPUT=$0002
+    => stdout/stderr default = $0003. }
+ DEFAULT_CONSOLE_MODE_IN=$0007;
+ DEFAULT_CONSOLE_MODE_OUT=$0003;
 
 Type
   { TODO 2 : Registres 32 bits du 80386 }
@@ -366,6 +374,11 @@ Var
  EmuExitCode:LongInt;
   { TODO 15 : Indicateur d'arret du processus par ExitProcess }
  EmuRunning:Boolean;
+
+  { TODO 16 : Modes de console emules pour stdin, stdout, stderr }
+ EmuConsoleModeIn:LongInt;
+ EmuConsoleModeOut:LongInt;
+ EmuConsoleModeErr:LongInt;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -4815,6 +4828,10 @@ Begin
   { Initialiser les variables d'etat du processus }
  EmuExitCode:=0;
  EmuRunning:=True;
+  { TODO 16 : Initialiser les modes de console par defaut }
+ EmuConsoleModeIn:=DEFAULT_CONSOLE_MODE_IN;
+ EmuConsoleModeOut:=DEFAULT_CONSOLE_MODE_OUT;
+ EmuConsoleModeErr:=DEFAULT_CONSOLE_MODE_OUT;
 End;
 
   { TODO 15 : Emulation de GetStdHandle (KERNEL32.DLL).
@@ -4948,6 +4965,222 @@ Begin
  StrIComp:=True;
 End;
 
+  { TODO 16 : Emulation de WriteConsoleA (KERNEL32.DLL).
+    BOOL WINAPI WriteConsoleA(HANDLE hConsoleOutput,
+                               const VOID *lpBuffer,
+                               DWORD nNumberOfCharsToWrite,
+                               LPDWORD lpNumberOfCharsWritten,
+                               LPVOID lpReserved);
+    Convention STDCALL : 5 parametres (20 octets).
+    Ecrit les caracteres du buffer vers la sortie standard Pascal. }
+Procedure EmuWriteConsoleA;
+Var
+ hConsole,lpBuffer,nChars,lpWritten:LongInt;
+ I:LongInt;
+ B:Byte;
+Begin
+ hConsole:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ nChars:=ReadDWord(Regs.ESP+12);
+ lpWritten:=ReadDWord(Regs.ESP+16);
+ If(hConsole=EMU_STDOUT_HANDLE)or(hConsole=EMU_STDERR_HANDLE)Then Begin
+  For I:=0 to nChars-1 do Begin
+   B:=ReadByte(lpBuffer+I);
+   Write(Chr(B));
+  End;
+  If lpWritten<>0 Then
+   WriteDWord(lpWritten,nChars);
+  Regs.EAX:=1;  { TRUE }
+ End
+ Else Begin
+  If lpWritten<>0 Then
+   WriteDWord(lpWritten,0);
+  Regs.EAX:=0;  { FALSE }
+ End;
+  { Nettoyer la pile : 5 parametres }
+ Regs.ESP:=Regs.ESP+20;
+End;
+
+  { TODO 16 : Emulation de ReadConsoleA (KERNEL32.DLL).
+    BOOL WINAPI ReadConsoleA(HANDLE hConsoleInput,
+                              LPVOID lpBuffer,
+                              DWORD nNumberOfCharsToRead,
+                              LPDWORD lpNumberOfCharsRead,
+                              LPVOID lpReserved);
+    Convention STDCALL : 5 parametres (20 octets).
+    Lit des caracteres depuis l'entree standard Pascal. }
+Procedure EmuReadConsoleA;
+Var
+ hConsole,lpBuffer,nChars,lpRead:LongInt;
+ I,Count:LongInt;
+ C:Char;
+Begin
+ hConsole:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ nChars:=ReadDWord(Regs.ESP+12);
+ lpRead:=ReadDWord(Regs.ESP+16);
+ Count:=0;
+ If hConsole=EMU_STDIN_HANDLE Then Begin
+  For I:=0 to nChars-1 do Begin
+   If Eof Then Break;
+   Read(C);
+   WriteByte(lpBuffer+I,Byte(C));
+   Inc(Count);
+   If C=#10 Then Break;
+  End;
+  If lpRead<>0 Then
+   WriteDWord(lpRead,Count);
+  Regs.EAX:=1;  { TRUE }
+ End
+ Else Begin
+  If lpRead<>0 Then
+   WriteDWord(lpRead,0);
+  Regs.EAX:=0;  { FALSE }
+ End;
+  { Nettoyer la pile : 5 parametres }
+ Regs.ESP:=Regs.ESP+20;
+End;
+
+  { TODO 16 : Emulation de WriteFile (KERNEL32.DLL).
+    BOOL WINAPI WriteFile(HANDLE hFile,
+                           LPCVOID lpBuffer,
+                           DWORD nNumberOfBytesToWrite,
+                           LPDWORD lpNumberOfBytesWritten,
+                           LPOVERLAPPED lpOverlapped);
+    Convention STDCALL : 5 parametres (20 octets).
+    Pour les handles stdout/stderr, ecrit vers la sortie Pascal.
+    Pour les autres handles, retourne une erreur. }
+Procedure EmuWriteFile;
+Var
+ hFile,lpBuffer,nBytes,lpWritten:LongInt;
+ I:LongInt;
+ B:Byte;
+Begin
+ hFile:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ nBytes:=ReadDWord(Regs.ESP+12);
+ lpWritten:=ReadDWord(Regs.ESP+16);
+ If(hFile=EMU_STDOUT_HANDLE)or(hFile=EMU_STDERR_HANDLE)Then Begin
+  For I:=0 to nBytes-1 do Begin
+   B:=ReadByte(lpBuffer+I);
+   Write(Chr(B));
+  End;
+  If lpWritten<>0 Then
+   WriteDWord(lpWritten,nBytes);
+  Regs.EAX:=1;  { TRUE }
+ End
+ Else Begin
+  WriteLn('WriteFile: handle non supporte: ',hFile);
+  If lpWritten<>0 Then
+   WriteDWord(lpWritten,0);
+  Regs.EAX:=0;  { FALSE }
+ End;
+  { Nettoyer la pile : 5 parametres }
+ Regs.ESP:=Regs.ESP+20;
+End;
+
+  { TODO 16 : Emulation de ReadFile (KERNEL32.DLL).
+    BOOL WINAPI ReadFile(HANDLE hFile,
+                          LPVOID lpBuffer,
+                          DWORD nNumberOfBytesToRead,
+                          LPDWORD lpNumberOfBytesRead,
+                          LPOVERLAPPED lpOverlapped);
+    Convention STDCALL : 5 parametres (20 octets).
+    Pour le handle stdin, lit depuis l'entree Pascal.
+    Pour les autres handles, retourne une erreur. }
+Procedure EmuReadFile;
+Var
+ hFile,lpBuffer,nBytes,lpRead:LongInt;
+ I,Count:LongInt;
+ C:Char;
+Begin
+ hFile:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ nBytes:=ReadDWord(Regs.ESP+12);
+ lpRead:=ReadDWord(Regs.ESP+16);
+ Count:=0;
+ If hFile=EMU_STDIN_HANDLE Then Begin
+  For I:=0 to nBytes-1 do Begin
+   If Eof Then Break;
+   Read(C);
+   WriteByte(lpBuffer+I,Byte(C));
+   Inc(Count);
+   If C=#10 Then Break;
+  End;
+  If lpRead<>0 Then
+   WriteDWord(lpRead,Count);
+  Regs.EAX:=1;  { TRUE }
+ End
+ Else Begin
+  WriteLn('ReadFile: handle non supporte: ',hFile);
+  If lpRead<>0 Then
+   WriteDWord(lpRead,0);
+  Regs.EAX:=0;  { FALSE }
+ End;
+  { Nettoyer la pile : 5 parametres }
+ Regs.ESP:=Regs.ESP+20;
+End;
+
+  { TODO 16 : Emulation de SetConsoleMode (KERNEL32.DLL).
+    BOOL WINAPI SetConsoleMode(HANDLE hConsoleHandle, DWORD dwMode);
+    Convention STDCALL : 2 parametres (8 octets).
+    Stocke le mode de console emule pour le handle donne. }
+Procedure EmuSetConsoleMode;
+Var
+ hConsole,dwMode:LongInt;
+Begin
+ hConsole:=ReadDWord(Regs.ESP+4);
+ dwMode:=ReadDWord(Regs.ESP+8);
+ Case hConsole of
+  EMU_STDIN_HANDLE:Begin
+   EmuConsoleModeIn:=dwMode;
+   Regs.EAX:=1;
+  End;
+  EMU_STDOUT_HANDLE:Begin
+   EmuConsoleModeOut:=dwMode;
+   Regs.EAX:=1;
+  End;
+  EMU_STDERR_HANDLE:Begin
+   EmuConsoleModeErr:=dwMode;
+   Regs.EAX:=1;
+  End;
+ Else
+  Regs.EAX:=0;  { FALSE - handle invalide }
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 16 : Emulation de GetConsoleMode (KERNEL32.DLL).
+    BOOL WINAPI GetConsoleMode(HANDLE hConsoleHandle, LPDWORD lpMode);
+    Convention STDCALL : 2 parametres (8 octets).
+    Retourne le mode de console emule pour le handle donne. }
+Procedure EmuGetConsoleMode;
+Var
+ hConsole,lpMode:LongInt;
+Begin
+ hConsole:=ReadDWord(Regs.ESP+4);
+ lpMode:=ReadDWord(Regs.ESP+8);
+ Case hConsole of
+  EMU_STDIN_HANDLE:Begin
+   If lpMode<>0 Then WriteDWord(lpMode,EmuConsoleModeIn);
+   Regs.EAX:=1;
+  End;
+  EMU_STDOUT_HANDLE:Begin
+   If lpMode<>0 Then WriteDWord(lpMode,EmuConsoleModeOut);
+   Regs.EAX:=1;
+  End;
+  EMU_STDERR_HANDLE:Begin
+   If lpMode<>0 Then WriteDWord(lpMode,EmuConsoleModeErr);
+   Regs.EAX:=1;
+  End;
+ Else
+  Regs.EAX:=0;  { FALSE - handle invalide }
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
   { TODO 15 : Dispatche un appel a une fonction de KERNEL32.DLL.
     Recoit l'index de l'entree d'importation dans ImportEntries
     et appelle la procedure d'emulation correspondante.
@@ -4974,6 +5207,19 @@ Begin
   EmuGetExitCodeProcess
  Else If StrIComp(FName,'GetStartupInfoA') Then
   EmuGetStartupInfoA
+  { TODO 16 : Entrees/sorties console }
+ Else If StrIComp(FName,'WriteConsoleA') Then
+  EmuWriteConsoleA
+ Else If StrIComp(FName,'ReadConsoleA') Then
+  EmuReadConsoleA
+ Else If StrIComp(FName,'WriteFile') Then
+  EmuWriteFile
+ Else If StrIComp(FName,'ReadFile') Then
+  EmuReadFile
+ Else If StrIComp(FName,'SetConsoleMode') Then
+  EmuSetConsoleMode
+ Else If StrIComp(FName,'GetConsoleMode') Then
+  EmuGetConsoleMode
  Else Begin
   WriteLn('KERNEL32: fonction non emulée: ',FName);
   DispatchKernel32:=False;
