@@ -71,7 +71,7 @@
       plat 32 bits avec empilement/depilement de EIP sur la pile,
       incluant les appels indirects via registre (CALL EAX, etc.).
 
-  14. Implementer les instructions SET conditionnel (SETcc), CMOVcc
+  14. [IMPLEMENTE] Implementer les instructions SET conditionnel (SETcc), CMOVcc
       (conditional move du 80686/Pentium Pro), CDQ, CBW, CWDE, CLC,
       STC, CMC, CLD, STD, NOP, LEAVE, ENTER et INT3 (breakpoint).
 
@@ -4548,6 +4548,170 @@ Begin
  Inc(EIP,2);
  EIP:=Pop32;
  Regs.ESP:=Regs.ESP+LongInt(Imm16);
+End;
+
+  { TODO 14 : SETcc r/m8 (opcodes $0F $90-$9F).
+    Positionne l'octet destination a 1 si la condition cc est
+    satisfaite, a 0 sinon. Utilise CheckCondition(cc) du TODO 12.
+    Le ModR/M utilise le champ reg=0 (non significatif). }
+Procedure OpSETcc(cc:Byte);
+Var
+ ModField,RegField,RMField:Byte;
+ EffAddr:LongInt;
+ IsMemory:Boolean;
+ Val:Byte;
+Begin
+ DecodeModRM(ModField,RegField,RMField,EffAddr,IsMemory);
+ If CheckCondition(cc)Then
+  Val:=1
+ Else
+  Val:=0;
+ If IsMemory Then
+  WriteByte(EffAddr,Val)
+ Else
+  SetReg8(RMField,Val);
+End;
+
+  { TODO 14 : CMOVcc r32,r/m32 (opcodes $0F $40-$4F).
+    Deplacement conditionnel : copie la source dans le registre
+    destination 32 bits seulement si la condition cc est satisfaite.
+    Instruction du Pentium Pro (P6). Le ModR/M encode la destination
+    dans le champ reg et la source dans le champ r/m. }
+Procedure OpCMOVcc(cc:Byte);
+Var
+ ModField,RegField,RMField:Byte;
+ EffAddr:LongInt;
+ IsMemory:Boolean;
+ SrcVal:LongInt;
+Begin
+ DecodeModRM(ModField,RegField,RMField,EffAddr,IsMemory);
+ If IsMemory Then
+  SrcVal:=ReadDWord(EffAddr)
+ Else
+  SrcVal:=GetReg32(RMField);
+ If CheckCondition(cc)Then
+  SetReg32(RegField,SrcVal);
+End;
+
+  { TODO 14 : CDQ (opcode $99).
+    Convert Doubleword to Quadword : etend le bit de signe de EAX
+    dans EDX. Si EAX est negatif (bit 31 = 1), EDX := $FFFFFFFF,
+    sinon EDX := $00000000. Utilise pour preparer IDIV. }
+Procedure OpCdq;
+Begin
+ If Regs.EAX<0 Then
+  Regs.EDX:=LongInt($FFFFFFFF)
+ Else
+  Regs.EDX:=0;
+End;
+
+  { TODO 14 : CBW (opcode $66 $98).
+    Convert Byte to Word : etend le bit de signe de AL dans AH.
+    Si AL >= $80 alors AH := $FF, sinon AH := $00. }
+Procedure OpCbw;
+Begin
+ If Regs.AL>=$80 Then
+  Regs.AH:=$FF
+ Else
+  Regs.AH:=$00;
+End;
+
+  { TODO 14 : CWDE (opcode $98).
+    Convert Word to Doubleword Extended : etend le bit de signe
+    de AX dans la partie haute de EAX (bits 16-31).
+    EAX := sign-extend(AX). }
+Procedure OpCwde;
+Var
+ Val16:SmallInt;
+Begin
+ Val16:=SmallInt(Regs.AX);
+ Regs.EAX:=LongInt(Val16);
+End;
+
+  { TODO 14 : CLC (opcode $F8).
+    Clear Carry Flag : met CF a 0 dans EFLAGS. }
+Procedure OpClc;
+Begin
+ EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 14 : STC (opcode $F9).
+    Set Carry Flag : met CF a 1 dans EFLAGS. }
+Procedure OpStc;
+Begin
+ EFlags.s:=EFlags.s+[CF];
+End;
+
+  { TODO 14 : CMC (opcode $F5).
+    Complement Carry Flag : inverse l'etat de CF dans EFLAGS. }
+Procedure OpCmc;
+Begin
+ If CF in EFlags.s Then
+  EFlags.s:=EFlags.s-[CF]
+ Else
+  EFlags.s:=EFlags.s+[CF];
+End;
+
+  { TODO 14 : CLD (opcode $FC).
+    Clear Direction Flag : met DF a 0 dans EFLAGS.
+    Les instructions de chaines incrementent ESI/EDI. }
+Procedure OpCld;
+Begin
+ EFlags.s:=EFlags.s-[DF];
+End;
+
+  { TODO 14 : STD (opcode $FD).
+    Set Direction Flag : met DF a 1 dans EFLAGS.
+    Les instructions de chaines decrementent ESI/EDI. }
+Procedure OpStd;
+Begin
+ EFlags.s:=EFlags.s+[DF];
+End;
+
+  { TODO 14 : NOP (opcode $90).
+    No Operation : ne fait rien. Correspond aussi a XCHG EAX,EAX. }
+Procedure OpNop;
+Begin
+ { Ne fait rien }
+End;
+
+  { TODO 14 : LEAVE (opcode $C9).
+    Restaure le cadre de pile : ESP := EBP, puis EBP := Pop32.
+    Equivalent a MOV ESP,EBP suivi de POP EBP.
+    Inverse de l'instruction ENTER. }
+Procedure OpLeave;
+Begin
+ Regs.ESP:=Regs.EBP;
+ Regs.EBP:=Pop32;
+End;
+
+  { TODO 14 : ENTER imm16,imm8 (opcode $C8).
+    Cree un cadre de pile : empile EBP, copie ESP dans EBP,
+    puis soustrait imm16 octets a ESP pour les variables locales.
+    Le parametre imm8 (niveau d'imbrication) est lu mais seul
+    le niveau 0 est implemente (cas usuel en Win32). }
+Procedure OpEnter;
+Var
+ Imm16:Word;
+ Level:Byte;
+Begin
+ Imm16:=ReadWord(EIP);
+ Inc(EIP,2);
+ Level:=ReadByte(EIP);
+ Inc(EIP);
+ Push32(Regs.EBP);
+ Regs.EBP:=Regs.ESP;
+ Regs.ESP:=Regs.ESP-LongInt(Imm16);
+End;
+
+  { TODO 14 : INT3 (opcode $CC).
+    Breakpoint : declenche une interruption logicielle de debogage.
+    Dans l'emulateur, on affiche un message et on arrete l'execution
+    en positionnant EIP a 0 (convention d'arret de l'emulateur). }
+Procedure OpInt3;
+Begin
+ WriteLn('INT3 breakpoint a EIP=$',HexStr(EIP-1,8));
+ EIP:=0;
 End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
