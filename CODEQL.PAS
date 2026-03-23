@@ -4657,12 +4657,67 @@ End;
 
 { ---- Consommer le prochain token non-commentaire ------------ }
 
+Procedure SrcSkipConditionalBlock; Forward;
+
 Procedure SrcConsume;
+Var DirVal : TString;
 Begin
   Repeat
     SrcLexNextToken;
+    If SrcToken.Kind = STK_DIRECTIVE Then
+    Begin
+      DirVal := StrLowerCase(SrcToken.Val);
+      { $ifdef fpc => on est FPC, on continue normalement }
+      If (Copy(DirVal, 1, 9) = '$ifdef fp') Or
+         (Copy(DirVal, 1, 10) = '$ifdef fpc') Then
+      Begin
+        { on est sous FPC => on garde ce bloc, continue }
+      End
+      { $ifndef fpc => on n est PAS FPC => skipper ce bloc }
+      Else If (Copy(DirVal, 1, 10) = '$ifndef fp') Or
+              (Copy(DirVal, 1, 11) = '$ifndef fpc') Then
+      Begin
+        SrcSkipConditionalBlock;
+      End
+      { $else => fin de la branche active, skipper le reste }
+      Else If Copy(DirVal, 1, 5) = '$else' Then
+      Begin
+        SrcSkipConditionalBlock;
+      End;
+      { $endif et autres directives => ignorer }
+    End;
   Until (SrcToken.Kind <> STK_COMMENT) And
         (SrcToken.Kind <> STK_DIRECTIVE);
+End;
+
+{ ---- Skipper un bloc conditionnel inactif -------------------- }
+
+Procedure SrcSkipConditionalBlock;
+Var Depth : Integer;
+    DirVal : TString;
+Begin
+  Depth := 1;
+  While (Depth > 0) And (SrcToken.Kind <> STK_EOF) Do
+  Begin
+    SrcLexNextToken;
+    If SrcToken.Kind = STK_DIRECTIVE Then
+    Begin
+      DirVal := StrLowerCase(SrcToken.Val);
+      If (Copy(DirVal, 1, 6) = '$ifdef') Or
+         (Copy(DirVal, 1, 7) = '$ifndef') Or
+         (Copy(DirVal, 1, 4) = '$if ') Or
+         (DirVal = '$if') Then
+        Inc(Depth)
+      Else If Copy(DirVal, 1, 6) = '$endif' Then
+      Begin
+        Dec(Depth);
+      End
+      Else If (Copy(DirVal, 1, 5) = '$else') And (Depth = 1) Then
+      Begin
+        Dec(Depth); { on sort au $else de meme niveau }
+      End;
+    End;
+  End;
 End;
 
 { ---- Tester la valeur du token courant ---------------------- }
