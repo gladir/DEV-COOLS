@@ -5810,15 +5810,21 @@ Begin
  End;
  HeapNextAddr:=HeapNextAddr+AlignedSize;
   { Copier les anciennes donnees (taille conservatrice = dwBytes) }
+ CopySize:=dwBytes;
  If lpMem<>0 Then Begin
-  CopySize:=dwBytes;
   For I:=0 to CopySize-1 do
    WriteByte(NewAddr+I,ReadByte(lpMem+I));
  End;
-  { Mettre a zero si HEAP_ZERO_MEMORY est demande }
- If(dwFlags and HEAP_ZERO_MEMORY)<>0 Then
-  For I:=0 to AlignedSize-1 do
-   WriteByte(NewAddr+I,0);
+  { Mettre a zero la portion au-dela des donnees copiees si HEAP_ZERO_MEMORY }
+ If(dwFlags and HEAP_ZERO_MEMORY)<>0 Then Begin
+  If lpMem<>0 Then Begin
+   For I:=CopySize to AlignedSize-1 do
+    WriteByte(NewAddr+I,0);
+  End
+  Else
+   For I:=0 to AlignedSize-1 do
+    WriteByte(NewAddr+I,0);
+ End;
  Regs.EAX:=NewAddr;
   { Nettoyer la pile : 4 parametres }
  Regs.ESP:=Regs.ESP+16;
