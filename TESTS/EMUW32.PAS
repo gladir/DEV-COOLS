@@ -55,7 +55,7 @@
       operandes 8/16/32 bits avec mise a jour correcte des drapeaux
       (CF, ZF, SF, OF, AF, PF) dans EFLAGS.
 
-  10. Implementer les instructions logiques et de decalage 32 bits :
+  10. [IMPLEMENTE] Implementer les instructions logiques et de decalage 32 bits :
       AND, OR, XOR, NOT, TEST, SHL, SHR, SAR, ROL, ROR, RCL, RCR,
       BT, BTS, BTR, BTC, BSF, BSR sur des operandes 32 bits.
 
@@ -2463,6 +2463,1456 @@ Begin
  End;
  Regs.EAX:=LongInt(Quot64);
  Regs.EDX:=LongInt(Rem64);
+End;
+
+  { TODO 10 : Mise a jour des drapeaux logiques 8 bits.
+    Les operations logiques (AND, OR, XOR, TEST) effacent CF et OF,
+    mettent a jour ZF, SF et PF, et laissent AF indefini (efface ici). }
+Procedure LogicFlags8(Res:Byte);
+Begin
+ EFlags.s:=EFlags.s-[CF,_OF,AF];
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(Res and $80)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Res)Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : Mise a jour des drapeaux logiques 32 bits. }
+Procedure LogicFlags32(Res:LongInt);
+Begin
+ EFlags.s:=EFlags.s-[CF,_OF,AF];
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If Res<0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(Res))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : AND r/m8, r8 (opcode $20). }
+Procedure OpAndRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadByte(Eff)and GetReg8(RegF);
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  R:=GetReg8(RMF)and GetReg8(RegF);
+  SetReg8(RMF,R);
+ End;
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : AND r/m32, r32 (opcode $21). }
+Procedure OpAndRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadDWord(Eff)and GetReg32(RegF);
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  R:=GetReg32(RMF)and GetReg32(RegF);
+  SetReg32(RMF,R);
+ End;
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : AND r8, r/m8 (opcode $22). }
+Procedure OpAndR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=GetReg8(RegF)and B;
+ SetReg8(RegF,R);
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : AND r32, r/m32 (opcode $23). }
+Procedure OpAndR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=GetReg32(RegF)and B;
+ SetReg32(RegF,R);
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : AND AL, imm8 (opcode $24). }
+Procedure OpAndALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=Regs.AL and Imm;
+ LogicFlags8(Regs.AL);
+End;
+
+  { TODO 10 : AND EAX, imm32 (opcode $25). }
+Procedure OpAndEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=Regs.EAX and Imm;
+ LogicFlags32(Regs.EAX);
+End;
+
+  { TODO 10 : OR r/m8, r8 (opcode $08). }
+Procedure OpOrRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadByte(Eff)or GetReg8(RegF);
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  R:=GetReg8(RMF)or GetReg8(RegF);
+  SetReg8(RMF,R);
+ End;
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : OR r/m32, r32 (opcode $09). }
+Procedure OpOrRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadDWord(Eff)or GetReg32(RegF);
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  R:=GetReg32(RMF)or GetReg32(RegF);
+  SetReg32(RMF,R);
+ End;
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : OR r8, r/m8 (opcode $0A). }
+Procedure OpOrR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=GetReg8(RegF)or B;
+ SetReg8(RegF,R);
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : OR r32, r/m32 (opcode $0B). }
+Procedure OpOrR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=GetReg32(RegF)or B;
+ SetReg32(RegF,R);
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : OR AL, imm8 (opcode $0C). }
+Procedure OpOrALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=Regs.AL or Imm;
+ LogicFlags8(Regs.AL);
+End;
+
+  { TODO 10 : OR EAX, imm32 (opcode $0D). }
+Procedure OpOrEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=Regs.EAX or Imm;
+ LogicFlags32(Regs.EAX);
+End;
+
+  { TODO 10 : XOR r/m8, r8 (opcode $30). }
+Procedure OpXorRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadByte(Eff)xor GetReg8(RegF);
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  R:=GetReg8(RMF)xor GetReg8(RegF);
+  SetReg8(RMF,R);
+ End;
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : XOR r/m32, r32 (opcode $31). }
+Procedure OpXorRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadDWord(Eff)xor GetReg32(RegF);
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  R:=GetReg32(RMF)xor GetReg32(RegF);
+  SetReg32(RMF,R);
+ End;
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : XOR r8, r/m8 (opcode $32). }
+Procedure OpXorR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=GetReg8(RegF)xor B;
+ SetReg8(RegF,R);
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : XOR r32, r/m32 (opcode $33). }
+Procedure OpXorR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=GetReg32(RegF)xor B;
+ SetReg32(RegF,R);
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : XOR AL, imm8 (opcode $34). }
+Procedure OpXorALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=Regs.AL xor Imm;
+ LogicFlags8(Regs.AL);
+End;
+
+  { TODO 10 : XOR EAX, imm32 (opcode $35). }
+Procedure OpXorEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=Regs.EAX xor Imm;
+ LogicFlags32(Regs.EAX);
+End;
+
+  { TODO 10 : NOT r/m8 (opcode $F6, reg=2). }
+Procedure OpNotRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then WriteByte(Eff,not ReadByte(Eff))
+ Else SetReg8(RMF,not GetReg8(RMF));
+End;
+
+  { TODO 10 : NOT r/m32 (opcode $F7, reg=2). }
+Procedure OpNotRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then WriteDWord(Eff,not ReadDWord(Eff))
+ Else SetReg32(RMF,not GetReg32(RMF));
+End;
+
+  { TODO 10 : TEST r/m8, r8 (opcode $84).
+    Effectue un AND logique sans stocker le resultat. }
+Procedure OpTestRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then R:=ReadByte(Eff)and GetReg8(RegF)
+ Else R:=GetReg8(RMF)and GetReg8(RegF);
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : TEST r/m32, r32 (opcode $85). }
+Procedure OpTestRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then R:=ReadDWord(Eff)and GetReg32(RegF)
+ Else R:=GetReg32(RMF)and GetReg32(RegF);
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : TEST AL, imm8 (opcode $A8). }
+Procedure OpTestALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ LogicFlags8(Regs.AL and Imm);
+End;
+
+  { TODO 10 : TEST EAX, imm32 (opcode $A9). }
+Procedure OpTestEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ LogicFlags32(Regs.EAX and Imm);
+End;
+
+  { TODO 10 : SHL r/m8, 1 (opcode $D0, reg=4).
+    Decalage logique a gauche de 1 bit sur operande 8 bits.
+    CF recoit le bit le plus significatif evince. }
+Procedure OpShlRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If(Val and $80)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl 1;
+ If((Val xor R)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHL r/m32, 1 (opcode $D1, reg=4). }
+Procedure OpShlRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val<0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl 1;
+ If((Val xor R))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHL r/m8, CL (opcode $D2, reg=4). }
+Procedure OpShlRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ If Cnt<=8 Then Begin
+  If(Val and(1 shl(8-Cnt)))<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+ End
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl Cnt;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHL r/m32, CL (opcode $D3, reg=4). }
+Procedure OpShlRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ If(Val and(LongInt(1)shl(32-Cnt)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl Cnt;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHL r/m8, imm8 (opcode $C0, reg=4). }
+Procedure OpShlRM8Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If Cnt=0 Then Exit;
+ If Cnt<=8 Then Begin
+  If(Val and(1 shl(8-Cnt)))<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+ End
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl Cnt;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHL r/m32, imm8 (opcode $C1, reg=4). }
+Procedure OpShlRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Cnt=0 Then Exit;
+ If(Val and(LongInt(1)shl(32-Cnt)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl Cnt;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m8, 1 (opcode $D0, reg=5).
+    Decalage logique a droite de 1 bit sur operande 8 bits.
+    CF recoit le bit le moins significatif evince. }
+Procedure OpShrRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shr 1;
+ If(Val and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m32, 1 (opcode $D1, reg=5). }
+Procedure OpShrRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=LongInt((Int64(Val)and $FFFFFFFF)shr 1);
+ If Val<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m8, CL (opcode $D2, reg=5). }
+Procedure OpShrRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ If(Val and(1 shl(Cnt-1)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shr Cnt;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m32, CL (opcode $D3, reg=5). }
+Procedure OpShrRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ Cnt:Byte;
+ R64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ If(Val and(LongInt(1)shl(Cnt-1)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R64:=(Int64(Val)and $FFFFFFFF)shr Cnt;
+ Val:=LongInt(R64);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+ If Val=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If Val<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(Val))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m8, imm8 (opcode $C0, reg=5). }
+Procedure OpShrRM8Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If Cnt=0 Then Exit;
+ If(Val and(1 shl(Cnt-1)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shr Cnt;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m32, imm8 (opcode $C1, reg=5). }
+Procedure OpShrRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ Cnt:Byte;
+ R64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Cnt=0 Then Exit;
+ If(Val and(LongInt(1)shl(Cnt-1)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R64:=(Int64(Val)and $FFFFFFFF)shr Cnt;
+ Val:=LongInt(R64);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+ If Val=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If Val<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(Val))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m8, 1 (opcode $D0, reg=7).
+    Decalage arithmetique a droite de 1 bit, preserve le signe. }
+Procedure OpSarRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+ R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ShortInt(ReadByte(Eff))
+ Else Val:=ShortInt(GetReg8(RMF));
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ EFlags.s:=EFlags.s-[_OF];
+ Val:=Val div 2;
+ R:=Byte(Val);
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m32, 1 (opcode $D1, reg=7). }
+Procedure OpSarRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ EFlags.s:=EFlags.s-[_OF];
+ If(Val<0)and((Val and 1)<>0)Then R:=(Val div 2)-1
+ Else R:=Val div 2;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m8, CL (opcode $D2, reg=7). }
+Procedure OpSarRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+ R:Byte;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ShortInt(ReadByte(Eff))
+ Else Val:=ShortInt(GetReg8(RMF));
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ For I:=1 to Cnt do Begin
+  If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  If(Val<0)and((Val and 1)<>0)Then Val:=(Val div 2)-1
+  Else Val:=Val div 2;
+ End;
+ R:=Byte(Val);
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m32, CL (opcode $D3, reg=7). }
+Procedure OpSarRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ For I:=1 to Cnt do Begin
+  If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  If(Val<0)and((Val and 1)<>0)Then Val:=(Val div 2)-1
+  Else Val:=Val div 2;
+ End;
+ R:=Val;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m8, imm8 (opcode $C0, reg=7). }
+Procedure OpSarRM8Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+ R:Byte;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ShortInt(ReadByte(Eff))
+ Else Val:=ShortInt(GetReg8(RMF));
+ If Cnt=0 Then Exit;
+ For I:=1 to Cnt do Begin
+  If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  If(Val<0)and((Val and 1)<>0)Then Val:=(Val div 2)-1
+  Else Val:=Val div 2;
+ End;
+ R:=Byte(Val);
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m32, imm8 (opcode $C1, reg=7). }
+Procedure OpSarRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Cnt=0 Then Exit;
+ For I:=1 to Cnt do Begin
+  If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  If(Val<0)and((Val and 1)<>0)Then Val:=(Val div 2)-1
+  Else Val:=Val div 2;
+ End;
+ R:=Val;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : ROL r/m8, 1 (opcode $D0, reg=0).
+    Rotation a gauche de 1 bit. Le bit MSB est deplace dans CF et
+    dans le bit LSB. }
+Procedure OpRolRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ R:=(Val shl 1)or(Val shr 7);
+ If(Val and $80)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If((Val xor R)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : ROL r/m32, 1 (opcode $D1, reg=0). }
+Procedure OpRolRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Bit31:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val<0 Then Bit31:=1 Else Bit31:=0;
+ R:=(Val shl 1)or LongInt(Bit31);
+ If Bit31<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If((Val xor R))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : ROL r/m8, CL (opcode $D2, reg=0). }
+Procedure OpRolRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If(R and $80)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shl 1)or(R shr 7);
+ End;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : ROL r/m32, CL (opcode $D3, reg=0). }
+Procedure OpRolRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+ Bit31:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If R<0 Then Bit31:=1 Else Bit31:=0;
+  If Bit31<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shl 1)or LongInt(Bit31);
+ End;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : ROR r/m8, 1 (opcode $D0, reg=1).
+    Rotation a droite de 1 bit. }
+Procedure OpRorRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ R:=(Val shr 1)or(Val shl 7);
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If((R xor(R shl 1))and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : ROR r/m32, 1 (opcode $D1, reg=1). }
+Procedure OpRorRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and 1)<>0 Then Begin
+  R:=LongInt((Int64(Val)and $FFFFFFFF)shr 1)or LongInt($80000000);
+  EFlags.s:=EFlags.s+[CF];
+ End
+ Else Begin
+  R:=LongInt((Int64(Val)and $FFFFFFFF)shr 1);
+  EFlags.s:=EFlags.s-[CF];
+ End;
+ If((R xor(R shl 1)))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : ROR r/m8, CL (opcode $D2, reg=1). }
+Procedure OpRorRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If(R and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shr 1)or(R shl 7);
+ End;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : ROR r/m32, CL (opcode $D3, reg=1). }
+Procedure OpRorRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If(R and 1)<>0 Then Begin
+   EFlags.s:=EFlags.s+[CF];
+   R:=LongInt((Int64(R)and $FFFFFFFF)shr 1)or LongInt($80000000);
+  End
+  Else Begin
+   EFlags.s:=EFlags.s-[CF];
+   R:=LongInt((Int64(R)and $FFFFFFFF)shr 1);
+  End;
+ End;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : RCL r/m8, 1 (opcode $D0, reg=2).
+    Rotation a gauche a travers CF. Le bit MSB va dans CF,
+    l'ancien CF va dans le bit LSB. }
+Procedure OpRclRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ OldCF:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If CF in EFlags.s Then OldCF:=1 Else OldCF:=0;
+ If(Val and $80)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=(Val shl 1)or OldCF;
+ If((Val xor R)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : RCL r/m32, 1 (opcode $D1, reg=2). }
+Procedure OpRclRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ OldCF:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If CF in EFlags.s Then OldCF:=1 Else OldCF:=0;
+ If Val<0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=(Val shl 1)or OldCF;
+ If((Val xor R))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : RCL r/m8, CL (opcode $D2, reg=2). }
+Procedure OpRclRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt,I,OldCF:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If CF in EFlags.s Then OldCF:=1 Else OldCF:=0;
+  If(R and $80)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shl 1)or OldCF;
+ End;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : RCL r/m32, CL (opcode $D3, reg=2). }
+Procedure OpRclRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+ OldCF:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If CF in EFlags.s Then OldCF:=1 Else OldCF:=0;
+  If R<0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shl 1)or OldCF;
+ End;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : RCR r/m8, 1 (opcode $D0, reg=3).
+    Rotation a droite a travers CF. Le bit LSB va dans CF,
+    l'ancien CF va dans le bit MSB. }
+Procedure OpRcrRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ OldCF:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If CF in EFlags.s Then OldCF:=$80 Else OldCF:=0;
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=(Val shr 1)or OldCF;
+ If((Val xor R)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : RCR r/m32, 1 (opcode $D1, reg=3). }
+Procedure OpRcrRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ OldCFBit:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If CF in EFlags.s Then OldCFBit:=LongInt($80000000)Else OldCFBit:=0;
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=LongInt((Int64(Val)and $FFFFFFFF)shr 1)or OldCFBit;
+ If((Val xor R))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : RCR r/m8, CL (opcode $D2, reg=3). }
+Procedure OpRcrRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt,I,OldCF:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If CF in EFlags.s Then OldCF:=$80 Else OldCF:=0;
+  If(R and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shr 1)or OldCF;
+ End;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : RCR r/m32, CL (opcode $D3, reg=3). }
+Procedure OpRcrRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+ OldCFBit:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If CF in EFlags.s Then OldCFBit:=LongInt($80000000)Else OldCFBit:=0;
+  If(R and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=LongInt((Int64(R)and $FFFFFFFF)shr 1)or OldCFBit;
+ End;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : BT r/m32, r32 (opcode 0F A3).
+    Teste le bit specifie par r32 dans r/m32 et copie dans CF. }
+Procedure OpBtRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=GetReg32(RegF)and 31;
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 10 : BTS r/m32, r32 (opcode 0F AB).
+    Teste et positionne le bit. CF recoit l'ancienne valeur. }
+Procedure OpBtsRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=GetReg32(RegF)and 31;
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val or(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BTR r/m32, r32 (opcode 0F B3).
+    Teste et efface le bit. CF recoit l'ancienne valeur. }
+Procedure OpBtrRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=GetReg32(RegF)and 31;
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val and not(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BTC r/m32, r32 (opcode 0F BB).
+    Teste et inverse le bit. CF recoit l'ancienne valeur. }
+Procedure OpBtcRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=GetReg32(RegF)and 31;
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val xor(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BT r/m32, imm8 (opcode 0F BA, reg=4). }
+Procedure OpBtRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=ReadByte(EIP)and 31;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 10 : BTS r/m32, imm8 (opcode 0F BA, reg=5). }
+Procedure OpBtsRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=ReadByte(EIP)and 31;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val or(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BTR r/m32, imm8 (opcode 0F BA, reg=6). }
+Procedure OpBtrRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=ReadByte(EIP)and 31;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val and not(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BTC r/m32, imm8 (opcode 0F BA, reg=7). }
+Procedure OpBtcRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=ReadByte(EIP)and 31;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val xor(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BSF r32, r/m32 (opcode 0F BC).
+    Recherche du premier bit a 1 en partant du bit 0 (LSB).
+    Si l'operande source est 0, ZF=1 et la destination est indefinie.
+    Sinon ZF=0 et la destination contient l'index du bit. }
+Procedure OpBsfR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val=0 Then
+  EFlags.s:=EFlags.s+[ZF]
+ Else Begin
+  EFlags.s:=EFlags.s-[ZF];
+  For I:=0 to 31 do
+   If(Val and(LongInt(1)shl I))<>0 Then Begin
+    SetReg32(RegF,I);
+    Exit;
+   End;
+ End;
+End;
+
+  { TODO 10 : BSR r32, r/m32 (opcode 0F BD).
+    Recherche du premier bit a 1 en partant du bit 31 (MSB).
+    Si l'operande source est 0, ZF=1 et la destination est indefinie.
+    Sinon ZF=0 et la destination contient l'index du bit. }
+Procedure OpBsrR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ I:Integer;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val=0 Then
+  EFlags.s:=EFlags.s+[ZF]
+ Else Begin
+  EFlags.s:=EFlags.s-[ZF];
+  For I:=31 downto 0 do
+   If(Val and(LongInt(1)shl I))<>0 Then Begin
+    SetReg32(RegF,I);
+    Exit;
+   End;
+ End;
 End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
