@@ -6706,11 +6706,10 @@ Procedure EmuGetTempFileNameA;
 Var
  lpPath,lpPrefix,lpTempFN:LongInt;
  uUnique:LongInt;
- PathStr,PrefixStr,TempName:String;
+ PathStr,PrefixStr,TempName,BaseDir:String;
  Unique:LongInt;
  I:Integer;
  F:File;
- HexPart:String;
 Begin
  lpPath:=ReadDWord(Regs.ESP+4);
  lpPrefix:=ReadDWord(Regs.ESP+8);
@@ -6724,22 +6723,17 @@ Begin
   Unique:=uUnique
  Else
   Unique:=LongInt(Length(PathStr)*256+Length(PrefixStr)) xor $1234;
-  { Construire le nom : path + prefix + hex(unique) + .tmp }
- HexPart:=HexStr(Unique and $FFFF,4);
- TempName:=PathStr;
- If(Length(TempName)>0)and(TempName[Length(TempName)]<>'\')and
-   (TempName[Length(TempName)]<>'/')Then
-  TempName:=TempName+'\';
- TempName:=TempName+PrefixStr+HexPart+'.tmp';
+  { Preparer le repertoire de base avec separateur final }
+ BaseDir:=PathStr;
+ If(Length(BaseDir)>0)and(BaseDir[Length(BaseDir)]<>'\')and
+   (BaseDir[Length(BaseDir)]<>'/')Then
+  BaseDir:=BaseDir+'\';
+  { Construire le nom : base + prefix + hex(unique) + .tmp }
+ TempName:=BaseDir+PrefixStr+HexStr(Unique and $FFFF,4)+'.tmp';
  If uUnique=0 Then Begin
     { S'assurer que le fichier est unique en incrementant }
   While Unique<$FFFF do Begin
-   HexPart:=HexStr(Unique and $FFFF,4);
-   TempName:=PathStr;
-   If(Length(TempName)>0)and(TempName[Length(TempName)]<>'\')and
-     (TempName[Length(TempName)]<>'/')Then
-    TempName:=TempName+'\';
-   TempName:=TempName+PrefixStr+HexPart+'.tmp';
+   TempName:=BaseDir+PrefixStr+HexStr(Unique and $FFFF,4)+'.tmp';
    {$I-}Assign(F,TempName);
    Reset(F,1);{$I+}
    If IOResult<>0 Then Begin
