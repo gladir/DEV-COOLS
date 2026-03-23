@@ -707,7 +707,15 @@ Type
     SNK_M2_CASE, SNK_M2_WHILE,
     SNK_M2_REPEAT, SNK_M2_FOR,
     SNK_M2_LOOP, SNK_M2_WITH,
-    SNK_M2_RETURN, SNK_M2_ASSIGN
+    SNK_M2_RETURN, SNK_M2_ASSIGN,
+    SNK_RUST_CRATE, SNK_RUST_MOD,
+    SNK_RUST_USE, SNK_RUST_FN,
+    SNK_RUST_STRUCT, SNK_RUST_ENUM,
+    SNK_RUST_IMPL, SNK_RUST_TRAIT,
+    SNK_RUST_CONST, SNK_RUST_STATIC,
+    SNK_RUST_IF, SNK_RUST_MATCH,
+    SNK_RUST_LOOP, SNK_RUST_FOR,
+    SNK_RUST_RETURN, SNK_RUST_LET
   );
 
   TSrcASTNode = Record
@@ -1446,7 +1454,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php|modula2]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php|modula2|rust]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1725,8 +1733,8 @@ Begin
      (Opts.Language <> 'ruby') And (Opts.Language <> 'swift') And
      (Opts.Language <> 'kotlin') And (Opts.Language <> 'oberon') And
      (Opts.Language <> 'ada') And (Opts.Language <> 'php') And
-     (Opts.Language <> 'modula2') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon, ada, php ou modula2)');
+     (Opts.Language <> 'modula2') And (Opts.Language <> 'rust') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon, ada, php, modula2 ou rust)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -6102,6 +6110,22 @@ Begin
     SNK_M2_WITH               : SrcNodeKindName := 'M2_WITH';
     SNK_M2_RETURN             : SrcNodeKindName := 'M2_RETURN';
     SNK_M2_ASSIGN             : SrcNodeKindName := 'M2_ASSIGN';
+    SNK_RUST_CRATE            : SrcNodeKindName := 'RUST_CRATE';
+    SNK_RUST_MOD              : SrcNodeKindName := 'RUST_MOD';
+    SNK_RUST_USE              : SrcNodeKindName := 'RUST_USE';
+    SNK_RUST_FN               : SrcNodeKindName := 'RUST_FN';
+    SNK_RUST_STRUCT           : SrcNodeKindName := 'RUST_STRUCT';
+    SNK_RUST_ENUM             : SrcNodeKindName := 'RUST_ENUM';
+    SNK_RUST_IMPL             : SrcNodeKindName := 'RUST_IMPL';
+    SNK_RUST_TRAIT            : SrcNodeKindName := 'RUST_TRAIT';
+    SNK_RUST_CONST            : SrcNodeKindName := 'RUST_CONST';
+    SNK_RUST_STATIC           : SrcNodeKindName := 'RUST_STATIC';
+    SNK_RUST_IF               : SrcNodeKindName := 'RUST_IF';
+    SNK_RUST_MATCH            : SrcNodeKindName := 'RUST_MATCH';
+    SNK_RUST_LOOP             : SrcNodeKindName := 'RUST_LOOP';
+    SNK_RUST_FOR              : SrcNodeKindName := 'RUST_FOR';
+    SNK_RUST_RETURN           : SrcNodeKindName := 'RUST_RETURN';
+    SNK_RUST_LET              : SrcNodeKindName := 'RUST_LET';
   Else
     SrcNodeKindName := '???';
   End;
@@ -30304,6 +30328,1320 @@ Begin
                 StrEndsWith(FName, '.m2');
 End;
 
+{ ---- Rust language support ------------------------------------ }
+
+Function IsRustKeyword(Const W : TString) : Boolean;
+Begin
+  IsRustKeyword :=
+    (W = 'as') Or (W = 'async') Or (W = 'await') Or
+    (W = 'break') Or (W = 'const') Or (W = 'continue') Or
+    (W = 'crate') Or (W = 'dyn') Or (W = 'else') Or
+    (W = 'enum') Or (W = 'extern') Or (W = 'false') Or
+    (W = 'fn') Or (W = 'for') Or (W = 'if') Or
+    (W = 'impl') Or (W = 'in') Or (W = 'let') Or
+    (W = 'loop') Or (W = 'match') Or (W = 'mod') Or
+    (W = 'move') Or (W = 'mut') Or (W = 'pub') Or
+    (W = 'ref') Or (W = 'return') Or (W = 'self') Or
+    (W = 'Self') Or (W = 'static') Or (W = 'struct') Or
+    (W = 'super') Or (W = 'trait') Or (W = 'true') Or
+    (W = 'type') Or (W = 'unsafe') Or (W = 'use') Or
+    (W = 'where') Or (W = 'while') Or (W = 'yield') Or
+    (W = 'abstract') Or (W = 'become') Or (W = 'box') Or
+    (W = 'do') Or (W = 'final') Or (W = 'macro') Or
+    (W = 'override') Or (W = 'priv') Or (W = 'try') Or
+    (W = 'typeof') Or (W = 'unsized') Or (W = 'virtual');
+End;
+
+Procedure RustLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+Procedure RustLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Code     : Integer;
+  Depth    : Integer;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Skip whitespace }
+    While (Not SrcEOF) And (SrcColNo <= Length(SrcLine)) And
+          ((SrcLine[SrcColNo] = ' ') Or (SrcLine[SrcColNo] = #9)) Do
+      Inc(SrcColNo);
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      Exit;
+    End;
+
+    If SrcColNo > Length(SrcLine) Then
+    Begin
+      SrcLexNextLine;
+      If SrcEOF Then
+      Begin
+        SrcToken.Kind := STK_EOF;
+        SrcToken.Val  := '';
+        Exit;
+      End;
+      Continue;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+    Scanning := False;
+
+    { Line comments // }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Block comments /* ... */ (nestable in Rust) }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      Inc(SrcColNo, 2);
+      Depth := 1;
+      While (Not SrcEOF) And (Depth > 0) Do
+      Begin
+        If SrcColNo > Length(SrcLine) Then
+        Begin
+          SrcLexNextLine;
+          Continue;
+        End;
+        If (SrcColNo < Length(SrcLine)) And
+           (SrcLine[SrcColNo] = '/') And (SrcLine[SrcColNo + 1] = '*') Then
+        Begin
+          Inc(Depth);
+          Inc(SrcColNo, 2);
+        End
+        Else If (SrcColNo < Length(SrcLine)) And
+                (SrcLine[SrcColNo] = '*') And (SrcLine[SrcColNo + 1] = '/') Then
+        Begin
+          Dec(Depth);
+          Inc(SrcColNo, 2);
+        End
+        Else
+          Inc(SrcColNo);
+      End;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Identifiers and keywords }
+    If (Ch In ['A'..'Z','a'..'z','_']) Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] In ['A'..'Z','a'..'z','0'..'9','_']) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If IsRustKeyword(S) Then
+        SrcToken.Kind := STK_KEYWORD
+      Else
+        SrcToken.Kind := STK_IDENT;
+      SrcToken.Val := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Numeric literals: decimal, hex 0x, octal 0o, binary 0b }
+    If (Ch In ['0'..'9']) Then
+    Begin
+      S := '';
+      If (Ch = '0') And (SrcColNo < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 1] In ['x','X']) Then
+      Begin
+        S := '0x';
+        Inc(SrcColNo, 2);
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] In ['0'..'9','a'..'f','A'..'F','_']) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      Else If (Ch = '0') And (SrcColNo < Length(SrcLine)) And
+              (SrcLine[SrcColNo + 1] In ['o','O']) Then
+      Begin
+        S := '0o';
+        Inc(SrcColNo, 2);
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] In ['0'..'7','_']) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      Else If (Ch = '0') And (SrcColNo < Length(SrcLine)) And
+              (SrcLine[SrcColNo + 1] In ['b','B']) Then
+      Begin
+        S := '0b';
+        Inc(SrcColNo, 2);
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] In ['0','1','_']) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      Else
+      Begin
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] In ['0'..'9','_']) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        { Floating point }
+        If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '.') And
+           (SrcColNo + 1 <= Length(SrcLine)) And
+           (SrcLine[SrcColNo + 1] In ['0'..'9']) Then
+        Begin
+          S := S + '.';
+          Inc(SrcColNo);
+          While (SrcColNo <= Length(SrcLine)) And
+                (SrcLine[SrcColNo] In ['0'..'9','_']) Do
+          Begin
+            If SrcLine[SrcColNo] <> '_' Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+        { Exponent }
+        If (SrcColNo <= Length(SrcLine)) And
+           (SrcLine[SrcColNo] In ['e','E']) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          If (SrcColNo <= Length(SrcLine)) And
+             (SrcLine[SrcColNo] In ['+','-']) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          While (SrcColNo <= Length(SrcLine)) And
+                (SrcLine[SrcColNo] In ['0'..'9','_']) Do
+          Begin
+            If SrcLine[SrcColNo] <> '_' Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+      End;
+      { Skip type suffix like u8, i32, f64, usize, isize }
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] In ['u','i','f']) Then
+      Begin
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] In ['a'..'z','0'..'9']) Do
+          Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_INTEGER;
+      SrcToken.Val  := S;
+      Val(S, SrcToken.IntVal, Code);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { String literals }
+    If Ch = '"' Then
+    Begin
+      S := '"';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] <> '"') Do
+      Begin
+        If SrcLine[SrcColNo] = '\' Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          If SrcColNo <= Length(SrcLine) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End
+        Else
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End;
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '"') Then
+      Begin
+        S := S + '"';
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Character literals }
+    If (Ch = '''') Then
+    Begin
+      S := '''';
+      Inc(SrcColNo);
+      { Check for lifetime 'a - skip if followed by identifier char then no closing ' }
+      If (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] In ['a'..'z','A'..'Z','_']) Then
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+        { Check if it's a char literal 'x' or lifetime 'ident }
+        If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '''') Then
+        Begin
+          S := S + '''';
+          Inc(SrcColNo);
+          SrcToken.Kind := STK_STRING;
+          SrcToken.Val  := S;
+          Inc(SrcTokenCount);
+          Exit;
+        End
+        Else
+        Begin
+          { It's a lifetime like 'a or 'static }
+          While (SrcColNo <= Length(SrcLine)) And
+                (SrcLine[SrcColNo] In ['a'..'z','A'..'Z','0'..'9','_']) Do
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          SrcToken.Kind := STK_IDENT;
+          SrcToken.Val  := S;
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+      End;
+      { Escape sequence char literal '\n' etc }
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '\') Then
+      Begin
+        S := S + '\';
+        Inc(SrcColNo);
+        If SrcColNo <= Length(SrcLine) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End;
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '''') Then
+      Begin
+        S := S + '''';
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Raw string literal r"..." or r#"..."# }
+    If (Ch = 'r') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] In ['"','#']) Then
+    Begin
+      S := 'r';
+      Inc(SrcColNo);
+      { Count # signs }
+      While (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '#') Do
+      Begin
+        S := S + '#';
+        Inc(SrcColNo);
+      End;
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '"') Then
+      Begin
+        S := S + '"';
+        Inc(SrcColNo);
+      End;
+      { Read until closing "# pattern }
+      While (Not SrcEOF) And (SrcColNo <= Length(SrcLine)) Do
+      Begin
+        If SrcLine[SrcColNo] = '"' Then
+        Begin
+          S := S + '"';
+          Inc(SrcColNo);
+          Break;
+        End;
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Multi-character operators }
+
+    { => (fat arrow) }
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '=>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { -> (thin arrow) }
+    If (Ch = '-') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '->';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { :: (path separator) }
+    If (Ch = ':') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = ':') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '::';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { == }
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '==';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { != }
+    If (Ch = '!') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '!=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { <= }
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { >= }
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { && }
+    If (Ch = '&') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '&') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '&&';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { || }
+    If (Ch = '|') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '|') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '||';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { << }
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '<') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<<';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { >> }
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { += -= *= /= %= &= |= ^= }
+    If (Ch In ['+','-','*','/','%','&','|','^']) And
+       (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := Ch + '=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { .. (range) and ..= (inclusive range) }
+    If (Ch = '.') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '.') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      If (SrcColNo + 1 < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Val := '..=';
+        Inc(SrcColNo, 3);
+      End
+      Else
+      Begin
+        SrcToken.Val := '..';
+        Inc(SrcColNo, 2);
+      End;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { # (attribute prefix) }
+    If (Ch = '#') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '#';
+      Inc(SrcColNo);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Single-character operators and punctuation }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- Rust parser ---------------------------------------------- }
+
+Procedure RustConsume;
+Begin
+  RustLexNextToken;
+End;
+
+Function RustIsKW(Const KW : TString) : Boolean;
+Begin
+  RustIsKW := (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = KW);
+End;
+
+Procedure RustExpect(Const KW : TString);
+Begin
+  If Not RustIsKW(KW) Then
+    WriteLn('CODEQL: Rust attendu "', KW, '" mais lu "', SrcToken.Val, '" ligne ', SrcToken.Line);
+  RustConsume;
+End;
+
+Procedure RustExpectOp(Const Op : TString);
+Begin
+  If (SrcToken.Kind <> STK_OP) Or (SrcToken.Val <> Op) Then
+    WriteLn('CODEQL: Rust attendu "', Op, '" mais lu "', SrcToken.Val, '" ligne ', SrcToken.Line);
+  RustConsume;
+End;
+
+Procedure RustSkipBalanced; Forward;
+Procedure RustParseItemList(Parent : Integer); Forward;
+
+Procedure RustSkipBalanced;
+Var Depth : Integer;
+Begin
+  { Skip until balanced braces/parens/brackets }
+  Depth := 0;
+  While (SrcToken.Kind <> STK_EOF) Do
+  Begin
+    If (SrcToken.Kind = STK_OP) And
+       ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or
+        (SrcToken.Val = '[')) Then
+      Inc(Depth)
+    Else If (SrcToken.Kind = STK_OP) And
+            ((SrcToken.Val = '}') Or (SrcToken.Val = ')') Or
+             (SrcToken.Val = ']')) Then
+    Begin
+      Dec(Depth);
+      If Depth <= 0 Then
+      Begin
+        RustConsume;
+        Exit;
+      End;
+    End;
+    RustConsume;
+  End;
+End;
+
+Procedure RustSkipBlock;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+  Begin
+    RustConsume;
+    RustSkipBalanced;
+  End;
+End;
+
+Procedure RustSkipToSemiOrBrace;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+    RustConsume;
+End;
+
+Procedure RustSkipGenericParams;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+  Begin
+    RustConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '>'))) Do
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+        RustSkipGenericParams
+      Else
+        RustConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '>') Then
+      RustConsume;
+  End;
+End;
+
+Procedure RustSkipParens;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+  Begin
+    RustConsume;
+    RustSkipBalanced;
+  End;
+End;
+
+Procedure RustSkipAttrs;
+Begin
+  While (SrcToken.Kind = STK_OP) And (SrcToken.Val = '#') Do
+  Begin
+    RustConsume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '!') Then
+      RustConsume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '[') Then
+    Begin
+      RustConsume;
+      RustSkipBalanced;
+    End;
+  End;
+End;
+
+Procedure RustParseBody(Parent : Integer);
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+  Begin
+    RustConsume;
+    RustParseItemList(Parent);
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+      RustConsume;
+  End;
+End;
+
+Procedure RustParseStatements(Parent : Integer);
+Var N : Integer;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+  Begin
+    RustSkipAttrs;
+
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+      Exit;
+
+    { let binding }
+    If RustIsKW('let') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_LET);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { let }
+      If RustIsKW('mut') Then RustConsume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RustConsume;
+      End;
+      { skip to ; }
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And
+           ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or (SrcToken.Val = '[')) Then
+        Begin
+          RustConsume;
+          RustSkipBalanced;
+        End
+        Else
+          RustConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End
+
+    { if expression }
+    Else If RustIsKW('if') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_IF);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { if }
+      If RustIsKW('let') Then RustConsume;
+      { skip condition }
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) Do
+        RustConsume;
+      { parse if body }
+      RustParseBody(N);
+      { else branch }
+      If RustIsKW('else') Then
+      Begin
+        RustConsume;
+        If RustIsKW('if') Then
+          Continue  { else if will be picked up in next iteration }
+        Else
+          RustParseBody(N);
+      End;
+    End
+
+    { match expression }
+    Else If RustIsKW('match') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_MATCH);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { match }
+      { skip match expression }
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) Do
+        RustConsume;
+      RustSkipBlock;
+    End
+
+    { loop }
+    Else If RustIsKW('loop') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_LOOP);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { loop }
+      RustParseBody(N);
+    End
+
+    { while loop }
+    Else If RustIsKW('while') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_LOOP);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Name := 'while';
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { while }
+      If RustIsKW('let') Then RustConsume;
+      { skip condition }
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) Do
+        RustConsume;
+      RustParseBody(N);
+    End
+
+    { for loop }
+    Else If RustIsKW('for') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_FOR);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { for }
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RustConsume;
+      End;
+      { skip to open brace }
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) Do
+        RustConsume;
+      RustParseBody(N);
+    End
+
+    { return }
+    Else If RustIsKW('return') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_RETURN);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { return }
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And
+           ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or (SrcToken.Val = '[')) Then
+        Begin
+          RustConsume;
+          RustSkipBalanced;
+        End
+        Else
+          RustConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End
+
+    { Nested items within function body: fn, struct, enum, impl, trait, mod, use, const, static }
+    Else If RustIsKW('fn') Or RustIsKW('pub') Or RustIsKW('struct') Or
+            RustIsKW('enum') Or RustIsKW('impl') Or RustIsKW('trait') Or
+            RustIsKW('mod') Or RustIsKW('use') Or RustIsKW('const') Or
+            RustIsKW('static') Or RustIsKW('type') Or RustIsKW('extern') Or
+            RustIsKW('unsafe') Or RustIsKW('async') Then
+    Begin
+      { Delegate to item parser }
+      RustParseItemList(Parent);
+      { Only one item, so break after }
+    End
+
+    { break / continue }
+    Else If RustIsKW('break') Or RustIsKW('continue') Then
+    Begin
+      RustConsume;
+      { optional label 'label }
+      If (SrcToken.Kind = STK_IDENT) And (Length(SrcToken.Val) > 0) And
+         (SrcToken.Val[1] = '''') Then
+        RustConsume;
+      { optional expression for break }
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And
+           ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or (SrcToken.Val = '[')) Then
+        Begin
+          RustConsume;
+          RustSkipBalanced;
+        End
+        Else
+          RustConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End
+
+    { Any other statement/expression }
+    Else
+    Begin
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And
+           ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or (SrcToken.Val = '[')) Then
+        Begin
+          RustConsume;
+          RustSkipBalanced;
+        End
+        Else
+          RustConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End;
+  End;
+End;
+
+Procedure RustParseItemList(Parent : Integer);
+Var N        : Integer;
+    ItemName : TString;
+    IsPub    : Boolean;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+  Begin
+    RustSkipAttrs;
+
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+      Exit;
+
+    IsPub := False;
+    If RustIsKW('pub') Then
+    Begin
+      IsPub := True;
+      RustConsume;
+      { pub(crate), pub(super), pub(in path) }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        RustSkipParens;
+    End;
+
+    { unsafe prefix }
+    If RustIsKW('unsafe') Then
+      RustConsume;
+
+    { async prefix }
+    If RustIsKW('async') Then
+      RustConsume;
+
+    { extern prefix }
+    If RustIsKW('extern') Then
+    Begin
+      RustConsume;
+      If SrcToken.Kind = STK_STRING Then
+        RustConsume;
+      { extern block }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        RustConsume;
+        RustParseItemList(Parent);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          RustConsume;
+        Continue;
+      End;
+    End;
+
+    { use declaration }
+    If RustIsKW('use') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_USE);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { use }
+      { collect path }
+      ItemName := '';
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        Begin
+          RustConsume;
+          RustSkipBalanced;
+        End
+        Else
+        Begin
+          If ItemName = '' Then
+            ItemName := SrcToken.Val;
+          RustConsume;
+        End;
+      End;
+      SrcNodes[N].Name := ItemName;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End
+
+    { mod declaration }
+    Else If RustIsKW('mod') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_MOD);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { mod }
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RustConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        RustConsume;
+        RustParseItemList(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          RustConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End
+
+    { fn declaration }
+    Else If RustIsKW('fn') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_FN);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { fn }
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RustConsume;
+      End;
+      RustSkipGenericParams;
+      { Skip parameters }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        RustSkipParens;
+      { Return type }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '->') Then
+      Begin
+        RustConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+              (Not RustIsKW('where')) Do
+        Begin
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+            RustSkipGenericParams
+          Else
+            RustConsume;
+        End;
+      End;
+      { where clause }
+      If RustIsKW('where') Then
+      Begin
+        RustConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+          RustConsume;
+      End;
+      { Function body or ; }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        RustConsume;
+        RustParseStatements(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          RustConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End
+
+    { struct declaration }
+    Else If RustIsKW('struct') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_STRUCT);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { struct }
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RustConsume;
+      End;
+      RustSkipGenericParams;
+      If RustIsKW('where') Then
+      Begin
+        RustConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+          RustConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        RustSkipBlock
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        RustSkipParens;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          RustConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End
+
+    { enum declaration }
+    Else If RustIsKW('enum') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_ENUM);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { enum }
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RustConsume;
+      End;
+      RustSkipGenericParams;
+      If RustIsKW('where') Then
+      Begin
+        RustConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) Do
+          RustConsume;
+      End;
+      RustSkipBlock;
+    End
+
+    { impl block }
+    Else If RustIsKW('impl') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_IMPL);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { impl }
+      RustSkipGenericParams;
+      { Collect type name }
+      ItemName := '';
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) And
+            (Not RustIsKW('where')) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+          RustSkipGenericParams
+        Else
+        Begin
+          If (SrcToken.Kind = STK_IDENT) And (ItemName = '') Then
+            ItemName := SrcToken.Val;
+          RustConsume;
+        End;
+      End;
+      SrcNodes[N].Name := ItemName;
+      If RustIsKW('where') Then
+      Begin
+        RustConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) Do
+          RustConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        RustConsume;
+        RustParseItemList(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          RustConsume;
+      End;
+    End
+
+    { trait declaration }
+    Else If RustIsKW('trait') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_TRAIT);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { trait }
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RustConsume;
+      End;
+      RustSkipGenericParams;
+      { supertraits : Trait1 + Trait2 }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+      Begin
+        RustConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) And
+              (Not RustIsKW('where')) Do
+        Begin
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+            RustSkipGenericParams
+          Else
+            RustConsume;
+        End;
+      End;
+      If RustIsKW('where') Then
+      Begin
+        RustConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{'))) Do
+          RustConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        RustConsume;
+        RustParseItemList(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          RustConsume;
+      End;
+    End
+
+    { const declaration }
+    Else If RustIsKW('const') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_CONST);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { const }
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RustConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And
+           ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or (SrcToken.Val = '[')) Then
+        Begin
+          RustConsume;
+          RustSkipBalanced;
+        End
+        Else
+          RustConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End
+
+    { static declaration }
+    Else If RustIsKW('static') Then
+    Begin
+      N := SrcNewNode(SNK_RUST_STATIC);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      RustConsume; { static }
+      If RustIsKW('mut') Then RustConsume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        RustConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And
+           ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or (SrcToken.Val = '[')) Then
+        Begin
+          RustConsume;
+          RustSkipBalanced;
+        End
+        Else
+          RustConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End
+
+    { type alias }
+    Else If RustIsKW('type') Then
+    Begin
+      RustConsume;
+      If SrcToken.Kind = STK_IDENT Then
+        RustConsume;
+      RustSkipGenericParams;
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+        RustConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume;
+    End
+
+    { macro_rules! }
+    Else If (SrcToken.Kind = STK_IDENT) And (SrcToken.Val = 'macro_rules') Then
+    Begin
+      RustConsume; { macro_rules }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '!') Then
+        RustConsume;
+      If SrcToken.Kind = STK_IDENT Then
+        RustConsume;
+      If (SrcToken.Kind = STK_OP) And
+         ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or (SrcToken.Val = '[')) Then
+      Begin
+        RustConsume;
+        RustSkipBalanced;
+      End;
+    End
+
+    { Other: expression, macro call, etc. - skip to semicolon }
+    Else
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        RustConsume
+      Else
+      Begin
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+        Begin
+          If (SrcToken.Kind = STK_OP) And
+             ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or (SrcToken.Val = '[')) Then
+          Begin
+            RustConsume;
+            RustSkipBalanced;
+          End
+          Else
+            RustConsume;
+        End;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          RustConsume;
+      End;
+    End;
+  End;
+End;
+
+Function RustParseTranslationUnit : Integer;
+Var Root : Integer;
+Begin
+  RustConsume; { prime the lexer }
+
+  Root := SrcNewNode(SNK_RUST_CRATE);
+  SrcNodes[Root].Line := 1;
+  SrcNodes[Root].Name := 'crate';
+
+  { Skip inner attributes #![...] }
+  RustSkipAttrs;
+
+  { Parse items }
+  RustParseItemList(Root);
+
+  RustParseTranslationUnit := Root;
+End;
+
+Function IsRustSource(Const FName : TString) : Boolean;
+Begin
+  IsRustSource := StrEndsWith(FName, '.rs');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -30369,7 +31707,8 @@ Begin
             ((Opts.Language = 'oberon') And IsOberonSource(SR.Name)) Or
             ((Opts.Language = 'ada') And IsAdaSource(SR.Name)) Or
              ((Opts.Language = 'php') And IsPhpSource(SR.Name)) Or
-              ((Opts.Language = 'modula2') And IsM2Source(SR.Name)) Then
+              ((Opts.Language = 'modula2') And IsM2Source(SR.Name)) Or
+               ((Opts.Language = 'rust') And IsRustSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -30526,6 +31865,12 @@ Begin
       M2LexInit;
       SrcASTInit;
       SrcRootNode := M2ParseTranslationUnit;
+    End
+    Else If Opts.Language = 'rust' Then
+    Begin
+      RustLexInit;
+      SrcASTInit;
+      SrcRootNode := RustParseTranslationUnit;
     End
     Else
     Begin
