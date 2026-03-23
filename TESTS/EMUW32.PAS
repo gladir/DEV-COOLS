@@ -63,7 +63,7 @@
       LODSD, CMPSD, SCASD ainsi que les prefixes REP/REPE/REPNE
       utilisant ECX comme compteur, et les variantes 8/16 bits.
 
-  12. Implementer les instructions de saut conditionnel 32 bits (Jcc
+  12. [IMPLEMENTE] Implementer les instructions de saut conditionnel 32 bits (Jcc
       near avec deplacement rel32, prefixe 0Fh) et les sauts
       inconditionnels JMP rel32/JMP [mem] en mode plat.
 
@@ -4333,6 +4333,163 @@ Begin
   Dec(Regs.ECX);
   If ZF in EFlags.s Then Exit;
  End;
+End;
+
+  { TODO 12 : Evaluation d'une condition x86 (cc = 0..15).
+    Retourne True si la condition est satisfaite selon EFLAGS.
+    Les 16 conditions correspondent aux opcodes Jcc ($70+cc)
+    et aux opcodes etendus 0F Jcc ($0F $80+cc) :
+      0=O, 1=NO, 2=B/C, 3=NB/NC, 4=Z/E, 5=NZ/NE,
+      6=BE/NA, 7=NBE/A, 8=S, 9=NS, 10=P/PE, 11=NP/PO,
+      12=L/NGE, 13=NL/GE, 14=LE/NG, 15=NLE/G }
+Function CheckCondition(cc:Byte):Boolean;
+Var
+ SFVal,OFVal:Boolean;
+Begin
+ SFVal:=SF in EFlags.s;
+ OFVal:=_OF in EFlags.s;
+ Case cc of
+  0:CheckCondition:=_OF in EFlags.s;                                { JO }
+  1:CheckCondition:=Not(_OF in EFlags.s);                           { JNO }
+  2:CheckCondition:=CF in EFlags.s;                                 { JB/JC/JNAE }
+  3:CheckCondition:=Not(CF in EFlags.s);                            { JNB/JNC/JAE }
+  4:CheckCondition:=ZF in EFlags.s;                                 { JZ/JE }
+  5:CheckCondition:=Not(ZF in EFlags.s);                            { JNZ/JNE }
+  6:CheckCondition:=(CF in EFlags.s)or(ZF in EFlags.s);             { JBE/JNA }
+  7:CheckCondition:=Not(CF in EFlags.s)and Not(ZF in EFlags.s);     { JNBE/JA }
+  8:CheckCondition:=SF in EFlags.s;                                 { JS }
+  9:CheckCondition:=Not(SF in EFlags.s);                            { JNS }
+  10:CheckCondition:=PF in EFlags.s;                                { JP/JPE }
+  11:CheckCondition:=Not(PF in EFlags.s);                           { JNP/JPO }
+  12:CheckCondition:=SFVal<>OFVal;                                  { JL/JNGE }
+  13:CheckCondition:=SFVal=OFVal;                                   { JNL/JGE }
+  14:CheckCondition:=(ZF in EFlags.s)or(SFVal<>OFVal);              { JLE/JNG }
+  15:CheckCondition:=Not(ZF in EFlags.s)and(SFVal=OFVal);           { JNLE/JG }
+  Else CheckCondition:=False;
+ End;
+End;
+
+  { TODO 12 : Jcc short rel8 (opcodes $70-$7F).
+    Saut conditionnel avec deplacement relatif signe de 8 bits.
+    Le deplacement est relatif a l'adresse apres l'instruction
+    (EIP pointe deja apres l'opcode quand cette procedure est appelee,
+    on lit le rel8 et on avance EIP de 1, puis on ajoute le
+    deplacement si la condition est satisfaite). }
+Procedure OpJccShort(cc:Byte);
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ If CheckCondition(cc)Then
+  EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 12 : Jcc near rel32 (opcodes $0F $80-$8F).
+    Saut conditionnel avec deplacement relatif signe de 32 bits.
+    Le deplacement est relatif a l'adresse apres l'instruction
+    (apres les 2 octets d'opcode 0F xx et les 4 octets de rel32). }
+Procedure OpJccNear(cc:Byte);
+Var
+ Rel32:LongInt;
+Begin
+ Rel32:=ReadDWord(EIP);
+ Inc(EIP,4);
+ If CheckCondition(cc)Then
+  EIP:=EIP+Rel32;
+End;
+
+  { TODO 12 : JMP short rel8 (opcode $EB).
+    Saut inconditionnel avec deplacement relatif signe de 8 bits. }
+Procedure OpJmpShort;
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 12 : JMP near rel32 (opcode $E9).
+    Saut inconditionnel avec deplacement relatif signe de 32 bits. }
+Procedure OpJmpNear;
+Var
+ Rel32:LongInt;
+Begin
+ Rel32:=ReadDWord(EIP);
+ Inc(EIP,4);
+ EIP:=EIP+Rel32;
+End;
+
+  { TODO 12 : JMP r/m32 (opcode $FF /4).
+    Saut inconditionnel indirect : l'adresse cible est lue depuis
+    un registre 32 bits ou une adresse memoire. L'octet ModR/M
+    a deja ete lu par le dispatch ; le champ reg doit valoir 4.
+    Si mod=11, la cible est un registre ; sinon, elle est lue
+    depuis la memoire a l'adresse effective. }
+Procedure OpJmpRM32;
+Var
+ ModField,RegField,RMField:Byte;
+ EffAddr:LongInt;
+ IsMemory:Boolean;
+Begin
+ DecodeModRM(ModField,RegField,RMField,EffAddr,IsMemory);
+ If IsMemory Then
+  EIP:=ReadDWord(EffAddr)
+ Else
+  EIP:=GetReg32(RMField);
+End;
+
+  { TODO 12 : JMP short rel8 conditionnel - JCXZ/JECXZ (opcode $E3).
+    Saut si ECX = 0 avec deplacement relatif signe de 8 bits.
+    En mode 32 bits, c'est JECXZ. }
+Procedure OpJecxz;
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ If Regs.ECX=0 Then
+  EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 12 : LOOP rel8 (opcode $E2).
+    Decremente ECX et saute si ECX <> 0. }
+Procedure OpLoop;
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ Dec(Regs.ECX);
+ If Regs.ECX<>0 Then
+  EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 12 : LOOPE/LOOPZ rel8 (opcode $E1).
+    Decremente ECX et saute si ECX <> 0 et ZF = 1. }
+Procedure OpLoope;
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ Dec(Regs.ECX);
+ If(Regs.ECX<>0)and(ZF in EFlags.s)Then
+  EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 12 : LOOPNE/LOOPNZ rel8 (opcode $E0).
+    Decremente ECX et saute si ECX <> 0 et ZF = 0. }
+Procedure OpLoopne;
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ Dec(Regs.ECX);
+ If(Regs.ECX<>0)and Not(ZF in EFlags.s)Then
+  EIP:=EIP+LongInt(Rel8);
 End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
