@@ -339,8 +339,8 @@ Const
   MAX_ERRORS = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_NODES  = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
   MAX_TYPES  = {$IFDEF FPC}256{$ELSE}64{$ENDIF};
-  MAX_SRC_NODES = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
-  MAX_DB_ROWS   = {$IFDEF FPC}8192{$ELSE}1024{$ENDIF};
+  MAX_SRC_NODES = {$IFDEF FPC}16384{$ELSE}512{$ENDIF};
+  MAX_DB_ROWS   = {$IFDEF FPC}32768{$ELSE}1024{$ENDIF};
   MAX_DB_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_QL_CLASSES = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_QL_PREDS   = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
@@ -1308,6 +1308,7 @@ Var
   SrcNodes     : Array[0..MAX_SRC_NODES - 1] Of TSrcASTNode;
   SrcNodeCount : Integer;
   SrcRootNode  : Integer;
+  SrcASTOverflow : Boolean;
 
   { Base de donnees relationnelle (TODO 7) }
   DbPrograms   : Array[0..MAX_DB_ROWS - 1] Of TDbProgram;
@@ -4625,7 +4626,9 @@ Function SrcNewNode(K : TSrcNodeKind) : Integer;
 Begin
   If SrcNodeCount >= MAX_SRC_NODES Then
   Begin
-    WriteLn('CODEQL: trop de noeuds AST source');
+    If Not SrcASTOverflow Then
+      WriteLn('CODEQL: trop de noeuds AST source (max=', MAX_SRC_NODES, ')');
+    SrcASTOverflow := True;
     SrcNewNode := -1;
     Exit;
   End;
@@ -4649,6 +4652,7 @@ Procedure SrcASTInit;
 Begin
   SrcNodeCount := 0;
   SrcRootNode  := -1;
+  SrcASTOverflow := False;
 End;
 
 { ---- Consommer le prochain token non-commentaire ------------ }
@@ -4729,6 +4733,7 @@ Function  SrcParseType      : Integer; Forward;
 Function SrcParsePrimary : Integer;
 Var N, Sub, Head, Arg : Integer;
 Begin
+  N := -1;
   SrcParsePrimary := -1;
   Case SrcToken.Kind Of
     STK_INTEGER:
@@ -4830,8 +4835,7 @@ Begin
   End;
 
   { postfixes : .field  ^deref  [index]  (args) }
-  N := SrcParsePrimary;
-  While True Do
+  While (N >= 0) Do
   Begin
     If SrcTokIsPunct('.') Then
     Begin
@@ -4880,11 +4884,23 @@ Begin
       If Not SrcTokIsPunct(')') Then
       Begin
         Arg := SrcParseExpr;
+        { Format specifier expr:width[:decimals] }
+        While SrcTokIsPunct(':') And (SrcToken.Kind <> STK_EOF) Do
+        Begin
+          SrcConsume;
+          SrcParseExpr;
+        End;
         SrcAppendToList(Head, Arg);
         While SrcTokIsPunct(',') Do
         Begin
           SrcConsume;
           Arg := SrcParseExpr;
+          { Format specifier expr:width[:decimals] }
+          While SrcTokIsPunct(':') And (SrcToken.Kind <> STK_EOF) Do
+          Begin
+            SrcConsume;
+            SrcParseExpr;
+          End;
           SrcAppendToList(Head, Arg);
         End;
       End;
@@ -5218,6 +5234,7 @@ End;
 
 Procedure SrcParseConstSection(Var Head : Integer);
 Var N : Integer;
+    Depth : Integer;
 Begin
   SrcConsume; { consomme 'const' }
   While (SrcToken.Kind = STK_IDENT) And
@@ -5237,7 +5254,18 @@ Begin
     If SrcTokIsOp('=') Then
     Begin
       SrcConsume;
-      SrcNodes[N].Right := SrcParseExpr;
+      { Initialisateur structure : (val1, val2, ...) }
+      If SrcTokIsPunct('(') Then
+      Begin
+        Depth := 0;
+        Repeat
+          If SrcTokIsPunct('(') Then Inc(Depth)
+          Else If SrcTokIsPunct(')') Then Dec(Depth);
+          SrcConsume;
+        Until (Depth <= 0) Or (SrcToken.Kind = STK_EOF);
+      End
+      Else
+        SrcNodes[N].Right := SrcParseExpr;
     End;
     If SrcTokIsPunct(';') Then
       SrcConsume;
@@ -33718,6 +33746,7 @@ Var
   I           : Integer;
   TotalNodes  : LongInt;
   TotalFiles  : Integer;
+  PrevExprCnt, PrevStmtCnt, PrevFuncCnt : Integer;
 Begin
   If Opts.Verbose Then
     ShowBanner;
@@ -33881,14 +33910,17 @@ Begin
     Inc(TotalFiles);
 
     { Extraire dans la base de donnees relationnelle }
+    PrevExprCnt := DbExprCnt;
+    PrevStmtCnt := DbStmtCnt;
+    PrevFuncCnt := DbFunctionCnt;
     ExtProgramId := DbAddProgram(SrcNodes[SrcRootNode].Name,
                                  SrcFileList[I]);
     ExtFileId := DbAddFile(SrcFileList[I], SrcTotalLines);
     DbAddLocation(ExtFileId, 1, 1, SrcTotalLines, 1);
     ExtractNode(SrcRootNode, ExtProgramId);
-    WriteLn('  expressions : ', DbExprCnt,
-            '  instructions: ', DbStmtCnt,
-            '  fonctions   : ', DbFunctionCnt);
+    WriteLn('  expressions : ', DbExprCnt - PrevExprCnt,
+            '  instructions: ', DbStmtCnt - PrevStmtCnt,
+            '  fonctions   : ', DbFunctionCnt - PrevFuncCnt);
 
     SrcLexClose;
   End;
