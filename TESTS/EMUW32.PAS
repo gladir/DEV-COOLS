@@ -120,7 +120,7 @@
       prefixes (66h, 67h, 0Fh pour les opcodes etendus, F2h/F3h
       pour REP) et dispatch vers les procedures d'emulation.
 
-  24. Implementer les options de ligne de commande : /DEBUG pour le
+  24. [IMPLEMENTE] Implementer les options de ligne de commande : /DEBUG pour le
       mode debogage avec affichage de l'etat des registres a chaque
       instruction, /VERBOSE pour les messages informatifs, et
       /READONLY pour interdire les ecritures sur disque.
@@ -478,6 +478,14 @@ Var
     Chaque slot contient un SearchRec actif pour iterer les fichiers. }
  EmuFindActive:Array[0..MAX_EMU_FIND_HANDLES-1] of Boolean;
  EmuFindSR:Array[0..MAX_EMU_FIND_HANDLES-1] of SearchRec;
+
+  { TODO 24 : Options de ligne de commande.
+    DebugMode : affiche l'etat des registres apres chaque instruction.
+    VerboseMode : affiche des messages informatifs supplementaires.
+    ReadOnlyMode : interdit les ecritures sur disque par le programme emule. }
+ DebugMode:Boolean;
+ VerboseMode:Boolean;
+ ReadOnlyMode:Boolean;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -5276,6 +5284,15 @@ Begin
  Else If(hFile>=EMU_FILE_HANDLE_BASE)and
         (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
   { TODO 17 : Ecriture dans un fichier emule }
+    { TODO 24 : En mode READONLY, bloquer les ecritures fichier }
+  If ReadOnlyMode Then Begin
+   If VerboseMode Then
+    WriteLn('[READONLY] WriteFile bloque pour handle ',hFile);
+   If lpWritten<>0 Then WriteDWord(lpWritten,0);
+   Regs.EAX:=0;
+   Regs.ESP:=Regs.ESP+20;
+   Exit;
+  End;
   Slot:=hFile-EMU_FILE_HANDLE_BASE;
   If Not EmuFileActive[Slot] Then Begin
    If lpWritten<>0 Then WriteDWord(lpWritten,0);
@@ -5464,6 +5481,14 @@ Begin
  dwFlags:=ReadDWord(Regs.ESP+24);
  hTemplate:=ReadDWord(Regs.ESP+28);
  FName:=ReadStringFromMem(lpFileName);
+  { TODO 24 : En mode READONLY, bloquer les creations/truncations de fichiers }
+ If ReadOnlyMode and(dwCreation<>OPEN_EXISTING)Then Begin
+  If VerboseMode Then
+   WriteLn('[READONLY] CreateFileA bloque pour "',FName,'"');
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+  Regs.ESP:=Regs.ESP+28;
+  Exit;
+ End;
  Slot:=FindFreeFileSlot;
  If Slot<0 Then Begin
   Regs.EAX:=INVALID_HANDLE_VALUE;
@@ -5648,6 +5673,14 @@ Var
 Begin
  lpFileName:=ReadDWord(Regs.ESP+4);
  FName:=ReadStringFromMem(lpFileName);
+  { TODO 24 : En mode READONLY, bloquer la suppression de fichiers }
+ If ReadOnlyMode Then Begin
+  If VerboseMode Then
+   WriteLn('[READONLY] DeleteFileA bloque pour "',FName,'"');
+  Regs.EAX:=0;
+  Regs.ESP:=Regs.ESP+4;
+  Exit;
+ End;
  {$I-}Assign(F,FName);
  Erase(F);{$I+}
  If IOResult=0 Then
@@ -5695,6 +5728,14 @@ Var
 Begin
  lpFileName:=ReadDWord(Regs.ESP+4);
  dwAttrs:=ReadDWord(Regs.ESP+8);
+  { TODO 24 : En mode READONLY, bloquer la modification des attributs }
+ If ReadOnlyMode Then Begin
+  If VerboseMode Then
+   WriteLn('[READONLY] SetFileAttributesA bloque');
+  Regs.EAX:=0;
+  Regs.ESP:=Regs.ESP+8;
+  Exit;
+ End;
  Regs.EAX:=1;  { TRUE - emulation simplifiee }
   { Nettoyer la pile : 2 parametres }
  Regs.ESP:=Regs.ESP+8;
@@ -6774,6 +6815,14 @@ Begin
  lpNew:=ReadDWord(Regs.ESP+8);
  OldName:=ReadStringFromMem(lpExisting);
  NewName:=ReadStringFromMem(lpNew);
+  { TODO 24 : En mode READONLY, bloquer le deplacement de fichiers }
+ If ReadOnlyMode Then Begin
+  If VerboseMode Then
+   WriteLn('[READONLY] MoveFileA bloque pour "',OldName,'"');
+  Regs.EAX:=0;
+  Regs.ESP:=Regs.ESP+8;
+  Exit;
+ End;
  {$I-}Assign(F,OldName);
  Rename(F,NewName);{$I+}
  If IOResult=0 Then
@@ -6805,6 +6854,14 @@ Begin
  bFail:=ReadDWord(Regs.ESP+12);
  SrcName:=ReadStringFromMem(lpExisting);
  DstName:=ReadStringFromMem(lpNew);
+  { TODO 24 : En mode READONLY, bloquer la copie de fichiers }
+ If ReadOnlyMode Then Begin
+  If VerboseMode Then
+   WriteLn('[READONLY] CopyFileA bloque pour "',DstName,'"');
+  Regs.EAX:=0;
+  Regs.ESP:=Regs.ESP+12;
+  Exit;
+ End;
   { Ouvrir le fichier source }
  {$I-}Assign(Src,SrcName);
  Reset(Src,1);{$I+}
@@ -7269,6 +7326,59 @@ Begin
           ImportEntries[Idx].FuncName);
 End;
 
+  { TODO 24 : Analyse des options de ligne de commande.
+    Parcourt les parametres et active les modes :
+    /DEBUG   - affiche l'etat des registres apres chaque instruction.
+    /VERBOSE - affiche des messages informatifs supplementaires.
+    /READONLY - interdit les ecritures sur disque par le programme emule.
+    Les options sont case-insensitive et precedees de / ou -. }
+Procedure ParseOptions;
+Var
+ I:Integer;
+ S:String;
+Begin
+ DebugMode:=False;
+ VerboseMode:=False;
+ ReadOnlyMode:=False;
+ For I:=1 to ParamCount do Begin
+  S:=ParamStr(I);
+  If(Length(S)>1)and((S[1]='/')or(S[1]='-'))Then Begin
+   Delete(S,1,1);
+   { Convertir en majuscules pour comparaison case-insensitive }
+   For I:=1 to Length(S) do
+    If(S[I]>='a')and(S[I]<='z')Then
+     S[I]:=Chr(Ord(S[I])-32);
+   If S='DEBUG' Then DebugMode:=True
+   Else If S='VERBOSE' Then VerboseMode:=True
+   Else If S='READONLY' Then ReadOnlyMode:=True;
+  End;
+ End;
+End;
+
+  { TODO 24 : Affichage de l'etat des registres pour le mode debogage.
+    Affiche EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI, EIP et les
+    drapeaux principaux (CF, ZF, SF, OF, DF, PF, AF) d'EFLAGS. }
+Procedure DumpRegisters;
+Begin
+ WriteLn('  EAX=$',HexStr(Regs.EAX,8),
+         ' ECX=$',HexStr(Regs.ECX,8),
+         ' EDX=$',HexStr(Regs.EDX,8),
+         ' EBX=$',HexStr(Regs.EBX,8));
+ WriteLn('  ESP=$',HexStr(Regs.ESP,8),
+         ' EBP=$',HexStr(Regs.EBP,8),
+         ' ESI=$',HexStr(Regs.ESI,8),
+         ' EDI=$',HexStr(Regs.EDI,8));
+ Write('  EIP=$',HexStr(EIP,8),' EFLAGS=');
+ If CF in EFlags.s Then Write('CF ');
+ If PF in EFlags.s Then Write('PF ');
+ If AF in EFlags.s Then Write('AF ');
+ If ZF in EFlags.s Then Write('ZF ');
+ If SF in EFlags.s Then Write('SF ');
+ If DF in EFlags.s Then Write('DF ');
+ If _OF in EFlags.s Then Write('OF ');
+ WriteLn;
+End;
+
   { TODO 23 : Boucle principale d'execution (Procedure Run).
     Decodage du flux d'instructions 80386 avec gestion des prefixes
     (66h operand-size, 67h address-size, 0Fh opcodes etendus,
@@ -7320,6 +7430,9 @@ Begin
     OpCode:=ReadByte(EIP);
     Inc(EIP);
    End;
+      { TODO 24 : En mode debogage, afficher l'opcode en cours }
+   If DebugMode Then
+    WriteLn('[DEBUG] EIP=$',HexStr(EIP-1,8),' opcode=$',HexStr(OpCode,2));
     { Dispatch de l'opcode principal }
    Case OpCode of
      { === ADD === }
@@ -7888,6 +8001,8 @@ Begin
      EmuRunning:=False;
     End;
    End; { Case OpCode }
+     { TODO 24 : En mode debogage, afficher l'etat des registres }
+   If DebugMode and EmuRunning Then DumpRegisters;
   End; { Else }
  End; { While EmuRunning }
 End;
@@ -7930,8 +8045,17 @@ Begin
 End;
 
 BEGIN
+  { TODO 24 : Analyser les options de ligne de commande }
+ ParseOptions;
+ If VerboseMode Then
+  WriteLn('EMUW32 : Demarrage de l''emulateur Windows 32 bits...');
+ If DebugMode Then
+  WriteLn('EMUW32 : Mode debogage active (/DEBUG).');
+ If ReadOnlyMode Then
+  WriteLn('EMUW32 : Mode lecture seule active (/READONLY).');
  Init;
- WriteLn('EMUW32 : Memoire lineaire de 16 Mo initialisee.');
+ If VerboseMode Then
+  WriteLn('EMUW32 : Memoire lineaire de 16 Mo initialisee.');
   { Fermer et supprimer le fichier d'echange }
  {$I-}Close(Memory);{$I+}
  If IOResult<>0 Then
