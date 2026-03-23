@@ -110,7 +110,7 @@
       FindFirstFileA, FindNextFileA, FindClose,
       GetTempPathA, GetTempFileNameA, MoveFileA, CopyFileA.
 
-  22. Implementer la convention d'appel STDCALL (Win32 API) : les
+  22. [IMPLEMENTE] Implementer la convention d'appel STDCALL (Win32 API) : les
       parametres sont empiles de droite a gauche, l'appele nettoie
       la pile, la valeur de retour est dans EAX. Detecter les
       CALL vers les thunks IAT et rediriger vers les emulations.
@@ -6865,6 +6865,190 @@ Begin
  Regs.ESP:=Regs.ESP+12;
 End;
 
+  { TODO 22 : Lecture du Nieme parametre STDCALL depuis la pile.
+    En convention STDCALL Win32, les parametres sont empiles de
+    droite a gauche par l'appelant. A l'entree de la fonction
+    emulée, la pile contient :
+      [ESP]   -> adresse de retour (empilee par CALL)
+      [ESP+4] -> parametre 1 (le plus a gauche dans le prototype C)
+      [ESP+8] -> parametre 2
+      ...
+    N est 1-indexe : N=1 retourne le premier parametre. }
+Function StdCallParam(N:Integer):LongInt;
+Begin
+ StdCallParam:=ReadDWord(Regs.ESP+LongInt(N)*4);
+End;
+
+  { TODO 22 : Place une valeur de retour STDCALL dans EAX.
+    En convention STDCALL Win32, la valeur de retour d'une
+    fonction (DWORD, HANDLE, BOOL, pointeur) est toujours
+    placee dans le registre EAX. }
+Procedure StdCallReturn(Value:LongInt);
+Begin
+ Regs.EAX:=Value;
+End;
+
+  { TODO 22 : Nettoie la pile apres un appel STDCALL.
+    En convention STDCALL, c'est l'appele qui nettoie les parametres
+    de la pile (equivalent a RET imm16 ou imm16 = NumParams * 4).
+    Cette procedure ajuste ESP pour retirer NumParams parametres
+    de 4 octets chacun (DWORD) de la pile. }
+Procedure StdCallCleanup(NumParams:Integer);
+Begin
+ Regs.ESP:=Regs.ESP+LongInt(NumParams)*4;
+End;
+
+  { TODO 22 : Verifie si une adresse est dans la zone des thunks IAT.
+    Les thunks d'importation sont alloues dans la zone $E00000-$EFFFFF
+    (ThunkBase = $E00000). Retourne True si l'adresse est un thunk
+    d'importation qui doit etre intercepte et redirige vers
+    l'emulation de la DLL correspondante. }
+Function IsThunkAddress(Addr:LongInt):Boolean;
+Begin
+ IsThunkAddress:=(Addr>=ThunkBase)and(Addr<$F00000);
+End;
+
+  { TODO 22 : Retourne le nombre de parametres STDCALL pour une
+    fonction KERNEL32.DLL donnee. Permet de connaitre la taille
+    des parametres sur la pile pour le nettoyage automatique.
+    Retourne -1 si la fonction est inconnue. }
+Function GetKernel32ParamCount(Const FuncName:String):Integer;
+Begin
+  { TODO 15 : Processus et console de base }
+ If StrIComp(FuncName,'GetStdHandle') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'ExitProcess') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetCommandLineA') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetCommandLineW') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetCurrentProcessId') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetCurrentProcess') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetExitCodeProcess') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'GetStartupInfoA') Then
+  GetKernel32ParamCount:=1
+  { TODO 16 : Entrees/sorties console }
+ Else If StrIComp(FuncName,'WriteConsoleA') Then
+  GetKernel32ParamCount:=5
+ Else If StrIComp(FuncName,'ReadConsoleA') Then
+  GetKernel32ParamCount:=5
+ Else If StrIComp(FuncName,'WriteFile') Then
+  GetKernel32ParamCount:=5
+ Else If StrIComp(FuncName,'ReadFile') Then
+  GetKernel32ParamCount:=5
+ Else If StrIComp(FuncName,'SetConsoleMode') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'GetConsoleMode') Then
+  GetKernel32ParamCount:=2
+  { TODO 17 : Gestion des fichiers }
+ Else If StrIComp(FuncName,'CreateFileA') Then
+  GetKernel32ParamCount:=7
+ Else If StrIComp(FuncName,'CloseHandle') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'SetFilePointer') Then
+  GetKernel32ParamCount:=4
+ Else If StrIComp(FuncName,'GetFileSize') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'DeleteFileA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetFileAttributesA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'SetFileAttributesA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'FlushFileBuffers') Then
+  GetKernel32ParamCount:=1
+  { TODO 18 : Gestion de la memoire }
+ Else If StrIComp(FuncName,'VirtualAlloc') Then
+  GetKernel32ParamCount:=4
+ Else If StrIComp(FuncName,'VirtualFree') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'GetProcessHeap') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'HeapCreate') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'HeapAlloc') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'HeapFree') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'HeapReAlloc') Then
+  GetKernel32ParamCount:=4
+ Else If StrIComp(FuncName,'GlobalAlloc') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'GlobalFree') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'LocalAlloc') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'LocalFree') Then
+  GetKernel32ParamCount:=1
+  { TODO 19 : Chaines et environnement }
+ Else If StrIComp(FuncName,'GetEnvironmentVariableA') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'GetEnvironmentStringsA') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'FreeEnvironmentStringsA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'lstrlenA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'lstrcpyA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'lstrcmpA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'lstrcmpiA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'lstrcatA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'GetModuleFileNameA') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'GetModuleHandleA') Then
+  GetKernel32ParamCount:=1
+  { TODO 20 : Date, heure et systeme }
+ Else If StrIComp(FuncName,'GetTickCount') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetSystemTime') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetLocalTime') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'QueryPerformanceCounter') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetSystemInfo') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetVersion') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetVersionExA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'Sleep') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetLastError') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'SetLastError') Then
+  GetKernel32ParamCount:=1
+  { TODO 21 : Synchronisation et divers }
+ Else If StrIComp(FuncName,'GetCurrentDirectoryA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'SetCurrentDirectoryA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'FindFirstFileA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'FindNextFileA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'FindClose') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetTempPathA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'GetTempFileNameA') Then
+  GetKernel32ParamCount:=4
+ Else If StrIComp(FuncName,'MoveFileA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'CopyFileA') Then
+  GetKernel32ParamCount:=3
+ Else
+  GetKernel32ParamCount:=-1;
+End;
+
   { TODO 15 : Dispatche un appel a une fonction de KERNEL32.DLL.
     Recoit l'index de l'entree d'importation dans ImportEntries
     et appelle la procedure d'emulation correspondante.
@@ -7041,6 +7225,46 @@ Begin
  End
  Else
   WriteLn('HandleThunkCall: DLL non emulée: ',
+          ImportEntries[Idx].DLLName,'!',
+          ImportEntries[Idx].FuncName);
+End;
+
+  { TODO 22 : Detection et dispatch unifie des appels vers les thunks IAT.
+    Verifie si l'adresse est un thunk d'importation via IsThunkAddress,
+    identifie la DLL et la fonction importee, dispatche l'appel vers
+    l'emulation KERNEL32.DLL, et gere le nettoyage de la pile selon
+    la convention STDCALL (l'appele nettoie les parametres, puis on
+    depile l'adresse de retour).
+    Cette fonction sert de point d'entree principal pour la boucle
+    d'execution (TODO 23) quand EIP pointe vers un thunk.
+    Retourne True si le thunk a ete traite avec succes. }
+Function DetectAndDispatchThunk(Addr:LongInt):Boolean;
+Var
+ Idx:Integer;
+ OK:Boolean;
+Begin
+ DetectAndDispatchThunk:=False;
+ If Not IsThunkAddress(Addr) Then Exit;
+ Idx:=FindImportByAddr(Addr);
+ If Idx<0 Then Begin
+  WriteLn('DetectAndDispatchThunk: thunk inconnu a $',HexStr(Addr,8));
+  Exit;
+ End;
+ If StrIComp(ImportEntries[Idx].DLLName,'KERNEL32.DLL')or
+    StrIComp(ImportEntries[Idx].DLLName,'kernel32.dll')or
+    StrIComp(ImportEntries[Idx].DLLName,'KERNEL32')or
+    StrIComp(ImportEntries[Idx].DLLName,'kernel32')Then Begin
+  OK:=DispatchKernel32(Idx);
+  DetectAndDispatchThunk:=OK;
+  If OK Then Begin
+    { Convention STDCALL : l'appele nettoie les parametres (deja fait
+      par chaque procedure Emu*). Il reste a depiler l'adresse de
+      retour pour simuler le RET final du thunk. }
+   EIP:=Pop32;
+  End;
+ End
+ Else
+  WriteLn('DetectAndDispatchThunk: DLL non emulée: ',
           ImportEntries[Idx].DLLName,'!',
           ImportEntries[Idx].FuncName);
 End;
