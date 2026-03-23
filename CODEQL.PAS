@@ -28100,7 +28100,6 @@ Var
   Scanning : Boolean;
   S        : TString;
   Code     : Integer;
-  Nest     : Integer;
 Begin
   SrcToken.IntVal   := 0;
   SrcToken.FloatVal := 0.0;
@@ -28566,9 +28565,6 @@ Begin
 End;
 
 { ---- PHP Parser -------------------------------------------- }
-
-Var
-  PhpTokVal : TString;
 
 Procedure PhpConsume;
 Begin
