@@ -1,7 +1,7 @@
 { @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
 }
 
 { TODO - Liste des 26 points a implementer pour le clone de CodeQL :
@@ -1460,40 +1460,46 @@ Procedure ShowBanner;
 Begin
   WriteLn('CODEQL v', CODEQL_VERSION, ' (', CODEQL_DATE, ')');
   WriteLn('Clone CodeQL - Analyse statique de code Pascal');
-  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn('Free Pascal (-Mtp)');
   WriteLn;
 End;
 
 { ---- Aide en ligne ----------------------------------------- }
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: CODEQL <commande> [options]');
-  WriteLn;
-  WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php|modula2|rust|perl|raku]');
-  WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
-  WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
-  WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
-  WriteLn('  generate samples  [<dir>]');
-  WriteLn;
-  WriteLn('Options globales :');
-  WriteLn('  -v, --verbose       Mode verbeux');
-  WriteLn('  -d                  Mode debug');
-  WriteLn('  -h, --help          Afficher cette aide');
-  WriteLn('  --search-path=<p>   Chemin vers les bibliotheques QL');
-  WriteLn('  --format=<fmt>      Format de sortie : sarif, csv, text');
-  WriteLn('  --output=<file>     Fichier de sortie des resultats');
-  WriteLn('  --interactive       Mode REPL (query run)');
-  WriteLn;
-  WriteLn('Exemples :');
-  WriteLn('  CODEQL database create mydb --source-root=src');
-  WriteLn('  CODEQL database analyze mydb security.qls --format=sarif');
-  WriteLn('  CODEQL query run --database=mydb find_bugs.ql');
-  WriteLn('  CODEQL query run --database=mydb --interactive');
-  WriteLn('  CODEQL generate samples');
-  WriteLn;
-  Halt(EXIT_USAGE);
+Procedure ShowUsage;Begin
+ WriteLn('CODEQL - Cette commande permet d''utiliser l''outil CodeQL en ',
+         'ligne de commande afin d''analyser automatiquement le code ',
+         'source d''un programme, de cr‚er une base d''analyse et ',
+         'd''ex‚cuter des requˆtes permettant de d‚tecter des ',
+         'vuln‚rabilit‚s, des erreurs de programmation et des problŠmes ',
+         'de qualit‚ logicielle.');
+ WriteLn;
+ WriteLn('Syntaxe: CODEQL <commande> [options]');
+ WriteLn;
+ WriteLn('Commandes :');
+ WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php|modula2|rust|perl|raku]');
+ WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
+ WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
+ WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
+ WriteLn('  generate samples  [<dir>]');
+ WriteLn;
+ WriteLn('Options globales :');
+ WriteLn('  -v, --verbose       Mode verbeux');
+ WriteLn('  -d                  Mode debug');
+ WriteLn('  -h, --help          Afficher cette aide');
+ WriteLn('  --search-path=<p>   Chemin vers les bibliotheques QL');
+ WriteLn('  --format=<fmt>      Format de sortie : sarif, csv, text');
+ WriteLn('  --output=<file>     Fichier de sortie des resultats');
+ WriteLn('  --interactive       Mode REPL (query run)');
+ WriteLn;
+ WriteLn('Exemples :');
+ WriteLn('  CODEQL database create mydb --source-root=src');
+ WriteLn('  CODEQL database analyze mydb security.qls --format=sarif');
+ WriteLn('  CODEQL query run --database=mydb find_bugs.ql');
+ WriteLn('  CODEQL query run --database=mydb --interactive');
+ WriteLn('  CODEQL generate samples');
+ WriteLn;
+ Halt(EXIT_USAGE);
 End;
 
 { ---- Initialisation des options ----------------------------- }
