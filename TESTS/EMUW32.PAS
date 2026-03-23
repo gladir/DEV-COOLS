@@ -2393,8 +2393,8 @@ Begin
   WriteLn('DIV: erreur de division par zero (32 bits)');
   Exit;
  End;
- Dividend64:=(Int64(Regs.EDX) and $FFFFFFFF) shl 32;
- Dividend64:=Dividend64 or (Int64(Regs.EAX) and $FFFFFFFF);
+ Dividend64:=((Int64(Regs.EDX) and $FFFFFFFF) shl 32) or
+             (Int64(Regs.EAX) and $FFFFFFFF);
  Divisor64:=Int64(Val) and $FFFFFFFF;
  Quot64:=Dividend64 div Divisor64;
  If Quot64>$FFFFFFFF Then Begin
