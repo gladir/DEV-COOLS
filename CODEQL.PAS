@@ -699,7 +699,15 @@ Type
     SNK_PHP_PROPERTY, SNK_PHP_CONST_DECL,
     SNK_PHP_IF, SNK_PHP_SWITCH,
     SNK_PHP_LOOP, SNK_PHP_TRY,
-    SNK_PHP_RETURN, SNK_PHP_ECHO
+    SNK_PHP_RETURN, SNK_PHP_ECHO,
+    SNK_M2_MODULE, SNK_M2_DEF_MODULE,
+    SNK_M2_IMPORT, SNK_M2_CONST_DECL,
+    SNK_M2_TYPE_DECL, SNK_M2_VAR_DECL,
+    SNK_M2_PROCEDURE, SNK_M2_IF,
+    SNK_M2_CASE, SNK_M2_WHILE,
+    SNK_M2_REPEAT, SNK_M2_FOR,
+    SNK_M2_LOOP, SNK_M2_WITH,
+    SNK_M2_RETURN, SNK_M2_ASSIGN
   );
 
   TSrcASTNode = Record
@@ -1438,7 +1446,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php|modula2]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1716,8 +1724,9 @@ Begin
      (Opts.Language <> 'javascript') And (Opts.Language <> 'python') And
      (Opts.Language <> 'ruby') And (Opts.Language <> 'swift') And
      (Opts.Language <> 'kotlin') And (Opts.Language <> 'oberon') And
-     (Opts.Language <> 'ada') And (Opts.Language <> 'php') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon, ada ou php)');
+     (Opts.Language <> 'ada') And (Opts.Language <> 'php') And
+     (Opts.Language <> 'modula2') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon, ada, php ou modula2)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -6077,6 +6086,22 @@ Begin
     SNK_PHP_TRY               : SrcNodeKindName := 'PHP_TRY';
     SNK_PHP_RETURN            : SrcNodeKindName := 'PHP_RETURN';
     SNK_PHP_ECHO              : SrcNodeKindName := 'PHP_ECHO';
+    SNK_M2_MODULE             : SrcNodeKindName := 'M2_MODULE';
+    SNK_M2_DEF_MODULE         : SrcNodeKindName := 'M2_DEF_MODULE';
+    SNK_M2_IMPORT             : SrcNodeKindName := 'M2_IMPORT';
+    SNK_M2_CONST_DECL         : SrcNodeKindName := 'M2_CONST_DECL';
+    SNK_M2_TYPE_DECL          : SrcNodeKindName := 'M2_TYPE_DECL';
+    SNK_M2_VAR_DECL           : SrcNodeKindName := 'M2_VAR_DECL';
+    SNK_M2_PROCEDURE          : SrcNodeKindName := 'M2_PROCEDURE';
+    SNK_M2_IF                 : SrcNodeKindName := 'M2_IF';
+    SNK_M2_CASE               : SrcNodeKindName := 'M2_CASE';
+    SNK_M2_WHILE              : SrcNodeKindName := 'M2_WHILE';
+    SNK_M2_REPEAT             : SrcNodeKindName := 'M2_REPEAT';
+    SNK_M2_FOR                : SrcNodeKindName := 'M2_FOR';
+    SNK_M2_LOOP               : SrcNodeKindName := 'M2_LOOP';
+    SNK_M2_WITH               : SrcNodeKindName := 'M2_WITH';
+    SNK_M2_RETURN             : SrcNodeKindName := 'M2_RETURN';
+    SNK_M2_ASSIGN             : SrcNodeKindName := 'M2_ASSIGN';
   Else
     SrcNodeKindName := '???';
   End;
@@ -29298,6 +29323,987 @@ Begin
                  StrEndsWith(FName, '.phtml');
 End;
 
+{ ---- Modula-2 language support -------------------------------- }
+
+Function IsM2Keyword(Const W : TString) : Boolean;
+Begin
+  IsM2Keyword :=
+    (W = 'AND') Or (W = 'ARRAY') Or (W = 'BEGIN') Or
+    (W = 'BY') Or (W = 'CASE') Or (W = 'CONST') Or
+    (W = 'DEFINITION') Or (W = 'DIV') Or (W = 'DO') Or
+    (W = 'ELSE') Or (W = 'ELSIF') Or (W = 'END') Or
+    (W = 'EXIT') Or (W = 'EXPORT') Or (W = 'FOR') Or
+    (W = 'FROM') Or (W = 'IF') Or (W = 'IMPLEMENTATION') Or
+    (W = 'IMPORT') Or (W = 'IN') Or (W = 'LOOP') Or
+    (W = 'MOD') Or (W = 'MODULE') Or (W = 'NOT') Or
+    (W = 'OF') Or (W = 'OR') Or (W = 'POINTER') Or
+    (W = 'PROCEDURE') Or (W = 'QUALIFIED') Or (W = 'RECORD') Or
+    (W = 'REPEAT') Or (W = 'RETURN') Or (W = 'SET') Or
+    (W = 'THEN') Or (W = 'TO') Or (W = 'TYPE') Or
+    (W = 'UNTIL') Or (W = 'VAR') Or (W = 'WHILE') Or
+    (W = 'WITH');
+End;
+
+Procedure M2LexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+Procedure M2LexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Code     : Integer;
+  Depth    : Integer;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Skip whitespace }
+    While (Not SrcEOF) And (SrcColNo <= Length(SrcLine)) And
+          ((SrcLine[SrcColNo] = ' ') Or (SrcLine[SrcColNo] = #9)) Do
+      Inc(SrcColNo);
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      Exit;
+    End;
+
+    If SrcColNo > Length(SrcLine) Then
+    Begin
+      SrcLexNextLine;
+      Continue;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+
+    { Nested (* *) comments }
+    If (Ch = '(') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      Inc(SrcColNo, 2);
+      Depth := 1;
+      While Depth > 0 Do
+      Begin
+        If SrcEOF Then
+        Begin
+          SrcToken.Kind := STK_EOF;
+          SrcToken.Val  := '';
+          Exit;
+        End;
+        If SrcColNo > Length(SrcLine) Then
+        Begin
+          SrcLexNextLine;
+          Continue;
+        End;
+        If (SrcLine[SrcColNo] = '(') And (SrcColNo < Length(SrcLine)) And
+           (SrcLine[SrcColNo + 1] = '*') Then
+        Begin
+          Inc(SrcColNo, 2);
+          Inc(Depth);
+        End
+        Else If (SrcLine[SrcColNo] = '*') And (SrcColNo < Length(SrcLine)) And
+                (SrcLine[SrcColNo + 1] = ')') Then
+        Begin
+          Inc(SrcColNo, 2);
+          Dec(Depth);
+        End
+        Else
+          Inc(SrcColNo);
+      End;
+      Continue;
+    End;
+
+    Scanning := False;
+
+    { Identifiers and keywords }
+    If ((Ch >= 'A') And (Ch <= 'Z')) Or
+       ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_') Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And
+            (((SrcLine[SrcColNo] >= 'A') And (SrcLine[SrcColNo] <= 'Z')) Or
+             ((SrcLine[SrcColNo] >= 'a') And (SrcLine[SrcColNo] <= 'z')) Or
+             ((SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '9')) Or
+             (SrcLine[SrcColNo] = '_')) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If IsM2Keyword(S) Then
+        SrcToken.Kind := STK_KEYWORD
+      Else
+        SrcToken.Kind := STK_IDENT;
+      SrcToken.Val := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Numbers: decimal, hex (0..9 followed by H suffix), octal (0..7 followed by B/C suffix) }
+    If (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And
+            (((SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '9')) Or
+             ((SrcLine[SrcColNo] >= 'A') And (SrcLine[SrcColNo] <= 'F')) Or
+             ((SrcLine[SrcColNo] >= 'a') And (SrcLine[SrcColNo] <= 'f'))) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      { Check for hex suffix H, octal suffix B or C, or decimal with dot }
+      If (SrcColNo <= Length(SrcLine)) And
+         ((SrcLine[SrcColNo] = 'H') Or (SrcLine[SrcColNo] = 'h')) Then
+      Begin
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_INTEGER;
+        SrcToken.Val  := S + 'H';
+        SrcToken.IntVal := 0;
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      If (SrcColNo <= Length(SrcLine)) And
+         ((SrcLine[SrcColNo] = 'B') Or (SrcLine[SrcColNo] = 'b') Or
+          (SrcLine[SrcColNo] = 'C') Or (SrcLine[SrcColNo] = 'c')) Then
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+        SrcToken.Kind := STK_INTEGER;
+        SrcToken.Val  := S;
+        SrcToken.IntVal := 0;
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      { Check for real number with dot }
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '.') And
+         (SrcColNo + 1 <= Length(SrcLine)) And (SrcLine[SrcColNo + 1] <> '.') Then
+      Begin
+        S := S + '.';
+        Inc(SrcColNo);
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '9') Do
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        { Exponent }
+        If (SrcColNo <= Length(SrcLine)) And
+           ((SrcLine[SrcColNo] = 'E') Or (SrcLine[SrcColNo] = 'e')) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          If (SrcColNo <= Length(SrcLine)) And
+             ((SrcLine[SrcColNo] = '+') Or (SrcLine[SrcColNo] = '-')) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          While (SrcColNo <= Length(SrcLine)) And
+                (SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '9') Do
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+        SrcToken.Kind := STK_FLOAT;
+        SrcToken.Val  := S;
+        Val(S, SrcToken.FloatVal, Code);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      SrcToken.Kind := STK_INTEGER;
+      SrcToken.Val  := S;
+      Val(S, SrcToken.IntVal, Code);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { String literals: single or double quoted }
+    If (Ch = '"') Or (Ch = '''') Then
+    Begin
+      S := '';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] <> Ch) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If SrcColNo <= Length(SrcLine) Then
+        Inc(SrcColNo); { skip closing quote }
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Multi-character operators }
+    If (Ch = ':') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := ':=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '.') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '.') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '..';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Single-character operators and punctuation }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- Modula-2 parser ------------------------------------------ }
+
+Procedure M2Consume;
+Begin
+  M2LexNextToken;
+End;
+
+Function M2IsKW(Const KW : TString) : Boolean;
+Begin
+  M2IsKW := (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = KW);
+End;
+
+Procedure M2Expect(Const KW : TString);
+Begin
+  If Not M2IsKW(KW) Then
+    WriteLn('CODEQL: Modula-2 attendu "', KW, '" mais lu "', SrcToken.Val, '" ligne ', SrcToken.Line);
+  M2Consume;
+End;
+
+Procedure M2ExpectOp(Const Op : TString);
+Begin
+  If (SrcToken.Kind <> STK_OP) Or (SrcToken.Val <> Op) Then
+    WriteLn('CODEQL: Modula-2 attendu "', Op, '" mais lu "', SrcToken.Val, '" ligne ', SrcToken.Line);
+  M2Consume;
+End;
+
+Procedure M2SkipToEnd;
+Var Depth : Integer;
+Begin
+  Depth := 1;
+  While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+  Begin
+    If M2IsKW('BEGIN') Or M2IsKW('IF') Or M2IsKW('CASE') Or
+       M2IsKW('WHILE') Or M2IsKW('FOR') Or M2IsKW('LOOP') Or
+       M2IsKW('WITH') Or M2IsKW('REPEAT') Then
+      Inc(Depth)
+    Else If M2IsKW('END') Then
+      Dec(Depth)
+    Else If M2IsKW('UNTIL') Then
+      Dec(Depth);
+    If Depth > 0 Then
+      M2Consume;
+  End;
+End;
+
+Procedure M2SkipExpr; Forward;
+Procedure M2ParseStatementSeq(Parent : Integer); Forward;
+
+Procedure M2SkipExpr;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        (Not M2IsKW('THEN')) And (Not M2IsKW('DO')) And
+        (Not M2IsKW('OF')) And (Not M2IsKW('END')) And
+        (Not M2IsKW('ELSE')) And (Not M2IsKW('ELSIF')) And
+        (Not M2IsKW('UNTIL')) And (Not M2IsKW('TO')) And
+        (Not M2IsKW('BY')) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ')'))) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ','))) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ']'))) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '|'))) Do
+    M2Consume;
+End;
+
+Procedure M2SkipType;
+Begin
+  { skip type expression until ; or ) }
+  While (SrcToken.Kind <> STK_EOF) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ')'))) And
+        (Not M2IsKW('END')) Do
+  Begin
+    If M2IsKW('RECORD') Or M2IsKW('BEGIN') Then
+    Begin
+      M2Consume;
+      M2SkipToEnd;
+      If M2IsKW('END') Then M2Consume;
+      Exit;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+    Begin
+      M2Consume;
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ')'))) Do
+        M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+        M2Consume;
+      Continue;
+    End;
+    M2Consume;
+  End;
+End;
+
+Procedure M2ParseStatementSeq(Parent : Integer);
+Var N : Integer;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        (Not M2IsKW('END')) And (Not M2IsKW('ELSE')) And
+        (Not M2IsKW('ELSIF')) And (Not M2IsKW('UNTIL')) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '|'))) Do
+  Begin
+    { IF statement }
+    If M2IsKW('IF') Then
+    Begin
+      N := SrcNewNode(SNK_M2_IF);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume; { IF }
+      M2SkipExpr;
+      If M2IsKW('THEN') Then M2Consume;
+      M2ParseStatementSeq(N);
+      While M2IsKW('ELSIF') Do
+      Begin
+        M2Consume; { ELSIF }
+        M2SkipExpr;
+        If M2IsKW('THEN') Then M2Consume;
+        M2ParseStatementSeq(N);
+      End;
+      If M2IsKW('ELSE') Then
+      Begin
+        M2Consume; { ELSE }
+        M2ParseStatementSeq(N);
+      End;
+      If M2IsKW('END') Then M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { CASE statement }
+    Else If M2IsKW('CASE') Then
+    Begin
+      N := SrcNewNode(SNK_M2_CASE);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume; { CASE }
+      M2SkipExpr;
+      If M2IsKW('OF') Then M2Consume;
+      { Parse case branches }
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not M2IsKW('END')) And (Not M2IsKW('ELSE')) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '|') Then
+          M2Consume;
+        { skip case labels }
+        M2SkipExpr;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+          M2Consume;
+        M2ParseStatementSeq(N);
+      End;
+      If M2IsKW('ELSE') Then
+      Begin
+        M2Consume;
+        M2ParseStatementSeq(N);
+      End;
+      If M2IsKW('END') Then M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { WHILE statement }
+    Else If M2IsKW('WHILE') Then
+    Begin
+      N := SrcNewNode(SNK_M2_WHILE);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume; { WHILE }
+      M2SkipExpr;
+      If M2IsKW('DO') Then M2Consume;
+      M2ParseStatementSeq(N);
+      If M2IsKW('END') Then M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { REPEAT statement }
+    Else If M2IsKW('REPEAT') Then
+    Begin
+      N := SrcNewNode(SNK_M2_REPEAT);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume; { REPEAT }
+      M2ParseStatementSeq(N);
+      If M2IsKW('UNTIL') Then M2Consume;
+      M2SkipExpr;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { FOR statement }
+    Else If M2IsKW('FOR') Then
+    Begin
+      N := SrcNewNode(SNK_M2_FOR);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume; { FOR }
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        M2Consume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':=') Then
+        M2Consume;
+      M2SkipExpr;
+      If M2IsKW('TO') Then M2Consume;
+      M2SkipExpr;
+      If M2IsKW('BY') Then
+      Begin
+        M2Consume;
+        M2SkipExpr;
+      End;
+      If M2IsKW('DO') Then M2Consume;
+      M2ParseStatementSeq(N);
+      If M2IsKW('END') Then M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { LOOP statement }
+    Else If M2IsKW('LOOP') Then
+    Begin
+      N := SrcNewNode(SNK_M2_LOOP);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume; { LOOP }
+      M2ParseStatementSeq(N);
+      If M2IsKW('END') Then M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { WITH statement }
+    Else If M2IsKW('WITH') Then
+    Begin
+      N := SrcNewNode(SNK_M2_WITH);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume; { WITH }
+      M2SkipExpr;
+      If M2IsKW('DO') Then M2Consume;
+      M2ParseStatementSeq(N);
+      If M2IsKW('END') Then M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { RETURN statement }
+    Else If M2IsKW('RETURN') Then
+    Begin
+      N := SrcNewNode(SNK_M2_RETURN);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume; { RETURN }
+      If (SrcToken.Kind <> STK_EOF) And
+         (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+         (Not M2IsKW('END')) And (Not M2IsKW('ELSE')) And
+         (Not M2IsKW('ELSIF')) Then
+        M2SkipExpr;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { EXIT statement }
+    Else If M2IsKW('EXIT') Then
+    Begin
+      M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { Assignment or procedure call }
+    Else If (SrcToken.Kind = STK_IDENT) Then
+    Begin
+      N := SrcNewNode(SNK_M2_ASSIGN);
+      SrcNodes[N].Name := SrcToken.Val;
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume;
+      { skip qualident, selectors, parameters, assignment }
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+            (Not M2IsKW('END')) And (Not M2IsKW('ELSE')) And
+            (Not M2IsKW('ELSIF')) And (Not M2IsKW('UNTIL')) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '|'))) Do
+        M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { Skip any stray semicolons or unexpected tokens }
+    Else
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume
+      Else
+        M2Consume;
+    End;
+  End;
+End;
+
+Procedure M2ParseDeclSeq(Parent : Integer);
+Var N : Integer;
+    ProcName : TString;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        (Not M2IsKW('BEGIN')) And (Not M2IsKW('END')) Do
+  Begin
+    { CONST declarations }
+    If M2IsKW('CONST') Then
+    Begin
+      M2Consume;
+      While (SrcToken.Kind = STK_IDENT) Do
+      Begin
+        N := SrcNewNode(SNK_M2_CONST_DECL);
+        SrcNodes[N].Name := SrcToken.Val;
+        SrcNodes[N].Line := SrcToken.Line;
+        SrcAppendToList(SrcNodes[Parent].Left, N);
+        M2Consume;
+        { skip = expr ; }
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+          M2Consume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          M2Consume;
+      End;
+    End
+
+    { TYPE declarations }
+    Else If M2IsKW('TYPE') Then
+    Begin
+      M2Consume;
+      While (SrcToken.Kind = STK_IDENT) Do
+      Begin
+        N := SrcNewNode(SNK_M2_TYPE_DECL);
+        SrcNodes[N].Name := SrcToken.Val;
+        SrcNodes[N].Line := SrcToken.Line;
+        SrcAppendToList(SrcNodes[Parent].Left, N);
+        M2Consume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '=') Then
+          M2Consume;
+        M2SkipType;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          M2Consume;
+      End;
+    End
+
+    { VAR declarations }
+    Else If M2IsKW('VAR') Then
+    Begin
+      M2Consume;
+      While (SrcToken.Kind = STK_IDENT) Do
+      Begin
+        N := SrcNewNode(SNK_M2_VAR_DECL);
+        SrcNodes[N].Name := SrcToken.Val;
+        SrcNodes[N].Line := SrcToken.Line;
+        SrcAppendToList(SrcNodes[Parent].Left, N);
+        M2Consume;
+        { skip identlist : type ; }
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+          M2Consume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          M2Consume;
+      End;
+    End
+
+    { PROCEDURE declaration }
+    Else If M2IsKW('PROCEDURE') Then
+    Begin
+      N := SrcNewNode(SNK_M2_PROCEDURE);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume; { PROCEDURE }
+      ProcName := '';
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        ProcName := SrcToken.Val;
+        SrcNodes[N].Name := ProcName;
+        M2Consume;
+      End;
+      { skip formal parameters }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        M2Consume;
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ')'))) Do
+          M2Consume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+          M2Consume;
+      End;
+      { return type }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+      Begin
+        M2Consume;
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+          M2Consume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+      { procedure body: nested declarations }
+      M2ParseDeclSeq(N);
+      { BEGIN ... END }
+      If M2IsKW('BEGIN') Then
+      Begin
+        M2Consume;
+        M2ParseStatementSeq(N);
+      End;
+      If M2IsKW('END') Then
+      Begin
+        M2Consume;
+        { skip procedure name after END }
+        If (SrcToken.Kind = STK_IDENT) And (SrcToken.Val = ProcName) Then
+          M2Consume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { MODULE (local module) }
+    Else If M2IsKW('MODULE') Then
+    Begin
+      N := SrcNewNode(SNK_M2_MODULE);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      M2Consume;
+      If SrcToken.Kind = STK_IDENT Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        M2Consume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+      { skip IMPORT, EXPORT }
+      While M2IsKW('IMPORT') Or M2IsKW('EXPORT') Or M2IsKW('FROM') Do
+      Begin
+        M2Consume;
+        While (SrcToken.Kind <> STK_EOF) And
+              (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+          M2Consume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          M2Consume;
+      End;
+      M2ParseDeclSeq(N);
+      If M2IsKW('BEGIN') Then
+      Begin
+        M2Consume;
+        M2ParseStatementSeq(N);
+      End;
+      If M2IsKW('END') Then M2Consume;
+      If SrcToken.Kind = STK_IDENT Then M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End
+
+    { Skip unexpected tokens in declaration sequence }
+    Else
+      M2Consume;
+  End;
+End;
+
+Function M2ParseTranslationUnit : Integer;
+Var Root     : Integer;
+    ModName  : TString;
+    ImportN  : Integer;
+    CN       : Integer;
+    TN       : Integer;
+    VN       : Integer;
+    PN       : Integer;
+    ImportN2 : Integer;
+Begin
+  M2Consume; { prime the lexer }
+  ModName := '';
+
+  { DEFINITION MODULE or IMPLEMENTATION MODULE or MODULE }
+  If M2IsKW('DEFINITION') Then
+  Begin
+    Root := SrcNewNode(SNK_M2_DEF_MODULE);
+    SrcNodes[Root].Line := SrcToken.Line;
+    M2Consume; { DEFINITION }
+    If M2IsKW('MODULE') Then M2Consume;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      ModName := SrcToken.Val;
+      SrcNodes[Root].Name := ModName;
+      M2Consume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+      M2Consume;
+    { Parse imports }
+    While M2IsKW('IMPORT') Or M2IsKW('FROM') Do
+    Begin
+      ImportN := SrcNewNode(SNK_M2_IMPORT);
+      SrcNodes[ImportN].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Root].Left, ImportN);
+      M2Consume;
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+      Begin
+        If SrcToken.Kind = STK_IDENT Then
+          SrcNodes[ImportN].Name := SrcToken.Val;
+        M2Consume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End;
+    { Definition module: CONST, TYPE, VAR, PROCEDURE declarations (no bodies) }
+    While (SrcToken.Kind <> STK_EOF) And (Not M2IsKW('END')) Do
+    Begin
+      If M2IsKW('CONST') Then
+      Begin
+        M2Consume;
+        While (SrcToken.Kind = STK_IDENT) Do
+        Begin
+          CN := SrcNewNode(SNK_M2_CONST_DECL);
+          SrcNodes[CN].Name := SrcToken.Val;
+          SrcNodes[CN].Line := SrcToken.Line;
+          SrcAppendToList(SrcNodes[Root].Left, CN);
+          M2Consume;
+          While (SrcToken.Kind <> STK_EOF) And
+                (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+            M2Consume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+            M2Consume;
+        End;
+      End
+      Else If M2IsKW('TYPE') Then
+      Begin
+        M2Consume;
+        While (SrcToken.Kind = STK_IDENT) Do
+        Begin
+          TN := SrcNewNode(SNK_M2_TYPE_DECL);
+          SrcNodes[TN].Name := SrcToken.Val;
+          SrcNodes[TN].Line := SrcToken.Line;
+          SrcAppendToList(SrcNodes[Root].Left, TN);
+          M2Consume;
+          { skip = type or ; for opaque types }
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+            M2Consume
+          Else
+          Begin
+            If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '=') Then
+              M2Consume;
+            M2SkipType;
+            If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+              M2Consume;
+          End;
+        End;
+      End
+      Else If M2IsKW('VAR') Then
+      Begin
+        M2Consume;
+        While (SrcToken.Kind = STK_IDENT) Do
+        Begin
+          VN := SrcNewNode(SNK_M2_VAR_DECL);
+          SrcNodes[VN].Name := SrcToken.Val;
+          SrcNodes[VN].Line := SrcToken.Line;
+          SrcAppendToList(SrcNodes[Root].Left, VN);
+          M2Consume;
+          While (SrcToken.Kind <> STK_EOF) And
+                (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+            M2Consume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+            M2Consume;
+        End;
+      End
+      Else If M2IsKW('PROCEDURE') Then
+      Begin
+        PN := SrcNewNode(SNK_M2_PROCEDURE);
+        SrcNodes[PN].Line := SrcToken.Line;
+        SrcAppendToList(SrcNodes[Root].Left, PN);
+        M2Consume;
+        If SrcToken.Kind = STK_IDENT Then
+        Begin
+          SrcNodes[PN].Name := SrcToken.Val;
+          M2Consume;
+        End;
+        { skip formal parameters }
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        Begin
+          M2Consume;
+          While (SrcToken.Kind <> STK_EOF) And
+                (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ')'))) Do
+            M2Consume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+            M2Consume;
+        End;
+        { return type }
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+        Begin
+          M2Consume;
+          While (SrcToken.Kind <> STK_EOF) And
+                (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+            M2Consume;
+        End;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          M2Consume;
+      End
+      Else
+        M2Consume;
+    End;
+    If M2IsKW('END') Then M2Consume;
+    If (SrcToken.Kind = STK_IDENT) And (SrcToken.Val = ModName) Then
+      M2Consume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '.') Then
+      M2Consume;
+  End
+  Else
+  Begin
+    { IMPLEMENTATION MODULE or plain MODULE }
+    If M2IsKW('IMPLEMENTATION') Then
+    Begin
+      Root := SrcNewNode(SNK_M2_MODULE);
+      SrcNodes[Root].Line := SrcToken.Line;
+      M2Consume; { IMPLEMENTATION }
+    End
+    Else
+    Begin
+      Root := SrcNewNode(SNK_M2_MODULE);
+      SrcNodes[Root].Line := SrcToken.Line;
+    End;
+    If M2IsKW('MODULE') Then M2Consume;
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      ModName := SrcToken.Val;
+      SrcNodes[Root].Name := ModName;
+      M2Consume;
+    End;
+    { skip optional priority }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '[') Then
+    Begin
+      M2Consume;
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ']'))) Do
+        M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ']') Then
+        M2Consume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+      M2Consume;
+    { Parse imports }
+    While M2IsKW('IMPORT') Or M2IsKW('FROM') Do
+    Begin
+      ImportN2 := SrcNewNode(SNK_M2_IMPORT);
+      SrcNodes[ImportN2].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Root].Left, ImportN2);
+      M2Consume;
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+      Begin
+        If SrcToken.Kind = STK_IDENT Then
+          SrcNodes[ImportN2].Name := SrcToken.Val;
+        M2Consume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End;
+    { skip EXPORT }
+    While M2IsKW('EXPORT') Do
+    Begin
+      M2Consume;
+      While (SrcToken.Kind <> STK_EOF) And
+            (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) Do
+        M2Consume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        M2Consume;
+    End;
+    { Declaration sequence }
+    M2ParseDeclSeq(Root);
+    { Module body }
+    If M2IsKW('BEGIN') Then
+    Begin
+      M2Consume;
+      M2ParseStatementSeq(Root);
+    End;
+    If M2IsKW('END') Then M2Consume;
+    If (SrcToken.Kind = STK_IDENT) And (SrcToken.Val = ModName) Then
+      M2Consume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '.') Then
+      M2Consume;
+  End;
+
+  M2ParseTranslationUnit := Root;
+End;
+
+{ ---- IsM2Source ----------------------------------------------- }
+
+Function IsM2Source(Const FName : TString) : Boolean;
+Begin
+  IsM2Source := StrEndsWith(FName, '.mod') Or
+                StrEndsWith(FName, '.def') Or
+                StrEndsWith(FName, '.m2');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -29362,7 +30368,8 @@ Begin
            ((Opts.Language = 'kotlin') And IsKotlinSource(SR.Name)) Or
             ((Opts.Language = 'oberon') And IsOberonSource(SR.Name)) Or
             ((Opts.Language = 'ada') And IsAdaSource(SR.Name)) Or
-             ((Opts.Language = 'php') And IsPhpSource(SR.Name)) Then
+             ((Opts.Language = 'php') And IsPhpSource(SR.Name)) Or
+              ((Opts.Language = 'modula2') And IsM2Source(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -29513,6 +30520,12 @@ Begin
       PhpLexInit;
       SrcASTInit;
       SrcRootNode := PhpParseTranslationUnit;
+    End
+    Else If Opts.Language = 'modula2' Then
+    Begin
+      M2LexInit;
+      SrcASTInit;
+      SrcRootNode := M2ParseTranslationUnit;
     End
     Else
     Begin
