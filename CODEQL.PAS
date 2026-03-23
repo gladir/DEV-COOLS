@@ -5572,14 +5572,26 @@ Begin
       SrcConsume;
     E := -1;
     While (Not SrcTokIsKw('end')) And (Not SrcTokIsKw('else')) And
-          (SrcToken.Kind <> STK_EOF) Do
+          (SrcToken.Kind <> STK_EOF) And (Not SrcASTOverflow) Do
     Begin
       SaveIdx := SrcNewNode(SNK_CASE_ITEM);
       SrcNodes[SaveIdx].Left := SrcParseExpr;
+      { Range labels: expr..expr }
+      If SrcTokIsOp('..') Then
+      Begin
+        SrcConsume;
+        SrcParseExpr;
+      End;
       While SrcTokIsPunct(',') Do
       Begin
         SrcConsume;
         SrcParseExpr; { extra labels, simplified }
+        { Range labels: expr..expr }
+        If SrcTokIsOp('..') Then
+        Begin
+          SrcConsume;
+          SrcParseExpr;
+        End;
       End;
       If SrcTokIsPunct(':') Then
         SrcConsume;
@@ -5671,9 +5683,10 @@ Begin
      SrcTokIsKw('finally') Then
     Exit;
 
-  { identifiant : affectation ou appel }
+  { identifiant : affectation, appel ou label }
   If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
   Begin
+    { Verifier si c est un label (identifiant:) }
     E := SrcParseExpr;
     If SrcTokIsOp(':=') Then
     Begin
@@ -5681,6 +5694,16 @@ Begin
       SrcNodes[N].Left := E;
       SrcConsume;
       SrcNodes[N].Right := SrcParseExpr;
+      SrcParseStatement := N;
+    End
+    Else If SrcTokIsPunct(':') And (E >= 0) And
+            (SrcNodes[E].Kind = SNK_EXPR_IDENT) Then
+    Begin
+      { Label : ident ':' statement }
+      N := SrcNewNode(SNK_LABEL_DECL);
+      SrcNodes[N].Name := SrcNodes[E].Name;
+      SrcConsume; { consomme ':' }
+      SrcNodes[N].Left := SrcParseStatement;
       SrcParseStatement := N;
     End
     Else
