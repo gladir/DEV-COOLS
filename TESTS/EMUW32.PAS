@@ -195,6 +195,9 @@ Const
   { TODO 15 : Taille de la structure STARTUPINFOA (68 octets) }
  STARTUPINFOA_SIZE=68;
 
+  { TODO 15 : Nom par defaut du programme emule }
+ DefaultExeName='EMUW32.EXE';
+
 Type
   { TODO 2 : Registres 32 bits du 80386 }
  LongRec=Record
@@ -4790,7 +4793,7 @@ Begin
  CmdLine:=ParamStr(0);
  For I:=1 to ParamCount do
   CmdLine:=CmdLine+' '+ParamStr(I);
- If CmdLine='' Then CmdLine:='EMUW32.EXE';
+ If CmdLine='' Then CmdLine:=DefaultExeName;
   { Ecrire la chaine de commande ASCII }
  CmdLineAddrA:=ProcessDataBase;
  NextAddr:=WriteStringToMem(CmdLineAddrA,CmdLine);
