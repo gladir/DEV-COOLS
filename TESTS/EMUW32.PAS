@@ -85,7 +85,7 @@
       sur les handles STD_INPUT_HANDLE, STD_OUTPUT_HANDLE et
       STD_ERROR_HANDLE, SetConsoleMode, GetConsoleMode.
 
-  17. Implementer l'emulation de KERNEL32.DLL - Gestion des fichiers :
+  17. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Gestion des fichiers :
       CreateFileA, ReadFile, WriteFile, CloseHandle, SetFilePointer,
       GetFileSize, DeleteFileA, GetFileAttributesA,
       SetFileAttributesA, FlushFileBuffers.
@@ -205,6 +205,33 @@ Const
     => stdout/stderr default = $0003. }
  DEFAULT_CONSOLE_MODE_IN=$0007;
  DEFAULT_CONSOLE_MODE_OUT=$0003;
+
+  { TODO 17 : Constantes Win32 pour les operations sur les fichiers.
+    Acces generique, modes de partage, dispositions de creation,
+    attributs de fichier et methodes de positionnement. }
+ GENERIC_READ=LongInt($80000000);
+ GENERIC_WRITE=$40000000;
+ FILE_SHARE_READ=1;
+ FILE_SHARE_WRITE=2;
+ CREATE_NEW=1;
+ CREATE_ALWAYS=2;
+ OPEN_EXISTING=3;
+ OPEN_ALWAYS=4;
+ TRUNCATE_EXISTING=5;
+ INVALID_HANDLE_VALUE=LongInt(-1);
+ FILE_ATTRIBUTE_READONLY=$01;
+ FILE_ATTRIBUTE_HIDDEN=$02;
+ FILE_ATTRIBUTE_SYSTEM=$04;
+ FILE_ATTRIBUTE_DIRECTORY=$10;
+ FILE_ATTRIBUTE_ARCHIVE=$20;
+ FILE_ATTRIBUTE_NORMAL=$80;
+ INVALID_FILE_ATTRIBUTES=LongInt(-1);
+ FILE_BEGIN=0;
+ FILE_CURRENT=1;
+ FILE_END=2;
+ INVALID_SET_FILE_POINTER=LongInt(-1);
+ MAX_EMU_FILES=16;
+ EMU_FILE_HANDLE_BASE=4;
 
 Type
   { TODO 2 : Registres 32 bits du 80386 }
@@ -379,6 +406,13 @@ Var
  EmuConsoleModeIn:LongInt;
  EmuConsoleModeOut:LongInt;
  EmuConsoleModeErr:LongInt;
+
+  { TODO 17 : Table des fichiers emules.
+    Chaque slot mappe un handle emule (EMU_FILE_HANDLE_BASE + index)
+    vers un fichier reel ouvert via les procedures Pascal. }
+ EmuFileActive:Array[0..MAX_EMU_FILES-1] of Boolean;
+ EmuFileVar:Array[0..MAX_EMU_FILES-1] of File;
+ EmuFileName:Array[0..MAX_EMU_FILES-1] of String;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -4793,6 +4827,32 @@ Begin
  WriteWideStringToMem:=Addr+LongInt(Length(S)*2)+2;
 End;
 
+  { TODO 17 : Initialisation de la table des fichiers emules.
+    Marque tous les slots comme inactifs. }
+Procedure InitEmuFiles;
+Var
+ I:Integer;
+Begin
+ For I:=0 to MAX_EMU_FILES-1 do Begin
+  EmuFileActive[I]:=False;
+  EmuFileName[I]:='';
+ End;
+End;
+
+  { TODO 17 : Trouve un slot libre dans la table des fichiers.
+    Retourne l'index (0..MAX_EMU_FILES-1) ou -1 si aucun slot libre. }
+Function FindFreeFileSlot:Integer;
+Var
+ I:Integer;
+Begin
+ FindFreeFileSlot:=-1;
+ For I:=0 to MAX_EMU_FILES-1 do
+  If Not EmuFileActive[I] Then Begin
+   FindFreeFileSlot:=I;
+   Exit;
+  End;
+End;
+
   { TODO 15 : Initialisation des donnees du processus emule.
     Ecrit la chaine de commande ASCII et Unicode, et la structure
     STARTUPINFOA dans la zone ProcessDataBase ($D00000). }
@@ -4832,6 +4892,8 @@ Begin
  EmuConsoleModeIn:=DEFAULT_CONSOLE_MODE_IN;
  EmuConsoleModeOut:=DEFAULT_CONSOLE_MODE_OUT;
  EmuConsoleModeErr:=DEFAULT_CONSOLE_MODE_OUT;
+  { TODO 17 : Initialiser la table des fichiers emules }
+ InitEmuFiles;
 End;
 
   { TODO 15 : Emulation de GetStdHandle (KERNEL32.DLL).
@@ -5049,12 +5111,15 @@ End;
                            LPOVERLAPPED lpOverlapped);
     Convention STDCALL : 5 parametres (20 octets).
     Pour les handles stdout/stderr, ecrit vers la sortie Pascal.
-    Pour les autres handles, retourne une erreur. }
+    TODO 17 : Supporte aussi les handles de fichiers emules. }
 Procedure EmuWriteFile;
 Var
  hFile,lpBuffer,nBytes,lpWritten:LongInt;
- I:LongInt;
+ I,Slot:LongInt;
  B:Byte;
+ Buf:Array[0..511] of Byte;
+ BytesW:Word;
+ Remain,ChunkSize,Written:LongInt;
 Begin
  hFile:=ReadDWord(Regs.ESP+4);
  lpBuffer:=ReadDWord(Regs.ESP+8);
@@ -5069,8 +5134,33 @@ Begin
    WriteDWord(lpWritten,nBytes);
   Regs.EAX:=1;  { TRUE }
  End
+ Else If(hFile>=EMU_FILE_HANDLE_BASE)and
+        (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  { TODO 17 : Ecriture dans un fichier emule }
+  Slot:=hFile-EMU_FILE_HANDLE_BASE;
+  If Not EmuFileActive[Slot] Then Begin
+   If lpWritten<>0 Then WriteDWord(lpWritten,0);
+   Regs.EAX:=0;
+  End
+  Else Begin
+   Written:=0;
+   Remain:=nBytes;
+   While Remain>0 do Begin
+    ChunkSize:=Remain;
+    If ChunkSize>512 Then ChunkSize:=512;
+    For I:=0 to ChunkSize-1 do
+     Buf[I]:=ReadByte(lpBuffer+Written+I);
+    {$I-}BlockWrite(EmuFileVar[Slot],Buf,ChunkSize,BytesW);{$I+}
+    If IOResult<>0 Then Break;
+    Written:=Written+LongInt(BytesW);
+    Remain:=Remain-LongInt(BytesW);
+    If BytesW<ChunkSize Then Break;
+   End;
+   If lpWritten<>0 Then WriteDWord(lpWritten,Written);
+   Regs.EAX:=1;
+  End;
+ End
  Else Begin
-  WriteLn('WriteFile: handle non supporte: ',hFile);
   If lpWritten<>0 Then
    WriteDWord(lpWritten,0);
   Regs.EAX:=0;  { FALSE }
@@ -5087,12 +5177,15 @@ End;
                           LPOVERLAPPED lpOverlapped);
     Convention STDCALL : 5 parametres (20 octets).
     Pour le handle stdin, lit depuis l'entree Pascal.
-    Pour les autres handles, retourne une erreur. }
+    TODO 17 : Supporte aussi les handles de fichiers emules. }
 Procedure EmuReadFile;
 Var
  hFile,lpBuffer,nBytes,lpRead:LongInt;
- I,Count:LongInt;
+ I,Count,Slot:LongInt;
  C:Char;
+ Buf:Array[0..511] of Byte;
+ BytesR:Word;
+ Remain,ChunkSize,TotalRead:LongInt;
 Begin
  hFile:=ReadDWord(Regs.ESP+4);
  lpBuffer:=ReadDWord(Regs.ESP+8);
@@ -5111,8 +5204,33 @@ Begin
    WriteDWord(lpRead,Count);
   Regs.EAX:=1;  { TRUE }
  End
+ Else If(hFile>=EMU_FILE_HANDLE_BASE)and
+        (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  { TODO 17 : Lecture depuis un fichier emule }
+  Slot:=hFile-EMU_FILE_HANDLE_BASE;
+  If Not EmuFileActive[Slot] Then Begin
+   If lpRead<>0 Then WriteDWord(lpRead,0);
+   Regs.EAX:=0;
+  End
+  Else Begin
+   TotalRead:=0;
+   Remain:=nBytes;
+   While Remain>0 do Begin
+    ChunkSize:=Remain;
+    If ChunkSize>512 Then ChunkSize:=512;
+    {$I-}BlockRead(EmuFileVar[Slot],Buf,ChunkSize,BytesR);{$I+}
+    If IOResult<>0 Then Break;
+    For I:=0 to LongInt(BytesR)-1 do
+     WriteByte(lpBuffer+TotalRead+I,Buf[I]);
+    TotalRead:=TotalRead+LongInt(BytesR);
+    Remain:=Remain-LongInt(BytesR);
+    If BytesR<ChunkSize Then Break;
+   End;
+   If lpRead<>0 Then WriteDWord(lpRead,TotalRead);
+   Regs.EAX:=1;
+  End;
+ End
  Else Begin
-  WriteLn('ReadFile: handle non supporte: ',hFile);
   If lpRead<>0 Then
    WriteDWord(lpRead,0);
   Regs.EAX:=0;  { FALSE }
@@ -5181,6 +5299,294 @@ Begin
  Regs.ESP:=Regs.ESP+8;
 End;
 
+  { TODO 17 : Emulation de CreateFileA (KERNEL32.DLL).
+    HANDLE WINAPI CreateFileA(LPCSTR lpFileName,
+                               DWORD dwDesiredAccess,
+                               DWORD dwShareMode,
+                               LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+                               DWORD dwCreationDisposition,
+                               DWORD dwFlagsAndAttributes,
+                               HANDLE hTemplateFile);
+    Convention STDCALL : 7 parametres (28 octets).
+    Ouvre ou cree un fichier reel et retourne un handle emule. }
+Procedure EmuCreateFileA;
+Var
+ lpFileName,dwAccess,dwShare,lpSecurity:LongInt;
+ dwCreation,dwFlags,hTemplate:LongInt;
+ FName:String;
+ Slot:Integer;
+ IORes:Integer;
+Begin
+ lpFileName:=ReadDWord(Regs.ESP+4);
+ dwAccess:=ReadDWord(Regs.ESP+8);
+ dwShare:=ReadDWord(Regs.ESP+12);
+ lpSecurity:=ReadDWord(Regs.ESP+16);
+ dwCreation:=ReadDWord(Regs.ESP+20);
+ dwFlags:=ReadDWord(Regs.ESP+24);
+ hTemplate:=ReadDWord(Regs.ESP+28);
+ FName:=ReadStringFromMem(lpFileName);
+ Slot:=FindFreeFileSlot;
+ If Slot<0 Then Begin
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+  Regs.ESP:=Regs.ESP+28;
+  Exit;
+ End;
+ {$I-}Assign(EmuFileVar[Slot],FName);{$I+}
+ Case dwCreation of
+  CREATE_NEW:Begin
+    { Echoue si le fichier existe deja }
+   {$I-}Reset(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+   If IORes=0 Then Begin
+    {$I-}Close(EmuFileVar[Slot]);{$I+}
+    If IOResult=0 Then;
+    Regs.EAX:=INVALID_HANDLE_VALUE;
+    Regs.ESP:=Regs.ESP+28;
+    Exit;
+   End;
+   {$I-}Rewrite(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+  End;
+  CREATE_ALWAYS:Begin
+   {$I-}Rewrite(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+  End;
+  OPEN_EXISTING:Begin
+   {$I-}Reset(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+  End;
+  OPEN_ALWAYS:Begin
+   {$I-}Reset(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+   If IORes<>0 Then Begin
+    {$I-}Rewrite(EmuFileVar[Slot],1);{$I+}
+    IORes:=IOResult;
+   End;
+  End;
+  TRUNCATE_EXISTING:Begin
+   {$I-}Reset(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+   If IORes=0 Then Begin
+    {$I-}Truncate(EmuFileVar[Slot]);{$I+}
+    IORes:=IOResult;
+   End;
+  End;
+ Else
+  IORes:=1;
+ End;
+ If IORes<>0 Then Begin
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+ End
+ Else Begin
+  EmuFileActive[Slot]:=True;
+  EmuFileName[Slot]:=FName;
+  Regs.EAX:=EMU_FILE_HANDLE_BASE+LongInt(Slot);
+ End;
+  { Nettoyer la pile : 7 parametres }
+ Regs.ESP:=Regs.ESP+28;
+End;
+
+  { TODO 17 : Emulation de CloseHandle (KERNEL32.DLL).
+    BOOL WINAPI CloseHandle(HANDLE hObject);
+    Convention STDCALL : 1 parametre (4 octets).
+    Ferme un handle de fichier emule. }
+Procedure EmuCloseHandle;
+Var
+ hObject:LongInt;
+ Slot:Integer;
+Begin
+ hObject:=ReadDWord(Regs.ESP+4);
+ If(hObject>=EMU_FILE_HANDLE_BASE)and
+   (hObject<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  Slot:=hObject-EMU_FILE_HANDLE_BASE;
+  If EmuFileActive[Slot] Then Begin
+   {$I-}Close(EmuFileVar[Slot]);{$I+}
+   If IOResult=0 Then;
+   EmuFileActive[Slot]:=False;
+   EmuFileName[Slot]:='';
+   Regs.EAX:=1;  { TRUE }
+  End
+  Else
+   Regs.EAX:=0;  { FALSE - handle inactif }
+ End
+ Else If(hObject=EMU_STDIN_HANDLE)or(hObject=EMU_STDOUT_HANDLE)or
+        (hObject=EMU_STDERR_HANDLE)Then
+  Regs.EAX:=1  { TRUE - console handles, rien a faire }
+ Else
+  Regs.EAX:=0;  { FALSE - handle invalide }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 17 : Emulation de SetFilePointer (KERNEL32.DLL).
+    DWORD WINAPI SetFilePointer(HANDLE hFile,
+                                 LONG lDistanceToMove,
+                                 PLONG lpDistanceToMoveHigh,
+                                 DWORD dwMoveMethod);
+    Convention STDCALL : 4 parametres (16 octets).
+    Positionne le curseur de lecture/ecriture d'un fichier emule. }
+Procedure EmuSetFilePointer;
+Var
+ hFile,lDistance,lpHigh,dwMethod:LongInt;
+ Slot:Integer;
+ NewPos,FSize:LongInt;
+Begin
+ hFile:=ReadDWord(Regs.ESP+4);
+ lDistance:=ReadDWord(Regs.ESP+8);
+ lpHigh:=ReadDWord(Regs.ESP+12);
+ dwMethod:=ReadDWord(Regs.ESP+16);
+ If(hFile>=EMU_FILE_HANDLE_BASE)and
+   (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  Slot:=hFile-EMU_FILE_HANDLE_BASE;
+  If Not EmuFileActive[Slot] Then Begin
+   Regs.EAX:=INVALID_SET_FILE_POINTER;
+  End
+  Else Begin
+   Case dwMethod of
+    FILE_BEGIN:NewPos:=lDistance;
+    FILE_CURRENT:NewPos:=FilePos(EmuFileVar[Slot])+lDistance;
+    FILE_END:NewPos:=FileSize(EmuFileVar[Slot])+lDistance;
+   Else
+    NewPos:=-1;
+   End;
+   If NewPos<0 Then
+    Regs.EAX:=INVALID_SET_FILE_POINTER
+   Else Begin
+    {$I-}Seek(EmuFileVar[Slot],NewPos);{$I+}
+    If IOResult<>0 Then
+     Regs.EAX:=INVALID_SET_FILE_POINTER
+    Else Begin
+     Regs.EAX:=NewPos;
+     If lpHigh<>0 Then WriteDWord(lpHigh,0);
+    End;
+   End;
+  End;
+ End
+ Else
+  Regs.EAX:=INVALID_SET_FILE_POINTER;
+  { Nettoyer la pile : 4 parametres }
+ Regs.ESP:=Regs.ESP+16;
+End;
+
+  { TODO 17 : Emulation de GetFileSize (KERNEL32.DLL).
+    DWORD WINAPI GetFileSize(HANDLE hFile, LPDWORD lpFileSizeHigh);
+    Convention STDCALL : 2 parametres (8 octets).
+    Retourne la taille du fichier emule (partie basse dans EAX). }
+Procedure EmuGetFileSize;
+Var
+ hFile,lpHigh:LongInt;
+ Slot:Integer;
+ FSize:LongInt;
+Begin
+ hFile:=ReadDWord(Regs.ESP+4);
+ lpHigh:=ReadDWord(Regs.ESP+8);
+ If(hFile>=EMU_FILE_HANDLE_BASE)and
+   (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  Slot:=hFile-EMU_FILE_HANDLE_BASE;
+  If Not EmuFileActive[Slot] Then
+   Regs.EAX:=INVALID_HANDLE_VALUE
+  Else Begin
+   FSize:=FileSize(EmuFileVar[Slot]);
+   Regs.EAX:=FSize;
+   If lpHigh<>0 Then WriteDWord(lpHigh,0);
+  End;
+ End
+ Else
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 17 : Emulation de DeleteFileA (KERNEL32.DLL).
+    BOOL WINAPI DeleteFileA(LPCSTR lpFileName);
+    Convention STDCALL : 1 parametre (4 octets).
+    Supprime un fichier du systeme de fichiers reel. }
+Procedure EmuDeleteFileA;
+Var
+ lpFileName:LongInt;
+ FName:String;
+ F:File;
+Begin
+ lpFileName:=ReadDWord(Regs.ESP+4);
+ FName:=ReadStringFromMem(lpFileName);
+ {$I-}Assign(F,FName);
+ Erase(F);{$I+}
+ If IOResult=0 Then
+  Regs.EAX:=1  { TRUE }
+ Else
+  Regs.EAX:=0; { FALSE }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 17 : Emulation de GetFileAttributesA (KERNEL32.DLL).
+    DWORD WINAPI GetFileAttributesA(LPCSTR lpFileName);
+    Convention STDCALL : 1 parametre (4 octets).
+    Retourne les attributs d'un fichier. Si le fichier n'existe pas,
+    retourne INVALID_FILE_ATTRIBUTES. Sinon retourne FILE_ATTRIBUTE_ARCHIVE
+    pour un fichier normal ou FILE_ATTRIBUTE_DIRECTORY pour un repertoire. }
+Procedure EmuGetFileAttributesA;
+Var
+ lpFileName:LongInt;
+ FName:String;
+ F:File;
+ SR:SearchRec;
+Begin
+ lpFileName:=ReadDWord(Regs.ESP+4);
+ FName:=ReadStringFromMem(lpFileName);
+ {$I-}FindFirst(FName,AnyFile,SR);{$I+}
+ If DosError=0 Then Begin
+  Regs.EAX:=LongInt(SR.Attr);
+  {$I-}FindClose(SR);{$I+}
+ End
+ Else
+  Regs.EAX:=INVALID_FILE_ATTRIBUTES;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 17 : Emulation de SetFileAttributesA (KERNEL32.DLL).
+    BOOL WINAPI SetFileAttributesA(LPCSTR lpFileName, DWORD dwFileAttributes);
+    Convention STDCALL : 2 parametres (8 octets).
+    Emulation simplifiee : retourne toujours TRUE car les attributs
+    DOS/Pascal ne correspondent pas exactement aux attributs Win32. }
+Procedure EmuSetFileAttributesA;
+Var
+ lpFileName,dwAttrs:LongInt;
+Begin
+ lpFileName:=ReadDWord(Regs.ESP+4);
+ dwAttrs:=ReadDWord(Regs.ESP+8);
+ Regs.EAX:=1;  { TRUE - emulation simplifiee }
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 17 : Emulation de FlushFileBuffers (KERNEL32.DLL).
+    BOOL WINAPI FlushFileBuffers(HANDLE hFile);
+    Convention STDCALL : 1 parametre (4 octets).
+    Force l'ecriture des tampons sur le disque. }
+Procedure EmuFlushFileBuffers;
+Var
+ hFile:LongInt;
+ Slot:Integer;
+Begin
+ hFile:=ReadDWord(Regs.ESP+4);
+ If(hFile>=EMU_FILE_HANDLE_BASE)and
+   (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  Slot:=hFile-EMU_FILE_HANDLE_BASE;
+  If EmuFileActive[Slot] Then
+   Regs.EAX:=1  { TRUE - les fichiers Pascal sont non-bufferises en mode 1 }
+  Else
+   Regs.EAX:=0;
+ End
+ Else If(hFile=EMU_STDOUT_HANDLE)or(hFile=EMU_STDERR_HANDLE)Then
+  Regs.EAX:=1  { TRUE - console toujours fluide }
+ Else
+  Regs.EAX:=0;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
   { TODO 15 : Dispatche un appel a une fonction de KERNEL32.DLL.
     Recoit l'index de l'entree d'importation dans ImportEntries
     et appelle la procedure d'emulation correspondante.
@@ -5220,6 +5626,23 @@ Begin
   EmuSetConsoleMode
  Else If StrIComp(FName,'GetConsoleMode') Then
   EmuGetConsoleMode
+  { TODO 17 : Gestion des fichiers }
+ Else If StrIComp(FName,'CreateFileA') Then
+  EmuCreateFileA
+ Else If StrIComp(FName,'CloseHandle') Then
+  EmuCloseHandle
+ Else If StrIComp(FName,'SetFilePointer') Then
+  EmuSetFilePointer
+ Else If StrIComp(FName,'GetFileSize') Then
+  EmuGetFileSize
+ Else If StrIComp(FName,'DeleteFileA') Then
+  EmuDeleteFileA
+ Else If StrIComp(FName,'GetFileAttributesA') Then
+  EmuGetFileAttributesA
+ Else If StrIComp(FName,'SetFileAttributesA') Then
+  EmuSetFileAttributesA
+ Else If StrIComp(FName,'FlushFileBuffers') Then
+  EmuFlushFileBuffers
  Else Begin
   WriteLn('KERNEL32: fonction non emulée: ',FName);
   DispatchKernel32:=False;
