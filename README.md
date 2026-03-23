@@ -229,6 +229,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur COBOL pour 8086/8088.</td>
 		</tr>
 		<tr>
+			<td><b>CODEQL.PAS</b></td>
+			<td>Cette commande permet d'utiliser l'outil CodeQL en ligne de commande afin d'analyser automatiquement le code source d'un programme, de créer une base d'analyse et d'exécuter des requêtes permettant de détecter des vulnérabilités, des erreurs de programmation et des problèmes de qualité logicielle.</td>
+		</tr>
+		<tr>
 			<td><b>COM2EXE.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
 		</tr>
