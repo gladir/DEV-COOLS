@@ -100,7 +100,7 @@
       FreeEnvironmentStringsA, lstrlenA, lstrcpyA, lstrcmpA,
       lstrcmpiA, lstrcatA, GetModuleFileNameA, GetModuleHandleA.
 
-  20. Implementer l'emulation de KERNEL32.DLL - Date, heure et
+  20. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Date, heure et
       systeme : GetTickCount, GetSystemTime, GetLocalTime,
       QueryPerformanceCounter, GetSystemInfo, GetVersion,
       GetVersionExA, Sleep, GetLastError, SetLastError.
@@ -135,7 +135,7 @@ Program EMUW32;
 
 {$A-}
 
-Uses DOS;
+Uses DOS,CRT;
 
 Const
   { TODO 1 : Fichier d'echange de 16 Mo pour la memoire lineaire }
@@ -261,6 +261,14 @@ Const
 
   { TODO 19 : Constante MAX_PATH Win32 pour GetModuleFileNameA. }
  MAX_PATH=260;
+
+  { TODO 20 : Constantes pour les structures systeme Win32.
+    SYSTEMTIME_SIZE = 16 octets (8 champs Word).
+    SYSTEM_INFO_SIZE = 36 octets.
+    OSVERSIONINFOA_SIZE = 148 octets. }
+ SYSTEMTIME_SIZE=16;
+ SYSTEM_INFO_SIZE=36;
+ OSVERSIONINFOA_SIZE=148;
 
 Type
   { TODO 2 : Registres 32 bits du 80386 }
@@ -454,6 +462,9 @@ Var
     bloc de chaines KEY=VALUE\0 termine par \0\0. }
  EnvBlockAddr:LongInt;
  ModuleFileNameAddr:LongInt;
+
+  { TODO 20 : Code de la derniere erreur Win32 pour Get/SetLastError. }
+ EmuLastError:LongInt;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -4959,6 +4970,8 @@ Begin
  EmuConsoleModeErr:=DEFAULT_CONSOLE_MODE_OUT;
   { TODO 17 : Initialiser la table des fichiers emules }
  InitEmuFiles;
+  { TODO 20 : Initialiser le code d'erreur Win32 }
+ EmuLastError:=0;
 End;
 
   { TODO 15 : Emulation de GetStdHandle (KERNEL32.DLL).
@@ -6221,6 +6234,234 @@ Begin
  Regs.ESP:=Regs.ESP+4;
 End;
 
+  { TODO 20 : Emulation de GetTickCount (KERNEL32.DLL).
+    DWORD WINAPI GetTickCount(void);
+    Convention STDCALL : 0 parametres.
+    Retourne le nombre de millisecondes depuis le demarrage.
+    Utilise une valeur simulee basee sur l'horloge Pascal. }
+Procedure EmuGetTickCount;
+Var
+ H,M,S,S100:Word;
+ Ticks:LongInt;
+Begin
+ GetTime(H,M,S,S100);
+ Ticks:=LongInt(H)*3600000+LongInt(M)*60000+LongInt(S)*1000+LongInt(S100)*10;
+ Regs.EAX:=Ticks;
+  { Pas de parametres a nettoyer }
+End;
+
+  { TODO 20 : Procedure auxiliaire pour ecrire une structure SYSTEMTIME
+    en memoire a l'adresse donnee.
+    SYSTEMTIME : 8 champs Word (16 octets) :
+      wYear, wMonth, wDayOfWeek, wDay,
+      wHour, wMinute, wSecond, wMilliseconds }
+Procedure WriteSystemTimeToMem(Addr:LongInt;Y,Mo,Dow,D,H,Mi,S,Ms:Word);
+Begin
+ WriteWord(Addr,Y);
+ WriteWord(Addr+2,Mo);
+ WriteWord(Addr+4,Dow);
+ WriteWord(Addr+6,D);
+ WriteWord(Addr+8,H);
+ WriteWord(Addr+10,Mi);
+ WriteWord(Addr+12,S);
+ WriteWord(Addr+14,Ms);
+End;
+
+  { TODO 20 : Emulation de GetSystemTime (KERNEL32.DLL).
+    void WINAPI GetSystemTime(LPSYSTEMTIME lpSystemTime);
+    Convention STDCALL : 1 parametre (4 octets).
+    Ecrit l'heure systeme locale (UTC approxime) dans la structure. }
+Procedure EmuGetSystemTime;
+Var
+ lpSystemTime:LongInt;
+ Y,Mo,D,Dow:Word;
+ H,Mi,S,S100:Word;
+Begin
+ lpSystemTime:=ReadDWord(Regs.ESP+4);
+ GetDate(Y,Mo,D,Dow);
+ GetTime(H,Mi,S,S100);
+ WriteSystemTimeToMem(lpSystemTime,Y,Mo,Dow,D,H,Mi,S,S100*10);
+  { Pas de valeur de retour }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de GetLocalTime (KERNEL32.DLL).
+    void WINAPI GetLocalTime(LPSYSTEMTIME lpSystemTime);
+    Convention STDCALL : 1 parametre (4 octets).
+    Identique a GetSystemTime dans cette emulation simplifiee. }
+Procedure EmuGetLocalTime;
+Var
+ lpSystemTime:LongInt;
+ Y,Mo,D,Dow:Word;
+ H,Mi,S,S100:Word;
+Begin
+ lpSystemTime:=ReadDWord(Regs.ESP+4);
+ GetDate(Y,Mo,D,Dow);
+ GetTime(H,Mi,S,S100);
+ WriteSystemTimeToMem(lpSystemTime,Y,Mo,Dow,D,H,Mi,S,S100*10);
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de QueryPerformanceCounter (KERNEL32.DLL).
+    BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
+    Convention STDCALL : 1 parametre (4 octets).
+    Ecrit un compteur 64 bits simule (base sur GetTime).
+    Retourne TRUE (1). }
+Procedure EmuQueryPerformanceCounter;
+Var
+ lpPerfCount:LongInt;
+ H,M,S,S100:Word;
+ Counter:LongInt;
+Begin
+ lpPerfCount:=ReadDWord(Regs.ESP+4);
+ GetTime(H,M,S,S100);
+ Counter:=LongInt(H)*3600000+LongInt(M)*60000+LongInt(S)*1000+LongInt(S100)*10;
+  { Ecrire comme LARGE_INTEGER (64 bits, little-endian) }
+ WriteDWord(lpPerfCount,Counter);
+ WriteDWord(lpPerfCount+4,0);  { Partie haute = 0 }
+ Regs.EAX:=1;  { TRUE }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de GetSystemInfo (KERNEL32.DLL).
+    void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo);
+    Convention STDCALL : 1 parametre (4 octets).
+    Remplit la structure SYSTEM_INFO (36 octets) avec des valeurs
+    emulant un processeur x86 monoprocesseur. }
+Procedure EmuGetSystemInfo;
+Var
+ lpSysInfo:LongInt;
+ I:Integer;
+Begin
+ lpSysInfo:=ReadDWord(Regs.ESP+4);
+  { Mettre a zero la structure }
+ For I:=0 to SYSTEM_INFO_SIZE-1 do
+  WriteByte(lpSysInfo+LongInt(I),0);
+  { wProcessorArchitecture = 0 (PROCESSOR_ARCHITECTURE_INTEL) }
+ WriteWord(lpSysInfo,0);
+  { dwPageSize = 4096 }
+ WriteDWord(lpSysInfo+4,$1000);
+  { lpMinimumApplicationAddress = $10000 }
+ WriteDWord(lpSysInfo+8,$10000);
+  { lpMaximumApplicationAddress = $7FFEFFFF }
+ WriteDWord(lpSysInfo+12,LongInt($7FFEFFFF));
+  { dwActiveProcessorMask = 1 }
+ WriteDWord(lpSysInfo+16,1);
+  { dwNumberOfProcessors = 1 }
+ WriteDWord(lpSysInfo+20,1);
+  { dwProcessorType = 386 (PROCESSOR_INTEL_386) }
+ WriteDWord(lpSysInfo+24,386);
+  { dwAllocationGranularity = 65536 }
+ WriteDWord(lpSysInfo+28,$10000);
+  { wProcessorLevel = 6 (Pentium Pro+) }
+ WriteWord(lpSysInfo+32,6);
+  { wProcessorRevision = 0 }
+ WriteWord(lpSysInfo+34,0);
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de GetVersion (KERNEL32.DLL).
+    DWORD WINAPI GetVersion(void);
+    Convention STDCALL : 0 parametres.
+    Retourne la version Windows emulée.
+    Octets bas: version majeure=5, mineure=1 (Windows XP).
+    Octets hauts: build number 2600. }
+Procedure EmuGetVersion;
+Begin
+  { Version 5.1 = Windows XP, build 2600 }
+  { Format: bits 0-7=major, 8-15=minor, 16-31=build }
+ Regs.EAX:=LongInt($0A280105);
+  { Pas de parametres a nettoyer }
+End;
+
+  { TODO 20 : Emulation de GetVersionExA (KERNEL32.DLL).
+    BOOL WINAPI GetVersionExA(LPOSVERSIONINFOA lpVersionInfo);
+    Convention STDCALL : 1 parametre (4 octets).
+    Remplit la structure OSVERSIONINFOA (148 octets).
+    Emule Windows XP SP3 (version 5.1, build 2600). }
+Procedure EmuGetVersionExA;
+Var
+ lpVerInfo:LongInt;
+ I:Integer;
+Begin
+ lpVerInfo:=ReadDWord(Regs.ESP+4);
+  { Mettre a zero toute la structure }
+ For I:=0 to OSVERSIONINFOA_SIZE-1 do
+  WriteByte(lpVerInfo+LongInt(I),0);
+  { dwOSVersionInfoSize = 148 }
+ WriteDWord(lpVerInfo,OSVERSIONINFOA_SIZE);
+  { dwMajorVersion = 5 }
+ WriteDWord(lpVerInfo+4,5);
+  { dwMinorVersion = 1 }
+ WriteDWord(lpVerInfo+8,1);
+  { dwBuildNumber = 2600 }
+ WriteDWord(lpVerInfo+12,2600);
+  { dwPlatformId = 2 (VER_PLATFORM_WIN32_NT) }
+ WriteDWord(lpVerInfo+16,2);
+  { szCSDVersion a l'offset 20, 128 octets : "Service Pack 3" }
+ WriteByte(lpVerInfo+20,Byte('S'));
+ WriteByte(lpVerInfo+21,Byte('e'));
+ WriteByte(lpVerInfo+22,Byte('r'));
+ WriteByte(lpVerInfo+23,Byte('v'));
+ WriteByte(lpVerInfo+24,Byte('i'));
+ WriteByte(lpVerInfo+25,Byte('c'));
+ WriteByte(lpVerInfo+26,Byte('e'));
+ WriteByte(lpVerInfo+27,Byte(' '));
+ WriteByte(lpVerInfo+28,Byte('P'));
+ WriteByte(lpVerInfo+29,Byte('a'));
+ WriteByte(lpVerInfo+30,Byte('c'));
+ WriteByte(lpVerInfo+31,Byte('k'));
+ WriteByte(lpVerInfo+32,Byte(' '));
+ WriteByte(lpVerInfo+33,Byte('3'));
+ WriteByte(lpVerInfo+34,0);
+ Regs.EAX:=1;  { TRUE }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de Sleep (KERNEL32.DLL).
+    void WINAPI Sleep(DWORD dwMilliseconds);
+    Convention STDCALL : 1 parametre (4 octets).
+    Effectue une pause via Delay du systeme hote. }
+Procedure EmuSleep;
+Var
+ dwMilliseconds:LongInt;
+Begin
+ dwMilliseconds:=ReadDWord(Regs.ESP+4);
+ If dwMilliseconds>0 Then
+  Delay(dwMilliseconds);
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de GetLastError (KERNEL32.DLL).
+    DWORD WINAPI GetLastError(void);
+    Convention STDCALL : 0 parametres.
+    Retourne le code d'erreur Win32 stocke. }
+Procedure EmuGetLastError;
+Begin
+ Regs.EAX:=EmuLastError;
+  { Pas de parametres a nettoyer }
+End;
+
+  { TODO 20 : Emulation de SetLastError (KERNEL32.DLL).
+    void WINAPI SetLastError(DWORD dwErrCode);
+    Convention STDCALL : 1 parametre (4 octets).
+    Stocke le code d'erreur Win32. }
+Procedure EmuSetLastError;
+Var
+ dwErrCode:LongInt;
+Begin
+ dwErrCode:=ReadDWord(Regs.ESP+4);
+ EmuLastError:=dwErrCode;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
   { TODO 15 : Dispatche un appel a une fonction de KERNEL32.DLL.
     Recoit l'index de l'entree d'importation dans ImportEntries
     et appelle la procedure d'emulation correspondante.
@@ -6321,6 +6562,27 @@ Begin
   EmuGetModuleFileNameA
  Else If StrIComp(FName,'GetModuleHandleA') Then
   EmuGetModuleHandleA
+  { TODO 20 : Date, heure et systeme }
+ Else If StrIComp(FName,'GetTickCount') Then
+  EmuGetTickCount
+ Else If StrIComp(FName,'GetSystemTime') Then
+  EmuGetSystemTime
+ Else If StrIComp(FName,'GetLocalTime') Then
+  EmuGetLocalTime
+ Else If StrIComp(FName,'QueryPerformanceCounter') Then
+  EmuQueryPerformanceCounter
+ Else If StrIComp(FName,'GetSystemInfo') Then
+  EmuGetSystemInfo
+ Else If StrIComp(FName,'GetVersion') Then
+  EmuGetVersion
+ Else If StrIComp(FName,'GetVersionExA') Then
+  EmuGetVersionExA
+ Else If StrIComp(FName,'Sleep') Then
+  EmuSleep
+ Else If StrIComp(FName,'GetLastError') Then
+  EmuGetLastError
+ Else If StrIComp(FName,'SetLastError') Then
+  EmuSetLastError
  Else Begin
   WriteLn('KERNEL32: fonction non emulée: ',FName);
   DispatchKernel32:=False;
