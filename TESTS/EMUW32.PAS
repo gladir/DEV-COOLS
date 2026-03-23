@@ -6374,6 +6374,7 @@ Procedure EmuGetVersion;
 Begin
   { Version 5.1 = Windows XP, build 2600 }
   { Format: bits 0-7=major, 8-15=minor, 16-31=build }
+  { $0A280105 = major 5, minor 1, build $0A28 (2600) }
  Regs.EAX:=LongInt($0A280105);
   { Pas de parametres a nettoyer }
 End;
