@@ -59,7 +59,7 @@
       AND, OR, XOR, NOT, TEST, SHL, SHR, SAR, ROL, ROR, RCL, RCR,
       BT, BTS, BTR, BTC, BSF, BSR sur des operandes 32 bits.
 
-  11. Implementer les instructions de chaines 32 bits : MOVSD, STOSD,
+  11. [IMPLEMENTE] Implementer les instructions de chaines 32 bits : MOVSD, STOSD,
       LODSD, CMPSD, SCASD ainsi que les prefixes REP/REPE/REPNE
       utilisant ECX comme compteur, et les variantes 8/16 bits.
 
@@ -1389,6 +1389,29 @@ Begin
  If Parity8(R8)Then EFlags.s:=EFlags.s+[PF]
  Else EFlags.s:=EFlags.s-[PF];
  ArithSub8:=R8;
+End;
+
+  { TODO 11 : Soustraction 16 bits avec mise a jour de tous les drapeaux.
+    Calcule A - B, met a jour CF (borrow si B > A non-signe), ZF,
+    SF, OF, AF, PF dans EFLAGS et retourne le resultat. }
+Function ArithSub16(A,B:Word):Word;
+Var
+ R16:Word;
+Begin
+ R16:=A-B;
+ If B>A Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If R16=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(R16 and $8000)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor B)and(A xor R16)and $8000)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor R16)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(Byte(R16))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithSub16:=R16;
 End;
 
   { TODO 9 : Soustraction 32 bits avec mise a jour de tous les drapeaux.
@@ -3912,6 +3935,403 @@ Begin
     SetReg32(RegF,I);
     Exit;
    End;
+ End;
+End;
+
+  { TODO 11 : MOVSB (opcode A4).
+    Copie un octet de [ESI] vers [EDI] et ajuste ESI/EDI selon DF. }
+Procedure OpMovsB;
+Begin
+ WriteByte(Regs.EDI,ReadByte(Regs.ESI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI);
+  Dec(Regs.EDI);
+ End Else Begin
+  Inc(Regs.ESI);
+  Inc(Regs.EDI);
+ End;
+End;
+
+  { TODO 11 : MOVSW (opcode 66 A5).
+    Copie un mot de [ESI] vers [EDI] et ajuste ESI/EDI selon DF. }
+Procedure OpMovsW;
+Begin
+ WriteWord(Regs.EDI,ReadWord(Regs.ESI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI,2);
+  Dec(Regs.EDI,2);
+ End Else Begin
+  Inc(Regs.ESI,2);
+  Inc(Regs.EDI,2);
+ End;
+End;
+
+  { TODO 11 : MOVSD (opcode A5).
+    Copie un double mot de [ESI] vers [EDI] et ajuste ESI/EDI selon DF. }
+Procedure OpMovsD;
+Begin
+ WriteDWord(Regs.EDI,ReadDWord(Regs.ESI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI,4);
+  Dec(Regs.EDI,4);
+ End Else Begin
+  Inc(Regs.ESI,4);
+  Inc(Regs.EDI,4);
+ End;
+End;
+
+  { TODO 11 : STOSB (opcode AA).
+    Ecrit AL dans [EDI] et ajuste EDI selon DF. }
+Procedure OpStosB;
+Begin
+ WriteByte(Regs.EDI,Regs.AL);
+ If DF in EFlags.s Then Dec(Regs.EDI)
+ Else Inc(Regs.EDI);
+End;
+
+  { TODO 11 : STOSW (opcode 66 AB).
+    Ecrit AX dans [EDI] et ajuste EDI selon DF. }
+Procedure OpStosW;
+Begin
+ WriteWord(Regs.EDI,Regs.AX);
+ If DF in EFlags.s Then Dec(Regs.EDI,2)
+ Else Inc(Regs.EDI,2);
+End;
+
+  { TODO 11 : STOSD (opcode AB).
+    Ecrit EAX dans [EDI] et ajuste EDI selon DF. }
+Procedure OpStosD;
+Begin
+ WriteDWord(Regs.EDI,Regs.EAX);
+ If DF in EFlags.s Then Dec(Regs.EDI,4)
+ Else Inc(Regs.EDI,4);
+End;
+
+  { TODO 11 : LODSB (opcode AC).
+    Charge un octet de [ESI] dans AL et ajuste ESI selon DF. }
+Procedure OpLodsB;
+Begin
+ Regs.AL:=ReadByte(Regs.ESI);
+ If DF in EFlags.s Then Dec(Regs.ESI)
+ Else Inc(Regs.ESI);
+End;
+
+  { TODO 11 : LODSW (opcode 66 AD).
+    Charge un mot de [ESI] dans AX et ajuste ESI selon DF. }
+Procedure OpLodsW;
+Begin
+ Regs.AX:=ReadWord(Regs.ESI);
+ If DF in EFlags.s Then Dec(Regs.ESI,2)
+ Else Inc(Regs.ESI,2);
+End;
+
+  { TODO 11 : LODSD (opcode AD).
+    Charge un double mot de [ESI] dans EAX et ajuste ESI selon DF. }
+Procedure OpLodsD;
+Begin
+ Regs.EAX:=ReadDWord(Regs.ESI);
+ If DF in EFlags.s Then Dec(Regs.ESI,4)
+ Else Inc(Regs.ESI,4);
+End;
+
+  { TODO 11 : CMPSB (opcode A6).
+    Compare l'octet [ESI] avec [EDI] (soustraction sans stocker le
+    resultat), met a jour les drapeaux et ajuste ESI/EDI selon DF. }
+Procedure OpCmpsB;
+Begin
+ ArithSub8(ReadByte(Regs.ESI),ReadByte(Regs.EDI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI);
+  Dec(Regs.EDI);
+ End Else Begin
+  Inc(Regs.ESI);
+  Inc(Regs.EDI);
+ End;
+End;
+
+  { TODO 11 : CMPSW (opcode 66 A7).
+    Compare le mot [ESI] avec [EDI], met a jour les drapeaux
+    et ajuste ESI/EDI selon DF. }
+Procedure OpCmpsW;
+Begin
+ ArithSub16(ReadWord(Regs.ESI),ReadWord(Regs.EDI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI,2);
+  Dec(Regs.EDI,2);
+ End Else Begin
+  Inc(Regs.ESI,2);
+  Inc(Regs.EDI,2);
+ End;
+End;
+
+  { TODO 11 : CMPSD (opcode A7).
+    Compare le double mot [ESI] avec [EDI], met a jour les drapeaux
+    et ajuste ESI/EDI selon DF. }
+Procedure OpCmpsD;
+Begin
+ ArithSub32(ReadDWord(Regs.ESI),ReadDWord(Regs.EDI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI,4);
+  Dec(Regs.EDI,4);
+ End Else Begin
+  Inc(Regs.ESI,4);
+  Inc(Regs.EDI,4);
+ End;
+End;
+
+  { TODO 11 : SCASB (opcode AE).
+    Compare AL avec l'octet [EDI] (soustraction AL - [EDI] sans
+    stocker le resultat), met a jour les drapeaux et ajuste EDI. }
+Procedure OpScasB;
+Begin
+ ArithSub8(Regs.AL,ReadByte(Regs.EDI));
+ If DF in EFlags.s Then Dec(Regs.EDI)
+ Else Inc(Regs.EDI);
+End;
+
+  { TODO 11 : SCASW (opcode 66 AF).
+    Compare AX avec le mot [EDI], met a jour les drapeaux
+    et ajuste EDI. }
+Procedure OpScasW;
+Begin
+ ArithSub16(Regs.AX,ReadWord(Regs.EDI));
+ If DF in EFlags.s Then Dec(Regs.EDI,2)
+ Else Inc(Regs.EDI,2);
+End;
+
+  { TODO 11 : SCASD (opcode AF).
+    Compare EAX avec le double mot [EDI], met a jour les drapeaux
+    et ajuste EDI. }
+Procedure OpScasD;
+Begin
+ ArithSub32(Regs.EAX,ReadDWord(Regs.EDI));
+ If DF in EFlags.s Then Dec(Regs.EDI,4)
+ Else Inc(Regs.EDI,4);
+End;
+
+  { TODO 11 : REP MOVSB (prefixe F3, opcode A4).
+    Copie ECX octets de [ESI] vers [EDI]. }
+Procedure OpRepMovsB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpMovsB;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP MOVSW (prefixe F3, opcode 66 A5).
+    Copie ECX mots de [ESI] vers [EDI]. }
+Procedure OpRepMovsW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpMovsW;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP MOVSD (prefixe F3, opcode A5).
+    Copie ECX doubles mots de [ESI] vers [EDI]. }
+Procedure OpRepMovsD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpMovsD;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP STOSB (prefixe F3, opcode AA).
+    Remplit ECX octets a [EDI] avec AL. }
+Procedure OpRepStosB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpStosB;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP STOSW (prefixe F3, opcode 66 AB).
+    Remplit ECX mots a [EDI] avec AX. }
+Procedure OpRepStosW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpStosW;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP STOSD (prefixe F3, opcode AB).
+    Remplit ECX doubles mots a [EDI] avec EAX. }
+Procedure OpRepStosD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpStosD;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP LODSB (prefixe F3, opcode AC).
+    Charge ECX octets successifs de [ESI] dans AL. }
+Procedure OpRepLodsB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpLodsB;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP LODSW (prefixe F3, opcode 66 AD).
+    Charge ECX mots successifs de [ESI] dans AX. }
+Procedure OpRepLodsW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpLodsW;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP LODSD (prefixe F3, opcode AD).
+    Charge ECX doubles mots successifs de [ESI] dans EAX. }
+Procedure OpRepLodsD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpLodsD;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REPE CMPSB (prefixe F3, opcode A6).
+    Compare les octets [ESI] et [EDI] tant que ECX<>0 et ZF=1.
+    Decremente ECX apres chaque comparaison. }
+Procedure OpRepeCmpsB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsB;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPE CMPSW (prefixe F3, opcode 66 A7).
+    Compare les mots [ESI] et [EDI] tant que ECX<>0 et ZF=1. }
+Procedure OpRepeCmpsW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsW;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPE CMPSD (prefixe F3, opcode A7).
+    Compare les doubles mots [ESI] et [EDI] tant que ECX<>0 et ZF=1. }
+Procedure OpRepeCmpsD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsD;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE CMPSB (prefixe F2, opcode A6).
+    Compare les octets [ESI] et [EDI] tant que ECX<>0 et ZF=0.
+    Decremente ECX apres chaque comparaison. }
+Procedure OpRepneCmpsB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsB;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE CMPSW (prefixe F2, opcode 66 A7).
+    Compare les mots [ESI] et [EDI] tant que ECX<>0 et ZF=0. }
+Procedure OpRepneCmpsW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsW;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE CMPSD (prefixe F2, opcode A7).
+    Compare les doubles mots [ESI] et [EDI] tant que ECX<>0 et ZF=0. }
+Procedure OpRepneCmpsD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsD;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPE SCASB (prefixe F3, opcode AE).
+    Compare AL avec [EDI] tant que ECX<>0 et ZF=1.
+    Decremente ECX apres chaque comparaison. }
+Procedure OpRepeScasB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasB;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPE SCASW (prefixe F3, opcode 66 AF).
+    Compare AX avec [EDI] tant que ECX<>0 et ZF=1. }
+Procedure OpRepeScasW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasW;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPE SCASD (prefixe F3, opcode AF).
+    Compare EAX avec [EDI] tant que ECX<>0 et ZF=1. }
+Procedure OpRepeScasD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasD;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE SCASB (prefixe F2, opcode AE).
+    Compare AL avec [EDI] tant que ECX<>0 et ZF=0.
+    Decremente ECX apres chaque comparaison. }
+Procedure OpRepneScasB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasB;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE SCASW (prefixe F2, opcode 66 AF).
+    Compare AX avec [EDI] tant que ECX<>0 et ZF=0. }
+Procedure OpRepneScasW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasW;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE SCASD (prefixe F2, opcode AF).
+    Compare EAX avec [EDI] tant que ECX<>0 et ZF=0. }
+Procedure OpRepneScasD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasD;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
  End;
 End;
 
