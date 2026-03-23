@@ -67,7 +67,7 @@
       near avec deplacement rel32, prefixe 0Fh) et les sauts
       inconditionnels JMP rel32/JMP [mem] en mode plat.
 
-  13. Implementer CALL rel32, CALL [mem], RET, RET imm16 en mode
+  13. [IMPLEMENTE] Implementer CALL rel32, CALL [mem], RET, RET imm16 en mode
       plat 32 bits avec empilement/depilement de EIP sur la pile,
       incluant les appels indirects via registre (CALL EAX, etc.).
 
@@ -4490,6 +4490,64 @@ Begin
  Dec(Regs.ECX);
  If(Regs.ECX<>0)and Not(ZF in EFlags.s)Then
   EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 13 : CALL near rel32 (opcode $E8).
+    Appel de sous-programme avec deplacement relatif signe de 32 bits.
+    Empile l'adresse de retour (EIP apres lecture du rel32) sur la
+    pile, puis ajoute le deplacement a EIP. }
+Procedure OpCallNear;
+Var
+ Rel32:LongInt;
+Begin
+ Rel32:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Push32(EIP);
+ EIP:=EIP+Rel32;
+End;
+
+  { TODO 13 : CALL r/m32 (opcode $FF /2).
+    Appel de sous-programme indirect : la cible est lue depuis
+    un registre 32 bits ou une adresse memoire. Empile l'adresse
+    de retour (EIP courant) sur la pile, puis charge EIP avec
+    la valeur lue. Cela inclut CALL EAX, CALL [mem], etc. }
+Procedure OpCallRM32;
+Var
+ ModField,RegField,RMField:Byte;
+ EffAddr:LongInt;
+ IsMemory:Boolean;
+ Target:LongInt;
+Begin
+ DecodeModRM(ModField,RegField,RMField,EffAddr,IsMemory);
+ If IsMemory Then
+  Target:=ReadDWord(EffAddr)
+ Else
+  Target:=GetReg32(RMField);
+ Push32(EIP);
+ EIP:=Target;
+End;
+
+  { TODO 13 : RET (opcode $C3).
+    Retour de sous-programme : depile l'adresse de retour depuis
+    la pile et la charge dans EIP. }
+Procedure OpRet;
+Begin
+ EIP:=Pop32;
+End;
+
+  { TODO 13 : RET imm16 (opcode $C2).
+    Retour de sous-programme avec nettoyage de la pile : depile
+    l'adresse de retour dans EIP, puis ajoute imm16 octets a ESP
+    pour liberer les parametres empiles par l'appelant.
+    Utilise par la convention STDCALL de Win32. }
+Procedure OpRetImm16;
+Var
+ Imm16:Word;
+Begin
+ Imm16:=ReadWord(EIP);
+ Inc(EIP,2);
+ EIP:=Pop32;
+ Regs.ESP:=Regs.ESP+LongInt(Imm16);
 End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
