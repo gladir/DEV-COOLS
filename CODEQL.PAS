@@ -715,7 +715,15 @@ Type
     SNK_RUST_CONST, SNK_RUST_STATIC,
     SNK_RUST_IF, SNK_RUST_MATCH,
     SNK_RUST_LOOP, SNK_RUST_FOR,
-    SNK_RUST_RETURN, SNK_RUST_LET
+    SNK_RUST_RETURN, SNK_RUST_LET,
+    SNK_PERL_FILE, SNK_PERL_PACKAGE,
+    SNK_PERL_USE, SNK_PERL_SUB,
+    SNK_PERL_IF, SNK_PERL_ELSIF,
+    SNK_PERL_WHILE, SNK_PERL_FOR,
+    SNK_PERL_FOREACH, SNK_PERL_UNLESS,
+    SNK_PERL_UNTIL, SNK_PERL_EVAL,
+    SNK_PERL_MY, SNK_PERL_LOCAL,
+    SNK_PERL_RETURN, SNK_PERL_ASSIGN
   );
 
   TSrcASTNode = Record
@@ -1454,7 +1462,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php|modula2|rust]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php|modula2|rust|perl]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1733,8 +1741,9 @@ Begin
      (Opts.Language <> 'ruby') And (Opts.Language <> 'swift') And
      (Opts.Language <> 'kotlin') And (Opts.Language <> 'oberon') And
      (Opts.Language <> 'ada') And (Opts.Language <> 'php') And
-     (Opts.Language <> 'modula2') And (Opts.Language <> 'rust') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon, ada, php, modula2 ou rust)');
+     (Opts.Language <> 'modula2') And (Opts.Language <> 'rust') And
+     (Opts.Language <> 'perl') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon, ada, php, modula2, rust ou perl)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -6126,6 +6135,22 @@ Begin
     SNK_RUST_FOR              : SrcNodeKindName := 'RUST_FOR';
     SNK_RUST_RETURN           : SrcNodeKindName := 'RUST_RETURN';
     SNK_RUST_LET              : SrcNodeKindName := 'RUST_LET';
+    SNK_PERL_FILE             : SrcNodeKindName := 'PERL_FILE';
+    SNK_PERL_PACKAGE          : SrcNodeKindName := 'PERL_PACKAGE';
+    SNK_PERL_USE              : SrcNodeKindName := 'PERL_USE';
+    SNK_PERL_SUB              : SrcNodeKindName := 'PERL_SUB';
+    SNK_PERL_IF               : SrcNodeKindName := 'PERL_IF';
+    SNK_PERL_ELSIF            : SrcNodeKindName := 'PERL_ELSIF';
+    SNK_PERL_WHILE            : SrcNodeKindName := 'PERL_WHILE';
+    SNK_PERL_FOR              : SrcNodeKindName := 'PERL_FOR';
+    SNK_PERL_FOREACH          : SrcNodeKindName := 'PERL_FOREACH';
+    SNK_PERL_UNLESS           : SrcNodeKindName := 'PERL_UNLESS';
+    SNK_PERL_UNTIL            : SrcNodeKindName := 'PERL_UNTIL';
+    SNK_PERL_EVAL             : SrcNodeKindName := 'PERL_EVAL';
+    SNK_PERL_MY               : SrcNodeKindName := 'PERL_MY';
+    SNK_PERL_LOCAL            : SrcNodeKindName := 'PERL_LOCAL';
+    SNK_PERL_RETURN           : SrcNodeKindName := 'PERL_RETURN';
+    SNK_PERL_ASSIGN           : SrcNodeKindName := 'PERL_ASSIGN';
   Else
     SrcNodeKindName := '???';
   End;
@@ -31642,6 +31667,1033 @@ Begin
   IsRustSource := StrEndsWith(FName, '.rs');
 End;
 
+{ ---- Perl language support ------------------------------------ }
+
+Function IsPerlKeyword(Const W : TString) : Boolean;
+Begin
+  IsPerlKeyword :=
+    (W = 'my') Or (W = 'our') Or (W = 'local') Or
+    (W = 'sub') Or (W = 'if') Or (W = 'elsif') Or
+    (W = 'else') Or (W = 'unless') Or (W = 'while') Or
+    (W = 'until') Or (W = 'for') Or (W = 'foreach') Or
+    (W = 'do') Or (W = 'use') Or (W = 'require') Or
+    (W = 'no') Or (W = 'package') Or (W = 'return') Or
+    (W = 'last') Or (W = 'next') Or (W = 'redo') Or
+    (W = 'die') Or (W = 'warn') Or (W = 'print') Or
+    (W = 'say') Or (W = 'chomp') Or (W = 'chop') Or
+    (W = 'push') Or (W = 'pop') Or (W = 'shift') Or
+    (W = 'unshift') Or (W = 'splice') Or (W = 'keys') Or
+    (W = 'values') Or (W = 'each') Or (W = 'delete') Or
+    (W = 'exists') Or (W = 'defined') Or (W = 'undef') Or
+    (W = 'eval') Or (W = 'BEGIN') Or (W = 'END') Or
+    (W = 'INIT') Or (W = 'CHECK') Or (W = 'UNITCHECK') Or
+    (W = 'AUTOLOAD') Or (W = 'DESTROY') Or (W = 'eq') Or
+    (W = 'ne') Or (W = 'lt') Or (W = 'gt') Or
+    (W = 'le') Or (W = 'ge') Or (W = 'cmp') Or
+    (W = 'not') Or (W = 'and') Or (W = 'or') Or
+    (W = 'xor') Or (W = 'bless') Or (W = 'ref') Or
+    (W = 'tie') Or (W = 'untie') Or (W = 'tied') Or
+    (W = 'open') Or (W = 'close') Or (W = 'read') Or
+    (W = 'write') Or (W = 'seek') Or (W = 'tell') Or
+    (W = 'eof') Or (W = 'binmode') Or (W = 'map') Or
+    (W = 'grep') Or (W = 'sort') Or (W = 'reverse') Or
+    (W = 'join') Or (W = 'split') Or (W = 'wantarray') Or
+    (W = 'caller') Or (W = 'scalar');
+End;
+
+Procedure PerlLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+Procedure PerlLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Code     : Integer;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Skip whitespace }
+    While (Not SrcEOF) And (SrcColNo <= Length(SrcLine)) And
+          ((SrcLine[SrcColNo] = ' ') Or (SrcLine[SrcColNo] = #9)) Do
+      Inc(SrcColNo);
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      Exit;
+    End;
+
+    If SrcColNo > Length(SrcLine) Then
+    Begin
+      SrcLexNextLine;
+      If SrcEOF Then
+      Begin
+        SrcToken.Kind := STK_EOF;
+        SrcToken.Val  := '';
+        Exit;
+      End;
+      Continue;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Ch := SrcLine[SrcColNo];
+    Scanning := False;
+
+    { Line comments # }
+    If (Ch = '#') Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Single-quoted strings }
+    If Ch = '''' Then
+    Begin
+      S := '''';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] <> '''') Do
+      Begin
+        If (SrcLine[SrcColNo] = '\') And (SrcColNo < Length(SrcLine)) And
+           (SrcLine[SrcColNo + 1] In ['''','\']) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End
+        Else
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End;
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '''') Then
+      Begin
+        S := S + '''';
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Double-quoted strings }
+    If Ch = '"' Then
+    Begin
+      S := '"';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] <> '"') Do
+      Begin
+        If SrcLine[SrcColNo] = '\' Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          If SrcColNo <= Length(SrcLine) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End
+        Else
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End;
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '"') Then
+      Begin
+        S := S + '"';
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Variables: $var, @array, %hash }
+    If (Ch In ['$','@','%']) Then
+    Begin
+      S := Ch;
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] In ['A'..'Z','a'..'z','0'..'9','_']) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_IDENT;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Numeric literals: decimal, hex 0x, octal 0, binary 0b }
+    If (Ch In ['0'..'9']) Then
+    Begin
+      S := '';
+      If (Ch = '0') And (SrcColNo < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 1] In ['x','X']) Then
+      Begin
+        S := '0x';
+        Inc(SrcColNo, 2);
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] In ['0'..'9','a'..'f','A'..'F','_']) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      Else If (Ch = '0') And (SrcColNo < Length(SrcLine)) And
+              (SrcLine[SrcColNo + 1] In ['b','B']) Then
+      Begin
+        S := '0b';
+        Inc(SrcColNo, 2);
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] In ['0','1','_']) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End
+      Else
+      Begin
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] In ['0'..'9','_']) Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        { Floating point }
+        If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '.') And
+           (SrcColNo + 1 <= Length(SrcLine)) And
+           (SrcLine[SrcColNo + 1] In ['0'..'9']) Then
+        Begin
+          S := S + '.';
+          Inc(SrcColNo);
+          While (SrcColNo <= Length(SrcLine)) And
+                (SrcLine[SrcColNo] In ['0'..'9','_']) Do
+          Begin
+            If SrcLine[SrcColNo] <> '_' Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+        { Exponent }
+        If (SrcColNo <= Length(SrcLine)) And
+           (SrcLine[SrcColNo] In ['e','E']) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          If (SrcColNo <= Length(SrcLine)) And
+             (SrcLine[SrcColNo] In ['+','-']) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          While (SrcColNo <= Length(SrcLine)) And
+                (SrcLine[SrcColNo] In ['0'..'9','_']) Do
+          Begin
+            If SrcLine[SrcColNo] <> '_' Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+      End;
+      SrcToken.Kind := STK_INTEGER;
+      SrcToken.Val  := S;
+      Val(S, SrcToken.IntVal, Code);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Identifiers and keywords }
+    If (Ch In ['A'..'Z','a'..'z','_']) Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] In ['A'..'Z','a'..'z','0'..'9','_']) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      { qw/.../ treated as string }
+      If (S = 'qw') And (SrcColNo <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] In ['(','/','{','[','<','!']) Then
+      Begin
+        Ch := SrcLine[SrcColNo];
+        S := 'qw' + Ch;
+        Inc(SrcColNo);
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] <> ')') And (SrcLine[SrcColNo] <> '/') And
+              (SrcLine[SrcColNo] <> '}') And (SrcLine[SrcColNo] <> ']') And
+              (SrcLine[SrcColNo] <> '>') And (SrcLine[SrcColNo] <> '!') Do
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        If SrcColNo <= Length(SrcLine) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        SrcToken.Kind := STK_STRING;
+        SrcToken.Val  := S;
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      If IsPerlKeyword(S) Then
+        SrcToken.Kind := STK_KEYWORD
+      Else
+        SrcToken.Kind := STK_IDENT;
+      SrcToken.Val := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Multi-character operators }
+
+    { -> (arrow) }
+    If (Ch = '-') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '->';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { => (fat comma) }
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '=>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { =~ (regex bind) }
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '~') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '=~';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { !~ (negated regex bind) }
+    If (Ch = '!') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '~') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '!~';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { :: (package separator) }
+    If (Ch = ':') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = ':') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '::';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { ** (exponentiation) or **= }
+    If (Ch = '*') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      If (SrcColNo + 1 < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Val := '**=';
+        Inc(SrcColNo, 3);
+      End
+      Else
+      Begin
+        SrcToken.Val := '**';
+        Inc(SrcColNo, 2);
+      End;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { // (defined-or) or //= }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      If (SrcColNo + 1 < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Val := '//=';
+        Inc(SrcColNo, 3);
+      End
+      Else
+      Begin
+        SrcToken.Val := '//';
+        Inc(SrcColNo, 2);
+      End;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { || or ||= }
+    If (Ch = '|') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '|') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      If (SrcColNo + 1 < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Val := '||=';
+        Inc(SrcColNo, 3);
+      End
+      Else
+      Begin
+        SrcToken.Val := '||';
+        Inc(SrcColNo, 2);
+      End;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { && or &&= }
+    If (Ch = '&') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '&') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      If (SrcColNo + 1 < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 2] = '=') Then
+      Begin
+        SrcToken.Val := '&&=';
+        Inc(SrcColNo, 3);
+      End
+      Else
+      Begin
+        SrcToken.Val := '&&';
+        Inc(SrcColNo, 2);
+      End;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { ... (yada yada) }
+    If (Ch = '.') And (SrcColNo + 1 < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '.') And (SrcLine[SrcColNo + 2] = '.') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '...';
+      Inc(SrcColNo, 3);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { .. (range) }
+    If (Ch = '.') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '.') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '..';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { <=> (spaceship) }
+    If (Ch = '<') And (SrcColNo + 1 < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') And (SrcLine[SrcColNo + 2] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<=>';
+      Inc(SrcColNo, 3);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { <<= }
+    If (Ch = '<') And (SrcColNo + 1 < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '<') And (SrcLine[SrcColNo + 2] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<<=';
+      Inc(SrcColNo, 3);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { >>= }
+    If (Ch = '>') And (SrcColNo + 1 < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') And (SrcLine[SrcColNo + 2] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>>=';
+      Inc(SrcColNo, 3);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { << }
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '<') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<<';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { >> }
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { <= }
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { >= }
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { == }
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '==';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { != }
+    If (Ch = '!') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '!=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { ++ }
+    If (Ch = '+') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '+') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '++';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { -- }
+    If (Ch = '-') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '-') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '--';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { .= += -= *= /= %= |= &= ^= }
+    If (Ch In ['.', '+','-','*','/','%','|','&','^']) And
+       (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := Ch + '=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Single-character operators and punctuation }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- Perl parser ---------------------------------------------- }
+
+Procedure PerlConsume;
+Begin
+  PerlLexNextToken;
+End;
+
+Function PerlIsKW(Const KW : TString) : Boolean;
+Begin
+  PerlIsKW := (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = KW);
+End;
+
+Procedure PerlSkipBalanced; Forward;
+
+Procedure PerlSkipBalanced;
+Var Depth : Integer;
+Begin
+  Depth := 0;
+  While (SrcToken.Kind <> STK_EOF) Do
+  Begin
+    If (SrcToken.Kind = STK_OP) And
+       ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or
+        (SrcToken.Val = '[')) Then
+      Inc(Depth)
+    Else If (SrcToken.Kind = STK_OP) And
+            ((SrcToken.Val = '}') Or (SrcToken.Val = ')') Or
+             (SrcToken.Val = ']')) Then
+    Begin
+      Dec(Depth);
+      If Depth <= 0 Then
+      Begin
+        PerlConsume;
+        Exit;
+      End;
+    End;
+    PerlConsume;
+  End;
+End;
+
+Procedure PerlSkipBlock;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+  Begin
+    PerlConsume;
+    PerlSkipBalanced;
+  End;
+End;
+
+Procedure PerlSkipToSemi;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';'))) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+  Begin
+    If (SrcToken.Kind = STK_OP) And
+       ((SrcToken.Val = '{') Or (SrcToken.Val = '(') Or (SrcToken.Val = '[')) Then
+    Begin
+      PerlConsume;
+      PerlSkipBalanced;
+    End
+    Else
+      PerlConsume;
+  End;
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+    PerlConsume;
+End;
+
+Procedure PerlParseStatements(Parent : Integer); Forward;
+
+Procedure PerlParseStatements(Parent : Integer);
+Var N        : Integer;
+    ItemName : TString;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        (Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}'))) Do
+  Begin
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+      Exit;
+
+    { use / require / no }
+    If PerlIsKW('use') Or PerlIsKW('require') Or PerlIsKW('no') Then
+    Begin
+      N := SrcNewNode(SNK_PERL_USE);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume; { use/require/no }
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        PerlConsume;
+      End;
+      PerlSkipToSemi;
+    End
+
+    { package declaration }
+    Else If PerlIsKW('package') Then
+    Begin
+      N := SrcNewNode(SNK_PERL_PACKAGE);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume; { package }
+      ItemName := '';
+      While (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+            ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '::')) Do
+      Begin
+        ItemName := ItemName + SrcToken.Val;
+        PerlConsume;
+      End;
+      SrcNodes[N].Name := ItemName;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PerlConsume;
+        PerlParseStatements(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PerlConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        PerlConsume;
+    End
+
+    { sub declaration }
+    Else If PerlIsKW('sub') Then
+    Begin
+      N := SrcNewNode(SNK_PERL_SUB);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume; { sub }
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        PerlConsume;
+      End;
+      { skip prototype (...) if present }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        PerlConsume;
+        PerlSkipBalanced;
+      End;
+      { skip attributes : attr }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+      Begin
+        PerlConsume;
+        While (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Do
+        Begin
+          PerlConsume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+          Begin
+            PerlConsume;
+            PerlSkipBalanced;
+          End;
+        End;
+      End;
+      { body }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PerlConsume;
+        PerlParseStatements(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PerlConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        PerlConsume;
+    End
+
+    { BEGIN / END / INIT / CHECK / UNITCHECK blocks }
+    Else If PerlIsKW('BEGIN') Or PerlIsKW('END') Or
+            PerlIsKW('INIT') Or PerlIsKW('CHECK') Or
+            PerlIsKW('UNITCHECK') Then
+    Begin
+      N := SrcNewNode(SNK_PERL_SUB);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Name := SrcToken.Val;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PerlConsume;
+        PerlParseStatements(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PerlConsume;
+      End;
+    End
+
+    { if / unless }
+    Else If PerlIsKW('if') Or PerlIsKW('unless') Then
+    Begin
+      If PerlIsKW('unless') Then
+        N := SrcNewNode(SNK_PERL_UNLESS)
+      Else
+        N := SrcNewNode(SNK_PERL_IF);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Name := SrcToken.Val;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume; { if/unless }
+      { skip condition (...) }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        PerlConsume;
+        PerlSkipBalanced;
+      End;
+      { body block }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PerlConsume;
+        PerlParseStatements(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PerlConsume;
+      End;
+      { elsif chains }
+      While PerlIsKW('elsif') Do
+      Begin
+        N := SrcNewNode(SNK_PERL_ELSIF);
+        SrcNodes[N].Line := SrcToken.Line;
+        SrcNodes[N].Name := 'elsif';
+        SrcAppendToList(SrcNodes[Parent].Left, N);
+        PerlConsume; { elsif }
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        Begin
+          PerlConsume;
+          PerlSkipBalanced;
+        End;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        Begin
+          PerlConsume;
+          PerlParseStatements(N);
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+            PerlConsume;
+        End;
+      End;
+      { else block }
+      If PerlIsKW('else') Then
+      Begin
+        PerlConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+          PerlSkipBlock;
+      End;
+    End
+
+    { while / until }
+    Else If PerlIsKW('while') Or PerlIsKW('until') Then
+    Begin
+      If PerlIsKW('until') Then
+        N := SrcNewNode(SNK_PERL_UNTIL)
+      Else
+        N := SrcNewNode(SNK_PERL_WHILE);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Name := SrcToken.Val;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume; { while/until }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        PerlConsume;
+        PerlSkipBalanced;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PerlConsume;
+        PerlParseStatements(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PerlConsume;
+      End;
+    End
+
+    { for / foreach }
+    Else If PerlIsKW('for') Or PerlIsKW('foreach') Then
+    Begin
+      If PerlIsKW('foreach') Then
+        N := SrcNewNode(SNK_PERL_FOREACH)
+      Else
+        N := SrcNewNode(SNK_PERL_FOR);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Name := SrcToken.Val;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume; { for/foreach }
+      { optional loop variable }
+      If PerlIsKW('my') Or PerlIsKW('our') Then
+        PerlConsume;
+      If (SrcToken.Kind = STK_IDENT) And (Length(SrcToken.Val) > 0) And
+         (SrcToken.Val[1] = '$') Then
+        PerlConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        PerlConsume;
+        PerlSkipBalanced;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PerlConsume;
+        PerlParseStatements(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PerlConsume;
+      End;
+    End
+
+    { do BLOCK or do EXPR }
+    Else If PerlIsKW('do') Then
+    Begin
+      PerlConsume; { do }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        PerlSkipBlock
+      Else
+        PerlSkipToSemi;
+    End
+
+    { eval BLOCK }
+    Else If PerlIsKW('eval') Then
+    Begin
+      N := SrcNewNode(SNK_PERL_EVAL);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcNodes[N].Name := 'eval';
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume; { eval }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PerlConsume;
+        PerlParseStatements(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PerlConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          PerlConsume;
+      End
+      Else
+        PerlSkipToSemi;
+    End
+
+    { my / our / local variable declarations }
+    Else If PerlIsKW('my') Or PerlIsKW('our') Then
+    Begin
+      N := SrcNewNode(SNK_PERL_MY);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume; { my/our }
+      If (SrcToken.Kind = STK_IDENT) And (Length(SrcToken.Val) > 0) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        PerlConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        SrcNodes[N].Name := '(...)';
+        PerlConsume;
+        PerlSkipBalanced;
+      End;
+      PerlSkipToSemi;
+    End
+
+    Else If PerlIsKW('local') Then
+    Begin
+      N := SrcNewNode(SNK_PERL_LOCAL);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume; { local }
+      If (SrcToken.Kind = STK_IDENT) And (Length(SrcToken.Val) > 0) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        PerlConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        SrcNodes[N].Name := '(...)';
+        PerlConsume;
+        PerlSkipBalanced;
+      End;
+      PerlSkipToSemi;
+    End
+
+    { return }
+    Else If PerlIsKW('return') Then
+    Begin
+      N := SrcNewNode(SNK_PERL_RETURN);
+      SrcNodes[N].Line := SrcToken.Line;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PerlConsume; { return }
+      PerlSkipToSemi;
+    End
+
+    { Other statement: expression or assignment }
+    Else
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        PerlConsume
+      Else
+      Begin
+        N := SrcNewNode(SNK_PERL_ASSIGN);
+        SrcNodes[N].Line := SrcToken.Line;
+        SrcAppendToList(SrcNodes[Parent].Left, N);
+        If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+          SrcNodes[N].Name := SrcToken.Val;
+        PerlSkipToSemi;
+      End;
+    End;
+  End;
+End;
+
+Function PerlParseTranslationUnit : Integer;
+Var Root : Integer;
+Begin
+  PerlConsume; { prime the lexer }
+
+  Root := SrcNewNode(SNK_PERL_FILE);
+  SrcNodes[Root].Line := 1;
+  SrcNodes[Root].Name := 'file';
+
+  PerlParseStatements(Root);
+
+  PerlParseTranslationUnit := Root;
+End;
+
+Function IsPerlSource(Const FName : TString) : Boolean;
+Begin
+  IsPerlSource := StrEndsWith(FName, '.pl') Or
+                  StrEndsWith(FName, '.pm') Or
+                  StrEndsWith(FName, '.t');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -31708,7 +32760,8 @@ Begin
             ((Opts.Language = 'ada') And IsAdaSource(SR.Name)) Or
              ((Opts.Language = 'php') And IsPhpSource(SR.Name)) Or
               ((Opts.Language = 'modula2') And IsM2Source(SR.Name)) Or
-               ((Opts.Language = 'rust') And IsRustSource(SR.Name)) Then
+               ((Opts.Language = 'rust') And IsRustSource(SR.Name)) Or
+                ((Opts.Language = 'perl') And IsPerlSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -31871,6 +32924,12 @@ Begin
       RustLexInit;
       SrcASTInit;
       SrcRootNode := RustParseTranslationUnit;
+    End
+    Else If Opts.Language = 'perl' Then
+    Begin
+      PerlLexInit;
+      SrcASTInit;
+      SrcRootNode := PerlParseTranslationUnit;
     End
     Else
     Begin
