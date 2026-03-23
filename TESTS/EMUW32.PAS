@@ -50,7 +50,7 @@
       MOV [mem],reg32 / MOVZX / MOVSX / LEA / XCHG / BSWAP
       avec les modes d'adressage ModR/M et SIB du 80386.
 
-  9.  Implementer les instructions arithmetiques 32 bits : ADD, SUB,
+  9.  [IMPLEMENTE] Implementer les instructions arithmetiques 32 bits : ADD, SUB,
       ADC, SBB, CMP, INC, DEC, NEG, MUL, IMUL, DIV, IDIV sur des
       operandes 8/16/32 bits avec mise a jour correcte des drapeaux
       (CF, ZF, SF, OF, AF, PF) dans EFLAGS.
@@ -1300,6 +1300,1169 @@ Begin
   SetReg8(RMF,GetReg8(RegF));
   SetReg8(RegF,Tmp);
  End;
+End;
+
+  { TODO 9 : Calcul de la parite du byte de poids faible.
+    Retourne True si le nombre de bits a 1 dans l'octet est pair
+    (PF=1 selon la convention x86). }
+Function Parity8(Value:Byte):Boolean;
+Var
+ I,Count:Byte;
+Begin
+ Count:=0;
+ For I:=0 to 7 do
+  If(Value and (1 shl I))<>0 Then Inc(Count);
+ Parity8:=(Count mod 2)=0;
+End;
+
+  { TODO 9 : Addition 8 bits avec mise a jour de tous les drapeaux.
+    Calcule A + B, met a jour CF, ZF, SF, OF, AF, PF dans EFLAGS
+    et retourne le resultat tronque sur 8 bits. }
+Function ArithAdd8(A,B:Byte):Byte;
+Var
+ Res:Word;
+ R8:Byte;
+Begin
+ Res:=Word(A)+Word(B);
+ R8:=Byte(Res);
+ If Res>255 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If R8=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(R8 and $80)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor R8)and(B xor R8)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor R8)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(R8)Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithAdd8:=R8;
+End;
+
+  { TODO 9 : Addition 32 bits avec mise a jour de tous les drapeaux.
+    Calcule A + B, met a jour CF, ZF, SF, OF, AF, PF dans EFLAGS
+    et retourne le resultat. Le carry est detecte par decomposition
+    en deux moities de 16 bits. }
+Function ArithAdd32(A,B:LongInt):LongInt;
+Var
+ Res:LongInt;
+ SumLo,CarryLo,SumHi:LongInt;
+Begin
+ Res:=A+B;
+ SumLo:=(A and $FFFF)+(B and $FFFF);
+ CarryLo:=SumLo shr 16;
+ SumHi:=((A shr 16) and $FFFF)+((B shr 16) and $FFFF)+CarryLo;
+ If(SumHi shr 16)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If Res<0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor Res)and(B xor Res))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor Res)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(Byte(Res))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithAdd32:=Res;
+End;
+
+  { TODO 9 : Soustraction 8 bits avec mise a jour de tous les drapeaux.
+    Calcule A - B, met a jour CF (borrow si B > A non-signe), ZF,
+    SF, OF, AF, PF dans EFLAGS et retourne le resultat. }
+Function ArithSub8(A,B:Byte):Byte;
+Var
+ R8:Byte;
+Begin
+ R8:=A-B;
+ If B>A Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If R8=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(R8 and $80)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor B)and(A xor R8)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor R8)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(R8)Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithSub8:=R8;
+End;
+
+  { TODO 9 : Soustraction 32 bits avec mise a jour de tous les drapeaux.
+    Calcule A - B, met a jour CF (borrow = comparaison non-signee
+    B > A par decomposition 16 bits), ZF, SF, OF, AF, PF. }
+Function ArithSub32(A,B:LongInt):LongInt;
+Var
+ Res:LongInt;
+ HiA,HiB:LongInt;
+Begin
+ Res:=A-B;
+ HiA:=(A shr 16) and $FFFF;
+ HiB:=(B shr 16) and $FFFF;
+ If HiA<>HiB Then Begin
+  If HiA<HiB Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+ End
+ Else Begin
+  If(A and $FFFF)<(B and $FFFF)Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+ End;
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If Res<0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor B)and(A xor Res))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor Res)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(Byte(Res))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithSub32:=Res;
+End;
+
+  { TODO 9 : Addition avec retenue 8 bits (ADC).
+    Calcule A + B + CF, met a jour tous les drapeaux. }
+Function ArithAdc8(A,B:Byte):Byte;
+Var
+ C:Word;
+ Res:Word;
+ R8:Byte;
+Begin
+ If CF in EFlags.s Then C:=1 Else C:=0;
+ Res:=Word(A)+Word(B)+C;
+ R8:=Byte(Res);
+ If Res>255 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If R8=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(R8 and $80)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor R8)and(B xor R8)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor R8)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(R8)Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithAdc8:=R8;
+End;
+
+  { TODO 9 : Addition avec retenue 32 bits (ADC).
+    Calcule A + B + CF, met a jour tous les drapeaux.
+    Le carry entrant (ancien CF) est ajoute a la somme. }
+Function ArithAdc32(A,B:LongInt):LongInt;
+Var
+ C:LongInt;
+ Res:LongInt;
+ SumLo,CarryLo,SumHi:LongInt;
+Begin
+ If CF in EFlags.s Then C:=1 Else C:=0;
+ Res:=A+B+C;
+ SumLo:=(A and $FFFF)+(B and $FFFF)+C;
+ CarryLo:=SumLo shr 16;
+ SumHi:=((A shr 16) and $FFFF)+((B shr 16) and $FFFF)+CarryLo;
+ If(SumHi shr 16)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If Res<0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor Res)and(B xor Res))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor Res)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(Byte(Res))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithAdc32:=Res;
+End;
+
+  { TODO 9 : Soustraction avec emprunt 8 bits (SBB).
+    Calcule A - B - CF, met a jour tous les drapeaux. }
+Function ArithSbb8(A,B:Byte):Byte;
+Var
+ C:Word;
+ Res:Integer;
+ R8:Byte;
+Begin
+ If CF in EFlags.s Then C:=1 Else C:=0;
+ Res:=Integer(A)-Integer(B)-Integer(C);
+ R8:=Byte(Res);
+ If Res<0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If R8=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(R8 and $80)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor B)and(A xor R8)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor R8)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(R8)Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithSbb8:=R8;
+End;
+
+  { TODO 9 : Soustraction avec emprunt 32 bits (SBB).
+    Calcule A - B - CF, met a jour tous les drapeaux. }
+Function ArithSbb32(A,B:LongInt):LongInt;
+Var
+ C:LongInt;
+ Res:LongInt;
+ DiffLo,BorrowLo,DiffHi:LongInt;
+Begin
+ If CF in EFlags.s Then C:=1 Else C:=0;
+ Res:=A-B-C;
+ DiffLo:=(A and $FFFF)-(B and $FFFF)-C;
+ If DiffLo<0 Then BorrowLo:=1 Else BorrowLo:=0;
+ DiffHi:=((A shr 16) and $FFFF)-((B shr 16) and $FFFF)-BorrowLo;
+ If DiffHi<0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If Res<0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor B)and(A xor Res))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor Res)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(Byte(Res))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithSbb32:=Res;
+End;
+
+  { TODO 9 : ADD r/m8, r8 (opcode $00).
+    Additionne le registre r8 a r/m8 avec mise a jour des drapeaux. }
+Procedure OpAddRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithAdd8(A,GetReg8(RegF));
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithAdd8(A,GetReg8(RegF));
+  SetReg8(RMF,R);
+ End;
+End;
+
+  { TODO 9 : ADD r/m32, r32 (opcode $01).
+    Additionne le registre r32 a r/m32 avec mise a jour des drapeaux. }
+Procedure OpAddRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithAdd32(A,GetReg32(RegF));
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithAdd32(A,GetReg32(RegF));
+  SetReg32(RMF,R);
+ End;
+End;
+
+  { TODO 9 : ADD r8, r/m8 (opcode $02).
+    Additionne r/m8 au registre r8 avec mise a jour des drapeaux. }
+Procedure OpAddR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=ArithAdd8(GetReg8(RegF),B);
+ SetReg8(RegF,R);
+End;
+
+  { TODO 9 : ADD r32, r/m32 (opcode $03).
+    Additionne r/m32 au registre r32 avec mise a jour des drapeaux. }
+Procedure OpAddR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=ArithAdd32(GetReg32(RegF),B);
+ SetReg32(RegF,R);
+End;
+
+  { TODO 9 : ADD AL, imm8 (opcode $04).
+    Additionne un immediat 8 bits a AL. }
+Procedure OpAddALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=ArithAdd8(Regs.AL,Imm);
+End;
+
+  { TODO 9 : ADD EAX, imm32 (opcode $05).
+    Additionne un immediat 32 bits a EAX. }
+Procedure OpAddEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=ArithAdd32(Regs.EAX,Imm);
+End;
+
+  { TODO 9 : SUB r/m8, r8 (opcode $28). }
+Procedure OpSubRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithSub8(A,GetReg8(RegF));
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithSub8(A,GetReg8(RegF));
+  SetReg8(RMF,R);
+ End;
+End;
+
+  { TODO 9 : SUB r/m32, r32 (opcode $29). }
+Procedure OpSubRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithSub32(A,GetReg32(RegF));
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithSub32(A,GetReg32(RegF));
+  SetReg32(RMF,R);
+ End;
+End;
+
+  { TODO 9 : SUB r8, r/m8 (opcode $2A). }
+Procedure OpSubR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=ArithSub8(GetReg8(RegF),B);
+ SetReg8(RegF,R);
+End;
+
+  { TODO 9 : SUB r32, r/m32 (opcode $2B). }
+Procedure OpSubR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=ArithSub32(GetReg32(RegF),B);
+ SetReg32(RegF,R);
+End;
+
+  { TODO 9 : SUB AL, imm8 (opcode $2C). }
+Procedure OpSubALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=ArithSub8(Regs.AL,Imm);
+End;
+
+  { TODO 9 : SUB EAX, imm32 (opcode $2D). }
+Procedure OpSubEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=ArithSub32(Regs.EAX,Imm);
+End;
+
+  { TODO 9 : ADC r/m8, r8 (opcode $10). }
+Procedure OpAdcRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithAdc8(A,GetReg8(RegF));
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithAdc8(A,GetReg8(RegF));
+  SetReg8(RMF,R);
+ End;
+End;
+
+  { TODO 9 : ADC r/m32, r32 (opcode $11). }
+Procedure OpAdcRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithAdc32(A,GetReg32(RegF));
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithAdc32(A,GetReg32(RegF));
+  SetReg32(RMF,R);
+ End;
+End;
+
+  { TODO 9 : ADC r8, r/m8 (opcode $12). }
+Procedure OpAdcR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=ArithAdc8(GetReg8(RegF),B);
+ SetReg8(RegF,R);
+End;
+
+  { TODO 9 : ADC r32, r/m32 (opcode $13). }
+Procedure OpAdcR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=ArithAdc32(GetReg32(RegF),B);
+ SetReg32(RegF,R);
+End;
+
+  { TODO 9 : ADC AL, imm8 (opcode $14). }
+Procedure OpAdcALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=ArithAdc8(Regs.AL,Imm);
+End;
+
+  { TODO 9 : ADC EAX, imm32 (opcode $15). }
+Procedure OpAdcEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=ArithAdc32(Regs.EAX,Imm);
+End;
+
+  { TODO 9 : SBB r/m8, r8 (opcode $18). }
+Procedure OpSbbRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithSbb8(A,GetReg8(RegF));
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithSbb8(A,GetReg8(RegF));
+  SetReg8(RMF,R);
+ End;
+End;
+
+  { TODO 9 : SBB r/m32, r32 (opcode $19). }
+Procedure OpSbbRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithSbb32(A,GetReg32(RegF));
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithSbb32(A,GetReg32(RegF));
+  SetReg32(RMF,R);
+ End;
+End;
+
+  { TODO 9 : SBB r8, r/m8 (opcode $1A). }
+Procedure OpSbbR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=ArithSbb8(GetReg8(RegF),B);
+ SetReg8(RegF,R);
+End;
+
+  { TODO 9 : SBB r32, r/m32 (opcode $1B). }
+Procedure OpSbbR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=ArithSbb32(GetReg32(RegF),B);
+ SetReg32(RegF,R);
+End;
+
+  { TODO 9 : SBB AL, imm8 (opcode $1C). }
+Procedure OpSbbALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=ArithSbb8(Regs.AL,Imm);
+End;
+
+  { TODO 9 : SBB EAX, imm32 (opcode $1D). }
+Procedure OpSbbEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=ArithSbb32(Regs.EAX,Imm);
+End;
+
+  { TODO 9 : CMP r/m8, r8 (opcode $38).
+    Compare par soustraction sans stocker le resultat. }
+Procedure OpCmpRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then A:=ReadByte(Eff)
+ Else A:=GetReg8(RMF);
+ ArithSub8(A,GetReg8(RegF));
+End;
+
+  { TODO 9 : CMP r/m32, r32 (opcode $39). }
+Procedure OpCmpRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then A:=ReadDWord(Eff)
+ Else A:=GetReg32(RMF);
+ ArithSub32(A,GetReg32(RegF));
+End;
+
+  { TODO 9 : CMP r8, r/m8 (opcode $3A). }
+Procedure OpCmpR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ ArithSub8(GetReg8(RegF),B);
+End;
+
+  { TODO 9 : CMP r32, r/m32 (opcode $3B). }
+Procedure OpCmpR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ ArithSub32(GetReg32(RegF),B);
+End;
+
+  { TODO 9 : CMP AL, imm8 (opcode $3C). }
+Procedure OpCmpALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ ArithSub8(Regs.AL,Imm);
+End;
+
+  { TODO 9 : CMP EAX, imm32 (opcode $3D). }
+Procedure OpCmpEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ ArithSub32(Regs.EAX,Imm);
+End;
+
+  { TODO 9 : INC r32 (opcode $40+r).
+    Incremente le registre r32 de 1. CF n'est pas modifie. }
+Procedure OpIncR32(RegIdx:Byte);
+Var
+ SaveCF:Boolean;
+Begin
+ SaveCF:=CF in EFlags.s;
+ SetReg32(RegIdx,ArithAdd32(GetReg32(RegIdx),1));
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : DEC r32 (opcode $48+r).
+    Decremente le registre r32 de 1. CF n'est pas modifie. }
+Procedure OpDecR32(RegIdx:Byte);
+Var
+ SaveCF:Boolean;
+Begin
+ SaveCF:=CF in EFlags.s;
+ SetReg32(RegIdx,ArithSub32(GetReg32(RegIdx),1));
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : INC r/m8 (opcode $FE /0).
+    Incremente r/m8 de 1. CF n'est pas modifie. }
+Procedure OpIncRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ SaveCF:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ SaveCF:=CF in EFlags.s;
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithAdd8(A,1);
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithAdd8(A,1);
+  SetReg8(RMF,R);
+ End;
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : DEC r/m8 (opcode $FE /1).
+    Decremente r/m8 de 1. CF n'est pas modifie. }
+Procedure OpDecRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ SaveCF:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ SaveCF:=CF in EFlags.s;
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithSub8(A,1);
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithSub8(A,1);
+  SetReg8(RMF,R);
+ End;
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : INC r/m32 (opcode $FF /0).
+    Incremente r/m32 de 1. CF n'est pas modifie. }
+Procedure OpIncRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ SaveCF:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ SaveCF:=CF in EFlags.s;
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithAdd32(A,1);
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithAdd32(A,1);
+  SetReg32(RMF,R);
+ End;
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : DEC r/m32 (opcode $FF /1).
+    Decremente r/m32 de 1. CF n'est pas modifie. }
+Procedure OpDecRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ SaveCF:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ SaveCF:=CF in EFlags.s;
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithSub32(A,1);
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithSub32(A,1);
+  SetReg32(RMF,R);
+ End;
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : NEG r/m8 (opcode $F6 /3).
+    Negation en complement a deux : r/m8 = 0 - r/m8.
+    CF est mis a 1 sauf si l'operande est 0. }
+Procedure OpNegRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then A:=ReadByte(Eff)
+ Else A:=GetReg8(RMF);
+ R:=ArithSub8(0,A);
+ If A<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 9 : NEG r/m32 (opcode $F7 /3).
+    Negation en complement a deux : r/m32 = 0 - r/m32.
+    CF est mis a 1 sauf si l'operande est 0. }
+Procedure OpNegRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then A:=ReadDWord(Eff)
+ Else A:=GetReg32(RMF);
+ R:=ArithSub32(0,A);
+ If A<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 9 : MUL r/m8 (opcode $F6 /4).
+    Multiplication non-signee : AX = AL * r/m8.
+    CF et OF sont mis a 1 si AH <> 0 (resultat deborde sur 8 bits). }
+Procedure OpMulRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:Byte;
+ Res:Word;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Res:=Word(Regs.AL)*Word(Val);
+ Regs.AX:=Res;
+ If Regs.AH<>0 Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : MUL r/m32 (opcode $F7 /4).
+    Multiplication non-signee : EDX:EAX = EAX * r/m32.
+    CF et OF sont mis a 1 si EDX <> 0 (resultat deborde sur 32 bits).
+    Utilise Int64 pour le calcul intermediaire 64 bits. }
+Procedure OpMulRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ A64,B64,Res64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ A64:=Int64(Regs.EAX) and $FFFFFFFF;
+ B64:=Int64(Val) and $FFFFFFFF;
+ Res64:=A64*B64;
+ Regs.EAX:=LongInt(Res64);
+ Regs.EDX:=LongInt(Res64 shr 32);
+ If Regs.EDX<>0 Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : IMUL r/m8 (opcode $F6 /5).
+    Multiplication signee : AX = AL * r/m8 (avec extension de signe).
+    CF et OF sont mis a 1 si le resultat ne tient pas dans 8 bits signes. }
+Procedure OpImulRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+ Res:Integer;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ShortInt(ReadByte(Eff))
+ Else Val:=ShortInt(GetReg8(RMF));
+ Res:=Integer(ShortInt(Regs.AL))*Integer(Val);
+ Regs.AX:=Word(Res);
+ If(Res<-128)or(Res>127)Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : IMUL r/m32 (opcode $F7 /5).
+    Multiplication signee : EDX:EAX = EAX * r/m32.
+    CF et OF sont mis a 1 si le resultat ne tient pas dans 32 bits signes.
+    Utilise Int64 pour le calcul intermediaire 64 bits. }
+Procedure OpImulRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ Res64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Res64:=Int64(Regs.EAX)*Int64(Val);
+ Regs.EAX:=LongInt(Res64);
+ Regs.EDX:=LongInt(Res64 shr 32);
+ If(Res64<Int64(-2147483648))or(Res64>Int64(2147483647))Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : IMUL r32, r/m32 (opcode $0F $AF).
+    Multiplication signee a deux operandes : r32 = r32 * r/m32.
+    Seuls les 32 bits bas du resultat sont stockes.
+    CF et OF sont mis a 1 si le resultat deborde. }
+Procedure OpImulR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B:LongInt;
+ Res64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ Res64:=Int64(GetReg32(RegF))*Int64(B);
+ SetReg32(RegF,LongInt(Res64));
+ If(Res64<Int64(-2147483648))or(Res64>Int64(2147483647))Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : IMUL r32, r/m32, imm32 (opcode $69).
+    Multiplication signee a trois operandes : r32 = r/m32 * imm32. }
+Procedure OpImulR32RM32Imm32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,Imm:LongInt;
+ Res64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ Res64:=Int64(B)*Int64(Imm);
+ SetReg32(RegF,LongInt(Res64));
+ If(Res64<Int64(-2147483648))or(Res64>Int64(2147483647))Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : IMUL r32, r/m32, imm8 (opcode $6B).
+    Multiplication signee a trois operandes : r32 = r/m32 * imm8
+    (l'immediat 8 bits est etendu avec signe a 32 bits). }
+Procedure OpImulR32RM32Imm8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B:LongInt;
+ Imm:LongInt;
+ Res64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Imm:=LongInt(ShortInt(ReadByte(EIP)));
+ Inc(EIP);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ Res64:=Int64(B)*Int64(Imm);
+ SetReg32(RegF,LongInt(Res64));
+ If(Res64<Int64(-2147483648))or(Res64>Int64(2147483647))Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : DIV r/m8 (opcode $F6 /6).
+    Division non-signee : AL = AX / r/m8, AH = AX mod r/m8.
+    Genere une erreur si le diviseur est 0 ou si le quotient
+    depasse 255. Les drapeaux sont indefinis. }
+Procedure OpDivRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:Byte;
+ Dividend:Word;
+ Quot:Word;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If Val=0 Then Begin
+  WriteLn('DIV: erreur de division par zero (8 bits)');
+  Exit;
+ End;
+ Dividend:=Regs.AX;
+ Quot:=Dividend div Val;
+ If Quot>255 Then Begin
+  WriteLn('DIV: debordement du quotient (8 bits)');
+  Exit;
+ End;
+ Regs.AL:=Byte(Quot);
+ Regs.AH:=Byte(Dividend mod Val);
+End;
+
+  { TODO 9 : DIV r/m32 (opcode $F7 /6).
+    Division non-signee : EAX = EDX:EAX / r/m32,
+    EDX = EDX:EAX mod r/m32.
+    Utilise Int64 pour le dividende 64 bits. }
+Procedure OpDivRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ Dividend64,Divisor64,Quot64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val=0 Then Begin
+  WriteLn('DIV: erreur de division par zero (32 bits)');
+  Exit;
+ End;
+ Dividend64:=(Int64(Regs.EDX) and $FFFFFFFF) shl 32;
+ Dividend64:=Dividend64 or (Int64(Regs.EAX) and $FFFFFFFF);
+ Divisor64:=Int64(Val) and $FFFFFFFF;
+ Quot64:=Dividend64 div Divisor64;
+ If Quot64>$FFFFFFFF Then Begin
+  WriteLn('DIV: debordement du quotient (32 bits)');
+  Exit;
+ End;
+ Regs.EAX:=LongInt(Quot64);
+ Regs.EDX:=LongInt(Dividend64 mod Divisor64);
+End;
+
+  { TODO 9 : IDIV r/m8 (opcode $F6 /7).
+    Division signee : AL = AX / r/m8, AH = AX mod r/m8 (signes).
+    Genere une erreur si le diviseur est 0 ou si le quotient
+    depasse la plage [-128, 127]. Les drapeaux sont indefinis. }
+Procedure OpIdivRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+ Dividend:Integer;
+ Quot:Integer;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ShortInt(ReadByte(Eff))
+ Else Val:=ShortInt(GetReg8(RMF));
+ If Val=0 Then Begin
+  WriteLn('IDIV: erreur de division par zero (8 bits)');
+  Exit;
+ End;
+ Dividend:=Integer(Regs.AX);
+ Quot:=Dividend div Integer(Val);
+ If(Quot<-128)or(Quot>127)Then Begin
+  WriteLn('IDIV: debordement du quotient (8 bits)');
+  Exit;
+ End;
+ Regs.AL:=Byte(Quot);
+ Regs.AH:=Byte(Dividend mod Integer(Val));
+End;
+
+  { TODO 9 : IDIV r/m32 (opcode $F7 /7).
+    Division signee : EAX = EDX:EAX / r/m32,
+    EDX = EDX:EAX mod r/m32 (signes).
+    Utilise Int64 pour le dividende 64 bits. }
+Procedure OpIdivRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ Dividend64,Quot64,Rem64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val=0 Then Begin
+  WriteLn('IDIV: erreur de division par zero (32 bits)');
+  Exit;
+ End;
+ Dividend64:=(Int64(Regs.EDX) shl 32) or (Int64(Regs.EAX) and $FFFFFFFF);
+ Quot64:=Dividend64 div Int64(Val);
+ Rem64:=Dividend64 mod Int64(Val);
+ If(Quot64<Int64(-2147483648))or(Quot64>Int64(2147483647))Then Begin
+  WriteLn('IDIV: debordement du quotient (32 bits)');
+  Exit;
+ End;
+ Regs.EAX:=LongInt(Quot64);
+ Regs.EDX:=LongInt(Rem64);
 End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
