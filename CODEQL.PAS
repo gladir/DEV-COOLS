@@ -26951,7 +26951,7 @@ Var
   Ch       : Char;
   Scanning : Boolean;
   S        : TString;
-  Based    : Boolean;
+  Code     : Integer;
 Begin
   SrcToken.IntVal   := 0;
   SrcToken.FloatVal := 0.0;
@@ -27000,7 +27000,7 @@ Begin
     Begin
       S := '';
       While (SrcColNo <= Length(SrcLine)) And
-            AdIsAlNum(SrcLine[SrcColNo]) Then
+            AdIsAlNum(SrcLine[SrcColNo]) Do
       Begin
         S := S + SrcLine[SrcColNo];
         Inc(SrcColNo);
@@ -27079,9 +27079,9 @@ Begin
           End;
         End;
       End;
-      SrcToken.Kind := STK_NUMBER;
+      SrcToken.Kind := STK_INTEGER;
       SrcToken.Val  := S;
-      Val(S, SrcToken.IntVal, Based);
+      Val(S, SrcToken.IntVal, Code);
       Inc(SrcTokenCount);
       Exit;
     End;
@@ -27536,7 +27536,7 @@ Begin
     If (SrcToken.Kind = STK_KEYWORD) And (UV = 'WITH') Then
     Begin
       N := SrcNewNode(SNK_AD_WITH_CLAUSE);
-      SrcAddChild(Parent, N);
+      SrcAppendToList(SrcNodes[Parent].Left, N);
       AdaConsume;
       While (SrcToken.Kind <> STK_EOF) And
             Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
@@ -27550,7 +27550,7 @@ Begin
     If (SrcToken.Kind = STK_KEYWORD) And (UV = 'USE') Then
     Begin
       N := SrcNewNode(SNK_AD_USE_CLAUSE);
-      SrcAddChild(Parent, N);
+      SrcAppendToList(SrcNodes[Parent].Left, N);
       AdaConsume;
       While (SrcToken.Kind <> STK_EOF) And
             Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
@@ -27576,7 +27576,7 @@ Begin
     If (SrcToken.Kind = STK_KEYWORD) And (UV = 'PROCEDURE') Then
     Begin
       N := SrcNewNode(SNK_AD_PROCEDURE);
-      SrcAddChild(Parent, N);
+      SrcAppendToList(SrcNodes[Parent].Left, N);
       AdaConsume;
       { procedure name }
       If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
@@ -27632,7 +27632,7 @@ Begin
     If (SrcToken.Kind = STK_KEYWORD) And (UV = 'FUNCTION') Then
     Begin
       N := SrcNewNode(SNK_AD_FUNCTION);
-      SrcAddChild(Parent, N);
+      SrcAppendToList(SrcNodes[Parent].Left, N);
       AdaConsume;
       { function name }
       If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
@@ -27705,7 +27705,7 @@ Begin
     If (SrcToken.Kind = STK_KEYWORD) And (UV = 'TYPE') Then
     Begin
       N := SrcNewNode(SNK_AD_TYPE_DECL);
-      SrcAddChild(Parent, N);
+      SrcAppendToList(SrcNodes[Parent].Left, N);
       AdaConsume;
       If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
       Begin
@@ -27720,7 +27720,7 @@ Begin
     If (SrcToken.Kind = STK_KEYWORD) And (UV = 'SUBTYPE') Then
     Begin
       N := SrcNewNode(SNK_AD_SUBTYPE_DECL);
-      SrcAddChild(Parent, N);
+      SrcAppendToList(SrcNodes[Parent].Left, N);
       AdaConsume;
       If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
       Begin
@@ -27743,13 +27743,13 @@ Begin
       If (SrcToken.Kind = STK_KEYWORD) And (UV = 'BODY') Then
       Begin
         N := SrcNewNode(SNK_AD_PACKAGE_BODY);
-        SrcAddChild(Parent, N);
+        SrcAppendToList(SrcNodes[Parent].Left, N);
         AdaConsume;
       End
       Else
       Begin
         N := SrcNewNode(SNK_AD_PACKAGE);
-        SrcAddChild(Parent, N);
+        SrcAppendToList(SrcNodes[Parent].Left, N);
       End;
       { package name }
       If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
@@ -27893,14 +27893,14 @@ Begin
         If (SrcToken.Kind = STK_KEYWORD) And (UV = 'CONSTANT') Then
         Begin
           N := SrcNewNode(SNK_AD_CONST_DECL);
-          SrcAddChild(Parent, N);
+          SrcAppendToList(SrcNodes[Parent].Left, N);
           SrcNodes[N].Name := Name;
           AdaConsume;
         End
         Else
         Begin
           N := SrcNewNode(SNK_AD_VAR_DECL);
-          SrcAddChild(Parent, N);
+          SrcAppendToList(SrcNodes[Parent].Left, N);
           SrcNodes[N].Name := Name;
         End;
         While (SrcToken.Kind <> STK_EOF) And
