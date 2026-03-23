@@ -75,7 +75,7 @@
       (conditional move du 80686/Pentium Pro), CDQ, CBW, CWDE, CLC,
       STC, CMC, CLD, STD, NOP, LEAVE, ENTER et INT3 (breakpoint).
 
-  15. Implementer l'emulation de KERNEL32.DLL - Gestion de processus
+  15. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Gestion de processus
       et console : GetStdHandle, ExitProcess, GetCommandLineA,
       GetCommandLineW, GetCurrentProcessId, GetCurrentProcess,
       GetExitCodeProcess, GetStartupInfoA.
@@ -171,6 +171,29 @@ Const
 
   { TODO 7 : Nombre maximum de repertoires de donnees PE }
  MaxDataDirs=16;
+
+  { TODO 15 : Constantes Win32 pour GetStdHandle }
+ STD_INPUT_HANDLE=LongInt(-10);
+ STD_OUTPUT_HANDLE=LongInt(-11);
+ STD_ERROR_HANDLE=LongInt(-12);
+
+  { TODO 15 : Handles emules pour stdin, stdout, stderr }
+ EMU_STDIN_HANDLE=1;
+ EMU_STDOUT_HANDLE=2;
+ EMU_STDERR_HANDLE=3;
+
+  { TODO 15 : PID fictif du processus emule }
+ EMU_PROCESS_ID=1000;
+
+  { TODO 15 : Pseudo-handle du processus courant }
+ EMU_CURRENT_PROCESS=LongInt(-1);
+
+  { TODO 15 : Zone de donnees pour les chaines du processus emule.
+    Utilise la zone $D00000-$DFFFFF (1 Mo) juste avant les thunks. }
+ ProcessDataBase=$D00000;
+
+  { TODO 15 : Taille de la structure STARTUPINFOA (68 octets) }
+ STARTUPINFOA_SIZE=68;
 
 Type
   { TODO 2 : Registres 32 bits du 80386 }
@@ -329,6 +352,17 @@ Var
   { TODO 7 : Table des fonctions importees resolues }
  ImportEntries:Array[0..MaxImportFuncs-1]of TImportEntry;
  ImportCount:Word;
+
+  { TODO 15 : Adresse en memoire lineaire de la chaine de commande ASCII }
+ CmdLineAddrA:LongInt;
+  { TODO 15 : Adresse en memoire lineaire de la chaine de commande Unicode }
+ CmdLineAddrW:LongInt;
+  { TODO 15 : Adresse en memoire lineaire de la structure STARTUPINFOA }
+ StartupInfoAddr:LongInt;
+  { TODO 15 : Code de sortie du processus emule }
+ EmuExitCode:LongInt;
+  { TODO 15 : Indicateur d'arret du processus par ExitProcess }
+ EmuRunning:Boolean;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -4712,6 +4746,269 @@ Procedure OpInt3;
 Begin
  WriteLn('INT3 breakpoint a EIP=$',HexStr(EIP-1,8));
  EIP:=0;
+End;
+
+  { TODO 15 : Ecriture d'une chaine ASCII terminee par un zero
+    dans la memoire lineaire 32 bits a l'adresse donnee.
+    Retourne l'adresse juste apres le zero terminal. }
+Function WriteStringToMem(Addr:LongInt;Const S:String):LongInt;
+Var
+ I:Integer;
+Begin
+ For I:=1 to Length(S) do
+  WriteByte(Addr+LongInt(I-1),Byte(S[I]));
+ WriteByte(Addr+LongInt(Length(S)),0);
+ WriteStringToMem:=Addr+LongInt(Length(S))+1;
+End;
+
+  { TODO 15 : Ecriture d'une chaine Unicode (UTF-16LE) terminee par un
+    zero dans la memoire lineaire 32 bits. Chaque caractere ASCII
+    est etendu sur 2 octets (octet bas = ASCII, octet haut = 0).
+    Retourne l'adresse juste apres le zero terminal (2 octets). }
+Function WriteWideStringToMem(Addr:LongInt;Const S:String):LongInt;
+Var
+ I:Integer;
+Begin
+ For I:=1 to Length(S) do Begin
+  WriteByte(Addr+LongInt((I-1)*2),Byte(S[I]));
+  WriteByte(Addr+LongInt((I-1)*2+1),0);
+ End;
+ WriteWord(Addr+LongInt(Length(S)*2),0);
+ WriteWideStringToMem:=Addr+LongInt(Length(S)*2)+2;
+End;
+
+  { TODO 15 : Initialisation des donnees du processus emule.
+    Ecrit la chaine de commande ASCII et Unicode, et la structure
+    STARTUPINFOA dans la zone ProcessDataBase ($D00000). }
+Procedure InitProcessData;
+Var
+ CmdLine:String;
+ NextAddr:LongInt;
+ I:Integer;
+Begin
+  { Construire la chaine de commande a partir des parametres reels }
+ CmdLine:=ParamStr(0);
+ For I:=1 to ParamCount do
+  CmdLine:=CmdLine+' '+ParamStr(I);
+ If CmdLine='' Then CmdLine:='EMUW32.EXE';
+  { Ecrire la chaine de commande ASCII }
+ CmdLineAddrA:=ProcessDataBase;
+ NextAddr:=WriteStringToMem(CmdLineAddrA,CmdLine);
+  { Aligner sur 4 octets }
+ If(NextAddr and 3)<>0 Then
+  NextAddr:=(NextAddr or 3)+1;
+  { Ecrire la chaine de commande Unicode (UTF-16LE) }
+ CmdLineAddrW:=NextAddr;
+ NextAddr:=WriteWideStringToMem(CmdLineAddrW,CmdLine);
+  { Aligner sur 4 octets }
+ If(NextAddr and 3)<>0 Then
+  NextAddr:=(NextAddr or 3)+1;
+  { Ecrire la structure STARTUPINFOA initialisee a zero
+    sauf le champ cb (taille de la structure, offset 0, 4 octets) }
+ StartupInfoAddr:=NextAddr;
+ For I:=0 to STARTUPINFOA_SIZE-1 do
+  WriteByte(StartupInfoAddr+LongInt(I),0);
+ WriteDWord(StartupInfoAddr,STARTUPINFOA_SIZE);
+  { Initialiser les variables d'etat du processus }
+ EmuExitCode:=0;
+ EmuRunning:=True;
+End;
+
+  { TODO 15 : Emulation de GetStdHandle (KERNEL32.DLL).
+    HANDLE WINAPI GetStdHandle(DWORD nStdHandle);
+    Convention STDCALL : 1 parametre (4 octets), nettoyage par l'appele.
+    Retourne un handle emule dans EAX. }
+Procedure EmuGetStdHandle;
+Var
+ nStdHandle:LongInt;
+Begin
+ nStdHandle:=ReadDWord(Regs.ESP+4);
+ Case nStdHandle of
+  STD_INPUT_HANDLE:Regs.EAX:=EMU_STDIN_HANDLE;
+  STD_OUTPUT_HANDLE:Regs.EAX:=EMU_STDOUT_HANDLE;
+  STD_ERROR_HANDLE:Regs.EAX:=EMU_STDERR_HANDLE;
+ Else
+  Regs.EAX:=LongInt(-1);  { INVALID_HANDLE_VALUE }
+ End;
+  { Nettoyer la pile (RET deja fait par l'appelant via RET dans le thunk,
+    mais en STDCALL l'appele nettoie les parametres).
+    Ici on simule le RET imm16 : depiler l'adresse de retour + 4 octets
+    de parametres. L'adresse de retour est deja depilee par le
+    mecanisme de CALL/RET, donc on nettoie seulement les parametres. }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 15 : Emulation de ExitProcess (KERNEL32.DLL).
+    VOID WINAPI ExitProcess(UINT uExitCode);
+    Convention STDCALL : 1 parametre (4 octets).
+    Arrete l'emulation avec le code de sortie donne. }
+Procedure EmuExitProcessProc;
+Var
+ uExitCode:LongInt;
+Begin
+ uExitCode:=ReadDWord(Regs.ESP+4);
+ EmuExitCode:=uExitCode;
+ EmuRunning:=False;
+ EIP:=0;
+ WriteLn('ExitProcess(',uExitCode,') appele.');
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 15 : Emulation de GetCommandLineA (KERNEL32.DLL).
+    LPSTR WINAPI GetCommandLineA(void);
+    Convention STDCALL : 0 parametres.
+    Retourne dans EAX un pointeur vers la chaine de commande ASCII. }
+Procedure EmuGetCommandLineA;
+Begin
+ Regs.EAX:=CmdLineAddrA;
+End;
+
+  { TODO 15 : Emulation de GetCommandLineW (KERNEL32.DLL).
+    LPWSTR WINAPI GetCommandLineW(void);
+    Convention STDCALL : 0 parametres.
+    Retourne dans EAX un pointeur vers la chaine de commande Unicode. }
+Procedure EmuGetCommandLineW;
+Begin
+ Regs.EAX:=CmdLineAddrW;
+End;
+
+  { TODO 15 : Emulation de GetCurrentProcessId (KERNEL32.DLL).
+    DWORD WINAPI GetCurrentProcessId(void);
+    Convention STDCALL : 0 parametres.
+    Retourne dans EAX un identifiant de processus fictif. }
+Procedure EmuGetCurrentProcessId;
+Begin
+ Regs.EAX:=EMU_PROCESS_ID;
+End;
+
+  { TODO 15 : Emulation de GetCurrentProcess (KERNEL32.DLL).
+    HANDLE WINAPI GetCurrentProcess(void);
+    Convention STDCALL : 0 parametres.
+    Retourne dans EAX le pseudo-handle du processus courant (-1). }
+Procedure EmuGetCurrentProcess;
+Begin
+ Regs.EAX:=EMU_CURRENT_PROCESS;
+End;
+
+  { TODO 15 : Emulation de GetExitCodeProcess (KERNEL32.DLL).
+    BOOL WINAPI GetExitCodeProcess(HANDLE hProcess,
+                                    LPDWORD lpExitCode);
+    Convention STDCALL : 2 parametres (8 octets).
+    Ecrit le code de sortie du processus dans *lpExitCode et
+    retourne TRUE (1) dans EAX. }
+Procedure EmuGetExitCodeProcess;
+Var
+ lpExitCode:LongInt;
+Begin
+ lpExitCode:=ReadDWord(Regs.ESP+8);
+ If lpExitCode<>0 Then
+  WriteDWord(lpExitCode,EmuExitCode);
+ Regs.EAX:=1;  { TRUE }
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 15 : Emulation de GetStartupInfoA (KERNEL32.DLL).
+    VOID WINAPI GetStartupInfoA(LPSTARTUPINFOA lpStartupInfo);
+    Convention STDCALL : 1 parametre (4 octets).
+    Copie la structure STARTUPINFOA pre-initialisee vers l'adresse
+    fournie par l'appelant. }
+Procedure EmuGetStartupInfoA;
+Var
+ lpStartupInfo:LongInt;
+ I:Integer;
+ B:Byte;
+Begin
+ lpStartupInfo:=ReadDWord(Regs.ESP+4);
+ If lpStartupInfo<>0 Then Begin
+  For I:=0 to STARTUPINFOA_SIZE-1 do Begin
+   B:=ReadByte(StartupInfoAddr+LongInt(I));
+   WriteByte(lpStartupInfo+LongInt(I),B);
+  End;
+ End;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 15 : Comparaison de chaines insensible a la casse.
+    Compare deux String Pascal en ignorant la casse des lettres.
+    Retourne True si les chaines sont identiques (insensible a la casse). }
+Function StrIComp(Const A,B:String):Boolean;
+Var
+ I:Integer;
+Begin
+ StrIComp:=False;
+ If Length(A)<>Length(B) Then Exit;
+ For I:=1 to Length(A) do
+  If UpCase(A[I])<>UpCase(B[I]) Then Exit;
+ StrIComp:=True;
+End;
+
+  { TODO 15 : Dispatche un appel a une fonction de KERNEL32.DLL.
+    Recoit l'index de l'entree d'importation dans ImportEntries
+    et appelle la procedure d'emulation correspondante.
+    Retourne True si la fonction a ete emulée, False sinon. }
+Function DispatchKernel32(Idx:Integer):Boolean;
+Var
+ FName:String;
+Begin
+ DispatchKernel32:=True;
+ FName:=ImportEntries[Idx].FuncName;
+ If StrIComp(FName,'GetStdHandle') Then
+  EmuGetStdHandle
+ Else If StrIComp(FName,'ExitProcess') Then
+  EmuExitProcessProc
+ Else If StrIComp(FName,'GetCommandLineA') Then
+  EmuGetCommandLineA
+ Else If StrIComp(FName,'GetCommandLineW') Then
+  EmuGetCommandLineW
+ Else If StrIComp(FName,'GetCurrentProcessId') Then
+  EmuGetCurrentProcessId
+ Else If StrIComp(FName,'GetCurrentProcess') Then
+  EmuGetCurrentProcess
+ Else If StrIComp(FName,'GetExitCodeProcess') Then
+  EmuGetExitCodeProcess
+ Else If StrIComp(FName,'GetStartupInfoA') Then
+  EmuGetStartupInfoA
+ Else Begin
+  WriteLn('KERNEL32: fonction non emulée: ',FName);
+  DispatchKernel32:=False;
+ End;
+End;
+
+  { TODO 15 : Dispatche un appel vers un thunk d'importation.
+    Verifie si l'adresse courante (EIP) est dans la zone des thunks
+    ($E00000-$EFFFFF). Si oui, cherche l'entree d'importation
+    correspondante et dispatche vers l'emulation KERNEL32.DLL.
+    Retourne True si le thunk a ete traite. }
+Function HandleThunkCall(Addr:LongInt):Boolean;
+Var
+ Idx:Integer;
+ OK:Boolean;
+Begin
+ HandleThunkCall:=False;
+ If(Addr<ThunkBase)or(Addr>=$F00000)Then Exit;
+ Idx:=FindImportByAddr(Addr);
+ If Idx<0 Then Begin
+  WriteLn('HandleThunkCall: thunk inconnu a $',HexStr(Addr,8));
+  Exit;
+ End;
+ If StrIComp(ImportEntries[Idx].DLLName,'KERNEL32.DLL')or
+    StrIComp(ImportEntries[Idx].DLLName,'kernel32.dll')or
+    StrIComp(ImportEntries[Idx].DLLName,'KERNEL32')or
+    StrIComp(ImportEntries[Idx].DLLName,'kernel32')Then Begin
+  OK:=DispatchKernel32(Idx);
+  HandleThunkCall:=OK;
+  If OK Then Begin
+    { Simuler le RET : depiler l'adresse de retour }
+   EIP:=Pop32;
+  End;
+ End
+ Else
+  WriteLn('HandleThunkCall: DLL non emulée: ',
+          ImportEntries[Idx].DLLName,'!',
+          ImportEntries[Idx].FuncName);
 End;
 
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
