@@ -270,6 +270,24 @@
         detection des fichiers .swift,
         integration dans database create avec --language=swift.
         [IMPLEMENTE]
+     35. Implementer le support du langage Kotlin : lexeur Kotlin
+         (mots-cles Kotlin abstract/actual/annotation/as/break/by/catch/
+         class/companion/const/constructor/continue/crossinline/data/
+         delegate/do/dynamic/else/enum/expect/external/false/field/
+         file/final/finally/for/fun/get/if/import/in/infix/init/
+         inline/inner/interface/internal/is/it/lateinit/noinline/
+         null/object/open/operator/out/override/package/private/
+         protected/public/reified/return/sealed/set/super/suspend/
+         tailrec/this/throw/true/try/typealias/val/var/vararg/
+         when/where/while/yield),
+         parseur Kotlin (package, import, class, object, interface,
+         data class, sealed class, enum class, companion object,
+         fun, val/var, if/else, when, for, while, do-while,
+         try/catch/finally, return, throw, init, constructor,
+         property get/set, typealias, type parameters),
+         detection des fichiers .kt et .kts,
+         integration dans database create avec --language=kotlin.
+         [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -617,7 +635,16 @@ Type
     SNK_SW_VAR_DECL, SNK_SW_IF,
     SNK_SW_GUARD, SNK_SW_SWITCH,
     SNK_SW_FOR_IN, SNK_SW_WHILE,
-    SNK_SW_DO_CATCH, SNK_SW_RETURN
+    SNK_SW_DO_CATCH, SNK_SW_RETURN,
+    { Kotlin node kinds }
+    SNK_KT_TRANSLATION_UNIT, SNK_KT_IMPORT,
+    SNK_KT_PACKAGE, SNK_KT_CLASS_DECL,
+    SNK_KT_OBJECT_DECL, SNK_KT_INTERFACE_DECL,
+    SNK_KT_FUN_DECL, SNK_KT_VAL_DECL,
+    SNK_KT_IF, SNK_KT_WHEN,
+    SNK_KT_FOR, SNK_KT_WHILE,
+    SNK_KT_DO_WHILE, SNK_KT_TRY_CATCH,
+    SNK_KT_RETURN, SNK_KT_INIT
   );
 
   TSrcASTNode = Record
@@ -1356,7 +1383,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1632,8 +1659,9 @@ Begin
      (Opts.Language <> 'cpp') And (Opts.Language <> 'csharp') And
      (Opts.Language <> 'go') And (Opts.Language <> 'java') And
      (Opts.Language <> 'javascript') And (Opts.Language <> 'python') And
-     (Opts.Language <> 'ruby') And (Opts.Language <> 'swift') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby ou swift)');
+     (Opts.Language <> 'ruby') And (Opts.Language <> 'swift') And
+     (Opts.Language <> 'kotlin') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift ou kotlin)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -5926,6 +5954,23 @@ Begin
     SNK_SW_WHILE              : SrcNodeKindName := 'SW_WHILE';
     SNK_SW_DO_CATCH           : SrcNodeKindName := 'SW_DO_CATCH';
     SNK_SW_RETURN             : SrcNodeKindName := 'SW_RETURN';
+    { Kotlin node kinds }
+    SNK_KT_TRANSLATION_UNIT   : SrcNodeKindName := 'KT_TRANSLATION_UNIT';
+    SNK_KT_IMPORT             : SrcNodeKindName := 'KT_IMPORT';
+    SNK_KT_PACKAGE            : SrcNodeKindName := 'KT_PACKAGE';
+    SNK_KT_CLASS_DECL         : SrcNodeKindName := 'KT_CLASS_DECL';
+    SNK_KT_OBJECT_DECL        : SrcNodeKindName := 'KT_OBJECT_DECL';
+    SNK_KT_INTERFACE_DECL     : SrcNodeKindName := 'KT_INTERFACE_DECL';
+    SNK_KT_FUN_DECL           : SrcNodeKindName := 'KT_FUN_DECL';
+    SNK_KT_VAL_DECL           : SrcNodeKindName := 'KT_VAL_DECL';
+    SNK_KT_IF                 : SrcNodeKindName := 'KT_IF';
+    SNK_KT_WHEN               : SrcNodeKindName := 'KT_WHEN';
+    SNK_KT_FOR                : SrcNodeKindName := 'KT_FOR';
+    SNK_KT_WHILE              : SrcNodeKindName := 'KT_WHILE';
+    SNK_KT_DO_WHILE           : SrcNodeKindName := 'KT_DO_WHILE';
+    SNK_KT_TRY_CATCH          : SrcNodeKindName := 'KT_TRY_CATCH';
+    SNK_KT_RETURN             : SrcNodeKindName := 'KT_RETURN';
+    SNK_KT_INIT               : SrcNodeKindName := 'KT_INIT';
   Else
     SrcNodeKindName := '???';
   End;
@@ -24483,6 +24528,1195 @@ End;
 
 { ---- Fin TODO 34 --------------------------------------------- }
 
+{ ============================================================
+  TODO 35 - SUPPORT DU LANGAGE KOTLIN [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- IsKotlinKeyword : tester si un mot est un mot-cle Kotlin - }
+
+Function IsKotlinKeyword(Const W : TString) : Boolean;
+Begin
+  IsKotlinKeyword :=
+    (W = 'abstract')  Or (W = 'actual')     Or (W = 'annotation') Or
+    (W = 'as')        Or (W = 'break')      Or (W = 'by')         Or
+    (W = 'catch')     Or (W = 'class')      Or (W = 'companion')  Or
+    (W = 'const')     Or (W = 'constructor') Or (W = 'continue')  Or
+    (W = 'crossinline') Or (W = 'data')     Or (W = 'delegate')   Or
+    (W = 'do')        Or (W = 'dynamic')    Or (W = 'else')       Or
+    (W = 'enum')      Or (W = 'expect')     Or (W = 'external')   Or
+    (W = 'false')     Or (W = 'field')      Or (W = 'file')       Or
+    (W = 'final')     Or (W = 'finally')    Or (W = 'for')        Or
+    (W = 'fun')       Or (W = 'get')        Or (W = 'if')         Or
+    (W = 'import')    Or (W = 'in')         Or (W = 'infix')      Or
+    (W = 'init')      Or (W = 'inline')     Or (W = 'inner')      Or
+    (W = 'interface') Or (W = 'internal')   Or (W = 'is')         Or
+    (W = 'it')        Or (W = 'lateinit')   Or (W = 'noinline')   Or
+    (W = 'null')      Or (W = 'object')     Or (W = 'open')       Or
+    (W = 'operator')  Or (W = 'out')        Or (W = 'override')   Or
+    (W = 'package')   Or (W = 'private')    Or (W = 'protected')  Or
+    (W = 'public')    Or (W = 'reified')    Or (W = 'return')     Or
+    (W = 'sealed')    Or (W = 'set')        Or (W = 'super')      Or
+    (W = 'suspend')   Or (W = 'tailrec')    Or (W = 'this')       Or
+    (W = 'throw')     Or (W = 'true')       Or (W = 'try')        Or
+    (W = 'typealias') Or (W = 'val')        Or (W = 'var')        Or
+    (W = 'vararg')    Or (W = 'when')       Or (W = 'where')      Or
+    (W = 'while')     Or (W = 'yield');
+End;
+
+{ ---- Utilitaires du lexeur Kotlin ----------------------------- }
+
+{ KtIsAlpha : lettre ou underscore }
+Function KtIsAlpha(Ch : Char) : Boolean;
+Begin
+  KtIsAlpha := ((Ch >= 'A') And (Ch <= 'Z')) Or
+               ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_');
+End;
+
+{ KtIsDigit : chiffre decimal }
+Function KtIsDigit(Ch : Char) : Boolean;
+Begin
+  KtIsDigit := (Ch >= '0') And (Ch <= '9');
+End;
+
+{ KtIsAlNum : lettre, chiffre ou underscore }
+Function KtIsAlNum(Ch : Char) : Boolean;
+Begin
+  KtIsAlNum := KtIsAlpha(Ch) Or KtIsDigit(Ch);
+End;
+
+{ ---- KtLexInit : initialiser le lexeur Kotlin ----------------- }
+
+Procedure KtLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+{ ---- KtLexNextToken : scanner le prochain token Kotlin -------- }
+
+Procedure KtLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Depth    : Integer;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not SrcEOF) And (SrcColNo > Length(SrcLine)) Do
+      SrcLexNextLine;
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      Exit;
+    End;
+
+    Ch := SrcLine[SrcColNo];
+
+    { Espaces }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Then
+    Begin
+      Inc(SrcColNo);
+      Continue;
+    End;
+
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+    Scanning := False;
+
+    { Commentaire ligne // }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/') Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Commentaire bloc /* */ avec imbrication }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      Inc(SrcColNo, 2);
+      Depth := 1;
+      While Depth > 0 Do
+      Begin
+        If SrcColNo > Length(SrcLine) Then
+        Begin
+          SrcLexNextLine;
+          If SrcEOF Then Break;
+        End
+        Else If (SrcLine[SrcColNo] = '/') And (SrcColNo < Length(SrcLine))
+                And (SrcLine[SrcColNo + 1] = '*') Then
+        Begin
+          Inc(Depth);
+          Inc(SrcColNo, 2);
+        End
+        Else If (SrcLine[SrcColNo] = '*') And (SrcColNo < Length(SrcLine))
+                And (SrcLine[SrcColNo + 1] = '/') Then
+        Begin
+          Dec(Depth);
+          Inc(SrcColNo, 2);
+        End
+        Else
+          Inc(SrcColNo);
+      End;
+      Scanning := True;
+      Continue;
+    End;
+
+    { Identifiant ou mot-cle }
+    If KtIsAlpha(Ch) Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And KtIsAlNum(SrcLine[SrcColNo]) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If IsKotlinKeyword(S) Then
+        SrcToken.Kind := STK_KEYWORD
+      Else
+        SrcToken.Kind := STK_IDENT;
+      SrcToken.Val := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Backtick identifiant `...` }
+    If Ch = '`' Then
+    Begin
+      Inc(SrcColNo);
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] <> '`') Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If SrcColNo <= Length(SrcLine) Then
+        Inc(SrcColNo); { skip closing ` }
+      SrcToken.Kind := STK_IDENT;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Nombre (decimal, hex 0x, binaire 0b) }
+    If KtIsDigit(Ch) Then
+    Begin
+      S := '';
+      If (Ch = '0') And (SrcColNo < Length(SrcLine)) Then
+      Begin
+        If (SrcLine[SrcColNo + 1] = 'x') Or (SrcLine[SrcColNo + 1] = 'X') Then
+        Begin
+          S := '0x';
+          Inc(SrcColNo, 2);
+          While (SrcColNo <= Length(SrcLine)) And
+                (((SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '9')) Or
+                 ((SrcLine[SrcColNo] >= 'a') And (SrcLine[SrcColNo] <= 'f')) Or
+                 ((SrcLine[SrcColNo] >= 'A') And (SrcLine[SrcColNo] <= 'F')) Or
+                 (SrcLine[SrcColNo] = '_')) Do
+          Begin
+            If SrcLine[SrcColNo] <> '_' Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          SrcToken.Kind := STK_INTEGER;
+          SrcToken.Val  := S;
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (SrcLine[SrcColNo + 1] = 'b') Or (SrcLine[SrcColNo + 1] = 'B') Then
+        Begin
+          S := '0b';
+          Inc(SrcColNo, 2);
+          While (SrcColNo <= Length(SrcLine)) And
+                ((SrcLine[SrcColNo] = '0') Or (SrcLine[SrcColNo] = '1') Or
+                 (SrcLine[SrcColNo] = '_')) Do
+          Begin
+            If SrcLine[SrcColNo] <> '_' Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          SrcToken.Kind := STK_INTEGER;
+          SrcToken.Val  := S;
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+      End;
+      While (SrcColNo <= Length(SrcLine)) And
+            (KtIsDigit(SrcLine[SrcColNo]) Or (SrcLine[SrcColNo] = '_') Or
+             (SrcLine[SrcColNo] = '.') Or (SrcLine[SrcColNo] = 'e') Or
+             (SrcLine[SrcColNo] = 'E') Or (SrcLine[SrcColNo] = 'L') Or
+             (SrcLine[SrcColNo] = 'f') Or (SrcLine[SrcColNo] = 'F')) Do
+      Begin
+        If SrcLine[SrcColNo] <> '_' Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_INTEGER;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaine double guillemets (avec interpolation dollar-accolade) }
+    If Ch = '"' Then
+    Begin
+      Inc(SrcColNo);
+      S := '';
+      { Triple-quoted raw string """...""" }
+      If (SrcColNo + 1 <= Length(SrcLine)) And
+         (SrcLine[SrcColNo] = '"') And (SrcLine[SrcColNo + 1] = '"') Then
+      Begin
+        Inc(SrcColNo, 2); { skip the other two " }
+        While Not SrcEOF Do
+        Begin
+          If SrcColNo > Length(SrcLine) Then
+          Begin
+            S := S + #10;
+            SrcLexNextLine;
+            If SrcEOF Then Break;
+          End
+          Else If (SrcLine[SrcColNo] = '"') And
+                  (SrcColNo + 2 <= Length(SrcLine)) And
+                  (SrcLine[SrcColNo + 1] = '"') And
+                  (SrcLine[SrcColNo + 2] = '"') Then
+          Begin
+            Inc(SrcColNo, 3);
+            Break;
+          End
+          Else
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+      End
+      Else
+      Begin
+        While (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] <> '"') Do
+        Begin
+          If (SrcLine[SrcColNo] = '\') And (SrcColNo < Length(SrcLine)) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End
+          Else
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+        If SrcColNo <= Length(SrcLine) Then
+          Inc(SrcColNo); { skip closing " }
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Chaine caractere simple (Kotlin: char literal) }
+    If Ch = '''' Then
+    Begin
+      Inc(SrcColNo);
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] <> '''') Do
+      Begin
+        If (SrcLine[SrcColNo] = '\') And (SrcColNo < Length(SrcLine)) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          If SrcColNo <= Length(SrcLine) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End
+        Else
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End;
+      If SrcColNo <= Length(SrcLine) Then
+        Inc(SrcColNo); { skip closing ' }
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Annotation @... }
+    If Ch = '@' Then
+    Begin
+      Inc(SrcColNo);
+      S := '@';
+      While (SrcColNo <= Length(SrcLine)) And
+            (KtIsAlNum(SrcLine[SrcColNo]) Or (SrcLine[SrcColNo] = '.')) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_IDENT;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Operateurs multi-caracteres }
+
+    { ?. safe call, ?: elvis }
+    If (Ch = '?') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If SrcLine[SrcColNo + 1] = '.' Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '?.';
+        Inc(SrcColNo, 2);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+      If SrcLine[SrcColNo + 1] = ':' Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := '?:';
+        Inc(SrcColNo, 2);
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+    End;
+
+    { :: double colon reference }
+    If (Ch = ':') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = ':') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '::';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { -> arrow }
+    If (Ch = '-') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '->';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { === !== identity }
+    If (Ch = '=') And (SrcColNo + 1 < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') And (SrcLine[SrcColNo + 2] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '===';
+      Inc(SrcColNo, 3);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '!') And (SrcColNo + 1 < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') And (SrcLine[SrcColNo + 2] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '!==';
+      Inc(SrcColNo, 3);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { == != >= <= << >> && || ++ -- += -= *= /= %= }
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '==';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '!') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '!=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '>=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '<=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '&') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '&') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '&&';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '|') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '|') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '||';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '+') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '+') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '++';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '-') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '-') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '--';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '+') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '+=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '-') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '-=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '*') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '*=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '/=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+    If (Ch = '%') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '%=';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    { .. range operator }
+    If (Ch = '.') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '.') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '..';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    { Operateur ou ponctuation simple }
+    SrcToken.Kind := STK_OP;
+    SrcToken.Val  := Ch;
+    Inc(SrcColNo);
+    Inc(SrcTokenCount);
+  End;
+End;
+
+{ ---- KtConsume : consommer un token Kotlin -------------------- }
+
+Procedure KtConsume;
+Begin
+  KtLexNextToken;
+End;
+
+{ ---- KtSkipBlock : sauter un bloc accolades Kotlin ------------ }
+
+Procedure KtSkipBlock;
+Var Depth : Integer;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+  Begin
+    Depth := 1;
+    KtConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        Inc(Depth)
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+        Dec(Depth);
+      If Depth > 0 Then
+        KtConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+      KtConsume;
+  End;
+End;
+
+{ ---- KtSkipParens : sauter un bloc ( ... ) Kotlin ------------- }
+
+Procedure KtSkipParens;
+Var Depth : Integer;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+  Begin
+    Depth := 1;
+    KtConsume;
+    While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        Inc(Depth)
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+        Dec(Depth);
+      If Depth > 0 Then
+        KtConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+      KtConsume;
+  End;
+End;
+
+{ ---- KtSkipTypeAnnotation : sauter une annotation de type ----- }
+
+Procedure KtSkipTypeAnnotation;
+Var Depth : Integer;
+Begin
+  { Sauter les identifiants, ?, ., <>, () pour les types }
+  While (SrcToken.Kind = STK_IDENT) Or
+        ((SrcToken.Kind = STK_KEYWORD) And
+         ((SrcToken.Val = 'suspend') Or (SrcToken.Val = 'dynamic'))) Or
+        ((SrcToken.Kind = STK_OP) And
+         ((SrcToken.Val = '?') Or (SrcToken.Val = '.') Or
+          (SrcToken.Val = '*'))) Do
+  Begin
+    KtConsume;
+    { Generics <...> }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+    Begin
+      Depth := 1;
+      KtConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+          Inc(Depth)
+        Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '>') Then
+          Dec(Depth);
+        If Depth > 0 Then
+          KtConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '>') Then
+        KtConsume;
+    End;
+    { Function type (A) -> B }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      KtSkipParens;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '->') Then
+      KtConsume
+    Else
+      Break;
+  End;
+End;
+
+{ ---- KtParseTopLevel : parser un element de niveau superieur -- }
+
+Function KtParseTopLevel : Integer;
+Var
+  N, Body, Last : Integer;
+  Name : TString;
+  KW   : TString;
+  Depth : Integer;
+Begin
+  KtParseTopLevel := -1;
+
+  { Package declaration }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'package') Then
+  Begin
+    KtConsume;
+    Name := '';
+    While (SrcToken.Kind = STK_IDENT) Or
+          ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '.')) Do
+    Begin
+      Name := Name + SrcToken.Val;
+      KtConsume;
+    End;
+    N := SrcNewNode(SNK_KT_PACKAGE);
+    SrcNodes[N].Name := Name;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  { Import declaration }
+  If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'import') Then
+  Begin
+    KtConsume;
+    Name := '';
+    While (SrcToken.Kind = STK_IDENT) Or
+          ((SrcToken.Kind = STK_OP) And
+           ((SrcToken.Val = '.') Or (SrcToken.Val = '*'))) Do
+    Begin
+      Name := Name + SrcToken.Val;
+      KtConsume;
+    End;
+    N := SrcNewNode(SNK_KT_IMPORT);
+    SrcNodes[N].Name := Name;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  { Skip modifiers: public, private, protected, internal, open, final,
+    abstract, sealed, data, inner, enum, annotation, companion, inline,
+    infix, operator, suspend, external, tailrec, actual, expect, override,
+    lateinit, const, crossinline, noinline, reified, vararg }
+  While (SrcToken.Kind = STK_KEYWORD) And
+        ((SrcToken.Val = 'public')    Or (SrcToken.Val = 'private')    Or
+         (SrcToken.Val = 'protected') Or (SrcToken.Val = 'internal')   Or
+         (SrcToken.Val = 'open')      Or (SrcToken.Val = 'final')      Or
+         (SrcToken.Val = 'abstract')  Or (SrcToken.Val = 'sealed')     Or
+         (SrcToken.Val = 'data')      Or (SrcToken.Val = 'inner')      Or
+         (SrcToken.Val = 'enum')      Or (SrcToken.Val = 'annotation') Or
+         (SrcToken.Val = 'companion') Or (SrcToken.Val = 'inline')     Or
+         (SrcToken.Val = 'infix')     Or (SrcToken.Val = 'operator')   Or
+         (SrcToken.Val = 'suspend')   Or (SrcToken.Val = 'external')   Or
+         (SrcToken.Val = 'tailrec')   Or (SrcToken.Val = 'actual')     Or
+         (SrcToken.Val = 'expect')    Or (SrcToken.Val = 'override')   Or
+         (SrcToken.Val = 'lateinit')  Or (SrcToken.Val = 'const')      Or
+         (SrcToken.Val = 'crossinline') Or (SrcToken.Val = 'noinline') Or
+         (SrcToken.Val = 'reified')   Or (SrcToken.Val = 'vararg')) Do
+    KtConsume;
+
+  { Skip annotations }
+  While (SrcToken.Kind = STK_IDENT) And (Length(SrcToken.Val) > 0) And
+        (SrcToken.Val[1] = '@') Do
+    KtConsume;
+
+  KW := SrcToken.Val;
+
+  { Class / interface / object declarations }
+  If (SrcToken.Kind = STK_KEYWORD) And
+     ((KW = 'class') Or (KW = 'interface') Or (KW = 'object')) Then
+  Begin
+    KtConsume;
+    Name := '';
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      Name := SrcToken.Val;
+      KtConsume;
+    End;
+    If KW = 'class' Then
+      N := SrcNewNode(SNK_KT_CLASS_DECL)
+    Else If KW = 'interface' Then
+      N := SrcNewNode(SNK_KT_INTERFACE_DECL)
+    Else
+      N := SrcNewNode(SNK_KT_OBJECT_DECL);
+    SrcNodes[N].Name := Name;
+
+    { Skip type parameters <...> }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+    Begin
+      Depth := 1;
+      KtConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+          Inc(Depth)
+        Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '>') Then
+          Dec(Depth);
+        If Depth > 0 Then
+          KtConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '>') Then
+        KtConsume;
+    End;
+
+    { Primary constructor }
+    If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'constructor') Then
+      KtConsume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      KtSkipParens;
+
+    { Supertypes : Type, Type }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+    Begin
+      KtConsume;
+      KtSkipTypeAnnotation;
+      While (SrcToken.Kind = STK_OP) And (SrcToken.Val = ',') Do
+      Begin
+        KtConsume;
+        KtSkipTypeAnnotation;
+      End;
+      { Super constructor call () }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        KtSkipParens;
+    End;
+
+    { Where clause }
+    If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where') Then
+    Begin
+      KtConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '{')) Do
+        KtConsume;
+    End;
+
+    { Class body }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+    Begin
+      KtConsume;
+      Last := -1;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}')) Do
+      Begin
+        Body := KtParseTopLevel;
+        If Body >= 0 Then
+        Begin
+          If SrcNodes[N].Left = -1 Then
+            SrcNodes[N].Left := Body
+          Else If Last >= 0 Then
+            SrcNodes[Last].Next := Body;
+          Last := Body;
+        End
+        Else
+        Begin
+          If SrcToken.Kind <> STK_EOF Then
+            KtConsume;
+        End;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+        KtConsume;
+    End;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  { Fun declaration }
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'fun') Then
+  Begin
+    KtConsume;
+    Name := '';
+    { Type parameters }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+    Begin
+      Depth := 1;
+      KtConsume;
+      While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+      Begin
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '<') Then
+          Inc(Depth)
+        Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '>') Then
+          Dec(Depth);
+        If Depth > 0 Then
+          KtConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '>') Then
+        KtConsume;
+    End;
+    { Receiver type (Type.) }
+    If (SrcToken.Kind = STK_IDENT) Then
+    Begin
+      Name := SrcToken.Val;
+      KtConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '.') Then
+      Begin
+        KtConsume;
+        If SrcToken.Kind = STK_IDENT Then
+        Begin
+          Name := Name + '.' + SrcToken.Val;
+          KtConsume;
+        End;
+      End;
+    End;
+    N := SrcNewNode(SNK_KT_FUN_DECL);
+    SrcNodes[N].Name := Name;
+
+    { Parameters }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      KtSkipParens;
+
+    { Return type }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+    Begin
+      KtConsume;
+      KtSkipTypeAnnotation;
+    End;
+
+    { Where clause }
+    If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'where') Then
+    Begin
+      KtConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 ((SrcToken.Val = '{') Or (SrcToken.Val = '='))) Do
+        KtConsume;
+    End;
+
+    { Body block or = expr }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      KtSkipBlock
+    Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '=') Then
+    Begin
+      KtConsume;
+      { Skip expression until newline-like boundary }
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_KEYWORD) And
+                 ((SrcToken.Val = 'fun') Or (SrcToken.Val = 'val') Or
+                  (SrcToken.Val = 'var') Or (SrcToken.Val = 'class') Or
+                  (SrcToken.Val = 'object') Or (SrcToken.Val = 'interface') Or
+                  (SrcToken.Val = 'import') Or (SrcToken.Val = 'package'))) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}')) Do
+        KtConsume;
+    End;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  { Val / Var declaration }
+  If (SrcToken.Kind = STK_KEYWORD) And
+     ((KW = 'val') Or (KW = 'var')) Then
+  Begin
+    KtConsume;
+    Name := '';
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      Name := SrcToken.Val;
+      KtConsume;
+    End
+    Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+    Begin
+      { Destructuring declaration }
+      Name := '(...)';
+      KtSkipParens;
+    End;
+    N := SrcNewNode(SNK_KT_VAL_DECL);
+    SrcNodes[N].Name := KW + ' ' + Name;
+
+    { Type annotation }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+    Begin
+      KtConsume;
+      KtSkipTypeAnnotation;
+    End;
+
+    { Initializer = ... }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '=') Then
+    Begin
+      KtConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_KEYWORD) And
+                 ((SrcToken.Val = 'get') Or (SrcToken.Val = 'set') Or
+                  (SrcToken.Val = 'fun') Or (SrcToken.Val = 'val') Or
+                  (SrcToken.Val = 'var') Or (SrcToken.Val = 'class') Or
+                  (SrcToken.Val = 'object') Or (SrcToken.Val = 'interface') Or
+                  (SrcToken.Val = 'import') Or (SrcToken.Val = 'package') Or
+                  (SrcToken.Val = 'init'))) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}')) Do
+        KtConsume;
+    End;
+
+    { Property accessors get/set }
+    While (SrcToken.Kind = STK_KEYWORD) And
+          ((SrcToken.Val = 'get') Or (SrcToken.Val = 'set')) Do
+    Begin
+      KtConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        KtSkipParens;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+      Begin
+        KtConsume;
+        KtSkipTypeAnnotation;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        KtSkipBlock
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '=') Then
+      Begin
+        KtConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_KEYWORD) And
+                   ((SrcToken.Val = 'get') Or (SrcToken.Val = 'set') Or
+                    (SrcToken.Val = 'fun') Or (SrcToken.Val = 'val') Or
+                    (SrcToken.Val = 'var') Or (SrcToken.Val = 'class'))) And
+              Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}')) Do
+          KtConsume;
+      End;
+    End;
+
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  { Init block }
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'init') Then
+  Begin
+    KtConsume;
+    N := SrcNewNode(SNK_KT_INIT);
+    SrcNodes[N].Name := 'init';
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      KtSkipBlock;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  { Constructor }
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'constructor') Then
+  Begin
+    KtConsume;
+    N := SrcNewNode(SNK_KT_FUN_DECL);
+    SrcNodes[N].Name := 'constructor';
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      KtSkipParens;
+    { Delegation call : this(...) or : super(...) }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+    Begin
+      KtConsume;
+      If (SrcToken.Kind = STK_KEYWORD) And
+         ((SrcToken.Val = 'this') Or (SrcToken.Val = 'super')) Then
+      Begin
+        KtConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+          KtSkipParens;
+      End;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      KtSkipBlock;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  { Typealias }
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'typealias') Then
+  Begin
+    KtConsume;
+    Name := '';
+    If SrcToken.Kind = STK_IDENT Then
+    Begin
+      Name := SrcToken.Val;
+      KtConsume;
+    End;
+    N := SrcNewNode(SNK_KT_CLASS_DECL);
+    SrcNodes[N].Name := 'typealias ' + Name;
+    { Skip = Type }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '=') Then
+    Begin
+      KtConsume;
+      KtSkipTypeAnnotation;
+    End;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  { Statement-level keywords: if, when, for, while, do, try, return, throw }
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'if') Then
+  Begin
+    KtConsume;
+    N := SrcNewNode(SNK_KT_IF);
+    SrcNodes[N].Name := 'if';
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      KtSkipParens;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      KtSkipBlock;
+    If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'else') Then
+    Begin
+      KtConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        KtSkipBlock
+      Else If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'if') Then
+      Begin
+        { else if - will be parsed in next iteration }
+      End;
+    End;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'when') Then
+  Begin
+    KtConsume;
+    N := SrcNewNode(SNK_KT_WHEN);
+    SrcNodes[N].Name := 'when';
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      KtSkipParens;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      KtSkipBlock;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'for') Then
+  Begin
+    KtConsume;
+    N := SrcNewNode(SNK_KT_FOR);
+    SrcNodes[N].Name := 'for';
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      KtSkipParens;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      KtSkipBlock;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'while') Then
+  Begin
+    KtConsume;
+    N := SrcNewNode(SNK_KT_WHILE);
+    SrcNodes[N].Name := 'while';
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      KtSkipParens;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      KtSkipBlock;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'do') Then
+  Begin
+    KtConsume;
+    N := SrcNewNode(SNK_KT_DO_WHILE);
+    SrcNodes[N].Name := 'do-while';
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      KtSkipBlock;
+    If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'while') Then
+    Begin
+      KtConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        KtSkipParens;
+    End;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'try') Then
+  Begin
+    KtConsume;
+    N := SrcNewNode(SNK_KT_TRY_CATCH);
+    SrcNodes[N].Name := 'try';
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      KtSkipBlock;
+    While (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'catch') Do
+    Begin
+      KtConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        KtSkipParens;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        KtSkipBlock;
+    End;
+    If (SrcToken.Kind = STK_KEYWORD) And (SrcToken.Val = 'finally') Then
+    Begin
+      KtConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        KtSkipBlock;
+    End;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'return') Then
+  Begin
+    KtConsume;
+    N := SrcNewNode(SNK_KT_RETURN);
+    SrcNodes[N].Name := 'return';
+    { Skip return value until next statement boundary }
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And
+               ((SrcToken.Val = '}') Or (SrcToken.Val = ';'))) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And
+               ((SrcToken.Val = 'fun') Or (SrcToken.Val = 'val') Or
+                (SrcToken.Val = 'var') Or (SrcToken.Val = 'class') Or
+                (SrcToken.Val = 'object') Or (SrcToken.Val = 'if') Or
+                (SrcToken.Val = 'when') Or (SrcToken.Val = 'for') Or
+                (SrcToken.Val = 'while') Or (SrcToken.Val = 'return'))) Do
+      KtConsume;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  If (SrcToken.Kind = STK_KEYWORD) And (KW = 'throw') Then
+  Begin
+    KtConsume;
+    N := SrcNewNode(SNK_KT_RETURN);
+    SrcNodes[N].Name := 'throw';
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And
+               ((SrcToken.Val = '}') Or (SrcToken.Val = ';'))) And
+          Not ((SrcToken.Kind = STK_KEYWORD) And
+               ((SrcToken.Val = 'fun') Or (SrcToken.Val = 'val') Or
+                (SrcToken.Val = 'var') Or (SrcToken.Val = 'class'))) Do
+      KtConsume;
+    KtParseTopLevel := N;
+    Exit;
+  End;
+
+  { Semicolons }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+  Begin
+    KtConsume;
+    KtParseTopLevel := -1;
+    Exit;
+  End;
+
+  { Closing brace - return to parent }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+  Begin
+    KtParseTopLevel := -1;
+    Exit;
+  End;
+
+  { Skip any other token to avoid infinite loop }
+  KtConsume;
+End;
+
+{ ---- KtParseTranslationUnit : parser un fichier Kotlin -------- }
+
+Function KtParseTranslationUnit : Integer;
+Var Root, N, Last : Integer;
+Begin
+  KtConsume;
+  Root := SrcNewNode(SNK_KT_TRANSLATION_UNIT);
+  SrcNodes[Root].Name := 'KT_TU';
+  Last := -1;
+  While SrcToken.Kind <> STK_EOF Do
+  Begin
+    N := KtParseTopLevel;
+    If N >= 0 Then
+    Begin
+      If SrcNodes[Root].Left = -1 Then
+        SrcNodes[Root].Left := N
+      Else If Last >= 0 Then
+        SrcNodes[Last].Next := N;
+      Last := N;
+    End
+    Else
+    Begin
+      { Token non reconnu, avancer pour eviter boucle infinie }
+      If SrcToken.Kind <> STK_EOF Then
+        KtConsume;
+    End;
+  End;
+  KtParseTranslationUnit := Root;
+End;
+
+{ ---- Fin TODO 35 --------------------------------------------- }
+
 { ---- StrEndsWith : tester si S se termine par Suf ---------- }
 
 Function StrEndsWith(Const S, Suf : TString) : Boolean;
@@ -24580,6 +25814,14 @@ Begin
   IsSwiftSource := StrEndsWith(FName, '.swift');
 End;
 
+{ ---- IsKotlinSource : verifier si le fichier est .kt ou .kts -- }
+
+Function IsKotlinSource(Const FName : TString) : Boolean;
+Begin
+  IsKotlinSource := StrEndsWith(FName, '.kt') Or
+                    StrEndsWith(FName, '.kts');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -24640,7 +25882,8 @@ Begin
           ((Opts.Language = 'javascript') And IsJSSource(SR.Name)) Or
           ((Opts.Language = 'python') And IsPythonSource(SR.Name)) Or
            ((Opts.Language = 'ruby') And IsRubySource(SR.Name)) Or
-           ((Opts.Language = 'swift') And IsSwiftSource(SR.Name)) Then
+           ((Opts.Language = 'swift') And IsSwiftSource(SR.Name)) Or
+           ((Opts.Language = 'kotlin') And IsKotlinSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -24767,6 +26010,12 @@ Begin
       SwLexInit;
       SrcASTInit;
       SrcRootNode := SwParseTranslationUnit;
+    End
+    Else If Opts.Language = 'kotlin' Then
+    Begin
+      KtLexInit;
+      SrcASTInit;
+      SrcRootNode := KtParseTranslationUnit;
     End
     Else
     Begin
