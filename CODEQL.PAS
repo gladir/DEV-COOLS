@@ -33840,12 +33840,44 @@ Begin
   WriteLn('Fichiers sources trouves : ', SrcFileCount);
   If SrcFileCount = 0 Then
   Begin
-    If Opts.Language = 'c' Then
+    If Opts.Language = 'pascal' Then
+      WriteLn('CODEQL: aucun fichier .pas ou .pp trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'c' Then
       WriteLn('CODEQL: aucun fichier .c ou .h trouve dans: ', Opts.SourceDir)
     Else If Opts.Language = 'cpp' Then
       WriteLn('CODEQL: aucun fichier .cpp/.cc/.cxx/.hpp/.hh/.hxx trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'csharp' Then
+      WriteLn('CODEQL: aucun fichier .cs trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'go' Then
+      WriteLn('CODEQL: aucun fichier .go trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'java' Then
+      WriteLn('CODEQL: aucun fichier .java trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'javascript' Then
+      WriteLn('CODEQL: aucun fichier .js ou .mjs trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'python' Then
+      WriteLn('CODEQL: aucun fichier .py ou .pyw trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'ruby' Then
+      WriteLn('CODEQL: aucun fichier .rb ou .rbw trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'swift' Then
+      WriteLn('CODEQL: aucun fichier .swift trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'kotlin' Then
+      WriteLn('CODEQL: aucun fichier .kt ou .kts trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'oberon' Then
+      WriteLn('CODEQL: aucun fichier .mod/.ob2/.obn trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'ada' Then
+      WriteLn('CODEQL: aucun fichier .ads ou .adb trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'php' Then
+      WriteLn('CODEQL: aucun fichier .php ou .phtml trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'modula2' Then
+      WriteLn('CODEQL: aucun fichier .mod/.def/.m2 trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'rust' Then
+      WriteLn('CODEQL: aucun fichier .rs trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'perl' Then
+      WriteLn('CODEQL: aucun fichier .pl/.pm/.t trouve dans: ', Opts.SourceDir)
+    Else If Opts.Language = 'raku' Then
+      WriteLn('CODEQL: aucun fichier .raku/.rakumod/.rakutest/.p6/.pm6/.t6 trouve dans: ', Opts.SourceDir)
     Else
-      WriteLn('CODEQL: aucun fichier .pas ou .pp trouve dans: ', Opts.SourceDir);
+      WriteLn('CODEQL: aucun fichier source trouve dans: ', Opts.SourceDir);
     Exit;
   End;
   If Opts.Verbose Then
@@ -33863,7 +33895,7 @@ Begin
   Begin
     WriteLn('--- Extraction [', I + 1, '/', SrcFileCount, '] : ',
             SrcFileList[I], ' ---');
-    { Parser le fichier source Pascal }
+    { Parser le fichier source }
     Assign(SrcLexF, SrcFileList[I]);
     {$I-}
     Reset(SrcLexF);
@@ -33976,8 +34008,15 @@ Begin
       SrcASTInit;
       SrcRootNode := RakuParseTranslationUnit;
     End
+    Else If Opts.Language = 'pascal' Then
+    Begin
+      SrcLexInit;
+      SrcASTInit;
+      SrcRootNode := SrcParseModule;
+    End
     Else
     Begin
+      { Defaut : Pascal }
       SrcLexInit;
       SrcASTInit;
       SrcRootNode := SrcParseModule;
