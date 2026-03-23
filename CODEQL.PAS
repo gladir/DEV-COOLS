@@ -301,6 +301,21 @@
      detection des fichiers .mod et .ob2,
      integration dans database create avec --language=oberon.
      [IMPLEMENTE]
+ 37. Implementer le support du langage Ada : lexeur Ada
+     (mots-cles Ada ABORT/ABS/ABSTRACT/ACCEPT/ACCESS/ALIASED/ALL/
+     AND/ARRAY/AT/BEGIN/BODY/CASE/CONSTANT/DECLARE/DELAY/DELTA/
+     DIGITS/DO/ELSE/ELSIF/END/ENTRY/EXCEPTION/EXIT/FOR/FUNCTION/
+     GENERIC/GOTO/IF/IN/INTERFACE/IS/LIMITED/LOOP/MOD/NEW/NOT/
+     NULL/OF/OR/OTHERS/OUT/OVERRIDING/PACKAGE/PRAGMA/PRIVATE/
+     PROCEDURE/PROTECTED/RAISE/RANGE/RECORD/REM/RENAMES/REQUEUE/
+     RETURN/REVERSE/SELECT/SEPARATE/SOME/SUBTYPE/SYNCHRONIZED/
+     TAGGED/TASK/TERMINATE/THEN/TYPE/UNTIL/USE/WHEN/WHILE/WITH/XOR),
+     parseur Ada (package, package body, with/use clauses,
+     procedure, function, type/subtype, variable/constant declarations,
+     if/elsif/else, loop/while/for, case/when, begin/end blocks,
+     return, assignment), detection des fichiers .ads et .adb,
+     integration dans database create avec --language=ada.
+     [IMPLEMENTE]
 }
 
 Program CODEQL;
@@ -666,7 +681,16 @@ Type
     SNK_OB_REPEAT, SNK_OB_FOR,
     SNK_OB_CASE, SNK_OB_WITH,
     SNK_OB_LOOP, SNK_OB_RETURN,
-    SNK_OB_RECORD, SNK_OB_ASSIGN
+    SNK_OB_RECORD, SNK_OB_ASSIGN,
+    { Ada node kinds }
+    SNK_AD_PACKAGE, SNK_AD_PACKAGE_BODY,
+    SNK_AD_WITH_CLAUSE, SNK_AD_USE_CLAUSE,
+    SNK_AD_PROCEDURE, SNK_AD_FUNCTION,
+    SNK_AD_TYPE_DECL, SNK_AD_SUBTYPE_DECL,
+    SNK_AD_VAR_DECL, SNK_AD_CONST_DECL,
+    SNK_AD_IF, SNK_AD_LOOP,
+    SNK_AD_CASE, SNK_AD_BLOCK,
+    SNK_AD_RETURN, SNK_AD_ASSIGN
   );
 
   TSrcASTNode = Record
@@ -1405,7 +1429,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1682,8 +1706,9 @@ Begin
      (Opts.Language <> 'go') And (Opts.Language <> 'java') And
      (Opts.Language <> 'javascript') And (Opts.Language <> 'python') And
      (Opts.Language <> 'ruby') And (Opts.Language <> 'swift') And
-     (Opts.Language <> 'kotlin') And (Opts.Language <> 'oberon') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin ou oberon)');
+     (Opts.Language <> 'kotlin') And (Opts.Language <> 'oberon') And
+     (Opts.Language <> 'ada') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon ou ada)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -6010,6 +6035,23 @@ Begin
     SNK_OB_RETURN             : SrcNodeKindName := 'OB_RETURN';
     SNK_OB_RECORD             : SrcNodeKindName := 'OB_RECORD';
     SNK_OB_ASSIGN             : SrcNodeKindName := 'OB_ASSIGN';
+    { Ada node kinds }
+    SNK_AD_PACKAGE            : SrcNodeKindName := 'AD_PACKAGE';
+    SNK_AD_PACKAGE_BODY       : SrcNodeKindName := 'AD_PACKAGE_BODY';
+    SNK_AD_WITH_CLAUSE        : SrcNodeKindName := 'AD_WITH_CLAUSE';
+    SNK_AD_USE_CLAUSE         : SrcNodeKindName := 'AD_USE_CLAUSE';
+    SNK_AD_PROCEDURE          : SrcNodeKindName := 'AD_PROCEDURE';
+    SNK_AD_FUNCTION           : SrcNodeKindName := 'AD_FUNCTION';
+    SNK_AD_TYPE_DECL          : SrcNodeKindName := 'AD_TYPE_DECL';
+    SNK_AD_SUBTYPE_DECL       : SrcNodeKindName := 'AD_SUBTYPE_DECL';
+    SNK_AD_VAR_DECL           : SrcNodeKindName := 'AD_VAR_DECL';
+    SNK_AD_CONST_DECL         : SrcNodeKindName := 'AD_CONST_DECL';
+    SNK_AD_IF                 : SrcNodeKindName := 'AD_IF';
+    SNK_AD_LOOP               : SrcNodeKindName := 'AD_LOOP';
+    SNK_AD_CASE               : SrcNodeKindName := 'AD_CASE';
+    SNK_AD_BLOCK              : SrcNodeKindName := 'AD_BLOCK';
+    SNK_AD_RETURN             : SrcNodeKindName := 'AD_RETURN';
+    SNK_AD_ASSIGN             : SrcNodeKindName := 'AD_ASSIGN';
   Else
     SrcNodeKindName := '???';
   End;
@@ -26823,6 +26865,1124 @@ Begin
                     StrEndsWith(FName, '.obn');
 End;
 
+{ ================================================================
+  TODO 37 - Support du langage Ada
+  ================================================================ }
+
+{ ---- Mots-cles Ada --------------------------------------------- }
+
+Function IsAdaKeyword(Const W : TString) : Boolean;
+Var U : TString;
+    I : Integer;
+Begin
+  U := '';
+  For I := 1 To Length(W) Do
+    If (W[I] >= 'a') And (W[I] <= 'z') Then
+      U := U + Chr(Ord(W[I]) - 32)
+    Else
+      U := U + W[I];
+  IsAdaKeyword :=
+    (U = 'ABORT') Or (U = 'ABS') Or (U = 'ABSTRACT') Or
+    (U = 'ACCEPT') Or (U = 'ACCESS') Or (U = 'ALIASED') Or
+    (U = 'ALL') Or (U = 'AND') Or (U = 'ARRAY') Or
+    (U = 'AT') Or (U = 'BEGIN') Or (U = 'BODY') Or
+    (U = 'CASE') Or (U = 'CONSTANT') Or (U = 'DECLARE') Or
+    (U = 'DELAY') Or (U = 'DELTA') Or (U = 'DIGITS') Or
+    (U = 'DO') Or (U = 'ELSE') Or (U = 'ELSIF') Or
+    (U = 'END') Or (U = 'ENTRY') Or (U = 'EXCEPTION') Or
+    (U = 'EXIT') Or (U = 'FOR') Or (U = 'FUNCTION') Or
+    (U = 'GENERIC') Or (U = 'GOTO') Or (U = 'IF') Or
+    (U = 'IN') Or (U = 'INTERFACE') Or (U = 'IS') Or
+    (U = 'LIMITED') Or (U = 'LOOP') Or (U = 'MOD') Or
+    (U = 'NEW') Or (U = 'NOT') Or (U = 'NULL') Or
+    (U = 'OF') Or (U = 'OR') Or (U = 'OTHERS') Or
+    (U = 'OUT') Or (U = 'OVERRIDING') Or (U = 'PACKAGE') Or
+    (U = 'PRAGMA') Or (U = 'PRIVATE') Or (U = 'PROCEDURE') Or
+    (U = 'PROTECTED') Or (U = 'RAISE') Or (U = 'RANGE') Or
+    (U = 'RECORD') Or (U = 'REM') Or (U = 'RENAMES') Or
+    (U = 'REQUEUE') Or (U = 'RETURN') Or (U = 'REVERSE') Or
+    (U = 'SELECT') Or (U = 'SEPARATE') Or (U = 'SOME') Or
+    (U = 'SUBTYPE') Or (U = 'SYNCHRONIZED') Or (U = 'TAGGED') Or
+    (U = 'TASK') Or (U = 'TERMINATE') Or (U = 'THEN') Or
+    (U = 'TYPE') Or (U = 'UNTIL') Or (U = 'USE') Or
+    (U = 'WHEN') Or (U = 'WHILE') Or (U = 'WITH') Or
+    (U = 'XOR');
+End;
+
+{ ---- Utilitaires du lexeur Ada --------------------------------- }
+
+Function AdIsAlpha(Ch : Char) : Boolean;
+Begin
+  AdIsAlpha := ((Ch >= 'A') And (Ch <= 'Z')) Or
+               ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_');
+End;
+
+Function AdIsDigit(Ch : Char) : Boolean;
+Begin
+  AdIsDigit := (Ch >= '0') And (Ch <= '9');
+End;
+
+Function AdIsAlNum(Ch : Char) : Boolean;
+Begin
+  AdIsAlNum := AdIsAlpha(Ch) Or AdIsDigit(Ch);
+End;
+
+{ ---- Lexeur Ada ------------------------------------------------ }
+
+Procedure AdaLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+Procedure AdaLexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Based    : Boolean;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Skip whitespace }
+    While (Not SrcEOF) And (SrcColNo <= Length(SrcLine)) And
+          ((SrcLine[SrcColNo] = ' ') Or (SrcLine[SrcColNo] = #9)) Do
+      Inc(SrcColNo);
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      Exit;
+    End;
+
+    If SrcColNo > Length(SrcLine) Then
+    Begin
+      SrcLexNextLine;
+      If SrcEOF Then
+      Begin
+        SrcToken.Kind := STK_EOF;
+        SrcToken.Val  := '';
+        Exit;
+      End;
+      Continue;
+    End;
+
+    Ch := SrcLine[SrcColNo];
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+
+    { -- comments: Ada uses -- for single-line comments }
+    If (Ch = '-') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '-') Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Continue;
+    End;
+
+    { -- identifiers and keywords }
+    If AdIsAlpha(Ch) Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And
+            AdIsAlNum(SrcLine[SrcColNo]) Then
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If IsAdaKeyword(S) Then
+        SrcToken.Kind := STK_KEYWORD
+      Else
+        SrcToken.Kind := STK_IDENT;
+      SrcToken.Val := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { -- numeric literals (integer and based literals like 16#FF#) }
+    If AdIsDigit(Ch) Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And
+            (AdIsDigit(SrcLine[SrcColNo]) Or (SrcLine[SrcColNo] = '_')) Do
+      Begin
+        If SrcLine[SrcColNo] <> '_' Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      { Check for based literal: 16#FF# }
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '#') Then
+      Begin
+        S := S + '#';
+        Inc(SrcColNo);
+        While (SrcColNo <= Length(SrcLine)) And
+              (SrcLine[SrcColNo] <> '#') Do
+        Begin
+          If SrcLine[SrcColNo] <> '_' Then
+            S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '#') Then
+        Begin
+          S := S + '#';
+          Inc(SrcColNo);
+        End;
+      End
+      Else
+      Begin
+        { Check for real literal with decimal point }
+        If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '.') And
+           (SrcColNo + 1 <= Length(SrcLine)) And (SrcLine[SrcColNo + 1] <> '.') Then
+        Begin
+          S := S + '.';
+          Inc(SrcColNo);
+          While (SrcColNo <= Length(SrcLine)) And
+                (AdIsDigit(SrcLine[SrcColNo]) Or (SrcLine[SrcColNo] = '_')) Do
+          Begin
+            If SrcLine[SrcColNo] <> '_' Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+        { Check for exponent }
+        If (SrcColNo <= Length(SrcLine)) And
+           ((SrcLine[SrcColNo] = 'E') Or (SrcLine[SrcColNo] = 'e')) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+          If (SrcColNo <= Length(SrcLine)) And
+             ((SrcLine[SrcColNo] = '+') Or (SrcLine[SrcColNo] = '-')) Then
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          While (SrcColNo <= Length(SrcLine)) And
+                AdIsDigit(SrcLine[SrcColNo]) Do
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+        End;
+      End;
+      SrcToken.Kind := STK_NUMBER;
+      SrcToken.Val  := S;
+      Val(S, SrcToken.IntVal, Based);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { -- string literals (double quotes) }
+    If Ch = '"' Then
+    Begin
+      S := '"';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) Do
+      Begin
+        If SrcLine[SrcColNo] = '"' Then
+        Begin
+          S := S + '"';
+          Inc(SrcColNo);
+          { Ada uses "" for escaped quote inside string }
+          If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '"') Then
+          Begin
+            S := S + '"';
+            Inc(SrcColNo);
+          End
+          Else
+            Break;
+        End
+        Else
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+      End;
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { -- character literals (single quotes: 'A') }
+    If (Ch = '''') And (SrcColNo + 2 <= Length(SrcLine)) And
+       (SrcLine[SrcColNo + 2] = '''') Then
+    Begin
+      S := '''';
+      S := S + SrcLine[SrcColNo + 1];
+      S := S + '''';
+      Inc(SrcColNo, 3);
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { -- tick (attribute access like X'First) if not char literal }
+    If Ch = '''' Then
+    Begin
+      S := '''';
+      Inc(SrcColNo);
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { -- multi-character operators }
+    If (Ch = ':') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := ':=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '=>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '.') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '.') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '..';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '*') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '**';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '=') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '/=';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '<') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '<<';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '>>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { -- single-character operators/punctuation }
+    If Ch In ['+','-','*','/','.','(',')',',',';',':','=','<','>',
+             '&','|','!','@','#','^','[',']','{','}'] Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := Ch;
+      Inc(SrcColNo);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Unknown character: skip }
+    Inc(SrcColNo);
+  End; { while Scanning }
+End;
+
+{ ---- Parseur Ada ----------------------------------------------- }
+
+Procedure AdaConsume;
+Begin
+  AdaLexNextToken;
+End;
+
+Function AdaUpperVal : TString;
+Var I : Integer;
+    U : TString;
+Begin
+  U := '';
+  For I := 1 To Length(SrcToken.Val) Do
+    If (SrcToken.Val[I] >= 'a') And (SrcToken.Val[I] <= 'z') Then
+      U := U + Chr(Ord(SrcToken.Val[I]) - 32)
+    Else
+      U := U + SrcToken.Val[I];
+  AdaUpperVal := U;
+End;
+
+Procedure AdaSkipStatementSeq; Forward;
+
+Procedure AdaSkipBlock;
+Var Depth : Integer;
+    UV    : TString;
+Begin
+  Depth := 1;
+  While (SrcToken.Kind <> STK_EOF) And (Depth > 0) Do
+  Begin
+    UV := AdaUpperVal;
+    If (SrcToken.Kind = STK_KEYWORD) And
+       ((UV = 'BEGIN') Or (UV = 'DECLARE') Or (UV = 'LOOP') Or
+        (UV = 'RECORD') Or (UV = 'CASE') Or (UV = 'SELECT') Or
+        (UV = 'IF') Or (UV = 'ACCEPT')) Then
+    Begin
+      Inc(Depth);
+      AdaConsume;
+    End
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+    Begin
+      Dec(Depth);
+      AdaConsume;
+      { skip optional name after END }
+      While (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+            ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '.')) Do
+        AdaConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        AdaConsume;
+    End
+    Else
+      AdaConsume;
+  End;
+End;
+
+Procedure AdaSkipType;
+Var UV : TString;
+Begin
+  UV := AdaUpperVal;
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'RECORD') Then
+  Begin
+    AdaConsume;
+    While (SrcToken.Kind <> STK_EOF) Do
+    Begin
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+      Begin
+        AdaConsume;
+        If (SrcToken.Kind = STK_KEYWORD) And (AdaUpperVal = 'RECORD') Then
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          AdaConsume;
+        Break;
+      End;
+      AdaConsume;
+    End;
+  End
+  Else
+  Begin
+    { Skip until semicolon }
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+      AdaConsume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+      AdaConsume;
+  End;
+End;
+
+Procedure AdaSkipStatementSeq;
+Var UV : TString;
+Begin
+  While (SrcToken.Kind <> STK_EOF) Do
+  Begin
+    UV := AdaUpperVal;
+    If (SrcToken.Kind = STK_KEYWORD) And
+       ((UV = 'END') Or (UV = 'ELSE') Or (UV = 'ELSIF') Or
+        (UV = 'WHEN') Or (UV = 'EXCEPTION')) Then
+      Exit;
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'IF') Then
+    Begin
+      AdaConsume; { skip IF }
+      { skip condition }
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_KEYWORD) And (AdaUpperVal = 'THEN')) Do
+        AdaConsume;
+      If (SrcToken.Kind = STK_KEYWORD) Then
+        AdaConsume; { skip THEN }
+      AdaSkipStatementSeq;
+      UV := AdaUpperVal;
+      While (SrcToken.Kind = STK_KEYWORD) And (UV = 'ELSIF') Do
+      Begin
+        AdaConsume; { skip ELSIF }
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_KEYWORD) And (AdaUpperVal = 'THEN')) Do
+          AdaConsume;
+        If (SrcToken.Kind = STK_KEYWORD) Then
+          AdaConsume; { skip THEN }
+        AdaSkipStatementSeq;
+        UV := AdaUpperVal;
+      End;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'ELSE') Then
+      Begin
+        AdaConsume;
+        AdaSkipStatementSeq;
+      End;
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+      Begin
+        AdaConsume; { skip END }
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'IF') Then
+          AdaConsume; { skip IF }
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          AdaConsume;
+      End;
+      Continue;
+    End;
+    If (SrcToken.Kind = STK_KEYWORD) And
+       ((UV = 'WHILE') Or (UV = 'FOR')) Then
+    Begin
+      AdaConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_KEYWORD) And (AdaUpperVal = 'LOOP')) Do
+        AdaConsume;
+      If (SrcToken.Kind = STK_KEYWORD) Then
+        AdaConsume; { skip LOOP }
+      AdaSkipStatementSeq;
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+      Begin
+        AdaConsume;
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'LOOP') Then
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          AdaConsume;
+      End;
+      Continue;
+    End;
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'LOOP') Then
+    Begin
+      AdaConsume;
+      AdaSkipStatementSeq;
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+      Begin
+        AdaConsume;
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'LOOP') Then
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          AdaConsume;
+      End;
+      Continue;
+    End;
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'CASE') Then
+    Begin
+      AdaConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_KEYWORD) And (AdaUpperVal = 'IS')) Do
+        AdaConsume;
+      If (SrcToken.Kind = STK_KEYWORD) Then
+        AdaConsume; { skip IS }
+      While (SrcToken.Kind <> STK_EOF) Do
+      Begin
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then Break;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'WHEN') Then
+        Begin
+          AdaConsume;
+          While (SrcToken.Kind <> STK_EOF) And
+                Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '=>')) Do
+            AdaConsume;
+          If (SrcToken.Kind = STK_OP) Then
+            AdaConsume; { skip => }
+          AdaSkipStatementSeq;
+        End
+        Else
+          AdaConsume;
+      End;
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+      Begin
+        AdaConsume;
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'CASE') Then
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          AdaConsume;
+      End;
+      Continue;
+    End;
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'BEGIN') Then
+    Begin
+      AdaConsume;
+      AdaSkipStatementSeq;
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'EXCEPTION') Then
+      Begin
+        AdaConsume;
+        While (SrcToken.Kind <> STK_EOF) Do
+        Begin
+          UV := AdaUpperVal;
+          If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then Break;
+          If (SrcToken.Kind = STK_KEYWORD) And (UV = 'WHEN') Then
+          Begin
+            AdaConsume;
+            While (SrcToken.Kind <> STK_EOF) And
+                  Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '=>')) Do
+              AdaConsume;
+            If (SrcToken.Kind = STK_OP) Then
+              AdaConsume;
+            AdaSkipStatementSeq;
+          End
+          Else
+            AdaConsume;
+        End;
+      End;
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+      Begin
+        AdaConsume;
+        { skip optional name }
+        While (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+              ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '.')) Do
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          AdaConsume;
+      End;
+      Continue;
+    End;
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'DECLARE') Then
+    Begin
+      AdaConsume;
+      { skip declarations until BEGIN }
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_KEYWORD) And (AdaUpperVal = 'BEGIN')) Do
+        AdaConsume;
+      Continue; { let BEGIN handler take over }
+    End;
+    { default: skip until semicolon }
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+    Begin
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And
+         ((UV = 'END') Or (UV = 'ELSE') Or (UV = 'ELSIF') Or
+          (UV = 'WHEN') Or (UV = 'EXCEPTION')) Then
+        Exit;
+      AdaConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+      AdaConsume;
+  End;
+End;
+
+Function AdaParseDecl(Parent : Integer) : Integer;
+Var N    : Integer;
+    UV   : TString;
+    Name : TString;
+Begin
+  AdaParseDecl := -1;
+  While (SrcToken.Kind <> STK_EOF) Do
+  Begin
+    UV := AdaUpperVal;
+
+    { end of declarations }
+    If (SrcToken.Kind = STK_KEYWORD) And
+       ((UV = 'BEGIN') Or (UV = 'END') Or (UV = 'PRIVATE')) Then
+      Exit;
+
+    { with clause }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'WITH') Then
+    Begin
+      N := SrcNewNode(SNK_AD_WITH_CLAUSE);
+      SrcAddChild(Parent, N);
+      AdaConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+        AdaConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        AdaConsume;
+      Continue;
+    End;
+
+    { use clause }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'USE') Then
+    Begin
+      N := SrcNewNode(SNK_AD_USE_CLAUSE);
+      SrcAddChild(Parent, N);
+      AdaConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+        AdaConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        AdaConsume;
+      Continue;
+    End;
+
+    { pragma }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'PRAGMA') Then
+    Begin
+      AdaConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+        AdaConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        AdaConsume;
+      Continue;
+    End;
+
+    { procedure declaration or body }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'PROCEDURE') Then
+    Begin
+      N := SrcNewNode(SNK_AD_PROCEDURE);
+      SrcAddChild(Parent, N);
+      AdaConsume;
+      { procedure name }
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        AdaConsume;
+      End;
+      { skip parameters }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        AdaConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ')')) Do
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) Then
+          AdaConsume;
+      End;
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'IS') Then
+      Begin
+        AdaConsume;
+        UV := AdaUpperVal;
+        { SEPARATE or NULL or declarations + BEGIN }
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'SEPARATE') Then
+        Begin
+          AdaConsume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+            AdaConsume;
+        End
+        Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'NULL') Then
+        Begin
+          AdaConsume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+            AdaConsume;
+        End
+        Else
+          AdaSkipBlock;
+      End
+      Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'RENAMES') Then
+      Begin
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) Then
+          AdaConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        AdaConsume;
+      Continue;
+    End;
+
+    { function declaration or body }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'FUNCTION') Then
+    Begin
+      N := SrcNewNode(SNK_AD_FUNCTION);
+      SrcAddChild(Parent, N);
+      AdaConsume;
+      { function name }
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        AdaConsume;
+      End;
+      { could be operator: skip string }
+      If (SrcToken.Kind = STK_STRING) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        AdaConsume;
+      End;
+      { skip parameters }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        AdaConsume;
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ')')) Do
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) Then
+          AdaConsume;
+      End;
+      { return type }
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'RETURN') Then
+      Begin
+        AdaConsume;
+        { skip return type until IS or ; or RENAMES }
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_KEYWORD) And
+                   ((AdaUpperVal = 'IS') Or (AdaUpperVal = 'RENAMES'))) And
+              Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+          AdaConsume;
+      End;
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'IS') Then
+      Begin
+        AdaConsume;
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'SEPARATE') Then
+        Begin
+          AdaConsume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+            AdaConsume;
+        End
+        Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'NULL') Then
+        Begin
+          AdaConsume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+            AdaConsume;
+        End
+        Else
+          AdaSkipBlock;
+      End
+      Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'RENAMES') Then
+      Begin
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) Then
+          AdaConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        AdaConsume;
+      Continue;
+    End;
+
+    { type declaration }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'TYPE') Then
+    Begin
+      N := SrcNewNode(SNK_AD_TYPE_DECL);
+      SrcAddChild(Parent, N);
+      AdaConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        AdaConsume;
+      End;
+      AdaSkipType;
+      Continue;
+    End;
+
+    { subtype declaration }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'SUBTYPE') Then
+    Begin
+      N := SrcNewNode(SNK_AD_SUBTYPE_DECL);
+      SrcAddChild(Parent, N);
+      AdaConsume;
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        SrcNodes[N].Name := SrcToken.Val;
+        AdaConsume;
+      End;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+        AdaConsume;
+      If (SrcToken.Kind = STK_OP) Then
+        AdaConsume;
+      Continue;
+    End;
+
+    { package declaration or body }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'PACKAGE') Then
+    Begin
+      AdaConsume;
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'BODY') Then
+      Begin
+        N := SrcNewNode(SNK_AD_PACKAGE_BODY);
+        SrcAddChild(Parent, N);
+        AdaConsume;
+      End
+      Else
+      Begin
+        N := SrcNewNode(SNK_AD_PACKAGE);
+        SrcAddChild(Parent, N);
+      End;
+      { package name }
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        Name := SrcToken.Val;
+        AdaConsume;
+        While (SrcToken.Kind = STK_OP) And (SrcToken.Val = '.') Do
+        Begin
+          Name := Name + '.';
+          AdaConsume;
+          If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+          Begin
+            Name := Name + SrcToken.Val;
+            AdaConsume;
+          End;
+        End;
+        SrcNodes[N].Name := Name;
+      End;
+      UV := AdaUpperVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'IS') Then
+      Begin
+        AdaConsume;
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'NEW') Then
+        Begin
+          { package instantiation }
+          While (SrcToken.Kind <> STK_EOF) And
+                Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+            AdaConsume;
+          If (SrcToken.Kind = STK_OP) Then
+            AdaConsume;
+        End
+        Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'SEPARATE') Then
+        Begin
+          AdaConsume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+            AdaConsume;
+        End
+        Else
+        Begin
+          AdaParseDecl(N);
+          UV := AdaUpperVal;
+          If (SrcToken.Kind = STK_KEYWORD) And (UV = 'PRIVATE') Then
+          Begin
+            AdaConsume;
+            AdaParseDecl(N);
+          End;
+          UV := AdaUpperVal;
+          If (SrcToken.Kind = STK_KEYWORD) And (UV = 'BEGIN') Then
+          Begin
+            AdaConsume;
+            AdaSkipStatementSeq;
+          End;
+          UV := AdaUpperVal;
+          If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+          Begin
+            AdaConsume;
+            While (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+                  ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '.')) Do
+              AdaConsume;
+            If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+              AdaConsume;
+          End;
+        End;
+      End
+      Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'RENAMES') Then
+      Begin
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) Then
+          AdaConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        AdaConsume;
+      Continue;
+    End;
+
+    { overriding keyword before procedure/function }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'OVERRIDING') Then
+    Begin
+      AdaConsume;
+      Continue;
+    End;
+
+    { generic }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'GENERIC') Then
+    Begin
+      AdaConsume;
+      { skip generic formals until package/procedure/function }
+      While (SrcToken.Kind <> STK_EOF) Do
+      Begin
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And
+           ((UV = 'PACKAGE') Or (UV = 'PROCEDURE') Or (UV = 'FUNCTION')) Then
+          Break;
+        AdaConsume;
+      End;
+      Continue;
+    End;
+
+    { task or protected }
+    If (SrcToken.Kind = STK_KEYWORD) And
+       ((UV = 'TASK') Or (UV = 'PROTECTED')) Then
+    Begin
+      AdaConsume;
+      { skip until end of task/protected }
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+      Begin
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'IS') Then
+        Begin
+          AdaConsume;
+          AdaSkipBlock;
+          Break;
+        End;
+        AdaConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        AdaConsume;
+      Continue;
+    End;
+
+    { variable or constant declaration (identifier : ...) }
+    If (SrcToken.Kind = STK_IDENT) Then
+    Begin
+      Name := SrcToken.Val;
+      AdaConsume;
+      { could be comma-separated list }
+      While (SrcToken.Kind = STK_OP) And (SrcToken.Val = ',') Do
+      Begin
+        AdaConsume;
+        If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+          AdaConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+      Begin
+        AdaConsume;
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'CONSTANT') Then
+        Begin
+          N := SrcNewNode(SNK_AD_CONST_DECL);
+          SrcAddChild(Parent, N);
+          SrcNodes[N].Name := Name;
+          AdaConsume;
+        End
+        Else
+        Begin
+          N := SrcNewNode(SNK_AD_VAR_DECL);
+          SrcAddChild(Parent, N);
+          SrcNodes[N].Name := Name;
+        End;
+        While (SrcToken.Kind <> STK_EOF) And
+              Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+          AdaConsume;
+        If (SrcToken.Kind = STK_OP) Then
+          AdaConsume;
+        Continue;
+      End;
+      { something else: skip to semicolon }
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+      Begin
+        UV := AdaUpperVal;
+        If (SrcToken.Kind = STK_KEYWORD) And
+           ((UV = 'BEGIN') Or (UV = 'END') Or (UV = 'PRIVATE')) Then
+          Exit;
+        AdaConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        AdaConsume;
+      Continue;
+    End;
+
+    { for representation clause }
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'FOR') Then
+    Begin
+      AdaConsume;
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+        AdaConsume;
+      If (SrcToken.Kind = STK_OP) Then
+        AdaConsume;
+      Continue;
+    End;
+
+    { anything else: skip token }
+    AdaConsume;
+  End;
+End;
+
+Function AdaParseTranslationUnit : Integer;
+Var Root : Integer;
+    UV   : TString;
+Begin
+  AdaConsume;
+  Root := SrcNewNode(SNK_AD_PACKAGE);
+
+  { parse with/use clauses and top-level declarations }
+  AdaParseDecl(Root);
+
+  { handle body section if BEGIN present }
+  UV := AdaUpperVal;
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'BEGIN') Then
+  Begin
+    AdaConsume;
+    AdaSkipStatementSeq;
+  End;
+
+  { handle END }
+  UV := AdaUpperVal;
+  If (SrcToken.Kind = STK_KEYWORD) And (UV = 'END') Then
+  Begin
+    AdaConsume;
+    While (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+          ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '.')) Do
+      AdaConsume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+      AdaConsume;
+  End;
+
+  AdaParseTranslationUnit := Root;
+End;
+
+{ ---- Detection des fichiers sources Ada ------------------------ }
+
+Function IsAdaSource(Const FName : TString) : Boolean;
+Begin
+  IsAdaSource := StrEndsWith(FName, '.ads') Or
+                 StrEndsWith(FName, '.adb');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -26885,7 +28045,8 @@ Begin
            ((Opts.Language = 'ruby') And IsRubySource(SR.Name)) Or
            ((Opts.Language = 'swift') And IsSwiftSource(SR.Name)) Or
            ((Opts.Language = 'kotlin') And IsKotlinSource(SR.Name)) Or
-            ((Opts.Language = 'oberon') And IsOberonSource(SR.Name)) Then
+            ((Opts.Language = 'oberon') And IsOberonSource(SR.Name)) Or
+            ((Opts.Language = 'ada') And IsAdaSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -27024,6 +28185,12 @@ Begin
       ObLexInit;
       SrcASTInit;
       SrcRootNode := ObParseTranslationUnit;
+    End
+    Else If Opts.Language = 'ada' Then
+    Begin
+      AdaLexInit;
+      SrcASTInit;
+      SrcRootNode := AdaParseTranslationUnit;
     End
     Else
     Begin
