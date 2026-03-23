@@ -90,7 +90,7 @@
       GetFileSize, DeleteFileA, GetFileAttributesA,
       SetFileAttributesA, FlushFileBuffers.
 
-  18. Implementer l'emulation de KERNEL32.DLL - Gestion de la memoire :
+  18. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Gestion de la memoire :
       VirtualAlloc, VirtualFree, GetProcessHeap, HeapCreate,
       HeapAlloc, HeapFree, HeapReAlloc, GlobalAlloc, GlobalFree,
       LocalAlloc, LocalFree dans l'espace de 16 Mo.
@@ -232,6 +232,32 @@ Const
  INVALID_SET_FILE_POINTER=LongInt(-1);
  MAX_EMU_FILES=16;
  EMU_FILE_HANDLE_BASE=4;
+
+  { TODO 18 : Constantes Win32 pour la gestion de la memoire.
+    Types d'allocation, protections, constantes heap/global/local. }
+ MEM_COMMIT=$1000;
+ MEM_RESERVE=$2000;
+ MEM_RELEASE=$8000;
+ MEM_DECOMMIT=$4000;
+ PAGE_NOACCESS=$01;
+ PAGE_READONLY=$02;
+ PAGE_READWRITE=$04;
+ PAGE_EXECUTE_READ=$20;
+ PAGE_EXECUTE_READWRITE=$40;
+ HEAP_ZERO_MEMORY=$08;
+ HEAP_NO_SERIALIZE=$01;
+ GMEM_FIXED=$0000;
+ GMEM_ZEROINIT=$0040;
+ GPTR=GMEM_FIXED or GMEM_ZEROINIT;
+ LMEM_FIXED=$0000;
+ LMEM_ZEROINIT=$0040;
+ LPTR=LMEM_FIXED or LMEM_ZEROINIT;
+
+  { TODO 18 : Zone de heap emule dans la memoire lineaire.
+    Utilise la zone $C00000-$CFFFFF (1 Mo) juste avant ProcessDataBase. }
+ HeapBase=$C00000;
+ HeapSize=1024*1024;  { 1 Mo }
+ EMU_HEAP_HANDLE=$C00000;
 
 Type
   { TODO 2 : Registres 32 bits du 80386 }
@@ -413,6 +439,12 @@ Var
  EmuFileActive:Array[0..MAX_EMU_FILES-1] of Boolean;
  EmuFileVar:Array[0..MAX_EMU_FILES-1] of File;
  EmuFileName:Array[0..MAX_EMU_FILES-1] of String;
+
+  { TODO 18 : Etat du heap emule.
+    HeapNextAddr est un pointeur bump qui avance dans la zone HeapBase..HeapBase+HeapSize.
+    HeapCreated indique si le heap par defaut a ete cree (via GetProcessHeap). }
+ HeapNextAddr:LongInt;
+ HeapCreated:Boolean;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -5587,6 +5619,305 @@ Begin
  Regs.ESP:=Regs.ESP+4;
 End;
 
+  { TODO 18 : Initialisation du heap emule.
+    Positionne le pointeur bump au debut de la zone de heap
+    et met a zero la zone entiere. }
+Procedure InitHeap;
+Begin
+ HeapNextAddr:=HeapBase;
+ HeapCreated:=True;
+End;
+
+  { TODO 18 : Emulation de VirtualAlloc (KERNEL32.DLL).
+    LPVOID WINAPI VirtualAlloc(LPVOID lpAddress,
+                                SIZE_T dwSize,
+                                DWORD flAllocationType,
+                                DWORD flProtect);
+    Convention STDCALL : 4 parametres (16 octets).
+    Alloue de la memoire dans l'espace lineaire emule.
+    Utilise un allocateur bump dans la zone HeapBase. }
+Procedure EmuVirtualAlloc;
+Var
+ lpAddress,dwSize,flAllocType,flProtect:LongInt;
+ AllocAddr,I:LongInt;
+ AlignedSize:LongInt;
+Begin
+ lpAddress:=ReadDWord(Regs.ESP+4);
+ dwSize:=ReadDWord(Regs.ESP+8);
+ flAllocType:=ReadDWord(Regs.ESP+12);
+ flProtect:=ReadDWord(Regs.ESP+16);
+  { Aligner la taille sur 4 Ko (granularite page Win32) }
+ AlignedSize:=(dwSize+$FFF) and LongInt($FFFFF000);
+ If AlignedSize<=0 Then AlignedSize:=$1000;
+  { Si une adresse est demandee et qu'elle est dans la zone heap, l'utiliser }
+ If(lpAddress<>0)and(lpAddress>=HeapBase)and
+   (lpAddress+AlignedSize<=HeapBase+HeapSize)Then Begin
+  AllocAddr:=lpAddress;
+   { Avancer le pointeur bump si necessaire }
+  If AllocAddr+AlignedSize>HeapNextAddr Then
+   HeapNextAddr:=AllocAddr+AlignedSize;
+ End
+ Else Begin
+   { Allocation au pointeur bump courant }
+  AllocAddr:=HeapNextAddr;
+  If AllocAddr+AlignedSize>HeapBase+HeapSize Then Begin
+   Regs.EAX:=0;  { Echec : plus de memoire }
+   Regs.ESP:=Regs.ESP+16;
+   Exit;
+  End;
+  HeapNextAddr:=HeapNextAddr+AlignedSize;
+ End;
+  { Mettre a zero la memoire allouee si MEM_COMMIT }
+ If(flAllocType and MEM_COMMIT)<>0 Then
+  For I:=0 to AlignedSize-1 do
+   WriteByte(AllocAddr+I,0);
+ Regs.EAX:=AllocAddr;
+  { Nettoyer la pile : 4 parametres }
+ Regs.ESP:=Regs.ESP+16;
+End;
+
+  { TODO 18 : Emulation de VirtualFree (KERNEL32.DLL).
+    BOOL WINAPI VirtualFree(LPVOID lpAddress,
+                             SIZE_T dwSize,
+                             DWORD dwFreeType);
+    Convention STDCALL : 3 parametres (12 octets).
+    Emulation simplifiee : retourne TRUE.
+    Le heap bump ne supporte pas la liberation partielle. }
+Procedure EmuVirtualFree;
+Var
+ lpAddress,dwSize,dwFreeType:LongInt;
+Begin
+ lpAddress:=ReadDWord(Regs.ESP+4);
+ dwSize:=ReadDWord(Regs.ESP+8);
+ dwFreeType:=ReadDWord(Regs.ESP+12);
+ Regs.EAX:=1;  { TRUE }
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 18 : Emulation de GetProcessHeap (KERNEL32.DLL).
+    HANDLE WINAPI GetProcessHeap(void);
+    Convention STDCALL : 0 parametre (0 octet).
+    Retourne le handle du heap par defaut du processus emule. }
+Procedure EmuGetProcessHeap;
+Begin
+ If Not HeapCreated Then InitHeap;
+ Regs.EAX:=EMU_HEAP_HANDLE;
+  { Pas de parametres a nettoyer }
+End;
+
+  { TODO 18 : Emulation de HeapCreate (KERNEL32.DLL).
+    HANDLE WINAPI HeapCreate(DWORD flOptions,
+                              SIZE_T dwInitialSize,
+                              SIZE_T dwMaximumSize);
+    Convention STDCALL : 3 parametres (12 octets).
+    Emulation simplifiee : retourne le handle du heap unique emule.
+    Tous les heaps partagent le meme espace. }
+Procedure EmuHeapCreate;
+Var
+ flOptions,dwInitial,dwMaximum:LongInt;
+Begin
+ flOptions:=ReadDWord(Regs.ESP+4);
+ dwInitial:=ReadDWord(Regs.ESP+8);
+ dwMaximum:=ReadDWord(Regs.ESP+12);
+ If Not HeapCreated Then InitHeap;
+ Regs.EAX:=EMU_HEAP_HANDLE;
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 18 : Emulation de HeapAlloc (KERNEL32.DLL).
+    LPVOID WINAPI HeapAlloc(HANDLE hHeap,
+                             DWORD dwFlags,
+                             SIZE_T dwBytes);
+    Convention STDCALL : 3 parametres (12 octets).
+    Alloue un bloc de memoire dans le heap emule.
+    Utilise un allocateur bump avec alignement sur 8 octets. }
+Procedure EmuHeapAlloc;
+Var
+ hHeap,dwFlags,dwBytes:LongInt;
+ AllocAddr:LongInt;
+ AlignedSize,I:LongInt;
+Begin
+ hHeap:=ReadDWord(Regs.ESP+4);
+ dwFlags:=ReadDWord(Regs.ESP+8);
+ dwBytes:=ReadDWord(Regs.ESP+12);
+  { Aligner sur 8 octets }
+ AlignedSize:=(dwBytes+7) and LongInt($FFFFFFF8);
+ If AlignedSize<=0 Then AlignedSize:=8;
+ AllocAddr:=HeapNextAddr;
+ If AllocAddr+AlignedSize>HeapBase+HeapSize Then Begin
+  Regs.EAX:=0;  { Echec }
+  Regs.ESP:=Regs.ESP+12;
+  Exit;
+ End;
+ HeapNextAddr:=HeapNextAddr+AlignedSize;
+  { Mettre a zero si HEAP_ZERO_MEMORY est demande }
+ If(dwFlags and HEAP_ZERO_MEMORY)<>0 Then
+  For I:=0 to AlignedSize-1 do
+   WriteByte(AllocAddr+I,0);
+ Regs.EAX:=AllocAddr;
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 18 : Emulation de HeapFree (KERNEL32.DLL).
+    BOOL WINAPI HeapFree(HANDLE hHeap,
+                          DWORD dwFlags,
+                          LPVOID lpMem);
+    Convention STDCALL : 3 parametres (12 octets).
+    Emulation simplifiee : retourne TRUE.
+    Le heap bump ne supporte pas la liberation individuelle. }
+Procedure EmuHeapFree;
+Var
+ hHeap,dwFlags,lpMem:LongInt;
+Begin
+ hHeap:=ReadDWord(Regs.ESP+4);
+ dwFlags:=ReadDWord(Regs.ESP+8);
+ lpMem:=ReadDWord(Regs.ESP+12);
+ Regs.EAX:=1;  { TRUE }
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 18 : Emulation de HeapReAlloc (KERNEL32.DLL).
+    LPVOID WINAPI HeapReAlloc(HANDLE hHeap,
+                               DWORD dwFlags,
+                               LPVOID lpMem,
+                               SIZE_T dwBytes);
+    Convention STDCALL : 4 parametres (16 octets).
+    Emulation simplifiee : alloue un nouveau bloc et copie les donnees.
+    L'ancien bloc n'est pas libere (allocateur bump). }
+Procedure EmuHeapReAlloc;
+Var
+ hHeap,dwFlags,lpMem,dwBytes:LongInt;
+ NewAddr:LongInt;
+ AlignedSize,I:LongInt;
+ CopySize:LongInt;
+Begin
+ hHeap:=ReadDWord(Regs.ESP+4);
+ dwFlags:=ReadDWord(Regs.ESP+8);
+ lpMem:=ReadDWord(Regs.ESP+12);
+ dwBytes:=ReadDWord(Regs.ESP+16);
+  { Aligner sur 8 octets }
+ AlignedSize:=(dwBytes+7) and LongInt($FFFFFFF8);
+ If AlignedSize<=0 Then AlignedSize:=8;
+ NewAddr:=HeapNextAddr;
+ If NewAddr+AlignedSize>HeapBase+HeapSize Then Begin
+  Regs.EAX:=0;  { Echec }
+  Regs.ESP:=Regs.ESP+16;
+  Exit;
+ End;
+ HeapNextAddr:=HeapNextAddr+AlignedSize;
+  { Copier les anciennes donnees (taille conservatrice = dwBytes) }
+ If lpMem<>0 Then Begin
+  CopySize:=dwBytes;
+  For I:=0 to CopySize-1 do
+   WriteByte(NewAddr+I,ReadByte(lpMem+I));
+ End;
+  { Mettre a zero si HEAP_ZERO_MEMORY est demande }
+ If(dwFlags and HEAP_ZERO_MEMORY)<>0 Then
+  For I:=0 to AlignedSize-1 do
+   WriteByte(NewAddr+I,0);
+ Regs.EAX:=NewAddr;
+  { Nettoyer la pile : 4 parametres }
+ Regs.ESP:=Regs.ESP+16;
+End;
+
+  { TODO 18 : Emulation de GlobalAlloc (KERNEL32.DLL).
+    HGLOBAL WINAPI GlobalAlloc(UINT uFlags, SIZE_T dwBytes);
+    Convention STDCALL : 2 parametres (8 octets).
+    Alloue de la memoire globale dans le heap emule.
+    GMEM_FIXED retourne un pointeur direct. }
+Procedure EmuGlobalAlloc;
+Var
+ uFlags,dwBytes:LongInt;
+ AllocAddr:LongInt;
+ AlignedSize,I:LongInt;
+Begin
+ uFlags:=ReadDWord(Regs.ESP+4);
+ dwBytes:=ReadDWord(Regs.ESP+8);
+  { Aligner sur 8 octets }
+ AlignedSize:=(dwBytes+7) and LongInt($FFFFFFF8);
+ If AlignedSize<=0 Then AlignedSize:=8;
+ AllocAddr:=HeapNextAddr;
+ If AllocAddr+AlignedSize>HeapBase+HeapSize Then Begin
+  Regs.EAX:=0;  { Echec }
+  Regs.ESP:=Regs.ESP+8;
+  Exit;
+ End;
+ HeapNextAddr:=HeapNextAddr+AlignedSize;
+  { Mettre a zero si GMEM_ZEROINIT est demande }
+ If(uFlags and GMEM_ZEROINIT)<>0 Then
+  For I:=0 to AlignedSize-1 do
+   WriteByte(AllocAddr+I,0);
+ Regs.EAX:=AllocAddr;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 18 : Emulation de GlobalFree (KERNEL32.DLL).
+    HGLOBAL WINAPI GlobalFree(HGLOBAL hMem);
+    Convention STDCALL : 1 parametre (4 octets).
+    Emulation simplifiee : retourne 0 (succes).
+    Le heap bump ne supporte pas la liberation individuelle. }
+Procedure EmuGlobalFree;
+Var
+ hMem:LongInt;
+Begin
+ hMem:=ReadDWord(Regs.ESP+4);
+ Regs.EAX:=0;  { NULL = succes }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 18 : Emulation de LocalAlloc (KERNEL32.DLL).
+    HLOCAL WINAPI LocalAlloc(UINT uFlags, SIZE_T uBytes);
+    Convention STDCALL : 2 parametres (8 octets).
+    Alloue de la memoire locale dans le heap emule.
+    LMEM_FIXED retourne un pointeur direct. }
+Procedure EmuLocalAlloc;
+Var
+ uFlags,uBytes:LongInt;
+ AllocAddr:LongInt;
+ AlignedSize,I:LongInt;
+Begin
+ uFlags:=ReadDWord(Regs.ESP+4);
+ uBytes:=ReadDWord(Regs.ESP+8);
+  { Aligner sur 8 octets }
+ AlignedSize:=(uBytes+7) and LongInt($FFFFFFF8);
+ If AlignedSize<=0 Then AlignedSize:=8;
+ AllocAddr:=HeapNextAddr;
+ If AllocAddr+AlignedSize>HeapBase+HeapSize Then Begin
+  Regs.EAX:=0;  { Echec }
+  Regs.ESP:=Regs.ESP+8;
+  Exit;
+ End;
+ HeapNextAddr:=HeapNextAddr+AlignedSize;
+  { Mettre a zero si LMEM_ZEROINIT est demande }
+ If(uFlags and LMEM_ZEROINIT)<>0 Then
+  For I:=0 to AlignedSize-1 do
+   WriteByte(AllocAddr+I,0);
+ Regs.EAX:=AllocAddr;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 18 : Emulation de LocalFree (KERNEL32.DLL).
+    HLOCAL WINAPI LocalFree(HLOCAL hMem);
+    Convention STDCALL : 1 parametre (4 octets).
+    Emulation simplifiee : retourne 0 (succes).
+    Le heap bump ne supporte pas la liberation individuelle. }
+Procedure EmuLocalFree;
+Var
+ hMem:LongInt;
+Begin
+ hMem:=ReadDWord(Regs.ESP+4);
+ Regs.EAX:=0;  { NULL = succes }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
   { TODO 15 : Dispatche un appel a une fonction de KERNEL32.DLL.
     Recoit l'index de l'entree d'importation dans ImportEntries
     et appelle la procedure d'emulation correspondante.
@@ -5643,6 +5974,29 @@ Begin
   EmuSetFileAttributesA
  Else If StrIComp(FName,'FlushFileBuffers') Then
   EmuFlushFileBuffers
+  { TODO 18 : Gestion de la memoire }
+ Else If StrIComp(FName,'VirtualAlloc') Then
+  EmuVirtualAlloc
+ Else If StrIComp(FName,'VirtualFree') Then
+  EmuVirtualFree
+ Else If StrIComp(FName,'GetProcessHeap') Then
+  EmuGetProcessHeap
+ Else If StrIComp(FName,'HeapCreate') Then
+  EmuHeapCreate
+ Else If StrIComp(FName,'HeapAlloc') Then
+  EmuHeapAlloc
+ Else If StrIComp(FName,'HeapFree') Then
+  EmuHeapFree
+ Else If StrIComp(FName,'HeapReAlloc') Then
+  EmuHeapReAlloc
+ Else If StrIComp(FName,'GlobalAlloc') Then
+  EmuGlobalAlloc
+ Else If StrIComp(FName,'GlobalFree') Then
+  EmuGlobalFree
+ Else If StrIComp(FName,'LocalAlloc') Then
+  EmuLocalAlloc
+ Else If StrIComp(FName,'LocalFree') Then
+  EmuLocalFree
  Else Begin
   WriteLn('KERNEL32: fonction non emulée: ',FName);
   DispatchKernel32:=False;
