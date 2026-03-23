@@ -690,7 +690,16 @@ Type
     SNK_AD_VAR_DECL, SNK_AD_CONST_DECL,
     SNK_AD_IF, SNK_AD_LOOP,
     SNK_AD_CASE, SNK_AD_BLOCK,
-    SNK_AD_RETURN, SNK_AD_ASSIGN
+    SNK_AD_RETURN, SNK_AD_ASSIGN,
+    { PHP node kinds }
+    SNK_PHP_FILE, SNK_PHP_NAMESPACE,
+    SNK_PHP_USE, SNK_PHP_CLASS,
+    SNK_PHP_INTERFACE, SNK_PHP_TRAIT,
+    SNK_PHP_FUNCTION, SNK_PHP_METHOD,
+    SNK_PHP_PROPERTY, SNK_PHP_CONST_DECL,
+    SNK_PHP_IF, SNK_PHP_SWITCH,
+    SNK_PHP_LOOP, SNK_PHP_TRY,
+    SNK_PHP_RETURN, SNK_PHP_ECHO
   );
 
   TSrcASTNode = Record
@@ -1429,7 +1438,7 @@ Begin
   WriteLn('Usage: CODEQL <commande> [options]');
   WriteLn;
   WriteLn('Commandes :');
-  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada]');
+  WriteLn('  database create   <db> --source-root=<dir> [--language=pascal|c|cpp|csharp|go|java|javascript|python|ruby|swift|kotlin|oberon|ada|php]');
   WriteLn('  database analyze  <db> [suite.qls] [--format=sarif|csv|text]');
   WriteLn('  query run         --database=<db> <query.ql> [--interactive]');
   WriteLn('  database interpret-results <db> [--format=sarif|csv|text]');
@@ -1707,8 +1716,8 @@ Begin
      (Opts.Language <> 'javascript') And (Opts.Language <> 'python') And
      (Opts.Language <> 'ruby') And (Opts.Language <> 'swift') And
      (Opts.Language <> 'kotlin') And (Opts.Language <> 'oberon') And
-     (Opts.Language <> 'ada') Then
-    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon ou ada)');
+     (Opts.Language <> 'ada') And (Opts.Language <> 'php') Then
+    FatalError('langage non supporte: ' + Opts.Language + ' (pascal, c, cpp, csharp, go, java, javascript, python, ruby, swift, kotlin, oberon, ada ou php)');
 End;
 
 { ---- Stubs des sous-commandes (TODO 23-24) ----------------- }
@@ -6052,6 +6061,22 @@ Begin
     SNK_AD_BLOCK              : SrcNodeKindName := 'AD_BLOCK';
     SNK_AD_RETURN             : SrcNodeKindName := 'AD_RETURN';
     SNK_AD_ASSIGN             : SrcNodeKindName := 'AD_ASSIGN';
+    SNK_PHP_FILE              : SrcNodeKindName := 'PHP_FILE';
+    SNK_PHP_NAMESPACE         : SrcNodeKindName := 'PHP_NAMESPACE';
+    SNK_PHP_USE               : SrcNodeKindName := 'PHP_USE';
+    SNK_PHP_CLASS             : SrcNodeKindName := 'PHP_CLASS';
+    SNK_PHP_INTERFACE         : SrcNodeKindName := 'PHP_INTERFACE';
+    SNK_PHP_TRAIT             : SrcNodeKindName := 'PHP_TRAIT';
+    SNK_PHP_FUNCTION          : SrcNodeKindName := 'PHP_FUNCTION';
+    SNK_PHP_METHOD            : SrcNodeKindName := 'PHP_METHOD';
+    SNK_PHP_PROPERTY          : SrcNodeKindName := 'PHP_PROPERTY';
+    SNK_PHP_CONST_DECL        : SrcNodeKindName := 'PHP_CONST_DECL';
+    SNK_PHP_IF                : SrcNodeKindName := 'PHP_IF';
+    SNK_PHP_SWITCH            : SrcNodeKindName := 'PHP_SWITCH';
+    SNK_PHP_LOOP              : SrcNodeKindName := 'PHP_LOOP';
+    SNK_PHP_TRY               : SrcNodeKindName := 'PHP_TRY';
+    SNK_PHP_RETURN            : SrcNodeKindName := 'PHP_RETURN';
+    SNK_PHP_ECHO              : SrcNodeKindName := 'PHP_ECHO';
   Else
     SrcNodeKindName := '???';
   End;
@@ -27983,6 +28008,1300 @@ Begin
                  StrEndsWith(FName, '.adb');
 End;
 
+{ ============================================================
+  PHP LANGUAGE SUPPORT
+  ============================================================ }
+
+{ ---- PHP character classification -------------------------- }
+
+Function PhpIsAlpha(Ch : Char) : Boolean;
+Begin
+  PhpIsAlpha := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                ((Ch >= 'a') And (Ch <= 'z')) Or
+                (Ch = '_');
+End;
+
+Function PhpIsDigit(Ch : Char) : Boolean;
+Begin
+  PhpIsDigit := (Ch >= '0') And (Ch <= '9');
+End;
+
+Function PhpIsAlNum(Ch : Char) : Boolean;
+Begin
+  PhpIsAlNum := PhpIsAlpha(Ch) Or PhpIsDigit(Ch);
+End;
+
+{ ---- IsPhpKeyword ------------------------------------------ }
+
+Function IsPhpKeyword(Const W : TString) : Boolean;
+Var U : TString;
+    I : Integer;
+Begin
+  U := '';
+  For I := 1 To Length(W) Do
+    If (W[I] >= 'A') And (W[I] <= 'Z') Then
+      U := U + Chr(Ord(W[I]) + 32)
+    Else
+      U := U + W[I];
+  IsPhpKeyword :=
+    (U = 'abstract') Or (U = 'and') Or (U = 'array') Or
+    (U = 'as') Or (U = 'break') Or (U = 'callable') Or
+    (U = 'case') Or (U = 'catch') Or (U = 'class') Or
+    (U = 'clone') Or (U = 'const') Or (U = 'continue') Or
+    (U = 'declare') Or (U = 'default') Or (U = 'do') Or
+    (U = 'echo') Or (U = 'else') Or (U = 'elseif') Or
+    (U = 'empty') Or (U = 'enddeclare') Or (U = 'endfor') Or
+    (U = 'endforeach') Or (U = 'endif') Or (U = 'endswitch') Or
+    (U = 'endwhile') Or (U = 'eval') Or (U = 'exit') Or
+    (U = 'extends') Or (U = 'final') Or (U = 'finally') Or
+    (U = 'fn') Or (U = 'for') Or (U = 'foreach') Or
+    (U = 'function') Or (U = 'global') Or (U = 'goto') Or
+    (U = 'if') Or (U = 'implements') Or (U = 'include') Or
+    (U = 'include_once') Or (U = 'instanceof') Or
+    (U = 'insteadof') Or (U = 'interface') Or (U = 'isset') Or
+    (U = 'list') Or (U = 'match') Or (U = 'namespace') Or
+    (U = 'new') Or (U = 'or') Or (U = 'print') Or
+    (U = 'private') Or (U = 'protected') Or (U = 'public') Or
+    (U = 'readonly') Or (U = 'require') Or (U = 'require_once') Or
+    (U = 'return') Or (U = 'static') Or (U = 'switch') Or
+    (U = 'throw') Or (U = 'trait') Or (U = 'try') Or
+    (U = 'unset') Or (U = 'use') Or (U = 'var') Or
+    (U = 'while') Or (U = 'xor') Or (U = 'yield') Or
+    (U = 'yield_from') Or (U = 'null') Or (U = 'true') Or
+    (U = 'false') Or (U = 'self') Or (U = 'parent') Or
+    (U = 'void') Or (U = 'int') Or (U = 'float') Or
+    (U = 'string') Or (U = 'bool') Or (U = 'mixed') Or
+    (U = 'never') Or (U = 'enum');
+End;
+
+{ ---- PHP Lexer --------------------------------------------- }
+
+Procedure PhpLexInit;
+Begin
+  SrcLineNo    := 0;
+  SrcColNo     := 1;
+  SrcEOF       := False;
+  SrcLine      := '';
+  SrcTokenCount := 0;
+  SrcTotalLines := 0;
+  SrcToken.Kind     := STK_EOF;
+  SrcToken.Val      := '';
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+  SrcToken.Line     := 0;
+  SrcToken.Col      := 0;
+  SrcLexNextLine;
+End;
+
+Procedure PhpLexNextToken;
+Label 901;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+  S        : TString;
+  Code     : Integer;
+  Nest     : Integer;
+Begin
+  SrcToken.IntVal   := 0;
+  SrcToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Skip whitespace }
+    While (Not SrcEOF) And (SrcColNo <= Length(SrcLine)) And
+          ((SrcLine[SrcColNo] = ' ') Or (SrcLine[SrcColNo] = #9)) Do
+      Inc(SrcColNo);
+
+    If SrcEOF Then
+    Begin
+      SrcToken.Kind := STK_EOF;
+      SrcToken.Val  := '';
+      Exit;
+    End;
+
+    If SrcColNo > Length(SrcLine) Then
+    Begin
+      SrcLexNextLine;
+      If SrcEOF Then
+      Begin
+        SrcToken.Kind := STK_EOF;
+        SrcToken.Val  := '';
+        Exit;
+      End;
+      Continue;
+    End;
+
+    Ch := SrcLine[SrcColNo];
+    SrcToken.Line := SrcLineNo;
+    SrcToken.Col  := SrcColNo;
+
+    { Single-line comments: // and # }
+    If ((Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '/')) Or (Ch = '#') Then
+    Begin
+      SrcColNo := Length(SrcLine) + 1;
+      Continue;
+    End;
+
+    { Multi-line comments: /* ... */ }
+    If (Ch = '/') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      Inc(SrcColNo, 2);
+      While Not SrcEOF Do
+      Begin
+        While SrcColNo <= Length(SrcLine) Do
+        Begin
+          If (SrcLine[SrcColNo] = '*') And
+             (SrcColNo < Length(SrcLine)) And
+             (SrcLine[SrcColNo + 1] = '/') Then
+          Begin
+            Inc(SrcColNo, 2);
+            Goto 901;
+          End;
+          Inc(SrcColNo);
+        End;
+        SrcLexNextLine;
+      End;
+901:
+      Continue;
+    End;
+
+    { PHP open/close tags: treat as operators }
+    If (Ch = '<') And (SrcColNo + 3 <= Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '?') Then
+    Begin
+      S := '';
+      If (SrcColNo + 4 <= Length(SrcLine)) And
+         ((SrcLine[SrcColNo + 2] = 'p') Or (SrcLine[SrcColNo + 2] = 'P')) And
+         ((SrcLine[SrcColNo + 3] = 'h') Or (SrcLine[SrcColNo + 3] = 'H')) And
+         ((SrcLine[SrcColNo + 4] = 'p') Or (SrcLine[SrcColNo + 4] = 'P')) Then
+      Begin
+        S := '<?php';
+        Inc(SrcColNo, 5);
+      End
+      Else If SrcLine[SrcColNo + 1] = '?' Then
+      Begin
+        S := '<?';
+        Inc(SrcColNo, 2);
+      End;
+      If S <> '' Then
+      Begin
+        SrcToken.Kind := STK_OP;
+        SrcToken.Val  := S;
+        Inc(SrcTokenCount);
+        Exit;
+      End;
+    End;
+
+    If (Ch = '?') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '>') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := '?>';
+      Inc(SrcColNo, 2);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Variables: $identifier }
+    If Ch = '$' Then
+    Begin
+      S := '$';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            PhpIsAlNum(SrcLine[SrcColNo]) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      SrcToken.Kind := STK_IDENT;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Identifiers and keywords }
+    If PhpIsAlpha(Ch) Then
+    Begin
+      S := '';
+      While (SrcColNo <= Length(SrcLine)) And
+            PhpIsAlNum(SrcLine[SrcColNo]) Do
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If IsPhpKeyword(S) Then
+        SrcToken.Kind := STK_KEYWORD
+      Else
+        SrcToken.Kind := STK_IDENT;
+      SrcToken.Val := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Numeric literals }
+    If PhpIsDigit(Ch) Then
+    Begin
+      S := '';
+      { Hex 0x, binary 0b, octal 0o }
+      If (Ch = '0') And (SrcColNo < Length(SrcLine)) Then
+      Begin
+        If (SrcLine[SrcColNo + 1] = 'x') Or (SrcLine[SrcColNo + 1] = 'X') Then
+        Begin
+          S := '0x';
+          Inc(SrcColNo, 2);
+          While (SrcColNo <= Length(SrcLine)) And
+                (((SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '9')) Or
+                 ((SrcLine[SrcColNo] >= 'a') And (SrcLine[SrcColNo] <= 'f')) Or
+                 ((SrcLine[SrcColNo] >= 'A') And (SrcLine[SrcColNo] <= 'F')) Or
+                 (SrcLine[SrcColNo] = '_')) Do
+          Begin
+            If SrcLine[SrcColNo] <> '_' Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          SrcToken.Kind := STK_INTEGER;
+          SrcToken.Val  := S;
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (SrcLine[SrcColNo + 1] = 'b') Or (SrcLine[SrcColNo + 1] = 'B') Then
+        Begin
+          S := '0b';
+          Inc(SrcColNo, 2);
+          While (SrcColNo <= Length(SrcLine)) And
+                ((SrcLine[SrcColNo] = '0') Or (SrcLine[SrcColNo] = '1') Or
+                 (SrcLine[SrcColNo] = '_')) Do
+          Begin
+            If SrcLine[SrcColNo] <> '_' Then
+              S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          SrcToken.Kind := STK_INTEGER;
+          SrcToken.Val  := S;
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+        If (SrcLine[SrcColNo + 1] = 'o') Or (SrcLine[SrcColNo + 1] = 'O') Then
+        Begin
+          S := '0o';
+          Inc(SrcColNo, 2);
+          While (SrcColNo <= Length(SrcLine)) And
+                ((SrcLine[SrcColNo] >= '0') And (SrcLine[SrcColNo] <= '7')) Do
+          Begin
+            S := S + SrcLine[SrcColNo];
+            Inc(SrcColNo);
+          End;
+          SrcToken.Kind := STK_INTEGER;
+          SrcToken.Val  := S;
+          Inc(SrcTokenCount);
+          Exit;
+        End;
+      End;
+      { Regular decimal number }
+      While (SrcColNo <= Length(SrcLine)) And
+            (PhpIsDigit(SrcLine[SrcColNo]) Or (SrcLine[SrcColNo] = '_')) Do
+      Begin
+        If SrcLine[SrcColNo] <> '_' Then
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      { Check for float }
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '.') And
+         (SrcColNo < Length(SrcLine)) And PhpIsDigit(SrcLine[SrcColNo + 1]) Then
+      Begin
+        S := S + '.';
+        Inc(SrcColNo);
+        While (SrcColNo <= Length(SrcLine)) And
+              PhpIsDigit(SrcLine[SrcColNo]) Do
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        SrcToken.Kind := STK_FLOAT;
+      End
+      Else
+        SrcToken.Kind := STK_INTEGER;
+      { Exponent }
+      If (SrcColNo <= Length(SrcLine)) And
+         ((SrcLine[SrcColNo] = 'e') Or (SrcLine[SrcColNo] = 'E')) Then
+      Begin
+        S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+        If (SrcColNo <= Length(SrcLine)) And
+           ((SrcLine[SrcColNo] = '+') Or (SrcLine[SrcColNo] = '-')) Then
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        While (SrcColNo <= Length(SrcLine)) And
+              PhpIsDigit(SrcLine[SrcColNo]) Do
+        Begin
+          S := S + SrcLine[SrcColNo];
+          Inc(SrcColNo);
+        End;
+        SrcToken.Kind := STK_FLOAT;
+      End;
+      SrcToken.Val := S;
+      If SrcToken.Kind = STK_INTEGER Then
+        Val(S, SrcToken.IntVal, Code);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Single-quoted strings }
+    If Ch = '''' Then
+    Begin
+      S := '';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] <> '''') Do
+      Begin
+        If (SrcLine[SrcColNo] = '\') And (SrcColNo < Length(SrcLine)) Then
+        Begin
+          Inc(SrcColNo);
+          S := S + SrcLine[SrcColNo];
+        End
+        Else
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '''') Then
+        Inc(SrcColNo);
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Double-quoted strings }
+    If Ch = '"' Then
+    Begin
+      S := '';
+      Inc(SrcColNo);
+      While (SrcColNo <= Length(SrcLine)) And
+            (SrcLine[SrcColNo] <> '"') Do
+      Begin
+        If (SrcLine[SrcColNo] = '\') And (SrcColNo < Length(SrcLine)) Then
+        Begin
+          Inc(SrcColNo);
+          S := S + SrcLine[SrcColNo];
+        End
+        Else
+          S := S + SrcLine[SrcColNo];
+        Inc(SrcColNo);
+      End;
+      If (SrcColNo <= Length(SrcLine)) And (SrcLine[SrcColNo] = '"') Then
+        Inc(SrcColNo);
+      SrcToken.Kind := STK_STRING;
+      SrcToken.Val  := S;
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Multi-character operators }
+    Scanning := False;
+
+    If (Ch = '=') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If SrcLine[SrcColNo + 1] = '=' Then
+      Begin
+        If (SrcColNo + 1 < Length(SrcLine)) And
+           (SrcLine[SrcColNo + 2] = '=') Then
+        Begin
+          SrcToken.Kind := STK_OP; SrcToken.Val := '===';
+          Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit;
+        End;
+        SrcToken.Kind := STK_OP; SrcToken.Val := '==';
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+      If SrcLine[SrcColNo + 1] = '>' Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '=>';
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+    End;
+
+    If (Ch = '!') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If SrcLine[SrcColNo + 1] = '=' Then
+      Begin
+        If (SrcColNo + 1 < Length(SrcLine)) And
+           (SrcLine[SrcColNo + 2] = '=') Then
+        Begin
+          SrcToken.Kind := STK_OP; SrcToken.Val := '!==';
+          Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit;
+        End;
+        SrcToken.Kind := STK_OP; SrcToken.Val := '!=';
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+    End;
+
+    If (Ch = '<') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If SrcLine[SrcColNo + 1] = '=' Then
+      Begin
+        If (SrcColNo + 1 < Length(SrcLine)) And
+           (SrcLine[SrcColNo + 2] = '>') Then
+        Begin
+          SrcToken.Kind := STK_OP; SrcToken.Val := '<=>';
+          Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit;
+        End;
+        SrcToken.Kind := STK_OP; SrcToken.Val := '<=';
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+      If SrcLine[SrcColNo + 1] = '<' Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '<<';
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+    End;
+
+    If (Ch = '>') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If SrcLine[SrcColNo + 1] = '=' Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '>=';
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+      If SrcLine[SrcColNo + 1] = '>' Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '>>';
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+    End;
+
+    If (Ch = '-') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If SrcLine[SrcColNo + 1] = '>' Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '->';
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+      If SrcLine[SrcColNo + 1] = '-' Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '--';
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+    End;
+
+    If (Ch = '+') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '+') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '++';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    If (Ch = '&') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '&') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '&&';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    If (Ch = '|') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '|') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '||';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    If (Ch = '?') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '?') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '??';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    If (Ch = '*') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = '*') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '**';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    If (Ch = '.') And (SrcColNo < Length(SrcLine)) Then
+    Begin
+      If (SrcLine[SrcColNo + 1] = '.') And (SrcColNo + 1 < Length(SrcLine)) And
+         (SrcLine[SrcColNo + 2] = '.') Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '...';
+        Inc(SrcColNo, 3); Inc(SrcTokenCount); Exit;
+      End;
+      If SrcLine[SrcColNo + 1] = '=' Then
+      Begin
+        SrcToken.Kind := STK_OP; SrcToken.Val := '.=';
+        Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+      End;
+    End;
+
+    If (Ch = ':') And (SrcColNo < Length(SrcLine)) And
+       (SrcLine[SrcColNo + 1] = ':') Then
+    Begin
+      SrcToken.Kind := STK_OP; SrcToken.Val := '::';
+      Inc(SrcColNo, 2); Inc(SrcTokenCount); Exit;
+    End;
+
+    { Single character operators }
+    If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+       (Ch = '%') Or (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or
+       (Ch = '!') Or (Ch = '&') Or (Ch = '|') Or (Ch = '^') Or
+       (Ch = '~') Or (Ch = '?') Or (Ch = ':') Or (Ch = '.') Or
+       (Ch = ',') Or (Ch = ';') Or (Ch = '(') Or (Ch = ')') Or
+       (Ch = '[') Or (Ch = ']') Or (Ch = '{') Or (Ch = '}') Or
+       (Ch = '@') Or (Ch = '\') Then
+    Begin
+      SrcToken.Kind := STK_OP;
+      SrcToken.Val  := Ch;
+      Inc(SrcColNo);
+      Inc(SrcTokenCount);
+      Exit;
+    End;
+
+    { Unknown character: skip }
+    Inc(SrcColNo);
+  End;
+End;
+
+{ ---- PHP Parser -------------------------------------------- }
+
+Var
+  PhpTokVal : TString;
+
+Procedure PhpConsume;
+Begin
+  PhpLexNextToken;
+End;
+
+Function PhpUpperVal : TString;
+Var R : TString;
+    I : Integer;
+Begin
+  R := '';
+  For I := 1 To Length(SrcToken.Val) Do
+    If (SrcToken.Val[I] >= 'a') And (SrcToken.Val[I] <= 'z') Then
+      R := R + Chr(Ord(SrcToken.Val[I]) - 32)
+    Else
+      R := R + SrcToken.Val[I];
+  PhpUpperVal := R;
+End;
+
+Function PhpLowerVal : TString;
+Var R : TString;
+    I : Integer;
+Begin
+  R := '';
+  For I := 1 To Length(SrcToken.Val) Do
+    If (SrcToken.Val[I] >= 'A') And (SrcToken.Val[I] <= 'Z') Then
+      R := R + Chr(Ord(SrcToken.Val[I]) + 32)
+    Else
+      R := R + SrcToken.Val[I];
+  PhpLowerVal := R;
+End;
+
+Procedure PhpSkipBlock; Forward;
+
+Procedure PhpSkipExpr;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_OP) And
+             ((SrcToken.Val = ';') Or (SrcToken.Val = ')') Or
+              (SrcToken.Val = ']') Or (SrcToken.Val = '}') Or
+              (SrcToken.Val = ',') Or (SrcToken.Val = '?>'))) Do
+  Begin
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+    Begin
+      PhpConsume;
+      PhpSkipExpr;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+        PhpConsume;
+    End
+    Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '[') Then
+    Begin
+      PhpConsume;
+      PhpSkipExpr;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ']') Then
+        PhpConsume;
+    End
+    Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      PhpSkipBlock
+    Else
+      PhpConsume;
+  End;
+End;
+
+Procedure PhpSkipBlock;
+Begin
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+  Begin
+    PhpConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}')) Do
+    Begin
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        PhpSkipBlock
+      Else
+        PhpConsume;
+    End;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+      PhpConsume;
+  End;
+End;
+
+Procedure PhpSkipToSemicolon;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ';')) Do
+  Begin
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      PhpSkipBlock
+    Else
+      PhpConsume;
+  End;
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+    PhpConsume;
+End;
+
+Procedure PhpParseClassBody(Parent : Integer); Forward;
+Procedure PhpParseStatementSeq(Parent : Integer); Forward;
+
+Procedure PhpParseFunction(Parent : Integer; IsMethod : Boolean);
+Var N    : Integer;
+    Name : TString;
+Begin
+  { consume 'function' }
+  PhpConsume;
+  Name := '';
+  { optional & for reference return }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '&') Then
+    PhpConsume;
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    Name := SrcToken.Val;
+    PhpConsume;
+  End;
+  If IsMethod Then
+    N := SrcNewNode(SNK_PHP_METHOD)
+  Else
+    N := SrcNewNode(SNK_PHP_FUNCTION);
+  SrcNodes[N].Name := Name;
+  SrcAppendToList(SrcNodes[Parent].Left, N);
+  { skip parameter list }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+  Begin
+    PhpConsume;
+    While (SrcToken.Kind <> STK_EOF) And
+          Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = ')')) Do
+      PhpConsume;
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+      PhpConsume;
+  End;
+  { optional return type : Type }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+  Begin
+    PhpConsume;
+    { skip type annotation }
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '?') Then
+      PhpConsume;
+    While (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+          ((SrcToken.Kind = STK_OP) And ((SrcToken.Val = '\') Or (SrcToken.Val = '|'))) Do
+      PhpConsume;
+  End;
+  { function body or abstract ; }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+  Begin
+    PhpConsume;
+    PhpParseStatementSeq(N);
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+      PhpConsume;
+  End
+  Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+    PhpConsume;
+End;
+
+Procedure PhpParseClass(Parent : Integer);
+Var N    : Integer;
+    UV   : TString;
+    Name : TString;
+    Kind : TSrcNodeKind;
+Begin
+  UV := PhpLowerVal;
+  If UV = 'interface' Then
+    Kind := SNK_PHP_INTERFACE
+  Else If UV = 'trait' Then
+    Kind := SNK_PHP_TRAIT
+  Else If UV = 'enum' Then
+    Kind := SNK_PHP_CLASS
+  Else
+    Kind := SNK_PHP_CLASS;
+  PhpConsume;  { consume class/interface/trait/enum keyword }
+  Name := '';
+  If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+  Begin
+    Name := SrcToken.Val;
+    PhpConsume;
+  End;
+  N := SrcNewNode(Kind);
+  SrcNodes[N].Name := Name;
+  SrcAppendToList(SrcNodes[Parent].Left, N);
+  { skip extends/implements }
+  UV := PhpLowerVal;
+  While (SrcToken.Kind = STK_KEYWORD) And
+        ((UV = 'extends') Or (UV = 'implements')) Do
+  Begin
+    PhpConsume;
+    While (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+          ((SrcToken.Kind = STK_OP) And ((SrcToken.Val = '\') Or (SrcToken.Val = ','))) Do
+      PhpConsume;
+    UV := PhpLowerVal;
+  End;
+  { class body }
+  If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+  Begin
+    PhpConsume;
+    PhpParseClassBody(N);
+    If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+      PhpConsume;
+  End;
+End;
+
+Procedure PhpParseClassBody(Parent : Integer);
+Var UV   : TString;
+    N    : Integer;
+    Name : TString;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '}')) Do
+  Begin
+    UV := PhpLowerVal;
+    { Skip visibility/modifier keywords }
+    While (SrcToken.Kind = STK_KEYWORD) And
+          ((UV = 'public') Or (UV = 'protected') Or (UV = 'private') Or
+           (UV = 'static') Or (UV = 'abstract') Or (UV = 'final') Or
+           (UV = 'readonly')) Do
+    Begin
+      PhpConsume;
+      UV := PhpLowerVal;
+    End;
+    If SrcToken.Kind = STK_EOF Then Exit;
+    UV := PhpLowerVal;
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'function') Then
+      PhpParseFunction(Parent, True)
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'const') Then
+    Begin
+      PhpConsume;
+      Name := '';
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        Name := SrcToken.Val;
+        PhpConsume;
+      End;
+      N := SrcNewNode(SNK_PHP_CONST_DECL);
+      SrcNodes[N].Name := Name;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PhpSkipToSemicolon;
+    End
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'use') Then
+    Begin
+      { trait use }
+      PhpConsume;
+      N := SrcNewNode(SNK_PHP_USE);
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 ((SrcToken.Val = ';') Or (SrcToken.Val = '{'))) Do
+        PhpConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        PhpSkipBlock
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        PhpConsume;
+    End
+    Else If (SrcToken.Kind = STK_IDENT) And (SrcToken.Val[1] = '$') Then
+    Begin
+      { property declaration }
+      Name := SrcToken.Val;
+      PhpConsume;
+      N := SrcNewNode(SNK_PHP_PROPERTY);
+      SrcNodes[N].Name := Name;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PhpSkipToSemicolon;
+    End
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'var') Then
+    Begin
+      PhpConsume;
+      Name := '';
+      If (SrcToken.Kind = STK_IDENT) Then
+      Begin
+        Name := SrcToken.Val;
+        PhpConsume;
+      End;
+      N := SrcNewNode(SNK_PHP_PROPERTY);
+      SrcNodes[N].Name := Name;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PhpSkipToSemicolon;
+    End
+    Else
+    Begin
+      { skip type hints or other tokens before property }
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+         (SrcToken.Kind = STK_OP) Then
+      Begin
+        PhpConsume;
+        { check if next is a property $var }
+        If (SrcToken.Kind = STK_IDENT) And (Length(SrcToken.Val) > 0) And
+           (SrcToken.Val[1] = '$') Then
+        Begin
+          Name := SrcToken.Val;
+          PhpConsume;
+          N := SrcNewNode(SNK_PHP_PROPERTY);
+          SrcNodes[N].Name := Name;
+          SrcAppendToList(SrcNodes[Parent].Left, N);
+          PhpSkipToSemicolon;
+        End
+        Else
+          PhpSkipToSemicolon;
+      End
+      Else
+        PhpConsume;
+    End;
+  End;
+End;
+
+Procedure PhpParseStatementSeq(Parent : Integer);
+Var UV   : TString;
+    N    : Integer;
+    Name : TString;
+Begin
+  While (SrcToken.Kind <> STK_EOF) And
+        Not ((SrcToken.Kind = STK_OP) And
+             ((SrcToken.Val = '}') Or (SrcToken.Val = '?>'))) Do
+  Begin
+    UV := PhpLowerVal;
+
+    If (SrcToken.Kind = STK_KEYWORD) And (UV = 'if') Then
+    Begin
+      N := SrcNewNode(SNK_PHP_IF);
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PhpConsume;
+      { condition }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        PhpConsume;
+        PhpSkipExpr;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+          PhpConsume;
+      End;
+      { body }
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PhpConsume;
+        PhpParseStatementSeq(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PhpConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+      Begin
+        { alternative syntax if: ... endif; }
+        PhpConsume;
+        PhpParseStatementSeq(N);
+        UV := PhpLowerVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'endif') Then
+          PhpConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          PhpConsume;
+      End
+      Else
+        PhpSkipToSemicolon;
+      { elseif / else }
+      UV := PhpLowerVal;
+      While (SrcToken.Kind = STK_KEYWORD) And (UV = 'elseif') Do
+      Begin
+        PhpConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        Begin
+          PhpConsume;
+          PhpSkipExpr;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+            PhpConsume;
+        End;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        Begin
+          PhpConsume;
+          PhpParseStatementSeq(N);
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+            PhpConsume;
+        End
+        Else
+          PhpSkipToSemicolon;
+        UV := PhpLowerVal;
+      End;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'else') Then
+      Begin
+        PhpConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        Begin
+          PhpConsume;
+          PhpParseStatementSeq(N);
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+            PhpConsume;
+        End
+        Else
+          PhpSkipToSemicolon;
+      End;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((UV = 'while') Or (UV = 'for') Or (UV = 'foreach') Or (UV = 'do')) Then
+    Begin
+      N := SrcNewNode(SNK_PHP_LOOP);
+      SrcNodes[N].Name := UV;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      If UV = 'do' Then
+      Begin
+        PhpConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        Begin
+          PhpConsume;
+          PhpParseStatementSeq(N);
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+            PhpConsume;
+        End;
+        UV := PhpLowerVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'while') Then
+        Begin
+          PhpConsume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+          Begin
+            PhpConsume;
+            PhpSkipExpr;
+            If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+              PhpConsume;
+          End;
+        End;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          PhpConsume;
+      End
+      Else
+      Begin
+        PhpConsume;
+        { condition/iteration }
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        Begin
+          PhpConsume;
+          PhpSkipExpr;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+            PhpConsume;
+        End;
+        { body }
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        Begin
+          PhpConsume;
+          PhpParseStatementSeq(N);
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+            PhpConsume;
+        End
+        Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+        Begin
+          PhpConsume;
+          PhpParseStatementSeq(N);
+          UV := PhpLowerVal;
+          If (SrcToken.Kind = STK_KEYWORD) And
+             ((UV = 'endwhile') Or (UV = 'endfor') Or (UV = 'endforeach')) Then
+            PhpConsume;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+            PhpConsume;
+        End
+        Else
+          PhpSkipToSemicolon;
+      End;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'switch') Then
+    Begin
+      N := SrcNewNode(SNK_PHP_SWITCH);
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PhpConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        PhpConsume;
+        PhpSkipExpr;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+          PhpConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PhpConsume;
+        PhpParseStatementSeq(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PhpConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ':') Then
+      Begin
+        PhpConsume;
+        PhpParseStatementSeq(N);
+        UV := PhpLowerVal;
+        If (SrcToken.Kind = STK_KEYWORD) And (UV = 'endswitch') Then
+          PhpConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+          PhpConsume;
+      End;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'try') Then
+    Begin
+      N := SrcNewNode(SNK_PHP_TRY);
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PhpConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PhpConsume;
+        PhpParseStatementSeq(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PhpConsume;
+      End;
+      UV := PhpLowerVal;
+      While (SrcToken.Kind = STK_KEYWORD) And (UV = 'catch') Do
+      Begin
+        PhpConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+        Begin
+          PhpConsume;
+          PhpSkipExpr;
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+            PhpConsume;
+        End;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        Begin
+          PhpConsume;
+          PhpParseStatementSeq(N);
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+            PhpConsume;
+        End;
+        UV := PhpLowerVal;
+      End;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'finally') Then
+      Begin
+        PhpConsume;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+        Begin
+          PhpConsume;
+          PhpParseStatementSeq(N);
+          If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+            PhpConsume;
+        End;
+      End;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'function') Then
+      PhpParseFunction(Parent, False)
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((UV = 'class') Or (UV = 'interface') Or (UV = 'trait') Or
+             (UV = 'enum')) Then
+      PhpParseClass(Parent)
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'namespace') Then
+    Begin
+      PhpConsume;
+      Name := '';
+      While (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+            ((SrcToken.Kind = STK_OP) And (SrcToken.Val = '\')) Do
+      Begin
+        Name := Name + SrcToken.Val;
+        PhpConsume;
+      End;
+      N := SrcNewNode(SNK_PHP_NAMESPACE);
+      SrcNodes[N].Name := Name;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PhpConsume;
+        PhpParseStatementSeq(N);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PhpConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        PhpConsume;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'use') Then
+    Begin
+      PhpConsume;
+      Name := '';
+      While (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Or
+            ((SrcToken.Kind = STK_OP) And ((SrcToken.Val = '\') Or (SrcToken.Val = ','))) Do
+      Begin
+        Name := Name + SrcToken.Val;
+        PhpConsume;
+      End;
+      N := SrcNewNode(SNK_PHP_USE);
+      SrcNodes[N].Name := Name;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        PhpConsume;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((UV = 'return') Or (UV = 'yield') Or (UV = 'yield_from')) Then
+    Begin
+      N := SrcNewNode(SNK_PHP_RETURN);
+      SrcNodes[N].Name := UV;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PhpConsume;
+      PhpSkipToSemicolon;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((UV = 'echo') Or (UV = 'print')) Then
+    Begin
+      N := SrcNewNode(SNK_PHP_ECHO);
+      SrcNodes[N].Name := UV;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PhpConsume;
+      PhpSkipToSemicolon;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((UV = 'include') Or (UV = 'include_once') Or
+             (UV = 'require') Or (UV = 'require_once')) Then
+    Begin
+      PhpConsume;
+      PhpSkipToSemicolon;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'abstract') Then
+    Begin
+      PhpConsume;
+      UV := PhpLowerVal;
+      If (SrcToken.Kind = STK_KEYWORD) And
+         ((UV = 'class') Or (UV = 'interface') Or (UV = 'trait')) Then
+        PhpParseClass(Parent)
+      Else
+        PhpSkipToSemicolon;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'final') Then
+    Begin
+      PhpConsume;
+      UV := PhpLowerVal;
+      If (SrcToken.Kind = STK_KEYWORD) And (UV = 'class') Then
+        PhpParseClass(Parent)
+      Else
+        PhpSkipToSemicolon;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((UV = 'case') Or (UV = 'default')) Then
+    Begin
+      PhpConsume;
+      { skip case expression }
+      While (SrcToken.Kind <> STK_EOF) And
+            Not ((SrcToken.Kind = STK_OP) And
+                 ((SrcToken.Val = ':') Or (SrcToken.Val = ';'))) Do
+        PhpConsume;
+      If (SrcToken.Kind = STK_OP) And
+         ((SrcToken.Val = ':') Or (SrcToken.Val = ';')) Then
+        PhpConsume;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'const') Then
+    Begin
+      PhpConsume;
+      Name := '';
+      If (SrcToken.Kind = STK_IDENT) Or (SrcToken.Kind = STK_KEYWORD) Then
+      Begin
+        Name := SrcToken.Val;
+        PhpConsume;
+      End;
+      N := SrcNewNode(SNK_PHP_CONST_DECL);
+      SrcNodes[N].Name := Name;
+      SrcAppendToList(SrcNodes[Parent].Left, N);
+      PhpSkipToSemicolon;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And (UV = 'declare') Then
+    Begin
+      PhpConsume;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '(') Then
+      Begin
+        PhpConsume;
+        PhpSkipExpr;
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ')') Then
+          PhpConsume;
+      End;
+      If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      Begin
+        PhpConsume;
+        PhpParseStatementSeq(Parent);
+        If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '}') Then
+          PhpConsume;
+      End
+      Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+        PhpConsume;
+    End
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((UV = 'break') Or (UV = 'continue') Or (UV = 'goto') Or
+             (UV = 'throw') Or (UV = 'unset') Or (UV = 'global') Or
+             (UV = 'static')) Then
+    Begin
+      PhpConsume;
+      PhpSkipToSemicolon;
+    End
+
+    Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = ';') Then
+      PhpConsume
+
+    Else If (SrcToken.Kind = STK_OP) And (SrcToken.Val = '{') Then
+      PhpSkipBlock
+
+    Else If (SrcToken.Kind = STK_OP) And
+            ((SrcToken.Val = '<?php') Or (SrcToken.Val = '<?')) Then
+      PhpConsume
+
+    Else If (SrcToken.Kind = STK_KEYWORD) And
+            ((UV = 'endif') Or (UV = 'endwhile') Or (UV = 'endfor') Or
+             (UV = 'endforeach') Or (UV = 'endswitch') Or
+             (UV = 'enddeclare')) Then
+    Begin
+      { These end alternative syntax blocks, return to caller }
+      Exit;
+    End
+
+    Else
+    Begin
+      { expression statement or other }
+      PhpSkipToSemicolon;
+    End;
+  End;
+End;
+
+Function PhpParseTranslationUnit : Integer;
+Var Root : Integer;
+Begin
+  PhpConsume;
+  Root := SrcNewNode(SNK_PHP_FILE);
+
+  { skip <?php open tag if present }
+  If (SrcToken.Kind = STK_OP) And
+     ((SrcToken.Val = '<?php') Or (SrcToken.Val = '<?')) Then
+    PhpConsume;
+
+  PhpParseStatementSeq(Root);
+
+  PhpParseTranslationUnit := Root;
+End;
+
+{ ---- IsPhpSource ------------------------------------------- }
+
+Function IsPhpSource(Const FName : TString) : Boolean;
+Begin
+  IsPhpSource := StrEndsWith(FName, '.php') Or
+                 StrEndsWith(FName, '.phtml');
+End;
+
 { ---- AddSrcFile : ajouter un fichier a la liste ------------ }
 
 Procedure AddSrcFile(Const FName : TString);
@@ -28046,7 +29365,8 @@ Begin
            ((Opts.Language = 'swift') And IsSwiftSource(SR.Name)) Or
            ((Opts.Language = 'kotlin') And IsKotlinSource(SR.Name)) Or
             ((Opts.Language = 'oberon') And IsOberonSource(SR.Name)) Or
-            ((Opts.Language = 'ada') And IsAdaSource(SR.Name)) Then
+            ((Opts.Language = 'ada') And IsAdaSource(SR.Name)) Or
+             ((Opts.Language = 'php') And IsPhpSource(SR.Name)) Then
         AddSrcFile(Prefix + SR.Name);
     End;
     FindNext(SR);
@@ -28191,6 +29511,12 @@ Begin
       AdaLexInit;
       SrcASTInit;
       SrcRootNode := AdaParseTranslationUnit;
+    End
+    Else If Opts.Language = 'php' Then
+    Begin
+      PhpLexInit;
+      SrcASTInit;
+      SrcRootNode := PhpParseTranslationUnit;
     End
     Else
     Begin
