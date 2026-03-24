@@ -178,7 +178,7 @@
               WHEN NOT MATCHED BY SOURCE THEN DELETE
             OUTPUT clause pour INSERT/UPDATE/DELETE/MERGE
 
-  TODO 12 - PARSEUR DDL (CREATE / ALTER / DROP)
+  TODO 12 - PARSEUR DDL (CREATE / ALTER / DROP) [IMPLEMENTE]
             CREATE TABLE nom (col type [contraintes], ...)
               Contraintes : PRIMARY KEY, UNIQUE, NOT NULL,
               DEFAULT, CHECK, FOREIGN KEY REFERENCES,
@@ -912,7 +912,44 @@ Const
   KW_OUTPUT       = 102;
   KW_USING        = 103;
 
-  KW_COUNT        = 103;     { nombre total de mots-cles definis  }
+  { -- DDL (TODO 12) -- }
+  KW_COLUMN       = 104;
+  KW_PRIMARY      = 105;
+  KW_KEY          = 106;
+  KW_FOREIGN      = 107;
+  KW_REFERENCES   = 108;
+  KW_UNIQUE       = 109;
+  KW_CLUSTERED    = 110;
+  KW_NONCLUSTERED = 111;
+  KW_IDENTITY     = 112;
+  KW_CHECK        = 113;
+  KW_CONSTRAINT   = 114;
+  KW_DEFAULT      = 115;
+  KW_ADD          = 116;
+  KW_INCLUDE      = 117;
+  KW_REBUILD      = 118;
+  KW_REORGANIZE   = 119;
+  KW_DISABLE      = 120;
+  KW_ENABLE       = 121;
+  KW_SCHEMABINDING = 122;
+  KW_AFTER        = 123;
+  KW_INSTEAD      = 124;
+  KW_FOR          = 125;
+  KW_RETURNS      = 126;
+  KW_ASC          = 127;
+  KW_DESC         = 128;
+  KW_OF           = 129;
+  KW_OPTION       = 130;
+  KW_FILLFACTOR   = 131;
+  KW_PAD_INDEX    = 132;
+  KW_NORECOMPUTE  = 133;
+  KW_NO           = 134;
+  KW_LOGIN        = 135;
+  KW_USER         = 136;
+  KW_ROLE         = 137;
+  KW_MEMBER       = 138;
+
+  KW_COUNT        = 138;     { nombre total de mots-cles definis  }
 
   { ---- Constantes AST noeud parseur SQL (TODO 09) ------------- }
   { Types de noeuds dans l arbre d expression }
@@ -993,6 +1030,34 @@ Const
   ND_OUTPUT_ITEM  = 70;      { item dans la clause OUTPUT            }
   ND_DEFAULT_VALUES = 71;    { DEFAULT VALUES                       }
   ND_EXEC_INSERT  = 72;      { INSERT ... EXEC procedure            }
+
+  { -- DDL nodes (TODO 12) -- }
+  ND_CREATE_TABLE = 73;      { CREATE TABLE                         }
+  ND_COL_DEF      = 74;      { colonne dans CREATE TABLE            }
+  ND_PK_CONSTRAINT = 75;     { PRIMARY KEY                          }
+  ND_FK_CONSTRAINT = 76;     { FOREIGN KEY REFERENCES               }
+  ND_UNIQUE_CONSTR = 77;     { UNIQUE                               }
+  ND_CHECK_CONSTR  = 78;     { CHECK (expression)                   }
+  ND_DEFAULT_CONSTR = 79;    { DEFAULT expression                   }
+  ND_IDENTITY_SPEC = 80;     { IDENTITY(seed,increment)             }
+  ND_TABLE_CONSTR  = 81;     { contrainte de table (niveau table)   }
+  ND_CREATE_INDEX  = 82;     { CREATE INDEX                         }
+  ND_INDEX_COL     = 83;     { colonne dans index (ASC/DESC)        }
+  ND_INCLUDE_COLS  = 84;     { INCLUDE (colonnes)                   }
+  ND_CREATE_VIEW   = 85;     { CREATE VIEW                          }
+  ND_CREATE_PROC   = 86;     { CREATE PROCEDURE                     }
+  ND_CREATE_FUNC   = 87;     { CREATE FUNCTION                      }
+  ND_CREATE_TRIGGER = 88;    { CREATE TRIGGER                       }
+  ND_CREATE_SCHEMA = 89;     { CREATE SCHEMA                        }
+  ND_CREATE_SEQ    = 90;     { CREATE SEQUENCE                      }
+  ND_CREATE_TYPE   = 91;     { CREATE TYPE                          }
+  ND_CREATE_DB     = 92;     { CREATE DATABASE                      }
+  ND_ALTER_TABLE   = 93;     { ALTER TABLE                          }
+  ND_ALTER_INDEX   = 94;     { ALTER INDEX                          }
+  ND_DROP_STMT     = 95;     { DROP TABLE/VIEW/INDEX/...            }
+  ND_PARAM_DEF     = 96;     { @param type dans proc/func           }
+  ND_BODY_BLOCK    = 97;     { BEGIN ... END bloc de corps          }
+  ND_WITH_OPTION   = 98;     { WITH (option = value)                }
 
   { Taille max du pool de noeuds AST }
   MAX_AST_NODES   = 1024;
@@ -4996,6 +5061,43 @@ Begin
   If U = 'OUTPUT'       Then Begin IsKeyword := KW_OUTPUT;      Exit; End;
   If U = 'USING'        Then Begin IsKeyword := KW_USING;       Exit; End;
 
+  { -- DDL (TODO 12) -- }
+  If U = 'COLUMN'       Then Begin IsKeyword := KW_COLUMN;       Exit; End;
+  If U = 'PRIMARY'      Then Begin IsKeyword := KW_PRIMARY;      Exit; End;
+  If U = 'KEY'          Then Begin IsKeyword := KW_KEY;          Exit; End;
+  If U = 'FOREIGN'      Then Begin IsKeyword := KW_FOREIGN;      Exit; End;
+  If U = 'REFERENCES'   Then Begin IsKeyword := KW_REFERENCES;   Exit; End;
+  If U = 'UNIQUE'       Then Begin IsKeyword := KW_UNIQUE;       Exit; End;
+  If U = 'CLUSTERED'    Then Begin IsKeyword := KW_CLUSTERED;    Exit; End;
+  If U = 'NONCLUSTERED' Then Begin IsKeyword := KW_NONCLUSTERED; Exit; End;
+  If U = 'IDENTITY'     Then Begin IsKeyword := KW_IDENTITY;     Exit; End;
+  If U = 'CHECK'        Then Begin IsKeyword := KW_CHECK;        Exit; End;
+  If U = 'CONSTRAINT'   Then Begin IsKeyword := KW_CONSTRAINT;   Exit; End;
+  If U = 'DEFAULT'      Then Begin IsKeyword := KW_DEFAULT;      Exit; End;
+  If U = 'ADD'          Then Begin IsKeyword := KW_ADD;          Exit; End;
+  If U = 'INCLUDE'      Then Begin IsKeyword := KW_INCLUDE;      Exit; End;
+  If U = 'REBUILD'      Then Begin IsKeyword := KW_REBUILD;      Exit; End;
+  If U = 'REORGANIZE'   Then Begin IsKeyword := KW_REORGANIZE;   Exit; End;
+  If U = 'DISABLE'      Then Begin IsKeyword := KW_DISABLE;      Exit; End;
+  If U = 'ENABLE'       Then Begin IsKeyword := KW_ENABLE;       Exit; End;
+  If U = 'SCHEMABINDING' Then Begin IsKeyword := KW_SCHEMABINDING; Exit; End;
+  If U = 'AFTER'        Then Begin IsKeyword := KW_AFTER;        Exit; End;
+  If U = 'INSTEAD'      Then Begin IsKeyword := KW_INSTEAD;      Exit; End;
+  If U = 'FOR'          Then Begin IsKeyword := KW_FOR;          Exit; End;
+  If U = 'RETURNS'      Then Begin IsKeyword := KW_RETURNS;      Exit; End;
+  If U = 'ASC'          Then Begin IsKeyword := KW_ASC;          Exit; End;
+  If U = 'DESC'         Then Begin IsKeyword := KW_DESC;         Exit; End;
+  If U = 'OF'           Then Begin IsKeyword := KW_OF;           Exit; End;
+  If U = 'OPTION'       Then Begin IsKeyword := KW_OPTION;       Exit; End;
+  If U = 'FILLFACTOR'   Then Begin IsKeyword := KW_FILLFACTOR;   Exit; End;
+  If U = 'PAD_INDEX'    Then Begin IsKeyword := KW_PAD_INDEX;    Exit; End;
+  If U = 'NORECOMPUTE'  Then Begin IsKeyword := KW_NORECOMPUTE;  Exit; End;
+  If U = 'NO'           Then Begin IsKeyword := KW_NO;           Exit; End;
+  If U = 'LOGIN'        Then Begin IsKeyword := KW_LOGIN;        Exit; End;
+  If U = 'USER'         Then Begin IsKeyword := KW_USER;         Exit; End;
+  If U = 'ROLE'         Then Begin IsKeyword := KW_ROLE;         Exit; End;
+  If U = 'MEMBER'       Then Begin IsKeyword := KW_MEMBER;       Exit; End;
+
   IsKeyword := 0;
 End;
 
@@ -5247,6 +5349,32 @@ Begin
     ND_OUTPUT_ITEM : NodeKindName := 'OUTPUT_ITEM';
     ND_DEFAULT_VALUES:NodeKindName:= 'DEFAULT_VALUES';
     ND_EXEC_INSERT : NodeKindName := 'EXEC_INSERT';
+    ND_CREATE_TABLE: NodeKindName := 'CREATE_TABLE';
+    ND_COL_DEF     : NodeKindName := 'COL_DEF';
+    ND_PK_CONSTRAINT: NodeKindName := 'PK_CONSTRAINT';
+    ND_FK_CONSTRAINT: NodeKindName := 'FK_CONSTRAINT';
+    ND_UNIQUE_CONSTR: NodeKindName := 'UNIQUE_CONSTR';
+    ND_CHECK_CONSTR : NodeKindName := 'CHECK_CONSTR';
+    ND_DEFAULT_CONSTR: NodeKindName := 'DEFAULT_CONSTR';
+    ND_IDENTITY_SPEC: NodeKindName := 'IDENTITY_SPEC';
+    ND_TABLE_CONSTR : NodeKindName := 'TABLE_CONSTR';
+    ND_CREATE_INDEX : NodeKindName := 'CREATE_INDEX';
+    ND_INDEX_COL    : NodeKindName := 'INDEX_COL';
+    ND_INCLUDE_COLS : NodeKindName := 'INCLUDE_COLS';
+    ND_CREATE_VIEW  : NodeKindName := 'CREATE_VIEW';
+    ND_CREATE_PROC  : NodeKindName := 'CREATE_PROC';
+    ND_CREATE_FUNC  : NodeKindName := 'CREATE_FUNC';
+    ND_CREATE_TRIGGER: NodeKindName := 'CREATE_TRIGGER';
+    ND_CREATE_SCHEMA : NodeKindName := 'CREATE_SCHEMA';
+    ND_CREATE_SEQ   : NodeKindName := 'CREATE_SEQ';
+    ND_CREATE_TYPE  : NodeKindName := 'CREATE_TYPE';
+    ND_CREATE_DB    : NodeKindName := 'CREATE_DB';
+    ND_ALTER_TABLE  : NodeKindName := 'ALTER_TABLE';
+    ND_ALTER_INDEX  : NodeKindName := 'ALTER_INDEX';
+    ND_DROP_STMT    : NodeKindName := 'DROP_STMT';
+    ND_PARAM_DEF    : NodeKindName := 'PARAM_DEF';
+    ND_BODY_BLOCK   : NodeKindName := 'BODY_BLOCK';
+    ND_WITH_OPTION  : NodeKindName := 'WITH_OPTION';
   Else
     NodeKindName := '?';
   End;
@@ -7979,6 +8107,1460 @@ Begin
   ParseMergeStmt := Mrg;
 End;
 
+{ ---- TODO 12 : Parseur DDL (CREATE / ALTER / DROP) ------------- }
+
+{ Helper : lire un nom d objet (potentiellement qualifie schema.nom) }
+Function ParseObjectName : Integer;
+Var
+  N    : Integer;
+  Name : TString;
+Begin
+  ParseObjectName := -1;
+  If Not ParseOk Then Exit;
+  If (LexCurTok.Kind <> TOK_IDENT) And (LexCurTok.Kind <> TOK_KEYWORD) And
+     (LexCurTok.Kind <> TOK_DELIM_IDENT) And
+     (LexCurTok.Kind <> TOK_TEMPOBJ) Then
+  Begin
+    ParseError('nom d''objet attendu');
+    Exit;
+  End;
+  Name := LexCurTok.Text;
+  N := NewNode(ND_IDENT, Name, LexCurTok.Line, LexCurTok.Col);
+  Advance;
+  While TokIs(TOK_DOT) And ParseOk Do
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+    Begin
+      Name := Name + '.' + LexCurTok.Text;
+      ASTPool[N].Text := Name;
+      Advance;
+    End
+    Else
+      Break;
+  End;
+  ParseObjectName := N;
+End;
+
+{ Helper : sauter un bloc BEGIN ... END (pour corps de proc/func/trigger) }
+Function ParseBodyBlock : Integer;
+Var
+  Blk   : Integer;
+  Depth : Integer;
+Begin
+  ParseBodyBlock := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_BEGIN) Then
+  Begin
+    ParseError('BEGIN attendu');
+    Exit;
+  End;
+  Blk := NewNode(ND_BODY_BLOCK, 'BEGIN...END', LexCurTok.Line,
+                 LexCurTok.Col);
+  Advance; { skip BEGIN }
+  Depth := 1;
+  While ParseOk And (Depth > 0) Do
+  Begin
+    If KwIs(KW_BEGIN) Then
+    Begin
+      Inc(Depth);
+      Advance;
+    End
+    Else If KwIs(KW_END) Then
+    Begin
+      Dec(Depth);
+      Advance;
+    End
+    Else If LexCurTok.Kind = TOK_EOF Then
+    Begin
+      ParseError('END attendu pour fermer le bloc BEGIN');
+      Break;
+    End
+    Else
+      Advance;
+  End;
+  ParseBodyBlock := Blk;
+End;
+
+{ Helper : parser les parametres d une proc/func (@p1 type, ...) }
+Function ParseParamList : Integer;
+Var
+  PList, P, T : Integer;
+Begin
+  ParseParamList := -1;
+  If Not ParseOk Then Exit;
+  PList := NewNode(ND_ARG_LIST, 'PARAMS', LexCurTok.Line, LexCurTok.Col);
+  { Parenthese ouvrante optionnelle }
+  If TokIs(TOK_LPAREN) Then
+    Advance;
+  While ParseOk And (LexCurTok.Kind = TOK_VARIABLE) Do
+  Begin
+    P := NewNode(ND_PARAM_DEF, LexCurTok.Text, LexCurTok.Line,
+                 LexCurTok.Col);
+    Advance; { skip @param }
+    { Type du parametre }
+    T := ParseTypeRef;
+    AddChild(P, T);
+    { Valeur par defaut optionnelle : = expr }
+    If TokIs(TOK_EQ) Then
+    Begin
+      Advance;
+      T := ParseSqlExpr;
+      AddChild(P, T);
+    End;
+    { OUTPUT optionnel }
+    If KwIs(KW_OUTPUT) Then
+      Advance;
+    AddChild(PList, P);
+    If TokIs(TOK_COMMA) Then
+      Advance
+    Else
+      Break;
+  End;
+  If TokIs(TOK_RPAREN) Then
+    Advance;
+  ParseParamList := PList;
+End;
+
+{ Helper : parser une colonne d index (nom [ASC|DESC]) }
+Function ParseIndexCol : Integer;
+Var
+  IC   : Integer;
+  Dir  : TString;
+Begin
+  ParseIndexCol := -1;
+  If Not ParseOk Then Exit;
+  If (LexCurTok.Kind <> TOK_IDENT) And (LexCurTok.Kind <> TOK_KEYWORD) And
+     (LexCurTok.Kind <> TOK_DELIM_IDENT) Then
+  Begin
+    ParseError('nom de colonne attendu dans l''index');
+    Exit;
+  End;
+  Dir := 'ASC';
+  IC := NewNode(ND_INDEX_COL, LexCurTok.Text, LexCurTok.Line,
+                LexCurTok.Col);
+  Advance;
+  If KwIs(KW_ASC) Then
+  Begin
+    Dir := 'ASC';
+    Advance;
+  End
+  Else If KwIs(KW_DESC) Then
+  Begin
+    Dir := 'DESC';
+    Advance;
+  End;
+  ASTPool[IC].Text := ASTPool[IC].Text + ' ' + Dir;
+  ParseIndexCol := IC;
+End;
+
+{ Helper : parser WITH (options) pour index }
+Function ParseWithOptions : Integer;
+Var
+  W, Opt : Integer;
+  OptName : TString;
+Begin
+  ParseWithOptions := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_WITH) Then Exit;
+  Advance; { skip WITH }
+  W := NewNode(ND_WITH_OPTION, 'WITH', LexCurTok.Line, LexCurTok.Col);
+  If TokIs(TOK_LPAREN) Then
+  Begin
+    Advance;
+    While ParseOk And Not TokIs(TOK_RPAREN) Do
+    Begin
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        OptName := LexCurTok.Text;
+        Advance;
+        If TokIs(TOK_EQ) Then
+        Begin
+          Advance;
+          OptName := OptName + '=' + LexCurTok.Text;
+          Advance;
+        End;
+        Opt := NewNode(ND_IDENT, OptName, LexCurTok.Line, LexCurTok.Col);
+        AddChild(W, Opt);
+      End
+      Else
+        Advance;
+      If TokIs(TOK_COMMA) Then
+        Advance;
+    End;
+    If TokIs(TOK_RPAREN) Then
+      Advance;
+  End;
+  ParseWithOptions := W;
+End;
+
+{ ---- CREATE TABLE ---------------------------------------------- }
+
+Function ParseColumnDef : Integer;
+Var
+  CD, T, E, N : Integer;
+  ColName     : TString;
+Begin
+  ParseColumnDef := -1;
+  If Not ParseOk Then Exit;
+
+  { Contrainte de niveau table ? }
+  If KwIs(KW_CONSTRAINT) Or KwIs(KW_PRIMARY) Or KwIs(KW_UNIQUE) Or
+     KwIs(KW_FOREIGN) Or KwIs(KW_CHECK) Then
+  Begin
+    CD := NewNode(ND_TABLE_CONSTR, '', LexCurTok.Line, LexCurTok.Col);
+    { CONSTRAINT nom optionnel }
+    If KwIs(KW_CONSTRAINT) Then
+    Begin
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+         (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+      Begin
+        ASTPool[CD].Text := LexCurTok.Text;
+        Advance;
+      End;
+    End;
+    If KwIs(KW_PRIMARY) Then
+    Begin
+      ASTPool[CD].Kind := ND_PK_CONSTRAINT;
+      Advance; { skip PRIMARY }
+      If KwIs(KW_KEY) Then
+        Advance; { skip KEY }
+      If KwIs(KW_CLUSTERED) Then
+        Advance
+      Else If KwIs(KW_NONCLUSTERED) Then
+        Advance;
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        While ParseOk And Not TokIs(TOK_RPAREN) Do
+        Begin
+          N := ParseIndexCol;
+          AddChild(CD, N);
+          If TokIs(TOK_COMMA) Then Advance;
+        End;
+        If TokIs(TOK_RPAREN) Then Advance;
+      End;
+    End
+    Else If KwIs(KW_UNIQUE) Then
+    Begin
+      ASTPool[CD].Kind := ND_UNIQUE_CONSTR;
+      Advance; { skip UNIQUE }
+      If KwIs(KW_CLUSTERED) Then
+        Advance
+      Else If KwIs(KW_NONCLUSTERED) Then
+        Advance;
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        While ParseOk And Not TokIs(TOK_RPAREN) Do
+        Begin
+          N := ParseIndexCol;
+          AddChild(CD, N);
+          If TokIs(TOK_COMMA) Then Advance;
+        End;
+        If TokIs(TOK_RPAREN) Then Advance;
+      End;
+    End
+    Else If KwIs(KW_FOREIGN) Then
+    Begin
+      ASTPool[CD].Kind := ND_FK_CONSTRAINT;
+      Advance; { skip FOREIGN }
+      If KwIs(KW_KEY) Then Advance;
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        While ParseOk And Not TokIs(TOK_RPAREN) Do
+        Begin
+          If (LexCurTok.Kind = TOK_IDENT) Or
+             (LexCurTok.Kind = TOK_KEYWORD) Or
+             (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+          Begin
+            N := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line,
+                         LexCurTok.Col);
+            AddChild(CD, N);
+            Advance;
+          End;
+          If TokIs(TOK_COMMA) Then Advance;
+        End;
+        If TokIs(TOK_RPAREN) Then Advance;
+      End;
+      If KwIs(KW_REFERENCES) Then
+      Begin
+        Advance;
+        N := ParseObjectName;
+        AddChild(CD, N);
+        If TokIs(TOK_LPAREN) Then
+        Begin
+          Advance;
+          While ParseOk And Not TokIs(TOK_RPAREN) Do
+          Begin
+            If (LexCurTok.Kind = TOK_IDENT) Or
+               (LexCurTok.Kind = TOK_KEYWORD) Or
+               (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+            Begin
+              N := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line,
+                           LexCurTok.Col);
+              AddChild(CD, N);
+              Advance;
+            End;
+            If TokIs(TOK_COMMA) Then Advance;
+          End;
+          If TokIs(TOK_RPAREN) Then Advance;
+        End;
+      End;
+    End
+    Else If KwIs(KW_CHECK) Then
+    Begin
+      ASTPool[CD].Kind := ND_CHECK_CONSTR;
+      Advance; { skip CHECK }
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        E := ParseSqlExpr;
+        AddChild(CD, E);
+        If TokIs(TOK_RPAREN) Then Advance;
+      End;
+    End;
+    ParseColumnDef := CD;
+    Exit;
+  End;
+
+  { Colonne normale : nom type [contraintes de colonne] }
+  If (LexCurTok.Kind <> TOK_IDENT) And (LexCurTok.Kind <> TOK_KEYWORD) And
+     (LexCurTok.Kind <> TOK_DELIM_IDENT) Then
+  Begin
+    ParseError('nom de colonne attendu');
+    Exit;
+  End;
+
+  ColName := LexCurTok.Text;
+  CD := NewNode(ND_COL_DEF, ColName, LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip column name }
+
+  { Type de donnees }
+  T := ParseTypeRef;
+  AddChild(CD, T);
+
+  { Contraintes de colonne inline }
+  While ParseOk And Not TokIs(TOK_COMMA) And Not TokIs(TOK_RPAREN) And
+        (LexCurTok.Kind <> TOK_EOF) Do
+  Begin
+    If KwIs(KW_CONSTRAINT) Then
+    Begin
+      Advance; { skip CONSTRAINT }
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+         (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+        Advance; { skip constraint name }
+    End;
+
+    If KwIs(KW_NOT) Then
+    Begin
+      Advance; { skip NOT }
+      If KwIs(KW_NULL) Then
+      Begin
+        N := NewNode(ND_IDENT, 'NOT NULL', LexCurTok.Line, LexCurTok.Col);
+        AddChild(CD, N);
+        Advance;
+      End;
+    End
+    Else If KwIs(KW_NULL) Then
+    Begin
+      N := NewNode(ND_IDENT, 'NULL', LexCurTok.Line, LexCurTok.Col);
+      AddChild(CD, N);
+      Advance;
+    End
+    Else If KwIs(KW_PRIMARY) Then
+    Begin
+      N := NewNode(ND_PK_CONSTRAINT, 'PRIMARY KEY', LexCurTok.Line,
+                   LexCurTok.Col);
+      Advance; { skip PRIMARY }
+      If KwIs(KW_KEY) Then Advance; { skip KEY }
+      If KwIs(KW_CLUSTERED) Then
+        Advance
+      Else If KwIs(KW_NONCLUSTERED) Then
+        Advance;
+      AddChild(CD, N);
+    End
+    Else If KwIs(KW_UNIQUE) Then
+    Begin
+      N := NewNode(ND_UNIQUE_CONSTR, 'UNIQUE', LexCurTok.Line,
+                   LexCurTok.Col);
+      Advance;
+      If KwIs(KW_CLUSTERED) Then
+        Advance
+      Else If KwIs(KW_NONCLUSTERED) Then
+        Advance;
+      AddChild(CD, N);
+    End
+    Else If KwIs(KW_DEFAULT) Then
+    Begin
+      Advance; { skip DEFAULT }
+      N := NewNode(ND_DEFAULT_CONSTR, 'DEFAULT', LexCurTok.Line,
+                   LexCurTok.Col);
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        E := ParseSqlExpr;
+        AddChild(N, E);
+        If TokIs(TOK_RPAREN) Then Advance;
+      End
+      Else
+      Begin
+        E := ParseSqlExpr;
+        AddChild(N, E);
+      End;
+      AddChild(CD, N);
+    End
+    Else If KwIs(KW_CHECK) Then
+    Begin
+      N := NewNode(ND_CHECK_CONSTR, 'CHECK', LexCurTok.Line,
+                   LexCurTok.Col);
+      Advance; { skip CHECK }
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        E := ParseSqlExpr;
+        AddChild(N, E);
+        If TokIs(TOK_RPAREN) Then Advance;
+      End;
+      AddChild(CD, N);
+    End
+    Else If KwIs(KW_REFERENCES) Then
+    Begin
+      N := NewNode(ND_FK_CONSTRAINT, 'REFERENCES', LexCurTok.Line,
+                   LexCurTok.Col);
+      Advance; { skip REFERENCES }
+      E := ParseObjectName;
+      AddChild(N, E);
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        While ParseOk And Not TokIs(TOK_RPAREN) Do
+        Begin
+          If (LexCurTok.Kind = TOK_IDENT) Or
+             (LexCurTok.Kind = TOK_KEYWORD) Or
+             (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+          Begin
+            E := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line,
+                         LexCurTok.Col);
+            AddChild(N, E);
+            Advance;
+          End;
+          If TokIs(TOK_COMMA) Then Advance;
+        End;
+        If TokIs(TOK_RPAREN) Then Advance;
+      End;
+      AddChild(CD, N);
+    End
+    Else If KwIs(KW_IDENTITY) Then
+    Begin
+      N := NewNode(ND_IDENTITY_SPEC, 'IDENTITY', LexCurTok.Line,
+                   LexCurTok.Col);
+      Advance; { skip IDENTITY }
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        E := ParseSqlExpr; { seed }
+        AddChild(N, E);
+        If TokIs(TOK_COMMA) Then
+        Begin
+          Advance;
+          E := ParseSqlExpr; { increment }
+          AddChild(N, E);
+        End;
+        If TokIs(TOK_RPAREN) Then Advance;
+      End;
+      AddChild(CD, N);
+    End
+    Else If KwIs(KW_COLLATE) Then
+    Begin
+      Advance; { skip COLLATE }
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        N := NewNode(ND_COLLATE, LexCurTok.Text, LexCurTok.Line,
+                     LexCurTok.Col);
+        AddChild(CD, N);
+        Advance;
+      End;
+    End
+    Else
+      Break;
+  End;
+
+  ParseColumnDef := CD;
+End;
+
+Function ParseCreateTable : Integer;
+Var
+  CT, N : Integer;
+Begin
+  ParseCreateTable := -1;
+  If Not ParseOk Then Exit;
+
+  CT := NewNode(ND_CREATE_TABLE, 'CREATE TABLE', LexCurTok.Line,
+                LexCurTok.Col);
+
+  { Nom de la table }
+  N := ParseObjectName;
+  AddChild(CT, N);
+
+  { Liste de colonnes }
+  If Not TokIs(TOK_LPAREN) Then
+  Begin
+    ParseError('( attendu apres nom de table dans CREATE TABLE');
+    ParseCreateTable := CT;
+    Exit;
+  End;
+  Advance; { skip ( }
+
+  While ParseOk And Not TokIs(TOK_RPAREN) And
+        (LexCurTok.Kind <> TOK_EOF) Do
+  Begin
+    N := ParseColumnDef;
+    AddChild(CT, N);
+    If TokIs(TOK_COMMA) Then
+      Advance
+    Else
+      Break;
+  End;
+
+  If TokIs(TOK_RPAREN) Then
+    Advance;
+
+  { Point-virgule optionnel }
+  If TokIs(TOK_SEMICOL) Then
+    Advance;
+
+  ParseCreateTable := CT;
+End;
+
+{ ---- CREATE INDEX ---------------------------------------------- }
+
+Function ParseCreateIndex(IsUnique : Boolean) : Integer;
+Var
+  CI, N, W : Integer;
+  Lbl      : TString;
+Begin
+  ParseCreateIndex := -1;
+  If Not ParseOk Then Exit;
+
+  If IsUnique Then
+    Lbl := 'CREATE UNIQUE INDEX'
+  Else
+    Lbl := 'CREATE INDEX';
+
+  CI := NewNode(ND_CREATE_INDEX, Lbl, LexCurTok.Line, LexCurTok.Col);
+
+  { CLUSTERED / NONCLUSTERED optionnel }
+  If KwIs(KW_CLUSTERED) Then
+  Begin
+    N := NewNode(ND_IDENT, 'CLUSTERED', LexCurTok.Line, LexCurTok.Col);
+    AddChild(CI, N);
+    Advance;
+  End
+  Else If KwIs(KW_NONCLUSTERED) Then
+  Begin
+    N := NewNode(ND_IDENT, 'NONCLUSTERED', LexCurTok.Line, LexCurTok.Col);
+    AddChild(CI, N);
+    Advance;
+  End;
+
+  { Nom de l index }
+  If Not KwIs(KW_INDEX) Then
+  Begin
+    ParseError('INDEX attendu');
+    ParseCreateIndex := CI;
+    Exit;
+  End;
+  Advance; { skip INDEX }
+
+  N := ParseObjectName;
+  AddChild(CI, N);
+
+  { ON table (colonnes) }
+  If Not KwIs(KW_ON) Then
+  Begin
+    ParseError('ON attendu apres nom d''index');
+    ParseCreateIndex := CI;
+    Exit;
+  End;
+  Advance; { skip ON }
+
+  N := ParseObjectName;
+  AddChild(CI, N);
+
+  If TokIs(TOK_LPAREN) Then
+  Begin
+    Advance;
+    While ParseOk And Not TokIs(TOK_RPAREN) Do
+    Begin
+      N := ParseIndexCol;
+      AddChild(CI, N);
+      If TokIs(TOK_COMMA) Then Advance;
+    End;
+    If TokIs(TOK_RPAREN) Then Advance;
+  End;
+
+  { INCLUDE (cols) optionnel }
+  If KwIs(KW_INCLUDE) Then
+  Begin
+    Advance; { skip INCLUDE }
+    W := NewNode(ND_INCLUDE_COLS, 'INCLUDE', LexCurTok.Line, LexCurTok.Col);
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      Advance;
+      While ParseOk And Not TokIs(TOK_RPAREN) Do
+      Begin
+        If (LexCurTok.Kind = TOK_IDENT) Or
+           (LexCurTok.Kind = TOK_KEYWORD) Or
+           (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+        Begin
+          N := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line,
+                       LexCurTok.Col);
+          AddChild(W, N);
+          Advance;
+        End;
+        If TokIs(TOK_COMMA) Then Advance;
+      End;
+      If TokIs(TOK_RPAREN) Then Advance;
+    End;
+    AddChild(CI, W);
+  End;
+
+  { WHERE filtre optionnel }
+  If KwIs(KW_WHERE) Then
+  Begin
+    Advance;
+    N := ParseSqlExpr;
+    W := NewNode(ND_WHERE_CLAUSE, 'WHERE', LexCurTok.Line, LexCurTok.Col);
+    AddChild(W, N);
+    AddChild(CI, W);
+  End;
+
+  { WITH (options) optionnel }
+  If KwIs(KW_WITH) Then
+  Begin
+    W := ParseWithOptions;
+    AddChild(CI, W);
+  End;
+
+  If TokIs(TOK_SEMICOL) Then
+    Advance;
+
+  ParseCreateIndex := CI;
+End;
+
+{ ---- CREATE VIEW ----------------------------------------------- }
+
+Function ParseCreateView : Integer;
+Var
+  CV, N, Sub : Integer;
+Begin
+  ParseCreateView := -1;
+  If Not ParseOk Then Exit;
+
+  CV := NewNode(ND_CREATE_VIEW, 'CREATE VIEW', LexCurTok.Line,
+                LexCurTok.Col);
+
+  { Nom de la vue }
+  N := ParseObjectName;
+  AddChild(CV, N);
+
+  { Liste de colonnes optionnelle }
+  If TokIs(TOK_LPAREN) Then
+  Begin
+    Advance;
+    While ParseOk And Not TokIs(TOK_RPAREN) Do
+    Begin
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+         (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+      Begin
+        N := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line,
+                     LexCurTok.Col);
+        AddChild(CV, N);
+        Advance;
+      End;
+      If TokIs(TOK_COMMA) Then Advance;
+    End;
+    If TokIs(TOK_RPAREN) Then Advance;
+  End;
+
+  { WITH SCHEMABINDING optionnel }
+  If KwIs(KW_WITH) Then
+  Begin
+    Advance;
+    If KwIs(KW_SCHEMABINDING) Then
+    Begin
+      N := NewNode(ND_IDENT, 'SCHEMABINDING', LexCurTok.Line,
+                   LexCurTok.Col);
+      AddChild(CV, N);
+      Advance;
+    End;
+  End;
+
+  { AS }
+  If Not KwIs(KW_AS) Then
+  Begin
+    ParseError('AS attendu dans CREATE VIEW');
+    ParseCreateView := CV;
+    Exit;
+  End;
+  Advance; { skip AS }
+
+  { SELECT ... }
+  Sub := ParseSelectStmt;
+  AddChild(CV, Sub);
+
+  { WITH CHECK OPTION optionnel }
+  If KwIs(KW_WITH) Then
+  Begin
+    Advance;
+    If KwIs(KW_CHECK) Then
+    Begin
+      Advance;
+      If KwIs(KW_OPTION) Then
+      Begin
+        N := NewNode(ND_IDENT, 'CHECK OPTION', LexCurTok.Line,
+                     LexCurTok.Col);
+        AddChild(CV, N);
+        Advance;
+      End;
+    End;
+  End;
+
+  If TokIs(TOK_SEMICOL) Then
+    Advance;
+
+  ParseCreateView := CV;
+End;
+
+{ ---- CREATE PROCEDURE ------------------------------------------ }
+
+Function ParseCreateProc : Integer;
+Var
+  CP, N, PL, Blk : Integer;
+Begin
+  ParseCreateProc := -1;
+  If Not ParseOk Then Exit;
+
+  CP := NewNode(ND_CREATE_PROC, 'CREATE PROCEDURE', LexCurTok.Line,
+                LexCurTok.Col);
+
+  { Nom de la procedure }
+  N := ParseObjectName;
+  AddChild(CP, N);
+
+  { Parametres optionnels }
+  If (LexCurTok.Kind = TOK_VARIABLE) Or TokIs(TOK_LPAREN) Then
+  Begin
+    PL := ParseParamList;
+    AddChild(CP, PL);
+  End;
+
+  { AS }
+  If KwIs(KW_AS) Then
+    Advance;
+
+  { Corps : BEGIN ... END }
+  If KwIs(KW_BEGIN) Then
+  Begin
+    Blk := ParseBodyBlock;
+    AddChild(CP, Blk);
+  End;
+
+  If TokIs(TOK_SEMICOL) Then
+    Advance;
+
+  ParseCreateProc := CP;
+End;
+
+{ ---- CREATE FUNCTION ------------------------------------------- }
+
+Function ParseCreateFunc : Integer;
+Var
+  CF, N, PL, T, Blk : Integer;
+Begin
+  ParseCreateFunc := -1;
+  If Not ParseOk Then Exit;
+
+  CF := NewNode(ND_CREATE_FUNC, 'CREATE FUNCTION', LexCurTok.Line,
+                LexCurTok.Col);
+
+  { Nom de la fonction }
+  N := ParseObjectName;
+  AddChild(CF, N);
+
+  { Parametres }
+  If TokIs(TOK_LPAREN) Or (LexCurTok.Kind = TOK_VARIABLE) Then
+  Begin
+    PL := ParseParamList;
+    AddChild(CF, PL);
+  End;
+
+  { RETURNS type }
+  If KwIs(KW_RETURNS) Then
+  Begin
+    Advance; { skip RETURNS }
+    { TABLE est un cas special pour les fonctions tabulaires }
+    If KwIs(KW_TABLE) Then
+    Begin
+      N := NewNode(ND_TYPE_REF, 'TABLE', LexCurTok.Line, LexCurTok.Col);
+      Advance;
+      { Definition de table optionnelle ( ... ) }
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        While ParseOk And Not TokIs(TOK_RPAREN) And
+              (LexCurTok.Kind <> TOK_EOF) Do
+          Advance;
+        If TokIs(TOK_RPAREN) Then Advance;
+      End;
+      AddChild(CF, N);
+    End
+    Else
+    Begin
+      T := ParseTypeRef;
+      AddChild(CF, T);
+    End;
+  End;
+
+  { AS optionnel }
+  If KwIs(KW_AS) Then
+    Advance;
+
+  { Corps : BEGIN ... END }
+  If KwIs(KW_BEGIN) Then
+  Begin
+    Blk := ParseBodyBlock;
+    AddChild(CF, Blk);
+  End;
+
+  If TokIs(TOK_SEMICOL) Then
+    Advance;
+
+  ParseCreateFunc := CF;
+End;
+
+{ ---- CREATE TRIGGER -------------------------------------------- }
+
+Function ParseCreateTrigger : Integer;
+Var
+  CTr, N, Blk : Integer;
+  EvtText     : TString;
+Begin
+  ParseCreateTrigger := -1;
+  If Not ParseOk Then Exit;
+
+  CTr := NewNode(ND_CREATE_TRIGGER, 'CREATE TRIGGER', LexCurTok.Line,
+                 LexCurTok.Col);
+
+  { Nom du trigger }
+  N := ParseObjectName;
+  AddChild(CTr, N);
+
+  { ON table }
+  If KwIs(KW_ON) Then
+  Begin
+    Advance;
+    N := ParseObjectName;
+    AddChild(CTr, N);
+  End;
+
+  { FOR / AFTER / INSTEAD OF }
+  If KwIs(KW_FOR) Then
+  Begin
+    N := NewNode(ND_IDENT, 'FOR', LexCurTok.Line, LexCurTok.Col);
+    AddChild(CTr, N);
+    Advance;
+  End
+  Else If KwIs(KW_AFTER) Then
+  Begin
+    N := NewNode(ND_IDENT, 'AFTER', LexCurTok.Line, LexCurTok.Col);
+    AddChild(CTr, N);
+    Advance;
+  End
+  Else If KwIs(KW_INSTEAD) Then
+  Begin
+    Advance; { skip INSTEAD }
+    If KwIs(KW_OF) Then
+      Advance; { skip OF }
+    N := NewNode(ND_IDENT, 'INSTEAD OF', LexCurTok.Line, LexCurTok.Col);
+    AddChild(CTr, N);
+  End;
+
+  { INSERT, UPDATE, DELETE (liste d evenements) }
+  EvtText := '';
+  While ParseOk And (KwIs(KW_INSERT) Or KwIs(KW_UPDATE) Or
+        KwIs(KW_DELETE)) Do
+  Begin
+    If EvtText <> '' Then
+      EvtText := EvtText + ',';
+    EvtText := EvtText + LexCurTok.Text;
+    Advance;
+    If TokIs(TOK_COMMA) Then Advance;
+  End;
+  If EvtText <> '' Then
+  Begin
+    N := NewNode(ND_IDENT, EvtText, LexCurTok.Line, LexCurTok.Col);
+    AddChild(CTr, N);
+  End;
+
+  { AS }
+  If KwIs(KW_AS) Then
+    Advance;
+
+  { Corps : BEGIN ... END }
+  If KwIs(KW_BEGIN) Then
+  Begin
+    Blk := ParseBodyBlock;
+    AddChild(CTr, Blk);
+  End;
+
+  If TokIs(TOK_SEMICOL) Then
+    Advance;
+
+  ParseCreateTrigger := CTr;
+End;
+
+{ ---- CREATE SCHEMA / SEQUENCE / TYPE / DATABASE ---------------- }
+
+Function ParseCreateSchema : Integer;
+Var
+  CS, N : Integer;
+Begin
+  ParseCreateSchema := -1;
+  If Not ParseOk Then Exit;
+  CS := NewNode(ND_CREATE_SCHEMA, 'CREATE SCHEMA', LexCurTok.Line,
+                LexCurTok.Col);
+  N := ParseObjectName;
+  AddChild(CS, N);
+  { AUTHORIZATION optionnel }
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    If StrUpperCase(LexCurTok.Text) = 'AUTHORIZATION' Then
+    Begin
+      Advance;
+      N := ParseObjectName;
+      AddChild(CS, N);
+    End;
+  End;
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseCreateSchema := CS;
+End;
+
+Function ParseCreateSequence : Integer;
+Var
+  CSq, N, E : Integer;
+Begin
+  ParseCreateSequence := -1;
+  If Not ParseOk Then Exit;
+  CSq := NewNode(ND_CREATE_SEQ, 'CREATE SEQUENCE', LexCurTok.Line,
+                 LexCurTok.Col);
+  N := ParseObjectName;
+  AddChild(CSq, N);
+  { Options : AS type, START WITH n, INCREMENT BY n, etc. }
+  While ParseOk And Not TokIs(TOK_SEMICOL) And
+        (LexCurTok.Kind <> TOK_EOF) Do
+  Begin
+    If KwIs(KW_AS) Then
+    Begin
+      Advance;
+      E := ParseTypeRef;
+      AddChild(CSq, E);
+    End
+    Else If (LexCurTok.Kind = TOK_IDENT) Or
+            (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      N := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line,
+                   LexCurTok.Col);
+      Advance;
+      { Si suivi d une valeur }
+      If (LexCurTok.Kind = TOK_NUMBER) Or (LexCurTok.Kind = TOK_FLOAT) Or
+         (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        ASTPool[N].Text := ASTPool[N].Text + ' ' + LexCurTok.Text;
+        Advance;
+      End;
+      AddChild(CSq, N);
+    End
+    Else
+      Break;
+  End;
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseCreateSequence := CSq;
+End;
+
+Function ParseCreateType : Integer;
+Var
+  CTy, N : Integer;
+Begin
+  ParseCreateType := -1;
+  If Not ParseOk Then Exit;
+  CTy := NewNode(ND_CREATE_TYPE, 'CREATE TYPE', LexCurTok.Line,
+                 LexCurTok.Col);
+  N := ParseObjectName;
+  AddChild(CTy, N);
+  { FROM type ou AS TABLE ( ... ) }
+  If KwIs(KW_AS) Then
+  Begin
+    Advance;
+    If KwIs(KW_TABLE) Then
+    Begin
+      Advance; { skip TABLE }
+      N := NewNode(ND_IDENT, 'TABLE', LexCurTok.Line, LexCurTok.Col);
+      AddChild(CTy, N);
+      { Sauter la definition de table }
+      If TokIs(TOK_LPAREN) Then
+      Begin
+        Advance;
+        While ParseOk And Not TokIs(TOK_RPAREN) And
+              (LexCurTok.Kind <> TOK_EOF) Do
+          Advance;
+        If TokIs(TOK_RPAREN) Then Advance;
+      End;
+    End
+    Else
+    Begin
+      N := ParseTypeRef;
+      AddChild(CTy, N);
+    End;
+  End
+  Else If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    If StrUpperCase(LexCurTok.Text) = 'FROM' Then
+    Begin
+      Advance;
+      N := ParseTypeRef;
+      AddChild(CTy, N);
+    End;
+  End;
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseCreateType := CTy;
+End;
+
+Function ParseCreateDatabase : Integer;
+Var
+  CDb, N : Integer;
+Begin
+  ParseCreateDatabase := -1;
+  If Not ParseOk Then Exit;
+  CDb := NewNode(ND_CREATE_DB, 'CREATE DATABASE', LexCurTok.Line,
+                 LexCurTok.Col);
+  N := ParseObjectName;
+  AddChild(CDb, N);
+  { Sauter les options restantes jusqu au ; ou EOF }
+  While ParseOk And Not TokIs(TOK_SEMICOL) And
+        (LexCurTok.Kind <> TOK_EOF) Do
+    Advance;
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseCreateDatabase := CDb;
+End;
+
+{ ---- Dispatch CREATE ------------------------------------------- }
+
+Function ParseCreateStmt : Integer;
+Var
+  IsUnique : Boolean;
+Begin
+  ParseCreateStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_CREATE) Then
+  Begin
+    ParseError('CREATE attendu');
+    Exit;
+  End;
+  Advance; { skip CREATE }
+
+  IsUnique := False;
+
+  If KwIs(KW_TABLE) Then
+  Begin
+    Advance; { skip TABLE }
+    ParseCreateStmt := ParseCreateTable;
+  End
+  Else If KwIs(KW_UNIQUE) Then
+  Begin
+    Advance; { skip UNIQUE }
+    IsUnique := True;
+    { CLUSTERED/NONCLUSTERED INDEX ... }
+    ParseCreateStmt := ParseCreateIndex(IsUnique);
+  End
+  Else If KwIs(KW_CLUSTERED) Or KwIs(KW_NONCLUSTERED) Then
+  Begin
+    { CLUSTERED/NONCLUSTERED INDEX ... }
+    ParseCreateStmt := ParseCreateIndex(False);
+  End
+  Else If KwIs(KW_INDEX) Then
+  Begin
+    { INDEX deja consomme par ParseCreateIndex }
+    ParseCreateStmt := ParseCreateIndex(False);
+  End
+  Else If KwIs(KW_VIEW) Then
+  Begin
+    Advance; { skip VIEW }
+    ParseCreateStmt := ParseCreateView;
+  End
+  Else If KwIs(KW_PROCEDURE) Then
+  Begin
+    Advance; { skip PROCEDURE }
+    ParseCreateStmt := ParseCreateProc;
+  End
+  Else If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    If StrUpperCase(LexCurTok.Text) = 'PROC' Then
+    Begin
+      Advance; { skip PROC }
+      ParseCreateStmt := ParseCreateProc;
+    End
+    Else
+    Begin
+      { Continuer avec les autres CREATE }
+      If KwIs(KW_FUNCTION) Then
+      Begin
+        Advance; { skip FUNCTION }
+        ParseCreateStmt := ParseCreateFunc;
+      End
+      Else If KwIs(KW_TRIGGER) Then
+      Begin
+        Advance; { skip TRIGGER }
+        ParseCreateStmt := ParseCreateTrigger;
+      End
+      Else If KwIs(KW_SCHEMA) Then
+      Begin
+        Advance; { skip SCHEMA }
+        ParseCreateStmt := ParseCreateSchema;
+      End
+      Else If KwIs(KW_SEQUENCE) Then
+      Begin
+        Advance; { skip SEQUENCE }
+        ParseCreateStmt := ParseCreateSequence;
+      End
+      Else If KwIs(KW_TYPE) Then
+      Begin
+        Advance; { skip TYPE }
+        ParseCreateStmt := ParseCreateType;
+      End
+      Else If KwIs(KW_DATABASE) Then
+      Begin
+        Advance; { skip DATABASE }
+        ParseCreateStmt := ParseCreateDatabase;
+      End
+      Else
+      Begin
+        ParseError('type d''objet CREATE inconnu: ' + LexCurTok.Text);
+      End;
+    End;
+  End
+  Else If KwIs(KW_FUNCTION) Then
+  Begin
+    Advance;
+    ParseCreateStmt := ParseCreateFunc;
+  End
+  Else If KwIs(KW_TRIGGER) Then
+  Begin
+    Advance;
+    ParseCreateStmt := ParseCreateTrigger;
+  End
+  Else If KwIs(KW_SCHEMA) Then
+  Begin
+    Advance;
+    ParseCreateStmt := ParseCreateSchema;
+  End
+  Else If KwIs(KW_SEQUENCE) Then
+  Begin
+    Advance;
+    ParseCreateStmt := ParseCreateSequence;
+  End
+  Else If KwIs(KW_TYPE) Then
+  Begin
+    Advance;
+    ParseCreateStmt := ParseCreateType;
+  End
+  Else If KwIs(KW_DATABASE) Then
+  Begin
+    Advance;
+    ParseCreateStmt := ParseCreateDatabase;
+  End
+  Else
+    ParseError('type d''objet CREATE inconnu: ' + LexCurTok.Text);
+End;
+
+{ ---- ALTER TABLE ----------------------------------------------- }
+
+Function ParseAlterTable : Integer;
+Var
+  AT, N, CD, T : Integer;
+Begin
+  ParseAlterTable := -1;
+  If Not ParseOk Then Exit;
+
+  AT := NewNode(ND_ALTER_TABLE, 'ALTER TABLE', LexCurTok.Line,
+                LexCurTok.Col);
+
+  { Nom de la table }
+  N := ParseObjectName;
+  AddChild(AT, N);
+
+  { ADD / ALTER COLUMN / DROP COLUMN }
+  If KwIs(KW_ADD) Then
+  Begin
+    Advance; { skip ADD }
+    { CONSTRAINT ou colonne }
+    If KwIs(KW_CONSTRAINT) Or KwIs(KW_PRIMARY) Or KwIs(KW_UNIQUE) Or
+       KwIs(KW_FOREIGN) Or KwIs(KW_CHECK) Then
+    Begin
+      CD := ParseColumnDef;
+      N := NewNode(ND_IDENT, 'ADD', LexCurTok.Line, LexCurTok.Col);
+      AddChild(N, CD);
+      AddChild(AT, N);
+    End
+    Else
+    Begin
+      { ADD colonne type [contraintes] }
+      CD := ParseColumnDef;
+      N := NewNode(ND_IDENT, 'ADD', LexCurTok.Line, LexCurTok.Col);
+      AddChild(N, CD);
+      AddChild(AT, N);
+    End;
+  End
+  Else If KwIs(KW_ALTER) Then
+  Begin
+    Advance; { skip ALTER }
+    If KwIs(KW_COLUMN) Then
+      Advance; { skip COLUMN }
+    N := NewNode(ND_IDENT, 'ALTER COLUMN', LexCurTok.Line, LexCurTok.Col);
+    { nom de la colonne }
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+    Begin
+      CD := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line,
+                    LexCurTok.Col);
+      Advance;
+      T := ParseTypeRef;
+      AddChild(CD, T);
+      { NOT NULL / NULL optionnel }
+      If KwIs(KW_NOT) Then
+      Begin
+        Advance;
+        If KwIs(KW_NULL) Then
+        Begin
+          T := NewNode(ND_IDENT, 'NOT NULL', LexCurTok.Line, LexCurTok.Col);
+          AddChild(CD, T);
+          Advance;
+        End;
+      End
+      Else If KwIs(KW_NULL) Then
+      Begin
+        T := NewNode(ND_IDENT, 'NULL', LexCurTok.Line, LexCurTok.Col);
+        AddChild(CD, T);
+        Advance;
+      End;
+      AddChild(N, CD);
+    End;
+    AddChild(AT, N);
+  End
+  Else If KwIs(KW_DROP) Then
+  Begin
+    Advance; { skip DROP }
+    N := NewNode(ND_IDENT, 'DROP', LexCurTok.Line, LexCurTok.Col);
+    If KwIs(KW_COLUMN) Then
+      Advance; { skip COLUMN }
+    If KwIs(KW_CONSTRAINT) Then
+      Advance; { skip CONSTRAINT }
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+       (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+    Begin
+      CD := NewNode(ND_IDENT, LexCurTok.Text, LexCurTok.Line,
+                    LexCurTok.Col);
+      AddChild(N, CD);
+      Advance;
+    End;
+    AddChild(AT, N);
+  End;
+
+  If TokIs(TOK_SEMICOL) Then
+    Advance;
+
+  ParseAlterTable := AT;
+End;
+
+{ ---- ALTER INDEX ----------------------------------------------- }
+
+Function ParseAlterIndex : Integer;
+Var
+  AI, N, W : Integer;
+Begin
+  ParseAlterIndex := -1;
+  If Not ParseOk Then Exit;
+
+  AI := NewNode(ND_ALTER_INDEX, 'ALTER INDEX', LexCurTok.Line,
+                LexCurTok.Col);
+
+  { Nom de l index ou ALL }
+  If KwIs(KW_ALL) Then
+  Begin
+    N := NewNode(ND_IDENT, 'ALL', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+  End
+  Else
+    N := ParseObjectName;
+  AddChild(AI, N);
+
+  { ON table }
+  If KwIs(KW_ON) Then
+  Begin
+    Advance;
+    N := ParseObjectName;
+    AddChild(AI, N);
+  End;
+
+  { REBUILD / REORGANIZE / DISABLE }
+  If KwIs(KW_REBUILD) Then
+  Begin
+    N := NewNode(ND_IDENT, 'REBUILD', LexCurTok.Line, LexCurTok.Col);
+    AddChild(AI, N);
+    Advance;
+  End
+  Else If KwIs(KW_REORGANIZE) Then
+  Begin
+    N := NewNode(ND_IDENT, 'REORGANIZE', LexCurTok.Line, LexCurTok.Col);
+    AddChild(AI, N);
+    Advance;
+  End
+  Else If KwIs(KW_DISABLE) Then
+  Begin
+    N := NewNode(ND_IDENT, 'DISABLE', LexCurTok.Line, LexCurTok.Col);
+    AddChild(AI, N);
+    Advance;
+  End;
+
+  { WITH (options) optionnel }
+  If KwIs(KW_WITH) Then
+  Begin
+    W := ParseWithOptions;
+    AddChild(AI, W);
+  End;
+
+  If TokIs(TOK_SEMICOL) Then
+    Advance;
+
+  ParseAlterIndex := AI;
+End;
+
+{ ---- Dispatch ALTER -------------------------------------------- }
+
+Function ParseAlterStmt : Integer;
+Begin
+  ParseAlterStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_ALTER) Then
+  Begin
+    ParseError('ALTER attendu');
+    Exit;
+  End;
+  Advance; { skip ALTER }
+
+  If KwIs(KW_TABLE) Then
+  Begin
+    Advance; { skip TABLE }
+    ParseAlterStmt := ParseAlterTable;
+  End
+  Else If KwIs(KW_INDEX) Then
+  Begin
+    Advance; { skip INDEX }
+    ParseAlterStmt := ParseAlterIndex;
+  End
+  Else
+  Begin
+    { Pour les autres ALTER (DATABASE, PROCEDURE, etc), }
+    { on cree un noeud generique et on saute jusqu au ; }
+    ParseAlterStmt := NewNode(ND_ALTER_TABLE, 'ALTER ' + LexCurTok.Text,
+                              LexCurTok.Line, LexCurTok.Col);
+    While ParseOk And Not TokIs(TOK_SEMICOL) And
+          (LexCurTok.Kind <> TOK_EOF) Do
+      Advance;
+    If TokIs(TOK_SEMICOL) Then Advance;
+  End;
+End;
+
+{ ---- DROP ------------------------------------------------------ }
+
+Function ParseDropStmt : Integer;
+Var
+  DS, N : Integer;
+  ObjType : TString;
+Begin
+  ParseDropStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_DROP) Then
+  Begin
+    ParseError('DROP attendu');
+    Exit;
+  End;
+  Advance; { skip DROP }
+
+  ObjType := '';
+  If KwIs(KW_TABLE) Then
+    ObjType := 'TABLE'
+  Else If KwIs(KW_VIEW) Then
+    ObjType := 'VIEW'
+  Else If KwIs(KW_INDEX) Then
+    ObjType := 'INDEX'
+  Else If KwIs(KW_PROCEDURE) Then
+    ObjType := 'PROCEDURE'
+  Else If KwIs(KW_FUNCTION) Then
+    ObjType := 'FUNCTION'
+  Else If KwIs(KW_TRIGGER) Then
+    ObjType := 'TRIGGER'
+  Else If KwIs(KW_DATABASE) Then
+    ObjType := 'DATABASE'
+  Else If KwIs(KW_SCHEMA) Then
+    ObjType := 'SCHEMA'
+  Else If KwIs(KW_SEQUENCE) Then
+    ObjType := 'SEQUENCE'
+  Else If KwIs(KW_TYPE) Then
+    ObjType := 'TYPE'
+  Else If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    If StrUpperCase(LexCurTok.Text) = 'PROC' Then
+      ObjType := 'PROCEDURE'
+    Else
+      ObjType := StrUpperCase(LexCurTok.Text);
+  End
+  Else
+  Begin
+    ParseError('type d''objet attendu apres DROP');
+    Exit;
+  End;
+
+  DS := NewNode(ND_DROP_STMT, 'DROP ' + ObjType, LexCurTok.Line,
+                LexCurTok.Col);
+  Advance; { skip object type }
+
+  { IF EXISTS optionnel }
+  If KwIs(KW_IF) Then
+  Begin
+    Advance; { skip IF }
+    If KwIs(KW_EXISTS) Then
+    Begin
+      N := NewNode(ND_IDENT, 'IF EXISTS', LexCurTok.Line, LexCurTok.Col);
+      AddChild(DS, N);
+      Advance; { skip EXISTS }
+    End;
+  End;
+
+  { Nom de l objet }
+  N := ParseObjectName;
+  AddChild(DS, N);
+
+  If TokIs(TOK_SEMICOL) Then
+    Advance;
+
+  ParseDropStmt := DS;
+End;
+
 { ---- Execution d une requete SQL ----------------------------- }
 
 Procedure ExecuteQuery(Const SQL : TString);
@@ -8001,6 +9583,12 @@ Begin
     Root := ParseTruncateStmt
   Else If KwIs(KW_MERGE) Then
     Root := ParseMergeStmt
+  Else If KwIs(KW_CREATE) Then
+    Root := ParseCreateStmt
+  Else If KwIs(KW_ALTER) Then
+    Root := ParseAlterStmt
+  Else If KwIs(KW_DROP) Then
+    Root := ParseDropStmt
   Else
     Root := ParseSqlExpr;
   If ParseOk And (Root >= 0) Then
