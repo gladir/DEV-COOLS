@@ -144,7 +144,7 @@
       Index=100 -> pas d'index. Generer la chaine d'operande
       avec les crochets, registres et facteur d'echelle.
 
-  15. Decodage des prefixes d'instructions.
+  15. [IMPLEMENTE] Decodage des prefixes d'instructions.
       Gerer les prefixes avant chaque instruction : segment
       override (26h=ES:, 2Eh=CS:, 36h=SS:, 3Eh=DS:, 64h=FS:,
       65h=GS:), LOCK (F0h), REP/REPE (F3h), REPNE (F2h),
@@ -1934,6 +1934,181 @@ Begin
 End;
 
 { ============================================================
+  DECODAGE DES PREFIXES D'INSTRUCTIONS (TODO 15)
+  ============================================================ }
+
+Type
+  { Etat des prefixes accumules avant une instruction }
+  TPrefixState = Record
+    HasSegOverride : Boolean;    { True si un prefixe de segment est present }
+    SegOverride    : Byte;       { indice segment (0=ES,1=CS,2=SS,3=DS,4=FS,5=GS) }
+    SegOverrideStr : String[3];  { chaine du segment ('ES:','CS:',...) }
+    HasLock        : Boolean;    { True si LOCK (F0h) est present }
+    HasRep         : Boolean;    { True si REP/REPE (F3h) est present }
+    HasRepNE       : Boolean;    { True si REPNE (F2h) est present }
+    HasOpSize      : Boolean;    { True si prefixe taille operande (66h) }
+    HasAddrSize    : Boolean;    { True si prefixe taille adresse (67h) }
+    PrefixCount    : Integer;    { nombre total d'octets de prefixes consommes }
+    EffOpSize      : Byte;       { taille effective de l'operande (1, 2 ou 4) }
+    EffAddrSize    : Byte;       { taille effective de l'adresse (2 ou 4) }
+  End;
+
+{ IsPrefix - Retourne True si l'octet est un prefixe d'instruction.
+  Prefixes reconnus : 26h,2Eh,36h,3Eh (seg 8086+), 64h,65h (seg 386+),
+                      66h (OpSize), 67h (AddrSize), F0h (LOCK),
+                      F2h (REPNE), F3h (REP/REPE) }
+Function IsPrefix(B : Byte) : Boolean;
+Begin
+  Case B Of
+    $26, $2E, $36, $3E,  { ES:, CS:, SS:, DS: }
+    $64, $65,             { FS:, GS: }
+    $66,                  { operand size override }
+    $67,                  { address size override }
+    $F0,                  { LOCK }
+    $F2,                  { REPNE/REPNZ }
+    $F3 :                 { REP/REPE/REPZ }
+      IsPrefix := True;
+  Else
+    IsPrefix := False;
+  End;
+End;
+
+{ InitPrefixState - Initialise l'etat des prefixes.
+  Mode32 : True si le mode par defaut est 32 bits, False si 16 bits.
+  En mode 16 bits : operande 16 bits, adresse 16 bits par defaut.
+  En mode 32 bits : operande 32 bits, adresse 32 bits par defaut. }
+Procedure InitPrefixState(Var PFX : TPrefixState; Mode32 : Boolean);
+Begin
+  PFX.HasSegOverride := False;
+  PFX.SegOverride    := 0;
+  PFX.SegOverrideStr := '';
+  PFX.HasLock        := False;
+  PFX.HasRep         := False;
+  PFX.HasRepNE       := False;
+  PFX.HasOpSize      := False;
+  PFX.HasAddrSize    := False;
+  PFX.PrefixCount    := 0;
+  If Mode32 Then Begin
+    PFX.EffOpSize   := 4;   { 32 bits par defaut }
+    PFX.EffAddrSize := 4;
+  End Else Begin
+    PFX.EffOpSize   := 2;   { 16 bits par defaut }
+    PFX.EffAddrSize := 2;
+  End;
+End;
+
+{ DecodePrefixes - Lit les octets de prefixes a partir de Offset dans l'image.
+  Accumule tous les prefixes consecutifs et met a jour l'etat PFX.
+  Mode32 : True si le mode courant est 32 bits.
+  PFX doit etre initialise par InitPrefixState avant l'appel.
+  Apres l'appel, PFX.PrefixCount contient le nombre d'octets de prefixes.
+  L'opcode reel se trouve donc a Offset + PFX.PrefixCount. }
+Procedure DecodePrefixes(Offset : LongInt; Mode32 : Boolean;
+                         Var PFX : TPrefixState);
+Var
+  B    : Byte;
+  Done : Boolean;
+Begin
+  Done := False;
+  While Not Done Do Begin
+    If (Offset + PFX.PrefixCount) >= ImageSize Then
+      Break;
+    B := ReadImageByte(Offset + PFX.PrefixCount);
+    Case B Of
+      $26 : Begin { ES: segment override }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 0;
+        PFX.SegOverrideStr := 'ES:';
+        Inc(PFX.PrefixCount);
+      End;
+      $2E : Begin { CS: segment override }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 1;
+        PFX.SegOverrideStr := 'CS:';
+        Inc(PFX.PrefixCount);
+      End;
+      $36 : Begin { SS: segment override }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 2;
+        PFX.SegOverrideStr := 'SS:';
+        Inc(PFX.PrefixCount);
+      End;
+      $3E : Begin { DS: segment override }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 3;
+        PFX.SegOverrideStr := 'DS:';
+        Inc(PFX.PrefixCount);
+      End;
+      $64 : Begin { FS: segment override (80386+) }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 4;
+        PFX.SegOverrideStr := 'FS:';
+        Inc(PFX.PrefixCount);
+      End;
+      $65 : Begin { GS: segment override (80386+) }
+        PFX.HasSegOverride := True;
+        PFX.SegOverride    := 5;
+        PFX.SegOverrideStr := 'GS:';
+        Inc(PFX.PrefixCount);
+      End;
+      $66 : Begin { operand size override (80386+) }
+        PFX.HasOpSize := True;
+        Inc(PFX.PrefixCount);
+        { Bascule la taille d'operande : 32->16 ou 16->32 }
+        If Mode32 Then
+          PFX.EffOpSize := 2
+        Else
+          PFX.EffOpSize := 4;
+      End;
+      $67 : Begin { address size override (80386+) }
+        PFX.HasAddrSize := True;
+        Inc(PFX.PrefixCount);
+        { Bascule la taille d'adresse : 32->16 ou 16->32 }
+        If Mode32 Then
+          PFX.EffAddrSize := 2
+        Else
+          PFX.EffAddrSize := 4;
+      End;
+      $F0 : Begin { LOCK }
+        PFX.HasLock := True;
+        Inc(PFX.PrefixCount);
+      End;
+      $F2 : Begin { REPNE/REPNZ }
+        PFX.HasRepNE := True;
+        PFX.HasRep   := False;  { REPNE ecrase REP si deja vu }
+        Inc(PFX.PrefixCount);
+      End;
+      $F3 : Begin { REP/REPE/REPZ }
+        PFX.HasRep   := True;
+        PFX.HasRepNE := False;  { REP ecrase REPNE si deja vu }
+        Inc(PFX.PrefixCount);
+      End;
+    Else
+      Done := True;  { octet non-prefixe : on arrete }
+    End;
+  End;
+End;
+
+{ PrefixToStr - Retourne la chaine des prefixes accumules pour l'affichage.
+  Exemple : 'LOCK REP ES:' si LOCK, REP et ES: sont presents.
+  Retourne une chaine vide si aucun prefixe n'est present. }
+Function PrefixToStr(Const PFX : TPrefixState) : TString;
+Var
+  S : TString;
+Begin
+  S := '';
+  If PFX.HasLock Then
+    S := S + 'LOCK ';
+  If PFX.HasRep Then
+    S := S + 'REP ';
+  If PFX.HasRepNE Then
+    S := S + 'REPNE ';
+  If PFX.HasSegOverride Then
+    S := S + PFX.SegOverrideStr;
+  PrefixToStr := S;
+End;
+
+{ ============================================================
   ANALYSE DES OPTIONS DE LIGNE DE COMMANDE
   ============================================================ }
 
@@ -2858,7 +3033,7 @@ Begin
  DataBytes := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 15 a 25 restent a implementer)');
+ WriteLn('(les TODOs 16 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
  { Liberation de la memoire }
