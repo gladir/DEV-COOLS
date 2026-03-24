@@ -3132,8 +3132,14 @@ Var
   BType      : Integer;
   Target     : LongInt;
   LabelName  : TString;
+  BadCount   : Integer;  { compteur d'instructions invalides consecutives }
 Begin
+  { Ajouter le point d'entree comme label en premier }
+  LabelName := GenerateLabelName(StartOffset, True, Mode32);
+  AddLabel(StartOffset, LabelName, True, False, False);
+
   CurOffset := StartOffset;
+  BadCount := 0;
   While CurOffset < EndOffset Do Begin
     { Verifier les bornes }
     If CurOffset >= ImageSize Then Break;
@@ -3141,7 +3147,12 @@ Begin
 
     { Calculer la taille de l'instruction courante }
     ISize := ComputeInstrSize(CurOffset, Mode32);
-    If ISize <= 0 Then ISize := 1; { securite }
+    If ISize <= 0 Then Begin
+      ISize := 1; { securite }
+      Inc(BadCount);
+      If BadCount > 16 Then Break; { eviter boucle infinie }
+    End Else
+      BadCount := 0;
 
     { Classifier l'instruction }
     BType := ClassifyInstruction(CurOffset, Mode32);
@@ -3179,10 +3190,6 @@ Begin
     { Avancer a l'instruction suivante }
     CurOffset := CurOffset + ISize;
   End;
-
-  { Ajouter le point d'entree comme label }
-  LabelName := GenerateLabelName(StartOffset, True, Mode32);
-  AddLabel(StartOffset, LabelName, True, False, False);
 
   { Ajouter les labels pour les imports PE }
   If IsPEFile Then Begin
