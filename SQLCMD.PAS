@@ -237,7 +237,7 @@
             ALTER LOGIN / ALTER USER
             DROP LOGIN / DROP USER
 
-  TODO 15 - MOTEUR D EXECUTION DES REQUETES (QUERY ENGINE)
+  TODO 15 - MOTEUR D EXECUTION DES REQUETES (QUERY ENGINE) [IMPLEMENTE]
             Architecture pipeline :
               Parse -> Bind -> Optimize -> Execute
             Scan sequentiel (Table Scan) sur les pages de donnees
@@ -1114,6 +1114,15 @@ Const
   { Taille max des enfants par noeud }
   MAX_AST_CHILDREN = 16;
 
+  { ---- Constantes du moteur d execution (TODO 15) -------------- }
+  MAX_QE_COLS     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+                                   { colonnes max par result set    }
+  MAX_QE_ROWS     = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
+                                   { lignes max en memoire          }
+  MAX_QE_COLWIDTH = 40;            { largeur max affichage colonne  }
+  MAX_QE_PAGES    = {$IFDEF FPC}1024{$ELSE}64{$ENDIF};
+                                   { pages max par table scan       }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1327,6 +1336,34 @@ Type
     Interactive: Boolean;   { REPL interactif (si pas -q/-i)       }
   End;
 
+  { ---- Colonne d un result set (TODO 15) --------------------- }
+  TQEColName = String[MAX_QE_COLWIDTH];
+
+  TQEColumn = Record
+    Name     : TQEColName;     { nom de la colonne                    }
+    XType    : Byte;           { type systeme SQL Server               }
+    MaxLen   : Word;           { longueur max                          }
+    Prec     : Byte;           { precision                             }
+    Scale    : Byte;           { echelle                               }
+    ColIdx   : Integer;        { index dans SysColumns (source)        }
+    Width    : Integer;        { largeur d affichage                   }
+  End;
+
+  { ---- Ligne d un result set (TODO 15) ----------------------- }
+  TQERow = Record
+    Vals     : Array[0..MAX_QE_COLS - 1] Of TSqlValue;
+    ColCnt   : Integer;
+  End;
+
+  { ---- Result set complet (TODO 15) -------------------------- }
+  TQEResultPtr = ^TQEResult;
+  TQEResult = Record
+    Cols     : Array[0..MAX_QE_COLS - 1] Of TQEColumn;
+    ColCnt   : Integer;
+    Rows     : Array[0..MAX_QE_ROWS - 1] Of TQERow;
+    RowCnt   : Integer;
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1365,6 +1402,8 @@ Var
   ASTPool     : Array[0..MAX_AST_NODES - 1] Of TASTNode;
   ASTCount    : Integer;         { nombre de noeuds alloues             }
   ParseOk     : Boolean;         { False si erreur de syntaxe           }
+  { ---- Moteur d execution (TODO 15) ----------------------------- }
+  QERes       : TQEResultPtr;    { result set courant (alloue New/Dispose) }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -10982,6 +11021,1400 @@ Begin
   ParseStatement := ParseSqlExpr;
 End;
 
+{ ============================================================
+  TODO 15 - MOTEUR D EXECUTION DES REQUETES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Chercher un objet table par nom dans le catalogue ------- }
+{ Retourne l index dans SysObjects ou -1 si introuvable.         }
+
+Function QEFindTable(Const TblName : TTokenText) : Integer;
+Var
+  I   : Integer;
+  U, N : TString;
+Begin
+  QEFindTable := -1;
+  U := StrUpperCase(TblName);
+  For I := 0 To SysObjCount - 1 Do
+    If SysObjects[I].Valid Then
+    Begin
+      N := StrUpperCase(SysObjects[I].Name);
+      If (N = U) And ((SysObjects[I].ObjType = 'U ') Or
+         (SysObjects[I].ObjType = 'U') Or
+         (SysObjects[I].ObjType = 'S ') Or
+         (SysObjects[I].ObjType = 'S')) Then
+      Begin
+        QEFindTable := I;
+        Exit;
+      End;
+    End;
+End;
+
+{ ---- Collecter les colonnes d une table ---------------------- }
+{ Remplit le result set avec les definitions de colonnes.         }
+{ Retourne le nombre de colonnes trouvees.                        }
+
+Function QEGetTableCols(ObjId : LongInt;
+                         Var Res : TQEResult) : Integer;
+Var
+  I, Cnt : Integer;
+Begin
+  Cnt := 0;
+  For I := 0 To SysColCount - 1 Do
+    If SysColumns[I].Valid And (SysColumns[I].ObjectId = ObjId) And
+       (Cnt < MAX_QE_COLS) Then
+    Begin
+      Res.Cols[Cnt].Name   := SysColumns[I].Name;
+      Res.Cols[Cnt].XType  := SysColumns[I].XType;
+      Res.Cols[Cnt].MaxLen := SysColumns[I].MaxLen;
+      Res.Cols[Cnt].Prec   := SysColumns[I].Prec;
+      Res.Cols[Cnt].Scale  := SysColumns[I].Scale;
+      Res.Cols[Cnt].ColIdx := I;
+      Res.Cols[Cnt].Width  := Length(SysColumns[I].Name);
+      If Res.Cols[Cnt].Width < 4 Then
+        Res.Cols[Cnt].Width := 4;
+      If Res.Cols[Cnt].Width > MAX_QE_COLWIDTH Then
+        Res.Cols[Cnt].Width := MAX_QE_COLWIDTH;
+      Inc(Cnt);
+    End;
+  Res.ColCnt := Cnt;
+  QEGetTableCols := Cnt;
+End;
+
+{ ---- Tester si une colonne est NULL dans le bitmap ----------- }
+
+Function QEColIsNull(Const Buf : TMdfPageBuf;
+                      RowOfs : Word; FixedLen : Word;
+                      ColNum : Integer) : Boolean;
+Var
+  NullBmpOfs : Word;
+  ByteIdx    : Integer;
+  BitIdx     : Integer;
+Begin
+  QEColIsNull := False;
+  NullBmpOfs := RowOfs + FixedLen + 2;
+  If NullBmpOfs >= MDF_PAGE_SIZE Then Exit;
+  ByteIdx := ColNum Div 8;
+  BitIdx  := ColNum Mod 8;
+  If NullBmpOfs + ByteIdx >= MDF_PAGE_SIZE Then Exit;
+  QEColIsNull := (Buf[NullBmpOfs + ByteIdx] And (1 Shl BitIdx)) <> 0;
+End;
+
+{ ---- Decoder les valeurs d une ligne d une page -------------- }
+{ Lit les colonnes fixes et variables d un enregistrement         }
+{ en utilisant les metadonnees du catalogue.                       }
+
+Procedure QEDecodeRow(Const Buf : TMdfPageBuf;
+                       RowOfs : Word;
+                       Const Res : TQEResult;
+                       Var Row : TQERow);
+Var
+  RH       : TMdfRowHeader;
+  I        : Integer;
+  ColXt    : Byte;
+  FixOfs   : Word;
+  FixSz    : Word;
+  DataLen  : Word;
+  VarOfs   : Word;
+  VarCnt   : Word;
+  OfsArr   : Word;
+  VarStart : Word;
+  VarEnd   : Word;
+  PrevEnd  : Word;
+  VarIdx   : Integer;
+  CurFixed : Word;
+Begin
+  Row.ColCnt := Res.ColCnt;
+  For I := 0 To Res.ColCnt - 1 Do
+    InitSqlValue(Row.Vals[I]);
+
+  ParseRowHeader(Buf, RowOfs, RH);
+  If Not RH.Valid Then Exit;
+
+  { Calculer les offsets des colonnes variables }
+  VarOfs := 0;
+  VarCnt := 0;
+  OfsArr := 0;
+  If RH.HasVarCols Then
+  Begin
+    VarOfs := RowOfs + RH.FixedLen + 2 + RH.NullBmpSize;
+    If VarOfs + 2 <= MDF_PAGE_SIZE Then
+    Begin
+      VarCnt := ReadWord(Buf, VarOfs);
+      OfsArr := VarOfs + 2;
+    End;
+  End;
+
+  { Decoder chaque colonne }
+  CurFixed := 4; { apres StatusA(1) + StatusB(1) + FixedLen(2) }
+  VarIdx := 0;
+  For I := 0 To Res.ColCnt - 1 Do
+  Begin
+    ColXt := Res.Cols[I].XType;
+
+    { Verifier NULL }
+    If RH.HasNullBmp And QEColIsNull(Buf, RowOfs, RH.FixedLen, I) Then
+    Begin
+      Row.Vals[I].IsNull := True;
+      Row.Vals[I].Valid  := True;
+      Row.Vals[I].XType  := ColXt;
+      If SqlTypeIsVariable(ColXt) Then
+        Inc(VarIdx);
+      If Not SqlTypeIsVariable(ColXt) Then
+      Begin
+        FixSz := SqlTypeFixedSize(ColXt);
+        If FixSz = 0 Then
+        Begin
+          If Res.Cols[I].MaxLen > 0 Then
+            FixSz := Res.Cols[I].MaxLen
+          Else
+            FixSz := 1;
+        End;
+        CurFixed := CurFixed + FixSz;
+      End;
+      Continue;
+    End;
+
+    If SqlTypeIsVariable(ColXt) Then
+    Begin
+      { Colonne a longueur variable }
+      If (VarIdx < VarCnt) And (OfsArr > 0) And
+         (OfsArr + LongInt(VarCnt) * 2 <= MDF_PAGE_SIZE) Then
+      Begin
+        VarEnd := ReadWord(Buf, OfsArr + VarIdx * 2) And $7FFF;
+        If VarIdx = 0 Then
+          VarStart := OfsArr + VarCnt * 2 - RowOfs
+        Else
+        Begin
+          PrevEnd := ReadWord(Buf, OfsArr + (VarIdx - 1) * 2) And $7FFF;
+          VarStart := PrevEnd;
+        End;
+        If VarEnd > VarStart Then
+          DataLen := VarEnd - VarStart
+        Else
+          DataLen := 0;
+        If (RowOfs + VarStart < MDF_PAGE_SIZE) And (DataLen > 0) Then
+          DecodeSqlValue(Buf, RowOfs + VarStart, DataLen,
+                         ColXt, Res.Cols[I].Prec, Res.Cols[I].Scale,
+                         Row.Vals[I])
+        Else
+        Begin
+          Row.Vals[I].IsNull := True;
+          Row.Vals[I].Valid  := True;
+          Row.Vals[I].XType  := ColXt;
+        End;
+      End
+      Else
+      Begin
+        Row.Vals[I].IsNull := True;
+        Row.Vals[I].Valid  := True;
+        Row.Vals[I].XType  := ColXt;
+      End;
+      Inc(VarIdx);
+    End
+    Else
+    Begin
+      { Colonne a longueur fixe }
+      FixSz := SqlTypeFixedSize(ColXt);
+      If FixSz = 0 Then
+      Begin
+        If Res.Cols[I].MaxLen > 0 Then
+          FixSz := Res.Cols[I].MaxLen
+        Else
+          FixSz := 1;
+      End;
+      FixOfs := RowOfs + CurFixed;
+      If FixOfs + FixSz <= MDF_PAGE_SIZE Then
+        DecodeSqlValue(Buf, FixOfs, FixSz,
+                       ColXt, Res.Cols[I].Prec, Res.Cols[I].Scale,
+                       Row.Vals[I])
+      Else
+      Begin
+        Row.Vals[I].IsNull := True;
+        Row.Vals[I].Valid  := True;
+        Row.Vals[I].XType  := ColXt;
+      End;
+      CurFixed := CurFixed + FixSz;
+    End;
+  End;
+End;
+
+{ ---- Comparer deux valeurs SQL ------------------------------- }
+{ Retourne <0, 0, >0 comme une comparaison standard.             }
+
+Function QECompareValues(Const A, B : TSqlValue) : Integer;
+Var
+  SA, SB : TSqlValueStr;
+Begin
+  { NULL en premier }
+  If A.IsNull And B.IsNull Then Begin QECompareValues := 0; Exit; End;
+  If A.IsNull Then Begin QECompareValues := -1; Exit; End;
+  If B.IsNull Then Begin QECompareValues := 1; Exit; End;
+
+  Case A.Category Of
+    SQLCAT_INTEGER :
+    Begin
+      If A.IntVal < B.IntVal Then QECompareValues := -1
+      Else If A.IntVal > B.IntVal Then QECompareValues := 1
+      Else QECompareValues := 0;
+    End;
+    SQLCAT_DECIMAL :
+    Begin
+      If A.FloatVal < B.FloatVal Then QECompareValues := -1
+      Else If A.FloatVal > B.FloatVal Then QECompareValues := 1
+      Else QECompareValues := 0;
+    End;
+  Else
+    Begin
+      SA := SqlValueToStr(A);
+      SB := SqlValueToStr(B);
+      If SA < SB Then QECompareValues := -1
+      Else If SA > SB Then QECompareValues := 1
+      Else QECompareValues := 0;
+    End;
+  End;
+End;
+
+{ ---- Evaluer une expression AST contre une ligne ------------- }
+{ Evaluation simplifiee : supporte colonnes, litteraux,           }
+{ comparaisons, AND, OR, NOT, IS NULL, IS NOT NULL, BETWEEN,     }
+{ LIKE (prefixe simple), IN.                                      }
+
+Function QEEvalExpr(Node : Integer;
+                     Const Row : TQERow;
+                     Const Res : TQEResult) : TSqlValue; Forward;
+
+Function QEEvalBool(Node : Integer;
+                     Const Row : TQERow;
+                     Const Res : TQEResult) : Boolean;
+Var
+  V : TSqlValue;
+Begin
+  V := QEEvalExpr(Node, Row, Res);
+  QEEvalBool := (V.Valid) And (Not V.IsNull) And (V.IntVal <> 0);
+End;
+
+Function QEFindColByName(Const ColName : TTokenText;
+                          Const Res : TQEResult) : Integer;
+Var
+  I    : Integer;
+  U, N : TString;
+Begin
+  QEFindColByName := -1;
+  U := StrUpperCase(ColName);
+  For I := 0 To Res.ColCnt - 1 Do
+  Begin
+    N := StrUpperCase(Res.Cols[I].Name);
+    If N = U Then
+    Begin
+      QEFindColByName := I;
+      Exit;
+    End;
+  End;
+End;
+
+Function QESimpleLike(Const S, Pattern : TSqlValueStr) : Boolean;
+Var
+  PLen, SLen : Integer;
+  PI, SI     : Integer;
+Begin
+  QESimpleLike := False;
+  PLen := Length(Pattern);
+  SLen := Length(S);
+  If PLen = 0 Then
+  Begin
+    QESimpleLike := (SLen = 0);
+    Exit;
+  End;
+  PI := 1;
+  SI := 1;
+  While (PI <= PLen) And (SI <= SLen) Do
+  Begin
+    If Pattern[PI] = '%' Then
+    Begin
+      { % au milieu ou fin : match le reste }
+      If PI = PLen Then
+      Begin
+        QESimpleLike := True;
+        Exit;
+      End;
+      { Chercher le caractere suivant }
+      Inc(PI);
+      While SI <= SLen Do
+      Begin
+        If UpCase(S[SI]) = UpCase(Pattern[PI]) Then Break;
+        Inc(SI);
+      End;
+      If SI > SLen Then Exit;
+    End
+    Else If Pattern[PI] = '_' Then
+    Begin
+      Inc(PI);
+      Inc(SI);
+    End
+    Else
+    Begin
+      If UpCase(S[SI]) <> UpCase(Pattern[PI]) Then Exit;
+      Inc(PI);
+      Inc(SI);
+    End;
+  End;
+  { Ignorer les % restants dans le pattern }
+  While (PI <= PLen) And (Pattern[PI] = '%') Do Inc(PI);
+  QESimpleLike := (PI > PLen) And (SI > SLen);
+End;
+
+Function QEEvalExpr(Node : Integer;
+                     Const Row : TQERow;
+                     Const Res : TQEResult) : TSqlValue;
+Var
+  V, VL, VR : TSqlValue;
+  CI         : Integer;
+  Op         : TTokenText;
+  Child0, Child1, Child2 : Integer;
+  I          : Integer;
+Begin
+  InitSqlValue(V);
+  V.IsNull := True;
+
+  If (Node < 0) Or (Node >= ASTCount) Then
+  Begin
+    QEEvalExpr := V;
+    Exit;
+  End;
+
+  Child0 := -1; Child1 := -1; Child2 := -1;
+  If ASTPool[Node].ChildCnt > 0 Then Child0 := ASTPool[Node].Children[0];
+  If ASTPool[Node].ChildCnt > 1 Then Child1 := ASTPool[Node].Children[1];
+  If ASTPool[Node].ChildCnt > 2 Then Child2 := ASTPool[Node].Children[2];
+
+  Case ASTPool[Node].Kind Of
+    ND_INT_LIT :
+    Begin
+      V.IsNull   := False;
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.Valid    := True;
+      Val(ASTPool[Node].Text, V.IntVal, CI);
+    End;
+    ND_FLOAT_LIT :
+    Begin
+      V.IsNull   := False;
+      V.Category := SQLCAT_DECIMAL;
+      V.XType    := XT_FLOAT;
+      V.Valid    := True;
+      Val(ASTPool[Node].Text, V.FloatVal, CI);
+    End;
+    ND_STR_LIT, ND_NSTR_LIT :
+    Begin
+      V.IsNull   := False;
+      V.Category := SQLCAT_STRING;
+      V.XType    := XT_VARCHAR;
+      V.StrVal   := ASTPool[Node].Text;
+      V.Valid    := True;
+    End;
+    ND_NULL_LIT :
+    Begin
+      V.IsNull := True;
+      V.Valid  := True;
+    End;
+    ND_IDENT, ND_DELIM_IDENT :
+    Begin
+      CI := QEFindColByName(ASTPool[Node].Text, Res);
+      If (CI >= 0) And (CI < Row.ColCnt) Then
+        V := Row.Vals[CI]
+      Else
+      Begin
+        V.IsNull := True;
+        V.Valid  := True;
+      End;
+    End;
+    ND_DOT_REF :
+    Begin
+      { table.colonne : utiliser le dernier enfant (nom de colonne) }
+      If ASTPool[Node].ChildCnt > 0 Then
+      Begin
+        I := ASTPool[Node].Children[ASTPool[Node].ChildCnt - 1];
+        If (I >= 0) And (I < ASTCount) Then
+        Begin
+          CI := QEFindColByName(ASTPool[I].Text, Res);
+          If (CI >= 0) And (CI < Row.ColCnt) Then
+            V := Row.Vals[CI]
+          Else
+          Begin
+            V.IsNull := True;
+            V.Valid  := True;
+          End;
+        End;
+      End;
+    End;
+    ND_STAR :
+    Begin
+      V.IsNull   := False;
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.IntVal   := 1;
+      V.Valid    := True;
+    End;
+    ND_COMPARE :
+    Begin
+      If (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        Op := ASTPool[Node].Text;
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        If VL.IsNull Or VR.IsNull Then
+        Begin
+          V.IsNull := True;
+        End
+        Else
+        Begin
+          CI := QECompareValues(VL, VR);
+          If Op = '=' Then V.IntVal := Ord(CI = 0)
+          Else If (Op = '<>') Or (Op = '!=') Then V.IntVal := Ord(CI <> 0)
+          Else If Op = '<' Then V.IntVal := Ord(CI < 0)
+          Else If Op = '>' Then V.IntVal := Ord(CI > 0)
+          Else If Op = '<=' Then V.IntVal := Ord(CI <= 0)
+          Else If Op = '>=' Then V.IntVal := Ord(CI >= 0)
+          Else V.IntVal := 0;
+        End;
+      End;
+    End;
+    ND_AND :
+    Begin
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.Valid    := True;
+      V.IsNull   := False;
+      If (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        If QEEvalBool(Child0, Row, Res) And
+           QEEvalBool(Child1, Row, Res) Then
+          V.IntVal := 1
+        Else
+          V.IntVal := 0;
+      End
+      Else
+        V.IntVal := 0;
+    End;
+    ND_OR :
+    Begin
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.Valid    := True;
+      V.IsNull   := False;
+      If (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        If QEEvalBool(Child0, Row, Res) Or
+           QEEvalBool(Child1, Row, Res) Then
+          V.IntVal := 1
+        Else
+          V.IntVal := 0;
+      End
+      Else
+        V.IntVal := 0;
+    End;
+    ND_NOT :
+    Begin
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.Valid    := True;
+      V.IsNull   := False;
+      If Child0 >= 0 Then
+        V.IntVal := Ord(Not QEEvalBool(Child0, Row, Res))
+      Else
+        V.IntVal := 0;
+    End;
+    ND_IS_NULL :
+    Begin
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.Valid    := True;
+      V.IsNull   := False;
+      If Child0 >= 0 Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.IntVal := Ord(VL.IsNull);
+      End
+      Else
+        V.IntVal := 0;
+    End;
+    ND_IS_NOT_NULL :
+    Begin
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.Valid    := True;
+      V.IsNull   := False;
+      If Child0 >= 0 Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.IntVal := Ord(Not VL.IsNull);
+      End
+      Else
+        V.IntVal := 0;
+    End;
+    ND_BETWEEN :
+    Begin
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.Valid    := True;
+      V.IsNull   := False;
+      If (Child0 >= 0) And (Child1 >= 0) And (Child2 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.IntVal := 0;
+        If (Not VL.IsNull) And (Not VR.IsNull) Then
+        Begin
+          If QECompareValues(VL, VR) >= 0 Then
+          Begin
+            VR := QEEvalExpr(Child2, Row, Res);
+            If (Not VR.IsNull) And (QECompareValues(VL, VR) <= 0) Then
+              V.IntVal := 1;
+          End;
+        End;
+      End
+      Else
+        V.IntVal := 0;
+    End;
+    ND_IN :
+    Begin
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.Valid    := True;
+      V.IsNull   := False;
+      V.IntVal   := 0;
+      If (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        If Not VL.IsNull Then
+        Begin
+          { Child1 est un ND_ARG_LIST }
+          If (Child1 >= 0) And (Child1 < ASTCount) Then
+            For I := 0 To ASTPool[Child1].ChildCnt - 1 Do
+            Begin
+              VR := QEEvalExpr(ASTPool[Child1].Children[I], Row, Res);
+              If (Not VR.IsNull) And (QECompareValues(VL, VR) = 0) Then
+              Begin
+                V.IntVal := 1;
+                Break;
+              End;
+            End;
+        End;
+      End;
+    End;
+    ND_LIKE :
+    Begin
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.Valid    := True;
+      V.IsNull   := False;
+      V.IntVal   := 0;
+      If (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        If (Not VL.IsNull) And (Not VR.IsNull) Then
+        Begin
+          If QESimpleLike(SqlValueToStr(VL), SqlValueToStr(VR)) Then
+            V.IntVal := 1;
+        End;
+      End;
+    End;
+    ND_BINOP :
+    Begin
+      If (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        Op := ASTPool[Node].Text;
+        V.Valid  := True;
+        V.IsNull := False;
+        If VL.IsNull Or VR.IsNull Then
+          V.IsNull := True
+        Else If (VL.Category = SQLCAT_INTEGER) And
+                (VR.Category = SQLCAT_INTEGER) Then
+        Begin
+          V.Category := SQLCAT_INTEGER;
+          V.XType    := XT_INT;
+          If Op = '+' Then V.IntVal := VL.IntVal + VR.IntVal
+          Else If Op = '-' Then V.IntVal := VL.IntVal - VR.IntVal
+          Else If Op = '*' Then V.IntVal := VL.IntVal * VR.IntVal
+          Else If (Op = '/') And (VR.IntVal <> 0) Then
+            V.IntVal := VL.IntVal Div VR.IntVal
+          Else If (Op = '%') And (VR.IntVal <> 0) Then
+            V.IntVal := VL.IntVal Mod VR.IntVal
+          Else V.IntVal := 0;
+        End
+        Else
+        Begin
+          V.Category := SQLCAT_DECIMAL;
+          V.XType    := XT_FLOAT;
+          If Op = '+' Then V.FloatVal := VL.FloatVal + VR.FloatVal
+          Else If Op = '-' Then V.FloatVal := VL.FloatVal - VR.FloatVal
+          Else If Op = '*' Then V.FloatVal := VL.FloatVal * VR.FloatVal
+          Else If (Op = '/') And (VR.FloatVal <> 0) Then
+            V.FloatVal := VL.FloatVal / VR.FloatVal
+          Else V.FloatVal := 0;
+        End;
+      End;
+    End;
+    ND_UNARY :
+    Begin
+      If Child0 >= 0 Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V  := VL;
+        Op := ASTPool[Node].Text;
+        If Op = '-' Then
+        Begin
+          If V.Category = SQLCAT_INTEGER Then
+            V.IntVal := -V.IntVal
+          Else If V.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := -V.FloatVal;
+        End;
+      End;
+    End;
+    ND_FUNC_CALL :
+    Begin
+      { Fonctions scalaires simples }
+      Op := StrUpperCase(ASTPool[Node].Text);
+      If (Op = 'UPPER') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V := VL;
+        If Not V.IsNull Then
+          V.StrVal := StrUpperCase(V.StrVal);
+      End
+      Else If (Op = 'LOWER') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V := VL;
+        If Not V.IsNull Then
+          V.StrVal := StrLowerCase(V.StrVal);
+      End
+      Else If (Op = 'LEN') Or (Op = 'DATALENGTH') Then
+      Begin
+        If Child0 >= 0 Then VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        If VL.IsNull Then V.IsNull := True
+        Else V.IntVal := Length(SqlValueToStr(VL));
+      End
+      Else If Op = 'ISNULL' Then
+      Begin
+        If (Child0 >= 0) And (Child1 >= 0) Then
+        Begin
+          VL := QEEvalExpr(Child0, Row, Res);
+          If VL.IsNull Then
+            V := QEEvalExpr(Child1, Row, Res)
+          Else
+            V := VL;
+        End;
+      End
+      Else If Op = 'COALESCE' Then
+      Begin
+        V.IsNull := True;
+        V.Valid  := True;
+        For I := 0 To ASTPool[Node].ChildCnt - 1 Do
+        Begin
+          VL := QEEvalExpr(ASTPool[Node].Children[I], Row, Res);
+          If Not VL.IsNull Then
+          Begin
+            V := VL;
+            Break;
+          End;
+        End;
+      End
+      Else If Op = 'ABS' Then
+      Begin
+        If Child0 >= 0 Then
+        Begin
+          V := QEEvalExpr(Child0, Row, Res);
+          If (Not V.IsNull) And (V.Category = SQLCAT_INTEGER) And
+             (V.IntVal < 0) Then
+            V.IntVal := -V.IntVal;
+        End;
+      End
+      Else
+      Begin
+        { Fonction inconnue, retourner NULL }
+        V.IsNull := True;
+        V.Valid  := True;
+      End;
+    End;
+    ND_CASE_WHEN :
+    Begin
+      V.IsNull := True;
+      V.Valid  := True;
+      I := 0;
+      While I < ASTPool[Node].ChildCnt Do
+      Begin
+        CI := ASTPool[Node].Children[I];
+        If (CI >= 0) And (CI < ASTCount) And
+           (ASTPool[CI].Kind = ND_WHEN_ITEM) Then
+        Begin
+          If (ASTPool[CI].ChildCnt >= 2) Then
+          Begin
+            If QEEvalBool(ASTPool[CI].Children[0], Row, Res) Then
+            Begin
+              V := QEEvalExpr(ASTPool[CI].Children[1], Row, Res);
+              Break;
+            End;
+          End;
+        End
+        Else
+        Begin
+          { ELSE branch }
+          V := QEEvalExpr(CI, Row, Res);
+          Break;
+        End;
+        Inc(I);
+      End;
+    End;
+  Else
+    Begin
+      V.IsNull := True;
+      V.Valid  := True;
+    End;
+  End;
+
+  QEEvalExpr := V;
+End;
+
+{ ---- Scanner une table et collecter les lignes --------------- }
+{ Parcourt toutes les pages de donnees du MDF dont l ObjId        }
+{ correspond a la table demandee. Retourne le nombre de lignes.   }
+
+Function QETableScan(ObjId : LongInt;
+                      Var Res : TQEResult) : Integer;
+Var
+  TmpBuf    : TMdfPageBuf;
+  Hdr       : TMdfPageHeader;
+  RH        : TMdfRowHeader;
+  I, J      : LongInt;
+  RowOfs    : Word;
+  SC        : Word;
+  Slots     : TMdfSlotArray;
+  PageCount : LongInt;
+Begin
+  Res.RowCnt := 0;
+  PageCount := 0;
+
+  For I := 0 To MdfPageCnt - 1 Do
+  Begin
+    If Res.RowCnt >= MAX_QE_ROWS Then Break;
+    If PageCount >= MAX_QE_PAGES Then Break;
+
+    If Not SeekPage(I, TmpBuf) Then Continue;
+    ParsePageHeader(TmpBuf, Hdr);
+
+    { Filtrer : pages de donnees (type 1) avec le bon ObjId }
+    If Hdr.PageType <> MDF_PT_DATA Then Continue;
+    If Hdr.ObjId <> ObjId Then Continue;
+
+    Inc(PageCount);
+    SC := Hdr.SlotCnt;
+    If SC > MDF_MAX_SLOTS Then SC := MDF_MAX_SLOTS;
+    ReadSlotArray(TmpBuf, SC, Slots);
+
+    For J := 0 To SC - 1 Do
+    Begin
+      If Res.RowCnt >= MAX_QE_ROWS Then Break;
+      RowOfs := Slots[J];
+      If (RowOfs < MDF_PAGE_HDR_SIZE) Or
+         (RowOfs >= MDF_PAGE_SIZE) Then Continue;
+
+      ParseRowHeader(TmpBuf, RowOfs, RH);
+      If Not RH.Valid Then Continue;
+      { Ignorer les ghost records (bit 0 de StatusA) }
+      If (RH.StatusA And $01) <> 0 Then Continue;
+
+      QEDecodeRow(TmpBuf, RowOfs, Res, Res.Rows[Res.RowCnt]);
+      Inc(Res.RowCnt);
+    End;
+  End;
+
+  QETableScan := Res.RowCnt;
+End;
+
+{ ---- Tri QuickSort des lignes -------------------------------- }
+{ Trie le result set en memoire par les colonnes d ORDER BY.      }
+
+Var
+  QESortCol   : Integer;         { index colonne de tri                 }
+  QESortDesc  : Boolean;         { True si DESC                         }
+
+Procedure QEQuickSort(Var Res : TQEResult; Lo, Hi : Integer);
+Var
+  I, J    : Integer;
+  Pivot   : TQERow;
+  TmpRow  : TQERow;
+Begin
+  If Lo >= Hi Then Exit;
+  I := Lo;
+  J := Hi;
+  Pivot := Res.Rows[(Lo + Hi) Div 2];
+  Repeat
+    If QESortDesc Then
+    Begin
+      While QECompareValues(Res.Rows[I].Vals[QESortCol],
+                             Pivot.Vals[QESortCol]) > 0 Do Inc(I);
+      While QECompareValues(Res.Rows[J].Vals[QESortCol],
+                             Pivot.Vals[QESortCol]) < 0 Do Dec(J);
+    End
+    Else
+    Begin
+      While QECompareValues(Res.Rows[I].Vals[QESortCol],
+                             Pivot.Vals[QESortCol]) < 0 Do Inc(I);
+      While QECompareValues(Res.Rows[J].Vals[QESortCol],
+                             Pivot.Vals[QESortCol]) > 0 Do Dec(J);
+    End;
+    If I <= J Then
+    Begin
+      TmpRow := Res.Rows[I];
+      Res.Rows[I] := Res.Rows[J];
+      Res.Rows[J] := TmpRow;
+      Inc(I);
+      Dec(J);
+    End;
+  Until I > J;
+  If Lo < J Then QEQuickSort(Res, Lo, J);
+  If I < Hi Then QEQuickSort(Res, I, Hi);
+End;
+
+{ ---- Eliminer les doublons (DISTINCT) ------------------------ }
+{ Supprime les lignes identiques dans un result set trie.         }
+
+Procedure QEDistinct(Var Res : TQEResult);
+Var
+  I, J, K  : Integer;
+  IsDup    : Boolean;
+Begin
+  If Res.RowCnt <= 1 Then Exit;
+  I := 1;
+  While I < Res.RowCnt Do
+  Begin
+    IsDup := True;
+    For K := 0 To Res.ColCnt - 1 Do
+      If QECompareValues(Res.Rows[I].Vals[K],
+                          Res.Rows[I - 1].Vals[K]) <> 0 Then
+      Begin
+        IsDup := False;
+        Break;
+      End;
+    If IsDup Then
+    Begin
+      { Supprimer la ligne I }
+      For J := I To Res.RowCnt - 2 Do
+        Res.Rows[J] := Res.Rows[J + 1];
+      Dec(Res.RowCnt);
+    End
+    Else
+      Inc(I);
+  End;
+End;
+
+{ ---- Formater et afficher un result set ---------------------- }
+{ Affiche les colonnes avec separateurs et largeurs ajustees.     }
+
+Procedure QEFormatResult(Var Res : TQEResult);
+Var
+  I, J     : Integer;
+  S, Cell  : TString;
+  W        : Integer;
+  Len      : Integer;
+Begin
+  If Res.ColCnt = 0 Then
+  Begin
+    OutputLine('(0 colonnes)');
+    Exit;
+  End;
+
+  { Ajuster les largeurs selon les donnees }
+  For I := 0 To Res.RowCnt - 1 Do
+    For J := 0 To Res.ColCnt - 1 Do
+    Begin
+      Len := Length(SqlValueToStr(Res.Rows[I].Vals[J]));
+      If Len > Res.Cols[J].Width Then
+      Begin
+        If Len > MAX_QE_COLWIDTH Then
+          Res.Cols[J].Width := MAX_QE_COLWIDTH
+        Else
+          Res.Cols[J].Width := Len;
+      End;
+    End;
+
+  { En-tete des colonnes }
+  S := '';
+  For J := 0 To Res.ColCnt - 1 Do
+  Begin
+    If J > 0 Then S := S + ' ';
+    Cell := Res.Cols[J].Name;
+    W := Res.Cols[J].Width;
+    While Length(Cell) < W Do Cell := Cell + ' ';
+    If Length(Cell) > W Then Cell[0] := Chr(W);
+    S := S + Cell;
+  End;
+  OutputLine(S);
+
+  { Ligne de separation }
+  S := '';
+  For J := 0 To Res.ColCnt - 1 Do
+  Begin
+    If J > 0 Then S := S + ' ';
+    W := Res.Cols[J].Width;
+    Cell := '';
+    For I := 1 To W Do Cell := Cell + '-';
+    S := S + Cell;
+  End;
+  OutputLine(S);
+
+  { Lignes de donnees }
+  For I := 0 To Res.RowCnt - 1 Do
+  Begin
+    S := '';
+    For J := 0 To Res.ColCnt - 1 Do
+    Begin
+      If J > 0 Then S := S + ' ';
+      Cell := SqlValueToStr(Res.Rows[I].Vals[J]);
+      W := Res.Cols[J].Width;
+      While Length(Cell) < W Do Cell := Cell + ' ';
+      If Length(Cell) > W Then Cell[0] := Chr(W);
+      S := S + Cell;
+    End;
+    OutputLine(S);
+  End;
+
+  { Compteur de lignes }
+  OutputLine('');
+  OutputLine('(' + IntToStr(Res.RowCnt) + ' ligne(s) affectee(s))');
+End;
+
+{ ---- Executer un SELECT ------------------------------------- }
+{ Pipeline : Scan -> Filter(WHERE) -> Project -> Sort -> Distinct }
+{            -> Top -> Output                                     }
+
+Procedure QEExecSelect(Root : Integer);
+Var
+  N          : Integer;
+  TblNode    : Integer;
+  WhereNode  : Integer;
+  OrderNode  : Integer;
+  TopNode    : Integer;
+  HasDistinct: Boolean;
+  I, J, K    : Integer;
+  TblIdx     : Integer;
+  ObjId      : LongInt;
+  TblName    : TTokenText;
+  CI         : Integer;
+  Row        : TQERow;
+  V          : TSqlValue;
+  TopN       : Integer;
+  IsPercent  : Boolean;
+  NbCols     : Integer;
+  ProjCols   : Array[0..MAX_QE_COLS - 1] Of Integer;
+  ProjNames  : Array[0..MAX_QE_COLS - 1] Of TQEColName;
+  ProjAll    : Boolean;
+  OrdCol     : Integer;
+  OrdDesc    : Boolean;
+  SrcRes     : TQEResult;
+Begin
+  If QERes = Nil Then New(QERes);
+  QERes^.ColCnt := 0;
+  QERes^.RowCnt := 0;
+
+  If (Root < 0) Or (Root >= ASTCount) Then
+  Begin
+    OutputLine('-- Erreur : noeud SELECT invalide');
+    Exit;
+  End;
+
+  If ASTPool[Root].Kind <> ND_SELECT_STMT Then
+  Begin
+    OutputLine('-- Erreur : noeud n''est pas un SELECT');
+    Exit;
+  End;
+
+  { Extraire les sous-noeuds du SELECT }
+  TblNode   := -1;
+  WhereNode := -1;
+  OrderNode := -1;
+  TopNode   := -1;
+  HasDistinct := False;
+
+  { Verifier DISTINCT dans le texte du noeud SELECT }
+  If StrUpperCase(ASTPool[Root].Text) = 'DISTINCT' Then
+    HasDistinct := True;
+
+  { Parcourir les enfants du SELECT }
+  For I := 0 To ASTPool[Root].ChildCnt - 1 Do
+  Begin
+    N := ASTPool[Root].Children[I];
+    If (N < 0) Or (N >= ASTCount) Then Continue;
+    Case ASTPool[N].Kind Of
+      ND_FROM_CLAUSE  : TblNode   := N;
+      ND_WHERE_CLAUSE : WhereNode := N;
+      ND_ORDER_BY     : OrderNode := N;
+      ND_TOP_CLAUSE   : TopNode   := N;
+    End;
+  End;
+
+  { Verifier qu on a un FROM }
+  If TblNode < 0 Then
+  Begin
+    { SELECT sans FROM : evaluer les expressions directement }
+    QERes^.ColCnt := 0;
+    QERes^.RowCnt := 1;
+    Row.ColCnt := 0;
+    J := 0;
+    For I := 0 To ASTPool[Root].ChildCnt - 1 Do
+    Begin
+      N := ASTPool[Root].Children[I];
+      If (N < 0) Or (N >= ASTCount) Then Continue;
+      If ASTPool[N].Kind = ND_SELECT_ITEM Then
+      Begin
+        If J < MAX_QE_COLS Then
+        Begin
+          V := QEEvalExpr(N, Row, QERes^);
+          { Chercher alias }
+          If ASTPool[N].ChildCnt > 0 Then
+          Begin
+            CI := ASTPool[N].Children[0];
+            V := QEEvalExpr(CI, Row, QERes^);
+          End;
+          QERes^.Cols[J].Name := '(expr)';
+          { Chercher un alias dans les enfants }
+          For K := 0 To ASTPool[N].ChildCnt - 1 Do
+          Begin
+            CI := ASTPool[N].Children[K];
+            If (CI >= 0) And (CI < ASTCount) And
+               (ASTPool[CI].Kind = ND_ALIAS) Then
+              QERes^.Cols[J].Name := ASTPool[CI].Text;
+          End;
+          QERes^.Cols[J].Width := Length(QERes^.Cols[J].Name);
+          If QERes^.Cols[J].Width < 4 Then
+            QERes^.Cols[J].Width := 4;
+          QERes^.Rows[0].Vals[J] := V;
+          Inc(J);
+        End;
+      End;
+    End;
+    QERes^.ColCnt := J;
+    QERes^.Rows[0].ColCnt := J;
+    QEFormatResult(QERes^);
+    Exit;
+  End;
+
+  { Trouver le nom de la table dans le FROM }
+  TblName := '';
+  For I := 0 To ASTPool[TblNode].ChildCnt - 1 Do
+  Begin
+    N := ASTPool[TblNode].Children[I];
+    If (N >= 0) And (N < ASTCount) And
+       (ASTPool[N].Kind = ND_TABLE_REF) Then
+    Begin
+      TblName := ASTPool[N].Text;
+      { Si le nom est vide, chercher dans les enfants }
+      If (TblName = '') And (ASTPool[N].ChildCnt > 0) Then
+      Begin
+        CI := ASTPool[N].Children[0];
+        If (CI >= 0) And (CI < ASTCount) Then
+          TblName := ASTPool[CI].Text;
+      End;
+      Break;
+    End;
+  End;
+
+  If TblName = '' Then
+  Begin
+    OutputLine('-- Erreur : table introuvable dans le FROM');
+    Exit;
+  End;
+
+  { Chercher la table dans le catalogue }
+  If Not CatalogValid Then
+  Begin
+    OutputLine('-- Erreur : catalogue systeme non charge');
+    Exit;
+  End;
+
+  TblIdx := QEFindTable(TblName);
+  If TblIdx < 0 Then
+  Begin
+    OutputLine('-- Erreur : table ''' + TblName + ''' introuvable');
+    Exit;
+  End;
+  ObjId := SysObjects[TblIdx].ObjectId;
+
+  { Charger les colonnes de la table source }
+  FillChar(SrcRes, SizeOf(SrcRes), 0);
+  QEGetTableCols(ObjId, SrcRes);
+
+  If SrcRes.ColCnt = 0 Then
+  Begin
+    OutputLine('-- Erreur : aucune colonne pour la table ''' +
+               TblName + '''');
+    Exit;
+  End;
+
+  { Scanner les pages de donnees }
+  QETableScan(ObjId, SrcRes);
+
+  If Opts.Verbose Then
+    OutputLine('-- Table scan : ' + IntToStr(SrcRes.RowCnt) +
+               ' ligne(s) trouvee(s) dans ' + TblName);
+
+  { Appliquer le filtre WHERE }
+  If WhereNode >= 0 Then
+  Begin
+    If ASTPool[WhereNode].ChildCnt > 0 Then
+    Begin
+      N := ASTPool[WhereNode].Children[0];
+      J := 0;
+      For I := 0 To SrcRes.RowCnt - 1 Do
+      Begin
+        If QEEvalBool(N, SrcRes.Rows[I], SrcRes) Then
+        Begin
+          If J <> I Then
+            SrcRes.Rows[J] := SrcRes.Rows[I];
+          Inc(J);
+        End;
+      End;
+      SrcRes.RowCnt := J;
+    End;
+  End;
+
+  { Determiner la projection (colonnes SELECT) }
+  NbCols := 0;
+  ProjAll := False;
+  For I := 0 To ASTPool[Root].ChildCnt - 1 Do
+  Begin
+    N := ASTPool[Root].Children[I];
+    If (N < 0) Or (N >= ASTCount) Then Continue;
+    If ASTPool[N].Kind = ND_SELECT_ITEM Then
+    Begin
+      If NbCols >= MAX_QE_COLS Then Break;
+      { Verifier si c est un * (SELECT *) }
+      If (ASTPool[N].ChildCnt > 0) Then
+      Begin
+        CI := ASTPool[N].Children[0];
+        If (CI >= 0) And (CI < ASTCount) And
+           (ASTPool[CI].Kind = ND_STAR) Then
+        Begin
+          ProjAll := True;
+          Break;
+        End;
+        { Chercher le nom de la colonne }
+        If ASTPool[CI].Kind = ND_IDENT Then
+        Begin
+          ProjCols[NbCols] := QEFindColByName(ASTPool[CI].Text, SrcRes);
+          ProjNames[NbCols] := ASTPool[CI].Text;
+          { Chercher alias }
+          For K := 0 To ASTPool[N].ChildCnt - 1 Do
+          Begin
+            J := ASTPool[N].Children[K];
+            If (J >= 0) And (J < ASTCount) And
+               (ASTPool[J].Kind = ND_ALIAS) Then
+              ProjNames[NbCols] := ASTPool[J].Text;
+          End;
+          Inc(NbCols);
+        End
+        Else If ASTPool[CI].Kind = ND_DOT_REF Then
+        Begin
+          { table.colonne : utiliser le dernier enfant }
+          If ASTPool[CI].ChildCnt > 0 Then
+          Begin
+            J := ASTPool[CI].Children[ASTPool[CI].ChildCnt - 1];
+            If (J >= 0) And (J < ASTCount) Then
+            Begin
+              ProjCols[NbCols] := QEFindColByName(ASTPool[J].Text,
+                                                    SrcRes);
+              ProjNames[NbCols] := ASTPool[J].Text;
+            End;
+          End
+          Else
+          Begin
+            ProjCols[NbCols] := -1;
+            ProjNames[NbCols] := '(expr)';
+          End;
+          Inc(NbCols);
+        End
+        Else
+        Begin
+          { Expression calculee }
+          ProjCols[NbCols] := -1;
+          ProjNames[NbCols] := '(expr)';
+          { Chercher alias }
+          For K := 0 To ASTPool[N].ChildCnt - 1 Do
+          Begin
+            J := ASTPool[N].Children[K];
+            If (J >= 0) And (J < ASTCount) And
+               (ASTPool[J].Kind = ND_ALIAS) Then
+              ProjNames[NbCols] := ASTPool[J].Text;
+          End;
+          Inc(NbCols);
+        End;
+      End
+      Else
+      Begin
+        { SELECT item sans enfant, essayer le texte du noeud }
+        If ASTPool[N].Text = '*' Then
+        Begin
+          ProjAll := True;
+          Break;
+        End;
+        ProjCols[NbCols] := QEFindColByName(ASTPool[N].Text, SrcRes);
+        ProjNames[NbCols] := ASTPool[N].Text;
+        Inc(NbCols);
+      End;
+    End;
+  End;
+
+  { Construire le result set projete }
+  If ProjAll Then
+  Begin
+    { SELECT * : copier toutes les colonnes }
+    QERes^.ColCnt := SrcRes.ColCnt;
+    For J := 0 To SrcRes.ColCnt - 1 Do
+      QERes^.Cols[J] := SrcRes.Cols[J];
+    QERes^.RowCnt := SrcRes.RowCnt;
+    For I := 0 To SrcRes.RowCnt - 1 Do
+      QERes^.Rows[I] := SrcRes.Rows[I];
+  End
+  Else If NbCols > 0 Then
+  Begin
+    QERes^.ColCnt := NbCols;
+    For J := 0 To NbCols - 1 Do
+    Begin
+      If ProjCols[J] >= 0 Then
+        QERes^.Cols[J] := SrcRes.Cols[ProjCols[J]]
+      Else
+      Begin
+        QERes^.Cols[J].Name   := ProjNames[J];
+        QERes^.Cols[J].XType  := 0;
+        QERes^.Cols[J].MaxLen := 0;
+        QERes^.Cols[J].Prec   := 0;
+        QERes^.Cols[J].Scale  := 0;
+        QERes^.Cols[J].ColIdx := -1;
+        QERes^.Cols[J].Width  := Length(ProjNames[J]);
+      End;
+      QERes^.Cols[J].Name := ProjNames[J];
+    End;
+    QERes^.RowCnt := SrcRes.RowCnt;
+    For I := 0 To SrcRes.RowCnt - 1 Do
+    Begin
+      QERes^.Rows[I].ColCnt := NbCols;
+      For J := 0 To NbCols - 1 Do
+      Begin
+        If ProjCols[J] >= 0 Then
+          QERes^.Rows[I].Vals[J] := SrcRes.Rows[I].Vals[ProjCols[J]]
+        Else
+        Begin
+          { Evaluer l expression }
+          N := ASTPool[Root].Children[0]; { premier SELECT_ITEM }
+          K := 0;
+          For CI := 0 To ASTPool[Root].ChildCnt - 1 Do
+          Begin
+            N := ASTPool[Root].Children[CI];
+            If (N >= 0) And (N < ASTCount) And
+               (ASTPool[N].Kind = ND_SELECT_ITEM) Then
+            Begin
+              If K = J Then
+              Begin
+                If ASTPool[N].ChildCnt > 0 Then
+                  QERes^.Rows[I].Vals[J] :=
+                    QEEvalExpr(ASTPool[N].Children[0],
+                               SrcRes.Rows[I], SrcRes);
+                Break;
+              End;
+              Inc(K);
+            End;
+          End;
+        End;
+      End;
+    End;
+  End
+  Else
+  Begin
+    { Pas de colonnes trouvees, copier tout }
+    QERes^.ColCnt := SrcRes.ColCnt;
+    For J := 0 To SrcRes.ColCnt - 1 Do
+      QERes^.Cols[J] := SrcRes.Cols[J];
+    QERes^.RowCnt := SrcRes.RowCnt;
+    For I := 0 To SrcRes.RowCnt - 1 Do
+      QERes^.Rows[I] := SrcRes.Rows[I];
+  End;
+
+  { ORDER BY : trier le result set }
+  If OrderNode >= 0 Then
+  Begin
+    If ASTPool[OrderNode].ChildCnt > 0 Then
+    Begin
+      N := ASTPool[OrderNode].Children[0];
+      If (N >= 0) And (N < ASTCount) And
+         (ASTPool[N].Kind = ND_ORDER_ITEM) Then
+      Begin
+        OrdDesc := (StrUpperCase(ASTPool[N].Text) = 'DESC');
+        OrdCol := -1;
+        If ASTPool[N].ChildCnt > 0 Then
+        Begin
+          CI := ASTPool[N].Children[0];
+          If (CI >= 0) And (CI < ASTCount) Then
+            OrdCol := QEFindColByName(ASTPool[CI].Text, QERes^);
+        End;
+        If (OrdCol >= 0) And (QERes^.RowCnt > 1) Then
+        Begin
+          QESortCol  := OrdCol;
+          QESortDesc := OrdDesc;
+          QEQuickSort(QERes^, 0, QERes^.RowCnt - 1);
+        End;
+      End;
+    End;
+  End;
+
+  { DISTINCT : eliminer les doublons }
+  If HasDistinct And (QERes^.RowCnt > 1) Then
+  Begin
+    { Trier d abord par la premiere colonne pour grouper les doublons }
+    If QERes^.ColCnt > 0 Then
+    Begin
+      QESortCol  := 0;
+      QESortDesc := False;
+      QEQuickSort(QERes^, 0, QERes^.RowCnt - 1);
+    End;
+    QEDistinct(QERes^);
+  End;
+
+  { TOP n : limiter le nombre de lignes }
+  If TopNode >= 0 Then
+  Begin
+    TopN := 0;
+    IsPercent := (StrUpperCase(ASTPool[TopNode].Text) = 'PERCENT');
+    If ASTPool[TopNode].ChildCnt > 0 Then
+    Begin
+      N := ASTPool[TopNode].Children[0];
+      If (N >= 0) And (N < ASTCount) Then
+        Val(ASTPool[N].Text, TopN, CI);
+    End
+    Else
+      Val(ASTPool[TopNode].Text, TopN, CI);
+    If IsPercent Then
+      TopN := (QERes^.RowCnt * TopN + 99) Div 100;
+    If (TopN >= 0) And (TopN < QERes^.RowCnt) Then
+      QERes^.RowCnt := TopN;
+  End;
+
+  { Afficher le result set }
+  QEFormatResult(QERes^);
+End;
+
 { ---- Execution d une requete SQL ----------------------------- }
 
 Procedure ExecuteQuery(Const SQL : TString);
@@ -11076,6 +12509,9 @@ Begin
       OutputLine('-- AST :');
       DumpExpr(Root, 0);
     End;
+    { Executer le SELECT via le moteur de requetes (TODO 15) }
+    If ASTPool[Root].Kind = ND_SELECT_STMT Then
+      QEExecSelect(Root);
   End
   Else
     OutputLine('-- Erreur de syntaxe dans : ' + SQL);
@@ -11179,6 +12615,11 @@ Begin
     Close(OutF);
     OutFOpen := False;
   End;
+  If QERes <> Nil Then
+  Begin
+    Dispose(QERes);
+    QERes := Nil;
+  End;
 End;
 
 { ============================================================
@@ -11197,6 +12638,7 @@ Begin
   SysIcCount   := 0;
   SysRsCount   := 0;
   CatalogValid := False;
+  QERes        := Nil;
 
   ParseArgs;
 
