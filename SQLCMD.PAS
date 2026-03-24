@@ -223,7 +223,7 @@
             USE database
             GO (separateur de batch)
 
-  TODO 14 - PARSEUR DCL (GRANT / REVOKE / DENY)
+  TODO 14 - PARSEUR DCL (GRANT / REVOKE / DENY) [IMPLEMENTE]
             GRANT permission ON objet TO principal
             REVOKE permission ON objet FROM principal
             DENY permission ON objet TO principal
@@ -953,7 +953,15 @@ Const
   KW_DELAY        = 139;
   KW_TIME         = 140;
 
-  KW_COUNT        = 140;     { nombre total de mots-cles definis  }
+  { -- DCL (TODO 14) -- }
+  KW_TO           = 141;
+  KW_CONTROL      = 142;
+  KW_DEFINITION   = 143;
+  KW_TAKE         = 144;
+  KW_OWNERSHIP    = 145;
+  KW_PUBLIC       = 146;
+
+  KW_COUNT        = 146;     { nombre total de mots-cles definis  }
 
   { ---- Constantes AST noeud parseur SQL (TODO 09) ------------- }
   { Types de noeuds dans l arbre d expression }
@@ -1085,6 +1093,20 @@ Const
   ND_EXEC_SQL      = 117;    { EXEC('sql dynamique')                }
   ND_USE_STMT      = 118;    { USE database                         }
   ND_GO_STMT       = 119;    { GO separateur de batch               }
+
+  { -- DCL nodes (TODO 14) -- }
+  ND_GRANT_STMT    = 120;    { GRANT permission ON obj TO principal }
+  ND_REVOKE_STMT   = 121;    { REVOKE permission ON obj FROM princ  }
+  ND_DENY_STMT     = 122;    { DENY permission ON obj TO principal  }
+  ND_PERMISSION    = 123;    { permission node (SELECT, INSERT...)  }
+  ND_PRINCIPAL     = 124;    { principal (user/role/login/public)    }
+  ND_CREATE_LOGIN  = 125;    { CREATE LOGIN                         }
+  ND_CREATE_USER   = 126;    { CREATE USER                          }
+  ND_ALTER_LOGIN   = 127;    { ALTER LOGIN                          }
+  ND_ALTER_USER    = 128;    { ALTER USER                           }
+  ND_ALTER_ROLE    = 129;    { ALTER ROLE ... ADD MEMBER             }
+  ND_DROP_LOGIN    = 130;    { DROP LOGIN                           }
+  ND_DROP_USER     = 131;    { DROP USER                            }
 
   { Taille max du pool de noeuds AST }
   MAX_AST_NODES   = 1024;
@@ -5129,6 +5151,14 @@ Begin
   If U = 'DELAY'        Then Begin IsKeyword := KW_DELAY;        Exit; End;
   If U = 'TIME'         Then Begin IsKeyword := KW_TIME;         Exit; End;
 
+  { -- DCL (TODO 14) -- }
+  If U = 'TO'           Then Begin IsKeyword := KW_TO;           Exit; End;
+  If U = 'CONTROL'      Then Begin IsKeyword := KW_CONTROL;      Exit; End;
+  If U = 'DEFINITION'   Then Begin IsKeyword := KW_DEFINITION;   Exit; End;
+  If U = 'TAKE'         Then Begin IsKeyword := KW_TAKE;         Exit; End;
+  If U = 'OWNERSHIP'    Then Begin IsKeyword := KW_OWNERSHIP;    Exit; End;
+  If U = 'PUBLIC'       Then Begin IsKeyword := KW_PUBLIC;       Exit; End;
+
   IsKeyword := 0;
 End;
 
@@ -5240,6 +5270,13 @@ Begin
     KW_DENY         : KeywordName := 'DENY';
     KW_OUTPUT       : KeywordName := 'OUTPUT';
     KW_USING        : KeywordName := 'USING';
+    { DCL (TODO 14) }
+    KW_TO           : KeywordName := 'TO';
+    KW_CONTROL      : KeywordName := 'CONTROL';
+    KW_DEFINITION   : KeywordName := 'DEFINITION';
+    KW_TAKE         : KeywordName := 'TAKE';
+    KW_OWNERSHIP    : KeywordName := 'OWNERSHIP';
+    KW_PUBLIC       : KeywordName := 'PUBLIC';
   Else
     KeywordName := '?';
   End;
@@ -5428,6 +5465,19 @@ Begin
     ND_EXEC_SQL     : NodeKindName := 'EXEC_SQL';
     ND_USE_STMT     : NodeKindName := 'USE_STMT';
     ND_GO_STMT      : NodeKindName := 'GO_STMT';
+    { DCL (TODO 14) }
+    ND_GRANT_STMT   : NodeKindName := 'GRANT_STMT';
+    ND_REVOKE_STMT  : NodeKindName := 'REVOKE_STMT';
+    ND_DENY_STMT    : NodeKindName := 'DENY_STMT';
+    ND_PERMISSION   : NodeKindName := 'PERMISSION';
+    ND_PRINCIPAL    : NodeKindName := 'PRINCIPAL';
+    ND_CREATE_LOGIN : NodeKindName := 'CREATE_LOGIN';
+    ND_CREATE_USER  : NodeKindName := 'CREATE_USER';
+    ND_ALTER_LOGIN  : NodeKindName := 'ALTER_LOGIN';
+    ND_ALTER_USER   : NodeKindName := 'ALTER_USER';
+    ND_ALTER_ROLE   : NodeKindName := 'ALTER_ROLE';
+    ND_DROP_LOGIN   : NodeKindName := 'DROP_LOGIN';
+    ND_DROP_USER    : NodeKindName := 'DROP_USER';
   Else
     NodeKindName := '?';
   End;
@@ -9211,6 +9261,363 @@ Begin
   ParseCreateDatabase := CDb;
 End;
 
+{ ---- TODO 14 : Parseur DCL (GRANT / REVOKE / DENY) ----------- }
+
+{ ---- ParsePermission ------------------------------------------- }
+{ Analyse un nom de permission SQL.                                 }
+{ Permissions : SELECT, INSERT, UPDATE, DELETE, EXECUTE, ALTER,     }
+{ CONTROL, VIEW DEFINITION, REFERENCES, TAKE OWNERSHIP             }
+
+Function ParsePermission : Integer;
+Var
+  PermName : TString;
+Begin
+  ParsePermission := -1;
+  If Not ParseOk Then Exit;
+  PermName := '';
+  If KwIs(KW_SELECT) Then
+    PermName := 'SELECT'
+  Else If KwIs(KW_INSERT) Then
+    PermName := 'INSERT'
+  Else If KwIs(KW_UPDATE) Then
+    PermName := 'UPDATE'
+  Else If KwIs(KW_DELETE) Then
+    PermName := 'DELETE'
+  Else If KwIs(KW_EXECUTE) Or KwIs(KW_EXEC) Then
+    PermName := 'EXECUTE'
+  Else If KwIs(KW_ALTER) Then
+    PermName := 'ALTER'
+  Else If KwIs(KW_CONTROL) Then
+    PermName := 'CONTROL'
+  Else If KwIs(KW_VIEW) Then
+  Begin
+    Advance; { skip VIEW }
+    If KwIs(KW_DEFINITION) Then
+    Begin
+      PermName := 'VIEW DEFINITION';
+    End
+    Else
+    Begin
+      ParseError('DEFINITION attendu apres VIEW');
+      Exit;
+    End;
+  End
+  Else If KwIs(KW_REFERENCES) Then
+    PermName := 'REFERENCES'
+  Else If KwIs(KW_TAKE) Then
+  Begin
+    Advance; { skip TAKE }
+    If KwIs(KW_OWNERSHIP) Then
+    Begin
+      PermName := 'TAKE OWNERSHIP';
+    End
+    Else
+    Begin
+      ParseError('OWNERSHIP attendu apres TAKE');
+      Exit;
+    End;
+  End
+  Else
+  Begin
+    { permission as identifier }
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+      PermName := StrUpperCase(LexCurTok.Text)
+    Else
+    Begin
+      ParseError('permission attendue');
+      Exit;
+    End;
+  End;
+  ParsePermission := NewNode(ND_PERMISSION, PermName, LexCurTok.Line,
+                             LexCurTok.Col);
+  Advance; { skip permission keyword }
+End;
+
+{ ---- ParsePrincipal -------------------------------------------- }
+{ Analyse un nom de principal (user, role, login, public).          }
+
+Function ParsePrincipal : Integer;
+Var
+  PName : TString;
+Begin
+  ParsePrincipal := -1;
+  If Not ParseOk Then Exit;
+  If KwIs(KW_PUBLIC) Then
+  Begin
+    ParsePrincipal := NewNode(ND_PRINCIPAL, 'PUBLIC', LexCurTok.Line,
+                              LexCurTok.Col);
+    Advance;
+    Exit;
+  End;
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    PName := LexCurTok.Text;
+    ParsePrincipal := NewNode(ND_PRINCIPAL, PName, LexCurTok.Line,
+                              LexCurTok.Col);
+    Advance;
+  End
+  Else If LexCurTok.Kind = TOK_DELIM_IDENT Then
+  Begin
+    ParsePrincipal := ParseObjectName;
+  End
+  Else
+    ParseError('nom de principal attendu');
+End;
+
+{ ---- ParseGrantStmt -------------------------------------------- }
+{ GRANT permission [ON objet] TO principal                          }
+{ GRANT permission TO role (sans ON)                                }
+
+Function ParseGrantStmt : Integer;
+Var
+  GS, Perm, Obj, Princ : Integer;
+Begin
+  ParseGrantStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_GRANT) Then
+  Begin
+    ParseError('GRANT attendu');
+    Exit;
+  End;
+  GS := NewNode(ND_GRANT_STMT, 'GRANT', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip GRANT }
+
+  { Parse permission }
+  Perm := ParsePermission;
+  AddChild(GS, Perm);
+
+  { ON objet (optionnel) }
+  If KwIs(KW_ON) Then
+  Begin
+    Advance; { skip ON }
+    Obj := ParseObjectName;
+    AddChild(GS, Obj);
+  End;
+
+  { TO principal }
+  If KwIs(KW_TO) Then
+  Begin
+    Advance; { skip TO }
+    Princ := ParsePrincipal;
+    AddChild(GS, Princ);
+  End
+  Else
+    ParseError('TO attendu');
+
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseGrantStmt := GS;
+End;
+
+{ ---- ParseRevokeStmt ------------------------------------------- }
+{ REVOKE permission [ON objet] FROM principal                       }
+
+Function ParseRevokeStmt : Integer;
+Var
+  RS, Perm, Obj, Princ : Integer;
+Begin
+  ParseRevokeStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_REVOKE) Then
+  Begin
+    ParseError('REVOKE attendu');
+    Exit;
+  End;
+  RS := NewNode(ND_REVOKE_STMT, 'REVOKE', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip REVOKE }
+
+  { Parse permission }
+  Perm := ParsePermission;
+  AddChild(RS, Perm);
+
+  { ON objet (optionnel) }
+  If KwIs(KW_ON) Then
+  Begin
+    Advance; { skip ON }
+    Obj := ParseObjectName;
+    AddChild(RS, Obj);
+  End;
+
+  { FROM principal }
+  If KwIs(KW_FROM) Then
+  Begin
+    Advance; { skip FROM }
+    Princ := ParsePrincipal;
+    AddChild(RS, Princ);
+  End
+  Else
+    ParseError('FROM attendu');
+
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseRevokeStmt := RS;
+End;
+
+{ ---- ParseDenyStmt --------------------------------------------- }
+{ DENY permission [ON objet] TO principal                           }
+
+Function ParseDenyStmt : Integer;
+Var
+  DS, Perm, Obj, Princ : Integer;
+Begin
+  ParseDenyStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_DENY) Then
+  Begin
+    ParseError('DENY attendu');
+    Exit;
+  End;
+  DS := NewNode(ND_DENY_STMT, 'DENY', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip DENY }
+
+  { Parse permission }
+  Perm := ParsePermission;
+  AddChild(DS, Perm);
+
+  { ON objet (optionnel) }
+  If KwIs(KW_ON) Then
+  Begin
+    Advance; { skip ON }
+    Obj := ParseObjectName;
+    AddChild(DS, Obj);
+  End;
+
+  { TO principal }
+  If KwIs(KW_TO) Then
+  Begin
+    Advance; { skip TO }
+    Princ := ParsePrincipal;
+    AddChild(DS, Princ);
+  End
+  Else
+    ParseError('TO attendu');
+
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseDenyStmt := DS;
+End;
+
+{ ---- ParseCreateLogin ------------------------------------------ }
+{ CREATE LOGIN name ... (options sautees)                           }
+
+Function ParseCreateLogin : Integer;
+Var
+  CL, N : Integer;
+Begin
+  ParseCreateLogin := -1;
+  If Not ParseOk Then Exit;
+  CL := NewNode(ND_CREATE_LOGIN, 'CREATE LOGIN', LexCurTok.Line,
+                LexCurTok.Col);
+  N := ParseObjectName;
+  AddChild(CL, N);
+  { Sauter les options restantes jusqu au ; ou EOF }
+  While ParseOk And Not TokIs(TOK_SEMICOL) And
+        (LexCurTok.Kind <> TOK_EOF) Do
+    Advance;
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseCreateLogin := CL;
+End;
+
+{ ---- ParseCreateUser ------------------------------------------- }
+{ CREATE USER name ... (options sautees)                            }
+
+Function ParseCreateUser : Integer;
+Var
+  CU, N : Integer;
+Begin
+  ParseCreateUser := -1;
+  If Not ParseOk Then Exit;
+  CU := NewNode(ND_CREATE_USER, 'CREATE USER', LexCurTok.Line,
+                LexCurTok.Col);
+  N := ParseObjectName;
+  AddChild(CU, N);
+  { Sauter les options restantes jusqu au ; ou EOF }
+  While ParseOk And Not TokIs(TOK_SEMICOL) And
+        (LexCurTok.Kind <> TOK_EOF) Do
+    Advance;
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseCreateUser := CU;
+End;
+
+{ ---- ParseAlterLogin ------------------------------------------- }
+{ ALTER LOGIN name ... (options sautees)                            }
+
+Function ParseAlterLogin : Integer;
+Var
+  AL, N : Integer;
+Begin
+  ParseAlterLogin := -1;
+  If Not ParseOk Then Exit;
+  AL := NewNode(ND_ALTER_LOGIN, 'ALTER LOGIN', LexCurTok.Line,
+                LexCurTok.Col);
+  N := ParseObjectName;
+  AddChild(AL, N);
+  { Sauter les options restantes jusqu au ; ou EOF }
+  While ParseOk And Not TokIs(TOK_SEMICOL) And
+        (LexCurTok.Kind <> TOK_EOF) Do
+    Advance;
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseAlterLogin := AL;
+End;
+
+{ ---- ParseAlterUser -------------------------------------------- }
+{ ALTER USER name ... (options sautees)                             }
+
+Function ParseAlterUser : Integer;
+Var
+  AU, N : Integer;
+Begin
+  ParseAlterUser := -1;
+  If Not ParseOk Then Exit;
+  AU := NewNode(ND_ALTER_USER, 'ALTER USER', LexCurTok.Line,
+                LexCurTok.Col);
+  N := ParseObjectName;
+  AddChild(AU, N);
+  { Sauter les options restantes jusqu au ; ou EOF }
+  While ParseOk And Not TokIs(TOK_SEMICOL) And
+        (LexCurTok.Kind <> TOK_EOF) Do
+    Advance;
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseAlterUser := AU;
+End;
+
+{ ---- ParseAlterRole -------------------------------------------- }
+{ ALTER ROLE rolename ADD MEMBER username                           }
+
+Function ParseAlterRole : Integer;
+Var
+  AR, N : Integer;
+Begin
+  ParseAlterRole := -1;
+  If Not ParseOk Then Exit;
+  AR := NewNode(ND_ALTER_ROLE, 'ALTER ROLE', LexCurTok.Line,
+                LexCurTok.Col);
+  { Nom du role }
+  N := ParseObjectName;
+  AddChild(AR, N);
+
+  { ADD MEMBER username }
+  If KwIs(KW_ADD) Then
+  Begin
+    Advance; { skip ADD }
+    If KwIs(KW_MEMBER) Then
+    Begin
+      Advance; { skip MEMBER }
+      N := ParsePrincipal;
+      AddChild(AR, N);
+    End
+    Else
+      ParseError('MEMBER attendu apres ADD');
+  End
+  Else
+  Begin
+    { Sauter les options restantes jusqu au ; ou EOF }
+    While ParseOk And Not TokIs(TOK_SEMICOL) And
+          (LexCurTok.Kind <> TOK_EOF) Do
+      Advance;
+  End;
+
+  If TokIs(TOK_SEMICOL) Then Advance;
+  ParseAlterRole := AR;
+End;
+
 { ---- Dispatch CREATE ------------------------------------------- }
 
 Function ParseCreateStmt : Integer;
@@ -9300,6 +9707,16 @@ Begin
         Advance; { skip DATABASE }
         ParseCreateStmt := ParseCreateDatabase;
       End
+      Else If KwIs(KW_LOGIN) Then
+      Begin
+        Advance; { skip LOGIN }
+        ParseCreateStmt := ParseCreateLogin;
+      End
+      Else If KwIs(KW_USER) Then
+      Begin
+        Advance; { skip USER }
+        ParseCreateStmt := ParseCreateUser;
+      End
       Else
       Begin
         ParseError('type d''objet CREATE inconnu: ' + LexCurTok.Text);
@@ -9335,6 +9752,16 @@ Begin
   Begin
     Advance;
     ParseCreateStmt := ParseCreateDatabase;
+  End
+  Else If KwIs(KW_LOGIN) Then
+  Begin
+    Advance; { skip LOGIN }
+    ParseCreateStmt := ParseCreateLogin;
+  End
+  Else If KwIs(KW_USER) Then
+  Begin
+    Advance; { skip USER }
+    ParseCreateStmt := ParseCreateUser;
   End
   Else
     ParseError('type d''objet CREATE inconnu: ' + LexCurTok.Text);
@@ -9525,6 +9952,21 @@ Begin
     Advance; { skip INDEX }
     ParseAlterStmt := ParseAlterIndex;
   End
+  Else If KwIs(KW_LOGIN) Then
+  Begin
+    Advance; { skip LOGIN }
+    ParseAlterStmt := ParseAlterLogin;
+  End
+  Else If KwIs(KW_USER) Then
+  Begin
+    Advance; { skip USER }
+    ParseAlterStmt := ParseAlterUser;
+  End
+  Else If KwIs(KW_ROLE) Then
+  Begin
+    Advance; { skip ROLE }
+    ParseAlterStmt := ParseAlterRole;
+  End
   Else
   Begin
     { Pour les autres ALTER (DATABASE, PROCEDURE, etc), }
@@ -9575,6 +10017,10 @@ Begin
     ObjType := 'SEQUENCE'
   Else If KwIs(KW_TYPE) Then
     ObjType := 'TYPE'
+  Else If KwIs(KW_LOGIN) Then
+    ObjType := 'LOGIN'
+  Else If KwIs(KW_USER) Then
+    ObjType := 'USER'
   Else If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
   Begin
     If StrUpperCase(LexCurTok.Text) = 'PROC' Then
@@ -10391,6 +10837,25 @@ Begin
     Exit;
   End;
 
+  { DCL (TODO 14) }
+  If KwIs(KW_GRANT) Then
+  Begin
+    ParseStatement := ParseGrantStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_REVOKE) Then
+  Begin
+    ParseStatement := ParseRevokeStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_DENY) Then
+  Begin
+    ParseStatement := ParseDenyStmt;
+    Exit;
+  End;
+
   { T-SQL control flow (TODO 13) }
   If KwIs(KW_DECLARE) Then
   Begin
@@ -10545,6 +11010,13 @@ Begin
     Root := ParseAlterStmt
   Else If KwIs(KW_DROP) Then
     Root := ParseDropStmt
+  { DCL (TODO 14) }
+  Else If KwIs(KW_GRANT) Then
+    Root := ParseGrantStmt
+  Else If KwIs(KW_REVOKE) Then
+    Root := ParseRevokeStmt
+  Else If KwIs(KW_DENY) Then
+    Root := ParseDenyStmt
   { T-SQL control flow (TODO 13) }
   Else If KwIs(KW_DECLARE) Then
     Root := ParseDeclareStmt
