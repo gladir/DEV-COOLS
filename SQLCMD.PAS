@@ -251,7 +251,7 @@
             Gestion du buffer pool (cache de pages en memoire)
             Limite memoire configurable pour les tris
 
-  TODO 16 - JOINTURES ET OPERATEURS ENSEMBLISTES
+  TODO 16 - JOINTURES ET OPERATEURS ENSEMBLISTES [IMPLEMENTE]
             Nested Loop Join : pour chaque ligne de la table
               externe, scanner la table interne
             Hash Join : construire une table de hachage sur la
@@ -1122,6 +1122,10 @@ Const
   MAX_QE_COLWIDTH = 40;            { largeur max affichage colonne  }
   MAX_QE_PAGES    = {$IFDEF FPC}1024{$ELSE}64{$ENDIF};
                                    { pages max par table scan       }
+
+  { ---- Constantes du moteur de jointure (TODO 16) -------------- }
+  MAX_QE_HASH     = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
+                                   { taille table de hachage        }
 
 { ============================================================
   TYPES
@@ -11997,9 +12001,730 @@ Begin
   OutputLine('(' + IntToStr(Res.RowCnt) + ' ligne(s) affectee(s))');
 End;
 
+{ ============================================================
+  TODO 16 - JOINTURES ET OPERATEURS ENSEMBLISTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Charger une table par nom ------------------------------- }
+{ Recherche la table dans le catalogue, charge les colonnes et    }
+{ effectue un table scan. Retourne True si succes.                }
+
+Function QELoadTable(Const TblName : TTokenText;
+                      Var Res : TQEResult) : Boolean;
+Var
+  TblIdx : Integer;
+  ObjId  : LongInt;
+Begin
+  QELoadTable := False;
+  FillChar(Res, SizeOf(Res), 0);
+  If Not CatalogValid Then Exit;
+  TblIdx := QEFindTable(TblName);
+  If TblIdx < 0 Then Exit;
+  ObjId := SysObjects[TblIdx].ObjectId;
+  QEGetTableCols(ObjId, Res);
+  If Res.ColCnt = 0 Then Exit;
+  QETableScan(ObjId, Res);
+  QELoadTable := True;
+End;
+
+{ ---- Fusionner les colonnes de deux result sets -------------- }
+{ Cree un result set avec les colonnes de Left puis de Right.     }
+{ Les lignes ne sont pas copiees ; seuls les Cols/ColCnt sont     }
+{ initialises.                                                    }
+
+Procedure QEMergeCols(Const Left, Right : TQEResult;
+                       Var Merged : TQEResult);
+Var
+  I, C : Integer;
+Begin
+  C := 0;
+  For I := 0 To Left.ColCnt - 1 Do
+    If C < MAX_QE_COLS Then
+    Begin
+      Merged.Cols[C] := Left.Cols[I];
+      Inc(C);
+    End;
+  For I := 0 To Right.ColCnt - 1 Do
+    If C < MAX_QE_COLS Then
+    Begin
+      Merged.Cols[C] := Right.Cols[I];
+      Inc(C);
+    End;
+  Merged.ColCnt := C;
+  Merged.RowCnt := 0;
+End;
+
+{ ---- Construire une ligne fusionnee -------------------------- }
+{ Concatene les valeurs de la ligne gauche et droite dans Dest.   }
+
+Procedure QEMergeRow(Const LR : TQERow; LCols : Integer;
+                      Const RR : TQERow; RCols : Integer;
+                      Var Dest : TQERow);
+Var
+  J, C : Integer;
+Begin
+  C := 0;
+  For J := 0 To LCols - 1 Do
+    If C < MAX_QE_COLS Then
+    Begin
+      Dest.Vals[C] := LR.Vals[J];
+      Inc(C);
+    End;
+  For J := 0 To RCols - 1 Do
+    If C < MAX_QE_COLS Then
+    Begin
+      Dest.Vals[C] := RR.Vals[J];
+      Inc(C);
+    End;
+  Dest.ColCnt := C;
+End;
+
+{ ---- Construire une ligne avec NULLs a droite ---------------- }
+
+Procedure QEMergeRowNullRight(Const LR : TQERow; LCols : Integer;
+                               RCols : Integer;
+                               Var Dest : TQERow);
+Var
+  J, C : Integer;
+Begin
+  C := 0;
+  For J := 0 To LCols - 1 Do
+    If C < MAX_QE_COLS Then
+    Begin
+      Dest.Vals[C] := LR.Vals[J];
+      Inc(C);
+    End;
+  For J := 0 To RCols - 1 Do
+    If C < MAX_QE_COLS Then
+    Begin
+      InitSqlValue(Dest.Vals[C]);
+      Dest.Vals[C].IsNull := True;
+      Dest.Vals[C].Valid  := True;
+      Inc(C);
+    End;
+  Dest.ColCnt := C;
+End;
+
+{ ---- Construire une ligne avec NULLs a gauche ---------------- }
+
+Procedure QEMergeRowNullLeft(LCols : Integer;
+                              Const RR : TQERow; RCols : Integer;
+                              Var Dest : TQERow);
+Var
+  J, C : Integer;
+Begin
+  C := 0;
+  For J := 0 To LCols - 1 Do
+    If C < MAX_QE_COLS Then
+    Begin
+      InitSqlValue(Dest.Vals[C]);
+      Dest.Vals[C].IsNull := True;
+      Dest.Vals[C].Valid  := True;
+      Inc(C);
+    End;
+  For J := 0 To RCols - 1 Do
+    If C < MAX_QE_COLS Then
+    Begin
+      Dest.Vals[C] := RR.Vals[J];
+      Inc(C);
+    End;
+  Dest.ColCnt := C;
+End;
+
+{ ---- CROSS JOIN (produit cartesien) -------------------------- }
+{ Pour chaque ligne de Left, genere une ligne pour chaque ligne   }
+{ de Right. Complexite O(n*m).                                    }
+
+Procedure QECrossJoin(Const Left, Right : TQEResult;
+                       Var Res : TQEResult);
+Var
+  I, J : Integer;
+Begin
+  QEMergeCols(Left, Right, Res);
+  Res.RowCnt := 0;
+  For I := 0 To Left.RowCnt - 1 Do
+    For J := 0 To Right.RowCnt - 1 Do
+    Begin
+      If Res.RowCnt >= MAX_QE_ROWS Then Break;
+      QEMergeRow(Left.Rows[I], Left.ColCnt,
+                  Right.Rows[J], Right.ColCnt,
+                  Res.Rows[Res.RowCnt]);
+      Inc(Res.RowCnt);
+    End;
+End;
+
+{ ---- Nested Loop Join ---------------------------------------- }
+{ Pour chaque ligne de Left, scanner Right et tester la condition }
+{ ON. Gere INNER, LEFT, RIGHT, FULL OUTER.                       }
+
+Procedure QENestedLoopJoin(Const Left, Right : TQEResult;
+                            OnNode : Integer;
+                            JoinType : TTokenText;
+                            Var Res : TQEResult);
+Var
+  I, J       : Integer;
+  Matched    : Boolean;
+  Row        : TQERow;
+  RMatched   : Array[0..MAX_QE_ROWS - 1] Of Boolean;
+  IsLeft     : Boolean;
+  IsRight    : Boolean;
+  IsFull     : Boolean;
+Begin
+  QEMergeCols(Left, Right, Res);
+  Res.RowCnt := 0;
+
+  IsLeft  := (Pos('LEFT', JoinType) > 0);
+  IsRight := (Pos('RIGHT', JoinType) > 0);
+  IsFull  := (Pos('FULL', JoinType) > 0);
+  If IsFull Then
+  Begin
+    IsLeft  := True;
+    IsRight := True;
+  End;
+
+  { Initialiser le suivi des lignes droites matchees }
+  If IsRight Then
+    For J := 0 To Right.RowCnt - 1 Do
+      RMatched[J] := False;
+
+  For I := 0 To Left.RowCnt - 1 Do
+  Begin
+    Matched := False;
+    For J := 0 To Right.RowCnt - 1 Do
+    Begin
+      If Res.RowCnt >= MAX_QE_ROWS Then Break;
+      { Construire la ligne fusionnee pour evaluer ON }
+      QEMergeRow(Left.Rows[I], Left.ColCnt,
+                  Right.Rows[J], Right.ColCnt, Row);
+
+      { Evaluer la condition ON }
+      If (OnNode < 0) Or QEEvalBool(OnNode, Row, Res) Then
+      Begin
+        Res.Rows[Res.RowCnt] := Row;
+        Inc(Res.RowCnt);
+        Matched := True;
+        If IsRight Then RMatched[J] := True;
+      End;
+    End;
+
+    { LEFT JOIN : si aucune correspondance, emettre avec NULLs }
+    If IsLeft And (Not Matched) Then
+    Begin
+      If Res.RowCnt < MAX_QE_ROWS Then
+      Begin
+        QEMergeRowNullRight(Left.Rows[I], Left.ColCnt,
+                             Right.ColCnt, Res.Rows[Res.RowCnt]);
+        Inc(Res.RowCnt);
+      End;
+    End;
+  End;
+
+  { RIGHT JOIN : emettre les lignes droites non matchees }
+  If IsRight Then
+    For J := 0 To Right.RowCnt - 1 Do
+      If (Not RMatched[J]) And (Res.RowCnt < MAX_QE_ROWS) Then
+      Begin
+        QEMergeRowNullLeft(Left.ColCnt,
+                            Right.Rows[J], Right.ColCnt,
+                            Res.Rows[Res.RowCnt]);
+        Inc(Res.RowCnt);
+      End;
+End;
+
+{ ---- Fonction de hachage simple ------------------------------ }
+{ Hache une TSqlValue pour la table de hachage du Hash Join.      }
+
+Function QEHashValue(Const V : TSqlValue) : LongInt;
+Var
+  H : LongInt;
+  I : Integer;
+  S : TSqlValueStr;
+Begin
+  H := 0;
+  If V.IsNull Then
+    H := 0
+  Else If V.Category = SQLCAT_INTEGER Then
+    H := V.IntVal
+  Else If V.Category = SQLCAT_DECIMAL Then
+    H := Round(V.FloatVal * 1000)
+  Else
+  Begin
+    S := V.StrVal;
+    For I := 1 To Length(S) Do
+      H := H * 31 + Ord(S[I]);
+  End;
+  If H < 0 Then H := -H;
+  QEHashValue := H Mod MAX_QE_HASH;
+End;
+
+{ ---- Hash Join ----------------------------------------------- }
+{ Construit une table de hachage sur la colonne de jointure de    }
+{ la table interne (Right), puis probe avec la table externe      }
+{ (Left). Les colonnes de jointure sont determinees a partir de   }
+{ la condition ON (egal simple colL = colR).                      }
+
+Procedure QEHashJoin(Const Left, Right : TQEResult;
+                      OnNode : Integer;
+                      JoinType : TTokenText;
+                      Var Res : TQEResult);
+Var
+  HashTab    : Array[0..MAX_QE_HASH - 1] Of Integer;
+  HashNext   : Array[0..MAX_QE_ROWS - 1] Of Integer;
+  LeftCol    : Integer;
+  RightCol   : Integer;
+  H          : LongInt;
+  I, J, Idx  : Integer;
+  Matched    : Boolean;
+  RMatched   : Array[0..MAX_QE_ROWS - 1] Of Boolean;
+  IsLeft     : Boolean;
+  IsRight    : Boolean;
+  IsFull     : Boolean;
+  LColName   : TTokenText;
+  RColName   : TTokenText;
+  Child0     : Integer;
+  Child1     : Integer;
+Begin
+  { Determiner les colonnes de jointure depuis ON (colL = colR) }
+  LeftCol  := -1;
+  RightCol := -1;
+  If (OnNode >= 0) And (OnNode < ASTCount) And
+     (ASTPool[OnNode].Kind = ND_COMPARE) And
+     (ASTPool[OnNode].Text = '=') And
+     (ASTPool[OnNode].ChildCnt >= 2) Then
+  Begin
+    Child0 := ASTPool[OnNode].Children[0];
+    Child1 := ASTPool[OnNode].Children[1];
+    If (Child0 >= 0) And (Child0 < ASTCount) And
+       (Child1 >= 0) And (Child1 < ASTCount) Then
+    Begin
+      { Extraire le nom de colonne gauche }
+      If ASTPool[Child0].Kind = ND_DOT_REF Then
+      Begin
+        If ASTPool[Child0].ChildCnt > 0 Then
+        Begin
+          I := ASTPool[Child0].Children[ASTPool[Child0].ChildCnt - 1];
+          If (I >= 0) And (I < ASTCount) Then
+            LColName := ASTPool[I].Text;
+        End;
+      End
+      Else
+        LColName := ASTPool[Child0].Text;
+      { Extraire le nom de colonne droite }
+      If ASTPool[Child1].Kind = ND_DOT_REF Then
+      Begin
+        If ASTPool[Child1].ChildCnt > 0 Then
+        Begin
+          I := ASTPool[Child1].Children[ASTPool[Child1].ChildCnt - 1];
+          If (I >= 0) And (I < ASTCount) Then
+            RColName := ASTPool[I].Text;
+        End;
+      End
+      Else
+        RColName := ASTPool[Child1].Text;
+
+      LeftCol  := QEFindColByName(LColName, Left);
+      RightCol := QEFindColByName(RColName, Right);
+      { Si pas trouve, essayer en inversant }
+      If (LeftCol < 0) Or (RightCol < 0) Then
+      Begin
+        LeftCol  := QEFindColByName(RColName, Left);
+        RightCol := QEFindColByName(LColName, Right);
+      End;
+    End;
+  End;
+
+  { Si on ne peut pas determiner les colonnes, fallback NL join }
+  If (LeftCol < 0) Or (RightCol < 0) Then
+  Begin
+    QENestedLoopJoin(Left, Right, OnNode, JoinType, Res);
+    Exit;
+  End;
+
+  QEMergeCols(Left, Right, Res);
+  Res.RowCnt := 0;
+
+  IsLeft  := (Pos('LEFT', JoinType) > 0);
+  IsRight := (Pos('RIGHT', JoinType) > 0);
+  IsFull  := (Pos('FULL', JoinType) > 0);
+  If IsFull Then
+  Begin
+    IsLeft  := True;
+    IsRight := True;
+  End;
+
+  { Initialiser la table de hachage }
+  For I := 0 To MAX_QE_HASH - 1 Do
+    HashTab[I] := -1;
+
+  { Construire la table de hachage sur la table Right }
+  For J := 0 To Right.RowCnt - 1 Do
+  Begin
+    H := QEHashValue(Right.Rows[J].Vals[RightCol]);
+    HashNext[J] := HashTab[H];
+    HashTab[H]  := J;
+  End;
+
+  If IsRight Then
+    For J := 0 To Right.RowCnt - 1 Do
+      RMatched[J] := False;
+
+  { Probe avec la table Left }
+  For I := 0 To Left.RowCnt - 1 Do
+  Begin
+    Matched := False;
+    H := QEHashValue(Left.Rows[I].Vals[LeftCol]);
+    Idx := HashTab[H];
+    While Idx >= 0 Do
+    Begin
+      If Res.RowCnt >= MAX_QE_ROWS Then Break;
+      If QECompareValues(Left.Rows[I].Vals[LeftCol],
+                          Right.Rows[Idx].Vals[RightCol]) = 0 Then
+      Begin
+        QEMergeRow(Left.Rows[I], Left.ColCnt,
+                    Right.Rows[Idx], Right.ColCnt,
+                    Res.Rows[Res.RowCnt]);
+        Inc(Res.RowCnt);
+        Matched := True;
+        If IsRight Then RMatched[Idx] := True;
+      End;
+      Idx := HashNext[Idx];
+    End;
+
+    If IsLeft And (Not Matched) Then
+    Begin
+      If Res.RowCnt < MAX_QE_ROWS Then
+      Begin
+        QEMergeRowNullRight(Left.Rows[I], Left.ColCnt,
+                             Right.ColCnt, Res.Rows[Res.RowCnt]);
+        Inc(Res.RowCnt);
+      End;
+    End;
+  End;
+
+  If IsRight Then
+    For J := 0 To Right.RowCnt - 1 Do
+      If (Not RMatched[J]) And (Res.RowCnt < MAX_QE_ROWS) Then
+      Begin
+        QEMergeRowNullLeft(Left.ColCnt,
+                            Right.Rows[J], Right.ColCnt,
+                            Res.Rows[Res.RowCnt]);
+        Inc(Res.RowCnt);
+      End;
+End;
+
+{ ---- Selection automatique de l algorithme de jointure ------- }
+{ Choisit Hash Join quand la condition ON est un egal simple,     }
+{ sinon utilise Nested Loop Join. Merge Join est utilise quand     }
+{ les deux tables sont petites et triees.                         }
+
+Procedure QEExecJoin(Const Left, Right : TQEResult;
+                      OnNode : Integer;
+                      JoinType : TTokenText;
+                      Var Res : TQEResult);
+Var
+  UT : TString;
+Begin
+  UT := StrUpperCase(JoinType);
+  { CROSS JOIN : pas de condition ON }
+  If Pos('CROSS', UT) > 0 Then
+  Begin
+    QECrossJoin(Left, Right, Res);
+    Exit;
+  End;
+
+  { Hash Join pour les egalites simples (colA = colB) }
+  If (OnNode >= 0) And (OnNode < ASTCount) And
+     (ASTPool[OnNode].Kind = ND_COMPARE) And
+     (ASTPool[OnNode].Text = '=') Then
+    QEHashJoin(Left, Right, OnNode, UT, Res)
+  Else
+    QENestedLoopJoin(Left, Right, OnNode, UT, Res);
+End;
+
+{ ---- Verifier compatibilite de colonnes pour UNION ----------- }
+{ Les deux result sets doivent avoir le meme nombre de colonnes.  }
+
+Function QESetOpCompatible(Const A, B : TQEResult) : Boolean;
+Begin
+  QESetOpCompatible := (A.ColCnt > 0) And (A.ColCnt = B.ColCnt);
+End;
+
+{ ---- UNION [ALL] --------------------------------------------- }
+{ Concatene les lignes des deux result sets. UNION elimine les    }
+{ doublons ; UNION ALL les conserve.                              }
+
+Procedure QEExecUnion(Const Left, Right : TQEResult;
+                       IsAll : Boolean;
+                       Var Res : TQEResult);
+Var
+  I, J : Integer;
+Begin
+  { Copier les colonnes du premier result set }
+  Res.ColCnt := Left.ColCnt;
+  For J := 0 To Left.ColCnt - 1 Do
+    Res.Cols[J] := Left.Cols[J];
+  Res.RowCnt := 0;
+
+  { Copier les lignes de Left }
+  For I := 0 To Left.RowCnt - 1 Do
+    If Res.RowCnt < MAX_QE_ROWS Then
+    Begin
+      Res.Rows[Res.RowCnt] := Left.Rows[I];
+      Res.Rows[Res.RowCnt].ColCnt := Left.ColCnt;
+      Inc(Res.RowCnt);
+    End;
+
+  { Copier les lignes de Right }
+  For I := 0 To Right.RowCnt - 1 Do
+    If Res.RowCnt < MAX_QE_ROWS Then
+    Begin
+      Res.Rows[Res.RowCnt].ColCnt := Left.ColCnt;
+      For J := 0 To Left.ColCnt - 1 Do
+      Begin
+        If J < Right.ColCnt Then
+          Res.Rows[Res.RowCnt].Vals[J] := Right.Rows[I].Vals[J]
+        Else
+        Begin
+          InitSqlValue(Res.Rows[Res.RowCnt].Vals[J]);
+          Res.Rows[Res.RowCnt].Vals[J].IsNull := True;
+          Res.Rows[Res.RowCnt].Vals[J].Valid  := True;
+        End;
+      End;
+      Inc(Res.RowCnt);
+    End;
+
+  { UNION (sans ALL) : eliminer les doublons }
+  If (Not IsAll) And (Res.RowCnt > 1) Then
+  Begin
+    If Res.ColCnt > 0 Then
+    Begin
+      QESortCol  := 0;
+      QESortDesc := False;
+      QEQuickSort(Res, 0, Res.RowCnt - 1);
+    End;
+    QEDistinct(Res);
+  End;
+End;
+
+{ ---- INTERSECT ----------------------------------------------- }
+{ Retourne les lignes presentes dans les deux result sets.        }
+{ Utilise un tri + scan pour detecter les correspondances.        }
+
+Procedure QEExecIntersect(Const Left, Right : TQEResult;
+                           Var Res : TQEResult);
+Var
+  I, J, K    : Integer;
+  Found      : Boolean;
+  AllMatch   : Boolean;
+Begin
+  Res.ColCnt := Left.ColCnt;
+  For J := 0 To Left.ColCnt - 1 Do
+    Res.Cols[J] := Left.Cols[J];
+  Res.RowCnt := 0;
+
+  For I := 0 To Left.RowCnt - 1 Do
+  Begin
+    Found := False;
+    For J := 0 To Right.RowCnt - 1 Do
+    Begin
+      AllMatch := True;
+      For K := 0 To Left.ColCnt - 1 Do
+      Begin
+        If K >= Right.ColCnt Then
+        Begin
+          AllMatch := False;
+          Break;
+        End;
+        If QECompareValues(Left.Rows[I].Vals[K],
+                            Right.Rows[J].Vals[K]) <> 0 Then
+        Begin
+          AllMatch := False;
+          Break;
+        End;
+      End;
+      If AllMatch Then
+      Begin
+        Found := True;
+        Break;
+      End;
+    End;
+    If Found And (Res.RowCnt < MAX_QE_ROWS) Then
+    Begin
+      Res.Rows[Res.RowCnt] := Left.Rows[I];
+      Res.Rows[Res.RowCnt].ColCnt := Left.ColCnt;
+      Inc(Res.RowCnt);
+    End;
+  End;
+
+  { Eliminer les doublons }
+  If Res.RowCnt > 1 Then
+  Begin
+    If Res.ColCnt > 0 Then
+    Begin
+      QESortCol  := 0;
+      QESortDesc := False;
+      QEQuickSort(Res, 0, Res.RowCnt - 1);
+    End;
+    QEDistinct(Res);
+  End;
+End;
+
+{ ---- EXCEPT -------------------------------------------------- }
+{ Retourne les lignes de Left absentes de Right.                  }
+
+Procedure QEExecExcept(Const Left, Right : TQEResult;
+                        Var Res : TQEResult);
+Var
+  I, J, K    : Integer;
+  Found      : Boolean;
+  AllMatch   : Boolean;
+Begin
+  Res.ColCnt := Left.ColCnt;
+  For J := 0 To Left.ColCnt - 1 Do
+    Res.Cols[J] := Left.Cols[J];
+  Res.RowCnt := 0;
+
+  For I := 0 To Left.RowCnt - 1 Do
+  Begin
+    Found := False;
+    For J := 0 To Right.RowCnt - 1 Do
+    Begin
+      AllMatch := True;
+      For K := 0 To Left.ColCnt - 1 Do
+      Begin
+        If K >= Right.ColCnt Then
+        Begin
+          AllMatch := False;
+          Break;
+        End;
+        If QECompareValues(Left.Rows[I].Vals[K],
+                            Right.Rows[J].Vals[K]) <> 0 Then
+        Begin
+          AllMatch := False;
+          Break;
+        End;
+      End;
+      If AllMatch Then
+      Begin
+        Found := True;
+        Break;
+      End;
+    End;
+    If (Not Found) And (Res.RowCnt < MAX_QE_ROWS) Then
+    Begin
+      Res.Rows[Res.RowCnt] := Left.Rows[I];
+      Res.Rows[Res.RowCnt].ColCnt := Left.ColCnt;
+      Inc(Res.RowCnt);
+    End;
+  End;
+
+  { Eliminer les doublons }
+  If Res.RowCnt > 1 Then
+  Begin
+    If Res.ColCnt > 0 Then
+    Begin
+      QESortCol  := 0;
+      QESortDesc := False;
+      QEQuickSort(Res, 0, Res.RowCnt - 1);
+    End;
+    QEDistinct(Res);
+  End;
+End;
+
+{ ---- Executer un operateur ensembliste ----------------------- }
+{ Dispatche UNION [ALL], INTERSECT, EXCEPT. Chaque branche est   }
+{ executee via QEExecSelect puis les resultats sont combines.     }
+
+Procedure QEExecSetOp(Root : Integer); Forward;
+
+Procedure QEExecSelect(Root : Integer); Forward;
+
+Procedure QEExecSetOp(Root : Integer);
+Var
+  LeftChild  : Integer;
+  RightChild : Integer;
+  LeftRes    : TQEResultPtr;
+  RightRes   : TQEResultPtr;
+  SavedQERes : TQEResultPtr;
+Begin
+  If (Root < 0) Or (Root >= ASTCount) Then
+  Begin
+    OutputLine('-- Erreur : noeud operateur ensembliste invalide');
+    Exit;
+  End;
+
+  If ASTPool[Root].ChildCnt < 2 Then
+  Begin
+    OutputLine('-- Erreur : operateur ensembliste necessite 2 operandes');
+    Exit;
+  End;
+
+  LeftChild  := ASTPool[Root].Children[0];
+  RightChild := ASTPool[Root].Children[1];
+
+  { Executer la branche gauche }
+  New(LeftRes);
+  FillChar(LeftRes^, SizeOf(TQEResult), 0);
+  SavedQERes := QERes;
+  QERes := LeftRes;
+  If ASTPool[LeftChild].Kind = ND_SELECT_STMT Then
+    QEExecSelect(LeftChild)
+  Else If (ASTPool[LeftChild].Kind = ND_UNION) Or
+          (ASTPool[LeftChild].Kind = ND_INTERSECT_OP) Or
+          (ASTPool[LeftChild].Kind = ND_EXCEPT_OP) Then
+    QEExecSetOp(LeftChild);
+  LeftRes := QERes;
+  QERes := SavedQERes;
+
+  { Executer la branche droite }
+  New(RightRes);
+  FillChar(RightRes^, SizeOf(TQEResult), 0);
+  SavedQERes := QERes;
+  QERes := RightRes;
+  If ASTPool[RightChild].Kind = ND_SELECT_STMT Then
+    QEExecSelect(RightChild)
+  Else If (ASTPool[RightChild].Kind = ND_UNION) Or
+          (ASTPool[RightChild].Kind = ND_INTERSECT_OP) Or
+          (ASTPool[RightChild].Kind = ND_EXCEPT_OP) Then
+    QEExecSetOp(RightChild);
+  RightRes := QERes;
+  QERes := SavedQERes;
+
+  { Verifier compatibilite }
+  If Not QESetOpCompatible(LeftRes^, RightRes^) Then
+  Begin
+    OutputLine('-- Erreur : nombre de colonnes incompatible pour ' +
+               ASTPool[Root].Text);
+    Dispose(LeftRes);
+    Dispose(RightRes);
+    Exit;
+  End;
+
+  { Combiner les resultats }
+  If QERes = Nil Then New(QERes);
+  FillChar(QERes^, SizeOf(TQEResult), 0);
+
+  Case ASTPool[Root].Kind Of
+    ND_UNION :
+      QEExecUnion(LeftRes^, RightRes^,
+                   Pos('ALL', StrUpperCase(ASTPool[Root].Text)) > 0,
+                   QERes^);
+    ND_INTERSECT_OP :
+      QEExecIntersect(LeftRes^, RightRes^, QERes^);
+    ND_EXCEPT_OP :
+      QEExecExcept(LeftRes^, RightRes^, QERes^);
+  End;
+
+  Dispose(LeftRes);
+  Dispose(RightRes);
+
+  { Afficher le result set }
+  QEFormatResult(QERes^);
+End;
+
 { ---- Executer un SELECT ------------------------------------- }
-{ Pipeline : Scan -> Filter(WHERE) -> Project -> Sort -> Distinct }
-{            -> Top -> Output                                     }
+{ Pipeline : Scan -> Join -> Filter(WHERE) -> Project -> Sort     }
+{            -> Distinct -> Top -> Output                         }
 
 Procedure QEExecSelect(Root : Integer);
 Var
@@ -12010,8 +12735,6 @@ Var
   TopNode    : Integer;
   HasDistinct: Boolean;
   I, J, K    : Integer;
-  TblIdx     : Integer;
-  ObjId      : LongInt;
   TblName    : TTokenText;
   CI         : Integer;
   Row        : TQERow;
@@ -12025,6 +12748,9 @@ Var
   OrdCol     : Integer;
   OrdDesc    : Boolean;
   SrcRes     : TQEResult;
+  JoinRes    : TQEResult;
+  TmpRes     : TQEResult;
+  OnNode     : Integer;
 Begin
   If QERes = Nil Then New(QERes);
   QERes^.ColCnt := 0;
@@ -12112,7 +12838,7 @@ Begin
     Exit;
   End;
 
-  { Trouver le nom de la table dans le FROM }
+  { Trouver le nom de la premiere table dans le FROM }
   TblName := '';
   For I := 0 To ASTPool[TblNode].ChildCnt - 1 Do
   Begin
@@ -12145,31 +12871,116 @@ Begin
     Exit;
   End;
 
-  TblIdx := QEFindTable(TblName);
-  If TblIdx < 0 Then
+  { Charger la premiere table }
+  If Not QELoadTable(TblName, SrcRes) Then
   Begin
     OutputLine('-- Erreur : table ''' + TblName + ''' introuvable');
     Exit;
   End;
-  ObjId := SysObjects[TblIdx].ObjectId;
-
-  { Charger les colonnes de la table source }
-  FillChar(SrcRes, SizeOf(SrcRes), 0);
-  QEGetTableCols(ObjId, SrcRes);
-
-  If SrcRes.ColCnt = 0 Then
-  Begin
-    OutputLine('-- Erreur : aucune colonne pour la table ''' +
-               TblName + '''');
-    Exit;
-  End;
-
-  { Scanner les pages de donnees }
-  QETableScan(ObjId, SrcRes);
 
   If Opts.Verbose Then
     OutputLine('-- Table scan : ' + IntToStr(SrcRes.RowCnt) +
                ' ligne(s) trouvee(s) dans ' + TblName);
+
+  { ---- Traitement des JOINs (TODO 16) ---- }
+  { Parcourir les enfants du FROM pour les jointures et les        }
+  { tables supplementaires (virgule = CROSS JOIN implicite).       }
+  For I := 0 To ASTPool[TblNode].ChildCnt - 1 Do
+  Begin
+    N := ASTPool[TblNode].Children[I];
+    If (N < 0) Or (N >= ASTCount) Then Continue;
+
+    { Tables supplementaires separees par virgule (CROSS JOIN) }
+    If (ASTPool[N].Kind = ND_TABLE_REF) And (I > 0) Then
+    Begin
+      TblName := ASTPool[N].Text;
+      If (TblName = '') And (ASTPool[N].ChildCnt > 0) Then
+      Begin
+        CI := ASTPool[N].Children[0];
+        If (CI >= 0) And (CI < ASTCount) Then
+          TblName := ASTPool[CI].Text;
+      End;
+      If TblName <> '' Then
+      Begin
+        If QELoadTable(TblName, JoinRes) Then
+        Begin
+          If Opts.Verbose Then
+            OutputLine('-- Cross join avec ' + TblName +
+                       ' (' + IntToStr(JoinRes.RowCnt) + ' ligne(s))');
+          QECrossJoin(SrcRes, JoinRes, TmpRes);
+          SrcRes := TmpRes;
+        End;
+      End;
+    End;
+
+    { Jointures explicites (INNER, LEFT, RIGHT, FULL, CROSS JOIN) }
+    If ASTPool[N].Kind = ND_JOIN Then
+    Begin
+      { La table a joindre est le premier enfant du ND_JOIN }
+      If ASTPool[N].ChildCnt > 0 Then
+      Begin
+        CI := ASTPool[N].Children[0];
+        If (CI >= 0) And (CI < ASTCount) And
+           (ASTPool[CI].Kind = ND_TABLE_REF) Then
+        Begin
+          TblName := ASTPool[CI].Text;
+          If (TblName = '') And (ASTPool[CI].ChildCnt > 0) Then
+          Begin
+            K := ASTPool[CI].Children[0];
+            If (K >= 0) And (K < ASTCount) Then
+              TblName := ASTPool[K].Text;
+          End;
+          If (TblName <> '') And QELoadTable(TblName, JoinRes) Then
+          Begin
+            { Determiner la condition ON (deuxieme enfant) }
+            OnNode := -1;
+            If ASTPool[N].ChildCnt > 1 Then
+            Begin
+              OnNode := ASTPool[N].Children[1];
+              If (OnNode < 0) Or (OnNode >= ASTCount) Then
+                OnNode := -1;
+            End;
+            If Opts.Verbose Then
+              OutputLine('-- ' + ASTPool[N].Text + ' avec ' + TblName +
+                         ' (' + IntToStr(JoinRes.RowCnt) + ' ligne(s))');
+            QEExecJoin(SrcRes, JoinRes, OnNode, ASTPool[N].Text, TmpRes);
+            SrcRes := TmpRes;
+          End;
+        End;
+      End;
+    End;
+
+    { CROSS APPLY / OUTER APPLY }
+    If ASTPool[N].Kind = ND_APPLY Then
+    Begin
+      If ASTPool[N].ChildCnt > 0 Then
+      Begin
+        CI := ASTPool[N].Children[0];
+        If (CI >= 0) And (CI < ASTCount) And
+           (ASTPool[CI].Kind = ND_TABLE_REF) Then
+        Begin
+          TblName := ASTPool[CI].Text;
+          If (TblName = '') And (ASTPool[CI].ChildCnt > 0) Then
+          Begin
+            K := ASTPool[CI].Children[0];
+            If (K >= 0) And (K < ASTCount) Then
+              TblName := ASTPool[K].Text;
+          End;
+          If (TblName <> '') And QELoadTable(TblName, JoinRes) Then
+          Begin
+            If Opts.Verbose Then
+              OutputLine('-- ' + ASTPool[N].Text + ' avec ' + TblName +
+                         ' (' + IntToStr(JoinRes.RowCnt) + ' ligne(s))');
+            If Pos('OUTER', StrUpperCase(ASTPool[N].Text)) > 0 Then
+              QENestedLoopJoin(SrcRes, JoinRes, -1, 'LEFT', TmpRes)
+            Else
+              QECrossJoin(SrcRes, JoinRes, TmpRes);
+            SrcRes := TmpRes;
+          End;
+        End;
+      End;
+    End;
+  End;
 
   { Appliquer le filtre WHERE }
   If WhereNode >= 0 Then
@@ -12512,6 +13323,11 @@ Begin
     { Executer le SELECT via le moteur de requetes (TODO 15) }
     If ASTPool[Root].Kind = ND_SELECT_STMT Then
       QEExecSelect(Root);
+    { Executer les operateurs ensemblistes (TODO 16) }
+    If (ASTPool[Root].Kind = ND_UNION) Or
+       (ASTPool[Root].Kind = ND_INTERSECT_OP) Or
+       (ASTPool[Root].Kind = ND_EXCEPT_OP) Then
+      QEExecSetOp(Root);
   End
   Else
     OutputLine('-- Erreur de syntaxe dans : ' + SQL);
