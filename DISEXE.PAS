@@ -60,7 +60,7 @@
       sections .text, .data, .rdata, .bss, .idata, .edata,
       .reloc par leur nom et/ou leurs flags.
 
-  6.  Traitement de la table d'importation PE (Import Directory).
+  6.  [IMPLEMENTE] Traitement de la table d'importation PE (Import Directory).
       Lire la Import Directory Table via DataDirectory[1] :
       chaque IMAGE_IMPORT_DESCRIPTOR contient OriginalFirstThunk,
       Name (RVA du nom de la DLL), FirstThunk (RVA de la IAT).
@@ -426,6 +426,16 @@ Type
     IsCall   : Boolean;   { CALL (True) ou JMP/Jcc (False) }
   End;
 
+  { Entree d'importation PE }
+  TImportEntry = Record
+    DLLName   : TString;    { nom de la DLL }
+    FuncName  : TString;    { nom de la fonction (vide si par ordinal) }
+    IATAddr   : LongInt;    { RVA de l'entree IAT }
+    Hint      : Word;       { hint index }
+    Ordinal   : Word;       { ordinal (si importation par ordinal) }
+    ByOrdinal : Boolean;    { True si importation par ordinal }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -478,6 +488,7 @@ Var
   DataBytes      : LongInt;  { nombre d'octets de donnees }
   ImportCount    : LongInt;  { nombre d'imports }
   ExportCount    : LongInt;  { nombre d'exports }
+  Imports        : Array[0..MAX_IMPORTS - 1] Of TImportEntry;
   IterI          : Integer;  { variable d'iteration generale }
 
 { ============================================================
@@ -574,6 +585,54 @@ Begin
  If (Chars And IMAGE_SCN_MEM_WRITE) <> 0 Then S := S + 'WRITE ';
  If S = '' Then S := '-';
  SectionFlagsStr := S;
+End;
+
+{ ============================================================
+  FONCTIONS D'ACCES A L'IMAGE EN MEMOIRE
+  ============================================================ }
+
+Function ReadImageByte(RVA : LongInt) : Byte;
+Begin
+ If (RVA >= 0) And (RVA < ImageSize) And (ImageBuffer <> Nil) Then
+  ReadImageByte := ImageBuffer^[RVA]
+ Else
+  ReadImageByte := 0;
+End;
+
+Function ReadImageWord(RVA : LongInt) : Word;
+Begin
+ If (RVA >= 0) And (RVA + 1 < ImageSize) And (ImageBuffer <> Nil) Then
+  ReadImageWord := ImageBuffer^[RVA] Or (Word(ImageBuffer^[RVA + 1]) Shl 8)
+ Else
+  ReadImageWord := 0;
+End;
+
+Function ReadImageDWord(RVA : LongInt) : LongInt;
+Begin
+ If (RVA >= 0) And (RVA + 3 < ImageSize) And (ImageBuffer <> Nil) Then
+  ReadImageDWord := LongInt(ImageBuffer^[RVA])
+                 Or (LongInt(ImageBuffer^[RVA + 1]) Shl 8)
+                 Or (LongInt(ImageBuffer^[RVA + 2]) Shl 16)
+                 Or (LongInt(ImageBuffer^[RVA + 3]) Shl 24)
+ Else
+  ReadImageDWord := 0;
+End;
+
+Function ReadImageString(RVA : LongInt) : TString;
+Var
+ S : TString;
+ B : Byte;
+Begin
+ S := '';
+ If (RVA >= 0) And (RVA < ImageSize) And (ImageBuffer <> Nil) Then Begin
+  While (RVA < ImageSize) And (Length(S) < 255) Do Begin
+   B := ImageBuffer^[RVA];
+   If B = 0 Then Break;
+   S := S + Chr(B);
+   Inc(RVA);
+  End;
+ End;
+ ReadImageString := S;
 End;
 
 { ============================================================
@@ -897,6 +956,91 @@ Begin
 End;
 
 { ============================================================
+  LECTURE DE LA TABLE D'IMPORTATION PE
+  ============================================================ }
+
+Function ReadPEImports : Boolean;
+Var
+ ImportDirRVA : LongInt;
+ ImportDirSize: LongInt;
+ DescOfs      : LongInt;
+ OrigThunk    : LongInt;
+ FirstThunk   : LongInt;
+ NameRVA      : LongInt;
+ ThunkRVA     : LongInt;
+ ThunkData    : LongInt;
+ HintRVA      : LongInt;
+ DLLName      : TString;
+ ThunkIdx     : LongInt;
+Begin
+ ReadPEImports := False;
+ ImportCount := 0;
+ { Verifier que DataDirectory[1] (Import) est present }
+ ImportDirRVA := DataDirs[1].VirtualAddress;
+ ImportDirSize := DataDirs[1].Size;
+ If (ImportDirRVA = 0) Or (ImportDirSize = 0) Then Begin
+  { Pas de table d'importation - c'est valide }
+  ReadPEImports := True;
+  Exit;
+ End;
+ { Parcourir les IMAGE_IMPORT_DESCRIPTORs (20 octets chacun) }
+ DescOfs := ImportDirRVA;
+ While True Do Begin
+  { Verifier les limites }
+  If DescOfs + 19 >= ImageSize Then Break;
+  { Lire les champs du descripteur }
+  OrigThunk  := ReadImageDWord(DescOfs);       { OriginalFirstThunk }
+  { DescOfs+4 = TimeDateStamp, DescOfs+8 = ForwarderChain }
+  NameRVA    := ReadImageDWord(DescOfs + 12);   { Name (RVA) }
+  FirstThunk := ReadImageDWord(DescOfs + 16);   { FirstThunk (IAT) }
+  { Fin de la liste : tous les champs a zero }
+  If (OrigThunk = 0) And (NameRVA = 0) And (FirstThunk = 0) Then Break;
+  { Lire le nom de la DLL }
+  If (NameRVA > 0) And (NameRVA < ImageSize) Then
+   DLLName := ReadImageString(NameRVA)
+  Else
+   DLLName := '???';
+  { Utiliser OriginalFirstThunk si disponible, sinon FirstThunk }
+  If OrigThunk <> 0 Then
+   ThunkRVA := OrigThunk
+  Else
+   ThunkRVA := FirstThunk;
+  { Parcourir les IMAGE_THUNK_DATA (4 octets chacun) }
+  ThunkIdx := 0;
+  While (ThunkRVA + ThunkIdx * 4 + 3 < ImageSize) Do Begin
+   ThunkData := ReadImageDWord(ThunkRVA + ThunkIdx * 4);
+   If ThunkData = 0 Then Break;  { Fin de la liste }
+   If ImportCount >= MAX_IMPORTS Then Break;
+   Imports[ImportCount].DLLName := DLLName;
+   Imports[ImportCount].IATAddr := FirstThunk + ThunkIdx * 4;
+   { Tester si importation par ordinal (bit 31 a 1) }
+   If (ThunkData And LongInt($80000000)) <> 0 Then Begin
+    Imports[ImportCount].ByOrdinal := True;
+    Imports[ImportCount].Ordinal := Word(ThunkData And $FFFF);
+    Imports[ImportCount].FuncName := '';
+    Imports[ImportCount].Hint := 0;
+   End Else Begin
+    Imports[ImportCount].ByOrdinal := False;
+    HintRVA := ThunkData;
+    If (HintRVA >= 0) And (HintRVA + 2 < ImageSize) Then Begin
+     Imports[ImportCount].Hint := ReadImageWord(HintRVA);
+     Imports[ImportCount].FuncName := ReadImageString(HintRVA + 2);
+    End Else Begin
+     Imports[ImportCount].Hint := 0;
+     Imports[ImportCount].FuncName := '???';
+    End;
+    Imports[ImportCount].Ordinal := 0;
+   End;
+   Inc(ImportCount);
+   Inc(ThunkIdx);
+  End;
+  { Descripteur suivant (20 octets) }
+  Inc(DescOfs, 20);
+ End;
+ ReadPEImports := True;
+End;
+
+{ ============================================================
   CHARGEMENT DU PROGRAMME DOS 16 BITS
   ============================================================ }
 
@@ -1064,6 +1208,23 @@ Begin
    WriteLn('  ImageBase        : $', HexDWord(PEOptHeader.ImageBase));
    WriteLn('  Point d''entree   : RVA $', HexDWord(PEEntryPointRVA));
   End;
+  { Lecture de la table d'importation PE }
+  If Not ReadPEImports Then Begin
+   Close(InFile);
+   Halt(1);
+  End;
+  If OptVerbose Then Begin
+   WriteLn('Imports PE : ', ImportCount, ' fonctions importees.');
+   For IterI := 0 To ImportCount - 1 Do Begin
+    If Imports[IterI].ByOrdinal Then
+     WriteLn('  ', Imports[IterI].DLLName, ' ! ordinal #', Imports[IterI].Ordinal,
+             '  IAT=$', HexDWord(Imports[IterI].IATAddr))
+    Else
+     WriteLn('  ', Imports[IterI].DLLName, ' ! ', Imports[IterI].FuncName,
+             '  (hint=', Imports[IterI].Hint, ')',
+             '  IAT=$', HexDWord(Imports[IterI].IATAddr));
+   End;
+  End;
  End Else Begin
   WriteLn('Format DOS MZ (16 bits) detecte.');
   { Chargement de l'image DOS en memoire }
@@ -1085,11 +1246,10 @@ Begin
  InstrCount := 0;
  ProcCount := 0;
  DataBytes := 0;
- ImportCount := 0;
  ExportCount := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 6 a 25 restent a implementer)');
+ WriteLn('(les TODOs 7 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
 End.
