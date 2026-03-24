@@ -281,7 +281,7 @@
             Gestion des NULLs dans les agregats (ignores)
             Hash Aggregate vs Stream Aggregate
 
-  TODO 18 - FONCTIONS DE FENETRE (WINDOW FUNCTIONS)
+  TODO 18 - FONCTIONS DE FENETRE (WINDOW FUNCTIONS) [IMPLEMENTE]
             ROW_NUMBER() OVER (ORDER BY ...)
             RANK() OVER (ORDER BY ...)
             DENSE_RANK() OVER (ORDER BY ...)
@@ -961,7 +961,13 @@ Const
   KW_OWNERSHIP    = 145;
   KW_PUBLIC       = 146;
 
-  KW_COUNT        = 146;     { nombre total de mots-cles definis  }
+  { -- Window Functions (TODO 18) -- }
+  KW_UNBOUNDED    = 147;
+  KW_PRECEDING    = 148;
+  KW_FOLLOWING    = 149;
+  KW_CURRENT_ROW  = 150;
+
+  KW_COUNT        = 150;     { nombre total de mots-cles definis  }
 
   { ---- Constantes AST noeud parseur SQL (TODO 09) ------------- }
   { Types de noeuds dans l arbre d expression }
@@ -1108,6 +1114,12 @@ Const
   ND_DROP_LOGIN    = 130;    { DROP LOGIN                           }
   ND_DROP_USER     = 131;    { DROP USER                            }
 
+  { -- Window Functions (TODO 18) -- }
+  ND_OVER_CLAUSE   = 132;    { OVER (PARTITION BY... ORDER BY...)    }
+  ND_PARTITION_BY  = 133;    { PARTITION BY colonnes                 }
+  ND_WINDOW_FRAME  = 134;    { ROWS/RANGE BETWEEN ... AND ...        }
+  ND_FRAME_BOUND   = 135;    { borne de cadre (UNBOUNDED PRECEDING)  }
+
   { Taille max du pool de noeuds AST }
   MAX_AST_NODES   = 1024;
 
@@ -1130,6 +1142,10 @@ Const
   { ---- Constantes du moteur d agregation (TODO 17) ------------- }
   MAX_QE_GROUPS   = {$IFDEF FPC}1024{$ELSE}64{$ENDIF};
                                    { groupes max pour GROUP BY      }
+
+  { ---- Constantes du moteur de fenetre (TODO 18) --------------- }
+  MAX_QE_PARTITIONS = {$IFDEF FPC}512{$ELSE}32{$ENDIF};
+                                   { partitions max pour OVER       }
 
 { ============================================================
   TYPES
@@ -5099,6 +5115,10 @@ Begin
   If U = 'PARTITION'    Then Begin IsKeyword := KW_PARTITION;   Exit; End;
   If U = 'ROWS'         Then Begin IsKeyword := KW_ROWS;        Exit; End;
   If U = 'RANGE'        Then Begin IsKeyword := KW_RANGE;       Exit; End;
+  { Window functions (TODO 18) }
+  If U = 'UNBOUNDED'    Then Begin IsKeyword := KW_UNBOUNDED;   Exit; End;
+  If U = 'PRECEDING'    Then Begin IsKeyword := KW_PRECEDING;   Exit; End;
+  If U = 'FOLLOWING'    Then Begin IsKeyword := KW_FOLLOWING;    Exit; End;
   If U = 'BETWEEN'      Then Begin IsKeyword := KW_BETWEEN;     Exit; End;
   If U = 'AND'          Then Begin IsKeyword := KW_AND;         Exit; End;
   If U = 'OR'           Then Begin IsKeyword := KW_OR;          Exit; End;
@@ -5264,6 +5284,11 @@ Begin
     KW_PARTITION    : KeywordName := 'PARTITION';
     KW_ROWS         : KeywordName := 'ROWS';
     KW_RANGE        : KeywordName := 'RANGE';
+    { Window functions (TODO 18) }
+    KW_UNBOUNDED    : KeywordName := 'UNBOUNDED';
+    KW_PRECEDING    : KeywordName := 'PRECEDING';
+    KW_FOLLOWING    : KeywordName := 'FOLLOWING';
+    KW_CURRENT_ROW  : KeywordName := 'CURRENT ROW';
     KW_BETWEEN      : KeywordName := 'BETWEEN';
     KW_AND          : KeywordName := 'AND';
     KW_OR           : KeywordName := 'OR';
@@ -5525,6 +5550,11 @@ Begin
     ND_ALTER_ROLE   : NodeKindName := 'ALTER_ROLE';
     ND_DROP_LOGIN   : NodeKindName := 'DROP_LOGIN';
     ND_DROP_USER    : NodeKindName := 'DROP_USER';
+    { Window functions (TODO 18) }
+    ND_OVER_CLAUSE  : NodeKindName := 'OVER_CLAUSE';
+    ND_PARTITION_BY : NodeKindName := 'PARTITION_BY';
+    ND_WINDOW_FRAME : NodeKindName := 'WINDOW_FRAME';
+    ND_FRAME_BOUND  : NodeKindName := 'FRAME_BOUND';
   Else
     NodeKindName := '?';
   End;
@@ -5606,6 +5636,185 @@ Begin
       ParseError(') attendu apres type');
   End;
   ParseTypeRef := N;
+End;
+
+{ ---- ParseOverClause : OVER (PARTITION BY.. ORDER BY.. frame) (TODO 18) }
+{ Enveloppe un noeud ND_FUNC_CALL dans un ND_OVER_CLAUSE.                }
+{ Syntaxe : OVER ( [PARTITION BY expr, ...]                               }
+{                  [ORDER BY expr [ASC|DESC], ...]                        }
+{                  [ROWS|RANGE BETWEEN borne AND borne] )                 }
+
+Function ParseOverClause(FuncNode : Integer) : Integer;
+Var
+  N, P, O, F, B, E, Item : Integer;
+  Dir, BndTxt : TTokenText;
+Begin
+  ParseOverClause := FuncNode;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_OVER) Then Exit;
+
+  N := NewNode(ND_OVER_CLAUSE, 'OVER', LexCurTok.Line, LexCurTok.Col);
+  AddChild(N, FuncNode);
+  Advance; { skip OVER }
+
+  If TokIs(TOK_LPAREN) Then
+    Advance
+  Else
+  Begin
+    ParseError('( attendu apres OVER');
+    ParseOverClause := N;
+    Exit;
+  End;
+
+  { PARTITION BY expr, expr, ... }
+  If KwIs(KW_PARTITION) Then
+  Begin
+    P := NewNode(ND_PARTITION_BY, 'PARTITION BY',
+                 LexCurTok.Line, LexCurTok.Col);
+    Advance; { skip PARTITION }
+    If KwIs(KW_BY) Then
+      Advance
+    Else
+      ParseError('BY attendu apres PARTITION');
+    E := ParseSqlExpr;
+    AddChild(P, E);
+    While TokIs(TOK_COMMA) And ParseOk Do
+    Begin
+      Advance;
+      E := ParseSqlExpr;
+      AddChild(P, E);
+    End;
+    AddChild(N, P);
+  End;
+
+  { ORDER BY expr [ASC|DESC], ... }
+  If KwIs(KW_ORDER) Then
+  Begin
+    O := NewNode(ND_ORDER_BY, 'ORDER BY', LexCurTok.Line, LexCurTok.Col);
+    Advance; { skip ORDER }
+    If KwIs(KW_BY) Then
+      Advance
+    Else
+      ParseError('BY attendu apres ORDER');
+    E := ParseSqlExpr;
+    Dir := 'ASC';
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      If StrUpperCase(LexCurTok.Text) = 'ASC' Then
+      Begin Dir := 'ASC'; Advance; End
+      Else If StrUpperCase(LexCurTok.Text) = 'DESC' Then
+      Begin Dir := 'DESC'; Advance; End;
+    End;
+    Item := NewNode(ND_ORDER_ITEM, Dir, LexCurTok.Line, LexCurTok.Col);
+    AddChild(Item, E);
+    AddChild(O, Item);
+    While TokIs(TOK_COMMA) And ParseOk Do
+    Begin
+      Advance;
+      E := ParseSqlExpr;
+      Dir := 'ASC';
+      If (LexCurTok.Kind = TOK_IDENT) Or
+         (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        If StrUpperCase(LexCurTok.Text) = 'ASC' Then
+        Begin Dir := 'ASC'; Advance; End
+        Else If StrUpperCase(LexCurTok.Text) = 'DESC' Then
+        Begin Dir := 'DESC'; Advance; End;
+      End;
+      Item := NewNode(ND_ORDER_ITEM, Dir, LexCurTok.Line, LexCurTok.Col);
+      AddChild(Item, E);
+      AddChild(O, Item);
+    End;
+    AddChild(N, O);
+  End;
+
+  { Frame : ROWS|RANGE BETWEEN borne AND borne }
+  If KwIs(KW_ROWS) Or KwIs(KW_RANGE) Then
+  Begin
+    If KwIs(KW_ROWS) Then
+      F := NewNode(ND_WINDOW_FRAME, 'ROWS',
+                   LexCurTok.Line, LexCurTok.Col)
+    Else
+      F := NewNode(ND_WINDOW_FRAME, 'RANGE',
+                   LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    If KwIs(KW_BETWEEN) Then
+    Begin
+      Advance; { skip BETWEEN }
+      { Borne inferieure }
+      BndTxt := '';
+      If KwIs(KW_UNBOUNDED) Then
+      Begin BndTxt := 'UNBOUNDED PRECEDING'; Advance;
+        If KwIs(KW_PRECEDING) Then Advance; End
+      Else If StrUpperCase(LexCurTok.Text) = 'CURRENT' Then
+      Begin BndTxt := 'CURRENT ROW'; Advance;
+        If KwIs(KW_ROWS) Or
+           (StrUpperCase(LexCurTok.Text) = 'ROW') Then Advance; End
+      Else
+      Begin
+        BndTxt := LexCurTok.Text;
+        Advance;
+        If KwIs(KW_PRECEDING) Then
+        Begin BndTxt := BndTxt + ' PRECEDING'; Advance; End
+        Else If KwIs(KW_FOLLOWING) Then
+        Begin BndTxt := BndTxt + ' FOLLOWING'; Advance; End;
+      End;
+      B := NewNode(ND_FRAME_BOUND, BndTxt, LexCurTok.Line, LexCurTok.Col);
+      AddChild(F, B);
+      { AND }
+      If KwIs(KW_AND) Then Advance
+      Else ParseError('AND attendu dans specification de cadre');
+      { Borne superieure }
+      BndTxt := '';
+      If KwIs(KW_UNBOUNDED) Then
+      Begin BndTxt := 'UNBOUNDED FOLLOWING'; Advance;
+        If KwIs(KW_FOLLOWING) Then Advance; End
+      Else If StrUpperCase(LexCurTok.Text) = 'CURRENT' Then
+      Begin BndTxt := 'CURRENT ROW'; Advance;
+        If KwIs(KW_ROWS) Or
+           (StrUpperCase(LexCurTok.Text) = 'ROW') Then Advance; End
+      Else
+      Begin
+        BndTxt := LexCurTok.Text;
+        Advance;
+        If KwIs(KW_PRECEDING) Then
+        Begin BndTxt := BndTxt + ' PRECEDING'; Advance; End
+        Else If KwIs(KW_FOLLOWING) Then
+        Begin BndTxt := BndTxt + ' FOLLOWING'; Advance; End;
+      End;
+      B := NewNode(ND_FRAME_BOUND, BndTxt, LexCurTok.Line, LexCurTok.Col);
+      AddChild(F, B);
+    End
+    Else
+    Begin
+      { Forme sans BETWEEN : ROWS UNBOUNDED PRECEDING }
+      BndTxt := '';
+      If KwIs(KW_UNBOUNDED) Then
+      Begin BndTxt := 'UNBOUNDED PRECEDING'; Advance;
+        If KwIs(KW_PRECEDING) Then Advance; End
+      Else If StrUpperCase(LexCurTok.Text) = 'CURRENT' Then
+      Begin BndTxt := 'CURRENT ROW'; Advance;
+        If KwIs(KW_ROWS) Or
+           (StrUpperCase(LexCurTok.Text) = 'ROW') Then Advance; End
+      Else
+      Begin
+        BndTxt := LexCurTok.Text;
+        Advance;
+        If KwIs(KW_PRECEDING) Then
+        Begin BndTxt := BndTxt + ' PRECEDING'; Advance; End;
+      End;
+      B := NewNode(ND_FRAME_BOUND, BndTxt, LexCurTok.Line, LexCurTok.Col);
+      AddChild(F, B);
+    End;
+    AddChild(N, F);
+  End;
+
+  If TokIs(TOK_RPAREN) Then
+    Advance
+  Else
+    ParseError(') attendu apres clause OVER');
+
+  ParseOverClause := N;
 End;
 
 { ---- ParseAtom : atomes de l expression SQL ------------------ }
@@ -5997,6 +6206,11 @@ Begin
         Advance
       Else
         ParseError(') attendu apres arguments');
+      { Clause OVER pour fonctions de fenetre (TODO 18) }
+      If KwIs(KW_OVER) Then
+      Begin
+        N := ParseOverClause(N);
+      End;
     End;
     ParseAtom := N;
     Exit;
