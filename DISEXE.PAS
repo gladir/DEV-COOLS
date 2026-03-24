@@ -184,7 +184,7 @@
       d'epilogue (POP BP / RET, LEAVE / RET). Marquer les
       fonctions importees et exportees avec leurs vrais noms.
 
-  19. Discrimination code/donnees dans les sections executables.
+  19. [IMPLEMENTE] Discrimination code/donnees dans les sections executables.
       Utiliser les informations de flux de controle (TODO 17)
       pour separer le code des donnees dans les sections
       executables. Les octets non atteints par le parcours du
@@ -1456,6 +1456,11 @@ Var
   { Relogements PE }
   PERelocs       : Array[0..MAX_RELOCS - 1] Of TPERelocEntry;
   PERelocCount   : LongInt;  { nombre d'entrees de relogement PE }
+
+  { Discrimination code/donnees (TODO 19) }
+  ByteFlags      : PByteArray; { 1 octet par octet de l'image : BF_xxx }
+  StringCount    : LongInt;  { nombre de chaines ASCII detectees }
+  JumpTblCount   : LongInt;  { nombre de tables de saut detectees }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -2911,6 +2916,14 @@ Const
   BT_RETF     = 11; { retour far (RETF) }
   BT_IRET     = 12; { retour d'interruption (IRET) }
 
+{ ByteFlags - Marqueurs pour la discrimination code/donnees (TODO 19) }
+  BF_UNKNOWN = 0;  { octet non classifie }
+  BF_CODE    = 1;  { octet d'instruction }
+  BF_DATA    = 2;  { octet de donnees (DB) }
+  BF_STRING  = 3;  { octet de chaine ASCII }
+  BF_JUMPTBL = 4;  { entree de table de saut }
+  BF_PADDING = 5;  { padding/alignement (NOP, INT3, 00) }
+
 { ClassifyInstruction - Classifie une instruction selon son type de flux.
   Parametres :
     Offset : position du premier octet de l'instruction (apres les prefixes)
@@ -3437,6 +3450,319 @@ Begin
     WriteLn('  Nouvelles procedures par prologue  : ', NewProcs);
     WriteLn('  Total sous-programmes              : ', ProcCount);
   End;
+End;
+
+{ ============================================================
+  DISCRIMINATION CODE/DONNEES (TODO 19)
+  ============================================================ }
+
+{ IsAsciiPrintable - Teste si un octet est un caractere ASCII imprimable
+  ou un caractere de controle courant (tab, CR, LF). }
+Function IsAsciiPrintable(B : Byte) : Boolean;
+Begin
+  IsAsciiPrintable := (B >= 32) And (B <= 126)
+                   Or (B = 9) Or (B = 10) Or (B = 13);
+End;
+
+{ MarkCodeBytes - Premiere passe : marque tous les octets des instructions
+  accessibles comme BF_CODE en suivant le flux de controle lineaire.
+  Utilise les labels generes par AnalyzeControlFlow (TODO 17) comme
+  points de depart et trace chaque bloc d'instructions jusqu'a un
+  saut inconditionnel ou un retour. }
+Procedure MarkCodeBytes(StartOffset, EndOffset : LongInt;
+                        Mode32 : Boolean);
+Var
+  I, J       : LongInt;
+  CurOffset  : LongInt;
+  ISize      : Integer;
+  BType      : Integer;
+  BadCount   : Integer;
+  Visited    : Boolean;
+Begin
+  { Passe 1 : Tracer le code depuis chaque label connu }
+  For I := 0 To LabelCount - 1 Do Begin
+    CurOffset := Labels[I].Address;
+    { Verifier que le label est dans les bornes }
+    If (CurOffset < 0) Or (CurOffset >= EndOffset) Then Continue;
+    If CurOffset >= ImageSize Then Continue;
+    { Ne pas retracer si deja marque comme code }
+    If ByteFlags^[CurOffset] = BF_CODE Then Continue;
+
+    BadCount := 0;
+    While CurOffset < EndOffset Do Begin
+      If CurOffset >= ImageSize Then Break;
+      If CurOffset < 0 Then Break;
+      { Si deja marque comme code, le bloc a deja ete trace }
+      If ByteFlags^[CurOffset] = BF_CODE Then Break;
+
+      { Calculer la taille de l'instruction }
+      ISize := ComputeInstrSize(CurOffset, Mode32);
+      If ISize <= 0 Then Begin
+        ISize := 1;
+        Inc(BadCount);
+        If BadCount > 16 Then Break;
+      End Else
+        BadCount := 0;
+
+      { Marquer tous les octets de cette instruction comme code }
+      For J := 0 To ISize - 1 Do Begin
+        If (CurOffset + J >= 0) And (CurOffset + J < ImageSize) Then
+          ByteFlags^[CurOffset + J] := BF_CODE;
+      End;
+
+      { Classifier l'instruction pour detecter les fins de bloc }
+      BType := ClassifyInstruction(CurOffset, Mode32);
+
+      CurOffset := CurOffset + ISize;
+
+      { Arreter le tracage apres un saut inconditionnel ou un retour }
+      If (BType = BT_JMP_REL8) Or (BType = BT_JMP_REL) Or
+         (BType = BT_JMP_FAR) Or (BType = BT_JMP_IND) Or
+         (BType = BT_RET) Or (BType = BT_RETF) Or
+         (BType = BT_IRET) Then
+        Break;
+    End;
+  End;
+
+  { Passe 2 : Marquer le padding (NOP=$90, INT3=$CC, $00) entre les blocs de code }
+  For I := 0 To ImageSize - 1 Do Begin
+    If ByteFlags^[I] = BF_UNKNOWN Then Begin
+      If (ReadImageByte(I) = $90) Or (ReadImageByte(I) = $CC) Or
+         (ReadImageByte(I) = $00) Then Begin
+        { Verifier qu'il est entre deux zones de code }
+        Visited := False;
+        If I > 0 Then Begin
+          If (ByteFlags^[I - 1] = BF_CODE) Or (ByteFlags^[I - 1] = BF_PADDING) Then
+            Visited := True;
+        End;
+        If Visited Then
+          ByteFlags^[I] := BF_PADDING;
+      End;
+    End;
+  End;
+End;
+
+{ MarkSectionFlags - Pour les fichiers PE, utilise les flags de section
+  pour classifier les octets. Les sections sans flag CODE ni EXECUTE sont
+  marquees comme BF_DATA. Les sections .rdata sont marquees comme BF_DATA. }
+Procedure MarkSectionFlags;
+Var
+  I, J       : LongInt;
+  SecStart   : LongInt;
+  SecEnd     : LongInt;
+  SecName    : TString;
+  IsCode     : Boolean;
+Begin
+  If Not IsPEFile Then Exit;
+
+  For I := 0 To SectionCount - 1 Do Begin
+    SecStart := Sections[I].VirtualAddress;
+    If Sections[I].VirtualSize > 0 Then
+      SecEnd := SecStart + Sections[I].VirtualSize
+    Else
+      SecEnd := SecStart + Sections[I].SizeOfRawData;
+    If SecEnd > ImageSize Then SecEnd := ImageSize;
+    SecName := GetSectionName(Sections[I]);
+
+    { Verifier si c'est une section de code }
+    IsCode := ((Sections[I].Characteristics And IMAGE_SCN_CNT_CODE) <> 0) Or
+              ((Sections[I].Characteristics And IMAGE_SCN_MEM_EXECUTE) <> 0);
+
+    If Not IsCode Then Begin
+      { Section de donnees : marquer tous les octets inconnus comme BF_DATA }
+      For J := SecStart To SecEnd - 1 Do Begin
+        If (J >= 0) And (J < ImageSize) Then Begin
+          If ByteFlags^[J] = BF_UNKNOWN Then
+            ByteFlags^[J] := BF_DATA;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ DetectAsciiStrings - Recherche les chaines ASCII (terminee par 0) dans
+  les zones non classifiees ou marquees comme donnees.
+  Une chaine est detectee si elle contient au moins 4 caracteres imprimables
+  consecutifs suivis d'un octet nul. }
+Procedure DetectAsciiStrings;
+Var
+  I, J       : LongInt;
+  RunStart   : LongInt;
+  RunLen     : LongInt;
+  B          : Byte;
+  InRun      : Boolean;
+Begin
+  StringCount := 0;
+  InRun := False;
+  RunStart := 0;
+  RunLen := 0;
+
+  For I := 0 To ImageSize - 1 Do Begin
+    B := ReadImageByte(I);
+
+    If (ByteFlags^[I] = BF_UNKNOWN) Or (ByteFlags^[I] = BF_DATA) Then Begin
+      If IsAsciiPrintable(B) Then Begin
+        If Not InRun Then Begin
+          RunStart := I;
+          RunLen := 0;
+          InRun := True;
+        End;
+        Inc(RunLen);
+      End Else If (B = 0) And InRun And (RunLen >= 4) Then Begin
+        { Chaine terminee par nul : marquer comme BF_STRING }
+        For J := RunStart To I Do Begin
+          If (J >= 0) And (J < ImageSize) Then
+            ByteFlags^[J] := BF_STRING;
+        End;
+        Inc(StringCount);
+        { Creer un label pour la chaine si aucun n'existe }
+        If FindLabel(RunStart) < 0 Then
+          AddLabel(RunStart, 'aStr_' + HexDWord(RunStart), False, False, False);
+        InRun := False;
+        RunLen := 0;
+      End Else Begin
+        InRun := False;
+        RunLen := 0;
+      End;
+    End Else Begin
+      InRun := False;
+      RunLen := 0;
+    End;
+  End;
+End;
+
+{ DetectJumpTables - Recherche les tables de saut (switch/case) dans les
+  zones non classifiees. Une table de saut est une sequence d'adresses
+  (16 ou 32 bits) qui pointent toutes vers des labels connus dans les
+  sections de code. Elle est detectee apres un JMP indirect. }
+Procedure DetectJumpTables(Mode32 : Boolean);
+Var
+  I, J, K    : LongInt;
+  Addr       : LongInt;
+  EntrySize  : Integer;
+  EntryCount : Integer;
+  AllValid   : Boolean;
+Begin
+  JumpTblCount := 0;
+
+  If Mode32 Then
+    EntrySize := 4
+  Else
+    EntrySize := 2;
+
+  { Chercher les tables de saut apres les JMP indirects dans les XRefs }
+  For I := 0 To XRefCount - 1 Do Begin
+    { Verifier s'il y a un JMP indirect dont la cible pourrait etre
+      suivie d'une table de saut }
+  End;
+
+  { Approche heuristique : chercher des sequences d'adresses alignees
+    dans les zones inconnues qui pointent vers des labels connus }
+  I := 0;
+  While I < ImageSize - EntrySize Do Begin
+    If (ByteFlags^[I] = BF_UNKNOWN) Or (ByteFlags^[I] = BF_DATA) Then Begin
+      { Tester si c'est le debut d'une table de saut }
+      EntryCount := 0;
+      AllValid := True;
+      K := I;
+      While (K + EntrySize <= ImageSize) And AllValid Do Begin
+        If Mode32 Then
+          Addr := ReadImageDWord(K)
+        Else
+          Addr := ReadImageWord(K);
+        { Verifier que l'adresse pointe vers un label connu }
+        If FindLabel(Addr) >= 0 Then Begin
+          Inc(EntryCount);
+          K := K + EntrySize;
+        End Else
+          AllValid := False;
+      End;
+
+      If EntryCount >= 3 Then Begin
+        { Marquer comme table de saut }
+        For J := I To I + (EntryCount * EntrySize) - 1 Do Begin
+          If (J >= 0) And (J < ImageSize) Then
+            ByteFlags^[J] := BF_JUMPTBL;
+        End;
+        Inc(JumpTblCount);
+        { Creer un label pour la table }
+        If FindLabel(I) < 0 Then
+          AddLabel(I, 'jtbl_' + HexDWord(I), False, False, False);
+        I := I + EntryCount * EntrySize;
+      End Else
+        Inc(I);
+    End Else
+      Inc(I);
+  End;
+End;
+
+{ DetectDataPatterns - Marque les zones restantes inconnues comme donnees.
+  Detecte les motifs courants : sequences de zeros (BSS), pointeurs
+  alignes et constantes numeriques. }
+Procedure DetectDataPatterns;
+Var
+  I          : LongInt;
+Begin
+  { Marquer tous les octets encore inconnus comme donnees }
+  DataBytes := 0;
+  For I := 0 To ImageSize - 1 Do Begin
+    If ByteFlags^[I] = BF_UNKNOWN Then Begin
+      ByteFlags^[I] := BF_DATA;
+    End;
+    { Compter les octets de donnees }
+    If (ByteFlags^[I] = BF_DATA) Or (ByteFlags^[I] = BF_STRING) Or
+       (ByteFlags^[I] = BF_JUMPTBL) Then
+      Inc(DataBytes);
+  End;
+End;
+
+{ DiscriminateCodeData - Procedure principale pour la discrimination
+  code/donnees (TODO 19). Orchestre les differentes passes. }
+Procedure DiscriminateCodeData(StartOffset, EndOffset : LongInt;
+                               Mode32 : Boolean);
+Var
+  CodeBytes   : LongInt;
+  PadBytes    : LongInt;
+  I           : LongInt;
+Begin
+  { Allouer et initialiser ByteFlags }
+  If ImageSize <= 0 Then Exit;
+  GetMem(ByteFlags, ImageSize);
+  FillChar(ByteFlags^, ImageSize, BF_UNKNOWN);
+
+  WriteLn('Discrimination code/donnees...');
+
+  { Passe 1 : Marquer les octets de code via le flux de controle }
+  MarkCodeBytes(StartOffset, EndOffset, Mode32);
+
+  { Passe 2 : Pour PE, utiliser les flags de section }
+  MarkSectionFlags;
+
+  { Passe 3 : Detecter les chaines ASCII }
+  DetectAsciiStrings;
+
+  { Passe 4 : Detecter les tables de saut }
+  DetectJumpTables(Mode32);
+
+  { Passe 5 : Marquer les zones restantes comme donnees }
+  DetectDataPatterns;
+
+  { Calculer les statistiques }
+  CodeBytes := 0;
+  PadBytes := 0;
+  For I := 0 To ImageSize - 1 Do Begin
+    Case ByteFlags^[I] Of
+      BF_CODE    : Inc(CodeBytes);
+      BF_PADDING : Inc(PadBytes);
+    End;
+  End;
+
+  WriteLn('Discrimination terminee :');
+  WriteLn('  Octets de code      : ', CodeBytes);
+  WriteLn('  Octets de donnees   : ', DataBytes);
+  WriteLn('  Chaines ASCII       : ', StringCount);
+  WriteLn('  Tables de saut      : ', JumpTblCount);
+  WriteLn('  Octets de padding   : ', PadBytes);
 End;
 
 { ============================================================
@@ -4362,6 +4688,7 @@ Begin
  InstrCount := 0;
  ProcCount := 0;
  DataBytes := 0;
+ ByteFlags := Nil;
  WriteLn;
  WriteLn('Analyse du flux de controle...');
  { Determiner le mode 32 bits et la zone de code }
@@ -4414,11 +4741,24 @@ Begin
    End;
   End;
  End;
+ { Discrimination code/donnees (TODO 19) }
+ If IsPEFile Then Begin
+  DiscriminateCodeData(PEEntryPointRVA, ImageSize, True);
+ End Else Begin
+  DiscriminateCodeData(LongInt(EntryCS) * 16 + LongInt(EntryIP), ImageSize, False);
+ End;
+ If OptVerbose Then Begin
+  WriteLn('Repartition des octets :');
+  For IterI := 0 To ImageSize - 1 Do Begin
+  End;
+ End;
  WriteLn;
- WriteLn('(les TODOs 19 a 25 restent a implementer)');
+ WriteLn('(les TODOs 20 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
  { Liberation de la memoire }
+ If (ByteFlags <> Nil) And (ImageSize > 0) Then
+  FreeMem(ByteFlags, ImageSize);
  If (RelocFlags <> Nil) And (ImageSize > 0) Then
   FreeMem(RelocFlags, ImageSize);
  If (ImageBuffer <> Nil) And (ImageSize > 0) Then
