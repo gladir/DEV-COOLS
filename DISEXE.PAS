@@ -70,7 +70,7 @@
       Stocker les noms des DLL et des fonctions importees
       avec leur adresse IAT pour generer les EXTRN dans le .ASM.
 
-  7.  Traitement de la table d'exportation PE (Export Directory).
+  7.  [IMPLEMENTE] Traitement de la table d'exportation PE (Export Directory).
       Lire la Export Directory Table via DataDirectory[0] :
       Name (nom de la DLL), NumberOfFunctions, NumberOfNames,
       AddressOfFunctions, AddressOfNames, AddressOfNameOrdinals.
@@ -436,6 +436,14 @@ Type
     ByOrdinal : Boolean;    { True si importation par ordinal }
   End;
 
+  { Entree d'exportation PE }
+  TExportEntry = Record
+    FuncName  : TString;    { nom de la fonction (vide si par ordinal seul) }
+    Ordinal   : Word;       { ordinal de la fonction }
+    FuncRVA   : LongInt;    { RVA de la fonction }
+    HasName   : Boolean;    { True si la fonction a un nom }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -489,6 +497,8 @@ Var
   ImportCount    : LongInt;  { nombre d'imports }
   ExportCount    : LongInt;  { nombre d'exports }
   Imports        : Array[0..MAX_IMPORTS - 1] Of TImportEntry;
+  ExportList     : Array[0..MAX_EXPORTS - 1] Of TExportEntry;
+  ExportDLLName  : TString;   { nom de la DLL exportee }
   IterI          : Integer;  { variable d'iteration generale }
 
 { ============================================================
@@ -1041,6 +1051,92 @@ Begin
 End;
 
 { ============================================================
+  LECTURE DE LA TABLE D'EXPORTATION PE
+  ============================================================ }
+
+Function ReadPEExports : Boolean;
+Var
+ ExportDirRVA  : LongInt;
+ ExportDirSize : LongInt;
+ ExportNameRVA : LongInt;
+ NumFunctions  : LongInt;
+ NumNames      : LongInt;
+ AddrFuncsRVA  : LongInt;
+ AddrNamesRVA  : LongInt;
+ AddrOrdsRVA   : LongInt;
+ OrdinalBase   : LongInt;
+ FuncRVA       : LongInt;
+ NameRVA       : LongInt;
+ NameOrd       : Word;
+ I, J          : LongInt;
+Begin
+ ReadPEExports := False;
+ ExportCount := 0;
+ ExportDLLName := '';
+ { Verifier que DataDirectory[0] (Export) est present }
+ ExportDirRVA := DataDirs[0].VirtualAddress;
+ ExportDirSize := DataDirs[0].Size;
+ If (ExportDirRVA = 0) Or (ExportDirSize = 0) Then Begin
+  { Pas de table d'exportation - c'est valide }
+  ReadPEExports := True;
+  Exit;
+ End;
+ { Verifier les limites }
+ If ExportDirRVA + 39 >= ImageSize Then Begin
+  WriteLn('Erreur : Export Directory hors limites.');
+  Exit;
+ End;
+ { Lire les champs de IMAGE_EXPORT_DIRECTORY (40 octets) }
+ { Offset 0 : Characteristics (4) }
+ { Offset 4 : TimeDateStamp (4) }
+ { Offset 8 : MajorVersion (2), MinorVersion (2) }
+ ExportNameRVA := ReadImageDWord(ExportDirRVA + 12);  { Name (RVA) }
+ OrdinalBase   := ReadImageDWord(ExportDirRVA + 16);  { Base }
+ NumFunctions  := ReadImageDWord(ExportDirRVA + 20);  { NumberOfFunctions }
+ NumNames      := ReadImageDWord(ExportDirRVA + 24);  { NumberOfNames }
+ AddrFuncsRVA  := ReadImageDWord(ExportDirRVA + 28);  { AddressOfFunctions }
+ AddrNamesRVA  := ReadImageDWord(ExportDirRVA + 32);  { AddressOfNames }
+ AddrOrdsRVA   := ReadImageDWord(ExportDirRVA + 36);  { AddressOfNameOrdinals }
+ { Lire le nom de la DLL }
+ If (ExportNameRVA > 0) And (ExportNameRVA < ImageSize) Then
+  ExportDLLName := ReadImageString(ExportNameRVA)
+ Else
+  ExportDLLName := '';
+ { Limiter le nombre de fonctions }
+ If NumFunctions > MAX_EXPORTS Then NumFunctions := MAX_EXPORTS;
+ { D'abord, enregistrer toutes les fonctions par ordinal }
+ For I := 0 To NumFunctions - 1 Do Begin
+  If ExportCount >= MAX_EXPORTS Then Break;
+  FuncRVA := ReadImageDWord(AddrFuncsRVA + I * 4);
+  If FuncRVA = 0 Then Continue;  { Entree vide }
+  ExportList[ExportCount].FuncRVA := FuncRVA;
+  ExportList[ExportCount].Ordinal := Word(OrdinalBase + I);
+  ExportList[ExportCount].FuncName := '';
+  ExportList[ExportCount].HasName := False;
+  Inc(ExportCount);
+ End;
+ { Ensuite, associer les noms aux fonctions via la table des ordinals }
+ If (NumNames > 0) And (AddrNamesRVA > 0) And (AddrOrdsRVA > 0) Then Begin
+  For I := 0 To NumNames - 1 Do Begin
+   NameRVA := ReadImageDWord(AddrNamesRVA + I * 4);
+   NameOrd := ReadImageWord(AddrOrdsRVA + I * 2);
+   { Chercher l'entree correspondante par ordinal }
+   For J := 0 To ExportCount - 1 Do Begin
+    If ExportList[J].Ordinal = Word(OrdinalBase + LongInt(NameOrd)) Then Begin
+     If (NameRVA > 0) And (NameRVA < ImageSize) Then
+      ExportList[J].FuncName := ReadImageString(NameRVA)
+     Else
+      ExportList[J].FuncName := '???';
+     ExportList[J].HasName := True;
+     Break;
+    End;
+   End;
+  End;
+ End;
+ ReadPEExports := True;
+End;
+
+{ ============================================================
   CHARGEMENT DU PROGRAMME DOS 16 BITS
   ============================================================ }
 
@@ -1225,6 +1321,27 @@ Begin
              '  IAT=$', HexDWord(Imports[IterI].IATAddr));
    End;
   End;
+  { Lecture de la table d'exportation PE }
+  If Not ReadPEExports Then Begin
+   Close(InFile);
+   Halt(1);
+  End;
+  If OptVerbose Then Begin
+   If ExportCount > 0 Then Begin
+    WriteLn('Exports PE : ', ExportCount, ' fonctions exportees.');
+    If ExportDLLName <> '' Then
+     WriteLn('  DLL : ', ExportDLLName);
+    For IterI := 0 To ExportCount - 1 Do Begin
+     If ExportList[IterI].HasName Then
+      WriteLn('  [', ExportList[IterI].Ordinal, '] ', ExportList[IterI].FuncName,
+              '  RVA=$', HexDWord(ExportList[IterI].FuncRVA))
+     Else
+      WriteLn('  [', ExportList[IterI].Ordinal, '] (ordinal seul)',
+              '  RVA=$', HexDWord(ExportList[IterI].FuncRVA));
+    End;
+   End Else
+    WriteLn('Exports PE : aucune exportation.');
+  End;
  End Else Begin
   WriteLn('Format DOS MZ (16 bits) detecte.');
   { Chargement de l'image DOS en memoire }
@@ -1246,10 +1363,9 @@ Begin
  InstrCount := 0;
  ProcCount := 0;
  DataBytes := 0;
- ExportCount := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 7 a 25 restent a implementer)');
+ WriteLn('(les TODOs 8 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
 End.
