@@ -174,7 +174,7 @@
       les blocs de code accessibles des zones potentiellement
       non-code (donnees intercalees, padding).
 
-  18. Detection des procedures, fonctions et points d'entree.
+  18. [IMPLEMENTE] Detection des procedures, fonctions et points d'entree.
       A partir du point d'entree (CS:IP pour MZ, AddressOfEntryPoint
       pour PE) et des adresses cibles de CALL, identifier les
       debuts de sous-programmes. Attribuer un label automatique
@@ -3224,6 +3224,222 @@ Begin
 End;
 
 { ============================================================
+  DETECTION DES PROCEDURES, FONCTIONS ET POINTS D'ENTREE (TODO 18)
+  ============================================================ }
+
+{ IsProloguePattern - Detecte un pattern de prologue de fonction.
+  Mode 16 bits : PUSH BP ($55) suivi de MOV BP,SP ($8B $EC ou $89 $E5)
+  Mode 32 bits : PUSH EBP ($55) suivi de MOV EBP,ESP ($8B $EC ou $89 $E5)
+  Note : en mode 32 bits, $55 = PUSH EBP et les encodages MOV sont
+  identiques a ceux du mode 16 bits car reg/rm utilisent les memes
+  champs pour BP/SP et EBP/ESP selon la taille d'operande effective.
+  Retourne True si un pattern de prologue est detecte a Offset. }
+Function IsProloguePattern(Offset : LongInt; Mode32 : Boolean) : Boolean;
+Var
+  B0, B1, B2 : Byte;
+Begin
+  IsProloguePattern := False;
+  If (Offset < 0) Or (Offset + 2 >= ImageSize) Then Exit;
+  B0 := ReadImageByte(Offset);
+  B1 := ReadImageByte(Offset + 1);
+  B2 := ReadImageByte(Offset + 2);
+  { PUSH BP/EBP = $55 }
+  If B0 <> $55 Then Exit;
+  { MOV BP,SP / MOV EBP,ESP }
+  { Encodage 1 : $8B $EC (MOV reg,r/m avec reg=BP/EBP, r/m=SP/ESP) }
+  { Encodage 2 : $89 $E5 (MOV r/m,reg avec r/m=BP/EBP, reg=SP/ESP) }
+  If ((B1 = $8B) And (B2 = $EC)) Or
+     ((B1 = $89) And (B2 = $E5)) Then
+    IsProloguePattern := True;
+End;
+
+{ IsEpiloguePattern - Detecte un pattern d'epilogue de fonction.
+  Patterns reconnus :
+  1. POP BP/EBP ($5D) + RET ($C3)
+  2. POP BP/EBP ($5D) + RET imm16 ($C2)
+  3. LEAVE ($C9) + RET ($C3)
+  4. LEAVE ($C9) + RET imm16 ($C2)
+  5. RET seul ($C3) - fin de procedure sans frame pointer
+  6. RET imm16 seul ($C2) - fin de procedure avec nettoyage de pile
+  Retourne True si un pattern d'epilogue est detecte a Offset. }
+Function IsEpiloguePattern(Offset : LongInt; Mode32 : Boolean) : Boolean;
+Var
+  B0, B1 : Byte;
+Begin
+  IsEpiloguePattern := False;
+  If (Offset < 0) Or (Offset >= ImageSize) Then Exit;
+  B0 := ReadImageByte(Offset);
+  { Pattern 1 & 2 : POP BP/EBP ($5D) suivi de RET ($C3) ou RET imm ($C2) }
+  If B0 = $5D Then Begin
+    If Offset + 1 < ImageSize Then Begin
+      B1 := ReadImageByte(Offset + 1);
+      If (B1 = $C3) Or (B1 = $C2) Then Begin
+        IsEpiloguePattern := True;
+        Exit;
+      End;
+    End;
+  End;
+  { Pattern 3 & 4 : LEAVE ($C9) suivi de RET ($C3) ou RET imm ($C2) }
+  If B0 = $C9 Then Begin
+    If Offset + 1 < ImageSize Then Begin
+      B1 := ReadImageByte(Offset + 1);
+      If (B1 = $C3) Or (B1 = $C2) Then Begin
+        IsEpiloguePattern := True;
+        Exit;
+      End;
+    End;
+  End;
+  { Pattern 5 & 6 : RET ($C3) ou RET imm ($C2) seuls }
+  If (B0 = $C3) Or (B0 = $C2) Then
+    IsEpiloguePattern := True;
+End;
+
+{ FindProcEnd - Cherche la fin d'une procedure.
+  Parcourt les instructions a partir de StartOffset et retourne
+  l'adresse du premier octet apres la derniere instruction de retour
+  (RET/RETF/IRET) trouvee. Retourne -1 si aucun retour n'est
+  trouve dans la limite de MaxScan instructions. }
+Function FindProcEnd(StartOffset, EndOffset : LongInt;
+                     Mode32 : Boolean) : LongInt;
+Const
+  MaxScan = 10000;
+Var
+  CurOffset  : LongInt;
+  ISize      : Integer;
+  BType      : Integer;
+  ScanCount  : Integer;
+Begin
+  FindProcEnd := -1;
+  CurOffset := StartOffset;
+  ScanCount := 0;
+  While (CurOffset < EndOffset) And (CurOffset < ImageSize) And
+        (ScanCount < MaxScan) Do Begin
+    ISize := ComputeInstrSize(CurOffset, Mode32);
+    If ISize <= 0 Then Exit;
+    BType := ClassifyInstruction(CurOffset, Mode32);
+    If (BType = BT_RET) Or (BType = BT_RETF) Or (BType = BT_IRET) Then Begin
+      FindProcEnd := CurOffset + ISize;
+      Exit;
+    End;
+    CurOffset := CurOffset + ISize;
+    Inc(ScanCount);
+  End;
+End;
+
+{ DetectProcedures - Seconde passe pour identifier les procedures.
+  Actions :
+  1. Pour chaque label marque IsProc (cible de CALL), verifier la
+     presence d'un pattern de prologue et chercher l'epilogue.
+  2. Scanner le code pour des prologues non encore detectes et
+     les ajouter comme nouvelles procedures.
+  3. Reutiliser les noms d'imports et d'exports comme noms de labels.
+  4. Generer les noms automatiques manquants (sub_XXXX / loc_XXXX).
+  Parametres :
+    StartOffset : debut de la zone de code
+    EndOffset   : fin de la zone de code
+    Mode32      : True si mode 32 bits }
+Procedure DetectProcedures(StartOffset, EndOffset : LongInt;
+                           Mode32 : Boolean);
+Var
+  I          : LongInt;
+  CurOffset  : LongInt;
+  ISize      : Integer;
+  LIdx       : LongInt;
+  NewProcs   : Integer;
+  ProlProcs  : Integer;
+  LabelName  : TString;
+Begin
+  NewProcs := 0;
+  ProlProcs := 0;
+
+  { Passe 1 : Verifier les prologues pour les labels deja marques IsProc }
+  For I := 0 To LabelCount - 1 Do Begin
+    If Labels[I].IsProc And (Not Labels[I].IsImport) Then Begin
+      If IsProloguePattern(Labels[I].Address, Mode32) Then
+        Inc(ProlProcs);
+    End;
+  End;
+
+  { Passe 2 : Scanner le code pour des prologues non encore detectes.
+    On cherche le pattern PUSH BP/EBP + MOV BP/EBP,SP/ESP a chaque
+    frontiere d'instruction. Les adresses ou ce pattern apparait et
+    qui ne sont pas deja des labels sont ajoutees comme procedures. }
+  CurOffset := StartOffset;
+  While CurOffset < EndOffset Do Begin
+    If CurOffset >= ImageSize Then Break;
+    If CurOffset < 0 Then Break;
+
+    { Verifier s'il y a un prologue a cette adresse }
+    If IsProloguePattern(CurOffset, Mode32) Then Begin
+      LIdx := FindLabel(CurOffset);
+      If LIdx < 0 Then Begin
+        { Nouveau sous-programme detecte par pattern de prologue }
+        LabelName := GenerateLabelName(CurOffset, True, Mode32);
+        AddLabel(CurOffset, LabelName, True, False, False);
+        Inc(NewProcs);
+        Inc(ProcCount);
+      End Else Begin
+        { Label existant : s'assurer qu'il est marque comme proc }
+        If Not Labels[LIdx].IsProc Then Begin
+          Labels[LIdx].IsProc := True;
+          { Renommer de loc_XXXX a sub_XXXX si le nom est auto-genere }
+          If (Labels[LIdx].Name <> '') And
+             (Copy(Labels[LIdx].Name, 1, 4) = 'loc_') Then Begin
+            Labels[LIdx].Name := GenerateLabelName(CurOffset, True, Mode32);
+          End;
+          Inc(NewProcs);
+          Inc(ProcCount);
+        End;
+      End;
+    End;
+
+    { Avancer instruction par instruction }
+    ISize := ComputeInstrSize(CurOffset, Mode32);
+    If ISize <= 0 Then ISize := 1;
+    CurOffset := CurOffset + ISize;
+  End;
+
+  { Passe 3 : Assurer que les imports et exports ont leurs vrais noms.
+    Les imports PE utilisent le nom de la fonction importee (DLL!func).
+    Les exports PE utilisent le nom de la fonction exportee. }
+  If IsPEFile Then Begin
+    For I := 0 To ImportCount - 1 Do Begin
+      If Imports[I].IATAddr > 0 Then Begin
+        If Imports[I].FuncName <> '' Then
+          AddLabel(Imports[I].IATAddr, Imports[I].FuncName,
+                   True, True, False);
+      End;
+    End;
+    For I := 0 To ExportCount - 1 Do Begin
+      If ExportList[I].FuncRVA > 0 Then Begin
+        If ExportList[I].HasName And (ExportList[I].FuncName <> '') Then
+          AddLabel(ExportList[I].FuncRVA, ExportList[I].FuncName,
+                   True, False, True);
+      End;
+    End;
+  End;
+
+  { Passe 4 : Generer les noms manquants pour tous les labels }
+  For I := 0 To LabelCount - 1 Do Begin
+    If Labels[I].Name = '' Then Begin
+      Labels[I].Name := GenerateLabelName(Labels[I].Address,
+                                          Labels[I].IsProc, Mode32);
+    End;
+  End;
+
+  { Re-trier les labels si de nouveaux ont ete ajoutes }
+  If NewProcs > 0 Then
+    SortLabels;
+
+  If OptVerbose Then Begin
+    WriteLn('Detection des procedures terminee :');
+    WriteLn('  Procedures avec prologue confirme  : ', ProlProcs);
+    WriteLn('  Nouvelles procedures par prologue  : ', NewProcs);
+    WriteLn('  Total sous-programmes              : ', ProcCount);
+  End;
+End;
+
+{ ============================================================
   ANALYSE DES OPTIONS DE LIGNE DE COMMANDE
   ============================================================ }
 
@@ -4162,8 +4378,17 @@ Begin
   WriteLn('  Sous-programmes trouves : ', ProcCount);
   WriteLn('  Labels generes          : ', LabelCount);
   WriteLn('  References croisees     : ', XRefCount);
+ End;
+ { Detection des procedures, fonctions et points d'entree (TODO 18) }
+ WriteLn('Detection des procedures...');
+ If IsPEFile Then Begin
+  DetectProcedures(PEEntryPointRVA, ImageSize, True);
+ End Else Begin
+  DetectProcedures(LongInt(EntryCS) * 16 + LongInt(EntryIP), ImageSize, False);
+ End;
+ If OptVerbose Then Begin
   If LabelCount > 0 Then Begin
-   WriteLn('Labels :');
+   WriteLn('Labels (apres detection des procedures) :');
    For IterI := 0 To LabelCount - 1 Do Begin
     Write('  ', Labels[IterI].Name, ' @ $');
     If IsPEFile Then
@@ -4190,7 +4415,7 @@ Begin
   End;
  End;
  WriteLn;
- WriteLn('(les TODOs 18 a 25 restent a implementer)');
+ WriteLn('(les TODOs 19 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
  { Liberation de la memoire }
