@@ -87,7 +87,7 @@
       des references symboliques segment:offset dans le .ASM
       plutot que des valeurs numeriques brutes.
 
-  9.  Traitement de la table de relogement PE (Base Relocation).
+  9.  [IMPLEMENTE] Traitement de la table de relogement PE (Base Relocation).
       Lire la Base Relocation Table via DataDirectory[5].
       Chaque bloc contient VirtualAddress et SizeOfBlock, suivi
       d'entrees de 16 bits (4 bits type + 12 bits offset).
@@ -296,6 +296,10 @@ Const
   IMAGE_SCN_MEM_READ               = $40000000;
   IMAGE_SCN_MEM_WRITE              = LongInt($80000000); { cast requis : depasse LongInt signe }
 
+  { Types de relogement PE (Base Relocation) }
+  IMAGE_REL_BASED_ABSOLUTE = 0;   { padding, ignorer }
+  IMAGE_REL_BASED_HIGHLOW  = 3;   { ajuster un DWORD 32 bits }
+
   { Limites des tableaux internes }
   MAX_SECTIONS   = 64;
   MAX_IMPORTS    = 4096;
@@ -444,6 +448,12 @@ Type
     HasName   : Boolean;    { True si la fonction a un nom }
   End;
 
+  { Entree de relogement PE }
+  TPERelocEntry = Record
+    Address   : LongInt;    { RVA de l'adresse a reloger }
+    RelocType : Byte;       { type de relogement (0=ABS, 3=HIGHLOW) }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -505,6 +515,10 @@ Var
   MZRelocs       : Array[0..MAX_RELOCS - 1] Of TMZReloc;
   MZRelocCount   : LongInt;  { nombre d'entrees de relogement lues }
   RelocFlags     : PByteArray; { 1 octet par octet de l'image : 1 = position relogee }
+
+  { Relogements PE }
+  PERelocs       : Array[0..MAX_RELOCS - 1] Of TPERelocEntry;
+  PERelocCount   : LongInt;  { nombre d'entrees de relogement PE }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -1142,6 +1156,87 @@ Begin
 End;
 
 { ============================================================
+  LECTURE DE LA TABLE DE RELOGEMENT PE (BASE RELOCATION)
+  ============================================================ }
+
+Function ReadPERelocs : Boolean;
+Var
+ RelocRVA    : LongInt;
+ RelocSize   : LongInt;
+ BlockPos    : LongInt;
+ BlockVA     : LongInt;
+ BlockSize   : LongInt;
+ EntryCount  : LongInt;
+ I           : LongInt;
+ Entry       : Word;
+ RelocType   : Byte;
+ RelocOffset : Word;
+ TargetRVA   : LongInt;
+ FlagSize    : LongInt;
+Begin
+ ReadPERelocs := False;
+ PERelocCount := 0;
+ { Verifier la presence de la Base Relocation Table (DataDirectory[5]) }
+ RelocRVA := DataDirs[5].VirtualAddress;
+ RelocSize := DataDirs[5].Size;
+ If (RelocRVA = 0) Or (RelocSize = 0) Then Begin
+  ReadPERelocs := True;  { pas de relogements, ce n'est pas une erreur }
+  Exit;
+ End;
+ { Allouer le tableau de flags (meme taille que l'image, 1 = position relogee) }
+ FlagSize := ImageSize;
+ If FlagSize > 0 Then Begin
+  GetMem(RelocFlags, FlagSize);
+  If RelocFlags = Nil Then Begin
+   WriteLn('Erreur : memoire insuffisante pour les flags de relogement PE.');
+   Exit;
+  End;
+  FillChar(RelocFlags^, FlagSize, 0);
+ End;
+ { Parcourir les blocs de relogement }
+ BlockPos := RelocRVA;
+ While BlockPos < RelocRVA + RelocSize Do Begin
+  { Lire l'entete du bloc : VirtualAddress (4) + SizeOfBlock (4) }
+  BlockVA := ReadImageDWord(BlockPos);
+  BlockSize := ReadImageDWord(BlockPos + 4);
+  { Verifier la validite du bloc }
+  If (BlockSize < 8) Or (BlockSize > RelocSize) Then Break;
+  { Nombre d'entrees de 16 bits dans ce bloc }
+  EntryCount := (BlockSize - 8) Div 2;
+  { Traiter chaque entree }
+  For I := 0 To EntryCount - 1 Do Begin
+   Entry := ReadImageWord(BlockPos + 8 + I * 2);
+   RelocType := Byte(Entry Shr 12);
+   RelocOffset := Entry And $0FFF;
+   Case RelocType Of
+    IMAGE_REL_BASED_ABSOLUTE: ; { padding, ignorer }
+    IMAGE_REL_BASED_HIGHLOW: Begin
+     { Calculer la RVA cible }
+     TargetRVA := BlockVA + LongInt(RelocOffset);
+     { Enregistrer dans la liste }
+     If PERelocCount < MAX_RELOCS Then Begin
+      PERelocs[PERelocCount].Address := TargetRVA;
+      PERelocs[PERelocCount].RelocType := RelocType;
+      Inc(PERelocCount);
+     End;
+     { Marquer les 4 octets comme reloges }
+     If (TargetRVA >= 0) And (TargetRVA + 3 < ImageSize) And
+        (RelocFlags <> Nil) Then Begin
+      RelocFlags^[TargetRVA] := 1;
+      RelocFlags^[TargetRVA + 1] := 1;
+      RelocFlags^[TargetRVA + 2] := 1;
+      RelocFlags^[TargetRVA + 3] := 1;
+     End;
+    End;
+   End; { case }
+  End;
+  { Passer au bloc suivant }
+  Inc(BlockPos, BlockSize);
+ End;
+ ReadPERelocs := True;
+End;
+
+{ ============================================================
   LECTURE DE LA TABLE DE RELOGEMENT MZ (DOS)
   ============================================================ }
 
@@ -1306,6 +1401,7 @@ Begin
  ImageBuffer := Nil;
  RelocFlags := Nil;
  MZRelocCount := 0;
+ PERelocCount := 0;
  If OptVerbose Then Begin
   WriteLn('Fichier d''entree  : ', InputFileName);
   WriteLn('Fichier de sortie : ', OutputFileName);
@@ -1432,6 +1528,20 @@ Begin
    End Else
     WriteLn('Exports PE : aucune exportation.');
   End;
+   { Lecture de la table de relogement PE (Base Relocation) }
+   If Not ReadPERelocs Then Begin
+    Close(InFile);
+    Halt(1);
+   End;
+   If OptVerbose Then Begin
+    WriteLn('Relogements PE : ', PERelocCount, ' entrees HIGHLOW.');
+    If PERelocCount > 0 Then Begin
+     For IterI := 0 To PERelocCount - 1 Do Begin
+      WriteLn('  [', IterI, '] RVA=$', HexDWord(PERelocs[IterI].Address),
+              '  type=', PERelocs[IterI].RelocType);
+     End;
+    End;
+   End;
  End Else Begin
   WriteLn('Format DOS MZ (16 bits) detecte.');
   { Lecture de la table de relogement MZ }
@@ -1479,7 +1589,7 @@ Begin
  DataBytes := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 9 a 25 restent a implementer)');
+ WriteLn('(les TODOs 10 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
  { Liberation de la memoire }
