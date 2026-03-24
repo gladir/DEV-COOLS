@@ -200,7 +200,7 @@
             DROP TABLE/VIEW/INDEX/PROCEDURE/FUNCTION/TRIGGER
               [IF EXISTS]
 
-  TODO 13 - PARSEUR DES INSTRUCTIONS DE CONTROLE T-SQL
+  TODO 13 - PARSEUR DES INSTRUCTIONS DE CONTROLE T-SQL [IMPLEMENTE]
             DECLARE @variable type [= valeur]
             DECLARE @table_var TABLE (col type, ...)
             SET @variable = expression
@@ -949,7 +949,11 @@ Const
   KW_ROLE         = 137;
   KW_MEMBER       = 138;
 
-  KW_COUNT        = 138;     { nombre total de mots-cles definis  }
+  { -- Controle T-SQL (TODO 13) -- }
+  KW_DELAY        = 139;
+  KW_TIME         = 140;
+
+  KW_COUNT        = 140;     { nombre total de mots-cles definis  }
 
   { ---- Constantes AST noeud parseur SQL (TODO 09) ------------- }
   { Types de noeuds dans l arbre d expression }
@@ -1058,6 +1062,29 @@ Const
   ND_PARAM_DEF     = 96;     { @param type dans proc/func           }
   ND_BODY_BLOCK    = 97;     { BEGIN ... END bloc de corps          }
   ND_WITH_OPTION   = 98;     { WITH (option = value)                }
+
+  { -- T-SQL control flow nodes (TODO 13) -- }
+  ND_DECLARE_VAR   = 99;     { DECLARE @var type [= expr]           }
+  ND_DECLARE_TABLE = 100;    { DECLARE @var TABLE (cols...)          }
+  ND_SET_VAR       = 101;    { SET @var = expr                      }
+  ND_SELECT_VAR    = 102;    { SELECT @var = expr                   }
+  ND_IF_STMT       = 103;    { IF cond BEGIN...END [ELSE ...]       }
+  ND_WHILE_STMT    = 104;    { WHILE cond BEGIN...END               }
+  ND_BREAK_STMT    = 105;    { BREAK                                }
+  ND_CONTINUE_STMT = 106;    { CONTINUE                             }
+  ND_BLOCK_STMT    = 107;    { BEGIN ... END bloc autonome          }
+  ND_GOTO_STMT     = 108;    { GOTO label                           }
+  ND_LABEL_STMT    = 109;    { label:                               }
+  ND_RETURN_STMT   = 110;    { RETURN [valeur]                      }
+  ND_WAITFOR_STMT  = 111;    { WAITFOR DELAY/TIME 'hh:mm:ss'       }
+  ND_TRY_CATCH     = 112;    { BEGIN TRY...END TRY BEGIN CATCH...   }
+  ND_THROW_STMT    = 113;    { THROW [num, msg, state]              }
+  ND_RAISERROR_STMT = 114;   { RAISERROR (msg, sev, state)          }
+  ND_PRINT_STMT    = 115;    { PRINT expression                     }
+  ND_EXEC_STMT     = 116;    { EXEC/EXECUTE procedure               }
+  ND_EXEC_SQL      = 117;    { EXEC('sql dynamique')                }
+  ND_USE_STMT      = 118;    { USE database                         }
+  ND_GO_STMT       = 119;    { GO separateur de batch               }
 
   { Taille max du pool de noeuds AST }
   MAX_AST_NODES   = 1024;
@@ -5098,6 +5125,10 @@ Begin
   If U = 'ROLE'         Then Begin IsKeyword := KW_ROLE;         Exit; End;
   If U = 'MEMBER'       Then Begin IsKeyword := KW_MEMBER;       Exit; End;
 
+  { -- T-SQL controle (TODO 13) -- }
+  If U = 'DELAY'        Then Begin IsKeyword := KW_DELAY;        Exit; End;
+  If U = 'TIME'         Then Begin IsKeyword := KW_TIME;         Exit; End;
+
   IsKeyword := 0;
 End;
 
@@ -5375,6 +5406,28 @@ Begin
     ND_PARAM_DEF    : NodeKindName := 'PARAM_DEF';
     ND_BODY_BLOCK   : NodeKindName := 'BODY_BLOCK';
     ND_WITH_OPTION  : NodeKindName := 'WITH_OPTION';
+    { -- T-SQL control flow (TODO 13) -- }
+    ND_DECLARE_VAR  : NodeKindName := 'DECLARE_VAR';
+    ND_DECLARE_TABLE: NodeKindName := 'DECLARE_TABLE';
+    ND_SET_VAR      : NodeKindName := 'SET_VAR';
+    ND_SELECT_VAR   : NodeKindName := 'SELECT_VAR';
+    ND_IF_STMT      : NodeKindName := 'IF_STMT';
+    ND_WHILE_STMT   : NodeKindName := 'WHILE_STMT';
+    ND_BREAK_STMT   : NodeKindName := 'BREAK_STMT';
+    ND_CONTINUE_STMT: NodeKindName := 'CONTINUE_STMT';
+    ND_BLOCK_STMT   : NodeKindName := 'BLOCK_STMT';
+    ND_GOTO_STMT    : NodeKindName := 'GOTO_STMT';
+    ND_LABEL_STMT   : NodeKindName := 'LABEL_STMT';
+    ND_RETURN_STMT  : NodeKindName := 'RETURN_STMT';
+    ND_WAITFOR_STMT : NodeKindName := 'WAITFOR_STMT';
+    ND_TRY_CATCH    : NodeKindName := 'TRY_CATCH';
+    ND_THROW_STMT   : NodeKindName := 'THROW_STMT';
+    ND_RAISERROR_STMT: NodeKindName := 'RAISERROR_STMT';
+    ND_PRINT_STMT   : NodeKindName := 'PRINT_STMT';
+    ND_EXEC_STMT    : NodeKindName := 'EXEC_STMT';
+    ND_EXEC_SQL     : NodeKindName := 'EXEC_SQL';
+    ND_USE_STMT     : NodeKindName := 'USE_STMT';
+    ND_GO_STMT      : NodeKindName := 'GO_STMT';
   Else
     NodeKindName := '?';
   End;
@@ -9561,6 +9614,909 @@ Begin
   ParseDropStmt := DS;
 End;
 
+{ ---- TODO 13 : Parseur des instructions de controle T-SQL ------ }
+
+{ ---- ParseDeclareStmt ------------------------------------------ }
+{ DECLARE @var type [= expr]                                        }
+{ DECLARE @var TABLE (col type, ...)                                }
+
+Function ParseDeclareStmt : Integer;
+Var
+  N, VN, T, E, ColD : Integer;
+  VarName            : TString;
+Begin
+  ParseDeclareStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_DECLARE) Then
+  Begin
+    ParseError('DECLARE attendu');
+    Exit;
+  End;
+  Advance; { skip DECLARE }
+
+  If LexCurTok.Kind <> TOK_VARIABLE Then
+  Begin
+    ParseError('variable @nom attendue apres DECLARE');
+    Exit;
+  End;
+  VarName := LexCurTok.Text;
+  Advance; { skip @variable }
+
+  { DECLARE @var TABLE (...) }
+  If KwIs(KW_TABLE) Then
+  Begin
+    N := NewNode(ND_DECLARE_TABLE, VarName, LexCurTok.Line, LexCurTok.Col);
+    Advance; { skip TABLE }
+    If TokIs(TOK_LPAREN) Then
+    Begin
+      Advance; { skip ( }
+      While ParseOk And Not TokIs(TOK_RPAREN) And
+            (LexCurTok.Kind <> TOK_EOF) Do
+      Begin
+        { Lire nom de colonne }
+        If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+           (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+        Begin
+          ColD := NewNode(ND_COL_DEF, LexCurTok.Text, LexCurTok.Line,
+                          LexCurTok.Col);
+          Advance;
+          { Lire le type }
+          T := ParseTypeRef;
+          If T >= 0 Then
+            AddChild(ColD, T);
+          AddChild(N, ColD);
+        End
+        Else
+        Begin
+          ParseError('nom de colonne attendu dans TABLE');
+          Break;
+        End;
+        If TokIs(TOK_COMMA) Then
+          Advance
+        Else
+          Break;
+      End;
+      If TokIs(TOK_RPAREN) Then
+        Advance;
+    End;
+    ParseDeclareStmt := N;
+    Exit;
+  End;
+
+  { DECLARE @var type [= expr] }
+  N := NewNode(ND_DECLARE_VAR, VarName, LexCurTok.Line, LexCurTok.Col);
+  { Type de la variable }
+  T := ParseTypeRef;
+  If T >= 0 Then
+    AddChild(N, T);
+  { Initialisation optionnelle }
+  If TokIs(TOK_EQ) Then
+  Begin
+    Advance; { skip = }
+    E := ParseSqlExpr;
+    If E >= 0 Then
+      AddChild(N, E);
+  End;
+  { Declarations multiples separees par virgule }
+  While TokIs(TOK_COMMA) And ParseOk Do
+  Begin
+    Advance; { skip , }
+    If LexCurTok.Kind = TOK_VARIABLE Then
+    Begin
+      VN := NewNode(ND_DECLARE_VAR, LexCurTok.Text, LexCurTok.Line,
+                     LexCurTok.Col);
+      Advance; { skip @var }
+      T := ParseTypeRef;
+      If T >= 0 Then
+        AddChild(VN, T);
+      If TokIs(TOK_EQ) Then
+      Begin
+        Advance;
+        E := ParseSqlExpr;
+        If E >= 0 Then
+          AddChild(VN, E);
+      End;
+      AddChild(N, VN);
+    End
+    Else
+    Begin
+      ParseError('variable @nom attendue');
+      Break;
+    End;
+  End;
+
+  ParseDeclareStmt := N;
+End;
+
+{ ---- ParseSetStmt ---------------------------------------------- }
+{ SET @variable = expression                                        }
+
+Function ParseSetStmt : Integer;
+Var
+  N, E   : Integer;
+  VarName : TString;
+Begin
+  ParseSetStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_SET) Then
+  Begin
+    ParseError('SET attendu');
+    Exit;
+  End;
+  Advance; { skip SET }
+
+  If LexCurTok.Kind <> TOK_VARIABLE Then
+  Begin
+    ParseError('variable @nom attendue apres SET');
+    Exit;
+  End;
+  VarName := LexCurTok.Text;
+  Advance; { skip @variable }
+
+  N := NewNode(ND_SET_VAR, VarName, LexCurTok.Line, LexCurTok.Col);
+
+  If TokIs(TOK_EQ) Then
+    Advance { skip = }
+  Else If TokIs(TOK_PLUS_EQ) Or TokIs(TOK_MINUS_EQ) Or
+          TokIs(TOK_STAR_EQ) Or TokIs(TOK_SLASH_EQ) Or
+          TokIs(TOK_PERCENT_EQ) Then
+  Begin
+    ASTPool[N].Text := VarName + ' ' + LexCurTok.Text;
+    Advance;
+  End
+  Else
+  Begin
+    ParseError('= attendu apres variable');
+    Exit;
+  End;
+
+  E := ParseSqlExpr;
+  If E >= 0 Then
+    AddChild(N, E);
+
+  ParseSetStmt := N;
+End;
+
+{ ---- ParseIfStmt ----------------------------------------------- }
+{ IF condition instruction | BEGIN...END [ELSE instruction | BEGIN...END] }
+
+Function ParseStatement : Integer; Forward;
+
+Function ParseIfStmt : Integer;
+Var
+  N, Cond, Body, ElseBody : Integer;
+Begin
+  ParseIfStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_IF) Then
+  Begin
+    ParseError('IF attendu');
+    Exit;
+  End;
+  N := NewNode(ND_IF_STMT, 'IF', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip IF }
+
+  { Condition }
+  Cond := ParseSqlExpr;
+  If Cond >= 0 Then
+    AddChild(N, Cond);
+
+  { Corps du IF : bloc ou instruction simple }
+  Body := ParseStatement;
+  If Body >= 0 Then
+    AddChild(N, Body);
+
+  { ELSE optionnel }
+  If KwIs(KW_ELSE) Then
+  Begin
+    Advance; { skip ELSE }
+    ElseBody := ParseStatement;
+    If ElseBody >= 0 Then
+      AddChild(N, ElseBody);
+  End;
+
+  ParseIfStmt := N;
+End;
+
+{ ---- ParseWhileStmt -------------------------------------------- }
+{ WHILE condition instruction | BEGIN...END                         }
+
+Function ParseWhileStmt : Integer;
+Var
+  N, Cond, Body : Integer;
+Begin
+  ParseWhileStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_WHILE) Then
+  Begin
+    ParseError('WHILE attendu');
+    Exit;
+  End;
+  N := NewNode(ND_WHILE_STMT, 'WHILE', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip WHILE }
+
+  Cond := ParseSqlExpr;
+  If Cond >= 0 Then
+    AddChild(N, Cond);
+
+  Body := ParseStatement;
+  If Body >= 0 Then
+    AddChild(N, Body);
+
+  ParseWhileStmt := N;
+End;
+
+{ ---- ParseBlockStmt -------------------------------------------- }
+{ BEGIN ... END (bloc autonome)                                     }
+{ BEGIN TRY ... END TRY BEGIN CATCH ... END CATCH                   }
+
+Function ParseBlockStmt : Integer;
+Var
+  N, S, TryBlk, CatchBlk : Integer;
+  IsTry                   : Boolean;
+Begin
+  ParseBlockStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_BEGIN) Then
+  Begin
+    ParseError('BEGIN attendu');
+    Exit;
+  End;
+  Advance; { skip BEGIN }
+
+  { Detecter BEGIN TRY }
+  IsTry := KwIs(KW_TRY);
+  If IsTry Then
+  Begin
+    Advance; { skip TRY }
+    N := NewNode(ND_TRY_CATCH, 'TRY_CATCH', LexCurTok.Line, LexCurTok.Col);
+
+    { Corps du TRY : lire les instructions jusqu a END TRY }
+    TryBlk := NewNode(ND_BLOCK_STMT, 'TRY', LexCurTok.Line, LexCurTok.Col);
+    While ParseOk And Not (KwIs(KW_END)) And
+          (LexCurTok.Kind <> TOK_EOF) Do
+    Begin
+      S := ParseStatement;
+      If S >= 0 Then
+        AddChild(TryBlk, S)
+      Else
+        Break;
+    End;
+    AddChild(N, TryBlk);
+
+    { END TRY }
+    If KwIs(KW_END) Then
+    Begin
+      Advance; { skip END }
+      If KwIs(KW_TRY) Then
+        Advance; { skip TRY }
+    End;
+
+    { BEGIN CATCH }
+    If KwIs(KW_BEGIN) Then
+    Begin
+      Advance; { skip BEGIN }
+      If KwIs(KW_CATCH) Then
+        Advance; { skip CATCH }
+
+      CatchBlk := NewNode(ND_BLOCK_STMT, 'CATCH', LexCurTok.Line,
+                           LexCurTok.Col);
+      While ParseOk And Not (KwIs(KW_END)) And
+            (LexCurTok.Kind <> TOK_EOF) Do
+      Begin
+        S := ParseStatement;
+        If S >= 0 Then
+          AddChild(CatchBlk, S)
+        Else
+          Break;
+      End;
+      AddChild(N, CatchBlk);
+
+      { END CATCH }
+      If KwIs(KW_END) Then
+      Begin
+        Advance; { skip END }
+        If KwIs(KW_CATCH) Then
+          Advance; { skip CATCH }
+      End;
+    End;
+
+    ParseBlockStmt := N;
+    Exit;
+  End;
+
+  { BEGIN ... END bloc normal }
+  N := NewNode(ND_BLOCK_STMT, 'BEGIN...END', LexCurTok.Line, LexCurTok.Col);
+  While ParseOk And Not KwIs(KW_END) And
+        (LexCurTok.Kind <> TOK_EOF) Do
+  Begin
+    S := ParseStatement;
+    If S >= 0 Then
+      AddChild(N, S)
+    Else
+      Break;
+  End;
+  If KwIs(KW_END) Then
+    Advance { skip END }
+  Else
+    ParseError('END attendu pour fermer le bloc BEGIN');
+
+  ParseBlockStmt := N;
+End;
+
+{ ---- ParseReturnStmt ------------------------------------------- }
+{ RETURN [valeur]                                                   }
+
+Function ParseReturnStmt : Integer;
+Var
+  N, E : Integer;
+Begin
+  ParseReturnStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_RETURN) Then
+  Begin
+    ParseError('RETURN attendu');
+    Exit;
+  End;
+  N := NewNode(ND_RETURN_STMT, 'RETURN', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip RETURN }
+
+  { Valeur de retour optionnelle }
+  If (LexCurTok.Kind <> TOK_EOF) And Not TokIs(TOK_SEMICOL) And
+     Not KwIs(KW_END) And Not KwIs(KW_GO) Then
+  Begin
+    E := ParseSqlExpr;
+    If E >= 0 Then
+      AddChild(N, E);
+  End;
+
+  ParseReturnStmt := N;
+End;
+
+{ ---- ParseWaitforStmt ------------------------------------------ }
+{ WAITFOR DELAY 'hh:mm:ss'                                         }
+{ WAITFOR TIME 'hh:mm:ss'                                          }
+
+Function ParseWaitforStmt : Integer;
+Var
+  N, E : Integer;
+  Mode : TString;
+Begin
+  ParseWaitforStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_WAITFOR) Then
+  Begin
+    ParseError('WAITFOR attendu');
+    Exit;
+  End;
+  Advance; { skip WAITFOR }
+
+  Mode := 'DELAY';
+  If KwIs(KW_DELAY) Then
+  Begin
+    Mode := 'DELAY';
+    Advance; { skip DELAY }
+  End
+  Else If KwIs(KW_TIME) Then
+  Begin
+    Mode := 'TIME';
+    Advance; { skip TIME }
+  End
+  Else
+  Begin
+    ParseError('DELAY ou TIME attendu apres WAITFOR');
+    Exit;
+  End;
+
+  N := NewNode(ND_WAITFOR_STMT, Mode, LexCurTok.Line, LexCurTok.Col);
+  E := ParseSqlExpr;
+  If E >= 0 Then
+    AddChild(N, E);
+
+  ParseWaitforStmt := N;
+End;
+
+{ ---- ParseThrowStmt -------------------------------------------- }
+{ THROW [numero, message, state]                                    }
+
+Function ParseThrowStmt : Integer;
+Var
+  N, E : Integer;
+Begin
+  ParseThrowStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_THROW) Then
+  Begin
+    ParseError('THROW attendu');
+    Exit;
+  End;
+  N := NewNode(ND_THROW_STMT, 'THROW', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip THROW }
+
+  { THROW sans arguments (re-throw dans CATCH) }
+  If TokIs(TOK_SEMICOL) Or TokIs(TOK_EOF) Or KwIs(KW_END) Then
+  Begin
+    ParseThrowStmt := N;
+    Exit;
+  End;
+
+  { numero }
+  E := ParseSqlExpr;
+  If E >= 0 Then
+    AddChild(N, E);
+
+  { , message }
+  If TokIs(TOK_COMMA) Then
+  Begin
+    Advance;
+    E := ParseSqlExpr;
+    If E >= 0 Then
+      AddChild(N, E);
+  End;
+
+  { , state }
+  If TokIs(TOK_COMMA) Then
+  Begin
+    Advance;
+    E := ParseSqlExpr;
+    If E >= 0 Then
+      AddChild(N, E);
+  End;
+
+  ParseThrowStmt := N;
+End;
+
+{ ---- ParseRaiserrorStmt ---------------------------------------- }
+{ RAISERROR (message, severity, state)                              }
+
+Function ParseRaiserrorStmt : Integer;
+Var
+  N, E : Integer;
+Begin
+  ParseRaiserrorStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_RAISERROR) Then
+  Begin
+    ParseError('RAISERROR attendu');
+    Exit;
+  End;
+  N := NewNode(ND_RAISERROR_STMT, 'RAISERROR', LexCurTok.Line,
+               LexCurTok.Col);
+  Advance; { skip RAISERROR }
+
+  { ( }
+  If TokIs(TOK_LPAREN) Then
+    Advance
+  Else
+  Begin
+    ParseError('( attendu apres RAISERROR');
+    Exit;
+  End;
+
+  { message }
+  E := ParseSqlExpr;
+  If E >= 0 Then
+    AddChild(N, E);
+
+  { , severity }
+  If TokIs(TOK_COMMA) Then
+  Begin
+    Advance;
+    E := ParseSqlExpr;
+    If E >= 0 Then
+      AddChild(N, E);
+  End;
+
+  { , state }
+  If TokIs(TOK_COMMA) Then
+  Begin
+    Advance;
+    E := ParseSqlExpr;
+    If E >= 0 Then
+      AddChild(N, E);
+  End;
+
+  { Arguments supplementaires optionnels }
+  While TokIs(TOK_COMMA) And ParseOk Do
+  Begin
+    Advance;
+    E := ParseSqlExpr;
+    If E >= 0 Then
+      AddChild(N, E);
+  End;
+
+  { ) }
+  If TokIs(TOK_RPAREN) Then
+    Advance
+  Else
+    ParseError(') attendu pour fermer RAISERROR');
+
+  ParseRaiserrorStmt := N;
+End;
+
+{ ---- ParsePrintStmt -------------------------------------------- }
+{ PRINT expression                                                  }
+
+Function ParsePrintStmt : Integer;
+Var
+  N, E : Integer;
+Begin
+  ParsePrintStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_PRINT) Then
+  Begin
+    ParseError('PRINT attendu');
+    Exit;
+  End;
+  N := NewNode(ND_PRINT_STMT, 'PRINT', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip PRINT }
+
+  E := ParseSqlExpr;
+  If E >= 0 Then
+    AddChild(N, E);
+
+  ParsePrintStmt := N;
+End;
+
+{ ---- ParseExecStmt --------------------------------------------- }
+{ EXEC / EXECUTE procedure [@ret =] proc @p1, @p2                  }
+{ EXEC('chaine SQL dynamique')                                      }
+{ sp_executesql N'requete', N'@p1 type', @p1=val                    }
+
+Function ParseExecStmt : Integer;
+Var
+  N, E, A : Integer;
+  ProcName : TString;
+Begin
+  ParseExecStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not (KwIs(KW_EXEC) Or KwIs(KW_EXECUTE)) Then
+  Begin
+    ParseError('EXEC ou EXECUTE attendu');
+    Exit;
+  End;
+  Advance; { skip EXEC/EXECUTE }
+
+  { EXEC('chaine SQL dynamique') }
+  If TokIs(TOK_LPAREN) Then
+  Begin
+    N := NewNode(ND_EXEC_SQL, 'EXEC_SQL', LexCurTok.Line, LexCurTok.Col);
+    Advance; { skip ( }
+    E := ParseSqlExpr;
+    If E >= 0 Then
+      AddChild(N, E);
+    { Concatenation avec + }
+    While TokIs(TOK_PLUS) And ParseOk Do
+    Begin
+      Advance;
+      E := ParseSqlExpr;
+      If E >= 0 Then
+        AddChild(N, E);
+    End;
+    If TokIs(TOK_RPAREN) Then
+      Advance;
+    ParseExecStmt := N;
+    Exit;
+  End;
+
+  { EXEC [@ret =] procedure @p1, @p2 }
+  { Verifier @ret = proc }
+  If (LexCurTok.Kind = TOK_VARIABLE) Then
+  Begin
+    ProcName := LexCurTok.Text;
+    { Regarder si c est @ret = proc_name ou proc directement }
+    { Pour simplifier, on regarde si le prochain token est = }
+    N := NewNode(ND_EXEC_STMT, '', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    If TokIs(TOK_EQ) Then
+    Begin
+      { @ret = proc }
+      ASTPool[N].Text := ProcName; { stocker var de retour }
+      Advance; { skip = }
+      { Nom de la procedure }
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+         (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+      Begin
+        E := ParseObjectName;
+        If E >= 0 Then
+          AddChild(N, E);
+      End;
+    End
+    Else
+    Begin
+      { La variable est en fait un parametre ou on a une erreur }
+      { Traiter comme nom de proc stocke dans une variable }
+      ASTPool[N].Text := ProcName;
+    End;
+  End
+  Else If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+          (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+  Begin
+    N := NewNode(ND_EXEC_STMT, '', LexCurTok.Line, LexCurTok.Col);
+    E := ParseObjectName;
+    If E >= 0 Then
+      AddChild(N, E);
+  End
+  Else
+  Begin
+    ParseError('nom de procedure attendu');
+    Exit;
+  End;
+
+  { Parametres : @p1 = val, @p2 = val, val, ... }
+  If (LexCurTok.Kind <> TOK_EOF) And Not TokIs(TOK_SEMICOL) And
+     Not KwIs(KW_END) And Not KwIs(KW_GO) Then
+  Begin
+    A := NewNode(ND_ARG_LIST, 'ARGS', LexCurTok.Line, LexCurTok.Col);
+    Repeat
+      E := ParseSqlExpr;
+      If E >= 0 Then
+        AddChild(A, E);
+      If TokIs(TOK_COMMA) Then
+        Advance
+      Else
+        Break;
+    Until Not ParseOk Or (LexCurTok.Kind = TOK_EOF);
+    AddChild(N, A);
+  End;
+
+  ParseExecStmt := N;
+End;
+
+{ ---- ParseUseStmt ---------------------------------------------- }
+{ USE database                                                      }
+
+Function ParseUseStmt : Integer;
+Var
+  N : Integer;
+Begin
+  ParseUseStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_USE) Then
+  Begin
+    ParseError('USE attendu');
+    Exit;
+  End;
+  Advance; { skip USE }
+
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Or
+     (LexCurTok.Kind = TOK_DELIM_IDENT) Then
+  Begin
+    N := NewNode(ND_USE_STMT, LexCurTok.Text, LexCurTok.Line,
+                 LexCurTok.Col);
+    Advance;
+  End
+  Else
+  Begin
+    ParseError('nom de base de donnees attendu');
+    Exit;
+  End;
+
+  ParseUseStmt := N;
+End;
+
+{ ---- ParseGoStmt ----------------------------------------------- }
+{ GO (separateur de batch)                                          }
+
+Function ParseGoStmt : Integer;
+Var
+  N : Integer;
+Begin
+  ParseGoStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_GO) Then
+  Begin
+    ParseError('GO attendu');
+    Exit;
+  End;
+  N := NewNode(ND_GO_STMT, 'GO', LexCurTok.Line, LexCurTok.Col);
+  Advance; { skip GO }
+
+  ParseGoStmt := N;
+End;
+
+{ ---- ParseStatement -------------------------------------------- }
+{ Dispatcher une instruction T-SQL unique                           }
+
+Function ParseStatement : Integer;
+Var
+  N       : Integer;
+Begin
+  ParseStatement := -1;
+  If Not ParseOk Then Exit;
+  If LexCurTok.Kind = TOK_EOF Then Exit;
+
+  { Point-virgule optionnel entre instructions }
+  If TokIs(TOK_SEMICOL) Then
+  Begin
+    Advance;
+    If LexCurTok.Kind = TOK_EOF Then Exit;
+  End;
+
+  { SELECT : verifier SELECT @var = expr (affectation) ou SELECT normal }
+  If KwIs(KW_SELECT) Then
+  Begin
+    { Tester si c est SELECT @var = ... (variable assignment) }
+    { On regarde le token apres SELECT : si c est @variable suivi de = }
+    { Sauvegarder position puis regarder }
+    ParseStatement := ParseSelectStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_INSERT) Then
+  Begin
+    ParseStatement := ParseInsertStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_UPDATE) Then
+  Begin
+    ParseStatement := ParseUpdateStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_DELETE) Then
+  Begin
+    ParseStatement := ParseDeleteStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_TRUNCATE) Then
+  Begin
+    ParseStatement := ParseTruncateStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_MERGE) Then
+  Begin
+    ParseStatement := ParseMergeStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_CREATE) Then
+  Begin
+    ParseStatement := ParseCreateStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_ALTER) Then
+  Begin
+    ParseStatement := ParseAlterStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_DROP) Then
+  Begin
+    ParseStatement := ParseDropStmt;
+    Exit;
+  End;
+
+  { T-SQL control flow (TODO 13) }
+  If KwIs(KW_DECLARE) Then
+  Begin
+    ParseStatement := ParseDeclareStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_SET) Then
+  Begin
+    { SET @var = ... (pas SET NOCOUNT etc. pour l instant) }
+    ParseStatement := ParseSetStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_IF) Then
+  Begin
+    ParseStatement := ParseIfStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_WHILE) Then
+  Begin
+    ParseStatement := ParseWhileStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_BEGIN) Then
+  Begin
+    ParseStatement := ParseBlockStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_BREAK) Then
+  Begin
+    N := NewNode(ND_BREAK_STMT, 'BREAK', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  If KwIs(KW_CONTINUE) Then
+  Begin
+    N := NewNode(ND_CONTINUE_STMT, 'CONTINUE', LexCurTok.Line,
+                 LexCurTok.Col);
+    Advance;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  If KwIs(KW_GOTO) Then
+  Begin
+    Advance; { skip GOTO }
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      N := NewNode(ND_GOTO_STMT, LexCurTok.Text, LexCurTok.Line,
+                   LexCurTok.Col);
+      Advance;
+    End
+    Else
+    Begin
+      ParseError('label attendu apres GOTO');
+      Exit;
+    End;
+    ParseStatement := N;
+    Exit;
+  End;
+
+  If KwIs(KW_RETURN) Then
+  Begin
+    ParseStatement := ParseReturnStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_WAITFOR) Then
+  Begin
+    ParseStatement := ParseWaitforStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_THROW) Then
+  Begin
+    ParseStatement := ParseThrowStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_RAISERROR) Then
+  Begin
+    ParseStatement := ParseRaiserrorStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_PRINT) Then
+  Begin
+    ParseStatement := ParsePrintStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_EXEC) Or KwIs(KW_EXECUTE) Then
+  Begin
+    ParseStatement := ParseExecStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_USE) Then
+  Begin
+    ParseStatement := ParseUseStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_GO) Then
+  Begin
+    ParseStatement := ParseGoStmt;
+    Exit;
+  End;
+
+  { Label : ident suivi de : (traite comme expression) }
+  If (LexCurTok.Kind = TOK_IDENT) Then
+  Begin
+    ParseStatement := ParseSqlExpr;
+    Exit;
+  End;
+
+  { Expression par defaut }
+  ParseStatement := ParseSqlExpr;
+End;
+
 { ---- Execution d une requete SQL ----------------------------- }
 
 Procedure ExecuteQuery(Const SQL : TString);
@@ -9589,6 +10545,56 @@ Begin
     Root := ParseAlterStmt
   Else If KwIs(KW_DROP) Then
     Root := ParseDropStmt
+  { T-SQL control flow (TODO 13) }
+  Else If KwIs(KW_DECLARE) Then
+    Root := ParseDeclareStmt
+  Else If KwIs(KW_SET) Then
+    Root := ParseSetStmt
+  Else If KwIs(KW_IF) Then
+    Root := ParseIfStmt
+  Else If KwIs(KW_WHILE) Then
+    Root := ParseWhileStmt
+  Else If KwIs(KW_BEGIN) Then
+    Root := ParseBlockStmt
+  Else If KwIs(KW_RETURN) Then
+    Root := ParseReturnStmt
+  Else If KwIs(KW_WAITFOR) Then
+    Root := ParseWaitforStmt
+  Else If KwIs(KW_THROW) Then
+    Root := ParseThrowStmt
+  Else If KwIs(KW_RAISERROR) Then
+    Root := ParseRaiserrorStmt
+  Else If KwIs(KW_PRINT) Then
+    Root := ParsePrintStmt
+  Else If KwIs(KW_EXEC) Or KwIs(KW_EXECUTE) Then
+    Root := ParseExecStmt
+  Else If KwIs(KW_USE) Then
+    Root := ParseUseStmt
+  Else If KwIs(KW_GO) Then
+    Root := ParseGoStmt
+  Else If KwIs(KW_BREAK) Then
+  Begin
+    Root := NewNode(ND_BREAK_STMT, 'BREAK', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+  End
+  Else If KwIs(KW_CONTINUE) Then
+  Begin
+    Root := NewNode(ND_CONTINUE_STMT, 'CONTINUE', LexCurTok.Line,
+                    LexCurTok.Col);
+    Advance;
+  End
+  Else If KwIs(KW_GOTO) Then
+  Begin
+    Advance;
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      Root := NewNode(ND_GOTO_STMT, LexCurTok.Text, LexCurTok.Line,
+                      LexCurTok.Col);
+      Advance;
+    End
+    Else
+      Root := -1;
+  End
   Else
     Root := ParseSqlExpr;
   If ParseOk And (Root >= 0) Then
