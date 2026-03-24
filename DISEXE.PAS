@@ -125,7 +125,7 @@
       BTR, BTC, SHLD, SHRD, IMUL reg,r/m,imm).
       Gerer le basculement 16/32 bits selon le mode.
 
-  13. Decodage des modes d'adressage ModR/M 16 bits.
+  13. [IMPLEMENTE] Decodage des modes d'adressage ModR/M 16 bits.
       Decoder l'octet ModR/M pour le mode 16 bits :
       mod (2 bits), reg (3 bits), r/m (3 bits).
       8 modes effectifs : [BX+SI], [BX+DI], [BP+SI], [BP+DI],
@@ -1579,6 +1579,133 @@ Begin
 End;
 
 { ============================================================
+  DECODAGE MODR/M 16 BITS (TODO 13)
+  ============================================================ }
+
+Const
+  { Noms des 8 modes d'adressage effectifs 16 bits (r/m 0..7, mod<>11) }
+  RM16Names : Array[0..7] Of String[5] = (
+    'BX+SI', 'BX+DI', 'BP+SI', 'BP+DI',
+    'SI',    'DI',    'BP',    'BX'
+  );
+
+{ DecodeModRM16 - Decode l'octet ModR/M pour le mode 16 bits.
+  Parametres :
+    Offset    : position dans l'image (pointe vers l'octet ModR/M)
+    OpSize    : taille de l'operande (1 = 8 bits, 2 = 16 bits)
+  Resultats retournes par var :
+    RegField  : valeur du champ reg (3 bits, indice de registre)
+    RMStr     : chaine d'operande pour le champ r/m
+    BytesUsed : nombre d'octets consommes (1 pour ModR/M + deplacements)
+}
+Procedure DecodeModRM16(Offset : LongInt; OpSize : Byte;
+                        Var RegField : Byte; Var RMStr : TString;
+                        Var BytesUsed : Integer);
+Var
+  ModRM    : Byte;
+  ModVal   : Byte;   { champ mod (2 bits superieurs) }
+  RegVal   : Byte;   { champ reg (3 bits du milieu) }
+  RMVal    : Byte;   { champ r/m (3 bits inferieurs) }
+  Disp8    : ShortInt;
+  Disp16   : SmallInt;
+  DispW    : Word;
+Begin
+  ModRM := ReadImageByte(Offset);
+  ModVal := (ModRM Shr 6) And $03;
+  RegVal := (ModRM Shr 3) And $07;
+  RMVal  := ModRM And $07;
+  RegField := RegVal;
+  BytesUsed := 1; { au minimum, l'octet ModR/M lui-meme }
+
+  Case ModVal Of
+    { mod=11 : registre direct }
+    3 : Begin
+      If OpSize = 1 Then
+        RMStr := RegNames8[RMVal]
+      Else
+        RMStr := RegNames16[RMVal];
+    End;
+    { mod=00 : pas de deplacement (sauf cas special r/m=110 -> disp16) }
+    0 : Begin
+      If RMVal = 6 Then Begin
+        { Cas special : adresse directe 16 bits }
+        DispW := ReadImageWord(Offset + 1);
+        RMStr := '[' + HexWord(DispW) + 'h]';
+        BytesUsed := 3; { ModR/M + disp16 }
+      End Else Begin
+        RMStr := '[' + RM16Names[RMVal] + ']';
+      End;
+    End;
+    { mod=01 : deplacement 8 bits signe }
+    1 : Begin
+      Disp8 := ShortInt(ReadImageByte(Offset + 1));
+      BytesUsed := 2; { ModR/M + disp8 }
+      If Disp8 = 0 Then
+        RMStr := '[' + RM16Names[RMVal] + ']'
+      Else If Disp8 > 0 Then
+        RMStr := '[' + RM16Names[RMVal] + '+' + HexByte(Byte(Disp8)) + 'h]'
+      Else
+        RMStr := '[' + RM16Names[RMVal] + '-' + HexByte(Byte(-Disp8)) + 'h]';
+    End;
+    { mod=10 : deplacement 16 bits }
+    2 : Begin
+      Disp16 := SmallInt(ReadImageWord(Offset + 1));
+      BytesUsed := 3; { ModR/M + disp16 }
+      If Disp16 = 0 Then
+        RMStr := '[' + RM16Names[RMVal] + ']'
+      Else If Disp16 > 0 Then Begin
+        DispW := Word(Disp16);
+        RMStr := '[' + RM16Names[RMVal] + '+' + HexWord(DispW) + 'h]';
+      End Else Begin
+        DispW := Word(-Disp16);
+        RMStr := '[' + RM16Names[RMVal] + '-' + HexWord(DispW) + 'h]';
+      End;
+    End;
+  End;
+End;
+
+{ DecodeRegField16 - Retourne le nom du registre pour le champ reg (mode 16 bits).
+  OpSize = 1 : registre 8 bits, OpSize = 2 : registre 16 bits }
+Function DecodeRegField16(RegIndex : Byte; OpSize : Byte) : TString;
+Begin
+  If OpSize = 1 Then
+    DecodeRegField16 := RegNames8[RegIndex And $07]
+  Else
+    DecodeRegField16 := RegNames16[RegIndex And $07];
+End;
+
+{ DecodeModRM16Full - Decode ModR/M et retourne les deux operandes.
+  Parametres :
+    Offset    : position dans l'image (pointe vers l'octet ModR/M)
+    OpSize    : taille de l'operande (1 = 8 bits, 2 = 16 bits)
+    DirBit    : True = reg est destination (reg, r/m), False = r/m est destination (r/m, reg)
+  Resultats retournes par var :
+    Op1Str    : chaine du 1er operande
+    Op2Str    : chaine du 2e operande
+    BytesUsed : nombre d'octets consommes (ModR/M + deplacements)
+}
+Procedure DecodeModRM16Full(Offset : LongInt; OpSize : Byte; DirBit : Boolean;
+                            Var Op1Str, Op2Str : TString;
+                            Var BytesUsed : Integer);
+Var
+  RegField  : Byte;
+  RMStr     : TString;
+  RegStr    : TString;
+Begin
+  DecodeModRM16(Offset, OpSize, RegField, RMStr, BytesUsed);
+  RegStr := DecodeRegField16(RegField, OpSize);
+  If DirBit Then Begin
+    { reg est destination : op1=reg, op2=r/m }
+    Op1Str := RegStr;
+    Op2Str := RMStr;
+  End Else Begin
+    { r/m est destination : op1=r/m, op2=reg }
+    Op1Str := RMStr;
+    Op2Str := RegStr;
+  End;
+End;
+
+{ ============================================================
   ANALYSE DES OPTIONS DE LIGNE DE COMMANDE
   ============================================================ }
 
@@ -2503,7 +2630,7 @@ Begin
  DataBytes := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 13 a 25 restent a implementer)');
+ WriteLn('(les TODOs 14 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
  { Liberation de la memoire }
