@@ -135,7 +135,7 @@
       Avec mod=11 : registre direct.
       Generer la chaine d'operande correspondante pour le .ASM.
 
-  14. Decodage des modes d'adressage ModR/M et SIB 32 bits.
+  14. [IMPLEMENTE] Decodage des modes d'adressage ModR/M et SIB 32 bits.
       Decoder l'octet ModR/M pour le mode 32 bits :
       si r/m=100 (ESP), lire l'octet SIB : scale (2 bits),
       index (3 bits), base (3 bits). Formule d'adresse :
@@ -1706,6 +1706,234 @@ Begin
 End;
 
 { ============================================================
+  DECODAGE MODR/M ET SIB 32 BITS (TODO 14)
+  ============================================================ }
+
+Const
+  { Facteurs d'echelle SIB : scale field (2 bits) -> multiplicateur }
+  ScaleFactors : Array[0..3] Of Byte = (1, 2, 4, 8);
+
+{ DecodeSIB - Decode l'octet SIB (Scale-Index-Base) pour le mode 32 bits.
+  Parametres :
+    SIBByte   : valeur de l'octet SIB
+    ModVal    : valeur du champ mod de l'octet ModR/M (pour cas special base=5)
+    Offset    : position dans l'image apres l'octet SIB (pour lire disp32)
+  Resultats retournes par var :
+    SIBStr    : chaine d'adresse generee (sans crochets)
+    ExtraBytes: nombre d'octets supplementaires consommes (0 ou 4 pour disp32)
+}
+Procedure DecodeSIB(SIBByte : Byte; ModVal : Byte; Offset : LongInt;
+                    Var SIBStr : TString; Var ExtraBytes : Integer);
+Var
+  Scale  : Byte;    { champ scale (2 bits superieurs) }
+  Idx    : Byte;    { champ index (3 bits du milieu) }
+  Base   : Byte;    { champ base (3 bits inferieurs) }
+  Disp32 : LongInt;
+  HasBase  : Boolean;
+  HasIndex : Boolean;
+Begin
+  Scale := (SIBByte Shr 6) And $03;
+  Idx   := (SIBByte Shr 3) And $07;
+  Base  := SIBByte And $07;
+  ExtraBytes := 0;
+  SIBStr := '';
+  HasBase := True;
+  HasIndex := True;
+
+  { index=100 (ESP) signifie pas d'index }
+  If Idx = 4 Then
+    HasIndex := False;
+
+  { base=101 (EBP) avec mod=00 signifie pas de base, disp32 a la place }
+  If (Base = 5) And (ModVal = 0) Then Begin
+    HasBase := False;
+    Disp32 := ReadImageDWord(Offset);
+    ExtraBytes := 4;
+  End;
+
+  { Construire la chaine d'adresse }
+  If HasBase Then
+    SIBStr := RegNames32[Base];
+
+  If HasIndex Then Begin
+    If SIBStr <> '' Then
+      SIBStr := SIBStr + '+';
+    SIBStr := SIBStr + RegNames32[Idx];
+    If Scale > 0 Then
+      SIBStr := SIBStr + '*' + IntToStr(ScaleFactors[Scale]);
+  End;
+
+  If Not HasBase Then Begin
+    { disp32 sans base }
+    If SIBStr <> '' Then
+      SIBStr := SIBStr + '+' + HexDWord(Disp32) + 'h'
+    Else
+      SIBStr := HexDWord(Disp32) + 'h';
+  End;
+
+  { Si aucun composant (ne devrait pas arriver normalement) }
+  If SIBStr = '' Then
+    SIBStr := '0';
+End;
+
+{ DecodeModRM32 - Decode l'octet ModR/M pour le mode 32 bits.
+  Parametres :
+    Offset    : position dans l'image (pointe vers l'octet ModR/M)
+    OpSize    : taille de l'operande (1 = 8 bits, 4 = 32 bits)
+  Resultats retournes par var :
+    RegField  : valeur du champ reg (3 bits, indice de registre)
+    RMStr     : chaine d'operande pour le champ r/m
+    BytesUsed : nombre d'octets consommes (ModR/M + SIB + deplacements)
+}
+Procedure DecodeModRM32(Offset : LongInt; OpSize : Byte;
+                        Var RegField : Byte; Var RMStr : TString;
+                        Var BytesUsed : Integer);
+Var
+  ModRM    : Byte;
+  ModVal   : Byte;    { champ mod (2 bits superieurs) }
+  RegVal   : Byte;    { champ reg (3 bits du milieu) }
+  RMVal    : Byte;    { champ r/m (3 bits inferieurs) }
+  SIBByte  : Byte;
+  SIBStr   : TString;
+  SIBExtra : Integer;
+  Disp8    : ShortInt;
+  Disp32   : LongInt;
+  DispDW   : LongInt;
+Begin
+  ModRM := ReadImageByte(Offset);
+  ModVal := (ModRM Shr 6) And $03;
+  RegVal := (ModRM Shr 3) And $07;
+  RMVal  := ModRM And $07;
+  RegField := RegVal;
+  BytesUsed := 1; { au minimum, l'octet ModR/M lui-meme }
+
+  Case ModVal Of
+    { mod=11 : registre direct }
+    3 : Begin
+      If OpSize = 1 Then
+        RMStr := RegNames8[RMVal]
+      Else
+        RMStr := RegNames32[RMVal];
+    End;
+    { mod=00 : pas de deplacement }
+    0 : Begin
+      If RMVal = 5 Then Begin
+        { Cas special : adresse directe 32 bits (disp32) }
+        Disp32 := ReadImageDWord(Offset + 1);
+        RMStr := '[' + HexDWord(Disp32) + 'h]';
+        BytesUsed := 5; { ModR/M + disp32 }
+      End
+      Else If RMVal = 4 Then Begin
+        { SIB byte suit le ModR/M }
+        SIBByte := ReadImageByte(Offset + 1);
+        DecodeSIB(SIBByte, ModVal, Offset + 2, SIBStr, SIBExtra);
+        RMStr := '[' + SIBStr + ']';
+        BytesUsed := 2 + SIBExtra; { ModR/M + SIB + eventuellement disp32 }
+      End Else Begin
+        RMStr := '[' + RegNames32[RMVal] + ']';
+      End;
+    End;
+    { mod=01 : deplacement 8 bits signe }
+    1 : Begin
+      If RMVal = 4 Then Begin
+        { SIB byte suit le ModR/M, puis disp8 }
+        SIBByte := ReadImageByte(Offset + 1);
+        DecodeSIB(SIBByte, ModVal, Offset + 2, SIBStr, SIBExtra);
+        Disp8 := ShortInt(ReadImageByte(Offset + 2 + SIBExtra));
+        BytesUsed := 3 + SIBExtra; { ModR/M + SIB + disp8 + SIBExtra }
+        If Disp8 = 0 Then
+          RMStr := '[' + SIBStr + ']'
+        Else If Disp8 > 0 Then
+          RMStr := '[' + SIBStr + '+' + HexByte(Byte(Disp8)) + 'h]'
+        Else
+          RMStr := '[' + SIBStr + '-' + HexByte(Byte(-Disp8)) + 'h]';
+      End Else Begin
+        Disp8 := ShortInt(ReadImageByte(Offset + 1));
+        BytesUsed := 2; { ModR/M + disp8 }
+        If Disp8 = 0 Then
+          RMStr := '[' + RegNames32[RMVal] + ']'
+        Else If Disp8 > 0 Then
+          RMStr := '[' + RegNames32[RMVal] + '+' + HexByte(Byte(Disp8)) + 'h]'
+        Else
+          RMStr := '[' + RegNames32[RMVal] + '-' + HexByte(Byte(-Disp8)) + 'h]';
+      End;
+    End;
+    { mod=10 : deplacement 32 bits }
+    2 : Begin
+      If RMVal = 4 Then Begin
+        { SIB byte suit le ModR/M, puis disp32 }
+        SIBByte := ReadImageByte(Offset + 1);
+        DecodeSIB(SIBByte, ModVal, Offset + 2, SIBStr, SIBExtra);
+        Disp32 := ReadImageDWord(Offset + 2 + SIBExtra);
+        BytesUsed := 6 + SIBExtra; { ModR/M + SIB + disp32 + SIBExtra }
+        If Disp32 = 0 Then
+          RMStr := '[' + SIBStr + ']'
+        Else If Disp32 > 0 Then Begin
+          DispDW := Disp32;
+          RMStr := '[' + SIBStr + '+' + HexDWord(DispDW) + 'h]';
+        End Else Begin
+          DispDW := -Disp32;
+          RMStr := '[' + SIBStr + '-' + HexDWord(DispDW) + 'h]';
+        End;
+      End Else Begin
+        Disp32 := ReadImageDWord(Offset + 1);
+        BytesUsed := 5; { ModR/M + disp32 }
+        If Disp32 = 0 Then
+          RMStr := '[' + RegNames32[RMVal] + ']'
+        Else If Disp32 > 0 Then Begin
+          DispDW := Disp32;
+          RMStr := '[' + RegNames32[RMVal] + '+' + HexDWord(DispDW) + 'h]';
+        End Else Begin
+          DispDW := -Disp32;
+          RMStr := '[' + RegNames32[RMVal] + '-' + HexDWord(DispDW) + 'h]';
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ DecodeRegField32 - Retourne le nom du registre pour le champ reg (mode 32 bits).
+  OpSize = 1 : registre 8 bits, OpSize = 4 : registre 32 bits }
+Function DecodeRegField32(RegIndex : Byte; OpSize : Byte) : TString;
+Begin
+  If OpSize = 1 Then
+    DecodeRegField32 := RegNames8[RegIndex And $07]
+  Else
+    DecodeRegField32 := RegNames32[RegIndex And $07];
+End;
+
+{ DecodeModRM32Full - Decode ModR/M et retourne les deux operandes (mode 32 bits).
+  Parametres :
+    Offset    : position dans l'image (pointe vers l'octet ModR/M)
+    OpSize    : taille de l'operande (1 = 8 bits, 4 = 32 bits)
+    DirBit    : True = reg est destination (reg, r/m), False = r/m est destination (r/m, reg)
+  Resultats retournes par var :
+    Op1Str    : chaine du 1er operande
+    Op2Str    : chaine du 2e operande
+    BytesUsed : nombre d'octets consommes (ModR/M + SIB + deplacements)
+}
+Procedure DecodeModRM32Full(Offset : LongInt; OpSize : Byte; DirBit : Boolean;
+                            Var Op1Str, Op2Str : TString;
+                            Var BytesUsed : Integer);
+Var
+  RegField  : Byte;
+  RMStr     : TString;
+  RegStr    : TString;
+Begin
+  DecodeModRM32(Offset, OpSize, RegField, RMStr, BytesUsed);
+  RegStr := DecodeRegField32(RegField, OpSize);
+  If DirBit Then Begin
+    { reg est destination : op1=reg, op2=r/m }
+    Op1Str := RegStr;
+    Op2Str := RMStr;
+  End Else Begin
+    { r/m est destination : op1=r/m, op2=reg }
+    Op1Str := RMStr;
+    Op2Str := RegStr;
+  End;
+End;
+
+{ ============================================================
   ANALYSE DES OPTIONS DE LIGNE DE COMMANDE
   ============================================================ }
 
@@ -2630,7 +2858,7 @@ Begin
  DataBytes := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 14 a 25 restent a implementer)');
+ WriteLn('(les TODOs 15 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
  { Liberation de la memoire }
