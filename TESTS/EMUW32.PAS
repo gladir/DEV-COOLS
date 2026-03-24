@@ -1,0 +1,8121 @@
+{ @author: Sylvain Maltais (support@gladir.com)
+  @created: 2024
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+}
+
+{ TODO - Liste des 25 points a implementer pour l'emulateur Windows 32 bits :
+
+  1.  [IMPLEMENTE] Creer le fichier d'echange de 16 Mo (EMUW32.$$$)
+      servant de memoire lineaire pour l'espace d'adressage virtuel
+      Win32, similaire au SwapFileMemory d'EMU8086.PAS et
+      d'EMUDPMI.PAS mais avec un espace plat de 16 777 216 octets
+      (16 Mo) pour emuler l'espace utilisateur d'un processus
+      Windows 32 bits.
+
+  2.  [IMPLEMENTE] Definir les registres 32 bits du 80386 : EAX, EBX,
+      ECX, EDX, ESI, EDI, EBP, ESP, EIP avec un acces aux
+      sous-parties 16 bits (AX, BX, ...) et 8 bits (AL, AH, ...)
+      par des records variants, ainsi que le registre EFLAGS complet
+      32 bits.
+
+  3.  [IMPLEMENTE] Implementer les procedures ReadByte/ReadWord/ReadDWord
+      et WriteByte/WriteWord/WriteDWord pour l'acces a la memoire
+      lineaire 32 bits via le fichier de 16 Mo, en utilisant un
+      modele d'adressage plat (flat) typique de Win32.
+
+  4.  [IMPLEMENTE] Implementer la pile 32 bits (PUSH/POP en mode 32
+      bits) avec ESP adressant la memoire lineaire, et allouer une
+      pile par defaut (par exemple 1 Mo) dans l'espace de 16 Mo.
+
+  5.  [IMPLEMENTE] Implementer le chargeur de fichiers PE (Portable
+      Executable) : lecture de l'entete MZ/DOS stub, de la signature
+      PE, de l'entete COFF (IMAGE_FILE_HEADER), de l'entete optionnel
+      (IMAGE_OPTIONAL_HEADER32) incluant AddressOfEntryPoint,
+      ImageBase, SectionAlignment et SizeOfStackReserve.
+
+  6.  [IMPLEMENTE] Implementer le chargement des sections PE (.text,
+      .data, .rdata, .bss, .idata) dans la memoire lineaire en
+      respectant les VirtualAddress et VirtualSize de chaque
+      IMAGE_SECTION_HEADER, et remplir les zones .bss de zeros.
+
+  7.  [IMPLEMENTE] Implementer le traitement de la table d'importation
+      (Import Directory Table / IAT) pour resoudre les appels aux DLL
+      importees, en particulier KERNEL32.DLL, en remplissant la
+      Import Address Table avec des adresses de thunks internes
+      emulant chaque fonction.
+
+  8.  [IMPLEMENTE] Implementer les instructions de transfert de donnees 32 bits :
+      MOV reg32,reg32 / MOV reg32,imm32 / MOV reg32,[mem] /
+      MOV [mem],reg32 / MOVZX / MOVSX / LEA / XCHG / BSWAP
+      avec les modes d'adressage ModR/M et SIB du 80386.
+
+  9.  [IMPLEMENTE] Implementer les instructions arithmetiques 32 bits : ADD, SUB,
+      ADC, SBB, CMP, INC, DEC, NEG, MUL, IMUL, DIV, IDIV sur des
+      operandes 8/16/32 bits avec mise a jour correcte des drapeaux
+      (CF, ZF, SF, OF, AF, PF) dans EFLAGS.
+
+  10. [IMPLEMENTE] Implementer les instructions logiques et de decalage 32 bits :
+      AND, OR, XOR, NOT, TEST, SHL, SHR, SAR, ROL, ROR, RCL, RCR,
+      BT, BTS, BTR, BTC, BSF, BSR sur des operandes 32 bits.
+
+  11. [IMPLEMENTE] Implementer les instructions de chaines 32 bits : MOVSD, STOSD,
+      LODSD, CMPSD, SCASD ainsi que les prefixes REP/REPE/REPNE
+      utilisant ECX comme compteur, et les variantes 8/16 bits.
+
+  12. [IMPLEMENTE] Implementer les instructions de saut conditionnel 32 bits (Jcc
+      near avec deplacement rel32, prefixe 0Fh) et les sauts
+      inconditionnels JMP rel32/JMP [mem] en mode plat.
+
+  13. [IMPLEMENTE] Implementer CALL rel32, CALL [mem], RET, RET imm16 en mode
+      plat 32 bits avec empilement/depilement de EIP sur la pile,
+      incluant les appels indirects via registre (CALL EAX, etc.).
+
+  14. [IMPLEMENTE] Implementer les instructions SET conditionnel (SETcc), CMOVcc
+      (conditional move du 80686/Pentium Pro), CDQ, CBW, CWDE, CLC,
+      STC, CMC, CLD, STD, NOP, LEAVE, ENTER et INT3 (breakpoint).
+
+  15. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Gestion de processus
+      et console : GetStdHandle, ExitProcess, GetCommandLineA,
+      GetCommandLineW, GetCurrentProcessId, GetCurrentProcess,
+      GetExitCodeProcess, GetStartupInfoA.
+
+  16. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Entrees/sorties
+      console : WriteConsoleA, ReadConsoleA, WriteFile, ReadFile
+      sur les handles STD_INPUT_HANDLE, STD_OUTPUT_HANDLE et
+      STD_ERROR_HANDLE, SetConsoleMode, GetConsoleMode.
+
+  17. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Gestion des fichiers :
+      CreateFileA, ReadFile, WriteFile, CloseHandle, SetFilePointer,
+      GetFileSize, DeleteFileA, GetFileAttributesA,
+      SetFileAttributesA, FlushFileBuffers.
+
+  18. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Gestion de la memoire :
+      VirtualAlloc, VirtualFree, GetProcessHeap, HeapCreate,
+      HeapAlloc, HeapFree, HeapReAlloc, GlobalAlloc, GlobalFree,
+      LocalAlloc, LocalFree dans l'espace de 16 Mo.
+
+  19. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Chaines et
+      environnement : GetEnvironmentVariableA, GetEnvironmentStringsA,
+      FreeEnvironmentStringsA, lstrlenA, lstrcpyA, lstrcmpA,
+      lstrcmpiA, lstrcatA, GetModuleFileNameA, GetModuleHandleA.
+
+  20. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Date, heure et
+      systeme : GetTickCount, GetSystemTime, GetLocalTime,
+      QueryPerformanceCounter, GetSystemInfo, GetVersion,
+      GetVersionExA, Sleep, GetLastError, SetLastError.
+
+  21. [IMPLEMENTE] Implementer l'emulation de KERNEL32.DLL - Synchronisation et
+      divers : GetCurrentDirectoryA, SetCurrentDirectoryA,
+      FindFirstFileA, FindNextFileA, FindClose,
+      GetTempPathA, GetTempFileNameA, MoveFileA, CopyFileA.
+
+  22. [IMPLEMENTE] Implementer la convention d'appel STDCALL (Win32 API) : les
+      parametres sont empiles de droite a gauche, l'appele nettoie
+      la pile, la valeur de retour est dans EAX. Detecter les
+      CALL vers les thunks IAT et rediriger vers les emulations.
+
+  23. [IMPLEMENTE] Implementer la boucle principale d'execution (Procedure Run)
+      avec decodage du flux d'instructions 80386, gestion des
+      prefixes (66h, 67h, 0Fh pour les opcodes etendus, F2h/F3h
+      pour REP) et dispatch vers les procedures d'emulation.
+
+  24. [IMPLEMENTE] Implementer les options de ligne de commande : /DEBUG pour le
+      mode debogage avec affichage de l'etat des registres a chaque
+      instruction, /VERBOSE pour les messages informatifs, et
+      /READONLY pour interdire les ecritures sur disque.
+
+  25. [IMPLEMENTE] Implementer la procedure de nettoyage (Procedure Done) qui
+      ferme et supprime le fichier d'echange de 16 Mo, ferme tous
+      les handles de fichiers emules, et affiche un rapport de
+      sortie (code de retour du processus emule, statistiques).
+}
+
+Program EMUW32;
+
+{$A-}
+
+Uses DOS,CRT;
+
+Const
+  { TODO 1 : Fichier d'echange de 16 Mo pour la memoire lineaire }
+ SwapFileMemory='EMUW32.$$$';
+
+  { Taille totale de la memoire lineaire : 16 Mo }
+ MemorySize=16*1024*1024;  { 16 777 216 octets }
+
+  { Taille du tampon de nettoyage pour l'initialisation }
+ ClearBufferSize=1024;
+
+  { Nombre de blocs de 1 Ko pour couvrir 16 Mo }
+ ClearBlockCount=MemorySize div ClearBufferSize;  { 16384 }
+
+  { TODO 4 : Taille de la pile par defaut : 1 Mo }
+ StackSize=1024*1024;  { 1 048 576 octets }
+
+  { TODO 4 : Adresse de base de la pile dans l'espace lineaire.
+    La pile occupe le dernier 1 Mo de l'espace de 16 Mo,
+    soit de $F00000 a $FFFFFF (croissance vers le bas). }
+ StackBase=MemorySize-StackSize;  { $F00000 = 15 Mo }
+
+  { TODO 6 : Nombre maximum de sections PE supportees }
+ MaxPESections=96;
+
+  { TODO 7 : Zone des thunks d'importation dans la memoire lineaire.
+    Les thunks occupent la zone de $E00000 a $EFFFFF (1 Mo),
+    juste en dessous de la pile ($F00000-$FFFFFF). }
+ ThunkBase=$E00000;
+
+  { TODO 7 : Nombre maximum de fonctions importees supportees }
+ MaxImportFuncs=1024;
+
+  { TODO 7 : Nombre maximum de repertoires de donnees PE }
+ MaxDataDirs=16;
+
+  { TODO 15 : Constantes Win32 pour GetStdHandle }
+ STD_INPUT_HANDLE=LongInt(-10);
+ STD_OUTPUT_HANDLE=LongInt(-11);
+ STD_ERROR_HANDLE=LongInt(-12);
+
+  { TODO 15 : Handles emules pour stdin, stdout, stderr }
+ EMU_STDIN_HANDLE=1;
+ EMU_STDOUT_HANDLE=2;
+ EMU_STDERR_HANDLE=3;
+
+  { TODO 15 : PID fictif du processus emule }
+ EMU_PROCESS_ID=1000;
+
+  { TODO 15 : Pseudo-handle du processus courant }
+ EMU_CURRENT_PROCESS=LongInt(-1);
+
+  { TODO 15 : Zone de donnees pour les chaines du processus emule.
+    Utilise la zone $D00000-$DFFFFF (1 Mo) juste avant les thunks. }
+ ProcessDataBase=$D00000;
+
+  { TODO 15 : Taille de la structure STARTUPINFOA (68 octets) }
+ STARTUPINFOA_SIZE=68;
+
+  { TODO 15 : Nom par defaut du programme emule }
+ DefaultExeName='EMUW32.EXE';
+
+  { TODO 16 : Modes par defaut de la console Win32.
+    ENABLE_PROCESSED_INPUT=$0001, ENABLE_LINE_INPUT=$0002,
+    ENABLE_ECHO_INPUT=$0004 => stdin default = $0007.
+    ENABLE_PROCESSED_OUTPUT=$0001, ENABLE_WRAP_AT_EOL_OUTPUT=$0002
+    => stdout/stderr default = $0003. }
+ DEFAULT_CONSOLE_MODE_IN=$0007;
+ DEFAULT_CONSOLE_MODE_OUT=$0003;
+
+  { TODO 17 : Constantes Win32 pour les operations sur les fichiers.
+    Acces generique, modes de partage, dispositions de creation,
+    attributs de fichier et methodes de positionnement. }
+ GENERIC_READ=LongInt($80000000);
+ GENERIC_WRITE=$40000000;
+ FILE_SHARE_READ=1;
+ FILE_SHARE_WRITE=2;
+ CREATE_NEW=1;
+ CREATE_ALWAYS=2;
+ OPEN_EXISTING=3;
+ OPEN_ALWAYS=4;
+ TRUNCATE_EXISTING=5;
+ INVALID_HANDLE_VALUE=LongInt(-1);
+ FILE_ATTRIBUTE_READONLY=$01;
+ FILE_ATTRIBUTE_HIDDEN=$02;
+ FILE_ATTRIBUTE_SYSTEM=$04;
+ FILE_ATTRIBUTE_DIRECTORY=$10;
+ FILE_ATTRIBUTE_ARCHIVE=$20;
+ FILE_ATTRIBUTE_NORMAL=$80;
+ INVALID_FILE_ATTRIBUTES=LongInt(-1);
+ FILE_BEGIN=0;
+ FILE_CURRENT=1;
+ FILE_END=2;
+ INVALID_SET_FILE_POINTER=LongInt(-1);
+ MAX_EMU_FILES=16;
+ EMU_FILE_HANDLE_BASE=4;
+
+  { TODO 18 : Constantes Win32 pour la gestion de la memoire.
+    Types d'allocation, protections, constantes heap/global/local. }
+ MEM_COMMIT=$1000;
+ MEM_RESERVE=$2000;
+ MEM_RELEASE=$8000;
+ MEM_DECOMMIT=$4000;
+ PAGE_NOACCESS=$01;
+ PAGE_READONLY=$02;
+ PAGE_READWRITE=$04;
+ PAGE_EXECUTE_READ=$20;
+ PAGE_EXECUTE_READWRITE=$40;
+ HEAP_ZERO_MEMORY=$08;
+ HEAP_NO_SERIALIZE=$01;
+ GMEM_FIXED=$0000;
+ GMEM_ZEROINIT=$0040;
+ GPTR=GMEM_FIXED or GMEM_ZEROINIT;
+ LMEM_FIXED=$0000;
+ LMEM_ZEROINIT=$0040;
+ LPTR=LMEM_FIXED or LMEM_ZEROINIT;
+
+  { TODO 18 : Zone de heap emule dans la memoire lineaire.
+    Utilise la zone $C00000-$CFFFFF (1 Mo) juste avant ProcessDataBase. }
+ HeapBase=$C00000;
+ HeapSize=1024*1024;  { 1 Mo }
+ EMU_HEAP_HANDLE=$C00000;
+
+  { TODO 19 : Constante MAX_PATH Win32 pour GetModuleFileNameA. }
+ MAX_PATH=260;
+
+  { TODO 20 : Constantes pour les structures systeme Win32.
+    SYSTEMTIME_SIZE = 16 octets (8 champs Word).
+    SYSTEM_INFO_SIZE = 36 octets.
+    OSVERSIONINFOA_SIZE = 148 octets. }
+ SYSTEMTIME_SIZE=16;
+ SYSTEM_INFO_SIZE=36;
+ OSVERSIONINFOA_SIZE=148;
+
+  { TODO 21 : Constantes pour l'emulation FindFirstFileA/FindNextFileA.
+    WIN32_FIND_DATAA_SIZE = 320 octets (attributs, dates, taille, noms).
+    MAX_EMU_FIND_HANDLES = nombre maximal de recherches simultanees.
+    EMU_FIND_HANDLE_BASE = base des handles de recherche emules. }
+ WIN32_FIND_DATAA_SIZE=320;
+ MAX_EMU_FIND_HANDLES=8;
+ EMU_FIND_HANDLE_BASE=$100;
+
+Type
+  { TODO 2 : Registres 32 bits du 80386 }
+ LongRec=Record
+  Lo,Hi:Word;
+ End;
+
+  { TODO 5 : En-tete DOS MZ (64 octets) }
+ TImageDosHeader=Record
+  e_magic:Word;                     { Signature MZ = $5A4D }
+  e_cblp:Word;                      { Octets dans la derniere page }
+  e_cp:Word;                        { Pages dans le fichier }
+  e_crlc:Word;                      { Relocalisations }
+  e_cparhdr:Word;                   { Taille de l'en-tete en paragraphes }
+  e_minalloc:Word;                  { Memoire minimum supplementaire }
+  e_maxalloc:Word;                  { Memoire maximum supplementaire }
+  e_ss:Word;                        { Valeur initiale SS }
+  e_sp:Word;                        { Valeur initiale SP }
+  e_csum:Word;                      { Checksum }
+  e_ip:Word;                        { Valeur initiale IP }
+  e_cs:Word;                        { Valeur initiale CS }
+  e_lfarlc:Word;                    { Offset table de relocalisation }
+  e_ovno:Word;                      { Numero d'overlay }
+  e_res:Array[0..3]of Word;         { Reserves }
+  e_oemid:Word;                     { Identifiant OEM }
+  e_oeminfo:Word;                   { Information OEM }
+  e_res2:Array[0..9]of Word;        { Reserves }
+  e_lfanew:LongInt;                 { Offset vers l'en-tete PE }
+ End;
+
+  { TODO 5 : En-tete COFF (IMAGE_FILE_HEADER, 20 octets) }
+ TImageFileHeader=Record
+  Machine:Word;                     { Architecture cible ($014C = i386) }
+  NumberOfSections:Word;            { Nombre de sections }
+  TimeDateStamp:LongInt;            { Horodatage de creation }
+  PointerToSymbolTable:LongInt;     { Offset table de symboles }
+  NumberOfSymbols:LongInt;          { Nombre de symboles }
+  SizeOfOptionalHeader:Word;        { Taille de l'en-tete optionnel }
+  Characteristics:Word;             { Drapeaux du fichier }
+ End;
+
+  { TODO 5 : En-tete optionnel PE32 (IMAGE_OPTIONAL_HEADER32, 96 octets
+    pour les champs standard, sans les repertoires de donnees) }
+ TImageOptionalHeader32=Record
+  Magic:Word;                       { $010B = PE32 }
+  MajorLinkerVersion:Byte;          { Version majeure du lieur }
+  MinorLinkerVersion:Byte;          { Version mineure du lieur }
+  SizeOfCode:LongInt;               { Taille totale du code }
+  SizeOfInitializedData:LongInt;    { Taille des donnees initialisees }
+  SizeOfUninitializedData:LongInt;  { Taille des donnees non initialisees }
+  AddressOfEntryPoint:LongInt;      { RVA du point d'entree }
+  BaseOfCode:LongInt;               { RVA de la base du code }
+  BaseOfData:LongInt;               { RVA de la base des donnees }
+  ImageBase:LongInt;                { Adresse de base preferee }
+  SectionAlignment:LongInt;         { Alignement des sections en memoire }
+  FileAlignment:LongInt;            { Alignement des sections dans le fichier }
+  MajorOperatingSystemVersion:Word; { Version majeure du SE requise }
+  MinorOperatingSystemVersion:Word; { Version mineure du SE requise }
+  MajorImageVersion:Word;           { Version majeure de l'image }
+  MinorImageVersion:Word;           { Version mineure de l'image }
+  MajorSubsystemVersion:Word;      { Version majeure du sous-systeme }
+  MinorSubsystemVersion:Word;      { Version mineure du sous-systeme }
+  Win32VersionValue:LongInt;        { Reserve, doit etre 0 }
+  SizeOfImage:LongInt;              { Taille totale de l'image en memoire }
+  SizeOfHeaders:LongInt;            { Taille combinee des en-tetes }
+  CheckSum:LongInt;                 { Somme de controle de l'image }
+  Subsystem:Word;                   { Sous-systeme requis (3=CONSOLE) }
+  DllCharacteristics:Word;          { Drapeaux DLL }
+  SizeOfStackReserve:LongInt;       { Taille de la pile reservee }
+  SizeOfStackCommit:LongInt;        { Taille de la pile initialement allouee }
+  SizeOfHeapReserve:LongInt;        { Taille du tas reserve }
+  SizeOfHeapCommit:LongInt;         { Taille du tas initialement alloue }
+  LoaderFlags:LongInt;              { Drapeaux du chargeur (obsolete) }
+  NumberOfRvaAndSizes:LongInt;      { Nombre de repertoires de donnees }
+ End;
+
+  { TODO 6 : En-tete de section PE (IMAGE_SECTION_HEADER, 40 octets) }
+ TImageSectionHeader=Record
+  Name:Array[0..7]of Char;          { Nom de la section (8 caracteres) }
+  VirtualSize:LongInt;               { Taille en memoire de la section }
+  VirtualAddress:LongInt;            { RVA de la section en memoire }
+  SizeOfRawData:LongInt;             { Taille des donnees dans le fichier }
+  PointerToRawData:LongInt;          { Offset des donnees dans le fichier }
+  PointerToRelocations:LongInt;      { Offset des relocalisations }
+  PointerToLinenumbers:LongInt;      { Offset des numeros de ligne }
+  NumberOfRelocations:Word;          { Nombre de relocalisations }
+  NumberOfLinenumbers:Word;          { Nombre de numeros de ligne }
+  Characteristics:LongInt;           { Drapeaux de la section }
+ End;
+
+  { TODO 7 : Repertoire de donnees PE (IMAGE_DATA_DIRECTORY, 8 octets) }
+ TImageDataDirectory=Record
+  VirtualAddress:LongInt;            { RVA du repertoire de donnees }
+  Size:LongInt;                      { Taille du repertoire de donnees }
+ End;
+
+  { TODO 7 : Descripteur d'importation PE (IMAGE_IMPORT_DESCRIPTOR,
+    20 octets) }
+ TImageImportDescriptor=Record
+  OriginalFirstThunk:LongInt;        { RVA de l'Import Lookup Table }
+  TimeDateStamp:LongInt;             { Horodatage (0 si non lie) }
+  ForwarderChain:LongInt;            { Chaine de redirection }
+  Name:LongInt;                      { RVA du nom de la DLL }
+  FirstThunk:LongInt;                { RVA de l'Import Address Table }
+ End;
+
+  { TODO 7 : Entree dans la table d'importation resolue }
+ TImportEntry=Record
+  DLLName:String[63];                { Nom de la DLL importee }
+  FuncName:String[127];              { Nom de la fonction importee }
+  Ordinal:Word;                      { Numero d'ordinal (si import par ordinal) }
+  ByOrdinal:Boolean;                 { True si import par ordinal }
+  ThunkAddr:LongInt;                 { Adresse du thunk dans la memoire }
+ End;
+
+Var
+  { TODO 1 : Fichier d'echange }
+ Memory:File;
+ ClrBuffer:Array[0..ClearBufferSize-1]of Byte;
+
+  { TODO 2 : Registres generaux 32 bits du 80386 avec acces aux
+    sous-parties 16 bits (AX, BX, ...) et 8 bits (AL, AH, ...) }
+ Regs:Record Case Byte of
+  0:(EAX,ECX,EDX,EBX,ESP,EBP,ESI,EDI:LongInt);
+  1:(AX,EAH,CX,ECH,DX,EDH,BX,EBH,SP,SPH,BP,BPH,SI,SIH,DI,DIH:Word);
+  2:(AL,AH,HAL,HAH,CL,CH,HCL,HCH,DL,DH,HDL,HDH,BL,BH,HBL,HBH:Byte);
+  3:(Abs:Array[0..7]of LongInt);
+  4:(AbsWord:Array[0..7]of LongRec);
+ End;
+
+  { TODO 2 : Pointeur d'instruction 32 bits }
+ EIP:LongInt;
+
+  { TODO 2 : Drapeaux du processeur (EFLAGS complet 32 bits) }
+ EFlags:Record Case Byte of
+  0:(s:Set of(CF,bit1,PF,bit3,AF,bit5,ZF,SF,TF,_IF,DF,_OF));
+  1:(Base:Word);
+  2:(Abs:LongInt);
+  3:(DataByte:Byte);
+ End;
+
+  { TODO 5 : En-tetes PE charges par LoadPE }
+ PEDosHeader:TImageDosHeader;
+ PEFileHeader:TImageFileHeader;
+ PEOptHeader:TImageOptionalHeader32;
+ PELoaded:Boolean;
+
+  { TODO 6 : Table des en-tetes de section PE }
+ PESections:Array[0..MaxPESections-1]of TImageSectionHeader;
+ PENumSections:Word;
+
+  { TODO 7 : Repertoires de donnees PE (lus depuis l'en-tete optionnel) }
+ PEDataDirs:Array[0..MaxDataDirs-1]of TImageDataDirectory;
+ PENumDataDirs:LongInt;
+
+  { TODO 7 : Table des fonctions importees resolues }
+ ImportEntries:Array[0..MaxImportFuncs-1]of TImportEntry;
+ ImportCount:Word;
+
+  { TODO 15 : Adresse en memoire lineaire de la chaine de commande ASCII }
+ CmdLineAddrA:LongInt;
+  { TODO 15 : Adresse en memoire lineaire de la chaine de commande Unicode }
+ CmdLineAddrW:LongInt;
+  { TODO 15 : Adresse en memoire lineaire de la structure STARTUPINFOA }
+ StartupInfoAddr:LongInt;
+  { TODO 15 : Code de sortie du processus emule }
+ EmuExitCode:LongInt;
+  { TODO 15 : Indicateur d'arret du processus par ExitProcess }
+ EmuRunning:Boolean;
+
+  { TODO 16 : Modes de console emules pour stdin, stdout, stderr }
+ EmuConsoleModeIn:LongInt;
+ EmuConsoleModeOut:LongInt;
+ EmuConsoleModeErr:LongInt;
+
+  { TODO 17 : Table des fichiers emules.
+    Chaque slot mappe un handle emule (EMU_FILE_HANDLE_BASE + index)
+    vers un fichier reel ouvert via les procedures Pascal. }
+ EmuFileActive:Array[0..MAX_EMU_FILES-1] of Boolean;
+ EmuFileVar:Array[0..MAX_EMU_FILES-1] of File;
+ EmuFileName:Array[0..MAX_EMU_FILES-1] of String;
+
+  { TODO 18 : Etat du heap emule.
+    HeapNextAddr est un pointeur bump qui avance dans la zone HeapBase..HeapBase+HeapSize.
+    HeapCreated indique si le heap par defaut a ete cree (via GetProcessHeap). }
+ HeapNextAddr:LongInt;
+ HeapCreated:Boolean;
+
+  { TODO 19 : Adresses en memoire lineaire du bloc d'environnement
+    et du nom du fichier module emule. EnvBlockAddr pointe vers un
+    bloc de chaines KEY=VALUE\0 termine par \0\0. }
+ EnvBlockAddr:LongInt;
+ ModuleFileNameAddr:LongInt;
+
+  { TODO 20 : Code de la derniere erreur Win32 pour Get/SetLastError. }
+ EmuLastError:LongInt;
+
+  { TODO 21 : Table des recherches FindFirstFileA/FindNextFileA.
+    Chaque slot contient un SearchRec actif pour iterer les fichiers. }
+ EmuFindActive:Array[0..MAX_EMU_FIND_HANDLES-1] of Boolean;
+ EmuFindSR:Array[0..MAX_EMU_FIND_HANDLES-1] of SearchRec;
+
+  { TODO 24 : Options de ligne de commande.
+    DebugMode : affiche l'etat des registres apres chaque instruction.
+    VerboseMode : affiche des messages informatifs supplementaires.
+    ReadOnlyMode : interdit les ecritures sur disque par le programme emule. }
+ DebugMode:Boolean;
+ VerboseMode:Boolean;
+ ReadOnlyMode:Boolean;
+
+  { TODO 25 : Compteur d'instructions executees pour les statistiques. }
+ EmuInstrCount:LongInt;
+
+  { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
+    L'adresse est une adresse lineaire plate (flat) dans l'espace
+    de 16 Mo. Retourne 0 si l'adresse est hors limites. }
+Function ReadByte(Addr:LongInt):Byte;
+Var
+ B:Byte;
+ ByteRead:Word;
+Begin
+ If(Addr<0)or(Addr>=MemorySize)Then Begin
+  WriteLn('Erreur: ReadByte adresse $',HexStr(Addr,8),' hors limites');
+  ReadByte:=0;
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockRead(Memory,B,1,ByteRead);
+ ReadByte:=B;
+End;
+
+  { TODO 3 : Lecture d'un mot 16 bits dans la memoire lineaire.
+    Lit 2 octets consecutifs en little-endian a l'adresse donnee. }
+Function ReadWord(Addr:LongInt):Word;
+Var
+ W:Word;
+ ByteRead:Word;
+Begin
+ If(Addr<0)or(Addr>MemorySize-2)Then Begin
+  WriteLn('Erreur: ReadWord adresse $',HexStr(Addr,8),' hors limites');
+  ReadWord:=0;
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockRead(Memory,W,2,ByteRead);
+ ReadWord:=W;
+End;
+
+  { TODO 3 : Lecture d'un double mot 32 bits dans la memoire lineaire.
+    Lit 4 octets consecutifs en little-endian a l'adresse donnee. }
+Function ReadDWord(Addr:LongInt):LongInt;
+Var
+ D:LongInt;
+ ByteRead:Word;
+Begin
+ If(Addr<0)or(Addr>MemorySize-4)Then Begin
+  WriteLn('Erreur: ReadDWord adresse $',HexStr(Addr,8),' hors limites');
+  ReadDWord:=0;
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockRead(Memory,D,4,ByteRead);
+ ReadDWord:=D;
+End;
+
+  { TODO 3 : Ecriture d'un octet dans la memoire lineaire 32 bits.
+    L'adresse est une adresse lineaire plate (flat) dans l'espace
+    de 16 Mo. }
+Procedure WriteByte(Addr:LongInt;Value:Byte);
+Var
+ ByteWrited:Word;
+Begin
+ If(Addr<0)or(Addr>=MemorySize)Then Begin
+  WriteLn('Erreur: WriteByte adresse $',HexStr(Addr,8),' hors limites');
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockWrite(Memory,Value,1,ByteWrited);
+End;
+
+  { TODO 3 : Ecriture d'un mot 16 bits dans la memoire lineaire.
+    Ecrit 2 octets consecutifs en little-endian a l'adresse donnee. }
+Procedure WriteWord(Addr:LongInt;Value:Word);
+Var
+ ByteWrited:Word;
+Begin
+ If(Addr<0)or(Addr>MemorySize-2)Then Begin
+  WriteLn('Erreur: WriteWord adresse $',HexStr(Addr,8),' hors limites');
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockWrite(Memory,Value,2,ByteWrited);
+End;
+
+  { TODO 3 : Ecriture d'un double mot 32 bits dans la memoire lineaire.
+    Ecrit 4 octets consecutifs en little-endian a l'adresse donnee. }
+Procedure WriteDWord(Addr:LongInt;Value:LongInt);
+Var
+ ByteWrited:Word;
+Begin
+ If(Addr<0)or(Addr>MemorySize-4)Then Begin
+  WriteLn('Erreur: WriteDWord adresse $',HexStr(Addr,8),' hors limites');
+  Exit;
+ End;
+ Seek(Memory,Addr);
+ BlockWrite(Memory,Value,4,ByteWrited);
+End;
+
+  { TODO 4 : Empiler un double mot 32 bits sur la pile.
+    Decremente ESP de 4, puis ecrit la valeur 32 bits a l'adresse
+    pointee par ESP dans la memoire lineaire plate. }
+Procedure Push32(Value:LongInt);
+Begin
+ Regs.ESP:=Regs.ESP-4;
+ WriteDWord(Regs.ESP,Value);
+End;
+
+  { TODO 4 : Depiler un double mot 32 bits de la pile.
+    Lit la valeur 32 bits a l'adresse pointee par ESP, puis
+    incremente ESP de 4. }
+Function Pop32:LongInt;
+Begin
+ Pop32:=ReadDWord(Regs.ESP);
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 4 : Empiler un mot 16 bits sur la pile.
+    Decremente ESP de 2, puis ecrit la valeur 16 bits a l'adresse
+    pointee par ESP dans la memoire lineaire plate. }
+Procedure Push16(Value:Word);
+Begin
+ Regs.ESP:=Regs.ESP-2;
+ WriteWord(Regs.ESP,Value);
+End;
+
+  { TODO 4 : Depiler un mot 16 bits de la pile.
+    Lit la valeur 16 bits a l'adresse pointee par ESP, puis
+    incremente ESP de 2. }
+Function Pop16:Word;
+Begin
+ Pop16:=ReadWord(Regs.ESP);
+ Regs.ESP:=Regs.ESP+2;
+End;
+
+  { TODO 7 : Lecture d'une chaine ASCII terminee par un zero
+    depuis la memoire lineaire 32 bits. Retourne une String Pascal
+    (max 255 caracteres). }
+Function ReadStringFromMem(Addr:LongInt):String;
+Var
+ S:String;
+ B:Byte;
+ I:Integer;
+Begin
+ S:='';
+ I:=0;
+ While I<255 do Begin
+  B:=ReadByte(Addr+LongInt(I));
+  If B=0 Then Break;
+  S:=S+Chr(B);
+  Inc(I);
+ End;
+ ReadStringFromMem:=S;
+End;
+
+  { TODO 7 : Recherche d'une entree d'importation par son adresse
+    de thunk dans la memoire lineaire. Retourne l'index dans
+    ImportEntries ou -1 si non trouvee. }
+Function FindImportByAddr(Addr:LongInt):Integer;
+Var
+ I:Integer;
+Begin
+ FindImportByAddr:=-1;
+ For I:=0 to ImportCount-1 do
+  If ImportEntries[I].ThunkAddr=Addr Then Begin
+   FindImportByAddr:=I;
+   Exit;
+  End;
+End;
+
+  { TODO 6 : Chargement des sections PE dans la memoire lineaire.
+    Lit les en-tetes IMAGE_SECTION_HEADER et copie les donnees de
+    chaque section (.text, .data, .rdata, .idata) a l'adresse
+    ImageBase + VirtualAddress. Les sections .bss (donnees non
+    initialisees, Characteristics bit $80) sont remplies de zeros.
+    Si VirtualSize > SizeOfRawData, le surplus est mis a zero. }
+Function LoadPESections(Var F:File):Boolean;
+Const
+ LoadBufSize=4096;
+Var
+ I:Integer;
+ SecName:String;
+ LoadAddr,Remaining:LongInt;
+ ChunkSize:Word;
+ LoadBuf:Array[0..LoadBufSize-1]of Byte;
+ ByteRead,ByteWrited:Word;
+ J,K:LongInt;
+Begin
+ LoadPESections:=False;
+ PENumSections:=PEFileHeader.NumberOfSections;
+ If PENumSections>MaxPESections Then Begin
+  WriteLn('LoadPESections: trop de sections (',PENumSections,')');
+  Exit;
+ End;
+  { Se positionner au debut de la table des en-tetes de section.
+    Position = e_lfanew + 4 (signature PE) + 20 (COFF header) +
+    SizeOfOptionalHeader (en-tete optionnel complet avec repertoires) }
+ Seek(F,PEDosHeader.e_lfanew+4+SizeOf(TImageFileHeader)+
+        LongInt(PEFileHeader.SizeOfOptionalHeader));
+  { Lire les en-tetes de section }
+ For I:=0 to PENumSections-1 do Begin
+  BlockRead(F,PESections[I],SizeOf(TImageSectionHeader),ByteRead);
+  If ByteRead<>SizeOf(TImageSectionHeader)Then Begin
+   WriteLn('LoadPESections: erreur lecture en-tete section ',I);
+   Exit;
+  End;
+ End;
+  { Charger chaque section dans la memoire lineaire }
+ For I:=0 to PENumSections-1 do Begin
+   { Extraire le nom de la section (max 8 caracteres, termine par #0) }
+  SecName:='';
+  For K:=0 to 7 do Begin
+   If PESections[I].Name[K]=#0 Then Break;
+   SecName:=SecName+PESections[I].Name[K];
+  End;
+   { Adresse de chargement = ImageBase + RVA de la section }
+  LoadAddr:=PEOptHeader.ImageBase+PESections[I].VirtualAddress;
+  WriteLn('LoadPESections: "',SecName,
+          '" RVA=$',HexStr(PESections[I].VirtualAddress,8),
+          ' VSize=$',HexStr(PESections[I].VirtualSize,8),
+          ' Raw=$',HexStr(PESections[I].SizeOfRawData,8),
+          ' -> $',HexStr(LoadAddr,8));
+   { Verifier que la section tient dans l'espace de 16 Mo }
+  If(LoadAddr<0)or(LoadAddr+PESections[I].VirtualSize>MemorySize)Then Begin
+   WriteLn('LoadPESections: section "',SecName,'" depasse la memoire');
+   Exit;
+  End;
+   { Section .bss (donnees non initialisees) : remplir de zeros }
+  If(PESections[I].Characteristics and $00000080)<>0 Then Begin
+   WriteLn('LoadPESections: "',SecName,'" (bss) remplissage zeros');
+   FillChar(LoadBuf,SizeOf(LoadBuf),0);
+   Remaining:=PESections[I].VirtualSize;
+   J:=LoadAddr;
+   While Remaining>0 do Begin
+    If Remaining>LoadBufSize Then ChunkSize:=LoadBufSize
+    Else ChunkSize:=Word(Remaining);
+    Seek(Memory,J);
+    BlockWrite(Memory,LoadBuf,ChunkSize,ByteWrited);
+    J:=J+LongInt(ChunkSize);
+    Remaining:=Remaining-LongInt(ChunkSize);
+   End;
+  End
+  Else If PESections[I].SizeOfRawData>0 Then Begin
+    { Copier les donnees brutes du fichier vers la memoire lineaire }
+   Seek(F,PESections[I].PointerToRawData);
+   Remaining:=PESections[I].SizeOfRawData;
+   J:=LoadAddr;
+   While Remaining>0 do Begin
+    If Remaining>LoadBufSize Then ChunkSize:=LoadBufSize
+    Else ChunkSize:=Word(Remaining);
+    BlockRead(F,LoadBuf,ChunkSize,ByteRead);
+    If ByteRead<>ChunkSize Then Begin
+     WriteLn('LoadPESections: erreur lecture "',SecName,'"');
+     Exit;
+    End;
+    Seek(Memory,J);
+    BlockWrite(Memory,LoadBuf,ChunkSize,ByteWrited);
+    J:=J+LongInt(ChunkSize);
+    Remaining:=Remaining-LongInt(ChunkSize);
+   End;
+    { Si VirtualSize > SizeOfRawData, remplir le reste de zeros }
+   If PESections[I].VirtualSize>PESections[I].SizeOfRawData Then Begin
+    FillChar(LoadBuf,SizeOf(LoadBuf),0);
+    Remaining:=PESections[I].VirtualSize-PESections[I].SizeOfRawData;
+    While Remaining>0 do Begin
+     If Remaining>LoadBufSize Then ChunkSize:=LoadBufSize
+     Else ChunkSize:=Word(Remaining);
+     Seek(Memory,J);
+     BlockWrite(Memory,LoadBuf,ChunkSize,ByteWrited);
+     J:=J+LongInt(ChunkSize);
+     Remaining:=Remaining-LongInt(ChunkSize);
+    End;
+   End;
+  End;
+ End;
+ LoadPESections:=True;
+ WriteLn('LoadPESections: ',PENumSections,' section(s) chargee(s).');
+End;
+
+  { TODO 7 : Lecture des repertoires de donnees PE depuis le fichier.
+    Les repertoires (IMAGE_DATA_DIRECTORY, 8 octets chacun) suivent
+    immediatement les champs standard de l'en-tete optionnel PE32.
+    Ils incluent notamment le repertoire d'importation (index 1). }
+Function LoadPEDataDirs(Var F:File):Boolean;
+Var
+ I:Integer;
+ ByteRead:Word;
+Begin
+ LoadPEDataDirs:=False;
+ PENumDataDirs:=PEOptHeader.NumberOfRvaAndSizes;
+ If PENumDataDirs>MaxDataDirs Then PENumDataDirs:=MaxDataDirs;
+ If PENumDataDirs<=0 Then Begin
+  WriteLn('LoadPEDataDirs: pas de repertoire de donnees');
+  LoadPEDataDirs:=True;
+  Exit;
+ End;
+ For I:=0 to PENumDataDirs-1 do Begin
+  BlockRead(F,PEDataDirs[I],SizeOf(TImageDataDirectory),ByteRead);
+  If ByteRead<>SizeOf(TImageDataDirectory)Then Begin
+   WriteLn('LoadPEDataDirs: erreur lecture repertoire ',I);
+   Exit;
+  End;
+ End;
+ WriteLn('LoadPEDataDirs: ',PENumDataDirs,' repertoire(s) lu(s).');
+ If PENumDataDirs>=2 Then
+  WriteLn('  Import Directory: RVA=$',HexStr(PEDataDirs[1].VirtualAddress,8),
+          ' Size=',PEDataDirs[1].Size);
+ LoadPEDataDirs:=True;
+End;
+
+  { TODO 7 : Traitement de la table d'importation PE.
+    Parcourt l'Import Directory Table dans la memoire lineaire chargee,
+    lit chaque IMAGE_IMPORT_DESCRIPTOR, extrait les noms de DLL et de
+    fonctions (ou les numeros d'ordinal), et remplit l'Import Address
+    Table (IAT) avec des adresses de thunks internes. Chaque thunk
+    est une adresse unique dans la zone ThunkBase qui sera interceptee
+    par la boucle d'execution pour rediriger vers l'emulation. }
+Function ProcessImports:Boolean;
+Var
+ ImportRVA,ImportSize:LongInt;
+ ImpAddr:LongInt;
+ DLLName:String;
+ ThunkRVA,LookupRVA:LongInt;
+ ThunkVal:LongInt;
+ HintAddr:LongInt;
+ FuncName:String;
+ NextThunk:LongInt;
+Begin
+ ProcessImports:=False;
+ ImportCount:=0;
+  { Verifier que le repertoire d'importation existe (index 1) }
+ If PENumDataDirs<2 Then Begin
+  WriteLn('ProcessImports: pas de repertoire d''importation');
+  ProcessImports:=True;
+  Exit;
+ End;
+ ImportRVA:=PEDataDirs[1].VirtualAddress;
+ ImportSize:=PEDataDirs[1].Size;
+ If(ImportRVA=0)or(ImportSize=0)Then Begin
+  WriteLn('ProcessImports: table d''importation vide');
+  ProcessImports:=True;
+  Exit;
+ End;
+ WriteLn('ProcessImports: Import Directory RVA=$',HexStr(ImportRVA,8),
+         ' Size=',ImportSize);
+ NextThunk:=ThunkBase;
+ ImpAddr:=PEOptHeader.ImageBase+ImportRVA;
+  { Parcourir les IMAGE_IMPORT_DESCRIPTOR (20 octets chacun)
+    jusqu'a un descripteur entierement nul }
+ Repeat
+   { Lire les champs du descripteur depuis la memoire lineaire }
+  ThunkVal:=ReadDWord(ImpAddr);      { OriginalFirstThunk }
+  LookupRVA:=ThunkVal;
+  ThunkVal:=ReadDWord(ImpAddr+12);   { Name }
+  If(ThunkVal=0)Then Break;          { Fin de la table }
+  ThunkRVA:=ReadDWord(ImpAddr+16);   { FirstThunk }
+  If(ThunkRVA=0)Then Break;
+   { Lire le nom de la DLL }
+  DLLName:=ReadStringFromMem(PEOptHeader.ImageBase+ThunkVal);
+  WriteLn('ProcessImports: DLL "',DLLName,'"');
+   { Utiliser OriginalFirstThunk (ILT) si disponible, sinon FirstThunk }
+  If LookupRVA=0 Then LookupRVA:=ThunkRVA;
+   { Parcourir les entrees de la table d'importation }
+  While True do Begin
+   ThunkVal:=ReadDWord(PEOptHeader.ImageBase+LookupRVA);
+   If ThunkVal=0 Then Break;  { Fin de la liste }
+   If ImportCount>=MaxImportFuncs Then Begin
+    WriteLn('ProcessImports: trop de fonctions importees');
+    Exit;
+   End;
+   ImportEntries[ImportCount].DLLName:=DLLName;
+    { Verifier si c'est un import par ordinal (bit 31 = signe negatif) }
+   If ThunkVal<0 Then Begin
+    ImportEntries[ImportCount].Ordinal:=Word(ThunkVal and $FFFF);
+    ImportEntries[ImportCount].ByOrdinal:=True;
+    ImportEntries[ImportCount].FuncName:='';
+    WriteLn('  Ordinal #',ImportEntries[ImportCount].Ordinal);
+   End
+   Else Begin
+     { Import par nom : ThunkVal est un RVA vers IMAGE_IMPORT_BY_NAME }
+    HintAddr:=PEOptHeader.ImageBase+ThunkVal;
+    FuncName:=ReadStringFromMem(HintAddr+2);
+    ImportEntries[ImportCount].Ordinal:=ReadWord(HintAddr);
+    ImportEntries[ImportCount].ByOrdinal:=False;
+    ImportEntries[ImportCount].FuncName:=FuncName;
+    WriteLn('  ',FuncName,' (hint=',ImportEntries[ImportCount].Ordinal,')');
+   End;
+    { Assigner un thunk interne }
+   ImportEntries[ImportCount].ThunkAddr:=NextThunk;
+    { Ecrire l'adresse du thunk dans la IAT en memoire }
+   WriteDWord(PEOptHeader.ImageBase+ThunkRVA,NextThunk);
+    { Ecrire INT3 ($CC) + RET ($C3) au thunk pour pieger l'appel }
+   WriteByte(NextThunk,$CC);
+   WriteByte(NextThunk+1,$C3);
+   Inc(ImportCount);
+   NextThunk:=NextThunk+16;  { Espacement de 16 octets entre thunks }
+   LookupRVA:=LookupRVA+4;
+   ThunkRVA:=ThunkRVA+4;
+  End;
+  ImpAddr:=ImpAddr+20;  { Prochain descripteur }
+ Until False;
+ ProcessImports:=True;
+ WriteLn('ProcessImports: ',ImportCount,' fonction(s) importee(s) resolue(s).');
+End;
+
+  { TODO 5 : Chargeur de fichiers PE (Portable Executable).
+    Lit l'en-tete MZ/DOS stub, la signature PE, l'en-tete COFF
+    (IMAGE_FILE_HEADER) et l'en-tete optionnel (IMAGE_OPTIONAL_HEADER32)
+    incluant AddressOfEntryPoint, ImageBase, SectionAlignment et
+    SizeOfStackReserve. Retourne True si le fichier est un PE valide. }
+Function LoadPE(FileName:String):Boolean;
+Var
+ F:File;
+ PESig:LongInt;
+ ByteRead:Word;
+Begin
+ LoadPE:=False;
+ PELoaded:=False;
+  { Ouvrir le fichier PE }
+ {$I-}Assign(F,FileName);
+ Reset(F,1);{$I+}
+ If IOResult<>0 Then Begin
+  WriteLn('LoadPE: impossible d''ouvrir "',FileName,'"');
+  Exit;
+ End;
+  { Verifier que le fichier est assez grand pour l'en-tete DOS }
+ If FileSize(F)<SizeOf(TImageDosHeader)Then Begin
+  WriteLn('LoadPE: fichier trop petit pour un en-tete DOS MZ');
+  Close(F);
+  Exit;
+ End;
+  { Lire l'en-tete DOS MZ (64 octets) }
+ BlockRead(F,PEDosHeader,SizeOf(TImageDosHeader),ByteRead);
+ If ByteRead<>SizeOf(TImageDosHeader)Then Begin
+  WriteLn('LoadPE: erreur de lecture de l''en-tete DOS');
+  Close(F);
+  Exit;
+ End;
+  { Verifier la signature MZ }
+ If PEDosHeader.e_magic<>$5A4D Then Begin
+  WriteLn('LoadPE: signature MZ invalide ($',HexStr(PEDosHeader.e_magic,4),
+          ' au lieu de $5A4D)');
+  Close(F);
+  Exit;
+ End;
+ WriteLn('LoadPE: En-tete DOS MZ valide, e_lfanew=$',
+         HexStr(PEDosHeader.e_lfanew,8));
+  { Verifier que e_lfanew pointe vers une position valide }
+ If(PEDosHeader.e_lfanew<$40)or
+   (PEDosHeader.e_lfanew>=FileSize(F)-4)Then Begin
+  WriteLn('LoadPE: e_lfanew invalide ($',HexStr(PEDosHeader.e_lfanew,8),')');
+  Close(F);
+  Exit;
+ End;
+  { Se positionner a l'offset de la signature PE }
+ Seek(F,PEDosHeader.e_lfanew);
+  { Lire la signature PE (4 octets : 'PE\0\0' = $00004550) }
+ BlockRead(F,PESig,4,ByteRead);
+ If ByteRead<>4 Then Begin
+  WriteLn('LoadPE: erreur de lecture de la signature PE');
+  Close(F);
+  Exit;
+ End;
+ If PESig<>$00004550 Then Begin
+  WriteLn('LoadPE: signature PE invalide ($',HexStr(PESig,8),
+          ' au lieu de $00004550)');
+  Close(F);
+  Exit;
+ End;
+ WriteLn('LoadPE: Signature PE valide.');
+  { Lire l'en-tete COFF (IMAGE_FILE_HEADER, 20 octets) }
+ BlockRead(F,PEFileHeader,SizeOf(TImageFileHeader),ByteRead);
+ If ByteRead<>SizeOf(TImageFileHeader)Then Begin
+  WriteLn('LoadPE: erreur de lecture de l''en-tete COFF');
+  Close(F);
+  Exit;
+ End;
+  { Verifier que c'est bien une machine i386 }
+ If PEFileHeader.Machine<>$014C Then Begin
+  WriteLn('LoadPE: machine non supportee ($',HexStr(PEFileHeader.Machine,4),
+          ', attendu $014C pour i386)');
+  Close(F);
+  Exit;
+ End;
+ WriteLn('LoadPE: En-tete COFF - Machine=i386, Sections=',
+         PEFileHeader.NumberOfSections,
+         ', OptHdrSize=',PEFileHeader.SizeOfOptionalHeader);
+  { Verifier que l'en-tete optionnel est present et assez grand }
+ If PEFileHeader.SizeOfOptionalHeader<SizeOf(TImageOptionalHeader32)Then Begin
+  WriteLn('LoadPE: en-tete optionnel trop petit (',
+          PEFileHeader.SizeOfOptionalHeader,' octets, minimum ',
+          SizeOf(TImageOptionalHeader32),')');
+  Close(F);
+  Exit;
+ End;
+  { Lire l'en-tete optionnel PE32 (IMAGE_OPTIONAL_HEADER32, 96 octets) }
+ BlockRead(F,PEOptHeader,SizeOf(TImageOptionalHeader32),ByteRead);
+ If ByteRead<>SizeOf(TImageOptionalHeader32)Then Begin
+  WriteLn('LoadPE: erreur de lecture de l''en-tete optionnel');
+  Close(F);
+  Exit;
+ End;
+  { Verifier la signature PE32 }
+ If PEOptHeader.Magic<>$010B Then Begin
+  WriteLn('LoadPE: magic optionnel invalide ($',HexStr(PEOptHeader.Magic,4),
+          ', attendu $010B pour PE32)');
+  Close(F);
+  Exit;
+ End;
+  { Afficher les champs principaux de l'en-tete optionnel }
+ WriteLn('LoadPE: En-tete optionnel PE32 :');
+ WriteLn('  AddressOfEntryPoint = $',HexStr(PEOptHeader.AddressOfEntryPoint,8));
+ WriteLn('  ImageBase           = $',HexStr(PEOptHeader.ImageBase,8));
+ WriteLn('  SectionAlignment    = $',HexStr(PEOptHeader.SectionAlignment,8));
+ WriteLn('  FileAlignment       = $',HexStr(PEOptHeader.FileAlignment,8));
+ WriteLn('  SizeOfImage         = $',HexStr(PEOptHeader.SizeOfImage,8));
+ WriteLn('  SizeOfHeaders       = $',HexStr(PEOptHeader.SizeOfHeaders,8));
+ WriteLn('  SizeOfStackReserve  = $',HexStr(PEOptHeader.SizeOfStackReserve,8));
+ WriteLn('  SizeOfStackCommit   = $',HexStr(PEOptHeader.SizeOfStackCommit,8));
+ WriteLn('  Subsystem           = ',PEOptHeader.Subsystem);
+ WriteLn('  NumberOfRvaAndSizes = ',PEOptHeader.NumberOfRvaAndSizes);
+  { TODO 7 : Lire les repertoires de donnees PE }
+ If Not LoadPEDataDirs(F)Then Begin
+  WriteLn('LoadPE: echec de la lecture des repertoires de donnees');
+  Close(F);
+  Exit;
+ End;
+  { TODO 6 : Charger les sections PE dans la memoire lineaire }
+ If Not LoadPESections(F)Then Begin
+  WriteLn('LoadPE: echec du chargement des sections');
+  Close(F);
+  Exit;
+ End;
+ Close(F);
+  { TODO 7 : Traiter la table d'importation }
+ If Not ProcessImports Then Begin
+  WriteLn('LoadPE: echec du traitement des importations');
+  PELoaded:=False;
+  LoadPE:=False;
+  Exit;
+ End;
+ PELoaded:=True;
+ LoadPE:=True;
+ WriteLn('LoadPE: Fichier PE charge avec succes.');
+End;
+
+  { TODO 8 : Acces aux registres generaux 32 bits par index (0-7).
+    Codage x86 : 0=EAX, 1=ECX, 2=EDX, 3=EBX, 4=ESP, 5=EBP,
+    6=ESI, 7=EDI. Correspond directement a Regs.Abs[0..7]. }
+Function GetReg32(Index:Byte):LongInt;
+Begin
+ GetReg32:=Regs.Abs[Index];
+End;
+
+Procedure SetReg32(Index:Byte;Value:LongInt);
+Begin
+ Regs.Abs[Index]:=Value;
+End;
+
+  { TODO 8 : Acces aux registres 16 bits par index (0-7).
+    Codage x86 : 0=AX, 1=CX, 2=DX, 3=BX, 4=SP, 5=BP, 6=SI, 7=DI.
+    Correspond a la partie basse (Lo) de Regs.AbsWord[0..7]. }
+Function GetReg16(Index:Byte):Word;
+Begin
+ GetReg16:=Regs.AbsWord[Index].Lo;
+End;
+
+Procedure SetReg16(Index:Byte;Value:Word);
+Begin
+ Regs.AbsWord[Index].Lo:=Value;
+End;
+
+  { TODO 8 : Acces aux registres 8 bits par index (0-7).
+    Codage x86 : 0=AL, 1=CL, 2=DL, 3=BL, 4=AH, 5=CH, 6=DH, 7=BH }
+Function GetReg8(Index:Byte):Byte;
+Begin
+ Case Index of
+  0:GetReg8:=Regs.AL;
+  1:GetReg8:=Regs.CL;
+  2:GetReg8:=Regs.DL;
+  3:GetReg8:=Regs.BL;
+  4:GetReg8:=Regs.AH;
+  5:GetReg8:=Regs.CH;
+  6:GetReg8:=Regs.DH;
+  7:GetReg8:=Regs.BH;
+  Else GetReg8:=0;
+ End;
+End;
+
+Procedure SetReg8(Index:Byte;Value:Byte);
+Begin
+ Case Index of
+  0:Regs.AL:=Value;
+  1:Regs.CL:=Value;
+  2:Regs.DL:=Value;
+  3:Regs.BL:=Value;
+  4:Regs.AH:=Value;
+  5:Regs.CH:=Value;
+  6:Regs.DH:=Value;
+  7:Regs.BH:=Value;
+ End;
+End;
+
+  { TODO 8 : Decodage de l'octet ModR/M et calcul de l'adresse effective.
+    Lit l'octet ModR/M a l'adresse EIP, avance EIP, et retourne
+    les champs mod (bits 7-6), reg (bits 5-3) et r/m (bits 2-0).
+    Si necessaire, lit l'octet SIB et/ou un deplacement (disp8/disp32).
+    EffAddr contient l'adresse memoire calculee si mod <> 11.
+    IsMemory est True si l'operande r/m est une reference memoire. }
+Procedure DecodeModRM(Var ModField,RegField,RMField:Byte;
+                      Var EffAddr:LongInt;Var IsMemory:Boolean);
+Var
+ ModRM,SIBByte:Byte;
+ Base,Index,Scale:Byte;
+ BaseVal,IndexVal:LongInt;
+ Disp8:ShortInt;
+ Disp32:LongInt;
+Begin
+ ModRM:=ReadByte(EIP);
+ Inc(EIP);
+ ModField:=(ModRM shr 6) and 3;
+ RegField:=(ModRM shr 3) and 7;
+ RMField:=ModRM and 7;
+ EffAddr:=0;
+ IsMemory:=(ModField<>3);
+ If ModField=3 Then Exit;  { Registre a registre, pas d'adresse effective }
+  { Mode memoire : calculer l'adresse effective }
+ If RMField=4 Then Begin
+   { Octet SIB present (r/m=100 en mode memoire) }
+  SIBByte:=ReadByte(EIP);
+  Inc(EIP);
+  Scale:=(SIBByte shr 6) and 3;
+  Index:=(SIBByte shr 3) and 7;
+  Base:=SIBByte and 7;
+   { Calculer la valeur du registre de base.
+     Si base=5 et mod=00, pas de registre de base (disp32 suit). }
+  If(Base=5)and(ModField=0)Then
+   BaseVal:=0
+  Else
+   BaseVal:=GetReg32(Base);
+   { Calculer la valeur du registre d'index.
+     Index=4 (ESP) signifie qu'il n'y a pas d'index. }
+  If Index=4 Then
+   IndexVal:=0
+  Else Begin
+   IndexVal:=GetReg32(Index);
+   Case Scale of
+    1:IndexVal:=IndexVal*2;
+    2:IndexVal:=IndexVal*4;
+    3:IndexVal:=IndexVal*8;
+   End;
+  End;
+  EffAddr:=BaseVal+IndexVal;
+   { Ajouter le deplacement selon le champ mod }
+  If(Base=5)and(ModField=0)Then Begin
+    { SIB avec base=5 et mod=00 : disp32 sans registre de base }
+   Disp32:=ReadDWord(EIP);
+   Inc(EIP,4);
+   EffAddr:=EffAddr+Disp32;
+  End
+  Else If ModField=1 Then Begin
+   Disp8:=ShortInt(ReadByte(EIP));
+   Inc(EIP);
+   EffAddr:=EffAddr+LongInt(Disp8);
+  End
+  Else If ModField=2 Then Begin
+   Disp32:=ReadDWord(EIP);
+   Inc(EIP,4);
+   EffAddr:=EffAddr+Disp32;
+  End;
+ End
+ Else Begin
+   { Pas de SIB }
+  If(ModField=0)and(RMField=5)Then Begin
+    { mod=00, r/m=101 : adresse directe disp32 }
+   Disp32:=ReadDWord(EIP);
+   Inc(EIP,4);
+   EffAddr:=Disp32;
+  End
+  Else Begin
+   EffAddr:=GetReg32(RMField);
+   If ModField=1 Then Begin
+    Disp8:=ShortInt(ReadByte(EIP));
+    Inc(EIP);
+    EffAddr:=EffAddr+LongInt(Disp8);
+   End
+   Else If ModField=2 Then Begin
+    Disp32:=ReadDWord(EIP);
+    Inc(EIP,4);
+    EffAddr:=EffAddr+Disp32;
+   End;
+  End;
+ End;
+End;
+
+  { TODO 8 : MOV r/m8, r8 (opcode $88).
+    Copie le registre 8 bits reg dans r/m8 (registre ou memoire). }
+Procedure OpMovRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  WriteByte(Eff,GetReg8(RegF))
+ Else
+  SetReg8(RMF,GetReg8(RegF));
+End;
+
+  { TODO 8 : MOV r8, r/m8 (opcode $8A).
+    Copie r/m8 (registre ou memoire) dans le registre 8 bits reg. }
+Procedure OpMovR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  SetReg8(RegF,ReadByte(Eff))
+ Else
+  SetReg8(RegF,GetReg8(RMF));
+End;
+
+  { TODO 8 : MOV r/m32, r32 (opcode $89).
+    Copie le registre 32 bits reg dans r/m32 (registre ou memoire).
+    Gere les modes d'adressage ModR/M et SIB du 80386. }
+Procedure OpMovRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  WriteDWord(Eff,GetReg32(RegF))
+ Else
+  SetReg32(RMF,GetReg32(RegF));
+End;
+
+  { TODO 8 : MOV r32, r/m32 (opcode $8B).
+    Copie r/m32 (registre ou memoire) dans le registre 32 bits reg.
+    Gere les modes d'adressage ModR/M et SIB du 80386. }
+Procedure OpMovR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  SetReg32(RegF,ReadDWord(Eff))
+ Else
+  SetReg32(RegF,GetReg32(RMF));
+End;
+
+  { TODO 8 : MOV r/m8, imm8 (opcode $C6 /0).
+    Charge une valeur immediate 8 bits dans r/m8. }
+Procedure OpMovRM8Imm8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Imm:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ If IsMem Then
+  WriteByte(Eff,Imm)
+ Else
+  SetReg8(RMF,Imm);
+End;
+
+  { TODO 8 : MOV r/m32, imm32 (opcode $C7 /0).
+    Charge une valeur immediate 32 bits dans r/m32. }
+Procedure OpMovRM32Imm32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Imm:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ If IsMem Then
+  WriteDWord(Eff,Imm)
+ Else
+  SetReg32(RMF,Imm);
+End;
+
+  { TODO 8 : MOV r8, imm8 (opcode $B0+r).
+    Charge une valeur immediate 8 bits dans le registre r8. }
+Procedure OpMovR8Imm8(RegIdx:Byte);
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ SetReg8(RegIdx,Imm);
+End;
+
+  { TODO 8 : MOV r32, imm32 (opcode $B8+r).
+    Charge une valeur immediate 32 bits dans le registre r32. }
+Procedure OpMovR32Imm32(RegIdx:Byte);
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ SetReg32(RegIdx,Imm);
+End;
+
+  { TODO 8 : MOVZX r32, r/m8 (opcode $0F $B6).
+    Extension a zero d'un octet vers un double mot 32 bits.
+    Lit un operande 8 bits et l'etend a 32 bits sans signe. }
+Procedure OpMovzxR32RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  Val:=ReadByte(Eff)
+ Else
+  Val:=GetReg8(RMF);
+ SetReg32(RegF,LongInt(Val));
+End;
+
+  { TODO 8 : MOVZX r32, r/m16 (opcode $0F $B7).
+    Extension a zero d'un mot 16 bits vers un double mot 32 bits.
+    Lit un operande 16 bits et l'etend a 32 bits sans signe. }
+Procedure OpMovzxR32RM16;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:Word;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  Val:=ReadWord(Eff)
+ Else
+  Val:=GetReg16(RMF);
+ SetReg32(RegF,LongInt(Val));
+End;
+
+  { TODO 8 : MOVSX r32, r/m8 (opcode $0F $BE).
+    Extension de signe d'un octet vers un double mot 32 bits.
+    Lit un operande 8 bits signe et l'etend a 32 bits avec signe. }
+Procedure OpMovsxR32RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  Val:=ShortInt(ReadByte(Eff))
+ Else
+  Val:=ShortInt(GetReg8(RMF));
+ SetReg32(RegF,LongInt(Val));
+End;
+
+  { TODO 8 : MOVSX r32, r/m16 (opcode $0F $BF).
+    Extension de signe d'un mot 16 bits vers un double mot 32 bits.
+    Lit un operande 16 bits signe et l'etend a 32 bits avec signe. }
+Procedure OpMovsxR32RM16;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:Integer;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then
+  Val:=Integer(ReadWord(Eff))
+ Else
+  Val:=Integer(GetReg16(RMF));
+ SetReg32(RegF,LongInt(Val));
+End;
+
+  { TODO 8 : LEA r32, m (opcode $8D).
+    Load Effective Address : calcule l'adresse effective de l'operande
+    memoire r/m et la charge dans le registre reg32, sans acceder
+    a la memoire. }
+Procedure OpLea;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ SetReg32(RegF,Eff);
+End;
+
+  { TODO 8 : XCHG r/m32, r32 (opcode $87).
+    Echange le contenu du registre reg32 avec r/m32 (registre ou
+    memoire). Operation atomique sur le bus memoire en x86 reel. }
+Procedure OpXchgRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Tmp:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  Tmp:=ReadDWord(Eff);
+  WriteDWord(Eff,GetReg32(RegF));
+  SetReg32(RegF,Tmp);
+ End
+ Else Begin
+  Tmp:=GetReg32(RMF);
+  SetReg32(RMF,GetReg32(RegF));
+  SetReg32(RegF,Tmp);
+ End;
+End;
+
+  { TODO 8 : XCHG EAX, r32 (opcode $90+r).
+    Echange le contenu de EAX avec le registre r32 specifie.
+    Le cas special $90 (r=0, XCHG EAX,EAX) est traite comme NOP. }
+Procedure OpXchgEAXR32(RegIdx:Byte);
+Var
+ Tmp:LongInt;
+Begin
+ If RegIdx=0 Then Exit;  { NOP : XCHG EAX,EAX }
+ Tmp:=Regs.EAX;
+ Regs.EAX:=GetReg32(RegIdx);
+ SetReg32(RegIdx,Tmp);
+End;
+
+  { TODO 8 : BSWAP r32 (opcode $0F $C8+r).
+    Byte Swap : inverse l'ordre des 4 octets d'un registre 32 bits.
+    Convertit entre big-endian et little-endian. }
+Procedure OpBswap(RegIdx:Byte);
+Var
+ Val:LongInt;
+ B0,B1,B2,B3:Byte;
+Begin
+ Val:=GetReg32(RegIdx);
+ B0:=Byte(Val);
+ B1:=Byte(Val shr 8);
+ B2:=Byte(Val shr 16);
+ B3:=Byte(Val shr 24);
+ SetReg32(RegIdx,(LongInt(B0) shl 24) or (LongInt(B1) shl 16) or
+                 (LongInt(B2) shl 8) or LongInt(B3));
+End;
+
+  { TODO 8 : XCHG r/m8, r8 (opcode $86).
+    Echange le contenu du registre r8 avec r/m8 (registre ou memoire). }
+Procedure OpXchgRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Tmp:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  Tmp:=ReadByte(Eff);
+  WriteByte(Eff,GetReg8(RegF));
+  SetReg8(RegF,Tmp);
+ End
+ Else Begin
+  Tmp:=GetReg8(RMF);
+  SetReg8(RMF,GetReg8(RegF));
+  SetReg8(RegF,Tmp);
+ End;
+End;
+
+  { TODO 9 : Calcul de la parite du byte de poids faible.
+    Retourne True si le nombre de bits a 1 dans l'octet est pair
+    (PF=1 selon la convention x86). }
+Function Parity8(Value:Byte):Boolean;
+Var
+ I,Count:Byte;
+Begin
+ Count:=0;
+ For I:=0 to 7 do
+  If(Value and (1 shl I))<>0 Then Inc(Count);
+ Parity8:=(Count mod 2)=0;
+End;
+
+  { TODO 9 : Addition 8 bits avec mise a jour de tous les drapeaux.
+    Calcule A + B, met a jour CF, ZF, SF, OF, AF, PF dans EFLAGS
+    et retourne le resultat tronque sur 8 bits. }
+Function ArithAdd8(A,B:Byte):Byte;
+Var
+ Res:Word;
+ R8:Byte;
+Begin
+ Res:=Word(A)+Word(B);
+ R8:=Byte(Res);
+ If Res>255 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If R8=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(R8 and $80)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor R8)and(B xor R8)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor R8)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(R8)Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithAdd8:=R8;
+End;
+
+  { TODO 9 : Addition 32 bits avec mise a jour de tous les drapeaux.
+    Calcule A + B, met a jour CF, ZF, SF, OF, AF, PF dans EFLAGS
+    et retourne le resultat. Le carry est detecte par decomposition
+    en deux moities de 16 bits. }
+Function ArithAdd32(A,B:LongInt):LongInt;
+Var
+ Res:LongInt;
+ SumLo,CarryLo,SumHi:LongInt;
+Begin
+ Res:=A+B;
+ SumLo:=(A and $FFFF)+(B and $FFFF);
+ CarryLo:=SumLo shr 16;
+ SumHi:=((A shr 16) and $FFFF)+((B shr 16) and $FFFF)+CarryLo;
+ If(SumHi shr 16)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If Res<0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor Res)and(B xor Res))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor Res)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(Byte(Res))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithAdd32:=Res;
+End;
+
+  { TODO 9 : Soustraction 8 bits avec mise a jour de tous les drapeaux.
+    Calcule A - B, met a jour CF (borrow si B > A non-signe), ZF,
+    SF, OF, AF, PF dans EFLAGS et retourne le resultat. }
+Function ArithSub8(A,B:Byte):Byte;
+Var
+ R8:Byte;
+Begin
+ R8:=A-B;
+ If B>A Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If R8=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(R8 and $80)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor B)and(A xor R8)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor R8)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(R8)Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithSub8:=R8;
+End;
+
+  { TODO 11 : Soustraction 16 bits avec mise a jour de tous les drapeaux.
+    Calcule A - B, met a jour CF (borrow si B > A non-signe), ZF,
+    SF, OF, AF, PF dans EFLAGS et retourne le resultat. }
+Function ArithSub16(A,B:Word):Word;
+Var
+ R16:Word;
+Begin
+ R16:=A-B;
+ If B>A Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If R16=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(R16 and $8000)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor B)and(A xor R16)and $8000)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor R16)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(Byte(R16))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithSub16:=R16;
+End;
+
+  { TODO 9 : Soustraction 32 bits avec mise a jour de tous les drapeaux.
+    Calcule A - B, met a jour CF (borrow = comparaison non-signee
+    B > A par decomposition 16 bits), ZF, SF, OF, AF, PF. }
+Function ArithSub32(A,B:LongInt):LongInt;
+Var
+ Res:LongInt;
+ HiA,HiB:LongInt;
+Begin
+ Res:=A-B;
+ HiA:=(A shr 16) and $FFFF;
+ HiB:=(B shr 16) and $FFFF;
+ If HiA<>HiB Then Begin
+  If HiA<HiB Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+ End
+ Else Begin
+  If(A and $FFFF)<(B and $FFFF)Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+ End;
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If Res<0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor B)and(A xor Res))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor Res)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(Byte(Res))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithSub32:=Res;
+End;
+
+  { TODO 9 : Addition avec retenue 8 bits (ADC).
+    Calcule A + B + CF, met a jour tous les drapeaux. }
+Function ArithAdc8(A,B:Byte):Byte;
+Var
+ C:Word;
+ Res:Word;
+ R8:Byte;
+Begin
+ If CF in EFlags.s Then C:=1 Else C:=0;
+ Res:=Word(A)+Word(B)+C;
+ R8:=Byte(Res);
+ If Res>255 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If R8=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(R8 and $80)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor R8)and(B xor R8)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor R8)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(R8)Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithAdc8:=R8;
+End;
+
+  { TODO 9 : Addition avec retenue 32 bits (ADC).
+    Calcule A + B + CF, met a jour tous les drapeaux.
+    Le carry entrant (ancien CF) est ajoute a la somme. }
+Function ArithAdc32(A,B:LongInt):LongInt;
+Var
+ C:LongInt;
+ Res:LongInt;
+ SumLo,CarryLo,SumHi:LongInt;
+Begin
+ If CF in EFlags.s Then C:=1 Else C:=0;
+ Res:=A+B+C;
+ SumLo:=(A and $FFFF)+(B and $FFFF)+C;
+ CarryLo:=SumLo shr 16;
+ SumHi:=((A shr 16) and $FFFF)+((B shr 16) and $FFFF)+CarryLo;
+ If(SumHi shr 16)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If Res<0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor Res)and(B xor Res))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor Res)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(Byte(Res))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithAdc32:=Res;
+End;
+
+  { TODO 9 : Soustraction avec emprunt 8 bits (SBB).
+    Calcule A - B - CF, met a jour tous les drapeaux. }
+Function ArithSbb8(A,B:Byte):Byte;
+Var
+ C:Word;
+ Res:Integer;
+ R8:Byte;
+Begin
+ If CF in EFlags.s Then C:=1 Else C:=0;
+ Res:=Integer(A)-Integer(B)-Integer(C);
+ R8:=Byte(Res);
+ If Res<0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If R8=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(R8 and $80)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor B)and(A xor R8)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor R8)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(R8)Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithSbb8:=R8;
+End;
+
+  { TODO 9 : Soustraction avec emprunt 32 bits (SBB).
+    Calcule A - B - CF, met a jour tous les drapeaux. }
+Function ArithSbb32(A,B:LongInt):LongInt;
+Var
+ C:LongInt;
+ Res:LongInt;
+ DiffLo,BorrowLo,DiffHi:LongInt;
+Begin
+ If CF in EFlags.s Then C:=1 Else C:=0;
+ Res:=A-B-C;
+ DiffLo:=(A and $FFFF)-(B and $FFFF)-C;
+ If DiffLo<0 Then BorrowLo:=1 Else BorrowLo:=0;
+ DiffHi:=((A shr 16) and $FFFF)-((B shr 16) and $FFFF)-BorrowLo;
+ If DiffHi<0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If Res<0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If((A xor B)and(A xor Res))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If((A xor B xor Res)and $10)<>0 Then EFlags.s:=EFlags.s+[AF]
+ Else EFlags.s:=EFlags.s-[AF];
+ If Parity8(Byte(Res))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+ ArithSbb32:=Res;
+End;
+
+  { TODO 9 : ADD r/m8, r8 (opcode $00).
+    Additionne le registre r8 a r/m8 avec mise a jour des drapeaux. }
+Procedure OpAddRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithAdd8(A,GetReg8(RegF));
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithAdd8(A,GetReg8(RegF));
+  SetReg8(RMF,R);
+ End;
+End;
+
+  { TODO 9 : ADD r/m32, r32 (opcode $01).
+    Additionne le registre r32 a r/m32 avec mise a jour des drapeaux. }
+Procedure OpAddRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithAdd32(A,GetReg32(RegF));
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithAdd32(A,GetReg32(RegF));
+  SetReg32(RMF,R);
+ End;
+End;
+
+  { TODO 9 : ADD r8, r/m8 (opcode $02).
+    Additionne r/m8 au registre r8 avec mise a jour des drapeaux. }
+Procedure OpAddR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=ArithAdd8(GetReg8(RegF),B);
+ SetReg8(RegF,R);
+End;
+
+  { TODO 9 : ADD r32, r/m32 (opcode $03).
+    Additionne r/m32 au registre r32 avec mise a jour des drapeaux. }
+Procedure OpAddR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=ArithAdd32(GetReg32(RegF),B);
+ SetReg32(RegF,R);
+End;
+
+  { TODO 9 : ADD AL, imm8 (opcode $04).
+    Additionne un immediat 8 bits a AL. }
+Procedure OpAddALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=ArithAdd8(Regs.AL,Imm);
+End;
+
+  { TODO 9 : ADD EAX, imm32 (opcode $05).
+    Additionne un immediat 32 bits a EAX. }
+Procedure OpAddEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=ArithAdd32(Regs.EAX,Imm);
+End;
+
+  { TODO 9 : SUB r/m8, r8 (opcode $28). }
+Procedure OpSubRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithSub8(A,GetReg8(RegF));
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithSub8(A,GetReg8(RegF));
+  SetReg8(RMF,R);
+ End;
+End;
+
+  { TODO 9 : SUB r/m32, r32 (opcode $29). }
+Procedure OpSubRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithSub32(A,GetReg32(RegF));
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithSub32(A,GetReg32(RegF));
+  SetReg32(RMF,R);
+ End;
+End;
+
+  { TODO 9 : SUB r8, r/m8 (opcode $2A). }
+Procedure OpSubR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=ArithSub8(GetReg8(RegF),B);
+ SetReg8(RegF,R);
+End;
+
+  { TODO 9 : SUB r32, r/m32 (opcode $2B). }
+Procedure OpSubR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=ArithSub32(GetReg32(RegF),B);
+ SetReg32(RegF,R);
+End;
+
+  { TODO 9 : SUB AL, imm8 (opcode $2C). }
+Procedure OpSubALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=ArithSub8(Regs.AL,Imm);
+End;
+
+  { TODO 9 : SUB EAX, imm32 (opcode $2D). }
+Procedure OpSubEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=ArithSub32(Regs.EAX,Imm);
+End;
+
+  { TODO 9 : ADC r/m8, r8 (opcode $10). }
+Procedure OpAdcRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithAdc8(A,GetReg8(RegF));
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithAdc8(A,GetReg8(RegF));
+  SetReg8(RMF,R);
+ End;
+End;
+
+  { TODO 9 : ADC r/m32, r32 (opcode $11). }
+Procedure OpAdcRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithAdc32(A,GetReg32(RegF));
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithAdc32(A,GetReg32(RegF));
+  SetReg32(RMF,R);
+ End;
+End;
+
+  { TODO 9 : ADC r8, r/m8 (opcode $12). }
+Procedure OpAdcR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=ArithAdc8(GetReg8(RegF),B);
+ SetReg8(RegF,R);
+End;
+
+  { TODO 9 : ADC r32, r/m32 (opcode $13). }
+Procedure OpAdcR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=ArithAdc32(GetReg32(RegF),B);
+ SetReg32(RegF,R);
+End;
+
+  { TODO 9 : ADC AL, imm8 (opcode $14). }
+Procedure OpAdcALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=ArithAdc8(Regs.AL,Imm);
+End;
+
+  { TODO 9 : ADC EAX, imm32 (opcode $15). }
+Procedure OpAdcEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=ArithAdc32(Regs.EAX,Imm);
+End;
+
+  { TODO 9 : SBB r/m8, r8 (opcode $18). }
+Procedure OpSbbRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithSbb8(A,GetReg8(RegF));
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithSbb8(A,GetReg8(RegF));
+  SetReg8(RMF,R);
+ End;
+End;
+
+  { TODO 9 : SBB r/m32, r32 (opcode $19). }
+Procedure OpSbbRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithSbb32(A,GetReg32(RegF));
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithSbb32(A,GetReg32(RegF));
+  SetReg32(RMF,R);
+ End;
+End;
+
+  { TODO 9 : SBB r8, r/m8 (opcode $1A). }
+Procedure OpSbbR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=ArithSbb8(GetReg8(RegF),B);
+ SetReg8(RegF,R);
+End;
+
+  { TODO 9 : SBB r32, r/m32 (opcode $1B). }
+Procedure OpSbbR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=ArithSbb32(GetReg32(RegF),B);
+ SetReg32(RegF,R);
+End;
+
+  { TODO 9 : SBB AL, imm8 (opcode $1C). }
+Procedure OpSbbALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=ArithSbb8(Regs.AL,Imm);
+End;
+
+  { TODO 9 : SBB EAX, imm32 (opcode $1D). }
+Procedure OpSbbEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=ArithSbb32(Regs.EAX,Imm);
+End;
+
+  { TODO 9 : CMP r/m8, r8 (opcode $38).
+    Compare par soustraction sans stocker le resultat. }
+Procedure OpCmpRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then A:=ReadByte(Eff)
+ Else A:=GetReg8(RMF);
+ ArithSub8(A,GetReg8(RegF));
+End;
+
+  { TODO 9 : CMP r/m32, r32 (opcode $39). }
+Procedure OpCmpRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then A:=ReadDWord(Eff)
+ Else A:=GetReg32(RMF);
+ ArithSub32(A,GetReg32(RegF));
+End;
+
+  { TODO 9 : CMP r8, r/m8 (opcode $3A). }
+Procedure OpCmpR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ ArithSub8(GetReg8(RegF),B);
+End;
+
+  { TODO 9 : CMP r32, r/m32 (opcode $3B). }
+Procedure OpCmpR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ ArithSub32(GetReg32(RegF),B);
+End;
+
+  { TODO 9 : CMP AL, imm8 (opcode $3C). }
+Procedure OpCmpALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ ArithSub8(Regs.AL,Imm);
+End;
+
+  { TODO 9 : CMP EAX, imm32 (opcode $3D). }
+Procedure OpCmpEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ ArithSub32(Regs.EAX,Imm);
+End;
+
+  { TODO 9 : INC r32 (opcode $40+r).
+    Incremente le registre r32 de 1. CF n'est pas modifie. }
+Procedure OpIncR32(RegIdx:Byte);
+Var
+ SaveCF:Boolean;
+Begin
+ SaveCF:=CF in EFlags.s;
+ SetReg32(RegIdx,ArithAdd32(GetReg32(RegIdx),1));
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : DEC r32 (opcode $48+r).
+    Decremente le registre r32 de 1. CF n'est pas modifie. }
+Procedure OpDecR32(RegIdx:Byte);
+Var
+ SaveCF:Boolean;
+Begin
+ SaveCF:=CF in EFlags.s;
+ SetReg32(RegIdx,ArithSub32(GetReg32(RegIdx),1));
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : INC r/m8 (opcode $FE /0).
+    Incremente r/m8 de 1. CF n'est pas modifie. }
+Procedure OpIncRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ SaveCF:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ SaveCF:=CF in EFlags.s;
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithAdd8(A,1);
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithAdd8(A,1);
+  SetReg8(RMF,R);
+ End;
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : DEC r/m8 (opcode $FE /1).
+    Decremente r/m8 de 1. CF n'est pas modifie. }
+Procedure OpDecRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ SaveCF:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ SaveCF:=CF in EFlags.s;
+ If IsMem Then Begin
+  A:=ReadByte(Eff);
+  R:=ArithSub8(A,1);
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  A:=GetReg8(RMF);
+  R:=ArithSub8(A,1);
+  SetReg8(RMF,R);
+ End;
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : INC r/m32 (opcode $FF /0).
+    Incremente r/m32 de 1. CF n'est pas modifie. }
+Procedure OpIncRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ SaveCF:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ SaveCF:=CF in EFlags.s;
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithAdd32(A,1);
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithAdd32(A,1);
+  SetReg32(RMF,R);
+ End;
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : DEC r/m32 (opcode $FF /1).
+    Decremente r/m32 de 1. CF n'est pas modifie. }
+Procedure OpDecRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ SaveCF:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ SaveCF:=CF in EFlags.s;
+ If IsMem Then Begin
+  A:=ReadDWord(Eff);
+  R:=ArithSub32(A,1);
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  A:=GetReg32(RMF);
+  R:=ArithSub32(A,1);
+  SetReg32(RMF,R);
+ End;
+ If SaveCF Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 9 : NEG r/m8 (opcode $F6 /3).
+    Negation en complement a deux : r/m8 = 0 - r/m8.
+    CF est mis a 1 sauf si l'operande est 0. }
+Procedure OpNegRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then A:=ReadByte(Eff)
+ Else A:=GetReg8(RMF);
+ R:=ArithSub8(0,A);
+ If A<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 9 : NEG r/m32 (opcode $F7 /3).
+    Negation en complement a deux : r/m32 = 0 - r/m32.
+    CF est mis a 1 sauf si l'operande est 0. }
+Procedure OpNegRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ A,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then A:=ReadDWord(Eff)
+ Else A:=GetReg32(RMF);
+ R:=ArithSub32(0,A);
+ If A<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 9 : MUL r/m8 (opcode $F6 /4).
+    Multiplication non-signee : AX = AL * r/m8.
+    CF et OF sont mis a 1 si AH <> 0 (resultat deborde sur 8 bits). }
+Procedure OpMulRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:Byte;
+ Res:Word;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Res:=Word(Regs.AL)*Word(Val);
+ Regs.AX:=Res;
+ If Regs.AH<>0 Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : MUL r/m32 (opcode $F7 /4).
+    Multiplication non-signee : EDX:EAX = EAX * r/m32.
+    CF et OF sont mis a 1 si EDX <> 0 (resultat deborde sur 32 bits).
+    Utilise Int64 pour le calcul intermediaire 64 bits. }
+Procedure OpMulRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ A64,B64,Res64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ A64:=Int64(Regs.EAX) and $FFFFFFFF;
+ B64:=Int64(Val) and $FFFFFFFF;
+ Res64:=A64*B64;
+ Regs.EAX:=LongInt(Res64);
+ Regs.EDX:=LongInt(Res64 shr 32);
+ If Regs.EDX<>0 Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : IMUL r/m8 (opcode $F6 /5).
+    Multiplication signee : AX = AL * r/m8 (avec extension de signe).
+    CF et OF sont mis a 1 si le resultat ne tient pas dans 8 bits signes. }
+Procedure OpImulRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+ Res:Integer;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ShortInt(ReadByte(Eff))
+ Else Val:=ShortInt(GetReg8(RMF));
+ Res:=Integer(ShortInt(Regs.AL))*Integer(Val);
+ Regs.AX:=Word(Res);
+ If(Res<-128)or(Res>127)Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : IMUL r/m32 (opcode $F7 /5).
+    Multiplication signee : EDX:EAX = EAX * r/m32.
+    CF et OF sont mis a 1 si le resultat ne tient pas dans 32 bits signes.
+    Utilise Int64 pour le calcul intermediaire 64 bits. }
+Procedure OpImulRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ Res64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Res64:=Int64(Regs.EAX)*Int64(Val);
+ Regs.EAX:=LongInt(Res64);
+ Regs.EDX:=LongInt(Res64 shr 32);
+ If(Res64<Int64(-2147483648))or(Res64>Int64(2147483647))Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : IMUL r32, r/m32 (opcode $0F $AF).
+    Multiplication signee a deux operandes : r32 = r32 * r/m32.
+    Seuls les 32 bits bas du resultat sont stockes.
+    CF et OF sont mis a 1 si le resultat deborde. }
+Procedure OpImulR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B:LongInt;
+ Res64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ Res64:=Int64(GetReg32(RegF))*Int64(B);
+ SetReg32(RegF,LongInt(Res64));
+ If(Res64<Int64(-2147483648))or(Res64>Int64(2147483647))Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : IMUL r32, r/m32, imm32 (opcode $69).
+    Multiplication signee a trois operandes : r32 = r/m32 * imm32. }
+Procedure OpImulR32RM32Imm32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,Imm:LongInt;
+ Res64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ Res64:=Int64(B)*Int64(Imm);
+ SetReg32(RegF,LongInt(Res64));
+ If(Res64<Int64(-2147483648))or(Res64>Int64(2147483647))Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : IMUL r32, r/m32, imm8 (opcode $6B).
+    Multiplication signee a trois operandes : r32 = r/m32 * imm8
+    (l'immediat 8 bits est etendu avec signe a 32 bits). }
+Procedure OpImulR32RM32Imm8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B:LongInt;
+ Imm:LongInt;
+ Res64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Imm:=LongInt(ShortInt(ReadByte(EIP)));
+ Inc(EIP);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ Res64:=Int64(B)*Int64(Imm);
+ SetReg32(RegF,LongInt(Res64));
+ If(Res64<Int64(-2147483648))or(Res64>Int64(2147483647))Then Begin
+  EFlags.s:=EFlags.s+[CF];
+  EFlags.s:=EFlags.s+[_OF];
+ End
+ Else Begin
+  EFlags.s:=EFlags.s-[CF];
+  EFlags.s:=EFlags.s-[_OF];
+ End;
+End;
+
+  { TODO 9 : DIV r/m8 (opcode $F6 /6).
+    Division non-signee : AL = AX / r/m8, AH = AX mod r/m8.
+    Genere une erreur si le diviseur est 0 ou si le quotient
+    depasse 255. Les drapeaux sont indefinis. }
+Procedure OpDivRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:Byte;
+ Dividend:Word;
+ Quot:Word;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If Val=0 Then Begin
+  WriteLn('DIV: erreur de division par zero (8 bits)');
+  Exit;
+ End;
+ Dividend:=Regs.AX;
+ Quot:=Dividend div Val;
+ If Quot>255 Then Begin
+  WriteLn('DIV: debordement du quotient (8 bits)');
+  Exit;
+ End;
+ Regs.AL:=Byte(Quot);
+ Regs.AH:=Byte(Dividend mod Val);
+End;
+
+  { TODO 9 : DIV r/m32 (opcode $F7 /6).
+    Division non-signee : EAX = EDX:EAX / r/m32,
+    EDX = EDX:EAX mod r/m32.
+    Utilise Int64 pour le dividende 64 bits. }
+Procedure OpDivRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ Dividend64,Divisor64,Quot64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val=0 Then Begin
+  WriteLn('DIV: erreur de division par zero (32 bits)');
+  Exit;
+ End;
+ Dividend64:=((Int64(Regs.EDX) and $FFFFFFFF) shl 32) or
+             (Int64(Regs.EAX) and $FFFFFFFF);
+ Divisor64:=Int64(Val) and $FFFFFFFF;
+ Quot64:=Dividend64 div Divisor64;
+ If Quot64>$FFFFFFFF Then Begin
+  WriteLn('DIV: debordement du quotient (32 bits)');
+  Exit;
+ End;
+ Regs.EAX:=LongInt(Quot64);
+ Regs.EDX:=LongInt(Dividend64 mod Divisor64);
+End;
+
+  { TODO 9 : IDIV r/m8 (opcode $F6 /7).
+    Division signee : AL = AX / r/m8, AH = AX mod r/m8 (signes).
+    Genere une erreur si le diviseur est 0 ou si le quotient
+    depasse la plage [-128, 127]. Les drapeaux sont indefinis. }
+Procedure OpIdivRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+ Dividend:Integer;
+ Quot:Integer;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ShortInt(ReadByte(Eff))
+ Else Val:=ShortInt(GetReg8(RMF));
+ If Val=0 Then Begin
+  WriteLn('IDIV: erreur de division par zero (8 bits)');
+  Exit;
+ End;
+ Dividend:=Integer(Regs.AX);
+ Quot:=Dividend div Integer(Val);
+ If(Quot<-128)or(Quot>127)Then Begin
+  WriteLn('IDIV: debordement du quotient (8 bits)');
+  Exit;
+ End;
+ Regs.AL:=Byte(Quot);
+ Regs.AH:=Byte(Dividend mod Integer(Val));
+End;
+
+  { TODO 9 : IDIV r/m32 (opcode $F7 /7).
+    Division signee : EAX = EDX:EAX / r/m32,
+    EDX = EDX:EAX mod r/m32 (signes).
+    Utilise Int64 pour le dividende 64 bits. }
+Procedure OpIdivRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ Dividend64,Quot64,Rem64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val=0 Then Begin
+  WriteLn('IDIV: erreur de division par zero (32 bits)');
+  Exit;
+ End;
+ Dividend64:=(Int64(Regs.EDX) shl 32) or (Int64(Regs.EAX) and $FFFFFFFF);
+ Quot64:=Dividend64 div Int64(Val);
+ Rem64:=Dividend64 mod Int64(Val);
+ If(Quot64<Int64(-2147483648))or(Quot64>Int64(2147483647))Then Begin
+  WriteLn('IDIV: debordement du quotient (32 bits)');
+  Exit;
+ End;
+ Regs.EAX:=LongInt(Quot64);
+ Regs.EDX:=LongInt(Rem64);
+End;
+
+  { TODO 10 : Mise a jour des drapeaux logiques 8 bits.
+    Les operations logiques (AND, OR, XOR, TEST) effacent CF et OF,
+    mettent a jour ZF, SF et PF, et laissent AF indefini (efface ici). }
+Procedure LogicFlags8(Res:Byte);
+Begin
+ EFlags.s:=EFlags.s-[CF,_OF,AF];
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If(Res and $80)<>0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Res)Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : Mise a jour des drapeaux logiques 32 bits. }
+Procedure LogicFlags32(Res:LongInt);
+Begin
+ EFlags.s:=EFlags.s-[CF,_OF,AF];
+ If Res=0 Then EFlags.s:=EFlags.s+[ZF]
+ Else EFlags.s:=EFlags.s-[ZF];
+ If Res<0 Then EFlags.s:=EFlags.s+[SF]
+ Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(Res))Then EFlags.s:=EFlags.s+[PF]
+ Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : AND r/m8, r8 (opcode $20). }
+Procedure OpAndRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadByte(Eff)and GetReg8(RegF);
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  R:=GetReg8(RMF)and GetReg8(RegF);
+  SetReg8(RMF,R);
+ End;
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : AND r/m32, r32 (opcode $21). }
+Procedure OpAndRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadDWord(Eff)and GetReg32(RegF);
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  R:=GetReg32(RMF)and GetReg32(RegF);
+  SetReg32(RMF,R);
+ End;
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : AND r8, r/m8 (opcode $22). }
+Procedure OpAndR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=GetReg8(RegF)and B;
+ SetReg8(RegF,R);
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : AND r32, r/m32 (opcode $23). }
+Procedure OpAndR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=GetReg32(RegF)and B;
+ SetReg32(RegF,R);
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : AND AL, imm8 (opcode $24). }
+Procedure OpAndALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=Regs.AL and Imm;
+ LogicFlags8(Regs.AL);
+End;
+
+  { TODO 10 : AND EAX, imm32 (opcode $25). }
+Procedure OpAndEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=Regs.EAX and Imm;
+ LogicFlags32(Regs.EAX);
+End;
+
+  { TODO 10 : OR r/m8, r8 (opcode $08). }
+Procedure OpOrRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadByte(Eff)or GetReg8(RegF);
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  R:=GetReg8(RMF)or GetReg8(RegF);
+  SetReg8(RMF,R);
+ End;
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : OR r/m32, r32 (opcode $09). }
+Procedure OpOrRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadDWord(Eff)or GetReg32(RegF);
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  R:=GetReg32(RMF)or GetReg32(RegF);
+  SetReg32(RMF,R);
+ End;
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : OR r8, r/m8 (opcode $0A). }
+Procedure OpOrR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=GetReg8(RegF)or B;
+ SetReg8(RegF,R);
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : OR r32, r/m32 (opcode $0B). }
+Procedure OpOrR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=GetReg32(RegF)or B;
+ SetReg32(RegF,R);
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : OR AL, imm8 (opcode $0C). }
+Procedure OpOrALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=Regs.AL or Imm;
+ LogicFlags8(Regs.AL);
+End;
+
+  { TODO 10 : OR EAX, imm32 (opcode $0D). }
+Procedure OpOrEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=Regs.EAX or Imm;
+ LogicFlags32(Regs.EAX);
+End;
+
+  { TODO 10 : XOR r/m8, r8 (opcode $30). }
+Procedure OpXorRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadByte(Eff)xor GetReg8(RegF);
+  WriteByte(Eff,R);
+ End
+ Else Begin
+  R:=GetReg8(RMF)xor GetReg8(RegF);
+  SetReg8(RMF,R);
+ End;
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : XOR r/m32, r32 (opcode $31). }
+Procedure OpXorRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Begin
+  R:=ReadDWord(Eff)xor GetReg32(RegF);
+  WriteDWord(Eff,R);
+ End
+ Else Begin
+  R:=GetReg32(RMF)xor GetReg32(RegF);
+  SetReg32(RMF,R);
+ End;
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : XOR r8, r/m8 (opcode $32). }
+Procedure OpXorR8RM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadByte(Eff)
+ Else B:=GetReg8(RMF);
+ R:=GetReg8(RegF)xor B;
+ SetReg8(RegF,R);
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : XOR r32, r/m32 (opcode $33). }
+Procedure OpXorR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ B,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then B:=ReadDWord(Eff)
+ Else B:=GetReg32(RMF);
+ R:=GetReg32(RegF)xor B;
+ SetReg32(RegF,R);
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : XOR AL, imm8 (opcode $34). }
+Procedure OpXorALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ Regs.AL:=Regs.AL xor Imm;
+ LogicFlags8(Regs.AL);
+End;
+
+  { TODO 10 : XOR EAX, imm32 (opcode $35). }
+Procedure OpXorEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Regs.EAX:=Regs.EAX xor Imm;
+ LogicFlags32(Regs.EAX);
+End;
+
+  { TODO 10 : NOT r/m8 (opcode $F6, reg=2). }
+Procedure OpNotRM8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then WriteByte(Eff,not ReadByte(Eff))
+ Else SetReg8(RMF,not GetReg8(RMF));
+End;
+
+  { TODO 10 : NOT r/m32 (opcode $F7, reg=2). }
+Procedure OpNotRM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then WriteDWord(Eff,not ReadDWord(Eff))
+ Else SetReg32(RMF,not GetReg32(RMF));
+End;
+
+  { TODO 10 : TEST r/m8, r8 (opcode $84).
+    Effectue un AND logique sans stocker le resultat. }
+Procedure OpTestRM8R8;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then R:=ReadByte(Eff)and GetReg8(RegF)
+ Else R:=GetReg8(RMF)and GetReg8(RegF);
+ LogicFlags8(R);
+End;
+
+  { TODO 10 : TEST r/m32, r32 (opcode $85). }
+Procedure OpTestRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then R:=ReadDWord(Eff)and GetReg32(RegF)
+ Else R:=GetReg32(RMF)and GetReg32(RegF);
+ LogicFlags32(R);
+End;
+
+  { TODO 10 : TEST AL, imm8 (opcode $A8). }
+Procedure OpTestALImm8;
+Var
+ Imm:Byte;
+Begin
+ Imm:=ReadByte(EIP);
+ Inc(EIP);
+ LogicFlags8(Regs.AL and Imm);
+End;
+
+  { TODO 10 : TEST EAX, imm32 (opcode $A9). }
+Procedure OpTestEAXImm32;
+Var
+ Imm:LongInt;
+Begin
+ Imm:=ReadDWord(EIP);
+ Inc(EIP,4);
+ LogicFlags32(Regs.EAX and Imm);
+End;
+
+  { TODO 10 : SHL r/m8, 1 (opcode $D0, reg=4).
+    Decalage logique a gauche de 1 bit sur operande 8 bits.
+    CF recoit le bit le plus significatif evince. }
+Procedure OpShlRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If(Val and $80)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl 1;
+ If((Val xor R)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHL r/m32, 1 (opcode $D1, reg=4). }
+Procedure OpShlRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val<0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl 1;
+ If((Val xor R))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHL r/m8, CL (opcode $D2, reg=4). }
+Procedure OpShlRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ If Cnt<=8 Then Begin
+  If(Val and(1 shl(8-Cnt)))<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+ End
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl Cnt;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHL r/m32, CL (opcode $D3, reg=4). }
+Procedure OpShlRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ If(Val and(LongInt(1)shl(32-Cnt)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl Cnt;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHL r/m8, imm8 (opcode $C0, reg=4). }
+Procedure OpShlRM8Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If Cnt=0 Then Exit;
+ If Cnt<=8 Then Begin
+  If(Val and(1 shl(8-Cnt)))<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+ End
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl Cnt;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHL r/m32, imm8 (opcode $C1, reg=4). }
+Procedure OpShlRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Cnt=0 Then Exit;
+ If(Val and(LongInt(1)shl(32-Cnt)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shl Cnt;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m8, 1 (opcode $D0, reg=5).
+    Decalage logique a droite de 1 bit sur operande 8 bits.
+    CF recoit le bit le moins significatif evince. }
+Procedure OpShrRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shr 1;
+ If(Val and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m32, 1 (opcode $D1, reg=5). }
+Procedure OpShrRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=LongInt((Int64(Val)and $FFFFFFFF)shr 1);
+ If Val<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m8, CL (opcode $D2, reg=5). }
+Procedure OpShrRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ If(Val and(1 shl(Cnt-1)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shr Cnt;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m32, CL (opcode $D3, reg=5). }
+Procedure OpShrRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ Cnt:Byte;
+ R64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ If(Val and(LongInt(1)shl(Cnt-1)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R64:=(Int64(Val)and $FFFFFFFF)shr Cnt;
+ Val:=LongInt(R64);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+ If Val=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If Val<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(Val))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m8, imm8 (opcode $C0, reg=5). }
+Procedure OpShrRM8Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If Cnt=0 Then Exit;
+ If(Val and(1 shl(Cnt-1)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=Val shr Cnt;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SHR r/m32, imm8 (opcode $C1, reg=5). }
+Procedure OpShrRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ Cnt:Byte;
+ R64:Int64;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Cnt=0 Then Exit;
+ If(Val and(LongInt(1)shl(Cnt-1)))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R64:=(Int64(Val)and $FFFFFFFF)shr Cnt;
+ Val:=LongInt(R64);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+ If Val=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If Val<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(Val))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m8, 1 (opcode $D0, reg=7).
+    Decalage arithmetique a droite de 1 bit, preserve le signe. }
+Procedure OpSarRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+ R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ShortInt(ReadByte(Eff))
+ Else Val:=ShortInt(GetReg8(RMF));
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ EFlags.s:=EFlags.s-[_OF];
+ Val:=Val div 2;
+ R:=Byte(Val);
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m32, 1 (opcode $D1, reg=7). }
+Procedure OpSarRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ EFlags.s:=EFlags.s-[_OF];
+ If(Val<0)and((Val and 1)<>0)Then R:=(Val div 2)-1
+ Else R:=Val div 2;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m8, CL (opcode $D2, reg=7). }
+Procedure OpSarRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+ R:Byte;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ShortInt(ReadByte(Eff))
+ Else Val:=ShortInt(GetReg8(RMF));
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ For I:=1 to Cnt do Begin
+  If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  If(Val<0)and((Val and 1)<>0)Then Val:=(Val div 2)-1
+  Else Val:=Val div 2;
+ End;
+ R:=Byte(Val);
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m32, CL (opcode $D3, reg=7). }
+Procedure OpSarRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ For I:=1 to Cnt do Begin
+  If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  If(Val<0)and((Val and 1)<>0)Then Val:=(Val div 2)-1
+  Else Val:=Val div 2;
+ End;
+ R:=Val;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m8, imm8 (opcode $C0, reg=7). }
+Procedure OpSarRM8Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:ShortInt;
+ R:Byte;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ShortInt(ReadByte(Eff))
+ Else Val:=ShortInt(GetReg8(RMF));
+ If Cnt=0 Then Exit;
+ For I:=1 to Cnt do Begin
+  If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  If(Val<0)and((Val and 1)<>0)Then Val:=(Val div 2)-1
+  Else Val:=Val div 2;
+ End;
+ R:=Byte(Val);
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If(R and $80)<>0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(R)Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : SAR r/m32, imm8 (opcode $C1, reg=7). }
+Procedure OpSarRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ Cnt:=ReadByte(EIP)and $1F;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Cnt=0 Then Exit;
+ For I:=1 to Cnt do Begin
+  If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  If(Val<0)and((Val and 1)<>0)Then Val:=(Val div 2)-1
+  Else Val:=Val div 2;
+ End;
+ R:=Val;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+ If R=0 Then EFlags.s:=EFlags.s+[ZF]Else EFlags.s:=EFlags.s-[ZF];
+ If R<0 Then EFlags.s:=EFlags.s+[SF]Else EFlags.s:=EFlags.s-[SF];
+ If Parity8(Byte(R))Then EFlags.s:=EFlags.s+[PF]Else EFlags.s:=EFlags.s-[PF];
+End;
+
+  { TODO 10 : ROL r/m8, 1 (opcode $D0, reg=0).
+    Rotation a gauche de 1 bit. Le bit MSB est deplace dans CF et
+    dans le bit LSB. }
+Procedure OpRolRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ R:=(Val shl 1)or(Val shr 7);
+ If(Val and $80)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If((Val xor R)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : ROL r/m32, 1 (opcode $D1, reg=0). }
+Procedure OpRolRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Bit31:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val<0 Then Bit31:=1 Else Bit31:=0;
+ R:=(Val shl 1)or LongInt(Bit31);
+ If Bit31<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If((Val xor R))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : ROL r/m8, CL (opcode $D2, reg=0). }
+Procedure OpRolRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If(R and $80)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shl 1)or(R shr 7);
+ End;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : ROL r/m32, CL (opcode $D3, reg=0). }
+Procedure OpRolRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+ Bit31:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If R<0 Then Bit31:=1 Else Bit31:=0;
+  If Bit31<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shl 1)or LongInt(Bit31);
+ End;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : ROR r/m8, 1 (opcode $D0, reg=1).
+    Rotation a droite de 1 bit. }
+Procedure OpRorRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ R:=(Val shr 1)or(Val shl 7);
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ If((R xor(R shl 1))and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : ROR r/m32, 1 (opcode $D1, reg=1). }
+Procedure OpRorRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and 1)<>0 Then Begin
+  R:=LongInt((Int64(Val)and $FFFFFFFF)shr 1)or LongInt($80000000);
+  EFlags.s:=EFlags.s+[CF];
+ End
+ Else Begin
+  R:=LongInt((Int64(Val)and $FFFFFFFF)shr 1);
+  EFlags.s:=EFlags.s-[CF];
+ End;
+ If((R xor(R shl 1)))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : ROR r/m8, CL (opcode $D2, reg=1). }
+Procedure OpRorRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If(R and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shr 1)or(R shl 7);
+ End;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : ROR r/m32, CL (opcode $D3, reg=1). }
+Procedure OpRorRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If(R and 1)<>0 Then Begin
+   EFlags.s:=EFlags.s+[CF];
+   R:=LongInt((Int64(R)and $FFFFFFFF)shr 1)or LongInt($80000000);
+  End
+  Else Begin
+   EFlags.s:=EFlags.s-[CF];
+   R:=LongInt((Int64(R)and $FFFFFFFF)shr 1);
+  End;
+ End;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : RCL r/m8, 1 (opcode $D0, reg=2).
+    Rotation a gauche a travers CF. Le bit MSB va dans CF,
+    l'ancien CF va dans le bit LSB. }
+Procedure OpRclRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ OldCF:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If CF in EFlags.s Then OldCF:=1 Else OldCF:=0;
+ If(Val and $80)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=(Val shl 1)or OldCF;
+ If((Val xor R)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : RCL r/m32, 1 (opcode $D1, reg=2). }
+Procedure OpRclRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ OldCF:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If CF in EFlags.s Then OldCF:=1 Else OldCF:=0;
+ If Val<0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=(Val shl 1)or OldCF;
+ If((Val xor R))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : RCL r/m8, CL (opcode $D2, reg=2). }
+Procedure OpRclRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt,I,OldCF:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If CF in EFlags.s Then OldCF:=1 Else OldCF:=0;
+  If(R and $80)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shl 1)or OldCF;
+ End;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : RCL r/m32, CL (opcode $D3, reg=2). }
+Procedure OpRclRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+ OldCF:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If CF in EFlags.s Then OldCF:=1 Else OldCF:=0;
+  If R<0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shl 1)or OldCF;
+ End;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : RCR r/m8, 1 (opcode $D0, reg=3).
+    Rotation a droite a travers CF. Le bit LSB va dans CF,
+    l'ancien CF va dans le bit MSB. }
+Procedure OpRcrRM8By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ OldCF:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ If CF in EFlags.s Then OldCF:=$80 Else OldCF:=0;
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=(Val shr 1)or OldCF;
+ If((Val xor R)and $80)<>0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : RCR r/m32, 1 (opcode $D1, reg=3). }
+Procedure OpRcrRM32By1;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ OldCFBit:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If CF in EFlags.s Then OldCFBit:=LongInt($80000000)Else OldCFBit:=0;
+ If(Val and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ R:=LongInt((Int64(Val)and $FFFFFFFF)shr 1)or OldCFBit;
+ If((Val xor R))<0 Then EFlags.s:=EFlags.s+[_OF]
+ Else EFlags.s:=EFlags.s-[_OF];
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : RCR r/m8, CL (opcode $D2, reg=3). }
+Procedure OpRcrRM8ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:Byte;
+ Cnt,I,OldCF:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadByte(Eff)
+ Else Val:=GetReg8(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If CF in EFlags.s Then OldCF:=$80 Else OldCF:=0;
+  If(R and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=(R shr 1)or OldCF;
+ End;
+ If IsMem Then WriteByte(Eff,R)
+ Else SetReg8(RMF,R);
+End;
+
+  { TODO 10 : RCR r/m32, CL (opcode $D3, reg=3). }
+Procedure OpRcrRM32ByCL;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val,R:LongInt;
+ Cnt,I:Byte;
+ OldCFBit:LongInt;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ Cnt:=Regs.CL and $1F;
+ If Cnt=0 Then Exit;
+ R:=Val;
+ For I:=1 to Cnt do Begin
+  If CF in EFlags.s Then OldCFBit:=LongInt($80000000)Else OldCFBit:=0;
+  If(R and 1)<>0 Then EFlags.s:=EFlags.s+[CF]
+  Else EFlags.s:=EFlags.s-[CF];
+  R:=LongInt((Int64(R)and $FFFFFFFF)shr 1)or OldCFBit;
+ End;
+ If IsMem Then WriteDWord(Eff,R)
+ Else SetReg32(RMF,R);
+End;
+
+  { TODO 10 : BT r/m32, r32 (opcode 0F A3).
+    Teste le bit specifie par r32 dans r/m32 et copie dans CF. }
+Procedure OpBtRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=GetReg32(RegF)and 31;
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 10 : BTS r/m32, r32 (opcode 0F AB).
+    Teste et positionne le bit. CF recoit l'ancienne valeur. }
+Procedure OpBtsRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=GetReg32(RegF)and 31;
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val or(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BTR r/m32, r32 (opcode 0F B3).
+    Teste et efface le bit. CF recoit l'ancienne valeur. }
+Procedure OpBtrRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=GetReg32(RegF)and 31;
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val and not(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BTC r/m32, r32 (opcode 0F BB).
+    Teste et inverse le bit. CF recoit l'ancienne valeur. }
+Procedure OpBtcRM32R32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=GetReg32(RegF)and 31;
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val xor(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BT r/m32, imm8 (opcode 0F BA, reg=4). }
+Procedure OpBtRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=ReadByte(EIP)and 31;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 10 : BTS r/m32, imm8 (opcode 0F BA, reg=5). }
+Procedure OpBtsRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=ReadByte(EIP)and 31;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val or(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BTR r/m32, imm8 (opcode 0F BA, reg=6). }
+Procedure OpBtrRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=ReadByte(EIP)and 31;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val and not(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BTC r/m32, imm8 (opcode 0F BA, reg=7). }
+Procedure OpBtcRM32Imm;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ BitIdx:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ BitIdx:=ReadByte(EIP)and 31;
+ Inc(EIP);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If(Val and(LongInt(1)shl BitIdx))<>0 Then EFlags.s:=EFlags.s+[CF]
+ Else EFlags.s:=EFlags.s-[CF];
+ Val:=Val xor(LongInt(1)shl BitIdx);
+ If IsMem Then WriteDWord(Eff,Val)
+ Else SetReg32(RMF,Val);
+End;
+
+  { TODO 10 : BSF r32, r/m32 (opcode 0F BC).
+    Recherche du premier bit a 1 en partant du bit 0 (LSB).
+    Si l'operande source est 0, ZF=1 et la destination est indefinie.
+    Sinon ZF=0 et la destination contient l'index du bit. }
+Procedure OpBsfR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ I:Byte;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val=0 Then
+  EFlags.s:=EFlags.s+[ZF]
+ Else Begin
+  EFlags.s:=EFlags.s-[ZF];
+  For I:=0 to 31 do
+   If(Val and(LongInt(1)shl I))<>0 Then Begin
+    SetReg32(RegF,I);
+    Exit;
+   End;
+ End;
+End;
+
+  { TODO 10 : BSR r32, r/m32 (opcode 0F BD).
+    Recherche du premier bit a 1 en partant du bit 31 (MSB).
+    Si l'operande source est 0, ZF=1 et la destination est indefinie.
+    Sinon ZF=0 et la destination contient l'index du bit. }
+Procedure OpBsrR32RM32;
+Var
+ ModF,RegF,RMF:Byte;
+ Eff:LongInt;
+ IsMem:Boolean;
+ Val:LongInt;
+ I:Integer;
+Begin
+ DecodeModRM(ModF,RegF,RMF,Eff,IsMem);
+ If IsMem Then Val:=ReadDWord(Eff)
+ Else Val:=GetReg32(RMF);
+ If Val=0 Then
+  EFlags.s:=EFlags.s+[ZF]
+ Else Begin
+  EFlags.s:=EFlags.s-[ZF];
+  For I:=31 downto 0 do
+   If(Val and(LongInt(1)shl I))<>0 Then Begin
+    SetReg32(RegF,I);
+    Exit;
+   End;
+ End;
+End;
+
+  { TODO 11 : MOVSB (opcode A4).
+    Copie un octet de [ESI] vers [EDI] et ajuste ESI/EDI selon DF. }
+Procedure OpMovsB;
+Begin
+ WriteByte(Regs.EDI,ReadByte(Regs.ESI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI);
+  Dec(Regs.EDI);
+ End Else Begin
+  Inc(Regs.ESI);
+  Inc(Regs.EDI);
+ End;
+End;
+
+  { TODO 11 : MOVSW (opcode 66 A5).
+    Copie un mot de [ESI] vers [EDI] et ajuste ESI/EDI selon DF. }
+Procedure OpMovsW;
+Begin
+ WriteWord(Regs.EDI,ReadWord(Regs.ESI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI,2);
+  Dec(Regs.EDI,2);
+ End Else Begin
+  Inc(Regs.ESI,2);
+  Inc(Regs.EDI,2);
+ End;
+End;
+
+  { TODO 11 : MOVSD (opcode A5).
+    Copie un double mot de [ESI] vers [EDI] et ajuste ESI/EDI selon DF. }
+Procedure OpMovsD;
+Begin
+ WriteDWord(Regs.EDI,ReadDWord(Regs.ESI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI,4);
+  Dec(Regs.EDI,4);
+ End Else Begin
+  Inc(Regs.ESI,4);
+  Inc(Regs.EDI,4);
+ End;
+End;
+
+  { TODO 11 : STOSB (opcode AA).
+    Ecrit AL dans [EDI] et ajuste EDI selon DF. }
+Procedure OpStosB;
+Begin
+ WriteByte(Regs.EDI,Regs.AL);
+ If DF in EFlags.s Then Dec(Regs.EDI)
+ Else Inc(Regs.EDI);
+End;
+
+  { TODO 11 : STOSW (opcode 66 AB).
+    Ecrit AX dans [EDI] et ajuste EDI selon DF. }
+Procedure OpStosW;
+Begin
+ WriteWord(Regs.EDI,Regs.AX);
+ If DF in EFlags.s Then Dec(Regs.EDI,2)
+ Else Inc(Regs.EDI,2);
+End;
+
+  { TODO 11 : STOSD (opcode AB).
+    Ecrit EAX dans [EDI] et ajuste EDI selon DF. }
+Procedure OpStosD;
+Begin
+ WriteDWord(Regs.EDI,Regs.EAX);
+ If DF in EFlags.s Then Dec(Regs.EDI,4)
+ Else Inc(Regs.EDI,4);
+End;
+
+  { TODO 11 : LODSB (opcode AC).
+    Charge un octet de [ESI] dans AL et ajuste ESI selon DF. }
+Procedure OpLodsB;
+Begin
+ Regs.AL:=ReadByte(Regs.ESI);
+ If DF in EFlags.s Then Dec(Regs.ESI)
+ Else Inc(Regs.ESI);
+End;
+
+  { TODO 11 : LODSW (opcode 66 AD).
+    Charge un mot de [ESI] dans AX et ajuste ESI selon DF. }
+Procedure OpLodsW;
+Begin
+ Regs.AX:=ReadWord(Regs.ESI);
+ If DF in EFlags.s Then Dec(Regs.ESI,2)
+ Else Inc(Regs.ESI,2);
+End;
+
+  { TODO 11 : LODSD (opcode AD).
+    Charge un double mot de [ESI] dans EAX et ajuste ESI selon DF. }
+Procedure OpLodsD;
+Begin
+ Regs.EAX:=ReadDWord(Regs.ESI);
+ If DF in EFlags.s Then Dec(Regs.ESI,4)
+ Else Inc(Regs.ESI,4);
+End;
+
+  { TODO 11 : CMPSB (opcode A6).
+    Compare l'octet [ESI] avec [EDI] (soustraction sans stocker le
+    resultat), met a jour les drapeaux et ajuste ESI/EDI selon DF. }
+Procedure OpCmpsB;
+Begin
+ ArithSub8(ReadByte(Regs.ESI),ReadByte(Regs.EDI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI);
+  Dec(Regs.EDI);
+ End Else Begin
+  Inc(Regs.ESI);
+  Inc(Regs.EDI);
+ End;
+End;
+
+  { TODO 11 : CMPSW (opcode 66 A7).
+    Compare le mot [ESI] avec [EDI], met a jour les drapeaux
+    et ajuste ESI/EDI selon DF. }
+Procedure OpCmpsW;
+Begin
+ ArithSub16(ReadWord(Regs.ESI),ReadWord(Regs.EDI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI,2);
+  Dec(Regs.EDI,2);
+ End Else Begin
+  Inc(Regs.ESI,2);
+  Inc(Regs.EDI,2);
+ End;
+End;
+
+  { TODO 11 : CMPSD (opcode A7).
+    Compare le double mot [ESI] avec [EDI], met a jour les drapeaux
+    et ajuste ESI/EDI selon DF. }
+Procedure OpCmpsD;
+Begin
+ ArithSub32(ReadDWord(Regs.ESI),ReadDWord(Regs.EDI));
+ If DF in EFlags.s Then Begin
+  Dec(Regs.ESI,4);
+  Dec(Regs.EDI,4);
+ End Else Begin
+  Inc(Regs.ESI,4);
+  Inc(Regs.EDI,4);
+ End;
+End;
+
+  { TODO 11 : SCASB (opcode AE).
+    Compare AL avec l'octet [EDI] (soustraction AL - [EDI] sans
+    stocker le resultat), met a jour les drapeaux et ajuste EDI. }
+Procedure OpScasB;
+Begin
+ ArithSub8(Regs.AL,ReadByte(Regs.EDI));
+ If DF in EFlags.s Then Dec(Regs.EDI)
+ Else Inc(Regs.EDI);
+End;
+
+  { TODO 11 : SCASW (opcode 66 AF).
+    Compare AX avec le mot [EDI], met a jour les drapeaux
+    et ajuste EDI. }
+Procedure OpScasW;
+Begin
+ ArithSub16(Regs.AX,ReadWord(Regs.EDI));
+ If DF in EFlags.s Then Dec(Regs.EDI,2)
+ Else Inc(Regs.EDI,2);
+End;
+
+  { TODO 11 : SCASD (opcode AF).
+    Compare EAX avec le double mot [EDI], met a jour les drapeaux
+    et ajuste EDI. }
+Procedure OpScasD;
+Begin
+ ArithSub32(Regs.EAX,ReadDWord(Regs.EDI));
+ If DF in EFlags.s Then Dec(Regs.EDI,4)
+ Else Inc(Regs.EDI,4);
+End;
+
+  { TODO 11 : REP MOVSB (prefixe F3, opcode A4).
+    Copie ECX octets de [ESI] vers [EDI]. }
+Procedure OpRepMovsB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpMovsB;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP MOVSW (prefixe F3, opcode 66 A5).
+    Copie ECX mots de [ESI] vers [EDI]. }
+Procedure OpRepMovsW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpMovsW;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP MOVSD (prefixe F3, opcode A5).
+    Copie ECX doubles mots de [ESI] vers [EDI]. }
+Procedure OpRepMovsD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpMovsD;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP STOSB (prefixe F3, opcode AA).
+    Remplit ECX octets a [EDI] avec AL. }
+Procedure OpRepStosB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpStosB;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP STOSW (prefixe F3, opcode 66 AB).
+    Remplit ECX mots a [EDI] avec AX. }
+Procedure OpRepStosW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpStosW;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP STOSD (prefixe F3, opcode AB).
+    Remplit ECX doubles mots a [EDI] avec EAX. }
+Procedure OpRepStosD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpStosD;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP LODSB (prefixe F3, opcode AC).
+    Charge ECX octets successifs de [ESI] dans AL. }
+Procedure OpRepLodsB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpLodsB;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP LODSW (prefixe F3, opcode 66 AD).
+    Charge ECX mots successifs de [ESI] dans AX. }
+Procedure OpRepLodsW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpLodsW;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REP LODSD (prefixe F3, opcode AD).
+    Charge ECX doubles mots successifs de [ESI] dans EAX. }
+Procedure OpRepLodsD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpLodsD;
+  Dec(Regs.ECX);
+ End;
+End;
+
+  { TODO 11 : REPE CMPSB (prefixe F3, opcode A6).
+    Compare les octets [ESI] et [EDI] tant que ECX<>0 et ZF=1.
+    Decremente ECX apres chaque comparaison. }
+Procedure OpRepeCmpsB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsB;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPE CMPSW (prefixe F3, opcode 66 A7).
+    Compare les mots [ESI] et [EDI] tant que ECX<>0 et ZF=1. }
+Procedure OpRepeCmpsW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsW;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPE CMPSD (prefixe F3, opcode A7).
+    Compare les doubles mots [ESI] et [EDI] tant que ECX<>0 et ZF=1. }
+Procedure OpRepeCmpsD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsD;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE CMPSB (prefixe F2, opcode A6).
+    Compare les octets [ESI] et [EDI] tant que ECX<>0 et ZF=0.
+    Decremente ECX apres chaque comparaison. }
+Procedure OpRepneCmpsB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsB;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE CMPSW (prefixe F2, opcode 66 A7).
+    Compare les mots [ESI] et [EDI] tant que ECX<>0 et ZF=0. }
+Procedure OpRepneCmpsW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsW;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE CMPSD (prefixe F2, opcode A7).
+    Compare les doubles mots [ESI] et [EDI] tant que ECX<>0 et ZF=0. }
+Procedure OpRepneCmpsD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpCmpsD;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPE SCASB (prefixe F3, opcode AE).
+    Compare AL avec [EDI] tant que ECX<>0 et ZF=1.
+    Decremente ECX apres chaque comparaison. }
+Procedure OpRepeScasB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasB;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPE SCASW (prefixe F3, opcode 66 AF).
+    Compare AX avec [EDI] tant que ECX<>0 et ZF=1. }
+Procedure OpRepeScasW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasW;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPE SCASD (prefixe F3, opcode AF).
+    Compare EAX avec [EDI] tant que ECX<>0 et ZF=1. }
+Procedure OpRepeScasD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasD;
+  Dec(Regs.ECX);
+  If Not(ZF in EFlags.s)Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE SCASB (prefixe F2, opcode AE).
+    Compare AL avec [EDI] tant que ECX<>0 et ZF=0.
+    Decremente ECX apres chaque comparaison. }
+Procedure OpRepneScasB;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasB;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE SCASW (prefixe F2, opcode 66 AF).
+    Compare AX avec [EDI] tant que ECX<>0 et ZF=0. }
+Procedure OpRepneScasW;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasW;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 11 : REPNE SCASD (prefixe F2, opcode AF).
+    Compare EAX avec [EDI] tant que ECX<>0 et ZF=0. }
+Procedure OpRepneScasD;
+Begin
+ While Regs.ECX<>0 do Begin
+  OpScasD;
+  Dec(Regs.ECX);
+  If ZF in EFlags.s Then Exit;
+ End;
+End;
+
+  { TODO 12 : Evaluation d'une condition x86 (cc = 0..15).
+    Retourne True si la condition est satisfaite selon EFLAGS.
+    Les 16 conditions correspondent aux opcodes Jcc ($70+cc)
+    et aux opcodes etendus 0F Jcc ($0F $80+cc) :
+      0=O, 1=NO, 2=B/C, 3=NB/NC, 4=Z/E, 5=NZ/NE,
+      6=BE/NA, 7=NBE/A, 8=S, 9=NS, 10=P/PE, 11=NP/PO,
+      12=L/NGE, 13=NL/GE, 14=LE/NG, 15=NLE/G }
+Function CheckCondition(cc:Byte):Boolean;
+Var
+ SFVal,OFVal:Boolean;
+Begin
+ SFVal:=SF in EFlags.s;
+ OFVal:=_OF in EFlags.s;
+ Case cc of
+  0:CheckCondition:=_OF in EFlags.s;                                { JO }
+  1:CheckCondition:=Not(_OF in EFlags.s);                           { JNO }
+  2:CheckCondition:=CF in EFlags.s;                                 { JB/JC/JNAE }
+  3:CheckCondition:=Not(CF in EFlags.s);                            { JNB/JNC/JAE }
+  4:CheckCondition:=ZF in EFlags.s;                                 { JZ/JE }
+  5:CheckCondition:=Not(ZF in EFlags.s);                            { JNZ/JNE }
+  6:CheckCondition:=(CF in EFlags.s)or(ZF in EFlags.s);             { JBE/JNA }
+  7:CheckCondition:=Not(CF in EFlags.s)and Not(ZF in EFlags.s);     { JNBE/JA }
+  8:CheckCondition:=SF in EFlags.s;                                 { JS }
+  9:CheckCondition:=Not(SF in EFlags.s);                            { JNS }
+  10:CheckCondition:=PF in EFlags.s;                                { JP/JPE }
+  11:CheckCondition:=Not(PF in EFlags.s);                           { JNP/JPO }
+  12:CheckCondition:=SFVal<>OFVal;                                  { JL/JNGE }
+  13:CheckCondition:=SFVal=OFVal;                                   { JNL/JGE }
+  14:CheckCondition:=(ZF in EFlags.s)or(SFVal<>OFVal);              { JLE/JNG }
+  15:CheckCondition:=Not(ZF in EFlags.s)and(SFVal=OFVal);           { JNLE/JG }
+  Else CheckCondition:=False;
+ End;
+End;
+
+  { TODO 12 : Jcc short rel8 (opcodes $70-$7F).
+    Saut conditionnel avec deplacement relatif signe de 8 bits.
+    Le deplacement est relatif a l'adresse apres l'instruction
+    (EIP pointe deja apres l'opcode quand cette procedure est appelee,
+    on lit le rel8 et on avance EIP de 1, puis on ajoute le
+    deplacement si la condition est satisfaite). }
+Procedure OpJccShort(cc:Byte);
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ If CheckCondition(cc)Then
+  EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 12 : Jcc near rel32 (opcodes $0F $80-$8F).
+    Saut conditionnel avec deplacement relatif signe de 32 bits.
+    Le deplacement est relatif a l'adresse apres l'instruction
+    (apres les 2 octets d'opcode 0F xx et les 4 octets de rel32). }
+Procedure OpJccNear(cc:Byte);
+Var
+ Rel32:LongInt;
+Begin
+ Rel32:=ReadDWord(EIP);
+ Inc(EIP,4);
+ If CheckCondition(cc)Then
+  EIP:=EIP+Rel32;
+End;
+
+  { TODO 12 : JMP short rel8 (opcode $EB).
+    Saut inconditionnel avec deplacement relatif signe de 8 bits. }
+Procedure OpJmpShort;
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 12 : JMP near rel32 (opcode $E9).
+    Saut inconditionnel avec deplacement relatif signe de 32 bits. }
+Procedure OpJmpNear;
+Var
+ Rel32:LongInt;
+Begin
+ Rel32:=ReadDWord(EIP);
+ Inc(EIP,4);
+ EIP:=EIP+Rel32;
+End;
+
+  { TODO 12 : JMP r/m32 (opcode $FF /4).
+    Saut inconditionnel indirect : l'adresse cible est lue depuis
+    un registre 32 bits ou une adresse memoire. L'octet ModR/M
+    a deja ete lu par le dispatch ; le champ reg doit valoir 4.
+    Si mod=11, la cible est un registre ; sinon, elle est lue
+    depuis la memoire a l'adresse effective. }
+Procedure OpJmpRM32;
+Var
+ ModField,RegField,RMField:Byte;
+ EffAddr:LongInt;
+ IsMemory:Boolean;
+Begin
+ DecodeModRM(ModField,RegField,RMField,EffAddr,IsMemory);
+ If IsMemory Then
+  EIP:=ReadDWord(EffAddr)
+ Else
+  EIP:=GetReg32(RMField);
+End;
+
+  { TODO 12 : JMP short rel8 conditionnel - JCXZ/JECXZ (opcode $E3).
+    Saut si ECX = 0 avec deplacement relatif signe de 8 bits.
+    En mode 32 bits, c'est JECXZ. }
+Procedure OpJecxz;
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ If Regs.ECX=0 Then
+  EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 12 : LOOP rel8 (opcode $E2).
+    Decremente ECX et saute si ECX <> 0. }
+Procedure OpLoop;
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ Dec(Regs.ECX);
+ If Regs.ECX<>0 Then
+  EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 12 : LOOPE/LOOPZ rel8 (opcode $E1).
+    Decremente ECX et saute si ECX <> 0 et ZF = 1. }
+Procedure OpLoope;
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ Dec(Regs.ECX);
+ If(Regs.ECX<>0)and(ZF in EFlags.s)Then
+  EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 12 : LOOPNE/LOOPNZ rel8 (opcode $E0).
+    Decremente ECX et saute si ECX <> 0 et ZF = 0. }
+Procedure OpLoopne;
+Var
+ Rel8:ShortInt;
+Begin
+ Rel8:=ShortInt(ReadByte(EIP));
+ Inc(EIP);
+ Dec(Regs.ECX);
+ If(Regs.ECX<>0)and Not(ZF in EFlags.s)Then
+  EIP:=EIP+LongInt(Rel8);
+End;
+
+  { TODO 13 : CALL near rel32 (opcode $E8).
+    Appel de sous-programme avec deplacement relatif signe de 32 bits.
+    Empile l'adresse de retour (EIP apres lecture du rel32) sur la
+    pile, puis ajoute le deplacement a EIP. }
+Procedure OpCallNear;
+Var
+ Rel32:LongInt;
+Begin
+ Rel32:=ReadDWord(EIP);
+ Inc(EIP,4);
+ Push32(EIP);
+ EIP:=EIP+Rel32;
+End;
+
+  { TODO 13 : CALL r/m32 (opcode $FF /2).
+    Appel de sous-programme indirect : la cible est lue depuis
+    un registre 32 bits ou une adresse memoire. Empile l'adresse
+    de retour (EIP courant) sur la pile, puis charge EIP avec
+    la valeur lue. Cela inclut CALL EAX, CALL [mem], etc. }
+Procedure OpCallRM32;
+Var
+ ModField,RegField,RMField:Byte;
+ EffAddr:LongInt;
+ IsMemory:Boolean;
+ Target:LongInt;
+Begin
+ DecodeModRM(ModField,RegField,RMField,EffAddr,IsMemory);
+ If IsMemory Then
+  Target:=ReadDWord(EffAddr)
+ Else
+  Target:=GetReg32(RMField);
+ Push32(EIP);
+ EIP:=Target;
+End;
+
+  { TODO 13 : RET (opcode $C3).
+    Retour de sous-programme : depile l'adresse de retour depuis
+    la pile et la charge dans EIP. }
+Procedure OpRet;
+Begin
+ EIP:=Pop32;
+End;
+
+  { TODO 13 : RET imm16 (opcode $C2).
+    Retour de sous-programme avec nettoyage de la pile : depile
+    l'adresse de retour dans EIP, puis ajoute imm16 octets a ESP
+    pour liberer les parametres empiles par l'appelant.
+    Utilise par la convention STDCALL de Win32. }
+Procedure OpRetImm16;
+Var
+ Imm16:Word;
+Begin
+ Imm16:=ReadWord(EIP);
+ Inc(EIP,2);
+ EIP:=Pop32;
+ Regs.ESP:=Regs.ESP+LongInt(Imm16);
+End;
+
+  { TODO 14 : SETcc r/m8 (opcodes $0F $90-$9F).
+    Positionne l'octet destination a 1 si la condition cc est
+    satisfaite, a 0 sinon. Utilise CheckCondition(cc) du TODO 12.
+    Le ModR/M utilise le champ reg=0 (non significatif). }
+Procedure OpSETcc(cc:Byte);
+Var
+ ModField,RegField,RMField:Byte;
+ EffAddr:LongInt;
+ IsMemory:Boolean;
+ Val:Byte;
+Begin
+ DecodeModRM(ModField,RegField,RMField,EffAddr,IsMemory);
+ If CheckCondition(cc)Then
+  Val:=1
+ Else
+  Val:=0;
+ If IsMemory Then
+  WriteByte(EffAddr,Val)
+ Else
+  SetReg8(RMField,Val);
+End;
+
+  { TODO 14 : CMOVcc r32,r/m32 (opcodes $0F $40-$4F).
+    Deplacement conditionnel : copie la source dans le registre
+    destination 32 bits seulement si la condition cc est satisfaite.
+    Instruction du Pentium Pro (architecture P6). Le ModR/M encode
+    la destination dans le champ reg et la source dans le champ r/m. }
+Procedure OpCMOVcc(cc:Byte);
+Var
+ ModField,RegField,RMField:Byte;
+ EffAddr:LongInt;
+ IsMemory:Boolean;
+ SrcVal:LongInt;
+Begin
+ DecodeModRM(ModField,RegField,RMField,EffAddr,IsMemory);
+ If IsMemory Then
+  SrcVal:=ReadDWord(EffAddr)
+ Else
+  SrcVal:=GetReg32(RMField);
+ If CheckCondition(cc)Then
+  SetReg32(RegField,SrcVal);
+End;
+
+  { TODO 14 : CDQ (opcode $99).
+    Convert Doubleword to Quadword : etend le bit de signe de EAX
+    dans EDX. Si EAX est negatif (bit 31 = 1), EDX := $FFFFFFFF,
+    sinon EDX := $00000000. Utilise pour preparer IDIV. }
+Procedure OpCdq;
+Begin
+ If Regs.EAX<0 Then
+  Regs.EDX:=LongInt($FFFFFFFF)
+ Else
+  Regs.EDX:=0;
+End;
+
+  { TODO 14 : CBW (opcode $66 $98).
+    Convert Byte to Word : etend le bit de signe de AL dans AH.
+    Si AL >= $80 alors AH := $FF, sinon AH := $00. }
+Procedure OpCbw;
+Begin
+ If Regs.AL>=$80 Then
+  Regs.AH:=$FF
+ Else
+  Regs.AH:=$00;
+End;
+
+  { TODO 14 : CWDE (opcode $98).
+    Convert Word to Doubleword Extended : etend le bit de signe
+    de AX dans la partie haute de EAX (bits 16-31).
+    EAX := sign-extend(AX). }
+Procedure OpCwde;
+Var
+ Val16:SmallInt;
+Begin
+ Val16:=SmallInt(Regs.AX);
+ Regs.EAX:=LongInt(Val16);
+End;
+
+  { TODO 14 : CLC (opcode $F8).
+    Clear Carry Flag : met CF a 0 dans EFLAGS. }
+Procedure OpClc;
+Begin
+ EFlags.s:=EFlags.s-[CF];
+End;
+
+  { TODO 14 : STC (opcode $F9).
+    Set Carry Flag : met CF a 1 dans EFLAGS. }
+Procedure OpStc;
+Begin
+ EFlags.s:=EFlags.s+[CF];
+End;
+
+  { TODO 14 : CMC (opcode $F5).
+    Complement Carry Flag : inverse l'etat de CF dans EFLAGS. }
+Procedure OpCmc;
+Begin
+ If CF in EFlags.s Then
+  EFlags.s:=EFlags.s-[CF]
+ Else
+  EFlags.s:=EFlags.s+[CF];
+End;
+
+  { TODO 14 : CLD (opcode $FC).
+    Clear Direction Flag : met DF a 0 dans EFLAGS.
+    Les instructions de chaines incrementent ESI/EDI. }
+Procedure OpCld;
+Begin
+ EFlags.s:=EFlags.s-[DF];
+End;
+
+  { TODO 14 : STD (opcode $FD).
+    Set Direction Flag : met DF a 1 dans EFLAGS.
+    Les instructions de chaines decrementent ESI/EDI. }
+Procedure OpStd;
+Begin
+ EFlags.s:=EFlags.s+[DF];
+End;
+
+  { TODO 14 : NOP (opcode $90).
+    No Operation : ne fait rien. Correspond aussi a XCHG EAX,EAX. }
+Procedure OpNop;
+Begin
+ { Ne fait rien }
+End;
+
+  { TODO 14 : LEAVE (opcode $C9).
+    Restaure le cadre de pile : ESP := EBP, puis EBP := Pop32.
+    Equivalent a MOV ESP,EBP suivi de POP EBP.
+    Inverse de l'instruction ENTER. }
+Procedure OpLeave;
+Begin
+ Regs.ESP:=Regs.EBP;
+ Regs.EBP:=Pop32;
+End;
+
+  { TODO 14 : ENTER imm16,imm8 (opcode $C8).
+    Cree un cadre de pile : empile EBP, copie ESP dans EBP,
+    puis soustrait imm16 octets a ESP pour les variables locales.
+    Le parametre imm8 (niveau d'imbrication) est lu mais seul
+    le niveau 0 est implemente (cas usuel en Win32). }
+Procedure OpEnter;
+Var
+ Imm16:Word;
+ Level:Byte;
+Begin
+ Imm16:=ReadWord(EIP);
+ Inc(EIP,2);
+ Level:=ReadByte(EIP);
+ Inc(EIP);
+ Push32(Regs.EBP);
+ Regs.EBP:=Regs.ESP;
+ Regs.ESP:=Regs.ESP-LongInt(Imm16);
+End;
+
+  { TODO 14 : INT3 (opcode $CC).
+    Breakpoint : declenche une interruption logicielle de debogage.
+    Dans l'emulateur, on affiche un message et on arrete l'execution
+    en positionnant EIP a 0 (convention d'arret de l'emulateur). }
+Procedure OpInt3;
+Begin
+ WriteLn('INT3 breakpoint a EIP=$',HexStr(EIP-1,8));
+ EIP:=0;
+End;
+
+  { TODO 15 : Ecriture d'une chaine ASCII terminee par un zero
+    dans la memoire lineaire 32 bits a l'adresse donnee.
+    Retourne l'adresse juste apres le zero terminal. }
+Function WriteStringToMem(Addr:LongInt;Const S:String):LongInt;
+Var
+ I:Integer;
+Begin
+ For I:=1 to Length(S) do
+  WriteByte(Addr+LongInt(I-1),Byte(S[I]));
+ WriteByte(Addr+LongInt(Length(S)),0);
+ WriteStringToMem:=Addr+LongInt(Length(S))+1;
+End;
+
+  { TODO 15 : Ecriture d'une chaine Unicode (UTF-16LE) terminee par un
+    zero dans la memoire lineaire 32 bits. Chaque caractere ASCII
+    est etendu sur 2 octets (octet bas = ASCII, octet haut = 0).
+    Retourne l'adresse juste apres le zero terminal (2 octets). }
+Function WriteWideStringToMem(Addr:LongInt;Const S:String):LongInt;
+Var
+ I:Integer;
+Begin
+ For I:=1 to Length(S) do Begin
+  WriteByte(Addr+LongInt((I-1)*2),Byte(S[I]));
+  WriteByte(Addr+LongInt((I-1)*2+1),0);
+ End;
+ WriteWord(Addr+LongInt(Length(S)*2),0);
+ WriteWideStringToMem:=Addr+LongInt(Length(S)*2)+2;
+End;
+
+  { TODO 17 : Initialisation de la table des fichiers emules.
+    Marque tous les emplacements comme inactifs. }
+Procedure InitEmuFiles;
+Var
+ I:Integer;
+Begin
+ For I:=0 to MAX_EMU_FILES-1 do Begin
+  EmuFileActive[I]:=False;
+  EmuFileName[I]:='';
+ End;
+End;
+
+  { TODO 17 : Trouve un emplacement libre dans la table des fichiers.
+    Retourne l'index (0..MAX_EMU_FILES-1) ou -1 si aucun emplacement libre. }
+Function FindFreeFileSlot:Integer;
+Var
+ I:Integer;
+Begin
+ FindFreeFileSlot:=-1;
+ For I:=0 to MAX_EMU_FILES-1 do
+  If Not EmuFileActive[I] Then Begin
+   FindFreeFileSlot:=I;
+   Exit;
+  End;
+End;
+
+  { TODO 21 : Initialisation de la table des recherches FindFirst/FindNext. }
+Procedure InitEmuFind;
+Var
+ I:Integer;
+Begin
+ For I:=0 to MAX_EMU_FIND_HANDLES-1 do
+  EmuFindActive[I]:=False;
+End;
+
+  { TODO 21 : Trouve un emplacement libre dans la table des recherches.
+    Retourne l'index (0..MAX_EMU_FIND_HANDLES-1) ou -1 si aucun. }
+Function FindFreeFindSlot:Integer;
+Var
+ I:Integer;
+Begin
+ FindFreeFindSlot:=-1;
+ For I:=0 to MAX_EMU_FIND_HANDLES-1 do
+  If Not EmuFindActive[I] Then Begin
+   FindFreeFindSlot:=I;
+   Exit;
+  End;
+End;
+
+  { TODO 21 : Ecrit une structure WIN32_FIND_DATAA dans la memoire emulée
+    a partir d'un SearchRec du DOS. Remplit dwFileAttributes, nFileSizeLow,
+    cFileName. Les champs FILETIME sont mis a zero (non supportes). }
+Procedure WriteFindDataToMem(Addr:LongInt;Var SR:SearchRec);
+Var
+ I:Integer;
+ FN:String;
+Begin
+  { Remplir la structure de zeros d'abord }
+ For I:=0 to WIN32_FIND_DATAA_SIZE-1 do
+  WriteByte(Addr+LongInt(I),0);
+  { dwFileAttributes (offset 0) }
+ WriteDWord(Addr,LongInt(SR.Attr));
+  { nFileSizeHigh (offset 28) = 0 }
+  { nFileSizeLow (offset 32) }
+ WriteDWord(Addr+32,SR.Size);
+  { cFileName (offset 44, MAX_PATH=260 chars) }
+ FN:=SR.Name;
+ For I:=1 to Length(FN) do
+  WriteByte(Addr+44+LongInt(I-1),Byte(FN[I]));
+ WriteByte(Addr+44+LongInt(Length(FN)),0);
+End;
+
+  { TODO 15 : Initialisation des donnees du processus emule.
+    Ecrit la chaine de commande ASCII et Unicode, et la structure
+    STARTUPINFOA dans la zone ProcessDataBase ($D00000). }
+Procedure InitProcessData;
+Var
+ CmdLine:String;
+ NextAddr:LongInt;
+ I:Integer;
+ EnvEntry:String;
+Begin
+  { Construire la chaine de commande a partir des parametres reels }
+ CmdLine:=ParamStr(0);
+ For I:=1 to ParamCount do
+  CmdLine:=CmdLine+' '+ParamStr(I);
+ If CmdLine='' Then CmdLine:=DefaultExeName;
+  { Ecrire la chaine de commande ASCII }
+ CmdLineAddrA:=ProcessDataBase;
+ NextAddr:=WriteStringToMem(CmdLineAddrA,CmdLine);
+  { Aligner sur 4 octets }
+ If(NextAddr and 3)<>0 Then
+  NextAddr:=(NextAddr or 3)+1;
+  { Ecrire la chaine de commande Unicode (UTF-16LE) }
+ CmdLineAddrW:=NextAddr;
+ NextAddr:=WriteWideStringToMem(CmdLineAddrW,CmdLine);
+  { Aligner sur 4 octets }
+ If(NextAddr and 3)<>0 Then
+  NextAddr:=(NextAddr or 3)+1;
+  { Ecrire la structure STARTUPINFOA initialisee a zero
+    sauf le champ cb (taille de la structure, offset 0, 4 octets) }
+ StartupInfoAddr:=NextAddr;
+ For I:=0 to STARTUPINFOA_SIZE-1 do
+  WriteByte(StartupInfoAddr+LongInt(I),0);
+ WriteDWord(StartupInfoAddr,STARTUPINFOA_SIZE);
+ NextAddr:=StartupInfoAddr+STARTUPINFOA_SIZE;
+  { Aligner sur 4 octets }
+ If(NextAddr and 3)<>0 Then
+  NextAddr:=(NextAddr or 3)+1;
+  { TODO 19 : Ecrire le bloc d'environnement en memoire.
+    Chaque variable d'environnement est une chaine KEY=VALUE\0.
+    Le bloc se termine par un \0 supplementaire. }
+ EnvBlockAddr:=NextAddr;
+ For I:=1 to EnvCount do Begin
+  EnvEntry:=EnvStr(I);
+  NextAddr:=WriteStringToMem(NextAddr,EnvEntry);
+ End;
+ WriteByte(NextAddr,0);  { Double \0 terminal }
+ Inc(NextAddr);
+  { Aligner sur 4 octets }
+ If(NextAddr and 3)<>0 Then
+  NextAddr:=(NextAddr or 3)+1;
+  { TODO 19 : Ecrire le nom du fichier module en memoire. }
+ ModuleFileNameAddr:=NextAddr;
+ NextAddr:=WriteStringToMem(NextAddr,DefaultExeName);
+  { Aligner sur 4 octets }
+ If(NextAddr and 3)<>0 Then
+  NextAddr:=(NextAddr or 3)+1;
+  { Initialiser les variables d'etat du processus }
+ EmuExitCode:=0;
+ EmuRunning:=True;
+  { TODO 16 : Initialiser les modes de console par defaut }
+ EmuConsoleModeIn:=DEFAULT_CONSOLE_MODE_IN;
+ EmuConsoleModeOut:=DEFAULT_CONSOLE_MODE_OUT;
+ EmuConsoleModeErr:=DEFAULT_CONSOLE_MODE_OUT;
+  { TODO 17 : Initialiser la table des fichiers emules }
+ InitEmuFiles;
+  { TODO 20 : Initialiser le code d'erreur Win32 }
+ EmuLastError:=0;
+  { TODO 21 : Initialiser la table des recherches FindFirst/FindNext }
+ InitEmuFind;
+End;
+
+  { TODO 15 : Emulation de GetStdHandle (KERNEL32.DLL).
+    HANDLE WINAPI GetStdHandle(DWORD nStdHandle);
+    Convention STDCALL : 1 parametre (4 octets), nettoyage par l'appele.
+    Retourne un handle emule dans EAX. }
+Procedure EmuGetStdHandle;
+Var
+ nStdHandle:LongInt;
+Begin
+ nStdHandle:=ReadDWord(Regs.ESP+4);
+ Case nStdHandle of
+  STD_INPUT_HANDLE:Regs.EAX:=EMU_STDIN_HANDLE;
+  STD_OUTPUT_HANDLE:Regs.EAX:=EMU_STDOUT_HANDLE;
+  STD_ERROR_HANDLE:Regs.EAX:=EMU_STDERR_HANDLE;
+ Else
+  Regs.EAX:=LongInt(-1);  { INVALID_HANDLE_VALUE }
+ End;
+  { Nettoyer la pile (RET deja fait par l'appelant via RET dans le thunk,
+    mais en STDCALL l'appele nettoie les parametres).
+    Ici on simule le RET imm16 : depiler l'adresse de retour + 4 octets
+    de parametres. L'adresse de retour est deja depilee par le
+    mecanisme de CALL/RET, donc on nettoie seulement les parametres. }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 15 : Emulation de ExitProcess (KERNEL32.DLL).
+    VOID WINAPI ExitProcess(UINT uExitCode);
+    Convention STDCALL : 1 parametre (4 octets).
+    Arrete l'emulation avec le code de sortie donne. }
+Procedure EmuExitProcessProc;
+Var
+ uExitCode:LongInt;
+Begin
+ uExitCode:=ReadDWord(Regs.ESP+4);
+ EmuExitCode:=uExitCode;
+ EmuRunning:=False;
+ EIP:=0;
+ WriteLn('ExitProcess(',uExitCode,') appele.');
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 15 : Emulation de GetCommandLineA (KERNEL32.DLL).
+    LPSTR WINAPI GetCommandLineA(void);
+    Convention STDCALL : 0 parametres.
+    Retourne dans EAX un pointeur vers la chaine de commande ASCII. }
+Procedure EmuGetCommandLineA;
+Begin
+ Regs.EAX:=CmdLineAddrA;
+End;
+
+  { TODO 15 : Emulation de GetCommandLineW (KERNEL32.DLL).
+    LPWSTR WINAPI GetCommandLineW(void);
+    Convention STDCALL : 0 parametres.
+    Retourne dans EAX un pointeur vers la chaine de commande Unicode. }
+Procedure EmuGetCommandLineW;
+Begin
+ Regs.EAX:=CmdLineAddrW;
+End;
+
+  { TODO 15 : Emulation de GetCurrentProcessId (KERNEL32.DLL).
+    DWORD WINAPI GetCurrentProcessId(void);
+    Convention STDCALL : 0 parametres.
+    Retourne dans EAX un identifiant de processus fictif. }
+Procedure EmuGetCurrentProcessId;
+Begin
+ Regs.EAX:=EMU_PROCESS_ID;
+End;
+
+  { TODO 15 : Emulation de GetCurrentProcess (KERNEL32.DLL).
+    HANDLE WINAPI GetCurrentProcess(void);
+    Convention STDCALL : 0 parametres.
+    Retourne dans EAX le pseudo-handle du processus courant (-1). }
+Procedure EmuGetCurrentProcess;
+Begin
+ Regs.EAX:=EMU_CURRENT_PROCESS;
+End;
+
+  { TODO 15 : Emulation de GetExitCodeProcess (KERNEL32.DLL).
+    BOOL WINAPI GetExitCodeProcess(HANDLE hProcess,
+                                    LPDWORD lpExitCode);
+    Convention STDCALL : 2 parametres (8 octets).
+    Ecrit le code de sortie du processus dans *lpExitCode et
+    retourne TRUE (1) dans EAX. }
+Procedure EmuGetExitCodeProcess;
+Var
+ lpExitCode:LongInt;
+Begin
+ lpExitCode:=ReadDWord(Regs.ESP+8);
+ If lpExitCode<>0 Then
+  WriteDWord(lpExitCode,EmuExitCode);
+ Regs.EAX:=1;  { TRUE }
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 15 : Emulation de GetStartupInfoA (KERNEL32.DLL).
+    VOID WINAPI GetStartupInfoA(LPSTARTUPINFOA lpStartupInfo);
+    Convention STDCALL : 1 parametre (4 octets).
+    Copie la structure STARTUPINFOA pre-initialisee vers l'adresse
+    fournie par l'appelant. }
+Procedure EmuGetStartupInfoA;
+Var
+ lpStartupInfo:LongInt;
+ I:Integer;
+ B:Byte;
+Begin
+ lpStartupInfo:=ReadDWord(Regs.ESP+4);
+ If lpStartupInfo<>0 Then Begin
+  For I:=0 to STARTUPINFOA_SIZE-1 do Begin
+   B:=ReadByte(StartupInfoAddr+LongInt(I));
+   WriteByte(lpStartupInfo+LongInt(I),B);
+  End;
+ End;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 15 : Comparaison de chaines insensible a la casse.
+    Compare deux String Pascal en ignorant la casse des lettres.
+    Retourne True si les chaines sont identiques (insensible a la casse). }
+Function StrIComp(Const A,B:String):Boolean;
+Var
+ I:Integer;
+Begin
+ StrIComp:=False;
+ If Length(A)<>Length(B) Then Exit;
+ For I:=1 to Length(A) do
+  If UpCase(A[I])<>UpCase(B[I]) Then Exit;
+ StrIComp:=True;
+End;
+
+  { TODO 16 : Emulation de WriteConsoleA (KERNEL32.DLL).
+    BOOL WINAPI WriteConsoleA(HANDLE hConsoleOutput,
+                               const VOID *lpBuffer,
+                               DWORD nNumberOfCharsToWrite,
+                               LPDWORD lpNumberOfCharsWritten,
+                               LPVOID lpReserved);
+    Convention STDCALL : 5 parametres (20 octets).
+    Ecrit les caracteres du buffer vers la sortie standard Pascal. }
+Procedure EmuWriteConsoleA;
+Var
+ hConsole,lpBuffer,nChars,lpWritten:LongInt;
+ I:LongInt;
+ B:Byte;
+Begin
+ hConsole:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ nChars:=ReadDWord(Regs.ESP+12);
+ lpWritten:=ReadDWord(Regs.ESP+16);
+ If(hConsole=EMU_STDOUT_HANDLE)or(hConsole=EMU_STDERR_HANDLE)Then Begin
+  For I:=0 to nChars-1 do Begin
+   B:=ReadByte(lpBuffer+I);
+   Write(Chr(B));
+  End;
+  If lpWritten<>0 Then
+   WriteDWord(lpWritten,nChars);
+  Regs.EAX:=1;  { TRUE }
+ End
+ Else Begin
+  If lpWritten<>0 Then
+   WriteDWord(lpWritten,0);
+  Regs.EAX:=0;  { FALSE }
+ End;
+  { Nettoyer la pile : 5 parametres }
+ Regs.ESP:=Regs.ESP+20;
+End;
+
+  { TODO 16 : Emulation de ReadConsoleA (KERNEL32.DLL).
+    BOOL WINAPI ReadConsoleA(HANDLE hConsoleInput,
+                              LPVOID lpBuffer,
+                              DWORD nNumberOfCharsToRead,
+                              LPDWORD lpNumberOfCharsRead,
+                              LPVOID lpReserved);
+    Convention STDCALL : 5 parametres (20 octets).
+    Lit des caracteres depuis l'entree standard Pascal. }
+Procedure EmuReadConsoleA;
+Var
+ hConsole,lpBuffer,nChars,lpRead:LongInt;
+ I,Count:LongInt;
+ C:Char;
+Begin
+ hConsole:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ nChars:=ReadDWord(Regs.ESP+12);
+ lpRead:=ReadDWord(Regs.ESP+16);
+ Count:=0;
+ If hConsole=EMU_STDIN_HANDLE Then Begin
+  For I:=0 to nChars-1 do Begin
+   If Eof Then Break;
+   Read(C);
+   WriteByte(lpBuffer+I,Byte(C));
+   Inc(Count);
+   If C=#10 Then Break;
+  End;
+  If lpRead<>0 Then
+   WriteDWord(lpRead,Count);
+  Regs.EAX:=1;  { TRUE }
+ End
+ Else Begin
+  If lpRead<>0 Then
+   WriteDWord(lpRead,0);
+  Regs.EAX:=0;  { FALSE }
+ End;
+  { Nettoyer la pile : 5 parametres }
+ Regs.ESP:=Regs.ESP+20;
+End;
+
+  { TODO 16 : Emulation de WriteFile (KERNEL32.DLL).
+    BOOL WINAPI WriteFile(HANDLE hFile,
+                           LPCVOID lpBuffer,
+                           DWORD nNumberOfBytesToWrite,
+                           LPDWORD lpNumberOfBytesWritten,
+                           LPOVERLAPPED lpOverlapped);
+    Convention STDCALL : 5 parametres (20 octets).
+    Pour les handles stdout/stderr, ecrit vers la sortie Pascal.
+    TODO 17 : Supporte aussi les handles de fichiers emules. }
+Procedure EmuWriteFile;
+Var
+ hFile,lpBuffer,nBytes,lpWritten:LongInt;
+ I,Slot:LongInt;
+ B:Byte;
+ Buf:Array[0..511] of Byte;
+ BytesW:Word;
+ Remain,ChunkSize,Written:LongInt;
+Begin
+ hFile:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ nBytes:=ReadDWord(Regs.ESP+12);
+ lpWritten:=ReadDWord(Regs.ESP+16);
+ If(hFile=EMU_STDOUT_HANDLE)or(hFile=EMU_STDERR_HANDLE)Then Begin
+  For I:=0 to nBytes-1 do Begin
+   B:=ReadByte(lpBuffer+I);
+   Write(Chr(B));
+  End;
+  If lpWritten<>0 Then
+   WriteDWord(lpWritten,nBytes);
+  Regs.EAX:=1;  { TRUE }
+ End
+ Else If(hFile>=EMU_FILE_HANDLE_BASE)and
+        (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  { TODO 17 : Ecriture dans un fichier emule }
+    { TODO 24 : En mode READONLY, bloquer les ecritures fichier }
+  If ReadOnlyMode Then Begin
+   If VerboseMode Then
+    WriteLn('[READONLY] WriteFile bloque pour handle ',hFile);
+   If lpWritten<>0 Then WriteDWord(lpWritten,0);
+   Regs.EAX:=0;
+   Regs.ESP:=Regs.ESP+20;
+   Exit;
+  End;
+  Slot:=hFile-EMU_FILE_HANDLE_BASE;
+  If Not EmuFileActive[Slot] Then Begin
+   If lpWritten<>0 Then WriteDWord(lpWritten,0);
+   Regs.EAX:=0;
+  End
+  Else Begin
+   Written:=0;
+   Remain:=nBytes;
+   While Remain>0 do Begin
+    ChunkSize:=Remain;
+    If ChunkSize>512 Then ChunkSize:=512;
+    For I:=0 to ChunkSize-1 do
+     Buf[I]:=ReadByte(lpBuffer+Written+I);
+    {$I-}BlockWrite(EmuFileVar[Slot],Buf,ChunkSize,BytesW);{$I+}
+    If IOResult<>0 Then Break;
+    Written:=Written+LongInt(BytesW);
+    Remain:=Remain-LongInt(BytesW);
+    If BytesW<ChunkSize Then Break;
+   End;
+   If lpWritten<>0 Then WriteDWord(lpWritten,Written);
+   Regs.EAX:=1;
+  End;
+ End
+ Else Begin
+  If lpWritten<>0 Then
+   WriteDWord(lpWritten,0);
+  Regs.EAX:=0;  { FALSE }
+ End;
+  { Nettoyer la pile : 5 parametres }
+ Regs.ESP:=Regs.ESP+20;
+End;
+
+  { TODO 16 : Emulation de ReadFile (KERNEL32.DLL).
+    BOOL WINAPI ReadFile(HANDLE hFile,
+                          LPVOID lpBuffer,
+                          DWORD nNumberOfBytesToRead,
+                          LPDWORD lpNumberOfBytesRead,
+                          LPOVERLAPPED lpOverlapped);
+    Convention STDCALL : 5 parametres (20 octets).
+    Pour le handle stdin, lit depuis l'entree Pascal.
+    TODO 17 : Supporte aussi les handles de fichiers emules. }
+Procedure EmuReadFile;
+Var
+ hFile,lpBuffer,nBytes,lpRead:LongInt;
+ I,Count,Slot:LongInt;
+ C:Char;
+ Buf:Array[0..511] of Byte;
+ BytesR:Word;
+ Remain,ChunkSize,TotalRead:LongInt;
+Begin
+ hFile:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ nBytes:=ReadDWord(Regs.ESP+12);
+ lpRead:=ReadDWord(Regs.ESP+16);
+ Count:=0;
+ If hFile=EMU_STDIN_HANDLE Then Begin
+  For I:=0 to nBytes-1 do Begin
+   If Eof Then Break;
+   Read(C);
+   WriteByte(lpBuffer+I,Byte(C));
+   Inc(Count);
+   If C=#10 Then Break;
+  End;
+  If lpRead<>0 Then
+   WriteDWord(lpRead,Count);
+  Regs.EAX:=1;  { TRUE }
+ End
+ Else If(hFile>=EMU_FILE_HANDLE_BASE)and
+        (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  { TODO 17 : Lecture depuis un fichier emule }
+  Slot:=hFile-EMU_FILE_HANDLE_BASE;
+  If Not EmuFileActive[Slot] Then Begin
+   If lpRead<>0 Then WriteDWord(lpRead,0);
+   Regs.EAX:=0;
+  End
+  Else Begin
+   TotalRead:=0;
+   Remain:=nBytes;
+   While Remain>0 do Begin
+    ChunkSize:=Remain;
+    If ChunkSize>512 Then ChunkSize:=512;
+    {$I-}BlockRead(EmuFileVar[Slot],Buf,ChunkSize,BytesR);{$I+}
+    If IOResult<>0 Then Break;
+    For I:=0 to LongInt(BytesR)-1 do
+     WriteByte(lpBuffer+TotalRead+I,Buf[I]);
+    TotalRead:=TotalRead+LongInt(BytesR);
+    Remain:=Remain-LongInt(BytesR);
+    If BytesR<ChunkSize Then Break;
+   End;
+   If lpRead<>0 Then WriteDWord(lpRead,TotalRead);
+   Regs.EAX:=1;
+  End;
+ End
+ Else Begin
+  If lpRead<>0 Then
+   WriteDWord(lpRead,0);
+  Regs.EAX:=0;  { FALSE }
+ End;
+  { Nettoyer la pile : 5 parametres }
+ Regs.ESP:=Regs.ESP+20;
+End;
+
+  { TODO 16 : Emulation de SetConsoleMode (KERNEL32.DLL).
+    BOOL WINAPI SetConsoleMode(HANDLE hConsoleHandle, DWORD dwMode);
+    Convention STDCALL : 2 parametres (8 octets).
+    Stocke le mode de console emule pour le handle donne. }
+Procedure EmuSetConsoleMode;
+Var
+ hConsole,dwMode:LongInt;
+Begin
+ hConsole:=ReadDWord(Regs.ESP+4);
+ dwMode:=ReadDWord(Regs.ESP+8);
+ Case hConsole of
+  EMU_STDIN_HANDLE:Begin
+   EmuConsoleModeIn:=dwMode;
+   Regs.EAX:=1;
+  End;
+  EMU_STDOUT_HANDLE:Begin
+   EmuConsoleModeOut:=dwMode;
+   Regs.EAX:=1;
+  End;
+  EMU_STDERR_HANDLE:Begin
+   EmuConsoleModeErr:=dwMode;
+   Regs.EAX:=1;
+  End;
+ Else
+  Regs.EAX:=0;  { FALSE - handle invalide }
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 16 : Emulation de GetConsoleMode (KERNEL32.DLL).
+    BOOL WINAPI GetConsoleMode(HANDLE hConsoleHandle, LPDWORD lpMode);
+    Convention STDCALL : 2 parametres (8 octets).
+    Retourne le mode de console emule pour le handle donne. }
+Procedure EmuGetConsoleMode;
+Var
+ hConsole,lpMode:LongInt;
+Begin
+ hConsole:=ReadDWord(Regs.ESP+4);
+ lpMode:=ReadDWord(Regs.ESP+8);
+ Case hConsole of
+  EMU_STDIN_HANDLE:Begin
+   If lpMode<>0 Then WriteDWord(lpMode,EmuConsoleModeIn);
+   Regs.EAX:=1;
+  End;
+  EMU_STDOUT_HANDLE:Begin
+   If lpMode<>0 Then WriteDWord(lpMode,EmuConsoleModeOut);
+   Regs.EAX:=1;
+  End;
+  EMU_STDERR_HANDLE:Begin
+   If lpMode<>0 Then WriteDWord(lpMode,EmuConsoleModeErr);
+   Regs.EAX:=1;
+  End;
+ Else
+  Regs.EAX:=0;  { FALSE - handle invalide }
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 17 : Emulation de CreateFileA (KERNEL32.DLL).
+    HANDLE WINAPI CreateFileA(LPCSTR lpFileName,
+                               DWORD dwDesiredAccess,
+                               DWORD dwShareMode,
+                               LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+                               DWORD dwCreationDisposition,
+                               DWORD dwFlagsAndAttributes,
+                               HANDLE hTemplateFile);
+    Convention STDCALL : 7 parametres (28 octets).
+    Ouvre ou cree un fichier reel et retourne un handle emule. }
+Procedure EmuCreateFileA;
+Var
+ lpFileName,dwAccess,dwShare,lpSecurity:LongInt;
+ dwCreation,dwFlags,hTemplate:LongInt;
+ FName:String;
+ Slot:Integer;
+ IORes:Integer;
+Begin
+ lpFileName:=ReadDWord(Regs.ESP+4);
+ dwAccess:=ReadDWord(Regs.ESP+8);
+ dwShare:=ReadDWord(Regs.ESP+12);
+ lpSecurity:=ReadDWord(Regs.ESP+16);
+ dwCreation:=ReadDWord(Regs.ESP+20);
+ dwFlags:=ReadDWord(Regs.ESP+24);
+ hTemplate:=ReadDWord(Regs.ESP+28);
+ FName:=ReadStringFromMem(lpFileName);
+  { TODO 24 : En mode READONLY, bloquer les creations/truncations de fichiers }
+ If ReadOnlyMode and(dwCreation<>OPEN_EXISTING)Then Begin
+  If VerboseMode Then
+   WriteLn('[READONLY] CreateFileA bloque pour "',FName,'"');
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+  Regs.ESP:=Regs.ESP+28;
+  Exit;
+ End;
+ Slot:=FindFreeFileSlot;
+ If Slot<0 Then Begin
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+  Regs.ESP:=Regs.ESP+28;
+  Exit;
+ End;
+ {$I-}Assign(EmuFileVar[Slot],FName);{$I+}
+ Case dwCreation of
+  CREATE_NEW:Begin
+    { Echoue si le fichier existe deja }
+   {$I-}Reset(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+   If IORes=0 Then Begin
+    {$I-}Close(EmuFileVar[Slot]);{$I+}
+    If IOResult=0 Then;
+    Regs.EAX:=INVALID_HANDLE_VALUE;
+    Regs.ESP:=Regs.ESP+28;
+    Exit;
+   End;
+   {$I-}Rewrite(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+  End;
+  CREATE_ALWAYS:Begin
+   {$I-}Rewrite(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+  End;
+  OPEN_EXISTING:Begin
+   {$I-}Reset(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+  End;
+  OPEN_ALWAYS:Begin
+   {$I-}Reset(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+   If IORes<>0 Then Begin
+    {$I-}Rewrite(EmuFileVar[Slot],1);{$I+}
+    IORes:=IOResult;
+   End;
+  End;
+  TRUNCATE_EXISTING:Begin
+   {$I-}Reset(EmuFileVar[Slot],1);{$I+}
+   IORes:=IOResult;
+   If IORes=0 Then Begin
+    {$I-}Truncate(EmuFileVar[Slot]);{$I+}
+    IORes:=IOResult;
+   End;
+  End;
+ Else
+  IORes:=1;
+ End;
+ If IORes<>0 Then Begin
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+ End
+ Else Begin
+  EmuFileActive[Slot]:=True;
+  EmuFileName[Slot]:=FName;
+  Regs.EAX:=EMU_FILE_HANDLE_BASE+LongInt(Slot);
+ End;
+  { Nettoyer la pile : 7 parametres }
+ Regs.ESP:=Regs.ESP+28;
+End;
+
+  { TODO 17 : Emulation de CloseHandle (KERNEL32.DLL).
+    BOOL WINAPI CloseHandle(HANDLE hObject);
+    Convention STDCALL : 1 parametre (4 octets).
+    Ferme un handle de fichier emule. }
+Procedure EmuCloseHandle;
+Var
+ hObject:LongInt;
+ Slot:Integer;
+Begin
+ hObject:=ReadDWord(Regs.ESP+4);
+ If(hObject>=EMU_FILE_HANDLE_BASE)and
+   (hObject<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  Slot:=hObject-EMU_FILE_HANDLE_BASE;
+  If EmuFileActive[Slot] Then Begin
+   {$I-}Close(EmuFileVar[Slot]);{$I+}
+   If IOResult=0 Then;
+   EmuFileActive[Slot]:=False;
+   EmuFileName[Slot]:='';
+   Regs.EAX:=1;  { TRUE }
+  End
+  Else
+   Regs.EAX:=0;  { FALSE - handle inactif }
+ End
+ Else If(hObject=EMU_STDIN_HANDLE)or(hObject=EMU_STDOUT_HANDLE)or
+        (hObject=EMU_STDERR_HANDLE)Then
+  Regs.EAX:=1  { TRUE - console handles, rien a faire }
+ Else
+  Regs.EAX:=0;  { FALSE - handle invalide }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 17 : Emulation de SetFilePointer (KERNEL32.DLL).
+    DWORD WINAPI SetFilePointer(HANDLE hFile,
+                                 LONG lDistanceToMove,
+                                 PLONG lpDistanceToMoveHigh,
+                                 DWORD dwMoveMethod);
+    Convention STDCALL : 4 parametres (16 octets).
+    Positionne le curseur de lecture/ecriture d'un fichier emule. }
+Procedure EmuSetFilePointer;
+Var
+ hFile,lDistance,lpHigh,dwMethod:LongInt;
+ Slot:Integer;
+ NewPos,FSize:LongInt;
+Begin
+ hFile:=ReadDWord(Regs.ESP+4);
+ lDistance:=ReadDWord(Regs.ESP+8);
+ lpHigh:=ReadDWord(Regs.ESP+12);
+ dwMethod:=ReadDWord(Regs.ESP+16);
+ If(hFile>=EMU_FILE_HANDLE_BASE)and
+   (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  Slot:=hFile-EMU_FILE_HANDLE_BASE;
+  If Not EmuFileActive[Slot] Then Begin
+   Regs.EAX:=INVALID_SET_FILE_POINTER;
+  End
+  Else Begin
+   Case dwMethod of
+    FILE_BEGIN:NewPos:=lDistance;
+    FILE_CURRENT:NewPos:=FilePos(EmuFileVar[Slot])+lDistance;
+    FILE_END:NewPos:=FileSize(EmuFileVar[Slot])+lDistance;
+   Else
+    NewPos:=-1;
+   End;
+   If NewPos<0 Then
+    Regs.EAX:=INVALID_SET_FILE_POINTER
+   Else Begin
+    {$I-}Seek(EmuFileVar[Slot],NewPos);{$I+}
+    If IOResult<>0 Then
+     Regs.EAX:=INVALID_SET_FILE_POINTER
+    Else Begin
+     Regs.EAX:=NewPos;
+     If lpHigh<>0 Then WriteDWord(lpHigh,0);
+    End;
+   End;
+  End;
+ End
+ Else
+  Regs.EAX:=INVALID_SET_FILE_POINTER;
+  { Nettoyer la pile : 4 parametres }
+ Regs.ESP:=Regs.ESP+16;
+End;
+
+  { TODO 17 : Emulation de GetFileSize (KERNEL32.DLL).
+    DWORD WINAPI GetFileSize(HANDLE hFile, LPDWORD lpFileSizeHigh);
+    Convention STDCALL : 2 parametres (8 octets).
+    Retourne la taille du fichier emule (partie basse dans EAX). }
+Procedure EmuGetFileSize;
+Var
+ hFile,lpHigh:LongInt;
+ Slot:Integer;
+ FSize:LongInt;
+Begin
+ hFile:=ReadDWord(Regs.ESP+4);
+ lpHigh:=ReadDWord(Regs.ESP+8);
+ If(hFile>=EMU_FILE_HANDLE_BASE)and
+   (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  Slot:=hFile-EMU_FILE_HANDLE_BASE;
+  If Not EmuFileActive[Slot] Then
+   Regs.EAX:=INVALID_HANDLE_VALUE
+  Else Begin
+   FSize:=FileSize(EmuFileVar[Slot]);
+   Regs.EAX:=FSize;
+   If lpHigh<>0 Then WriteDWord(lpHigh,0);
+  End;
+ End
+ Else
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 17 : Emulation de DeleteFileA (KERNEL32.DLL).
+    BOOL WINAPI DeleteFileA(LPCSTR lpFileName);
+    Convention STDCALL : 1 parametre (4 octets).
+    Supprime un fichier du systeme de fichiers reel. }
+Procedure EmuDeleteFileA;
+Var
+ lpFileName:LongInt;
+ FName:String;
+ F:File;
+Begin
+ lpFileName:=ReadDWord(Regs.ESP+4);
+ FName:=ReadStringFromMem(lpFileName);
+  { TODO 24 : En mode READONLY, bloquer la suppression de fichiers }
+ If ReadOnlyMode Then Begin
+  If VerboseMode Then
+   WriteLn('[READONLY] DeleteFileA bloque pour "',FName,'"');
+  Regs.EAX:=0;
+  Regs.ESP:=Regs.ESP+4;
+  Exit;
+ End;
+ {$I-}Assign(F,FName);
+ Erase(F);{$I+}
+ If IOResult=0 Then
+  Regs.EAX:=1  { TRUE }
+ Else
+  Regs.EAX:=0; { FALSE }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 17 : Emulation de GetFileAttributesA (KERNEL32.DLL).
+    DWORD WINAPI GetFileAttributesA(LPCSTR lpFileName);
+    Convention STDCALL : 1 parametre (4 octets).
+    Retourne les attributs d'un fichier. Si le fichier n'existe pas,
+    retourne INVALID_FILE_ATTRIBUTES. Sinon retourne FILE_ATTRIBUTE_ARCHIVE
+    pour un fichier normal ou FILE_ATTRIBUTE_DIRECTORY pour un repertoire. }
+Procedure EmuGetFileAttributesA;
+Var
+ lpFileName:LongInt;
+ FName:String;
+ F:File;
+ SR:SearchRec;
+Begin
+ lpFileName:=ReadDWord(Regs.ESP+4);
+ FName:=ReadStringFromMem(lpFileName);
+ {$I-}FindFirst(FName,AnyFile,SR);{$I+}
+ If DosError=0 Then Begin
+  Regs.EAX:=LongInt(SR.Attr);
+  {$I-}FindClose(SR);{$I+}
+ End
+ Else
+  Regs.EAX:=INVALID_FILE_ATTRIBUTES;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 17 : Emulation de SetFileAttributesA (KERNEL32.DLL).
+    BOOL WINAPI SetFileAttributesA(LPCSTR lpFileName, DWORD dwFileAttributes);
+    Convention STDCALL : 2 parametres (8 octets).
+    Emulation simplifiee : retourne toujours TRUE car les attributs
+    DOS/Pascal ne correspondent pas exactement aux attributs Win32. }
+Procedure EmuSetFileAttributesA;
+Var
+ lpFileName,dwAttrs:LongInt;
+Begin
+ lpFileName:=ReadDWord(Regs.ESP+4);
+ dwAttrs:=ReadDWord(Regs.ESP+8);
+  { TODO 24 : En mode READONLY, bloquer la modification des attributs }
+ If ReadOnlyMode Then Begin
+  If VerboseMode Then
+   WriteLn('[READONLY] SetFileAttributesA bloque');
+  Regs.EAX:=0;
+  Regs.ESP:=Regs.ESP+8;
+  Exit;
+ End;
+ Regs.EAX:=1;  { TRUE - emulation simplifiee }
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 17 : Emulation de FlushFileBuffers (KERNEL32.DLL).
+    BOOL WINAPI FlushFileBuffers(HANDLE hFile);
+    Convention STDCALL : 1 parametre (4 octets).
+    Force l'ecriture des tampons sur le disque. }
+Procedure EmuFlushFileBuffers;
+Var
+ hFile:LongInt;
+ Slot:Integer;
+Begin
+ hFile:=ReadDWord(Regs.ESP+4);
+ If(hFile>=EMU_FILE_HANDLE_BASE)and
+   (hFile<EMU_FILE_HANDLE_BASE+MAX_EMU_FILES)Then Begin
+  Slot:=hFile-EMU_FILE_HANDLE_BASE;
+  If EmuFileActive[Slot] Then
+   Regs.EAX:=1  { TRUE - les fichiers Pascal sont non-bufferises en mode 1 }
+  Else
+   Regs.EAX:=0;
+ End
+ Else If(hFile=EMU_STDOUT_HANDLE)or(hFile=EMU_STDERR_HANDLE)Then
+  Regs.EAX:=1  { TRUE - console toujours fluide }
+ Else
+  Regs.EAX:=0;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 18 : Initialisation du heap emule.
+    Positionne le pointeur bump au debut de la zone de heap
+    et met a zero la zone entiere. }
+Procedure InitHeap;
+Begin
+ HeapNextAddr:=HeapBase;
+ HeapCreated:=True;
+End;
+
+  { TODO 18 : Emulation de VirtualAlloc (KERNEL32.DLL).
+    LPVOID WINAPI VirtualAlloc(LPVOID lpAddress,
+                                SIZE_T dwSize,
+                                DWORD flAllocationType,
+                                DWORD flProtect);
+    Convention STDCALL : 4 parametres (16 octets).
+    Alloue de la memoire dans l'espace lineaire emule.
+    Utilise un allocateur bump dans la zone HeapBase. }
+Procedure EmuVirtualAlloc;
+Var
+ lpAddress,dwSize,flAllocType,flProtect:LongInt;
+ AllocAddr,I:LongInt;
+ AlignedSize:LongInt;
+Begin
+ lpAddress:=ReadDWord(Regs.ESP+4);
+ dwSize:=ReadDWord(Regs.ESP+8);
+ flAllocType:=ReadDWord(Regs.ESP+12);
+ flProtect:=ReadDWord(Regs.ESP+16);
+  { Aligner la taille sur 4 Ko (granularite page Win32) }
+ AlignedSize:=(dwSize+$FFF) and LongInt($FFFFF000);
+ If AlignedSize<=0 Then AlignedSize:=$1000;
+  { Si une adresse est demandee et qu'elle est dans la zone heap, l'utiliser }
+ If(lpAddress<>0)and(lpAddress>=HeapBase)and
+   (lpAddress+AlignedSize<=HeapBase+HeapSize)Then Begin
+  AllocAddr:=lpAddress;
+   { Avancer le pointeur bump si necessaire }
+  If AllocAddr+AlignedSize>HeapNextAddr Then
+   HeapNextAddr:=AllocAddr+AlignedSize;
+ End
+ Else Begin
+   { Allocation au pointeur bump courant }
+  AllocAddr:=HeapNextAddr;
+  If AllocAddr+AlignedSize>HeapBase+HeapSize Then Begin
+   Regs.EAX:=0;  { Echec : plus de memoire }
+   Regs.ESP:=Regs.ESP+16;
+   Exit;
+  End;
+  HeapNextAddr:=HeapNextAddr+AlignedSize;
+ End;
+  { Mettre a zero la memoire allouee si MEM_COMMIT }
+ If(flAllocType and MEM_COMMIT)<>0 Then
+  For I:=0 to AlignedSize-1 do
+   WriteByte(AllocAddr+I,0);
+ Regs.EAX:=AllocAddr;
+  { Nettoyer la pile : 4 parametres }
+ Regs.ESP:=Regs.ESP+16;
+End;
+
+  { TODO 18 : Emulation de VirtualFree (KERNEL32.DLL).
+    BOOL WINAPI VirtualFree(LPVOID lpAddress,
+                             SIZE_T dwSize,
+                             DWORD dwFreeType);
+    Convention STDCALL : 3 parametres (12 octets).
+    Emulation simplifiee : retourne TRUE.
+    Le heap bump ne supporte pas la liberation partielle. }
+Procedure EmuVirtualFree;
+Var
+ lpAddress,dwSize,dwFreeType:LongInt;
+Begin
+ lpAddress:=ReadDWord(Regs.ESP+4);
+ dwSize:=ReadDWord(Regs.ESP+8);
+ dwFreeType:=ReadDWord(Regs.ESP+12);
+ Regs.EAX:=1;  { TRUE }
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 18 : Emulation de GetProcessHeap (KERNEL32.DLL).
+    HANDLE WINAPI GetProcessHeap(void);
+    Convention STDCALL : 0 parametre (0 octet).
+    Retourne le handle du heap par defaut du processus emule. }
+Procedure EmuGetProcessHeap;
+Begin
+ If Not HeapCreated Then InitHeap;
+ Regs.EAX:=EMU_HEAP_HANDLE;
+  { Pas de parametres a nettoyer }
+End;
+
+  { TODO 18 : Emulation de HeapCreate (KERNEL32.DLL).
+    HANDLE WINAPI HeapCreate(DWORD flOptions,
+                              SIZE_T dwInitialSize,
+                              SIZE_T dwMaximumSize);
+    Convention STDCALL : 3 parametres (12 octets).
+    Emulation simplifiee : retourne le handle du heap unique emule.
+    Tous les heaps partagent le meme espace. }
+Procedure EmuHeapCreate;
+Var
+ flOptions,dwInitial,dwMaximum:LongInt;
+Begin
+ flOptions:=ReadDWord(Regs.ESP+4);
+ dwInitial:=ReadDWord(Regs.ESP+8);
+ dwMaximum:=ReadDWord(Regs.ESP+12);
+ If Not HeapCreated Then InitHeap;
+ Regs.EAX:=EMU_HEAP_HANDLE;
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 18 : Emulation de HeapAlloc (KERNEL32.DLL).
+    LPVOID WINAPI HeapAlloc(HANDLE hHeap,
+                             DWORD dwFlags,
+                             SIZE_T dwBytes);
+    Convention STDCALL : 3 parametres (12 octets).
+    Alloue un bloc de memoire dans le heap emule.
+    Utilise un allocateur bump avec alignement sur 8 octets. }
+Procedure EmuHeapAlloc;
+Var
+ hHeap,dwFlags,dwBytes:LongInt;
+ AllocAddr:LongInt;
+ AlignedSize,I:LongInt;
+Begin
+ hHeap:=ReadDWord(Regs.ESP+4);
+ dwFlags:=ReadDWord(Regs.ESP+8);
+ dwBytes:=ReadDWord(Regs.ESP+12);
+  { Aligner sur 8 octets }
+ AlignedSize:=(dwBytes+7) and LongInt($FFFFFFF8);
+ If AlignedSize<=0 Then AlignedSize:=8;
+ AllocAddr:=HeapNextAddr;
+ If AllocAddr+AlignedSize>HeapBase+HeapSize Then Begin
+  Regs.EAX:=0;  { Echec }
+  Regs.ESP:=Regs.ESP+12;
+  Exit;
+ End;
+ HeapNextAddr:=HeapNextAddr+AlignedSize;
+  { Mettre a zero si HEAP_ZERO_MEMORY est demande }
+ If(dwFlags and HEAP_ZERO_MEMORY)<>0 Then
+  For I:=0 to AlignedSize-1 do
+   WriteByte(AllocAddr+I,0);
+ Regs.EAX:=AllocAddr;
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 18 : Emulation de HeapFree (KERNEL32.DLL).
+    BOOL WINAPI HeapFree(HANDLE hHeap,
+                          DWORD dwFlags,
+                          LPVOID lpMem);
+    Convention STDCALL : 3 parametres (12 octets).
+    Emulation simplifiee : retourne TRUE.
+    Le heap bump ne supporte pas la liberation individuelle. }
+Procedure EmuHeapFree;
+Var
+ hHeap,dwFlags,lpMem:LongInt;
+Begin
+ hHeap:=ReadDWord(Regs.ESP+4);
+ dwFlags:=ReadDWord(Regs.ESP+8);
+ lpMem:=ReadDWord(Regs.ESP+12);
+ Regs.EAX:=1;  { TRUE }
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 18 : Emulation de HeapReAlloc (KERNEL32.DLL).
+    LPVOID WINAPI HeapReAlloc(HANDLE hHeap,
+                               DWORD dwFlags,
+                               LPVOID lpMem,
+                               SIZE_T dwBytes);
+    Convention STDCALL : 4 parametres (16 octets).
+    Emulation simplifiee : alloue un nouveau bloc et copie les donnees.
+    L'ancien bloc n'est pas libere (allocateur bump). }
+Procedure EmuHeapReAlloc;
+Var
+ hHeap,dwFlags,lpMem,dwBytes:LongInt;
+ NewAddr:LongInt;
+ AlignedSize,I:LongInt;
+ CopySize:LongInt;
+Begin
+ hHeap:=ReadDWord(Regs.ESP+4);
+ dwFlags:=ReadDWord(Regs.ESP+8);
+ lpMem:=ReadDWord(Regs.ESP+12);
+ dwBytes:=ReadDWord(Regs.ESP+16);
+  { Aligner sur 8 octets }
+ AlignedSize:=(dwBytes+7) and LongInt($FFFFFFF8);
+ If AlignedSize<=0 Then AlignedSize:=8;
+ NewAddr:=HeapNextAddr;
+ If NewAddr+AlignedSize>HeapBase+HeapSize Then Begin
+  Regs.EAX:=0;  { Echec }
+  Regs.ESP:=Regs.ESP+16;
+  Exit;
+ End;
+ HeapNextAddr:=HeapNextAddr+AlignedSize;
+  { Copier les anciennes donnees (taille conservatrice = dwBytes) }
+ CopySize:=dwBytes;
+ If lpMem<>0 Then Begin
+  For I:=0 to CopySize-1 do
+   WriteByte(NewAddr+I,ReadByte(lpMem+I));
+ End;
+  { Mettre a zero la portion au-dela des donnees copiees si HEAP_ZERO_MEMORY }
+ If(dwFlags and HEAP_ZERO_MEMORY)<>0 Then Begin
+  If lpMem<>0 Then Begin
+   For I:=CopySize to AlignedSize-1 do
+    WriteByte(NewAddr+I,0);
+  End
+  Else
+   For I:=0 to AlignedSize-1 do
+    WriteByte(NewAddr+I,0);
+ End;
+ Regs.EAX:=NewAddr;
+  { Nettoyer la pile : 4 parametres }
+ Regs.ESP:=Regs.ESP+16;
+End;
+
+  { TODO 18 : Emulation de GlobalAlloc (KERNEL32.DLL).
+    HGLOBAL WINAPI GlobalAlloc(UINT uFlags, SIZE_T dwBytes);
+    Convention STDCALL : 2 parametres (8 octets).
+    Alloue de la memoire globale dans le heap emule.
+    GMEM_FIXED retourne un pointeur direct. }
+Procedure EmuGlobalAlloc;
+Var
+ uFlags,dwBytes:LongInt;
+ AllocAddr:LongInt;
+ AlignedSize,I:LongInt;
+Begin
+ uFlags:=ReadDWord(Regs.ESP+4);
+ dwBytes:=ReadDWord(Regs.ESP+8);
+  { Aligner sur 8 octets }
+ AlignedSize:=(dwBytes+7) and LongInt($FFFFFFF8);
+ If AlignedSize<=0 Then AlignedSize:=8;
+ AllocAddr:=HeapNextAddr;
+ If AllocAddr+AlignedSize>HeapBase+HeapSize Then Begin
+  Regs.EAX:=0;  { Echec }
+  Regs.ESP:=Regs.ESP+8;
+  Exit;
+ End;
+ HeapNextAddr:=HeapNextAddr+AlignedSize;
+  { Mettre a zero si GMEM_ZEROINIT est demande }
+ If(uFlags and GMEM_ZEROINIT)<>0 Then
+  For I:=0 to AlignedSize-1 do
+   WriteByte(AllocAddr+I,0);
+ Regs.EAX:=AllocAddr;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 18 : Emulation de GlobalFree (KERNEL32.DLL).
+    HGLOBAL WINAPI GlobalFree(HGLOBAL hMem);
+    Convention STDCALL : 1 parametre (4 octets).
+    Emulation simplifiee : retourne 0 (succes).
+    Le heap bump ne supporte pas la liberation individuelle. }
+Procedure EmuGlobalFree;
+Var
+ hMem:LongInt;
+Begin
+ hMem:=ReadDWord(Regs.ESP+4);
+ Regs.EAX:=0;  { NULL = succes }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 18 : Emulation de LocalAlloc (KERNEL32.DLL).
+    HLOCAL WINAPI LocalAlloc(UINT uFlags, SIZE_T uBytes);
+    Convention STDCALL : 2 parametres (8 octets).
+    Alloue de la memoire locale dans le heap emule.
+    LMEM_FIXED retourne un pointeur direct. }
+Procedure EmuLocalAlloc;
+Var
+ uFlags,uBytes:LongInt;
+ AllocAddr:LongInt;
+ AlignedSize,I:LongInt;
+Begin
+ uFlags:=ReadDWord(Regs.ESP+4);
+ uBytes:=ReadDWord(Regs.ESP+8);
+  { Aligner sur 8 octets }
+ AlignedSize:=(uBytes+7) and LongInt($FFFFFFF8);
+ If AlignedSize<=0 Then AlignedSize:=8;
+ AllocAddr:=HeapNextAddr;
+ If AllocAddr+AlignedSize>HeapBase+HeapSize Then Begin
+  Regs.EAX:=0;  { Echec }
+  Regs.ESP:=Regs.ESP+8;
+  Exit;
+ End;
+ HeapNextAddr:=HeapNextAddr+AlignedSize;
+  { Mettre a zero si LMEM_ZEROINIT est demande }
+ If(uFlags and LMEM_ZEROINIT)<>0 Then
+  For I:=0 to AlignedSize-1 do
+   WriteByte(AllocAddr+I,0);
+ Regs.EAX:=AllocAddr;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 18 : Emulation de LocalFree (KERNEL32.DLL).
+    HLOCAL WINAPI LocalFree(HLOCAL hMem);
+    Convention STDCALL : 1 parametre (4 octets).
+    Emulation simplifiee : retourne 0 (succes).
+    Le heap bump ne supporte pas la liberation individuelle. }
+Procedure EmuLocalFree;
+Var
+ hMem:LongInt;
+Begin
+ hMem:=ReadDWord(Regs.ESP+4);
+ Regs.EAX:=0;  { NULL = succes }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 19 : Emulation de GetEnvironmentVariableA (KERNEL32.DLL).
+    DWORD WINAPI GetEnvironmentVariableA(LPCSTR lpName,
+                                          LPSTR lpBuffer,
+                                          DWORD nSize);
+    Convention STDCALL : 3 parametres (12 octets).
+    Lit le nom de la variable depuis lpName, appelle GetEnv du systeme
+    hote, ecrit la valeur dans lpBuffer si nSize est suffisant.
+    Retourne la longueur de la valeur, ou 0 si non trouvee. }
+Procedure EmuGetEnvironmentVariableA;
+Var
+ lpName,lpBuffer,nSize:LongInt;
+ VarName,VarValue:String;
+ I:Integer;
+Begin
+ lpName:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ nSize:=ReadDWord(Regs.ESP+12);
+ VarName:=ReadStringFromMem(lpName);
+ VarValue:=GetEnv(VarName);
+ If VarValue='' Then Begin
+  Regs.EAX:=0;
+ End
+ Else Begin
+  If LongInt(Length(VarValue)+1)<=nSize Then Begin
+   For I:=1 to Length(VarValue) do
+    WriteByte(lpBuffer+LongInt(I-1),Byte(VarValue[I]));
+   WriteByte(lpBuffer+LongInt(Length(VarValue)),0);
+   Regs.EAX:=LongInt(Length(VarValue));
+  End
+  Else Begin
+    { Buffer trop petit : retourner la taille necessaire }
+   Regs.EAX:=LongInt(Length(VarValue)+1);
+  End;
+ End;
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 19 : Emulation de GetEnvironmentStringsA (KERNEL32.DLL).
+    LPCH WINAPI GetEnvironmentStringsA(void);
+    Convention STDCALL : 0 parametre (0 octets).
+    Retourne un pointeur vers le bloc d'environnement en memoire
+    (chaines KEY=VALUE\0 terminees par un \0 supplementaire). }
+Procedure EmuGetEnvironmentStringsA;
+Begin
+ Regs.EAX:=EnvBlockAddr;
+End;
+
+  { TODO 19 : Emulation de FreeEnvironmentStringsA (KERNEL32.DLL).
+    BOOL WINAPI FreeEnvironmentStringsA(LPCH lpszEnvironmentBlock);
+    Convention STDCALL : 1 parametre (4 octets).
+    Emulation simplifiee : retourne toujours TRUE (1). }
+Procedure EmuFreeEnvironmentStringsA;
+Var
+ lpEnv:LongInt;
+Begin
+ lpEnv:=ReadDWord(Regs.ESP+4);
+ Regs.EAX:=1;  { TRUE = succes }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 19 : Emulation de lstrlenA (KERNEL32.DLL).
+    int WINAPI lstrlenA(LPCSTR lpString);
+    Convention STDCALL : 1 parametre (4 octets).
+    Retourne la longueur de la chaine pointee par lpString,
+    ou 0 si le pointeur est NULL. }
+Procedure EmulstrlenA;
+Var
+ lpString:LongInt;
+ Len:LongInt;
+Begin
+ lpString:=ReadDWord(Regs.ESP+4);
+ If lpString=0 Then Begin
+  Regs.EAX:=0;
+ End
+ Else Begin
+  Len:=0;
+  While(Len<65535)and(ReadByte(lpString+Len)<>0)do
+   Inc(Len);
+  Regs.EAX:=Len;
+ End;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 19 : Emulation de lstrcpyA (KERNEL32.DLL).
+    LPSTR WINAPI lstrcpyA(LPSTR lpString1, LPCSTR lpString2);
+    Convention STDCALL : 2 parametres (8 octets).
+    Copie la chaine source lpString2 vers la destination lpString1.
+    Retourne lpString1. }
+Procedure EmulstrcpyA;
+Var
+ lpDst,lpSrc:LongInt;
+ B:Byte;
+ I:LongInt;
+Begin
+ lpDst:=ReadDWord(Regs.ESP+4);
+ lpSrc:=ReadDWord(Regs.ESP+8);
+ I:=0;
+ Repeat
+  B:=ReadByte(lpSrc+I);
+  WriteByte(lpDst+I,B);
+  Inc(I);
+ Until B=0;
+ Regs.EAX:=lpDst;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 19 : Emulation de lstrcmpA (KERNEL32.DLL).
+    int WINAPI lstrcmpA(LPCSTR lpString1, LPCSTR lpString2);
+    Convention STDCALL : 2 parametres (8 octets).
+    Compare deux chaines sensible a la casse.
+    Retourne <0, 0 ou >0 selon le resultat. }
+Procedure EmulstrcmpA;
+Var
+ lp1,lp2:LongInt;
+ B1,B2:Byte;
+ I:LongInt;
+Begin
+ lp1:=ReadDWord(Regs.ESP+4);
+ lp2:=ReadDWord(Regs.ESP+8);
+ I:=0;
+ Repeat
+  B1:=ReadByte(lp1+I);
+  B2:=ReadByte(lp2+I);
+  If B1<B2 Then Begin
+   Regs.EAX:=LongInt(-1);
+   Regs.ESP:=Regs.ESP+8;
+   Exit;
+  End;
+  If B1>B2 Then Begin
+   Regs.EAX:=1;
+   Regs.ESP:=Regs.ESP+8;
+   Exit;
+  End;
+  Inc(I);
+ Until B1=0;
+ Regs.EAX:=0;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 19 : Emulation de lstrcmpiA (KERNEL32.DLL).
+    int WINAPI lstrcmpiA(LPCSTR lpString1, LPCSTR lpString2);
+    Convention STDCALL : 2 parametres (8 octets).
+    Compare deux chaines sans tenir compte de la casse.
+    Retourne <0, 0 ou >0 selon le resultat. }
+Procedure EmulstrcmpiA;
+Var
+ lp1,lp2:LongInt;
+ B1,B2:Byte;
+ C1,C2:Char;
+ I:LongInt;
+Begin
+ lp1:=ReadDWord(Regs.ESP+4);
+ lp2:=ReadDWord(Regs.ESP+8);
+ I:=0;
+ Repeat
+  B1:=ReadByte(lp1+I);
+  B2:=ReadByte(lp2+I);
+  C1:=UpCase(Chr(B1));
+  C2:=UpCase(Chr(B2));
+  If C1<C2 Then Begin
+   Regs.EAX:=LongInt(-1);
+   Regs.ESP:=Regs.ESP+8;
+   Exit;
+  End;
+  If C1>C2 Then Begin
+   Regs.EAX:=1;
+   Regs.ESP:=Regs.ESP+8;
+   Exit;
+  End;
+  Inc(I);
+ Until B1=0;
+ Regs.EAX:=0;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 19 : Emulation de lstrcatA (KERNEL32.DLL).
+    LPSTR WINAPI lstrcatA(LPSTR lpString1, LPCSTR lpString2);
+    Convention STDCALL : 2 parametres (8 octets).
+    Concatene lpString2 a la fin de lpString1.
+    Retourne lpString1. }
+Procedure EmulstrcatA;
+Var
+ lpDst,lpSrc:LongInt;
+ B:Byte;
+ DstLen,I:LongInt;
+Begin
+ lpDst:=ReadDWord(Regs.ESP+4);
+ lpSrc:=ReadDWord(Regs.ESP+8);
+  { Trouver la fin de lpString1 }
+ DstLen:=0;
+ While ReadByte(lpDst+DstLen)<>0 do
+  Inc(DstLen);
+  { Copier lpString2 a la suite }
+ I:=0;
+ Repeat
+  B:=ReadByte(lpSrc+I);
+  WriteByte(lpDst+DstLen+I,B);
+  Inc(I);
+ Until B=0;
+ Regs.EAX:=lpDst;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 19 : Emulation de GetModuleFileNameA (KERNEL32.DLL).
+    DWORD WINAPI GetModuleFileNameA(HMODULE hModule,
+                                     LPSTR lpFilename,
+                                     DWORD nSize);
+    Convention STDCALL : 3 parametres (12 octets).
+    Si hModule est 0 ou le handle du module courant, copie le nom
+    du fichier executable dans lpFilename.
+    Retourne le nombre de caracteres copies. }
+Procedure EmuGetModuleFileNameA;
+Var
+ hModule,lpFilename,nSize:LongInt;
+ ModName:String;
+ CopyLen,I:Integer;
+Begin
+ hModule:=ReadDWord(Regs.ESP+4);
+ lpFilename:=ReadDWord(Regs.ESP+8);
+ nSize:=ReadDWord(Regs.ESP+12);
+ ModName:=DefaultExeName;
+ CopyLen:=Length(ModName);
+ If LongInt(CopyLen)>=nSize Then
+  CopyLen:=Integer(nSize)-1;
+ If CopyLen<0 Then CopyLen:=0;
+ For I:=1 to CopyLen do
+  WriteByte(lpFilename+LongInt(I-1),Byte(ModName[I]));
+ WriteByte(lpFilename+LongInt(CopyLen),0);
+ Regs.EAX:=LongInt(CopyLen);
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 19 : Emulation de GetModuleHandleA (KERNEL32.DLL).
+    HMODULE WINAPI GetModuleHandleA(LPCSTR lpModuleName);
+    Convention STDCALL : 1 parametre (4 octets).
+    Si lpModuleName est NULL, retourne le handle du module courant
+    (ImageBase du PE charge). Sinon, retourne 0 (module non trouve). }
+Procedure EmuGetModuleHandleA;
+Var
+ lpModuleName:LongInt;
+ ModName:String;
+Begin
+ lpModuleName:=ReadDWord(Regs.ESP+4);
+ If lpModuleName=0 Then
+  Regs.EAX:=PEOptHeader.ImageBase
+ Else Begin
+  ModName:=ReadStringFromMem(lpModuleName);
+  If StrIComp(ModName,DefaultExeName) Then
+   Regs.EAX:=PEOptHeader.ImageBase
+  Else
+   Regs.EAX:=0;
+ End;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de GetTickCount (KERNEL32.DLL).
+    DWORD WINAPI GetTickCount(void);
+    Convention STDCALL : 0 parametres.
+    Retourne le nombre de millisecondes depuis le demarrage.
+    Utilise une valeur simulee basee sur l'horloge Pascal. }
+Procedure EmuGetTickCount;
+Var
+ H,M,S,S100:Word;
+ Ticks:LongInt;
+Begin
+ GetTime(H,M,S,S100);
+ Ticks:=LongInt(H)*3600000+LongInt(M)*60000+LongInt(S)*1000+LongInt(S100)*10;
+ Regs.EAX:=Ticks;
+  { Pas de parametres a nettoyer }
+End;
+
+  { TODO 20 : Procedure auxiliaire pour ecrire une structure SYSTEMTIME
+    en memoire a l'adresse donnee.
+    SYSTEMTIME : 8 champs Word (16 octets) :
+      wYear, wMonth, wDayOfWeek, wDay,
+      wHour, wMinute, wSecond, wMilliseconds }
+Procedure WriteSystemTimeToMem(Addr:LongInt;Y,Mo,Dow,D,H,Mi,S,Ms:Word);
+Begin
+ WriteWord(Addr,Y);
+ WriteWord(Addr+2,Mo);
+ WriteWord(Addr+4,Dow);
+ WriteWord(Addr+6,D);
+ WriteWord(Addr+8,H);
+ WriteWord(Addr+10,Mi);
+ WriteWord(Addr+12,S);
+ WriteWord(Addr+14,Ms);
+End;
+
+  { TODO 20 : Emulation de GetSystemTime (KERNEL32.DLL).
+    void WINAPI GetSystemTime(LPSYSTEMTIME lpSystemTime);
+    Convention STDCALL : 1 parametre (4 octets).
+    Ecrit l'heure systeme locale (UTC approxime) dans la structure. }
+Procedure EmuGetSystemTime;
+Var
+ lpSystemTime:LongInt;
+ Y,Mo,D,Dow:Word;
+ H,Mi,S,S100:Word;
+Begin
+ lpSystemTime:=ReadDWord(Regs.ESP+4);
+ GetDate(Y,Mo,D,Dow);
+ GetTime(H,Mi,S,S100);
+ WriteSystemTimeToMem(lpSystemTime,Y,Mo,Dow,D,H,Mi,S,S100*10);
+  { Pas de valeur de retour }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de GetLocalTime (KERNEL32.DLL).
+    void WINAPI GetLocalTime(LPSYSTEMTIME lpSystemTime);
+    Convention STDCALL : 1 parametre (4 octets).
+    Identique a GetSystemTime dans cette emulation simplifiee. }
+Procedure EmuGetLocalTime;
+Var
+ lpSystemTime:LongInt;
+ Y,Mo,D,Dow:Word;
+ H,Mi,S,S100:Word;
+Begin
+ lpSystemTime:=ReadDWord(Regs.ESP+4);
+ GetDate(Y,Mo,D,Dow);
+ GetTime(H,Mi,S,S100);
+ WriteSystemTimeToMem(lpSystemTime,Y,Mo,Dow,D,H,Mi,S,S100*10);
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de QueryPerformanceCounter (KERNEL32.DLL).
+    BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *lpPerformanceCount);
+    Convention STDCALL : 1 parametre (4 octets).
+    Ecrit un compteur 64 bits simule (base sur GetTime).
+    Retourne TRUE (1). }
+Procedure EmuQueryPerformanceCounter;
+Var
+ lpPerfCount:LongInt;
+ H,M,S,S100:Word;
+ Counter:LongInt;
+Begin
+ lpPerfCount:=ReadDWord(Regs.ESP+4);
+ GetTime(H,M,S,S100);
+ Counter:=LongInt(H)*3600000+LongInt(M)*60000+LongInt(S)*1000+LongInt(S100)*10;
+  { Ecrire comme LARGE_INTEGER (64 bits, little-endian) }
+ WriteDWord(lpPerfCount,Counter);
+ WriteDWord(lpPerfCount+4,0);  { Partie haute = 0 }
+ Regs.EAX:=1;  { TRUE }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de GetSystemInfo (KERNEL32.DLL).
+    void WINAPI GetSystemInfo(LPSYSTEM_INFO lpSystemInfo);
+    Convention STDCALL : 1 parametre (4 octets).
+    Remplit la structure SYSTEM_INFO (36 octets) avec des valeurs
+    emulant un processeur x86 monoprocesseur. }
+Procedure EmuGetSystemInfo;
+Var
+ lpSysInfo:LongInt;
+ I:Integer;
+Begin
+ lpSysInfo:=ReadDWord(Regs.ESP+4);
+  { Mettre a zero la structure }
+ For I:=0 to SYSTEM_INFO_SIZE-1 do
+  WriteByte(lpSysInfo+LongInt(I),0);
+  { wProcessorArchitecture = 0 (PROCESSOR_ARCHITECTURE_INTEL) }
+ WriteWord(lpSysInfo,0);
+  { dwPageSize = 4096 }
+ WriteDWord(lpSysInfo+4,$1000);
+  { lpMinimumApplicationAddress = $10000 }
+ WriteDWord(lpSysInfo+8,$10000);
+  { lpMaximumApplicationAddress = $7FFEFFFF }
+ WriteDWord(lpSysInfo+12,LongInt($7FFEFFFF));
+  { dwActiveProcessorMask = 1 }
+ WriteDWord(lpSysInfo+16,1);
+  { dwNumberOfProcessors = 1 }
+ WriteDWord(lpSysInfo+20,1);
+  { dwProcessorType = 386 (PROCESSOR_INTEL_386) }
+ WriteDWord(lpSysInfo+24,386);
+  { dwAllocationGranularity = 65536 }
+ WriteDWord(lpSysInfo+28,$10000);
+  { wProcessorLevel = 6 (Pentium Pro+) }
+ WriteWord(lpSysInfo+32,6);
+  { wProcessorRevision = 0 }
+ WriteWord(lpSysInfo+34,0);
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de GetVersion (KERNEL32.DLL).
+    DWORD WINAPI GetVersion(void);
+    Convention STDCALL : 0 parametres.
+    Retourne la version Windows emulée.
+    Octets bas: version majeure=5, mineure=1 (Windows XP).
+    Octets hauts: build number 2600. }
+Procedure EmuGetVersion;
+Begin
+  { Version 5.1 = Windows XP, build 2600 }
+  { Format: bits 0-7=major, 8-15=minor, 16-31=build }
+  { $0A280105 = major 5, minor 1, build $0A28 (2600) }
+ Regs.EAX:=LongInt($0A280105);
+  { Pas de parametres a nettoyer }
+End;
+
+  { TODO 20 : Emulation de GetVersionExA (KERNEL32.DLL).
+    BOOL WINAPI GetVersionExA(LPOSVERSIONINFOA lpVersionInfo);
+    Convention STDCALL : 1 parametre (4 octets).
+    Remplit la structure OSVERSIONINFOA (148 octets).
+    Emule Windows XP SP3 (version 5.1, build 2600). }
+Procedure EmuGetVersionExA;
+Var
+ lpVerInfo:LongInt;
+ I:Integer;
+Begin
+ lpVerInfo:=ReadDWord(Regs.ESP+4);
+  { Mettre a zero toute la structure }
+ For I:=0 to OSVERSIONINFOA_SIZE-1 do
+  WriteByte(lpVerInfo+LongInt(I),0);
+  { dwOSVersionInfoSize = 148 }
+ WriteDWord(lpVerInfo,OSVERSIONINFOA_SIZE);
+  { dwMajorVersion = 5 }
+ WriteDWord(lpVerInfo+4,5);
+  { dwMinorVersion = 1 }
+ WriteDWord(lpVerInfo+8,1);
+  { dwBuildNumber = 2600 }
+ WriteDWord(lpVerInfo+12,2600);
+  { dwPlatformId = 2 (VER_PLATFORM_WIN32_NT) }
+ WriteDWord(lpVerInfo+16,2);
+  { szCSDVersion a l'offset 20, 128 octets : "Service Pack 3" }
+ WriteByte(lpVerInfo+20,Byte('S'));
+ WriteByte(lpVerInfo+21,Byte('e'));
+ WriteByte(lpVerInfo+22,Byte('r'));
+ WriteByte(lpVerInfo+23,Byte('v'));
+ WriteByte(lpVerInfo+24,Byte('i'));
+ WriteByte(lpVerInfo+25,Byte('c'));
+ WriteByte(lpVerInfo+26,Byte('e'));
+ WriteByte(lpVerInfo+27,Byte(' '));
+ WriteByte(lpVerInfo+28,Byte('P'));
+ WriteByte(lpVerInfo+29,Byte('a'));
+ WriteByte(lpVerInfo+30,Byte('c'));
+ WriteByte(lpVerInfo+31,Byte('k'));
+ WriteByte(lpVerInfo+32,Byte(' '));
+ WriteByte(lpVerInfo+33,Byte('3'));
+ WriteByte(lpVerInfo+34,0);
+ Regs.EAX:=1;  { TRUE }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de Sleep (KERNEL32.DLL).
+    void WINAPI Sleep(DWORD dwMilliseconds);
+    Convention STDCALL : 1 parametre (4 octets).
+    Effectue une pause via Delay du systeme hote. }
+Procedure EmuSleep;
+Var
+ dwMilliseconds:LongInt;
+Begin
+ dwMilliseconds:=ReadDWord(Regs.ESP+4);
+ If dwMilliseconds>0 Then
+  Delay(dwMilliseconds);
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 20 : Emulation de GetLastError (KERNEL32.DLL).
+    DWORD WINAPI GetLastError(void);
+    Convention STDCALL : 0 parametres.
+    Retourne le code d'erreur Win32 stocke. }
+Procedure EmuGetLastError;
+Begin
+ Regs.EAX:=EmuLastError;
+  { Pas de parametres a nettoyer }
+End;
+
+  { TODO 20 : Emulation de SetLastError (KERNEL32.DLL).
+    void WINAPI SetLastError(DWORD dwErrCode);
+    Convention STDCALL : 1 parametre (4 octets).
+    Stocke le code d'erreur Win32. }
+Procedure EmuSetLastError;
+Var
+ dwErrCode:LongInt;
+Begin
+ dwErrCode:=ReadDWord(Regs.ESP+4);
+ EmuLastError:=dwErrCode;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 21 : Emulation de GetCurrentDirectoryA (KERNEL32.DLL).
+    DWORD WINAPI GetCurrentDirectoryA(DWORD nBufferLength, LPSTR lpBuffer);
+    Convention STDCALL : 2 parametres (8 octets).
+    Retourne la longueur du repertoire courant (sans le \0 terminal). }
+Procedure EmuGetCurrentDirectoryA;
+Var
+ nBufLen,lpBuffer:LongInt;
+ Dir:String;
+ I:Integer;
+Begin
+ nBufLen:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ GetDir(0,Dir);
+ If LongInt(Length(Dir)+1)>nBufLen Then Begin
+    { Buffer trop petit : retourner la taille necessaire }
+  Regs.EAX:=LongInt(Length(Dir)+1);
+ End
+ Else Begin
+  For I:=1 to Length(Dir) do
+   WriteByte(lpBuffer+LongInt(I-1),Byte(Dir[I]));
+  WriteByte(lpBuffer+LongInt(Length(Dir)),0);
+  Regs.EAX:=LongInt(Length(Dir));
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 21 : Emulation de SetCurrentDirectoryA (KERNEL32.DLL).
+    BOOL WINAPI SetCurrentDirectoryA(LPCSTR lpPathName);
+    Convention STDCALL : 1 parametre (4 octets).
+    Change le repertoire courant. }
+Procedure EmuSetCurrentDirectoryA;
+Var
+ lpPathName:LongInt;
+ Dir:String;
+Begin
+ lpPathName:=ReadDWord(Regs.ESP+4);
+ Dir:=ReadStringFromMem(lpPathName);
+ {$I-}ChDir(Dir);{$I+}
+ If IOResult=0 Then
+  Regs.EAX:=1  { TRUE }
+ Else
+  Regs.EAX:=0; { FALSE }
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 21 : Emulation de FindFirstFileA (KERNEL32.DLL).
+    HANDLE WINAPI FindFirstFileA(LPCSTR lpFileName,
+                                  LPWIN32_FIND_DATAA lpFindFileData);
+    Convention STDCALL : 2 parametres (8 octets).
+    Demarre une recherche de fichiers. Retourne un handle de recherche
+    ou INVALID_HANDLE_VALUE si aucun fichier trouve. }
+Procedure EmuFindFirstFileA;
+Var
+ lpFileName,lpFindData:LongInt;
+ Pattern:String;
+ Slot:Integer;
+Begin
+ lpFileName:=ReadDWord(Regs.ESP+4);
+ lpFindData:=ReadDWord(Regs.ESP+8);
+ Pattern:=ReadStringFromMem(lpFileName);
+ Slot:=FindFreeFindSlot;
+ If Slot<0 Then Begin
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+  Regs.ESP:=Regs.ESP+8;
+  Exit;
+ End;
+ {$I-}FindFirst(Pattern,AnyFile,EmuFindSR[Slot]);{$I+}
+ If DosError=0 Then Begin
+  EmuFindActive[Slot]:=True;
+  WriteFindDataToMem(lpFindData,EmuFindSR[Slot]);
+  Regs.EAX:=LongInt(EMU_FIND_HANDLE_BASE+Slot);
+ End
+ Else Begin
+  Regs.EAX:=INVALID_HANDLE_VALUE;
+  EmuLastError:=2; { ERROR_FILE_NOT_FOUND }
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 21 : Emulation de FindNextFileA (KERNEL32.DLL).
+    BOOL WINAPI FindNextFileA(HANDLE hFindFile,
+                               LPWIN32_FIND_DATAA lpFindFileData);
+    Convention STDCALL : 2 parametres (8 octets).
+    Continue une recherche de fichiers. }
+Procedure EmuFindNextFileA;
+Var
+ hFind,lpFindData:LongInt;
+ Slot:Integer;
+Begin
+ hFind:=ReadDWord(Regs.ESP+4);
+ lpFindData:=ReadDWord(Regs.ESP+8);
+ Slot:=hFind-EMU_FIND_HANDLE_BASE;
+ If(Slot>=0)and(Slot<MAX_EMU_FIND_HANDLES)and EmuFindActive[Slot] Then Begin
+  {$I-}FindNext(EmuFindSR[Slot]);{$I+}
+  If DosError=0 Then Begin
+   WriteFindDataToMem(lpFindData,EmuFindSR[Slot]);
+   Regs.EAX:=1; { TRUE }
+  End
+  Else Begin
+   Regs.EAX:=0; { FALSE }
+   EmuLastError:=18; { ERROR_NO_MORE_FILES }
+  End;
+ End
+ Else Begin
+  Regs.EAX:=0; { FALSE }
+  EmuLastError:=6; { ERROR_INVALID_HANDLE }
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 21 : Emulation de FindClose (KERNEL32.DLL).
+    BOOL WINAPI FindClose(HANDLE hFindFile);
+    Convention STDCALL : 1 parametre (4 octets).
+    Ferme un handle de recherche. }
+Procedure EmuFindCloseProc;
+Var
+ hFind:LongInt;
+ Slot:Integer;
+Begin
+ hFind:=ReadDWord(Regs.ESP+4);
+ Slot:=hFind-EMU_FIND_HANDLE_BASE;
+ If(Slot>=0)and(Slot<MAX_EMU_FIND_HANDLES)and EmuFindActive[Slot] Then Begin
+  {$I-}FindClose(EmuFindSR[Slot]);{$I+}
+  If IOResult=0 Then;
+  EmuFindActive[Slot]:=False;
+  Regs.EAX:=1; { TRUE }
+ End
+ Else Begin
+  Regs.EAX:=0; { FALSE }
+  EmuLastError:=6; { ERROR_INVALID_HANDLE }
+ End;
+  { Nettoyer la pile : 1 parametre }
+ Regs.ESP:=Regs.ESP+4;
+End;
+
+  { TODO 21 : Emulation de GetTempPathA (KERNEL32.DLL).
+    DWORD WINAPI GetTempPathA(DWORD nBufferLength, LPSTR lpBuffer);
+    Convention STDCALL : 2 parametres (8 octets).
+    Retourne le chemin du repertoire temporaire. }
+Procedure EmuGetTempPathA;
+Var
+ nBufLen,lpBuffer:LongInt;
+ TmpDir:String;
+ I:Integer;
+Begin
+ nBufLen:=ReadDWord(Regs.ESP+4);
+ lpBuffer:=ReadDWord(Regs.ESP+8);
+ TmpDir:=GetEnv('TEMP');
+ If TmpDir='' Then TmpDir:=GetEnv('TMP');
+ If TmpDir='' Then TmpDir:='.';
+  { Ajouter un separateur final si absent }
+ If(Length(TmpDir)>0)and(TmpDir[Length(TmpDir)]<>'\')and
+   (TmpDir[Length(TmpDir)]<>'/')Then
+  TmpDir:=TmpDir+'\';
+ If LongInt(Length(TmpDir)+1)>nBufLen Then Begin
+  Regs.EAX:=LongInt(Length(TmpDir)+1);
+ End
+ Else Begin
+  For I:=1 to Length(TmpDir) do
+   WriteByte(lpBuffer+LongInt(I-1),Byte(TmpDir[I]));
+  WriteByte(lpBuffer+LongInt(Length(TmpDir)),0);
+  Regs.EAX:=LongInt(Length(TmpDir));
+ End;
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 21 : Emulation de GetTempFileNameA (KERNEL32.DLL).
+    UINT WINAPI GetTempFileNameA(LPCSTR lpPathName,
+                                  LPCSTR lpPrefixString,
+                                  UINT uUnique,
+                                  LPSTR lpTempFileName);
+    Convention STDCALL : 4 parametres (16 octets).
+    Genere un nom de fichier temporaire unique. }
+Procedure EmuGetTempFileNameA;
+Var
+ lpPath,lpPrefix,lpTempFN:LongInt;
+ uUnique:LongInt;
+ PathStr,PrefixStr,TempName,BaseDir:String;
+ Unique:LongInt;
+ I:Integer;
+ F:File;
+Begin
+ lpPath:=ReadDWord(Regs.ESP+4);
+ lpPrefix:=ReadDWord(Regs.ESP+8);
+ uUnique:=ReadDWord(Regs.ESP+12);
+ lpTempFN:=ReadDWord(Regs.ESP+16);
+ PathStr:=ReadStringFromMem(lpPath);
+ PrefixStr:=ReadStringFromMem(lpPrefix);
+  { Tronquer le prefixe a 3 caracteres }
+ If Length(PrefixStr)>3 Then PrefixStr:=Copy(PrefixStr,1,3);
+ If uUnique<>0 Then
+  Unique:=uUnique
+ Else
+  Unique:=LongInt(Length(PathStr)*256+Length(PrefixStr)) xor $1234;
+  { Preparer le repertoire de base avec separateur final }
+ BaseDir:=PathStr;
+ If(Length(BaseDir)>0)and(BaseDir[Length(BaseDir)]<>'\')and
+   (BaseDir[Length(BaseDir)]<>'/')Then
+  BaseDir:=BaseDir+'\';
+  { Construire le nom : base + prefix + hex(unique) + .tmp }
+ TempName:=BaseDir+PrefixStr+HexStr(Unique and $FFFF,4)+'.tmp';
+ If uUnique=0 Then Begin
+    { S'assurer que le fichier est unique en incrementant }
+  While Unique<$FFFF do Begin
+   TempName:=BaseDir+PrefixStr+HexStr(Unique and $FFFF,4)+'.tmp';
+   {$I-}Assign(F,TempName);
+   Reset(F,1);{$I+}
+   If IOResult<>0 Then Begin
+      { Fichier n'existe pas : creer le fichier vide }
+    {$I-}Rewrite(F,1);{$I+}
+    If IOResult=0 Then Begin
+     {$I-}Close(F);{$I+}
+     If IOResult=0 Then;
+    End;
+    Break;
+   End;
+   {$I-}Close(F);{$I+}
+   If IOResult=0 Then;
+   Inc(Unique);
+  End;
+ End;
+  { Ecrire le nom dans le buffer }
+ For I:=1 to Length(TempName) do
+  WriteByte(lpTempFN+LongInt(I-1),Byte(TempName[I]));
+ WriteByte(lpTempFN+LongInt(Length(TempName)),0);
+ Regs.EAX:=Unique and $FFFF;
+  { Nettoyer la pile : 4 parametres }
+ Regs.ESP:=Regs.ESP+16;
+End;
+
+  { TODO 21 : Emulation de MoveFileA (KERNEL32.DLL).
+    BOOL WINAPI MoveFileA(LPCSTR lpExistingFileName,
+                           LPCSTR lpNewFileName);
+    Convention STDCALL : 2 parametres (8 octets).
+    Deplace (renomme) un fichier. }
+Procedure EmuMoveFileA;
+Var
+ lpExisting,lpNew:LongInt;
+ OldName,NewName:String;
+ F:File;
+Begin
+ lpExisting:=ReadDWord(Regs.ESP+4);
+ lpNew:=ReadDWord(Regs.ESP+8);
+ OldName:=ReadStringFromMem(lpExisting);
+ NewName:=ReadStringFromMem(lpNew);
+  { TODO 24 : En mode READONLY, bloquer le deplacement de fichiers }
+ If ReadOnlyMode Then Begin
+  If VerboseMode Then
+   WriteLn('[READONLY] MoveFileA bloque pour "',OldName,'"');
+  Regs.EAX:=0;
+  Regs.ESP:=Regs.ESP+8;
+  Exit;
+ End;
+ {$I-}Assign(F,OldName);
+ Rename(F,NewName);{$I+}
+ If IOResult=0 Then
+  Regs.EAX:=1  { TRUE }
+ Else
+  Regs.EAX:=0; { FALSE }
+  { Nettoyer la pile : 2 parametres }
+ Regs.ESP:=Regs.ESP+8;
+End;
+
+  { TODO 21 : Emulation de CopyFileA (KERNEL32.DLL).
+    BOOL WINAPI CopyFileA(LPCSTR lpExistingFileName,
+                           LPCSTR lpNewFileName,
+                           BOOL bFailIfExists);
+    Convention STDCALL : 3 parametres (12 octets).
+    Copie un fichier. Si bFailIfExists<>0 et que le fichier
+    destination existe deja, echoue. }
+Procedure EmuCopyFileA;
+Var
+ lpExisting,lpNew,bFail:LongInt;
+ SrcName,DstName:String;
+ Src,Dst:File;
+ CopyBuf:Array[0..511] of Byte;
+ BytesRead:Word;
+ IORes:Integer;
+Begin
+ lpExisting:=ReadDWord(Regs.ESP+4);
+ lpNew:=ReadDWord(Regs.ESP+8);
+ bFail:=ReadDWord(Regs.ESP+12);
+ SrcName:=ReadStringFromMem(lpExisting);
+ DstName:=ReadStringFromMem(lpNew);
+  { TODO 24 : En mode READONLY, bloquer la copie de fichiers }
+ If ReadOnlyMode Then Begin
+  If VerboseMode Then
+   WriteLn('[READONLY] CopyFileA bloque pour "',DstName,'"');
+  Regs.EAX:=0;
+  Regs.ESP:=Regs.ESP+12;
+  Exit;
+ End;
+  { Ouvrir le fichier source }
+ {$I-}Assign(Src,SrcName);
+ Reset(Src,1);{$I+}
+ IORes:=IOResult;
+ If IORes<>0 Then Begin
+  Regs.EAX:=0; { FALSE }
+  Regs.ESP:=Regs.ESP+12;
+  Exit;
+ End;
+  { Si bFailIfExists, verifier que la destination n'existe pas }
+ If bFail<>0 Then Begin
+  {$I-}Assign(Dst,DstName);
+  Reset(Dst,1);{$I+}
+  IORes:=IOResult;
+  If IORes=0 Then Begin
+    { Le fichier existe deja : echouer }
+   {$I-}Close(Dst);{$I+}
+   If IOResult=0 Then;
+   {$I-}Close(Src);{$I+}
+   If IOResult=0 Then;
+   Regs.EAX:=0; { FALSE }
+   Regs.ESP:=Regs.ESP+12;
+   Exit;
+  End;
+ End;
+  { Creer/ecraser le fichier destination }
+ {$I-}Assign(Dst,DstName);
+ Rewrite(Dst,1);{$I+}
+ IORes:=IOResult;
+ If IORes<>0 Then Begin
+  {$I-}Close(Src);{$I+}
+  If IOResult=0 Then;
+  Regs.EAX:=0; { FALSE }
+  Regs.ESP:=Regs.ESP+12;
+  Exit;
+ End;
+  { Copier le contenu }
+ Repeat
+  {$I-}BlockRead(Src,CopyBuf,SizeOf(CopyBuf),BytesRead);{$I+}
+  If IOResult<>0 Then Begin
+   BytesRead:=0;
+   Break;
+  End;
+  If BytesRead>0 Then Begin
+   {$I-}BlockWrite(Dst,CopyBuf,BytesRead);{$I+}
+   If IOResult<>0 Then Begin
+    BytesRead:=0;
+    Break;
+   End;
+  End;
+ Until BytesRead=0;
+ {$I-}Close(Src);{$I+}
+ If IOResult=0 Then;
+ {$I-}Close(Dst);{$I+}
+ If IOResult=0 Then;
+ Regs.EAX:=1; { TRUE }
+  { Nettoyer la pile : 3 parametres }
+ Regs.ESP:=Regs.ESP+12;
+End;
+
+  { TODO 22 : Lecture du Nieme parametre STDCALL depuis la pile.
+    En convention STDCALL Win32, les parametres sont empiles de
+    droite a gauche par l'appelant. A l'entree de la fonction
+    emulée, la pile contient :
+      [ESP]   -> adresse de retour (empilee par CALL)
+      [ESP+4] -> parametre 1 (le plus a gauche dans le prototype C)
+      [ESP+8] -> parametre 2
+      ...
+    N est 1-indexe : N=1 retourne le premier parametre. }
+Function StdCallParam(N:Integer):LongInt;
+Begin
+ StdCallParam:=ReadDWord(Regs.ESP+LongInt(N)*4);
+End;
+
+  { TODO 22 : Place une valeur de retour STDCALL dans EAX.
+    En convention STDCALL Win32, la valeur de retour d'une
+    fonction (DWORD, HANDLE, BOOL, pointeur) est toujours
+    placee dans le registre EAX. }
+Procedure StdCallReturn(Value:LongInt);
+Begin
+ Regs.EAX:=Value;
+End;
+
+  { TODO 22 : Nettoie la pile apres un appel STDCALL.
+    En convention STDCALL, c'est l'appele qui nettoie les parametres
+    de la pile (equivalent a RET imm16 ou imm16 = NumParams * 4).
+    Cette procedure ajuste ESP pour retirer NumParams parametres
+    de 4 octets chacun (DWORD) de la pile. }
+Procedure StdCallCleanup(NumParams:Integer);
+Begin
+ Regs.ESP:=Regs.ESP+LongInt(NumParams)*4;
+End;
+
+  { TODO 22 : Verifie si une adresse est dans la zone des thunks IAT.
+    Les thunks d'importation sont alloues dans la zone $E00000-$EFFFFF
+    (ThunkBase = $E00000). Retourne True si l'adresse est un thunk
+    d'importation qui doit etre intercepte et redirige vers
+    l'emulation de la DLL correspondante. }
+Function IsThunkAddress(Addr:LongInt):Boolean;
+Begin
+ IsThunkAddress:=(Addr>=ThunkBase)and(Addr<$F00000);
+End;
+
+  { TODO 22 : Retourne le nombre de parametres STDCALL pour une
+    fonction KERNEL32.DLL donnee. Permet de connaitre la taille
+    des parametres sur la pile pour le nettoyage automatique.
+    Retourne -1 si la fonction est inconnue. }
+Function GetKernel32ParamCount(Const FuncName:String):Integer;
+Begin
+  { TODO 15 : Processus et console de base }
+ If StrIComp(FuncName,'GetStdHandle') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'ExitProcess') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetCommandLineA') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetCommandLineW') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetCurrentProcessId') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetCurrentProcess') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetExitCodeProcess') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'GetStartupInfoA') Then
+  GetKernel32ParamCount:=1
+  { TODO 16 : Entrees/sorties console }
+ Else If StrIComp(FuncName,'WriteConsoleA') Then
+  GetKernel32ParamCount:=5
+ Else If StrIComp(FuncName,'ReadConsoleA') Then
+  GetKernel32ParamCount:=5
+ Else If StrIComp(FuncName,'WriteFile') Then
+  GetKernel32ParamCount:=5
+ Else If StrIComp(FuncName,'ReadFile') Then
+  GetKernel32ParamCount:=5
+ Else If StrIComp(FuncName,'SetConsoleMode') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'GetConsoleMode') Then
+  GetKernel32ParamCount:=2
+  { TODO 17 : Gestion des fichiers }
+ Else If StrIComp(FuncName,'CreateFileA') Then
+  GetKernel32ParamCount:=7
+ Else If StrIComp(FuncName,'CloseHandle') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'SetFilePointer') Then
+  GetKernel32ParamCount:=4
+ Else If StrIComp(FuncName,'GetFileSize') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'DeleteFileA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetFileAttributesA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'SetFileAttributesA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'FlushFileBuffers') Then
+  GetKernel32ParamCount:=1
+  { TODO 18 : Gestion de la memoire }
+ Else If StrIComp(FuncName,'VirtualAlloc') Then
+  GetKernel32ParamCount:=4
+ Else If StrIComp(FuncName,'VirtualFree') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'GetProcessHeap') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'HeapCreate') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'HeapAlloc') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'HeapFree') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'HeapReAlloc') Then
+  GetKernel32ParamCount:=4
+ Else If StrIComp(FuncName,'GlobalAlloc') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'GlobalFree') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'LocalAlloc') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'LocalFree') Then
+  GetKernel32ParamCount:=1
+  { TODO 19 : Chaines et environnement }
+ Else If StrIComp(FuncName,'GetEnvironmentVariableA') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'GetEnvironmentStringsA') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'FreeEnvironmentStringsA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'lstrlenA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'lstrcpyA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'lstrcmpA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'lstrcmpiA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'lstrcatA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'GetModuleFileNameA') Then
+  GetKernel32ParamCount:=3
+ Else If StrIComp(FuncName,'GetModuleHandleA') Then
+  GetKernel32ParamCount:=1
+  { TODO 20 : Date, heure et systeme }
+ Else If StrIComp(FuncName,'GetTickCount') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetSystemTime') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetLocalTime') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'QueryPerformanceCounter') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetSystemInfo') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetVersion') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'GetVersionExA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'Sleep') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetLastError') Then
+  GetKernel32ParamCount:=0
+ Else If StrIComp(FuncName,'SetLastError') Then
+  GetKernel32ParamCount:=1
+  { TODO 21 : Synchronisation et divers }
+ Else If StrIComp(FuncName,'GetCurrentDirectoryA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'SetCurrentDirectoryA') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'FindFirstFileA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'FindNextFileA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'FindClose') Then
+  GetKernel32ParamCount:=1
+ Else If StrIComp(FuncName,'GetTempPathA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'GetTempFileNameA') Then
+  GetKernel32ParamCount:=4
+ Else If StrIComp(FuncName,'MoveFileA') Then
+  GetKernel32ParamCount:=2
+ Else If StrIComp(FuncName,'CopyFileA') Then
+  GetKernel32ParamCount:=3
+ Else
+  GetKernel32ParamCount:=-1;
+End;
+
+  { TODO 15 : Dispatche un appel a une fonction de KERNEL32.DLL.
+    Recoit l'index de l'entree d'importation dans ImportEntries
+    et appelle la procedure d'emulation correspondante.
+    Retourne True si la fonction a ete emulée, False sinon. }
+Function DispatchKernel32(Idx:Integer):Boolean;
+Var
+ FName:String;
+Begin
+ DispatchKernel32:=True;
+ FName:=ImportEntries[Idx].FuncName;
+ If StrIComp(FName,'GetStdHandle') Then
+  EmuGetStdHandle
+ Else If StrIComp(FName,'ExitProcess') Then
+  EmuExitProcessProc
+ Else If StrIComp(FName,'GetCommandLineA') Then
+  EmuGetCommandLineA
+ Else If StrIComp(FName,'GetCommandLineW') Then
+  EmuGetCommandLineW
+ Else If StrIComp(FName,'GetCurrentProcessId') Then
+  EmuGetCurrentProcessId
+ Else If StrIComp(FName,'GetCurrentProcess') Then
+  EmuGetCurrentProcess
+ Else If StrIComp(FName,'GetExitCodeProcess') Then
+  EmuGetExitCodeProcess
+ Else If StrIComp(FName,'GetStartupInfoA') Then
+  EmuGetStartupInfoA
+  { TODO 16 : Entrees/sorties console }
+ Else If StrIComp(FName,'WriteConsoleA') Then
+  EmuWriteConsoleA
+ Else If StrIComp(FName,'ReadConsoleA') Then
+  EmuReadConsoleA
+ Else If StrIComp(FName,'WriteFile') Then
+  EmuWriteFile
+ Else If StrIComp(FName,'ReadFile') Then
+  EmuReadFile
+ Else If StrIComp(FName,'SetConsoleMode') Then
+  EmuSetConsoleMode
+ Else If StrIComp(FName,'GetConsoleMode') Then
+  EmuGetConsoleMode
+  { TODO 17 : Gestion des fichiers }
+ Else If StrIComp(FName,'CreateFileA') Then
+  EmuCreateFileA
+ Else If StrIComp(FName,'CloseHandle') Then
+  EmuCloseHandle
+ Else If StrIComp(FName,'SetFilePointer') Then
+  EmuSetFilePointer
+ Else If StrIComp(FName,'GetFileSize') Then
+  EmuGetFileSize
+ Else If StrIComp(FName,'DeleteFileA') Then
+  EmuDeleteFileA
+ Else If StrIComp(FName,'GetFileAttributesA') Then
+  EmuGetFileAttributesA
+ Else If StrIComp(FName,'SetFileAttributesA') Then
+  EmuSetFileAttributesA
+ Else If StrIComp(FName,'FlushFileBuffers') Then
+  EmuFlushFileBuffers
+  { TODO 18 : Gestion de la memoire }
+ Else If StrIComp(FName,'VirtualAlloc') Then
+  EmuVirtualAlloc
+ Else If StrIComp(FName,'VirtualFree') Then
+  EmuVirtualFree
+ Else If StrIComp(FName,'GetProcessHeap') Then
+  EmuGetProcessHeap
+ Else If StrIComp(FName,'HeapCreate') Then
+  EmuHeapCreate
+ Else If StrIComp(FName,'HeapAlloc') Then
+  EmuHeapAlloc
+ Else If StrIComp(FName,'HeapFree') Then
+  EmuHeapFree
+ Else If StrIComp(FName,'HeapReAlloc') Then
+  EmuHeapReAlloc
+ Else If StrIComp(FName,'GlobalAlloc') Then
+  EmuGlobalAlloc
+ Else If StrIComp(FName,'GlobalFree') Then
+  EmuGlobalFree
+ Else If StrIComp(FName,'LocalAlloc') Then
+  EmuLocalAlloc
+ Else If StrIComp(FName,'LocalFree') Then
+  EmuLocalFree
+  { TODO 19 : Chaines et environnement }
+ Else If StrIComp(FName,'GetEnvironmentVariableA') Then
+  EmuGetEnvironmentVariableA
+ Else If StrIComp(FName,'GetEnvironmentStringsA') Then
+  EmuGetEnvironmentStringsA
+ Else If StrIComp(FName,'FreeEnvironmentStringsA') Then
+  EmuFreeEnvironmentStringsA
+ Else If StrIComp(FName,'lstrlenA') Then
+  EmulstrlenA
+ Else If StrIComp(FName,'lstrcpyA') Then
+  EmulstrcpyA
+ Else If StrIComp(FName,'lstrcmpA') Then
+  EmulstrcmpA
+ Else If StrIComp(FName,'lstrcmpiA') Then
+  EmulstrcmpiA
+ Else If StrIComp(FName,'lstrcatA') Then
+  EmulstrcatA
+ Else If StrIComp(FName,'GetModuleFileNameA') Then
+  EmuGetModuleFileNameA
+ Else If StrIComp(FName,'GetModuleHandleA') Then
+  EmuGetModuleHandleA
+  { TODO 20 : Date, heure et systeme }
+ Else If StrIComp(FName,'GetTickCount') Then
+  EmuGetTickCount
+ Else If StrIComp(FName,'GetSystemTime') Then
+  EmuGetSystemTime
+ Else If StrIComp(FName,'GetLocalTime') Then
+  EmuGetLocalTime
+ Else If StrIComp(FName,'QueryPerformanceCounter') Then
+  EmuQueryPerformanceCounter
+ Else If StrIComp(FName,'GetSystemInfo') Then
+  EmuGetSystemInfo
+ Else If StrIComp(FName,'GetVersion') Then
+  EmuGetVersion
+ Else If StrIComp(FName,'GetVersionExA') Then
+  EmuGetVersionExA
+ Else If StrIComp(FName,'Sleep') Then
+  EmuSleep
+ Else If StrIComp(FName,'GetLastError') Then
+  EmuGetLastError
+ Else If StrIComp(FName,'SetLastError') Then
+  EmuSetLastError
+  { TODO 21 : Synchronisation et divers }
+ Else If StrIComp(FName,'GetCurrentDirectoryA') Then
+  EmuGetCurrentDirectoryA
+ Else If StrIComp(FName,'SetCurrentDirectoryA') Then
+  EmuSetCurrentDirectoryA
+ Else If StrIComp(FName,'FindFirstFileA') Then
+  EmuFindFirstFileA
+ Else If StrIComp(FName,'FindNextFileA') Then
+  EmuFindNextFileA
+ Else If StrIComp(FName,'FindClose') Then
+  EmuFindCloseProc
+ Else If StrIComp(FName,'GetTempPathA') Then
+  EmuGetTempPathA
+ Else If StrIComp(FName,'GetTempFileNameA') Then
+  EmuGetTempFileNameA
+ Else If StrIComp(FName,'MoveFileA') Then
+  EmuMoveFileA
+ Else If StrIComp(FName,'CopyFileA') Then
+  EmuCopyFileA
+ Else Begin
+  WriteLn('KERNEL32: fonction non emulée: ',FName);
+  DispatchKernel32:=False;
+ End;
+End;
+
+  { TODO 15 : Dispatche un appel vers un thunk d'importation.
+    Verifie si l'adresse courante (EIP) est dans la zone des thunks
+    ($E00000-$EFFFFF). Si oui, cherche l'entree d'importation
+    correspondante et dispatche vers l'emulation KERNEL32.DLL.
+    Retourne True si le thunk a ete traite. }
+Function HandleThunkCall(Addr:LongInt):Boolean;
+Var
+ Idx:Integer;
+ OK:Boolean;
+Begin
+ HandleThunkCall:=False;
+ If(Addr<ThunkBase)or(Addr>=$F00000)Then Exit;
+ Idx:=FindImportByAddr(Addr);
+ If Idx<0 Then Begin
+  WriteLn('HandleThunkCall: thunk inconnu a $',HexStr(Addr,8));
+  Exit;
+ End;
+ If StrIComp(ImportEntries[Idx].DLLName,'KERNEL32.DLL')or
+    StrIComp(ImportEntries[Idx].DLLName,'kernel32.dll')or
+    StrIComp(ImportEntries[Idx].DLLName,'KERNEL32')or
+    StrIComp(ImportEntries[Idx].DLLName,'kernel32')Then Begin
+  OK:=DispatchKernel32(Idx);
+  HandleThunkCall:=OK;
+  If OK Then Begin
+    { Simuler le RET : depiler l'adresse de retour }
+   EIP:=Pop32;
+  End;
+ End
+ Else
+  WriteLn('HandleThunkCall: DLL non emulée: ',
+          ImportEntries[Idx].DLLName,'!',
+          ImportEntries[Idx].FuncName);
+End;
+
+  { TODO 22 : Detection et dispatch unifie des appels vers les thunks IAT.
+    Verifie si l'adresse est un thunk d'importation via IsThunkAddress,
+    identifie la DLL et la fonction importee, dispatche l'appel vers
+    l'emulation KERNEL32.DLL, et gere le nettoyage de la pile selon
+    la convention STDCALL (l'appele nettoie les parametres, puis on
+    depile l'adresse de retour).
+    Cette fonction sert de point d'entree principal pour la boucle
+    d'execution (TODO 23) quand EIP pointe vers un thunk.
+    Retourne True si le thunk a ete traite avec succes. }
+Function DetectAndDispatchThunk(Addr:LongInt):Boolean;
+Var
+ Idx:Integer;
+ OK:Boolean;
+Begin
+ DetectAndDispatchThunk:=False;
+ If Not IsThunkAddress(Addr) Then Exit;
+ Idx:=FindImportByAddr(Addr);
+ If Idx<0 Then Begin
+  WriteLn('DetectAndDispatchThunk: thunk inconnu a $',HexStr(Addr,8));
+  Exit;
+ End;
+ If StrIComp(ImportEntries[Idx].DLLName,'KERNEL32.DLL')or
+    StrIComp(ImportEntries[Idx].DLLName,'kernel32.dll')or
+    StrIComp(ImportEntries[Idx].DLLName,'KERNEL32')or
+    StrIComp(ImportEntries[Idx].DLLName,'kernel32')Then Begin
+  OK:=DispatchKernel32(Idx);
+  DetectAndDispatchThunk:=OK;
+  If OK Then Begin
+    { Convention STDCALL : l'appele nettoie les parametres (deja fait
+      par chaque procedure Emu*). Il reste a depiler l'adresse de
+      retour pour simuler le RET final du thunk. }
+   EIP:=Pop32;
+  End;
+ End
+ Else
+  WriteLn('DetectAndDispatchThunk: DLL non emulée: ',
+          ImportEntries[Idx].DLLName,'!',
+          ImportEntries[Idx].FuncName);
+End;
+
+  { TODO 24 : Analyse des options de ligne de commande.
+    Parcourt les parametres et active les modes :
+    /DEBUG   - affiche l'etat des registres apres chaque instruction.
+    /VERBOSE - affiche des messages informatifs supplementaires.
+    /READONLY - interdit les ecritures sur disque par le programme emule.
+    Les options sont case-insensitive et precedees de / ou -. }
+Procedure ParseOptions;
+Var
+ I:Integer;
+ S:String;
+Begin
+ DebugMode:=False;
+ VerboseMode:=False;
+ ReadOnlyMode:=False;
+ For I:=1 to ParamCount do Begin
+  S:=ParamStr(I);
+  If(Length(S)>1)and((S[1]='/')or(S[1]='-'))Then Begin
+   Delete(S,1,1);
+   { Convertir en majuscules pour comparaison case-insensitive }
+   For I:=1 to Length(S) do
+    If(S[I]>='a')and(S[I]<='z')Then
+     S[I]:=Chr(Ord(S[I])-32);
+   If S='DEBUG' Then DebugMode:=True
+   Else If S='VERBOSE' Then VerboseMode:=True
+   Else If S='READONLY' Then ReadOnlyMode:=True;
+  End;
+ End;
+End;
+
+  { TODO 24 : Affichage de l'etat des registres pour le mode debogage.
+    Affiche EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI, EIP et les
+    drapeaux principaux (CF, ZF, SF, OF, DF, PF, AF) d'EFLAGS. }
+Procedure DumpRegisters;
+Begin
+ WriteLn('  EAX=$',HexStr(Regs.EAX,8),
+         ' ECX=$',HexStr(Regs.ECX,8),
+         ' EDX=$',HexStr(Regs.EDX,8),
+         ' EBX=$',HexStr(Regs.EBX,8));
+ WriteLn('  ESP=$',HexStr(Regs.ESP,8),
+         ' EBP=$',HexStr(Regs.EBP,8),
+         ' ESI=$',HexStr(Regs.ESI,8),
+         ' EDI=$',HexStr(Regs.EDI,8));
+ Write('  EIP=$',HexStr(EIP,8),' EFLAGS=');
+ If CF in EFlags.s Then Write('CF ');
+ If PF in EFlags.s Then Write('PF ');
+ If AF in EFlags.s Then Write('AF ');
+ If ZF in EFlags.s Then Write('ZF ');
+ If SF in EFlags.s Then Write('SF ');
+ If DF in EFlags.s Then Write('DF ');
+ If _OF in EFlags.s Then Write('OF ');
+ WriteLn;
+End;
+
+  { TODO 23 : Boucle principale d'execution (Procedure Run).
+    Decodage du flux d'instructions 80386 avec gestion des prefixes
+    (66h operand-size, 67h address-size, 0Fh opcodes etendus,
+    F2h/F3h pour REP/REPNE) et dispatch vers les procedures
+    d'emulation definies dans les TODOs 8-14.
+    La boucle tourne tant que EmuRunning est True et que EIP est
+    valide. A chaque iteration, on verifie si EIP pointe vers un
+    thunk IAT (zone $E00000-$EFFFFF) pour dispatcher les appels
+    Win32 via DetectAndDispatchThunk (TODO 22), sinon on decode
+    l'instruction x86 courante. }
+Procedure Run;
+Var
+ OpCode,ExtOp,PeekByte,RegExt:Byte;
+ HasPrefix66,HasPrefixF2,HasPrefixF3:Boolean;
+ GrpModF,GrpRegF,GrpRMF:Byte;
+ GrpEff,GrpVal32,GrpImm32,GrpRes32:LongInt;
+ GrpIsMem:Boolean;
+ GrpVal8,GrpImm8,GrpRes8:Byte;
+Begin
+ While EmuRunning do Begin
+   { Verifier la validite de EIP }
+  If(EIP<=0)or(EIP>=MemorySize)Then Begin
+   If EmuRunning Then
+    WriteLn('Run: EIP invalide $',HexStr(EIP,8),' - arret.');
+   EmuRunning:=False;
+  End
+  Else If IsThunkAddress(EIP)Then Begin
+    { EIP pointe vers un thunk IAT : dispatcher l'appel emule }
+   If Not DetectAndDispatchThunk(EIP)Then Begin
+    WriteLn('Run: thunk non gere a EIP=$',HexStr(EIP,8));
+    EmuRunning:=False;
+   End;
+  End
+  Else Begin
+    { Reinitialiser les drapeaux de prefixe }
+   HasPrefix66:=False;
+   HasPrefixF2:=False;
+   HasPrefixF3:=False;
+    { Lire l'octet d'opcode }
+   OpCode:=ReadByte(EIP);
+   Inc(EIP);
+    { Boucle de consommation des prefixes }
+   While(OpCode=$66)or(OpCode=$67)or
+        (OpCode=$F2)or(OpCode=$F3)do Begin
+    If OpCode=$66 Then HasPrefix66:=True
+    Else If OpCode=$F2 Then HasPrefixF2:=True
+    Else If OpCode=$F3 Then HasPrefixF3:=True;
+     { $67 address-size override ignore en mode plat 32 bits }
+    OpCode:=ReadByte(EIP);
+    Inc(EIP);
+   End;
+      { TODO 24 : En mode debogage, afficher l'opcode en cours }
+   If DebugMode Then
+    WriteLn('[DEBUG] EIP=$',HexStr(EIP-1,8),' opcode=$',HexStr(OpCode,2));
+    { Dispatch de l'opcode principal }
+      { TODO 25 : Incrementer le compteur d'instructions }
+   Inc(EmuInstrCount);
+   Case OpCode of
+     { === ADD === }
+    $00:OpAddRM8R8;
+    $01:OpAddRM32R32;
+    $02:OpAddR8RM8;
+    $03:OpAddR32RM32;
+    $04:OpAddALImm8;
+    $05:OpAddEAXImm32;
+     { === OR === }
+    $08:OpOrRM8R8;
+    $09:OpOrRM32R32;
+    $0A:OpOrR8RM8;
+    $0B:OpOrR32RM32;
+    $0C:OpOrALImm8;
+    $0D:OpOrEAXImm32;
+     { === Opcodes etendus $0F === }
+    $0F:Begin
+     ExtOp:=ReadByte(EIP);
+     Inc(EIP);
+     Case ExtOp of
+       { CMOVcc r32,r/m32 }
+      $40,$41,$42,$43,$44,$45,$46,$47,
+      $48,$49,$4A,$4B,$4C,$4D,$4E,$4F:
+       OpCMOVcc(ExtOp-$40);
+       { Jcc near rel32 }
+      $80,$81,$82,$83,$84,$85,$86,$87,
+      $88,$89,$8A,$8B,$8C,$8D,$8E,$8F:
+       OpJccNear(ExtOp-$80);
+       { SETcc r/m8 }
+      $90,$91,$92,$93,$94,$95,$96,$97,
+      $98,$99,$9A,$9B,$9C,$9D,$9E,$9F:
+       OpSETcc(ExtOp-$90);
+       { BT r/m32,r32 }
+      $A3:OpBtRM32R32;
+       { BTS r/m32,r32 }
+      $AB:OpBtsRM32R32;
+       { IMUL r32,r/m32 }
+      $AF:OpImulR32RM32;
+       { BTR r/m32,r32 }
+      $B3:OpBtrRM32R32;
+       { MOVZX r32,r/m8 }
+      $B6:OpMovzxR32RM8;
+       { MOVZX r32,r/m16 }
+      $B7:OpMovzxR32RM16;
+       { BT/BTS/BTR/BTC r/m32,imm8 - dispatch par champ reg }
+      $BA:Begin
+       PeekByte:=ReadByte(EIP);
+       RegExt:=(PeekByte shr 3)and 7;
+       Case RegExt of
+        4:OpBtRM32Imm;
+        5:OpBtsRM32Imm;
+        6:OpBtrRM32Imm;
+        7:OpBtcRM32Imm;
+        Else Begin
+         WriteLn('Run: $0F $BA reg=',RegExt,' non implemente');
+         EmuRunning:=False;
+        End;
+       End;
+      End;
+       { BTC r/m32,r32 }
+      $BB:OpBtcRM32R32;
+       { BSF r32,r/m32 }
+      $BC:OpBsfR32RM32;
+       { BSR r32,r/m32 }
+      $BD:OpBsrR32RM32;
+       { MOVSX r32,r/m8 }
+      $BE:OpMovsxR32RM8;
+       { MOVSX r32,r/m16 }
+      $BF:OpMovsxR32RM16;
+       { BSWAP r32 }
+      $C8,$C9,$CA,$CB,$CC,$CD,$CE,$CF:
+       OpBswap(ExtOp-$C8);
+      Else Begin
+       WriteLn('Run: opcode etendu $0F $',HexStr(ExtOp,2),
+               ' non implemente a EIP=$',HexStr(EIP-2,8));
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === ADC === }
+    $10:OpAdcRM8R8;
+    $11:OpAdcRM32R32;
+    $12:OpAdcR8RM8;
+    $13:OpAdcR32RM32;
+    $14:OpAdcALImm8;
+    $15:OpAdcEAXImm32;
+     { === SBB === }
+    $18:OpSbbRM8R8;
+    $19:OpSbbRM32R32;
+    $1A:OpSbbR8RM8;
+    $1B:OpSbbR32RM32;
+    $1C:OpSbbALImm8;
+    $1D:OpSbbEAXImm32;
+     { === AND === }
+    $20:OpAndRM8R8;
+    $21:OpAndRM32R32;
+    $22:OpAndR8RM8;
+    $23:OpAndR32RM32;
+    $24:OpAndALImm8;
+    $25:OpAndEAXImm32;
+     { === SUB === }
+    $28:OpSubRM8R8;
+    $29:OpSubRM32R32;
+    $2A:OpSubR8RM8;
+    $2B:OpSubR32RM32;
+    $2C:OpSubALImm8;
+    $2D:OpSubEAXImm32;
+     { === XOR === }
+    $30:OpXorRM8R8;
+    $31:OpXorRM32R32;
+    $32:OpXorR8RM8;
+    $33:OpXorR32RM32;
+    $34:OpXorALImm8;
+    $35:OpXorEAXImm32;
+     { === CMP === }
+    $38:OpCmpRM8R8;
+    $39:OpCmpRM32R32;
+    $3A:OpCmpR8RM8;
+    $3B:OpCmpR32RM32;
+    $3C:OpCmpALImm8;
+    $3D:OpCmpEAXImm32;
+     { === INC r32 ($40-$47) === }
+    $40,$41,$42,$43,$44,$45,$46,$47:
+     OpIncR32(OpCode-$40);
+     { === DEC r32 ($48-$4F) === }
+    $48,$49,$4A,$4B,$4C,$4D,$4E,$4F:
+     OpDecR32(OpCode-$48);
+     { === PUSH r32 ($50-$57) === }
+    $50,$51,$52,$53,$54,$55,$56,$57:
+     Push32(GetReg32(OpCode-$50));
+     { === POP r32 ($58-$5F) === }
+    $58,$59,$5A,$5B,$5C,$5D,$5E,$5F:
+     SetReg32(OpCode-$58,Pop32);
+     { === PUSHAD ($60) === }
+    $60:Begin
+     GrpVal32:=Regs.ESP;
+     Push32(Regs.EAX);
+     Push32(Regs.ECX);
+     Push32(Regs.EDX);
+     Push32(Regs.EBX);
+     Push32(GrpVal32);
+     Push32(Regs.EBP);
+     Push32(Regs.ESI);
+     Push32(Regs.EDI);
+    End;
+     { === POPAD ($61) === }
+    $61:Begin
+     Regs.EDI:=Pop32;
+     Regs.ESI:=Pop32;
+     Regs.EBP:=Pop32;
+     Pop32; { ESP ignore }
+     Regs.EBX:=Pop32;
+     Regs.EDX:=Pop32;
+     Regs.ECX:=Pop32;
+     Regs.EAX:=Pop32;
+    End;
+     { === PUSH imm32 ($68) === }
+    $68:Begin
+     GrpImm32:=ReadDWord(EIP);
+     Inc(EIP,4);
+     Push32(GrpImm32);
+    End;
+     { === IMUL r32,r/m32,imm32 ($69) === }
+    $69:OpImulR32RM32Imm32;
+     { === PUSH imm8 sign-extended ($6A) === }
+    $6A:Begin
+     GrpImm8:=ReadByte(EIP);
+     Inc(EIP);
+     Push32(LongInt(ShortInt(GrpImm8)));
+    End;
+     { === IMUL r32,r/m32,imm8 ($6B) === }
+    $6B:OpImulR32RM32Imm8;
+     { === Jcc short rel8 ($70-$7F) === }
+    $70,$71,$72,$73,$74,$75,$76,$77,
+    $78,$79,$7A,$7B,$7C,$7D,$7E,$7F:
+     OpJccShort(OpCode-$70);
+     { === Group 1 : ALU r/m8, imm8 ($80) === }
+    $80:Begin
+     DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+     If GrpIsMem Then GrpVal8:=ReadByte(GrpEff)
+     Else GrpVal8:=GetReg8(GrpRMF);
+     GrpImm8:=ReadByte(EIP);
+     Inc(EIP);
+     Case GrpRegF of
+      0:GrpRes8:=ArithAdd8(GrpVal8,GrpImm8);
+      1:Begin GrpRes8:=GrpVal8 or GrpImm8;LogicFlags8(GrpRes8);End;
+      2:GrpRes8:=ArithAdc8(GrpVal8,GrpImm8);
+      3:GrpRes8:=ArithSbb8(GrpVal8,GrpImm8);
+      4:Begin GrpRes8:=GrpVal8 and GrpImm8;LogicFlags8(GrpRes8);End;
+      5:GrpRes8:=ArithSub8(GrpVal8,GrpImm8);
+      6:Begin GrpRes8:=GrpVal8 xor GrpImm8;LogicFlags8(GrpRes8);End;
+      7:GrpRes8:=ArithSub8(GrpVal8,GrpImm8); { CMP }
+     End;
+     If GrpRegF<>7 Then Begin
+      If GrpIsMem Then WriteByte(GrpEff,GrpRes8)
+      Else SetReg8(GrpRMF,GrpRes8);
+     End;
+    End;
+     { === Group 1 : ALU r/m32, imm32 ($81) === }
+    $81:Begin
+     DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+     If GrpIsMem Then GrpVal32:=ReadDWord(GrpEff)
+     Else GrpVal32:=GetReg32(GrpRMF);
+     GrpImm32:=ReadDWord(EIP);
+     Inc(EIP,4);
+     Case GrpRegF of
+      0:GrpRes32:=ArithAdd32(GrpVal32,GrpImm32);
+      1:Begin GrpRes32:=GrpVal32 or GrpImm32;LogicFlags32(GrpRes32);End;
+      2:GrpRes32:=ArithAdc32(GrpVal32,GrpImm32);
+      3:GrpRes32:=ArithSbb32(GrpVal32,GrpImm32);
+      4:Begin GrpRes32:=GrpVal32 and GrpImm32;LogicFlags32(GrpRes32);End;
+      5:GrpRes32:=ArithSub32(GrpVal32,GrpImm32);
+      6:Begin GrpRes32:=GrpVal32 xor GrpImm32;LogicFlags32(GrpRes32);End;
+      7:GrpRes32:=ArithSub32(GrpVal32,GrpImm32); { CMP }
+     End;
+     If GrpRegF<>7 Then Begin
+      If GrpIsMem Then WriteDWord(GrpEff,GrpRes32)
+      Else SetReg32(GrpRMF,GrpRes32);
+     End;
+    End;
+     { === Group 1 : ALU r/m32, sign-extended imm8 ($83) === }
+    $83:Begin
+     DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+     If GrpIsMem Then GrpVal32:=ReadDWord(GrpEff)
+     Else GrpVal32:=GetReg32(GrpRMF);
+     GrpImm32:=LongInt(ShortInt(ReadByte(EIP)));
+     Inc(EIP);
+     Case GrpRegF of
+      0:GrpRes32:=ArithAdd32(GrpVal32,GrpImm32);
+      1:Begin GrpRes32:=GrpVal32 or GrpImm32;LogicFlags32(GrpRes32);End;
+      2:GrpRes32:=ArithAdc32(GrpVal32,GrpImm32);
+      3:GrpRes32:=ArithSbb32(GrpVal32,GrpImm32);
+      4:Begin GrpRes32:=GrpVal32 and GrpImm32;LogicFlags32(GrpRes32);End;
+      5:GrpRes32:=ArithSub32(GrpVal32,GrpImm32);
+      6:Begin GrpRes32:=GrpVal32 xor GrpImm32;LogicFlags32(GrpRes32);End;
+      7:GrpRes32:=ArithSub32(GrpVal32,GrpImm32); { CMP }
+     End;
+     If GrpRegF<>7 Then Begin
+      If GrpIsMem Then WriteDWord(GrpEff,GrpRes32)
+      Else SetReg32(GrpRMF,GrpRes32);
+     End;
+    End;
+     { === TEST === }
+    $84:OpTestRM8R8;
+    $85:OpTestRM32R32;
+     { === XCHG === }
+    $86:OpXchgRM8R8;
+    $87:OpXchgRM32R32;
+     { === MOV === }
+    $88:OpMovRM8R8;
+    $89:OpMovRM32R32;
+    $8A:OpMovR8RM8;
+    $8B:OpMovR32RM32;
+     { === LEA r32,m === }
+    $8D:OpLea;
+     { === POP r/m32 ($8F) === }
+    $8F:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     If RegExt=0 Then Begin
+      DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+      GrpVal32:=Pop32;
+      If GrpIsMem Then WriteDWord(GrpEff,GrpVal32)
+      Else SetReg32(GrpRMF,GrpVal32);
+     End
+     Else Begin
+      WriteLn('Run: opcode $8F reg=',RegExt,' non implemente');
+      EmuRunning:=False;
+     End;
+    End;
+     { === NOP ($90) / XCHG EAX,r32 ($91-$97) === }
+    $90:OpNop;
+    $91,$92,$93,$94,$95,$96,$97:
+     OpXchgEAXR32(OpCode-$90);
+     { === CWDE ($98) ou CBW avec prefixe $66 === }
+    $98:If HasPrefix66 Then OpCbw Else OpCwde;
+     { === CDQ ($99) === }
+    $99:OpCdq;
+     { === PUSHFD ($9C) === }
+    $9C:Push32(EFlags.Abs);
+     { === POPFD ($9D) === }
+    $9D:EFlags.Abs:=Pop32;
+     { === Instructions de chaines avec gestion REP/REPE/REPNE === }
+     { MOVSB / REP MOVSB }
+    $A4:If HasPrefixF3 Then OpRepMovsB Else OpMovsB;
+     { MOVSD/MOVSW / REP MOVSD/MOVSW }
+    $A5:If HasPrefixF3 Then Begin
+         If HasPrefix66 Then OpRepMovsW Else OpRepMovsD;
+        End
+        Else Begin
+         If HasPrefix66 Then OpMovsW Else OpMovsD;
+        End;
+     { CMPSB / REPE CMPSB / REPNE CMPSB }
+    $A6:If HasPrefixF3 Then OpRepeCmpsB
+        Else If HasPrefixF2 Then OpRepneCmpsB
+        Else OpCmpsB;
+     { CMPSD/CMPSW / REPE/REPNE CMPSD/CMPSW }
+    $A7:If HasPrefixF3 Then Begin
+         If HasPrefix66 Then OpRepeCmpsW Else OpRepeCmpsD;
+        End
+        Else If HasPrefixF2 Then Begin
+         If HasPrefix66 Then OpRepneCmpsW Else OpRepneCmpsD;
+        End
+        Else Begin
+         If HasPrefix66 Then OpCmpsW Else OpCmpsD;
+        End;
+     { TEST AL,imm8 }
+    $A8:OpTestALImm8;
+     { TEST EAX,imm32 }
+    $A9:OpTestEAXImm32;
+     { STOSB / REP STOSB }
+    $AA:If HasPrefixF3 Then OpRepStosB Else OpStosB;
+     { STOSD/STOSW / REP STOSD/STOSW }
+    $AB:If HasPrefixF3 Then Begin
+         If HasPrefix66 Then OpRepStosW Else OpRepStosD;
+        End
+        Else Begin
+         If HasPrefix66 Then OpStosW Else OpStosD;
+        End;
+     { LODSB / REP LODSB }
+    $AC:If HasPrefixF3 Then OpRepLodsB Else OpLodsB;
+     { LODSD/LODSW / REP LODSD/LODSW }
+    $AD:If HasPrefixF3 Then Begin
+         If HasPrefix66 Then OpRepLodsW Else OpRepLodsD;
+        End
+        Else Begin
+         If HasPrefix66 Then OpLodsW Else OpLodsD;
+        End;
+     { SCASB / REPE SCASB / REPNE SCASB }
+    $AE:If HasPrefixF3 Then OpRepeScasB
+        Else If HasPrefixF2 Then OpRepneScasB
+        Else OpScasB;
+     { SCASD/SCASW / REPE/REPNE SCASD/SCASW }
+    $AF:If HasPrefixF3 Then Begin
+         If HasPrefix66 Then OpRepeScasW Else OpRepeScasD;
+        End
+        Else If HasPrefixF2 Then Begin
+         If HasPrefix66 Then OpRepneScasW Else OpRepneScasD;
+        End
+        Else Begin
+         If HasPrefix66 Then OpScasW Else OpScasD;
+        End;
+     { === MOV r8, imm8 ($B0-$B7) === }
+    $B0,$B1,$B2,$B3,$B4,$B5,$B6,$B7:
+     OpMovR8Imm8(OpCode-$B0);
+     { === MOV r32, imm32 ($B8-$BF) === }
+    $B8,$B9,$BA,$BB,$BC,$BD,$BE,$BF:
+     OpMovR32Imm32(OpCode-$B8);
+     { === Group 2 : shifts/rotates r/m8, imm8 ($C0) === }
+    $C0:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      4:OpShlRM8Imm;
+      5:OpShrRM8Imm;
+      6:OpShlRM8Imm; { SAL = SHL }
+      7:OpSarRM8Imm;
+      Else Begin
+       WriteLn('Run: opcode $C0 reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === Group 2 : shifts/rotates r/m32, imm8 ($C1) === }
+    $C1:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      4:OpShlRM32Imm;
+      5:OpShrRM32Imm;
+      6:OpShlRM32Imm; { SAL = SHL }
+      7:OpSarRM32Imm;
+      Else Begin
+       WriteLn('Run: opcode $C1 reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === RET imm16 ($C2) === }
+    $C2:OpRetImm16;
+     { === RET ($C3) === }
+    $C3:OpRet;
+     { === MOV r/m8, imm8 ($C6) === }
+    $C6:OpMovRM8Imm8;
+     { === MOV r/m32, imm32 ($C7) === }
+    $C7:OpMovRM32Imm32;
+     { === ENTER imm16, imm8 ($C8) === }
+    $C8:OpEnter;
+     { === LEAVE ($C9) === }
+    $C9:OpLeave;
+     { === INT3 ($CC) === }
+    $CC:OpInt3;
+     { === Group 2 : shifts/rotates r/m8, 1 ($D0) === }
+    $D0:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpRolRM8By1;
+      1:OpRorRM8By1;
+      2:OpRclRM8By1;
+      3:OpRcrRM8By1;
+      4:OpShlRM8By1;
+      5:OpShrRM8By1;
+      6:OpShlRM8By1; { SAL = SHL }
+      7:OpSarRM8By1;
+     End;
+    End;
+     { === Group 2 : shifts/rotates r/m32, 1 ($D1) === }
+    $D1:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpRolRM32By1;
+      1:OpRorRM32By1;
+      2:OpRclRM32By1;
+      3:OpRcrRM32By1;
+      4:OpShlRM32By1;
+      5:OpShrRM32By1;
+      6:OpShlRM32By1; { SAL = SHL }
+      7:OpSarRM32By1;
+     End;
+    End;
+     { === Group 2 : shifts/rotates r/m8, CL ($D2) === }
+    $D2:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpRolRM8ByCL;
+      1:OpRorRM8ByCL;
+      2:OpRclRM8ByCL;
+      3:OpRcrRM8ByCL;
+      4:OpShlRM8ByCL;
+      5:OpShrRM8ByCL;
+      6:OpShlRM8ByCL; { SAL = SHL }
+      7:OpSarRM8ByCL;
+     End;
+    End;
+     { === Group 2 : shifts/rotates r/m32, CL ($D3) === }
+    $D3:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpRolRM32ByCL;
+      1:OpRorRM32ByCL;
+      2:OpRclRM32ByCL;
+      3:OpRcrRM32ByCL;
+      4:OpShlRM32ByCL;
+      5:OpShrRM32ByCL;
+      6:OpShlRM32ByCL; { SAL = SHL }
+      7:OpSarRM32ByCL;
+     End;
+    End;
+     { === LOOPNE ($E0) === }
+    $E0:OpLoopne;
+     { === LOOPE ($E1) === }
+    $E1:OpLoope;
+     { === LOOP ($E2) === }
+    $E2:OpLoop;
+     { === JECXZ ($E3) === }
+    $E3:OpJecxz;
+     { === CALL near rel32 ($E8) === }
+    $E8:OpCallNear;
+     { === JMP near rel32 ($E9) === }
+    $E9:OpJmpNear;
+     { === JMP short rel8 ($EB) === }
+    $EB:OpJmpShort;
+     { === CMC ($F5) === }
+    $F5:OpCmc;
+     { === Group 3 : unary r/m8 ($F6) === }
+    $F6:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:Begin { TEST r/m8, imm8 }
+       DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+       If GrpIsMem Then GrpVal8:=ReadByte(GrpEff)
+       Else GrpVal8:=GetReg8(GrpRMF);
+       GrpImm8:=ReadByte(EIP);
+       Inc(EIP);
+       GrpRes8:=GrpVal8 and GrpImm8;
+       LogicFlags8(GrpRes8);
+      End;
+      2:OpNotRM8;
+      3:OpNegRM8;
+      4:OpMulRM8;
+      5:OpImulRM8;
+      6:OpDivRM8;
+      7:OpIdivRM8;
+      Else Begin
+       WriteLn('Run: opcode $F6 reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === Group 3 : unary r/m32 ($F7) === }
+    $F7:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:Begin { TEST r/m32, imm32 }
+       DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+       If GrpIsMem Then GrpVal32:=ReadDWord(GrpEff)
+       Else GrpVal32:=GetReg32(GrpRMF);
+       GrpImm32:=ReadDWord(EIP);
+       Inc(EIP,4);
+       GrpRes32:=GrpVal32 and GrpImm32;
+       LogicFlags32(GrpRes32);
+      End;
+      2:OpNotRM32;
+      3:OpNegRM32;
+      4:OpMulRM32;
+      5:OpImulRM32;
+      6:OpDivRM32;
+      7:OpIdivRM32;
+      Else Begin
+       WriteLn('Run: opcode $F7 reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === CLC ($F8) === }
+    $F8:OpClc;
+     { === STC ($F9) === }
+    $F9:OpStc;
+     { === CLD ($FC) === }
+    $FC:OpCld;
+     { === STD ($FD) === }
+    $FD:OpStd;
+     { === Group 4 : INC/DEC r/m8 ($FE) === }
+    $FE:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpIncRM8;
+      1:OpDecRM8;
+      Else Begin
+       WriteLn('Run: opcode $FE reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+     { === Group 5 : INC/DEC/CALL/JMP/PUSH r/m32 ($FF) === }
+    $FF:Begin
+     PeekByte:=ReadByte(EIP);
+     RegExt:=(PeekByte shr 3)and 7;
+     Case RegExt of
+      0:OpIncRM32;
+      1:OpDecRM32;
+      2:OpCallRM32;
+      4:OpJmpRM32;
+      6:Begin { PUSH r/m32 }
+       DecodeModRM(GrpModF,GrpRegF,GrpRMF,GrpEff,GrpIsMem);
+       If GrpIsMem Then Push32(ReadDWord(GrpEff))
+       Else Push32(GetReg32(GrpRMF));
+      End;
+      Else Begin
+       WriteLn('Run: opcode $FF reg=',RegExt,' non implemente');
+       EmuRunning:=False;
+      End;
+     End;
+    End;
+    Else Begin
+     WriteLn('Run: opcode $',HexStr(OpCode,2),
+             ' non implemente a EIP=$',HexStr(EIP-1,8));
+     EmuRunning:=False;
+    End;
+   End; { Case OpCode }
+     { TODO 24 : En mode debogage, afficher l'etat des registres }
+   If DebugMode and EmuRunning Then DumpRegisters;
+  End; { Else }
+ End; { While EmuRunning }
+End;
+
+  { TODO 25 : Procedure de nettoyage.
+    Ferme tous les handles de fichiers emules, ferme les recherches
+    FindFirstFile/FindNextFile actives, ferme et supprime le fichier
+    d'echange de 16 Mo, puis affiche un rapport de sortie. }
+Procedure Done;
+Var
+ I:Integer;
+ FilesClosedCount:Integer;
+ FindClosedCount:Integer;
+Begin
+  { Fermer tous les fichiers emules encore ouverts }
+ FilesClosedCount:=0;
+ For I:=0 to MAX_EMU_FILES-1 do Begin
+  If EmuFileActive[I] Then Begin
+   {$I-}Close(EmuFileVar[I]);{$I+}
+   If IOResult<>0 Then
+    WriteLn('EMUW32 : Avertissement - erreur fermeture fichier emule #',I,
+            ' (',EmuFileName[I],').');
+   EmuFileActive[I]:=False;
+   Inc(FilesClosedCount);
+   If VerboseMode Then
+    WriteLn('EMUW32 : Fichier emule ferme : ',EmuFileName[I]);
+  End;
+ End;
+  { Fermer toutes les recherches FindFirstFile encore actives }
+ FindClosedCount:=0;
+ For I:=0 to MAX_EMU_FIND_HANDLES-1 do Begin
+  If EmuFindActive[I] Then Begin
+   {$I-}FindClose(EmuFindSR[I]);{$I+}
+   If IOResult<>0 Then;{ Ignorer les erreurs de FindClose }
+   EmuFindActive[I]:=False;
+   Inc(FindClosedCount);
+  End;
+ End;
+  { Fermer et supprimer le fichier d'echange }
+ {$I-}Close(Memory);{$I+}
+ If IOResult<>0 Then
+  WriteLn('EMUW32 : Avertissement - erreur lors de la fermeture du fichier d''echange.');
+ {$I-}Assign(Memory,SwapFileMemory);
+ Erase(Memory);{$I+}
+ If IOResult<>0 Then
+  WriteLn('EMUW32 : Avertissement - impossible de supprimer le fichier d''echange.');
+  { Afficher le rapport de sortie }
+ WriteLn;
+ WriteLn('=== Rapport de sortie EMUW32 ===');
+ WriteLn('Code de retour du processus : ',EmuExitCode);
+ WriteLn('Instructions executees       : ',EmuInstrCount);
+ WriteLn('Fichiers emules fermes       : ',FilesClosedCount);
+ WriteLn('Recherches FindFile fermees  : ',FindClosedCount);
+ WriteLn('Fichier d''echange supprime   : ',SwapFileMemory);
+ WriteLn('================================');
+End;
+
+  { TODO 1 : Procedure d'initialisation de la memoire lineaire.
+    Cree le fichier d'echange de 16 Mo (EMUW32.$$$) et le remplit
+    de zeros pour simuler un espace d'adressage plat Win32. }
+Procedure Init;
+Var
+ J:LongInt;
+ ByteWrited:Word;
+Begin
+ {$I-}Assign(Memory,SwapFileMemory);
+ Rewrite(Memory,1);{$I+}
+ If IOResult<>0 Then Begin
+  WriteLn('Impossible de creer un fichier temporaire pour la memoire');
+  Halt(1);
+ End;
+ WriteLn('Creation du fichier d''echange de 16 Mo...');
+ FillChar(ClrBuffer,SizeOf(ClrBuffer),0);
+ For J:=0 to ClearBlockCount-1 do Begin
+  Seek(Memory,J*LongInt(ClearBufferSize));
+  BlockWrite(Memory,ClrBuffer,ClearBufferSize,ByteWrited);
+  If ByteWrited<>ClearBufferSize Then Begin
+   WriteLn('Erreur d''ecriture lors de l''initialisation de la memoire');
+   Close(Memory);
+   Halt(1);
+  End;
+ End;
+ WriteLn('Fichier d''echange de 16 Mo cree avec succes.');
+  { TODO 4 : Initialiser les registres et le pointeur de pile.
+    ESP pointe au sommet de la zone de pile (MemorySize = 16 Mo).
+    La pile croit vers le bas de MemorySize vers StackBase. }
+ FillChar(Regs,SizeOf(Regs),0);
+ EIP:=0;
+ EFlags.Abs:=0;
+ Regs.ESP:=MemorySize;  { Sommet de pile : 16 Mo }
+  { TODO 25 : Initialiser le compteur d'instructions }
+ EmuInstrCount:=0;
+ WriteLn('Pile de 1 Mo allouee (ESP=$',HexStr(Regs.ESP,8),
+         ', base=$',HexStr(StackBase,8),').');
+End;
+
+BEGIN
+  { TODO 24 : Analyser les options de ligne de commande }
+ ParseOptions;
+ If VerboseMode Then
+  WriteLn('EMUW32 : Demarrage de l''emulateur Windows 32 bits...');
+ If DebugMode Then
+  WriteLn('EMUW32 : Mode debogage active (/DEBUG).');
+ If ReadOnlyMode Then
+  WriteLn('EMUW32 : Mode lecture seule active (/READONLY).');
+ Init;
+ If VerboseMode Then
+  WriteLn('EMUW32 : Memoire lineaire de 16 Mo initialisee.');
+  { TODO 25 : Nettoyage et rapport de sortie }
+ Done;
+END.

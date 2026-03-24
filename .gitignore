@@ -4,11 +4,3 @@
 *.obj
 *.ppu
 *.prg
-/TPCW32
-*.exe
-/TESTS/EMU8086
-ASM68
-TESTS/EMUDPMI
-TESTS/EMUDPMI.o
-EMUDPMI.$$$
-CODEQL
