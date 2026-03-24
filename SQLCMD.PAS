@@ -267,7 +267,7 @@
             EXCEPT : difference des ensembles
             CROSS APPLY / OUTER APPLY
 
-  TODO 17 - FONCTIONS D AGREGATION ET GROUP BY
+  TODO 17 - FONCTIONS D AGREGATION ET GROUP BY [IMPLEMENTE]
             COUNT(etoile), COUNT(col), COUNT(DISTINCT col)
             SUM(col), AVG(col), MIN(col), MAX(col)
             STDEV(col), STDEVP(col), VAR(col), VARP(col)
@@ -1126,6 +1126,10 @@ Const
   { ---- Constantes du moteur de jointure (TODO 16) -------------- }
   MAX_QE_HASH     = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
                                    { taille table de hachage        }
+
+  { ---- Constantes du moteur d agregation (TODO 17) ------------- }
+  MAX_QE_GROUPS   = {$IFDEF FPC}1024{$ELSE}64{$ENDIF};
+                                   { groupes max pour GROUP BY      }
 
 { ============================================================
   TYPES
@@ -12722,9 +12726,776 @@ Begin
   QEFormatResult(QERes^);
 End;
 
+{ ---- Fonctions d agregation et GROUP BY (TODO 17) ------------ }
+{ Detecte si un nom de fonction est un agregat SQL.                }
+
+Function QEIsAggrFunc(Const FnName : TTokenText) : Boolean;
+Var
+  U : TTokenText;
+Begin
+  U := StrUpperCase(FnName);
+  QEIsAggrFunc := (U = 'COUNT') Or (U = 'SUM') Or (U = 'AVG') Or
+                  (U = 'MIN') Or (U = 'MAX') Or
+                  (U = 'STDEV') Or (U = 'STDEVP') Or
+                  (U = 'VAR') Or (U = 'VARP') Or
+                  (U = 'STRING_AGG') Or
+                  (U = 'GROUPING') Or (U = 'GROUPING_ID');
+End;
+
+{ Detecte si un noeud AST contient un appel a une fonction agregat }
+
+Function QEHasAggregate(Node : Integer) : Boolean;
+Var
+  I, C : Integer;
+Begin
+  QEHasAggregate := False;
+  If (Node < 0) Or (Node >= ASTCount) Then Exit;
+  If (ASTPool[Node].Kind = ND_FUNC_CALL) And
+     QEIsAggrFunc(ASTPool[Node].Text) Then
+  Begin
+    QEHasAggregate := True;
+    Exit;
+  End;
+  For I := 0 To ASTPool[Node].ChildCnt - 1 Do
+  Begin
+    C := ASTPool[Node].Children[I];
+    If QEHasAggregate(C) Then
+    Begin
+      QEHasAggregate := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ Evalue une fonction agregat sur un ensemble de lignes.           }
+{ StartR..EndR definissent la plage de lignes dans SrcRes.         }
+
+Function QEEvalAggregate(Node : Integer;
+                          Const SrcRes : TQEResult;
+                          StartR, EndR : Integer) : TSqlValue;
+Var
+  Op          : TTokenText;
+  V, AV       : TSqlValue;
+  I, ArgNode  : Integer;
+  Cnt         : LongInt;
+  SumF        : Real;
+  SumI        : LongInt;
+  MinV, MaxV  : TSqlValue;
+  HasMin      : Boolean;
+  HasMax      : Boolean;
+  UseFloat    : Boolean;
+  CmpR        : Integer;
+  Sep         : TSqlValueStr;
+  Concat      : TSqlValueStr;
+  FirstConcat : Boolean;
+  DistKeys    : Array[0..MAX_QE_ROWS - 1] Of TSqlValueStr;
+  DistCnt     : Integer;
+  Found       : Boolean;
+  J           : Integer;
+  SumSq       : Real;
+  MeanF       : Real;
+  IsDistinct  : Boolean;
+  DistNode    : Integer;
+Begin
+  V.IsNull   := True;
+  V.Valid    := True;
+  V.Category := SQLCAT_INTEGER;
+  V.XType    := XT_INT;
+  V.IntVal   := 0;
+  V.FloatVal := 0.0;
+  V.StrVal   := '';
+  V.HiVal    := 0;
+  QEEvalAggregate := V;
+
+  If (Node < 0) Or (Node >= ASTCount) Then Exit;
+  If ASTPool[Node].Kind <> ND_FUNC_CALL Then Exit;
+
+  Op := StrUpperCase(ASTPool[Node].Text);
+
+  { Determiner le noeud argument (enfant[1], car enfant[0] est le nom) }
+  ArgNode := -1;
+  If ASTPool[Node].ChildCnt > 1 Then
+    ArgNode := ASTPool[Node].Children[1];
+
+  { Verifier COUNT(DISTINCT ...) }
+  IsDistinct := False;
+  If (Op = 'COUNT') And (ArgNode >= 0) And (ArgNode < ASTCount) And
+     (StrUpperCase(ASTPool[ArgNode].Text) = 'DISTINCT') Then
+  Begin
+    IsDistinct := True;
+    { L argument reel est le suivant }
+    If ASTPool[Node].ChildCnt > 2 Then
+      ArgNode := ASTPool[Node].Children[2]
+    Else
+      ArgNode := -1;
+  End;
+
+  { COUNT(*) }
+  If Op = 'COUNT' Then
+  Begin
+    { Verifier si c est COUNT(*) }
+    If (ArgNode >= 0) And (ArgNode < ASTCount) And
+       (ASTPool[ArgNode].Kind = ND_STAR) Then
+    Begin
+      V.IsNull   := False;
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.IntVal   := (EndR - StartR) + 1;
+      QEEvalAggregate := V;
+      Exit;
+    End;
+
+    { COUNT(col) ou COUNT(DISTINCT col) }
+    Cnt := 0;
+    DistCnt := 0;
+    For I := StartR To EndR Do
+    Begin
+      If ArgNode >= 0 Then
+        AV := QEEvalExpr(ArgNode, SrcRes.Rows[I], SrcRes)
+      Else
+      Begin
+        AV.IsNull := False;
+        AV.Valid := True;
+      End;
+      If Not AV.IsNull Then
+      Begin
+        If IsDistinct Then
+        Begin
+          { Verifier l unicite }
+          Sep := SqlValueToStr(AV);
+          Found := False;
+          For J := 0 To DistCnt - 1 Do
+          Begin
+            If DistKeys[J] = Sep Then
+            Begin
+              Found := True;
+              Break;
+            End;
+          End;
+          If Not Found Then
+          Begin
+            If DistCnt < MAX_QE_ROWS Then
+            Begin
+              DistKeys[DistCnt] := Sep;
+              Inc(DistCnt);
+            End;
+            Inc(Cnt);
+          End;
+        End
+        Else
+          Inc(Cnt);
+      End;
+    End;
+    V.IsNull   := False;
+    V.Category := SQLCAT_INTEGER;
+    V.XType    := XT_INT;
+    V.IntVal   := Cnt;
+    QEEvalAggregate := V;
+    Exit;
+  End;
+
+  { SUM(col) }
+  If Op = 'SUM' Then
+  Begin
+    SumF := 0.0;
+    SumI := 0;
+    UseFloat := False;
+    Cnt := 0;
+    For I := StartR To EndR Do
+    Begin
+      If ArgNode >= 0 Then
+        AV := QEEvalExpr(ArgNode, SrcRes.Rows[I], SrcRes)
+      Else
+        AV.IsNull := True;
+      If Not AV.IsNull Then
+      Begin
+        Inc(Cnt);
+        If AV.Category = SQLCAT_DECIMAL Then
+        Begin
+          UseFloat := True;
+          SumF := SumF + AV.FloatVal;
+        End
+        Else
+        Begin
+          SumI := SumI + AV.IntVal;
+          SumF := SumF + AV.IntVal;
+        End;
+      End;
+    End;
+    If Cnt = 0 Then
+    Begin
+      V.IsNull := True;
+      V.Valid  := True;
+    End
+    Else If UseFloat Then
+    Begin
+      V.IsNull   := False;
+      V.Category := SQLCAT_DECIMAL;
+      V.XType    := XT_FLOAT;
+      V.FloatVal := SumF;
+    End
+    Else
+    Begin
+      V.IsNull   := False;
+      V.Category := SQLCAT_INTEGER;
+      V.XType    := XT_INT;
+      V.IntVal   := SumI;
+    End;
+    QEEvalAggregate := V;
+    Exit;
+  End;
+
+  { AVG(col) }
+  If Op = 'AVG' Then
+  Begin
+    SumF := 0.0;
+    Cnt := 0;
+    For I := StartR To EndR Do
+    Begin
+      If ArgNode >= 0 Then
+        AV := QEEvalExpr(ArgNode, SrcRes.Rows[I], SrcRes)
+      Else
+        AV.IsNull := True;
+      If Not AV.IsNull Then
+      Begin
+        Inc(Cnt);
+        If AV.Category = SQLCAT_DECIMAL Then
+          SumF := SumF + AV.FloatVal
+        Else
+          SumF := SumF + AV.IntVal;
+      End;
+    End;
+    If Cnt = 0 Then
+    Begin
+      V.IsNull := True;
+      V.Valid  := True;
+    End
+    Else
+    Begin
+      V.IsNull   := False;
+      V.Category := SQLCAT_DECIMAL;
+      V.XType    := XT_FLOAT;
+      V.FloatVal := SumF / Cnt;
+    End;
+    QEEvalAggregate := V;
+    Exit;
+  End;
+
+  { MIN(col) }
+  If Op = 'MIN' Then
+  Begin
+    HasMin := False;
+    For I := StartR To EndR Do
+    Begin
+      If ArgNode >= 0 Then
+        AV := QEEvalExpr(ArgNode, SrcRes.Rows[I], SrcRes)
+      Else
+        AV.IsNull := True;
+      If Not AV.IsNull Then
+      Begin
+        If Not HasMin Then
+        Begin
+          MinV := AV;
+          HasMin := True;
+        End
+        Else
+        Begin
+          CmpR := QECompareValues(AV, MinV);
+          If CmpR < 0 Then MinV := AV;
+        End;
+      End;
+    End;
+    If HasMin Then
+      V := MinV
+    Else
+    Begin
+      V.IsNull := True;
+      V.Valid  := True;
+    End;
+    QEEvalAggregate := V;
+    Exit;
+  End;
+
+  { MAX(col) }
+  If Op = 'MAX' Then
+  Begin
+    HasMax := False;
+    For I := StartR To EndR Do
+    Begin
+      If ArgNode >= 0 Then
+        AV := QEEvalExpr(ArgNode, SrcRes.Rows[I], SrcRes)
+      Else
+        AV.IsNull := True;
+      If Not AV.IsNull Then
+      Begin
+        If Not HasMax Then
+        Begin
+          MaxV := AV;
+          HasMax := True;
+        End
+        Else
+        Begin
+          CmpR := QECompareValues(AV, MaxV);
+          If CmpR > 0 Then MaxV := AV;
+        End;
+      End;
+    End;
+    If HasMax Then
+      V := MaxV
+    Else
+    Begin
+      V.IsNull := True;
+      V.Valid  := True;
+    End;
+    QEEvalAggregate := V;
+    Exit;
+  End;
+
+  { STDEV(col) - ecart-type d echantillon }
+  If (Op = 'STDEV') Or (Op = 'STDEVP') Then
+  Begin
+    SumF := 0.0;
+    Cnt := 0;
+    For I := StartR To EndR Do
+    Begin
+      If ArgNode >= 0 Then
+        AV := QEEvalExpr(ArgNode, SrcRes.Rows[I], SrcRes)
+      Else
+        AV.IsNull := True;
+      If Not AV.IsNull Then
+      Begin
+        Inc(Cnt);
+        If AV.Category = SQLCAT_DECIMAL Then
+          SumF := SumF + AV.FloatVal
+        Else
+          SumF := SumF + AV.IntVal;
+      End;
+    End;
+    If ((Op = 'STDEV') And (Cnt < 2)) Or
+       ((Op = 'STDEVP') And (Cnt < 1)) Then
+    Begin
+      V.IsNull := True;
+      V.Valid  := True;
+      QEEvalAggregate := V;
+      Exit;
+    End;
+    MeanF := SumF / Cnt;
+    SumSq := 0.0;
+    For I := StartR To EndR Do
+    Begin
+      If ArgNode >= 0 Then
+        AV := QEEvalExpr(ArgNode, SrcRes.Rows[I], SrcRes)
+      Else
+        AV.IsNull := True;
+      If Not AV.IsNull Then
+      Begin
+        If AV.Category = SQLCAT_DECIMAL Then
+          SumSq := SumSq + (AV.FloatVal - MeanF) * (AV.FloatVal - MeanF)
+        Else
+          SumSq := SumSq + (AV.IntVal - MeanF) * (AV.IntVal - MeanF);
+      End;
+    End;
+    V.IsNull   := False;
+    V.Category := SQLCAT_DECIMAL;
+    V.XType    := XT_FLOAT;
+    If Op = 'STDEVP' Then
+      V.FloatVal := Sqrt(SumSq / Cnt)
+    Else
+      V.FloatVal := Sqrt(SumSq / (Cnt - 1));
+    QEEvalAggregate := V;
+    Exit;
+  End;
+
+  { VAR(col), VARP(col) - variance }
+  If (Op = 'VAR') Or (Op = 'VARP') Then
+  Begin
+    SumF := 0.0;
+    Cnt := 0;
+    For I := StartR To EndR Do
+    Begin
+      If ArgNode >= 0 Then
+        AV := QEEvalExpr(ArgNode, SrcRes.Rows[I], SrcRes)
+      Else
+        AV.IsNull := True;
+      If Not AV.IsNull Then
+      Begin
+        Inc(Cnt);
+        If AV.Category = SQLCAT_DECIMAL Then
+          SumF := SumF + AV.FloatVal
+        Else
+          SumF := SumF + AV.IntVal;
+      End;
+    End;
+    If ((Op = 'VAR') And (Cnt < 2)) Or
+       ((Op = 'VARP') And (Cnt < 1)) Then
+    Begin
+      V.IsNull := True;
+      V.Valid  := True;
+      QEEvalAggregate := V;
+      Exit;
+    End;
+    MeanF := SumF / Cnt;
+    SumSq := 0.0;
+    For I := StartR To EndR Do
+    Begin
+      If ArgNode >= 0 Then
+        AV := QEEvalExpr(ArgNode, SrcRes.Rows[I], SrcRes)
+      Else
+        AV.IsNull := True;
+      If Not AV.IsNull Then
+      Begin
+        If AV.Category = SQLCAT_DECIMAL Then
+          SumSq := SumSq + (AV.FloatVal - MeanF) * (AV.FloatVal - MeanF)
+        Else
+          SumSq := SumSq + (AV.IntVal - MeanF) * (AV.IntVal - MeanF);
+      End;
+    End;
+    V.IsNull   := False;
+    V.Category := SQLCAT_DECIMAL;
+    V.XType    := XT_FLOAT;
+    If Op = 'VARP' Then
+      V.FloatVal := SumSq / Cnt
+    Else
+      V.FloatVal := SumSq / (Cnt - 1);
+    QEEvalAggregate := V;
+    Exit;
+  End;
+
+  { STRING_AGG(col, separateur) }
+  If Op = 'STRING_AGG' Then
+  Begin
+    Sep := ',';
+    { Le separateur est l argument 2 (enfant[2]) }
+    If ASTPool[Node].ChildCnt > 2 Then
+    Begin
+      DistNode := ASTPool[Node].Children[2];
+      If (DistNode >= 0) And (DistNode < ASTCount) Then
+      Begin
+        AV := QEEvalExpr(DistNode, SrcRes.Rows[StartR], SrcRes);
+        If Not AV.IsNull Then
+          Sep := AV.StrVal;
+        If Length(Sep) = 0 Then Sep := SqlValueToStr(AV);
+      End;
+    End;
+    Concat := '';
+    FirstConcat := True;
+    For I := StartR To EndR Do
+    Begin
+      If ArgNode >= 0 Then
+        AV := QEEvalExpr(ArgNode, SrcRes.Rows[I], SrcRes)
+      Else
+        AV.IsNull := True;
+      If Not AV.IsNull Then
+      Begin
+        If Not FirstConcat Then
+          Concat := Concat + Sep;
+        Concat := Concat + SqlValueToStr(AV);
+        FirstConcat := False;
+      End;
+    End;
+    If FirstConcat Then
+    Begin
+      V.IsNull := True;
+      V.Valid  := True;
+    End
+    Else
+    Begin
+      V.IsNull   := False;
+      V.Category := SQLCAT_STRING;
+      V.XType    := XT_VARCHAR;
+      V.StrVal   := Concat;
+    End;
+    QEEvalAggregate := V;
+    Exit;
+  End;
+
+  { GROUPING(col) - retourne 1 si super-agregate, 0 sinon }
+  If (Op = 'GROUPING') Or (Op = 'GROUPING_ID') Then
+  Begin
+    V.IsNull   := False;
+    V.Category := SQLCAT_INTEGER;
+    V.XType    := XT_INT;
+    V.IntVal   := 0;
+    QEEvalAggregate := V;
+    Exit;
+  End;
+
+  { Aggregat inconnu }
+  V.IsNull := True;
+  V.Valid  := True;
+  QEEvalAggregate := V;
+End;
+
+{ Evalue une expression en remplacant les appels aux agregate      }
+{ par leur valeur calculee sur le groupe (StartR..EndR).           }
+
+Function QEEvalExprAggr(Node : Integer;
+                         Const Row : TQERow;
+                         Const Res : TQEResult;
+                         StartR, EndR : Integer) : TSqlValue;
+Var
+  V : TSqlValue;
+Begin
+  V.IsNull := True;
+  V.Valid  := True;
+  If (Node < 0) Or (Node >= ASTCount) Then
+  Begin
+    QEEvalExprAggr := V;
+    Exit;
+  End;
+
+  { Si c est un appel a une fonction agregat, l evaluer sur le groupe }
+  If (ASTPool[Node].Kind = ND_FUNC_CALL) And
+     QEIsAggrFunc(ASTPool[Node].Text) Then
+  Begin
+    QEEvalExprAggr := QEEvalAggregate(Node, Res, StartR, EndR);
+    Exit;
+  End;
+
+  { Sinon, evaluation normale sur la ligne representante }
+  QEEvalExprAggr := QEEvalExpr(Node, Row, Res);
+End;
+
+{ Construit la cle de groupe pour une ligne, en concatenant les    }
+{ valeurs des colonnes GROUP BY separees par un delimiteur.        }
+
+Function QEGroupKey(Const Row : TQERow;
+                     Const Res : TQEResult;
+                     GroupNode : Integer) : TSqlValueStr;
+Var
+  I, C   : Integer;
+  V      : TSqlValue;
+  Key    : TSqlValueStr;
+Begin
+  Key := '';
+  If (GroupNode < 0) Or (GroupNode >= ASTCount) Then
+  Begin
+    QEGroupKey := '';
+    Exit;
+  End;
+  For I := 0 To ASTPool[GroupNode].ChildCnt - 1 Do
+  Begin
+    C := ASTPool[GroupNode].Children[I];
+    If (C >= 0) And (C < ASTCount) Then
+    Begin
+      V := QEEvalExpr(C, Row, Res);
+      If I > 0 Then Key := Key + #1;
+      If V.IsNull Then
+        Key := Key + #0
+      Else
+        Key := Key + SqlValueToStr(V);
+    End;
+  End;
+  QEGroupKey := Key;
+End;
+
+{ Effectue le GROUP BY + agregation sur SrcRes.                    }
+{ GroupNode = noeud ND_GROUP_BY (-1 si pas de GROUP BY mais avec   }
+{ des agregats => un seul groupe sur toutes les lignes).           }
+{ HavingNode = noeud ND_HAVING (-1 si pas de HAVING).             }
+{ Root = noeud ND_SELECT_STMT.                                     }
+{ Resultat ecrit dans QERes^.                                      }
+
+Procedure QEExecGroupBy(Const SrcRes : TQEResult;
+                         Root, GroupNode, HavingNode : Integer);
+Var
+  I, J, K, N      : Integer;
+  GrpKeys          : Array[0..MAX_QE_GROUPS - 1] Of TSqlValueStr;
+  GrpCnt           : Integer;
+  Key              : TSqlValueStr;
+  Found            : Boolean;
+  Sorted           : TQEResult;
+  NbCols           : Integer;
+  CI               : Integer;
+  V                : TSqlValue;
+  ProjNames        : Array[0..MAX_QE_COLS - 1] Of TQEColName;
+Begin
+  If QERes = Nil Then New(QERes);
+  QERes^.ColCnt := 0;
+  QERes^.RowCnt := 0;
+
+  { Phase 1 : Identifier les groupes }
+  GrpCnt := 0;
+
+  If GroupNode < 0 Then
+  Begin
+    { Pas de GROUP BY : un seul groupe = toutes les lignes }
+    GrpCnt := 1;
+    GrpKeys[0] := '';
+  End
+  Else
+  Begin
+    { Hacher chaque ligne pour trouver son groupe }
+    For I := 0 To SrcRes.RowCnt - 1 Do
+    Begin
+      Key := QEGroupKey(SrcRes.Rows[I], SrcRes, GroupNode);
+      Found := False;
+      For J := 0 To GrpCnt - 1 Do
+      Begin
+        If GrpKeys[J] = Key Then
+        Begin
+          Found := True;
+          Break;
+        End;
+      End;
+      If Not Found Then
+      Begin
+        If GrpCnt < MAX_QE_GROUPS Then
+        Begin
+          GrpKeys[GrpCnt] := Key;
+          Inc(GrpCnt);
+        End;
+      End;
+    End;
+  End;
+
+  { Phase 2 : Determiner les colonnes de sortie (SELECT items) }
+  NbCols := 0;
+  For I := 0 To ASTPool[Root].ChildCnt - 1 Do
+  Begin
+    N := ASTPool[Root].Children[I];
+    If (N < 0) Or (N >= ASTCount) Then Continue;
+    If ASTPool[N].Kind = ND_SELECT_ITEM Then
+    Begin
+      If NbCols >= MAX_QE_COLS Then Break;
+      ProjNames[NbCols] := '(expr)';
+      If ASTPool[N].ChildCnt > 0 Then
+      Begin
+        CI := ASTPool[N].Children[0];
+        If (CI >= 0) And (CI < ASTCount) Then
+        Begin
+          If ASTPool[CI].Kind = ND_IDENT Then
+            ProjNames[NbCols] := ASTPool[CI].Text
+          Else If (ASTPool[CI].Kind = ND_FUNC_CALL) Then
+            ProjNames[NbCols] := ASTPool[CI].Text;
+        End;
+        { Chercher alias }
+        For K := 0 To ASTPool[N].ChildCnt - 1 Do
+        Begin
+          J := ASTPool[N].Children[K];
+          If (J >= 0) And (J < ASTCount) And
+             (ASTPool[J].Kind = ND_ALIAS) Then
+            ProjNames[NbCols] := ASTPool[J].Text;
+        End;
+      End;
+      Inc(NbCols);
+    End;
+  End;
+
+  { Configurer les colonnes du result set }
+  QERes^.ColCnt := NbCols;
+  For J := 0 To NbCols - 1 Do
+  Begin
+    QERes^.Cols[J].Name   := ProjNames[J];
+    QERes^.Cols[J].XType  := 0;
+    QERes^.Cols[J].MaxLen := 0;
+    QERes^.Cols[J].Prec   := 0;
+    QERes^.Cols[J].Scale  := 0;
+    QERes^.Cols[J].ColIdx := -1;
+    QERes^.Cols[J].Width  := Length(ProjNames[J]);
+  End;
+
+  { Phase 3 : Pour chaque groupe, evaluer les expressions SELECT }
+  { avec les agregate calcules sur le groupe.                      }
+  For I := 0 To GrpCnt - 1 Do
+  Begin
+    If QERes^.RowCnt >= MAX_QE_ROWS Then Break;
+
+    { Construire la copie temporaire du sous-ensemble pour les       }
+    { groupes non contigus. On passe la plage originale.             }
+    { Pour GROUP BY, les lignes ne sont pas forcement contigues.     }
+    { On collecte les indices des lignes du groupe.                  }
+    Sorted.ColCnt := SrcRes.ColCnt;
+    For J := 0 To SrcRes.ColCnt - 1 Do
+      Sorted.Cols[J] := SrcRes.Cols[J];
+    Sorted.RowCnt := 0;
+    If GroupNode < 0 Then
+    Begin
+      { Un seul groupe = toutes les lignes }
+      Sorted := SrcRes;
+    End
+    Else
+    Begin
+      For J := 0 To SrcRes.RowCnt - 1 Do
+      Begin
+        Key := QEGroupKey(SrcRes.Rows[J], SrcRes, GroupNode);
+        If Key = GrpKeys[I] Then
+        Begin
+          If Sorted.RowCnt < MAX_QE_ROWS Then
+          Begin
+            Sorted.Rows[Sorted.RowCnt] := SrcRes.Rows[J];
+            Inc(Sorted.RowCnt);
+          End;
+        End;
+      End;
+    End;
+
+    If Sorted.RowCnt = 0 Then Continue;
+
+    { Evaluer chaque colonne SELECT pour ce groupe }
+    QERes^.Rows[QERes^.RowCnt].ColCnt := NbCols;
+    K := 0;
+    For J := 0 To ASTPool[Root].ChildCnt - 1 Do
+    Begin
+      N := ASTPool[Root].Children[J];
+      If (N < 0) Or (N >= ASTCount) Then Continue;
+      If ASTPool[N].Kind <> ND_SELECT_ITEM Then Continue;
+      If K >= NbCols Then Break;
+
+      If ASTPool[N].ChildCnt > 0 Then
+      Begin
+        CI := ASTPool[N].Children[0];
+        QERes^.Rows[QERes^.RowCnt].Vals[K] :=
+          QEEvalExprAggr(CI, Sorted.Rows[0], Sorted,
+                          0, Sorted.RowCnt - 1);
+      End
+      Else
+      Begin
+        V.IsNull := True;
+        V.Valid  := True;
+        QERes^.Rows[QERes^.RowCnt].Vals[K] := V;
+      End;
+      Inc(K);
+    End;
+
+    Inc(QERes^.RowCnt);
+  End;
+
+  { Phase 4 : Appliquer le filtre HAVING }
+  If (HavingNode >= 0) And (ASTPool[HavingNode].ChildCnt > 0) Then
+  Begin
+    { HAVING fonctionne sur le result set agrege }
+    { On re-evalue la condition HAVING pour chaque ligne de resultat }
+    J := 0;
+    For I := 0 To QERes^.RowCnt - 1 Do
+    Begin
+      { Evaluer la condition HAVING avec les valeurs de la ligne }
+      N := ASTPool[HavingNode].Children[0];
+      V := QEEvalExpr(N, QERes^.Rows[I], QERes^);
+      If (Not V.IsNull) And V.Valid And
+         ((V.Category = SQLCAT_INTEGER) And (V.IntVal <> 0)) Then
+      Begin
+        If J <> I Then
+          QERes^.Rows[J] := QERes^.Rows[I];
+        Inc(J);
+      End
+      Else If (Not V.IsNull) And V.Valid And
+              (V.Category = SQLCAT_STRING) And
+              (StrUpperCase(V.StrVal) = 'TRUE') Then
+      Begin
+        If J <> I Then
+          QERes^.Rows[J] := QERes^.Rows[I];
+        Inc(J);
+      End;
+    End;
+    QERes^.RowCnt := J;
+  End;
+End;
+
 { ---- Executer un SELECT ------------------------------------- }
-{ Pipeline : Scan -> Join -> Filter(WHERE) -> Project -> Sort     }
-{            -> Distinct -> Top -> Output                         }
+{ Pipeline : Scan -> Join -> Filter(WHERE) -> GroupBy/Aggregate   }
+{            -> Having -> Project -> Sort -> Distinct -> Top       }
+{            -> Output                                             }
 
 Procedure QEExecSelect(Root : Integer);
 Var
@@ -12733,7 +13504,10 @@ Var
   WhereNode  : Integer;
   OrderNode  : Integer;
   TopNode    : Integer;
+  GroupNode  : Integer;
+  HavingNode : Integer;
   HasDistinct: Boolean;
+  HasAggr    : Boolean;
   I, J, K    : Integer;
   TblName    : TTokenText;
   CI         : Integer;
@@ -12769,11 +13543,14 @@ Begin
   End;
 
   { Extraire les sous-noeuds du SELECT }
-  TblNode   := -1;
-  WhereNode := -1;
-  OrderNode := -1;
-  TopNode   := -1;
+  TblNode    := -1;
+  WhereNode  := -1;
+  OrderNode  := -1;
+  TopNode    := -1;
+  GroupNode  := -1;
+  HavingNode := -1;
   HasDistinct := False;
+  HasAggr    := False;
 
   { Verifier DISTINCT dans le texte du noeud SELECT }
   If StrUpperCase(ASTPool[Root].Text) = 'DISTINCT' Then
@@ -12785,10 +13562,12 @@ Begin
     N := ASTPool[Root].Children[I];
     If (N < 0) Or (N >= ASTCount) Then Continue;
     Case ASTPool[N].Kind Of
-      ND_FROM_CLAUSE  : TblNode   := N;
-      ND_WHERE_CLAUSE : WhereNode := N;
-      ND_ORDER_BY     : OrderNode := N;
-      ND_TOP_CLAUSE   : TopNode   := N;
+      ND_FROM_CLAUSE  : TblNode    := N;
+      ND_WHERE_CLAUSE : WhereNode  := N;
+      ND_ORDER_BY     : OrderNode  := N;
+      ND_TOP_CLAUSE   : TopNode    := N;
+      ND_GROUP_BY     : GroupNode  := N;
+      ND_HAVING       : HavingNode := N;
     End;
   End;
 
@@ -13000,6 +13779,108 @@ Begin
       End;
       SrcRes.RowCnt := J;
     End;
+  End;
+
+  { Detecter si des agregats sont utilises dans les SELECT items }
+  If GroupNode < 0 Then
+  Begin
+    For I := 0 To ASTPool[Root].ChildCnt - 1 Do
+    Begin
+      N := ASTPool[Root].Children[I];
+      If (N >= 0) And (N < ASTCount) And
+         (ASTPool[N].Kind = ND_SELECT_ITEM) Then
+      Begin
+        If ASTPool[N].ChildCnt > 0 Then
+        Begin
+          If QEHasAggregate(ASTPool[N].Children[0]) Then
+          Begin
+            HasAggr := True;
+            Break;
+          End;
+        End;
+      End;
+    End;
+  End
+  Else
+    HasAggr := True;
+
+  { GROUP BY / Agregation (TODO 17) }
+  If (GroupNode >= 0) Or HasAggr Then
+  Begin
+    QEExecGroupBy(SrcRes, Root, GroupNode, HavingNode);
+    { QEExecGroupBy a ecrit dans QERes^, continuer avec ORDER BY etc. }
+    { Copier le resultat dans SrcRes pour la suite du pipeline }
+    SrcRes.ColCnt := QERes^.ColCnt;
+    For J := 0 To QERes^.ColCnt - 1 Do
+      SrcRes.Cols[J] := QERes^.Cols[J];
+    SrcRes.RowCnt := QERes^.RowCnt;
+    For I := 0 To QERes^.RowCnt - 1 Do
+      SrcRes.Rows[I] := QERes^.Rows[I];
+
+    { Copier directement dans QERes pour la suite }
+    { (pas besoin de reprojeter, QEExecGroupBy l a deja fait) }
+
+    { ORDER BY : trier le result set }
+    If OrderNode >= 0 Then
+    Begin
+      If ASTPool[OrderNode].ChildCnt > 0 Then
+      Begin
+        N := ASTPool[OrderNode].Children[0];
+        If (N >= 0) And (N < ASTCount) And
+           (ASTPool[N].Kind = ND_ORDER_ITEM) Then
+        Begin
+          OrdDesc := (StrUpperCase(ASTPool[N].Text) = 'DESC');
+          OrdCol := -1;
+          If ASTPool[N].ChildCnt > 0 Then
+          Begin
+            CI := ASTPool[N].Children[0];
+            If (CI >= 0) And (CI < ASTCount) Then
+              OrdCol := QEFindColByName(ASTPool[CI].Text, QERes^);
+          End;
+          If (OrdCol >= 0) And (QERes^.RowCnt > 1) Then
+          Begin
+            QESortCol  := OrdCol;
+            QESortDesc := OrdDesc;
+            QEQuickSort(QERes^, 0, QERes^.RowCnt - 1);
+          End;
+        End;
+      End;
+    End;
+
+    { DISTINCT : eliminer les doublons }
+    If HasDistinct And (QERes^.RowCnt > 1) Then
+    Begin
+      If QERes^.ColCnt > 0 Then
+      Begin
+        QESortCol  := 0;
+        QESortDesc := False;
+        QEQuickSort(QERes^, 0, QERes^.RowCnt - 1);
+      End;
+      QEDistinct(QERes^);
+    End;
+
+    { TOP n : limiter le nombre de lignes }
+    If TopNode >= 0 Then
+    Begin
+      TopN := 0;
+      IsPercent := (StrUpperCase(ASTPool[TopNode].Text) = 'PERCENT');
+      If ASTPool[TopNode].ChildCnt > 0 Then
+      Begin
+        N := ASTPool[TopNode].Children[0];
+        If (N >= 0) And (N < ASTCount) Then
+          Val(ASTPool[N].Text, TopN, CI);
+      End
+      Else
+        Val(ASTPool[TopNode].Text, TopN, CI);
+      If IsPercent Then
+        TopN := (QERes^.RowCnt * TopN + 99) Div 100;
+      If (TopN >= 0) And (TopN < QERes^.RowCnt) Then
+        QERes^.RowCnt := TopN;
+    End;
+
+    { Afficher le result set }
+    QEFormatResult(QERes^);
+    Exit;
   End;
 
   { Determiner la projection (colonnes SELECT) }
