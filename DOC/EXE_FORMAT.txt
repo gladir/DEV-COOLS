@@ -384,7 +384,7 @@ Dans le projet DEV-COOLS, le format PE 32 bits est genere par :
   - CSCW32.PAS  (compilateur C# vers Win32)
   - AWKCW32.PAS (compilateur AWK vers Win32)
   - ABAPCW32.PAS (compilateur ABAP vers Win32)
-  - PSPCW32.PAS (compilateur PostScript vers Win32)
+  - PSPCW32.PAS (compilateur Pascal Server Pages vers Win32)
   - ADACW32.PAS (compilateur Ada vers Win32)
   - VAXPCW32.PAS (compilateur VAX Pascal vers Win32)
 
