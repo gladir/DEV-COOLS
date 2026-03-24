@@ -49,7 +49,7 @@
       SizeOfHeaders, NumberOfRvaAndSizes, DataDirectory[16].
       Valider Machine=$014C et Magic=$010B pour PE 32 bits.
 
-  5.  Lecture des sections PE et chargement en memoire.
+  5.  [IMPLEMENTE] Lecture des sections PE et chargement en memoire.
       Lire chaque IMAGE_SECTION_HEADER (40 octets) : Name[8],
       VirtualSize, VirtualAddress, SizeOfRawData,
       PointerToRawData, Characteristics (flags executable,
@@ -288,6 +288,14 @@ Const
   { Magic pour IMAGE_OPTIONAL_HEADER }
   PE32_MAGIC     = $010B;  { PE32 (32 bits) }
 
+  { Section characteristics flags }
+  IMAGE_SCN_CNT_CODE               = $00000020;
+  IMAGE_SCN_CNT_INITIALIZED_DATA   = $00000040;
+  IMAGE_SCN_CNT_UNINITIALIZED_DATA = $00000080;
+  IMAGE_SCN_MEM_EXECUTE            = $20000000;
+  IMAGE_SCN_MEM_READ               = $40000000;
+  IMAGE_SCN_MEM_WRITE              = LongInt($80000000); { cast requis : depasse LongInt signe }
+
   { Limites des tableaux internes }
   MAX_SECTIONS   = 64;
   MAX_IMPORTS    = 4096;
@@ -456,6 +464,7 @@ Var
   EntrySS        : Word;        { SS initial }
   EntrySP        : Word;        { SP initial }
   BaseSegment    : Word;        { segment de base pour relogement }
+  PEEntryPointRVA : LongInt;    { RVA du point d'entree PE 32 bits }
 
   { Labels et references croisees }
   Labels         : Array[0..MAX_LABELS - 1] Of TLabelInfo;
@@ -469,6 +478,7 @@ Var
   DataBytes      : LongInt;  { nombre d'octets de donnees }
   ImportCount    : LongInt;  { nombre d'imports }
   ExportCount    : LongInt;  { nombre d'exports }
+  IterI          : Integer;  { variable d'iteration generale }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -536,6 +546,34 @@ Begin
   FileExists := True;
  End Else
   FileExists := False;
+End;
+
+Function GetSectionName(Const Hdr : TPESectionHeader) : TString;
+Var
+ I : Integer;
+ S : TString;
+Begin
+ S := '';
+ For I := 0 To 7 Do Begin
+  If Hdr.Name[I] = #0 Then Break;
+  S := S + Hdr.Name[I];
+ End;
+ GetSectionName := S;
+End;
+
+Function SectionFlagsStr(Chars : LongInt) : TString;
+Var
+ S : TString;
+Begin
+ S := '';
+ If (Chars And IMAGE_SCN_CNT_CODE) <> 0 Then S := S + 'CODE ';
+ If (Chars And IMAGE_SCN_CNT_INITIALIZED_DATA) <> 0 Then S := S + 'IDATA ';
+ If (Chars And IMAGE_SCN_CNT_UNINITIALIZED_DATA) <> 0 Then S := S + 'UDATA ';
+ If (Chars And IMAGE_SCN_MEM_EXECUTE) <> 0 Then S := S + 'EXEC ';
+ If (Chars And IMAGE_SCN_MEM_READ) <> 0 Then S := S + 'READ ';
+ If (Chars And IMAGE_SCN_MEM_WRITE) <> 0 Then S := S + 'WRITE ';
+ If S = '' Then S := '-';
+ SectionFlagsStr := S;
 End;
 
 { ============================================================
@@ -734,6 +772,131 @@ Begin
 End;
 
 { ============================================================
+  LECTURE DES SECTIONS PE
+  ============================================================ }
+
+Function ReadPESections : Boolean;
+Var
+ BytesRead : Word;
+ I         : Integer;
+ SectOfs   : LongInt;
+Begin
+ ReadPESections := False;
+ { Les section headers se trouvent apres PE sig + FILE_HEADER + OptionalHeader }
+ SectOfs := PEOffset + 4 + SizeOf(TPEFileHeader) + PEFileHeader.SizeOfOptionalHeader;
+ Seek(InFile, SectOfs);
+ If IOResult <> 0 Then Begin
+  WriteLn('Erreur : impossible de positionner aux section headers.');
+  Exit;
+ End;
+ { Lire chaque section header (40 octets) }
+ For I := 0 To SectionCount - 1 Do Begin
+  BlockRead(InFile, Sections[I], SizeOf(TPESectionHeader), BytesRead);
+  If (IOResult <> 0) Or (BytesRead < SizeOf(TPESectionHeader)) Then Begin
+   WriteLn('Erreur : lecture section header #', I, ' echouee.');
+   Exit;
+  End;
+ End;
+ ReadPESections := True;
+End;
+
+{ ============================================================
+  CHARGEMENT DE L'IMAGE PE 32 BITS
+  ============================================================ }
+
+Function LoadPE32Image : Boolean;
+Var
+ BytesRead  : Word;
+ I          : Integer;
+ LoadSize   : LongInt;
+ Remaining  : LongInt;
+ FileOfs    : LongInt;
+ BufOfs     : LongInt;
+ ChunkSize  : Word;
+Begin
+ LoadPE32Image := False;
+ { Taille de l'image = SizeOfImage de l'optional header }
+ ImageSize := PEOptHeader.SizeOfImage;
+ If (ImageSize <= 0) Or (ImageSize > MAX_IMAGE_SIZE) Then Begin
+  WriteLn('Erreur : taille image PE invalide ($', HexDWord(ImageSize), ').');
+  Exit;
+ End;
+ { Allouer le tampon et initialiser a zero }
+ GetMem(ImageBuffer, ImageSize);
+ If ImageBuffer = Nil Then Begin
+  WriteLn('Erreur : memoire insuffisante pour ', ImageSize, ' octets.');
+  Exit;
+ End;
+ FillChar(ImageBuffer^, ImageSize, 0);
+ { Charger les entetes PE (SizeOfHeaders octets) au debut du tampon }
+ LoadSize := PEOptHeader.SizeOfHeaders;
+ If LoadSize > ImageSize Then LoadSize := ImageSize;
+ Seek(InFile, 0);
+ If IOResult <> 0 Then Begin
+  FreeMem(ImageBuffer, ImageSize);
+  ImageBuffer := Nil;
+  Exit;
+ End;
+ Remaining := LoadSize;
+ BufOfs := 0;
+ While Remaining > 0 Do Begin
+  If Remaining > 32768 Then
+   ChunkSize := 32768
+  Else
+   ChunkSize := Word(Remaining);
+  BlockRead(InFile, ImageBuffer^[BufOfs], ChunkSize, BytesRead);
+  If (IOResult <> 0) Or (BytesRead = 0) Then Begin
+   WriteLn('Erreur : lecture des entetes PE echouee.');
+   FreeMem(ImageBuffer, ImageSize);
+   ImageBuffer := Nil;
+   Exit;
+  End;
+  Inc(BufOfs, BytesRead);
+  Dec(Remaining, BytesRead);
+ End;
+ { Charger chaque section dans le tampon a son VirtualAddress }
+ For I := 0 To SectionCount - 1 Do Begin
+  If (Sections[I].SizeOfRawData > 0) And (Sections[I].PointerToRawData > 0) Then Begin
+   { Verifier que la section tient dans le tampon }
+   LoadSize := Sections[I].SizeOfRawData;
+   If Sections[I].VirtualAddress + LoadSize > ImageSize Then
+    LoadSize := ImageSize - Sections[I].VirtualAddress;
+   If LoadSize <= 0 Then Continue;
+   { Positionner dans le fichier }
+   FileOfs := Sections[I].PointerToRawData;
+   Seek(InFile, FileOfs);
+   If IOResult <> 0 Then Begin
+    WriteLn('Erreur : positionnement section ', GetSectionName(Sections[I]), ' echoue.');
+    FreeMem(ImageBuffer, ImageSize);
+    ImageBuffer := Nil;
+    Exit;
+   End;
+   { Lire les donnees de la section }
+   BufOfs := Sections[I].VirtualAddress;
+   Remaining := LoadSize;
+   While Remaining > 0 Do Begin
+    If Remaining > 32768 Then
+     ChunkSize := 32768
+    Else
+     ChunkSize := Word(Remaining);
+    BlockRead(InFile, ImageBuffer^[BufOfs], ChunkSize, BytesRead);
+    If (IOResult <> 0) Or (BytesRead = 0) Then Begin
+     WriteLn('Erreur : lecture section ', GetSectionName(Sections[I]), ' incomplete.');
+     FreeMem(ImageBuffer, ImageSize);
+     ImageBuffer := Nil;
+     Exit;
+    End;
+    Inc(BufOfs, BytesRead);
+    Dec(Remaining, BytesRead);
+   End;
+  End;
+ End;
+ { Stocker le point d'entree PE }
+ PEEntryPointRVA := PEOptHeader.AddressOfEntryPoint;
+ LoadPE32Image := True;
+End;
+
+{ ============================================================
   CHARGEMENT DU PROGRAMME DOS 16 BITS
   ============================================================ }
 
@@ -874,6 +1037,33 @@ Begin
    WriteLn('  NumberOfRvaAndSizes: ', PEOptHeader.NumberOfRvaAndSizes);
    WriteLn('  Sections           : ', SectionCount);
   End;
+  { Lecture des sections PE }
+  If Not ReadPESections Then Begin
+   Close(InFile);
+   Halt(1);
+  End;
+  If OptVerbose Then Begin
+   WriteLn('Sections PE :');
+   For IterI := 0 To SectionCount - 1 Do Begin
+    WriteLn('  [', IterI, '] ', GetSectionName(Sections[IterI]),
+            '  VA=$', HexDWord(Sections[IterI].VirtualAddress),
+            '  VSize=$', HexDWord(Sections[IterI].VirtualSize),
+            '  RawSize=$', HexDWord(Sections[IterI].SizeOfRawData),
+            '  RawPtr=$', HexDWord(Sections[IterI].PointerToRawData));
+    WriteLn('         Flags=$', HexDWord(Sections[IterI].Characteristics),
+            ' [', SectionFlagsStr(Sections[IterI].Characteristics), ']');
+   End;
+  End;
+  { Chargement de l'image PE en memoire }
+  If Not LoadPE32Image Then Begin
+   Close(InFile);
+   Halt(1);
+  End;
+  If OptVerbose Then Begin
+   WriteLn('Image PE chargee : ', ImageSize, ' octets.');
+   WriteLn('  ImageBase        : $', HexDWord(PEOptHeader.ImageBase));
+   WriteLn('  Point d''entree   : RVA $', HexDWord(PEEntryPointRVA));
+  End;
  End Else Begin
   WriteLn('Format DOS MZ (16 bits) detecte.');
   { Chargement de l'image DOS en memoire }
@@ -897,10 +1087,9 @@ Begin
  DataBytes := 0;
  ImportCount := 0;
  ExportCount := 0;
- SectionCount := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 5 a 25 restent a implementer)');
+ WriteLn('(les TODOs 6 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
 End.
