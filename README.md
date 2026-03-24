@@ -229,12 +229,20 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur COBOL pour 8086/8088.</td>
 		</tr>
 		<tr>
+			<td><b>CODEQL.PAS</b></td>
+			<td>Cette commande permet d'utiliser l'outil CodeQL en ligne de commande afin d'analyser automatiquement le code source d'un programme, de créer une base d'analyse et d'exécuter des requêtes permettant de détecter des vulnérabilités, des erreurs de programmation et des problèmes de qualité logicielle.</td>
+		</tr>
+		<tr>
 			<td><b>COM2EXE.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
 		</tr>
 		<tr>
 			<td><b>CONVERT.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de code source Pascal en minuscule, majuscule ou capitale. Cette commande est inspiré de la commande CONVERT du Pascal pour FLEX.</td>
+		</tr>
+		<tr>
+			<td><b>CREF.PAS</b></td>
+			<td>Cette commande permet de produire une liste de symboles croisés.</td>
 		</tr>
 		<tr>
 			<td><b>CSC86.PAS</b></td>
@@ -443,7 +451,11 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
     	<tr>
 			<td><b>TOKEN2BAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de TOKEN (GWBASIC, CoCo,...) de BASIC en BASIC ASCII.</td>
-		</tr>	
+		</tr>
+		<tr>
+			<td><b>TPCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Turbo Pascal pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
 		<tr>
 			<td><b>TP2JS.PAS</b></td>
 			<td>Cette commande permet de compiler un fichier Turbo Pascal en code JavaScript.</td>
