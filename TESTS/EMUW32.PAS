@@ -125,7 +125,7 @@
       instruction, /VERBOSE pour les messages informatifs, et
       /READONLY pour interdire les ecritures sur disque.
 
-  25. Implementer la procedure de nettoyage (Procedure Done) qui
+  25. [IMPLEMENTE] Implementer la procedure de nettoyage (Procedure Done) qui
       ferme et supprime le fichier d'echange de 16 Mo, ferme tous
       les handles de fichiers emules, et affiche un rapport de
       sortie (code de retour du processus emule, statistiques).
@@ -486,6 +486,9 @@ Var
  DebugMode:Boolean;
  VerboseMode:Boolean;
  ReadOnlyMode:Boolean;
+
+  { TODO 25 : Compteur d'instructions executees pour les statistiques. }
+ EmuInstrCount:LongInt;
 
   { TODO 3 : Lecture d'un octet dans la memoire lineaire 32 bits.
     L'adresse est une adresse lineaire plate (flat) dans l'espace
@@ -7434,6 +7437,8 @@ Begin
    If DebugMode Then
     WriteLn('[DEBUG] EIP=$',HexStr(EIP-1,8),' opcode=$',HexStr(OpCode,2));
     { Dispatch de l'opcode principal }
+      { TODO 25 : Incrementer le compteur d'instructions }
+   Inc(EmuInstrCount);
    Case OpCode of
      { === ADD === }
     $00:OpAddRM8R8;
@@ -8007,6 +8012,59 @@ Begin
  End; { While EmuRunning }
 End;
 
+  { TODO 25 : Procedure de nettoyage.
+    Ferme tous les handles de fichiers emules, ferme les recherches
+    FindFirstFile/FindNextFile actives, ferme et supprime le fichier
+    d'echange de 16 Mo, puis affiche un rapport de sortie. }
+Procedure Done;
+Var
+ I:Integer;
+ FilesClosedCount:Integer;
+ FindClosedCount:Integer;
+Begin
+  { Fermer tous les fichiers emules encore ouverts }
+ FilesClosedCount:=0;
+ For I:=0 to MAX_EMU_FILES-1 do Begin
+  If EmuFileActive[I] Then Begin
+   {$I-}Close(EmuFileVar[I]);{$I+}
+   If IOResult<>0 Then
+    WriteLn('EMUW32 : Avertissement - erreur fermeture fichier emule #',I,
+            ' (',EmuFileName[I],').');
+   EmuFileActive[I]:=False;
+   Inc(FilesClosedCount);
+   If VerboseMode Then
+    WriteLn('EMUW32 : Fichier emule ferme : ',EmuFileName[I]);
+  End;
+ End;
+  { Fermer toutes les recherches FindFirstFile encore actives }
+ FindClosedCount:=0;
+ For I:=0 to MAX_EMU_FIND_HANDLES-1 do Begin
+  If EmuFindActive[I] Then Begin
+   {$I-}FindClose(EmuFindSR[I]);{$I+}
+   If IOResult<>0 Then;{ Ignorer les erreurs de FindClose }
+   EmuFindActive[I]:=False;
+   Inc(FindClosedCount);
+  End;
+ End;
+  { Fermer et supprimer le fichier d'echange }
+ {$I-}Close(Memory);{$I+}
+ If IOResult<>0 Then
+  WriteLn('EMUW32 : Avertissement - erreur lors de la fermeture du fichier d''echange.');
+ {$I-}Assign(Memory,SwapFileMemory);
+ Erase(Memory);{$I+}
+ If IOResult<>0 Then
+  WriteLn('EMUW32 : Avertissement - impossible de supprimer le fichier d''echange.');
+  { Afficher le rapport de sortie }
+ WriteLn;
+ WriteLn('=== Rapport de sortie EMUW32 ===');
+ WriteLn('Code de retour du processus : ',EmuExitCode);
+ WriteLn('Instructions executees       : ',EmuInstrCount);
+ WriteLn('Fichiers emules fermes       : ',FilesClosedCount);
+ WriteLn('Recherches FindFile fermees  : ',FindClosedCount);
+ WriteLn('Fichier d''echange supprime   : ',SwapFileMemory);
+ WriteLn('================================');
+End;
+
   { TODO 1 : Procedure d'initialisation de la memoire lineaire.
     Cree le fichier d'echange de 16 Mo (EMUW32.$$$) et le remplit
     de zeros pour simuler un espace d'adressage plat Win32. }
@@ -8040,6 +8098,8 @@ Begin
  EIP:=0;
  EFlags.Abs:=0;
  Regs.ESP:=MemorySize;  { Sommet de pile : 16 Mo }
+  { TODO 25 : Initialiser le compteur d'instructions }
+ EmuInstrCount:=0;
  WriteLn('Pile de 1 Mo allouee (ESP=$',HexStr(Regs.ESP,8),
          ', base=$',HexStr(StackBase,8),').');
 End;
@@ -8056,12 +8116,6 @@ BEGIN
  Init;
  If VerboseMode Then
   WriteLn('EMUW32 : Memoire lineaire de 16 Mo initialisee.');
-  { Fermer et supprimer le fichier d'echange }
- {$I-}Close(Memory);{$I+}
- If IOResult<>0 Then
-  WriteLn('EMUW32 : Avertissement - erreur lors de la fermeture du fichier d''echange.');
- {$I-}Assign(Memory,SwapFileMemory);
- Erase(Memory);{$I+}
- If IOResult<>0 Then
-  WriteLn('EMUW32 : Avertissement - impossible de supprimer le fichier d''echange.');
+  { TODO 25 : Nettoyage et rapport de sortie }
+ Done;
 END.
