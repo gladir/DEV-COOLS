@@ -13708,8 +13708,553 @@ End;
 
 { ---- Executer un SELECT ------------------------------------- }
 { Pipeline : Scan -> Join -> Filter(WHERE) -> GroupBy/Aggregate   }
-{            -> Having -> Project -> Sort -> Distinct -> Top       }
-{            -> Output                                             }
+{            -> Having -> Project -> Window -> Sort -> Distinct    }
+{            -> Top -> Output                                      }
+
+{ ---- Fonctions de fenetre (Window Functions) (TODO 18) ------- }
+{ Detecte et evalue les fonctions de fenetre (ROW_NUMBER, RANK,    }
+{ DENSE_RANK, NTILE, LAG, LEAD, FIRST_VALUE, LAST_VALUE,          }
+{ PERCENT_RANK, CUME_DIST) avec clause OVER (PARTITION BY,         }
+{ ORDER BY, frame). Supporte aussi les agregats en fenetre :       }
+{ SUM/AVG/COUNT/MIN/MAX OVER (...).                                }
+
+Var
+  QEWinIdx      : Array[0..MAX_QE_ROWS - 1] Of Integer;
+  QEWinOverNode : Integer;
+  QEWinResPtr   : TQEResultPtr;
+
+Function QEIsWindowFunc(Const FnName : TTokenText) : Boolean;
+Var U : TTokenText;
+Begin
+  U := StrUpperCase(FnName);
+  QEIsWindowFunc :=
+    (U = 'ROW_NUMBER') Or (U = 'RANK') Or (U = 'DENSE_RANK') Or
+    (U = 'NTILE') Or (U = 'LAG') Or (U = 'LEAD') Or
+    (U = 'FIRST_VALUE') Or (U = 'LAST_VALUE') Or
+    (U = 'PERCENT_RANK') Or (U = 'CUME_DIST');
+End;
+
+Function QEHasWindowFunc(Node : Integer) : Boolean;
+Var I : Integer;
+Begin
+  QEHasWindowFunc := False;
+  If (Node < 0) Or (Node >= ASTCount) Then Exit;
+  If ASTPool[Node].Kind = ND_OVER_CLAUSE Then
+  Begin
+    QEHasWindowFunc := True;
+    Exit;
+  End;
+  For I := 0 To ASTPool[Node].ChildCnt - 1 Do
+    If QEHasWindowFunc(ASTPool[Node].Children[I]) Then
+    Begin
+      QEHasWindowFunc := True;
+      Exit;
+    End;
+End;
+
+{ Construit la cle de partition pour une ligne }
+Function QEWinPartKey(RowIdx : Integer) : TTokenText;
+Var
+  I, PNode, E : Integer;
+  V           : TSqlValue;
+  Key         : TTokenText;
+Begin
+  Key := '';
+  If (QEWinOverNode < 0) Or (QEWinOverNode >= ASTCount) Then
+  Begin
+    QEWinPartKey := '';
+    Exit;
+  End;
+  PNode := -1;
+  For I := 0 To ASTPool[QEWinOverNode].ChildCnt - 1 Do
+  Begin
+    E := ASTPool[QEWinOverNode].Children[I];
+    If (E >= 0) And (E < ASTCount) And
+       (ASTPool[E].Kind = ND_PARTITION_BY) Then
+    Begin
+      PNode := E;
+      Break;
+    End;
+  End;
+  If PNode < 0 Then
+  Begin
+    QEWinPartKey := '';
+    Exit;
+  End;
+  For I := 0 To ASTPool[PNode].ChildCnt - 1 Do
+  Begin
+    E := ASTPool[PNode].Children[I];
+    V := QEEvalExpr(E, QEWinResPtr^.Rows[RowIdx], QEWinResPtr^);
+    If Key <> '' Then Key := Key + '|';
+    If V.IsNull Then Key := Key + '<NULL>'
+    Else Key := Key + SqlValueToStr(V);
+  End;
+  QEWinPartKey := Key;
+End;
+
+{ Compare deux lignes par partition + ORDER BY }
+Function QEWinCompare(A, B : Integer) : Integer;
+Var
+  KA, KB    : TTokenText;
+  I, E, N   : Integer;
+  ONode     : Integer;
+  VA, VB    : TSqlValue;
+  Cmp       : Integer;
+  IsDesc    : Boolean;
+Begin
+  QEWinCompare := 0;
+  KA := QEWinPartKey(A);
+  KB := QEWinPartKey(B);
+  If KA < KB Then Begin QEWinCompare := -1; Exit; End;
+  If KA > KB Then Begin QEWinCompare := 1; Exit; End;
+  ONode := -1;
+  For I := 0 To ASTPool[QEWinOverNode].ChildCnt - 1 Do
+  Begin
+    E := ASTPool[QEWinOverNode].Children[I];
+    If (E >= 0) And (E < ASTCount) And
+       (ASTPool[E].Kind = ND_ORDER_BY) Then
+    Begin
+      ONode := E;
+      Break;
+    End;
+  End;
+  If ONode < 0 Then Exit;
+  For I := 0 To ASTPool[ONode].ChildCnt - 1 Do
+  Begin
+    N := ASTPool[ONode].Children[I];
+    If (N < 0) Or (N >= ASTCount) Then Continue;
+    If ASTPool[N].Kind <> ND_ORDER_ITEM Then Continue;
+    IsDesc := (StrUpperCase(ASTPool[N].Text) = 'DESC');
+    If ASTPool[N].ChildCnt > 0 Then
+    Begin
+      E := ASTPool[N].Children[0];
+      VA := QEEvalExpr(E, QEWinResPtr^.Rows[A], QEWinResPtr^);
+      VB := QEEvalExpr(E, QEWinResPtr^.Rows[B], QEWinResPtr^);
+      Cmp := QECompareValues(VA, VB);
+      If IsDesc Then Cmp := -Cmp;
+      If Cmp <> 0 Then
+      Begin
+        QEWinCompare := Cmp;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+{ Tri rapide de l index de fenetre }
+Procedure QEWinQuickSort(Lo, Hi : Integer);
+Var
+  I, J, Pivot, Tmp : Integer;
+Begin
+  If Lo >= Hi Then Exit;
+  I := Lo;
+  J := Hi;
+  Pivot := QEWinIdx[(Lo + Hi) Div 2];
+  Repeat
+    While QEWinCompare(QEWinIdx[I], Pivot) < 0 Do Inc(I);
+    While QEWinCompare(QEWinIdx[J], Pivot) > 0 Do Dec(J);
+    If I <= J Then
+    Begin
+      Tmp := QEWinIdx[I];
+      QEWinIdx[I] := QEWinIdx[J];
+      QEWinIdx[J] := Tmp;
+      Inc(I);
+      Dec(J);
+    End;
+  Until I > J;
+  If Lo < J Then QEWinQuickSort(Lo, J);
+  If I < Hi Then QEWinQuickSort(I, Hi);
+End;
+
+{ Construit la cle ORDER BY pour une ligne (pour detection egalites) }
+Function QEWinOrdKey(RowIdx : Integer) : TTokenText;
+Var
+  I, E, N   : Integer;
+  ONode     : Integer;
+  V         : TSqlValue;
+  Key       : TTokenText;
+Begin
+  Key := '';
+  ONode := -1;
+  For I := 0 To ASTPool[QEWinOverNode].ChildCnt - 1 Do
+  Begin
+    E := ASTPool[QEWinOverNode].Children[I];
+    If (E >= 0) And (E < ASTCount) And
+       (ASTPool[E].Kind = ND_ORDER_BY) Then
+    Begin
+      ONode := E;
+      Break;
+    End;
+  End;
+  If ONode < 0 Then Begin QEWinOrdKey := ''; Exit; End;
+  For I := 0 To ASTPool[ONode].ChildCnt - 1 Do
+  Begin
+    N := ASTPool[ONode].Children[I];
+    If (N < 0) Or (N >= ASTCount) Then Continue;
+    If ASTPool[N].Kind <> ND_ORDER_ITEM Then Continue;
+    If ASTPool[N].ChildCnt > 0 Then
+    Begin
+      E := ASTPool[N].Children[0];
+      V := QEEvalExpr(E, QEWinResPtr^.Rows[RowIdx], QEWinResPtr^);
+      If Key <> '' Then Key := Key + '|';
+      If V.IsNull Then Key := Key + '<NULL>'
+      Else Key := Key + SqlValueToStr(V);
+    End;
+  End;
+  QEWinOrdKey := Key;
+End;
+
+{ Applique les fonctions de fenetre sur le result set }
+Procedure QEApplyWindowFuncs(Var Res : TQEResult; Root : Integer);
+Var
+  I, J, K, N, CI  : Integer;
+  ColIdx          : Integer;
+  FuncNode        : Integer;
+  FnName          : TTokenText;
+  OverNode        : Integer;
+  PrevPartKey     : TTokenText;
+  CurPartKey      : TTokenText;
+  RowNum          : LongInt;
+  RankVal         : LongInt;
+  DenseVal        : LongInt;
+  PartSize        : Integer;
+  PartStart       : Integer;
+  V               : TSqlValue;
+  NtileN          : LongInt;
+  Bucket          : LongInt;
+  BucketSize      : LongInt;
+  BucketRem       : LongInt;
+  PrevOrdKey      : TTokenText;
+  CurOrdKey       : TTokenText;
+  ArgNode         : Integer;
+  LagOffset       : LongInt;
+  DefaultVal      : TSqlValue;
+  TargetIdx       : Integer;
+  ArgExpr         : Integer;
+  SumVal          : Real;
+  CntVal          : LongInt;
+  MinVal, MaxVal  : TSqlValue;
+  TmpVal          : TSqlValue;
+  LastTie         : Integer;
+  IsAggr          : Boolean;
+Begin
+  If Res.RowCnt <= 0 Then Exit;
+
+  ColIdx := 0;
+  For I := 0 To ASTPool[Root].ChildCnt - 1 Do
+  Begin
+    N := ASTPool[Root].Children[I];
+    If (N < 0) Or (N >= ASTCount) Then Continue;
+    If ASTPool[N].Kind <> ND_SELECT_ITEM Then Continue;
+
+    OverNode := -1;
+    If ASTPool[N].ChildCnt > 0 Then
+    Begin
+      CI := ASTPool[N].Children[0];
+      If (CI >= 0) And (CI < ASTCount) And
+         (ASTPool[CI].Kind = ND_OVER_CLAUSE) Then
+        OverNode := CI;
+    End;
+
+    If OverNode >= 0 Then
+    Begin
+      FuncNode := -1;
+      If ASTPool[OverNode].ChildCnt > 0 Then
+      Begin
+        FuncNode := ASTPool[OverNode].Children[0];
+        If (FuncNode >= 0) And (FuncNode < ASTCount) And
+           (ASTPool[FuncNode].Kind = ND_FUNC_CALL) Then
+          FnName := StrUpperCase(ASTPool[FuncNode].Text)
+        Else
+        Begin
+          FnName := '';
+          FuncNode := -1;
+        End;
+      End;
+
+      If FuncNode < 0 Then
+      Begin
+        Inc(ColIdx);
+        Continue;
+      End;
+
+      { Configurer le contexte de tri }
+      QEWinOverNode := OverNode;
+      QEWinResPtr   := @Res;
+
+      { Initialiser le tableau d index }
+      For J := 0 To Res.RowCnt - 1 Do
+        QEWinIdx[J] := J;
+
+      { Trier par partition + order }
+      If Res.RowCnt > 1 Then
+        QEWinQuickSort(0, Res.RowCnt - 1);
+
+      { Detecter si c est un agregat en fenetre }
+      IsAggr := (FnName = 'SUM') Or (FnName = 'AVG') Or
+                (FnName = 'COUNT') Or (FnName = 'MIN') Or
+                (FnName = 'MAX');
+
+      { Expression argument pour LAG/LEAD/FIRST_VALUE/LAST_VALUE/agregats }
+      ArgExpr := -1;
+      If ASTPool[FuncNode].ChildCnt > 0 Then
+        ArgExpr := ASTPool[FuncNode].Children[0];
+
+      { Parcourir les lignes triees et calculer les valeurs }
+      PrevPartKey := #1;
+      PartStart := 0;
+      PartSize := 0;
+      RowNum := 0;
+      RankVal := 1;
+      DenseVal := 0;
+      PrevOrdKey := #1;
+
+      For J := 0 To Res.RowCnt - 1 Do
+      Begin
+        CurPartKey := QEWinPartKey(QEWinIdx[J]);
+
+        { Detecter une nouvelle partition }
+        If CurPartKey <> PrevPartKey Then
+        Begin
+          RowNum := 0;
+          RankVal := 1;
+          DenseVal := 0;
+          PrevOrdKey := #1;
+          PartStart := J;
+          PartSize := 0;
+          For K := J To Res.RowCnt - 1 Do
+          Begin
+            If QEWinPartKey(QEWinIdx[K]) = CurPartKey Then
+              Inc(PartSize)
+            Else
+              Break;
+          End;
+          PrevPartKey := CurPartKey;
+        End;
+
+        Inc(RowNum);
+
+        { Cle ORDER BY pour detection des egalites }
+        CurOrdKey := QEWinOrdKey(QEWinIdx[J]);
+
+        If CurOrdKey <> PrevOrdKey Then
+        Begin
+          RankVal := RowNum;
+          Inc(DenseVal);
+          PrevOrdKey := CurOrdKey;
+        End;
+
+        { Calculer la valeur de la fonction de fenetre }
+        InitSqlValue(V);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := False;
+
+        If FnName = 'ROW_NUMBER' Then
+          V.IntVal := RowNum
+        Else If FnName = 'RANK' Then
+          V.IntVal := RankVal
+        Else If FnName = 'DENSE_RANK' Then
+          V.IntVal := DenseVal
+        Else If FnName = 'NTILE' Then
+        Begin
+          NtileN := 1;
+          If ASTPool[FuncNode].ChildCnt > 0 Then
+          Begin
+            ArgNode := ASTPool[FuncNode].Children[0];
+            If (ArgNode >= 0) And (ArgNode < ASTCount) Then
+              Val(ASTPool[ArgNode].Text, NtileN, K);
+          End;
+          If NtileN < 1 Then NtileN := 1;
+          BucketSize := PartSize Div NtileN;
+          BucketRem  := PartSize Mod NtileN;
+          K := RowNum;
+          Bucket := 0;
+          While K > 0 Do
+          Begin
+            Inc(Bucket);
+            If Bucket <= BucketRem Then
+              Dec(K, BucketSize + 1)
+            Else
+              Dec(K, BucketSize);
+          End;
+          V.IntVal := Bucket;
+        End
+        Else If FnName = 'PERCENT_RANK' Then
+        Begin
+          V.Category := SQLCAT_DECIMAL;
+          V.XType    := XT_FLOAT;
+          If PartSize <= 1 Then
+            V.FloatVal := 0.0
+          Else
+            V.FloatVal := (RankVal - 1) / (PartSize - 1);
+        End
+        Else If FnName = 'CUME_DIST' Then
+        Begin
+          V.Category := SQLCAT_DECIMAL;
+          V.XType    := XT_FLOAT;
+          { Trouver la derniere ligne avec la meme cle d ordre }
+          LastTie := J;
+          While (LastTie + 1 < PartStart + PartSize) And
+                (QEWinOrdKey(QEWinIdx[LastTie + 1]) = CurOrdKey) Do
+            Inc(LastTie);
+          If PartSize > 0 Then
+            V.FloatVal := (LastTie - PartStart + 1) / PartSize
+          Else
+            V.FloatVal := 1.0;
+        End
+        Else If FnName = 'LAG' Then
+        Begin
+          LagOffset := 1;
+          InitSqlValue(DefaultVal);
+          DefaultVal.IsNull := True;
+          DefaultVal.Valid := True;
+          If ASTPool[FuncNode].ChildCnt > 1 Then
+          Begin
+            ArgNode := ASTPool[FuncNode].Children[1];
+            If (ArgNode >= 0) And (ArgNode < ASTCount) Then
+              Val(ASTPool[ArgNode].Text, LagOffset, K);
+          End;
+          If ASTPool[FuncNode].ChildCnt > 2 Then
+          Begin
+            ArgNode := ASTPool[FuncNode].Children[2];
+            If (ArgNode >= 0) And (ArgNode < ASTCount) Then
+              DefaultVal := QEEvalExpr(ArgNode,
+                Res.Rows[QEWinIdx[J]], Res);
+          End;
+          TargetIdx := J - LagOffset;
+          If (TargetIdx >= PartStart) And
+             (TargetIdx < PartStart + PartSize) And
+             (ArgExpr >= 0) Then
+            V := QEEvalExpr(ArgExpr,
+              Res.Rows[QEWinIdx[TargetIdx]], Res)
+          Else
+            V := DefaultVal;
+        End
+        Else If FnName = 'LEAD' Then
+        Begin
+          LagOffset := 1;
+          InitSqlValue(DefaultVal);
+          DefaultVal.IsNull := True;
+          DefaultVal.Valid := True;
+          If ASTPool[FuncNode].ChildCnt > 1 Then
+          Begin
+            ArgNode := ASTPool[FuncNode].Children[1];
+            If (ArgNode >= 0) And (ArgNode < ASTCount) Then
+              Val(ASTPool[ArgNode].Text, LagOffset, K);
+          End;
+          If ASTPool[FuncNode].ChildCnt > 2 Then
+          Begin
+            ArgNode := ASTPool[FuncNode].Children[2];
+            If (ArgNode >= 0) And (ArgNode < ASTCount) Then
+              DefaultVal := QEEvalExpr(ArgNode,
+                Res.Rows[QEWinIdx[J]], Res);
+          End;
+          TargetIdx := J + LagOffset;
+          If (TargetIdx >= PartStart) And
+             (TargetIdx < PartStart + PartSize) And
+             (ArgExpr >= 0) Then
+            V := QEEvalExpr(ArgExpr,
+              Res.Rows[QEWinIdx[TargetIdx]], Res)
+          Else
+            V := DefaultVal;
+        End
+        Else If FnName = 'FIRST_VALUE' Then
+        Begin
+          If (ArgExpr >= 0) And (PartSize > 0) Then
+            V := QEEvalExpr(ArgExpr,
+              Res.Rows[QEWinIdx[PartStart]], Res)
+          Else
+          Begin V.IsNull := True; V.Valid := True; End;
+        End
+        Else If FnName = 'LAST_VALUE' Then
+        Begin
+          If (ArgExpr >= 0) And (PartSize > 0) Then
+            V := QEEvalExpr(ArgExpr,
+              Res.Rows[QEWinIdx[PartStart + PartSize - 1]], Res)
+          Else
+          Begin V.IsNull := True; V.Valid := True; End;
+        End
+        Else If IsAggr Then
+        Begin
+          { Agregats en fenetre sur la partition entiere }
+          SumVal := 0.0;
+          CntVal := 0;
+          InitSqlValue(MinVal); MinVal.IsNull := True;
+          InitSqlValue(MaxVal); MaxVal.IsNull := True;
+          For K := PartStart To PartStart + PartSize - 1 Do
+          Begin
+            If ArgExpr >= 0 Then
+              TmpVal := QEEvalExpr(ArgExpr,
+                Res.Rows[QEWinIdx[K]], Res)
+            Else
+            Begin
+              InitSqlValue(TmpVal);
+              TmpVal.IsNull := False;
+              TmpVal.IntVal := 1;
+              TmpVal.Category := SQLCAT_INTEGER;
+            End;
+            If Not TmpVal.IsNull Then
+            Begin
+              Inc(CntVal);
+              If TmpVal.Category = SQLCAT_DECIMAL Then
+                SumVal := SumVal + TmpVal.FloatVal
+              Else
+                SumVal := SumVal + TmpVal.IntVal;
+              If MinVal.IsNull Then MinVal := TmpVal
+              Else If QECompareValues(TmpVal, MinVal) < 0 Then
+                MinVal := TmpVal;
+              If MaxVal.IsNull Then MaxVal := TmpVal
+              Else If QECompareValues(TmpVal, MaxVal) > 0 Then
+                MaxVal := TmpVal;
+            End;
+          End;
+          If FnName = 'COUNT' Then
+          Begin
+            V.Category := SQLCAT_INTEGER;
+            V.XType := XT_INT;
+            V.IntVal := CntVal;
+          End
+          Else If FnName = 'SUM' Then
+          Begin
+            V.Category := SQLCAT_DECIMAL;
+            V.XType := XT_FLOAT;
+            V.FloatVal := SumVal;
+            If CntVal = 0 Then V.IsNull := True;
+          End
+          Else If FnName = 'AVG' Then
+          Begin
+            V.Category := SQLCAT_DECIMAL;
+            V.XType := XT_FLOAT;
+            If CntVal > 0 Then
+              V.FloatVal := SumVal / CntVal
+            Else
+              V.IsNull := True;
+          End
+          Else If FnName = 'MIN' Then
+            V := MinVal
+          Else If FnName = 'MAX' Then
+            V := MaxVal;
+        End
+        Else
+        Begin
+          { Fonction non reconnue }
+          V.IsNull := True;
+          V.Valid := True;
+        End;
+
+        { Stocker la valeur dans la ligne originale }
+        If ColIdx < Res.ColCnt Then
+          Res.Rows[QEWinIdx[J]].Vals[ColIdx] := V;
+      End;
+    End;
+
+    Inc(ColIdx);
+  End;
+End;
+
+{ ---- Executer un SELECT ------------------------------------- }
 
 Procedure QEExecSelect(Root : Integer);
 Var
