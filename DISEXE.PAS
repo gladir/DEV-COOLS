@@ -39,7 +39,7 @@
       Initialiser CS:IP et SS:SP a partir de l'entete MZ.
       Stocker les segments de base pour le relogement.
 
-  4.  Lecture et validation des entetes PE (Portable Executable).
+  4.  [IMPLEMENTE] Lecture et validation des entetes PE (Portable Executable).
       Si e_lfanew pointe vers une signature PE ($00004550), lire
       IMAGE_FILE_HEADER (20 octets) : Machine ($014C = i386),
       NumberOfSections, TimeDateStamp, SizeOfOptionalHeader,
@@ -297,6 +297,9 @@ Const
   MAX_XREFS      = 65536;
   BUFFER_SIZE    = 65536;
 
+  { Nombre d'entrees dans le DataDirectory PE }
+  MAX_DATA_DIRS  = 16;
+
   { Taille maximale de l'image en memoire (16 Mo) }
   MAX_IMAGE_SIZE = 16 * 1024 * 1024;
 
@@ -373,6 +376,12 @@ Type
     NumberOfRvaAndSizes  : LongInt;
   End;
 
+  { Entree du DataDirectory PE (8 octets) }
+  TDataDirectory = Record
+    VirtualAddress : LongInt;
+    Size           : LongInt;
+  End;
+
   { Section PE - IMAGE_SECTION_HEADER (40 octets) }
   TPESectionHeader = Record
     Name            : Array[0..7] Of Char;
@@ -433,6 +442,7 @@ Var
   PEOptHeader    : TPEOptionalHeader;
   IsPEFile       : Boolean;   { True si fichier PE detecte }
   PEOffset       : LongInt;   { offset de la signature PE }
+  DataDirs       : Array[0..MAX_DATA_DIRS - 1] Of TDataDirectory;
 
   { Sections }
   Sections       : Array[0..MAX_SECTIONS - 1] Of TPESectionHeader;
@@ -661,6 +671,69 @@ Begin
 End;
 
 { ============================================================
+  LECTURE DES ENTETES PE
+  ============================================================ }
+
+Function ReadPEHeaders : Boolean;
+Var
+ BytesRead : Word;
+ I         : Integer;
+ NumDirs   : LongInt;
+Begin
+ ReadPEHeaders := False;
+ { Positionner apres la signature PE (4 octets) }
+ Seek(InFile, PEOffset + 4);
+ If IOResult <> 0 Then Begin
+  WriteLn('Erreur : impossible de positionner a l''entete PE.');
+  Exit;
+ End;
+ { Lire IMAGE_FILE_HEADER (20 octets) }
+ BlockRead(InFile, PEFileHeader, SizeOf(TPEFileHeader), BytesRead);
+ If (IOResult <> 0) Or (BytesRead < SizeOf(TPEFileHeader)) Then Begin
+  WriteLn('Erreur : lecture IMAGE_FILE_HEADER echouee.');
+  Exit;
+ End;
+ { Valider Machine = i386 }
+ If PEFileHeader.Machine <> IMAGE_FILE_MACHINE_I386 Then Begin
+  WriteLn('Erreur : Machine non supportee ($', HexWord(PEFileHeader.Machine),
+          '). Seul i386 ($014C) est supporte.');
+  Exit;
+ End;
+ { Lire IMAGE_OPTIONAL_HEADER32 }
+ BlockRead(InFile, PEOptHeader, SizeOf(TPEOptionalHeader), BytesRead);
+ If (IOResult <> 0) Or (BytesRead < SizeOf(TPEOptionalHeader)) Then Begin
+  WriteLn('Erreur : lecture IMAGE_OPTIONAL_HEADER32 echouee.');
+  Exit;
+ End;
+ { Valider Magic = PE32 }
+ If PEOptHeader.Magic <> PE32_MAGIC Then Begin
+  WriteLn('Erreur : Magic non supporte ($', HexWord(PEOptHeader.Magic),
+          '). Seul PE32 ($010B) est supporte.');
+  Exit;
+ End;
+ { Lire le DataDirectory }
+ NumDirs := PEOptHeader.NumberOfRvaAndSizes;
+ If NumDirs > MAX_DATA_DIRS Then NumDirs := MAX_DATA_DIRS;
+ { Initialiser toutes les entrees a zero }
+ For I := 0 To MAX_DATA_DIRS - 1 Do Begin
+  DataDirs[I].VirtualAddress := 0;
+  DataDirs[I].Size := 0;
+ End;
+ { Lire les entrees du DataDirectory }
+ For I := 0 To NumDirs - 1 Do Begin
+  BlockRead(InFile, DataDirs[I], SizeOf(TDataDirectory), BytesRead);
+  If (IOResult <> 0) Or (BytesRead < SizeOf(TDataDirectory)) Then Begin
+   WriteLn('Erreur : lecture DataDirectory[', I, '] echouee.');
+   Exit;
+  End;
+ End;
+ { Nombre de sections }
+ SectionCount := PEFileHeader.NumberOfSections;
+ If SectionCount > MAX_SECTIONS Then SectionCount := MAX_SECTIONS;
+ ReadPEHeaders := True;
+End;
+
+{ ============================================================
   CHARGEMENT DU PROGRAMME DOS 16 BITS
   ============================================================ }
 
@@ -772,6 +845,35 @@ Begin
  { Detection PE }
  If DetectPE Then Begin
   WriteLn('Format PE (Windows 32 bits) detecte a l''offset $', HexDWord(PEOffset), '.');
+  { Lecture des entetes PE }
+  If Not ReadPEHeaders Then Begin
+   Close(InFile);
+   Halt(1);
+  End;
+  If OptVerbose Then Begin
+   WriteLn('IMAGE_FILE_HEADER :');
+   WriteLn('  Machine            : $', HexWord(PEFileHeader.Machine));
+   WriteLn('  NumberOfSections   : ', PEFileHeader.NumberOfSections);
+   WriteLn('  TimeDateStamp      : $', HexDWord(PEFileHeader.TimeDateStamp));
+   WriteLn('  SizeOfOptionalHeader : ', PEFileHeader.SizeOfOptionalHeader);
+   WriteLn('  Characteristics    : $', HexWord(PEFileHeader.Characteristics));
+   WriteLn('IMAGE_OPTIONAL_HEADER32 :');
+   WriteLn('  Magic              : $', HexWord(PEOptHeader.Magic));
+   WriteLn('  LinkerVersion      : ', PEOptHeader.MajorLinkerVersion, '.', PEOptHeader.MinorLinkerVersion);
+   WriteLn('  SizeOfCode         : $', HexDWord(PEOptHeader.SizeOfCode));
+   WriteLn('  AddressOfEntryPoint: $', HexDWord(PEOptHeader.AddressOfEntryPoint));
+   WriteLn('  BaseOfCode         : $', HexDWord(PEOptHeader.BaseOfCode));
+   WriteLn('  BaseOfData         : $', HexDWord(PEOptHeader.BaseOfData));
+   WriteLn('  ImageBase          : $', HexDWord(PEOptHeader.ImageBase));
+   WriteLn('  SectionAlignment   : $', HexDWord(PEOptHeader.SectionAlignment));
+   WriteLn('  FileAlignment      : $', HexDWord(PEOptHeader.FileAlignment));
+   WriteLn('  SizeOfImage        : $', HexDWord(PEOptHeader.SizeOfImage));
+   WriteLn('  SizeOfHeaders      : $', HexDWord(PEOptHeader.SizeOfHeaders));
+   WriteLn('  CheckSum           : $', HexDWord(PEOptHeader.CheckSum));
+   WriteLn('  Subsystem          : ', PEOptHeader.Subsystem);
+   WriteLn('  NumberOfRvaAndSizes: ', PEOptHeader.NumberOfRvaAndSizes);
+   WriteLn('  Sections           : ', SectionCount);
+  End;
  End Else Begin
   WriteLn('Format DOS MZ (16 bits) detecte.');
   { Chargement de l'image DOS en memoire }
@@ -798,7 +900,7 @@ Begin
  SectionCount := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 4 a 25 restent a implementer)');
+ WriteLn('(les TODOs 5 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
 End.
