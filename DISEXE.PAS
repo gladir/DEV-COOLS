@@ -30,7 +30,7 @@
       Detecter la presence d'un entete PE via le champ a l'offset
       $3C (e_lfanew) pointant vers la signature PE.
 
-  3.  Chargement du programme DOS 16 bits en memoire.
+  3.  [IMPLEMENTE] Chargement du programme DOS 16 bits en memoire.
       Si le fichier est un EXE DOS pur (pas de signature PE), charger
       l'image executable en memoire a partir de la fin de l'entete MZ
       (taille entete * 16 octets). Calculer la taille de l'image :
@@ -306,6 +306,10 @@ Const
 Type
   TString = String;
 
+  { Tampon dynamique pour l'image en memoire }
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+
   { Entete MZ (DOS EXE header - 28 octets minimum) }
   TMZHeader = Record
     Signature    : Word;    { $5A4D = 'MZ' }
@@ -435,7 +439,13 @@ Var
   SectionCount   : Integer;
 
   { Image en memoire }
+  ImageBuffer    : PByteArray;  { tampon de l'image en memoire }
   ImageSize      : LongInt;
+  EntryCS        : Word;        { CS du point d'entree }
+  EntryIP        : Word;        { IP du point d'entree }
+  EntrySS        : Word;        { SS initial }
+  EntrySP        : Word;        { SP initial }
+  BaseSegment    : Word;        { segment de base pour relogement }
 
   { Labels et references croisees }
   Labels         : Array[0..MAX_LABELS - 1] Of TLabelInfo;
@@ -651,6 +661,76 @@ Begin
 End;
 
 { ============================================================
+  CHARGEMENT DU PROGRAMME DOS 16 BITS
+  ============================================================ }
+
+Function LoadDOS16Image : Boolean;
+Var
+ HeaderBytes : LongInt;
+ FileBytes   : LongInt;
+ BytesRead   : Word;
+ Remaining   : LongInt;
+ Offset      : LongInt;
+ ChunkSize   : Word;
+Begin
+ LoadDOS16Image := False;
+ { Calculer la taille de l'entete en octets }
+ HeaderBytes := LongInt(MZHeader.HeaderSize) * 16;
+ { Calculer la taille totale du fichier a partir des champs MZ }
+ If MZHeader.LastPageSize = 0 Then
+  FileBytes := LongInt(MZHeader.PageCount) * 512
+ Else
+  FileBytes := (LongInt(MZHeader.PageCount) - 1) * 512 + MZHeader.LastPageSize;
+ { Calculer la taille de l'image executable }
+ ImageSize := FileBytes - HeaderBytes;
+ If (ImageSize <= 0) Or (ImageSize > MAX_IMAGE_SIZE) Then Begin
+  WriteLn('Erreur : taille image invalide (', ImageSize, ' octets).');
+  Exit;
+ End;
+ { Allouer le tampon dynamique pour l'image }
+ GetMem(ImageBuffer, ImageSize);
+ If ImageBuffer = Nil Then Begin
+  WriteLn('Erreur : memoire insuffisante pour ', ImageSize, ' octets.');
+  Exit;
+ End;
+ { Positionner a la fin de l'entete MZ }
+ Seek(InFile, HeaderBytes);
+ If IOResult <> 0 Then Begin
+  WriteLn('Erreur : impossible de positionner dans le fichier.');
+  FreeMem(ImageBuffer, ImageSize);
+  ImageBuffer := Nil;
+  Exit;
+ End;
+ { Lire l'image en blocs de BUFFER_SIZE }
+ Offset := 0;
+ Remaining := ImageSize;
+ While Remaining > 0 Do Begin
+  If Remaining > 32768 Then
+   ChunkSize := 32768
+  Else
+   ChunkSize := Word(Remaining);
+  BlockRead(InFile, ImageBuffer^[Offset], ChunkSize, BytesRead);
+  If (IOResult <> 0) Or (BytesRead = 0) Then Begin
+   WriteLn('Erreur : lecture incomplete de l''image.');
+   FreeMem(ImageBuffer, ImageSize);
+   ImageBuffer := Nil;
+   Exit;
+  End;
+  Inc(Offset, BytesRead);
+  Dec(Remaining, BytesRead);
+ End;
+ { Initialiser le point d'entree CS:IP }
+ EntryCS := MZHeader.InitCS;
+ EntryIP := MZHeader.InitIP;
+ { Initialiser la pile SS:SP }
+ EntrySS := MZHeader.InitSS;
+ EntrySP := MZHeader.InitSP;
+ { Segment de base pour le relogement (0 par defaut, sera ajuste au relogement) }
+ BaseSegment := 0;
+ LoadDOS16Image := True;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -659,6 +739,7 @@ Begin
  WriteLn('Desassembleur de fichiers EXE (MZ DOS 16 bits / PE Windows 32 bits)');
  WriteLn;
  ParseArgs;
+ ImageBuffer := Nil;
  If OptVerbose Then Begin
   WriteLn('Fichier d''entree  : ', InputFileName);
   WriteLn('Fichier de sortie : ', OutputFileName);
@@ -693,6 +774,17 @@ Begin
   WriteLn('Format PE (Windows 32 bits) detecte a l''offset $', HexDWord(PEOffset), '.');
  End Else Begin
   WriteLn('Format DOS MZ (16 bits) detecte.');
+  { Chargement de l'image DOS en memoire }
+  If Not LoadDOS16Image Then Begin
+   Close(InFile);
+   Halt(1);
+  End;
+  If OptVerbose Then Begin
+   WriteLn('Image DOS chargee : ', ImageSize, ' octets.');
+   WriteLn('  Point d''entree  : ', HexWord(EntryCS), ':', HexWord(EntryIP));
+   WriteLn('  Pile initiale   : ', HexWord(EntrySS), ':', HexWord(EntrySP));
+   WriteLn('  Segment de base : ', HexWord(BaseSegment));
+  End;
  End;
  Close(InFile);
  { Initialiser les compteurs }
@@ -706,7 +798,7 @@ Begin
  SectionCount := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 3 a 25 restent a implementer)');
+ WriteLn('(les TODOs 4 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
 End.
