@@ -20,7 +20,7 @@
       Fonctions utilitaires : UpCaseStr, HexByte, HexWord, HexDWord,
       IntToStr, FileExists, ChangeFileExt.
 
-  2.  Lecture et validation de l'entete MZ (DOS EXE header).
+  2.  [IMPLEMENTE] Lecture et validation de l'entete MZ (DOS EXE header).
       Lire les 28 octets de l'entete MZ : signature (MZ ou ZM),
       nombre d'octets dans la derniere page, nombre de pages de
       512 octets, nombre d'entrees de relogement, taille de l'entete
@@ -669,10 +669,24 @@ Begin
  If Not ReadMZHeader Then Halt(1);
  If OptVerbose Then Begin
   WriteLn('Entete MZ valide.');
+  WriteLn('  Signature     : $', HexWord(MZHeader.Signature));
+  WriteLn('  Derniere page : ', MZHeader.LastPageSize, ' octets');
   WriteLn('  Pages         : ', MZHeader.PageCount);
   WriteLn('  Relogements   : ', MZHeader.RelocCount);
-  WriteLn('  CS:IP initial : ', HexWord(MZHeader.InitCS), ':', HexWord(MZHeader.InitIP));
+  WriteLn('  Taille entete : ', MZHeader.HeaderSize, ' paragraphes (', MZHeader.HeaderSize * 16, ' octets)');
+  WriteLn('  MINALLOC      : ', MZHeader.MinAlloc, ' paragraphes');
+  WriteLn('  MAXALLOC      : ', MZHeader.MaxAlloc, ' paragraphes');
   WriteLn('  SS:SP initial : ', HexWord(MZHeader.InitSS), ':', HexWord(MZHeader.InitSP));
+  WriteLn('  Checksum      : $', HexWord(MZHeader.Checksum));
+  WriteLn('  CS:IP initial : ', HexWord(MZHeader.InitCS), ':', HexWord(MZHeader.InitIP));
+  WriteLn('  Offset reloc  : $', HexWord(MZHeader.RelocOfs));
+  WriteLn('  Overlay       : ', MZHeader.OverlayNum);
+  If MZHeader.PageCount > 0 Then Begin
+   If MZHeader.LastPageSize = 0 Then
+    WriteLn('  Taille image  : ', LongInt(MZHeader.PageCount) * 512 - LongInt(MZHeader.HeaderSize) * 16, ' octets')
+   Else
+    WriteLn('  Taille image  : ', (LongInt(MZHeader.PageCount) - 1) * 512 + MZHeader.LastPageSize - LongInt(MZHeader.HeaderSize) * 16, ' octets');
+  End;
  End;
  { Detection PE }
  If DetectPE Then Begin
