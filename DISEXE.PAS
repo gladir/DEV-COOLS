@@ -78,7 +78,7 @@
       et le RVA. Generer des labels PUBLIC dans le .ASM pour
       chaque export. Gerer les exports par ordinal sans nom.
 
-  8.  Traitement de la table de relogement MZ (DOS).
+  8.  [IMPLEMENTE] Traitement de la table de relogement MZ (DOS).
       Lire la table de relogement DOS a partir de l'offset
       indique dans l'entete MZ. Chaque entree est un couple
       segment:offset (4 octets). Appliquer les relogements
@@ -500,6 +500,11 @@ Var
   ExportList     : Array[0..MAX_EXPORTS - 1] Of TExportEntry;
   ExportDLLName  : TString;   { nom de la DLL exportee }
   IterI          : Integer;  { variable d'iteration generale }
+
+  { Relogements DOS MZ }
+  MZRelocs       : Array[0..MAX_RELOCS - 1] Of TMZReloc;
+  MZRelocCount   : LongInt;  { nombre d'entrees de relogement lues }
+  RelocFlags     : PByteArray; { 1 octet par octet de l'image : 1 = position relogee }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -1137,6 +1142,89 @@ Begin
 End;
 
 { ============================================================
+  LECTURE DE LA TABLE DE RELOGEMENT MZ (DOS)
+  ============================================================ }
+
+Function ReadMZRelocs : Boolean;
+Var
+ I         : LongInt;
+ BytesRead : Word;
+Begin
+ ReadMZRelocs := False;
+ MZRelocCount := 0;
+ { Verifier qu'il y a des relogements }
+ If MZHeader.RelocCount = 0 Then Begin
+  ReadMZRelocs := True;
+  Exit;
+ End;
+ { Limiter au maximum }
+ If LongInt(MZHeader.RelocCount) > MAX_RELOCS Then Begin
+  WriteLn('Erreur : trop de relogements MZ (', MZHeader.RelocCount, ', max=', MAX_RELOCS, ').');
+  Exit;
+ End;
+ { Positionner a l'offset de la table de relogement }
+ Seek(InFile, MZHeader.RelocOfs);
+ If IOResult <> 0 Then Begin
+  WriteLn('Erreur : impossible de positionner a la table de relogement ($', HexWord(MZHeader.RelocOfs), ').');
+  Exit;
+ End;
+ { Lire les entrees de relogement (4 octets chacune : offset + segment) }
+ For I := 0 To MZHeader.RelocCount - 1 Do Begin
+  BlockRead(InFile, MZRelocs[I], SizeOf(TMZReloc), BytesRead);
+  If (IOResult <> 0) Or (BytesRead <> SizeOf(TMZReloc)) Then Begin
+   WriteLn('Erreur : lecture relogement MZ #', I, ' echouee.');
+   Exit;
+  End;
+ End;
+ MZRelocCount := MZHeader.RelocCount;
+ ReadMZRelocs := True;
+End;
+
+{ ============================================================
+  APPLICATION DES RELOGEMENTS MZ (DOS)
+  ============================================================ }
+
+Function ApplyMZRelocs : Boolean;
+Var
+ I        : LongInt;
+ Addr     : LongInt;
+ OldWord  : Word;
+ NewWord  : Word;
+ FlagSize : LongInt;
+Begin
+ ApplyMZRelocs := False;
+ { Calculer la taille du tableau de flags (1 octet par position de mot possible) }
+ FlagSize := ImageSize;
+ GetMem(RelocFlags, FlagSize);
+ If RelocFlags = Nil Then Begin
+  WriteLn('Erreur : memoire insuffisante pour les flags de relogement.');
+  Exit;
+ End;
+ FillChar(RelocFlags^, FlagSize, 0);
+ { Appliquer chaque relogement }
+ For I := 0 To MZRelocCount - 1 Do Begin
+  { Calculer l'adresse lineaire dans l'image }
+  Addr := LongInt(MZRelocs[I].Segment) * 16 + LongInt(MZRelocs[I].Offset);
+  { Verifier les limites (il faut 2 octets pour un mot) }
+  If (Addr < 0) Or (Addr + 1 >= ImageSize) Then Begin
+   If OptVerbose Then
+    WriteLn('  Avertissement : relogement #', I, ' hors limites ($', HexDWord(Addr), ').');
+   Continue;
+  End;
+  { Lire le mot a l'adresse indiquee }
+  OldWord := ImageBuffer^[Addr] Or (Word(ImageBuffer^[Addr + 1]) Shl 8);
+  { Ajouter le segment de base }
+  NewWord := OldWord + BaseSegment;
+  { Ecrire le mot modifie }
+  ImageBuffer^[Addr] := Byte(NewWord And $FF);
+  ImageBuffer^[Addr + 1] := Byte((NewWord Shr 8) And $FF);
+  { Marquer l'adresse comme relogee }
+  RelocFlags^[Addr] := 1;
+ End;
+ ApplyMZRelocs := True;
+End;
+
+{ ============================================================
   CHARGEMENT DU PROGRAMME DOS 16 BITS
   ============================================================ }
 
@@ -1216,6 +1304,8 @@ Begin
  WriteLn;
  ParseArgs;
  ImageBuffer := Nil;
+ RelocFlags := Nil;
+ MZRelocCount := 0;
  If OptVerbose Then Begin
   WriteLn('Fichier d''entree  : ', InputFileName);
   WriteLn('Fichier de sortie : ', OutputFileName);
@@ -1344,6 +1434,11 @@ Begin
   End;
  End Else Begin
   WriteLn('Format DOS MZ (16 bits) detecte.');
+  { Lecture de la table de relogement MZ }
+  If Not ReadMZRelocs Then Begin
+   Close(InFile);
+   Halt(1);
+  End;
   { Chargement de l'image DOS en memoire }
   If Not LoadDOS16Image Then Begin
    Close(InFile);
@@ -1355,6 +1450,25 @@ Begin
    WriteLn('  Pile initiale   : ', HexWord(EntrySS), ':', HexWord(EntrySP));
    WriteLn('  Segment de base : ', HexWord(BaseSegment));
   End;
+  { Application des relogements MZ }
+  If MZRelocCount > 0 Then Begin
+   If Not ApplyMZRelocs Then Begin
+    WriteLn('Erreur : application des relogements MZ echouee.');
+    Close(InFile);
+    Halt(1);
+   End;
+  End;
+  If OptVerbose Then Begin
+   WriteLn('Relogements MZ : ', MZRelocCount, ' entrees.');
+   If MZRelocCount > 0 Then Begin
+    For IterI := 0 To MZRelocCount - 1 Do Begin
+     WriteLn('  [', IterI, '] ', HexWord(MZRelocs[IterI].Segment), ':',
+             HexWord(MZRelocs[IterI].Offset),
+             '  -> offset $', HexDWord(LongInt(MZRelocs[IterI].Segment) * 16 +
+                                       LongInt(MZRelocs[IterI].Offset)));
+    End;
+   End;
+  End;
  End;
  Close(InFile);
  { Initialiser les compteurs }
@@ -1365,7 +1479,12 @@ Begin
  DataBytes := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 8 a 25 restent a implementer)');
+ WriteLn('(les TODOs 9 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
+ { Liberation de la memoire }
+ If (RelocFlags <> Nil) And (ImageSize > 0) Then
+  FreeMem(RelocFlags, ImageSize);
+ If (ImageBuffer <> Nil) And (ImageSize > 0) Then
+  FreeMem(ImageBuffer, ImageSize);
 End.
