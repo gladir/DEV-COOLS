@@ -164,7 +164,7 @@
       CMPXCHG (B0h/B1h), BSWAP (C8h-CFh).
       Instructions systeme : INVD, WBINVD, CPUID, RDTSC, etc.
 
-  17. Analyse du flux de controle et references croisees.
+  17. [IMPLEMENTE] Analyse du flux de controle et references croisees.
       Premiere passe de desassemblage lineaire pour identifier
       les instructions de saut (JMP, Jcc, LOOP), d'appel (CALL)
       et de retour (RET, RETF, IRET). Pour chaque instruction
@@ -2476,6 +2476,747 @@ Begin
 End;
 
 { ============================================================
+  ANALYSE DU FLUX DE CONTROLE ET REFERENCES CROISEES (TODO 17)
+  ============================================================ }
+
+{ AddLabel - Ajoute un label a la table des labels.
+  Si l'adresse existe deja, ne fait rien (evite les doublons).
+  Parametres :
+    Addr   : adresse dans l'image
+    AName  : nom du label (vide pour auto-generation)
+    Proc   : True si c'est un sous-programme (cible de CALL)
+    Imp    : True si c'est un import
+    Exp    : True si c'est un export
+  Retourne True si le label a ete ajoute, False si deja present ou table pleine. }
+Function AddLabel(Addr : LongInt; AName : TString;
+                  Proc, Imp, Exp : Boolean) : Boolean;
+Var
+  I : LongInt;
+Begin
+  { Verifier si l'adresse existe deja }
+  For I := 0 To LabelCount - 1 Do Begin
+    If Labels[I].Address = Addr Then Begin
+      { Mettre a jour les flags si necessaire }
+      If Proc Then Labels[I].IsProc := True;
+      If Imp Then Labels[I].IsImport := True;
+      If Exp Then Labels[I].IsExport := True;
+      If (AName <> '') And (Labels[I].Name = '') Then
+        Labels[I].Name := AName;
+      AddLabel := False;
+      Exit;
+    End;
+  End;
+  { Verifier si la table est pleine }
+  If LabelCount >= MAX_LABELS Then Begin
+    AddLabel := False;
+    Exit;
+  End;
+  { Ajouter le nouveau label }
+  Labels[LabelCount].Address  := Addr;
+  Labels[LabelCount].Name     := AName;
+  Labels[LabelCount].IsProc   := Proc;
+  Labels[LabelCount].IsImport := Imp;
+  Labels[LabelCount].IsExport := Exp;
+  Inc(LabelCount);
+  AddLabel := True;
+End;
+
+{ FindLabel - Recherche un label par adresse.
+  Retourne l'indice dans Labels[] ou -1 si non trouve. }
+Function FindLabel(Addr : LongInt) : LongInt;
+Var
+  I : LongInt;
+Begin
+  For I := 0 To LabelCount - 1 Do Begin
+    If Labels[I].Address = Addr Then Begin
+      FindLabel := I;
+      Exit;
+    End;
+  End;
+  FindLabel := -1;
+End;
+
+{ AddXRef - Ajoute une reference croisee a la table.
+  Parametres :
+    FromA  : adresse source (adresse de l'instruction de branchement)
+    ToA    : adresse cible (destination du saut/appel)
+    IsCALL : True si c'est un CALL, False si c'est un JMP/Jcc/LOOP
+  Retourne True si ajoute, False si table pleine. }
+Function AddXRef(FromA, ToA : LongInt; IsCALL : Boolean) : Boolean;
+Begin
+  If XRefCount >= MAX_XREFS Then Begin
+    AddXRef := False;
+    Exit;
+  End;
+  XRefs[XRefCount].FromAddr := FromA;
+  XRefs[XRefCount].ToAddr   := ToA;
+  XRefs[XRefCount].IsCall   := IsCALL;
+  Inc(XRefCount);
+  AddXRef := True;
+End;
+
+{ SortLabels - Tri des labels par adresse croissante (tri a bulles simple). }
+Procedure SortLabels;
+Var
+  I, J  : LongInt;
+  Tmp   : TLabelInfo;
+Begin
+  For I := 0 To LabelCount - 2 Do
+    For J := 0 To LabelCount - 2 - I Do
+      If Labels[J].Address > Labels[J + 1].Address Then Begin
+        Tmp := Labels[J];
+        Labels[J] := Labels[J + 1];
+        Labels[J + 1] := Tmp;
+      End;
+End;
+
+{ SortXRefs - Tri des references croisees par adresse cible croissante. }
+Procedure SortXRefs;
+Var
+  I, J : LongInt;
+  Tmp  : TXRef;
+Begin
+  For I := 0 To XRefCount - 2 Do
+    For J := 0 To XRefCount - 2 - I Do
+      If XRefs[J].ToAddr > XRefs[J + 1].ToAddr Then Begin
+        Tmp := XRefs[J];
+        XRefs[J] := XRefs[J + 1];
+        XRefs[J + 1] := Tmp;
+      End;
+End;
+
+{ ComputeModRMSize16 - Calcule le nombre d'octets ModR/M + deplacement en mode 16 bits.
+  Retourne le nombre d'octets (1..3). }
+Function ComputeModRMSize16(Offset : LongInt) : Integer;
+Var
+  ModRM  : Byte;
+  ModVal : Byte;
+  RMVal  : Byte;
+Begin
+  ModRM  := ReadImageByte(Offset);
+  ModVal := (ModRM Shr 6) And $03;
+  RMVal  := ModRM And $07;
+  Case ModVal Of
+    0 : If RMVal = 6 Then
+          ComputeModRMSize16 := 3   { ModR/M + disp16 }
+        Else
+          ComputeModRMSize16 := 1;  { ModR/M seul }
+    1 : ComputeModRMSize16 := 2;    { ModR/M + disp8 }
+    2 : ComputeModRMSize16 := 3;    { ModR/M + disp16 }
+    3 : ComputeModRMSize16 := 1;    { ModR/M seul (registre) }
+  Else
+    ComputeModRMSize16 := 1;
+  End;
+End;
+
+{ ComputeModRMSize32 - Calcule le nombre d'octets ModR/M + SIB + deplacement en mode 32 bits.
+  Retourne le nombre d'octets (1..6). }
+Function ComputeModRMSize32(Offset : LongInt) : Integer;
+Var
+  ModRM   : Byte;
+  ModVal  : Byte;
+  RMVal   : Byte;
+  SIBByte : Byte;
+  SIBBase : Byte;
+  Size    : Integer;
+Begin
+  ModRM  := ReadImageByte(Offset);
+  ModVal := (ModRM Shr 6) And $03;
+  RMVal  := ModRM And $07;
+  Size := 1; { ModR/M byte }
+  Case ModVal Of
+    3 : Begin { registre direct }
+      ComputeModRMSize32 := 1;
+      Exit;
+    End;
+    0 : Begin
+      If RMVal = 5 Then Begin
+        ComputeModRMSize32 := 5; { ModR/M + disp32 }
+        Exit;
+      End;
+      If RMVal = 4 Then Begin
+        { SIB byte present }
+        SIBByte := ReadImageByte(Offset + 1);
+        SIBBase := SIBByte And $07;
+        Size := 2; { ModR/M + SIB }
+        If SIBBase = 5 Then
+          Size := Size + 4; { + disp32 }
+        ComputeModRMSize32 := Size;
+        Exit;
+      End;
+      ComputeModRMSize32 := 1;
+      Exit;
+    End;
+    1 : Begin
+      If RMVal = 4 Then
+        ComputeModRMSize32 := 3  { ModR/M + SIB + disp8 }
+      Else
+        ComputeModRMSize32 := 2; { ModR/M + disp8 }
+      Exit;
+    End;
+    2 : Begin
+      If RMVal = 4 Then
+        ComputeModRMSize32 := 6  { ModR/M + SIB + disp32 }
+      Else
+        ComputeModRMSize32 := 5; { ModR/M + disp32 }
+      Exit;
+    End;
+  End;
+  ComputeModRMSize32 := Size;
+End;
+
+{ ComputeModRMSize - Calcule la taille ModR/M selon la taille d'adresse effective. }
+Function ComputeModRMSize(Offset : LongInt; AddrSz : Byte) : Integer;
+Begin
+  If AddrSz = 4 Then
+    ComputeModRMSize := ComputeModRMSize32(Offset)
+  Else
+    ComputeModRMSize := ComputeModRMSize16(Offset);
+End;
+
+{ Compute0FInstrSize - Calcule la taille d'un opcode etendu 0Fh
+  (en octets apres le prefixe 0Fh, inclut le second octet).
+  Parametres :
+    Offset : position du second octet (apres 0Fh) dans l'image
+    PFX    : etat des prefixes
+  Retourne le nombre d'octets consommes APRES le 0Fh. }
+Function Compute0FInstrSize(Offset : LongInt; Const PFX : TPrefixState) : Integer;
+Var
+  SecondByte : Byte;
+  Entry      : TOpcodeEntry;
+  OpSz       : Byte;
+  AddrSz     : Byte;
+  MRMSize    : Integer;
+Begin
+  SecondByte := ReadImageByte(Offset);
+  Entry := Opcode0FTable[SecondByte];
+  OpSz  := PFX.EffOpSize;
+  AddrSz := PFX.EffAddrSize;
+
+  { Instructions reservees/inconnues }
+  If Entry.Mnemonic = '???' Then Begin
+    Compute0FInstrSize := 1;
+    Exit;
+  End;
+
+  { GRP6/GRP7 : ModR/M }
+  If (Entry.Mnemonic = 'GRP6') Or (Entry.Mnemonic = 'GRP7') Then Begin
+    MRMSize := ComputeModRMSize(Offset + 1, AddrSz);
+    Compute0FInstrSize := 1 + MRMSize;
+    Exit;
+  End;
+
+  { GRP8 : ModR/M + imm8 }
+  If Entry.Mnemonic = 'GRP8' Then Begin
+    MRMSize := ComputeModRMSize(Offset + 1, AddrSz);
+    Compute0FInstrSize := 1 + MRMSize + 1;
+    Exit;
+  End;
+
+  { BSWAP : juste le second octet }
+  If (SecondByte >= $C8) And (SecondByte <= $CF) Then Begin
+    Compute0FInstrSize := 1;
+    Exit;
+  End;
+
+  { Jcc near : rel16/rel32 }
+  If (SecondByte >= $80) And (SecondByte <= $8F) Then Begin
+    If OpSz = 4 Then
+      Compute0FInstrSize := 1 + 4  { second byte + rel32 }
+    Else
+      Compute0FInstrSize := 1 + 2; { second byte + rel16 }
+    Exit;
+  End;
+
+  { MOV CRn/DRn/TRn : second byte + ModR/M }
+  If (SecondByte >= $20) And (SecondByte <= $27) Then Begin
+    Compute0FInstrSize := 1 + 1;
+    Exit;
+  End;
+
+  { SHLD/SHRD : second byte + ModR/M + (imm8 ou rien) }
+  If (SecondByte = $A4) Or (SecondByte = $AC) Then Begin
+    { SHLD/SHRD r/m, r, imm8 }
+    MRMSize := ComputeModRMSize(Offset + 1, AddrSz);
+    Compute0FInstrSize := 1 + MRMSize + 1;
+    Exit;
+  End;
+  If (SecondByte = $A5) Or (SecondByte = $AD) Then Begin
+    { SHLD/SHRD r/m, r, CL }
+    MRMSize := ComputeModRMSize(Offset + 1, AddrSz);
+    Compute0FInstrSize := 1 + MRMSize;
+    Exit;
+  End;
+
+  { Instructions sans operande }
+  If Entry.OpCount = 0 Then Begin
+    Compute0FInstrSize := 1;
+    Exit;
+  End;
+
+  { Instructions avec ModR/M (1 ou 2 operandes) }
+  If Entry.NeedModRM Then Begin
+    MRMSize := ComputeModRMSize(Offset + 1, AddrSz);
+    Compute0FInstrSize := 1 + MRMSize;
+    Exit;
+  End;
+
+  { Fallback }
+  Compute0FInstrSize := 1;
+End;
+
+{ ComputeInstrSize - Calcule la taille totale d'une instruction a l'offset donne.
+  Inclut les prefixes. Retourne le nombre d'octets de l'instruction complete.
+  Parametres :
+    Offset : position du premier octet de l'instruction dans l'image
+    Mode32 : True si mode 32 bits par defaut
+}
+Function ComputeInstrSize(Offset : LongInt; Mode32 : Boolean) : Integer;
+Var
+  PFX       : TPrefixState;
+  OpcOffset : LongInt;    { offset de l'opcode reel (apres les prefixes) }
+  Opcode    : Byte;
+  Entry     : TOpcodeEntry;
+  OpSz      : Byte;
+  AddrSz    : Byte;
+  Size      : Integer;
+  MRMSize   : Integer;
+  RegField  : Byte;
+Begin
+  InitPrefixState(PFX, Mode32);
+  DecodePrefixes(Offset, Mode32, PFX);
+  OpcOffset := Offset + PFX.PrefixCount;
+
+  If OpcOffset >= ImageSize Then Begin
+    ComputeInstrSize := 1;
+    Exit;
+  End;
+
+  Opcode := ReadImageByte(OpcOffset);
+  OpSz   := PFX.EffOpSize;
+  AddrSz := PFX.EffAddrSize;
+  Size   := PFX.PrefixCount;
+
+  { Opcode etendu 0Fh }
+  If Opcode = $0F Then Begin
+    Size := Size + 1 + Compute0FInstrSize(OpcOffset + 1, PFX);
+    ComputeInstrSize := Size;
+    Exit;
+  End;
+
+  Entry := OpcodeTable[Opcode];
+
+  { Instructions inconnues }
+  If Entry.Mnemonic = '???' Then Begin
+    ComputeInstrSize := Size + 1;
+    Exit;
+  End;
+
+  { Instructions de groupe GRP1..GRP5 avec ModR/M }
+  If (Entry.Mnemonic = 'GRP1') Or (Entry.Mnemonic = 'GRP2') Or
+     (Entry.Mnemonic = 'GRP3') Or (Entry.Mnemonic = 'GRP4') Or
+     (Entry.Mnemonic = 'GRP5') Then Begin
+    MRMSize := ComputeModRMSize(OpcOffset + 1, AddrSz);
+    Size := Size + 1 + MRMSize; { opcode + ModR/M+disp }
+    { Ajouter l'immediat si present }
+    Case Opcode Of
+      $80 : Size := Size + 1; { GRP1 r/m8, imm8 }
+      $81 : If OpSz = 4 Then  { GRP1 r/m16, imm16 ou r/m32, imm32 }
+              Size := Size + 4
+            Else
+              Size := Size + 2;
+      $82 : Size := Size + 1; { GRP1 r/m8, imm8 (alias) }
+      $83 : Size := Size + 1; { GRP1 r/m16, imm8x }
+      $C0 : Size := Size + 1; { GRP2 r/m8, imm8 }
+      $C1 : Size := Size + 1; { GRP2 r/m16, imm8 }
+      $F6 : Begin { GRP3 r/m8 : TEST a un imm8, les autres non }
+              RegField := (ReadImageByte(OpcOffset + 1) Shr 3) And $07;
+              If RegField = 0 Then Size := Size + 1; { TEST r/m8, imm8 }
+            End;
+      $F7 : Begin { GRP3 r/m16 : TEST a un imm16, les autres non }
+              RegField := (ReadImageByte(OpcOffset + 1) Shr 3) And $07;
+              If RegField = 0 Then Begin
+                If OpSz = 4 Then
+                  Size := Size + 4
+                Else
+                  Size := Size + 2;
+              End;
+            End;
+    End;
+    ComputeInstrSize := Size;
+    Exit;
+  End;
+
+  { Taille de base }
+  Size := Size + Entry.BaseSize;
+
+  { Ajuster pour le mode 32 bits (certains operandes changent de taille) }
+  If OpSz = 4 Then Begin
+    { IMM16 -> IMM32 en mode 32 bits }
+    If Entry.Op1Type = OT_IMM16 Then
+      Size := Size + 2  { 16->32 bits : +2 octets }
+    Else If Entry.Op2Type = OT_IMM16 Then
+      Size := Size + 2;
+    { REL16 -> REL32 en mode 32 bits }
+    If Entry.Op1Type = OT_REL16 Then
+      Size := Size + 2;
+    { AX -> EAX, MEM16 -> MEM32, FAR -> FAR 32 }
+    If (Entry.Op1Type = OT_MEM16) Or (Entry.Op2Type = OT_MEM16) Then Begin
+      If AddrSz = 4 Then
+        Size := Size + 2; { adresse 16->32 bits : +2 octets }
+    End;
+    If Entry.Op1Type = OT_FAR Then
+      Size := Size + 2; { segment:offset32 au lieu de segment:offset16 }
+  End;
+  If AddrSz = 4 Then Begin
+    If (Entry.Op1Type = OT_MEM16) Or (Entry.Op2Type = OT_MEM16) Then Begin
+      If OpSz <> 4 Then { Si pas deja ajuste ci-dessus }
+        Size := Size + 2;
+    End;
+  End;
+
+  { Ajouter la taille du ModR/M si necessaire }
+  If Entry.NeedModRM Then Begin
+    MRMSize := ComputeModRMSize(OpcOffset + 1, AddrSz);
+    Size := Size + MRMSize;
+    { Ajouter l'immediat pour certains opcodes a 2 operandes }
+    If Entry.Op2Type = OT_IMM8 Then
+      Size := Size + 1
+    Else If Entry.Op2Type = OT_IMM8X Then
+      Size := Size + 1
+    Else If Entry.Op2Type = OT_IMM16 Then Begin
+      If OpSz = 4 Then
+        Size := Size + 4
+      Else
+        Size := Size + 2;
+    End;
+  End;
+
+  ComputeInstrSize := Size;
+End;
+
+{ BranchType constants for classification }
+Const
+  BT_NONE     = 0;  { pas une instruction de branchement }
+  BT_JCC_REL8 = 1;  { saut conditionnel court (Jcc rel8, LOOP, JCXZ) }
+  BT_JMP_REL8 = 2;  { saut inconditionnel court (JMP rel8) }
+  BT_JCC_REL  = 3;  { saut conditionnel near (0F 80..8F rel16/rel32) }
+  BT_JMP_REL  = 4;  { saut inconditionnel near (JMP rel16/rel32) }
+  BT_JMP_FAR  = 5;  { saut far (JMP far) }
+  BT_CALL_REL = 6;  { appel near relatif (CALL rel16/rel32) }
+  BT_CALL_FAR = 7;  { appel far (CALL far) }
+  BT_CALL_IND = 8;  { appel indirect (GRP5 reg=2 ou 3) }
+  BT_JMP_IND  = 9;  { saut indirect (GRP5 reg=4 ou 5) }
+  BT_RET      = 10; { retour near (RET) }
+  BT_RETF     = 11; { retour far (RETF) }
+  BT_IRET     = 12; { retour d'interruption (IRET) }
+
+{ ClassifyInstruction - Classifie une instruction selon son type de flux.
+  Parametres :
+    Offset : position du premier octet de l'instruction (apres les prefixes)
+    Mode32 : True si mode 32 bits
+  Retourne une constante BT_xxx. }
+Function ClassifyInstruction(Offset : LongInt; Mode32 : Boolean) : Integer;
+Var
+  PFX       : TPrefixState;
+  OpcOffset : LongInt;
+  Opcode    : Byte;
+  SecondByte: Byte;
+  RegField  : Byte;
+Begin
+  InitPrefixState(PFX, Mode32);
+  DecodePrefixes(Offset, Mode32, PFX);
+  OpcOffset := Offset + PFX.PrefixCount;
+
+  If OpcOffset >= ImageSize Then Begin
+    ClassifyInstruction := BT_NONE;
+    Exit;
+  End;
+
+  Opcode := ReadImageByte(OpcOffset);
+
+  { Sauts conditionnels courts $70-$7F }
+  If (Opcode >= $70) And (Opcode <= $7F) Then Begin
+    ClassifyInstruction := BT_JCC_REL8;
+    Exit;
+  End;
+
+  { LOOP, LOOPZ, LOOPNZ, JCXZ $E0-$E3 }
+  If (Opcode >= $E0) And (Opcode <= $E3) Then Begin
+    ClassifyInstruction := BT_JCC_REL8;
+    Exit;
+  End;
+
+  { JMP short $EB }
+  If Opcode = $EB Then Begin
+    ClassifyInstruction := BT_JMP_REL8;
+    Exit;
+  End;
+
+  { JMP near rel16/rel32 $E9 }
+  If Opcode = $E9 Then Begin
+    ClassifyInstruction := BT_JMP_REL;
+    Exit;
+  End;
+
+  { JMP far $EA }
+  If Opcode = $EA Then Begin
+    ClassifyInstruction := BT_JMP_FAR;
+    Exit;
+  End;
+
+  { CALL near rel16/rel32 $E8 }
+  If Opcode = $E8 Then Begin
+    ClassifyInstruction := BT_CALL_REL;
+    Exit;
+  End;
+
+  { CALL far $9A }
+  If Opcode = $9A Then Begin
+    ClassifyInstruction := BT_CALL_FAR;
+    Exit;
+  End;
+
+  { RET $C2, $C3 }
+  If (Opcode = $C2) Or (Opcode = $C3) Then Begin
+    ClassifyInstruction := BT_RET;
+    Exit;
+  End;
+
+  { RETF $CA, $CB }
+  If (Opcode = $CA) Or (Opcode = $CB) Then Begin
+    ClassifyInstruction := BT_RETF;
+    Exit;
+  End;
+
+  { IRET $CF }
+  If Opcode = $CF Then Begin
+    ClassifyInstruction := BT_IRET;
+    Exit;
+  End;
+
+  { GRP5 $FF : CALL indirect (reg=2,3) et JMP indirect (reg=4,5) }
+  If Opcode = $FF Then Begin
+    If (OpcOffset + 1) < ImageSize Then Begin
+      RegField := (ReadImageByte(OpcOffset + 1) Shr 3) And $07;
+      If (RegField = 2) Or (RegField = 3) Then Begin
+        ClassifyInstruction := BT_CALL_IND;
+        Exit;
+      End;
+      If (RegField = 4) Or (RegField = 5) Then Begin
+        ClassifyInstruction := BT_JMP_IND;
+        Exit;
+      End;
+    End;
+  End;
+
+  { Opcode etendu 0Fh }
+  If Opcode = $0F Then Begin
+    If (OpcOffset + 1) < ImageSize Then Begin
+      SecondByte := ReadImageByte(OpcOffset + 1);
+      { Jcc near $0F 80-8F }
+      If (SecondByte >= $80) And (SecondByte <= $8F) Then Begin
+        ClassifyInstruction := BT_JCC_REL;
+        Exit;
+      End;
+    End;
+  End;
+
+  ClassifyInstruction := BT_NONE;
+End;
+
+{ ComputeBranchTarget - Calcule l'adresse cible d'une instruction de branchement.
+  Parametres :
+    Offset     : position du premier octet de l'instruction dans l'image
+    Mode32     : True si mode 32 bits
+    BranchType : type de branchement (BT_xxx) retourne par ClassifyInstruction
+  Retourne l'adresse cible, ou -1 si impossible a calculer (indirect, far). }
+Function ComputeBranchTarget(Offset : LongInt; Mode32 : Boolean;
+                             BranchType : Integer) : LongInt;
+Var
+  PFX       : TPrefixState;
+  OpcOffset : LongInt;
+  OpSz      : Byte;
+  Rel8      : ShortInt;
+  Rel16     : SmallInt;
+  Rel32     : LongInt;
+  InstrSize : Integer;
+Begin
+  InitPrefixState(PFX, Mode32);
+  DecodePrefixes(Offset, Mode32, PFX);
+  OpcOffset := Offset + PFX.PrefixCount;
+  OpSz := PFX.EffOpSize;
+  InstrSize := ComputeInstrSize(Offset, Mode32);
+
+  ComputeBranchTarget := -1;
+
+  Case BranchType Of
+    BT_JCC_REL8, BT_JMP_REL8 : Begin
+      { rel8 est le dernier octet de l'instruction }
+      Rel8 := ShortInt(ReadImageByte(OpcOffset + 1));
+      ComputeBranchTarget := Offset + InstrSize + Rel8;
+    End;
+    BT_JMP_REL : Begin
+      { JMP rel16/rel32 - l'immediat commence apres l'opcode }
+      If OpSz = 4 Then Begin
+        Rel32 := ReadImageDWord(OpcOffset + 1);
+        ComputeBranchTarget := Offset + InstrSize + Rel32;
+      End Else Begin
+        Rel16 := SmallInt(ReadImageWord(OpcOffset + 1));
+        ComputeBranchTarget := Offset + InstrSize + Rel16;
+      End;
+    End;
+    BT_CALL_REL : Begin
+      { CALL rel16/rel32 }
+      If OpSz = 4 Then Begin
+        Rel32 := ReadImageDWord(OpcOffset + 1);
+        ComputeBranchTarget := Offset + InstrSize + Rel32;
+      End Else Begin
+        Rel16 := SmallInt(ReadImageWord(OpcOffset + 1));
+        ComputeBranchTarget := Offset + InstrSize + Rel16;
+      End;
+    End;
+    BT_JCC_REL : Begin
+      { 0F 80..8F rel16/rel32 - immediat commence apres 0F + second byte }
+      If OpSz = 4 Then Begin
+        Rel32 := ReadImageDWord(OpcOffset + 2);
+        ComputeBranchTarget := Offset + InstrSize + Rel32;
+      End Else Begin
+        Rel16 := SmallInt(ReadImageWord(OpcOffset + 2));
+        ComputeBranchTarget := Offset + InstrSize + Rel16;
+      End;
+    End;
+  Else
+    { FAR, indirect, RET, IRET : cible non calculable }
+    ComputeBranchTarget := -1;
+  End;
+End;
+
+{ GenerateLabelName - Genere un nom automatique pour un label.
+  Parametres :
+    Addr   : adresse du label
+    IsProc : True si c'est un sous-programme
+    Mode32 : True si mode 32 bits (noms longs) }
+Function GenerateLabelName(Addr : LongInt; IsProc : Boolean;
+                           Mode32 : Boolean) : TString;
+Begin
+  If IsProc Then Begin
+    If Mode32 Then
+      GenerateLabelName := 'sub_' + HexDWord(Addr)
+    Else
+      GenerateLabelName := 'sub_' + HexWord(Word(Addr));
+  End Else Begin
+    If Mode32 Then
+      GenerateLabelName := 'loc_' + HexDWord(Addr)
+    Else
+      GenerateLabelName := 'loc_' + HexWord(Word(Addr));
+  End;
+End;
+
+{ AnalyzeControlFlow - Premiere passe de desassemblage lineaire.
+  Parcourt le code a partir du point d'entree et identifie :
+  - Les instructions de saut (JMP, Jcc, LOOP) et d'appel (CALL)
+  - Les adresses cibles -> ajoutees comme labels et references croisees
+  - Les instructions de retour (RET, RETF, IRET)
+  Construit la table des labels et des XRefs.
+  Parametres :
+    StartOffset : adresse du premier octet de code dans l'image
+    EndOffset   : adresse apres le dernier octet de code
+    Mode32      : True si mode 32 bits
+}
+Procedure AnalyzeControlFlow(StartOffset, EndOffset : LongInt;
+                             Mode32 : Boolean);
+Var
+  CurOffset  : LongInt;
+  ISize      : Integer;
+  BType      : Integer;
+  Target     : LongInt;
+  LabelName  : TString;
+Begin
+  CurOffset := StartOffset;
+  While CurOffset < EndOffset Do Begin
+    { Verifier les bornes }
+    If CurOffset >= ImageSize Then Break;
+    If CurOffset < 0 Then Break;
+
+    { Calculer la taille de l'instruction courante }
+    ISize := ComputeInstrSize(CurOffset, Mode32);
+    If ISize <= 0 Then ISize := 1; { securite }
+
+    { Classifier l'instruction }
+    BType := ClassifyInstruction(CurOffset, Mode32);
+
+    If BType <> BT_NONE Then Begin
+      { Calculer l'adresse cible }
+      Target := ComputeBranchTarget(CurOffset, Mode32, BType);
+
+      If Target >= 0 Then Begin
+        { Verifier que la cible est dans les bornes de l'image }
+        If (Target >= 0) And (Target < ImageSize) Then Begin
+          { Determiner si c'est un appel (CALL) ou un saut (JMP/Jcc) }
+          If (BType = BT_CALL_REL) Then Begin
+            { Cible de CALL : marquer comme sous-programme }
+            LabelName := GenerateLabelName(Target, True, Mode32);
+            AddLabel(Target, LabelName, True, False, False);
+            AddXRef(CurOffset, Target, True);
+            Inc(ProcCount);
+          End Else If (BType >= BT_JCC_REL8) And (BType <= BT_JMP_REL) Then Begin
+            { Cible de saut : marquer comme label de code }
+            LabelName := GenerateLabelName(Target, False, Mode32);
+            AddLabel(Target, LabelName, False, False, False);
+            AddXRef(CurOffset, Target, False);
+          End;
+        End;
+      End;
+
+      { Pour les sauts inconditionnels et les retours, noter la fin du bloc }
+      { (les adresses suivantes pourraient etre des donnees) }
+    End;
+
+    { Compter l'instruction }
+    Inc(InstrCount);
+
+    { Avancer a l'instruction suivante }
+    CurOffset := CurOffset + ISize;
+  End;
+
+  { Ajouter le point d'entree comme label }
+  LabelName := GenerateLabelName(StartOffset, True, Mode32);
+  AddLabel(StartOffset, LabelName, True, False, False);
+
+  { Ajouter les labels pour les imports PE }
+  If IsPEFile Then Begin
+    For IterI := 0 To ImportCount - 1 Do Begin
+      If Imports[IterI].IATAddr > 0 Then Begin
+        If Imports[IterI].FuncName <> '' Then
+          AddLabel(Imports[IterI].IATAddr, Imports[IterI].FuncName, True, True, False)
+        Else
+          AddLabel(Imports[IterI].IATAddr, 'ord_' + HexWord(Imports[IterI].Ordinal),
+                   True, True, False);
+      End;
+    End;
+  End;
+
+  { Ajouter les labels pour les exports PE }
+  If IsPEFile Then Begin
+    For IterI := 0 To ExportCount - 1 Do Begin
+      If ExportList[IterI].FuncRVA > 0 Then Begin
+        If ExportList[IterI].HasName And (ExportList[IterI].FuncName <> '') Then
+          AddLabel(ExportList[IterI].FuncRVA, ExportList[IterI].FuncName, True, False, True)
+        Else
+          AddLabel(ExportList[IterI].FuncRVA,
+                   'export_' + HexWord(ExportList[IterI].Ordinal),
+                   True, False, True);
+      End;
+    End;
+  End;
+
+  { Trier les labels et les XRefs pour un acces efficace }
+  SortLabels;
+  SortXRefs;
+End;
+
+{ ============================================================
   ANALYSE DES OPTIONS DE LIGNE DE COMMANDE
   ============================================================ }
 
@@ -3399,8 +4140,50 @@ Begin
  ProcCount := 0;
  DataBytes := 0;
  WriteLn;
- WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 17 a 25 restent a implementer)');
+ WriteLn('Analyse du flux de controle...');
+ { Determiner le mode 32 bits et la zone de code }
+ If IsPEFile Then Begin
+  { PE 32 bits : desassembler a partir du point d'entree }
+  AnalyzeControlFlow(PEEntryPointRVA, ImageSize, True);
+ End Else Begin
+  { DOS 16 bits : desassembler a partir de CS:IP }
+  AnalyzeControlFlow(LongInt(EntryCS) * 16 + LongInt(EntryIP), ImageSize, False);
+ End;
+ If OptVerbose Then Begin
+  WriteLn('Analyse du flux de controle terminee :');
+  WriteLn('  Instructions analysees  : ', InstrCount);
+  WriteLn('  Sous-programmes trouves : ', ProcCount);
+  WriteLn('  Labels generes          : ', LabelCount);
+  WriteLn('  References croisees     : ', XRefCount);
+  If LabelCount > 0 Then Begin
+   WriteLn('Labels :');
+   For IterI := 0 To LabelCount - 1 Do Begin
+    Write('  ', Labels[IterI].Name, ' @ $');
+    If IsPEFile Then
+     Write(HexDWord(Labels[IterI].Address))
+    Else
+     Write(HexWord(Word(Labels[IterI].Address)));
+    If Labels[IterI].IsProc Then Write(' [PROC]');
+    If Labels[IterI].IsImport Then Write(' [IMPORT]');
+    If Labels[IterI].IsExport Then Write(' [EXPORT]');
+    WriteLn;
+   End;
+  End;
+  If XRefCount > 0 Then Begin
+   WriteLn('References croisees (', XRefCount, ') :');
+   For IterI := 0 To XRefCount - 1 Do Begin
+    Write('  $');
+    If IsPEFile Then
+     Write(HexDWord(XRefs[IterI].FromAddr), ' -> $', HexDWord(XRefs[IterI].ToAddr))
+    Else
+     Write(HexWord(Word(XRefs[IterI].FromAddr)), ' -> $', HexWord(Word(XRefs[IterI].ToAddr)));
+    If XRefs[IterI].IsCall Then Write(' [CALL]') Else Write(' [JMP]');
+    WriteLn;
+   End;
+  End;
+ End;
+ WriteLn;
+ WriteLn('(les TODOs 18 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
  { Liberation de la memoire }
