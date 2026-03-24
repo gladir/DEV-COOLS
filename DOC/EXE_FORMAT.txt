@@ -1,0 +1,1195 @@
+==============================================================================
+     FORMAT DE FICHIER .EXE - Executable DOS 16 bits (MZ)
+     et Portable Executable Windows 32 bits (PE)
+     Microsoft / Intel / TIS (Tool Interface Standard)
+==============================================================================
+
+Document de reference du format .EXE couvrant deux variantes :
+  - Le format DOS MZ originel (16 bits, Mark Zbikowski, 1981)
+  - Le format PE (Portable Executable, Windows 32 bits, 1993)
+
+Ce document decrit les structures telles qu'implementees dans les
+programmes LINK.PAS (editeur de liens DOS 16 bits), TPCW32.PAS,
+CCW32.PAS (compilateurs generant du PE 32 bits) et EMUW32.PAS
+(emulateur Windows 32 bits) du projet DEV-COOLS.
+
+Date:       Mars 2026
+Normes:     - Microsoft MS-DOS Programmer's Reference (1991)
+            - Tool Interface Standard (TIS) PE/COFF Specification
+            - Microsoft PE and COFF Specification, revision 11
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  PREMIERE PARTIE : FORMAT DOS MZ (16 BITS)
+
+   1.  Vue d ensemble du format MZ
+   2.  Structure generale du fichier MZ
+   3.  En-tete MZ (28 octets)
+   4.  Champs de l en-tete MZ
+   5.  Table de relocalisation
+   6.  Zone d overlay
+   7.  Chargement en memoire par DOS
+
+  DEUXIEME PARTIE : FORMAT PE (WINDOWS 32 BITS)
+
+   8.  Vue d ensemble du format PE
+   9.  Structure generale du fichier PE
+  10.  Stub DOS et en-tete MZ etendu (64 octets)
+  11.  Signature PE
+  12.  En-tete COFF (IMAGE_FILE_HEADER, 20 octets)
+  13.  En-tete optionnel PE32 (IMAGE_OPTIONAL_HEADER32, 224 octets)
+  14.  Repertoires de donnees (Data Directories)
+  15.  Table des sections (IMAGE_SECTION_HEADER, 40 octets)
+  16.  Table d importation (Import Directory)
+  17.  Table d exportation (Export Directory)
+  18.  Table de relocalisation de base (Base Relocation)
+  19.  Section de ressources
+  20.  Ordre des octets et alignement
+  21.  Constantes et valeurs typiques
+  22.  References
+
+##############################################################################
+#                                                                            #
+#              PREMIERE PARTIE : FORMAT DOS MZ (16 BITS)                     #
+#                                                                            #
+##############################################################################
+
+==============================================================================
+1. VUE D ENSEMBLE DU FORMAT MZ
+==============================================================================
+
+Le format MZ est le format executable originel de MS-DOS, introduit
+par Mark Zbikowski chez Microsoft en 1981 pour DOS 2.0. Il remplace
+le format .COM (image binaire brute limitee a 64 Ko).
+
+Le nom provient de la signature ASCII "MZ" ($4D $5A) presente au
+debut de tout fichier executable DOS. Cette signature permet au
+systeme d exploitation de distinguer un fichier .EXE d un fichier
+.COM.
+
+Le format MZ est utilise par :
+  - Les compilateurs et assembleurs DOS (MASM, TASM, Turbo Pascal,
+    Borland C++, Watcom C, Quick Pascal, etc.)
+  - L editeur de liens LINK.PAS du projet DEV-COOLS
+  - Le chargeur d executables de MS-DOS, PC-DOS, DR-DOS et FreeDOS
+
+Limitations du format MZ :
+  - Adressage 16 bits segmente (segment:offset)
+  - Espace d adressage maximal de 1 Mo (mode reel x86)
+  - Pas de support natif pour le mode protege
+  - Pas de format d importation de DLL
+
+==============================================================================
+2. STRUCTURE GENERALE DU FICHIER MZ
+==============================================================================
+
+Un fichier .EXE au format MZ est compose des parties suivantes :
+
+  +--------------------------------------+
+  |  En-tete MZ (28 octets minimum)      |
+  +--------------------------------------+
+  |  Zone reservee / Extensions           |
+  |  (padding jusqu a RelocOffset)       |
+  +--------------------------------------+
+  |  Table de relocalisation              |
+  |  (RelocCount * 4 octets)             |
+  +--------------------------------------+
+  |  Padding (alignement sur paragraphe) |
+  +--------------------------------------+
+  |  Image du programme                   |
+  |  (code + donnees)                    |
+  +--------------------------------------+
+  |  Zone d overlay (optionnel)          |
+  +--------------------------------------+
+
+La taille de l en-tete complet (incluant la table de relocalisation
+et le padding) est donnee par HeaderSize * 16 octets. L image du
+programme commence donc a l offset HeaderSize * 16.
+
+==============================================================================
+3. EN-TETE MZ (28 OCTETS)
+==============================================================================
+
+L en-tete MZ minimal est une structure de 28 octets (14 mots de
+16 bits), tous en Little-Endian :
+
+  Offset  Taille  Champ           Description
+  ------  ------  --------------- -------------------------------------------
+  $00     2       Signature       Signature "MZ" ($4D $5A) ou "ZM" ($5A $4D)
+  $02     2       LastPageBytes   Octets utilises dans la derniere page
+  $04     2       PageCount       Nombre total de pages de 512 octets
+  $06     2       RelocCount      Nombre d entrees de relocalisation
+  $08     2       HeaderSize      Taille de l en-tete en paragraphes (16 oct.)
+  $0A     2       MinAlloc        Paragraphes de memoire supplementaire minimum
+  $0C     2       MaxAlloc        Paragraphes de memoire supplementaire maximum
+  $0E     2       InitSS          Valeur initiale de SS (relatif)
+  $10     2       InitSP          Valeur initiale de SP
+  $12     2       Checksum        Somme de controle (souvent 0)
+  $14     2       InitIP          Valeur initiale de IP (point d entree)
+  $16     2       InitCS          Valeur initiale de CS (relatif)
+  $18     2       RelocOffset     Offset de la table de relocalisation
+  $1A     2       OverlayNumber   Numero d overlay (0 = programme principal)
+
+Representation en structure Pascal (telle que dans LINK.PAS) :
+
+  Type
+    TExeHeader = Record
+      Signature     : Word;    { $5A4D = 'MZ'                         }
+      LastPageBytes : Word;    { Octets dans la derniere page          }
+      PageCount     : Word;    { Pages de 512 octets dans l EXE       }
+      RelocCount    : Word;    { Nombre d entrees de relocalisation    }
+      HeaderSize    : Word;    { Taille en-tete en paragraphes         }
+      MinAlloc      : Word;    { Memoire minimum supplementaire        }
+      MaxAlloc      : Word;    { Memoire maximum supplementaire        }
+      InitSS        : Word;    { SS initial (relatif au chargement)    }
+      InitSP        : Word;    { SP initial                            }
+      Checksum      : Word;    { Somme de controle                     }
+      InitIP        : Word;    { IP initial                            }
+      InitCS        : Word;    { CS initial (relatif au chargement)    }
+      RelocOffset   : Word;    { Offset table de relocalisation        }
+      OverlayNumber : Word;    { Numero d overlay (0 = principal)      }
+    End;
+
+==============================================================================
+4. CHAMPS DE L EN-TETE MZ
+==============================================================================
+
+4.1 SIGNATURE ($00)
+--------------------
+
+  Valeur $5A4D (caracteres ASCII 'M', 'Z' en Little-Endian).
+  Certains anciens executables utilisent $4D5A ('ZM'), mais cette
+  variante est rarement supportee.
+
+4.2 TAILLE DU FICHIER ($02-$05)
+---------------------------------
+
+  La taille totale du fichier est calculee a partir de deux champs :
+
+    Taille = (PageCount - 1) * 512 + LastPageBytes
+
+  Si LastPageBytes = 0, la derniere page est complete :
+
+    Taille = PageCount * 512
+
+  Chaque page fait 512 octets ($200). Ce systeme de pagination
+  est herite de la gestion de fichiers par secteurs de DOS.
+
+4.3 TABLE DE RELOCALISATION ($06-$07, $18)
+--------------------------------------------
+
+  RelocCount indique le nombre d entrees de relocalisation.
+  RelocOffset indique l offset (dans le fichier) ou commence la table.
+  Voir la section 5 pour le detail du format.
+
+4.4 TAILLE DE L EN-TETE ($08)
+-------------------------------
+
+  HeaderSize est exprime en paragraphes de 16 octets. L image du
+  programme commence donc a l offset :
+
+    ImageOffset = HeaderSize * 16
+
+  Typiquement, HeaderSize = $0002 (32 octets) pour un programme sans
+  relocalisation, ou plus si la table de relocalisation est grande.
+
+4.5 ALLOCATION MEMOIRE ($0A-$0D)
+----------------------------------
+
+  MinAlloc : Nombre minimum de paragraphes supplementaires requis
+             au-dela de l image chargee (pour la pile, les donnees
+             dynamiques, etc.). Si la memoire disponible est inferieure,
+             DOS refuse de charger le programme.
+
+  MaxAlloc : Nombre maximum de paragraphes supplementaires souhaites.
+             DOS alloue autant de memoire que possible, jusqu a cette
+             limite. Valeur $FFFF = demander toute la memoire disponible.
+
+4.6 REGISTRES INITIAUX ($0E-$17)
+-----------------------------------
+
+  InitSS : Valeur initiale du registre de segment de pile SS,
+           relative au segment de chargement du programme.
+  InitSP : Valeur initiale du pointeur de pile SP.
+  InitCS : Valeur initiale du registre de segment de code CS,
+           relative au segment de chargement du programme.
+  InitIP : Valeur initiale du pointeur d instruction IP
+           (point d entree du programme).
+
+  Apres chargement a l adresse de base LoadSeg, DOS initialise :
+    CS = LoadSeg + InitCS
+    IP = InitIP
+    SS = LoadSeg + InitSS
+    SP = InitSP
+
+  Le point d entree absolu est donc CS:IP = (LoadSeg+InitCS):InitIP.
+
+4.7 SOMME DE CONTROLE ($12)
+------------------------------
+
+  La somme de tous les mots de 16 bits du fichier devrait donner
+  $FFFF. En pratique, ce champ est souvent laisse a $0000 et n est
+  pas verifie par DOS.
+
+4.8 NUMERO D OVERLAY ($1A)
+----------------------------
+
+  0 pour le programme principal. Les overlays (segments de code
+  charges a la demande) utilisent des valeurs > 0.
+
+==============================================================================
+5. TABLE DE RELOCALISATION
+==============================================================================
+
+La table de relocalisation permet au chargeur DOS d ajuster les
+references de segments dans l image du programme, car l adresse de
+chargement n est pas connue a l avance.
+
+5.1 FORMAT D UNE ENTREE
+--------------------------
+
+  Chaque entree fait 4 octets (2 mots de 16 bits, Little-Endian) :
+
+  +----------+----------+
+  | Offset   | Segment  |
+  | (2 oct.) | (2 oct.) |
+  +----------+----------+
+
+  Offset  : Offset dans le segment
+  Segment : Numero de segment (relatif a l image du programme)
+
+  L adresse dans le fichier de l element a corriger est :
+
+    FileAddr = HeaderSize * 16 + Segment * 16 + Offset
+
+5.2 APPLICATION DE LA RELOCALISATION
+--------------------------------------
+
+  Le chargeur DOS procede ainsi pour chaque entree :
+
+    1. Calculer l adresse en memoire :
+       Addr = LoadSeg * 16 + Segment * 16 + Offset
+
+    2. Lire le mot de 16 bits a cette adresse
+
+    3. Ajouter LoadSeg a ce mot
+
+    4. Ecrire le resultat a la meme adresse
+
+  Cela ajuste toutes les references de segments pour refleter
+  l adresse de chargement reelle.
+
+5.3 EXEMPLE
+--------------
+
+  Si RelocCount = 2 et la table contient :
+    Entree 1 : Offset=$0010, Segment=$0000
+    Entree 2 : Offset=$0005, Segment=$0003
+
+  Et si le programme est charge au segment $1234 :
+    - A l offset $0010 dans le segment 0 de l image :
+      ajouter $1234 au mot present
+    - A l offset $0005 dans le segment 3 de l image ($0030+$0005) :
+      ajouter $1234 au mot present
+
+==============================================================================
+6. ZONE D OVERLAY
+==============================================================================
+
+Si la taille calculee du fichier (PageCount * 512 ajuste par
+LastPageBytes) est inferieure a la taille reelle du fichier,
+les octets supplementaires constituent la zone d overlay.
+
+Les overlays sont des segments de code charges a la demande par
+un gestionnaire d overlay (comme celui de Turbo Pascal ou de
+Microsoft Overlay Manager). Leur format est specifique au
+compilateur ou au gestionnaire utilise.
+
+Le champ OverlayNumber dans l en-tete identifie le numero de
+l overlay ; 0 indique le programme principal.
+
+==============================================================================
+7. CHARGEMENT EN MEMOIRE PAR DOS
+==============================================================================
+
+Le chargeur d executables de DOS (fonction INT $21, AH=$4B)
+effectue les etapes suivantes :
+
+  1. Lire l en-tete MZ (28 octets minimum)
+
+  2. Verifier la signature ($5A4D)
+
+  3. Calculer la taille memoire requise :
+       TailleImage = (Taille du fichier) - (HeaderSize * 16)
+       MemRequise  = TailleImage + MinAlloc * 16
+
+  4. Allouer un bloc memoire :
+       - Au moins MemRequise octets
+       - Au plus TailleImage + MaxAlloc * 16 octets
+
+  5. Creer le PSP (Program Segment Prefix, 256 octets) au
+     debut du bloc alloue
+
+  6. Charger l image du programme (a partir de HeaderSize * 16
+     dans le fichier) juste apres le PSP
+
+  7. Appliquer les relocalisations (table de relocalisation)
+
+  8. Initialiser les registres :
+       DS = ES = segment du PSP
+       CS = LoadSeg + InitCS
+       IP = InitIP
+       SS = LoadSeg + InitSS
+       SP = InitSP
+
+  9. Transferer le controle a CS:IP
+
+Organisation en memoire apres chargement :
+
+  +------------------------------+  Adresse basse
+  |  PSP (256 octets)            |  Segment du PSP (DS, ES)
+  +------------------------------+
+  |  Image du programme          |  LoadSeg = PSP + $10
+  |  (code + donnees)            |
+  +------------------------------+
+  |  Zone non initialisee        |  BSS / pile / donnees dynamiques
+  |  (MinAlloc .. MaxAlloc)      |
+  +------------------------------+  Adresse haute
+
+##############################################################################
+#                                                                            #
+#              DEUXIEME PARTIE : FORMAT PE (WINDOWS 32 BITS)                 #
+#                                                                            #
+##############################################################################
+
+==============================================================================
+8. VUE D ENSEMBLE DU FORMAT PE
+==============================================================================
+
+Le format PE (Portable Executable) est le format executable de
+Windows, introduit avec Windows NT 3.1 en 1993. Il est base sur
+le format COFF (Common Object File Format) d Unix System V.
+
+Le format PE est utilise pour :
+  - Les executables (.EXE)
+  - Les bibliotheques dynamiques (.DLL)
+  - Les pilotes (.SYS)
+  - Les programmes de panneau de configuration (.CPL)
+
+Dans le projet DEV-COOLS, le format PE 32 bits est genere par :
+  - TPCW32.PAS  (compilateur Turbo Pascal vers Win32)
+  - CCW32.PAS   (compilateur C vers Win32)
+  - CSCW32.PAS  (compilateur C# vers Win32)
+  - AWKCW32.PAS (compilateur AWK vers Win32)
+  - ABAPCW32.PAS (compilateur ABAP vers Win32)
+  - PSPCW32.PAS (compilateur PostScript vers Win32)
+  - ADACW32.PAS (compilateur Ada vers Win32)
+  - VAXPCW32.PAS (compilateur VAX Pascal vers Win32)
+
+Et charge/execute par :
+  - EMUW32.PAS  (emulateur Windows 32 bits)
+
+Caracteristiques du format PE :
+  - Compatibilite descendante avec DOS (stub MZ)
+  - Adressage lineaire 32 bits (espace de 4 Go)
+  - Sections nommees avec attributs (code, donnees, lecture/ecriture)
+  - Tables d importation et d exportation de symboles
+  - Support de la relocalisation de base
+  - Repertoires de donnees pour les ressources, le debogage, etc.
+
+==============================================================================
+9. STRUCTURE GENERALE DU FICHIER PE
+==============================================================================
+
+Un fichier PE 32 bits est organise comme suit :
+
+  +------------------------------------------+  Offset $0000
+  |  En-tete DOS MZ etendu (64 octets)       |
+  +------------------------------------------+
+  |  Stub DOS (programme DOS)                |
+  |  ("This program cannot be run in DOS")   |
+  +------------------------------------------+  Offset e_lfanew
+  |  Signature PE ($00004550 = "PE\0\0")     |  (4 octets)
+  +------------------------------------------+
+  |  En-tete COFF (IMAGE_FILE_HEADER)        |  (20 octets)
+  +------------------------------------------+
+  |  En-tete optionnel (IMAGE_OPTIONAL_HDR)  |  (224 octets pour PE32)
+  |    - Champs standard (28 octets)         |
+  |    - Champs specifiques Windows (68 oct.)|
+  |    - Repertoires de donnees (128 octets) |
+  +------------------------------------------+
+  |  Table des sections                       |
+  |  (N * 40 octets, N = NumberOfSections)   |
+  +------------------------------------------+
+  |  Padding (alignement FileAlignment)      |
+  +------------------------------------------+  Offset PointerToRawData[0]
+  |  Section .text (code executable)         |
+  +------------------------------------------+
+  |  Section .rdata (donnees en lecture seule)|
+  +------------------------------------------+
+  |  Section .data (donnees initialisees)    |
+  +------------------------------------------+
+  |  Section .idata (table d importation)    |
+  +------------------------------------------+
+  |  Section .rsrc (ressources, optionnel)   |
+  +------------------------------------------+
+  |  Section .reloc (relocalisations, opt.)  |
+  +------------------------------------------+
+  |  Autres sections (optionnel)             |
+  +------------------------------------------+
+
+Les en-tetes (DOS + PE + sections) sont generalement contenus dans
+les premiers 512 octets ($200) du fichier, ce qui correspond a la
+valeur typique de FileAlignment.
+
+==============================================================================
+10. STUB DOS ET EN-TETE MZ ETENDU (64 OCTETS)
+==============================================================================
+
+Un fichier PE commence par un en-tete DOS MZ etendu de 64 octets.
+Cet en-tete est une version allongee de l en-tete MZ de 28 octets
+(section 3) avec des champs supplementaires reserves et le champ
+crucial e_lfanew qui pointe vers l en-tete PE.
+
+  Offset  Taille  Champ         Description
+  ------  ------  ------------- ------------------------------------------
+  $00     2       e_magic       Signature "MZ" ($5A4D)
+  $02     2       e_cblp        Octets dans la derniere page
+  $04     2       e_cp          Pages dans le fichier
+  $06     2       e_crlc        Nombre de relocalisations
+  $08     2       e_cparhdr     Taille en-tete en paragraphes
+  $0A     2       e_minalloc    Paragraphes minimum supplementaires
+  $0C     2       e_maxalloc    Paragraphes maximum supplementaires
+  $0E     2       e_ss          SS initial
+  $10     2       e_sp          SP initial
+  $12     2       e_csum        Checksum
+  $14     2       e_ip          IP initial
+  $16     2       e_cs          CS initial
+  $18     2       e_lfarlc      Offset table de relocalisation
+  $1A     2       e_ovno        Numero d overlay
+  $1C     8       e_res         Reserves (4 mots)
+  $24     2       e_oemid       Identifiant OEM
+  $26     2       e_oeminfo     Information OEM
+  $28     20      e_res2        Reserves (10 mots)
+  $3C     4       e_lfanew      Offset vers l en-tete PE (LongInt)
+
+Representation en structure Pascal (telle que dans EMUW32.PAS) :
+
+  Type
+    TImageDosHeader = Record
+      e_magic    : Word;                 { $5A4D = 'MZ'              }
+      e_cblp     : Word;                 { Octets derniere page      }
+      e_cp       : Word;                 { Pages dans le fichier     }
+      e_crlc     : Word;                 { Relocalisations           }
+      e_cparhdr  : Word;                 { Taille en-tete (parag.)   }
+      e_minalloc : Word;                 { Memoire minimum           }
+      e_maxalloc : Word;                 { Memoire maximum           }
+      e_ss       : Word;                 { SS initial                }
+      e_sp       : Word;                 { SP initial                }
+      e_csum     : Word;                 { Checksum                  }
+      e_ip       : Word;                 { IP initial                }
+      e_cs       : Word;                 { CS initial                }
+      e_lfarlc   : Word;                 { Offset table reloc.       }
+      e_ovno     : Word;                 { Numero d overlay          }
+      e_res      : Array[0..3] of Word;  { Reserves                  }
+      e_oemid    : Word;                 { Identifiant OEM           }
+      e_oeminfo  : Word;                 { Information OEM           }
+      e_res2     : Array[0..9] of Word;  { Reserves                  }
+      e_lfanew   : LongInt;             { Offset vers en-tete PE    }
+    End;
+
+Le champ e_lfanew est le plus important pour le format PE :
+il contient l offset absolu dans le fichier ou se trouve la
+signature PE ($00004550). Typiquement, e_lfanew = $80 ou $100.
+
+10.1 STUB DOS
+--------------
+
+  Entre l en-tete MZ etendu (64 octets) et l en-tete PE se trouve
+  le stub DOS : un petit programme DOS valide qui s execute si le
+  fichier est lance sous DOS pur.
+
+  Le stub typique affiche le message :
+    "This program cannot be run in DOS mode."
+  puis termine avec INT $21, AH=$4C.
+
+  Le stub est optionnel en theorie, mais toujours present en
+  pratique. Sa taille varie, mais le total (en-tete MZ + stub)
+  est generalement aligne sur 8 octets ou plus.
+
+==============================================================================
+11. SIGNATURE PE
+==============================================================================
+
+A l offset indique par e_lfanew se trouve la signature PE :
+
+  Offset        Taille  Valeur      Description
+  -----------   ------  ----------  ------------------------------------------
+  e_lfanew      4       $00004550   Signature "PE\0\0" (Little-Endian)
+
+  Les 4 octets sont : $50, $45, $00, $00 (ASCII 'P', 'E', NUL, NUL).
+
+  Cette signature est definie comme constante dans CCW32.PAS :
+    PE_PE_SIG = $00004550;
+
+  Si cette signature est absente ou incorrecte, le fichier est
+  un executable DOS MZ pur (sans en-tete PE).
+
+==============================================================================
+12. EN-TETE COFF (IMAGE_FILE_HEADER, 20 OCTETS)
+==============================================================================
+
+Immediatement apres la signature PE se trouve l en-tete COFF
+(aussi appele IMAGE_FILE_HEADER), d une taille fixe de 20 octets :
+
+  Offset  Taille  Champ                 Description
+  ------  ------  --------------------- ------------------------------------
+  +0      2       Machine               Architecture cible
+  +2      2       NumberOfSections      Nombre de sections
+  +4      4       TimeDateStamp         Horodatage de creation (Unix time)
+  +8      4       PointerToSymbolTable  Offset table de symboles (0 si aucun)
+  +12     4       NumberOfSymbols       Nombre de symboles (0 si aucun)
+  +16     2       SizeOfOptionalHeader  Taille de l en-tete optionnel
+  +18     2       Characteristics       Drapeaux du fichier
+
+Representation en structure Pascal (telle que dans EMUW32.PAS) :
+
+  Type
+    TImageFileHeader = Record
+      Machine              : Word;      { $014C = i386              }
+      NumberOfSections     : Word;      { Nombre de sections        }
+      TimeDateStamp        : LongInt;   { Horodatage Unix           }
+      PointerToSymbolTable : LongInt;   { Offset table symboles     }
+      NumberOfSymbols      : LongInt;   { Nombre de symboles        }
+      SizeOfOptionalHeader : Word;      { Taille en-tete optionnel  }
+      Characteristics      : Word;      { Drapeaux du fichier       }
+    End;
+
+12.1 CHAMP MACHINE
+--------------------
+
+  Les valeurs courantes sont :
+
+  Valeur   Architecture
+  ------   ----------------------------------------
+  $0000    Inconnue
+  $014C    Intel 386 ou compatible (IMAGE_FILE_MACHINE_I386)
+  $0166    MIPS little-endian
+  $01A2    Hitachi SH3
+  $01A4    Hitachi SH3 DSP
+  $01A6    Hitachi SH4
+  $01C0    ARM little-endian
+  $01F0    IBM PowerPC little-endian
+  $0200    Intel Itanium (IA-64)
+  $8664    AMD64 / x86-64 (IMAGE_FILE_MACHINE_AMD64)
+  $AA64    ARM64 / AArch64
+
+  Pour les executables Win32 generes par DEV-COOLS :
+    PE_MACHINE_I386 = $014C;   { defini dans CCW32.PAS }
+
+12.2 CHAMP CHARACTERISTICS
+-----------------------------
+
+  Masque de bits decrivant les proprietes du fichier :
+
+  Bit     Masque    Nom                           Description
+  -----   ------   ----------------------------- -------------------------
+  0       $0001    IMAGE_FILE_RELOCS_STRIPPED     Pas de relocalisations
+  1       $0002    IMAGE_FILE_EXECUTABLE_IMAGE    Fichier executable valide
+  2       $0004    IMAGE_FILE_LINE_NUMS_STRIPPED  Pas de numeros de ligne
+  3       $0008    IMAGE_FILE_LOCAL_SYMS_STRIPPED Pas de symboles locaux
+  4       $0010    IMAGE_FILE_AGGRESSIVE_WS_TRIM Reduire le working set
+  5       $0020    IMAGE_FILE_LARGE_ADDRESS_AWARE Supporte > 2 Go
+  7       $0080    IMAGE_FILE_BYTES_REVERSED_LO   Octets inverses (lo)
+  8       $0100    IMAGE_FILE_32BIT_MACHINE       Machine 32 bits
+  9       $0200    IMAGE_FILE_DEBUG_STRIPPED       Pas de debogage
+  10      $0400    IMAGE_FILE_REMOVABLE_RUN_FS    Copier si amovible
+  11      $0800    IMAGE_FILE_NET_RUN_FROM_SWAP   Copier si reseau
+  12      $1000    IMAGE_FILE_SYSTEM              Fichier systeme
+  13      $2000    IMAGE_FILE_DLL                 Bibliotheque dynamique
+  14      $4000    IMAGE_FILE_UP_SYSTEM_ONLY      Monoprocesseur seulement
+  15      $8000    IMAGE_FILE_BYTES_REVERSED_HI   Octets inverses (hi)
+
+  Valeur typique pour un executable Win32 console :
+    Characteristics = $010F
+      ($0002 EXECUTABLE + $0004 LINE_NUMS_STRIPPED +
+       $0008 LOCAL_SYMS_STRIPPED + $0001 RELOCS_STRIPPED +
+       $0100 32BIT_MACHINE)
+
+==============================================================================
+13. EN-TETE OPTIONNEL PE32 (IMAGE_OPTIONAL_HEADER32, 224 OCTETS)
+==============================================================================
+
+L en-tete optionnel suit immediatement l en-tete COFF. Malgre son
+nom, il est obligatoire pour les fichiers executables. Sa taille
+totale est de 224 octets pour PE32 (96 octets de champs standard +
+128 octets de repertoires de donnees).
+
+  La taille est indiquee par SizeOfOptionalHeader dans le COFF header :
+    PE_OPT_SIZE = 224;   { defini dans CCW32.PAS }
+
+13.1 CHAMPS STANDARD (OFFSETS +0 A +27)
+------------------------------------------
+
+  Offset  Taille  Champ                     Description
+  ------  ------  ------------------------  --------------------------------
+  +0      2       Magic                     $010B = PE32 (32 bits)
+                                            $020B = PE32+ (64 bits)
+  +2      1       MajorLinkerVersion        Version majeure du lieur
+  +3      1       MinorLinkerVersion        Version mineure du lieur
+  +4      4       SizeOfCode                Taille totale des sections code
+  +8      4       SizeOfInitializedData     Taille donnees initialisees
+  +12     4       SizeOfUninitializedData   Taille donnees non initialisees
+  +16     4       AddressOfEntryPoint       RVA du point d entree
+  +20     4       BaseOfCode                RVA de la base du code
+  +24     4       BaseOfData                RVA de la base des donnees
+
+  Nota : Le champ BaseOfData n existe pas dans PE32+ (64 bits).
+
+13.2 CHAMPS SPECIFIQUES WINDOWS (OFFSETS +28 A +95)
+------------------------------------------------------
+
+  Offset  Taille  Champ                          Description
+  ------  ------  -----------------------------  ----------------------------
+  +28     4       ImageBase                      Adresse de base preferee
+  +32     4       SectionAlignment               Alignement sections memoire
+  +36     4       FileAlignment                  Alignement sections fichier
+  +40     2       MajorOperatingSystemVersion    Version SE majeure
+  +42     2       MinorOperatingSystemVersion    Version SE mineure
+  +44     2       MajorImageVersion              Version image majeure
+  +46     2       MinorImageVersion              Version image mineure
+  +48     2       MajorSubsystemVersion          Version sous-systeme majeure
+  +50     2       MinorSubsystemVersion          Version sous-systeme mineure
+  +52     4       Win32VersionValue              Reserve (doit etre 0)
+  +56     4       SizeOfImage                    Taille totale image memoire
+  +60     4       SizeOfHeaders                  Taille combinee des en-tetes
+  +64     4       CheckSum                       Somme de controle de l image
+  +68     2       Subsystem                      Sous-systeme requis
+  +70     2       DllCharacteristics             Drapeaux DLL
+  +72     4       SizeOfStackReserve             Pile reservee
+  +76     4       SizeOfStackCommit              Pile initialement allouee
+  +80     4       SizeOfHeapReserve              Tas reserve
+  +84     4       SizeOfHeapCommit               Tas initialement alloue
+  +88     4       LoaderFlags                    Drapeaux chargeur (obsolete)
+  +92     4       NumberOfRvaAndSizes            Nombre de repertoires
+
+Representation en structure Pascal (telle que dans EMUW32.PAS) :
+
+  Type
+    TImageOptionalHeader32 = Record
+      Magic                       : Word;
+      MajorLinkerVersion          : Byte;
+      MinorLinkerVersion          : Byte;
+      SizeOfCode                  : LongInt;
+      SizeOfInitializedData       : LongInt;
+      SizeOfUninitializedData     : LongInt;
+      AddressOfEntryPoint         : LongInt;
+      BaseOfCode                  : LongInt;
+      BaseOfData                  : LongInt;
+      ImageBase                   : LongInt;
+      SectionAlignment            : LongInt;
+      FileAlignment               : LongInt;
+      MajorOperatingSystemVersion : Word;
+      MinorOperatingSystemVersion : Word;
+      MajorImageVersion           : Word;
+      MinorImageVersion           : Word;
+      MajorSubsystemVersion       : Word;
+      MinorSubsystemVersion       : Word;
+      Win32VersionValue           : LongInt;
+      SizeOfImage                 : LongInt;
+      SizeOfHeaders               : LongInt;
+      CheckSum                    : LongInt;
+      Subsystem                   : Word;
+      DllCharacteristics          : Word;
+      SizeOfStackReserve          : LongInt;
+      SizeOfStackCommit           : LongInt;
+      SizeOfHeapReserve           : LongInt;
+      SizeOfHeapCommit            : LongInt;
+      LoaderFlags                 : LongInt;
+      NumberOfRvaAndSizes         : LongInt;
+    End;
+
+13.3 CHAMP IMAGEBASE
+-----------------------
+
+  Adresse virtuelle preferee de chargement de l image. Si cette
+  adresse n est pas disponible, le chargeur relocalise l image
+  (si la table de relocalisation de base est presente).
+
+  Valeur typique :
+    PE_IMG_BASE = $00400000;   { defini dans CCW32.PAS et TPCW32.PAS }
+
+  Les DLL utilisent generalement $10000000 comme base.
+
+13.4 CHAMP SECTIONALIGNMENT ET FILEALIGNMENT
+-----------------------------------------------
+
+  SectionAlignment : Alignement des sections quand elles sont
+  chargees en memoire. Typiquement 4096 octets ($1000), soit
+  la taille d une page memoire x86.
+
+  FileAlignment : Alignement des sections dans le fichier sur
+  disque. Typiquement 512 octets ($200), soit la taille d un
+  secteur disque.
+
+  Constantes dans DEV-COOLS :
+    PE_SEC_ALIGN  = $1000;   { SectionAlignment (CCW32.PAS)  }
+    PE_FILE_ALIGN = $0200;   { FileAlignment (CCW32.PAS)     }
+
+13.5 CHAMP SUBSYSTEM
+-----------------------
+
+  Identifie l environnement requis pour executer l image :
+
+  Valeur  Nom                                  Description
+  ------  ----------------------------------   ---------------------------
+  0       IMAGE_SUBSYSTEM_UNKNOWN              Inconnu
+  1       IMAGE_SUBSYSTEM_NATIVE               Pilote de peripherique
+  2       IMAGE_SUBSYSTEM_WINDOWS_GUI          Application graphique Win32
+  3       IMAGE_SUBSYSTEM_WINDOWS_CUI          Application console Win32
+  5       IMAGE_SUBSYSTEM_OS2_CUI              Application console OS/2
+  7       IMAGE_SUBSYSTEM_POSIX_CUI            Application console POSIX
+  9       IMAGE_SUBSYSTEM_WINDOWS_CE_GUI       Application Windows CE
+
+  Constante dans DEV-COOLS :
+    PE_SUBSYS_CUI = 3;   { Console subsystem (CCW32.PAS) }
+
+13.6 CHAMP DLLCHARACTERISTICS
+-------------------------------
+
+  Drapeaux de securite et de comportement :
+
+  Masque   Nom                                 Description
+  ------   ---------------------------------   ---------------------------
+  $0020    IMAGE_DLLCHARACTERISTICS_HIGH_EA    Supporte adresses hautes
+  $0040    IMAGE_DLLCHARACTERISTICS_DYN_BASE   ASLR active
+  $0080    IMAGE_DLLCHARACTERISTICS_FORCE_INT  Verification integrite
+  $0100    IMAGE_DLLCHARACTERISTICS_NX_COMPAT  Compatible DEP (NX)
+  $0200    IMAGE_DLLCHARACTERISTICS_NO_ISOL    Pas d isolation
+  $0400    IMAGE_DLLCHARACTERISTICS_NO_SEH     Pas de SEH
+  $0800    IMAGE_DLLCHARACTERISTICS_NO_BIND    Ne pas lier
+  $2000    IMAGE_DLLCHARACTERISTICS_WDM        Pilote WDM
+  $8000    IMAGE_DLLCHARACTERISTICS_TERM_SA    Terminal Server aware
+
+==============================================================================
+14. REPERTOIRES DE DONNEES (DATA DIRECTORIES)
+==============================================================================
+
+Les repertoires de donnees suivent immediatement les champs de
+l en-tete optionnel (a l offset +96). Il y en a jusqu a 16,
+chacun faisant 8 octets :
+
+  Offset  Taille  Champ           Description
+  ------  ------  --------------- ------------------------------------------
+  +0      4       VirtualAddress  RVA du repertoire de donnees
+  +4      4       Size            Taille du repertoire en octets
+
+Representation en structure Pascal (telle que dans EMUW32.PAS) :
+
+  Type
+    TImageDataDirectory = Record
+      VirtualAddress : LongInt;   { RVA du repertoire             }
+      Size           : LongInt;   { Taille du repertoire          }
+    End;
+
+Si VirtualAddress = 0 et Size = 0, le repertoire n est pas present.
+
+14.1 TABLE DES REPERTOIRES
+-----------------------------
+
+  Index  Nom                                  Description
+  -----  ---------------------------------    ----------------------------
+  0      IMAGE_DIRECTORY_ENTRY_EXPORT         Table d exportation
+  1      IMAGE_DIRECTORY_ENTRY_IMPORT         Table d importation
+  2      IMAGE_DIRECTORY_ENTRY_RESOURCE       Ressources
+  3      IMAGE_DIRECTORY_ENTRY_EXCEPTION      Table d exceptions
+  4      IMAGE_DIRECTORY_ENTRY_SECURITY       Table de securite
+  5      IMAGE_DIRECTORY_ENTRY_BASERELOC      Relocalisations de base
+  6      IMAGE_DIRECTORY_ENTRY_DEBUG          Informations de debogage
+  7      IMAGE_DIRECTORY_ENTRY_ARCHITECTURE   Donnees d architecture
+  8      IMAGE_DIRECTORY_ENTRY_GLOBALPTR      Pointeur global (MIPS GP)
+  9      IMAGE_DIRECTORY_ENTRY_TLS            Thread Local Storage
+  10     IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG    Configuration du chargeur
+  11     IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT   Importations liees
+  12     IMAGE_DIRECTORY_ENTRY_IAT            Import Address Table
+  13     IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT   Importation differee
+  14     IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR Descripteur CLR (.NET)
+  15     (reserve)                            Reserve, doit etre zero
+
+Les repertoires les plus importants pour un executable minimal
+sont l index 1 (Import) et l index 12 (IAT).
+
+==============================================================================
+15. TABLE DES SECTIONS (IMAGE_SECTION_HEADER, 40 OCTETS)
+==============================================================================
+
+La table des sections suit l en-tete optionnel. Chaque entree fait
+40 octets et decrit une section du fichier PE :
+
+  Offset  Taille  Champ                  Description
+  ------  ------  ---------------------- ----------------------------------
+  +0      8       Name                   Nom de la section (8 caracteres)
+  +8      4       VirtualSize            Taille en memoire
+  +12     4       VirtualAddress         RVA de la section en memoire
+  +16     4       SizeOfRawData          Taille dans le fichier
+  +20     4       PointerToRawData       Offset dans le fichier
+  +24     4       PointerToRelocations   Offset des relocalisations
+  +28     4       PointerToLinenumbers   Offset des numeros de ligne
+  +32     2       NumberOfRelocations    Nombre de relocalisations
+  +34     2       NumberOfLinenumbers    Nombre de numeros de ligne
+  +36     4       Characteristics        Drapeaux de la section
+
+Representation en structure Pascal (telle que dans EMUW32.PAS) :
+
+  Type
+    TImageSectionHeader = Record
+      Name                 : Array[0..7] of Char;
+      VirtualSize          : LongInt;
+      VirtualAddress       : LongInt;
+      SizeOfRawData        : LongInt;
+      PointerToRawData     : LongInt;
+      PointerToRelocations : LongInt;
+      PointerToLinenumbers : LongInt;
+      NumberOfRelocations  : Word;
+      NumberOfLinenumbers  : Word;
+      Characteristics      : LongInt;
+    End;
+
+15.1 NOMS DE SECTIONS COURANTS
+---------------------------------
+
+  Nom        Contenu                            Drapeaux typiques
+  --------   ---------------------------------  --------------------
+  .text      Code executable                    $60000020
+  .rdata     Donnees en lecture seule            $40000040
+  .data      Donnees initialisees (lect./ecr.)  $C0000040
+  .bss       Donnees non initialisees            $C0000080
+  .idata     Table d importation                $40000040
+  .edata     Table d exportation                $40000040
+  .rsrc      Ressources                         $40000040
+  .reloc     Relocalisations de base            $42000040
+
+  Constantes de drapeaux dans CCW32.PAS :
+    PE_SCN_TEXT  = $60000020;   { CODE | EXECUTE | READ         }
+    PE_SCN_RDATA = $40000040;   { INIT_DATA | READ              }
+    PE_SCN_BSS   = $C0000040;   { INIT_DATA | READ | WRITE      }
+
+15.2 DRAPEAUX DE SECTION (CHARACTERISTICS)
+--------------------------------------------
+
+  Masque        Nom                                 Description
+  ----------    ---------------------------------   ----------------------
+  $00000020     IMAGE_SCN_CNT_CODE                  Contient du code
+  $00000040     IMAGE_SCN_CNT_INITIALIZED_DATA      Donnees initialisees
+  $00000080     IMAGE_SCN_CNT_UNINITIALIZED_DATA    Donnees non init.
+  $00000200     IMAGE_SCN_LNK_INFO                  Commentaires / info
+  $00000800     IMAGE_SCN_LNK_REMOVE                A supprimer apres lien
+  $00001000     IMAGE_SCN_LNK_COMDAT                Donnees COMDAT
+  $00500000     IMAGE_SCN_ALIGN_16BYTES             Alignement 16 octets
+  $02000000     IMAGE_SCN_MEM_DISCARDABLE           Jetable
+  $04000000     IMAGE_SCN_MEM_NOT_CACHED            Non cacheable
+  $08000000     IMAGE_SCN_MEM_NOT_PAGED             Non paginable
+  $10000000     IMAGE_SCN_MEM_SHARED                Partageable
+  $20000000     IMAGE_SCN_MEM_EXECUTE               Executable
+  $40000000     IMAGE_SCN_MEM_READ                  Lisible
+  $80000000     IMAGE_SCN_MEM_WRITE                 Inscriptible
+
+15.3 RVA ET ADRESSES
+-----------------------
+
+  RVA (Relative Virtual Address) : Adresse relative a l ImageBase.
+  L adresse virtuelle absolue en memoire est :
+
+    VA = ImageBase + RVA
+
+  Pour trouver l offset dans le fichier correspondant a un RVA :
+
+    1. Trouver la section contenant le RVA :
+       VirtualAddress <= RVA < VirtualAddress + VirtualSize
+
+    2. Calculer l offset dans le fichier :
+       FileOffset = PointerToRawData + (RVA - VirtualAddress)
+
+  Les RVA typiques pour un executable genere par DEV-COOLS :
+    PE_TEXT_RVA  = $1000;   { .text  (TPCW32.PAS) }
+    PE_DATA_RVA  = $2000;   { .data  (TPCW32.PAS) }
+    PE_IDATA_RVA = $3000;   { .idata (TPCW32.PAS) }
+
+==============================================================================
+16. TABLE D IMPORTATION (IMPORT DIRECTORY)
+==============================================================================
+
+La table d importation permet au chargeur Windows de resoudre les
+appels aux fonctions des DLL externes (KERNEL32.DLL, USER32.DLL,
+GDI32.DLL, etc.).
+
+16.1 DESCRIPTEUR D IMPORTATION (20 OCTETS)
+---------------------------------------------
+
+  Chaque DLL importee est decrite par un IMAGE_IMPORT_DESCRIPTOR :
+
+  Offset  Taille  Champ               Description
+  ------  ------  ------------------- ------------------------------------
+  +0      4       OriginalFirstThunk  RVA de l Import Lookup Table (ILT)
+  +4      4       TimeDateStamp       Horodatage (0 = non lie)
+  +8      4       ForwarderChain      Chaine de redirection (-1 = aucune)
+  +12     4       Name                RVA du nom de la DLL (chaine ASCIIZ)
+  +16     4       FirstThunk          RVA de l Import Address Table (IAT)
+
+  La table se termine par un descripteur entierement nul (20 octets
+  a zero).
+
+  Representation en structure Pascal (telle que dans EMUW32.PAS) :
+
+    Type
+      TImageImportDescriptor = Record
+        OriginalFirstThunk : LongInt;  { RVA de l ILT              }
+        TimeDateStamp      : LongInt;  { Horodatage                }
+        ForwarderChain     : LongInt;  { Redirection               }
+        Name               : LongInt;  { RVA nom de la DLL         }
+        FirstThunk         : LongInt;  { RVA de l IAT              }
+      End;
+
+16.2 IMPORT LOOKUP TABLE (ILT) ET IMPORT ADDRESS TABLE (IAT)
+---------------------------------------------------------------
+
+  L ILT et l IAT sont des tableaux de LongInt (32 bits pour PE32),
+  termines par un element nul. Chaque element designe une fonction
+  importee :
+
+  - Si le bit 31 est a 1 : importation par ordinal
+      Ordinal = Element AND $FFFF
+
+  - Si le bit 31 est a 0 : importation par nom
+      RVA vers une structure Hint/Name :
+        +0  : Word  = Hint (index dans la table d exportation)
+        +2  : ASCIIZ = Nom de la fonction
+
+  Avant chargement, l ILT et l IAT contiennent les memes valeurs.
+  Au chargement, Windows ecrase l IAT avec les adresses reelles
+  des fonctions en memoire (les "thunks").
+
+16.3 MECANISME D APPEL
+-------------------------
+
+  Le code appelle une fonction importee via un saut indirect :
+
+    CALL DWORD PTR [IAT_Addr]
+
+  Ou IAT_Addr est l adresse de l entree correspondante dans l IAT.
+  Ce saut indirect est souvent regroupe dans un "thunk" :
+
+    JMP DWORD PTR [IAT_Entry]
+
+  L emulateur EMUW32.PAS intercepte ces adresses de thunk pour
+  rediriger les appels vers ses propres implementations :
+
+    Type
+      TImportEntry = Record
+        DLLName   : String[63];    { Nom de la DLL          }
+        FuncName  : String[127];   { Nom de la fonction     }
+        Ordinal   : Word;          { Ordinal (si applicable)}
+        ByOrdinal : Boolean;       { Import par ordinal ?   }
+        ThunkAddr : LongInt;       { Adresse du thunk IAT   }
+      End;
+
+==============================================================================
+17. TABLE D EXPORTATION (EXPORT DIRECTORY)
+==============================================================================
+
+La table d exportation est principalement presente dans les DLL.
+Elle permet a d autres modules de trouver les fonctions et donnees
+exportees.
+
+17.1 STRUCTURE DU REPERTOIRE D EXPORTATION
+---------------------------------------------
+
+  Offset  Taille  Champ                   Description
+  ------  ------  ----------------------  ---------------------------------
+  +0      4       Characteristics         Reserve (0)
+  +4      4       TimeDateStamp           Horodatage de creation
+  +8      2       MajorVersion            Version majeure
+  +10     2       MinorVersion            Version mineure
+  +12     4       Name                    RVA du nom de la DLL
+  +16     4       Base                    Ordinal de base
+  +20     4       NumberOfFunctions       Nombre de fonctions exportees
+  +24     4       NumberOfNames           Nombre de noms exportes
+  +28     4       AddressOfFunctions      RVA table d adresses (EAT)
+  +32     4       AddressOfNames          RVA table de noms
+  +36     4       AddressOfNameOrdinals   RVA table d ordinaux de noms
+
+17.2 RESOLUTION D UNE EXPORTATION PAR NOM
+--------------------------------------------
+
+  Pour trouver l adresse d une fonction exportee par nom :
+
+    1. Rechercher le nom dans la table des noms (tri binaire)
+    2. Obtenir l index i de la correspondance
+    3. Lire l ordinal dans AddressOfNameOrdinals[i]
+    4. Lire l adresse dans AddressOfFunctions[ordinal]
+    5. L adresse reelle est ImageBase + adresse (RVA)
+
+==============================================================================
+18. TABLE DE RELOCALISATION DE BASE (BASE RELOCATION)
+==============================================================================
+
+Si l image ne peut pas etre chargee a son ImageBase preferee,
+le chargeur utilise la table de relocalisation de base pour
+ajuster toutes les adresses absolues dans le code et les donnees.
+
+18.1 STRUCTURE DES BLOCS
+---------------------------
+
+  La table est composee de blocs, chaque bloc couvrant une page
+  memoire (typiquement 4096 octets) :
+
+  Offset  Taille  Champ           Description
+  ------  ------  --------------- ------------------------------------------
+  +0      4       VirtualAddress  RVA de la page (multiple de $1000)
+  +4      4       SizeOfBlock     Taille du bloc en octets (incluant en-tete)
+  +8      2*n     TypeOffset[]    Tableau d entrees de relocalisation
+
+  Chaque entree TypeOffset est un Word de 16 bits :
+    Bits 12-15 : Type de relocalisation
+    Bits 0-11  : Offset dans la page (0..$FFF)
+
+18.2 TYPES DE RELOCALISATION
+-------------------------------
+
+  Type  Nom                               Description
+  ----  --------------------------------  ---------------------------------
+  0     IMAGE_REL_BASED_ABSOLUTE          Padding (pas de relocalisation)
+  1     IMAGE_REL_BASED_HIGH              Ajuster les 16 bits hauts
+  2     IMAGE_REL_BASED_LOW               Ajuster les 16 bits bas
+  3     IMAGE_REL_BASED_HIGHLOW           Ajuster les 32 bits complets
+  4     IMAGE_REL_BASED_HIGHADJ           Ajuster 16 bits hauts + delta
+  10    IMAGE_REL_BASED_DIR64             Ajuster 64 bits (PE32+)
+
+  Le type 3 (HIGHLOW) est le plus courant pour les executables PE32.
+  Le type 0 (ABSOLUTE) sert de padding pour aligner le bloc.
+
+==============================================================================
+19. SECTION DE RESSOURCES
+==============================================================================
+
+Les ressources (icones, dialogues, menus, manifestes, informations
+de version, etc.) sont stockees dans la section .rsrc.
+
+19.1 STRUCTURE ARBORESCENTE
+------------------------------
+
+  Les ressources sont organisees en arbre a trois niveaux :
+
+  Niveau 1 : Type de ressource (icone, menu, dialogue, etc.)
+  Niveau 2 : Identifiant de la ressource (nom ou numero)
+  Niveau 3 : Langue de la ressource (code de langue)
+
+  Chaque noeud de l arbre est une structure
+  IMAGE_RESOURCE_DIRECTORY (16 octets) suivie d entrees
+  IMAGE_RESOURCE_DIRECTORY_ENTRY (8 octets chacune).
+
+19.2 TYPES DE RESSOURCES COURANTS
+------------------------------------
+
+  ID    Nom                      Description
+  ----  -----------------------  ----------------------------
+  1     RT_CURSOR                Curseur
+  2     RT_BITMAP                Bitmap
+  3     RT_ICON                  Icone
+  4     RT_MENU                  Menu
+  5     RT_DIALOG                Dialogue
+  6     RT_STRING                Table de chaines
+  7     RT_FONTDIR               Repertoire de polices
+  8     RT_FONT                  Police
+  9     RT_ACCELERATOR           Table d accelerateurs
+  10    RT_RCDATA                Donnees brutes
+  11    RT_MESSAGETABLE          Table de messages
+  12    RT_GROUP_CURSOR          Groupe de curseurs
+  14    RT_GROUP_ICON            Groupe d icones
+  16    RT_VERSION               Information de version
+  24    RT_MANIFEST              Manifeste XML
+
+==============================================================================
+20. ORDRE DES OCTETS ET ALIGNEMENT
+==============================================================================
+
+20.1 ENDIANISME
+-----------------
+
+  Le format MZ et le format PE utilisent tous deux l ordre
+  Little-Endian (octet de poids faible en premier), conformement
+  a l architecture Intel x86.
+
+  Exemple : la valeur $12345678 est stockee comme :
+    Offset +0 : $78  (poids faible)
+    Offset +1 : $56
+    Offset +2 : $34
+    Offset +3 : $12  (poids fort)
+
+  La signature "MZ" ($4D $5A) est un Word Little-Endian = $5A4D.
+  La signature "PE" ($50 $45 $00 $00) est un LongInt LE = $00004550.
+
+20.2 ALIGNEMENT
+-----------------
+
+  Format MZ :
+    - L en-tete est aligne sur un paragraphe (16 octets)
+    - HeaderSize est en paragraphes
+
+  Format PE :
+    - SectionAlignment = $1000 (4 Ko) pour l alignement en memoire
+    - FileAlignment = $0200 (512 octets) pour l alignement sur disque
+    - Les en-tetes sont paddes a un multiple de FileAlignment
+    - Chaque section est paddee a un multiple de FileAlignment dans
+      le fichier et de SectionAlignment en memoire
+
+==============================================================================
+21. CONSTANTES ET VALEURS TYPIQUES
+==============================================================================
+
+Recapitulatif des constantes definies dans le projet DEV-COOLS :
+
+  Constante          Valeur       Fichier         Description
+  -----------------  ----------   --------------  -------------------------
+  PE_DOS_MAGIC       $5A4D        CCW32.PAS       Signature 'MZ'
+  PE_PE_SIG          $00004550    CCW32.PAS       Signature 'PE\0\0'
+  PE_MACHINE_I386    $014C        CCW32.PAS       Architecture i386
+  PE_OPT_SIZE        224          CCW32.PAS       Taille Optional Header
+  PE_MAGIC_32        $010B        CCW32.PAS       Magie PE32
+  PE_IMG_BASE        $00400000    CCW32/TPCW32    Adresse de base
+  PE_SEC_ALIGN       $1000        CCW32.PAS       Alignement sections mem.
+  PE_FILE_ALIGN      $0200        CCW32.PAS       Alignement sections fich.
+  PE_SUBSYS_CUI      3            CCW32.PAS       Sous-systeme console
+  PE_SCN_TEXT        $60000020    CCW32.PAS       Drapeaux section .text
+  PE_SCN_RDATA       $40000040    CCW32.PAS       Drapeaux section .rdata
+  PE_SCN_BSS         $C0000040    CCW32.PAS       Drapeaux section .bss
+  PE_TEXT_RVA        $1000        TPCW32.PAS      RVA section .text
+  PE_DATA_RVA        $2000        TPCW32.PAS      RVA section .data
+  PE_IDATA_RVA       $3000        TPCW32.PAS      RVA section .idata
+  PE_HDR_SIZE        $200         TPCW32.PAS      Taille en-tetes PE
+  COFF_RELOC_DIR32   6            CCW32.PAS       Reloc. DIR32
+  COFF_RELOC_REL32   20           CCW32.PAS       Reloc. REL32
+
+==============================================================================
+22. REFERENCES
+==============================================================================
+
+  - Microsoft, "MS-DOS Programmer's Reference" (1991)
+  - Microsoft, "Microsoft Portable Executable and Common Object
+    File Format Specification", revision 11 (2017)
+  - Tool Interface Standard (TIS) Committee, "PE/COFF Specification"
+  - Intel, "8086 Family User's Manual" (1979)
+  - Matt Pietrek, "Peering Inside the PE: A Tour of the Win32
+    Portable Executable File Format", Microsoft Systems Journal (1994)
+  - Matt Pietrek, "An In-Depth Look into the Win32 Portable
+    Executable File Format", MSDN Magazine (2002)
+  - LINK.PAS dans le projet DEV-COOLS (editeur de liens DOS 16 bits)
+  - TPCW32.PAS dans le projet DEV-COOLS (compilateur Turbo Pascal Win32)
+  - CCW32.PAS dans le projet DEV-COOLS (compilateur C Win32)
+  - EMUW32.PAS dans le projet DEV-COOLS (emulateur Windows 32 bits)
+
+==============================================================================
+FIN DU DOCUMENT
+==============================================================================
