@@ -8,7 +8,7 @@
 
 { TODO - Liste des 25 points a implementer pour le desassembleur EXE (MZ/PE) :
 
-  1.  Infrastructure, options de ligne de commande et constantes globales.
+  1.  [IMPLEMENTE] Infrastructure, options de ligne de commande et constantes globales.
       Programme principal DISEXE en Turbo Pascal / Free Pascal.
       Analyse des options : nom du fichier .EXE en entree, nom du
       fichier .ASM en sortie (par defaut meme nom avec extension .ASM),
@@ -493,6 +493,29 @@ Begin
   If (FileName[I] = '\') Or (FileName[I] = '/') Then Break;
  End;
  ChangeFileExt := Base + NewExt;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+ S : TString;
+Begin
+ Str(N, S);
+ IntToStr := S;
+End;
+
+Function FileExists(Const FileName : TString) : Boolean;
+Var
+ F : File;
+Begin
+ Assign(F, FileName);
+ {$I-}
+ Reset(F, 1);
+ {$I+}
+ If IOResult = 0 Then Begin
+  Close(F);
+  FileExists := True;
+ End Else
+  FileExists := False;
 End;
 
 { ============================================================
