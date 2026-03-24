@@ -154,7 +154,7 @@
       Le prefix 67h bascule entre adresses 16 et 32 bits.
       Accumuler les prefixes avant le decodage de l'opcode.
 
-  16. Decodage des opcodes etendus (0Fh) et instructions avancees.
+  16. [IMPLEMENTE] Decodage des opcodes etendus (0Fh) et instructions avancees.
       Decoder les opcodes a deux octets (0Fh + second octet) :
       Jcc near (80h-8Fh), SETcc (90h-9Fh), CMOVcc (40h-4Fh),
       MOVZX (B6h/B7h), MOVSX (BEh/BFh), BSF (BCh), BSR (BDh),
@@ -1061,9 +1061,11 @@ Const
     (Mnemonic:'CLTS';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     { $0F 07 reserve (LOADALL 80386 / SYSRET 686+) }
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    { $0F 08..$0F 0F reserves }
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 08 INVD (Invalidate Cache, 80486+) }
+    (Mnemonic:'INVD';     OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 09 WBINVD (Write Back and Invalidate Cache, 80486+) }
+    (Mnemonic:'WBINVD';   OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 0A..$0F 0F reserves }
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
@@ -1113,7 +1115,16 @@ Const
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    { $0F 30..$0F 3F reserves }
+    { $0F 30..$0F 3F instructions systeme (Pentium+) }
+    { $0F 30 WRMSR (Write Model Specific Register) }
+    (Mnemonic:'WRMSR';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 31 RDTSC (Read Time Stamp Counter) }
+    (Mnemonic:'RDTSC';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 32 RDMSR (Read Model Specific Register) }
+    (Mnemonic:'RDMSR';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 33 RDPMC (Read Performance Monitoring Counter, P6+) }
+    (Mnemonic:'RDPMC';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 34..$0F 3F reserves }
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
@@ -1126,27 +1137,39 @@ Const
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    { $0F 40..$0F 4F reserves (CMOVcc sur P6+) }
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 40..$0F 4F CMOVcc r16, r/m16 (P6+) }
+    { $0F 40 CMOVO }
+    (Mnemonic:'CMOVO';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 41 CMOVNO }
+    (Mnemonic:'CMOVNO';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 42 CMOVB }
+    (Mnemonic:'CMOVB';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 43 CMOVNB }
+    (Mnemonic:'CMOVNB';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 44 CMOVZ }
+    (Mnemonic:'CMOVZ';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 45 CMOVNZ }
+    (Mnemonic:'CMOVNZ';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 46 CMOVBE }
+    (Mnemonic:'CMOVBE';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 47 CMOVNBE }
+    (Mnemonic:'CMOVNBE';  OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 48 CMOVS }
+    (Mnemonic:'CMOVS';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 49 CMOVNS }
+    (Mnemonic:'CMOVNS';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4A CMOVP }
+    (Mnemonic:'CMOVP';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4B CMOVNP }
+    (Mnemonic:'CMOVNP';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4C CMOVL }
+    (Mnemonic:'CMOVL';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4D CMOVNL }
+    (Mnemonic:'CMOVNL';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4E CMOVLE }
+    (Mnemonic:'CMOVLE';   OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F 4F CMOVNLE }
+    (Mnemonic:'CMOVNLE';  OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
     { $0F 50..$0F 5F reserves }
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
@@ -2109,6 +2132,350 @@ Begin
 End;
 
 { ============================================================
+  DECODAGE DES OPCODES ETENDUS 0Fh (TODO 16)
+  ============================================================ }
+
+{ Decode0FOpcode - Decode un opcode etendu 0Fh et retourne le mnemonique,
+  les operandes et le nombre d'octets consommes APRES l'octet 0Fh.
+  Parametres :
+    SecondByte : valeur du second octet (apres le 0Fh)
+    Offset     : position dans l'image du premier octet APRES le second octet
+                 (c.-a-d. l'octet ModR/M ou immediat eventuel)
+    PFX        : etat des prefixes (EffOpSize, EffAddrSize, etc.)
+  Resultats retournes par var :
+    Mnem       : mnemonique de l'instruction (ex: 'JNZ', 'MOVZX', ...)
+    Operands   : chaine des operandes (ex: 'EAX, [EBX+04h]')
+    BytesUsed  : nombre d'octets consommes APRES le 0Fh (inclut le second octet)
+}
+Procedure Decode0FOpcode(SecondByte : Byte; Offset : LongInt;
+                         Const PFX : TPrefixState;
+                         Var Mnem : TString; Var Operands : TString;
+                         Var BytesUsed : Integer);
+Var
+  Entry      : TOpcodeEntry;
+  RegField   : Byte;
+  RMStr      : TString;
+  RegStr     : TString;
+  ModRMBytes : Integer;
+  Rel16      : SmallInt;
+  Rel32      : LongInt;
+  Imm8       : Byte;
+  TargetAddr : LongInt;
+  OpSz       : Byte;       { taille effective d'operande (2 ou 4) }
+  AddrSz     : Byte;       { taille effective d'adresse (2 ou 4) }
+  ModRM      : Byte;
+  RegIdx     : Byte;
+Begin
+  Entry := Opcode0FTable[SecondByte];
+  OpSz  := PFX.EffOpSize;
+  AddrSz := PFX.EffAddrSize;
+  Mnem := Entry.Mnemonic;
+  Operands := '';
+  BytesUsed := 1; { le second octet lui-meme est toujours consomme }
+
+  { Instructions inconnues ou reservees }
+  If Entry.Mnemonic = '???' Then Begin
+    Mnem := 'DB';
+    Operands := '0Fh, ' + HexByte(SecondByte) + 'h';
+    Exit;
+  End;
+
+  { --- Cas speciaux des instructions de groupe (GRP6/GRP7/GRP8) --- }
+  If Entry.Mnemonic = 'GRP6' Then Begin
+    If Offset < ImageSize Then Begin
+      ModRM := ReadImageByte(Offset);
+      RegField := (ModRM Shr 3) And $07;
+      Mnem := Grp6Mnemonics[RegField];
+      If AddrSz = 4 Then
+        DecodeModRM32(Offset, 2, RegField, RMStr, ModRMBytes)
+      Else
+        DecodeModRM16(Offset, 2, RegField, RMStr, ModRMBytes);
+      Operands := RMStr;
+      BytesUsed := 1 + ModRMBytes;
+    End;
+    Exit;
+  End;
+
+  If Entry.Mnemonic = 'GRP7' Then Begin
+    If Offset < ImageSize Then Begin
+      ModRM := ReadImageByte(Offset);
+      RegField := (ModRM Shr 3) And $07;
+      Mnem := Grp7Mnemonics[RegField];
+      If AddrSz = 4 Then
+        DecodeModRM32(Offset, 2, RegField, RMStr, ModRMBytes)
+      Else
+        DecodeModRM16(Offset, 2, RegField, RMStr, ModRMBytes);
+      Operands := RMStr;
+      BytesUsed := 1 + ModRMBytes;
+    End;
+    Exit;
+  End;
+
+  If Entry.Mnemonic = 'GRP8' Then Begin
+    If Offset < ImageSize Then Begin
+      ModRM := ReadImageByte(Offset);
+      RegField := (ModRM Shr 3) And $07;
+      Mnem := Grp8Mnemonics[RegField];
+      If AddrSz = 4 Then
+        DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes)
+      Else
+        DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+      Imm8 := ReadImageByte(Offset + ModRMBytes);
+      Operands := RMStr + ', ' + HexByte(Imm8) + 'h';
+      BytesUsed := 1 + ModRMBytes + 1;
+    End;
+    Exit;
+  End;
+
+  { --- BSWAP : registre encode dans les 3 bits bas du second octet --- }
+  If (SecondByte >= $C8) And (SecondByte <= $CF) And
+     (Entry.Mnemonic = 'BSWAP') Then Begin
+    RegIdx := SecondByte And $07;
+    Operands := RegNames32[RegIdx];
+    Exit;
+  End;
+
+  { --- Jcc near : deplacement relatif 16/32 bits --- }
+  If (SecondByte >= $80) And (SecondByte <= $8F) Then Begin
+    If OpSz = 4 Then Begin
+      Rel32 := ReadImageDWord(Offset);
+      TargetAddr := Offset + 4 + Rel32;
+      Operands := HexDWord(TargetAddr) + 'h';
+      BytesUsed := 1 + 4;
+    End Else Begin
+      Rel16 := SmallInt(ReadImageWord(Offset));
+      TargetAddr := Offset + 2 + Rel16;
+      Operands := HexWord(Word(TargetAddr And $FFFF)) + 'h';
+      BytesUsed := 1 + 2;
+    End;
+    Exit;
+  End;
+
+  { --- MOV CRn/DRn/TRn : registres speciaux --- }
+  If (SecondByte >= $20) And (SecondByte <= $27) And
+     (Entry.Mnemonic = 'MOV') Then Begin
+    If Offset < ImageSize Then Begin
+      ModRM := ReadImageByte(Offset);
+      RegField := (ModRM Shr 3) And $07;
+      RegIdx := ModRM And $07;
+      BytesUsed := 1 + 1; { second byte + ModR/M }
+      Case SecondByte Of
+        $20 : Operands := RegNames32[RegIdx] + ', ' + CRegNames[RegField And $03];
+        $21 : Operands := RegNames32[RegIdx] + ', ' + DRegNames[RegField];
+        $22 : Operands := CRegNames[RegField And $03] + ', ' + RegNames32[RegIdx];
+        $23 : Operands := DRegNames[RegField] + ', ' + RegNames32[RegIdx];
+        $24 : Operands := RegNames32[RegIdx] + ', ' + TRegNames[RegField];
+        $26 : Operands := TRegNames[RegField] + ', ' + RegNames32[RegIdx];
+      Else
+        Operands := '???';
+      End;
+    End;
+    Exit;
+  End;
+
+  { --- SHLD/SHRD : 3 operandes (r/m, reg, imm8 ou CL) --- }
+  If ((SecondByte = $A4) Or (SecondByte = $A5) Or
+      (SecondByte = $AC) Or (SecondByte = $AD)) And
+     ((Entry.Mnemonic = 'SHLD') Or (Entry.Mnemonic = 'SHRD')) Then Begin
+    If Offset < ImageSize Then Begin
+      If AddrSz = 4 Then Begin
+        DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes);
+        If OpSz = 4 Then
+          RegStr := RegNames32[RegField]
+        Else
+          RegStr := RegNames16[RegField];
+      End Else Begin
+        DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+        If OpSz = 4 Then
+          RegStr := RegNames32[RegField]
+        Else
+          RegStr := RegNames16[RegField];
+      End;
+      If (SecondByte = $A4) Or (SecondByte = $AC) Then Begin
+        { SHLD/SHRD r/m, r, imm8 }
+        Imm8 := ReadImageByte(Offset + ModRMBytes);
+        Operands := RMStr + ', ' + RegStr + ', ' + HexByte(Imm8) + 'h';
+        BytesUsed := 1 + ModRMBytes + 1;
+      End Else Begin
+        { SHLD/SHRD r/m, r, CL }
+        Operands := RMStr + ', ' + RegStr + ', CL';
+        BytesUsed := 1 + ModRMBytes;
+      End;
+    End;
+    Exit;
+  End;
+
+  { --- Instructions sans operande (CLTS, CPUID, INVD, WBINVD, etc.) --- }
+  If Entry.OpCount = 0 Then Begin
+    Operands := '';
+    Exit;
+  End;
+
+  { --- Instructions avec 1 operande (SETcc, PUSH/POP FS/GS) --- }
+  If Entry.OpCount = 1 Then Begin
+    Case Entry.Op1Type Of
+      OT_RM8 : Begin
+        If Offset < ImageSize Then Begin
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, 1, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, 1, RegField, RMStr, ModRMBytes);
+          Operands := RMStr;
+          BytesUsed := 1 + ModRMBytes;
+        End;
+      End;
+      OT_FS : Operands := 'FS';
+      OT_GS : Operands := 'GS';
+      OT_REG32 : Begin
+        { BSWAP fallback (deja traite au-dessus normalement) }
+        RegIdx := SecondByte And $07;
+        Operands := RegNames32[RegIdx];
+      End;
+    Else
+      Operands := '???';
+    End;
+    Exit;
+  End;
+
+  { --- Instructions avec 2 operandes (generique) --- }
+  If Entry.OpCount = 2 Then Begin
+    { Determiner la taille d'operande effective pour les types 16-bit }
+    { Les types RM16/REG16 deviennent RM32/REG32 si EffOpSize=4 }
+
+    { Cas: premier operande = registre, second = r/m (direction reg<-r/m) }
+    If (Entry.Op1Type In [OT_REG16, OT_REG32]) And
+       (Entry.Op2Type In [OT_RM8, OT_RM16, OT_RM32, OT_MEM]) Then Begin
+      If Entry.Op2Type = OT_RM8 Then Begin
+        { MOVZX/MOVSX r16, r/m8 ou r32, r/m8 }
+        If Offset < ImageSize Then Begin
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, 1, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, 1, RegField, RMStr, ModRMBytes);
+          If (Entry.Op1Type = OT_REG32) Or (OpSz = 4) Then
+            RegStr := RegNames32[RegField]
+          Else
+            RegStr := RegNames16[RegField];
+          Operands := RegStr + ', ' + RMStr;
+          BytesUsed := 1 + ModRMBytes;
+        End;
+      End
+      Else If Entry.Op2Type = OT_RM16 Then Begin
+        { MOVZX/MOVSX r32, r/m16 ou CMOVcc r, r/m etc. }
+        If Offset < ImageSize Then Begin
+          If (Entry.Op1Type = OT_REG32) Then Begin
+            { Op1 toujours 32 bits, Op2 toujours 16 bits }
+            If AddrSz = 4 Then
+              DecodeModRM32(Offset, 2, RegField, RMStr, ModRMBytes)
+            Else
+              DecodeModRM16(Offset, 2, RegField, RMStr, ModRMBytes);
+            RegStr := RegNames32[RegField];
+          End Else Begin
+            { Op taille selon EffOpSize }
+            If AddrSz = 4 Then
+              DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes)
+            Else
+              DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+            If OpSz = 4 Then
+              RegStr := RegNames32[RegField]
+            Else
+              RegStr := RegNames16[RegField];
+          End;
+          Operands := RegStr + ', ' + RMStr;
+          BytesUsed := 1 + ModRMBytes;
+        End;
+      End
+      Else If Entry.Op2Type = OT_MEM Then Begin
+        { LSS/LFS/LGS r, m16:16 }
+        If Offset < ImageSize Then Begin
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+          If OpSz = 4 Then
+            RegStr := RegNames32[RegField]
+          Else
+            RegStr := RegNames16[RegField];
+          Operands := RegStr + ', ' + RMStr;
+          BytesUsed := 1 + ModRMBytes;
+        End;
+      End
+      Else Begin
+        { Autre cas RM32, etc. }
+        If Offset < ImageSize Then Begin
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+          If OpSz = 4 Then
+            RegStr := RegNames32[RegField]
+          Else
+            RegStr := RegNames16[RegField];
+          Operands := RegStr + ', ' + RMStr;
+          BytesUsed := 1 + ModRMBytes;
+        End;
+      End;
+      Exit;
+    End;
+
+    { Cas: premier operande = r/m, second = registre (direction r/m<-reg) }
+    If (Entry.Op1Type In [OT_RM8, OT_RM16, OT_RM32]) And
+       (Entry.Op2Type In [OT_REG8, OT_REG16, OT_REG32, OT_IMM8, OT_CL]) Then Begin
+      If Offset < ImageSize Then Begin
+        If Entry.Op1Type = OT_RM8 Then Begin
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, 1, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, 1, RegField, RMStr, ModRMBytes);
+          If Entry.Op2Type = OT_REG8 Then
+            RegStr := RegNames8[RegField]
+          Else If Entry.Op2Type = OT_IMM8 Then Begin
+            Imm8 := ReadImageByte(Offset + ModRMBytes);
+            Operands := RMStr + ', ' + HexByte(Imm8) + 'h';
+            BytesUsed := 1 + ModRMBytes + 1;
+            Exit;
+          End Else
+            RegStr := 'CL';
+        End Else Begin
+          { RM16 ou RM32 }
+          If AddrSz = 4 Then
+            DecodeModRM32(Offset, OpSz, RegField, RMStr, ModRMBytes)
+          Else
+            DecodeModRM16(Offset, OpSz, RegField, RMStr, ModRMBytes);
+          If Entry.Op2Type = OT_REG8 Then
+            RegStr := RegNames8[RegField]
+          Else If Entry.Op2Type = OT_REG16 Then Begin
+            If OpSz = 4 Then
+              RegStr := RegNames32[RegField]
+            Else
+              RegStr := RegNames16[RegField];
+          End
+          Else If Entry.Op2Type = OT_REG32 Then
+            RegStr := RegNames32[RegField]
+          Else If Entry.Op2Type = OT_IMM8 Then Begin
+            Imm8 := ReadImageByte(Offset + ModRMBytes);
+            Operands := RMStr + ', ' + HexByte(Imm8) + 'h';
+            BytesUsed := 1 + ModRMBytes + 1;
+            Exit;
+          End
+          Else If Entry.Op2Type = OT_CL Then
+            RegStr := 'CL'
+          Else
+            RegStr := '???';
+        End;
+        Operands := RMStr + ', ' + RegStr;
+        BytesUsed := 1 + ModRMBytes;
+      End;
+      Exit;
+    End;
+
+    { Cas: MOV CRn/DRn/TRn (deja traite ci-dessus normalement) }
+    { Fallback generique pour les autres cas a 2 operandes }
+    Operands := '???';
+  End;
+End;
+
+{ ============================================================
   ANALYSE DES OPTIONS DE LIGNE DE COMMANDE
   ============================================================ }
 
@@ -3033,7 +3400,7 @@ Begin
  DataBytes := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 16 a 25 restent a implementer)');
+ WriteLn('(les TODOs 17 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
  { Liberation de la memoire }
