@@ -726,10 +726,10 @@ Const
     (Mnemonic:'FS:';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
     { $65 GS: (prefixe segment GS sur 80386+) }
     (Mnemonic:'GS:';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
-    { $66 DB 66h (prefixe taille operande sur 80386+) }
-    (Mnemonic:'DB';       OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
-    { $67 DB 67h (prefixe taille adresse sur 80386+) }
-    (Mnemonic:'DB';       OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $66 OPSIZ (prefixe taille operande sur 80386+) }
+    (Mnemonic:'OPSIZ';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $67 ADDRSIZ (prefixe taille adresse sur 80386+) }
+    (Mnemonic:'ADDRSIZ';  OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
     { $68 PUSH imm16 }
     (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_IMM16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:3),
     { $69 IMUL r16, r/m16, imm16 }
