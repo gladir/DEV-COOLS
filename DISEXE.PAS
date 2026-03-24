@@ -4747,9 +4747,11 @@ Begin
  End Else Begin
   DiscriminateCodeData(LongInt(EntryCS) * 16 + LongInt(EntryIP), ImageSize, False);
  End;
- If OptVerbose Then Begin
-  WriteLn('Repartition des octets :');
-  For IterI := 0 To ImageSize - 1 Do Begin
+ If OptVerbose And IsPEFile Then Begin
+  WriteLn('Repartition par section :');
+  For IterI := 0 To SectionCount - 1 Do Begin
+   WriteLn('  ', GetSectionName(Sections[IterI]), ' : ',
+           SectionFlagsStr(Sections[IterI].Characteristics));
   End;
  End;
  WriteLn;
