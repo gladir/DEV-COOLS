@@ -115,7 +115,7 @@
       SMSW, CLTS, LAR, LSL, VERR, VERW.
       Instructions protegees pour le mode protege.
 
-  12. Table des opcodes et mnemoniques 80386 (32 bits).
+  12. [IMPLEMENTE] Table des opcodes et mnemoniques 80386 (32 bits).
       Etendre la table pour le mode 32 bits : prefixes de
       taille d'operande (66h) et de taille d'adresse (67h),
       registres 32 bits (EAX,ECX,EDX,EBX,ESP,EBP,ESI,EDI),
@@ -339,6 +339,17 @@ Const
   OT_SS      = 20;  { registre SS implicite }
   OT_MEM16   = 21;  { adresse memoire directe 16 bits }
   OT_IMM8X   = 22;  { immediat 8 bits signe-etendu a 16 bits }
+  { Constantes de types d'operandes 80386 (32 bits) }
+  OT_REG32   = 23;  { registre 32 bits }
+  OT_RM32    = 24;  { registre/memoire 32 bits (ModR/M) }
+  OT_IMM32   = 25;  { immediat 32 bits }
+  OT_EAX     = 26;  { registre EAX implicite }
+  OT_FS      = 27;  { registre FS implicite }
+  OT_GS      = 28;  { registre GS implicite }
+  OT_CR      = 29;  { registre de controle CRn }
+  OT_DR      = 30;  { registre de debogage DRn }
+  OT_TR      = 31;  { registre de test TRn }
+  OT_REL32   = 32;  { deplacement relatif 32 bits }
 
 { ============================================================
   TYPES
@@ -506,6 +517,31 @@ Const
   { Registres de segment (indices 0..3) }
   SegRegNames : Array[0..3] Of String[2] = (
     'ES', 'CS', 'SS', 'DS'
+  );
+
+  { Registres 32 bits (indices 0..7, 80386+) }
+  RegNames32 : Array[0..7] Of String[3] = (
+    'EAX', 'ECX', 'EDX', 'EBX', 'ESP', 'EBP', 'ESI', 'EDI'
+  );
+
+  { Registres de segment etendus (indices 0..5, FS/GS sur 80386+) }
+  SegRegNames6 : Array[0..5] Of String[2] = (
+    'ES', 'CS', 'SS', 'DS', 'FS', 'GS'
+  );
+
+  { Registres de controle (indices 0..3, 80386+) }
+  CRegNames : Array[0..3] Of String[3] = (
+    'CR0', 'CR1', 'CR2', 'CR3'
+  );
+
+  { Registres de debogage (indices 0..7, 80386+) }
+  DRegNames : Array[0..7] Of String[3] = (
+    'DR0', 'DR1', 'DR2', 'DR3', 'DR4', 'DR5', 'DR6', 'DR7'
+  );
+
+  { Registres de test (indices 0..7, 80386+) }
+  TRegNames : Array[0..7] Of String[3] = (
+    'TR0', 'TR1', 'TR2', 'TR3', 'TR4', 'TR5', 'TR6', 'TR7'
   );
 
 { ============================================================
@@ -686,14 +722,14 @@ Const
     (Mnemonic:'BOUND';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:1),
     { $63 ARPL r/m16, r16 (mode protege 80286) }
     (Mnemonic:'ARPL';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:1),
-    { $64 reserve (FS: sur 80386+) }
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
-    { $65 reserve (GS: sur 80386+) }
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
-    { $66 reserve (prefixe taille operande sur 80386+) }
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
-    { $67 reserve (prefixe taille adresse sur 80386+) }
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $64 FS: (prefixe segment FS sur 80386+) }
+    (Mnemonic:'FS:';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $65 GS: (prefixe segment GS sur 80386+) }
+    (Mnemonic:'GS:';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $66 DB 66h (prefixe taille operande sur 80386+) }
+    (Mnemonic:'DB';       OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
+    { $67 DB 67h (prefixe taille adresse sur 80386+) }
+    (Mnemonic:'DB';       OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:1),
     { $68 PUSH imm16 }
     (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_IMM16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:3),
     { $69 IMUL r16, r/m16, imm16 }
@@ -995,6 +1031,12 @@ Const
     'SGDT', 'SIDT', 'LGDT', 'LIDT', 'SMSW', '???', 'LMSW', '???'
   );
 
+  { Mnemoniques du groupe 8 (opcode 0F BA, selon champ reg de ModR/M) }
+  { Instructions bit test 80386+ }
+  Grp8Mnemonics : Array[0..7] Of String[3] = (
+    '???', '???', '???', '???', 'BT', 'BTS', 'BTR', 'BTC'
+  );
+
 { ============================================================
   TABLE DES OPCODES ETENDUS 0Fh (80286+)
   ============================================================ }
@@ -1045,15 +1087,24 @@ Const
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    { $0F 20..$0F 2F reserves (MOV CRn/DRn/TRn sur 80386+) }
+    { $0F 20..$0F 2F MOV CRn/DRn/TRn (80386+) }
+    { $0F 20 MOV r32, CRn }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG32; Op2Type:OT_CR;    NeedModRM:True;  BaseSize:2),
+    { $0F 21 MOV r32, DRn }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG32; Op2Type:OT_DR;    NeedModRM:True;  BaseSize:2),
+    { $0F 22 MOV CRn, r32 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_CR;    Op2Type:OT_REG32; NeedModRM:True;  BaseSize:2),
+    { $0F 23 MOV DRn, r32 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_DR;    Op2Type:OT_REG32; NeedModRM:True;  BaseSize:2),
+    { $0F 24 MOV r32, TRn }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_REG32; Op2Type:OT_TR;    NeedModRM:True;  BaseSize:2),
+    { $0F 25 reserve }
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 26 MOV TRn, r32 }
+    (Mnemonic:'MOV';      OpCount:2; Op1Type:OT_TR;    Op2Type:OT_REG32; NeedModRM:True;  BaseSize:2),
+    { $0F 27 reserve }
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 28..$0F 2F reserves }
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
@@ -1164,74 +1215,110 @@ Const
     (Mnemonic:'JNL';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
     (Mnemonic:'JLE';      OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
     (Mnemonic:'JNLE';     OpCount:1; Op1Type:OT_REL16; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:4),
-    { $0F 90..$0F 9F reserves (SETcc sur 80386+) }
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    { $0F A0..$0F AF reserves (PUSH FS/GS, BT/BTS/BTR/BTC, SHLD/SHRD, IMUL sur 80386+) }
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    { $0F B0..$0F BF reserves (CMPXCHG, MOVZX, MOVSX, BSF, BSR sur 80386+) }
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    { $0F C0..$0F CF reserves (XADD, BSWAP sur 80486+) }
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
-    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F 90..$0F 9F SETcc r/m8 (set byte on condition, 80386+) }
+    (Mnemonic:'SETO';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNO';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETB';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNB';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETZ';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNZ';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETBE';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNBE';   OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETS';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNS';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETP';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNP';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETL';     OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNL';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETLE';    OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    (Mnemonic:'SETNLE';   OpCount:1; Op1Type:OT_RM8;   Op2Type:OT_NONE;  NeedModRM:True;  BaseSize:2),
+    { $0F A0..$0F AF (PUSH FS/GS, BT/BTS/BTR/BTC, SHLD/SHRD, IMUL sur 80386+) }
+    { $0F A0 PUSH FS }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_FS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A1 POP FS }
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_FS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A2 CPUID (Pentium+, reserve ici) }
+    (Mnemonic:'CPUID';    OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A3 BT r/m16, r16 }
+    (Mnemonic:'BT';       OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F A4 SHLD r/m16, r16, imm8 }
+    (Mnemonic:'SHLD';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:2),
+    { $0F A5 SHLD r/m16, r16, CL }
+    (Mnemonic:'SHLD';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_CL;    NeedModRM:True;  BaseSize:2),
+    { $0F A6 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A7 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A8 PUSH GS }
+    (Mnemonic:'PUSH';     OpCount:1; Op1Type:OT_GS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F A9 POP GS }
+    (Mnemonic:'POP';      OpCount:1; Op1Type:OT_GS;    Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F AA RSM (resume from SMM, Pentium+) }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F AB BTS r/m16, r16 }
+    (Mnemonic:'BTS';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F AC SHRD r/m16, r16, imm8 }
+    (Mnemonic:'SHRD';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:2),
+    { $0F AD SHRD r/m16, r16, CL }
+    (Mnemonic:'SHRD';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_CL;    NeedModRM:True;  BaseSize:2),
+    { $0F AE reserve (FXSAVE/FXRSTOR/etc., Pentium+) }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F AF IMUL r16, r/m16 }
+    (Mnemonic:'IMUL';     OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F B0..$0F BF (CMPXCHG, MOVZX, MOVSX, BSF, BSR sur 80386+) }
+    { $0F B0 CMPXCHG r/m8, r8 (80486+) }
+    (Mnemonic:'CMPXCHG';  OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:2),
+    { $0F B1 CMPXCHG r/m16, r16 (80486+) }
+    (Mnemonic:'CMPXCHG';  OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F B2 LSS r16, m16:16 }
+    (Mnemonic:'LSS';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:2),
+    { $0F B3 BTR r/m16, r16 }
+    (Mnemonic:'BTR';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F B4 LFS r16, m16:16 }
+    (Mnemonic:'LFS';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:2),
+    { $0F B5 LGS r16, m16:16 }
+    (Mnemonic:'LGS';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_MEM;   NeedModRM:True;  BaseSize:2),
+    { $0F B6 MOVZX r16, r/m8 }
+    (Mnemonic:'MOVZX';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:2),
+    { $0F B7 MOVZX r32, r/m16 }
+    (Mnemonic:'MOVZX';    OpCount:2; Op1Type:OT_REG32; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F B8 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F B9 reserve }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F BA GRP8 r/m16, imm8 (BT/BTS/BTR/BTC) }
+    (Mnemonic:'GRP8';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_IMM8;  NeedModRM:True;  BaseSize:2),
+    { $0F BB BTC r/m16, r16 }
+    (Mnemonic:'BTC';      OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F BC BSF r16, r/m16 }
+    (Mnemonic:'BSF';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F BD BSR r16, r/m16 }
+    (Mnemonic:'BSR';      OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F BE MOVSX r16, r/m8 }
+    (Mnemonic:'MOVSX';    OpCount:2; Op1Type:OT_REG16; Op2Type:OT_RM8;   NeedModRM:True;  BaseSize:2),
+    { $0F BF MOVSX r32, r/m16 }
+    (Mnemonic:'MOVSX';    OpCount:2; Op1Type:OT_REG32; Op2Type:OT_RM16;  NeedModRM:True;  BaseSize:2),
+    { $0F C0..$0F CF (XADD, BSWAP sur 80486+) }
+    { $0F C0 XADD r/m8, r8 (80486+) }
+    (Mnemonic:'XADD';     OpCount:2; Op1Type:OT_RM8;   Op2Type:OT_REG8;  NeedModRM:True;  BaseSize:2),
+    { $0F C1 XADD r/m16, r16 (80486+) }
+    (Mnemonic:'XADD';     OpCount:2; Op1Type:OT_RM16;  Op2Type:OT_REG16; NeedModRM:True;  BaseSize:2),
+    { $0F C2..$0F C7 reserves }
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    { $0F C8..$0F CF BSWAP r32 (80486+) }
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
+    (Mnemonic:'BSWAP';    OpCount:1; Op1Type:OT_REG32; Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     { $0F D0..$0F DF reserves }
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
     (Mnemonic:'???';      OpCount:0; Op1Type:OT_NONE;  Op2Type:OT_NONE;  NeedModRM:False; BaseSize:2),
@@ -2416,7 +2503,7 @@ Begin
  DataBytes := 0;
  WriteLn;
  WriteLn('Desassemblage en cours...');
- WriteLn('(les TODOs 12 a 25 restent a implementer)');
+ WriteLn('(les TODOs 13 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
  { Liberation de la memoire }
