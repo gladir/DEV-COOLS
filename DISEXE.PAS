@@ -1,259 +1,10 @@
 { @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Desassembleur de fichiers .EXE (MZ DOS 16 bits et PE Windows 32 bits)
                 genere un fichier de sortie .ASM (assembleur 8086, 80286, 80386, ...)
-}
-
-{ TODO - Liste des 25 points a implementer pour le desassembleur EXE (MZ/PE) :
-
-  1.  [IMPLEMENTE] Infrastructure, options de ligne de commande et constantes globales.
-      Programme principal DISEXE en Turbo Pascal / Free Pascal.
-      Analyse des options : nom du fichier .EXE en entree, nom du
-      fichier .ASM en sortie (par defaut meme nom avec extension .ASM),
-      options -16 (forcer mode 16 bits), -32 (forcer mode 32 bits),
-      -map (charger un fichier .MAP pour les symboles), -v (verbose),
-      -hex (inclure les octets hexadecimaux en commentaire).
-      Constantes de dimensionnement : MAX_SECTIONS, MAX_IMPORTS,
-      MAX_EXPORTS, MAX_RELOCS, MAX_LABELS, MAX_XREFS, BUFFER_SIZE.
-      Fonctions utilitaires : UpCaseStr, HexByte, HexWord, HexDWord,
-      IntToStr, FileExists, ChangeFileExt.
-
-  2.  [IMPLEMENTE] Lecture et validation de l'entete MZ (DOS EXE header).
-      Lire les 28 octets de l'entete MZ : signature (MZ ou ZM),
-      nombre d'octets dans la derniere page, nombre de pages de
-      512 octets, nombre d'entrees de relogement, taille de l'entete
-      en paragraphes, MINALLOC, MAXALLOC, SS:SP initial, checksum,
-      CS:IP initial (point d'entree), offset de la table de relogement,
-      numero d'overlay. Valider la signature $5A4D (MZ).
-      Detecter la presence d'un entete PE via le champ a l'offset
-      $3C (e_lfanew) pointant vers la signature PE.
-
-  3.  [IMPLEMENTE] Chargement du programme DOS 16 bits en memoire.
-      Si le fichier est un EXE DOS pur (pas de signature PE), charger
-      l'image executable en memoire a partir de la fin de l'entete MZ
-      (taille entete * 16 octets). Calculer la taille de l'image :
-      (nombre de pages - 1) * 512 + octets derniere page - taille
-      entete * 16. Allouer un tampon dynamique pour l'image.
-      Initialiser CS:IP et SS:SP a partir de l'entete MZ.
-      Stocker les segments de base pour le relogement.
-
-  4.  [IMPLEMENTE] Lecture et validation des entetes PE (Portable Executable).
-      Si e_lfanew pointe vers une signature PE ($00004550), lire
-      IMAGE_FILE_HEADER (20 octets) : Machine ($014C = i386),
-      NumberOfSections, TimeDateStamp, SizeOfOptionalHeader,
-      Characteristics. Puis lire IMAGE_OPTIONAL_HEADER32 :
-      Magic ($010B = PE32), AddressOfEntryPoint, ImageBase,
-      SectionAlignment, FileAlignment, SizeOfImage,
-      SizeOfHeaders, NumberOfRvaAndSizes, DataDirectory[16].
-      Valider Machine=$014C et Magic=$010B pour PE 32 bits.
-
-  5.  [IMPLEMENTE] Lecture des sections PE et chargement en memoire.
-      Lire chaque IMAGE_SECTION_HEADER (40 octets) : Name[8],
-      VirtualSize, VirtualAddress, SizeOfRawData,
-      PointerToRawData, Characteristics (flags executable,
-      lisible, inscriptible, contient du code, contient des
-      donnees initialisees/non-initialisees).
-      Charger chaque section dans le tampon memoire a son
-      VirtualAddress relatif a ImageBase. Identifier les
-      sections .text, .data, .rdata, .bss, .idata, .edata,
-      .reloc par leur nom et/ou leurs flags.
-
-  6.  [IMPLEMENTE] Traitement de la table d'importation PE (Import Directory).
-      Lire la Import Directory Table via DataDirectory[1] :
-      chaque IMAGE_IMPORT_DESCRIPTOR contient OriginalFirstThunk,
-      Name (RVA du nom de la DLL), FirstThunk (RVA de la IAT).
-      Pour chaque DLL importee, lire les IMAGE_THUNK_DATA :
-      si le bit haut est a 1, importation par ordinal, sinon
-      par RVA vers IMAGE_IMPORT_BY_NAME (Hint + Name).
-      Stocker les noms des DLL et des fonctions importees
-      avec leur adresse IAT pour generer les EXTRN dans le .ASM.
-
-  7.  [IMPLEMENTE] Traitement de la table d'exportation PE (Export Directory).
-      Lire la Export Directory Table via DataDirectory[0] :
-      Name (nom de la DLL), NumberOfFunctions, NumberOfNames,
-      AddressOfFunctions, AddressOfNames, AddressOfNameOrdinals.
-      Pour chaque fonction exportee, stocker le nom, l'ordinal
-      et le RVA. Generer des labels PUBLIC dans le .ASM pour
-      chaque export. Gerer les exports par ordinal sans nom.
-
-  8.  [IMPLEMENTE] Traitement de la table de relogement MZ (DOS).
-      Lire la table de relogement DOS a partir de l'offset
-      indique dans l'entete MZ. Chaque entree est un couple
-      segment:offset (4 octets). Appliquer les relogements
-      en ajoutant le segment de base aux mots aux positions
-      indiquees. Marquer les adresses relogees pour generer
-      des references symboliques segment:offset dans le .ASM
-      plutot que des valeurs numeriques brutes.
-
-  9.  [IMPLEMENTE] Traitement de la table de relogement PE (Base Relocation).
-      Lire la Base Relocation Table via DataDirectory[5].
-      Chaque bloc contient VirtualAddress et SizeOfBlock, suivi
-      d'entrees de 16 bits (4 bits type + 12 bits offset).
-      Types supportes : IMAGE_REL_BASED_ABSOLUTE (padding),
-      IMAGE_REL_BASED_HIGHLOW (ajuster un DWORD 32 bits).
-      Marquer les adresses relogees pour generer des
-      references symboliques dans le .ASM.
-
-  10. [IMPLEMENTE] Table des opcodes et mnemoniques 8086/8088.
-      Definir les 256 opcodes de base du 8086/8088 avec pour
-      chacun : le mnemonique (MOV, ADD, SUB, CMP, JMP, CALL,
-      RET, PUSH, POP, INT, etc.), la taille de base, le type
-      d'operandes (reg, mem, imm, rel8, rel16), le besoin
-      d'un octet ModR/M. Inclure les opcodes du coprocesseur
-      x87 (ESC, FWAIT). Definir les noms des registres 8 bits
-      (AL,CL,DL,BL,AH,CH,DH,BH), 16 bits (AX,CX,DX,BX,
-      SP,BP,SI,DI) et de segment (ES,CS,SS,DS).
-
-  11. [IMPLEMENTE] Table des opcodes et mnemoniques 80286.
-      Etendre la table avec les instructions ajoutees par le
-      80286 : BOUND, ENTER, LEAVE, INS, OUTS, PUSHA, POPA,
-      PUSH imm8/imm16, IMUL imm, SHL/SHR/SAR/ROL/ROR/RCL/RCR
-      avec operande immediat. Opcodes etendus 0Fh du 80286 :
-      LGDT, SGDT, LIDT, SIDT, LLDT, SLDT, LTR, STR, LMSW,
-      SMSW, CLTS, LAR, LSL, VERR, VERW.
-      Instructions protegees pour le mode protege.
-
-  12. [IMPLEMENTE] Table des opcodes et mnemoniques 80386 (32 bits).
-      Etendre la table pour le mode 32 bits : prefixes de
-      taille d'operande (66h) et de taille d'adresse (67h),
-      registres 32 bits (EAX,ECX,EDX,EBX,ESP,EBP,ESI,EDI),
-      registres de segment supplementaires (FS, GS),
-      instructions 32 bits (MOVZX, MOVSX, CWDE, CDQ, BSWAP,
-      XADD, CMPXCHG, SETcc, CMOVcc, BSF, BSR, BT, BTS,
-      BTR, BTC, SHLD, SHRD, IMUL reg,r/m,imm).
-      Gerer le basculement 16/32 bits selon le mode.
-
-  13. [IMPLEMENTE] Decodage des modes d'adressage ModR/M 16 bits.
-      Decoder l'octet ModR/M pour le mode 16 bits :
-      mod (2 bits), reg (3 bits), r/m (3 bits).
-      8 modes effectifs : [BX+SI], [BX+DI], [BP+SI], [BP+DI],
-      [SI], [DI], [BP] (sauf mod=00 r/m=110 -> disp16), [BX].
-      Avec mod=01 : deplacement 8 bits signe.
-      Avec mod=10 : deplacement 16 bits.
-      Avec mod=11 : registre direct.
-      Generer la chaine d'operande correspondante pour le .ASM.
-
-  14. [IMPLEMENTE] Decodage des modes d'adressage ModR/M et SIB 32 bits.
-      Decoder l'octet ModR/M pour le mode 32 bits :
-      si r/m=100 (ESP), lire l'octet SIB : scale (2 bits),
-      index (3 bits), base (3 bits). Formule d'adresse :
-      [base + index*scale + deplacement].
-      Scale = 1, 2, 4 ou 8. Base=101 avec mod=00 -> disp32.
-      Index=100 -> pas d'index. Generer la chaine d'operande
-      avec les crochets, registres et facteur d'echelle.
-
-  15. [IMPLEMENTE] Decodage des prefixes d'instructions.
-      Gerer les prefixes avant chaque instruction : segment
-      override (26h=ES:, 2Eh=CS:, 36h=SS:, 3Eh=DS:, 64h=FS:,
-      65h=GS:), LOCK (F0h), REP/REPE (F3h), REPNE (F2h),
-      taille d'operande (66h), taille d'adresse (67h).
-      Un meme opcode peut etre precede de plusieurs prefixes.
-      Le prefix 66h bascule entre operandes 16 et 32 bits.
-      Le prefix 67h bascule entre adresses 16 et 32 bits.
-      Accumuler les prefixes avant le decodage de l'opcode.
-
-  16. [IMPLEMENTE] Decodage des opcodes etendus (0Fh) et instructions avancees.
-      Decoder les opcodes a deux octets (0Fh + second octet) :
-      Jcc near (80h-8Fh), SETcc (90h-9Fh), CMOVcc (40h-4Fh),
-      MOVZX (B6h/B7h), MOVSX (BEh/BFh), BSF (BCh), BSR (BDh),
-      BT/BTS/BTR/BTC (A3h/ABh/B3h/BBh/BAh),
-      SHLD (A4h/A5h), SHRD (ACh/ADh),
-      IMUL r,r/m (AFh), XADD (C0h/C1h),
-      CMPXCHG (B0h/B1h), BSWAP (C8h-CFh).
-      Instructions systeme : INVD, WBINVD, CPUID, RDTSC, etc.
-
-  17. [IMPLEMENTE] Analyse du flux de controle et references croisees.
-      Premiere passe de desassemblage lineaire pour identifier
-      les instructions de saut (JMP, Jcc, LOOP), d'appel (CALL)
-      et de retour (RET, RETF, IRET). Pour chaque instruction
-      de branchement, calculer l'adresse cible et l'ajouter
-      a la table des references croisees (XREF). Construire
-      un graphe de flux de controle simplifie pour distinguer
-      les blocs de code accessibles des zones potentiellement
-      non-code (donnees intercalees, padding).
-
-  18. [IMPLEMENTE] Detection des procedures, fonctions et points d'entree.
-      A partir du point d'entree (CS:IP pour MZ, AddressOfEntryPoint
-      pour PE) et des adresses cibles de CALL, identifier les
-      debuts de sous-programmes. Attribuer un label automatique
-      a chaque sous-programme (sub_XXXX pour MZ, sub_XXXXXXXX pour
-      PE). Detecter les patterns de prologue (PUSH BP / MOV BP,SP
-      pour 16 bits, PUSH EBP / MOV EBP,ESP pour 32 bits) et
-      d'epilogue (POP BP / RET, LEAVE / RET). Marquer les
-      fonctions importees et exportees avec leurs vrais noms.
-
-  19. [IMPLEMENTE] Discrimination code/donnees dans les sections executables.
-      Utiliser les informations de flux de controle (TODO 17)
-      pour separer le code des donnees dans les sections
-      executables. Les octets non atteints par le parcours du
-      flux sont marques comme donnees (DB). Detecter les
-      tables de saut (switch/case), les chaines de caracteres
-      (ASCII terminee par 0), les tables de pointeurs et les
-      constantes numeriques. Pour les fichiers PE, utiliser
-      les flags de section pour distinguer .text (code) de
-      .data et .rdata (donnees).
-
-  20. [IMPLEMENTE] Generation du fichier .ASM : en-tete, directives et segments.
-      Emettre l'en-tete du fichier .ASM avec des commentaires
-      (nom du fichier source, date, outil). Pour les EXE DOS
-      16 bits : .MODEL SMALL/MEDIUM/LARGE, .STACK, SEGMENT/ENDS.
-      Pour les PE 32 bits : .386, .MODEL FLAT, STDCALL,
-      .CODE/.DATA/.CONST. Emettre les directives EXTRN pour
-      les fonctions importees et PUBLIC pour les exports.
-      Definir les SEGMENT avec les noms et attributs corrects.
-
-  21. [IMPLEMENTE] Generation du fichier .ASM : section de code (instructions).
-      Emettre le code desassemble instruction par instruction
-      dans le segment de code. Format : label (si reference),
-      tabulation, mnemonique, operandes. Inserer des lignes
-      vides entre les sous-programmes. Generer les labels de
-      saut (loc_XXXX, @@loop, etc.) aux adresses cibles.
-      Si l'option -hex est active, ajouter en commentaire les
-      octets hexadecimaux de chaque instruction.
-      Gerer la largeur des operandes (BYTE PTR, WORD PTR,
-      DWORD PTR) quand elle est ambigue.
-
-  22. [IMPLEMENTE] Generation du fichier .ASM : section de donnees (DB, DW, DD).
-      Emettre les donnees dans les segments de donnees avec les
-      directives DB, DW, DD selon le contexte. Detecter les
-      chaines ASCII et les emettre avec DB 'texte',0.
-      Regrouper les octets consecutifs non-chaine en lignes
-      de DB xx,xx,xx,... (16 octets max par ligne). Emettre
-      les donnees non-initialisees (.bss) avec des directives
-      DB ? ou DUP(?). Generer des labels pour les variables
-      referencees (dword_XXXX, byte_XXXX, aString_XXXX).
-
-  23. [IMPLEMENTE] Etiquettes automatiques et table des symboles.
-      Gerer une table de symboles unifiant les labels generes
-      automatiquement : sub_XXXX (sous-programmes), loc_XXXX
-      (cibles de saut), dword_XXXX / word_XXXX / byte_XXXX
-      (variables), aString_XXXX (chaines), off_XXXX (offsets).
-      Pour les imports PE, utiliser les noms reels des fonctions
-      (ex: _ExitProcess@4). Pour les exports, utiliser les noms
-      exportes. Si un fichier .MAP est fourni (-map), charger
-      les symboles et les utiliser a la place des labels generes.
-
-  24. [IMPLEMENTE] Commentaires et annotations dans le fichier .ASM.
-      Generer des commentaires automatiques pour les appels
-      systeme connus : INT 21h (fonctions DOS), INT 10h (BIOS
-      video), INT 16h (BIOS clavier), INT 13h (BIOS disque).
-      Pour les PE, annoter les appels aux fonctions importees
-      (KERNEL32, USER32, GDI32, etc.) avec le nom de la fonction.
-      Ajouter des commentaires pour les constantes connues
-      (codes d'erreur Windows, flags de fichier, etc.).
-      Inserer des separateurs visuels entre les sous-programmes.
-
-  25. [IMPLEMENTE] Options de sortie, verification finale et rapport.
-      Verifier la coherence du fichier .ASM genere : toutes les
-      references croisees sont resolues, les labels sont uniques,
-      les segments sont correctement fermes. Afficher un rapport
-      final : nombre d'instructions desassemblees, nombre de
-      sous-programmes detectes, nombre de labels generes, nombre
-      d'imports/exports, nombre d'octets de donnees, taille du
-      fichier .ASM. Si -v est active, afficher des statistiques
-      detaillees. Gerer le code de retour (0=succes, 1=erreur).
+  @license: MIT
 }
 
 Program DISEXE;
@@ -1457,7 +1208,7 @@ Var
   PERelocs       : Array[0..MAX_RELOCS - 1] Of TPERelocEntry;
   PERelocCount   : LongInt;  { nombre d'entrees de relogement PE }
 
-  { Discrimination code/donnees (TODO 19) }
+  { Discrimination code/donnees }
   ByteFlags      : PByteArray; { 1 octet par octet de l'image : BF_xxx }
   StringCount    : LongInt;  { nombre de chaines ASCII detectees }
   JumpTblCount   : LongInt;  { nombre de tables de saut detectees }
@@ -1607,7 +1358,7 @@ Begin
 End;
 
 { ============================================================
-  DECODAGE MODR/M 16 BITS (TODO 13)
+  DECODAGE MODR/M 16 BITS
   ============================================================ }
 
 Const
@@ -1734,7 +1485,7 @@ Begin
 End;
 
 { ============================================================
-  DECODAGE MODR/M ET SIB 32 BITS (TODO 14)
+  DECODAGE MODR/M ET SIB 32 BITS
   ============================================================ }
 
 Const
@@ -1962,7 +1713,7 @@ Begin
 End;
 
 { ============================================================
-  DECODAGE DES PREFIXES D'INSTRUCTIONS (TODO 15)
+  DECODAGE DES PREFIXES D'INSTRUCTIONS
   ============================================================ }
 
 Type
@@ -2131,13 +1882,30 @@ Begin
     S := S + 'REP ';
   If PFX.HasRepNE Then
     S := S + 'REPNE ';
-  If PFX.HasSegOverride Then
-    S := S + PFX.SegOverrideStr;
   PrefixToStr := S;
 End;
 
+{ InjectSegOvr - Insere un prefixe de segment devant la premiere reference
+  memoire '[' dans la chaine d'operandes S.
+  Si aucune reference memoire n'est present, retourne S inchange.
+  Exemple : InjectSegOvr('SS:', '[0148h], SP') -> 'SS:[0148h], SP' }
+Function InjectSegOvr(Const SegOvr, S : TString) : TString;
+Var
+  P : Integer;
+Begin
+  If SegOvr = '' Then Begin
+    InjectSegOvr := S;
+    Exit;
+  End;
+  P := Pos('[', S);
+  If P > 0 Then
+    InjectSegOvr := Copy(S, 1, P - 1) + SegOvr + Copy(S, P, Length(S))
+  Else
+    InjectSegOvr := S;
+End;
+
 { ============================================================
-  DECODAGE DES OPCODES ETENDUS 0Fh (TODO 16)
+  DECODAGE DES OPCODES ETENDUS 0Fh
   ============================================================ }
 
 { Decode0FOpcode - Decode un opcode etendu 0Fh et retourne le mnemonique,
@@ -2481,7 +2249,7 @@ Begin
 End;
 
 { ============================================================
-  ANALYSE DU FLUX DE CONTROLE ET REFERENCES CROISEES (TODO 17)
+  ANALYSE DU FLUX DE CONTROLE ET REFERENCES CROISEES
   ============================================================ }
 
 { AddLabel - Ajoute un label a la table des labels.
@@ -2916,7 +2684,7 @@ Const
   BT_RETF     = 11; { retour far (RETF) }
   BT_IRET     = 12; { retour d'interruption (IRET) }
 
-{ ByteFlags - Marqueurs pour la discrimination code/donnees (TODO 19) }
+{ ByteFlags - Marqueurs pour la discrimination code/donnees }
   BF_UNKNOWN = 0;  { octet non classifie }
   BF_CODE    = 1;  { octet d'instruction }
   BF_DATA    = 2;  { octet de donnees (DB) }
@@ -3237,7 +3005,7 @@ Begin
 End;
 
 { ============================================================
-  DETECTION DES PROCEDURES, FONCTIONS ET POINTS D'ENTREE (TODO 18)
+  DETECTION DES PROCEDURES, FONCTIONS ET POINTS D'ENTREE
   ============================================================ }
 
 { IsProloguePattern - Detecte un pattern de prologue de fonction.
@@ -3453,7 +3221,7 @@ Begin
 End;
 
 { ============================================================
-  DISCRIMINATION CODE/DONNEES (TODO 19)
+  DISCRIMINATION CODE/DONNEES
   ============================================================ }
 
 { IsAsciiPrintable - Teste si un octet est un caractere ASCII imprimable
@@ -3466,7 +3234,7 @@ End;
 
 { MarkCodeBytes - Premiere passe : marque tous les octets des instructions
   accessibles comme BF_CODE en suivant le flux de controle lineaire.
-  Utilise les labels generes par AnalyzeControlFlow (TODO 17) comme
+  Utilise les labels generes par AnalyzeControlFlow comme
   points de depart et trace chaque bloc d'instructions jusqu'a un
   saut inconditionnel ou un retour. }
 Procedure MarkCodeBytes(StartOffset, EndOffset : LongInt;
@@ -3717,7 +3485,7 @@ Begin
 End;
 
 { DiscriminateCodeData - Procedure principale pour la discrimination
-  code/donnees (TODO 19). Orchestre les differentes passes. }
+  code/donnees. Orchestre les differentes passes. }
 Procedure DiscriminateCodeData(StartOffset, EndOffset : LongInt;
                                Mode32 : Boolean);
 Var
@@ -3766,7 +3534,7 @@ Begin
 End;
 
 { ============================================================
-  GENERATION DU FICHIER .ASM : EN-TETE, DIRECTIVES, SEGMENTS (TODO 20)
+  GENERATION DU FICHIER .ASM : EN-TETE, DIRECTIVES, SEGMENTS
   ============================================================ }
 
 { Ecrit l'en-tete du fichier .ASM avec des commentaires :
@@ -3818,7 +3586,7 @@ Begin
 End;
 
 { ============================================================
-  GENERATION DU FICHIER .ASM : SECTION DE CODE (TODO 21)
+  GENERATION DU FICHIER .ASM : SECTION DE CODE
   ============================================================ }
 
 { DisassembleInstruction - Decode une instruction a l'adresse donnee.
@@ -3894,7 +3662,7 @@ Begin
       SecByte := ReadImageByte(OpcOffset + 1);
       Decode0FOpcode(SecByte, OpcOffset + 2, PFX, Mnem0F, Ops0F, Bytes0F);
       Mnem := PrefStr + Mnem0F;
-      Operands := Ops0F;
+      Operands := InjectSegOvr(PFX.SegOverrideStr, Ops0F);
       BytesUsed := TotalSize + 1 + Bytes0F; { prefixes + 0F byte + (second+rest) }
     End Else Begin
       Mnem := 'DB';
@@ -4008,6 +3776,7 @@ Begin
         End;
       End;
     End; { case }
+    Operands := InjectSegOvr(PFX.SegOverrideStr, Operands);
     Exit;
   End;
 
@@ -4066,6 +3835,7 @@ Begin
       Operands := RMStr;
       BytesUsed := TotalSize + 1 + MRMBytes;
     End;
+    Operands := InjectSegOvr(PFX.SegOverrideStr, Operands);
     Exit;
   End;
 
@@ -4273,6 +4043,7 @@ Begin
       End;
     End;
   End;
+  Operands := InjectSegOvr(PFX.SegOverrideStr, Operands);
 End;
 
 { FormatHexBytes - Formate les octets hexadecimaux d'une instruction
@@ -4299,7 +4070,7 @@ Begin
 End;
 
 { ============================================================
-  COMMENTAIRES ET ANNOTATIONS DANS LE FICHIER .ASM (TODO 24)
+  COMMENTAIRES ET ANNOTATIONS DANS LE FICHIER .ASM
   ============================================================ }
 
 { GetINTDescription - Retourne un commentaire descriptif pour un numero
@@ -4662,7 +4433,7 @@ Begin
     { Emettre un label si cette adresse en a un }
     LblIdx := FindLabel(Addr);
     If LblIdx >= 0 Then Begin
-      { Inserer un separateur visuel entre sous-programmes (TODO 24) }
+      { Inserer un separateur visuel entre sous-programmes  }
       If Labels[LblIdx].IsProc Then Begin
         If PrevIsProc Or (Addr > StartAddr) Then
           WriteLn(F);
@@ -4695,7 +4466,7 @@ Begin
     Else
       LineStr := '        ' + Mnem;
 
-    { Generer les annotations automatiques (TODO 24) }
+    { Generer les annotations automatiques }
     Annotation := GetInstructionAnnotation(Mnem, Ops, Addr, Mode32);
 
     { Ajouter les octets hexadecimaux en commentaire si -hex }
@@ -4750,7 +4521,7 @@ Begin
 End;
 
 { ============================================================
-  GENERATION DU FICHIER .ASM : SECTION DE DONNEES (TODO 22)
+  GENERATION DU FICHIER .ASM : SECTION DE DONNEES
   ============================================================ }
 
 { IsASMSafeChar - Teste si un caractere peut apparaitre directement dans
@@ -5048,7 +4819,7 @@ Begin
 End;
 
 { ============================================================
-  ETIQUETTES AUTOMATIQUES ET TABLE DES SYMBOLES (TODO 23)
+  ETIQUETTES AUTOMATIQUES ET TABLE DES SYMBOLES
   ============================================================ }
 
 { FindLabelByName - Recherche un label dans la table par son nom.
@@ -5556,7 +5327,7 @@ Begin
 End;
 
 { ============================================================
-  VERIFICATION FINALE ET RAPPORT (TODO 25)
+  VERIFICATION FINALE ET RAPPORT
   ============================================================ }
 
 { VerifyASMCoherence - Verifie la coherence du desassemblage :
@@ -5707,10 +5478,12 @@ End;
   ANALYSE DES OPTIONS DE LIGNE DE COMMANDE
   ============================================================ }
 
-Procedure ShowHelp;
-Begin
+Procedure ShowHelp;Begin
  WriteLn('DISEXE v', DISEXE_VERSION, ' - Desassembleur EXE (MZ/PE)');
- WriteLn('Usage : DISEXE [options] fichier.exe');
+ WriteLn('DISEX - Cette commande permet de lancer le d‚sassembleur de ',
+         'fichiers EXE (MZ DOS 16 bits / PE Windows 32 bits).');
+ WriteLn;
+ WriteLn('Syntaxe : DISEXE [options] fichier.exe');
  WriteLn;
  WriteLn('Options :');
  WriteLn('  -16       Forcer le mode 16 bits (DOS)');
@@ -6436,7 +6209,12 @@ End;
   PROGRAMME PRINCIPAL
   ============================================================ }
 
-Begin
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowHelp;
+  Halt;
+ End;
  WriteLn('DISEXE v', DISEXE_VERSION, ' (', DISEXE_DATE, ')');
  WriteLn('Desassembleur de fichiers EXE (MZ DOS 16 bits / PE Windows 32 bits)');
  WriteLn;
@@ -6648,7 +6426,7 @@ Begin
   WriteLn('  Labels generes          : ', LabelCount);
   WriteLn('  References croisees     : ', XRefCount);
  End;
- { Detection des procedures, fonctions et points d'entree (TODO 18) }
+ { Detection des procedures, fonctions et points d'entree }
  WriteLn('Detection des procedures...');
  If IsPEFile Then Begin
   DetectProcedures(PEEntryPointRVA, ImageSize, True);
@@ -6683,7 +6461,7 @@ Begin
    End;
   End;
  End;
- { Discrimination code/donnees (TODO 19) }
+ { Discrimination code/donnees }
  If IsPEFile Then Begin
   DiscriminateCodeData(PEEntryPointRVA, ImageSize, True);
  End Else Begin
@@ -6696,14 +6474,14 @@ Begin
            SectionFlagsStr(Sections[IterI].Characteristics));
   End;
  End;
- { Etiquettes automatiques et table des symboles (TODO 23) }
+ { Etiquettes automatiques et table des symboles }
  If IsPEFile Then
   BuildSymbolTable(True)
  Else
   BuildSymbolTable(False);
- { Generation du fichier .ASM : en-tete, directives et segments (TODO 20) }
+ { Generation du fichier .ASM : en-tete, directives et segments }
  GenerateASMHeader;
- { Verification finale et rapport (TODO 25) }
+ { Verification finale et rapport }
  VerifyASMCoherence;
  DisplayFinalReport;
  WriteLn('Termine.');
@@ -6714,4 +6492,4 @@ Begin
   FreeMem(RelocFlags, ImageSize);
  If (ImageBuffer <> Nil) And (ImageSize > 0) Then
   FreeMem(ImageBuffer, ImageSize);
-End.
+END.
