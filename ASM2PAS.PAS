@@ -100,7 +100,7 @@
       pile SP/ESP et le registre de base BP/EBP pour l'acces
       aux parametres et variables locales sur la pile.
 
-  10. [A FAIRE] Traduction des instructions de transfert de donnees.
+  10. [IMPLEMENTE] Traduction des instructions de transfert de donnees.
       Convertir MOV dest,src -> dest := src (affectation Pascal).
       XCHG a,b -> Begin tmp:=a; a:=b; b:=tmp End.
       LEA reg,[expr] -> reg := Addr(expr) ou @expr.
@@ -4058,6 +4058,386 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des instructions de transfert de donnees - TODO 10
+  ============================================================ }
+
+Const
+ MAX_TRANSLATIONS = 8192;
+
+Type
+ TTranslation = Record
+  SrcLine:LongInt;
+  PascalCode:String;
+  AsmComment:String;
+  IsTranslated:Boolean;
+ End;
+
+Var
+ Translations:Array[0..MAX_TRANSLATIONS-1] of TTranslation;
+ TranslationCount:LongInt;
+
+Procedure AddTranslation(Line:LongInt;Code,AsmCmt:String);
+Begin
+ If TranslationCount>=MAX_TRANSLATIONS Then Exit;
+ Translations[TranslationCount].SrcLine:=Line;
+ Translations[TranslationCount].PascalCode:=Code;
+ Translations[TranslationCount].AsmComment:=AsmCmt;
+ Translations[TranslationCount].IsTranslated:=True;
+ Inc(TranslationCount);
+End;
+
+Function FindProcForLine(Line:LongInt):Integer;
+{ Trouve l'index de procedure contenant une ligne donnee }
+Var
+ I:Integer;
+Begin
+ FindProcForLine:=0;
+ For I:=1 to ProcCount do
+  If(Line>=Procs[I].StartLine)and(Line<=Procs[I].EndLine)Then Begin
+   FindProcForLine:=I;
+   Exit;
+  End;
+End;
+
+Function OperandToExpr(Var Op:TOperand;ProcIdx:Integer):String;
+{ Convertit un TOperand en expression Pascal lisible.
+  Gere les registres (avec sous-registres), la memoire,
+  les immediats, les labels, OFFSET et SEG. }
+Var
+ U,Expr:String;
+ SymIdx:Integer;
+Begin
+ Case Op.OpType of
+  OT_REG8,OT_REG16,OT_REG32:Begin
+   U:=UpCaseStr(Op.Reg);
+   If IsSubReg(U) Then
+    OperandToExpr:=SubRegExpr(U)
+   Else
+    OperandToExpr:=RegToPascalVar(U);
+  End;
+  OT_SEGREG:
+   OperandToExpr:=RegToPascalVar(Op.Reg);
+  OT_MEM:Begin
+   { Acces memoire : verifier si c'est un acces pile [BP+x] }
+   U:=UpCaseStr(Op.BaseReg);
+   If((U='BP')or(U='EBP'))and(Op.IndexReg='')Then
+    OperandToExpr:=StackAccessExpr(U,Op.Disp,ProcIdx)
+   Else If Op.MemExpr<>'' Then Begin
+    { Verifier si l'expression memoire est un symbole connu }
+    SymIdx:=FindSymbol(Op.MemExpr);
+    If SymIdx>0 Then
+     OperandToExpr:=Symbols[SymIdx].Name
+    Else
+     OperandToExpr:='Mem['+Op.MemExpr+']';
+   End
+   Else If(Op.BaseReg<>'')and(Op.IndexReg<>'')Then Begin
+    { Adressage base+index }
+    Expr:=RegToPascalVar(Op.BaseReg)+'+'+RegToPascalVar(Op.IndexReg);
+    If Op.Scale>1 Then
+     Expr:=RegToPascalVar(Op.BaseReg)+'+'+
+      RegToPascalVar(Op.IndexReg)+'*'+IntToStr(Op.Scale);
+    If Op.HasDisp Then Begin
+     If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
+     Else Expr:=Expr+IntToStr(Op.Disp);
+    End;
+    OperandToExpr:='Mem['+Expr+']';
+   End
+   Else If Op.BaseReg<>'' Then Begin
+    Expr:=RegToPascalVar(Op.BaseReg);
+    If Op.HasDisp Then Begin
+     If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
+     Else Expr:=Expr+IntToStr(Op.Disp);
+    End;
+    OperandToExpr:='Mem['+Expr+']';
+   End
+   Else If Op.HasDisp Then
+    OperandToExpr:='Mem['+IntToStr(Op.Disp)+']'
+   Else
+    OperandToExpr:='Mem[0]';
+  End;
+  OT_IMM8:
+   If(Op.Imm>=32)and(Op.Imm<=126)Then
+    OperandToExpr:=IntToStr(Op.Imm)
+   Else
+    OperandToExpr:='$'+HexByte(Op.Imm);
+  OT_IMM16:
+   OperandToExpr:='$'+HexWord(Op.Imm);
+  OT_IMM32:
+   OperandToExpr:='$'+HexDWord(Op.Imm);
+  OT_LABEL:Begin
+   SymIdx:=FindSymbol(Op.LabelName);
+   If SymIdx>0 Then
+    OperandToExpr:=Symbols[SymIdx].Name
+   Else
+    OperandToExpr:=Op.LabelName;
+  End;
+  OT_OFFSET:Begin
+   SymIdx:=FindSymbol(Op.LabelName);
+   If SymIdx>0 Then
+    OperandToExpr:='@'+Symbols[SymIdx].Name
+   Else
+    OperandToExpr:='@'+Op.LabelName;
+  End;
+  OT_SEG:Begin
+   SymIdx:=FindSymbol(Op.LabelName);
+   If SymIdx>0 Then
+    OperandToExpr:='Seg('+Symbols[SymIdx].Name+')'
+   Else
+    OperandToExpr:='Seg('+Op.LabelName+')';
+  End;
+  Else
+   OperandToExpr:='?';
+ End;
+End;
+
+Function TranslateMOV(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ MOV dest,src -> dest := src
+  Gere les cas speciaux : registres 8 bits, segments, memoire }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateMOV:=D+' := '+S+';';
+End;
+
+Function TranslateXCHG(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ XCHG a,b -> Begin TmpXchg:=a; a:=b; b:=TmpXchg End }
+Var
+ A,B:String;
+Begin
+ A:=OperandToExpr(AsmL.Op1,ProcIdx);
+ B:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateXCHG:='Begin TmpXchg := '+A+'; '+A+' := '+B+'; '+
+  B+' := TmpXchg; End;';
+End;
+
+Function TranslateLEA(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ LEA reg,[expr] -> reg := @expr ou reg := Addr(expr) }
+Var
+ D,S:String;
+ SymIdx:Integer;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ { Pour LEA, l'operande source est une adresse, pas le contenu }
+ If AsmL.Op2.MemExpr<>'' Then Begin
+  SymIdx:=FindSymbol(AsmL.Op2.MemExpr);
+  If SymIdx>0 Then
+   S:='@'+Symbols[SymIdx].Name
+  Else
+   S:='@'+AsmL.Op2.MemExpr;
+ End
+ Else If(AsmL.Op2.BaseReg<>'')and(AsmL.Op2.IndexReg<>'')Then Begin
+  S:=RegToPascalVar(AsmL.Op2.BaseReg)+'+'+
+   RegToPascalVar(AsmL.Op2.IndexReg);
+  If AsmL.Op2.Scale>1 Then
+   S:=RegToPascalVar(AsmL.Op2.BaseReg)+'+'+
+    RegToPascalVar(AsmL.Op2.IndexReg)+'*'+IntToStr(AsmL.Op2.Scale);
+  If AsmL.Op2.HasDisp Then Begin
+   If AsmL.Op2.Disp>=0 Then S:=S+'+'+IntToStr(AsmL.Op2.Disp)
+   Else S:=S+IntToStr(AsmL.Op2.Disp);
+  End;
+ End
+ Else If AsmL.Op2.BaseReg<>'' Then Begin
+  S:=RegToPascalVar(AsmL.Op2.BaseReg);
+  If AsmL.Op2.HasDisp Then Begin
+   If AsmL.Op2.Disp>=0 Then S:=S+'+'+IntToStr(AsmL.Op2.Disp)
+   Else S:=S+IntToStr(AsmL.Op2.Disp);
+  End;
+ End
+ Else
+  S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateLEA:=D+' := '+S+';';
+End;
+
+Function TranslateLDx(Var AsmL:TAsmLine;ProcIdx:Integer;
+ SegName:String):String;
+{ LDS/LES/LFS/LGS reg,[mem] ->
+  RegXS := Seg(mem); reg := Ofs(mem)
+  ou en une ligne : chargement du pointeur far }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If AsmL.Op2.MemExpr<>'' Then
+  S:=AsmL.Op2.MemExpr
+ Else
+  S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateLDx:='Reg'+SegName+' := MemW[Seg('+S+')]; '+
+  D+' := Ofs('+S+');';
+End;
+
+Function TranslateMOVZX(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ MOVZX dest,src -> dest := Word(Byte(src)) ou LongInt(Word(src))
+  Extension zero (non signee) }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ { Determiner le type de cast selon les tailles }
+ If AsmL.Op2.OpType=OT_REG8 Then Begin
+  If AsmL.Op1.OpType=OT_REG32 Then
+   TranslateMOVZX:=D+' := LongInt(Byte('+S+'));'
+  Else
+   TranslateMOVZX:=D+' := Word(Byte('+S+'));';
+ End
+ Else If(AsmL.Op2.OpType=OT_REG16)or(AsmL.Op2.OpType=OT_MEM)Then
+  TranslateMOVZX:=D+' := LongInt(Word('+S+'));'
+ Else
+  TranslateMOVZX:=D+' := '+S+';';
+End;
+
+Function TranslateMOVSX(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ MOVSX dest,src -> dest := Integer(ShortInt(src)) ou
+  LongInt(Integer(src)) - Extension de signe }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ If AsmL.Op2.OpType=OT_REG8 Then Begin
+  If AsmL.Op1.OpType=OT_REG32 Then
+   TranslateMOVSX:=D+' := LongInt(ShortInt('+S+'));'
+  Else
+   TranslateMOVSX:=D+' := Integer(ShortInt('+S+'));';
+ End
+ Else If(AsmL.Op2.OpType=OT_REG16)or(AsmL.Op2.OpType=OT_MEM)Then
+  TranslateMOVSX:=D+' := LongInt(Integer('+S+'));'
+ Else
+  TranslateMOVSX:=D+' := '+S+';';
+End;
+
+Function TranslateCBW_CWD(Mnem:String):String;
+{ CBW -> RegAX := Integer(ShortInt(Lo(RegAX)));
+  CWD -> Begin RegDX := Hi(RegAX) shr 7 * $FFFF; End;
+       = paire DX:AX := LongInt(Integer(RegAX))
+  CWDE -> RegEAX := LongInt(Integer(Word(RegEAX)));
+  CDQ  -> RegEDX := LongInt(RegEAX) shr 31 * $FFFFFFFF;
+       = paire EDX:EAX := extension de signe de EAX }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Mnem);
+ If U='CBW' Then
+  TranslateCBW_CWD:='RegAX := Integer(ShortInt(Lo(RegAX)));'
+ Else If U='CWD' Then
+  TranslateCBW_CWD:=
+   'LongRec(LongInt(Integer(RegAX))).Lo := RegAX; '+
+   'RegDX := LongRec(LongInt(Integer(RegAX))).Hi;'
+ Else If U='CWDE' Then
+  TranslateCBW_CWD:='RegEAX := LongInt(Integer(Word(RegEAX)));'
+ Else If U='CDQ' Then
+  TranslateCBW_CWD:=
+   'If RegEAX and $80000000 <> 0 Then RegEDX := LongInt(-1) '+
+   'Else RegEDX := 0;'
+ Else
+  TranslateCBW_CWD:='{ '+U+' }';
+End;
+
+Function TranslateDataTransfer(Var AsmL:TAsmLine;
+ ProcIdx:Integer):String;
+{ Orchestre la traduction d'une instruction de transfert.
+  Retourne la chaine Pascal correspondante, ou '' si non gere. }
+Var
+ M:String;
+Begin
+ M:=AsmL.Mnemonic;
+ If M='MOV' Then
+  TranslateDataTransfer:=TranslateMOV(AsmL,ProcIdx)
+ Else If M='XCHG' Then
+  TranslateDataTransfer:=TranslateXCHG(AsmL,ProcIdx)
+ Else If M='LEA' Then
+  TranslateDataTransfer:=TranslateLEA(AsmL,ProcIdx)
+ Else If M='LDS' Then
+  TranslateDataTransfer:=TranslateLDx(AsmL,ProcIdx,'DS')
+ Else If M='LES' Then
+  TranslateDataTransfer:=TranslateLDx(AsmL,ProcIdx,'ES')
+ Else If M='LFS' Then
+  TranslateDataTransfer:=TranslateLDx(AsmL,ProcIdx,'FS')
+ Else If M='LGS' Then
+  TranslateDataTransfer:=TranslateLDx(AsmL,ProcIdx,'GS')
+ Else If M='MOVZX' Then
+  TranslateDataTransfer:=TranslateMOVZX(AsmL,ProcIdx)
+ Else If M='MOVSX' Then
+  TranslateDataTransfer:=TranslateMOVSX(AsmL,ProcIdx)
+ Else If(M='CBW')or(M='CWD')or(M='CWDE')or(M='CDQ')Then
+  TranslateDataTransfer:=TranslateCBW_CWD(M)
+ Else
+  TranslateDataTransfer:='';
+End;
+
+Function IsDataTransferMnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est une instruction de transfert }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsDataTransferMnemonic:=
+  (U='MOV')or(U='XCHG')or(U='LEA')or
+  (U='LDS')or(U='LES')or(U='LFS')or(U='LGS')or
+  (U='MOVZX')or(U='MOVSX')or
+  (U='CBW')or(U='CWD')or(U='CWDE')or(U='CDQ');
+End;
+
+Procedure ProcessDataTransfers;
+{ Parcourt les lignes source et traduit les instructions de transfert.
+  Produit des statistiques detaillees. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ ProcIdx:Integer;
+ Code:String;
+ MovCount,XchgCount,LeaCount:LongInt;
+ LdxCount,MovzxCount,MovsxCount:LongInt;
+ CbwCount,TotalXfer:LongInt;
+ M:String;
+Begin
+ TranslationCount:=0;
+ MovCount:=0;XchgCount:=0;LeaCount:=0;
+ LdxCount:=0;MovzxCount:=0;MovsxCount:=0;
+ CbwCount:=0;TotalXfer:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=AsmL.Mnemonic;
+  If Not IsDataTransferMnemonic(M) Then Continue;
+  ProcIdx:=FindProcForLine(I);
+  Code:=TranslateDataTransfer(AsmL,ProcIdx);
+  If Code<>'' Then Begin
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(TotalXfer);
+   If M='MOV' Then Inc(MovCount)
+   Else If M='XCHG' Then Inc(XchgCount)
+   Else If M='LEA' Then Inc(LeaCount)
+   Else If(M='LDS')or(M='LES')or(M='LFS')or(M='LGS')Then
+    Inc(LdxCount)
+   Else If M='MOVZX' Then Inc(MovzxCount)
+   Else If M='MOVSX' Then Inc(MovsxCount)
+   Else If(M='CBW')or(M='CWD')or(M='CWDE')or(M='CDQ')Then
+    Inc(CbwCount);
+  End;
+ End;
+ WriteLn('Traduction transferts : ',TotalXfer,' instructions, ',
+  TranslationCount,' traductions.');
+ If Verbose Then Begin
+  WriteLn('  MOV       : ',MovCount);
+  WriteLn('  XCHG      : ',XchgCount);
+  WriteLn('  LEA       : ',LeaCount);
+  WriteLn('  LDS/LES   : ',LdxCount);
+  WriteLn('  MOVZX     : ',MovzxCount);
+  WriteLn('  MOVSX     : ',MovsxCount);
+  WriteLn('  CBW/CWD   : ',CbwCount);
+  If TranslationCount>0 Then Begin
+   WriteLn('  Details :');
+   For I:=0 to TranslationCount-1 do
+    WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -4165,7 +4545,8 @@ BEGIN
  ProcessTypeInference;
  { Mapping des registres (TODO 9) }
  ProcessRegisterMapping;
- { TODO 10 - Traduction des transferts }
+ { Traduction des transferts (TODO 10) }
+ ProcessDataTransfers;
  { TODO 11 - Traduction arithmetique }
  { TODO 12 - Traduction logique }
  { TODO 13 - Traduction comparaisons/sauts }
