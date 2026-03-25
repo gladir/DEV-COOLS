@@ -342,7 +342,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>JASMIN.PAS</b></td>
-			<td>Cette commande permet d'aassembler un fichier source Jasmin (.j) en fichier .class (bytecode Java) compatible avec la JVM.</td>
+			<td>Cette commande permet d'assembler un fichier source Jasmin (.j) en fichier .class (bytecode Java) compatible avec la JVM.</td>
 		</tr>
 		<tr>
 			<td><b>JAVAC86.PAS</b></td>
