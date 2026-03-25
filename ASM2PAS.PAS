@@ -49,7 +49,7 @@
       DB -> Byte, DW -> Word, DD -> LongInt, chaines -> String,
       tableaux -> Array[..] of Byte/Word/LongInt.
 
-  5.  [A FAIRE] Analyse des directives de procedures (PROC/ENDP).
+  5.  [IMPLEMENTE] Analyse des directives de procedures (PROC/ENDP).
       Reconnaitre les directives PROC et ENDP pour delimiter les
       procedures et fonctions assembleur. Gerer les attributs
       NEAR et FAR, les conventions d'appel (C, PASCAL, STDCALL),
