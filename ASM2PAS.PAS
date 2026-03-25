@@ -39,7 +39,7 @@
       Determiner le mode 16 ou 32 bits a partir du modele
       memoire et des directives de processeur.
 
-  4.  [A FAIRE] Analyse des directives de donnees (DB, DW, DD, DQ, DT).
+  4.  [IMPLEMENTE] Analyse des directives de donnees (DB, DW, DD, DQ, DT).
       Reconnaitre les declarations de donnees : DB (octet),
       DW (mot 16 bits), DD (double mot 32 bits), DQ (quad mot
       64 bits), DT (10 octets). Gerer les valeurs multiples
@@ -393,6 +393,26 @@ Const
  CPU_586  = 5;
 
  MAX_SEGMENTS = 64;
+ MAX_DATAVARS = 4096;
+ MAX_DATAELEMS = 256;
+
+ { Types de directives de donnees }
+ DT_NONE = 0;
+ DT_DB   = 1;
+ DT_DW   = 2;
+ DT_DD   = 3;
+ DT_DQ   = 4;
+ DT_DF   = 5;
+ DT_DT   = 6;
+
+ { Types d'elements de donnees }
+ DE_NUMBER  = 0;
+ DE_STRING  = 1;
+ DE_DUP     = 2;
+ DE_OFFSET  = 3;
+ DE_SEG     = 4;
+ DE_UNINIT  = 5;
+ DE_EXPR    = 6;
 
 Type
  TSegmentInfo = Record
@@ -454,6 +474,28 @@ Type
   EndLine:LongInt;
  End;
 
+ TDataElem = Record
+  ElemType:Byte;
+  NumValue:LongInt;
+  StrValue:String;
+  DupCount:LongInt;
+  DupValue:LongInt;
+  DupIsUninit:Boolean;
+ End;
+
+ TDataVar = Record
+  Name:String;
+  DirType:Byte;
+  PascalType:Byte;
+  ElemSize:Word;
+  Elements:Array[1..MAX_DATAELEMS] of TDataElem;
+  ElemCount:Integer;
+  TotalSize:LongInt;
+  Section:Byte;
+  SrcLine:LongInt;
+  IsPublic:Boolean;
+ End;
+
  PStr = ^String;
 
 Var
@@ -491,6 +533,9 @@ Var
  Assumes:Array[1..6] of TAssumeEntry;
  GroupName:String;
  GroupSegments:String;
+ { Donnees (TODO 4) }
+ DataVars:Array[1..MAX_DATAVARS] of TDataVar;
+ DataVarCount:Integer;
 
 { ============================================================
   Fonctions utilitaires
@@ -1476,6 +1521,380 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Analyse des directives de donnees - TODO 4
+  ============================================================ }
+
+Function IsDataDirective(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsDataDirective:=(U='DB')or(U='DW')or(U='DD')or
+  (U='DQ')or(U='DF')or(U='DT');
+End;
+
+Function DataDirToType(S:String):Byte;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ If U='DB' Then DataDirToType:=DT_DB
+ Else If U='DW' Then DataDirToType:=DT_DW
+ Else If U='DD' Then DataDirToType:=DT_DD
+ Else If U='DQ' Then DataDirToType:=DT_DQ
+ Else If U='DF' Then DataDirToType:=DT_DF
+ Else If U='DT' Then DataDirToType:=DT_DT
+ Else DataDirToType:=DT_NONE;
+End;
+
+Function DataDirSize(DT:Byte):Word;
+Begin
+ Case DT of
+  DT_DB:DataDirSize:=1;
+  DT_DW:DataDirSize:=2;
+  DT_DD:DataDirSize:=4;
+  DT_DQ:DataDirSize:=8;
+  DT_DF:DataDirSize:=6;
+  DT_DT:DataDirSize:=10;
+  Else DataDirSize:=1;
+ End;
+End;
+
+Function DataDirToPascalType(DT:Byte):Byte;
+Begin
+ Case DT of
+  DT_DB:DataDirToPascalType:=PT_BYTE;
+  DT_DW:DataDirToPascalType:=PT_WORD;
+  DT_DD:DataDirToPascalType:=PT_LONGINT;
+  DT_DQ:DataDirToPascalType:=PT_ARRAY;
+  DT_DF:DataDirToPascalType:=PT_ARRAY;
+  DT_DT:DataDirToPascalType:=PT_ARRAY;
+  Else DataDirToPascalType:=PT_BYTE;
+ End;
+End;
+
+Function DataDirName(DT:Byte):String;
+Begin
+ Case DT of
+  DT_DB:DataDirName:='DB';
+  DT_DW:DataDirName:='DW';
+  DT_DD:DataDirName:='DD';
+  DT_DQ:DataDirName:='DQ';
+  DT_DF:DataDirName:='DF';
+  DT_DT:DataDirName:='DT';
+  Else DataDirName:='??';
+ End;
+End;
+
+Function PascalTypeName(PT:Byte):String;
+Begin
+ Case PT of
+  PT_BYTE:PascalTypeName:='Byte';
+  PT_SHORTINT:PascalTypeName:='ShortInt';
+  PT_WORD:PascalTypeName:='Word';
+  PT_INTEGER:PascalTypeName:='Integer';
+  PT_LONGINT:PascalTypeName:='LongInt';
+  PT_BOOLEAN:PascalTypeName:='Boolean';
+  PT_CHAR:PascalTypeName:='Char';
+  PT_STRING:PascalTypeName:='String';
+  PT_POINTER:PascalTypeName:='Pointer';
+  PT_PCHAR:PascalTypeName:='PChar';
+  PT_ARRAY:PascalTypeName:='Array';
+  Else PascalTypeName:='Byte';
+ End;
+End;
+
+Function ParseNumericValue(S:String):LongInt;
+{ Parse un nombre decimal, hexadecimal MASM (0FFh, 0xFF) ou Pascal ($FF) }
+Var
+ U:String;
+ V:LongInt;
+ Code:Integer;
+Begin
+ U:=UpCaseStr(Trim(S));
+ ParseNumericValue:=0;
+ If Length(U)=0 Then Exit;
+ { Hex Pascal : $FF }
+ If U[1]='$' Then Begin
+  ParseNumericValue:=HexToInt(Copy(U,2,Length(U)-1));
+  Exit;
+ End;
+ { Hex C : 0xFF }
+ If(Length(U)>2)and(U[1]='0')and(U[2]='X')Then Begin
+  ParseNumericValue:=HexToInt(Copy(U,3,Length(U)-2));
+  Exit;
+ End;
+ { Hex MASM : 0FFh ou FFh }
+ If(Length(U)>0)and(U[Length(U)]='H')Then Begin
+  ParseNumericValue:=HexToInt(Copy(U,1,Length(U)-1));
+  Exit;
+ End;
+ { Decimal }
+ Val(U,V,Code);
+ If Code=0 Then ParseNumericValue:=V;
+End;
+
+Procedure ParseDataLine(LineIdx:LongInt);
+{ Parse une ligne de donnees : [nom] DB/DW/DD/DQ/DF/DT valeurs }
+Var
+ VarName:String;
+ DirIdx:Integer;
+ DT:Byte;
+ I:Integer;
+ U:String;
+ Elem:TDataElem;
+ DupCnt:LongInt;
+Begin
+ If TokenCount<2 Then Exit;
+ { Determiner la position de la directive }
+ VarName:='';
+ DirIdx:=0;
+ If(Tokens[1].Kind=TK_DIRECTIVE)and IsDataDirective(Tokens[1].Value)Then
+  DirIdx:=1
+ Else If(Tokens[1].Kind=TK_LABEL)Then Begin
+  { label: DB ... }
+  VarName:=Tokens[1].Value;
+  If(TokenCount>=2)and(Tokens[2].Kind=TK_DIRECTIVE)and
+    IsDataDirective(Tokens[2].Value)Then
+   DirIdx:=2;
+ End
+ Else If(Tokens[1].Kind=TK_IDENT)Then Begin
+  { nom DB ... }
+  If(TokenCount>=2)and(Tokens[2].Kind=TK_DIRECTIVE)and
+    IsDataDirective(Tokens[2].Value)Then Begin
+   VarName:=Tokens[1].Value;
+   DirIdx:=2;
+  End;
+ End;
+ If DirIdx=0 Then Exit;
+ DT:=DataDirToType(Tokens[DirIdx].Value);
+ If DT=DT_NONE Then Exit;
+ { Ajouter la variable }
+ If DataVarCount>=MAX_DATAVARS Then Exit;
+ Inc(DataVarCount);
+ DataVars[DataVarCount].Name:=VarName;
+ DataVars[DataVarCount].DirType:=DT;
+ DataVars[DataVarCount].ElemSize:=DataDirSize(DT);
+ DataVars[DataVarCount].ElemCount:=0;
+ DataVars[DataVarCount].TotalSize:=0;
+ DataVars[DataVarCount].Section:=CurrentSection;
+ DataVars[DataVarCount].SrcLine:=LineIdx;
+ DataVars[DataVarCount].IsPublic:=False;
+ { Determiner le type Pascal initial }
+ DataVars[DataVarCount].PascalType:=DataDirToPascalType(DT);
+ { Parcourir les valeurs apres la directive }
+ I:=DirIdx+1;
+ While(I<=TokenCount)and(DataVars[DataVarCount].ElemCount<MAX_DATAELEMS)do Begin
+  If Tokens[I].Kind=TK_COMMENT Then Break;
+  If Tokens[I].Kind=TK_COMMA Then Begin
+   Inc(I);
+   Continue;
+  End;
+  { Initialiser l'element }
+  Elem.ElemType:=DE_NUMBER;
+  Elem.NumValue:=0;
+  Elem.StrValue:='';
+  Elem.DupCount:=0;
+  Elem.DupValue:=0;
+  Elem.DupIsUninit:=False;
+  U:=UpCaseStr(Tokens[I].Value);
+  { Valeur non-initialisee : ? }
+  If Tokens[I].Value='?' Then Begin
+   Elem.ElemType:=DE_UNINIT;
+   Inc(I);
+  End
+  { Chaine de caracteres }
+  Else If Tokens[I].Kind=TK_STRING Then Begin
+   Elem.ElemType:=DE_STRING;
+   Elem.StrValue:=Tokens[I].Value;
+   { Pour DB, une chaine de N chars occupe N octets }
+   If DT=DT_DB Then
+    DataVars[DataVarCount].PascalType:=PT_STRING;
+   Inc(I);
+  End
+  { OFFSET label }
+  Else If U='OFFSET' Then Begin
+   Elem.ElemType:=DE_OFFSET;
+   Inc(I);
+   If I<=TokenCount Then Begin
+    Elem.StrValue:=Tokens[I].Value;
+    Inc(I);
+   End;
+  End
+  { SEG label }
+  Else If U='SEG' Then Begin
+   Elem.ElemType:=DE_SEG;
+   Inc(I);
+   If I<=TokenCount Then Begin
+    Elem.StrValue:=Tokens[I].Value;
+    Inc(I);
+   End;
+  End
+  { nombre suivi de DUP(...) }
+  Else If(Tokens[I].Kind=TK_NUMBER)Then Begin
+   DupCnt:=ParseNumericValue(Tokens[I].Value);
+   { Verifier si suivi de DUP }
+   If(I+1<=TokenCount)and(UpCaseStr(Tokens[I+1].Value)='DUP')Then Begin
+    Elem.ElemType:=DE_DUP;
+    Elem.DupCount:=DupCnt;
+    Inc(I,2);
+    { Sauter le '(' ouvrante si present - NOTE: le tokenizer ne gere
+      pas les parentheses comme tokens separes, elles font partie du
+      flux de tokens. On cherche la valeur dans les tokens suivants. }
+    { Chercher la valeur entre parentheses }
+    If(I<=TokenCount)Then Begin
+     U:=Tokens[I].Value;
+     { Enlever les parentheses si presentes }
+     If(Length(U)>0)and(U[1]='(')Then
+      U:=Copy(U,2,Length(U)-1);
+     If(Length(U)>0)and(U[Length(U)]=')')Then
+      U:=Copy(U,1,Length(U)-1);
+     U:=Trim(U);
+     If U='?' Then
+      Elem.DupIsUninit:=True
+     Else
+      Elem.DupValue:=ParseNumericValue(U);
+     Inc(I);
+    End;
+    { Verifier si ')' est un token separe suivant }
+    If(I<=TokenCount)and(Tokens[I].Value=')')Then
+     Inc(I);
+   End
+   Else Begin
+    { Nombre simple }
+    Elem.ElemType:=DE_NUMBER;
+    Elem.NumValue:=DupCnt;
+    Inc(I);
+   End;
+  End
+  { Identificateur (reference a un label, etc.) }
+  Else If(Tokens[I].Kind=TK_IDENT)or(Tokens[I].Kind=TK_LABEL)Then Begin
+   { DUP seul ne devrait pas arriver ici, mais verifier }
+   If U='DUP' Then Begin
+    Inc(I);
+    Continue;
+   End;
+   Elem.ElemType:=DE_EXPR;
+   Elem.StrValue:=Tokens[I].Value;
+   Inc(I);
+  End
+  Else Begin
+   { Token non reconnu, passer }
+   Inc(I);
+   Continue;
+  End;
+  { Stocker l'element }
+  Inc(DataVars[DataVarCount].ElemCount);
+  DataVars[DataVarCount].Elements[DataVars[DataVarCount].ElemCount]:=Elem;
+ End;
+ { Calculer la taille totale }
+ With DataVars[DataVarCount] do Begin
+  TotalSize:=0;
+  For I:=1 to ElemCount do Begin
+   Case Elements[I].ElemType of
+    DE_NUMBER:TotalSize:=TotalSize+ElemSize;
+    DE_STRING:Begin
+     If DirType=DT_DB Then
+      TotalSize:=TotalSize+Length(Elements[I].StrValue)
+     Else
+      TotalSize:=TotalSize+ElemSize;
+    End;
+    DE_DUP:TotalSize:=TotalSize+Elements[I].DupCount*ElemSize;
+    DE_OFFSET:TotalSize:=TotalSize+ElemSize;
+    DE_SEG:TotalSize:=TotalSize+2;
+    DE_UNINIT:TotalSize:=TotalSize+ElemSize;
+    DE_EXPR:TotalSize:=TotalSize+ElemSize;
+   End;
+  End;
+  { Affiner le type Pascal }
+  If(DirType=DT_DB)and(ElemCount=1)and
+    (Elements[1].ElemType=DE_STRING)Then
+   PascalType:=PT_STRING
+  Else If(ElemCount>1)or((ElemCount=1)and
+    (Elements[1].ElemType=DE_DUP))Then
+   PascalType:=PT_ARRAY
+  Else
+   PascalType:=DataDirToPascalType(DirType);
+ End;
+ { Ajouter a la table des symboles si nomme }
+ If VarName<>'' Then Begin
+  If SymbolCount<MAX_SYMBOLS Then Begin
+   Inc(SymbolCount);
+   Symbols[SymbolCount].Name:=VarName;
+   Symbols[SymbolCount].SymType:=SY_VAR;
+   Symbols[SymbolCount].DataType:=DataVars[DataVarCount].PascalType;
+   Symbols[SymbolCount].Size:=Word(DataVars[DataVarCount].TotalSize);
+   Symbols[SymbolCount].Offset:=0;
+   Symbols[SymbolCount].Segment:='';
+   Symbols[SymbolCount].IsPublic:=False;
+   Symbols[SymbolCount].IsExtern:=False;
+   Inc(TotalVars);
+  End;
+ End;
+End;
+
+Procedure ProcessDataDirectives;
+Var
+ I:LongInt;
+ HasData:Boolean;
+ StringCount,DupCount,NumCount:LongInt;
+ TotalBytes:LongInt;
+ J:Integer;
+Begin
+ DataVarCount:=0;
+ StringCount:=0;
+ DupCount:=0;
+ NumCount:=0;
+ TotalBytes:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  TokenizeLine(SrcLines[I]^);
+  If TokenCount<2 Then Continue;
+  HasData:=False;
+  { Cas 1: directive en premiere position (DB val) }
+  If(Tokens[1].Kind=TK_DIRECTIVE)and IsDataDirective(Tokens[1].Value)Then
+   HasData:=True
+  { Cas 2: nom suivi de directive (msg DB 'Hello') }
+  Else If(TokenCount>=2)and(Tokens[2].Kind=TK_DIRECTIVE)and
+    IsDataDirective(Tokens[2].Value)Then
+   HasData:=True;
+  If HasData Then Begin
+   ParseDataLine(I);
+   { Statistiques }
+   If DataVarCount>0 Then Begin
+    TotalBytes:=TotalBytes+DataVars[DataVarCount].TotalSize;
+    For J:=1 to DataVars[DataVarCount].ElemCount do
+     Case DataVars[DataVarCount].Elements[J].ElemType of
+      DE_STRING:Inc(StringCount);
+      DE_DUP:Inc(DupCount);
+      DE_NUMBER,DE_UNINIT:Inc(NumCount);
+     End;
+   End;
+  End;
+ End;
+ WriteLn('Analyse des donnees : ',DataVarCount,' variables, ',
+  TotalBytes,' octets.');
+ If Verbose Then Begin
+  WriteLn('  Chaines     : ',StringCount);
+  WriteLn('  DUP         : ',DupCount);
+  WriteLn('  Numeriques  : ',NumCount);
+  If DataVarCount>0 Then Begin
+   WriteLn('  Details :');
+   For I:=1 to DataVarCount do Begin
+    If DataVars[I].Name<>'' Then
+     Write('    ',DataVars[I].Name)
+    Else
+     Write('    (anonyme)');
+    Write(' ',DataDirName(DataVars[I].DirType));
+    Write(' -> ',PascalTypeName(DataVars[I].PascalType));
+    Write(' (',DataVars[I].TotalSize,' octets, ',
+     DataVars[I].ElemCount,' elem)');
+    WriteLn;
+   End;
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -1571,7 +1990,8 @@ BEGIN
  ReadASMFile;
  { Analyse des directives (TODO 3) }
  ProcessDirectives;
- { TODO 4  - Analyse des donnees }
+ { Analyse des donnees (TODO 4) }
+ ProcessDataDirectives;
  { TODO 5  - Analyse des procedures }
  { TODO 6  - Table des symboles }
  { TODO 7  - Analyse des operandes }
