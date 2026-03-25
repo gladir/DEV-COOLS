@@ -5733,12 +5733,16 @@ Var
 Begin
  ReadMZHeader := False;
  Assign(InFile, InputFileName);
+ {$I-}
  Reset(InFile, 1);
+ {$I+}
  If IOResult <> 0 Then Begin
   WriteLn('Erreur : impossible d''ouvrir ', InputFileName);
   Exit;
  End;
+ {$I-}
  BlockRead(InFile, MZHeader, SizeOf(TMZHeader), BytesRead);
+ {$I+}
  If (IOResult <> 0) Or (BytesRead < SizeOf(TMZHeader)) Then Begin
   WriteLn('Erreur : fichier trop petit pour un entete MZ.');
   Close(InFile);
