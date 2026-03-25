@@ -198,7 +198,7 @@
       Detecter les patterns connus : copie de chaine, recherche
       de caractere, comparaison de chaines, remplissage.
 
-  18. [A FAIRE] Traduction des appels systeme (INT 21h DOS, INT 10h BIOS, etc.).
+  18. [IMPLEMENTE] Traduction des appels systeme (INT 21h DOS, INT 10h BIOS, etc.).
       Reconnaitre les interruptions logicielles et les traduire
       en appels de fonctions Pascal equivalentes :
       INT 21h/AH=01 -> ReadKey (lecture caractere clavier).
@@ -6320,6 +6320,343 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des appels systeme (INT) - TODO 18
+  ============================================================ }
+
+Function IsIntMnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est une interruption logicielle }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsIntMnemonic:=(U='INT')or(U='INTO');
+End;
+
+Function FindPrevMovAH(LineIdx:LongInt):LongInt;
+{ Recherche en arriere la derniere instruction MOV AH, imm
+  avant la ligne LineIdx (dans une fenetre de 10 lignes).
+  Retourne la valeur immediate chargee dans AH, ou -1 si non trouve. }
+Var
+ J:LongInt;
+ AsmT:TAsmLine;
+ MJ:String;
+Begin
+ FindPrevMovAH:=-1;
+ For J:=LineIdx-1 downto 0 do Begin
+  If LineIdx-J>10 Then Break;
+  ParseInstructionLine(J,AsmT);
+  If AsmT.Mnemonic='' Then Continue;
+  MJ:=UpCaseStr(AsmT.Mnemonic);
+  If(MJ='MOV')and(AsmT.Op1.OpType=OT_REG8)and
+   (UpCaseStr(AsmT.Op1.Reg)='AH')and
+   (AsmT.Op2.OpType=OT_IMM8)Then Begin
+   FindPrevMovAH:=AsmT.Op2.Imm;
+   Exit;
+  End;
+  { Si on rencontre un label ou un INT, on arrete }
+  If AsmT.LabelStr<>'' Then Break;
+  If MJ='INT' Then Break;
+ End;
+End;
+
+Function FindPrevMovAL(LineIdx:LongInt):LongInt;
+{ Recherche en arriere la derniere instruction MOV AL, imm
+  avant la ligne LineIdx (dans une fenetre de 10 lignes).
+  Retourne la valeur immediate chargee dans AL, ou -1 si non trouve. }
+Var
+ J:LongInt;
+ AsmT:TAsmLine;
+ MJ:String;
+Begin
+ FindPrevMovAL:=-1;
+ For J:=LineIdx-1 downto 0 do Begin
+  If LineIdx-J>10 Then Break;
+  ParseInstructionLine(J,AsmT);
+  If AsmT.Mnemonic='' Then Continue;
+  MJ:=UpCaseStr(AsmT.Mnemonic);
+  If(MJ='MOV')and(AsmT.Op1.OpType=OT_REG8)and
+   (UpCaseStr(AsmT.Op1.Reg)='AL')and
+   (AsmT.Op2.OpType=OT_IMM8)Then Begin
+   FindPrevMovAL:=AsmT.Op2.Imm;
+   Exit;
+  End;
+  If AsmT.LabelStr<>'' Then Break;
+  If MJ='INT' Then Break;
+ End;
+End;
+
+Function TranslateINT21h(FuncAH:LongInt):String;
+{ Traduit les fonctions DOS INT 21h en equivalents Pascal.
+  AH=01h -> ReadKey (lecture caractere clavier, echo)
+  AH=02h -> Write(Chr(RegDL)) (afficher caractere)
+  AH=06h -> Read/Write direct console
+  AH=07h -> ReadKey sans echo (pas d'echo, pas de Ctrl-C)
+  AH=08h -> ReadKey sans echo (pas d'echo)
+  AH=09h -> Write(chaine terminee par $)
+  AH=0Ah -> ReadLn (lecture tampon)
+  AH=25h -> SetIntVec
+  AH=2Ah -> GetDate
+  AH=2Ch -> GetTime
+  AH=30h -> Lo(DosVersion)/Hi(DosVersion)
+  AH=35h -> GetIntVec
+  AH=3Ch -> Rewrite (creer fichier)
+  AH=3Dh -> Reset (ouvrir fichier)
+  AH=3Eh -> Close (fermer fichier)
+  AH=3Fh -> BlockRead (lire fichier)
+  AH=40h -> BlockWrite (ecrire fichier)
+  AH=41h -> Erase (supprimer fichier)
+  AH=43h -> GetFAttr/SetFAttr
+  AH=4Ch -> Halt (terminer programme)
+  Autres -> Intr($21, Regs) }
+Begin
+ Case FuncAH of
+  $01:TranslateINT21h:='RegAL := Ord(ReadKey); { INT 21h/AH=01 }';
+  $02:TranslateINT21h:='Write(Chr(Lo(RegDX))); { INT 21h/AH=02 }';
+  $06:TranslateINT21h:=
+   'If Lo(RegDX) = $FF Then RegAL := Ord(ReadKey) '+
+   'Else Write(Chr(Lo(RegDX))); { INT 21h/AH=06 }';
+  $07:TranslateINT21h:='RegAL := Ord(ReadKey); { INT 21h/AH=07 }';
+  $08:TranslateINT21h:='RegAL := Ord(ReadKey); { INT 21h/AH=08 }';
+  $09:TranslateINT21h:=
+   'Write(DosString(RegDX)); { INT 21h/AH=09, chaine $ }';
+  $0A:TranslateINT21h:='ReadLn(InputBuf); { INT 21h/AH=0Ah }';
+  $25:TranslateINT21h:=
+   'SetIntVec(Lo(RegAX), Ptr(RegDS, RegDX)); { INT 21h/AH=25 }';
+  $2A:TranslateINT21h:=
+   'GetDate(Year, Month, Day, DayOfWeek); '+
+   'RegCX := Year; Lo(RegDX) := Month; Hi(RegDX) := Day; '+
+   'RegAL := DayOfWeek; { INT 21h/AH=2A }';
+  $2C:TranslateINT21h:=
+   'GetTime(Hour, Minute, Second, Sec100); '+
+   'Hi(RegCX) := Hour; Lo(RegCX) := Minute; '+
+   'Hi(RegDX) := Second; Lo(RegDX) := Sec100; { INT 21h/AH=2C }';
+  $30:TranslateINT21h:=
+   'RegAL := Lo(DosVersion); RegAH := Hi(DosVersion); '+
+   '{ INT 21h/AH=30 }';
+  $35:TranslateINT21h:=
+   'GetIntVec(Lo(RegAX), IntPtr); '+
+   'RegBX := Ofs(IntPtr^); RegES := Seg(IntPtr^); { INT 21h/AH=35 }';
+  $3C:TranslateINT21h:=
+   'Assign(F, ParamStr(RegDX)); Rewrite(F); { INT 21h/AH=3C creer }';
+  $3D:TranslateINT21h:=
+   'Assign(F, ParamStr(RegDX)); Reset(F); { INT 21h/AH=3D ouvrir }';
+  $3E:TranslateINT21h:='Close(F); { INT 21h/AH=3E fermer }';
+  $3F:TranslateINT21h:=
+   'BlockRead(F, Buf, RegCX, RegAX); { INT 21h/AH=3F lire }';
+  $40:TranslateINT21h:=
+   'BlockWrite(F, Buf, RegCX, RegAX); { INT 21h/AH=40 ecrire }';
+  $41:TranslateINT21h:=
+   'Assign(F, ParamStr(RegDX)); Erase(F); { INT 21h/AH=41 suppr }';
+  $43:TranslateINT21h:=
+   'GetFAttr(F, RegCX); { INT 21h/AH=43 attributs }';
+  $4C:TranslateINT21h:='Halt(Lo(RegAX)); { INT 21h/AH=4C }';
+ Else
+  TranslateINT21h:=
+   'Begin Regs.AH := $'+HexByte(FuncAH)+
+   '; Intr($21, Regs); End; { INT 21h/AH='+
+   HexByte(FuncAH)+' }';
+ End;
+End;
+
+Function TranslateINT10h(FuncAH:LongInt):String;
+{ Traduit les fonctions BIOS video INT 10h en equivalents Pascal.
+  AH=00h -> TextMode/mode video
+  AH=01h -> curseur
+  AH=02h -> GotoXY
+  AH=03h -> WhereX/WhereY
+  AH=05h -> page active
+  AH=06h -> ScrollUp (ClrScr si AL=0)
+  AH=07h -> ScrollDown
+  AH=09h -> ecrire caractere+attribut
+  AH=0Eh -> Write(Chr(AL)) teletype
+  AH=0Fh -> mode video courant
+  AH=13h -> ecrire chaine
+  Autres -> Intr($10, Regs) }
+Begin
+ Case FuncAH of
+  $00:TranslateINT10h:=
+   'TextMode(Lo(RegAX)); { INT 10h/AH=00 mode video }';
+  $01:TranslateINT10h:=
+   'Begin Regs.CX := RegCX; Regs.AH := $01; '+
+   'Intr($10, Regs); End; { INT 10h/AH=01 curseur }';
+  $02:TranslateINT10h:=
+   'GotoXY(Lo(RegDX) + 1, Hi(RegDX) + 1); { INT 10h/AH=02 }';
+  $03:TranslateINT10h:=
+   'Lo(RegDX) := WhereX - 1; Hi(RegDX) := WhereY - 1; '+
+   '{ INT 10h/AH=03 }';
+  $05:TranslateINT10h:=
+   'Begin Regs.AL := Lo(RegAX); Regs.AH := $05; '+
+   'Intr($10, Regs); End; { INT 10h/AH=05 page }';
+  $06:TranslateINT10h:=
+   'If Lo(RegAX) = 0 Then ClrScr '+
+   'Else Begin Regs.AX := RegAX; Regs.BH := Hi(RegBX); '+
+   'Regs.CX := RegCX; Regs.DX := RegDX; '+
+   'Intr($10, Regs); End; { INT 10h/AH=06 scroll }';
+  $07:TranslateINT10h:=
+   'Begin Regs.AX := RegAX; Regs.BH := Hi(RegBX); '+
+   'Regs.CX := RegCX; Regs.DX := RegDX; '+
+   'Intr($10, Regs); End; { INT 10h/AH=07 scroll down }';
+  $09:TranslateINT10h:=
+   'Begin TextAttr := Lo(RegBX); Write(Chr(Lo(RegAX))); '+
+   'End; { INT 10h/AH=09 car+attr }';
+  $0E:TranslateINT10h:=
+   'Write(Chr(Lo(RegAX))); { INT 10h/AH=0E teletype }';
+  $0F:TranslateINT10h:=
+   'RegAL := LastMode; RegAH := 80; '+
+   '{ INT 10h/AH=0F mode courant }';
+  $13:TranslateINT10h:=
+   'Begin Regs.AX := RegAX; Regs.BX := RegBX; '+
+   'Regs.CX := RegCX; Regs.DX := RegDX; '+
+   'Regs.ES := RegES; Regs.BP := RegBP; '+
+   'Intr($10, Regs); End; { INT 10h/AH=13 chaine }';
+ Else
+  TranslateINT10h:=
+   'Begin Regs.AH := $'+HexByte(FuncAH)+
+   '; Intr($10, Regs); End; { INT 10h/AH='+
+   HexByte(FuncAH)+' }';
+ End;
+End;
+
+Function TranslateINT16h(FuncAH:LongInt):String;
+{ Traduit les fonctions BIOS clavier INT 16h en equivalents Pascal.
+  AH=00h -> ReadKey
+  AH=01h -> KeyPressed
+  AH=02h -> shift flags
+  AH=10h -> ReadKey etendu
+  AH=11h -> KeyPressed etendu
+  Autres -> Intr($16, Regs) }
+Begin
+ Case FuncAH of
+  $00:TranslateINT16h:=
+   'RegAL := Ord(ReadKey); RegAH := 0; { INT 16h/AH=00 }';
+  $01:TranslateINT16h:=
+   'FlagZF := not KeyPressed; { INT 16h/AH=01 }';
+  $02:TranslateINT16h:=
+   'Begin Regs.AH := $02; Intr($16, Regs); '+
+   'RegAL := Regs.AL; End; { INT 16h/AH=02 shift }';
+  $10:TranslateINT16h:=
+   'RegAL := Ord(ReadKey); If RegAL = 0 Then '+
+   'RegAH := Ord(ReadKey); { INT 16h/AH=10 }';
+  $11:TranslateINT16h:=
+   'FlagZF := not KeyPressed; { INT 16h/AH=11 }';
+ Else
+  TranslateINT16h:=
+   'Begin Regs.AH := $'+HexByte(FuncAH)+
+   '; Intr($16, Regs); End; { INT 16h/AH='+
+   HexByte(FuncAH)+' }';
+ End;
+End;
+
+Function TranslateINT(IntNum,FuncAH:LongInt):String;
+{ Traduit une instruction INT nn en code Pascal.
+  Dispatche vers les traducteurs specialises pour les
+  interruptions connues (21h, 10h, 16h).
+  Pour les autres interruptions, genere un appel Intr(). }
+Begin
+ Case IntNum of
+  $10:TranslateINT:=TranslateINT10h(FuncAH);
+  $16:TranslateINT:=TranslateINT16h(FuncAH);
+  $21:TranslateINT:=TranslateINT21h(FuncAH);
+ Else
+  If FuncAH>=0 Then
+   TranslateINT:='Begin Regs.AH := $'+HexByte(FuncAH)+
+    '; Intr($'+HexByte(IntNum)+', Regs); End; { INT '+
+    HexByte(IntNum)+'h/AH='+HexByte(FuncAH)+' }'
+  Else
+   TranslateINT:='Intr($'+HexByte(IntNum)+
+    ', Regs); { INT '+HexByte(IntNum)+'h }';
+ End;
+End;
+
+Procedure ProcessIntTranslations;
+{ Parcourt les lignes source et traduit les instructions INT
+  en appels de fonctions Pascal equivalentes. Detecte les MOV AH, nn
+  precedant un INT pour identifier la fonction appelee.
+  Produit des statistiques par categorie d'interruption. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ Code:String;
+ IntNum,FuncAH:LongInt;
+ TotalInt:LongInt;
+ Int21Count,Int10Count,Int16Count,IntOtherCount:LongInt;
+ Int21Known,Int10Known,Int16Known:LongInt;
+ IntoCount:LongInt;
+ M:String;
+Begin
+ TotalInt:=0;
+ Int21Count:=0;Int10Count:=0;Int16Count:=0;IntOtherCount:=0;
+ Int21Known:=0;Int10Known:=0;Int16Known:=0;
+ IntoCount:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=UpCaseStr(AsmL.Mnemonic);
+  If Not IsIntMnemonic(M) Then Continue;
+  Code:='';
+  If M='INTO' Then Begin
+   Code:='If FlagOF Then Begin Regs.AH := 0; Intr($04, Regs); End;'+
+    ' { INTO }';
+   Inc(IntoCount);
+  End
+  Else If M='INT' Then Begin
+   { Recuperer le numero d'interruption depuis l'operande }
+   IntNum:=-1;
+   If AsmL.Op1.OpType=OT_IMM8 Then
+    IntNum:=AsmL.Op1.Imm
+   Else If AsmL.Op1.OpType=OT_IMM16 Then
+    IntNum:=AsmL.Op1.Imm
+   Else If AsmL.Op1.OpType=OT_LABEL Then
+    IntNum:=HexToInt(AsmL.Op1.LabelName);
+   If IntNum<0 Then Continue;
+   { Rechercher le MOV AH, nn precedant }
+   FuncAH:=FindPrevMovAH(I);
+   { Traduire selon le numero d'interruption }
+   Code:=TranslateINT(IntNum,FuncAH);
+   Case IntNum of
+    $10:Begin
+     Inc(Int10Count);
+     If FuncAH>=0 Then Inc(Int10Known);
+    End;
+    $16:Begin
+     Inc(Int16Count);
+     If FuncAH>=0 Then Inc(Int16Known);
+    End;
+    $21:Begin
+     Inc(Int21Count);
+     If FuncAH>=0 Then Inc(Int21Known);
+    End;
+   Else
+    Inc(IntOtherCount);
+   End;
+  End;
+  If Code<>'' Then Begin
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(TotalInt);
+  End;
+ End;
+ WriteLn('Traduction INT systeme : ',TotalInt,' instructions, ',
+  TranslationCount,' traductions totales.');
+ If Verbose Then Begin
+  WriteLn('  INT 21h (DOS)    : ',Int21Count);
+  WriteLn('    func. connues  : ',Int21Known);
+  WriteLn('  INT 10h (video)  : ',Int10Count);
+  WriteLn('    func. connues  : ',Int10Known);
+  WriteLn('  INT 16h (clavier): ',Int16Count);
+  WriteLn('    func. connues  : ',Int16Known);
+  WriteLn('  Autres INT       : ',IntOtherCount);
+  WriteLn('  INTO             : ',IntoCount);
+  If TotalInt>0 Then Begin
+   WriteLn('  Details :');
+   For I:=TranslationCount-TotalInt to TranslationCount-1 do
+    If I>=0 Then
+     WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -6444,6 +6781,7 @@ BEGIN
  { TODO 17 - Traduction chaines }
  ProcessStringTranslations;
  { TODO 18 - Traduction INT systeme }
+ ProcessIntTranslations;
  { TODO 19 - Traduction adressage }
  { TODO 20 - Extensions 80386 }
  { TODO 21 - Generation en-tete Pascal }
