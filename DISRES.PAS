@@ -194,7 +194,7 @@
             Procedure ReadNullHeader32
               valider et ignorer la ressource nulle de 32 octets
 
-  TODO 07 - TABLE DES TYPES DE RESSOURCES (RT_*) [IMPLEMENTE]
+  TODO 07 - TABLE DES TYPES DE RESSOURCES [RT_*] [IMPLEMENTE]
             Constantes des types standards :
               RT_CURSOR = 1, RT_BITMAP = 2, RT_ICON = 3,
               RT_MENU = 4, RT_DIALOG = 5, RT_STRING = 6,
@@ -326,7 +326,7 @@
               '    ' + IntToStr(Entry.StringId) + ', "' +
               EscapeRCString(Entry.Text) + '"'
 
-  TODO 12 - DECODAGE RT_ACCELERATOR (TYPE 9) [A FAIRE]
+  TODO 12 - DECODAGE RT_ACCELERATOR (TYPE 9) [IMPLEMENTE]
             Type TAccelEntry : record
               fVirt  : Word   (drapeaux de l accelerateur)
               Key    : Word   (code de touche)
@@ -807,6 +807,14 @@ Const
   MF32_DISCARDABLE = $1000;
   MF32_SHARED      = $0030;
 
+  { Drapeaux fVirt pour les accelerateurs (RT_ACCELERATOR) }
+  FVIRTKEY  = $01;   { touche virtuelle                    }
+  FNOINVERT = $02;   { ne pas inverser la barre de menu    }
+  FSHIFT    = $04;   { modificateur SHIFT                  }
+  FCONTROL  = $08;   { modificateur CONTROL                }
+  FALT      = $10;   { modificateur ALT                    }
+  FLAST     = $80;   { dernier accelerateur du tableau     }
+
   { Limites internes }
   MAX_RESOURCES   = 4096;
   MAX_STRINGS     = 4096;
@@ -849,6 +857,14 @@ Type
     Version         : LongInt;  { version utilisateur                       }
     Characteristics : LongInt;  { caracteristiques utilisateur              }
     DataOfs         : LongInt;  { position des donnees dans le fichier      }
+  End;
+
+  { Entree dans la table des accelerateurs decodes (RT_ACCELERATOR) }
+  TAccelEntry = Record
+    fVirt  : Word;    { drapeaux de l accelerateur            }
+    Key    : Word;    { code de touche                        }
+    Cmd    : Word;    { identifiant de commande               }
+    IsLast : Boolean; { True si bit FLAST de fVirt est a 1   }
   End;
 
   { Entree dans la table des chaines decodes (RT_STRING) }
@@ -898,6 +914,8 @@ Var
   ResCount     : Integer;        { nombre de ressources collectees  }
   StringEntries : Array[1..MAX_STRINGS] Of TStringEntry;
   StringCount   : Integer;       { nombre de chaines decodees       }
+  AccelEntries  : Array[1..MAX_ACCEL] Of TAccelEntry;
+  AccelCount    : Integer;       { nombre d accelerateurs decodes   }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -1935,6 +1953,115 @@ Begin
 End;
 
 { ============================================================
+  TODO 12 - DECODAGE RT_ACCELERATOR (TYPE 9) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Nom de la touche virtuelle ----------------------------- }
+Function VKeyToStr(Key : Word; AVirt : Word) : TString;
+Var
+  S : TString;
+Begin
+  If (AVirt And FVIRTKEY) <> 0 Then
+  Begin
+    Case Key Of
+      $08 : S := 'VK_BACK';
+      $09 : S := 'VK_TAB';
+      $0D : S := 'VK_RETURN';
+      $1B : S := 'VK_ESCAPE';
+      $20 : S := 'VK_SPACE';
+      $23 : S := 'VK_END';
+      $24 : S := 'VK_HOME';
+      $25 : S := 'VK_LEFT';
+      $26 : S := 'VK_UP';
+      $27 : S := 'VK_RIGHT';
+      $28 : S := 'VK_DOWN';
+      $2D : S := 'VK_INSERT';
+      $2E : S := 'VK_DELETE';
+      $70 : S := 'VK_F1';
+      $71 : S := 'VK_F2';
+      $72 : S := 'VK_F3';
+      $73 : S := 'VK_F4';
+      $74 : S := 'VK_F5';
+      $75 : S := 'VK_F6';
+      $76 : S := 'VK_F7';
+      $77 : S := 'VK_F8';
+      $78 : S := 'VK_F9';
+      $79 : S := 'VK_F10';
+      $7A : S := 'VK_F11';
+      $7B : S := 'VK_F12';
+    Else
+      S := IntToStr(Key);
+    End;
+  End
+  Else
+    S := '"' + Chr(Key And $FF) + '"';
+  VKeyToStr := S;
+End;
+
+{ ---- Decoder une ressource ACCELERATORS --------------------- }
+Procedure ParseAccelerators(Const Res : TResourceEntry);
+Var
+  fV     : Word;
+  K      : Word;
+  Cmd    : Word;
+  Pad    : Word;
+  E      : TAccelEntry;
+Begin
+  SeekResPos(Res.DataOfs);
+  Repeat
+    fV  := ReadWord;
+    K   := ReadWord;
+    Cmd := ReadWord;
+    Pad := ReadWord;   { padding / reserved }
+    If AccelCount < MAX_ACCEL Then
+    Begin
+      Inc(AccelCount);
+      E.fVirt  := fV;
+      E.Key    := K;
+      E.Cmd    := Cmd;
+      E.IsLast := (fV And FLAST) <> 0;
+      AccelEntries[AccelCount] := E;
+    End;
+  Until (fV And FLAST) <> 0;
+End;
+
+{ ---- Decoder toutes les ressources ACCELERATORS ------------- }
+Procedure ParseAllAccelerators;
+Var
+  I : Integer;
+Begin
+  AccelCount := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_ACCELERATOR) Then
+      ParseAccelerators(Resources[I]);
+  End;
+  If Opts.Verbose Then
+    WriteLn(AccelCount, ' accelerateur(s) decode(s).');
+End;
+
+{ ---- Generer la ligne RC pour un accelerateur --------------- }
+Function AccelEntryToRC(Const E : TAccelEntry) : TString;
+Var
+  S    : TString;
+  Opts2 : TString;
+Begin
+  S := '    ' + VKeyToStr(E.Key, E.fVirt) + ', ' + IntToStr(E.Cmd);
+  Opts2 := '';
+  If (E.fVirt And FNOINVERT) <> 0 Then
+    Opts2 := Opts2 + ', NOINVERT';
+  If (E.fVirt And FSHIFT) <> 0 Then
+    Opts2 := Opts2 + ', SHIFT';
+  If (E.fVirt And FCONTROL) <> 0 Then
+    Opts2 := Opts2 + ', CONTROL';
+  If (E.fVirt And FALT) <> 0 Then
+    Opts2 := Opts2 + ', ALT';
+  If (E.fVirt And FVIRTKEY) <> 0 Then
+    Opts2 := Opts2 + ', VIRTKEY';
+  AccelEntryToRC := S + Opts2;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -1977,8 +2104,11 @@ Begin
   { Decoder les tables de chaines (RT_STRING) }
   ParseAllStringTables;
 
-  { TODO 12 a TODO 25 : a implementer }
-  WriteLn('(TODO 12 a TODO 25 : implementation en cours)');
+  { Decoder les accelerateurs (RT_ACCELERATOR) }
+  ParseAllAccelerators;
+
+  { TODO 13 a TODO 25 : a implementer }
+  WriteLn('(TODO 13 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
