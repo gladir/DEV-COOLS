@@ -112,7 +112,7 @@
       CWDE -> EAX := LongInt(Integer(AX)).
       CDQ -> EDX:EAX := extension de signe de EAX.
 
-  11. [A FAIRE] Traduction des instructions arithmetiques.
+  11. [IMPLEMENTE] Traduction des instructions arithmetiques.
       ADD dest,src -> dest := dest + src.
       ADC dest,src -> dest := dest + src + Ord(FlagCF).
       SUB dest,src -> dest := dest - src.
@@ -4438,6 +4438,284 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des instructions arithmetiques - TODO 11
+  ============================================================ }
+
+Function TranslateADD(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ ADD dest,src -> dest := dest + src }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateADD:=D+' := '+D+' + '+S+';';
+End;
+
+Function TranslateADC(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ ADC dest,src -> dest := dest + src + Ord(FlagCF) }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateADC:=D+' := '+D+' + '+S+' + Ord(FlagCF);';
+End;
+
+Function TranslateSUB(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ SUB dest,src -> dest := dest - src }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateSUB:=D+' := '+D+' - '+S+';';
+End;
+
+Function TranslateSBB(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ SBB dest,src -> dest := dest - src - Ord(FlagCF) }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateSBB:=D+' := '+D+' - '+S+' - Ord(FlagCF);';
+End;
+
+Function TranslateINC_DEC(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ INC dest -> Inc(dest); DEC dest -> Dec(dest) }
+Var
+ D:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If AsmL.Mnemonic='INC' Then
+  TranslateINC_DEC:='Inc('+D+');'
+ Else
+  TranslateINC_DEC:='Dec('+D+');';
+End;
+
+Function TranslateNEG(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ NEG dest -> dest := -dest (complement a deux) }
+Var
+ D:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ TranslateNEG:=D+' := -'+D+';';
+End;
+
+Function TranslateMUL(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ MUL src (8 bits)  -> RegAX := Lo(RegAX) * Byte(src)
+  MUL src (16 bits) -> LongRec: RegDX:RegAX := Word(RegAX) * Word(src)
+  MUL src (32 bits) -> RegEDX:RegEAX := LongInt(RegEAX) * LongInt(src) }
+Var
+ S:String;
+Begin
+ S:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If AsmL.Op1.OpType=OT_REG8 Then
+  TranslateMUL:='RegAX := Word(Lo(RegAX)) * Word(Byte('+S+'));'
+ Else If AsmL.Op1.OpType=OT_REG32 Then
+  TranslateMUL:=
+   'Begin TmpQ := Int64(LongInt(RegEAX)) * Int64(LongInt('+S+')); '+
+   'RegEAX := LongInt(TmpQ and $FFFFFFFF); '+
+   'RegEDX := LongInt(TmpQ shr 32); End;'
+ Else
+  TranslateMUL:=
+   'Begin TmpL := LongInt(Word(RegAX)) * LongInt(Word('+S+')); '+
+   'RegAX := Word(TmpL and $FFFF); '+
+   'RegDX := Word(TmpL shr 16); End;';
+End;
+
+Function TranslateIMUL(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ IMUL src          -> DX:AX := Integer(AX) * Integer(src) (1 operande)
+  IMUL dest,src     -> dest := dest * src (2 operandes, 386+)
+  IMUL dest,src,imm -> dest := src * imm (3 operandes, 386+) }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ { Verifier si c'est une forme a 2 ou 3 operandes (386+) }
+ If AsmL.Op2.OpType<>OT_NONE Then Begin
+  S:=OperandToExpr(AsmL.Op2,ProcIdx);
+  { IMUL dest,src -> dest := dest * src }
+  TranslateIMUL:=D+' := '+D+' * '+S+';';
+ End
+ Else Begin
+  { IMUL src -> DX:AX := Integer(AX) * Integer(src) (forme 1 op) }
+  If AsmL.Op1.OpType=OT_REG8 Then
+   TranslateIMUL:='RegAX := Integer(ShortInt(Lo(RegAX))) * '+
+    'Integer(ShortInt('+D+'));'
+  Else If AsmL.Op1.OpType=OT_REG32 Then
+   TranslateIMUL:=
+    'Begin TmpQ := Int64(LongInt(RegEAX)) * Int64(LongInt('+D+')); '+
+    'RegEAX := LongInt(TmpQ and $FFFFFFFF); '+
+    'RegEDX := LongInt(TmpQ shr 32); End;'
+  Else
+   TranslateIMUL:=
+    'Begin TmpL := LongInt(Integer(RegAX)) * LongInt(Integer('+D+')); '+
+    'RegAX := Word(TmpL and $FFFF); '+
+    'RegDX := Word(TmpL shr 16); End;';
+ End;
+End;
+
+Function TranslateDIV(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ DIV src (8 bits)  -> AL := AX div src; AH := AX mod src
+  DIV src (16 bits) -> AX := DX:AX div src; DX := DX:AX mod src
+  DIV src (32 bits) -> EAX := EDX:EAX div src; EDX := EDX:EAX mod src }
+Var
+ S:String;
+Begin
+ S:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If AsmL.Op1.OpType=OT_REG8 Then
+  TranslateDIV:=
+   'Begin TmpW := RegAX; '+
+   'RegAX := Word(Byte(TmpW div Byte('+S+'))) or '+
+   '(Word(Byte(TmpW mod Byte('+S+'))) shl 8); End;'
+ Else If AsmL.Op1.OpType=OT_REG32 Then
+  TranslateDIV:=
+   'Begin TmpQ := (Int64(LongInt(RegEDX)) shl 32) or '+
+   'Int64(LongInt(RegEAX) and $FFFFFFFF); '+
+   'RegEAX := LongInt(TmpQ div LongInt('+S+')); '+
+   'RegEDX := LongInt(TmpQ mod LongInt('+S+')); End;'
+ Else
+  TranslateDIV:=
+   'Begin TmpL := (LongInt(RegDX) shl 16) or LongInt(RegAX); '+
+   'RegAX := Word(TmpL div Word('+S+')); '+
+   'RegDX := Word(TmpL mod Word('+S+')); End;';
+End;
+
+Function TranslateIDIV(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ IDIV src (8 bits)  -> AL := AX sdiv src; AH := AX smod src
+  IDIV src (16 bits) -> AX := DX:AX sdiv src; DX := DX:AX smod src
+  IDIV src (32 bits) -> EAX := EDX:EAX sdiv src; EDX := EDX:EAX smod src }
+Var
+ S:String;
+Begin
+ S:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If AsmL.Op1.OpType=OT_REG8 Then
+  TranslateIDIV:=
+   'Begin TmpI := Integer(RegAX); '+
+   'RegAX := Word(Byte(ShortInt(TmpI div ShortInt('+S+')))) or '+
+   '(Word(Byte(ShortInt(TmpI mod ShortInt('+S+')))) shl 8); End;'
+ Else If AsmL.Op1.OpType=OT_REG32 Then
+  TranslateIDIV:=
+   'Begin TmpQ := (Int64(LongInt(RegEDX)) shl 32) or '+
+   'Int64(LongInt(RegEAX) and $FFFFFFFF); '+
+   'RegEAX := LongInt(TmpQ div LongInt('+S+')); '+
+   'RegEDX := LongInt(TmpQ mod LongInt('+S+')); End;'
+ Else
+  TranslateIDIV:=
+   'Begin TmpL := (LongInt(RegDX) shl 16) or LongInt(RegAX); '+
+   'RegAX := Word(Integer(TmpL div Integer('+S+'))); '+
+   'RegDX := Word(Integer(TmpL mod Integer('+S+'))); End;';
+End;
+
+Function TranslateArithmetic(Var AsmL:TAsmLine;
+ ProcIdx:Integer):String;
+{ Orchestre la traduction d'une instruction arithmetique.
+  Retourne la chaine Pascal correspondante, ou '' si non gere. }
+Var
+ M:String;
+Begin
+ M:=AsmL.Mnemonic;
+ If M='ADD' Then
+  TranslateArithmetic:=TranslateADD(AsmL,ProcIdx)
+ Else If M='ADC' Then
+  TranslateArithmetic:=TranslateADC(AsmL,ProcIdx)
+ Else If M='SUB' Then
+  TranslateArithmetic:=TranslateSUB(AsmL,ProcIdx)
+ Else If M='SBB' Then
+  TranslateArithmetic:=TranslateSBB(AsmL,ProcIdx)
+ Else If(M='INC')or(M='DEC')Then
+  TranslateArithmetic:=TranslateINC_DEC(AsmL,ProcIdx)
+ Else If M='NEG' Then
+  TranslateArithmetic:=TranslateNEG(AsmL,ProcIdx)
+ Else If M='MUL' Then
+  TranslateArithmetic:=TranslateMUL(AsmL,ProcIdx)
+ Else If M='IMUL' Then
+  TranslateArithmetic:=TranslateIMUL(AsmL,ProcIdx)
+ Else If M='DIV' Then
+  TranslateArithmetic:=TranslateDIV(AsmL,ProcIdx)
+ Else If M='IDIV' Then
+  TranslateArithmetic:=TranslateIDIV(AsmL,ProcIdx)
+ Else
+  TranslateArithmetic:='';
+End;
+
+Function IsArithmeticMnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est une instruction arithmetique }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsArithmeticMnemonic:=
+  (U='ADD')or(U='ADC')or(U='SUB')or(U='SBB')or
+  (U='INC')or(U='DEC')or(U='NEG')or
+  (U='MUL')or(U='IMUL')or(U='DIV')or(U='IDIV');
+End;
+
+Procedure ProcessArithmeticTranslations;
+{ Parcourt les lignes source et traduit les instructions arithmetiques.
+  Produit des statistiques detaillees. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ ProcIdx:Integer;
+ Code:String;
+ AddCount,AdcCount,SubCount,SbbCount:LongInt;
+ IncDecCount,NegCount:LongInt;
+ MulCount,ImulCount,DivCount,IdivCount:LongInt;
+ TotalArith:LongInt;
+ M:String;
+Begin
+ AddCount:=0;AdcCount:=0;SubCount:=0;SbbCount:=0;
+ IncDecCount:=0;NegCount:=0;
+ MulCount:=0;ImulCount:=0;DivCount:=0;IdivCount:=0;
+ TotalArith:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=AsmL.Mnemonic;
+  If Not IsArithmeticMnemonic(M) Then Continue;
+  ProcIdx:=FindProcForLine(I);
+  Code:=TranslateArithmetic(AsmL,ProcIdx);
+  If Code<>'' Then Begin
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(TotalArith);
+   If M='ADD' Then Inc(AddCount)
+   Else If M='ADC' Then Inc(AdcCount)
+   Else If M='SUB' Then Inc(SubCount)
+   Else If M='SBB' Then Inc(SbbCount)
+   Else If(M='INC')or(M='DEC')Then Inc(IncDecCount)
+   Else If M='NEG' Then Inc(NegCount)
+   Else If M='MUL' Then Inc(MulCount)
+   Else If M='IMUL' Then Inc(ImulCount)
+   Else If M='DIV' Then Inc(DivCount)
+   Else If M='IDIV' Then Inc(IdivCount);
+  End;
+ End;
+ WriteLn('Traduction arithmetique : ',TotalArith,' instructions, ',
+  TranslationCount,' traductions totales.');
+ If Verbose Then Begin
+  WriteLn('  ADD       : ',AddCount);
+  WriteLn('  ADC       : ',AdcCount);
+  WriteLn('  SUB       : ',SubCount);
+  WriteLn('  SBB       : ',SbbCount);
+  WriteLn('  INC/DEC   : ',IncDecCount);
+  WriteLn('  NEG       : ',NegCount);
+  WriteLn('  MUL       : ',MulCount);
+  WriteLn('  IMUL      : ',ImulCount);
+  WriteLn('  DIV       : ',DivCount);
+  WriteLn('  IDIV      : ',IdivCount);
+  If TotalArith>0 Then Begin
+   WriteLn('  Details :');
+   For I:=TranslationCount-TotalArith to TranslationCount-1 do
+    If I>=0 Then
+     WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -4548,6 +4826,7 @@ BEGIN
  { Traduction des transferts (TODO 10) }
  ProcessDataTransfers;
  { TODO 11 - Traduction arithmetique }
+ ProcessArithmeticTranslations;
  { TODO 12 - Traduction logique }
  { TODO 13 - Traduction comparaisons/sauts }
  { TODO 14 - Traduction boucles }
