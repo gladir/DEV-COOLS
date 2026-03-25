@@ -9,3 +9,6 @@
 /TESTS/EMU8086
 ASM68
 /SQLCMD
+SQLCMD
+*.o
+*.ppu

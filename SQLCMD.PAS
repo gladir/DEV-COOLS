@@ -300,7 +300,7 @@
               UNBOUNDED PRECEDING, n PRECEDING,
               CURRENT ROW, n FOLLOWING, UNBOUNDED FOLLOWING
 
-  TODO 19 - FONCTIONS SCALAIRES BUILT-IN : CHAINES
+  TODO 19 - FONCTIONS SCALAIRES BUILT-IN : CHAINES [IMPLEMENTE]
             LEN(s), DATALENGTH(s)
             LEFT(s,n), RIGHT(s,n), SUBSTRING(s,start,len)
             LTRIM(s), RTRIM(s), TRIM(s)
@@ -321,7 +321,7 @@
             TRANSLATE(s, from_chars, to_chars)
             STRING_ESCAPE(s, type)
 
-  TODO 20 - FONCTIONS SCALAIRES BUILT-IN : DATES ET HEURES
+  TODO 20 - FONCTIONS SCALAIRES BUILT-IN : DATES ET HEURES [IMPLEMENTE]
             GETDATE(), GETUTCDATE(), SYSDATETIME(),
               SYSUTCDATETIME(), SYSDATETIMEOFFSET()
             DATEADD(part, n, date)
@@ -12414,18 +12414,18 @@ Begin
         V.Valid    := True;
         If VL.IsNull Or VR.IsNull Then V.IsNull := True
         Else Begin
-          CI := QEEvalExpr(Child2, Row, Res);
+          VT := QEEvalExpr(Child2, Row, Res);
           Op := SqlValueToStr(VL);
           VR.StrVal := SqlValueToStr(VR);
-          CI.StrVal := SqlValueToStr(CI);
+          STmp := SqlValueToStr(VT);
           V.StrVal := '';
           For I := 1 To Length(Op) Do
           Begin
-            CI := Pos(Op[I], VR.StrVal);
-            If (CI > 0) And (CI <= Length(CI.StrVal)) Then
+            J := Pos(Op[I], VR.StrVal);
+            If (J > 0) And (J <= Length(STmp)) Then
             Begin
               If Length(V.StrVal) < MAX_SQL_VALUE_STR Then
-                V.StrVal := V.StrVal + CI.StrVal[CI];
+                V.StrVal := V.StrVal + STmp[J];
             End
             Else Begin
               If Length(V.StrVal) < MAX_SQL_VALUE_STR Then
@@ -12462,6 +12462,772 @@ Begin
             End;
           End;
           Op := 'STRING_ESCAPE';
+        End;
+      End
+      { ===== TODO 19 suite : STRING_SPLIT ===== }
+      Else If (Op = 'STRING_SPLIT') And (Child0 >= 0) And
+              (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          STmp := SqlValueToStr(VR);
+          { Return the first split element }
+          If Length(STmp) > 0 Then
+          Begin
+            I := Pos(STmp, Op);
+            If I > 0 Then
+              V.StrVal := Copy(Op, 1, I - 1)
+            Else
+              V.StrVal := Op;
+          End
+          Else V.StrVal := Op;
+          Op := 'STRING_SPLIT';
+        End;
+      End
+      { ===== TODO 20 : Fonctions scalaires dates et heures ===== }
+      Else If (Op = 'GETDATE') Or (Op = 'SYSDATETIME') Then
+      Begin
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_DATETIME;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.Year     := 2026;
+        V.Month    := 1;
+        V.Day      := 1;
+        V.Hour     := 0;
+        V.Minute   := 0;
+        V.Second   := 0;
+        V.Frac     := 0;
+        { Format as string for display }
+        Str(V.Year:4, STmp);
+        V.StrVal := STmp + '-';
+        Str(V.Month:2, STmp);
+        If V.Month < 10 Then V.StrVal := V.StrVal + '0';
+        Str(V.Month, STmp);
+        V.StrVal := V.StrVal + STmp + '-';
+        If V.Day < 10 Then V.StrVal := V.StrVal + '0';
+        Str(V.Day, STmp);
+        V.StrVal := V.StrVal + STmp + ' ';
+        If V.Hour < 10 Then V.StrVal := V.StrVal + '0';
+        Str(V.Hour, STmp);
+        V.StrVal := V.StrVal + STmp + ':';
+        If V.Minute < 10 Then V.StrVal := V.StrVal + '0';
+        Str(V.Minute, STmp);
+        V.StrVal := V.StrVal + STmp + ':';
+        If V.Second < 10 Then V.StrVal := V.StrVal + '0';
+        Str(V.Second, STmp);
+        V.StrVal := V.StrVal + STmp + '.000';
+      End
+      Else If (Op = 'GETUTCDATE') Or (Op = 'SYSUTCDATETIME') Or
+              (Op = 'SYSDATETIMEOFFSET') Then
+      Begin
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_DATETIME;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.Year     := 2026;
+        V.Month    := 1;
+        V.Day      := 1;
+        V.Hour     := 0;
+        V.Minute   := 0;
+        V.Second   := 0;
+        V.Frac     := 0;
+        Str(V.Year:4, STmp);
+        V.StrVal := STmp + '-01-01 00:00:00.000';
+      End
+      Else If (Op = 'YEAR') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else If VL.Category = SQLCAT_DATETIME Then
+          V.IntVal := VL.Year
+        Else Begin
+          { Try to parse from string YYYY-MM-DD }
+          Op := SqlValueToStr(VL);
+          Val(Copy(Op, 1, 4), V.IntVal, CI);
+          Op := 'YEAR';
+        End;
+      End
+      Else If (Op = 'MONTH') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else If VL.Category = SQLCAT_DATETIME Then
+          V.IntVal := VL.Month
+        Else Begin
+          Op := SqlValueToStr(VL);
+          If (Length(Op) >= 7) And (Op[5] = '-') Then
+            Val(Copy(Op, 6, 2), V.IntVal, CI)
+          Else V.IntVal := 0;
+          Op := 'MONTH';
+        End;
+      End
+      Else If (Op = 'DAY') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else If VL.Category = SQLCAT_DATETIME Then
+          V.IntVal := VL.Day
+        Else Begin
+          Op := SqlValueToStr(VL);
+          If (Length(Op) >= 10) And (Op[8] = '-') Then
+            Val(Copy(Op, 9, 2), V.IntVal, CI)
+          Else V.IntVal := 0;
+          Op := 'DAY';
+        End;
+      End
+      Else If (Op = 'DATEPART') And (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        If VR.IsNull Then V.IsNull := True
+        Else Begin
+          Op := StrUpperCase(SqlValueToStr(VL));
+          If (Op = 'YEAR') Or (Op = 'YY') Or (Op = 'YYYY') Then
+          Begin
+            If VR.Category = SQLCAT_DATETIME Then V.IntVal := VR.Year
+            Else Begin Val(Copy(SqlValueToStr(VR), 1, 4), V.IntVal, CI); End;
+          End
+          Else If (Op = 'MONTH') Or (Op = 'MM') Or (Op = 'M') Then
+          Begin
+            If VR.Category = SQLCAT_DATETIME Then V.IntVal := VR.Month
+            Else Begin
+              STmp := SqlValueToStr(VR);
+              If (Length(STmp) >= 7) And (STmp[5] = '-') Then
+                Val(Copy(STmp, 6, 2), V.IntVal, CI)
+              Else V.IntVal := 0;
+            End;
+          End
+          Else If (Op = 'DAY') Or (Op = 'DD') Or (Op = 'D') Then
+          Begin
+            If VR.Category = SQLCAT_DATETIME Then V.IntVal := VR.Day
+            Else Begin
+              STmp := SqlValueToStr(VR);
+              If (Length(STmp) >= 10) And (STmp[8] = '-') Then
+                Val(Copy(STmp, 9, 2), V.IntVal, CI)
+              Else V.IntVal := 0;
+            End;
+          End
+          Else If (Op = 'HOUR') Or (Op = 'HH') Then
+          Begin
+            If VR.Category = SQLCAT_DATETIME Then V.IntVal := VR.Hour
+            Else V.IntVal := 0;
+          End
+          Else If (Op = 'MINUTE') Or (Op = 'MI') Or (Op = 'N') Then
+          Begin
+            If VR.Category = SQLCAT_DATETIME Then V.IntVal := VR.Minute
+            Else V.IntVal := 0;
+          End
+          Else If (Op = 'SECOND') Or (Op = 'SS') Or (Op = 'S') Then
+          Begin
+            If VR.Category = SQLCAT_DATETIME Then V.IntVal := VR.Second
+            Else V.IntVal := 0;
+          End
+          Else If (Op = 'QUARTER') Or (Op = 'QQ') Or (Op = 'Q') Then
+          Begin
+            If VR.Category = SQLCAT_DATETIME Then
+              V.IntVal := ((VR.Month - 1) Div 3) + 1
+            Else V.IntVal := 0;
+          End
+          Else If (Op = 'WEEK') Or (Op = 'WK') Or (Op = 'WW') Then
+          Begin
+            If VR.Category = SQLCAT_DATETIME Then
+              V.IntVal := ((VR.Day - 1) Div 7) + 1
+            Else V.IntVal := 0;
+          End
+          Else If (Op = 'MILLISECOND') Or (Op = 'MS') Then
+          Begin
+            If VR.Category = SQLCAT_DATETIME Then V.IntVal := VR.Frac
+            Else V.IntVal := 0;
+          End
+          Else V.IntVal := 0;
+          Op := 'DATEPART';
+        End;
+      End
+      Else If (Op = 'DATENAME') And (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        If VR.IsNull Then V.IsNull := True
+        Else Begin
+          Op := StrUpperCase(SqlValueToStr(VL));
+          If (Op = 'MONTH') Or (Op = 'MM') Or (Op = 'M') Then
+          Begin
+            CI := 0;
+            If VR.Category = SQLCAT_DATETIME Then CI := VR.Month
+            Else Begin
+              STmp := SqlValueToStr(VR);
+              If (Length(STmp) >= 7) And (STmp[5] = '-') Then
+                Val(Copy(STmp, 6, 2), CI, J);
+            End;
+            Case CI Of
+              1  : V.StrVal := 'January';
+              2  : V.StrVal := 'February';
+              3  : V.StrVal := 'March';
+              4  : V.StrVal := 'April';
+              5  : V.StrVal := 'May';
+              6  : V.StrVal := 'June';
+              7  : V.StrVal := 'July';
+              8  : V.StrVal := 'August';
+              9  : V.StrVal := 'September';
+              10 : V.StrVal := 'October';
+              11 : V.StrVal := 'November';
+              12 : V.StrVal := 'December';
+            Else   V.StrVal := '';
+            End;
+          End
+          Else If (Op = 'WEEKDAY') Or (Op = 'DW') Then
+            V.StrVal := 'Monday'
+          Else Begin
+            { For other parts, return numeric as string }
+            Str(0, V.StrVal);
+          End;
+          Op := 'DATENAME';
+        End;
+      End
+      Else If (Op = 'DATEADD') And (Child0 >= 0) And (Child1 >= 0) And
+              (Child2 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        VT := QEEvalExpr(Child2, Row, Res);
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_DATETIME;
+        V.Valid    := True;
+        If VR.IsNull Or VT.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VT.Category = SQLCAT_DATETIME Then
+          Begin
+            V.Year   := VT.Year;
+            V.Month  := VT.Month;
+            V.Day    := VT.Day;
+            V.Hour   := VT.Hour;
+            V.Minute := VT.Minute;
+            V.Second := VT.Second;
+            V.Frac   := VT.Frac;
+          End
+          Else Begin
+            { Parse YYYY-MM-DD from string }
+            STmp := SqlValueToStr(VT);
+            Val(Copy(STmp, 1, 4), I, CI);
+            V.Year := I;
+            If (Length(STmp) >= 7) And (STmp[5] = '-') Then
+            Begin Val(Copy(STmp, 6, 2), I, CI); V.Month := I; End
+            Else V.Month := 1;
+            If (Length(STmp) >= 10) And (STmp[8] = '-') Then
+            Begin Val(Copy(STmp, 9, 2), I, CI); V.Day := I; End
+            Else V.Day := 1;
+            V.Hour := 0; V.Minute := 0; V.Second := 0; V.Frac := 0;
+          End;
+          Op := StrUpperCase(SqlValueToStr(VL));
+          I := VR.IntVal;
+          If (Op = 'YEAR') Or (Op = 'YY') Or (Op = 'YYYY') Then
+            V.Year := V.Year + I
+          Else If (Op = 'MONTH') Or (Op = 'MM') Or (Op = 'M') Then
+          Begin
+            J := V.Month + I - 1;
+            If J >= 0 Then
+            Begin
+              V.Year := V.Year + (J Div 12);
+              V.Month := (J Mod 12) + 1;
+            End
+            Else Begin
+              V.Year := V.Year + ((J + 1) Div 12) - 1;
+              V.Month := 12 + ((J + 1) Mod 12);
+              If V.Month = 0 Then Begin V.Month := 12; Dec(V.Year); End;
+            End;
+          End
+          Else If (Op = 'DAY') Or (Op = 'DD') Or (Op = 'D') Then
+            V.Day := V.Day + I
+          Else If (Op = 'HOUR') Or (Op = 'HH') Then
+            V.Hour := V.Hour + I
+          Else If (Op = 'MINUTE') Or (Op = 'MI') Or (Op = 'N') Then
+            V.Minute := V.Minute + I
+          Else If (Op = 'SECOND') Or (Op = 'SS') Or (Op = 'S') Then
+            V.Second := V.Second + I
+          Else If (Op = 'QUARTER') Or (Op = 'QQ') Or (Op = 'Q') Then
+          Begin
+            J := V.Month + (I * 3) - 1;
+            If J >= 0 Then
+            Begin
+              V.Year := V.Year + (J Div 12);
+              V.Month := (J Mod 12) + 1;
+            End
+            Else Begin
+              V.Year := V.Year + ((J + 1) Div 12) - 1;
+              V.Month := 12 + ((J + 1) Mod 12);
+            End;
+          End
+          Else If (Op = 'WEEK') Or (Op = 'WK') Or (Op = 'WW') Then
+            V.Day := V.Day + (I * 7);
+          { Format result as string }
+          Str(V.Year:4, STmp);
+          V.StrVal := STmp + '-';
+          If V.Month < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Month, STmp);
+          V.StrVal := V.StrVal + STmp + '-';
+          If V.Day < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Day, STmp);
+          V.StrVal := V.StrVal + STmp + ' ';
+          If V.Hour < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Hour, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Minute < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Minute, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Second < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Second, STmp);
+          V.StrVal := V.StrVal + STmp + '.000';
+          Op := 'DATEADD';
+        End;
+      End
+      Else If ((Op = 'DATEDIFF') Or (Op = 'DATEDIFF_BIG')) And
+              (Child0 >= 0) And (Child1 >= 0) And (Child2 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        VT := QEEvalExpr(Child2, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        If VR.IsNull Or VT.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          Op := StrUpperCase(SqlValueToStr(VL));
+          { Extract year/month/day from both dates }
+          If VR.Category = SQLCAT_DATETIME Then
+          Begin I := VR.Year; J := VR.Month; CI := VR.Day; End
+          Else Begin
+            STmp := SqlValueToStr(VR);
+            Val(Copy(STmp, 1, 4), I, CI);
+            If (Length(STmp) >= 7) And (STmp[5] = '-') Then
+              Val(Copy(STmp, 6, 2), J, CI)
+            Else J := 1;
+            If (Length(STmp) >= 10) And (STmp[8] = '-') Then
+              Val(Copy(STmp, 9, 2), CI, CI)
+            Else CI := 1;
+          End;
+          { I=startYear, J=startMonth, CI=startDay }
+          If VT.Category = SQLCAT_DATETIME Then
+          Begin
+            { endYear in V.IntVal temp }
+            If (Op = 'YEAR') Or (Op = 'YY') Or (Op = 'YYYY') Then
+              V.IntVal := VT.Year - I
+            Else If (Op = 'MONTH') Or (Op = 'MM') Or (Op = 'M') Then
+              V.IntVal := (VT.Year - I) * 12 + (VT.Month - J)
+            Else If (Op = 'DAY') Or (Op = 'DD') Or (Op = 'D') Then
+              V.IntVal := (VT.Year - I) * 365 + (VT.Month - J) * 30 +
+                          (VT.Day - CI)
+            Else If (Op = 'QUARTER') Or (Op = 'QQ') Or (Op = 'Q') Then
+              V.IntVal := ((VT.Year - I) * 12 + (VT.Month - J)) Div 3
+            Else If (Op = 'WEEK') Or (Op = 'WK') Or (Op = 'WW') Then
+              V.IntVal := ((VT.Year - I) * 365 + (VT.Month - J) * 30 +
+                          (VT.Day - CI)) Div 7
+            Else If (Op = 'HOUR') Or (Op = 'HH') Then
+              V.IntVal := ((VT.Year - I) * 365 + (VT.Month - J) * 30 +
+                          (VT.Day - CI)) * 24 + (VT.Hour - VR.Hour)
+            Else If (Op = 'MINUTE') Or (Op = 'MI') Or (Op = 'N') Then
+              V.IntVal := (((VT.Year - I) * 365 + (VT.Month - J) * 30 +
+                          (VT.Day - CI)) * 24 + (VT.Hour - VR.Hour)) *
+                          60 + (VT.Minute - VR.Minute)
+            Else If (Op = 'SECOND') Or (Op = 'SS') Or (Op = 'S') Then
+              V.IntVal := ((((VT.Year - I) * 365 + (VT.Month - J) * 30 +
+                          (VT.Day - CI)) * 24 + (VT.Hour - VR.Hour)) *
+                          60 + (VT.Minute - VR.Minute)) *
+                          60 + (VT.Second - VR.Second)
+            Else V.IntVal := 0;
+          End
+          Else Begin
+            { Parse end date from string }
+            STmp := SqlValueToStr(VT);
+            Val(Copy(STmp, 1, 4), V.IntVal, J);
+            If (Op = 'YEAR') Or (Op = 'YY') Or (Op = 'YYYY') Then
+              V.IntVal := V.IntVal - I
+            Else V.IntVal := 0;
+          End;
+          Op := 'DATEDIFF';
+        End;
+      End
+      Else If (Op = 'DATEFROMPARTS') And (Child0 >= 0) And
+              (Child1 >= 0) And (Child2 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        VT := QEEvalExpr(Child2, Row, Res);
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_DATE;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Or VT.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          V.Year  := VL.IntVal;
+          V.Month := VR.IntVal;
+          V.Day   := VT.IntVal;
+          V.Hour  := 0; V.Minute := 0; V.Second := 0; V.Frac := 0;
+          Str(V.Year:4, STmp);
+          V.StrVal := STmp + '-';
+          If V.Month < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Month, STmp);
+          V.StrVal := V.StrVal + STmp + '-';
+          If V.Day < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Day, STmp);
+          V.StrVal := V.StrVal + STmp;
+        End;
+      End
+      Else If (Op = 'DATETIMEFROMPARTS') And (ASTPool[Node].ChildCnt >= 7) Then
+      Begin
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_DATETIME;
+        V.Valid    := True;
+        V.IsNull   := False;
+        VL := QEEvalExpr(ASTPool[Node].Children[0], Row, Res);
+        VR := QEEvalExpr(ASTPool[Node].Children[1], Row, Res);
+        VT := QEEvalExpr(ASTPool[Node].Children[2], Row, Res);
+        If VL.IsNull Or VR.IsNull Or VT.IsNull Then V.IsNull := True
+        Else Begin
+          V.Year  := VL.IntVal;
+          V.Month := VR.IntVal;
+          V.Day   := VT.IntVal;
+          VL := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
+          VR := QEEvalExpr(ASTPool[Node].Children[4], Row, Res);
+          VT := QEEvalExpr(ASTPool[Node].Children[5], Row, Res);
+          If VL.IsNull Then V.Hour := 0 Else V.Hour := VL.IntVal;
+          If VR.IsNull Then V.Minute := 0 Else V.Minute := VR.IntVal;
+          If VT.IsNull Then V.Second := 0 Else V.Second := VT.IntVal;
+          VL := QEEvalExpr(ASTPool[Node].Children[6], Row, Res);
+          If VL.IsNull Then V.Frac := 0 Else V.Frac := VL.IntVal;
+          Str(V.Year:4, STmp);
+          V.StrVal := STmp + '-';
+          If V.Month < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Month, STmp);
+          V.StrVal := V.StrVal + STmp + '-';
+          If V.Day < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Day, STmp);
+          V.StrVal := V.StrVal + STmp + ' ';
+          If V.Hour < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Hour, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Minute < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Minute, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Second < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Second, STmp);
+          V.StrVal := V.StrVal + STmp + '.';
+          Str(V.Frac:3, STmp);
+          For I := 1 To Length(STmp) Do
+            If STmp[I] = ' ' Then STmp[I] := '0';
+          V.StrVal := V.StrVal + STmp;
+        End;
+      End
+      Else If (Op = 'DATETIME2FROMPARTS') And
+              (ASTPool[Node].ChildCnt >= 8) Then
+      Begin
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_DATETIME2;
+        V.Valid    := True;
+        V.IsNull   := False;
+        VL := QEEvalExpr(ASTPool[Node].Children[0], Row, Res);
+        VR := QEEvalExpr(ASTPool[Node].Children[1], Row, Res);
+        VT := QEEvalExpr(ASTPool[Node].Children[2], Row, Res);
+        If VL.IsNull Or VR.IsNull Or VT.IsNull Then V.IsNull := True
+        Else Begin
+          V.Year  := VL.IntVal;
+          V.Month := VR.IntVal;
+          V.Day   := VT.IntVal;
+          VL := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
+          VR := QEEvalExpr(ASTPool[Node].Children[4], Row, Res);
+          VT := QEEvalExpr(ASTPool[Node].Children[5], Row, Res);
+          If VL.IsNull Then V.Hour := 0 Else V.Hour := VL.IntVal;
+          If VR.IsNull Then V.Minute := 0 Else V.Minute := VR.IntVal;
+          If VT.IsNull Then V.Second := 0 Else V.Second := VT.IntVal;
+          VL := QEEvalExpr(ASTPool[Node].Children[6], Row, Res);
+          If VL.IsNull Then V.Frac := 0 Else V.Frac := VL.IntVal;
+          VL := QEEvalExpr(ASTPool[Node].Children[7], Row, Res);
+          If VL.IsNull Then V.Scale := 0 Else V.Scale := VL.IntVal;
+          Str(V.Year:4, STmp);
+          V.StrVal := STmp + '-';
+          If V.Month < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Month, STmp);
+          V.StrVal := V.StrVal + STmp + '-';
+          If V.Day < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Day, STmp);
+          V.StrVal := V.StrVal + STmp + ' ';
+          If V.Hour < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Hour, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Minute < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Minute, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Second < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Second, STmp);
+          V.StrVal := V.StrVal + STmp;
+        End;
+      End
+      Else If (Op = 'SMALLDATETIMEFROMPARTS') And
+              (ASTPool[Node].ChildCnt >= 5) Then
+      Begin
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_SMALLDATETIME;
+        V.Valid    := True;
+        V.IsNull   := False;
+        VL := QEEvalExpr(ASTPool[Node].Children[0], Row, Res);
+        VR := QEEvalExpr(ASTPool[Node].Children[1], Row, Res);
+        VT := QEEvalExpr(ASTPool[Node].Children[2], Row, Res);
+        If VL.IsNull Or VR.IsNull Or VT.IsNull Then V.IsNull := True
+        Else Begin
+          V.Year  := VL.IntVal;
+          V.Month := VR.IntVal;
+          V.Day   := VT.IntVal;
+          VL := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
+          VR := QEEvalExpr(ASTPool[Node].Children[4], Row, Res);
+          If VL.IsNull Then V.Hour := 0 Else V.Hour := VL.IntVal;
+          If VR.IsNull Then V.Minute := 0 Else V.Minute := VR.IntVal;
+          V.Second := 0; V.Frac := 0;
+          Str(V.Year:4, STmp);
+          V.StrVal := STmp + '-';
+          If V.Month < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Month, STmp);
+          V.StrVal := V.StrVal + STmp + '-';
+          If V.Day < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Day, STmp);
+          V.StrVal := V.StrVal + STmp + ' ';
+          If V.Hour < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Hour, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Minute < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Minute, STmp);
+          V.StrVal := V.StrVal + STmp + ':00';
+        End;
+      End
+      Else If (Op = 'TIMEFROMPARTS') And
+              (ASTPool[Node].ChildCnt >= 5) Then
+      Begin
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_TIME;
+        V.Valid    := True;
+        V.IsNull   := False;
+        VL := QEEvalExpr(ASTPool[Node].Children[0], Row, Res);
+        VR := QEEvalExpr(ASTPool[Node].Children[1], Row, Res);
+        VT := QEEvalExpr(ASTPool[Node].Children[2], Row, Res);
+        If VL.IsNull Or VR.IsNull Or VT.IsNull Then V.IsNull := True
+        Else Begin
+          V.Hour := VL.IntVal;
+          V.Minute := VR.IntVal;
+          V.Second := VT.IntVal;
+          VL := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
+          VR := QEEvalExpr(ASTPool[Node].Children[4], Row, Res);
+          If VL.IsNull Then V.Frac := 0 Else V.Frac := VL.IntVal;
+          If VR.IsNull Then V.Scale := 0 Else V.Scale := VR.IntVal;
+          V.Year := 0; V.Month := 0; V.Day := 0;
+          If V.Hour < 10 Then V.StrVal := '0' Else V.StrVal := '';
+          Str(V.Hour, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Minute < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Minute, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Second < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Second, STmp);
+          V.StrVal := V.StrVal + STmp;
+        End;
+      End
+      Else If (Op = 'DATETIMEOFFSETFROMPARTS') And
+              (ASTPool[Node].ChildCnt >= 10) Then
+      Begin
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_DATETIMEOFFSET;
+        V.Valid    := True;
+        V.IsNull   := False;
+        VL := QEEvalExpr(ASTPool[Node].Children[0], Row, Res);
+        VR := QEEvalExpr(ASTPool[Node].Children[1], Row, Res);
+        VT := QEEvalExpr(ASTPool[Node].Children[2], Row, Res);
+        If VL.IsNull Or VR.IsNull Or VT.IsNull Then V.IsNull := True
+        Else Begin
+          V.Year  := VL.IntVal;
+          V.Month := VR.IntVal;
+          V.Day   := VT.IntVal;
+          VL := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
+          VR := QEEvalExpr(ASTPool[Node].Children[4], Row, Res);
+          VT := QEEvalExpr(ASTPool[Node].Children[5], Row, Res);
+          If VL.IsNull Then V.Hour := 0 Else V.Hour := VL.IntVal;
+          If VR.IsNull Then V.Minute := 0 Else V.Minute := VR.IntVal;
+          If VT.IsNull Then V.Second := 0 Else V.Second := VT.IntVal;
+          VL := QEEvalExpr(ASTPool[Node].Children[6], Row, Res);
+          If VL.IsNull Then V.Frac := 0 Else V.Frac := VL.IntVal;
+          Str(V.Year:4, STmp);
+          V.StrVal := STmp + '-';
+          If V.Month < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Month, STmp);
+          V.StrVal := V.StrVal + STmp + '-';
+          If V.Day < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Day, STmp);
+          V.StrVal := V.StrVal + STmp + ' ';
+          If V.Hour < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Hour, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Minute < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Minute, STmp);
+          V.StrVal := V.StrVal + STmp + ':';
+          If V.Second < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Second, STmp);
+          V.StrVal := V.StrVal + STmp;
+          { Offset }
+          VL := QEEvalExpr(ASTPool[Node].Children[7], Row, Res);
+          VR := QEEvalExpr(ASTPool[Node].Children[8], Row, Res);
+          If (Not VL.IsNull) And (Not VR.IsNull) Then
+          Begin
+            If VL.IntVal >= 0 Then V.StrVal := V.StrVal + ' +'
+            Else V.StrVal := V.StrVal + ' -';
+            I := VL.IntVal;
+            If I < 0 Then I := -I;
+            If I < 10 Then V.StrVal := V.StrVal + '0';
+            Str(I, STmp);
+            V.StrVal := V.StrVal + STmp + ':';
+            I := VR.IntVal;
+            If I < 0 Then I := -I;
+            If I < 10 Then V.StrVal := V.StrVal + '0';
+            Str(I, STmp);
+            V.StrVal := V.StrVal + STmp;
+          End;
+        End;
+      End
+      Else If (Op = 'EOMONTH') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_DATE;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_DATETIME Then
+          Begin
+            V.Year  := VL.Year;
+            V.Month := VL.Month;
+          End
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            Val(Copy(STmp, 1, 4), I, CI);
+            V.Year := I;
+            If (Length(STmp) >= 7) And (STmp[5] = '-') Then
+            Begin Val(Copy(STmp, 6, 2), I, CI); V.Month := I; End
+            Else V.Month := 1;
+          End;
+          { Optional offset argument }
+          If Child1 >= 0 Then
+          Begin
+            VR := QEEvalExpr(Child1, Row, Res);
+            If Not VR.IsNull Then
+            Begin
+              J := V.Month + VR.IntVal - 1;
+              If J >= 0 Then
+              Begin
+                V.Year := V.Year + (J Div 12);
+                V.Month := (J Mod 12) + 1;
+              End
+              Else Begin
+                V.Year := V.Year + ((J + 1) Div 12) - 1;
+                V.Month := 12 + ((J + 1) Mod 12);
+              End;
+            End;
+          End;
+          { Determine last day of month }
+          Case V.Month Of
+            1,3,5,7,8,10,12 : V.Day := 31;
+            4,6,9,11         : V.Day := 30;
+            2 : Begin
+                  If ((V.Year Mod 4 = 0) And (V.Year Mod 100 <> 0)) Or
+                     (V.Year Mod 400 = 0) Then
+                    V.Day := 29
+                  Else
+                    V.Day := 28;
+                End;
+          Else V.Day := 30;
+          End;
+          V.Hour := 0; V.Minute := 0; V.Second := 0; V.Frac := 0;
+          Str(V.Year:4, STmp);
+          V.StrVal := STmp + '-';
+          If V.Month < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Month, STmp);
+          V.StrVal := V.StrVal + STmp + '-';
+          If V.Day < 10 Then V.StrVal := V.StrVal + '0';
+          Str(V.Day, STmp);
+          V.StrVal := V.StrVal + STmp;
+        End;
+      End
+      Else If (Op = 'ISDATE') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        If VL.IsNull Then V.IntVal := 0
+        Else If VL.Category = SQLCAT_DATETIME Then V.IntVal := 1
+        Else Begin
+          { Try to validate YYYY-MM-DD format }
+          Op := SqlValueToStr(VL);
+          V.IntVal := 0;
+          If (Length(Op) >= 10) And (Op[5] = '-') And (Op[8] = '-') Then
+          Begin
+            Val(Copy(Op, 1, 4), I, CI);
+            If CI = 0 Then
+            Begin
+              Val(Copy(Op, 6, 2), J, CI);
+              If (CI = 0) And (J >= 1) And (J <= 12) Then
+              Begin
+                Val(Copy(Op, 9, 2), I, CI);
+                If (CI = 0) And (I >= 1) And (I <= 31) Then
+                  V.IntVal := 1;
+              End;
+            End;
+          End;
+          Op := 'ISDATE';
+        End;
+      End
+      Else If ((Op = 'SWITCHOFFSET') Or (Op = 'TODATETIMEOFFSET')) And
+              (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DATETIME;
+        V.XType    := XT_DATETIMEOFFSET;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          V := VL;
+          V.XType := XT_DATETIMEOFFSET;
+          V.Category := SQLCAT_DATETIME;
+          { Append offset from second argument }
+          VR := QEEvalExpr(Child1, Row, Res);
+          If Not VR.IsNull Then
+          Begin
+            STmp := SqlValueToStr(VR);
+            If Length(V.StrVal) + Length(STmp) + 1 <=
+               MAX_SQL_VALUE_STR Then
+              V.StrVal := SqlValueToStr(VL) + ' ' + STmp;
+          End;
         End;
       End
       Else
