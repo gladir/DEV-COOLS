@@ -150,7 +150,7 @@
       Detecter les structures if-then-else completes et les
       boucles while/repeat pour eviter les Goto.
 
-  14. [A FAIRE] Traduction des sauts inconditionnels et detection de boucles.
+  14. [IMPLEMENTE] Traduction des sauts inconditionnels et detection de boucles.
       JMP label -> Goto label (avec declaration Label en Pascal).
       Detecter les patterns de boucles pour generer du code
       structure : JMP arriere -> Repeat..Until ou While..Do.
@@ -5186,6 +5186,164 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des sauts inconditionnels et boucles - TODO 14
+  ============================================================ }
+
+Function TranslateJMP(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ JMP label -> Goto label }
+Var
+ Target:String;
+Begin
+ Target:=OperandToExpr(AsmL.Op1,ProcIdx);
+ TranslateJMP:='Goto '+Target+';';
+End;
+
+Function TranslateLOOP(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ LOOP label -> Begin Dec(RegCX); If RegCX <> 0 Then Goto label End }
+Var
+ Target,CxVar:String;
+Begin
+ Target:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If Mode32 Then CxVar:='RegECX'
+ Else CxVar:='RegCX';
+ TranslateLOOP:='Begin Dec('+CxVar+'); If '+CxVar+' <> 0 Then Goto '+Target+'; End;';
+End;
+
+Function TranslateLOOPE(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ LOOPE/LOOPZ label -> Begin Dec(RegCX); If (RegCX<>0) and FlagZF Then Goto label End }
+Var
+ Target,CxVar:String;
+Begin
+ Target:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If Mode32 Then CxVar:='RegECX'
+ Else CxVar:='RegCX';
+ TranslateLOOPE:='Begin Dec('+CxVar+'); If ('+CxVar+' <> 0) and FlagZF Then Goto '+Target+'; End;';
+End;
+
+Function TranslateLOOPNE(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ LOOPNE/LOOPNZ label -> Begin Dec(RegCX); If (RegCX<>0) and not FlagZF Then Goto label End }
+Var
+ Target,CxVar:String;
+Begin
+ Target:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If Mode32 Then CxVar:='RegECX'
+ Else CxVar:='RegCX';
+ TranslateLOOPNE:='Begin Dec('+CxVar+'); If ('+CxVar+' <> 0) and not FlagZF Then Goto '+Target+'; End;';
+End;
+
+Function TranslateJCXZ(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ JCXZ/JECXZ label -> If RegCX = 0 Then Goto label }
+Var
+ Target,CxVar:String;
+Begin
+ Target:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If Mode32 Then CxVar:='RegECX'
+ Else CxVar:='RegCX';
+ TranslateJCXZ:='If '+CxVar+' = 0 Then Goto '+Target+';';
+End;
+
+Function IsJumpLoopMnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est un saut inconditionnel ou une instruction de boucle }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsJumpLoopMnemonic:=
+  (U='JMP')or(U='LOOP')or(U='LOOPE')or(U='LOOPZ')or
+  (U='LOOPNE')or(U='LOOPNZ')or(U='JCXZ')or(U='JECXZ');
+End;
+
+Function IsBackwardJump(JmpLine:LongInt;TargetLabel:String):Boolean;
+{ Detecte si un JMP pointe en arriere (back-edge potentielle boucle).
+  Cherche si le label cible est defini avant la ligne du JMP. }
+Var
+ I:LongInt;
+ AsmT:TAsmLine;
+Begin
+ IsBackwardJump:=False;
+ For I:=0 to JmpLine-1 do Begin
+  ParseInstructionLine(I,AsmT);
+  If UpCaseStr(AsmT.LabelStr)=UpCaseStr(TargetLabel) Then Begin
+   IsBackwardJump:=True;
+   Exit;
+  End;
+ End;
+End;
+
+Procedure ProcessJumpLoopTranslations;
+{ Parcourt les lignes source et traduit les sauts inconditionnels
+  et les instructions de boucle. Detecte les back-edges pour
+  identifier les boucles potentielles. Produit des statistiques. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ ProcIdx:Integer;
+ Code:String;
+ JmpCount,LoopCount,LoopeCount,LoopneCount,JcxzCount:LongInt;
+ BackJmpCount:LongInt;
+ TotalJmpLoop:LongInt;
+ M:String;
+ Target:String;
+Begin
+ JmpCount:=0;LoopCount:=0;LoopeCount:=0;LoopneCount:=0;JcxzCount:=0;
+ BackJmpCount:=0;
+ TotalJmpLoop:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=AsmL.Mnemonic;
+  If Not IsJumpLoopMnemonic(M) Then Continue;
+  ProcIdx:=FindProcForLine(I);
+  Code:='';
+  If M='JMP' Then Begin
+   Code:=TranslateJMP(AsmL,ProcIdx);
+   Inc(JmpCount);
+   { Detecter les sauts arriere (boucles potentielles) }
+   Target:=OperandToExpr(AsmL.Op1,ProcIdx);
+   If IsBackwardJump(I,Target) Then
+    Inc(BackJmpCount);
+  End
+  Else If M='LOOP' Then Begin
+   Code:=TranslateLOOP(AsmL,ProcIdx);
+   Inc(LoopCount);
+  End
+  Else If(M='LOOPE')or(M='LOOPZ')Then Begin
+   Code:=TranslateLOOPE(AsmL,ProcIdx);
+   Inc(LoopeCount);
+  End
+  Else If(M='LOOPNE')or(M='LOOPNZ')Then Begin
+   Code:=TranslateLOOPNE(AsmL,ProcIdx);
+   Inc(LoopneCount);
+  End
+  Else If(M='JCXZ')or(M='JECXZ')Then Begin
+   Code:=TranslateJCXZ(AsmL,ProcIdx);
+   Inc(JcxzCount);
+  End;
+  If Code<>'' Then Begin
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(TotalJmpLoop);
+  End;
+ End;
+ WriteLn('Traduction sauts/boucles : ',TotalJmpLoop,' instructions, ',
+  TranslationCount,' traductions totales.');
+ If Verbose Then Begin
+  WriteLn('  JMP              : ',JmpCount);
+  WriteLn('    dont arriere   : ',BackJmpCount);
+  WriteLn('  LOOP             : ',LoopCount);
+  WriteLn('  LOOPE/LOOPZ      : ',LoopeCount);
+  WriteLn('  LOOPNE/LOOPNZ    : ',LoopneCount);
+  WriteLn('  JCXZ/JECXZ       : ',JcxzCount);
+  If TotalJmpLoop>0 Then Begin
+   WriteLn('  Details :');
+   For I:=TranslationCount-TotalJmpLoop to TranslationCount-1 do
+    If I>=0 Then
+     WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -5302,6 +5460,7 @@ BEGIN
  { TODO 13 - Traduction comparaisons/sauts }
  ProcessCompareJumpTranslations;
  { TODO 14 - Traduction boucles }
+ ProcessJumpLoopTranslations;
  { TODO 15 - Traduction CALL/RET }
  { TODO 16 - Traduction PUSH/POP }
  { TODO 17 - Traduction chaines }
