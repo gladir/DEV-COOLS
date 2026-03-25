@@ -195,7 +195,7 @@
       les flags de section pour distinguer .text (code) de
       .data et .rdata (donnees).
 
-  20. Generation du fichier .ASM : en-tete, directives et segments.
+  20. [IMPLEMENTE] Generation du fichier .ASM : en-tete, directives et segments.
       Emettre l'en-tete du fichier .ASM avec des commentaires
       (nom du fichier source, date, outil). Pour les EXE DOS
       16 bits : .MODEL SMALL/MEDIUM/LARGE, .STACK, SEGMENT/ENDS.
@@ -3766,6 +3766,174 @@ Begin
 End;
 
 { ============================================================
+  GENERATION DU FICHIER .ASM : EN-TETE, DIRECTIVES, SEGMENTS (TODO 20)
+  ============================================================ }
+
+{ Ecrit l'en-tete du fichier .ASM avec des commentaires :
+  nom du fichier source, date, outil. }
+Procedure WriteASMHeader(Var F : Text);
+Begin
+  WriteLn(F, '; ============================================================');
+  WriteLn(F, '; Fichier genere par DISEXE v', DISEXE_VERSION, ' (', DISEXE_DATE, ')');
+  WriteLn(F, '; Source : ', InputFileName);
+  If IsPEFile Then
+    WriteLn(F, '; Format : PE 32 bits (Portable Executable)')
+  Else
+    WriteLn(F, '; Format : MZ DOS 16 bits');
+  WriteLn(F, '; ============================================================');
+  WriteLn(F);
+End;
+
+{ Ecrit les directives EXTRN pour les fonctions importees (PE). }
+Procedure WriteASMExterns(Var F : Text);
+Var
+  I : LongInt;
+Begin
+  If ImportCount <= 0 Then Exit;
+  WriteLn(F, '; --- Fonctions importees ---');
+  For I := 0 To ImportCount - 1 Do Begin
+    If Imports[I].ByOrdinal Then
+      WriteLn(F, 'EXTRN ', Imports[I].DLLName, '!ord_',
+              IntToStr(Imports[I].Ordinal), ':PROC')
+    Else
+      WriteLn(F, 'EXTRN ', Imports[I].FuncName, ':PROC');
+  End;
+  WriteLn(F);
+End;
+
+{ Ecrit les directives PUBLIC pour les fonctions exportees (PE). }
+Procedure WriteASMPublics(Var F : Text);
+Var
+  I : LongInt;
+Begin
+  If ExportCount <= 0 Then Exit;
+  WriteLn(F, '; --- Fonctions exportees ---');
+  For I := 0 To ExportCount - 1 Do Begin
+    If ExportList[I].HasName Then
+      WriteLn(F, 'PUBLIC ', ExportList[I].FuncName)
+    Else
+      WriteLn(F, 'PUBLIC ord_', IntToStr(ExportList[I].Ordinal));
+  End;
+  WriteLn(F);
+End;
+
+{ Ecrit les directives de modele et segments pour un EXE DOS 16 bits.
+  Genere .MODEL SMALL, .STACK, et les directives SEGMENT/ENDS. }
+Procedure WriteASMDirectivesDOS16(Var F : Text);
+Begin
+  WriteLn(F, '.8086');
+  WriteLn(F, '.MODEL SMALL');
+  WriteLn(F);
+  { Pile }
+  WriteLn(F, '.STACK ', HexWord(EntrySP), 'h');
+  WriteLn(F);
+  { Segment de donnees }
+  WriteLn(F, 'DSEG SEGMENT PARA PUBLIC ''DATA''');
+  WriteLn(F);
+  WriteLn(F, '; (donnees a generer par TODO 22)');
+  WriteLn(F);
+  WriteLn(F, 'DSEG ENDS');
+  WriteLn(F);
+  { Segment de code }
+  WriteLn(F, 'CSEG SEGMENT PARA PUBLIC ''CODE''');
+  WriteLn(F, '  ASSUME CS:CSEG, DS:DSEG, SS:STACK');
+  WriteLn(F);
+  WriteLn(F, '; Point d''entree : ', HexWord(EntryCS), ':', HexWord(EntryIP));
+  WriteLn(F);
+  WriteLn(F, '; (code a generer par TODO 21)');
+  WriteLn(F);
+  WriteLn(F, 'CSEG ENDS');
+  WriteLn(F);
+  WriteLn(F, 'END');
+End;
+
+{ Ecrit les directives de modele et segments pour un PE 32 bits.
+  Genere .386, .MODEL FLAT, STDCALL, et les sections. }
+Procedure WriteASMDirectivesPE32(Var F : Text);
+Var
+  I       : Integer;
+  SecName : TString;
+  IsCode  : Boolean;
+  IsData  : Boolean;
+  IsBSS   : Boolean;
+Begin
+  WriteLn(F, '.386');
+  WriteLn(F, '.MODEL FLAT, STDCALL');
+  WriteLn(F, 'OPTION CASEMAP:NONE');
+  WriteLn(F);
+  { Declarations d'imports }
+  WriteASMExterns(F);
+  { Declarations d'exports }
+  WriteASMPublics(F);
+  { Generer les sections PE }
+  For I := 0 To SectionCount - 1 Do Begin
+    SecName := GetSectionName(Sections[I]);
+    IsCode := ((Sections[I].Characteristics And IMAGE_SCN_CNT_CODE) <> 0) Or
+              ((Sections[I].Characteristics And IMAGE_SCN_MEM_EXECUTE) <> 0);
+    IsData := (Sections[I].Characteristics And IMAGE_SCN_CNT_INITIALIZED_DATA) <> 0;
+    IsBSS  := (Sections[I].Characteristics And IMAGE_SCN_CNT_UNINITIALIZED_DATA) <> 0;
+    If IsCode Then Begin
+      WriteLn(F, '; --- Section ', SecName, ' (CODE) ---');
+      WriteLn(F, '.CODE');
+      WriteLn(F);
+      WriteLn(F, '; Point d''entree RVA : ', HexDWord(PEEntryPointRVA), 'h');
+      WriteLn(F, '; ImageBase : ', HexDWord(PEOptHeader.ImageBase), 'h');
+      WriteLn(F);
+      WriteLn(F, '; (code a generer par TODO 21)');
+      WriteLn(F);
+    End Else If IsBSS Then Begin
+      WriteLn(F, '; --- Section ', SecName, ' (BSS) ---');
+      WriteLn(F, '.DATA?');
+      WriteLn(F);
+      WriteLn(F, '; (donnees non-initialisees a generer par TODO 22)');
+      WriteLn(F);
+    End Else If IsData Then Begin
+      If (Sections[I].Characteristics And IMAGE_SCN_MEM_WRITE) <> 0 Then Begin
+        WriteLn(F, '; --- Section ', SecName, ' (DATA) ---');
+        WriteLn(F, '.DATA');
+      End Else Begin
+        WriteLn(F, '; --- Section ', SecName, ' (CONST) ---');
+        WriteLn(F, '.CONST');
+      End;
+      WriteLn(F);
+      WriteLn(F, '; (donnees a generer par TODO 22)');
+      WriteLn(F);
+    End Else Begin
+      WriteLn(F, '; --- Section ', SecName, ' (', SectionFlagsStr(Sections[I].Characteristics), ') ---');
+      WriteLn(F);
+    End;
+  End;
+  WriteLn(F, 'END');
+End;
+
+{ Orchestre la generation de l'en-tete du fichier .ASM.
+  Cree le fichier de sortie, ecrit l'en-tete avec commentaires,
+  puis les directives adaptees au format (DOS 16 ou PE 32 bits). }
+Procedure GenerateASMHeader;
+Var
+  F : Text;
+Begin
+  WriteLn('Generation du fichier .ASM : ', OutputFileName);
+  Assign(F, OutputFileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    WriteLn('Erreur : impossible de creer le fichier ', OutputFileName);
+    Exit;
+  End;
+  { En-tete avec commentaires }
+  WriteASMHeader(F);
+  { Directives et segments selon le format }
+  If IsPEFile Then
+    WriteASMDirectivesPE32(F)
+  Else
+    WriteASMDirectivesDOS16(F);
+  Close(F);
+  WriteLn('Fichier .ASM genere avec succes.');
+End;
+
+{ ============================================================
   ANALYSE DES OPTIONS DE LIGNE DE COMMANDE
   ============================================================ }
 
@@ -4754,8 +4922,10 @@ Begin
            SectionFlagsStr(Sections[IterI].Characteristics));
   End;
  End;
+ { Generation du fichier .ASM : en-tete, directives et segments (TODO 20) }
+ GenerateASMHeader;
  WriteLn;
- WriteLn('(les TODOs 20 a 25 restent a implementer)');
+ WriteLn('(les TODOs 21 a 25 restent a implementer)');
  WriteLn;
  WriteLn('Termine.');
  { Liberation de la memoire }
