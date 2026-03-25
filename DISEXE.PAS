@@ -225,7 +225,7 @@
       DB ? ou DUP(?). Generer des labels pour les variables
       referencees (dword_XXXX, byte_XXXX, aString_XXXX).
 
-  23. Etiquettes automatiques et table des symboles.
+  23. [IMPLEMENTE] Etiquettes automatiques et table des symboles.
       Gerer une table de symboles unifiant les labels generes
       automatiquement : sub_XXXX (sous-programmes), loc_XXXX
       (cibles de saut), dword_XXXX / word_XXXX / byte_XXXX
@@ -4671,6 +4671,403 @@ Begin
   End;
 End;
 
+{ ============================================================
+  ETIQUETTES AUTOMATIQUES ET TABLE DES SYMBOLES (TODO 23)
+  ============================================================ }
+
+{ FindLabelByName - Recherche un label dans la table par son nom.
+  Retourne l'index du label si trouve, -1 sinon.
+  La comparaison est insensible a la casse. }
+Function FindLabelByName(AName : TString) : LongInt;
+Var
+  I    : LongInt;
+  UName : TString;
+  ULbl  : TString;
+Begin
+  UName := UpCaseStr(AName);
+  For I := 0 To LabelCount - 1 Do Begin
+    ULbl := UpCaseStr(Labels[I].Name);
+    If ULbl = UName Then Begin
+      FindLabelByName := I;
+      Exit;
+    End;
+  End;
+  FindLabelByName := -1;
+End;
+
+{ ResolveSymbolName - Retourne le meilleur nom disponible pour une adresse.
+  Priorite : import/export (nom reel) > nom existant non-vide > generation auto.
+  Si aucun label n'existe, retourne une chaine vide. }
+Function ResolveSymbolName(Addr : LongInt; Mode32 : Boolean) : TString;
+Var
+  Idx : LongInt;
+Begin
+  Idx := FindLabel(Addr);
+  If Idx >= 0 Then Begin
+    { Le label existe, retourner son nom }
+    If Labels[Idx].Name <> '' Then Begin
+      ResolveSymbolName := Labels[Idx].Name;
+      Exit;
+    End;
+    { Nom vide, generer un nom automatique }
+    ResolveSymbolName := GenerateLabelName(Addr, Labels[Idx].IsProc, Mode32);
+  End Else
+    ResolveSymbolName := '';
+End;
+
+{ IsDataLabel - Teste si un label pointe vers une zone de donnees
+  (BF_DATA, BF_STRING, BF_JUMPTBL, BF_PADDING ou BF_UNKNOWN).
+  Retourne True si le label n'est pas dans du code. }
+Function IsDataLabel(Addr : LongInt) : Boolean;
+Var
+  BF : Byte;
+Begin
+  IsDataLabel := False;
+  If (ByteFlags = Nil) Or (Addr < 0) Or (Addr >= ImageSize) Then Exit;
+  BF := ByteFlags^[Addr];
+  IsDataLabel := (BF <> BF_CODE);
+End;
+
+{ CountConsecutiveDataBytes - Compte le nombre d'octets consecutifs de
+  donnees (BF_DATA) a partir d'une adresse donnee, sans depasser un label.
+  Utilise pour determiner la taille du bloc de donnees (dword, word, byte). }
+Function CountConsecutiveDataBytes(Addr : LongInt) : LongInt;
+Var
+  Count : LongInt;
+  Limit : LongInt;
+Begin
+  Count := 0;
+  Limit := ImageSize;
+  If Limit > Addr + 16 Then Limit := Addr + 16;
+  While (Addr + Count < Limit) Do Begin
+    If ByteFlags = Nil Then Break;
+    If ByteFlags^[Addr + Count] <> BF_DATA Then Break;
+    { S'arreter si on rencontre un autre label (sauf le premier octet) }
+    If (Count > 0) And (FindLabel(Addr + Count) >= 0) Then Break;
+    Inc(Count);
+  End;
+  CountConsecutiveDataBytes := Count;
+End;
+
+{ IsRelocatedAddress - Teste si une adresse est une position relogee
+  (contient un offset/pointeur). Retourne True si l'adresse fait partie
+  d'un relogement MZ ou PE. }
+Function IsRelocatedAddress(Addr : LongInt) : Boolean;
+Begin
+  IsRelocatedAddress := False;
+  If (RelocFlags <> Nil) And (Addr >= 0) And (Addr < ImageSize) Then Begin
+    If RelocFlags^[Addr] = 1 Then
+      IsRelocatedAddress := True;
+  End;
+End;
+
+{ RefineDataLabels - Parcourt la table des labels et ameliore les noms
+  des labels de donnees generiques (loc_XXXX) en noms plus specifiques
+  selon le type de donnees :
+    - off_XXXX  : offset/pointeur (adresse relogee)
+    - dword_XXXX : donnee de 4 octets
+    - word_XXXX  : donnee de 2 octets
+    - byte_XXXX  : donnee de 1 octet
+  Les labels deja nommes (aStr_, jtbl_, imports, exports, sub_) ne sont
+  pas modifies. }
+Procedure RefineDataLabels(Mode32 : Boolean);
+Var
+  I         : LongInt;
+  Addr      : LongInt;
+  OldName   : TString;
+  NewName   : TString;
+  DataSize  : LongInt;
+  AddrStr   : TString;
+  Prefix    : TString;
+  Refined   : LongInt;
+Begin
+  Refined := 0;
+  For I := 0 To LabelCount - 1 Do Begin
+    Addr := Labels[I].Address;
+    OldName := Labels[I].Name;
+    { Ne pas modifier les imports, exports ou procedures }
+    If Labels[I].IsImport Then Continue;
+    If Labels[I].IsExport Then Continue;
+    If Labels[I].IsProc Then Continue;
+    { Ne modifier que les labels loc_XXXX (generes automatiquement pour du code) }
+    If Length(OldName) < 4 Then Continue;
+    If Copy(OldName, 1, 4) <> 'loc_' Then Continue;
+    { Verifier que l'adresse pointe vers des donnees }
+    If Not IsDataLabel(Addr) Then Continue;
+    { Generer le suffixe d'adresse }
+    If Mode32 Then
+      AddrStr := HexDWord(Addr)
+    Else
+      AddrStr := HexWord(Word(Addr));
+    { Determiner le type de donnees }
+    If IsRelocatedAddress(Addr) Then Begin
+      { C'est un pointeur/offset reloge }
+      Prefix := 'off_';
+    End Else Begin
+      { Classifier selon la taille du bloc de donnees }
+      DataSize := CountConsecutiveDataBytes(Addr);
+      If DataSize >= 4 Then
+        Prefix := 'dword_'
+      Else If DataSize >= 2 Then
+        Prefix := 'word_'
+      Else
+        Prefix := 'byte_';
+    End;
+    NewName := Prefix + AddrStr;
+    Labels[I].Name := NewName;
+    Inc(Refined);
+  End;
+  If OptVerbose And (Refined > 0) Then
+    WriteLn('  Labels de donnees raffines : ', Refined);
+End;
+
+{ ParseHexValue - Convertit une chaine hexadecimale en LongInt.
+  Accepte les prefixes 0x, $, et les suffixes h.
+  Retourne True si la conversion a reussi. }
+Function ParseHexValue(S : TString; Var Value : LongInt) : Boolean;
+Var
+  I      : Integer;
+  C      : Char;
+  Digit  : Integer;
+  Result : LongInt;
+Begin
+  ParseHexValue := False;
+  { Retirer espaces de debut/fin }
+  While (Length(S) > 0) And (S[1] = ' ') Do Delete(S, 1, 1);
+  While (Length(S) > 0) And (S[Length(S)] = ' ') Do Delete(S, Length(S), 1);
+  If Length(S) = 0 Then Exit;
+  { Retirer prefixes 0x ou $ }
+  If (Length(S) >= 2) And (S[1] = '0') And ((S[2] = 'x') Or (S[2] = 'X')) Then
+    Delete(S, 1, 2)
+  Else If S[1] = '$' Then
+    Delete(S, 1, 1);
+  { Retirer suffixe h }
+  If (Length(S) > 0) And ((S[Length(S)] = 'h') Or (S[Length(S)] = 'H')) Then
+    Delete(S, Length(S), 1);
+  If Length(S) = 0 Then Exit;
+  Result := 0;
+  For I := 1 To Length(S) Do Begin
+    C := S[I];
+    If (C >= '0') And (C <= '9') Then
+      Digit := Ord(C) - Ord('0')
+    Else If (C >= 'A') And (C <= 'F') Then
+      Digit := Ord(C) - Ord('A') + 10
+    Else If (C >= 'a') And (C <= 'f') Then
+      Digit := Ord(C) - Ord('a') + 10
+    Else
+      Exit;  { caractere invalide }
+    Result := Result * 16 + Digit;
+  End;
+  Value := Result;
+  ParseHexValue := True;
+End;
+
+{ TrimLeft - Retire les espaces en debut de chaine }
+Function TrimLeft(S : TString) : TString;
+Begin
+  While (Length(S) > 0) And (S[1] = ' ') Do Delete(S, 1, 1);
+  TrimLeft := S;
+End;
+
+{ TrimRight - Retire les espaces en fin de chaine }
+Function TrimRight(S : TString) : TString;
+Begin
+  While (Length(S) > 0) And (S[Length(S)] = ' ') Do Delete(S, Length(S), 1);
+  TrimRight := S;
+End;
+
+{ TrimStr - Retire les espaces en debut et fin de chaine }
+Function TrimStr(S : TString) : TString;
+Begin
+  TrimStr := TrimRight(TrimLeft(S));
+End;
+
+{ ParseMapLine - Tente de parser une ligne de fichier .MAP pour en
+  extraire un symbole avec son adresse. Supporte les formats courants :
+    - Microsoft LINK : "  0001:00000010  _symbol  00401010  module.obj"
+    - Borland TLINK  : "  0001:0010  _symbol"
+    - Adresse simple  : "00401010 _symbol"
+  Retourne True si un symbole a ete extrait avec succes.
+  L'adresse retournee est un offset lineaire (pour MZ : segment*16+offset,
+  pour PE : le RVA apres le ':' seulement). }
+Function ParseMapLine(Line : TString; Mode32 : Boolean;
+                      Var Addr : LongInt; Var SymName : TString) : Boolean;
+Var
+  S       : TString;
+  ColPos  : Integer;
+  SegStr  : TString;
+  OfsStr  : TString;
+  SegVal  : LongInt;
+  OfsVal  : LongInt;
+  I       : Integer;
+  NameStart : Integer;
+Begin
+  ParseMapLine := False;
+  S := TrimStr(Line);
+  If Length(S) = 0 Then Exit;
+  { Ignorer les lignes de commentaire ou d'en-tete }
+  If S[1] = ';' Then Exit;
+  If S[1] = '-' Then Exit;
+  If S[1] = '=' Then Exit;
+  { Chercher le format segment:offset }
+  ColPos := 0;
+  For I := 1 To Length(S) Do Begin
+    If S[I] = ':' Then Begin
+      ColPos := I;
+      Break;
+    End;
+    If S[I] = ' ' Then Break; { pas de ':' dans le premier mot }
+  End;
+  If ColPos > 1 Then Begin
+    { Format segment:offset nom }
+    SegStr := Copy(S, 1, ColPos - 1);
+    { Extraire l'offset apres le ':' }
+    I := ColPos + 1;
+    While (I <= Length(S)) And (S[I] <> ' ') And (S[I] <> #9) Do Inc(I);
+    OfsStr := Copy(S, ColPos + 1, I - ColPos - 1);
+    { Parser segment et offset }
+    If Not ParseHexValue(SegStr, SegVal) Then Exit;
+    If Not ParseHexValue(OfsStr, OfsVal) Then Exit;
+    { Calculer l'adresse lineaire }
+    If Mode32 Then
+      Addr := OfsVal  { PE : l'offset est le RVA direct }
+    Else
+      Addr := SegVal * 16 + OfsVal;  { DOS : segment*16 + offset }
+    { Extraire le nom du symbole (premier mot apres les espaces) }
+    While (I <= Length(S)) And ((S[I] = ' ') Or (S[I] = #9)) Do Inc(I);
+    If I > Length(S) Then Exit;  { pas de nom }
+    NameStart := I;
+    While (I <= Length(S)) And (S[I] <> ' ') And (S[I] <> #9) Do Inc(I);
+    SymName := Copy(S, NameStart, I - NameStart);
+    If Length(SymName) = 0 Then Exit;
+    ParseMapLine := True;
+  End Else Begin
+    { Format adresse_hex nom (sans segment) }
+    I := 1;
+    While (I <= Length(S)) And (S[I] <> ' ') And (S[I] <> #9) Do Inc(I);
+    OfsStr := Copy(S, 1, I - 1);
+    If Not ParseHexValue(OfsStr, OfsVal) Then Exit;
+    Addr := OfsVal;
+    { Extraire le nom }
+    While (I <= Length(S)) And ((S[I] = ' ') Or (S[I] = #9)) Do Inc(I);
+    If I > Length(S) Then Exit;
+    NameStart := I;
+    While (I <= Length(S)) And (S[I] <> ' ') And (S[I] <> #9) Do Inc(I);
+    SymName := Copy(S, NameStart, I - NameStart);
+    If Length(SymName) = 0 Then Exit;
+    ParseMapLine := True;
+  End;
+End;
+
+{ LoadMapFile - Charge un fichier .MAP et importe les symboles dans
+  la table des labels. Les symboles du fichier MAP ont la priorite
+  la plus elevee et remplacent les noms auto-generes.
+  Si un label existe deja a l'adresse, son nom est mis a jour.
+  Sinon, un nouveau label est ajoute. }
+Procedure LoadMapFile(FileName : TString; Mode32 : Boolean);
+Var
+  MapFile     : Text;
+  Line        : TString;
+  Addr        : LongInt;
+  SymName     : TString;
+  LblIdx      : LongInt;
+  Loaded      : LongInt;
+  Skipped     : LongInt;
+Begin
+  Loaded := 0;
+  Skipped := 0;
+  WriteLn('Chargement du fichier MAP : ', FileName);
+  Assign(MapFile, FileName);
+  {$I-}
+  Reset(MapFile);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    WriteLn('Erreur : impossible d''ouvrir le fichier MAP ', FileName);
+    Exit;
+  End;
+  While Not Eof(MapFile) Do Begin
+    ReadLn(MapFile, Line);
+    If ParseMapLine(Line, Mode32, Addr, SymName) Then Begin
+      { Verifier que l'adresse est dans l'image }
+      If (Addr < 0) Or (Addr >= ImageSize) Then Begin
+        Inc(Skipped);
+        Continue;
+      End;
+      { Chercher si un label existe deja a cette adresse }
+      LblIdx := FindLabel(Addr);
+      If LblIdx >= 0 Then Begin
+        { Remplacer le nom auto-genere par le nom du MAP }
+        Labels[LblIdx].Name := SymName;
+      End Else Begin
+        { Ajouter un nouveau label }
+        AddLabel(Addr, SymName, False, False, False);
+      End;
+      Inc(Loaded);
+    End;
+  End;
+  Close(MapFile);
+  WriteLn('  Symboles charges depuis MAP : ', Loaded);
+  If Skipped > 0 Then
+    WriteLn('  Symboles ignores (hors image) : ', Skipped);
+End;
+
+{ BuildSymbolTable - Orchestre la construction de la table de symboles
+  unifiant tous les labels. Les etapes sont :
+  1. Si un fichier .MAP est fourni, charger les symboles
+  2. Raffiner les labels de donnees (loc_ -> dword_/word_/byte_/off_)
+  3. Trier les labels par adresse pour faciliter la recherche }
+Procedure BuildSymbolTable(Mode32 : Boolean);
+Var
+  SymCount : LongInt;
+  ProcLabels : LongInt;
+  DataLabels : LongInt;
+  ImpLabels  : LongInt;
+  ExpLabels  : LongInt;
+  I          : LongInt;
+Begin
+  WriteLn('Construction de la table des symboles...');
+  { Etape 1 : charger le fichier .MAP si fourni }
+  If OptUseMap And (MapFileName <> '') Then
+    LoadMapFile(MapFileName, Mode32);
+  { Etape 2 : raffiner les labels de donnees }
+  RefineDataLabels(Mode32);
+  { Etape 3 : trier les labels }
+  SortLabels;
+  { Statistiques }
+  SymCount := LabelCount;
+  ProcLabels := 0;
+  DataLabels := 0;
+  ImpLabels := 0;
+  ExpLabels := 0;
+  For I := 0 To LabelCount - 1 Do Begin
+    If Labels[I].IsProc Then Inc(ProcLabels);
+    If Labels[I].IsImport Then Inc(ImpLabels);
+    If Labels[I].IsExport Then Inc(ExpLabels);
+    If (Not Labels[I].IsProc) And (Not Labels[I].IsImport)
+       And (Not Labels[I].IsExport) Then Inc(DataLabels);
+  End;
+  WriteLn('Table des symboles construite :');
+  WriteLn('  Total symboles    : ', SymCount);
+  WriteLn('  Sous-programmes   : ', ProcLabels);
+  WriteLn('  Labels de donnees : ', DataLabels);
+  WriteLn('  Imports           : ', ImpLabels);
+  WriteLn('  Exports           : ', ExpLabels);
+  If OptVerbose Then Begin
+    WriteLn('Detail des symboles :');
+    For I := 0 To LabelCount - 1 Do Begin
+      Write('  ', Labels[I].Name, ' @ ');
+      If Mode32 Then
+        Write('$', HexDWord(Labels[I].Address))
+      Else
+        Write('$', HexWord(Word(Labels[I].Address)));
+      If Labels[I].IsProc Then Write(' [PROC]');
+      If Labels[I].IsImport Then Write(' [IMPORT]');
+      If Labels[I].IsExport Then Write(' [EXPORT]');
+      WriteLn;
+    End;
+  End;
+End;
+
 { Ecrit les directives de modele et segments pour un EXE DOS 16 bits.
   Genere .MODEL SMALL, .STACK, et les directives SEGMENT/ENDS. }
 Procedure WriteASMDirectivesDOS16(Var F : Text);
@@ -5771,6 +6168,11 @@ Begin
            SectionFlagsStr(Sections[IterI].Characteristics));
   End;
  End;
+ { Etiquettes automatiques et table des symboles (TODO 23) }
+ If IsPEFile Then
+  BuildSymbolTable(True)
+ Else
+  BuildSymbolTable(False);
  { Generation du fichier .ASM : en-tete, directives et segments (TODO 20) }
  GenerateASMHeader;
  WriteLn;
