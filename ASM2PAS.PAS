@@ -8,7 +8,7 @@
 
 { TODO - Liste des 25 points a implementer pour le transpileur ASM vers Pascal :
 
-  1.  [A FAIRE] Infrastructure, options de ligne de commande et constantes globales.
+  1.  [IMPLEMENTE] Infrastructure, options de ligne de commande et constantes globales.
       Programme principal ASM2PAS en Turbo Pascal / Free Pascal.
       Analyse des options : nom du fichier .ASM en entree, nom du
       fichier .PAS en sortie (par defaut meme nom avec extension .PAS),
@@ -299,7 +299,12 @@ Program ASM2PAS;
  {$H-}
 {$ENDIF}
 
+{$A-}
+
 Const
+ ASM2PAS_VERSION = '1.0';
+ ASM2PAS_DATE    = '2026-03-25';
+
  MAX_SYMBOLS = 4096;
  MAX_LABELS  = 2048;
  MAX_PROCS   = 512;
@@ -470,6 +475,11 @@ Begin
  HexWord:=HexByte(Hi(W))+HexByte(Lo(W));
 End;
 
+Function HexDWord(D:LongInt):String;
+Begin
+ HexDWord:=HexWord(Word(D shr 16))+HexWord(Word(D and $FFFF));
+End;
+
 Function HexToInt(S:String):LongInt;
 Var
  I:Integer;
@@ -521,17 +531,19 @@ End;
 
 Procedure ShowHelp;
 Begin
- WriteLn('ASM2PAS : Transpileur d''Assembleur 8086/80386 vers Pascal (Turbo Pascal)');
- WriteLn;
- WriteLn('Syntaxe : ASM2PAS [options] fichier.ASM [fichier.PAS]');
+ WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
+ WriteLn('Usage : ASM2PAS [options] fichier.ASM [fichier.PAS]');
  WriteLn;
  WriteLn('Options :');
- WriteLn('  -16        Forcer le mode 16 bits (8086)');
- WriteLn('  -32        Forcer le mode 32 bits (80386)');
- WriteLn('  -inline    Garder le code non-traduisible en ASM inline');
- WriteLn('  -comments  Inclure le code ASM original en commentaire');
- WriteLn('  -v         Mode verbeux');
- WriteLn('  -h, --help Afficher cette aide');
+ WriteLn('  -16         Forcer le mode 16 bits (8086)');
+ WriteLn('  -32         Forcer le mode 32 bits (80386)');
+ WriteLn('  -o file     Nom du fichier .PAS de sortie');
+ WriteLn('  -inline     Garder le code non-traduisible en ASM inline (defaut)');
+ WriteLn('  -noinline   Ne pas utiliser d''ASM inline');
+ WriteLn('  -comments   Inclure le code ASM original en commentaire');
+ WriteLn('  -v          Mode verbeux');
+ WriteLn('  -h, --help  Afficher cette aide');
+ Halt(0);
 End;
 
 Procedure ParseCommandLine;
@@ -545,7 +557,8 @@ Begin
  UseInline:=True;
  Verbose:=False;
  AddComments:=False;
- For I:=1 to ParamCount do Begin
+ I:=1;
+ While I<=ParamCount do Begin
   Param:=ParamStr(I);
   If(Param='-h')or(Param='--help')or(Param='/?')Then Begin
    ShowHelp;
@@ -554,10 +567,20 @@ Begin
   Else If Param='-16' Then Mode32:=False
   Else If Param='-32' Then Mode32:=True
   Else If Param='-inline' Then UseInline:=True
+  Else If Param='-noinline' Then UseInline:=False
   Else If Param='-comments' Then AddComments:=True
   Else If Param='-v' Then Verbose:=True
+  Else If(Param='-o')and(I<ParamCount)Then Begin
+   Inc(I);
+   OutFileName:=ParamStr(I);
+  End
+  Else If(Length(Param)>0)and(Param[1]='-')Then Begin
+   WriteLn('Option inconnue : ',Param);
+   Halt(1);
+  End
   Else If InFileName='' Then InFileName:=Param
   Else If OutFileName='' Then OutFileName:=Param;
+  Inc(I);
  End;
  If InFileName='' Then Begin
   ShowHelp;
@@ -571,6 +594,9 @@ End;
   ============================================================ }
 
 BEGIN
+ WriteLn('ASM2PAS v',ASM2PAS_VERSION,' (',ASM2PAS_DATE,')');
+ WriteLn('Transpileur Assembleur 8086/80386 (MASM/TASM) vers Pascal');
+ WriteLn;
  ParseCommandLine;
  If Not FileExists(InFileName) Then Begin
   WriteLn('Erreur : Fichier introuvable : ',InFileName);
@@ -586,11 +612,13 @@ BEGIN
  TotalVars:=0;
  TotalLabels:=0;
  If Verbose Then Begin
-  WriteLn('ASM2PAS - Transpileur Assembleur 8086/80386 vers Pascal');
   WriteLn('Fichier source    : ',InFileName);
   WriteLn('Fichier de sortie : ',OutFileName);
   If Mode32 Then WriteLn('Mode : 32 bits (80386)')
             Else WriteLn('Mode : 16 bits (8086)');
+  If UseInline Then WriteLn('ASM inline : active')
+               Else WriteLn('ASM inline : desactive');
+  If AddComments Then WriteLn('Commentaires ASM : actifs');
  End;
  { TODO 2  - Analyseur lexical }
  { TODO 3  - Analyse des directives }
