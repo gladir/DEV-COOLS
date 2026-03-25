@@ -138,7 +138,7 @@
       BT/BTS/BTR/BTC -> test, set, reset, complement de bit :
       BT base,bit -> FlagCF := (base shr bit) and 1 = 1.
 
-  13. [A FAIRE] Traduction des comparaisons et sauts conditionnels en IF/THEN/ELSE.
+  13. [IMPLEMENTE] Traduction des comparaisons et sauts conditionnels en IF/THEN/ELSE.
       CMP a,b -> positionner les flags (ZF, CF, SF, OF).
       Reconnaitre les patterns CMP + Jcc et les traduire en
       structures IF..THEN..ELSE Pascal :
@@ -4979,6 +4979,213 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des comparaisons et sauts conditionnels - TODO 13
+  ============================================================ }
+
+Function TranslateCMP(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ CMP a,b -> positionner les flags de comparaison
+  Stocke dans les variables FlagZF, FlagCF, FlagSF, FlagOF }
+Var
+ A,B:String;
+Begin
+ A:=OperandToExpr(AsmL.Op1,ProcIdx);
+ B:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateCMP:=
+  'Begin FlagZF := ('+A+') = ('+B+'); '+
+  'FlagCF := ('+A+') < ('+B+'); '+
+  'FlagSF := ('+A+') - ('+B+') < 0; '+
+  'FlagOF := False; End;';
+End;
+
+Function JccToCondition(Mnem:String):String;
+{ Convertit un mnemonique Jcc en operateur de comparaison Pascal.
+  Sauts signes : JE/JZ = , JNE/JNZ <> , JL/JNGE < , JG/JNLE > ,
+                 JLE/JNG <= , JGE/JNL >= .
+  Sauts non signes : JB/JNAE/JC < , JA/JNBE > , JBE/JNA <= , JAE/JNB/JNC >= .
+  Sauts sur flags : JS -> SF, JNS -> not SF, JO -> OF, JNO -> not OF,
+                    JP/JPE -> PF, JNP/JPO -> not PF.
+  Retourne '' si non reconnu. }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Mnem);
+ If(U='JE')or(U='JZ')Then JccToCondition:='='
+ Else If(U='JNE')or(U='JNZ')Then JccToCondition:='<>'
+ Else If(U='JL')or(U='JNGE')Then JccToCondition:='<'
+ Else If(U='JG')or(U='JNLE')Then JccToCondition:='>'
+ Else If(U='JLE')or(U='JNG')Then JccToCondition:='<='
+ Else If(U='JGE')or(U='JNL')Then JccToCondition:='>='
+ Else If(U='JB')or(U='JNAE')or(U='JC')Then JccToCondition:='<'
+ Else If(U='JA')or(U='JNBE')Then JccToCondition:='>'
+ Else If(U='JBE')or(U='JNA')Then JccToCondition:='<='
+ Else If(U='JAE')or(U='JNB')or(U='JNC')Then JccToCondition:='>='
+ Else JccToCondition:='';
+End;
+
+Function JccToFlagExpr(Mnem:String):String;
+{ Convertit un mnemonique Jcc en expression sur les flags (quand pas de CMP).
+  JS -> FlagSF, JNS -> not FlagSF, JO -> FlagOF, JNO -> not FlagOF,
+  JP/JPE -> FlagPF, JNP/JPO -> not FlagPF,
+  JZ/JE -> FlagZF, JNZ/JNE -> not FlagZF,
+  JC/JB -> FlagCF, JNC/JAE -> not FlagCF.
+  Retourne '' si non reconnu. }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Mnem);
+ If(U='JE')or(U='JZ')Then JccToFlagExpr:='FlagZF'
+ Else If(U='JNE')or(U='JNZ')Then JccToFlagExpr:='not FlagZF'
+ Else If U='JS' Then JccToFlagExpr:='FlagSF'
+ Else If U='JNS' Then JccToFlagExpr:='not FlagSF'
+ Else If U='JO' Then JccToFlagExpr:='FlagOF'
+ Else If U='JNO' Then JccToFlagExpr:='not FlagOF'
+ Else If(U='JP')or(U='JPE')Then JccToFlagExpr:='FlagPF'
+ Else If(U='JNP')or(U='JPO')Then JccToFlagExpr:='not FlagPF'
+ Else If(U='JC')or(U='JB')or(U='JNAE')Then JccToFlagExpr:='FlagCF'
+ Else If(U='JNC')or(U='JAE')or(U='JNB')Then JccToFlagExpr:='not FlagCF'
+ Else If(U='JA')or(U='JNBE')Then
+  JccToFlagExpr:='(not FlagCF) and (not FlagZF)'
+ Else If(U='JBE')or(U='JNA')Then
+  JccToFlagExpr:='FlagCF or FlagZF'
+ Else If(U='JG')or(U='JNLE')Then
+  JccToFlagExpr:='(not FlagZF) and (FlagSF = FlagOF)'
+ Else If(U='JGE')or(U='JNL')Then
+  JccToFlagExpr:='FlagSF = FlagOF'
+ Else If(U='JL')or(U='JNGE')Then
+  JccToFlagExpr:='FlagSF <> FlagOF'
+ Else If(U='JLE')or(U='JNG')Then
+  JccToFlagExpr:='FlagZF or (FlagSF <> FlagOF)'
+ Else JccToFlagExpr:='';
+End;
+
+Function IsConditionalJump(M:String):Boolean;
+{ Verifie si un mnemonique est un saut conditionnel }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsConditionalJump:=
+  (U='JE')or(U='JNE')or(U='JZ')or(U='JNZ')or
+  (U='JA')or(U='JAE')or(U='JB')or(U='JBE')or
+  (U='JG')or(U='JGE')or(U='JL')or(U='JLE')or
+  (U='JNA')or(U='JNAE')or(U='JNB')or(U='JNBE')or
+  (U='JNG')or(U='JNGE')or(U='JNL')or(U='JNLE')or
+  (U='JC')or(U='JNC')or(U='JO')or(U='JNO')or
+  (U='JS')or(U='JNS')or(U='JP')or(U='JNP')or
+  (U='JPE')or(U='JPO');
+End;
+
+Function IsCompareJumpMnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est CMP ou un saut conditionnel }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsCompareJumpMnemonic:=(U='CMP')or IsConditionalJump(U);
+End;
+
+Procedure ProcessCompareJumpTranslations;
+{ Parcourt les lignes source et traduit les patterns CMP + Jcc
+  en structures If..Then Goto label ou en expressions sur flags.
+  Detecte les patterns CMP suivi de Jcc et combine les deux lignes
+  en une seule traduction Pascal. Produit des statistiques. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ ProcIdx:Integer;
+ Code:String;
+ CmpCount,JccCount,CmpJccCount,FlagJccCount:LongInt;
+ TotalCmpJcc:LongInt;
+ M:String;
+ Cond,FExpr:String;
+ CmpA,CmpB:String;
+ Target:String;
+ CmpLine:LongInt;
+ HasPendingCmp:Boolean;
+ PendingA,PendingB:String;
+Begin
+ CmpCount:=0;JccCount:=0;CmpJccCount:=0;FlagJccCount:=0;
+ TotalCmpJcc:=0;
+ HasPendingCmp:=False;
+ PendingA:='';PendingB:='';
+ CmpLine:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=AsmL.Mnemonic;
+  ProcIdx:=FindProcForLine(I);
+  { Traiter CMP }
+  If M='CMP' Then Begin
+   CmpA:=OperandToExpr(AsmL.Op1,ProcIdx);
+   CmpB:=OperandToExpr(AsmL.Op2,ProcIdx);
+   Code:=TranslateCMP(AsmL,ProcIdx);
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(CmpCount);
+   Inc(TotalCmpJcc);
+   HasPendingCmp:=True;
+   PendingA:=CmpA;
+   PendingB:=CmpB;
+   CmpLine:=I;
+  End
+  { Traiter les sauts conditionnels }
+  Else If IsConditionalJump(M) Then Begin
+   Target:=OperandToExpr(AsmL.Op1,ProcIdx);
+   { Si CMP precede immediatement : generer If a op b Then Goto label }
+   If HasPendingCmp and(I=CmpLine+1)Then Begin
+    Cond:=JccToCondition(M);
+    If Cond<>'' Then Begin
+     Code:='If '+PendingA+' '+Cond+' '+PendingB+' Then Goto '+Target+';';
+     AddTranslation(I,Code,SrcLines[I]^);
+     Inc(CmpJccCount);
+     Inc(TotalCmpJcc);
+    End
+    Else Begin
+     { Sauts sur flags speciaux (JS/JO/JP) meme apres CMP }
+     FExpr:=JccToFlagExpr(M);
+     If FExpr<>'' Then Begin
+      Code:='If '+FExpr+' Then Goto '+Target+';';
+      AddTranslation(I,Code,SrcLines[I]^);
+      Inc(FlagJccCount);
+      Inc(TotalCmpJcc);
+     End;
+    End;
+   End
+   Else Begin
+    { Pas de CMP precedent : utiliser les flags }
+    FExpr:=JccToFlagExpr(M);
+    If FExpr<>'' Then Begin
+     Code:='If '+FExpr+' Then Goto '+Target+';';
+     AddTranslation(I,Code,SrcLines[I]^);
+     Inc(FlagJccCount);
+     Inc(TotalCmpJcc);
+    End;
+   End;
+   Inc(JccCount);
+   HasPendingCmp:=False;
+  End
+  Else Begin
+   { Toute autre instruction invalide le CMP en attente }
+   HasPendingCmp:=False;
+  End;
+ End;
+ WriteLn('Traduction comparaisons/sauts : ',TotalCmpJcc,' instructions, ',
+  TranslationCount,' traductions totales.');
+ If Verbose Then Begin
+  WriteLn('  CMP              : ',CmpCount);
+  WriteLn('  Jcc total        : ',JccCount);
+  WriteLn('  CMP+Jcc -> If op : ',CmpJccCount);
+  WriteLn('  Jcc -> If flag   : ',FlagJccCount);
+  If TotalCmpJcc>0 Then Begin
+   WriteLn('  Details :');
+   For I:=TranslationCount-TotalCmpJcc to TranslationCount-1 do
+    If I>=0 Then
+     WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -5093,6 +5300,7 @@ BEGIN
  { TODO 12 - Traduction logique }
  ProcessLogicalTranslations;
  { TODO 13 - Traduction comparaisons/sauts }
+ ProcessCompareJumpTranslations;
  { TODO 14 - Traduction boucles }
  { TODO 15 - Traduction CALL/RET }
  { TODO 16 - Traduction PUSH/POP }
