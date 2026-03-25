@@ -59,7 +59,7 @@
       Determiner si une procedure retourne une valeur (fonction)
       en analysant l'utilisation de AX/EAX avant RET.
 
-  6.  [A FAIRE] Table des symboles et gestion des identificateurs.
+  6.  [IMPLEMENTE] Table des symboles et gestion des identificateurs.
       Maintenir une table des symboles globale contenant :
       labels (adresses de saut), noms de procedures, noms de
       variables (donnees), constantes (EQU, =), segments,
@@ -2386,6 +2386,337 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Table des symboles et gestion des identificateurs - TODO 6
+  ============================================================ }
+
+Function SymbolTypeName(ST:Byte):String;
+Begin
+ Case ST of
+  SY_LABEL:SymbolTypeName:='LABEL';
+  SY_PROC:SymbolTypeName:='PROC';
+  SY_VAR:SymbolTypeName:='VAR';
+  SY_CONST:SymbolTypeName:='CONST';
+  SY_SEGMENT:SymbolTypeName:='SEGMENT';
+  SY_PARAM:SymbolTypeName:='PARAM';
+  Else SymbolTypeName:='?';
+ End;
+End;
+
+Function FindSymbol(Name:String):Integer;
+{ Recherche un symbole par nom (case-insensitive). Retourne l'index ou 0. }
+Var
+ I:Integer;
+ U:String;
+Begin
+ U:=UpCaseStr(Name);
+ FindSymbol:=0;
+ For I:=1 to SymbolCount do
+  If UpCaseStr(Symbols[I].Name)=U Then Begin
+   FindSymbol:=I;
+   Exit;
+  End;
+End;
+
+Function AddSymbol(AName:String;AType:Byte;ADataType:Byte;ASize:Word;
+ AOffset:LongInt;ASegment:String;APublic,AExtern:Boolean):Integer;
+{ Ajoute un symbole. Retourne l'index ou 0 si doublon ou table pleine. }
+Var
+ Idx:Integer;
+Begin
+ AddSymbol:=0;
+ If AName='' Then Exit;
+ { Verifier doublon }
+ Idx:=FindSymbol(AName);
+ If Idx>0 Then Begin
+  { Mettre a jour les flags si necessaire }
+  If APublic Then Symbols[Idx].IsPublic:=True;
+  If AExtern Then Symbols[Idx].IsExtern:=True;
+  { Mettre a jour le type si le precedent etait plus generique }
+  If(Symbols[Idx].SymType=SY_LABEL)and(AType<>SY_LABEL)Then Begin
+   Symbols[Idx].SymType:=AType;
+   Symbols[Idx].DataType:=ADataType;
+   Symbols[Idx].Size:=ASize;
+  End;
+  AddSymbol:=Idx;
+  Exit;
+ End;
+ If SymbolCount>=MAX_SYMBOLS Then Exit;
+ Inc(SymbolCount);
+ Symbols[SymbolCount].Name:=AName;
+ Symbols[SymbolCount].SymType:=AType;
+ Symbols[SymbolCount].DataType:=ADataType;
+ Symbols[SymbolCount].Size:=ASize;
+ Symbols[SymbolCount].Offset:=AOffset;
+ Symbols[SymbolCount].Segment:=ASegment;
+ Symbols[SymbolCount].IsPublic:=APublic;
+ Symbols[SymbolCount].IsExtern:=AExtern;
+ AddSymbol:=SymbolCount;
+End;
+
+Function IsLocalLabel(Name:String):Boolean;
+{ Detecte les labels locaux : @@xxx ou @xxx }
+Begin
+ IsLocalLabel:=False;
+ If Length(Name)<2 Then Exit;
+ IsLocalLabel:=(Name[1]='@');
+End;
+
+Procedure CollectLabels;
+{ Parcourt les lignes source et collecte les labels (etiquettes avec ':') }
+Var
+ I:LongInt;
+ LabelName:String;
+Begin
+ For I:=0 to SrcLineCount-1 do Begin
+  TokenizeLine(SrcLines[I]^);
+  If TokenCount=0 Then Continue;
+  { Le tokenizer produit TK_LABEL pour les labels avec ':' }
+  If Tokens[1].Kind=TK_LABEL Then Begin
+   LabelName:=Tokens[1].Value;
+   { Ne pas ajouter les labels locaux @@xxx comme globaux }
+   If Not IsLocalLabel(LabelName) Then
+    AddSymbol(LabelName,SY_LABEL,PT_WORD,0,I,'',False,False);
+  End;
+ End;
+End;
+
+Procedure CollectConstants;
+{ Parcourt les lignes source et collecte les constantes (EQU, =) }
+Var
+ I:LongInt;
+ J:Integer;
+ U:String;
+ CName:String;
+ CValue:LongInt;
+ HasEqu:Boolean;
+Begin
+ For I:=0 to SrcLineCount-1 do Begin
+  TokenizeLine(SrcLines[I]^);
+  If TokenCount<3 Then Continue;
+  { Forme : name EQU value  ou  name = value }
+  HasEqu:=False;
+  If(Tokens[1].Kind=TK_IDENT)or(Tokens[1].Kind=TK_LABEL)Then Begin
+   CName:=Tokens[1].Value;
+   J:=2;
+   { Skipper le token si TK_LABEL a consomme le ':' }
+   If Tokens[1].Kind=TK_LABEL Then
+    J:=2
+   Else
+    J:=2;
+   If J<=TokenCount Then Begin
+    U:=UpCaseStr(Tokens[J].Value);
+    If(Tokens[J].Kind=TK_DIRECTIVE)and(U='EQU')Then
+     HasEqu:=True
+    Else If(U='=')Then
+     HasEqu:=True;
+   End;
+   If HasEqu and(J<TokenCount)Then Begin
+    { Evaluer la valeur (simplifie: premier nombre apres EQU/=) }
+    CValue:=0;
+    If(J+1<=TokenCount)and(Tokens[J+1].Kind=TK_NUMBER)Then
+     CValue:=ParseNumericValue(Tokens[J+1].Value)
+    Else If(J+1<=TokenCount)and(Tokens[J+1].Kind=TK_STRING)Then
+     CValue:=0;
+    AddSymbol(CName,SY_CONST,PT_LONGINT,4,CValue,'',False,False);
+   End;
+  End;
+ End;
+End;
+
+Procedure CollectSegmentSymbols;
+{ Ajoute les segments definis comme symboles dans la table }
+Var
+ I:Integer;
+Begin
+ For I:=1 to SegmentCount do
+  AddSymbol(Segments[I].Name,SY_SEGMENT,PT_WORD,0,0,'',False,False);
+End;
+
+Procedure CollectProcParams;
+{ Ajoute les parametres et locales des procedures comme symboles }
+Var
+ I:Integer;
+ J:Byte;
+ ParamOfs:LongInt;
+Begin
+ For I:=1 to ProcCount do Begin
+  { Parametres }
+  ParamOfs:=4; { BP+4 pour NEAR, BP+6 pour FAR }
+  If Not Procs[I].IsNear Then ParamOfs:=6;
+  For J:=1 to Procs[I].ParamCount do Begin
+   AddSymbol(Procs[I].Params[J].Name,SY_PARAM,
+    Procs[I].Params[J].PascalType,Procs[I].Params[J].Size,
+    ParamOfs,Procs[I].Name,False,False);
+   ParamOfs:=ParamOfs+Procs[I].Params[J].Size;
+  End;
+ End;
+End;
+
+Procedure CollectPublicExtern;
+{ Parcourt les lignes source et traite PUBLIC et EXTRN/EXTERN }
+Var
+ I:LongInt;
+ J:Integer;
+ U:String;
+ SymName:String;
+ Idx:Integer;
+Begin
+ For I:=0 to SrcLineCount-1 do Begin
+  TokenizeLine(SrcLines[I]^);
+  If TokenCount<2 Then Continue;
+  U:=UpCaseStr(Tokens[1].Value);
+  If(Tokens[1].Kind=TK_DIRECTIVE)and(U='PUBLIC')Then Begin
+   { PUBLIC sym1 [, sym2 ...] }
+   J:=2;
+   While J<=TokenCount do Begin
+    If Tokens[J].Kind=TK_COMMENT Then Break;
+    If Tokens[J].Kind=TK_COMMA Then Begin
+     Inc(J);
+     Continue;
+    End;
+    SymName:=Tokens[J].Value;
+    If(SymName<>'')and(Tokens[J].Kind<>TK_COMMENT)Then Begin
+     Idx:=FindSymbol(SymName);
+     If Idx>0 Then
+      Symbols[Idx].IsPublic:=True
+     Else
+      AddSymbol(SymName,SY_LABEL,PT_WORD,0,0,'',True,False);
+    End;
+    Inc(J);
+   End;
+  End
+  Else If(Tokens[1].Kind=TK_DIRECTIVE)and
+        ((U='EXTRN')or(U='EXTERN'))Then Begin
+   { EXTRN sym:type [, sym:type ...] }
+   J:=2;
+   While J<=TokenCount do Begin
+    If Tokens[J].Kind=TK_COMMENT Then Break;
+    If Tokens[J].Kind=TK_COMMA Then Begin
+     Inc(J);
+     Continue;
+    End;
+    { Le nom peut etre TK_LABEL (tokenizer consomme ':') ou TK_IDENT }
+    If Tokens[J].Kind=TK_LABEL Then Begin
+     SymName:=Tokens[J].Value;
+     Inc(J);
+     { Sauter le type (NEAR, FAR, BYTE, WORD, DWORD, etc.) }
+     If(J<=TokenCount)and(Tokens[J].Kind<>TK_COMMA)and
+       (Tokens[J].Kind<>TK_COMMENT)Then
+      Inc(J);
+     AddSymbol(SymName,SY_LABEL,PT_WORD,0,0,'',False,True);
+    End
+    Else If Tokens[J].Kind=TK_IDENT Then Begin
+     SymName:=Tokens[J].Value;
+     Inc(J);
+     { Sauter ':' + type si present }
+     If(J<=TokenCount)and(Tokens[J].Kind=TK_COLON)Then Begin
+      Inc(J);
+      If J<=TokenCount Then Inc(J);
+     End;
+     AddSymbol(SymName,SY_LABEL,PT_WORD,0,0,'',False,True);
+    End
+    Else Inc(J);
+   End;
+  End;
+ End;
+End;
+
+Procedure VerifySymbolTable;
+{ Verifie la coherence de la table des symboles }
+Var
+ I,J:Integer;
+ DupCount:Integer;
+ UnresCount:Integer;
+ U1,U2:String;
+Begin
+ DupCount:=0;
+ UnresCount:=0;
+ { Verifier les doublons (meme nom, meme type) }
+ For I:=1 to SymbolCount-1 do Begin
+  U1:=UpCaseStr(Symbols[I].Name);
+  For J:=I+1 to SymbolCount do Begin
+   U2:=UpCaseStr(Symbols[J].Name);
+   If(U1=U2)and(Symbols[I].SymType=Symbols[J].SymType)Then Begin
+    Inc(DupCount);
+    If Verbose Then
+     WriteLn('  Attention : doublon ',Symbols[I].Name,
+      ' (',SymbolTypeName(Symbols[I].SymType),')');
+   End;
+  End;
+ End;
+ { Verifier les symboles externes non resolus }
+ For I:=1 to SymbolCount do
+  If Symbols[I].IsExtern and(Symbols[I].SymType=SY_LABEL)Then
+   Inc(UnresCount);
+ If DupCount>0 Then
+  WriteLn('  Doublons detectes : ',DupCount);
+ If UnresCount>0 Then
+  WriteLn('  Symboles externes : ',UnresCount);
+End;
+
+Procedure BuildSymbolTable;
+Var
+ I:Integer;
+ LabelCnt,ConstCnt,SegCnt,ParamCnt:Integer;
+ ProcCnt,VarCnt,PubCnt,ExtCnt:Integer;
+ OldCount:Integer;
+Begin
+ OldCount:=SymbolCount;
+ { Collecter tous les symboles }
+ CollectLabels;
+ LabelCnt:=SymbolCount-OldCount;
+ OldCount:=SymbolCount;
+ CollectConstants;
+ ConstCnt:=SymbolCount-OldCount;
+ OldCount:=SymbolCount;
+ CollectSegmentSymbols;
+ SegCnt:=SymbolCount-OldCount;
+ OldCount:=SymbolCount;
+ CollectProcParams;
+ ParamCnt:=SymbolCount-OldCount;
+ OldCount:=SymbolCount;
+ CollectPublicExtern;
+ { Compter par type }
+ ProcCnt:=0;
+ VarCnt:=0;
+ PubCnt:=0;
+ ExtCnt:=0;
+ For I:=1 to SymbolCount do Begin
+  If Symbols[I].SymType=SY_PROC Then Inc(ProcCnt);
+  If Symbols[I].SymType=SY_VAR Then Inc(VarCnt);
+  If Symbols[I].IsPublic Then Inc(PubCnt);
+  If Symbols[I].IsExtern Then Inc(ExtCnt);
+ End;
+ WriteLn('Table des symboles : ',SymbolCount,' symboles.');
+ If Verbose Then Begin
+  WriteLn('  Labels      : ',LabelCnt);
+  WriteLn('  Constantes  : ',ConstCnt);
+  WriteLn('  Variables   : ',VarCnt);
+  WriteLn('  Procedures  : ',ProcCnt);
+  WriteLn('  Segments    : ',SegCnt);
+  WriteLn('  Parametres  : ',ParamCnt);
+  WriteLn('  PUBLIC      : ',PubCnt);
+  WriteLn('  EXTRN       : ',ExtCnt);
+  { Verification }
+  VerifySymbolTable;
+  { Details }
+  If SymbolCount>0 Then Begin
+   WriteLn('  Details :');
+   For I:=1 to SymbolCount do Begin
+    Write('    ',Symbols[I].Name);
+    Write(' [',SymbolTypeName(Symbols[I].SymType),']');
+    Write(' ',PascalTypeName(Symbols[I].DataType));
+    If Symbols[I].Size>0 Then Write(' (',Symbols[I].Size,' octets)');
+    If Symbols[I].IsPublic Then Write(' PUBLIC');
+    If Symbols[I].IsExtern Then Write(' EXTRN');
+    If Symbols[I].Segment<>'' Then Write(' @',Symbols[I].Segment);
+    WriteLn;
+   End;
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -2485,7 +2816,8 @@ BEGIN
  ProcessDataDirectives;
  { Analyse des procedures (TODO 5) }
  ProcessProcedureDirectives;
- { TODO 6  - Table des symboles }
+ { Table des symboles (TODO 6) }
+ BuildSymbolTable;
  { TODO 7  - Analyse des operandes }
  { TODO 8  - Inference de types }
  { TODO 9  - Traduction des registres }
