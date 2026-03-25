@@ -137,6 +137,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur 6502.</td>
 		</tr>
 		<tr>
+			<td><b>ASM68.PAS</b></td>
+			<td>Cette commande permet de lancer le clone du Motorola Macro Assembler (ASM68). Assembleur pour la famille Motorola 68000.</td>
+		</tr>
+		<tr>
 			<td><b>ASM8080.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur 8080.</td>
 		</tr>
