@@ -163,7 +163,7 @@
       naturelles (back-edges dans le CFG) et les traduire
       en While/Repeat au lieu de Goto.
 
-  15. [A FAIRE] Traduction des appels de procedures (CALL/RET).
+  15. [IMPLEMENTE] Traduction des appels de procedures (CALL/RET).
       CALL label -> appel de procedure/fonction Pascal.
       Si la procedure est connue (dans la table des symboles),
       generer un appel Pascal avec les parametres detectes.
@@ -5344,6 +5344,250 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des appels de procedures (CALL/RET) - TODO 15
+  ============================================================ }
+
+Function FindProcByName(Name:String):Integer;
+{ Recherche un index de procedure par nom (case-insensitive). Retourne 0 si non trouvee. }
+Var
+ I:Integer;
+ U:String;
+Begin
+ U:=UpCaseStr(Name);
+ FindProcByName:=0;
+ For I:=1 to ProcCount do
+  If UpCaseStr(Procs[I].Name)=U Then Begin
+   FindProcByName:=I;
+   Exit;
+  End;
+End;
+
+Function CountPushesBeforeCall(CallLine:LongInt):Integer;
+{ Compte les PUSH consecutifs immediatement avant un CALL.
+  Remonte depuis CallLine-1 tant que l'instruction est un PUSH. }
+Var
+ I:LongInt;
+ AsmT:TAsmLine;
+ Count:Integer;
+Begin
+ Count:=0;
+ I:=CallLine-1;
+ While I>=0 do Begin
+  ParseInstructionLine(I,AsmT);
+  If AsmT.Mnemonic='' Then Begin Dec(I); Continue; End;
+  If AsmT.IsDirective Then Begin Dec(I); Continue; End;
+  If UpCaseStr(AsmT.Mnemonic)<>'PUSH' Then Break;
+  Inc(Count);
+  Dec(I);
+ End;
+ CountPushesBeforeCall:=Count;
+End;
+
+Function BuildCallArgs(CallLine:LongInt;ArgCount:Integer;
+ Convention:Byte;ProcIdx:Integer):String;
+{ Construit la liste des arguments Pascal pour un CALL.
+  Pour la convention C (droite a gauche), les PUSH sont empiles
+  dans l'ordre inverse : le dernier PUSH est le premier argument.
+  Pour PASCAL (gauche a droite), l'ordre est direct.
+  Pour STDCALL (droite a gauche), meme ordre que C. }
+Var
+ I,J:LongInt;
+ AsmT:TAsmLine;
+ Args:Array[1..32] of String;
+ RealCount:Integer;
+ Result:String;
+Begin
+ RealCount:=0;
+ I:=CallLine-1;
+ { Collecter les arguments depuis les PUSH avant le CALL }
+ While(I>=0)and(RealCount<ArgCount)and(RealCount<32)do Begin
+  ParseInstructionLine(I,AsmT);
+  If AsmT.Mnemonic='' Then Begin Dec(I); Continue; End;
+  If AsmT.IsDirective Then Begin Dec(I); Continue; End;
+  If UpCaseStr(AsmT.Mnemonic)<>'PUSH' Then Break;
+  Inc(RealCount);
+  Args[RealCount]:=OperandToExpr(AsmT.Op1,ProcIdx);
+  Dec(I);
+ End;
+ { Construire la chaine d'arguments }
+ Result:='';
+ If RealCount>0 Then Begin
+  If(Convention=CC_PASCAL)or(Convention=CC_BASIC)or
+    (Convention=CC_FORTRAN)Then Begin
+   { Convention Pascal : arguments dans l'ordre inverse des PUSH }
+   For J:=RealCount downto 1 do Begin
+    If Result<>'' Then Result:=Result+', ';
+    Result:=Result+Args[J];
+   End;
+  End
+  Else Begin
+   { Convention C / STDCALL : premier PUSH = dernier argument }
+   For J:=RealCount downto 1 do Begin
+    If Result<>'' Then Result:=Result+', ';
+    Result:=Result+Args[J];
+   End;
+  End;
+ End;
+ BuildCallArgs:=Result;
+End;
+
+Function TranslateCALL(Var AsmL:TAsmLine;LineIdx:LongInt;
+ ProcIdx:Integer):String;
+{ CALL label -> NomProc(args) ou NomProc si pas de parametres.
+  Si la procedure cible est connue, genere un appel avec parametres.
+  Sinon, genere un appel simple au label. }
+Var
+ Target:String;
+ TargetProc:Integer;
+ PushCount:Integer;
+ ArgCount:Integer;
+ Args:String;
+ Conv:Byte;
+ R:String;
+Begin
+ Target:=OperandToExpr(AsmL.Op1,ProcIdx);
+ TargetProc:=FindProcByName(Target);
+ R:='';
+ If TargetProc>0 Then Begin
+  { Procedure connue : utiliser le nombre de parametres declares }
+  ArgCount:=Procs[TargetProc].ParamCount;
+  Conv:=Procs[TargetProc].Convention;
+  If ArgCount>0 Then Begin
+   PushCount:=CountPushesBeforeCall(LineIdx);
+   If PushCount<ArgCount Then ArgCount:=PushCount;
+   Args:=BuildCallArgs(LineIdx,ArgCount,Conv,ProcIdx);
+   If Procs[TargetProc].IsFunction Then
+    R:='Result := '+Target+'('+Args+')'
+   Else
+    R:=Target+'('+Args+')'
+  End
+  Else Begin
+   If Procs[TargetProc].IsFunction Then
+    R:='Result := '+Target
+   Else
+    R:=Target
+  End;
+ End
+ Else Begin
+  { Procedure inconnue : verifier s'il y a des PUSH avant }
+  PushCount:=CountPushesBeforeCall(LineIdx);
+  If PushCount>0 Then Begin
+   Args:=BuildCallArgs(LineIdx,PushCount,CC_C,ProcIdx);
+   R:=Target+'('+Args+')'
+  End
+  Else
+   R:=Target;
+ End;
+ TranslateCALL:=R+';';
+End;
+
+Function TranslateRET(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ RET -> Exit
+  RET n -> Begin RegSP := RegSP + n; Exit; End
+  RETF -> Exit (appel FAR)
+  RETF n -> Begin RegSP := RegSP + n; Exit; End }
+Var
+ SpVar:String;
+Begin
+ If Mode32 Then SpVar:='RegESP'
+ Else SpVar:='RegSP';
+ If AsmL.Op1.OpType<>OT_NONE Then Begin
+  { RET n : nettoyage de pile + sortie }
+  TranslateRET:='Begin '+SpVar+' := '+SpVar+' + '+
+   IntToStr(AsmL.Op1.Imm)+'; Exit; End;'
+ End
+ Else
+  TranslateRET:='Exit;';
+End;
+
+Function IsCallRetMnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est un appel ou un retour de procedure }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsCallRetMnemonic:=
+  (U='CALL')or(U='RET')or(U='RETN')or(U='RETF');
+End;
+
+Procedure ProcessCallRetTranslations;
+{ Parcourt les lignes source et traduit les instructions CALL et RET
+  en appels de procedures et Exit Pascal. Identifie les parametres
+  via les PUSH precedant un CALL. Produit des statistiques. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ ProcIdx:Integer;
+ Code:String;
+ CallCount,RetCount,RetNCount,CallFarCount:LongInt;
+ CallKnownCount,CallUnknownCount:LongInt;
+ TotalCallRet:LongInt;
+ M:String;
+ Target:String;
+ TargetProc:Integer;
+Begin
+ CallCount:=0;RetCount:=0;RetNCount:=0;CallFarCount:=0;
+ CallKnownCount:=0;CallUnknownCount:=0;
+ TotalCallRet:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=AsmL.Mnemonic;
+  If Not IsCallRetMnemonic(M) Then Continue;
+  ProcIdx:=FindProcForLine(I);
+  Code:='';
+  If M='CALL' Then Begin
+   Code:=TranslateCALL(AsmL,I,ProcIdx);
+   Inc(CallCount);
+   { Classifier : appel connu ou inconnu }
+   Target:=OperandToExpr(AsmL.Op1,ProcIdx);
+   TargetProc:=FindProcByName(Target);
+   If TargetProc>0 Then
+    Inc(CallKnownCount)
+   Else
+    Inc(CallUnknownCount);
+   { Detecter les CALL FAR (operande memoire ou label FAR) }
+   If(AsmL.Op1.OpType=OT_MEM)and(AsmL.Op1.SegOverride<>'')Then
+    Inc(CallFarCount);
+  End
+  Else If(M='RET')or(M='RETN')Then Begin
+   Code:=TranslateRET(AsmL,ProcIdx);
+   Inc(RetCount);
+   If AsmL.Op1.OpType<>OT_NONE Then
+    Inc(RetNCount);
+  End
+  Else If M='RETF' Then Begin
+   Code:=TranslateRET(AsmL,ProcIdx);
+   Inc(RetCount);
+   Inc(CallFarCount);
+   If AsmL.Op1.OpType<>OT_NONE Then
+    Inc(RetNCount);
+  End;
+  If Code<>'' Then Begin
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(TotalCallRet);
+  End;
+ End;
+ WriteLn('Traduction CALL/RET : ',TotalCallRet,' instructions, ',
+  TranslationCount,' traductions totales.');
+ If Verbose Then Begin
+  WriteLn('  CALL             : ',CallCount);
+  WriteLn('    proc. connues  : ',CallKnownCount);
+  WriteLn('    proc. inconnues: ',CallUnknownCount);
+  WriteLn('    appels FAR     : ',CallFarCount);
+  WriteLn('  RET/RETN/RETF    : ',RetCount);
+  WriteLn('    RET n (pile)   : ',RetNCount);
+  If TotalCallRet>0 Then Begin
+   WriteLn('  Details :');
+   For I:=TranslationCount-TotalCallRet to TranslationCount-1 do
+    If I>=0 Then
+     WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -5462,6 +5706,7 @@ BEGIN
  { TODO 14 - Traduction boucles }
  ProcessJumpLoopTranslations;
  { TODO 15 - Traduction CALL/RET }
+ ProcessCallRetTranslations;
  { TODO 16 - Traduction PUSH/POP }
  { TODO 17 - Traduction chaines }
  { TODO 18 - Traduction INT systeme }
