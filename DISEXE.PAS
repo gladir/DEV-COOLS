@@ -4589,6 +4589,11 @@ Begin
     { Si c'est de la donnee, du string, du padding ou un jump table, emettre en DB }
     If (BFlag = BF_DATA) Or (BFlag = BF_STRING) Or
        (BFlag = BF_JUMPTBL) Or (BFlag = BF_PADDING) Then Begin
+      { En mode DOS 16 bits, les donnees sont deja emises dans DSEG }
+      If Not Mode32 Then Begin
+        Inc(Addr);
+        Continue;
+      End;
       { Emettre un label si necessaire }
       LblIdx := FindLabel(Addr);
       If LblIdx >= 0 Then Begin
