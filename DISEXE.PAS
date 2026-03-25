@@ -4522,8 +4522,6 @@ Begin
       TargetLbl := FindLabel(DWordVal);
       If TargetLbl >= 0 Then
         WriteLn(F, '        DD      OFFSET ', Labels[TargetLbl].Name)
-      Else If Mode32 Then
-        WriteLn(F, '        DD      ', HexDWord(DWordVal), 'h')
       Else
         WriteLn(F, '        DD      ', HexDWord(DWordVal), 'h');
       Addr := Addr + 4;
