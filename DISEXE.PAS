@@ -3793,8 +3793,8 @@ Begin
   WriteLn(F, '; --- Fonctions importees ---');
   For I := 0 To ImportCount - 1 Do Begin
     If Imports[I].ByOrdinal Then
-      WriteLn(F, 'EXTRN ', Imports[I].DLLName, '!ord_',
-              IntToStr(Imports[I].Ordinal), ':PROC')
+      WriteLn(F, 'EXTRN ord_', IntToStr(Imports[I].Ordinal),
+              ':PROC  ; ', Imports[I].DLLName)
     Else
       WriteLn(F, 'EXTRN ', Imports[I].FuncName, ':PROC');
   End;
@@ -3824,8 +3824,8 @@ Begin
   WriteLn(F, '.8086');
   WriteLn(F, '.MODEL SMALL');
   WriteLn(F);
-  { Pile }
-  WriteLn(F, '.STACK ', HexWord(EntrySP), 'h');
+  { Pile : SP initial = taille de la pile pour MZ DOS }
+  WriteLn(F, '.STACK ', HexWord(EntrySP), 'h  ; SP initial');
   WriteLn(F);
   { Segment de donnees }
   WriteLn(F, 'DSEG SEGMENT PARA PUBLIC ''DATA''');
