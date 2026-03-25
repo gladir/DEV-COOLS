@@ -249,7 +249,7 @@
               ex. $040C -> 'LANGUAGE LANG_FRENCH, SUBLANG_FRENCH'
               ex. $0000 -> 'LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL'
 
-  TODO 09 - DECODAGE DES FLAGS MEMOIRE [A FAIRE]
+  TODO 09 - DECODAGE DES FLAGS MEMOIRE [IMPLEMENTE]
             Constantes de flags memoire 16 bits :
               MF_MOVEABLE    = $0010,
               MF_PURE        = $0020,
@@ -792,6 +792,20 @@ Const
   LANG_JAPANESE        = $0411;
   LANG_CHINESE_SIMPL   = $0804;
   LANG_CHINESE_TRAD    = $0404;
+
+  { Flags memoire 16 bits (format Windows 3.x) }
+  MF_FIXED       = $0000;
+  MF_MOVEABLE    = $0010;
+  MF_PURE        = $0020;
+  MF_PRELOAD     = $0040;
+  MF_DISCARDABLE = $1000;
+
+  { Flags memoire 32 bits (format Win32) }
+  MF32_MOVEABLE    = $0010;
+  MF32_PURE        = $0020;
+  MF32_PRELOAD     = $0040;
+  MF32_DISCARDABLE = $1000;
+  MF32_SHARED      = $0030;
 
   { Limites internes }
   MAX_RESOURCES   = 4096;
@@ -1672,6 +1686,69 @@ Begin
 End;
 
 { ============================================================
+  TODO 09 - DECODAGE DES FLAGS MEMOIRE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Description textuelle des flags memoire --------------- }
+Function MemFlagsToStr(Flags : Word) : TString;
+Var
+  S : TString;
+Begin
+  If Flags = MF_FIXED Then
+  Begin
+    MemFlagsToStr := 'FIXED';
+    Exit;
+  End;
+  S := '';
+  If (Flags And MF_MOVEABLE) <> 0 Then
+  Begin
+    If S <> '' Then S := S + ' | ';
+    S := S + 'MOVEABLE';
+  End;
+  If (Flags And MF_PURE) <> 0 Then
+  Begin
+    If S <> '' Then S := S + ' | ';
+    S := S + 'PURE';
+  End;
+  If (Flags And MF_PRELOAD) <> 0 Then
+  Begin
+    If S <> '' Then S := S + ' | ';
+    S := S + 'PRELOAD';
+  End;
+  If (Flags And MF_DISCARDABLE) <> 0 Then
+  Begin
+    If S <> '' Then S := S + ' | ';
+    S := S + 'DISCARDABLE';
+  End;
+  If S = '' Then S := 'FIXED';
+  MemFlagsToStr := S;
+End;
+
+{ ---- Options RC correspondant aux flags memoire ------------ }
+Function MemFlagsToRCOptions(Flags : Word) : TString;
+Var
+  S : TString;
+Begin
+  S := '';
+  If (Flags And MF_DISCARDABLE) <> 0 Then
+  Begin
+    If S <> '' Then S := S + ' ';
+    S := S + 'DISCARDABLE';
+  End;
+  If (Flags And MF_MOVEABLE) <> 0 Then
+  Begin
+    If S <> '' Then S := S + ' ';
+    S := S + 'MOVEABLE';
+  End;
+  If (Flags And MF_PRELOAD) <> 0 Then
+  Begin
+    If S <> '' Then S := S + ' ';
+    S := S + 'PRELOAD';
+  End;
+  MemFlagsToRCOptions := S;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -1708,12 +1785,12 @@ Begin
   { Detecter le format 16 ou 32 bits }
   CheckResFormat(ResFormat);
 
-  { TODO 09 a TODO 25 : a implementer }
+  { TODO 10 a TODO 25 : a implementer }
   Case ResFormat Of
     FMT_RES16 : WriteLn('Format RES 16 bits confirme.');
     FMT_RES32 : WriteLn('Format RES 32 bits confirme.');
   End;
-  WriteLn('(TODO 09 a TODO 25 : implementation en cours)');
+  WriteLn('(TODO 10 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
