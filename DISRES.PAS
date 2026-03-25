@@ -194,7 +194,7 @@
             Procedure ReadNullHeader32
               valider et ignorer la ressource nulle de 32 octets
 
-  TODO 07 - TABLE DES TYPES DE RESSOURCES (RT_*) [A FAIRE]
+  TODO 07 - TABLE DES TYPES DE RESSOURCES (RT_*) [IMPLEMENTE]
             Constantes des types standards :
               RT_CURSOR = 1, RT_BITMAP = 2, RT_ICON = 3,
               RT_MENU = 4, RT_DIALOG = 5, RT_STRING = 6,
@@ -751,6 +751,30 @@ Const
   FMT_UNKNOWN = 0;
   FMT_RES16   = 1;   { Windows 3.x / Borland Pascal 16 bits }
   FMT_RES32   = 2;   { Windows NT/9x+ 32 bits               }
+
+  { Types de ressources standards (RT_*) }
+  RT_CURSOR       = 1;
+  RT_BITMAP       = 2;
+  RT_ICON         = 3;
+  RT_MENU         = 4;
+  RT_DIALOG       = 5;
+  RT_STRING       = 6;
+  RT_FONTDIR      = 7;
+  RT_FONT         = 8;
+  RT_ACCELERATOR  = 9;
+  RT_RCDATA       = 10;
+  RT_MESSAGETABLE = 11;
+  RT_GROUP_CURSOR = 12;
+  RT_GROUP_ICON   = 14;
+  RT_VERSION      = 16;
+  RT_DLGINCLUDE   = 17;
+  RT_PLUGPLAY     = 19;
+  RT_VXD          = 20;
+  RT_ANICURSOR    = 21;
+  RT_ANIICON      = 22;
+  RT_HTML         = 23;
+  RT_MANIFEST     = 24;
+  RT_TOOLBAR      = 241;
 
   { Limites internes }
   MAX_RESOURCES   = 4096;
@@ -1481,6 +1505,89 @@ Begin
 End;
 
 { ============================================================
+  TODO 07 - TABLE DES TYPES DE RESSOURCES (RT_*) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Nom symbolique RT_xxx d'un type de ressource --------- }
+Function ResourceTypeName(TypeId : Word) : TString;
+Begin
+  Case TypeId Of
+    RT_CURSOR       : ResourceTypeName := 'RT_CURSOR';
+    RT_BITMAP       : ResourceTypeName := 'RT_BITMAP';
+    RT_ICON         : ResourceTypeName := 'RT_ICON';
+    RT_MENU         : ResourceTypeName := 'RT_MENU';
+    RT_DIALOG       : ResourceTypeName := 'RT_DIALOG';
+    RT_STRING       : ResourceTypeName := 'RT_STRING';
+    RT_FONTDIR      : ResourceTypeName := 'RT_FONTDIR';
+    RT_FONT         : ResourceTypeName := 'RT_FONT';
+    RT_ACCELERATOR  : ResourceTypeName := 'RT_ACCELERATOR';
+    RT_RCDATA       : ResourceTypeName := 'RT_RCDATA';
+    RT_MESSAGETABLE : ResourceTypeName := 'RT_MESSAGETABLE';
+    RT_GROUP_CURSOR : ResourceTypeName := 'RT_GROUP_CURSOR';
+    RT_GROUP_ICON   : ResourceTypeName := 'RT_GROUP_ICON';
+    RT_VERSION      : ResourceTypeName := 'RT_VERSION';
+    RT_DLGINCLUDE   : ResourceTypeName := 'RT_DLGINCLUDE';
+    RT_PLUGPLAY     : ResourceTypeName := 'RT_PLUGPLAY';
+    RT_VXD          : ResourceTypeName := 'RT_VXD';
+    RT_ANICURSOR    : ResourceTypeName := 'RT_ANICURSOR';
+    RT_ANIICON      : ResourceTypeName := 'RT_ANIICON';
+    RT_HTML         : ResourceTypeName := 'RT_HTML';
+    RT_MANIFEST     : ResourceTypeName := 'RT_MANIFEST';
+    RT_TOOLBAR      : ResourceTypeName := 'RT_TOOLBAR';
+  Else
+    ResourceTypeName := 'RT_UNKNOWN_' + IntToStr(TypeId);
+  End;
+End;
+
+{ ---- Mot-cle RC pour la generation du script -------------- }
+Function ResourceTypeKeyword(TypeId : Word) : TString;
+Begin
+  Case TypeId Of
+    RT_CURSOR       : ResourceTypeKeyword := 'CURSOR';
+    RT_BITMAP       : ResourceTypeKeyword := 'BITMAP';
+    RT_ICON         : ResourceTypeKeyword := 'ICON';
+    RT_MENU         : ResourceTypeKeyword := 'MENU';
+    RT_DIALOG       : ResourceTypeKeyword := 'DIALOG';
+    RT_STRING       : ResourceTypeKeyword := 'STRINGTABLE';
+    RT_FONTDIR      : ResourceTypeKeyword := 'FONTDIR';
+    RT_FONT         : ResourceTypeKeyword := 'FONT';
+    RT_ACCELERATOR  : ResourceTypeKeyword := 'ACCELERATORS';
+    RT_RCDATA       : ResourceTypeKeyword := 'RCDATA';
+    RT_MESSAGETABLE : ResourceTypeKeyword := 'MESSAGETABLE';
+    RT_GROUP_CURSOR : ResourceTypeKeyword := 'GROUP_CURSOR';
+    RT_GROUP_ICON   : ResourceTypeKeyword := 'GROUP_ICON';
+    RT_VERSION      : ResourceTypeKeyword := 'VERSIONINFO';
+    RT_DLGINCLUDE   : ResourceTypeKeyword := 'DLGINCLUDE';
+    RT_PLUGPLAY     : ResourceTypeKeyword := 'PLUGPLAY';
+    RT_VXD          : ResourceTypeKeyword := 'VXD';
+    RT_ANICURSOR    : ResourceTypeKeyword := 'ANICURSOR';
+    RT_ANIICON      : ResourceTypeKeyword := 'ANIICON';
+    RT_HTML         : ResourceTypeKeyword := 'HTML';
+    RT_MANIFEST     : ResourceTypeKeyword := 'MANIFEST';
+    RT_TOOLBAR      : ResourceTypeKeyword := 'TOOLBAR';
+  Else
+    ResourceTypeKeyword := 'RCDATA';
+  End;
+End;
+
+{ ---- Extension du fichier extrait pour ce type ------------ }
+Function ResourceFileExt(TypeId : Word) : TString;
+Begin
+  Case TypeId Of
+    RT_CURSOR,
+    RT_ANICURSOR    : ResourceFileExt := '.cur';
+    RT_BITMAP       : ResourceFileExt := '.bmp';
+    RT_ICON,
+    RT_ANIICON      : ResourceFileExt := '.ico';
+    RT_FONT         : ResourceFileExt := '.fnt';
+    RT_HTML         : ResourceFileExt := '.html';
+    RT_MANIFEST     : ResourceFileExt := '.xml';
+  Else
+    ResourceFileExt := '.bin';
+  End;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -1517,12 +1624,12 @@ Begin
   { Detecter le format 16 ou 32 bits }
   CheckResFormat(ResFormat);
 
-  { TODO 07 a TODO 25 : a implementer }
+  { TODO 08 a TODO 25 : a implementer }
   Case ResFormat Of
     FMT_RES16 : WriteLn('Format RES 16 bits confirme.');
     FMT_RES32 : WriteLn('Format RES 32 bits confirme.');
   End;
-  WriteLn('(TODO 07 a TODO 25 : implementation en cours)');
+  WriteLn('(TODO 08 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
