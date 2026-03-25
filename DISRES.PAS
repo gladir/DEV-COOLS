@@ -83,7 +83,7 @@
               si Name <> '' : retourner Name entre guillemets
               sinon : retourner IntToStr(ID)
 
-  TODO 03 - LECTURE BINAIRE DU FICHIER .RES [A FAIRE]
+  TODO 03 - LECTURE BINAIRE DU FICHIER .RES [IMPLEMENTE]
             Variables globales : ResFile (File Of Byte),
               ResFileName (String), ResFileSize (LongInt),
               ResFilePos (LongInt)
@@ -779,7 +779,11 @@ Type
   VARIABLES GLOBALES
   ============================================================ }
 Var
-  Opts : TOptions;
+  Opts         : TOptions;
+  ResFile      : File Of Byte;   { fichier .RES ouvert en lecture  }
+  ResFileName  : TString;        { nom du fichier courant          }
+  ResFileSize  : LongInt;        { taille totale en octets         }
+  ResFilePos   : LongInt;        { position courante (0-base)      }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -1111,6 +1115,122 @@ Begin
 End;
 
 { ============================================================
+  TODO 03 - LECTURE BINAIRE DU FICHIER .RES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Ouvrir le fichier RES en lecture --------------------- }
+Procedure OpenResFile(Const FName : TString);
+Begin
+  ResFileName := FName;
+  Assign(ResFile, FName);
+  {$I-}
+  Reset(ResFile);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier : ' + FName);
+  { Lire la taille via FileSize }
+  ResFileSize := FileSize(ResFile);
+  ResFilePos  := 0;
+End;
+
+{ ---- Fermer le fichier RES -------------------------------- }
+Procedure CloseResFile;
+Begin
+  Close(ResFile);
+End;
+
+{ ---- Lire un octet ---------------------------------------- }
+Function ReadByte : Byte;
+Var
+  B : Byte;
+Begin
+  If ResFilePos >= ResFileSize Then
+    FatalError('EOF inattendu dans ' + ResFileName);
+  Read(ResFile, B);
+  Inc(ResFilePos);
+  ReadByte := B;
+End;
+
+{ ---- Lire un Word little-endian (2 octets) ---------------- }
+Function ReadWord : Word;
+Var
+  Lo_, Hi_ : Byte;
+Begin
+  Lo_ := ReadByte;
+  Hi_ := ReadByte;
+  ReadWord := Word(Lo_) + Word(Hi_) * 256;
+End;
+
+{ ---- Lire un DWord little-endian (4 octets) --------------- }
+Function ReadDWord : LongInt;
+Var
+  W0, W1 : Word;
+Begin
+  W0 := ReadWord;
+  W1 := ReadWord;
+  ReadDWord := LongInt(W0) Or (LongInt(W1) Shl 16);
+End;
+
+{ ---- Lire un WCHAR (2 octets little-endian) --------------- }
+Function ReadWChar : Word;
+Begin
+  ReadWChar := ReadWord;
+End;
+
+{ ---- Avancer de N octets sans lire le contenu ------------- }
+Procedure SkipBytes(N : LongInt);
+Var
+  I : LongInt;
+  B : Byte;
+Begin
+  If N <= 0 Then Exit;
+  If N > 64 Then
+  Begin
+    { Seek direct pour efficacite }
+    Seek(ResFile, ResFilePos + N);
+    ResFilePos := ResFilePos + N;
+  End
+  Else
+  Begin
+    For I := 1 To N Do
+    Begin
+      Read(ResFile, B);
+      Inc(ResFilePos);
+    End;
+  End;
+End;
+
+{ ---- Retourner la position courante ----------------------- }
+Function GetResPos : LongInt;
+Begin
+  GetResPos := ResFilePos;
+End;
+
+{ ---- Se deplacer a la position Pos ------------------------ }
+Procedure SeekResPos(Pos : LongInt);
+Begin
+  Seek(ResFile, Pos);
+  ResFilePos := Pos;
+End;
+
+{ ---- Tester la fin de fichier ----------------------------- }
+Function ResEOF : Boolean;
+Begin
+  ResEOF := ResFilePos >= ResFileSize;
+End;
+
+{ ---- Aligner la position sur un multiple de Align --------- }
+Procedure AlignResPos(Align : Byte);
+Var
+  Remainder : LongInt;
+Begin
+  If Align <= 1 Then Exit;
+  Remainder := ResFilePos Mod LongInt(Align);
+  If Remainder <> 0 Then
+    SkipBytes(LongInt(Align) - Remainder);
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -1138,7 +1258,17 @@ Begin
     WriteLn;
   End;
 
-  { TODO 03 a TODO 25 : a implementer }
-  WriteLn('Fichier source : ', Opts.SrcFile);
-  WriteLn('(TODO 03 a TODO 25 : implementation en cours)');
+  { Ouvrir le fichier source }
+  OpenResFile(Opts.SrcFile);
+
+  If Opts.Verbose Then
+    WriteLn('Taille du fichier : ', ResFileSize, ' octets');
+
+  { TODO 04 a TODO 25 : a implementer }
+  WriteLn('Lecture OK : ', ResFileSize, ' octets charges depuis ',
+          Opts.SrcFile);
+  WriteLn('(TODO 04 a TODO 25 : implementation en cours)');
+
+  { Fermer le fichier source }
+  CloseResFile;
 End.
