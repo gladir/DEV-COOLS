@@ -215,7 +215,7 @@
       Gerer la largeur des operandes (BYTE PTR, WORD PTR,
       DWORD PTR) quand elle est ambigue.
 
-  22. Generation du fichier .ASM : section de donnees (DB, DW, DD).
+  22. [IMPLEMENTE] Generation du fichier .ASM : section de donnees (DB, DW, DD).
       Emettre les donnees dans les segments de donnees avec les
       directives DB, DW, DD selon le contexte. Detecter les
       chaines ASCII et les emettre avec DB 'texte',0.
@@ -4373,6 +4373,306 @@ Begin
   WriteASMCodeRange(F, SecStart, SecEnd, True);
 End;
 
+{ ============================================================
+  GENERATION DU FICHIER .ASM : SECTION DE DONNEES (TODO 22)
+  ============================================================ }
+
+{ IsASMSafeChar - Teste si un caractere peut apparaitre directement dans
+  une chaine entre apostrophes en syntaxe MASM (ASCII imprimable sauf
+  l'apostrophe qui doit etre doublee). }
+Function IsASMSafeChar(B : Byte) : Boolean;
+Begin
+  IsASMSafeChar := (B >= 32) And (B <= 126);
+End;
+
+{ EmitASMString - Emet une chaine ASCII detectee sous forme DB 'texte',0.
+  Gere les apostrophes en les doublant ('') et les caracteres de controle
+  courants (TAB=09h, CR=0Dh, LF=0Ah) en les emettant numeriquement.
+  Parametres :
+    F         : fichier de sortie
+    Addr      : adresse de debut de la chaine dans l'image
+    Mode32    : True si mode 32 bits (pour le format hex des commentaires)
+  Retourne le nombre d'octets consommes (longueur chaine + NUL terminal). }
+Function EmitASMString(Var F : Text; Addr : LongInt; Mode32 : Boolean) : LongInt;
+Var
+  StartAddr : LongInt;
+  B         : Byte;
+  InStr     : Boolean;  { on est en cours d'emission dans une chaine '' }
+  LineStr   : TString;
+  StrLen    : LongInt;
+  First     : Boolean;  { premier element sur la ligne }
+Begin
+  StartAddr := Addr;
+  LineStr := '        DB      ';
+  InStr := False;
+  First := True;
+
+  { Parcourir la chaine jusqu'au NUL terminal }
+  While Addr < ImageSize Do Begin
+    B := ReadImageByte(Addr);
+    If B = 0 Then Begin
+      { Terminer la chaine en cours si necessaire }
+      If InStr Then Begin
+        LineStr := LineStr + '''';
+        InStr := False;
+      End;
+      If Not First Then
+        LineStr := LineStr + ',';
+      LineStr := LineStr + '0';
+      Inc(Addr);
+      Break;
+    End;
+    If IsASMSafeChar(B) Then Begin
+      If Not InStr Then Begin
+        If Not First Then
+          LineStr := LineStr + ',';
+        LineStr := LineStr + '''';
+        InStr := True;
+      End;
+      If Chr(B) = '''' Then
+        LineStr := LineStr + ''''''  { doubler l'apostrophe }
+      Else
+        LineStr := LineStr + Chr(B);
+    End Else Begin
+      { Caractere non imprimable : emettre numeriquement }
+      If InStr Then Begin
+        LineStr := LineStr + '''';
+        InStr := False;
+      End;
+      If Not First Then
+        LineStr := LineStr + ',';
+      LineStr := LineStr + HexByte(B) + 'h';
+    End;
+    First := False;
+    Inc(Addr);
+    { Securite : limiter la longueur de la ligne }
+    If Length(LineStr) > 200 Then Begin
+      If InStr Then Begin
+        LineStr := LineStr + '''';
+        InStr := False;
+      End;
+      WriteLn(F, LineStr);
+      LineStr := '        DB      ';
+      First := True;
+    End;
+  End;
+  If InStr Then
+    LineStr := LineStr + '''';
+  WriteLn(F, LineStr);
+  StrLen := Addr - StartAddr;
+  EmitASMString := StrLen;
+End;
+
+{ WriteASMDataRange - Emet les donnees d'une plage d'adresses avec les
+  directives DB, DW, DD. Detecte les chaines ASCII (BF_STRING) et les
+  emet avec DB 'texte',0. Regroupe les octets consecutifs non-chaine en
+  lignes de DB xx,xx,xx,... (16 octets max par ligne). Emet les entrees
+  de table de saut (BF_JUMPTBL) en DD avec le label correspondant.
+  Genere des labels pour les variables referencees.
+  Parametres :
+    F         : fichier de sortie
+    StartAddr : adresse de debut dans l'image
+    EndAddr   : adresse de fin (exclue) dans l'image
+    Mode32    : True si mode 32 bits }
+Procedure WriteASMDataRange(Var F : Text; StartAddr, EndAddr : LongInt;
+                             Mode32 : Boolean);
+Var
+  Addr      : LongInt;
+  LblIdx    : LongInt;
+  BFlag     : Byte;
+  B         : Byte;
+  LineStr   : TString;
+  ByteCount : Integer;
+  StrBytes  : LongInt;
+  DWordVal  : LongInt;
+  TargetLbl : LongInt;
+Begin
+  Addr := StartAddr;
+  If EndAddr > ImageSize Then EndAddr := ImageSize;
+
+  While Addr < EndAddr Do Begin
+    { Determiner le flag de cet octet }
+    BFlag := BF_UNKNOWN;
+    If (ByteFlags <> Nil) And (Addr >= 0) And (Addr < ImageSize) Then
+      BFlag := ByteFlags^[Addr];
+
+    { Si c'est du code, sauter jusqu'au prochain non-code }
+    If BFlag = BF_CODE Then Begin
+      Inc(Addr);
+      Continue;
+    End;
+
+    { Emettre un label si cette adresse en a un }
+    LblIdx := FindLabel(Addr);
+    If LblIdx >= 0 Then Begin
+      WriteLn(F, Labels[LblIdx].Name, ':');
+    End;
+
+    { Chaine ASCII : emettre avec DB 'texte',0 }
+    If BFlag = BF_STRING Then Begin
+      StrBytes := EmitASMString(F, Addr, Mode32);
+      If StrBytes < 1 Then StrBytes := 1;
+      Addr := Addr + StrBytes;
+      Continue;
+    End;
+
+    { Table de saut : emettre en DD avec label si possible }
+    If (BFlag = BF_JUMPTBL) And (Addr + 3 < EndAddr) Then Begin
+      DWordVal := ReadImageDWord(Addr);
+      TargetLbl := FindLabel(DWordVal);
+      If TargetLbl >= 0 Then
+        WriteLn(F, '        DD      OFFSET ', Labels[TargetLbl].Name)
+      Else If Mode32 Then
+        WriteLn(F, '        DD      ', HexDWord(DWordVal), 'h')
+      Else
+        WriteLn(F, '        DD      ', HexDWord(DWordVal), 'h');
+      Addr := Addr + 4;
+      Continue;
+    End;
+
+    { Padding : emettre en DB avec commentaire }
+    If BFlag = BF_PADDING Then Begin
+      B := ReadImageByte(Addr);
+      { Compter les octets de padding consecutifs identiques }
+      ByteCount := 0;
+      While (Addr + ByteCount < EndAddr) And (ByteCount < 256) Do Begin
+        If (ByteFlags <> Nil) And (ByteFlags^[Addr + ByteCount] = BF_PADDING) And
+           (ReadImageByte(Addr + ByteCount) = B) Then
+          Inc(ByteCount)
+        Else
+          Break;
+      End;
+      If ByteCount < 1 Then ByteCount := 1;
+      If ByteCount > 1 Then
+        WriteLn(F, '        DB      ', IntToStr(ByteCount), ' DUP(', HexByte(B), 'h)',
+                '  ; padding')
+      Else
+        WriteLn(F, '        DB      ', HexByte(B), 'h  ; padding');
+      Addr := Addr + ByteCount;
+      Continue;
+    End;
+
+    { Donnees generiques (BF_DATA ou BF_UNKNOWN) : emettre en lignes de DB }
+    LineStr := '        DB      ';
+    ByteCount := 0;
+    While (Addr < EndAddr) And (ByteCount < 16) Do Begin
+      { Verifier le flag de l'octet courant }
+      BFlag := BF_UNKNOWN;
+      If (ByteFlags <> Nil) And (Addr >= 0) And (Addr < ImageSize) Then
+        BFlag := ByteFlags^[Addr];
+      { Arreter si on tombe sur du code, une chaine, un jump table ou un padding }
+      If (BFlag = BF_CODE) Or (BFlag = BF_STRING) Or
+         (BFlag = BF_JUMPTBL) Or (BFlag = BF_PADDING) Then
+        Break;
+      { Arreter si l'adresse suivante a un label (sauf le premier octet) }
+      If (ByteCount > 0) And (FindLabel(Addr) >= 0) Then
+        Break;
+      B := ReadImageByte(Addr);
+      If ByteCount > 0 Then
+        LineStr := LineStr + ',';
+      LineStr := LineStr + HexByte(B) + 'h';
+      Inc(ByteCount);
+      Inc(Addr);
+    End;
+    If ByteCount > 0 Then
+      WriteLn(F, LineStr);
+    { Securite : si rien n'a ete emis, avancer d'un octet }
+    If ByteCount = 0 Then Begin
+      B := ReadImageByte(Addr);
+      WriteLn(F, '        DB      ', HexByte(B), 'h');
+      Inc(Addr);
+    End;
+  End;
+End;
+
+{ WriteASMDataDOS16 - Emet les donnees du segment de donnees pour un EXE
+  DOS 16 bits. Parcourt l'image et emet les octets marques comme donnees
+  (BF_DATA, BF_STRING, etc.) dans le segment DSEG. }
+Procedure WriteASMDataDOS16(Var F : Text);
+Begin
+  WriteLn(F, '; Donnees extraites de l''image');
+  WriteLn(F);
+  WriteASMDataRange(F, 0, ImageSize, False);
+End;
+
+{ WriteASMDataPE32 - Emet les donnees pour une section PE 32 bits
+  (section DATA ou CONST contenant des donnees initialisees).
+  Parametres :
+    F            : fichier de sortie
+    SectionIndex : index de la section dans le tableau Sections[] }
+Procedure WriteASMDataPE32(Var F : Text; SectionIndex : Integer);
+Var
+  SecStart : LongInt;
+  SecEnd   : LongInt;
+Begin
+  SecStart := Sections[SectionIndex].VirtualAddress;
+  SecEnd   := SecStart + Sections[SectionIndex].VirtualSize;
+  If SecEnd > ImageSize Then SecEnd := ImageSize;
+  WriteLn(F, '; Section a l''adresse RVA ', HexDWord(SecStart), 'h');
+  WriteLn(F);
+  WriteASMDataRange(F, SecStart, SecEnd, True);
+End;
+
+{ WriteASMBSSPE32 - Emet les donnees non-initialisees pour une section
+  PE 32 bits (.bss). Genere des directives DB ? ou DUP(?) pour les
+  variables, avec des labels aux adresses referencees.
+  Parametres :
+    F            : fichier de sortie
+    SectionIndex : index de la section dans le tableau Sections[] }
+Procedure WriteASMBSSPE32(Var F : Text; SectionIndex : Integer);
+Var
+  SecStart   : LongInt;
+  SecEnd     : LongInt;
+  Addr       : LongInt;
+  LblIdx     : LongInt;
+  NextLbl    : LongInt;
+  BlockSize  : LongInt;
+  I          : LongInt;
+Begin
+  SecStart := Sections[SectionIndex].VirtualAddress;
+  SecEnd   := SecStart + Sections[SectionIndex].VirtualSize;
+  If SecEnd > ImageSize Then SecEnd := ImageSize;
+  Addr := SecStart;
+  WriteLn(F, '; Donnees non-initialisees (BSS) a l''adresse RVA ',
+          HexDWord(SecStart), 'h');
+  WriteLn(F);
+
+  While Addr < SecEnd Do Begin
+    { Emettre un label si cette adresse en a un }
+    LblIdx := FindLabel(Addr);
+    If LblIdx >= 0 Then Begin
+      { Trouver la prochaine adresse avec un label pour dimensionner le bloc }
+      NextLbl := SecEnd;
+      For I := 0 To LabelCount - 1 Do Begin
+        If (Labels[I].Address > Addr) And (Labels[I].Address < NextLbl) Then
+          NextLbl := Labels[I].Address;
+      End;
+      BlockSize := NextLbl - Addr;
+      If BlockSize < 1 Then BlockSize := 1;
+      WriteLn(F, Labels[LblIdx].Name, ':');
+      If BlockSize > 1 Then
+        WriteLn(F, '        DB      ', IntToStr(BlockSize), ' DUP(?)')
+      Else
+        WriteLn(F, '        DB      ?');
+      Addr := Addr + BlockSize;
+    End Else Begin
+      { Pas de label : avancer en bloc jusqu'au prochain label ou fin }
+      NextLbl := SecEnd;
+      For I := 0 To LabelCount - 1 Do Begin
+        If (Labels[I].Address > Addr) And (Labels[I].Address < NextLbl) Then
+          NextLbl := Labels[I].Address;
+      End;
+      BlockSize := NextLbl - Addr;
+      If BlockSize < 1 Then BlockSize := 1;
+      If BlockSize > 1 Then
+        WriteLn(F, '        DB      ', IntToStr(BlockSize), ' DUP(?)')
+      Else
+        WriteLn(F, '        DB      ?');
+      Addr := Addr + BlockSize;
+    End;
+  End;
+End;
+
 { Ecrit les directives de modele et segments pour un EXE DOS 16 bits.
   Genere .MODEL SMALL, .STACK, et les directives SEGMENT/ENDS. }
 Procedure WriteASMDirectivesDOS16(Var F : Text);
@@ -4386,7 +4686,7 @@ Begin
   { Segment de donnees }
   WriteLn(F, 'DSEG SEGMENT PARA PUBLIC ''DATA''');
   WriteLn(F);
-  WriteLn(F, '; (donnees a generer par TODO 22)');
+  WriteASMDataDOS16(F);
   WriteLn(F);
   WriteLn(F, 'DSEG ENDS');
   WriteLn(F);
@@ -4436,7 +4736,7 @@ Begin
       WriteLn(F, '; --- Section ', SecName, ' (BSS) ---');
       WriteLn(F, '.DATA?');
       WriteLn(F);
-      WriteLn(F, '; (donnees non-initialisees a generer par TODO 22)');
+      WriteASMBSSPE32(F, I);
       WriteLn(F);
     End Else If IsData Then Begin
       If (Sections[I].Characteristics And IMAGE_SCN_MEM_WRITE) <> 0 Then Begin
@@ -4447,7 +4747,7 @@ Begin
         WriteLn(F, '.CONST');
       End;
       WriteLn(F);
-      WriteLn(F, '; (donnees a generer par TODO 22)');
+      WriteASMDataPE32(F, I);
       WriteLn(F);
     End Else Begin
       WriteLn(F, '; --- Section ', SecName, ' (', SectionFlagsStr(Sections[I].Characteristics), ') ---');
