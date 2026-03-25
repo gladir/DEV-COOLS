@@ -134,7 +134,7 @@
               appeler DetectResFormat, afficher le format detecte
               si Verbose, lever FatalError si FMT_UNKNOWN
 
-  TODO 05 - PARSING DE L'EN-TETE RESSOURCE 16 BITS [A FAIRE]
+  TODO 05 - PARSING DE L'EN-TETE RESSOURCE 16 BITS [IMPLEMENTE]
             Type TResHeader16 : record
               TypeId   : Word    (type numerique, bit 15 = 1 si numerique)
               TypeName : String  (chaine Pascal si bit 15 = 0, vide sinon)
@@ -765,6 +765,19 @@ Const
 Type
   TString = String;
 
+  { En-tete d'une ressource 16 bits (format Windows 3.x) }
+  TResHeader16 = Record
+    TypeId   : Word;      { identifiant numerique de type (bit 15 = 1) }
+    TypeName : TString;   { chaine Pascal si bit 15 = 0, vide sinon    }
+    NameId   : Word;      { identifiant numerique du nom (bit 15 = 1)  }
+    NameStr  : TString;   { chaine Pascal si bit 15 = 0, vide sinon    }
+    DataSize : LongInt;   { taille des donnees en octets               }
+    Attribs  : Word;      { attributs memoire                          }
+    Reserved : Word;      { reserve = 0                                }
+    NameLen  : Word;      { longueur du nom (optionnel)                }
+    DataOfs  : LongInt;   { position du debut des donnees              }
+  End;
+
   { Options de la ligne de commande }
   TOptions = Record
     SrcFile    : TString;   { fichier .RES source               }
@@ -1296,6 +1309,83 @@ Begin
 End;
 
 { ============================================================
+  TODO 05 - PARSING DE L'EN-TETE RESSOURCE 16 BITS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Lire une chaine Pascal (longueur 1 octet + chars) ---- }
+Function ReadPascalString : TString;
+Var
+  Len : Byte;
+  I   : Integer;
+  S   : TString;
+Begin
+  Len := ReadByte;
+  S   := '';
+  For I := 1 To Len Do
+    S := S + Chr(ReadByte);
+  { Aligner sur 2 octets : total lu = 1 (longueur) + Len (chars) }
+  If ((Len + 1) Mod 2) <> 0 Then
+    SkipBytes(1);
+  ReadPascalString := S;
+End;
+
+{ ---- Lire l'en-tete d'une ressource 16 bits --------------- }
+Procedure ReadResHeader16(Var Hdr : TResHeader16);
+Var
+  W : Word;
+Begin
+  { Type : WORD avec bit 15 = numerique ou chaine Pascal }
+  W := ReadWord;
+  If (W And $8000) <> 0 Then
+  Begin
+    Hdr.TypeId   := W And $7FFF;
+    Hdr.TypeName := '';
+  End
+  Else
+  Begin
+    Hdr.TypeId   := 0;
+    SeekResPos(ResFilePos - 2);
+    Hdr.TypeName := ReadPascalString;
+  End;
+
+  { Nom : meme logique }
+  W := ReadWord;
+  If (W And $8000) <> 0 Then
+  Begin
+    Hdr.NameId  := W And $7FFF;
+    Hdr.NameStr := '';
+  End
+  Else
+  Begin
+    Hdr.NameId  := 0;
+    SeekResPos(ResFilePos - 2);
+    Hdr.NameStr := ReadPascalString;
+  End;
+  Hdr.NameLen := Length(Hdr.NameStr);
+
+  { Champs numeriques }
+  Hdr.DataSize := ReadDWord;
+  Hdr.Attribs  := ReadWord;
+  Hdr.Reserved := ReadWord;
+
+  { Alignement sur 2 octets avant les donnees }
+  AlignResPos(2);
+  Hdr.DataOfs := GetResPos;
+End;
+
+{ ---- Tester si la ressource courante est le marqueur de fin }
+Function IsLastResHeader16 : Boolean;
+Var
+  W       : Word;
+  SavePos : LongInt;
+Begin
+  SavePos          := GetResPos;
+  W                := ReadWord;
+  SeekResPos(SavePos);
+  IsLastResHeader16 := (W = $0000);
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -1332,12 +1422,12 @@ Begin
   { Detecter le format 16 ou 32 bits }
   CheckResFormat(ResFormat);
 
-  { TODO 05 a TODO 25 : a implementer }
+  { TODO 06 a TODO 25 : a implementer }
   Case ResFormat Of
     FMT_RES16 : WriteLn('Format RES 16 bits confirme.');
     FMT_RES32 : WriteLn('Format RES 32 bits confirme.');
   End;
-  WriteLn('(TODO 05 a TODO 25 : implementation en cours)');
+  WriteLn('(TODO 06 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
