@@ -21,6 +21,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Ada 83/95 pour de l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>ADACW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Ada 83/95 pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>ABAP86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur ABAP/4 pour de l'assembleur du microprocesseur 8086.</td>
 		</tr>
