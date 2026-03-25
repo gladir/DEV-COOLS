@@ -174,7 +174,7 @@
       procedure. RET n -> sortie avec nettoyage de pile.
       CALL FAR -> appel inter-segment.
 
-  16. [A FAIRE] Traduction des operations de pile (PUSH/POP).
+  16. [IMPLEMENTE] Traduction des operations de pile (PUSH/POP).
       PUSH reg/mem/imm -> empiler sur la pile simulee ou passer
       comme parametre a la prochaine procedure appelee.
       POP reg/mem -> depiler. PUSHA/PUSHAD -> sauvegarder tous
@@ -5588,6 +5588,354 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des operations de pile (PUSH/POP) - TODO 16
+  ============================================================ }
+
+Function IsPushForCall(PushLine:LongInt):Boolean;
+{ Verifie si un PUSH a la ligne PushLine sert de parametre a un
+  CALL qui suit. Remonte ou descend pour trouver un CALL.
+  Si oui, le PUSH est deja traite par TODO 15 (BuildCallArgs). }
+Var
+ I:LongInt;
+ AsmT:TAsmLine;
+ M:String;
+Begin
+ IsPushForCall:=False;
+ { Chercher vers l'avant un CALL precedee uniquement de PUSH }
+ I:=PushLine+1;
+ While I<SrcLineCount do Begin
+  ParseInstructionLine(I,AsmT);
+  If AsmT.Mnemonic='' Then Begin Inc(I); Continue; End;
+  If AsmT.IsDirective Then Begin Inc(I); Continue; End;
+  M:=UpCaseStr(AsmT.Mnemonic);
+  If M='PUSH' Then Begin Inc(I); Continue; End;
+  If M='CALL' Then Begin IsPushForCall:=True; Exit; End;
+  Break;
+ End;
+End;
+
+Function FindMatchingPop(PushLine:LongInt;RegName:String):LongInt;
+{ Cherche un POP du meme registre apres PushLine dans la meme
+  procedure. Retourne l'index de la ligne du POP ou -1. }
+Var
+ I:LongInt;
+ AsmT:TAsmLine;
+ M,R:String;
+ ProcIdx,ProcIdx2:Integer;
+ Depth:Integer;
+Begin
+ FindMatchingPop:=-1;
+ ProcIdx:=FindProcForLine(PushLine);
+ Depth:=1;
+ I:=PushLine+1;
+ While I<SrcLineCount do Begin
+  { Ne pas chercher au-dela de la procedure courante }
+  ProcIdx2:=FindProcForLine(I);
+  If(ProcIdx>0)and(ProcIdx2<>ProcIdx)Then Exit;
+  ParseInstructionLine(I,AsmT);
+  If AsmT.Mnemonic='' Then Begin Inc(I); Continue; End;
+  If AsmT.IsDirective Then Begin Inc(I); Continue; End;
+  M:=UpCaseStr(AsmT.Mnemonic);
+  If M='PUSH' Then Begin
+   R:='';
+   If AsmT.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+    R:=UpCaseStr(AsmT.Op1.Reg);
+   If R=UpCaseStr(RegName) Then Inc(Depth);
+  End
+  Else If M='POP' Then Begin
+   R:='';
+   If AsmT.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+    R:=UpCaseStr(AsmT.Op1.Reg);
+   If R=UpCaseStr(RegName) Then Begin
+    Dec(Depth);
+    If Depth=0 Then Begin
+     FindMatchingPop:=I;
+     Exit;
+    End;
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
+Function TranslatePUSH(Var AsmL:TAsmLine;LineIdx:LongInt;
+ ProcIdx:Integer):String;
+{ PUSH reg -> SaveXX := RegXX (si PUSH/POP paire detectee)
+  PUSH reg -> Dec(RegSP, 2); MemW[RegSS:RegSP] := RegXX (sinon)
+  PUSH mem -> Dec(RegSP, N); Mem[RegSS:RegSP] := expr
+  PUSH imm -> Dec(RegSP, 2); MemW[RegSS:RegSP] := value }
+Var
+ Expr,RegName,SpVar,SaveVar:String;
+ OpSize:Integer;
+ PopLine:LongInt;
+Begin
+ TranslatePUSH:='';
+ If Mode32 Then SpVar:='RegESP'
+ Else SpVar:='RegSP';
+ Expr:=OperandToExpr(AsmL.Op1,ProcIdx);
+ { Determiner la taille de l'operande }
+ If AsmL.Op1.OpType=OT_REG32 Then OpSize:=4
+ Else If AsmL.Op1.OpType=OT_REG16 Then OpSize:=2
+ Else If AsmL.Op1.OpType=OT_REG8 Then OpSize:=1
+ Else If Mode32 Then OpSize:=4
+ Else OpSize:=2;
+ { Verifier si c'est un PUSH qui alimente un CALL }
+ If IsPushForCall(LineIdx) Then Begin
+  { Deja traite par TODO 15 : marquer comme commentaire }
+  TranslatePUSH:='{ PUSH '+Expr+' -> param CALL }';
+  Exit;
+ End;
+ { Verifier si c'est une paire PUSH/POP de sauvegarde }
+ If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then Begin
+  RegName:=UpCaseStr(AsmL.Op1.Reg);
+  PopLine:=FindMatchingPop(LineIdx,RegName);
+  If PopLine>=0 Then Begin
+   { Paire PUSH/POP detectee : utiliser une variable temporaire }
+   SaveVar:='Save'+RegToPascalVar(RegName);
+   TranslatePUSH:=SaveVar+' := '+Expr+';';
+   Exit;
+  End;
+ End;
+ { Pas de paire : simuler la pile }
+ TranslatePUSH:='Begin Dec('+SpVar+', '+IntToStr(OpSize)+
+  '); Mem['+SpVar+'] := '+Expr+'; End;';
+End;
+
+Function TranslatePOP(Var AsmL:TAsmLine;LineIdx:LongInt;
+ ProcIdx:Integer):String;
+{ POP reg -> RegXX := SaveXX (si PUSH/POP paire detectee)
+  POP reg -> RegXX := Mem[RegSS:RegSP]; Inc(RegSP, 2) (sinon)
+  POP mem -> expr := Mem[RegSS:RegSP]; Inc(RegSP, N) }
+Var
+ Expr,RegName,SpVar,SaveVar:String;
+ OpSize:Integer;
+ I:LongInt;
+ AsmT:TAsmLine;
+ M,R:String;
+ Found:Boolean;
+ ProcIdx2:Integer;
+Begin
+ TranslatePOP:='';
+ If Mode32 Then SpVar:='RegESP'
+ Else SpVar:='RegSP';
+ Expr:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If AsmL.Op1.OpType=OT_REG32 Then OpSize:=4
+ Else If AsmL.Op1.OpType=OT_REG16 Then OpSize:=2
+ Else If AsmL.Op1.OpType=OT_REG8 Then OpSize:=1
+ Else If Mode32 Then OpSize:=4
+ Else OpSize:=2;
+ { Verifier si un PUSH correspondant existe avant }
+ If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then Begin
+  RegName:=UpCaseStr(AsmL.Op1.Reg);
+  Found:=False;
+  I:=LineIdx-1;
+  While I>=0 do Begin
+   ProcIdx2:=FindProcForLine(I);
+   If(ProcIdx>0)and(ProcIdx2<>ProcIdx)Then Break;
+   ParseInstructionLine(I,AsmT);
+   If AsmT.Mnemonic='' Then Begin Dec(I); Continue; End;
+   If AsmT.IsDirective Then Begin Dec(I); Continue; End;
+   M:=UpCaseStr(AsmT.Mnemonic);
+   If M='PUSH' Then Begin
+    If AsmT.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then Begin
+     R:=UpCaseStr(AsmT.Op1.Reg);
+     If R=RegName Then Begin
+      { Verifier que ce PUSH a ce POP comme match }
+      If FindMatchingPop(I,R)=LineIdx Then Begin
+       Found:=True;
+       Break;
+      End;
+     End;
+    End;
+   End;
+   Dec(I);
+  End;
+  If Found Then Begin
+   SaveVar:='Save'+RegToPascalVar(RegName);
+   TranslatePOP:=Expr+' := '+SaveVar+';';
+   Exit;
+  End;
+ End;
+ { Pas de paire : simuler la pile }
+ TranslatePOP:='Begin '+Expr+' := Mem['+SpVar+']; Inc('+
+  SpVar+', '+IntToStr(OpSize)+'); End;';
+End;
+
+Function TranslatePUSHA(Var AsmL:TAsmLine):String;
+{ PUSHA -> sauvegarder AX, CX, DX, BX, SP, BP, SI, DI
+  PUSHAD -> sauvegarder EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI }
+Var
+ M:String;
+Begin
+ M:=UpCaseStr(AsmL.Mnemonic);
+ If(M='PUSHAD')or(Mode32)Then
+  TranslatePUSHA:='Begin SaveEAX := RegEAX; SaveECX := RegECX; '+
+   'SaveEDX := RegEDX; SaveEBX := RegEBX; SaveESP := RegESP; '+
+   'SaveEBP := RegEBP; SaveESI := RegESI; SaveEDI := RegEDI; End;'
+ Else
+  TranslatePUSHA:='Begin SaveAX := RegAX; SaveCX := RegCX; '+
+   'SaveDX := RegDX; SaveBX := RegBX; SaveSP := RegSP; '+
+   'SaveBP := RegBP; SaveSI := RegSI; SaveDI := RegDI; End;';
+End;
+
+Function TranslatePOPA(Var AsmL:TAsmLine):String;
+{ POPA -> restaurer DI, SI, BP, (SP ignore), BX, DX, CX, AX
+  POPAD -> restaurer EDI, ESI, EBP, (ESP ignore), EBX, EDX, ECX, EAX }
+Var
+ M:String;
+Begin
+ M:=UpCaseStr(AsmL.Mnemonic);
+ If(M='POPAD')or(Mode32)Then
+  TranslatePOPA:='Begin RegEDI := SaveEDI; RegESI := SaveESI; '+
+   'RegEBP := SaveEBP; RegEBX := SaveEBX; '+
+   'RegEDX := SaveEDX; RegECX := SaveECX; RegEAX := SaveEAX; End;'
+ Else
+  TranslatePOPA:='Begin RegDI := SaveDI; RegSI := SaveSI; '+
+   'RegBP := SaveBP; RegBX := SaveBX; '+
+   'RegDX := SaveDX; RegCX := SaveCX; RegAX := SaveAX; End;';
+End;
+
+Function TranslatePUSHF(Var AsmL:TAsmLine):String;
+{ PUSHF -> sauvegarder tous les flags dans une variable }
+Begin
+ If Mode32 Or(UpCaseStr(AsmL.Mnemonic)='PUSHFD')Then
+  TranslatePUSHF:='Begin SaveFlagCF := FlagCF; SaveFlagZF := FlagZF; '+
+   'SaveFlagSF := FlagSF; SaveFlagOF := FlagOF; '+
+   'SaveFlagDF := FlagDF; SaveFlagPF := FlagPF; '+
+   'SaveFlagAF := FlagAF; End;'
+ Else
+  TranslatePUSHF:='Begin SaveFlagCF := FlagCF; SaveFlagZF := FlagZF; '+
+   'SaveFlagSF := FlagSF; SaveFlagOF := FlagOF; '+
+   'SaveFlagDF := FlagDF; SaveFlagPF := FlagPF; '+
+   'SaveFlagAF := FlagAF; End;';
+End;
+
+Function TranslatePOPF(Var AsmL:TAsmLine):String;
+{ POPF -> restaurer tous les flags depuis la variable }
+Begin
+ If Mode32 Or(UpCaseStr(AsmL.Mnemonic)='POPFD')Then
+  TranslatePOPF:='Begin FlagCF := SaveFlagCF; FlagZF := SaveFlagZF; '+
+   'FlagSF := SaveFlagSF; FlagOF := SaveFlagOF; '+
+   'FlagDF := SaveFlagDF; FlagPF := SaveFlagPF; '+
+   'FlagAF := SaveFlagAF; End;'
+ Else
+  TranslatePOPF:='Begin FlagCF := SaveFlagCF; FlagZF := SaveFlagZF; '+
+   'FlagSF := SaveFlagSF; FlagOF := SaveFlagOF; '+
+   'FlagDF := SaveFlagDF; FlagPF := SaveFlagPF; '+
+   'FlagAF := SaveFlagAF; End;';
+End;
+
+Function IsPushPopMnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est une operation de pile }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsPushPopMnemonic:=
+  (U='PUSH')or(U='POP')or
+  (U='PUSHA')or(U='PUSHAD')or
+  (U='POPA')or(U='POPAD')or
+  (U='PUSHF')or(U='PUSHFD')or
+  (U='POPF')or(U='POPFD');
+End;
+
+Procedure ProcessPushPopTranslations;
+{ Parcourt les lignes source et traduit les instructions PUSH et POP
+  en operations Pascal equivalentes. Detecte les paires de
+  sauvegarde/restauration de registres et les convertit en
+  variables temporaires. Produit des statistiques. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ ProcIdx:Integer;
+ Code:String;
+ M:String;
+ PushCount,PopCount:LongInt;
+ PushaCount,PopaCount:LongInt;
+ PushfCount,PopfCount:LongInt;
+ PushCallCount,PushSaveCount,PushStackCount:LongInt;
+ PopRestoreCount,PopStackCount:LongInt;
+ TotalPushPop:LongInt;
+Begin
+ PushCount:=0;PopCount:=0;
+ PushaCount:=0;PopaCount:=0;
+ PushfCount:=0;PopfCount:=0;
+ PushCallCount:=0;PushSaveCount:=0;PushStackCount:=0;
+ PopRestoreCount:=0;PopStackCount:=0;
+ TotalPushPop:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=UpCaseStr(AsmL.Mnemonic);
+  If Not IsPushPopMnemonic(M) Then Continue;
+  ProcIdx:=FindProcForLine(I);
+  Code:='';
+  If M='PUSH' Then Begin
+   Code:=TranslatePUSH(AsmL,I,ProcIdx);
+   Inc(PushCount);
+   { Classifier le PUSH }
+   If IsPushForCall(I) Then
+    Inc(PushCallCount)
+   Else If Pos('Save',Code)=1 Then
+    Inc(PushSaveCount)
+   Else
+    Inc(PushStackCount);
+  End
+  Else If M='POP' Then Begin
+   Code:=TranslatePOP(AsmL,I,ProcIdx);
+   Inc(PopCount);
+   { Classifier le POP }
+   If Pos('Save',Code)>0 Then
+    Inc(PopRestoreCount)
+   Else
+    Inc(PopStackCount);
+  End
+  Else If(M='PUSHA')or(M='PUSHAD')Then Begin
+   Code:=TranslatePUSHA(AsmL);
+   Inc(PushaCount);
+  End
+  Else If(M='POPA')or(M='POPAD')Then Begin
+   Code:=TranslatePOPA(AsmL);
+   Inc(PopaCount);
+  End
+  Else If(M='PUSHF')or(M='PUSHFD')Then Begin
+   Code:=TranslatePUSHF(AsmL);
+   Inc(PushfCount);
+  End
+  Else If(M='POPF')or(M='POPFD')Then Begin
+   Code:=TranslatePOPF(AsmL);
+   Inc(PopfCount);
+  End;
+  If Code<>'' Then Begin
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(TotalPushPop);
+  End;
+ End;
+ WriteLn('Traduction PUSH/POP : ',TotalPushPop,' instructions, ',
+  TranslationCount,' traductions totales.');
+ If Verbose Then Begin
+  WriteLn('  PUSH             : ',PushCount);
+  WriteLn('    param. CALL    : ',PushCallCount);
+  WriteLn('    sauvegarde reg : ',PushSaveCount);
+  WriteLn('    pile simulee   : ',PushStackCount);
+  WriteLn('  POP              : ',PopCount);
+  WriteLn('    restaur. reg   : ',PopRestoreCount);
+  WriteLn('    pile simulee   : ',PopStackCount);
+  WriteLn('  PUSHA/PUSHAD     : ',PushaCount);
+  WriteLn('  POPA/POPAD       : ',PopaCount);
+  WriteLn('  PUSHF/PUSHFD     : ',PushfCount);
+  WriteLn('  POPF/POPFD       : ',PopfCount);
+  If TotalPushPop>0 Then Begin
+   WriteLn('  Details :');
+   For I:=TranslationCount-TotalPushPop to TranslationCount-1 do
+    If I>=0 Then
+     WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -5708,6 +6056,7 @@ BEGIN
  { TODO 15 - Traduction CALL/RET }
  ProcessCallRetTranslations;
  { TODO 16 - Traduction PUSH/POP }
+ ProcessPushPopTranslations;
  { TODO 17 - Traduction chaines }
  { TODO 18 - Traduction INT systeme }
  { TODO 19 - Traduction adressage }
