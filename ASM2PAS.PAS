@@ -414,7 +414,33 @@ Const
  DE_UNINIT  = 5;
  DE_EXPR    = 6;
 
+ { Conventions d'appel (TODO 5) }
+ CC_NONE    = 0;
+ CC_C       = 1;
+ CC_PASCAL  = 2;
+ CC_STDCALL = 3;
+ CC_BASIC   = 4;
+ CC_FORTRAN = 5;
+ CC_SYSCALL = 6;
+
+ MAX_LOCALS = 64;
+
 Type
+ TProcParam = Record
+  Name:String;
+  TypeName:String;
+  PascalType:Byte;
+  Size:Word;
+ End;
+
+ TProcLocal = Record
+  Name:String;
+  TypeName:String;
+  PascalType:Byte;
+  Size:Word;
+  Count:Word;
+ End;
+
  TSegmentInfo = Record
   Name:String;
   ClassName:String;
@@ -469,9 +495,14 @@ Type
   IsNear:Boolean;
   Convention:Byte;
   ParamCount:Byte;
+  Params:Array[1..MAX_PARAMS] of TProcParam;
+  LocalCount:Byte;
+  Locals:Array[1..MAX_LOCALS] of TProcLocal;
   LocalSize:Word;
   StartLine:LongInt;
   EndLine:LongInt;
+  UsesAX:Boolean;
+  IsPublic:Boolean;
  End;
 
  TDataElem = Record
@@ -1895,6 +1926,466 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Analyse des directives de procedures - TODO 5
+  ============================================================ }
+
+Function ConventionName(C:Byte):String;
+Begin
+ Case C of
+  CC_C:ConventionName:='C';
+  CC_PASCAL:ConventionName:='PASCAL';
+  CC_STDCALL:ConventionName:='STDCALL';
+  CC_BASIC:ConventionName:='BASIC';
+  CC_FORTRAN:ConventionName:='FORTRAN';
+  CC_SYSCALL:ConventionName:='SYSCALL';
+  Else ConventionName:='(defaut)';
+ End;
+End;
+
+Function MasmTypeToPascalType(S:String):Byte;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ If(U='BYTE')or(U='DB')Then MasmTypeToPascalType:=PT_BYTE
+ Else If U='SBYTE' Then MasmTypeToPascalType:=PT_SHORTINT
+ Else If(U='WORD')or(U='DW')Then MasmTypeToPascalType:=PT_WORD
+ Else If U='SWORD' Then MasmTypeToPascalType:=PT_INTEGER
+ Else If(U='DWORD')or(U='DD')Then MasmTypeToPascalType:=PT_LONGINT
+ Else If U='SDWORD' Then MasmTypeToPascalType:=PT_LONGINT
+ Else If(U='FWORD')or(U='DF')Then MasmTypeToPascalType:=PT_POINTER
+ Else If(U='QWORD')or(U='DQ')Then MasmTypeToPascalType:=PT_LONGINT
+ Else If(U='TBYTE')or(U='DT')Then MasmTypeToPascalType:=PT_LONGINT
+ Else If(U='PTR')or(U='NEAR')or(U='FAR')Then MasmTypeToPascalType:=PT_POINTER
+ Else MasmTypeToPascalType:=PT_WORD;
+End;
+
+Function MasmTypeSize(S:String):Word;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ If(U='BYTE')or(U='DB')or(U='SBYTE')Then MasmTypeSize:=1
+ Else If(U='WORD')or(U='DW')or(U='SWORD')Then MasmTypeSize:=2
+ Else If(U='DWORD')or(U='DD')or(U='SDWORD')Then MasmTypeSize:=4
+ Else If(U='FWORD')or(U='DF')Then MasmTypeSize:=6
+ Else If(U='QWORD')or(U='DQ')Then MasmTypeSize:=8
+ Else If(U='TBYTE')or(U='DT')Then MasmTypeSize:=10
+ Else If(U='PTR')or(U='NEAR')Then Begin
+  If Mode32 Then MasmTypeSize:=4
+  Else MasmTypeSize:=2;
+ End
+ Else If U='FAR' Then Begin
+  If Mode32 Then MasmTypeSize:=6
+  Else MasmTypeSize:=4;
+ End
+ Else MasmTypeSize:=2;
+End;
+
+Function IsCallingConvention(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsCallingConvention:=(U='C')or(U='PASCAL')or(U='STDCALL')or
+  (U='BASIC')or(U='FORTRAN')or(U='SYSCALL');
+End;
+
+Function ConventionFromName(S:String):Byte;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ If U='C' Then ConventionFromName:=CC_C
+ Else If U='PASCAL' Then ConventionFromName:=CC_PASCAL
+ Else If U='STDCALL' Then ConventionFromName:=CC_STDCALL
+ Else If U='BASIC' Then ConventionFromName:=CC_BASIC
+ Else If U='FORTRAN' Then ConventionFromName:=CC_FORTRAN
+ Else If U='SYSCALL' Then ConventionFromName:=CC_SYSCALL
+ Else ConventionFromName:=CC_NONE;
+End;
+
+Procedure ParseProcLine(LineIdx:LongInt);
+{ Traite: name PROC [NEAR|FAR] [conv] [USES reg...] [,] [params] }
+Var
+ U:String;
+ TokIdx:Integer;
+ PName:String;
+ InParams:Boolean;
+ ParamName,ParamType:String;
+Begin
+ TokenizeLine(SrcLines[LineIdx]^);
+ If TokenCount<2 Then Exit;
+ { Le nom de la procedure est le premier token }
+ PName:=Tokens[1].Value;
+ { Verifier que le deuxieme token est PROC }
+ If UpCaseStr(Tokens[2].Value)<>'PROC' Then Exit;
+ { Verifier le nombre max }
+ If ProcCount>=MAX_PROCS Then Exit;
+ Inc(ProcCount);
+ Procs[ProcCount].Name:=PName;
+ Procs[ProcCount].IsFunction:=False;
+ Procs[ProcCount].IsNear:=True;
+ Procs[ProcCount].Convention:=CC_NONE;
+ Procs[ProcCount].ParamCount:=0;
+ Procs[ProcCount].LocalCount:=0;
+ Procs[ProcCount].LocalSize:=0;
+ Procs[ProcCount].StartLine:=LineIdx;
+ Procs[ProcCount].EndLine:=-1;
+ Procs[ProcCount].UsesAX:=False;
+ Procs[ProcCount].IsPublic:=False;
+ { Default: NEAR pour modeles SMALL/TINY/FLAT, FAR sinon }
+ If(MemoryModel=MM_LARGE)or(MemoryModel=MM_HUGE)or
+   (MemoryModel=MM_MEDIUM)Then
+  Procs[ProcCount].IsNear:=False;
+ { Parser les attributs apres PROC }
+ TokIdx:=3;
+ InParams:=False;
+ While TokIdx<=TokenCount do Begin
+  If Tokens[TokIdx].Kind=TK_COMMENT Then Break;
+  U:=UpCaseStr(Tokens[TokIdx].Value);
+  If U='NEAR' Then Begin
+   Procs[ProcCount].IsNear:=True;
+   Inc(TokIdx);
+  End
+  Else If U='FAR' Then Begin
+   Procs[ProcCount].IsNear:=False;
+   Inc(TokIdx);
+  End
+  Else If IsCallingConvention(U) Then Begin
+   Procs[ProcCount].Convention:=ConventionFromName(U);
+   Inc(TokIdx);
+  End
+  Else If U='USES' Then Begin
+   { Sauter la liste des registres sauvegardes }
+   Inc(TokIdx);
+   While(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind=TK_REGISTER)do
+    Inc(TokIdx);
+   { Sauter une virgule eventuelle apres USES }
+   If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind=TK_COMMA)Then
+    Inc(TokIdx);
+  End
+  Else If Tokens[TokIdx].Kind=TK_COMMA Then Begin
+   Inc(TokIdx);
+  End
+  Else Begin
+   { On entre dans le mode parametres }
+   InParams:=True;
+   Break;
+  End;
+ End;
+ { Parser les parametres si present }
+ If InParams Then Begin
+  While TokIdx<=TokenCount do Begin
+   If Tokens[TokIdx].Kind=TK_COMMENT Then Break;
+   If Tokens[TokIdx].Kind=TK_COMMA Then Begin
+    Inc(TokIdx);
+    Continue;
+   End;
+   { Lire le nom du parametre }
+   ParamName:='';
+   ParamType:='WORD';
+   If Tokens[TokIdx].Kind=TK_LABEL Then Begin
+    { Le tokenizer a consomme le ':' - param:TYPE }
+    ParamName:=Tokens[TokIdx].Value;
+    Inc(TokIdx);
+    { Le prochain token est directement le type }
+    If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind<>TK_COMMA)and
+      (Tokens[TokIdx].Kind<>TK_COMMENT)Then Begin
+     ParamType:=Tokens[TokIdx].Value;
+     Inc(TokIdx);
+     If(TokIdx<=TokenCount)and(UpCaseStr(Tokens[TokIdx].Value)='PTR')Then
+      Inc(TokIdx);
+    End;
+   End
+   Else If Tokens[TokIdx].Kind=TK_IDENT Then Begin
+    ParamName:=Tokens[TokIdx].Value;
+    Inc(TokIdx);
+    { Lire ':' + type }
+    If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind=TK_COLON)Then Begin
+     Inc(TokIdx);
+     If TokIdx<=TokenCount Then Begin
+      ParamType:=Tokens[TokIdx].Value;
+      Inc(TokIdx);
+      If(TokIdx<=TokenCount)and(UpCaseStr(Tokens[TokIdx].Value)='PTR')Then
+       Inc(TokIdx);
+     End;
+    End;
+   End
+   Else Begin
+    Inc(TokIdx);
+    Continue;
+   End;
+   If(Procs[ProcCount].ParamCount<MAX_PARAMS)and(ParamName<>'')Then Begin
+    Inc(Procs[ProcCount].ParamCount);
+    With Procs[ProcCount].Params[Procs[ProcCount].ParamCount] do Begin
+     Name:=ParamName;
+     TypeName:=ParamType;
+     PascalType:=MasmTypeToPascalType(ParamType);
+     Size:=MasmTypeSize(ParamType);
+    End;
+   End;
+  End;
+ End;
+ { Ajouter a la table des symboles }
+ If SymbolCount<MAX_SYMBOLS Then Begin
+  Inc(SymbolCount);
+  Symbols[SymbolCount].Name:=PName;
+  Symbols[SymbolCount].SymType:=SY_PROC;
+  Symbols[SymbolCount].DataType:=PT_WORD;
+  Symbols[SymbolCount].Size:=0;
+  Symbols[SymbolCount].Offset:=0;
+  Symbols[SymbolCount].Segment:='';
+  Symbols[SymbolCount].IsPublic:=False;
+  Symbols[SymbolCount].IsExtern:=False;
+  Inc(TotalProcs);
+ End;
+End;
+
+Procedure ParseLocalLine(LineIdx:LongInt;ProcIdx:Integer);
+{ Traite: LOCAL var1:TYPE [, var2:TYPE ...] }
+{ Traite: LOCAL var1[count]:TYPE }
+Var
+ TokIdx:Integer;
+ VarName,VarType:String;
+ ArrCount:Word;
+ VarSize:Word;
+ V:LongInt;
+ Code:Integer;
+Begin
+ TokenizeLine(SrcLines[LineIdx]^);
+ If TokenCount<2 Then Exit;
+ If UpCaseStr(Tokens[1].Value)<>'LOCAL' Then Exit;
+ TokIdx:=2;
+ While TokIdx<=TokenCount do Begin
+  If Tokens[TokIdx].Kind=TK_COMMENT Then Break;
+  If Tokens[TokIdx].Kind=TK_COMMA Then Begin
+   Inc(TokIdx);
+   Continue;
+  End;
+  VarName:='';
+  VarType:='WORD';
+  ArrCount:=1;
+  { Lire le nom de la variable locale }
+  If Tokens[TokIdx].Kind=TK_LABEL Then Begin
+   { Le tokenizer a consomme le ':' - var:TYPE }
+   VarName:=Tokens[TokIdx].Value;
+   Inc(TokIdx);
+   { Le prochain token est directement le type }
+   If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind<>TK_COMMA)and
+     (Tokens[TokIdx].Kind<>TK_COMMENT)Then Begin
+    VarType:=Tokens[TokIdx].Value;
+    Inc(TokIdx);
+    If(TokIdx<=TokenCount)and(UpCaseStr(Tokens[TokIdx].Value)='PTR')Then
+     Inc(TokIdx);
+   End;
+   If(ProcIdx>0)and(ProcIdx<=ProcCount)and(VarName<>'')Then Begin
+    If Procs[ProcIdx].LocalCount<MAX_LOCALS Then Begin
+     Inc(Procs[ProcIdx].LocalCount);
+     With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
+      Name:=VarName;
+      TypeName:=VarType;
+      PascalType:=MasmTypeToPascalType(VarType);
+      Size:=MasmTypeSize(VarType);
+      Count:=ArrCount;
+     End;
+     VarSize:=MasmTypeSize(VarType)*ArrCount;
+     Procs[ProcIdx].LocalSize:=Procs[ProcIdx].LocalSize+VarSize;
+    End;
+   End;
+  End
+  Else If Tokens[TokIdx].Kind=TK_IDENT Then Begin
+   VarName:=Tokens[TokIdx].Value;
+   Inc(TokIdx);
+   { Verifier un compteur [n] }
+   If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind=TK_LBRACKET)Then Begin
+    Inc(TokIdx);
+    If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind=TK_NUMBER)Then Begin
+     Val(Tokens[TokIdx].Value,V,Code);
+     If Code<>0 Then V:=ParseNumericValue(Tokens[TokIdx].Value);
+     ArrCount:=Word(V);
+     If ArrCount=0 Then ArrCount:=1;
+     Inc(TokIdx);
+    End;
+    If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind=TK_RBRACKET)Then
+     Inc(TokIdx);
+   End;
+   { Lire ':' + type }
+   If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind=TK_COLON)Then Begin
+    Inc(TokIdx);
+    If TokIdx<=TokenCount Then Begin
+     VarType:=Tokens[TokIdx].Value;
+     Inc(TokIdx);
+     If(TokIdx<=TokenCount)and(UpCaseStr(Tokens[TokIdx].Value)='PTR')Then
+      Inc(TokIdx);
+    End;
+   End;
+   If(ProcIdx>0)and(ProcIdx<=ProcCount)and(VarName<>'')Then Begin
+    If Procs[ProcIdx].LocalCount<MAX_LOCALS Then Begin
+     Inc(Procs[ProcIdx].LocalCount);
+     With Procs[ProcIdx].Locals[Procs[ProcIdx].LocalCount] do Begin
+      Name:=VarName;
+      TypeName:=VarType;
+      PascalType:=MasmTypeToPascalType(VarType);
+      Size:=MasmTypeSize(VarType);
+      Count:=ArrCount;
+     End;
+     VarSize:=MasmTypeSize(VarType)*ArrCount;
+     Procs[ProcIdx].LocalSize:=Procs[ProcIdx].LocalSize+VarSize;
+    End;
+   End;
+  End
+  Else Inc(TokIdx);
+ End;
+End;
+
+Procedure DetectFunctionReturn(ProcIdx:Integer);
+{ Detecte si une procedure retourne une valeur en analysant
+  l'utilisation de AX/EAX avant RET/RETN/RETF }
+Var
+ I:LongInt;
+ U:String;
+ HasMovAX:Boolean;
+ StartL,EndL:LongInt;
+Begin
+ If(ProcIdx<1)or(ProcIdx>ProcCount)Then Exit;
+ StartL:=Procs[ProcIdx].StartLine;
+ EndL:=Procs[ProcIdx].EndLine;
+ If EndL<0 Then EndL:=SrcLineCount-1;
+ HasMovAX:=False;
+ For I:=StartL to EndL do Begin
+  TokenizeLine(SrcLines[I]^);
+  If TokenCount=0 Then Continue;
+  If Tokens[1].Kind<>TK_MNEMONIC Then Continue;
+  U:=UpCaseStr(Tokens[1].Value);
+  { Detecter MOV AX,... ou MOV EAX,... }
+  If(U='MOV')or(U='MOVZX')or(U='MOVSX')Then Begin
+   If TokenCount>=2 Then Begin
+    If(UpCaseStr(Tokens[2].Value)='AX')or
+      (UpCaseStr(Tokens[2].Value)='EAX')Then Begin
+     HasMovAX:=True;
+     Procs[ProcIdx].UsesAX:=True;
+    End;
+   End;
+  End
+  { Detecter XOR AX,AX ou XOR EAX,EAX }
+  Else If U='XOR' Then Begin
+   If TokenCount>=4 Then Begin
+    If((UpCaseStr(Tokens[2].Value)='AX')and
+       (UpCaseStr(Tokens[4].Value)='AX'))or
+      ((UpCaseStr(Tokens[2].Value)='EAX')and
+       (UpCaseStr(Tokens[4].Value)='EAX'))Then Begin
+     HasMovAX:=True;
+     Procs[ProcIdx].UsesAX:=True;
+    End;
+   End;
+  End
+  { Detecter LEA AX,... ou LEA EAX,... }
+  Else If U='LEA' Then Begin
+   If TokenCount>=2 Then Begin
+    If(UpCaseStr(Tokens[2].Value)='AX')or
+      (UpCaseStr(Tokens[2].Value)='EAX')Then Begin
+     HasMovAX:=True;
+     Procs[ProcIdx].UsesAX:=True;
+    End;
+   End;
+  End;
+ End;
+ Procs[ProcIdx].IsFunction:=HasMovAX;
+End;
+
+Procedure ProcessProcedureDirectives;
+Var
+ I:LongInt;
+ U:String;
+ CurrentProc:Integer;
+ ProcDirCount:LongInt;
+ NearCount,FarCount,FuncCount:LongInt;
+ ParamTotal,LocalTotal:LongInt;
+ UnmatchedCount:LongInt;
+Begin
+ ProcCount:=0;
+ ProcDirCount:=0;
+ NearCount:=0;
+ FarCount:=0;
+ FuncCount:=0;
+ ParamTotal:=0;
+ LocalTotal:=0;
+ UnmatchedCount:=0;
+ CurrentProc:=0;
+ { Premiere passe : detecter PROC, ENDP et LOCAL }
+ For I:=0 to SrcLineCount-1 do Begin
+  TokenizeLine(SrcLines[I]^);
+  If TokenCount<2 Then Begin
+   { Verifier LOCAL comme premier token avec au moins 1 argument }
+   If(TokenCount>=1)and(Tokens[1].Kind=TK_DIRECTIVE)and
+     (UpCaseStr(Tokens[1].Value)='LOCAL')Then Begin
+    If CurrentProc>0 Then
+     ParseLocalLine(I,CurrentProc);
+   End;
+   Continue;
+  End;
+  U:=UpCaseStr(Tokens[2].Value);
+  If(Tokens[2].Kind=TK_DIRECTIVE)and(U='PROC')Then Begin
+   ParseProcLine(I);
+   CurrentProc:=ProcCount;
+   Inc(ProcDirCount);
+  End
+  Else If(Tokens[2].Kind=TK_DIRECTIVE)and(U='ENDP')Then Begin
+   { Associer ENDP au PROC correspondant }
+   If CurrentProc>0 Then Begin
+    Procs[CurrentProc].EndLine:=I;
+    CurrentProc:=0;
+   End;
+   Inc(ProcDirCount);
+  End
+  Else If(Tokens[1].Kind=TK_DIRECTIVE)and
+        (UpCaseStr(Tokens[1].Value)='LOCAL')Then Begin
+   { Traiter LOCAL dans la procedure courante }
+   If CurrentProc>0 Then
+    ParseLocalLine(I,CurrentProc);
+  End;
+ End;
+ { Deuxieme passe : detecter les fonctions (retour AX/EAX) }
+ For I:=1 to ProcCount do Begin
+  DetectFunctionReturn(I);
+  If Procs[I].IsNear Then Inc(NearCount) Else Inc(FarCount);
+  If Procs[I].IsFunction Then Inc(FuncCount);
+  ParamTotal:=ParamTotal+Procs[I].ParamCount;
+  LocalTotal:=LocalTotal+Procs[I].LocalCount;
+  If Procs[I].EndLine<0 Then Inc(UnmatchedCount);
+ End;
+ WriteLn('Analyse des procedures : ',ProcCount,' procedures, ',
+  ProcDirCount,' directives.');
+ If Verbose Then Begin
+  WriteLn('  NEAR          : ',NearCount);
+  WriteLn('  FAR           : ',FarCount);
+  WriteLn('  Fonctions     : ',FuncCount);
+  WriteLn('  Parametres    : ',ParamTotal);
+  WriteLn('  Var. locales  : ',LocalTotal);
+  If UnmatchedCount>0 Then
+   WriteLn('  Non-fermes    : ',UnmatchedCount);
+  If ProcCount>0 Then Begin
+   WriteLn('  Details :');
+   For I:=1 to ProcCount do Begin
+    Write('    ',Procs[I].Name);
+    If Procs[I].IsNear Then Write(' NEAR') Else Write(' FAR');
+    If Procs[I].Convention<>CC_NONE Then
+     Write(' ',ConventionName(Procs[I].Convention));
+    If Procs[I].IsFunction Then Write(' (fonction)');
+    If Procs[I].ParamCount>0 Then
+     Write(' (',Procs[I].ParamCount,' params)');
+    If Procs[I].LocalCount>0 Then
+     Write(' (',Procs[I].LocalCount,' locales, ',
+      Procs[I].LocalSize,' octets)');
+    If Procs[I].EndLine<0 Then Write(' [SANS ENDP]');
+    WriteLn;
+   End;
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -1992,7 +2483,8 @@ BEGIN
  ProcessDirectives;
  { Analyse des donnees (TODO 4) }
  ProcessDataDirectives;
- { TODO 5  - Analyse des procedures }
+ { Analyse des procedures (TODO 5) }
+ ProcessProcedureDirectives;
  { TODO 6  - Table des symboles }
  { TODO 7  - Analyse des operandes }
  { TODO 8  - Inference de types }
