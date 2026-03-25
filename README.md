@@ -194,7 +194,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>C2PAS.PAS</b></td>
-			<td>Cette commande permet de convertir un fichier «.C» en «.PAS».</td>
+			<td>Cette commande permet de transpiler un fichier «.C» en «.PAS».</td>
 		</tr>	
 		<tr>
 			<td><b>CC09.PAS</b></td>
