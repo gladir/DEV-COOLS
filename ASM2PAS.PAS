@@ -89,7 +89,7 @@
       affiner le type : CMP avec 0/1 -> Boolean, MOVSB/LODSB
       avec boucle -> String, MUL/IMUL -> distinguer signe/non-signe.
 
-  9.  [A FAIRE] Traduction des registres en variables Pascal.
+  9.  [IMPLEMENTE] Traduction des registres en variables Pascal.
       Mapper les registres CPU vers des variables Pascal :
       AX/EAX -> RegAX:Word/RegEAX:LongInt, etc.
       Gerer les sous-registres : AL = Lo(RegAX), AH = Hi(RegAX).
@@ -3564,6 +3564,500 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des registres en variables Pascal - TODO 9
+  ============================================================ }
+
+Function RegToPascalVar(Reg:String):String;
+{ Mapper un registre CPU vers un nom de variable Pascal.
+  Gere les registres 8/16/32 bits et segments. }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Reg);
+ { Registres 32 bits }
+ If U='EAX' Then RegToPascalVar:='RegEAX'
+ Else If U='EBX' Then RegToPascalVar:='RegEBX'
+ Else If U='ECX' Then RegToPascalVar:='RegECX'
+ Else If U='EDX' Then RegToPascalVar:='RegEDX'
+ Else If U='ESI' Then RegToPascalVar:='RegESI'
+ Else If U='EDI' Then RegToPascalVar:='RegEDI'
+ Else If U='EBP' Then RegToPascalVar:='RegEBP'
+ Else If U='ESP' Then RegToPascalVar:='RegESP'
+ { Registres 16 bits }
+ Else If U='AX' Then RegToPascalVar:='RegAX'
+ Else If U='BX' Then RegToPascalVar:='RegBX'
+ Else If U='CX' Then RegToPascalVar:='RegCX'
+ Else If U='DX' Then RegToPascalVar:='RegDX'
+ Else If U='SI' Then RegToPascalVar:='RegSI'
+ Else If U='DI' Then RegToPascalVar:='RegDI'
+ Else If U='BP' Then RegToPascalVar:='RegBP'
+ Else If U='SP' Then RegToPascalVar:='RegSP'
+ { Registres 8 bits - variable du registre parent }
+ Else If U='AL' Then RegToPascalVar:='RegAX'
+ Else If U='AH' Then RegToPascalVar:='RegAX'
+ Else If U='BL' Then RegToPascalVar:='RegBX'
+ Else If U='BH' Then RegToPascalVar:='RegBX'
+ Else If U='CL' Then RegToPascalVar:='RegCX'
+ Else If U='CH' Then RegToPascalVar:='RegCX'
+ Else If U='DL' Then RegToPascalVar:='RegDX'
+ Else If U='DH' Then RegToPascalVar:='RegDX'
+ { Registres de segment }
+ Else If U='CS' Then RegToPascalVar:='RegCS'
+ Else If U='DS' Then RegToPascalVar:='RegDS'
+ Else If U='ES' Then RegToPascalVar:='RegES'
+ Else If U='SS' Then RegToPascalVar:='RegSS'
+ Else If U='FS' Then RegToPascalVar:='RegFS'
+ Else If U='GS' Then RegToPascalVar:='RegGS'
+ Else RegToPascalVar:='Reg_'+U;
+End;
+
+Function RegToPascalType(Reg:String):Byte;
+{ Retourne le type Pascal correspondant a un registre }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Reg);
+ If IsReg8(U) Then RegToPascalType:=PT_BYTE
+ Else If IsReg16(U) Then RegToPascalType:=PT_WORD
+ Else If IsReg32(U) Then RegToPascalType:=PT_LONGINT
+ Else If IsSegReg(U) Then RegToPascalType:=PT_WORD
+ Else RegToPascalType:=PT_WORD;
+End;
+
+Function SubRegExpr(Reg:String):String;
+{ Genere l'expression Pascal pour acceder a un sous-registre.
+  AL = Lo(RegAX), AH = Hi(RegAX).
+  En mode 32 bits, AX = Word(RegEAX). }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Reg);
+ { Sous-registres 8 bits bas (Lo) }
+ If U='AL' Then SubRegExpr:='Lo(RegAX)'
+ Else If U='BL' Then SubRegExpr:='Lo(RegBX)'
+ Else If U='CL' Then SubRegExpr:='Lo(RegCX)'
+ Else If U='DL' Then SubRegExpr:='Lo(RegDX)'
+ { Sous-registres 8 bits haut (Hi) }
+ Else If U='AH' Then SubRegExpr:='Hi(RegAX)'
+ Else If U='BH' Then SubRegExpr:='Hi(RegBX)'
+ Else If U='CH' Then SubRegExpr:='Hi(RegCX)'
+ Else If U='DH' Then SubRegExpr:='Hi(RegDX)'
+ { En mode 32 bits, les registres 16 bits sont des sous-registres }
+ Else If Mode32 and(U='AX')Then SubRegExpr:='Word(RegEAX)'
+ Else If Mode32 and(U='BX')Then SubRegExpr:='Word(RegEBX)'
+ Else If Mode32 and(U='CX')Then SubRegExpr:='Word(RegECX)'
+ Else If Mode32 and(U='DX')Then SubRegExpr:='Word(RegEDX)'
+ Else If Mode32 and(U='SI')Then SubRegExpr:='Word(RegESI)'
+ Else If Mode32 and(U='DI')Then SubRegExpr:='Word(RegEDI)'
+ Else If Mode32 and(U='BP')Then SubRegExpr:='Word(RegEBP)'
+ Else If Mode32 and(U='SP')Then SubRegExpr:='Word(RegESP)'
+ { Registres complets : pas de sous-expression }
+ Else SubRegExpr:=RegToPascalVar(U);
+End;
+
+Function IsSubReg(Reg:String):Boolean;
+{ Determine si un registre est un sous-registre }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Reg);
+ IsSubReg:=IsReg8(U)or
+  (Mode32 and IsReg16(U));
+End;
+
+Function FlagToPascalVar(Flag:String):String;
+{ Mapper un flag du registre FLAGS vers un booleen Pascal }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Flag);
+ If U='CF' Then FlagToPascalVar:='FlagCF'
+ Else If U='ZF' Then FlagToPascalVar:='FlagZF'
+ Else If U='SF' Then FlagToPascalVar:='FlagSF'
+ Else If U='OF' Then FlagToPascalVar:='FlagOF'
+ Else If U='DF' Then FlagToPascalVar:='FlagDF'
+ Else If U='PF' Then FlagToPascalVar:='FlagPF'
+ Else If U='AF' Then FlagToPascalVar:='FlagAF'
+ Else If U='IF' Then FlagToPascalVar:='FlagIF'
+ Else If U='TF' Then FlagToPascalVar:='FlagTF'
+ Else FlagToPascalVar:='Flag_'+U;
+End;
+
+Function MnemonicAffectsFlags(M:String):Boolean;
+{ Verifie si un mnemonique modifie les flags }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ MnemonicAffectsFlags:=
+  (U='ADD')or(U='SUB')or(U='CMP')or(U='AND')or(U='OR')or
+  (U='XOR')or(U='TEST')or(U='NEG')or(U='NOT')or
+  (U='INC')or(U='DEC')or(U='ADC')or(U='SBB')or
+  (U='MUL')or(U='IMUL')or(U='DIV')or(U='IDIV')or
+  (U='SHL')or(U='SHR')or(U='SAL')or(U='SAR')or
+  (U='ROL')or(U='ROR')or(U='RCL')or(U='RCR')or
+  (U='BT')or(U='BTS')or(U='BTR')or(U='BTC')or
+  (U='BSF')or(U='BSR')or
+  (U='STC')or(U='CLC')or(U='CMC')or(U='STD')or(U='CLD')or
+  (U='STI')or(U='CLI')or
+  (U='SAHF')or(U='LAHF')or
+  (U='SCASB')or(U='SCASW')or(U='SCASD')or
+  (U='CMPSB')or(U='CMPSW')or(U='CMPSD');
+End;
+
+Function MnemonicUsesFlags(M:String):Boolean;
+{ Verifie si un mnemonique lit les flags }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ MnemonicUsesFlags:=
+  (U='JC')or(U='JNC')or(U='JZ')or(U='JNZ')or(U='JE')or(U='JNE')or
+  (U='JS')or(U='JNS')or(U='JO')or(U='JNO')or(U='JP')or(U='JNP')or
+  (U='JA')or(U='JAE')or(U='JB')or(U='JBE')or
+  (U='JG')or(U='JGE')or(U='JL')or(U='JLE')or
+  (U='JNA')or(U='JNAE')or(U='JNB')or(U='JNBE')or
+  (U='JNG')or(U='JNGE')or(U='JNL')or(U='JNLE')or
+  (U='LOOPE')or(U='LOOPNE')or(U='LOOPZ')or(U='LOOPNZ')or
+  (U='ADC')or(U='SBB')or(U='RCL')or(U='RCR')or
+  (U='CMC')or(U='LAHF')or(U='PUSHF')or(U='PUSHFD')or
+  (U='SETA')or(U='SETAE')or(U='SETB')or(U='SETBE')or
+  (U='SETE')or(U='SETNE')or(U='SETG')or(U='SETGE')or
+  (U='SETL')or(U='SETLE')or(U='SETS')or(U='SETNS')or
+  (U='SETO')or(U='SETNO')or(U='SETP')or(U='SETNP')or
+  (U='SETC')or(U='SETNC')or(U='SETZ')or(U='SETNZ')or
+  (U='CMOVA')or(U='CMOVAE')or(U='CMOVB')or(U='CMOVBE')or
+  (U='CMOVE')or(U='CMOVNE')or(U='CMOVG')or(U='CMOVGE')or
+  (U='CMOVL')or(U='CMOVLE')or(U='CMOVS')or(U='CMOVNS')or
+  (U='CMOVO')or(U='CMOVNO');
+End;
+
+Function StackAccessExpr(BaseReg:String;Offset:LongInt;
+ ProcIdx:Integer):String;
+{ Traduit un acces [BP+offset] ou [EBP+offset] en reference
+  aux parametres ou variables locales de la procedure.
+  Offset positif = parametre, offset negatif = variable locale. }
+Var
+ J:Integer;
+ U:String;
+Begin
+ U:=UpCaseStr(BaseReg);
+ If(U<>'BP')and(U<>'EBP')Then Begin
+  StackAccessExpr:='['+BaseReg+'+'+IntToStr(Offset)+']';
+  Exit;
+ End;
+ If(ProcIdx>=1)and(ProcIdx<=ProcCount)Then Begin
+  { Chercher dans les parametres (offset positif) }
+  If Offset>0 Then Begin
+   For J:=1 to Procs[ProcIdx].ParamCount do Begin
+    If Procs[ProcIdx].Params[J].Size>0 Then Begin
+     { Les parametres NEAR sont a BP+4, BP+6..., FAR a BP+6, BP+8... }
+     StackAccessExpr:=Procs[ProcIdx].Params[J].Name;
+     Exit;
+    End;
+   End;
+  End;
+  { Chercher dans les variables locales (offset negatif) }
+  If Offset<0 Then Begin
+   For J:=1 to Procs[ProcIdx].LocalCount do Begin
+    If Procs[ProcIdx].Locals[J].Size>0 Then Begin
+     StackAccessExpr:=Procs[ProcIdx].Locals[J].Name;
+     Exit;
+    End;
+   End;
+  End;
+ End;
+ { Pas trouve : generer une expression generique }
+ If Offset>=0 Then
+  StackAccessExpr:='Param_BP_'+IntToStr(Offset)
+ Else
+  StackAccessExpr:='Local_BP_'+IntToStr(-Offset);
+End;
+
+Const
+ MAX_REGUSAGE = 30;
+
+Type
+ TRegUsage = Record
+  RegName:String;
+  ReadCount:LongInt;
+  WriteCount:LongInt;
+  IsTemp:Boolean;
+  TempName:String;
+ End;
+
+Var
+ RegUsages:Array[1..MAX_REGUSAGE] of TRegUsage;
+ RegUsageCount:Integer;
+ NeedFlags:Boolean;
+
+Function FindRegUsage(Reg:String):Integer;
+{ Trouve l'index d'un registre dans la table d'usage }
+Var
+ I:Integer;
+ U:String;
+Begin
+ U:=UpCaseStr(Reg);
+ FindRegUsage:=0;
+ For I:=1 to RegUsageCount do
+  If UpCaseStr(RegUsages[I].RegName)=U Then Begin
+   FindRegUsage:=I;
+   Exit;
+  End;
+End;
+
+Procedure AddRegUsage(Reg:String;IsWrite:Boolean);
+{ Ajoute ou met a jour l'usage d'un registre }
+Var
+ Idx:Integer;
+ U:String;
+Begin
+ U:=UpCaseStr(Reg);
+ If(U='')or(U='FLAGS')Then Exit;
+ Idx:=FindRegUsage(U);
+ If Idx=0 Then Begin
+  If RegUsageCount>=MAX_REGUSAGE Then Exit;
+  Inc(RegUsageCount);
+  Idx:=RegUsageCount;
+  RegUsages[Idx].RegName:=U;
+  RegUsages[Idx].ReadCount:=0;
+  RegUsages[Idx].WriteCount:=0;
+  RegUsages[Idx].IsTemp:=False;
+  RegUsages[Idx].TempName:='';
+ End;
+ If IsWrite Then Inc(RegUsages[Idx].WriteCount)
+ Else Inc(RegUsages[Idx].ReadCount);
+End;
+
+Procedure AnalyzeRegisterUsage(Var AsmL:TAsmLine);
+{ Analyse une instruction pour determiner les registres lus/ecrits }
+Var
+ U:String;
+Begin
+ U:=AsmL.Mnemonic;
+ { Mnemoniques qui ecrivent dans op1 et lisent op2 }
+ If(U='MOV')or(U='MOVZX')or(U='MOVSX')or(U='LEA')or
+   (U='LDS')or(U='LES')or(U='LFS')or(U='LGS')Then Begin
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+   AddRegUsage(AsmL.Op1.Reg,True);
+  If AsmL.Op2.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+   AddRegUsage(AsmL.Op2.Reg,False);
+ End
+ { Mnemoniques qui lisent et ecrivent op1 }
+ Else If(U='ADD')or(U='SUB')or(U='ADC')or(U='SBB')or
+   (U='AND')or(U='OR')or(U='XOR')or(U='INC')or(U='DEC')or
+   (U='NEG')or(U='NOT')or(U='SHL')or(U='SHR')or(U='SAL')or
+   (U='SAR')or(U='ROL')or(U='ROR')or(U='RCL')or(U='RCR')Then Begin
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then Begin
+   AddRegUsage(AsmL.Op1.Reg,True);
+   AddRegUsage(AsmL.Op1.Reg,False);
+  End;
+  If AsmL.Op2.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+   AddRegUsage(AsmL.Op2.Reg,False);
+ End
+ { CMP/TEST lisent les deux operandes }
+ Else If(U='CMP')or(U='TEST')Then Begin
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+   AddRegUsage(AsmL.Op1.Reg,False);
+  If AsmL.Op2.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+   AddRegUsage(AsmL.Op2.Reg,False);
+ End
+ { PUSH lit le registre }
+ Else If U='PUSH' Then Begin
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32,OT_SEGREG] Then
+   AddRegUsage(AsmL.Op1.Reg,False);
+ End
+ { POP ecrit dans le registre }
+ Else If U='POP' Then Begin
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32,OT_SEGREG] Then
+   AddRegUsage(AsmL.Op1.Reg,True);
+ End
+ { XCHG lit et ecrit les deux }
+ Else If U='XCHG' Then Begin
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then Begin
+   AddRegUsage(AsmL.Op1.Reg,True);
+   AddRegUsage(AsmL.Op1.Reg,False);
+  End;
+  If AsmL.Op2.OpType in [OT_REG8,OT_REG16,OT_REG32] Then Begin
+   AddRegUsage(AsmL.Op2.Reg,True);
+   AddRegUsage(AsmL.Op2.Reg,False);
+  End;
+ End
+ { MUL/IMUL implicitement ecrit dans AX/DX:AX ou EAX/EDX:EAX }
+ Else If(U='MUL')or(U='IMUL')Then Begin
+  If Mode32 Then Begin
+   AddRegUsage('EAX',True);
+   AddRegUsage('EDX',True);
+  End Else Begin
+   AddRegUsage('AX',True);
+   AddRegUsage('DX',True);
+  End;
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+   AddRegUsage(AsmL.Op1.Reg,False);
+ End
+ { DIV/IDIV implicitement lit et ecrit AX/DX }
+ Else If(U='DIV')or(U='IDIV')Then Begin
+  If Mode32 Then Begin
+   AddRegUsage('EAX',True);
+   AddRegUsage('EAX',False);
+   AddRegUsage('EDX',True);
+   AddRegUsage('EDX',False);
+  End Else Begin
+   AddRegUsage('AX',True);
+   AddRegUsage('AX',False);
+   AddRegUsage('DX',True);
+   AddRegUsage('DX',False);
+  End;
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+   AddRegUsage(AsmL.Op1.Reg,False);
+ End
+ { CBW/CWD/CWDE/CDQ : extensions de signe implicites }
+ Else If U='CBW' Then Begin
+  AddRegUsage('AX',True);AddRegUsage('AL',False);
+ End
+ Else If U='CWD' Then Begin
+  AddRegUsage('DX',True);AddRegUsage('AX',False);
+ End
+ Else If U='CWDE' Then Begin
+  AddRegUsage('EAX',True);AddRegUsage('AX',False);
+ End
+ Else If U='CDQ' Then Begin
+  AddRegUsage('EDX',True);AddRegUsage('EAX',False);
+ End
+ { Instructions de chaine : utilisent SI/DI/CX implicitement }
+ Else If(U='MOVSB')or(U='MOVSW')or(U='MOVSD')or
+   (U='CMPSB')or(U='CMPSW')or(U='CMPSD')or
+   (U='LODSB')or(U='LODSW')or(U='LODSD')or
+   (U='STOSB')or(U='STOSW')or(U='STOSD')or
+   (U='SCASB')or(U='SCASW')or(U='SCASD')Then Begin
+  If Mode32 Then Begin
+   AddRegUsage('ESI',False);AddRegUsage('EDI',False);
+   AddRegUsage('ESI',True);AddRegUsage('EDI',True);
+  End Else Begin
+   AddRegUsage('SI',False);AddRegUsage('DI',False);
+   AddRegUsage('SI',True);AddRegUsage('DI',True);
+  End;
+  If(U='LODSB')or(U='LODSW')or(U='LODSD')Then Begin
+   If Mode32 Then AddRegUsage('EAX',True)
+   Else AddRegUsage('AX',True);
+  End;
+  If(U='STOSB')or(U='STOSW')or(U='STOSD')Then Begin
+   If Mode32 Then AddRegUsage('EAX',False)
+   Else AddRegUsage('AX',False);
+  End;
+ End
+ { Autres instructions avec operandes registres }
+ Else Begin
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+   AddRegUsage(AsmL.Op1.Reg,False);
+  If AsmL.Op2.OpType in [OT_REG8,OT_REG16,OT_REG32] Then
+   AddRegUsage(AsmL.Op2.Reg,False);
+ End;
+ { Verifier si les flags sont necessaires }
+ If MnemonicAffectsFlags(U) or MnemonicUsesFlags(U) Then
+  NeedFlags:=True;
+End;
+
+Procedure DetectTempRegisters;
+{ Detecte les registres utilises comme variables temporaires.
+  Un registre est considere temporaire s'il est ecrit puis lu
+  dans un contexte limite (pas un registre de travail global). }
+Var
+ I:Integer;
+ TempIdx:Integer;
+ U:String;
+Begin
+ TempIdx:=0;
+ For I:=1 to RegUsageCount do Begin
+  U:=UpCaseStr(RegUsages[I].RegName);
+  { Ignorer les registres speciaux pile/base }
+  If(U='SP')or(U='ESP')or(U='BP')or(U='EBP')Then Continue;
+  { Ignorer les registres de segment }
+  If IsSegReg(U) Then Continue;
+  { Un registre utilise peu de fois, surtout en ecriture, est un temporaire }
+  If(RegUsages[I].WriteCount>=1)and(RegUsages[I].WriteCount<=3)and
+    (RegUsages[I].ReadCount>=1)and(RegUsages[I].ReadCount<=5)Then Begin
+   { Les registres principaux AX/EAX ne sont pas temporaires
+     sauf si le code est tres court }
+   If(U='AX')or(U='EAX')Then Continue;
+   Inc(TempIdx);
+   RegUsages[I].IsTemp:=True;
+   RegUsages[I].TempName:='Tmp'+Chr(Ord('A')+TempIdx-1);
+   If TempIdx>26 Then
+    RegUsages[I].TempName:='Tmp'+IntToStr(TempIdx);
+  End;
+ End;
+End;
+
+Procedure ProcessRegisterMapping;
+{ Orchestrateur : analyse les registres et cree le mapping vers Pascal }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ InstrCount:LongInt;
+ Reg16Used,Reg32Used:LongInt;
+ Reg8Used,SegUsed:LongInt;
+ TempCount:LongInt;
+Begin
+ RegUsageCount:=0;
+ NeedFlags:=False;
+ InstrCount:=0;
+ { Scanner toutes les instructions }
+ For I:=0 to SrcLineCount-1 do Begin
+  TokenizeLine(SrcLines[I]^);
+  If TokenCount=0 Then Continue;
+  If(Tokens[1].Kind=TK_DIRECTIVE)Then Continue;
+  If(Tokens[1].Kind=TK_LABEL)and(TokenCount>=2)and
+    (Tokens[2].Kind=TK_DIRECTIVE)Then Continue;
+  If(Tokens[1].Kind=TK_IDENT)and(TokenCount>=2)and
+    (Tokens[2].Kind=TK_DIRECTIVE)Then Continue;
+  If(Tokens[1].Kind=TK_MNEMONIC)or
+    ((Tokens[1].Kind=TK_LABEL)and(TokenCount>=2)and
+     (Tokens[2].Kind=TK_MNEMONIC))Then Begin
+   ParseInstructionLine(I,AsmL);
+   If AsmL.Mnemonic<>'' Then Begin
+    Inc(InstrCount);
+    AnalyzeRegisterUsage(AsmL);
+   End;
+  End;
+ End;
+ { Detecter les registres temporaires }
+ DetectTempRegisters;
+ { Compter les categories }
+ Reg8Used:=0;Reg16Used:=0;Reg32Used:=0;SegUsed:=0;TempCount:=0;
+ For I:=1 to RegUsageCount do Begin
+  If IsReg8(RegUsages[I].RegName) Then Inc(Reg8Used)
+  Else If IsReg16(RegUsages[I].RegName) Then Inc(Reg16Used)
+  Else If IsReg32(RegUsages[I].RegName) Then Inc(Reg32Used)
+  Else If IsSegReg(RegUsages[I].RegName) Then Inc(SegUsed);
+  If RegUsages[I].IsTemp Then Inc(TempCount);
+ End;
+ WriteLn('Mapping registres : ',RegUsageCount,' registres, ',
+  InstrCount,' instructions.');
+ If Verbose Then Begin
+  WriteLn('  Registres 8 bits  : ',Reg8Used);
+  WriteLn('  Registres 16 bits : ',Reg16Used);
+  WriteLn('  Registres 32 bits : ',Reg32Used);
+  WriteLn('  Registres segment : ',SegUsed);
+  WriteLn('  Temporaires       : ',TempCount);
+  If NeedFlags Then WriteLn('  Flags necessaires : oui')
+  Else WriteLn('  Flags necessaires : non');
+  { Details de chaque registre }
+  For I:=1 to RegUsageCount do Begin
+   Write('    ',RegUsages[I].RegName,' -> ',
+    RegToPascalVar(RegUsages[I].RegName),':',
+    PascalTypeName(RegToPascalType(RegUsages[I].RegName)));
+   If IsSubReg(RegUsages[I].RegName) Then
+    Write(' [',SubRegExpr(RegUsages[I].RegName),']');
+   If RegUsages[I].IsTemp Then
+    Write(' (temp: ',RegUsages[I].TempName,')');
+   Write(' R=',RegUsages[I].ReadCount,' W=',RegUsages[I].WriteCount);
+   WriteLn;
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -3669,7 +4163,8 @@ BEGIN
  ProcessOperands;
  { Inference de types (TODO 8) }
  ProcessTypeInference;
- { TODO 9  - Traduction des registres }
+ { Mapping des registres (TODO 9) }
+ ProcessRegisterMapping;
  { TODO 10 - Traduction des transferts }
  { TODO 11 - Traduction arithmetique }
  { TODO 12 - Traduction logique }
