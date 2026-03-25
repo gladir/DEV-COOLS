@@ -69,7 +69,7 @@
       portee : symboles globaux (PUBLIC) et locaux (@@, LOCAL).
       Verifier les doublons et les references non resolues.
 
-  7.  [A FAIRE] Analyse des operandes et modes d'adressage.
+  7.  [IMPLEMENTE] Analyse des operandes et modes d'adressage.
       Parser les operandes des instructions : registres 8 bits
       (AL..BH), 16 bits (AX..DI), 32 bits (EAX..EDI), de
       segment (CS,DS,ES,SS,FS,GS), immediats decimaux et
@@ -364,6 +364,8 @@ Const
  OT_IMM16   = 7;
  OT_IMM32   = 8;
  OT_LABEL   = 9;
+ OT_OFFSET  = 10;
+ OT_SEG     = 11;
 
  { Modeles memoire }
  MM_NONE    = 0;
@@ -477,6 +479,13 @@ Type
   MemExpr:String;
   Size:Byte;
   LabelName:String;
+  { Champs memoire indexee (TODO 7) }
+  BaseReg:String;
+  IndexReg:String;
+  Scale:Byte;
+  Disp:LongInt;
+  HasDisp:Boolean;
+  SegOverride:String;
  End;
 
  TAsmLine = Record
@@ -2717,6 +2726,513 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Analyse des operandes et modes d'adressage - TODO 7
+  ============================================================ }
+
+Function IsReg8(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsReg8:=(U='AL')or(U='AH')or(U='BL')or(U='BH')or
+  (U='CL')or(U='CH')or(U='DL')or(U='DH');
+End;
+
+Function IsReg16(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsReg16:=(U='AX')or(U='BX')or(U='CX')or(U='DX')or
+  (U='SI')or(U='DI')or(U='BP')or(U='SP');
+End;
+
+Function IsReg32(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsReg32:=(U='EAX')or(U='EBX')or(U='ECX')or(U='EDX')or
+  (U='ESI')or(U='EDI')or(U='EBP')or(U='ESP');
+End;
+
+Function IsSegReg(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsSegReg:=(U='CS')or(U='DS')or(U='ES')or(U='SS')or
+  (U='FS')or(U='GS');
+End;
+
+Function RegSize(S:String):Byte;
+{ Retourne la taille d'un registre en octets (1, 2 ou 4) }
+Begin
+ If IsReg8(S) Then RegSize:=1
+ Else If IsReg16(S) Then RegSize:=2
+ Else If IsReg32(S) Then RegSize:=4
+ Else If IsSegReg(S) Then RegSize:=2
+ Else RegSize:=0;
+End;
+
+Function RegToOpType(S:String):Byte;
+{ Determine le type d'operande pour un registre }
+Begin
+ If IsReg8(S) Then RegToOpType:=OT_REG8
+ Else If IsReg16(S) Then RegToOpType:=OT_REG16
+ Else If IsReg32(S) Then RegToOpType:=OT_REG32
+ Else If IsSegReg(S) Then RegToOpType:=OT_SEGREG
+ Else RegToOpType:=OT_NONE;
+End;
+
+Function IsSizePrefix(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsSizePrefix:=(U='BYTE')or(U='WORD')or(U='DWORD')or
+  (U='FWORD')or(U='QWORD')or(U='TBYTE')or
+  (U='NEAR')or(U='FAR')or(U='SHORT');
+End;
+
+Function SizePrefixToBytes(S:String):Byte;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ If U='BYTE' Then SizePrefixToBytes:=1
+ Else If U='WORD' Then SizePrefixToBytes:=2
+ Else If U='DWORD' Then SizePrefixToBytes:=4
+ Else If U='FWORD' Then SizePrefixToBytes:=6
+ Else If U='QWORD' Then SizePrefixToBytes:=8
+ Else If U='TBYTE' Then SizePrefixToBytes:=10
+ Else If U='NEAR' Then Begin
+  If Mode32 Then SizePrefixToBytes:=4
+  Else SizePrefixToBytes:=2;
+ End
+ Else If U='FAR' Then Begin
+  If Mode32 Then SizePrefixToBytes:=6
+  Else SizePrefixToBytes:=4;
+ End
+ Else If U='SHORT' Then SizePrefixToBytes:=1
+ Else SizePrefixToBytes:=0;
+End;
+
+Procedure InitOperand(Var Op:TOperand);
+Begin
+ Op.OpType:=OT_NONE;
+ Op.Reg:='';
+ Op.Imm:=0;
+ Op.MemExpr:='';
+ Op.Size:=0;
+ Op.LabelName:='';
+ Op.BaseReg:='';
+ Op.IndexReg:='';
+ Op.Scale:=0;
+ Op.Disp:=0;
+ Op.HasDisp:=False;
+ Op.SegOverride:='';
+End;
+
+Function IsMemBaseReg16(S:String):Boolean;
+{ Registres valides comme base en mode 16 bits }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsMemBaseReg16:=(U='BX')or(U='BP')or(U='SI')or(U='DI');
+End;
+
+Function IsMemIndexReg16(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsMemIndexReg16:=(U='SI')or(U='DI');
+End;
+
+Function IsMemBaseReg32(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsMemBaseReg32:=(U='EAX')or(U='EBX')or(U='ECX')or(U='EDX')or
+  (U='ESI')or(U='EDI')or(U='EBP')or(U='ESP');
+End;
+
+Procedure ParseMemoryOperand(Var Op:TOperand;StartTok,EndTok:Integer);
+{ Parse le contenu entre crochets [StartTok..EndTok] }
+Var
+ I:Integer;
+ U:String;
+ Negate:Boolean;
+ V:LongInt;
+ Code:Integer;
+Begin
+ Op.OpType:=OT_MEM;
+ Op.BaseReg:='';
+ Op.IndexReg:='';
+ Op.Scale:=0;
+ Op.Disp:=0;
+ Op.HasDisp:=False;
+ Op.MemExpr:='';
+ Negate:=False;
+ I:=StartTok;
+ While I<=EndTok do Begin
+  { Construire MemExpr pour affichage }
+  If Op.MemExpr<>'' Then Op.MemExpr:=Op.MemExpr+Tokens[I].Value
+  Else Op.MemExpr:=Tokens[I].Value;
+  If Tokens[I].Kind=TK_REGISTER Then Begin
+   U:=UpCaseStr(Tokens[I].Value);
+   { Verifier s'il y a un facteur d'echelle: REG*2, REG*4, REG*8 }
+   If(I+2<=EndTok)and(Tokens[I+1].Kind=TK_STAR)and
+     (Tokens[I+2].Kind=TK_NUMBER)Then Begin
+    Op.IndexReg:=U;
+    Val(Tokens[I+2].Value,V,Code);
+    If Code=0 Then Op.Scale:=Byte(V)
+    Else Op.Scale:=1;
+    Op.MemExpr:=Op.MemExpr+Tokens[I+1].Value+Tokens[I+2].Value;
+    Inc(I,2);
+   End
+   Else If Op.BaseReg='' Then
+    Op.BaseReg:=U
+   Else If Op.IndexReg='' Then Begin
+    Op.IndexReg:=U;
+    Op.Scale:=1;
+   End;
+  End
+  Else If Tokens[I].Kind=TK_NUMBER Then Begin
+   V:=ParseNumericValue(Tokens[I].Value);
+   If Negate Then V:=-V;
+   Op.Disp:=Op.Disp+V;
+   Op.HasDisp:=True;
+   Negate:=False;
+  End
+  Else If Tokens[I].Kind=TK_IDENT Then Begin
+   { Symbole dans l'adressage memoire, ex: [myvar] ou [BX+myvar] }
+   U:=Tokens[I].Value;
+   Op.LabelName:=U;
+   Op.HasDisp:=True;
+  End
+  Else If Tokens[I].Kind=TK_PLUS Then
+   Negate:=False
+  Else If Tokens[I].Kind=TK_MINUS Then
+   Negate:=True;
+  Inc(I);
+ End;
+ { Determiner la taille par defaut si pas de prefixe }
+ If Op.Size=0 Then Begin
+  If(Op.BaseReg<>'')and(IsReg32(Op.BaseReg))Then Op.Size:=4
+  Else If(Op.BaseReg<>'')and(IsReg16(Op.BaseReg))Then Op.Size:=2;
+ End;
+End;
+
+Function ParseOperand(Var TokIdx:Integer):TOperand;
+{ Parse un operande a partir de la position TokIdx dans les tokens.
+  Avance TokIdx apres le dernier token consomme. }
+Var
+ Op:TOperand;
+ U:String;
+ V:LongInt;
+ BracketStart,BracketEnd:Integer;
+ SzByte:Byte;
+Begin
+ InitOperand(Op);
+ If(TokIdx<1)or(TokIdx>TokenCount)Then Begin
+  ParseOperand:=Op;
+  Exit;
+ End;
+ { Detecter prefixe de segment: CS: DS: etc. }
+ If(Tokens[TokIdx].Kind=TK_REGISTER)and IsSegReg(Tokens[TokIdx].Value)Then Begin
+  If(TokIdx+1<=TokenCount)and(Tokens[TokIdx+1].Kind=TK_COLON)Then Begin
+   Op.SegOverride:=UpCaseStr(Tokens[TokIdx].Value);
+   Inc(TokIdx,2);
+   If TokIdx>TokenCount Then Begin
+    ParseOperand:=Op;
+    Exit;
+   End;
+  End;
+ End;
+ { Detecter BYTE PTR / WORD PTR / DWORD PTR }
+ If(Tokens[TokIdx].Kind=TK_IDENT)or(Tokens[TokIdx].Kind=TK_REGISTER)Then Begin
+  U:=UpCaseStr(Tokens[TokIdx].Value);
+  If IsSizePrefix(U) Then Begin
+   SzByte:=SizePrefixToBytes(U);
+   Inc(TokIdx);
+   { Sauter PTR s'il est present }
+   If(TokIdx<=TokenCount)and(UpCaseStr(Tokens[TokIdx].Value)='PTR')Then
+    Inc(TokIdx);
+   Op.Size:=SzByte;
+   If TokIdx>TokenCount Then Begin
+    ParseOperand:=Op;
+    Exit;
+   End;
+  End;
+ End;
+ { Detecter OFFSET label }
+ If(Tokens[TokIdx].Kind=TK_IDENT)or(Tokens[TokIdx].Kind=TK_DIRECTIVE)Then Begin
+  U:=UpCaseStr(Tokens[TokIdx].Value);
+  If U='OFFSET' Then Begin
+   Inc(TokIdx);
+   If TokIdx<=TokenCount Then Begin
+    If Tokens[TokIdx].Kind=TK_LABEL Then
+     Op.LabelName:=Tokens[TokIdx].Value
+    Else
+     Op.LabelName:=Tokens[TokIdx].Value;
+    Op.OpType:=OT_OFFSET;
+    If Mode32 Then Op.Size:=4
+    Else Op.Size:=2;
+    Inc(TokIdx);
+   End;
+   ParseOperand:=Op;
+   Exit;
+  End;
+  { Detecter SEG label }
+  If U='SEG' Then Begin
+   Inc(TokIdx);
+   If TokIdx<=TokenCount Then Begin
+    Op.LabelName:=Tokens[TokIdx].Value;
+    Op.OpType:=OT_SEG;
+    Op.Size:=2;
+    Inc(TokIdx);
+   End;
+   ParseOperand:=Op;
+   Exit;
+  End;
+ End;
+ { Operande registre }
+ If Tokens[TokIdx].Kind=TK_REGISTER Then Begin
+  Op.Reg:=UpCaseStr(Tokens[TokIdx].Value);
+  Op.OpType:=RegToOpType(Op.Reg);
+  Op.Size:=RegSize(Op.Reg);
+  Inc(TokIdx);
+  ParseOperand:=Op;
+  Exit;
+ End;
+ { Operande memoire entre crochets }
+ If Tokens[TokIdx].Kind=TK_LBRACKET Then Begin
+  BracketStart:=TokIdx+1;
+  BracketEnd:=TokIdx+1;
+  { Trouver le crochet fermant }
+  While(BracketEnd<=TokenCount)and(Tokens[BracketEnd].Kind<>TK_RBRACKET)do
+   Inc(BracketEnd);
+  Dec(BracketEnd); { Pointe au dernier token avant ] }
+  If BracketStart<=BracketEnd Then
+   ParseMemoryOperand(Op,BracketStart,BracketEnd);
+  { Avancer apres le crochet fermant }
+  TokIdx:=BracketEnd+2;
+  ParseOperand:=Op;
+  Exit;
+ End;
+ { Operande immediat (nombre) }
+ If Tokens[TokIdx].Kind=TK_NUMBER Then Begin
+  V:=ParseNumericValue(Tokens[TokIdx].Value);
+  Op.Imm:=V;
+  If(V>=-128)and(V<=255)Then Begin
+   Op.OpType:=OT_IMM8;
+   If Op.Size=0 Then Op.Size:=1;
+  End
+  Else If(V>=-32768)and(V<=65535)Then Begin
+   Op.OpType:=OT_IMM16;
+   If Op.Size=0 Then Op.Size:=2;
+  End
+  Else Begin
+   Op.OpType:=OT_IMM32;
+   If Op.Size=0 Then Op.Size:=4;
+  End;
+  Inc(TokIdx);
+  ParseOperand:=Op;
+  Exit;
+ End;
+ { Immediat negatif: -nombre }
+ If(Tokens[TokIdx].Kind=TK_MINUS)and(TokIdx<TokenCount)and
+   (Tokens[TokIdx+1].Kind=TK_NUMBER)Then Begin
+  V:=-ParseNumericValue(Tokens[TokIdx+1].Value);
+  Op.Imm:=V;
+  If(V>=-128)and(V<=127)Then Begin
+   Op.OpType:=OT_IMM8;
+   If Op.Size=0 Then Op.Size:=1;
+  End
+  Else If(V>=-32768)and(V<=32767)Then Begin
+   Op.OpType:=OT_IMM16;
+   If Op.Size=0 Then Op.Size:=2;
+  End
+  Else Begin
+   Op.OpType:=OT_IMM32;
+   If Op.Size=0 Then Op.Size:=4;
+  End;
+  Inc(TokIdx,2);
+  ParseOperand:=Op;
+  Exit;
+ End;
+ { Operande label/identifiant (reference memoire directe ou label de saut) }
+ If(Tokens[TokIdx].Kind=TK_IDENT)or(Tokens[TokIdx].Kind=TK_LABEL)Then Begin
+  Op.LabelName:=Tokens[TokIdx].Value;
+  Op.OpType:=OT_LABEL;
+  Inc(TokIdx);
+  { Verifier si c'est suivi de crochets: var[BX] }
+  If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind=TK_LBRACKET)Then Begin
+   BracketStart:=TokIdx+1;
+   BracketEnd:=TokIdx+1;
+   While(BracketEnd<=TokenCount)and(Tokens[BracketEnd].Kind<>TK_RBRACKET)do
+    Inc(BracketEnd);
+   Dec(BracketEnd);
+   If BracketStart<=BracketEnd Then
+    ParseMemoryOperand(Op,BracketStart,BracketEnd);
+   Op.OpType:=OT_MEM;
+   TokIdx:=BracketEnd+2;
+  End;
+  ParseOperand:=Op;
+  Exit;
+ End;
+ { Token non reconnu, avancer }
+ Inc(TokIdx);
+ ParseOperand:=Op;
+End;
+
+Function OperandTypeName(OT:Byte):String;
+Begin
+ Case OT of
+  OT_NONE:OperandTypeName:='NONE';
+  OT_REG8:OperandTypeName:='REG8';
+  OT_REG16:OperandTypeName:='REG16';
+  OT_REG32:OperandTypeName:='REG32';
+  OT_SEGREG:OperandTypeName:='SEGREG';
+  OT_MEM:OperandTypeName:='MEM';
+  OT_IMM8:OperandTypeName:='IMM8';
+  OT_IMM16:OperandTypeName:='IMM16';
+  OT_IMM32:OperandTypeName:='IMM32';
+  OT_LABEL:OperandTypeName:='LABEL';
+  OT_OFFSET:OperandTypeName:='OFFSET';
+  OT_SEG:OperandTypeName:='SEG';
+  Else OperandTypeName:='?';
+ End;
+End;
+
+Procedure ParseInstructionLine(LineIdx:LongInt;Var AsmL:TAsmLine);
+{ Parse une ligne d'instruction ASM en ses composants }
+Var
+ TokIdx:Integer;
+ U:String;
+Begin
+ AsmL.LabelStr:='';
+ AsmL.Mnemonic:='';
+ InitOperand(AsmL.Op1);
+ InitOperand(AsmL.Op2);
+ AsmL.Comment:='';
+ AsmL.LineNum:=LineIdx;
+ AsmL.IsDirective:=False;
+ AsmL.IsTranslated:=False;
+ TokenizeLine(SrcLines[LineIdx]^);
+ If TokenCount=0 Then Exit;
+ TokIdx:=1;
+ { Extraire le label si present }
+ If Tokens[TokIdx].Kind=TK_LABEL Then Begin
+  AsmL.LabelStr:=Tokens[TokIdx].Value;
+  Inc(TokIdx);
+  If TokIdx>TokenCount Then Exit;
+ End;
+ { Extraire le commentaire de fin si present }
+ If Tokens[TokenCount].Kind=TK_COMMENT Then
+  AsmL.Comment:=Tokens[TokenCount].Value;
+ { Directive ? }
+ If Tokens[TokIdx].Kind=TK_DIRECTIVE Then Begin
+  AsmL.IsDirective:=True;
+  AsmL.Mnemonic:=UpCaseStr(Tokens[TokIdx].Value);
+  Exit;
+ End;
+ { Mnemonique }
+ If Tokens[TokIdx].Kind=TK_MNEMONIC Then Begin
+  AsmL.Mnemonic:=UpCaseStr(Tokens[TokIdx].Value);
+  Inc(TokIdx);
+ End
+ Else If Tokens[TokIdx].Kind=TK_IDENT Then Begin
+  { Peut etre un identifiant suivi d'une directive (ex: myvar DB ...) }
+  U:=UpCaseStr(Tokens[TokIdx].Value);
+  If(TokIdx<TokenCount)and(Tokens[TokIdx+1].Kind=TK_DIRECTIVE)Then Begin
+   AsmL.IsDirective:=True;
+   AsmL.LabelStr:=Tokens[TokIdx].Value;
+   AsmL.Mnemonic:=UpCaseStr(Tokens[TokIdx+1].Value);
+   Exit;
+  End;
+  { Sinon traiter comme mnemonique inconnu }
+  AsmL.Mnemonic:=U;
+  Inc(TokIdx);
+ End
+ Else Exit;
+ { Parser le premier operande }
+ If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind<>TK_COMMENT)Then
+  AsmL.Op1:=ParseOperand(TokIdx);
+ { Sauter la virgule }
+ If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind=TK_COMMA)Then
+  Inc(TokIdx);
+ { Parser le deuxieme operande }
+ If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind<>TK_COMMENT)Then
+  AsmL.Op2:=ParseOperand(TokIdx);
+End;
+
+Procedure ProcessOperands;
+{ Orchestrateur : parse toutes les lignes d'instructions et collecte les statistiques }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ InstrCount:LongInt;
+ RegCount,MemCount,ImmCount,LabelCount:LongInt;
+ OffsetCount,SegCount:LongInt;
+
+ Procedure CountOperand(Var Op:TOperand);
+ Begin
+  Case Op.OpType of
+   OT_REG8,OT_REG16,OT_REG32,OT_SEGREG:Inc(RegCount);
+   OT_MEM:Inc(MemCount);
+   OT_IMM8,OT_IMM16,OT_IMM32:Inc(ImmCount);
+   OT_LABEL:Inc(LabelCount);
+   OT_OFFSET:Inc(OffsetCount);
+   OT_SEG:Inc(SegCount);
+  End;
+ End;
+
+Begin
+ InstrCount:=0;
+ RegCount:=0;
+ MemCount:=0;
+ ImmCount:=0;
+ LabelCount:=0;
+ OffsetCount:=0;
+ SegCount:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  TokenizeLine(SrcLines[I]^);
+  If TokenCount=0 Then Continue;
+  { Ignorer les lignes de directives pures }
+  If(Tokens[1].Kind=TK_DIRECTIVE)Then Continue;
+  If(Tokens[1].Kind=TK_LABEL)and(TokenCount>=2)and
+    (Tokens[2].Kind=TK_DIRECTIVE)Then Continue;
+  If(Tokens[1].Kind=TK_IDENT)and(TokenCount>=2)and
+    (Tokens[2].Kind=TK_DIRECTIVE)Then Continue;
+  { Parser les lignes avec mnemonique }
+  If(Tokens[1].Kind=TK_MNEMONIC)or
+    ((Tokens[1].Kind=TK_LABEL)and(TokenCount>=2)and
+     (Tokens[2].Kind=TK_MNEMONIC))Then Begin
+   ParseInstructionLine(I,AsmL);
+   If AsmL.Mnemonic<>'' Then Begin
+    Inc(InstrCount);
+    CountOperand(AsmL.Op1);
+    CountOperand(AsmL.Op2);
+   End;
+  End;
+ End;
+ WriteLn('Analyse des operandes : ',InstrCount,' instructions.');
+ If Verbose Then Begin
+  WriteLn('  Registres  : ',RegCount);
+  WriteLn('  Memoire    : ',MemCount);
+  WriteLn('  Immediats  : ',ImmCount);
+  WriteLn('  Labels     : ',LabelCount);
+  WriteLn('  OFFSET     : ',OffsetCount);
+  WriteLn('  SEG        : ',SegCount);
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -2818,7 +3334,8 @@ BEGIN
  ProcessProcedureDirectives;
  { Table des symboles (TODO 6) }
  BuildSymbolTable;
- { TODO 7  - Analyse des operandes }
+ { Analyse des operandes (TODO 7) }
+ ProcessOperands;
  { TODO 8  - Inference de types }
  { TODO 9  - Traduction des registres }
  { TODO 10 - Traduction des transferts }
