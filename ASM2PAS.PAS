@@ -185,7 +185,7 @@
       sauvegarder/restaurer des registres, les convertir en
       variables temporaires locales.
 
-  17. [A FAIRE] Traduction des instructions de chaine (string operations).
+  17. [IMPLEMENTE] Traduction des instructions de chaine (string operations).
       MOVSB/MOVSW/MOVSD -> Move(Src^, Dst^, Count).
       CMPSB/CMPSW/CMPSD -> comparaison de blocs memoire.
       LODSB -> AL := Mem[DS:SI]; Inc(SI).
@@ -5936,6 +5936,390 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des instructions de chaine - TODO 17
+  ============================================================ }
+
+Function IsRepPrefix(M:String):Boolean;
+{ Verifie si un mnemonique est un prefixe de repetition }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsRepPrefix:=(U='REP')or(U='REPE')or(U='REPZ')or
+  (U='REPNE')or(U='REPNZ');
+End;
+
+Function IsStringOpMnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est une operation de chaine pure
+  (sans les prefixes REP) }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsStringOpMnemonic:=(U='MOVSB')or(U='MOVSW')or(U='MOVSD')or
+  (U='CMPSB')or(U='CMPSW')or(U='CMPSD')or
+  (U='LODSB')or(U='LODSW')or(U='LODSD')or
+  (U='STOSB')or(U='STOSW')or(U='STOSD')or
+  (U='SCASB')or(U='SCASW')or(U='SCASD');
+End;
+
+Function ExtractStringOp(LineIdx:LongInt):String;
+{ Extraire l'instruction de chaine d'une ligne avec prefixe REP.
+  Cherche dans le texte source un mnemonique de chaine. }
+Var
+ Line:String;
+Begin
+ ExtractStringOp:='';
+ Line:=UpCaseStr(SrcLines[LineIdx]^);
+ If Pos('MOVSD',Line)>0 Then Begin ExtractStringOp:='MOVSD'; Exit End;
+ If Pos('MOVSW',Line)>0 Then Begin ExtractStringOp:='MOVSW'; Exit End;
+ If Pos('MOVSB',Line)>0 Then Begin ExtractStringOp:='MOVSB'; Exit End;
+ If Pos('CMPSD',Line)>0 Then Begin ExtractStringOp:='CMPSD'; Exit End;
+ If Pos('CMPSW',Line)>0 Then Begin ExtractStringOp:='CMPSW'; Exit End;
+ If Pos('CMPSB',Line)>0 Then Begin ExtractStringOp:='CMPSB'; Exit End;
+ If Pos('LODSD',Line)>0 Then Begin ExtractStringOp:='LODSD'; Exit End;
+ If Pos('LODSW',Line)>0 Then Begin ExtractStringOp:='LODSW'; Exit End;
+ If Pos('LODSB',Line)>0 Then Begin ExtractStringOp:='LODSB'; Exit End;
+ If Pos('STOSD',Line)>0 Then Begin ExtractStringOp:='STOSD'; Exit End;
+ If Pos('STOSW',Line)>0 Then Begin ExtractStringOp:='STOSW'; Exit End;
+ If Pos('STOSB',Line)>0 Then Begin ExtractStringOp:='STOSB'; Exit End;
+ If Pos('SCASD',Line)>0 Then Begin ExtractStringOp:='SCASD'; Exit End;
+ If Pos('SCASW',Line)>0 Then Begin ExtractStringOp:='SCASW'; Exit End;
+ If Pos('SCASB',Line)>0 Then Begin ExtractStringOp:='SCASB'; Exit End;
+End;
+
+Function StringOpStep(StringOp:String):String;
+{ Retourne le pas d'incrementation selon le suffixe B/W/D }
+Begin
+ If StringOp[Length(StringOp)]='B' Then StringOpStep:='1'
+ Else If StringOp[Length(StringOp)]='W' Then StringOpStep:='2'
+ Else StringOpStep:='4';
+End;
+
+Function StringOpMemPfx(StringOp:String):String;
+{ Retourne Mem/MemW/MemL selon la taille de l'operation }
+Begin
+ If StringOp[Length(StringOp)]='B' Then StringOpMemPfx:='Mem'
+ Else If StringOp[Length(StringOp)]='W' Then StringOpMemPfx:='MemW'
+ Else StringOpMemPfx:='MemL';
+End;
+
+Function StringOpAccum(StringOp:String):String;
+{ Retourne l'expression de l'accumulateur selon la taille }
+Begin
+ If StringOp[Length(StringOp)]='B' Then StringOpAccum:='Lo(RegAX)'
+ Else If StringOp[Length(StringOp)]='W' Then StringOpAccum:='RegAX'
+ Else StringOpAccum:='RegEAX';
+End;
+
+Function TranslateMOVS(StringOp,RepType:String):String;
+{ MOVSx -> copie memoire [SI]->[DI] avec ajustement SI/DI.
+  REP MOVSx -> Move(Mem[SI], Mem[DI], CX * step). }
+Var
+ SiVar,DiVar,CxVar,Step,MP:String;
+Begin
+ If Mode32 Then Begin
+  SiVar:='RegESI'; DiVar:='RegEDI'; CxVar:='RegECX'
+ End Else Begin
+  SiVar:='RegSI'; DiVar:='RegDI'; CxVar:='RegCX'
+ End;
+ Step:=StringOpStep(StringOp);
+ MP:=StringOpMemPfx(StringOp);
+ If RepType<>'' Then Begin
+  If Step='1' Then
+   TranslateMOVS:='Begin Move('+MP+'['+SiVar+'], '+MP+'['+
+    DiVar+'], '+CxVar+'); Inc('+SiVar+', '+CxVar+'); Inc('+
+    DiVar+', '+CxVar+'); '+CxVar+' := 0 End'
+  Else
+   TranslateMOVS:='Begin Move('+MP+'['+SiVar+'], '+MP+'['+
+    DiVar+'], '+CxVar+' * '+Step+'); Inc('+SiVar+', '+CxVar+
+    ' * '+Step+'); Inc('+DiVar+', '+CxVar+' * '+Step+'); '+
+    CxVar+' := 0 End';
+ End
+ Else Begin
+  If Step='1' Then
+   TranslateMOVS:='Begin '+MP+'['+DiVar+'] := '+MP+'['+SiVar+
+    ']; If Not FlagDF Then Begin Inc('+SiVar+'); Inc('+DiVar+
+    ') End Else Begin Dec('+SiVar+'); Dec('+DiVar+') End End'
+  Else
+   TranslateMOVS:='Begin '+MP+'['+DiVar+'] := '+MP+'['+SiVar+
+    ']; If Not FlagDF Then Begin Inc('+SiVar+', '+Step+
+    '); Inc('+DiVar+', '+Step+') End Else Begin Dec('+SiVar+
+    ', '+Step+'); Dec('+DiVar+', '+Step+') End End';
+ End;
+End;
+
+Function TranslateLODS(StringOp,RepType:String):String;
+{ LODSx -> accumulateur := Mem[SI]; ajuster SI.
+  REP LODSx -> boucle (rare mais valide). }
+Var
+ SiVar,CxVar,Step,MP,Acc:String;
+Begin
+ If Mode32 Then Begin SiVar:='RegESI'; CxVar:='RegECX' End
+ Else Begin SiVar:='RegSI'; CxVar:='RegCX' End;
+ Step:=StringOpStep(StringOp);
+ MP:=StringOpMemPfx(StringOp);
+ Acc:=StringOpAccum(StringOp);
+ If RepType<>'' Then
+  TranslateLODS:='Begin While '+CxVar+' > 0 do Begin '+Acc+
+   ' := '+MP+'['+SiVar+']; If Not FlagDF Then Inc('+SiVar+
+   ', '+Step+') Else Dec('+SiVar+', '+Step+'); Dec('+
+   CxVar+') End End'
+ Else Begin
+  If Step='1' Then
+   TranslateLODS:='Begin '+Acc+' := '+MP+'['+SiVar+
+    ']; If Not FlagDF Then Inc('+SiVar+') Else Dec('+
+    SiVar+') End'
+  Else
+   TranslateLODS:='Begin '+Acc+' := '+MP+'['+SiVar+
+    ']; If Not FlagDF Then Inc('+SiVar+', '+Step+
+    ') Else Dec('+SiVar+', '+Step+') End';
+ End;
+End;
+
+Function TranslateSTOS(StringOp,RepType:String):String;
+{ STOSx -> Mem[DI] := accumulateur; ajuster DI.
+  REP STOSx -> FillChar/FillWord/FillDWord. }
+Var
+ DiVar,CxVar,Step,MP,Acc:String;
+Begin
+ If Mode32 Then Begin DiVar:='RegEDI'; CxVar:='RegECX' End
+ Else Begin DiVar:='RegDI'; CxVar:='RegCX' End;
+ Step:=StringOpStep(StringOp);
+ MP:=StringOpMemPfx(StringOp);
+ Acc:=StringOpAccum(StringOp);
+ If RepType<>'' Then Begin
+  If StringOp='STOSB' Then
+   TranslateSTOS:='Begin FillChar('+MP+'['+DiVar+'], '+CxVar+
+    ', '+Acc+'); Inc('+DiVar+', '+CxVar+'); '+CxVar+' := 0 End'
+  Else If StringOp='STOSW' Then
+   TranslateSTOS:='Begin FillWord('+MP+'['+DiVar+'], '+CxVar+
+    ', '+Acc+'); Inc('+DiVar+', '+CxVar+' * 2); '+
+    CxVar+' := 0 End'
+  Else
+   TranslateSTOS:='Begin FillDWord('+MP+'['+DiVar+'], '+CxVar+
+    ', '+Acc+'); Inc('+DiVar+', '+CxVar+' * 4); '+
+    CxVar+' := 0 End';
+ End
+ Else Begin
+  If Step='1' Then
+   TranslateSTOS:='Begin '+MP+'['+DiVar+'] := '+Acc+
+    '; If Not FlagDF Then Inc('+DiVar+') Else Dec('+
+    DiVar+') End'
+  Else
+   TranslateSTOS:='Begin '+MP+'['+DiVar+'] := '+Acc+
+    '; If Not FlagDF Then Inc('+DiVar+', '+Step+
+    ') Else Dec('+DiVar+', '+Step+') End';
+ End;
+End;
+
+Function TranslateCMPS(StringOp,RepType:String):String;
+{ CMPSx -> comparer Mem[SI] avec Mem[DI], positionner flags.
+  REPE CMPSx -> repeter tant que egal (trouver 1er different).
+  REPNE CMPSx -> repeter tant que different (trouver 1er egal). }
+Var
+ SiVar,DiVar,CxVar,Step,MP:String;
+Begin
+ If Mode32 Then Begin
+  SiVar:='RegESI'; DiVar:='RegEDI'; CxVar:='RegECX'
+ End Else Begin
+  SiVar:='RegSI'; DiVar:='RegDI'; CxVar:='RegCX'
+ End;
+ Step:=StringOpStep(StringOp);
+ MP:=StringOpMemPfx(StringOp);
+ If(RepType='REPE')or(RepType='REPZ')Then Begin
+  If Step='1' Then
+   TranslateCMPS:='Begin While '+CxVar+' > 0 do Begin '+
+    'FlagZF := ('+MP+'['+SiVar+'] = '+MP+'['+DiVar+
+    ']); If Not FlagDF Then Begin Inc('+SiVar+'); Inc('+
+    DiVar+') End Else Begin Dec('+SiVar+'); Dec('+DiVar+
+    ') End; Dec('+CxVar+'); If Not FlagZF Then Break End End'
+  Else
+   TranslateCMPS:='Begin While '+CxVar+' > 0 do Begin '+
+    'FlagZF := ('+MP+'['+SiVar+'] = '+MP+'['+DiVar+
+    ']); If Not FlagDF Then Begin Inc('+SiVar+', '+Step+
+    '); Inc('+DiVar+', '+Step+') End Else Begin Dec('+
+    SiVar+', '+Step+'); Dec('+DiVar+', '+Step+
+    ') End; Dec('+CxVar+'); If Not FlagZF Then Break End End';
+ End
+ Else If(RepType='REPNE')or(RepType='REPNZ')Then Begin
+  If Step='1' Then
+   TranslateCMPS:='Begin While '+CxVar+' > 0 do Begin '+
+    'FlagZF := ('+MP+'['+SiVar+'] = '+MP+'['+DiVar+
+    ']); If Not FlagDF Then Begin Inc('+SiVar+'); Inc('+
+    DiVar+') End Else Begin Dec('+SiVar+'); Dec('+DiVar+
+    ') End; Dec('+CxVar+'); If FlagZF Then Break End End'
+  Else
+   TranslateCMPS:='Begin While '+CxVar+' > 0 do Begin '+
+    'FlagZF := ('+MP+'['+SiVar+'] = '+MP+'['+DiVar+
+    ']); If Not FlagDF Then Begin Inc('+SiVar+', '+Step+
+    '); Inc('+DiVar+', '+Step+') End Else Begin Dec('+
+    SiVar+', '+Step+'); Dec('+DiVar+', '+Step+
+    ') End; Dec('+CxVar+'); If FlagZF Then Break End End';
+ End
+ Else Begin
+  If Step='1' Then
+   TranslateCMPS:='Begin FlagZF := ('+MP+'['+SiVar+'] = '+
+    MP+'['+DiVar+']); FlagCF := ('+MP+'['+SiVar+'] < '+
+    MP+'['+DiVar+']); If Not FlagDF Then Begin Inc('+SiVar+
+    '); Inc('+DiVar+') End Else Begin Dec('+SiVar+
+    '); Dec('+DiVar+') End End'
+  Else
+   TranslateCMPS:='Begin FlagZF := ('+MP+'['+SiVar+'] = '+
+    MP+'['+DiVar+']); FlagCF := ('+MP+'['+SiVar+'] < '+
+    MP+'['+DiVar+']); If Not FlagDF Then Begin Inc('+SiVar+
+    ', '+Step+'); Inc('+DiVar+', '+Step+') End Else Begin Dec('+
+    SiVar+', '+Step+'); Dec('+DiVar+', '+Step+') End End';
+ End;
+End;
+
+Function TranslateSCAS(StringOp,RepType:String):String;
+{ SCASx -> comparer accumulateur avec Mem[DI], positionner flags.
+  REPE SCASx -> repeter tant que egal (chercher 1er different).
+  REPNE SCASx -> repeter tant que different (chercher 1er egal). }
+Var
+ DiVar,CxVar,Step,MP,Acc:String;
+Begin
+ If Mode32 Then Begin DiVar:='RegEDI'; CxVar:='RegECX' End
+ Else Begin DiVar:='RegDI'; CxVar:='RegCX' End;
+ Step:=StringOpStep(StringOp);
+ MP:=StringOpMemPfx(StringOp);
+ Acc:=StringOpAccum(StringOp);
+ If(RepType='REPE')or(RepType='REPZ')Then Begin
+  If Step='1' Then
+   TranslateSCAS:='Begin While '+CxVar+' > 0 do Begin '+
+    'FlagZF := ('+Acc+' = '+MP+'['+DiVar+
+    ']); If Not FlagDF Then Inc('+DiVar+') Else Dec('+
+    DiVar+'); Dec('+CxVar+'); If Not FlagZF Then Break End End'
+  Else
+   TranslateSCAS:='Begin While '+CxVar+' > 0 do Begin '+
+    'FlagZF := ('+Acc+' = '+MP+'['+DiVar+
+    ']); If Not FlagDF Then Inc('+DiVar+', '+Step+
+    ') Else Dec('+DiVar+', '+Step+'); Dec('+CxVar+
+    '); If Not FlagZF Then Break End End';
+ End
+ Else If(RepType='REPNE')or(RepType='REPNZ')Then Begin
+  If Step='1' Then
+   TranslateSCAS:='Begin While '+CxVar+' > 0 do Begin '+
+    'FlagZF := ('+Acc+' = '+MP+'['+DiVar+
+    ']); If Not FlagDF Then Inc('+DiVar+') Else Dec('+
+    DiVar+'); Dec('+CxVar+'); If FlagZF Then Break End End'
+  Else
+   TranslateSCAS:='Begin While '+CxVar+' > 0 do Begin '+
+    'FlagZF := ('+Acc+' = '+MP+'['+DiVar+
+    ']); If Not FlagDF Then Inc('+DiVar+', '+Step+
+    ') Else Dec('+DiVar+', '+Step+'); Dec('+CxVar+
+    '); If FlagZF Then Break End End';
+ End
+ Else Begin
+  If Step='1' Then
+   TranslateSCAS:='Begin FlagZF := ('+Acc+' = '+MP+'['+DiVar+
+    ']); FlagCF := ('+Acc+' < '+MP+'['+DiVar+
+    ']); If Not FlagDF Then Inc('+DiVar+') Else Dec('+
+    DiVar+') End'
+  Else
+   TranslateSCAS:='Begin FlagZF := ('+Acc+' = '+MP+'['+DiVar+
+    ']); FlagCF := ('+Acc+' < '+MP+'['+DiVar+
+    ']); If Not FlagDF Then Inc('+DiVar+', '+Step+
+    ') Else Dec('+DiVar+', '+Step+') End';
+ End;
+End;
+
+Procedure ProcessStringTranslations;
+{ Parcourt les lignes source et traduit les instructions de chaine
+  (MOVS, CMPS, LODS, STOS, SCAS) avec ou sans prefixe REP/REPE/REPNE
+  en operations Pascal equivalentes. Produit des statistiques. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ Code:String;
+ M,StringOp,RepType:String;
+ MovsCount,CmpsCount,LodsCount,StosCount,ScasCount:LongInt;
+ RepMovsCount,RepStosCount,RepLodsCount:LongInt;
+ RepeCmpsCount,RepneCmpsCount:LongInt;
+ RepeScasCount,RepneScasCount:LongInt;
+ TotalString:LongInt;
+Begin
+ MovsCount:=0;CmpsCount:=0;LodsCount:=0;StosCount:=0;ScasCount:=0;
+ RepMovsCount:=0;RepStosCount:=0;RepLodsCount:=0;
+ RepeCmpsCount:=0;RepneCmpsCount:=0;
+ RepeScasCount:=0;RepneScasCount:=0;
+ TotalString:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=UpCaseStr(AsmL.Mnemonic);
+  Code:='';
+  RepType:='';
+  StringOp:='';
+  If IsStringOpMnemonic(M) Then
+   StringOp:=M
+  Else If IsRepPrefix(M) Then Begin
+   RepType:=M;
+   StringOp:=ExtractStringOp(I);
+   If StringOp='' Then Continue;
+  End
+  Else Continue;
+  If Copy(StringOp,1,4)='MOVS' Then Begin
+   Code:=TranslateMOVS(StringOp,RepType);
+   If RepType<>'' Then Inc(RepMovsCount)
+   Else Inc(MovsCount);
+  End
+  Else If Copy(StringOp,1,4)='CMPS' Then Begin
+   Code:=TranslateCMPS(StringOp,RepType);
+   If(RepType='REPE')or(RepType='REPZ')Then Inc(RepeCmpsCount)
+   Else If(RepType='REPNE')or(RepType='REPNZ')Then
+    Inc(RepneCmpsCount)
+   Else Inc(CmpsCount);
+  End
+  Else If Copy(StringOp,1,4)='LODS' Then Begin
+   Code:=TranslateLODS(StringOp,RepType);
+   If RepType<>'' Then Inc(RepLodsCount)
+   Else Inc(LodsCount);
+  End
+  Else If Copy(StringOp,1,4)='STOS' Then Begin
+   Code:=TranslateSTOS(StringOp,RepType);
+   If RepType<>'' Then Inc(RepStosCount)
+   Else Inc(StosCount);
+  End
+  Else If Copy(StringOp,1,4)='SCAS' Then Begin
+   Code:=TranslateSCAS(StringOp,RepType);
+   If(RepType='REPE')or(RepType='REPZ')Then Inc(RepeScasCount)
+   Else If(RepType='REPNE')or(RepType='REPNZ')Then
+    Inc(RepneScasCount)
+   Else Inc(ScasCount);
+  End;
+  If Code<>'' Then Begin
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(TotalString);
+  End;
+ End;
+ WriteLn('Traduction chaines : ',TotalString,' instructions, ',
+  TranslationCount,' traductions totales.');
+ If Verbose Then Begin
+  WriteLn('  MOVS (sans REP)  : ',MovsCount);
+  WriteLn('  REP MOVS         : ',RepMovsCount);
+  WriteLn('  LODS (sans REP)  : ',LodsCount);
+  WriteLn('  REP LODS         : ',RepLodsCount);
+  WriteLn('  STOS (sans REP)  : ',StosCount);
+  WriteLn('  REP STOS         : ',RepStosCount);
+  WriteLn('  CMPS (sans REP)  : ',CmpsCount);
+  WriteLn('  REPE CMPS        : ',RepeCmpsCount);
+  WriteLn('  REPNE CMPS       : ',RepneCmpsCount);
+  WriteLn('  SCAS (sans REP)  : ',ScasCount);
+  WriteLn('  REPE SCAS        : ',RepeScasCount);
+  WriteLn('  REPNE SCAS       : ',RepneScasCount);
+  If TotalString>0 Then Begin
+   WriteLn('  Details :');
+   For I:=TranslationCount-TotalString to TranslationCount-1 do
+    If I>=0 Then
+     WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -6058,6 +6442,7 @@ BEGIN
  { TODO 16 - Traduction PUSH/POP }
  ProcessPushPopTranslations;
  { TODO 17 - Traduction chaines }
+ ProcessStringTranslations;
  { TODO 18 - Traduction INT systeme }
  { TODO 19 - Traduction adressage }
  { TODO 20 - Extensions 80386 }
