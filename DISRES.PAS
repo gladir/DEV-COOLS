@@ -302,7 +302,7 @@
               appeler CollectResources16 ou CollectResources32,
               afficher le nombre de ressources collectees si Verbose
 
-  TODO 11 - DECODAGE RT_STRING (TYPE 6) [A FAIRE]
+  TODO 11 - DECODAGE RT_STRING (TYPE 6) [IMPLEMENTE]
             Type TStringEntry : record
               BlockId  : Word    (identifiant du bloc 1..N)
               Index    : Byte    (indice dans le bloc 0..15)
@@ -851,6 +851,14 @@ Type
     DataOfs         : LongInt;  { position des donnees dans le fichier      }
   End;
 
+  { Entree dans la table des chaines decodes (RT_STRING) }
+  TStringEntry = Record
+    BlockId  : Word;    { identifiant du bloc 1..N      }
+    Index    : Byte;    { indice dans le bloc 0..15     }
+    StringId : Word;    { = (BlockId-1)*16 + Index      }
+    Text     : TString; { texte de la chaine            }
+  End;
+
   { Entree dans la table des ressources collectees }
   TResourceEntry = Record
     ResFormat  : Integer;   { FMT_RES16 ou FMT_RES32              }
@@ -888,6 +896,8 @@ Var
   ResFormat    : Integer;        { FMT_RES16 ou FMT_RES32          }
   Resources    : Array[1..MAX_RESOURCES] Of TResourceEntry;
   ResCount     : Integer;        { nombre de ressources collectees  }
+  StringEntries : Array[1..MAX_STRINGS] Of TStringEntry;
+  StringCount   : Integer;       { nombre de chaines decodees       }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -1864,6 +1874,67 @@ Begin
 End;
 
 { ============================================================
+  TODO 11 - DECODAGE RT_STRING (TYPE 6) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Decoder une ressource STRINGTABLE 16 entrees ---------- }
+Procedure ParseStringTable(Const Res : TResourceEntry);
+Var
+  I      : Integer;
+  LenW   : Word;
+  J      : Integer;
+  W      : Word;
+  S      : TString;
+  E      : TStringEntry;
+Begin
+  SeekResPos(Res.DataOfs);
+  For I := 0 To 15 Do
+  Begin
+    LenW := ReadWord;
+    If LenW > 0 Then
+    Begin
+      S := '';
+      For J := 1 To LenW Do
+      Begin
+        W := ReadWChar;
+        S := S + WCharToChar(W);
+      End;
+      If StringCount < MAX_STRINGS Then
+      Begin
+        Inc(StringCount);
+        E.BlockId  := Res.NameId;
+        E.Index    := I;
+        E.StringId := (Res.NameId - 1) * 16 + I;
+        E.Text     := S;
+        StringEntries[StringCount] := E;
+      End;
+    End;
+  End;
+End;
+
+{ ---- Decoder toutes les ressources STRINGTABLE ------------- }
+Procedure ParseAllStringTables;
+Var
+  I : Integer;
+Begin
+  StringCount := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_STRING) Then
+      ParseStringTable(Resources[I]);
+  End;
+  If Opts.Verbose Then
+    WriteLn(StringCount, ' chaine(s) decodee(s).');
+End;
+
+{ ---- Generer la ligne RC pour une entree de chaine --------- }
+Function StringTableRC(Const Entry : TStringEntry) : TString;
+Begin
+  StringTableRC := '    ' + IntToStr(Entry.StringId) +
+                   ', "' + EscapeRCString(Entry.Text) + '"';
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -1903,8 +1974,11 @@ Begin
   { Collecter toutes les ressources }
   CollectResources(ResFormat);
 
-  { TODO 11 a TODO 25 : a implementer }
-  WriteLn('(TODO 11 a TODO 25 : implementation en cours)');
+  { Decoder les tables de chaines (RT_STRING) }
+  ParseAllStringTables;
+
+  { TODO 12 a TODO 25 : a implementer }
+  WriteLn('(TODO 12 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
