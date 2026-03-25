@@ -273,7 +273,7 @@
               en les separant par des espaces
               utilise pour annoter la ligne de declaration de ressource
 
-  TODO 10 - TABLE DES RESSOURCES (COLLECTE) [A FAIRE]
+  TODO 10 - TABLE DES RESSOURCES (COLLECTE) [IMPLEMENTE]
             Type TResourceEntry : record
               ResFormat    : Integer   (FMT_RES16 ou FMT_RES32)
               TypeIsId     : Boolean   (True si type numerique)
@@ -851,6 +851,21 @@ Type
     DataOfs         : LongInt;  { position des donnees dans le fichier      }
   End;
 
+  { Entree dans la table des ressources collectees }
+  TResourceEntry = Record
+    ResFormat  : Integer;   { FMT_RES16 ou FMT_RES32              }
+    TypeIsId   : Boolean;   { True si type numerique              }
+    TypeId     : Word;      { identifiant de type si TypeIsId     }
+    TypeName   : TString;   { nom de type si Non TypeIsId         }
+    NameIsId   : Boolean;   { True si nom numerique               }
+    NameId     : Word;      { identifiant de nom si NameIsId      }
+    NameStr    : TString;   { nom si Non NameIsId                 }
+    DataSize   : LongInt;   { taille des donnees en octets        }
+    DataOfs    : LongInt;   { offset des donnees dans le fichier  }
+    MemFlags   : Word;      { attributs memoire                   }
+    LangId     : Word;      { identifiant de langue (0 si 16 bits)}
+  End;
+
   { Options de la ligne de commande }
   TOptions = Record
     SrcFile    : TString;   { fichier .RES source               }
@@ -871,6 +886,8 @@ Var
   ResFileSize  : LongInt;        { taille totale en octets         }
   ResFilePos   : LongInt;        { position courante (0-base)      }
   ResFormat    : Integer;        { FMT_RES16 ou FMT_RES32          }
+  Resources    : Array[1..MAX_RESOURCES] Of TResourceEntry;
+  ResCount     : Integer;        { nombre de ressources collectees  }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -1749,6 +1766,104 @@ Begin
 End;
 
 { ============================================================
+  TODO 10 - TABLE DES RESSOURCES (COLLECTE) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Collecte des ressources 16 bits ---------------------- }
+Procedure CollectResources16;
+Var
+  H   : TResHeader16;
+  E   : TResourceEntry;
+Begin
+  SeekResPos(0);
+  While (Not IsLastResHeader16) And (Not ResEOF) Do
+  Begin
+    ReadResHeader16(H);
+    If ResCount < MAX_RESOURCES Then
+    Begin
+      Inc(ResCount);
+      E.ResFormat := FMT_RES16;
+      If (H.TypeId And $8000) <> 0 Then
+      Begin
+        E.TypeIsId := True;
+        E.TypeId   := H.TypeId And $7FFF;
+        E.TypeName := '';
+      End
+      Else
+      Begin
+        E.TypeIsId := False;
+        E.TypeId   := 0;
+        E.TypeName := H.TypeName;
+      End;
+      If (H.NameId And $8000) <> 0 Then
+      Begin
+        E.NameIsId := True;
+        E.NameId   := H.NameId And $7FFF;
+        E.NameStr  := '';
+      End
+      Else
+      Begin
+        E.NameIsId := False;
+        E.NameId   := 0;
+        E.NameStr  := H.NameStr;
+      End;
+      E.DataSize := H.DataSize;
+      E.DataOfs  := H.DataOfs;
+      E.MemFlags := H.Attribs;
+      E.LangId   := 0;
+      Resources[ResCount] := E;
+    End;
+    SkipBytes(H.DataSize);
+    AlignResPos(2);
+  End;
+End;
+
+{ ---- Collecte des ressources 32 bits ---------------------- }
+Procedure CollectResources32;
+Var
+  H    : TResHeader32;
+  E    : TResourceEntry;
+Begin
+  SeekResPos(0);
+  { Lire et ignorer la ressource nulle (en-tete de version) }
+  ReadNullHeader32;
+  While Not ResEOF Do
+  Begin
+    ReadResHeader32(H);
+    If ResCount < MAX_RESOURCES Then
+    Begin
+      Inc(ResCount);
+      E.ResFormat := FMT_RES32;
+      E.TypeIsId  := H.TypeIsId;
+      E.TypeId    := H.TypeId;
+      E.TypeName  := H.TypeName;
+      E.NameIsId  := H.NameIsId;
+      E.NameId    := H.NameId;
+      E.NameStr   := H.NameStr;
+      E.DataSize  := H.DataSize;
+      E.DataOfs   := H.DataOfs;
+      E.MemFlags  := H.MemFlags;
+      E.LangId    := H.LangId;
+      Resources[ResCount] := E;
+    End;
+    SkipBytes(H.DataSize);
+    AlignResPos(4);
+  End;
+End;
+
+{ ---- Orchestrateur de collecte ---------------------------- }
+Procedure CollectResources(AResFormat : Integer);
+Begin
+  ResCount := 0;
+  If AResFormat = FMT_RES16 Then
+    CollectResources16
+  Else
+    CollectResources32;
+  If Opts.Verbose Then
+    WriteLn(ResCount, ' ressource(s) collectee(s).');
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -1785,12 +1900,11 @@ Begin
   { Detecter le format 16 ou 32 bits }
   CheckResFormat(ResFormat);
 
-  { TODO 10 a TODO 25 : a implementer }
-  Case ResFormat Of
-    FMT_RES16 : WriteLn('Format RES 16 bits confirme.');
-    FMT_RES32 : WriteLn('Format RES 32 bits confirme.');
-  End;
-  WriteLn('(TODO 10 a TODO 25 : implementation en cours)');
+  { Collecter toutes les ressources }
+  CollectResources(ResFormat);
+
+  { TODO 11 a TODO 25 : a implementer }
+  WriteLn('(TODO 11 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
