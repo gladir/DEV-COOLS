@@ -30,7 +30,7 @@
       de ligne avec '\'. Ignorer les lignes vides et les
       lignes ne contenant que des commentaires.
 
-  3.  [A FAIRE] Analyse des directives d'assemblage (segments et modeles).
+  3.  [IMPLEMENTE] Analyse des directives d'assemblage (segments et modeles).
       Reconnaitre les directives MASM/TASM : .MODEL (SMALL,
       COMPACT, MEDIUM, LARGE, HUGE, FLAT), .STACK, .CODE,
       .DATA, .DATA?, .CONST, .FARDATA, SEGMENT/ENDS avec
@@ -365,7 +365,49 @@ Const
  OT_IMM32   = 8;
  OT_LABEL   = 9;
 
+ { Modeles memoire }
+ MM_NONE    = 0;
+ MM_TINY    = 1;
+ MM_SMALL   = 2;
+ MM_COMPACT = 3;
+ MM_MEDIUM  = 4;
+ MM_LARGE   = 5;
+ MM_HUGE    = 6;
+ MM_FLAT    = 7;
+
+ { Sections courantes }
+ SEC_NONE    = 0;
+ SEC_CODE    = 1;
+ SEC_DATA    = 2;
+ SEC_DATAQ   = 3;
+ SEC_CONST   = 4;
+ SEC_STACK   = 5;
+ SEC_FARDATA = 6;
+
+ { Niveaux de processeur }
+ CPU_8086 = 0;
+ CPU_186  = 1;
+ CPU_286  = 2;
+ CPU_386  = 3;
+ CPU_486  = 4;
+ CPU_586  = 5;
+
+ MAX_SEGMENTS = 64;
+
 Type
+ TSegmentInfo = Record
+  Name:String;
+  ClassName:String;
+  Align:String;
+  Combine:String;
+  Use32:Boolean;
+  IsOpen:Boolean;
+ End;
+
+ TAssumeEntry = Record
+  SegReg:String;
+  SegName:String;
+ End;
  TToken = Record
   Kind:Byte;
   Value:String;
@@ -436,6 +478,19 @@ Var
  SrcLines:Array[0..MAX_LINES-1] of PStr;
  SrcLineNums:Array[0..MAX_LINES-1] of LongInt;
  SrcLineCount:LongInt;
+ { Etat des directives (TODO 3) }
+ MemoryModel:Byte;
+ CpuLevel:Byte;
+ CurrentSection:Byte;
+ StackSize:Word;
+ CaseSensitive:Boolean;
+ HasModelDirective:Boolean;
+ EntryPoint:String;
+ Segments:Array[1..MAX_SEGMENTS] of TSegmentInfo;
+ SegmentCount:Integer;
+ Assumes:Array[1..6] of TAssumeEntry;
+ GroupName:String;
+ GroupSegments:String;
 
 { ============================================================
   Fonctions utilitaires
@@ -811,7 +866,8 @@ Begin
   End;
   { Identificateur, registre, mnemonique, directive, label }
   If IsIdentStart(C) Then Begin
-   S:='';
+   S:=C;
+   Inc(I);
    While(I<=Length(Line))and IsIdentChar(Line[I])do Begin
     S:=S+Line[I];
     Inc(I);
@@ -956,8 +1012,469 @@ Begin
 End;
 
 { ============================================================
-  Programme principal
+  Analyse des directives d'assemblage - TODO 3
   ============================================================ }
+
+Function ModelName(M:Byte):String;
+Begin
+ Case M of
+  MM_TINY:ModelName:='TINY';
+  MM_SMALL:ModelName:='SMALL';
+  MM_COMPACT:ModelName:='COMPACT';
+  MM_MEDIUM:ModelName:='MEDIUM';
+  MM_LARGE:ModelName:='LARGE';
+  MM_HUGE:ModelName:='HUGE';
+  MM_FLAT:ModelName:='FLAT';
+  Else ModelName:='NONE';
+ End;
+End;
+
+Function SectionName(S:Byte):String;
+Begin
+ Case S of
+  SEC_CODE:SectionName:='CODE';
+  SEC_DATA:SectionName:='DATA';
+  SEC_DATAQ:SectionName:='DATA?';
+  SEC_CONST:SectionName:='CONST';
+  SEC_STACK:SectionName:='STACK';
+  SEC_FARDATA:SectionName:='FARDATA';
+  Else SectionName:='NONE';
+ End;
+End;
+
+Function CpuName(C:Byte):String;
+Begin
+ Case C of
+  CPU_8086:CpuName:='8086';
+  CPU_186:CpuName:='80186';
+  CPU_286:CpuName:='80286';
+  CPU_386:CpuName:='80386';
+  CPU_486:CpuName:='80486';
+  CPU_586:CpuName:='80586';
+  Else CpuName:='8086';
+ End;
+End;
+
+Procedure InitDirectiveState;
+Var
+ I:Integer;
+Begin
+ MemoryModel:=MM_NONE;
+ CpuLevel:=CPU_8086;
+ CurrentSection:=SEC_NONE;
+ StackSize:=0;
+ CaseSensitive:=False;
+ HasModelDirective:=False;
+ EntryPoint:='';
+ SegmentCount:=0;
+ GroupName:='';
+ GroupSegments:='';
+ For I:=1 to 6 do Begin
+  Assumes[I].SegReg:='';
+  Assumes[I].SegName:='';
+ End;
+End;
+
+Function FindSegmentByName(Name:String):Integer;
+Var
+ I:Integer;
+ U:String;
+Begin
+ U:=UpCaseStr(Name);
+ FindSegmentByName:=0;
+ For I:=1 to SegmentCount do
+  If UpCaseStr(Segments[I].Name)=U Then Begin
+   FindSegmentByName:=I;
+   Exit;
+  End;
+End;
+
+Procedure ProcessModelDirective;
+{ Traite .MODEL SMALL, .MODEL FLAT, etc. }
+Var
+ I:Integer;
+ U:String;
+Begin
+ If TokenCount<2 Then Exit;
+ I:=2;
+ While I<=TokenCount do Begin
+  If Tokens[I].Kind=TK_COMMENT Then Break;
+  If Tokens[I].Kind=TK_COMMA Then Begin
+   Inc(I);
+   Continue;
+  End;
+  U:=UpCaseStr(Tokens[I].Value);
+  If U='TINY' Then MemoryModel:=MM_TINY
+  Else If U='SMALL' Then MemoryModel:=MM_SMALL
+  Else If U='COMPACT' Then MemoryModel:=MM_COMPACT
+  Else If U='MEDIUM' Then MemoryModel:=MM_MEDIUM
+  Else If U='LARGE' Then MemoryModel:=MM_LARGE
+  Else If U='HUGE' Then MemoryModel:=MM_HUGE
+  Else If U='FLAT' Then Begin
+   MemoryModel:=MM_FLAT;
+   Mode32:=True;
+   If CpuLevel<CPU_386 Then CpuLevel:=CPU_386;
+  End;
+  Inc(I);
+ End;
+ HasModelDirective:=True;
+ If Verbose Then
+  WriteLn('  .MODEL ',ModelName(MemoryModel));
+End;
+
+Procedure ProcessProcessorDirective(Dir:String);
+{ Traite .8086, .286, .386, .486, .586, etc. }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Dir);
+ If U='.8086' Then Begin
+  CpuLevel:=CPU_8086;
+  Mode32:=False;
+ End
+ Else If U='.186' Then Begin
+  CpuLevel:=CPU_186;
+  Mode32:=False;
+ End
+ Else If(U='.286')or(U='.286C')or(U='.286P')Then Begin
+  CpuLevel:=CPU_286;
+  Mode32:=False;
+ End
+ Else If(U='.386')or(U='.386C')or(U='.386P')Then Begin
+  CpuLevel:=CPU_386;
+  Mode32:=True;
+ End
+ Else If(U='.486')or(U='.486P')Then Begin
+  CpuLevel:=CPU_486;
+  Mode32:=True;
+ End
+ Else If(U='.586')or(U='.586P')Then Begin
+  CpuLevel:=CPU_586;
+  Mode32:=True;
+ End;
+ If Verbose Then
+  WriteLn('  Processeur : ',CpuName(CpuLevel),
+   ' (mode ',16+Ord(Mode32)*16,' bits)');
+End;
+
+Procedure ProcessSectionDirective(Dir:String);
+{ Traite .CODE, .DATA, .DATA?, .CONST, .FARDATA, .STACK }
+Var
+ U:String;
+ I:Integer;
+Begin
+ U:=UpCaseStr(Dir);
+ If U='.CODE' Then CurrentSection:=SEC_CODE
+ Else If U='.DATA' Then CurrentSection:=SEC_DATA
+ Else If U='.DATA?' Then CurrentSection:=SEC_DATAQ
+ Else If U='.CONST' Then CurrentSection:=SEC_CONST
+ Else If U='.FARDATA' Then CurrentSection:=SEC_FARDATA
+ Else If U='.FARDATA?' Then CurrentSection:=SEC_FARDATA
+ Else If U='.STACK' Then Begin
+  CurrentSection:=SEC_STACK;
+  If(TokenCount>=2)and(Tokens[2].Kind=TK_NUMBER)Then Begin
+   StackSize:=Word(HexToInt(Tokens[2].Value));
+   If StackSize=0 Then Begin
+    { Nombre decimal }
+    Val(Tokens[2].Value,StackSize,I);
+    If I<>0 Then StackSize:=256;
+   End;
+  End Else
+   StackSize:=256;
+  If Verbose Then
+   WriteLn('  .STACK ',StackSize);
+ End;
+ If(U<>'.STACK')and Verbose Then
+  WriteLn('  Section : ',SectionName(CurrentSection));
+End;
+
+Procedure ProcessSegmentDirective;
+{ Traite: NomSeg SEGMENT [align] [combine] [use16/use32] ['class'] }
+Var
+ I,Idx:Integer;
+ U,SegName_:String;
+Begin
+ If TokenCount<2 Then Exit;
+ { Token 1 = nom du segment, Token 2 = SEGMENT }
+ SegName_:=Tokens[1].Value;
+ Idx:=FindSegmentByName(SegName_);
+ If Idx=0 Then Begin
+  If SegmentCount<MAX_SEGMENTS Then Begin
+   Inc(SegmentCount);
+   Idx:=SegmentCount;
+   Segments[Idx].Name:=SegName_;
+   Segments[Idx].ClassName:='';
+   Segments[Idx].Align:='';
+   Segments[Idx].Combine:='';
+   Segments[Idx].Use32:=Mode32;
+   Segments[Idx].IsOpen:=True;
+  End Else Exit;
+ End Else
+  Segments[Idx].IsOpen:=True;
+ { Parcourir les attributs }
+ I:=3;
+ While I<=TokenCount do Begin
+  If Tokens[I].Kind=TK_COMMENT Then Break;
+  U:=UpCaseStr(Tokens[I].Value);
+  If(U='BYTE')or(U='WORD')or(U='DWORD')or(U='PARA')or(U='PAGE')Then
+   Segments[Idx].Align:=U
+  Else If(U='PUBLIC')or(U='COMMON')or(U='PRIVATE')or
+        (U='STACK')or(U='MEMORY')or(U='AT')Then
+   Segments[Idx].Combine:=U
+  Else If U='USE16' Then
+   Segments[Idx].Use32:=False
+  Else If U='USE32' Then
+   Segments[Idx].Use32:=True
+  Else If Tokens[I].Kind=TK_STRING Then
+   Segments[Idx].ClassName:=Tokens[I].Value;
+  Inc(I);
+ End;
+ CurrentSection:=SEC_CODE;
+ If Verbose Then Begin
+  Write('  SEGMENT ',SegName_);
+  If Segments[Idx].Align<>'' Then Write(' ',Segments[Idx].Align);
+  If Segments[Idx].Combine<>'' Then Write(' ',Segments[Idx].Combine);
+  If Segments[Idx].ClassName<>'' Then
+   Write(' ''',Segments[Idx].ClassName,'''');
+  If Segments[Idx].Use32 Then Write(' USE32')
+                          Else Write(' USE16');
+  WriteLn;
+ End;
+End;
+
+Procedure ProcessEndsDirective;
+{ Traite: NomSeg ENDS }
+Var
+ Idx:Integer;
+Begin
+ If TokenCount<2 Then Exit;
+ Idx:=FindSegmentByName(Tokens[1].Value);
+ If Idx>0 Then Begin
+  Segments[Idx].IsOpen:=False;
+  If Verbose Then
+   WriteLn('  ENDS ',Segments[Idx].Name);
+ End;
+ CurrentSection:=SEC_NONE;
+End;
+
+Procedure ProcessAssumeDirective;
+{ Traite: ASSUME CS:CSEG, DS:DSEG, ES:NOTHING, ... }
+{ Note: CS:CSEG peut etre tokenise comme LABEL(CS) + IDENT(CSEG) }
+{       ou REGISTER(CS) + COLON(:) + IDENT(CSEG) }
+Var
+ I,Idx:Integer;
+ SegReg,SegTarget:String;
+Begin
+ I:=2;
+ While I<=TokenCount do Begin
+  If Tokens[I].Kind=TK_COMMENT Then Break;
+  If Tokens[I].Kind=TK_COMMA Then Begin
+   Inc(I);
+   Continue;
+  End;
+  { Cas 1: tokenise comme LABEL(CS) suivi de IDENT(CSEG) }
+  If Tokens[I].Kind=TK_LABEL Then Begin
+   SegReg:=UpCaseStr(Tokens[I].Value);
+   Idx:=0;
+   If SegReg='CS' Then Idx:=1
+   Else If SegReg='DS' Then Idx:=2
+   Else If SegReg='ES' Then Idx:=3
+   Else If SegReg='SS' Then Idx:=4
+   Else If SegReg='FS' Then Idx:=5
+   Else If SegReg='GS' Then Idx:=6;
+   If(Idx>0)and(I+1<=TokenCount)Then Begin
+    SegTarget:=UpCaseStr(Tokens[I+1].Value);
+    Assumes[Idx].SegReg:=SegReg;
+    If SegTarget='NOTHING' Then Assumes[Idx].SegName:=''
+                           Else Assumes[Idx].SegName:=SegTarget;
+    Inc(I,2);
+   End Else
+    Inc(I);
+  End
+  { Cas 2: tokenise comme REGISTER(CS) + COLON(:) + IDENT(CSEG) }
+  Else If(I+2<=TokenCount)and(Tokens[I+1].Kind=TK_COLON)Then Begin
+   SegReg:=UpCaseStr(Tokens[I].Value);
+   SegTarget:=UpCaseStr(Tokens[I+2].Value);
+   Idx:=0;
+   If SegReg='CS' Then Idx:=1
+   Else If SegReg='DS' Then Idx:=2
+   Else If SegReg='ES' Then Idx:=3
+   Else If SegReg='SS' Then Idx:=4
+   Else If SegReg='FS' Then Idx:=5
+   Else If SegReg='GS' Then Idx:=6;
+   If Idx>0 Then Begin
+    Assumes[Idx].SegReg:=SegReg;
+    If SegTarget='NOTHING' Then Assumes[Idx].SegName:=''
+                           Else Assumes[Idx].SegName:=SegTarget;
+   End;
+   Inc(I,3);
+  End Else
+   Inc(I);
+ End;
+ If Verbose Then Begin
+  Write('  ASSUME');
+  For Idx:=1 to 6 do
+   If Assumes[Idx].SegReg<>'' Then Begin
+    Write(' ',Assumes[Idx].SegReg,':');
+    If Assumes[Idx].SegName<>'' Then Write(Assumes[Idx].SegName)
+                                 Else Write('NOTHING');
+   End;
+  WriteLn;
+ End;
+End;
+
+Procedure ProcessOptionDirective;
+{ Traite: OPTION CASEMAP:NONE }
+{ Note: CASEMAP:NONE peut etre tokenise comme LABEL(CASEMAP) + IDENT(NONE) }
+{       ou IDENT(CASEMAP) + COLON(:) + IDENT(NONE) }
+Var
+ I:Integer;
+ U:String;
+Begin
+ I:=2;
+ While I<=TokenCount do Begin
+  If Tokens[I].Kind=TK_COMMENT Then Break;
+  { Cas 1: LABEL(CASEMAP) suivi de IDENT(NONE) }
+  If(Tokens[I].Kind=TK_LABEL)and
+    (UpCaseStr(Tokens[I].Value)='CASEMAP')Then Begin
+   If(I+1<=TokenCount)and(UpCaseStr(Tokens[I+1].Value)='NONE')Then Begin
+    CaseSensitive:=True;
+    If Verbose Then
+     WriteLn('  OPTION CASEMAP:NONE (sensible a la casse)');
+   End;
+   Inc(I,2);
+   Continue;
+  End;
+  { Cas 2: IDENT(CASEMAP) + COLON(:) + IDENT(NONE) }
+  U:=UpCaseStr(Tokens[I].Value);
+  If U='CASEMAP' Then Begin
+   If(I+2<=TokenCount)and(Tokens[I+1].Kind=TK_COLON)Then Begin
+    If UpCaseStr(Tokens[I+2].Value)='NONE' Then Begin
+     CaseSensitive:=True;
+     If Verbose Then
+      WriteLn('  OPTION CASEMAP:NONE (sensible a la casse)');
+    End;
+    Inc(I,3);
+    Continue;
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
+Procedure ProcessGroupDirective;
+{ Traite: DGROUP GROUP DSEG, SSEG }
+Var
+ I:Integer;
+Begin
+ If TokenCount<3 Then Exit;
+ GroupName:=Tokens[1].Value;
+ GroupSegments:='';
+ I:=3;
+ While I<=TokenCount do Begin
+  If Tokens[I].Kind=TK_COMMENT Then Break;
+  If Tokens[I].Kind<>TK_COMMA Then Begin
+   If GroupSegments<>'' Then GroupSegments:=GroupSegments+', ';
+   GroupSegments:=GroupSegments+Tokens[I].Value;
+  End;
+  Inc(I);
+ End;
+ If Verbose Then
+  WriteLn('  GROUP ',GroupName,' = ',GroupSegments);
+End;
+
+Procedure ProcessEndDirective;
+{ Traite: END [entry_point] }
+Begin
+ If(TokenCount>=2)and(Tokens[2].Kind<>TK_COMMENT)Then
+  EntryPoint:=Tokens[2].Value;
+ If Verbose Then Begin
+  If EntryPoint<>'' Then WriteLn('  END ',EntryPoint)
+                     Else WriteLn('  END');
+ End;
+End;
+
+Procedure ProcessDirectives;
+Var
+ I:LongInt;
+ U:String;
+ DirCount,SegCount,SecCount:LongInt;
+Begin
+ InitDirectiveState;
+ DirCount:=0;
+ SegCount:=0;
+ SecCount:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  TokenizeLine(SrcLines[I]^);
+  If TokenCount=0 Then Continue;
+  { Directives commencant par '.' }
+  If(Tokens[1].Kind=TK_DIRECTIVE)and(Length(Tokens[1].Value)>0)and
+    (Tokens[1].Value[1]='.')Then Begin
+   U:=UpCaseStr(Tokens[1].Value);
+   If U='.MODEL' Then Begin
+    ProcessModelDirective;
+    Inc(DirCount);
+   End
+   Else If(U='.8086')or(U='.186')or(U='.286')or(U='.286C')or
+         (U='.286P')or(U='.386')or(U='.386C')or(U='.386P')or
+         (U='.486')or(U='.486P')or(U='.586')or(U='.586P')Then Begin
+    ProcessProcessorDirective(U);
+    Inc(DirCount);
+   End
+   Else If(U='.CODE')or(U='.DATA')or(U='.DATA?')or(U='.CONST')or
+         (U='.FARDATA')or(U='.FARDATA?')or(U='.STACK')Then Begin
+    ProcessSectionDirective(U);
+    Inc(DirCount);
+    Inc(SecCount);
+   End;
+  End
+  { Directives SEGMENT/ENDS/GROUP comme deuxieme token }
+  Else If(TokenCount>=2)and(Tokens[2].Kind=TK_DIRECTIVE)Then Begin
+   U:=UpCaseStr(Tokens[2].Value);
+   If U='SEGMENT' Then Begin
+    ProcessSegmentDirective;
+    Inc(DirCount);
+    Inc(SegCount);
+   End
+   Else If U='ENDS' Then Begin
+    ProcessEndsDirective;
+    Inc(DirCount);
+   End
+   Else If(U='GROUP')and(TokenCount>=3)Then Begin
+    ProcessGroupDirective;
+    Inc(DirCount);
+   End;
+  End
+  { ASSUME, OPTION, GROUP, END comme premier token }
+  Else If Tokens[1].Kind=TK_DIRECTIVE Then Begin
+   U:=UpCaseStr(Tokens[1].Value);
+   If U='ASSUME' Then Begin
+    ProcessAssumeDirective;
+    Inc(DirCount);
+   End
+   Else If U='OPTION' Then Begin
+    ProcessOptionDirective;
+    Inc(DirCount);
+   End
+   Else If U='END' Then Begin
+    ProcessEndDirective;
+    Inc(DirCount);
+   End;
+  End;
+ End;
+ WriteLn('Analyse des directives : ',DirCount,' directives traitees.');
+ If Verbose Then Begin
+  WriteLn('  Modele memoire : ',ModelName(MemoryModel));
+  WriteLn('  Processeur     : ',CpuName(CpuLevel));
+  WriteLn('  Mode           : ',16+Ord(Mode32)*16,' bits');
+  WriteLn('  Segments       : ',SegmentCount);
+  WriteLn('  Sections       : ',SecCount);
+  If StackSize>0 Then WriteLn('  Pile           : ',StackSize,' octets');
+  If CaseSensitive Then WriteLn('  Sensible a la casse');
+  If EntryPoint<>'' Then WriteLn('  Point d''entree : ',EntryPoint);
+  If GroupName<>'' Then WriteLn('  Groupe         : ',GroupName,' (',GroupSegments,')');
+ End;
+End;
 
 Procedure ShowHelp;
 Begin
@@ -1052,7 +1569,8 @@ BEGIN
  End;
  { Analyseur lexical (TODO 2) }
  ReadASMFile;
- { TODO 3  - Analyse des directives }
+ { Analyse des directives (TODO 3) }
+ ProcessDirectives;
  { TODO 4  - Analyse des donnees }
  { TODO 5  - Analyse des procedures }
  { TODO 6  - Table des symboles }
