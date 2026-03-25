@@ -235,7 +235,7 @@
       exportes. Si un fichier .MAP est fourni (-map), charger
       les symboles et les utiliser a la place des labels generes.
 
-  24. Commentaires et annotations dans le fichier .ASM.
+  24. [IMPLEMENTE] Commentaires et annotations dans le fichier .ASM.
       Generer des commentaires automatiques pour les appels
       systeme connus : INT 21h (fonctions DOS), INT 10h (BIOS
       video), INT 16h (BIOS clavier), INT 13h (BIOS disque).
@@ -4251,6 +4251,311 @@ Begin
   FormatHexBytes := S;
 End;
 
+{ ============================================================
+  COMMENTAIRES ET ANNOTATIONS DANS LE FICHIER .ASM (TODO 24)
+  ============================================================ }
+
+{ GetINTDescription - Retourne un commentaire descriptif pour un numero
+  d'interruption connu. Les principales interruptions DOS et BIOS sont
+  documentees. Retourne une chaine vide si l'interruption est inconnue. }
+Function GetINTDescription(IntNum : Byte) : TString;
+Begin
+  Case IntNum Of
+    $10 : GetINTDescription := 'BIOS video service';
+    $11 : GetINTDescription := 'BIOS equipment list';
+    $12 : GetINTDescription := 'BIOS memory size';
+    $13 : GetINTDescription := 'BIOS disk service';
+    $14 : GetINTDescription := 'BIOS serial port service';
+    $15 : GetINTDescription := 'BIOS miscellaneous service';
+    $16 : GetINTDescription := 'BIOS keyboard service';
+    $17 : GetINTDescription := 'BIOS printer service';
+    $19 : GetINTDescription := 'BIOS bootstrap loader';
+    $1A : GetINTDescription := 'BIOS time service';
+    $20 : GetINTDescription := 'DOS terminate program';
+    $21 : GetINTDescription := 'DOS function call';
+    $22 : GetINTDescription := 'DOS terminate address';
+    $23 : GetINTDescription := 'DOS Ctrl-C handler';
+    $24 : GetINTDescription := 'DOS critical error handler';
+    $25 : GetINTDescription := 'DOS absolute disk read';
+    $26 : GetINTDescription := 'DOS absolute disk write';
+    $27 : GetINTDescription := 'DOS terminate and stay resident';
+    $2F : GetINTDescription := 'DOS multiplex interrupt';
+    $33 : GetINTDescription := 'Mouse driver';
+    $67 : GetINTDescription := 'EMS (Expanded Memory)';
+  Else
+    GetINTDescription := '';
+  End;
+End;
+
+{ GetImportFuncDescription - Retourne un commentaire descriptif pour une
+  fonction importee connue de Windows. Couvre les fonctions les plus
+  courantes de KERNEL32, USER32, GDI32, ADVAPI32 et MSVCRT. }
+Function GetImportFuncDescription(FuncName : TString) : TString;
+Var
+  UName : TString;
+Begin
+  UName := UpCaseStr(FuncName);
+  { KERNEL32 - Gestion des processus }
+  If UName = 'EXITPROCESS' Then GetImportFuncDescription := 'terminate process'
+  Else If UName = '_EXITPROCESS@4' Then GetImportFuncDescription := 'terminate process'
+  Else If UName = 'GETMODULEHANDLEA' Then GetImportFuncDescription := 'get module handle (ANSI)'
+  Else If UName = '_GETMODULEHANDLEA@4' Then GetImportFuncDescription := 'get module handle (ANSI)'
+  Else If UName = 'GETMODULEHANDLEW' Then GetImportFuncDescription := 'get module handle (Unicode)'
+  Else If UName = 'GETPROCADDRESS' Then GetImportFuncDescription := 'get function address'
+  Else If UName = '_GETPROCADDRESS@8' Then GetImportFuncDescription := 'get function address'
+  Else If UName = 'LOADLIBRARYA' Then GetImportFuncDescription := 'load DLL (ANSI)'
+  Else If UName = '_LOADLIBRARYA@4' Then GetImportFuncDescription := 'load DLL (ANSI)'
+  Else If UName = 'LOADLIBRARYW' Then GetImportFuncDescription := 'load DLL (Unicode)'
+  Else If UName = 'FREELIBRARY' Then GetImportFuncDescription := 'free DLL'
+  Else If UName = '_FREELIBRARY@4' Then GetImportFuncDescription := 'free DLL'
+  Else If UName = 'GETLASTERROR' Then GetImportFuncDescription := 'get last error code'
+  Else If UName = '_GETLASTERROR@0' Then GetImportFuncDescription := 'get last error code'
+  Else If UName = 'SETLASTERROR' Then GetImportFuncDescription := 'set last error code'
+  { KERNEL32 - Gestion de la memoire }
+  Else If UName = 'GLOBALALLOC' Then GetImportFuncDescription := 'allocate global memory'
+  Else If UName = 'GLOBALFREE' Then GetImportFuncDescription := 'free global memory'
+  Else If UName = 'GLOBALLOCK' Then GetImportFuncDescription := 'lock global memory'
+  Else If UName = 'GLOBALUNLOCK' Then GetImportFuncDescription := 'unlock global memory'
+  Else If UName = 'LOCALALLOC' Then GetImportFuncDescription := 'allocate local memory'
+  Else If UName = 'LOCALFREE' Then GetImportFuncDescription := 'free local memory'
+  Else If UName = 'HEAPALLOC' Then GetImportFuncDescription := 'allocate heap memory'
+  Else If UName = 'HEAPFREE' Then GetImportFuncDescription := 'free heap memory'
+  Else If UName = 'GETPROCESSHEAP' Then GetImportFuncDescription := 'get process heap handle'
+  Else If UName = '_GETPROCESSHEAP@0' Then GetImportFuncDescription := 'get process heap handle'
+  Else If UName = 'VIRTUALALLOC' Then GetImportFuncDescription := 'allocate virtual memory'
+  Else If UName = 'VIRTUALFREE' Then GetImportFuncDescription := 'free virtual memory'
+  Else If UName = 'VIRTUALPROTECT' Then GetImportFuncDescription := 'change memory protection'
+  { KERNEL32 - Fichiers }
+  Else If UName = 'CREATEFILEA' Then GetImportFuncDescription := 'create/open file (ANSI)'
+  Else If UName = '_CREATEFILEA@28' Then GetImportFuncDescription := 'create/open file (ANSI)'
+  Else If UName = 'CREATEFILEW' Then GetImportFuncDescription := 'create/open file (Unicode)'
+  Else If UName = 'READFILE' Then GetImportFuncDescription := 'read from file'
+  Else If UName = '_READFILE@20' Then GetImportFuncDescription := 'read from file'
+  Else If UName = 'WRITEFILE' Then GetImportFuncDescription := 'write to file'
+  Else If UName = '_WRITEFILE@20' Then GetImportFuncDescription := 'write to file'
+  Else If UName = 'CLOSEHANDLE' Then GetImportFuncDescription := 'close handle'
+  Else If UName = '_CLOSEHANDLE@4' Then GetImportFuncDescription := 'close handle'
+  Else If UName = 'DELETEFILEA' Then GetImportFuncDescription := 'delete file (ANSI)'
+  Else If UName = 'DELETEFILEW' Then GetImportFuncDescription := 'delete file (Unicode)'
+  Else If UName = 'GETFILESIZE' Then GetImportFuncDescription := 'get file size'
+  Else If UName = 'SETFILEPOINTER' Then GetImportFuncDescription := 'set file pointer'
+  Else If UName = 'FINDFIRSTFILEA' Then GetImportFuncDescription := 'find first file (ANSI)'
+  Else If UName = 'FINDNEXTFILEA' Then GetImportFuncDescription := 'find next file (ANSI)'
+  Else If UName = 'FINDCLOSE' Then GetImportFuncDescription := 'close find handle'
+  { KERNEL32 - Console }
+  Else If UName = 'GETSTDHANDLE' Then GetImportFuncDescription := 'get standard handle'
+  Else If UName = '_GETSTDHANDLE@4' Then GetImportFuncDescription := 'get standard handle'
+  Else If UName = 'WRITECONSOLEA' Then GetImportFuncDescription := 'write to console (ANSI)'
+  Else If UName = 'READCONSOLEA' Then GetImportFuncDescription := 'read from console (ANSI)'
+  Else If UName = 'SETCONSOLETITLEA' Then GetImportFuncDescription := 'set console title (ANSI)'
+  Else If UName = 'ALLOCCONSOLE' Then GetImportFuncDescription := 'allocate console'
+  Else If UName = 'FREECONSOLE' Then GetImportFuncDescription := 'free console'
+  { KERNEL32 - Chaines }
+  Else If UName = 'LSTRLENA' Then GetImportFuncDescription := 'string length (ANSI)'
+  Else If UName = 'LSTRLENW' Then GetImportFuncDescription := 'string length (Unicode)'
+  Else If UName = 'LSTRCPYA' Then GetImportFuncDescription := 'string copy (ANSI)'
+  Else If UName = 'LSTRCATA' Then GetImportFuncDescription := 'string concatenate (ANSI)'
+  Else If UName = 'LSTRCMPIA' Then GetImportFuncDescription := 'case-insensitive string compare (ANSI)'
+  Else If UName = 'MULTIBYTETOWIDECHAR' Then GetImportFuncDescription := 'convert ANSI to Unicode'
+  Else If UName = 'WIDECHARTOMULTIBYTE' Then GetImportFuncDescription := 'convert Unicode to ANSI'
+  { KERNEL32 - Threads et synchronisation }
+  Else If UName = 'CREATETHREAD' Then GetImportFuncDescription := 'create thread'
+  Else If UName = 'TERMINATETHREAD' Then GetImportFuncDescription := 'terminate thread'
+  Else If UName = 'SLEEP' Then GetImportFuncDescription := 'suspend thread'
+  Else If UName = '_SLEEP@4' Then GetImportFuncDescription := 'suspend thread'
+  Else If UName = 'WAITFORSINGLEOBJECT' Then GetImportFuncDescription := 'wait for object'
+  Else If UName = 'WAITFORMULTIPLEOBJECTS' Then GetImportFuncDescription := 'wait for multiple objects'
+  Else If UName = 'CREATEMUTEXA' Then GetImportFuncDescription := 'create mutex (ANSI)'
+  Else If UName = 'RELEASEMUTEX' Then GetImportFuncDescription := 'release mutex'
+  Else If UName = 'CREATEEVENTA' Then GetImportFuncDescription := 'create event (ANSI)'
+  Else If UName = 'SETEVENT' Then GetImportFuncDescription := 'set event'
+  Else If UName = 'RESETEVENT' Then GetImportFuncDescription := 'reset event'
+  Else If UName = 'ENTERCRITICALSECTION' Then GetImportFuncDescription := 'enter critical section'
+  Else If UName = 'LEAVECRITICALSECTION' Then GetImportFuncDescription := 'leave critical section'
+  Else If UName = 'INITIALIZECRITICALSECTION' Then GetImportFuncDescription := 'initialize critical section'
+  Else If UName = 'DELETECRITICALSECTION' Then GetImportFuncDescription := 'delete critical section'
+  { KERNEL32 - Divers }
+  Else If UName = 'GETCOMMANDLINEA' Then GetImportFuncDescription := 'get command line (ANSI)'
+  Else If UName = '_GETCOMMANDLINEA@0' Then GetImportFuncDescription := 'get command line (ANSI)'
+  Else If UName = 'GETCOMMANDLINEW' Then GetImportFuncDescription := 'get command line (Unicode)'
+  Else If UName = 'GETENVIRONMENTSTRINGS' Then GetImportFuncDescription := 'get environment strings'
+  Else If UName = 'GETTICKCOUNT' Then GetImportFuncDescription := 'get tick count'
+  Else If UName = '_GETTICKCOUNT@0' Then GetImportFuncDescription := 'get tick count'
+  Else If UName = 'GETCURRENTPROCESSID' Then GetImportFuncDescription := 'get current process ID'
+  Else If UName = 'GETCURRENTTHREADID' Then GetImportFuncDescription := 'get current thread ID'
+  Else If UName = 'GETCURRENTPROCESS' Then GetImportFuncDescription := 'get current process handle'
+  Else If UName = 'GETVERSION' Then GetImportFuncDescription := 'get Windows version'
+  Else If UName = 'GETVERSIONEXA' Then GetImportFuncDescription := 'get Windows version (extended)'
+  Else If UName = 'GETSYSTEMDIRECTORYA' Then GetImportFuncDescription := 'get system directory (ANSI)'
+  Else If UName = 'GETWINDOWSDIRECTORYA' Then GetImportFuncDescription := 'get Windows directory (ANSI)'
+  Else If UName = 'OUTPUTDEBUGSTRINGA' Then GetImportFuncDescription := 'output debug string (ANSI)'
+  { USER32 - Fenetres }
+  Else If UName = 'MESSAGEBOXA' Then GetImportFuncDescription := 'show message box (ANSI)'
+  Else If UName = '_MESSAGEBOXA@16' Then GetImportFuncDescription := 'show message box (ANSI)'
+  Else If UName = 'MESSAGEBOXW' Then GetImportFuncDescription := 'show message box (Unicode)'
+  Else If UName = '_MESSAGEBOXW@16' Then GetImportFuncDescription := 'show message box (Unicode)'
+  Else If UName = 'CREATEWINDOWEXA' Then GetImportFuncDescription := 'create window (extended, ANSI)'
+  Else If UName = 'CREATEWINDOWEXW' Then GetImportFuncDescription := 'create window (extended, Unicode)'
+  Else If UName = 'DESTROYWINDOW' Then GetImportFuncDescription := 'destroy window'
+  Else If UName = 'SHOWWINDOW' Then GetImportFuncDescription := 'show/hide window'
+  Else If UName = 'UPDATEWINDOW' Then GetImportFuncDescription := 'update window'
+  Else If UName = 'GETMESSAGEA' Then GetImportFuncDescription := 'get message (ANSI)'
+  Else If UName = 'GETMESSAGEW' Then GetImportFuncDescription := 'get message (Unicode)'
+  Else If UName = 'PEEKMESSAGEA' Then GetImportFuncDescription := 'peek message (ANSI)'
+  Else If UName = 'TRANSLATEMESSAGE' Then GetImportFuncDescription := 'translate message'
+  Else If UName = 'DISPATCHMESSAGEA' Then GetImportFuncDescription := 'dispatch message (ANSI)'
+  Else If UName = 'DISPATCHMESSAGEW' Then GetImportFuncDescription := 'dispatch message (Unicode)'
+  Else If UName = 'POSTQUITMESSAGE' Then GetImportFuncDescription := 'post quit message'
+  Else If UName = '_POSTQUITMESSAGE@4' Then GetImportFuncDescription := 'post quit message'
+  Else If UName = 'SENDMESSAGEA' Then GetImportFuncDescription := 'send message (ANSI)'
+  Else If UName = 'POSTMESSAGEA' Then GetImportFuncDescription := 'post message (ANSI)'
+  Else If UName = 'DEFWINDOWPROCA' Then GetImportFuncDescription := 'default window procedure (ANSI)'
+  Else If UName = 'DEFWINDOWPROCW' Then GetImportFuncDescription := 'default window procedure (Unicode)'
+  Else If UName = 'REGISTERCLASSEXA' Then GetImportFuncDescription := 'register window class (ANSI)'
+  Else If UName = 'REGISTERCLASSEXW' Then GetImportFuncDescription := 'register window class (Unicode)'
+  Else If UName = 'LOADICONA' Then GetImportFuncDescription := 'load icon (ANSI)'
+  Else If UName = 'LOADCURSORA' Then GetImportFuncDescription := 'load cursor (ANSI)'
+  Else If UName = 'SETWINDOWTEXTA' Then GetImportFuncDescription := 'set window text (ANSI)'
+  Else If UName = 'GETWINDOWTEXTA' Then GetImportFuncDescription := 'get window text (ANSI)'
+  Else If UName = 'GETDLGITEM' Then GetImportFuncDescription := 'get dialog item handle'
+  Else If UName = 'SETDLGITEMTEXTA' Then GetImportFuncDescription := 'set dialog item text (ANSI)'
+  Else If UName = 'GETDLGITEMTEXTA' Then GetImportFuncDescription := 'get dialog item text (ANSI)'
+  Else If UName = 'ENABLEWINDOW' Then GetImportFuncDescription := 'enable/disable window'
+  Else If UName = 'DIALOGBOXPARAMA' Then GetImportFuncDescription := 'create modal dialog (ANSI)'
+  Else If UName = 'ENDDIALOG' Then GetImportFuncDescription := 'end dialog'
+  Else If UName = 'GETDC' Then GetImportFuncDescription := 'get device context'
+  Else If UName = 'RELEASEDC' Then GetImportFuncDescription := 'release device context'
+  Else If UName = 'INVALIDATERECT' Then GetImportFuncDescription := 'invalidate rectangle'
+  Else If UName = 'BEGINPAINT' Then GetImportFuncDescription := 'begin paint'
+  Else If UName = 'ENDPAINT' Then GetImportFuncDescription := 'end paint'
+  Else If UName = 'SETFOCUS' Then GetImportFuncDescription := 'set input focus'
+  Else If UName = 'GETCLIENTRECT' Then GetImportFuncDescription := 'get client rectangle'
+  Else If UName = 'MOVEWINDOW' Then GetImportFuncDescription := 'move/resize window'
+  Else If UName = 'SETTIMER' Then GetImportFuncDescription := 'set timer'
+  Else If UName = 'KILLTIMER' Then GetImportFuncDescription := 'kill timer'
+  Else If UName = 'WSPRINTFA' Then GetImportFuncDescription := 'formatted string output (ANSI)'
+  { GDI32 - Graphiques }
+  Else If UName = 'TEXTOUTA' Then GetImportFuncDescription := 'text output (ANSI)'
+  Else If UName = 'TEXTOUTW' Then GetImportFuncDescription := 'text output (Unicode)'
+  Else If UName = 'SELECTOBJECT' Then GetImportFuncDescription := 'select GDI object'
+  Else If UName = 'DELETEOBJECT' Then GetImportFuncDescription := 'delete GDI object'
+  Else If UName = 'CREATEFONTA' Then GetImportFuncDescription := 'create font (ANSI)'
+  Else If UName = 'CREATESOLIDBRUSH' Then GetImportFuncDescription := 'create solid brush'
+  Else If UName = 'CREATEPEN' Then GetImportFuncDescription := 'create pen'
+  Else If UName = 'RECTANGLE' Then GetImportFuncDescription := 'draw rectangle'
+  Else If UName = 'ELLIPSE' Then GetImportFuncDescription := 'draw ellipse'
+  Else If UName = 'MOVETOEX' Then GetImportFuncDescription := 'move to position'
+  Else If UName = 'LINETO' Then GetImportFuncDescription := 'draw line to'
+  Else If UName = 'SETPIXEL' Then GetImportFuncDescription := 'set pixel color'
+  Else If UName = 'GETPIXEL' Then GetImportFuncDescription := 'get pixel color'
+  Else If UName = 'SETBKMODE' Then GetImportFuncDescription := 'set background mode'
+  Else If UName = 'SETTEXTCOLOR' Then GetImportFuncDescription := 'set text color'
+  Else If UName = 'SETBKCOLOR' Then GetImportFuncDescription := 'set background color'
+  Else If UName = 'BITBLT' Then GetImportFuncDescription := 'bit block transfer'
+  Else If UName = 'STRETCHBLT' Then GetImportFuncDescription := 'stretch bit block transfer'
+  Else If UName = 'CREATECOMPATIBLEDC' Then GetImportFuncDescription := 'create compatible DC'
+  Else If UName = 'CREATECOMPATIBLEBITMAP' Then GetImportFuncDescription := 'create compatible bitmap'
+  Else If UName = 'DELETEDC' Then GetImportFuncDescription := 'delete DC'
+  { ADVAPI32 - Registre et securite }
+  Else If UName = 'REGOPENKEYEXA' Then GetImportFuncDescription := 'open registry key (ANSI)'
+  Else If UName = 'REGCLOSEKEY' Then GetImportFuncDescription := 'close registry key'
+  Else If UName = 'REGQUERYVALUEEXA' Then GetImportFuncDescription := 'query registry value (ANSI)'
+  Else If UName = 'REGSETVALUEEXA' Then GetImportFuncDescription := 'set registry value (ANSI)'
+  Else If UName = 'REGCREATEKEYEXA' Then GetImportFuncDescription := 'create registry key (ANSI)'
+  Else If UName = 'REGDELETEKEYA' Then GetImportFuncDescription := 'delete registry key (ANSI)'
+  Else If UName = 'REGDELETEVALUEA' Then GetImportFuncDescription := 'delete registry value (ANSI)'
+  { MSVCRT - Runtime C }
+  Else If UName = 'PRINTF' Then GetImportFuncDescription := 'formatted output'
+  Else If UName = '_PRINTF' Then GetImportFuncDescription := 'formatted output'
+  Else If UName = 'FPRINTF' Then GetImportFuncDescription := 'formatted file output'
+  Else If UName = 'SPRINTF' Then GetImportFuncDescription := 'formatted string output'
+  Else If UName = 'SCANF' Then GetImportFuncDescription := 'formatted input'
+  Else If UName = 'MALLOC' Then GetImportFuncDescription := 'allocate memory'
+  Else If UName = '_MALLOC' Then GetImportFuncDescription := 'allocate memory'
+  Else If UName = 'FREE' Then GetImportFuncDescription := 'free memory'
+  Else If UName = '_FREE' Then GetImportFuncDescription := 'free memory'
+  Else If UName = 'REALLOC' Then GetImportFuncDescription := 'reallocate memory'
+  Else If UName = 'MEMCPY' Then GetImportFuncDescription := 'copy memory block'
+  Else If UName = 'MEMSET' Then GetImportFuncDescription := 'fill memory block'
+  Else If UName = 'STRLEN' Then GetImportFuncDescription := 'string length'
+  Else If UName = 'STRCPY' Then GetImportFuncDescription := 'string copy'
+  Else If UName = 'STRCAT' Then GetImportFuncDescription := 'string concatenate'
+  Else If UName = 'STRCMP' Then GetImportFuncDescription := 'string compare'
+  Else If UName = 'FOPEN' Then GetImportFuncDescription := 'open file'
+  Else If UName = 'FCLOSE' Then GetImportFuncDescription := 'close file'
+  Else If UName = 'FREAD' Then GetImportFuncDescription := 'read from file'
+  Else If UName = 'FWRITE' Then GetImportFuncDescription := 'write to file'
+  Else If UName = 'EXIT' Then GetImportFuncDescription := 'terminate program'
+  Else If UName = '_EXIT' Then GetImportFuncDescription := 'terminate program'
+  Else If UName = 'ATOI' Then GetImportFuncDescription := 'string to integer'
+  Else If UName = 'ATOF' Then GetImportFuncDescription := 'string to float'
+  Else
+    GetImportFuncDescription := '';
+End;
+
+{ GetInstructionAnnotation - Determine le commentaire d'annotation a ajouter
+  apres une instruction desassemblee. Analyse le mnemonique et les operandes
+  pour generer un commentaire descriptif.
+  Parametres :
+    Mnem    : mnemonique de l'instruction
+    Ops     : operandes de l'instruction
+    Addr    : adresse de l'instruction dans l'image
+    Mode32  : True si mode 32 bits
+  Retourne une chaine de commentaire (vide si aucun commentaire a ajouter). }
+Function GetInstructionAnnotation(Mnem, Ops : TString;
+                                    Addr : LongInt; Mode32 : Boolean) : TString;
+Var
+  UMnem   : TString;
+  IntNum  : Byte;
+  Code    : Integer;
+  IntVal  : LongInt;
+  I       : LongInt;
+  UOps    : TString;
+  ULbl    : TString;
+  Desc    : TString;
+Begin
+  GetInstructionAnnotation := '';
+  UMnem := UpCaseStr(Mnem);
+
+  { Annotation pour les instructions INT }
+  If UMnem = 'INT' Then Begin
+    { Extraire le numero d'interruption des operandes (format: XXh) }
+    IntVal := 0;
+    If Length(Ops) > 0 Then Begin
+      Val('$' + Copy(Ops, 1, Length(Ops) - 1), IntVal, Code);
+      If Code = 0 Then Begin
+        IntNum := Byte(IntVal And $FF);
+        Desc := GetINTDescription(IntNum);
+        If Desc <> '' Then
+          GetInstructionAnnotation := Desc;
+      End;
+    End;
+    Exit;
+  End;
+
+  { Annotation pour CALL/JMP vers des fonctions importees }
+  If (UMnem = 'CALL') Or (UMnem = 'JMP') Then Begin
+    { Verifier si l'operande est un nom de label (pas une adresse numerique) }
+    If (Length(Ops) > 0) And (Ops[1] <> '[') And (Ops[1] <> '$') And
+       Not ((Ops[1] >= '0') And (Ops[1] <= '9')) Then Begin
+      { Recherche inline du label par nom (equivalent a FindLabelByName) }
+      UOps := UpCaseStr(Ops);
+      For I := 0 To LabelCount - 1 Do Begin
+        ULbl := UpCaseStr(Labels[I].Name);
+        If ULbl = UOps Then Begin
+          If Labels[I].IsImport Then Begin
+            Desc := GetImportFuncDescription(Ops);
+            If Desc <> '' Then
+              GetInstructionAnnotation := Desc;
+          End;
+          Break;
+        End;
+      End;
+    End;
+    Exit;
+  End;
+End;
+
 { WriteASMCodeRange - Emet le code desassemble pour une plage d'adresses.
   Parametres :
     F         : fichier de sortie
@@ -4269,6 +4574,8 @@ Var
   LineStr    : TString;
   HexStr     : TString;
   BFlag      : Byte;
+  Annotation : TString;
+  AddrStr    : TString;
 Begin
   Addr := StartAddr;
   PrevIsProc := False;
@@ -4303,13 +4610,19 @@ Begin
     { Emettre un label si cette adresse en a un }
     LblIdx := FindLabel(Addr);
     If LblIdx >= 0 Then Begin
-      { Inserer une ligne vide entre sous-programmes }
+      { Inserer un separateur visuel entre sous-programmes (TODO 24) }
       If Labels[LblIdx].IsProc Then Begin
         If PrevIsProc Or (Addr > StartAddr) Then
           WriteLn(F);
-        WriteLn(F, '; ---------------------------------------------------------------------------');
-        WriteLn(F, '; Sous-programme ', Labels[LblIdx].Name);
-        WriteLn(F, '; ---------------------------------------------------------------------------');
+        WriteLn(F, '; ===========================================================================');
+        If Mode32 Then
+          AddrStr := HexDWord(Addr) + 'h'
+        Else
+          AddrStr := HexWord(Word(Addr)) + 'h';
+        WriteLn(F, '; Sous-programme ', Labels[LblIdx].Name, '  (', AddrStr, ')');
+        If Labels[LblIdx].IsExport Then
+          WriteLn(F, '; Exported entry point');
+        WriteLn(F, '; ===========================================================================');
         PrevIsProc := True;
       End Else Begin
         PrevIsProc := False;
@@ -4330,13 +4643,24 @@ Begin
     Else
       LineStr := '        ' + Mnem;
 
+    { Generer les annotations automatiques (TODO 24) }
+    Annotation := GetInstructionAnnotation(Mnem, Ops, Addr, Mode32);
+
     { Ajouter les octets hexadecimaux en commentaire si -hex }
     If OptHex Then Begin
       { Completer avec des espaces pour aligner le commentaire }
       While Length(LineStr) < 48 Do
         LineStr := LineStr + ' ';
       HexStr := FormatHexBytes(Addr, InstrSize);
-      LineStr := LineStr + '; ' + HexStr;
+      If Annotation <> '' Then
+        LineStr := LineStr + '; ' + HexStr + '  ' + Annotation
+      Else
+        LineStr := LineStr + '; ' + HexStr;
+    End Else If Annotation <> '' Then Begin
+      { Ajouter l'annotation meme sans -hex }
+      While Length(LineStr) < 48 Do
+        LineStr := LineStr + ' ';
+      LineStr := LineStr + '; ' + Annotation;
     End;
 
     WriteLn(F, LineStr);
