@@ -125,7 +125,7 @@
       IDIV src -> idem avec division signee.
       Mettre a jour les flags apres chaque operation.
 
-  12. [A FAIRE] Traduction des instructions logiques et de decalage.
+  12. [IMPLEMENTE] Traduction des instructions logiques et de decalage.
       AND dest,src -> dest := dest and src.
       OR dest,src -> dest := dest or src.
       XOR dest,src -> dest := dest xor src.
@@ -4716,6 +4716,269 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des instructions logiques et de decalage - TODO 12
+  ============================================================ }
+
+Function TranslateAND(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ AND dest,src -> dest := dest and src }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateAND:=D+' := '+D+' and '+S+';';
+End;
+
+Function TranslateOR(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ OR dest,src -> dest := dest or src }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateOR:=D+' := '+D+' or '+S+';';
+End;
+
+Function TranslateXOR(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ XOR dest,src -> dest := dest xor src }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateXOR:=D+' := '+D+' xor '+S+';';
+End;
+
+Function TranslateNOT(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ NOT dest -> dest := not dest }
+Var
+ D:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ TranslateNOT:=D+' := not '+D+';';
+End;
+
+Function TranslateTEST(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ TEST a,b -> positionner flags selon a and b (pas de stockage) }
+Var
+ A,B:String;
+Begin
+ A:=OperandToExpr(AsmL.Op1,ProcIdx);
+ B:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateTEST:=
+  'Begin FlagZF := ('+A+' and '+B+') = 0; '+
+  'FlagSF := ('+A+' and '+B+') < 0; '+
+  'FlagCF := False; FlagOF := False; End;';
+End;
+
+Function TranslateSHL(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ SHL/SAL dest,n -> dest := dest shl n }
+Var
+ D,N:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If AsmL.Op2.OpType<>OT_NONE Then
+  N:=OperandToExpr(AsmL.Op2,ProcIdx)
+ Else
+  N:='1';
+ TranslateSHL:=D+' := '+D+' shl '+N+';';
+End;
+
+Function TranslateSHR(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ SHR dest,n -> dest := dest shr n (non signe) }
+Var
+ D,N:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If AsmL.Op2.OpType<>OT_NONE Then
+  N:=OperandToExpr(AsmL.Op2,ProcIdx)
+ Else
+  N:='1';
+ TranslateSHR:=D+' := '+D+' shr '+N+';';
+End;
+
+Function TranslateSAR(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ SAR dest,n -> decalage arithmetique a droite (preserve le signe) }
+Var
+ D,N:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If AsmL.Op2.OpType<>OT_NONE Then
+  N:=OperandToExpr(AsmL.Op2,ProcIdx)
+ Else
+  N:='1';
+ If AsmL.Op1.OpType=OT_REG32 Then
+  TranslateSAR:=D+' := LongInt(LongInt('+D+') div (1 shl '+N+'));'
+ Else If AsmL.Op1.OpType=OT_REG8 Then
+  TranslateSAR:=D+' := Byte(ShortInt(ShortInt('+D+') div (1 shl '+N+')));'
+ Else
+  TranslateSAR:=D+' := Word(Integer(Integer('+D+') div (1 shl '+N+')));';
+End;
+
+Function TranslateROTATE(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ ROL/ROR/RCL/RCR dest,n -> rotations (pas d'equivalent direct en Pascal) }
+Var
+ D,N,M,Bits:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ If AsmL.Op2.OpType<>OT_NONE Then
+  N:=OperandToExpr(AsmL.Op2,ProcIdx)
+ Else
+  N:='1';
+ M:=AsmL.Mnemonic;
+ If AsmL.Op1.OpType=OT_REG32 Then Bits:='32'
+ Else If AsmL.Op1.OpType=OT_REG8 Then Bits:='8'
+ Else Bits:='16';
+ If M='ROL' Then
+  TranslateROTATE:=D+' := ('+D+' shl '+N+') or ('+D+' shr ('+Bits+'-'+N+'));'
+ Else If M='ROR' Then
+  TranslateROTATE:=D+' := ('+D+' shr '+N+') or ('+D+' shl ('+Bits+'-'+N+'));'
+ Else If M='RCL' Then
+  TranslateROTATE:=
+   'Begin FlagCF := ('+D+' shr ('+Bits+'-1)) and 1 = 1; '+
+   D+' := ('+D+' shl '+N+') or Ord(FlagCF); End;'
+ Else { RCR }
+  TranslateROTATE:=
+   'Begin FlagCF := '+D+' and 1 = 1; '+
+   D+' := ('+D+' shr '+N+') or (Ord(FlagCF) shl ('+Bits+'-1)); End;';
+End;
+
+Function TranslateBIT(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ BT base,bit  -> FlagCF := (base shr bit) and 1 = 1
+  BTS base,bit -> FlagCF := ...; base := base or (1 shl bit)
+  BTR base,bit -> FlagCF := ...; base := base and not (1 shl bit)
+  BTC base,bit -> FlagCF := ...; base := base xor (1 shl bit) }
+Var
+ D,B,M:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ B:=OperandToExpr(AsmL.Op2,ProcIdx);
+ M:=AsmL.Mnemonic;
+ If M='BT' Then
+  TranslateBIT:='FlagCF := ('+D+' shr '+B+') and 1 = 1;'
+ Else If M='BTS' Then
+  TranslateBIT:=
+   'Begin FlagCF := ('+D+' shr '+B+') and 1 = 1; '+
+   D+' := '+D+' or (1 shl '+B+'); End;'
+ Else If M='BTR' Then
+  TranslateBIT:=
+   'Begin FlagCF := ('+D+' shr '+B+') and 1 = 1; '+
+   D+' := '+D+' and not (1 shl '+B+'); End;'
+ Else { BTC }
+  TranslateBIT:=
+   'Begin FlagCF := ('+D+' shr '+B+') and 1 = 1; '+
+   D+' := '+D+' xor (1 shl '+B+'); End;';
+End;
+
+Function TranslateLogical(Var AsmL:TAsmLine;
+ ProcIdx:Integer):String;
+{ Orchestre la traduction d'une instruction logique ou de decalage.
+  Retourne la chaine Pascal correspondante, ou '' si non gere. }
+Var
+ M:String;
+Begin
+ M:=AsmL.Mnemonic;
+ If M='AND' Then
+  TranslateLogical:=TranslateAND(AsmL,ProcIdx)
+ Else If M='OR' Then
+  TranslateLogical:=TranslateOR(AsmL,ProcIdx)
+ Else If M='XOR' Then
+  TranslateLogical:=TranslateXOR(AsmL,ProcIdx)
+ Else If M='NOT' Then
+  TranslateLogical:=TranslateNOT(AsmL,ProcIdx)
+ Else If M='TEST' Then
+  TranslateLogical:=TranslateTEST(AsmL,ProcIdx)
+ Else If(M='SHL')or(M='SAL')Then
+  TranslateLogical:=TranslateSHL(AsmL,ProcIdx)
+ Else If M='SHR' Then
+  TranslateLogical:=TranslateSHR(AsmL,ProcIdx)
+ Else If M='SAR' Then
+  TranslateLogical:=TranslateSAR(AsmL,ProcIdx)
+ Else If(M='ROL')or(M='ROR')or(M='RCL')or(M='RCR')Then
+  TranslateLogical:=TranslateROTATE(AsmL,ProcIdx)
+ Else If(M='BT')or(M='BTS')or(M='BTR')or(M='BTC')Then
+  TranslateLogical:=TranslateBIT(AsmL,ProcIdx)
+ Else
+  TranslateLogical:='';
+End;
+
+Function IsLogicalMnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est une instruction logique ou de decalage }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsLogicalMnemonic:=
+  (U='AND')or(U='OR')or(U='XOR')or(U='NOT')or(U='TEST')or
+  (U='SHL')or(U='SAL')or(U='SHR')or(U='SAR')or
+  (U='ROL')or(U='ROR')or(U='RCL')or(U='RCR')or
+  (U='BT')or(U='BTS')or(U='BTR')or(U='BTC');
+End;
+
+Procedure ProcessLogicalTranslations;
+{ Parcourt les lignes source et traduit les instructions logiques
+  et de decalage. Produit des statistiques detaillees. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ ProcIdx:Integer;
+ Code:String;
+ AndCount,OrCount,XorCount,NotCount,TestCount:LongInt;
+ ShlCount,ShrCount,SarCount:LongInt;
+ RotCount,BitCount:LongInt;
+ TotalLogic:LongInt;
+ M:String;
+Begin
+ AndCount:=0;OrCount:=0;XorCount:=0;NotCount:=0;TestCount:=0;
+ ShlCount:=0;ShrCount:=0;SarCount:=0;
+ RotCount:=0;BitCount:=0;
+ TotalLogic:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=AsmL.Mnemonic;
+  If Not IsLogicalMnemonic(M) Then Continue;
+  ProcIdx:=FindProcForLine(I);
+  Code:=TranslateLogical(AsmL,ProcIdx);
+  If Code<>'' Then Begin
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(TotalLogic);
+   If M='AND' Then Inc(AndCount)
+   Else If M='OR' Then Inc(OrCount)
+   Else If M='XOR' Then Inc(XorCount)
+   Else If M='NOT' Then Inc(NotCount)
+   Else If M='TEST' Then Inc(TestCount)
+   Else If(M='SHL')or(M='SAL')Then Inc(ShlCount)
+   Else If M='SHR' Then Inc(ShrCount)
+   Else If M='SAR' Then Inc(SarCount)
+   Else If(M='ROL')or(M='ROR')or(M='RCL')or(M='RCR')Then Inc(RotCount)
+   Else If(M='BT')or(M='BTS')or(M='BTR')or(M='BTC')Then Inc(BitCount);
+  End;
+ End;
+ WriteLn('Traduction logique/decalage : ',TotalLogic,' instructions, ',
+  TranslationCount,' traductions totales.');
+ If Verbose Then Begin
+  WriteLn('  AND       : ',AndCount);
+  WriteLn('  OR        : ',OrCount);
+  WriteLn('  XOR       : ',XorCount);
+  WriteLn('  NOT       : ',NotCount);
+  WriteLn('  TEST      : ',TestCount);
+  WriteLn('  SHL/SAL   : ',ShlCount);
+  WriteLn('  SHR       : ',ShrCount);
+  WriteLn('  SAR       : ',SarCount);
+  WriteLn('  ROL/ROR/RCL/RCR : ',RotCount);
+  WriteLn('  BT/BTS/BTR/BTC  : ',BitCount);
+  If TotalLogic>0 Then Begin
+   WriteLn('  Details :');
+   For I:=TranslationCount-TotalLogic to TranslationCount-1 do
+    If I>=0 Then
+     WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -4828,6 +5091,7 @@ BEGIN
  { TODO 11 - Traduction arithmetique }
  ProcessArithmeticTranslations;
  { TODO 12 - Traduction logique }
+ ProcessLogicalTranslations;
  { TODO 13 - Traduction comparaisons/sauts }
  { TODO 14 - Traduction boucles }
  { TODO 15 - Traduction CALL/RET }
