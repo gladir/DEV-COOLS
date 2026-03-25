@@ -4058,10 +4058,11 @@ Begin
       End;
     End Else Begin
       { 1 operande avec ModR/M }
+      RegField := 0;
       If AddrSz = 4 Then
-        DecodeModRM32(OpcOffset + 1, OpSz, 0, RMStr, MRMBytes)
+        DecodeModRM32(OpcOffset + 1, OpSz, RegField, RMStr, MRMBytes)
       Else
-        DecodeModRM16(OpcOffset + 1, OpSz, 0, RMStr, MRMBytes);
+        DecodeModRM16(OpcOffset + 1, OpSz, RegField, RMStr, MRMBytes);
       Operands := RMStr;
       BytesUsed := TotalSize + 1 + MRMBytes;
     End;
