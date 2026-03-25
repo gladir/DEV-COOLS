@@ -116,7 +116,7 @@
               aligner ResFilePos sur un multiple de Align
               (2 pour format 16 bits, 4 pour format 32 bits)
 
-  TODO 04 - DETECTION DU FORMAT 16 OU 32 BITS [A FAIRE]
+  TODO 04 - DETECTION DU FORMAT 16 OU 32 BITS [IMPLEMENTE]
             Function DetectResFormat: Integer
               lire les 8 premiers octets sans consommer le flux
               (sauvegarder la position, lire, puis revenir)
@@ -784,6 +784,7 @@ Var
   ResFileName  : TString;        { nom du fichier courant          }
   ResFileSize  : LongInt;        { taille totale en octets         }
   ResFilePos   : LongInt;        { position courante (0-base)      }
+  ResFormat    : Integer;        { FMT_RES16 ou FMT_RES32          }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -1231,6 +1232,70 @@ Begin
 End;
 
 { ============================================================
+  TODO 04 - DETECTION DU FORMAT 16 OU 32 BITS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Detecter automatiquement le format du fichier .RES --- }
+Function DetectResFormat : Integer;
+Var
+  SavePos : LongInt;
+  DW0     : LongInt;   { 4 premiers octets : DataSize (32 bits) ou TypeId (16 bits) }
+  DW1     : LongInt;   { 4 octets suivants : HeaderSize (32 bits)                   }
+  W0      : Word;      { premier WORD pour critere 16 bits                          }
+Begin
+  { Respecter les options de force en priorite }
+  If Opts.Force16 Then Begin DetectResFormat := FMT_RES16; Exit; End;
+  If Opts.Force32 Then Begin DetectResFormat := FMT_RES32; Exit; End;
+
+  { Fichier trop petit pour etre valide }
+  If ResFileSize < 8 Then Begin DetectResFormat := FMT_UNKNOWN; Exit; End;
+
+  { Sauvegarder la position et lire les 8 premiers octets }
+  SavePos := GetResPos;
+  DW0 := ReadDWord;
+  DW1 := ReadDWord;
+  SeekResPos(SavePos);
+
+  { Critere format 32 bits :
+    premier enregistrement = ressource nulle => DataSize=0, HeaderSize=32 }
+  If (DW0 = 0) And (DW1 = 32) Then
+  Begin
+    DetectResFormat := FMT_RES32;
+    Exit;
+  End;
+
+  { Critere format 16 bits :
+    premier WORD = type numerique $8001..$800F
+    ou type connu non numerique 1..16 (RT_CURSOR..RT_ANIICON) }
+  W0 := Word(DW0 And $0000FFFF);
+  If ((W0 >= $8001) And (W0 <= $800F)) Or
+     ((W0 >= 1)     And (W0 <= 16))    Then
+  Begin
+    DetectResFormat := FMT_RES16;
+    Exit;
+  End;
+
+  DetectResFormat := FMT_UNKNOWN;
+End;
+
+{ ---- Verifier le format et lever une erreur si inconnu ---- }
+Procedure CheckResFormat(Var AResFormat : Integer);
+Begin
+  AResFormat := DetectResFormat;
+  If Opts.Verbose Then
+  Begin
+    Case AResFormat Of
+      FMT_RES16 : WriteLn('Format detecte    : RES 16 bits (Windows 3.x)');
+      FMT_RES32 : WriteLn('Format detecte    : RES 32 bits (Windows NT/9x+)');
+    Else
+      WriteLn('Format detecte    : inconnu');
+    End;
+  End;
+  If AResFormat = FMT_UNKNOWN Then
+    FatalError('Format de fichier non reconnu : ' + ResFileName);
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -1264,10 +1329,15 @@ Begin
   If Opts.Verbose Then
     WriteLn('Taille du fichier : ', ResFileSize, ' octets');
 
-  { TODO 04 a TODO 25 : a implementer }
-  WriteLn('Lecture OK : ', ResFileSize, ' octets charges depuis ',
-          Opts.SrcFile);
-  WriteLn('(TODO 04 a TODO 25 : implementation en cours)');
+  { Detecter le format 16 ou 32 bits }
+  CheckResFormat(ResFormat);
+
+  { TODO 05 a TODO 25 : a implementer }
+  Case ResFormat Of
+    FMT_RES16 : WriteLn('Format RES 16 bits confirme.');
+    FMT_RES32 : WriteLn('Format RES 32 bits confirme.');
+  End;
+  WriteLn('(TODO 05 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
