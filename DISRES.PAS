@@ -220,7 +220,7 @@
               ex. 3 -> '.ico', 1 -> '.cur', 2 -> '.bmp',
               8 -> '.fnt', 24 -> '.xml', autres -> '.bin'
 
-  TODO 08 - DECODAGE DE LANGUAGE ID [A FAIRE]
+  TODO 08 - DECODAGE DE LANGUAGE ID [IMPLEMENTE]
             Constantes de langues courantes :
               LANG_NEUTRAL         = $0000,
               LANG_ENGLISH_US      = $0409,
@@ -775,6 +775,23 @@ Const
   RT_HTML         = 23;
   RT_MANIFEST     = 24;
   RT_TOOLBAR      = 241;
+
+  { Identifiants de langue (LANG_*) }
+  LANG_NEUTRAL         = $0000;
+  LANG_ENGLISH_US      = $0409;
+  LANG_ENGLISH_UK      = $0809;
+  LANG_FRENCH          = $040C;
+  LANG_FRENCH_BELGIUM  = $080C;
+  LANG_FRENCH_CANADA   = $0C0C;
+  LANG_GERMAN          = $0407;
+  LANG_ITALIAN         = $0410;
+  LANG_SPANISH         = $0C0A;
+  LANG_PORTUGUESE_BR   = $0416;
+  LANG_PORTUGUESE_PT   = $0816;
+  LANG_RUSSIAN         = $0419;
+  LANG_JAPANESE        = $0411;
+  LANG_CHINESE_SIMPL   = $0804;
+  LANG_CHINESE_TRAD    = $0404;
 
   { Limites internes }
   MAX_RESOURCES   = 4096;
@@ -1588,6 +1605,73 @@ Begin
 End;
 
 { ============================================================
+  TODO 08 - DECODAGE DE LANGUAGE ID [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Description textuelle d'un identifiant de langue ----- }
+Function LangIdToStr(LangId : Word) : TString;
+Begin
+  Case LangId Of
+    LANG_NEUTRAL        : LangIdToStr := 'NEUTRAL';
+    LANG_ENGLISH_US     : LangIdToStr := 'ENGLISH, AMERICAN';
+    LANG_ENGLISH_UK     : LangIdToStr := 'ENGLISH, BRITISH';
+    LANG_FRENCH         : LangIdToStr := 'FRENCH';
+    LANG_FRENCH_BELGIUM : LangIdToStr := 'FRENCH, BELGIAN';
+    LANG_FRENCH_CANADA  : LangIdToStr := 'FRENCH, CANADIAN';
+    LANG_GERMAN         : LangIdToStr := 'GERMAN';
+    LANG_ITALIAN        : LangIdToStr := 'ITALIAN';
+    LANG_SPANISH        : LangIdToStr := 'SPANISH';
+    LANG_PORTUGUESE_BR  : LangIdToStr := 'PORTUGUESE, BRAZILIAN';
+    LANG_PORTUGUESE_PT  : LangIdToStr := 'PORTUGUESE';
+    LANG_RUSSIAN        : LangIdToStr := 'RUSSIAN';
+    LANG_JAPANESE       : LangIdToStr := 'JAPANESE';
+    LANG_CHINESE_SIMPL  : LangIdToStr := 'CHINESE, SIMPLIFIED';
+    LANG_CHINESE_TRAD   : LangIdToStr := 'CHINESE, TRADITIONAL';
+  Else
+    LangIdToStr := 'LANG_' + HexWord(LangId);
+  End;
+End;
+
+{ ---- Directive LANGUAGE pour un script .RC ----------------- }
+Function LangIdToRCKeyword(LangId : Word) : TString;
+Begin
+  Case LangId Of
+    LANG_NEUTRAL        : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL';
+    LANG_ENGLISH_US     : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US';
+    LANG_ENGLISH_UK     : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_UK';
+    LANG_FRENCH         : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_FRENCH, SUBLANG_FRENCH';
+    LANG_FRENCH_BELGIUM : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_FRENCH, SUBLANG_FRENCH_BELGIAN';
+    LANG_FRENCH_CANADA  : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_FRENCH, SUBLANG_FRENCH_CANADIAN';
+    LANG_GERMAN         : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_GERMAN, SUBLANG_GERMAN';
+    LANG_ITALIAN        : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_ITALIAN, SUBLANG_ITALIAN';
+    LANG_SPANISH        : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_SPANISH, SUBLANG_SPANISH';
+    LANG_PORTUGUESE_BR  : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_PORTUGUESE, SUBLANG_PORTUGUESE_BRAZILIAN';
+    LANG_PORTUGUESE_PT  : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_PORTUGUESE, SUBLANG_PORTUGUESE';
+    LANG_RUSSIAN        : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_RUSSIAN, SUBLANG_DEFAULT';
+    LANG_JAPANESE       : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT';
+    LANG_CHINESE_SIMPL  : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED';
+    LANG_CHINESE_TRAD   : LangIdToRCKeyword :=
+                            'LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL';
+  Else
+    LangIdToRCKeyword := 'LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL';
+  End;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -1624,12 +1708,12 @@ Begin
   { Detecter le format 16 ou 32 bits }
   CheckResFormat(ResFormat);
 
-  { TODO 08 a TODO 25 : a implementer }
+  { TODO 09 a TODO 25 : a implementer }
   Case ResFormat Of
     FMT_RES16 : WriteLn('Format RES 16 bits confirme.');
     FMT_RES32 : WriteLn('Format RES 32 bits confirme.');
   End;
-  WriteLn('(TODO 08 a TODO 25 : implementation en cours)');
+  WriteLn('(TODO 09 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
