@@ -158,7 +158,7 @@
             Function IsLastResHeader16: Boolean
               retourner True si le WORD courant = $0000 (marqueur de fin)
 
-  TODO 06 - PARSING DE L'EN-TETE RESSOURCE 32 BITS [A FAIRE]
+  TODO 06 - PARSING DE L'EN-TETE RESSOURCE 32 BITS [IMPLEMENTE]
             Type TResHeader32 : record
               DataSize    : LongInt (taille des donnees en octets)
               HeaderSize  : LongInt (taille de l en-tete, variable)
@@ -778,6 +778,24 @@ Type
     DataOfs  : LongInt;   { position du debut des donnees              }
   End;
 
+  { En-tete d'une ressource 32 bits (format Win32) }
+  TResHeader32 = Record
+    DataSize        : LongInt;  { taille des donnees en octets              }
+    HeaderSize      : LongInt;  { taille de l en-tete (variable)            }
+    TypeIsId        : Boolean;  { True si type numerique                    }
+    TypeId          : Word;     { identifiant de type si TypeIsId           }
+    TypeName        : TString;  { nom Unicode Latin-1 si Non TypeIsId       }
+    NameIsId        : Boolean;  { True si nom numerique                     }
+    NameId          : Word;     { identifiant de nom si NameIsId            }
+    NameStr         : TString;  { nom Unicode Latin-1 si Non NameIsId       }
+    DataVersion     : LongInt;  { version des donnees                       }
+    MemFlags        : Word;     { attributs memoire                         }
+    LangId          : Word;     { identifiant de langue                     }
+    Version         : LongInt;  { version utilisateur                       }
+    Characteristics : LongInt;  { caracteristiques utilisateur              }
+    DataOfs         : LongInt;  { position des donnees dans le fichier      }
+  End;
+
   { Options de la ligne de commande }
   TOptions = Record
     SrcFile    : TString;   { fichier .RES source               }
@@ -1386,6 +1404,83 @@ Begin
 End;
 
 { ============================================================
+  TODO 06 - PARSING DE L'EN-TETE RESSOURCE 32 BITS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Lire une chaine Unicode UTF-16LE (terminee par $0000) - }
+Function ReadUnicodeString : TString;
+Var
+  W : Word;
+  S : TString;
+Begin
+  S := '';
+  W := ReadWChar;
+  While W <> 0 Do
+  Begin
+    S := S + WCharToChar(W);
+    W := ReadWChar;
+  End;
+  ReadUnicodeString := S;
+End;
+
+{ ---- Lire un identifiant numerique ou un nom Unicode ------- }
+Procedure ReadIdOrName(Var IsId : Boolean; Var Id : Word;
+                       Var Name : TString);
+Var
+  W : Word;
+Begin
+  W := ReadWord;
+  If W = $FFFF Then
+  Begin
+    IsId := True;
+    Id   := ReadWord;
+    Name := '';
+  End
+  Else
+  Begin
+    IsId := False;
+    Id   := 0;
+    { Le WORD lu est le premier WCHAR de la chaine Unicode }
+    Name := WCharToChar(W) + ReadUnicodeString;
+  End;
+End;
+
+{ ---- Lire l'en-tete d'une ressource 32 bits --------------- }
+Procedure ReadResHeader32(Var Hdr : TResHeader32);
+Begin
+  Hdr.DataSize   := ReadDWord;
+  Hdr.HeaderSize := ReadDWord;
+
+  { Type : $FFFF + WORD numerique ou chaine Unicode }
+  ReadIdOrName(Hdr.TypeIsId, Hdr.TypeId, Hdr.TypeName);
+
+  { Nom : meme logique }
+  ReadIdOrName(Hdr.NameIsId, Hdr.NameId, Hdr.NameStr);
+
+  { Aligner sur 4 octets apres Type + Nom }
+  AlignResPos(4);
+
+  { Champs fixes suivant le padding }
+  Hdr.DataVersion     := ReadDWord;
+  Hdr.MemFlags        := ReadWord;
+  Hdr.LangId          := ReadWord;
+  Hdr.Version         := ReadDWord;
+  Hdr.Characteristics := ReadDWord;
+
+  Hdr.DataOfs := GetResPos;
+End;
+
+{ ---- Valider et sauter la ressource nulle de 32 octets ---- }
+Procedure ReadNullHeader32;
+Var
+  Hdr : TResHeader32;
+Begin
+  ReadResHeader32(Hdr);
+  If (Hdr.DataSize <> 0) Or (Hdr.HeaderSize <> 32) Then
+    FatalError('En-tete null 32 bits invalide dans ' + ResFileName);
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -1422,12 +1517,12 @@ Begin
   { Detecter le format 16 ou 32 bits }
   CheckResFormat(ResFormat);
 
-  { TODO 06 a TODO 25 : a implementer }
+  { TODO 07 a TODO 25 : a implementer }
   Case ResFormat Of
     FMT_RES16 : WriteLn('Format RES 16 bits confirme.');
     FMT_RES32 : WriteLn('Format RES 32 bits confirme.');
   End;
-  WriteLn('(TODO 06 a TODO 25 : implementation en cours)');
+  WriteLn('(TODO 07 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
