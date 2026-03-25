@@ -51,7 +51,7 @@
               la version, puis quitter avec EXIT_OK
             Afficher la banniere de version au demarrage
 
-  TODO 02 - FONCTIONS UTILITAIRES [A FAIRE]
+  TODO 02 - FONCTIONS UTILITAIRES [IMPLEMENTE]
             Function HexByte(B: Byte): String
               retourne la representation hexadecimale sur 2 chiffres
             Function HexWord(W: Word): String
@@ -942,6 +942,175 @@ Begin
 End;
 
 { ============================================================
+  TODO 02 - FONCTIONS UTILITAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Representation hexadecimale 2 chiffres --------------- }
+Function HexByte(B : Byte) : TString;
+Const
+  HexDigits : Array[0..15] Of Char = '0123456789ABCDEF';
+Begin
+  HexByte := HexDigits[B Shr 4] + HexDigits[B And $0F];
+End;
+
+{ ---- Representation hexadecimale 4 chiffres --------------- }
+Function HexWord(W : Word) : TString;
+Begin
+  HexWord := HexByte(Hi(W)) + HexByte(Lo(W));
+End;
+
+{ ---- Representation hexadecimale 8 chiffres --------------- }
+Function HexDWord(D : LongInt) : TString;
+Begin
+  HexDWord := HexWord(Word(D Shr 16)) + HexWord(Word(D And $FFFF));
+End;
+
+{ ---- Conversion entier -> chaine decimale ----------------- }
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+{ ---- Conversion chaine en majuscules ---------------------- }
+Function UpCaseStr(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    Tmp[I] := UpCase(Tmp[I]);
+  UpCaseStr := Tmp;
+End;
+
+{ ---- Supprimer espaces de debut et de fin ----------------- }
+Function Trim(Const S : TString) : TString;
+Var
+  L, R : Integer;
+Begin
+  L := 1;
+  While (L <= Length(S)) And (S[L] = ' ') Do Inc(L);
+  R := Length(S);
+  While (R >= L) And (S[R] = ' ') Do Dec(R);
+  If L > R Then
+    Trim := ''
+  Else
+    Trim := Copy(S, L, R - L + 1);
+End;
+
+{ ---- Verifier l existence d un fichier -------------------- }
+Function FileExists(Const FName : TString) : Boolean;
+Var
+  F : File;
+Begin
+  Assign(F, FName);
+  {$I-}
+  Reset(F, 1);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    Close(F);
+    FileExists := True;
+  End
+  Else
+    FileExists := False;
+End;
+
+{ ---- Remplacer l extension d un fichier ------------------- }
+Function ChangeFileExt(Const FName, NewExt : TString) : TString;
+Var
+  I    : Integer;
+  Base : TString;
+Begin
+  Base := FName;
+  For I := Length(FName) DownTo 1 Do
+  Begin
+    If FName[I] = '.' Then
+    Begin
+      Base := Copy(FName, 1, I - 1);
+      Break;
+    End;
+    If (FName[I] = '\') Or (FName[I] = '/') Then Break;
+  End;
+  ChangeFileExt := Base + NewExt;
+End;
+
+{ ---- Completer a gauche avec des espaces ------------------ }
+Function PadLeft(Const S : TString; Width : Integer) : TString;
+Var
+  R : TString;
+Begin
+  R := S;
+  While Length(R) < Width Do
+    R := ' ' + R;
+  PadLeft := R;
+End;
+
+{ ---- Convertir WCHAR Unicode en Char Latin-1 -------------- }
+Function WCharToChar(W : Word) : Char;
+Begin
+  { Caracteres ASCII directs }
+  If W < 128 Then
+    WCharToChar := Chr(W)
+  { Plage Latin-1 supplement (U+0080..U+00FF) }
+  Else If W <= $00FF Then
+    WCharToChar := Chr(W And $FF)
+  { Caracteres hors Latin-1 : remplacer par '?' }
+  Else
+    WCharToChar := '?';
+End;
+
+{ ---- Convertir tableau de WCHAR en String Pascal ---------- }
+Function UniStrToStr(Const Buf : Array Of Word; Len : Integer) : TString;
+Var
+  I : Integer;
+  S : TString;
+Begin
+  S := '';
+  For I := 0 To Len - 1 Do
+  Begin
+    If Buf[I] = 0 Then Break;
+    If Length(S) < 255 Then
+      S := S + WCharToChar(Buf[I]);
+  End;
+  UniStrToStr := S;
+End;
+
+{ ---- Echapper les caracteres speciaux pour le format RC --- }
+Function EscapeRCString(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Res : TString;
+Begin
+  Res := '';
+  For I := 1 To Length(S) Do
+  Begin
+    Case S[I] Of
+      '"'  : Res := Res + '\"';
+      '\'  : Res := Res + '\\';
+      #9   : Res := Res + '\t';
+      #13  : Res := Res + '\n';
+      #10  : { ignorer LF apres CR } ;
+    Else
+      Res := Res + S[I];
+    End;
+  End;
+  EscapeRCString := Res;
+End;
+
+{ ---- Formatter un identifiant ressource (nom ou ID) ------- }
+Function FormatID(ID : LongInt; Const Name : TString) : TString;
+Begin
+  If Name <> '' Then
+    FormatID := '"' + Name + '"'
+  Else
+    FormatID := IntToStr(ID);
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -969,7 +1138,7 @@ Begin
     WriteLn;
   End;
 
-  { TODO 02 a TODO 25 : a implementer }
+  { TODO 03 a TODO 25 : a implementer }
   WriteLn('Fichier source : ', Opts.SrcFile);
-  WriteLn('(TODO 02 a TODO 25 : implementation en cours)');
+  WriteLn('(TODO 03 a TODO 25 : implementation en cours)');
 End.
