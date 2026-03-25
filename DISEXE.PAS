@@ -204,7 +204,7 @@
       les fonctions importees et PUBLIC pour les exports.
       Definir les SEGMENT avec les noms et attributs corrects.
 
-  21. Generation du fichier .ASM : section de code (instructions).
+  21. [IMPLEMENTE] Generation du fichier .ASM : section de code (instructions).
       Emettre le code desassemble instruction par instruction
       dans le segment de code. Format : label (si reference),
       tabulation, mnemonique, operandes. Inserer des lignes
@@ -3817,6 +3817,561 @@ Begin
   WriteLn(F);
 End;
 
+{ ============================================================
+  GENERATION DU FICHIER .ASM : SECTION DE CODE (TODO 21)
+  ============================================================ }
+
+{ DisassembleInstruction - Decode une instruction a l'adresse donnee.
+  Parametres :
+    Offset : position dans ImageBuffer
+    Mode32 : True si mode 32 bits
+  Resultats :
+    Mnem     : mnemonique de l'instruction
+    Operands : chaine des operandes
+    BytesUsed : nombre total d'octets consommes
+}
+Procedure DisassembleInstruction(Offset : LongInt; Mode32 : Boolean;
+                                  Var Mnem : TString; Var Operands : TString;
+                                  Var BytesUsed : Integer);
+Var
+  PFX       : TPrefixState;
+  OpcOffset : LongInt;
+  Opcode    : Byte;
+  Entry     : TOpcodeEntry;
+  OpSz      : Byte;
+  AddrSz    : Byte;
+  RegField  : Byte;
+  ModRM     : Byte;
+  MRMBytes  : Integer;
+  RMStr     : TString;
+  RegStr    : TString;
+  Imm8      : Byte;
+  Imm16     : Word;
+  Imm32     : LongInt;
+  Rel8      : ShortInt;
+  Rel16     : SmallInt;
+  Rel32     : LongInt;
+  TargetAddr: LongInt;
+  PrefStr   : TString;
+  LblIdx    : LongInt;
+  TotalSize : Integer;
+  SecByte   : Byte;
+  Mnem0F    : TString;
+  Ops0F     : TString;
+  Bytes0F   : Integer;
+Begin
+  Mnem := '';
+  Operands := '';
+  BytesUsed := 1;
+
+  If (Offset < 0) Or (Offset >= ImageSize) Then Begin
+    Mnem := 'DB';
+    Operands := '??';
+    Exit;
+  End;
+
+  { Decoder les prefixes }
+  InitPrefixState(PFX, Mode32);
+  DecodePrefixes(Offset, Mode32, PFX);
+  OpcOffset := Offset + PFX.PrefixCount;
+  OpSz  := PFX.EffOpSize;
+  AddrSz := PFX.EffAddrSize;
+  TotalSize := PFX.PrefixCount;
+
+  If OpcOffset >= ImageSize Then Begin
+    Mnem := 'DB';
+    Operands := HexByte(ReadImageByte(Offset)) + 'h';
+    BytesUsed := 1;
+    Exit;
+  End;
+
+  Opcode := ReadImageByte(OpcOffset);
+  PrefStr := PrefixToStr(PFX);
+
+  { Opcode etendu 0Fh }
+  If Opcode = $0F Then Begin
+    If OpcOffset + 1 < ImageSize Then Begin
+      SecByte := ReadImageByte(OpcOffset + 1);
+      Decode0FOpcode(SecByte, OpcOffset + 2, PFX, Mnem0F, Ops0F, Bytes0F);
+      Mnem := PrefStr + Mnem0F;
+      Operands := Ops0F;
+      BytesUsed := TotalSize + 1 + Bytes0F; { prefixes + 0F byte + (second+rest) }
+    End Else Begin
+      Mnem := 'DB';
+      Operands := '0Fh';
+      BytesUsed := TotalSize + 1;
+    End;
+    Exit;
+  End;
+
+  Entry := OpcodeTable[Opcode];
+
+  { Instruction inconnue }
+  If Entry.Mnemonic = '???' Then Begin
+    Mnem := 'DB';
+    Operands := HexByte(Opcode) + 'h';
+    BytesUsed := TotalSize + 1;
+    Exit;
+  End;
+
+  { Instructions de groupe }
+  If (Entry.Mnemonic = 'GRP1') Or (Entry.Mnemonic = 'GRP2') Or
+     (Entry.Mnemonic = 'GRP3') Or (Entry.Mnemonic = 'GRP4') Or
+     (Entry.Mnemonic = 'GRP5') Then Begin
+    If OpcOffset + 1 >= ImageSize Then Begin
+      Mnem := 'DB';
+      Operands := HexByte(Opcode) + 'h';
+      BytesUsed := TotalSize + 1;
+      Exit;
+    End;
+    ModRM := ReadImageByte(OpcOffset + 1);
+    RegField := (ModRM Shr 3) And $07;
+    Case Entry.Mnemonic[4] Of
+      '1' : Mnem := Grp1Mnemonics[RegField];
+      '2' : Mnem := Grp2Mnemonics[RegField];
+      '3' : Mnem := Grp3Mnemonics[RegField];
+      '4' : Mnem := Grp4Mnemonics[RegField];
+      '5' : Mnem := Grp5Mnemonics[RegField];
+    Else
+      Mnem := '???';
+    End;
+    Mnem := PrefStr + Mnem;
+    { Decoder l'operande r/m }
+    If AddrSz = 4 Then
+      DecodeModRM32(OpcOffset + 1, OpSz, RegField, RMStr, MRMBytes)
+    Else
+      DecodeModRM16(OpcOffset + 1, OpSz, RegField, RMStr, MRMBytes);
+    Operands := RMStr;
+    BytesUsed := TotalSize + 1 + MRMBytes;
+    { Ajouter l'immediat pour certains groupes }
+    Case Opcode Of
+      $80 : Begin { GRP1 r/m8, imm8 }
+        Imm8 := ReadImageByte(OpcOffset + 1 + MRMBytes);
+        Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End;
+      $81 : Begin { GRP1 r/m, imm16/32 }
+        If OpSz = 4 Then Begin
+          Imm32 := ReadImageDWord(OpcOffset + 1 + MRMBytes);
+          Operands := Operands + ', ' + HexDWord(Imm32) + 'h';
+          BytesUsed := BytesUsed + 4;
+        End Else Begin
+          Imm16 := ReadImageWord(OpcOffset + 1 + MRMBytes);
+          Operands := Operands + ', ' + HexWord(Imm16) + 'h';
+          BytesUsed := BytesUsed + 2;
+        End;
+      End;
+      $82 : Begin { GRP1 r/m8, imm8 (alias) }
+        Imm8 := ReadImageByte(OpcOffset + 1 + MRMBytes);
+        Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End;
+      $83 : Begin { GRP1 r/m, imm8 sign-extended }
+        Imm8 := ReadImageByte(OpcOffset + 1 + MRMBytes);
+        Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End;
+      $C0 : Begin { GRP2 r/m8, imm8 }
+        Imm8 := ReadImageByte(OpcOffset + 1 + MRMBytes);
+        Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End;
+      $C1 : Begin { GRP2 r/m, imm8 }
+        Imm8 := ReadImageByte(OpcOffset + 1 + MRMBytes);
+        Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End;
+      $D0, $D1 : Begin { GRP2 r/m, 1 }
+        Operands := Operands + ', 1';
+      End;
+      $D2, $D3 : Begin { GRP2 r/m, CL }
+        Operands := Operands + ', CL';
+      End;
+      $F6 : Begin { GRP3 r/m8 }
+        If RegField = 0 Then Begin { TEST r/m8, imm8 }
+          Imm8 := ReadImageByte(OpcOffset + 1 + MRMBytes);
+          Operands := Operands + ', ' + HexByte(Imm8) + 'h';
+          Inc(BytesUsed);
+        End;
+      End;
+      $F7 : Begin { GRP3 r/m }
+        If RegField = 0 Then Begin { TEST r/m, imm }
+          If OpSz = 4 Then Begin
+            Imm32 := ReadImageDWord(OpcOffset + 1 + MRMBytes);
+            Operands := Operands + ', ' + HexDWord(Imm32) + 'h';
+            BytesUsed := BytesUsed + 4;
+          End Else Begin
+            Imm16 := ReadImageWord(OpcOffset + 1 + MRMBytes);
+            Operands := Operands + ', ' + HexWord(Imm16) + 'h';
+            BytesUsed := BytesUsed + 2;
+          End;
+        End;
+      End;
+    End; { case }
+    Exit;
+  End;
+
+  { Instruction normale - commencer par le mnemonique }
+  Mnem := PrefStr + Entry.Mnemonic;
+  BytesUsed := TotalSize + Entry.BaseSize;
+
+  { Instructions sans operande }
+  If Entry.OpCount = 0 Then Begin
+    Operands := '';
+    Exit;
+  End;
+
+  { Instructions avec ModR/M et deux operandes }
+  If Entry.NeedModRM Then Begin
+    If Entry.OpCount = 2 Then Begin
+      If AddrSz = 4 Then
+        DecodeModRM32Full(OpcOffset + 1, OpSz, (Opcode And $02) <> 0,
+                          RMStr, RegStr, MRMBytes)
+      Else
+        DecodeModRM16Full(OpcOffset + 1, OpSz, (Opcode And $02) <> 0,
+                          RMStr, RegStr, MRMBytes);
+      BytesUsed := TotalSize + 1 + MRMBytes;
+      { Selon direction bit : reg,r/m ou r/m,reg }
+      If (Opcode And $02) <> 0 Then
+        Operands := RMStr + ', ' + RegStr
+      Else
+        Operands := RMStr + ', ' + RegStr;
+      { Ajouter immediat si Op2 est un immediat }
+      If Entry.Op2Type = OT_IMM8 Then Begin
+        Imm8 := ReadImageByte(OpcOffset + 1 + MRMBytes);
+        Operands := RMStr + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End Else If Entry.Op2Type = OT_IMM8X Then Begin
+        Imm8 := ReadImageByte(OpcOffset + 1 + MRMBytes);
+        Operands := RMStr + ', ' + HexByte(Imm8) + 'h';
+        Inc(BytesUsed);
+      End Else If Entry.Op2Type = OT_IMM16 Then Begin
+        If OpSz = 4 Then Begin
+          Imm32 := ReadImageDWord(OpcOffset + 1 + MRMBytes);
+          Operands := RMStr + ', ' + HexDWord(Imm32) + 'h';
+          BytesUsed := BytesUsed + 4;
+        End Else Begin
+          Imm16 := ReadImageWord(OpcOffset + 1 + MRMBytes);
+          Operands := RMStr + ', ' + HexWord(Imm16) + 'h';
+          BytesUsed := BytesUsed + 2;
+        End;
+      End;
+    End Else Begin
+      { 1 operande avec ModR/M }
+      If AddrSz = 4 Then
+        DecodeModRM32(OpcOffset + 1, OpSz, 0, RMStr, MRMBytes)
+      Else
+        DecodeModRM16(OpcOffset + 1, OpSz, 0, RMStr, MRMBytes);
+      Operands := RMStr;
+      BytesUsed := TotalSize + 1 + MRMBytes;
+    End;
+    Exit;
+  End;
+
+  { Instructions sans ModR/M - operandes implicites ou immediats }
+  Case Entry.OpCount Of
+    1 : Begin
+      Case Entry.Op1Type Of
+        OT_AL    : Operands := 'AL';
+        OT_AX    : If OpSz = 4 Then Operands := 'EAX' Else Operands := 'AX';
+        OT_CL    : Operands := 'CL';
+        OT_DX    : Operands := 'DX';
+        OT_ONE   : Operands := '1';
+        OT_CS    : Operands := 'CS';
+        OT_DS    : Operands := 'DS';
+        OT_ES    : Operands := 'ES';
+        OT_SS    : Operands := 'SS';
+        OT_FS    : Operands := 'FS';
+        OT_GS    : Operands := 'GS';
+        OT_REG8  : Begin
+          RegField := Opcode And $07;
+          Operands := RegNames8[RegField];
+        End;
+        OT_REG16 : Begin
+          RegField := Opcode And $07;
+          If OpSz = 4 Then
+            Operands := RegNames32[RegField]
+          Else
+            Operands := RegNames16[RegField];
+        End;
+        OT_SEGREG : Begin
+          RegField := (Opcode Shr 3) And $03;
+          Operands := SegRegNames[RegField];
+        End;
+        OT_IMM8  : Begin
+          Imm8 := ReadImageByte(OpcOffset + 1);
+          Operands := HexByte(Imm8) + 'h';
+        End;
+        OT_IMM16 : Begin
+          If OpSz = 4 Then Begin
+            Imm32 := ReadImageDWord(OpcOffset + 1);
+            Operands := HexDWord(Imm32) + 'h';
+            BytesUsed := BytesUsed + 2; { 16->32 bits }
+          End Else Begin
+            Imm16 := ReadImageWord(OpcOffset + 1);
+            Operands := HexWord(Imm16) + 'h';
+          End;
+        End;
+        OT_REL8  : Begin
+          Rel8 := ShortInt(ReadImageByte(OpcOffset + 1));
+          TargetAddr := OpcOffset + 2 + LongInt(Rel8);
+          LblIdx := FindLabel(TargetAddr);
+          If LblIdx >= 0 Then
+            Operands := Labels[LblIdx].Name
+          Else If Mode32 Then
+            Operands := HexDWord(TargetAddr) + 'h'
+          Else
+            Operands := HexWord(Word(TargetAddr)) + 'h';
+        End;
+        OT_REL16 : Begin
+          If OpSz = 4 Then Begin
+            Rel32 := ReadImageDWord(OpcOffset + 1);
+            TargetAddr := OpcOffset + 5 + Rel32;
+            BytesUsed := BytesUsed + 2; { 16->32 bits }
+          End Else Begin
+            Rel16 := SmallInt(ReadImageWord(OpcOffset + 1));
+            TargetAddr := OpcOffset + 3 + LongInt(Rel16);
+          End;
+          LblIdx := FindLabel(TargetAddr);
+          If LblIdx >= 0 Then
+            Operands := Labels[LblIdx].Name
+          Else If Mode32 Then
+            Operands := HexDWord(TargetAddr) + 'h'
+          Else
+            Operands := HexWord(Word(TargetAddr)) + 'h';
+        End;
+        OT_FAR   : Begin
+          If OpSz = 4 Then Begin
+            Imm32 := ReadImageDWord(OpcOffset + 1);
+            Imm16 := ReadImageWord(OpcOffset + 5);
+            Operands := HexWord(Imm16) + ':' + HexDWord(Imm32) + 'h';
+            BytesUsed := BytesUsed + 2; { 32 bit offset }
+          End Else Begin
+            Imm16 := ReadImageWord(OpcOffset + 1);
+            Operands := HexWord(ReadImageWord(OpcOffset + 3)) + ':' + HexWord(Imm16) + 'h';
+          End;
+        End;
+        OT_MEM16 : Begin
+          If AddrSz = 4 Then Begin
+            Imm32 := ReadImageDWord(OpcOffset + 1);
+            Operands := '[' + HexDWord(Imm32) + 'h]';
+            BytesUsed := BytesUsed + 2; { 16->32 adresse }
+          End Else Begin
+            Imm16 := ReadImageWord(OpcOffset + 1);
+            Operands := '[' + HexWord(Imm16) + 'h]';
+          End;
+        End;
+      Else
+        Operands := '?';
+      End;
+    End;
+    2 : Begin
+      { Deux operandes sans ModR/M (operandes implicites) }
+      { Premiere operande }
+      Case Entry.Op1Type Of
+        OT_AL    : Operands := 'AL, ';
+        OT_AX    : If OpSz = 4 Then Operands := 'EAX, ' Else Operands := 'AX, ';
+        OT_DX    : Operands := 'DX, ';
+        OT_MEM16 : Begin
+          If AddrSz = 4 Then Begin
+            Imm32 := ReadImageDWord(OpcOffset + 1);
+            Operands := '[' + HexDWord(Imm32) + 'h], ';
+            BytesUsed := BytesUsed + 2;
+          End Else Begin
+            Imm16 := ReadImageWord(OpcOffset + 1);
+            Operands := '[' + HexWord(Imm16) + 'h], ';
+          End;
+        End;
+      Else
+        Operands := '?, ';
+      End;
+      { Deuxieme operande }
+      Case Entry.Op2Type Of
+        OT_AL    : Operands := Operands + 'AL';
+        OT_AX    : If OpSz = 4 Then Operands := Operands + 'EAX' Else Operands := Operands + 'AX';
+        OT_DX    : Operands := Operands + 'DX';
+        OT_CL    : Operands := Operands + 'CL';
+        OT_ONE   : Operands := Operands + '1';
+        OT_IMM8  : Begin
+          Imm8 := ReadImageByte(OpcOffset + Entry.BaseSize - 1);
+          Operands := Operands + HexByte(Imm8) + 'h';
+        End;
+        OT_IMM16 : Begin
+          If OpSz = 4 Then Begin
+            Imm32 := ReadImageDWord(OpcOffset + Entry.BaseSize - 4);
+            Operands := Operands + HexDWord(Imm32) + 'h';
+            BytesUsed := BytesUsed + 2;
+          End Else Begin
+            Imm16 := ReadImageWord(OpcOffset + Entry.BaseSize - 2);
+            Operands := Operands + HexWord(Imm16) + 'h';
+          End;
+        End;
+        OT_MEM16 : Begin
+          If AddrSz = 4 Then Begin
+            Imm32 := ReadImageDWord(OpcOffset + 1);
+            Operands := Operands + '[' + HexDWord(Imm32) + 'h]';
+            BytesUsed := BytesUsed + 2;
+          End Else Begin
+            Imm16 := ReadImageWord(OpcOffset + 1);
+            Operands := Operands + '[' + HexWord(Imm16) + 'h]';
+          End;
+        End;
+        OT_CS    : Operands := Operands + 'CS';
+        OT_DS    : Operands := Operands + 'DS';
+        OT_ES    : Operands := Operands + 'ES';
+        OT_SS    : Operands := Operands + 'SS';
+      Else
+        Operands := Operands + '?';
+      End;
+    End;
+  End;
+End;
+
+{ FormatHexBytes - Formate les octets hexadecimaux d'une instruction
+  pour un commentaire ASM. }
+Function FormatHexBytes(Offset : LongInt; Count : Integer) : TString;
+Var
+  S : TString;
+  I : Integer;
+Begin
+  S := '';
+  For I := 0 To Count - 1 Do Begin
+    If I > 0 Then S := S + ' ';
+    If Offset + I < ImageSize Then
+      S := S + HexByte(ReadImageByte(Offset + I))
+    Else
+      S := S + '??';
+    { Limiter la longueur pour eviter debordement }
+    If Length(S) > 40 Then Begin
+      S := S + '...';
+      Break;
+    End;
+  End;
+  FormatHexBytes := S;
+End;
+
+{ WriteASMCodeRange - Emet le code desassemble pour une plage d'adresses.
+  Parametres :
+    F         : fichier de sortie
+    StartAddr : adresse de debut dans l'image
+    EndAddr   : adresse de fin (exclue) dans l'image
+    Mode32    : True si mode 32 bits }
+Procedure WriteASMCodeRange(Var F : Text; StartAddr, EndAddr : LongInt;
+                             Mode32 : Boolean);
+Var
+  Addr       : LongInt;
+  Mnem       : TString;
+  Ops        : TString;
+  InstrSize  : Integer;
+  LblIdx     : LongInt;
+  PrevIsProc : Boolean;
+  LineStr    : TString;
+  HexStr     : TString;
+  BFlag      : Byte;
+Begin
+  Addr := StartAddr;
+  PrevIsProc := False;
+
+  While Addr < EndAddr Do Begin
+    { Verifier si cet octet est du code (ByteFlags) }
+    BFlag := BF_UNKNOWN;
+    If (ByteFlags <> Nil) And (Addr >= 0) And (Addr < ImageSize) Then
+      BFlag := ByteFlags^[Addr];
+
+    { Si c'est de la donnee, du string, du padding ou un jump table, emettre en DB }
+    If (BFlag = BF_DATA) Or (BFlag = BF_STRING) Or
+       (BFlag = BF_JUMPTBL) Or (BFlag = BF_PADDING) Then Begin
+      { Emettre un label si necessaire }
+      LblIdx := FindLabel(Addr);
+      If LblIdx >= 0 Then Begin
+        If Labels[LblIdx].IsProc Then Begin
+          WriteLn(F);
+          WriteLn(F, '; ---------------------------------------------------------------------------');
+        End;
+        WriteLn(F, Labels[LblIdx].Name, ':');
+      End;
+      { Emettre un DB pour cet octet }
+      LineStr := '        DB      ' + HexByte(ReadImageByte(Addr)) + 'h';
+      If OptHex Then
+        LineStr := LineStr + '                ; ' + HexByte(ReadImageByte(Addr));
+      WriteLn(F, LineStr);
+      Inc(Addr);
+      Continue;
+    End;
+
+    { Emettre un label si cette adresse en a un }
+    LblIdx := FindLabel(Addr);
+    If LblIdx >= 0 Then Begin
+      { Inserer une ligne vide entre sous-programmes }
+      If Labels[LblIdx].IsProc Then Begin
+        If PrevIsProc Or (Addr > StartAddr) Then
+          WriteLn(F);
+        WriteLn(F, '; ---------------------------------------------------------------------------');
+        WriteLn(F, '; Sous-programme ', Labels[LblIdx].Name);
+        WriteLn(F, '; ---------------------------------------------------------------------------');
+        PrevIsProc := True;
+      End Else Begin
+        PrevIsProc := False;
+      End;
+      WriteLn(F, Labels[LblIdx].Name, ':');
+    End Else
+      PrevIsProc := False;
+
+    { Desassembler l'instruction }
+    DisassembleInstruction(Addr, Mode32, Mnem, Ops, InstrSize);
+
+    { Securite : eviter boucle infinie }
+    If InstrSize < 1 Then InstrSize := 1;
+
+    { Formater la ligne }
+    If Ops <> '' Then
+      LineStr := '        ' + Mnem + '      ' + Ops
+    Else
+      LineStr := '        ' + Mnem;
+
+    { Ajouter les octets hexadecimaux en commentaire si -hex }
+    If OptHex Then Begin
+      { Completer avec des espaces pour aligner le commentaire }
+      While Length(LineStr) < 48 Do
+        LineStr := LineStr + ' ';
+      HexStr := FormatHexBytes(Addr, InstrSize);
+      LineStr := LineStr + '; ' + HexStr;
+    End;
+
+    WriteLn(F, LineStr);
+    Inc(InstrCount);
+    Addr := Addr + InstrSize;
+  End;
+End;
+
+{ WriteASMCodeDOS16 - Emet la section de code pour un EXE DOS 16 bits.
+  Le point d'entree est CS:IP, le code va du debut a la fin de l'image. }
+Procedure WriteASMCodeDOS16(Var F : Text);
+Var
+  StartAddr : LongInt;
+Begin
+  StartAddr := LongInt(EntryCS) * 16 + LongInt(EntryIP);
+  WriteLn(F, '; Point d''entree : ', HexWord(EntryCS), ':', HexWord(EntryIP));
+  WriteLn(F);
+  WriteASMCodeRange(F, 0, ImageSize, False);
+End;
+
+{ WriteASMCodePE32 - Emet la section de code pour un PE 32 bits.
+  Parcourt les sections CODE/EXECUTE et emet le desassemblage. }
+Procedure WriteASMCodePE32(Var F : Text; SectionIndex : Integer);
+Var
+  SecStart : LongInt;
+  SecEnd   : LongInt;
+Begin
+  SecStart := Sections[SectionIndex].VirtualAddress;
+  SecEnd   := SecStart + Sections[SectionIndex].VirtualSize;
+  If SecEnd > ImageSize Then SecEnd := ImageSize;
+  WriteLn(F, '; Point d''entree RVA : ', HexDWord(PEEntryPointRVA), 'h');
+  WriteLn(F, '; ImageBase : ', HexDWord(PEOptHeader.ImageBase), 'h');
+  WriteLn(F);
+  WriteASMCodeRange(F, SecStart, SecEnd, True);
+End;
+
 { Ecrit les directives de modele et segments pour un EXE DOS 16 bits.
   Genere .MODEL SMALL, .STACK, et les directives SEGMENT/ENDS. }
 Procedure WriteASMDirectivesDOS16(Var F : Text);
@@ -3838,9 +4393,7 @@ Begin
   WriteLn(F, 'CSEG SEGMENT PARA PUBLIC ''CODE''');
   WriteLn(F, '  ASSUME CS:CSEG, DS:DSEG, SS:STACK');
   WriteLn(F);
-  WriteLn(F, '; Point d''entree : ', HexWord(EntryCS), ':', HexWord(EntryIP));
-  WriteLn(F);
-  WriteLn(F, '; (code a generer par TODO 21)');
+  WriteASMCodeDOS16(F);
   WriteLn(F);
   WriteLn(F, 'CSEG ENDS');
   WriteLn(F);
@@ -3876,10 +4429,7 @@ Begin
       WriteLn(F, '; --- Section ', SecName, ' (CODE) ---');
       WriteLn(F, '.CODE');
       WriteLn(F);
-      WriteLn(F, '; Point d''entree RVA : ', HexDWord(PEEntryPointRVA), 'h');
-      WriteLn(F, '; ImageBase : ', HexDWord(PEOptHeader.ImageBase), 'h');
-      WriteLn(F);
-      WriteLn(F, '; (code a generer par TODO 21)');
+      WriteASMCodePE32(F, I);
       WriteLn(F);
     End Else If IsBSS Then Begin
       WriteLn(F, '; --- Section ', SecName, ' (BSS) ---');
