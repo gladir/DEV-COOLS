@@ -11590,11 +11590,12 @@ Function QEEvalExpr(Node : Integer;
                      Const Row : TQERow;
                      Const Res : TQEResult) : TSqlValue;
 Var
-  V, VL, VR : TSqlValue;
+  V, VL, VR, VT : TSqlValue;
   CI         : Integer;
   Op         : TTokenText;
   Child0, Child1, Child2 : Integer;
-  I          : Integer;
+  I, J       : Integer;
+  STmp       : TSqlValueStr;
 Begin
   InitSqlValue(V);
   V.IsNull := True;
@@ -11962,6 +11963,505 @@ Begin
           If (Not V.IsNull) And (V.Category = SQLCAT_INTEGER) And
              (V.IntVal < 0) Then
             V.IntVal := -V.IntVal;
+        End;
+      End
+      { ===== TODO 19 : Fonctions scalaires chaines ===== }
+      Else If (Op = 'LEFT') And (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else V.StrVal := Copy(SqlValueToStr(VL), 1, VR.IntVal);
+      End
+      Else If (Op = 'RIGHT') And (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          If VR.IntVal >= Length(Op) Then V.StrVal := Op
+          Else V.StrVal := Copy(Op, Length(Op) - VR.IntVal + 1, VR.IntVal);
+          Op := 'RIGHT';
+        End;
+      End
+      Else If (Op = 'SUBSTRING') And (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          I := VR.IntVal;
+          If Child2 >= 0 Then Begin
+            VR := QEEvalExpr(Child2, Row, Res);
+            If VR.IsNull Then V.IsNull := True
+            Else V.StrVal := Copy(Op, I, VR.IntVal);
+          End
+          Else V.StrVal := Copy(Op, I, Length(Op));
+          Op := 'SUBSTRING';
+        End;
+      End
+      Else If (Op = 'LTRIM') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          I := 1;
+          While (I <= Length(Op)) And (Op[I] = ' ') Do Inc(I);
+          V.StrVal := Copy(Op, I, Length(Op) - I + 1);
+          Op := 'LTRIM';
+        End;
+      End
+      Else If (Op = 'RTRIM') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          I := Length(Op);
+          While (I > 0) And (Op[I] = ' ') Do Dec(I);
+          V.StrVal := Copy(Op, 1, I);
+          Op := 'RTRIM';
+        End;
+      End
+      Else If (Op = 'TRIM') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          I := 1;
+          While (I <= Length(Op)) And (Op[I] = ' ') Do Inc(I);
+          Op := Copy(Op, I, Length(Op) - I + 1);
+          I := Length(Op);
+          While (I > 0) And (Op[I] = ' ') Do Dec(I);
+          V.StrVal := Copy(Op, 1, I);
+          Op := 'TRIM';
+        End;
+      End
+      Else If (Op = 'REPLACE') And (Child0 >= 0) And (Child1 >= 0) And
+              (Child2 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          VT := QEEvalExpr(Child2, Row, Res);
+          V.StrVal := '';
+          VR.StrVal := SqlValueToStr(VR);
+          STmp := SqlValueToStr(VT);
+          I := 1;
+          While I <= Length(Op) Do
+          Begin
+            If (Length(VR.StrVal) > 0) And
+               (Copy(Op, I, Length(VR.StrVal)) = VR.StrVal) Then
+            Begin
+              V.StrVal := V.StrVal + STmp;
+              I := I + Length(VR.StrVal);
+            End
+            Else Begin
+              If Length(V.StrVal) < MAX_SQL_VALUE_STR Then
+                V.StrVal := V.StrVal + Op[I];
+              Inc(I);
+            End;
+          End;
+          Op := 'REPLACE';
+        End;
+      End
+      Else If (Op = 'REPLICATE') And (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          V.StrVal := '';
+          For I := 1 To VR.IntVal Do
+          Begin
+            If Length(V.StrVal) + Length(SqlValueToStr(VL)) <=
+               MAX_SQL_VALUE_STR Then
+              V.StrVal := V.StrVal + SqlValueToStr(VL)
+            Else Break;
+          End;
+        End;
+      End
+      Else If (Op = 'REVERSE') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          V.StrVal := '';
+          For I := Length(Op) DownTo 1 Do
+            If Length(V.StrVal) < MAX_SQL_VALUE_STR Then
+              V.StrVal := V.StrVal + Op[I];
+          Op := 'REVERSE';
+        End;
+      End
+      Else If (Op = 'CHARINDEX') And (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          I := 1;
+          If Child2 >= 0 Then Begin
+            VT := QEEvalExpr(Child2, Row, Res);
+            If Not VT.IsNull Then I := VT.IntVal;
+          End;
+          Op := SqlValueToStr(VR);
+          VL.StrVal := SqlValueToStr(VL);
+          If I > 1 Then
+          Begin
+            J := Pos(VL.StrVal, Copy(Op, I, Length(Op) - I + 1));
+            If J > 0 Then V.IntVal := J + I - 1
+            Else V.IntVal := 0;
+          End
+          Else
+            V.IntVal := Pos(VL.StrVal, Op);
+          Op := 'CHARINDEX';
+        End;
+      End
+      Else If (Op = 'PATINDEX') And (Child0 >= 0) And (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IntVal   := 0;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          { Simplified: treat %pattern% as substring search }
+          Op := SqlValueToStr(VL);
+          VR.StrVal := SqlValueToStr(VR);
+          { Strip leading/trailing % }
+          If (Length(Op) >= 2) And (Op[1] = '%') And
+             (Op[Length(Op)] = '%') Then
+            Op := Copy(Op, 2, Length(Op) - 2);
+          If Length(Op) > 0 Then
+            V.IntVal := Pos(Op, VR.StrVal);
+          Op := 'PATINDEX';
+        End;
+      End
+      Else If (Op = 'STUFF') And (Child0 >= 0) And (Child1 >= 0) And
+              (Child2 >= 0) And (ASTPool[Node].ChildCnt >= 4) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          VR := QEEvalExpr(Child1, Row, Res);
+          VL := QEEvalExpr(Child2, Row, Res);
+          VT := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
+          If VR.IsNull Or VL.IsNull Then V.IsNull := True
+          Else Begin
+            I := VR.IntVal; { start }
+            V.StrVal := Copy(Op, 1, I - 1) + SqlValueToStr(VT) +
+                         Copy(Op, I + VL.IntVal, Length(Op));
+          End;
+          Op := 'STUFF';
+        End;
+      End
+      Else If Op = 'CONCAT' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := '';
+        For I := 0 To ASTPool[Node].ChildCnt - 1 Do
+        Begin
+          VL := QEEvalExpr(ASTPool[Node].Children[I], Row, Res);
+          If Not VL.IsNull Then
+            V.StrVal := V.StrVal + SqlValueToStr(VL);
+        End;
+      End
+      Else If Op = 'CONCAT_WS' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := '';
+        If Child0 >= 0 Then
+        Begin
+          VR := QEEvalExpr(Child0, Row, Res);
+          If VR.IsNull Then V.IsNull := True
+          Else Begin
+            CI := 0;
+            For I := 1 To ASTPool[Node].ChildCnt - 1 Do
+            Begin
+              VL := QEEvalExpr(ASTPool[Node].Children[I], Row, Res);
+              If Not VL.IsNull Then
+              Begin
+                If CI > 0 Then V.StrVal := V.StrVal + SqlValueToStr(VR);
+                V.StrVal := V.StrVal + SqlValueToStr(VL);
+                Inc(CI);
+              End;
+            End;
+          End;
+        End;
+      End
+      Else If Op = 'FORMAT' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        If (Child0 >= 0) And (Child1 >= 0) Then
+        Begin
+          VL := QEEvalExpr(Child0, Row, Res);
+          If VL.IsNull Then V.IsNull := True
+          Else V.StrVal := SqlValueToStr(VL);
+        End
+        Else V.IsNull := True;
+      End
+      Else If Op = 'QUOTENAME' Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          If Child1 >= 0 Then Begin
+            VR := QEEvalExpr(Child1, Row, Res);
+            If (Not VR.IsNull) And (Length(SqlValueToStr(VR)) > 0) Then
+            Begin
+              CI := Ord(SqlValueToStr(VR)[1]);
+              If Chr(CI) = '''' Then
+                V.StrVal := '''' + Op + ''''
+              Else If Chr(CI) = '"' Then
+                V.StrVal := '"' + Op + '"'
+              Else If Chr(CI) = '(' Then
+                V.StrVal := '(' + Op + ')'
+              Else
+                V.StrVal := '[' + Op + ']';
+            End
+            Else V.StrVal := '[' + Op + ']';
+          End
+          Else V.StrVal := '[' + Op + ']';
+          Op := 'QUOTENAME';
+        End;
+      End
+      Else If (Op = 'CHAR') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_CHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else If (VL.IntVal >= 0) And (VL.IntVal <= 255) Then
+          V.StrVal := Chr(VL.IntVal)
+        Else V.IsNull := True;
+      End
+      Else If (Op = 'NCHAR') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else If (VL.IntVal >= 0) And (VL.IntVal <= 255) Then
+          V.StrVal := Chr(VL.IntVal)
+        Else V.IsNull := True;
+      End
+      Else If ((Op = 'ASCII') Or (Op = 'UNICODE')) And
+              (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          If Length(Op) > 0 Then V.IntVal := Ord(Op[1])
+          Else V.IsNull := True;
+          Op := 'ASCII';
+        End;
+      End
+      Else If (Op = 'SPACE') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.StrVal := '';
+          I := VL.IntVal;
+          If I > MAX_SQL_VALUE_STR Then I := MAX_SQL_VALUE_STR;
+          If I < 0 Then I := 0;
+          While Length(V.StrVal) < I Do
+            V.StrVal := V.StrVal + ' ';
+        End;
+      End
+      Else If (Op = 'STR') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          If VL.Category = SQLCAT_INTEGER Then
+            Str(VL.IntVal, V.StrVal)
+          Else
+            Str(VL.FloatVal:10:0, V.StrVal);
+        End;
+      End
+      Else If (Op = 'SOUNDEX') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          Op := StrUpperCase(SqlValueToStr(VL));
+          V.StrVal := '';
+          If Length(Op) > 0 Then
+          Begin
+            V.StrVal := Op[1];
+            CI := 0;
+            For I := 2 To Length(Op) Do
+            Begin
+              Case Op[I] Of
+                'B','F','P','V'                 : CI := Ord('1');
+                'C','G','J','K','Q','S','X','Z' : CI := Ord('2');
+                'D','T'                         : CI := Ord('3');
+                'L'                             : CI := Ord('4');
+                'M','N'                         : CI := Ord('5');
+                'R'                             : CI := Ord('6');
+              Else CI := 0;
+              End;
+              If (CI > 0) And (Length(V.StrVal) < 4) Then
+              Begin
+                If (Length(V.StrVal) < 1) Or
+                   (V.StrVal[Length(V.StrVal)] <> Chr(CI)) Then
+                  V.StrVal := V.StrVal + Chr(CI);
+              End;
+            End;
+            While Length(V.StrVal) < 4 Do V.StrVal := V.StrVal + '0';
+          End;
+          Op := 'SOUNDEX';
+        End;
+      End
+      Else If (Op = 'DIFFERENCE') And (Child0 >= 0) And
+              (Child1 >= 0) Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IntVal   := 0;
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          { Compare SOUNDEX codes character by character }
+          V.IntVal := 0;
+          For I := 1 To 4 Do
+          Begin
+            If (I <= Length(VL.StrVal)) And (I <= Length(VR.StrVal)) Then
+              If VL.StrVal[I] = VR.StrVal[I] Then Inc(V.IntVal);
+          End;
+        End;
+      End
+      Else If (Op = 'TRANSLATE') And (Child0 >= 0) And (Child1 >= 0) And
+              (Child2 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_VARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          CI := QEEvalExpr(Child2, Row, Res);
+          Op := SqlValueToStr(VL);
+          VR.StrVal := SqlValueToStr(VR);
+          CI.StrVal := SqlValueToStr(CI);
+          V.StrVal := '';
+          For I := 1 To Length(Op) Do
+          Begin
+            CI := Pos(Op[I], VR.StrVal);
+            If (CI > 0) And (CI <= Length(CI.StrVal)) Then
+            Begin
+              If Length(V.StrVal) < MAX_SQL_VALUE_STR Then
+                V.StrVal := V.StrVal + CI.StrVal[CI];
+            End
+            Else Begin
+              If Length(V.StrVal) < MAX_SQL_VALUE_STR Then
+                V.StrVal := V.StrVal + Op[I];
+            End;
+          End;
+          Op := 'TRANSLATE';
+        End;
+      End
+      Else If (Op = 'STRING_ESCAPE') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          Op := SqlValueToStr(VL);
+          V.StrVal := '';
+          For I := 1 To Length(Op) Do
+          Begin
+            If Length(V.StrVal) < MAX_SQL_VALUE_STR - 1 Then
+            Case Op[I] Of
+              '"'  : V.StrVal := V.StrVal + '\"';
+              '\'  : V.StrVal := V.StrVal + '\\';
+              '/'  : V.StrVal := V.StrVal + '\/';
+              #8   : V.StrVal := V.StrVal + '\b';
+              #12  : V.StrVal := V.StrVal + '\f';
+              #10  : V.StrVal := V.StrVal + '\n';
+              #13  : V.StrVal := V.StrVal + '\r';
+              #9   : V.StrVal := V.StrVal + '\t';
+            Else
+              V.StrVal := V.StrVal + Op[I];
+            End;
+          End;
+          Op := 'STRING_ESCAPE';
         End;
       End
       Else
