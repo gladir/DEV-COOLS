@@ -28,7 +28,7 @@
 
   Voir DOC/RES_FORMAT.txt pour la description complete du format .RES.
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
             DISRES_VERSION ('1.0') et DISRES_DATE ('2026-03-25')
             {$A-} pour desactiver l alignement automatique des records
             TOptions : SrcFile (String), OutFile (String),
@@ -742,28 +742,234 @@ Const
   DISRES_VERSION = '1.0';
   DISRES_DATE    = '2026-03-25';
 
+  { Codes de retour }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Formats de fichier .RES }
+  FMT_UNKNOWN = 0;
+  FMT_RES16   = 1;   { Windows 3.x / Borland Pascal 16 bits }
+  FMT_RES32   = 2;   { Windows NT/9x+ 32 bits               }
+
+  { Limites internes }
+  MAX_RESOURCES   = 4096;
+  MAX_STRINGS     = 4096;
+  MAX_ACCEL       = 256;
+  MAX_MENU_ITEMS  = 512;
+  MAX_DIALOG_CTRL = 256;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String;
+
+  { Options de la ligne de commande }
+  TOptions = Record
+    SrcFile    : TString;   { fichier .RES source               }
+    OutFile    : TString;   { fichier .RC de sortie             }
+    Force16    : Boolean;   { -16 : forcer format 16 bits       }
+    Force32    : Boolean;   { -32 : forcer format 32 bits       }
+    Verbose    : Boolean;   { -v  : mode verbeux                }
+    ExtractBin : Boolean;   { -x  : extraire ressources binaires}
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
 Var
-  ResFileName  : String;
-  OutFileName  : String;
-  Verbose      : Boolean;
-  Force16      : Boolean;
-  Force32      : Boolean;
+  Opts : TOptions;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Erreur fatale ---------------------------------------- }
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('DISRES: ERREUR - ', Msg);
+  Halt(EXIT_ERROR);
+End;
+
+{ ---- Aide en ligne ---------------------------------------- }
+Procedure ShowHelp;
+Begin
+  WriteLn('DISRES v', DISRES_VERSION,
+          ' - Desassembleur de fichiers .RES (ressources Windows) vers .RC');
+  WriteLn;
+  WriteLn('Syntaxe : DISRES fichier.res [-o sortie.rc] [-16|-32] [-x] [-v] [-h]');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -o nom    : specifier le nom du fichier de sortie .RC');
+  WriteLn('              (defaut : meme nom que le fichier source, extension .RC)');
+  WriteLn('  -16       : forcer la lecture en format RES 16 bits');
+  WriteLn('              (Windows 3.x, Borland Pascal, Turbo Pascal pour Windows)');
+  WriteLn('  -32       : forcer la lecture en format RES 32 bits');
+  WriteLn('              (Windows NT/9x+, MSVC, Delphi, Free Pascal/windres)');
+  WriteLn('  -x        : extraire les ressources binaires (icones, curseurs, bitmaps)');
+  WriteLn('              dans le repertoire courant');
+  WriteLn('  -v        : mode verbeux (afficher les details des ressources)');
+  WriteLn('  -h        : afficher cette aide');
+  WriteLn('  --help    : afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  DISRES appli.res');
+  WriteLn('  DISRES appli.res -o ressources.rc -v');
+  WriteLn('  DISRES appli.res -32 -x -o appli.rc');
+  WriteLn;
+  Halt(EXIT_OK);
+End;
+
+{ ---- Construction du nom de sortie par defaut ------------- }
+Procedure BuildOutName(Var AOpts : TOptions);
+Var
+  Base : TString;
+  I    : Integer;
+Begin
+  Base := AOpts.SrcFile;
+  For I := Length(Base) DownTo 1 Do
+  Begin
+    If (Base[I] = '.') Or (Base[I] = ':') Or
+       (Base[I] = '\') Or (Base[I] = '/') Then
+    Begin
+      If Base[I] = '.' Then
+        Base := Copy(Base, 1, I - 1);
+      Break;
+    End;
+  End;
+  AOpts.OutFile := Base + '.RC';
+End;
+
+{ ---- Analyse de la ligne de commande ---------------------- }
+Procedure ParseCommandLine(Var AOpts : TOptions);
+Var
+  I    : Integer;
+  Arg  : TString;
+  SLen : Integer;
+  Ext  : TString;
+Begin
+  { Initialisation des options }
+  AOpts.SrcFile    := '';
+  AOpts.OutFile    := '';
+  AOpts.Force16    := False;
+  AOpts.Force32    := False;
+  AOpts.Verbose    := False;
+  AOpts.ExtractBin := False;
+
+  If ParamCount = 0 Then
+    ShowHelp;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+    If (Arg = '-h') Or (Arg = '-?') Or (Arg = '--help') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      AOpts.Verbose := True
+    Else If Arg = '-16' Then
+    Begin
+      AOpts.Force16 := True;
+      AOpts.Force32 := False;
+    End
+    Else If Arg = '-32' Then
+    Begin
+      AOpts.Force32 := True;
+      AOpts.Force16 := False;
+    End
+    Else If Arg = '-x' Then
+      AOpts.ExtractBin := True
+    Else If (Arg = '-o') And (I < ParamCount) Then
+    Begin
+      Inc(I);
+      AOpts.OutFile := ParamStr(I);
+    End
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+    Begin
+      WriteLn('DISRES: option inconnue : ', Arg);
+      WriteLn('Utilisez DISRES -h pour l''aide.');
+      Halt(EXIT_USAGE);
+    End
+    Else If AOpts.SrcFile = '' Then
+      AOpts.SrcFile := Arg
+    Else
+    Begin
+      WriteLn('DISRES: argument inattendu : ', Arg);
+      WriteLn('Utilisez DISRES -h pour l''aide.');
+      Halt(EXIT_USAGE);
+    End;
+    Inc(I);
+  End;
+
+  { Verifier que le fichier source est fourni }
+  If AOpts.SrcFile = '' Then
+  Begin
+    WriteLn('DISRES: aucun fichier source specifie.');
+    WriteLn('Utilisez DISRES -h pour l''aide.');
+    Halt(EXIT_USAGE);
+  End;
+
+  { Verifier l'extension .res / .RES }
+  SLen := Length(AOpts.SrcFile);
+  If SLen >= 4 Then
+    Ext := Copy(AOpts.SrcFile, SLen - 3, 4)
+  Else
+    Ext := AOpts.SrcFile;
+  { Convertir en majuscules pour comparaison }
+  If (Length(Ext) = 4) And (Ext[1] = '.') Then
+  Begin
+    If (Ext[2] In ['R', 'r']) And (Ext[3] In ['E', 'e']) And
+       (Ext[4] In ['S', 's']) Then
+      { extension valide }
+    Else
+    Begin
+      WriteLn('DISRES: le fichier source doit avoir l''extension .RES : ',
+              AOpts.SrcFile);
+      Halt(EXIT_USAGE);
+    End;
+  End
+  Else
+  Begin
+    WriteLn('DISRES: le fichier source doit avoir l''extension .RES : ',
+            AOpts.SrcFile);
+    Halt(EXIT_USAGE);
+  End;
+
+  { Construire le nom de sortie par defaut si non specifie }
+  If AOpts.OutFile = '' Then
+    BuildOutName(AOpts);
+End;
 
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
-  WriteLn('DISRES version ', DISRES_VERSION, ' (', DISRES_DATE, ')');
-  WriteLn('Desassembleur de fichiers .RES vers .RC');
+  { Banniere de version }
+  WriteLn('DISRES v', DISRES_VERSION, ' (', DISRES_DATE, ') - ',
+          'Desassembleur de fichiers .RES vers .RC');
   WriteLn;
-  { TODO 01 a TODO 25 : a implementer }
-  If ParamCount < 1 Then Begin
-    WriteLn('Usage: DISRES fichier.res [-o sortie.rc] [-16|-32] [-v] [-h]');
-    Halt(2);
+
+  { Analyser la ligne de commande }
+  ParseCommandLine(Opts);
+
+  { Afficher la configuration si mode verbeux }
+  If Opts.Verbose Then
+  Begin
+    WriteLn('Fichier source  : ', Opts.SrcFile);
+    WriteLn('Fichier sortie  : ', Opts.OutFile);
+    If Opts.Force16 Then
+      WriteLn('Format force    : RES 16 bits')
+    Else If Opts.Force32 Then
+      WriteLn('Format force    : RES 32 bits')
+    Else
+      WriteLn('Format          : detection automatique');
+    If Opts.ExtractBin Then
+      WriteLn('Extraction bin. : activee');
+    WriteLn;
   End;
-  WriteLn('Fichier source : ', ParamStr(1));
-  WriteLn('(implementation en cours - voir les TODO ci-dessus)');
+
+  { TODO 02 a TODO 25 : a implementer }
+  WriteLn('Fichier source : ', Opts.SrcFile);
+  WriteLn('(TODO 02 a TODO 25 : implementation en cours)');
 End.
