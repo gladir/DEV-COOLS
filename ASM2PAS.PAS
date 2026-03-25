@@ -20,7 +20,7 @@
       Fonctions utilitaires : UpCaseStr, Trim, HexToInt,
       IntToStr, FileExists, ChangeFileExt.
 
-  2.  [A FAIRE] Analyseur lexical (tokenizer) du code assembleur.
+  2.  [IMPLEMENTE] Analyseur lexical (tokenizer) du code assembleur.
       Lire le fichier .ASM ligne par ligne et decouper chaque
       ligne en tokens : labels (identificateur suivi de ':'),
       mnemoniques d'instructions, operandes (registres, memoire,
@@ -412,6 +412,8 @@ Type
   EndLine:LongInt;
  End;
 
+ PStr = ^String;
+
 Var
  InFileName,OutFileName:String;
  Mode32:Boolean;
@@ -429,6 +431,11 @@ Var
  TotalProcs:LongInt;
  TotalVars:LongInt;
  TotalLabels:LongInt;
+ Tokens:Array[1..MAX_TOKENS] of TToken;
+ TokenCount:Integer;
+ SrcLines:Array[0..MAX_LINES-1] of PStr;
+ SrcLineNums:Array[0..MAX_LINES-1] of LongInt;
+ SrcLineCount:LongInt;
 
 { ============================================================
   Fonctions utilitaires
@@ -526,6 +533,429 @@ Begin
 End;
 
 { ============================================================
+  Analyseur lexical (tokenizer) - TODO 2
+  ============================================================ }
+
+Function IsIdentStart(C:Char):Boolean;
+Begin
+ IsIdentStart:=(C='_')or(C='.')or(C='@')or(C='?')or
+  ((C>='A')and(C<='Z'))or((C>='a')and(C<='z'));
+End;
+
+Function IsIdentChar(C:Char):Boolean;
+Begin
+ IsIdentChar:=(C='_')or(C='@')or(C='?')or
+  ((C>='A')and(C<='Z'))or((C>='a')and(C<='z'))or
+  ((C>='0')and(C<='9'));
+End;
+
+Function IsDigit(C:Char):Boolean;
+Begin
+ IsDigit:=(C>='0')and(C<='9');
+End;
+
+Function IsHexDigit(C:Char):Boolean;
+Var
+ U:Char;
+Begin
+ U:=UpCase(C);
+ IsHexDigit:=((U>='0')and(U<='9'))or((U>='A')and(U<='F'));
+End;
+
+Function IsRegister(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsRegister:=
+  { Registres 8 bits }
+  (U='AL')or(U='AH')or(U='BL')or(U='BH')or
+  (U='CL')or(U='CH')or(U='DL')or(U='DH')or
+  { Registres 16 bits }
+  (U='AX')or(U='BX')or(U='CX')or(U='DX')or
+  (U='SI')or(U='DI')or(U='BP')or(U='SP')or
+  { Registres de segment }
+  (U='CS')or(U='DS')or(U='ES')or(U='SS')or(U='FS')or(U='GS')or
+  { Registres 32 bits }
+  (U='EAX')or(U='EBX')or(U='ECX')or(U='EDX')or
+  (U='ESI')or(U='EDI')or(U='EBP')or(U='ESP');
+End;
+
+Function IsMnemonic(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsMnemonic:=
+  { Transfert de donnees }
+  (U='MOV')or(U='MOVZX')or(U='MOVSX')or(U='XCHG')or
+  (U='LEA')or(U='LDS')or(U='LES')or(U='LFS')or(U='LGS')or
+  (U='CBW')or(U='CWD')or(U='CWDE')or(U='CDQ')or
+  (U='LAHF')or(U='SAHF')or
+  { Arithmetique }
+  (U='ADD')or(U='ADC')or(U='SUB')or(U='SBB')or
+  (U='INC')or(U='DEC')or(U='NEG')or
+  (U='MUL')or(U='IMUL')or(U='DIV')or(U='IDIV')or
+  (U='DAA')or(U='DAS')or(U='AAA')or(U='AAS')or(U='AAM')or(U='AAD')or
+  { Logique }
+  (U='AND')or(U='OR')or(U='XOR')or(U='NOT')or(U='TEST')or
+  { Decalage et rotation }
+  (U='SHL')or(U='SHR')or(U='SAL')or(U='SAR')or
+  (U='ROL')or(U='ROR')or(U='RCL')or(U='RCR')or
+  (U='SHLD')or(U='SHRD')or
+  { Operations sur bits }
+  (U='BT')or(U='BTS')or(U='BTR')or(U='BTC')or
+  (U='BSF')or(U='BSR')or(U='BSWAP')or
+  { Comparaison }
+  (U='CMP')or
+  { Sauts }
+  (U='JMP')or(U='JE')or(U='JNE')or(U='JZ')or(U='JNZ')or
+  (U='JA')or(U='JAE')or(U='JB')or(U='JBE')or
+  (U='JG')or(U='JGE')or(U='JL')or(U='JLE')or
+  (U='JNA')or(U='JNAE')or(U='JNB')or(U='JNBE')or
+  (U='JNG')or(U='JNGE')or(U='JNL')or(U='JNLE')or
+  (U='JC')or(U='JNC')or(U='JO')or(U='JNO')or
+  (U='JS')or(U='JNS')or(U='JP')or(U='JNP')or
+  (U='JPE')or(U='JPO')or(U='JCXZ')or(U='JECXZ')or
+  { Boucles }
+  (U='LOOP')or(U='LOOPE')or(U='LOOPZ')or
+  (U='LOOPNE')or(U='LOOPNZ')or
+  { Appels et retours }
+  (U='CALL')or(U='RET')or(U='RETF')or(U='RETN')or(U='IRET')or
+  { Pile }
+  (U='PUSH')or(U='POP')or(U='PUSHA')or(U='POPA')or
+  (U='PUSHAD')or(U='POPAD')or(U='PUSHF')or(U='POPF')or
+  (U='PUSHFD')or(U='POPFD')or
+  { Operations sur chaines }
+  (U='MOVSB')or(U='MOVSW')or(U='MOVSD')or
+  (U='CMPSB')or(U='CMPSW')or(U='CMPSD')or
+  (U='LODSB')or(U='LODSW')or(U='LODSD')or
+  (U='STOSB')or(U='STOSW')or(U='STOSD')or
+  (U='SCASB')or(U='SCASW')or(U='SCASD')or
+  { Prefixes }
+  (U='REP')or(U='REPE')or(U='REPZ')or
+  (U='REPNE')or(U='REPNZ')or(U='LOCK')or
+  { Interruptions }
+  (U='INT')or(U='INTO')or
+  { Flags }
+  (U='CLC')or(U='STC')or(U='CMC')or
+  (U='CLD')or(U='STD')or(U='CLI')or(U='STI')or
+  { Divers }
+  (U='NOP')or(U='HLT')or(U='WAIT')or(U='FWAIT')or
+  (U='ENTER')or(U='LEAVE')or(U='XLAT')or(U='XLATB')or
+  { Entrees/Sorties }
+  (U='IN')or(U='OUT')or(U='INSB')or(U='INSW')or
+  (U='OUTSB')or(U='OUTSW')or
+  { SETcc }
+  (U='SETE')or(U='SETNE')or(U='SETZ')or(U='SETNZ')or
+  (U='SETA')or(U='SETAE')or(U='SETB')or(U='SETBE')or
+  (U='SETG')or(U='SETGE')or(U='SETL')or(U='SETLE')or
+  (U='SETC')or(U='SETNC')or(U='SETO')or(U='SETNO')or
+  (U='SETS')or(U='SETNS')or
+  { CMOVcc }
+  (U='CMOVE')or(U='CMOVNE')or(U='CMOVZ')or(U='CMOVNZ')or
+  (U='CMOVA')or(U='CMOVAE')or(U='CMOVB')or(U='CMOVBE')or
+  (U='CMOVG')or(U='CMOVGE')or(U='CMOVL')or(U='CMOVLE')or
+  { Systeme }
+  (U='CPUID')or(U='RDTSC')or(U='RDMSR')or(U='WRMSR')or
+  (U='INVD')or(U='WBINVD')or
+  { Echange }
+  (U='XADD')or(U='CMPXCHG');
+End;
+
+Function IsDirective(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsDirective:=
+  { Modeles et segments }
+  (U='.MODEL')or(U='.STACK')or(U='.CODE')or
+  (U='.DATA')or(U='.DATA?')or(U='.CONST')or
+  (U='.FARDATA')or(U='.FARDATA?')or
+  (U='SEGMENT')or(U='ENDS')or(U='GROUP')or(U='ASSUME')or
+  { Processeur }
+  (U='.8086')or(U='.186')or(U='.286')or(U='.286C')or(U='.286P')or
+  (U='.386')or(U='.386C')or(U='.386P')or
+  (U='.486')or(U='.486P')or(U='.586')or(U='.586P')or
+  (U='OPTION')or
+  { Procedures }
+  (U='PROC')or(U='ENDP')or
+  { Donnees }
+  (U='DB')or(U='DW')or(U='DD')or(U='DQ')or(U='DF')or(U='DT')or
+  (U='EQU')or
+  { Visibilite }
+  (U='PUBLIC')or(U='EXTRN')or(U='EXTERN')or
+  { Inclusion }
+  (U='INCLUDE')or(U='INCLUDELIB')or
+  { Divers }
+  (U='LOCAL')or(U='END')or(U='ORG')or(U='ALIGN')or(U='EVEN')or
+  (U='TITLE')or(U='NAME')or(U='PAGE')or
+  { Assemblage conditionnel }
+  (U='IF')or(U='IFDEF')or(U='IFNDEF')or(U='ELSE')or(U='ENDIF')or
+  { Macros }
+  (U='MACRO')or(U='ENDM')or(U='REPT')or(U='IRP')or(U='IRPC');
+End;
+
+Function ClassifyIdent(S:String):Byte;
+Begin
+ If IsRegister(S) Then ClassifyIdent:=TK_REGISTER
+ Else If IsDirective(S) Then ClassifyIdent:=TK_DIRECTIVE
+ Else If IsMnemonic(S) Then ClassifyIdent:=TK_MNEMONIC
+ Else ClassifyIdent:=TK_IDENT;
+End;
+
+Procedure AddToken(Kind:Byte;Value:String);
+Begin
+ If TokenCount<MAX_TOKENS Then Begin
+  Inc(TokenCount);
+  Tokens[TokenCount].Kind:=Kind;
+  Tokens[TokenCount].Value:=Value;
+ End;
+End;
+
+Procedure TokenizeLine(Line:String);
+Var
+ I:Integer;
+ C:Char;
+ S:String;
+Begin
+ TokenCount:=0;
+ I:=1;
+ While(I<=Length(Line))and(TokenCount<MAX_TOKENS)do Begin
+  C:=Line[I];
+  { Espace et tabulation }
+  If(C=' ')or(C=#9)Then Begin
+   Inc(I);
+   Continue;
+  End;
+  { Commentaire : ';' jusqu'a la fin de ligne }
+  If C=';' Then Begin
+   AddToken(TK_COMMENT,Copy(Line,I+1,Length(Line)-I));
+   Break;
+  End;
+  { Chaine entre guillemets simples }
+  If C='''' Then Begin
+   S:='';
+   Inc(I);
+   While I<=Length(Line) do Begin
+    If Line[I]='''' Then Begin
+     If(I<Length(Line))and(Line[I+1]='''')Then Begin
+      S:=S+'''';
+      Inc(I,2);
+     End Else Begin
+      Inc(I);
+      Break;
+     End;
+    End Else Begin
+     S:=S+Line[I];
+     Inc(I);
+    End;
+   End;
+   AddToken(TK_STRING,S);
+   Continue;
+  End;
+  { Chaine entre guillemets doubles }
+  If C='"' Then Begin
+   S:='';
+   Inc(I);
+   While(I<=Length(Line))and(Line[I]<>'"')do Begin
+    S:=S+Line[I];
+    Inc(I);
+   End;
+   If I<=Length(Line) Then Inc(I);
+   AddToken(TK_STRING,S);
+   Continue;
+  End;
+  { Prefixe hexadecimal Pascal : $ABCD }
+  If C='$' Then Begin
+   If(I<Length(Line))and IsHexDigit(Line[I+1])Then Begin
+    S:='$';
+    Inc(I);
+    While(I<=Length(Line))and IsHexDigit(Line[I])do Begin
+     S:=S+Line[I];
+     Inc(I);
+    End;
+    AddToken(TK_NUMBER,S);
+   End Else Begin
+    AddToken(TK_IDENT,'$');
+    Inc(I);
+   End;
+   Continue;
+  End;
+  { Nombre : decimal, hex MASM (0FFh), hex C (0x1234) }
+  If IsDigit(C) Then Begin
+   S:='';
+   If(C='0')and(I<Length(Line))and
+     ((Line[I+1]='x')or(Line[I+1]='X'))Then Begin
+    { Hex C : 0x1234 }
+    S:='0x';
+    Inc(I,2);
+    While(I<=Length(Line))and IsHexDigit(Line[I])do Begin
+     S:=S+Line[I];
+     Inc(I);
+    End;
+   End Else Begin
+    { Decimal ou hex MASM (0FFh) }
+    While(I<=Length(Line))and IsHexDigit(Line[I])do Begin
+     S:=S+Line[I];
+     Inc(I);
+    End;
+    If(I<=Length(Line))and((Line[I]='h')or(Line[I]='H'))Then Begin
+     S:=S+'h';
+     Inc(I);
+    End;
+   End;
+   AddToken(TK_NUMBER,S);
+   Continue;
+  End;
+  { Identificateur, registre, mnemonique, directive, label }
+  If IsIdentStart(C) Then Begin
+   S:='';
+   While(I<=Length(Line))and IsIdentChar(Line[I])do Begin
+    S:=S+Line[I];
+    Inc(I);
+   End;
+   { Directives avec suffixe '?' (.DATA?, .FARDATA?) }
+   If(Length(S)>1)and(S[1]='.')and
+     (I<=Length(Line))and(Line[I]='?')Then Begin
+    S:=S+'?';
+    Inc(I);
+   End;
+   { Label : identificateur suivi de ':' }
+   If(I<=Length(Line))and(Line[I]=':')Then Begin
+    Inc(I);
+    AddToken(TK_LABEL,S);
+    Continue;
+   End;
+   { Classifier l'identificateur }
+   AddToken(ClassifyIdent(S),S);
+   Continue;
+  End;
+  { Operateurs et ponctuation }
+  Case C of
+   ',':AddToken(TK_COMMA,',');
+   '[':AddToken(TK_LBRACKET,'[');
+   ']':AddToken(TK_RBRACKET,']');
+   '+':AddToken(TK_PLUS,'+');
+   '-':AddToken(TK_MINUS,'-');
+   '*':AddToken(TK_STAR,'*');
+   ':':AddToken(TK_COLON,':');
+  End;
+  Inc(I);
+ End;
+End;
+
+Function GetTokenName(Kind:Byte):String;
+Begin
+ Case Kind of
+  TK_NONE:GetTokenName:='NONE';
+  TK_IDENT:GetTokenName:='IDENT';
+  TK_NUMBER:GetTokenName:='NUMBER';
+  TK_STRING:GetTokenName:='STRING';
+  TK_REGISTER:GetTokenName:='REGISTER';
+  TK_MNEMONIC:GetTokenName:='MNEMONIC';
+  TK_DIRECTIVE:GetTokenName:='DIRECTIVE';
+  TK_LABEL:GetTokenName:='LABEL';
+  TK_COMMA:GetTokenName:='COMMA';
+  TK_LBRACKET:GetTokenName:='LBRACKET';
+  TK_RBRACKET:GetTokenName:='RBRACKET';
+  TK_PLUS:GetTokenName:='PLUS';
+  TK_MINUS:GetTokenName:='MINUS';
+  TK_STAR:GetTokenName:='STAR';
+  TK_COLON:GetTokenName:='COLON';
+  TK_COMMENT:GetTokenName:='COMMENT';
+  TK_EOL:GetTokenName:='EOL';
+  Else GetTokenName:='?';
+ End;
+End;
+
+Procedure ReadASMFile;
+Var
+ Line,CurLine:String;
+ FileLineNum:LongInt;
+ HasContinuation:Boolean;
+ LabelCnt,InstrCnt,DirCnt,CommentCnt:LongInt;
+ I,NonComment:Integer;
+Begin
+ SrcLineCount:=0;
+ LabelCnt:=0;
+ InstrCnt:=0;
+ DirCnt:=0;
+ CommentCnt:=0;
+ Assign(InFile,InFileName);
+ {$I-}Reset(InFile);{$I+}
+ If IoResult<>0 Then Begin
+  WriteLn('Erreur : Impossible d''ouvrir ',InFileName);
+  Halt(1);
+ End;
+ FileLineNum:=0;
+ CurLine:='';
+ HasContinuation:=False;
+ While Not Eof(InFile) do Begin
+  ReadLn(InFile,Line);
+  Inc(FileLineNum);
+  { Gestion des continuations de ligne avec '\' }
+  If HasContinuation Then
+   CurLine:=CurLine+' '+Trim(Line)
+  Else
+   CurLine:=Line;
+  If(Length(CurLine)>0)and(CurLine[Length(CurLine)]='\')Then Begin
+   CurLine:=Copy(CurLine,1,Length(CurLine)-1);
+   HasContinuation:=True;
+   Continue;
+  End;
+  HasContinuation:=False;
+  { Tokeniser la ligne }
+  TokenizeLine(CurLine);
+  { Compter les tokens non-commentaires }
+  NonComment:=0;
+  For I:=1 to TokenCount do
+   If Tokens[I].Kind<>TK_COMMENT Then Inc(NonComment);
+  { Ignorer les lignes vides et les lignes de commentaire seul }
+  If NonComment=0 Then Begin
+   If TokenCount>0 Then Inc(CommentCnt);
+   Continue;
+  End;
+  { Stocker la ligne source }
+  If SrcLineCount<MAX_LINES Then Begin
+   New(SrcLines[SrcLineCount]);
+   SrcLines[SrcLineCount]^:=CurLine;
+   SrcLineNums[SrcLineCount]:=FileLineNum;
+   Inc(SrcLineCount);
+   { Compter les statistiques par type de token }
+   For I:=1 to TokenCount do Begin
+    Case Tokens[I].Kind of
+     TK_LABEL:Inc(LabelCnt);
+     TK_MNEMONIC:Inc(InstrCnt);
+     TK_DIRECTIVE:Inc(DirCnt);
+    End;
+   End;
+  End;
+ End;
+ Close(InFile);
+ WriteLn('Lecture de ',InFileName,' : ',FileLineNum,' lignes, ',
+         SrcLineCount,' lignes utiles.');
+ If Verbose Then Begin
+  WriteLn('  Labels       : ',LabelCnt);
+  WriteLn('  Instructions : ',InstrCnt);
+  WriteLn('  Directives   : ',DirCnt);
+  WriteLn('  Commentaires : ',CommentCnt);
+ End;
+End;
+
+Procedure FreeSourceLines;
+Var
+ I:LongInt;
+Begin
+ For I:=0 to SrcLineCount-1 do Begin
+  If SrcLines[I]<>Nil Then Dispose(SrcLines[I]);
+  SrcLines[I]:=Nil;
+ End;
+ SrcLineCount:=0;
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
@@ -620,7 +1050,8 @@ BEGIN
                Else WriteLn('ASM inline : desactive');
   If AddComments Then WriteLn('Commentaires ASM : actifs');
  End;
- { TODO 2  - Analyseur lexical }
+ { Analyseur lexical (TODO 2) }
+ ReadASMFile;
  { TODO 3  - Analyse des directives }
  { TODO 4  - Analyse des donnees }
  { TODO 5  - Analyse des procedures }
@@ -644,5 +1075,6 @@ BEGIN
  { TODO 23 - Fallback ASM inline }
  { TODO 24 - Optimisation }
  { TODO 25 - Verification et rapport }
+ FreeSourceLines;
  WriteLn('Transpilation terminee.');
 END.
