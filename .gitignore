@@ -4,5 +4,6 @@
 *.obj
 *.ppu
 *.prg
+ASM2PAS
 CODEQL
 DISEXE
