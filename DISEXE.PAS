@@ -5480,7 +5480,7 @@ End;
 
 Procedure ShowHelp;Begin
  WriteLn('DISEXE v', DISEXE_VERSION, ' - Desassembleur EXE (MZ/PE)');
- WriteLn('DISEX - Cette commande permet de lancer le d‚sassembleur de ',
+ WriteLn('DISEXE - Cette commande permet de lancer le d‚sassembleur de ',
          'fichiers EXE (MZ DOS 16 bits / PE Windows 32 bits).');
  WriteLn;
  WriteLn('Syntaxe : DISEXE [options] fichier.exe');
