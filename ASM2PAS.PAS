@@ -79,7 +79,7 @@
       SEG label. Construire un arbre d'operande avec le type
       (reg, mem, imm), la taille et la valeur ou l'expression.
 
-  8.  [A FAIRE] Inference de types pour les variables et les registres.
+  8.  [IMPLEMENTE] Inference de types pour les variables et les registres.
       Determiner le type Pascal optimal pour chaque variable et
       registre : Byte (8 bits non signe), ShortInt (8 bits signe),
       Word (16 bits non signe), Integer (16 bits signe),
@@ -3233,6 +3233,337 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Inference de types pour les variables et registres - TODO 8
+  ============================================================ }
+
+Function InferTypeFromSize(Size:Word):Byte;
+{ Deduit un type Pascal par defaut a partir de la taille en octets }
+Begin
+ Case Size of
+  1:InferTypeFromSize:=PT_BYTE;
+  2:InferTypeFromSize:=PT_WORD;
+  4:InferTypeFromSize:=PT_LONGINT;
+  6:InferTypeFromSize:=PT_POINTER;
+  Else InferTypeFromSize:=PT_ARRAY;
+ End;
+End;
+
+Function IsSignedMnemonic(M:String):Boolean;
+{ Mnemoniques qui impliquent un traitement signe }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsSignedMnemonic:=(U='IMUL')or(U='IDIV')or(U='MOVSX')or
+  (U='CBW')or(U='CWD')or(U='CWDE')or(U='CDQ')or
+  (U='SAR')or(U='JS')or(U='JNS')or(U='JG')or(U='JGE')or
+  (U='JL')or(U='JLE')or(U='JNG')or(U='JNGE')or
+  (U='JNL')or(U='JNLE')or(U='SETG')or(U='SETGE')or
+  (U='SETL')or(U='SETLE')or(U='CMOVG')or(U='CMOVGE')or
+  (U='CMOVL')or(U='CMOVLE');
+End;
+
+Function IsUnsignedMnemonic(M:String):Boolean;
+{ Mnemoniques qui impliquent un traitement non signe }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsUnsignedMnemonic:=(U='MUL')or(U='DIV')or(U='MOVZX')or
+  (U='SHR')or(U='JA')or(U='JAE')or(U='JB')or(U='JBE')or
+  (U='JNA')or(U='JNAE')or(U='JNB')or(U='JNBE')or
+  (U='SETA')or(U='SETAE')or(U='SETB')or(U='SETBE')or
+  (U='CMOVA')or(U='CMOVAE')or(U='CMOVB')or(U='CMOVBE');
+End;
+
+Function IsStringMnemonic(M:String):Boolean;
+{ Mnemoniques d'operations sur chaines }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsStringMnemonic:=(U='MOVSB')or(U='MOVSW')or(U='MOVSD')or
+  (U='CMPSB')or(U='CMPSW')or(U='CMPSD')or
+  (U='LODSB')or(U='LODSW')or(U='LODSD')or
+  (U='STOSB')or(U='STOSW')or(U='STOSD')or
+  (U='SCASB')or(U='SCASW')or(U='SCASD')or
+  (U='REP')or(U='REPE')or(U='REPZ')or
+  (U='REPNE')or(U='REPNZ');
+End;
+
+Function IsCharContext(M:String;Var Op1,Op2:TOperand):Boolean;
+{ Detecte si une instruction utilise un contexte de caractere }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsCharContext:=False;
+ { CMP reg8, imm dans la plage ASCII imprimable }
+ If(U='CMP')and(Op1.OpType=OT_REG8)Then Begin
+  If(Op2.OpType in [OT_IMM8,OT_IMM16])and
+    (Op2.Imm>=32)and(Op2.Imm<=126)Then
+   IsCharContext:=True;
+ End;
+ { MOV reg8, imm ASCII }
+ If(U='MOV')and(Op1.OpType=OT_REG8)Then Begin
+  If(Op2.OpType in [OT_IMM8,OT_IMM16])and
+    (Op2.Imm>=32)and(Op2.Imm<=126)Then
+   IsCharContext:=True;
+ End;
+End;
+
+Function IsBooleanContext(M:String;Var Op1,Op2:TOperand):Boolean;
+{ Detecte si une instruction utilise un contexte booleen }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsBooleanContext:=False;
+ { CMP var, 0 ou CMP var, 1 }
+ If U='CMP' Then Begin
+  If(Op2.OpType in [OT_IMM8,OT_IMM16,OT_IMM32])and
+    ((Op2.Imm=0)or(Op2.Imm=1))Then Begin
+   If(Op1.OpType=OT_MEM)or(Op1.OpType=OT_LABEL)Then
+    IsBooleanContext:=True;
+  End;
+ End;
+ { TEST reg, reg (auto-test) }
+ If U='TEST' Then Begin
+  If(Op1.OpType in [OT_REG8,OT_REG16,OT_REG32])and
+    (Op2.OpType in [OT_REG8,OT_REG16,OT_REG32])and
+    (UpCaseStr(Op1.Reg)=UpCaseStr(Op2.Reg))Then
+   IsBooleanContext:=True;
+ End;
+End;
+
+Function IsPointerContext(M:String;Var Op1,Op2:TOperand):Boolean;
+{ Detecte si une instruction utilise un contexte de pointeur }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsPointerContext:=False;
+ { LDS/LES/LFS/LGS => pointeur FAR }
+ If(U='LDS')or(U='LES')or(U='LFS')or(U='LGS')Then
+  IsPointerContext:=True;
+ { LEA => adresse }
+ If U='LEA' Then IsPointerContext:=True;
+ { MOV reg, OFFSET => pointeur }
+ If(U='MOV')and(Op2.OpType=OT_OFFSET)Then
+  IsPointerContext:=True;
+End;
+
+Procedure RefineSymbolType(SymIdx:Integer;NewType:Byte);
+{ Raffine le type d'un symbole si le nouveau type est plus specifique }
+Begin
+ If(SymIdx<1)or(SymIdx>SymbolCount)Then Exit;
+ { Ne pas degrader un type deja specifique }
+ Case Symbols[SymIdx].DataType of
+  PT_BOOLEAN,PT_CHAR,PT_STRING,PT_PCHAR,PT_POINTER:Exit;
+ End;
+ { Promouvoir vers un type plus specifique }
+ Case NewType of
+  PT_BOOLEAN,PT_CHAR,PT_STRING,PT_PCHAR,PT_POINTER:
+   Symbols[SymIdx].DataType:=NewType;
+  PT_SHORTINT:
+   If Symbols[SymIdx].DataType=PT_BYTE Then
+    Symbols[SymIdx].DataType:=PT_SHORTINT;
+  PT_INTEGER:
+   If Symbols[SymIdx].DataType=PT_WORD Then
+    Symbols[SymIdx].DataType:=PT_INTEGER;
+ End;
+End;
+
+Procedure InferFromInstruction(Var AsmL:TAsmLine;
+ Var SignedCount,UnsignedCount,BoolCount,CharCount,
+     PtrCount,StrCount:LongInt);
+{ Analyse une instruction pour inferer des types }
+Var
+ U:String;
+ Idx:Integer;
+Begin
+ U:=AsmL.Mnemonic;
+ { Compter les contextes signes / non-signes }
+ If IsSignedMnemonic(U) Then Begin
+  Inc(SignedCount);
+  { Raffiner les operandes memoire/label vers signe }
+  If(AsmL.Op1.OpType=OT_LABEL)or(AsmL.Op1.OpType=OT_MEM)Then Begin
+   Idx:=FindSymbol(AsmL.Op1.LabelName);
+   If Idx>0 Then Begin
+    If Symbols[Idx].Size=1 Then RefineSymbolType(Idx,PT_SHORTINT)
+    Else If Symbols[Idx].Size=2 Then RefineSymbolType(Idx,PT_INTEGER);
+   End;
+  End;
+ End;
+ If IsUnsignedMnemonic(U) Then Inc(UnsignedCount);
+ { Contexte chaine }
+ If IsStringMnemonic(U) Then Begin
+  Inc(StrCount);
+  { SI/DI pointent vers des donnees de chaine }
+ End;
+ { Contexte booleen : CMP var, 0/1 }
+ If IsBooleanContext(U,AsmL.Op1,AsmL.Op2) Then Begin
+  Inc(BoolCount);
+  If(AsmL.Op1.OpType=OT_LABEL)or(AsmL.Op1.OpType=OT_MEM)Then Begin
+   Idx:=FindSymbol(AsmL.Op1.LabelName);
+   If Idx>0 Then Begin
+    If Symbols[Idx].Size=1 Then
+     RefineSymbolType(Idx,PT_BOOLEAN);
+   End;
+  End;
+ End;
+ { Contexte caractere }
+ If IsCharContext(U,AsmL.Op1,AsmL.Op2) Then Begin
+  Inc(CharCount);
+  { Si l'operande memoire est DB, raffiner en Char }
+  If(AsmL.Op1.OpType=OT_LABEL)or(AsmL.Op1.OpType=OT_MEM)Then Begin
+   Idx:=FindSymbol(AsmL.Op1.LabelName);
+   If Idx>0 Then Begin
+    If Symbols[Idx].Size=1 Then
+     RefineSymbolType(Idx,PT_CHAR);
+   End;
+  End;
+ End;
+ { Contexte pointeur }
+ If IsPointerContext(U,AsmL.Op1,AsmL.Op2) Then Begin
+  Inc(PtrCount);
+  { LDS/LES/LFS/LGS : l'operande memoire est un Pointer }
+  If(UpCaseStr(U)='LDS')or(UpCaseStr(U)='LES')or
+    (UpCaseStr(U)='LFS')or(UpCaseStr(U)='LGS')Then Begin
+   If(AsmL.Op2.OpType=OT_LABEL)or(AsmL.Op2.OpType=OT_MEM)Then Begin
+    Idx:=FindSymbol(AsmL.Op2.LabelName);
+    If Idx>0 Then RefineSymbolType(Idx,PT_POINTER);
+   End;
+  End;
+ End;
+ { MOV avec OFFSET => la source est un pointeur/PChar }
+ If(UpCaseStr(U)='MOV')and(AsmL.Op2.OpType=OT_OFFSET)Then Begin
+  Idx:=FindSymbol(AsmL.Op2.LabelName);
+  If Idx>0 Then Begin
+   { Si la cible est une variable de type DB string, c'est un PChar }
+   If Symbols[Idx].DataType=PT_STRING Then
+    RefineSymbolType(Idx,PT_PCHAR)
+   Else If Symbols[Idx].DataType=PT_ARRAY Then
+    RefineSymbolType(Idx,PT_PCHAR);
+  End;
+ End;
+End;
+
+Procedure RefineDataVarTypes;
+{ Raffine le type des variables de donnees a partir de leur contenu }
+Var
+ I:Integer;
+ DV:TDataVar;
+Begin
+ For I:=1 to DataVarCount do Begin
+  DV:=DataVars[I];
+  { DB avec une seule chaine => PChar ou String }
+  If(DV.DirType=DT_DB)and(DV.ElemCount>=1)Then Begin
+   If(DV.ElemCount=1)and(DV.Elements[1].ElemType=DE_STRING)Then Begin
+    { Chaine seule => String }
+    DataVars[I].PascalType:=PT_STRING;
+    { Mettre a jour le symbole }
+    If FindSymbol(DV.Name)>0 Then
+     Symbols[FindSymbol(DV.Name)].DataType:=PT_STRING;
+   End
+   Else If(DV.ElemCount=2)and(DV.Elements[1].ElemType=DE_STRING)and
+     (DV.Elements[2].ElemType=DE_NUMBER)and(DV.Elements[2].NumValue=0)Then Begin
+    { Chaine + 0 terminateur => PChar }
+    DataVars[I].PascalType:=PT_PCHAR;
+    If FindSymbol(DV.Name)>0 Then
+     Symbols[FindSymbol(DV.Name)].DataType:=PT_PCHAR;
+   End
+   Else If(DV.ElemCount>=2)and(DV.Elements[1].ElemType=DE_STRING)Then Begin
+    { Chaine + donnees => PChar }
+    DataVars[I].PascalType:=PT_PCHAR;
+    If FindSymbol(DV.Name)>0 Then
+     Symbols[FindSymbol(DV.Name)].DataType:=PT_PCHAR;
+   End;
+  End;
+  { DB avec un seul octet 0 ou 1 => potentiellement Boolean }
+  If(DV.DirType=DT_DB)and(DV.ElemCount=1)and
+    (DV.Elements[1].ElemType=DE_NUMBER)Then Begin
+   If(DV.Elements[1].NumValue=0)or(DV.Elements[1].NumValue=1)Then Begin
+    DataVars[I].PascalType:=PT_BOOLEAN;
+    If FindSymbol(DV.Name)>0 Then
+     Symbols[FindSymbol(DV.Name)].DataType:=PT_BOOLEAN;
+   End;
+  End;
+  { DD avec OFFSET => Pointer }
+  If(DV.DirType=DT_DD)and(DV.ElemCount=1)and
+    (DV.Elements[1].ElemType=DE_OFFSET)Then Begin
+   DataVars[I].PascalType:=PT_POINTER;
+   If FindSymbol(DV.Name)>0 Then
+    Symbols[FindSymbol(DV.Name)].DataType:=PT_POINTER;
+  End;
+  { DF (6 octets) => Pointer FAR 48 bits }
+  If DV.DirType=DT_DF Then Begin
+   DataVars[I].PascalType:=PT_POINTER;
+   If FindSymbol(DV.Name)>0 Then
+    Symbols[FindSymbol(DV.Name)].DataType:=PT_POINTER;
+  End;
+ End;
+End;
+
+Procedure ProcessTypeInference;
+{ Orchestrateur : infere les types des variables et registres }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ InstrCount:LongInt;
+ SignedCount,UnsignedCount:LongInt;
+ BoolCount,CharCount,PtrCount,StrCount:LongInt;
+ RefinedCount:LongInt;
+ OldType:Byte;
+Begin
+ SignedCount:=0;
+ UnsignedCount:=0;
+ BoolCount:=0;
+ CharCount:=0;
+ PtrCount:=0;
+ StrCount:=0;
+ InstrCount:=0;
+ { Passe 1 : Raffiner les types des variables de donnees (contenu) }
+ RefineDataVarTypes;
+ { Passe 2 : Analyser les instructions pour inferer les types }
+ For I:=0 to SrcLineCount-1 do Begin
+  TokenizeLine(SrcLines[I]^);
+  If TokenCount=0 Then Continue;
+  If(Tokens[1].Kind=TK_DIRECTIVE)Then Continue;
+  If(Tokens[1].Kind=TK_LABEL)and(TokenCount>=2)and
+    (Tokens[2].Kind=TK_DIRECTIVE)Then Continue;
+  If(Tokens[1].Kind=TK_IDENT)and(TokenCount>=2)and
+    (Tokens[2].Kind=TK_DIRECTIVE)Then Continue;
+  If(Tokens[1].Kind=TK_MNEMONIC)or
+    ((Tokens[1].Kind=TK_LABEL)and(TokenCount>=2)and
+     (Tokens[2].Kind=TK_MNEMONIC))Then Begin
+   ParseInstructionLine(I,AsmL);
+   If AsmL.Mnemonic<>'' Then Begin
+    Inc(InstrCount);
+    InferFromInstruction(AsmL,SignedCount,UnsignedCount,
+     BoolCount,CharCount,PtrCount,StrCount);
+   End;
+  End;
+ End;
+ { Compter combien de symboles ont ete raffines }
+ RefinedCount:=0;
+ For I:=1 to SymbolCount do Begin
+  OldType:=InferTypeFromSize(Symbols[I].Size);
+  If Symbols[I].DataType<>OldType Then Inc(RefinedCount);
+ End;
+ WriteLn('Inference de types : ',InstrCount,' instructions analysees.');
+ If Verbose Then Begin
+  WriteLn('  Contextes signes   : ',SignedCount);
+  WriteLn('  Contextes non-sign : ',UnsignedCount);
+  WriteLn('  Contextes booleen  : ',BoolCount);
+  WriteLn('  Contextes char     : ',CharCount);
+  WriteLn('  Contextes pointeur : ',PtrCount);
+  WriteLn('  Contextes chaine   : ',StrCount);
+  WriteLn('  Symboles raffines  : ',RefinedCount);
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -3336,7 +3667,8 @@ BEGIN
  BuildSymbolTable;
  { Analyse des operandes (TODO 7) }
  ProcessOperands;
- { TODO 8  - Inference de types }
+ { Inference de types (TODO 8) }
+ ProcessTypeInference;
  { TODO 9  - Traduction des registres }
  { TODO 10 - Traduction des transferts }
  { TODO 11 - Traduction arithmetique }
