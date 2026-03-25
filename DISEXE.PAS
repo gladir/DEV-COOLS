@@ -358,7 +358,7 @@ Type
   TString = String;
 
   { Tampon dynamique pour l'image en memoire }
-  TByteArray = Array[0..0] Of Byte;
+  TByteArray = Array[0..($7FFFFFFF - 1)] Of Byte;
   PByteArray = ^TByteArray;
 
   { Entete MZ (DOS EXE header - 28 octets minimum) }
@@ -4172,7 +4172,33 @@ Begin
       Case Entry.Op1Type Of
         OT_AL    : Operands := 'AL, ';
         OT_AX    : If OpSz = 4 Then Operands := 'EAX, ' Else Operands := 'AX, ';
+        OT_CL    : Operands := 'CL, ';
         OT_DX    : Operands := 'DX, ';
+        OT_CS    : Operands := 'CS, ';
+        OT_DS    : Operands := 'DS, ';
+        OT_ES    : Operands := 'ES, ';
+        OT_SS    : Operands := 'SS, ';
+        OT_FS    : Operands := 'FS, ';
+        OT_GS    : Operands := 'GS, ';
+        OT_REG8  : Begin
+          RegField := Opcode And $07;
+          Operands := RegNames8[RegField] + ', ';
+        End;
+        OT_REG16 : Begin
+          RegField := Opcode And $07;
+          If OpSz = 4 Then
+            Operands := RegNames32[RegField] + ', '
+          Else
+            Operands := RegNames16[RegField] + ', ';
+        End;
+        OT_REG32 : Begin
+          RegField := Opcode And $07;
+          Operands := RegNames32[RegField] + ', ';
+        End;
+        OT_SEGREG : Begin
+          RegField := (Opcode Shr 3) And $03;
+          Operands := SegRegNames[RegField] + ', ';
+        End;
         OT_MEM16 : Begin
           If AddrSz = 4 Then Begin
             Imm32 := ReadImageDWord(OpcOffset + 1);
@@ -4193,6 +4219,31 @@ Begin
         OT_DX    : Operands := Operands + 'DX';
         OT_CL    : Operands := Operands + 'CL';
         OT_ONE   : Operands := Operands + '1';
+        OT_CS    : Operands := Operands + 'CS';
+        OT_DS    : Operands := Operands + 'DS';
+        OT_ES    : Operands := Operands + 'ES';
+        OT_SS    : Operands := Operands + 'SS';
+        OT_FS    : Operands := Operands + 'FS';
+        OT_GS    : Operands := Operands + 'GS';
+        OT_REG8  : Begin
+          RegField := Opcode And $07;
+          Operands := Operands + RegNames8[RegField];
+        End;
+        OT_REG16 : Begin
+          RegField := Opcode And $07;
+          If OpSz = 4 Then
+            Operands := Operands + RegNames32[RegField]
+          Else
+            Operands := Operands + RegNames16[RegField];
+        End;
+        OT_REG32 : Begin
+          RegField := Opcode And $07;
+          Operands := Operands + RegNames32[RegField];
+        End;
+        OT_SEGREG : Begin
+          RegField := (Opcode Shr 3) And $03;
+          Operands := Operands + SegRegNames[RegField];
+        End;
         OT_IMM8  : Begin
           Imm8 := ReadImageByte(OpcOffset + Entry.BaseSize - 1);
           Operands := Operands + HexByte(Imm8) + 'h';
@@ -4217,10 +4268,6 @@ Begin
             Operands := Operands + '[' + HexWord(Imm16) + 'h]';
           End;
         End;
-        OT_CS    : Operands := Operands + 'CS';
-        OT_DS    : Operands := Operands + 'DS';
-        OT_ES    : Operands := Operands + 'ES';
-        OT_SS    : Operands := Operands + 'SS';
       Else
         Operands := Operands + '?';
       End;
