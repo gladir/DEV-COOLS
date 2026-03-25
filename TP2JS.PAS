@@ -3,11 +3,11 @@
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
-  @description: Compilateur Turbo Pascal vers JavaScript (.js)
+  @description: Transpilateur Turbo Pascal vers JavaScript (.js)
 }
 
 (* ============================================================
-   TP2JS.PAS - Compilateur Turbo Pascal vers JavaScript (.js)
+   TP2JS.PAS - Transpilateur Turbo Pascal vers JavaScript (.js)
    Turbo Pascal / Free Pascal (-Mtp)
    Cible : code JavaScript ES5+ (.js)
 
@@ -367,7 +367,7 @@ Begin
 End;
 
 Procedure ShowUsage;Begin
- WriteLn('TP2JS - Cette commande permet de compiler un fichier Turbo ',
+ WriteLn('TP2JS - Cette commande permet de transpiler un fichier Turbo ',
          'Pascal en code JavaScript.');
  WriteLn;
  WriteLn('Syntaxe : TP2JS <source.pas> [sortie.js] [options]');
@@ -389,7 +389,7 @@ End;
 
 Procedure ShowStats;Begin
   WriteLn;
-  WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+  WriteLn('Transpilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
   WriteLn('  Lignes         : ', TotalLines);
   WriteLn('  Erreurs        : ', ErrorCount);
   WriteLn('  Avertissements : ', WarnCount);
@@ -10045,11 +10045,11 @@ End;
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
+BEGIN
   ParseArgs;
   Run;
   If ErrorCount > 0 Then
     Halt(EXIT_ERROR)
   Else
     Halt(EXIT_OK);
-End.
+END.
