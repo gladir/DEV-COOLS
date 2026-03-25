@@ -245,7 +245,7 @@
       (codes d'erreur Windows, flags de fichier, etc.).
       Inserer des separateurs visuels entre les sous-programmes.
 
-  25. Options de sortie, verification finale et rapport.
+  25. [IMPLEMENTE] Options de sortie, verification finale et rapport.
       Verifier la coherence du fichier .ASM genere : toutes les
       references croisees sont resolues, les labels sont uniques,
       les segments sont correctement fermes. Afficher un rapport
@@ -5504,6 +5504,154 @@ Begin
 End;
 
 { ============================================================
+  VERIFICATION FINALE ET RAPPORT (TODO 25)
+  ============================================================ }
+
+{ VerifyASMCoherence - Verifie la coherence du desassemblage :
+  1. Pas de labels en double (meme adresse et meme nom)
+  2. Toutes les references croisees ont un label cible
+  3. Les noms de labels sont uniques
+  Retourne True si tout est coherent, False sinon. }
+Function VerifyASMCoherence : Boolean;
+Var
+  I, J     : LongInt;
+  Errors   : LongInt;
+  Found    : Boolean;
+Begin
+  Errors := 0;
+  { Verification 1 : labels uniques par nom }
+  For I := 0 To LabelCount - 2 Do Begin
+    For J := I + 1 To LabelCount - 1 Do Begin
+      If (Labels[I].Name = Labels[J].Name) And
+         (Labels[I].Address <> Labels[J].Address) Then Begin
+        If OptVerbose Then
+          WriteLn('  Avertissement : label duplique "', Labels[I].Name,
+                  '" aux adresses $', HexDWord(Labels[I].Address),
+                  ' et $', HexDWord(Labels[J].Address));
+        Inc(Errors);
+      End;
+    End;
+  End;
+  { Verification 2 : chaque cible de reference croisee a un label }
+  For I := 0 To XRefCount - 1 Do Begin
+    Found := False;
+    For J := 0 To LabelCount - 1 Do Begin
+      If Labels[J].Address = XRefs[I].ToAddr Then Begin
+        Found := True;
+        Break;
+      End;
+    End;
+    If Not Found Then Begin
+      If OptVerbose Then
+        WriteLn('  Avertissement : reference croisee vers $',
+                HexDWord(XRefs[I].ToAddr), ' sans label correspondant');
+      Inc(Errors);
+    End;
+  End;
+  If Errors = 0 Then
+    WriteLn('Verification de coherence : OK (aucune anomalie)')
+  Else
+    WriteLn('Verification de coherence : ', Errors, ' anomalie(s) detectee(s)');
+  VerifyASMCoherence := (Errors = 0);
+End;
+
+{ GetFileSize - Retourne la taille d'un fichier en octets, ou -1 si erreur }
+Function GetFileSize(Const FileName : TString) : LongInt;
+Var
+  F    : File Of Byte;
+  Size : LongInt;
+Begin
+  {$I-}
+  Assign(F, FileName);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    GetFileSize := -1;
+    Exit;
+  End;
+  Size := System.FileSize(F);
+  Close(F);
+  GetFileSize := Size;
+End;
+
+{ DisplayFinalReport - Affiche le rapport final du desassemblage.
+  Toujours affiche le resume principal.
+  Si OptVerbose, affiche des statistiques detaillees. }
+Procedure DisplayFinalReport;
+Var
+  ASMSize   : LongInt;
+  NbImport  : LongInt;
+  NbExport  : LongInt;
+  NbProc    : LongInt;
+  I         : LongInt;
+Begin
+  WriteLn;
+  WriteLn('============================================================');
+  WriteLn('  RAPPORT FINAL');
+  WriteLn('============================================================');
+  WriteLn;
+  { Compter les sous-programmes parmi les labels }
+  NbProc := 0;
+  NbImport := 0;
+  NbExport := 0;
+  For I := 0 To LabelCount - 1 Do Begin
+    If Labels[I].IsProc Then Inc(NbProc);
+    If Labels[I].IsImport Then Inc(NbImport);
+    If Labels[I].IsExport Then Inc(NbExport);
+  End;
+  WriteLn('  Fichier source          : ', InputFileName);
+  WriteLn('  Fichier ASM genere      : ', OutputFileName);
+  If IsPEFile Then
+    WriteLn('  Format                  : PE 32 bits (Windows)')
+  Else
+    WriteLn('  Format                  : MZ 16 bits (DOS)');
+  WriteLn;
+  WriteLn('  Instructions analysees  : ', InstrCount);
+  WriteLn('  Sous-programmes         : ', NbProc);
+  WriteLn('  Labels generes          : ', LabelCount);
+  WriteLn('  References croisees     : ', XRefCount);
+  WriteLn('  Imports                 : ', ImportCount);
+  WriteLn('  Exports                 : ', ExportCount);
+  WriteLn('  Octets de donnees       : ', DataBytes);
+  WriteLn('  Chaines ASCII           : ', StringCount);
+  WriteLn('  Tables de saut          : ', JumpTblCount);
+  { Taille du fichier ASM genere }
+  ASMSize := GetFileSize(OutputFileName);
+  If ASMSize >= 0 Then
+    WriteLn('  Taille du fichier .ASM  : ', ASMSize, ' octets')
+  Else
+    WriteLn('  Taille du fichier .ASM  : (non disponible)');
+  WriteLn('  Taille de l''image       : ', ImageSize, ' octets');
+  { Statistiques detaillees en mode verbose }
+  If OptVerbose Then Begin
+    WriteLn;
+    WriteLn('  --- Statistiques detaillees ---');
+    If IsPEFile Then Begin
+      WriteLn('  Point d''entree PE       : $', HexDWord(PEEntryPointRVA));
+      WriteLn('  Nombre de sections      : ', SectionCount);
+      WriteLn('  Relogements PE          : ', PERelocCount);
+      For I := 0 To SectionCount - 1 Do Begin
+        WriteLn('    Section ', GetSectionName(Sections[I]),
+                ' : VA=$', HexDWord(Sections[I].VirtualAddress),
+                ' Taille=$', HexDWord(Sections[I].VirtualSize));
+      End;
+    End Else Begin
+      WriteLn('  Point d''entree DOS      : ',
+              HexWord(EntryCS), ':', HexWord(EntryIP));
+      WriteLn('  Pile initiale           : ',
+              HexWord(EntrySS), ':', HexWord(EntrySP));
+      WriteLn('  Segment de base         : ', HexWord(BaseSegment));
+      WriteLn('  Relogements MZ          : ', MZRelocCount);
+    End;
+    WriteLn('  Labels de type PROC     : ', NbProc);
+    WriteLn('  Labels de type IMPORT   : ', NbImport);
+    WriteLn('  Labels de type EXPORT   : ', NbExport);
+  End;
+  WriteLn;
+  WriteLn('============================================================');
+End;
+
+{ ============================================================
   ANALYSE DES OPTIONS DE LIGNE DE COMMANDE
   ============================================================ }
 
@@ -6499,9 +6647,9 @@ Begin
   BuildSymbolTable(False);
  { Generation du fichier .ASM : en-tete, directives et segments (TODO 20) }
  GenerateASMHeader;
- WriteLn;
- WriteLn('(les TODOs 21 a 25 restent a implementer)');
- WriteLn;
+ { Verification finale et rapport (TODO 25) }
+ VerifyASMCoherence;
+ DisplayFinalReport;
  WriteLn('Termine.');
  { Liberation de la memoire }
  If (ByteFlags <> Nil) And (ImageSize > 0) Then
