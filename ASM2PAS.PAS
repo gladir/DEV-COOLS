@@ -213,7 +213,7 @@
       INT 16h -> fonctions BIOS clavier (KeyPressed, ReadKey).
       Interruptions inconnues -> appel Intr() ou inline ASM.
 
-  19. [A FAIRE] Traduction des modes d'adressage en syntaxe Pascal.
+  19. [IMPLEMENTE] Traduction des modes d'adressage en syntaxe Pascal.
       [BX+SI+disp] -> Mem[Seg:Ofs] ou acces tableau.
       [BP+n] avec n > 0 -> parametre de procedure (ParamN).
       [BP-n] -> variable locale (LocalN).
@@ -6657,6 +6657,552 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Traduction des modes d'adressage - TODO 19
+  ============================================================ }
+
+Const
+ { Categories de modes d'adressage }
+ AC_NONE    = 0;
+ AC_STACK   = 1;  { [BP+n] ou [BP-n] }
+ AC_ARRAY   = 2;  { [BX+SI+disp] ou [reg+index*scale] }
+ AC_RECORD  = 3;  { [reg+offset fixe] acces champ de structure }
+ AC_SEGOFS  = 4;  { segment:offset : Mem/MemW/MemL }
+ AC_DIRECT  = 5;  { [addr] acces memoire direct }
+ AC_INDEXED = 6;  { [EBX+ECX*4] tableau indexe }
+
+ MAX_ADDR_FIELDS = 128;
+ MAX_ADDR_STRUCTS = 32;
+ MIN_STRUCT_REFS = 2;  { Nb minimum de refs pour detecter un record }
+
+Type
+ TAddrField = Record
+  BaseReg:String;    { Registre de base utilise }
+  Offset:LongInt;    { Deplacement fixe }
+  Size:Byte;         { Taille de l'acces (1,2,4) }
+  RefCount:Integer;  { Nb de references a cet offset }
+  SrcLine:LongInt;   { Premiere ligne de reference }
+ End;
+
+ TAddrStruct = Record
+  BaseReg:String;     { Registre de base commun }
+  FieldCount:Integer;
+  Fields:Array[1..16] of Record
+   Offset:LongInt;
+   Size:Byte;
+   FieldName:String;
+  End;
+  RecordName:String;  { Nom genere pour le record }
+  RefCount:Integer;   { Total de references }
+ End;
+
+Var
+ AddrFields:Array[1..MAX_ADDR_FIELDS] of TAddrField;
+ AddrFieldCount:Integer;
+ AddrStructs:Array[1..MAX_ADDR_STRUCTS] of TAddrStruct;
+ AddrStructCount:Integer;
+
+Function AddrModeCategory(Var Op:TOperand):Byte;
+{ Classifie le mode d'adressage d'un operande memoire.
+  AC_STACK   = [BP+n] ou [EBP+n] : acces pile (params/locales)
+  AC_INDEXED = [reg+index*scale] : tableau indexe
+  AC_ARRAY   = [base+index+disp] : acces tableau/record
+  AC_RECORD  = [base+disp fixe] sans index : champ de structure
+  AC_SEGOFS  = avec override de segment explicite
+  AC_DIRECT  = [imm] ou [label] seul
+  AC_NONE    = pas un operande memoire }
+Var
+ U:String;
+Begin
+ If Op.OpType<>OT_MEM Then Begin
+  AddrModeCategory:=AC_NONE;
+  Exit;
+ End;
+ U:=UpCaseStr(Op.BaseReg);
+ { [BP+n] ou [EBP+n] = acces pile }
+ If((U='BP')or(U='EBP'))and(Op.IndexReg='')Then Begin
+  AddrModeCategory:=AC_STACK;
+  Exit;
+ End;
+ { [reg+index*scale] avec scale>1 = tableau indexe }
+ If(Op.IndexReg<>'')and(Op.Scale>1)Then Begin
+  AddrModeCategory:=AC_INDEXED;
+  Exit;
+ End;
+ { Avec override de segment explicite }
+ If Op.SegOverride<>'' Then Begin
+  AddrModeCategory:=AC_SEGOFS;
+  Exit;
+ End;
+ { [base+index+disp] = acces tableau }
+ If(Op.BaseReg<>'')and(Op.IndexReg<>'')Then Begin
+  AddrModeCategory:=AC_ARRAY;
+  Exit;
+ End;
+ { [base+disp] sans index = potentiel champ de record }
+ If(Op.BaseReg<>'')and(Op.HasDisp)and(Op.IndexReg='')Then Begin
+  AddrModeCategory:=AC_RECORD;
+  Exit;
+ End;
+ { [base] seul sans deplacement }
+ If(Op.BaseReg<>'')and(Not Op.HasDisp)Then Begin
+  AddrModeCategory:=AC_DIRECT;
+  Exit;
+ End;
+ { [label] ou [imm] }
+ If Op.HasDisp or(Op.LabelName<>'')Then Begin
+  AddrModeCategory:=AC_DIRECT;
+  Exit;
+ End;
+ AddrModeCategory:=AC_DIRECT;
+End;
+
+Function MemSizeToPrefix(Size:Byte):String;
+{ Retourne le prefixe Mem/MemW/MemL selon la taille.
+  1 byte  -> Mem   (Byte)
+  2 bytes -> MemW  (Word)
+  4 bytes -> MemL  (LongInt) }
+Begin
+ Case Size of
+  1:MemSizeToPrefix:='Mem';
+  2:MemSizeToPrefix:='MemW';
+  4:MemSizeToPrefix:='MemL';
+ Else
+  MemSizeToPrefix:='Mem';
+ End;
+End;
+
+Function MemSizeToType(Size:Byte):String;
+{ Retourne le nom de type Pascal selon la taille.
+  1 -> Byte, 2 -> Word, 4 -> LongInt }
+Begin
+ Case Size of
+  1:MemSizeToType:='Byte';
+  2:MemSizeToType:='Word';
+  4:MemSizeToType:='LongInt';
+ Else
+  MemSizeToType:='Byte';
+ End;
+End;
+
+Function RecordFieldName(Offset:LongInt;Size:Byte):String;
+{ Genere un nom de champ de record a partir de l'offset et de la taille.
+  Ex: offset 0, size 2 -> FieldW_00
+      offset 4, size 1 -> FieldB_04
+      offset 8, size 4 -> FieldL_08 }
+Var
+ Prefix:String;
+ S:String;
+Begin
+ Case Size of
+  1:Prefix:='FieldB_';
+  2:Prefix:='FieldW_';
+  4:Prefix:='FieldL_';
+ Else
+  Prefix:='Field_';
+ End;
+ Str(Abs(Offset),S);
+ If Abs(Offset)<10 Then S:='0'+S;
+ RecordFieldName:=Prefix+S;
+End;
+
+Procedure CollectAddrFields(Var Op:TOperand;SrcLine:LongInt);
+{ Collecte les acces memoire [base+offset] pour la detection de
+  patterns de structures. Chaque paire (baseReg, offset) unique
+  est enregistree avec un compteur de references. }
+Var
+ I:Integer;
+ U:String;
+Begin
+ If Op.OpType<>OT_MEM Then Exit;
+ U:=UpCaseStr(Op.BaseReg);
+ If U='' Then Exit;
+ If(U='BP')or(U='EBP')Then Exit; { Pile, pas structure }
+ If Op.IndexReg<>'' Then Exit;   { Avec index, pas struct }
+ If Not Op.HasDisp Then Exit;    { Sans offset, pas struct }
+ { Chercher si cette paire existe deja }
+ For I:=1 to AddrFieldCount do Begin
+  If(UpCaseStr(AddrFields[I].BaseReg)=U)and
+    (AddrFields[I].Offset=Op.Disp)Then Begin
+   Inc(AddrFields[I].RefCount);
+   Exit;
+  End;
+ End;
+ { Ajouter une nouvelle entree }
+ If AddrFieldCount<MAX_ADDR_FIELDS Then Begin
+  Inc(AddrFieldCount);
+  AddrFields[AddrFieldCount].BaseReg:=U;
+  AddrFields[AddrFieldCount].Offset:=Op.Disp;
+  If Op.Size>0 Then AddrFields[AddrFieldCount].Size:=Op.Size
+  Else AddrFields[AddrFieldCount].Size:=2;
+  AddrFields[AddrFieldCount].RefCount:=1;
+  AddrFields[AddrFieldCount].SrcLine:=SrcLine;
+ End;
+End;
+
+Procedure DetectRecordPatterns;
+{ Analyse les champs collectes pour detecter des patterns de
+  structures/records. Un record est detecte quand un meme
+  registre de base est utilise avec plusieurs offsets fixes
+  de facon repetee. }
+Var
+ I,J,K:Integer;
+ BaseRegs:Array[1..32] of String;
+ BaseRegCount:Integer;
+ U:String;
+ Found:Boolean;
+ FieldIdx:Integer;
+ S:String;
+Begin
+ AddrStructCount:=0;
+ { Collecter les registres de base uniques }
+ BaseRegCount:=0;
+ For I:=1 to 32 do BaseRegs[I]:='';
+ For I:=1 to AddrFieldCount do Begin
+  U:=AddrFields[I].BaseReg;
+  Found:=False;
+  For J:=1 to BaseRegCount do
+   If BaseRegs[J]=U Then Begin Found:=True; Break; End;
+  If(Not Found)and(BaseRegCount<32)Then Begin
+   Inc(BaseRegCount);
+   BaseRegs[BaseRegCount]:=U;
+  End;
+ End;
+ { Pour chaque registre de base, trouver les offsets utilises }
+ For I:=1 to BaseRegCount do Begin
+  { Compter les offsets distincts pour ce registre }
+  FieldIdx:=0;
+  For J:=1 to AddrFieldCount do Begin
+   If AddrFields[J].BaseReg=BaseRegs[I] Then
+    Inc(FieldIdx);
+  End;
+  { Si au moins MIN_STRUCT_REFS offsets distincts, c'est un record }
+  If FieldIdx>=MIN_STRUCT_REFS Then Begin
+   If AddrStructCount<MAX_ADDR_STRUCTS Then Begin
+    Inc(AddrStructCount);
+    AddrStructs[AddrStructCount].BaseReg:=BaseRegs[I];
+    AddrStructs[AddrStructCount].FieldCount:=0;
+    AddrStructs[AddrStructCount].RefCount:=0;
+    Str(AddrStructCount,S);
+    AddrStructs[AddrStructCount].RecordName:='TStruct'+S;
+    { Remplir les champs }
+    For J:=1 to AddrFieldCount do Begin
+     If AddrFields[J].BaseReg=BaseRegs[I] Then Begin
+      K:=AddrStructs[AddrStructCount].FieldCount;
+      If K<16 Then Begin
+       Inc(K);
+       AddrStructs[AddrStructCount].FieldCount:=K;
+       AddrStructs[AddrStructCount].Fields[K].Offset:=AddrFields[J].Offset;
+       AddrStructs[AddrStructCount].Fields[K].Size:=AddrFields[J].Size;
+       AddrStructs[AddrStructCount].Fields[K].FieldName:=
+        RecordFieldName(AddrFields[J].Offset,AddrFields[J].Size);
+       Inc(AddrStructs[AddrStructCount].RefCount,AddrFields[J].RefCount);
+      End;
+     End;
+    End;
+   End;
+  End;
+ End;
+End;
+
+Function FindAddrStruct(BaseReg:String;Offset:LongInt):String;
+{ Cherche si un acces [BaseReg+Offset] correspond a un champ
+  d'une structure detectee. Retourne le nom du champ ou '' }
+Var
+ I,J:Integer;
+ U:String;
+Begin
+ FindAddrStruct:='';
+ U:=UpCaseStr(BaseReg);
+ For I:=1 to AddrStructCount do Begin
+  If AddrStructs[I].BaseReg=U Then Begin
+   For J:=1 to AddrStructs[I].FieldCount do Begin
+    If AddrStructs[I].Fields[J].Offset=Offset Then Begin
+     FindAddrStruct:=AddrStructs[I].RecordName+'.'+
+      AddrStructs[I].Fields[J].FieldName;
+     Exit;
+    End;
+   End;
+  End;
+ End;
+End;
+
+Function TranslateMemAccess(Var Op:TOperand;ProcIdx:Integer):String;
+{ Traduit un operande memoire en expression Pascal amelioree.
+  Gere les differents modes d'adressage avec typage correct :
+  - [BP+n]  -> param/local via StackAccessExpr
+  - [BX+SI+disp] -> Mem/MemW/MemL[RegDS:base+index+disp]
+  - [EBX+ECX*4]  -> Tab[Index] ou MemL[base+index*scale]
+  - WORD PTR [x] -> MemW[...]
+  - DWORD PTR [x] -> MemL[...]
+  - [reg+disp]   -> record field si detecte, sinon Mem[...] }
+Var
+ Cat:Byte;
+ Pfx,Expr,FieldRef:String;
+ U,SegStr:String;
+Begin
+ Cat:=AddrModeCategory(Op);
+ { Determiner le prefixe memoire selon la taille }
+ If Op.Size>0 Then Pfx:=MemSizeToPrefix(Op.Size)
+ Else Pfx:='Mem';
+ Case Cat of
+  AC_STACK:Begin
+   { Pile : deleguer a StackAccessExpr }
+   TranslateMemAccess:=StackAccessExpr(Op.BaseReg,Op.Disp,ProcIdx);
+  End;
+  AC_INDEXED:Begin
+   { Tableau indexe : [base+index*scale+disp] }
+   Expr:=RegToPascalVar(Op.BaseReg);
+   If Op.IndexReg<>'' Then Begin
+    Expr:=Expr+'+'+RegToPascalVar(Op.IndexReg);
+    If Op.Scale>1 Then
+     Expr:=RegToPascalVar(Op.BaseReg)+'+'+
+      RegToPascalVar(Op.IndexReg)+'*'+IntToStr(Op.Scale);
+   End;
+   If Op.HasDisp Then Begin
+    If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
+    Else Expr:=Expr+IntToStr(Op.Disp);
+   End;
+   TranslateMemAccess:=Pfx+'['+Expr+']';
+  End;
+  AC_ARRAY:Begin
+   { Base+index : [BX+SI+disp] }
+   U:=UpCaseStr(Op.BaseReg);
+   If Op.SegOverride<>'' Then
+    SegStr:=RegToPascalVar(Copy(Op.SegOverride,1,2))+':'
+   Else If(U='BX')or(U='SI')or(U='DI')Then
+    SegStr:='RegDS:'
+   Else SegStr:='';
+   Expr:=RegToPascalVar(Op.BaseReg)+'+'+RegToPascalVar(Op.IndexReg);
+   If Op.HasDisp Then Begin
+    If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
+    Else Expr:=Expr+IntToStr(Op.Disp);
+   End;
+   TranslateMemAccess:=Pfx+'['+SegStr+Expr+']';
+  End;
+  AC_RECORD:Begin
+   { Champ de structure potentiel : [reg+offset fixe] }
+   U:=UpCaseStr(Op.BaseReg);
+   { Verifier si c'est un champ de record detecte }
+   FieldRef:=FindAddrStruct(U,Op.Disp);
+   If FieldRef<>'' Then Begin
+    { Acces via record : PtrReg^.FieldName }
+    TranslateMemAccess:=Pfx+'['+RegToPascalVar(Op.BaseReg)+'+'+
+     IntToStr(Op.Disp)+'] { '+FieldRef+' }';
+   End
+   Else Begin
+    { Acces memoire simple avec offset }
+    Expr:=RegToPascalVar(Op.BaseReg);
+    If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
+    Else Expr:=Expr+IntToStr(Op.Disp);
+    TranslateMemAccess:=Pfx+'['+Expr+']';
+   End;
+  End;
+  AC_SEGOFS:Begin
+   { Segment:Offset explicite }
+   SegStr:=RegToPascalVar(Copy(Op.SegOverride,1,2))+':';
+   If(Op.BaseReg<>'')and(Op.IndexReg<>'')Then Begin
+    Expr:=RegToPascalVar(Op.BaseReg)+'+'+RegToPascalVar(Op.IndexReg);
+    If Op.Scale>1 Then
+     Expr:=RegToPascalVar(Op.BaseReg)+'+'+
+      RegToPascalVar(Op.IndexReg)+'*'+IntToStr(Op.Scale);
+    If Op.HasDisp Then Begin
+     If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
+     Else Expr:=Expr+IntToStr(Op.Disp);
+    End;
+   End
+   Else If Op.BaseReg<>'' Then Begin
+    Expr:=RegToPascalVar(Op.BaseReg);
+    If Op.HasDisp Then Begin
+     If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
+     Else Expr:=Expr+IntToStr(Op.Disp);
+    End;
+   End
+   Else If Op.LabelName<>'' Then
+    Expr:=Op.LabelName
+   Else If Op.HasDisp Then
+    Expr:=IntToStr(Op.Disp)
+   Else Expr:='0';
+   TranslateMemAccess:=Pfx+'['+SegStr+Expr+']';
+  End;
+  AC_DIRECT:Begin
+   { Acces memoire direct }
+   If Op.LabelName<>'' Then Begin
+    If FindSymbol(Op.LabelName)>0 Then
+     TranslateMemAccess:=Symbols[FindSymbol(Op.LabelName)].Name
+    Else
+     TranslateMemAccess:=Pfx+'['+Op.LabelName+']';
+   End
+   Else If Op.BaseReg<>'' Then
+    TranslateMemAccess:=Pfx+'['+RegToPascalVar(Op.BaseReg)+']'
+   Else If Op.HasDisp Then
+    TranslateMemAccess:=Pfx+'[$'+HexWord(Word(Op.Disp))+']'
+   Else
+    TranslateMemAccess:=Pfx+'[0]';
+  End;
+ Else
+  TranslateMemAccess:='Mem[0]';
+ End;
+End;
+
+Function IsAddrModeMnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est une instruction qui utilise
+  des operandes memoire necessitant une traduction d'adressage.
+  Inclut les transferts, arithmetique, logique, comparaisons. }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsAddrModeMnemonic:=
+  (U='MOV')or(U='MOVZX')or(U='MOVSX')or
+  (U='LEA')or(U='LDS')or(U='LES')or(U='LFS')or(U='LGS')or(U='LSS')or
+  (U='ADD')or(U='ADC')or(U='SUB')or(U='SBB')or
+  (U='AND')or(U='OR')or(U='XOR')or(U='TEST')or(U='NOT')or(U='NEG')or
+  (U='CMP')or(U='INC')or(U='DEC')or
+  (U='MUL')or(U='IMUL')or(U='DIV')or(U='IDIV')or
+  (U='SHL')or(U='SHR')or(U='SAR')or(U='SAL')or
+  (U='ROL')or(U='ROR')or(U='RCL')or(U='RCR')or
+  (U='XCHG')or(U='PUSH')or(U='POP')or
+  (U='BT')or(U='BTS')or(U='BTR')or(U='BTC');
+End;
+
+Procedure ProcessAddressingTranslations;
+{ Parcourt les lignes source pour traduire les modes d'adressage
+  complexes en syntaxe Pascal. Detecte les patterns de structures
+  (records) et genere des traductions typees (Mem/MemW/MemL).
+  Phase 1: Collecte des acces memoire pour detection de structures.
+  Phase 2: Traduction des operandes memoire avec typage correct.
+  Produit des statistiques par categorie d'adressage. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ ProcIdx:Integer;
+ M,Code,Expr1,Expr2:String;
+ Cat1,Cat2:Byte;
+ TotalAddr:LongInt;
+ StackCount,ArrayCount,IndexedCount:LongInt;
+ RecordCount,SegOfsCount,DirectCount:LongInt;
+ StructFieldRefs:LongInt;
+Begin
+ TotalAddr:=0;
+ StackCount:=0;ArrayCount:=0;IndexedCount:=0;
+ RecordCount:=0;SegOfsCount:=0;DirectCount:=0;
+ StructFieldRefs:=0;
+ AddrFieldCount:=0;
+ AddrStructCount:=0;
+ { Phase 1 : Collecter les acces memoire pour detection de records }
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=UpCaseStr(AsmL.Mnemonic);
+  If Not IsAddrModeMnemonic(M) Then Continue;
+  CollectAddrFields(AsmL.Op1,I);
+  CollectAddrFields(AsmL.Op2,I);
+ End;
+ { Detecter les structures }
+ DetectRecordPatterns;
+ { Phase 2 : Traduire les operandes memoire }
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=UpCaseStr(AsmL.Mnemonic);
+  If Not IsAddrModeMnemonic(M) Then Continue;
+  { Verifier si au moins un operande est memoire }
+  Cat1:=AddrModeCategory(AsmL.Op1);
+  Cat2:=AddrModeCategory(AsmL.Op2);
+  If(Cat1=AC_NONE)and(Cat2=AC_NONE)Then Continue;
+  ProcIdx:=FindProcForLine(I);
+  Code:='';
+  { Traduire les deux operandes }
+  If AsmL.Op1.OpType=OT_MEM Then
+   Expr1:=TranslateMemAccess(AsmL.Op1,ProcIdx)
+  Else
+   Expr1:=OperandToExpr(AsmL.Op1,ProcIdx);
+  If AsmL.Op2.OpType=OT_MEM Then
+   Expr2:=TranslateMemAccess(AsmL.Op2,ProcIdx)
+  Else
+   Expr2:=OperandToExpr(AsmL.Op2,ProcIdx);
+  { Generer le commentaire de traduction }
+  If(Cat1<>AC_NONE)Then Begin
+   Code:='{ addr: '+M+' '+Expr1;
+   If AsmL.Op2.OpType<>OT_NONE Then
+    Code:=Code+', '+Expr2;
+   Code:=Code+' }';
+  End
+  Else If(Cat2<>AC_NONE)Then Begin
+   Code:='{ addr: '+M+' '+Expr1+', '+Expr2+' }';
+  End;
+  { Compter les categories }
+  If Cat1<>AC_NONE Then Begin
+   Case Cat1 of
+    AC_STACK:Inc(StackCount);
+    AC_ARRAY:Inc(ArrayCount);
+    AC_INDEXED:Inc(IndexedCount);
+    AC_RECORD:Begin
+     Inc(RecordCount);
+     If FindAddrStruct(AsmL.Op1.BaseReg,AsmL.Op1.Disp)<>'' Then
+      Inc(StructFieldRefs);
+    End;
+    AC_SEGOFS:Inc(SegOfsCount);
+    AC_DIRECT:Inc(DirectCount);
+   End;
+  End;
+  If Cat2<>AC_NONE Then Begin
+   Case Cat2 of
+    AC_STACK:Inc(StackCount);
+    AC_ARRAY:Inc(ArrayCount);
+    AC_INDEXED:Inc(IndexedCount);
+    AC_RECORD:Begin
+     Inc(RecordCount);
+     If FindAddrStruct(AsmL.Op2.BaseReg,AsmL.Op2.Disp)<>'' Then
+      Inc(StructFieldRefs);
+    End;
+    AC_SEGOFS:Inc(SegOfsCount);
+    AC_DIRECT:Inc(DirectCount);
+   End;
+  End;
+  If Code<>'' Then Begin
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(TotalAddr);
+  End;
+ End;
+ WriteLn('Traduction adressage : ',TotalAddr,' operandes memoire, ',
+  TranslationCount,' traductions totales.');
+ If Verbose Then Begin
+  WriteLn('  Pile [BP+n]       : ',StackCount);
+  WriteLn('  Tableau [b+i+d]   : ',ArrayCount);
+  WriteLn('  Indexe [r+i*s]    : ',IndexedCount);
+  WriteLn('  Record [r+d]      : ',RecordCount);
+  WriteLn('  Segment:Offset    : ',SegOfsCount);
+  WriteLn('  Direct [addr]     : ',DirectCount);
+  WriteLn('  Structures detect.: ',AddrStructCount);
+  WriteLn('  Champs collectes  : ',AddrFieldCount);
+  WriteLn('  Refs struct.      : ',StructFieldRefs);
+  If AddrStructCount>0 Then Begin
+   WriteLn('  Records detectes :');
+   For I:=1 to AddrStructCount do Begin
+    WriteLn('    ',AddrStructs[I].RecordName,' (base=',
+     AddrStructs[I].BaseReg,', ',
+     AddrStructs[I].FieldCount,' champs, ',
+     AddrStructs[I].RefCount,' refs) :');
+    For ProcIdx:=1 to AddrStructs[I].FieldCount do
+     WriteLn('      ',
+      AddrStructs[I].Fields[ProcIdx].FieldName,
+      ' : ',MemSizeToType(AddrStructs[I].Fields[ProcIdx].Size),
+      '; { offset ',AddrStructs[I].Fields[ProcIdx].Offset,' }');
+   End;
+  End;
+  If TotalAddr>0 Then Begin
+   WriteLn('  Details :');
+   For I:=TranslationCount-TotalAddr to TranslationCount-1 do
+    If I>=0 Then
+     WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -6783,6 +7329,7 @@ BEGIN
  { TODO 18 - Traduction INT systeme }
  ProcessIntTranslations;
  { TODO 19 - Traduction adressage }
+ ProcessAddressingTranslations;
  { TODO 20 - Extensions 80386 }
  { TODO 21 - Generation en-tete Pascal }
  { TODO 22 - Generation corps procedures }
