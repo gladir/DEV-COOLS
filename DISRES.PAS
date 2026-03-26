@@ -415,7 +415,7 @@
               extraCount (WORD), sauter extraCount octets
               stocker les lignes de dialogue generees
 
-  TODO 15 - DECODAGE RT_VERSION (TYPE 16) [A FAIRE]
+  TODO 15 - DECODAGE RT_VERSION (TYPE 16) [IMPLEMENTE]
             Constantes VS_FIXEDFILEINFO :
               VS_FFI_SIGNATURE = $FEEF04BD
             Constantes VFT_* (dwFileType) :
@@ -840,6 +840,21 @@ Const
   DS_MODALFRAME = $0080;  { cadre modal                    }
   DS_CENTER     = $0800;  { centrer dans l ecran           }
 
+  { Constantes VS_VERSIONINFO (RT_VERSION) }
+  VS_FFI_SIGNATURE = LongInt($FEEF04BD); { signature VS_FIXEDFILEINFO    }
+
+  { Types de fichiers VFT_* (dwFileType) }
+  VFT_UNKNOWN = 0;   { type inconnu            }
+  VFT_APP     = 1;   { application             }
+  VFT_DLL     = 2;   { bibliotheque de liens   }
+  VFT_DRV     = 3;   { pilote de peripherique  }
+  VFT_FONT    = 4;   { police de caracteres    }
+  VFT_VXD     = 5;   { pilote virtuel          }
+
+  { Systemes d exploitation VOS_* (dwFileOS) }
+  VOS_UNKNOWN      = 0;         { OS inconnu        }
+  VOS_NT_WINDOWS32 = $00040004; { Windows 32 bits   }
+
   { Limites internes }
   MAX_RESOURCES   = 4096;
   MAX_STRINGS     = 4096;
@@ -848,6 +863,9 @@ Const
   MAX_MENU_LINES  = 2048;
   MAX_DIALOG_CTRL = 256;
   MAX_DIALOG_LINES = 1024;
+  MAX_VERSION_INFO    = 16;   { ressources RT_VERSION par fichier   }
+  MAX_VERSION_STRINGS = 64;   { paires cle-valeur par ressource     }
+  MAX_VERSION_LINES   = 512;  { lignes RC generees pour les versions}
 
 { ============================================================
   TYPES
@@ -928,6 +946,30 @@ Type
   { Tableau de lignes RC pour la generation (dialogues) }
   TDialogLineArray = Array[1..MAX_DIALOG_LINES] Of TString;
 
+  { Entree de valeur de chaine de version (StringFileInfo) }
+  TVersionStringEntry = Record
+    Key   : TString;   { nom de la cle, ex. "CompanyName"  }
+    Value : TString;   { valeur associee                   }
+  End;
+
+  { Informations de version decodees (RT_VERSION) }
+  TVersionInfo = Record
+    FileVersionMS    : LongInt;  { version fichier partie haute         }
+    FileVersionLS    : LongInt;  { version fichier partie basse         }
+    ProductVersionMS : LongInt;  { version produit partie haute         }
+    ProductVersionLS : LongInt;  { version produit partie basse         }
+    FileOS           : LongInt;  { systeme d exploitation cible         }
+    FileType         : LongInt;  { type de fichier VFT_*                }
+    FileSubtype      : LongInt;  { sous-type de fichier                 }
+    FileFlags        : LongInt;  { drapeaux de fichier                  }
+    FileFlagsMask    : LongInt;  { masque des drapeaux valides          }
+    StringTableKey   : TString;  { cle du bloc StringTable ex 040904b0 }
+    StringValues     : Array[1..MAX_VERSION_STRINGS] Of TVersionStringEntry;
+    StringCount      : Integer;  { nombre de paires cle-valeur          }
+    TranslationLang  : Word;     { identifiant de langue                }
+    TranslationCP    : Word;     { page de codes                        }
+  End;
+
   { Entree dans la table des chaines decodes (RT_STRING) }
   TStringEntry = Record
     BlockId  : Word;    { identifiant du bloc 1..N      }
@@ -985,6 +1027,10 @@ Var
   DialogCtrlCount  : Integer;    { nombre de controles decodes       }
   DialogRCLines    : TDialogLineArray; { lignes RC pour les dialogues }
   DialogRCLineCount : Integer;   { nombre de lignes RC de dialogue   }
+  VersionInfos      : Array[1..MAX_VERSION_INFO] Of TVersionInfo;
+  VersionInfoCount  : Integer;   { nombre de ressources de version   }
+  VersionRCLines    : Array[1..MAX_VERSION_LINES] Of TString;
+  VersionRCLineCount : Integer;  { nombre de lignes RC de version    }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -2552,6 +2598,290 @@ Begin
 End;
 
 { ============================================================
+  TODO 15 - DECODAGE RT_VERSION (TYPE 16) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Formater un LongInt en hexadecimal style RC ---------- }
+Function HexLong(D : LongInt) : TString;
+Var
+  S : TString;
+  I : Integer;
+Begin
+  S := HexDWord(D);
+  I := 1;
+  While (I < Length(S)) And (S[I] = '0') Do
+    Inc(I);
+  HexLong := '0x' + Copy(S, I, Length(S) - I + 1) + 'L';
+End;
+
+{ ---- Lire le bloc VS_FIXEDFILEINFO ------------------------ }
+Procedure ParseVSFixedFileInfo(Var Info : TVersionInfo);
+Var
+  Sig : LongInt;
+Begin
+  Sig := ReadDWord;
+  If Sig <> VS_FFI_SIGNATURE Then
+    Exit;
+  ReadDWord;                          { dwStrucVersion }
+  Info.FileVersionMS    := ReadDWord;
+  Info.FileVersionLS    := ReadDWord;
+  Info.ProductVersionMS := ReadDWord;
+  Info.ProductVersionLS := ReadDWord;
+  Info.FileFlagsMask    := ReadDWord;
+  Info.FileFlags        := ReadDWord;
+  Info.FileOS           := ReadDWord;
+  Info.FileType         := ReadDWord;
+  Info.FileSubtype      := ReadDWord;
+  ReadDWord;                          { dwFileDateMS }
+  ReadDWord;                          { dwFileDateLS }
+End;
+
+{ ---- Lire les blocs StringFileInfo recursivement ---------- }
+Procedure ParseVersionStringBlock(Var Info : TVersionInfo);
+Var
+  BlockStart : LongInt;
+  BlockLen   : Word;
+  TableStart : LongInt;
+  TableLen   : Word;
+  EntryStart : LongInt;
+  EntryLen   : Word;
+  SKey       : TString;
+  SVal       : TString;
+  W          : Word;
+Begin
+  BlockStart := ResFilePos;
+  BlockLen   := ReadWord;
+  ReadWord;                     { wValueLength = 0 }
+  ReadWord;                     { wType = 1 }
+  ReadUnicodeString;            { szKey = "StringFileInfo" }
+  AlignResPos(4);
+  If BlockLen = 0 Then Exit;
+  { Parser chaque StringTable }
+  While ResFilePos < BlockStart + BlockLen Do
+  Begin
+    TableStart := ResFilePos;
+    TableLen   := ReadWord;
+    If TableLen = 0 Then Break;
+    ReadWord;                   { wValueLength = 0 }
+    ReadWord;                   { wType = 1 }
+    Info.StringTableKey := ReadUnicodeString;  { ex. "040904b0" }
+    AlignResPos(4);
+    { Parser chaque entree de chaine }
+    While ResFilePos < TableStart + TableLen Do
+    Begin
+      EntryStart := ResFilePos;
+      EntryLen   := ReadWord;
+      If EntryLen = 0 Then Break;
+      ReadWord;                 { wValueLength }
+      ReadWord;                 { wType = 1 }
+      SKey := ReadUnicodeString;
+      AlignResPos(4);
+      { Lire la valeur jusqu au nul ou fin d entree }
+      SVal := '';
+      While ResFilePos < EntryStart + EntryLen Do
+      Begin
+        W := ReadWChar;
+        If W = 0 Then Break;
+        SVal := SVal + WCharToChar(W);
+      End;
+      { Stocker la paire cle-valeur }
+      If (SKey <> '') And (Info.StringCount < MAX_VERSION_STRINGS) Then
+      Begin
+        Inc(Info.StringCount);
+        Info.StringValues[Info.StringCount].Key   := SKey;
+        Info.StringValues[Info.StringCount].Value := SVal;
+      End;
+      SeekResPos(EntryStart + EntryLen);
+    End;
+    SeekResPos(TableStart + TableLen);
+  End;
+  SeekResPos(BlockStart + BlockLen);
+End;
+
+{ ---- Lire le bloc VarFileInfo ----------------------------- }
+Procedure ParseVersionVarBlock(Var Info : TVersionInfo);
+Var
+  BlockStart : LongInt;
+  BlockLen   : Word;
+  VarStart   : LongInt;
+  VarLen     : Word;
+Begin
+  BlockStart := ResFilePos;
+  BlockLen   := ReadWord;
+  ReadWord;                     { wValueLength = 0 }
+  ReadWord;                     { wType = 1 }
+  ReadUnicodeString;            { szKey = "VarFileInfo" }
+  AlignResPos(4);
+  If BlockLen = 0 Then Exit;
+  If ResFilePos < BlockStart + BlockLen Then
+  Begin
+    VarStart := ResFilePos;
+    VarLen   := ReadWord;
+    If VarLen > 0 Then
+    Begin
+      ReadWord;                 { wValueLength }
+      ReadWord;                 { wType = 0 }
+      ReadUnicodeString;        { szKey = "Translation" }
+      AlignResPos(4);
+      If ResFilePos < VarStart + VarLen Then
+      Begin
+        Info.TranslationLang := ReadWord;
+        Info.TranslationCP   := ReadWord;
+      End;
+    End;
+  End;
+  SeekResPos(BlockStart + BlockLen);
+End;
+
+{ ---- Generer les lignes RC pour une ressource de version -- }
+Procedure VersionInfoToRC(Const Info    : TVersionInfo;
+                          Const ResName : TString);
+  Procedure AddLine(Const S : TString);
+  Begin
+    If VersionRCLineCount < MAX_VERSION_LINES Then
+    Begin
+      Inc(VersionRCLineCount);
+      VersionRCLines[VersionRCLineCount] := S;
+    End;
+  End;
+  Function VerStr(MS, LS : LongInt) : TString;
+  Begin
+    VerStr := IntToStr(Word(MS Shr 16)) + ', ' +
+              IntToStr(Word(MS And $FFFF)) + ', ' +
+              IntToStr(Word(LS Shr 16)) + ', ' +
+              IntToStr(Word(LS And $FFFF));
+  End;
+Var
+  I        : Integer;
+  BlkKey   : TString;
+Begin
+  AddLine(ResName + ' VERSIONINFO');
+  AddLine('FILEVERSION '    + VerStr(Info.FileVersionMS,    Info.FileVersionLS));
+  AddLine('PRODUCTVERSION ' + VerStr(Info.ProductVersionMS, Info.ProductVersionLS));
+  AddLine('FILEFLAGSMASK '  + HexLong(Info.FileFlagsMask));
+  AddLine('FILEFLAGS '      + HexLong(Info.FileFlags));
+  AddLine('FILEOS '         + HexLong(Info.FileOS));
+  AddLine('FILETYPE '       + HexLong(Info.FileType));
+  AddLine('FILESUBTYPE '    + HexLong(Info.FileSubtype));
+  AddLine('BEGIN');
+  If Info.StringCount > 0 Then
+  Begin
+    AddLine('    BLOCK "StringFileInfo"');
+    AddLine('    BEGIN');
+    If Info.StringTableKey <> '' Then
+      BlkKey := Info.StringTableKey
+    Else
+      BlkKey := HexWord(Info.TranslationLang) + HexWord(Info.TranslationCP);
+    AddLine('        BLOCK "' + BlkKey + '"');
+    AddLine('        BEGIN');
+    For I := 1 To Info.StringCount Do
+      AddLine('            VALUE "' + Info.StringValues[I].Key + '", "' +
+              EscapeRCString(Info.StringValues[I].Value) + '"');
+    AddLine('        END');
+    AddLine('    END');
+  End;
+  If (Info.TranslationLang <> 0) Or (Info.TranslationCP <> 0) Then
+  Begin
+    AddLine('    BLOCK "VarFileInfo"');
+    AddLine('    BEGIN');
+    AddLine('        VALUE "Translation", 0x' +
+            HexWord(Info.TranslationLang) + ', 0x' +
+            HexWord(Info.TranslationCP));
+    AddLine('    END');
+  End;
+  AddLine('END');
+End;
+
+{ ---- Decoder une ressource RT_VERSION --------------------- }
+Procedure ParseVersionInfo(Const Res     : TResourceEntry;
+                           Var   Info    : TVersionInfo);
+Var
+  ResStart : LongInt;
+  ResLen   : Word;
+  ValLen   : Word;
+  SavePos  : LongInt;
+  BlockLen : Word;
+  BlockKey : TString;
+Begin
+  { Initialiser la structure }
+  Info.FileVersionMS    := 0;
+  Info.FileVersionLS    := 0;
+  Info.ProductVersionMS := 0;
+  Info.ProductVersionLS := 0;
+  Info.FileOS           := VOS_UNKNOWN;
+  Info.FileType         := VFT_UNKNOWN;
+  Info.FileSubtype      := 0;
+  Info.FileFlags        := 0;
+  Info.FileFlagsMask    := 0;
+  Info.StringTableKey   := '';
+  Info.StringCount      := 0;
+  Info.TranslationLang  := 0;
+  Info.TranslationCP    := 0;
+  SeekResPos(Res.DataOfs);
+  ResStart := ResFilePos;
+  ResLen   := ReadWord;        { wLength total }
+  ValLen   := ReadWord;        { wValueLength = 52 si VS_FIXEDFILEINFO }
+  ReadWord;                    { wType = 0 }
+  ReadUnicodeString;           { szKey = "VS_VERSION_INFO" }
+  AlignResPos(4);
+  { Lire VS_FIXEDFILEINFO si present }
+  If ValLen > 0 Then
+    ParseVSFixedFileInfo(Info);
+  AlignResPos(4);
+  { Parser les blocs enfants StringFileInfo et VarFileInfo }
+  While ResFilePos < ResStart + ResLen Do
+  Begin
+    SavePos  := ResFilePos;
+    BlockLen := ReadWord;
+    If BlockLen = 0 Then Break;
+    ReadWord;                  { wValueLength }
+    ReadWord;                  { wType }
+    BlockKey := ReadUnicodeString;
+    SeekResPos(SavePos);
+    If UpCaseStr(BlockKey) = 'STRINGFILEINFO' Then
+      ParseVersionStringBlock(Info)
+    Else If UpCaseStr(BlockKey) = 'VARFILEINFO' Then
+      ParseVersionVarBlock(Info)
+    Else
+      Break;
+  End;
+End;
+
+{ ---- Decoder toutes les ressources RT_VERSION ------------- }
+Procedure ParseAllVersionInfos;
+Var
+  I        : Integer;
+  VerCount : Integer;
+  Info     : TVersionInfo;
+  ResName  : TString;
+Begin
+  VersionInfoCount   := 0;
+  VersionRCLineCount := 0;
+  VerCount           := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_VERSION) Then
+    Begin
+      ParseVersionInfo(Resources[I], Info);
+      If Resources[I].NameIsId Then
+        ResName := IntToStr(Resources[I].NameId)
+      Else
+        ResName := Resources[I].NameStr;
+      VersionInfoToRC(Info, ResName);
+      If VersionInfoCount < MAX_VERSION_INFO Then
+      Begin
+        Inc(VersionInfoCount);
+        VersionInfos[VersionInfoCount] := Info;
+      End;
+      Inc(VerCount);
+    End;
+  End;
+  If Opts.Verbose Then
+    WriteLn(VerCount, ' ressource(s) de version decodee(s), ',
+            VersionRCLineCount, ' ligne(s) RC generee(s).');
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -2603,8 +2933,11 @@ Begin
   { Decoder les dialogues (RT_DIALOG) }
   ParseAllDialogs;
 
-  { TODO 15 a TODO 25 : a implementer }
-  WriteLn('(TODO 15 a TODO 25 : implementation en cours)');
+  { Decoder les informations de version (RT_VERSION) }
+  ParseAllVersionInfos;
+
+  { TODO 16 a TODO 25 : a implementer }
+  WriteLn('(TODO 16 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
