@@ -237,7 +237,7 @@
       Mode FLAT : pas de segments, adresses lineaires 32 bits,
       traduire en mode Protected avec uses Dos, WinAPI, etc.
 
-  21. [A FAIRE] Generation du code Pascal : en-tete, uses, types et declarations.
+  21. [IMPLEMENTE] Generation du code Pascal : en-tete, uses, types et declarations.
       Emettre l'en-tete du fichier Pascal : Program <nom>;
       clause Uses (Dos, Crt, etc. selon les INT detectees),
       section Type (records pour les structures detectees,
@@ -7595,6 +7595,377 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Generation de l'en-tete Pascal - TODO 21
+  ============================================================ }
+
+Function ExtractBaseName(Const FN:String):String;
+{ Extrait le nom de base du fichier (sans chemin ni extension).
+  Ex: '/path/to/HELLO.ASM' -> 'HELLO' }
+Var
+ S:String;
+ I:Integer;
+Begin
+ S:=FN;
+ { Enlever le chemin }
+ For I:=Length(S) DownTo 1 do
+  If(S[I]='/')or(S[I]='\')or(S[I]=':')Then Begin
+   S:=Copy(S,I+1,Length(S)-I);
+   Break;
+  End;
+ { Enlever l'extension }
+ For I:=Length(S) DownTo 1 do
+  If S[I]='.' Then Begin
+   S:=Copy(S,1,I-1);
+   Break;
+  End;
+ { S'assurer que le nom est un identificateur Pascal valide }
+ If(Length(S)>0)and(S[1]>='0')and(S[1]<='9')Then
+  S:='P'+S;
+ If S='' Then S:='Program1';
+ ExtractBaseName:=S;
+End;
+
+Function ScanForINTCall(Const IntHex:String):Boolean;
+{ Parcourt les lignes sources pour detecter un appel INT xxh.
+  IntHex doit etre '21H', '10H', '16H', etc. }
+Var
+ I:LongInt;
+ U,Pat1,Pat2,Pat3:String;
+Begin
+ ScanForINTCall:=False;
+ Pat1:='INT '+IntHex;
+ Pat2:='INT '+Copy(IntHex,1,Length(IntHex)-1);
+ Pat3:='INT $'+Copy(IntHex,1,Length(IntHex)-1);
+ For I:=0 to SrcLineCount-1 do Begin
+  If SrcLines[I]=Nil Then Continue;
+  U:=UpCaseStr(Trim(SrcLines[I]^));
+  If(Pos(Pat1,U)>0)or(Pos(Pat2,U)>0)or(Pos(Pat3,U)>0)Then Begin
+   ScanForINTCall:=True;
+   Exit;
+  End;
+ End;
+End;
+
+Function PascalTypeStr(PT:Byte):String;
+{ Convertit une constante PT_* en nom de type Pascal.
+  PT_BYTE -> 'Byte', PT_WORD -> 'Word', etc. }
+Begin
+ Case PT of
+  PT_BYTE:     PascalTypeStr:='Byte';
+  PT_SHORTINT: PascalTypeStr:='ShortInt';
+  PT_WORD:     PascalTypeStr:='Word';
+  PT_INTEGER:  PascalTypeStr:='Integer';
+  PT_LONGINT:  PascalTypeStr:='LongInt';
+  PT_BOOLEAN:  PascalTypeStr:='Boolean';
+  PT_CHAR:     PascalTypeStr:='Char';
+  PT_STRING:   PascalTypeStr:='String';
+  PT_POINTER:  PascalTypeStr:='Pointer';
+  PT_PCHAR:    PascalTypeStr:='PChar';
+  PT_ARRAY:    PascalTypeStr:='Byte';
+ Else
+  PascalTypeStr:='Byte';
+ End;
+End;
+
+Function DirTypeStr(DT:Byte):String;
+{ Convertit un type de directive de donnees (DT_DB/DW/DD/DQ) en
+  nom de type Pascal. }
+Begin
+ Case DT of
+  DT_DB: DirTypeStr:='Byte';
+  DT_DW: DirTypeStr:='Word';
+  DT_DD: DirTypeStr:='LongInt';
+  DT_DQ: DirTypeStr:='Comp';
+  DT_DF: DirTypeStr:='Pointer';
+  DT_DT: DirTypeStr:='Extended';
+ Else
+  DirTypeStr:='Byte';
+ End;
+End;
+
+Function IsHeaderMnemonic(Const M:String):Boolean;
+{ Indique si le mnemonique est gere par TODO 21
+  (utilise pour verifier la completude des traductions). }
+Begin
+ IsHeaderMnemonic:=False; { TODO 21 ne gere pas de mnemoniques }
+End;
+
+Procedure ProcessHeaderGeneration;
+{ Genere l'en-tete du fichier Pascal de sortie :
+  - En-tete Program <nom>;
+  - Clause Uses (Dos, Crt, etc. selon les INT detectees)
+  - Section Type (records pour les structures detectees)
+  - Section Const (constantes EQU et donnees en lecture seule)
+  - Section Var (registres, flags, variables du segment DATA)
+  - Declarations Label pour les Goto }
+Var
+ ProgName:String;
+ NeedDos,NeedCrt:Boolean;
+ I,J:Integer;
+ HasConst,HasLabel,HasType:Boolean;
+ UnitList:String;
+ LabelCount,VarCount,ConstCount,TypeCount:Integer;
+ First:Boolean;
+ S:String;
+Begin
+ ProgName:=ExtractBaseName(InFileName);
+
+ { Detecter les unites necessaires a partir des INT trouvees }
+ NeedDos:=ScanForINTCall('21H');
+ NeedCrt:=ScanForINTCall('10H') or ScanForINTCall('16H');
+
+ { Ouvrir le fichier de sortie }
+ Assign(OutFile,OutFileName);
+ Rewrite(OutFile);
+
+ { === En-tete du fichier === }
+ WriteLn(OutFile,'{ Genere par ASM2PAS v',ASM2PAS_VERSION,
+  ' a partir de ',InFileName,' }');
+ WriteLn(OutFile,'Program ',ProgName,';');
+ WriteLn(OutFile);
+
+ { === Clause Uses === }
+ UnitList:='';
+ If NeedDos Then UnitList:='Dos';
+ If NeedCrt Then Begin
+  If UnitList<>'' Then UnitList:=UnitList+', ';
+  UnitList:=UnitList+'Crt';
+ End;
+ If UnitList<>'' Then Begin
+  WriteLn(OutFile,'Uses ',UnitList,';');
+  WriteLn(OutFile);
+ End;
+
+ { === Section Type === }
+ HasType:=False;
+ TypeCount:=0;
+ For I:=1 to AddrStructCount do
+  If AddrStructs[I].FieldCount>0 Then Begin
+   If Not HasType Then Begin
+    WriteLn(OutFile,'Type');
+    HasType:=True;
+   End;
+   WriteLn(OutFile,'  ',AddrStructs[I].RecordName,' = Record');
+   For J:=1 to AddrStructs[I].FieldCount do
+    WriteLn(OutFile,'    ',
+     AddrStructs[I].Fields[J].FieldName,' : ',
+     MemSizeToType(AddrStructs[I].Fields[J].Size),
+     ';');
+   WriteLn(OutFile,'  End;');
+   Inc(TypeCount);
+  End;
+ If HasType Then WriteLn(OutFile);
+
+ { === Section Const === }
+ HasConst:=False;
+ ConstCount:=0;
+ { Constantes EQU (symboles de type SY_CONST) }
+ For I:=1 to SymbolCount do
+  If Symbols[I].SymType=SY_CONST Then Begin
+   If Not HasConst Then Begin
+    WriteLn(OutFile,'Const');
+    HasConst:=True;
+   End;
+   WriteLn(OutFile,'  ',Symbols[I].Name,' = ',Symbols[I].Offset,';');
+   Inc(ConstCount);
+  End;
+ { Donnees en lecture seule (section .CONST) }
+ For I:=1 to DataVarCount do Begin
+  If DataVars[I].Section<>SEC_CONST Then Continue;
+  If DataVars[I].Name='' Then Continue;
+  If Not HasConst Then Begin
+   WriteLn(OutFile,'Const');
+   HasConst:=True;
+  End;
+  If(DataVars[I].ElemCount=1)and
+    (DataVars[I].Elements[1].ElemType=DE_NUMBER)Then Begin
+   WriteLn(OutFile,'  ',DataVars[I].Name,' : ',
+    DirTypeStr(DataVars[I].DirType),' = ',
+    DataVars[I].Elements[1].NumValue,';');
+   Inc(ConstCount);
+  End
+  Else If(DataVars[I].ElemCount=1)and
+    (DataVars[I].Elements[1].ElemType=DE_STRING)Then Begin
+   WriteLn(OutFile,'  ',DataVars[I].Name,
+    ' : String = ''',
+    DataVars[I].Elements[1].StrValue,''';');
+   Inc(ConstCount);
+  End
+  Else If DataVars[I].ElemCount>1 Then Begin
+   Write(OutFile,'  ',DataVars[I].Name,
+    ' : Array[0..',DataVars[I].ElemCount-1,
+    '] of ',DirTypeStr(DataVars[I].DirType),' = (');
+   For J:=1 to DataVars[I].ElemCount do Begin
+    If J>1 Then Write(OutFile,', ');
+    If DataVars[I].Elements[J].ElemType=DE_NUMBER Then
+     Write(OutFile,DataVars[I].Elements[J].NumValue)
+    Else If DataVars[I].Elements[J].ElemType=DE_STRING Then
+     Write(OutFile,'''',DataVars[I].Elements[J].StrValue,'''')
+    Else
+     Write(OutFile,'0');
+   End;
+   WriteLn(OutFile,');');
+   Inc(ConstCount);
+  End;
+ End;
+ If HasConst Then WriteLn(OutFile);
+
+ { === Section Var === }
+ VarCount:=0;
+ WriteLn(OutFile,'Var');
+
+ { Registres 16 bits }
+ WriteLn(OutFile,'  { Registres 16 bits }');
+ WriteLn(OutFile,'  RegAX, RegBX, RegCX, RegDX : Word;');
+ WriteLn(OutFile,'  RegSI, RegDI, RegBP, RegSP : Word;');
+ WriteLn(OutFile,'  RegDS, RegES, RegSS, RegCS : Word;');
+ Inc(VarCount,12);
+
+ { Registres 32 bits si mode 32 ou CPU >= 386 }
+ If Mode32 or(CpuLevel>=CPU_386)Then Begin
+  WriteLn(OutFile,'  { Registres 32 bits }');
+  WriteLn(OutFile,'  RegEAX, RegEBX, RegECX, RegEDX : LongInt;');
+  WriteLn(OutFile,'  RegESI, RegEDI, RegEBP, RegESP : LongInt;');
+  WriteLn(OutFile,'  RegFS, RegGS : Word;');
+  Inc(VarCount,10);
+ End;
+
+ { Flags du processeur }
+ WriteLn(OutFile,'  { Flags }');
+ WriteLn(OutFile,'  FlagCF, FlagZF, FlagSF, FlagOF : Boolean;');
+ WriteLn(OutFile,'  FlagDF, FlagPF, FlagAF : Boolean;');
+ Inc(VarCount,7);
+
+ { Variables de sauvegarde pour les paires PUSH/POP }
+ WriteLn(OutFile,'  { Variables de sauvegarde PUSH/POP }');
+ WriteLn(OutFile,'  SaveAX, SaveBX, SaveCX, SaveDX : Word;');
+ WriteLn(OutFile,'  SaveSI, SaveDI, SaveBP, SaveSP : Word;');
+ WriteLn(OutFile,'  SaveFlags : Word;');
+ Inc(VarCount,9);
+ If Mode32 or(CpuLevel>=CPU_386)Then Begin
+  WriteLn(OutFile,'  SaveEAX, SaveEBX, SaveECX, SaveEDX : LongInt;');
+  WriteLn(OutFile,'  SaveESI, SaveEDI, SaveEBP, SaveESP : LongInt;');
+  WriteLn(OutFile,'  SaveXADD : LongInt;');
+  Inc(VarCount,9);
+ End;
+
+ { Variables du segment DATA }
+ For I:=1 to DataVarCount do Begin
+  If DataVars[I].Section=SEC_CONST Then Continue;
+  If DataVars[I].Name='' Then Continue;
+  { DUP -> Array }
+  If(DataVars[I].ElemCount=1)and
+    (DataVars[I].Elements[1].ElemType=DE_DUP)Then Begin
+   WriteLn(OutFile,'  ',DataVars[I].Name,' : Array[0..',
+    DataVars[I].Elements[1].DupCount-1,'] of ',
+    DirTypeStr(DataVars[I].DirType),';');
+   Inc(VarCount);
+  End
+  { Chaine terminee par 0 (DB 'texte',0) -> String }
+  Else If(DataVars[I].ElemCount>=1)and
+    (DataVars[I].Elements[1].ElemType=DE_STRING)Then Begin
+   WriteLn(OutFile,'  ',DataVars[I].Name,' : String;');
+   Inc(VarCount);
+  End
+  { Valeur non initialisee }
+  Else If(DataVars[I].ElemCount=1)and
+    (DataVars[I].Elements[1].ElemType=DE_UNINIT)Then Begin
+   WriteLn(OutFile,'  ',DataVars[I].Name,' : ',
+    DirTypeStr(DataVars[I].DirType),';');
+   Inc(VarCount);
+  End
+  { Valeur simple initialisee -> const typee ou var }
+  Else If(DataVars[I].ElemCount=1)and
+    (DataVars[I].Elements[1].ElemType=DE_NUMBER)Then Begin
+   WriteLn(OutFile,'  ',DataVars[I].Name,' : ',
+    DirTypeStr(DataVars[I].DirType),';');
+   Inc(VarCount);
+  End
+  { Tableau de valeurs multiples }
+  Else If DataVars[I].ElemCount>1 Then Begin
+   WriteLn(OutFile,'  ',DataVars[I].Name,' : Array[0..',
+    DataVars[I].ElemCount-1,'] of ',
+    DirTypeStr(DataVars[I].DirType),';');
+   Inc(VarCount);
+  End
+  Else Begin
+   WriteLn(OutFile,'  ',DataVars[I].Name,' : ',
+    PascalTypeStr(DataVars[I].PascalType),';');
+   Inc(VarCount);
+  End;
+ End;
+ WriteLn(OutFile);
+
+ { === Declarations Label === }
+ HasLabel:=False;
+ LabelCount:=0;
+ First:=True;
+ For I:=1 to SymbolCount do
+  If Symbols[I].SymType=SY_LABEL Then Begin
+   If Not HasLabel Then Begin
+    Write(OutFile,'Label');
+    HasLabel:=True;
+   End;
+   If Not First Then
+    Write(OutFile,',');
+   Write(OutFile,' ',Symbols[I].Name);
+   First:=False;
+   Inc(LabelCount);
+   { Nouvelle ligne tous les 8 labels pour la lisibilite }
+   If(LabelCount Mod 8=0)Then Begin
+    WriteLn(OutFile);
+    Write(OutFile,'     ');
+   End;
+  End;
+ If HasLabel Then Begin
+  WriteLn(OutFile,';');
+  WriteLn(OutFile);
+ End;
+
+ { === Bloc principal placeholder === }
+ WriteLn(OutFile,'BEGIN');
+ WriteLn(OutFile,'  { Corps du programme (voir TODO 22) }');
+ WriteLn(OutFile,'END.');
+
+ { Fermer le fichier de sortie }
+ Close(OutFile);
+
+ { === Statistiques === }
+ WriteLn('  Generation de l''en-tete Pascal :');
+ WriteLn('    Fichier de sortie : ',OutFileName);
+ If UnitList<>'' Then
+  WriteLn('    Uses              : ',UnitList)
+ Else
+  WriteLn('    Uses              : (aucune unite)');
+ WriteLn('    Types             : ',TypeCount,' record(s)');
+ WriteLn('    Constantes        : ',ConstCount,' constante(s)');
+ WriteLn('    Variables         : ',VarCount,' variable(s)');
+ WriteLn('    Labels            : ',LabelCount,' label(s)');
+ If Verbose Then Begin
+  WriteLn('  Details :');
+  WriteLn('    INT 21h detecte   : ',ScanForINTCall('21H'));
+  WriteLn('    INT 10h detecte   : ',ScanForINTCall('10H'));
+  WriteLn('    INT 16h detecte   : ',ScanForINTCall('16H'));
+  WriteLn('    Mode              : ',
+   Ord(Mode32)*32+(1-Ord(Mode32))*16,' bits');
+  WriteLn('    CPU niveau        : ',CpuLevel);
+  If MemoryModel<>0 Then Begin
+   S:='';
+   Case MemoryModel of
+    MM_TINY:   S:='TINY';
+    MM_SMALL:  S:='SMALL';
+    MM_COMPACT:S:='COMPACT';
+    MM_MEDIUM: S:='MEDIUM';
+    MM_LARGE:  S:='LARGE';
+    MM_HUGE:   S:='HUGE';
+    MM_FLAT:   S:='FLAT';
+   End;
+   WriteLn('    Modele memoire    : ',S);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -7725,6 +8096,7 @@ BEGIN
  { TODO 20 - Extensions 80386 }
  Process386Translations;
  { TODO 21 - Generation en-tete Pascal }
+ ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
  { TODO 23 - Fallback ASM inline }
  { TODO 24 - Optimisation }
