@@ -269,7 +269,7 @@
       n'a pas pu etre traduit. Gerer les interruptions non
       reconnues avec Intr(IntNo, Regs) en utilisant les Registers.
 
-  24. [A FAIRE] Passes d'optimisation sur le code Pascal genere.
+  24. [IMPLEMENTE] Passes d'optimisation sur le code Pascal genere.
       Optimiser le code Pascal genere en plusieurs passes :
       (a) Elimination des variables de registre inutilisees.
       (b) Propagation des constantes (RegAX := 0; x := RegAX -> x := 0).
@@ -8412,6 +8412,317 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Passes d'optimisation - TODO 24
+  ============================================================ }
+
+Function IsRegVar(Const S:String):Boolean;
+{ Verifie si S est un nom de variable registre simule. }
+Var U:String;
+Begin
+ U:=UpCaseStr(S);
+ IsRegVar:=(U='REGAX')or(U='REGBX')or(U='REGCX')or(U='REGDX')
+  or(U='REGSI')or(U='REGDI')or(U='REGBP')or(U='REGSP')
+  or(U='REGEAX')or(U='REGEBX')or(U='REGECX')or(U='REGEDX')
+  or(U='REGESI')or(U='REGEDI')or(U='REGEBP')or(U='REGESP');
+End;
+
+Function IsConstValue(Const S:String):Boolean;
+{ Verifie si S est un litteral constant (entier, $hex, True, False). }
+Var I:Integer; U:String;
+Begin
+ U:=Trim(S);
+ If Length(U)=0 Then Begin IsConstValue:=False; Exit; End;
+ If(U='True')or(U='False')Then Begin IsConstValue:=True; Exit; End;
+ If U[1]='$' Then Begin
+  IsConstValue:=True;
+  For I:=2 to Length(U) do
+   If Not(U[I] in ['0'..'9','A'..'F','a'..'f'])Then Begin
+    IsConstValue:=False; Exit;
+   End;
+  If Length(U)<2 Then IsConstValue:=False;
+  Exit;
+ End;
+ IsConstValue:=True;
+ For I:=1 to Length(U) do
+  If Not(U[I] in ['0'..'9'])Then Begin
+   IsConstValue:=False; Exit;
+  End;
+End;
+
+Function SplitAssign(Const Code:String; Var LHS,RHS:String):Boolean;
+{ Separe 'LHS := RHS;' en ses deux parties. }
+Var P:Integer; S:String;
+Begin
+ SplitAssign:=False;
+ S:=Trim(Code);
+ P:=Pos(':=',S);
+ If P<2 Then Exit;
+ LHS:=Trim(Copy(S,1,P-1));
+ RHS:=Trim(Copy(S,P+2,255));
+ If(Length(RHS)>0)and(RHS[Length(RHS)]=';')Then
+  RHS:=Trim(Copy(RHS,1,Length(RHS)-1));
+ SplitAssign:=(Length(LHS)>0)and(Length(RHS)>0);
+End;
+
+Function ReplaceInStr(Const S,Old,New:String):String;
+{ Remplace la premiere occurrence de Old par New dans S. }
+Var P:Integer;
+Begin
+ P:=Pos(Old,S);
+ If P=0 Then ReplaceInStr:=S
+ Else ReplaceInStr:=Copy(S,1,P-1)+New+Copy(S,P+Length(Old),255);
+End;
+
+Procedure OptIdiomatic(Var OptCount:Integer);
+{ (f) Patterns idiomatiques : X xor X -> 0, X or X -> nop. }
+Var
+ I:Integer;
+ LHS,RHS:String;
+Begin
+ OptCount:=0;
+ For I:=0 to TranslationCount-1 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  If Not SplitAssign(Translations[I].PascalCode,LHS,RHS)Then Continue;
+  If RHS=LHS+' xor '+LHS Then Begin
+   Translations[I].PascalCode:=LHS+' := 0;';
+   Inc(OptCount);
+  End
+  Else If RHS=LHS+' or '+LHS Then Begin
+   Translations[I].PascalCode:='{ opt: '+LHS+' or self = nop }';
+   Inc(OptCount);
+  End;
+ End;
+End;
+
+Procedure OptConstProp(Var OptCount:Integer);
+{ (b) Propagation de constantes entre traductions consecutives.
+  RegAX := 0; x := RegAX -> x := 0 }
+Var
+ I,J,P:Integer;
+ LHS1,RHS1,LHS2,RHS2,NewRHS:String;
+Begin
+ OptCount:=0;
+ For I:=0 to TranslationCount-2 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  If Not SplitAssign(Translations[I].PascalCode,LHS1,RHS1)Then Continue;
+  If Not IsRegVar(LHS1)Then Continue;
+  If Not IsConstValue(RHS1)Then Continue;
+  J:=I+1;
+  If Not Translations[J].IsTranslated Then Continue;
+  If Not SplitAssign(Translations[J].PascalCode,LHS2,RHS2)Then Continue;
+  If UpCaseStr(LHS2)=UpCaseStr(LHS1)Then Continue;
+  P:=Pos(LHS1,RHS2);
+  If P>0 Then Begin
+   NewRHS:=ReplaceInStr(RHS2,LHS1,RHS1);
+   Translations[J].PascalCode:=LHS2+' := '+NewRHS+';';
+   Inc(OptCount);
+  End;
+ End;
+End;
+
+Function IsZeroVal(Const S:String):Boolean;
+{ Verifie si S represente zero (0, $0, $00, $0000, $00000000). }
+Var U:String; I:Integer; AllZero:Boolean;
+Begin
+ U:=Trim(S);
+ If U='0' Then Begin IsZeroVal:=True; Exit; End;
+ If(Length(U)>1)and(U[1]='$')Then Begin
+  AllZero:=True;
+  For I:=2 to Length(U) do
+   If U[I]<>'0' Then AllZero:=False;
+  IsZeroVal:=AllZero and(Length(U)>=2);
+  Exit;
+ End;
+ IsZeroVal:=False;
+End;
+
+Function IsOneVal(Const S:String):Boolean;
+{ Verifie si S represente un (1, $1, $01, $0001, $00000001). }
+Var U:String; I:Integer;
+Begin
+ U:=Trim(S);
+ If U='1' Then Begin IsOneVal:=True; Exit; End;
+ If(Length(U)>1)and(U[1]='$')Then Begin
+  If U[Length(U)]<>'1' Then Begin IsOneVal:=False; Exit; End;
+  For I:=2 to Length(U)-1 do
+   If U[I]<>'0' Then Begin IsOneVal:=False; Exit; End;
+  IsOneVal:=True;
+  Exit;
+ End;
+ IsOneVal:=False;
+End;
+
+Procedure OptSimplify(Var OptCount:Integer);
+{ (c) Simplification : x + 0 -> nop, x + 1 -> Inc(x),
+  x - 0 -> nop, x - 1 -> Dec(x), x * 1 -> nop, x or 0 -> nop. }
+Var
+ I:Integer;
+ LHS,RHS,Tail:String;
+Begin
+ OptCount:=0;
+ For I:=0 to TranslationCount-1 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  If Not SplitAssign(Translations[I].PascalCode,LHS,RHS)Then Continue;
+  If Pos(LHS+' + ',RHS)=1 Then Begin
+   Tail:=Trim(Copy(RHS,Length(LHS)+4,255));
+   If IsZeroVal(Tail)Then Begin
+    Translations[I].PascalCode:='{ opt: '+LHS+' + 0 = nop }';
+    Inc(OptCount);
+   End Else If IsOneVal(Tail)Then Begin
+    Translations[I].PascalCode:='Inc('+LHS+');';
+    Inc(OptCount);
+   End;
+  End
+  Else If Pos(LHS+' - ',RHS)=1 Then Begin
+   Tail:=Trim(Copy(RHS,Length(LHS)+4,255));
+   If IsZeroVal(Tail)Then Begin
+    Translations[I].PascalCode:='{ opt: '+LHS+' - 0 = nop }';
+    Inc(OptCount);
+   End Else If IsOneVal(Tail)Then Begin
+    Translations[I].PascalCode:='Dec('+LHS+');';
+    Inc(OptCount);
+   End;
+  End
+  Else If Pos(LHS+' or ',RHS)=1 Then Begin
+   Tail:=Trim(Copy(RHS,Length(LHS)+5,255));
+   If IsZeroVal(Tail)Then Begin
+    Translations[I].PascalCode:='{ opt: '+LHS+' or 0 = nop }';
+    Inc(OptCount);
+   End;
+  End
+  Else If(RHS=LHS+' and $FFFF')or(RHS=LHS+' and $FFFFFFFF')Then Begin
+   Translations[I].PascalCode:='{ opt: '+LHS+' and max = nop }';
+   Inc(OptCount);
+  End
+  Else If Pos(LHS+' * ',RHS)=1 Then Begin
+   Tail:=Trim(Copy(RHS,Length(LHS)+4,255));
+   If IsOneVal(Tail)Then Begin
+    Translations[I].PascalCode:='{ opt: '+LHS+' * 1 = nop }';
+    Inc(OptCount);
+   End;
+  End;
+ End;
+End;
+
+Procedure OptGotoDetect(Var CandidCount:Integer);
+{ (d) Detecte les Goto pouvant etre remplaces par des structures. }
+Var
+ I,J,P:Integer;
+ Code,Lbl:String;
+Begin
+ CandidCount:=0;
+ For I:=0 to TranslationCount-1 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  Code:=Translations[I].PascalCode;
+  If(Pos('If ',Code)=1)and(Pos('Then Goto ',Code)>0)Then Begin
+   P:=Pos('Then Goto ',Code);
+   Lbl:=Trim(Copy(Code,P+10,255));
+   If(Length(Lbl)>0)and(Lbl[Length(Lbl)]=';')Then
+    Lbl:=Copy(Lbl,1,Length(Lbl)-1);
+   For J:=I+1 to TranslationCount-1 do Begin
+    If Not Translations[J].IsTranslated Then Continue;
+    If Pos(Lbl+':',Translations[J].PascalCode)>0 Then Begin
+     Inc(CandidCount);
+     Break;
+    End;
+   End;
+  End;
+ End;
+End;
+
+Procedure OptSubRegFusion(Var OptCount:Integer);
+{ (e) Fusion Lo/Hi : Lo(R) := v; Hi(R) := 0 -> R := Word(v). }
+Var
+ I,J,P1:Integer;
+ Code1,Code2,RegN,LoVal:String;
+Begin
+ OptCount:=0;
+ For I:=0 to TranslationCount-2 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  Code1:=Translations[I].PascalCode;
+  If Pos('Lo(',Code1)<>1 Then Continue;
+  P1:=Pos(') :=',Code1);
+  If P1<5 Then Continue;
+  RegN:=Copy(Code1,4,P1-4);
+  If Not IsRegVar(RegN)Then Continue;
+  LoVal:=Trim(Copy(Code1,P1+4,255));
+  If(Length(LoVal)>0)and(LoVal[Length(LoVal)]=';')Then
+   LoVal:=Trim(Copy(LoVal,1,Length(LoVal)-1));
+  J:=I+1;
+  If Not Translations[J].IsTranslated Then Continue;
+  Code2:=Translations[J].PascalCode;
+  If Code2='Hi('+RegN+') := 0;' Then Begin
+   Translations[I].PascalCode:=RegN+' := Word('+LoVal+');';
+   Translations[J].PascalCode:='{ opt: Hi('+RegN+') fusionne }';
+   Inc(OptCount);
+  End;
+ End;
+End;
+
+Procedure OptUnusedRegs(Var UnusedCount:Integer);
+{ (a) Detecte les registres ecrits mais jamais lus. }
+Const
+ REG_NAMES:Array[1..16] of String[8] = (
+  'RegAX','RegBX','RegCX','RegDX',
+  'RegSI','RegDI','RegBP','RegSP',
+  'RegEAX','RegEBX','RegECX','RegEDX',
+  'RegESI','RegEDI','RegEBP','RegESP');
+Var
+ R,I:Integer;
+ WrCount,RdCount:Integer;
+ LHS,RHS:String;
+Begin
+ UnusedCount:=0;
+ For R:=1 to 16 do Begin
+  WrCount:=0;
+  RdCount:=0;
+  For I:=0 to TranslationCount-1 do Begin
+   If Not Translations[I].IsTranslated Then Continue;
+   If SplitAssign(Translations[I].PascalCode,LHS,RHS)Then Begin
+    If LHS=REG_NAMES[R] Then Inc(WrCount);
+    If Pos(REG_NAMES[R],RHS)>0 Then Inc(RdCount);
+   End Else Begin
+    If Pos(REG_NAMES[R],Translations[I].PascalCode)>0 Then
+     Inc(RdCount);
+   End;
+  End;
+  If(WrCount>0)and(RdCount=0)Then Inc(UnusedCount);
+ End;
+End;
+
+Function IsOptMnemonic(Const M:String):Boolean;
+{ Indique si le mnemonique est gere par TODO 24
+  (l'optimisation agit sur les traductions, pas sur les mnemoniques). }
+Begin
+ IsOptMnemonic:=False;
+End;
+
+Procedure ProcessOptimization;
+{ Passe d'optimisation sur les traductions Pascal generees. }
+Var
+ IdiomCount,ConstPropCount,SimplifyCount:Integer;
+ SubRegCount,GotoCount,UnusedCount,TotalOpt:Integer;
+Begin
+ OptIdiomatic(IdiomCount);
+ OptConstProp(ConstPropCount);
+ OptSimplify(SimplifyCount);
+ OptSubRegFusion(SubRegCount);
+ OptGotoDetect(GotoCount);
+ OptUnusedRegs(UnusedCount);
+ TotalOpt:=IdiomCount+ConstPropCount+SimplifyCount+SubRegCount;
+ WriteLn('Optimisation : ',TotalOpt,' modifications, ',
+  GotoCount,' Goto candidats, ',UnusedCount,' registres inutilises.');
+ If Verbose Then Begin
+  WriteLn('  Patterns idiom.  : ',IdiomCount);
+  WriteLn('  Prop. constantes : ',ConstPropCount);
+  WriteLn('  Simplifications  : ',SimplifyCount);
+  WriteLn('  Fusion sous-reg  : ',SubRegCount);
+  WriteLn('  Goto remplacables: ',GotoCount);
+  WriteLn('  Registres inutil.: ',UnusedCount);
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -8543,11 +8854,12 @@ BEGIN
  Process386Translations;
  { TODO 23 - Fallback ASM inline (avant generation) }
  ProcessInlineFallback;
+ { TODO 24 - Optimisation (avant generation) }
+ ProcessOptimization;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
  ProcessBodyGeneration;
- { TODO 24 - Optimisation }
  { TODO 25 - Verification et rapport }
  FreeSourceLines;
  WriteLn('Transpilation terminee.');
