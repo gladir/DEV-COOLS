@@ -386,7 +386,7 @@
               si wVersion = 1 : menu etendu MENUEX (stub : hex dump)
               stocker les lignes generees pour la phase de generation
 
-  TODO 14 - DECODAGE RT_DIALOG (TYPE 5) [A FAIRE]
+  TODO 14 - DECODAGE RT_DIALOG (TYPE 5) [IMPLEMENTE]
             Constantes de classes predefinies (atoms) :
               DC_BUTTON = $0080, DC_EDIT = $0081, DC_STATIC = $0082,
               DC_LISTBOX = $0083, DC_SCROLLBAR = $0084,
@@ -826,6 +826,20 @@ Const
   MF_SEPARATOR    = $0800;  { separateur de menu         }
   MF_END          = $0080;  { dernier element du niveau  }
 
+  { Classes predefinies des controles de dialogue (DC_*) }
+  DC_BUTTON    = $0080;  { bouton standard             }
+  DC_EDIT      = $0081;  { zone de saisie              }
+  DC_STATIC    = $0082;  { texte statique              }
+  DC_LISTBOX   = $0083;  { liste deroulante            }
+  DC_SCROLLBAR = $0084;  { barre de defilement         }
+  DC_COMBOBOX  = $0085;  { liste combinee              }
+
+  { Styles de dialogue DS_* }
+  DS_SYSMODAL   = $0002;  { dialogue systeme modal         }
+  DS_SETFONT    = $0040;  { utiliser une police specifique }
+  DS_MODALFRAME = $0080;  { cadre modal                    }
+  DS_CENTER     = $0800;  { centrer dans l ecran           }
+
   { Limites internes }
   MAX_RESOURCES   = 4096;
   MAX_STRINGS     = 4096;
@@ -833,6 +847,7 @@ Const
   MAX_MENU_ITEMS  = 512;
   MAX_MENU_LINES  = 2048;
   MAX_DIALOG_CTRL = 256;
+  MAX_DIALOG_LINES = 1024;
 
 { ============================================================
   TYPES
@@ -893,6 +908,26 @@ Type
   { Tableau de lignes RC pour la generation (menus) }
   TMenuLineArray = Array[1..MAX_MENU_LINES] Of TString;
 
+  { Controle de dialogue decode (RT_DIALOG) }
+  TDialogControl = Record
+    Style     : LongInt;   { style du controle                  }
+    ExStyle   : LongInt;   { style etendu du controle           }
+    X         : Word;      { position X                         }
+    Y         : Word;      { position Y                         }
+    CX        : Word;      { largeur                            }
+    CY        : Word;      { hauteur                            }
+    Id        : Word;      { identifiant de commande            }
+    ClassIsId : Boolean;   { True si classe est un identifiant  }
+    ClassId   : Word;      { identifiant de classe si ClassIsId }
+    ClassName : TString;   { nom de classe si Non ClassIsId     }
+    TitleIsId : Boolean;   { True si titre est un identifiant   }
+    TitleId   : Word;      { identifiant de titre si TitleIsId  }
+    TitleStr  : TString;   { texte du titre si Non TitleIsId    }
+  End;
+
+  { Tableau de lignes RC pour la generation (dialogues) }
+  TDialogLineArray = Array[1..MAX_DIALOG_LINES] Of TString;
+
   { Entree dans la table des chaines decodes (RT_STRING) }
   TStringEntry = Record
     BlockId  : Word;    { identifiant du bloc 1..N      }
@@ -946,6 +981,10 @@ Var
   MenuItemCount : Integer;       { nombre d elements de menu decodes }
   MenuRCLines   : TMenuLineArray;{ lignes RC generees pour les menus }
   MenuRCLineCount : Integer;     { nombre de lignes RC de menu       }
+  DialogControls   : Array[1..MAX_DIALOG_CTRL] Of TDialogControl;
+  DialogCtrlCount  : Integer;    { nombre de controles decodes       }
+  DialogRCLines    : TDialogLineArray; { lignes RC pour les dialogues }
+  DialogRCLineCount : Integer;   { nombre de lignes RC de dialogue   }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -2265,6 +2304,254 @@ Begin
 End;
 
 { ============================================================
+  TODO 14 - DECODAGE RT_DIALOG (TYPE 5) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Nom de classe predefinit a partir d un atome --------- }
+Function WindowClassAtomToStr(Atom : Word) : TString;
+Begin
+  Case Atom Of
+    DC_BUTTON    : WindowClassAtomToStr := 'BUTTON';
+    DC_EDIT      : WindowClassAtomToStr := 'EDIT';
+    DC_STATIC    : WindowClassAtomToStr := 'STATIC';
+    DC_LISTBOX   : WindowClassAtomToStr := 'LISTBOX';
+    DC_SCROLLBAR : WindowClassAtomToStr := 'SCROLLBAR';
+    DC_COMBOBOX  : WindowClassAtomToStr := 'COMBOBOX';
+  Else
+    WindowClassAtomToStr := '#' + IntToStr(Atom);
+  End;
+End;
+
+{ ---- Construire la chaine de styles WS_*/DS_* ------------- }
+Procedure ParseDialogStyles(Style : LongInt; Var StyleStr : TString);
+  Procedure AddStyle(Const S : TString);
+  Begin
+    If StyleStr = '' Then
+      StyleStr := S
+    Else
+      StyleStr := StyleStr + ' | ' + S;
+  End;
+Begin
+  StyleStr := '';
+  { Styles DS_* (petites valeurs) }
+  If (Style And DS_SYSMODAL)   <> 0 Then AddStyle('DS_SYSMODAL');
+  If (Style And DS_SETFONT)    <> 0 Then AddStyle('DS_SETFONT');
+  If (Style And DS_MODALFRAME) <> 0 Then AddStyle('DS_MODALFRAME');
+  If (Style And DS_CENTER)     <> 0 Then AddStyle('DS_CENTER');
+  { Styles WS_* (grandes valeurs, comparaisons avec masques) }
+  If (Style And $80000000) <> 0 Then AddStyle('WS_POPUP');
+  If (Style And $40000000) <> 0 Then AddStyle('WS_CHILD');
+  If (Style And $20000000) <> 0 Then AddStyle('WS_CLIPSIBLINGS');
+  If (Style And $10000000) <> 0 Then AddStyle('WS_VISIBLE');
+  If (Style And $08000000) <> 0 Then AddStyle('WS_DISABLED');
+  If (Style And $00200000) <> 0 Then AddStyle('WS_VSCROLL');
+  If (Style And $00100000) <> 0 Then AddStyle('WS_HSCROLL');
+  If (Style And $00080000) <> 0 Then AddStyle('WS_SYSMENU');
+  If (Style And $00040000) <> 0 Then AddStyle('WS_THICKFRAME');
+  If (Style And $00020000) <> 0 Then AddStyle('WS_MINIMIZEBOX');
+  If (Style And $00010000) <> 0 Then AddStyle('WS_MAXIMIZEBOX');
+  { WS_CAPTION = WS_BORDER | WS_DLGFRAME = $00C00000 }
+  If (Style And $00C00000) = $00C00000 Then
+    AddStyle('WS_CAPTION')
+  Else
+  Begin
+    If (Style And $00800000) <> 0 Then AddStyle('WS_BORDER');
+    If (Style And $00400000) <> 0 Then AddStyle('WS_DLGFRAME');
+  End;
+  If StyleStr = '' Then
+    StyleStr := '0';
+End;
+
+{ ---- Decoder un modele de boite de dialogue ---------------- }
+Procedure ParseDialogTemplate(Const Res : TResourceEntry);
+Var
+  Style        : LongInt;
+  ExStyle      : LongInt;
+  CDit         : Word;
+  DX, DY, DCX, DCY : Word;
+  MenuIsId     : Boolean;
+  MenuId       : Word;
+  MenuName     : TString;
+  WClassIsId   : Boolean;
+  WClassId     : Word;
+  WClassName   : TString;
+  Title        : TString;
+  PointSize    : Word;
+  Typeface     : TString;
+  StyleStr     : TString;
+  ResName      : TString;
+  I            : Integer;
+  StartLine    : Integer;
+  Ctrl         : TDialogControl;
+  CStyle       : LongInt;
+  CExStyle     : LongInt;
+  CX2, CY2, CCX, CCY, CId : Word;
+  ExtraCount   : Word;
+  CtrlClassIsId : Boolean;
+  CtrlClassId   : Word;
+  CtrlClassName : TString;
+  CtrlTitleIsId : Boolean;
+  CtrlTitleId   : Word;
+  CtrlTitleStr  : TString;
+  CtrlClassNameRC : TString;
+  CtrlTitleRC     : TString;
+Begin
+  SeekResPos(Res.DataOfs);
+  Style   := ReadDWord;
+  ExStyle := ReadDWord;
+  CDit    := ReadWord;
+  DX      := ReadWord;
+  DY      := ReadWord;
+  DCX     := ReadWord;
+  DCY     := ReadWord;
+  { Lire le menu (sz_Or_Ord) }
+  ReadIdOrName(MenuIsId, MenuId, MenuName);
+  { Lire la classe de fenetre (sz_Or_Ord) }
+  ReadIdOrName(WClassIsId, WClassId, WClassName);
+  { Lire le titre }
+  Title := ReadUnicodeString;
+  { Lire la police si DS_SETFONT }
+  PointSize := 0;
+  Typeface  := '';
+  If (Style And DS_SETFONT) <> 0 Then
+  Begin
+    PointSize := ReadWord;
+    Typeface  := ReadUnicodeString;
+  End;
+  { Determiner le nom de la ressource }
+  If Res.NameIsId Then
+    ResName := IntToStr(Res.NameId)
+  Else
+    ResName := Res.NameStr;
+  StartLine := DialogRCLineCount;
+  { Generer l en-tete du dialogue }
+  If DialogRCLineCount < MAX_DIALOG_LINES Then
+  Begin
+    Inc(DialogRCLineCount);
+    DialogRCLines[DialogRCLineCount] := ResName + ' DIALOG ' +
+      IntToStr(DX) + ', ' + IntToStr(DY) + ', ' +
+      IntToStr(DCX) + ', ' + IntToStr(DCY);
+  End;
+  ParseDialogStyles(Style, StyleStr);
+  If DialogRCLineCount < MAX_DIALOG_LINES Then
+  Begin
+    Inc(DialogRCLineCount);
+    DialogRCLines[DialogRCLineCount] := 'STYLE ' + StyleStr;
+  End;
+  If Title <> '' Then
+  Begin
+    If DialogRCLineCount < MAX_DIALOG_LINES Then
+    Begin
+      Inc(DialogRCLineCount);
+      DialogRCLines[DialogRCLineCount] := 'CAPTION "' +
+        EscapeRCString(Title) + '"';
+    End;
+  End;
+  If (Style And DS_SETFONT) <> 0 Then
+  Begin
+    If DialogRCLineCount < MAX_DIALOG_LINES Then
+    Begin
+      Inc(DialogRCLineCount);
+      DialogRCLines[DialogRCLineCount] := 'FONT ' +
+        IntToStr(PointSize) + ', "' + EscapeRCString(Typeface) + '"';
+    End;
+  End;
+  If DialogRCLineCount < MAX_DIALOG_LINES Then
+  Begin
+    Inc(DialogRCLineCount);
+    DialogRCLines[DialogRCLineCount] := 'BEGIN';
+  End;
+  { Decoder chaque controle }
+  For I := 1 To CDit Do
+  Begin
+    { Aligner sur 4 octets }
+    AlignResPos(4);
+    CStyle   := ReadDWord;
+    CExStyle := ReadDWord;
+    CX2 := ReadWord;
+    CY2 := ReadWord;
+    CCX := ReadWord;
+    CCY := ReadWord;
+    CId := ReadWord;
+    ReadIdOrName(CtrlClassIsId, CtrlClassId, CtrlClassName);
+    ReadIdOrName(CtrlTitleIsId, CtrlTitleId, CtrlTitleStr);
+    ExtraCount := ReadWord;
+    If ExtraCount > 0 Then
+      SkipBytes(ExtraCount);
+    { Stocker dans le tableau global DialogControls }
+    If DialogCtrlCount < MAX_DIALOG_CTRL Then
+    Begin
+      Inc(DialogCtrlCount);
+      Ctrl.Style     := CStyle;
+      Ctrl.ExStyle   := CExStyle;
+      Ctrl.X         := CX2;
+      Ctrl.Y         := CY2;
+      Ctrl.CX        := CCX;
+      Ctrl.CY        := CCY;
+      Ctrl.Id        := CId;
+      Ctrl.ClassIsId := CtrlClassIsId;
+      Ctrl.ClassId   := CtrlClassId;
+      Ctrl.ClassName := CtrlClassName;
+      Ctrl.TitleIsId := CtrlTitleIsId;
+      Ctrl.TitleId   := CtrlTitleId;
+      Ctrl.TitleStr  := CtrlTitleStr;
+      DialogControls[DialogCtrlCount] := Ctrl;
+    End;
+    { Determiner le nom de classe pour le RC }
+    If CtrlClassIsId Then
+      CtrlClassNameRC := '"' + WindowClassAtomToStr(CtrlClassId) + '"'
+    Else
+      CtrlClassNameRC := '"' + CtrlClassName + '"';
+    { Determiner le titre pour le RC }
+    If CtrlTitleIsId Then
+      CtrlTitleRC := IntToStr(CtrlTitleId)
+    Else
+      CtrlTitleRC := '"' + EscapeRCString(CtrlTitleStr) + '"';
+    { Generer la ligne CONTROL }
+    If DialogRCLineCount < MAX_DIALOG_LINES Then
+    Begin
+      Inc(DialogRCLineCount);
+      DialogRCLines[DialogRCLineCount] :=
+        '    CONTROL ' + CtrlTitleRC + ', ' + IntToStr(CId) + ', ' +
+        CtrlClassNameRC + ', ' + IntToStr(CStyle) + ', ' +
+        IntToStr(CX2) + ', ' + IntToStr(CY2) + ', ' +
+        IntToStr(CCX) + ', ' + IntToStr(CCY);
+    End;
+  End;
+  If DialogRCLineCount < MAX_DIALOG_LINES Then
+  Begin
+    Inc(DialogRCLineCount);
+    DialogRCLines[DialogRCLineCount] := 'END';
+  End;
+  { Afficher si mode verbeux }
+  If Opts.Verbose Then
+    For I := StartLine + 1 To DialogRCLineCount Do
+      WriteLn(DialogRCLines[I]);
+End;
+
+{ ---- Decoder tous les dialogues ---------------------------- }
+Procedure ParseAllDialogs;
+Var
+  I         : Integer;
+  DlgCount  : Integer;
+Begin
+  DialogCtrlCount   := 0;
+  DialogRCLineCount := 0;
+  DlgCount          := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_DIALOG) Then
+    Begin
+      ParseDialogTemplate(Resources[I]);
+      Inc(DlgCount);
+    End;
+  End;
+  If Opts.Verbose Then
+    WriteLn(DlgCount, ' dialogue(s) decode(s), ',
+            DialogCtrlCount, ' controle(s) au total.');
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -2313,8 +2600,11 @@ Begin
   { Decoder les menus (RT_MENU) }
   ParseAllMenus;
 
-  { TODO 14 a TODO 25 : a implementer }
-  WriteLn('(TODO 14 a TODO 25 : implementation en cours)');
+  { Decoder les dialogues (RT_DIALOG) }
+  ParseAllDialogs;
+
+  { TODO 15 a TODO 25 : a implementer }
+  WriteLn('(TODO 15 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
