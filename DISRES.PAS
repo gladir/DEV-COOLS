@@ -355,7 +355,7 @@
               '    ' + VKeyToStr(E.Key) + ', ' + IntToStr(E.Cmd) +
               options (NOINVERT, SHIFT, CONTROL, ALT, VIRTKEY) separes par ', '
 
-  TODO 13 - DECODAGE RT_MENU (TYPE 4) [A FAIRE]
+  TODO 13 - DECODAGE RT_MENU (TYPE 4) [IMPLEMENTE]
             Type TMenuItem : record
               Flags    : Word    (fItemFlags)
               MenuID   : Word    (identifiant ou 0 si popup)
@@ -815,11 +815,23 @@ Const
   FALT      = $10;   { modificateur ALT                    }
   FLAST     = $80;   { dernier accelerateur du tableau     }
 
+  { Drapeaux fItemFlags pour les elements de menu (RT_MENU) }
+  MF_GRAYED       = $0001;  { element grise              }
+  MF_DISABLED     = $0002;  { element desactive          }
+  MF_BITMAP       = $0008;  { element bitmap             }
+  MF_CHECKED      = $0010;  { element coche              }
+  MF_POPUP        = $0020;  { element sous-menu popup    }
+  MF_MENUBARBREAK = $0040;  { saut de barre de menu      }
+  MF_MENUBREAK    = $0080;  { saut de colonne de menu    }
+  MF_SEPARATOR    = $0800;  { separateur de menu         }
+  MF_END          = $0080;  { dernier element du niveau  }
+
   { Limites internes }
   MAX_RESOURCES   = 4096;
   MAX_STRINGS     = 4096;
   MAX_ACCEL       = 256;
   MAX_MENU_ITEMS  = 512;
+  MAX_MENU_LINES  = 2048;
   MAX_DIALOG_CTRL = 256;
 
 { ============================================================
@@ -866,6 +878,20 @@ Type
     Cmd    : Word;    { identifiant de commande               }
     IsLast : Boolean; { True si bit FLAST de fVirt est a 1   }
   End;
+
+  { Element de menu decode (RT_MENU) }
+  TMenuItem = Record
+    Flags   : Word;     { drapeaux fItemFlags                  }
+    MenuID  : Word;     { identifiant ou 0 si popup            }
+    Text    : TString;  { texte Unicode converti               }
+    IsPopup : Boolean;  { True si MF_POPUP dans Flags          }
+    IsEnd   : Boolean;  { True si MF_END dans Flags            }
+    IsSep   : Boolean;  { True si MF_SEPARATOR dans Flags      }
+    IsLast  : Boolean;  { marque de fin du niveau courant      }
+  End;
+
+  { Tableau de lignes RC pour la generation (menus) }
+  TMenuLineArray = Array[1..MAX_MENU_LINES] Of TString;
 
   { Entree dans la table des chaines decodes (RT_STRING) }
   TStringEntry = Record
@@ -916,6 +942,10 @@ Var
   StringCount   : Integer;       { nombre de chaines decodees       }
   AccelEntries  : Array[1..MAX_ACCEL] Of TAccelEntry;
   AccelCount    : Integer;       { nombre d accelerateurs decodes   }
+  MenuItems     : Array[1..MAX_MENU_ITEMS] Of TMenuItem;
+  MenuItemCount : Integer;       { nombre d elements de menu decodes }
+  MenuRCLines   : TMenuLineArray;{ lignes RC generees pour les menus }
+  MenuRCLineCount : Integer;     { nombre de lignes RC de menu       }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -2062,6 +2092,179 @@ Begin
 End;
 
 { ============================================================
+  TODO 13 - DECODAGE RT_MENU (TYPE 4) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Lire les elements de menu recursivement --------------- }
+Procedure ParseMenuItems(Level : Integer;
+                         Var Lines : TMenuLineArray;
+                         Var LineCount : Integer);
+Var
+  fFlags  : Word;
+  Mid     : Word;
+  Txt     : TString;
+  IsPopup : Boolean;
+  IsEnd2  : Boolean;
+  IsSep   : Boolean;
+  Indent  : TString;
+  Opts2   : TString;
+  J       : Integer;
+  E       : TMenuItem;
+Begin
+  Repeat
+    fFlags  := ReadWord;
+    IsPopup := (fFlags And MF_POPUP) <> 0;
+    IsEnd2  := (fFlags And MF_END) <> 0;
+    IsSep   := (fFlags And MF_SEPARATOR) <> 0;
+    Mid := 0;
+    If Not IsPopup Then
+      Mid := ReadWord;
+    Txt := ReadUnicodeString;
+    { Stocker dans le tableau global MenuItems }
+    If MenuItemCount < MAX_MENU_ITEMS Then
+    Begin
+      Inc(MenuItemCount);
+      E.Flags   := fFlags;
+      E.MenuID  := Mid;
+      E.Text    := Txt;
+      E.IsPopup := IsPopup;
+      E.IsEnd   := IsEnd2;
+      E.IsSep   := IsSep;
+      E.IsLast  := IsEnd2;
+      MenuItems[MenuItemCount] := E;
+    End;
+    { Construire le prefixe d indentation }
+    Indent := '';
+    For J := 1 To (Level + 1) Do
+      Indent := Indent + '    ';
+    { Generer les lignes RC correspondantes }
+    If IsPopup Then
+    Begin
+      If LineCount < MAX_MENU_LINES Then
+      Begin
+        Inc(LineCount);
+        Lines[LineCount] := Indent + 'POPUP "' + Txt + '"';
+      End;
+      If LineCount < MAX_MENU_LINES Then
+      Begin
+        Inc(LineCount);
+        Lines[LineCount] := Indent + 'BEGIN';
+      End;
+      ParseMenuItems(Level + 1, Lines, LineCount);
+      If LineCount < MAX_MENU_LINES Then
+      Begin
+        Inc(LineCount);
+        Lines[LineCount] := Indent + 'END';
+      End;
+    End
+    Else If IsSep Then
+    Begin
+      If LineCount < MAX_MENU_LINES Then
+      Begin
+        Inc(LineCount);
+        Lines[LineCount] := Indent + 'MENUITEM SEPARATOR';
+      End;
+    End
+    Else
+    Begin
+      Opts2 := '';
+      If (fFlags And MF_GRAYED) <> 0 Then
+        Opts2 := Opts2 + ', GRAYED';
+      If (fFlags And MF_CHECKED) <> 0 Then
+        Opts2 := Opts2 + ', CHECKED';
+      If (fFlags And MF_DISABLED) <> 0 Then
+        Opts2 := Opts2 + ', INACTIVE';
+      If (fFlags And MF_MENUBARBREAK) <> 0 Then
+        Opts2 := Opts2 + ', MENUBARBREAK';
+      If LineCount < MAX_MENU_LINES Then
+      Begin
+        Inc(LineCount);
+        Lines[LineCount] := Indent + 'MENUITEM "' + Txt + '", ' +
+                            IntToStr(Mid) + Opts2;
+      End;
+    End;
+  Until IsEnd2;
+End;
+
+{ ---- Decoder une ressource MENU ----------------------------- }
+Procedure ParseMenu(Const Res : TResourceEntry);
+Var
+  wVersion     : Word;
+  cbHeaderSize : Word;
+  ResName      : TString;
+  StartLine    : Integer;
+  I            : Integer;
+Begin
+  SeekResPos(Res.DataOfs);
+  wVersion     := ReadWord;
+  cbHeaderSize := ReadWord;
+  { Se positionner apres l en-tete (cbHeaderSize inclut les 4 octets lus) }
+  SeekResPos(Res.DataOfs + cbHeaderSize);
+  { Determiner le nom de la ressource }
+  If Res.NameIsId Then
+    ResName := IntToStr(Res.NameId)
+  Else
+    ResName := Res.NameStr;
+  StartLine := MenuRCLineCount;
+  { Ajouter l en-tete et le bloc RC }
+  If MenuRCLineCount < MAX_MENU_LINES Then
+  Begin
+    Inc(MenuRCLineCount);
+    MenuRCLines[MenuRCLineCount] := ResName + ' MENU';
+  End;
+  If MenuRCLineCount < MAX_MENU_LINES Then
+  Begin
+    Inc(MenuRCLineCount);
+    MenuRCLines[MenuRCLineCount] := 'BEGIN';
+  End;
+  If wVersion = 0 Then
+  Begin
+    { Menu standard }
+    ParseMenuItems(0, MenuRCLines, MenuRCLineCount);
+  End
+  Else
+  Begin
+    { Menu etendu MENUEX : non supporte, stub }
+    If MenuRCLineCount < MAX_MENU_LINES Then
+    Begin
+      Inc(MenuRCLineCount);
+      MenuRCLines[MenuRCLineCount] := '    { MENUEX - format etendu non supporte }';
+    End;
+  End;
+  If MenuRCLineCount < MAX_MENU_LINES Then
+  Begin
+    Inc(MenuRCLineCount);
+    MenuRCLines[MenuRCLineCount] := 'END';
+  End;
+  { Afficher si mode verbeux }
+  If Opts.Verbose Then
+    For I := StartLine + 1 To MenuRCLineCount Do
+      WriteLn(MenuRCLines[I]);
+End;
+
+{ ---- Decoder toutes les ressources MENU -------------------- }
+Procedure ParseAllMenus;
+Var
+  I         : Integer;
+  MenuCount : Integer;
+Begin
+  MenuItemCount   := 0;
+  MenuRCLineCount := 0;
+  MenuCount       := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_MENU) Then
+    Begin
+      ParseMenu(Resources[I]);
+      Inc(MenuCount);
+    End;
+  End;
+  If Opts.Verbose Then
+    WriteLn(MenuCount, ' menu(s) decode(s), ',
+            MenuItemCount, ' element(s) de menu au total.');
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -2107,8 +2310,11 @@ Begin
   { Decoder les accelerateurs (RT_ACCELERATOR) }
   ParseAllAccelerators;
 
-  { TODO 13 a TODO 25 : a implementer }
-  WriteLn('(TODO 13 a TODO 25 : implementation en cours)');
+  { Decoder les menus (RT_MENU) }
+  ParseAllMenus;
+
+  { TODO 14 a TODO 25 : a implementer }
+  WriteLn('(TODO 14 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
