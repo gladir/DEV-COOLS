@@ -259,7 +259,7 @@
       Generer le bloc BEGIN..END principal pour le point
       d'entree du programme.
 
-  23. [A FAIRE] Fallback ASM inline pour les instructions non-traduisibles.
+  23. [IMPLEMENTE] Fallback ASM inline pour les instructions non-traduisibles.
       Pour les instructions qui n'ont pas d'equivalent Pascal
       direct (CLI, STI, HLT, IN, OUT, CPUID, RDTSC, instructions
       FPU x87, etc.), generer un bloc ASM inline Turbo Pascal :
@@ -8210,6 +8210,208 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Fallback ASM inline - TODO 23
+  ============================================================ }
+
+Function IsFPUMnemonic(Const M:String):Boolean;
+{ Detecte les instructions x87 FPU (non traduisibles en Pascal). }
+Var U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsFPUMnemonic:=
+  (U='FADD')or(U='FADDP')or(U='FIADD')or
+  (U='FSUB')or(U='FSUBP')or(U='FISUB')or
+  (U='FSUBR')or(U='FSUBRP')or(U='FISUBR')or
+  (U='FMUL')or(U='FMULP')or(U='FIMUL')or
+  (U='FDIV')or(U='FDIVP')or(U='FIDIV')or
+  (U='FDIVR')or(U='FDIVRP')or(U='FIDIVR')or
+  (U='FLD')or(U='FILD')or(U='FBLD')or
+  (U='FST')or(U='FSTP')or(U='FIST')or
+  (U='FISTP')or(U='FBSTP')or
+  (U='FXCH')or(U='FCOM')or(U='FCOMP')or(U='FCOMPP')or
+  (U='FTST')or(U='FXAM')or
+  (U='FSIN')or(U='FCOS')or(U='FSINCOS')or(U='FSQRT')or
+  (U='FPTAN')or(U='FPATAN')or(U='FRNDINT')or
+  (U='FABS')or(U='FCHS')or(U='FSCALE')or
+  (U='FPREM')or(U='FPREM1')or
+  (U='FYL2X')or(U='FYL2XP1')or(U='F2XM1')or
+  (U='FLDZ')or(U='FLD1')or(U='FLDPI')or
+  (U='FLDL2E')or(U='FLDL2T')or(U='FLDLG2')or(U='FLDLN2')or
+  (U='FINIT')or(U='FNINIT')or(U='FCLEX')or(U='FNCLEX')or
+  (U='FSAVE')or(U='FNSAVE')or(U='FRSTOR')or
+  (U='FSTCW')or(U='FNSTCW')or(U='FLDCW')or
+  (U='FSTSW')or(U='FNSTSW')or(U='FSTENV')or(U='FNSTENV')or
+  (U='FLDENV')or(U='FNOP')or
+  (U='FUCOM')or(U='FUCOMP')or(U='FUCOMPP')or
+  (U='FUCOMI')or(U='FUCOMIP')or(U='FCOMI')or(U='FCOMIP')or
+  (U='FDECSTP')or(U='FINCSTP')or(U='FFREE')or
+  (U='FISTTP')or(U='FCMOVB')or(U='FCMOVE')or
+  (U='FCMOVBE')or(U='FCMOVU')or(U='FCMOVNB')or
+  (U='FCMOVNE')or(U='FCMOVNBE')or(U='FCMOVNU');
+End;
+
+Function IsIOPrivMnemonic(Const M:String):Boolean;
+{ Detecte les instructions E/S et privilegiees non traduisibles. }
+Var U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsIOPrivMnemonic:=
+  (U='CLI')or(U='STI')or(U='HLT')or
+  (U='IN')or(U='OUT')or
+  (U='INSB')or(U='INSW')or(U='INSD')or
+  (U='OUTSB')or(U='OUTSW')or(U='OUTSD')or
+  (U='CPUID')or(U='RDTSC')or(U='RDMSR')or
+  (U='WRMSR')or(U='RDPMC')or
+  (U='LGDT')or(U='LIDT')or(U='LLDT')or
+  (U='SGDT')or(U='SIDT')or(U='SLDT')or
+  (U='INVLPG')or(U='WBINVD')or(U='INVD')or
+  (U='CLTS')or(U='LMSW')or(U='SMSW')or
+  (U='ARPL')or(U='VERR')or(U='VERW')or
+  (U='LAR')or(U='LSL');
+End;
+
+Function AsmInlineInstr(Var AsmL:TAsmLine):String;
+{ Reconstruit le texte d'instruction assembleur depuis TAsmLine.
+  Retourne MNEMONIC OP1,OP2 ou MNEMONIC OP1 ou MNEMONIC. }
+Var S:String;
+Begin
+ S:=AsmL.Mnemonic;
+ If AsmL.Op1.Reg<>'' Then Begin
+  S:=S+' '+AsmL.Op1.Reg;
+  If AsmL.Op2.Reg<>'' Then
+   S:=S+','+AsmL.Op2.Reg
+  Else If AsmL.Op2.MemExpr<>'' Then
+   S:=S+','+AsmL.Op2.MemExpr;
+ End
+ Else If AsmL.Op1.MemExpr<>'' Then Begin
+  S:=S+' '+AsmL.Op1.MemExpr;
+  If AsmL.Op2.Reg<>'' Then
+   S:=S+','+AsmL.Op2.Reg
+  Else If AsmL.Op2.MemExpr<>'' Then
+   S:=S+','+AsmL.Op2.MemExpr;
+ End
+ Else If AsmL.Op1.LabelName<>'' Then Begin
+  S:=S+' '+AsmL.Op1.LabelName;
+ End;
+ AsmInlineInstr:=S;
+End;
+
+Function IsInlineMnemonic(Const M:String):Boolean;
+{ Indique si le mnemonique est gere par TODO 23
+  (instruction necessitant un fallback ASM inline). }
+Begin
+ IsInlineMnemonic:=IsFPUMnemonic(M) or IsIOPrivMnemonic(M);
+End;
+
+Procedure ProcessInlineFallback;
+{ Pour les instructions sans traduction Pascal directe,
+  generer un fallback en ASM inline si UseInline est active.
+  Regroupe les instructions consecutives dans un seul bloc asm.
+  Insere un commentaire avertissant que le code n'a pas pu
+  etre traduit. }
+Var
+ I,J:Integer;
+ AsmL:TAsmLine;
+ GroupStart,GroupEnd:Integer;
+ InlineCount,GroupCount:Integer;
+ FPUCount,IOPrivCount,OtherCount:Integer;
+ Instr:String;
+Begin
+ If Not UseInline Then Begin
+  WriteLn('  Fallback ASM inline : desactive (-noinline)');
+  Exit;
+ End;
+
+ InlineCount:=0;
+ GroupCount:=0;
+ FPUCount:=0;
+ IOPrivCount:=0;
+ OtherCount:=0;
+
+ I:=0;
+ While I<SrcLineCount do Begin
+  If SrcLines[I]=Nil Then Begin Inc(I); Continue; End;
+
+  { Parser la ligne }
+  ParseInstructionLine(I,AsmL);
+  If AsmL.IsDirective or(AsmL.Mnemonic='')Then Begin
+   Inc(I);
+   Continue;
+  End;
+
+  { Verifier si cette instruction a deja une traduction }
+  If FindTranslationForLine(I)>=0 Then Begin
+   Inc(I);
+   Continue;
+  End;
+
+  { Instruction non traduite trouvee - chercher la fin du groupe }
+  GroupStart:=I;
+  GroupEnd:=I;
+  J:=I+1;
+  While J<SrcLineCount do Begin
+   If SrcLines[J]=Nil Then Break;
+   ParseInstructionLine(J,AsmL);
+   If AsmL.IsDirective or(AsmL.Mnemonic='')Then Break;
+   If FindTranslationForLine(J)>=0 Then Break;
+   GroupEnd:=J;
+   Inc(J);
+  End;
+
+  { Generer les traductions ASM inline pour le groupe }
+  If GroupStart=GroupEnd Then Begin
+   { Instruction isolee : asm INSTR; end; sur une seule ligne }
+   ParseInstructionLine(GroupStart,AsmL);
+   Instr:=AsmInlineInstr(AsmL);
+   AddTranslation(GroupStart,
+    'asm '+Instr+'; end;',AsmL.Mnemonic);
+   If IsFPUMnemonic(AsmL.Mnemonic) Then Inc(FPUCount)
+   Else If IsIOPrivMnemonic(AsmL.Mnemonic) Then Inc(IOPrivCount)
+   Else Inc(OtherCount);
+   Inc(InlineCount);
+  End
+  Else Begin
+   { Groupe de N instructions consecutives non traduites :
+     ouvrir un seul bloc asm, emettre chaque instruction,
+     fermer avec end; sur la derniere ligne }
+   Inc(GroupCount);
+   For J:=GroupStart to GroupEnd do Begin
+    ParseInstructionLine(J,AsmL);
+    Instr:=AsmInlineInstr(AsmL);
+    If IsFPUMnemonic(AsmL.Mnemonic) Then Inc(FPUCount)
+    Else If IsIOPrivMnemonic(AsmL.Mnemonic) Then Inc(IOPrivCount)
+    Else Inc(OtherCount);
+    If J=GroupStart Then
+     { Premiere instruction : ouvrir le bloc asm }
+     AddTranslation(J,
+      'asm'+Chr(10)+'    '+Instr+';',AsmL.Mnemonic)
+    Else If J=GroupEnd Then
+     { Derniere instruction : fermer le bloc asm }
+     AddTranslation(J,
+      '  '+Instr+';'+Chr(10)+'  end;',AsmL.Mnemonic)
+    Else
+     { Instructions intermediaires }
+     AddTranslation(J,'  '+Instr+';',AsmL.Mnemonic);
+    Inc(InlineCount);
+   End;
+  End;
+
+  I:=GroupEnd+1;
+ End;
+
+ { Statistiques }
+ WriteLn('  Fallback ASM inline :');
+ WriteLn('    Instructions inline : ',InlineCount);
+ WriteLn('    Blocs groupes       : ',GroupCount);
+ If Verbose Then Begin
+  WriteLn('  Details par categorie :');
+  WriteLn('    FPU x87        : ',FPUCount);
+  WriteLn('    E/S et systeme : ',IOPrivCount);
+  WriteLn('    Autres         : ',OtherCount);
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -8339,11 +8541,12 @@ BEGIN
  ProcessAddressingTranslations;
  { TODO 20 - Extensions 80386 }
  Process386Translations;
+ { TODO 23 - Fallback ASM inline (avant generation) }
+ ProcessInlineFallback;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
  ProcessBodyGeneration;
- { TODO 23 - Fallback ASM inline }
  { TODO 24 - Optimisation }
  { TODO 25 - Verification et rapport }
  FreeSourceLines;
