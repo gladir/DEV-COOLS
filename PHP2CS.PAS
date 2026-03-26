@@ -983,6 +983,34 @@ Begin
     ChangeExt := S + NewExt;
 End;
 
+Function ExtractExt(S: TString): TString;
+Var I: Integer;
+Begin
+  I := Length(S);
+  While (I > 0) And (S[I] <> '.') And (S[I] <> '\') And (S[I] <> '/') Do
+    Dec(I);
+  If (I > 0) And (S[I] = '.') Then
+    ExtractExt := Copy(S, I, Length(S) - I + 1)
+  Else
+    ExtractExt := '';
+End;
+
+Function FileExists(Const Name: TString): Boolean;
+Var F: File;
+Begin
+  Assign(F, Name);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    Close(F);
+    FileExists := True;
+  End
+  Else
+    FileExists := False;
+End;
+
 { ============================================================
   GESTION DES ERREURS
   ============================================================ }
@@ -1005,11 +1033,37 @@ End;
   AFFICHAGE
   ============================================================ }
 
+Function FrameworkName(FW: Integer): TString;
+Begin
+  Case FW Of
+    FW_NONE    : FrameworkName := 'none';
+    FW_EF      : FrameworkName := 'ef';
+    FW_EFCORE  : FrameworkName := 'efcore';
+    FW_ASPNET  : FrameworkName := 'aspnet';
+    FW_BLAZOR  : FrameworkName := 'blazor';
+    FW_DAPPER  : FrameworkName := 'dapper';
+    FW_ADONET  : FrameworkName := 'adonet';
+    FW_WINFORMS: FrameworkName := 'winforms';
+    FW_WPF     : FrameworkName := 'wpf';
+    FW_MAUI    : FrameworkName := 'maui';
+  Else
+    FrameworkName := 'inconnu';
+  End;
+End;
+
+Function CsVersionValid(Const V: TString): Boolean;
+Begin
+  CsVersionValid := (V = CS_VER_60) Or (V = CS_VER_70) Or
+                    (V = CS_VER_80) Or (V = CS_VER_90) Or
+                    (V = CS_VER_100) Or (V = CS_VER_110) Or
+                    (V = CS_VER_120);
+End;
+
 Procedure ShowBanner;
 Begin
   WriteLn('PHP2CS v', PHP2CS_VERSION, ' (', PHP2CS_DATE, ')');
   WriteLn('Transpileur PHP vers C# ', Opts.CsVersion,
-          ' (framework: ', Opts.Framework, ')');
+          ' (framework: ', FrameworkName(Opts.Framework), ')');
   WriteLn;
 End;
 
@@ -1051,7 +1105,7 @@ Begin
   WriteLn('PHP2CS: avertissements    : ', WarnCount);
   WriteLn('PHP2CS: erreurs           : ', ErrorCount);
   WriteLn('PHP2CS: version C# cible  : ', Opts.CsVersion);
-  WriteLn('PHP2CS: framework cible   : ', Opts.Framework);
+  WriteLn('PHP2CS: framework cible   : ', FrameworkName(Opts.Framework));
 End;
 
 { ============================================================
@@ -1127,6 +1181,22 @@ Begin
   Begin
     ShowHelp;
     Halt(EXIT_USAGE);
+  End;
+
+  { Verifier l extension .php du fichier source }
+  If UpStr(ExtractExt(Opts.SrcFile)) <> '.PHP' Then
+    WarnMsg('le fichier source n a pas l extension .php: ' + Opts.SrcFile);
+
+  { Verifier l existence du fichier source }
+  If Not FileExists(Opts.SrcFile) Then
+    FatalError('fichier source introuvable: ' + Opts.SrcFile);
+
+  { Valider la version C# cible }
+  If Not CsVersionValid(Opts.CsVersion) Then
+  Begin
+    WarnMsg('version C# inconnue: ' + Opts.CsVersion +
+            ', defaut utilise: ' + CS_VER_DEF);
+    Opts.CsVersion := CS_VER_DEF;
   End;
 
   If Opts.OutFile = '' Then
