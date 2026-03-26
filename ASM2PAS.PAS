@@ -225,7 +225,7 @@
       et generer des types Record Pascal correspondants quand
       des offsets fixes sont utilises de facon repetee.
 
-  20. [A FAIRE] Gestion des extensions 80386 en mode 32 bits.
+  20. [IMPLEMENTE] Gestion des extensions 80386 en mode 32 bits.
       Gerer les registres 32 bits (EAX..EDI) comme LongInt.
       Prefixe 66h : basculement taille d'operande 16/32 bits.
       Prefixe 67h : basculement taille d'adresse 16/32 bits.
@@ -7203,6 +7203,398 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Gestion des extensions 80386 - TODO 20
+  ============================================================ }
+
+Function SETccSuffix(Mnem:String):String;
+{ Extrait le suffixe de condition d'un mnemonique SETcc.
+  SETE -> E, SETNE -> NE, SETG -> G, etc. }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Mnem);
+ If(Length(U)>3)and(Copy(U,1,3)='SET')Then
+  SETccSuffix:=Copy(U,4,Length(U)-3)
+ Else
+  SETccSuffix:='';
+End;
+
+Function CMOVccSuffix(Mnem:String):String;
+{ Extrait le suffixe de condition d'un mnemonique CMOVcc.
+  CMOVE -> E, CMOVNE -> NE, CMOVG -> G, etc. }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Mnem);
+ If(Length(U)>4)and(Copy(U,1,4)='CMOV')Then
+  CMOVccSuffix:=Copy(U,5,Length(U)-4)
+ Else
+  CMOVccSuffix:='';
+End;
+
+Function CcToFlagExpr(Suffix:String):String;
+{ Convertit un suffixe de condition (E, NE, G, GE, L, LE, etc.)
+  en expression booleenne Pascal sur les flags.
+  Memes conditions que Jcc mais sans le prefixe J. }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(Suffix);
+ If(U='E')or(U='Z')Then CcToFlagExpr:='FlagZF'
+ Else If(U='NE')or(U='NZ')Then CcToFlagExpr:='not FlagZF'
+ Else If U='S' Then CcToFlagExpr:='FlagSF'
+ Else If U='NS' Then CcToFlagExpr:='not FlagSF'
+ Else If U='O' Then CcToFlagExpr:='FlagOF'
+ Else If U='NO' Then CcToFlagExpr:='not FlagOF'
+ Else If(U='P')or(U='PE')Then CcToFlagExpr:='FlagPF'
+ Else If(U='NP')or(U='PO')Then CcToFlagExpr:='not FlagPF'
+ Else If(U='C')or(U='B')or(U='NAE')Then CcToFlagExpr:='FlagCF'
+ Else If(U='NC')or(U='AE')or(U='NB')Then CcToFlagExpr:='not FlagCF'
+ Else If(U='A')or(U='NBE')Then
+  CcToFlagExpr:='(not FlagCF) and (not FlagZF)'
+ Else If(U='BE')or(U='NA')Then
+  CcToFlagExpr:='FlagCF or FlagZF'
+ Else If(U='G')or(U='NLE')Then
+  CcToFlagExpr:='(not FlagZF) and (FlagSF = FlagOF)'
+ Else If(U='GE')or(U='NL')Then
+  CcToFlagExpr:='FlagSF = FlagOF'
+ Else If(U='L')or(U='NGE')Then
+  CcToFlagExpr:='FlagSF <> FlagOF'
+ Else If(U='LE')or(U='NG')Then
+  CcToFlagExpr:='FlagZF or (FlagSF <> FlagOF)'
+ Else CcToFlagExpr:='';
+End;
+
+Function ExtractThirdOp(SrcLine:String):String;
+{ Pour les instructions a 3 operandes (SHLD, SHRD, IMUL),
+  extrait le troisieme operande apres la deuxieme virgule. }
+Var
+ P1,P2:Integer;
+ S:String;
+Begin
+ S:=SrcLine;
+ P1:=Pos(',',S);
+ If P1>0 Then Begin
+  S:=Copy(S,P1+1,Length(S)-P1);
+  P2:=Pos(',',S);
+  If P2>0 Then Begin
+   S:=Copy(S,P2+1,Length(S)-P2);
+   P1:=Pos(';',S);
+   If P1>0 Then S:=Copy(S,1,P1-1);
+   ExtractThirdOp:=Trim(S);
+  End
+  Else ExtractThirdOp:='';
+ End Else ExtractThirdOp:='';
+End;
+
+Function IsSETcc(M:String):Boolean;
+{ Verifie si un mnemonique est une instruction SETcc }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsSETcc:=
+  (U='SETE')or(U='SETNE')or(U='SETZ')or(U='SETNZ')or
+  (U='SETA')or(U='SETAE')or(U='SETB')or(U='SETBE')or
+  (U='SETG')or(U='SETGE')or(U='SETL')or(U='SETLE')or
+  (U='SETC')or(U='SETNC')or(U='SETO')or(U='SETNO')or
+  (U='SETS')or(U='SETNS')or(U='SETP')or(U='SETNP')or
+  (U='SETPE')or(U='SETPO')or
+  (U='SETNA')or(U='SETNAE')or(U='SETNB')or(U='SETNBE')or
+  (U='SETNG')or(U='SETNGE')or(U='SETNL')or(U='SETNLE');
+End;
+
+Function IsCMOVcc(M:String):Boolean;
+{ Verifie si un mnemonique est une instruction CMOVcc }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ IsCMOVcc:=
+  (U='CMOVE')or(U='CMOVNE')or(U='CMOVZ')or(U='CMOVNZ')or
+  (U='CMOVA')or(U='CMOVAE')or(U='CMOVB')or(U='CMOVBE')or
+  (U='CMOVG')or(U='CMOVGE')or(U='CMOVL')or(U='CMOVLE')or
+  (U='CMOVC')or(U='CMOVNC')or(U='CMOVO')or(U='CMOVNO')or
+  (U='CMOVS')or(U='CMOVNS')or(U='CMOVP')or(U='CMOVNP')or
+  (U='CMOVPE')or(U='CMOVPO')or
+  (U='CMOVNA')or(U='CMOVNAE')or(U='CMOVNB')or(U='CMOVNBE')or
+  (U='CMOVNG')or(U='CMOVNGE')or(U='CMOVNL')or(U='CMOVNLE');
+End;
+
+Function TranslateBSWAP(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ BSWAP reg32 -> inversion d'endianness (octets 0123 -> 3210)
+  Requiert un registre 32 bits. }
+Var
+ D:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ TranslateBSWAP:=D+' := (('+D+' and $FF) shl 24) or '+
+  '(('+D+' and $FF00) shl 8) or '+
+  '(('+D+' shr 8) and $FF00) or '+
+  '(('+D+' shr 24) and $FF);';
+End;
+
+Function TranslateBSF(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ BSF dest,src -> recherche du premier bit a 1 en partant du poids faible.
+  Si src = 0, FlagZF := True. Sinon dest := index du bit, FlagZF := False. }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateBSF:='If '+S+' = 0 Then FlagZF := True Else Begin '+
+  'FlagZF := False; '+D+' := 0; '+
+  'While ('+S+' shr '+D+') and 1 = 0 do Inc('+D+'); End;';
+End;
+
+Function TranslateBSR(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ BSR dest,src -> recherche du dernier bit a 1 en partant du poids fort.
+  Si src = 0, FlagZF := True. Sinon dest := index du bit, FlagZF := False. }
+Var
+ D,S,Bits:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ If AsmL.Op2.OpType=OT_REG32 Then Bits:='31'
+ Else Bits:='15';
+ TranslateBSR:='If '+S+' = 0 Then FlagZF := True Else Begin '+
+  'FlagZF := False; '+D+' := '+Bits+'; '+
+  'While ('+S+' shr '+D+') and 1 = 0 do Dec('+D+'); End;';
+End;
+
+Function TranslateSETcc(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ SETcc r/m8 -> positionner octet selon condition.
+  Genere : dest := Ord(condition_flags); }
+Var
+ D,Cond,Suf:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ Suf:=SETccSuffix(AsmL.Mnemonic);
+ Cond:=CcToFlagExpr(Suf);
+ If Cond<>'' Then
+  TranslateSETcc:=D+' := Ord('+Cond+');'
+ Else
+  TranslateSETcc:=D+' := Ord({'+UpCaseStr(AsmL.Mnemonic)+'});';
+End;
+
+Function TranslateCMOVcc(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ CMOVcc dest,src -> deplacement conditionnel.
+  Genere : If condition Then dest := src; }
+Var
+ D,S,Cond,Suf:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ Suf:=CMOVccSuffix(AsmL.Mnemonic);
+ Cond:=CcToFlagExpr(Suf);
+ If Cond<>'' Then
+  TranslateCMOVcc:='If '+Cond+' Then '+D+' := '+S+';'
+ Else
+  TranslateCMOVcc:='If {'+UpCaseStr(AsmL.Mnemonic)+'} Then '+D+' := '+S+';';
+End;
+
+Function TranslateXADD(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ XADD dest,src -> echange et addition.
+  Semantique : temp := dest; dest := dest + src; src := temp;
+  Modifie les flags comme ADD. }
+Var
+ D,S:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ TranslateXADD:='Begin SaveXADD := '+D+'; '+
+  D+' := '+D+' + '+S+'; '+S+' := SaveXADD; End;';
+End;
+
+Function TranslateCMPXCHG(Var AsmL:TAsmLine;ProcIdx:Integer):String;
+{ CMPXCHG dest,src -> comparer et echanger.
+  Compare dest avec accumulateur (AL/AX/EAX selon taille).
+  Si egal : FlagZF := True, dest := src.
+  Sinon : FlagZF := False, accumulateur := dest. }
+Var
+ D,S,Acc:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ If AsmL.Op1.OpType=OT_REG32 Then Acc:='RegEAX'
+ Else If AsmL.Op1.OpType=OT_REG8 Then Acc:='Lo(RegAX)'
+ Else Acc:='RegAX';
+ TranslateCMPXCHG:='If '+Acc+' = '+D+' Then Begin FlagZF := True; '+
+  D+' := '+S+'; End Else Begin FlagZF := False; '+
+  Acc+' := '+D+'; End;';
+End;
+
+Function TranslateSHLD(Var AsmL:TAsmLine;ProcIdx:Integer;
+ CountStr:String):String;
+{ SHLD dest,src,count -> decalage gauche double precision.
+  Les bits sortant a gauche de dest sont remplaces par les bits
+  de poids fort de src. }
+Var
+ D,S,N,Bits:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ If CountStr<>'' Then N:=CountStr
+ Else N:='Lo(RegCX)';
+ If AsmL.Op1.OpType=OT_REG32 Then Bits:='32'
+ Else Bits:='16';
+ TranslateSHLD:=D+' := ('+D+' shl '+N+') or '+
+  '('+S+' shr ('+Bits+' - '+N+'));';
+End;
+
+Function TranslateSHRD(Var AsmL:TAsmLine;ProcIdx:Integer;
+ CountStr:String):String;
+{ SHRD dest,src,count -> decalage droit double precision.
+  Les bits sortant a droite de dest sont remplaces par les bits
+  de poids faible de src. }
+Var
+ D,S,N,Bits:String;
+Begin
+ D:=OperandToExpr(AsmL.Op1,ProcIdx);
+ S:=OperandToExpr(AsmL.Op2,ProcIdx);
+ If CountStr<>'' Then N:=CountStr
+ Else N:='Lo(RegCX)';
+ If AsmL.Op1.OpType=OT_REG32 Then Bits:='32'
+ Else Bits:='16';
+ TranslateSHRD:=D+' := ('+D+' shr '+N+') or '+
+  '('+S+' shl ('+Bits+' - '+N+'));';
+End;
+
+Function Is386Mnemonic(M:String):Boolean;
+{ Verifie si un mnemonique est une instruction specifique 386+
+  (BSWAP, BSF, BSR, SETcc, CMOVcc, XADD, CMPXCHG, SHLD, SHRD). }
+Var
+ U:String;
+Begin
+ U:=UpCaseStr(M);
+ Is386Mnemonic:=
+  (U='BSWAP')or(U='BSF')or(U='BSR')or
+  (U='XADD')or(U='CMPXCHG')or
+  (U='SHLD')or(U='SHRD')or
+  IsSETcc(M)or IsCMOVcc(M);
+End;
+
+Procedure Process386Translations;
+{ Parcourt les lignes source et traduit les instructions specifiques
+  au processeur 80386+ en code Pascal equivalent.
+  Gere BSWAP, BSF/BSR, SETcc, CMOVcc, XADD, CMPXCHG, SHLD/SHRD.
+  Detecte le mode FLAT et supprime les prefixes de segment inutiles.
+  Produit des statistiques par categorie d'instruction. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ ProcIdx:Integer;
+ Code:String;
+ Total386:LongInt;
+ BswapCount,BsfCount,BsrCount:LongInt;
+ SetccCount,CmovccCount:LongInt;
+ XaddCount,CmpxchgCount:LongInt;
+ ShldCount,ShrdCount:LongInt;
+ FlatModeCount:LongInt;
+ M,CountStr:String;
+Begin
+ Total386:=0;
+ BswapCount:=0;BsfCount:=0;BsrCount:=0;
+ SetccCount:=0;CmovccCount:=0;
+ XaddCount:=0;CmpxchgCount:=0;
+ ShldCount:=0;ShrdCount:=0;
+ FlatModeCount:=0;
+ { Detecter le mode FLAT }
+ If MemoryModel=MM_FLAT Then Begin
+  FlatModeCount:=1;
+  If Verbose Then
+   WriteLn('  Mode FLAT detecte : segments ignores, adresses lineaires 32 bits.');
+ End;
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Continue;
+  If AsmL.IsDirective Then Continue;
+  M:=UpCaseStr(AsmL.Mnemonic);
+  If Not Is386Mnemonic(M) Then Continue;
+  ProcIdx:=FindProcForLine(I);
+  Code:='';
+  { BSWAP }
+  If M='BSWAP' Then Begin
+   Code:=TranslateBSWAP(AsmL,ProcIdx);
+   Inc(BswapCount);
+  End
+  { BSF }
+  Else If M='BSF' Then Begin
+   Code:=TranslateBSF(AsmL,ProcIdx);
+   Inc(BsfCount);
+  End
+  { BSR }
+  Else If M='BSR' Then Begin
+   Code:=TranslateBSR(AsmL,ProcIdx);
+   Inc(BsrCount);
+  End
+  { SETcc }
+  Else If IsSETcc(M) Then Begin
+   Code:=TranslateSETcc(AsmL,ProcIdx);
+   Inc(SetccCount);
+  End
+  { CMOVcc }
+  Else If IsCMOVcc(M) Then Begin
+   Code:=TranslateCMOVcc(AsmL,ProcIdx);
+   Inc(CmovccCount);
+  End
+  { XADD }
+  Else If M='XADD' Then Begin
+   Code:=TranslateXADD(AsmL,ProcIdx);
+   Inc(XaddCount);
+  End
+  { CMPXCHG }
+  Else If M='CMPXCHG' Then Begin
+   Code:=TranslateCMPXCHG(AsmL,ProcIdx);
+   Inc(CmpxchgCount);
+  End
+  { SHLD }
+  Else If M='SHLD' Then Begin
+   CountStr:=ExtractThirdOp(SrcLines[I]^);
+   If CountStr<>'' Then Begin
+    If UpCaseStr(CountStr)='CL' Then CountStr:='Lo(RegCX)';
+   End;
+   Code:=TranslateSHLD(AsmL,ProcIdx,CountStr);
+   Inc(ShldCount);
+  End
+  { SHRD }
+  Else If M='SHRD' Then Begin
+   CountStr:=ExtractThirdOp(SrcLines[I]^);
+   If CountStr<>'' Then Begin
+    If UpCaseStr(CountStr)='CL' Then CountStr:='Lo(RegCX)';
+   End;
+   Code:=TranslateSHRD(AsmL,ProcIdx,CountStr);
+   Inc(ShrdCount);
+  End;
+  If Code<>'' Then Begin
+   AddTranslation(I,Code,SrcLines[I]^);
+   Inc(Total386);
+  End;
+ End;
+ WriteLn('Traduction 386 : ',Total386,' instructions, ',
+  TranslationCount,' traductions totales.');
+ If Verbose Then Begin
+  WriteLn('  BSWAP            : ',BswapCount);
+  WriteLn('  BSF              : ',BsfCount);
+  WriteLn('  BSR              : ',BsrCount);
+  WriteLn('  SETcc            : ',SetccCount);
+  WriteLn('  CMOVcc           : ',CmovccCount);
+  WriteLn('  XADD             : ',XaddCount);
+  WriteLn('  CMPXCHG          : ',CmpxchgCount);
+  WriteLn('  SHLD             : ',ShldCount);
+  WriteLn('  SHRD             : ',ShrdCount);
+  If FlatModeCount>0 Then
+   WriteLn('  Mode FLAT        : actif');
+  If Total386>0 Then Begin
+   WriteLn('  Details :');
+   For I:=TranslationCount-Total386 to TranslationCount-1 do
+    If I>=0 Then
+     WriteLn('    ',Translations[I].PascalCode);
+  End;
+ End;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -7331,6 +7723,7 @@ BEGIN
  { TODO 19 - Traduction adressage }
  ProcessAddressingTranslations;
  { TODO 20 - Extensions 80386 }
+ Process386Translations;
  { TODO 21 - Generation en-tete Pascal }
  { TODO 22 - Generation corps procedures }
  { TODO 23 - Fallback ASM inline }
