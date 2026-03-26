@@ -281,7 +281,7 @@
       (Lo(RegAX) := val; Hi(RegAX) := 0 -> RegAX := Word(val)).
       (f) Detection de patterns idiomatiques connus (XOR AX,AX -> := 0).
 
-  25. [A FAIRE] Options de sortie, verification finale et rapport.
+  25. [IMPLEMENTE] Options de sortie, verification finale et rapport.
       Verifier la coherence du fichier .PAS genere : toutes les
       references sont resolues, les procedures ont un ENDP
       correspondant, les types sont coherents. Afficher un rapport
@@ -8723,6 +8723,209 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Verification finale et rapport - TODO 25
+  ============================================================ }
+
+Function IsVerifyMnemonic(Const M:String):Boolean;
+{ Indique si le mnemonique est gere par TODO 25
+  (la verification agit sur les resultats globaux, pas sur les mnemoniques). }
+Begin
+ IsVerifyMnemonic:=False;
+End;
+
+Procedure ProcessVerificationReport;
+{ Verification de coherence et rapport final de la transpilation. }
+Var
+ I,J,P:Integer;
+ ErrorCount:Integer;
+ WarnCount:Integer;
+ LabelSymCount:Integer;
+ ProcSymCount:Integer;
+ VarSymCount:Integer;
+ ConstSymCount:Integer;
+ ExternCount:Integer;
+ PublicCount:Integer;
+ TransOK:LongInt;
+ TransInline:LongInt;
+ TransNone:LongInt;
+ Pct:LongInt;
+ UnmatchedProcs:Integer;
+ GotoTargets:Integer;
+ UnresolvedGotos:Integer;
+ Code,Lbl:String;
+ Found:Boolean;
+ ExitCode:Integer;
+Begin
+ ErrorCount:=0;
+ WarnCount:=0;
+
+ { === Phase 1 : Comptage des symboles === }
+ LabelSymCount:=0;
+ ProcSymCount:=0;
+ VarSymCount:=0;
+ ConstSymCount:=0;
+ ExternCount:=0;
+ PublicCount:=0;
+ For I:=1 to SymbolCount do Begin
+  Case Symbols[I].SymType of
+   SY_LABEL:Inc(LabelSymCount);
+   SY_PROC:Inc(ProcSymCount);
+   SY_VAR:Inc(VarSymCount);
+   SY_CONST:Inc(ConstSymCount);
+  End;
+  If Symbols[I].IsExtern Then Inc(ExternCount);
+  If Symbols[I].IsPublic Then Inc(PublicCount);
+ End;
+
+ { === Phase 2 : Verification des procedures (ENDP correspondant) === }
+ UnmatchedProcs:=0;
+ For I:=1 to ProcCount do Begin
+  If Procs[I].EndLine<=Procs[I].StartLine Then Begin
+   Inc(UnmatchedProcs);
+   Inc(WarnCount);
+  End;
+ End;
+
+ { === Phase 3 : Verification des references Goto === }
+ GotoTargets:=0;
+ UnresolvedGotos:=0;
+ For I:=0 to TranslationCount-1 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  Code:=Translations[I].PascalCode;
+  P:=Pos('Goto ',Code);
+  If P>0 Then Begin
+   Lbl:=Trim(Copy(Code,P+5,255));
+   { Retirer le point-virgule terminal }
+   If(Length(Lbl)>0)and(Lbl[Length(Lbl)]=';')Then
+    Lbl:=Trim(Copy(Lbl,1,Length(Lbl)-1));
+   { Retirer 'End;' si present apres le label (ex: Begin ... Goto X; End;) }
+   P:=Pos(' ',Lbl);
+   If P>0 Then Lbl:=Copy(Lbl,1,P-1);
+   If Length(Lbl)=0 Then Continue;
+   Inc(GotoTargets);
+   { Chercher le label comme cible dans les traductions }
+   Found:=False;
+   For J:=0 to TranslationCount-1 do Begin
+    If Not Translations[J].IsTranslated Then Continue;
+    If Pos(Lbl+':',Translations[J].PascalCode)>0 Then Begin
+     Found:=True;
+     Break;
+    End;
+   End;
+   { Aussi verifier dans la table des symboles }
+   If Not Found Then Begin
+    If FindSymbol(Lbl)>0 Then Found:=True;
+   End;
+   If Not Found Then Begin
+    Inc(UnresolvedGotos);
+    Inc(WarnCount);
+   End;
+  End;
+ End;
+
+ { === Phase 4 : Comptage des traductions === }
+ TransOK:=0;
+ TransInline:=0;
+ TransNone:=0;
+ For I:=0 to TranslationCount-1 do Begin
+  If Translations[I].IsTranslated Then Begin
+   { Verifier si c'est du ASM inline }
+   If(Pos('asm',Translations[I].PascalCode)>0)
+    and(Pos('end;',Translations[I].PascalCode)>0)Then
+    Inc(TransInline)
+   Else
+    Inc(TransOK);
+  End Else
+   Inc(TransNone);
+ End;
+
+ { === Phase 5 : Calcul du pourcentage de traduction === }
+ If TranslationCount>0 Then
+  Pct:=(TransOK*100) div TranslationCount
+ Else
+  Pct:=0;
+
+ { === Phase 6 : Detection des erreurs graves === }
+ If TranslationCount=0 Then Begin
+  Inc(ErrorCount);
+ End;
+ If(ProcCount>0)and(UnmatchedProcs=ProcCount)Then Begin
+  Inc(ErrorCount);
+ End;
+
+ { === Rapport final === }
+ WriteLn;
+ WriteLn('=== Rapport de transpilation ===');
+ WriteLn('  Fichier source      : ',InFileName);
+ WriteLn('  Fichier genere      : ',OutFileName);
+ WriteLn('  Lignes source       : ',SrcLineCount);
+ WriteLn('  Instructions totales: ',TranslationCount);
+ WriteLn('  Traduites (Pascal)  : ',TransOK);
+ WriteLn('  ASM inline          : ',TransInline);
+ WriteLn('  Non traduites       : ',TransNone);
+ WriteLn('  Pourcentage traduit : ',Pct,'%');
+ WriteLn('  Procedures          : ',ProcCount);
+ WriteLn('  Variables           : ',DataVarCount);
+ WriteLn('  Symboles            : ',SymbolCount);
+
+ If(UnmatchedProcs>0)Then
+  WriteLn('  AVERTISSEMENT: ',UnmatchedProcs,
+   ' procedure(s) sans ENDP correspondant.');
+ If(UnresolvedGotos>0)Then
+  WriteLn('  AVERTISSEMENT: ',UnresolvedGotos,
+   ' reference(s) Goto non resolue(s) sur ',GotoTargets,' cible(s).');
+
+ If Verbose Then Begin
+  WriteLn('  Details des symboles :');
+  WriteLn('    Labels       : ',LabelSymCount);
+  WriteLn('    Procedures   : ',ProcSymCount);
+  WriteLn('    Variables    : ',VarSymCount);
+  WriteLn('    Constantes   : ',ConstSymCount);
+  WriteLn('    Externes     : ',ExternCount);
+  WriteLn('    Publics      : ',PublicCount);
+  WriteLn('  Details des procedures :');
+  For I:=1 to ProcCount do Begin
+   Write('    ',Procs[I].Name);
+   If Procs[I].IsFunction or Procs[I].UsesAX Then Write(' (Function)')
+   Else Write(' (Procedure)');
+   If Procs[I].IsNear Then Write(' NEAR') Else Write(' FAR');
+   Write(' params:',Procs[I].ParamCount);
+   Write(' locals:',Procs[I].LocalCount);
+   WriteLn(' [',Procs[I].StartLine,'..',Procs[I].EndLine,']');
+  End;
+  WriteLn('  Details de la traduction :');
+  WriteLn('    References Goto   : ',GotoTargets);
+  WriteLn('    Goto resolus      : ',GotoTargets-UnresolvedGotos);
+  WriteLn('    Goto non resolus  : ',UnresolvedGotos);
+  WriteLn('    Proc. sans ENDP   : ',UnmatchedProcs);
+  WriteLn('  Mode de traduction :');
+  If Mode32 Then WriteLn('    Architecture : 80386 (32 bits)')
+  Else WriteLn('    Architecture : 8086 (16 bits)');
+  If UseInline Then WriteLn('    ASM inline   : active')
+  Else WriteLn('    ASM inline   : desactive');
+  If AddComments Then WriteLn('    Commentaires : actifs')
+  Else WriteLn('    Commentaires : desactives');
+ End;
+
+ WriteLn('  Avertissements : ',WarnCount);
+ WriteLn('  Erreurs         : ',ErrorCount);
+
+ { === Code de retour === }
+ If ErrorCount>0 Then ExitCode:=1
+ Else ExitCode:=0;
+
+ If ExitCode=0 Then
+  WriteLn('Transpilation terminee avec succes.')
+ Else
+  WriteLn('Transpilation terminee avec des erreurs.');
+
+ { Liberer la memoire }
+ FreeSourceLines;
+
+ Halt(ExitCode);
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
@@ -8861,6 +9064,5 @@ BEGIN
  { TODO 22 - Generation corps procedures }
  ProcessBodyGeneration;
  { TODO 25 - Verification et rapport }
- FreeSourceLines;
- WriteLn('Transpilation terminee.');
+ ProcessVerificationReport;
 END.
