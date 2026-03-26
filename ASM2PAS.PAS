@@ -248,7 +248,7 @@
       Label pour les Goto encore necessaires apres l'analyse
       de flux de controle.
 
-  22. [A FAIRE] Generation du code Pascal : corps des procedures et fonctions.
+  22. [IMPLEMENTE] Generation du code Pascal : corps des procedures et fonctions.
       Pour chaque procedure ASM, generer une procedure ou
       fonction Pascal avec ses parametres et variables locales.
       Emettre le code traduit instruction par instruction dans
@@ -7923,13 +7923,7 @@ Begin
   WriteLn(OutFile);
  End;
 
- { === Bloc principal placeholder === }
- WriteLn(OutFile,'BEGIN');
- WriteLn(OutFile,'  { Corps du programme (voir TODO 22) }');
- WriteLn(OutFile,'END.');
-
- { Fermer le fichier de sortie }
- Close(OutFile);
+ { Le fichier reste ouvert pour TODO 22 (ProcessBodyGeneration) }
 
  { === Statistiques === }
  WriteLn('  Generation de l''en-tete Pascal :');
@@ -7962,6 +7956,256 @@ Begin
     MM_FLAT:   S:='FLAT';
    End;
    WriteLn('    Modele memoire    : ',S);
+  End;
+ End;
+End;
+
+{ ============================================================
+  Generation du corps des procedures - TODO 22
+  ============================================================ }
+
+Function FindTranslationForLine(Line:LongInt):LongInt;
+{ Cherche l'index de la traduction pour une ligne source donnee.
+  Retourne -1 si aucune traduction n'existe pour cette ligne. }
+Var
+ I:LongInt;
+Begin
+ FindTranslationForLine:=-1;
+ For I:=0 to TranslationCount-1 do
+  If Translations[I].SrcLine=Line Then Begin
+   FindTranslationForLine:=I;
+   Exit;
+  End;
+End;
+
+Function IsLineInAnyProc(Line:LongInt):Boolean;
+{ Verifie si une ligne source appartient a une procedure. }
+Begin
+ IsLineInAnyProc:=(FindProcForLine(Line)<>0);
+End;
+
+Function ProcReturnType(ProcIdx:Integer):String;
+{ Determine le type de retour d'une fonction.
+  Si mode 32 bits, retourne LongInt, sinon Word. }
+Begin
+ If Mode32 Then
+  ProcReturnType:='LongInt'
+ Else
+  ProcReturnType:='Word';
+End;
+
+Function IsBodyMnemonic(Const M:String):Boolean;
+{ Indique si le mnemonique est gere par TODO 22
+  (utilise pour les statistiques de completude). }
+Begin
+ IsBodyMnemonic:=False; { TODO 22 orchestre, ne traduit pas }
+End;
+
+Procedure ProcessBodyGeneration;
+{ Genere le corps des procedures et le bloc principal du fichier
+  Pascal de sortie. Le fichier OutFile est deja ouvert par
+  ProcessHeaderGeneration (TODO 21). }
+Var
+ I,J,K:Integer;
+ ProcIdx:Integer;
+ TrIdx:LongInt;
+ AsmL:TAsmLine;
+ ProcBodyCount:Integer;
+ MainBodyCount:Integer;
+ FuncCount:Integer;
+ InstrInProc:Integer;
+ InstrInMain:Integer;
+ SrcText:String;
+Begin
+ ProcBodyCount:=0;
+ MainBodyCount:=0;
+ FuncCount:=0;
+ InstrInProc:=0;
+ InstrInMain:=0;
+
+ { === Generation des procedures et fonctions === }
+ For I:=1 to ProcCount do Begin
+  { Determiner si c'est une fonction (AX/EAX utilise avant RET) }
+  If Procs[I].IsFunction or Procs[I].UsesAX Then Begin
+   { En-tete de fonction }
+   Write(OutFile,'Function ',Procs[I].Name);
+   If Procs[I].ParamCount>0 Then Begin
+    Write(OutFile,'(');
+    For J:=1 to Procs[I].ParamCount do Begin
+     If J>1 Then Write(OutFile,'; ');
+     Write(OutFile,Procs[I].Params[J].Name,' : ',
+      PascalTypeStr(Procs[I].Params[J].PascalType));
+    End;
+    Write(OutFile,')');
+   End;
+   Write(OutFile,' : ',ProcReturnType(I));
+   WriteLn(OutFile,';');
+   Inc(FuncCount);
+  End
+  Else Begin
+   { En-tete de procedure }
+   Write(OutFile,'Procedure ',Procs[I].Name);
+   If Procs[I].ParamCount>0 Then Begin
+    Write(OutFile,'(');
+    For J:=1 to Procs[I].ParamCount do Begin
+     If J>1 Then Write(OutFile,'; ');
+     Write(OutFile,Procs[I].Params[J].Name,' : ',
+      PascalTypeStr(Procs[I].Params[J].PascalType));
+    End;
+    Write(OutFile,')');
+   End;
+   WriteLn(OutFile,';');
+  End;
+
+  { Variables locales }
+  If Procs[I].LocalCount>0 Then Begin
+   WriteLn(OutFile,'Var');
+   For J:=1 to Procs[I].LocalCount do Begin
+    If Procs[I].Locals[J].Count>1 Then
+     WriteLn(OutFile,'  ',Procs[I].Locals[J].Name,
+      ' : Array[0..',Procs[I].Locals[J].Count-1,
+      '] of ',PascalTypeStr(Procs[I].Locals[J].PascalType),';')
+    Else
+     WriteLn(OutFile,'  ',Procs[I].Locals[J].Name,' : ',
+      PascalTypeStr(Procs[I].Locals[J].PascalType),';');
+   End;
+  End;
+
+  { Corps de la procedure }
+  WriteLn(OutFile,'Begin');
+  K:=0;
+  For J:=Procs[I].StartLine to Procs[I].EndLine do Begin
+   If(J<0)or(J>=SrcLineCount)Then Continue;
+   If SrcLines[J]=Nil Then Continue;
+
+   { Parser la ligne pour extraire le label }
+   ParseInstructionLine(J,AsmL);
+
+   { Sauter les directives PROC/ENDP/DB/DW/etc. }
+   If AsmL.IsDirective Then Continue;
+
+   { Emettre le label s'il y en a un (sauf le nom de la proc) }
+   If(AsmL.LabelStr<>'')and
+     (UpCaseStr(AsmL.LabelStr)<>UpCaseStr(Procs[I].Name))Then
+    WriteLn(OutFile,'  ',AsmL.LabelStr,':');
+
+   { Sauter les lignes sans instruction }
+   If AsmL.Mnemonic='' Then Continue;
+
+   { Chercher une traduction pour cette ligne }
+   TrIdx:=FindTranslationForLine(J);
+   If TrIdx>=0 Then Begin
+    If AddComments Then Begin
+     SrcText:=SrcLines[J]^;
+     { Tronquer le commentaire source s'il est trop long }
+     If Length(SrcText)>40 Then
+      SrcText:=Copy(SrcText,1,40)+'...';
+     WriteLn(OutFile,'  ',Translations[TrIdx].PascalCode,
+      ' { ',SrcText,' }');
+    End
+    Else
+     WriteLn(OutFile,'  ',Translations[TrIdx].PascalCode);
+    Inc(K);
+   End
+   Else Begin
+    { Instruction non traduite : commentaire }
+    If SrcLines[J]<>Nil Then
+     WriteLn(OutFile,'  { Non traduit: ',SrcLines[J]^,' }');
+   End;
+  End;
+
+  { Si c'est une fonction, emettre l'affectation du resultat }
+  If Procs[I].IsFunction or Procs[I].UsesAX Then Begin
+   If Mode32 Then
+    WriteLn(OutFile,'  ',Procs[I].Name,' := RegEAX;')
+   Else
+    WriteLn(OutFile,'  ',Procs[I].Name,' := RegAX;');
+  End;
+
+  WriteLn(OutFile,'End;');
+  WriteLn(OutFile);
+  Inc(ProcBodyCount);
+  Inc(InstrInProc,K);
+ End;
+
+ { === Bloc principal BEGIN..END === }
+ WriteLn(OutFile,'BEGIN');
+ K:=0;
+ For I:=0 to SrcLineCount-1 do Begin
+  If SrcLines[I]=Nil Then Continue;
+
+  { Sauter les lignes a l'interieur des procedures }
+  If IsLineInAnyProc(I) Then Continue;
+
+  { Parser la ligne pour le label }
+  ParseInstructionLine(I,AsmL);
+
+  { Sauter les directives (DB/DW/MODEL/SEGMENT/etc.) }
+  If AsmL.IsDirective Then Continue;
+
+  { Emettre le label (sauf noms de procedures et donnees) }
+  If AsmL.LabelStr<>'' Then Begin
+   { Verifier que ce n'est pas un nom de procedure }
+   ProcIdx:=0;
+   For J:=1 to ProcCount do
+    If UpCaseStr(AsmL.LabelStr)=UpCaseStr(Procs[J].Name) Then Begin
+     ProcIdx:=J;
+     Break;
+    End;
+   If ProcIdx=0 Then
+    WriteLn(OutFile,'  ',AsmL.LabelStr,':');
+  End;
+
+  { Sauter les lignes sans instruction }
+  If AsmL.Mnemonic='' Then Continue;
+
+  { Chercher une traduction }
+  TrIdx:=FindTranslationForLine(I);
+  If TrIdx>=0 Then Begin
+   If AddComments Then Begin
+    SrcText:=SrcLines[I]^;
+    If Length(SrcText)>40 Then
+     SrcText:=Copy(SrcText,1,40)+'...';
+    WriteLn(OutFile,'  ',Translations[TrIdx].PascalCode,
+     ' { ',SrcText,' }');
+   End
+   Else
+    WriteLn(OutFile,'  ',Translations[TrIdx].PascalCode);
+   Inc(K);
+  End
+  Else Begin
+   { Instruction non traduite : commentaire }
+   WriteLn(OutFile,'  { Non traduit: ',SrcLines[I]^,' }');
+  End;
+ End;
+ Inc(MainBodyCount);
+ Inc(InstrInMain,K);
+
+ WriteLn(OutFile,'END.');
+
+ { Fermer le fichier de sortie }
+ Close(OutFile);
+
+ { === Statistiques === }
+ WriteLn('  Generation du corps des procedures :');
+ WriteLn('    Procedures        : ',ProcBodyCount);
+ WriteLn('    Fonctions         : ',FuncCount);
+ WriteLn('    Instr. dans procs : ',InstrInProc);
+ WriteLn('    Instr. dans main  : ',InstrInMain);
+ WriteLn('    Traductions total : ',TranslationCount);
+ If Verbose Then Begin
+  WriteLn('  Details par procedure :');
+  For I:=1 to ProcCount do Begin
+   If Procs[I].IsFunction or Procs[I].UsesAX Then
+    Write('    Function ')
+   Else
+    Write('    Procedure ');
+   Write(Procs[I].Name);
+   If Procs[I].ParamCount>0 Then
+    Write(' (',Procs[I].ParamCount,' params)');
+   If Procs[I].LocalCount>0 Then
+    Write(' (',Procs[I].LocalCount,' locals)');
+   WriteLn(' [lignes ',Procs[I].StartLine,'..',Procs[I].EndLine,']');
   End;
  End;
 End;
@@ -8098,6 +8342,7 @@ BEGIN
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
+ ProcessBodyGeneration;
  { TODO 23 - Fallback ASM inline }
  { TODO 24 - Optimisation }
  { TODO 25 - Verification et rapport }
