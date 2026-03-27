@@ -560,7 +560,7 @@
               generer le bloc RC complet :
               ResId + ' RCDATA BEGIN' / lignes hex / 'END'
 
-  TODO 20 - DECODAGE RT_MANIFEST (TYPE 24) [A FAIRE]
+  TODO 20 - DECODAGE RT_MANIFEST (TYPE 24) [IMPLEMENTE]
             Type TManifestData : record
               Text     : Array[1..256] Of String  (lignes XML)
               LineCount : Integer
@@ -876,6 +876,7 @@ Const
   MAX_GRP_ENTRIES     = 16;   { images max par ressource groupe     }
   RCDATA_BYTES_PER_LINE = 16; { octets par ligne hex RCDATA         }
   MAX_RCDATA_LINES    = 4096; { lignes RC generees pour les RCDATA  }
+  MAX_MANIFEST_LINES  = 256;  { lignes XML max par ressource manifest}
 
 { ============================================================
   TYPES
@@ -958,6 +959,12 @@ Type
 
   { Tableau de lignes RC pour la generation (RCDATA) }
   TRCDataLineArray = Array[1..MAX_RCDATA_LINES] Of TString;
+
+  { Donnees decodees d une ressource RT_MANIFEST (XML) }
+  TManifestData = Record
+    Text      : Array[1..MAX_MANIFEST_LINES] Of TString; { lignes XML }
+    LineCount : Integer;                                  { nb lignes  }
+  End;
 
   { Entree de valeur de chaine de version (StringFileInfo) }
   TVersionStringEntry = Record
@@ -3841,6 +3848,167 @@ Begin
 End;
 
 
+{ ============================================================
+  TODO 20 - DECODAGE RT_MANIFEST (TYPE 24) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Analyser le contenu XML UTF-8 d un manifest ----------- }
+{ Lit les octets bruts, decode les sequences UTF-8 courantes   }
+{ et decompose en lignes (LF ou CR+LF)                         }
+Procedure ParseManifest(Const Res  : TResourceEntry;
+                        Var   Data : TManifestData);
+Var
+  Buf     : PByteArray;
+  BufSize : LongInt;
+  I       : LongInt;
+  B       : Byte;
+  B2      : Byte;
+  Ch      : Char;
+  CurLine : TString;
+Begin
+  Data.LineCount := 0;
+  CurLine := '';
+  ReadRawResourceBytes(Res, Buf, BufSize);
+  If Buf = Nil Then Exit;
+  I := 0;
+  While I < BufSize Do
+  Begin
+    B := Buf^[I];
+    Inc(I);
+    If B < $80 Then
+    Begin
+      { ASCII direct (U+0000..U+007F) }
+      Ch := Chr(B);
+    End
+    Else If (B >= $C2) And (B <= $DF) And (I < BufSize) Then
+    Begin
+      { Sequence UTF-8 sur 2 octets : U+0080..U+07FF }
+      B2 := Buf^[I];
+      Inc(I);
+      { Convertir en Latin-1 si dans la plage U+00C0..U+00FF }
+      If (B = $C3) And (B2 >= $80) And (B2 <= $BF) Then
+        Ch := Chr($40 Or (B2 And $3F))
+      Else If (B = $C2) And (B2 >= $80) And (B2 <= $BF) Then
+        Ch := Chr(B2 And $3F)
+      Else
+        Ch := '?';
+    End
+    Else If (B >= $E0) And (B <= $EF) And (I + 2 <= BufSize) Then
+    Begin
+      { Sequence UTF-8 sur 3 octets : U+0800..U+FFFF -> hors Latin-1 }
+      Inc(I, 2);  { sauter les 2 octets de continuation }
+      Ch := '?';
+    End
+    Else If (B >= $F0) And (B <= $F7) And (I + 3 <= BufSize) Then
+    Begin
+      { Sequence UTF-8 sur 4 octets : U+10000+ -> hors Latin-1 }
+      Inc(I, 3);  { sauter les 3 octets de continuation }
+      Ch := '?';
+    End
+    Else
+      Ch := '?';
+    { Gerer les fins de ligne (LF ou CR+LF) }
+    If Ch = #10 Then
+    Begin
+      If Data.LineCount < MAX_MANIFEST_LINES Then
+      Begin
+        Inc(Data.LineCount);
+        Data.Text[Data.LineCount] := CurLine;
+      End;
+      CurLine := '';
+    End
+    Else If Ch = #13 Then
+    Begin
+      { CR ignore : sera suivi d un LF pour CR+LF }
+    End
+    Else
+      CurLine := CurLine + Ch;
+  End;
+  { Enregistrer la derniere ligne si non vide }
+  If (Length(CurLine) > 0) And (Data.LineCount < MAX_MANIFEST_LINES) Then
+  Begin
+    Inc(Data.LineCount);
+    Data.Text[Data.LineCount] := CurLine;
+  End;
+  FreeMem(Buf, BufSize);
+End;
+
+{ ---- Extraire un manifest RT_MANIFEST vers un fichier .xml -- }
+{ Ecrit les octets bruts de la ressource dans un fichier .xml   }
+Procedure ExtractManifestFile(Const Res     : TResourceEntry;
+                              Const OutFile : TString);
+Var
+  F       : File Of Byte;
+  Buf     : PByteArray;
+  BufSize : LongInt;
+  I       : LongInt;
+  B       : Byte;
+Begin
+  ReadRawResourceBytes(Res, Buf, BufSize);
+  If Buf = Nil Then Exit;
+  Assign(F, OutFile);
+  Rewrite(F);
+  For I := 0 To BufSize - 1 Do
+  Begin
+    B := Buf^[I];
+    Write(F, B);
+  End;
+  Close(F);
+  FreeMem(Buf, BufSize);
+End;
+
+{ ---- Decoder / afficher toutes les ressources RT_MANIFEST --- }
+Procedure ParseAllManifests;
+Var
+  I             : Integer;
+  ManifestCount : Integer;
+  Data          : TManifestData;
+  OutName       : TString;
+  J             : Integer;
+Begin
+  ManifestCount := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_MANIFEST) Then
+    Begin
+      Inc(ManifestCount);
+      ParseManifest(Resources[I], Data);
+      If Opts.ExtractBin Then
+      Begin
+        If Resources[I].NameIsId Then
+          OutName := 'MANIFEST_' + IntToStr(Resources[I].NameId) + '.xml'
+        Else
+          OutName := 'MANIFEST_' + Resources[I].NameStr + '.xml';
+        ExtractManifestFile(Resources[I], OutName);
+        If Opts.Verbose Then
+        Begin
+          WriteLn('  Manifest extrait: ', OutName,
+                  ' (', Resources[I].DataSize, ' octet(s), ',
+                  Data.LineCount, ' ligne(s) XML)');
+          For J := 1 To Data.LineCount Do
+            WriteLn(Data.Text[J]);
+        End;
+      End
+      Else If Opts.Verbose Then
+      Begin
+        If Resources[I].NameIsId Then
+          WriteLn('  RT_MANIFEST #', Resources[I].NameId,
+                  ' : ', Resources[I].DataSize, ' octet(s), ',
+                  Data.LineCount, ' ligne(s) XML')
+        Else
+          WriteLn('  RT_MANIFEST "', Resources[I].NameStr,
+                  '" : ', Resources[I].DataSize, ' octet(s), ',
+                  Data.LineCount, ' ligne(s) XML');
+        For J := 1 To Data.LineCount Do
+          WriteLn(Data.Text[J]);
+      End;
+    End;
+  End;
+  If Opts.Verbose And (ManifestCount > 0) Then
+    WriteLn(ManifestCount, ' ressource(s) RT_MANIFEST trouvee(s).');
+End;
+
+
 Begin
   { Banniere de version }
   WriteLn('DISRES v', DISRES_VERSION, ' (', DISRES_DATE, ') - ',
@@ -3910,8 +4078,11 @@ Begin
   { Decoder les donnees binaires generiques (RT_RCDATA) }
   ParseAllRCData;
 
-  { TODO 20 a TODO 25 : a implementer }
-  WriteLn('(TODO 20 a TODO 25 : implementation en cours)');
+  { Decoder les manifests d application (RT_MANIFEST) }
+  ParseAllManifests;
+
+  { TODO 21 a TODO 25 : a implementer }
+  WriteLn('(TODO 21 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
