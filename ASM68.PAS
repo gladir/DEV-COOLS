@@ -1,10 +1,11 @@
 { @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Clone de Motorola Macro Assembler (ASM68)
                 Assembleur pour la famille Motorola 68000
                 Genere du code objet S-Record a partir de sources assembleur 68000
+  @license: MIT
 }
 
 { ---------------------------------------------------------------------------- }
@@ -7948,9 +7949,9 @@ End;
 { Analyse des options de ligne de commande                                     }
 { ============================================================================ }
 
-Procedure ShowHelp;
-Begin
- WriteLn('ASM68 - Clone de Motorola Macro Assembler (ASM68)');
+Procedure ShowHelp;Begin
+ WriteLn('ASM68 - Cette commande permet de lancer le clone du Motorola ',
+          'Macro Assembler (ASM68).');
  WriteLn('Assembleur pour la famille Motorola 68000');
  WriteLn;
  WriteLn('Syntaxe : asm68 fichier.asm [options]');
@@ -7972,11 +7973,10 @@ Begin
  WriteLn('  asm68 prog.asm -d DEBUG -i includes -e');
 End;
 
-Procedure ShowVersion;
-Begin
+Procedure ShowVersion;Begin
  WriteLn('ASM68 version 0.1 - Assembleur Motorola 68000');
  WriteLn('Clone de Motorola Macro Assembler (ASM68)');
- WriteLn('(C) 2026 - Turbo Pascal / Free Pascal');
+ WriteLn('Pour Free Pascal');
 End;
 
 Procedure ParseArgs;

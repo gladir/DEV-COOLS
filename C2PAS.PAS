@@ -2787,7 +2787,7 @@ End;
 Procedure StartUpC2Pas(Var Q:SwitchC2Pascal);Var I:Byte;Str:String;
 
  Procedure Help;Begin
-  WriteLn('C2PAS - Cette commande permet de convertir un fichier .C en .PAS.');
+  WriteLn('C2PAS - Cette commande permet de transpiler un fichier .C en .PAS.');
   WriteLn;
   WriteLn('Syntaxe : C2PAS [fichier[.C]] [ option ]');
   WriteLn(' * = par d‚faut');
