@@ -554,6 +554,7 @@ Var
  InlineInstructions:LongInt;
  NeedWinDos:Boolean;
  NeedDosBool:Boolean;
+ NeedStrings:Boolean;
  TotalProcs:LongInt;
  TotalVars:LongInt;
  TotalLabels:LongInt;
@@ -5434,10 +5435,74 @@ Begin
  BuildCallArgs:=Result;
 End;
 
+Function IsStringsCall(Name:String):Boolean;
+{ Verifie si le nom correspond a une fonction C de manipulation de
+  chaines, traduisible par l'unite Strings de Turbo Pascal.
+  Reconnait les noms avec ou sans prefixe _ en majuscules/minuscules. }
+Var U:String;
+Begin
+ U:=UpCaseStr(Name);
+ If(Length(U)>1)and(U[1]='_')Then
+  Delete(U,1,1);
+ IsStringsCall:=
+  (U='STRCMP')or(U='STRICMP')or(U='STRCASECMP')or
+  (U='STRCAT')or(U='STRCPY')or(U='STRLEN')or
+  (U='STRNCAT')or(U='STRNCPY')or
+  (U='STRUPR')or(U='STRLWR')or
+  (U='STRSTR')or(U='STRCHR')or(U='STRRCHR')or
+  (U='STRMOV')or(U='STREND')or(U='STRNEW')or
+  (U='STRDISPOSE')or(U='STRPAS')or(U='STRPCOPY');
+End;
+
+Function StringsFuncName(Name:String):String;
+{ Retourne le nom de la fonction equivalente de l'unite Strings
+  de Turbo Pascal pour une fonction C de chaines. }
+Var U:String;
+Begin
+ U:=UpCaseStr(Name);
+ If(Length(U)>1)and(U[1]='_')Then
+  Delete(U,1,1);
+ If U='STRCMP' Then StringsFuncName:='StrComp'
+ Else If(U='STRICMP')or(U='STRCASECMP')Then
+  StringsFuncName:='StrIComp'
+ Else If U='STRCAT' Then StringsFuncName:='StrCat'
+ Else If U='STRCPY' Then StringsFuncName:='StrCopy'
+ Else If U='STRLEN' Then StringsFuncName:='StrLen'
+ Else If U='STRNCAT' Then StringsFuncName:='StrLCat'
+ Else If U='STRNCPY' Then StringsFuncName:='StrLCopy'
+ Else If U='STRUPR' Then StringsFuncName:='StrUpper'
+ Else If U='STRLWR' Then StringsFuncName:='StrLower'
+ Else If U='STRSTR' Then StringsFuncName:='StrPos'
+ Else If U='STRCHR' Then StringsFuncName:='StrScan'
+ Else If U='STRRCHR' Then StringsFuncName:='StrRScan'
+ Else If U='STRMOV' Then StringsFuncName:='StrMove'
+ Else If U='STREND' Then StringsFuncName:='StrEnd'
+ Else If U='STRNEW' Then StringsFuncName:='StrNew'
+ Else If U='STRDISPOSE' Then StringsFuncName:='StrDispose'
+ Else If U='STRPAS' Then StringsFuncName:='StrPas'
+ Else If U='STRPCOPY' Then StringsFuncName:='StrPCopy'
+ Else StringsFuncName:=Name;
+End;
+
+Function IsStringsReturnAX(Name:String):Boolean;
+{ Verifie si une fonction Strings retourne une valeur entiere
+  qui doit etre capturee dans RegAX (strcmp, stricmp, strlen). }
+Var U:String;
+Begin
+ U:=UpCaseStr(Name);
+ If(Length(U)>1)and(U[1]='_')Then
+  Delete(U,1,1);
+ IsStringsReturnAX:=
+  (U='STRCMP')or(U='STRICMP')or(U='STRCASECMP')or
+  (U='STRLEN');
+End;
+
 Function TranslateCALL(Var AsmL:TAsmLine;LineIdx:LongInt;
  ProcIdx:Integer):String;
 { CALL label -> NomProc(args) ou NomProc si pas de parametres.
   Si la procedure cible est connue, genere un appel avec parametres.
+  Si c'est une fonction C de chaines (strcmp, strcat, ...), utilise
+  l'equivalent de l'unite Strings de Turbo Pascal.
   Sinon, genere un appel simple au label. }
 Var
  Target:String;
@@ -5447,6 +5512,7 @@ Var
  Args:String;
  Conv:Byte;
  R:String;
+ PascalName:String;
 Begin
  Target:=OperandToExpr(AsmL.Op1,ProcIdx);
  TargetProc:=FindProcByName(Target);
@@ -5470,6 +5536,24 @@ Begin
    Else
     R:=Target
   End;
+ End
+ Else If IsStringsCall(Target) Then Begin
+  { Fonction C de chaines -> utiliser l'unite Strings }
+  PascalName:=StringsFuncName(Target);
+  PushCount:=CountPushesBeforeCall(LineIdx);
+  If PushCount>0 Then Begin
+   Args:=BuildCallArgs(LineIdx,PushCount,CC_C,ProcIdx);
+   If IsStringsReturnAX(Target) Then
+    R:='RegAX := '+PascalName+'('+Args+')'
+   Else
+    R:=PascalName+'('+Args+')'
+  End
+  Else Begin
+   If IsStringsReturnAX(Target) Then
+    R:='RegAX := '+PascalName
+   Else
+    R:=PascalName
+  End
  End
  Else Begin
   { Procedure inconnue : verifier s'il y a des PUSH avant }
@@ -5523,14 +5607,14 @@ Var
  ProcIdx:Integer;
  Code:String;
  CallCount,RetCount,RetNCount,CallFarCount:LongInt;
- CallKnownCount,CallUnknownCount:LongInt;
+ CallKnownCount,CallUnknownCount,CallStringsCount:LongInt;
  TotalCallRet:LongInt;
  M:String;
  Target:String;
  TargetProc:Integer;
 Begin
  CallCount:=0;RetCount:=0;RetNCount:=0;CallFarCount:=0;
- CallKnownCount:=0;CallUnknownCount:=0;
+ CallKnownCount:=0;CallUnknownCount:=0;CallStringsCount:=0;
  TotalCallRet:=0;
  For I:=0 to SrcLineCount-1 do Begin
   ParseInstructionLine(I,AsmL);
