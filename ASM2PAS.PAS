@@ -6492,7 +6492,95 @@ Begin
  End;
 End;
 
-Function TranslateINT21h(FuncAH,FuncAL:LongInt):String;
+Function FindPrevDXLabel(LineIdx:LongInt):String;
+{ Recherche en arriere un LEA DX, label ou MOV DX, OFFSET label
+  avant la ligne LineIdx (dans une fenetre de 10 lignes).
+  Retourne le nom du label, ou '' si non trouve. }
+Var
+ J:LongInt;
+ AsmT:TAsmLine;
+ MJ:String;
+Begin
+ FindPrevDXLabel:='';
+ For J:=LineIdx-1 downto 0 do Begin
+  If LineIdx-J>10 Then Break;
+  ParseInstructionLine(J,AsmT);
+  If AsmT.Mnemonic='' Then Continue;
+  MJ:=UpCaseStr(AsmT.Mnemonic);
+  { LEA DX, label }
+  If(MJ='LEA')and(AsmT.Op1.OpType=OT_REG16)and
+   (UpCaseStr(AsmT.Op1.Reg)='DX')and
+   (AsmT.Op2.LabelName<>'')Then Begin
+   FindPrevDXLabel:=AsmT.Op2.LabelName;
+   Exit;
+  End;
+  { MOV DX, OFFSET label }
+  If(MJ='MOV')and(AsmT.Op1.OpType=OT_REG16)and
+   (UpCaseStr(AsmT.Op1.Reg)='DX')and
+   (AsmT.Op2.OpType=OT_OFFSET)and
+   (AsmT.Op2.LabelName<>'')Then Begin
+   FindPrevDXLabel:=AsmT.Op2.LabelName;
+   Exit;
+  End;
+  { MOV DX, label (reference directe) }
+  If(MJ='MOV')and(AsmT.Op1.OpType=OT_REG16)and
+   (UpCaseStr(AsmT.Op1.Reg)='DX')and
+   (AsmT.Op2.OpType=OT_LABEL)and
+   (AsmT.Op2.LabelName<>'')Then Begin
+   FindPrevDXLabel:=AsmT.Op2.LabelName;
+   Exit;
+  End;
+  If AsmT.LabelStr<>'' Then Break;
+  If MJ='INT' Then Break;
+ End;
+End;
+
+Function FindDataVarByName(Name:String):Integer;
+{ Recherche une variable de donnees par nom (case-insensitive).
+  Retourne l'index dans DataVars, ou 0 si non trouvee. }
+Var
+ I:Integer;
+ U:String;
+Begin
+ U:=UpCaseStr(Name);
+ FindDataVarByName:=0;
+ For I:=1 to DataVarCount do
+  If UpCaseStr(DataVars[I].Name)=U Then Begin
+   FindDataVarByName:=I;
+   Exit;
+  End;
+End;
+
+Function GetDataVarString(VarIdx:Integer):String;
+{ Extrait le contenu texte d'une variable DB.
+  Concatene tous les elements DE_STRING, supprime le '$' terminal
+  si present (convention DOS pour INT 21h/AH=09). }
+Var
+ I:Integer;
+ S:String;
+Begin
+ S:='';
+ If(VarIdx<1)or(VarIdx>DataVarCount)Then Begin
+  GetDataVarString:='';
+  Exit;
+ End;
+ If DataVars[VarIdx].DirType<>DT_DB Then Begin
+  GetDataVarString:='';
+  Exit;
+ End;
+ For I:=1 to DataVars[VarIdx].ElemCount do
+  If DataVars[VarIdx].Elements[I].ElemType=DE_STRING Then
+   S:=S+DataVars[VarIdx].Elements[I].StrValue;
+ { Supprimer le '$' terminal (terminateur DOS) }
+ If(Length(S)>0)and(S[Length(S)]='$')Then
+  Delete(S,Length(S),1);
+ { Supprimer les CR/LF terminaux si presents }
+ While(Length(S)>0)and(S[Length(S)] in [#13,#10])do
+  Delete(S,Length(S),1);
+ GetDataVarString:=S;
+End;
+
+Function TranslateINT21h(FuncAH,FuncAL,LineIdx:LongInt):String;
 { Traduit les fonctions DOS INT 21h en equivalents Pascal.
   AH=01h -> ReadKey (lecture caractere clavier, echo)
   AH=02h -> Write(Chr(RegDL)) (afficher caractere)
@@ -6522,6 +6610,10 @@ Function TranslateINT21h(FuncAH,FuncAL:LongInt):String;
   AH=4Ch -> Halt (terminer programme)
   AH=54h -> GetVerify (Dos/WinDOS)
   Autres -> Intr($21, Regs) }
+Var
+ DXLbl:String;
+ VIdx:Integer;
+ Str09:String;
 Begin
  Case FuncAH of
   $01:TranslateINT21h:='RegAL := Ord(ReadKey); { INT 21h/AH=01 }';
@@ -6531,8 +6623,24 @@ Begin
    'Else Write(Chr(Lo(RegDX))); { INT 21h/AH=06 }';
   $07:TranslateINT21h:='RegAL := Ord(ReadKey); { INT 21h/AH=07 }';
   $08:TranslateINT21h:='RegAL := Ord(ReadKey); { INT 21h/AH=08 }';
-  $09:TranslateINT21h:=
-   'WriteLn; (* INT 21h/AH=09: Write string at DS:DX *)';
+  $09:Begin
+    { INT 21h/AH=09: afficher chaine a DS:DX (terminee par '$').
+      On recherche la variable DB pointee par DX et on genere
+      Write('...') avec le contenu de la chaine. }
+    DXLbl:=FindPrevDXLabel(LineIdx);
+    VIdx:=0;
+    Str09:='';
+    If DXLbl<>'' Then
+     VIdx:=FindDataVarByName(DXLbl);
+    If VIdx>0 Then
+     Str09:=GetDataVarString(VIdx);
+    If Str09<>'' Then
+     TranslateINT21h:='Write('''+Str09+'''); { INT 21h/AH=09 }'
+    Else If DXLbl<>'' Then
+     TranslateINT21h:='Write('+DXLbl+'); { INT 21h/AH=09 }'
+    Else
+     TranslateINT21h:='Write(PChar(@Mem[RegDX])); { INT 21h/AH=09 }';
+   End;
   $0A:TranslateINT21h:='ReadLn; (* INT 21h/AH=0Ah: Buffered input *)';
   $25:TranslateINT21h:=
    'SetIntVec(Lo(RegAX), Ptr(RegDS, RegDX)); { INT 21h/AH=25 }';
@@ -6684,7 +6792,7 @@ Begin
  End;
 End;
 
-Function TranslateINT(IntNum,FuncAH,FuncAL:LongInt):String;
+Function TranslateINT(IntNum,FuncAH,FuncAL,LineIdx:LongInt):String;
 { Traduit une instruction INT nn en code Pascal.
   Dispatche vers les traducteurs specialises pour les
   interruptions connues (21h, 10h, 16h).
@@ -6693,7 +6801,7 @@ Begin
  Case IntNum of
   $10:TranslateINT:=TranslateINT10h(FuncAH);
   $16:TranslateINT:=TranslateINT16h(FuncAH);
-  $21:TranslateINT:=TranslateINT21h(FuncAH,FuncAL);
+  $21:TranslateINT:=TranslateINT21h(FuncAH,FuncAL,LineIdx);
  Else
   If FuncAH>=0 Then
    TranslateINT:='Begin Regs.AH := $'+HexByte(FuncAH)+
@@ -6751,7 +6859,7 @@ Begin
    FuncAH:=FindPrevMovAH(I);
    FuncAL:=FindPrevMovAL(I);
    { Traduire selon le numero d'interruption }
-   Code:=TranslateINT(IntNum,FuncAH,FuncAL);
+   Code:=TranslateINT(IntNum,FuncAH,FuncAL,I);
    Case IntNum of
     $10:Begin
      Inc(Int10Count);

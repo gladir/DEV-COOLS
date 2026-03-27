@@ -166,6 +166,19 @@ run_test() {
     fi
   fi
 
+  # Verifier la coherence Write/WriteLn : si le fichier ASM contient
+  # un INT 21h avec AH=09 (affichage chaine $), le Pascal genere doit
+  # contenir Write(...) au lieu d'un WriteLn generique
+  if grep -qi "INT.*21h\|INT.*21H" "$ASM_FILE" 2>/dev/null; then
+    if grep -q "AH.*09\|AH.*9" "$ASM_FILE" 2>/dev/null; then
+      if grep -q "INT 21h/AH=09" "$PAS_FILE"; then
+        if ! grep -q "Write(" "$PAS_FILE"; then
+          STRUCT_ERRORS="${STRUCT_ERRORS}  - Write(...) manquant pour INT 21h/AH=09\n"
+        fi
+      fi
+    fi
+  fi
+
   if [ -z "$STRUCT_ERRORS" ]; then
     echo -e "${GREEN}OK${NC}"
     STRUCT_OK=$((STRUCT_OK + 1))
