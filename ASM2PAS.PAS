@@ -8398,6 +8398,16 @@ Begin
      WriteLn(OutFile,'  ',Procs[I].Name,' := ',
       Procs[I].StringsReplacement,'(RegDI, RegSI);');
    End
+   Else If(Procs[I].StringsReplacement='StrLower')
+        or(Procs[I].StringsReplacement='StrUpper')Then Begin
+    If Procs[I].ParamCount>=1 Then
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(',
+      Procs[I].Params[1].Name,');')
+    Else
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(RegSI);');
+   End
    Else Begin
     { Fonction Strings generique }
     WriteLn(OutFile,'  ',Procs[I].StringsReplacement,';');
@@ -9180,13 +9190,16 @@ Function DetectProcStringsPattern(ProcIdx:Integer):String;
 { Analyse le corps d'une procedure pour detecter les patterns
   assembleur correspondant a des fonctions de l'unite Strings.
   Retourne le nom de la fonction Strings (ex: 'StrCopy', 'StrLen',
-  'StrCat', 'StrComp') ou '' si aucun pattern n'est reconnu.
+  'StrCat', 'StrComp', 'StrLower', 'StrUpper') ou '' si aucun
+  pattern n'est reconnu.
 
   Patterns detectes :
   - strcpy : REPNE SCASB + REP MOVSB + retour AX pointeur dest
   - strlen : REPNE SCASB + NEG CX/AX (ou NOT CX + DEC CX) sans MOVSB
   - strcmp : REPE CMPSB
   - strcat : 2x REPNE SCASB + REP MOVSB (cherche fin dest puis copie)
+  - strlower : boucle char par char, compare 41h-5Ah, ADD 20h
+  - strupper : boucle char par char, compare 61h-7Ah, SUB 20h
 }
 Var
  I:LongInt;
@@ -9199,6 +9212,12 @@ Var
  HasNegAX:Boolean;
  HasNotCX:Boolean;
  HasMovsb:Boolean;
+ Has41h:Boolean;
+ Has5Ah:Boolean;
+ HasAdd20h:Boolean;
+ Has61h:Boolean;
+ Has7Ah:Boolean;
+ HasSub20h:Boolean;
  M:String;
 Begin
  DetectProcStringsPattern:='';
@@ -9214,6 +9233,12 @@ Begin
  HasNegAX:=False;
  HasNotCX:=False;
  HasMovsb:=False;
+ Has41h:=False;
+ Has5Ah:=False;
+ HasAdd20h:=False;
+ Has61h:=False;
+ Has7Ah:=False;
+ HasSub20h:=False;
  For I:=Procs[ProcIdx].StartLine to Procs[ProcIdx].EndLine do Begin
   If(I<0)or(I>=SrcLineCount)Then Continue;
   If SrcLines[I]=Nil Then Continue;
@@ -9246,6 +9271,14 @@ Begin
   { Detecter NOT CX / NOT ECX }
   If(Pos('NOT',Line)>0)and((Pos('CX',Line)>0)or(Pos('ECX',Line)>0))Then
    HasNotCX:=True;
+  { Detecter strlower pattern : 41H ('A'), 5AH ('Z'), 20H }
+  If Pos('41H',Line)>0 Then Has41h:=True;
+  If Pos('5AH',Line)>0 Then Has5Ah:=True;
+  If Pos('20H',Line)>0 Then HasAdd20h:=True;
+  { Detecter strupper pattern : 61H ('a'), 7AH ('z'), SUB+20H }
+  If Pos('61H',Line)>0 Then Has61h:=True;
+  If Pos('7AH',Line)>0 Then Has7Ah:=True;
+  If(Pos('SUB',Line)>0)and(Pos('20H',Line)>0)Then HasSub20h:=True;
  End;
 
  { Pattern strcmp : REPE CMPSB }
@@ -9269,6 +9302,20 @@ Begin
  { Pattern strlen : REPNE SCASB + NEG/NOT CX ou NEG AX, sans MOVSB }
  If HasRepneScasb and(HasNegCX or HasNotCX or HasNegAX)and(Not HasMovsb)Then Begin
   DetectProcStringsPattern:='StrLen';
+  Exit;
+ End;
+
+ { Pattern strlower : compare 'A'(41h)-'Z'(5Ah) + ADD 20h, sans SCASB }
+ If Has41h and Has5Ah and HasAdd20h and
+    (Not HasRepneScasb)and(Not HasRepeCmpsb)Then Begin
+  DetectProcStringsPattern:='StrLower';
+  Exit;
+ End;
+
+ { Pattern strupper : compare 'a'(61h)-'z'(7Ah) + SUB 20h, sans SCASB }
+ If Has61h and Has7Ah and HasSub20h and
+    (Not HasRepneScasb)and(Not HasRepeCmpsb)Then Begin
+  DetectProcStringsPattern:='StrUpper';
   Exit;
  End;
 End;

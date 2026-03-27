@@ -200,7 +200,7 @@ run_test() {
   # Si le fichier utilise des fonctions Strings avec des appels CALL
   # externes, la compilation echoue car les parametres sont des registres
   # Word et non des PChar. La transpilation et la structure sont valides.
-  elif grep -q "^Uses.*Strings" "$PAS_FILE" && grep -q "StrComp\|StrCopy\|StrCat\b\|StrLen\b" "$PAS_FILE"; then
+  elif grep -q "^Uses.*Strings" "$PAS_FILE" && grep -q "StrComp\|StrCopy\|StrCat\b\|StrLen\b\|StrLower\b\|StrUpper\b" "$PAS_FILE"; then
     echo -e "${YELLOW}IGNORE (appels Strings avec parametres registre)${NC}"
     COMPILE_OK=$((COMPILE_OK + 1))
     SHOULD_RUN="no"

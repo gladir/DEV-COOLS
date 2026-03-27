@@ -1,11 +1,12 @@
 ; Test 13 - Detection de patterns assembleur -> unite Strings
-; Teste: procedures qui implementent strcpy/strlen via
+; Teste: procedures qui implementent strcpy/strlen/strlower via
 ;   REPNE SCASB + REP MOVSB (strcpy)
 ;   REPNE SCASB + NEG CX (strlen variante NOT CX + DEC CX)
 ;   REPNE SCASB + NEG AX (strlen variante MOV AX,CX + INC + INC + NEG AX)
+;   boucle char par char, compare 41h-5Ah, ADD 20h (strlower)
 ; Le transpileur doit reconnaitre ces patterns et generer des
-; appels a StrCopy/StrLen de l'unite Strings au lieu de traduire
-; chaque instruction individuellement.
+; appels a StrCopy/StrLen/StrLower de l'unite Strings au lieu de
+; traduire chaque instruction individuellement.
 
 .MODEL SMALL
 .STACK 100h
@@ -86,6 +87,38 @@ my_strlen2 PROC NEAR
     RET
 my_strlen2 ENDP
 
+; --- Pattern strlower : boucle char par char, compare 41h-5Ah, ADD 20h ---
+; Convertit une chaine en minuscules, retourne pointeur original.
+my_strlower PROC NEAR
+    PUSH BP
+    MOV BP, SP
+    PUSH SI
+    MOV SI, [BP+04h]
+    MOV DX, SI
+    MOV BH, 41h
+    MOV BL, 5Ah
+    MOV AL, 20h
+    XOR CX, CX
+loc_sl_loop:
+    MOV CL, [SI]
+    JCXZ loc_sl_done
+    CMP CL, BH
+    JB loc_sl_next
+    CMP CL, BL
+    JNBE loc_sl_next
+    ADD CL, AL
+    MOV [SI], CL
+loc_sl_next:
+    INC SI
+    JMP loc_sl_loop
+loc_sl_done:
+    MOV AX, DX
+    POP SI
+    MOV SP, BP
+    POP BP
+    RET
+my_strlower ENDP
+
 START:
     MOV AX, @DATA
     MOV DS, AX
@@ -108,6 +141,12 @@ START:
     LEA AX, dst
     PUSH AX
     CALL my_strlen2
+    ADD SP, 2
+
+    ; Convertir dst en minuscules via my_strlower
+    LEA AX, dst
+    PUSH AX
+    CALL my_strlower
     ADD SP, 2
 
     MOV AH, 4Ch
