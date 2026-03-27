@@ -480,7 +480,7 @@
               Const OutFile: String)
               similaire a ExtractIconFile pour les curseurs .cur
 
-  TODO 17 - DECODAGE RT_BITMAP (TYPE 2) [A FAIRE]
+  TODO 17 - DECODAGE RT_BITMAP (TYPE 2) [IMPLEMENTE]
             Constantes BITMAPINFOHEADER :
               BI_RGB = 0, BI_RLE8 = 1, BI_RLE4 = 2, BI_BITFIELDS = 3
             Type TBitmapFileHeader : record
@@ -855,6 +855,12 @@ Const
   VOS_UNKNOWN      = 0;         { OS inconnu        }
   VOS_NT_WINDOWS32 = $00040004; { Windows 32 bits   }
 
+  { Constantes de compression BITMAPINFOHEADER (BI_*) }
+  BI_RGB       = 0;  { pas de compression (RVB pur)           }
+  BI_RLE8      = 1;  { compression RLE 8 bpp                  }
+  BI_RLE4      = 2;  { compression RLE 4 bpp                  }
+  BI_BITFIELDS = 3;  { masques de couleur RGB definis          }
+
   { Limites internes }
   MAX_RESOURCES   = 4096;
   MAX_STRINGS     = 4096;
@@ -1024,6 +1030,30 @@ Type
     BitCount   : Word;     { bits/pixel ; CUR : hotspot Y     }
     BytesInRes : LongInt;  { taille des donnees DIB           }
     ImageOfs   : LongInt;  { offset des donnees dans le .ico  }
+  End;
+
+  { En-tete d un fichier .bmp (BITMAPFILEHEADER, 14 octets) }
+  TBitmapFileHeader = Record
+    bfType      : Word;    { = $4D42 ('BM')                   }
+    bfSize      : LongInt; { taille totale du fichier .bmp     }
+    bfReserved1 : Word;    { = 0                              }
+    bfReserved2 : Word;    { = 0                              }
+    bfOffBits   : LongInt; { offset vers les donnees pixels    }
+  End;
+
+  { En-tete d information bitmap (BITMAPINFOHEADER, 40 octets) }
+  TBitmapInfoHeader = Record
+    biSize          : LongInt; { = 40                          }
+    biWidth         : LongInt; { largeur en pixels             }
+    biHeight        : LongInt; { hauteur (positif = bas-haut)  }
+    biPlanes        : Word;    { = 1                           }
+    biBitCount      : Word;    { bits par pixel                }
+    biCompression   : LongInt; { BI_RGB, BI_RLE8, etc.         }
+    biSizeImage     : LongInt; { taille donnees pixels         }
+    biXPelsPerMeter : LongInt; { resolution horizontale        }
+    biYPelsPerMeter : LongInt; { resolution verticale          }
+    biClrUsed       : LongInt; { couleurs utilisees            }
+    biClrImportant  : LongInt; { couleurs importantes          }
   End;
 
 { ============================================================
@@ -3172,8 +3202,150 @@ Begin
 End;
 
 { ============================================================
-  PROGRAMME PRINCIPAL
+  TODO 17 - DECODAGE RT_BITMAP (TYPE 2) [IMPLEMENTE]
   ============================================================ }
+
+{ ---- Extraire une bitmap RT_BITMAP vers un fichier .bmp ---- }
+Procedure ExtractBitmapFile(Const Res     : TResourceEntry;
+                             Const OutFile : TString);
+Var
+  F              : File Of Byte;
+  biSize         : LongInt;
+  biBitCount     : Word;
+  biSizeImage    : LongInt;
+  biClrUsed      : LongInt;
+  bfOffBits      : LongInt;
+  bfSize         : LongInt;
+  NumColors      : LongInt;
+  I              : LongInt;
+  B              : Byte;
+  Lo_            : Byte;
+  Hi_            : Byte;
+  Procedure WriteW(V : Word);
+  Begin
+    Lo_ := V And $FF;
+    Hi_ := (V Shr 8) And $FF;
+    Write(F, Lo_);
+    Write(F, Hi_);
+  End;
+  Procedure WriteL(V : LongInt);
+  Begin
+    WriteW(Word(V And $FFFF));
+    WriteW(Word((V Shr 16) And $FFFF));
+  End;
+Begin
+  If Res.DataSize < 40 Then Exit;
+  { Lire les champs cles du BITMAPINFOHEADER }
+  SeekResPos(Res.DataOfs);
+  biSize        := ReadDWord;   { biSize (= 40 en general)  }
+  ReadDWord;                    { biWidth                   }
+  ReadDWord;                    { biHeight                  }
+  ReadWord;                     { biPlanes                  }
+  biBitCount    := ReadWord;    { biBitCount                }
+  ReadDWord;                    { biCompression             }
+  biSizeImage   := ReadDWord;   { biSizeImage               }
+  ReadDWord;                    { biXPelsPerMeter           }
+  ReadDWord;                    { biYPelsPerMeter           }
+  biClrUsed     := ReadDWord;   { biClrUsed                 }
+  { Calculer le nombre de couleurs dans la palette }
+  If biClrUsed > 0 Then
+    NumColors := biClrUsed
+  Else If biBitCount <= 8 Then
+    NumColors := LongInt(1) Shl biBitCount
+  Else
+    NumColors := 0;
+  { Calculer les offsets du BITMAPFILEHEADER }
+  { 14 = sizeof(BITMAPFILEHEADER) : bfType(2)+bfSize(4)+bfRes1(2)+bfRes2(2)+bfOffBits(4) }
+  bfOffBits := 14 + biSize + NumColors * 4;
+  { Si biSizeImage = 0 (BI_RGB non compresse), utiliser la taille des donnees restantes }
+  If biSizeImage = 0 Then
+  Begin
+    biSizeImage := Res.DataSize - biSize - NumColors * 4;
+    If biSizeImage < 0 Then biSizeImage := 0;
+  End;
+  bfSize := bfOffBits + biSizeImage;
+  { Creer le fichier .bmp }
+  Assign(F, OutFile);
+  {$I-} Rewrite(F); {$I+}
+  If IOResult <> 0 Then Exit;
+  { Ecrire le BITMAPFILEHEADER (14 octets) }
+  WriteW($4D42);                { bfType = 'BM'            }
+  WriteL(bfSize);               { bfSize                   }
+  WriteW(0);                    { bfReserved1 = 0          }
+  WriteW(0);                    { bfReserved2 = 0          }
+  WriteL(bfOffBits);            { bfOffBits                }
+  { Ecrire les donnees brutes (BITMAPINFOHEADER + palette + pixels) }
+  SeekResPos(Res.DataOfs);
+  For I := 1 To Res.DataSize Do
+  Begin
+    B := ReadByte;
+    Write(F, B);
+  End;
+  Close(F);
+End;
+
+{ ---- Retourner une description de la bitmap -------------- }
+Function BitmapInfoLine(Const Res : TResourceEntry) : TString;
+Var
+  biWidth    : LongInt;
+  biHeight   : LongInt;
+  biBitCount : Word;
+Begin
+  BitmapInfoLine := '';
+  If Res.DataSize < 40 Then Exit;
+  SeekResPos(Res.DataOfs);
+  ReadDWord;                        { biSize   }
+  biWidth    := ReadDWord;          { biWidth  }
+  biHeight   := ReadDWord;          { biHeight }
+  ReadWord;                         { biPlanes }
+  biBitCount := ReadWord;           { biBitCount }
+  BitmapInfoLine := 'W=' + IntToStr(biWidth) +
+                    ' H=' + IntToStr(biHeight) +
+                    ' BPP=' + IntToStr(biBitCount);
+End;
+
+{ ---- Decoder / extraire toutes les bitmaps RT_BITMAP ----- }
+Procedure ParseAllBitmaps;
+Var
+  I           : Integer;
+  BitmapCount : Integer;
+  OutName     : TString;
+  InfoStr     : TString;
+Begin
+  BitmapCount := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_BITMAP) Then
+    Begin
+      Inc(BitmapCount);
+      If Opts.ExtractBin Then
+      Begin
+        If Resources[I].NameIsId Then
+          OutName := 'BITMAP_' + IntToStr(Resources[I].NameId) + '.bmp'
+        Else
+          OutName := 'BITMAP_' + Resources[I].NameStr + '.bmp';
+        ExtractBitmapFile(Resources[I], OutName);
+        If Opts.Verbose Then
+        Begin
+          InfoStr := BitmapInfoLine(Resources[I]);
+          WriteLn('  Bitmap extraite: ', OutName,
+                  ' (', Resources[I].DataSize, ' octets) ', InfoStr);
+        End;
+      End Else If Opts.Verbose Then
+      Begin
+        InfoStr := BitmapInfoLine(Resources[I]);
+        If Resources[I].NameIsId Then
+          WriteLn('  RT_BITMAP #', Resources[I].NameId, ' : ', InfoStr)
+        Else
+          WriteLn('  RT_BITMAP "', Resources[I].NameStr, '" : ', InfoStr);
+      End;
+    End;
+  End;
+  If Opts.Verbose And (BitmapCount > 0) Then
+    WriteLn(BitmapCount, ' ressource(s) RT_BITMAP trouvee(s).');
+End;
+
+
 Begin
   { Banniere de version }
   WriteLn('DISRES v', DISRES_VERSION, ' (', DISRES_DATE, ') - ',
@@ -3232,8 +3404,11 @@ Begin
   { Decoder les curseurs (RT_CURSOR) }
   ParseAllCursors;
 
-  { TODO 17 a TODO 25 : a implementer }
-  WriteLn('(TODO 17 a TODO 25 : implementation en cours)');
+  { Decoder les bitmaps (RT_BITMAP) }
+  ParseAllBitmaps;
+
+  { TODO 18 a TODO 25 : a implementer }
+  WriteLn('(TODO 18 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
