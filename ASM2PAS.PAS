@@ -366,6 +366,7 @@ Const
  OT_LABEL   = 9;
  OT_OFFSET  = 10;
  OT_SEG     = 11;
+ OT_FAR     = 12; { Adresse FAR absolue seg:ofs (ex: CALL 00C9:02CDh) }
 
  { Modeles memoire }
  MM_NONE    = 0;
@@ -1676,7 +1677,10 @@ Begin
  End;
  { Decimal }
  Val(U,V,Code);
- If Code=0 Then ParseNumericValue:=V;
+ If Code=0 Then ParseNumericValue:=V
+ { Fallback : si echec decimal, essayer comme hex sans suffixe }
+ { (ex: segment '00C9' dans 'CALL 00C9:02CDh') }
+ Else ParseNumericValue:=HexToInt(U);
 End;
 
 Procedure ParseDataLine(LineIdx:LongInt);
@@ -3047,10 +3051,18 @@ Begin
    If Op.Size=0 Then Op.Size:=4;
   End;
   Inc(TokIdx);
+  { Verifier si c'est une adresse FAR: seg:ofs (ex: CALL 00C9:02CDh) }
+  If(TokIdx<=TokenCount)and(Tokens[TokIdx].Kind=TK_COLON)and
+    (TokIdx+1<=TokenCount)and(Tokens[TokIdx+1].Kind=TK_NUMBER)Then Begin
+   Op.OpType:=OT_FAR;
+   Op.Size:=4;
+   Op.Disp:=ParseNumericValue(Tokens[TokIdx+1].Value);
+   Op.HasDisp:=True;
+   Inc(TokIdx,2);
+  End;
   ParseOperand:=Op;
   Exit;
  End;
- { Immediat negatif: -nombre }
  If(Tokens[TokIdx].Kind=TK_MINUS)and(TokIdx<TokenCount)and
    (Tokens[TokIdx+1].Kind=TK_NUMBER)Then Begin
   V:=-ParseNumericValue(Tokens[TokIdx+1].Value);
@@ -4191,6 +4203,8 @@ Begin
    Else
     OperandToExpr:='Seg('+Op.LabelName+')';
   End;
+  OT_FAR:
+   OperandToExpr:=HexWord(Word(Op.Imm))+'h:'+HexWord(Word(Op.Disp))+'h';
   Else
    OperandToExpr:='?';
  End;
@@ -5516,6 +5530,12 @@ Var
  R:String;
  PascalName:String;
 Begin
+ { CALL FAR avec adresse absolue: non traduisible, generer un commentaire }
+ If AsmL.Op1.OpType=OT_FAR Then Begin
+  TranslateCALL:='{ TODO: CALL FAR '+HexWord(Word(AsmL.Op1.Imm))+'h:'
+   +HexWord(Word(AsmL.Op1.Disp))+'h }';
+  Exit;
+ End;
  Target:=OperandToExpr(AsmL.Op1,ProcIdx);
  TargetProc:=FindProcByName(Target);
  R:='';
