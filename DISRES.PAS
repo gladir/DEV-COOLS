@@ -514,7 +514,7 @@
               retourner une chaine descriptive de la bitmap :
               'W=' + largeur + ' H=' + hauteur + ' BPP=' + biBitCount
 
-  TODO 18 - DECODAGE RT_GROUP_ICON / RT_GROUP_CURSOR (TYPES 14 ET 12) [A FAIRE]
+  TODO 18 - DECODAGE RT_GROUP_ICON / RT_GROUP_CURSOR (TYPES 14 ET 12) [IMPLEMENTE]
             Type TGrpIconDirEntry : record
               Width    : Byte
               Height   : Byte
@@ -872,6 +872,8 @@ Const
   MAX_VERSION_INFO    = 16;   { ressources RT_VERSION par fichier   }
   MAX_VERSION_STRINGS = 64;   { paires cle-valeur par ressource     }
   MAX_VERSION_LINES   = 512;  { lignes RC generees pour les versions}
+  MAX_GRP_ICONS       = 64;   { ressources RT_GROUP_ICON/CURSOR max }
+  MAX_GRP_ENTRIES     = 16;   { images max par ressource groupe     }
 
 { ============================================================
   TYPES
@@ -1056,6 +1058,26 @@ Type
     biClrImportant  : LongInt; { couleurs importantes          }
   End;
 
+  { Entree de repertoire de groupe d icone/curseur (GRPICONDIR) }
+  TGrpIconDirEntry = Record
+    Width      : Byte;     { largeur en pixels (0 = 256)                  }
+    Height     : Byte;     { hauteur en pixels (0 = 256)                  }
+    ColorCount : Byte;     { nombre de couleurs (0 si >= 256)             }
+    Reserved   : Byte;     { = 0                                          }
+    Planes     : Word;     { plans (ICO) ou hotspot X (CUR)               }
+    BitCount   : Word;     { bits/pixel (ICO) ou hotspot Y (CUR)          }
+    BytesInRes : LongInt;  { taille des donnees de la ressource associee  }
+    Id         : Word;     { identifiant de la ressource RT_ICON/CURSOR   }
+  End;
+
+  { Structure interne representant un groupe d icones/curseurs }
+  TGroupIcon = Record
+    GroupId  : Word;                                   { NameId du groupe  }
+    IsCursor : Boolean;                                { True = .cur       }
+    Count    : Integer;                                { nb d images       }
+    Entries  : Array[1..MAX_GRP_ENTRIES] Of TGrpIconDirEntry;
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1084,6 +1106,8 @@ Var
   VersionInfoCount  : Integer;   { nombre de ressources de version   }
   VersionRCLines    : Array[1..MAX_VERSION_LINES] Of TString;
   VersionRCLineCount : Integer;  { nombre de lignes RC de version    }
+  GroupIcons        : Array[1..MAX_GRP_ICONS] Of TGroupIcon;
+  GroupIconCount    : Integer;   { nombre de groupes d icones decodes  }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -3346,6 +3370,365 @@ Begin
 End;
 
 
+{ ============================================================
+  TODO 18 - DECODAGE RT_GROUP_ICON / RT_GROUP_CURSOR (TYPES 14 ET 12) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Trouver la ressource RT_ICON/RT_CURSOR par son NameId -- }
+Function FindIconById(TypeId : Word; IconId : Word) : Integer;
+Var
+  J : Integer;
+Begin
+  FindIconById := 0;
+  For J := 1 To ResCount Do
+    If Resources[J].TypeIsId And (Resources[J].TypeId = TypeId) Then
+      If Resources[J].NameIsId And (Resources[J].NameId = IconId) Then
+      Begin
+        FindIconById := J;
+        Exit;
+      End;
+End;
+
+{ ---- Analyser un groupe d icones RT_GROUP_ICON --------------- }
+Procedure ParseGroupIcon(Const Res : TResourceEntry);
+Var
+  Reserved : Word;
+  ResType  : Word;
+  Count    : Word;
+  I        : Integer;
+  GrpIdx   : Integer;
+  E        : TGrpIconDirEntry;
+Begin
+  If Res.DataSize < 6 Then Exit;
+  SeekResPos(Res.DataOfs);
+  Reserved := ReadWord;   { doit etre 0  }
+  ResType  := ReadWord;   { 1 = icone    }
+  Count    := ReadWord;   { nb d images  }
+  If Count = 0 Then Exit;
+  If GroupIconCount >= MAX_GRP_ICONS Then Exit;
+  Inc(GroupIconCount);
+  GrpIdx := GroupIconCount;
+  GroupIcons[GrpIdx].IsCursor := False;
+  If Res.NameIsId Then
+    GroupIcons[GrpIdx].GroupId := Res.NameId
+  Else
+    GroupIcons[GrpIdx].GroupId := 0;
+  If Count > MAX_GRP_ENTRIES Then
+    GroupIcons[GrpIdx].Count := MAX_GRP_ENTRIES
+  Else
+    GroupIcons[GrpIdx].Count := Count;
+  For I := 1 To GroupIcons[GrpIdx].Count Do
+  Begin
+    E.Width      := ReadByte;
+    E.Height     := ReadByte;
+    E.ColorCount := ReadByte;
+    E.Reserved   := ReadByte;
+    E.Planes     := ReadWord;
+    E.BitCount   := ReadWord;
+    E.BytesInRes := ReadDWord;
+    E.Id         := ReadWord;
+    GroupIcons[GrpIdx].Entries[I] := E;
+  End;
+  { Lire et ignorer les entrees supplementaires si Count > MAX_GRP_ENTRIES }
+  For I := MAX_GRP_ENTRIES + 1 To Count Do
+  Begin
+    ReadByte; ReadByte; ReadByte; ReadByte;   { Width/Height/ColorCount/Reserved }
+    ReadWord; ReadWord;                        { Planes/BitCount }
+    ReadDWord;                                 { BytesInRes }
+    ReadWord;                                  { Id }
+  End;
+End;
+
+{ ---- Assembler un fichier .ico pour un groupe d icones ------- }
+Procedure BuildGroupIconFile(GrpIdx : Integer; Const OutFile : TString);
+Var
+  F       : File Of Byte;
+  N       : Integer;
+  I       : Integer;
+  ResIdx  : Integer;
+  Offset  : LongInt;
+  J       : LongInt;
+  B       : Byte;
+  Lo_     : Byte;
+  Hi_     : Byte;
+  E       : TGrpIconDirEntry;
+  Procedure WriteW(V : Word);
+  Begin
+    Lo_ := V And $FF;
+    Hi_ := (V Shr 8) And $FF;
+    Write(F, Lo_);
+    Write(F, Hi_);
+  End;
+  Procedure WriteL(V : LongInt);
+  Begin
+    WriteW(Word(V And $FFFF));
+    WriteW(Word((V Shr 16) And $FFFF));
+  End;
+Begin
+  N := GroupIcons[GrpIdx].Count;
+  If N = 0 Then Exit;
+  Assign(F, OutFile);
+  {$I-} Rewrite(F); {$I+}
+  If IOResult <> 0 Then Exit;
+  { Ecrire l en-tete ICONDIR (6 octets) }
+  WriteW(0);                  { Reserved = 0     }
+  WriteW(1);                  { Type     = 1 ICO }
+  WriteW(N);                  { Count            }
+  { Calculer l offset du debut des donnees :
+    6 (ICONDIR) + N * 16 (ICONDIRENTRY) }
+  Offset := 6 + LongInt(N) * 16;
+  { Ecrire N entrees ICONDIRENTRY (16 octets chacune) }
+  For I := 1 To N Do
+  Begin
+    E := GroupIcons[GrpIdx].Entries[I];
+    Write(F, E.Width);
+    Write(F, E.Height);
+    Write(F, E.ColorCount);
+    B := 0; Write(F, B);      { Reserved = 0 }
+    WriteW(E.Planes);
+    WriteW(E.BitCount);
+    WriteL(E.BytesInRes);
+    WriteL(Offset);
+    Offset := Offset + E.BytesInRes;
+  End;
+  { Ecrire les donnees DIB brutes de chaque RT_ICON }
+  For I := 1 To N Do
+  Begin
+    E := GroupIcons[GrpIdx].Entries[I];
+    ResIdx := FindIconById(RT_ICON, E.Id);
+    If ResIdx > 0 Then
+    Begin
+      SeekResPos(Resources[ResIdx].DataOfs);
+      For J := 1 To Resources[ResIdx].DataSize Do
+      Begin
+        B := ReadByte;
+        Write(F, B);
+      End;
+    End Else
+    Begin
+      { Ressource manquante : ecrire des zeros }
+      B := 0;
+      For J := 1 To E.BytesInRes Do
+        Write(F, B);
+    End;
+  End;
+  Close(F);
+End;
+
+{ ---- Analyser un groupe de curseurs RT_GROUP_CURSOR ---------- }
+Procedure ParseGroupCursor(Const Res : TResourceEntry);
+Var
+  Reserved : Word;
+  ResType  : Word;
+  Count    : Word;
+  I        : Integer;
+  GrpIdx   : Integer;
+  E        : TGrpIconDirEntry;
+Begin
+  If Res.DataSize < 6 Then Exit;
+  SeekResPos(Res.DataOfs);
+  Reserved := ReadWord;   { doit etre 0  }
+  ResType  := ReadWord;   { 2 = curseur  }
+  Count    := ReadWord;   { nb d images  }
+  If Count = 0 Then Exit;
+  If GroupIconCount >= MAX_GRP_ICONS Then Exit;
+  Inc(GroupIconCount);
+  GrpIdx := GroupIconCount;
+  GroupIcons[GrpIdx].IsCursor := True;
+  If Res.NameIsId Then
+    GroupIcons[GrpIdx].GroupId := Res.NameId
+  Else
+    GroupIcons[GrpIdx].GroupId := 0;
+  If Count > MAX_GRP_ENTRIES Then
+    GroupIcons[GrpIdx].Count := MAX_GRP_ENTRIES
+  Else
+    GroupIcons[GrpIdx].Count := Count;
+  For I := 1 To GroupIcons[GrpIdx].Count Do
+  Begin
+    E.Width      := ReadByte;
+    E.Height     := ReadByte;
+    E.ColorCount := ReadByte;
+    E.Reserved   := ReadByte;
+    E.Planes     := ReadWord;
+    E.BitCount   := ReadWord;
+    E.BytesInRes := ReadDWord;
+    E.Id         := ReadWord;
+    GroupIcons[GrpIdx].Entries[I] := E;
+  End;
+  For I := MAX_GRP_ENTRIES + 1 To Count Do
+  Begin
+    ReadByte; ReadByte; ReadByte; ReadByte;
+    ReadWord; ReadWord;
+    ReadDWord;
+    ReadWord;
+  End;
+End;
+
+{ ---- Assembler un fichier .cur pour un groupe de curseurs ---- }
+Procedure BuildGroupCursorFile(GrpIdx : Integer; Const OutFile : TString);
+Var
+  F       : File Of Byte;
+  N       : Integer;
+  I       : Integer;
+  ResIdx  : Integer;
+  Offset  : LongInt;
+  J       : LongInt;
+  B       : Byte;
+  Lo_     : Byte;
+  Hi_     : Byte;
+  E       : TGrpIconDirEntry;
+  DibSize : LongInt;
+  Procedure WriteW(V : Word);
+  Begin
+    Lo_ := V And $FF;
+    Hi_ := (V Shr 8) And $FF;
+    Write(F, Lo_);
+    Write(F, Hi_);
+  End;
+  Procedure WriteL(V : LongInt);
+  Begin
+    WriteW(Word(V And $FFFF));
+    WriteW(Word((V Shr 16) And $FFFF));
+  End;
+Begin
+  N := GroupIcons[GrpIdx].Count;
+  If N = 0 Then Exit;
+  Assign(F, OutFile);
+  {$I-} Rewrite(F); {$I+}
+  If IOResult <> 0 Then Exit;
+  { Ecrire l en-tete CURSORDIR (6 octets) }
+  WriteW(0);                  { Reserved = 0     }
+  WriteW(2);                  { Type     = 2 CUR }
+  WriteW(N);                  { Count            }
+  Offset := 6 + LongInt(N) * 16;
+  { Ecrire N entrees ICONDIRENTRY pour .cur (16 octets chacune) }
+  For I := 1 To N Do
+  Begin
+    E := GroupIcons[GrpIdx].Entries[I];
+    Write(F, E.Width);
+    Write(F, E.Height);
+    Write(F, E.ColorCount);
+    B := 0; Write(F, B);
+    WriteW(E.Planes);   { Planes  = hotspot X pour .cur }
+    WriteW(E.BitCount); { BitCount = hotspot Y pour .cur }
+    { Les donnees RT_CURSOR contiennent 4 octets hotspot + DIB
+      la taille dans le .cur est sans le hotspot }
+    DibSize := E.BytesInRes - 4;
+    If DibSize < 0 Then DibSize := E.BytesInRes;
+    WriteL(DibSize);
+    WriteL(Offset);
+    Offset := Offset + DibSize;
+  End;
+  { Ecrire les donnees DIB brutes de chaque RT_CURSOR (sans le hotspot) }
+  For I := 1 To N Do
+  Begin
+    E := GroupIcons[GrpIdx].Entries[I];
+    ResIdx := FindIconById(RT_CURSOR, E.Id);
+    If ResIdx > 0 Then
+    Begin
+      DibSize := Resources[ResIdx].DataSize - 4;
+      If DibSize < 0 Then DibSize := 0;
+      SeekResPos(Resources[ResIdx].DataOfs + 4);  { sauter le hotspot }
+      For J := 1 To DibSize Do
+      Begin
+        B := ReadByte;
+        Write(F, B);
+      End;
+    End Else
+    Begin
+      DibSize := E.BytesInRes - 4;
+      If DibSize < 0 Then DibSize := 0;
+      B := 0;
+      For J := 1 To DibSize Do
+        Write(F, B);
+    End;
+  End;
+  Close(F);
+End;
+
+{ ---- Decoder / extraire tous les groupes d icones ------------ }
+Procedure ParseAllGroupIcons;
+Var
+  I          : Integer;
+  GrpCount   : Integer;
+  OutName    : TString;
+  GrpIdx     : Integer;
+Begin
+  GrpCount := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_GROUP_ICON) Then
+    Begin
+      Inc(GrpCount);
+      GrpIdx := GroupIconCount + 1;
+      ParseGroupIcon(Resources[I]);
+      If Opts.ExtractBin And (GrpIdx <= GroupIconCount) Then
+      Begin
+        If Resources[I].NameIsId Then
+          OutName := 'GROUP_ICON_' + IntToStr(Resources[I].NameId) + '.ico'
+        Else
+          OutName := 'GROUP_ICON_' + Resources[I].NameStr + '.ico';
+        BuildGroupIconFile(GrpIdx, OutName);
+        If Opts.Verbose Then
+          WriteLn('  Groupe icone extrait: ', OutName,
+                  ' (', GroupIcons[GrpIdx].Count, ' image(s))');
+      End Else If Opts.Verbose Then
+      Begin
+        If Resources[I].NameIsId Then
+          WriteLn('  RT_GROUP_ICON #', Resources[I].NameId, ' : ',
+                  GroupIcons[GrpIdx].Count, ' image(s)')
+        Else
+          WriteLn('  RT_GROUP_ICON "', Resources[I].NameStr, '" : ',
+                  GroupIcons[GrpIdx].Count, ' image(s)');
+      End;
+    End;
+  End;
+  If Opts.Verbose And (GrpCount > 0) Then
+    WriteLn(GrpCount, ' ressource(s) RT_GROUP_ICON trouvee(s).');
+End;
+
+{ ---- Decoder / extraire tous les groupes de curseurs --------- }
+Procedure ParseAllGroupCursors;
+Var
+  I          : Integer;
+  GrpCount   : Integer;
+  OutName    : TString;
+  GrpIdx     : Integer;
+Begin
+  GrpCount := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_GROUP_CURSOR) Then
+    Begin
+      Inc(GrpCount);
+      GrpIdx := GroupIconCount + 1;
+      ParseGroupCursor(Resources[I]);
+      If Opts.ExtractBin And (GrpIdx <= GroupIconCount) Then
+      Begin
+        If Resources[I].NameIsId Then
+          OutName := 'GROUP_CURSOR_' + IntToStr(Resources[I].NameId) + '.cur'
+        Else
+          OutName := 'GROUP_CURSOR_' + Resources[I].NameStr + '.cur';
+        BuildGroupCursorFile(GrpIdx, OutName);
+        If Opts.Verbose Then
+          WriteLn('  Groupe curseur extrait: ', OutName,
+                  ' (', GroupIcons[GrpIdx].Count, ' image(s))');
+      End Else If Opts.Verbose Then
+      Begin
+        If Resources[I].NameIsId Then
+          WriteLn('  RT_GROUP_CURSOR #', Resources[I].NameId, ' : ',
+                  GroupIcons[GrpIdx].Count, ' image(s)')
+        Else
+          WriteLn('  RT_GROUP_CURSOR "', Resources[I].NameStr, '" : ',
+                  GroupIcons[GrpIdx].Count, ' image(s)');
+      End;
+    End;
+  End;
+  If Opts.Verbose And (GrpCount > 0) Then
+    WriteLn(GrpCount, ' ressource(s) RT_GROUP_CURSOR trouvee(s).');
+End;
+
+
 Begin
   { Banniere de version }
   WriteLn('DISRES v', DISRES_VERSION, ' (', DISRES_DATE, ') - ',
@@ -3407,8 +3790,13 @@ Begin
   { Decoder les bitmaps (RT_BITMAP) }
   ParseAllBitmaps;
 
-  { TODO 18 a TODO 25 : a implementer }
-  WriteLn('(TODO 18 a TODO 25 : implementation en cours)');
+  { Decoder les groupes d icones (RT_GROUP_ICON) et curseurs (RT_GROUP_CURSOR) }
+  GroupIconCount := 0;
+  ParseAllGroupIcons;
+  ParseAllGroupCursors;
+
+  { TODO 19 a TODO 25 : a implementer }
+  WriteLn('(TODO 19 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
