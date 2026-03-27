@@ -5458,13 +5458,13 @@ Begin
    If PushCount<ArgCount Then ArgCount:=PushCount;
    Args:=BuildCallArgs(LineIdx,ArgCount,Conv,ProcIdx);
    If Procs[TargetProc].IsFunction Then
-    R:='Result := '+Target+'('+Args+')'
+    R:='RegAX := '+Target+'('+Args+')'
    Else
     R:=Target+'('+Args+')'
   End
   Else Begin
    If Procs[TargetProc].IsFunction Then
-    R:='Result := '+Target
+    R:='RegAX := '+Target
    Else
     R:=Target
   End;
@@ -6030,12 +6030,12 @@ Begin
   If Step='1' Then
    TranslateMOVS:='Begin Move('+MP+'['+SiVar+'], '+MP+'['+
     DiVar+'], '+CxVar+'); Inc('+SiVar+', '+CxVar+'); Inc('+
-    DiVar+', '+CxVar+'); '+CxVar+' := 0 End'
+    DiVar+', '+CxVar+'); '+CxVar+' := 0; End;'
   Else
    TranslateMOVS:='Begin Move('+MP+'['+SiVar+'], '+MP+'['+
     DiVar+'], '+CxVar+' * '+Step+'); Inc('+SiVar+', '+CxVar+
     ' * '+Step+'); Inc('+DiVar+', '+CxVar+' * '+Step+'); '+
-    CxVar+' := 0 End';
+    CxVar+' := 0; End;';
  End
  Else Begin
   If Step='1' Then
@@ -6092,15 +6092,15 @@ Begin
  If RepType<>'' Then Begin
   If StringOp='STOSB' Then
    TranslateSTOS:='Begin FillChar('+MP+'['+DiVar+'], '+CxVar+
-    ', '+Acc+'); Inc('+DiVar+', '+CxVar+'); '+CxVar+' := 0 End'
+    ', '+Acc+'); Inc('+DiVar+', '+CxVar+'); '+CxVar+' := 0; End;'
   Else If StringOp='STOSW' Then
    TranslateSTOS:='Begin FillWord('+MP+'['+DiVar+'], '+CxVar+
     ', '+Acc+'); Inc('+DiVar+', '+CxVar+' * 2); '+
-    CxVar+' := 0 End'
+    CxVar+' := 0; End;'
   Else
    TranslateSTOS:='Begin FillDWord('+MP+'['+DiVar+'], '+CxVar+
     ', '+Acc+'); Inc('+DiVar+', '+CxVar+' * 4); '+
-    CxVar+' := 0 End';
+    CxVar+' := 0; End;';
  End
  Else Begin
   If Step='1' Then
@@ -6419,8 +6419,8 @@ Begin
   $07:TranslateINT21h:='RegAL := Ord(ReadKey); { INT 21h/AH=07 }';
   $08:TranslateINT21h:='RegAL := Ord(ReadKey); { INT 21h/AH=08 }';
   $09:TranslateINT21h:=
-   'Write(DosString(RegDX)); { INT 21h/AH=09, chaine $ }';
-  $0A:TranslateINT21h:='ReadLn(InputBuf); { INT 21h/AH=0Ah }';
+   'WriteLn; (* INT 21h/AH=09: Write string at DS:DX *)';
+  $0A:TranslateINT21h:='ReadLn; (* INT 21h/AH=0Ah: Buffered input *)';
   $25:TranslateINT21h:=
    'SetIntVec(Lo(RegAX), Ptr(RegDS, RegDX)); { INT 21h/AH=25 }';
   $2A:TranslateINT21h:=
@@ -7839,13 +7839,24 @@ Begin
 
  { Variables de sauvegarde pour les paires PUSH/POP }
  WriteLn(OutFile,'  { Variables de sauvegarde PUSH/POP }');
- WriteLn(OutFile,'  SaveAX, SaveBX, SaveCX, SaveDX : Word;');
- WriteLn(OutFile,'  SaveSI, SaveDI, SaveBP, SaveSP : Word;');
+ WriteLn(OutFile,'  SaveRegAX, SaveRegBX, SaveRegCX, SaveRegDX : Word;');
+ WriteLn(OutFile,'  SaveRegSI, SaveRegDI, SaveRegBP, SaveRegSP : Word;');
  WriteLn(OutFile,'  SaveFlags : Word;');
- Inc(VarCount,9);
+ WriteLn(OutFile,'  { Sauvegarde individuelle des flags (PUSHF/POPF) }');
+ WriteLn(OutFile,'  SaveFlagCF, SaveFlagZF, SaveFlagSF, SaveFlagOF : Boolean;');
+ WriteLn(OutFile,'  SaveFlagDF, SaveFlagPF, SaveFlagAF : Boolean;');
+ Inc(VarCount,16);
+ { Variables temporaires pour MUL/DIV et XCHG }
+ WriteLn(OutFile,'  { Variables temporaires }');
+ WriteLn(OutFile,'  TmpL : LongInt;');
+ WriteLn(OutFile,'  TmpW : Word;');
+ WriteLn(OutFile,'  { Simulation memoire pour acces Mem[] }');
+ WriteLn(OutFile,'  Mem : Array[0..65535] of Byte;');
+ WriteLn(OutFile,'  MemW : Array[0..32767] of Word absolute Mem;');
+ Inc(VarCount,4);
  If Mode32 or(CpuLevel>=CPU_386)Then Begin
-  WriteLn(OutFile,'  SaveEAX, SaveEBX, SaveECX, SaveEDX : LongInt;');
-  WriteLn(OutFile,'  SaveESI, SaveEDI, SaveEBP, SaveESP : LongInt;');
+  WriteLn(OutFile,'  SaveRegEAX, SaveRegEBX, SaveRegECX, SaveRegEDX : LongInt;');
+  WriteLn(OutFile,'  SaveRegESI, SaveRegEDI, SaveRegEBP, SaveRegESP : LongInt;');
   WriteLn(OutFile,'  SaveXADD : LongInt;');
   Inc(VarCount,9);
  End;
@@ -8724,6 +8735,122 @@ Begin
 End;
 
 { ============================================================
+  Correction post-traitement des sous-registres et @DATA
+  ============================================================ }
+
+Procedure ProcessSubRegFixup;
+{ Corrige les assignations invalides Hi(RegXX) := val et Lo(RegXX) := val
+  en utilisant des operations de bits valides en Pascal.
+  Corrige aussi les references @DATA invalides en Pascal.
+  Corrige les assignations de variables String/Array a des registres Word
+  avec Ofs(). }
+Var
+ I,J:Integer;
+ Code:String;
+ P,P2:Integer;
+ RegName,Value,VarName:String;
+ Fixed:Integer;
+ IsStringOrArray:Boolean;
+Begin
+ Fixed:=0;
+ For I:=0 to TranslationCount-1 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  Code:=Translations[I].PascalCode;
+
+  { Corriger Hi(RegXX) := val; -> RegXX := (RegXX and $00FF) or (Word(val) shl 8); }
+  P:=Pos('Hi(',Code);
+  If(P>0)Then Begin
+   P2:=Pos(') :=',Code);
+   If(P2>P)Then Begin
+    RegName:=Copy(Code,P+3,P2-P-3);
+    Value:=Trim(Copy(Code,P2+4,255));
+    { Retirer le point-virgule terminal }
+    If(Length(Value)>0)and(Value[Length(Value)]=';')Then
+     Value:=Copy(Value,1,Length(Value)-1);
+    Value:=Trim(Value);
+    If Length(Value)>0 Then Begin
+     Translations[I].PascalCode:=
+      Copy(Code,1,P-1)+RegName+' := ('+RegName+
+      ' and $00FF) or (Word('+Value+') shl 8);';
+     Inc(Fixed);
+    End;
+   End;
+  End;
+
+  Code:=Translations[I].PascalCode;
+
+  { Corriger Lo(RegXX) := val; -> RegXX := (RegXX and $FF00) or Word(val); }
+  P:=Pos('Lo(',Code);
+  If(P>0)Then Begin
+   P2:=Pos(') :=',Code);
+   If(P2>P)Then Begin
+    RegName:=Copy(Code,P+3,P2-P-3);
+    Value:=Trim(Copy(Code,P2+4,255));
+    If(Length(Value)>0)and(Value[Length(Value)]=';')Then
+     Value:=Copy(Value,1,Length(Value)-1);
+    Value:=Trim(Value);
+    If Length(Value)>0 Then Begin
+     Translations[I].PascalCode:=
+      Copy(Code,1,P-1)+RegName+' := ('+RegName+
+      ' and $FF00) or Word('+Value+');';
+     Inc(Fixed);
+    End;
+   End;
+  End;
+
+  Code:=Translations[I].PascalCode;
+
+  { Corriger les references @DATA invalides en Pascal }
+  P:=Pos('@DATA',Code);
+  If P>0 Then Begin
+   Translations[I].PascalCode:=
+    Copy(Code,1,P-1)+'0 (* @DATA *)'+Copy(Code,P+5,255);
+   Inc(Fixed);
+  End;
+
+  Code:=Translations[I].PascalCode;
+
+  { Corriger les assignations de variables String/Array a des registres Word.
+    Detecter le pattern: RegXX := VarName; ou VarName est String ou Array
+    et le remplacer par RegXX := Ofs(VarName); }
+  P:=Pos(':= ',Code);
+  If P>0 Then Begin
+   Value:=Trim(Copy(Code,P+3,255));
+   If(Length(Value)>0)and(Value[Length(Value)]=';')Then Begin
+    VarName:=Trim(Copy(Value,1,Length(Value)-1));
+    { Verifier si le cote gauche est un registre et le cote droit une var String/Array }
+    If(Pos('Reg',Code)=1)or(Pos(' Reg',Code)>0)Then Begin
+     IsStringOrArray:=False;
+     For J:=1 to DataVarCount do Begin
+      If DataVars[J].Name=VarName Then Begin
+       If(DataVars[J].ElemCount>=1)and
+         (DataVars[J].Elements[1].ElemType=DE_STRING)Then
+        IsStringOrArray:=True
+       Else If(DataVars[J].ElemCount=1)and
+         (DataVars[J].Elements[1].ElemType=DE_DUP)Then
+        IsStringOrArray:=True
+       Else If DataVars[J].ElemCount>1 Then
+        IsStringOrArray:=True;
+       Break;
+      End;
+     End;
+     If IsStringOrArray Then Begin
+      Translations[I].PascalCode:=
+       Copy(Code,1,P+2)+'Ofs('+VarName+');';
+      Inc(Fixed);
+     End;
+    End;
+   End;
+  End;
+ End;
+
+ If Verbose Then Begin
+  WriteLn('  Correction sous-registres et @DATA :');
+  WriteLn('    Corrections appliquees : ',Fixed);
+ End;
+End;
+
+{ ============================================================
   Verification finale et rapport - TODO 25
   ============================================================ }
 
@@ -9059,6 +9186,8 @@ BEGIN
  ProcessInlineFallback;
  { TODO 24 - Optimisation (avant generation) }
  ProcessOptimization;
+ { Correction sous-registres Hi/Lo et @DATA }
+ ProcessSubRegFixup;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
