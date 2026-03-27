@@ -9291,6 +9291,12 @@ Begin
     ((Pos('AX',Line)>0)or(Pos('EAX',Line)>0))and
     ((Pos('CX',Line)>0)or(Pos('ECX',Line)>0))Then
    HasSubAXCX:=True;
+   { Detecter MOV AX,DI (strend pattern) }
+   If(Pos('MOV',Line)>0)and(Pos('AX',Line)>0)and(Pos('DI',Line)>0)Then
+    HasMovAXDI:=True;
+   { Detecter DEC AX (strend pattern) }
+   If(Pos('DEC',Line)>0)and((Pos('AX',Line)>0)or(Pos('EAX',Line)>0))Then
+    HasDecAX:=True;
  End;
 
  { Pattern strcmp : REPE CMPSB }
@@ -9314,6 +9320,14 @@ Begin
  { Pattern strlen : REPNE SCASB + NEG/NOT CX ou NEG AX ou SUB AX,CX, sans MOVSB }
  If HasRepneScasb and(HasNegCX or HasNotCX or HasNegAX or HasSubAXCX)and(Not HasMovsb)Then Begin
   DetectProcStringsPattern:='StrLen';
+  Exit;
+ End;
+
+ { Pattern strend : REPNE SCASB + MOV AX,DI + DEC AX, sans MOVSB ni NEG/NOT }
+ If HasRepneScasb and HasMovAXDI and HasDecAX and
+    (Not HasMovsb)and(Not HasNegCX)and(Not HasNotCX)and
+    (Not HasNegAX)and(Not HasSubAXCX)Then Begin
+  DetectProcStringsPattern:='StrEnd';
   Exit;
  End;
 
