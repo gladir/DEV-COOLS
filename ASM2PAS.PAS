@@ -552,6 +552,7 @@ Var
  TotalInstructions:LongInt;
  TranslatedInstructions:LongInt;
  InlineInstructions:LongInt;
+ NeedWinDos:Boolean;
  TotalProcs:LongInt;
  TotalVars:LongInt;
  TotalLabels:LongInt;
@@ -6400,6 +6401,9 @@ Function TranslateINT21h(FuncAH:LongInt):String;
   AH=2Ch -> GetTime
   AH=30h -> Lo(DosVersion)/Hi(DosVersion)
   AH=35h -> GetIntVec
+  AH=39h -> CreateDir (WinDOS, creer repertoire)
+  AH=3Ah -> RemoveDir (WinDOS, supprimer repertoire)
+  AH=3Bh -> SetCurDir (WinDOS, changer repertoire)
   AH=3Ch -> Rewrite (creer fichier)
   AH=3Dh -> Reset (ouvrir fichier)
   AH=3Eh -> Close (fermer fichier)
@@ -6437,6 +6441,12 @@ Begin
   $35:TranslateINT21h:=
    'GetIntVec(Lo(RegAX), IntPtr); '+
    'RegBX := Ofs(IntPtr^); RegES := Seg(IntPtr^); { INT 21h/AH=35 }';
+  $39:TranslateINT21h:=
+   'CreateDir(DirBuf); { INT 21h/AH=39 creer repertoire (WinDOS) }';
+  $3A:TranslateINT21h:=
+   'RemoveDir(DirBuf); { INT 21h/AH=3A supprimer repertoire (WinDOS) }';
+  $3B:TranslateINT21h:=
+   'SetCurDir(DirBuf); { INT 21h/AH=3B changer repertoire (WinDOS) }';
   $3C:TranslateINT21h:=
    'Assign(F, ParamStr(RegDX)); Rewrite(F); { INT 21h/AH=3C creer }';
   $3D:TranslateINT21h:=
@@ -6627,6 +6637,8 @@ Begin
     $21:Begin
      Inc(Int21Count);
      If FuncAH>=0 Then Inc(Int21Known);
+     If(FuncAH=$39)or(FuncAH=$3A)or(FuncAH=$3B)Then
+      NeedWinDos:=True;
     End;
    Else
     Inc(IntOtherCount);
@@ -7727,7 +7739,10 @@ Begin
 
  { === Clause Uses === }
  UnitList:='';
- If NeedDos Then UnitList:='Dos';
+ If NeedWinDos Then
+  UnitList:='WinDos'
+ Else If NeedDos Then
+  UnitList:='Dos';
  If NeedCrt Then Begin
   If UnitList<>'' Then UnitList:=UnitList+', ';
   UnitList:=UnitList+'Crt';
@@ -7859,6 +7874,11 @@ Begin
   WriteLn(OutFile,'  SaveRegESI, SaveRegEDI, SaveRegEBP, SaveRegESP : LongInt;');
   WriteLn(OutFile,'  SaveXADD : LongInt;');
   Inc(VarCount,9);
+ End;
+ If NeedWinDos Then Begin
+  WriteLn(OutFile,'  { Tampon repertoire pour SetCurDir/CreateDir/RemoveDir }');
+  WriteLn(OutFile,'  DirBuf : Array[0..255] of Char;');
+  Inc(VarCount,1);
  End;
 
  { Variables du segment DATA }
@@ -9132,6 +9152,7 @@ BEGIN
  TotalInstructions:=0;
  TranslatedInstructions:=0;
  InlineInstructions:=0;
+ NeedWinDos:=False;
  TotalProcs:=0;
  TotalVars:=0;
  TotalLabels:=0;
