@@ -553,6 +553,7 @@ Var
  TranslatedInstructions:LongInt;
  InlineInstructions:LongInt;
  NeedWinDos:Boolean;
+ NeedDosBool:Boolean;
  TotalProcs:LongInt;
  TotalVars:LongInt;
  TotalLabels:LongInt;
@@ -6355,6 +6356,13 @@ Begin
    FindPrevMovAH:=AsmT.Op2.Imm;
    Exit;
   End;
+  { MOV AX, imm16 -> AH = Hi(imm16) }
+  If(MJ='MOV')and(AsmT.Op1.OpType=OT_REG16)and
+   (UpCaseStr(AsmT.Op1.Reg)='AX')and
+   (AsmT.Op2.OpType=OT_IMM16)Then Begin
+   FindPrevMovAH:=(AsmT.Op2.Imm shr 8) and $FF;
+   Exit;
+  End;
   { Si on rencontre un label ou un INT, on arrete }
   If AsmT.LabelStr<>'' Then Break;
   If MJ='INT' Then Break;
@@ -6382,12 +6390,19 @@ Begin
    FindPrevMovAL:=AsmT.Op2.Imm;
    Exit;
   End;
+  { MOV AX, imm16 -> AL = Lo(imm16) }
+  If(MJ='MOV')and(AsmT.Op1.OpType=OT_REG16)and
+   (UpCaseStr(AsmT.Op1.Reg)='AX')and
+   (AsmT.Op2.OpType=OT_IMM16)Then Begin
+   FindPrevMovAL:=AsmT.Op2.Imm and $FF;
+   Exit;
+  End;
   If AsmT.LabelStr<>'' Then Break;
   If MJ='INT' Then Break;
  End;
 End;
 
-Function TranslateINT21h(FuncAH:LongInt):String;
+Function TranslateINT21h(FuncAH,FuncAL:LongInt):String;
 { Traduit les fonctions DOS INT 21h en equivalents Pascal.
   AH=01h -> ReadKey (lecture caractere clavier, echo)
   AH=02h -> Write(Chr(RegDL)) (afficher caractere)
@@ -6439,12 +6454,27 @@ Begin
    'GetTime(Hour, Minute, Second, Sec100); '+
    'Hi(RegCX) := Hour; Lo(RegCX) := Minute; '+
    'Hi(RegDX) := Second; Lo(RegDX) := Sec100; { INT 21h/AH=2C }';
+  $2E:TranslateINT21h:=
+   'SetVerify(Boolean(Lo(RegAX))); { INT 21h/AH=2E }';
   $30:TranslateINT21h:=
    'RegAL := Lo(DosVersion); RegAH := Hi(DosVersion); '+
    '{ INT 21h/AH=30 }';
+  $33:Begin
+   If FuncAL=0 Then
+    TranslateINT21h:=
+     'GetCBreak(BoolTmp); { INT 21h/AX=3300 - resultat dans BoolTmp }'
+   Else If FuncAL=1 Then
+    TranslateINT21h:=
+     'SetCBreak(Boolean(Lo(RegDX))); { INT 21h/AX=3301 }'
+   Else
+    TranslateINT21h:=
+     'GetCBreak(BoolTmp); { INT 21h/AH=33 - resultat dans BoolTmp }';
+  End;
   $35:TranslateINT21h:=
    'GetIntVec(Lo(RegAX), IntPtr); '+
    'RegBX := Ofs(IntPtr^); RegES := Seg(IntPtr^); { INT 21h/AH=35 }';
+  $36:TranslateINT21h:=
+   'TmpL := DiskFree(Lo(RegDX)); { INT 21h/AH=36 - DiskFree ou DiskSize }';
   $39:TranslateINT21h:=
    'CreateDir(DirBuf); { INT 21h/AH=39 creer repertoire (WinDOS) }';
   $3A:TranslateINT21h:=
@@ -6465,6 +6495,8 @@ Begin
   $43:TranslateINT21h:=
    'GetFAttr(F, RegCX); { INT 21h/AH=43 attributs }';
   $4C:TranslateINT21h:='Halt(Lo(RegAX)); { INT 21h/AH=4C }';
+  $54:TranslateINT21h:=
+   'GetVerify(BoolTmp); { INT 21h/AH=54 - resultat dans BoolTmp }';
  Else
   TranslateINT21h:=
    'Begin Regs.AH := $'+HexByte(FuncAH)+
@@ -6562,7 +6594,7 @@ Begin
  End;
 End;
 
-Function TranslateINT(IntNum,FuncAH:LongInt):String;
+Function TranslateINT(IntNum,FuncAH,FuncAL:LongInt):String;
 { Traduit une instruction INT nn en code Pascal.
   Dispatche vers les traducteurs specialises pour les
   interruptions connues (21h, 10h, 16h).
@@ -6571,7 +6603,7 @@ Begin
  Case IntNum of
   $10:TranslateINT:=TranslateINT10h(FuncAH);
   $16:TranslateINT:=TranslateINT16h(FuncAH);
-  $21:TranslateINT:=TranslateINT21h(FuncAH);
+  $21:TranslateINT:=TranslateINT21h(FuncAH,FuncAL);
  Else
   If FuncAH>=0 Then
    TranslateINT:='Begin Regs.AH := $'+HexByte(FuncAH)+
@@ -6592,7 +6624,7 @@ Var
  I:LongInt;
  AsmL:TAsmLine;
  Code:String;
- IntNum,FuncAH:LongInt;
+ IntNum,FuncAH,FuncAL:LongInt;
  TotalInt:LongInt;
  Int21Count,Int10Count,Int16Count,IntOtherCount:LongInt;
  Int21Known,Int10Known,Int16Known:LongInt;
@@ -6625,10 +6657,11 @@ Begin
    Else If AsmL.Op1.OpType=OT_LABEL Then
     IntNum:=HexToInt(AsmL.Op1.LabelName);
    If IntNum<0 Then Continue;
-   { Rechercher le MOV AH, nn precedant }
+   { Rechercher le MOV AH, nn et MOV AL, nn precedants }
    FuncAH:=FindPrevMovAH(I);
+   FuncAL:=FindPrevMovAL(I);
    { Traduire selon le numero d'interruption }
-   Code:=TranslateINT(IntNum,FuncAH);
+   Code:=TranslateINT(IntNum,FuncAH,FuncAL);
    Case IntNum of
     $10:Begin
      Inc(Int10Count);
@@ -6643,6 +6676,8 @@ Begin
      If FuncAH>=0 Then Inc(Int21Known);
      If(FuncAH=$39)or(FuncAH=$3A)or(FuncAH=$3B)Then
       NeedWinDos:=True;
+     If(FuncAH=$33)or(FuncAH=$54)Then
+      NeedDosBool:=True;
     End;
    Else
     Inc(IntOtherCount);
@@ -7882,6 +7917,11 @@ Begin
  If NeedWinDos Then Begin
   WriteLn(OutFile,'  { Tampon repertoire pour SetCurDir/CreateDir/RemoveDir }');
   WriteLn(OutFile,'  DirBuf : Array[0..255] of Char;');
+  Inc(VarCount,1);
+ End;
+ If NeedDosBool Then Begin
+  WriteLn(OutFile,'  { Variable temporaire pour GetCBreak/GetVerify }');
+  WriteLn(OutFile,'  BoolTmp : Boolean;');
   Inc(VarCount,1);
  End;
 
@@ -9157,6 +9197,7 @@ BEGIN
  TranslatedInstructions:=0;
  InlineInstructions:=0;
  NeedWinDos:=False;
+ NeedDosBool:=False;
  TotalProcs:=0;
  TotalVars:=0;
  TotalLabels:=0;

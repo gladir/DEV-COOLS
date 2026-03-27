@@ -142,6 +142,22 @@ run_test() {
     fi
   fi
 
+  # Verifier la coherence DOS : si GetCBreak/GetVerify sont utilises,
+  # l'unite Dos doit etre dans Uses et BoolTmp doit etre declare
+  if grep -q "GetCBreak\|GetVerify" "$PAS_FILE"; then
+    if ! grep -q "^Uses Dos\|^Uses WinDos" "$PAS_FILE"; then
+      STRUCT_ERRORS="${STRUCT_ERRORS}  - Uses Dos manquant pour GetCBreak/GetVerify\n"
+    fi
+    if ! grep -q "BoolTmp" "$PAS_FILE"; then
+      STRUCT_ERRORS="${STRUCT_ERRORS}  - Variable BoolTmp manquante pour GetCBreak/GetVerify\n"
+    fi
+  fi
+  if grep -q "SetCBreak\|SetVerify\|DiskFree\|DiskSize" "$PAS_FILE"; then
+    if ! grep -q "^Uses Dos\|^Uses WinDos" "$PAS_FILE"; then
+      STRUCT_ERRORS="${STRUCT_ERRORS}  - Uses Dos manquant pour SetCBreak/SetVerify/DiskFree/DiskSize\n"
+    fi
+  fi
+
   if [ -z "$STRUCT_ERRORS" ]; then
     echo -e "${GREEN}OK${NC}"
     STRUCT_OK=$((STRUCT_OK + 1))
