@@ -66,7 +66,7 @@
             Detecter l extension .php du fichier source.
             Programme principal : validation et appel Run.
 
-  TODO 02 - LEXEUR PHP (TOKENS) [A FAIRE]
+  TODO 02 - LEXEUR PHP (TOKENS) [IMPLEMENTE]
             TTokenKind : TK_EOF, TK_OPEN_PHP (<?php), TK_CLOSE_PHP (?>),
               TK_INTEGER, TK_FLOAT, TK_STRING_SQ (chaine apostrophe),
               TK_STRING_DQ (chaine guillemets, interpolation),
@@ -931,6 +931,8 @@ Var
   LexCol     : Integer;
   LexCh      : Char;
   LexEOF     : Boolean;
+  LexPeekCh  : Char;    { caractere espion (un niveau de lookahead)      }
+  LexHasPeek : Boolean; { True si LexPeekCh est valide                  }
 
   { Statistiques }
   ErrorCount : Integer;
@@ -1204,7 +1206,750 @@ Begin
 End;
 
 { ============================================================
-  TODO 02 - LEXEUR PHP (A FAIRE)
+  TODO 02 - LEXEUR PHP (TOKENS) [IMPLEMENTE]
+  ============================================================ }
+
+{ Stub IsKeyword - sera remplace par TODO 03 }
+Function IsKeyword(Const S: TString): Integer;
+Begin
+  IsKeyword := 0;
+End;
+
+Function TokenKindStr(K: TTokenKind): TString;
+Begin
+  Case K Of
+    TK_EOF          : TokenKindStr := 'EOF';
+    TK_OPEN_PHP     : TokenKindStr := 'OPEN_PHP';
+    TK_CLOSE_PHP    : TokenKindStr := 'CLOSE_PHP';
+    TK_INTEGER      : TokenKindStr := 'INTEGER';
+    TK_FLOAT        : TokenKindStr := 'FLOAT';
+    TK_STRING_SQ    : TokenKindStr := 'STRING_SQ';
+    TK_STRING_DQ    : TokenKindStr := 'STRING_DQ';
+    TK_HEREDOC      : TokenKindStr := 'HEREDOC';
+    TK_NOWDOC       : TokenKindStr := 'NOWDOC';
+    TK_IDENT        : TokenKindStr := 'IDENT';
+    TK_KEYWORD      : TokenKindStr := 'KEYWORD';
+    TK_VAR          : TokenKindStr := 'VAR';
+    TK_OP           : TokenKindStr := 'OP';
+    TK_PUNCT        : TokenKindStr := 'PUNCT';
+    TK_COMMENT_LINE : TokenKindStr := 'COMMENT_LINE';
+    TK_COMMENT_BLOCK: TokenKindStr := 'COMMENT_BLOCK';
+    TK_COMMENT_DOC  : TokenKindStr := 'COMMENT_DOC';
+  Else
+    TokenKindStr := '?';
+  End;
+End;
+
+Procedure LexNextChar;
+Var Ch: Char;
+Begin
+  If LexHasPeek Then
+  Begin
+    Ch := LexPeekCh;
+    LexHasPeek := False;
+  End
+  Else If EOF(SrcF) Then
+  Begin
+    LexEOF := True;
+    LexCh  := #0;
+    Exit;
+  End
+  Else
+    Read(SrcF, Ch);
+  LexCh := Ch;
+  If Ch = #10 Then
+  Begin
+    Inc(LexLine);
+    LexCol := 0;
+    Inc(LinesRead);
+  End
+  Else If Ch <> #13 Then
+    Inc(LexCol);
+End;
+
+Function LexPeekChar: Char;
+Begin
+  If LexHasPeek Then
+    LexPeekChar := LexPeekCh
+  Else If EOF(SrcF) Then
+    LexPeekChar := #0
+  Else
+  Begin
+    Read(SrcF, LexPeekCh);
+    LexHasPeek := True;
+    LexPeekChar := LexPeekCh;
+  End;
+End;
+
+Procedure LexScanIdent;
+Var S: TString; KwIdx: Integer;
+Begin
+  S := '';
+  While LexCh In ['a'..'z','A'..'Z','0'..'9','_'] Do
+  Begin
+    If Length(S) < MAX_STR Then S := S + LexCh;
+    LexNextChar;
+  End;
+  KwIdx := IsKeyword(S);
+  CurTok.Val := S;
+  If KwIdx > 0 Then
+    CurTok.Kind := TK_KEYWORD
+  Else
+    CurTok.Kind := TK_IDENT;
+End;
+
+Procedure LexScanNumber;
+Var S: TString; IsFloat: Boolean; ErrCode: Integer;
+Begin
+  S := '';
+  IsFloat := False;
+  { Prefixes 0x (hexa), 0b (binaire), 0o (octal) }
+  If (LexCh = '0') And (LexPeekChar In ['x','X','b','B','o','O']) Then
+  Begin
+    S := '0';
+    LexNextChar;
+    If Length(S) < MAX_STR Then S := S + LexCh;
+    LexNextChar;
+    While LexCh In ['0'..'9','a'..'f','A'..'F','_'] Do
+    Begin
+      If LexCh <> '_' Then
+        If Length(S) < MAX_STR Then S := S + LexCh;
+      LexNextChar;
+    End;
+  End
+  Else
+  Begin
+    While LexCh In ['0'..'9','_'] Do
+    Begin
+      If LexCh <> '_' Then
+        If Length(S) < MAX_STR Then S := S + LexCh;
+      LexNextChar;
+    End;
+    { Partie decimale }
+    If (LexCh = '.') And (LexPeekChar In ['0'..'9']) Then
+    Begin
+      IsFloat := True;
+      If Length(S) < MAX_STR Then S := S + '.';
+      LexNextChar;
+      While LexCh In ['0'..'9','_'] Do
+      Begin
+        If LexCh <> '_' Then
+          If Length(S) < MAX_STR Then S := S + LexCh;
+        LexNextChar;
+      End;
+    End;
+    { Exposant e/E }
+    If LexCh In ['e','E'] Then
+    Begin
+      IsFloat := True;
+      If Length(S) < MAX_STR Then S := S + LexCh;
+      LexNextChar;
+      If LexCh In ['+','-'] Then
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCh;
+        LexNextChar;
+      End;
+      While LexCh In ['0'..'9'] Do
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCh;
+        LexNextChar;
+      End;
+    End;
+  End;
+  CurTok.Val := S;
+  If IsFloat Then
+  Begin
+    CurTok.Kind := TK_FLOAT;
+    Val(S, CurTok.FloatVal, ErrCode);
+    If ErrCode <> 0 Then CurTok.FloatVal := 0.0;
+  End
+  Else
+  Begin
+    CurTok.Kind := TK_INTEGER;
+    Val(S, CurTok.IntVal, ErrCode);
+    If ErrCode <> 0 Then CurTok.IntVal := 0;
+  End;
+End;
+
+Procedure LexScanStringSQ;
+Var S: TString;
+Begin
+  S := '';
+  LexNextChar; { ignore guillemet ouvrant ' }
+  While (Not LexEOF) And (LexCh <> '''') Do
+  Begin
+    If LexCh = '\' Then
+    Begin
+      If LexPeekChar In ['''','\'] Then
+      Begin
+        LexNextChar; { ignore \ }
+        If Length(S) < MAX_STR Then S := S + LexCh;
+        LexNextChar;
+      End
+      Else
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCh;
+        LexNextChar;
+      End;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + LexCh;
+      LexNextChar;
+    End;
+  End;
+  If Not LexEOF Then LexNextChar; { ignore guillemet fermant ' }
+  CurTok.Kind := TK_STRING_SQ;
+  CurTok.Val  := S;
+End;
+
+Procedure LexScanStringDQ;
+Var S: TString;
+Begin
+  S := '';
+  LexNextChar; { ignore guillemet ouvrant " }
+  While (Not LexEOF) And (LexCh <> '"') Do
+  Begin
+    If LexCh = '\' Then
+    Begin
+      If Length(S) < MAX_STR Then S := S + '\';
+      LexNextChar;
+      If Not LexEOF Then
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCh;
+        LexNextChar;
+      End;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + LexCh;
+      LexNextChar;
+    End;
+  End;
+  If Not LexEOF Then LexNextChar; { ignore guillemet fermant " }
+  CurTok.Kind := TK_STRING_DQ;
+  CurTok.Val  := S;
+End;
+
+Procedure LexScanHeredocNowdoc;
+Var
+  HLabel   : TString;
+  IsNowdoc : Boolean;
+  S, HLine : TString;
+Begin
+  IsNowdoc := False;
+  HLabel   := '';
+  While LexCh In [' ',#9] Do LexNextChar; { espace apres <<< }
+  If LexCh = '''' Then
+  Begin
+    IsNowdoc := True;
+    LexNextChar; { ignore ' ouvrant }
+  End
+  Else If LexCh = '"' Then
+    LexNextChar; { ignore " ouvrant optionnel }
+  While LexCh In ['a'..'z','A'..'Z','0'..'9','_'] Do
+  Begin
+    If Length(HLabel) < MAX_STR Then HLabel := HLabel + LexCh;
+    LexNextChar;
+  End;
+  If IsNowdoc And (LexCh = '''') Then LexNextChar; { ignore ' fermant }
+  While (Not LexEOF) And (LexCh <> #10) Do LexNextChar; { fin de ligne }
+  If Not LexEOF Then LexNextChar; { ignore le saut de ligne }
+  S := '';
+  While Not LexEOF Do
+  Begin
+    HLine := '';
+    While (Not LexEOF) And (LexCh <> #10) Do
+    Begin
+      If Length(HLine) < MAX_STR Then HLine := HLine + LexCh;
+      LexNextChar;
+    End;
+    If Not LexEOF Then LexNextChar; { ignore le saut de ligne }
+    { Terminateur : label seul ou label suivi de ; }
+    If (HLine = HLabel) Or (HLine = HLabel + ';') Then Break;
+    If S <> '' Then
+      If Length(S) < MAX_STR Then S := S + #10;
+    If Length(S) + Length(HLine) <= MAX_STR Then
+      S := S + HLine;
+  End;
+  CurTok.Val := S;
+  If IsNowdoc Then
+    CurTok.Kind := TK_NOWDOC
+  Else
+    CurTok.Kind := TK_HEREDOC;
+End;
+
+Procedure LexNextToken;
+Var S: TString; Peek: Char;
+Begin
+  While (Not LexEOF) And (LexCh In [' ',#9,#10,#13]) Do
+    LexNextChar;
+  CurTok.Line    := LexLine;
+  CurTok.Col     := LexCol;
+  CurTok.IntVal  := 0;
+  CurTok.FloatVal := 0.0;
+  CurTok.Val     := '';
+  If LexEOF Then
+  Begin
+    CurTok.Kind := TK_EOF;
+    If Opts.Verbose Then
+      WriteLn('[Lex] EOF at ', CurTok.Line, ':', CurTok.Col);
+    Exit;
+  End;
+  Peek := LexPeekChar;
+  Case LexCh Of
+    '<': Begin
+      If Peek = '?' Then
+      Begin
+        LexNextChar; LexNextChar; { apres <? }
+        If LexCh In ['p','P'] Then
+          If LexPeekChar In ['h','H'] Then
+          Begin
+            LexNextChar; { h }
+            If LexPeekChar In ['p','P'] Then
+              LexNextChar; { p }
+            LexNextChar; { avance apres php }
+          End;
+        If LexCh = '=' Then LexNextChar; { <?= }
+        CurTok.Kind := TK_OPEN_PHP;
+        CurTok.Val  := '<?php';
+      End
+      Else If Peek = '<' Then
+      Begin
+        LexNextChar; { deuxieme < }
+        If LexPeekChar = '<' Then
+        Begin
+          LexNextChar; { troisieme < }
+          LexNextChar; { avance vers le label }
+          LexScanHeredocNowdoc;
+        End
+        Else If LexPeekChar = '=' Then
+        Begin
+          LexNextChar; LexNextChar;
+          CurTok.Kind := TK_OP; CurTok.Val := '<<=';
+        End
+        Else
+        Begin
+          LexNextChar;
+          CurTok.Kind := TK_OP; CurTok.Val := '<<';
+        End;
+      End
+      Else If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        If LexCh = '>' Then
+        Begin
+          LexNextChar;
+          CurTok.Kind := TK_OP; CurTok.Val := '<=>';
+        End
+        Else
+        Begin
+          CurTok.Kind := TK_OP; CurTok.Val := '<=';
+        End;
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '<';
+      End;
+    End;
+    '>': Begin
+      If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '>=';
+      End
+      Else If Peek = '>' Then
+      Begin
+        LexNextChar; LexNextChar;
+        If LexCh = '=' Then
+        Begin
+          LexNextChar;
+          CurTok.Kind := TK_OP; CurTok.Val := '>>=';
+        End
+        Else
+        Begin
+          CurTok.Kind := TK_OP; CurTok.Val := '>>';
+        End;
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '>';
+      End;
+    End;
+    '=': Begin
+      If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        If LexCh = '=' Then
+        Begin
+          LexNextChar;
+          CurTok.Kind := TK_OP; CurTok.Val := '===';
+        End
+        Else
+        Begin
+          CurTok.Kind := TK_OP; CurTok.Val := '==';
+        End;
+      End
+      Else If Peek = '>' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '=>';
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '=';
+      End;
+    End;
+    '!': Begin
+      If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        If LexCh = '=' Then
+        Begin
+          LexNextChar;
+          CurTok.Kind := TK_OP; CurTok.Val := '!==';
+        End
+        Else
+        Begin
+          CurTok.Kind := TK_OP; CurTok.Val := '!=';
+        End;
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '!';
+      End;
+    End;
+    '&': Begin
+      If Peek = '&' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '&&';
+      End
+      Else If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '&=';
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_PUNCT; CurTok.Val := '&';
+      End;
+    End;
+    '|': Begin
+      If Peek = '|' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '||';
+      End
+      Else If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '|=';
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_PUNCT; CurTok.Val := '|';
+      End;
+    End;
+    '^': Begin
+      If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '^=';
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_PUNCT; CurTok.Val := '^';
+      End;
+    End;
+    '+': Begin
+      If Peek = '+' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '++';
+      End
+      Else If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '+=';
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '+';
+      End;
+    End;
+    '-': Begin
+      If Peek = '-' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '--';
+      End
+      Else If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '-=';
+      End
+      Else If Peek = '>' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '->';
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '-';
+      End;
+    End;
+    '*': Begin
+      If Peek = '*' Then
+      Begin
+        LexNextChar; LexNextChar;
+        If LexCh = '=' Then
+        Begin
+          LexNextChar;
+          CurTok.Kind := TK_OP; CurTok.Val := '**=';
+        End
+        Else
+        Begin
+          CurTok.Kind := TK_OP; CurTok.Val := '**';
+        End;
+      End
+      Else If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '*=';
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '*';
+      End;
+    End;
+    '/': Begin
+      If Peek = '/' Then
+      Begin
+        LexNextChar; LexNextChar; { ignore // }
+        S := '//';
+        While (Not LexEOF) And (LexCh <> #10) Do
+        Begin
+          If Length(S) < MAX_STR Then S := S + LexCh;
+          LexNextChar;
+        End;
+        CurTok.Kind := TK_COMMENT_LINE;
+        CurTok.Val  := S;
+      End
+      Else If Peek = '*' Then
+      Begin
+        LexNextChar; LexNextChar; { ignore /* }
+        If LexCh = '*' Then
+        Begin
+          S := '/**';
+          LexNextChar;
+          CurTok.Kind := TK_COMMENT_DOC;
+        End
+        Else
+        Begin
+          S := '/*';
+          CurTok.Kind := TK_COMMENT_BLOCK;
+        End;
+        While Not LexEOF Do
+        Begin
+          If (LexCh = '*') And (LexPeekChar = '/') Then
+          Begin
+            LexNextChar; LexNextChar; { ignore */ }
+            Break;
+          End;
+          If Length(S) < MAX_STR Then S := S + LexCh;
+          LexNextChar;
+        End;
+        CurTok.Val := S;
+      End
+      Else If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '/=';
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '/';
+      End;
+    End;
+    '%': Begin
+      If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '%=';
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_PUNCT; CurTok.Val := '%';
+      End;
+    End;
+    '.': Begin
+      If Peek = '=' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '.=';
+      End
+      Else If Peek = '.' Then
+      Begin
+        LexNextChar; LexNextChar;
+        If LexCh = '.' Then
+        Begin
+          LexNextChar;
+          CurTok.Kind := TK_OP; CurTok.Val := '...';
+        End
+        Else
+        Begin
+          CurTok.Kind := TK_OP; CurTok.Val := '..';
+        End;
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_PUNCT; CurTok.Val := '.';
+      End;
+    End;
+    ':': Begin
+      If Peek = ':' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_OP; CurTok.Val := '::';
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_PUNCT; CurTok.Val := ':';
+      End;
+    End;
+    '?': Begin
+      If Peek = '>' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_CLOSE_PHP; CurTok.Val := '?>';
+      End
+      Else If Peek = '?' Then
+      Begin
+        LexNextChar; LexNextChar;
+        If LexCh = '=' Then
+        Begin
+          LexNextChar;
+          CurTok.Kind := TK_OP; CurTok.Val := '??=';
+        End
+        Else
+        Begin
+          CurTok.Kind := TK_OP; CurTok.Val := '??';
+        End;
+      End
+      Else If Peek = '-' Then
+      Begin
+        { ?-> operateur nullsafe : consume ? et -, puis verifie > }
+        LexNextChar; { LexCh = '-' }
+        If LexPeekChar = '>' Then
+        Begin
+          LexNextChar; LexNextChar; { ignore > }
+          CurTok.Kind := TK_OP; CurTok.Val := '?->';
+        End
+        Else
+        Begin
+          { Pas ?-> : produire ? et laisser - pour le prochain token }
+          CurTok.Kind := TK_PUNCT; CurTok.Val := '?';
+        End;
+      End
+      Else
+      Begin
+        LexNextChar;
+        CurTok.Kind := TK_PUNCT; CurTok.Val := '?';
+      End;
+    End;
+    '#': Begin
+      If Peek = '[' Then
+      Begin
+        LexNextChar; LexNextChar;
+        CurTok.Kind := TK_PUNCT; CurTok.Val := '#[';
+      End
+      Else
+      Begin
+        LexNextChar;
+        S := '#';
+        While (Not LexEOF) And (LexCh <> #10) Do
+        Begin
+          If Length(S) < MAX_STR Then S := S + LexCh;
+          LexNextChar;
+        End;
+        CurTok.Kind := TK_COMMENT_LINE;
+        CurTok.Val  := S;
+      End;
+    End;
+    '$': Begin
+      LexNextChar; { ignore $ }
+      S := '';
+      While LexCh In ['a'..'z','A'..'Z','0'..'9','_'] Do
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCh;
+        LexNextChar;
+      End;
+      CurTok.Kind := TK_VAR;
+      CurTok.Val  := S;
+    End;
+    '''': LexScanStringSQ;
+    '"' : LexScanStringDQ;
+    '0'..'9': LexScanNumber;
+    'a'..'z','A'..'Z','_': LexScanIdent;
+    '(': Begin LexNextChar; CurTok.Kind := TK_PUNCT; CurTok.Val := '('; End;
+    ')': Begin LexNextChar; CurTok.Kind := TK_PUNCT; CurTok.Val := ')'; End;
+    '[': Begin LexNextChar; CurTok.Kind := TK_PUNCT; CurTok.Val := '['; End;
+    ']': Begin LexNextChar; CurTok.Kind := TK_PUNCT; CurTok.Val := ']'; End;
+    '{': Begin LexNextChar; CurTok.Kind := TK_PUNCT; CurTok.Val := '{'; End;
+    '}': Begin LexNextChar; CurTok.Kind := TK_PUNCT; CurTok.Val := '}'; End;
+    ';': Begin LexNextChar; CurTok.Kind := TK_PUNCT; CurTok.Val := ';'; End;
+    ',': Begin LexNextChar; CurTok.Kind := TK_PUNCT; CurTok.Val := ','; End;
+    '~': Begin LexNextChar; CurTok.Kind := TK_PUNCT; CurTok.Val := '~'; End;
+    '@': Begin LexNextChar; CurTok.Kind := TK_PUNCT; CurTok.Val := '@'; End;
+  Else
+    LexNextChar; { caractere inconnu : ignorer }
+    LexNextToken; { recommencer }
+    Exit;
+  End;
+  If Opts.Verbose Then
+    WriteLn('[Lex] ', TokenKindStr(CurTok.Kind), '(', CurTok.Val,
+            ') at ', CurTok.Line, ':', CurTok.Col);
+End;
+
+Procedure LexInit(Const Filename: TString);
+Begin
+  Assign(SrcF, Filename);
+  Reset(SrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le fichier: ' + Filename);
+  LexLine    := 1;
+  LexCol     := 0;
+  LexEOF     := False;
+  LexHasPeek := False;
+  LexPeekCh  := #0;
+  LexNextChar; { lire le premier caractere dans LexCh }
+End;
+
+Procedure LexClose;
+Begin
+  If Not LexEOF Then
+  Begin
+    Close(SrcF);
+    LexEOF := True;
+  End;
+End;
+
+{ ============================================================
   TODO 03 - MOTS-CLES PHP (A FAIRE)
   TODO 04 - TABLE DES SYMBOLES ET TYPES (A FAIRE)
   TODO 05 - GESTION DES SCOPES ET NAMESPACES (A FAIRE)
@@ -1232,11 +1977,13 @@ End;
 
 Procedure Run;
 Begin
-  { TODO 02 : LexInit(Opts.SrcFile) }
-  { TODO 24 : EmitHeader }
-  { TODO 25 : boucle principale de transpilation }
-  { TODO 25 : EmitClose }
-  WarnMsg('transpilation non encore implementee (TODOs 02-25 a faire)');
+  LexInit(Opts.SrcFile);
+  { Boucle de tokenisation (transpilation TODOs 03-25 a venir) }
+  Repeat
+    LexNextToken;
+  Until CurTok.Kind = TK_EOF;
+  LexClose;
+  WarnMsg('transpilation non encore implementee (TODOs 03-25 a faire)');
 End;
 
 Procedure Cleanup;
