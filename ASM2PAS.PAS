@@ -1,7 +1,7 @@
 { @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Transpileur d'assembleur 8086/80386 (syntaxe MASM/TASM)
                 en langage de programmation Pascal (Turbo Pascal)
 }
@@ -9,7 +9,7 @@
 { TODO - Liste des 25 points a implementer pour le transpileur ASM vers Pascal :
 
   1.  [IMPLEMENTE] Infrastructure, options de ligne de commande et constantes globales.
-      Programme principal ASM2PAS en Turbo Pascal / Free Pascal.
+      Programme principal ASM2PAS en Free Pascal.
       Analyse des options : nom du fichier .ASM en entree, nom du
       fichier .PAS en sortie (par defaut meme nom avec extension .PAS),
       options -16 (mode 16 bits), -32 (mode 32 bits), -inline (garder
@@ -6698,10 +6698,14 @@ Begin
   $54:TranslateINT21h:=
    'GetVerify(BoolTmp); { INT 21h/AH=54 - resultat dans BoolTmp }';
  Else
-  TranslateINT21h:=
-   'Begin Regs.AH := $'+HexByte(FuncAH)+
-   '; Intr($21, Regs); End; { INT 21h/AH='+
-   HexByte(FuncAH)+' }';
+  If FuncAH>=0 Then
+   TranslateINT21h:=
+    'Begin Regs.AH := $'+HexByte(Byte(FuncAH And $FF))+
+    '; Intr($21, Regs); End; { INT 21h/AH='+
+    HexByte(Byte(FuncAH And $FF))+' }'
+  Else
+   TranslateINT21h:=
+    'Intr($21, Regs); { INT 21h - AH inconnu }';
  End;
 End;
 
@@ -6757,10 +6761,14 @@ Begin
    'Regs.ES := RegES; Regs.BP := RegBP; '+
    'Intr($10, Regs); End; { INT 10h/AH=13 chaine }';
  Else
-  TranslateINT10h:=
-   'Begin Regs.AH := $'+HexByte(FuncAH)+
-   '; Intr($10, Regs); End; { INT 10h/AH='+
-   HexByte(FuncAH)+' }';
+  If FuncAH>=0 Then
+   TranslateINT10h:=
+    'Begin Regs.AH := $'+HexByte(Byte(FuncAH And $FF))+
+    '; Intr($10, Regs); End; { INT 10h/AH='+
+    HexByte(Byte(FuncAH And $FF))+' }'
+  Else
+   TranslateINT10h:=
+    'Intr($10, Regs); { INT 10h - AH inconnu }';
  End;
 End;
 
@@ -6787,10 +6795,14 @@ Begin
   $11:TranslateINT16h:=
    'FlagZF := not KeyPressed; { INT 16h/AH=11 }';
  Else
-  TranslateINT16h:=
-   'Begin Regs.AH := $'+HexByte(FuncAH)+
-   '; Intr($16, Regs); End; { INT 16h/AH='+
-   HexByte(FuncAH)+' }';
+  If FuncAH>=0 Then
+   TranslateINT16h:=
+    'Begin Regs.AH := $'+HexByte(Byte(FuncAH And $FF))+
+    '; Intr($16, Regs); End; { INT 16h/AH='+
+    HexByte(Byte(FuncAH And $FF))+' }'
+  Else
+   TranslateINT16h:=
+    'Intr($16, Regs); { INT 16h - AH inconnu }';
  End;
 End;
 
@@ -6806,12 +6818,12 @@ Begin
   $21:TranslateINT:=TranslateINT21h(FuncAH,FuncAL,LineIdx);
  Else
   If FuncAH>=0 Then
-   TranslateINT:='Begin Regs.AH := $'+HexByte(FuncAH)+
-    '; Intr($'+HexByte(IntNum)+', Regs); End; { INT '+
-    HexByte(IntNum)+'h/AH='+HexByte(FuncAH)+' }'
+   TranslateINT:='Begin Regs.AH := $'+HexByte(Byte(FuncAH And $FF))+
+    '; Intr($'+HexByte(Byte(IntNum And $FF))+', Regs); End; { INT '+
+    HexByte(Byte(IntNum And $FF))+'h/AH='+HexByte(Byte(FuncAH And $FF))+' }'
   Else
-   TranslateINT:='Intr($'+HexByte(IntNum)+
-    ', Regs); { INT '+HexByte(IntNum)+'h }';
+   TranslateINT:='Intr($'+HexByte(Byte(IntNum And $FF))+
+    ', Regs); { INT '+HexByte(Byte(IntNum And $FF))+'h }';
  End;
 End;
 
@@ -9587,9 +9599,9 @@ Begin
  Halt(ExitCode);
 End;
 
-Procedure ShowHelp;
-Begin
- WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Transpileur d''Assembleur 8086/80386 vers Pascal');
+Procedure ShowHelp;Begin
+ WriteLn('ASM2PAS v',ASM2PAS_VERSION,' - Cette commande permet de ',
+         'transpileur d''Assembleur 8086/80386 vers Pascal');
  WriteLn('Usage : ASM2PAS [options] fichier.ASM [fichier.PAS]');
  WriteLn;
  WriteLn('Options :');
