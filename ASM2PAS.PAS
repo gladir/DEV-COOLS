@@ -5634,6 +5634,11 @@ Begin
     Inc(CallKnownCount)
    Else
     Inc(CallUnknownCount);
+   { Detecter les appels a des fonctions C de chaines -> unite Strings }
+   If IsStringsCall(Target) Then Begin
+    NeedStrings:=True;
+    Inc(CallStringsCount);
+   End;
    { Detecter les CALL FAR (operande memoire ou label FAR) }
    If(AsmL.Op1.OpType=OT_MEM)and(AsmL.Op1.SegOverride<>'')Then
     Inc(CallFarCount);
@@ -5662,6 +5667,7 @@ Begin
   WriteLn('  CALL             : ',CallCount);
   WriteLn('    proc. connues  : ',CallKnownCount);
   WriteLn('    proc. inconnues: ',CallUnknownCount);
+  WriteLn('    Strings unit   : ',CallStringsCount);
   WriteLn('    appels FAR     : ',CallFarCount);
   WriteLn('  RET/RETN/RETF    : ',RetCount);
   WriteLn('    RET n (pile)   : ',RetNCount);
@@ -7870,6 +7876,10 @@ Begin
   If UnitList<>'' Then UnitList:=UnitList+', ';
   UnitList:=UnitList+'Crt';
  End;
+ If NeedStrings Then Begin
+  If UnitList<>'' Then UnitList:=UnitList+', ';
+  UnitList:=UnitList+'Strings';
+ End;
  If UnitList<>'' Then Begin
   WriteLn(OutFile,'Uses ',UnitList,';');
   WriteLn(OutFile);
@@ -9282,6 +9292,7 @@ BEGIN
  InlineInstructions:=0;
  NeedWinDos:=False;
  NeedDosBool:=False;
+ NeedStrings:=False;
  TotalProcs:=0;
  TotalVars:=0;
  TotalLabels:=0;

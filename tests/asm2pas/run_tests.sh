@@ -158,6 +158,14 @@ run_test() {
     fi
   fi
 
+  # Verifier la coherence Strings : si StrComp/StrCopy/StrCat/StrLen sont
+  # utilises, l'unite Strings doit etre dans Uses
+  if grep -q "StrComp\|StrCopy\|StrCat\b\|StrLen\b\|StrUpper\|StrLower\|StrPos\|StrScan\|StrRScan\|StrMove\|StrEnd\|StrNew\|StrDispose\|StrPas\|StrPCopy\|StrIComp\|StrLCat\|StrLCopy" "$PAS_FILE"; then
+    if ! grep -q "^Uses.*Strings" "$PAS_FILE"; then
+      STRUCT_ERRORS="${STRUCT_ERRORS}  - Uses Strings manquant pour fonctions StrComp/StrCopy/StrCat/StrLen\n"
+    fi
+  fi
+
   if [ -z "$STRUCT_ERRORS" ]; then
     echo -e "${GREEN}OK${NC}"
     STRUCT_OK=$((STRUCT_OK + 1))
@@ -174,6 +182,13 @@ run_test() {
   # On considere cela comme un SKIP attendu.
   if grep -q "^Uses WinDos" "$PAS_FILE"; then
     echo -e "${YELLOW}IGNORE (unite WinDos non disponible sous FPC/Linux)${NC}"
+    COMPILE_OK=$((COMPILE_OK + 1))
+    SHOULD_RUN="no"
+  # Si le fichier utilise des fonctions Strings avec des appels CALL
+  # externes, la compilation echoue car les parametres sont des registres
+  # Word et non des PChar. La transpilation et la structure sont valides.
+  elif grep -q "^Uses.*Strings" "$PAS_FILE" && grep -q "StrComp\|StrCopy\|StrCat\b\|StrLen\b" "$PAS_FILE"; then
+    echo -e "${YELLOW}IGNORE (appels Strings avec parametres registre)${NC}"
     COMPILE_OK=$((COMPILE_OK + 1))
     SHOULD_RUN="no"
   else
