@@ -512,6 +512,7 @@ Type
   EndLine:LongInt;
   UsesAX:Boolean;
   IsPublic:Boolean;
+  StringsReplacement:String;
  End;
 
  TDataElem = Record
@@ -2047,6 +2048,7 @@ Begin
  Procs[ProcCount].EndLine:=-1;
  Procs[ProcCount].UsesAX:=False;
  Procs[ProcCount].IsPublic:=False;
+ Procs[ProcCount].StringsReplacement:='';
  { Default: NEAR pour modeles SMALL/TINY/FLAT, FAR sinon }
  If(MemoryModel=MM_LARGE)or(MemoryModel=MM_HUGE)or
    (MemoryModel=MM_MEDIUM)Then
@@ -8351,52 +8353,106 @@ Begin
   { Corps de la procedure }
   WriteLn(OutFile,'Begin');
   K:=0;
-  For J:=Procs[I].StartLine to Procs[I].EndLine do Begin
-   If(J<0)or(J>=SrcLineCount)Then Continue;
-   If SrcLines[J]=Nil Then Continue;
 
-   { Parser la ligne pour extraire le label }
-   ParseInstructionLine(J,AsmL);
-
-   { Sauter les directives PROC/ENDP/DB/DW/etc. }
-   If AsmL.IsDirective Then Continue;
-
-   { Emettre le label s'il y en a un (sauf le nom de la proc) }
-   If(AsmL.LabelStr<>'')and
-     (UpCaseStr(AsmL.LabelStr)<>UpCaseStr(Procs[I].Name))Then
-    WriteLn(OutFile,'  ',AsmL.LabelStr,':');
-
-   { Sauter les lignes sans instruction }
-   If AsmL.Mnemonic='' Then Continue;
-
-   { Chercher une traduction pour cette ligne }
-   TrIdx:=FindTranslationForLine(J);
-   If TrIdx>=0 Then Begin
-    If AddComments Then Begin
-     SrcText:=SrcLines[J]^;
-     { Tronquer le commentaire source s'il est trop long }
-     If Length(SrcText)>40 Then
-      SrcText:=Copy(SrcText,1,40)+'...';
-     WriteLn(OutFile,'  ',Translations[TrIdx].PascalCode,
-      ' { ',SrcText,' }');
-    End
+  { Verifier si la procedure doit etre remplacee par un appel Strings }
+  If Procs[I].StringsReplacement<>'' Then Begin
+   { Emettre le corps simplifie avec l'appel a l'unite Strings }
+   WriteLn(OutFile,'  { Pattern assembleur remplace par ',
+    Procs[I].StringsReplacement,' de l''unite Strings }');
+   If Procs[I].StringsReplacement='StrCopy' Then Begin
+    If Procs[I].ParamCount>=2 Then
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(',
+      Procs[I].Params[2].Name,', ',
+      Procs[I].Params[1].Name,');')
     Else
-     WriteLn(OutFile,'  ',Translations[TrIdx].PascalCode);
-    Inc(K);
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(RegDI, RegSI);');
+   End
+   Else If Procs[I].StringsReplacement='StrLen' Then Begin
+    If Procs[I].ParamCount>=1 Then
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(',
+      Procs[I].Params[1].Name,');')
+    Else
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(RegDI);');
+   End
+   Else If Procs[I].StringsReplacement='StrComp' Then Begin
+    If Procs[I].ParamCount>=2 Then
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(',
+      Procs[I].Params[1].Name,', ',
+      Procs[I].Params[2].Name,');')
+    Else
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(RegSI, RegDI);');
+   End
+   Else If Procs[I].StringsReplacement='StrCat' Then Begin
+    If Procs[I].ParamCount>=2 Then
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(',
+      Procs[I].Params[2].Name,', ',
+      Procs[I].Params[1].Name,');')
+    Else
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(RegDI, RegSI);');
    End
    Else Begin
-    { Instruction non traduite : commentaire }
-    If SrcLines[J]<>Nil Then
-     WriteLn(OutFile,'  { Non traduit: ',SrcLines[J]^,' }');
+    { Fonction Strings generique }
+    WriteLn(OutFile,'  ',Procs[I].StringsReplacement,';');
    End;
-  End;
+   Inc(K);
+  End
+  Else Begin
+   { Corps normal : traduction instruction par instruction }
+   For J:=Procs[I].StartLine to Procs[I].EndLine do Begin
+    If(J<0)or(J>=SrcLineCount)Then Continue;
+    If SrcLines[J]=Nil Then Continue;
 
-  { Si c'est une fonction, emettre l'affectation du resultat }
-  If Procs[I].IsFunction or Procs[I].UsesAX Then Begin
-   If Mode32 Then
-    WriteLn(OutFile,'  ',Procs[I].Name,' := RegEAX;')
-   Else
-    WriteLn(OutFile,'  ',Procs[I].Name,' := RegAX;');
+    { Parser la ligne pour extraire le label }
+    ParseInstructionLine(J,AsmL);
+
+    { Sauter les directives PROC/ENDP/DB/DW/etc. }
+    If AsmL.IsDirective Then Continue;
+
+    { Emettre le label s'il y en a un (sauf le nom de la proc) }
+    If(AsmL.LabelStr<>'')and
+      (UpCaseStr(AsmL.LabelStr)<>UpCaseStr(Procs[I].Name))Then
+     WriteLn(OutFile,'  ',AsmL.LabelStr,':');
+
+    { Sauter les lignes sans instruction }
+    If AsmL.Mnemonic='' Then Continue;
+
+    { Chercher une traduction pour cette ligne }
+    TrIdx:=FindTranslationForLine(J);
+    If TrIdx>=0 Then Begin
+     If AddComments Then Begin
+      SrcText:=SrcLines[J]^;
+      { Tronquer le commentaire source s'il est trop long }
+      If Length(SrcText)>40 Then
+       SrcText:=Copy(SrcText,1,40)+'...';
+      WriteLn(OutFile,'  ',Translations[TrIdx].PascalCode,
+       ' { ',SrcText,' }');
+     End
+     Else
+      WriteLn(OutFile,'  ',Translations[TrIdx].PascalCode);
+     Inc(K);
+    End
+    Else Begin
+     { Instruction non traduite : commentaire }
+     If SrcLines[J]<>Nil Then
+      WriteLn(OutFile,'  { Non traduit: ',SrcLines[J]^,' }');
+    End;
+   End;
+
+   { Si c'est une fonction, emettre l'affectation du resultat }
+   If Procs[I].IsFunction or Procs[I].UsesAX Then Begin
+    If Mode32 Then
+     WriteLn(OutFile,'  ',Procs[I].Name,' := RegEAX;')
+    Else
+     WriteLn(OutFile,'  ',Procs[I].Name,' := RegAX;');
+   End;
   End;
 
   WriteLn(OutFile,'End;');
@@ -9117,6 +9173,131 @@ Begin
 End;
 
 { ============================================================
+  Detection de patterns de procedures Strings
+  ============================================================ }
+
+Function DetectProcStringsPattern(ProcIdx:Integer):String;
+{ Analyse le corps d'une procedure pour detecter les patterns
+  assembleur correspondant a des fonctions de l'unite Strings.
+  Retourne le nom de la fonction Strings (ex: 'StrCopy', 'StrLen',
+  'StrCat', 'StrComp') ou '' si aucun pattern n'est reconnu.
+
+  Patterns detectes :
+  - strcpy : REPNE SCASB + REP MOVSB + retour AX pointeur dest
+  - strlen : REPNE SCASB + NEG CX (ou NOT CX + DEC CX) sans MOVSB
+  - strcmp : REPE CMPSB
+  - strcat : 2x REPNE SCASB + REP MOVSB (cherche fin dest puis copie)
+}
+Var
+ I:LongInt;
+ Line:String;
+ HasRepneScasb:Boolean;
+ HasRepMovsb:Boolean;
+ HasRepeCmpsb:Boolean;
+ RepneScasbCount:Integer;
+ HasNegCX:Boolean;
+ HasNotCX:Boolean;
+ HasMovsb:Boolean;
+ M:String;
+Begin
+ DetectProcStringsPattern:='';
+ If ProcIdx<1 Then Exit;
+ If ProcIdx>ProcCount Then Exit;
+ If Procs[ProcIdx].StartLine<0 Then Exit;
+ If Procs[ProcIdx].EndLine<0 Then Exit;
+ HasRepneScasb:=False;
+ HasRepMovsb:=False;
+ HasRepeCmpsb:=False;
+ RepneScasbCount:=0;
+ HasNegCX:=False;
+ HasNotCX:=False;
+ HasMovsb:=False;
+ For I:=Procs[ProcIdx].StartLine to Procs[ProcIdx].EndLine do Begin
+  If(I<0)or(I>=SrcLineCount)Then Continue;
+  If SrcLines[I]=Nil Then Continue;
+  Line:=UpCaseStr(SrcLines[I]^);
+  { Detecter REPNE SCASB }
+  If(Pos('REPNE',Line)>0)and(Pos('SCASB',Line)>0)Then Begin
+   HasRepneScasb:=True;
+   Inc(RepneScasbCount);
+  End;
+  { Detecter REP MOVSB }
+  If(Pos('MOVSB',Line)>0)Then Begin
+   HasMovsb:=True;
+   If(Pos('REP ',Line)>0)or(Pos('REP'+Chr(9),Line)>0)Then Begin
+    { Verifier que c'est REP et pas REPNE/REPE }
+    If(Pos('REPNE',Line)=0)and(Pos('REPE',Line)=0)Then
+     HasRepMovsb:=True;
+   End;
+  End;
+  { Detecter REPE CMPSB }
+  If(Pos('CMPSB',Line)>0)Then Begin
+   If(Pos('REPE',Line)>0)or(Pos('REPZ',Line)>0)Then
+    HasRepeCmpsb:=True;
+  End;
+  { Detecter NEG CX / NEG ECX }
+  If(Pos('NEG',Line)>0)and((Pos('CX',Line)>0)or(Pos('ECX',Line)>0))Then
+   HasNegCX:=True;
+  { Detecter NOT CX / NOT ECX }
+  If(Pos('NOT',Line)>0)and((Pos('CX',Line)>0)or(Pos('ECX',Line)>0))Then
+   HasNotCX:=True;
+ End;
+
+ { Pattern strcmp : REPE CMPSB }
+ If HasRepeCmpsb and(Not HasRepneScasb)and(Not HasRepMovsb)Then Begin
+  DetectProcStringsPattern:='StrComp';
+  Exit;
+ End;
+
+ { Pattern strcat : 2x REPNE SCASB + REP MOVSB }
+ If(RepneScasbCount>=2)and HasRepMovsb Then Begin
+  DetectProcStringsPattern:='StrCat';
+  Exit;
+ End;
+
+ { Pattern strcpy : 1x REPNE SCASB + REP MOVSB }
+ If HasRepneScasb and HasRepMovsb Then Begin
+  DetectProcStringsPattern:='StrCopy';
+  Exit;
+ End;
+
+ { Pattern strlen : REPNE SCASB + NEG/NOT CX, sans MOVSB }
+ If HasRepneScasb and(HasNegCX or HasNotCX)and(Not HasMovsb)Then Begin
+  DetectProcStringsPattern:='StrLen';
+  Exit;
+ End;
+End;
+
+Procedure ProcessProcBodyPatterns;
+{ Scanne les corps des procedures pour detecter les patterns
+  assembleur correspondant a des fonctions de l'unite Strings.
+  Met a jour StringsReplacement et NeedStrings. }
+Var
+ I:Integer;
+ Pat:String;
+ PatCount:Integer;
+Begin
+ PatCount:=0;
+ For I:=1 to ProcCount do Begin
+  Pat:=DetectProcStringsPattern(I);
+  If Pat<>'' Then Begin
+   Procs[I].StringsReplacement:=Pat;
+   NeedStrings:=True;
+   Inc(PatCount);
+  End;
+ End;
+ WriteLn('  Detection de patterns Strings dans les procedures :');
+ WriteLn('    Procedures analysees : ',ProcCount);
+ WriteLn('    Patterns detectes    : ',PatCount);
+ If Verbose Then Begin
+  For I:=1 to ProcCount do Begin
+   If Procs[I].StringsReplacement<>'' Then
+    WriteLn('    ',Procs[I].Name,' -> ',Procs[I].StringsReplacement);
+  End;
+ End;
+End;
+
+{ ============================================================
   Verification finale et rapport - TODO 25
   ============================================================ }
 
@@ -9457,6 +9638,8 @@ BEGIN
  ProcessOptimization;
  { Correction sous-registres Hi/Lo et @DATA }
  ProcessSubRegFixup;
+ { Detection de patterns Strings dans les procedures }
+ ProcessProcBodyPatterns;
  { TODO 21 - Generation en-tete Pascal }
  ProcessHeaderGeneration;
  { TODO 22 - Generation corps procedures }
