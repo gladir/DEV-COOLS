@@ -539,7 +539,7 @@
             Procedure ParseGroupCursor(Const Res: TResourceEntry)
               similaire a ParseGroupIcon pour RT_GROUP_CURSOR -> .cur
 
-  TODO 19 - DECODAGE RT_RCDATA (TYPE 10) [A FAIRE]
+  TODO 19 - DECODAGE RT_RCDATA (TYPE 10) [IMPLEMENTE]
             Constantes de formatage :
               RCDATA_BYTES_PER_LINE = 16
             Procedure ParseRCData(Const Res: TResourceEntry;
@@ -874,6 +874,8 @@ Const
   MAX_VERSION_LINES   = 512;  { lignes RC generees pour les versions}
   MAX_GRP_ICONS       = 64;   { ressources RT_GROUP_ICON/CURSOR max }
   MAX_GRP_ENTRIES     = 16;   { images max par ressource groupe     }
+  RCDATA_BYTES_PER_LINE = 16; { octets par ligne hex RCDATA         }
+  MAX_RCDATA_LINES    = 4096; { lignes RC generees pour les RCDATA  }
 
 { ============================================================
   TYPES
@@ -953,6 +955,9 @@ Type
 
   { Tableau de lignes RC pour la generation (dialogues) }
   TDialogLineArray = Array[1..MAX_DIALOG_LINES] Of TString;
+
+  { Tableau de lignes RC pour la generation (RCDATA) }
+  TRCDataLineArray = Array[1..MAX_RCDATA_LINES] Of TString;
 
   { Entree de valeur de chaine de version (StringFileInfo) }
   TVersionStringEntry = Record
@@ -1108,6 +1113,8 @@ Var
   VersionRCLineCount : Integer;  { nombre de lignes RC de version    }
   GroupIcons        : Array[1..MAX_GRP_ICONS] Of TGroupIcon;
   GroupIconCount    : Integer;   { nombre de groupes d icones decodes  }
+  RCDataRCLines     : TRCDataLineArray; { lignes RC generees pour les RCDATA }
+  RCDataRCLineCount : Integer;   { nombre de lignes RC RCDATA          }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -3729,6 +3736,111 @@ Begin
 End;
 
 
+{ ============================================================
+  TODO 19 - DECODAGE RT_RCDATA (TYPE 10) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Convertir N octets en ligne hex style RC --------------- }
+Function RCDataToHexLine(Buf      : PByteArray;
+                          StartOfs : LongInt;
+                          Count    : Integer) : TString;
+Var
+  I : Integer;
+  S : TString;
+Begin
+  S := '';
+  For I := 0 To Count - 1 Do
+  Begin
+    If I > 0 Then S := S + ', ';
+    S := S + '0x' + HexByte(Buf^[StartOfs + LongInt(I)]);
+  End;
+  RCDataToHexLine := S;
+End;
+
+{ ---- Analyser les octets d une ressource RT_RCDATA ---------- }
+{ Ecrit les lignes hex directement dans RCDataRCLines          }
+Procedure ParseRCData(Const Res : TResourceEntry);
+Var
+  Buf       : PByteArray;
+  BufSize   : LongInt;
+  Offset    : LongInt;
+  BytesLeft : LongInt;
+  Count     : Integer;
+Begin
+  ReadRawResourceBytes(Res, Buf, BufSize);
+  If Buf = Nil Then Exit;
+  Offset := 0;
+  While (Offset < BufSize) And (RCDataRCLineCount < MAX_RCDATA_LINES) Do
+  Begin
+    BytesLeft := BufSize - Offset;
+    If BytesLeft > RCDATA_BYTES_PER_LINE Then
+      Count := RCDATA_BYTES_PER_LINE
+    Else
+      Count := Integer(BytesLeft);
+    Inc(RCDataRCLineCount);
+    RCDataRCLines[RCDataRCLineCount] :=
+      '    ' + RCDataToHexLine(Buf, Offset, Count);
+    Offset := Offset + LongInt(Count);
+  End;
+  FreeMem(Buf, BufSize);
+End;
+
+{ ---- Generer le bloc RC complet pour une ressource RCDATA --- }
+{ ResId RCDATA BEGIN / lignes hex / END                        }
+Procedure GenerateRCDataBlock(Const Res   : TResourceEntry;
+                               Const ResId : TString);
+Begin
+  If RCDataRCLineCount >= MAX_RCDATA_LINES Then Exit;
+  Inc(RCDataRCLineCount);
+  RCDataRCLines[RCDataRCLineCount] := ResId + ' RCDATA BEGIN';
+  ParseRCData(Res);
+  If RCDataRCLineCount < MAX_RCDATA_LINES Then
+  Begin
+    Inc(RCDataRCLineCount);
+    RCDataRCLines[RCDataRCLineCount] := 'END';
+  End;
+End;
+
+{ ---- Decoder / afficher toutes les ressources RT_RCDATA ----- }
+Procedure ParseAllRCData;
+Var
+  I           : Integer;
+  RCDataCount : Integer;
+  ResId       : TString;
+  StartLine   : Integer;
+  J           : Integer;
+Begin
+  RCDataRCLineCount := 0;
+  RCDataCount := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_RCDATA) Then
+    Begin
+      Inc(RCDataCount);
+      If Resources[I].NameIsId Then
+        ResId := IntToStr(Resources[I].NameId)
+      Else
+        ResId := Resources[I].NameStr;
+      StartLine := RCDataRCLineCount;
+      GenerateRCDataBlock(Resources[I], ResId);
+      If Opts.Verbose Then
+      Begin
+        If Resources[I].NameIsId Then
+          WriteLn('  RT_RCDATA #', Resources[I].NameId,
+                  ' : ', Resources[I].DataSize, ' octet(s)')
+        Else
+          WriteLn('  RT_RCDATA "', Resources[I].NameStr,
+                  '" : ', Resources[I].DataSize, ' octet(s)');
+        For J := StartLine + 1 To RCDataRCLineCount Do
+          WriteLn(RCDataRCLines[J]);
+      End;
+    End;
+  End;
+  If Opts.Verbose And (RCDataCount > 0) Then
+    WriteLn(RCDataCount, ' ressource(s) RT_RCDATA trouvee(s).');
+End;
+
+
 Begin
   { Banniere de version }
   WriteLn('DISRES v', DISRES_VERSION, ' (', DISRES_DATE, ') - ',
@@ -3795,8 +3907,11 @@ Begin
   ParseAllGroupIcons;
   ParseAllGroupCursors;
 
-  { TODO 19 a TODO 25 : a implementer }
-  WriteLn('(TODO 19 a TODO 25 : implementation en cours)');
+  { Decoder les donnees binaires generiques (RT_RCDATA) }
+  ParseAllRCData;
+
+  { TODO 20 a TODO 25 : a implementer }
+  WriteLn('(TODO 20 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
