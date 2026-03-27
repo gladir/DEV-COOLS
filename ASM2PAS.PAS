@@ -8408,6 +8408,15 @@ Begin
      WriteLn(OutFile,'  ',Procs[I].Name,' := ',
       Procs[I].StringsReplacement,'(RegSI);');
    End
+   Else If Procs[I].StringsReplacement='StrEnd' Then Begin
+    If Procs[I].ParamCount>=1 Then
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(',
+      Procs[I].Params[1].Name,');')
+    Else
+     WriteLn(OutFile,'  ',Procs[I].Name,' := ',
+      Procs[I].StringsReplacement,'(RegDI);');
+   End
    Else Begin
     { Fonction Strings generique }
     WriteLn(OutFile,'  ',Procs[I].StringsReplacement,';');

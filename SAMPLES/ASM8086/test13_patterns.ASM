@@ -1,12 +1,13 @@
 ; Test 13 - Detection de patterns assembleur -> unite Strings
-; Teste: procedures qui implementent strcpy/strlen/strlower via
+; Teste: procedures qui implementent strcpy/strlen/strlower/strend via
 ;   REPNE SCASB + REP MOVSB (strcpy)
 ;   REPNE SCASB + NEG CX (strlen variante NOT CX + DEC CX)
 ;   REPNE SCASB + NEG AX (strlen variante MOV AX,CX + INC + INC + NEG AX)
 ;   REPNE SCASB + SUB AX,CX (strlen variante MOV AX,FFFEh + SUB AX,CX)
 ;   boucle char par char, compare 41h-5Ah, ADD 20h (strlower)
+;   REPNE SCASB + MOV AX,DI + DEC AX (strend)
 ; Le transpileur doit reconnaitre ces patterns et generer des
-; appels a StrCopy/StrLen/StrLower de l'unite Strings au lieu de
+; appels a StrCopy/StrLen/StrLower/StrEnd de l'unite Strings au lieu de
 ; traduire chaque instruction individuellement.
 
 .MODEL SMALL
@@ -139,6 +140,26 @@ loc_sl_done:
     RET
 my_strlower ENDP
 
+; --- Pattern strend : REPNE SCASB + MOV AX,DI + DEC AX ---
+; Trouve le pointeur vers le NUL terminant la chaine, retourne dans AX.
+my_strend PROC NEAR
+    PUSH BP
+    MOV BP, SP
+    PUSH DI
+    PUSH DS
+    POP ES
+    MOV DI, [BP+04h]
+    XOR AX, AX
+    MOV CX, 0FFFFh
+    REPNE SCASB
+    MOV AX, DI
+    DEC AX
+    POP DI
+    MOV SP, BP
+    POP BP
+    RET
+my_strend ENDP
+
 START:
     MOV AX, @DATA
     MOV DS, AX
@@ -173,6 +194,12 @@ START:
     LEA AX, dst
     PUSH AX
     CALL my_strlower
+    ADD SP, 2
+
+    ; Trouver le NUL en fin de chaine via my_strend
+    LEA AX, dst
+    PUSH AX
+    CALL my_strend
     ADD SP, 2
 
     MOV AH, 4Ch
