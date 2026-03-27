@@ -9195,7 +9195,7 @@ Function DetectProcStringsPattern(ProcIdx:Integer):String;
 
   Patterns detectes :
   - strcpy : REPNE SCASB + REP MOVSB + retour AX pointeur dest
-  - strlen : REPNE SCASB + NEG CX/AX (ou NOT CX + DEC CX) sans MOVSB
+  - strlen : REPNE SCASB + NEG CX/AX (ou NOT CX + DEC CX, ou SUB AX,CX) sans MOVSB
   - strcmp : REPE CMPSB
   - strcat : 2x REPNE SCASB + REP MOVSB (cherche fin dest puis copie)
   - strlower : boucle char par char, compare 41h-5Ah, ADD 20h
@@ -9218,6 +9218,7 @@ Var
  Has61h:Boolean;
  Has7Ah:Boolean;
  HasSub20h:Boolean;
+ HasSubAXCX:Boolean;
  M:String;
 Begin
  DetectProcStringsPattern:='';
@@ -9239,6 +9240,7 @@ Begin
  Has61h:=False;
  Has7Ah:=False;
  HasSub20h:=False;
+ HasSubAXCX:=False;
  For I:=Procs[ProcIdx].StartLine to Procs[ProcIdx].EndLine do Begin
   If(I<0)or(I>=SrcLineCount)Then Continue;
   If SrcLines[I]=Nil Then Continue;
@@ -9279,6 +9281,11 @@ Begin
   If Pos('61H',Line)>0 Then Has61h:=True;
   If Pos('7AH',Line)>0 Then Has7Ah:=True;
   If(Pos('SUB',Line)>0)and(Pos('20H',Line)>0)Then HasSub20h:=True;
+  { Detecter SUB AX,CX / SUB EAX,ECX (strlen variante SUB) }
+  If(Pos('SUB',Line)>0)and
+    ((Pos('AX',Line)>0)or(Pos('EAX',Line)>0))and
+    ((Pos('CX',Line)>0)or(Pos('ECX',Line)>0))Then
+   HasSubAXCX:=True;
  End;
 
  { Pattern strcmp : REPE CMPSB }
@@ -9299,8 +9306,8 @@ Begin
   Exit;
  End;
 
- { Pattern strlen : REPNE SCASB + NEG/NOT CX ou NEG AX, sans MOVSB }
- If HasRepneScasb and(HasNegCX or HasNotCX or HasNegAX)and(Not HasMovsb)Then Begin
+ { Pattern strlen : REPNE SCASB + NEG/NOT CX ou NEG AX ou SUB AX,CX, sans MOVSB }
+ If HasRepneScasb and(HasNegCX or HasNotCX or HasNegAX or HasSubAXCX)and(Not HasMovsb)Then Begin
   DetectProcStringsPattern:='StrLen';
   Exit;
  End;

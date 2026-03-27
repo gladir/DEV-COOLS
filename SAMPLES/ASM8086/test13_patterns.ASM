@@ -3,6 +3,7 @@
 ;   REPNE SCASB + REP MOVSB (strcpy)
 ;   REPNE SCASB + NEG CX (strlen variante NOT CX + DEC CX)
 ;   REPNE SCASB + NEG AX (strlen variante MOV AX,CX + INC + INC + NEG AX)
+;   REPNE SCASB + SUB AX,CX (strlen variante MOV AX,FFFEh + SUB AX,CX)
 ;   boucle char par char, compare 41h-5Ah, ADD 20h (strlower)
 ; Le transpileur doit reconnaitre ces patterns et generer des
 ; appels a StrCopy/StrLen/StrLower de l'unite Strings au lieu de
@@ -87,6 +88,25 @@ my_strlen2 PROC NEAR
     RET
 my_strlen2 ENDP
 
+; --- Pattern strlen variante : REPNE SCASB + SUB AX,CX ---
+; Meme calcul de longueur mais avec MOV AX,FFFEh + SUB AX,CX.
+my_strlen3 PROC NEAR
+    PUSH BP
+    MOV BP, SP
+    CLD
+    PUSH DS
+    POP ES
+    MOV DI, [BP+04h]
+    MOV CX, 0FFFFh
+    XOR AX, AX
+    REPNE SCASB
+    MOV AX, 0FFFEh
+    SUB AX, CX
+    MOV SP, BP
+    POP BP
+    RET
+my_strlen3 ENDP
+
 ; --- Pattern strlower : boucle char par char, compare 41h-5Ah, ADD 20h ---
 ; Convertit une chaine en minuscules, retourne pointeur original.
 my_strlower PROC NEAR
@@ -141,6 +161,12 @@ START:
     LEA AX, dst
     PUSH AX
     CALL my_strlen2
+    ADD SP, 2
+
+    ; Calculer la longueur via my_strlen3 (variante SUB AX,CX)
+    LEA AX, dst
+    PUSH AX
+    CALL my_strlen3
     ADD SP, 2
 
     ; Convertir dst en minuscules via my_strlower
