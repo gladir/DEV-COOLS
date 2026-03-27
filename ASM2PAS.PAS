@@ -6399,8 +6399,11 @@ Function TranslateINT21h(FuncAH:LongInt):String;
   AH=25h -> SetIntVec
   AH=2Ah -> GetDate
   AH=2Ch -> GetTime
+  AH=2Eh -> SetVerify (Dos/WinDOS)
   AH=30h -> Lo(DosVersion)/Hi(DosVersion)
+  AH=33h -> GetCBreak/SetCBreak (Dos/WinDOS)
   AH=35h -> GetIntVec
+  AH=36h -> DiskFree/DiskSize (Dos/WinDOS)
   AH=39h -> CreateDir (WinDOS, creer repertoire)
   AH=3Ah -> RemoveDir (WinDOS, supprimer repertoire)
   AH=3Bh -> SetCurDir (WinDOS, changer repertoire)
@@ -6412,6 +6415,7 @@ Function TranslateINT21h(FuncAH:LongInt):String;
   AH=41h -> Erase (supprimer fichier)
   AH=43h -> GetFAttr/SetFAttr
   AH=4Ch -> Halt (terminer programme)
+  AH=54h -> GetVerify (Dos/WinDOS)
   Autres -> Intr($21, Regs) }
 Begin
  Case FuncAH of
