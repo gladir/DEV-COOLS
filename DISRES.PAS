@@ -605,7 +605,7 @@
               si ResFormat = FMT_RES32 et LangId <> 0 :
               ecrire 'LANGUAGE ' + LangIdToRCKeyword(LangId)
 
-  TODO 22 - GENERATION DES DIRECTIVES RC PAR TYPE [A FAIRE]
+  TODO 22 - GENERATION DES DIRECTIVES RC PAR TYPE [IMPLEMENTE]
             Procedure WriteRCResource(Var OutFile: Text;
               Const Res: TResourceEntry)
               orchestrateur : appeler la procedure de generation
@@ -4146,14 +4146,381 @@ Begin
     End;
 End;
 
-{ ---- Generer le fichier .RC (en-tete et directive de langue) - }
-{ Ouvre Opts.OutFile en ecriture, ecrit l en-tete via            }
-{ WriteRCHeader et la directive de langue via                    }
-{ WriteRCLanguageDirective, puis ferme le fichier.               }
-{ Les ressources seront ajoutees par TODO 22 a TODO 24.          }
+{ ============================================================
+  TODO 22 - GENERATION DES DIRECTIVES RC PAR TYPE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Forward declaration de WriteRCStringTable (TODO 24) --- }
+Procedure WriteRCStringTable(Var OutFile : Text); Forward;
+
+{ ---- Forward declaration de WriteRCAccelerators (TODO 24) -- }
+Procedure WriteRCAccelerators(Var OutFile : Text;
+                               Const Res  : TResourceEntry); Forward;
+
+{ ---- Forward declaration de WriteRCVersionInfo (TODO 24) --- }
+Procedure WriteRCVersionInfo(Var OutFile : Text;
+                              Const Res  : TResourceEntry); Forward;
+
+{ ---- Ecrire la directive RC pour une ressource RT_ICON ----- }
+{ Les RT_ICON individuels sont des sous-ressources des groupes }
+{ RT_GROUP_ICON et ne sont pas references directement dans .RC }
+Procedure WriteRCIcon(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName : TString;
+Begin
+  ResName := FormatID(Res.NameId, Res.NameStr);
+  WriteLn(OutFile, '// RT_ICON ', ResName,
+          ' (', Res.DataSize, ' octets, sous-ressource de RT_GROUP_ICON)');
+  WriteLn(OutFile);
+End;
+
+{ ---- Ecrire la directive RC pour une ressource RT_CURSOR --- }
+{ Les RT_CURSOR individuels sont des sous-ressources des       }
+{ groupes RT_GROUP_CURSOR.                                     }
+Procedure WriteRCCursor(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName : TString;
+Begin
+  ResName := FormatID(Res.NameId, Res.NameStr);
+  WriteLn(OutFile, '// RT_CURSOR ', ResName,
+          ' (', Res.DataSize, ' octets, sous-ressource de RT_GROUP_CURSOR)');
+  WriteLn(OutFile);
+End;
+
+{ ---- Ecrire la directive RC pour une ressource RT_BITMAP --- }
+{ Genere : ID BITMAP [options] "BITMAP_N.bmp"                 }
+Procedure WriteRCBitmap(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName  : TString;
+  FileName : TString;
+  Opts_s   : TString;
+Begin
+  ResName  := FormatID(Res.NameId, Res.NameStr);
+  FileName := 'BITMAP_' + FormatID(Res.NameId, Res.NameStr) + '.bmp';
+  Opts_s   := MemFlagsToRCOptions(Res.MemFlags);
+  If Opts_s <> '' Then
+    WriteLn(OutFile, ResName, ' BITMAP ', Opts_s, ' "', FileName, '"')
+  Else
+    WriteLn(OutFile, ResName, ' BITMAP "', FileName, '"');
+  WriteLn(OutFile);
+End;
+
+{ ---- Ecrire la directive RC pour une ressource RT_MENU ----- }
+{ Cherche le bloc correspondant dans MenuRCLines et l ecrit.   }
+Procedure WriteRCMenu(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName : TString;
+  Tag     : TString;
+  I       : Integer;
+  Depth   : Integer;
+  Found   : Boolean;
+Begin
+  If Res.NameIsId Then
+    ResName := IntToStr(Res.NameId)
+  Else
+    ResName := Res.NameStr;
+  Tag   := ResName + ' MENU';
+  Found := False;
+  I     := 1;
+  While I <= MenuRCLineCount Do
+  Begin
+    If MenuRCLines[I] = Tag Then
+    Begin
+      Found := True;
+      WriteLn(OutFile, MenuRCLines[I]);
+      Inc(I);
+      Depth := 0;
+      While I <= MenuRCLineCount Do
+      Begin
+        WriteLn(OutFile, MenuRCLines[I]);
+        If MenuRCLines[I] = 'BEGIN' Then
+          Inc(Depth)
+        Else If MenuRCLines[I] = 'END' Then
+        Begin
+          Dec(Depth);
+          If Depth = 0 Then Break;
+        End;
+        Inc(I);
+      End;
+      WriteLn(OutFile);
+      Exit;
+    End;
+    Inc(I);
+  End;
+  If Not Found Then
+  Begin
+    WriteLn(OutFile, '// MENU ', ResName, ' (non decode)');
+    WriteLn(OutFile);
+  End;
+End;
+
+{ ---- Ecrire la directive RC pour une ressource RT_DIALOG --- }
+{ Cherche le bloc correspondant dans DialogRCLines et l ecrit. }
+Procedure WriteRCDialog(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName : TString;
+  Prefix  : TString;
+  I       : Integer;
+  Depth   : Integer;
+  Found   : Boolean;
+Begin
+  If Res.NameIsId Then
+    ResName := IntToStr(Res.NameId)
+  Else
+    ResName := Res.NameStr;
+  Prefix := ResName + ' DIALOG ';
+  Found  := False;
+  I      := 1;
+  While I <= DialogRCLineCount Do
+  Begin
+    If Copy(DialogRCLines[I], 1, Length(Prefix)) = Prefix Then
+    Begin
+      Found := True;
+      WriteLn(OutFile, DialogRCLines[I]);
+      Inc(I);
+      Depth := 0;
+      While I <= DialogRCLineCount Do
+      Begin
+        WriteLn(OutFile, DialogRCLines[I]);
+        If DialogRCLines[I] = 'BEGIN' Then
+          Inc(Depth)
+        Else If DialogRCLines[I] = 'END' Then
+        Begin
+          Dec(Depth);
+          If Depth = 0 Then Break;
+        End;
+        Inc(I);
+      End;
+      WriteLn(OutFile);
+      Exit;
+    End;
+    Inc(I);
+  End;
+  If Not Found Then
+  Begin
+    WriteLn(OutFile, '// DIALOG ', ResName, ' (non decode)');
+    WriteLn(OutFile);
+  End;
+End;
+
+{ ---- Ecrire la directive RC pour une ressource RT_RCDATA --- }
+{ Cherche le bloc correspondant dans RCDataRCLines et l ecrit. }
+Procedure WriteRCRCData(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName : TString;
+  Tag     : TString;
+  I       : Integer;
+  Found   : Boolean;
+Begin
+  ResName := FormatID(Res.NameId, Res.NameStr);
+  Tag     := ResName + ' RCDATA BEGIN';
+  Found   := False;
+  I       := 1;
+  While I <= RCDataRCLineCount Do
+  Begin
+    If RCDataRCLines[I] = Tag Then
+    Begin
+      Found := True;
+      WriteLn(OutFile, RCDataRCLines[I]);
+      Inc(I);
+      While I <= RCDataRCLineCount Do
+      Begin
+        WriteLn(OutFile, RCDataRCLines[I]);
+        If RCDataRCLines[I] = 'END' Then Break;
+        Inc(I);
+      End;
+      WriteLn(OutFile);
+      Exit;
+    End;
+    Inc(I);
+  End;
+  If Not Found Then
+  Begin
+    WriteLn(OutFile, '// RCDATA ', ResName, ' (non decode)');
+    WriteLn(OutFile);
+  End;
+End;
+
+{ ---- Ecrire la directive RC pour une ressource RT_MANIFEST - }
+{ Genere : ID RT_MANIFEST "MANIFEST_N.xml"                    }
+Procedure WriteRCManifest(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName  : TString;
+  FileName : TString;
+Begin
+  ResName  := FormatID(Res.NameId, Res.NameStr);
+  FileName := 'MANIFEST_' + FormatID(Res.NameId, Res.NameStr) + '.xml';
+  WriteLn(OutFile, ResName, ' RT_MANIFEST "', FileName, '"');
+  WriteLn(OutFile);
+End;
+
+{ ---- Ecrire la directive RC pour un groupe d icones -------- }
+{ Genere : ID ICON "ICON_N.ico"                               }
+Procedure WriteRCGroupIcon(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName  : TString;
+  FileName : TString;
+Begin
+  ResName  := FormatID(Res.NameId, Res.NameStr);
+  FileName := 'ICON_' + FormatID(Res.NameId, Res.NameStr) + '.ico';
+  WriteLn(OutFile, ResName, ' ICON "', FileName, '"');
+  WriteLn(OutFile);
+End;
+
+{ ---- Ecrire la directive RC pour un groupe de curseurs ----- }
+{ Genere : ID CURSOR "CURSOR_N.cur"                           }
+Procedure WriteRCGroupCursor(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName  : TString;
+  FileName : TString;
+Begin
+  ResName  := FormatID(Res.NameId, Res.NameStr);
+  FileName := 'CURSOR_' + FormatID(Res.NameId, Res.NameStr) + '.cur';
+  WriteLn(OutFile, ResName, ' CURSOR "', FileName, '"');
+  WriteLn(OutFile);
+End;
+
+{ ---- Ecrire un hexdump generique pour les types inconnus --- }
+{ Genere un bloc RCDATA avec les octets en hexadecimal.        }
+Procedure WriteRCRawData(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName  : TString;
+  TypeName : TString;
+  Buf      : PByteArray;
+  BufSize  : LongInt;
+  I        : LongInt;
+  LineStr  : TString;
+  ColIdx   : Integer;
+Begin
+  If Res.TypeIsId Then
+    ResName := FormatID(Res.NameId, Res.NameStr) +
+               '_TYPE' + IntToStr(Res.TypeId)
+  Else
+    ResName := Res.TypeName + '_' + FormatID(Res.NameId, Res.NameStr);
+  TypeName := ResourceTypeKeyword(Res.TypeId);
+  If TypeName = '' Then TypeName := 'RCDATA';
+  WriteLn(OutFile, '// Type brut : ', ResourceTypeName(Res.TypeId),
+          ' #', Res.NameId, ' (', Res.DataSize, ' octets)');
+  WriteLn(OutFile, ResName, ' RCDATA BEGIN');
+  ReadRawResourceBytes(Res, Buf, BufSize);
+  If Buf <> Nil Then
+  Begin
+    LineStr := '    ';
+    ColIdx  := 0;
+    For I := 0 To BufSize - 1 Do
+    Begin
+      If ColIdx > 0 Then LineStr := LineStr + ', ';
+      LineStr := LineStr + '0x' + HexByte(Buf^[I]);
+      Inc(ColIdx);
+      If ColIdx >= RCDATA_BYTES_PER_LINE Then
+      Begin
+        WriteLn(OutFile, LineStr);
+        LineStr := '    ';
+        ColIdx  := 0;
+      End;
+    End;
+    If ColIdx > 0 Then WriteLn(OutFile, LineStr);
+    FreeMem(Buf, BufSize);
+  End;
+  WriteLn(OutFile, 'END');
+  WriteLn(OutFile);
+End;
+
+{ ---- Orchestrateur : generer la directive RC pour une res. - }
+{ Dispatche vers la procedure appropriee selon le TypeId.      }
+Procedure WriteRCResource(Var OutFile : Text; Const Res : TResourceEntry);
+Begin
+  If Not Res.TypeIsId Then
+  Begin
+    WriteRCRawData(OutFile, Res);
+    Exit;
+  End;
+  Case Res.TypeId Of
+    RT_CURSOR       : WriteRCCursor(OutFile, Res);
+    RT_BITMAP       : WriteRCBitmap(OutFile, Res);
+    RT_ICON         : WriteRCIcon(OutFile, Res);
+    RT_MENU         : WriteRCMenu(OutFile, Res);
+    RT_DIALOG       : WriteRCDialog(OutFile, Res);
+    RT_STRING       : { gere globalement par WriteRCStringTable } ;
+    RT_ACCELERATOR  : WriteRCAccelerators(OutFile, Res);
+    RT_RCDATA       : WriteRCRCData(OutFile, Res);
+    RT_VERSION      : WriteRCVersionInfo(OutFile, Res);
+    RT_MANIFEST     : WriteRCManifest(OutFile, Res);
+    RT_GROUP_ICON   : WriteRCGroupIcon(OutFile, Res);
+    RT_GROUP_CURSOR : WriteRCGroupCursor(OutFile, Res);
+  Else
+    WriteRCRawData(OutFile, Res);
+  End;
+End;
+
+{ ---- Stubs pour TODO 24 (implementation dans TODO 24) ------ }
+Procedure WriteRCStringTable(Var OutFile : Text);
+Begin
+  { TODO 24 : implementer la generation de STRINGTABLE }
+End;
+
+Procedure WriteRCAccelerators(Var OutFile : Text; Const Res : TResourceEntry);
+Begin
+  { TODO 24 : implementer la generation de ACCELERATORS }
+End;
+
+Procedure WriteRCVersionInfo(Var OutFile : Text; Const Res : TResourceEntry);
+Var
+  ResName : TString;
+  Prefix  : TString;
+  I       : Integer;
+  Depth   : Integer;
+  Found   : Boolean;
+Begin
+  If Res.NameIsId Then
+    ResName := IntToStr(Res.NameId)
+  Else
+    ResName := Res.NameStr;
+  Prefix := ResName + ' VERSIONINFO';
+  Found  := False;
+  I      := 1;
+  While I <= VersionRCLineCount Do
+  Begin
+    If Copy(VersionRCLines[I], 1, Length(Prefix)) = Prefix Then
+    Begin
+      Found := True;
+      WriteLn(OutFile, VersionRCLines[I]);
+      Inc(I);
+      Depth := 0;
+      While I <= VersionRCLineCount Do
+      Begin
+        WriteLn(OutFile, VersionRCLines[I]);
+        If VersionRCLines[I] = 'BEGIN' Then
+          Inc(Depth)
+        Else If VersionRCLines[I] = 'END' Then
+        Begin
+          Dec(Depth);
+          If Depth = 0 Then Break;
+        End;
+        Inc(I);
+      End;
+      WriteLn(OutFile);
+      Exit;
+    End;
+    Inc(I);
+  End;
+  If Not Found Then
+  Begin
+    WriteLn(OutFile, '// VERSIONINFO ', ResName, ' (non decode)');
+    WriteLn(OutFile);
+  End;
+End;
+
+{ ---- Generer le fichier .RC complet ------------------------ }
+{ Ouvre Opts.OutFile en ecriture, ecrit l en-tete, la          }
+{ directive de langue, puis toutes les directives de           }
+{ ressources via WriteRCResource. Les RT_STRING sont groupees  }
+{ en un appel a WriteRCStringTable a la fin.                   }
 Procedure GenerateRCFile(AResFormat : Integer);
 Var
-  OutFile : Text;
+  OutFile    : Text;
+  I          : Integer;
+  HasStrings : Boolean;
 Begin
   Assign(OutFile, Opts.OutFile);
   {$I-}
@@ -4166,7 +4533,18 @@ Begin
   End;
   WriteRCHeader(OutFile, Opts.SrcFile, AResFormat);
   WriteRCLanguageDirective(OutFile, GetPrimaryLangId, AResFormat);
-  { TODO 22 a TODO 24 : ecrire les directives de ressources ici }
+  { Ecrire les directives de ressources (sauf RT_STRING) }
+  HasStrings := False;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_STRING) Then
+      HasStrings := True
+    Else
+      WriteRCResource(OutFile, Resources[I]);
+  End;
+  { Regrouper toutes les RT_STRING dans un seul bloc STRINGTABLE }
+  If HasStrings Then
+    WriteRCStringTable(OutFile);
   Close(OutFile);
   If Opts.Verbose Then
     WriteLn('Fichier RC genere : ', Opts.OutFile);
@@ -4245,11 +4623,8 @@ Begin
   { Decoder les manifests d application (RT_MANIFEST) }
   ParseAllManifests;
 
-  { Generer l en-tete du fichier .RC (TODO 21) }
+  { Generer le fichier .RC complet (TODO 21 + TODO 22) }
   GenerateRCFile(ResFormat);
-
-  { TODO 22 a TODO 25 : a implementer }
-  WriteLn('(TODO 22 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
