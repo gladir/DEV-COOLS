@@ -451,7 +451,7 @@
               appeler ParseVSFixedFileInfo, puis parser les blocs enfants
               StringFileInfo et VarFileInfo
 
-  TODO 16 - DECODAGE RT_ICON / RT_CURSOR (TYPES 3 ET 1) [A FAIRE]
+  TODO 16 - DECODAGE RT_ICON / RT_CURSOR (TYPES 3 ET 1) [IMPLEMENTE]
             Type TIconHeader : record
               Reserved : Word  (= 0)
               ResType  : Word  (1 = ICO, 2 = CUR)
@@ -1001,6 +1001,29 @@ Type
     Force32    : Boolean;   { -32 : forcer format 32 bits       }
     Verbose    : Boolean;   { -v  : mode verbeux                }
     ExtractBin : Boolean;   { -x  : extraire ressources binaires}
+  End;
+
+  { Tampon d octets generique pour les ressources binaires }
+  TByteArray = Array[0..65534] Of Byte;
+  PByteArray = ^TByteArray;
+
+  { En-tete d un fichier .ico/.cur (ICONDIR / CURSORDIR) }
+  TIconHeader = Record
+    Reserved : Word;   { = 0                              }
+    ResType  : Word;   { 1 = ICO, 2 = CUR                 }
+    Count    : Word;   { nombre d images dans le fichier  }
+  End;
+
+  { Entree de repertoire d icone/curseur (ICONDIRENTRY) }
+  TIconDirEntry = Record
+    Width      : Byte;     { largeur en pixels (0 = 256)      }
+    Height     : Byte;     { hauteur en pixels (0 = 256)      }
+    ColorCount : Byte;     { nombre de couleurs (0 si >= 256) }
+    Reserved   : Byte;     { = 0                              }
+    Planes     : Word;     { ICO : 1 ; CUR : hotspot X        }
+    BitCount   : Word;     { bits/pixel ; CUR : hotspot Y     }
+    BytesInRes : LongInt;  { taille des donnees DIB           }
+    ImageOfs   : LongInt;  { offset des donnees dans le .ico  }
   End;
 
 { ============================================================
@@ -2882,6 +2905,273 @@ Begin
 End;
 
 { ============================================================
+  TODO 16 - DECODAGE RT_ICON / RT_CURSOR (TYPES 3 ET 1) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Lire les octets bruts d une ressource dans un tampon -- }
+Procedure ReadRawResourceBytes(Const Res     : TResourceEntry;
+                               Var   Buf     : PByteArray;
+                               Var   BufSize : LongInt);
+Var
+  I : LongInt;
+Begin
+  BufSize := Res.DataSize;
+  If BufSize <= 0 Then
+  Begin
+    Buf := Nil;
+    Exit;
+  End;
+  GetMem(Buf, BufSize);
+  SeekResPos(Res.DataOfs);
+  For I := 0 To BufSize - 1 Do
+    Buf^[I] := ReadByte;
+End;
+
+{ ---- Extraire une icone RT_ICON vers un fichier .ico ------- }
+Procedure ExtractIconFile(Const Res     : TResourceEntry;
+                          Const OutFile : TString);
+Var
+  F           : File Of Byte;
+  biWidth     : LongInt;
+  biHeight    : LongInt;
+  biBitCount  : Word;
+  biClrUsed   : LongInt;
+  AWidth      : Byte;
+  AHeight     : Byte;
+  AColorCount : Byte;
+  I           : LongInt;
+  B           : Byte;
+  Lo_         : Byte;
+  Hi_         : Byte;
+  Procedure WriteW(V : Word);
+  Begin
+    Lo_ := V And $FF;
+    Hi_ := (V Shr 8) And $FF;
+    Write(F, Lo_);
+    Write(F, Hi_);
+  End;
+  Procedure WriteL(V : LongInt);
+  Begin
+    WriteW(Word(V And $FFFF));
+    WriteW(Word((V Shr 16) And $FFFF));
+  End;
+Begin
+  If Res.DataSize < 40 Then Exit;
+  { Lire les champs cles du BITMAPINFOHEADER }
+  SeekResPos(Res.DataOfs);
+  ReadDWord;                        { biSize            }
+  biWidth    := ReadDWord;          { biWidth           }
+  biHeight   := ReadDWord;          { biHeight (double) }
+  ReadWord;                         { biPlanes          }
+  biBitCount := ReadWord;           { biBitCount        }
+  ReadDWord;                        { biCompression     }
+  ReadDWord;                        { biSizeImage       }
+  ReadDWord;                        { biXPelsPerMeter   }
+  ReadDWord;                        { biYPelsPerMeter   }
+  biClrUsed  := ReadDWord;          { biClrUsed         }
+  { La hauteur DIB est doublee (masques XOR et AND) }
+  biHeight := biHeight Div 2;
+  { Convertir en valeurs TIconDirEntry }
+  If biWidth  >= 256 Then AWidth  := 0 Else AWidth  := Byte(biWidth);
+  If biHeight >= 256 Then AHeight := 0 Else AHeight := Byte(biHeight);
+  { Calculer le nombre de couleurs }
+  If biBitCount >= 16 Then
+    AColorCount := 0
+  Else If biClrUsed > 0 Then
+  Begin
+    If biClrUsed >= 256 Then AColorCount := 0
+    Else AColorCount := Byte(biClrUsed);
+  End
+  Else If biBitCount > 0 Then
+  Begin
+    If (LongInt(1) Shl biBitCount) >= 256 Then AColorCount := 0
+    Else AColorCount := Byte(LongInt(1) Shl biBitCount);
+  End
+  Else
+    AColorCount := 0;
+  { Creer le fichier .ico }
+  Assign(F, OutFile);
+  {$I-} Rewrite(F); {$I+}
+  If IOResult <> 0 Then Exit;
+  { Ecrire TIconHeader (6 octets) }
+  WriteW(0);                        { Reserved = 0     }
+  WriteW(1);                        { ResType  = 1 ICO }
+  WriteW(1);                        { Count    = 1     }
+  { Ecrire TIconDirEntry (16 octets) }
+  { ImageOfs = 6 (TIconHeader) + 16 (TIconDirEntry) = 22 }
+  Write(F, AWidth);
+  Write(F, AHeight);
+  Write(F, AColorCount);
+  B := 0; Write(F, B);              { Reserved = 0     }
+  WriteW(1);                        { Planes   = 1     }
+  WriteW(biBitCount);
+  WriteL(Res.DataSize);             { BytesInRes       }
+  WriteL(22);                       { ImageOfs = 22    }
+  { Ecrire les donnees DIB brutes }
+  SeekResPos(Res.DataOfs);
+  For I := 1 To Res.DataSize Do
+  Begin
+    B := ReadByte;
+    Write(F, B);
+  End;
+  Close(F);
+End;
+
+{ ---- Extraire un curseur RT_CURSOR vers un fichier .cur ---- }
+Procedure ExtractCursorFile(Const Res     : TResourceEntry;
+                             Const OutFile : TString);
+Var
+  F           : File Of Byte;
+  HotX        : Word;
+  HotY        : Word;
+  biWidth     : LongInt;
+  biHeight    : LongInt;
+  biBitCount  : Word;
+  biClrUsed   : LongInt;
+  AWidth      : Byte;
+  AHeight     : Byte;
+  AColorCount : Byte;
+  DibSize     : LongInt;
+  I           : LongInt;
+  B           : Byte;
+  Lo_         : Byte;
+  Hi_         : Byte;
+  Procedure WriteW(V : Word);
+  Begin
+    Lo_ := V And $FF;
+    Hi_ := (V Shr 8) And $FF;
+    Write(F, Lo_);
+    Write(F, Hi_);
+  End;
+  Procedure WriteL(V : LongInt);
+  Begin
+    WriteW(Word(V And $FFFF));
+    WriteW(Word((V Shr 16) And $FFFF));
+  End;
+Begin
+  { 4 octets hotspot + 40 octets BITMAPINFOHEADER minimum }
+  If Res.DataSize < 44 Then Exit;
+  { Lire le hotspot puis les champs BITMAPINFOHEADER }
+  SeekResPos(Res.DataOfs);
+  HotX := ReadWord;                 { hotspot X         }
+  HotY := ReadWord;                 { hotspot Y         }
+  ReadDWord;                        { biSize            }
+  biWidth    := ReadDWord;          { biWidth           }
+  biHeight   := ReadDWord;          { biHeight (double) }
+  ReadWord;                         { biPlanes          }
+  biBitCount := ReadWord;           { biBitCount        }
+  ReadDWord;                        { biCompression     }
+  ReadDWord;                        { biSizeImage       }
+  ReadDWord;                        { biXPelsPerMeter   }
+  ReadDWord;                        { biYPelsPerMeter   }
+  biClrUsed  := ReadDWord;          { biClrUsed         }
+  biHeight := biHeight Div 2;
+  If biWidth  >= 256 Then AWidth  := 0 Else AWidth  := Byte(biWidth);
+  If biHeight >= 256 Then AHeight := 0 Else AHeight := Byte(biHeight);
+  If biBitCount >= 16 Then
+    AColorCount := 0
+  Else If biClrUsed > 0 Then
+  Begin
+    If biClrUsed >= 256 Then AColorCount := 0
+    Else AColorCount := Byte(biClrUsed);
+  End
+  Else If biBitCount > 0 Then
+  Begin
+    If (LongInt(1) Shl biBitCount) >= 256 Then AColorCount := 0
+    Else AColorCount := Byte(LongInt(1) Shl biBitCount);
+  End
+  Else
+    AColorCount := 0;
+  { Les donnees DIB ne comprennent pas les 4 octets de hotspot }
+  DibSize := Res.DataSize - 4;
+  Assign(F, OutFile);
+  {$I-} Rewrite(F); {$I+}
+  If IOResult <> 0 Then Exit;
+  { Ecrire TIconHeader (6 octets) }
+  WriteW(0);                        { Reserved = 0     }
+  WriteW(2);                        { ResType  = 2 CUR }
+  WriteW(1);                        { Count    = 1     }
+  { Ecrire TIconDirEntry (16 octets) }
+  { Pour .cur : Planes = HotX, BitCount = HotY }
+  Write(F, AWidth);
+  Write(F, AHeight);
+  Write(F, AColorCount);
+  B := 0; Write(F, B);              { Reserved = 0     }
+  WriteW(HotX);                     { Planes   = HotX  }
+  WriteW(HotY);                     { BitCount = HotY  }
+  WriteL(DibSize);                  { BytesInRes       }
+  WriteL(22);                       { ImageOfs = 22    }
+  { Ecrire les donnees DIB brutes (sans les 4 octets de hotspot) }
+  SeekResPos(Res.DataOfs + 4);
+  For I := 1 To DibSize Do
+  Begin
+    B := ReadByte;
+    Write(F, B);
+  End;
+  Close(F);
+End;
+
+{ ---- Decoder / extraire toutes les icones RT_ICON ---------- }
+Procedure ParseAllIcons;
+Var
+  I         : Integer;
+  IconCount : Integer;
+  OutName   : TString;
+Begin
+  IconCount := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_ICON) Then
+    Begin
+      Inc(IconCount);
+      If Opts.ExtractBin Then
+      Begin
+        If Resources[I].NameIsId Then
+          OutName := 'ICON_' + IntToStr(Resources[I].NameId) + '.ico'
+        Else
+          OutName := 'ICON_' + Resources[I].NameStr + '.ico';
+        ExtractIconFile(Resources[I], OutName);
+        If Opts.Verbose Then
+          WriteLn('  Icone extraite : ', OutName,
+                  ' (', Resources[I].DataSize, ' octets)');
+      End;
+    End;
+  End;
+  If Opts.Verbose And (IconCount > 0) Then
+    WriteLn(IconCount, ' ressource(s) RT_ICON trouvee(s).');
+End;
+
+{ ---- Decoder / extraire tous les curseurs RT_CURSOR -------- }
+Procedure ParseAllCursors;
+Var
+  I           : Integer;
+  CursorCount : Integer;
+  OutName     : TString;
+Begin
+  CursorCount := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = RT_CURSOR) Then
+    Begin
+      Inc(CursorCount);
+      If Opts.ExtractBin Then
+      Begin
+        If Resources[I].NameIsId Then
+          OutName := 'CURSOR_' + IntToStr(Resources[I].NameId) + '.cur'
+        Else
+          OutName := 'CURSOR_' + Resources[I].NameStr + '.cur';
+        ExtractCursorFile(Resources[I], OutName);
+        If Opts.Verbose Then
+          WriteLn('  Curseur extrait: ', OutName,
+                  ' (', Resources[I].DataSize, ' octets)');
+      End;
+    End;
+  End;
+  If Opts.Verbose And (CursorCount > 0) Then
+    WriteLn(CursorCount, ' ressource(s) RT_CURSOR trouvee(s).');
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 Begin
@@ -2936,8 +3226,14 @@ Begin
   { Decoder les informations de version (RT_VERSION) }
   ParseAllVersionInfos;
 
-  { TODO 16 a TODO 25 : a implementer }
-  WriteLn('(TODO 16 a TODO 25 : implementation en cours)');
+  { Decoder les icones (RT_ICON) }
+  ParseAllIcons;
+
+  { Decoder les curseurs (RT_CURSOR) }
+  ParseAllCursors;
+
+  { TODO 17 a TODO 25 : a implementer }
+  WriteLn('(TODO 17 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
