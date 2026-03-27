@@ -9190,12 +9190,13 @@ Function DetectProcStringsPattern(ProcIdx:Integer):String;
 { Analyse le corps d'une procedure pour detecter les patterns
   assembleur correspondant a des fonctions de l'unite Strings.
   Retourne le nom de la fonction Strings (ex: 'StrCopy', 'StrLen',
-  'StrCat', 'StrComp', 'StrLower', 'StrUpper') ou '' si aucun
-  pattern n'est reconnu.
+  'StrCat', 'StrComp', 'StrLower', 'StrUpper', 'StrEnd') ou '' si
+  aucun pattern n'est reconnu.
 
   Patterns detectes :
   - strcpy : REPNE SCASB + REP MOVSB + retour AX pointeur dest
   - strlen : REPNE SCASB + NEG CX/AX (ou NOT CX + DEC CX, ou SUB AX,CX) sans MOVSB
+  - strend : REPNE SCASB + MOV AX,DI + DEC AX (retourne ptr fin de chaine)
   - strcmp : REPE CMPSB
   - strcat : 2x REPNE SCASB + REP MOVSB (cherche fin dest puis copie)
   - strlower : boucle char par char, compare 41h-5Ah, ADD 20h
@@ -9219,6 +9220,8 @@ Var
  Has7Ah:Boolean;
  HasSub20h:Boolean;
  HasSubAXCX:Boolean;
+ HasMovAXDI:Boolean;
+ HasDecAX:Boolean;
  M:String;
 Begin
  DetectProcStringsPattern:='';
@@ -9241,6 +9244,8 @@ Begin
  Has7Ah:=False;
  HasSub20h:=False;
  HasSubAXCX:=False;
+ HasMovAXDI:=False;
+ HasDecAX:=False;
  For I:=Procs[ProcIdx].StartLine to Procs[ProcIdx].EndLine do Begin
   If(I<0)or(I>=SrcLineCount)Then Continue;
   If SrcLines[I]=Nil Then Continue;
