@@ -583,7 +583,7 @@
               Const OutFile: String)
               ecrire les octets bruts de la ressource dans un fichier .xml
 
-  TODO 21 - GENERATION DE L'EN-TETE DU FICHIER .RC [A FAIRE]
+  TODO 21 - GENERATION DE L'EN-TETE DU FICHIER .RC [IMPLEMENTE]
             Procedure WriteRCHeader(Var OutFile: Text;
               Const SrcFileName: String; ResFormat: Integer)
               ecrire les commentaires d en-tete :
@@ -4009,6 +4009,170 @@ Begin
 End;
 
 
+{ ============================================================
+  TODO 21 - GENERATION DE L'EN-TETE DU FICHIER .RC [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Formatter un entier Word en 2 chiffres avec zero ----- }
+Function IntTo2Digits(N : Word) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  If Length(S) < 2 Then S := '0' + S;
+  IntTo2Digits := S;
+End;
+
+{ ---- Obtenir la date courante au format AAAA-MM-JJ --------- }
+Function CurrentDateStr : TString;
+Var
+  Year, Month, Day, DayOfWeek : Word;
+Begin
+  GetDate(Year, Month, Day, DayOfWeek);
+  CurrentDateStr := IntToStr(Year) + '-' +
+                    IntTo2Digits(Month) + '-' +
+                    IntTo2Digits(Day);
+End;
+
+{ ---- Ecrire l en-tete commentaire + includes du fichier .RC - }
+{ Genere les commentaires de version, source, format et date,   }
+{ l include appropriate selon le format, puis les #define IDM_  }
+{ pour chaque identifiant de commande unique des accelerateurs  }
+{ et des elements de menu non-popup.                            }
+Procedure WriteRCHeader(Var OutFile    : Text;
+                        Const SrcFileName : TString;
+                        AResFormat    : Integer);
+Var
+  CmdIds     : Array[1..256] Of Word;
+  CmdIdCount : Integer;
+  I, J       : Integer;
+  Cmd        : Word;
+  AlreadyIn  : Boolean;
+Begin
+  { Commentaires d en-tete }
+  WriteLn(OutFile, '// Fichier .RC genere par DISRES version ',
+          DISRES_VERSION);
+  WriteLn(OutFile, '// Source : ', SrcFileName);
+  If AResFormat = FMT_RES16 Then
+    WriteLn(OutFile, '// Format : RES 16 bits')
+  Else
+    WriteLn(OutFile, '// Format : RES 32 bits');
+  WriteLn(OutFile, '// Date   : ', CurrentDateStr);
+  WriteLn(OutFile);
+  { Include selon le format 16 ou 32 bits }
+  If AResFormat = FMT_RES16 Then
+    WriteLn(OutFile, '#include <wintypes.h>')
+  Else
+    WriteLn(OutFile, '#include <windows.h>');
+  WriteLn(OutFile);
+  { Collecter les IDs de commandes uniques : accelerateurs }
+  CmdIdCount := 0;
+  For I := 1 To AccelCount Do
+  Begin
+    Cmd := AccelEntries[I].Cmd;
+    If Cmd > 0 Then
+    Begin
+      AlreadyIn := False;
+      For J := 1 To CmdIdCount Do
+        If CmdIds[J] = Cmd Then
+        Begin
+          AlreadyIn := True;
+          Break;
+        End;
+      If (Not AlreadyIn) And (CmdIdCount < 256) Then
+      Begin
+        Inc(CmdIdCount);
+        CmdIds[CmdIdCount] := Cmd;
+      End;
+    End;
+  End;
+  { Ajouter les IDs de commandes des elements de menu non-popup }
+  For I := 1 To MenuItemCount Do
+  Begin
+    Cmd := MenuItems[I].MenuID;
+    If (Cmd > 0) And (Not MenuItems[I].IsPopup) Then
+    Begin
+      AlreadyIn := False;
+      For J := 1 To CmdIdCount Do
+        If CmdIds[J] = Cmd Then
+        Begin
+          AlreadyIn := True;
+          Break;
+        End;
+      If (Not AlreadyIn) And (CmdIdCount < 256) Then
+      Begin
+        Inc(CmdIdCount);
+        CmdIds[CmdIdCount] := Cmd;
+      End;
+    End;
+  End;
+  { Generer les #define IDM_xxx si des identifiants ont ete trouves }
+  If CmdIdCount > 0 Then
+  Begin
+    WriteLn(OutFile, '// Identifiants de commandes (a personaliser)');
+    For I := 1 To CmdIdCount Do
+      WriteLn(OutFile, '#define IDM_', CmdIds[I], ' ', CmdIds[I]);
+    WriteLn(OutFile);
+  End;
+End;
+
+{ ---- Ecrire la directive de langue pour un script .RC ------- }
+{ Si le format est 32 bits et LangId non nul, ecrit la ligne    }
+{ LANGUAGE LANG_xxx, SUBLANG_xxx correspondante.                }
+Procedure WriteRCLanguageDirective(Var OutFile  : Text;
+                                   LangId      : Word;
+                                   AResFormat  : Integer);
+Begin
+  If (AResFormat = FMT_RES32) And (LangId <> 0) Then
+  Begin
+    WriteLn(OutFile, LangIdToRCKeyword(LangId));
+    WriteLn(OutFile);
+  End;
+End;
+
+{ ---- Determiner la langue principale du fichier .RES -------- }
+{ Retourne le premier LangId non nul rencontre dans Resources,  }
+{ ou 0 si toutes les ressources ont LangId = 0 (format 16 bits) }
+Function GetPrimaryLangId : Word;
+Var
+  I : Integer;
+Begin
+  GetPrimaryLangId := 0;
+  For I := 1 To ResCount Do
+    If Resources[I].LangId <> 0 Then
+    Begin
+      GetPrimaryLangId := Resources[I].LangId;
+      Exit;
+    End;
+End;
+
+{ ---- Generer le fichier .RC (en-tete et directive de langue) - }
+{ Ouvre Opts.OutFile en ecriture, ecrit l en-tete via            }
+{ WriteRCHeader et la directive de langue via                    }
+{ WriteRCLanguageDirective, puis ferme le fichier.               }
+{ Les ressources seront ajoutees par TODO 22 a TODO 24.          }
+Procedure GenerateRCFile(AResFormat : Integer);
+Var
+  OutFile : Text;
+Begin
+  Assign(OutFile, Opts.OutFile);
+  {$I-}
+  Rewrite(OutFile);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('DISRES: impossible de creer le fichier : ', Opts.OutFile);
+    Exit;
+  End;
+  WriteRCHeader(OutFile, Opts.SrcFile, AResFormat);
+  WriteRCLanguageDirective(OutFile, GetPrimaryLangId, AResFormat);
+  { TODO 22 a TODO 24 : ecrire les directives de ressources ici }
+  Close(OutFile);
+  If Opts.Verbose Then
+    WriteLn('Fichier RC genere : ', Opts.OutFile);
+End;
+
+
 Begin
   { Banniere de version }
   WriteLn('DISRES v', DISRES_VERSION, ' (', DISRES_DATE, ') - ',
@@ -4081,8 +4245,11 @@ Begin
   { Decoder les manifests d application (RT_MANIFEST) }
   ParseAllManifests;
 
-  { TODO 21 a TODO 25 : a implementer }
-  WriteLn('(TODO 21 a TODO 25 : implementation en cours)');
+  { Generer l en-tete du fichier .RC (TODO 21) }
+  GenerateRCFile(ResFormat);
+
+  { TODO 22 a TODO 25 : a implementer }
+  WriteLn('(TODO 22 a TODO 25 : implementation en cours)');
 
   { Fermer le fichier source }
   CloseResFile;
