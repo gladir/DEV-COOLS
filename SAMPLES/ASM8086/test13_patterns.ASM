@@ -1,7 +1,8 @@
 ; Test 13 - Detection de patterns assembleur -> unite Strings
 ; Teste: procedures qui implementent strcpy/strlen via
 ;   REPNE SCASB + REP MOVSB (strcpy)
-;   REPNE SCASB + NEG CX (strlen)
+;   REPNE SCASB + NEG CX (strlen variante NOT CX + DEC CX)
+;   REPNE SCASB + NEG AX (strlen variante MOV AX,CX + INC + INC + NEG AX)
 ; Le transpileur doit reconnaitre ces patterns et generer des
 ; appels a StrCopy/StrLen de l'unite Strings au lieu de traduire
 ; chaque instruction individuellement.
@@ -42,7 +43,7 @@ my_strcpy PROC NEAR
     RET
 my_strcpy ENDP
 
-; --- Pattern strlen : REPNE SCASB + NEG CX ---
+; --- Pattern strlen : REPNE SCASB + NOT CX + DEC CX ---
 ; Calcule la longueur d'une chaine ASCIIZ, retourne dans AX.
 my_strlen PROC NEAR
     PUSH BP
@@ -63,6 +64,28 @@ my_strlen PROC NEAR
     RET
 my_strlen ENDP
 
+; --- Pattern strlen variante : REPNE SCASB + NEG AX ---
+; Meme calcul de longueur mais avec MOV AX,CX + INC + INC + NEG AX.
+my_strlen2 PROC NEAR
+    PUSH BP
+    MOV BP, SP
+    PUSH DI
+    PUSH DS
+    POP ES
+    MOV DI, [BP+04h]
+    XOR AX, AX
+    MOV CX, FFFFh
+    REPNE SCASB
+    MOV AX, CX
+    INC AX
+    INC AX
+    NEG AX
+    POP DI
+    MOV SP, BP
+    POP BP
+    RET
+my_strlen2 ENDP
+
 START:
     MOV AX, @DATA
     MOV DS, AX
@@ -79,6 +102,12 @@ START:
     LEA AX, dst
     PUSH AX
     CALL my_strlen
+    ADD SP, 2
+
+    ; Calculer la longueur via my_strlen2 (variante NEG AX)
+    LEA AX, dst
+    PUSH AX
+    CALL my_strlen2
     ADD SP, 2
 
     MOV AH, 4Ch

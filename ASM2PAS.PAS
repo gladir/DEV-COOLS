@@ -9184,7 +9184,7 @@ Function DetectProcStringsPattern(ProcIdx:Integer):String;
 
   Patterns detectes :
   - strcpy : REPNE SCASB + REP MOVSB + retour AX pointeur dest
-  - strlen : REPNE SCASB + NEG CX (ou NOT CX + DEC CX) sans MOVSB
+  - strlen : REPNE SCASB + NEG CX/AX (ou NOT CX + DEC CX) sans MOVSB
   - strcmp : REPE CMPSB
   - strcat : 2x REPNE SCASB + REP MOVSB (cherche fin dest puis copie)
 }
@@ -9196,6 +9196,7 @@ Var
  HasRepeCmpsb:Boolean;
  RepneScasbCount:Integer;
  HasNegCX:Boolean;
+ HasNegAX:Boolean;
  HasNotCX:Boolean;
  HasMovsb:Boolean;
  M:String;
@@ -9210,6 +9211,7 @@ Begin
  HasRepeCmpsb:=False;
  RepneScasbCount:=0;
  HasNegCX:=False;
+ HasNegAX:=False;
  HasNotCX:=False;
  HasMovsb:=False;
  For I:=Procs[ProcIdx].StartLine to Procs[ProcIdx].EndLine do Begin
@@ -9238,6 +9240,9 @@ Begin
   { Detecter NEG CX / NEG ECX }
   If(Pos('NEG',Line)>0)and((Pos('CX',Line)>0)or(Pos('ECX',Line)>0))Then
    HasNegCX:=True;
+  { Detecter NEG AX / NEG EAX }
+  If(Pos('NEG',Line)>0)and((Pos('AX',Line)>0)or(Pos('EAX',Line)>0))Then
+   HasNegAX:=True;
   { Detecter NOT CX / NOT ECX }
   If(Pos('NOT',Line)>0)and((Pos('CX',Line)>0)or(Pos('ECX',Line)>0))Then
    HasNotCX:=True;
@@ -9261,8 +9266,8 @@ Begin
   Exit;
  End;
 
- { Pattern strlen : REPNE SCASB + NEG/NOT CX, sans MOVSB }
- If HasRepneScasb and(HasNegCX or HasNotCX)and(Not HasMovsb)Then Begin
+ { Pattern strlen : REPNE SCASB + NEG/NOT CX ou NEG AX, sans MOVSB }
+ If HasRepneScasb and(HasNegCX or HasNotCX or HasNegAX)and(Not HasMovsb)Then Begin
   DetectProcStringsPattern:='StrLen';
   Exit;
  End;
