@@ -226,7 +226,7 @@
               __METHOD__ -> nom de methode courant (nameof(Method))
               __FUNCTION__ -> nom de fonction courant (nameof(Fn))
 
-  TODO 08 - TRANSPILATION : CHAINES ET INTERPOLATION [A FAIRE]
+  TODO 08 - TRANSPILATION : CHAINES ET INTERPOLATION [IMPLEMENTE]
             Chaines simples '' : LexScanStringSQ → "@'...'" ou "..."
               Echappements reconnus : \\ \' (autres passes tel quel).
             Chaines doubles "" avec interpolation :
@@ -2067,7 +2067,7 @@ End;
   TODO 05 - GESTION DES SCOPES ET NAMESPACES (IMPLEMENTE)
   TODO 06 - DECLARATIONS DE VARIABLES PHP (IMPLEMENTE)
   TODO 07 - EXPRESSIONS (IMPLEMENTE)
-  TODO 08 - CHAINES ET INTERPOLATION (A FAIRE)
+  TODO 08 - CHAINES ET INTERPOLATION (IMPLEMENTE)
   TODO 09 - STRUCTURES DE CONTROLE (A FAIRE)
   TODO 10 - BOUCLES (A FAIRE)
   TODO 11 - SWITCH ET MATCH (A FAIRE)
@@ -2394,6 +2394,18 @@ End;
 { Declaration anticipee pour TODO 07 (recursion avec TODO 06) }
 Function ParseExprStr: TString; Forward;
 
+{ Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
+Function SqContentToCS(Const S: TString): TString; Forward;
+Function NowDocContentToCS(Const S: TString): TString; Forward;
+Function DqEscSeq(Const S: TString; Var I: Integer): TString; Forward;
+Function DqContentToCS(Const S: TString): TString; Forward;
+Function PhpStringToCS(Kind: TTokenKind; Const S: TString): TString; Forward;
+Function SprintfSpecToCS(Const S: TString; Var I, ArgIdx: Integer): TString; Forward;
+Function SprintfFmtToCS(Const Fmt: TString): TString; Forward;
+Function ParseSprintfCall(IsWrite: Boolean): TString; Forward;
+Function ParseNumberFormatCall: TString; Forward;
+Function ParseStrPadCall: TString; Forward;
+
 { Supprime le '$' initial d un nom de variable PHP }
 Function VarPhpName(Const S: TString): TString;
 Begin
@@ -2539,10 +2551,10 @@ Begin
       { Conversion simple : utiliser la valeur textuelle du token }
       TokToCS := Tok.Val;
     End;
-    TK_STRING_SQ : TokToCS := '"' + Tok.Val + '"';
-    TK_STRING_DQ : TokToCS := '"' + Tok.Val + '"';
-    TK_HEREDOC   : TokToCS := '"' + Tok.Val + '"';
-    TK_NOWDOC    : TokToCS := '@"' + Tok.Val + '"';
+    TK_STRING_SQ,
+    TK_STRING_DQ,
+    TK_HEREDOC,
+    TK_NOWDOC    : TokToCS := PhpStringToCS(Tok.Kind, Tok.Val);
     TK_KEYWORD   :
     Begin
       If LowStr(Tok.Val) = 'true'  Then TokToCS := 'true'
@@ -2874,7 +2886,7 @@ End;
 
 { Niveau 14 - Primaire : literal, variable, (expr), [array], appel, new, cast }
 Function ParseExprPrimary: TString;
-Var R, CastName, MemberName, Op: TString;
+Var R, CastName, MemberName, Op, FnLow: TString;
 Begin
   R := '';
   Case CurTok.Kind Of
@@ -2888,19 +2900,9 @@ Begin
       R := CurTok.Val;
       LexNextToken;
     End;
-    TK_STRING_SQ :
+    TK_STRING_SQ, TK_STRING_DQ, TK_HEREDOC, TK_NOWDOC :
     Begin
-      R := '"' + CurTok.Val + '"';
-      LexNextToken;
-    End;
-    TK_STRING_DQ, TK_HEREDOC :
-    Begin
-      R := '$"' + CurTok.Val + '"';
-      LexNextToken;
-    End;
-    TK_NOWDOC :
-    Begin
-      R := '@"' + CurTok.Val + '"';
+      R := PhpStringToCS(CurTok.Kind, CurTok.Val);
       LexNextToken;
     End;
     TK_VAR :
@@ -2947,10 +2949,24 @@ Begin
     End;
     TK_IDENT :
     Begin
+      FnLow := LowStr(CurTok.Val);
       R := MakeCsName(CurTok.Val);
       LexNextToken;
       If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
-        R := ParseFnCallArgs(R)
+      Begin
+        If (FnLow = 'sprintf') Or (FnLow = 'vsprintf') Then
+          R := ParseSprintfCall(False)
+        Else If FnLow = 'printf' Then
+          R := ParseSprintfCall(True)
+        Else If FnLow = 'number_format' Then
+          R := ParseNumberFormatCall
+        Else If FnLow = 'str_pad' Then
+          R := ParseStrPadCall
+        Else If FnLow = 'wordwrap' Then
+          R := ExprAppend('/* wordwrap */ ', ParseFnCallArgs(R))
+        Else
+          R := ParseFnCallArgs(R);
+      End
       Else
       Begin
         { member access via :: }
@@ -3423,6 +3439,517 @@ Begin
     ParseExprStr := ParseExprYield;
 End;
 
+{ ============================================================
+  TODO 08 - TRANSPILATION : CHAINES ET INTERPOLATION PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Convertit le contenu brut d une chaine SQ PHP en contenu C# sans guillemets.
+  Le lexeur a deja traite : \\ -> \ et \' -> '.
+  Ici on re-echappe pour C# : \ -> \\, " -> \", #10 -> \n, #13 -> \r. }
+Function SqContentToCS(Const S: TString): TString;
+Var I: Integer; R: TString;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If S[I] = '\' Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '\\';
+    End
+    Else If S[I] = '"' Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '\"';
+    End
+    Else If S[I] = #10 Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '\n';
+    End
+    Else If S[I] = #13 Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '\r';
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then R := R + S[I];
+    End;
+  End;
+  SqContentToCS := R;
+End;
+
+{ Convertit le contenu brut d une chaine Nowdoc (verbatim multi-ligne) en
+  contenu pour @"..." C# : seule sequence speciale = " -> "". }
+Function NowDocContentToCS(Const S: TString): TString;
+Var I: Integer; R: TString;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If S[I] = '"' Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '""';
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then R := R + S[I];
+    End;
+  End;
+  NowDocContentToCS := R;
+End;
+
+{ Convertit une sequence d echappement PHP \X a partir de la position I dans S
+  (I pointe sur le caractere apres le backslash). Avance I. }
+Function DqEscSeq(Const S: TString; Var I: Integer): TString;
+Var
+  Hex  : TString;
+  NbHex: Integer;
+Begin
+  If I > Length(S) Then Begin DqEscSeq := '\'; Exit; End;
+  Case S[I] Of
+    'n': Begin DqEscSeq := '\n';   Inc(I); End;
+    't': Begin DqEscSeq := '\t';   Inc(I); End;
+    'r': Begin DqEscSeq := '\r';   Inc(I); End;
+    '\': Begin DqEscSeq := '\\';  Inc(I); End;
+    '"': Begin DqEscSeq := '\"';  Inc(I); End;
+    '$': Begin DqEscSeq := '$';   Inc(I); End;
+    '0': Begin DqEscSeq := '\0';  Inc(I); End;
+    'v': Begin DqEscSeq := '\v';  Inc(I); End;
+    'f': Begin DqEscSeq := '\f';  Inc(I); End;
+    'e': Begin DqEscSeq := '\x1B'; Inc(I); End;
+    'x': Begin
+      Hex := '\x'; Inc(I); NbHex := 0;
+      While (I <= Length(S)) And (NbHex < 2) And
+            (((S[I] >= '0') And (S[I] <= '9')) Or
+             ((S[I] >= 'a') And (S[I] <= 'f')) Or
+             ((S[I] >= 'A') And (S[I] <= 'F'))) Do
+      Begin
+        If Length(Hex) < MAX_STR Then Hex := Hex + S[I];
+        Inc(I); Inc(NbHex);
+      End;
+      DqEscSeq := Hex;
+    End;
+    'u': Begin
+      Inc(I);
+      If (I <= Length(S)) And (S[I] = '{') Then
+      Begin
+        Inc(I); { saute '{' }
+        Hex := '\u'; NbHex := 0;
+        While (I <= Length(S)) And (S[I] <> '}') And (NbHex < 4) Do
+        Begin
+          If Length(Hex) < MAX_STR Then Hex := Hex + S[I];
+          Inc(I); Inc(NbHex);
+        End;
+        If I <= Length(S) Then Inc(I); { saute accolade fermante }
+        DqEscSeq := Hex;
+      End
+      Else
+      Begin
+        Hex := '\u'; NbHex := 0;
+        While (I <= Length(S)) And (NbHex < 4) And
+              (((S[I] >= '0') And (S[I] <= '9')) Or
+               ((S[I] >= 'a') And (S[I] <= 'f')) Or
+               ((S[I] >= 'A') And (S[I] <= 'F'))) Do
+        Begin
+          If Length(Hex) < MAX_STR Then Hex := Hex + S[I];
+          Inc(I); Inc(NbHex);
+        End;
+        DqEscSeq := Hex;
+      End;
+    End;
+  Else
+    DqEscSeq := '\' + S[I]; Inc(I);
+  End;
+End;
+
+{ Convertit le contenu brut d une chaine DQ PHP (ou Heredoc) en contenu C#.
+  Sequences d echappement converties, $var et dollar-var interpolation traitees.
+  Si C# >= 6 : retourne le contenu pour $"..." (interpolation C# native).
+  Sinon : retourne une expression de concatenation "..." + Var + "...". }
+Function DqContentToCS(Const S: TString): TString;
+Var
+  I        : Integer;
+  Ch       : Char;
+  R        : TString;
+  VarN     : TString;
+  UseInterp: Boolean;
+Begin
+  UseInterp := CsVersionGE(Opts.CsVersion, CS_VER_60);
+  R := '';
+  I := 1;
+  While I <= Length(S) Do
+  Begin
+    Ch := S[I];
+    If Ch = '\' Then
+    Begin
+      Inc(I);
+      If Length(R) < MAX_STR - 5 Then
+        R := R + DqEscSeq(S, I);
+    End
+    Else If Ch = #10 Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '\n';
+      Inc(I);
+    End
+    Else If Ch = #13 Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '\r';
+      Inc(I);
+    End
+    Else If (Ch = '{') And (I < Length(S)) And (S[I + 1] = '$') Then
+    Begin
+      { interpolation avec accolades : dollar-var entre accolades }
+      Inc(I); Inc(I); { saute '{' et '$' }
+      VarN := '';
+      While (I <= Length(S)) And
+            (((S[I] >= 'a') And (S[I] <= 'z')) Or
+             ((S[I] >= 'A') And (S[I] <= 'Z')) Or
+             ((S[I] >= '0') And (S[I] <= '9')) Or
+             (S[I] = '_')) Do
+      Begin
+        If Length(VarN) < MAX_STR Then VarN := VarN + S[I];
+        Inc(I);
+      End;
+      While (I <= Length(S)) And (S[I] <> '}') Do Inc(I);
+      If I <= Length(S) Then Inc(I); { saute accolade fermante }
+      If VarN <> '' Then
+      Begin
+        If UseInterp Then
+        Begin
+          If Length(R) < MAX_STR - 2 Then
+            R := R + '{' + MakeCsName(VarN) + '}';
+        End
+        Else
+        Begin
+          If Length(R) < MAX_STR - 10 Then
+            R := R + '" + ' + MakeCsName(VarN) + ' + "';
+        End;
+      End;
+    End
+    Else If Ch = '{' Then
+    Begin
+      If UseInterp Then
+      Begin
+        If Length(R) < MAX_STR - 1 Then R := R + '{{';
+      End
+      Else
+      Begin
+        If Length(R) < MAX_STR Then R := R + '{';
+      End;
+      Inc(I);
+    End
+    Else If Ch = '}' Then
+    Begin
+      If UseInterp Then
+      Begin
+        If Length(R) < MAX_STR - 1 Then R := R + '}}';
+      End
+      Else
+      Begin
+        If Length(R) < MAX_STR Then R := R + '}';
+      End;
+      Inc(I);
+    End
+    Else If (Ch = '$') And (I < Length(S)) And
+            (((S[I + 1] >= 'a') And (S[I + 1] <= 'z')) Or
+             ((S[I + 1] >= 'A') And (S[I + 1] <= 'Z')) Or
+             (S[I + 1] = '_')) Then
+    Begin
+      Inc(I); { saute '$' }
+      VarN := '';
+      While (I <= Length(S)) And
+            (((S[I] >= 'a') And (S[I] <= 'z')) Or
+             ((S[I] >= 'A') And (S[I] <= 'Z')) Or
+             ((S[I] >= '0') And (S[I] <= '9')) Or
+             (S[I] = '_')) Do
+      Begin
+        If Length(VarN) < MAX_STR Then VarN := VarN + S[I];
+        Inc(I);
+      End;
+      If UseInterp Then
+      Begin
+        If Length(R) < MAX_STR - 2 Then
+          R := R + '{' + MakeCsName(VarN) + '}';
+      End
+      Else
+      Begin
+        If Length(R) < MAX_STR - 10 Then
+          R := R + '" + ' + MakeCsName(VarN) + ' + "';
+      End;
+    End
+    Else If Ch = '"' Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '\"';
+      Inc(I);
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then R := R + Ch;
+      Inc(I);
+    End;
+  End;
+  DqContentToCS := R;
+End;
+
+{ Convertit un token de chaine PHP en expression C# complete (avec guillemets) :
+  TK_STRING_SQ  -> "contenu" (avec re-echappement)
+  TK_STRING_DQ  -> interpolation $"..." (C# 6+) ou concatenation
+  TK_HEREDOC    -> comme TK_STRING_DQ
+  TK_NOWDOC     -> @"contenu" (verbatim, multi-ligne) }
+Function PhpStringToCS(Kind: TTokenKind; Const S: TString): TString;
+Var Content: TString;
+Begin
+  Case Kind Of
+    TK_STRING_SQ :
+    Begin
+      Content := SqContentToCS(S);
+      PhpStringToCS := '"' + Content + '"';
+    End;
+    TK_STRING_DQ, TK_HEREDOC :
+    Begin
+      Content := DqContentToCS(S);
+      If CsVersionGE(Opts.CsVersion, CS_VER_60) Then
+        PhpStringToCS := '$"' + Content + '"'
+      Else
+        PhpStringToCS := '"' + Content + '"';
+    End;
+    TK_NOWDOC :
+    Begin
+      Content := NowDocContentToCS(S);
+      PhpStringToCS := '@"' + Content + '"';
+    End;
+  Else
+    PhpStringToCS := '"' + S + '"';
+  End;
+End;
+
+{ Convertit un specifieur de format PHP printf (char apres %) en specifieur
+  C# string.Format. I pointe sur le char apres %, ArgIdx = prochain argument. }
+Function SprintfSpecToCS(Const S: TString; Var I, ArgIdx: Integer): TString;
+Var
+  Width, Prec: TString;
+  Ch         : Char;
+  IdxStr     : TString;
+Begin
+  Width := ''; Prec := '';
+  { Drapeaux optionnels : -, +, 0, espace, ' }
+  While (I <= Length(S)) And (S[I] In ['-', '+', '0', ' ', '''']) Do
+  Begin
+    Inc(I);
+  End;
+  { Largeur minimale }
+  While (I <= Length(S)) And (S[I] >= '0') And (S[I] <= '9') Do
+  Begin
+    Width := Width + S[I]; Inc(I);
+  End;
+  { Precision }
+  If (I <= Length(S)) And (S[I] = '.') Then
+  Begin
+    Inc(I);
+    While (I <= Length(S)) And (S[I] >= '0') And (S[I] <= '9') Do
+    Begin
+      Prec := Prec + S[I]; Inc(I);
+    End;
+  End;
+  If I > Length(S) Then
+  Begin
+    SprintfSpecToCS := '{' + ItoS(ArgIdx) + '}';
+    Inc(ArgIdx);
+    Exit;
+  End;
+  Ch := S[I]; Inc(I);
+  IdxStr := ItoS(ArgIdx);
+  Case Ch Of
+    's', 'b': Begin SprintfSpecToCS := '{' + IdxStr + '}'; Inc(ArgIdx); End;
+    'd', 'i', 'u':
+    Begin
+      If Width <> '' Then
+        SprintfSpecToCS := '{' + IdxStr + ':D' + Width + '}'
+      Else
+        SprintfSpecToCS := '{' + IdxStr + ':D}';
+      Inc(ArgIdx);
+    End;
+    'f':
+    Begin
+      If Prec <> '' Then
+        SprintfSpecToCS := '{' + IdxStr + ':F' + Prec + '}'
+      Else
+        SprintfSpecToCS := '{' + IdxStr + ':F}';
+      Inc(ArgIdx);
+    End;
+    'e': Begin SprintfSpecToCS := '{' + IdxStr + ':e}'; Inc(ArgIdx); End;
+    'E': Begin SprintfSpecToCS := '{' + IdxStr + ':E}'; Inc(ArgIdx); End;
+    'g', 'G': Begin SprintfSpecToCS := '{' + IdxStr + ':G}'; Inc(ArgIdx); End;
+    'x': Begin SprintfSpecToCS := '{' + IdxStr + ':x}'; Inc(ArgIdx); End;
+    'X': Begin SprintfSpecToCS := '{' + IdxStr + ':X}'; Inc(ArgIdx); End;
+    'o': Begin SprintfSpecToCS := '/* octal */{' + IdxStr + '}'; Inc(ArgIdx); End;
+    'c': Begin SprintfSpecToCS := '{' + IdxStr + '}'; Inc(ArgIdx); End;
+    '%': SprintfSpecToCS := '%'; { "%%" -> "%" dans le format }
+  Else
+    SprintfSpecToCS := '{' + IdxStr + '}'; Inc(ArgIdx);
+  End;
+End;
+
+{ Convertit une chaine de format PHP sprintf en chaine de format C# string.Format.
+  Remplace %s par arg-0, %d par arg-0:D, %.2f par arg-0:F2, etc. }
+Function SprintfFmtToCS(Const Fmt: TString): TString;
+Var
+  I, ArgIdx: Integer;
+  R: TString;
+Begin
+  R := ''; ArgIdx := 0; I := 1;
+  While I <= Length(Fmt) Do
+  Begin
+    If Fmt[I] = '%' Then
+    Begin
+      Inc(I);
+      If Length(R) < MAX_STR - 20 Then
+        R := R + SprintfSpecToCS(Fmt, I, ArgIdx);
+    End
+    Else If Fmt[I] = '{' Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '{{';
+      Inc(I);
+    End
+    Else If Fmt[I] = '}' Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '}}';
+      Inc(I);
+    End
+    Else If Fmt[I] = #10 Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '\n';
+      Inc(I);
+    End
+    Else If Fmt[I] = #13 Then
+    Begin
+      If Length(R) < MAX_STR - 1 Then R := R + '\r';
+      Inc(I);
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then R := R + Fmt[I];
+      Inc(I);
+    End;
+  End;
+  SprintfFmtToCS := R;
+End;
+
+{ Parse un appel sprintf(fmt, ...) ou printf(fmt, ...) et le convertit en
+  string.Format(...) ou Console.Write(string.Format(...)).
+  IsWrite=True pour printf. CurTok doit pointer sur '(' a l entree. }
+Function ParseSprintfCall(IsWrite: Boolean): TString;
+Var
+  FmtTok  : TToken;
+  FmtCS   : TString;
+  CsArgs  : TString;
+  ConvFmt : TString;
+Begin
+  LexNextToken; { saute '(' }
+  FmtTok := CurTok;
+  FmtCS  := ParseExprStr; { parse l expression de format }
+  CsArgs := '';
+  While (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Do
+  Begin
+    LexNextToken;
+    If CsArgs <> '' Then CsArgs := CsArgs + ', ';
+    CsArgs := CsArgs + ParseExprStr;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+    LexNextToken;
+  { Convertir le format si c est un litteral SQ ou DQ }
+  If FmtTok.Kind In [TK_STRING_SQ, TK_STRING_DQ, TK_HEREDOC] Then
+    ConvFmt := '"' + SprintfFmtToCS(FmtTok.Val) + '"'
+  Else
+    ConvFmt := FmtCS;
+  If IsWrite Then
+  Begin
+    If CsArgs <> '' Then
+      ParseSprintfCall :=
+        'Console.Write(string.Format(' + ConvFmt + ', ' + CsArgs + '))'
+    Else
+      ParseSprintfCall := 'Console.Write(' + ConvFmt + ')';
+  End
+  Else
+  Begin
+    If CsArgs <> '' Then
+      ParseSprintfCall := 'string.Format(' + ConvFmt + ', ' + CsArgs + ')'
+    Else
+      ParseSprintfCall := ConvFmt;
+  End;
+End;
+
+{ Parse un appel number_format(n, dec [, dec_point [, thousands_sep]]) et le
+  convertit en n.ToString("F" + dec). CurTok doit pointer sur '('. }
+Function ParseNumberFormatCall: TString;
+Var
+  Args    : Array[1..4] Of TString;
+  ArgCount: Integer;
+  N, Dec  : TString;
+  AllDig  : Boolean;
+  K       : Integer;
+Begin
+  LexNextToken; { saute '(' }
+  ArgCount := 0;
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+        (CurTok.Kind <> TK_EOF) And (ArgCount < 4) Do
+  Begin
+    Inc(ArgCount);
+    Args[ArgCount] := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      LexNextToken;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+    LexNextToken;
+  N   := '';
+  Dec := '';
+  If ArgCount >= 1 Then N   := Args[1];
+  If ArgCount >= 2 Then Dec := Args[2];
+  { Verifier si Dec est un litteral entier }
+  AllDig := (Dec <> '');
+  For K := 1 To Length(Dec) Do
+    If (Dec[K] < '0') Or (Dec[K] > '9') Then AllDig := False;
+  If Dec = '' Then
+    ParseNumberFormatCall := N + '.ToString()'
+  Else If AllDig Then
+    ParseNumberFormatCall := N + '.ToString("F' + Dec + '")'
+  Else
+    ParseNumberFormatCall :=
+      N + '.ToString("F" + (' + Dec + ').ToString())';
+End;
+
+{ Parse un appel str_pad(s, len [, pad_str [, pad_type]]) et le convertit en
+  s.PadRight(len) ou s.PadLeft(len). CurTok doit pointer sur '('. }
+Function ParseStrPadCall: TString;
+Var
+  Args    : Array[1..4] Of TString;
+  ArgCount: Integer;
+  S, Len  : TString;
+  PadType : TString;
+  IsLeft  : Boolean;
+Begin
+  LexNextToken; { saute '(' }
+  ArgCount := 0;
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+        (CurTok.Kind <> TK_EOF) And (ArgCount < 4) Do
+  Begin
+    Inc(ArgCount);
+    Args[ArgCount] := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      LexNextToken;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+    LexNextToken;
+  S := ''; Len := ''; PadType := '';
+  If ArgCount >= 1 Then S       := Args[1];
+  If ArgCount >= 2 Then Len     := Args[2];
+  If ArgCount >= 4 Then PadType := Args[4];
+  { PHP : STR_PAD_RIGHT=1 (defaut), STR_PAD_LEFT=0, STR_PAD_BOTH=2 }
+  IsLeft := (PadType = '0') Or (LowStr(PadType) = 'str_pad_left');
+  If IsLeft Then
+    ParseStrPadCall := S + '.PadLeft(' + Len + ')'
+  Else
+    ParseStrPadCall := S + '.PadRight(' + Len + ')';
+End;
+
 Procedure Run;
 Begin
   LexInit(Opts.SrcFile);
@@ -3431,7 +3958,7 @@ Begin
     LexNextToken;
   Until CurTok.Kind = TK_EOF;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 08-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 09-25 a faire)');
 End;
 
 Procedure Cleanup;
