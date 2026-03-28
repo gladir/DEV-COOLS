@@ -2018,10 +2018,12 @@ Begin
     Begin
       Inc(ResCount);
       E.ResFormat := FMT_RES16;
-      If (H.TypeId And $8000) <> 0 Then
+      { TypeId a deja le bit 15 supprime par ReadResHeader16 ;
+        determiner numerique vs chaine selon TypeName vide ou non }
+      If H.TypeName = '' Then
       Begin
         E.TypeIsId := True;
-        E.TypeId   := H.TypeId And $7FFF;
+        E.TypeId   := H.TypeId;
         E.TypeName := '';
       End
       Else
@@ -2030,10 +2032,11 @@ Begin
         E.TypeId   := 0;
         E.TypeName := H.TypeName;
       End;
-      If (H.NameId And $8000) <> 0 Then
+      { Meme logique pour le nom de ressource }
+      If H.NameStr = '' Then
       Begin
         E.NameIsId := True;
-        E.NameId   := H.NameId And $7FFF;
+        E.NameId   := H.NameId;
         E.NameStr  := '';
       End
       Else
@@ -4579,6 +4582,22 @@ Begin
   Close(F);
 End;
 
+{ ---- Tester si une ligne RC contient un BEGIN valide ------- }
+{ Retourne True si Line = 'BEGIN' ou se termine par ' BEGIN'   }
+{ (format "ResName RCDATA BEGIN")                              }
+Function LineHasBegin(Const S : TString) : Boolean;
+Var
+  L : Integer;
+Begin
+  L := Length(S);
+  If S = 'BEGIN' Then
+    LineHasBegin := True
+  Else If (L >= 6) And (Copy(S, L - 4, 5) = 'BEGIN') And (S[L - 5] = ' ') Then
+    LineHasBegin := True
+  Else
+    LineHasBegin := False;
+End;
+
 { ---- Verifier le fichier RC genere ------------------------- }
 Procedure VerifyRCFile(Const OutFileName : TString);
 Var
@@ -4618,7 +4637,7 @@ Begin
   Begin
     ReadLn(F, Line);
     Inc(LineCount);
-    If Line = 'BEGIN' Then
+    If LineHasBegin(Line) Then
       Inc(BeginCount)
     Else If Line = 'END' Then
       Inc(EndCount);
