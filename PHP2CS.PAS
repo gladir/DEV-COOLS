@@ -113,7 +113,7 @@
             Modificateurs de visibilite : public protected private
               readonly abstract final static
 
-  TODO 04 - TABLE DES SYMBOLES ET GESTION DES TYPES [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES ET GESTION DES TYPES [IMPLEMENTE]
             TPhpType : PT_INT, PT_FLOAT, PT_STRING, PT_BOOL, PT_NULL,
               PT_ARRAY, PT_OBJECT, PT_MIXED, PT_VOID, PT_NEVER,
               PT_ITERABLE, PT_CALLABLE, PT_UNION (type union PHP 8.0),
@@ -2050,7 +2050,7 @@ End;
 
 { ============================================================
   TODO 03 - MOTS-CLES PHP (IMPLEMENTE)
-  TODO 04 - TABLE DES SYMBOLES ET TYPES (A FAIRE)
+  TODO 04 - TABLE DES SYMBOLES ET TYPES (IMPLEMENTE)
   TODO 05 - GESTION DES SCOPES ET NAMESPACES (A FAIRE)
   TODO 06 - DECLARATIONS DE VARIABLES PHP (A FAIRE)
   TODO 07 - EXPRESSIONS (A FAIRE)
@@ -2074,6 +2074,174 @@ End;
   TODO 25 - FINALISATION, RAPPORT ET EXEMPLES (A FAIRE)
   ============================================================ }
 
+{ ============================================================
+  TODO 04 - TABLE DES SYMBOLES ET GESTION DES TYPES [IMPLEMENTE]
+  ============================================================ }
+
+{ Retourne un ordinal numerique pour une version C# afin de la comparer }
+Function CsVerOrdinal(Const V: TString): Integer;
+Begin
+  If      V = CS_VER_60  Then CsVerOrdinal := 60
+  Else If V = CS_VER_70  Then CsVerOrdinal := 70
+  Else If V = CS_VER_80  Then CsVerOrdinal := 80
+  Else If V = CS_VER_90  Then CsVerOrdinal := 90
+  Else If V = CS_VER_100 Then CsVerOrdinal := 100
+  Else If V = CS_VER_110 Then CsVerOrdinal := 110
+  Else If V = CS_VER_120 Then CsVerOrdinal := 120
+  Else                        CsVerOrdinal := 0;
+End;
+
+{ Retourne vrai si la version V est >= la version minimale Min }
+Function CsVersionGE(Const V, Min: TString): Boolean;
+Begin
+  CsVersionGE := CsVerOrdinal(V) >= CsVerOrdinal(Min);
+End;
+
+{ Convertit un nom PHP (snake_case / mixte) en PascalCase C# }
+Function MakeCsName(Const PhpName: TString): TString;
+Var
+  I   : Integer;
+  Cap : Boolean;
+  S, R: TString;
+Begin
+  S   := PhpName;
+  R   := '';
+  Cap := True;
+  For I := 1 To Length(S) Do
+  Begin
+    If S[I] = '_' Then
+      Cap := True
+    Else
+    Begin
+      If Cap Then
+      Begin
+        If Length(R) < MAX_STR Then
+          R := R + UpStr(Copy(S, I, 1));
+        Cap := False;
+      End
+      Else
+        If Length(R) < MAX_STR Then
+          R := R + S[I];
+    End;
+  End;
+  If R = '' Then R := S;
+  MakeCsName := R;
+End;
+
+{ Retourne le TPhpType correspondant au nom de type PHP (insensible casse) }
+Function PhpTypeFromStr(Const S: TString): TPhpType;
+Var LS: TString;
+Begin
+  LS := LowStr(S);
+  If      LS = 'int'       Then PhpTypeFromStr := PT_INT
+  Else If LS = 'integer'   Then PhpTypeFromStr := PT_INT
+  Else If LS = 'float'     Then PhpTypeFromStr := PT_FLOAT
+  Else If LS = 'double'    Then PhpTypeFromStr := PT_FLOAT
+  Else If LS = 'string'    Then PhpTypeFromStr := PT_STRING
+  Else If LS = 'bool'      Then PhpTypeFromStr := PT_BOOL
+  Else If LS = 'boolean'   Then PhpTypeFromStr := PT_BOOL
+  Else If LS = 'null'      Then PhpTypeFromStr := PT_NULL
+  Else If LS = 'array'     Then PhpTypeFromStr := PT_ARRAY
+  Else If LS = 'object'    Then PhpTypeFromStr := PT_OBJECT
+  Else If LS = 'mixed'     Then PhpTypeFromStr := PT_MIXED
+  Else If LS = 'void'      Then PhpTypeFromStr := PT_VOID
+  Else If LS = 'never'     Then PhpTypeFromStr := PT_NEVER
+  Else If LS = 'iterable'  Then PhpTypeFromStr := PT_ITERABLE
+  Else If LS = 'callable'  Then PhpTypeFromStr := PT_CALLABLE
+  Else                          PhpTypeFromStr := PT_UNKNOWN;
+End;
+
+{ Convertit un type PHP en type C# selon la version cible et le framework.
+  Nullable=True ajoute le ? pour les types valeur (int?,bool?,double?) en
+  C# 8+ et pour les types reference en C# 8+ (nullable reference types). }
+Function TypePhpToCS(T: TPhpType; Nullable: Boolean;
+                     Const CsVer: TString; Fw: Integer): TString;
+Var Base: TString;
+Begin
+  Case T Of
+    PT_INT        : Base := 'int';
+    PT_FLOAT      : Base := 'double';    { PHP float = IEEE 754 double   }
+    PT_STRING     : Base := 'string';
+    PT_BOOL       : Base := 'bool';
+    PT_NULL       : Base := 'null';
+    PT_ARRAY      : Base := 'List<object>';
+    PT_OBJECT     : Base := 'object';
+    PT_VOID       : Base := 'void';
+    PT_NEVER      : Base := 'void';      { pas d equivalent exact en C#  }
+    PT_ITERABLE   : Base := 'IEnumerable<object>';
+    PT_CALLABLE   : Base := 'Func<object>';
+    PT_MIXED      : Base := 'dynamic';   { dynamic disponible depuis C#4 }
+    PT_UNION,
+    PT_INTERSECTION: Base := 'object';  { types complexes : simplification }
+    PT_NULLABLE   : Base := 'object';   { resoudre le type interne en amont }
+  Else
+    Base := 'object';
+  End;
+  { Ajout du suffixe nullable en C# 8+ }
+  If Nullable And CsVersionGE(CsVer, CS_VER_80) Then
+  Begin
+    If (Base = 'void') Or (Base = 'null') Then
+      TypePhpToCS := Base              { void/null ne prennent pas ? }
+    Else
+      TypePhpToCS := Base + '?';
+  End
+  Else
+    TypePhpToCS := Base;
+End;
+
+{ Ajoute un symbole dans la table ; retourne son indice (1-base) ou 0 si pleine }
+Function SymAdd(Const Name: TString; Kind: TSymKind; PhpType: TPhpType;
+                Nullable, IsRef: Boolean; Scope, DeclLine: Integer): Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    WarnMsg('table des symboles pleine (MAX_SYM=' + ItoS(MAX_SYM) + ')');
+    SymAdd := 0;
+    Exit;
+  End;
+  Inc(SymCount);
+  SymTab[SymCount].Name     := Name;
+  SymTab[SymCount].CsName   := MakeCsName(Name);
+  SymTab[SymCount].Kind     := Kind;
+  SymTab[SymCount].PhpType  := PhpType;
+  SymTab[SymCount].Nullable := Nullable;
+  SymTab[SymCount].IsRef    := IsRef;
+  SymTab[SymCount].Scope    := Scope;
+  SymTab[SymCount].DeclLine := DeclLine;
+  SymAdd := SymCount;
+End;
+
+{ Cherche un symbole par nom strictement dans le scope indique ;
+  retourne l indice dans SymTab (1-base) ou 0 si non trouve }
+Function SymFindLocal(Const Name: TString; Scope: Integer): Integer;
+Var I: Integer;
+Begin
+  For I := 1 To SymCount Do
+    If (SymTab[I].Name = Name) And (SymTab[I].Scope = Scope) Then
+    Begin
+      SymFindLocal := I;
+      Exit;
+    End;
+  SymFindLocal := 0;
+End;
+
+{ Cherche un symbole dans le scope global (Scope=0) }
+Function SymFindGlobal(Const Name: TString): Integer;
+Begin
+  SymFindGlobal := SymFindLocal(Name, 0);
+End;
+
+{ Cherche un symbole d abord dans le scope local, puis dans le scope global }
+Function SymFind(Const Name: TString; Scope: Integer): Integer;
+Var Idx: Integer;
+Begin
+  Idx := SymFindLocal(Name, Scope);
+  If Idx > 0 Then
+    SymFind := Idx
+  Else
+    SymFind := SymFindGlobal(Name);
+End;
+
 Procedure Run;
 Begin
   LexInit(Opts.SrcFile);
@@ -2082,7 +2250,7 @@ Begin
     LexNextToken;
   Until CurTok.Kind = TK_EOF;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 04-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 05-25 a faire)');
 End;
 
 Procedure Cleanup;
