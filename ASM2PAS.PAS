@@ -9481,6 +9481,8 @@ Function InvertFlagExpr(Const FExpr:String):String;
 Begin
  If Pos('not ',FExpr)=1 Then
   InvertFlagExpr:=Copy(FExpr,5,255)
+ Else If(Length(FExpr)>0)and(FExpr[1]='(')Then
+  InvertFlagExpr:='not '+FExpr
  Else
   InvertFlagExpr:='not ('+FExpr+')';
 End;
@@ -9549,7 +9551,7 @@ Begin
   Exit;
  End;
  { Expression sur flags (If FlagXX Then ou If not FlagXX Then) }
- If(Length(CondPart)>0)and(Pos('Goto',CondPart)=0)Then Begin
+ If(Length(CondPart)>0)and(Pos('GOTO',UpCaseStr(CondPart))=0)Then Begin
   CondA:=CondPart;
   CondOp:='';
   CondB:='';
