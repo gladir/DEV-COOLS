@@ -6034,8 +6034,8 @@ End;
   CurTok est sur '[' ou deja consomme pour array(.
   Detecte la forme associative (=>).
   Retourne:
-    - CS12+ :  [v1, v2]  ou  CS < 12 : new List<object> { v1, v2 }
-    - Associatif : new Dictionary<string,object> { {"k",v}, ... }
+    - CS12+ : [v1, v2]  ou  CS < 12 : new List<object> ...
+    - Associatif : new Dictionary<string,object> ...
   Gere la recursion (tableaux imbriques). }
 Function ParseArrayLiteral: TString;
 Var
@@ -6100,26 +6100,13 @@ End;
   Retourne la chaine C# equivalente. }
 Function ParseArrayFuncCall(Const FnLow: TString): TString;
 Var
-  Arg1, Arg2, Arg3, Arg4: TString;
-  ArgCount: Integer;
-  { Lecture d un argument : parse une expression et consomme ',' ou ')' }
-  Function ReadArg(Out Done: Boolean): TString;
-  Var E: TString;
-  Begin
-    E := ParseExprStr;
-    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
-    Begin
-      LexNextToken; Done := False;
-    End
-    Else
-      Done := True;
-    ReadArg := E;
-  End;
-Var Done: Boolean;
+  Arg1, Arg2, Arg3, R: TString;
+  IsAssoc2 : Boolean;
+  Key2, Val2: TString;
+  IsFirst2  : Boolean;
 Begin
   LexNextToken; { past '(' }
-  Arg1 := ''; Arg2 := ''; Arg3 := ''; Arg4 := '';
-  ArgCount := 0;
+  Arg1 := ''; Arg2 := ''; Arg3 := '';
 
   { --- Fonctions a 1 argument --- }
   If (FnLow = 'count') Or (FnLow = 'sizeof') Then
@@ -6209,21 +6196,26 @@ Begin
   { --- Fonctions a 2 arguments --- }
   Else If (FnLow = 'in_array') Or (FnLow = 'array_contains') Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall := Arg2 + '.Contains(' + Arg1 + ')';
   End
   Else If FnLow = 'array_search' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall := Arg2 + '.IndexOf(' + Arg1 + ')';
   End
   Else If FnLow = 'array_push' Then
   Begin
-    Arg1 := ReadArg(Done);
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
     Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
@@ -6231,14 +6223,18 @@ Begin
   End
   Else If FnLow = 'array_unshift' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall := Arg1 + '.Insert(0, ' + Arg2 + ')';
   End
   Else If FnLow = 'array_merge' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall :=
@@ -6246,14 +6242,18 @@ Begin
   End
   Else If (FnLow = 'implode') Or (FnLow = 'join') Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall := 'string.Join(' + Arg1 + ', ' + Arg2 + ')';
   End
   Else If FnLow = 'explode' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And
        ((CurTok.Val = ')') Or (CurTok.Val = ',')) Then
     Begin
@@ -6269,28 +6269,37 @@ Begin
   End
   Else If FnLow = 'array_map' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall := Arg2 + '.Select(' + Arg1 + ').ToList()';
   End
   Else If FnLow = 'array_filter' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall := Arg1 + '.Where(' + Arg2 + ').ToList()';
   End
   Else If FnLow = 'array_key_exists' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall := Arg2 + '.ContainsKey(' + Arg1 + ')';
   End
   Else If FnLow = 'array_pad' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ReadArg(Done);
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
     Arg3 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
@@ -6300,17 +6309,17 @@ Begin
   { --- Fonctions a 3 arguments --- }
   Else If FnLow = 'array_slice' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ReadArg(Done);
-    If Not Done Then
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
     Begin
+      LexNextToken; { consommer la virgule avant le 3e argument }
       Arg3 := ParseExprStr;
-      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
-      Begin
-        LexNextToken; { ignorer preserve_keys }
-        While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
-              (CurTok.Kind <> TK_EOF) Do
-          LexNextToken;
-      End;
+      { Ignorer preserve_keys eventuellement }
+      While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+            (CurTok.Kind <> TK_EOF) Do
+        LexNextToken;
       If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
         LexNextToken;
       ParseArrayFuncCall := Arg1 + '.GetRange(' + Arg2 + ', ' + Arg3 + ')';
@@ -6334,7 +6343,9 @@ Begin
   End
   Else If FnLow = 'array_chunk' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And
        ((CurTok.Val = ')') Or (CurTok.Val = ',')) Then
     Begin
@@ -6351,7 +6362,10 @@ Begin
   End
   Else If FnLow = 'array_reduce' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ReadArg(Done);
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
     Arg3 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
@@ -6360,7 +6374,9 @@ Begin
   End
   Else If FnLow = 'array_combine' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall :=
@@ -6369,7 +6385,9 @@ Begin
   End
   Else If FnLow = 'array_diff' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall :=
@@ -6377,7 +6395,9 @@ Begin
   End
   Else If FnLow = 'array_intersect' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall :=
@@ -6386,7 +6406,10 @@ Begin
   Else If FnLow = 'array_fill' Then
   Begin
     { array_fill(start_index, num, value) -> Enumerable.Repeat(value,num).ToList() }
-    Arg1 := ReadArg(Done); Arg2 := ReadArg(Done);
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
     Arg3 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
@@ -6395,7 +6418,9 @@ Begin
   End
   Else If (FnLow = 'usort') Or (FnLow = 'uasort') Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall :=
@@ -6403,7 +6428,9 @@ Begin
   End
   Else If FnLow = 'uksort' Then
   Begin
-    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
     ParseArrayFuncCall :=
@@ -6412,19 +6439,16 @@ Begin
   End
   Else If FnLow = 'compact' Then
   Begin
-    { compact('a','b') -> new Dictionary<string,object>{{"a",a},{"b",b}} }
+    { compact('a','b') -> new Dictionary<string,object> avec les variables }
     R := 'new Dictionary<string,object> {';
-    Done := False;
-    While Not Done And (CurTok.Kind <> TK_EOF) Do
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
     Begin
       Arg1 := ParseExprStr;
-      { Arg1 est une chaine entre guillemets : retirer les guillemets }
       If R <> 'new Dictionary<string,object> {' Then R := R + ',';
       R := R + ' {' + Arg1 + ', ' + Arg1 + '}';
       If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
-        LexNextToken
-      Else
-        Done := True;
+        LexNextToken;
     End;
     If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
       LexNextToken;
@@ -6441,13 +6465,51 @@ Begin
   Else If FnLow = 'array' Then
   Begin
     { array(v1, v2, ...) ou array('k'=>v, ...) }
-    ParseArrayFuncCall := ParseArrayLiteral;
+    { Note: '(' deja consomme par LexNextToken au debut; on parse le corps directement }
+    IsAssoc2 := False;
+    R := '';
+    IsFirst2 := True;
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      Begin
+        LexNextToken;
+        Continue;
+      End;
+      Key2 := ParseExprStr;
+      If (CurTok.Kind = TK_OP) And (CurTok.Val = '=>') Then
+      Begin
+        IsAssoc2 := True;
+        LexNextToken;
+        Val2 := ParseExprStr;
+        If IsFirst2 Then
+          R := '{' + Key2 + ', ' + Val2 + '}'
+        Else
+          R := R + ', {' + Key2 + ', ' + Val2 + '}';
+        IsFirst2 := False;
+      End
+      Else
+      Begin
+        If IsFirst2 Then
+          R := Key2
+        Else
+          R := R + ', ' + Key2;
+        IsFirst2 := False;
+      End;
+    End;
+    LexNextToken; { past ')' }
+    If IsAssoc2 Then
+      ParseArrayFuncCall := 'new Dictionary<string,object> { ' + R + ' }'
+    Else If CsVersionGE(Opts.CsVersion, CS_VER_120) Then
+      ParseArrayFuncCall := '[' + R + ']'
+    Else
+      ParseArrayFuncCall := 'new List<object> { ' + R + ' }';
   End
   Else
   Begin
     { Autres fonctions tableau non reconnues : appel generique }
     R := MakeCsName(FnLow) + '(';
-    Done := False;
     While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
           (CurTok.Kind <> TK_EOF) Do
     Begin
