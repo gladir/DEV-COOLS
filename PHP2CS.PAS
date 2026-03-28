@@ -187,7 +187,7 @@
               $_FILES -> IFormFile (ASP.NET)
               $GLOBALS -> stub (champ statique de classe)
 
-  TODO 07 - TRANSPILATION : EXPRESSIONS [A FAIRE]
+  TODO 07 - TRANSPILATION : EXPRESSIONS [IMPLEMENTE]
             Parseur d expressions PHP avec precedence complete :
               Niveau 1  : yield / yield from
               Niveau 2  : ternaire ? :, ternaire court ?:
@@ -2066,7 +2066,7 @@ End;
   TODO 04 - TABLE DES SYMBOLES ET TYPES (IMPLEMENTE)
   TODO 05 - GESTION DES SCOPES ET NAMESPACES (IMPLEMENTE)
   TODO 06 - DECLARATIONS DE VARIABLES PHP (IMPLEMENTE)
-  TODO 07 - EXPRESSIONS (A FAIRE)
+  TODO 07 - EXPRESSIONS (IMPLEMENTE)
   TODO 08 - CHAINES ET INTERPOLATION (A FAIRE)
   TODO 09 - STRUCTURES DE CONTROLE (A FAIRE)
   TODO 10 - BOUCLES (A FAIRE)
@@ -2391,6 +2391,9 @@ End;
   TODO 06 - TRANSPILATION : DECLARATIONS DE VARIABLES PHP [IMPLEMENTE]
   ============================================================ }
 
+{ Declaration anticipee pour TODO 07 (recursion avec TODO 06) }
+Function ParseExprStr: TString; Forward;
+
 { Supprime le '$' initial d un nom de variable PHP }
 Function VarPhpName(Const S: TString): TString;
 Begin
@@ -2590,13 +2593,9 @@ Begin
   { Lire le RHS (token suivant = premier token du RHS) }
   LexNextToken;
   Inferred := VarInferType(CurTok);
-  RhsCs    := TokToCS(CurTok);
   Nullable := (Inferred = PT_NULL);
-
-  { Consommer jusqu au ';' (RHS multi-token gere par TODO 07) }
-  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
-        (CurTok.Kind <> TK_EOF) Do
-    LexNextToken;
+  RhsCs    := ParseExprStr;
+  { CurTok est maintenant le token stop (';') }
 
   { Determiner le type C# }
   Case Inferred Of
@@ -2649,11 +2648,8 @@ Begin
 
   LexNextToken;
   Inferred := VarInferType(CurTok);
-  RhsCs    := TokToCS(CurTok);
-
-  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
-        (CurTok.Kind <> TK_EOF) Do
-    LexNextToken;
+  RhsCs    := ParseExprStr;
+  { CurTok est maintenant le token stop (';') }
 
   Case Inferred Of
     PT_INT    : CsType := 'int';
@@ -2724,11 +2720,8 @@ Begin
   If Not ((CurTok.Kind = TK_OP) And (CurTok.Val = '=')) Then Exit;
 
   LexNextToken;
-  RhsCs := TokToCS(CurTok);
-
-  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
-        (CurTok.Kind <> TK_EOF) Do
-    LexNextToken;
+  RhsCs := ParseExprStr;
+  { CurTok est maintenant le token stop (';') }
 
   { Emettre seulement si C# 7+ supporte les tuples }
   If CsVersionGE(Opts.CsVersion, CS_VER_70) Then
@@ -2744,6 +2737,692 @@ Begin
   ParseDestructDecl := True;
 End;
 
+{ ============================================================
+  TODO 07 - TRANSPILATION : EXPRESSIONS PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Retourne vrai si le nom est un type de cast PHP reconnu }
+Function IsCastType(Const S: TString): Boolean;
+Var L: TString;
+Begin
+  L := LowStr(S);
+  IsCastType := (L = 'int') Or (L = 'integer') Or
+                (L = 'float') Or (L = 'double') Or (L = 'real') Or
+                (L = 'bool') Or (L = 'boolean') Or
+                (L = 'string') Or (L = 'array') Or
+                (L = 'object') Or (L = 'unset');
+End;
+
+{ Retourne la representation C# d un operateur binaire PHP }
+Function PhpBinOpToCS(Const Op: TString): TString;
+Var L: TString;
+Begin
+  L := LowStr(Op);
+  If      Op = '.'   Then PhpBinOpToCS := '+'
+  Else If Op = '===' Then PhpBinOpToCS := '=='
+  Else If Op = '!==' Then PhpBinOpToCS := '!='
+  Else If Op = '<>'  Then PhpBinOpToCS := '!='
+  Else If Op = '?->' Then PhpBinOpToCS := '?.'
+  Else If Op = '->'  Then PhpBinOpToCS := '.'
+  Else If Op = '::'  Then PhpBinOpToCS := '.'
+  Else If L  = 'and' Then PhpBinOpToCS := '&&'
+  Else If L  = 'or'  Then PhpBinOpToCS := '||'
+  Else If L  = 'xor' Then PhpBinOpToCS := '^'
+  Else If Op = '.='  Then PhpBinOpToCS := '+='
+  Else                    PhpBinOpToCS := Op;
+End;
+
+{ Retourne la representation C# d un cast PHP }
+Function PhpCastToCS(Const CastName: TString): TString;
+Var L: TString;
+Begin
+  L := LowStr(TrimStr(CastName));
+  If (L = 'int') Or (L = 'integer') Then
+    PhpCastToCS := '(int)'
+  Else If (L = 'float') Or (L = 'double') Or (L = 'real') Then
+    PhpCastToCS := '(double)'
+  Else If (L = 'bool') Or (L = 'boolean') Then
+    PhpCastToCS := '(bool)'
+  Else If L = 'string' Then
+    PhpCastToCS := '' { handled by .ToString() suffix }
+  Else If L = 'array' Then
+    PhpCastToCS := '' { handled specially }
+  Else If L = 'object' Then
+    PhpCastToCS := '(object)'
+  Else If L = 'unset' Then
+    PhpCastToCS := '' { PHP unset cast }
+  Else
+    PhpCastToCS := '(' + CastName + ')';
+End;
+
+{ Retourne la representation C# d une constante magique PHP }
+Function PhpMagicConstToCS(Const Name: TString; SrcLine: Integer): TString;
+Var L: TString;
+Begin
+  L := LowStr(Name);
+  If      L = '__line__'      Then PhpMagicConstToCS := ItoS(SrcLine)
+  Else If L = '__file__'      Then PhpMagicConstToCS := '"' + Opts.SrcFile + '"'
+  Else If L = '__class__'     Then PhpMagicConstToCS := 'nameof(' + ScopeCurrentName + ')'
+  Else If L = '__method__'    Then PhpMagicConstToCS := 'nameof(' + ScopeCurrentName + ')'
+  Else If L = '__function__'  Then PhpMagicConstToCS := 'nameof(' + ScopeCurrentName + ')'
+  Else If L = '__namespace__' Then PhpMagicConstToCS := '"' + NsPhpToCS(CurrentNs) + '"'
+  Else If L = '__dir__'       Then
+    PhpMagicConstToCS := 'System.IO.Path.GetDirectoryName("' + Opts.SrcFile + '")'
+  Else If L = '__trait__'     Then PhpMagicConstToCS := 'nameof(' + ScopeCurrentName + ')'
+  Else                             PhpMagicConstToCS := '"' + Name + '"';
+End;
+
+{ Concatenation securisee : tronque avec avertissement si > MAX_STR }
+Function ExprAppend(Const A, B: TString): TString;
+Begin
+  If Length(A) + Length(B) <= MAX_STR Then
+    ExprAppend := A + B
+  Else
+  Begin
+    WarnMsg('expression C# trop longue, tronquee');
+    ExprAppend := Copy(A + B, 1, MAX_STR);
+  End;
+End;
+
+{ Retourne vrai si CurTok est un token qui termine une expression }
+Function IsExprStop: Boolean;
+Begin
+  IsExprStop :=
+    (CurTok.Kind = TK_EOF) Or
+    ((CurTok.Kind = TK_PUNCT) And
+      ((CurTok.Val = ';') Or (CurTok.Val = ')') Or
+       (CurTok.Val = ']') Or (CurTok.Val = '}') Or
+       (CurTok.Val = ',')));
+End;
+
+{ Parse les arguments d un appel de fonction : FnCs '(' arg1, arg2, ... ')'
+  Pre: CurTok pointe sur '('. Post: CurTok pointe sur le token apres ')'. }
+Function ParseFnCallArgs(Const FnCs: TString): TString;
+Var R: TString;
+Begin
+  R := ExprAppend(FnCs, '(');
+  LexNextToken; { past '(' }
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+        (CurTok.Kind <> TK_EOF) Do
+  Begin
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      R := ExprAppend(R, ', ');
+      LexNextToken;
+    End
+    Else If (CurTok.Kind = TK_OP) And (CurTok.Val = '...') Then
+    Begin
+      { spread operator ...args }
+      LexNextToken;
+      R := ExprAppend(R, ParseExprStr);
+      R := ExprAppend(R, '.ToArray()');
+    End
+    Else If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '&') Then
+    Begin
+      { reference argument &$x }
+      LexNextToken; { skip '&' }
+      R := ExprAppend(R, 'ref ');
+      R := ExprAppend(R, ParseExprStr);
+    End
+    Else
+      R := ExprAppend(R, ParseExprStr);
+  End;
+  R := ExprAppend(R, ')');
+  LexNextToken; { past ')' }
+  ParseFnCallArgs := R;
+End;
+
+{ Niveau 14 - Primaire : literal, variable, (expr), [array], appel, new, cast }
+Function ParseExprPrimary: TString;
+Var R, CastName, MemberName, Op: TString;
+Begin
+  R := '';
+  Case CurTok.Kind Of
+    TK_INTEGER :
+    Begin
+      R := ItoS(CurTok.IntVal);
+      LexNextToken;
+    End;
+    TK_FLOAT :
+    Begin
+      R := CurTok.Val;
+      LexNextToken;
+    End;
+    TK_STRING_SQ :
+    Begin
+      R := '"' + CurTok.Val + '"';
+      LexNextToken;
+    End;
+    TK_STRING_DQ, TK_HEREDOC :
+    Begin
+      R := '$"' + CurTok.Val + '"';
+      LexNextToken;
+    End;
+    TK_NOWDOC :
+    Begin
+      R := '@"' + CurTok.Val + '"';
+      LexNextToken;
+    End;
+    TK_VAR :
+    Begin
+      If IsSuperGlobal(CurTok.Val) Then
+        R := SuperGlobalCS(CurTok.Val, Opts.Framework)
+      Else
+        R := MakeCsName(VarPhpName(CurTok.Val));
+      LexNextToken;
+      { post ++/-- }
+      If (CurTok.Kind = TK_OP) And
+         ((CurTok.Val = '++') Or (CurTok.Val = '--')) Then
+      Begin
+        R := ExprAppend(R, CurTok.Val);
+        LexNextToken;
+      End;
+      { member access ->, ::, ?-> et acces tableau [] }
+      While ((CurTok.Kind = TK_OP) And
+             ((CurTok.Val = '->') Or (CurTok.Val = '::') Or
+              (CurTok.Val = '?->'))) Or
+            ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '[')) Do
+      Begin
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '[') Then
+        Begin
+          LexNextToken;
+          R := ExprAppend(R, '[');
+          R := ExprAppend(R, ParseExprStr);
+          { CurTok = ']' }
+          R := ExprAppend(R, ']');
+          LexNextToken; { past ']' }
+        End
+        Else
+        Begin
+          Op := CurTok.Val;
+          LexNextToken; { member name }
+          MemberName := MakeCsName(CurTok.Val);
+          LexNextToken;
+          If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+            R := ParseFnCallArgs(ExprAppend(R, PhpBinOpToCS(Op) + MemberName))
+          Else
+            R := ExprAppend(R, PhpBinOpToCS(Op) + MemberName);
+        End;
+      End;
+    End;
+    TK_IDENT :
+    Begin
+      R := MakeCsName(CurTok.Val);
+      LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+        R := ParseFnCallArgs(R)
+      Else
+      Begin
+        { member access via :: }
+        While (CurTok.Kind = TK_OP) And
+              ((CurTok.Val = '::') Or (CurTok.Val = '->')) Do
+        Begin
+          Op := CurTok.Val;
+          LexNextToken;
+          MemberName := MakeCsName(CurTok.Val);
+          LexNextToken;
+          If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+            R := ParseFnCallArgs(ExprAppend(R, '.' + MemberName))
+          Else
+            R := ExprAppend(R, '.' + MemberName);
+        End;
+        { acces tableau }
+        While (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '[') Do
+        Begin
+          LexNextToken;
+          R := ExprAppend(R, '[');
+          R := ExprAppend(R, ParseExprStr);
+          R := ExprAppend(R, ']');
+          LexNextToken; { past ']' }
+        End;
+      End;
+    End;
+    TK_KEYWORD :
+    Begin
+      If LowStr(CurTok.Val) = 'true' Then
+      Begin
+        R := 'true'; LexNextToken;
+      End
+      Else If LowStr(CurTok.Val) = 'false' Then
+      Begin
+        R := 'false'; LexNextToken;
+      End
+      Else If LowStr(CurTok.Val) = 'null' Then
+      Begin
+        R := 'null'; LexNextToken;
+      End
+      Else If LowStr(CurTok.Val) = 'new' Then
+      Begin
+        LexNextToken; { class name }
+        R := 'new ' + MakeCsName(CurTok.Val);
+        LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+          R := ParseFnCallArgs(R);
+      End
+      Else If (LowStr(CurTok.Val) = '__line__')   Or
+              (LowStr(CurTok.Val) = '__file__')   Or
+              (LowStr(CurTok.Val) = '__class__')  Or
+              (LowStr(CurTok.Val) = '__method__') Or
+              (LowStr(CurTok.Val) = '__function__') Or
+              (LowStr(CurTok.Val) = '__namespace__') Or
+              (LowStr(CurTok.Val) = '__dir__')    Or
+              (LowStr(CurTok.Val) = '__trait__') Then
+      Begin
+        R := PhpMagicConstToCS(CurTok.Val, CurTok.Line);
+        LexNextToken;
+      End
+      Else
+      Begin
+        R := MakeCsName(CurTok.Val);
+        LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+          R := ParseFnCallArgs(R);
+      End;
+    End;
+    TK_PUNCT :
+    Begin
+      If CurTok.Val = '(' Then
+      Begin
+        LexNextToken; { past '(' }
+        { Detecter un cast PHP : (int), (float), (string), etc. }
+        If (CurTok.Kind = TK_KEYWORD) And IsCastType(CurTok.Val) Then
+        Begin
+          CastName := CurTok.Val;
+          LexNextToken; { past type keyword }
+          If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+          Begin
+            { C est un cast }
+            LexNextToken; { past ')' }
+            If LowStr(CastName) = 'string' Then
+            Begin
+              { (string)expr -> expr.ToString() }
+              R := ExprAppend(ParseExprPrimary, '.ToString()');
+            End
+            Else If LowStr(CastName) = 'array' Then
+            Begin
+              { cast array : List<object> wrapper }
+              R := ExprAppend('new List<object> { ', ParseExprPrimary);
+              R := ExprAppend(R, ' }');
+            End
+            Else
+              R := ExprAppend(PhpCastToCS(CastName), ParseExprPrimary);
+          End
+          Else
+          Begin
+            { Pas un cast pur : expression parenthesee commencant par le mot-cle }
+            R := '(' + MakeCsName(CastName);
+            R := ExprAppend(R, ParseExprStr);
+            R := ExprAppend(R, ')');
+            LexNextToken; { past ')' }
+          End;
+        End
+        Else
+        Begin
+          { Expression parenthesee ordinaire }
+          R := '(' + ParseExprStr + ')';
+          { CurTok = ')' }
+          LexNextToken; { past ')' }
+        End;
+      End
+      Else If CurTok.Val = '[' Then
+      Begin
+        { Tableau litteral [v1, v2, ...] }
+        R := 'new object[] {';
+        LexNextToken;
+        While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ']')) And
+              (CurTok.Kind <> TK_EOF) Do
+        Begin
+          If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+          Begin
+            R := ExprAppend(R, ', '); LexNextToken;
+          End
+          Else
+            R := ExprAppend(R, ParseExprStr);
+        End;
+        R := ExprAppend(R, '}');
+        LexNextToken; { past ']' }
+      End
+      Else If CurTok.Val = '&' Then
+      Begin
+        { reference &$var ou & expression }
+        LexNextToken; { skip '&' }
+        R := ParseExprPrimary;
+      End;
+    End;
+    TK_OP :
+    Begin
+      { @ suppresseur d erreur : ignorer }
+      If CurTok.Val = '@' Then
+      Begin
+        LexNextToken;
+        R := ParseExprPrimary;
+      End;
+    End;
+  Else
+    { Token inconnu : consommer et retourner vide }
+    LexNextToken;
+  End;
+  ParseExprPrimary := R;
+End;
+
+{ Niveau 13 - Unaires : ! ~ - + pre++/-- instanceof }
+Function ParseExprUnary: TString;
+Var Op, Operand: TString;
+Begin
+  If (CurTok.Kind = TK_OP) And
+     ((CurTok.Val = '!') Or (CurTok.Val = '~') Or
+      (CurTok.Val = '-') Or (CurTok.Val = '+')) Then
+  Begin
+    Op := CurTok.Val;
+    LexNextToken;
+    Operand := ParseExprUnary;
+    ParseExprUnary := ExprAppend(Op, Operand);
+  End
+  Else If (CurTok.Kind = TK_OP) And
+          ((CurTok.Val = '++') Or (CurTok.Val = '--')) Then
+  Begin
+    Op := CurTok.Val;
+    LexNextToken;
+    Operand := ParseExprUnary;
+    ParseExprUnary := ExprAppend(Op, Operand);
+  End
+  Else
+  Begin
+    Operand := ParseExprPrimary;
+    { instanceof -> is (C#) }
+    If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'instanceof') Then
+    Begin
+      LexNextToken; { class name }
+      Operand := ExprAppend(Operand, ' is ');
+      Operand := ExprAppend(Operand, MakeCsName(CurTok.Val));
+      LexNextToken;
+    End;
+    ParseExprUnary := Operand;
+  End;
+End;
+
+{ Niveau 12 - Puissance : ** -> Math.Pow(...) }
+Function ParseExprPow: TString;
+Var L, R: TString;
+Begin
+  L := ParseExprUnary;
+  While (CurTok.Kind = TK_OP) And (CurTok.Val = '**') Do
+  Begin
+    LexNextToken;
+    R := ParseExprUnary;
+    L := ExprAppend('Math.Pow(' + L + ', ', ExprAppend(R, ')'));
+  End;
+  ParseExprPow := L;
+End;
+
+{ Niveau 11 - * / % }
+Function ParseExprMulDiv: TString;
+Var L, R, Op: TString;
+Begin
+  L := ParseExprPow;
+  While (CurTok.Kind = TK_OP) And
+        ((CurTok.Val = '*') Or (CurTok.Val = '/') Or (CurTok.Val = '%')) Do
+  Begin
+    Op := CurTok.Val;
+    LexNextToken;
+    R := ParseExprPow;
+    L := ExprAppend(L, ' ' + Op + ' ');
+    L := ExprAppend(L, R);
+  End;
+  ParseExprMulDiv := L;
+End;
+
+{ Niveau 10 - + - . (concat) }
+Function ParseExprAddSub: TString;
+Var L, R, Op: TString;
+Begin
+  L := ParseExprMulDiv;
+  While ((CurTok.Kind = TK_OP) And
+         ((CurTok.Val = '+') Or (CurTok.Val = '-'))) Or
+        ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '.')) Do
+  Begin
+    Op := PhpBinOpToCS(CurTok.Val);  { '.' -> '+' }
+    LexNextToken;
+    R := ParseExprMulDiv;
+    L := ExprAppend(L, ' ' + Op + ' ');
+    L := ExprAppend(L, R);
+  End;
+  ParseExprAddSub := L;
+End;
+
+{ Niveau 9 - << >> }
+Function ParseExprShift: TString;
+Var L, R, Op: TString;
+Begin
+  L := ParseExprAddSub;
+  While (CurTok.Kind = TK_OP) And
+        ((CurTok.Val = '<<') Or (CurTok.Val = '>>')) Do
+  Begin
+    Op := CurTok.Val;
+    LexNextToken;
+    R := ParseExprAddSub;
+    L := ExprAppend(L, ' ' + Op + ' ');
+    L := ExprAppend(L, R);
+  End;
+  ParseExprShift := L;
+End;
+
+{ Niveau 8 - < <= > >= }
+Function ParseExprComparison: TString;
+Var L, R, Op: TString;
+Begin
+  L := ParseExprShift;
+  While (CurTok.Kind = TK_OP) And
+        ((CurTok.Val = '<') Or (CurTok.Val = '<=') Or
+         (CurTok.Val = '>') Or (CurTok.Val = '>=')) Do
+  Begin
+    Op := CurTok.Val;
+    LexNextToken;
+    R := ParseExprShift;
+    L := ExprAppend(L, ' ' + Op + ' ');
+    L := ExprAppend(L, R);
+  End;
+  ParseExprComparison := L;
+End;
+
+{ Niveau 7 - == === != !== <> <=> }
+Function ParseExprEquality: TString;
+Var L, R, Op: TString;
+Begin
+  L := ParseExprComparison;
+  While (CurTok.Kind = TK_OP) And
+        ((CurTok.Val = '==') Or (CurTok.Val = '===') Or
+         (CurTok.Val = '!=') Or (CurTok.Val = '<>') Or
+         (CurTok.Val = '!==') Or (CurTok.Val = '<=>')) Do
+  Begin
+    If CurTok.Val = '===' Then
+      WarnMsg('operateur === converti en == (verification de type ignoree)');
+    If CurTok.Val = '<=>' Then
+    Begin
+      LexNextToken;
+      R := ParseExprComparison;
+      L := ExprAppend('Comparer<object>.Default.Compare(' + L + ', ',
+                       ExprAppend(R, ')'));
+    End
+    Else
+    Begin
+      Op := PhpBinOpToCS(CurTok.Val);
+      LexNextToken;
+      R := ParseExprComparison;
+      L := ExprAppend(L, ' ' + Op + ' ');
+      L := ExprAppend(L, R);
+    End;
+  End;
+  ParseExprEquality := L;
+End;
+
+{ Niveau 6 - | ^ & (bitwise, TK_PUNCT standalone) }
+Function ParseExprBitwise: TString;
+Var L, R, Op: TString;
+Begin
+  L := ParseExprEquality;
+  While ((CurTok.Kind = TK_PUNCT) And
+         ((CurTok.Val = '|') Or (CurTok.Val = '^') Or
+          (CurTok.Val = '&'))) Do
+  Begin
+    Op := CurTok.Val;
+    LexNextToken;
+    R := ParseExprEquality;
+    L := ExprAppend(L, ' ' + Op + ' ');
+    L := ExprAppend(L, R);
+  End;
+  ParseExprBitwise := L;
+End;
+
+{ Niveau 5 - || && (TK_OP) }
+Function ParseExprLogic: TString;
+Var L, R, Op: TString;
+Begin
+  L := ParseExprBitwise;
+  While (CurTok.Kind = TK_OP) And
+        ((CurTok.Val = '||') Or (CurTok.Val = '&&')) Do
+  Begin
+    Op := CurTok.Val;
+    LexNextToken;
+    R := ParseExprBitwise;
+    L := ExprAppend(L, ' ' + Op + ' ');
+    L := ExprAppend(L, R);
+  End;
+  ParseExprLogic := L;
+End;
+
+{ Niveau 4 - or and xor (mots-cles) }
+Function ParseExprLogicKw: TString;
+Var L, R, Op: TString;
+Begin
+  L := ParseExprLogic;
+  While (CurTok.Kind = TK_KEYWORD) And
+        ((LowStr(CurTok.Val) = 'or') Or
+         (LowStr(CurTok.Val) = 'and') Or
+         (LowStr(CurTok.Val) = 'xor')) Do
+  Begin
+    Op := PhpBinOpToCS(CurTok.Val);
+    LexNextToken;
+    R := ParseExprLogic;
+    L := ExprAppend(L, ' ' + Op + ' ');
+    L := ExprAppend(L, R);
+  End;
+  ParseExprLogicKw := L;
+End;
+
+{ Niveau 3 - ?? et ??= (null-coalescing) }
+Function ParseExprNullCoalesce: TString;
+Var L, R: TString;
+Begin
+  L := ParseExprLogicKw;
+  While (CurTok.Kind = TK_OP) And
+        ((CurTok.Val = '??') Or (CurTok.Val = '??=')) Do
+  Begin
+    If CurTok.Val = '??=' Then
+    Begin
+      LexNextToken;
+      R := ParseExprLogicKw;
+      If CsVersionGE(Opts.CsVersion, CS_VER_80) Then
+      Begin
+        L := ExprAppend(L, ' ??= ');
+        L := ExprAppend(L, R);
+      End
+      Else
+      Begin
+        L := ExprAppend(L + ' = ' + L + ' ?? ', R);
+      End;
+    End
+    Else
+    Begin
+      LexNextToken;
+      R := ParseExprLogicKw;
+      If CsVersionGE(Opts.CsVersion, CS_VER_60) Then
+      Begin
+        L := ExprAppend(L, ' ?? ');
+        L := ExprAppend(L, R);
+      End
+      Else
+      Begin
+        L := ExprAppend('(' + L + ' != null) ? ' + L + ' : ', R);
+      End;
+    End;
+  End;
+  ParseExprNullCoalesce := L;
+End;
+
+{ Niveau 2 - Ternaire ? : et Elvis ?: }
+Function ParseExprTernary: TString;
+Var Cond, ThenExpr, ElseExpr: TString;
+Begin
+  Cond := ParseExprNullCoalesce;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '?') Then
+  Begin
+    LexNextToken; { past '?' }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+    Begin
+      { Operateur Elvis ?: }
+      LexNextToken; { past ':' }
+      ElseExpr := ParseExprNullCoalesce;
+      ParseExprTernary := ExprAppend(
+        '(' + Cond + ' != null) ? ' + Cond + ' : ', ElseExpr);
+    End
+    Else
+    Begin
+      { Ternaire complet ? then : else }
+      ThenExpr := ParseExprNullCoalesce;
+      { CurTok doit etre ':' }
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+        LexNextToken; { past ':' }
+      ElseExpr := ParseExprNullCoalesce;
+      ParseExprTernary := ExprAppend(
+        ExprAppend('(' + Cond + ') ? ', ExprAppend(ThenExpr, ' : ')),
+        ElseExpr);
+    End;
+  End
+  Else
+    ParseExprTernary := Cond;
+End;
+
+{ Niveau 1 - yield / yield from }
+Function ParseExprYield: TString;
+Var E: TString;
+Begin
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'yield') Then
+  Begin
+    LexNextToken;
+    If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'from') Then
+    Begin
+      { yield from -> IEnumerable iteration stub }
+      LexNextToken;
+      E := ParseExprTernary;
+      ParseExprYield := ExprAppend(
+        '/* yield from */ foreach(var _y in ', ExprAppend(E, ') yield return _y'));
+    End
+    Else If Not IsExprStop Then
+    Begin
+      E := ParseExprTernary;
+      ParseExprYield := ExprAppend('yield return ', E);
+    End
+    Else
+      ParseExprYield := 'yield break';
+  End
+  Else
+    ParseExprYield := ParseExprTernary;
+End;
+
+{ Point d entree du parseur d expressions PHP.
+  Pre-condition  : CurTok pointe sur le premier token de l expression.
+  Post-condition : CurTok pointe sur le premier token APRES l expression
+                   (token stop : point-virgule, parenthese, crochet, virgule).
+  Retourne la chaine C# equivalente. }
+Function ParseExprStr: TString;
+Begin
+  If IsExprStop Then
+    ParseExprStr := ''
+  Else
+    ParseExprStr := ParseExprYield;
+End;
+
 Procedure Run;
 Begin
   LexInit(Opts.SrcFile);
@@ -2752,7 +3431,7 @@ Begin
     LexNextToken;
   Until CurTok.Kind = TK_EOF;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 07-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 08-25 a faire)');
 End;
 
 Procedure Cleanup;
