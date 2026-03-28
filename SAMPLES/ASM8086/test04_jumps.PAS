@@ -26,7 +26,7 @@ Var
   MemW : Array[0..32767] of Word absolute Mem;
   counter : Word;
 
-Label START, skip_this, loop_start, less_label, equal_label, greater_label, done_cmp;
+Label START, skip_this, less_label, equal_label, greater_label, done_cmp;
 
 BEGIN
   START:

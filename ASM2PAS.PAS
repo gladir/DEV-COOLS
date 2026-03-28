@@ -8731,9 +8731,6 @@ Begin
  End;
 End;
 
-{ Declaration forward pour IsLabelOptimized (definie dans TODO 24) }
-Function IsLabelOptimized(Const LabelName:String):Boolean; Forward;
-
 Function ReplaceParamBPReferences(Code:String;ProcIdx:Integer):String;
 { Remplace les references Param_BP_N par les vrais noms de parametres.
   Pour convention NEAR:
