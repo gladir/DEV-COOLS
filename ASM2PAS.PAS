@@ -8697,8 +8697,12 @@ Begin
     End;
     Write(OutFile,')');
    End;
-   Write(OutFile,' : ',ProcReturnType(I));
-   WriteLn(OutFile,';');
+   Write(OutFile,' : ',ProcReturnType(I),';');
+   { Ajouter directive Near ou Far selon le type d'appel }
+   If Procs[I].IsNear Then
+    WriteLn(OutFile,' Near;')
+   Else
+    WriteLn(OutFile,' Far;');
    Inc(FuncCount);
   End
   Else Begin
@@ -8713,7 +8717,12 @@ Begin
     End;
     Write(OutFile,')');
    End;
-   WriteLn(OutFile,';');
+   Write(OutFile,';');
+   { Ajouter directive Near ou Far selon le type d'appel }
+   If Procs[I].IsNear Then
+    WriteLn(OutFile,' Near;')
+   Else
+    WriteLn(OutFile,' Far;');
   End;
 
   { Variables locales }
