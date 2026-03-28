@@ -303,7 +303,7 @@
               C# : switch expression sans _ (UnmatchedValueException)
               Avertissement si pas de default/_.
 
-  TODO 12 - TRANSPILATION : FONCTIONS PHP [A FAIRE]
+  TODO 12 - TRANSPILATION : FONCTIONS PHP [IMPLEMENTE]
             Transpilation de function foo($a, $b) { ... } :
               C# : static RetType Foo(ParamType a, ParamType b) { ... }
               Inference du type de retour si possible.
@@ -2071,7 +2071,7 @@ End;
   TODO 09 - STRUCTURES DE CONTROLE (IMPLEMENTE)
   TODO 10 - BOUCLES (IMPLEMENTE)
   TODO 11 - SWITCH ET MATCH (IMPLEMENTE)
-  TODO 12 - FONCTIONS PHP (A FAIRE)
+  TODO 12 - FONCTIONS PHP (IMPLEMENTE)
   TODO 13 - CLASSES PHP (A FAIRE)
   TODO 14 - INTERFACES ET TRAITS PHP (A FAIRE)
   TODO 15 - TABLEAUX PHP (A FAIRE)
@@ -2410,6 +2410,10 @@ Procedure ParseContinueStmt(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 11 (switch/match) }
 Procedure ParseSwitchStmt(Indent: Integer); Forward;
+
+{ Declarations anticipees pour TODO 12 (fonctions PHP) }
+Procedure ParseFuncDef(Indent: Integer); Forward;
+Procedure ParseReturnStmt(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -4207,6 +4211,10 @@ Begin
       ParseContinueStmt(Indent)
     Else If KwLow = 'switch' Then
       ParseSwitchStmt(Indent)
+    Else If KwLow = 'function' Then
+      ParseFuncDef(Indent)
+    Else If KwLow = 'return' Then
+      ParseReturnStmt(Indent)
     Else If (CurTok.Kind = TK_IDENT) And (CurTok.Kind <> TK_EOF) Then
     Begin
       { Label : ident suivi de ':' (sans espace entre les deux) }
@@ -4803,6 +4811,332 @@ Begin
   EmitLine(IndentStr(Indent) + '}');
 End;
 
+{ ============================================================
+  TODO 12 - TRANSPILATION : FONCTIONS PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Analyse un type PHP en position courante du lexeur.
+  Supporte : ?type (nullable), int|string (union), Nom.
+  Avance CurTok jusqu au token suivant le type.
+  Retourne le type C# correspondant. }
+Function ParsePhpTypeHint(Var Nullable: Boolean): TString;
+Var T: TPhpType; TyStr: TString;
+Begin
+  Nullable := False;
+  TyStr    := '';
+  { Nullable prefix ? }
+  If (CurTok.Kind = TK_OP) And (CurTok.Val = '?') Then
+  Begin
+    Nullable := True;
+    LexNextToken;
+  End;
+  { Lire le type de base : ident ou keyword }
+  If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+  Begin
+    TyStr := CurTok.Val;
+    LexNextToken;
+    { Type union : int|string → object }
+    While (CurTok.Kind = TK_OP) And (CurTok.Val = '|') Do
+    Begin
+      LexNextToken;
+      If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+        LexNextToken;
+    End;
+    { Type intersection : A&B → object }
+    While (CurTok.Kind = TK_OP) And (CurTok.Val = '&') Do
+    Begin
+      LexNextToken;
+      If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+        LexNextToken;
+    End;
+    T := PhpTypeFromStr(TyStr);
+    ParsePhpTypeHint := TypePhpToCS(T, Nullable, Opts.CsVersion, Opts.Framework);
+  End
+  Else
+    ParsePhpTypeHint := 'object';
+End;
+
+{ Emet les parametres d une fonction PHP en C#.
+  CurTok doit etre le token apres la '(' ouvrante.
+  Retourne la liste de parametres C# (sans les parentheses). }
+Function ParseFuncParams: TString;
+Var
+  Result : TString;
+  First  : Boolean;
+  IsRef  : Boolean;
+  IsVar  : Boolean;
+  Nullable: Boolean;
+  PType  : TString;
+  PName  : TString;
+  DefVal : TString;
+Begin
+  Result := '';
+  First  := True;
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+        Not (CurTok.Kind = TK_EOF) Do
+  Begin
+    If Not First Then
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+        LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+        Break;
+    End;
+    First  := False;
+    IsRef  := False;
+    IsVar  := False;
+    PType  := '';
+    PName  := '';
+    DefVal := '';
+
+    { Variadique : ...type $param ou ...$param }
+    If (CurTok.Kind = TK_OP) And (CurTok.Val = '...') Then
+    Begin
+      IsVar := True;
+      LexNextToken;
+    End;
+
+    { Type hint optionnel }
+    If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Or
+       ((CurTok.Kind = TK_OP) And (CurTok.Val = '?')) Then
+    Begin
+      { Est-ce un type hint ou le nom de variable ? }
+      If CurTok.Kind = TK_VAR Then
+      Begin
+        { Pas de type hint }
+        PType := 'object';
+      End
+      Else
+      Begin
+        PType := ParsePhpTypeHint(Nullable);
+      End;
+    End
+    Else
+      PType := 'object';
+
+    { Passage par reference : &$param }
+    If (CurTok.Kind = TK_OP) And (CurTok.Val = '&') Then
+    Begin
+      IsRef := True;
+      LexNextToken;
+    End;
+
+    { Variadique avant le $ }
+    If (CurTok.Kind = TK_OP) And (CurTok.Val = '...') Then
+    Begin
+      IsVar := True;
+      LexNextToken;
+    End;
+
+    { Nom du parametre }
+    If CurTok.Kind = TK_VAR Then
+    Begin
+      PName := MakeCsName(VarPhpName(CurTok.Val));
+      LexNextToken;
+    End
+    Else
+      PName := 'param' + ItoS(SymCount + 1);
+
+    { Valeur par defaut }
+    If (CurTok.Kind = TK_OP) And (CurTok.Val = '=') Then
+    Begin
+      LexNextToken;
+      DefVal := ParseExprStr;
+    End;
+
+    { Construire la declaration du parametre }
+    If IsVar Then
+    Begin
+      { params object[] args }
+      If Length(Result) > 0 Then Result := Result + ', ';
+      Result := Result + 'params object[] ' + PName;
+    End
+    Else If IsRef Then
+    Begin
+      WarnMsg('parametre par reference &$' + PName +
+              ' converti en ref (limitations C#)');
+      If Length(Result) > 0 Then Result := Result + ', ';
+      If PType = '' Then PType := 'object';
+      Result := Result + 'ref ' + PType + ' ' + PName;
+    End
+    Else
+    Begin
+      If Length(Result) > 0 Then Result := Result + ', ';
+      If PType = '' Then PType := 'object';
+      Result := Result + PType + ' ' + PName;
+      If DefVal <> '' Then
+        Result := Result + ' = ' + DefVal;
+    End;
+  End;
+  ParseFuncParams := Result;
+End;
+
+{ Parse et emet return $val; ou return;
+  CurTok doit etre le mot-cle 'return'. }
+Procedure ParseReturnStmt(Indent: Integer);
+Var ValCS: TString;
+Begin
+  LexNextToken; { saute 'return' }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+  Begin
+    EmitLine(IndentStr(Indent) + 'return;');
+    LexNextToken;
+  End
+  Else If CurTok.Kind = TK_EOF Then
+    EmitLine(IndentStr(Indent) + 'return;')
+  Else
+  Begin
+    ValCS := ParseExprStr;
+    EmitLine(IndentStr(Indent) + 'return ' + ValCS + ';');
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+      LexNextToken;
+  End;
+End;
+
+{ Parse et emet une definition de fonction PHP (nommee, anonyme, arrow).
+  CurTok doit etre le mot-cle 'function'.
+  Indent : niveau d indentation courant.
+
+  Syntaxes gerees :
+    function foo(params): RetType --- static RetType Foo(params)
+    function foo(params)          --- static object Foo(params)
+    function(params) use ($x)     --- (params) =>
+    function* foo()               --- stub generateur
+}
+Procedure ParseFuncDef(Indent: Integer);
+Var
+  FnName   : TString;
+  Params   : TString;
+  RetType  : TString;
+  RetNull  : Boolean;
+  IsGen    : Boolean;
+  IsStatic : Boolean;
+Begin
+  IsStatic := True;
+  IsGen    := False;
+
+  { Mot-cle 'function' }
+  LexNextToken; { saute 'function' }
+
+  { Fonction generatrice : function* foo() }
+  If (CurTok.Kind = TK_OP) And (CurTok.Val = '*') Then
+  Begin
+    IsGen := True;
+    LexNextToken;
+  End;
+
+  { Nom de la fonction (optionnel pour les anonymes) }
+  FnName := '';
+  If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+  Begin
+    FnName := MakeCsName(CurTok.Val);
+    LexNextToken;
+  End;
+
+  { Parametres }
+  Params := '';
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+  Begin
+    LexNextToken; { saute '(' }
+    Params := ParseFuncParams;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken; { saute ')' }
+  End;
+
+  { Clause use($x, &$y) pour les closures }
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'use') Then
+  Begin
+    LexNextToken; { saute 'use' }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+    Begin
+      LexNextToken;
+      While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+            Not (CurTok.Kind = TK_EOF) Do
+      Begin
+        If (CurTok.Kind = TK_OP) And (CurTok.Val = '&') Then
+        Begin
+          LexNextToken;
+          If CurTok.Kind = TK_VAR Then
+          Begin
+            WarnMsg('capture par reference use(&$' + VarPhpName(CurTok.Val) +
+                    ') : converti en capture par valeur (stub)');
+            LexNextToken;
+          End;
+        End
+        Else If CurTok.Kind = TK_VAR Then
+          LexNextToken
+        Else If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+          LexNextToken
+        Else
+          LexNextToken;
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+        LexNextToken;
+    End;
+  End;
+
+  { Type de retour PHP 7+ : function foo(): string }
+  RetType := 'object';
+  RetNull := False;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+  Begin
+    LexNextToken; { saute ':' }
+    RetType := ParsePhpTypeHint(RetNull);
+  End;
+
+  { Determiner le type d ouverture du corps : '{' ou syntaxe alternative ':' }
+  { Pour les fonctions anonymes sans corps (ex: utilisees comme expression),  }
+  { le '{' doit etre consomme avant d appeler ParseBlock.                      }
+
+  If IsGen Then
+  Begin
+    { Stub generateur : commentaire + corps consomme }
+    EmitLine(IndentStr(Indent) + '// TODO: fonction generatrice (yield) convertie en stub');
+    If FnName <> '' Then
+      EmitLine(IndentStr(Indent) + 'static IEnumerable<object> ' + FnName +
+               '(' + Params + ')')
+    Else
+      EmitLine(IndentStr(Indent) + 'static IEnumerable<object> AnonymousGenerator(' +
+               Params + ')');
+    EmitLine(IndentStr(Indent) + '{');
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+      LexNextToken;
+    ScopeEnter(SCK_FUNCTION, FnName);
+    ParseBlock(Indent + 1, '');
+    ScopeLeave;
+    EmitLine(IndentStr(Indent) + '}');
+  End
+  Else If FnName = '' Then
+  Begin
+    { Fonction anonyme : (params) => corps }
+    EmitLine(IndentStr(Indent) + '(' + Params + ') =>');
+    EmitLine(IndentStr(Indent) + '{');
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+      LexNextToken;
+    ScopeEnter(SCK_CLOSURE, '');
+    ParseBlock(Indent + 1, '');
+    ScopeLeave;
+    EmitLine(IndentStr(Indent) + '}');
+  End
+  Else
+  Begin
+    { Fonction nommee standard }
+    If IsStatic Then
+      EmitLine(IndentStr(Indent) + 'static ' + RetType + ' ' + FnName +
+               '(' + Params + ')')
+    Else
+      EmitLine(IndentStr(Indent) + RetType + ' ' + FnName +
+               '(' + Params + ')');
+    EmitLine(IndentStr(Indent) + '{');
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+      LexNextToken;
+    ScopeEnter(SCK_FUNCTION, FnName);
+    ParseBlock(Indent + 1, '');
+    ScopeLeave;
+    EmitLine(IndentStr(Indent) + '}');
+  End;
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -4846,6 +5180,10 @@ Begin
       ParseContinueStmt(0)
     Else If KwLow = 'switch' Then
       ParseSwitchStmt(0)
+    Else If KwLow = 'function' Then
+      ParseFuncDef(0)
+    Else If KwLow = 'return' Then
+      ParseReturnStmt(0)
     Else If KwLow = 'static' Then
     Begin
       If Not ParseStaticVarDecl(0) Then
@@ -4885,7 +5223,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 12-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 13-25 a faire)');
 End;
 
 Procedure Cleanup;
