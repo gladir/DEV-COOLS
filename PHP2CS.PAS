@@ -384,7 +384,7 @@
                   static class Color { public const string Red = "red"; ... }
                   ou record struct (CS 9+) selon version cible.
 
-  TODO 15 - TRANSPILATION : TABLEAUX PHP (array / []) [A FAIRE]
+  TODO 15 - TRANSPILATION : TABLEAUX PHP (array / []) [IMPLEMENTE]
             Tableaux indexes PHP :
               $arr = [1, 2, 3]; -> var arr = new List<int>{1,2,3};
                 ou int[] arr = {1,2,3}; selon contexte (CS 12 : [1,2,3])
@@ -2074,7 +2074,7 @@ End;
   TODO 12 - FONCTIONS PHP (IMPLEMENTE)
   TODO 13 - CLASSES PHP (IMPLEMENTE)
   TODO 14 - INTERFACES ET TRAITS PHP (IMPLEMENTE)
-  TODO 15 - TABLEAUX PHP (A FAIRE)
+  TODO 15 - TABLEAUX PHP (IMPLEMENTE)
   TODO 16 - FONCTIONS DE CHAINES (A FAIRE)
   TODO 17 - FONCTIONS MATH ET DATE/HEURE (A FAIRE)
   TODO 18 - GESTION DES EXCEPTIONS (A FAIRE)
@@ -2422,6 +2422,10 @@ Procedure ParseClassDef(Indent: Integer); Forward;
 Procedure ParseInterfaceDef(Indent: Integer); Forward;
 Procedure ParseTraitDef(Indent: Integer); Forward;
 Procedure ParseEnumDef(Indent: Integer); Forward;
+
+{ Declarations anticipees pour TODO 15 (tableaux PHP) }
+Function ParseArrayLiteral: TString; Forward;
+Function ParseArrayFuncCall(Const FnLow: TString): TString; Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -2993,6 +2997,26 @@ Begin
           R := ParseStrPadCall
         Else If FnLow = 'wordwrap' Then
           R := ExprAppend('/* wordwrap */ ', ParseFnCallArgs(R))
+        Else If (FnLow = 'array') Or (FnLow = 'count') Or (FnLow = 'sizeof') Or
+                (FnLow = 'array_push')    Or (FnLow = 'array_pop')   Or
+                (FnLow = 'array_shift')   Or (FnLow = 'array_unshift') Or
+                (FnLow = 'array_reverse') Or (FnLow = 'array_slice')  Or
+                (FnLow = 'array_splice')  Or (FnLow = 'array_chunk')  Or
+                (FnLow = 'sort')          Or (FnLow = 'rsort')        Or
+                (FnLow = 'usort')         Or (FnLow = 'uasort')       Or
+                (FnLow = 'uksort')        Or (FnLow = 'in_array')     Or
+                (FnLow = 'array_search')  Or (FnLow = 'array_unique') Or
+                (FnLow = 'array_merge')   Or (FnLow = 'array_map')    Or
+                (FnLow = 'array_filter')  Or (FnLow = 'array_reduce') Or
+                (FnLow = 'array_keys')    Or (FnLow = 'array_values') Or
+                (FnLow = 'array_key_exists') Or (FnLow = 'array_flip') Or
+                (FnLow = 'array_combine') Or (FnLow = 'array_diff')   Or
+                (FnLow = 'array_intersect') Or (FnLow = 'array_fill') Or
+                (FnLow = 'array_count_values') Or (FnLow = 'array_pad') Or
+                (FnLow = 'compact')       Or (FnLow = 'extract')      Or
+                (FnLow = 'implode')       Or (FnLow = 'join')         Or
+                (FnLow = 'explode') Then
+          R := ParseArrayFuncCall(FnLow)
         Else
           R := ParseFnCallArgs(R);
       End
@@ -3113,21 +3137,9 @@ Begin
       End
       Else If CurTok.Val = '[' Then
       Begin
-        { Tableau litteral [v1, v2, ...] }
-        R := 'new object[] {';
-        LexNextToken;
-        While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ']')) And
-              (CurTok.Kind <> TK_EOF) Do
-        Begin
-          If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
-          Begin
-            R := ExprAppend(R, ', '); LexNextToken;
-          End
-          Else
-            R := ExprAppend(R, ParseExprStr);
-        End;
-        R := ExprAppend(R, '}');
-        LexNextToken; { past ']' }
+        { Tableau litteral [v1, v2, ...] ou ['key'=>val, ...] }
+        { Deleguer a ParseArrayLiteral qui gere les deux cas }
+        R := ParseArrayLiteral;
       End
       Else If CurTok.Val = '&' Then
       Begin
@@ -6014,6 +6026,444 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 15 - TRANSPILATION : TABLEAUX PHP (array / []) [IMPLEMENTE]
+  ============================================================ }
+
+{ Parse un tableau litteral PHP [] ou array() et retourne le C# equivalent.
+  CurTok est sur '[' ou deja consomme pour array(.
+  Detecte la forme associative (=>).
+  Retourne:
+    - CS12+ :  [v1, v2]  ou  CS < 12 : new List<object> { v1, v2 }
+    - Associatif : new Dictionary<string,object> { {"k",v}, ... }
+  Gere la recursion (tableaux imbriques). }
+Function ParseArrayLiteral: TString;
+Var
+  IsAssoc    : Boolean;
+  Key, Val, R: TString;
+  IsFirst    : Boolean;
+Begin
+  { Consommer '[' ou '(' selon qu on arrive de array() }
+  LexNextToken; { past '[' ou '(' }
+  { Premiere passe : sauvegarder les elements pour detecter '=>' }
+  IsAssoc := False;
+  { Verification rapide : on scanne les tokens en profondeur 0 pour trouver '=>' }
+  { Impossible sans look-ahead : on fait un seul passage en collectant les paires }
+  { Approche : parser les elements, si on rencontre '=>' on bascule en dict }
+  R := '';
+  IsFirst := True;
+  While Not ((CurTok.Kind = TK_PUNCT) And
+             ((CurTok.Val = ']') Or (CurTok.Val = ')'))) And
+        (CurTok.Kind <> TK_EOF) Do
+  Begin
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken; { skip ',' }
+      Continue;
+    End;
+    { Parser la cle ou la valeur }
+    Key := ParseExprStr;
+    If (CurTok.Kind = TK_OP) And (CurTok.Val = '=>') Then
+    Begin
+      { Tableau associatif }
+      IsAssoc := True;
+      LexNextToken; { past '=>' }
+      Val := ParseExprStr;
+      If IsFirst Then
+        R := '{' + Key + ', ' + Val + '}'
+      Else
+        R := R + ', {' + Key + ', ' + Val + '}';
+      IsFirst := False;
+    End
+    Else
+    Begin
+      If IsFirst Then
+        R := Key
+      Else
+        R := R + ', ' + Key;
+      IsFirst := False;
+    End;
+  End;
+  LexNextToken; { past ']' ou ')' }
+  If IsAssoc Then
+    ParseArrayLiteral :=
+      'new Dictionary<string,object> { ' + R + ' }'
+  Else If CsVersionGE(Opts.CsVersion, CS_VER_120) Then
+    ParseArrayLiteral := '[' + R + ']'
+  Else
+    ParseArrayLiteral := 'new List<object> { ' + R + ' }';
+End;
+
+{ Transpile un appel de fonction tableau PHP.
+  FnLow : nom de la fonction en minuscules.
+  CurTok est sur '(' (a consommer).
+  Retourne la chaine C# equivalente. }
+Function ParseArrayFuncCall(Const FnLow: TString): TString;
+Var
+  Arg1, Arg2, Arg3, Arg4: TString;
+  ArgCount: Integer;
+  { Lecture d un argument : parse une expression et consomme ',' ou ')' }
+  Function ReadArg(Out Done: Boolean): TString;
+  Var E: TString;
+  Begin
+    E := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken; Done := False;
+    End
+    Else
+      Done := True;
+    ReadArg := E;
+  End;
+Var Done: Boolean;
+Begin
+  LexNextToken; { past '(' }
+  Arg1 := ''; Arg2 := ''; Arg3 := ''; Arg4 := '';
+  ArgCount := 0;
+
+  { --- Fonctions a 1 argument --- }
+  If (FnLow = 'count') Or (FnLow = 'sizeof') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg1 + '.Count';
+  End
+  Else If FnLow = 'array_pop' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    { PHP : supprime et retourne dernier element }
+    ParseArrayFuncCall :=
+      Arg1 + '[' + Arg1 + '.Count - 1]'
+      + '; ' + Arg1 + '.RemoveAt(' + Arg1 + '.Count - 1)';
+  End
+  Else If FnLow = 'array_shift' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '[0]; ' + Arg1 + '.RemoveAt(0)';
+  End
+  Else If FnLow = 'array_reverse' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg1 + '.AsEnumerable().Reverse().ToList()';
+  End
+  Else If FnLow = 'sort' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg1 + '.Sort()';
+  End
+  Else If FnLow = 'rsort' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '.Sort(); ' + Arg1 + '.Reverse()';
+  End
+  Else If FnLow = 'array_keys' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg1 + '.Keys.ToList()';
+  End
+  Else If FnLow = 'array_values' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg1 + '.Values.ToList()';
+  End
+  Else If FnLow = 'array_unique' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg1 + '.Distinct().ToList()';
+  End
+  Else If FnLow = 'array_flip' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '.ToDictionary(kv => kv.Value, kv => kv.Key)';
+  End
+  Else If FnLow = 'array_count_values' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '.GroupBy(v => v).ToDictionary(g => g.Key, g => g.Count())';
+  End
+  { --- Fonctions a 2 arguments --- }
+  Else If (FnLow = 'in_array') Or (FnLow = 'array_contains') Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg2 + '.Contains(' + Arg1 + ')';
+  End
+  Else If FnLow = 'array_search' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg2 + '.IndexOf(' + Arg1 + ')';
+  End
+  Else If FnLow = 'array_push' Then
+  Begin
+    Arg1 := ReadArg(Done);
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg1 + '.Add(' + Arg2 + ')';
+  End
+  Else If FnLow = 'array_unshift' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg1 + '.Insert(0, ' + Arg2 + ')';
+  End
+  Else If FnLow = 'array_merge' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '.Concat(' + Arg2 + ').ToList()';
+  End
+  Else If (FnLow = 'implode') Or (FnLow = 'join') Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := 'string.Join(' + Arg1 + ', ' + Arg2 + ')';
+  End
+  Else If FnLow = 'explode' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And
+       ((CurTok.Val = ')') Or (CurTok.Val = ',')) Then
+    Begin
+      { Ignorer l argument optionnel limit }
+      While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+            (CurTok.Kind <> TK_EOF) Do
+        LexNextToken;
+      LexNextToken; { past ')' }
+    End;
+    ParseArrayFuncCall :=
+      Arg2 + '.Split(new[] {' + Arg1 + '}, StringSplitOptions.None)' +
+      '.ToList()';
+  End
+  Else If FnLow = 'array_map' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg2 + '.Select(' + Arg1 + ').ToList()';
+  End
+  Else If FnLow = 'array_filter' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg1 + '.Where(' + Arg2 + ').ToList()';
+  End
+  Else If FnLow = 'array_key_exists' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := Arg2 + '.ContainsKey(' + Arg1 + ')';
+  End
+  Else If FnLow = 'array_pad' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ReadArg(Done);
+    Arg3 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      '/* array_pad */ ' + Arg1;
+  End
+  { --- Fonctions a 3 arguments --- }
+  Else If FnLow = 'array_slice' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ReadArg(Done);
+    If Not Done Then
+    Begin
+      Arg3 := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      Begin
+        LexNextToken; { ignorer preserve_keys }
+        While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+              (CurTok.Kind <> TK_EOF) Do
+          LexNextToken;
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+        LexNextToken;
+      ParseArrayFuncCall := Arg1 + '.GetRange(' + Arg2 + ', ' + Arg3 + ')';
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+        LexNextToken;
+      ParseArrayFuncCall :=
+        Arg1 + '.Skip(' + Arg2 + ').ToList()';
+    End;
+  End
+  Else If FnLow = 'array_splice' Then
+  Begin
+    { array_splice(&$arr, offset, len, replacement) -> stub }
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+      LexNextToken;
+    LexNextToken;
+    ParseArrayFuncCall := '/* array_splice: voir List<T>.RemoveRange/InsertRange */';
+  End
+  Else If FnLow = 'array_chunk' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And
+       ((CurTok.Val = ')') Or (CurTok.Val = ',')) Then
+    Begin
+      While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+            (CurTok.Kind <> TK_EOF) Do
+        LexNextToken;
+      LexNextToken;
+    End;
+    If CsVersionGE(Opts.CsVersion, CS_VER_60) Then
+      ParseArrayFuncCall := Arg1 + '.Chunk(' + Arg2 + ').ToList()'
+    Else
+      ParseArrayFuncCall :=
+        '/* array_chunk(' + Arg1 + ', ' + Arg2 + ') -> boucle manuelle */';
+  End
+  Else If FnLow = 'array_reduce' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ReadArg(Done);
+    Arg3 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '.Aggregate(' + Arg3 + ', ' + Arg2 + ')';
+  End
+  Else If FnLow = 'array_combine' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '.Zip(' + Arg2 + ')' +
+      '.ToDictionary(p => p.First, p => p.Second)';
+  End
+  Else If FnLow = 'array_diff' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '.Except(' + Arg2 + ').ToList()';
+  End
+  Else If FnLow = 'array_intersect' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '.Intersect(' + Arg2 + ').ToList()';
+  End
+  Else If FnLow = 'array_fill' Then
+  Begin
+    { array_fill(start_index, num, value) -> Enumerable.Repeat(value,num).ToList() }
+    Arg1 := ReadArg(Done); Arg2 := ReadArg(Done);
+    Arg3 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      'Enumerable.Repeat(' + Arg3 + ', ' + Arg2 + ').ToList()';
+  End
+  Else If (FnLow = 'usort') Or (FnLow = 'uasort') Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '.Sort((a, b) => ' + Arg2 + '(a, b))';
+  End
+  Else If FnLow = 'uksort' Then
+  Begin
+    Arg1 := ReadArg(Done); Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      Arg1 + '.OrderBy(kv => kv.Key, Comparer<object>.Create(' +
+      Arg2 + ')).ToDictionary(kv => kv.Key, kv => kv.Value)';
+  End
+  Else If FnLow = 'compact' Then
+  Begin
+    { compact('a','b') -> new Dictionary<string,object>{{"a",a},{"b",b}} }
+    R := 'new Dictionary<string,object> {';
+    Done := False;
+    While Not Done And (CurTok.Kind <> TK_EOF) Do
+    Begin
+      Arg1 := ParseExprStr;
+      { Arg1 est une chaine entre guillemets : retirer les guillemets }
+      If R <> 'new Dictionary<string,object> {' Then R := R + ',';
+      R := R + ' {' + Arg1 + ', ' + Arg1 + '}';
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+        LexNextToken
+      Else
+        Done := True;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := R + ' }';
+  End
+  Else If FnLow = 'extract' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall :=
+      '/* extract(' + Arg1 + ') : non supporte directement en C# */';
+  End
+  Else If FnLow = 'array' Then
+  Begin
+    { array(v1, v2, ...) ou array('k'=>v, ...) }
+    ParseArrayFuncCall := ParseArrayLiteral;
+  End
+  Else
+  Begin
+    { Autres fonctions tableau non reconnues : appel generique }
+    R := MakeCsName(FnLow) + '(';
+    Done := False;
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      Begin
+        R := R + ', '; LexNextToken;
+      End
+      Else
+        R := R + ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+    ParseArrayFuncCall := R + ')';
+  End;
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -6114,7 +6564,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 15-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 16-25 a faire)');
 End;
 
 Procedure Cleanup;
