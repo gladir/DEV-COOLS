@@ -442,6 +442,11 @@ Type
   PascalType:Byte;
   Size:Word;
   Count:Word;
+  { Champs pour variables locales issues d'acces memoire indexes }
+  IsIndexedMem:Boolean;   { True si cree pour un acces [BaseReg+IndexReg+Offset] }
+  IndexOffset:LongInt;    { Offset dans l'adressage indexe }
+  IndexBaseReg:String;    { Registre de base (BX, BP, etc.) }
+  IndexIndexReg:String;   { Registre d'index (SI, DI, etc.) }
  End;
 
  TSegmentInfo = Record
@@ -2207,6 +2212,10 @@ Begin
       PascalType:=MasmTypeToPascalType(VarType);
       Size:=MasmTypeSize(VarType);
       Count:=ArrCount;
+      IsIndexedMem:=False;
+      IndexOffset:=0;
+      IndexBaseReg:='';
+      IndexIndexReg:='';
      End;
      VarSize:=MasmTypeSize(VarType)*ArrCount;
      Procs[ProcIdx].LocalSize:=Procs[ProcIdx].LocalSize+VarSize;
@@ -2248,6 +2257,10 @@ Begin
       PascalType:=MasmTypeToPascalType(VarType);
       Size:=MasmTypeSize(VarType);
       Count:=ArrCount;
+      IsIndexedMem:=False;
+      IndexOffset:=0;
+      IndexBaseReg:='';
+      IndexIndexReg:='';
      End;
      VarSize:=MasmTypeSize(VarType)*ArrCount;
      Procs[ProcIdx].LocalSize:=Procs[ProcIdx].LocalSize+VarSize;
@@ -4047,6 +4060,30 @@ Begin
   StackAccessExpr:='Local_BP_'+IntToStr(-Offset);
 End;
 
+Function FindIndexedLocalByOffset(ProcIdx:Integer;BaseReg,IndexReg:String;
+ Offset:LongInt):Integer;
+{ Cherche une variable locale indexee par son offset et ses registres.
+  Retourne l'index dans Procs[ProcIdx].Locals[] ou 0 si non trouve. }
+Var
+ J:Integer;
+ UBase,UIndex:String;
+Begin
+ FindIndexedLocalByOffset:=0;
+ If(ProcIdx<1)or(ProcIdx>ProcCount)Then Exit;
+ UBase:=UpCaseStr(BaseReg);
+ UIndex:=UpCaseStr(IndexReg);
+ For J:=1 to Procs[ProcIdx].LocalCount do Begin
+  With Procs[ProcIdx].Locals[J] do Begin
+   If IsIndexedMem and (IndexOffset=Offset) and
+      (UpCaseStr(IndexBaseReg)=UBase) and
+      (UpCaseStr(IndexIndexReg)=UIndex) Then Begin
+    FindIndexedLocalByOffset:=J;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
 Const
  MAX_REGUSAGE = 30;
 
@@ -4378,7 +4415,7 @@ Function OperandToExpr(Var Op:TOperand;ProcIdx:Integer):String;
   les immediats, les labels, OFFSET et SEG. }
 Var
  U,Expr:String;
- SymIdx:Integer;
+ SymIdx,LocalIdx:Integer;
 Begin
  Case Op.OpType of
   OT_REG8,OT_REG16,OT_REG32:Begin
@@ -4395,6 +4432,29 @@ Begin
    U:=UpCaseStr(Op.BaseReg);
    If((U='BP')or(U='EBP'))and(Op.IndexReg='')Then
     OperandToExpr:=StackAccessExpr(U,Op.Disp,ProcIdx)
+   Else If(Op.BaseReg<>'')and(Op.IndexReg<>'')Then Begin
+    { Adressage base+index - chercher d'abord une variable locale }
+    If Op.HasDisp Then
+     LocalIdx:=FindIndexedLocalByOffset(ProcIdx,Op.BaseReg,Op.IndexReg,Op.Disp)
+    Else
+     LocalIdx:=FindIndexedLocalByOffset(ProcIdx,Op.BaseReg,Op.IndexReg,0);
+    If LocalIdx>0 Then Begin
+     { Variable locale trouvee - utiliser son nom }
+     OperandToExpr:=Procs[ProcIdx].Locals[LocalIdx].Name;
+    End
+    Else Begin
+     { Pas de variable locale - generer Mem[...] }
+     Expr:=RegToPascalVar(Op.BaseReg)+'+'+RegToPascalVar(Op.IndexReg);
+     If Op.Scale>1 Then
+      Expr:=RegToPascalVar(Op.BaseReg)+'+'+
+       RegToPascalVar(Op.IndexReg)+'*'+IntToStr(Op.Scale);
+     If Op.HasDisp Then Begin
+      If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
+      Else Expr:=Expr+IntToStr(Op.Disp);
+     End;
+     OperandToExpr:='Mem['+Expr+']';
+    End;
+   End
    Else If Op.MemExpr<>'' Then Begin
     { Verifier si l'expression memoire est un symbole connu }
     SymIdx:=FindSymbol(Op.MemExpr);
@@ -4402,18 +4462,6 @@ Begin
      OperandToExpr:=Symbols[SymIdx].Name
     Else
      OperandToExpr:='Mem['+Op.MemExpr+']';
-   End
-   Else If(Op.BaseReg<>'')and(Op.IndexReg<>'')Then Begin
-    { Adressage base+index }
-    Expr:=RegToPascalVar(Op.BaseReg)+'+'+RegToPascalVar(Op.IndexReg);
-    If Op.Scale>1 Then
-     Expr:=RegToPascalVar(Op.BaseReg)+'+'+
-      RegToPascalVar(Op.IndexReg)+'*'+IntToStr(Op.Scale);
-    If Op.HasDisp Then Begin
-     If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
-     Else Expr:=Expr+IntToStr(Op.Disp);
-    End;
-    OperandToExpr:='Mem['+Expr+']';
    End
    Else If Op.BaseReg<>'' Then Begin
     Expr:=RegToPascalVar(Op.BaseReg);
@@ -7469,7 +7517,7 @@ Function TranslateMemAccess(Var Op:TOperand;ProcIdx:Integer):String;
 { Traduit un operande memoire en expression Pascal amelioree.
   Gere les differents modes d'adressage avec typage correct :
   - [BP+n]  -> param/local via StackAccessExpr
-  - [BX+SI+disp] -> Mem/MemW/MemL[RegDS:base+index+disp]
+  - [BX+SI+disp] -> Variable locale si disponible, sinon Mem[...]
   - [EBX+ECX*4]  -> Tab[Index] ou MemL[base+index*scale]
   - WORD PTR [x] -> MemW[...]
   - DWORD PTR [x] -> MemL[...]
@@ -7478,6 +7526,7 @@ Var
  Cat:Byte;
  Pfx,Expr,FieldRef:String;
  U,SegStr:String;
+ LocalIdx:Integer;
 Begin
  Cat:=AddrModeCategory(Op);
  { Determiner le prefixe memoire selon la taille }
@@ -7505,18 +7554,30 @@ Begin
   End;
   AC_ARRAY:Begin
    { Base+index : [BX+SI+disp] }
-   U:=UpCaseStr(Op.BaseReg);
-   If Op.SegOverride<>'' Then
-    SegStr:=RegToPascalVar(Copy(Op.SegOverride,1,2))+':'
-   Else If(U='BX')or(U='SI')or(U='DI')Then
-    SegStr:='RegDS:'
-   Else SegStr:='';
-   Expr:=RegToPascalVar(Op.BaseReg)+'+'+RegToPascalVar(Op.IndexReg);
-   If Op.HasDisp Then Begin
-    If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
-    Else Expr:=Expr+IntToStr(Op.Disp);
+   { Chercher d'abord une variable locale pour cet acces }
+   If Op.HasDisp Then
+    LocalIdx:=FindIndexedLocalByOffset(ProcIdx,Op.BaseReg,Op.IndexReg,Op.Disp)
+   Else
+    LocalIdx:=FindIndexedLocalByOffset(ProcIdx,Op.BaseReg,Op.IndexReg,0);
+   If LocalIdx>0 Then Begin
+    { Variable locale trouvee - utiliser son nom }
+    TranslateMemAccess:=Procs[ProcIdx].Locals[LocalIdx].Name;
+   End
+   Else Begin
+    { Pas de variable locale - generer l'acces memoire standard }
+    U:=UpCaseStr(Op.BaseReg);
+    If Op.SegOverride<>'' Then
+     SegStr:=RegToPascalVar(Copy(Op.SegOverride,1,2))+':'
+    Else If(U='BX')or(U='SI')or(U='DI')Then
+     SegStr:='RegDS:'
+    Else SegStr:='';
+    Expr:=RegToPascalVar(Op.BaseReg)+'+'+RegToPascalVar(Op.IndexReg);
+    If Op.HasDisp Then Begin
+     If Op.Disp>=0 Then Expr:=Expr+'+'+IntToStr(Op.Disp)
+     Else Expr:=Expr+IntToStr(Op.Disp);
+    End;
+    TranslateMemAccess:=Pfx+'['+SegStr+Expr+']';
    End;
-   TranslateMemAccess:=Pfx+'['+SegStr+Expr+']';
   End;
   AC_RECORD:Begin
    { Champ de structure potentiel : [reg+offset fixe] }
@@ -9811,6 +9872,142 @@ Begin
 End;
 
 { ============================================================
+  Collecte des acces memoire indexes pour creer des variables
+  locales - Amelioration de la lisibilite du code genere
+  ============================================================ }
+
+Function AddIndexedLocal(ProcIdx:Integer;BaseReg,IndexReg:String;
+ Offset:LongInt;DataSize:Byte):Integer;
+{ Ajoute une variable locale pour un acces memoire indexe.
+  Retourne l'index de la nouvelle variable ou 0 si echec. }
+Var
+ VarName:String;
+ LocalIdx:Integer;
+ LPascalType:Byte;
+Begin
+ AddIndexedLocal:=0;
+ If(ProcIdx<1)or(ProcIdx>ProcCount)Then Exit;
+ If Procs[ProcIdx].LocalCount>=MAX_LOCALS Then Exit;
+ 
+ { Verifier si existe deja }
+ LocalIdx:=FindIndexedLocalByOffset(ProcIdx,BaseReg,IndexReg,Offset);
+ If LocalIdx>0 Then Begin
+  AddIndexedLocal:=LocalIdx;
+  Exit;
+ End;
+ 
+ { Creer un nom de variable lisible avec notation hexadecimale }
+ If Offset>=0 Then
+  VarName:='Idx'+HexWord(Word(Offset))+'h'
+ Else
+  VarName:='IdxN'+HexWord(Word(-Offset))+'h';
+ 
+ { Determiner le type Pascal en fonction de la taille }
+ Case DataSize of
+  1:LPascalType:=PT_BYTE;
+  2:LPascalType:=PT_WORD;
+  4:LPascalType:=PT_LONGINT;
+  Else LPascalType:=PT_WORD;
+ End;
+ 
+ Inc(Procs[ProcIdx].LocalCount);
+ LocalIdx:=Procs[ProcIdx].LocalCount;
+ With Procs[ProcIdx].Locals[LocalIdx] do Begin
+  Name:=VarName;
+  TypeName:='WORD';
+  PascalType:=LPascalType;
+  Size:=DataSize;
+  Count:=1;
+  IsIndexedMem:=True;
+  IndexOffset:=Offset;
+  IndexBaseReg:=UpCaseStr(BaseReg);
+  IndexIndexReg:=UpCaseStr(IndexReg);
+ End;
+ 
+ AddIndexedLocal:=LocalIdx;
+End;
+
+Procedure CollectIndexedMemAccessInOp(ProcIdx:Integer;Var Op:TOperand);
+{ Analyse un operande et collecte les acces memoire indexes. }
+Var
+ UBase,UIndex:String;
+ DataSize:Byte;
+Begin
+ If Op.OpType<>OT_MEM Then Exit;
+ 
+ { On s'interesse aux acces avec registre de base + registre d'index }
+ If(Op.BaseReg='')or(Op.IndexReg='')Then Exit;
+ 
+ UBase:=UpCaseStr(Op.BaseReg);
+ UIndex:=UpCaseStr(Op.IndexReg);
+ 
+ { Ignorer les acces pile [BP+x] sans index }
+ If((UBase='BP')or(UBase='EBP'))and(Op.IndexReg='')Then Exit;
+ 
+ { Calculer la taille de donnees - Op.Size contient directement la taille }
+ Case Op.Size of
+  1:DataSize:=1;
+  2:DataSize:=2;
+  4:DataSize:=4;
+  Else DataSize:=2;
+ End;
+ 
+ { Collecter si l'acces a un deplacement }
+ If Op.HasDisp Then
+  AddIndexedLocal(ProcIdx,UBase,UIndex,Op.Disp,DataSize)
+ Else
+  AddIndexedLocal(ProcIdx,UBase,UIndex,0,DataSize);
+End;
+
+Procedure CollectProcIndexedMemAccesses(ProcIdx:Integer);
+{ Parcourt le code d'une procedure et collecte tous les acces
+  memoire indexes pour creer des variables locales appropriees. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ StartL,EndL:LongInt;
+Begin
+ If(ProcIdx<1)or(ProcIdx>ProcCount)Then Exit;
+ 
+ StartL:=Procs[ProcIdx].StartLine;
+ EndL:=Procs[ProcIdx].EndLine;
+ 
+ If EndL<=StartL Then Exit;
+ 
+ For I:=StartL to EndL do Begin
+  If(I<0)or(I>=SrcLineCount)Then Continue;
+  ParseInstructionLine(I,AsmL);
+  If AsmL.IsDirective Then Continue;
+  If AsmL.Mnemonic='' Then Continue;
+  
+  { Analyser les deux operandes }
+  CollectIndexedMemAccessInOp(ProcIdx,AsmL.Op1);
+  CollectIndexedMemAccessInOp(ProcIdx,AsmL.Op2);
+ End;
+End;
+
+Procedure ProcessIndexedMemoryLocals;
+{ Parcourt toutes les procedures et collecte les acces memoire indexes
+  pour creer des variables locales plus lisibles. }
+Var
+ I:Integer;
+ TotalLocals:Integer;
+ InitLocals:Integer;
+Begin
+ TotalLocals:=0;
+ 
+ For I:=1 to ProcCount do Begin
+  InitLocals:=Procs[I].LocalCount;
+  CollectProcIndexedMemAccesses(I);
+  TotalLocals:=TotalLocals+(Procs[I].LocalCount-InitLocals);
+ End;
+ 
+ WriteLn('  Collecte acces memoire indexes :');
+ WriteLn('    Procedures analysees : ',ProcCount);
+ WriteLn('    Variables locales creees : ',TotalLocals);
+End;
+
+{ ============================================================
   Verification finale et rapport - TODO 25
   ============================================================ }
 
@@ -10125,6 +10322,8 @@ BEGIN
  ProcessTypeInference;
  { Mapping des registres (TODO 9) }
  ProcessRegisterMapping;
+ { Collecte des acces memoire indexes pour creer des variables locales }
+ ProcessIndexedMemoryLocals;
  { Traduction des transferts (TODO 10) }
  ProcessDataTransfers;
  { TODO 11 - Traduction arithmetique }
