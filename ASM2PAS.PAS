@@ -8289,6 +8289,9 @@ Begin
  End;
 End;
 
+{ Declaration forward pour IsLabelOptimized (definie dans TODO 24) }
+Function IsLabelOptimized(Const LabelName:String):Boolean; Forward;
+
 Function IsHeaderMnemonic(Const M:String):Boolean;
 { Indique si le mnemonique est gere par TODO 21
   (utilise pour verifier la completude des traductions). }
@@ -8538,6 +8541,8 @@ Begin
   If Symbols[I].SymType=SY_LABEL Then Begin
    { Exclure les labels qui sont des noms de procedures }
    If IsProcAlreadyDefined(Symbols[I].Name) Then Continue;
+   { Exclure les labels optimises (ex: boucles While) }
+   If IsLabelOptimized(Symbols[I].Name) Then Continue;
    If Not HasLabel Then Begin
     Write(OutFile,'Label');
     HasLabel:=True;
@@ -9786,6 +9791,162 @@ Begin
  End;
 End;
 
+Function IsLoopPattern(Const Code:String;
+                       Var CxVar,Lbl,ExtraCond:String):Boolean;
+{ Detecte si Code est un pattern de boucle LOOP traduit:
+  - "Begin Dec(RegCX); If RegCX <> 0 Then Goto label; End;"
+  - "Begin Dec(RegECX); If RegECX <> 0 Then Goto label; End;"
+  - Variantes LOOPE/LOOPNE avec FlagZF
+  Retourne True si detecte, avec le nom du registre CX, le label cible,
+  et une eventuelle condition supplementaire (FlagZF). }
+Var
+ P1,P2,P3:Integer;
+ TmpCx,TmpLbl:String;
+Begin
+ IsLoopPattern:=False;
+ CxVar:='';
+ Lbl:='';
+ ExtraCond:='';
+ 
+ { Verifier le debut "Begin Dec(" }
+ If Pos('Begin Dec(',Code)<>1 Then Exit;
+ 
+ { Trouver la fin du Dec() }
+ P1:=Pos('); If ',Code);
+ If P1<12 Then Exit;
+ 
+ { Extraire le registre CX }
+ TmpCx:=Copy(Code,11,P1-11);
+ If(TmpCx<>'RegCX')and(TmpCx<>'RegECX')Then Exit;
+ 
+ { Verifier la condition et extraire le label }
+ P2:=Pos(' Then Goto ',Code);
+ If P2<P1 Then Exit;
+ 
+ { Trouver la fin du label }
+ P3:=Pos('; End;',Code);
+ If P3<P2 Then Exit;
+ 
+ { Extraire le label }
+ TmpLbl:=Trim(Copy(Code,P2+11,P3-P2-11));
+ If Length(TmpLbl)=0 Then Exit;
+ 
+ { Verifier la condition : <> 0 simple ou avec FlagZF }
+ { Pattern simple: "If RegCX <> 0 Then Goto" }
+ If Pos('If '+TmpCx+' <> 0 Then Goto',Code)>0 Then Begin
+  CxVar:=TmpCx;
+  Lbl:=TmpLbl;
+  ExtraCond:='';
+  IsLoopPattern:=True;
+  Exit;
+ End;
+ 
+ { Pattern LOOPE: "If (RegCX <> 0) and FlagZF Then Goto" }
+ If Pos('If ('+TmpCx+' <> 0) and FlagZF Then Goto',Code)>0 Then Begin
+  CxVar:=TmpCx;
+  Lbl:=TmpLbl;
+  ExtraCond:=' and FlagZF';
+  IsLoopPattern:=True;
+  Exit;
+ End;
+ 
+ { Pattern LOOPNE: "If (RegCX <> 0) and not FlagZF Then Goto" }
+ If Pos('If ('+TmpCx+' <> 0) and not FlagZF Then Goto',Code)>0 Then Begin
+  CxVar:=TmpCx;
+  Lbl:=TmpLbl;
+  ExtraCond:=' and not FlagZF';
+  IsLoopPattern:=True;
+  Exit;
+ End;
+End;
+
+Function FindFirstTranslationAfterLine(Line:LongInt):LongInt;
+{ Trouve l'index de la premiere traduction dont la ligne source
+  est >= Line. Retourne -1 si aucune trouvee. }
+Var
+ I:LongInt;
+ BestIdx:LongInt;
+ BestLine:LongInt;
+Begin
+ FindFirstTranslationAfterLine:=-1;
+ BestIdx:=-1;
+ BestLine:=MaxLongInt;
+ For I:=0 to TranslationCount-1 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  If(Translations[I].SrcLine>=Line)and(Translations[I].SrcLine<BestLine)Then Begin
+   BestIdx:=I;
+   BestLine:=Translations[I].SrcLine;
+  End;
+ End;
+ FindFirstTranslationAfterLine:=BestIdx;
+End;
+
+Procedure OptLoopToWhile(Var OptCount:Integer);
+{ Reconstruction des boucles While a partir des patterns LOOP:
+  Begin Dec(RegCX); If RegCX <> 0 Then Goto label; End
+  devient une structure While si le label est un saut arriere.
+  
+  Transformation:
+  - Le label devient: While CxVar <> 0 do Begin
+  - Les instructions entre label et LOOP restent intactes
+  - Le LOOP devient: Dec(CxVar); End (* While *) }
+Var
+ I:LongInt;
+ Code:String;
+ CxVar,Lbl,ExtraCond:String;
+ LabelSrcLine:LongInt;
+ FirstTrIdx:LongInt;
+ WhileCond:String;
+Begin
+ OptCount:=0;
+ 
+ For I:=0 to TranslationCount-1 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  Code:=Translations[I].PascalCode;
+  
+  { Detecter le pattern de boucle LOOP }
+  If Not IsLoopPattern(Code,CxVar,Lbl,ExtraCond)Then Continue;
+  
+  { Chercher la ligne source du label (saut arriere) }
+  LabelSrcLine:=FindLabelSrcLine(Lbl);
+  If LabelSrcLine<0 Then Continue;
+  
+  { Verifier que le label est AVANT la traduction actuelle (saut arriere) }
+  If LabelSrcLine>=Translations[I].SrcLine Then Continue;
+  
+  { Verifier que le label n'est pas reference ailleurs que par ce LOOP }
+  { Pour simplifier, on accepte si le label est reference une seule fois }
+  If CountLabelReferences(Lbl)>1 Then Continue;
+  
+  { Construire la condition While }
+  If ExtraCond='' Then
+   WhileCond:='While '+CxVar+' <> 0 do Begin'
+  Else
+   WhileCond:='While ('+CxVar+' <> 0)'+ExtraCond+' do Begin';
+  
+  { Trouver la premiere traduction apres le label (premiere instruction du corps) }
+  FirstTrIdx:=FindFirstTranslationAfterLine(LabelSrcLine);
+  If(FirstTrIdx>=0)and(FirstTrIdx<I)Then Begin
+   { Prefixer cette traduction avec While ... do Begin }
+   Translations[FirstTrIdx].PascalCode:=
+    WhileCond+' '+Translations[FirstTrIdx].PascalCode;
+  End
+  Else Begin
+   { Pas de traduction entre le label et le LOOP, cas rare }
+   { On ne peut pas optimiser dans ce cas }
+   Continue;
+  End;
+  
+  { Modifier la traduction du LOOP : Dec() + End }
+  Translations[I].PascalCode:='Dec('+CxVar+'); End; { While '+Lbl+' }';
+  
+  { Marquer le label comme optimise (ne pas generer le Label) }
+  AddOptLabel(Lbl);
+  
+  Inc(OptCount);
+ End;
+End;
+
 Procedure OptUnusedRegs(Var UnusedCount:Integer);
 { (a) Detecte les registres ecrits mais jamais lus. }
 Const
@@ -9829,15 +9990,18 @@ Procedure ProcessOptimization;
 Var
  IdiomCount,ConstPropCount,SimplifyCount:Integer;
  SubRegCount,GotoCount,GotoBlockCount,UnusedCount,TotalOpt:Integer;
+ LoopWhileCount:Integer;
 Begin
  OptIdiomatic(IdiomCount);
  OptConstProp(ConstPropCount);
  OptSimplify(SimplifyCount);
  OptSubRegFusion(SubRegCount);
+ OptLoopToWhile(LoopWhileCount);
  OptGotoToIfBeginEnd(GotoBlockCount);
  OptGotoDetect(GotoCount);
  OptUnusedRegs(UnusedCount);
- TotalOpt:=IdiomCount+ConstPropCount+SimplifyCount+SubRegCount+GotoBlockCount;
+ TotalOpt:=IdiomCount+ConstPropCount+SimplifyCount+SubRegCount+
+  GotoBlockCount+LoopWhileCount;
  WriteLn('Optimisation : ',TotalOpt,' modifications, ',
   GotoCount,' Goto candidats, ',UnusedCount,' registres inutilises.');
  If Verbose Then Begin
@@ -9845,6 +10009,7 @@ Begin
   WriteLn('  Prop. constantes : ',ConstPropCount);
   WriteLn('  Simplifications  : ',SimplifyCount);
   WriteLn('  Fusion sous-reg  : ',SubRegCount);
+  WriteLn('  Loop -> While    : ',LoopWhileCount);
   WriteLn('  If-Then-Begin-End: ',GotoBlockCount);
   WriteLn('  Goto remplacables: ',GotoCount);
   WriteLn('  Registres inutil.: ',UnusedCount);
