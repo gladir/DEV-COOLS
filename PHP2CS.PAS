@@ -269,7 +269,7 @@
               C# : goto label; label: (si CS supporte)
               Avertissement sur usage de goto.
 
-  TODO 10 - TRANSPILATION : BOUCLES [A FAIRE]
+  TODO 10 - TRANSPILATION : BOUCLES [IMPLEMENTE]
             Transpilation de for($i=0; $i<n; $i++) :
               C# : for(int i=0; i<n; i++) (avec inference de type)
             Transpilation de foreach($arr as $val) :
@@ -2069,7 +2069,7 @@ End;
   TODO 07 - EXPRESSIONS (IMPLEMENTE)
   TODO 08 - CHAINES ET INTERPOLATION (IMPLEMENTE)
   TODO 09 - STRUCTURES DE CONTROLE (IMPLEMENTE)
-  TODO 10 - BOUCLES (A FAIRE)
+  TODO 10 - BOUCLES (IMPLEMENTE)
   TODO 11 - SWITCH ET MATCH (A FAIRE)
   TODO 12 - FONCTIONS PHP (A FAIRE)
   TODO 13 - CLASSES PHP (A FAIRE)
@@ -2399,6 +2399,14 @@ Function  ParseMatchExpr(Indent: Integer): TString; Forward;
 Procedure ParseDeclareStmt(Indent: Integer); Forward;
 Procedure ParseGotoStmt(Indent: Integer); Forward;
 Procedure ParseIfStmt(Indent: Integer); Forward;
+
+{ Declarations anticipees pour TODO 10 (boucles) }
+Procedure ParseForStmt(Indent: Integer); Forward;
+Procedure ParseForeachStmt(Indent: Integer); Forward;
+Procedure ParseWhileStmt(Indent: Integer); Forward;
+Procedure ParseDoWhileStmt(Indent: Integer); Forward;
+Procedure ParseBreakStmt(Indent: Integer); Forward;
+Procedure ParseContinueStmt(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -4182,6 +4190,18 @@ Begin
       ParseDeclareStmt(Indent)
     Else If KwLow = 'goto' Then
       ParseGotoStmt(Indent)
+    Else If KwLow = 'for' Then
+      ParseForStmt(Indent)
+    Else If KwLow = 'foreach' Then
+      ParseForeachStmt(Indent)
+    Else If KwLow = 'while' Then
+      ParseWhileStmt(Indent)
+    Else If KwLow = 'do' Then
+      ParseDoWhileStmt(Indent)
+    Else If KwLow = 'break' Then
+      ParseBreakStmt(Indent)
+    Else If KwLow = 'continue' Then
+      ParseContinueStmt(Indent)
     Else If (CurTok.Kind = TK_IDENT) And (CurTok.Kind <> TK_EOF) Then
     Begin
       { Label : ident suivi de ':' (sans espace entre les deux) }
@@ -4301,6 +4321,306 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 10 - TRANSPILATION : BOUCLES PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Parse et emet une instruction for PHP.
+  CurTok doit etre le mot-cle 'for'.
+  Syntaxes supportees :
+    for($i=0; $i<n; $i++) begin...end
+    for($i=0; $i<n; $i++): ... endfor; }
+Procedure ParseForStmt(Indent: Integer);
+Var
+  InitCS  : TString;
+  CondCS  : TString;
+  IncrCS  : TString;
+  VarName : TString;
+  Op      : TString;
+  Inferred: TPhpType;
+  CsType  : TString;
+  UseAlt  : Boolean;
+Begin
+  LexNextToken; { saute 'for' }
+  InitCS := ''; CondCS := ''; IncrCS := '';
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+    LexNextToken;
+  { -- Partie init : $var = expr ou expression simple -- }
+  If Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) Then
+  Begin
+    If CurTok.Kind = TK_VAR Then
+    Begin
+      VarName := MakeCsName(VarPhpName(CurTok.Val));
+      LexNextToken;
+      If (CurTok.Kind = TK_OP) And (CurTok.Val = '=') Then
+      Begin
+        LexNextToken;
+        Inferred := VarInferType(CurTok);
+        Case Inferred Of
+          PT_INT    : CsType := 'int';
+          PT_FLOAT  : CsType := 'double';
+          PT_STRING : CsType := 'string';
+          PT_BOOL   : CsType := 'bool';
+        Else
+          CsType := 'var';
+        End;
+        InitCS := CsType + ' ' + VarName + ' = ' + ParseExprStr;
+      End
+      Else If (CurTok.Kind = TK_OP) And
+              ((CurTok.Val = '++') Or (CurTok.Val = '--')) Then
+      Begin
+        InitCS := VarName + CurTok.Val;
+        LexNextToken;
+      End
+      Else
+        InitCS := VarName;
+    End
+    Else
+      InitCS := ParseExprStr;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+    LexNextToken;
+  { -- Partie condition -- }
+  CondCS := ParseExprStr;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+    LexNextToken;
+  { -- Partie increment : $var++ / $var-- / $var op= expr / pre-incr -- }
+  If Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) Then
+  Begin
+    If (CurTok.Kind = TK_OP) And
+       ((CurTok.Val = '++') Or (CurTok.Val = '--')) Then
+    Begin
+      Op := CurTok.Val;
+      LexNextToken;
+      If CurTok.Kind = TK_VAR Then
+      Begin
+        VarName := MakeCsName(VarPhpName(CurTok.Val));
+        LexNextToken;
+        IncrCS := Op + VarName;
+      End
+      Else
+        IncrCS := Op;
+    End
+    Else If CurTok.Kind = TK_VAR Then
+    Begin
+      VarName := MakeCsName(VarPhpName(CurTok.Val));
+      LexNextToken;
+      If (CurTok.Kind = TK_OP) And
+         ((CurTok.Val = '++') Or (CurTok.Val = '--')) Then
+      Begin
+        IncrCS := VarName + CurTok.Val;
+        LexNextToken;
+      End
+      Else If (CurTok.Kind = TK_OP) And
+              ((CurTok.Val = '+=') Or (CurTok.Val = '-=') Or
+               (CurTok.Val = '*=') Or (CurTok.Val = '/=')) Then
+      Begin
+        Op := CurTok.Val;
+        LexNextToken;
+        IncrCS := VarName + ' ' + Op + ' ' + ParseExprStr;
+      End
+      Else If (CurTok.Kind = TK_OP) And (CurTok.Val = '=') Then
+      Begin
+        LexNextToken;
+        IncrCS := VarName + ' = ' + ParseExprStr;
+      End
+      Else
+        IncrCS := VarName;
+    End
+    Else
+      IncrCS := ParseExprStr;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+    LexNextToken;
+  EmitLine(IndentStr(Indent) + 'for (' + InitCS + '; ' + CondCS + '; ' + IncrCS + ')');
+  EmitLine(IndentStr(Indent) + '{');
+  UseAlt := (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':');
+  If UseAlt Then
+  Begin
+    LexNextToken;
+    ParseBlock(Indent + 1, 'endfor');
+  End
+  Else
+  Begin
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+      LexNextToken;
+    ParseBlock(Indent + 1, '');
+  End;
+  EmitLine(IndentStr(Indent) + '}');
+End;
+
+{ Parse et emet une instruction foreach PHP.
+  CurTok doit etre le mot-cle 'foreach'.
+  Syntaxes supportees :
+    foreach($arr as $val) begin...end
+    foreach($arr as $key => $val) begin...end
+    foreach($arr as $val): ... endforeach; }
+Procedure ParseForeachStmt(Indent: Integer);
+Var
+  ArrCS  : TString;
+  KeyCS  : TString;
+  ValCS  : TString;
+  HasKey : Boolean;
+  UseAlt : Boolean;
+Begin
+  LexNextToken; { saute 'foreach' }
+  ArrCS := ''; KeyCS := ''; ValCS := '';
+  HasKey := False;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+    LexNextToken;
+  { Expression de tableau : s arrete sur le mot-cle 'as' }
+  ArrCS := ParseExprStr;
+  { Consomme 'as' }
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'as') Then
+    LexNextToken;
+  { Premiere variable : key ou val }
+  KeyCS := ParseExprStr;
+  If (CurTok.Kind = TK_OP) And (CurTok.Val = '=>') Then
+  Begin
+    HasKey := True;
+    LexNextToken; { saute '=>' }
+    ValCS := ParseExprStr;
+  End
+  Else
+    ValCS := KeyCS;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+    LexNextToken;
+  { Generer C# }
+  If HasKey Then
+  Begin
+    EmitLine(IndentStr(Indent) + 'foreach (var _kvp in ' + ArrCS + ')');
+    EmitLine(IndentStr(Indent) + '{');
+    EmitLine(IndentStr(Indent + 1) + 'var ' + KeyCS + ' = _kvp.Key;');
+    EmitLine(IndentStr(Indent + 1) + 'var ' + ValCS + ' = _kvp.Value;');
+  End
+  Else
+  Begin
+    EmitLine(IndentStr(Indent) + 'foreach (var ' + ValCS + ' in ' + ArrCS + ')');
+    EmitLine(IndentStr(Indent) + '{');
+  End;
+  UseAlt := (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':');
+  If UseAlt Then
+  Begin
+    LexNextToken;
+    ParseBlock(Indent + 1, 'endforeach');
+  End
+  Else
+  Begin
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+      LexNextToken;
+    ParseBlock(Indent + 1, '');
+  End;
+  EmitLine(IndentStr(Indent) + '}');
+End;
+
+{ Parse et emet une instruction while PHP.
+  CurTok doit etre le mot-cle 'while'.
+  Syntaxes supportees :
+    while(expr) begin...end
+    while(expr): ... endwhile; }
+Procedure ParseWhileStmt(Indent: Integer);
+Var
+  CondCS : TString;
+  UseAlt : Boolean;
+Begin
+  LexNextToken; { saute 'while' }
+  CondCS := '';
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+  Begin
+    LexNextToken;
+    CondCS := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+  End;
+  EmitLine(IndentStr(Indent) + 'while (' + CondCS + ')');
+  EmitLine(IndentStr(Indent) + '{');
+  UseAlt := (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':');
+  If UseAlt Then
+  Begin
+    LexNextToken;
+    ParseBlock(Indent + 1, 'endwhile');
+  End
+  Else
+  Begin
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+      LexNextToken;
+    ParseBlock(Indent + 1, '');
+  End;
+  EmitLine(IndentStr(Indent) + '}');
+End;
+
+{ Parse et emet une instruction do...while PHP.
+  CurTok doit etre le mot-cle 'do'. }
+Procedure ParseDoWhileStmt(Indent: Integer);
+Var
+  CondCS : TString;
+Begin
+  LexNextToken; { saute 'do' }
+  EmitLine(IndentStr(Indent) + 'do');
+  EmitLine(IndentStr(Indent) + '{');
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+    LexNextToken;
+  ParseBlock(Indent + 1, '');
+  { ParseBlock a deja consomme l accolade fermante du do }
+  CondCS := '';
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'while') Then
+  Begin
+    LexNextToken; { saute 'while' }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+    Begin
+      LexNextToken;
+      CondCS := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+        LexNextToken;
+    End;
+  End;
+  EmitLine(IndentStr(Indent) + '} while (' + CondCS + ');');
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+    LexNextToken;
+End;
+
+{ Parse et emet une instruction break PHP.
+  CurTok doit etre le mot-cle 'break'.
+    break;   -> break;
+    break N; -> break; (avertissement si N>1) }
+Procedure ParseBreakStmt(Indent: Integer);
+Var N: LongInt;
+Begin
+  LexNextToken; { saute 'break' }
+  N := 1;
+  If CurTok.Kind = TK_INTEGER Then
+  Begin
+    N := CurTok.IntVal;
+    LexNextToken;
+  End;
+  If N > 1 Then
+    WarnMsg('break ' + ItoS(N) + ' converti en break simple (profondeur > 1)');
+  EmitLine(IndentStr(Indent) + 'break;');
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+    LexNextToken;
+End;
+
+{ Parse et emet une instruction continue PHP.
+  CurTok doit etre le mot-cle 'continue'.
+    continue;   -> continue;
+    continue N; -> continue; (avertissement si N>1) }
+Procedure ParseContinueStmt(Indent: Integer);
+Var N: LongInt;
+Begin
+  LexNextToken; { saute 'continue' }
+  N := 1;
+  If CurTok.Kind = TK_INTEGER Then
+  Begin
+    N := CurTok.IntVal;
+    LexNextToken;
+  End;
+  If N > 1 Then
+    WarnMsg('continue ' + ItoS(N) + ' converti en continue simple (profondeur > 1)');
+  EmitLine(IndentStr(Indent) + 'continue;');
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+    LexNextToken;
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -4330,6 +4650,18 @@ Begin
       ParseIfStmt(0)
     Else If KwLow = 'goto' Then
       ParseGotoStmt(0)
+    Else If KwLow = 'for' Then
+      ParseForStmt(0)
+    Else If KwLow = 'foreach' Then
+      ParseForeachStmt(0)
+    Else If KwLow = 'while' Then
+      ParseWhileStmt(0)
+    Else If KwLow = 'do' Then
+      ParseDoWhileStmt(0)
+    Else If KwLow = 'break' Then
+      ParseBreakStmt(0)
+    Else If KwLow = 'continue' Then
+      ParseContinueStmt(0)
     Else If KwLow = 'static' Then
     Begin
       If Not ParseStaticVarDecl(0) Then
@@ -4369,7 +4701,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 10-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 11-25 a faire)');
 End;
 
 Procedure Cleanup;
