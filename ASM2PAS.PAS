@@ -353,6 +353,9 @@ Const
  PT_PCHAR    = 9;
  PT_ARRAY    = 10;
 
+ { Limite pour les labels optimises }
+ MAX_OPT_LABELS = 256;
+
  { Types d'operandes }
  OT_NONE    = 0;
  OT_REG8    = 1;
@@ -586,6 +589,9 @@ Var
  { Donnees (TODO 4) }
  DataVars:Array[1..MAX_DATAVARS] of TDataVar;
  DataVarCount:Integer;
+ { Labels optimises (ne pas emettre dans ProcessBodyGeneration) }
+ OptLabels:Array[1..MAX_OPT_LABELS] of String;
+ OptLabelCount:Integer;
 
 { ============================================================
   Fonctions utilitaires
@@ -8720,6 +8726,9 @@ Begin
  End;
 End;
 
+{ Declaration forward pour IsLabelOptimized (definie dans TODO 24) }
+Function IsLabelOptimized(Const LabelName:String):Boolean; Forward;
+
 Function ReplaceParamBPReferences(Code:String;ProcIdx:Integer):String;
 { Remplace les references Param_BP_N par les vrais noms de parametres.
   Pour convention NEAR:
@@ -8925,9 +8934,10 @@ Begin
     { Sauter le prologue/epilogue des fonctions implicites }
     If IsPrologueEpilogueInstr(AsmL,I,J) Then Continue;
 
-    { Emettre le label s'il y en a un (sauf le nom de la proc) }
+    { Emettre le label s'il y en a un (sauf le nom de la proc et les labels optimises) }
     If(AsmL.LabelStr<>'')and
-      (UpCaseStr(AsmL.LabelStr)<>UpCaseStr(Procs[I].Name))Then
+      (UpCaseStr(AsmL.LabelStr)<>UpCaseStr(Procs[I].Name))and
+      (Not IsLabelOptimized(AsmL.LabelStr))Then
      WriteLn(OutFile,'  ',AsmL.LabelStr,':');
 
     { Sauter les lignes sans instruction }
@@ -8994,7 +9004,8 @@ Begin
      ProcIdx:=J;
      Break;
     End;
-   If ProcIdx=0 Then
+   { N'emettre le label que s'il n'est pas un nom de proc et n'est pas optimise }
+   If(ProcIdx=0)and(Not IsLabelOptimized(AsmL.LabelStr))Then
     WriteLn(OutFile,'  ',AsmL.LabelStr,':');
   End;
 
@@ -9481,6 +9492,49 @@ Begin
  End;
 End;
 
+Procedure AddOptLabel(Const LabelName:String);
+{ Ajoute un label a la liste des labels optimises
+  (qui ne doivent pas etre emis dans ProcessBodyGeneration). }
+Begin
+ If OptLabelCount>=MAX_OPT_LABELS Then Exit;
+ Inc(OptLabelCount);
+ OptLabels[OptLabelCount]:=LabelName;
+End;
+
+Function IsLabelOptimized(Const LabelName:String):Boolean;
+{ Verifie si un label est dans la liste des labels optimises. }
+Var
+ I:Integer;
+ U:String;
+Begin
+ IsLabelOptimized:=False;
+ U:=UpCaseStr(LabelName);
+ For I:=1 to OptLabelCount do
+  If UpCaseStr(OptLabels[I])=U Then Begin
+   IsLabelOptimized:=True;
+   Exit;
+  End;
+End;
+
+Function CountLabelReferences(Const LabelName:String):Integer;
+{ Compte le nombre de references a un label dans les traductions.
+  Exclut la declaration du label lui-meme. }
+Var
+ I:Integer;
+ U:String;
+ Count:Integer;
+Begin
+ Count:=0;
+ U:=UpCaseStr(LabelName);
+ For I:=0 to TranslationCount-1 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  { Chercher "Goto label" ou "Then Goto label" }
+  If Pos('Goto '+U,UpCaseStr(Translations[I].PascalCode))>0 Then
+   Inc(Count);
+ End;
+ CountLabelReferences:=Count;
+End;
+
 Function FindLabelSrcLine(LabelName:String):LongInt;
 { Trouve la ligne source contenant un label donne.
   Retourne -1 si le label n'est pas trouve. }
@@ -9666,6 +9720,10 @@ Begin
      { Modifier Exit; en End; }
      Translations[ExitIdx].PascalCode:='End;';
      Inc(OptCount);
+     { Verifier si le label n'est plus reference ailleurs
+       et le marquer comme optimise pour ne pas l'emettre }
+     If CountLabelReferences(Lbl)=0 Then
+      AddOptLabel(Lbl);
     End;
    End;
   End;
@@ -10529,6 +10587,7 @@ BEGIN
  TotalProcs:=0;
  TotalVars:=0;
  TotalLabels:=0;
+ OptLabelCount:=0;
  If Verbose Then Begin
   WriteLn('Fichier source    : ',InFileName);
   WriteLn('Fichier de sortie : ',OutFileName);
