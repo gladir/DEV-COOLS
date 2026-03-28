@@ -158,7 +158,7 @@
             Table des use declarations : UseTable[1..MAX_USE].
             UseAdd(FqName, Alias), UseFind(Alias).
 
-  TODO 06 - TRANSPILATION : DECLARATIONS DE VARIABLES PHP ($var) [A FAIRE]
+  TODO 06 - TRANSPILATION : DECLARATIONS DE VARIABLES PHP ($var) [IMPLEMENTE]
             Reconnaître les declarations de variables PHP :
               $var = expr;            -> var nom = expr; (ou type explicite)
               $var = null;            -> type? nom = null; (CS 8+ nullable)
@@ -2065,7 +2065,7 @@ End;
   TODO 03 - MOTS-CLES PHP (IMPLEMENTE)
   TODO 04 - TABLE DES SYMBOLES ET TYPES (IMPLEMENTE)
   TODO 05 - GESTION DES SCOPES ET NAMESPACES (IMPLEMENTE)
-  TODO 06 - DECLARATIONS DE VARIABLES PHP (A FAIRE)
+  TODO 06 - DECLARATIONS DE VARIABLES PHP (IMPLEMENTE)
   TODO 07 - EXPRESSIONS (A FAIRE)
   TODO 08 - CHAINES ET INTERPOLATION (A FAIRE)
   TODO 09 - STRUCTURES DE CONTROLE (A FAIRE)
@@ -2387,6 +2387,363 @@ Begin
     UseCsName := MakeCsName(LastSegment(FqN));
 End;
 
+{ ============================================================
+  TODO 06 - TRANSPILATION : DECLARATIONS DE VARIABLES PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Supprime le '$' initial d un nom de variable PHP }
+Function VarPhpName(Const S: TString): TString;
+Begin
+  If (Length(S) > 0) And (S[1] = '$') Then
+    VarPhpName := Copy(S, 2, Length(S) - 1)
+  Else
+    VarPhpName := S;
+End;
+
+{ Emet une ligne dans le fichier C# de sortie }
+Procedure EmitLine(Const S: TString);
+Begin
+  If OutFOpen Then
+  Begin
+    WriteLn(OutF, S);
+    Inc(LinesEmit);
+  End;
+End;
+
+{ Emet un bloc d indentation (2 espaces par niveau) }
+Function IndentStr(Level: Integer): TString;
+Var I: Integer; R: TString;
+Begin
+  R := '';
+  For I := 1 To Level * 2 Do
+    If Length(R) < MAX_STR Then R := R + ' ';
+  IndentStr := R;
+End;
+
+{ Infere le type PHP a partir d un token RHS (literal) }
+Function VarInferType(Const Tok: TToken): TPhpType;
+Begin
+  Case Tok.Kind Of
+    TK_INTEGER    : VarInferType := PT_INT;
+    TK_FLOAT      : VarInferType := PT_FLOAT;
+    TK_STRING_SQ,
+    TK_STRING_DQ,
+    TK_HEREDOC,
+    TK_NOWDOC     : VarInferType := PT_STRING;
+    TK_KEYWORD    :
+    Begin
+      If (LowStr(Tok.Val) = 'true') Or (LowStr(Tok.Val) = 'false') Then
+        VarInferType := PT_BOOL
+      Else If LowStr(Tok.Val) = 'null' Then
+        VarInferType := PT_NULL
+      Else
+        VarInferType := PT_UNKNOWN;
+    End;
+  Else
+    VarInferType := PT_UNKNOWN;
+  End;
+End;
+
+{ Retourne la representation C# d une superglobale PHP selon le framework }
+Function SuperGlobalCS(Const Name: TString; Fw: Integer): TString;
+Var N: TString;
+Begin
+  N := LowStr(Name);
+  If N = '$_get' Then
+  Begin
+    If Fw = FW_ASPNET Then SuperGlobalCS := 'HttpContext.Request.Query'
+    Else SuperGlobalCS := 'new Dictionary<string, string>() /* $_GET */';
+  End
+  Else If N = '$_post' Then
+  Begin
+    If Fw = FW_ASPNET Then SuperGlobalCS := 'HttpContext.Request.Form'
+    Else SuperGlobalCS := 'new Dictionary<string, string>() /* $_POST */';
+  End
+  Else If N = '$_session' Then
+  Begin
+    If Fw = FW_ASPNET Then SuperGlobalCS := 'HttpContext.Session'
+    Else SuperGlobalCS := 'new Dictionary<string, object>() /* $_SESSION */';
+  End
+  Else If N = '$_cookie' Then
+  Begin
+    If Fw = FW_ASPNET Then SuperGlobalCS := 'HttpContext.Request.Cookies'
+    Else SuperGlobalCS := 'new Dictionary<string, string>() /* $_COOKIE */';
+  End
+  Else If N = '$_server' Then
+    SuperGlobalCS := 'new Dictionary<string, string>() /* $_SERVER */'
+  Else If N = '$_env' Then
+    SuperGlobalCS := 'Environment.GetEnvironmentVariables() /* $_ENV */'
+  Else If N = '$_files' Then
+  Begin
+    If Fw = FW_ASPNET Then SuperGlobalCS := 'HttpContext.Request.Form.Files /* $_FILES */'
+    Else SuperGlobalCS := 'new List<object>() /* $_FILES */';
+  End
+  Else If N = '$globals' Then
+    SuperGlobalCS := '/* $GLOBALS: utiliser des champs statiques */'
+  Else
+    SuperGlobalCS := '';
+End;
+
+{ Retourne vrai si le nom de variable est une superglobale PHP }
+Function IsSuperGlobal(Const Name: TString): Boolean;
+Var N: TString;
+Begin
+  N := LowStr(Name);
+  IsSuperGlobal := (N = '$_get') Or (N = '$_post') Or (N = '$_session') Or
+                   (N = '$_cookie') Or (N = '$_server') Or (N = '$_env') Or
+                   (N = '$_files') Or (N = '$globals') Or (N = '$_request');
+End;
+
+{ Emet une declaration de variable C# dans le fichier de sortie.
+  PhpName : nom PHP sans $ ; CsType : type C# ('' -> var) ;
+  Nullable : ajoute le ? (C# 8+) ; RhsCs : RHS deja traduit ;
+  IsStatic : emettre un champ statique prive ; Indent : niveau }
+Procedure EmitVarDecl(Const PhpName, CsType, RhsCs: TString;
+                      Nullable, IsStatic: Boolean;
+                      Indent: Integer);
+Var
+  CsName, TypeStr, Prefix, Line: TString;
+Begin
+  CsName := MakeCsName(PhpName);
+  If CsType = '' Then
+    TypeStr := 'var'
+  Else If Nullable And (CsType <> 'object') And
+          CsVersionGE(Opts.CsVersion, CS_VER_80) Then
+    TypeStr := CsType + '?'
+  Else
+    TypeStr := CsType;
+
+  If IsStatic Then
+    Prefix := 'private static '
+  Else
+    Prefix := '';
+
+  Line := IndentStr(Indent) + Prefix + TypeStr + ' ' + CsName;
+  If RhsCs <> '' Then
+    Line := Line + ' = ' + RhsCs + ';'
+  Else
+    Line := Line + ';';
+  EmitLine(Line);
+End;
+
+{ Convertit un token literal en sa representation C# string }
+Function TokToCS(Const Tok: TToken): TString;
+Begin
+  Case Tok.Kind Of
+    TK_INTEGER : TokToCS := ItoS(Tok.IntVal);
+    TK_FLOAT   :
+    Begin
+      { Conversion simple : utiliser la valeur textuelle du token }
+      TokToCS := Tok.Val;
+    End;
+    TK_STRING_SQ : TokToCS := '"' + Tok.Val + '"';
+    TK_STRING_DQ : TokToCS := '"' + Tok.Val + '"';
+    TK_HEREDOC   : TokToCS := '"' + Tok.Val + '"';
+    TK_NOWDOC    : TokToCS := '@"' + Tok.Val + '"';
+    TK_KEYWORD   :
+    Begin
+      If LowStr(Tok.Val) = 'true'  Then TokToCS := 'true'
+      Else If LowStr(Tok.Val) = 'false' Then TokToCS := 'false'
+      Else If LowStr(Tok.Val) = 'null'  Then TokToCS := 'null'
+      Else TokToCS := Tok.Val;
+    End;
+    TK_VAR : TokToCS := MakeCsName(VarPhpName(Tok.Val));
+    TK_IDENT : TokToCS := MakeCsName(Tok.Val);
+  Else
+    TokToCS := Tok.Val;
+  End;
+End;
+
+{ Parse et emet une declaration de variable simple :
+    $var = expr;   -> var CsName = rhsCs;
+    $var = null;   -> object? CsName = null; (C# 8+)
+  Suppose que CurTok est le token TK_VAR apres le $.
+  Consomme jusqu au ';' inclus. Retourne vrai si parsee. }
+Function ParseSimpleVarDecl(Indent: Integer): Boolean;
+Var
+  PhpName, RhsCs, CsType: TString;
+  Inferred: TPhpType;
+  Nullable: Boolean;
+Begin
+  ParseSimpleVarDecl := False;
+  If CurTok.Kind <> TK_VAR Then Exit;
+
+  PhpName := VarPhpName(CurTok.Val);
+
+  { Superglobales : ne pas generer de declaration locale }
+  If IsSuperGlobal(CurTok.Val) Then
+  Begin
+    { On consomme jusqu au ; }
+    Repeat
+      LexNextToken;
+    Until (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Or
+          (CurTok.Kind = TK_EOF);
+    ParseSimpleVarDecl := True;
+    Exit;
+  End;
+
+  { Lire le '=' }
+  LexNextToken;
+  If Not ((CurTok.Kind = TK_OP) And (CurTok.Val = '=')) Then
+    Exit;
+
+  { Lire le RHS (token suivant = premier token du RHS) }
+  LexNextToken;
+  Inferred := VarInferType(CurTok);
+  RhsCs    := TokToCS(CurTok);
+  Nullable := (Inferred = PT_NULL);
+
+  { Consommer jusqu au ';' (RHS multi-token gere par TODO 07) }
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) Do
+    LexNextToken;
+
+  { Determiner le type C# }
+  Case Inferred Of
+    PT_INT    : CsType := 'int';
+    PT_FLOAT  : CsType := 'double';
+    PT_STRING : CsType := 'string';
+    PT_BOOL   : CsType := 'bool';
+    PT_NULL   :
+    Begin
+      If CsVersionGE(Opts.CsVersion, CS_VER_80) Then CsType := 'object'
+      Else CsType := 'object';
+    End;
+  Else
+    CsType := '';   { -> var }
+  End;
+
+  { Enregistrer dans SymTab }
+  SymAdd(PhpName, SK_VAR, Inferred, Nullable, False,
+         ScopeCurrentIndex, CurTok.Line);
+
+  EmitVarDecl(PhpName, CsType, RhsCs, Nullable, False, Indent);
+  ParseSimpleVarDecl := True;
+End;
+
+{ Parse et emet une declaration de variable statique :
+    static $var = val;  ->  private static type CsName = val; }
+Function ParseStaticVarDecl(Indent: Integer): Boolean;
+Var
+  PhpName, RhsCs, CsType: TString;
+  Inferred: TPhpType;
+Begin
+  ParseStaticVarDecl := False;
+  { CurTok doit etre le mot-cle 'static' }
+  If Not ((CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'static')) Then
+    Exit;
+
+  LexNextToken;
+  If CurTok.Kind <> TK_VAR Then Exit;
+
+  PhpName := VarPhpName(CurTok.Val);
+
+  LexNextToken;
+  If Not ((CurTok.Kind = TK_OP) And (CurTok.Val = '=')) Then
+  Begin
+    { pas d initialisation : static $var; }
+    EmitVarDecl(PhpName, '', '', False, True, Indent);
+    ParseStaticVarDecl := True;
+    Exit;
+  End;
+
+  LexNextToken;
+  Inferred := VarInferType(CurTok);
+  RhsCs    := TokToCS(CurTok);
+
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) Do
+    LexNextToken;
+
+  Case Inferred Of
+    PT_INT    : CsType := 'int';
+    PT_FLOAT  : CsType := 'double';
+    PT_STRING : CsType := 'string';
+    PT_BOOL   : CsType := 'bool';
+  Else
+    CsType := '';
+  End;
+
+  SymAdd(PhpName, SK_STATIC_VAR, Inferred, False, False,
+         ScopeCurrentIndex, CurTok.Line);
+
+  EmitVarDecl(PhpName, CsType, RhsCs, False, True, Indent);
+  ParseStaticVarDecl := True;
+End;
+
+{ Extrait les noms de variables d une liste list($a, $b) ou [$a, $b]
+  jusqu au ')' ou ']'. Retourne la liste des CsNames separee par virgules.
+  CurTok doit pointer sur '(' ou '[' a l entree. }
+Function ParseDestructList(CloseCh: Char): TString;
+Var Result: TString;
+Begin
+  Result := '';
+  LexNextToken; { consommer '(' ou '[' }
+  While Not (CurTok.Kind = TK_EOF) Do
+  Begin
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = CloseCh) Then Break;
+    If CurTok.Kind = TK_VAR Then
+    Begin
+      If Result <> '' Then
+        If Length(Result) < MAX_STR Then Result := Result + ', ';
+      If Length(Result) < MAX_STR Then
+        Result := Result + MakeCsName(VarPhpName(CurTok.Val));
+    End;
+    LexNextToken;
+  End;
+  ParseDestructList := Result;
+End;
+
+{ Parse list($a, $b) = expr; ou [$a, $b] = expr;
+  -> var (a, b) = expr; (C# 7+)
+  CurTok doit etre 'list' ou '[' a l entree. }
+Function ParseDestructDecl(Indent: Integer): Boolean;
+Var
+  Names, RhsCs, Line: TString;
+  IsListKw: Boolean;
+Begin
+  ParseDestructDecl := False;
+  IsListKw := (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'list');
+
+  If IsListKw Then
+  Begin
+    LexNextToken; { '(' }
+    If Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(')) Then Exit;
+    Names := ParseDestructList(')');
+    LexNextToken; { consommer ')' -> token apres }
+  End
+  Else If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '[') Then
+  Begin
+    Names := ParseDestructList(']');
+    LexNextToken; { consommer ']' -> token apres }
+  End
+  Else
+    Exit;
+
+  { Lire '=' }
+  If Not ((CurTok.Kind = TK_OP) And (CurTok.Val = '=')) Then Exit;
+
+  LexNextToken;
+  RhsCs := TokToCS(CurTok);
+
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) Do
+    LexNextToken;
+
+  { Emettre seulement si C# 7+ supporte les tuples }
+  If CsVersionGE(Opts.CsVersion, CS_VER_70) Then
+  Begin
+    Line := IndentStr(Indent) + 'var (' + Names + ') = ' + RhsCs + ';';
+    EmitLine(Line);
+  End
+  Else
+  Begin
+    { Fallback : declarer chaque variable separement comme var }
+    EmitLine(IndentStr(Indent) + '/* destructuration non supportee < C# 7 */');
+  End;
+  ParseDestructDecl := True;
+End;
+
 Procedure Run;
 Begin
   LexInit(Opts.SrcFile);
@@ -2395,7 +2752,7 @@ Begin
     LexNextToken;
   Until CurTok.Kind = TK_EOF;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 06-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 07-25 a faire)');
 End;
 
 Procedure Cleanup;
