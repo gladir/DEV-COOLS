@@ -2019,8 +2019,9 @@ Begin
       Inc(ResCount);
       E.ResFormat := FMT_RES16;
       { TypeId a deja le bit 15 supprime par ReadResHeader16 ;
-        determiner numerique vs chaine selon TypeName vide ou non }
-      If H.TypeName = '' Then
+        determiner numerique vs chaine selon TypeName vide ou non.
+        TypeId > 0 avec TypeName = '' indique un type numerique valide. }
+      If (H.TypeName = '') And (H.TypeId > 0) Then
       Begin
         E.TypeIsId := True;
         E.TypeId   := H.TypeId;
@@ -2033,7 +2034,7 @@ Begin
         E.TypeName := H.TypeName;
       End;
       { Meme logique pour le nom de ressource }
-      If H.NameStr = '' Then
+      If (H.NameStr = '') And (H.NameId > 0) Then
       Begin
         E.NameIsId := True;
         E.NameId   := H.NameId;
