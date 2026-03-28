@@ -139,7 +139,7 @@
             Constantes PHP MAX_SYM, MAX_FN, MAX_CLASS, MAX_SCOPE,
               MAX_PARAM, MAX_FIELD, MAX_METHOD, MAX_USE, MAX_ERRORS.
 
-  TODO 05 - GESTION DES SCOPES ET NAMESPACES PHP [A FAIRE]
+  TODO 05 - GESTION DES SCOPES ET NAMESPACES PHP [IMPLEMENTE]
             TScope : SK_GLOBAL, SK_FUNCTION, SK_METHOD, SK_CLASS,
               SK_NAMESPACE, SK_CLOSURE, SK_ARROW_FN
             ScopeStack[1..MAX_SCOPE] : pile de scopes actifs.
@@ -905,6 +905,12 @@ Type
     Name : TString;
   End;
 
+  { Declaration use PHP : use Foo\Bar; ou use Foo\Bar as Alias; }
+  TUseRec = Record
+    FqName : TString;   { nom pleinement qualifie PHP (Foo\Bar)       }
+    Alias  : TString;   { alias (Bar par defaut, ou alias explicite)  }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -922,6 +928,13 @@ Var
   { Pile de scopes }
   ScopeStack : Array[1..MAX_SCOPE] of TScopeRec;
   ScopeTop   : Integer;
+
+  { Table des declarations use PHP }
+  UseTable   : Array[1..MAX_USE] of TUseRec;
+  UseCount   : Integer;
+
+  { Namespace courant (vide si aucun) }
+  CurrentNs  : TString;
 
   { Token courant }
   CurTok     : TToken;
@@ -2051,7 +2064,7 @@ End;
 { ============================================================
   TODO 03 - MOTS-CLES PHP (IMPLEMENTE)
   TODO 04 - TABLE DES SYMBOLES ET TYPES (IMPLEMENTE)
-  TODO 05 - GESTION DES SCOPES ET NAMESPACES (A FAIRE)
+  TODO 05 - GESTION DES SCOPES ET NAMESPACES (IMPLEMENTE)
   TODO 06 - DECLARATIONS DE VARIABLES PHP (A FAIRE)
   TODO 07 - EXPRESSIONS (A FAIRE)
   TODO 08 - CHAINES ET INTERPOLATION (A FAIRE)
@@ -2242,6 +2255,138 @@ Begin
     SymFind := SymFindGlobal(Name);
 End;
 
+{ ============================================================
+  TODO 05 - GESTION DES SCOPES ET NAMESPACES PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Retourne l indice du scope courant (utilise comme Scope dans SymAdd) }
+Function ScopeCurrentIndex: Integer;
+Begin
+  ScopeCurrentIndex := ScopeTop;
+End;
+
+{ Retourne le nom du scope courant ('' si scope global) }
+Function ScopeCurrentName: TString;
+Begin
+  If ScopeTop > 0 Then
+    ScopeCurrentName := ScopeStack[ScopeTop].Name
+  Else
+    ScopeCurrentName := '';
+End;
+
+{ Retourne vrai si on est au niveau global (aucun scope empile) }
+Function ScopeIsGlobal: Boolean;
+Begin
+  ScopeIsGlobal := ScopeTop = 0;
+End;
+
+{ Retourne vrai si le scope courant est une methode de classe }
+Function ScopeIsMethod: Boolean;
+Begin
+  ScopeIsMethod := (ScopeTop > 0) And
+                   (ScopeStack[ScopeTop].Kind = SCK_METHOD);
+End;
+
+{ Empile un nouveau scope }
+Procedure ScopeEnter(Kind: TScopeKind; Const Name: TString);
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    WarnMsg('pile de scopes pleine (MAX_SCOPE=' + ItoS(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  Inc(ScopeTop);
+  ScopeStack[ScopeTop].Kind := Kind;
+  ScopeStack[ScopeTop].Name := Name;
+End;
+
+{ Depile le scope courant }
+Procedure ScopeLeave;
+Begin
+  If ScopeTop > 0 Then
+    Dec(ScopeTop)
+  Else
+    WarnMsg('ScopeLeave : pile de scopes vide');
+End;
+
+{ Convertit un nom de namespace PHP (Foo\Bar\Baz) en nom C# (Foo.Bar.Baz) }
+Function NsPhpToCS(Const S: TString): TString;
+Var I: Integer; R: TString;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If S[I] = '\' Then
+    Begin
+      If Length(R) < MAX_STR Then R := R + '.';
+    End
+    Else
+      If Length(R) < MAX_STR Then R := R + S[I];
+  End;
+  NsPhpToCS := R;
+End;
+
+{ Retourne le dernier segment d un nom qualifie (Foo\Bar -> Bar) }
+Function LastSegment(Const S: TString): TString;
+Var I: Integer; Seg: TString;
+Begin
+  Seg := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If S[I] = '\' Then
+      Seg := ''
+    Else
+      If Length(Seg) < MAX_STR Then Seg := Seg + S[I];
+  End;
+  If Seg = '' Then LastSegment := S
+              Else LastSegment := Seg;
+End;
+
+{ Ajoute une declaration use dans UseTable ; retourne son indice ou 0 si pleine.
+  Si Alias est vide, l alias par defaut est le dernier segment du FqName. }
+Function UseAdd(Const FqName, Alias: TString): Integer;
+Var EffAlias: TString;
+Begin
+  If UseCount >= MAX_USE Then
+  Begin
+    WarnMsg('table use pleine (MAX_USE=' + ItoS(MAX_USE) + ')');
+    UseAdd := 0;
+    Exit;
+  End;
+  If Alias = '' Then
+    EffAlias := LastSegment(FqName)
+  Else
+    EffAlias := Alias;
+  Inc(UseCount);
+  UseTable[UseCount].FqName := FqName;
+  UseTable[UseCount].Alias  := EffAlias;
+  UseAdd := UseCount;
+End;
+
+{ Cherche un alias dans UseTable ; retourne le FqName ou '' si non trouve }
+Function UseFind(Const Alias: TString): TString;
+Var I: Integer;
+Begin
+  For I := 1 To UseCount Do
+    If UseTable[I].Alias = Alias Then
+    Begin
+      UseFind := UseTable[I].FqName;
+      Exit;
+    End;
+  UseFind := '';
+End;
+
+{ Retourne le nom C# genere pour un alias use (derive du FqName en C#) }
+Function UseCsName(Const Alias: TString): TString;
+Var FqN: TString;
+Begin
+  FqN := UseFind(Alias);
+  If FqN = '' Then
+    UseCsName := MakeCsName(Alias)
+  Else
+    UseCsName := MakeCsName(LastSegment(FqN));
+End;
+
 Procedure Run;
 Begin
   LexInit(Opts.SrcFile);
@@ -2250,7 +2395,7 @@ Begin
     LexNextToken;
   Until CurTok.Kind = TK_EOF;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 05-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 06-25 a faire)');
 End;
 
 Procedure Cleanup;
@@ -2284,6 +2429,8 @@ BEGIN
   ClassCount := 0;
   SymCount   := 0;
   ScopeTop   := 0;
+  UseCount   := 0;
+  CurrentNs  := '';
   OutFOpen   := False;
 
   ParseArgs;
