@@ -358,7 +358,7 @@
               __clone -> MemberwiseClone() (Clone() interface)
             Classe anonyme PHP 7+ : new class{...} -> stub avec commentaire.
 
-  TODO 14 - TRANSPILATION : INTERFACES ET TRAITS PHP [A FAIRE]
+  TODO 14 - TRANSPILATION : INTERFACES ET TRAITS PHP [IMPLEMENTE]
             Transpilation d interface :
               interface Foo extends Bar, Baz { ... }
               C# : interface IFoo : IBar, IBaz { ... }
@@ -2073,7 +2073,7 @@ End;
   TODO 11 - SWITCH ET MATCH (IMPLEMENTE)
   TODO 12 - FONCTIONS PHP (IMPLEMENTE)
   TODO 13 - CLASSES PHP (IMPLEMENTE)
-  TODO 14 - INTERFACES ET TRAITS PHP (A FAIRE)
+  TODO 14 - INTERFACES ET TRAITS PHP (IMPLEMENTE)
   TODO 15 - TABLEAUX PHP (A FAIRE)
   TODO 16 - FONCTIONS DE CHAINES (A FAIRE)
   TODO 17 - FONCTIONS MATH ET DATE/HEURE (A FAIRE)
@@ -2417,6 +2417,11 @@ Procedure ParseReturnStmt(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 13 (classes PHP) }
 Procedure ParseClassDef(Indent: Integer); Forward;
+
+{ Declarations anticipees pour TODO 14 (interfaces, traits, enums PHP) }
+Procedure ParseInterfaceDef(Indent: Integer); Forward;
+Procedure ParseTraitDef(Indent: Integer); Forward;
+Procedure ParseEnumDef(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -4226,6 +4231,12 @@ Begin
       ParseClassDef(Indent)
     Else If KwLow = 'readonly' Then
       ParseClassDef(Indent)
+    Else If KwLow = 'interface' Then
+      ParseInterfaceDef(Indent)
+    Else If KwLow = 'trait' Then
+      ParseTraitDef(Indent)
+    Else If KwLow = 'enum' Then
+      ParseEnumDef(Indent)
     Else If (CurTok.Kind = TK_IDENT) And (CurTok.Kind <> TK_EOF) Then
     Begin
       { Label : ident suivi de ':' (sans espace entre les deux) }
@@ -5511,6 +5522,498 @@ Begin
   EmitLine(IndentStr(Indent) + '}');
 End;
 
+{ ============================================================
+  TODO 14 - TRANSPILATION : INTERFACES ET TRAITS PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Ajoute le prefixe I si absent (convention C# pour interfaces). }
+Function AddIPrefix(Const N: TString): TString;
+Begin
+  If (Length(N) > 0) And (N[1] <> 'I') Then
+    AddIPrefix := 'I' + N
+  Else
+    AddIPrefix := N;
+End;
+
+{ Parse le corps d une interface PHP.
+  CurTok doit etre apres le '{' ouvert.
+  IfName : nom C# de l interface (avec prefixe I). }
+Procedure ParseInterfaceBody(Const IfName: TString; Indent: Integer);
+Var
+  KwLow  : TString;
+  Vis    : TString;
+  PName  : TString;
+  DefVal : TString;
+  Params : TString;
+  RetType: TString;
+  RetNull: Boolean;
+  CsHead : TString;
+Begin
+  Vis := 'public';
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}')) And
+        Not (CurTok.Kind = TK_EOF) Do
+  Begin
+    KwLow := '';
+    If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+    { Constante d interface }
+    If KwLow = 'const' Then
+    Begin
+      LexNextToken;
+      If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+      Begin
+        PName := CurTok.Val;
+        LexNextToken;
+        DefVal := '';
+        If (CurTok.Kind = TK_OP) And (CurTok.Val = '=') Then
+        Begin
+          LexNextToken;
+          DefVal := ParseExprStr;
+        End;
+        EmitLine(IndentStr(Indent) + 'const object ' + PName +
+                 ' = ' + DefVal + ';');
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+    End
+    { Methode d interface }
+    Else If KwLow = 'function' Then
+    Begin
+      LexNextToken;
+      If (CurTok.Kind = TK_OP) And (CurTok.Val = '*') Then
+        LexNextToken;
+      PName := 'Method';
+      If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+      Begin
+        PName := MakeCsName(CurTok.Val);
+        LexNextToken;
+      End;
+      Params := '';
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+      Begin
+        LexNextToken;
+        Params := ParseFuncParams;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+          LexNextToken;
+      End;
+      RetType := 'void';
+      RetNull := False;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+      Begin
+        LexNextToken;
+        RetType := ParsePhpTypeHint(RetNull);
+      End;
+      CsHead := IndentStr(Indent) + RetType + ' ' + PName +
+                '(' + Params + ')';
+      { Corps (PHP 8 default method) : stub + commentaire }
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+      Begin
+        EmitLine(IndentStr(Indent) + '// default method (PHP 8)');
+        EmitLine(CsHead);
+        EmitLine(IndentStr(Indent) + '{');
+        LexNextToken;
+        ScopeEnter(SCK_METHOD, PName);
+        ParseBlock(Indent + 1, '');
+        ScopeLeave;
+        EmitLine(IndentStr(Indent) + '}');
+      End
+      Else
+      Begin
+        EmitLine(CsHead + ';');
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End;
+    End
+    Else
+    Begin
+      LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+    End;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then
+    LexNextToken;
+End;
+
+{ Parse et emet une definition d interface PHP.
+  CurTok doit etre 'interface'. }
+Procedure ParseInterfaceDef(Indent: Integer);
+Var
+  IfName  : TString;
+  BaseList: TString;
+  CsDecl  : TString;
+Begin
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'interface') Then
+    LexNextToken;
+  IfName := 'IAnonymous';
+  If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+  Begin
+    IfName := AddIPrefix(MakeCsName(CurTok.Val));
+    LexNextToken;
+  End;
+  BaseList := '';
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'extends') Then
+  Begin
+    LexNextToken;
+    While (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Do
+    Begin
+      If Length(BaseList) > 0 Then BaseList := BaseList + ', ';
+      BaseList := BaseList + AddIPrefix(MakeCsName(CurTok.Val));
+      LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+        LexNextToken
+      Else
+        Break;
+    End;
+  End;
+  CsDecl := 'interface ' + IfName;
+  If Length(BaseList) > 0 Then
+    CsDecl := CsDecl + ' : ' + BaseList;
+  EmitLine(IndentStr(Indent) + CsDecl);
+  EmitLine(IndentStr(Indent) + '{');
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+    LexNextToken;
+  ScopeEnter(SCK_CLASS, IfName);
+  ParseInterfaceBody(IfName, Indent + 1);
+  ScopeLeave;
+  EmitLine(IndentStr(Indent) + '}');
+End;
+
+{ Parse et emet le corps d un trait PHP.
+  Les membres sont transpiles comme dans une classe partielle. }
+Procedure ParseTraitBody(Const TraitName: TString; Indent: Integer);
+Var
+  KwLow   : TString;
+  Vis     : TString;
+  IsStatic: Boolean;
+  PType   : TString;
+  Nullable: Boolean;
+  PName   : TString;
+  DefVal  : TString;
+  MethName: TString;
+  Params  : TString;
+  RetType : TString;
+  RetNull : Boolean;
+  IsOvr   : Boolean;
+  SpecKind: TString;
+  CsHead  : TString;
+  UseList : TString;
+Begin
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}')) And
+        Not (CurTok.Kind = TK_EOF) Do
+  Begin
+    KwLow := '';
+    If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+    Vis      := 'public';
+    IsStatic := False;
+    { Directive use dans le trait }
+    If KwLow = 'use' Then
+    Begin
+      LexNextToken;
+      UseList := '';
+      While (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Do
+      Begin
+        If Length(UseList) > 0 Then UseList := UseList + ', ';
+        UseList := UseList + MakeCsName(CurTok.Val);
+        LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+          LexNextToken
+        Else
+          Break;
+      End;
+      { use Foo(method as alias) ou use Foo,Bar insteadof Baz }
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+      Begin
+        EmitLine(IndentStr(Indent) +
+                 '// use ' + UseList + ' { ... } (resolution de conflit de trait)');
+        LexNextToken;
+        While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}')) And
+              Not (CurTok.Kind = TK_EOF) Do
+          LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then
+          LexNextToken;
+      End
+      Else
+      Begin
+        EmitLine(IndentStr(Indent) +
+                 '// use ' + UseList + '; (trait inclus dans ce trait)');
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End;
+    End
+    Else
+    Begin
+      { Ramasser les modificateurs }
+      While (CurTok.Kind = TK_KEYWORD) And
+            ((LowStr(CurTok.Val) = 'public') Or
+             (LowStr(CurTok.Val) = 'protected') Or
+             (LowStr(CurTok.Val) = 'private') Or
+             (LowStr(CurTok.Val) = 'static') Or
+             (LowStr(CurTok.Val) = 'abstract') Or
+             (LowStr(CurTok.Val) = 'final') Or
+             (LowStr(CurTok.Val) = 'readonly')) Do
+      Begin
+        KwLow := LowStr(CurTok.Val);
+        If (KwLow = 'public') Or (KwLow = 'protected') Or (KwLow = 'private') Then
+          Vis := KwLow
+        Else If KwLow = 'static' Then
+          IsStatic := True;
+        LexNextToken;
+      End;
+      KwLow := '';
+      If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+      { Methode }
+      If KwLow = 'function' Then
+      Begin
+        LexNextToken;
+        If (CurTok.Kind = TK_OP) And (CurTok.Val = '*') Then
+          LexNextToken;
+        MethName := 'Method';
+        If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+        Begin
+          MethName := CurTok.Val;
+          LexNextToken;
+        End;
+        Params := '';
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+        Begin
+          LexNextToken;
+          Params := ParseFuncParams;
+          If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+            LexNextToken;
+        End;
+        RetType := 'void';
+        RetNull := False;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+        Begin
+          LexNextToken;
+          RetType := ParsePhpTypeHint(RetNull);
+        End;
+        IsOvr    := False;
+        SpecKind := '';
+        MethName := MagicMethodName(MethName, TraitName, IsOvr, SpecKind);
+        CsHead := IndentStr(Indent) + Vis;
+        If IsStatic Then CsHead := CsHead + ' static';
+        If IsOvr    Then CsHead := CsHead + ' override';
+        If SpecKind = 'constructor' Then
+          CsHead := CsHead + ' ' + MethName + '(' + Params + ')'
+        Else
+          CsHead := CsHead + ' ' + RetType + ' ' + MethName + '(' + Params + ')';
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+        Begin
+          EmitLine(CsHead);
+          EmitLine(IndentStr(Indent) + '{');
+          LexNextToken;
+          ScopeEnter(SCK_METHOD, MethName);
+          ParseBlock(Indent + 1, '');
+          ScopeLeave;
+          EmitLine(IndentStr(Indent) + '}');
+        End
+        Else If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        Begin
+          EmitLine(CsHead + ';');
+          LexNextToken;
+        End;
+      End
+      { Propriete }
+      Else If (CurTok.Kind = TK_VAR) Or
+              ((CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD)) Then
+      Begin
+        PType := 'object';
+        If CurTok.Kind <> TK_VAR Then
+          PType := ParsePhpTypeHint(Nullable);
+        PName := 'Prop';
+        If CurTok.Kind = TK_VAR Then
+        Begin
+          PName := MakeCsName(VarPhpName(CurTok.Val));
+          LexNextToken;
+        End;
+        DefVal := '';
+        If (CurTok.Kind = TK_OP) And (CurTok.Val = '=') Then
+        Begin
+          LexNextToken;
+          DefVal := ParseExprStr;
+        End;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+        CsHead := IndentStr(Indent) + Vis;
+        If IsStatic Then CsHead := CsHead + ' static';
+        CsHead := CsHead + ' ' + PType + ' ' + PName + ' { get; set; }';
+        If DefVal <> '' Then CsHead := CsHead + ' // = ' + DefVal;
+        EmitLine(CsHead);
+      End
+      Else
+      Begin
+        LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End;
+    End;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then
+    LexNextToken;
+End;
+
+{ Parse et emet une definition de trait PHP.
+  CurTok doit etre 'trait'. }
+Procedure ParseTraitDef(Indent: Integer);
+Var
+  TraitName: TString;
+Begin
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'trait') Then
+    LexNextToken;
+  TraitName := 'Trait';
+  If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+  Begin
+    TraitName := MakeCsName(CurTok.Val);
+    LexNextToken;
+  End;
+  WarnMsg('trait ' + TraitName +
+          ' : pas d equivalent direct en C# ; genere comme partial class');
+  EmitLine(IndentStr(Indent) + '// PHP trait ' + TraitName);
+  EmitLine(IndentStr(Indent) + 'public partial class __Trait_' + TraitName);
+  EmitLine(IndentStr(Indent) + '{');
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+    LexNextToken;
+  ScopeEnter(SCK_CLASS, '__Trait_' + TraitName);
+  ParseTraitBody(TraitName, Indent + 1);
+  ScopeLeave;
+  EmitLine(IndentStr(Indent) + '}');
+End;
+
+{ Parse et emet une definition d enum PHP 8.1.
+  CurTok doit etre 'enum'. }
+Procedure ParseEnumDef(Indent: Integer);
+Var
+  EnumName: TString;
+  BackType: TString;
+  CaseName: TString;
+  CaseVal : TString;
+  KwLow   : TString;
+  IsBacked: Boolean;
+  IsFirst : Boolean;
+Begin
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'enum') Then
+    LexNextToken;
+  EnumName := 'MyEnum';
+  If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+  Begin
+    EnumName := MakeCsName(CurTok.Val);
+    LexNextToken;
+  End;
+  { backed enum : enum Color: string (accolades) }
+  IsBacked := False;
+  BackType := '';
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+  Begin
+    IsBacked := True;
+    LexNextToken;
+    If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+    Begin
+      BackType := LowStr(CurTok.Val);
+      LexNextToken;
+    End;
+  End;
+  { Sauter implements (enum peut implementer une interface en PHP) }
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'implements') Then
+  Begin
+    LexNextToken;
+    While (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Do
+    Begin
+      LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+        LexNextToken
+      Else
+        Break;
+    End;
+  End;
+  { Consommer accolade ouvrante }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+    LexNextToken;
+  If IsBacked Then
+  Begin
+    { Backed enum : generer static class avec consts (CS 9+ : record struct) }
+    EmitLine(IndentStr(Indent) +
+             '// PHP backed enum ' + EnumName + ' : ' + BackType);
+    If CsVersionGE(Opts.CsVersion, CS_VER_90) Then
+      EmitLine(IndentStr(Indent) + 'public readonly record struct ' + EnumName)
+    Else
+      EmitLine(IndentStr(Indent) + 'public static class ' + EnumName);
+    EmitLine(IndentStr(Indent) + '{');
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}')) And
+          Not (CurTok.Kind = TK_EOF) Do
+    Begin
+      KwLow := '';
+      If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+      If KwLow = 'case' Then
+      Begin
+        LexNextToken;
+        CaseName := '';
+        If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+        Begin
+          CaseName := CurTok.Val;
+          LexNextToken;
+        End;
+        CaseVal := '';
+        If (CurTok.Kind = TK_OP) And (CurTok.Val = '=') Then
+        Begin
+          LexNextToken;
+          CaseVal := ParseExprStr;
+        End;
+        If CaseVal <> '' Then
+          EmitLine(IndentStr(Indent + 1) +
+                   'public const object ' + CaseName + ' = ' + CaseVal + ';')
+        Else
+          EmitLine(IndentStr(Indent + 1) +
+                   'public const object ' + CaseName + ';');
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken
+      Else If Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}')) Then
+        LexNextToken;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then
+      LexNextToken;
+    EmitLine(IndentStr(Indent) + '}');
+  End
+  Else
+  Begin
+    { Enum simple : generer enum C# }
+    EmitLine(IndentStr(Indent) + 'public enum ' + EnumName);
+    EmitLine(IndentStr(Indent) + '{');
+    IsFirst := True;
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}')) And
+          Not (CurTok.Kind = TK_EOF) Do
+    Begin
+      KwLow := '';
+      If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+      If KwLow = 'case' Then
+      Begin
+        LexNextToken;
+        CaseName := '';
+        If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+        Begin
+          CaseName := CurTok.Val;
+          LexNextToken;
+        End;
+        If Not IsFirst Then
+          EmitLine(IndentStr(Indent + 1) + CaseName + ',')
+        Else
+        Begin
+          EmitLine(IndentStr(Indent + 1) + CaseName + ',');
+          IsFirst := False;
+        End;
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken
+      Else If Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}')) Then
+        LexNextToken;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then
+      LexNextToken;
+    EmitLine(IndentStr(Indent) + '}');
+  End;
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -5566,6 +6069,12 @@ Begin
       ParseClassDef(0)
     Else If KwLow = 'readonly' Then
       ParseClassDef(0)
+    Else If KwLow = 'interface' Then
+      ParseInterfaceDef(0)
+    Else If KwLow = 'trait' Then
+      ParseTraitDef(0)
+    Else If KwLow = 'enum' Then
+      ParseEnumDef(0)
     Else If KwLow = 'static' Then
     Begin
       If Not ParseStaticVarDecl(0) Then
@@ -5605,7 +6114,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 14-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 15-25 a faire)');
 End;
 
 Procedure Cleanup;
