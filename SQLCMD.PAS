@@ -356,7 +356,7 @@
             IIF(condition, val_true, val_false)
             GREATEST(val1, val2, ...), LEAST(val1, val2, ...)
 
-  TODO 22 - FONCTIONS SCALAIRES BUILT-IN : CONVERSION ET SYSTEME
+  TODO 22 - FONCTIONS SCALAIRES BUILT-IN : CONVERSION ET SYSTEME [IMPLEMENTE]
             CAST(expr AS type)
             CONVERT(type, expr [, style])
             TRY_CAST(expr AS type)
@@ -6071,6 +6071,137 @@ Begin
       Advance
     Else
       ParseError(') attendu apres CONVERT');
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { ===== TODO 22 : TRY_CAST, TRY_CONVERT, PARSE, TRY_PARSE ===== }
+
+  { TRY_CAST(expr AS type) }
+  If (LexCurTok.Kind = TOK_IDENT) And
+     (StrUpperCase(LexCurTok.Text) = 'TRY_CAST') Then
+  Begin
+    N := NewNode(ND_CAST, 'TRY_CAST', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    If TokIs(TOK_LPAREN) Then
+      Advance
+    Else
+      ParseError('( attendu apres TRY_CAST');
+    E := ParseSqlExpr;
+    AddChild(N, E);
+    If KwIs(KW_AS) Then
+      Advance
+    Else
+      ParseError('AS attendu dans TRY_CAST');
+    T := ParseTypeRef;
+    AddChild(N, T);
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu apres TRY_CAST');
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { TRY_CONVERT(type, expr [, style]) }
+  If (LexCurTok.Kind = TOK_IDENT) And
+     (StrUpperCase(LexCurTok.Text) = 'TRY_CONVERT') Then
+  Begin
+    N := NewNode(ND_CONVERT, 'TRY_CONVERT', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    If TokIs(TOK_LPAREN) Then
+      Advance
+    Else
+      ParseError('( attendu apres TRY_CONVERT');
+    T := ParseTypeRef;
+    AddChild(N, T);
+    If TokIs(TOK_COMMA) Then
+      Advance
+    Else
+      ParseError(', attendu dans TRY_CONVERT');
+    E := ParseSqlExpr;
+    AddChild(N, E);
+    { Style optionnel }
+    If TokIs(TOK_COMMA) Then
+    Begin
+      Advance;
+      E := ParseSqlExpr;
+      AddChild(N, E);
+    End;
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu apres TRY_CONVERT');
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { PARSE(string AS type [USING culture]) }
+  If (LexCurTok.Kind = TOK_IDENT) And
+     (StrUpperCase(LexCurTok.Text) = 'PARSE') Then
+  Begin
+    N := NewNode(ND_CAST, 'PARSE', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    If TokIs(TOK_LPAREN) Then
+      Advance
+    Else
+      ParseError('( attendu apres PARSE');
+    E := ParseSqlExpr;
+    AddChild(N, E);
+    If KwIs(KW_AS) Then
+      Advance
+    Else
+      ParseError('AS attendu dans PARSE');
+    T := ParseTypeRef;
+    AddChild(N, T);
+    { USING culture optionnel : ignorer }
+    If (LexCurTok.Kind = TOK_IDENT) And
+       (StrUpperCase(LexCurTok.Text) = 'USING') Then
+    Begin
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or
+         (LexCurTok.Kind = TOK_STRING) Then
+        Advance;
+    End;
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu apres PARSE');
+    ParseAtom := N;
+    Exit;
+  End;
+
+  { TRY_PARSE(string AS type [USING culture]) }
+  If (LexCurTok.Kind = TOK_IDENT) And
+     (StrUpperCase(LexCurTok.Text) = 'TRY_PARSE') Then
+  Begin
+    N := NewNode(ND_CAST, 'TRY_PARSE', LexCurTok.Line, LexCurTok.Col);
+    Advance;
+    If TokIs(TOK_LPAREN) Then
+      Advance
+    Else
+      ParseError('( attendu apres TRY_PARSE');
+    E := ParseSqlExpr;
+    AddChild(N, E);
+    If KwIs(KW_AS) Then
+      Advance
+    Else
+      ParseError('AS attendu dans TRY_PARSE');
+    T := ParseTypeRef;
+    AddChild(N, T);
+    { USING culture optionnel : ignorer }
+    If (LexCurTok.Kind = TOK_IDENT) And
+       (StrUpperCase(LexCurTok.Text) = 'USING') Then
+    Begin
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or
+         (LexCurTok.Kind = TOK_STRING) Then
+        Advance;
+    End;
+    If TokIs(TOK_RPAREN) Then
+      Advance
+    Else
+      ParseError(') attendu apres TRY_PARSE');
     ParseAtom := N;
     Exit;
   End;
@@ -13919,6 +14050,246 @@ Begin
           End;
         End;
       End
+      { ===== TODO 22 : Fonctions de conversion et systeme ===== }
+      Else If (Op = 'NULLIF') And (Child0 >= 0) And
+              (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Valid := True;
+        If VL.IsNull And VR.IsNull Then
+          V.IsNull := True
+        Else If VL.IsNull Or VR.IsNull Then
+          V := VL
+        Else If SqlValueToStr(VL) = SqlValueToStr(VR) Then
+          V.IsNull := True
+        Else
+          V := VL;
+      End
+      Else If (Op = 'ISNUMERIC') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        If VL.IsNull Then V.IntVal := 0
+        Else If VL.Category = SQLCAT_INTEGER Then V.IntVal := 1
+        Else If VL.Category = SQLCAT_DECIMAL Then V.IntVal := 1
+        Else Begin
+          Val(SqlValueToStr(VL), V.FloatVal, CI);
+          If CI = 0 Then V.IntVal := 1
+          Else V.IntVal := 0;
+        End;
+      End
+      Else If Op = 'SCOPE_IDENTITY' Then
+      Begin
+        V.IsNull := True;
+        V.Valid  := True;
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_DECIMAL;
+      End
+      Else If (Op = 'IDENT_CURRENT') And (Child0 >= 0) Then
+      Begin
+        V.IsNull := True;
+        V.Valid  := True;
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_DECIMAL;
+      End
+      Else If Op = 'NEWID' Then
+      Begin
+        V.IsNull   := False;
+        V.Valid    := True;
+        V.Category := SQLCAT_SPECIAL;
+        V.XType    := XT_UNIQUEID;
+        V.StrVal   := '00000000-0000-0000-0000-000000000000';
+      End
+      Else If Op = 'NEWSEQUENTIALID' Then
+      Begin
+        V.IsNull   := False;
+        V.Valid    := True;
+        V.Category := SQLCAT_SPECIAL;
+        V.XType    := XT_UNIQUEID;
+        V.StrVal   := '00000000-0000-0000-0000-000000000001';
+      End
+      Else If (Op = 'OBJECT_ID') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          V.IntVal := 0;
+        End;
+      End
+      Else If (Op = 'OBJECT_NAME') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          V.StrVal := '';
+        End;
+      End
+      Else If (Op = 'DB_ID') Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.IntVal   := 1;
+      End
+      Else If (Op = 'DB_NAME') Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := 'master';
+      End
+      Else If (Op = 'SCHEMA_ID') Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.IntVal   := 1;
+      End
+      Else If (Op = 'SCHEMA_NAME') Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := 'dbo';
+      End
+      Else If (Op = 'USER_ID') Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.IntVal   := 1;
+      End
+      Else If (Op = 'USER_NAME') Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := 'dbo';
+      End
+      Else If Op = 'HOST_NAME' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := 'localhost';
+      End
+      Else If Op = 'APP_NAME' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := 'SQLCMD';
+      End
+      Else If Op = 'SUSER_SNAME' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := 'sa';
+      End
+      Else If Op = 'ORIGINAL_LOGIN' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := 'sa';
+      End
+      Else If Op = 'CURRENT_USER' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := 'dbo';
+      End
+      Else If Op = 'SESSION_USER' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := 'dbo';
+      End
+      Else If Op = 'SYSTEM_USER' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.StrVal   := 'sa';
+      End
+      Else If Op = 'ERROR_NUMBER' Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := True;
+      End
+      Else If Op = 'ERROR_MESSAGE' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := True;
+      End
+      Else If Op = 'ERROR_SEVERITY' Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := True;
+      End
+      Else If Op = 'ERROR_STATE' Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := True;
+      End
+      Else If Op = 'ERROR_LINE' Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := True;
+      End
+      Else If Op = 'ERROR_PROCEDURE' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := True;
+      End
+      Else If Op = 'XACT_STATE' Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_SMALLINT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.IntVal   := 0;
+      End
       Else
       Begin
         { Fonction inconnue, retourner NULL }
@@ -13953,6 +14324,469 @@ Begin
           Break;
         End;
         Inc(I);
+      End;
+    End;
+    { ===== TODO 22 : Evaluation CAST/TRY_CAST/PARSE/TRY_PARSE ===== }
+    ND_CAST :
+    Begin
+      V.Valid := True;
+      If Child0 >= 0 Then
+        VL := QEEvalExpr(Child0, Row, Res)
+      Else Begin
+        InitSqlValue(VL);
+        VL.IsNull := True;
+        VL.Valid  := True;
+      End;
+      If VL.IsNull Then
+        V.IsNull := True
+      Else Begin
+        V.IsNull := False;
+        Op := '';
+        If (Child1 >= 0) And (Child1 < ASTCount) Then
+          Op := StrUpperCase(ASTPool[Child1].Text);
+        If (Op = 'INT') Or (Op = 'INTEGER') Or
+           (Op = 'BIGINT') Or (Op = 'SMALLINT') Or
+           (Op = 'TINYINT') Then
+        Begin
+          V.Category := SQLCAT_INTEGER;
+          V.XType    := XT_INT;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.IntVal := VL.IntVal
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.IntVal := Trunc(VL.FloatVal)
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            Val(STmp, V.FloatVal, CI);
+            If CI = 0 Then
+              V.IntVal := Trunc(V.FloatVal)
+            Else If (StrUpperCase(ASTPool[Node].Text) = 'TRY_CAST') Or
+                    (StrUpperCase(ASTPool[Node].Text) = 'TRY_PARSE') Then
+              V.IsNull := True
+            Else
+              V.IntVal := 0;
+          End;
+        End
+        Else If (Op = 'BIT') Then
+        Begin
+          V.Category := SQLCAT_INTEGER;
+          V.XType    := XT_BIT;
+          If VL.Category = SQLCAT_INTEGER Then
+          Begin
+            If VL.IntVal <> 0 Then V.IntVal := 1
+            Else V.IntVal := 0;
+          End
+          Else If VL.Category = SQLCAT_DECIMAL Then
+          Begin
+            If VL.FloatVal <> 0.0 Then V.IntVal := 1
+            Else V.IntVal := 0;
+          End
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            If (STmp = '0') Or (STmp = '') Or
+               (STmp = 'false') Or (STmp = 'FALSE') Then
+              V.IntVal := 0
+            Else
+              V.IntVal := 1;
+          End;
+        End
+        Else If (Op = 'FLOAT') Or (Op = 'REAL') Or
+                (Op = 'DECIMAL') Or (Op = 'NUMERIC') Or
+                (Op = 'MONEY') Or (Op = 'SMALLMONEY') Then
+        Begin
+          V.Category := SQLCAT_DECIMAL;
+          If (Op = 'MONEY') Or (Op = 'SMALLMONEY') Then
+            V.XType := XT_MONEY
+          Else If Op = 'REAL' Then
+            V.XType := XT_REAL
+          Else If (Op = 'DECIMAL') Or (Op = 'NUMERIC') Then
+            V.XType := XT_DECIMAL
+          Else
+            V.XType := XT_FLOAT;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            Val(STmp, V.FloatVal, CI);
+            If CI <> 0 Then
+            Begin
+              If (StrUpperCase(ASTPool[Node].Text) = 'TRY_CAST') Or
+                 (StrUpperCase(ASTPool[Node].Text) = 'TRY_PARSE') Then
+                V.IsNull := True
+              Else
+                V.FloatVal := 0.0;
+            End;
+          End;
+        End
+        Else If (Op = 'VARCHAR') Or (Op = 'CHAR') Or
+                (Op = 'NVARCHAR') Or (Op = 'NCHAR') Or
+                (Op = 'TEXT') Or (Op = 'NTEXT') Then
+        Begin
+          V.Category := SQLCAT_STRING;
+          If (Op = 'NVARCHAR') Or (Op = 'NCHAR') Or
+             (Op = 'NTEXT') Then
+            V.XType := XT_NVARCHAR
+          Else
+            V.XType := XT_VARCHAR;
+          V.StrVal := SqlValueToStr(VL);
+        End
+        Else If (Op = 'DATE') Then
+        Begin
+          V.Category := SQLCAT_DATETIME;
+          V.XType    := XT_DATE;
+          If VL.Category = SQLCAT_DATETIME Then
+          Begin
+            V.Year  := VL.Year;
+            V.Month := VL.Month;
+            V.Day   := VL.Day;
+            V.Hour  := 0;
+            V.Minute := 0;
+            V.Second := 0;
+            V.Frac  := 0;
+          End
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            V.Year := 0; V.Month := 0; V.Day := 0;
+            If (Length(STmp) >= 10) And
+               (STmp[5] = '-') And (STmp[8] = '-') Then
+            Begin
+              Val(Copy(STmp, 1, 4), I, CI);
+              If CI = 0 Then V.Year := I;
+              Val(Copy(STmp, 6, 2), I, CI);
+              If CI = 0 Then V.Month := I;
+              Val(Copy(STmp, 9, 2), I, CI);
+              If CI = 0 Then V.Day := I;
+            End
+            Else If (StrUpperCase(ASTPool[Node].Text) = 'TRY_CAST') Or
+                    (StrUpperCase(ASTPool[Node].Text) = 'TRY_PARSE') Then
+              V.IsNull := True;
+          End;
+        End
+        Else If (Op = 'DATETIME') Or (Op = 'DATETIME2') Or
+                (Op = 'SMALLDATETIME') Then
+        Begin
+          V.Category := SQLCAT_DATETIME;
+          If Op = 'DATETIME2' Then
+            V.XType := XT_DATETIME2
+          Else If Op = 'SMALLDATETIME' Then
+            V.XType := XT_SMALLDATETIME
+          Else
+            V.XType := XT_DATETIME;
+          If VL.Category = SQLCAT_DATETIME Then
+            V := VL
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            V.Year := 0; V.Month := 0; V.Day := 0;
+            V.Hour := 0; V.Minute := 0; V.Second := 0;
+            V.Frac := 0;
+            If (Length(STmp) >= 10) And
+               (STmp[5] = '-') And (STmp[8] = '-') Then
+            Begin
+              Val(Copy(STmp, 1, 4), I, CI);
+              If CI = 0 Then V.Year := I;
+              Val(Copy(STmp, 6, 2), I, CI);
+              If CI = 0 Then V.Month := I;
+              Val(Copy(STmp, 9, 2), I, CI);
+              If CI = 0 Then V.Day := I;
+              If (Length(STmp) >= 19) And
+                 (STmp[11] = ' ') And (STmp[14] = ':') And
+                 (STmp[17] = ':') Then
+              Begin
+                Val(Copy(STmp, 12, 2), I, CI);
+                If CI = 0 Then V.Hour := I;
+                Val(Copy(STmp, 15, 2), I, CI);
+                If CI = 0 Then V.Minute := I;
+                Val(Copy(STmp, 18, 2), I, CI);
+                If CI = 0 Then V.Second := I;
+              End;
+            End
+            Else If (StrUpperCase(ASTPool[Node].Text) = 'TRY_CAST') Or
+                    (StrUpperCase(ASTPool[Node].Text) = 'TRY_PARSE') Then
+              V.IsNull := True;
+          End;
+          V.Category := SQLCAT_DATETIME;
+        End
+        Else If Op = 'TIME' Then
+        Begin
+          V.Category := SQLCAT_DATETIME;
+          V.XType    := XT_TIME;
+          If VL.Category = SQLCAT_DATETIME Then
+          Begin
+            V.Year := 0; V.Month := 0; V.Day := 0;
+            V.Hour := VL.Hour; V.Minute := VL.Minute;
+            V.Second := VL.Second; V.Frac := VL.Frac;
+          End
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            V.Hour := 0; V.Minute := 0; V.Second := 0;
+            V.Frac := 0;
+            If (Length(STmp) >= 8) And
+               (STmp[3] = ':') And (STmp[6] = ':') Then
+            Begin
+              Val(Copy(STmp, 1, 2), I, CI);
+              If CI = 0 Then V.Hour := I;
+              Val(Copy(STmp, 4, 2), I, CI);
+              If CI = 0 Then V.Minute := I;
+              Val(Copy(STmp, 7, 2), I, CI);
+              If CI = 0 Then V.Second := I;
+            End
+            Else If (StrUpperCase(ASTPool[Node].Text) = 'TRY_CAST') Or
+                    (StrUpperCase(ASTPool[Node].Text) = 'TRY_PARSE') Then
+              V.IsNull := True;
+          End;
+        End
+        Else If Op = 'UNIQUEIDENTIFIER' Then
+        Begin
+          V.Category := SQLCAT_SPECIAL;
+          V.XType    := XT_UNIQUEID;
+          V.StrVal   := SqlValueToStr(VL);
+        End
+        Else If (Op = 'BINARY') Or (Op = 'VARBINARY') Then
+        Begin
+          V.Category := SQLCAT_BINARY;
+          V.XType    := XT_VARBINARY;
+          V.StrVal   := SqlValueToStr(VL);
+        End
+        Else If Op = 'XML' Then
+        Begin
+          V.Category := SQLCAT_SPECIAL;
+          V.XType    := XT_XML;
+          V.StrVal   := SqlValueToStr(VL);
+        End
+        Else Begin
+          { Type inconnu : conversion en chaine }
+          V.Category := SQLCAT_STRING;
+          V.XType    := XT_VARCHAR;
+          V.StrVal   := SqlValueToStr(VL);
+        End;
+      End;
+    End;
+    { ===== TODO 22 : Evaluation CONVERT/TRY_CONVERT ===== }
+    ND_CONVERT :
+    Begin
+      V.Valid := True;
+      { Child0 = type reference, Child1 = expression, Child2 = style }
+      Op := '';
+      If (Child0 >= 0) And (Child0 < ASTCount) Then
+        Op := StrUpperCase(ASTPool[Child0].Text);
+      If Child1 >= 0 Then
+        VL := QEEvalExpr(Child1, Row, Res)
+      Else Begin
+        InitSqlValue(VL);
+        VL.IsNull := True;
+        VL.Valid  := True;
+      End;
+      If VL.IsNull Then
+        V.IsNull := True
+      Else Begin
+        V.IsNull := False;
+        If (Op = 'INT') Or (Op = 'INTEGER') Or
+           (Op = 'BIGINT') Or (Op = 'SMALLINT') Or
+           (Op = 'TINYINT') Then
+        Begin
+          V.Category := SQLCAT_INTEGER;
+          V.XType    := XT_INT;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.IntVal := VL.IntVal
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.IntVal := Trunc(VL.FloatVal)
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            Val(STmp, V.FloatVal, CI);
+            If CI = 0 Then
+              V.IntVal := Trunc(V.FloatVal)
+            Else If StrUpperCase(ASTPool[Node].Text) = 'TRY_CONVERT' Then
+              V.IsNull := True
+            Else
+              V.IntVal := 0;
+          End;
+        End
+        Else If Op = 'BIT' Then
+        Begin
+          V.Category := SQLCAT_INTEGER;
+          V.XType    := XT_BIT;
+          If VL.Category = SQLCAT_INTEGER Then
+          Begin
+            If VL.IntVal <> 0 Then V.IntVal := 1
+            Else V.IntVal := 0;
+          End
+          Else If VL.Category = SQLCAT_DECIMAL Then
+          Begin
+            If VL.FloatVal <> 0.0 Then V.IntVal := 1
+            Else V.IntVal := 0;
+          End
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            If (STmp = '0') Or (STmp = '') Then V.IntVal := 0
+            Else V.IntVal := 1;
+          End;
+        End
+        Else If (Op = 'FLOAT') Or (Op = 'REAL') Or
+                (Op = 'DECIMAL') Or (Op = 'NUMERIC') Or
+                (Op = 'MONEY') Or (Op = 'SMALLMONEY') Then
+        Begin
+          V.Category := SQLCAT_DECIMAL;
+          V.XType    := XT_FLOAT;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            Val(STmp, V.FloatVal, CI);
+            If CI <> 0 Then
+            Begin
+              If StrUpperCase(ASTPool[Node].Text) = 'TRY_CONVERT' Then
+                V.IsNull := True
+              Else
+                V.FloatVal := 0.0;
+            End;
+          End;
+        End
+        Else If (Op = 'VARCHAR') Or (Op = 'CHAR') Or
+                (Op = 'NVARCHAR') Or (Op = 'NCHAR') Or
+                (Op = 'TEXT') Or (Op = 'NTEXT') Then
+        Begin
+          V.Category := SQLCAT_STRING;
+          V.XType    := XT_VARCHAR;
+          V.StrVal   := SqlValueToStr(VL);
+        End
+        Else If Op = 'DATE' Then
+        Begin
+          V.Category := SQLCAT_DATETIME;
+          V.XType    := XT_DATE;
+          If VL.Category = SQLCAT_DATETIME Then
+          Begin
+            V.Year  := VL.Year;
+            V.Month := VL.Month;
+            V.Day   := VL.Day;
+          End
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            V.Year := 0; V.Month := 0; V.Day := 0;
+            If (Length(STmp) >= 10) And
+               (STmp[5] = '-') And (STmp[8] = '-') Then
+            Begin
+              Val(Copy(STmp, 1, 4), I, CI);
+              If CI = 0 Then V.Year := I;
+              Val(Copy(STmp, 6, 2), I, CI);
+              If CI = 0 Then V.Month := I;
+              Val(Copy(STmp, 9, 2), I, CI);
+              If CI = 0 Then V.Day := I;
+            End
+            Else If StrUpperCase(ASTPool[Node].Text) = 'TRY_CONVERT' Then
+              V.IsNull := True;
+          End;
+        End
+        Else If (Op = 'DATETIME') Or (Op = 'DATETIME2') Or
+                (Op = 'SMALLDATETIME') Then
+        Begin
+          V.Category := SQLCAT_DATETIME;
+          V.XType    := XT_DATETIME;
+          If VL.Category = SQLCAT_DATETIME Then
+            V := VL
+          Else Begin
+            STmp := SqlValueToStr(VL);
+            V.Year := 0; V.Month := 0; V.Day := 0;
+            V.Hour := 0; V.Minute := 0; V.Second := 0;
+            If (Length(STmp) >= 10) And
+               (STmp[5] = '-') And (STmp[8] = '-') Then
+            Begin
+              Val(Copy(STmp, 1, 4), I, CI);
+              If CI = 0 Then V.Year := I;
+              Val(Copy(STmp, 6, 2), I, CI);
+              If CI = 0 Then V.Month := I;
+              Val(Copy(STmp, 9, 2), I, CI);
+              If CI = 0 Then V.Day := I;
+              If (Length(STmp) >= 19) And
+                 (STmp[11] = ' ') And (STmp[14] = ':') And
+                 (STmp[17] = ':') Then
+              Begin
+                Val(Copy(STmp, 12, 2), I, CI);
+                If CI = 0 Then V.Hour := I;
+                Val(Copy(STmp, 15, 2), I, CI);
+                If CI = 0 Then V.Minute := I;
+                Val(Copy(STmp, 18, 2), I, CI);
+                If CI = 0 Then V.Second := I;
+              End;
+            End
+            Else If StrUpperCase(ASTPool[Node].Text) = 'TRY_CONVERT' Then
+              V.IsNull := True;
+          End;
+          V.Category := SQLCAT_DATETIME;
+        End
+        Else Begin
+          { Type inconnu : conversion en chaine }
+          V.Category := SQLCAT_STRING;
+          V.XType    := XT_VARCHAR;
+          V.StrVal   := SqlValueToStr(VL);
+        End;
+      End;
+    End;
+    { ===== TODO 22 : Evaluation des variables @@ ===== }
+    ND_VARIABLE :
+    Begin
+      Op := StrUpperCase(ASTPool[Node].Text);
+      V.Valid := True;
+      If Op = '@@ROWCOUNT' Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.IsNull   := False;
+        V.IntVal   := 0;
+      End
+      Else If Op = '@@ERROR' Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.IsNull   := False;
+        V.IntVal   := 0;
+      End
+      Else If Op = '@@IDENTITY' Then
+      Begin
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_DECIMAL;
+        V.IsNull   := True;
+      End
+      Else If Op = '@@TRANCOUNT' Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.IsNull   := False;
+        V.IntVal   := 0;
+      End
+      Else If Op = '@@VERSION' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.IsNull   := False;
+        V.StrVal   := 'SQLCMD Emulator 1.0';
+      End
+      Else If Op = '@@SERVERNAME' Then
+      Begin
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.IsNull   := False;
+        V.StrVal   := 'localhost';
+      End
+      Else If Op = '@@SPID' Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_SMALLINT;
+        V.IsNull   := False;
+        V.IntVal   := 1;
+      End
+      Else If Op = '@@FETCH_STATUS' Then
+      Begin
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.IsNull   := False;
+        V.IntVal   := -1;
+      End
+      Else Begin
+        { Variable utilisateur ou inconnue }
+        V.IsNull := True;
       End;
     End;
   Else
