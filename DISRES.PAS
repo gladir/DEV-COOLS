@@ -688,7 +688,7 @@
               'FILESUBTYPE ' + HexDWord
               'BEGIN' / blocs BLOCK et VALUE / 'END'
 
-  TODO 25 - VERIFICATION ET RAPPORT FINAL [A FAIRE]
+  TODO 25 - VERIFICATION ET RAPPORT FINAL [IMPLEMENTE]
             Function GetFileSize(Const FName: String): LongInt
               ouvrir le fichier, chercher la fin, retourner la taille
             Procedure VerifyRCFile(Const OutFileName: String)
@@ -1122,6 +1122,7 @@ Var
   GroupIconCount    : Integer;   { nombre de groupes d icones decodes  }
   RCDataRCLines     : TRCDataLineArray; { lignes RC generees pour les RCDATA }
   RCDataRCLineCount : Integer;   { nombre de lignes RC RCDATA          }
+  ExtractCount      : Integer;   { nombre de fichiers binaires extraits }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -3199,6 +3200,7 @@ Begin
         Else
           OutName := 'ICON_' + Resources[I].NameStr + '.ico';
         ExtractIconFile(Resources[I], OutName);
+        Inc(ExtractCount);
         If Opts.Verbose Then
           WriteLn('  Icone extraite : ', OutName,
                   ' (', Resources[I].DataSize, ' octets)');
@@ -3229,6 +3231,7 @@ Begin
         Else
           OutName := 'CURSOR_' + Resources[I].NameStr + '.cur';
         ExtractCursorFile(Resources[I], OutName);
+        Inc(ExtractCount);
         If Opts.Verbose Then
           WriteLn('  Curseur extrait: ', OutName,
                   ' (', Resources[I].DataSize, ' octets)');
@@ -3363,6 +3366,7 @@ Begin
         Else
           OutName := 'BITMAP_' + Resources[I].NameStr + '.bmp';
         ExtractBitmapFile(Resources[I], OutName);
+        Inc(ExtractCount);
         If Opts.Verbose Then
         Begin
           InfoStr := BitmapInfoLine(Resources[I]);
@@ -3683,6 +3687,7 @@ Begin
         Else
           OutName := 'GROUP_ICON_' + Resources[I].NameStr + '.ico';
         BuildGroupIconFile(GrpIdx, OutName);
+        Inc(ExtractCount);
         If Opts.Verbose Then
           WriteLn('  Groupe icone extrait: ', OutName,
                   ' (', GroupIcons[GrpIdx].Count, ' image(s))');
@@ -3724,6 +3729,7 @@ Begin
         Else
           OutName := 'GROUP_CURSOR_' + Resources[I].NameStr + '.cur';
         BuildGroupCursorFile(GrpIdx, OutName);
+        Inc(ExtractCount);
         If Opts.Verbose Then
           WriteLn('  Groupe curseur extrait: ', OutName,
                   ' (', GroupIcons[GrpIdx].Count, ' image(s))');
@@ -3980,6 +3986,7 @@ Begin
         Else
           OutName := 'MANIFEST_' + Resources[I].NameStr + '.xml';
         ExtractManifestFile(Resources[I], OutName);
+        Inc(ExtractCount);
         If Opts.Verbose Then
         Begin
           WriteLn('  Manifest extrait: ', OutName,
@@ -4550,6 +4557,204 @@ Begin
     WriteLn('Fichier RC genere : ', Opts.OutFile);
 End;
 
+{ ============================================================
+  TODO 25 - VERIFICATION ET RAPPORT FINAL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Retourner la taille d un fichier en octets ------------ }
+Function GetFileSize(Const FName : TString) : LongInt;
+Var
+  F : File Of Byte;
+Begin
+  Assign(F, FName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    GetFileSize := -1;
+    Exit;
+  End;
+  GetFileSize := FileSize(F);
+  Close(F);
+End;
+
+{ ---- Verifier le fichier RC genere ------------------------- }
+Procedure VerifyRCFile(Const OutFileName : TString);
+Var
+  F          : Text;
+  Line       : TString;
+  LineCount  : Integer;
+  BeginCount : Integer;
+  EndCount   : Integer;
+  HasUnknown : Boolean;
+  I          : Integer;
+  FSz        : LongInt;
+Begin
+  FSz := GetFileSize(OutFileName);
+  If FSz < 0 Then
+  Begin
+    WriteLn('DISRES: AVERTISSEMENT - le fichier RC n''existe pas : ', OutFileName);
+    Exit;
+  End;
+  If FSz = 0 Then
+  Begin
+    WriteLn('DISRES: AVERTISSEMENT - le fichier RC est vide : ', OutFileName);
+    Exit;
+  End;
+  Assign(F, OutFileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('DISRES: AVERTISSEMENT - impossible d''ouvrir le fichier RC : ', OutFileName);
+    Exit;
+  End;
+  LineCount  := 0;
+  BeginCount := 0;
+  EndCount   := 0;
+  While Not EOF(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineCount);
+    If Line = 'BEGIN' Then
+      Inc(BeginCount)
+    Else If Line = 'END' Then
+      Inc(EndCount);
+  End;
+  Close(F);
+  If BeginCount <> EndCount Then
+    WriteLn('DISRES: AVERTISSEMENT - desequilibre BEGIN/END dans le fichier RC (',
+            BeginCount, ' BEGIN, ', EndCount, ' END)');
+  HasUnknown := False;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId Then
+    Begin
+      If (Resources[I].TypeId > RT_MANIFEST) And
+         (Resources[I].TypeId <> RT_TOOLBAR) Then
+      Begin
+        HasUnknown := True;
+        Break;
+      End;
+    End;
+  End;
+  If HasUnknown Then
+    WriteLn('DISRES: AVERTISSEMENT - certaines ressources de type inconnu ',
+            'n''ont pas pu etre decodees.');
+End;
+
+{ ---- Afficher le rapport final de desassemblage ------------ }
+Procedure DisplayFinalReport(Const AOpts : TOptions; AResFormat : Integer);
+Var
+  I           : Integer;
+  CountIcon   : Integer;
+  CountBitmap : Integer;
+  CountMenu   : Integer;
+  CountDialog : Integer;
+  CountAccel  : Integer;
+  CountVersion : Integer;
+  CountRCData : Integer;
+  CountManifest : Integer;
+  CountCursor : Integer;
+  CountGrpIcon : Integer;
+  CountGrpCursor : Integer;
+  CountStringBlocks : Integer;
+  FileSz      : LongInt;
+Begin
+  WriteLn('=== DISRES - Rapport de desassemblage ===');
+  WriteLn('Fichier source  : ', AOpts.SrcFile);
+  If AResFormat = FMT_RES16 Then
+    WriteLn('Format detecte  : RES 16 bits')
+  Else If AResFormat = FMT_RES32 Then
+    WriteLn('Format detecte  : RES 32 bits')
+  Else
+    WriteLn('Format detecte  : inconnu');
+  WriteLn('Ressources total: ', IntToStr(ResCount));
+  CountIcon      := 0;
+  CountBitmap    := 0;
+  CountMenu      := 0;
+  CountDialog    := 0;
+  CountAccel     := 0;
+  CountVersion   := 0;
+  CountRCData    := 0;
+  CountManifest  := 0;
+  CountCursor    := 0;
+  CountGrpIcon   := 0;
+  CountGrpCursor := 0;
+  CountStringBlocks := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId Then
+      Case Resources[I].TypeId Of
+        RT_ICON         : Inc(CountIcon);
+        RT_BITMAP       : Inc(CountBitmap);
+        RT_MENU         : Inc(CountMenu);
+        RT_DIALOG       : Inc(CountDialog);
+        RT_STRING       : Inc(CountStringBlocks);
+        RT_ACCELERATOR  : Inc(CountAccel);
+        RT_VERSION      : Inc(CountVersion);
+        RT_RCDATA       : Inc(CountRCData);
+        RT_MANIFEST     : Inc(CountManifest);
+        RT_CURSOR       : Inc(CountCursor);
+        RT_GROUP_ICON   : Inc(CountGrpIcon);
+        RT_GROUP_CURSOR : Inc(CountGrpCursor);
+      End;
+  End;
+  If CountCursor > 0 Then
+    WriteLn('  RT_CURSOR     : ', IntToStr(CountCursor), ' ressource(s)');
+  If CountIcon > 0 Then
+    WriteLn('  RT_ICON       : ', IntToStr(CountIcon), ' ressource(s)');
+  If CountBitmap > 0 Then
+    WriteLn('  RT_BITMAP     : ', IntToStr(CountBitmap), ' ressource(s)');
+  If CountMenu > 0 Then
+    WriteLn('  RT_MENU       : ', IntToStr(CountMenu), ' ressource(s)');
+  If CountDialog > 0 Then
+    WriteLn('  RT_DIALOG     : ', IntToStr(CountDialog), ' ressource(s)');
+  If CountStringBlocks > 0 Then
+    WriteLn('  RT_STRING     : ', IntToStr(CountStringBlocks), ' bloc(s), ',
+            IntToStr(StringCount), ' chaine(s)');
+  If CountAccel > 0 Then
+    WriteLn('  RT_ACCELERATOR: ', IntToStr(CountAccel), ' table(s)');
+  If CountVersion > 0 Then
+    WriteLn('  RT_VERSION    : ', IntToStr(CountVersion), ' ressource(s)');
+  If CountRCData > 0 Then
+    WriteLn('  RT_RCDATA     : ', IntToStr(CountRCData), ' ressource(s)');
+  If CountManifest > 0 Then
+    WriteLn('  RT_MANIFEST   : ', IntToStr(CountManifest), ' ressource(s)');
+  If CountGrpIcon > 0 Then
+    WriteLn('  RT_GROUP_ICON : ', IntToStr(CountGrpIcon), ' ressource(s)');
+  If CountGrpCursor > 0 Then
+    WriteLn('  RT_GROUP_CURSOR: ', IntToStr(CountGrpCursor), ' ressource(s)');
+  WriteLn('Fichiers extraits: ', IntToStr(ExtractCount));
+  WriteLn('Fichier RC genere: ', AOpts.OutFile);
+  FileSz := GetFileSize(AOpts.OutFile);
+  If FileSz >= 0 Then
+    WriteLn('Taille RC        : ', IntToStr(FileSz), ' octets')
+  Else
+    WriteLn('Taille RC        : (fichier absent)');
+  If AOpts.Verbose Then
+  Begin
+    WriteLn;
+    WriteLn('Detail des ressources :');
+    For I := 1 To ResCount Do
+    Begin
+      If Resources[I].TypeIsId Then
+        Write('  [', IntToStr(I), '] type=', ResourceTypeName(Resources[I].TypeId))
+      Else
+        Write('  [', IntToStr(I), '] type="', Resources[I].TypeName, '"');
+      If Resources[I].NameIsId Then
+        Write(' id=', IntToStr(Resources[I].NameId))
+      Else
+        Write(' nom="', Resources[I].NameStr, '"');
+      Write(' lang=', HexWord(Resources[I].LangId));
+      Write(' taille=', IntToStr(Resources[I].DataSize), ' octets');
+      WriteLn(' flags=', HexWord(Resources[I].MemFlags));
+    End;
+  End;
+End;
+
 
 Begin
   { Banniere de version }
@@ -4577,6 +4782,7 @@ Begin
   End;
 
   { Ouvrir le fichier source }
+  ExtractCount := 0;
   OpenResFile(Opts.SrcFile);
 
   If Opts.Verbose Then
@@ -4625,6 +4831,12 @@ Begin
 
   { Generer le fichier .RC complet (TODO 21 + TODO 22) }
   GenerateRCFile(ResFormat);
+
+  { Verifier le fichier RC genere (TODO 25) }
+  VerifyRCFile(Opts.OutFile);
+
+  { Afficher le rapport final (TODO 25) }
+  DisplayFinalReport(Opts, ResFormat);
 
   { Fermer le fichier source }
   CloseResFile;
