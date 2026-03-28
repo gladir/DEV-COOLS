@@ -9914,7 +9914,13 @@ Begin
  LocalIdx:=Procs[ProcIdx].LocalCount;
  With Procs[ProcIdx].Locals[LocalIdx] do Begin
   Name:=VarName;
-  TypeName:='WORD';
+  { TypeName doit correspondre au type Pascal }
+  Case LPascalType of
+   PT_BYTE:TypeName:='BYTE';
+   PT_WORD:TypeName:='WORD';
+   PT_LONGINT:TypeName:='DWORD';
+   Else TypeName:='WORD';
+  End;
   PascalType:=LPascalType;
   Size:=DataSize;
   Count:=1;
@@ -9940,9 +9946,6 @@ Begin
  
  UBase:=UpCaseStr(Op.BaseReg);
  UIndex:=UpCaseStr(Op.IndexReg);
- 
- { Ignorer les acces pile [BP+x] sans index }
- If((UBase='BP')or(UBase='EBP'))and(Op.IndexReg='')Then Exit;
  
  { Calculer la taille de donnees - Op.Size contient directement la taille }
  Case Op.Size of
