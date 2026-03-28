@@ -8630,9 +8630,41 @@ Begin
  IsBodyMnemonic:=False; { TODO 22 orchestre, ne traduit pas }
 End;
 
-Function IsPrologueEpilogueInstr(Var AsmL:TAsmLine;ProcIdx:Integer):Boolean;
+Function IsLastRetInProc(LineIdx:LongInt;ProcIdx:Integer):Boolean;
+{ Verifie si le RET a LineIdx est le dernier RET de la procedure.
+  Si c'est le cas, il fait partie de l'epilogue et ne doit pas etre traduit.
+  Si ce n'est pas le dernier RET, c'est une sortie anticipee qui doit
+  etre traduite en Exit; pour permettre l'optimisation If-Then-Begin-End. }
+Var
+ J:LongInt;
+ AsmL2:TAsmLine;
+ M:String;
+Begin
+ IsLastRetInProc:=True;
+ If(ProcIdx<1)or(ProcIdx>ProcCount)Then Exit;
+ { Chercher un autre RET apres cette ligne dans la meme procedure }
+ For J:=LineIdx+1 to Procs[ProcIdx].EndLine do Begin
+  If(J<0)or(J>=SrcLineCount)Then Continue;
+  If SrcLines[J]=Nil Then Continue;
+  ParseInstructionLine(J,AsmL2);
+  If AsmL2.IsDirective Then Continue;
+  M:=UpCaseStr(AsmL2.Mnemonic);
+  If(M='RET')or(M='RETN')or(M='RETF')Then Begin
+   { Il y a un autre RET apres, donc ce n'est pas le dernier }
+   IsLastRetInProc:=False;
+   Exit;
+  End;
+ End;
+ { Aucun autre RET trouve apres, c'est bien le dernier }
+End;
+
+Function IsPrologueEpilogueInstr(Var AsmL:TAsmLine;ProcIdx:Integer;
+ LineIdx:LongInt):Boolean;
 { Detecte si l'instruction fait partie du prologue ou epilogue
-  d'une fonction implicite : PUSH BP, MOV BP,SP, POP BP, RET n }
+  d'une fonction implicite : PUSH BP, MOV BP,SP, POP BP, RET n.
+  Pour RET, seul le DERNIER RET de la procedure est considere comme
+  epilogue. Les RET intermediaires sont des sorties anticipees qui
+  doivent etre traduites en Exit; pour l'optimisation. }
 Var
  M,Op1Str,Op2Str:String;
 Begin
@@ -8676,10 +8708,15 @@ Begin
   End;
  End;
  
- { RET / RETN / RETF avec ou sans operande }
+ { RET / RETN / RETF : seulement le dernier de la procedure est epilogue }
  If(M='RET')or(M='RETN')or(M='RETF')Then Begin
-  IsPrologueEpilogueInstr:=True;
-  Exit;
+  { Verifier si c'est le dernier RET de la procedure }
+  If IsLastRetInProc(LineIdx,ProcIdx)Then Begin
+   IsPrologueEpilogueInstr:=True;
+   Exit;
+  End;
+  { Ce n'est pas le dernier RET, donc c'est une sortie anticipee
+    qui doit etre traduite en Exit; }
  End;
 End;
 
@@ -8886,7 +8923,7 @@ Begin
     If AsmL.IsDirective Then Continue;
 
     { Sauter le prologue/epilogue des fonctions implicites }
-    If IsPrologueEpilogueInstr(AsmL,I) Then Continue;
+    If IsPrologueEpilogueInstr(AsmL,I,J) Then Continue;
 
     { Emettre le label s'il y en a un (sauf le nom de la proc) }
     If(AsmL.LabelStr<>'')and
