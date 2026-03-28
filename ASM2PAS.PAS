@@ -8655,28 +8655,64 @@ Begin
   (U='LAR')or(U='LSL');
 End;
 
-Function AsmInlineInstr(Var AsmL:TAsmLine):String;
-{ Reconstruit le texte d'instruction assembleur depuis TAsmLine.
-  Retourne MNEMONIC OP1,OP2 ou MNEMONIC OP1 ou MNEMONIC. }
+Function AsmOperandStr(Var Op:TOperand):String;
+{ Reconstruit le texte d'un operande pour ASM inline. }
 Var S:String;
 Begin
+ If Op.Reg<>'' Then Begin
+  AsmOperandStr:=Op.Reg;
+  Exit;
+ End;
+ If Op.MemExpr<>'' Then Begin
+  AsmOperandStr:='['+Op.MemExpr+']';
+  Exit;
+ End;
+ { Adressage indexe : BaseReg+IndexReg ou BaseReg seul }
+ If Op.BaseReg<>'' Then Begin
+  S:='['+Op.BaseReg;
+  If Op.IndexReg<>'' Then S:=S+'+'+Op.IndexReg;
+  If Op.HasDisp Then Begin
+   If Op.Disp>=0 Then S:=S+'+'+IntToStr(Op.Disp)
+   Else S:=S+IntToStr(Op.Disp);
+  End;
+  S:=S+']';
+  AsmOperandStr:=S;
+  Exit;
+ End;
+ If Op.LabelName<>'' Then Begin
+  AsmOperandStr:=Op.LabelName;
+  Exit;
+ End;
+ If Op.OpType In [OT_IMM8,OT_IMM16,OT_IMM32] Then Begin
+  AsmOperandStr:=IntToStr(Op.Imm);
+  Exit;
+ End;
+ AsmOperandStr:='';
+End;
+
+Function AsmInlineInstr(Var AsmL:TAsmLine):String;
+{ Reconstruit le texte d'instruction assembleur depuis TAsmLine.
+  Retourne MNEMONIC OP1,OP2 ou MNEMONIC OP1 ou MNEMONIC.
+  Si le mnemonique est inconnu (???), genere un commentaire. }
+Var
+ S,Op1S,Op2S:String;
+Begin
+ { Instruction non decodee : generer un commentaire }
+ If AsmL.Mnemonic='???' Then Begin
+  Op1S:=AsmOperandStr(AsmL.Op1);
+  If Op1S<>'' Then
+   AsmInlineInstr:='{ ??? '+Op1S+' }'
+  Else
+   AsmInlineInstr:='{ ??? }';
+  Exit;
+ End;
  S:=AsmL.Mnemonic;
- If AsmL.Op1.Reg<>'' Then Begin
-  S:=S+' '+AsmL.Op1.Reg;
-  If AsmL.Op2.Reg<>'' Then
-   S:=S+','+AsmL.Op2.Reg
-  Else If AsmL.Op2.MemExpr<>'' Then
-   S:=S+','+AsmL.Op2.MemExpr;
- End
- Else If AsmL.Op1.MemExpr<>'' Then Begin
-  S:=S+' '+AsmL.Op1.MemExpr;
-  If AsmL.Op2.Reg<>'' Then
-   S:=S+','+AsmL.Op2.Reg
-  Else If AsmL.Op2.MemExpr<>'' Then
-   S:=S+','+AsmL.Op2.MemExpr;
- End
- Else If AsmL.Op1.LabelName<>'' Then Begin
-  S:=S+' '+AsmL.Op1.LabelName;
+ Op1S:=AsmOperandStr(AsmL.Op1);
+ If Op1S<>'' Then Begin
+  S:=S+' '+Op1S;
+  Op2S:=AsmOperandStr(AsmL.Op2);
+  If Op2S<>'' Then
+   S:=S+','+Op2S;
  End;
  AsmInlineInstr:=S;
 End;
@@ -8748,8 +8784,12 @@ Begin
    { Instruction isolee : asm INSTR; end; sur une seule ligne }
    ParseInstructionLine(GroupStart,AsmL);
    Instr:=AsmInlineInstr(AsmL);
-   AddTranslation(GroupStart,
-    'asm '+Instr+'; end;',AsmL.Mnemonic);
+   { Instruction non decodee '???' : commentaire Pascal seul }
+   If AsmL.Mnemonic='???' Then
+    AddTranslation(GroupStart,Instr+';',AsmL.Mnemonic)
+   Else
+    AddTranslation(GroupStart,
+     'asm '+Instr+'; end;',AsmL.Mnemonic);
    If IsFPUMnemonic(AsmL.Mnemonic) Then Inc(FPUCount)
    Else If IsIOPrivMnemonic(AsmL.Mnemonic) Then Inc(IOPrivCount)
    Else Inc(OtherCount);
@@ -8757,8 +8797,8 @@ Begin
   End
   Else Begin
    { Groupe de N instructions consecutives non traduites :
-     ouvrir un seul bloc asm, emettre chaque instruction,
-     fermer avec end; sur la derniere ligne }
+     Les instructions ??? sont des commentaires Pascal,
+     les autres vont dans un ou des blocs asm...end. }
    Inc(GroupCount);
    For J:=GroupStart to GroupEnd do Begin
     ParseInstructionLine(J,AsmL);
@@ -8766,17 +8806,11 @@ Begin
     If IsFPUMnemonic(AsmL.Mnemonic) Then Inc(FPUCount)
     Else If IsIOPrivMnemonic(AsmL.Mnemonic) Then Inc(IOPrivCount)
     Else Inc(OtherCount);
-    If J=GroupStart Then
-     { Premiere instruction : ouvrir le bloc asm }
-     AddTranslation(J,
-      'asm'+Chr(10)+'    '+Instr+';',AsmL.Mnemonic)
-    Else If J=GroupEnd Then
-     { Derniere instruction : fermer le bloc asm }
-     AddTranslation(J,
-      '  '+Instr+';'+Chr(10)+'  end;',AsmL.Mnemonic)
+    { Instruction non decodee '???' : commentaire Pascal seul }
+    If AsmL.Mnemonic='???' Then
+     AddTranslation(J,Instr+';',AsmL.Mnemonic)
     Else
-     { Instructions intermediaires }
-     AddTranslation(J,'  '+Instr+';',AsmL.Mnemonic);
+     AddTranslation(J,'asm '+Instr+'; end;',AsmL.Mnemonic);
     Inc(InlineCount);
    End;
   End;
