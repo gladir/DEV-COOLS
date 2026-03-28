@@ -353,6 +353,9 @@ Const
  PT_PCHAR    = 9;
  PT_ARRAY    = 10;
 
+ { Limite pour les labels optimises }
+ MAX_OPT_LABELS = 256;
+
  { Types d'operandes }
  OT_NONE    = 0;
  OT_REG8    = 1;
@@ -586,6 +589,9 @@ Var
  { Donnees (TODO 4) }
  DataVars:Array[1..MAX_DATAVARS] of TDataVar;
  DataVarCount:Integer;
+ { Labels optimises (ne pas emettre dans ProcessBodyGeneration) }
+ OptLabels:Array[1..MAX_OPT_LABELS] of String;
+ OptLabelCount:Integer;
 
 { ============================================================
   Fonctions utilitaires
@@ -8630,9 +8636,41 @@ Begin
  IsBodyMnemonic:=False; { TODO 22 orchestre, ne traduit pas }
 End;
 
-Function IsPrologueEpilogueInstr(Var AsmL:TAsmLine;ProcIdx:Integer):Boolean;
+Function IsLastRetInProc(LineIdx:LongInt;ProcIdx:Integer):Boolean;
+{ Verifie si le RET a LineIdx est le dernier RET de la procedure.
+  Si c'est le cas, il fait partie de l'epilogue et ne doit pas etre traduit.
+  Si ce n'est pas le dernier RET, c'est une sortie anticipee qui doit
+  etre traduite en Exit; pour permettre l'optimisation If-Then-Begin-End. }
+Var
+ J:LongInt;
+ AsmL2:TAsmLine;
+ M:String;
+Begin
+ IsLastRetInProc:=True;
+ If(ProcIdx<1)or(ProcIdx>ProcCount)Then Exit;
+ { Chercher un autre RET apres cette ligne dans la meme procedure }
+ For J:=LineIdx+1 to Procs[ProcIdx].EndLine do Begin
+  If(J<0)or(J>=SrcLineCount)Then Continue;
+  If SrcLines[J]=Nil Then Continue;
+  ParseInstructionLine(J,AsmL2);
+  If AsmL2.IsDirective Then Continue;
+  M:=UpCaseStr(AsmL2.Mnemonic);
+  If(M='RET')or(M='RETN')or(M='RETF')Then Begin
+   { Il y a un autre RET apres, donc ce n'est pas le dernier }
+   IsLastRetInProc:=False;
+   Exit;
+  End;
+ End;
+ { Aucun autre RET trouve apres, c'est bien le dernier }
+End;
+
+Function IsPrologueEpilogueInstr(Var AsmL:TAsmLine;ProcIdx:Integer;
+ LineIdx:LongInt):Boolean;
 { Detecte si l'instruction fait partie du prologue ou epilogue
-  d'une fonction implicite : PUSH BP, MOV BP,SP, POP BP, RET n }
+  d'une fonction implicite : PUSH BP, MOV BP,SP, POP BP, RET n.
+  Pour RET, seul le DERNIER RET de la procedure est considere comme
+  epilogue. Les RET intermediaires sont des sorties anticipees qui
+  doivent etre traduites en Exit; pour l'optimisation. }
 Var
  M,Op1Str,Op2Str:String;
 Begin
@@ -8676,12 +8714,20 @@ Begin
   End;
  End;
  
- { RET / RETN / RETF avec ou sans operande }
+ { RET / RETN / RETF : seulement le dernier de la procedure est epilogue }
  If(M='RET')or(M='RETN')or(M='RETF')Then Begin
-  IsPrologueEpilogueInstr:=True;
-  Exit;
+  { Verifier si c'est le dernier RET de la procedure }
+  If IsLastRetInProc(LineIdx,ProcIdx)Then Begin
+   IsPrologueEpilogueInstr:=True;
+   Exit;
+  End;
+  { Ce n'est pas le dernier RET, donc c'est une sortie anticipee
+    qui doit etre traduite en Exit; }
  End;
 End;
+
+{ Declaration forward pour IsLabelOptimized (definie dans TODO 24) }
+Function IsLabelOptimized(Const LabelName:String):Boolean; Forward;
 
 Function ReplaceParamBPReferences(Code:String;ProcIdx:Integer):String;
 { Remplace les references Param_BP_N par les vrais noms de parametres.
@@ -8886,11 +8932,12 @@ Begin
     If AsmL.IsDirective Then Continue;
 
     { Sauter le prologue/epilogue des fonctions implicites }
-    If IsPrologueEpilogueInstr(AsmL,I) Then Continue;
+    If IsPrologueEpilogueInstr(AsmL,I,J) Then Continue;
 
-    { Emettre le label s'il y en a un (sauf le nom de la proc) }
+    { Emettre le label s'il y en a un (sauf le nom de la proc et les labels optimises) }
     If(AsmL.LabelStr<>'')and
-      (UpCaseStr(AsmL.LabelStr)<>UpCaseStr(Procs[I].Name))Then
+      (UpCaseStr(AsmL.LabelStr)<>UpCaseStr(Procs[I].Name))and
+      (Not IsLabelOptimized(AsmL.LabelStr))Then
      WriteLn(OutFile,'  ',AsmL.LabelStr,':');
 
     { Sauter les lignes sans instruction }
@@ -8957,7 +9004,8 @@ Begin
      ProcIdx:=J;
      Break;
     End;
-   If ProcIdx=0 Then
+   { N'emettre le label que s'il n'est pas un nom de proc et n'est pas optimise }
+   If(ProcIdx=0)and(Not IsLabelOptimized(AsmL.LabelStr))Then
     WriteLn(OutFile,'  ',AsmL.LabelStr,':');
   End;
 
@@ -9444,6 +9492,245 @@ Begin
  End;
 End;
 
+Procedure AddOptLabel(Const LabelName:String);
+{ Ajoute un label a la liste des labels optimises
+  (qui ne doivent pas etre emis dans ProcessBodyGeneration). }
+Begin
+ If OptLabelCount>=MAX_OPT_LABELS Then Exit;
+ Inc(OptLabelCount);
+ OptLabels[OptLabelCount]:=LabelName;
+End;
+
+Function IsLabelOptimized(Const LabelName:String):Boolean;
+{ Verifie si un label est dans la liste des labels optimises. }
+Var
+ I:Integer;
+ U:String;
+Begin
+ IsLabelOptimized:=False;
+ U:=UpCaseStr(LabelName);
+ For I:=1 to OptLabelCount do
+  If UpCaseStr(OptLabels[I])=U Then Begin
+   IsLabelOptimized:=True;
+   Exit;
+  End;
+End;
+
+Function CountLabelReferences(Const LabelName:String):Integer;
+{ Compte le nombre de references a un label dans les traductions.
+  Exclut la declaration du label lui-meme. }
+Var
+ I:Integer;
+ U:String;
+ Count:Integer;
+Begin
+ Count:=0;
+ U:=UpCaseStr(LabelName);
+ For I:=0 to TranslationCount-1 do Begin
+  If Not Translations[I].IsTranslated Then Continue;
+  { Chercher "Goto label" ou "Then Goto label" }
+  If Pos('Goto '+U,UpCaseStr(Translations[I].PascalCode))>0 Then
+   Inc(Count);
+ End;
+ CountLabelReferences:=Count;
+End;
+
+Function FindLabelSrcLine(LabelName:String):LongInt;
+{ Trouve la ligne source contenant un label donne.
+  Retourne -1 si le label n'est pas trouve. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+Begin
+ FindLabelSrcLine:=-1;
+ For I:=0 to SrcLineCount-1 do Begin
+  If SrcLines[I]=Nil Then Continue;
+  ParseInstructionLine(I,AsmL);
+  If UpCaseStr(AsmL.LabelStr)=UpCaseStr(LabelName) Then Begin
+   FindLabelSrcLine:=I;
+   Exit;
+  End;
+ End;
+End;
+
+Function InvertCondition(Const Cond:String):String;
+{ Inverse une condition de comparaison Pascal.
+  = -> <>, <> -> =, < -> >=, > -> <=, <= -> >, >= -> < }
+Begin
+ If Cond='=' Then InvertCondition:='<>'
+ Else If Cond='<>' Then InvertCondition:='='
+ Else If Cond='<' Then InvertCondition:='>='
+ Else If Cond='>' Then InvertCondition:='<='
+ Else If Cond='<=' Then InvertCondition:='>'
+ Else If Cond='>=' Then InvertCondition:='<'
+ Else InvertCondition:=Cond;
+End;
+
+Function InvertFlagExpr(Const FExpr:String):String;
+{ Inverse une expression sur les flags.
+  FlagXX -> not FlagXX, not FlagXX -> FlagXX }
+Begin
+ If Pos('not ',FExpr)=1 Then
+  InvertFlagExpr:=Copy(FExpr,5,255)
+ Else If(Length(FExpr)>0)and(FExpr[1]='(')Then
+  InvertFlagExpr:='not '+FExpr
+ Else
+  InvertFlagExpr:='not ('+FExpr+')';
+End;
+
+Function ParseIfCondition(Const Code:String;Var CondA,CondOp,CondB:String):Boolean;
+{ Parse une instruction If pour extraire la condition.
+  Format: If A op B Then Goto label;
+  Retourne True si le parsing a reussi. }
+Var
+ P1,P2:Integer;
+ CondPart:String;
+Begin
+ ParseIfCondition:=False;
+ CondA:=''; CondOp:=''; CondB:='';
+ If Pos('If ',Code)<>1 Then Exit;
+ P1:=Pos(' Then ',Code);
+ If P1=0 Then Exit;
+ CondPart:=Trim(Copy(Code,4,P1-4));
+ { Chercher l'operateur de comparaison }
+ P2:=Pos(' <> ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='<>';
+  CondB:=Trim(Copy(CondPart,P2+4,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ P2:=Pos(' <= ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='<=';
+  CondB:=Trim(Copy(CondPart,P2+4,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ P2:=Pos(' >= ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='>=';
+  CondB:=Trim(Copy(CondPart,P2+4,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ P2:=Pos(' < ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='<';
+  CondB:=Trim(Copy(CondPart,P2+3,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ P2:=Pos(' > ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='>';
+  CondB:=Trim(Copy(CondPart,P2+3,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ P2:=Pos(' = ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='=';
+  CondB:=Trim(Copy(CondPart,P2+3,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ { Expression sur flags (If FlagXX Then ou If not FlagXX Then) }
+ If(Length(CondPart)>0)and(Pos('GOTO',UpCaseStr(CondPart))=0)Then Begin
+  CondA:=CondPart;
+  CondOp:='';
+  CondB:='';
+  ParseIfCondition:=True;
+ End;
+End;
+
+Procedure OptGotoToIfBeginEnd(Var OptCount:Integer);
+{ Transforme les patterns If...Then Goto label; suivi de code puis
+  Exit; puis label: en bloc If (condition inversee) Then Begin...End.
+  Cette optimisation produit un code Pascal plus lisible. }
+Var
+ I,J:LongInt;
+ Code,Lbl:String;
+ P:Integer;
+ LabelLine:LongInt;
+ ExitIdx:LongInt;
+ CondA,CondOp,CondB:String;
+ InvOp:String;
+ NewCond:String;
+ LastExitIdx:LongInt;
+ LastExitLine:LongInt;
+Begin
+ OptCount:=0;
+ I:=0;
+ While I<TranslationCount do Begin
+  If Not Translations[I].IsTranslated Then Begin
+   Inc(I);
+   Continue;
+  End;
+  Code:=Translations[I].PascalCode;
+  { Chercher If ... Then Goto label; }
+  If(Pos('If ',Code)=1)and(Pos('Then Goto ',Code)>0)Then Begin
+   P:=Pos('Then Goto ',Code);
+   Lbl:=Trim(Copy(Code,P+10,255));
+   If(Length(Lbl)>0)and(Lbl[Length(Lbl)]=';')Then
+    Lbl:=Copy(Lbl,1,Length(Lbl)-1);
+   { Trouver la ligne source du label }
+   LabelLine:=FindLabelSrcLine(Lbl);
+   If LabelLine<0 Then Begin
+    Inc(I);
+    Continue;
+   End;
+   { Chercher le dernier Exit; dont la ligne source est AVANT le label }
+   LastExitIdx:=-1;
+   LastExitLine:=-1;
+   For J:=I+1 to TranslationCount-1 do Begin
+    If Not Translations[J].IsTranslated Then Continue;
+    { Ne considerer que les traductions AVANT le label }
+    If Translations[J].SrcLine>=LabelLine Then Continue;
+    { Verifier si c'est Exit; }
+    If Translations[J].PascalCode='Exit;' Then Begin
+     { Garder le dernier Exit; avant le label (plus proche du label) }
+     If Translations[J].SrcLine>LastExitLine Then Begin
+      LastExitIdx:=J;
+      LastExitLine:=Translations[J].SrcLine;
+     End;
+    End;
+   End;
+   { Si on a trouve un Exit; valide, effectuer la transformation }
+   If LastExitIdx>I Then Begin
+    ExitIdx:=LastExitIdx;
+    { Parser la condition }
+    If ParseIfCondition(Code,CondA,CondOp,CondB)Then Begin
+     { Inverser la condition }
+     If CondOp<>'' Then Begin
+      InvOp:=InvertCondition(CondOp);
+      NewCond:='If '+CondA+' '+InvOp+' '+CondB+' Then Begin';
+     End Else Begin
+      { Expression sur flags }
+      NewCond:='If '+InvertFlagExpr(CondA)+' Then Begin';
+     End;
+     { Modifier la traduction du If }
+     Translations[I].PascalCode:=NewCond;
+     { Modifier Exit; en End; }
+     Translations[ExitIdx].PascalCode:='End;';
+     Inc(OptCount);
+     { Verifier si le label n'est plus reference ailleurs
+       et le marquer comme optimise pour ne pas l'emettre }
+     If CountLabelReferences(Lbl)=0 Then
+      AddOptLabel(Lbl);
+    End;
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
 Procedure OptGotoDetect(Var CandidCount:Integer);
 { (d) Detecte les Goto pouvant etre remplaces par des structures. }
 Var
@@ -9541,15 +9828,16 @@ Procedure ProcessOptimization;
 { Passe d'optimisation sur les traductions Pascal generees. }
 Var
  IdiomCount,ConstPropCount,SimplifyCount:Integer;
- SubRegCount,GotoCount,UnusedCount,TotalOpt:Integer;
+ SubRegCount,GotoCount,GotoBlockCount,UnusedCount,TotalOpt:Integer;
 Begin
  OptIdiomatic(IdiomCount);
  OptConstProp(ConstPropCount);
  OptSimplify(SimplifyCount);
  OptSubRegFusion(SubRegCount);
+ OptGotoToIfBeginEnd(GotoBlockCount);
  OptGotoDetect(GotoCount);
  OptUnusedRegs(UnusedCount);
- TotalOpt:=IdiomCount+ConstPropCount+SimplifyCount+SubRegCount;
+ TotalOpt:=IdiomCount+ConstPropCount+SimplifyCount+SubRegCount+GotoBlockCount;
  WriteLn('Optimisation : ',TotalOpt,' modifications, ',
   GotoCount,' Goto candidats, ',UnusedCount,' registres inutilises.');
  If Verbose Then Begin
@@ -9557,6 +9845,7 @@ Begin
   WriteLn('  Prop. constantes : ',ConstPropCount);
   WriteLn('  Simplifications  : ',SimplifyCount);
   WriteLn('  Fusion sous-reg  : ',SubRegCount);
+  WriteLn('  If-Then-Begin-End: ',GotoBlockCount);
   WriteLn('  Goto remplacables: ',GotoCount);
   WriteLn('  Registres inutil.: ',UnusedCount);
  End;
@@ -10298,6 +10587,7 @@ BEGIN
  TotalProcs:=0;
  TotalVars:=0;
  TotalLabels:=0;
+ OptLabelCount:=0;
  If Verbose Then Begin
   WriteLn('Fichier source    : ',InFileName);
   WriteLn('Fichier de sortie : ',OutFileName);
