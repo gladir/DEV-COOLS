@@ -9444,6 +9444,196 @@ Begin
  End;
 End;
 
+Function FindLabelSrcLine(LabelName:String):LongInt;
+{ Trouve la ligne source contenant un label donne.
+  Retourne -1 si le label n'est pas trouve. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+Begin
+ FindLabelSrcLine:=-1;
+ For I:=0 to SrcLineCount-1 do Begin
+  If SrcLines[I]=Nil Then Continue;
+  ParseInstructionLine(I,AsmL);
+  If UpCaseStr(AsmL.LabelStr)=UpCaseStr(LabelName) Then Begin
+   FindLabelSrcLine:=I;
+   Exit;
+  End;
+ End;
+End;
+
+Function InvertCondition(Const Cond:String):String;
+{ Inverse une condition de comparaison Pascal.
+  = -> <>, <> -> =, < -> >=, > -> <=, <= -> >, >= -> < }
+Begin
+ If Cond='=' Then InvertCondition:='<>'
+ Else If Cond='<>' Then InvertCondition:='='
+ Else If Cond='<' Then InvertCondition:='>='
+ Else If Cond='>' Then InvertCondition:='<='
+ Else If Cond='<=' Then InvertCondition:='>'
+ Else If Cond='>=' Then InvertCondition:='<'
+ Else InvertCondition:=Cond;
+End;
+
+Function InvertFlagExpr(Const FExpr:String):String;
+{ Inverse une expression sur les flags.
+  FlagXX -> not FlagXX, not FlagXX -> FlagXX }
+Begin
+ If Pos('not ',FExpr)=1 Then
+  InvertFlagExpr:=Copy(FExpr,5,255)
+ Else
+  InvertFlagExpr:='not ('+FExpr+')';
+End;
+
+Function ParseIfCondition(Const Code:String;Var CondA,CondOp,CondB:String):Boolean;
+{ Parse une instruction If pour extraire la condition.
+  Format: If A op B Then Goto label;
+  Retourne True si le parsing a reussi. }
+Var
+ P1,P2:Integer;
+ CondPart:String;
+Begin
+ ParseIfCondition:=False;
+ CondA:=''; CondOp:=''; CondB:='';
+ If Pos('If ',Code)<>1 Then Exit;
+ P1:=Pos(' Then ',Code);
+ If P1=0 Then Exit;
+ CondPart:=Trim(Copy(Code,4,P1-4));
+ { Chercher l'operateur de comparaison }
+ P2:=Pos(' <> ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='<>';
+  CondB:=Trim(Copy(CondPart,P2+4,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ P2:=Pos(' <= ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='<=';
+  CondB:=Trim(Copy(CondPart,P2+4,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ P2:=Pos(' >= ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='>=';
+  CondB:=Trim(Copy(CondPart,P2+4,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ P2:=Pos(' < ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='<';
+  CondB:=Trim(Copy(CondPart,P2+3,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ P2:=Pos(' > ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='>';
+  CondB:=Trim(Copy(CondPart,P2+3,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ P2:=Pos(' = ',CondPart);
+ If P2>0 Then Begin
+  CondA:=Trim(Copy(CondPart,1,P2-1));
+  CondOp:='=';
+  CondB:=Trim(Copy(CondPart,P2+3,255));
+  ParseIfCondition:=True;
+  Exit;
+ End;
+ { Expression sur flags (If FlagXX Then ou If not FlagXX Then) }
+ If(Length(CondPart)>0)and(Pos('Goto',CondPart)=0)Then Begin
+  CondA:=CondPart;
+  CondOp:='';
+  CondB:='';
+  ParseIfCondition:=True;
+ End;
+End;
+
+Procedure OptGotoToIfBeginEnd(Var OptCount:Integer);
+{ Transforme les patterns If...Then Goto label; suivi de code puis
+  Exit; puis label: en bloc If (condition inversee) Then Begin...End.
+  Cette optimisation produit un code Pascal plus lisible. }
+Var
+ I,J:LongInt;
+ Code,Lbl:String;
+ P:Integer;
+ LabelLine:LongInt;
+ ExitIdx:LongInt;
+ CondA,CondOp,CondB:String;
+ InvOp:String;
+ NewCond:String;
+ LastExitIdx:LongInt;
+ LastExitLine:LongInt;
+Begin
+ OptCount:=0;
+ I:=0;
+ While I<TranslationCount do Begin
+  If Not Translations[I].IsTranslated Then Begin
+   Inc(I);
+   Continue;
+  End;
+  Code:=Translations[I].PascalCode;
+  { Chercher If ... Then Goto label; }
+  If(Pos('If ',Code)=1)and(Pos('Then Goto ',Code)>0)Then Begin
+   P:=Pos('Then Goto ',Code);
+   Lbl:=Trim(Copy(Code,P+10,255));
+   If(Length(Lbl)>0)and(Lbl[Length(Lbl)]=';')Then
+    Lbl:=Copy(Lbl,1,Length(Lbl)-1);
+   { Trouver la ligne source du label }
+   LabelLine:=FindLabelSrcLine(Lbl);
+   If LabelLine<0 Then Begin
+    Inc(I);
+    Continue;
+   End;
+   { Chercher le dernier Exit; dont la ligne source est AVANT le label }
+   LastExitIdx:=-1;
+   LastExitLine:=-1;
+   For J:=I+1 to TranslationCount-1 do Begin
+    If Not Translations[J].IsTranslated Then Continue;
+    { Ne considerer que les traductions AVANT le label }
+    If Translations[J].SrcLine>=LabelLine Then Continue;
+    { Verifier si c'est Exit; }
+    If Translations[J].PascalCode='Exit;' Then Begin
+     { Garder le dernier Exit; avant le label (plus proche du label) }
+     If Translations[J].SrcLine>LastExitLine Then Begin
+      LastExitIdx:=J;
+      LastExitLine:=Translations[J].SrcLine;
+     End;
+    End;
+   End;
+   { Si on a trouve un Exit; valide, effectuer la transformation }
+   If LastExitIdx>I Then Begin
+    ExitIdx:=LastExitIdx;
+    { Parser la condition }
+    If ParseIfCondition(Code,CondA,CondOp,CondB)Then Begin
+     { Inverser la condition }
+     If CondOp<>'' Then Begin
+      InvOp:=InvertCondition(CondOp);
+      NewCond:='If '+CondA+' '+InvOp+' '+CondB+' Then Begin';
+     End Else Begin
+      { Expression sur flags }
+      NewCond:='If '+InvertFlagExpr(CondA)+' Then Begin';
+     End;
+     { Modifier la traduction du If }
+     Translations[I].PascalCode:=NewCond;
+     { Modifier Exit; en End; }
+     Translations[ExitIdx].PascalCode:='End;';
+     Inc(OptCount);
+    End;
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
 Procedure OptGotoDetect(Var CandidCount:Integer);
 { (d) Detecte les Goto pouvant etre remplaces par des structures. }
 Var
@@ -9541,15 +9731,16 @@ Procedure ProcessOptimization;
 { Passe d'optimisation sur les traductions Pascal generees. }
 Var
  IdiomCount,ConstPropCount,SimplifyCount:Integer;
- SubRegCount,GotoCount,UnusedCount,TotalOpt:Integer;
+ SubRegCount,GotoCount,GotoBlockCount,UnusedCount,TotalOpt:Integer;
 Begin
  OptIdiomatic(IdiomCount);
  OptConstProp(ConstPropCount);
  OptSimplify(SimplifyCount);
  OptSubRegFusion(SubRegCount);
+ OptGotoToIfBeginEnd(GotoBlockCount);
  OptGotoDetect(GotoCount);
  OptUnusedRegs(UnusedCount);
- TotalOpt:=IdiomCount+ConstPropCount+SimplifyCount+SubRegCount;
+ TotalOpt:=IdiomCount+ConstPropCount+SimplifyCount+SubRegCount+GotoBlockCount;
  WriteLn('Optimisation : ',TotalOpt,' modifications, ',
   GotoCount,' Goto candidats, ',UnusedCount,' registres inutilises.');
  If Verbose Then Begin
@@ -9557,6 +9748,7 @@ Begin
   WriteLn('  Prop. constantes : ',ConstPropCount);
   WriteLn('  Simplifications  : ',SimplifyCount);
   WriteLn('  Fusion sous-reg  : ',SubRegCount);
+  WriteLn('  If-Then-Begin-End: ',GotoBlockCount);
   WriteLn('  Goto remplacables: ',GotoCount);
   WriteLn('  Registres inutil.: ',UnusedCount);
  End;
