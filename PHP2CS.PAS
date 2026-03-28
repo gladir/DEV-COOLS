@@ -250,7 +250,7 @@
               str_pad -> PadLeft / PadRight
               wordwrap -> stub commentaire
 
-  TODO 09 - TRANSPILATION : STRUCTURES DE CONTROLE [A FAIRE]
+  TODO 09 - TRANSPILATION : STRUCTURES DE CONTROLE [IMPLEMENTE]
             Transpilation de if / elseif / else / endif :
               PHP : if(expr): ... elseif(expr): ... else: ... endif;
               C# : if(expr){...} else if(expr){...} else{...}
@@ -2068,7 +2068,7 @@ End;
   TODO 06 - DECLARATIONS DE VARIABLES PHP (IMPLEMENTE)
   TODO 07 - EXPRESSIONS (IMPLEMENTE)
   TODO 08 - CHAINES ET INTERPOLATION (IMPLEMENTE)
-  TODO 09 - STRUCTURES DE CONTROLE (A FAIRE)
+  TODO 09 - STRUCTURES DE CONTROLE (IMPLEMENTE)
   TODO 10 - BOUCLES (A FAIRE)
   TODO 11 - SWITCH ET MATCH (A FAIRE)
   TODO 12 - FONCTIONS PHP (A FAIRE)
@@ -2393,6 +2393,12 @@ End;
 
 { Declaration anticipee pour TODO 07 (recursion avec TODO 06) }
 Function ParseExprStr: TString; Forward;
+
+{ Declarations anticipees pour TODO 09 (structures de controle) }
+Function  ParseMatchExpr(Indent: Integer): TString; Forward;
+Procedure ParseDeclareStmt(Indent: Integer); Forward;
+Procedure ParseGotoStmt(Indent: Integer); Forward;
+Procedure ParseIfStmt(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -3027,6 +3033,8 @@ Begin
         R := PhpMagicConstToCS(CurTok.Val, CurTok.Line);
         LexNextToken;
       End
+      Else If LowStr(CurTok.Val) = 'match' Then
+        R := ParseMatchExpr(0)
       Else
       Begin
         R := MakeCsName(CurTok.Val);
@@ -3950,15 +3958,418 @@ Begin
     ParseStrPadCall := S + '.PadRight(' + Len + ')';
 End;
 
-Procedure Run;
+{ ============================================================
+  TODO 09 - TRANSPILATION : STRUCTURES DE CONTROLE PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Convertit un nom PHP en label C# valide (supprime $ initial si present) }
+Function PhpLabelToCS(Const S: TString): TString;
 Begin
-  LexInit(Opts.SrcFile);
-  { Boucle de tokenisation (transpilation TODOs 03-25 a venir) }
-  Repeat
+  If (Length(S) > 0) And (S[1] = '$') Then
+    PhpLabelToCS := MakeCsName(Copy(S, 2, Length(S) - 1))
+  Else
+    PhpLabelToCS := MakeCsName(S);
+End;
+
+{ Parse declare(strict_types=1|0), declare(ticks=N), declare(encoding='X').
+  CurTok doit etre le mot-cle 'declare'. }
+Procedure ParseDeclareStmt(Indent: Integer);
+Var DirName, DirVal: TString;
+Begin
+  LexNextToken; { saute 'declare' }
+  If Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(')) Then Exit;
+  LexNextToken; { saute '(' }
+  DirName := '';
+  DirVal  := '';
+  If CurTok.Kind = TK_IDENT Then
+  Begin
+    DirName := LowStr(CurTok.Val);
     LexNextToken;
-  Until CurTok.Kind = TK_EOF;
+    If (CurTok.Kind = TK_OP) And (CurTok.Val = '=') Then
+    Begin
+      LexNextToken;
+      DirVal := CurTok.Val;
+      LexNextToken;
+    End;
+  End;
+  { consommer jusqu a ')' }
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+        (CurTok.Kind <> TK_EOF) Do
+    LexNextToken;
+  If Not (CurTok.Kind = TK_EOF) Then LexNextToken; { saute ')' }
+  { consommer ';' si present }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+    LexNextToken;
+  If DirName = 'strict_types' Then
+  Begin
+    EmitLine(IndentStr(Indent) + '// strict_types=' + DirVal);
+    If DirVal = '1' Then
+      Opts.StrictTypes := True;
+  End
+  Else If DirName = 'ticks' Then
+    EmitLine(IndentStr(Indent) + '// declare(ticks=' + DirVal + ')')
+  Else If DirName = 'encoding' Then
+    EmitLine(IndentStr(Indent) + '// declare(encoding=' + DirVal + ')')
+  Else
+    EmitLine(IndentStr(Indent) + '// declare(' + DirName + '=' + DirVal + ')');
+End;
+
+{ Parse goto label; et emet goto CsLabel; avec avertissement.
+  CurTok doit etre le mot-cle 'goto'. }
+Procedure ParseGotoStmt(Indent: Integer);
+Var LabelName: TString;
+Begin
+  LexNextToken; { saute 'goto' }
+  LabelName := '';
+  If CurTok.Kind = TK_IDENT Then
+  Begin
+    LabelName := PhpLabelToCS(CurTok.Val);
+    LexNextToken;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+    LexNextToken;
+  WarnMsg('goto utilise (ligne ' + ItoS(CurTok.Line) + ')');
+  EmitLine(IndentStr(Indent) + 'goto ' + LabelName + ';');
+End;
+
+{ Parse un bloc d instructions PHP entre accolades ou en syntaxe alternative.
+  Emet les instructions du bloc. EndKw = mot-cle de fermeture (ex. 'endif')
+  pour la syntaxe alternative; valeur vide = mode accolades. }
+Procedure ParseBlock(Indent: Integer; Const EndKw: TString); Forward;
+
+{ Parse une expression match(expr) et retourne la chaine C#.
+  CurTok doit etre le mot-cle 'match'.
+  En C# 8+ : genere une switch expression.
+  Sinon : genere une chaine if/else. }
+Function ParseMatchExpr(Indent: Integer): TString;
+Var
+  SubjCS   : TString;
+  ArmCS    : TString;
+  ValCS    : TString;
+  Branches : Array[1..64] Of TString;
+  Values   : Array[1..64] Of TString;
+  DefBranch: TString;
+  Count    : Integer;
+  IsDefault: Boolean;
+  R        : TString;
+  I        : Integer;
+Begin
+  LexNextToken; { saute 'match' }
+  SubjCS := '';
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+  Begin
+    LexNextToken;
+    SubjCS := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+  End;
+  { consommer '{' }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+    LexNextToken;
+  Count := 0; DefBranch := '';
+  While Not (CurTok.Kind = TK_EOF) And
+        Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}')) Do
+  Begin
+    IsDefault := (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'default');
+    If IsDefault Then
+    Begin
+      LexNextToken; { saute 'default' }
+      If (CurTok.Kind = TK_OP) And (CurTok.Val = '=>') Then
+        LexNextToken;
+      DefBranch := ParseExprStr;
+    End
+    Else
+    Begin
+      ValCS := ParseExprStr;
+      If (CurTok.Kind = TK_OP) And (CurTok.Val = '=>') Then
+        LexNextToken;
+      ArmCS := ParseExprStr;
+      If Count < 64 Then
+      Begin
+        Inc(Count);
+        Values[Count]   := ValCS;
+        Branches[Count] := ArmCS;
+      End;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      LexNextToken;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then
+    LexNextToken;
+  { Generer C# }
+  If CsVersionGE(Opts.CsVersion, CS_VER_80) Then
+  Begin
+    R := SubjCS + ' switch { ';
+    For I := 1 To Count Do
+    Begin
+      If Length(R) < MAX_STR - 20 Then
+        R := R + Values[I] + ' => ' + Branches[I] + ', ';
+    End;
+    If DefBranch <> '' Then
+      If Length(R) < MAX_STR - 10 Then
+        R := R + '_ => ' + DefBranch;
+    If Length(R) < MAX_STR Then R := R + ' }';
+    ParseMatchExpr := R;
+  End
+  Else
+  Begin
+    { if/else chain : generer comme expression ternaire imbriquee }
+    R := '';
+    For I := Count DownTo 1 Do
+    Begin
+      If R = '' Then
+        R := Branches[I]
+      Else
+        R := SubjCS + ' == ' + Values[I] + ' ? ' + Branches[I] + ' : ' + R;
+    End;
+    If DefBranch <> '' Then
+      R := SubjCS + ' == ' + Values[1] + ' ? ' + Branches[1] + ' : ' + DefBranch;
+    ParseMatchExpr := R;
+  End;
+End;
+
+{ Parse un bloc PHP : accolades ou syntaxe alternative.
+  Indent : niveau d indentation du contenu.
+  EndKw  : mot-cle de fin (ex 'endif') pour syntaxe alternative, '' pour accolades. }
+Procedure ParseBlock(Indent: Integer; Const EndKw: TString);
+Var
+  UseAlt   : Boolean;
+  KwLow    : TString;
+  SaveTok  : TToken;
+Begin
+  UseAlt := (EndKw <> '');
+  If Not UseAlt Then
+  Begin
+    { accolades : on a deja consomme l accolade ouvrante }
+  End;
+  { Boucle sur les instructions du bloc }
+  While Not (CurTok.Kind = TK_EOF) Do
+  Begin
+    { Fin de bloc }
+    If Not UseAlt Then
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then
+      Begin
+        LexNextToken; { consommer accolade fermante }
+        Break;
+      End;
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_KEYWORD) And
+         (LowStr(CurTok.Val) = EndKw) Then
+      Begin
+        LexNextToken; { consommer le mot-cle endXxx }
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+        Break;
+      End;
+      { Pour if : sortir sur elseif / else / endif }
+      If EndKw = 'endif' Then
+      Begin
+        KwLow := LowStr(CurTok.Val);
+        If (CurTok.Kind = TK_KEYWORD) And
+           ((KwLow = 'elseif') Or (KwLow = 'else')) Then
+          Break;
+      End;
+    End;
+    { Dispatcher les instructions }
+    KwLow := '';
+    If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+    If KwLow = 'if' Then
+      ParseIfStmt(Indent)
+    Else If KwLow = 'declare' Then
+      ParseDeclareStmt(Indent)
+    Else If KwLow = 'goto' Then
+      ParseGotoStmt(Indent)
+    Else If (CurTok.Kind = TK_IDENT) And (CurTok.Kind <> TK_EOF) Then
+    Begin
+      { Label : ident suivi de ':' (sans espace entre les deux) }
+      SaveTok := CurTok;
+      LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+      Begin
+        EmitLine(IndentStr(Indent - 1) +
+                 PhpLabelToCS(SaveTok.Val) + ':');
+        LexNextToken;
+      End
+      Else
+      Begin
+        { Consomme l instruction jusqu au ';' }
+        While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+              Not (CurTok.Kind = TK_EOF) Do
+          LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End;
+    End
+    Else If CurTok.Kind = TK_VAR Then
+    Begin
+      If Not ParseSimpleVarDecl(Indent) Then
+      Begin
+        While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+              Not (CurTok.Kind = TK_EOF) Do
+          LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End
+      Else
+      Begin
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End;
+    End
+    Else
+    Begin
+      { Instruction inconnue : consomme jusqu au ';' }
+      LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+    End;
+  End;
+End;
+
+{ Parse une instruction if/elseif/else/endif.
+  CurTok doit etre le mot-cle 'if'. }
+Procedure ParseIfStmt(Indent: Integer);
+Var
+  CondCS : TString;
+  KwLow  : TString;
+  First  : Boolean;
+Begin
+  First  := True;
+  { Boucle sur if / elseif }
+  While True Do
+  Begin
+    KwLow := '';
+    If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+    If (KwLow <> 'if') And (KwLow <> 'elseif') Then Break;
+    LexNextToken; { saute 'if' ou 'elseif' }
+    CondCS := '';
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+    Begin
+      LexNextToken;
+      CondCS := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+        LexNextToken;
+    End;
+    If First Then
+    Begin
+      EmitLine(IndentStr(Indent) + 'if (' + CondCS + ')');
+      First := False;
+    End
+    Else
+      EmitLine(IndentStr(Indent) + 'else if (' + CondCS + ')');
+    EmitLine(IndentStr(Indent) + '{');
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+    Begin
+      LexNextToken; { saute ':' }
+      { ParseBlock sort sur elseif/else ou consomme endif }
+      ParseBlock(Indent + 1, 'endif');
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+        LexNextToken;
+      ParseBlock(Indent + 1, '');
+    End;
+    EmitLine(IndentStr(Indent) + '}');
+    { Verifier si elseif ou else suivent }
+    KwLow := '';
+    If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+    If (KwLow <> 'elseif') And (KwLow <> 'else') Then Break;
+    If KwLow = 'else' Then Break;
+  End;
+  { else ? }
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'else') Then
+  Begin
+    LexNextToken; { saute 'else' }
+    EmitLine(IndentStr(Indent) + 'else');
+    EmitLine(IndentStr(Indent) + '{');
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+    Begin
+      LexNextToken;
+      ParseBlock(Indent + 1, 'endif');
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+        LexNextToken;
+      ParseBlock(Indent + 1, '');
+    End;
+    EmitLine(IndentStr(Indent) + '}');
+  End;
+End;
+
+Procedure Run;
+Var KwLow: TString;
+Begin
+  { Ouvrir le fichier de sortie }
+  Assign(OutF, Opts.OutFile);
+  {$I-}
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('impossible d ouvrir le fichier de sortie : ' + Opts.OutFile);
+    Exit;
+  End;
+  OutFOpen := True;
+  LexInit(Opts.SrcFile);
+  LexNextToken; { charger le premier token }
+  { Consommer l ouverture PHP }
+  If CurTok.Kind = TK_OPEN_PHP Then LexNextToken;
+  { Boucle principale de transpilation }
+  While CurTok.Kind <> TK_EOF Do
+  Begin
+    KwLow := '';
+    If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+    If KwLow = 'declare' Then
+      ParseDeclareStmt(0)
+    Else If KwLow = 'if' Then
+      ParseIfStmt(0)
+    Else If KwLow = 'goto' Then
+      ParseGotoStmt(0)
+    Else If KwLow = 'static' Then
+    Begin
+      If Not ParseStaticVarDecl(0) Then
+      Begin
+        LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End
+      Else
+      Begin
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End;
+    End
+    Else If CurTok.Kind = TK_VAR Then
+    Begin
+      If Not ParseSimpleVarDecl(0) Then
+      Begin
+        LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End
+      Else
+      Begin
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End;
+    End
+    Else If CurTok.Kind = TK_CLOSE_PHP Then
+      LexNextToken
+    Else
+    Begin
+      { Instruction non encore traitee : avancer }
+      LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+    End;
+  End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 09-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 10-25 a faire)');
 End;
 
 Procedure Cleanup;
