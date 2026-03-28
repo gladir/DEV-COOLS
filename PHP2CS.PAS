@@ -287,7 +287,7 @@
             Syntaxe alternative PHP (endfor, endforeach, endwhile) :
               Convertir vers accolades C# normales.
 
-  TODO 11 - TRANSPILATION : SWITCH ET MATCH [A FAIRE]
+  TODO 11 - TRANSPILATION : SWITCH ET MATCH [IMPLEMENTE]
             Transpilation de switch($var) / case val: / default: :
               C# : switch(var){ case val: ... break; default: ... }
               Detecter le fall-through PHP (absence de break) :
@@ -2070,7 +2070,7 @@ End;
   TODO 08 - CHAINES ET INTERPOLATION (IMPLEMENTE)
   TODO 09 - STRUCTURES DE CONTROLE (IMPLEMENTE)
   TODO 10 - BOUCLES (IMPLEMENTE)
-  TODO 11 - SWITCH ET MATCH (A FAIRE)
+  TODO 11 - SWITCH ET MATCH (IMPLEMENTE)
   TODO 12 - FONCTIONS PHP (A FAIRE)
   TODO 13 - CLASSES PHP (A FAIRE)
   TODO 14 - INTERFACES ET TRAITS PHP (A FAIRE)
@@ -2407,6 +2407,9 @@ Procedure ParseWhileStmt(Indent: Integer); Forward;
 Procedure ParseDoWhileStmt(Indent: Integer); Forward;
 Procedure ParseBreakStmt(Indent: Integer); Forward;
 Procedure ParseContinueStmt(Indent: Integer); Forward;
+
+{ Declarations anticipees pour TODO 11 (switch/match) }
+Procedure ParseSwitchStmt(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -4202,6 +4205,8 @@ Begin
       ParseBreakStmt(Indent)
     Else If KwLow = 'continue' Then
       ParseContinueStmt(Indent)
+    Else If KwLow = 'switch' Then
+      ParseSwitchStmt(Indent)
     Else If (CurTok.Kind = TK_IDENT) And (CurTok.Kind <> TK_EOF) Then
     Begin
       { Label : ident suivi de ':' (sans espace entre les deux) }
@@ -4621,6 +4626,183 @@ Begin
     LexNextToken;
 End;
 
+{ ============================================================
+  TODO 11 - TRANSPILATION : SWITCH ET MATCH PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Parse et emet une instruction switch PHP.
+  CurTok doit etre le mot-cle 'switch'.
+  Syntaxes supportees :
+    switch($var) begin case ... end
+    switch($var): ... endswitch;
+  Fall-through detecte : avertissement + goto case/goto default.
+  Le match PHP 8.0 est deja gere par ParseMatchExpr dans les expressions. }
+Procedure ParseSwitchStmt(Indent: Integer);
+Var
+  SubjCS     : TString;
+  KwLow      : TString;
+  ValCS      : TString;
+  UseAlt     : Boolean;
+  HadBreak   : Boolean;
+  FirstCase  : Boolean;
+
+Begin
+  LexNextToken; { saute 'switch' }
+  SubjCS := '';
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+  Begin
+    LexNextToken;
+    SubjCS := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+      LexNextToken;
+  End;
+  { Determiner le mode accolades vs syntaxe alternative }
+  UseAlt := (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':');
+  If UseAlt Then
+    LexNextToken
+  Else If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+    LexNextToken;
+
+  EmitLine(IndentStr(Indent) + 'switch (' + SubjCS + ')');
+  EmitLine(IndentStr(Indent) + '{');
+
+  { Boucle principale : emettre case par case }
+  FirstCase  := True;
+  HadBreak   := True;  { avant le premier case : pas de fall-through }
+
+  While Not (CurTok.Kind = TK_EOF) Do
+  Begin
+    { Fin du switch }
+    If Not UseAlt Then
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then
+      Begin
+        LexNextToken;
+        Break;
+      End;
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_KEYWORD) And
+         (LowStr(CurTok.Val) = 'endswitch') Then
+      Begin
+        LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+        Break;
+      End;
+    End;
+
+    KwLow := '';
+    If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+
+    If KwLow = 'case' Then
+    Begin
+      LexNextToken; { saute 'case' }
+      ValCS := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+        LexNextToken;
+      { Fall-through detecte : le cas precedent n avait pas de break }
+      If Not HadBreak And Not FirstCase Then
+      Begin
+        WarnMsg('fall-through PHP detecte avant case ' + ValCS + ' (ligne ' + ItoS(CurTok.Line) + ')');
+        EmitLine(IndentStr(Indent + 2) + 'goto case ' + ValCS + ';');
+      End;
+      FirstCase := False;
+      HadBreak  := False;
+      EmitLine(IndentStr(Indent + 1) + 'case ' + ValCS + ':');
+    End
+    Else If KwLow = 'default' Then
+    Begin
+      LexNextToken; { saute 'default' }
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+        LexNextToken;
+      If Not HadBreak And Not FirstCase Then
+      Begin
+        WarnMsg('fall-through PHP detecte avant default (ligne ' + ItoS(CurTok.Line) + ')');
+        EmitLine(IndentStr(Indent + 2) + 'goto default;');
+      End;
+      FirstCase := False;
+      HadBreak  := False;
+      EmitLine(IndentStr(Indent + 1) + 'default:');
+    End
+    Else If KwLow = 'break' Then
+    Begin
+      LexNextToken;
+      If CurTok.Kind = TK_INTEGER Then
+        LexNextToken; { ignorer le niveau }
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+      EmitLine(IndentStr(Indent + 2) + 'break;');
+      HadBreak := True;
+    End
+    Else If KwLow = 'return' Then
+    Begin
+      LexNextToken;
+      If Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) Then
+      Begin
+        ValCS := ParseExprStr;
+        EmitLine(IndentStr(Indent + 2) + 'return ' + ValCS + ';');
+      End
+      Else
+        EmitLine(IndentStr(Indent + 2) + 'return;');
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+      HadBreak := True;
+    End
+    Else If KwLow = 'if' Then
+    Begin
+      ParseIfStmt(Indent + 2);
+    End
+    Else If KwLow = 'for' Then
+      ParseForStmt(Indent + 2)
+    Else If KwLow = 'foreach' Then
+      ParseForeachStmt(Indent + 2)
+    Else If KwLow = 'while' Then
+      ParseWhileStmt(Indent + 2)
+    Else If KwLow = 'do' Then
+      ParseDoWhileStmt(Indent + 2)
+    Else If KwLow = 'continue' Then
+    Begin
+      LexNextToken;
+      If CurTok.Kind = TK_INTEGER Then LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+      EmitLine(IndentStr(Indent + 2) + 'continue;');
+    End
+    Else If CurTok.Kind = TK_VAR Then
+    Begin
+      If Not ParseSimpleVarDecl(Indent + 2) Then
+      Begin
+        While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+              Not (CurTok.Kind = TK_EOF) Do
+          LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End
+      Else
+      Begin
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End;
+    End
+    Else
+    Begin
+      { Expression-instruction : emettre jusqu au ';' }
+      If Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) Then
+      Begin
+        ValCS := ParseExprStr;
+        If ValCS <> '' Then
+          EmitLine(IndentStr(Indent + 2) + ValCS + ';');
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+    End;
+  End;
+
+  EmitLine(IndentStr(Indent) + '}');
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -4662,6 +4844,8 @@ Begin
       ParseBreakStmt(0)
     Else If KwLow = 'continue' Then
       ParseContinueStmt(0)
+    Else If KwLow = 'switch' Then
+      ParseSwitchStmt(0)
     Else If KwLow = 'static' Then
     Begin
       If Not ParseStaticVarDecl(0) Then
@@ -4701,7 +4885,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 11-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 12-25 a faire)');
 End;
 
 Procedure Cleanup;
