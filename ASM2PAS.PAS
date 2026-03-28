@@ -3251,6 +3251,249 @@ Begin
 End;
 
 { ============================================================
+  Detection des fonctions implicites (sans PROC/ENDP)
+  ============================================================ }
+
+Function IsProcAlreadyDefined(Name:String):Boolean;
+{ Verifie si un nom est deja defini comme procedure dans Procs[]. }
+Var
+ I:Integer;
+Begin
+ IsProcAlreadyDefined:=False;
+ For I:=1 to ProcCount do
+  If UpCaseStr(Procs[I].Name)=UpCaseStr(Name) Then Begin
+   IsProcAlreadyDefined:=True;
+   Exit;
+  End;
+End;
+
+Function DetectImplicitFunctionPattern(LabelLine:LongInt;
+ Var EndLine:LongInt;Var RetBytes:Word):Boolean;
+{ Detecte le pattern de fonction implicite :
+  - etiquette: (deja verifie par l'appelant)
+  - PUSH BP
+  - MOV BP, SP
+  - ... corps de la fonction ...
+  - POP BP
+  - RET [nnnn]
+  Retourne True si le pattern est detecte.
+  EndLine contient la ligne du RET, RetBytes contient la valeur de RET n. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ M:String;
+ Op1Str,Op2Str:String;
+ HasPushBP,HasMovBPSP,HasPopBP:Boolean;
+ Line1,Line2:LongInt;
+ NextLabelLine:LongInt;
+Begin
+ DetectImplicitFunctionPattern:=False;
+ EndLine:=-1;
+ RetBytes:=0;
+ HasPushBP:=False;
+ HasMovBPSP:=False;
+ HasPopBP:=False;
+ Line1:=-1;
+ Line2:=-1;
+ 
+ { Chercher PUSH BP sur la meme ligne ou les lignes suivantes }
+ I:=LabelLine;
+ ParseInstructionLine(I,AsmL);
+ { Si le label est seul sur sa ligne, verifier la ligne suivante }
+ If AsmL.Mnemonic='' Then Inc(I);
+ 
+ { Chercher jusqu'a 3 lignes pour PUSH BP et MOV BP, SP }
+ While(I<=LabelLine+3)and(I<SrcLineCount)do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Begin Inc(I); Continue; End;
+  If AsmL.IsDirective Then Break; { Fin si directive }
+  M:=UpCaseStr(AsmL.Mnemonic);
+  
+  { Verifier PUSH BP }
+  If(M='PUSH')and(Not HasPushBP)Then Begin
+   If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then Begin
+    Op1Str:=UpCaseStr(AsmL.Op1.Reg);
+    If(Op1Str='BP')or(Op1Str='EBP')Then Begin
+     HasPushBP:=True;
+     Line1:=I;
+    End;
+   End;
+  End;
+  
+  { Verifier MOV BP, SP }
+  If(M='MOV')and HasPushBP and(Not HasMovBPSP)Then Begin
+   If(AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32])and
+     (AsmL.Op2.OpType in [OT_REG8,OT_REG16,OT_REG32])Then Begin
+    Op1Str:=UpCaseStr(AsmL.Op1.Reg);
+    Op2Str:=UpCaseStr(AsmL.Op2.Reg);
+    If((Op1Str='BP')or(Op1Str='EBP'))and
+      ((Op2Str='SP')or(Op2Str='ESP'))Then Begin
+     HasMovBPSP:=True;
+     Line2:=I;
+    End;
+   End;
+  End;
+  
+  { Si on a les deux, on a le debut du pattern }
+  If HasPushBP and HasMovBPSP Then Break;
+  Inc(I);
+ End;
+ 
+ { Verifier qu'on a trouve le debut du pattern }
+ If Not(HasPushBP and HasMovBPSP)Then Exit;
+ 
+ { Chercher le prochain label pour delimiter la recherche }
+ NextLabelLine:=SrcLineCount;
+ For I:=Line2+1 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.LabelStr<>'' Then Begin
+   NextLabelLine:=I;
+   Break;
+  End;
+ End;
+ 
+ { Chercher POP BP et RET dans le corps }
+ I:=Line2+1;
+ While I<NextLabelLine do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.Mnemonic='' Then Begin Inc(I); Continue; End;
+  M:=UpCaseStr(AsmL.Mnemonic);
+  
+  { Verifier POP BP }
+  If M='POP' Then Begin
+   If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then Begin
+    Op1Str:=UpCaseStr(AsmL.Op1.Reg);
+    If(Op1Str='BP')or(Op1Str='EBP')Then
+     HasPopBP:=True;
+   End;
+  End;
+  
+  { Verifier RET/RETN/RETF }
+  If(M='RET')or(M='RETN')or(M='RETF')Then Begin
+   If HasPopBP Then Begin
+    { Pattern complet detecte! }
+    DetectImplicitFunctionPattern:=True;
+    EndLine:=I;
+    { Extraire la valeur de RET n si presente }
+    If AsmL.Op1.OpType in [OT_IMM8,OT_IMM16,OT_IMM32] Then
+     RetBytes:=Word(AsmL.Op1.Imm)
+    Else
+     RetBytes:=0;
+    Exit;
+   End;
+  End;
+  
+  Inc(I);
+ End;
+End;
+
+Procedure DetectImplicitFunctions;
+{ Detecte les fonctions implicites (sans directive PROC/ENDP) en
+  recherchant le pattern PUSH BP / MOV BP,SP ... POP BP / RET n.
+  Ajoute les fonctions detectees dans la table Procs[]. }
+Var
+ I:LongInt;
+ AsmL:TAsmLine;
+ LabelName:String;
+ LabelLine:LongInt;
+ EndLine:LongInt;
+ RetBytes:Word;
+ ParamBytes:Word;
+ ParamCount:Byte;
+ ImplicitCount:Integer;
+ J:Byte;
+Begin
+ ImplicitCount:=0;
+ 
+ { Parcourir toutes les lignes pour trouver des labels }
+ For I:=0 to SrcLineCount-1 do Begin
+  ParseInstructionLine(I,AsmL);
+  If AsmL.LabelStr='' Then Continue;
+  
+  { Ignorer les labels locaux (@@xxx ou @xxx) }
+  LabelName:=AsmL.LabelStr;
+  If IsLocalLabel(LabelName) Then Continue;
+  
+  { Ignorer si deja defini comme procedure }
+  If IsProcAlreadyDefined(LabelName) Then Continue;
+  
+  { Ignorer si c'est le point d'entree (START, _start, main, etc.) }
+  If(UpCaseStr(LabelName)=UpCaseStr(EntryPoint))Then Continue;
+  If(UpCaseStr(LabelName)='START')Then Continue;
+  If(UpCaseStr(LabelName)='_START')Then Continue;
+  
+  { Tenter de detecter le pattern de fonction }
+  LabelLine:=I;
+  If DetectImplicitFunctionPattern(LabelLine,EndLine,RetBytes) Then Begin
+   { Pattern detecte! Creer une entree TProcInfo }
+   If ProcCount>=MAX_PROCS Then Continue;
+   Inc(ProcCount);
+   
+   Procs[ProcCount].Name:=LabelName;
+   Procs[ProcCount].IsFunction:=True;  { Assume fonction par defaut }
+   Procs[ProcCount].IsNear:=True;
+   Procs[ProcCount].Convention:=CC_PASCAL; { Convention Pascal par defaut (appele nettoie) }
+   Procs[ProcCount].StartLine:=LabelLine;
+   Procs[ProcCount].EndLine:=EndLine;
+   Procs[ProcCount].UsesAX:=True; { Assume que la fonction retourne dans AX }
+   Procs[ProcCount].IsPublic:=False;
+   Procs[ProcCount].StringsReplacement:='';
+   Procs[ProcCount].LocalCount:=0;
+   Procs[ProcCount].LocalSize:=0;
+   
+   { Calculer le nombre de parametres a partir de RET n }
+   { Pour convention PASCAL/STDCALL, RET n nettoie n octets de la pile }
+   { Chaque parametre Word = 2 octets, donc n/2 parametres }
+   If RetBytes>0 Then Begin
+    ParamBytes:=RetBytes;
+    If Mode32 Then
+     ParamCount:=ParamBytes div 4 { Parametres 32 bits }
+    Else
+     ParamCount:=ParamBytes div 2; { Parametres 16 bits }
+    If ParamCount>MAX_PARAMS Then ParamCount:=MAX_PARAMS;
+   End
+   Else
+    ParamCount:=0;
+   
+   Procs[ProcCount].ParamCount:=ParamCount;
+   
+   { Creer des noms de parametres generiques }
+   For J:=1 to ParamCount do Begin
+    Procs[ProcCount].Params[J].Name:='Param'+IntToStr(J);
+    If Mode32 Then Begin
+     Procs[ProcCount].Params[J].TypeName:='DWORD';
+     Procs[ProcCount].Params[J].PascalType:=PT_LONGINT;
+     Procs[ProcCount].Params[J].Size:=4;
+    End
+    Else Begin
+     Procs[ProcCount].Params[J].TypeName:='WORD';
+     Procs[ProcCount].Params[J].PascalType:=PT_WORD;
+     Procs[ProcCount].Params[J].Size:=2;
+    End;
+   End;
+   
+   { Detecter si c'est vraiment une fonction (utilise AX avant RET) }
+   DetectFunctionReturn(ProcCount);
+   
+   Inc(ImplicitCount);
+  End;
+ End;
+ 
+ { Afficher les resultats }
+ WriteLn('Detection fonctions implicites : ',ImplicitCount,' fonction(s) detectee(s).');
+ If Verbose and(ImplicitCount>0)Then Begin
+  WriteLn('  Details :');
+  For I:=ProcCount-ImplicitCount+1 to ProcCount do Begin
+   Write('    ',Procs[I].Name);
+   If Procs[I].IsFunction or Procs[I].UsesAX Then Write(' (fonction)')
+   Else Write(' (procedure)');
+   Write(' params:',Procs[I].ParamCount);
+   WriteLn(' [',Procs[I].StartLine,'..',Procs[I].EndLine,']');
+  End;
+ End;
+End;
+
+{ ============================================================
   Inference de types pour les variables et registres - TODO 8
   ============================================================ }
 
@@ -3758,6 +4001,7 @@ Function StackAccessExpr(BaseReg:String;Offset:LongInt;
 Var
  J:Integer;
  U:String;
+ ParamOffset:Integer;
 Begin
  U:=UpCaseStr(BaseReg);
  If(U<>'BP')and(U<>'EBP')Then Begin
@@ -3767,11 +4011,22 @@ Begin
  If(ProcIdx>=1)and(ProcIdx<=ProcCount)Then Begin
   { Chercher dans les parametres (offset positif) }
   If Offset>0 Then Begin
+   { Calculer quel parametre correspond a cet offset }
+   { Convention NEAR : BP+0 = saved BP, BP+2 = retour, BP+4 = param1, BP+6 = param2 }
+   { Convention FAR :  BP+0 = saved BP, BP+2 = retour off, BP+4 = retour seg, BP+6 = param1 }
+   If Procs[ProcIdx].IsNear Then
+    ParamOffset:=4
+   Else
+    ParamOffset:=6;
+   
    For J:=1 to Procs[ProcIdx].ParamCount do Begin
     If Procs[ProcIdx].Params[J].Size>0 Then Begin
-     { Les parametres NEAR sont a BP+4, BP+6..., FAR a BP+6, BP+8... }
-     StackAccessExpr:=Procs[ProcIdx].Params[J].Name;
-     Exit;
+     { Verifier si l'offset correspond a ce parametre }
+     If Offset=ParamOffset Then Begin
+      StackAccessExpr:=Procs[ProcIdx].Params[J].Name;
+      Exit;
+     End;
+     ParamOffset:=ParamOffset+Procs[ProcIdx].Params[J].Size;
     End;
    End;
   End;
@@ -8214,6 +8469,8 @@ Begin
  First:=True;
  For I:=1 to SymbolCount do
   If Symbols[I].SymType=SY_LABEL Then Begin
+   { Exclure les labels qui sont des noms de procedures }
+   If IsProcAlreadyDefined(Symbols[I].Name) Then Continue;
    If Not HasLabel Then Begin
     Write(OutFile,'Label');
     HasLabel:=True;
@@ -8312,6 +8569,97 @@ Begin
  IsBodyMnemonic:=False; { TODO 22 orchestre, ne traduit pas }
 End;
 
+Function IsPrologueEpilogueInstr(Var AsmL:TAsmLine;ProcIdx:Integer):Boolean;
+{ Detecte si l'instruction fait partie du prologue ou epilogue
+  d'une fonction implicite : PUSH BP, MOV BP,SP, POP BP, RET n }
+Var
+ M,Op1Str,Op2Str:String;
+Begin
+ IsPrologueEpilogueInstr:=False;
+ If ProcIdx=0 Then Exit;
+ M:=UpCaseStr(AsmL.Mnemonic);
+ 
+ { PUSH BP / PUSH EBP }
+ If M='PUSH' Then Begin
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then Begin
+   Op1Str:=UpCaseStr(AsmL.Op1.Reg);
+   If(Op1Str='BP')or(Op1Str='EBP')Then Begin
+    IsPrologueEpilogueInstr:=True;
+    Exit;
+   End;
+  End;
+ End;
+ 
+ { MOV BP, SP / MOV EBP, ESP }
+ If M='MOV' Then Begin
+  If(AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32])and
+    (AsmL.Op2.OpType in [OT_REG8,OT_REG16,OT_REG32])Then Begin
+   Op1Str:=UpCaseStr(AsmL.Op1.Reg);
+   Op2Str:=UpCaseStr(AsmL.Op2.Reg);
+   If((Op1Str='BP')or(Op1Str='EBP'))and
+     ((Op2Str='SP')or(Op2Str='ESP'))Then Begin
+    IsPrologueEpilogueInstr:=True;
+    Exit;
+   End;
+  End;
+ End;
+ 
+ { POP BP / POP EBP }
+ If M='POP' Then Begin
+  If AsmL.Op1.OpType in [OT_REG8,OT_REG16,OT_REG32] Then Begin
+   Op1Str:=UpCaseStr(AsmL.Op1.Reg);
+   If(Op1Str='BP')or(Op1Str='EBP')Then Begin
+    IsPrologueEpilogueInstr:=True;
+    Exit;
+   End;
+  End;
+ End;
+ 
+ { RET / RETN / RETF avec ou sans operande }
+ If(M='RET')or(M='RETN')or(M='RETF')Then Begin
+  IsPrologueEpilogueInstr:=True;
+  Exit;
+ End;
+End;
+
+Function ReplaceParamBPReferences(Code:String;ProcIdx:Integer):String;
+{ Remplace les references Param_BP_N par les vrais noms de parametres.
+  Pour convention NEAR:
+    16 bits: Param_BP_4 -> Param1, Param_BP_6 -> Param2, etc.
+    32 bits: Param_BP_8 -> Param1, Param_BP_12 -> Param2, etc.
+  Note: utilise pour les cas non resolus par StackAccessExpr }
+Var
+ I:Integer;
+ ParamName,SearchStr:String;
+ Offset:Integer;
+ P:Integer;
+Begin
+ ReplaceParamBPReferences:=Code;
+ If ProcIdx=0 Then Exit;
+ If Procs[ProcIdx].ParamCount=0 Then Exit;
+ 
+ For I:=1 to Procs[ProcIdx].ParamCount do Begin
+  { Calculer l'offset de ce parametre sur la pile (convention NEAR) }
+  If Mode32 Then
+   Offset:=8+(I-1)*4 { 32 bits: [EBP+8], [EBP+12], ... }
+  Else
+   Offset:=4+(I-1)*2; { 16 bits: [BP+4], [BP+6], ... }
+  
+  { Construire le pattern a rechercher }
+  SearchStr:='Param_BP_'+IntToStr(Offset);
+  ParamName:=Procs[ProcIdx].Params[I].Name;
+  
+  { Remplacer toutes les occurrences }
+  P:=Pos(SearchStr,Code);
+  While P>0 do Begin
+   Code:=Copy(Code,1,P-1)+ParamName+Copy(Code,P+Length(SearchStr),255);
+   P:=Pos(SearchStr,Code);
+  End;
+ End;
+ 
+ ReplaceParamBPReferences:=Code;
+End;
+
 Procedure ProcessBodyGeneration;
 { Genere le corps des procedures et le bloc principal du fichier
   Pascal de sortie. Le fichier OutFile est deja ouvert par
@@ -8349,8 +8697,12 @@ Begin
     End;
     Write(OutFile,')');
    End;
-   Write(OutFile,' : ',ProcReturnType(I));
-   WriteLn(OutFile,';');
+   Write(OutFile,' : ',ProcReturnType(I),';');
+   { Ajouter directive Near ou Far selon le type d'appel }
+   If Procs[I].IsNear Then
+    WriteLn(OutFile,' Near;')
+   Else
+    WriteLn(OutFile,' Far;');
    Inc(FuncCount);
   End
   Else Begin
@@ -8365,7 +8717,12 @@ Begin
     End;
     Write(OutFile,')');
    End;
-   WriteLn(OutFile,';');
+   Write(OutFile,';');
+   { Ajouter directive Near ou Far selon le type d'appel }
+   If Procs[I].IsNear Then
+    WriteLn(OutFile,' Near;')
+   Else
+    WriteLn(OutFile,' Far;');
   End;
 
   { Variables locales }
@@ -8467,6 +8824,9 @@ Begin
     { Sauter les directives PROC/ENDP/DB/DW/etc. }
     If AsmL.IsDirective Then Continue;
 
+    { Sauter le prologue/epilogue des fonctions implicites }
+    If IsPrologueEpilogueInstr(AsmL,I) Then Continue;
+
     { Emettre le label s'il y en a un (sauf le nom de la proc) }
     If(AsmL.LabelStr<>'')and
       (UpCaseStr(AsmL.LabelStr)<>UpCaseStr(Procs[I].Name))Then
@@ -8478,16 +8838,16 @@ Begin
     { Chercher une traduction pour cette ligne }
     TrIdx:=FindTranslationForLine(J);
     If TrIdx>=0 Then Begin
+     { Remplacer les references aux parametres }
+     SrcText:=ReplaceParamBPReferences(Translations[TrIdx].PascalCode,I);
      If AddComments Then Begin
-      SrcText:=SrcLines[J]^;
-      { Tronquer le commentaire source s'il est trop long }
-      If Length(SrcText)>40 Then
-       SrcText:=Copy(SrcText,1,40)+'...';
-      WriteLn(OutFile,'  ',Translations[TrIdx].PascalCode,
-       ' { ',SrcText,' }');
+      If Length(SrcLines[J]^)>40 Then
+       WriteLn(OutFile,'  ',SrcText,' { ',Copy(SrcLines[J]^,1,40),'... }')
+      Else
+       WriteLn(OutFile,'  ',SrcText,' { ',SrcLines[J]^,' }');
      End
      Else
-      WriteLn(OutFile,'  ',Translations[TrIdx].PascalCode);
+      WriteLn(OutFile,'  ',SrcText);
      Inc(K);
     End
     Else Begin
@@ -9755,6 +10115,8 @@ BEGIN
  ProcessDataDirectives;
  { Analyse des procedures (TODO 5) }
  ProcessProcedureDirectives;
+ { Detection des fonctions implicites (sans PROC/ENDP) }
+ DetectImplicitFunctions;
  { Table des symboles (TODO 6) }
  BuildSymbolTable;
  { Analyse des operandes (TODO 7) }
