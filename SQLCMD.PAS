@@ -344,7 +344,7 @@
               day, week, weekday, hour, minute, second,
               millisecond, microsecond, nanosecond
 
-  TODO 21 - FONCTIONS SCALAIRES BUILT-IN : MATHEMATIQUES
+  TODO 21 - FONCTIONS SCALAIRES BUILT-IN : MATHEMATIQUES [IMPLEMENTE]
             ABS(n), SIGN(n), CEILING(n), FLOOR(n), ROUND(n,d)
             POWER(x, y), SQRT(x), SQUARE(x), EXP(x), LOG(x),
               LOG(x, base), LOG10(x)
@@ -11960,9 +11960,14 @@ Begin
         If Child0 >= 0 Then
         Begin
           V := QEEvalExpr(Child0, Row, Res);
-          If (Not V.IsNull) And (V.Category = SQLCAT_INTEGER) And
-             (V.IntVal < 0) Then
-            V.IntVal := -V.IntVal;
+          If Not V.IsNull Then
+          Begin
+            If (V.Category = SQLCAT_INTEGER) And (V.IntVal < 0) Then
+              V.IntVal := -V.IntVal
+            Else If (V.Category = SQLCAT_DECIMAL) And
+                    (V.FloatVal < 0) Then
+              V.FloatVal := -V.FloatVal;
+          End;
         End;
       End
       { ===== TODO 19 : Fonctions scalaires chaines ===== }
@@ -13227,6 +13232,690 @@ Begin
             If Length(V.StrVal) + Length(STmp) + 1 <=
                MAX_SQL_VALUE_STR Then
               V.StrVal := SqlValueToStr(VL) + ' ' + STmp;
+          End;
+        End;
+      End
+      { ===== TODO 21 : Fonctions scalaires mathematiques ===== }
+      Else If (Op = 'SIGN') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+          Begin
+            If VL.IntVal > 0 Then V.IntVal := 1
+            Else If VL.IntVal < 0 Then V.IntVal := -1
+            Else V.IntVal := 0;
+          End
+          Else If VL.Category = SQLCAT_DECIMAL Then
+          Begin
+            If VL.FloatVal > 0 Then V.IntVal := 1
+            Else If VL.FloatVal < 0 Then V.IntVal := -1
+            Else V.IntVal := 0;
+          End
+          Else V.IntVal := 0;
+        End;
+      End
+      Else If (Op = 'CEILING') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Valid := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V := VL
+          Else If VL.Category = SQLCAT_DECIMAL Then
+          Begin
+            V.Category := SQLCAT_INTEGER;
+            V.XType    := XT_INT;
+            If VL.FloatVal >= 0 Then
+            Begin
+              V.IntVal := Trunc(VL.FloatVal);
+              If Frac(VL.FloatVal) > 0 Then
+                Inc(V.IntVal);
+            End
+            Else
+              V.IntVal := Trunc(VL.FloatVal);
+          End
+          Else Begin
+            V.Category := SQLCAT_INTEGER;
+            V.XType    := XT_INT;
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI = 0 Then
+            Begin
+              V.IntVal := Trunc(V.FloatVal);
+              If (V.FloatVal >= 0) And (Frac(V.FloatVal) > 0) Then
+                Inc(V.IntVal);
+            End
+            Else V.IntVal := 0;
+          End;
+        End;
+      End
+      Else If (Op = 'FLOOR') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Valid := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V := VL
+          Else If VL.Category = SQLCAT_DECIMAL Then
+          Begin
+            V.Category := SQLCAT_INTEGER;
+            V.XType    := XT_INT;
+            If VL.FloatVal >= 0 Then
+              V.IntVal := Trunc(VL.FloatVal)
+            Else Begin
+              V.IntVal := Trunc(VL.FloatVal);
+              If Frac(VL.FloatVal) <> 0 Then
+                Dec(V.IntVal);
+            End;
+          End
+          Else Begin
+            V.Category := SQLCAT_INTEGER;
+            V.XType    := XT_INT;
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI = 0 Then
+            Begin
+              If V.FloatVal >= 0 Then
+                V.IntVal := Trunc(V.FloatVal)
+              Else Begin
+                V.IntVal := Trunc(V.FloatVal);
+                If Frac(V.FloatVal) <> 0 Then
+                  Dec(V.IntVal);
+              End;
+            End
+            Else V.IntVal := 0;
+          End;
+        End;
+      End
+      Else If (Op = 'ROUND') And (Child0 >= 0) And
+              (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          { Extract value as float }
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          { Get decimal places }
+          I := VR.IntVal;
+          { Compute ROUND: multiply, round, divide }
+          If I >= 0 Then
+          Begin
+            VR.FloatVal := 1.0;
+            For J := 1 To I Do
+              VR.FloatVal := VR.FloatVal * 10.0;
+            V.FloatVal := Round(V.FloatVal * VR.FloatVal) /
+                          VR.FloatVal;
+          End
+          Else Begin
+            { Negative d: round to left of decimal }
+            VR.FloatVal := 1.0;
+            For J := 1 To -I Do
+              VR.FloatVal := VR.FloatVal * 10.0;
+            V.FloatVal := Round(V.FloatVal / VR.FloatVal) *
+                          VR.FloatVal;
+          End;
+        End;
+      End
+      Else If (Op = 'POWER') And (Child0 >= 0) And
+              (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          If VR.Category = SQLCAT_INTEGER Then
+            VR.FloatVal := VR.IntVal * 1.0
+          Else If VR.Category <> SQLCAT_DECIMAL Then
+          Begin
+            Val(SqlValueToStr(VR), VR.FloatVal, CI);
+            If CI <> 0 Then VR.FloatVal := 0;
+          End;
+          If V.FloatVal = 0 Then
+          Begin
+            If VR.FloatVal = 0 Then V.FloatVal := 1
+            Else V.FloatVal := 0;
+          End
+          Else If V.FloatVal > 0 Then
+            V.FloatVal := Exp(VR.FloatVal * Ln(V.FloatVal))
+          Else Begin
+            { Negative base: only valid for integer exponents }
+            I := Trunc(VR.FloatVal);
+            If Frac(VR.FloatVal) = 0 Then
+            Begin
+              V.FloatVal := Exp(VR.FloatVal * Ln(-V.FloatVal));
+              If Odd(I) Then V.FloatVal := -V.FloatVal;
+            End
+            Else
+              V.FloatVal := 0;
+          End;
+        End;
+      End
+      Else If (Op = 'SQRT') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          If V.FloatVal >= 0 Then
+            V.FloatVal := Sqrt(V.FloatVal)
+          Else
+            V.FloatVal := 0;
+        End;
+      End
+      Else If (Op = 'SQUARE') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          V.FloatVal := V.FloatVal * V.FloatVal;
+        End;
+      End
+      Else If (Op = 'EXP') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          V.FloatVal := Exp(V.FloatVal);
+        End;
+      End
+      Else If (Op = 'LOG') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          If V.FloatVal > 0 Then
+          Begin
+            V.FloatVal := Ln(V.FloatVal);
+            { Optional base argument: LOG(x, base) }
+            If Child1 >= 0 Then
+            Begin
+              VR := QEEvalExpr(Child1, Row, Res);
+              If Not VR.IsNull Then
+              Begin
+                If VR.Category = SQLCAT_INTEGER Then
+                  VR.FloatVal := VR.IntVal * 1.0
+                Else If VR.Category <> SQLCAT_DECIMAL Then
+                Begin
+                  Val(SqlValueToStr(VR), VR.FloatVal, CI);
+                  If CI <> 0 Then VR.FloatVal := 0;
+                End;
+                If (VR.FloatVal > 0) And (VR.FloatVal <> 1.0) Then
+                  V.FloatVal := V.FloatVal / Ln(VR.FloatVal)
+                Else
+                  V.FloatVal := 0;
+              End;
+            End;
+          End
+          Else
+            V.FloatVal := 0;
+        End;
+      End
+      Else If (Op = 'LOG10') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          If V.FloatVal > 0 Then
+            V.FloatVal := Ln(V.FloatVal) / Ln(10.0)
+          Else
+            V.FloatVal := 0;
+        End;
+      End
+      Else If (Op = 'SIN') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          V.FloatVal := Sin(V.FloatVal);
+        End;
+      End
+      Else If (Op = 'COS') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          V.FloatVal := Cos(V.FloatVal);
+        End;
+      End
+      Else If (Op = 'TAN') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          VR.FloatVal := Cos(V.FloatVal);
+          If VR.FloatVal <> 0 Then
+            V.FloatVal := Sin(V.FloatVal) / VR.FloatVal
+          Else
+            V.FloatVal := 0;
+        End;
+      End
+      Else If (Op = 'COT') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          VR.FloatVal := Sin(V.FloatVal);
+          If VR.FloatVal <> 0 Then
+            V.FloatVal := Cos(V.FloatVal) / VR.FloatVal
+          Else
+            V.FloatVal := 0;
+        End;
+      End
+      Else If (Op = 'ASIN') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          { ASIN(x) = ATAN(x / SQRT(1 - x*x)) }
+          If (V.FloatVal >= -1.0) And (V.FloatVal <= 1.0) Then
+          Begin
+            If V.FloatVal = 1.0 Then
+              V.FloatVal := Pi / 2.0
+            Else If V.FloatVal = -1.0 Then
+              V.FloatVal := -Pi / 2.0
+            Else
+              V.FloatVal := ArcTan(V.FloatVal /
+                            Sqrt(1.0 - V.FloatVal * V.FloatVal));
+          End
+          Else
+            V.FloatVal := 0;
+        End;
+      End
+      Else If (Op = 'ACOS') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          { ACOS(x) = PI/2 - ASIN(x) }
+          If (V.FloatVal >= -1.0) And (V.FloatVal <= 1.0) Then
+          Begin
+            If V.FloatVal = 1.0 Then
+              V.FloatVal := 0
+            Else If V.FloatVal = -1.0 Then
+              V.FloatVal := Pi
+            Else
+              V.FloatVal := Pi / 2.0 - ArcTan(V.FloatVal /
+                            Sqrt(1.0 - V.FloatVal * V.FloatVal));
+          End
+          Else
+            V.FloatVal := 0;
+        End;
+      End
+      Else If (Op = 'ATAN') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          V.FloatVal := ArcTan(V.FloatVal);
+        End;
+      End
+      Else If (Op = 'ATN2') And (Child0 >= 0) And
+              (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Or VR.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          { Extract Y }
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          { Extract X }
+          If VR.Category = SQLCAT_INTEGER Then
+            VR.FloatVal := VR.IntVal * 1.0
+          Else If VR.Category <> SQLCAT_DECIMAL Then
+          Begin
+            Val(SqlValueToStr(VR), VR.FloatVal, CI);
+            If CI <> 0 Then VR.FloatVal := 0;
+          End;
+          { ATN2(y, x) }
+          If VR.FloatVal > 0 Then
+            V.FloatVal := ArcTan(V.FloatVal / VR.FloatVal)
+          Else If (VR.FloatVal < 0) And (V.FloatVal >= 0) Then
+            V.FloatVal := ArcTan(V.FloatVal / VR.FloatVal) + Pi
+          Else If (VR.FloatVal < 0) And (V.FloatVal < 0) Then
+            V.FloatVal := ArcTan(V.FloatVal / VR.FloatVal) - Pi
+          Else If (VR.FloatVal = 0) And (V.FloatVal > 0) Then
+            V.FloatVal := Pi / 2.0
+          Else If (VR.FloatVal = 0) And (V.FloatVal < 0) Then
+            V.FloatVal := -Pi / 2.0
+          Else
+            V.FloatVal := 0;
+        End;
+      End
+      Else If Op = 'PI' Then
+      Begin
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        V.FloatVal := Pi;
+      End
+      Else If (Op = 'DEGREES') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          V.FloatVal := V.FloatVal * 180.0 / Pi;
+        End;
+      End
+      Else If (Op = 'RADIANS') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        If VL.IsNull Then V.IsNull := True
+        Else Begin
+          V.IsNull := False;
+          If VL.Category = SQLCAT_INTEGER Then
+            V.FloatVal := VL.IntVal * 1.0
+          Else If VL.Category = SQLCAT_DECIMAL Then
+            V.FloatVal := VL.FloatVal
+          Else Begin
+            Val(SqlValueToStr(VL), V.FloatVal, CI);
+            If CI <> 0 Then V.FloatVal := 0;
+          End;
+          V.FloatVal := V.FloatVal * Pi / 180.0;
+        End;
+      End
+      Else If Op = 'RAND' Then
+      Begin
+        V.Category := SQLCAT_DECIMAL;
+        V.XType    := XT_FLOAT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        If Child0 >= 0 Then
+        Begin
+          VL := QEEvalExpr(Child0, Row, Res);
+          If Not VL.IsNull Then
+            RandSeed := VL.IntVal;
+        End;
+        V.FloatVal := Random;
+      End
+      Else If (Op = 'CHOOSE') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Valid  := True;
+        V.IsNull := True;
+        If Not VL.IsNull Then
+        Begin
+          I := VL.IntVal;
+          { CHOOSE is 1-based: index 1 = Children[1] }
+          If (I >= 1) And (I < ASTPool[Node].ChildCnt) Then
+            V := QEEvalExpr(ASTPool[Node].Children[I], Row, Res);
+        End;
+      End
+      Else If (Op = 'IIF') And (Child0 >= 0) And
+              (Child1 >= 0) And (Child2 >= 0) Then
+      Begin
+        V.Valid := True;
+        If QEEvalBool(Child0, Row, Res) Then
+          V := QEEvalExpr(Child1, Row, Res)
+        Else
+          V := QEEvalExpr(Child2, Row, Res);
+      End
+      Else If (Op = 'GREATEST') And
+              (ASTPool[Node].ChildCnt >= 2) Then
+      Begin
+        V := QEEvalExpr(ASTPool[Node].Children[0], Row, Res);
+        V.Valid := True;
+        For I := 1 To ASTPool[Node].ChildCnt - 1 Do
+        Begin
+          VL := QEEvalExpr(ASTPool[Node].Children[I], Row, Res);
+          If VL.IsNull Then Continue;
+          If V.IsNull Then
+          Begin
+            V := VL;
+            Continue;
+          End;
+          { Compare values }
+          If (V.Category = SQLCAT_INTEGER) And
+             (VL.Category = SQLCAT_INTEGER) Then
+          Begin
+            If VL.IntVal > V.IntVal Then V := VL;
+          End
+          Else If (V.Category = SQLCAT_DECIMAL) Or
+                  (VL.Category = SQLCAT_DECIMAL) Then
+          Begin
+            If V.Category = SQLCAT_INTEGER Then
+              V.FloatVal := V.IntVal * 1.0;
+            If VL.Category = SQLCAT_INTEGER Then
+              VL.FloatVal := VL.IntVal * 1.0;
+            If VL.FloatVal > V.FloatVal Then V := VL;
+          End
+          Else Begin
+            If SqlValueToStr(VL) > SqlValueToStr(V) Then V := VL;
+          End;
+        End;
+      End
+      Else If (Op = 'LEAST') And
+              (ASTPool[Node].ChildCnt >= 2) Then
+      Begin
+        V := QEEvalExpr(ASTPool[Node].Children[0], Row, Res);
+        V.Valid := True;
+        For I := 1 To ASTPool[Node].ChildCnt - 1 Do
+        Begin
+          VL := QEEvalExpr(ASTPool[Node].Children[I], Row, Res);
+          If VL.IsNull Then Continue;
+          If V.IsNull Then
+          Begin
+            V := VL;
+            Continue;
+          End;
+          { Compare values }
+          If (V.Category = SQLCAT_INTEGER) And
+             (VL.Category = SQLCAT_INTEGER) Then
+          Begin
+            If VL.IntVal < V.IntVal Then V := VL;
+          End
+          Else If (V.Category = SQLCAT_DECIMAL) Or
+                  (VL.Category = SQLCAT_DECIMAL) Then
+          Begin
+            If V.Category = SQLCAT_INTEGER Then
+              V.FloatVal := V.IntVal * 1.0;
+            If VL.Category = SQLCAT_INTEGER Then
+              VL.FloatVal := VL.IntVal * 1.0;
+            If VL.FloatVal < V.FloatVal Then V := VL;
+          End
+          Else Begin
+            If SqlValueToStr(VL) < SqlValueToStr(V) Then V := VL;
           End;
         End;
       End
