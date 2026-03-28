@@ -328,7 +328,7 @@
               C# : var fn = (int x) => x * 2; (expression lambda)
             Fonctions generatrices (yield) : stub avec commentaire.
 
-  TODO 13 - TRANSPILATION : CLASSES PHP (OOP) [A FAIRE]
+  TODO 13 - TRANSPILATION : CLASSES PHP (OOP) [IMPLEMENTE]
             Transpilation de class Foo extends Bar implements Baz :
               C# : class Foo : Bar, Baz { ... }
               Modificateurs : abstract class -> abstract class,
@@ -2072,7 +2072,7 @@ End;
   TODO 10 - BOUCLES (IMPLEMENTE)
   TODO 11 - SWITCH ET MATCH (IMPLEMENTE)
   TODO 12 - FONCTIONS PHP (IMPLEMENTE)
-  TODO 13 - CLASSES PHP (A FAIRE)
+  TODO 13 - CLASSES PHP (IMPLEMENTE)
   TODO 14 - INTERFACES ET TRAITS PHP (A FAIRE)
   TODO 15 - TABLEAUX PHP (A FAIRE)
   TODO 16 - FONCTIONS DE CHAINES (A FAIRE)
@@ -2414,6 +2414,9 @@ Procedure ParseSwitchStmt(Indent: Integer); Forward;
 { Declarations anticipees pour TODO 12 (fonctions PHP) }
 Procedure ParseFuncDef(Indent: Integer); Forward;
 Procedure ParseReturnStmt(Indent: Integer); Forward;
+
+{ Declarations anticipees pour TODO 13 (classes PHP) }
+Procedure ParseClassDef(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -4215,6 +4218,14 @@ Begin
       ParseFuncDef(Indent)
     Else If KwLow = 'return' Then
       ParseReturnStmt(Indent)
+    Else If KwLow = 'class' Then
+      ParseClassDef(Indent)
+    Else If KwLow = 'abstract' Then
+      ParseClassDef(Indent)
+    Else If KwLow = 'final' Then
+      ParseClassDef(Indent)
+    Else If KwLow = 'readonly' Then
+      ParseClassDef(Indent)
     Else If (CurTok.Kind = TK_IDENT) And (CurTok.Kind <> TK_EOF) Then
     Begin
       { Label : ident suivi de ':' (sans espace entre les deux) }
@@ -5137,6 +5148,369 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 13 - TRANSPILATION : CLASSES PHP (OOP) [IMPLEMENTE]
+  ============================================================ }
+
+{ Convertit un nom de methode magique PHP en nom C# correspondant.
+  Retourne le nom C# et met a jour IsOverride selon besoin. }
+Function MagicMethodName(Const PhpName: TString;
+                          Const ClassName: TString;
+                          Var IsOverride: Boolean;
+                          Var IsSpecial: TString): TString;
+Var LN: TString;
+Begin
+  LN := LowStr(PhpName);
+  IsOverride := False;
+  IsSpecial  := '';
+  If LN = '__construct' Then
+  Begin
+    MagicMethodName := ClassName;
+    IsSpecial := 'constructor';
+  End
+  Else If LN = '__destruct' Then
+  Begin
+    MagicMethodName := '~' + ClassName;
+    IsSpecial := 'destructor';
+  End
+  Else If LN = '__tostring' Then
+  Begin
+    MagicMethodName := 'ToString';
+    IsOverride := True;
+    IsSpecial := 'override';
+  End
+  Else If LN = '__clone' Then
+  Begin
+    MagicMethodName := 'Clone';
+    IsSpecial := 'clone';
+  End
+  Else If LN = '__invoke' Then
+  Begin
+    MagicMethodName := 'Invoke';
+    IsSpecial := 'invoke';
+  End
+  Else If LN = '__get' Then
+  Begin
+    MagicMethodName := 'Get';
+    IsSpecial := 'get';
+  End
+  Else If LN = '__set' Then
+  Begin
+    MagicMethodName := 'Set';
+    IsSpecial := 'set';
+  End
+  Else
+    MagicMethodName := MakeCsName(PhpName);
+End;
+
+{ Parse et emet le corps d une classe PHP.
+  CurTok doit etre '{' (consomme avant l appel).
+  ClassName : nom C# de la classe courante.
+  Indent : indentation du contenu. }
+Procedure ParseClassBody(Const ClassName: TString; Indent: Integer);
+Var
+  KwLow    : TString;
+  Vis      : TString;
+  IsStatic : Boolean;
+  IsAbstr  : Boolean;
+  IsFinal  : Boolean;
+  IsReadOnly: Boolean;
+  IsConst  : Boolean;
+  PType    : TString;
+  Nullable : Boolean;
+  PName    : TString;
+  DefVal   : TString;
+  MethName : TString;
+  Params   : TString;
+  RetType  : TString;
+  RetNull  : Boolean;
+  IsOvr    : Boolean;
+  SpecKind : TString;
+  CsHead   : TString;
+Begin
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}')) And
+        Not (CurTok.Kind = TK_EOF) Do
+  Begin
+    KwLow := '';
+    If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+    Vis       := 'public';
+    IsStatic  := False;
+    IsAbstr   := False;
+    IsFinal   := False;
+    IsReadOnly := False;
+    IsConst   := False;
+
+    { Ramasser les modificateurs }
+    While (CurTok.Kind = TK_KEYWORD) And
+          ((LowStr(CurTok.Val) = 'public') Or
+           (LowStr(CurTok.Val) = 'protected') Or
+           (LowStr(CurTok.Val) = 'private') Or
+           (LowStr(CurTok.Val) = 'static') Or
+           (LowStr(CurTok.Val) = 'abstract') Or
+           (LowStr(CurTok.Val) = 'final') Or
+           (LowStr(CurTok.Val) = 'readonly')) Do
+    Begin
+      KwLow := LowStr(CurTok.Val);
+      If (KwLow = 'public') Or (KwLow = 'protected') Or (KwLow = 'private') Then
+        Vis := KwLow
+      Else If KwLow = 'static' Then
+        IsStatic := True
+      Else If KwLow = 'abstract' Then
+        IsAbstr := True
+      Else If KwLow = 'final' Then
+        IsFinal := True
+      Else If KwLow = 'readonly' Then
+        IsReadOnly := True;
+      LexNextToken;
+    End;
+
+    KwLow := '';
+    If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+
+    { Constante de classe : const FOO = val; }
+    If KwLow = 'const' Then
+    Begin
+      LexNextToken;
+      If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+      Begin
+        PName := CurTok.Val;
+        LexNextToken;
+        DefVal := '';
+        If (CurTok.Kind = TK_OP) And (CurTok.Val = '=') Then
+        Begin
+          LexNextToken;
+          DefVal := ParseExprStr;
+        End;
+        EmitLine(IndentStr(Indent) + Vis + ' const object ' + PName +
+                 ' = ' + DefVal + ';');
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+    End
+
+    { Methode : function ... }
+    Else If KwLow = 'function' Then
+    Begin
+      LexNextToken; { saute 'function' }
+      { function* (generateur) }
+      If (CurTok.Kind = TK_OP) And (CurTok.Val = '*') Then
+        LexNextToken;
+      { Nom de la methode }
+      MethName := '';
+      If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+      Begin
+        MethName := CurTok.Val;
+        LexNextToken;
+      End;
+      { Parametres }
+      Params := '';
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+      Begin
+        LexNextToken;
+        Params := ParseFuncParams;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+          LexNextToken;
+      End;
+      { Type de retour }
+      RetType := 'void';
+      RetNull := False;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+      Begin
+        LexNextToken;
+        RetType := ParsePhpTypeHint(RetNull);
+      End;
+      { Construire l en-tete de la methode }
+      IsOvr   := False;
+      SpecKind := '';
+      MethName := MagicMethodName(MethName, ClassName, IsOvr, SpecKind);
+      CsHead := IndentStr(Indent) + Vis;
+      If IsStatic Then CsHead := CsHead + ' static';
+      If IsAbstr  Then CsHead := CsHead + ' abstract';
+      If IsFinal  Then CsHead := CsHead + ' /* final */';
+      If IsOvr    Then CsHead := CsHead + ' override';
+      { Constructeur : pas de type de retour }
+      If SpecKind = 'constructor' Then
+        CsHead := CsHead + ' ' + MethName + '(' + Params + ')'
+      Else If SpecKind = 'destructor' Then
+        CsHead := CsHead + ' ' + MethName + '()'
+      Else
+        CsHead := CsHead + ' ' + RetType + ' ' + MethName + '(' + Params + ')';
+      If IsAbstr Then
+      Begin
+        EmitLine(CsHead + ';');
+        { Sauter le corps si present }
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+        Begin
+          LexNextToken;
+          ParseBlock(Indent + 1, '');
+        End
+        Else If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+          LexNextToken;
+      End
+      Else If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+      Begin
+        EmitLine(CsHead);
+        EmitLine(IndentStr(Indent) + '{');
+        LexNextToken;
+        ScopeEnter(SCK_METHOD, MethName);
+        ParseBlock(Indent + 1, '');
+        ScopeLeave;
+        EmitLine(IndentStr(Indent) + '}');
+      End
+      Else If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+      Begin
+        EmitLine(CsHead + ';');
+        LexNextToken;
+      End;
+    End
+
+    { Propriete : $prop ou type $prop }
+    Else If (CurTok.Kind = TK_VAR) Or
+            ((CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD)) Then
+    Begin
+      { Type hint optionnel }
+      PType := 'object';
+      If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Or
+         ((CurTok.Kind = TK_OP) And (CurTok.Val = '?')) Then
+      Begin
+        If CurTok.Kind <> TK_VAR Then
+        Begin
+          PType := ParsePhpTypeHint(Nullable);
+        End;
+      End;
+      { Nom de la propriete }
+      PName := 'Prop';
+      If CurTok.Kind = TK_VAR Then
+      Begin
+        PName := MakeCsName(VarPhpName(CurTok.Val));
+        LexNextToken;
+      End;
+      { Valeur par defaut }
+      DefVal := '';
+      If (CurTok.Kind = TK_OP) And (CurTok.Val = '=') Then
+      Begin
+        LexNextToken;
+        DefVal := ParseExprStr;
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+      { Emettre la propriete }
+      CsHead := IndentStr(Indent) + Vis;
+      If IsStatic Then CsHead := CsHead + ' static';
+      If IsReadOnly Then
+      Begin
+        If CsVersionGE(Opts.CsVersion, CS_VER_90) Then
+          CsHead := CsHead + ' ' + PType + ' ' + PName + ' { get; init; }'
+        Else
+          CsHead := CsHead + ' readonly ' + PType + ' ' + PName + ';'
+      End
+      Else
+      Begin
+        CsHead := CsHead + ' ' + PType + ' ' + PName + ' { get; set; }';
+        If DefVal <> '' Then
+          CsHead := CsHead + ' // = ' + DefVal;
+      End;
+      EmitLine(CsHead);
+    End
+
+    Else
+    Begin
+      { Token inattendu : avancer }
+      LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+        LexNextToken;
+    End;
+  End;
+  { Consommer accolade fermante }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then
+    LexNextToken;
+End;
+
+{ Parse et emet une definition de classe PHP.
+  CurTok doit etre 'class', 'abstract', 'final' ou 'readonly'.
+  Indent : niveau d indentation courant. }
+Procedure ParseClassDef(Indent: Integer);
+Var
+  Mod1     : TString;
+  Mod2     : TString;
+  ClassName: TString;
+  BaseList : TString;
+  CsDecl   : TString;
+Begin
+  Mod1 := '';
+  Mod2 := '';
+  { Ramasser les modificateurs avant 'class' }
+  While (CurTok.Kind = TK_KEYWORD) And
+        (LowStr(CurTok.Val) <> 'class') Do
+  Begin
+    Mod1 := Mod1 + LowStr(CurTok.Val) + ' ';
+    LexNextToken;
+  End;
+  { Mot-cle 'class' }
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'class') Then
+    LexNextToken;
+  { Nom de la classe }
+  ClassName := 'AnonymousClass';
+  If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+  Begin
+    ClassName := MakeCsName(CurTok.Val);
+    LexNextToken;
+  End;
+  { Construire les modificateurs C# }
+  CsDecl := '';
+  If Pos('abstract', Mod1) > 0 Then
+    CsDecl := 'abstract '
+  Else If Pos('final', Mod1) > 0 Then
+    CsDecl := 'sealed '
+  Else If Pos('readonly', Mod1) > 0 Then
+  Begin
+    If CsVersionGE(Opts.CsVersion, CS_VER_100) Then
+      CsDecl := 'readonly '
+    Else
+    Begin
+      WarnMsg('readonly class necessite C# 10+ ; genere comme class standard');
+      CsDecl := '';
+    End;
+  End;
+  CsDecl := CsDecl + 'class ' + ClassName;
+  { extends et implements }
+  BaseList := '';
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'extends') Then
+  Begin
+    LexNextToken;
+    If (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Then
+    Begin
+      BaseList := MakeCsName(CurTok.Val);
+      LexNextToken;
+    End;
+  End;
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'implements') Then
+  Begin
+    LexNextToken;
+    While (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Do
+    Begin
+      If Length(BaseList) > 0 Then BaseList := BaseList + ', ';
+      BaseList := BaseList + MakeCsName(CurTok.Val);
+      LexNextToken;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+        LexNextToken
+      Else
+        Break;
+    End;
+  End;
+  If Length(BaseList) > 0 Then
+    CsDecl := CsDecl + ' : ' + BaseList;
+  EmitLine(IndentStr(Indent) + CsDecl);
+  EmitLine(IndentStr(Indent) + '{');
+  { Corps de la classe }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+    LexNextToken;
+  ScopeEnter(SCK_CLASS, ClassName);
+  ParseClassBody(ClassName, Indent + 1);
+  ScopeLeave;
+  EmitLine(IndentStr(Indent) + '}');
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -5184,6 +5558,14 @@ Begin
       ParseFuncDef(0)
     Else If KwLow = 'return' Then
       ParseReturnStmt(0)
+    Else If KwLow = 'class' Then
+      ParseClassDef(0)
+    Else If KwLow = 'abstract' Then
+      ParseClassDef(0)
+    Else If KwLow = 'final' Then
+      ParseClassDef(0)
+    Else If KwLow = 'readonly' Then
+      ParseClassDef(0)
     Else If KwLow = 'static' Then
     Begin
       If Not ParseStaticVarDecl(0) Then
@@ -5223,7 +5605,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 13-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 14-25 a faire)');
 End;
 
 Procedure Cleanup;
