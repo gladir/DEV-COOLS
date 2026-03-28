@@ -91,7 +91,7 @@
             Ponctuation : ( ) [ ] { } ; , . : ? ~ @ & | ^ %.
             Mode debug (-v) : affichage de chaque token avec position.
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES PHP [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES PHP [IMPLEMENTE]
             Function IsKeyword(Const S: String): Integer
             Retourne l indice dans le tableau de mots-cles ou 0.
             Mots-cles PHP complets a reconnaitre :
@@ -962,6 +962,15 @@ Begin
   UpStr := S;
 End;
 
+Function LowStr(S: TString): TString;
+Var I: Integer;
+Begin
+  For I := 1 To Length(S) Do
+    If (S[I] >= 'A') And (S[I] <= 'Z') Then
+      S[I] := Chr(Ord(S[I]) + 32);
+  LowStr := S;
+End;
+
 Function TrimStr(S: TString): TString;
 Var B, E: Integer;
 Begin
@@ -1209,9 +1218,99 @@ End;
   TODO 02 - LEXEUR PHP (TOKENS) [IMPLEMENTE]
   ============================================================ }
 
-{ Stub IsKeyword - sera remplace par TODO 03 }
+{ ============================================================
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES PHP [IMPLEMENTE]
+  ============================================================ }
+
+Const
+  PHP_KW_COUNT  = 88;   { nombre total de mots-cles PHP reconnus        }
+  PHP_KW_MAXLEN = 15;   { longueur max d un mot-cle (__namespace__ = 13) }
+
+{ Tableau trie des mots-cles PHP (casse minuscule) pour recherche binaire }
+Const
+  PhpKeywords : Array[1..PHP_KW_COUNT] of String[PHP_KW_MAXLEN] = (
+    { __ magiques }
+    '__class__',    '__dir__',      '__file__',     '__function__',
+    '__line__',     '__method__',   '__namespace__','__trait__',
+    { a }
+    'abstract',     'array',        'as',
+    { b }
+    'bool',         'break',
+    { c }
+    'callable',     'case',         'catch',        'class',
+    'clone',        'const',        'continue',
+    { d }
+    'declare',      'default',      'do',
+    { e }
+    'echo',         'else',         'elseif',       'empty',
+    'enddeclare',   'endfor',       'endforeach',   'endif',
+    'endswitch',    'endwhile',     'enum',         'eval',
+    'exit',         'extends',
+    { f }
+    'false',        'final',        'finally',      'float',
+    'fn',           'for',          'foreach',      'function',
+    { g }
+    'global',       'goto',
+    { i }
+    'if',           'implements',   'include',      'include_once',
+    'instanceof',   'insteadof',    'int',          'interface',
+    'isset',        'iterable',
+    { l }
+    'list',
+    { m }
+    'match',        'mixed',
+    { n }
+    'namespace',    'never',        'new',          'null',
+    { o }
+    'object',
+    { p }
+    'parent',       'print',        'private',      'protected',
+    'public',
+    { r }
+    'readonly',     'require',      'require_once', 'return',
+    { s }
+    'self',         'static',       'string',       'switch',
+    { t }
+    'throw',        'trait',        'true',         'try',
+    { u }
+    'unset',        'use',
+    { v }
+    'var',          'void',
+    { w }
+    'while',
+    { y }
+    'yield'
+  );
+
+{ IsKeyword : retourne l indice (1..PHP_KW_COUNT) du mot-cle, ou 0 si absent.
+  La comparaison est insensible a la casse (normalisation en minuscules).
+  Utilise une recherche binaire sur le tableau trie PhpKeywords.           }
 Function IsKeyword(Const S: TString): Integer;
+Var
+  Lo, Hi, Mid : Integer;
+  LS           : TString;
 Begin
+  If Length(S) > PHP_KW_MAXLEN Then
+  Begin
+    IsKeyword := 0;
+    Exit;
+  End;
+  LS := LowStr(S);
+  Lo := 1;
+  Hi := PHP_KW_COUNT;
+  While Lo <= Hi Do
+  Begin
+    Mid := (Lo + Hi) Div 2;
+    If PhpKeywords[Mid] = LS Then
+    Begin
+      IsKeyword := Mid;
+      Exit;
+    End
+    Else If PhpKeywords[Mid] < LS Then
+      Lo := Mid + 1
+    Else
+      Hi := Mid - 1;
+  End;
   IsKeyword := 0;
 End;
 
@@ -1950,7 +2049,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - MOTS-CLES PHP (A FAIRE)
+  TODO 03 - MOTS-CLES PHP (IMPLEMENTE)
   TODO 04 - TABLE DES SYMBOLES ET TYPES (A FAIRE)
   TODO 05 - GESTION DES SCOPES ET NAMESPACES (A FAIRE)
   TODO 06 - DECLARATIONS DE VARIABLES PHP (A FAIRE)
@@ -1983,7 +2082,7 @@ Begin
     LexNextToken;
   Until CurTok.Kind = TK_EOF;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 03-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 04-25 a faire)');
 End;
 
 Procedure Cleanup;
