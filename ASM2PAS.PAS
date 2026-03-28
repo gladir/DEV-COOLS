@@ -4012,8 +4012,8 @@ Begin
   { Chercher dans les parametres (offset positif) }
   If Offset>0 Then Begin
    { Calculer quel parametre correspond a cet offset }
-   { Convention NEAR : BP+4 = retour, BP+4 = param1, BP+6 = param2, etc. }
-   { Convention FAR :  BP+4 = retour seg, BP+6 = retour off, param1 a BP+6 }
+   { Convention NEAR : BP+0 = saved BP, BP+2 = retour, BP+4 = param1, BP+6 = param2 }
+   { Convention FAR :  BP+0 = saved BP, BP+2 = retour off, BP+4 = retour seg, BP+6 = param1 }
    If Procs[ProcIdx].IsNear Then
     ParamOffset:=4
    Else
@@ -8624,8 +8624,10 @@ End;
 
 Function ReplaceParamBPReferences(Code:String;ProcIdx:Integer):String;
 { Remplace les references Param_BP_N par les vrais noms de parametres.
-  Param_BP_4 -> Param1, Param_BP_6 -> Param2, etc. (mode 16 bits)
-  Param_BP_8 -> Param1, Param_BP_12 -> Param2, etc. (mode 32 bits) }
+  Pour convention NEAR:
+    16 bits: Param_BP_4 -> Param1, Param_BP_6 -> Param2, etc.
+    32 bits: Param_BP_8 -> Param1, Param_BP_12 -> Param2, etc.
+  Note: utilise pour les cas non resolus par StackAccessExpr }
 Var
  I:Integer;
  ParamName,SearchStr:String;
@@ -8637,8 +8639,7 @@ Begin
  If Procs[ProcIdx].ParamCount=0 Then Exit;
  
  For I:=1 to Procs[ProcIdx].ParamCount do Begin
-  { Calculer l'offset de ce parametre sur la pile }
-  { Convention: [BP+4] = premier param (apres retour), +2 par param supplementaire }
+  { Calculer l'offset de ce parametre sur la pile (convention NEAR) }
   If Mode32 Then
    Offset:=8+(I-1)*4 { 32 bits: [EBP+8], [EBP+12], ... }
   Else
