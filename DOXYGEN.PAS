@@ -83,7 +83,7 @@
             Procedure ShowBanner : afficher la banniere de demarrage
             Programme principal : validation des arguments et appel Run
 
-  TODO 02 - OPTION PERSONNALISEE -INPUT (FICHIER SOURCE DIRECT) [A FAIRE]
+  TODO 02 - OPTION PERSONNALISEE -INPUT (FICHIER SOURCE DIRECT) [IMPLEMENTE]
             Extension DEV-COOLS : permettre l analyse directe d un fichier
             source sans fichier de configuration Doxyfile.
             Syntaxe : doxygen -INPUT fichier.ext
@@ -1304,19 +1304,29 @@ End;
   TRAITEMENT DU FICHIER SOURCE DIRECT (-INPUT)
   ============================================================ }
 
+Procedure ValidateInputFile(Const FileName: String);
+Var
+  Lang: TSourceLanguage;
+Begin
+  { Verifier que le fichier existe }
+  If Not FileExists(FileName) Then
+    FatalError('Fichier non trouve: ' + FileName);
+
+  { Verifier que l extension est reconnue }
+  Lang := DetectLanguageFromExt(FileName);
+  If Lang = LANG_UNKNOWN Then
+    WarnMsg('Extension non reconnue pour: ' + FileName + ' - analyse generique');
+End;
+
 Procedure ProcessInputFile(Const FileName: String);
 Var
   Lang: TSourceLanguage;
 Begin
-  If Not FileExists(FileName) Then
-    FatalError('Fichier non trouve: ' + FileName);
+  { Valider le fichier d entree }
+  ValidateInputFile(FileName);
 
+  { Detecter le langage }
   Lang := DetectLanguageFromExt(FileName);
-  If Lang = LANG_UNKNOWN Then
-  Begin
-    WarnMsg('Langage non reconnu pour: ' + FileName);
-    WarnMsg('Tentative d''analyse generique...');
-  End;
 
   InfoMsg('Analyse du fichier: ' + FileName);
   InfoMsg('Langage detecte: ' + LanguageToStr(Lang));
