@@ -383,7 +383,7 @@
               ERROR_STATE(), ERROR_LINE(), ERROR_PROCEDURE()
             XACT_STATE()
 
-  TODO 23 - FONCTIONS SCALAIRES BUILT-IN : JSON ET XML
+  TODO 23 - FONCTIONS SCALAIRES BUILT-IN : JSON ET XML [IMPLEMENTE]
             JSON : ISJSON(s), JSON_VALUE(s, path),
               JSON_QUERY(s, path), JSON_MODIFY(s, path, val),
               OPENJSON(s [, path]) WITH (schema),
@@ -11628,6 +11628,366 @@ Begin
   End;
 End;
 
+{ ===== TODO 23 : Fonctions utilitaires JSON ===== }
+
+Procedure JsonSkipWhite(Const S : TSqlValueStr; Var P : Integer);
+Begin
+  While (P <= Length(S)) And (S[P] <= ' ') Do Inc(P);
+End;
+
+Function JsonIsValid(Const S : TSqlValueStr) : Boolean;
+Var
+  P, Depth, L : Integer;
+  InStr : Boolean;
+  Ch    : Char;
+Begin
+  JsonIsValid := False;
+  L := Length(S);
+  If L = 0 Then Exit;
+  P := 1;
+  JsonSkipWhite(S, P);
+  If P > L Then Exit;
+  Ch := S[P];
+  If Not (Ch In ['{', '[', '"', '-', '0'..'9', 't', 'f', 'n']) Then Exit;
+  Depth := 0;
+  InStr := False;
+  While P <= L Do
+  Begin
+    Ch := S[P];
+    If InStr Then
+    Begin
+      If (Ch = '\') And (P < L) Then
+        Inc(P)
+      Else If Ch = '"' Then
+        InStr := False;
+    End
+    Else
+    Begin
+      Case Ch Of
+        '"' : InStr := True;
+        '{', '[' : Inc(Depth);
+        '}', ']' : Begin
+                     Dec(Depth);
+                     If Depth < 0 Then Exit;
+                   End;
+      End;
+    End;
+    Inc(P);
+  End;
+  If InStr Then Exit;
+  If Depth <> 0 Then Exit;
+  JsonIsValid := True;
+End;
+
+Function JsonSkipValue(Const S : TSqlValueStr; P : Integer) : Integer;
+Var
+  Depth, L : Integer;
+  InStr : Boolean;
+  Ch    : Char;
+Begin
+  L := Length(S);
+  JsonSkipWhite(S, P);
+  If P > L Then Begin JsonSkipValue := P; Exit; End;
+  Ch := S[P];
+  If Ch = '"' Then
+  Begin
+    Inc(P);
+    While P <= L Do
+    Begin
+      If (S[P] = '\') And (P < L) Then
+        Inc(P, 2)
+      Else If S[P] = '"' Then
+      Begin
+        Inc(P);
+        JsonSkipValue := P;
+        Exit;
+      End
+      Else
+        Inc(P);
+    End;
+    JsonSkipValue := P;
+    Exit;
+  End;
+  If Ch In ['{', '['] Then
+  Begin
+    Depth := 1;
+    InStr := False;
+    Inc(P);
+    While (P <= L) And (Depth > 0) Do
+    Begin
+      Ch := S[P];
+      If InStr Then
+      Begin
+        If (Ch = '\') And (P < L) Then Inc(P)
+        Else If Ch = '"' Then InStr := False;
+      End
+      Else
+      Begin
+        Case Ch Of
+          '"' : InStr := True;
+          '{', '[' : Inc(Depth);
+          '}', ']' : Dec(Depth);
+        End;
+      End;
+      Inc(P);
+    End;
+    JsonSkipValue := P;
+    Exit;
+  End;
+  { number, true, false, null }
+  While (P <= L) And Not (S[P] In [',', '}', ']', ' ', #9, #10, #13]) Do
+    Inc(P);
+  JsonSkipValue := P;
+End;
+
+Function JsonExtractStr(Const S : TSqlValueStr; P : Integer;
+                        Var Val : TSqlValueStr) : Boolean;
+Var
+  L : Integer;
+  Ch : Char;
+Begin
+  JsonExtractStr := False;
+  Val := '';
+  L := Length(S);
+  JsonSkipWhite(S, P);
+  If (P > L) Or (S[P] <> '"') Then Exit;
+  Inc(P);
+  While P <= L Do
+  Begin
+    Ch := S[P];
+    If Ch = '\' Then
+    Begin
+      Inc(P);
+      If P <= L Then
+      Begin
+        Case S[P] Of
+          '"' : Val := Val + '"';
+          '\' : Val := Val + '\';
+          '/' : Val := Val + '/';
+          'b' : Val := Val + #8;
+          'f' : Val := Val + #12;
+          'n' : Val := Val + #10;
+          'r' : Val := Val + #13;
+          't' : Val := Val + #9;
+        Else
+          Val := Val + S[P];
+        End;
+      End;
+    End
+    Else If Ch = '"' Then
+    Begin
+      JsonExtractStr := True;
+      Exit;
+    End
+    Else
+      Val := Val + Ch;
+    Inc(P);
+  End;
+End;
+
+Function JsonFindKey(Const S : TSqlValueStr; P : Integer;
+                     Const Key : TString;
+                     Var ValStart : Integer) : Boolean;
+Var
+  L   : Integer;
+  K   : TSqlValueStr;
+Begin
+  JsonFindKey := False;
+  L := Length(S);
+  JsonSkipWhite(S, P);
+  If (P > L) Or (S[P] <> '{') Then Exit;
+  Inc(P);
+  While P <= L Do
+  Begin
+    JsonSkipWhite(S, P);
+    If P > L Then Exit;
+    If S[P] = '}' Then Exit;
+    If S[P] = ',' Then Begin Inc(P); Continue; End;
+    { Parse key }
+    If S[P] <> '"' Then Exit;
+    JsonExtractStr(S, P, K);
+    { Skip past the key string }
+    Inc(P); { skip opening " }
+    While (P <= L) And (S[P] <> '"') Do
+    Begin
+      If (S[P] = '\') And (P < L) Then Inc(P);
+      Inc(P);
+    End;
+    If P <= L Then Inc(P); { skip closing " }
+    JsonSkipWhite(S, P);
+    If (P > L) Or (S[P] <> ':') Then Exit;
+    Inc(P);
+    JsonSkipWhite(S, P);
+    If K = Key Then
+    Begin
+      ValStart := P;
+      JsonFindKey := True;
+      Exit;
+    End;
+    P := JsonSkipValue(S, P);
+  End;
+End;
+
+Function JsonExtractAtPath(Const S : TSqlValueStr;
+                           Const Path : TString;
+                           Var Result : TSqlValueStr;
+                           Var IsObj : Boolean) : Boolean;
+Var
+  PP, VP, L, PL, KS, CI, CurP : Integer;
+  Key   : TString;
+  CurS  : TSqlValueStr;
+  Idx   : Integer;
+  Ch    : Char;
+Begin
+  JsonExtractAtPath := False;
+  IsObj := False;
+  Result := '';
+  CurS := S;
+  PL := Length(Path);
+  PP := 1;
+  { Skip leading $ }
+  If (PP <= PL) And (Path[PP] = '$') Then Inc(PP);
+  While PP <= PL Do
+  Begin
+    If Path[PP] = '.' Then
+    Begin
+      Inc(PP);
+      { Extract key name }
+      KS := PP;
+      While (PP <= PL) And Not (Path[PP] In ['.', '[']) Do Inc(PP);
+      Key := Copy(Path, KS, PP - KS);
+      If Key = '' Then Begin JsonExtractAtPath := False; Exit; End;
+      L := Length(CurS);
+      CurP := 1;
+      JsonSkipWhite(CurS, CurP);
+      If Not JsonFindKey(CurS, CurP, Key, VP) Then Exit;
+      { Extract value }
+      CurP := JsonSkipValue(CurS, VP);
+      CurS := Copy(CurS, VP, CurP - VP);
+    End
+    Else If Path[PP] = '[' Then
+    Begin
+      Inc(PP);
+      { Extract array index }
+      Idx := 0;
+      While (PP <= PL) And (Path[PP] In ['0'..'9']) Do
+      Begin
+        Idx := Idx * 10 + Ord(Path[PP]) - Ord('0');
+        Inc(PP);
+      End;
+      If (PP <= PL) And (Path[PP] = ']') Then Inc(PP);
+      L := Length(CurS);
+      CurP := 1;
+      JsonSkipWhite(CurS, CurP);
+      If (CurP > L) Or (CurS[CurP] <> '[') Then Exit;
+      Inc(CurP);
+      CI := 0;
+      While CurP <= L Do
+      Begin
+        JsonSkipWhite(CurS, CurP);
+        If CurS[CurP] = ']' Then Exit;
+        If CurS[CurP] = ',' Then Begin Inc(CurP); Continue; End;
+        If CI = Idx Then
+        Begin
+          VP := CurP;
+          CurP := JsonSkipValue(CurS, CurP);
+          CurS := Copy(CurS, VP, CurP - VP);
+          Break;
+        End;
+        CurP := JsonSkipValue(CurS, CurP);
+        Inc(CI);
+      End;
+      If CI <> Idx Then Exit;
+    End
+    Else
+      Break;
+  End;
+  { Trim result }
+  L := Length(CurS);
+  CurP := 1;
+  JsonSkipWhite(CurS, CurP);
+  If CurP > L Then Exit;
+  Ch := CurS[CurP];
+  If Ch In ['{', '['] Then
+  Begin
+    Result := CurS;
+    IsObj := True;
+    JsonExtractAtPath := True;
+  End
+  Else If Ch = '"' Then
+  Begin
+    JsonExtractStr(CurS, CurP, Result);
+    IsObj := False;
+    JsonExtractAtPath := True;
+  End
+  Else
+  Begin
+    { number, true, false, null }
+    Result := CurS;
+    { Trim trailing whitespace/comma }
+    While (Length(Result) > 0) And
+          (Result[Length(Result)] In [' ', #9, #10, #13, ',', '}', ']']) Do
+      Dec(Result[0]);
+    If Result = 'null' Then
+    Begin
+      Result := '';
+      JsonExtractAtPath := False;
+      Exit;
+    End;
+    IsObj := False;
+    JsonExtractAtPath := True;
+  End;
+End;
+
+Function JsonModifyAtPath(Const S : TSqlValueStr;
+                          Const Path : TString;
+                          Const NewVal : TSqlValueStr;
+                          IsNewNull : Boolean) : TSqlValueStr;
+Var
+  PP, VP, VEnd, L, PL, KS : Integer;
+  Key    : TString;
+  Before, After : TSqlValueStr;
+Begin
+  JsonModifyAtPath := S;
+  PL := Length(Path);
+  PP := 1;
+  If (PP <= PL) And (Path[PP] = '$') Then Inc(PP);
+  If (PP > PL) Or (Path[PP] <> '.') Then Exit;
+  Inc(PP);
+  { Extract key name (simple single-level only) }
+  KS := PP;
+  While (PP <= PL) And Not (Path[PP] In ['.', '[']) Do Inc(PP);
+  Key := Copy(Path, KS, PP - KS);
+  If Key = '' Then Exit;
+  L := Length(S);
+  VP := 1;
+  JsonSkipWhite(S, VP);
+  If Not JsonFindKey(S, VP, Key, VP) Then
+  Begin
+    { Key not found: insert before closing }
+    If IsNewNull Then Begin JsonModifyAtPath := S; Exit; End;
+    L := Length(S);
+    VP := L;
+    While (VP > 0) And (S[VP] <> '}') Do Dec(VP);
+    If VP <= 0 Then Exit;
+    Before := Copy(S, 1, VP - 1);
+    After  := Copy(S, VP, L - VP + 1);
+    { Check if there are existing keys }
+    If Pos(':', Before) > 0 Then
+      Before := Before + ', ';
+    JsonModifyAtPath := Before + '"' + Key + '":' + NewVal + After;
+    Exit;
+  End;
+  { Found key at VP; find end of value }
+  VEnd := JsonSkipValue(S, VP);
+  Before := Copy(S, 1, VP - 1);
+  After  := Copy(S, VEnd, Length(S) - VEnd + 1);
+  If IsNewNull Then
+    JsonModifyAtPath := Before + 'null' + After
+  Else
+    JsonModifyAtPath := Before + NewVal + After;
+End;
+
 { ---- Evaluer une expression AST contre une ligne ------------- }
 { Evaluation simplifiee : supporte colonnes, litteraux,           }
 { comparaisons, AND, OR, NOT, IS NULL, IS NOT NULL, BETWEEN,     }
@@ -11727,7 +12087,9 @@ Var
   Child0, Child1, Child2 : Integer;
   I, J       : Integer;
   STmp       : TSqlValueStr;
+  IsJsonObj  : Boolean;
 Begin
+  IsJsonObj := False;
   InitSqlValue(V);
   V.IsNull := True;
 
@@ -14289,6 +14651,121 @@ Begin
         V.Valid    := True;
         V.IsNull   := False;
         V.IntVal   := 0;
+      End
+      { ===== TODO 23 : Fonctions JSON et XML ===== }
+      Else If (Op = 'ISJSON') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_INTEGER;
+        V.XType    := XT_INT;
+        V.Valid    := True;
+        V.IsNull   := False;
+        If VL.IsNull Then
+          V.IsNull := True
+        Else If JsonIsValid(SqlValueToStr(VL)) Then
+          V.IntVal := 1
+        Else
+          V.IntVal := 0;
+      End
+      Else If (Op = 'JSON_VALUE') And (Child0 >= 0) And
+              (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Valid := True;
+        If VL.IsNull Or VR.IsNull Then
+          V.IsNull := True
+        Else Begin
+          V.Category := SQLCAT_STRING;
+          V.XType    := XT_NVARCHAR;
+          If JsonExtractAtPath(SqlValueToStr(VL),
+                               SqlValueToStr(VR),
+                               V.StrVal, IsJsonObj) Then
+          Begin
+            If IsJsonObj Then
+              V.IsNull := True
+            Else
+              V.IsNull := False;
+          End
+          Else
+            V.IsNull := True;
+        End;
+      End
+      Else If (Op = 'JSON_QUERY') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Valid := True;
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        If VL.IsNull Then
+          V.IsNull := True
+        Else If Child1 >= 0 Then
+        Begin
+          VR := QEEvalExpr(Child1, Row, Res);
+          If VR.IsNull Then
+            V.IsNull := True
+          Else If JsonExtractAtPath(SqlValueToStr(VL),
+                                    SqlValueToStr(VR),
+                                    V.StrVal, IsJsonObj) Then
+          Begin
+            If IsJsonObj Then
+              V.IsNull := False
+            Else
+              V.IsNull := True;
+          End
+          Else
+            V.IsNull := True;
+        End
+        Else
+        Begin
+          V.StrVal := SqlValueToStr(VL);
+          V.IsNull := False;
+        End;
+      End
+      Else If (Op = 'JSON_MODIFY') And (Child0 >= 0) And
+              (Child1 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        VR := QEEvalExpr(Child1, Row, Res);
+        V.Valid := True;
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        If VL.IsNull Then
+          V.IsNull := True
+        Else Begin
+          If ASTPool[Node].ChildCnt >= 3 Then
+          Begin
+            VT := QEEvalExpr(ASTPool[Node].Children[2], Row, Res);
+            If VT.IsNull Then
+              V.StrVal := JsonModifyAtPath(SqlValueToStr(VL),
+                                           SqlValueToStr(VR),
+                                           'null', True)
+            Else
+              V.StrVal := JsonModifyAtPath(SqlValueToStr(VL),
+                                           SqlValueToStr(VR),
+                                           '"' + SqlValueToStr(VT) + '"',
+                                           False);
+          End
+          Else
+            V.StrVal := JsonModifyAtPath(SqlValueToStr(VL),
+                                         SqlValueToStr(VR),
+                                         'null', True);
+          V.IsNull := False;
+        End;
+      End
+      Else If Op = 'OPENJSON' Then
+      Begin
+        V.IsNull := True;
+        V.Valid  := True;
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+      End
+      Else If Op = 'OPENXML' Then
+      Begin
+        V.IsNull := True;
+        V.Valid  := True;
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
       End
       Else
       Begin
