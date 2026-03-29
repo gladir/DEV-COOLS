@@ -520,7 +520,7 @@
               set_exception_handler / restore_exception_handler : stubs.
               set_error_handler : stub avec commentaire.
 
-  TODO 19 - TRANSPILATION : NAMESPACES ET IMPORTS PHP [A FAIRE]
+  TODO 19 - TRANSPILATION : NAMESPACES ET IMPORTS PHP [IMPLEMENTE]
             Transpilation de namespace Foo\Bar; :
               C# : namespace Foo.Bar (ou namespace Foo.Bar; si CS 10+ et -file-ns)
               Remplacer \ par . dans les noms de namespace.
@@ -2078,7 +2078,7 @@ End;
   TODO 16 - FONCTIONS DE CHAINES (IMPLEMENTE)
   TODO 17 - FONCTIONS MATH ET DATE/HEURE (IMPLEMENTE)
   TODO 18 - GESTION DES EXCEPTIONS (IMPLEMENTE)
-  TODO 19 - NAMESPACES ET IMPORTS (A FAIRE)
+  TODO 19 - NAMESPACES ET IMPORTS (IMPLEMENTE)
   TODO 20 - INCLUDE / REQUIRE (A FAIRE)
   TODO 21 - CIBLE : ENTITY FRAMEWORK / EF CORE (A FAIRE)
   TODO 22 - CIBLE : ASP.NET CORE / BLAZOR (A FAIRE)
@@ -2441,6 +2441,11 @@ Function PhpExcToCS(Const ClassName: TString): TString; Forward;
 Procedure ParseThrowStmt(Indent: Integer); Forward;
 Procedure ParseTryStmt(Indent: Integer); Forward;
 Procedure ParseExcHandlerStub(Indent: Integer); Forward;
+
+{ Declarations anticipees pour TODO 19 (namespaces et imports PHP) }
+Procedure EmitFrameworkUsings; Forward;
+Procedure ParseNamespaceStmt; Forward;
+Procedure ParseUseStmt; Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -4272,6 +4277,10 @@ Begin
       ParseTryStmt(Indent)
     Else If KwLow = 'throw' Then
       ParseThrowStmt(Indent)
+    Else If KwLow = 'namespace' Then
+      ParseNamespaceStmt
+    Else If KwLow = 'use' Then
+      ParseUseStmt
     Else If (CurTok.Kind = TK_IDENT) And (CurTok.Kind <> TK_EOF) Then
     Begin
       { TODO 18 : stubs pour les gestionnaires d exceptions PHP }
@@ -7995,9 +8004,9 @@ End;
 { Parse une instruction try / catch / finally PHP.
   CurTok doit etre le mot-cle 'try'.
   Syntaxes supportees :
-    try { ... } catch(ExType $e) { ... }
-    try { ... } catch(TypeA|TypeB $e) { ... }   (multi-catch PHP 8.0)
-    try { ... } catch(ExType $e) { ... } finally { ... }
+    try [...] catch(ExType $e) [...]
+    try [...] catch(TypeA|TypeB $e) [...]   (multi-catch PHP 8.0)
+    try [...] catch(ExType $e) [...] finally [...]
   Multi-catch PHP 8.0 :
     CS 6+ : catch(Exception e) when (e is TypeA or e is TypeB)
     CS < 6 : utilise le premier type (avec avertissement) }
@@ -8139,6 +8148,222 @@ Begin
   If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
 End;
 
+{ ============================================================
+  TODO 19 - TRANSPILATION : NAMESPACES ET IMPORTS PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Emet les directives using correspondant au framework cible.
+  Toujours inclus : System, System.Collections.Generic.
+  Les using additionnels dependent du framework selectionne. }
+Procedure EmitFrameworkUsings;
+Begin
+  EmitLine('using System;');
+  EmitLine('using System.Collections.Generic;');
+  Case Opts.Framework Of
+    FW_EF :
+    Begin
+      EmitLine('using System.Data.Entity;');
+    End;
+    FW_EFCORE :
+    Begin
+      EmitLine('using Microsoft.EntityFrameworkCore;');
+    End;
+    FW_ASPNET :
+    Begin
+      EmitLine('using Microsoft.AspNetCore.Mvc;');
+    End;
+    FW_BLAZOR :
+    Begin
+      EmitLine('using Microsoft.AspNetCore.Components;');
+    End;
+    FW_DAPPER :
+    Begin
+      EmitLine('using Dapper;');
+      EmitLine('using System.Data;');
+    End;
+    FW_ADONET :
+    Begin
+      EmitLine('using System.Data;');
+      EmitLine('using System.Data.SqlClient;');
+    End;
+    FW_WINFORMS :
+    Begin
+      EmitLine('using System.Windows.Forms;');
+    End;
+    FW_WPF :
+    Begin
+      EmitLine('using System.Windows;');
+      EmitLine('using System.Windows.Controls;');
+    End;
+    FW_MAUI :
+    Begin
+      EmitLine('using Microsoft.Maui;');
+      EmitLine('using Microsoft.Maui.Controls;');
+    End;
+  End;
+  EmitLine('');
+End;
+
+{ Collecte un nom qualifie PHP (Foo\Bar\Baz) sous forme de chaine C# (Foo.Bar.Baz).
+  Le lexer ignore les '\', donc les segments arrivent en TK_IDENT consecutifs.
+  S arrete des qu on voit autre chose qu un TK_IDENT. }
+Function CollectQualifiedName: TString;
+Var QN : TString;
+Begin
+  QN := '';
+  While CurTok.Kind = TK_IDENT Do
+  Begin
+    If QN <> '' Then
+      If Length(QN) < MAX_STR Then QN := QN + '.';
+    If Length(QN) < MAX_STR Then QN := QN + CurTok.Val;
+    LexNextToken;
+  End;
+  CollectQualifiedName := QN;
+End;
+
+{ Parse une declaration namespace PHP.
+  CurTok doit etre le mot-cle 'namespace'.
+  Syntaxes supportees :
+    namespace Foo\Bar;           -> namespace Foo.Bar [;]
+    namespace Foo\Bar [...]      -> commentaire stub
+  Met a jour CurrentNs. }
+Procedure ParseNamespaceStmt;
+Var
+  NsName : TString;
+  Depth  : Integer;
+Begin
+  LexNextToken; { saute 'namespace' }
+  NsName := CollectQualifiedName;
+  CurrentNs := NsName;
+  { namespace Foo [...] : bloc PHP (commentaire stub) }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+  Begin
+    EmitLine('// namespace ' + NsName + ' { ... }');
+    LexNextToken; { saute '{' }
+    Depth := 1;
+    While (Depth > 0) And (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then Inc(Depth)
+      Else If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then Dec(Depth);
+      LexNextToken;
+    End;
+    Exit;
+  End;
+  { namespace Foo; : declaration de fichier }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  If Opts.UseFileScopedNs And CsVersionGE(Opts.CsVersion, CS_VER_100) Then
+    EmitLine('namespace ' + NsName + ';')
+  Else
+    EmitLine('namespace ' + NsName);
+End;
+
+{ Parse une declaration use PHP (tous formats).
+  CurTok doit etre le mot-cle 'use'.
+  Syntaxes supportees :
+    use Foo\Bar;
+    use Foo\Bar as Baz;
+    use function Foo\bar;
+    use const Foo\BAR;
+    use Foo\[Bar, Baz];
+    use Foo\[Bar as B, Baz];
+  Emet les directives using C# correspondantes. }
+Procedure ParseUseStmt;
+Var
+  Kind    : TString;
+  Prefix  : TString;
+  Name    : TString;
+  Alias   : TString;
+  CsAlias : TString;
+Begin
+  LexNextToken; { saute 'use' }
+  Kind := 'normal';
+  { use function ... ou use const ... }
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'function') Then
+  Begin
+    Kind := 'function';
+    LexNextToken;
+  End
+  Else If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'const') Then
+  Begin
+    Kind := 'const';
+    LexNextToken;
+  End;
+  { Collecter le nom / prefix (segments TK_IDENT separes par \ ignore) }
+  Prefix := CollectQualifiedName;
+  { use Foo\[Bar, Baz]; : group use }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then
+  Begin
+    LexNextToken; { saute '{' }
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}')) And
+          Not (CurTok.Kind = TK_EOF) Do
+    Begin
+      Name := CollectQualifiedName;
+      CsAlias := '';
+      If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'as') Then
+      Begin
+        LexNextToken;
+        If CurTok.Kind = TK_IDENT Then
+        Begin
+          CsAlias := CurTok.Val;
+          LexNextToken;
+        End;
+      End;
+      If Name <> '' Then
+      Begin
+        If Kind = 'function' Then
+          EmitLine('// use function ' + Prefix + '.' + Name +
+                   '; // TODO: pas d equivalent direct en C#')
+        Else If Kind = 'const' Then
+          EmitLine('// use const ' + Prefix + '.' + Name +
+                   '; // TODO: pas d equivalent direct en C#')
+        Else If CsAlias <> '' Then
+        Begin
+          EmitLine('using ' + CsAlias + ' = ' + Prefix + '.' + Name + ';');
+          UseAdd(Prefix + '\' + Name, CsAlias);
+        End
+        Else
+        Begin
+          EmitLine('using ' + Prefix + '.' + Name + ';');
+          UseAdd(Prefix + '\' + Name, '');
+        End;
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '}') Then LexNextToken;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+    Exit;
+  End;
+  { use function Foo\bar; ou use const Foo\BAR; }
+  If Kind <> 'normal' Then
+  Begin
+    If Kind = 'function' Then
+      EmitLine('// use function ' + Prefix +
+               '; // TODO: pas d equivalent direct en C#')
+    Else
+      EmitLine('// use const ' + Prefix +
+               '; // TODO: pas d equivalent direct en C#');
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+    Exit;
+  End;
+  { use Foo\Bar as Baz; ou use Foo\Bar; }
+  Alias := '';
+  If (CurTok.Kind = TK_KEYWORD) And (LowStr(CurTok.Val) = 'as') Then
+  Begin
+    LexNextToken;
+    If CurTok.Kind = TK_IDENT Then
+    Begin
+      Alias := CurTok.Val;
+      LexNextToken;
+    End;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  If Alias <> '' Then
+    EmitLine('using ' + Alias + ' = ' + Prefix + ';')
+  Else
+    EmitLine('using ' + Prefix + ';');
+  UseAdd(Prefix, Alias);
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -8157,6 +8382,8 @@ Begin
   LexNextToken; { charger le premier token }
   { Consommer l ouverture PHP }
   If CurTok.Kind = TK_OPEN_PHP Then LexNextToken;
+  { Emettre les using de base selon le framework cible }
+  EmitFrameworkUsings;
   { Boucle principale de transpilation }
   While CurTok.Kind <> TK_EOF Do
   Begin
@@ -8164,6 +8391,10 @@ Begin
     If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
     If KwLow = 'declare' Then
       ParseDeclareStmt(0)
+    Else If KwLow = 'namespace' Then
+      ParseNamespaceStmt
+    Else If KwLow = 'use' Then
+      ParseUseStmt
     Else If KwLow = 'if' Then
       ParseIfStmt(0)
     Else If KwLow = 'goto' Then
@@ -8250,7 +8481,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 19-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 20-25 a faire)');
 End;
 
 Procedure Cleanup;
