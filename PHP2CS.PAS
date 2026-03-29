@@ -701,7 +701,7 @@
             EmitRegion(Name) / EmitEndRegion : balises #region si -region.
             EmitFileNs : namespace au niveau fichier (CS 10+ si -file-ns).
 
-  TODO 25 - FINALISATION, RAPPORT ET EXEMPLES [A FAIRE]
+  TODO 25 - FINALISATION, RAPPORT ET EXEMPLES [IMPLEMENTE]
             Finalisation de la generation C# :
               EmitClose : fermer le fichier de sortie .cs.
               Fermer les blocs ouverts (namespace, class) si necessaire.
@@ -788,6 +788,7 @@ Const
   MAX_METHOD = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_USE    = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_ERRORS = {$IFDEF FPC}100{$ELSE}20{$ENDIF};
+  MAX_STUB   = {$IFDEF FPC}128{$ELSE}32{$ENDIF};  { fonctionnalites PHP stubbees }
   MAX_STR    = 255;
 
 { ============================================================
@@ -811,6 +812,8 @@ Type
     UseFileScopedNs: Boolean; { namespace au niveau fichier (-file-ns)}
     EmitCsproj   : Boolean;   { generer un .csproj minimal (-csproj)  }
     SingleFile   : Boolean;   { tout dans un seul .cs (-single)       }
+    ToStdout     : Boolean;   { ecrire C# sur stdout (-stdout)        }
+    EmitSamples  : Boolean;   { generer les fichiers d exemples (-samples) }
   End;
 
   { Type PHP }
@@ -957,6 +960,11 @@ Var
   LinesEmit  : Integer;
   FnCount    : Integer;
   ClassCount : Integer;
+
+  { Liste des fonctionnalites PHP stubbees (non transpirees) }
+  StubList   : Array[1..MAX_STUB] of TString;
+  StubCount  : Integer;
+  OutIsStdout : Boolean;  { True si la sortie va vers stdout }
 
 { ============================================================
   UTILITAIRES GENERAUX
@@ -1114,6 +1122,8 @@ Begin
   WriteLn('  -region           Emettre #region / #endregion');
   WriteLn('  -csproj           Generer un fichier .csproj minimal');
   WriteLn('  -single           Tout generer dans un seul fichier .cs');
+  WriteLn('  -stdout           Ecrire le C# genere sur la sortie standard');
+  WriteLn('  -samples          Generer des fichiers PHP d exemples (SAMPLES\PHP2CS\)');
   WriteLn('  -h /?             Afficher cette aide');
   WriteLn;
   WriteLn('Exemples :');
@@ -1123,8 +1133,14 @@ Begin
 End;
 
 Procedure ShowStats;
+Var I: Integer;
 Begin
   WriteLn('PHP2CS: --- Rapport de transpilation ---');
+  WriteLn('PHP2CS: source PHP        : ', Opts.SrcFile);
+  If Opts.ToStdout Then
+    WriteLn('PHP2CS: sortie C#         : (stdout)')
+  Else
+    WriteLn('PHP2CS: sortie C#         : ', Opts.OutFile);
   WriteLn('PHP2CS: lignes PHP lues   : ', LinesRead);
   WriteLn('PHP2CS: lignes C# emises  : ', LinesEmit);
   WriteLn('PHP2CS: fonctions         : ', FnCount);
@@ -1133,6 +1149,12 @@ Begin
   WriteLn('PHP2CS: erreurs           : ', ErrorCount);
   WriteLn('PHP2CS: version C# cible  : ', Opts.CsVersion);
   WriteLn('PHP2CS: framework cible   : ', FrameworkName(Opts.Framework));
+  If StubCount > 0 Then
+  Begin
+    WriteLn('PHP2CS: stubs PHP (', StubCount, ') :');
+    For I := 1 To StubCount Do
+      WriteLn('PHP2CS:   - ', StubList[I]);
+  End;
 End;
 
 { ============================================================
@@ -1154,6 +1176,8 @@ Begin
   Opts.UseFileScopedNs := False;
   Opts.EmitCsproj    := False;
   Opts.SingleFile    := False;
+  Opts.ToStdout      := False;
+  Opts.EmitSamples   := False;
 
   I := 1;
   While I <= ParamCount Do
@@ -1175,6 +1199,10 @@ Begin
       Opts.EmitCsproj := True
     Else If (S = '-single') Then
       Opts.SingleFile := True
+    Else If (S = '-stdout') Then
+      Opts.ToStdout := True
+    Else If (S = '-samples') Then
+      Opts.EmitSamples := True
     Else If (S = '-cs-version') And (I < ParamCount) Then
     Begin
       Inc(I);
@@ -2127,7 +2155,7 @@ End;
   TODO 22 - CIBLE : ASP.NET CORE / BLAZOR (IMPLEMENTE)
   TODO 23 - CIBLE : DAPPER ET ADO.NET (IMPLEMENTE)
   TODO 24 - GENERATION DE L EN-TETE C# (IMPLEMENTE)
-  TODO 25 - FINALISATION, RAPPORT ET EXEMPLES (A FAIRE)
+  TODO 25 - FINALISATION, RAPPORT ET EXEMPLES (IMPLEMENTE)
   ============================================================ }
 
 { ============================================================
@@ -2530,6 +2558,11 @@ Procedure EmitRegion(Const Name: TString); Forward;
 Procedure EmitEndRegion; Forward;
 Procedure EmitFileNs; Forward;
 Procedure EmitCsprojFile; Forward;
+
+{ Declarations anticipees pour TODO 25 (Finalisation, rapport et exemples) }
+Procedure AddStub(Const Name: TString); Forward;
+Procedure EmitClose; Forward;
+Procedure EmitSampleFiles; Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -9673,20 +9706,181 @@ Begin
 End;
 
 
+{ ============================================================
+  TODO 25 - FINALISATION, RAPPORT ET EXEMPLES [IMPLEMENTE]
+  ============================================================ }
+
+{ Ajoute une fonctionnalite PHP stubbee dans la liste de rapport.
+  Un meme nom n est ajoute qu une seule fois (deduplication). }
+Procedure AddStub(Const Name: TString);
+Var I: Integer;
+Begin
+  For I := 1 To StubCount Do
+    If StubList[I] = Name Then Exit;
+  If StubCount < MAX_STUB Then
+  Begin
+    Inc(StubCount);
+    StubList[StubCount] := Name;
+  End;
+End;
+
+{ Ferme les blocs ouverts (scopes non fermes) en emettant les accolades
+  fermantes manquantes et en emettant un avertissement pour chaque bloc.
+  Appele en fin de transpilation pour securiser le fichier .cs genere. }
+Procedure EmitClose;
+Var I: Integer;
+Begin
+  For I := ScopeTop DownTo 1 Do
+  Begin
+    WarnMsg('bloc non ferme : "' + ScopeStack[I].Name +
+            '", accolade fermante ajoutee');
+    EmitLine('}');
+  End;
+  ScopeTop := 0;
+  EmitLine('');
+End;
+
+{ Genere les fichiers d exemples PHP dans le sous-repertoire SAMPLES\PHP2CS\.
+  Appele lorsque l option -samples est activee.
+  Cree le repertoire si necessaire (ignore l erreur s il existe deja). }
+Procedure EmitSampleFiles;
+Var F: Text;
+
+  { Cree un repertoire, ignore l erreur s il existe deja. }
+  Procedure TryMkDir(Const D: TString);
+  Begin
+    {$I-} MkDir(D); {$I+}
+    If IOResult <> 0 Then; { ignore : deja existant ou non supporté }
+  End;
+
+  { Ouvre un fichier exemple en ecriture ; retourne True si succes. }
+  Function OpenSample(Const FName: TString): Boolean;
+  Begin
+    Assign(F, FName);
+    {$I-} Rewrite(F); {$I+}
+    OpenSample := IOResult = 0;
+  End;
+
+Begin
+  TryMkDir('SAMPLES');
+  TryMkDir('SAMPLES\PHP2CS');
+
+  { Exemple 1 : hello.php -> hello.cs (echo Hello World) }
+  If OpenSample('SAMPLES\PHP2CS\hello.php') Then
+  Begin
+    WriteLn(F, '<?php');
+    WriteLn(F, '// Exemple 1 : Hello World');
+    WriteLn(F, 'echo "Hello, World!\n";');
+    WriteLn(F, '');
+    WriteLn(F, '$name = "PHP2CS";');
+    WriteLn(F, 'echo "Transpileur: " . $name . "\n";');
+    Close(F);
+    If Opts.Verbose Then
+      WriteLn('PHP2CS: exemple genere : SAMPLES\PHP2CS\hello.php');
+  End;
+
+  { Exemple 2 : class.php -> class.cs (classe simple OOP) }
+  If OpenSample('SAMPLES\PHP2CS\class.php') Then
+  Begin
+    WriteLn(F, '<?php');
+    WriteLn(F, '// Exemple 2 : Classe simple OOP');
+    WriteLn(F, 'class Animal {');
+    WriteLn(F, '    private string $name;');
+    WriteLn(F, '    public function __construct(string $name) {');
+    WriteLn(F, '        $this->name = $name;');
+    WriteLn(F, '    }');
+    WriteLn(F, '    public function speak(): string {');
+    WriteLn(F, '        return $this->name . " dit: Bonjour!";');
+    WriteLn(F, '    }');
+    WriteLn(F, '}');
+    WriteLn(F, '$a = new Animal("Chat");');
+    WriteLn(F, 'echo $a->speak() . "\n";');
+    Close(F);
+    If Opts.Verbose Then
+      WriteLn('PHP2CS: exemple genere : SAMPLES\PHP2CS\class.php');
+  End;
+
+  { Exemple 3 : array.php -> array.cs (manipulations de tableaux) }
+  If OpenSample('SAMPLES\PHP2CS\array.php') Then
+  Begin
+    WriteLn(F, '<?php');
+    WriteLn(F, '// Exemple 3 : Manipulation de tableaux');
+    WriteLn(F, '$fruits = ["pomme", "banane", "cerise"];');
+    WriteLn(F, 'foreach ($fruits as $f) {');
+    WriteLn(F, '    echo $f . "\n";');
+    WriteLn(F, '}');
+    WriteLn(F, '$n = count($fruits);');
+    WriteLn(F, 'echo "Total: " . $n . "\n";');
+    WriteLn(F, 'array_push($fruits, "mangue");');
+    WriteLn(F, 'sort($fruits);');
+    Close(F);
+    If Opts.Verbose Then
+      WriteLn('PHP2CS: exemple genere : SAMPLES\PHP2CS\array.php');
+  End;
+
+  { Exemple 4 : pdo.php -> pdo_ef.cs (acces BD via PDO -> EF Core) }
+  If OpenSample('SAMPLES\PHP2CS\pdo.php') Then
+  Begin
+    WriteLn(F, '<?php');
+    WriteLn(F, '// Exemple 4 : Acces BD via PDO -> EF Core');
+    WriteLn(F, '$pdo = new PDO("mysql:host=localhost;dbname=test", "user", "pass");');
+    WriteLn(F, '$stmt = $pdo->prepare("SELECT id, name FROM users WHERE id = :id");');
+    WriteLn(F, '$stmt->execute([":id" => 1]);');
+    WriteLn(F, '$row = $stmt->fetch(PDO::FETCH_ASSOC);');
+    WriteLn(F, 'echo $row["name"] . "\n";');
+    Close(F);
+    If Opts.Verbose Then
+      WriteLn('PHP2CS: exemple genere : SAMPLES\PHP2CS\pdo.php');
+  End;
+
+  { Exemple 5 : web.php -> web.cs (formulaire HTML -> ASP.NET Core) }
+  If OpenSample('SAMPLES\PHP2CS\web.php') Then
+  Begin
+    WriteLn(F, '<?php');
+    WriteLn(F, '// Exemple 5 : Formulaire HTML -> ASP.NET Core');
+    WriteLn(F, 'session_start();');
+    WriteLn(F, '$name = $_POST["name"] ?? "monde";');
+    WriteLn(F, 'header("Content-Type: text/html");');
+    WriteLn(F, 'echo "<html><body>Bonjour " . htmlspecialchars($name) . "</body></html>";');
+    Close(F);
+    If Opts.Verbose Then
+      WriteLn('PHP2CS: exemple genere : SAMPLES\PHP2CS\web.php');
+  End;
+End;
+
+
 Procedure Run;
 Var KwLow: TString;
 Begin
-  { Ouvrir le fichier de sortie }
-  Assign(OutF, Opts.OutFile);
-  {$I-}
-  Rewrite(OutF);
-  {$I+}
-  If IOResult <> 0 Then
+  { Ouvrir le fichier de sortie (ou utiliser stdout si -stdout) }
+  OutIsStdout := Opts.ToStdout;
+  If OutIsStdout Then
   Begin
-    FatalError('impossible d ouvrir le fichier de sortie : ' + Opts.OutFile);
-    Exit;
+    { Assigner OutF a la sortie standard ('' = console en TP/FPC) }
+    Assign(OutF, '');
+    {$I-}
+    Rewrite(OutF);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      FatalError('impossible d ouvrir la sortie standard');
+      Exit;
+    End;
+    OutFOpen := True;
+  End
+  Else
+  Begin
+    Assign(OutF, Opts.OutFile);
+    {$I-}
+    Rewrite(OutF);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      FatalError('impossible d ouvrir le fichier de sortie : ' + Opts.OutFile);
+      Exit;
+    End;
+    OutFOpen := True;
   End;
-  OutFOpen := True;
   LexInit(Opts.SrcFile);
   LexNextToken; { charger le premier token }
   { Consommer l ouverture PHP standard <?php uniquement (pas <?=) }
@@ -9858,15 +10052,18 @@ Begin
     EmitDapperStub
   Else If Opts.Framework = FW_ADONET Then
     EmitAdoNetStub;
+  { Fermer les blocs ouverts non fermes (securite) }
+  EmitClose;
   LexClose;
   { Generer le fichier .csproj minimal si l option est activee }
   EmitCsprojFile;
-  WarnMsg('transpilation non encore implementee (TODO 25 a faire)');
+  { Generer les fichiers d exemples si l option est activee }
+  If Opts.EmitSamples Then EmitSampleFiles;
 End;
 
 Procedure Cleanup;
 Begin
-  If OutFOpen Then
+  If OutFOpen And Not OutIsStdout Then
   Begin
     Close(OutF);
     OutFOpen := False;
@@ -9887,17 +10084,19 @@ BEGIN
     Halt(EXIT_OK);
   End;
 
-  ErrorCount := 0;
-  WarnCount  := 0;
-  LinesRead  := 0;
-  LinesEmit  := 0;
-  FnCount    := 0;
-  ClassCount := 0;
-  SymCount   := 0;
-  ScopeTop   := 0;
-  UseCount   := 0;
-  CurrentNs  := '';
-  OutFOpen   := False;
+  ErrorCount  := 0;
+  WarnCount   := 0;
+  LinesRead   := 0;
+  LinesEmit   := 0;
+  FnCount     := 0;
+  ClassCount  := 0;
+  SymCount    := 0;
+  ScopeTop    := 0;
+  UseCount    := 0;
+  StubCount   := 0;
+  CurrentNs   := '';
+  OutFOpen    := False;
+  OutIsStdout := False;
 
   ParseArgs;
   If Opts.Verbose Then ShowBanner;
