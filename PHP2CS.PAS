@@ -593,7 +593,7 @@
             Migrations EF Core : stub commentaire avec instructions.
             EF6 vs EF Core : differences d API gerees selon -framework ef|efcore.
 
-  TODO 22 - CIBLE FRAMEWORK : ASP.NET CORE / BLAZOR [A FAIRE]
+  TODO 22 - CIBLE FRAMEWORK : ASP.NET CORE / BLAZOR [IMPLEMENTE]
             Mode active par -framework aspnet ou -framework blazor.
             Transpilation des fonctions PHP web vers ASP.NET Core :
               header('Content-Type: ...')
@@ -2124,7 +2124,7 @@ End;
   TODO 19 - NAMESPACES ET IMPORTS (IMPLEMENTE)
   TODO 20 - INCLUDE / REQUIRE (IMPLEMENTE)
   TODO 21 - CIBLE : ENTITY FRAMEWORK / EF CORE (IMPLEMENTE)
-  TODO 22 - CIBLE : ASP.NET CORE / BLAZOR (A FAIRE)
+  TODO 22 - CIBLE : ASP.NET CORE / BLAZOR (IMPLEMENTE)
   TODO 23 - CIBLE : DAPPER ET ADO.NET (A FAIRE)
   TODO 24 - GENERATION DE L EN-TETE C# (A FAIRE)
   TODO 25 - FINALISATION, RAPPORT ET EXEMPLES (A FAIRE)
@@ -2502,6 +2502,15 @@ Function  IsPdoFunc(Const FnLow: TString): Boolean; Forward;
 Procedure ParsePdoConnectStub(Indent: Integer); Forward;
 Procedure ParsePdoFuncStub(Indent: Integer); Forward;
 Procedure EmitDbContextStub; Forward;
+
+{ Declarations anticipees pour TODO 22 (ASP.NET Core / Blazor) }
+Function  IsWebPhpFunc(Const FnLow: TString): Boolean; Forward;
+Procedure ParseHeaderCall(Indent: Integer); Forward;
+Procedure ParseSessionStmt(Indent: Integer); Forward;
+Procedure ParseSetcookieStub(Indent: Integer); Forward;
+Procedure ParseObStub(Indent: Integer); Forward;
+Procedure EmitAspNetControllerStub; Forward;
+Procedure EmitBlazorComponentStub; Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -8793,6 +8802,343 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 22 - CIBLE FRAMEWORK : ASP.NET CORE / BLAZOR [IMPLEMENTE]
+  ============================================================ }
+
+{ Retourne True si le nom en minuscules est une fonction PHP web
+  geree par le transpileur ASP.NET Core / Blazor. }
+Function IsWebPhpFunc(Const FnLow: TString): Boolean;
+Begin
+  IsWebPhpFunc :=
+    (FnLow = 'header')              Or
+    (FnLow = 'session_start')       Or
+    (FnLow = 'session_destroy')     Or
+    (FnLow = 'session_unset')       Or
+    (FnLow = 'session_write_close') Or
+    (FnLow = 'setcookie')           Or
+    (FnLow = 'setrawcookie')        Or
+    (FnLow = 'ob_start')            Or
+    (FnLow = 'ob_get_clean')        Or
+    (FnLow = 'ob_end_clean')        Or
+    (FnLow = 'ob_get_contents')     Or
+    (FnLow = 'ob_flush')            Or
+    (FnLow = 'ob_end_flush')        Or
+    (FnLow = 'headers_sent')        Or
+    (FnLow = 'header_remove');
+End;
+
+{ Transpile un appel PHP header('...') vers ASP.NET Core.
+  CurTok est sur 'header'. Consomme jusqu au ';' inclus. }
+Procedure ParseHeaderCall(Indent: Integer);
+Var
+  Arg    : TString;
+  Low    : TString;
+  P      : Integer;
+  ValStr : TString;
+Begin
+  LexNextToken; { sauter 'header' }
+  Arg := '';
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+  Begin
+    LexNextToken; { sauter '(' }
+    If (CurTok.Kind = TK_STRING_SQ) Or (CurTok.Kind = TK_STRING_DQ) Then
+    Begin
+      Arg := CurTok.Val;
+      LexNextToken;
+    End;
+    { Sauter jusqu a la fermeture ')' }
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) And (CurTok.Kind <> TK_CLOSE_PHP) Do
+      LexNextToken;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  { Analyser le contenu de l argument }
+  Low := LowStr(Arg);
+  If Copy(Low, 1, 9) = 'location:' Then
+  Begin
+    ValStr := Arg;
+    P := Pos(':', ValStr);
+    If P > 0 Then ValStr := Copy(ValStr, P + 1, Length(ValStr));
+    While (Length(ValStr) > 0) And (ValStr[1] = ' ') Do
+      ValStr := Copy(ValStr, 2, Length(ValStr));
+    EmitLine(IndentStr(Indent) + 'return Redirect("' + ValStr + '");');
+  End
+  Else If Copy(Low, 1, 13) = 'content-type:' Then
+  Begin
+    ValStr := Arg;
+    P := Pos(':', ValStr);
+    If P > 0 Then ValStr := Copy(ValStr, P + 1, Length(ValStr));
+    While (Length(ValStr) > 0) And (ValStr[1] = ' ') Do
+      ValStr := Copy(ValStr, 2, Length(ValStr));
+    EmitLine(IndentStr(Indent) + 'Response.ContentType = "' + ValStr + '";');
+  End
+  Else If Arg <> '' Then
+    EmitLine(IndentStr(Indent) +
+      '// header("' + Arg + '") -> Response.Headers.Add(name, value);')
+  Else
+    EmitLine(IndentStr(Indent) +
+      '// header(...) -> Response.Headers.Add(name, value);');
+End;
+
+{ Transpile session_start(), session_destroy(), session_unset(), etc.
+  vers ASP.NET Core Session. CurTok est sur le nom de la fonction.
+  Consomme jusqu au ';' inclus. }
+Procedure ParseSessionStmt(Indent: Integer);
+Var FnLow: TString;
+Begin
+  FnLow := LowStr(CurTok.Val);
+  LexNextToken; { sauter le nom de fonction }
+  { Sauter les parentheses et arguments }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+  Begin
+    LexNextToken; { sauter '(' }
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) And (CurTok.Kind <> TK_CLOSE_PHP) Do
+      LexNextToken;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  If FnLow = 'session_start' Then
+    EmitLine(IndentStr(Indent) +
+      '// session_start() -> configure via services.AddSession()' +
+      ' + app.UseSession() dans Program.cs')
+  Else If (FnLow = 'session_destroy') Or (FnLow = 'session_unset') Then
+    EmitLine(IndentStr(Indent) + 'HttpContext.Session.Clear(); // ' + FnLow)
+  Else If FnLow = 'session_write_close' Then
+    EmitLine(IndentStr(Indent) +
+      '// session_write_close() -> Session persistee automatiquement en ASP.NET Core')
+  Else
+    EmitLine(IndentStr(Indent) + '// ' + FnLow + '() -> stub ASP.NET Core Session');
+End;
+
+{ Transpile setcookie() / setrawcookie() vers Response.Cookies.Append.
+  CurTok est sur 'setcookie' ou 'setrawcookie'.
+  Consomme jusqu au ';' inclus. }
+Procedure ParseSetcookieStub(Indent: Integer);
+Var
+  FnLow : TString;
+  Buf   : TString;
+Begin
+  FnLow := LowStr(CurTok.Val);
+  LexNextToken; { sauter le nom }
+  Buf := '';
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+  Begin
+    LexNextToken; { sauter '(' }
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) And (CurTok.Kind <> TK_CLOSE_PHP) Do
+    Begin
+      If Buf <> '' Then Buf := Buf + ' ';
+      Buf := Buf + CurTok.Val;
+      LexNextToken;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  EmitLine(IndentStr(Indent) + '// ' + FnLow + '(' + Buf + ')');
+  EmitLine(IndentStr(Indent) +
+    '// -> Response.Cookies.Append(name, value,' +
+    ' new CookieOptions { Expires = DateTimeOffset.FromUnixTimeSeconds(exp) });');
+End;
+
+{ Transpile ob_start(), ob_get_clean(), ob_end_clean(), ob_get_contents(),
+  ob_flush(), ob_end_flush(), headers_sent(), header_remove()
+  vers des stubs ASP.NET Core. CurTok est sur le nom de la fonction.
+  Consomme jusqu au ';' inclus. }
+Procedure ParseObStub(Indent: Integer);
+Var FnLow: TString;
+Begin
+  FnLow := LowStr(CurTok.Val);
+  LexNextToken; { sauter le nom }
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+  Begin
+    LexNextToken; { sauter '(' }
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) And (CurTok.Kind <> TK_CLOSE_PHP) Do
+      LexNextToken;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  If FnLow = 'ob_start' Then
+    EmitLine(IndentStr(Indent) +
+      'var __ob = new System.IO.StringWriter(); // ob_start()')
+  Else If FnLow = 'ob_get_clean' Then
+  Begin
+    EmitLine(IndentStr(Indent) +
+      '// ob_get_clean() -> __ob.ToString()');
+    EmitLine(IndentStr(Indent) +
+      '// puis : __ob.GetStringBuilder().Clear();');
+  End
+  Else If FnLow = 'ob_end_clean' Then
+    EmitLine(IndentStr(Indent) +
+      '__ob.GetStringBuilder().Clear(); // ob_end_clean()')
+  Else If FnLow = 'ob_get_contents' Then
+    EmitLine(IndentStr(Indent) + '// ob_get_contents() -> __ob.ToString()')
+  Else If (FnLow = 'ob_flush') Or (FnLow = 'ob_end_flush') Then
+    EmitLine(IndentStr(Indent) +
+      '// ' + FnLow + '() -> await Response.WriteAsync(__ob.ToString());')
+  Else If FnLow = 'headers_sent' Then
+    EmitLine(IndentStr(Indent) + '// headers_sent() -> Response.HasStarted')
+  Else If FnLow = 'header_remove' Then
+    EmitLine(IndentStr(Indent) + '// header_remove() -> Response.Headers.Remove(...)')
+  Else
+    EmitLine(IndentStr(Indent) + '// ' + FnLow + '() -> stub ASP.NET Core');
+End;
+
+{ Emet un stub de controleur ASP.NET Core MVC / API complet pour
+  -framework aspnet. }
+Procedure EmitAspNetControllerStub;
+Begin
+  EmitLine('');
+  EmitLine('// ============================================================');
+  EmitLine('// Stub ASP.NET Core genere par PHP2CS');
+  EmitLine('// ============================================================');
+  EmitLine('');
+  EmitLine('// -- Configuration des services (Program.cs) --');
+  EmitLine('// var builder = WebApplication.CreateBuilder(args);');
+  EmitLine('// builder.Services.AddControllersWithViews();');
+  EmitLine('// builder.Services.AddSession();');
+  EmitLine('// builder.Services.AddAuthentication(' +
+           'CookieAuthenticationDefaults.AuthenticationScheme)');
+  EmitLine('//     .AddCookie();');
+  EmitLine('// var app = builder.Build();');
+  EmitLine('// app.UseRouting();');
+  EmitLine('// app.UseAuthentication();');
+  EmitLine('// app.UseAuthorization();');
+  EmitLine('// app.UseSession();');
+  EmitLine('// app.MapDefaultControllerRoute();');
+  EmitLine('// app.Run();');
+  EmitLine('');
+  EmitLine('using Microsoft.AspNetCore.Mvc;');
+  EmitLine('using Microsoft.AspNetCore.Authorization;');
+  EmitLine('');
+  EmitLine('// TODO: renommer la classe selon le controleur PHP detecte');
+  EmitLine('[ApiController]');
+  EmitLine('[Route("[controller]")]');
+  EmitLine('public class AppController : ControllerBase');
+  EmitLine('{');
+  EmitLine('    // [HttpGet]');
+  EmitLine('    // public IActionResult Index()');
+  EmitLine('    // {');
+  EmitLine('    //     return Ok("Hello from PHP2CS");');
+  EmitLine('    // }');
+  EmitLine('');
+  EmitLine('    // [HttpGet("{id}")]');
+  EmitLine('    // [Authorize]');
+  EmitLine('    // public IActionResult GetById(int id)');
+  EmitLine('    // {');
+  EmitLine('    //     // Remplacer par la logique PHP detectee');
+  EmitLine('    //     return Ok(new { Id = id });');
+  EmitLine('    // }');
+  EmitLine('');
+  EmitLine('    // [HttpPost]');
+  EmitLine('    // public IActionResult Create([FromBody] object dto)');
+  EmitLine('    // {');
+  EmitLine('    //     if (!ModelState.IsValid) return BadRequest(ModelState);');
+  EmitLine('    //     return CreatedAtAction(nameof(GetById), new { id = 0 }, dto);');
+  EmitLine('    // }');
+  EmitLine('');
+  EmitLine('    // [HttpPut("{id}")]');
+  EmitLine('    // public IActionResult Update(int id, [FromBody] object dto)');
+  EmitLine('    // {');
+  EmitLine('    //     return NoContent();');
+  EmitLine('    // }');
+  EmitLine('');
+  EmitLine('    // [HttpDelete("{id}")]');
+  EmitLine('    // public IActionResult Delete(int id)');
+  EmitLine('    // {');
+  EmitLine('    //     return NoContent();');
+  EmitLine('    // }');
+  EmitLine('}');
+  EmitLine('');
+  EmitLine('// -- Validation de modele (Data Annotations) --');
+  EmitLine('// using System.ComponentModel.DataAnnotations;');
+  EmitLine('// public class UserDto');
+  EmitLine('// {');
+  EmitLine('//     [Required]');
+  EmitLine('//     [MaxLength(100)]');
+  EmitLine('//     public string Name { get; set; }');
+  EmitLine('//');
+  EmitLine('//     [Required]');
+  EmitLine('//     [EmailAddress]');
+  EmitLine('//     public string Email { get; set; }');
+  EmitLine('// }');
+  EmitLine('');
+  EmitLine('// -- Authentification / autorisation --');
+  EmitLine('// [Authorize]                 : exige un utilisateur authentifie');
+  EmitLine('// [AllowAnonymous]            : autorise les requetes anonymes');
+  EmitLine('// [Authorize(Roles = "Admin")]: exige le role Admin');
+  EmitLine('');
+  EmitLine('// -- Liaisons de modele --');
+  EmitLine('// [FromBody]  : corps JSON/XML de la requete');
+  EmitLine('// [FromQuery] : parametre de requete (?param=val)');
+  EmitLine('// [FromRoute] : parametre de route ({id})');
+  EmitLine('// [FromForm]  : donnees de formulaire HTML');
+End;
+
+{ Emet un stub de composant Blazor pour -framework blazor. }
+Procedure EmitBlazorComponentStub;
+Begin
+  EmitLine('');
+  EmitLine('// ============================================================');
+  EmitLine('// Stub Blazor genere par PHP2CS');
+  EmitLine('// ============================================================');
+  EmitLine('');
+  EmitLine('// -- Configuration dans Program.cs (Blazor WebAssembly) --');
+  EmitLine('// var builder = WebAssemblyHostBuilder.CreateDefault(args);');
+  EmitLine('// builder.RootComponents.Add<App>("#app");');
+  EmitLine('// builder.Services.AddScoped(sp =>' +
+           ' new HttpClient { BaseAddress = new Uri(builder.HostEnvironment.BaseAddress) });');
+  EmitLine('// await builder.Build().RunAsync();');
+  EmitLine('');
+  EmitLine('using Microsoft.AspNetCore.Components;');
+  EmitLine('using Microsoft.AspNetCore.Components.Web;');
+  EmitLine('');
+  EmitLine('// TODO: renommer en fonction du composant PHP detecte');
+  EmitLine('// Fichier : AppComponent.razor');
+  EmitLine('//');
+  EmitLine('// @page "/app"');
+  EmitLine('// @inject HttpClient Http');
+  EmitLine('//');
+  EmitLine('// <h3>@title</h3>');
+  EmitLine('// <p>@message</p>');
+  EmitLine('// <button @onclick="HandleClick">Cliquer</button>');
+  EmitLine('//');
+  EmitLine('// @code {');
+  EmitLine('//     private string title = "Mon composant Blazor";');
+  EmitLine('//     private string message = "";');
+  EmitLine('//');
+  EmitLine('//     [Parameter]');
+  EmitLine('//     public EventCallback OnChange { get; set; }');
+  EmitLine('//');
+  EmitLine('//     protected override async Task OnInitializedAsync()');
+  EmitLine('//     {');
+  EmitLine('//         // TODO: charger les donnees (remplace le code PHP)');
+  EmitLine('//         // var data = await Http.GetFromJsonAsync<List<object>>("api/...");');
+  EmitLine('//     }');
+  EmitLine('//');
+  EmitLine('//     private async Task HandleClick()');
+  EmitLine('//     {');
+  EmitLine('//         message = "Clique!";');
+  EmitLine('//         StateHasChanged();');
+  EmitLine('//         await OnChange.InvokeAsync();');
+  EmitLine('//     }');
+  EmitLine('// }');
+  EmitLine('');
+  EmitLine('// -- Liaison de donnees (@bind) --');
+  EmitLine('// <input @bind="value" @bind:event="oninput" />');
+  EmitLine('// private string value = "";');
+  EmitLine('');
+  EmitLine('// -- Injection de dependances (@inject) --');
+  EmitLine('// @inject NavigationManager NavManager');
+  EmitLine('// @inject IJSRuntime JS');
+  EmitLine('// NavManager.NavigateTo("/autre-page");');
+  EmitLine('// await JS.InvokeVoidAsync("alert", "message");');
+End;
+
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -8885,6 +9231,26 @@ Begin
             ((Opts.Framework = FW_EF) Or (Opts.Framework = FW_EFCORE)) And
             IsPdoIdent(LowStr(CurTok.Val)) Then
       ParsePdoConnectStub(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            ((Opts.Framework = FW_ASPNET) Or (Opts.Framework = FW_BLAZOR)) And
+            (LowStr(CurTok.Val) = 'header') Then
+      ParseHeaderCall(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            ((Opts.Framework = FW_ASPNET) Or (Opts.Framework = FW_BLAZOR)) And
+            ((LowStr(CurTok.Val) = 'session_start')       Or
+             (LowStr(CurTok.Val) = 'session_destroy')     Or
+             (LowStr(CurTok.Val) = 'session_unset')       Or
+             (LowStr(CurTok.Val) = 'session_write_close')) Then
+      ParseSessionStmt(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            ((Opts.Framework = FW_ASPNET) Or (Opts.Framework = FW_BLAZOR)) And
+            ((LowStr(CurTok.Val) = 'setcookie') Or
+             (LowStr(CurTok.Val) = 'setrawcookie')) Then
+      ParseSetcookieStub(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            ((Opts.Framework = FW_ASPNET) Or (Opts.Framework = FW_BLAZOR)) And
+            IsWebPhpFunc(LowStr(CurTok.Val)) Then
+      ParseObStub(0)
     Else If (CurTok.Kind = TK_OPEN_PHP) And (CurTok.Val = '<?=') Then
       ParseShortEchoTag(0)
     Else If CurTok.Kind = TK_HTML Then
@@ -8930,8 +9296,13 @@ Begin
   { Emettre le DbContext EF/EFCore si le framework le requiert }
   If (Opts.Framework = FW_EF) Or (Opts.Framework = FW_EFCORE) Then
     EmitDbContextStub;
+  { Emettre le stub ASP.NET Core / Blazor si le framework le requiert }
+  If Opts.Framework = FW_ASPNET Then
+    EmitAspNetControllerStub
+  Else If Opts.Framework = FW_BLAZOR Then
+    EmitBlazorComponentStub;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 22-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 23-25 a faire)');
 End;
 
 Procedure Cleanup;
