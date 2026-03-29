@@ -123,7 +123,7 @@
               verifier que l extension est reconnue
               afficher un avertissement si langage non supporte
 
-  TODO 03 - LEXEUR DE COMMENTAIRES DE DOCUMENTATION [A FAIRE]
+  TODO 03 - LEXEUR DE COMMENTAIRES DE DOCUMENTATION [IMPLEMENTE]
             TDocCommentKind : (DCK_NONE, DCK_JAVADOC, DCK_QT,
               DCK_TRIPLE_SLASH, DCK_EXCLAMATION, DCK_DOXYGEN)
             TDocToken : record
@@ -926,11 +926,26 @@ Type
     LANG_IDL, LANG_OBJC, LANG_SLICE, LANG_LEX, LANG_RUST,
     LANG_GO, LANG_SWIFT, LANG_KOTLIN, LANG_BASIC, LANG_COBOL);
 
+  { Types pour les commentaires de documentation (TODO 03) }
+  TDocCommentKind = (DCK_NONE, DCK_JAVADOC, DCK_QT,
+    DCK_TRIPLE_SLASH, DCK_EXCLAMATION, DCK_DOXYGEN);
+
+  TDocToken = Record
+    Kind : TDocCommentKind;
+    Text : String;
+    Line : Integer;
+    Col  : Integer;
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
 Var
   Opts : TOptions;
+
+  { Variables pour les commentaires de documentation (TODO 03) }
+  DocTokens     : Array[1..MAX_DOC_TOKENS] Of TDocToken;
+  DocTokenCount : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -1109,8 +1124,338 @@ Begin
 End;
 
 { ============================================================
-  AFFICHAGE DE L'AIDE ET DE LA VERSION
+  TODO 03 - LEXEUR DE COMMENTAIRES DE DOCUMENTATION
   ============================================================ }
+
+Function IsDocCommentStart(Const Line: String; Pos: Integer): TDocCommentKind;
+{ Detecte le debut d'un commentaire de documentation a la position Pos }
+Var
+  Remaining: Integer;
+Begin
+  IsDocCommentStart := DCK_NONE;
+  Remaining := Length(Line) - Pos + 1;
+
+  If Remaining < 2 Then Exit;
+
+  { Styles C/C++/Java }
+  If Remaining >= 3 Then
+  Begin
+    { /** - Style Javadoc }
+    If (Line[Pos] = '/') And (Line[Pos+1] = '*') And (Line[Pos+2] = '*') Then
+    Begin
+      { Verifier que ce n'est pas /*** (juste des etoiles decoratives) }
+      If (Remaining < 4) Or (Line[Pos+3] <> '*') Then
+      Begin
+        IsDocCommentStart := DCK_JAVADOC;
+        Exit;
+      End;
+    End;
+
+    { /*! - Style Doxygen }
+    If (Line[Pos] = '/') And (Line[Pos+1] = '*') And (Line[Pos+2] = '!') Then
+    Begin
+      IsDocCommentStart := DCK_DOXYGEN;
+      Exit;
+    End;
+
+    { /// - Triple slash C++ }
+    If (Line[Pos] = '/') And (Line[Pos+1] = '/') And (Line[Pos+2] = '/') Then
+    Begin
+      { Verifier que ce n'est pas //// (juste des slashes decoratifs) }
+      If (Remaining < 4) Or (Line[Pos+3] <> '/') Then
+      Begin
+        IsDocCommentStart := DCK_TRIPLE_SLASH;
+        Exit;
+      End;
+    End;
+
+    { //! - Style Qt/Exclamation }
+    If (Line[Pos] = '/') And (Line[Pos+1] = '/') And (Line[Pos+2] = '!') Then
+    Begin
+      IsDocCommentStart := DCK_EXCLAMATION;
+      Exit;
+    End;
+
+    { {** - Style Pascal/Delphi Javadoc }
+    If (Line[Pos] = '{') And (Line[Pos+1] = '*') And (Line[Pos+2] = '*') Then
+    Begin
+      IsDocCommentStart := DCK_JAVADOC;
+      Exit;
+    End;
+
+    { (*! - Style Pascal Doxygen }
+    If (Line[Pos] = '(') And (Line[Pos+1] = '*') And (Line[Pos+2] = '!') Then
+    Begin
+      IsDocCommentStart := DCK_DOXYGEN;
+      Exit;
+    End;
+
+    { (** - Style Pascal/OCaml Javadoc }
+    If (Line[Pos] = '(') And (Line[Pos+1] = '*') And (Line[Pos+2] = '*') Then
+    Begin
+      { Verifier que ce n'est pas (*** }
+      If (Remaining < 4) Or (Line[Pos+3] <> '*') Then
+      Begin
+        IsDocCommentStart := DCK_JAVADOC;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+Procedure InitDocTokens;
+{ Initialise le tableau des tokens de documentation }
+Begin
+  DocTokenCount := 0;
+End;
+
+Procedure AddDocToken(Kind: TDocCommentKind; Const Text: String;
+  Line, Col: Integer);
+{ Ajoute un token de documentation au tableau }
+Begin
+  If DocTokenCount < MAX_DOC_TOKENS Then
+  Begin
+    Inc(DocTokenCount);
+    DocTokens[DocTokenCount].Kind := Kind;
+    DocTokens[DocTokenCount].Text := Text;
+    DocTokens[DocTokenCount].Line := Line;
+    DocTokens[DocTokenCount].Col  := Col;
+  End
+  Else
+    WarnMsg('Trop de commentaires de documentation (max=' +
+      IntToStr(MAX_DOC_TOKENS) + ')');
+End;
+
+Function TrimLeft(Const S: String): String;
+{ Supprime les espaces au debut de la chaine }
+Var
+  I: Integer;
+Begin
+  I := 1;
+  While (I <= Length(S)) And (S[I] = ' ') Do Inc(I);
+  TrimLeft := Copy(S, I, Length(S) - I + 1);
+End;
+
+Function TrimRight(Const S: String): String;
+{ Supprime les espaces a la fin de la chaine }
+Var
+  I: Integer;
+Begin
+  I := Length(S);
+  While (I >= 1) And (S[I] = ' ') Do Dec(I);
+  TrimRight := Copy(S, 1, I);
+End;
+
+Function TrimStr(Const S: String): String;
+{ Supprime les espaces au debut et a la fin }
+Begin
+  TrimStr := TrimLeft(TrimRight(S));
+End;
+
+Function StripLinePrefix(Const Line: String): String;
+{ Supprime les prefixes de ligne dans les commentaires multi-lignes
+  comme "  * " ou "  // " }
+Var
+  S: String;
+Begin
+  S := TrimLeft(Line);
+
+  { Prefixe * pour commentaires C style /** ... */ }
+  If (Length(S) >= 1) And (S[1] = '*') Then
+  Begin
+    S := Copy(S, 2, Length(S) - 1);
+    If (Length(S) >= 1) And (S[1] = ' ') Then
+      S := Copy(S, 2, Length(S) - 1);
+    StripLinePrefix := S;
+    Exit;
+  End;
+
+  { Prefixe // pour commentaires C++ style /// ou //! }
+  If (Length(S) >= 2) And (S[1] = '/') And (S[2] = '/') Then
+  Begin
+    S := Copy(S, 3, Length(S) - 2);
+    { Sauter le / ou ! supplementaire }
+    If (Length(S) >= 1) And ((S[1] = '/') Or (S[1] = '!')) Then
+      S := Copy(S, 2, Length(S) - 1);
+    If (Length(S) >= 1) And (S[1] = ' ') Then
+      S := Copy(S, 2, Length(S) - 1);
+    StripLinePrefix := S;
+    Exit;
+  End;
+
+  StripLinePrefix := S;
+End;
+
+Procedure ScanDocComment(Var F: Text; Var CurrentLine: String;
+  Var LineNum: Integer; Kind: TDocCommentKind; StartCol: Integer;
+  Var Token: TDocToken);
+{ Extrait le contenu complet d'un commentaire de documentation.
+  Gere les commentaires multi-lignes et single-line. }
+Var
+  Content: String;
+  TempLine: String;
+  I, EndPos: Integer;
+  InMultiLine: Boolean;
+  EndMarker: String;
+Begin
+  Token.Kind := Kind;
+  Token.Line := LineNum;
+  Token.Col  := StartCol;
+  Content := '';
+
+  { Determiner le marqueur de fin selon le type }
+  Case Kind Of
+    DCK_JAVADOC, DCK_DOXYGEN:
+    Begin
+      { Commentaires C: /** */ ou /*! */  Pascal: (** *) }
+      If CurrentLine[StartCol] = '{' Then
+        EndMarker := '}'
+      Else If CurrentLine[StartCol] = '(' Then
+        EndMarker := '*)'
+      Else
+        EndMarker := '*/';
+      InMultiLine := True;
+    End;
+    DCK_TRIPLE_SLASH, DCK_EXCLAMATION:
+    Begin
+      { Commentaires /// ou //! - une seule ligne }
+      EndMarker := '';
+      InMultiLine := False;
+    End;
+  Else
+    EndMarker := '';
+    InMultiLine := False;
+  End;
+
+  { Extraire le contenu de la premiere ligne }
+  If InMultiLine Then
+  Begin
+    { Sauter le marqueur de debut (/** ou /*! ou {** ou (**) }
+    I := StartCol + 3;
+    If I <= Length(CurrentLine) Then
+    Begin
+      TempLine := Copy(CurrentLine, I, Length(CurrentLine) - I + 1);
+
+      { Verifier si le commentaire se termine sur la meme ligne }
+      If EndMarker = '}' Then
+        EndPos := System.Pos('}', TempLine)
+      Else If EndMarker = '*)' Then
+        EndPos := System.Pos('*)', TempLine)
+      Else
+        EndPos := System.Pos('*/', TempLine);
+
+      If EndPos > 0 Then
+      Begin
+        { Commentaire sur une seule ligne }
+        Content := TrimStr(Copy(TempLine, 1, EndPos - 1));
+        Token.Text := Content;
+        Exit;
+      End
+      Else
+        Content := StripLinePrefix(TempLine);
+    End;
+
+    { Lire les lignes suivantes jusqu'au marqueur de fin }
+    While Not Eof(F) Do
+    Begin
+      ReadLn(F, CurrentLine);
+      Inc(LineNum);
+
+      { Chercher le marqueur de fin }
+      If EndMarker = '}' Then
+        EndPos := System.Pos('}', CurrentLine)
+      Else If EndMarker = '*)' Then
+        EndPos := System.Pos('*)', CurrentLine)
+      Else
+        EndPos := System.Pos('*/', CurrentLine);
+
+      If EndPos > 0 Then
+      Begin
+        { Derniere ligne du commentaire }
+        TempLine := Copy(CurrentLine, 1, EndPos - 1);
+        TempLine := StripLinePrefix(TempLine);
+        If Content <> '' Then Content := Content + ' ';
+        Content := Content + TrimStr(TempLine);
+        Break;
+      End
+      Else
+      Begin
+        { Ligne intermediaire }
+        TempLine := StripLinePrefix(CurrentLine);
+        If Content <> '' Then Content := Content + ' ';
+        Content := Content + TrimStr(TempLine);
+      End;
+    End;
+  End
+  Else
+  Begin
+    { Commentaire single-line (/// ou //!) }
+    I := StartCol + 3;
+    If I <= Length(CurrentLine) Then
+    Begin
+      TempLine := Copy(CurrentLine, I, Length(CurrentLine) - I + 1);
+      If (Length(TempLine) >= 1) And (TempLine[1] = ' ') Then
+        TempLine := Copy(TempLine, 2, Length(TempLine) - 1);
+      Content := TrimStr(TempLine);
+    End;
+  End;
+
+  Token.Text := Content;
+End;
+
+Procedure ExtractDocComments(Const SourceFile: String);
+{ Ouvre le fichier source et extrait tous les commentaires de documentation }
+Var
+  F: Text;
+  Line: String;
+  LineNum, I: Integer;
+  Kind: TDocCommentKind;
+  Token: TDocToken;
+Begin
+  InitDocTokens;
+
+  Assign(F, SourceFile);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Impossible d''ouvrir le fichier: ' + SourceFile);
+    Exit;
+  End;
+
+  LineNum := 0;
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+
+    { Scanner la ligne a la recherche de commentaires doc }
+    I := 1;
+    While I <= Length(Line) Do
+    Begin
+      { Sauter les espaces }
+      While (I <= Length(Line)) And (Line[I] = ' ') Do Inc(I);
+      If I > Length(Line) Then Break;
+
+      { Verifier si c'est un debut de commentaire doc }
+      Kind := IsDocCommentStart(Line, I);
+      If Kind <> DCK_NONE Then
+      Begin
+        ScanDocComment(F, Line, LineNum, Kind, I, Token);
+        If Token.Text <> '' Then
+          AddDocToken(Token.Kind, Token.Text, Token.Line, Token.Col);
+        Break; { Passer a la ligne suivante }
+      End;
+
+      Inc(I);
+    End;
+  End;
+
+  Close(F);
+
+  InfoMsg('Commentaires de documentation extraits: ' + IntToStr(DocTokenCount));
+End;
 
 Procedure ShowVersion;
 Begin
@@ -1321,6 +1666,7 @@ End;
 Procedure ProcessInputFile(Const FileName: String);
 Var
   Lang: TSourceLanguage;
+  I: Integer;
 Begin
   { Valider le fichier d entree }
   ValidateInputFile(FileName);
@@ -1331,12 +1677,38 @@ Begin
   InfoMsg('Analyse du fichier: ' + FileName);
   InfoMsg('Langage detecte: ' + LanguageToStr(Lang));
 
-  { TODO: Implementer l'analyse complete du fichier }
   WriteLn('Traitement de ', FileName, ' (', LanguageToStr(Lang), ')');
-  WriteLn('  -> Documentation sera generee dans le repertoire courant');
   WriteLn;
-  WriteLn('Note: Cette fonctionnalite est en cours d''implementation.');
-  WriteLn('      Voir les TODOs 03 a 25 pour la feuille de route complete.');
+
+  { Extraire les commentaires de documentation (TODO 03) }
+  ExtractDocComments(FileName);
+
+  If DocTokenCount > 0 Then
+  Begin
+    WriteLn('Commentaires de documentation trouves: ', DocTokenCount);
+    WriteLn;
+    For I := 1 To DocTokenCount Do
+    Begin
+      Write('  [', I, '] Ligne ', DocTokens[I].Line, ': ');
+      Case DocTokens[I].Kind Of
+        DCK_JAVADOC:      Write('(Javadoc) ');
+        DCK_DOXYGEN:      Write('(Doxygen) ');
+        DCK_TRIPLE_SLASH: Write('(///) ');
+        DCK_EXCLAMATION:  Write('(//!) ');
+      End;
+      If Length(DocTokens[I].Text) > 60 Then
+        WriteLn(Copy(DocTokens[I].Text, 1, 57), '...')
+      Else
+        WriteLn(DocTokens[I].Text);
+    End;
+    WriteLn;
+  End
+  Else
+    WriteLn('Aucun commentaire de documentation trouve.');
+
+  WriteLn;
+  WriteLn('Note: L''analyse des balises est en cours d''implementation.');
+  WriteLn('      Voir les TODOs 04 a 25 pour la feuille de route complete.');
 End;
 
 { ============================================================
