@@ -396,7 +396,7 @@
               FOR XML EXPLICIT
             sp_xml_preparedocument, sp_xml_removedocument
 
-  TODO 24 - LECTURE DES INDEX (B-TREE)
+  TODO 24 - LECTURE DES INDEX (B-TREE) [IMPLEMENTE]
             Decoder les pages d index (type 2) : structure B-Tree
             Lire la page racine de l index (sys.sysidxstats)
             Parcourir les niveaux intermediaires (non-leaf)
@@ -15330,6 +15330,605 @@ Begin
   End;
 
   QETableScan := Res.RowCnt;
+End;
+
+{ ===== TODO 24 : Lecture des index (B-Tree) ===== }
+
+{ ---- Chercher un index pour une table par ObjId --------------- }
+{ Retourne l indice dans SysIndexes du premier index non-heap     }
+{ (clustered ou non-clustered) pour la table. -1 si aucun.        }
+
+Function FindIndexForTable(ObjId : LongInt) : Integer;
+Var
+  I       : Integer;
+  BestIdx : Integer;
+Begin
+  BestIdx := -1;
+  For I := 0 To SysIdxCount - 1 Do
+    If SysIndexes[I].Valid And
+       (SysIndexes[I].ObjectId = ObjId) And
+       (SysIndexes[I].IdxType > 0) Then
+    Begin
+      { Preferer le clustered (type 1) }
+      If SysIndexes[I].IdxType = 1 Then
+      Begin
+        FindIndexForTable := I;
+        Exit;
+      End;
+      If BestIdx < 0 Then
+        BestIdx := I;
+    End;
+  FindIndexForTable := BestIdx;
+End;
+
+{ ---- Chercher un index pour une colonne ---------------------- }
+{ Retourne l indice dans SysIndexes de l index dont la premiere   }
+{ cle correspond a ColId. -1 si aucun index.                      }
+
+Function FindIndexForCol(ObjId : LongInt; ColId : LongInt) : Integer;
+Var
+  I, J : Integer;
+Begin
+  FindIndexForCol := -1;
+  For I := 0 To SysIdxCount - 1 Do
+    If SysIndexes[I].Valid And
+       (SysIndexes[I].ObjectId = ObjId) And
+       (SysIndexes[I].IdxType > 0) Then
+    Begin
+      { Chercher la premiere cle (SubId = 1) de cet index }
+      For J := 0 To SysIcCount - 1 Do
+        If SysIdxCols[J].Valid And
+           (SysIdxCols[J].ObjectId = ObjId) And
+           (SysIdxCols[J].IndexId = SysIndexes[I].IndexId) And
+           (SysIdxCols[J].SubId = 1) And
+           (SysIdxCols[J].ColumnId = ColId) Then
+        Begin
+          FindIndexForCol := I;
+          Exit;
+        End;
+    End;
+End;
+
+{ ---- Chercher le column_id d une colonne par nom ------------- }
+{ Retourne le column_id ou -1 si introuvable.                    }
+
+Function FindColIdByName(ObjId : LongInt;
+                          Const ColName : TTokenText) : LongInt;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  FindColIdByName := -1;
+  U := StrUpperCase(ColName);
+  For I := 0 To SysColCount - 1 Do
+    If SysColumns[I].Valid And
+       (SysColumns[I].ObjectId = ObjId) And
+       (StrUpperCase(SysColumns[I].Name) = U) Then
+    Begin
+      FindColIdByName := SysColumns[I].ColumnId;
+      Exit;
+    End;
+End;
+
+{ ---- Trouver la page racine d un index ----------------------- }
+{ Parcourt les pages d index (type 2) du MDF pour trouver la      }
+{ page ayant le niveau B-Tree le plus eleve (racine) pour un      }
+{ ObjId et IndexId donnes. Retourne -1 si introuvable.            }
+
+Function FindIndexRootPage(ObjId : LongInt;
+                            IndexId : LongInt) : LongInt;
+Var
+  TmpBuf    : TMdfPageBuf;
+  Hdr       : TMdfPageHeader;
+  I         : LongInt;
+  MaxLevel  : Byte;
+  RootPage  : LongInt;
+  PageCount : LongInt;
+Begin
+  MaxLevel  := 0;
+  RootPage  := -1;
+  PageCount := 0;
+
+  For I := 0 To MdfPageCnt - 1 Do
+  Begin
+    If PageCount >= MAX_QE_PAGES Then Break;
+    If Not SeekPage(I, TmpBuf) Then Continue;
+    ParsePageHeader(TmpBuf, Hdr);
+
+    { Pages d index (type 2) avec le bon ObjId }
+    If Hdr.PageType <> MDF_PT_INDEX Then Continue;
+    If Hdr.ObjId <> ObjId Then Continue;
+
+    Inc(PageCount);
+
+    { La racine est la page avec le niveau le plus eleve }
+    If Hdr.Level >= MaxLevel Then
+    Begin
+      MaxLevel := Hdr.Level;
+      RootPage := I;
+    End;
+  End;
+
+  FindIndexRootPage := RootPage;
+End;
+
+{ ---- Trouver la premiere page feuille d un index ------------- }
+{ Parcourt les pages d index pour trouver la premiere page         }
+{ feuille (Level=0) de la chaine chainee. Suit le PrevPage pour   }
+{ trouver le debut de la liste.                                    }
+
+Function FindFirstLeafPage(ObjId : LongInt) : LongInt;
+Var
+  TmpBuf    : TMdfPageBuf;
+  Hdr       : TMdfPageHeader;
+  I         : LongInt;
+  FirstLeaf : LongInt;
+  PageCount : LongInt;
+Begin
+  FirstLeaf := -1;
+  PageCount := 0;
+
+  For I := 0 To MdfPageCnt - 1 Do
+  Begin
+    If PageCount >= MAX_QE_PAGES Then Break;
+    If Not SeekPage(I, TmpBuf) Then Continue;
+    ParsePageHeader(TmpBuf, Hdr);
+
+    If Hdr.PageType <> MDF_PT_INDEX Then Continue;
+    If Hdr.ObjId <> ObjId Then Continue;
+    If Hdr.Level <> 0 Then Continue;
+
+    Inc(PageCount);
+
+    { Chercher la feuille sans page precedente (debut de chaine) }
+    If Hdr.PrevPage = 0 Then
+    Begin
+      FirstLeaf := I;
+      Break;
+    End;
+
+    { Sinon garder la premiere trouvee comme fallback }
+    If FirstLeaf < 0 Then
+      FirstLeaf := I;
+  End;
+
+  FindFirstLeafPage := FirstLeaf;
+End;
+
+{ ---- Extraire la cle entiere d une entree d index ------------ }
+{ Lit la valeur entiere (4 octets) a la position de la cle dans   }
+{ une entree d index. Retourne 0 si la position est invalide.     }
+
+Function ExtractIndexKeyInt(Const Buf : TMdfPageBuf;
+                             RowOfs : Word;
+                             FixedLen : Word) : LongInt;
+Var
+  KeyOfs : Word;
+Begin
+  { La cle commence apres les status bits (2 octets min) }
+  KeyOfs := RowOfs + 4;
+  If KeyOfs + 4 > MDF_PAGE_SIZE Then
+  Begin
+    ExtractIndexKeyInt := 0;
+    Exit;
+  End;
+  ExtractIndexKeyInt := ReadLong(Buf, KeyOfs);
+End;
+
+{ ---- Extraire le pointeur enfant d un noeud intermediaire ---- }
+{ Dans un noeud non-feuille, chaque entree contient la cle         }
+{ suivie d un pointeur de page enfant (4 octets PageID).           }
+{ Le pointeur est situe apres la partie fixe de la cle.            }
+
+Function ExtractChildPagePtr(Const Buf : TMdfPageBuf;
+                              RowOfs : Word;
+                              FixedLen : Word) : LongInt;
+Var
+  PtrOfs : Word;
+Begin
+  { Le pointeur enfant se trouve apres la partie fixe du row }
+  PtrOfs := RowOfs + FixedLen;
+  If PtrOfs + 4 > MDF_PAGE_SIZE Then
+  Begin
+    ExtractChildPagePtr := 0;
+    Exit;
+  End;
+  ExtractChildPagePtr := ReadLong(Buf, PtrOfs);
+End;
+
+{ ---- Extraire le RID d une feuille non-clustered ------------- }
+{ Dans une feuille d index non-clustered, chaque entree contient  }
+{ la cle suivie d un RID (PageID 4oct + FileID 2oct + SlotID 2oct)}
+
+Procedure ExtractLeafRID(Const Buf : TMdfPageBuf;
+                          RowOfs : Word;
+                          FixedLen : Word;
+                          Var RIDPage : LongInt;
+                          Var RIDSlot : Word);
+Var
+  RidOfs : Word;
+Begin
+  RIDPage := 0;
+  RIDSlot := 0;
+  RidOfs := RowOfs + FixedLen;
+  If RidOfs + 8 > MDF_PAGE_SIZE Then Exit;
+  RIDPage := ReadLong(Buf, RidOfs);
+  { FileID a RidOfs+4 (2 oct), SlotID a RidOfs+6 (2 oct) }
+  RIDSlot := ReadWord(Buf, RidOfs + 6);
+End;
+
+{ ---- Index Scan : parcours sequentiel des feuilles ----------- }
+{ Parcourt toutes les pages feuille (Level=0) de l index,          }
+{ extrait chaque entree et decode le row de donnees correspondant. }
+{ Pour un index clustered, les feuilles sont les pages de donnees. }
+{ Pour un non-clustered, on suit les RID vers les data pages.      }
+
+Function QEIndexScan(ObjId : LongInt;
+                      IdxIdx : Integer;
+                      Var Res : TQEResult) : Integer;
+Var
+  TmpBuf     : TMdfPageBuf;
+  DataBuf    : TMdfPageBuf;
+  Hdr        : TMdfPageHeader;
+  DataHdr    : TMdfPageHeader;
+  RH         : TMdfRowHeader;
+  I, J       : LongInt;
+  RowOfs     : Word;
+  SC         : Word;
+  Slots      : TMdfSlotArray;
+  DataSlots  : TMdfSlotArray;
+  PageCount  : LongInt;
+  RIDPage    : LongInt;
+  RIDSlot    : Word;
+  IdxType    : Byte;
+  FixLen     : Word;
+Begin
+  Res.RowCnt := 0;
+  PageCount  := 0;
+  IdxType    := SysIndexes[IdxIdx].IdxType;
+
+  { Index clustered : les feuilles sont les data pages (type 1) }
+  If IdxType = 1 Then
+  Begin
+    QEIndexScan := QETableScan(ObjId, Res);
+    Exit;
+  End;
+
+  { Index non-clustered : parcourir les pages feuille (type 2, level=0) }
+  For I := 0 To MdfPageCnt - 1 Do
+  Begin
+    If Res.RowCnt >= MAX_QE_ROWS Then Break;
+    If PageCount >= MAX_QE_PAGES Then Break;
+
+    If Not SeekPage(I, TmpBuf) Then Continue;
+    ParsePageHeader(TmpBuf, Hdr);
+
+    If Hdr.PageType <> MDF_PT_INDEX Then Continue;
+    If Hdr.ObjId <> ObjId Then Continue;
+    If Hdr.Level <> 0 Then Continue;  { Feuilles seulement }
+
+    Inc(PageCount);
+    SC := Hdr.SlotCnt;
+    If SC > MDF_MAX_SLOTS Then SC := MDF_MAX_SLOTS;
+    ReadSlotArray(TmpBuf, SC, Slots);
+
+    FixLen := Hdr.PMinLen;
+    If FixLen < 4 Then FixLen := 8;
+
+    For J := 0 To SC - 1 Do
+    Begin
+      If Res.RowCnt >= MAX_QE_ROWS Then Break;
+      RowOfs := Slots[J];
+      If (RowOfs < MDF_PAGE_HDR_SIZE) Or
+         (RowOfs >= MDF_PAGE_SIZE) Then Continue;
+
+      { Extraire le RID de l entree d index }
+      ExtractLeafRID(TmpBuf, RowOfs, FixLen, RIDPage, RIDSlot);
+
+      If (RIDPage <= 0) Or (RIDPage >= MdfPageCnt) Then Continue;
+
+      { Lire la page de donnees correspondante (Key Lookup) }
+      If Not SeekPage(RIDPage, DataBuf) Then Continue;
+      ParsePageHeader(DataBuf, DataHdr);
+      If DataHdr.PageType <> MDF_PT_DATA Then Continue;
+
+      { Verifier le slot }
+      If RIDSlot >= DataHdr.SlotCnt Then Continue;
+      ReadSlotArray(DataBuf, DataHdr.SlotCnt, DataSlots);
+      If RIDSlot >= MDF_MAX_SLOTS Then Continue;
+
+      RowOfs := DataSlots[RIDSlot];
+      If (RowOfs < MDF_PAGE_HDR_SIZE) Or
+         (RowOfs >= MDF_PAGE_SIZE) Then Continue;
+
+      ParseRowHeader(DataBuf, RowOfs, RH);
+      If Not RH.Valid Then Continue;
+      If (RH.StatusA And $01) <> 0 Then Continue; { ghost }
+
+      QEDecodeRow(DataBuf, RowOfs, Res, Res.Rows[Res.RowCnt]);
+      Inc(Res.RowCnt);
+    End;
+  End;
+
+  QEIndexScan := Res.RowCnt;
+End;
+
+{ ---- Index Seek : recherche par cle dans le B-Tree ----------- }
+{ Navigue dans l arbre B depuis la racine jusqu aux feuilles       }
+{ pour trouver les entrees correspondant a une valeur de cle.      }
+{ Supporte la recherche par valeur entiere (cas le plus courant).  }
+{ Retourne le nombre de lignes trouvees.                           }
+
+Function QEIndexSeek(ObjId : LongInt;
+                      IdxIdx : Integer;
+                      Const KeyVal : TSqlValue;
+                      Var Res : TQEResult) : Integer;
+Var
+  TmpBuf     : TMdfPageBuf;
+  DataBuf    : TMdfPageBuf;
+  Hdr        : TMdfPageHeader;
+  DataHdr    : TMdfPageHeader;
+  RH         : TMdfRowHeader;
+  RootPage   : LongInt;
+  CurPage    : LongInt;
+  I          : LongInt;
+  RowOfs     : Word;
+  SC         : Word;
+  Slots      : TMdfSlotArray;
+  DataSlots  : TMdfSlotArray;
+  FixLen     : Word;
+  KeyInt     : LongInt;
+  ChildPage  : LongInt;
+  RIDPage    : LongInt;
+  RIDSlot    : Word;
+  IdxType    : Byte;
+  MaxDepth   : Integer;
+  SearchKey  : LongInt;
+Begin
+  Res.RowCnt := 0;
+  IdxType    := SysIndexes[IdxIdx].IdxType;
+
+  { Ne supporte le seek que pour les cles entieres }
+  If KeyVal.Category <> SQLCAT_INTEGER Then
+  Begin
+    QEIndexSeek := 0;
+    Exit;
+  End;
+  SearchKey := KeyVal.IntVal;
+
+  { Trouver la page racine }
+  RootPage := FindIndexRootPage(ObjId, SysIndexes[IdxIdx].IndexId);
+  If RootPage < 0 Then
+  Begin
+    QEIndexSeek := 0;
+    Exit;
+  End;
+
+  { Descendre dans le B-Tree depuis la racine }
+  CurPage  := RootPage;
+  MaxDepth := 0;
+
+  While (CurPage >= 0) And (CurPage < MdfPageCnt) And
+        (MaxDepth < 20) Do
+  Begin
+    Inc(MaxDepth);
+
+    If Not SeekPage(CurPage, TmpBuf) Then Break;
+    ParsePageHeader(TmpBuf, Hdr);
+
+    If (Hdr.PageType <> MDF_PT_INDEX) And
+       (Hdr.PageType <> MDF_PT_DATA) Then Break;
+
+    SC := Hdr.SlotCnt;
+    If SC > MDF_MAX_SLOTS Then SC := MDF_MAX_SLOTS;
+    If SC = 0 Then Break;
+    ReadSlotArray(TmpBuf, SC, Slots);
+
+    FixLen := Hdr.PMinLen;
+    If FixLen < 4 Then FixLen := 8;
+
+    { Niveau intermediaire (non-feuille) : chercher l enfant }
+    If Hdr.Level > 0 Then
+    Begin
+      ChildPage := -1;
+      For I := 0 To SC - 1 Do
+      Begin
+        RowOfs := Slots[I];
+        If (RowOfs < MDF_PAGE_HDR_SIZE) Or
+           (RowOfs >= MDF_PAGE_SIZE) Then Continue;
+
+        KeyInt := ExtractIndexKeyInt(TmpBuf, RowOfs, FixLen);
+        ChildPage := ExtractChildPagePtr(TmpBuf, RowOfs, FixLen);
+
+        { Si la cle cherchee est inferieure a cette entree,      }
+        { descendre dans l enfant precedent.                      }
+        If SearchKey < KeyInt Then
+        Begin
+          If I > 0 Then
+          Begin
+            RowOfs := Slots[I - 1];
+            If (RowOfs >= MDF_PAGE_HDR_SIZE) And
+               (RowOfs < MDF_PAGE_SIZE) Then
+              ChildPage := ExtractChildPagePtr(TmpBuf, RowOfs, FixLen);
+          End;
+          Break;
+        End;
+      End;
+
+      If ChildPage <= 0 Then Break;
+      CurPage := ChildPage;
+      Continue;
+    End;
+
+    { Niveau feuille (Level=0) : extraire les lignes correspondantes }
+    For I := 0 To SC - 1 Do
+    Begin
+      If Res.RowCnt >= MAX_QE_ROWS Then Break;
+      RowOfs := Slots[I];
+      If (RowOfs < MDF_PAGE_HDR_SIZE) Or
+         (RowOfs >= MDF_PAGE_SIZE) Then Continue;
+
+      KeyInt := ExtractIndexKeyInt(TmpBuf, RowOfs, FixLen);
+      If KeyInt <> SearchKey Then Continue;
+
+      { Index clustered : les donnees sont dans la page de donnees }
+      If IdxType = 1 Then
+      Begin
+        ParseRowHeader(TmpBuf, RowOfs, RH);
+        If Not RH.Valid Then Continue;
+        If (RH.StatusA And $01) <> 0 Then Continue;
+        QEDecodeRow(TmpBuf, RowOfs, Res, Res.Rows[Res.RowCnt]);
+        Inc(Res.RowCnt);
+      End
+      Else
+      Begin
+        { Non-clustered : Key Lookup via RID }
+        ExtractLeafRID(TmpBuf, RowOfs, FixLen, RIDPage, RIDSlot);
+        If (RIDPage <= 0) Or (RIDPage >= MdfPageCnt) Then Continue;
+
+        If Not SeekPage(RIDPage, DataBuf) Then Continue;
+        ParsePageHeader(DataBuf, DataHdr);
+        If DataHdr.PageType <> MDF_PT_DATA Then Continue;
+        If RIDSlot >= DataHdr.SlotCnt Then Continue;
+
+        ReadSlotArray(DataBuf, DataHdr.SlotCnt, DataSlots);
+        If RIDSlot >= MDF_MAX_SLOTS Then Continue;
+
+        RowOfs := DataSlots[RIDSlot];
+        If (RowOfs < MDF_PAGE_HDR_SIZE) Or
+           (RowOfs >= MDF_PAGE_SIZE) Then Continue;
+
+        ParseRowHeader(DataBuf, RowOfs, RH);
+        If Not RH.Valid Then Continue;
+        If (RH.StatusA And $01) <> 0 Then Continue;
+        QEDecodeRow(DataBuf, RowOfs, Res, Res.Rows[Res.RowCnt]);
+        Inc(Res.RowCnt);
+      End;
+    End;
+
+    { Suivre la page suivante pour les feuilles chainees }
+    If (Hdr.NextPage > 0) And (Hdr.NextPage < MdfPageCnt) And
+       (Res.RowCnt < MAX_QE_ROWS) Then
+    Begin
+      { Verifier si la page suivante contient des cles correspondantes }
+      If Not SeekPage(Hdr.NextPage, TmpBuf) Then Break;
+      ParsePageHeader(TmpBuf, Hdr);
+      If Hdr.Level <> 0 Then Break;
+      If Hdr.SlotCnt = 0 Then Break;
+      SC := Hdr.SlotCnt;
+      If SC > MDF_MAX_SLOTS Then SC := MDF_MAX_SLOTS;
+      ReadSlotArray(TmpBuf, SC, Slots);
+
+      RowOfs := Slots[0];
+      If (RowOfs < MDF_PAGE_HDR_SIZE) Or
+         (RowOfs >= MDF_PAGE_SIZE) Then Break;
+      KeyInt := ExtractIndexKeyInt(TmpBuf, RowOfs, FixLen);
+      If KeyInt <> SearchKey Then Break;
+
+      { La page suivante contient encore des cles correspondantes }
+      CurPage := Hdr.NextPage;
+      Continue;
+    End;
+
+    Break;  { Fin de la recherche }
+  End;
+
+  QEIndexSeek := Res.RowCnt;
+End;
+
+{ ---- Key Lookup : chercher une ligne par page et slot -------- }
+{ Lit une page de donnees et extrait la ligne au slot donne.       }
+{ Utilise pour dereferencer un RID d index non-clustered.          }
+
+Function QEKeyLookup(PageNum : LongInt; SlotNum : Word;
+                      Const Res : TQEResult;
+                      Var Row : TQERow) : Boolean;
+Var
+  TmpBuf : TMdfPageBuf;
+  Hdr    : TMdfPageHeader;
+  RH     : TMdfRowHeader;
+  Slots  : TMdfSlotArray;
+  RowOfs : Word;
+  SC     : Word;
+Begin
+  QEKeyLookup := False;
+  If (PageNum <= 0) Or (PageNum >= MdfPageCnt) Then Exit;
+
+  If Not SeekPage(PageNum, TmpBuf) Then Exit;
+  ParsePageHeader(TmpBuf, Hdr);
+  If Hdr.PageType <> MDF_PT_DATA Then Exit;
+
+  SC := Hdr.SlotCnt;
+  If SC > MDF_MAX_SLOTS Then SC := MDF_MAX_SLOTS;
+  If SlotNum >= SC Then Exit;
+
+  ReadSlotArray(TmpBuf, SC, Slots);
+  RowOfs := Slots[SlotNum];
+  If (RowOfs < MDF_PAGE_HDR_SIZE) Or
+     (RowOfs >= MDF_PAGE_SIZE) Then Exit;
+
+  ParseRowHeader(TmpBuf, RowOfs, RH);
+  If Not RH.Valid Then Exit;
+  If (RH.StatusA And $01) <> 0 Then Exit;
+
+  QEDecodeRow(TmpBuf, RowOfs, Res, Row);
+  QEKeyLookup := True;
+End;
+
+{ ---- Afficher les informations d index d une table ----------- }
+{ Liste les index definis pour une table en mode verbose.          }
+
+Procedure ShowTableIndexes(ObjId : LongInt);
+Var
+  I, J, K : Integer;
+  IdxId   : LongInt;
+  ColName : TCatName;
+Begin
+  For I := 0 To SysIdxCount - 1 Do
+  Begin
+    If Not SysIndexes[I].Valid Then Continue;
+    If SysIndexes[I].ObjectId <> ObjId Then Continue;
+    If SysIndexes[I].IdxType = 0 Then Continue;
+
+    Write('  Index : ', SysIndexes[I].Name);
+    If SysIndexes[I].IdxType = 1 Then
+      Write(' (CLUSTERED)')
+    Else
+      Write(' (NONCLUSTERED)');
+
+    IdxId := SysIndexes[I].IndexId;
+    Write(' Cles : ');
+    For J := 0 To SysIcCount - 1 Do
+    Begin
+      If Not SysIdxCols[J].Valid Then Continue;
+      If SysIdxCols[J].ObjectId <> ObjId Then Continue;
+      If SysIdxCols[J].IndexId <> IdxId Then Continue;
+
+      { Trouver le nom de la colonne }
+      ColName := '';
+      If SysIdxCols[J].ColumnId > 0 Then
+      Begin
+        For K := 0 To SysColCount - 1 Do
+          If SysColumns[K].Valid And
+             (SysColumns[K].ObjectId = ObjId) And
+             (SysColumns[K].ColumnId = SysIdxCols[J].ColumnId) Then
+          Begin
+            ColName := SysColumns[K].Name;
+            Break;
+          End;
+      End;
+
+      If ColName <> '' Then
+        Write(ColName)
+      Else
+        Write('col_', SysIdxCols[J].ColumnId);
+
+      If SysIdxCols[J].SubId > 1 Then
+        Write(' (', SysIdxCols[J].SubId, ')');
+      Write(' ');
+    End;
+    WriteLn;
+  End;
 End;
 
 { ---- Tri QuickSort des lignes -------------------------------- }
