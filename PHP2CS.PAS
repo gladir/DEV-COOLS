@@ -491,7 +491,7 @@
               date_create / date_diff -> DateTime stubs
               checkdate($m,$d,$y) -> DateTime.TryParse stub
 
-  TODO 18 - TRANSPILATION : GESTION DES EXCEPTIONS [A FAIRE]
+  TODO 18 - TRANSPILATION : GESTION DES EXCEPTIONS [IMPLEMENTE]
             Transpilation de try / catch / finally / throw :
               PHP : try { ... } catch(ExType $e) { ... } finally { ... }
               C# : try { ... } catch(ExType e) { ... } finally { ... }
@@ -2077,7 +2077,7 @@ End;
   TODO 15 - TABLEAUX PHP (IMPLEMENTE)
   TODO 16 - FONCTIONS DE CHAINES (IMPLEMENTE)
   TODO 17 - FONCTIONS MATH ET DATE/HEURE (IMPLEMENTE)
-  TODO 18 - GESTION DES EXCEPTIONS (A FAIRE)
+  TODO 18 - GESTION DES EXCEPTIONS (IMPLEMENTE)
   TODO 19 - NAMESPACES ET IMPORTS (A FAIRE)
   TODO 20 - INCLUDE / REQUIRE (A FAIRE)
   TODO 21 - CIBLE : ENTITY FRAMEWORK / EF CORE (A FAIRE)
@@ -2435,6 +2435,12 @@ Procedure ParseEchoStmt(Indent: Integer); Forward;
 { Declarations anticipees pour TODO 17 (fonctions math et date/heure PHP) }
 Function IsMathFunc(Const FnLow: TString): Boolean; Forward;
 Function ParseMathFuncCall(Const FnLow: TString): TString; Forward;
+
+{ Declarations anticipees pour TODO 18 (gestion des exceptions PHP) }
+Function PhpExcToCS(Const ClassName: TString): TString; Forward;
+Procedure ParseThrowStmt(Indent: Integer); Forward;
+Procedure ParseTryStmt(Indent: Integer); Forward;
+Procedure ParseExcHandlerStub(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -4262,25 +4268,37 @@ Begin
       ParseTraitDef(Indent)
     Else If KwLow = 'enum' Then
       ParseEnumDef(Indent)
+    Else If KwLow = 'try' Then
+      ParseTryStmt(Indent)
+    Else If KwLow = 'throw' Then
+      ParseThrowStmt(Indent)
     Else If (CurTok.Kind = TK_IDENT) And (CurTok.Kind <> TK_EOF) Then
     Begin
-      { Label : ident suivi de ':' (sans espace entre les deux) }
-      SaveTok := CurTok;
-      LexNextToken;
-      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
-      Begin
-        EmitLine(IndentStr(Indent - 1) +
-                 PhpLabelToCS(SaveTok.Val) + ':');
-        LexNextToken;
-      End
+      { TODO 18 : stubs pour les gestionnaires d exceptions PHP }
+      If (LowStr(CurTok.Val) = 'set_exception_handler') Or
+         (LowStr(CurTok.Val) = 'restore_exception_handler') Or
+         (LowStr(CurTok.Val) = 'set_error_handler') Then
+        ParseExcHandlerStub(Indent)
       Else
       Begin
-        { Consomme l instruction jusqu au ';' }
-        While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
-              Not (CurTok.Kind = TK_EOF) Do
+        { Label : ident suivi de ':' (sans espace entre les deux) }
+        SaveTok := CurTok;
+        LexNextToken;
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ':') Then
+        Begin
+          EmitLine(IndentStr(Indent - 1) +
+                   PhpLabelToCS(SaveTok.Val) + ':');
           LexNextToken;
-        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
-          LexNextToken;
+        End
+        Else
+        Begin
+          { Consomme l instruction jusqu au ';' }
+          While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+                Not (CurTok.Kind = TK_EOF) Do
+            LexNextToken;
+          If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+            LexNextToken;
+        End;
       End;
     End
     Else If CurTok.Kind = TK_VAR Then
@@ -7908,6 +7926,219 @@ Begin
     EmitLine(IndentStr(Indent) + 'Console.Write(' + Parts + ');');
 End;
 
+{ ============================================================
+  TODO 18 - TRANSPILATION : GESTION DES EXCEPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ Convertit un nom de classe d exception PHP en son equivalent C#.
+  Les noms standards PHP sont mappes vers leurs equivalents C#.
+  Les noms inconnus sont retournes tels quels. }
+Function PhpExcToCS(Const ClassName: TString): TString;
+Var LN : TString;
+Begin
+  LN := LowStr(ClassName);
+  If (LN = 'exception') Or (LN = 'runtimeexception') Then
+    PhpExcToCS := ClassName
+  Else If LN = 'invalidargumentexception' Then
+    PhpExcToCS := 'ArgumentException'
+  Else If LN = 'logicexception' Then
+    PhpExcToCS := 'InvalidOperationException'
+  Else If LN = 'badfunctioncallexception' Then
+    PhpExcToCS := 'NotSupportedException'
+  Else If LN = 'badmethodcallexception' Then
+    PhpExcToCS := 'NotSupportedException'
+  Else If LN = 'outofrangeexception' Then
+    PhpExcToCS := 'ArgumentOutOfRangeException'
+  Else If LN = 'outofboundsexception' Then
+    PhpExcToCS := 'IndexOutOfRangeException'
+  Else If LN = 'overflowexception' Then
+    PhpExcToCS := 'OverflowException'
+  Else If LN = 'underflowexception' Then
+    PhpExcToCS := 'OverflowException'
+  Else If LN = 'domainexception' Then
+    PhpExcToCS := 'InvalidOperationException'
+  Else If LN = 'unexpectedvalueexception' Then
+    PhpExcToCS := 'InvalidOperationException'
+  Else If LN = 'typeerror' Then
+    PhpExcToCS := 'InvalidCastException'
+  Else If LN = 'valueerror' Then
+    PhpExcToCS := 'ArgumentException'
+  Else If LN = 'error' Then
+    PhpExcToCS := 'Exception'
+  Else If LN = 'parseerror' Then
+    PhpExcToCS := 'FormatException'
+  Else If LN = 'arithmeticerror' Then
+    PhpExcToCS := 'ArithmeticException'
+  Else If LN = 'divisionbyzeroerror' Then
+    PhpExcToCS := 'DivideByZeroException'
+  Else If LN = 'throwable' Then
+    PhpExcToCS := 'Exception'
+  Else
+    PhpExcToCS := ClassName;
+End;
+
+{ Parse une instruction throw.
+  CurTok doit etre le mot-cle 'throw'.
+  Syntaxes supportees :
+    throw new ExType(msg);
+    throw $e;
+    throw new ExType(msg);  (throw expression PHP 8.0 identique en CS 7+) }
+Procedure ParseThrowStmt(Indent: Integer);
+Var Expr : TString;
+Begin
+  LexNextToken; { saute 'throw' }
+  Expr := ParseExprStr;
+  EmitLine(IndentStr(Indent) + 'throw ' + Expr + ';');
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+End;
+
+{ Parse une instruction try / catch / finally PHP.
+  CurTok doit etre le mot-cle 'try'.
+  Syntaxes supportees :
+    try { ... } catch(ExType $e) { ... }
+    try { ... } catch(TypeA|TypeB $e) { ... }   (multi-catch PHP 8.0)
+    try { ... } catch(ExType $e) { ... } finally { ... }
+  Multi-catch PHP 8.0 :
+    CS 6+ : catch(Exception e) when (e is TypeA or e is TypeB)
+    CS < 6 : utilise le premier type (avec avertissement) }
+Procedure ParseTryStmt(Indent: Integer);
+Var
+  KwLow    : TString;
+  CsType   : TString;
+  CatchVar : TString;
+  WhenCond : TString;
+  TpArr    : Array[1..8] Of TString;
+  TpCount  : Integer;
+  I        : Integer;
+Begin
+  LexNextToken; { saute 'try' }
+  EmitLine(IndentStr(Indent) + 'try');
+  EmitLine(IndentStr(Indent) + '{');
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then LexNextToken;
+  ParseBlock(Indent + 1, '');
+  EmitLine(IndentStr(Indent) + '}');
+
+  { Zero ou plusieurs blocs catch }
+  While True Do
+  Begin
+    KwLow := '';
+    If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+    If KwLow <> 'catch' Then Break;
+    LexNextToken; { saute 'catch' }
+
+    TpCount  := 0;
+    CatchVar := 'e';
+
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(') Then
+    Begin
+      LexNextToken; { saute '(' }
+
+      { Parser un ou plusieurs types d exception separes par '|' }
+      While True Do
+      Begin
+        { Accumuler les segments de type (gestion namespace : \ ignore par le lexer) }
+        CsType := '';
+        While (CurTok.Kind = TK_IDENT) Or (CurTok.Kind = TK_KEYWORD) Do
+        Begin
+          If CsType = '' Then
+            CsType := CurTok.Val
+          Else
+            CsType := CsType + '.' + CurTok.Val;
+          LexNextToken;
+        End;
+        If CsType = '' Then Break;
+        { Mapper le nom vers l equivalent C# }
+        CsType := PhpExcToCS(CsType);
+        If TpCount < 8 Then
+        Begin
+          Inc(TpCount);
+          TpArr[TpCount] := CsType;
+        End;
+        { Separateur multi-catch '|' (PHP 8.0) }
+        If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '|') Then
+          LexNextToken
+        Else
+          Break;
+      End;
+
+      { Nom de variable optionnel $e }
+      If CurTok.Kind = TK_VAR Then
+      Begin
+        CatchVar := MakeCsName(VarPhpName(CurTok.Val));
+        LexNextToken;
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    End;
+
+    { Emettre l entete catch selon le nombre de types }
+    If TpCount = 0 Then
+      { Catch generique sans type specife }
+      EmitLine(IndentStr(Indent) + 'catch (Exception ' + CatchVar + ')')
+    Else If TpCount = 1 Then
+      { Catch simple : catch(ExType e) }
+      EmitLine(IndentStr(Indent) + 'catch (' + TpArr[1] + ' ' + CatchVar + ')')
+    Else
+    Begin
+      { Multi-catch PHP 8.0 : catch(TypeA|TypeB $e) }
+      If CsVersionGE(Opts.CsVersion, '6.0') Then
+      Begin
+        { CS 6+ : catch(Exception e) when (e is TypeA or e is TypeB) }
+        WhenCond := '';
+        For I := 1 To TpCount Do
+        Begin
+          If I > 1 Then WhenCond := WhenCond + ' or ';
+          WhenCond := WhenCond + CatchVar + ' is ' + TpArr[I];
+        End;
+        EmitLine(IndentStr(Indent) + 'catch (Exception ' + CatchVar + ')');
+        EmitLine(IndentStr(Indent) + '    when (' + WhenCond + ')');
+      End
+      Else
+      Begin
+        { CS < 6 : utiliser le premier type seulement (avec avertissement) }
+        WarnMsg('multi-catch reduit au premier type (' + TpArr[1] +
+                ') pour C# < 6.0 - utilisez --cs-version:6.0');
+        EmitLine(IndentStr(Indent) + 'catch (' + TpArr[1] + ' ' + CatchVar + ')');
+      End;
+    End;
+
+    EmitLine(IndentStr(Indent) + '{');
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then LexNextToken;
+    ParseBlock(Indent + 1, '');
+    EmitLine(IndentStr(Indent) + '}');
+  End;
+
+  { Bloc finally optionnel }
+  KwLow := '';
+  If CurTok.Kind = TK_KEYWORD Then KwLow := LowStr(CurTok.Val);
+  If KwLow = 'finally' Then
+  Begin
+    LexNextToken; { saute 'finally' }
+    EmitLine(IndentStr(Indent) + 'finally');
+    EmitLine(IndentStr(Indent) + '{');
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '{') Then LexNextToken;
+    ParseBlock(Indent + 1, '');
+    EmitLine(IndentStr(Indent) + '}');
+  End;
+End;
+
+{ Emet un commentaire stub pour set_exception_handler,
+  restore_exception_handler ou set_error_handler.
+  CurTok doit etre sur l identifiant de la fonction.
+  Consomme jusqu au ';' inclus. }
+Procedure ParseExcHandlerStub(Indent: Integer);
+Var FnName : TString;
+Begin
+  FnName := CurTok.Val;
+  LexNextToken; { saute le nom de la fonction }
+  EmitLine(IndentStr(Indent) + '// ' + FnName +
+           '(...); // TODO: pas d equivalent direct en C#');
+  { Sauter les arguments et le point-virgule }
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        Not (CurTok.Kind = TK_EOF) Do
+    LexNextToken;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -7969,8 +8200,17 @@ Begin
       ParseTraitDef(0)
     Else If KwLow = 'enum' Then
       ParseEnumDef(0)
+    Else If KwLow = 'try' Then
+      ParseTryStmt(0)
+    Else If KwLow = 'throw' Then
+      ParseThrowStmt(0)
     Else If (KwLow = 'echo') Or (KwLow = 'print') Then
       ParseEchoStmt(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            ((LowStr(CurTok.Val) = 'set_exception_handler') Or
+             (LowStr(CurTok.Val) = 'restore_exception_handler') Or
+             (LowStr(CurTok.Val) = 'set_error_handler')) Then
+      ParseExcHandlerStub(0)
     Else If KwLow = 'static' Then
     Begin
       If Not ParseStaticVarDecl(0) Then
@@ -8010,7 +8250,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 18-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 19-25 a faire)');
 End;
 
 Procedure Cleanup;
