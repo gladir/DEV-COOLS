@@ -622,7 +622,7 @@
             Authentification / autorisation :
               PHP sessions -> [Authorize] attribute stub.
 
-  TODO 23 - CIBLE FRAMEWORK : DAPPER ET ADO.NET [A FAIRE]
+  TODO 23 - CIBLE FRAMEWORK : DAPPER ET ADO.NET [IMPLEMENTE]
             Mode active par -framework dapper ou -framework adonet.
             Transpilation des requetes SQL PHP inline :
               Reconnaitre les chaines SQL dans le code PHP :
@@ -2125,7 +2125,7 @@ End;
   TODO 20 - INCLUDE / REQUIRE (IMPLEMENTE)
   TODO 21 - CIBLE : ENTITY FRAMEWORK / EF CORE (IMPLEMENTE)
   TODO 22 - CIBLE : ASP.NET CORE / BLAZOR (IMPLEMENTE)
-  TODO 23 - CIBLE : DAPPER ET ADO.NET (A FAIRE)
+  TODO 23 - CIBLE : DAPPER ET ADO.NET (IMPLEMENTE)
   TODO 24 - GENERATION DE L EN-TETE C# (A FAIRE)
   TODO 25 - FINALISATION, RAPPORT ET EXEMPLES (A FAIRE)
   ============================================================ }
@@ -2511,6 +2511,16 @@ Procedure ParseSetcookieStub(Indent: Integer); Forward;
 Procedure ParseObStub(Indent: Integer); Forward;
 Procedure EmitAspNetControllerStub; Forward;
 Procedure EmitBlazorComponentStub; Forward;
+
+{ Declarations anticipees pour TODO 23 (Dapper / ADO.NET) }
+Function  IsSqlIdent(Const FnLow: TString): Boolean; Forward;
+Function  IsSqlFunc(Const FnLow: TString): Boolean; Forward;
+Procedure ParseDapperConnectStub(Indent: Integer); Forward;
+Procedure ParseDapperQueryStub(Indent: Integer); Forward;
+Procedure ParseAdoNetConnectStub(Indent: Integer); Forward;
+Procedure ParseAdoNetQueryStub(Indent: Integer); Forward;
+Procedure EmitDapperStub; Forward;
+Procedure EmitAdoNetStub; Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -9138,6 +9148,295 @@ Begin
   EmitLine('// await JS.InvokeVoidAsync("alert", "message");');
 End;
 
+{ ============================================================
+  TODO 23 - CIBLE FRAMEWORK : DAPPER ET ADO.NET [IMPLEMENTE]
+  ============================================================ }
+
+{ Retourne True si le nom en minuscules est un identifiant de connexion BD
+  PHP reconnu pour une transpilation Dapper / ADO.NET. }
+Function IsSqlIdent(Const FnLow: TString): Boolean;
+Begin
+  IsSqlIdent :=
+    (FnLow = 'pdo')            Or (FnLow = 'mysqli')           Or
+    (FnLow = 'pg_connect')     Or (FnLow = 'mysql_connect')    Or
+    (FnLow = 'mysqli_connect') Or (FnLow = 'odbc_connect')     Or
+    (FnLow = 'sqlite_open')    Or (FnLow = 'sqlsrv_connect')   Or
+    (FnLow = 'oci_connect')    Or (FnLow = 'oci_pconnect');
+End;
+
+{ Retourne True si le nom en minuscules est une fonction procedurale PHP
+  de manipulation de requetes BD (mysqli_, pg_, mysql_, sqlsrv_). }
+Function IsSqlFunc(Const FnLow: TString): Boolean;
+Begin
+  IsSqlFunc :=
+    (FnLow = 'mysqli_query')              Or
+    (FnLow = 'mysqli_fetch_assoc')        Or
+    (FnLow = 'mysqli_fetch_array')        Or
+    (FnLow = 'mysqli_num_rows')           Or
+    (FnLow = 'mysqli_close')              Or
+    (FnLow = 'mysqli_select_db')          Or
+    (FnLow = 'mysqli_error')              Or
+    (FnLow = 'mysqli_errno')              Or
+    (FnLow = 'mysqli_affected_rows')      Or
+    (FnLow = 'mysqli_insert_id')          Or
+    (FnLow = 'mysqli_real_escape_string') Or
+    (FnLow = 'pg_query')                  Or
+    (FnLow = 'pg_fetch_assoc')            Or
+    (FnLow = 'pg_fetch_array')            Or
+    (FnLow = 'pg_num_rows')               Or
+    (FnLow = 'pg_close')                  Or
+    (FnLow = 'pg_query_params')           Or
+    (FnLow = 'pg_last_error')             Or
+    (FnLow = 'pg_escape_string')          Or
+    (FnLow = 'mysql_query')               Or
+    (FnLow = 'mysql_fetch_assoc')         Or
+    (FnLow = 'mysql_fetch_array')         Or
+    (FnLow = 'mysql_num_rows')            Or
+    (FnLow = 'mysql_close')               Or
+    (FnLow = 'mysql_error')               Or
+    (FnLow = 'mysql_insert_id')           Or
+    (FnLow = 'mysql_real_escape_string')  Or
+    (FnLow = 'sqlsrv_query')              Or
+    (FnLow = 'sqlsrv_fetch_array')        Or
+    (FnLow = 'sqlsrv_close')              Or
+    (FnLow = 'sqlsrv_errors');
+End;
+
+{ Emet un stub commentaire Dapper pour un appel de connexion BD PHP.
+  CurTok est sur l identifiant de connexion.
+  Consomme jusqu au ';' inclus. }
+Procedure ParseDapperConnectStub(Indent: Integer);
+Var FnLow: TString;
+Begin
+  FnLow := LowStr(CurTok.Val);
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) And
+        (CurTok.Kind <> TK_CLOSE_PHP) Do
+    LexNextToken;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  EmitLine(IndentStr(Indent) + '// ' + FnLow +
+           '(...); -> Dapper : using var conn = new SqlConnection(connectionString);');
+End;
+
+{ Emet un stub commentaire Dapper pour un appel de fonction procedurale BD PHP.
+  CurTok est sur l identifiant de la fonction.
+  Consomme jusqu au ';' inclus. }
+Procedure ParseDapperQueryStub(Indent: Integer);
+Var
+  FnLow   : TString;
+  Equiv   : TString;
+Begin
+  FnLow := LowStr(CurTok.Val);
+  If (FnLow = 'mysqli_query') Or (FnLow = 'mysql_query') Or
+     (FnLow = 'pg_query')     Or (FnLow = 'pg_query_params') Or
+     (FnLow = 'sqlsrv_query') Then
+    Equiv := 'conn.Query<T>(sql, new { param }) ou conn.Execute(sql, new { param })'
+  Else If (FnLow = 'mysqli_fetch_assoc')  Or (FnLow = 'mysql_fetch_assoc') Or
+          (FnLow = 'pg_fetch_assoc')      Or (FnLow = 'sqlsrv_fetch_array') Or
+          (FnLow = 'mysqli_fetch_array')  Or
+          (FnLow = 'mysql_fetch_array')   Or (FnLow = 'pg_fetch_array') Then
+    Equiv := 'resultat de conn.Query<T>(...).ToList() ou .FirstOrDefault()'
+  Else If (FnLow = 'mysqli_num_rows') Or (FnLow = 'mysql_num_rows') Or
+          (FnLow = 'pg_num_rows') Then
+    Equiv := 'resultats.Count() apres conn.Query<T>(...)'
+  Else If FnLow = 'mysqli_affected_rows' Then
+    Equiv := 'valeur de retour de conn.Execute(...) (lignes affectees)'
+  Else If (FnLow = 'mysqli_insert_id') Or (FnLow = 'mysql_insert_id') Then
+    Equiv := 'conn.ExecuteScalar<int>("... RETURNING id", ...) ou SCOPE_IDENTITY()'
+  Else If (FnLow = 'mysqli_close') Or (FnLow = 'mysql_close') Or
+          (FnLow = 'pg_close')     Or (FnLow = 'sqlsrv_close') Then
+    Equiv := 'conn.Dispose() ou using var conn = new SqlConnection(...)'
+  Else If (FnLow = 'mysqli_real_escape_string') Or
+          (FnLow = 'mysql_real_escape_string')  Or
+          (FnLow = 'pg_escape_string') Then
+    Equiv := 'parametres Dapper (new { param }) - echappement inutile'
+  Else If (FnLow = 'mysqli_error') Or (FnLow = 'mysql_error') Or
+          (FnLow = 'pg_last_error') Or (FnLow = 'sqlsrv_errors') Then
+    Equiv := 'exception SqlException (utiliser try/catch)'
+  Else
+    Equiv := 'voir documentation Dapper pour ' + FnLow;
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) And
+        (CurTok.Kind <> TK_CLOSE_PHP) Do
+    LexNextToken;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  EmitLine(IndentStr(Indent) + '// ' + FnLow + '(...) -> ' + Equiv + ';');
+End;
+
+{ Emet un stub commentaire ADO.NET pour un appel de connexion BD PHP.
+  CurTok est sur l identifiant de connexion.
+  Consomme jusqu au ';' inclus. }
+Procedure ParseAdoNetConnectStub(Indent: Integer);
+Var FnLow: TString;
+Begin
+  FnLow := LowStr(CurTok.Val);
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) And
+        (CurTok.Kind <> TK_CLOSE_PHP) Do
+    LexNextToken;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  EmitLine(IndentStr(Indent) + '// ' + FnLow +
+           '(...); -> ADO.NET : using var conn = new SqlConnection(connectionString);');
+End;
+
+{ Emet un stub commentaire ADO.NET pour un appel de fonction procedurale BD PHP.
+  CurTok est sur l identifiant de la fonction.
+  Consomme jusqu au ';' inclus. }
+Procedure ParseAdoNetQueryStub(Indent: Integer);
+Var
+  FnLow   : TString;
+  Equiv   : TString;
+Begin
+  FnLow := LowStr(CurTok.Val);
+  If (FnLow = 'mysqli_query') Or (FnLow = 'mysql_query') Or
+     (FnLow = 'pg_query')     Or (FnLow = 'pg_query_params') Or
+     (FnLow = 'sqlsrv_query') Then
+    Equiv := 'new SqlCommand(sql, conn); cmd.ExecuteReader() / ExecuteNonQuery()'
+  Else If (FnLow = 'mysqli_fetch_assoc')  Or (FnLow = 'mysql_fetch_assoc') Or
+          (FnLow = 'pg_fetch_assoc')      Or (FnLow = 'sqlsrv_fetch_array') Or
+          (FnLow = 'mysqli_fetch_array')  Or
+          (FnLow = 'mysql_fetch_array')   Or (FnLow = 'pg_fetch_array') Then
+    Equiv := 'rdr.Read() -> rdr["colonne"] dans boucle while'
+  Else If (FnLow = 'mysqli_num_rows') Or (FnLow = 'mysql_num_rows') Or
+          (FnLow = 'pg_num_rows') Then
+    Equiv := 'compter les lignes via DataTable.Rows.Count apres SqlDataAdapter.Fill()'
+  Else If FnLow = 'mysqli_affected_rows' Then
+    Equiv := 'valeur de retour de cmd.ExecuteNonQuery()'
+  Else If (FnLow = 'mysqli_insert_id') Or (FnLow = 'mysql_insert_id') Then
+    Equiv := '(int)cmd.ExecuteScalar() avec SELECT SCOPE_IDENTITY()'
+  Else If (FnLow = 'mysqli_close') Or (FnLow = 'mysql_close') Or
+          (FnLow = 'pg_close')     Or (FnLow = 'sqlsrv_close') Then
+    Equiv := 'conn.Close() ou using var conn = new SqlConnection(...)'
+  Else If (FnLow = 'mysqli_real_escape_string') Or
+          (FnLow = 'mysql_real_escape_string')  Or
+          (FnLow = 'pg_escape_string') Then
+    Equiv := 'cmd.Parameters.AddWithValue("@p", val) - echappement inutile'
+  Else If (FnLow = 'mysqli_error') Or (FnLow = 'mysql_error') Or
+          (FnLow = 'pg_last_error') Or (FnLow = 'sqlsrv_errors') Then
+    Equiv := 'exception SqlException (utiliser try/catch)'
+  Else
+    Equiv := 'voir documentation ADO.NET pour ' + FnLow;
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) And
+        (CurTok.Kind <> TK_CLOSE_PHP) Do
+    LexNextToken;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  EmitLine(IndentStr(Indent) + '// ' + FnLow + '(...) -> ' + Equiv + ';');
+End;
+
+{ Emet un stub complet Dapper avec exemples de patterns courants. }
+Procedure EmitDapperStub;
+Begin
+  EmitLine('');
+  EmitLine('// ============================================================');
+  EmitLine('// Stub Dapper - genere automatiquement par PHP2CS');
+  EmitLine('// Package NuGet requis : Dapper');
+  EmitLine('// ============================================================');
+  EmitLine('');
+  EmitLine('// TODO: remplacer la chaine de connexion ci-dessous');
+  EmitLine('// private const string ConnectionString =');
+  EmitLine('//     "Server=.;Database=AppDb;Trusted_Connection=True;";');
+  EmitLine('');
+  EmitLine('// -- Pattern SELECT (Query<T>) --');
+  EmitLine('// using var conn = new SqlConnection(ConnectionString);');
+  EmitLine('// var items = conn.Query<MyEntity>(');
+  EmitLine('//     "SELECT * FROM table WHERE id = @id",');
+  EmitLine('//     new { id = value }).ToList();');
+  EmitLine('');
+  EmitLine('// -- Pattern SELECT scalaire (ExecuteScalar<T>) --');
+  EmitLine('// var count = conn.ExecuteScalar<int>(');
+  EmitLine('//     "SELECT COUNT(*) FROM table WHERE active = @a",');
+  EmitLine('//     new { a = true });');
+  EmitLine('');
+  EmitLine('// -- Pattern INSERT/UPDATE/DELETE (Execute) --');
+  EmitLine('// int affected = conn.Execute(');
+  EmitLine('//     "INSERT INTO table (col1, col2) VALUES (@c1, @c2)",');
+  EmitLine('//     new { c1 = val1, c2 = val2 });');
+  EmitLine('');
+  EmitLine('// -- Pattern QuerySingle<T> (une seule ligne attendue) --');
+  EmitLine('// var item = conn.QuerySingleOrDefault<MyEntity>(');
+  EmitLine('//     "SELECT * FROM table WHERE id = @id", new { id });');
+  EmitLine('');
+  EmitLine('// -- Pattern transaction --');
+  EmitLine('// using var conn = new SqlConnection(ConnectionString);');
+  EmitLine('// conn.Open();');
+  EmitLine('// using var tx = conn.BeginTransaction();');
+  EmitLine('// conn.Execute(sql1, params1, tx);');
+  EmitLine('// conn.Execute(sql2, params2, tx);');
+  EmitLine('// tx.Commit();');
+  EmitLine('');
+  EmitLine('// -- Classe entite exemple --');
+  EmitLine('// public class MyEntity');
+  EmitLine('// {');
+  EmitLine('//     public int    Id   { get; set; }');
+  EmitLine('//     public string Name { get; set; } = "";');
+  EmitLine('// }');
+  EmitLine('');
+  EmitLine('// -- Avertissement securite --');
+  EmitLine('// Ne jamais concatener des valeurs utilisateur dans le SQL.');
+  EmitLine('// Utiliser toujours les parametres Dapper (new { param }).');
+End;
+
+{ Emet un stub complet ADO.NET avec exemples de patterns courants. }
+Procedure EmitAdoNetStub;
+Begin
+  EmitLine('');
+  EmitLine('// ============================================================');
+  EmitLine('// Stub ADO.NET - genere automatiquement par PHP2CS');
+  EmitLine('// Package NuGet requis : System.Data.SqlClient ou');
+  EmitLine('//                        Microsoft.Data.SqlClient');
+  EmitLine('// ============================================================');
+  EmitLine('');
+  EmitLine('// TODO: remplacer la chaine de connexion ci-dessous');
+  EmitLine('// private const string ConnectionString =');
+  EmitLine('//     "Server=.;Database=AppDb;Trusted_Connection=True;";');
+  EmitLine('');
+  EmitLine('// -- Pattern SELECT avec SqlDataReader --');
+  EmitLine('// using var conn = new SqlConnection(ConnectionString);');
+  EmitLine('// using var cmd  = new SqlCommand(');
+  EmitLine('//     "SELECT * FROM table WHERE id = @id", conn);');
+  EmitLine('// cmd.Parameters.AddWithValue("@id", value);');
+  EmitLine('// conn.Open();');
+  EmitLine('// using var rdr = cmd.ExecuteReader();');
+  EmitLine('// while (rdr.Read())');
+  EmitLine('// {');
+  EmitLine('//     var col = rdr["colonne"].ToString();');
+  EmitLine('// }');
+  EmitLine('');
+  EmitLine('// -- Pattern INSERT/UPDATE/DELETE (ExecuteNonQuery) --');
+  EmitLine('// using var conn = new SqlConnection(ConnectionString);');
+  EmitLine('// using var cmd  = new SqlCommand(');
+  EmitLine('//     "INSERT INTO table (col) VALUES (@col)", conn);');
+  EmitLine('// cmd.Parameters.AddWithValue("@col", value);');
+  EmitLine('// conn.Open();');
+  EmitLine('// int affected = cmd.ExecuteNonQuery();');
+  EmitLine('');
+  EmitLine('// -- Pattern scalaire (ExecuteScalar) --');
+  EmitLine('// using var conn = new SqlConnection(ConnectionString);');
+  EmitLine('// using var cmd  = new SqlCommand(');
+  EmitLine('//     "SELECT COUNT(*) FROM table", conn);');
+  EmitLine('// conn.Open();');
+  EmitLine('// int count = (int)cmd.ExecuteScalar();');
+  EmitLine('');
+  EmitLine('// -- Pattern transaction --');
+  EmitLine('// using var conn = new SqlConnection(ConnectionString);');
+  EmitLine('// conn.Open();');
+  EmitLine('// using var tx = conn.BeginTransaction();');
+  EmitLine('// using var cmd = new SqlCommand(sql, conn, tx);');
+  EmitLine('// cmd.ExecuteNonQuery();');
+  EmitLine('// tx.Commit();');
+  EmitLine('');
+  EmitLine('// -- Fournisseurs de BD supportes --');
+  EmitLine('// MySQL    : MySqlConnection  (MySql.Data ou MySqlConnector)');
+  EmitLine('// PostgreSQL: NpgsqlConnection (Npgsql)');
+  EmitLine('// SQLite   : SqliteConnection  (Microsoft.Data.Sqlite)');
+  EmitLine('// Oracle   : OracleConnection  (Oracle.ManagedDataAccess)');
+  EmitLine('');
+  EmitLine('// -- Avertissement securite --');
+  EmitLine('// Ne jamais concatener des valeurs utilisateur dans le SQL.');
+  EmitLine('// Utiliser toujours cmd.Parameters.AddWithValue("@p", val).');
+End;
+
 
 Procedure Run;
 Var KwLow: TString;
@@ -9251,6 +9550,22 @@ Begin
             ((Opts.Framework = FW_ASPNET) Or (Opts.Framework = FW_BLAZOR)) And
             IsWebPhpFunc(LowStr(CurTok.Val)) Then
       ParseObStub(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            (Opts.Framework = FW_DAPPER) And
+            IsSqlFunc(LowStr(CurTok.Val)) Then
+      ParseDapperQueryStub(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            (Opts.Framework = FW_DAPPER) And
+            IsSqlIdent(LowStr(CurTok.Val)) Then
+      ParseDapperConnectStub(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            (Opts.Framework = FW_ADONET) And
+            IsSqlFunc(LowStr(CurTok.Val)) Then
+      ParseAdoNetQueryStub(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            (Opts.Framework = FW_ADONET) And
+            IsSqlIdent(LowStr(CurTok.Val)) Then
+      ParseAdoNetConnectStub(0)
     Else If (CurTok.Kind = TK_OPEN_PHP) And (CurTok.Val = '<?=') Then
       ParseShortEchoTag(0)
     Else If CurTok.Kind = TK_HTML Then
@@ -9301,8 +9616,13 @@ Begin
     EmitAspNetControllerStub
   Else If Opts.Framework = FW_BLAZOR Then
     EmitBlazorComponentStub;
+  { Emettre le stub Dapper / ADO.NET si le framework le requiert }
+  If Opts.Framework = FW_DAPPER Then
+    EmitDapperStub
+  Else If Opts.Framework = FW_ADONET Then
+    EmitAdoNetStub;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 23-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 24-25 a faire)');
 End;
 
 Procedure Cleanup;
