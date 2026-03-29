@@ -569,7 +569,7 @@
             Short echo tag <?= expr ?> :
               C# : Console.Write(expr); ou Response.Write(expr);
 
-  TODO 21 - CIBLE FRAMEWORK : ENTITY FRAMEWORK / EF CORE [A FAIRE]
+  TODO 21 - CIBLE FRAMEWORK : ENTITY FRAMEWORK / EF CORE [IMPLEMENTE]
             Mode active par -framework ef ou -framework efcore.
             Reconnaitre les patterns PHP typiques d acces BD :
               PDO / mysqli / pg_connect / mysql_connect stubs.
@@ -2123,7 +2123,7 @@ End;
   TODO 18 - GESTION DES EXCEPTIONS (IMPLEMENTE)
   TODO 19 - NAMESPACES ET IMPORTS (IMPLEMENTE)
   TODO 20 - INCLUDE / REQUIRE (IMPLEMENTE)
-  TODO 21 - CIBLE : ENTITY FRAMEWORK / EF CORE (A FAIRE)
+  TODO 21 - CIBLE : ENTITY FRAMEWORK / EF CORE (IMPLEMENTE)
   TODO 22 - CIBLE : ASP.NET CORE / BLAZOR (A FAIRE)
   TODO 23 - CIBLE : DAPPER ET ADO.NET (A FAIRE)
   TODO 24 - GENERATION DE L EN-TETE C# (A FAIRE)
@@ -2495,6 +2495,13 @@ Procedure ParseHtmlContent(Indent: Integer); Forward;
 Procedure ParseIncludeStmt(Indent: Integer); Forward;
 Procedure ParseAutoloadStub(Indent: Integer); Forward;
 Procedure ParseShortEchoTag(Indent: Integer); Forward;
+
+{ Declarations anticipees pour TODO 21 (Entity Framework / EF Core) }
+Function  IsPdoIdent(Const FnLow: TString): Boolean; Forward;
+Function  IsPdoFunc(Const FnLow: TString): Boolean; Forward;
+Procedure ParsePdoConnectStub(Indent: Integer); Forward;
+Procedure ParsePdoFuncStub(Indent: Integer); Forward;
+Procedure EmitDbContextStub; Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -8538,6 +8545,254 @@ Begin
   EmitLine(IndentStr(Indent) + 'Console.Write(' + Expr + ');');
 End;
 
+{ ============================================================
+  TODO 21 - CIBLE FRAMEWORK : ENTITY FRAMEWORK / EF CORE [IMPLEMENTE]
+  ============================================================ }
+
+{ Retourne True si le nom en minuscules est un identifiant de connexion BD
+  PHP (classe PDO/mysqli ou fonction procedurale de connexion). }
+Function IsPdoIdent(Const FnLow: TString): Boolean;
+Begin
+  IsPdoIdent :=
+    (FnLow = 'pdo')            Or (FnLow = 'mysqli')           Or
+    (FnLow = 'pg_connect')     Or (FnLow = 'mysql_connect')    Or
+    (FnLow = 'mysqli_connect') Or (FnLow = 'odbc_connect')     Or
+    (FnLow = 'sqlite_open')    Or (FnLow = 'sqlsrv_connect')   Or
+    (FnLow = 'oci_connect')    Or (FnLow = 'oci_pconnect');
+End;
+
+{ Retourne True si le nom en minuscules est une fonction procedurale
+  PDO/mysqli/pg_/mysql_ de manipulation de requetes ou de resultats. }
+Function IsPdoFunc(Const FnLow: TString): Boolean;
+Begin
+  IsPdoFunc :=
+    (FnLow = 'mysqli_query')              Or
+    (FnLow = 'mysqli_fetch_assoc')        Or
+    (FnLow = 'mysqli_fetch_array')        Or
+    (FnLow = 'mysqli_num_rows')           Or
+    (FnLow = 'mysqli_close')              Or
+    (FnLow = 'mysqli_select_db')          Or
+    (FnLow = 'mysqli_error')              Or
+    (FnLow = 'mysqli_errno')              Or
+    (FnLow = 'mysqli_affected_rows')      Or
+    (FnLow = 'mysqli_insert_id')          Or
+    (FnLow = 'mysqli_real_escape_string') Or
+    (FnLow = 'pg_query')                  Or
+    (FnLow = 'pg_fetch_assoc')            Or
+    (FnLow = 'pg_fetch_array')            Or
+    (FnLow = 'pg_num_rows')               Or
+    (FnLow = 'pg_close')                  Or
+    (FnLow = 'pg_query_params')           Or
+    (FnLow = 'pg_last_error')             Or
+    (FnLow = 'pg_escape_string')          Or
+    (FnLow = 'mysql_query')               Or
+    (FnLow = 'mysql_fetch_assoc')         Or
+    (FnLow = 'mysql_fetch_array')         Or
+    (FnLow = 'mysql_num_rows')            Or
+    (FnLow = 'mysql_close')               Or
+    (FnLow = 'mysql_error')               Or
+    (FnLow = 'mysql_insert_id')           Or
+    (FnLow = 'mysql_real_escape_string')  Or
+    (FnLow = 'sqlsrv_query')              Or
+    (FnLow = 'sqlsrv_fetch_array')        Or
+    (FnLow = 'sqlsrv_close')              Or
+    (FnLow = 'sqlsrv_errors');
+End;
+
+{ Emet un stub commentaire EF Core / EF6 pour un appel de connexion BD PHP.
+  CurTok est sur l identifiant de connexion (pdo, mysqli, pg_connect, etc.).
+  Consomme jusqu au ';' inclus. }
+Procedure ParsePdoConnectStub(Indent: Integer);
+Var
+  FnLow : TString;
+  EfVer : TString;
+Begin
+  FnLow := LowStr(CurTok.Val);
+  If Opts.Framework = FW_EFCORE Then EfVer := 'EF Core' Else EfVer := 'EF 6';
+  { Sauter jusqu au ; inclus }
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) And
+        (CurTok.Kind <> TK_CLOSE_PHP) Do
+    LexNextToken;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  EmitLine(IndentStr(Indent) + '// ' + FnLow +
+           '(...); -> ' + EfVer +
+           ' : remplacer par new AppDbContext(options)');
+End;
+
+{ Emet un stub commentaire EF Core pour un appel de fonction procedurale
+  PDO/mysqli/pg_.  CurTok est sur l identifiant de la fonction.
+  Consomme jusqu au ';' inclus. }
+Procedure ParsePdoFuncStub(Indent: Integer);
+Var
+  FnLow   : TString;
+  EfEquiv : TString;
+Begin
+  FnLow := LowStr(CurTok.Val);
+  If (FnLow = 'mysqli_query') Or (FnLow = 'mysql_query') Or
+     (FnLow = 'pg_query')     Or (FnLow = 'pg_query_params') Or
+     (FnLow = 'sqlsrv_query') Then
+    EfEquiv := 'context.Database.ExecuteSqlRaw(...) ' +
+               'ou context.Set<T>().FromSqlRaw(...)'
+  Else If (FnLow = 'mysqli_fetch_assoc')  Or (FnLow = 'mysql_fetch_assoc') Or
+          (FnLow = 'pg_fetch_assoc')      Or (FnLow = 'sqlsrv_fetch_array') Or
+          (FnLow = 'mysqli_fetch_array')  Or
+          (FnLow = 'mysql_fetch_array')   Or (FnLow = 'pg_fetch_array') Then
+    EfEquiv := 'context.Set<T>().ToList() ou .FirstOrDefault()'
+  Else If (FnLow = 'mysqli_num_rows') Or (FnLow = 'mysql_num_rows') Or
+          (FnLow = 'pg_num_rows') Then
+    EfEquiv := 'context.Set<T>().Count()'
+  Else If FnLow = 'mysqli_affected_rows' Then
+    EfEquiv := 'resultat de ExecuteSqlRaw() (lignes affectees)'
+  Else If (FnLow = 'mysqli_insert_id') Or (FnLow = 'mysql_insert_id') Then
+    EfEquiv := 'entite.Id apres context.SaveChanges()'
+  Else If (FnLow = 'mysqli_close') Or (FnLow = 'mysql_close') Or
+          (FnLow = 'pg_close')     Or (FnLow = 'sqlsrv_close') Then
+    EfEquiv := 'context.Dispose() ou using (var ctx = new AppDbContext(...))'
+  Else If (FnLow = 'mysqli_real_escape_string') Or
+          (FnLow = 'mysql_real_escape_string')  Or
+          (FnLow = 'pg_escape_string') Then
+    EfEquiv := 'parametres EF (anti-injection integre - echappement inutile)'
+  Else If (FnLow = 'mysqli_error') Or (FnLow = 'mysql_error') Or
+          (FnLow = 'pg_last_error') Or (FnLow = 'sqlsrv_errors') Then
+    EfEquiv := 'exception DbUpdateException (utiliser try/catch)'
+  Else
+    EfEquiv := 'voir documentation EF Core pour ' + FnLow;
+  { Sauter jusqu au ; inclus }
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) And
+        (CurTok.Kind <> TK_CLOSE_PHP) Do
+    LexNextToken;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  EmitLine(IndentStr(Indent) + '// ' + FnLow + '(...) -> ' + EfEquiv + ';');
+End;
+
+{ Emet la classe DbContext EF / EF Core stub complete.
+  Inclut constructeur, DbSet, OnModelCreating, CRUD, annotations
+  et instructions de migration EF. }
+Procedure EmitDbContextStub;
+Var
+  EfVer    : TString;
+  PkgRef   : TString;
+  CtorOpts : TString;
+Begin
+  If Opts.Framework = FW_EFCORE Then
+  Begin
+    EfVer    := 'Core';
+    PkgRef   := 'Microsoft.EntityFrameworkCore';
+    CtorOpts := 'DbContextOptions<AppDbContext> options';
+  End
+  Else
+  Begin
+    EfVer    := '6';
+    PkgRef   := 'System.Data.Entity';
+    CtorOpts := 'string nameOrConnectionString = "AppDbContext"';
+  End;
+  EmitLine('');
+  EmitLine('// ============================================================');
+  EmitLine('// DbContext EF ' + EfVer + ' - genere automatiquement par PHP2CS');
+  EmitLine('// Package NuGet requis : ' + PkgRef);
+  EmitLine('// ============================================================');
+  EmitLine('');
+  EmitLine('// TODO: personnaliser AppDbContext selon les classes PHP detectees');
+  EmitLine('public class AppDbContext : DbContext');
+  EmitLine('{');
+  { Constructeur }
+  EmitLine('    public AppDbContext(' + CtorOpts + ')');
+  If Opts.Framework = FW_EFCORE Then
+    EmitLine('        : base(options) { }')
+  Else
+    EmitLine('        : base(nameOrConnectionString) { }');
+  EmitLine('');
+  { Proprietes DbSet }
+  EmitLine('    // TODO: ajouter un DbSet<T> pour chaque entite PHP detectee');
+  EmitLine('    // Exemple :');
+  EmitLine('    // public DbSet<User>    Users    { get; set; }');
+  EmitLine('    // public DbSet<Product> Products { get; set; }');
+  EmitLine('');
+  { OnModelCreating + OnConfiguring }
+  If Opts.Framework = FW_EFCORE Then
+  Begin
+    EmitLine('    protected override void OnModelCreating(' +
+             'ModelBuilder modelBuilder)');
+    EmitLine('    {');
+    EmitLine('        base.OnModelCreating(modelBuilder);');
+    EmitLine('        // TODO: configurer les entites, contraintes, index');
+    EmitLine('        // Exemple :');
+    EmitLine('        // modelBuilder.Entity<User>()');
+    EmitLine('        //     .HasKey(u => u.Id);');
+    EmitLine('        // modelBuilder.Entity<User>()');
+    EmitLine('        //     .Property(u => u.Name)' +
+             '.IsRequired().HasMaxLength(100);');
+    EmitLine('    }');
+    EmitLine('');
+    EmitLine('    protected override void OnConfiguring(' +
+             'DbContextOptionsBuilder optionsBuilder)');
+    EmitLine('    {');
+    EmitLine('        if (!optionsBuilder.IsConfigured)');
+    EmitLine('        {');
+    EmitLine('            // TODO: remplacer par votre chaine de connexion');
+    EmitLine('            optionsBuilder.UseSqlServer(');
+    EmitLine('                "Server=.;Database=AppDb;' +
+             'Trusted_Connection=True;");');
+    EmitLine('        }');
+    EmitLine('    }');
+  End
+  Else
+  Begin
+    EmitLine('    protected override void OnModelCreating(' +
+             'DbModelBuilder modelBuilder)');
+    EmitLine('    {');
+    EmitLine('        base.OnModelCreating(modelBuilder);');
+    EmitLine('        // TODO: configurer les entites via Fluent API EF 6');
+    EmitLine('        // Exemple :');
+    EmitLine('        // modelBuilder.Entity<User>().HasKey(u => u.Id);');
+    EmitLine('    }');
+  End;
+  EmitLine('}');
+  EmitLine('');
+  { Aide CRUD generique }
+  EmitLine('// -- Methodes CRUD generiques EF ' + EfVer + ' (a adapter) --');
+  EmitLine('// Create : ctx.Set<T>().Add(entity); ctx.SaveChanges();');
+  EmitLine('// Read   : ctx.Set<T>().Find(id);');
+  If Opts.Framework = FW_EFCORE Then
+    EmitLine('// Update : ctx.Entry(entity).State = ' +
+             'EntityState.Modified; ctx.SaveChanges();')
+  Else
+    EmitLine('// Update : ctx.Entry(entity).State = ' +
+             'System.Data.EntityState.Modified; ctx.SaveChanges();');
+  EmitLine('// Delete : ctx.Set<T>().Remove(entity); ctx.SaveChanges();');
+  EmitLine('// Trans  : using var tx = ' +
+           'ctx.Database.BeginTransaction(); ... tx.Commit();');
+  EmitLine('');
+  { Attributs EF disponibles }
+  EmitLine('// -- Attributs EF ' + EfVer + ' disponibles pour les entites --');
+  EmitLine('// [Table("nom_table")]    sur la classe');
+  EmitLine('// [Key]                  sur la cle primaire');
+  EmitLine('// [Required]             champ obligatoire');
+  EmitLine('// [MaxLength(n)]         longueur maximale');
+  EmitLine('// [Column("nom")]        correspondance colonne');
+  EmitLine('// [ForeignKey("col")]    cle etrangere');
+  If Opts.Framework = FW_EFCORE Then
+    EmitLine('// [Index("col")]          index (EF Core 5+)');
+  EmitLine('');
+  { Instructions de migration }
+  EmitLine('// -- Migrations EF ' + EfVer + ' --');
+  If Opts.Framework = FW_EFCORE Then
+  Begin
+    EmitLine('// dotnet tool install --global dotnet-ef');
+    EmitLine('// dotnet ef migrations add Initial');
+    EmitLine('// dotnet ef database update');
+  End
+  Else
+  Begin
+    EmitLine('// (console du gestionnaire de packages Visual Studio)');
+    EmitLine('// Enable-Migrations');
+    EmitLine('// Add-Migration Initial');
+    EmitLine('// Update-Database');
+  End;
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -8622,6 +8877,14 @@ Begin
     Else If (CurTok.Kind = TK_IDENT) And
             (LowStr(CurTok.Val) = 'spl_autoload_register') Then
       ParseAutoloadStub(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            ((Opts.Framework = FW_EF) Or (Opts.Framework = FW_EFCORE)) And
+            IsPdoFunc(LowStr(CurTok.Val)) Then
+      ParsePdoFuncStub(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            ((Opts.Framework = FW_EF) Or (Opts.Framework = FW_EFCORE)) And
+            IsPdoIdent(LowStr(CurTok.Val)) Then
+      ParsePdoConnectStub(0)
     Else If (CurTok.Kind = TK_OPEN_PHP) And (CurTok.Val = '<?=') Then
       ParseShortEchoTag(0)
     Else If CurTok.Kind = TK_HTML Then
@@ -8664,8 +8927,11 @@ Begin
         LexNextToken;
     End;
   End;
+  { Emettre le DbContext EF/EFCore si le framework le requiert }
+  If (Opts.Framework = FW_EF) Or (Opts.Framework = FW_EFCORE) Then
+    EmitDbContextStub;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 21-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 22-25 a faire)');
 End;
 
 Procedure Cleanup;
