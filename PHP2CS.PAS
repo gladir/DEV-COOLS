@@ -67,12 +67,13 @@
             Programme principal : validation et appel Run.
 
   TODO 02 - LEXEUR PHP (TOKENS) [IMPLEMENTE]
-            TTokenKind : TK_EOF, TK_OPEN_PHP (<?php), TK_CLOSE_PHP (?>),
+            TTokenKind : TK_EOF, TK_OPEN_PHP (<?php ou <?=), TK_CLOSE_PHP (?>),
               TK_INTEGER, TK_FLOAT, TK_STRING_SQ (chaine apostrophe),
               TK_STRING_DQ (chaine guillemets, interpolation),
               TK_HEREDOC, TK_NOWDOC, TK_IDENT, TK_KEYWORD, TK_VAR ($ident),
               TK_OP, TK_PUNCT, TK_COMMENT_LINE (//), TK_COMMENT_BLOCK (/* */),
-              TK_COMMENT_DOC (/** **/), TK_HASH_COMMENT (#).
+              TK_COMMENT_DOC (/** **/), TK_HASH_COMMENT (#),
+              TK_HTML (contenu HTML hors balises PHP).
             TToken : Kind, Val (String[255]), IntVal (LongInt),
               FloatVal (Real), Line, Col.
             LexInit(Filename) : ouvrir fichier, initialiser etat lexeur.
@@ -547,7 +548,7 @@
               wpf     : + using System.Windows; + using System.Windows.Controls;
               maui    : + using Microsoft.Maui; + using Microsoft.Maui.Controls;
 
-  TODO 20 - TRANSPILATION : INCLUDE / REQUIRE PHP [A FAIRE]
+  TODO 20 - TRANSPILATION : INCLUDE / REQUIRE PHP [IMPLEMENTE]
             include 'fichier.php' / include_once 'fichier.php' :
               C# : commentaire // #include "fichier.php" + stub
               Option : traiter l include de facon recursive
@@ -877,7 +878,8 @@ Type
     TK_PUNCT,       { ponctuation                                     }
     TK_COMMENT_LINE,  { // ou #                                       }
     TK_COMMENT_BLOCK, { /* ... */                                     }
-    TK_COMMENT_DOC    { /** ... */                                    }
+    TK_COMMENT_DOC    { /** ... */                                    },
+    TK_HTML           { contenu HTML hors balises PHP <?php ... ?>    }
   );
 
   TToken = Record
@@ -946,6 +948,7 @@ Var
   LexEOF     : Boolean;
   LexPeekCh  : Char;    { caractere espion (un niveau de lookahead)      }
   LexHasPeek : Boolean; { True si LexPeekCh est valide                  }
+  LexInPhpMode : Boolean; { True si l on est a l interieur de <?php?> }
 
   { Statistiques }
   ErrorCount : Integer;
@@ -1347,6 +1350,7 @@ Begin
     TK_COMMENT_LINE : TokenKindStr := 'COMMENT_LINE';
     TK_COMMENT_BLOCK: TokenKindStr := 'COMMENT_BLOCK';
     TK_COMMENT_DOC  : TokenKindStr := 'COMMENT_DOC';
+    TK_HTML         : TokenKindStr := 'HTML';
   Else
     TokenKindStr := '?';
   End;
@@ -1594,6 +1598,34 @@ End;
 Procedure LexNextToken;
 Var S: TString; Peek: Char;
 Begin
+  { Mode HTML : collecter tout le contenu jusqu a la prochaine balise PHP }
+  If Not LexInPhpMode Then
+  Begin
+    CurTok.Line    := LexLine;
+    CurTok.Col     := LexCol;
+    CurTok.IntVal  := 0;
+    CurTok.FloatVal := 0.0;
+    S := '';
+    While Not LexEOF Do
+    Begin
+      If (LexCh = '<') And (LexPeekChar = '?') Then Break;
+      If Length(S) < MAX_STR Then S := S + LexCh;
+      LexNextChar;
+    End;
+    If S <> '' Then
+    Begin
+      CurTok.Kind := TK_HTML;
+      CurTok.Val  := S;
+      Exit;
+    End;
+    If LexEOF Then
+    Begin
+      CurTok.Kind    := TK_EOF;
+      CurTok.Val     := '';
+      Exit;
+    End;
+    { On est positionne sur <? : basculer vers le scanner PHP normal }
+  End;
   While (Not LexEOF) And (LexCh In [' ',#9,#10,#13]) Do
     LexNextChar;
   CurTok.Line    := LexLine;
@@ -1622,9 +1654,18 @@ Begin
               LexNextChar; { p }
             LexNextChar; { avance apres php }
           End;
-        If LexCh = '=' Then LexNextChar; { <?= }
-        CurTok.Kind := TK_OPEN_PHP;
-        CurTok.Val  := '<?php';
+        If LexCh = '=' Then
+        Begin
+          LexNextChar; { consomme = de <?= }
+          CurTok.Kind := TK_OPEN_PHP;
+          CurTok.Val  := '<?=';
+        End
+        Else
+        Begin
+          CurTok.Kind := TK_OPEN_PHP;
+          CurTok.Val  := '<?php';
+        End;
+        LexInPhpMode := True;
       End
       Else If Peek = '<' Then
       Begin
@@ -1949,6 +1990,7 @@ Begin
       Begin
         LexNextChar; LexNextChar;
         CurTok.Kind := TK_CLOSE_PHP; CurTok.Val := '?>';
+        LexInPhpMode := False; { retour au mode HTML apres ?> }
       End
       Else If Peek = '?' Then
       Begin
@@ -2049,6 +2091,7 @@ Begin
   LexEOF     := False;
   LexHasPeek := False;
   LexPeekCh  := #0;
+  LexInPhpMode := False; { mode HTML par defaut, passe a True sur <?php }
   LexNextChar; { lire le premier caractere dans LexCh }
 End;
 
@@ -2079,7 +2122,7 @@ End;
   TODO 17 - FONCTIONS MATH ET DATE/HEURE (IMPLEMENTE)
   TODO 18 - GESTION DES EXCEPTIONS (IMPLEMENTE)
   TODO 19 - NAMESPACES ET IMPORTS (IMPLEMENTE)
-  TODO 20 - INCLUDE / REQUIRE (A FAIRE)
+  TODO 20 - INCLUDE / REQUIRE (IMPLEMENTE)
   TODO 21 - CIBLE : ENTITY FRAMEWORK / EF CORE (A FAIRE)
   TODO 22 - CIBLE : ASP.NET CORE / BLAZOR (A FAIRE)
   TODO 23 - CIBLE : DAPPER ET ADO.NET (A FAIRE)
@@ -2446,6 +2489,12 @@ Procedure ParseExcHandlerStub(Indent: Integer); Forward;
 Procedure EmitFrameworkUsings; Forward;
 Procedure ParseNamespaceStmt; Forward;
 Procedure ParseUseStmt; Forward;
+
+{ Declarations anticipees pour TODO 20 (include / require / short echo) }
+Procedure ParseHtmlContent(Indent: Integer); Forward;
+Procedure ParseIncludeStmt(Indent: Integer); Forward;
+Procedure ParseAutoloadStub(Indent: Integer); Forward;
+Procedure ParseShortEchoTag(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -4281,6 +4330,9 @@ Begin
       ParseNamespaceStmt
     Else If KwLow = 'use' Then
       ParseUseStmt
+    Else If (KwLow = 'include') Or (KwLow = 'include_once') Or
+            (KwLow = 'require') Or (KwLow = 'require_once') Then
+      ParseIncludeStmt(Indent)
     Else If (CurTok.Kind = TK_IDENT) And (CurTok.Kind <> TK_EOF) Then
     Begin
       { TODO 18 : stubs pour les gestionnaires d exceptions PHP }
@@ -4288,6 +4340,9 @@ Begin
          (LowStr(CurTok.Val) = 'restore_exception_handler') Or
          (LowStr(CurTok.Val) = 'set_error_handler') Then
         ParseExcHandlerStub(Indent)
+      { TODO 20 : stub autoloading PHP }
+      Else If LowStr(CurTok.Val) = 'spl_autoload_register' Then
+        ParseAutoloadStub(Indent)
       Else
       Begin
         { Label : ident suivi de ':' (sans espace entre les deux) }
@@ -8364,6 +8419,125 @@ Begin
   UseAdd(Prefix, Alias);
 End;
 
+{ ============================================================
+  TODO 20 - TRANSPILATION : INCLUDE / REQUIRE PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Echappe un caractere pour un litterale de chaine C# double-quoted. }
+Function CsEscapeChar(C: Char): TString;
+Begin
+  Case C Of
+    '\': CsEscapeChar := '\\';
+    '"': CsEscapeChar := '\"';
+    #10: CsEscapeChar := '\n';
+    #13: CsEscapeChar := '\r';
+    #9 : CsEscapeChar := '\t';
+  Else
+    CsEscapeChar := C;
+  End;
+End;
+
+{ Echappe une chaine pour etre utilisee dans un litterale C# double-quoted. }
+Function CsEscapeStr(Const S: TString): TString;
+Var I: Integer; R: TString;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If Length(R) < MAX_STR Then
+      R := R + CsEscapeChar(S[I]);
+  End;
+  CsEscapeStr := R;
+End;
+
+{ Parse le contenu HTML hors balises PHP et l emettre comme Console.Write.
+  CurTok est TK_HTML et contient la chaine HTML brute. }
+Procedure ParseHtmlContent(Indent: Integer);
+Var S, Trimmed: TString;
+Begin
+  S := CurTok.Val;
+  LexNextToken;
+  Trimmed := TrimStr(S);
+  If Trimmed = '' Then Exit;
+  { Emettre le contenu HTML comme Console.Write }
+  EmitLine(IndentStr(Indent) + 'Console.Write("' + CsEscapeStr(S) + '");');
+End;
+
+{ Parse une instruction include / include_once / require / require_once.
+  CurTok est le mot-cle include/include_once/require/require_once. }
+Procedure ParseIncludeStmt(Indent: Integer);
+Var
+  KwLow  : TString;
+  IsOnce : Boolean;
+  IsReq  : Boolean;
+  KwStr  : TString;
+  Expr   : TString;
+  HasPar : Boolean;
+Begin
+  KwLow  := LowStr(CurTok.Val);
+  IsOnce := (KwLow = 'include_once') Or (KwLow = 'require_once');
+  IsReq  := (KwLow = 'require') Or (KwLow = 'require_once');
+  LexNextToken; { consomme le mot-cle }
+  { Parentheses optionnelles : include('file') ou include 'file' }
+  HasPar := (CurTok.Kind = TK_PUNCT) And (CurTok.Val = '(');
+  If HasPar Then LexNextToken;
+  Expr := ParseExprStr;
+  If HasPar And (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+    LexNextToken;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then
+    LexNextToken;
+  If IsReq Then
+  Begin
+    If IsOnce Then KwStr := 'require_once' Else KwStr := 'require';
+    EmitLine(IndentStr(Indent) + '// ' + KwStr + ' ' + Expr +
+             '; // TODO: fichier requis - erreur fatale si absent');
+  End
+  Else
+  Begin
+    If IsOnce Then KwStr := 'include_once' Else KwStr := 'include';
+    EmitLine(IndentStr(Indent) + '// ' + KwStr + ' ' + Expr + ';');
+  End;
+  EmitLine(IndentStr(Indent) +
+           '// TODO: inclure le contenu transpile de ' + Expr);
+End;
+
+{ Parse un appel spl_autoload_register(...) et emet un stub commentaire.
+  CurTok est l identificateur spl_autoload_register. }
+Procedure ParseAutoloadStub(Indent: Integer);
+Begin
+  { Sauter jusqu au ; inclus }
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) And
+        (CurTok.Kind <> TK_CLOSE_PHP) Do
+    LexNextToken;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  EmitLine(IndentStr(Indent) +
+           '// TODO: spl_autoload_register -> ' +
+           'autoloading non applicable en C# (utiliser namespaces et using)');
+End;
+
+{ Parse un short echo tag <?= expr ?> et emet Console.Write(expr);
+  CurTok est TK_OPEN_PHP avec Val = ''<?=''. }
+Procedure ParseShortEchoTag(Indent: Integer);
+Var Expr: TString;
+Begin
+  LexNextToken; { consomme <?= }
+  Expr := '';
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        Not (CurTok.Kind = TK_CLOSE_PHP) And
+        Not (CurTok.Kind = TK_EOF) Do
+  Begin
+    If Expr = '' Then
+      Expr := ParseExprStr
+    Else
+      Break;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+  If CurTok.Kind = TK_CLOSE_PHP Then LexNextToken;
+  If Expr = '' Then Exit;
+  EmitLine(IndentStr(Indent) + 'Console.Write(' + Expr + ');');
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -8380,8 +8554,8 @@ Begin
   OutFOpen := True;
   LexInit(Opts.SrcFile);
   LexNextToken; { charger le premier token }
-  { Consommer l ouverture PHP }
-  If CurTok.Kind = TK_OPEN_PHP Then LexNextToken;
+  { Consommer l ouverture PHP standard <?php uniquement (pas <?=) }
+  If (CurTok.Kind = TK_OPEN_PHP) And (CurTok.Val = '<?php') Then LexNextToken;
   { Emettre les using de base selon le framework cible }
   EmitFrameworkUsings;
   { Boucle principale de transpilation }
@@ -8395,6 +8569,9 @@ Begin
       ParseNamespaceStmt
     Else If KwLow = 'use' Then
       ParseUseStmt
+    Else If (KwLow = 'include') Or (KwLow = 'include_once') Or
+            (KwLow = 'require') Or (KwLow = 'require_once') Then
+      ParseIncludeStmt(0)
     Else If KwLow = 'if' Then
       ParseIfStmt(0)
     Else If KwLow = 'goto' Then
@@ -8442,6 +8619,13 @@ Begin
              (LowStr(CurTok.Val) = 'restore_exception_handler') Or
              (LowStr(CurTok.Val) = 'set_error_handler')) Then
       ParseExcHandlerStub(0)
+    Else If (CurTok.Kind = TK_IDENT) And
+            (LowStr(CurTok.Val) = 'spl_autoload_register') Then
+      ParseAutoloadStub(0)
+    Else If (CurTok.Kind = TK_OPEN_PHP) And (CurTok.Val = '<?=') Then
+      ParseShortEchoTag(0)
+    Else If CurTok.Kind = TK_HTML Then
+      ParseHtmlContent(0)
     Else If KwLow = 'static' Then
     Begin
       If Not ParseStaticVarDecl(0) Then
@@ -8481,7 +8665,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 20-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 21-25 a faire)');
 End;
 
 Procedure Cleanup;
