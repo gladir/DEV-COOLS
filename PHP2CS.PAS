@@ -7328,6 +7328,531 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 17 - TRANSPILATION : FONCTIONS MATHEMATIQUES ET DATE/HEURE [IMPLEMENTE]
+  ============================================================ }
+
+{ Retourne True si FnLow est une fonction mathematique ou date/heure PHP connue }
+Function IsMathFunc(Const FnLow: TString): Boolean;
+Begin
+  IsMathFunc :=
+    (FnLow = 'abs')          Or (FnLow = 'ceil')         Or
+    (FnLow = 'floor')        Or (FnLow = 'round')        Or
+    (FnLow = 'sqrt')         Or (FnLow = 'pow')          Or
+    (FnLow = 'max')          Or (FnLow = 'min')          Or
+    (FnLow = 'fmod')         Or (FnLow = 'intdiv')       Or
+    (FnLow = 'pi')           Or (FnLow = 'exp')          Or
+    (FnLow = 'log')          Or (FnLow = 'log10')        Or
+    (FnLow = 'sin')          Or (FnLow = 'cos')          Or
+    (FnLow = 'tan')          Or (FnLow = 'asin')         Or
+    (FnLow = 'acos')         Or (FnLow = 'atan')         Or
+    (FnLow = 'atan2')        Or (FnLow = 'rand')         Or
+    (FnLow = 'mt_rand')      Or (FnLow = 'random_int')   Or
+    (FnLow = 'fabs')         Or (FnLow = 'hypot')        Or
+    (FnLow = 'fdiv')         Or (FnLow = 'base_convert') Or
+    (FnLow = 'bindec')       Or (FnLow = 'octdec')       Or
+    (FnLow = 'hexdec')       Or (FnLow = 'decbin')       Or
+    (FnLow = 'decoct')       Or (FnLow = 'dechex')       Or
+    (FnLow = 'intval')       Or (FnLow = 'floatval')     Or
+    (FnLow = 'doubleval')    Or (FnLow = 'is_nan')       Or
+    (FnLow = 'is_infinite')  Or (FnLow = 'is_finite')    Or
+    (FnLow = 'is_numeric')   Or
+    (FnLow = 'time')         Or (FnLow = 'microtime')    Or
+    (FnLow = 'date')         Or (FnLow = 'gmdate')       Or
+    (FnLow = 'mktime')       Or (FnLow = 'strtotime')    Or
+    (FnLow = 'date_create')  Or (FnLow = 'date_diff')    Or
+    (FnLow = 'date_format')  Or (FnLow = 'date_add')     Or
+    (FnLow = 'date_sub')     Or (FnLow = 'checkdate')    Or
+    (FnLow = 'getdate')      Or (FnLow = 'gettimeofday') Or
+    (FnLow = 'localtime')    Or (FnLow = 'strftime')     Or
+    (FnLow = 'gmstrftime')   Or
+    (FnLow = 'date_timestamp_get') Or
+    (FnLow = 'date_timestamp_set');
+End;
+
+{ Parse un appel de fonction mathematique ou date/heure PHP.
+  FnLow : nom de la fonction en minuscules (CurTok est sur '(').
+  Retourne la chaine C# equivalente. }
+Function ParseMathFuncCall(Const FnLow: TString): TString;
+Var
+  Arg1, Arg2, Arg3, Arg4, Arg5, Arg6: TString;
+Begin
+  LexNextToken; { past '(' }
+  Arg1 := ''; Arg2 := ''; Arg3 := ''; Arg4 := '';
+  Arg5 := ''; Arg6 := '';
+
+  { ---- abs($x) -> Math.Abs(x) ---- }
+  If FnLow = 'abs' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.Abs(' + Arg1 + ')';
+  End
+
+  { ---- ceil($x) -> Math.Ceiling(x) ---- }
+  Else If FnLow = 'ceil' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.Ceiling(' + Arg1 + ')';
+  End
+
+  { ---- floor($x) -> Math.Floor(x) ---- }
+  Else If FnLow = 'floor' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.Floor(' + Arg1 + ')';
+  End
+
+  { ---- round($x [, $n [, $mode]]) -> Math.Round(x [, n]) ---- }
+  Else If FnLow = 'round' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg2 := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      Begin
+        LexNextToken;
+        Arg3 := ParseExprStr; { mode PHP_ROUND_HALF_UP etc. - ignore }
+      End;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      ParseMathFuncCall := 'Math.Round(' + Arg1 + ', ' + Arg2 + ')';
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      ParseMathFuncCall := 'Math.Round(' + Arg1 + ')';
+    End;
+  End
+
+  { ---- sqrt($x) -> Math.Sqrt(x) ---- }
+  Else If FnLow = 'sqrt' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.Sqrt(' + Arg1 + ')';
+  End
+
+  { ---- pow($x, $y) -> Math.Pow(x, y) ---- }
+  Else If FnLow = 'pow' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.Pow(' + Arg1 + ', ' + Arg2 + ')';
+  End
+
+  { ---- max($a, $b [, ...]) -> Math.Max(a, b) ---- }
+  Else If FnLow = 'max' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    While (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Do
+    Begin
+      LexNextToken;
+      Arg3 := ParseExprStr;
+      Arg2 := 'Math.Max(' + Arg2 + ', ' + Arg3 + ')';
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.Max(' + Arg1 + ', ' + Arg2 + ')';
+  End
+
+  { ---- min($a, $b [, ...]) -> Math.Min(a, b) ---- }
+  Else If FnLow = 'min' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    While (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Do
+    Begin
+      LexNextToken;
+      Arg3 := ParseExprStr;
+      Arg2 := 'Math.Min(' + Arg2 + ', ' + Arg3 + ')';
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.Min(' + Arg1 + ', ' + Arg2 + ')';
+  End
+
+  { ---- fmod($x, $y) -> x % y (double) ---- }
+  Else If FnLow = 'fmod' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := Arg1 + ' % ' + Arg2;
+  End
+
+  { ---- intdiv($a, $b) -> (int)(a / b) ---- }
+  Else If FnLow = 'intdiv' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := '(int)(' + Arg1 + ' / ' + Arg2 + ')';
+  End
+
+  { ---- pi() -> Math.PI ---- }
+  Else If FnLow = 'pi' Then
+  Begin
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.PI';
+  End
+
+  { ---- exp($x) -> Math.Exp(x) ---- }
+  Else If FnLow = 'exp' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.Exp(' + Arg1 + ')';
+  End
+
+  { ---- log($x [, $base]) -> Math.Log(x [, base]) ---- }
+  Else If FnLow = 'log' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg2 := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      ParseMathFuncCall := 'Math.Log(' + Arg1 + ', ' + Arg2 + ')';
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      ParseMathFuncCall := 'Math.Log(' + Arg1 + ')';
+    End;
+  End
+
+  { ---- log10($x) -> Math.Log10(x) ---- }
+  Else If FnLow = 'log10' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.Log10(' + Arg1 + ')';
+  End
+
+  { ---- sin / cos / tan -> Math.Sin / Math.Cos / Math.Tan ---- }
+  Else If (FnLow = 'sin') Or (FnLow = 'cos') Or (FnLow = 'tan') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    If FnLow = 'sin' Then
+      ParseMathFuncCall := 'Math.Sin(' + Arg1 + ')'
+    Else If FnLow = 'cos' Then
+      ParseMathFuncCall := 'Math.Cos(' + Arg1 + ')'
+    Else
+      ParseMathFuncCall := 'Math.Tan(' + Arg1 + ')';
+  End
+
+  { ---- asin / acos / atan / atan2 ---- }
+  Else If (FnLow = 'asin') Or (FnLow = 'acos') Or
+          (FnLow = 'atan') Or (FnLow = 'atan2') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If FnLow = 'atan2' Then
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+      Arg2 := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      ParseMathFuncCall := 'Math.Atan2(' + Arg1 + ', ' + Arg2 + ')';
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      If FnLow = 'asin' Then
+        ParseMathFuncCall := 'Math.Asin(' + Arg1 + ')'
+      Else If FnLow = 'acos' Then
+        ParseMathFuncCall := 'Math.Acos(' + Arg1 + ')'
+      Else
+        ParseMathFuncCall := 'Math.Atan(' + Arg1 + ')';
+    End;
+  End
+
+  { ---- rand / mt_rand / random_int -> new Random().Next(...) ---- }
+  Else If (FnLow = 'rand') Or (FnLow = 'mt_rand') Or (FnLow = 'random_int') Then
+  Begin
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then
+    Begin
+      LexNextToken;
+      ParseMathFuncCall := 'new Random().Next()';
+    End
+    Else
+    Begin
+      Arg1 := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+      Arg2 := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      ParseMathFuncCall := 'new Random().Next(' + Arg1 + ', ' + Arg2 + ' + 1)';
+    End;
+  End
+
+  { ---- fabs($x) -> Math.Abs(x) ---- }
+  Else If FnLow = 'fabs' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Math.Abs(' + Arg1 + ')';
+  End
+
+  { ---- hypot($x, $y) -> Math.Sqrt(x*x + y*y) ---- }
+  Else If FnLow = 'hypot' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall :=
+      'Math.Sqrt(' + Arg1 + ' * ' + Arg1 + ' + ' + Arg2 + ' * ' + Arg2 + ')';
+  End
+
+  { ---- fdiv($x, $y) -> x / y ---- }
+  Else If FnLow = 'fdiv' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := Arg1 + ' / ' + Arg2;
+  End
+
+  { ---- base_convert($n, $from, $to) -> Convert.ToString(Convert.ToInt64(n,from),to) ---- }
+  Else If FnLow = 'base_convert' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg3 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall :=
+      'Convert.ToString(Convert.ToInt64(' + Arg1 + ', ' + Arg2 + '), ' + Arg3 + ')';
+  End
+
+  { ---- bindec / octdec / hexdec -> Convert.ToInt64(n, base) ---- }
+  Else If FnLow = 'bindec' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Convert.ToInt64(' + Arg1 + ', 2)';
+  End
+  Else If FnLow = 'octdec' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Convert.ToInt64(' + Arg1 + ', 8)';
+  End
+  Else If FnLow = 'hexdec' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Convert.ToInt64(' + Arg1 + ', 16)';
+  End
+
+  { ---- decbin / decoct / dechex -> Convert.ToString(n, base) ---- }
+  Else If FnLow = 'decbin' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Convert.ToString(' + Arg1 + ', 2)';
+  End
+  Else If FnLow = 'decoct' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Convert.ToString(' + Arg1 + ', 8)';
+  End
+  Else If FnLow = 'dechex' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'Convert.ToString(' + Arg1 + ', 16)';
+  End
+
+  { ---- intval($v [,$base]) -> (int)v ---- }
+  Else If (FnLow = 'intval') Or (FnLow = 'floatval') Or (FnLow = 'doubleval') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg2 := ParseExprStr; { base optionnelle pour intval - ignore }
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    If FnLow = 'intval' Then
+      ParseMathFuncCall := '(int)(' + Arg1 + ')'
+    Else
+      ParseMathFuncCall := '(double)(' + Arg1 + ')';
+  End
+
+  { ---- is_nan / is_infinite / is_finite ---- }
+  Else If (FnLow = 'is_nan') Or (FnLow = 'is_infinite') Or (FnLow = 'is_finite') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    If FnLow = 'is_nan' Then
+      ParseMathFuncCall := 'double.IsNaN(' + Arg1 + ')'
+    Else If FnLow = 'is_infinite' Then
+      ParseMathFuncCall := 'double.IsInfinity(' + Arg1 + ')'
+    Else
+      ParseMathFuncCall := 'double.IsFinite(' + Arg1 + ')';
+  End
+
+  { ---- is_numeric($v) -> double.TryParse(v.ToString(), out _) ---- }
+  Else If FnLow = 'is_numeric' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'double.TryParse(' + Arg1 + '.ToString(), out _)';
+  End
+
+  { ---- time() -> DateTimeOffset.UtcNow.ToUnixTimeSeconds() ---- }
+  Else If FnLow = 'time' Then
+  Begin
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := 'DateTimeOffset.UtcNow.ToUnixTimeSeconds()';
+  End
+
+  { ---- microtime([true]) -> (double)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()/1000.0 ---- }
+  Else If FnLow = 'microtime' Then
+  Begin
+    If Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) Then
+      Arg1 := ParseExprStr; { parametre optionnel }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall :=
+      '(double)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0';
+  End
+
+  { ---- date($fmt [, $ts]) / gmdate ---- }
+  Else If (FnLow = 'date') Or (FnLow = 'gmdate') Then
+  Begin
+    Arg1 := ParseExprStr; { format }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg2 := ParseExprStr; { timestamp }
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      ParseMathFuncCall :=
+        'DateTimeOffset.FromUnixTimeSeconds(' + Arg2 + ').ToString(' + Arg1 + ')';
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      ParseMathFuncCall := 'DateTimeOffset.UtcNow.ToString(' + Arg1 + ')';
+    End;
+  End
+
+  { ---- mktime(h,m,s,mo,d,y) -> DateTimeOffset(...).ToUnixTimeSeconds() ---- }
+  Else If FnLow = 'mktime' Then
+  Begin
+    Arg1 := ParseExprStr; { hour }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr; { minute }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg3 := ParseExprStr; { second }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg4 := ParseExprStr; { month }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg5 := ParseExprStr; { day }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg6 := ParseExprStr; { year }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall :=
+      'new DateTimeOffset(new DateTime(' + Arg6 + ', ' + Arg4 + ', ' +
+      Arg5 + ', ' + Arg1 + ', ' + Arg2 + ', ' + Arg3 +
+      '), TimeSpan.Zero).ToUnixTimeSeconds()';
+  End
+
+  { ---- strtotime($s) -> (new DateTimeOffset(DateTime.Parse(s), TimeSpan.Zero)).ToUnixTimeSeconds() ---- }
+  Else If FnLow = 'strtotime' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall :=
+      '(new DateTimeOffset(DateTime.Parse(' + Arg1 +
+      '), TimeSpan.Zero)).ToUnixTimeSeconds()';
+  End
+
+  { ---- checkdate($m, $d, $y) -> DateTime.TryParse stub ---- }
+  Else If FnLow = 'checkdate' Then
+  Begin
+    Arg1 := ParseExprStr; { month }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr; { day }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg3 := ParseExprStr; { year }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall :=
+      'DateTime.TryParse(' + Arg3 + ' + "-" + ' + Arg1 +
+      ' + "-" + ' + Arg2 + ', out _)';
+  End
+
+  { ---- date_create / date_diff / date_format / date_add / date_sub /
+         date_timestamp_get / date_timestamp_set stubs ---- }
+  Else If (FnLow = 'date_create')       Or (FnLow = 'date_diff')          Or
+          (FnLow = 'date_format')        Or (FnLow = 'date_add')           Or
+          (FnLow = 'date_sub')           Or (FnLow = 'date_timestamp_get') Or
+          (FnLow = 'date_timestamp_set') Then
+  Begin
+    Arg1 := MakeCsName(FnLow) + '(';
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      Begin
+        Arg1 := Arg1 + ', '; LexNextToken;
+      End
+      Else
+        Arg1 := Arg1 + ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := '/* ' + FnLow + ' */ ' + Arg1 + ')';
+  End
+
+  { ---- getdate / gettimeofday / localtime / strftime / gmstrftime stubs ---- }
+  Else If (FnLow = 'getdate')     Or (FnLow = 'gettimeofday') Or
+          (FnLow = 'localtime')   Or (FnLow = 'strftime')     Or
+          (FnLow = 'gmstrftime')  Then
+  Begin
+    Arg1 := '';
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+        LexNextToken
+      Else
+        Arg1 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := '/* ' + FnLow + ' stub */ null';
+  End
+
+  { ---- Fonctions non reconnues -> appel generique ---- }
+  Else
+  Begin
+    Arg1 := MakeCsName(FnLow) + '(';
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      Begin
+        Arg1 := Arg1 + ', '; LexNextToken;
+      End
+      Else
+        Arg1 := Arg1 + ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseMathFuncCall := Arg1 + ')';
+  End;
+End;
+
 { Transpile echo ou print vers Console.Write[Line].
   Gere la liste de valeurs separees par '.' ou ','.
   Format : echo expr1, expr2; ou echo expr1 . expr2;
@@ -7485,7 +8010,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 17-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 18-25 a faire)');
 End;
 
 Procedure Cleanup;
