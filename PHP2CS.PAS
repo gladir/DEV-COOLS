@@ -461,7 +461,7 @@
               print $val; -> Console.Write(val);
               print_r / var_dump -> commentaire stub + Console.WriteLine
 
-  TODO 17 - TRANSPILATION : FONCTIONS MATHEMATIQUES ET DATE/HEURE [A FAIRE]
+  TODO 17 - TRANSPILATION : FONCTIONS MATHEMATIQUES ET DATE/HEURE [IMPLEMENTE]
             Fonctions mathematiques PHP -> System.Math :
               abs($x) -> Math.Abs(x)
               ceil($x) -> Math.Ceiling(x)
@@ -2076,7 +2076,7 @@ End;
   TODO 14 - INTERFACES ET TRAITS PHP (IMPLEMENTE)
   TODO 15 - TABLEAUX PHP (IMPLEMENTE)
   TODO 16 - FONCTIONS DE CHAINES (IMPLEMENTE)
-  TODO 17 - FONCTIONS MATH ET DATE/HEURE (A FAIRE)
+  TODO 17 - FONCTIONS MATH ET DATE/HEURE (IMPLEMENTE)
   TODO 18 - GESTION DES EXCEPTIONS (A FAIRE)
   TODO 19 - NAMESPACES ET IMPORTS (A FAIRE)
   TODO 20 - INCLUDE / REQUIRE (A FAIRE)
@@ -2431,6 +2431,10 @@ Function ParseArrayFuncCall(Const FnLow: TString): TString; Forward;
 Function IsStrFunc(Const FnLow: TString): Boolean; Forward;
 Function ParseStrFuncCall(Const FnLow: TString): TString; Forward;
 Procedure ParseEchoStmt(Indent: Integer); Forward;
+
+{ Declarations anticipees pour TODO 17 (fonctions math et date/heure PHP) }
+Function IsMathFunc(Const FnLow: TString): Boolean; Forward;
+Function ParseMathFuncCall(Const FnLow: TString): TString; Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -3024,6 +3028,8 @@ Begin
           R := ParseArrayFuncCall(FnLow)
         Else If IsStrFunc(FnLow) Then
           R := ParseStrFuncCall(FnLow)
+        Else If IsMathFunc(FnLow) Then
+          R := ParseMathFuncCall(FnLow)
         Else
           R := ParseFnCallArgs(R);
       End
