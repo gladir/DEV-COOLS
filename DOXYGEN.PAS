@@ -43,7 +43,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
             DOXYGEN_VERSION ('1.0') et DOXYGEN_DATE ('2026-03-29')
             {$IFDEF FPC} {$MODE TP} {$ENDIF} pour compatibilite
             TOptions : record
