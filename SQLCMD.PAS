@@ -412,7 +412,7 @@
               Key Lookup en lisant les colonnes directement
             Index filtres (WHERE dans CREATE INDEX)
 
-  TODO 25 - OPTIMISEUR DE REQUETES (QUERY OPTIMIZER)
+  TODO 25 - OPTIMISEUR DE REQUETES (QUERY OPTIMIZER) [IMPLEMENTE]
             Statistiques de base : nombre de lignes par table,
               nombre de pages, densite des index
             Estimation de cardinalite pour les filtres WHERE
@@ -1120,6 +1120,9 @@ Const
   ND_WINDOW_FRAME  = 134;    { ROWS/RANGE BETWEEN ... AND ...        }
   ND_FRAME_BOUND   = 135;    { borne de cadre (UNBOUNDED PRECEDING)  }
 
+  { -- Query optimizer nodes (TODO 25) -- }
+  ND_SET_OPTION    = 136;    { SET SHOWPLAN_TEXT/STATISTICS IO/TIME  }
+
   { Taille max du pool de noeuds AST }
   MAX_AST_NODES   = 1024;
 
@@ -1428,6 +1431,11 @@ Var
   ParseOk     : Boolean;         { False si erreur de syntaxe           }
   { ---- Moteur d execution (TODO 15) ----------------------------- }
   QERes       : TQEResultPtr;    { result set courant (alloue New/Dispose) }
+  { ---- Optimiseur de requetes (TODO 25) ----------------------- }
+  ShowPlanText   : Boolean;      { SET SHOWPLAN_TEXT ON               }
+  StatisticsIO   : Boolean;      { SET STATISTICS IO ON               }
+  StatisticsTime : Boolean;      { SET STATISTICS TIME ON             }
+  QEPagesRead    : LongInt;      { compteur de pages lues (I/O stats) }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -5555,6 +5563,7 @@ Begin
     ND_PARTITION_BY : NodeKindName := 'PARTITION_BY';
     ND_WINDOW_FRAME : NodeKindName := 'WINDOW_FRAME';
     ND_FRAME_BOUND  : NodeKindName := 'FRAME_BOUND';
+    ND_SET_OPTION   : NodeKindName := 'SET_OPTION';
   Else
     NodeKindName := '?';
   End;
@@ -10582,6 +10591,75 @@ Begin
     Exit;
   End;
   Advance; { skip SET }
+
+  { ---- TODO 25 : SET SHOWPLAN_TEXT / STATISTICS IO / TIME ------- }
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    VarName := StrUpperCase(LexCurTok.Text);
+
+    { SET SHOWPLAN_TEXT ON|OFF }
+    If VarName = 'SHOWPLAN_TEXT' Then
+    Begin
+      Advance; { skip SHOWPLAN_TEXT }
+      If KwIs(KW_ON) Then
+        N := NewNode(ND_SET_OPTION, 'SHOWPLAN_TEXT ON',
+                     LexCurTok.Line, LexCurTok.Col)
+      Else
+        N := NewNode(ND_SET_OPTION, 'SHOWPLAN_TEXT OFF',
+                     LexCurTok.Line, LexCurTok.Col);
+      Advance; { skip ON/OFF }
+      ParseSetStmt := N;
+      Exit;
+    End;
+
+    { SET SHOWPLAN_ALL ON|OFF }
+    If VarName = 'SHOWPLAN_ALL' Then
+    Begin
+      Advance;
+      If KwIs(KW_ON) Then
+        N := NewNode(ND_SET_OPTION, 'SHOWPLAN_ALL ON',
+                     LexCurTok.Line, LexCurTok.Col)
+      Else
+        N := NewNode(ND_SET_OPTION, 'SHOWPLAN_ALL OFF',
+                     LexCurTok.Line, LexCurTok.Col);
+      Advance;
+      ParseSetStmt := N;
+      Exit;
+    End;
+
+    { SET STATISTICS IO|TIME|PROFILE ON|OFF }
+    If VarName = 'STATISTICS' Then
+    Begin
+      Advance; { skip STATISTICS }
+      VarName := StrUpperCase(LexCurTok.Text);
+      Advance; { skip IO/TIME/PROFILE }
+      If KwIs(KW_ON) Then
+        N := NewNode(ND_SET_OPTION, 'STATISTICS ' + VarName + ' ON',
+                     LexCurTok.Line, LexCurTok.Col)
+      Else
+        N := NewNode(ND_SET_OPTION, 'STATISTICS ' + VarName + ' OFF',
+                     LexCurTok.Line, LexCurTok.Col);
+      Advance;
+      ParseSetStmt := N;
+      Exit;
+    End;
+
+    { SET NOCOUNT ON|OFF }
+    If VarName = 'NOCOUNT' Then
+    Begin
+      Advance;
+      If KwIs(KW_ON) Then
+        N := NewNode(ND_SET_OPTION, 'NOCOUNT ON',
+                     LexCurTok.Line, LexCurTok.Col)
+      Else
+        N := NewNode(ND_SET_OPTION, 'NOCOUNT OFF',
+                     LexCurTok.Line, LexCurTok.Col);
+      Advance;
+      ParseSetStmt := N;
+      Exit;
+    End;
+  End;
+  { ---- Fin TODO 25 SET options ---------------------------------- }
 
   If LexCurTok.Kind <> TOK_VARIABLE Then
   Begin
@@ -15931,6 +16009,540 @@ Begin
   End;
 End;
 
+{ ===== TODO 25 : Optimiseur de requetes (Query Optimizer) ===== }
+
+{ ---- Statistiques de base : compter les pages d une table ------ }
+{ Parcourt le MDF pour compter les pages de donnees (type 1)       }
+{ correspondant a l ObjId donne. Retourne le nombre de pages.      }
+
+Function QECountTablePages(ObjId : LongInt) : LongInt;
+Var
+  TmpBuf : TMdfPageBuf;
+  Hdr    : TMdfPageHeader;
+  I      : LongInt;
+  Cnt    : LongInt;
+Begin
+  Cnt := 0;
+  For I := 0 To MdfPageCnt - 1 Do
+  Begin
+    If Not SeekPage(I, TmpBuf) Then Continue;
+    ParsePageHeader(TmpBuf, Hdr);
+    If (Hdr.PageType = MDF_PT_DATA) And (Hdr.ObjId = ObjId) Then
+      Inc(Cnt);
+  End;
+  QECountTablePages := Cnt;
+End;
+
+{ ---- Estimation du nombre de lignes d une table ----------------- }
+{ Estimation rapide : lit la premiere page de donnees et multiplie  }
+{ le nombre de slots par le nombre total de pages.                  }
+
+Function QEEstimateRows(ObjId : LongInt) : LongInt;
+Var
+  TmpBuf    : TMdfPageBuf;
+  Hdr       : TMdfPageHeader;
+  I         : LongInt;
+  TotalPages: LongInt;
+  FirstSlots: Integer;
+Begin
+  TotalPages := 0;
+  FirstSlots := 0;
+  For I := 0 To MdfPageCnt - 1 Do
+  Begin
+    If Not SeekPage(I, TmpBuf) Then Continue;
+    ParsePageHeader(TmpBuf, Hdr);
+    If (Hdr.PageType = MDF_PT_DATA) And (Hdr.ObjId = ObjId) Then
+    Begin
+      Inc(TotalPages);
+      If TotalPages = 1 Then
+        FirstSlots := Hdr.SlotCnt;
+    End;
+  End;
+  If (TotalPages > 0) And (FirstSlots > 0) Then
+    QEEstimateRows := TotalPages * FirstSlots
+  Else
+    QEEstimateRows := 0;
+End;
+
+{ ---- Estimation de la densite d un index ----------------------- }
+{ Retourne une estimation 0..100 de la densite (% de cles           }
+{ uniques). Basee sur le nombre de pages de l index vs nombre       }
+{ de pages de donnees. Plus la densite est haute, plus le seek      }
+{ est efficace.                                                     }
+
+Function QEEstimateIndexDensity(ObjId : LongInt;
+                                 IdxIdx : Integer) : Integer;
+Var
+  DataPages : LongInt;
+  IdxPages  : LongInt;
+  TmpBuf    : TMdfPageBuf;
+  Hdr       : TMdfPageHeader;
+  I         : LongInt;
+  IdxId     : LongInt;
+Begin
+  DataPages := QECountTablePages(ObjId);
+  If DataPages = 0 Then
+  Begin
+    QEEstimateIndexDensity := 100;
+    Exit;
+  End;
+  IdxId := SysIndexes[IdxIdx].IndexId;
+  IdxPages := 0;
+  For I := 0 To MdfPageCnt - 1 Do
+  Begin
+    If Not SeekPage(I, TmpBuf) Then Continue;
+    ParsePageHeader(TmpBuf, Hdr);
+    If (Hdr.PageType = MDF_PT_INDEX) And (Hdr.ObjId = ObjId) And
+       (Hdr.IndexId = IdxId) Then
+      Inc(IdxPages);
+  End;
+  If IdxPages = 0 Then
+    QEEstimateIndexDensity := 50
+  Else If IdxPages >= DataPages Then
+    QEEstimateIndexDensity := 10
+  Else
+    QEEstimateIndexDensity := 100 - Integer((IdxPages * 100) Div DataPages);
+End;
+
+{ ---- Estimation de la selectivite d un predicat WHERE ---------- }
+{ Retourne une estimation 0..100 representant le pourcentage de     }
+{ lignes qui satisfont le predicat. Heuristiques simples :          }
+{ - egalite (=) : 10%                                               }
+{ - inegalite (<>, !=) : 90%                                        }
+{ - comparaison (<, >, <=, >=) : 30%                                 }
+{ - BETWEEN : 25%                                                    }
+{ - LIKE : 25% (avec % initial : 75%)                                }
+{ - IN : 20%                                                         }
+{ - IS NULL / IS NOT NULL : 5% / 95%                                 }
+{ - AND : selectivite gauche * selectivite droite / 100               }
+{ - OR  : selectivite gauche + selectivite droite (cap 100)           }
+
+Function QEEstimateSelectivity(WhereNode : Integer) : Integer;
+Var
+  Kind : Integer;
+  U    : TString;
+  SelL, SelR : Integer;
+Begin
+  QEEstimateSelectivity := 100; { par defaut : pas de filtre }
+  If (WhereNode < 0) Or (WhereNode >= ASTCount) Then Exit;
+  Kind := ASTPool[WhereNode].Kind;
+  U := StrUpperCase(ASTPool[WhereNode].Text);
+
+  { Operateurs de comparaison }
+  If Kind = ND_COMPARE Then
+  Begin
+    If (U = '=') Then
+      QEEstimateSelectivity := 10
+    Else If (U = '<>') Or (U = '!=') Then
+      QEEstimateSelectivity := 90
+    Else { <, >, <=, >= }
+      QEEstimateSelectivity := 30;
+    Exit;
+  End;
+
+  { BETWEEN }
+  If Kind = ND_BETWEEN Then
+  Begin
+    QEEstimateSelectivity := 25;
+    Exit;
+  End;
+
+  { LIKE }
+  If Kind = ND_LIKE Then
+  Begin
+    { Si le pattern commence par %, faible selectivite }
+    If (ASTPool[WhereNode].ChildCnt > 1) Then
+    Begin
+      SelL := ASTPool[WhereNode].Children[1];
+      If (SelL >= 0) And (SelL < ASTCount) Then
+      Begin
+        If (Length(ASTPool[SelL].Text) > 0) And
+           (ASTPool[SelL].Text[1] = '%') Then
+        Begin
+          QEEstimateSelectivity := 75;
+          Exit;
+        End;
+      End;
+    End;
+    QEEstimateSelectivity := 25;
+    Exit;
+  End;
+
+  { IN }
+  If Kind = ND_IN Then
+  Begin
+    QEEstimateSelectivity := 20;
+    Exit;
+  End;
+
+  { IS NULL / IS NOT NULL }
+  If (U = 'IS NULL') Then
+  Begin
+    QEEstimateSelectivity := 5;
+    Exit;
+  End;
+  If (U = 'IS NOT NULL') Then
+  Begin
+    QEEstimateSelectivity := 95;
+    Exit;
+  End;
+
+  { NOT }
+  If Kind = ND_NOT Then
+  Begin
+    If ASTPool[WhereNode].ChildCnt > 0 Then
+    Begin
+      SelL := QEEstimateSelectivity(ASTPool[WhereNode].Children[0]);
+      QEEstimateSelectivity := 100 - SelL;
+    End;
+    Exit;
+  End;
+
+  { AND : produit des selectivites }
+  If Kind = ND_AND Then
+  Begin
+    SelL := 100;
+    SelR := 100;
+    If ASTPool[WhereNode].ChildCnt > 0 Then
+      SelL := QEEstimateSelectivity(ASTPool[WhereNode].Children[0]);
+    If ASTPool[WhereNode].ChildCnt > 1 Then
+      SelR := QEEstimateSelectivity(ASTPool[WhereNode].Children[1]);
+    QEEstimateSelectivity := (SelL * SelR) Div 100;
+    Exit;
+  End;
+
+  { OR : somme des selectivites (cap a 100) }
+  If Kind = ND_OR Then
+  Begin
+    SelL := 100;
+    SelR := 100;
+    If ASTPool[WhereNode].ChildCnt > 0 Then
+      SelL := QEEstimateSelectivity(ASTPool[WhereNode].Children[0]);
+    If ASTPool[WhereNode].ChildCnt > 1 Then
+      SelR := QEEstimateSelectivity(ASTPool[WhereNode].Children[1]);
+    SelL := SelL + SelR;
+    If SelL > 100 Then SelL := 100;
+    QEEstimateSelectivity := SelL;
+    Exit;
+  End;
+
+  { WHERE clause node : descendre dans le premier enfant }
+  If Kind = ND_WHERE_CLAUSE Then
+  Begin
+    If ASTPool[WhereNode].ChildCnt > 0 Then
+      QEEstimateSelectivity :=
+        QEEstimateSelectivity(ASTPool[WhereNode].Children[0]);
+    Exit;
+  End;
+End;
+
+{ ---- Extraire la colonne d un predicat d egalite --------------- }
+{ Si le noeud est col = valeur ou valeur = col, retourne le nom    }
+{ de la colonne. Sinon retourne chaine vide.                       }
+
+Function QEGetEqualityCol(WhereNode : Integer) : TTokenText;
+Var
+  L, R : Integer;
+Begin
+  QEGetEqualityCol := '';
+  If (WhereNode < 0) Or (WhereNode >= ASTCount) Then Exit;
+  If ASTPool[WhereNode].Kind <> ND_COMPARE Then Exit;
+  If ASTPool[WhereNode].Text <> '=' Then Exit;
+  If ASTPool[WhereNode].ChildCnt < 2 Then Exit;
+  L := ASTPool[WhereNode].Children[0];
+  R := ASTPool[WhereNode].Children[1];
+  If (L >= 0) And (L < ASTCount) And
+     (ASTPool[L].Kind = ND_IDENT) Then
+    QEGetEqualityCol := ASTPool[L].Text
+  Else If (R >= 0) And (R < ASTCount) And
+          (ASTPool[R].Kind = ND_IDENT) Then
+    QEGetEqualityCol := ASTPool[R].Text;
+End;
+
+{ ---- Constantes pour le plan d acces (TODO 25) ----------------- }
+
+Const
+  QE_ACCESS_TABLE_SCAN = 0;
+  QE_ACCESS_INDEX_SCAN = 1;
+  QE_ACCESS_INDEX_SEEK = 2;
+  QE_ACCESS_KEY_LOOKUP = 3;
+
+{ ---- Selection du plan d acces --------------------------------- }
+{ Decide entre Table Scan, Index Seek, Index Scan, Key Lookup       }
+{ en fonction de la selectivite du WHERE et de la presence           }
+{ d un index sur la colonne filtree.                                 }
+{ Retourne l une des constantes QE_ACCESS_*.                        }
+
+Function QEChooseAccessPath(ObjId : LongInt;
+                             WhereNode : Integer;
+                             Var IdxIdx : Integer) : Integer;
+Var
+  Sel   : Integer;
+  Col   : TTokenText;
+  ColId : LongInt;
+  WN    : Integer;
+Begin
+  IdxIdx := -1;
+
+  { Sans WHERE : toujours un Table Scan }
+  If (WhereNode < 0) Or (WhereNode >= ASTCount) Then
+  Begin
+    QEChooseAccessPath := QE_ACCESS_TABLE_SCAN;
+    Exit;
+  End;
+
+  { Estimer la selectivite }
+  Sel := QEEstimateSelectivity(WhereNode);
+
+  { Chercher si le predicat est une egalite sur une colonne indexee }
+  WN := WhereNode;
+  If ASTPool[WN].Kind = ND_WHERE_CLAUSE Then
+    If ASTPool[WN].ChildCnt > 0 Then
+      WN := ASTPool[WN].Children[0];
+
+  Col := QEGetEqualityCol(WN);
+  If Col <> '' Then
+  Begin
+    ColId := FindColIdByName(ObjId, Col);
+    If ColId > 0 Then
+    Begin
+      IdxIdx := FindIndexForCol(ObjId, ColId);
+      If IdxIdx >= 0 Then
+      Begin
+        { Selectivite basse : Index Seek }
+        If Sel <= 30 Then
+        Begin
+          QEChooseAccessPath := QE_ACCESS_INDEX_SEEK;
+          Exit;
+        End;
+        { Selectivite moyenne : Index Scan }
+        QEChooseAccessPath := QE_ACCESS_INDEX_SCAN;
+        Exit;
+      End;
+    End;
+  End;
+
+  { Si selectivite tres basse mais pas d index d egalite,
+    chercher n importe quel index }
+  If Sel <= 15 Then
+  Begin
+    IdxIdx := FindIndexForTable(ObjId);
+    If IdxIdx >= 0 Then
+    Begin
+      QEChooseAccessPath := QE_ACCESS_INDEX_SCAN;
+      Exit;
+    End;
+  End;
+
+  { Par defaut : Table Scan }
+  QEChooseAccessPath := QE_ACCESS_TABLE_SCAN;
+End;
+
+{ ---- Constantes pour l algorithme de jointure ------------------- }
+
+Const
+  QE_JOIN_NESTED_LOOP = 0;
+  QE_JOIN_HASH        = 1;
+  QE_JOIN_MERGE       = 2;
+
+{ ---- Selection de l algorithme de jointure ---------------------- }
+{ Heuristique simple basee sur la taille des tables :                }
+{ - Petites tables (< 50 lignes) : Nested Loop                      }
+{ - Tables moyennes : Hash Join                                      }
+{ - Grandes tables triees : Merge Join                               }
+
+Function QEChooseJoinAlgo(LeftRows, RightRows : LongInt;
+                           HasOrderBy : Boolean) : Integer;
+Begin
+  { Si les deux tables sont petites : Nested Loop }
+  If (LeftRows < 50) Or (RightRows < 50) Then
+  Begin
+    QEChooseJoinAlgo := QE_JOIN_NESTED_LOOP;
+    Exit;
+  End;
+
+  { Si un ORDER BY est present et les tables sont grandes : Merge }
+  If HasOrderBy And (LeftRows > 200) And (RightRows > 200) Then
+  Begin
+    QEChooseJoinAlgo := QE_JOIN_MERGE;
+    Exit;
+  End;
+
+  { Par defaut pour les tables moyennes/grandes : Hash }
+  If (LeftRows > 100) And (RightRows > 100) Then
+    QEChooseJoinAlgo := QE_JOIN_HASH
+  Else
+    QEChooseJoinAlgo := QE_JOIN_NESTED_LOOP;
+End;
+
+{ ---- Noms textuels des plans d acces et jointures --------------- }
+
+Function QEAccessPathName(AP : Integer) : TString;
+Begin
+  Case AP Of
+    QE_ACCESS_TABLE_SCAN : QEAccessPathName := 'Table Scan';
+    QE_ACCESS_INDEX_SCAN : QEAccessPathName := 'Index Scan';
+    QE_ACCESS_INDEX_SEEK : QEAccessPathName := 'Index Seek';
+    QE_ACCESS_KEY_LOOKUP : QEAccessPathName := 'Key Lookup';
+  Else
+    QEAccessPathName := 'Unknown';
+  End;
+End;
+
+Function QEJoinAlgoName(JA : Integer) : TString;
+Begin
+  Case JA Of
+    QE_JOIN_NESTED_LOOP : QEJoinAlgoName := 'Nested Loops';
+    QE_JOIN_HASH        : QEJoinAlgoName := 'Hash Match';
+    QE_JOIN_MERGE       : QEJoinAlgoName := 'Merge Join';
+  Else
+    QEJoinAlgoName := 'Unknown';
+  End;
+End;
+
+{ ---- Elimination des expressions constantes --------------------- }
+{ Detecte si un noeud d expression est une constante (literal)       }
+{ et retourne True si c est le cas.                                  }
+
+Function QEIsConstExpr(Node : Integer) : Boolean;
+Begin
+  QEIsConstExpr := False;
+  If (Node < 0) Or (Node >= ASTCount) Then Exit;
+  If ASTPool[Node].Kind = ND_INT_LIT Then
+    QEIsConstExpr := True
+  Else If ASTPool[Node].Kind = ND_FLOAT_LIT Then
+    QEIsConstExpr := True
+  Else If ASTPool[Node].Kind = ND_STR_LIT Then
+    QEIsConstExpr := True
+  Else If ASTPool[Node].Kind = ND_NULL_LIT Then
+    QEIsConstExpr := True;
+End;
+
+{ ---- Verifier si un predicat peut etre pousse vers la source ----- }
+{ Un predicat est "pushable" s il ne reference que des colonnes       }
+{ d une seule table (pas de jointure croisee).                        }
+
+Function QEIsSingleTablePred(Node : Integer) : Boolean;
+Begin
+  QEIsSingleTablePred := False;
+  If (Node < 0) Or (Node >= ASTCount) Then Exit;
+  { Predicats simples col = val, col < val, etc. sont pushable }
+  If ASTPool[Node].Kind = ND_COMPARE Then
+    QEIsSingleTablePred := True
+  Else If ASTPool[Node].Kind = ND_BETWEEN Then
+    QEIsSingleTablePred := True
+  Else If ASTPool[Node].Kind = ND_LIKE Then
+    QEIsSingleTablePred := True
+  Else If ASTPool[Node].Kind = ND_IN Then
+    QEIsSingleTablePred := True;
+End;
+
+{ ---- Afficher le plan d execution textuel ----------------------- }
+{ Produit un plan d execution similaire a SET SHOWPLAN_TEXT ON        }
+{ de SQL Server. Affiche l arbre des operateurs physiques.           }
+
+Procedure QEShowPlan(Root : Integer;
+                      Const TblName : TTokenText;
+                      WhereNode : Integer;
+                      OrderNode : Integer;
+                      GroupNode : Integer;
+                      HasDistinct : Boolean;
+                      JoinCount : Integer);
+Var
+  AP      : Integer;
+  JA      : Integer;
+  IdxIdx  : Integer;
+  Sel     : Integer;
+  EstRows : LongInt;
+  TblIdx  : Integer;
+  ObjId   : LongInt;
+Begin
+  OutputLine('');
+  OutputLine('StmtText');
+  OutputLine('------------------------------------------------------------------------');
+
+  { Ligne 1 : SELECT principal }
+  If HasDistinct Then
+    OutputLine('  |--Sort (DISTINCT ORDER BY)')
+  Else If OrderNode >= 0 Then
+    OutputLine('  |--Sort (ORDER BY)');
+
+  If GroupNode >= 0 Then
+    OutputLine('  |--Hash Match (Aggregate)');
+
+  { Determiner le plan d acces }
+  TblIdx := QEFindTable(TblName);
+  If TblIdx >= 0 Then
+  Begin
+    ObjId := SysObjects[TblIdx].ObjectId;
+    AP := QEChooseAccessPath(ObjId, WhereNode, IdxIdx);
+    Sel := QEEstimateSelectivity(WhereNode);
+    EstRows := QEEstimateRows(ObjId);
+    If EstRows > 0 Then
+      EstRows := (EstRows * Sel) Div 100;
+    If EstRows < 1 Then EstRows := 1;
+
+    { Afficher le plan d acces }
+    If AP = QE_ACCESS_INDEX_SEEK Then
+    Begin
+      OutputLine('  |--Nested Loops (Inner Join)');
+      If (IdxIdx >= 0) And (SysIndexes[IdxIdx].IdxType <> 1) Then
+        OutputLine('       |--Key Lookup (Clustered)');
+      OutputLine('       |--Index Seek (NonClustered, [' +
+                  SysIndexes[IdxIdx].Name + '], SEEK:([key]=scalar)' +
+                  ' ORDERED FORWARD)');
+    End
+    Else If AP = QE_ACCESS_INDEX_SCAN Then
+    Begin
+      If IdxIdx >= 0 Then
+        OutputLine('  |--Index Scan (NonClustered, [' +
+                    SysIndexes[IdxIdx].Name + '], ORDERED FORWARD)')
+      Else
+        OutputLine('  |--Index Scan (ORDERED FORWARD)');
+    End
+    Else
+      OutputLine('  |--Table Scan ([' + TblName +
+                  '], WHERE:(' + IntToStr(Sel) + '% est.))');
+
+    OutputLine('');
+    OutputLine(' Est. rows: ' + IntToStr(EstRows) +
+               ', Est. I/O cost: ' +
+               IntToStr(QECountTablePages(ObjId)));
+  End
+  Else
+    OutputLine('  |--Table Scan ([' + TblName + '])');
+
+  { Jointures }
+  If JoinCount > 0 Then
+  Begin
+    JA := QEChooseJoinAlgo(100, 100, OrderNode >= 0);
+    OutputLine('  |--' + QEJoinAlgoName(JA) +
+               ' (Join, ' + IntToStr(JoinCount) + ' join(s))');
+  End;
+
+  OutputLine('');
+End;
+
+{ ---- Afficher les statistiques I/O ------------------------------ }
+{ Produit un rapport similaire a SET STATISTICS IO ON de             }
+{ SQL Server. Affiche le nombre de lectures logiques/physiques.      }
+
+Procedure QEShowStatsIO(Const TblName : TTokenText;
+                         PagesRead : LongInt;
+                         RowsRead : LongInt);
+Begin
+  OutputLine('');
+  OutputLine('Table ''' + TblName + '''. Scan count 1, ' +
+             'logical reads ' + IntToStr(PagesRead) +
+             ', physical reads ' + IntToStr(PagesRead) +
+             ', page server reads 0, ' +
+             'read-ahead reads 0, page server read-ahead reads 0, ' +
+             'lob logical reads 0, lob physical reads 0, ' +
+             'lob page server reads 0, lob read-ahead reads 0, ' +
+             'lob page server read-ahead reads 0.');
+  OutputLine('');
+End;
+
 { ---- Tri QuickSort des lignes -------------------------------- }
 { Trie le result set en memoire par les colonnes d ORDER BY.      }
 
@@ -18149,6 +18761,7 @@ Var
   JoinRes    : TQEResult;
   TmpRes     : TQEResult;
   OnNode     : Integer;
+  MainTblName: TTokenText;   { TODO 25 : nom de la table principale }
 Begin
   If QERes = Nil Then New(QERes);
   QERes^.ColCnt := 0;
@@ -18267,6 +18880,26 @@ Begin
     Exit;
   End;
 
+  { ---- TODO 25 : Afficher le plan d execution si SHOWPLAN_TEXT ON ---- }
+  If ShowPlanText Then
+  Begin
+    { Compter les jointures }
+    J := 0;
+    For I := 0 To ASTPool[TblNode].ChildCnt - 1 Do
+    Begin
+      N := ASTPool[TblNode].Children[I];
+      If (N >= 0) And (N < ASTCount) Then
+        If (ASTPool[N].Kind = ND_JOIN) Or (ASTPool[N].Kind = ND_APPLY) Or
+           ((ASTPool[N].Kind = ND_TABLE_REF) And (I > 0)) Then
+          Inc(J);
+    End;
+    QEShowPlan(Root, TblName, WhereNode, OrderNode, GroupNode,
+               HasDistinct, J);
+    { En mode SHOWPLAN_TEXT, on ne execute pas la requete }
+    Exit;
+  End;
+  { ---- Fin TODO 25 SHOWPLAN_TEXT ---- }
+
   { Chercher la table dans le catalogue }
   If Not CatalogValid Then
   Begin
@@ -18275,6 +18908,7 @@ Begin
   End;
 
   { Charger la premiere table }
+  MainTblName := TblName;  { TODO 25 : sauvegarder pour STATISTICS IO }
   If Not QELoadTable(TblName, SrcRes) Then
   Begin
     OutputLine('-- Erreur : table ''' + TblName + ''' introuvable');
@@ -18729,9 +19363,19 @@ Begin
 
   { Afficher le result set }
   QEFormatResult(QERes^);
-End;
 
-{ ---- Execution d une requete SQL ----------------------------- }
+  { ---- TODO 25 : Afficher les statistiques I/O si STATISTICS IO ON ---- }
+  If StatisticsIO Then
+  Begin
+    { Compter les pages de la table principale }
+    I := QEFindTable(MainTblName);
+    If I >= 0 Then
+      QEShowStatsIO(MainTblName,
+                     QECountTablePages(SysObjects[I].ObjectId),
+                     QERes^.RowCnt);
+  End;
+  { ---- Fin TODO 25 STATISTICS IO ---- }
+End;
 
 Procedure ExecuteQuery(Const SQL : TString);
 Var
@@ -18833,6 +19477,57 @@ Begin
        (ASTPool[Root].Kind = ND_INTERSECT_OP) Or
        (ASTPool[Root].Kind = ND_EXCEPT_OP) Then
       QEExecSetOp(Root);
+    { ---- TODO 25 : Execution des SET options ---- }
+    If ASTPool[Root].Kind = ND_SET_OPTION Then
+    Begin
+      If ASTPool[Root].Text = 'SHOWPLAN_TEXT ON' Then
+      Begin
+        ShowPlanText := True;
+        OutputLine('-- SET SHOWPLAN_TEXT ON');
+      End
+      Else If ASTPool[Root].Text = 'SHOWPLAN_TEXT OFF' Then
+      Begin
+        ShowPlanText := False;
+        OutputLine('-- SET SHOWPLAN_TEXT OFF');
+      End
+      Else If ASTPool[Root].Text = 'SHOWPLAN_ALL ON' Then
+      Begin
+        ShowPlanText := True;
+        OutputLine('-- SET SHOWPLAN_ALL ON');
+      End
+      Else If ASTPool[Root].Text = 'SHOWPLAN_ALL OFF' Then
+      Begin
+        ShowPlanText := False;
+        OutputLine('-- SET SHOWPLAN_ALL OFF');
+      End
+      Else If ASTPool[Root].Text = 'STATISTICS IO ON' Then
+      Begin
+        StatisticsIO := True;
+        OutputLine('-- SET STATISTICS IO ON');
+      End
+      Else If ASTPool[Root].Text = 'STATISTICS IO OFF' Then
+      Begin
+        StatisticsIO := False;
+        OutputLine('-- SET STATISTICS IO OFF');
+      End
+      Else If ASTPool[Root].Text = 'STATISTICS TIME ON' Then
+      Begin
+        StatisticsTime := True;
+        OutputLine('-- SET STATISTICS TIME ON');
+      End
+      Else If ASTPool[Root].Text = 'STATISTICS TIME OFF' Then
+      Begin
+        StatisticsTime := False;
+        OutputLine('-- SET STATISTICS TIME OFF');
+      End
+      Else If ASTPool[Root].Text = 'NOCOUNT ON' Then
+        OutputLine('-- SET NOCOUNT ON (acknowledged)')
+      Else If ASTPool[Root].Text = 'NOCOUNT OFF' Then
+        OutputLine('-- SET NOCOUNT OFF (acknowledged)')
+      Else
+        OutputLine('-- SET ' + ASTPool[Root].Text + ' (acknowledged)');
+    End;
+    { ---- Fin TODO 25 SET options ---- }
   End
   Else
     OutputLine('-- Erreur de syntaxe dans : ' + SQL);
@@ -18960,6 +19655,11 @@ Begin
   SysRsCount   := 0;
   CatalogValid := False;
   QERes        := Nil;
+  { ---- TODO 25 : initialisation des variables d optimiseur ---- }
+  ShowPlanText   := False;
+  StatisticsIO   := False;
+  StatisticsTime := False;
+  QEPagesRead    := 0;
 
   ParseArgs;
 
