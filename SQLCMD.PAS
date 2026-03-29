@@ -428,7 +428,7 @@
             Plan d execution textuel (SET SHOWPLAN_TEXT ON)
             SET STATISTICS IO ON : afficher les I/O par table
 
-  TODO 26 - CURSEURS ET VARIABLES TABLE
+  TODO 26 - CURSEURS ET VARIABLES TABLE [IMPLEMENTE]
             DECLARE nom CURSOR FOR SELECT ...
             OPEN nom, FETCH NEXT FROM nom INTO @vars
             CLOSE nom, DEALLOCATE nom
@@ -967,7 +967,25 @@ Const
   KW_FOLLOWING    = 149;
   KW_CURRENT_ROW  = 150;
 
-  KW_COUNT        = 150;     { nombre total de mots-cles definis  }
+  { -- Curseurs (TODO 26) -- }
+  KW_CURSOR       = 151;
+  KW_OPEN         = 152;
+  KW_CLOSE        = 153;
+  KW_DEALLOCATE   = 154;
+  KW_SCROLL       = 155;
+  KW_FORWARD_ONLY = 156;
+  KW_STATIC       = 157;
+  KW_DYNAMIC      = 158;
+  KW_KEYSET       = 159;
+  KW_FAST_FORWARD = 160;
+  KW_FIRST        = 161;
+  KW_LAST         = 162;
+  KW_PRIOR        = 163;
+  KW_ABSOLUTE     = 164;
+  KW_RELATIVE     = 165;
+  KW_READONLY     = 166;
+
+  KW_COUNT        = 166;     { nombre total de mots-cles definis  }
 
   { ---- Constantes AST noeud parseur SQL (TODO 09) ------------- }
   { Types de noeuds dans l arbre d expression }
@@ -1123,6 +1141,13 @@ Const
   { -- Query optimizer nodes (TODO 25) -- }
   ND_SET_OPTION    = 136;    { SET SHOWPLAN_TEXT/STATISTICS IO/TIME  }
 
+  { -- Cursor nodes (TODO 26) -- }
+  ND_DECLARE_CURSOR    = 137;  { DECLARE name CURSOR FOR SELECT ... }
+  ND_OPEN_CURSOR       = 138;  { OPEN cursor_name                   }
+  ND_FETCH_CURSOR      = 139;  { FETCH NEXT/PRIOR/FIRST/LAST FROM   }
+  ND_CLOSE_CURSOR      = 140;  { CLOSE cursor_name                  }
+  ND_DEALLOCATE_CURSOR = 141;  { DEALLOCATE cursor_name              }
+
   { Taille max du pool de noeuds AST }
   MAX_AST_NODES   = 1024;
 
@@ -1137,6 +1162,10 @@ Const
   MAX_QE_COLWIDTH = 40;            { largeur max affichage colonne  }
   MAX_QE_PAGES    = {$IFDEF FPC}1024{$ELSE}64{$ENDIF};
                                    { pages max par table scan       }
+
+  { ---- Constantes des curseurs (TODO 26) ------------------------ }
+  MAX_CURSORS     = 16;            { curseurs ouverts simultanes    }
+  MAX_USER_VARS   = 64;            { variables utilisateur @var     }
 
   { ---- Constantes du moteur de jointure (TODO 16) -------------- }
   MAX_QE_HASH     = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
@@ -1436,6 +1465,23 @@ Var
   StatisticsIO   : Boolean;      { SET STATISTICS IO ON               }
   StatisticsTime : Boolean;      { SET STATISTICS TIME ON             }
   QEPagesRead    : LongInt;      { compteur de pages lues (I/O stats) }
+  { ---- Curseurs et Variables Table (TODO 26) -------------------- }
+  FetchStatus    : LongInt;      { @@FETCH_STATUS : 0,-1,-2           }
+  CursorCount    : Integer;      { nombre de curseurs declares        }
+  CursorNames    : Array[0..MAX_CURSORS - 1] Of TTokenText;
+  CursorSelect   : Array[0..MAX_CURSORS - 1] Of Integer;
+                                   { noeud AST du SELECT associe       }
+  CursorRes      : Array[0..MAX_CURSORS - 1] Of TQEResultPtr;
+                                   { result set materialise             }
+  CursorRow      : Array[0..MAX_CURSORS - 1] Of Integer;
+                                   { position courante dans le result   }
+  CursorOpen     : Array[0..MAX_CURSORS - 1] Of Boolean;
+                                   { True si le curseur est ouvert      }
+  CursorType     : Array[0..MAX_CURSORS - 1] Of TTokenText;
+                                   { FORWARD_ONLY, SCROLL, etc.         }
+  UserVarCount   : Integer;      { nombre de variables utilisateur    }
+  UserVarNames   : Array[0..MAX_USER_VARS - 1] Of TTokenText;
+  UserVarValues  : Array[0..MAX_USER_VARS - 1] Of TSqlValue;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -5234,6 +5280,24 @@ Begin
   If U = 'OWNERSHIP'    Then Begin IsKeyword := KW_OWNERSHIP;    Exit; End;
   If U = 'PUBLIC'       Then Begin IsKeyword := KW_PUBLIC;       Exit; End;
 
+  { -- Curseurs (TODO 26) -- }
+  If U = 'CURSOR'       Then Begin IsKeyword := KW_CURSOR;       Exit; End;
+  If U = 'OPEN'         Then Begin IsKeyword := KW_OPEN;         Exit; End;
+  If U = 'CLOSE'        Then Begin IsKeyword := KW_CLOSE;        Exit; End;
+  If U = 'DEALLOCATE'   Then Begin IsKeyword := KW_DEALLOCATE;   Exit; End;
+  If U = 'SCROLL'       Then Begin IsKeyword := KW_SCROLL;       Exit; End;
+  If U = 'FORWARD_ONLY' Then Begin IsKeyword := KW_FORWARD_ONLY; Exit; End;
+  If U = 'STATIC'       Then Begin IsKeyword := KW_STATIC;       Exit; End;
+  If U = 'DYNAMIC'      Then Begin IsKeyword := KW_DYNAMIC;      Exit; End;
+  If U = 'KEYSET'       Then Begin IsKeyword := KW_KEYSET;       Exit; End;
+  If U = 'FAST_FORWARD' Then Begin IsKeyword := KW_FAST_FORWARD; Exit; End;
+  If U = 'FIRST'        Then Begin IsKeyword := KW_FIRST;        Exit; End;
+  If U = 'LAST'         Then Begin IsKeyword := KW_LAST;         Exit; End;
+  If U = 'PRIOR'        Then Begin IsKeyword := KW_PRIOR;        Exit; End;
+  If U = 'ABSOLUTE'     Then Begin IsKeyword := KW_ABSOLUTE;     Exit; End;
+  If U = 'RELATIVE'     Then Begin IsKeyword := KW_RELATIVE;     Exit; End;
+  If U = 'READONLY'     Then Begin IsKeyword := KW_READONLY;     Exit; End;
+
   IsKeyword := 0;
 End;
 
@@ -5357,6 +5421,23 @@ Begin
     KW_TAKE         : KeywordName := 'TAKE';
     KW_OWNERSHIP    : KeywordName := 'OWNERSHIP';
     KW_PUBLIC       : KeywordName := 'PUBLIC';
+    { Curseurs (TODO 26) }
+    KW_CURSOR       : KeywordName := 'CURSOR';
+    KW_OPEN         : KeywordName := 'OPEN';
+    KW_CLOSE        : KeywordName := 'CLOSE';
+    KW_DEALLOCATE   : KeywordName := 'DEALLOCATE';
+    KW_SCROLL       : KeywordName := 'SCROLL';
+    KW_FORWARD_ONLY : KeywordName := 'FORWARD_ONLY';
+    KW_STATIC       : KeywordName := 'STATIC';
+    KW_DYNAMIC      : KeywordName := 'DYNAMIC';
+    KW_KEYSET       : KeywordName := 'KEYSET';
+    KW_FAST_FORWARD : KeywordName := 'FAST_FORWARD';
+    KW_FIRST        : KeywordName := 'FIRST';
+    KW_LAST         : KeywordName := 'LAST';
+    KW_PRIOR        : KeywordName := 'PRIOR';
+    KW_ABSOLUTE     : KeywordName := 'ABSOLUTE';
+    KW_RELATIVE     : KeywordName := 'RELATIVE';
+    KW_READONLY     : KeywordName := 'READONLY';
   Else
     KeywordName := '?';
   End;
@@ -5564,6 +5645,12 @@ Begin
     ND_WINDOW_FRAME : NodeKindName := 'WINDOW_FRAME';
     ND_FRAME_BOUND  : NodeKindName := 'FRAME_BOUND';
     ND_SET_OPTION   : NodeKindName := 'SET_OPTION';
+    { Cursor nodes (TODO 26) }
+    ND_DECLARE_CURSOR    : NodeKindName := 'DECLARE_CURSOR';
+    ND_OPEN_CURSOR       : NodeKindName := 'OPEN_CURSOR';
+    ND_FETCH_CURSOR      : NodeKindName := 'FETCH_CURSOR';
+    ND_CLOSE_CURSOR      : NodeKindName := 'CLOSE_CURSOR';
+    ND_DEALLOCATE_CURSOR : NodeKindName := 'DEALLOCATE_CURSOR';
   Else
     NodeKindName := '?';
   End;
@@ -10466,6 +10553,10 @@ End;
 { ---- ParseDeclareStmt ------------------------------------------ }
 { DECLARE @var type [= expr]                                        }
 { DECLARE @var TABLE (col type, ...)                                }
+{ DECLARE cursor_name CURSOR [SCROLL|FORWARD_ONLY] FOR SELECT ...   }
+
+Function ParseDeclareCursorStmt(Const CursorName : TString) : Integer;
+  Forward;
 
 Function ParseDeclareStmt : Integer;
 Var
@@ -10480,6 +10571,27 @@ Begin
     Exit;
   End;
   Advance; { skip DECLARE }
+
+  { ---- TODO 26 : DECLARE cursor_name CURSOR ... ---- }
+  { Si le token courant est un identifiant suivi de CURSOR,         }
+  { c est une declaration de curseur (pas une variable @).           }
+  If ((LexCurTok.Kind = TOK_IDENT) Or
+      ((LexCurTok.Kind = TOK_KEYWORD) And
+       (LexCurTok.KwId <> KW_CURSOR))) And
+     (LexCurTok.Kind <> TOK_VARIABLE) Then
+  Begin
+    VarName := LexCurTok.Text;
+    Advance; { skip cursor_name }
+    If KwIs(KW_CURSOR) Then
+    Begin
+      ParseDeclareStmt := ParseDeclareCursorStmt(VarName);
+      Exit;
+    End;
+    { Ce n est pas un curseur - erreur, on attendait @variable }
+    ParseError('variable @nom ou cursor CURSOR attendue apres DECLARE');
+    Exit;
+  End;
+  { ---- Fin TODO 26 : DECLARE cursor_name CURSOR ---- }
 
   If LexCurTok.Kind <> TOK_VARIABLE Then
   Begin
@@ -10574,6 +10686,248 @@ Begin
 
   ParseDeclareStmt := N;
 End;
+
+{ ---- TODO 26 : Parsing des curseurs ----------------------------- }
+
+{ ---- ParseDeclareCursorStmt ------------------------------------ }
+{ DECLARE cursor_name CURSOR [SCROLL|FORWARD_ONLY] [STATIC|       }
+{ KEYSET|DYNAMIC|FAST_FORWARD] [READ_ONLY] FOR SELECT ...          }
+
+Function ParseDeclareCursorStmt(Const CursorName : TString) : Integer;
+Var
+  N, Sel  : Integer;
+  CType   : TString;
+Begin
+  ParseDeclareCursorStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_CURSOR) Then
+  Begin
+    ParseError('CURSOR attendu');
+    Exit;
+  End;
+  Advance; { skip CURSOR }
+
+  N := NewNode(ND_DECLARE_CURSOR, CursorName, LexCurTok.Line, LexCurTok.Col);
+  CType := 'FORWARD_ONLY';
+
+  { Options de curseur optionnelles }
+  While ParseOk And (LexCurTok.Kind = TOK_KEYWORD) And
+        Not KwIs(KW_FOR) And (LexCurTok.Kind <> TOK_EOF) Do
+  Begin
+    If KwIs(KW_SCROLL) Then
+    Begin
+      CType := 'SCROLL';
+      Advance;
+    End
+    Else If KwIs(KW_FORWARD_ONLY) Then
+    Begin
+      CType := 'FORWARD_ONLY';
+      Advance;
+    End
+    Else If KwIs(KW_STATIC) Then
+    Begin
+      CType := 'STATIC';
+      Advance;
+    End
+    Else If KwIs(KW_KEYSET) Then
+    Begin
+      CType := 'KEYSET';
+      Advance;
+    End
+    Else If KwIs(KW_DYNAMIC) Then
+    Begin
+      CType := 'DYNAMIC';
+      Advance;
+    End
+    Else If KwIs(KW_FAST_FORWARD) Then
+    Begin
+      CType := 'FAST_FORWARD';
+      Advance;
+    End
+    Else If KwIs(KW_READONLY) Then
+      Advance  { acknowledged, ignore }
+    Else
+      Break;
+  End;
+
+  ASTPool[N].Text := CursorName + ':' + CType;
+
+  { FOR SELECT ... }
+  If Not KwIs(KW_FOR) Then
+  Begin
+    ParseError('FOR attendu apres options de curseur');
+    ParseDeclareCursorStmt := N;
+    Exit;
+  End;
+  Advance; { skip FOR }
+
+  Sel := ParseSelectStmt;
+  If Sel >= 0 Then
+    AddChild(N, Sel);
+
+  ParseDeclareCursorStmt := N;
+End;
+
+{ ---- ParseOpenCursorStmt --------------------------------------- }
+{ OPEN cursor_name                                                  }
+
+Function ParseOpenCursorStmt : Integer;
+Var
+  N : Integer;
+Begin
+  ParseOpenCursorStmt := -1;
+  If Not ParseOk Then Exit;
+  Advance; { skip OPEN }
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    N := NewNode(ND_OPEN_CURSOR, LexCurTok.Text, LexCurTok.Line,
+                 LexCurTok.Col);
+    Advance;
+    ParseOpenCursorStmt := N;
+  End
+  Else
+    ParseError('nom de curseur attendu apres OPEN');
+End;
+
+{ ---- ParseFetchStmt -------------------------------------------- }
+{ FETCH [NEXT|PRIOR|FIRST|LAST|ABSOLUTE n|RELATIVE n]              }
+{       FROM cursor_name [INTO @var1, @var2, ...]                   }
+
+Function ParseFetchStmt : Integer;
+Var
+  N, E  : Integer;
+  Dir   : TString;
+Begin
+  ParseFetchStmt := -1;
+  If Not ParseOk Then Exit;
+  Advance; { skip FETCH }
+
+  Dir := 'NEXT';
+  { Direction optionnelle }
+  If KwIs(KW_NEXT) Then
+  Begin
+    Dir := 'NEXT';
+    Advance;
+  End
+  Else If KwIs(KW_PRIOR) Then
+  Begin
+    Dir := 'PRIOR';
+    Advance;
+  End
+  Else If KwIs(KW_FIRST) Then
+  Begin
+    Dir := 'FIRST';
+    Advance;
+  End
+  Else If KwIs(KW_LAST) Then
+  Begin
+    Dir := 'LAST';
+    Advance;
+  End
+  Else If KwIs(KW_ABSOLUTE) Then
+  Begin
+    Dir := 'ABSOLUTE';
+    Advance;
+    { Skip the offset expression (number) }
+    If LexCurTok.Kind = TOK_NUMBER Then
+    Begin
+      Dir := 'ABSOLUTE ' + LexCurTok.Text;
+      Advance;
+    End;
+  End
+  Else If KwIs(KW_RELATIVE) Then
+  Begin
+    Dir := 'RELATIVE';
+    Advance;
+    If LexCurTok.Kind = TOK_NUMBER Then
+    Begin
+      Dir := 'RELATIVE ' + LexCurTok.Text;
+      Advance;
+    End;
+  End;
+
+  { FROM cursor_name }
+  If Not KwIs(KW_FROM) Then
+  Begin
+    ParseError('FROM attendu dans FETCH');
+    Exit;
+  End;
+  Advance; { skip FROM }
+
+  If (LexCurTok.Kind <> TOK_IDENT) And (LexCurTok.Kind <> TOK_KEYWORD) Then
+  Begin
+    ParseError('nom de curseur attendu apres FROM');
+    Exit;
+  End;
+
+  N := NewNode(ND_FETCH_CURSOR, LexCurTok.Text, LexCurTok.Line,
+               LexCurTok.Col);
+  ASTPool[N].Text := LexCurTok.Text + ':' + Dir;
+  Advance; { skip cursor_name }
+
+  { INTO @var1, @var2, ... }
+  If KwIs(KW_INTO) Then
+  Begin
+    Advance; { skip INTO }
+    While ParseOk And (LexCurTok.Kind = TOK_VARIABLE) Do
+    Begin
+      E := NewNode(ND_VARIABLE, LexCurTok.Text, LexCurTok.Line,
+                   LexCurTok.Col);
+      AddChild(N, E);
+      Advance;
+      If TokIs(TOK_COMMA) Then
+        Advance
+      Else
+        Break;
+    End;
+  End;
+
+  ParseFetchStmt := N;
+End;
+
+{ ---- ParseCloseCursorStmt ------------------------------------- }
+{ CLOSE cursor_name                                                 }
+
+Function ParseCloseCursorStmt : Integer;
+Var
+  N : Integer;
+Begin
+  ParseCloseCursorStmt := -1;
+  If Not ParseOk Then Exit;
+  Advance; { skip CLOSE }
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    N := NewNode(ND_CLOSE_CURSOR, LexCurTok.Text, LexCurTok.Line,
+                 LexCurTok.Col);
+    Advance;
+    ParseCloseCursorStmt := N;
+  End
+  Else
+    ParseError('nom de curseur attendu apres CLOSE');
+End;
+
+{ ---- ParseDeallocateCursorStmt --------------------------------- }
+{ DEALLOCATE cursor_name                                            }
+
+Function ParseDeallocateCursorStmt : Integer;
+Var
+  N : Integer;
+Begin
+  ParseDeallocateCursorStmt := -1;
+  If Not ParseOk Then Exit;
+  Advance; { skip DEALLOCATE }
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    N := NewNode(ND_DEALLOCATE_CURSOR, LexCurTok.Text, LexCurTok.Line,
+                 LexCurTok.Col);
+    Advance;
+    ParseDeallocateCursorStmt := N;
+  End
+  Else
+    ParseError('nom de curseur attendu apres DEALLOCATE');
+End;
+
+{ ---- Fin TODO 26 : Parsing des curseurs ---- }
 
 { ---- ParseSetStmt ---------------------------------------------- }
 { SET @variable = expression                                        }
@@ -11340,6 +11694,32 @@ Begin
     Exit;
   End;
 
+  { ---- TODO 26 : Dispatchers curseurs ---- }
+  If KwIs(KW_OPEN) Then
+  Begin
+    ParseStatement := ParseOpenCursorStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_FETCH) Then
+  Begin
+    ParseStatement := ParseFetchStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_CLOSE) Then
+  Begin
+    ParseStatement := ParseCloseCursorStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_DEALLOCATE) Then
+  Begin
+    ParseStatement := ParseDeallocateCursorStmt;
+    Exit;
+  End;
+  { ---- Fin TODO 26 : Dispatchers curseurs ---- }
+
   If KwIs(KW_IF) Then
   Begin
     ParseStatement := ParseIfStmt;
@@ -12074,6 +12454,9 @@ End;
 Function QEEvalExpr(Node : Integer;
                      Const Row : TQERow;
                      Const Res : TQEResult) : TSqlValue; Forward;
+
+{ ---- TODO 26 : Forward pour GetUserVar ---- }
+Function GetUserVar(Const Name : TTokenText) : TSqlValue; Forward;
 
 Function QEEvalBool(Node : Integer;
                      Const Row : TQERow;
@@ -15337,11 +15720,19 @@ Begin
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.IsNull   := False;
-        V.IntVal   := -1;
+        V.IntVal   := FetchStatus;  { TODO 26 : valeur reelle }
       End
       Else Begin
-        { Variable utilisateur ou inconnue }
-        V.IsNull := True;
+        { TODO 26 : Variable utilisateur @var }
+        If (Length(Op) > 1) And (Op[1] = '@') And (Op[2] <> '@') Then
+        Begin
+          V := GetUserVar(Op);
+        End
+        Else
+        Begin
+          { Variable inconnue }
+          V.IsNull := True;
+        End;
       End;
     End;
   Else
@@ -16542,6 +16933,377 @@ Begin
              'lob page server read-ahead reads 0.');
   OutputLine('');
 End;
+
+{ ===== TODO 26 : Curseurs et Variables Table ===== }
+
+{ ---- FindUserVar ----------------------------------------------- }
+{ Cherche une variable utilisateur par nom. Retourne l index ou -1. }
+
+Function FindUserVar(Const Name : TTokenText) : Integer;
+Var
+  I : Integer;
+  U : TTokenText;
+Begin
+  U := StrUpperCase(Name);
+  FindUserVar := -1;
+  For I := 0 To UserVarCount - 1 Do
+    If StrUpperCase(UserVarNames[I]) = U Then
+    Begin
+      FindUserVar := I;
+      Exit;
+    End;
+End;
+
+{ ---- SetUserVar ------------------------------------------------ }
+{ Affecte une valeur a une variable utilisateur @var.                }
+{ Cree la variable si elle n existe pas.                             }
+
+Procedure SetUserVar(Const Name : TTokenText; Const Val : TSqlValue);
+Var
+  Idx : Integer;
+Begin
+  Idx := FindUserVar(Name);
+  If Idx < 0 Then
+  Begin
+    If UserVarCount >= MAX_USER_VARS Then
+    Begin
+      OutputLine('-- Erreur : trop de variables utilisateur');
+      Exit;
+    End;
+    Idx := UserVarCount;
+    Inc(UserVarCount);
+    UserVarNames[Idx] := Name;
+  End;
+  UserVarValues[Idx] := Val;
+End;
+
+{ ---- GetUserVar ------------------------------------------------ }
+{ Retourne la valeur d une variable utilisateur. NULL si inconnue.   }
+
+Function GetUserVar(Const Name : TTokenText) : TSqlValue;
+Var
+  Idx : Integer;
+  V   : TSqlValue;
+Begin
+  Idx := FindUserVar(Name);
+  If Idx >= 0 Then
+    GetUserVar := UserVarValues[Idx]
+  Else
+  Begin
+    FillChar(V, SizeOf(V), 0);
+    V.IsNull := True;
+    V.Valid  := True;
+    GetUserVar := V;
+  End;
+End;
+
+{ ---- FindCursorByName ------------------------------------------ }
+{ Cherche un curseur par nom. Retourne l index ou -1.                }
+
+Function FindCursorByName(Const Name : TTokenText) : Integer;
+Var
+  I : Integer;
+  U : TTokenText;
+Begin
+  U := StrUpperCase(Name);
+  FindCursorByName := -1;
+  For I := 0 To CursorCount - 1 Do
+    If StrUpperCase(CursorNames[I]) = U Then
+    Begin
+      FindCursorByName := I;
+      Exit;
+    End;
+End;
+
+{ ---- ExecDeclareCursor ----------------------------------------- }
+{ Enregistre un curseur dans la liste des curseurs declares.          }
+{ Le curseur n est pas encore ouvert.                                }
+
+Procedure ExecDeclareCursor(Node : Integer);
+Var
+  CName   : TTokenText;
+  CTyp    : TTokenText;
+  P       : Integer;
+  Idx     : Integer;
+Begin
+  { Text = "cursorname:TYPE" }
+  CName := ASTPool[Node].Text;
+  P := Pos(':', CName);
+  If P > 0 Then
+  Begin
+    CTyp := Copy(CName, P + 1, Length(CName));
+    CName := Copy(CName, 1, P - 1);
+  End
+  Else
+    CTyp := 'FORWARD_ONLY';
+
+  { Verifier si le curseur existe deja }
+  Idx := FindCursorByName(CName);
+  If Idx >= 0 Then
+  Begin
+    OutputLine('-- Erreur : curseur ' + CName + ' deja declare');
+    Exit;
+  End;
+
+  If CursorCount >= MAX_CURSORS Then
+  Begin
+    OutputLine('-- Erreur : trop de curseurs declares');
+    Exit;
+  End;
+
+  Idx := CursorCount;
+  Inc(CursorCount);
+  CursorNames[Idx]  := CName;
+  CursorType[Idx]   := CTyp;
+  CursorOpen[Idx]   := False;
+  CursorRow[Idx]    := -1;
+  CursorRes[Idx]    := Nil;
+
+  { Sauvegarder le noeud SELECT (premier enfant) }
+  If ASTPool[Node].ChildCnt > 0 Then
+    CursorSelect[Idx] := ASTPool[Node].Children[0]
+  Else
+    CursorSelect[Idx] := -1;
+
+  OutputLine('-- Cursor ' + CName + ' declared (' + CTyp + ')');
+End;
+
+{ ---- ExecOpenCursor -------------------------------------------- }
+{ Ouvre un curseur declare : execute le SELECT et materialise le      }
+{ result set en memoire.                                             }
+
+Procedure ExecOpenCursor(Node : Integer); Forward;
+
+{ ---- ExecFetchCursor ------------------------------------------- }
+{ Lit la ligne suivante du curseur et assigne les valeurs aux        }
+{ variables @var1, @var2, ...                                        }
+
+Procedure ExecFetchCursor(Node : Integer);
+Var
+  CName   : TTokenText;
+  Dir     : TTokenText;
+  Idx, P  : Integer;
+  TargRow : Integer;
+  I       : Integer;
+  VName   : TTokenText;
+  V       : TSqlValue;
+  AbsOfs  : LongInt;
+  Code    : Integer;
+Begin
+  { Text = "cursorname:DIRECTION [n]" }
+  CName := ASTPool[Node].Text;
+  P := Pos(':', CName);
+  If P > 0 Then
+  Begin
+    Dir := Copy(CName, P + 1, Length(CName));
+    CName := Copy(CName, 1, P - 1);
+  End
+  Else
+    Dir := 'NEXT';
+
+  Idx := FindCursorByName(CName);
+  If Idx < 0 Then
+  Begin
+    OutputLine('-- Erreur : curseur ' + CName + ' non declare');
+    FetchStatus := -1;
+    Exit;
+  End;
+
+  If Not CursorOpen[Idx] Then
+  Begin
+    OutputLine('-- Erreur : curseur ' + CName + ' non ouvert');
+    FetchStatus := -1;
+    Exit;
+  End;
+
+  If CursorRes[Idx] = Nil Then
+  Begin
+    FetchStatus := -1;
+    Exit;
+  End;
+
+  { Determiner la ligne cible }
+  TargRow := CursorRow[Idx];
+
+  If Dir = 'NEXT' Then
+    TargRow := TargRow + 1
+  Else If Dir = 'PRIOR' Then
+    TargRow := TargRow - 1
+  Else If Dir = 'FIRST' Then
+    TargRow := 0
+  Else If Dir = 'LAST' Then
+    TargRow := CursorRes[Idx]^.RowCnt - 1
+  Else If Copy(Dir, 1, 9) = 'ABSOLUTE ' Then
+  Begin
+    Val(Copy(Dir, 10, Length(Dir)), AbsOfs, Code);
+    If Code = 0 Then
+      TargRow := AbsOfs - 1  { 1-based to 0-based }
+    Else
+      TargRow := CursorRow[Idx] + 1;
+  End
+  Else If Copy(Dir, 1, 9) = 'RELATIVE ' Then
+  Begin
+    Val(Copy(Dir, 10, Length(Dir)), AbsOfs, Code);
+    If Code = 0 Then
+      TargRow := CursorRow[Idx] + AbsOfs
+    Else
+      TargRow := CursorRow[Idx] + 1;
+  End
+  Else
+    TargRow := TargRow + 1;  { default NEXT }
+
+  { Verifier les limites }
+  If (TargRow < 0) Or (TargRow >= CursorRes[Idx]^.RowCnt) Then
+  Begin
+    FetchStatus := -1;  { fin du curseur }
+    { Mettre les variables INTO a NULL }
+    For I := 0 To ASTPool[Node].ChildCnt - 1 Do
+    Begin
+      VName := ASTPool[ASTPool[Node].Children[I]].Text;
+      FillChar(V, SizeOf(V), 0);
+      V.IsNull := True;
+      V.Valid  := True;
+      SetUserVar(VName, V);
+    End;
+    Exit;
+  End;
+
+  { Fetch reussi }
+  FetchStatus := 0;
+  CursorRow[Idx] := TargRow;
+
+  { Assigner les valeurs aux variables INTO }
+  For I := 0 To ASTPool[Node].ChildCnt - 1 Do
+  Begin
+    VName := ASTPool[ASTPool[Node].Children[I]].Text;
+    If I < CursorRes[Idx]^.ColCnt Then
+    Begin
+      V := CursorRes[Idx]^.Rows[TargRow].Vals[I];
+      SetUserVar(VName, V);
+    End
+    Else
+    Begin
+      FillChar(V, SizeOf(V), 0);
+      V.IsNull := True;
+      V.Valid  := True;
+      SetUserVar(VName, V);
+    End;
+  End;
+End;
+
+{ ---- ExecCloseCursor ------------------------------------------- }
+{ Ferme un curseur ouvert.                                           }
+
+Procedure ExecCloseCursor(Node : Integer);
+Var
+  CName : TTokenText;
+  Idx   : Integer;
+Begin
+  CName := ASTPool[Node].Text;
+  Idx := FindCursorByName(CName);
+
+  If Idx < 0 Then
+  Begin
+    OutputLine('-- Erreur : curseur ' + CName + ' non declare');
+    Exit;
+  End;
+
+  If Not CursorOpen[Idx] Then
+  Begin
+    OutputLine('-- Erreur : curseur ' + CName + ' non ouvert');
+    Exit;
+  End;
+
+  CursorOpen[Idx] := False;
+  CursorRow[Idx]  := -1;
+  OutputLine('-- Cursor ' + CName + ' closed');
+End;
+
+{ ---- ExecDeallocateCursor -------------------------------------- }
+{ Libere les ressources d un curseur et le retire de la liste.       }
+
+Procedure ExecDeallocateCursor(Node : Integer);
+Var
+  CName : TTokenText;
+  Idx   : Integer;
+  I     : Integer;
+Begin
+  CName := ASTPool[Node].Text;
+  Idx := FindCursorByName(CName);
+
+  If Idx < 0 Then
+  Begin
+    OutputLine('-- Erreur : curseur ' + CName + ' non declare');
+    Exit;
+  End;
+
+  { Fermer si ouvert }
+  If CursorOpen[Idx] Then
+    CursorOpen[Idx] := False;
+
+  { Liberer le result set }
+  If CursorRes[Idx] <> Nil Then
+  Begin
+    Dispose(CursorRes[Idx]);
+    CursorRes[Idx] := Nil;
+  End;
+
+  { Retirer de la liste en decalant }
+  For I := Idx To CursorCount - 2 Do
+  Begin
+    CursorNames[I]  := CursorNames[I + 1];
+    CursorSelect[I] := CursorSelect[I + 1];
+    CursorRes[I]    := CursorRes[I + 1];
+    CursorRow[I]    := CursorRow[I + 1];
+    CursorOpen[I]   := CursorOpen[I + 1];
+    CursorType[I]   := CursorType[I + 1];
+  End;
+  Dec(CursorCount);
+
+  OutputLine('-- Cursor ' + CName + ' deallocated');
+End;
+
+{ ---- ExecDeclareVar -------------------------------------------- }
+{ Execute une declaration de variable @var et l ajoute au stockage.  }
+
+Procedure ExecDeclareVar(Node : Integer);
+Var
+  VName : TTokenText;
+  V     : TSqlValue;
+Begin
+  VName := ASTPool[Node].Text;
+  FillChar(V, SizeOf(V), 0);
+  V.IsNull := True;
+  V.Valid  := True;
+  SetUserVar(VName, V);
+End;
+
+{ ---- ExecSetVar ------------------------------------------------ }
+{ Execute un SET @var = expression.                                  }
+
+Procedure ExecSetVar(Node : Integer); Forward;
+
+{ ---- ExecDeclareTable ------------------------------------------ }
+{ Execute une declaration de variable table @t TABLE (...).          }
+{ Cree un result set vide pour la variable table.                    }
+
+Procedure ExecDeclareTable(Node : Integer);
+Var
+  VName : TTokenText;
+  V     : TSqlValue;
+Begin
+  VName := ASTPool[Node].Text;
+  FillChar(V, SizeOf(V), 0);
+  V.IsNull   := False;
+  V.Valid    := True;
+  V.Category := SQLCAT_STRING;
+  V.XType    := XT_NVARCHAR;
+  V.StrVal   := '(table variable)';
+  SetUserVar(VName, V);
+  OutputLine('-- Table variable ' + VName + ' declared');
+End;
+
+{ ===== Fin TODO 26 ===== }
 
 { ---- Tri QuickSort des lignes -------------------------------- }
 { Trie le result set en memoire par les colonnes d ORDER BY.      }
@@ -19377,6 +20139,98 @@ Begin
   { ---- Fin TODO 25 STATISTICS IO ---- }
 End;
 
+{ ---- TODO 26 : Implementations des fonctions Forward ----------- }
+
+{ ---- ExecOpenCursor (implementation) --------------------------- }
+
+Procedure ExecOpenCursor(Node : Integer);
+Var
+  CName : TTokenText;
+  Idx   : Integer;
+  Sel   : Integer;
+Begin
+  CName := ASTPool[Node].Text;
+  Idx := FindCursorByName(CName);
+
+  If Idx < 0 Then
+  Begin
+    OutputLine('-- Erreur : curseur ' + CName + ' non declare');
+    FetchStatus := -1;
+    Exit;
+  End;
+
+  If CursorOpen[Idx] Then
+  Begin
+    OutputLine('-- Erreur : curseur ' + CName + ' deja ouvert');
+    Exit;
+  End;
+
+  Sel := CursorSelect[Idx];
+  If Sel < 0 Then
+  Begin
+    OutputLine('-- Erreur : curseur ' + CName + ' sans requete SELECT');
+    FetchStatus := -1;
+    Exit;
+  End;
+
+  { Executer le SELECT et capturer le result set }
+  If CursorRes[Idx] <> Nil Then
+  Begin
+    Dispose(CursorRes[Idx]);
+    CursorRes[Idx] := Nil;
+  End;
+
+  New(CursorRes[Idx]);
+  FillChar(CursorRes[Idx]^, SizeOf(TQEResult), 0);
+
+  { Sauvegarder et remplacer le result set global }
+  If QERes <> Nil Then
+    Dispose(QERes);
+  New(QERes);
+  FillChar(QERes^, SizeOf(TQEResult), 0);
+  QEExecSelect(Sel);
+
+  { Copier le result set dans le curseur }
+  CursorRes[Idx]^ := QERes^;
+  CursorRow[Idx]  := -1;  { avant la premiere ligne }
+  CursorOpen[Idx] := True;
+  FetchStatus     := -1;  { pas encore fetche }
+
+  OutputLine('-- Cursor ' + CName + ' opened (' +
+             IntToStr(CursorRes[Idx]^.RowCnt) + ' rows)');
+End;
+
+{ ---- ExecSetVar (implementation) ------------------------------- }
+
+Procedure ExecSetVar(Node : Integer);
+Var
+  VName   : TTokenText;
+  V       : TSqlValue;
+  DummyR  : TQERow;
+  DRS     : TQEResultPtr;
+Begin
+  VName := ASTPool[Node].Text;
+  { Evaluer l expression enfant }
+  If ASTPool[Node].ChildCnt > 0 Then
+  Begin
+    FillChar(DummyR, SizeOf(DummyR), 0);
+    New(DRS);
+    FillChar(DRS^, SizeOf(TQEResult), 0);
+    V := QEEvalExpr(ASTPool[Node].Children[0], DummyR, DRS^);
+    SetUserVar(VName, V);
+    Dispose(DRS);
+  End
+  Else
+  Begin
+    FillChar(V, SizeOf(V), 0);
+    V.IsNull := True;
+    V.Valid  := True;
+    SetUserVar(VName, V);
+  End;
+End;
+
+{ ---- Fin TODO 26 : Implementations Forward ---- }
+
 Procedure ExecuteQuery(Const SQL : TString);
 Var
   Root : Integer;
@@ -19415,6 +20269,16 @@ Begin
     Root := ParseDeclareStmt
   Else If KwIs(KW_SET) Then
     Root := ParseSetStmt
+  { ---- TODO 26 : Curseurs ---- }
+  Else If KwIs(KW_OPEN) Then
+    Root := ParseOpenCursorStmt
+  Else If KwIs(KW_FETCH) Then
+    Root := ParseFetchStmt
+  Else If KwIs(KW_CLOSE) Then
+    Root := ParseCloseCursorStmt
+  Else If KwIs(KW_DEALLOCATE) Then
+    Root := ParseDeallocateCursorStmt
+  { ---- Fin TODO 26 ---- }
   Else If KwIs(KW_IF) Then
     Root := ParseIfStmt
   Else If KwIs(KW_WHILE) Then
@@ -19528,6 +20392,25 @@ Begin
         OutputLine('-- SET ' + ASTPool[Root].Text + ' (acknowledged)');
     End;
     { ---- Fin TODO 25 SET options ---- }
+    { ---- TODO 26 : Execution des curseurs ---- }
+    If ASTPool[Root].Kind = ND_DECLARE_CURSOR Then
+      ExecDeclareCursor(Root);
+    If ASTPool[Root].Kind = ND_OPEN_CURSOR Then
+      ExecOpenCursor(Root);
+    If ASTPool[Root].Kind = ND_FETCH_CURSOR Then
+      ExecFetchCursor(Root);
+    If ASTPool[Root].Kind = ND_CLOSE_CURSOR Then
+      ExecCloseCursor(Root);
+    If ASTPool[Root].Kind = ND_DEALLOCATE_CURSOR Then
+      ExecDeallocateCursor(Root);
+    { Execution de DECLARE @var et SET @var (TODO 26) }
+    If ASTPool[Root].Kind = ND_DECLARE_VAR Then
+      ExecDeclareVar(Root);
+    If ASTPool[Root].Kind = ND_SET_VAR Then
+      ExecSetVar(Root);
+    If ASTPool[Root].Kind = ND_DECLARE_TABLE Then
+      ExecDeclareTable(Root);
+    { ---- Fin TODO 26 : Execution des curseurs ---- }
   End
   Else
     OutputLine('-- Erreur de syntaxe dans : ' + SQL);
@@ -19660,6 +20543,10 @@ Begin
   StatisticsIO   := False;
   StatisticsTime := False;
   QEPagesRead    := 0;
+  { ---- TODO 26 : initialisation des curseurs ---- }
+  FetchStatus    := -1;
+  CursorCount    := 0;
+  UserVarCount   := 0;
 
   ParseArgs;
 
