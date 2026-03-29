@@ -420,7 +420,7 @@
               explode -> str.Split(sep)
               array_chunk -> Chunk (CS 6+) ou stub boucle
 
-  TODO 16 - TRANSPILATION : FONCTIONS DE CHAINES PHP [A FAIRE]
+  TODO 16 - TRANSPILATION : FONCTIONS DE CHAINES PHP [IMPLEMENTE]
             Fonctions de longueur et sous-chaines :
               strlen($s) -> s.Length
               substr($s, start) -> s.Substring(start) ou s[start..] (CS 8+)
@@ -2075,7 +2075,7 @@ End;
   TODO 13 - CLASSES PHP (IMPLEMENTE)
   TODO 14 - INTERFACES ET TRAITS PHP (IMPLEMENTE)
   TODO 15 - TABLEAUX PHP (IMPLEMENTE)
-  TODO 16 - FONCTIONS DE CHAINES (A FAIRE)
+  TODO 16 - FONCTIONS DE CHAINES (IMPLEMENTE)
   TODO 17 - FONCTIONS MATH ET DATE/HEURE (A FAIRE)
   TODO 18 - GESTION DES EXCEPTIONS (A FAIRE)
   TODO 19 - NAMESPACES ET IMPORTS (A FAIRE)
@@ -2426,6 +2426,11 @@ Procedure ParseEnumDef(Indent: Integer); Forward;
 { Declarations anticipees pour TODO 15 (tableaux PHP) }
 Function ParseArrayLiteral: TString; Forward;
 Function ParseArrayFuncCall(Const FnLow: TString): TString; Forward;
+
+{ Declarations anticipees pour TODO 16 (fonctions de chaines PHP) }
+Function IsStrFunc(Const FnLow: TString): Boolean; Forward;
+Function ParseStrFuncCall(Const FnLow: TString): TString; Forward;
+Procedure ParseEchoStmt(Indent: Integer); Forward;
 
 { Declarations anticipees pour TODO 08 (utilisees par TokToCS et ParseExprPrimary) }
 Function SqContentToCS(Const S: TString): TString; Forward;
@@ -3017,6 +3022,8 @@ Begin
                 (FnLow = 'implode')       Or (FnLow = 'join')         Or
                 (FnLow = 'explode') Then
           R := ParseArrayFuncCall(FnLow)
+        Else If IsStrFunc(FnLow) Then
+          R := ParseStrFuncCall(FnLow)
         Else
           R := ParseFnCallArgs(R);
       End
@@ -6526,6 +6533,850 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 16 - TRANSPILATION : FONCTIONS DE CHAINES PHP [IMPLEMENTE]
+  ============================================================ }
+
+{ Retourne True si FnLow est une fonction de chaine PHP connue }
+Function IsStrFunc(Const FnLow: TString): Boolean;
+Begin
+  IsStrFunc :=
+    (FnLow = 'strlen')          Or (FnLow = 'substr')         Or
+    (FnLow = 'strpos')          Or (FnLow = 'strrpos')        Or
+    (FnLow = 'str_contains')    Or (FnLow = 'str_starts_with') Or
+    (FnLow = 'str_ends_with')   Or (FnLow = 'strtolower')     Or
+    (FnLow = 'strtoupper')      Or (FnLow = 'ucfirst')        Or
+    (FnLow = 'lcfirst')         Or (FnLow = 'ucwords')        Or
+    (FnLow = 'trim')            Or (FnLow = 'ltrim')          Or
+    (FnLow = 'rtrim')           Or (FnLow = 'str_replace')    Or
+    (FnLow = 'str_ireplace')    Or (FnLow = 'str_repeat')     Or
+    (FnLow = 'str_pad')         Or (FnLow = 'chunk_split')    Or
+    (FnLow = 'wordwrap')        Or (FnLow = 'nl2br')          Or
+    (FnLow = 'preg_match')      Or (FnLow = 'preg_replace')   Or
+    (FnLow = 'preg_split')      Or (FnLow = 'preg_match_all') Or
+    (FnLow = 'ord')             Or (FnLow = 'chr')            Or
+    (FnLow = 'bin2hex')         Or (FnLow = 'hex2bin')        Or
+    (FnLow = 'base64_encode')   Or (FnLow = 'base64_decode')  Or
+    (FnLow = 'md5')             Or (FnLow = 'sha1')           Or
+    (FnLow = 'crc32')           Or (FnLow = 'number_format')  Or
+    (FnLow = 'sprintf')         Or (FnLow = 'str_split')      Or
+    (FnLow = 'str_word_count')  Or (FnLow = 'strrev')         Or
+    (FnLow = 'str_replace')     Or (FnLow = 'substr_count')   Or
+    (FnLow = 'substr_replace')  Or (FnLow = 'strcmp')         Or
+    (FnLow = 'strcasecmp')      Or (FnLow = 'strncmp')        Or
+    (FnLow = 'strncasecmp')     Or (FnLow = 'strchr')         Or
+    (FnLow = 'strstr')          Or (FnLow = 'stristr')        Or
+    (FnLow = 'stripos')         Or (FnLow = 'strripos')       Or
+    (FnLow = 'str_contains')    Or (FnLow = 'htmlspecialchars') Or
+    (FnLow = 'htmlentities')    Or (FnLow = 'strip_tags')     Or
+    (FnLow = 'addslashes')      Or (FnLow = 'stripslashes')   Or
+    (FnLow = 'quoted_printable_encode') Or
+    (FnLow = 'quoted_printable_decode') Or
+    (FnLow = 'rtrim')           Or (FnLow = 'chop')           Or
+    (FnLow = 'mb_strlen')       Or (FnLow = 'mb_substr')      Or
+    (FnLow = 'mb_strtolower')   Or (FnLow = 'mb_strtoupper')  Or
+    (FnLow = 'mb_strpos')       Or (FnLow = 'mb_strrpos')     Or
+    (FnLow = 'mb_convert_encoding') Or (FnLow = 'mb_detect_encoding') Or
+    (FnLow = 'print_r')         Or (FnLow = 'var_dump')       Or
+    (FnLow = 'var_export')      Or (FnLow = 'printf')         Or
+    (FnLow = 'fprintf')         Or (FnLow = 'sscanf');
+End;
+
+{ Parse un appel de fonction de chaine PHP.
+  FnLow : nom de la fonction en minuscules (CurTok est sur '(').
+  Retourne la chaine C# equivalente. }
+Function ParseStrFuncCall(Const FnLow: TString): TString;
+Var
+  Arg1, Arg2, Arg3, Arg4: TString;
+Begin
+  LexNextToken; { past '(' }
+  Arg1 := ''; Arg2 := ''; Arg3 := ''; Arg4 := '';
+
+  { ---- strlen($s) -> s.Length ---- }
+  If FnLow = 'strlen' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + '.Length';
+  End
+
+  { ---- substr($s, start [, len]) ---- }
+  Else If FnLow = 'substr' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg3 := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      If CsVersionGE(Opts.CsVersion, CS_VER_80) Then
+        ParseStrFuncCall := Arg1 + '[' + Arg2 + '..(' + Arg2 + '+' + Arg3 + ')]'
+      Else
+        ParseStrFuncCall := Arg1 + '.Substring(' + Arg2 + ', ' + Arg3 + ')';
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      If CsVersionGE(Opts.CsVersion, CS_VER_80) Then
+        ParseStrFuncCall := Arg1 + '[' + Arg2 + '..]'
+      Else
+        ParseStrFuncCall := Arg1 + '.Substring(' + Arg2 + ')';
+    End;
+  End
+
+  { ---- strpos($s, $needle [, offset]) -> s.IndexOf(needle [, offset]) ---- }
+  Else If FnLow = 'strpos' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg3 := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      ParseStrFuncCall := Arg1 + '.IndexOf(' + Arg2 + ', ' + Arg3 + ')';
+    End
+    Else
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+      ParseStrFuncCall := Arg1 + '.IndexOf(' + Arg2 + ')';
+    End;
+  End
+
+  { ---- stripos($s, $needle) -> s.IndexOf(needle, StringComparison.OrdinalIgnoreCase) ---- }
+  Else If FnLow = 'stripos' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      Arg1 + '.IndexOf(' + Arg2 + ', StringComparison.OrdinalIgnoreCase)';
+  End
+
+  { ---- strrpos($s, $needle) -> s.LastIndexOf(needle) ---- }
+  Else If (FnLow = 'strrpos') Or (FnLow = 'strripos') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    If FnLow = 'strripos' Then
+      ParseStrFuncCall :=
+        Arg1 + '.LastIndexOf(' + Arg2 +
+        ', StringComparison.OrdinalIgnoreCase)'
+    Else
+      ParseStrFuncCall := Arg1 + '.LastIndexOf(' + Arg2 + ')';
+  End
+
+  { ---- str_contains($s, $needle) -> s.Contains(needle) ---- }
+  Else If FnLow = 'str_contains' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + '.Contains(' + Arg2 + ')';
+  End
+
+  { ---- str_starts_with -> StartsWith ---- }
+  Else If FnLow = 'str_starts_with' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + '.StartsWith(' + Arg2 + ')';
+  End
+
+  { ---- str_ends_with -> EndsWith ---- }
+  Else If FnLow = 'str_ends_with' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + '.EndsWith(' + Arg2 + ')';
+  End
+
+  { ---- strtolower -> s.ToLower() ---- }
+  Else If (FnLow = 'strtolower') Or (FnLow = 'mb_strtolower') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken; { skip optional locale param }
+      Arg2 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + '.ToLower()';
+  End
+
+  { ---- strtoupper -> s.ToUpper() ---- }
+  Else If (FnLow = 'strtoupper') Or (FnLow = 'mb_strtoupper') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg2 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + '.ToUpper()';
+  End
+
+  { ---- ucfirst : mettre en majuscule le premier caractere ---- }
+  Else If FnLow = 'ucfirst' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'char.ToUpper(' + Arg1 + '[0]) + ' + Arg1 + '.Substring(1)';
+  End
+
+  { ---- lcfirst ---- }
+  Else If FnLow = 'lcfirst' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'char.ToLower(' + Arg1 + '[0]) + ' + Arg1 + '.Substring(1)';
+  End
+
+  { ---- ucwords ---- }
+  Else If FnLow = 'ucwords' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'System.Globalization.CultureInfo.CurrentCulture' +
+      '.TextInfo.ToTitleCase(' + Arg1 + '.ToLower())';
+  End
+
+  { ---- trim / ltrim / rtrim / chop ---- }
+  Else If (FnLow = 'trim') Or (FnLow = 'ltrim') Or
+          (FnLow = 'rtrim') Or (FnLow = 'chop') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg2 := ParseExprStr; { chars optionnels }
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    If (FnLow = 'ltrim') Then
+      ParseStrFuncCall := Arg1 + '.TrimStart()'
+    Else If (FnLow = 'rtrim') Or (FnLow = 'chop') Then
+      ParseStrFuncCall := Arg1 + '.TrimEnd()'
+    Else
+      ParseStrFuncCall := Arg1 + '.Trim()';
+  End
+
+  { ---- str_replace($search, $repl, $subj) -> subj.Replace(search, repl) ---- }
+  Else If FnLow = 'str_replace' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg3 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg3 + '.Replace(' + Arg1 + ', ' + Arg2 + ')';
+  End
+
+  { ---- str_ireplace -> Regex.Replace IgnoreCase ---- }
+  Else If FnLow = 'str_ireplace' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg3 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'Regex.Replace(' + Arg3 + ', Regex.Escape(' + Arg1 + '), ' +
+      Arg2 + ', RegexOptions.IgnoreCase)';
+  End
+
+  { ---- str_repeat($s, n) -> string.Concat(Enumerable.Repeat(s, n)) ---- }
+  Else If FnLow = 'str_repeat' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'string.Concat(Enumerable.Repeat(' + Arg1 + ', ' + Arg2 + '))';
+  End
+
+  { ---- str_pad($s, len [, pad [, type]]) ---- }
+  Else If FnLow = 'str_pad' Then
+  Begin
+    { Delegue a ParseStrPadCall existante mais en adaptant }
+    { ParseStrPadCall attend le curseur sur '(' deja consomme,
+      mais ici on a deja consomme '(' au debut. On reconstruit. }
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg3 := ParseExprStr;
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      Begin
+        LexNextToken;
+        Arg4 := ParseExprStr;
+      End;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    { STR_PAD_LEFT=0, STR_PAD_RIGHT=1, STR_PAD_BOTH=2 }
+    If Arg4 = '0' Then
+      ParseStrFuncCall := Arg1 + '.PadLeft(' + Arg2 + ', ' +
+                          '(' + Arg3 + ')[0])'
+    Else
+      ParseStrFuncCall := Arg1 + '.PadRight(' + Arg2 + ', ' +
+                          '(' + Arg3 + ')[0])';
+  End
+
+  { ---- chunk_split($s, chunklen, end) ---- }
+  Else If FnLow = 'chunk_split' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken
+    Else Arg2 := '76';
+    If Arg2 = '' Then Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg3 := ParseExprStr;
+    End
+    Else Arg3 := '"\\r\\n"';
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      '/* chunk_split(' + Arg1 + ', ' + Arg2 + ', ' + Arg3 +
+      ') : boucle manuelle en C# */';
+  End
+
+  { ---- wordwrap ---- }
+  Else If FnLow = 'wordwrap' Then
+  Begin
+    Arg1 := ParseExprStr;
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken
+      Else
+      Begin
+        Arg2 := ParseExprStr;
+      End;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      '/* wordwrap(' + Arg1 + ') : boucle manuelle en C# */';
+  End
+
+  { ---- nl2br($s) -> s.Replace("\n", "<br />\n") ---- }
+  Else If FnLow = 'nl2br' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      Arg1 + '.Replace("\\n", "<br />\\n")';
+  End
+
+  { ---- preg_match($pat, $subj, &$matches) -> Regex.Match stub ---- }
+  Else If FnLow = 'preg_match' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg3 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    If Arg3 <> '' Then
+      ParseStrFuncCall :=
+        'Regex.Match(' + Arg2 + ', ' + Arg1 + ') /* matches -> ' + Arg3 + ' */'
+    Else
+      ParseStrFuncCall :=
+        'Regex.IsMatch(' + Arg2 + ', ' + Arg1 + ')';
+  End
+
+  { ---- preg_match_all($pat, $subj, &$matches) -> Regex.Matches stub ---- }
+  Else If FnLow = 'preg_match_all' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg3 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'Regex.Matches(' + Arg2 + ', ' + Arg1 + ') /* -> ' + Arg3 + ' */';
+  End
+
+  { ---- preg_replace($pat, $repl, $subj) -> Regex.Replace ---- }
+  Else If FnLow = 'preg_replace' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg3 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'Regex.Replace(' + Arg3 + ', ' + Arg1 + ', ' + Arg2 + ')';
+  End
+
+  { ---- preg_split($pat, $subj) -> Regex.Split ---- }
+  Else If FnLow = 'preg_split' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'Regex.Split(' + Arg2 + ', ' + Arg1 + ')';
+  End
+
+  { ---- ord($s) -> (int)s[0] ---- }
+  Else If FnLow = 'ord' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := '(int)' + Arg1 + '[0]';
+  End
+
+  { ---- chr($n) -> ((char)n).ToString() ---- }
+  Else If FnLow = 'chr' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := '((char)(' + Arg1 + ')).ToString()';
+  End
+
+  { ---- bin2hex / hex2bin ---- }
+  Else If FnLow = 'bin2hex' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(' + Arg1 + '))';
+  End
+  Else If FnLow = 'hex2bin' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'System.Text.Encoding.UTF8.GetString(Convert.FromHexString(' + Arg1 + '))';
+  End
+
+  { ---- base64_encode / base64_decode ---- }
+  Else If FnLow = 'base64_encode' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(' + Arg1 + '))';
+  End
+  Else If FnLow = 'base64_decode' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(' + Arg1 + '))';
+  End
+
+  { ---- md5($s) -> stub ---- }
+  Else If FnLow = 'md5' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'Convert.ToHexString(' +
+      'System.Security.Cryptography.MD5.HashData(' +
+      'System.Text.Encoding.UTF8.GetBytes(' + Arg1 + '))).ToLower()';
+  End
+
+  { ---- sha1($s) -> stub ---- }
+  Else If FnLow = 'sha1' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'Convert.ToHexString(' +
+      'System.Security.Cryptography.SHA1.HashData(' +
+      'System.Text.Encoding.UTF8.GetBytes(' + Arg1 + '))).ToLower()';
+  End
+
+  { ---- crc32($s) -> stub ---- }
+  Else If FnLow = 'crc32' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      '/* crc32(' + Arg1 + ') : utiliser System.IO.Hashing.Crc32 */';
+  End
+
+  { ---- str_split($s [, len]) -> s.ToCharArray() ou Chunk ---- }
+  Else If FnLow = 'str_split' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg2 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    If Arg2 = '' Then
+      ParseStrFuncCall := Arg1 + '.ToCharArray()'
+    Else
+      ParseStrFuncCall :=
+        Arg1 + '.Chunk(' + Arg2 + ')' +
+        '.Select(c => new string(c)).ToList()';
+  End
+
+  { ---- strrev($s) -> new string(s.Reverse().ToArray()) ---- }
+  Else If FnLow = 'strrev' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'new string(' + Arg1 + '.Reverse().ToArray())';
+  End
+
+  { ---- str_word_count($s) -> s.Split(' ').Length ---- }
+  Else If FnLow = 'str_word_count' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + '.Split('' '') .Length';
+  End
+
+  { ---- substr_count($s, $needle) -> helper ---- }
+  Else If FnLow = 'substr_count' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      '(' + Arg1 + '.Length - ' + Arg1 + '.Replace(' + Arg2 + ', "").Length)' +
+      ' / ' + Arg2 + '.Length';
+  End
+
+  { ---- substr_replace($s,$repl,$start[,$len]) ---- }
+  Else If FnLow = 'substr_replace' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg3 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg4 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    If Arg4 <> '' Then
+      ParseStrFuncCall :=
+        Arg1 + '.Remove(' + Arg3 + ', ' + Arg4 + ').Insert(' + Arg3 + ', ' + Arg2 + ')'
+    Else
+      ParseStrFuncCall :=
+        Arg1 + '.Substring(0, ' + Arg3 + ') + ' + Arg2;
+  End
+
+  { ---- strcmp / strcasecmp / strncmp / strncasecmp ---- }
+  Else If (FnLow = 'strcmp') Or (FnLow = 'strcasecmp') Or
+          (FnLow = 'strncmp') Or (FnLow = 'strncasecmp') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (FnLow = 'strncmp') Or (FnLow = 'strncasecmp') Then
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+      Arg3 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    If (FnLow = 'strcasecmp') Or (FnLow = 'strncasecmp') Then
+      ParseStrFuncCall :=
+        'string.Compare(' + Arg1 + ', ' + Arg2 +
+        ', StringComparison.OrdinalIgnoreCase)'
+    Else
+      ParseStrFuncCall :=
+        'string.Compare(' + Arg1 + ', ' + Arg2 + ', StringComparison.Ordinal)';
+  End
+
+  { ---- strstr / strchr / stristr -> IndexOf / Contains ---- }
+  Else If (FnLow = 'strstr') Or (FnLow = 'strchr') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      Arg1 + '.Substring(' + Arg1 + '.IndexOf(' + Arg2 + '))';
+  End
+  Else If FnLow = 'stristr' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      Arg1 + '.Substring(' + Arg1 + '.IndexOf(' + Arg2 +
+      ', StringComparison.OrdinalIgnoreCase))';
+  End
+
+  { ---- htmlspecialchars / htmlentities -> WebUtility.HtmlEncode ---- }
+  Else If (FnLow = 'htmlspecialchars') Or (FnLow = 'htmlentities') Then
+  Begin
+    Arg1 := ParseExprStr;
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken
+      Else Arg2 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'System.Net.WebUtility.HtmlEncode(' + Arg1 + ')';
+  End
+
+  { ---- strip_tags($s) -> Regex.Replace(s, "<.*?>", "") ---- }
+  Else If FnLow = 'strip_tags' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'Regex.Replace(' + Arg1 + ', "<.*?>", "")';
+  End
+
+  { ---- addslashes / stripslashes ---- }
+  Else If FnLow = 'addslashes' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      '/* addslashes(' + Arg1 + ') : utiliser Regex.Escape ou Replace manuel */';
+  End
+  Else If FnLow = 'stripslashes' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      '/* stripslashes(' + Arg1 + ') : utiliser Regex.Unescape ou Replace manuel */';
+  End
+
+  { ---- mb_strlen($s) -> s.Length ---- }
+  Else If FnLow = 'mb_strlen' Then
+  Begin
+    Arg1 := ParseExprStr;
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken
+      Else Arg2 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + '.Length';
+  End
+
+  { ---- mb_substr($s, start [, len]) -> s.Substring ---- }
+  Else If FnLow = 'mb_substr' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg3 := ParseExprStr;
+      { skip optional encoding param }
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      Begin
+        LexNextToken;
+        Arg4 := ParseExprStr;
+      End;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    If Arg3 <> '' Then
+      ParseStrFuncCall := Arg1 + '.Substring(' + Arg2 + ', ' + Arg3 + ')'
+    Else
+      ParseStrFuncCall := Arg1 + '.Substring(' + Arg2 + ')';
+  End
+
+  { ---- mb_strpos($s, $needle) -> s.IndexOf(needle) ---- }
+  Else If FnLow = 'mb_strpos' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken
+      Else Arg3 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + '.IndexOf(' + Arg2 + ')';
+  End
+
+  { ---- mb_strrpos($s, $needle) -> s.LastIndexOf(needle) ---- }
+  Else If FnLow = 'mb_strrpos' Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken;
+    Arg2 := ParseExprStr;
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken
+      Else Arg3 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + '.LastIndexOf(' + Arg2 + ')';
+  End
+
+  { ---- mb_convert_encoding / mb_detect_encoding -> stubs ---- }
+  Else If (FnLow = 'mb_convert_encoding') Or
+          (FnLow = 'mb_detect_encoding') Then
+  Begin
+    Arg1 := ParseExprStr;
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then LexNextToken
+      Else Arg2 := ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      '/* ' + FnLow + '(' + Arg1 + '): voir System.Text.Encoding */';
+  End
+
+  { ---- print_r / var_dump / var_export -> Console.WriteLine stub ---- }
+  Else If (FnLow = 'print_r') Or (FnLow = 'var_dump') Or
+          (FnLow = 'var_export') Then
+  Begin
+    Arg1 := ParseExprStr;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Arg2 := ParseExprStr; { return param optionnel }
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall :=
+      'Console.WriteLine(' + Arg1 + ')' +
+      ' /* ' + FnLow + ' */';
+  End
+
+  { ---- sprintf($fmt, ...) -> string.Format ---- }
+  Else If FnLow = 'sprintf' Then
+  Begin
+    { Delegue a ParseSprintfCall }
+    { ParseSprintfCall attend CurTok deja sur le premier argument }
+    { on a deja consomme '(' au debut, donc on peut appeler directement }
+    ParseStrFuncCall := ParseSprintfCall(False);
+  End
+
+  { ---- printf($fmt, ...) -> Console.Write(string.Format(...)) ---- }
+  Else If FnLow = 'printf' Then
+  Begin
+    Arg1 := ParseSprintfCall(True);
+    ParseStrFuncCall := Arg1;
+  End
+
+  { ---- number_format -> delegue a ParseNumberFormatCall ---- }
+  Else If FnLow = 'number_format' Then
+  Begin
+    { ParseNumberFormatCall attend CurTok sur le premier arg (apres '(') }
+    ParseStrFuncCall := ParseNumberFormatCall;
+  End
+
+  { ---- Fonctions non reconnues specifiquement : appel generique ---- }
+  Else
+  Begin
+    Arg1 := MakeCsName(FnLow) + '(';
+    While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')')) And
+          (CurTok.Kind <> TK_EOF) Do
+    Begin
+      If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+      Begin
+        Arg1 := Arg1 + ', '; LexNextToken;
+      End
+      Else
+        Arg1 := Arg1 + ParseExprStr;
+    End;
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ')') Then LexNextToken;
+    ParseStrFuncCall := Arg1 + ')';
+  End;
+End;
+
+{ Transpile echo ou print vers Console.Write[Line].
+  Gere la liste de valeurs separees par '.' ou ','.
+  Format : echo expr1, expr2; ou echo expr1 . expr2;
+           print expr; }
+Procedure ParseEchoStmt(Indent: Integer);
+Var
+  IsEcho : Boolean;
+  Parts  : TString;
+  Part   : TString;
+  HasNL  : Boolean;
+  UseWriteLine : Boolean;
+Begin
+  IsEcho := LowStr(CurTok.Val) = 'echo';
+  LexNextToken; { past 'echo' ou 'print' }
+  Parts := '';
+  HasNL := False;
+  UseWriteLine := False;
+
+  { Parser les expressions : pour echo, plusieurs args separes par ',' }
+  While Not ((CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';')) And
+        (CurTok.Kind <> TK_EOF) And
+        (CurTok.Kind <> TK_CLOSE_PHP) Do
+  Begin
+    { Sauter les virgules (echo peut avoir plusieurs arguments) }
+    If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ',') Then
+    Begin
+      LexNextToken;
+      Continue;
+    End;
+    Part := ParseExprStr;
+    { Detecter si l expression se termine par "\n" -> utiliser WriteLine }
+    If (Length(Part) >= 4) And
+       (Copy(Part, Length(Part)-3, 4) = '"\\n"') Then
+    Begin
+      UseWriteLine := True;
+      Part := Copy(Part, 1, Length(Part)-4);
+      { Enlever le ' + ' final eventuel }
+      While (Length(Part) > 3) And
+            (Copy(Part, Length(Part)-2, 3) = ' + ') Do
+        Part := Copy(Part, 1, Length(Part)-3);
+    End;
+    If Parts = '' Then
+      Parts := Part
+    Else
+      Parts := Parts + ' + ' + Part;
+  End;
+  If (CurTok.Kind = TK_PUNCT) And (CurTok.Val = ';') Then LexNextToken;
+
+  { Generer l appel Console.Write ou Console.WriteLine }
+  If UseWriteLine Then
+    EmitLine(IndentStr(Indent) + 'Console.WriteLine(' + Parts + ');')
+  Else
+    EmitLine(IndentStr(Indent) + 'Console.Write(' + Parts + ');');
+End;
+
 Procedure Run;
 Var KwLow: TString;
 Begin
@@ -6587,6 +7438,8 @@ Begin
       ParseTraitDef(0)
     Else If KwLow = 'enum' Then
       ParseEnumDef(0)
+    Else If (KwLow = 'echo') Or (KwLow = 'print') Then
+      ParseEchoStmt(0)
     Else If KwLow = 'static' Then
     Begin
       If Not ParseStaticVarDecl(0) Then
@@ -6626,7 +7479,7 @@ Begin
     End;
   End;
   LexClose;
-  WarnMsg('transpilation non encore implementee (TODOs 16-25 a faire)');
+  WarnMsg('transpilation non encore implementee (TODOs 17-25 a faire)');
 End;
 
 Procedure Cleanup;
