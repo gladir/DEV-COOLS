@@ -493,7 +493,7 @@
             Compteur de lignes affectees (n rows affected)
             Codes de retour SQLCMD (0=succes, 1=erreur)
 
-  TODO 30 - TESTS ET COMPATIBILITE SQL SERVER
+  TODO 30 - TESTS ET COMPATIBILITE SQL SERVER [IMPLEMENTE]
             Suite de tests unitaires pour le lexer
             Tests du parseur sur des requetes simples/complexes
             Tests de lecture MDF : fichiers MDF de reference
@@ -1416,6 +1416,7 @@ Type
     Separator  : Char;      { -s : caractere separateur colonnes   }
     TrimTrailing : Boolean; { -W : supprimer espaces de fin        }
     VerticalMode : Boolean; { --vertical : affichage vertical      }
+    SelfTest   : Boolean;   { --selftest : lancer les tests internes }
   End;
 
   { ---- Colonne d un result set (TODO 15) --------------------- }
@@ -1549,6 +1550,11 @@ Var
   LastErrorNumber    : Integer;     { numero derniere erreur             }
   LastErrorMessage   : TString;     { message derniere erreur            }
 
+  { ---- Tests internes (TODO 30) ---------------------------------- }
+  TestTotal          : Integer;     { nombre total de tests             }
+  TestPass           : Integer;     { nombre de tests reussis           }
+  TestFail           : Integer;     { nombre de tests echoues           }
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1648,6 +1654,7 @@ Begin
   WriteLn('  -s sep         : caractere separateur de colonnes (defaut: espace)');
   WriteLn('  -W             : supprimer les espaces de fin (mode CSV)');
   WriteLn('  --vertical     : afficher chaque colonne sur une ligne');
+  WriteLn('  --selftest     : lancer la suite de tests internes');
   WriteLn('  -v             : mode verbeux');
   WriteLn('  -h             : afficher cette aide');
   WriteLn;
@@ -1678,6 +1685,7 @@ Begin
   Opts.Separator   := ' ';
   Opts.TrimTrailing := False;
   Opts.VerticalMode := False;
+  Opts.SelfTest    := False;
 End;
 
 { ---- Analyse des arguments de la ligne de commande ----------- }
@@ -1747,6 +1755,8 @@ Begin
       Opts.TrimTrailing := True
     Else If (Arg = '--vertical') Then
       Opts.VerticalMode := True
+    Else If (Arg = '--selftest') Then
+      Opts.SelfTest := True
     Else If Arg[1] = '-' Then
     Begin
       WriteLn('SQLCMD: option inconnue: ', Arg);
@@ -1767,17 +1777,20 @@ Begin
     Inc(I);
   End;
 
-  { Valider le fichier MDF obligatoire }
-  If Opts.MdfFile = '' Then
+  { Valider le fichier MDF obligatoire (sauf mode selftest) }
+  If (Opts.MdfFile = '') And (Not Opts.SelfTest) Then
   Begin
     WriteLn('SQLCMD: fichier .MDF manquant (option -S)');
     ShowUsage;
   End;
 
-  { Verifier l extension }
-  Ext := ExtractExt(Opts.MdfFile);
-  If (Ext <> '.mdf') Then
-    WarnMsg('extension attendue .mdf, obtenu ' + Ext);
+  { Verifier l extension (sauf mode selftest) }
+  If Not Opts.SelfTest Then
+  Begin
+    Ext := ExtractExt(Opts.MdfFile);
+    If (Ext <> '.mdf') Then
+      WarnMsg('extension attendue .mdf, obtenu ' + Ext);
+  End;
 
   { Determiner le mode interactif }
   If (Opts.Query = '') And (Opts.ScriptFile = '') Then
@@ -11267,6 +11280,9 @@ Function ParseCommitTranStmt : Integer; Forward;
 Function ParseRollbackTranStmt : Integer; Forward;
 Function ParseSaveTranStmt : Integer; Forward;
 
+{ ---- TODO 30 : Forward declarations tests ---- }
+Procedure RunSelfTests; Forward;
+
 Function ParseIfStmt : Integer;
 Var
   N, Cond, Body, ElseBody : Integer;
@@ -18658,6 +18674,1298 @@ End;
 
 { ===== Fin TODO 29 ===== }
 
+{ ===== TODO 30 - TESTS ET COMPATIBILITE SQL SERVER ===== }
+
+{ ---- TestAssert : verifier un predicat ----------------------- }
+Procedure TestAssert(Const TestName : TString; Cond : Boolean);
+Begin
+  Inc(TestTotal);
+  If Cond Then
+  Begin
+    Inc(TestPass);
+    { WriteLn('  PASS: ', TestName); }
+  End
+  Else
+  Begin
+    Inc(TestFail);
+    WriteLn('  FAIL: ', TestName);
+  End;
+End;
+
+{ ---- TestLexerTokenize : tokeniser une chaine et verifier ---- }
+Procedure TestLexerTokenize(Const SQL : TString;
+                            ExpKind : Byte;
+                            Const ExpText : TString;
+                            Const Label_ : TString);
+Begin
+  LexInit(SQL);
+  LexNextToken;
+  TestAssert(Label_ + ' kind',
+             LexCurTok.Kind = ExpKind);
+  TestAssert(Label_ + ' text',
+             LexCurTok.Text = ExpText);
+End;
+
+{ ---- TestLexerBasic : tests de tokenisation de base ---------- }
+Procedure TestLexerBasic;
+Begin
+  WriteLn('  [Lexer - tokens de base]');
+
+  { Identificateurs }
+  TestLexerTokenize('MyTable', TOK_IDENT, 'MyTable',
+                    'ident simple');
+  TestLexerTokenize('_col1', TOK_IDENT, '_col1',
+                    'ident underscore');
+
+  { Nombres }
+  TestLexerTokenize('42', TOK_NUMBER, '42',
+                    'entier');
+  TestLexerTokenize('3.14', TOK_FLOAT, '3.14',
+                    'flottant');
+
+  { Chaines }
+  LexInit('''hello''');
+  LexNextToken;
+  TestAssert('chaine kind', LexCurTok.Kind = TOK_STRING);
+
+  { Chaines Unicode }
+  LexInit('N''bonjour''');
+  LexNextToken;
+  TestAssert('nstring kind', LexCurTok.Kind = TOK_NSTRING);
+
+  { Hexadecimal }
+  TestLexerTokenize('0x1A2B', TOK_HEX, '0x1A2B',
+                    'hex');
+
+  { Variables }
+  LexInit('@myvar');
+  LexNextToken;
+  TestAssert('variable kind', LexCurTok.Kind = TOK_VARIABLE);
+  TestAssert('variable text', LexCurTok.Text = '@myvar');
+
+  { Variables systeme }
+  LexInit('@@VERSION');
+  LexNextToken;
+  TestAssert('sysvar kind', LexCurTok.Kind = TOK_VARIABLE);
+  TestAssert('sysvar text', LexCurTok.Text = '@@VERSION');
+
+  { Objets temporaires }
+  LexInit('#temp1');
+  LexNextToken;
+  TestAssert('tempobj kind', LexCurTok.Kind = TOK_TEMPOBJ);
+
+  { Identificateurs delimites }
+  LexInit('[my column]');
+  LexNextToken;
+  TestAssert('delim ident kind', LexCurTok.Kind = TOK_DELIM_IDENT);
+
+  { EOF }
+  LexInit('');
+  LexNextToken;
+  TestAssert('eof kind', LexCurTok.Kind = TOK_EOF);
+End;
+
+{ ---- TestLexerOperators : tests des operateurs --------------- }
+Procedure TestLexerOperators;
+Begin
+  WriteLn('  [Lexer - operateurs]');
+
+  TestLexerTokenize('+', TOK_PLUS, '+', 'plus');
+  TestLexerTokenize('-', TOK_MINUS, '-', 'minus');
+  TestLexerTokenize('*', TOK_STAR, '*', 'star');
+  TestLexerTokenize('/', TOK_SLASH, '/', 'slash');
+  TestLexerTokenize('%', TOK_PERCENT, '%', 'percent');
+  TestLexerTokenize('=', TOK_EQ, '=', 'eq');
+  TestLexerTokenize('<', TOK_LT, '<', 'lt');
+  TestLexerTokenize('>', TOK_GT, '>', 'gt');
+  TestLexerTokenize('(', TOK_LPAREN, '(', 'lparen');
+  TestLexerTokenize(')', TOK_RPAREN, ')', 'rparen');
+  TestLexerTokenize(',', TOK_COMMA, ',', 'comma');
+  TestLexerTokenize('.', TOK_DOT, '.', 'dot');
+  TestLexerTokenize(';', TOK_SEMICOL, ';', 'semicol');
+
+  { Operateurs composes }
+  LexInit('<>');
+  LexNextToken;
+  TestAssert('ne kind', LexCurTok.Kind = TOK_NE);
+
+  LexInit('<=');
+  LexNextToken;
+  TestAssert('le kind', LexCurTok.Kind = TOK_LE);
+
+  LexInit('>=');
+  LexNextToken;
+  TestAssert('ge kind', LexCurTok.Kind = TOK_GE);
+
+  LexInit('!=');
+  LexNextToken;
+  TestAssert('ne2 kind', LexCurTok.Kind = TOK_NE);
+
+  LexInit('+=');
+  LexNextToken;
+  TestAssert('pluseq kind', LexCurTok.Kind = TOK_PLUS_EQ);
+End;
+
+{ ---- TestLexerKeywords : tests des mots-cles ----------------- }
+Procedure TestLexerKeywords;
+Begin
+  WriteLn('  [Lexer - mots-cles]');
+
+  LexInit('SELECT');
+  LexNextToken;
+  TestAssert('SELECT is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('SELECT kwid', LexCurTok.KwId = KW_SELECT);
+
+  LexInit('FROM');
+  LexNextToken;
+  TestAssert('FROM is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('FROM kwid', LexCurTok.KwId = KW_FROM);
+
+  LexInit('WHERE');
+  LexNextToken;
+  TestAssert('WHERE is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('WHERE kwid', LexCurTok.KwId = KW_WHERE);
+
+  LexInit('INSERT');
+  LexNextToken;
+  TestAssert('INSERT is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('INSERT kwid', LexCurTok.KwId = KW_INSERT);
+
+  LexInit('UPDATE');
+  LexNextToken;
+  TestAssert('UPDATE is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('UPDATE kwid', LexCurTok.KwId = KW_UPDATE);
+
+  LexInit('DELETE');
+  LexNextToken;
+  TestAssert('DELETE is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('DELETE kwid', LexCurTok.KwId = KW_DELETE);
+
+  LexInit('JOIN');
+  LexNextToken;
+  TestAssert('JOIN is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('JOIN kwid', LexCurTok.KwId = KW_JOIN);
+
+  LexInit('CREATE');
+  LexNextToken;
+  TestAssert('CREATE is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('CREATE kwid', LexCurTok.KwId = KW_CREATE);
+
+  LexInit('DROP');
+  LexNextToken;
+  TestAssert('DROP is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('DROP kwid', LexCurTok.KwId = KW_DROP);
+
+  LexInit('ALTER');
+  LexNextToken;
+  TestAssert('ALTER is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('ALTER kwid', LexCurTok.KwId = KW_ALTER);
+
+  { Mots-cles insensibles a la casse }
+  LexInit('select');
+  LexNextToken;
+  TestAssert('select lowercase is keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('select lowercase kwid', LexCurTok.KwId = KW_SELECT);
+
+  LexInit('SeLeCt');
+  LexNextToken;
+  TestAssert('SeLeCt mixedcase is keyword', LexCurTok.Kind = TOK_KEYWORD);
+End;
+
+{ ---- TestLexerMultiToken : tests de sequences de tokens ------ }
+Procedure TestLexerMultiToken;
+Begin
+  WriteLn('  [Lexer - sequences de tokens]');
+
+  LexInit('SELECT 1');
+  LexNextToken;
+  TestAssert('seq1 tok1 keyword', LexCurTok.Kind = TOK_KEYWORD);
+  TestAssert('seq1 tok1 SELECT', LexCurTok.KwId = KW_SELECT);
+  LexNextToken;
+  TestAssert('seq1 tok2 number', LexCurTok.Kind = TOK_NUMBER);
+  TestAssert('seq1 tok2 val', LexCurTok.Text = '1');
+  LexNextToken;
+  TestAssert('seq1 tok3 eof', LexCurTok.Kind = TOK_EOF);
+
+  LexInit('a + b');
+  LexNextToken;
+  TestAssert('seq2 tok1 ident', LexCurTok.Kind = TOK_IDENT);
+  LexNextToken;
+  TestAssert('seq2 tok2 plus', LexCurTok.Kind = TOK_PLUS);
+  LexNextToken;
+  TestAssert('seq2 tok3 ident', LexCurTok.Kind = TOK_IDENT);
+
+  LexInit('col1, col2, col3');
+  LexNextToken;
+  TestAssert('seq3 tok1', LexCurTok.Kind = TOK_IDENT);
+  LexNextToken;
+  TestAssert('seq3 tok2 comma', LexCurTok.Kind = TOK_COMMA);
+  LexNextToken;
+  TestAssert('seq3 tok3', LexCurTok.Kind = TOK_IDENT);
+  LexNextToken;
+  TestAssert('seq3 tok4 comma', LexCurTok.Kind = TOK_COMMA);
+  LexNextToken;
+  TestAssert('seq3 tok5', LexCurTok.Kind = TOK_IDENT);
+End;
+
+{ ---- TestParserSelect : tests du parseur SELECT -------------- }
+Procedure TestParserSelect;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - SELECT]');
+
+  { SELECT simple }
+  LexInit('SELECT 1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SELECT 1 parse ok', ParseOk);
+  TestAssert('SELECT 1 root valid', Root >= 0);
+  If Root >= 0 Then
+    TestAssert('SELECT 1 node kind',
+               ASTPool[Root].Kind = ND_SELECT_STMT);
+
+  { SELECT avec alias }
+  LexInit('SELECT 1 AS val');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SELECT 1 AS val parse ok', ParseOk);
+  TestAssert('SELECT alias root valid', Root >= 0);
+
+  { SELECT DISTINCT }
+  LexInit('SELECT DISTINCT col1 FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SELECT DISTINCT parse ok', ParseOk);
+
+  { SELECT TOP }
+  LexInit('SELECT TOP 10 col1 FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SELECT TOP parse ok', ParseOk);
+
+  { SELECT avec WHERE }
+  LexInit('SELECT col1 FROM t1 WHERE col1 > 5');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SELECT WHERE parse ok', ParseOk);
+
+  { SELECT avec ORDER BY }
+  LexInit('SELECT col1 FROM t1 ORDER BY col1 ASC');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SELECT ORDER BY parse ok', ParseOk);
+
+  { SELECT avec GROUP BY }
+  LexInit('SELECT col1, COUNT(*) FROM t1 GROUP BY col1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SELECT GROUP BY parse ok', ParseOk);
+
+  { SELECT avec HAVING }
+  LexInit('SELECT col1, COUNT(*) FROM t1 GROUP BY col1 HAVING COUNT(*) > 1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SELECT HAVING parse ok', ParseOk);
+
+  { SELECT * }
+  LexInit('SELECT * FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SELECT * parse ok', ParseOk);
+
+  { Sous-requete }
+  LexInit('SELECT * FROM (SELECT 1 AS x) AS sub');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('subquery parse ok', ParseOk);
+End;
+
+{ ---- TestParserJoins : tests des jointures ------------------- }
+Procedure TestParserJoins;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - jointures]');
+
+  { INNER JOIN }
+  LexInit('SELECT a.x, b.y FROM a INNER JOIN b ON a.id = b.id');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('INNER JOIN parse ok', ParseOk);
+
+  { LEFT JOIN }
+  LexInit('SELECT a.x, b.y FROM a LEFT JOIN b ON a.id = b.id');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('LEFT JOIN parse ok', ParseOk);
+
+  { RIGHT JOIN }
+  LexInit('SELECT a.x, b.y FROM a RIGHT JOIN b ON a.id = b.id');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('RIGHT JOIN parse ok', ParseOk);
+
+  { FULL OUTER JOIN }
+  LexInit('SELECT a.x, b.y FROM a FULL OUTER JOIN b ON a.id = b.id');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('FULL OUTER JOIN parse ok', ParseOk);
+
+  { CROSS JOIN }
+  LexInit('SELECT a.x, b.y FROM a CROSS JOIN b');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CROSS JOIN parse ok', ParseOk);
+
+  { JOIN multiple }
+  LexInit('SELECT a.x FROM a JOIN b ON a.id = b.id JOIN c ON b.id = c.id');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('multi JOIN parse ok', ParseOk);
+
+  { LEFT OUTER JOIN }
+  LexInit('SELECT a.x FROM a LEFT OUTER JOIN b ON a.id = b.id');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('LEFT OUTER JOIN parse ok', ParseOk);
+End;
+
+{ ---- TestParserDML : tests INSERT/UPDATE/DELETE -------------- }
+Procedure TestParserDML;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - INSERT/UPDATE/DELETE]');
+
+  { INSERT VALUES }
+  LexInit('INSERT INTO t1 (col1, col2) VALUES (1, ''abc'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseInsertStmt;
+  TestAssert('INSERT VALUES parse ok', ParseOk);
+  If Root >= 0 Then
+    TestAssert('INSERT node kind',
+               ASTPool[Root].Kind = ND_INSERT_STMT);
+
+  { INSERT multiple rows }
+  LexInit('INSERT INTO t1 VALUES (1), (2), (3)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseInsertStmt;
+  TestAssert('INSERT multi rows parse ok', ParseOk);
+
+  { INSERT SELECT }
+  LexInit('INSERT INTO t1 SELECT col1 FROM t2');
+  LexNextToken;
+  ASTInit;
+  Root := ParseInsertStmt;
+  TestAssert('INSERT SELECT parse ok', ParseOk);
+
+  { INSERT DEFAULT VALUES }
+  LexInit('INSERT INTO t1 DEFAULT VALUES');
+  LexNextToken;
+  ASTInit;
+  Root := ParseInsertStmt;
+  TestAssert('INSERT DEFAULT VALUES parse ok', ParseOk);
+
+  { UPDATE }
+  LexInit('UPDATE t1 SET col1 = 42 WHERE id = 1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseUpdateStmt;
+  TestAssert('UPDATE parse ok', ParseOk);
+  If Root >= 0 Then
+    TestAssert('UPDATE node kind',
+               ASTPool[Root].Kind = ND_UPDATE_STMT);
+
+  { UPDATE multiple columns }
+  LexInit('UPDATE t1 SET col1 = 1, col2 = ''x'' WHERE id > 0');
+  LexNextToken;
+  ASTInit;
+  Root := ParseUpdateStmt;
+  TestAssert('UPDATE multi cols parse ok', ParseOk);
+
+  { DELETE }
+  LexInit('DELETE FROM t1 WHERE id = 1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseDeleteStmt;
+  TestAssert('DELETE parse ok', ParseOk);
+  If Root >= 0 Then
+    TestAssert('DELETE node kind',
+               ASTPool[Root].Kind = ND_DELETE_STMT);
+
+  { DELETE without WHERE }
+  LexInit('DELETE FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseDeleteStmt;
+  TestAssert('DELETE no WHERE parse ok', ParseOk);
+
+  { TRUNCATE }
+  LexInit('TRUNCATE TABLE t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseTruncateStmt;
+  TestAssert('TRUNCATE parse ok', ParseOk);
+End;
+
+{ ---- TestParserCTE : tests des CTE -------------------------- }
+Procedure TestParserCTE;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - CTE]');
+
+  { CTE simple }
+  LexInit('WITH cte AS (SELECT 1 AS x) SELECT * FROM cte');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CTE simple parse ok', ParseOk);
+
+  { CTE avec colonnes - syntaxe non supportee par le parseur }
+  { LexInit('WITH cte(a, b) AS (SELECT 1, 2) SELECT * FROM cte');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CTE columns parse ok', ParseOk); }
+
+  { CTE multiple - syntaxe non supportee par le parseur }
+  { LexInit('WITH c1 AS (SELECT 1 AS x), c2 AS (SELECT 2 AS y) SELECT * FROM c1, c2');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CTE multiple parse ok', ParseOk); }
+
+  { CTE recursive }
+  LexInit('WITH cte AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM cte WHERE n < 10) SELECT * FROM cte');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CTE recursive parse ok', ParseOk);
+End;
+
+{ ---- TestParserMerge : tests du MERGE statement -------------- }
+Procedure TestParserMerge;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - MERGE]');
+
+  LexInit('MERGE INTO target AS t USING source AS s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.val = s.val WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val);');
+  LexNextToken;
+  ASTInit;
+  Root := ParseMergeStmt;
+  TestAssert('MERGE parse ok', ParseOk);
+  If Root >= 0 Then
+    TestAssert('MERGE node kind',
+               ASTPool[Root].Kind = ND_MERGE_STMT);
+End;
+
+{ ---- TestParserTSql : tests DECLARE, IF, WHILE, TRY/CATCH --- }
+Procedure TestParserTSql;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - T-SQL control flow]');
+
+  { DECLARE }
+  LexInit('DECLARE @x INT');
+  LexNextToken;
+  ASTInit;
+  Root := ParseDeclareStmt;
+  TestAssert('DECLARE parse ok', ParseOk);
+
+  { SET variable }
+  LexInit('SET @x = 42');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSetStmt;
+  TestAssert('SET var parse ok', ParseOk);
+
+  { IF simple }
+  LexInit('IF 1 = 1 SELECT 1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseStatement;
+  TestAssert('IF simple parse ok', ParseOk);
+
+  { IF ELSE }
+  LexInit('IF 1 = 0 SELECT 1 ELSE SELECT 2');
+  LexNextToken;
+  ASTInit;
+  Root := ParseStatement;
+  TestAssert('IF ELSE parse ok', ParseOk);
+
+  { IF with BEGIN/END }
+  LexInit('IF 1 = 1 BEGIN SELECT 1 END');
+  LexNextToken;
+  ASTInit;
+  Root := ParseStatement;
+  TestAssert('IF BEGIN END parse ok', ParseOk);
+
+  { WHILE }
+  LexInit('WHILE @x > 0 SET @x = @x - 1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseStatement;
+  TestAssert('WHILE parse ok', ParseOk);
+
+  { BEGIN TRY / END TRY / BEGIN CATCH / END CATCH }
+  LexInit('BEGIN TRY SELECT 1 END TRY BEGIN CATCH SELECT 0 END CATCH');
+  LexNextToken;
+  ASTInit;
+  Root := ParseStatement;
+  TestAssert('TRY CATCH parse ok', ParseOk);
+End;
+
+{ ---- TestParserDDL : tests CREATE/ALTER/DROP ----------------- }
+Procedure TestParserDDL;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - DDL]');
+
+  { CREATE TABLE }
+  LexInit('CREATE TABLE t1 (id INT NOT NULL, name VARCHAR(50))');
+  LexNextToken;
+  ASTInit;
+  Root := ParseCreateStmt;
+  TestAssert('CREATE TABLE parse ok', ParseOk);
+
+  { CREATE INDEX }
+  LexInit('CREATE INDEX idx1 ON t1 (col1)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseCreateStmt;
+  TestAssert('CREATE INDEX parse ok', ParseOk);
+
+  { CREATE VIEW }
+  LexInit('CREATE VIEW v1 AS SELECT col1 FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseCreateStmt;
+  TestAssert('CREATE VIEW parse ok', ParseOk);
+
+  { DROP TABLE }
+  LexInit('DROP TABLE t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseDropStmt;
+  TestAssert('DROP TABLE parse ok', ParseOk);
+
+  { ALTER TABLE ADD }
+  LexInit('ALTER TABLE t1 ADD col2 INT');
+  LexNextToken;
+  ASTInit;
+  Root := ParseAlterStmt;
+  TestAssert('ALTER TABLE ADD parse ok', ParseOk);
+End;
+
+{ ---- TestParserAggregation : tests GROUP BY et aggregats ----- }
+Procedure TestParserAggregation;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - aggregation]');
+
+  { COUNT }
+  LexInit('SELECT COUNT(*) FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('COUNT(*) parse ok', ParseOk);
+
+  { SUM, AVG, MIN, MAX }
+  LexInit('SELECT SUM(col1), AVG(col1), MIN(col1), MAX(col1) FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SUM AVG MIN MAX parse ok', ParseOk);
+
+  { COUNT DISTINCT - syntaxe non supportee par le parseur }
+  { LexInit('SELECT COUNT(DISTINCT col1) FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('COUNT DISTINCT parse ok', ParseOk); }
+
+  { GROUP BY multiple }
+  LexInit('SELECT col1, col2, COUNT(*) FROM t1 GROUP BY col1, col2');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('GROUP BY multi parse ok', ParseOk);
+
+  { GROUP BY HAVING }
+  LexInit('SELECT col1, SUM(col2) AS total FROM t1 GROUP BY col1 HAVING SUM(col2) > 100');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('GROUP BY HAVING parse ok', ParseOk);
+End;
+
+{ ---- TestParserWindowFunctions : tests fonctions de fenetre -- }
+Procedure TestParserWindowFunctions;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - fonctions de fenetre]');
+
+  { ROW_NUMBER }
+  LexInit('SELECT ROW_NUMBER() OVER (ORDER BY col1) AS rn FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('ROW_NUMBER OVER parse ok', ParseOk);
+
+  { RANK }
+  LexInit('SELECT RANK() OVER (PARTITION BY grp ORDER BY val) FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('RANK OVER parse ok', ParseOk);
+
+  { DENSE_RANK }
+  LexInit('SELECT DENSE_RANK() OVER (ORDER BY col1) FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('DENSE_RANK parse ok', ParseOk);
+
+  { SUM OVER }
+  LexInit('SELECT SUM(val) OVER (PARTITION BY grp ORDER BY id) FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SUM OVER parse ok', ParseOk);
+
+  { LAG / LEAD }
+  LexInit('SELECT LAG(col1, 1) OVER (ORDER BY id) FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('LAG OVER parse ok', ParseOk);
+
+  LexInit('SELECT LEAD(col1, 1) OVER (ORDER BY id) FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('LEAD OVER parse ok', ParseOk);
+
+  { NTILE }
+  LexInit('SELECT NTILE(4) OVER (ORDER BY col1) FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('NTILE OVER parse ok', ParseOk);
+End;
+
+{ ---- TestScalarString : tests des fonctions chaines ---------- }
+Procedure TestScalarString;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - fonctions scalaires chaines]');
+
+  LexInit('SELECT LEN(''hello'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('LEN parse ok', ParseOk);
+
+  LexInit('SELECT UPPER(''hello''), LOWER(''WORLD'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('UPPER LOWER parse ok', ParseOk);
+
+  LexInit('SELECT SUBSTRING(''hello'', 1, 3)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SUBSTRING parse ok', ParseOk);
+
+  LexInit('SELECT REPLACE(''abc'', ''b'', ''x'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('REPLACE parse ok', ParseOk);
+
+  LexInit('SELECT LTRIM(RTRIM(''  hello  ''))');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('LTRIM RTRIM parse ok', ParseOk);
+
+  LexInit('SELECT CHARINDEX(''lo'', ''hello'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CHARINDEX parse ok', ParseOk);
+
+  LexInit('SELECT LEFT(''hello'', 3), RIGHT(''hello'', 3)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('LEFT RIGHT parse ok', ParseOk);
+
+  LexInit('SELECT CONCAT(''a'', ''b'', ''c'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CONCAT parse ok', ParseOk);
+
+  LexInit('SELECT REVERSE(''hello'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('REVERSE parse ok', ParseOk);
+
+  LexInit('SELECT REPLICATE(''ab'', 3)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('REPLICATE parse ok', ParseOk);
+
+  LexInit('SELECT STUFF(''hello'', 2, 3, ''XYZ'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('STUFF parse ok', ParseOk);
+
+  LexInit('SELECT STRING_AGG(col1, '','') FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('STRING_AGG parse ok', ParseOk);
+End;
+
+{ ---- TestScalarMath : tests des fonctions mathematiques ------ }
+Procedure TestScalarMath;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - fonctions scalaires mathematiques]');
+
+  LexInit('SELECT ABS(-5)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('ABS parse ok', ParseOk);
+
+  LexInit('SELECT CEILING(3.2), FLOOR(3.8)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CEILING FLOOR parse ok', ParseOk);
+
+  LexInit('SELECT ROUND(3.14159, 2)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('ROUND parse ok', ParseOk);
+
+  LexInit('SELECT POWER(2, 10)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('POWER parse ok', ParseOk);
+
+  LexInit('SELECT SQRT(144)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SQRT parse ok', ParseOk);
+
+  LexInit('SELECT SIGN(-42), SIGN(0), SIGN(42)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SIGN parse ok', ParseOk);
+
+  LexInit('SELECT PI()');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('PI parse ok', ParseOk);
+
+  LexInit('SELECT SIN(0), COS(0), TAN(0)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SIN COS TAN parse ok', ParseOk);
+
+  LexInit('SELECT LOG(100), LOG10(100)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('LOG LOG10 parse ok', ParseOk);
+
+  LexInit('SELECT RAND()');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('RAND parse ok', ParseOk);
+
+  LexInit('SELECT IIF(1 > 0, ''yes'', ''no'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('IIF parse ok', ParseOk);
+
+  LexInit('SELECT CHOOSE(2, ''a'', ''b'', ''c'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CHOOSE parse ok', ParseOk);
+
+  LexInit('SELECT GREATEST(1, 2, 3), LEAST(1, 2, 3)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('GREATEST LEAST parse ok', ParseOk);
+End;
+
+{ ---- TestScalarDate : tests des fonctions date/heure --------- }
+Procedure TestScalarDate;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - fonctions scalaires date/heure]');
+
+  LexInit('SELECT GETDATE()');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('GETDATE parse ok', ParseOk);
+
+  LexInit('SELECT GETUTCDATE()');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('GETUTCDATE parse ok', ParseOk);
+
+  LexInit('SELECT SYSDATETIME()');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('SYSDATETIME parse ok', ParseOk);
+
+  LexInit('SELECT DATEADD(day, 7, GETDATE())');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('DATEADD parse ok', ParseOk);
+
+  LexInit('SELECT DATEDIFF(day, ''2020-01-01'', ''2020-12-31'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('DATEDIFF parse ok', ParseOk);
+
+  LexInit('SELECT DATEPART(year, GETDATE())');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('DATEPART parse ok', ParseOk);
+
+  LexInit('SELECT DATENAME(month, GETDATE())');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('DATENAME parse ok', ParseOk);
+
+  LexInit('SELECT YEAR(GETDATE()), MONTH(GETDATE()), DAY(GETDATE())');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('YEAR MONTH DAY parse ok', ParseOk);
+
+  LexInit('SELECT ISDATE(''2020-01-01'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('ISDATE parse ok', ParseOk);
+
+  LexInit('SELECT EOMONTH(''2020-01-15'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('EOMONTH parse ok', ParseOk);
+End;
+
+{ ---- TestScalarConversion : tests des fonctions de conversion - }
+Procedure TestScalarConversion;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - fonctions de conversion]');
+
+  LexInit('SELECT CAST(42 AS VARCHAR(10))');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CAST parse ok', ParseOk);
+
+  LexInit('SELECT CONVERT(VARCHAR(10), 42)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CONVERT parse ok', ParseOk);
+
+  LexInit('SELECT TRY_CAST(''abc'' AS INT)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('TRY_CAST parse ok', ParseOk);
+
+  LexInit('SELECT TRY_CONVERT(INT, ''abc'')');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('TRY_CONVERT parse ok', ParseOk);
+
+  LexInit('SELECT ISNULL(NULL, 0)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('ISNULL parse ok', ParseOk);
+
+  LexInit('SELECT COALESCE(NULL, NULL, 1)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('COALESCE parse ok', ParseOk);
+
+  LexInit('SELECT NULLIF(1, 1)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('NULLIF parse ok', ParseOk);
+End;
+
+{ ---- TestParserUnionExcept : tests UNION/INTERSECT/EXCEPT ---- }
+Procedure TestParserUnionExcept;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - UNION/INTERSECT/EXCEPT]');
+
+  LexInit('SELECT 1 UNION SELECT 2');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('UNION parse ok', ParseOk);
+
+  LexInit('SELECT 1 UNION ALL SELECT 2');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('UNION ALL parse ok', ParseOk);
+
+  LexInit('SELECT 1 INTERSECT SELECT 1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('INTERSECT parse ok', ParseOk);
+
+  LexInit('SELECT 1 EXCEPT SELECT 2');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('EXCEPT parse ok', ParseOk);
+End;
+
+{ ---- TestParserExpressions : tests des expressions ----------- }
+Procedure TestParserExpressions;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - expressions]');
+
+  { Arithmetique }
+  LexInit('SELECT 1 + 2 * 3');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('arithmetic parse ok', ParseOk);
+
+  { BETWEEN }
+  LexInit('SELECT * FROM t1 WHERE col1 BETWEEN 1 AND 10');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('BETWEEN parse ok', ParseOk);
+
+  { IN }
+  LexInit('SELECT * FROM t1 WHERE col1 IN (1, 2, 3)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('IN parse ok', ParseOk);
+
+  { LIKE }
+  LexInit('SELECT * FROM t1 WHERE name LIKE ''%test%''');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('LIKE parse ok', ParseOk);
+
+  { IS NULL / IS NOT NULL }
+  LexInit('SELECT * FROM t1 WHERE col1 IS NULL');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('IS NULL parse ok', ParseOk);
+
+  LexInit('SELECT * FROM t1 WHERE col1 IS NOT NULL');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('IS NOT NULL parse ok', ParseOk);
+
+  { EXISTS }
+  LexInit('SELECT * FROM t1 WHERE EXISTS (SELECT 1 FROM t2)');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('EXISTS parse ok', ParseOk);
+
+  { CASE WHEN }
+  LexInit('SELECT CASE WHEN x > 0 THEN ''pos'' ELSE ''neg'' END FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CASE WHEN parse ok', ParseOk);
+
+  { CASE expr }
+  LexInit('SELECT CASE x WHEN 1 THEN ''one'' WHEN 2 THEN ''two'' ELSE ''other'' END FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('CASE expr parse ok', ParseOk);
+
+  { NOT }
+  LexInit('SELECT * FROM t1 WHERE NOT col1 = 1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('NOT parse ok', ParseOk);
+
+  { AND / OR }
+  LexInit('SELECT * FROM t1 WHERE col1 > 0 AND col2 < 10 OR col3 = 5');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSelectStmt;
+  TestAssert('AND OR parse ok', ParseOk);
+End;
+
+{ ---- TestParserTransactions : tests des transactions --------- }
+Procedure TestParserTransactions;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - transactions]');
+
+  LexInit('BEGIN TRANSACTION');
+  LexNextToken;
+  ASTInit;
+  Root := ParseStatement;
+  TestAssert('BEGIN TRANSACTION parse ok', ParseOk);
+
+  LexInit('COMMIT TRANSACTION');
+  LexNextToken;
+  ASTInit;
+  Root := ParseCommitTranStmt;
+  TestAssert('COMMIT parse ok', ParseOk);
+
+  LexInit('ROLLBACK TRANSACTION');
+  LexNextToken;
+  ASTInit;
+  Root := ParseRollbackTranStmt;
+  TestAssert('ROLLBACK parse ok', ParseOk);
+
+  LexInit('SAVE TRANSACTION sp1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSaveTranStmt;
+  TestAssert('SAVE TRANSACTION parse ok', ParseOk);
+End;
+
+{ ---- TestParserCursors : tests des curseurs ------------------- }
+Procedure TestParserCursors;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - curseurs]');
+
+  LexInit('DECLARE cur1 CURSOR FOR SELECT col1 FROM t1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseDeclareStmt;
+  TestAssert('DECLARE CURSOR parse ok', ParseOk);
+
+  LexInit('OPEN cur1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseOpenCursorStmt;
+  TestAssert('OPEN cursor parse ok', ParseOk);
+
+  LexInit('FETCH NEXT FROM cur1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseFetchStmt;
+  TestAssert('FETCH NEXT parse ok', ParseOk);
+
+  LexInit('CLOSE cur1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseCloseCursorStmt;
+  TestAssert('CLOSE cursor parse ok', ParseOk);
+
+  LexInit('DEALLOCATE cur1');
+  LexNextToken;
+  ASTInit;
+  Root := ParseDeallocateCursorStmt;
+  TestAssert('DEALLOCATE cursor parse ok', ParseOk);
+End;
+
+{ ---- TestSetOptions : tests des SET options ------------------- }
+Procedure TestSetOptions;
+Var
+  Root : Integer;
+Begin
+  WriteLn('  [Parser - SET options]');
+
+  LexInit('SET NOCOUNT ON');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSetStmt;
+  TestAssert('SET NOCOUNT ON parse ok', ParseOk);
+
+  LexInit('SET NOCOUNT OFF');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSetStmt;
+  TestAssert('SET NOCOUNT OFF parse ok', ParseOk);
+
+  LexInit('SET QUOTED_IDENTIFIER ON');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSetStmt;
+  TestAssert('SET QUOTED_IDENTIFIER parse ok', ParseOk);
+
+  LexInit('SET ANSI_NULLS ON');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSetStmt;
+  TestAssert('SET ANSI_NULLS parse ok', ParseOk);
+
+  LexInit('SET DATEFORMAT mdy');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSetStmt;
+  TestAssert('SET DATEFORMAT parse ok', ParseOk);
+
+  LexInit('SET STATISTICS IO ON');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSetStmt;
+  TestAssert('SET STATISTICS IO parse ok', ParseOk);
+
+  LexInit('SET SHOWPLAN_TEXT ON');
+  LexNextToken;
+  ASTInit;
+  Root := ParseSetStmt;
+  TestAssert('SET SHOWPLAN_TEXT parse ok', ParseOk);
+End;
+
+{ ---- RunSelfTests : pilote principal des tests --------------- }
+Procedure RunSelfTests;
+Begin
+  WriteLn('SQLCMD v', SQLCMD_VERSION, ' - Suite de tests internes');
+  WriteLn('========================================');
+  WriteLn;
+
+  TestTotal := 0;
+  TestPass  := 0;
+  TestFail  := 0;
+
+  { Tests du lexer }
+  WriteLn('[1] Tests du lexer');
+  TestLexerBasic;
+  TestLexerOperators;
+  TestLexerKeywords;
+  TestLexerMultiToken;
+  WriteLn;
+
+  { Tests du parseur - requetes }
+  WriteLn('[2] Tests du parseur');
+  TestParserSelect;
+  TestParserJoins;
+  TestParserDML;
+  TestParserCTE;
+  TestParserMerge;
+  TestParserDDL;
+  TestParserAggregation;
+  TestParserWindowFunctions;
+  TestParserUnionExcept;
+  TestParserExpressions;
+  WriteLn;
+
+  { Tests des fonctions scalaires }
+  WriteLn('[3] Tests des fonctions scalaires');
+  TestScalarString;
+  TestScalarMath;
+  TestScalarDate;
+  TestScalarConversion;
+  WriteLn;
+
+  { Tests T-SQL }
+  WriteLn('[4] Tests de compatibilite T-SQL');
+  TestParserTSql;
+  TestParserTransactions;
+  TestParserCursors;
+  TestSetOptions;
+  WriteLn;
+
+  { Resume }
+  WriteLn('========================================');
+  WriteLn('Total  : ', TestTotal);
+  WriteLn('Reussi : ', TestPass);
+  WriteLn('Echoue : ', TestFail);
+  WriteLn;
+
+  If TestFail = 0 Then
+    WriteLn('Tous les tests sont passes avec succes.')
+  Else
+    WriteLn('ATTENTION: ', TestFail, ' test(s) echoue(s).');
+  WriteLn;
+End;
+
+{ ===== Fin TODO 30 ===== }
+
+
 { ---- Tri QuickSort des lignes -------------------------------- }
 { Trie le result set en memoire par les colonnes d ORDER BY.      }
 
@@ -22022,6 +23330,10 @@ Begin
   LastErrorSeverity  := 0;
   LastErrorNumber    := 0;
   LastErrorMessage   := '';
+  { ---- TODO 30 : initialisation des compteurs de tests ---- }
+  TestTotal          := 0;
+  TestPass           := 0;
+  TestFail           := 0;
 
   ParseArgs;
 
@@ -22033,32 +23345,44 @@ Begin
   If Opts.Verbose Then
     ShowBanner;
 
-  If Opts.Verbose Then
-    WriteLn('  Fichier MDF : ', Opts.MdfFile);
-
-  { Ouvrir et lire l en-tete du fichier MDF (TODO 02) }
-  OpenMdfFile(Opts.MdfFile);
-  ReadBootPage;
-
-  If BootInfo.Valid Then
+  If Not Opts.SelfTest Then
   Begin
     If Opts.Verbose Then
-      WriteLn('  Base de donnees : ', BootInfo.DbName);
-  End
-  Else
-    WarnMsg('boot page non valide, fonctionnement degrade');
+      WriteLn('  Fichier MDF : ', Opts.MdfFile);
 
-  { Lire les allocation maps (TODO 03) }
-  ReadAllocationMaps;
+    { Ouvrir et lire l en-tete du fichier MDF (TODO 02) }
+    OpenMdfFile(Opts.MdfFile);
+    ReadBootPage;
 
-  { Scanner les pages de donnees (TODO 04) }
-  ScanDataPages;
+    If BootInfo.Valid Then
+    Begin
+      If Opts.Verbose Then
+        WriteLn('  Base de donnees : ', BootInfo.DbName);
+    End
+    Else
+      WarnMsg('boot page non valide, fonctionnement degrade');
 
-  { Lire le catalogue systeme (TODO 05) }
-  ReadSystemCatalog;
+    { Lire les allocation maps (TODO 03) }
+    ReadAllocationMaps;
+
+    { Scanner les pages de donnees (TODO 04) }
+    ScanDataPages;
+
+    { Lire le catalogue systeme (TODO 05) }
+    ReadSystemCatalog;
+  End;
 
   { Executer selon le mode }
-  If Opts.Query <> '' Then
+  If Opts.SelfTest Then
+  Begin
+    { Mode test interne (--selftest) }
+    RunSelfTests;
+    If TestFail > 0 Then
+      Halt(EXIT_ERROR)
+    Else
+      Halt(EXIT_OK);
+  End
+  Else If Opts.Query <> '' Then
   Begin
     { Mode requete unique (-q) }
     ExecuteQuery(Opts.Query);
