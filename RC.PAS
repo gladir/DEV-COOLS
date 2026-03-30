@@ -275,7 +275,7 @@
               lire LANGUAGE LANG_xxx, SUBLANG_xxx et mettre a jour
               CurrentLangId := MakeLangId(primary, sub)
 
-  TODO 09 - TRAITEMENT DES FLAGS MEMOIRE [A FAIRE]
+  TODO 09 - TRAITEMENT DES FLAGS MEMOIRE [IMPLEMENTE]
             Variables globales :
               DefaultMemFlags : Word (flags par defaut pour les ressources)
             Constantes de flags memoire :
@@ -869,6 +869,9 @@ Var
   
   { TODO 08 : Variables pour le traitement des Language IDs }
   CurrentLangId : Word;
+  
+  { TODO 09 : Variables pour le traitement des flags memoire }
+  DefaultMemFlags : Word;
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -2882,6 +2885,93 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 09 : TRAITEMENT DES FLAGS MEMOIRE
+  ============================================================ }
+
+{ ----- Function MemFlagFromName ----- }
+{ Retourne le flag memoire correspondant au mot-cle }
+Function MemFlagFromName(Const Name : TString) : Word;
+Var
+  N : TString;
+Begin
+  N := UpCaseStr(Name);
+  
+  If N = 'MOVEABLE' Then
+    MemFlagFromName := MF_MOVEABLE       { $0010 }
+  Else If N = 'MOVABLE' Then
+    MemFlagFromName := MF_MOVEABLE       { Orthographe alternative }
+  Else If N = 'PURE' Then
+    MemFlagFromName := MF_PURE           { $0020 }
+  Else If N = 'PRELOAD' Then
+    MemFlagFromName := MF_PRELOAD        { $0040 }
+  Else If N = 'DISCARDABLE' Then
+    MemFlagFromName := MF_DISCARDABLE    { $1000 }
+  Else If N = 'FIXED' Then
+    MemFlagFromName := MF_FIXED          { $0000 }
+  Else If N = 'LOADONCALL' Then
+    MemFlagFromName := MF_FIXED          { $0000 - meme que FIXED }
+  Else If N = 'SHARED' Then
+    MemFlagFromName := MF_MOVEABLE Or MF_PURE  { $0030 }
+  Else If N = 'IMPURE' Then
+    MemFlagFromName := MF_FIXED          { Oppose de PURE }
+  Else If N = 'NONSHARED' Then
+    MemFlagFromName := MF_FIXED          { Oppose de SHARED }
+  Else
+    MemFlagFromName := 0;                { Flag inconnu }
+End;
+
+{ ----- Function IsMemoryOption ----- }
+{ Verifie si le token courant est une option memoire }
+Function IsMemoryOption(Const Name : TString) : Boolean;
+Var
+  N : TString;
+Begin
+  N := UpCaseStr(Name);
+  IsMemoryOption := (N = 'MOVEABLE') Or (N = 'MOVABLE') Or
+                    (N = 'PURE') Or (N = 'PRELOAD') Or
+                    (N = 'DISCARDABLE') Or (N = 'FIXED') Or
+                    (N = 'LOADONCALL') Or (N = 'SHARED') Or
+                    (N = 'IMPURE') Or (N = 'NONSHARED');
+End;
+
+{ ----- Function ParseMemoryOptions ----- }
+{ Lit les options de memoire optionnelles apres une declaration }
+{ de ressource. Retourne la combinaison des flags ou DefaultMemFlags }
+{ si aucune option n'est specifiee. }
+Function ParseMemoryOptions : Word;
+Var
+  Flags    : Word;
+  HasFlags : Boolean;
+  FlagVal  : Word;
+Begin
+  Flags := 0;
+  HasFlags := False;
+  
+  { Lire les options de memoire tant qu'il y en a }
+  While (CurrToken.Kind = TK_IDENT) And IsMemoryOption(CurrToken.Value) Do
+  Begin
+    FlagVal := MemFlagFromName(CurrToken.Value);
+    
+    { FIXED et MOVEABLE sont exclusifs mutuellement }
+    If (FlagVal = MF_MOVEABLE) Then
+      Flags := (Flags And (Not MF_FIXED)) Or MF_MOVEABLE
+    Else If (CurrToken.Value = 'FIXED') Or (CurrToken.Value = 'fixed') Then
+      Flags := (Flags And (Not MF_MOVEABLE)) Or MF_FIXED
+    Else
+      Flags := Flags Or FlagVal;
+    
+    HasFlags := True;
+    NextToken;
+  End;
+  
+  { Si aucune option specifiee, utiliser les flags par defaut }
+  If Not HasFlags Then
+    ParseMemoryOptions := DefaultMemFlags
+  Else
+    ParseMemoryOptions := Flags;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -2984,9 +3074,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 09-25 }
+  { TODO : Implementation des TODOs 10-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-08 [IMPLEMENTE]. TODOs 09-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-09 [IMPLEMENTE]. TODOs 10-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
