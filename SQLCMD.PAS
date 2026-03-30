@@ -12767,6 +12767,13 @@ Function IsolationLevelName(Level : Integer) : TString; Forward;
 Procedure TranLogAdd(Const Op, Tbl : TTokenText); Forward;
 Function ParseBlockBody : Integer; Forward;
 
+{ ---- Forward declarations pour les instructions de controle de flux ---- }
+Procedure ExecStatement(Node : Integer); Forward;
+Procedure ExecWhile(Node : Integer); Forward;
+Procedure ExecIf(Node : Integer); Forward;
+Procedure ExecBlock(Node : Integer); Forward;
+Procedure ExecPrint(Node : Integer); Forward;
+
 Function QEEvalBool(Node : Integer;
                      Const Row : TQERow;
                      Const Res : TQEResult) : Boolean;
@@ -22966,6 +22973,143 @@ End;
 
 { ---- Fin TODO 26 : Implementations Forward ---- }
 
+{ ---- Implémentation des instructions de controle de flux ---- }
+
+{ ---- ExecPrint -------------------------------------------------- }
+{ Execute une instruction PRINT expression.                          }
+
+Procedure ExecPrint(Node : Integer);
+Var
+  V      : TSqlValue;
+  DummyR : TQERow;
+  DRS    : TQEResultPtr;
+Begin
+  If ASTPool[Node].ChildCnt > 0 Then
+  Begin
+    FillChar(DummyR, SizeOf(DummyR), 0);
+    New(DRS);
+    FillChar(DRS^, SizeOf(TQEResult), 0);
+    V := QEEvalExpr(ASTPool[Node].Children[0], DummyR, DRS^);
+    If V.Valid And (Not V.IsNull) Then
+      OutputLine(V.StrVal)
+    Else If V.Valid And V.IsNull Then
+      OutputLine('NULL')
+    Else
+      OutputLine('');
+    Dispose(DRS);
+  End;
+End;
+
+{ ---- ExecBlock -------------------------------------------------- }
+{ Execute un bloc BEGIN ... END en executant chaque instruction.     }
+
+Procedure ExecBlock(Node : Integer);
+Var
+  I : Integer;
+Begin
+  For I := 0 To ASTPool[Node].ChildCnt - 1 Do
+    ExecStatement(ASTPool[Node].Children[I]);
+End;
+
+{ ---- ExecIf ----------------------------------------------------- }
+{ Execute une instruction IF condition instruction [ELSE instruction]. }
+
+Procedure ExecIf(Node : Integer);
+Var
+  CondNode, BodyNode, ElseNode : Integer;
+  CondVal                       : Boolean;
+  DummyR                        : TQERow;
+  DRS                           : TQEResultPtr;
+Begin
+  If ASTPool[Node].ChildCnt < 2 Then Exit;
+  
+  CondNode := ASTPool[Node].Children[0];
+  BodyNode := ASTPool[Node].Children[1];
+  
+  { Evaluer la condition }
+  FillChar(DummyR, SizeOf(DummyR), 0);
+  New(DRS);
+  FillChar(DRS^, SizeOf(TQEResult), 0);
+  CondVal := QEEvalBool(CondNode, DummyR, DRS^);
+  Dispose(DRS);
+  
+  If CondVal Then
+    ExecStatement(BodyNode)
+  Else If ASTPool[Node].ChildCnt >= 3 Then
+  Begin
+    ElseNode := ASTPool[Node].Children[2];
+    ExecStatement(ElseNode);
+  End;
+End;
+
+{ ---- ExecWhile -------------------------------------------------- }
+{ Execute une boucle WHILE condition instruction.                     }
+
+Procedure ExecWhile(Node : Integer);
+Var
+  CondNode, BodyNode : Integer;
+  CondVal            : Boolean;
+  DummyR             : TQERow;
+  DRS                : TQEResultPtr;
+  Iterations         : Integer;
+Const
+  MAX_WHILE_ITERATIONS = 100000;
+Begin
+  If ASTPool[Node].ChildCnt < 2 Then Exit;
+  
+  CondNode := ASTPool[Node].Children[0];
+  BodyNode := ASTPool[Node].Children[1];
+  Iterations := 0;
+  
+  { Evaluer la condition initiale }
+  FillChar(DummyR, SizeOf(DummyR), 0);
+  New(DRS);
+  FillChar(DRS^, SizeOf(TQEResult), 0);
+  CondVal := QEEvalBool(CondNode, DummyR, DRS^);
+  
+  While CondVal And (Iterations < MAX_WHILE_ITERATIONS) Do
+  Begin
+    ExecStatement(BodyNode);
+    Inc(Iterations);
+    
+    { Re-evaluer la condition }
+    CondVal := QEEvalBool(CondNode, DummyR, DRS^);
+  End;
+  
+  Dispose(DRS);
+  
+  If Iterations >= MAX_WHILE_ITERATIONS Then
+    OutputLine('-- Avertissement : boucle WHILE interrompue apres ' +
+               IntToStr(MAX_WHILE_ITERATIONS) + ' iterations');
+End;
+
+{ ---- ExecStatement ---------------------------------------------- }
+{ Execute recursivement une instruction de controle de flux.          }
+
+Procedure ExecStatement(Node : Integer);
+Var
+  Kind : Integer;
+Begin
+  If Node < 0 Then Exit;
+  
+  Kind := ASTPool[Node].Kind;
+  
+  Case Kind Of
+    ND_WHILE_STMT   : ExecWhile(Node);
+    ND_IF_STMT      : ExecIf(Node);
+    ND_BLOCK_STMT   : ExecBlock(Node);
+    ND_PRINT_STMT   : ExecPrint(Node);
+    ND_DECLARE_VAR  : ExecDeclareVar(Node);
+    ND_SET_VAR      : ExecSetVar(Node);
+    ND_DECLARE_TABLE: ExecDeclareTable(Node);
+    ND_SELECT_STMT  : QEExecSelect(Node);
+  Else
+    { Pour les autres types, ne rien faire pour l instant }
+  End;
+End;
+
+{ ---- Fin des instructions de controle de flux ---- }
+
 Procedure ExecuteQuery(Const SQL : TString);
 Var
   Root : Integer;
@@ -23229,6 +23373,16 @@ Begin
     If ASTPool[Root].Kind = ND_SAVE_TRAN Then
       ExecSaveTran(Root);
     { ---- Fin TODO 28 ---- }
+    { ---- Instructions de controle de flux ---- }
+    If ASTPool[Root].Kind = ND_WHILE_STMT Then
+      ExecWhile(Root);
+    If ASTPool[Root].Kind = ND_IF_STMT Then
+      ExecIf(Root);
+    If ASTPool[Root].Kind = ND_BLOCK_STMT Then
+      ExecBlock(Root);
+    If ASTPool[Root].Kind = ND_PRINT_STMT Then
+      ExecPrint(Root);
+    { ---- Fin instructions de controle de flux ---- }
     { ---- USE database ---- }
     If ASTPool[Root].Kind = ND_USE_STMT Then
     Begin
