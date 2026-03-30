@@ -200,7 +200,7 @@
             Procedure SeekResPos(Pos: LongInt)
               se deplacer a la position Pos dans le fichier
 
-  TODO 06 - GENERATION EN-TETE RES 16/32 BITS [A FAIRE]
+  TODO 06 - GENERATION EN-TETE RES 16/32 BITS [IMPLEMENTE]
             Procedure WriteNullHeader32
               ecrire la ressource nulle de 32 octets au debut du fichier
               32 bits : DataSize=0, HeaderSize=32, Type=$FFFF,
@@ -2394,6 +2394,183 @@ Begin
   ResFilePos := Pos;
 End;
 
+{ ============================================================
+  TODO 06 : GENERATION EN-TETE RES 16/32 BITS
+  ============================================================ }
+
+{ ----- Procedure WriteNullHeader32 ----- }
+{ Ecrit la ressource nulle de 32 octets au debut du fichier .RES 32 bits }
+Procedure WriteNullHeader32;
+Begin
+  { DataSize = 0 }
+  WriteDWord(0);
+  { HeaderSize = 32 }
+  WriteDWord(32);
+  { Type = $FFFF + 0 (ressource nulle) }
+  WriteWord($FFFF);
+  WriteWord(0);
+  { Name = $FFFF + 0 }
+  WriteWord($FFFF);
+  WriteWord(0);
+  { DataVersion = 0 }
+  WriteDWord(0);
+  { MemFlags = 0 }
+  WriteWord(0);
+  { LangId = 0 }
+  WriteWord(0);
+  { Version = 0 }
+  WriteDWord(0);
+  { Characteristics = 0 }
+  WriteDWord(0);
+End;
+
+{ ----- Procedure WriteResHeader16 ----- }
+{ Ecrit l'en-tete 16 bits avec IDs numeriques }
+Procedure WriteResHeader16(TypeId, NameId : Word; DataSize, Attribs : Word);
+Begin
+  { TypeId avec bit $8000 indiquant ID numerique }
+  WriteWord(TypeId Or $8000);
+  { NameId avec bit $8000 indiquant ID numerique }
+  WriteWord(NameId Or $8000);
+  { DataSize en DWORD }
+  WriteDWord(DataSize);
+  { Attributs }
+  WriteWord(Attribs);
+  { Reserved = 0 }
+  WriteWord(0);
+End;
+
+{ ----- Procedure WriteResHeader16Str ----- }
+{ Variante avec noms en chaines Pascal }
+Procedure WriteResHeader16Str(Const TypeName, ResName : TString;
+                               DataSize, Attribs : Word);
+Var
+  I : Integer;
+Begin
+  { TypeName - chaine sans bit $8000, terminee par null }
+  For I := 1 To Length(TypeName) Do
+    WriteByte(Ord(TypeName[I]));
+  WriteByte(0);
+  
+  { ResName - chaine terminee par null }
+  For I := 1 To Length(ResName) Do
+    WriteByte(Ord(ResName[I]));
+  WriteByte(0);
+  
+  { DataSize en DWORD }
+  WriteDWord(DataSize);
+  { Attributs }
+  WriteWord(Attribs);
+  { Reserved = 0 }
+  WriteWord(0);
+End;
+
+{ ----- Function CalculateHeaderSize32 ----- }
+{ Calcule la taille de l'en-tete 32 bits variable }
+Function CalculateHeaderSize32(TypeIsId : Boolean; Const TypeName : TString;
+                                NameIsId : Boolean; Const ResName : TString) : LongInt;
+Var
+  Size : LongInt;
+Begin
+  { Taille de base : DataSize(4) + HeaderSize(4) = 8 }
+  Size := 8;
+  
+  { Type : FFFF+ID (4 octets) ou Unicode (2 octets par char + 2 null) }
+  If TypeIsId Then
+    Size := Size + 4
+  Else
+    Size := Size + (Length(TypeName) + 1) * 2;
+  
+  { Name : FFFF+ID (4 octets) ou Unicode (2 octets par char + 2 null) }
+  If NameIsId Then
+    Size := Size + 4
+  Else
+    Size := Size + (Length(ResName) + 1) * 2;
+  
+  { Alignement sur DWORD (4 octets) }
+  If (Size Mod 4) <> 0 Then
+    Size := Size + (4 - (Size Mod 4));
+  
+  { Reste de l'en-tete : DataVersion(4) + MemFlags(2) + LangId(2) + }
+  { Version(4) + Characteristics(4) = 16 }
+  Size := Size + 16;
+  
+  CalculateHeaderSize32 := Size;
+End;
+
+{ ----- Procedure WriteResHeader32 ----- }
+{ Ecrit l'en-tete 32 bits complet }
+Procedure WriteResHeader32(TypeIsId : Boolean; TypeId : Word;
+                            Const TypeName : TString;
+                            NameIsId : Boolean; NameId : Word;
+                            Const ResName : TString;
+                            DataSize : LongInt; MemFlags : Word;
+                            LangId : Word);
+Var
+  HeaderSize : LongInt;
+  I : Integer;
+Begin
+  { Calculer la taille de l'en-tete }
+  HeaderSize := CalculateHeaderSize32(TypeIsId, TypeName, NameIsId, ResName);
+  
+  { DataSize }
+  WriteDWord(DataSize);
+  
+  { HeaderSize }
+  WriteDWord(HeaderSize);
+  
+  { Type : FFFF+ID ou chaine Unicode }
+  If TypeIsId Then
+  Begin
+    WriteWord($FFFF);
+    WriteWord(TypeId);
+  End
+  Else
+  Begin
+    For I := 1 To Length(TypeName) Do
+      WriteWChar(CharToWChar(TypeName[I]));
+    WriteWChar(0);
+  End;
+  
+  { Name : FFFF+ID ou chaine Unicode }
+  If NameIsId Then
+  Begin
+    WriteWord($FFFF);
+    WriteWord(NameId);
+  End
+  Else
+  Begin
+    For I := 1 To Length(ResName) Do
+      WriteWChar(CharToWChar(ResName[I]));
+    WriteWChar(0);
+  End;
+  
+  { Alignement sur DWORD }
+  PadToAlignment(4);
+  
+  { DataVersion = 0 }
+  WriteDWord(0);
+  
+  { MemFlags }
+  WriteWord(MemFlags);
+  
+  { LangId }
+  WriteWord(LangId);
+  
+  { Version = 0 }
+  WriteDWord(0);
+  
+  { Characteristics = 0 }
+  WriteDWord(0);
+End;
+
+{ ----- Procedure WriteEndMarker16 ----- }
+{ Ecrit le marqueur de fin 16 bits }
+Procedure WriteEndMarker16;
+Begin
+  WriteWord($0000);
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -2496,9 +2673,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 06-25 }
+  { TODO : Implementation des TODOs 07-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-05 [IMPLEMENTE]. TODOs 06-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-06 [IMPLEMENTE]. TODOs 07-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
