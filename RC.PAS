@@ -229,7 +229,7 @@
             Procedure WriteEndMarker16
               ecrire le marqueur de fin 16 bits : WORD $0000
 
-  TODO 07 - TABLE DES TYPES DE RESSOURCES [RT_*] [A FAIRE]
+  TODO 07 - TABLE DES TYPES DE RESSOURCES [RT_*] [IMPLEMENTE]
             Constantes des types standards :
               RT_CURSOR = 1, RT_BITMAP = 2, RT_ICON = 3,
               RT_MENU = 4, RT_DIALOG = 5, RT_STRING = 6,
@@ -2571,6 +2571,95 @@ Begin
   WriteWord($0000);
 End;
 
+{ ============================================================
+  TODO 07 : TABLE DES TYPES DE RESSOURCES [RT_*]
+  (Constantes RT_* definies avec TODO 01)
+  ============================================================ }
+
+{ ----- Function ResourceTypeFromKeyword ----- }
+{ Retourne le type numerique correspondant au mot-cle RC }
+Function ResourceTypeFromKeyword(Const Kw : TString) : Word;
+Var
+  KwUp : TString;
+Begin
+  KwUp := UpCaseStr(Kw);
+  
+  If KwUp = 'CURSOR' Then
+    ResourceTypeFromKeyword := RT_CURSOR
+  Else If KwUp = 'BITMAP' Then
+    ResourceTypeFromKeyword := RT_BITMAP
+  Else If KwUp = 'ICON' Then
+    ResourceTypeFromKeyword := RT_ICON
+  Else If KwUp = 'MENU' Then
+    ResourceTypeFromKeyword := RT_MENU
+  Else If (KwUp = 'DIALOG') Or (KwUp = 'DIALOGEX') Then
+    ResourceTypeFromKeyword := RT_DIALOG
+  Else If KwUp = 'STRINGTABLE' Then
+    ResourceTypeFromKeyword := RT_STRING
+  Else If KwUp = 'FONTDIR' Then
+    ResourceTypeFromKeyword := RT_FONTDIR
+  Else If KwUp = 'FONT' Then
+    ResourceTypeFromKeyword := RT_FONT
+  Else If (KwUp = 'ACCELERATORS') Or (KwUp = 'ACCELERATOR') Then
+    ResourceTypeFromKeyword := RT_ACCELERATOR
+  Else If KwUp = 'RCDATA' Then
+    ResourceTypeFromKeyword := RT_RCDATA
+  Else If KwUp = 'MESSAGETABLE' Then
+    ResourceTypeFromKeyword := RT_MESSAGETABLE
+  Else If (KwUp = 'VERSIONINFO') Or (KwUp = 'VERSION') Then
+    ResourceTypeFromKeyword := RT_VERSION
+  Else If KwUp = 'DLGINCLUDE' Then
+    ResourceTypeFromKeyword := RT_DLGINCLUDE
+  Else If KwUp = 'PLUGPLAY' Then
+    ResourceTypeFromKeyword := RT_PLUGPLAY
+  Else If KwUp = 'VXD' Then
+    ResourceTypeFromKeyword := RT_VXD
+  Else If KwUp = 'ANICURSOR' Then
+    ResourceTypeFromKeyword := RT_ANICURSOR
+  Else If KwUp = 'ANIICON' Then
+    ResourceTypeFromKeyword := RT_ANIICON
+  Else If KwUp = 'HTML' Then
+    ResourceTypeFromKeyword := RT_HTML
+  Else If KwUp = 'MANIFEST' Then
+    ResourceTypeFromKeyword := RT_MANIFEST
+  Else If KwUp = 'TOOLBAR' Then
+    ResourceTypeFromKeyword := RT_TOOLBAR
+  Else
+    ResourceTypeFromKeyword := 0; { Type utilisateur ou inconnu }
+End;
+
+{ ----- Function ResourceTypeName ----- }
+{ Retourne le nom symbolique RT_xxx correspondant au type }
+Function ResourceTypeName(TypeId : Word) : TString;
+Begin
+  Case TypeId Of
+    RT_CURSOR       : ResourceTypeName := 'RT_CURSOR';
+    RT_BITMAP       : ResourceTypeName := 'RT_BITMAP';
+    RT_ICON         : ResourceTypeName := 'RT_ICON';
+    RT_MENU         : ResourceTypeName := 'RT_MENU';
+    RT_DIALOG       : ResourceTypeName := 'RT_DIALOG';
+    RT_STRING       : ResourceTypeName := 'RT_STRING';
+    RT_FONTDIR      : ResourceTypeName := 'RT_FONTDIR';
+    RT_FONT         : ResourceTypeName := 'RT_FONT';
+    RT_ACCELERATOR  : ResourceTypeName := 'RT_ACCELERATOR';
+    RT_RCDATA       : ResourceTypeName := 'RT_RCDATA';
+    RT_MESSAGETABLE : ResourceTypeName := 'RT_MESSAGETABLE';
+    RT_GROUP_CURSOR : ResourceTypeName := 'RT_GROUP_CURSOR';
+    RT_GROUP_ICON   : ResourceTypeName := 'RT_GROUP_ICON';
+    RT_VERSION      : ResourceTypeName := 'RT_VERSION';
+    RT_DLGINCLUDE   : ResourceTypeName := 'RT_DLGINCLUDE';
+    RT_PLUGPLAY     : ResourceTypeName := 'RT_PLUGPLAY';
+    RT_VXD          : ResourceTypeName := 'RT_VXD';
+    RT_ANICURSOR    : ResourceTypeName := 'RT_ANICURSOR';
+    RT_ANIICON      : ResourceTypeName := 'RT_ANIICON';
+    RT_HTML         : ResourceTypeName := 'RT_HTML';
+    RT_MANIFEST     : ResourceTypeName := 'RT_MANIFEST';
+    RT_TOOLBAR      : ResourceTypeName := 'RT_TOOLBAR';
+  Else
+    ResourceTypeName := 'RT_USER(' + IntToStr(TypeId) + ')';
+  End;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -2673,9 +2762,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 07-25 }
+  { TODO : Implementation des TODOs 08-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-06 [IMPLEMENTE]. TODOs 07-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-07 [IMPLEMENTE]. TODOs 08-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
