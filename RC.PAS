@@ -134,7 +134,7 @@
             Function PeekTokenFn: TToken
               retourner le prochain token sans avancer
 
-  TODO 04 - PARSER RC (ANALYSE SYNTAXIQUE) [A FAIRE]
+  TODO 04 - PARSER RC (ANALYSE SYNTAXIQUE) [IMPLEMENTE]
             Type TStatementKind : enumeration des types de declarations
               ST_INCLUDE, ST_DEFINE, ST_UNDEF, ST_IFDEF, ST_IFNDEF,
               ST_ELSE, ST_ENDIF, ST_PRAGMA, ST_LANGUAGE,
@@ -1662,6 +1662,605 @@ Begin
   PeekTokenFn := PeekToken;
 End;
 
+{ ============================================================
+  TODO 04 : PARSER RC (ANALYSE SYNTAXIQUE)
+  ============================================================ }
+
+{ ----- Type TStatementKind ----- }
+Type
+  TStatementKind = (
+    ST_INCLUDE,       { #include }
+    ST_DEFINE,        { #define }
+    ST_UNDEF,         { #undef }
+    ST_IFDEF,         { #ifdef }
+    ST_IFNDEF,        { #ifndef }
+    ST_ELSE,          { #else }
+    ST_ENDIF,         { #endif }
+    ST_PRAGMA,        { #pragma }
+    ST_LANGUAGE,      { LANGUAGE }
+    ST_STRINGTABLE,   { STRINGTABLE }
+    ST_ACCELERATORS,  { ACCELERATORS }
+    ST_MENU,          { MENU }
+    ST_MENUEX,        { MENUEX }
+    ST_DIALOG,        { DIALOG }
+    ST_DIALOGEX,      { DIALOGEX }
+    ST_VERSIONINFO,   { VERSIONINFO }
+    ST_ICON,          { ICON }
+    ST_CURSOR,        { CURSOR }
+    ST_BITMAP,        { BITMAP }
+    ST_FONT,          { FONT }
+    ST_RCDATA,        { RCDATA }
+    ST_MESSAGETABLE,  { MESSAGETABLE }
+    ST_MANIFEST,      { MANIFEST }
+    ST_HTML,          { HTML }
+    ST_USER_TYPE      { Type utilisateur }
+  );
+
+{ ----- Type TResourceId ----- }
+Type
+  TResourceId = Record
+    IsNumeric : Boolean;   { True si ID numerique, False si chaine }
+    NumId     : LongInt;   { ID numerique }
+    StrId     : TString;   { ID chaine }
+  End;
+
+{ ----- Variables globales du parser ----- }
+Var
+  ParseError     : Boolean;    { True si une erreur de parsing s est produite }
+  ParseErrorMsg  : TString;    { Message d erreur }
+
+{ ----- Procedure SyntaxError ----- }
+Procedure SyntaxError(Const Msg : TString);
+Begin
+  ParseError := True;
+  ParseErrorMsg := Msg;
+  WriteLn('Erreur de syntaxe ligne ', LexLine, ' col ', LexCol, ': ', Msg);
+End;
+
+{ ----- Function ExpectToken ----- }
+Function ExpectToken(Kind : TTokenKind) : TToken;
+Var
+  Tok : TToken;
+Begin
+  Tok := NextToken;
+  If Tok.Kind <> Kind Then
+  Begin
+    SyntaxError('Token inattendu: ' + Tok.Value);
+  End;
+  ExpectToken := Tok;
+End;
+
+{ ----- Function ExpectIdent ----- }
+Function ExpectIdent : TString;
+Var
+  Tok : TToken;
+Begin
+  Tok := NextToken;
+  If Tok.Kind <> TK_IDENT Then
+  Begin
+    SyntaxError('Identifiant attendu, trouve: ' + Tok.Value);
+    ExpectIdent := '';
+  End
+  Else
+    ExpectIdent := Tok.Value;
+End;
+
+{ ----- Function ExpectNumber ----- }
+Function ExpectNumber : LongInt;
+Var
+  Tok : TToken;
+Begin
+  Tok := NextToken;
+  If Tok.Kind <> TK_NUMBER Then
+  Begin
+    SyntaxError('Nombre attendu, trouve: ' + Tok.Value);
+    ExpectNumber := 0;
+  End
+  Else
+    ExpectNumber := Tok.IntVal;
+End;
+
+{ ----- Function ExpectString ----- }
+Function ExpectString : TString;
+Var
+  Tok : TToken;
+Begin
+  Tok := NextToken;
+  If Tok.Kind <> TK_STRING Then
+  Begin
+    SyntaxError('Chaine attendue, trouvee: ' + Tok.Value);
+    ExpectString := '';
+  End
+  Else
+    ExpectString := Tok.Value;
+End;
+
+{ ----- Forward declaration pour ParseExpression ----- }
+Function ParseExpression : LongInt; Forward;
+
+{ ----- Function ParsePrimaryExpr ----- }
+Function ParsePrimaryExpr : LongInt;
+Var
+  Tok : TToken;
+  Val : LongInt;
+Begin
+  Tok := PeekTokenFn;
+
+  If Tok.Kind = TK_NUMBER Then
+  Begin
+    Tok := NextToken;
+    ParsePrimaryExpr := Tok.IntVal;
+  End
+  Else If Tok.Kind = TK_IDENT Then
+  Begin
+    Tok := NextToken;
+    { Les identifiants sont traites comme 0 pour l instant }
+    { Dans une impl complete, on chercherait dans les defines }
+    ParsePrimaryExpr := 0;
+  End
+  Else If Tok.Kind = TK_LPAREN Then
+  Begin
+    Tok := NextToken; { Consommer ( }
+    Val := ParseExpression;
+    ExpectToken(TK_RPAREN); { Attendre ) }
+    ParsePrimaryExpr := Val;
+  End
+  Else If Tok.Kind = TK_NOT Then
+  Begin
+    Tok := NextToken; { Consommer NOT ou ~ }
+    Val := ParsePrimaryExpr;
+    ParsePrimaryExpr := Not Val;
+  End
+  Else If Tok.Kind = TK_MINUS Then
+  Begin
+    Tok := NextToken; { Consommer - }
+    Val := ParsePrimaryExpr;
+    ParsePrimaryExpr := -Val;
+  End
+  Else
+  Begin
+    SyntaxError('Expression attendue, trouvee: ' + Tok.Value);
+    ParsePrimaryExpr := 0;
+  End;
+End;
+
+{ ----- Function ParseExpression ----- }
+Function ParseExpression : LongInt;
+Var
+  Left  : LongInt;
+  Right : LongInt;
+  Tok   : TToken;
+Begin
+  Left := ParsePrimaryExpr;
+
+  { Verifier les operateurs binaires }
+  Tok := PeekTokenFn;
+  While (Tok.Kind = TK_PLUS) Or (Tok.Kind = TK_MINUS) Or (Tok.Kind = TK_PIPE) Do
+  Begin
+    Tok := NextToken; { Consommer l operateur }
+    Right := ParsePrimaryExpr;
+
+    Case Tok.Kind Of
+      TK_PLUS  : Left := Left + Right;
+      TK_MINUS : Left := Left - Right;
+      TK_PIPE  : Left := Left Or Right;
+    End;
+
+    Tok := PeekTokenFn;
+  End;
+
+  ParseExpression := Left;
+End;
+
+{ ----- Function ParseResourceId ----- }
+Function ParseResourceId : TResourceId;
+Var
+  Tok : TToken;
+  Res : TResourceId;
+Begin
+  Tok := PeekTokenFn;
+
+  If Tok.Kind = TK_NUMBER Then
+  Begin
+    Tok := NextToken;
+    Res.IsNumeric := True;
+    Res.NumId := Tok.IntVal;
+    Res.StrId := '';
+  End
+  Else If Tok.Kind = TK_STRING Then
+  Begin
+    Tok := NextToken;
+    Res.IsNumeric := False;
+    Res.NumId := 0;
+    Res.StrId := Tok.Value;
+  End
+  Else If Tok.Kind = TK_IDENT Then
+  Begin
+    Tok := NextToken;
+    Res.IsNumeric := False;
+    Res.NumId := 0;
+    Res.StrId := Tok.Value;
+  End
+  Else
+  Begin
+    SyntaxError('ID de ressource attendu, trouve: ' + Tok.Value);
+    Res.IsNumeric := True;
+    Res.NumId := 0;
+    Res.StrId := '';
+  End;
+
+  ParseResourceId := Res;
+End;
+
+{ ----- Function IsRCKeyword ----- }
+Function IsRCKeyword(Const Ident : TString) : Boolean;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(Ident);
+  IsRCKeyword :=
+    (U = 'ACCELERATORS') Or
+    (U = 'ALT') Or
+    (U = 'ASCII') Or
+    (U = 'AUTO3STATE') Or
+    (U = 'AUTOCHECKBOX') Or
+    (U = 'AUTORADIOBUTTON') Or
+    (U = 'BEGIN') Or
+    (U = 'BITMAP') Or
+    (U = 'BLOCK') Or
+    (U = 'CAPTION') Or
+    (U = 'CHARACTERISTICS') Or
+    (U = 'CHECKBOX') Or
+    (U = 'CLASS') Or
+    (U = 'COMBOBOX') Or
+    (U = 'CONTROL') Or
+    (U = 'CTEXT') Or
+    (U = 'CURSOR') Or
+    (U = 'DEFPUSHBUTTON') Or
+    (U = 'DIALOG') Or
+    (U = 'DIALOGEX') Or
+    (U = 'DISCARDABLE') Or
+    (U = 'EDITTEXT') Or
+    (U = 'END') Or
+    (U = 'EXSTYLE') Or
+    (U = 'FILEFLAGS') Or
+    (U = 'FILEFLAGSMASK') Or
+    (U = 'FILEOS') Or
+    (U = 'FILESUBTYPE') Or
+    (U = 'FILETYPE') Or
+    (U = 'FILEVERSION') Or
+    (U = 'FIXED') Or
+    (U = 'FONT') Or
+    (U = 'GRAYED') Or
+    (U = 'GROUPBOX') Or
+    (U = 'HELP') Or
+    (U = 'HTML') Or
+    (U = 'ICON') Or
+    (U = 'IMPURE') Or
+    (U = 'INACTIVE') Or
+    (U = 'LANGUAGE') Or
+    (U = 'LISTBOX') Or
+    (U = 'LOADONCALL') Or
+    (U = 'LTEXT') Or
+    (U = 'MANIFEST') Or
+    (U = 'MENU') Or
+    (U = 'MENUBARBREAK') Or
+    (U = 'MENUBREAK') Or
+    (U = 'MENUEX') Or
+    (U = 'MENUITEM') Or
+    (U = 'MESSAGETABLE') Or
+    (U = 'MOVEABLE') Or
+    (U = 'NOINVERT') Or
+    (U = 'NOT') Or
+    (U = 'POPUP') Or
+    (U = 'PRELOAD') Or
+    (U = 'PRODUCTVERSION') Or
+    (U = 'PURE') Or
+    (U = 'PUSHBOX') Or
+    (U = 'PUSHBUTTON') Or
+    (U = 'RADIOBUTTON') Or
+    (U = 'RCDATA') Or
+    (U = 'RTEXT') Or
+    (U = 'SCROLLBAR') Or
+    (U = 'SEPARATOR') Or
+    (U = 'SHIFT') Or
+    (U = 'STATE3') Or
+    (U = 'STRINGTABLE') Or
+    (U = 'STYLE') Or
+    (U = 'VALUE') Or
+    (U = 'VERSION') Or
+    (U = 'VERSIONINFO') Or
+    (U = 'VIRTKEY');
+End;
+
+{ ----- Function GetStatementKind ----- }
+Function GetStatementKind(Const Ident : TString) : TStatementKind;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(Ident);
+  If U = 'STRINGTABLE' Then
+    GetStatementKind := ST_STRINGTABLE
+  Else If U = 'ACCELERATORS' Then
+    GetStatementKind := ST_ACCELERATORS
+  Else If U = 'MENU' Then
+    GetStatementKind := ST_MENU
+  Else If U = 'MENUEX' Then
+    GetStatementKind := ST_MENUEX
+  Else If U = 'DIALOG' Then
+    GetStatementKind := ST_DIALOG
+  Else If U = 'DIALOGEX' Then
+    GetStatementKind := ST_DIALOGEX
+  Else If U = 'VERSIONINFO' Then
+    GetStatementKind := ST_VERSIONINFO
+  Else If U = 'ICON' Then
+    GetStatementKind := ST_ICON
+  Else If U = 'CURSOR' Then
+    GetStatementKind := ST_CURSOR
+  Else If U = 'BITMAP' Then
+    GetStatementKind := ST_BITMAP
+  Else If U = 'FONT' Then
+    GetStatementKind := ST_FONT
+  Else If U = 'RCDATA' Then
+    GetStatementKind := ST_RCDATA
+  Else If U = 'MESSAGETABLE' Then
+    GetStatementKind := ST_MESSAGETABLE
+  Else If U = 'MANIFEST' Then
+    GetStatementKind := ST_MANIFEST
+  Else If U = 'HTML' Then
+    GetStatementKind := ST_HTML
+  Else If U = 'LANGUAGE' Then
+    GetStatementKind := ST_LANGUAGE
+  Else
+    GetStatementKind := ST_USER_TYPE;
+End;
+
+{ ----- Procedure SkipToEndBlock ----- }
+Procedure SkipToEndBlock;
+Var
+  Tok   : TToken;
+  Depth : Integer;
+Begin
+  Depth := 1;
+  While (Depth > 0) And (Not ParseError) Do
+  Begin
+    Tok := NextToken;
+    If Tok.Kind = TK_EOF Then
+    Begin
+      SyntaxError('Fin de fichier inattendue dans un bloc');
+      Exit;
+    End
+    Else If Tok.Kind = TK_BEGIN Then
+      Inc(Depth)
+    Else If Tok.Kind = TK_END Then
+      Dec(Depth);
+  End;
+End;
+
+{ ----- Procedure ParsePreprocessor ----- }
+Procedure ParsePreprocessor(Const Directive : TString);
+Var
+  D   : TString;
+  Tok : TToken;
+Begin
+  D := UpCaseStr(Directive);
+
+  If D = '#INCLUDE' Then
+  Begin
+    { Lire le nom de fichier }
+    Tok := NextToken;
+    If (Tok.Kind = TK_STRING) Or (Tok.Kind = TK_IDENT) Then
+    Begin
+      { TODO: implementer l inclusion de fichiers }
+    End;
+  End
+  Else If D = '#DEFINE' Then
+  Begin
+    { Lire l identifiant et eventuellement la valeur }
+    Tok := NextToken;
+    If Tok.Kind = TK_IDENT Then
+    Begin
+      { TODO: implementer les defines }
+    End;
+  End
+  Else If D = '#UNDEF' Then
+  Begin
+    Tok := NextToken;
+    { TODO: implementer undef }
+  End
+  Else If D = '#IFDEF' Then
+  Begin
+    Tok := NextToken;
+    { TODO: implementer ifdef }
+  End
+  Else If D = '#IFNDEF' Then
+  Begin
+    Tok := NextToken;
+    { TODO: implementer ifndef }
+  End
+  Else If D = '#ELSE' Then
+  Begin
+    { TODO: implementer else }
+  End
+  Else If D = '#ENDIF' Then
+  Begin
+    { TODO: implementer endif }
+  End
+  Else If D = '#PRAGMA' Then
+  Begin
+    { Ignorer le reste de la ligne }
+    Tok := NextToken;
+  End;
+End;
+
+{ ----- Procedure ParseStatement ----- }
+Procedure ParseStatement;
+Var
+  Tok      : TToken;
+  ResId    : TResourceId;
+  StmtKind : TStatementKind;
+  IdUp     : TString;
+Begin
+  Tok := PeekTokenFn;
+
+  { Fin de fichier }
+  If Tok.Kind = TK_EOF Then
+    Exit;
+
+  { Nouvelle ligne - ignorer }
+  If Tok.Kind = TK_NEWLINE Then
+  Begin
+    Tok := NextToken;
+    Exit;
+  End;
+
+  { Directive preprocesseur }
+  If Tok.Kind = TK_PREPROCESSOR Then
+  Begin
+    Tok := NextToken;
+    ParsePreprocessor(Tok.Value);
+    Exit;
+  End;
+
+  { Identifiant - peut etre un ID de ressource ou un mot-cle }
+  If (Tok.Kind = TK_IDENT) Or (Tok.Kind = TK_NUMBER) Then
+  Begin
+    IdUp := UpCaseStr(Tok.Value);
+
+    { Verifier si c est LANGUAGE en premier }
+    If IdUp = 'LANGUAGE' Then
+    Begin
+      Tok := NextToken; { Consommer LANGUAGE }
+      { Lire les parametres de language }
+      Tok := PeekTokenFn;
+      If Tok.Kind = TK_NUMBER Then
+        Tok := NextToken;
+      Tok := PeekTokenFn;
+      If Tok.Kind = TK_COMMA Then
+      Begin
+        Tok := NextToken;
+        Tok := PeekTokenFn;
+        If Tok.Kind = TK_NUMBER Then
+          Tok := NextToken;
+      End;
+      Exit;
+    End;
+
+    { Verifier si c est STRINGTABLE sans ID }
+    If IdUp = 'STRINGTABLE' Then
+    Begin
+      Tok := NextToken; { Consommer STRINGTABLE }
+      { Attendre BEGIN ou { }
+      Tok := PeekTokenFn;
+      While (Tok.Kind <> TK_BEGIN) And (Tok.Kind <> TK_LBRACE) And (Tok.Kind <> TK_EOF) Do
+      Begin
+        Tok := NextToken;
+        Tok := PeekTokenFn;
+      End;
+      If (Tok.Kind = TK_BEGIN) Or (Tok.Kind = TK_LBRACE) Then
+      Begin
+        Tok := NextToken;
+        SkipToEndBlock;
+      End;
+      Exit;
+    End;
+
+    { Sinon, c est un ID de ressource suivi d un type }
+    ResId := ParseResourceId;
+
+    { Lire le type de ressource }
+    Tok := PeekTokenFn;
+    If Tok.Kind = TK_IDENT Then
+    Begin
+      Tok := NextToken;
+      StmtKind := GetStatementKind(Tok.Value);
+
+      { Pour les ressources simples (ICON, CURSOR, BITMAP, etc.), }
+      { lire le nom de fichier }
+      If (StmtKind = ST_ICON) Or (StmtKind = ST_CURSOR) Or
+         (StmtKind = ST_BITMAP) Or (StmtKind = ST_FONT) Or
+         (StmtKind = ST_MANIFEST) Or (StmtKind = ST_HTML) Then
+      Begin
+        { Options memoire optionnelles }
+        Tok := PeekTokenFn;
+        While (Tok.Kind = TK_IDENT) And
+              ((UpCaseStr(Tok.Value) = 'DISCARDABLE') Or
+               (UpCaseStr(Tok.Value) = 'PRELOAD') Or
+               (UpCaseStr(Tok.Value) = 'LOADONCALL') Or
+               (UpCaseStr(Tok.Value) = 'MOVEABLE') Or
+               (UpCaseStr(Tok.Value) = 'FIXED') Or
+               (UpCaseStr(Tok.Value) = 'PURE') Or
+               (UpCaseStr(Tok.Value) = 'IMPURE')) Do
+        Begin
+          Tok := NextToken;
+          Tok := PeekTokenFn;
+        End;
+        { Lire le nom du fichier }
+        If Tok.Kind = TK_STRING Then
+          Tok := NextToken;
+      End
+      { Pour DIALOG, DIALOGEX, MENU, MENUEX, ACCELERATORS, RCDATA, VERSIONINFO }
+      { lire jusqu au END du bloc }
+      Else If (StmtKind = ST_DIALOG) Or (StmtKind = ST_DIALOGEX) Or
+              (StmtKind = ST_MENU) Or (StmtKind = ST_MENUEX) Or
+              (StmtKind = ST_ACCELERATORS) Or (StmtKind = ST_RCDATA) Or
+              (StmtKind = ST_VERSIONINFO) Or (StmtKind = ST_MESSAGETABLE) Then
+      Begin
+        (* Sauter jusqu a BEGIN puis jusqu a END *)
+        Tok := PeekTokenFn;
+        While (Tok.Kind <> TK_BEGIN) And (Tok.Kind <> TK_LBRACE) And (Tok.Kind <> TK_EOF) Do
+        Begin
+          Tok := NextToken;
+          Tok := PeekTokenFn;
+        End;
+        If (Tok.Kind = TK_BEGIN) Or (Tok.Kind = TK_LBRACE) Then
+        Begin
+          Tok := NextToken;
+          SkipToEndBlock;
+        End;
+      End
+      { Type utilisateur ou inconnu }
+      Else
+      Begin
+        { Sauter jusqu a la fin de la ligne ou BEGIN }
+        Tok := PeekTokenFn;
+        While (Tok.Kind <> TK_NEWLINE) And (Tok.Kind <> TK_BEGIN) And
+              (Tok.Kind <> TK_LBRACE) And (Tok.Kind <> TK_EOF) Do
+        Begin
+          Tok := NextToken;
+          Tok := PeekTokenFn;
+        End;
+        If (Tok.Kind = TK_BEGIN) Or (Tok.Kind = TK_LBRACE) Then
+        Begin
+          Tok := NextToken;
+          SkipToEndBlock;
+        End;
+      End;
+    End;
+  End
+  Else
+  Begin
+    { Token inattendu - le sauter }
+    Tok := NextToken;
+  End;
+End;
+
+{ ----- Procedure ParseFile ----- }
+Procedure ParseFile;
+Var
+  Tok : TToken;
+Begin
+  ParseError := False;
+  ParseErrorMsg := '';
+
+  Tok := PeekTokenFn;
+  While (Tok.Kind <> TK_EOF) And (Not ParseError) Do
+  Begin
+    ParseStatement;
+    Tok := PeekTokenFn;
+  End;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -1764,9 +2363,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 04-25 }
+  { TODO : Implementation des TODOs 05-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-03 [IMPLEMENTE]. TODOs 04-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-04 [IMPLEMENTE]. TODOs 05-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
