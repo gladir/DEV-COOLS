@@ -757,7 +757,8 @@ End;
 
 Function IsSignedType(Const T: TCType): Boolean;
 Begin
-  IsSignedType := T.Kind In [TK_CHAR, TK_SCHAR, TK_SHORT, TK_INT,
+  { Note: TK_CHAR n'est pas inclus car son signe est implementation-defined en C }
+  IsSignedType := T.Kind In [TK_SCHAR, TK_SHORT, TK_INT,
                              TK_LONG, TK_LONGLONG];
 End;
 
