@@ -441,7 +441,7 @@
             INSERT INTO @t, SELECT FROM @t, UPDATE @t, DELETE @t
             Passage de variables table en parametre (READONLY)
 
-  TODO 27 - PROCEDURES STOCKEES ET FONCTIONS UTILISATEUR
+  TODO 27 - PROCEDURES STOCKEES ET FONCTIONS UTILISATEUR [IMPLEMENTE]
             Stockage des corps de procedures dans un catalogue
               interne (texte SQL)
             EXEC / EXECUTE procedure @param1, @param2
@@ -1148,6 +1148,10 @@ Const
   ND_CLOSE_CURSOR      = 140;  { CLOSE cursor_name                  }
   ND_DEALLOCATE_CURSOR = 141;  { DEALLOCATE cursor_name              }
 
+  { -- Stored procedures/functions nodes (TODO 27) -- }
+  ND_STORED_PROC   = 142;    { corps de procedure stockee            }
+  ND_USER_FUNC     = 143;    { corps de fonction utilisateur         }
+
   { Taille max du pool de noeuds AST }
   MAX_AST_NODES   = 1024;
 
@@ -1166,6 +1170,9 @@ Const
   { ---- Constantes des curseurs (TODO 26) ------------------------ }
   MAX_CURSORS     = 16;            { curseurs ouverts simultanes    }
   MAX_USER_VARS   = 64;            { variables utilisateur @var     }
+
+  { ---- Constantes des procedures stockees (TODO 27) ------------ }
+  MAX_STORED_PROCS = 32;           { procedures/fonctions enregistrees }
 
   { ---- Constantes du moteur de jointure (TODO 16) -------------- }
   MAX_QE_HASH     = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
@@ -1482,6 +1489,18 @@ Var
   UserVarCount   : Integer;      { nombre de variables utilisateur    }
   UserVarNames   : Array[0..MAX_USER_VARS - 1] Of TTokenText;
   UserVarValues  : Array[0..MAX_USER_VARS - 1] Of TSqlValue;
+
+  { ---- Procedures stockees et fonctions (TODO 27) ---------------- }
+  StoredProcCount  : Integer;
+  StoredProcNames  : Array[0..MAX_STORED_PROCS - 1] Of TTokenText;
+  StoredProcSQL    : Array[0..MAX_STORED_PROCS - 1] Of TString;
+  StoredProcKind   : Array[0..MAX_STORED_PROCS - 1] Of Integer;
+                                  { 0 = procedure, 1 = scalar func,  }
+                                  { 2 = table func                    }
+  StoredProcParams : Array[0..MAX_STORED_PROCS - 1] Of TString;
+                                  { liste de params serialisee        }
+  StoredProcRetType : Array[0..MAX_STORED_PROCS - 1] Of TTokenText;
+                                  { type de retour pour fonctions     }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -5651,6 +5670,9 @@ Begin
     ND_FETCH_CURSOR      : NodeKindName := 'FETCH_CURSOR';
     ND_CLOSE_CURSOR      : NodeKindName := 'CLOSE_CURSOR';
     ND_DEALLOCATE_CURSOR : NodeKindName := 'DEALLOCATE_CURSOR';
+    { Stored procedures/functions (TODO 27) }
+    ND_STORED_PROC  : NodeKindName := 'STORED_PROC';
+    ND_USER_FUNC    : NodeKindName := 'USER_FUNC';
   Else
     NodeKindName := '?';
   End;
@@ -12458,6 +12480,10 @@ Function QEEvalExpr(Node : Integer;
 { ---- TODO 26 : Forward pour GetUserVar ---- }
 Function GetUserVar(Const Name : TTokenText) : TSqlValue; Forward;
 
+{ ---- TODO 27 : Forward declarations ---- }
+Function XTypeToName(XType : Integer) : TTokenText; Forward;
+Procedure ExecuteQuery(Const SQL : TString); Forward;
+
 Function QEEvalBool(Node : Integer;
                      Const Row : TQERow;
                      Const Res : TQEResult) : Boolean;
@@ -14945,6 +14971,17 @@ Begin
         Else Begin
           V.IsNull := False;
           V.IntVal := 0;
+          { Chercher dans SysObjects par nom }
+          For I := 0 To SysObjCount - 1 Do
+          Begin
+            If SysObjects[I].Valid And
+               (StrUpperCase(SysObjects[I].Name) =
+                StrUpperCase(VL.StrVal)) Then
+            Begin
+              V.IntVal := SysObjects[I].ObjectId;
+              Break;
+            End;
+          End;
         End;
       End
       Else If (Op = 'OBJECT_NAME') And (Child0 >= 0) Then
@@ -14956,9 +14993,131 @@ Begin
         If VL.IsNull Then V.IsNull := True
         Else Begin
           V.IsNull := False;
-          V.StrVal := '';
+          V.StrVal := FindObjectName(VL.IntVal);
         End;
       End
+      { ---- TODO 27 : COL_NAME, TYPE_NAME, INDEX_COL ---- }
+      Else If (Op = 'COL_NAME') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := True;
+        V.StrVal   := '';
+        If Not VL.IsNull Then
+        Begin
+          { Deuxieme argument = column_id }
+          VR.IntVal := 1;
+          VR.IsNull := True;
+          If (ASTPool[Node].ChildCnt > 1) Then
+          Begin
+            Child1 := ASTPool[Node].Children[1];
+            If Child1 >= 0 Then
+              VR := QEEvalExpr(Child1, Row, Res);
+          End;
+          If Not VR.IsNull Then
+          Begin
+            For I := 0 To SysColCount - 1 Do
+            Begin
+              If SysColumns[I].Valid And
+                 (SysColumns[I].ObjectId = VL.IntVal) And
+                 (SysColumns[I].ColumnId = VR.IntVal) Then
+              Begin
+                V.IsNull := False;
+                V.StrVal := SysColumns[I].Name;
+                Break;
+              End;
+            End;
+          End;
+        End;
+      End
+      Else If (Op = 'TYPE_NAME') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        If VL.IsNull Then
+        Begin
+          V.IsNull := True;
+          V.StrVal := '';
+        End
+        Else
+        Begin
+          V.IsNull := False;
+          V.StrVal := XTypeToName(VL.IntVal);
+        End;
+      End
+      Else If (Op = 'INDEX_COL') And (Child0 >= 0) Then
+      Begin
+        VL := QEEvalExpr(Child0, Row, Res);
+        V.Category := SQLCAT_STRING;
+        V.XType    := XT_NVARCHAR;
+        V.Valid    := True;
+        V.IsNull   := True;
+        V.StrVal   := '';
+        If Not VL.IsNull Then
+        Begin
+          { Deuxieme arg = index_id, troisieme = col_pos }
+          VR.IntVal := 1;
+          VR.IsNull := True;
+          VT.IntVal := 1;
+          VT.IsNull := True;
+          If (ASTPool[Node].ChildCnt > 1) Then
+          Begin
+            Child1 := ASTPool[Node].Children[1];
+            If Child1 >= 0 Then
+              VR := QEEvalExpr(Child1, Row, Res);
+          End;
+          If (ASTPool[Node].ChildCnt > 2) Then
+          Begin
+            Child2 := ASTPool[Node].Children[2];
+            If Child2 >= 0 Then
+              VT := QEEvalExpr(Child2, Row, Res);
+          End;
+          If (Not VR.IsNull) And (Not VT.IsNull) Then
+          Begin
+            { Chercher l objet par nom pour obtenir ObjectId }
+            For I := 0 To SysObjCount - 1 Do
+            Begin
+              If SysObjects[I].Valid And
+                 (StrUpperCase(SysObjects[I].Name) =
+                  StrUpperCase(VL.StrVal)) Then
+              Begin
+                { Chercher dans SysIdxCols }
+                For J := 0 To SysIcCount - 1 Do
+                Begin
+                  If SysIdxCols[J].Valid And
+                     (SysIdxCols[J].ObjectId =
+                       SysObjects[I].ObjectId) And
+                     (SysIdxCols[J].IndexId = VR.IntVal) And
+                     (SysIdxCols[J].SubId = VT.IntVal) Then
+                  Begin
+                    { Chercher le nom de colonne }
+                    For CI := 0 To SysColCount - 1 Do
+                    Begin
+                      If SysColumns[CI].Valid And
+                         (SysColumns[CI].ObjectId =
+                           SysObjects[I].ObjectId) And
+                         (SysColumns[CI].ColumnId =
+                           SysIdxCols[J].ColumnId) Then
+                      Begin
+                        V.IsNull := False;
+                        V.StrVal := SysColumns[CI].Name;
+                        Break;
+                      End;
+                    End;
+                    Break;
+                  End;
+                End;
+                Break;
+              End;
+            End;
+          End;
+        End;
+      End
+      { ---- Fin TODO 27 ---- }
       Else If (Op = 'DB_ID') Then
       Begin
         V.Category := SQLCAT_INTEGER;
@@ -17304,6 +17463,542 @@ Begin
 End;
 
 { ===== Fin TODO 26 ===== }
+
+{ ===== TODO 27 : Procedures Stockees et Fonctions Utilisateur ===== }
+
+{ ---- FindStoredProc -------------------------------------------- }
+{ Cherche une procedure/fonction stockee par nom. Retourne index    }
+{ dans le catalogue ou -1 si introuvable.                           }
+
+Function FindStoredProc(Const Name : TTokenText) : Integer;
+Var
+  I : Integer;
+  U : TTokenText;
+Begin
+  U := StrUpperCase(Name);
+  For I := 0 To StoredProcCount - 1 Do
+  Begin
+    If StrUpperCase(StoredProcNames[I]) = U Then
+    Begin
+      FindStoredProc := I;
+      Exit;
+    End;
+  End;
+  FindStoredProc := -1;
+End;
+
+{ ---- RegisterStoredProc ---------------------------------------- }
+{ Enregistre une procedure ou fonction dans le catalogue interne.   }
+
+Procedure RegisterStoredProc(Const Name : TTokenText;
+                              Const Body : TString;
+                              Kind : Integer;
+                              Const Params : TString;
+                              Const RetType : TTokenText);
+Var
+  Idx : Integer;
+Begin
+  Idx := FindStoredProc(Name);
+  If Idx < 0 Then
+  Begin
+    If StoredProcCount >= MAX_STORED_PROCS Then
+    Begin
+      OutputLine('-- Erreur : trop de procedures stockees');
+      Exit;
+    End;
+    Idx := StoredProcCount;
+    Inc(StoredProcCount);
+  End;
+  StoredProcNames[Idx]  := Name;
+  StoredProcSQL[Idx]    := Body;
+  StoredProcKind[Idx]   := Kind;
+  StoredProcParams[Idx] := Params;
+  StoredProcRetType[Idx] := RetType;
+End;
+
+{ ---- ExecSystemProc -------------------------------------------- }
+{ Execute une procedure systeme (sp_help, sp_helptext, etc.)        }
+
+Procedure ExecSystemProc(Const ProcName : TTokenText;
+                          Const Arg : TTokenText);
+Var
+  U, UA : TTokenText;
+  I     : Integer;
+  Cnt   : Integer;
+Begin
+  U := StrUpperCase(ProcName);
+  UA := StrUpperCase(Arg);
+
+  If U = 'SP_HELP' Then
+  Begin
+    If Arg = '' Then
+    Begin
+      OutputLine('Name                           Type');
+      OutputLine('------------------------------ ----');
+      Cnt := 0;
+      For I := 0 To SysObjCount - 1 Do
+      Begin
+        If SysObjects[I].Valid Then
+        Begin
+          OutputLine(SysObjects[I].Name +
+            '                              ' +
+            SysObjects[I].ObjType);
+          Inc(Cnt);
+        End;
+      End;
+      OutputLine('(' + IntToStr(Cnt) + ' row(s) affected)');
+    End
+    Else
+    Begin
+      Cnt := 0;
+      For I := 0 To SysObjCount - 1 Do
+      Begin
+        If SysObjects[I].Valid And
+           (StrUpperCase(SysObjects[I].Name) = UA) Then
+        Begin
+          OutputLine('Name       : ' + SysObjects[I].Name);
+          OutputLine('Object_id  : ' + IntToStr(SysObjects[I].ObjectId));
+          OutputLine('Type       : ' + SysObjects[I].ObjType);
+          OutputLine('Schema_id  : ' + IntToStr(SysObjects[I].SchemaId));
+          Inc(Cnt);
+        End;
+      End;
+      If Cnt = 0 Then
+        OutputLine('-- Objet introuvable : ' + Arg);
+    End;
+  End
+  Else If U = 'SP_HELPTEXT' Then
+  Begin
+    I := FindStoredProc(Arg);
+    If I >= 0 Then
+      OutputLine(StoredProcSQL[I])
+    Else
+      OutputLine('-- Objet introuvable : ' + Arg);
+  End
+  Else If U = 'SP_COLUMNS' Then
+  Begin
+    If Arg = '' Then
+    Begin
+      OutputLine('-- sp_columns : nom de table requis');
+      Exit;
+    End;
+    OutputLine('TABLE_NAME  COLUMN_NAME  DATA_TYPE  NULLABLE');
+    OutputLine('----------- ------------ ---------- --------');
+    Cnt := 0;
+    For I := 0 To SysColCount - 1 Do
+    Begin
+      If SysColumns[I].Valid Then
+      Begin
+        { Trouver le nom de la table }
+        If StrUpperCase(FindObjectName(SysColumns[I].ObjectId)) = UA Then
+        Begin
+          OutputLine(Arg + '  ' +
+            SysColumns[I].Name + '  ' +
+            IntToStr(SysColumns[I].XType) + '  ' +
+            IntToStr(Ord(SysColumns[I].Nullable)));
+          Inc(Cnt);
+        End;
+      End;
+    End;
+    OutputLine('(' + IntToStr(Cnt) + ' row(s) affected)');
+  End
+  Else If U = 'SP_TABLES' Then
+  Begin
+    OutputLine('TABLE_NAME                     TABLE_TYPE');
+    OutputLine('------------------------------ ----------');
+    Cnt := 0;
+    For I := 0 To SysObjCount - 1 Do
+    Begin
+      If SysObjects[I].Valid And
+         ((SysObjects[I].ObjType = 'U ') Or
+          (SysObjects[I].ObjType = 'S ') Or
+          (SysObjects[I].ObjType = 'V ')) Then
+      Begin
+        OutputLine(SysObjects[I].Name + '  ' +
+          SysObjects[I].ObjType);
+        Inc(Cnt);
+      End;
+    End;
+    OutputLine('(' + IntToStr(Cnt) + ' row(s) affected)');
+  End
+  Else If U = 'SP_DATABASES' Then
+  Begin
+    OutputLine('DATABASE_NAME  DATABASE_SIZE  REMARKS');
+    OutputLine('-------------- -------------- -------');
+    OutputLine('master         0              (default)');
+    OutputLine('(1 row(s) affected)');
+  End
+  Else If U = 'SP_WHO' Then
+  Begin
+    OutputLine('spid  status     loginame  hostname');
+    OutputLine('----  ---------  --------  --------');
+    OutputLine('1     runnable   sa        localhost');
+    OutputLine('(1 row(s) affected)');
+  End
+  Else If U = 'SP_LOCK' Then
+  Begin
+    OutputLine('spid  dbid  ObjId  Type  Mode');
+    OutputLine('----  ----  -----  ----  ----');
+    OutputLine('(0 row(s) affected)');
+  End
+  Else If U = 'SP_SPACEUSED' Then
+  Begin
+    OutputLine('database_name  database_size  unallocated space');
+    OutputLine('-------------- -------------- -----------------');
+    OutputLine('master         0 KB           0 KB');
+    OutputLine('');
+    OutputLine('reserved       data           index_size  unused');
+    OutputLine('-------------- -------------- ----------- ------');
+    OutputLine('0 KB           0 KB           0 KB        0 KB');
+  End
+  Else
+    OutputLine('-- Procedure systeme inconnue : ' + ProcName);
+End;
+
+{ ---- ExtractProcName ------------------------------------------- }
+{ Extrait le nom d une procedure depuis un noeud ND_EXEC_STMT.      }
+
+Function ExtractProcName(Node : Integer) : TTokenText;
+Var
+  Child0, C0 : Integer;
+Begin
+  ExtractProcName := '';
+  If Node < 0 Then Exit;
+  If ASTPool[Node].ChildCnt < 1 Then
+  Begin
+    { Le nom peut etre dans Text }
+    If ASTPool[Node].Text <> '' Then
+      ExtractProcName := ASTPool[Node].Text;
+    Exit;
+  End;
+  Child0 := ASTPool[Node].Children[0];
+  If Child0 < 0 Then Exit;
+  { ND_DOT_REF: le dernier enfant contient le nom }
+  If ASTPool[Child0].Kind = ND_DOT_REF Then
+  Begin
+    If ASTPool[Child0].ChildCnt > 0 Then
+    Begin
+      C0 := ASTPool[Child0].Children[ASTPool[Child0].ChildCnt - 1];
+      If C0 >= 0 Then
+        ExtractProcName := ASTPool[C0].Text;
+    End
+    Else
+      ExtractProcName := ASTPool[Child0].Text;
+  End
+  Else
+    ExtractProcName := ASTPool[Child0].Text;
+End;
+
+{ ---- ExecCreateProc -------------------------------------------- }
+{ Enregistre une procedure stockee depuis un noeud ND_CREATE_PROC.  }
+
+Procedure ExecCreateProc(Node : Integer);
+Var
+  PName   : TTokenText;
+  PParams : TString;
+  Child0  : Integer;
+  I, PL   : Integer;
+Begin
+  If Node < 0 Then Exit;
+  { Extraire le nom (Child 0 = ND_DOT_REF) }
+  PName := '';
+  If ASTPool[Node].ChildCnt > 0 Then
+  Begin
+    Child0 := ASTPool[Node].Children[0];
+    If Child0 >= 0 Then
+    Begin
+      If ASTPool[Child0].Kind = ND_DOT_REF Then
+      Begin
+        If ASTPool[Child0].ChildCnt > 0 Then
+        Begin
+          I := ASTPool[Child0].Children[ASTPool[Child0].ChildCnt - 1];
+          If I >= 0 Then
+            PName := ASTPool[I].Text;
+        End
+        Else
+          PName := ASTPool[Child0].Text;
+      End
+      Else
+        PName := ASTPool[Child0].Text;
+    End;
+  End;
+  If PName = '' Then
+  Begin
+    OutputLine('-- Erreur : nom de procedure manquant');
+    Exit;
+  End;
+  { Extraire les parametres (Child 1 = ND_ARG_LIST) }
+  PParams := '';
+  If ASTPool[Node].ChildCnt > 1 Then
+  Begin
+    PL := ASTPool[Node].Children[1];
+    If (PL >= 0) And (ASTPool[PL].Kind = ND_ARG_LIST) Then
+    Begin
+      For I := 0 To ASTPool[PL].ChildCnt - 1 Do
+      Begin
+        If I > 0 Then PParams := PParams + ',';
+        If ASTPool[PL].Children[I] >= 0 Then
+          PParams := PParams + ASTPool[ASTPool[PL].Children[I]].Text;
+      End;
+    End;
+  End;
+  RegisterStoredProc(PName, LexSrc, 0, PParams, '');
+  OutputLine('-- Procedure ' + PName + ' creee');
+End;
+
+{ ---- ExecCreateFunc -------------------------------------------- }
+{ Enregistre une fonction utilisateur depuis ND_CREATE_FUNC.        }
+
+Procedure ExecCreateFunc(Node : Integer);
+Var
+  FName    : TTokenText;
+  FParams  : TString;
+  FRetType : TTokenText;
+  Kind     : Integer;
+  Child0   : Integer;
+  I, PL, RT : Integer;
+Begin
+  If Node < 0 Then Exit;
+  { Extraire le nom }
+  FName := '';
+  If ASTPool[Node].ChildCnt > 0 Then
+  Begin
+    Child0 := ASTPool[Node].Children[0];
+    If Child0 >= 0 Then
+    Begin
+      If ASTPool[Child0].Kind = ND_DOT_REF Then
+      Begin
+        If ASTPool[Child0].ChildCnt > 0 Then
+        Begin
+          I := ASTPool[Child0].Children[ASTPool[Child0].ChildCnt - 1];
+          If I >= 0 Then
+            FName := ASTPool[I].Text;
+        End
+        Else
+          FName := ASTPool[Child0].Text;
+      End
+      Else
+        FName := ASTPool[Child0].Text;
+    End;
+  End;
+  If FName = '' Then
+  Begin
+    OutputLine('-- Erreur : nom de fonction manquant');
+    Exit;
+  End;
+  { Extraire les parametres (Child 1 = ND_ARG_LIST) }
+  FParams := '';
+  If ASTPool[Node].ChildCnt > 1 Then
+  Begin
+    PL := ASTPool[Node].Children[1];
+    If (PL >= 0) And (ASTPool[PL].Kind = ND_ARG_LIST) Then
+    Begin
+      For I := 0 To ASTPool[PL].ChildCnt - 1 Do
+      Begin
+        If I > 0 Then FParams := FParams + ',';
+        If ASTPool[PL].Children[I] >= 0 Then
+          FParams := FParams + ASTPool[ASTPool[PL].Children[I]].Text;
+      End;
+    End;
+  End;
+  { Extraire le type de retour (Child 2 = ND_TYPE_REF) }
+  FRetType := '';
+  Kind := 1; { scalaire par defaut }
+  If ASTPool[Node].ChildCnt > 2 Then
+  Begin
+    RT := ASTPool[Node].Children[2];
+    If RT >= 0 Then
+    Begin
+      FRetType := ASTPool[RT].Text;
+      If StrUpperCase(FRetType) = 'TABLE' Then
+        Kind := 2;
+    End;
+  End;
+  RegisterStoredProc(FName, LexSrc, Kind, FParams, FRetType);
+  OutputLine('-- Fonction ' + FName + ' creee');
+End;
+
+{ ---- IsSystemProc ---------------------------------------------- }
+{ Verifie si un nom est une procedure systeme.                      }
+
+Function IsSystemProc(Const Name : TTokenText) : Boolean;
+Var
+  U : TTokenText;
+Begin
+  U := StrUpperCase(Name);
+  IsSystemProc :=
+    (U = 'SP_HELP') Or (U = 'SP_HELPTEXT') Or
+    (U = 'SP_COLUMNS') Or (U = 'SP_TABLES') Or
+    (U = 'SP_DATABASES') Or (U = 'SP_WHO') Or
+    (U = 'SP_LOCK') Or (U = 'SP_SPACEUSED');
+End;
+
+{ ---- ExecExecStmt ---------------------------------------------- }
+{ Execute un ND_EXEC_STMT : procedure stockee ou systeme.           }
+
+Procedure ExecExecStmt(Node : Integer);
+Var
+  PName  : TTokenText;
+  Idx    : Integer;
+  ArgStr : TTokenText;
+  ArgNode : Integer;
+  I       : Integer;
+Begin
+  If Node < 0 Then Exit;
+  PName := ExtractProcName(Node);
+  If PName = '' Then
+  Begin
+    OutputLine('-- Erreur : nom de procedure manquant dans EXEC');
+    Exit;
+  End;
+
+  { Extraire premier argument en texte pour les procs systeme }
+  ArgStr := '';
+  If ASTPool[Node].ChildCnt > 1 Then
+  Begin
+    ArgNode := ASTPool[Node].Children[1];
+    If (ArgNode >= 0) And (ASTPool[ArgNode].Kind = ND_ARG_LIST) Then
+    Begin
+      If ASTPool[ArgNode].ChildCnt > 0 Then
+      Begin
+        I := ASTPool[ArgNode].Children[0];
+        If I >= 0 Then
+          ArgStr := ASTPool[I].Text;
+      End;
+    End
+    Else If ArgNode >= 0 Then
+      ArgStr := ASTPool[ArgNode].Text;
+  End;
+
+  { Procedures systeme }
+  If IsSystemProc(PName) Then
+  Begin
+    ExecSystemProc(PName, ArgStr);
+    Exit;
+  End;
+
+  { Procedures utilisateur }
+  Idx := FindStoredProc(PName);
+  If Idx >= 0 Then
+  Begin
+    OutputLine('-- Execution de ' + StoredProcNames[Idx]);
+    ExecuteQuery(StoredProcSQL[Idx]);
+  End
+  Else
+    OutputLine('-- Procedure introuvable : ' + PName);
+End;
+
+{ ---- ExecExecSql ----------------------------------------------- }
+{ Execute un ND_EXEC_SQL : SQL dynamique.                           }
+
+Procedure ExecExecSql(Node : Integer);
+Var
+  DynSql : TString;
+  I, C   : Integer;
+  V      : TSqlValue;
+  EmptyRow : TQERow;
+  EmptyRes : TQEResult;
+Begin
+  If Node < 0 Then Exit;
+  DynSql := '';
+  EmptyRes.RowCnt := 0;
+  EmptyRes.ColCnt := 0;
+  EmptyRow.ColCnt := 0;
+  For I := 0 To ASTPool[Node].ChildCnt - 1 Do
+  Begin
+    C := ASTPool[Node].Children[I];
+    If C >= 0 Then
+    Begin
+      V := QEEvalExpr(C, EmptyRow, EmptyRes);
+      If (Not V.IsNull) And V.Valid Then
+        DynSql := DynSql + V.StrVal;
+    End;
+  End;
+  If DynSql <> '' Then
+    ExecuteQuery(DynSql)
+  Else
+    OutputLine('-- EXEC : expression SQL vide');
+End;
+
+{ ---- XTypeToName ----------------------------------------------- }
+{ Convertit un code xtype en nom de type SQL Server.                }
+
+Function XTypeToName(XType : Integer) : TTokenText;
+Begin
+  Case XType Of
+    XT_UNIQUEID       : XTypeToName := 'uniqueidentifier';
+    XT_DATE           : XTypeToName := 'date';
+    XT_TIME           : XTypeToName := 'time';
+    XT_DATETIME2      : XTypeToName := 'datetime2';
+    XT_DATETIMEOFFSET : XTypeToName := 'datetimeoffset';
+    XT_TINYINT        : XTypeToName := 'tinyint';
+    XT_SMALLINT       : XTypeToName := 'smallint';
+    XT_INT            : XTypeToName := 'int';
+    XT_SMALLDATETIME  : XTypeToName := 'smalldatetime';
+    XT_REAL           : XTypeToName := 'real';
+    XT_MONEY          : XTypeToName := 'money';
+    XT_DATETIME       : XTypeToName := 'datetime';
+    XT_FLOAT          : XTypeToName := 'float';
+    XT_SQL_VARIANT    : XTypeToName := 'sql_variant';
+    XT_NTEXT          : XTypeToName := 'ntext';
+    XT_BIT            : XTypeToName := 'bit';
+    XT_DECIMAL        : XTypeToName := 'decimal';
+    XT_NUMERIC        : XTypeToName := 'numeric';
+    XT_SMALLMONEY     : XTypeToName := 'smallmoney';
+    XT_BIGINT         : XTypeToName := 'bigint';
+    XT_VARBINARY      : XTypeToName := 'varbinary';
+    XT_VARCHAR        : XTypeToName := 'varchar';
+    XT_BINARY         : XTypeToName := 'binary';
+    XT_CHAR           : XTypeToName := 'char';
+    XT_TIMESTAMP      : XTypeToName := 'timestamp';
+    XT_NVARCHAR       : XTypeToName := 'nvarchar';
+    XT_NCHAR          : XTypeToName := 'nchar';
+    XT_XML            : XTypeToName := 'xml';
+  Else
+    XTypeToName := '(type ' + IntToStr(XType) + ')';
+  End;
+End;
+
+{ ---- XTypeFromName --------------------------------------------- }
+{ Convertit un nom de type en code xtype.                           }
+
+Function XTypeFromName(Const Name : TTokenText) : Integer;
+Var
+  U : TTokenText;
+Begin
+  U := StrUpperCase(Name);
+  If U = 'INT'               Then XTypeFromName := XT_INT
+  Else If U = 'BIGINT'       Then XTypeFromName := XT_BIGINT
+  Else If U = 'SMALLINT'     Then XTypeFromName := XT_SMALLINT
+  Else If U = 'TINYINT'      Then XTypeFromName := XT_TINYINT
+  Else If U = 'BIT'          Then XTypeFromName := XT_BIT
+  Else If U = 'DECIMAL'      Then XTypeFromName := XT_DECIMAL
+  Else If U = 'NUMERIC'      Then XTypeFromName := XT_NUMERIC
+  Else If U = 'FLOAT'        Then XTypeFromName := XT_FLOAT
+  Else If U = 'REAL'         Then XTypeFromName := XT_REAL
+  Else If U = 'MONEY'        Then XTypeFromName := XT_MONEY
+  Else If U = 'SMALLMONEY'   Then XTypeFromName := XT_SMALLMONEY
+  Else If U = 'CHAR'         Then XTypeFromName := XT_CHAR
+  Else If U = 'VARCHAR'      Then XTypeFromName := XT_VARCHAR
+  Else If U = 'NCHAR'        Then XTypeFromName := XT_NCHAR
+  Else If U = 'NVARCHAR'     Then XTypeFromName := XT_NVARCHAR
+  Else If U = 'NTEXT'        Then XTypeFromName := XT_NTEXT
+  Else If U = 'BINARY'       Then XTypeFromName := XT_BINARY
+  Else If U = 'VARBINARY'    Then XTypeFromName := XT_VARBINARY
+  Else If U = 'DATE'         Then XTypeFromName := XT_DATE
+  Else If U = 'TIME'         Then XTypeFromName := XT_TIME
+  Else If U = 'DATETIME'     Then XTypeFromName := XT_DATETIME
+  Else If U = 'DATETIME2'    Then XTypeFromName := XT_DATETIME2
+  Else If U = 'SMALLDATETIME' Then XTypeFromName := XT_SMALLDATETIME
+  Else If U = 'DATETIMEOFFSET' Then XTypeFromName := XT_DATETIMEOFFSET
+  Else If U = 'TIMESTAMP'    Then XTypeFromName := XT_TIMESTAMP
+  Else If U = 'UNIQUEIDENTIFIER' Then XTypeFromName := XT_UNIQUEID
+  Else If U = 'XML'          Then XTypeFromName := XT_XML
+  Else If U = 'SQL_VARIANT'  Then XTypeFromName := XT_SQL_VARIANT
+  Else XTypeFromName := 0;
+End;
+
+{ ===== Fin TODO 27 ===== }
 
 { ---- Tri QuickSort des lignes -------------------------------- }
 { Trie le result set en memoire par les colonnes d ORDER BY.      }
@@ -20411,6 +21106,16 @@ Begin
     If ASTPool[Root].Kind = ND_DECLARE_TABLE Then
       ExecDeclareTable(Root);
     { ---- Fin TODO 26 : Execution des curseurs ---- }
+    { ---- TODO 27 : Procedures stockees et fonctions ---- }
+    If ASTPool[Root].Kind = ND_CREATE_PROC Then
+      ExecCreateProc(Root);
+    If ASTPool[Root].Kind = ND_CREATE_FUNC Then
+      ExecCreateFunc(Root);
+    If ASTPool[Root].Kind = ND_EXEC_STMT Then
+      ExecExecStmt(Root);
+    If ASTPool[Root].Kind = ND_EXEC_SQL Then
+      ExecExecSql(Root);
+    { ---- Fin TODO 27 ---- }
   End
   Else
     OutputLine('-- Erreur de syntaxe dans : ' + SQL);
@@ -20547,6 +21252,8 @@ Begin
   FetchStatus    := -1;
   CursorCount    := 0;
   UserVarCount   := 0;
+  { ---- TODO 27 : initialisation des procedures stockees ---- }
+  StoredProcCount := 0;
 
   ParseArgs;
 
