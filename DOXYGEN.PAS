@@ -293,7 +293,7 @@
             Procedure ProcessOption_e(Var Opts: TOptions; Const Args: Array Of String)
             Procedure ProcessOption_b(Var Opts: TOptions)
 
-  TODO 07 - DETECTION AUTOMATIQUE DU LANGAGE SOURCE [A FAIRE]
+  TODO 07 - DETECTION AUTOMATIQUE DU LANGAGE SOURCE [IMPLEMENTE]
             TSourceLanguage : (LANG_UNKNOWN, LANG_C, LANG_CPP, LANG_JAVA,
               LANG_CSHARP, LANG_PYTHON, LANG_FORTRAN, LANG_VHDL,
               LANG_PASCAL, LANG_ADA, LANG_PHP, LANG_JAVASCRIPT,
@@ -1203,8 +1203,348 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - LEXEUR DE COMMENTAIRES DE DOCUMENTATION
+  TODO 07 - DETECTION AUTOMATIQUE DU LANGAGE SOURCE
   ============================================================ }
+
+Function LanguageSupportsDocComments(Lang: TSourceLanguage): Boolean;
+{ Retourne True si le langage supporte les commentaires de documentation Doxygen }
+Begin
+  Case Lang Of
+    LANG_C,
+    LANG_CPP,
+    LANG_JAVA,
+    LANG_CSHARP,
+    LANG_D,
+    LANG_OBJC,
+    LANG_RUST,
+    LANG_GO,
+    LANG_SWIFT,
+    LANG_KOTLIN,
+    LANG_JAVASCRIPT:
+      LanguageSupportsDocComments := True;
+    LANG_PYTHON,
+    LANG_PASCAL,
+    LANG_ADA,
+    LANG_PHP,
+    LANG_PERL,
+    LANG_RUBY,
+    LANG_FORTRAN,
+    LANG_VHDL,
+    LANG_TCL,
+    LANG_SQL,
+    LANG_IDL,
+    LANG_SLICE,
+    LANG_LEX,
+    LANG_BASIC,
+    LANG_COBOL:
+      LanguageSupportsDocComments := True;
+  Else
+    LanguageSupportsDocComments := False;
+  End;
+End;
+
+Function GetCommentStyles(Lang: TSourceLanguage): String;
+{ Retourne les styles de commentaires supportes par le langage }
+Begin
+  Case Lang Of
+    LANG_C:
+      GetCommentStyles := '/* */, //, /** */, /*! */';
+    LANG_CPP:
+      GetCommentStyles := '/* */, //, /** */, /*! */, ///';
+    LANG_JAVA:
+      GetCommentStyles := '/* */, //, /** */';
+    LANG_CSHARP:
+      GetCommentStyles := '/* */, //, /** */, ///, ///';
+    LANG_PYTHON:
+      GetCommentStyles := '#, """ """, '' '' ''';
+    LANG_PASCAL:
+      GetCommentStyles := '{ }, (* *), //, {** }, (*! *)';
+    LANG_ADA:
+      GetCommentStyles := '--';
+    LANG_PHP:
+      GetCommentStyles := '/* */, //, #, /** */';
+    LANG_JAVASCRIPT:
+      GetCommentStyles := '/* */, //, /** */';
+    LANG_PERL:
+      GetCommentStyles := '#, =pod ... =cut';
+    LANG_RUBY:
+      GetCommentStyles := '#, =begin ... =end';
+    LANG_FORTRAN:
+      GetCommentStyles := 'C, !, !>';
+    LANG_VHDL:
+      GetCommentStyles := '--';
+    LANG_TCL:
+      GetCommentStyles := '#';
+    LANG_SQL:
+      GetCommentStyles := '--, /* */';
+    LANG_D:
+      GetCommentStyles := '/* */, //, /** */, /*! */, ///';
+    LANG_IDL:
+      GetCommentStyles := '/* */, //';
+    LANG_OBJC:
+      GetCommentStyles := '/* */, //, /** */, /*! */';
+    LANG_SLICE:
+      GetCommentStyles := '/* */, //';
+    LANG_LEX:
+      GetCommentStyles := '/* */, //';
+    LANG_RUST:
+      GetCommentStyles := '/* */, //, /// , //!';
+    LANG_GO:
+      GetCommentStyles := '/* */, //';
+    LANG_SWIFT:
+      GetCommentStyles := '/* */, //, /** */, ///';
+    LANG_KOTLIN:
+      GetCommentStyles := '/* */, //, /** */';
+    LANG_BASIC:
+      GetCommentStyles := ''''' , REM';
+    LANG_COBOL:
+      GetCommentStyles := '* (column 7)';
+  Else
+    GetCommentStyles := 'Unknown';
+  End;
+End;
+
+Function DetectLanguageFromShebang(Const Line: String): TSourceLanguage;
+{ Detecte le langage a partir du shebang (premiere ligne #!...) }
+Var
+  UpperLine: String;
+Begin
+  DetectLanguageFromShebang := LANG_UNKNOWN;
+  
+  If (Length(Line) < 2) Or (Line[1] <> '#') Or (Line[2] <> '!') Then
+    Exit;
+  
+  UpperLine := UpStr(Line);
+  
+  { Python }
+  If (Pos('PYTHON', UpperLine) > 0) Then
+    DetectLanguageFromShebang := LANG_PYTHON
+  { Perl }
+  Else If (Pos('PERL', UpperLine) > 0) Then
+    DetectLanguageFromShebang := LANG_PERL
+  { Ruby }
+  Else If (Pos('RUBY', UpperLine) > 0) Then
+    DetectLanguageFromShebang := LANG_RUBY
+  { PHP }
+  Else If (Pos('PHP', UpperLine) > 0) Then
+    DetectLanguageFromShebang := LANG_PHP
+  { Tcl }
+  Else If (Pos('TCLSH', UpperLine) > 0) Or (Pos('WISH', UpperLine) > 0) Then
+    DetectLanguageFromShebang := LANG_TCL
+  { Bash/Shell (non supporte, mais detecte) }
+  Else If (Pos('/SH', UpperLine) > 0) Or (Pos('BASH', UpperLine) > 0) Then
+    DetectLanguageFromShebang := LANG_UNKNOWN
+  { Node.js }
+  Else If (Pos('NODE', UpperLine) > 0) Then
+    DetectLanguageFromShebang := LANG_JAVASCRIPT;
+End;
+
+Function DetectLanguageFromContent(Const FileName: String): TSourceLanguage;
+{ Analyse les premieres lignes du fichier pour detecter le langage }
+Var
+  F: Text;
+  Line, UpperLine: String;
+  LineCount: Integer;
+  ShebangLang: TSourceLanguage;
+Begin
+  DetectLanguageFromContent := LANG_UNKNOWN;
+  
+  {$I-}
+  Assign(F, FileName);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineCount := 0;
+  While (Not Eof(F)) And (LineCount < 50) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineCount);
+    
+    { Verifier le shebang sur la premiere ligne }
+    If LineCount = 1 Then
+    Begin
+      ShebangLang := DetectLanguageFromShebang(Line);
+      If ShebangLang <> LANG_UNKNOWN Then
+      Begin
+        DetectLanguageFromContent := ShebangLang;
+        Close(F);
+        Exit;
+      End;
+    End;
+    
+    UpperLine := UpStr(Line);
+    
+    { Detecter Pascal par mots-cles }
+    If (Pos('PROGRAM ', UpperLine) = 1) Or (Pos('UNIT ', UpperLine) = 1) Or
+       (Pos('LIBRARY ', UpperLine) = 1) Or (Pos('USES ', UpperLine) > 0) Then
+    Begin
+      DetectLanguageFromContent := LANG_PASCAL;
+      Close(F);
+      Exit;
+    End;
+    
+    { Detecter Fortran par mots-cles }
+    If (Pos('PROGRAM ', UpperLine) = 1) Or (Pos('SUBROUTINE ', UpperLine) > 0) Or
+       (Pos('FUNCTION ', UpperLine) > 0) Or (Pos('MODULE ', UpperLine) = 1) Then
+    Begin
+      { Verifier si c'est vraiment Fortran et pas un autre langage }
+      If (Pos('IMPLICIT ', UpperLine) > 0) Or (Pos('INTEGER ', UpperLine) > 0) Or
+         (Pos('REAL ', UpperLine) > 0) Or (Pos('DIMENSION ', UpperLine) > 0) Then
+      Begin
+        DetectLanguageFromContent := LANG_FORTRAN;
+        Close(F);
+        Exit;
+      End;
+    End;
+    
+    { Detecter C/C++ par #include }
+    If (Pos('#INCLUDE', UpperLine) > 0) Then
+    Begin
+      { C++ si headers sans .h ou iostream/vector/etc. }
+      If (Pos('<IOSTREAM>', UpperLine) > 0) Or (Pos('<VECTOR>', UpperLine) > 0) Or
+         (Pos('<STRING>', UpperLine) > 0) Or (Pos('<MAP>', UpperLine) > 0) Then
+        DetectLanguageFromContent := LANG_CPP
+      Else
+        DetectLanguageFromContent := LANG_C;
+      Close(F);
+      Exit;
+    End;
+    
+    { Detecter Java par package/import }
+    If (Pos('PACKAGE ', UpperLine) = 1) Or (Pos('IMPORT JAVA.', UpperLine) > 0) Then
+    Begin
+      DetectLanguageFromContent := LANG_JAVA;
+      Close(F);
+      Exit;
+    End;
+    
+    { Detecter Python par def/class/import }
+    If (Pos('DEF ', UpperLine) = 1) Or (Pos('CLASS ', UpperLine) = 1) Or
+       (Pos('IMPORT ', UpperLine) = 1) Or (Pos('FROM ', UpperLine) = 1) Then
+    Begin
+      { Eviter confusion avec d'autres langages }
+      If (Pos(':', Line) > 0) Then
+      Begin
+        DetectLanguageFromContent := LANG_PYTHON;
+        Close(F);
+        Exit;
+      End;
+    End;
+    
+    { Detecter C# par using System }
+    If (Pos('USING SYSTEM', UpperLine) > 0) Or (Pos('NAMESPACE ', UpperLine) > 0) Then
+    Begin
+      { Verifier que ce n'est pas C++ }
+      If (Pos('#INCLUDE', UpperLine) = 0) Then
+      Begin
+        DetectLanguageFromContent := LANG_CSHARP;
+        Close(F);
+        Exit;
+      End;
+    End;
+    
+    { Detecter Rust par fn main() ou use std:: }
+    If (Pos('FN MAIN', UpperLine) > 0) Or (Pos('USE STD::', UpperLine) > 0) Or
+       (Pos('MOD ', UpperLine) = 1) Then
+    Begin
+      DetectLanguageFromContent := LANG_RUST;
+      Close(F);
+      Exit;
+    End;
+    
+    { Detecter Go par package main/func }
+    If (Pos('PACKAGE MAIN', UpperLine) > 0) Or (Pos('FUNC ', UpperLine) > 0) Then
+    Begin
+      { Verifier la syntaxe Go }
+      If (Pos('IMPORT (', UpperLine) > 0) Or (Pos('IMPORT "', UpperLine) > 0) Then
+      Begin
+        DetectLanguageFromContent := LANG_GO;
+        Close(F);
+        Exit;
+      End;
+    End;
+    
+    { Detecter Swift par import Foundation/UIKit }
+    If (Pos('IMPORT FOUNDATION', UpperLine) > 0) Or (Pos('IMPORT UIKIT', UpperLine) > 0) Or
+       (Pos('IMPORT SWIFTUI', UpperLine) > 0) Then
+    Begin
+      DetectLanguageFromContent := LANG_SWIFT;
+      Close(F);
+      Exit;
+    End;
+    
+    { Detecter Kotlin par fun main ou package }
+    If (Pos('FUN MAIN', UpperLine) > 0) Or (Pos('PACKAGE ', UpperLine) = 1) Then
+    Begin
+      { Verifier syntaxe Kotlin vs Java }
+      If (Pos('VAL ', UpperLine) > 0) Or (Pos('VAR ', UpperLine) > 0) Or
+         (Pos('FUN ', UpperLine) > 0) Then
+      Begin
+        DetectLanguageFromContent := LANG_KOTLIN;
+        Close(F);
+        Exit;
+      End;
+    End;
+    
+    { Detecter VHDL par library/entity/architecture }
+    If (Pos('LIBRARY ', UpperLine) = 1) Or (Pos('ENTITY ', UpperLine) = 1) Or
+       (Pos('ARCHITECTURE ', UpperLine) = 1) Then
+    Begin
+      DetectLanguageFromContent := LANG_VHDL;
+      Close(F);
+      Exit;
+    End;
+    
+    { Detecter Ada par with/procedure }
+    If (Pos('WITH ', UpperLine) = 1) Or (Pos('PROCEDURE ', UpperLine) = 1) Then
+    Begin
+      { Verifier syntaxe Ada }
+      If (Pos(';', Line) > 0) And (Pos('IS', UpperLine) > 0) Then
+      Begin
+        DetectLanguageFromContent := LANG_ADA;
+        Close(F);
+        Exit;
+      End;
+    End;
+    
+    { Detecter COBOL par IDENTIFICATION DIVISION }
+    If (Pos('IDENTIFICATION DIVISION', UpperLine) > 0) Or
+       (Pos('PROCEDURE DIVISION', UpperLine) > 0) Then
+    Begin
+      DetectLanguageFromContent := LANG_COBOL;
+      Close(F);
+      Exit;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Function DetectLanguage(Const FileName: String): TSourceLanguage;
+{ Detection complete du langage : extension puis analyse du contenu }
+Var
+  Lang: TSourceLanguage;
+Begin
+  { D'abord essayer par l'extension }
+  Lang := DetectLanguageFromExt(FileName);
+  
+  { Si inconnu ou ambigu, analyser le contenu }
+  If Lang = LANG_UNKNOWN Then
+    Lang := DetectLanguageFromContent(FileName);
+  
+  { Pour certaines extensions ambigues, analyser le contenu }
+  { .h peut etre C ou C++ }
+  If (Lang = LANG_C) And (Pos('.H', UpStr(ExtractExt(FileName))) > 0) Then
+  Begin
+    { Analyser le contenu pour determiner si c'est du C++ }
+    { Si DetectLanguageFromContent trouve C++, utiliser ca }
+    If DetectLanguageFromContent(FileName) = LANG_CPP Then
+      Lang := LANG_CPP;
+  End;
+  
+  DetectLanguage := Lang;
+End;
 
 Function IsDocCommentStart(Const Line: String; Pos: Integer): TDocCommentKind;
 { Detecte le debut d'un commentaire de documentation a la position Pos }
@@ -3987,7 +4327,7 @@ Begin
   
   WriteLn;
   WriteLn('Note: La generation de documentation est en cours d''implementation.');
-  WriteLn('      Voir les TODOs 07 a 25 pour la feuille de route.');
+  WriteLn('      Voir les TODOs 08 a 25 pour la feuille de route.');
 End;
 
 { ============================================================
