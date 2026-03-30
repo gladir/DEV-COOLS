@@ -13,7 +13,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Constantes globales : MAX_FUNCS, MAX_VARS, MAX_PARAMS,
       MAX_STRUCT_FIELDS, MAX_ARRAY_DIM, MAX_BLOCK_DEPTH, MAX_EXPR_DEPTH.
 
-  2.  [A FAIRE] Types internes et structures de donnees.
+  2.  [IMPLEMENTE] Types internes et structures de donnees.
       Definir les types internes pour la representation du code C :
       TTypeKind (TK_VOID, TK_CHAR, TK_SCHAR, TK_UCHAR, TK_SHORT,
       TK_USHORT, TK_INT, TK_UINT, TK_LONG, TK_ULONG, TK_LONGLONG,
@@ -24,6 +24,12 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       TCType : record avec Kind, Quals, Pointee, ArraySize, StructDef.
       TVariable : record avec Name, VType, Storage, Initialized, Scope.
       TFunction : record avec Name, RetType, Params, Body, NumParams.
+      Fonctions : InitCType, InitVariable, InitField, InitStructDef,
+      InitUnionDef, InitEnumDef, InitFunction, InitParam.
+      Predicats : IsVoidType, IsIntegerType, IsSignedType, IsUnsignedType,
+      IsFloatType, IsScalarType, IsPointerType, IsArrayType, IsStructType,
+      IsUnionType, IsEnumType, IsFuncType, IsCompositeType, IsArithType,
+      GetTypeSize, GetTypeSizeBits, AreTypesCompatible, CanConvertTo.
 
   3.  [A FAIRE] Generateur aleatoire et seed.
       Implanter un generateur de nombres pseudo-aleatoires reproductible

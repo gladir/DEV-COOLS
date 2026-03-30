@@ -28,7 +28,7 @@
             Constantes globales : MAX_FUNCS, MAX_VARS, MAX_PARAMS,
             MAX_STRUCT_FIELDS, MAX_ARRAY_DIM, MAX_BLOCK_DEPTH, MAX_EXPR_DEPTH.
 
-  TODO 02 - [A FAIRE] TYPES INTERNES ET STRUCTURES DE DONNEES
+  TODO 02 - [IMPLEMENTE] TYPES INTERNES ET STRUCTURES DE DONNEES
             Definir les types internes pour la representation du code C :
             TTypeKind (TK_VOID, TK_CHAR, TK_SCHAR, TK_UCHAR, TK_SHORT,
             TK_USHORT, TK_INT, TK_UINT, TK_LONG, TK_ULONG, TK_LONGLONG,
@@ -39,6 +39,12 @@
             TCType : record avec Kind, Quals, Pointee, ArraySize, StructDef.
             TVariable : record avec Name, VType, Storage, Initialized, Scope.
             TFunction : record avec Name, RetType, Params, Body, NumParams.
+            Fonctions : InitCType, InitVariable, InitField, InitStructDef,
+            InitUnionDef, InitEnumDef, InitFunction, InitParam.
+            Predicats : IsVoidType, IsIntegerType, IsSignedType, IsUnsignedType,
+            IsFloatType, IsScalarType, IsPointerType, IsArrayType, IsStructType,
+            IsUnionType, IsEnumType, IsFuncType, IsCompositeType, IsArithType,
+            GetTypeSize, GetTypeSizeBits, AreTypesCompatible.
 
   TODO 03 - [A FAIRE] GENERATEUR ALEATOIRE ET SEED
             Implanter un generateur de nombres pseudo-aleatoires reproductible
@@ -324,7 +330,7 @@ Type
   TString = String[MAX_STR];
 
 { ============================================================
-  TODO 02 : TYPES INTERNES ET STRUCTURES DE DONNEES [A FAIRE]
+  TODO 02 : TYPES INTERNES ET STRUCTURES DE DONNEES [IMPLEMENTE]
   ============================================================ }
 
 Type
@@ -602,6 +608,316 @@ Var
 Begin
   FSplit(FileName, D, N, E);
   ChangeFileExt := D + N + NewExt;
+End;
+
+{ ============================================================
+  TODO 02 : FONCTIONS POUR TYPES INTERNES [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Fonctions d'initialisation --- }
+
+Procedure InitCType(Var T: TCType);
+Begin
+  T.Kind := TK_INT;
+  T.Quals := Q_NONE;
+  T.PointeeIdx := -1;
+  T.ArraySize := 0;
+  T.ElemIdx := -1;
+  T.StructIdx := -1;
+End;
+
+Function MakeBasicType(Kind: TTypeKind): TCType;
+Var
+  T: TCType;
+Begin
+  InitCType(T);
+  T.Kind := Kind;
+  MakeBasicType := T;
+End;
+
+Function MakeQualifiedType(Kind: TTypeKind; Quals: TQualifier): TCType;
+Var
+  T: TCType;
+Begin
+  InitCType(T);
+  T.Kind := Kind;
+  T.Quals := Quals;
+  MakeQualifiedType := T;
+End;
+
+Procedure InitVariable(Var V: TVariable);
+Begin
+  V.Name := '';
+  InitCType(V.VType);
+  V.Storage := SC_AUTO;
+  V.Initialized := False;
+  V.ScopeLevel := 0;
+  V.IsParam := False;
+  V.IsGlobal := False;
+End;
+
+Procedure InitField(Var F: TField);
+Begin
+  F.Name := '';
+  InitCType(F.FType);
+  F.BitWidth := 0;
+End;
+
+Procedure InitStructDef(Var S: TStructDef);
+Var
+  I: Integer;
+Begin
+  S.Name := '';
+  For I := 1 To MAX_STRUCT_FIELDS Do
+    InitField(S.Fields[I]);
+  S.NumFields := 0;
+  S.IsComplete := False;
+End;
+
+Procedure InitUnionDef(Var U: TUnionDef);
+Var
+  I: Integer;
+Begin
+  U.Name := '';
+  For I := 1 To MAX_UNION_FIELDS Do
+    InitField(U.Fields[I]);
+  U.NumFields := 0;
+  U.IsComplete := False;
+End;
+
+Procedure InitEnumConst(Var E: TEnumConst);
+Begin
+  E.Name := '';
+  E.Value := 0;
+  E.HasVal := False;
+End;
+
+Procedure InitEnumDef(Var E: TEnumDef);
+Var
+  I: Integer;
+Begin
+  E.Name := '';
+  For I := 1 To MAX_ENUM_CONSTS Do
+    InitEnumConst(E.Consts[I]);
+  E.NumConsts := 0;
+End;
+
+Procedure InitParam(Var P: TParam);
+Begin
+  P.Name := '';
+  InitCType(P.PType);
+End;
+
+Procedure InitFunction(Var F: TFunction);
+Var
+  I: Integer;
+Begin
+  F.Name := '';
+  InitCType(F.RetType);
+  F.RetType.Kind := TK_INT;
+  For I := 1 To MAX_PARAMS Do
+    InitParam(F.Params[I]);
+  F.NumParams := 0;
+  F.IsStatic := False;
+  F.IsDefined := False;
+End;
+
+Procedure InitScope(Var S: TScope);
+Begin
+  S.StartVarIdx := 0;
+  S.NumVars := 0;
+  S.Level := 0;
+End;
+
+Procedure InitLabel(Var L: TLabel);
+Begin
+  L.Name := '';
+  L.Defined := False;
+  L.Used := False;
+End;
+
+{ --- Predicats de type --- }
+
+Function IsVoidType(Const T: TCType): Boolean;
+Begin
+  IsVoidType := (T.Kind = TK_VOID);
+End;
+
+Function IsCharType(Const T: TCType): Boolean;
+Begin
+  IsCharType := (T.Kind = TK_CHAR) Or (T.Kind = TK_SCHAR) Or (T.Kind = TK_UCHAR);
+End;
+
+Function IsIntegerType(Const T: TCType): Boolean;
+Begin
+  IsIntegerType := T.Kind In [TK_CHAR, TK_SCHAR, TK_UCHAR, TK_SHORT, TK_USHORT,
+                              TK_INT, TK_UINT, TK_LONG, TK_ULONG,
+                              TK_LONGLONG, TK_ULONGLONG];
+End;
+
+Function IsSignedType(Const T: TCType): Boolean;
+Begin
+  IsSignedType := T.Kind In [TK_CHAR, TK_SCHAR, TK_SHORT, TK_INT,
+                             TK_LONG, TK_LONGLONG];
+End;
+
+Function IsUnsignedType(Const T: TCType): Boolean;
+Begin
+  IsUnsignedType := T.Kind In [TK_UCHAR, TK_USHORT, TK_UINT,
+                               TK_ULONG, TK_ULONGLONG];
+End;
+
+Function IsFloatType(Const T: TCType): Boolean;
+Begin
+  IsFloatType := T.Kind In [TK_FLOAT, TK_DOUBLE, TK_LONGDOUBLE];
+End;
+
+Function IsArithType(Const T: TCType): Boolean;
+Begin
+  IsArithType := IsIntegerType(T) Or IsFloatType(T);
+End;
+
+Function IsScalarType(Const T: TCType): Boolean;
+Begin
+  IsScalarType := IsArithType(T) Or (T.Kind = TK_POINTER) Or (T.Kind = TK_ENUM);
+End;
+
+Function IsPointerType(Const T: TCType): Boolean;
+Begin
+  IsPointerType := (T.Kind = TK_POINTER);
+End;
+
+Function IsArrayType(Const T: TCType): Boolean;
+Begin
+  IsArrayType := (T.Kind = TK_ARRAY);
+End;
+
+Function IsStructType(Const T: TCType): Boolean;
+Begin
+  IsStructType := (T.Kind = TK_STRUCT);
+End;
+
+Function IsUnionType(Const T: TCType): Boolean;
+Begin
+  IsUnionType := (T.Kind = TK_UNION);
+End;
+
+Function IsEnumType(Const T: TCType): Boolean;
+Begin
+  IsEnumType := (T.Kind = TK_ENUM);
+End;
+
+Function IsFuncType(Const T: TCType): Boolean;
+Begin
+  IsFuncType := (T.Kind = TK_FUNC);
+End;
+
+Function IsCompositeType(Const T: TCType): Boolean;
+Begin
+  IsCompositeType := (T.Kind = TK_STRUCT) Or (T.Kind = TK_UNION) Or (T.Kind = TK_ARRAY);
+End;
+
+Function IsAggregateType(Const T: TCType): Boolean;
+Begin
+  IsAggregateType := (T.Kind = TK_STRUCT) Or (T.Kind = TK_UNION);
+End;
+
+Function IsConstQualified(Const T: TCType): Boolean;
+Begin
+  IsConstQualified := (T.Quals = Q_CONST) Or (T.Quals = Q_CONST_VOLATILE);
+End;
+
+Function IsVolatileQualified(Const T: TCType): Boolean;
+Begin
+  IsVolatileQualified := (T.Quals = Q_VOLATILE) Or (T.Quals = Q_CONST_VOLATILE);
+End;
+
+{ --- Taille des types --- }
+
+Function GetTypeSize(Const T: TCType): Integer;
+Begin
+  Case T.Kind Of
+    TK_VOID:       GetTypeSize := 0;
+    TK_CHAR,
+    TK_SCHAR,
+    TK_UCHAR:      GetTypeSize := 1;
+    TK_SHORT,
+    TK_USHORT:     GetTypeSize := 2;
+    TK_INT,
+    TK_UINT,
+    TK_FLOAT:      GetTypeSize := 4;
+    TK_LONG,
+    TK_ULONG:      GetTypeSize := 4;  { 32-bit platform }
+    TK_LONGLONG,
+    TK_ULONGLONG,
+    TK_DOUBLE:     GetTypeSize := 8;
+    TK_LONGDOUBLE: GetTypeSize := 10; { x86 extended }
+    TK_POINTER:    GetTypeSize := 4;  { 32-bit platform }
+    TK_ENUM:       GetTypeSize := 4;  { enum = int }
+    TK_ARRAY:      GetTypeSize := 0;  { need element type }
+    TK_STRUCT,
+    TK_UNION:      GetTypeSize := 0;  { need struct definition }
+    TK_FUNC:       GetTypeSize := 0;
+  Else
+    GetTypeSize := 0;
+  End;
+End;
+
+Function GetTypeSizeBits(Const T: TCType): Integer;
+Begin
+  GetTypeSizeBits := GetTypeSize(T) * 8;
+End;
+
+{ --- Compatibilite des types --- }
+
+Function AreTypesCompatible(Const T1, T2: TCType): Boolean;
+Begin
+  { Compatibilite de base: meme Kind }
+  If T1.Kind <> T2.Kind Then
+  Begin
+    AreTypesCompatible := False;
+    Exit;
+  End;
+  { Pour les types composes, verifier l'index }
+  Case T1.Kind Of
+    TK_STRUCT,
+    TK_UNION,
+    TK_ENUM:       AreTypesCompatible := (T1.StructIdx = T2.StructIdx);
+    TK_POINTER:    AreTypesCompatible := (T1.PointeeIdx = T2.PointeeIdx);
+    TK_ARRAY:      AreTypesCompatible := (T1.ElemIdx = T2.ElemIdx) And
+                                         (T1.ArraySize = T2.ArraySize);
+  Else
+    AreTypesCompatible := True;
+  End;
+End;
+
+Function CanConvertTo(Const FromType, ToType: TCType): Boolean;
+Begin
+  { Conversions implicites autorisees }
+  If AreTypesCompatible(FromType, ToType) Then
+  Begin
+    CanConvertTo := True;
+    Exit;
+  End;
+  { Conversions arithmetiques }
+  If IsArithType(FromType) And IsArithType(ToType) Then
+  Begin
+    CanConvertTo := True;
+    Exit;
+  End;
+  { Pointeur vers void* }
+  If IsPointerType(FromType) And IsPointerType(ToType) Then
+  Begin
+    CanConvertTo := True;
+    Exit;
+  End;
+  { Enum vers int }
+  If IsEnumType(FromType) And IsIntegerType(ToType) Then
+  Begin
+    CanConvertTo := True;
+    Exit;
+  End;
+  CanConvertTo := False;
 End;
 
 { ============================================================
