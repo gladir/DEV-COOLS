@@ -31,7 +31,7 @@
 
   Voir DOC/RES_FORMAT.txt pour la description complete du format .RES.
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
             RC_VERSION ('1.0') et RC_DATE ('2026-03-30')
             {$A-} pour desactiver l alignement automatique des records
             TOptions : SrcFile (String), OutFile (String),
@@ -1042,9 +1042,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 01-25 }
+  { TODO : Implementation des TODOs 02-25 }
   WriteLn;
-  WriteLn('NOTE: Les TODOs 01-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODO 01 [IMPLEMENTE]. TODOs 02-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
