@@ -262,7 +262,7 @@
               generer un fichier Doxyfile avec toutes les options
               par defaut, commente avec des explications
 
-  TODO 06 - TOUTES LES OPTIONS DE LIGNE DE COMMANDE [A FAIRE]
+  TODO 06 - TOUTES LES OPTIONS DE LIGNE DE COMMANDE [IMPLEMENTE]
             Implementation complete des options doxygen :
             -g [fichier]    : generer un fichier Doxyfile par defaut
                               si fichier non specifie, utiliser 'Doxyfile'
@@ -2728,6 +2728,831 @@ Begin
     WriteLn('Fichier de configuration genere: ', FileName);
 End;
 
+{ ============================================================
+  TODO 06 - TOUTES LES OPTIONS DE LIGNE DE COMMANDE
+  ============================================================ }
+
+{ GenerateLayoutXml : generer un fichier DoxygenLayout.xml par defaut }
+Procedure GenerateLayoutXml(Const FileName: String);
+Var
+  F: Text;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier: ' + FileName);
+    Exit;
+  End;
+
+  { En-tete XML }
+  WriteLn(F, '<?xml version="1.0" encoding="UTF-8"?>');
+  WriteLn(F, '<!-- DoxygenLayout.xml - Genere par DOXYGEN ', DOXYGEN_VERSION, ' (DEV-COOLS) -->');
+  WriteLn(F, '<!-- Ce fichier definit la structure de la documentation generee -->');
+  WriteLn(F, '');
+  WriteLn(F, '<doxygenlayout version="1.0">');
+  WriteLn(F, '  <!-- Navigation principale -->');
+  WriteLn(F, '  <navindex>');
+  WriteLn(F, '    <tab type="mainpage" visible="yes" title=""/>');
+  WriteLn(F, '    <tab type="pages" visible="yes" title="" intro=""/>');
+  WriteLn(F, '    <tab type="modules" visible="yes" title="" intro=""/>');
+  WriteLn(F, '    <tab type="namespaces" visible="yes" title="">');
+  WriteLn(F, '      <tab type="namespacelist" visible="yes" title="" intro=""/>');
+  WriteLn(F, '      <tab type="namespacemembers" visible="yes" title="" intro=""/>');
+  WriteLn(F, '    </tab>');
+  WriteLn(F, '    <tab type="classes" visible="yes" title="">');
+  WriteLn(F, '      <tab type="classlist" visible="yes" title="" intro=""/>');
+  WriteLn(F, '      <tab type="classindex" visible="yes" title=""/>');
+  WriteLn(F, '      <tab type="hierarchy" visible="yes" title="" intro=""/>');
+  WriteLn(F, '      <tab type="classmembers" visible="yes" title="" intro=""/>');
+  WriteLn(F, '    </tab>');
+  WriteLn(F, '    <tab type="files" visible="yes" title="">');
+  WriteLn(F, '      <tab type="filelist" visible="yes" title="" intro=""/>');
+  WriteLn(F, '      <tab type="globals" visible="yes" title="" intro=""/>');
+  WriteLn(F, '    </tab>');
+  WriteLn(F, '    <tab type="examples" visible="yes" title="" intro=""/>');
+  WriteLn(F, '  </navindex>');
+  WriteLn(F, '');
+  WriteLn(F, '  <!-- Structure de la page de classe -->');
+  WriteLn(F, '  <class>');
+  WriteLn(F, '    <briefdescription visible="yes"/>');
+  WriteLn(F, '    <includes visible="$SHOW_INCLUDE_FILES"/>');
+  WriteLn(F, '    <inheritancegraph visible="$CLASS_GRAPH"/>');
+  WriteLn(F, '    <collaborationgraph visible="$COLLABORATION_GRAPH"/>');
+  WriteLn(F, '    <memberdecl>');
+  WriteLn(F, '      <nestedclasses visible="yes" title=""/>');
+  WriteLn(F, '      <publictypes title=""/>');
+  WriteLn(F, '      <publicslots title=""/>');
+  WriteLn(F, '      <signals title=""/>');
+  WriteLn(F, '      <publicmethods title=""/>');
+  WriteLn(F, '      <publicstaticmethods title=""/>');
+  WriteLn(F, '      <publicattributes title=""/>');
+  WriteLn(F, '      <publicstaticattributes title=""/>');
+  WriteLn(F, '      <protectedtypes title=""/>');
+  WriteLn(F, '      <protectedslots title=""/>');
+  WriteLn(F, '      <protectedmethods title=""/>');
+  WriteLn(F, '      <protectedstaticmethods title=""/>');
+  WriteLn(F, '      <protectedattributes title=""/>');
+  WriteLn(F, '      <protectedstaticattributes title=""/>');
+  WriteLn(F, '      <privatetypes title=""/>');
+  WriteLn(F, '      <privateslots title=""/>');
+  WriteLn(F, '      <privatemethods title=""/>');
+  WriteLn(F, '      <privatestaticmethods title=""/>');
+  WriteLn(F, '      <privateattributes title=""/>');
+  WriteLn(F, '      <privatestaticattributes title=""/>');
+  WriteLn(F, '      <friends title=""/>');
+  WriteLn(F, '      <related title="" subtitle=""/>');
+  WriteLn(F, '      <membergroups visible="yes"/>');
+  WriteLn(F, '    </memberdecl>');
+  WriteLn(F, '    <detaileddescription title=""/>');
+  WriteLn(F, '    <memberdef>');
+  WriteLn(F, '      <typedefs title=""/>');
+  WriteLn(F, '      <enums title=""/>');
+  WriteLn(F, '      <constructors title=""/>');
+  WriteLn(F, '      <functions title=""/>');
+  WriteLn(F, '      <related title=""/>');
+  WriteLn(F, '      <variables title=""/>');
+  WriteLn(F, '      <properties title=""/>');
+  WriteLn(F, '      <events title=""/>');
+  WriteLn(F, '    </memberdef>');
+  WriteLn(F, '    <allmemberslink visible="yes"/>');
+  WriteLn(F, '    <usedfiles visible="$SHOW_USED_FILES"/>');
+  WriteLn(F, '    <authorsection visible="yes"/>');
+  WriteLn(F, '  </class>');
+  WriteLn(F, '');
+  WriteLn(F, '  <!-- Structure de la page de namespace -->');
+  WriteLn(F, '  <namespace>');
+  WriteLn(F, '    <briefdescription visible="yes"/>');
+  WriteLn(F, '    <memberdecl>');
+  WriteLn(F, '      <nestednamespaces visible="yes" title=""/>');
+  WriteLn(F, '      <classes visible="yes" title=""/>');
+  WriteLn(F, '      <typedefs title=""/>');
+  WriteLn(F, '      <enums title=""/>');
+  WriteLn(F, '      <functions title=""/>');
+  WriteLn(F, '      <variables title=""/>');
+  WriteLn(F, '      <membergroups visible="yes"/>');
+  WriteLn(F, '    </memberdecl>');
+  WriteLn(F, '    <detaileddescription title=""/>');
+  WriteLn(F, '    <memberdef>');
+  WriteLn(F, '      <typedefs title=""/>');
+  WriteLn(F, '      <enums title=""/>');
+  WriteLn(F, '      <functions title=""/>');
+  WriteLn(F, '      <variables title=""/>');
+  WriteLn(F, '    </memberdef>');
+  WriteLn(F, '    <authorsection visible="yes"/>');
+  WriteLn(F, '  </namespace>');
+  WriteLn(F, '');
+  WriteLn(F, '  <!-- Structure de la page de fichier -->');
+  WriteLn(F, '  <file>');
+  WriteLn(F, '    <briefdescription visible="yes"/>');
+  WriteLn(F, '    <includes visible="$SHOW_INCLUDE_FILES"/>');
+  WriteLn(F, '    <includegraph visible="$INCLUDE_GRAPH"/>');
+  WriteLn(F, '    <includedbygraph visible="$INCLUDED_BY_GRAPH"/>');
+  WriteLn(F, '    <sourcelink visible="yes"/>');
+  WriteLn(F, '    <memberdecl>');
+  WriteLn(F, '      <classes visible="yes" title=""/>');
+  WriteLn(F, '      <namespaces visible="yes" title=""/>');
+  WriteLn(F, '      <defines title=""/>');
+  WriteLn(F, '      <typedefs title=""/>');
+  WriteLn(F, '      <enums title=""/>');
+  WriteLn(F, '      <functions title=""/>');
+  WriteLn(F, '      <variables title=""/>');
+  WriteLn(F, '      <membergroups visible="yes"/>');
+  WriteLn(F, '    </memberdecl>');
+  WriteLn(F, '    <detaileddescription title=""/>');
+  WriteLn(F, '    <memberdef>');
+  WriteLn(F, '      <defines title=""/>');
+  WriteLn(F, '      <typedefs title=""/>');
+  WriteLn(F, '      <enums title=""/>');
+  WriteLn(F, '      <functions title=""/>');
+  WriteLn(F, '      <variables title=""/>');
+  WriteLn(F, '    </memberdef>');
+  WriteLn(F, '    <authorsection visible="yes"/>');
+  WriteLn(F, '  </file>');
+  WriteLn(F, '');
+  WriteLn(F, '  <!-- Structure de la page de groupe -->');
+  WriteLn(F, '  <group>');
+  WriteLn(F, '    <briefdescription visible="yes"/>');
+  WriteLn(F, '    <groupgraph visible="$GROUP_GRAPHS"/>');
+  WriteLn(F, '    <memberdecl>');
+  WriteLn(F, '      <nestedgroups visible="yes" title=""/>');
+  WriteLn(F, '      <dirs visible="yes" title=""/>');
+  WriteLn(F, '      <files visible="yes" title=""/>');
+  WriteLn(F, '      <namespaces visible="yes" title=""/>');
+  WriteLn(F, '      <classes visible="yes" title=""/>');
+  WriteLn(F, '      <defines title=""/>');
+  WriteLn(F, '      <typedefs title=""/>');
+  WriteLn(F, '      <enums title=""/>');
+  WriteLn(F, '      <enumvalues title=""/>');
+  WriteLn(F, '      <functions title=""/>');
+  WriteLn(F, '      <variables title=""/>');
+  WriteLn(F, '      <signals title=""/>');
+  WriteLn(F, '      <publicslots title=""/>');
+  WriteLn(F, '      <protectedslots title=""/>');
+  WriteLn(F, '      <privateslots title=""/>');
+  WriteLn(F, '      <events title=""/>');
+  WriteLn(F, '      <properties title=""/>');
+  WriteLn(F, '      <friends title=""/>');
+  WriteLn(F, '      <membergroups visible="yes"/>');
+  WriteLn(F, '    </memberdecl>');
+  WriteLn(F, '    <detaileddescription title=""/>');
+  WriteLn(F, '    <memberdef>');
+  WriteLn(F, '      <defines title=""/>');
+  WriteLn(F, '      <typedefs title=""/>');
+  WriteLn(F, '      <enums title=""/>');
+  WriteLn(F, '      <enumvalues title=""/>');
+  WriteLn(F, '      <functions title=""/>');
+  WriteLn(F, '      <variables title=""/>');
+  WriteLn(F, '      <signals title=""/>');
+  WriteLn(F, '      <publicslots title=""/>');
+  WriteLn(F, '      <protectedslots title=""/>');
+  WriteLn(F, '      <privateslots title=""/>');
+  WriteLn(F, '      <events title=""/>');
+  WriteLn(F, '      <properties title=""/>');
+  WriteLn(F, '      <friends title=""/>');
+  WriteLn(F, '    </memberdef>');
+  WriteLn(F, '    <authorsection visible="yes"/>');
+  WriteLn(F, '  </group>');
+  WriteLn(F, '');
+  WriteLn(F, '  <!-- Structure de la page de repertoire -->');
+  WriteLn(F, '  <directory>');
+  WriteLn(F, '    <briefdescription visible="yes"/>');
+  WriteLn(F, '    <directorygraph visible="yes"/>');
+  WriteLn(F, '    <memberdecl>');
+  WriteLn(F, '      <dirs visible="yes"/>');
+  WriteLn(F, '      <files visible="yes"/>');
+  WriteLn(F, '    </memberdecl>');
+  WriteLn(F, '    <detaileddescription title=""/>');
+  WriteLn(F, '  </directory>');
+  WriteLn(F, '</doxygenlayout>');
+  
+  Close(F);
+  
+  If Not Opts.Quiet Then
+    WriteLn('Fichier layout genere: ', FileName);
+End;
+
+{ GenerateHtmlStylesheet : generer une feuille de style CSS par defaut }
+Procedure GenerateHtmlStylesheet(Const FileName: String);
+Var
+  F: Text;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier: ' + FileName);
+    Exit;
+  End;
+
+  WriteLn(F, '/* Doxygen Stylesheet - Genere par DOXYGEN ', DOXYGEN_VERSION, ' (DEV-COOLS) */');
+  WriteLn(F, '');
+  WriteLn(F, '/* Styles generaux */');
+  WriteLn(F, 'body, table, div, p, dl {');
+  WriteLn(F, '  font-family: Lucida Grande, Verdana, Geneva, Arial, sans-serif;');
+  WriteLn(F, '  font-size: 13px;');
+  WriteLn(F, '  line-height: 1.3;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, 'body {');
+  WriteLn(F, '  background-color: white;');
+  WriteLn(F, '  margin: 0;');
+  WriteLn(F, '  padding: 0;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '/* Titres */');
+  WriteLn(F, 'h1, h2, h3, h4, h5, h6 {');
+  WriteLn(F, '  color: #253555;');
+  WriteLn(F, '  font-family: inherit;');
+  WriteLn(F, '  margin-top: 1em;');
+  WriteLn(F, '  margin-bottom: 0.5em;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, 'h1 { font-size: 150%; }');
+  WriteLn(F, 'h2 { font-size: 120%; }');
+  WriteLn(F, 'h3 { font-size: 100%; }');
+  WriteLn(F, '');
+  WriteLn(F, '/* Liens */');
+  WriteLn(F, 'a { color: #3D578C; text-decoration: none; }');
+  WriteLn(F, 'a:hover { text-decoration: underline; }');
+  WriteLn(F, 'a.code, a.code:visited { color: #4665A2; }');
+  WriteLn(F, '');
+  WriteLn(F, '/* Navigation */');
+  WriteLn(F, '#titlearea {');
+  WriteLn(F, '  padding: 10px;');
+  WriteLn(F, '  border-bottom: 1px solid #C4CFE5;');
+  WriteLn(F, '  background-color: #F9FAFC;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '.tabs, .tabs2, .tabs3 {');
+  WriteLn(F, '  background-color: #E8EEF2;');
+  WriteLn(F, '  border-bottom: 1px solid #84B0C7;');
+  WriteLn(F, '  padding: 5px 0;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '.tablist {');
+  WriteLn(F, '  list-style: none;');
+  WriteLn(F, '  margin: 0;');
+  WriteLn(F, '  padding: 0;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '.tablist li { display: inline; }');
+  WriteLn(F, '.tablist a { padding: 5px 10px; }');
+  WriteLn(F, '');
+  WriteLn(F, '/* Contenu principal */');
+  WriteLn(F, '.contents {');
+  WriteLn(F, '  padding: 10px 20px;');
+  WriteLn(F, '  margin-top: 10px;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '/* Tables */');
+  WriteLn(F, 'table.memberdecls {');
+  WriteLn(F, '  border-spacing: 0px;');
+  WriteLn(F, '  width: 100%;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '.memItemLeft, .memItemRight, .memTemplParams {');
+  WriteLn(F, '  border-bottom: 1px solid #DEE4F0;');
+  WriteLn(F, '  padding: 4px;');
+  WriteLn(F, '  vertical-align: top;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '.memItemLeft { white-space: nowrap; }');
+  WriteLn(F, '');
+  WriteLn(F, '/* Blocs de code */');
+  WriteLn(F, 'pre.fragment, div.fragment {');
+  WriteLn(F, '  background-color: #FBFCFD;');
+  WriteLn(F, '  border: 1px solid #C4CFE5;');
+  WriteLn(F, '  font-family: monospace, fixed;');
+  WriteLn(F, '  font-size: 105%;');
+  WriteLn(F, '  padding: 8px;');
+  WriteLn(F, '  margin: 4px 8px;');
+  WriteLn(F, '  overflow: auto;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '/* Coloration syntaxique */');
+  WriteLn(F, '.keyword { color: #008000; font-weight: bold; }');
+  WriteLn(F, '.keywordtype { color: #604020; }');
+  WriteLn(F, '.keywordflow { color: #E08000; }');
+  WriteLn(F, '.comment { color: #800000; }');
+  WriteLn(F, '.preprocessor { color: #806020; }');
+  WriteLn(F, '.stringliteral { color: #002080; }');
+  WriteLn(F, '.charliteral { color: #008080; }');
+  WriteLn(F, '');
+  WriteLn(F, '/* Documentation des membres */');
+  WriteLn(F, '.memtitle {');
+  WriteLn(F, '  padding: 3px 5px;');
+  WriteLn(F, '  background-color: #D8DFE5;');
+  WriteLn(F, '  border: 1px solid #A8B8D9;');
+  WriteLn(F, '  font-weight: bold;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '.memdoc {');
+  WriteLn(F, '  padding: 5px 10px;');
+  WriteLn(F, '  border-left: 1px solid #A8B8D9;');
+  WriteLn(F, '  border-right: 1px solid #A8B8D9;');
+  WriteLn(F, '  border-bottom: 1px solid #A8B8D9;');
+  WriteLn(F, '  background-color: #FBFCFD;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '/* Footer */');
+  WriteLn(F, '#footer {');
+  WriteLn(F, '  text-align: center;');
+  WriteLn(F, '  font-size: 80%;');
+  WriteLn(F, '  padding: 10px;');
+  WriteLn(F, '  color: #666;');
+  WriteLn(F, '  border-top: 1px solid #C4CFE5;');
+  WriteLn(F, '}');
+  
+  Close(F);
+  
+  If Not Opts.Quiet Then
+    WriteLn('Feuille de style CSS generee: ', FileName);
+End;
+
+{ GenerateHtmlHeader : generer un fichier header HTML par defaut }
+Procedure GenerateHtmlHeader(Const FileName: String);
+Var
+  F: Text;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier: ' + FileName);
+    Exit;
+  End;
+
+  WriteLn(F, '<!-- Header HTML - Genere par DOXYGEN ', DOXYGEN_VERSION, ' (DEV-COOLS) -->');
+  WriteLn(F, '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">');
+  WriteLn(F, '<html xmlns="http://www.w3.org/1999/xhtml">');
+  WriteLn(F, '<head>');
+  WriteLn(F, '<meta http-equiv="Content-Type" content="text/xhtml;charset=UTF-8"/>');
+  WriteLn(F, '<meta http-equiv="X-UA-Compatible" content="IE=9"/>');
+  WriteLn(F, '<meta name="generator" content="Doxygen $doxygenversion"/>');
+  WriteLn(F, '<meta name="viewport" content="width=device-width, initial-scale=1"/>');
+  WriteLn(F, '<!--BEGIN PROJECT_NAME--><title>$projectname: $title</title><!--END PROJECT_NAME-->');
+  WriteLn(F, '<!--BEGIN !PROJECT_NAME--><title>$title</title><!--END !PROJECT_NAME-->');
+  WriteLn(F, '<link href="$relpath^$stylesheet" rel="stylesheet" type="text/css" />');
+  WriteLn(F, '$extrastylesheet');
+  WriteLn(F, '</head>');
+  WriteLn(F, '<body>');
+  WriteLn(F, '<div id="top">');
+  WriteLn(F, '<!-- Header personnalisable -->');
+  WriteLn(F, '<!--BEGIN PROJECT_NAME-->');
+  WriteLn(F, '<div id="titlearea">');
+  WriteLn(F, '<table cellspacing="0" cellpadding="0">');
+  WriteLn(F, ' <tbody>');
+  WriteLn(F, ' <tr style="height: 56px;">');
+  WriteLn(F, '  <!--BEGIN PROJECT_LOGO-->');
+  WriteLn(F, '  <td id="projectlogo"><img alt="Logo" src="$relpath^$projectlogo"/></td>');
+  WriteLn(F, '  <!--END PROJECT_LOGO-->');
+  WriteLn(F, '  <td id="projectalign" style="padding-left: 0.5em;">');
+  WriteLn(F, '   <div id="projectname">$projectname');
+  WriteLn(F, '   <!--BEGIN PROJECT_NUMBER-->&#160;<span id="projectnumber">$projectnumber</span><!--END PROJECT_NUMBER-->');
+  WriteLn(F, '   </div>');
+  WriteLn(F, '   <!--BEGIN PROJECT_BRIEF--><div id="projectbrief">$projectbrief</div><!--END PROJECT_BRIEF-->');
+  WriteLn(F, '  </td>');
+  WriteLn(F, ' </tr>');
+  WriteLn(F, ' </tbody>');
+  WriteLn(F, '</table>');
+  WriteLn(F, '</div>');
+  WriteLn(F, '<!--END PROJECT_NAME-->');
+  WriteLn(F, '');
+  
+  Close(F);
+  
+  If Not Opts.Quiet Then
+    WriteLn('Header HTML genere: ', FileName);
+End;
+
+{ GenerateHtmlFooter : generer un fichier footer HTML par defaut }
+Procedure GenerateHtmlFooter(Const FileName: String);
+Var
+  F: Text;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier: ' + FileName);
+    Exit;
+  End;
+
+  WriteLn(F, '<!-- Footer HTML - Genere par DOXYGEN ', DOXYGEN_VERSION, ' (DEV-COOLS) -->');
+  WriteLn(F, '</div><!-- top -->');
+  WriteLn(F, '');
+  WriteLn(F, '<!-- Begin footer -->');
+  WriteLn(F, '<div id="footer">');
+  WriteLn(F, '<hr class="footer"/>');
+  WriteLn(F, '<address class="footer">');
+  WriteLn(F, '<small>');
+  WriteLn(F, 'Genere par &#160;<a href="http://www.doxygen.org/index.html">');
+  WriteLn(F, '<img class="footer" src="$relpath^doxygen.png" alt="doxygen"/></a> $doxygenversion');
+  WriteLn(F, '</small>');
+  WriteLn(F, '</address>');
+  WriteLn(F, '</div>');
+  WriteLn(F, '');
+  WriteLn(F, '</body>');
+  WriteLn(F, '</html>');
+  
+  Close(F);
+  
+  If Not Opts.Quiet Then
+    WriteLn('Footer HTML genere: ', FileName);
+End;
+
+{ GenerateLatexHeader : generer un fichier header LaTeX par defaut }
+Procedure GenerateLatexHeader(Const FileName: String);
+Var
+  F: Text;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier: ' + FileName);
+    Exit;
+  End;
+
+  WriteLn(F, '% Header LaTeX - Genere par DOXYGEN ', DOXYGEN_VERSION, ' (DEV-COOLS)');
+  WriteLn(F, '%');
+  WriteLn(F, '% Ce fichier est inclus au debut du document LaTeX genere.');
+  WriteLn(F, '% Vous pouvez y ajouter des packages supplementaires ou des commandes.');
+  WriteLn(F, '%');
+  WriteLn(F, '\documentclass[a4paper]{article}');
+  WriteLn(F, '');
+  WriteLn(F, '% Packages de base');
+  WriteLn(F, '\usepackage[utf8]{inputenc}');
+  WriteLn(F, '\usepackage[T1]{fontenc}');
+  WriteLn(F, '\usepackage{lmodern}');
+  WriteLn(F, '\usepackage{graphicx}');
+  WriteLn(F, '\usepackage{hyperref}');
+  WriteLn(F, '\usepackage{color}');
+  WriteLn(F, '\usepackage{fancyhdr}');
+  WriteLn(F, '\usepackage{longtable}');
+  WriteLn(F, '\usepackage{array}');
+  WriteLn(F, '\usepackage{multicol}');
+  WriteLn(F, '\usepackage{makeidx}');
+  WriteLn(F, '');
+  WriteLn(F, '% Configuration de la page');
+  WriteLn(F, '\usepackage[top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm]{geometry}');
+  WriteLn(F, '');
+  WriteLn(F, '% Configuration de la coloration syntaxique');
+  WriteLn(F, '\usepackage{listings}');
+  WriteLn(F, '\lstset{');
+  WriteLn(F, '  basicstyle=\ttfamily\small,');
+  WriteLn(F, '  keywordstyle=\color{blue}\bfseries,');
+  WriteLn(F, '  commentstyle=\color{green!60!black},');
+  WriteLn(F, '  stringstyle=\color{red},');
+  WriteLn(F, '  numbers=left,');
+  WriteLn(F, '  numberstyle=\tiny\color{gray},');
+  WriteLn(F, '  stepnumber=1,');
+  WriteLn(F, '  numbersep=5pt,');
+  WriteLn(F, '  showspaces=false,');
+  WriteLn(F, '  showstringspaces=false,');
+  WriteLn(F, '  frame=single,');
+  WriteLn(F, '  breaklines=true');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '% Index');
+  WriteLn(F, '\makeindex');
+  WriteLn(F, '');
+  WriteLn(F, '% Configuration de l''en-tete et du pied de page');
+  WriteLn(F, '\pagestyle{fancy}');
+  WriteLn(F, '\fancyhf{}');
+  WriteLn(F, '\renewcommand{\headrulewidth}{0.4pt}');
+  WriteLn(F, '\renewcommand{\footrulewidth}{0.4pt}');
+  WriteLn(F, '\fancyhead[L]{$projectname}');
+  WriteLn(F, '\fancyhead[R]{\thepage}');
+  WriteLn(F, '\fancyfoot[C]{Genere par Doxygen}');
+  WriteLn(F, '');
+  WriteLn(F, '% Debut du document');
+  WriteLn(F, '\begin{document}');
+  WriteLn(F, '');
+  
+  Close(F);
+  
+  If Not Opts.Quiet Then
+    WriteLn('Header LaTeX genere: ', FileName);
+End;
+
+{ GenerateRtfStylesheet : generer un fichier de style RTF par defaut }
+Procedure GenerateRtfStylesheet(Const FileName: String);
+Var
+  F: Text;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier: ' + FileName);
+    Exit;
+  End;
+
+  WriteLn(F, '# RTF Stylesheet - Genere par DOXYGEN ', DOXYGEN_VERSION, ' (DEV-COOLS)');
+  WriteLn(F, '#');
+  WriteLn(F, '# Ce fichier definit les styles pour la sortie RTF.');
+  WriteLn(F, '# Format: StyleName,FontName,FontSize,ColorIndex,Bold,Italic,Underline');
+  WriteLn(F, '#');
+  WriteLn(F, '# Styles de base');
+  WriteLn(F, 'Title,Arial,24,0,1,0,0');
+  WriteLn(F, 'Heading1,Arial,18,0,1,0,0');
+  WriteLn(F, 'Heading2,Arial,14,0,1,0,0');
+  WriteLn(F, 'Heading3,Arial,12,0,1,0,0');
+  WriteLn(F, 'Heading4,Arial,11,0,1,0,0');
+  WriteLn(F, 'Normal,Times New Roman,10,0,0,0,0');
+  WriteLn(F, 'Code,Courier New,9,0,0,0,0');
+  WriteLn(F, 'CodeBold,Courier New,9,0,1,0,0');
+  WriteLn(F, 'Emphasis,Times New Roman,10,0,0,1,0');
+  WriteLn(F, 'Strong,Times New Roman,10,0,1,0,0');
+  WriteLn(F, 'ListBullet,Times New Roman,10,0,0,0,0');
+  WriteLn(F, 'ListNumber,Times New Roman,10,0,0,0,0');
+  WriteLn(F, '');
+  WriteLn(F, '# Styles pour la documentation');
+  WriteLn(F, 'DescBrief,Times New Roman,10,0,0,1,0');
+  WriteLn(F, 'DescDetailed,Times New Roman,10,0,0,0,0');
+  WriteLn(F, 'ParamName,Courier New,9,1,1,0,0');
+  WriteLn(F, 'ParamType,Courier New,9,2,0,0,0');
+  WriteLn(F, 'ReturnValue,Courier New,9,3,0,0,0');
+  WriteLn(F, '');
+  WriteLn(F, '# Table des couleurs (index -> R,G,B)');
+  WriteLn(F, '# 0 = noir, 1 = bleu, 2 = vert, 3 = rouge');
+  WriteLn(F, '');
+  
+  Close(F);
+  
+  If Not Opts.Quiet Then
+    WriteLn('Feuille de style RTF generee: ', FileName);
+End;
+
+{ UpdateConfigFile : mettre a jour un fichier de configuration existant }
+Procedure UpdateConfigFile(Const FileName: String);
+Var
+  F, FOut: Text;
+  Line, TmpName: String;
+  LineNum: Integer;
+Begin
+  If Not FileExists(FileName) Then
+  Begin
+    { Si le fichier n'existe pas, en creer un nouveau }
+    WriteLn('Fichier non trouve, creation d''un nouveau Doxyfile...');
+    GenerateDefaultConfig(FileName);
+    Exit;
+  End;
+
+  { Lire le fichier existant }
+  ReadConfigFile(FileName);
+
+  { Creer un fichier temporaire }
+  TmpName := FileName + '.tmp';
+  Assign(FOut, TmpName);
+  {$I-}
+  Rewrite(FOut);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier temporaire: ' + TmpName);
+    Exit;
+  End;
+
+  { Copier le contenu avec mise a jour }
+  Assign(F, FileName);
+  Reset(F);
+  LineNum := 0;
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    WriteLn(FOut, Line);
+  End;
+  
+  Close(F);
+  
+  { Ajouter une note de mise a jour }
+  WriteLn(FOut, '');
+  WriteLn(FOut, '# Mis a jour par DOXYGEN ', DOXYGEN_VERSION, ' (DEV-COOLS)');
+  
+  Close(FOut);
+
+  { Remplacer l'ancien fichier par le nouveau }
+  Assign(F, FileName);
+  Erase(F);
+  Assign(FOut, TmpName);
+  Rename(FOut, FileName);
+  
+  If Not Opts.Quiet Then
+    WriteLn('Fichier de configuration mis a jour: ', FileName);
+End;
+
+{ ExpandConfig : afficher la configuration complete avec les valeurs resolues }
+Procedure ExpandConfig;
+Var
+  I: Integer;
+Begin
+  WriteLn('# Configuration expandee');
+  WriteLn('# Genere par DOXYGEN ', DOXYGEN_VERSION, ' (DEV-COOLS)');
+  WriteLn('#');
+  WriteLn('# Nombre d''options: ', ConfigCount);
+  WriteLn('#');
+  WriteLn;
+  
+  For I := 1 To ConfigCount Do
+  Begin
+    If Config[I].IsSet Then
+      Write(Config[I].Name, ' = ')
+    Else
+      Write('# ', Config[I].Name, ' = ');
+    WriteLn(Config[I].Value);
+  End;
+End;
+
+{ IsValidDebugOption : verifier si une option de debogage est valide }
+Function IsValidDebugOption(Const Opt: String): Boolean;
+Var
+  UpperOpt: String;
+Begin
+  UpperOpt := UpStr(Opt);
+  IsValidDebugOption := (UpperOpt = 'TIME') Or
+                        (UpperOpt = 'EXTCMD') Or
+                        (UpperOpt = 'MARKDOWN') Or
+                        (UpperOpt = 'FILTEROUTPUT') Or
+                        (UpperOpt = 'VALIDATE') Or
+                        (UpperOpt = 'PLANTUML') Or
+                        (UpperOpt = 'RTF') Or
+                        (UpperOpt = 'QHP') Or
+                        (UpperOpt = 'TAG') Or
+                        (UpperOpt = 'LEX') Or
+                        (UpperOpt = 'FORTRAN') Or
+                        (UpperOpt = 'LAYOUT') Or
+                        (UpperOpt = 'CITE') Or
+                        (UpperOpt = 'SRCLEX') Or
+                        (UpperOpt = 'COMMENTCNV') Or
+                        (UpperOpt = 'PREPROCESSOR');
+End;
+
+{ ProcessOption_g : traiter l'option -g (generer Doxyfile) }
+Procedure ProcessOption_g(Const FileName: String);
+Begin
+  If FileName = '' Then
+    GenerateDefaultConfig('Doxyfile')
+  Else
+    GenerateDefaultConfig(FileName);
+End;
+
+{ ProcessOption_s : traiter l'option -s (mode silencieux) }
+Procedure ProcessOption_s;
+Begin
+  Opts.Quiet := True;
+End;
+
+{ ProcessOption_u : traiter l'option -u (mise a jour du Doxyfile) }
+Procedure ProcessOption_u(Const FileName: String);
+Begin
+  If FileName = '' Then
+    UpdateConfigFile('Doxyfile')
+  Else
+    UpdateConfigFile(FileName);
+End;
+
+{ ProcessOption_w : traiter l'option -w (generer fichier de style) }
+Procedure ProcessOption_w(Const Format, StyleType, FileName: String);
+Var
+  UpperFormat, UpperType: String;
+  ActualFileName: String;
+Begin
+  UpperFormat := UpStr(Format);
+  UpperType := UpStr(StyleType);
+  
+  If FileName = '' Then
+  Begin
+    { Determiner le nom par defaut }
+    If UpperFormat = 'HTML' Then
+    Begin
+      If UpperType = 'HEADER' Then
+        ActualFileName := 'header.html'
+      Else If UpperType = 'FOOTER' Then
+        ActualFileName := 'footer.html'
+      Else
+        ActualFileName := 'doxygen.css';
+    End
+    Else If UpperFormat = 'LATEX' Then
+      ActualFileName := 'header.tex'
+    Else If UpperFormat = 'RTF' Then
+      ActualFileName := 'rtfstyle.txt'
+    Else
+    Begin
+      WarnMsg('Format non supporte: ' + Format);
+      Exit;
+    End;
+  End
+  Else
+    ActualFileName := FileName;
+  
+  If UpperFormat = 'HTML' Then
+  Begin
+    If UpperType = 'HEADER' Then
+      GenerateHtmlHeader(ActualFileName)
+    Else If UpperType = 'FOOTER' Then
+      GenerateHtmlFooter(ActualFileName)
+    Else
+      GenerateHtmlStylesheet(ActualFileName);
+  End
+  Else If UpperFormat = 'LATEX' Then
+    GenerateLatexHeader(ActualFileName)
+  Else If UpperFormat = 'RTF' Then
+    GenerateRtfStylesheet(ActualFileName)
+  Else
+    WarnMsg('Format non supporte: ' + Format);
+End;
+
+{ ProcessOption_l : traiter l'option -l (generer layout.xml) }
+Procedure ProcessOption_l(Const FileName: String);
+Begin
+  If FileName = '' Then
+    GenerateLayoutXml('DoxygenLayout.xml')
+  Else
+    GenerateLayoutXml(FileName);
+End;
+
+{ ProcessOption_d : traiter l'option -d (options de debogage) }
+Procedure ProcessOption_d(Const DebugOpt: String);
+Begin
+  If Not IsValidDebugOption(DebugOpt) Then
+  Begin
+    WarnMsg('Option de debogage non reconnue: ' + DebugOpt);
+    WriteLn('Options valides: time, extcmd, markdown, filteroutput, validate,');
+    WriteLn('                 plantuml, rtf, qhp, tag, lex, fortran, layout,');
+    WriteLn('                 cite, srclex, commentcnv, preprocessor');
+    Exit;
+  End;
+  
+  Opts.DebugMode := True;
+  If Opts.DebugOpts = '' Then
+    Opts.DebugOpts := DebugOpt
+  Else
+    Opts.DebugOpts := Opts.DebugOpts + ',' + DebugOpt;
+  
+  If Not Opts.Quiet Then
+    WriteLn('Mode debogage active: ', DebugOpt);
+End;
+
+{ ProcessOption_x : traiter l'option -x (afficher config expandee) }
+Procedure ProcessOption_x;
+Begin
+  Opts.ExpandOnly := True;
+End;
+
+{ ProcessOption_e : traiter l'option -e (generer header pour format) }
+Procedure ProcessOption_e(Const Format, FileName: String);
+Var
+  UpperFormat: String;
+  ActualFileName: String;
+Begin
+  UpperFormat := UpStr(Format);
+  
+  If FileName = '' Then
+  Begin
+    If UpperFormat = 'HTML' Then
+      ActualFileName := 'header.html'
+    Else If UpperFormat = 'LATEX' Then
+      ActualFileName := 'header.tex'
+    Else
+    Begin
+      WarnMsg('Format non supporte pour -e: ' + Format);
+      Exit;
+    End;
+  End
+  Else
+    ActualFileName := FileName;
+  
+  If UpperFormat = 'HTML' Then
+    GenerateHtmlHeader(ActualFileName)
+  Else If UpperFormat = 'LATEX' Then
+    GenerateLatexHeader(ActualFileName)
+  Else
+    WarnMsg('Format non supporte pour -e: ' + Format);
+End;
+
+{ ProcessOption_b : traiter l'option -b (mode batch) }
+Procedure ProcessOption_b;
+Begin
+  Opts.BatchMode := True;
+End;
+
 Procedure ShowVersion;
 Begin
   WriteLn('DOXYGEN version ', DOXYGEN_VERSION, ' (', DOXYGEN_DATE, ')');
@@ -3059,28 +3884,48 @@ Begin
     Halt(EXIT_OK);
   End;
 
-  { Mise a jour d'un fichier de configuration }
+  { Mise a jour d'un fichier de configuration (TODO 06) }
   If Opts.UpdateConfig Then
   Begin
-    WriteLn('Mise a jour du fichier de configuration...');
-    WriteLn('Note: Cette fonctionnalite est en cours d''implementation.');
+    If Opts.ConfigFile = '' Then
+      Opts.ConfigFile := 'Doxyfile';
+    UpdateConfigFile(Opts.ConfigFile);
     Halt(EXIT_OK);
   End;
 
-  { Generation de fichier de style }
+  { Generation de fichier de style (TODO 06) }
   If Opts.GenStyle Then
   Begin
-    WriteLn('Generation du fichier de style ', Opts.StyleFormat, '...');
-    WriteLn('Note: Cette fonctionnalite est en cours d''implementation.');
+    ProcessOption_w(Opts.StyleFormat, 'stylesheet', '');
     Halt(EXIT_OK);
   End;
 
-  { Generation de layout }
+  { Generation de layout (TODO 06) }
   If Opts.GenLayout Then
   Begin
-    WriteLn('Generation du fichier layout.xml...');
-    WriteLn('Note: Cette fonctionnalite est en cours d''implementation.');
+    ProcessOption_l('');
     Halt(EXIT_OK);
+  End;
+
+  { Generation de header (TODO 06) }
+  If Opts.GenHeader Then
+  Begin
+    ProcessOption_e(Opts.HeaderFormat, '');
+    Halt(EXIT_OK);
+  End;
+
+  { Valider les options de debogage si specifiees (TODO 06) }
+  If Opts.DebugMode And (Opts.DebugOpts <> '') Then
+  Begin
+    If Not IsValidDebugOption(Opts.DebugOpts) Then
+    Begin
+      WarnMsg('Option de debogage non reconnue: ' + Opts.DebugOpts);
+      WriteLn('Options valides: time, extcmd, markdown, filteroutput, validate,');
+      WriteLn('                 plantuml, rtf, qhp, tag, lex, fortran, layout,');
+      WriteLn('                 cite, srclex, commentcnv, preprocessor');
+    End
+    Else If Not Opts.Quiet Then
+      WriteLn('Mode debogage active: ', Opts.DebugOpts);
   End;
 
   { Mode normal : lecture du fichier de configuration et generation }
@@ -3104,6 +3949,13 @@ Begin
 
   { Lecture du fichier de configuration (TODO 05) }
   ReadConfigFile(Opts.ConfigFile);
+  
+  { Mode expansion de configuration (TODO 06) }
+  If Opts.ExpandOnly Then
+  Begin
+    ExpandConfig;
+    Halt(EXIT_OK);
+  End;
   
   { Afficher les informations du projet }
   WriteLn('Lecture de ', Opts.ConfigFile, '... OK');
@@ -3135,7 +3987,7 @@ Begin
   
   WriteLn;
   WriteLn('Note: La generation de documentation est en cours d''implementation.');
-  WriteLn('      Voir les TODOs 06 a 25 pour la feuille de route.');
+  WriteLn('      Voir les TODOs 07 a 25 pour la feuille de route.');
 End;
 
 { ============================================================
