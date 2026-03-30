@@ -1,4 +1,4 @@
--- Test des fonctions mathematiques SQL Server
+GO
 SELECT ABS(1) AS Expr1, ABS(-1) AS Expr2, ABS(30.2) AS Expr3, ABS(-35.4) AS Expr4
 GO
 SELECT CEILING(4.1) AS Expr1, CEILING(-4.1) AS Expr2

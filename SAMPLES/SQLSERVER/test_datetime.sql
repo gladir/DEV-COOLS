@@ -1,4 +1,4 @@
--- Test des fonctions date/heure SQL Server
+GO
 SELECT GETDATE() AS Expr1
 GO
 SELECT GETUTCDATE() AS Expr1

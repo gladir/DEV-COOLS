@@ -1,4 +1,4 @@
--- Test des fonctions chaine SQL Server
+GO
 SELECT LEN('Hello') AS Expr1
 GO
 SELECT UPPER('hello world') AS Expr1

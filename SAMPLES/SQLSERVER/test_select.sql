@@ -1,4 +1,4 @@
--- Test de SELECT avec diverses clauses
+GO
 SELECT 1 AS One, 2 AS Two, 3 AS Three
 GO
 SELECT 'Hello' AS Greeting, 42 AS Answer

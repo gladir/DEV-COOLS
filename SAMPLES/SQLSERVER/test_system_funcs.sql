@@ -1,4 +1,4 @@
--- Test des fonctions systeme SQL Server
+GO
 SELECT @@VERSION AS Expr1
 GO
 SELECT @@SERVERNAME AS Expr1

@@ -1,4 +1,4 @@
--- Test de la commande USE
+GO
 USE master
 GO
 USE TestDB

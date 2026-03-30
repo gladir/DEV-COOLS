@@ -1,5 +1,3 @@
--- Test des fonctions d'agregation SQL Server
--- Ces requetes necessitent une table avec des donnees
 SELECT COUNT(*) AS TotalRows FROM Employees
 GO
 SELECT SUM(Salary) AS TotalSalary FROM Employees

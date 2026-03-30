@@ -1,4 +1,4 @@
--- Test des options SET SQL Server
+GO
 SET NOCOUNT ON
 GO
 SELECT 1 AS TestNoCount

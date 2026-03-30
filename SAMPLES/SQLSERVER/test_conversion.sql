@@ -1,4 +1,4 @@
--- Test des conversions de types SQL Server
+GO
 SELECT CAST(123 AS VARCHAR(10)) AS Expr1
 GO
 SELECT CAST('456' AS INT) AS Expr1

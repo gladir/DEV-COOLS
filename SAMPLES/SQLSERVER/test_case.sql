@@ -1,4 +1,4 @@
--- Test des expressions CASE SQL Server
+GO
 SELECT CASE WHEN 1 = 1 THEN 'Egal' ELSE 'Different' END AS Expr1
 GO
 SELECT CASE WHEN 1 > 2 THEN 'Plus grand' WHEN 1 = 2 THEN 'Egal' ELSE 'Plus petit' END AS Expr1

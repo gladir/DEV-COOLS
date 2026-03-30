@@ -1,4 +1,4 @@
--- Test de NULLIF et COALESCE SQL Server
+GO
 SELECT NULLIF(1, 1) AS Expr1
 GO
 SELECT NULLIF(1, 2) AS Expr1

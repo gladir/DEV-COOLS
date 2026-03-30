@@ -1,4 +1,4 @@
--- Test des fonctions trigonometriques SQL Server
+GO
 SELECT SIN(0) AS Expr1, SIN(PI()/2) AS Expr2
 GO
 SELECT COS(0) AS Expr1, COS(PI()) AS Expr2

@@ -1,4 +1,4 @@
--- Test des variables et DECLARE SQL Server
+GO
 DECLARE @x INT
 SET @x = 42
 SELECT @x AS Expr1

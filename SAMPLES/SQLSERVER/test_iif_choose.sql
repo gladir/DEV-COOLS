@@ -1,4 +1,4 @@
--- Test de IIF et CHOOSE SQL Server
+GO
 SELECT IIF(1 > 0, 'Vrai', 'Faux') AS Expr1
 GO
 SELECT IIF(1 < 0, 'Vrai', 'Faux') AS Expr1

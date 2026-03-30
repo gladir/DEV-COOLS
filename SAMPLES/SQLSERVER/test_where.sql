@@ -1,4 +1,4 @@
--- Test des operateurs WHERE SQL Server
+GO
 SELECT * FROM Employees WHERE Salary BETWEEN 40000 AND 60000
 GO
 SELECT * FROM Employees WHERE Department IN ('Engineering', 'Sales')
