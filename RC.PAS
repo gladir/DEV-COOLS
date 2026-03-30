@@ -168,7 +168,7 @@
               END, ICON, LANGUAGE, MENU, MENUEX, POPUP, RCDATA,
               STRINGTABLE, VERSIONINFO, etc.
 
-  TODO 05 - ECRITURE BINAIRE DU FICHIER .RES [A FAIRE]
+  TODO 05 - ECRITURE BINAIRE DU FICHIER .RES [IMPLEMENTE]
             Variables globales : ResFile (File Of Byte),
               ResFileName (String), ResFileSize (LongInt),
               ResFilePos (LongInt)
@@ -2261,6 +2261,139 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 05 : ECRITURE BINAIRE DU FICHIER .RES
+  ============================================================ }
+
+Var
+  ResFile     : File Of Byte;   { Fichier binaire de sortie }
+  ResFileName : TString;        { Nom du fichier .RES }
+  ResFileSize : LongInt;        { Taille totale du fichier }
+  ResFilePos  : LongInt;        { Position courante dans le fichier }
+
+{ ----- Procedure CreateResFile ----- }
+Procedure CreateResFile(Const FName : TString);
+Begin
+  ResFileName := FName;
+  ResFilePos := 0;
+  ResFileSize := 0;
+
+  {$I-}
+  Assign(ResFile, FName);
+  Rewrite(ResFile);
+  {$I+}
+
+  If IOResult <> 0 Then
+    FatalError('Impossible de creer le fichier : ' + FName);
+End;
+
+{ ----- Procedure CloseResFile ----- }
+Procedure CloseResFile;
+Begin
+  {$I-}
+  Close(ResFile);
+  {$I+}
+  If IOResult <> 0 Then
+    { Ignorer les erreurs de fermeture }
+    ;
+  ResFileSize := ResFilePos;
+End;
+
+{ ----- Procedure WriteByte ----- }
+Procedure WriteByte(B : Byte);
+Begin
+  {$I-}
+  Write(ResFile, B);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Erreur d''ecriture dans le fichier .RES');
+  Inc(ResFilePos);
+End;
+
+{ ----- Procedure WriteWord ----- }
+Procedure WriteWord(W : Word);
+Begin
+  { Little-endian : octet de poids faible en premier }
+  WriteByte(Lo(W));
+  WriteByte(Hi(W));
+End;
+
+{ ----- Procedure WriteDWord ----- }
+Procedure WriteDWord(D : LongInt);
+Begin
+  { Little-endian : 4 octets du moins significatif au plus significatif }
+  WriteByte(Byte(D And $FF));
+  WriteByte(Byte((D Shr 8) And $FF));
+  WriteByte(Byte((D Shr 16) And $FF));
+  WriteByte(Byte((D Shr 24) And $FF));
+End;
+
+{ ----- Procedure WriteWChar ----- }
+Procedure WriteWChar(W : Word);
+Begin
+  { WCHAR = 2 octets little-endian }
+  WriteWord(W);
+End;
+
+{ ----- Procedure WriteBytes ----- }
+Procedure WriteBytes(Const Buf : Array Of Byte; Count : LongInt);
+Var
+  I : LongInt;
+Begin
+  For I := 0 To Count - 1 Do
+    WriteByte(Buf[I]);
+End;
+
+{ ----- Procedure WriteString ----- }
+Procedure WriteString(Const S : TString);
+Var
+  I   : Integer;
+  Len : Byte;
+Begin
+  { Chaine Pascal : 1 octet longueur + caracteres }
+  Len := Length(S);
+  WriteByte(Len);
+  For I := 1 To Len Do
+    WriteByte(Ord(S[I]));
+End;
+
+{ ----- Procedure WriteUnicodeString ----- }
+Procedure WriteUnicodeString(Const S : TString);
+Var
+  I : Integer;
+Begin
+  { Chaine Unicode UTF-16LE terminee par $0000 }
+  For I := 1 To Length(S) Do
+    WriteWChar(CharToWChar(S[I]));
+  { Terminateur nul Unicode }
+  WriteWChar($0000);
+End;
+
+{ ----- Procedure PadToAlignment ----- }
+Procedure PadToAlignment(Align : Byte);
+Begin
+  { Ecrire des octets $00 jusqu a alignement }
+  While (ResFilePos Mod Align) <> 0 Do
+    WriteByte($00);
+End;
+
+{ ----- Function GetResPos ----- }
+Function GetResPos : LongInt;
+Begin
+  GetResPos := ResFilePos;
+End;
+
+{ ----- Procedure SeekResPos ----- }
+Procedure SeekResPos(Pos : LongInt);
+Begin
+  {$I-}
+  Seek(ResFile, Pos);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Erreur de positionnement dans le fichier .RES');
+  ResFilePos := Pos;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -2363,9 +2496,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 05-25 }
+  { TODO : Implementation des TODOs 06-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-04 [IMPLEMENTE]. TODOs 05-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-05 [IMPLEMENTE]. TODOs 06-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
