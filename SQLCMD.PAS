@@ -1,14 +1,14 @@
 { @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal)
+  @abstract(Target: Free Pascal)
   @description: Clone de SQL Server lisant directement les fichiers .MDF
   @license: MIT
 }
 
 (* ============================================================
   SQLCMD.PAS - Clone SQL Server en ligne de commande
-  Turbo Pascal 7 / Free Pascal (-Mtp)
+  Free Pascal (-Mtp)
 
   Lit directement les fichiers .MDF de SQL Server sans
   necessiter d instance SQL Server.
@@ -1638,7 +1638,7 @@ Procedure ShowBanner;
 Begin
   WriteLn('SQLCMD v', SQLCMD_VERSION, ' (', SQLCMD_DATE, ')');
   WriteLn('Clone SQL Server - lecture directe des fichiers .MDF');
-  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn('Free Pascal (-Mtp)');
   WriteLn;
 End;
 
@@ -1666,7 +1666,8 @@ End;
 Procedure ShowHelp;
 Begin
   WriteLn('SQLCMD v', SQLCMD_VERSION,
-          ' - Clone SQL Server en ligne de commande');
+          ' - Cette commande permet de lancer un clone SQL Server en ',
+          'ligne de commande.');
   WriteLn;
   ShowUsage;
 End;
