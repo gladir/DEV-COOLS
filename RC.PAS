@@ -292,7 +292,7 @@
               retourner la combinaison des flags, ou DefaultMemFlags
               si aucune option specifiee
 
-  TODO 10 - TABLE DES RESSOURCES (COLLECTE) [A FAIRE]
+  TODO 10 - TABLE DES RESSOURCES (COLLECTE) [IMPLEMENTE]
             Type TResourceEntry : record
               TypeIsId   : Boolean   (True si type numerique)
               TypeId     : Word      (identifiant de type)
@@ -860,6 +860,20 @@ Type
     Defines      : Array[1..64] Of TString;
     DefineCount  : Integer;
   End;
+  
+  { TODO 10 : Table des ressources }
+  TResourceEntry = Record
+    TypeIsId   : Boolean;   { True si type numerique }
+    TypeId     : Word;      { identifiant de type }
+    TypeName   : TString;   { nom de type si Non TypeIsId }
+    NameIsId   : Boolean;   { True si nom numerique }
+    NameId     : Word;      { identifiant de nom }
+    NameStr    : TString;   { nom si Non NameIsId }
+    DataSize   : LongInt;   { taille des donnees }
+    DataOfs    : LongInt;   { offset dans le fichier genere }
+    MemFlags   : Word;      { attributs memoire }
+    LangId     : Word;      { identifiant de langue }
+  End;
 
 { ============================================================
   VARIABLES GLOBALES
@@ -872,6 +886,10 @@ Var
   
   { TODO 09 : Variables pour le traitement des flags memoire }
   DefaultMemFlags : Word;
+  
+  { TODO 10 : Table des ressources }
+  Resources : Array[1..MAX_RESOURCES] Of TResourceEntry;
+  ResCount  : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -2972,6 +2990,62 @@ Begin
     ParseMemoryOptions := Flags;
 End;
 
+{ =============================================================
+  TODO 10 - TABLE DES RESSOURCES (COLLECTE)
+  ============================================================= }
+
+{ ----- Function AddResource ----- }
+{ Ajoute une nouvelle ressource a la table et retourne l index }
+Function AddResource(ATypeIsId: Boolean; ATypeId: Word;
+  Const ATypeName: TString; ANameIsId: Boolean; ANameId: Word;
+  Const AResName: TString; AMemFlags: Word; ALangId: Word): Integer;
+Begin
+  If ResCount >= MAX_RESOURCES Then
+  Begin
+    FatalError('Nombre maximal de ressources atteint (' + IntToStr(MAX_RESOURCES) + ')');
+    AddResource := 0;
+    Exit;
+  End;
+  
+  Inc(ResCount);
+  
+  With Resources[ResCount] Do
+  Begin
+    TypeIsId := ATypeIsId;
+    TypeId   := ATypeId;
+    TypeName := ATypeName;
+    NameIsId := ANameIsId;
+    NameId   := ANameId;
+    NameStr  := AResName;
+    DataSize := 0;      { Sera mis a jour plus tard }
+    DataOfs  := 0;      { Sera mis a jour plus tard }
+    MemFlags := AMemFlags;
+    LangId   := ALangId;
+  End;
+  
+  AddResource := ResCount;
+End;
+
+{ ----- Procedure SetResourceDataOfs ----- }
+{ Met a jour l offset des donnees pour une ressource }
+Procedure SetResourceDataOfs(Index: Integer; Ofs: LongInt);
+Begin
+  If (Index >= 1) And (Index <= ResCount) Then
+    Resources[Index].DataOfs := Ofs
+  Else
+    FatalError('Index de ressource invalide: ' + IntToStr(Index));
+End;
+
+{ ----- Procedure SetResourceDataSize ----- }
+{ Met a jour la taille des donnees pour une ressource }
+Procedure SetResourceDataSize(Index: Integer; Size: LongInt);
+Begin
+  If (Index >= 1) And (Index <= ResCount) Then
+    Resources[Index].DataSize := Size
+  Else
+    FatalError('Index de ressource invalide: ' + IntToStr(Index));
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -3059,6 +3133,9 @@ Begin
   WriteLn('RC v', RC_VERSION, ' (', RC_DATE, ') - ',
           'Compilateur de ressources Windows');
   WriteLn;
+  
+  { Initialiser le compteur de ressources }
+  ResCount := 0;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -3074,9 +3151,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 10-25 }
+  { TODO : Implementation des TODOs 11-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-09 [IMPLEMENTE]. TODOs 10-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-10 [IMPLEMENTE]. TODOs 11-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
