@@ -1135,89 +1135,732 @@ Pour les donnees binaires :
 4. DECLARATIONS DE DONNEES
 =========================================================================
 
-4.1 Declaration simple
-----------------------
+4.1 Introduction aux declarations de donnees
+---------------------------------------------
 
-  DATA nom TYPE type [VALUE valeur_initiale].
+La declaration des donnees est une etape fondamentale dans tout programme
+ABAP. Elle permet de definir les variables, les constantes, les structures
+et les tables internes qui seront utilisees pour stocker et manipuler les
+informations pendant l'execution du programme.
 
-  Exemples :
+En ABAP, toutes les declarations doivent apparaitre avant les instructions
+executables. Cette contrainte assure une separation claire entre la
+definition des ressources et leur utilisation, ce qui facilite la
+comprehension et la maintenance du code.
 
+Le systeme de declaration ABAP offre plusieurs mecanismes complementaires :
+
+  - Declaration explicite avec TYPE : specifier directement le type de
+    donnees souhaite pour une variable.
+
+  - Declaration par reference avec LIKE : reprendre le type d'une autre
+    variable ou d'un champ du dictionnaire de donnees.
+
+  - Declaration de types personnalises avec TYPES : creer des types
+    reutilisables dans tout le programme.
+
+  - Declaration de constantes avec CONSTANTS : definir des valeurs
+    immuables accessibles globalement.
+
+Le choix entre ces mecanismes depend du contexte et des besoins de
+reutilisabilite. Une bonne pratique consiste a definir des types
+personnalises pour les structures frequemment utilisees, et a utiliser
+LIKE pour referencer les elements du dictionnaire de donnees SAP.
+
+4.2 Instruction DATA - Declaration de variables
+------------------------------------------------
+
+L'instruction DATA est le mecanisme principal pour declarer des variables
+en ABAP. Elle alloue de la memoire pour stocker une valeur et associe un
+nom symbolique a cette zone de memoire.
+
+Syntaxe complete :
+
+  DATA nom TYPE type [LENGTH longueur] [DECIMALS decimales]
+       [VALUE valeur_initiale] [READ-ONLY].
+
+Elements de la syntaxe :
+  - nom : identifiant unique de la variable (max 30 caracteres)
+  - TYPE type : specification du type de donnees
+  - LENGTH longueur : taille pour les types C, N, X (optionnel)
+  - DECIMALS decimales : nombre de decimales pour le type P (optionnel)
+  - VALUE valeur : valeur initiale (optionnel)
+  - READ-ONLY : empeche la modification directe (optionnel, classes)
+
+Regles de nommage recommandees (conventions SAP) :
+  - gv_ : variable globale (Global Variable)
+  - lv_ : variable locale (Local Variable)
+  - pv_ : parametre de fonction (Parameter Variable)
+  - cv_ : variable de retour (Changing Variable)
+
+Exemples de declarations simples :
+
+    " Entier avec valeur initiale
     DATA gv_compteur TYPE I VALUE 0.
+
+    " Chaine de caracteres avec longueur explicite
     DATA gv_nom TYPE C LENGTH 30.
-    DATA gv_prix TYPE P DECIMALS 2.
+
+    " Nombre decimal avec precision
+    DATA gv_prix TYPE P LENGTH 8 DECIMALS 2.
+
+    " Chaine de longueur variable
     DATA gv_texte TYPE STRING.
 
-4.2 Declaration multiple (chaine)
----------------------------------
+    " Date et heure
+    DATA gv_date TYPE D VALUE sy-datum.
+    DATA gv_heure TYPE T.
 
-  DATA: nom1 TYPE type1,
-        nom2 TYPE type2,
-        nom3 TYPE type3.
+    " Reference au dictionnaire de donnees
+    DATA gv_client TYPE kunnr.    " Numero client SAP
+    DATA gv_montant TYPE wrbtr.   " Montant en devise
 
-  Exemple :
+Initialisation automatique : toute variable declaree sans clause VALUE
+recoit automatiquement la valeur initiale de son type (0 pour les nombres,
+espaces pour les chaines, '00000000' pour les dates, etc.).
 
-    DATA: gv_x TYPE I VALUE 1,
-          gv_y TYPE I VALUE 2,
-          gv_z TYPE I.
+Portee des variables : une variable declaree avec DATA au niveau du
+programme (hors des procedures) est globale et accessible depuis tout
+le programme. Une variable declaree dans une procedure (FORM, METHOD,
+FUNCTION) est locale a cette procedure.
 
-4.3 Constantes
---------------
+4.3 Declaration chainee - Syntaxe avec deux-points
+--------------------------------------------------
+
+La declaration chainee permet de declarer plusieurs variables en une
+seule instruction DATA, en utilisant le caractere deux-points (:) apres
+le mot-cle et des virgules pour separer les declarations.
+
+Syntaxe :
+
+  DATA: nom1 TYPE type1 [options1],
+        nom2 TYPE type2 [options2],
+        ...
+        nomN TYPE typeN [optionsN].
+
+Cette syntaxe est particulierement utile pour :
+  - Regrouper les declarations par theme ou fonction
+  - Reduire la repetition du mot-cle DATA
+  - Ameliorer la lisibilite du code
+
+Exemple detaille :
+
+    " Declarations groupees par fonction
+    DATA: " Variables de travail
+          lv_index    TYPE I,
+          lv_longueur TYPE I,
+          lv_position TYPE I,
+
+          " Variables de resultat
+          lv_total    TYPE P DECIMALS 2,
+          lv_moyenne  TYPE F,
+
+          " Indicateurs
+          lv_trouve   TYPE ABAP_BOOL,
+          lv_erreur   TYPE ABAP_BOOL VALUE abap_false.
+
+Bonnes pratiques pour les declarations chainees :
+  - Aligner les noms de variables pour une meilleure lisibilite
+  - Grouper les variables par fonction ou par type
+  - Ajouter des commentaires pour documenter les groupes
+  - Limiter le nombre de variables par chaine (max 10-15)
+
+Declaration avec BEGIN OF - END OF integree :
+
+La syntaxe chainee permet aussi de declarer directement des structures :
+
+    DATA: BEGIN OF ls_donnees,
+            id    TYPE I,
+            nom   TYPE C LENGTH 30,
+            actif TYPE ABAP_BOOL,
+          END OF ls_donnees.
+
+Cette forme est equivalente a definir un type puis declarer une variable
+de ce type, mais sans creer de type reutilisable.
+
+4.4 Instruction CONSTANTS - Declaration de constantes
+------------------------------------------------------
+
+L'instruction CONSTANTS permet de declarer des valeurs immuables qui ne
+peuvent pas etre modifiees pendant l'execution du programme. L'utilisation
+de constantes ameliore la lisibilite et la maintenabilite du code.
+
+Syntaxe :
 
   CONSTANTS nom TYPE type VALUE valeur.
 
-  Exemple :
+Regles de nommage recommandees :
+  - gc_ : constante globale (Global Constant)
+  - lc_ : constante locale (Local Constant)
+  - c_  : forme abregee acceptable
 
-    CONSTANTS gc_pi TYPE F VALUE '3.14159'.
-    CONSTANTS gc_max TYPE I VALUE 100.
+Avantages des constantes :
+  - Centralisation des valeurs fixes
+  - Modification facile (un seul endroit)
+  - Documentation du code (noms significatifs)
+  - Detection des erreurs a la compilation
 
-4.4 Declaration par reference (LIKE)
--------------------------------------
+Exemples de declarations de constantes :
 
-  DATA nom LIKE autre_variable.
+    " Constantes mathematiques
+    CONSTANTS gc_pi TYPE F VALUE '3.14159265358979'.
+    CONSTANTS gc_e  TYPE F VALUE '2.71828182845904'.
 
-  Exemple :
+    " Limites et seuils
+    CONSTANTS gc_max_lignes TYPE I VALUE 1000.
+    CONSTANTS gc_taux_tva   TYPE P DECIMALS 2 VALUE '20.00'.
 
-    DATA gv_copie LIKE gv_compteur.
+    " Codes et statuts
+    CONSTANTS gc_statut_actif   TYPE C LENGTH 1 VALUE 'A'.
+    CONSTANTS gc_statut_inactif TYPE C LENGTH 1 VALUE 'I'.
+    CONSTANTS gc_statut_bloque  TYPE C LENGTH 1 VALUE 'B'.
 
-4.5 Structures
---------------
+    " Messages
+    CONSTANTS gc_msg_erreur TYPE STRING VALUE 'Une erreur est survenue'.
+
+Declaration chainee de constantes :
+
+    CONSTANTS: gc_lundi    TYPE I VALUE 1,
+               gc_mardi    TYPE I VALUE 2,
+               gc_mercredi TYPE I VALUE 3,
+               gc_jeudi    TYPE I VALUE 4,
+               gc_vendredi TYPE I VALUE 5,
+               gc_samedi   TYPE I VALUE 6,
+               gc_dimanche TYPE I VALUE 7.
+
+Constantes de structure :
+
+Les constantes peuvent aussi etre des structures avec des valeurs
+predefinies pour chaque champ :
+
+    CONSTANTS: BEGIN OF gc_defaut,
+                 taille TYPE I VALUE 100,
+                 format TYPE C LENGTH 3 VALUE 'PDF',
+                 actif  TYPE ABAP_BOOL VALUE abap_true,
+               END OF gc_defaut.
+
+4.5 Declaration par reference - LIKE et TYPE REF TO
+----------------------------------------------------
+
+La clause LIKE permet de declarer une variable en reprenant le type
+d'une autre variable existante ou d'un element du dictionnaire de
+donnees SAP (tables, structures, elements de donnees).
+
+Syntaxe avec LIKE :
+
+  DATA nom LIKE reference.
+
+Cas d'utilisation de LIKE :
+  - Copier le type d'une variable locale
+  - Referencer un champ d'une table du dictionnaire
+  - Assurer la coherence avec les structures existantes
+
+Exemples :
+
+    " Reference a une variable locale
+    DATA gv_original TYPE I.
+    DATA gv_copie LIKE gv_original.
+
+    " Reference a un champ de table du dictionnaire
+    DATA gv_numero_client LIKE kna1-kunnr.
+    DATA gv_nom_client LIKE kna1-name1.
+    DATA gv_montant LIKE bseg-wrbtr.
+
+    " Reference a la ligne d'une table
+    DATA gt_clients LIKE TABLE OF kna1.
+    DATA gs_client LIKE LINE OF gt_clients.
+
+TYPE vs LIKE - Differences et recommandations :
+
+  - TYPE : reference a un type de donnees abstrait (type elementaire,
+    type defini avec TYPES, element de donnees du dictionnaire).
+
+  - LIKE : reference a un objet de donnees concret (variable, champ
+    de table, structure).
+
+Recommandation moderne : depuis ABAP 7.40, il est preferable d'utiliser
+TYPE plutot que LIKE pour la plupart des cas. LIKE reste utile pour
+referencer des champs de tables du dictionnaire ou pour copier le type
+d'une variable dynamiquement determinee.
+
+Types reference - TYPE REF TO :
+
+Pour travailler avec des references (pointeurs), ABAP utilise la
+syntaxe TYPE REF TO :
+
+    " Reference a un objet
+    DATA lo_client TYPE REF TO zcl_client.
+
+    " Reference a des donnees
+    DATA lr_donnees TYPE REF TO ty_donnees.
+    DATA lr_table TYPE REF TO DATA.      " Reference generique
+
+4.6 Instruction TYPES - Definition de types personnalises
+-----------------------------------------------------------
+
+L'instruction TYPES permet de creer des definitions de types
+reutilisables dans tout le programme. Ces types peuvent etre des
+types elementaires, des structures ou des types de tables.
+
+Syntaxe pour types elementaires :
+
+  TYPES nom TYPE type_de_base [LENGTH longueur] [DECIMALS decimales].
+
+Exemples :
+
+    " Types elementaires personnalises
+    TYPES ty_montant TYPE P LENGTH 15 DECIMALS 2.
+    TYPES ty_code TYPE C LENGTH 10.
+    TYPES ty_description TYPE STRING.
+
+Syntaxe pour types structures :
 
   TYPES: BEGIN OF nom_structure,
            champ1 TYPE type1,
            champ2 TYPE type2,
+           ...
          END OF nom_structure.
 
-  DATA variable TYPE nom_structure.
+Exemple complet de structure :
 
-  Exemple :
+    " Definition d'un type structure
+    TYPES: BEGIN OF ty_employe,
+             matricule TYPE N LENGTH 8,
+             nom       TYPE C LENGTH 40,
+             prenom    TYPE C LENGTH 30,
+             service   TYPE C LENGTH 4,
+             salaire   TYPE P LENGTH 8 DECIMALS 2,
+             date_embauche TYPE D,
+             actif     TYPE ABAP_BOOL,
+           END OF ty_employe.
+
+    " Declaration de variables utilisant ce type
+    DATA gs_employe TYPE ty_employe.
+    DATA gt_employes TYPE TABLE OF ty_employe.
+    DATA gs_backup TYPE ty_employe.
+
+Structures imbriquees :
+
+Les structures peuvent contenir d'autres structures pour modeliser
+des donnees complexes :
+
+    TYPES: BEGIN OF ty_adresse,
+             rue        TYPE C LENGTH 60,
+             code_postal TYPE N LENGTH 5,
+             ville      TYPE C LENGTH 40,
+             pays       TYPE C LENGTH 3,
+           END OF ty_adresse.
+
+    TYPES: BEGIN OF ty_client_complet,
+             numero     TYPE N LENGTH 10,
+             nom        TYPE C LENGTH 60,
+             adresse_facturation TYPE ty_adresse,
+             adresse_livraison   TYPE ty_adresse,
+             telephone  TYPE C LENGTH 15,
+             email      TYPE C LENGTH 60,
+           END OF ty_client_complet.
+
+Inclusion de structures avec INCLUDE :
+
+Pour eviter la duplication, on peut inclure une structure dans une
+autre avec la clause INCLUDE :
 
     TYPES: BEGIN OF ty_personne,
-             nom    TYPE C LENGTH 30,
-             age    TYPE I,
-             ville  TYPE C LENGTH 20,
+             nom    TYPE C LENGTH 40,
+             prenom TYPE C LENGTH 30,
            END OF ty_personne.
-    DATA gs_pers TYPE ty_personne.
 
-4.6 Tables internes
--------------------
+    TYPES: BEGIN OF ty_employe_v2.
+             INCLUDE TYPE ty_personne.
+    TYPES:   matricule TYPE N LENGTH 8,
+             service   TYPE C LENGTH 4,
+           END OF ty_employe_v2.
 
-  DATA nom TYPE TABLE OF type_ligne.
-  DATA nom LIKE TABLE OF variable.
+4.7 Structures - Definition et utilisation detaillee
+------------------------------------------------------
 
-  Exemple :
+Les structures sont des types de donnees composes qui regroupent
+plusieurs champs de types differents sous un meme identificateur.
+Elles sont essentielles pour modeliser des entites metier complexes.
 
-    DATA gt_personnes TYPE TABLE OF ty_personne.
+Declaration directe avec DATA BEGIN OF :
 
-4.7 Ecran de selection
------------------------
+    DATA: BEGIN OF gs_commande,
+            numero      TYPE N LENGTH 10,
+            date        TYPE D,
+            client      TYPE N LENGTH 10,
+            montant_ht  TYPE P DECIMALS 2,
+            tva         TYPE P DECIMALS 2,
+            montant_ttc TYPE P DECIMALS 2,
+            statut      TYPE C LENGTH 2,
+          END OF gs_commande.
 
-  PARAMETERS nom TYPE type [DEFAULT valeur].
-  SELECT-OPTIONS nom FOR variable.
+Acces aux champs d'une structure :
 
-  Exemple :
+L'acces aux champs individuels se fait avec le tiret (-) :
 
-    PARAMETERS p_count TYPE I DEFAULT 10.
-    SELECT-OPTIONS s_date FOR sy-datum.
+    gs_commande-numero = '0000000001'.
+    gs_commande-date = sy-datum.
+    gs_commande-client = '0000123456'.
+    gs_commande-montant_ht = '1000.00'.
+    gs_commande-tva = gs_commande-montant_ht * '0.20'.
+    gs_commande-montant_ttc = gs_commande-montant_ht + gs_commande-tva.
+
+Affectation complete de structure :
+
+On peut affecter une structure entiere a une autre du meme type :
+
+    DATA gs_copie LIKE gs_commande.
+    gs_copie = gs_commande.          " Copie complete
+
+Ou utiliser MOVE-CORRESPONDING pour copier les champs de meme nom :
+
+    DATA: BEGIN OF gs_resume,
+            numero TYPE N LENGTH 10,
+            montant_ttc TYPE P DECIMALS 2,
+          END OF gs_resume.
+
+    MOVE-CORRESPONDING gs_commande TO gs_resume.
+
+Initialisation des structures :
+
+    " Reinitialiser tous les champs a leur valeur initiale
+    CLEAR gs_commande.
+
+    " Reinitialiser un champ specifique
+    CLEAR gs_commande-statut.
+
+    " Verifier si une structure est initiale
+    IF gs_commande IS INITIAL.
+      WRITE: / 'La structure est vide'.
+    ENDIF.
+
+4.8 Tables internes - Declaration et types de tables
+------------------------------------------------------
+
+Les tables internes sont des structures de donnees dynamiques qui
+permettent de stocker plusieurs lignes du meme type. Elles sont
+fondamentales pour le traitement de collections de donnees en ABAP.
+
+Types de tables internes :
+
+ABAP supporte trois types principaux de tables internes, chacun
+optimise pour des usages specifiques :
+
+  1. TABLE STANDARD (par defaut) :
+     - Acces sequentiel ou par index
+     - Insertion rapide (a la fin)
+     - Recherche lineaire O(n)
+     - Adaptee aux petites collections
+
+  2. SORTED TABLE :
+     - Toujours triee selon une cle
+     - Recherche binaire O(log n)
+     - Insertion triee automatique
+     - Adaptee aux recherches frequentes
+
+  3. HASHED TABLE :
+     - Acces par cle unique (hash)
+     - Recherche O(1) par cle
+     - Pas d'acces par index
+     - Adaptee aux grandes collections avec cle unique
+
+Syntaxe de declaration :
+
+    " Table standard (defaut)
+    DATA gt_donnees TYPE TABLE OF ty_ligne.
+    DATA gt_clients TYPE STANDARD TABLE OF ty_client.
+
+    " Table triee avec cle
+    DATA gt_employes TYPE SORTED TABLE OF ty_employe
+                     WITH UNIQUE KEY matricule.
+
+    " Table avec cle non unique
+    DATA gt_commandes TYPE SORTED TABLE OF ty_commande
+                      WITH NON-UNIQUE KEY client.
+
+    " Table hashee avec cle unique
+    DATA gt_index TYPE HASHED TABLE OF ty_index
+                  WITH UNIQUE KEY code.
+
+Declaration complete avec toutes les options :
+
+    TYPES: BEGIN OF ty_article,
+             numero TYPE N LENGTH 10,
+             designation TYPE C LENGTH 40,
+             prix TYPE P DECIMALS 2,
+             stock TYPE I,
+           END OF ty_article.
+
+    DATA gt_articles TYPE TABLE OF ty_article
+         WITH HEADER LINE             " (obsolete mais supporte)
+         WITH KEY numero.
+
+Syntaxe moderne (ABAP 7.40+) :
+
+    DATA gt_articles TYPE SORTED TABLE OF ty_article
+         WITH UNIQUE KEY numero
+         WITH NON-UNIQUE SORTED KEY k_prix COMPONENTS prix.
+
+Declaration avec LIKE TABLE OF :
+
+    DATA gt_clients_vip LIKE TABLE OF gs_client.
+    DATA gt_copie LIKE gt_clients.
+
+4.9 Field-symbols et references de donnees
+-------------------------------------------
+
+Les field-symbols sont des pointeurs symboliques vers des zones de
+memoire. Ils permettent d'acceder a des donnees de maniere dynamique
+sans copier les valeurs.
+
+Declaration de field-symbols :
+
+    FIELD-SYMBOLS <fs_ligne> TYPE ty_ligne.
+    FIELD-SYMBOLS <fs_champ> TYPE ANY.
+    FIELD-SYMBOLS <fs_table> TYPE ANY TABLE.
+
+Affectation avec ASSIGN :
+
+    DATA gv_valeur TYPE I VALUE 42.
+    FIELD-SYMBOLS <fs_val> TYPE I.
+
+    ASSIGN gv_valeur TO <fs_val>.
+    <fs_val> = 100.          " Modifie gv_valeur directement
+    WRITE: / gv_valeur.      " Affiche 100
+
+Utilisation avec les tables internes :
+
+    LOOP AT gt_clients ASSIGNING FIELD-SYMBOL(<fs_client>).
+      <fs_client>-statut = 'A'.    " Modification directe
+    ENDLOOP.
+
+Verification d'affectation :
+
+    IF <fs_val> IS ASSIGNED.
+      " Le field-symbol pointe vers une donnee valide
+    ENDIF.
+
+    UNASSIGN <fs_val>.       " Libere l'affectation
+
+References de donnees avec GET REFERENCE :
+
+    DATA lr_ref TYPE REF TO ty_client.
+    DATA ls_client TYPE ty_client.
+
+    GET REFERENCE OF ls_client INTO lr_ref.
+
+    " Acces via la reference
+    lr_ref->nom = 'Dupont'.
+
+4.10 Ecran de selection - PARAMETERS et SELECT-OPTIONS
+--------------------------------------------------------
+
+L'ecran de selection permet de definir des parametres d'entree que
+l'utilisateur peut renseigner avant l'execution d'un report. C'est
+une fonctionnalite essentielle des programmes de type REPORT.
+
+Instruction PARAMETERS :
+
+  PARAMETERS nom TYPE type [DEFAULT valeur] [options].
+
+Options principales de PARAMETERS :
+  - DEFAULT valeur : valeur par defaut
+  - OBLIGATORY : saisie obligatoire
+  - LOWER CASE : accepte les minuscules
+  - AS CHECKBOX : affiche comme case a cocher
+  - RADIOBUTTON GROUP grp : bouton radio dans un groupe
+  - MODIF ID id : identifiant pour modification dynamique
+  - NO-DISPLAY : parametre cache
+
+Exemples de PARAMETERS :
+
+    " Parametre simple avec valeur par defaut
+    PARAMETERS p_societe TYPE bukrs DEFAULT '1000'.
+
+    " Parametre obligatoire
+    PARAMETERS p_date TYPE sy-datum OBLIGATORY.
+
+    " Case a cocher
+    PARAMETERS p_actif AS CHECKBOX DEFAULT 'X'.
+
+    " Boutons radio
+    PARAMETERS: p_opt1 RADIOBUTTON GROUP grp1 DEFAULT 'X',
+                p_opt2 RADIOBUTTON GROUP grp1,
+                p_opt3 RADIOBUTTON GROUP grp1.
+
+    " Parametre avec liste de valeurs (recherche F4)
+    PARAMETERS p_client TYPE kunnr MATCHCODE OBJECT zsh_client.
+
+Instruction SELECT-OPTIONS :
+
+  SELECT-OPTIONS nom FOR variable [options].
+
+Les SELECT-OPTIONS permettent de definir des plages de valeurs
+(intervals) pour les selections. Le systeme cree automatiquement
+une table interne avec les champs SIGN, OPTION, LOW et HIGH.
+
+Structure d'une ligne SELECT-OPTIONS :
+  - SIGN : 'I' (Include) ou 'E' (Exclude)
+  - OPTION : 'EQ', 'NE', 'GT', 'LT', 'GE', 'LE', 'BT' (Between), etc.
+  - LOW : valeur basse de l'intervalle
+  - HIGH : valeur haute de l'intervalle (pour BT)
+
+Exemples de SELECT-OPTIONS :
+
+    " Variable de reference pour SELECT-OPTIONS
+    TABLES: kna1.    " Ou: DATA gv_kunnr TYPE kna1-kunnr.
+
+    " Selection de numeros de clients
+    SELECT-OPTIONS s_kunnr FOR kna1-kunnr.
+
+    " Selection de dates
+    SELECT-OPTIONS s_date FOR sy-datum DEFAULT sy-datum.
+
+    " Selection avec options
+    SELECT-OPTIONS s_bukrs FOR t001-bukrs NO-EXTENSION
+                                          NO INTERVALS.
+
+Utilisation dans les requetes SELECT :
+
+    SELECT * FROM kna1
+      WHERE kunnr IN s_kunnr
+        AND land1 = p_pays
+      INTO TABLE gt_clients.
+
+4.11 Variables systeme - Structure SY
+--------------------------------------
+
+ABAP fournit une structure systeme SY (alias SYST) contenant des
+informations sur le contexte d'execution. Ces champs sont en lecture
+seule et mis a jour automatiquement par le systeme.
+
+Champs SY frequemment utilises :
+
+  Champ         Type     Description
+  ------------  -------  ------------------------------------------
+  sy-subrc      I        Code retour de la derniere operation
+  sy-datum      D        Date systeme (AAAAMMJJ)
+  sy-uzeit      T        Heure systeme (HHMMSS)
+  sy-uname      C(12)    Nom de l'utilisateur connecte
+  sy-langu      C(1)     Langue de connexion
+  sy-mandt      C(3)     Mandant de connexion
+  sy-sysid      C(8)     Identifiant du systeme SAP
+  sy-host       C(32)    Nom du serveur d'application
+  sy-index      I        Index de boucle (DO, WHILE)
+  sy-tabix      I        Index de ligne dans une table interne
+  sy-dbcnt      I        Nombre de lignes traitees par SELECT
+  sy-msgid      C(20)    Classe du dernier message
+  sy-msgno      N(3)     Numero du dernier message
+  sy-msgty      C(1)     Type du dernier message (E/W/I/S)
+  sy-msgv1-v4   C(50)    Variables du dernier message
+  sy-repid      C(40)    Nom du programme en cours
+  sy-tcode      C(20)    Code transaction en cours
+  sy-dynnr      N(4)     Numero d'ecran courant
+  sy-batch      C(1)     'X' si execution en batch
+
+Exemples d'utilisation :
+
+    " Verification du code retour
+    READ TABLE gt_clients WITH KEY numero = lv_num INTO gs_client.
+    IF sy-subrc = 0.
+      WRITE: / 'Client trouve:', gs_client-nom.
+    ELSE.
+      WRITE: / 'Client non trouve'.
+    ENDIF.
+
+    " Utilisation de la date et heure systeme
+    gs_log-date_creation = sy-datum.
+    gs_log-heure_creation = sy-uzeit.
+    gs_log-utilisateur = sy-uname.
+
+    " Index de boucle
+    DO 10 TIMES.
+      WRITE: / 'Iteration:', sy-index.
+    ENDDO.
+
+    " Index de table
+    LOOP AT gt_articles INTO gs_article.
+      gs_article-ligne = sy-tabix.
+    ENDLOOP.
+
+4.12 Bonnes pratiques pour les declarations
+--------------------------------------------
+
+Conventions de nommage recommandees :
+
+  Prefixe  Signification          Exemple
+  -------  ---------------------  ----------------
+  gv_      Variable globale       gv_compteur
+  lv_      Variable locale        lv_index
+  gs_      Structure globale      gs_client
+  ls_      Structure locale       ls_donnees
+  gt_      Table globale          gt_resultats
+  lt_      Table locale           lt_temp
+  gf_      Flag/booleen global    gf_traite
+  lf_      Flag/booleen local     lf_erreur
+  gc_      Constante globale      gc_max
+  lc_      Constante locale       lc_taille
+  lo_      Objet local            lo_document
+  go_      Objet global           go_application
+  lr_      Reference locale       lr_donnees
+  gr_      Reference globale      gr_contexte
+
+Types personnalises :
+
+  Prefixe  Signification          Exemple
+  -------  ---------------------  ----------------
+  ty_      Type structure         ty_client
+  tt_      Type table             tt_clients
+  tr_      Type range             tr_numeros
+
+Organisation des declarations :
+
+Pour une meilleure lisibilite, organiser les declarations dans
+l'ordre suivant :
+
+    1. TYPES (definitions de types personnalises)
+    2. CONSTANTS (constantes)
+    3. DATA (variables et structures simples)
+    4. DATA (tables internes)
+    5. FIELD-SYMBOLS (symboles de champ)
+    6. PARAMETERS et SELECT-OPTIONS (ecran de selection)
+
+Exemple d'organisation :
+
+    "======================================
+    " Types personnalises
+    "======================================
+    TYPES: BEGIN OF ty_resultat,
+             code TYPE N LENGTH 10,
+             valeur TYPE P DECIMALS 2,
+           END OF ty_resultat.
+    TYPES tt_resultats TYPE TABLE OF ty_resultat.
+
+    "======================================
+    " Constantes
+    "======================================
+    CONSTANTS: gc_max_lignes TYPE I VALUE 1000,
+               gc_version TYPE C LENGTH 5 VALUE '1.0.0'.
+
+    "======================================
+    " Variables globales
+    "======================================
+    DATA: gv_compteur TYPE I,
+          gv_total TYPE P DECIMALS 2,
+          gs_resultat TYPE ty_resultat.
+
+    "======================================
+    " Tables internes
+    "======================================
+    DATA: gt_resultats TYPE tt_resultats,
+          gt_erreurs TYPE TABLE OF bapiret2.
+
+    "======================================
+    " Ecran de selection
+    "======================================
+    PARAMETERS p_annee TYPE gjahr OBLIGATORY.
+    SELECT-OPTIONS s_bukrs FOR t001-bukrs.
 
 
 =========================================================================
