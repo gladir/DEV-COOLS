@@ -15,7 +15,7 @@
   LISTE DES 25 TODOs A IMPLEMENTER
   ============================================================
 
-  TODO 01 - [A FAIRE] INFRASTRUCTURE DE BASE ET OPTIONS CLI
+  TODO 01 - [IMPLEMENTE] INFRASTRUCTURE DE BASE ET OPTIONS CLI
             Programme principal CSMITH en Turbo Pascal / Free Pascal.
             Options de ligne de commande : --seed <n> (graine aleatoire),
             --max-funcs <n> (nombre max de fonctions), --max-block-depth <n>

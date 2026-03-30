@@ -5,3 +5,5 @@
 *.ppu
 *.prg
 SQLCMD
+CSMITH
+*.o

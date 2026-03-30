@@ -1,6 +1,6 @@
 TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
 
-  1.  [A FAIRE] Infrastructure de base et options CLI.
+  1.  [IMPLEMENTE] Infrastructure de base et options CLI.
       Programme principal CSMITH en Turbo Pascal / Free Pascal.
       Options de ligne de commande : --seed <n> (graine aleatoire),
       --max-funcs <n> (nombre max de fonctions), --max-block-depth <n>
