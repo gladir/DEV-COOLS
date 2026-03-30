@@ -13169,23 +13169,23 @@ Begin
     Begin
       { Fonctions scalaires simples }
       Op := StrUpperCase(ASTPool[Node].Text);
-      If (Op = 'UPPER') And (Child0 >= 0) Then
+      If (Op = 'UPPER') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V := VL;
         If Not V.IsNull Then
           V.StrVal := StrUpperCase(V.StrVal);
       End
-      Else If (Op = 'LOWER') And (Child0 >= 0) Then
+      Else If (Op = 'LOWER') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V := VL;
         If Not V.IsNull Then
           V.StrVal := StrLowerCase(V.StrVal);
       End
       Else If (Op = 'LEN') Or (Op = 'DATALENGTH') Then
       Begin
-        If Child0 >= 0 Then VL := QEEvalExpr(Child0, Row, Res);
+        If Child1 >= 0 Then VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -13195,11 +13195,11 @@ Begin
       End
       Else If Op = 'ISNULL' Then
       Begin
-        If (Child0 >= 0) And (Child1 >= 0) Then
+        If (Child1 >= 0) And (Child2 >= 0) Then
         Begin
-          VL := QEEvalExpr(Child0, Row, Res);
+          VL := QEEvalExpr(Child1, Row, Res);
           If VL.IsNull Then
-            V := QEEvalExpr(Child1, Row, Res)
+            V := QEEvalExpr(Child2, Row, Res)
           Else
             V := VL;
         End;
@@ -13208,7 +13208,7 @@ Begin
       Begin
         V.IsNull := True;
         V.Valid  := True;
-        For I := 0 To ASTPool[Node].ChildCnt - 1 Do
+        For I := 1 To ASTPool[Node].ChildCnt - 1 Do
         Begin
           VL := QEEvalExpr(ASTPool[Node].Children[I], Row, Res);
           If Not VL.IsNull Then
@@ -13220,9 +13220,9 @@ Begin
       End
       Else If Op = 'ABS' Then
       Begin
-        If Child0 >= 0 Then
+        If Child1 >= 0 Then
         Begin
-          V := QEEvalExpr(Child0, Row, Res);
+          V := QEEvalExpr(Child1, Row, Res);
           If Not V.IsNull Then
           Begin
             If (V.Category = SQLCAT_INTEGER) And (V.IntVal < 0) Then
@@ -13234,20 +13234,21 @@ Begin
         End;
       End
       { ===== TODO 19 : Fonctions scalaires chaines ===== }
-      Else If (Op = 'LEFT') And (Child0 >= 0) And (Child1 >= 0) Then
+      Else If (Op = 'LEFT') And (Child1 >= 0) And (Child2 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
+        V.IsNull   := False;
         If VL.IsNull Or VR.IsNull Then V.IsNull := True
         Else V.StrVal := Copy(SqlValueToStr(VL), 1, VR.IntVal);
       End
-      Else If (Op = 'RIGHT') And (Child0 >= 0) And (Child1 >= 0) Then
+      Else If (Op = 'RIGHT') And (Child1 >= 0) And (Child2 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13259,10 +13260,10 @@ Begin
           Op := 'RIGHT';
         End;
       End
-      Else If (Op = 'SUBSTRING') And (Child0 >= 0) And (Child1 >= 0) Then
+      Else If (Op = 'SUBSTRING') And (Child1 >= 0) And (Child2 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13270,8 +13271,8 @@ Begin
         Else Begin
           Op := SqlValueToStr(VL);
           I := VR.IntVal;
-          If Child2 >= 0 Then Begin
-            VR := QEEvalExpr(Child2, Row, Res);
+          If ASTPool[Node].ChildCnt > 3 Then Begin
+            VR := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
             If VR.IsNull Then V.IsNull := True
             Else V.StrVal := Copy(Op, I, VR.IntVal);
           End
@@ -13279,9 +13280,9 @@ Begin
           Op := 'SUBSTRING';
         End;
       End
-      Else If (Op = 'LTRIM') And (Child0 >= 0) Then
+      Else If (Op = 'LTRIM') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13294,9 +13295,9 @@ Begin
           Op := 'LTRIM';
         End;
       End
-      Else If (Op = 'RTRIM') And (Child0 >= 0) Then
+      Else If (Op = 'RTRIM') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13309,9 +13310,9 @@ Begin
           Op := 'RTRIM';
         End;
       End
-      Else If (Op = 'TRIM') And (Child0 >= 0) Then
+      Else If (Op = 'TRIM') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13327,18 +13328,18 @@ Begin
           Op := 'TRIM';
         End;
       End
-      Else If (Op = 'REPLACE') And (Child0 >= 0) And (Child1 >= 0) And
-              (Child2 >= 0) Then
+      Else If (Op = 'REPLACE') And (Child1 >= 0) And (Child2 >= 0) And
+              (ASTPool[Node].ChildCnt > 3) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
         If VL.IsNull Or VR.IsNull Then V.IsNull := True
         Else Begin
           Op := SqlValueToStr(VL);
-          VT := QEEvalExpr(Child2, Row, Res);
+          VT := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
           V.StrVal := '';
           VR.StrVal := SqlValueToStr(VR);
           STmp := SqlValueToStr(VT);
@@ -13360,10 +13361,10 @@ Begin
           Op := 'REPLACE';
         End;
       End
-      Else If (Op = 'REPLICATE') And (Child0 >= 0) And (Child1 >= 0) Then
+      Else If (Op = 'REPLICATE') And (Child1 >= 0) And (Child2 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13379,9 +13380,9 @@ Begin
           End;
         End;
       End
-      Else If (Op = 'REVERSE') And (Child0 >= 0) Then
+      Else If (Op = 'REVERSE') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13395,18 +13396,18 @@ Begin
           Op := 'REVERSE';
         End;
       End
-      Else If (Op = 'CHARINDEX') And (Child0 >= 0) And (Child1 >= 0) Then
+      Else If (Op = 'CHARINDEX') And (Child1 >= 0) And (Child2 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
         If VL.IsNull Or VR.IsNull Then V.IsNull := True
         Else Begin
           I := 1;
-          If Child2 >= 0 Then Begin
-            VT := QEEvalExpr(Child2, Row, Res);
+          If ASTPool[Node].ChildCnt > 3 Then Begin
+            VT := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
             If Not VT.IsNull Then I := VT.IntVal;
           End;
           Op := SqlValueToStr(VR);
@@ -13422,10 +13423,10 @@ Begin
           Op := 'CHARINDEX';
         End;
       End
-      Else If (Op = 'PATINDEX') And (Child0 >= 0) And (Child1 >= 0) Then
+      Else If (Op = 'PATINDEX') And (Child1 >= 0) And (Child2 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -13444,19 +13445,19 @@ Begin
           Op := 'PATINDEX';
         End;
       End
-      Else If (Op = 'STUFF') And (Child0 >= 0) And (Child1 >= 0) And
-              (Child2 >= 0) And (ASTPool[Node].ChildCnt >= 4) Then
+      Else If (Op = 'STUFF') And (Child1 >= 0) And (Child2 >= 0) And
+              (ASTPool[Node].ChildCnt > 3) And (ASTPool[Node].ChildCnt >= 5) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
         If VL.IsNull Then V.IsNull := True
         Else Begin
           Op := SqlValueToStr(VL);
-          VR := QEEvalExpr(Child1, Row, Res);
-          VL := QEEvalExpr(Child2, Row, Res);
-          VT := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
+          VR := QEEvalExpr(Child2, Row, Res);
+          VL := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
+          VT := QEEvalExpr(ASTPool[Node].Children[4], Row, Res);
           If VR.IsNull Or VL.IsNull Then V.IsNull := True
           Else Begin
             I := VR.IntVal; { start }
@@ -13473,7 +13474,7 @@ Begin
         V.Valid    := True;
         V.IsNull   := False;
         V.StrVal   := '';
-        For I := 0 To ASTPool[Node].ChildCnt - 1 Do
+        For I := 1 To ASTPool[Node].ChildCnt - 1 Do
         Begin
           VL := QEEvalExpr(ASTPool[Node].Children[I], Row, Res);
           If Not VL.IsNull Then
@@ -13487,13 +13488,13 @@ Begin
         V.Valid    := True;
         V.IsNull   := False;
         V.StrVal   := '';
-        If Child0 >= 0 Then
+        If Child1 >= 0 Then
         Begin
-          VR := QEEvalExpr(Child0, Row, Res);
+          VR := QEEvalExpr(Child1, Row, Res);
           If VR.IsNull Then V.IsNull := True
           Else Begin
             CI := 0;
-            For I := 1 To ASTPool[Node].ChildCnt - 1 Do
+            For I := 2 To ASTPool[Node].ChildCnt - 1 Do
             Begin
               VL := QEEvalExpr(ASTPool[Node].Children[I], Row, Res);
               If Not VL.IsNull Then
@@ -13511,9 +13512,9 @@ Begin
         V.Category := SQLCAT_STRING;
         V.XType    := XT_NVARCHAR;
         V.Valid    := True;
-        If (Child0 >= 0) And (Child1 >= 0) Then
+        If (Child1 >= 0) And (Child2 >= 0) Then
         Begin
-          VL := QEEvalExpr(Child0, Row, Res);
+          VL := QEEvalExpr(Child1, Row, Res);
           If VL.IsNull Then V.IsNull := True
           Else V.StrVal := SqlValueToStr(VL);
         End
@@ -13521,15 +13522,15 @@ Begin
       End
       Else If Op = 'QUOTENAME' Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_NVARCHAR;
         V.Valid    := True;
         If VL.IsNull Then V.IsNull := True
         Else Begin
           Op := SqlValueToStr(VL);
-          If Child1 >= 0 Then Begin
-            VR := QEEvalExpr(Child1, Row, Res);
+          If Child2 >= 0 Then Begin
+            VR := QEEvalExpr(Child2, Row, Res);
             If (Not VR.IsNull) And (Length(SqlValueToStr(VR)) > 0) Then
             Begin
               CI := Ord(SqlValueToStr(VR)[1]);
@@ -13548,9 +13549,9 @@ Begin
           Op := 'QUOTENAME';
         End;
       End
-      Else If (Op = 'CHAR') And (Child0 >= 0) Then
+      Else If (Op = 'CHAR') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_CHAR;
         V.Valid    := True;
@@ -13559,9 +13560,9 @@ Begin
           V.StrVal := Chr(VL.IntVal)
         Else V.IsNull := True;
       End
-      Else If (Op = 'NCHAR') And (Child0 >= 0) Then
+      Else If (Op = 'NCHAR') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_NCHAR;
         V.Valid    := True;
@@ -13571,9 +13572,9 @@ Begin
         Else V.IsNull := True;
       End
       Else If ((Op = 'ASCII') Or (Op = 'UNICODE')) And
-              (Child0 >= 0) Then
+              (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -13585,9 +13586,9 @@ Begin
           Op := 'ASCII';
         End;
       End
-      Else If (Op = 'SPACE') And (Child0 >= 0) Then
+      Else If (Op = 'SPACE') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13601,9 +13602,9 @@ Begin
             V.StrVal := V.StrVal + ' ';
         End;
       End
-      Else If (Op = 'STR') And (Child0 >= 0) Then
+      Else If (Op = 'STR') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13615,9 +13616,9 @@ Begin
             Str(VL.FloatVal:10:0, V.StrVal);
         End;
       End
-      Else If (Op = 'SOUNDEX') And (Child0 >= 0) Then
+      Else If (Op = 'SOUNDEX') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13652,15 +13653,15 @@ Begin
           Op := 'SOUNDEX';
         End;
       End
-      Else If (Op = 'DIFFERENCE') And (Child0 >= 0) And
-              (Child1 >= 0) Then
+      Else If (Op = 'DIFFERENCE') And (Child1 >= 0) And
+              (Child2 >= 0) Then
       Begin
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
         V.IntVal   := 0;
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         If VL.IsNull Or VR.IsNull Then V.IsNull := True
         Else Begin
           { Compare SOUNDEX codes character by character }
@@ -13672,17 +13673,17 @@ Begin
           End;
         End;
       End
-      Else If (Op = 'TRANSLATE') And (Child0 >= 0) And (Child1 >= 0) And
-              (Child2 >= 0) Then
+      Else If (Op = 'TRANSLATE') And (Child1 >= 0) And (Child2 >= 0) And
+              (ASTPool[Node].ChildCnt > 3) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
         If VL.IsNull Or VR.IsNull Then V.IsNull := True
         Else Begin
-          VT := QEEvalExpr(Child2, Row, Res);
+          VT := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
           Op := SqlValueToStr(VL);
           VR.StrVal := SqlValueToStr(VR);
           STmp := SqlValueToStr(VT);
@@ -13703,9 +13704,9 @@ Begin
           Op := 'TRANSLATE';
         End;
       End
-      Else If (Op = 'STRING_ESCAPE') And (Child0 >= 0) Then
+      Else If (Op = 'STRING_ESCAPE') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_NVARCHAR;
         V.Valid    := True;
@@ -13733,11 +13734,11 @@ Begin
         End;
       End
       { ===== TODO 19 suite : STRING_SPLIT ===== }
-      Else If (Op = 'STRING_SPLIT') And (Child0 >= 0) And
-              (Child1 >= 0) Then
+      Else If (Op = 'STRING_SPLIT') And (Child1 >= 0) And
+              (Child2 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_VARCHAR;
         V.Valid    := True;
@@ -13809,9 +13810,9 @@ Begin
         Str(V.Year:4, STmp);
         V.StrVal := STmp + '-01-01 00:00:00.000';
       End
-      Else If (Op = 'YEAR') And (Child0 >= 0) Then
+      Else If (Op = 'YEAR') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -13825,9 +13826,9 @@ Begin
           Op := 'YEAR';
         End;
       End
-      Else If (Op = 'MONTH') And (Child0 >= 0) Then
+      Else If (Op = 'MONTH') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -13842,9 +13843,9 @@ Begin
           Op := 'MONTH';
         End;
       End
-      Else If (Op = 'DAY') And (Child0 >= 0) Then
+      Else If (Op = 'DAY') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -13859,10 +13860,10 @@ Begin
           Op := 'DAY';
         End;
       End
-      Else If (Op = 'DATEPART') And (Child0 >= 0) And (Child1 >= 0) Then
+      Else If (Op = 'DATEPART') And (Child1 >= 0) And (Child2 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -13930,10 +13931,10 @@ Begin
           Op := 'DATEPART';
         End;
       End
-      Else If (Op = 'DATENAME') And (Child0 >= 0) And (Child1 >= 0) Then
+      Else If (Op = 'DATENAME') And (Child1 >= 0) And (Child2 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
         V.Category := SQLCAT_STRING;
         V.XType    := XT_NVARCHAR;
         V.Valid    := True;
@@ -13974,12 +13975,12 @@ Begin
           Op := 'DATENAME';
         End;
       End
-      Else If (Op = 'DATEADD') And (Child0 >= 0) And (Child1 >= 0) And
-              (Child2 >= 0) Then
+      Else If (Op = 'DATEADD') And (Child1 >= 0) And (Child2 >= 0) And
+              (ASTPool[Node].ChildCnt > 3) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
-        VT := QEEvalExpr(Child2, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
+        VT := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
         V.Category := SQLCAT_DATETIME;
         V.XType    := XT_DATETIME;
         V.Valid    := True;
@@ -14072,11 +14073,11 @@ Begin
         End;
       End
       Else If ((Op = 'DATEDIFF') Or (Op = 'DATEDIFF_BIG')) And
-              (Child0 >= 0) And (Child1 >= 0) And (Child2 >= 0) Then
+              (Child1 >= 0) And (Child2 >= 0) And (ASTPool[Node].ChildCnt > 3) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
-        VR := QEEvalExpr(Child1, Row, Res);
-        VT := QEEvalExpr(Child2, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
+        VR := QEEvalExpr(Child2, Row, Res);
+        VT := QEEvalExpr(ASTPool[Node].Children[3], Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -14380,9 +14381,9 @@ Begin
           End;
         End;
       End
-      Else If (Op = 'EOMONTH') And (Child0 >= 0) Then
+      Else If (Op = 'EOMONTH') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DATETIME;
         V.XType    := XT_DATE;
         V.Valid    := True;
@@ -14444,9 +14445,9 @@ Begin
           V.StrVal := V.StrVal + STmp;
         End;
       End
-      Else If (Op = 'ISDATE') And (Child0 >= 0) Then
+      Else If (Op = 'ISDATE') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -14499,9 +14500,9 @@ Begin
         End;
       End
       { ===== TODO 21 : Fonctions scalaires mathematiques ===== }
-      Else If (Op = 'SIGN') And (Child0 >= 0) Then
+      Else If (Op = 'SIGN') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -14523,9 +14524,9 @@ Begin
           Else V.IntVal := 0;
         End;
       End
-      Else If (Op = 'CEILING') And (Child0 >= 0) Then
+      Else If (Op = 'CEILING') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Valid := True;
         If VL.IsNull Then V.IsNull := True
         Else Begin
@@ -14559,9 +14560,9 @@ Begin
           End;
         End;
       End
-      Else If (Op = 'FLOOR') And (Child0 >= 0) Then
+      Else If (Op = 'FLOOR') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Valid := True;
         If VL.IsNull Then V.IsNull := True
         Else Begin
@@ -14598,7 +14599,7 @@ Begin
           End;
         End;
       End
-      Else If (Op = 'ROUND') And (Child0 >= 0) And
+      Else If (Op = 'ROUND') And (Child1 >= 0) And
               (Child1 >= 0) Then
       Begin
         VL := QEEvalExpr(Child0, Row, Res);
@@ -14639,7 +14640,7 @@ Begin
           End;
         End;
       End
-      Else If (Op = 'POWER') And (Child0 >= 0) And
+      Else If (Op = 'POWER') And (Child1 >= 0) And
               (Child1 >= 0) Then
       Begin
         VL := QEEvalExpr(Child0, Row, Res);
@@ -14685,9 +14686,9 @@ Begin
           End;
         End;
       End
-      Else If (Op = 'SQRT') And (Child0 >= 0) Then
+      Else If (Op = 'SQRT') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14708,9 +14709,9 @@ Begin
             V.FloatVal := 0;
         End;
       End
-      Else If (Op = 'SQUARE') And (Child0 >= 0) Then
+      Else If (Op = 'SQUARE') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14728,9 +14729,9 @@ Begin
           V.FloatVal := V.FloatVal * V.FloatVal;
         End;
       End
-      Else If (Op = 'EXP') And (Child0 >= 0) Then
+      Else If (Op = 'EXP') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14748,9 +14749,9 @@ Begin
           V.FloatVal := Exp(V.FloatVal);
         End;
       End
-      Else If (Op = 'LOG') And (Child0 >= 0) Then
+      Else If (Op = 'LOG') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14792,9 +14793,9 @@ Begin
             V.FloatVal := 0;
         End;
       End
-      Else If (Op = 'LOG10') And (Child0 >= 0) Then
+      Else If (Op = 'LOG10') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14815,9 +14816,9 @@ Begin
             V.FloatVal := 0;
         End;
       End
-      Else If (Op = 'SIN') And (Child0 >= 0) Then
+      Else If (Op = 'SIN') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14835,9 +14836,9 @@ Begin
           V.FloatVal := Sin(V.FloatVal);
         End;
       End
-      Else If (Op = 'COS') And (Child0 >= 0) Then
+      Else If (Op = 'COS') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14855,9 +14856,9 @@ Begin
           V.FloatVal := Cos(V.FloatVal);
         End;
       End
-      Else If (Op = 'TAN') And (Child0 >= 0) Then
+      Else If (Op = 'TAN') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14879,9 +14880,9 @@ Begin
             V.FloatVal := 0;
         End;
       End
-      Else If (Op = 'COT') And (Child0 >= 0) Then
+      Else If (Op = 'COT') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14903,9 +14904,9 @@ Begin
             V.FloatVal := 0;
         End;
       End
-      Else If (Op = 'ASIN') And (Child0 >= 0) Then
+      Else If (Op = 'ASIN') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14935,9 +14936,9 @@ Begin
             V.FloatVal := 0;
         End;
       End
-      Else If (Op = 'ACOS') And (Child0 >= 0) Then
+      Else If (Op = 'ACOS') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14967,9 +14968,9 @@ Begin
             V.FloatVal := 0;
         End;
       End
-      Else If (Op = 'ATAN') And (Child0 >= 0) Then
+      Else If (Op = 'ATAN') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -14987,7 +14988,7 @@ Begin
           V.FloatVal := ArcTan(V.FloatVal);
         End;
       End
-      Else If (Op = 'ATN2') And (Child0 >= 0) And
+      Else If (Op = 'ATN2') And (Child1 >= 0) And
               (Child1 >= 0) Then
       Begin
         VL := QEEvalExpr(Child0, Row, Res);
@@ -15038,9 +15039,9 @@ Begin
         V.IsNull   := False;
         V.FloatVal := Pi;
       End
-      Else If (Op = 'DEGREES') And (Child0 >= 0) Then
+      Else If (Op = 'DEGREES') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -15058,9 +15059,9 @@ Begin
           V.FloatVal := V.FloatVal * 180.0 / Pi;
         End;
       End
-      Else If (Op = 'RADIANS') And (Child0 >= 0) Then
+      Else If (Op = 'RADIANS') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_FLOAT;
         V.Valid    := True;
@@ -15092,7 +15093,7 @@ Begin
         End;
         V.FloatVal := Random;
       End
-      Else If (Op = 'CHOOSE') And (Child0 >= 0) Then
+      Else If (Op = 'CHOOSE') And (Child1 >= 0) Then
       Begin
         VL := QEEvalExpr(Child0, Row, Res);
         V.Valid  := True;
@@ -15183,7 +15184,7 @@ Begin
         End;
       End
       { ===== TODO 22 : Fonctions de conversion et systeme ===== }
-      Else If (Op = 'NULLIF') And (Child0 >= 0) And
+      Else If (Op = 'NULLIF') And (Child1 >= 0) And
               (Child1 >= 0) Then
       Begin
         VL := QEEvalExpr(Child0, Row, Res);
@@ -15198,9 +15199,9 @@ Begin
         Else
           V := VL;
       End
-      Else If (Op = 'ISNUMERIC') And (Child0 >= 0) Then
+      Else If (Op = 'ISNUMERIC') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -15221,7 +15222,7 @@ Begin
         V.Category := SQLCAT_DECIMAL;
         V.XType    := XT_DECIMAL;
       End
-      Else If (Op = 'IDENT_CURRENT') And (Child0 >= 0) Then
+      Else If (Op = 'IDENT_CURRENT') And (Child1 >= 0) Then
       Begin
         V.IsNull := True;
         V.Valid  := True;
@@ -15244,7 +15245,7 @@ Begin
         V.XType    := XT_UNIQUEID;
         V.StrVal   := '00000000-0000-0000-0000-000000000001';
       End
-      Else If (Op = 'OBJECT_ID') And (Child0 >= 0) Then
+      Else If (Op = 'OBJECT_ID') And (Child1 >= 0) Then
       Begin
         VL := QEEvalExpr(Child0, Row, Res);
         V.Category := SQLCAT_INTEGER;
@@ -15267,7 +15268,7 @@ Begin
           End;
         End;
       End
-      Else If (Op = 'OBJECT_NAME') And (Child0 >= 0) Then
+      Else If (Op = 'OBJECT_NAME') And (Child1 >= 0) Then
       Begin
         VL := QEEvalExpr(Child0, Row, Res);
         V.Category := SQLCAT_STRING;
@@ -15280,7 +15281,7 @@ Begin
         End;
       End
       { ---- TODO 27 : COL_NAME, TYPE_NAME, INDEX_COL ---- }
-      Else If (Op = 'COL_NAME') And (Child0 >= 0) Then
+      Else If (Op = 'COL_NAME') And (Child1 >= 0) Then
       Begin
         VL := QEEvalExpr(Child0, Row, Res);
         V.Category := SQLCAT_STRING;
@@ -15315,7 +15316,7 @@ Begin
           End;
         End;
       End
-      Else If (Op = 'TYPE_NAME') And (Child0 >= 0) Then
+      Else If (Op = 'TYPE_NAME') And (Child1 >= 0) Then
       Begin
         VL := QEEvalExpr(Child0, Row, Res);
         V.Category := SQLCAT_STRING;
@@ -15332,7 +15333,7 @@ Begin
           V.StrVal := XTypeToName(VL.IntVal);
         End;
       End
-      Else If (Op = 'INDEX_COL') And (Child0 >= 0) Then
+      Else If (Op = 'INDEX_COL') And (Child1 >= 0) Then
       Begin
         VL := QEEvalExpr(Child0, Row, Res);
         V.Category := SQLCAT_STRING;
@@ -15556,9 +15557,9 @@ Begin
         V.IntVal   := XactState;
       End
       { ===== TODO 23 : Fonctions JSON et XML ===== }
-      Else If (Op = 'ISJSON') And (Child0 >= 0) Then
+      Else If (Op = 'ISJSON') And (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.Valid    := True;
@@ -15570,10 +15571,10 @@ Begin
         Else
           V.IntVal := 0;
       End
-      Else If (Op = 'JSON_VALUE') And (Child0 >= 0) And
+      Else If (Op = 'JSON_VALUE') And (Child1 >= 0) And
               (Child1 >= 0) Then
       Begin
-        VL := QEEvalExpr(Child0, Row, Res);
+        VL := QEEvalExpr(Child1, Row, Res);
         VR := QEEvalExpr(Child1, Row, Res);
         V.Valid := True;
         If VL.IsNull Or VR.IsNull Then
