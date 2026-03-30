@@ -1658,10 +1658,10 @@ End;
 
 Procedure ShowUsage;
 Begin
-  WriteLn('Usage: SQLCMD -S <fichier.mdf> [options]');
+  WriteLn('Usage: SQLCMD [-S <fichier.mdf>] [options]');
   WriteLn('       SQLCMD --createmdf[=fichier.mdf]');
   WriteLn;
-  WriteLn('  -S fichier.mdf : fichier MDF a ouvrir (obligatoire)');
+  WriteLn('  -S fichier.mdf : fichier MDF a ouvrir (defaut: master.mdf)');
   WriteLn('  -d database    : nom de la base de donnees');
   WriteLn('  -q "requete"   : executer une requete et quitter');
   WriteLn('  -i script.sql  : executer un script SQL et quitter');
@@ -1675,6 +1675,7 @@ Begin
   WriteLn('  -v             : mode verbeux');
   WriteLn('  -h             : afficher cette aide');
   WriteLn;
+  WriteLn('Si -S n''est pas specifie, master.mdf du repertoire courant est utilise.');
   WriteLn('Mode interactif (REPL) par defaut si -q et -i absents.');
   WriteLn;
   Halt(EXIT_USAGE);
@@ -1716,8 +1717,7 @@ Var
   Ext : TString;
 Begin
   InitOptions;
-  If ParamCount = 0 Then
-    ShowUsage;
+  { Ne pas appeler ShowUsage si ParamCount = 0, on va essayer master.mdf }
 
   I := 1;
   While I <= ParamCount Do
@@ -1800,11 +1800,31 @@ Begin
     Inc(I);
   End;
 
-  { Valider le fichier MDF obligatoire (sauf mode selftest ou createmdf) }
+  { Si pas de fichier MDF specifie, essayer master.mdf par defaut }
   If (Opts.MdfFile = '') And (Not Opts.SelfTest) And (Opts.CreateMdf = '') Then
   Begin
-    WriteLn('SQLCMD: fichier .MDF manquant (option -S)');
-    ShowUsage;
+    { Essayer d utiliser master.mdf par defaut }
+    Assign(MdfF, 'master.mdf');
+    {$I-}
+    Reset(MdfF, 1);
+    {$I+}
+    If IOResult = 0 Then
+    Begin
+      Close(MdfF);
+      Opts.MdfFile := 'master.mdf';
+    End
+    Else
+    Begin
+      WriteLn('SQLCMD: fichier .MDF manquant.');
+      WriteLn;
+      WriteLn('Le fichier master.mdf n''existe pas dans le repertoire courant.');
+      WriteLn('Vous devez soit :');
+      WriteLn('  - Specifier un fichier MDF avec l''option -S <fichier.mdf>');
+      WriteLn('  - Creer un fichier MDF vide avec --createmdf ou --createmdf=<nom.mdf>');
+      WriteLn;
+      WriteLn('Utilisez SQLCMD -h pour afficher l''aide complete.');
+      Halt(EXIT_USAGE);
+    End;
   End;
 
   { Verifier l extension (sauf mode selftest ou createmdf) }
