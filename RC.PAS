@@ -56,7 +56,7 @@
               la version, puis quitter avec EXIT_OK
             Afficher la banniere de version au demarrage
 
-  TODO 02 - FONCTIONS UTILITAIRES [A FAIRE]
+  TODO 02 - FONCTIONS UTILITAIRES [IMPLEMENTE]
             Function HexByte(B: Byte): String
               retourne la representation hexadecimale sur 2 chiffres
             Function HexWord(W: Word): String
@@ -940,6 +940,194 @@ Begin
   ChangeFileExt := Res;
 End;
 
+{ ============================================================
+  TODO 02 : FONCTIONS UTILITAIRES
+  ============================================================ }
+
+{ ----- Function HexByte ----- }
+Function HexByte(B : Byte) : TString;
+Const
+  HexChars : Array[0..15] Of Char = '0123456789ABCDEF';
+Begin
+  HexByte := HexChars[B Shr 4] + HexChars[B And $0F];
+End;
+
+{ ----- Function HexWord ----- }
+Function HexWord(W : Word) : TString;
+Begin
+  HexWord := HexByte(Hi(W)) + HexByte(Lo(W));
+End;
+
+{ ----- Function HexDWord ----- }
+Function HexDWord(D : LongInt) : TString;
+Begin
+  HexDWord := HexWord((D Shr 16) And $FFFF) + HexWord(D And $FFFF);
+End;
+
+{ ----- Function IntToStr ----- }
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+{ ----- Function StrToInt ----- }
+Function StrToInt(Const S : TString) : LongInt;
+Var
+  I, Code : Integer;
+  Val     : LongInt;
+  Tmp     : TString;
+Begin
+  Tmp := S;
+  { Supprimer les espaces }
+  While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do
+    Delete(Tmp, 1, 1);
+  While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do
+    Delete(Tmp, Length(Tmp), 1);
+
+  Val := 0;
+  If Length(Tmp) = 0 Then
+  Begin
+    StrToInt := 0;
+    Exit;
+  End;
+
+  { Format hexadecimal 0x... ou 0X... }
+  If (Length(Tmp) > 2) And (Tmp[1] = '0') And
+     ((Tmp[2] = 'x') Or (Tmp[2] = 'X')) Then
+  Begin
+    Delete(Tmp, 1, 2);
+    For I := 1 To Length(Tmp) Do
+    Begin
+      Val := Val Shl 4;
+      Case Tmp[I] Of
+        '0'..'9': Val := Val + Ord(Tmp[I]) - Ord('0');
+        'A'..'F': Val := Val + Ord(Tmp[I]) - Ord('A') + 10;
+        'a'..'f': Val := Val + Ord(Tmp[I]) - Ord('a') + 10;
+      End;
+    End;
+    StrToInt := Val;
+    Exit;
+  End;
+
+  { Format hexadecimal ...h ou ...H }
+  If (Length(Tmp) > 1) And ((Tmp[Length(Tmp)] = 'h') Or (Tmp[Length(Tmp)] = 'H')) Then
+  Begin
+    Delete(Tmp, Length(Tmp), 1);
+    For I := 1 To Length(Tmp) Do
+    Begin
+      Val := Val Shl 4;
+      Case Tmp[I] Of
+        '0'..'9': Val := Val + Ord(Tmp[I]) - Ord('0');
+        'A'..'F': Val := Val + Ord(Tmp[I]) - Ord('A') + 10;
+        'a'..'f': Val := Val + Ord(Tmp[I]) - Ord('a') + 10;
+      End;
+    End;
+    StrToInt := Val;
+    Exit;
+  End;
+
+  { Format decimal }
+  System.Val(S, Val, Code);
+  If Code = 0 Then
+    StrToInt := Val
+  Else
+    StrToInt := 0;
+End;
+
+{ ----- Function Trim ----- }
+Function Trim(Const S : TString) : TString;
+Var
+  L, R : Integer;
+Begin
+  L := 1;
+  R := Length(S);
+  While (L <= R) And (S[L] = ' ') Do
+    Inc(L);
+  While (R >= L) And (S[R] = ' ') Do
+    Dec(R);
+  If L > R Then
+    Trim := ''
+  Else
+    Trim := Copy(S, L, R - L + 1);
+End;
+
+{ ----- Function FileExists ----- }
+Function FileExists(Const FName : TString) : Boolean;
+Var
+  F : File;
+Begin
+  {$I-}
+  Assign(F, FName);
+  Reset(F, 1);
+  If IOResult = 0 Then
+  Begin
+    Close(F);
+    FileExists := True;
+  End
+  Else
+    FileExists := False;
+  {$I+}
+End;
+
+{ ----- Function ExtractFileName ----- }
+Function ExtractFileName(Const FName : TString) : TString;
+Var
+  I : Integer;
+Begin
+  For I := Length(FName) DownTo 1 Do
+  Begin
+    If (FName[I] = '\') Or (FName[I] = '/') Then
+    Begin
+      ExtractFileName := Copy(FName, I + 1, Length(FName) - I);
+      Exit;
+    End;
+  End;
+  ExtractFileName := FName;
+End;
+
+{ ----- Function ExtractFilePath ----- }
+Function ExtractFilePath(Const FName : TString) : TString;
+Var
+  I : Integer;
+Begin
+  For I := Length(FName) DownTo 1 Do
+  Begin
+    If (FName[I] = '\') Or (FName[I] = '/') Then
+    Begin
+      ExtractFilePath := Copy(FName, 1, I);
+      Exit;
+    End;
+  End;
+  ExtractFilePath := '';
+End;
+
+{ ----- Function CharToWChar ----- }
+Function CharToWChar(C : Char) : Word;
+Begin
+  { Latin-1 vers Unicode (les 256 premiers caracteres sont identiques) }
+  CharToWChar := Ord(C);
+End;
+
+{ ----- Type pour tableau de WCHAR ----- }
+Type
+  TWCharArray = Array[0..255] Of Word;
+
+{ ----- Procedure StrToUniStr ----- }
+Procedure StrToUniStr(Const S : TString; Var Arr : TWCharArray; Var Len : Integer);
+Var
+  I : Integer;
+Begin
+  Len := Length(S);
+  For I := 1 To Len Do
+    Arr[I - 1] := CharToWChar(S[I]);
+  { Ajouter le terminateur null }
+  Arr[Len] := 0;
+  Inc(Len); { Len inclut le terminateur null }
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -1042,9 +1230,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 02-25 }
+  { TODO : Implementation des TODOs 03-25 }
   WriteLn;
-  WriteLn('NOTE: TODO 01 [IMPLEMENTE]. TODOs 02-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-02 [IMPLEMENTE]. TODOs 03-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
