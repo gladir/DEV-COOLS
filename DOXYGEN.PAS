@@ -154,7 +154,7 @@
               accumuler les tokens dans DocTokens[]
               associer chaque commentaire a l entite qui suit
 
-  TODO 04 - PARSER DES BALISES DOXYGEN [A FAIRE]
+  TODO 04 - PARSER DES BALISES DOXYGEN [IMPLEMENTE]
             TDoxyTagKind : (TAG_UNKNOWN, TAG_PARAM, TAG_RETURN, TAG_RETURNS,
               TAG_BRIEF, TAG_DETAILS, TAG_NOTE, TAG_WARNING, TAG_TODO,
               TAG_BUG, TAG_DEPRECATED, TAG_AUTHOR, TAG_VERSION, TAG_DATE,
@@ -937,6 +937,69 @@ Type
     Col  : Integer;
   End;
 
+  { Types pour les balises Doxygen (TODO 04) }
+  TDoxyTagKind = (
+    { Balises inconnues ou texte libre }
+    TAG_UNKNOWN, TAG_TEXT,
+    { Description }
+    TAG_BRIEF, TAG_DETAILS, TAG_SHORT,
+    { Parametres et retour }
+    TAG_PARAM, TAG_RETURN, TAG_RETURNS, TAG_RETVAL, TAG_TPARAM,
+    { Exceptions }
+    TAG_EXCEPTION, TAG_THROW, TAG_THROWS,
+    { Notes et avertissements }
+    TAG_NOTE, TAG_WARNING, TAG_ATTENTION, TAG_REMARK, TAG_REMARKS,
+    TAG_TODO, TAG_BUG, TAG_DEPRECATED,
+    { Informations sur l'entite }
+    TAG_AUTHOR, TAG_AUTHORS, TAG_VERSION, TAG_DATE, TAG_SINCE,
+    TAG_COPYRIGHT, TAG_LICENSE,
+    { References croisees }
+    TAG_SEE, TAG_SA, TAG_REF, TAG_LINK, TAG_ENDLINK,
+    { Documentation de code }
+    TAG_CODE, TAG_ENDCODE, TAG_VERBATIM, TAG_ENDVERBATIM,
+    TAG_EXAMPLE, TAG_SNIPPET, TAG_INCLUDE, TAG_INCLUDELINENO, TAG_INCLUDEDOC,
+    { Entites documentees }
+    TAG_FILE, TAG_CLASS, TAG_STRUCT, TAG_UNION, TAG_ENUM,
+    TAG_VAR, TAG_DEF, TAG_TYPEDEF, TAG_FN, TAG_NAMESPACE,
+    TAG_PACKAGE, TAG_INTERFACE, TAG_PROPERTY, TAG_EVENT,
+    TAG_RELATES, TAG_RELATED, TAG_RELATESALSO, TAG_MEMBEROF,
+    { Groupes }
+    TAG_INGROUP, TAG_DEFGROUP, TAG_ADDTOGROUP, TAG_WEAKGROUP, TAG_NAME,
+    { Pages et sections }
+    TAG_MAINPAGE, TAG_PAGE, TAG_SUBPAGE, TAG_SECTION, TAG_SUBSECTION,
+    TAG_PARAGRAPH, TAG_ANCHOR,
+    { Multimedia }
+    TAG_IMAGE, TAG_DOT, TAG_ENDDOT, TAG_MSC, TAG_ENDMSC,
+    TAG_STARTUML, TAG_ENDUML,
+    { Formatage conditionnel }
+    TAG_HTMLONLY, TAG_ENDHTMLONLY, TAG_LATEXONLY, TAG_ENDLATEXONLY,
+    TAG_XMLONLY, TAG_ENDXMLONLY, TAG_RTFONLY, TAG_ENDRTFONLY,
+    TAG_MANONLY, TAG_ENDMANONLY, TAG_DOCBOOKONLY, TAG_ENDDOCBOOKONLY,
+    { Conditions }
+    TAG_IF, TAG_IFNOT, TAG_ELSE, TAG_ELSEIF, TAG_ENDIF,
+    TAG_COND, TAG_ENDCOND,
+    { Copie de documentation }
+    TAG_COPYDOC, TAG_COPYBRIEF, TAG_COPYDETAILS,
+    { Sections internes }
+    TAG_INTERNAL, TAG_ENDINTERNAL, TAG_PAR, TAG_PARBLOCK, TAG_ENDPARBLOCK,
+    { Visibilite }
+    TAG_PURE, TAG_STATIC, TAG_PRIVATE, TAG_PROTECTED, TAG_PUBLIC,
+    { Affichage }
+    TAG_NOSUBGROUPING, TAG_SHOWINITIALIZER, TAG_HIDEINITIALIZER,
+    TAG_CALLGRAPH, TAG_HIDECALLGRAPH, TAG_CALLERGRAPH, TAG_HIDECALLERGRAPH,
+    { Divers }
+    TAG_DIR, TAG_DONTINCLUDE, TAG_LINE, TAG_SKIP, TAG_SKIPLINE, TAG_UNTIL,
+    TAG_TEST, TAG_XREFITEM, TAG_INVARIANT, TAG_PRE, TAG_POST
+  );
+
+  TDoxyTag = Record
+    Kind      : TDoxyTagKind;
+    Name      : String;
+    ParamName : String;
+    Content   : String;
+    Line      : Integer;
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -946,6 +1009,10 @@ Var
   { Variables pour les commentaires de documentation (TODO 03) }
   DocTokens     : Array[1..MAX_DOC_TOKENS] Of TDocToken;
   DocTokenCount : Integer;
+
+  { Variables pour les balises Doxygen (TODO 04) }
+  DocTags       : Array[1..MAX_TAGS] Of TDoxyTag;
+  DocTagCount   : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -1457,6 +1524,602 @@ Begin
   InfoMsg('Commentaires de documentation extraits: ' + IntToStr(DocTokenCount));
 End;
 
+{ ============================================================
+  TODO 04 - PARSER DES BALISES DOXYGEN
+  ============================================================ }
+
+Procedure InitDocTags;
+{ Initialise le tableau des balises }
+Begin
+  DocTagCount := 0;
+End;
+
+Procedure AddDocTag(Kind: TDoxyTagKind; Const Name, ParamName, Content: String;
+  Line: Integer);
+{ Ajoute une balise au tableau }
+Begin
+  If DocTagCount < MAX_TAGS Then
+  Begin
+    Inc(DocTagCount);
+    DocTags[DocTagCount].Kind := Kind;
+    DocTags[DocTagCount].Name := Name;
+    DocTags[DocTagCount].ParamName := ParamName;
+    DocTags[DocTagCount].Content := Content;
+    DocTags[DocTagCount].Line := Line;
+  End
+  Else
+    WarnMsg('Trop de balises Doxygen (max=' + IntToStr(MAX_TAGS) + ')');
+End;
+
+Function LowerStr(Const S: String): String;
+{ Convertit une chaine en minuscules }
+Var
+  I: Integer;
+  R: String;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  LowerStr := R;
+End;
+
+Function ParseTagKind(Const TagName: String): TDoxyTagKind;
+{ Convertit un nom de balise en enumeration TDoxyTagKind.
+  Supporte les variantes avec @ et \ (ex: @param et \param) }
+Var
+  Name: String;
+Begin
+  { Normaliser le nom (enlever @ ou \ et mettre en minuscules) }
+  Name := LowerStr(TagName);
+  If (Length(Name) >= 1) And ((Name[1] = '@') Or (Name[1] = '\')) Then
+    Name := Copy(Name, 2, Length(Name) - 1);
+
+  { Mapper vers l'enumeration }
+  If (Name = 'brief') Or (Name = 'short') Then
+    ParseTagKind := TAG_BRIEF
+  Else If Name = 'details' Then
+    ParseTagKind := TAG_DETAILS
+  Else If Name = 'param' Then
+    ParseTagKind := TAG_PARAM
+  Else If Name = 'return' Then
+    ParseTagKind := TAG_RETURN
+  Else If Name = 'returns' Then
+    ParseTagKind := TAG_RETURNS
+  Else If Name = 'retval' Then
+    ParseTagKind := TAG_RETVAL
+  Else If Name = 'tparam' Then
+    ParseTagKind := TAG_TPARAM
+  Else If (Name = 'exception') Or (Name = 'throw') Or (Name = 'throws') Then
+    ParseTagKind := TAG_EXCEPTION
+  Else If Name = 'note' Then
+    ParseTagKind := TAG_NOTE
+  Else If Name = 'warning' Then
+    ParseTagKind := TAG_WARNING
+  Else If Name = 'attention' Then
+    ParseTagKind := TAG_ATTENTION
+  Else If (Name = 'remark') Or (Name = 'remarks') Then
+    ParseTagKind := TAG_REMARK
+  Else If Name = 'todo' Then
+    ParseTagKind := TAG_TODO
+  Else If Name = 'bug' Then
+    ParseTagKind := TAG_BUG
+  Else If Name = 'deprecated' Then
+    ParseTagKind := TAG_DEPRECATED
+  Else If (Name = 'author') Or (Name = 'authors') Then
+    ParseTagKind := TAG_AUTHOR
+  Else If Name = 'version' Then
+    ParseTagKind := TAG_VERSION
+  Else If Name = 'date' Then
+    ParseTagKind := TAG_DATE
+  Else If Name = 'since' Then
+    ParseTagKind := TAG_SINCE
+  Else If Name = 'copyright' Then
+    ParseTagKind := TAG_COPYRIGHT
+  Else If Name = 'license' Then
+    ParseTagKind := TAG_LICENSE
+  Else If (Name = 'see') Or (Name = 'sa') Then
+    ParseTagKind := TAG_SEE
+  Else If Name = 'ref' Then
+    ParseTagKind := TAG_REF
+  Else If Name = 'link' Then
+    ParseTagKind := TAG_LINK
+  Else If Name = 'endlink' Then
+    ParseTagKind := TAG_ENDLINK
+  Else If Name = 'code' Then
+    ParseTagKind := TAG_CODE
+  Else If Name = 'endcode' Then
+    ParseTagKind := TAG_ENDCODE
+  Else If Name = 'verbatim' Then
+    ParseTagKind := TAG_VERBATIM
+  Else If Name = 'endverbatim' Then
+    ParseTagKind := TAG_ENDVERBATIM
+  Else If Name = 'example' Then
+    ParseTagKind := TAG_EXAMPLE
+  Else If Name = 'snippet' Then
+    ParseTagKind := TAG_SNIPPET
+  Else If Name = 'include' Then
+    ParseTagKind := TAG_INCLUDE
+  Else If Name = 'includelineno' Then
+    ParseTagKind := TAG_INCLUDELINENO
+  Else If Name = 'includedoc' Then
+    ParseTagKind := TAG_INCLUDEDOC
+  Else If Name = 'file' Then
+    ParseTagKind := TAG_FILE
+  Else If Name = 'class' Then
+    ParseTagKind := TAG_CLASS
+  Else If Name = 'struct' Then
+    ParseTagKind := TAG_STRUCT
+  Else If Name = 'union' Then
+    ParseTagKind := TAG_UNION
+  Else If Name = 'enum' Then
+    ParseTagKind := TAG_ENUM
+  Else If Name = 'var' Then
+    ParseTagKind := TAG_VAR
+  Else If (Name = 'def') Or (Name = 'define') Then
+    ParseTagKind := TAG_DEF
+  Else If Name = 'typedef' Then
+    ParseTagKind := TAG_TYPEDEF
+  Else If (Name = 'fn') Or (Name = 'function') Then
+    ParseTagKind := TAG_FN
+  Else If Name = 'namespace' Then
+    ParseTagKind := TAG_NAMESPACE
+  Else If Name = 'package' Then
+    ParseTagKind := TAG_PACKAGE
+  Else If Name = 'interface' Then
+    ParseTagKind := TAG_INTERFACE
+  Else If Name = 'property' Then
+    ParseTagKind := TAG_PROPERTY
+  Else If Name = 'event' Then
+    ParseTagKind := TAG_EVENT
+  Else If (Name = 'relates') Or (Name = 'related') Or (Name = 'relatesalso') Then
+    ParseTagKind := TAG_RELATES
+  Else If Name = 'memberof' Then
+    ParseTagKind := TAG_MEMBEROF
+  Else If Name = 'ingroup' Then
+    ParseTagKind := TAG_INGROUP
+  Else If Name = 'defgroup' Then
+    ParseTagKind := TAG_DEFGROUP
+  Else If Name = 'addtogroup' Then
+    ParseTagKind := TAG_ADDTOGROUP
+  Else If Name = 'weakgroup' Then
+    ParseTagKind := TAG_WEAKGROUP
+  Else If Name = 'name' Then
+    ParseTagKind := TAG_NAME
+  Else If Name = 'mainpage' Then
+    ParseTagKind := TAG_MAINPAGE
+  Else If Name = 'page' Then
+    ParseTagKind := TAG_PAGE
+  Else If Name = 'subpage' Then
+    ParseTagKind := TAG_SUBPAGE
+  Else If Name = 'section' Then
+    ParseTagKind := TAG_SECTION
+  Else If Name = 'subsection' Then
+    ParseTagKind := TAG_SUBSECTION
+  Else If Name = 'paragraph' Then
+    ParseTagKind := TAG_PARAGRAPH
+  Else If Name = 'anchor' Then
+    ParseTagKind := TAG_ANCHOR
+  Else If Name = 'image' Then
+    ParseTagKind := TAG_IMAGE
+  Else If Name = 'dot' Then
+    ParseTagKind := TAG_DOT
+  Else If Name = 'enddot' Then
+    ParseTagKind := TAG_ENDDOT
+  Else If Name = 'msc' Then
+    ParseTagKind := TAG_MSC
+  Else If Name = 'endmsc' Then
+    ParseTagKind := TAG_ENDMSC
+  Else If Name = 'startuml' Then
+    ParseTagKind := TAG_STARTUML
+  Else If Name = 'enduml' Then
+    ParseTagKind := TAG_ENDUML
+  Else If Name = 'htmlonly' Then
+    ParseTagKind := TAG_HTMLONLY
+  Else If Name = 'endhtmlonly' Then
+    ParseTagKind := TAG_ENDHTMLONLY
+  Else If Name = 'latexonly' Then
+    ParseTagKind := TAG_LATEXONLY
+  Else If Name = 'endlatexonly' Then
+    ParseTagKind := TAG_ENDLATEXONLY
+  Else If Name = 'xmlonly' Then
+    ParseTagKind := TAG_XMLONLY
+  Else If Name = 'endxmlonly' Then
+    ParseTagKind := TAG_ENDXMLONLY
+  Else If Name = 'rtfonly' Then
+    ParseTagKind := TAG_RTFONLY
+  Else If Name = 'endrtfonly' Then
+    ParseTagKind := TAG_ENDRTFONLY
+  Else If Name = 'manonly' Then
+    ParseTagKind := TAG_MANONLY
+  Else If Name = 'endmanonly' Then
+    ParseTagKind := TAG_ENDMANONLY
+  Else If Name = 'docbookonly' Then
+    ParseTagKind := TAG_DOCBOOKONLY
+  Else If Name = 'enddocbookonly' Then
+    ParseTagKind := TAG_ENDDOCBOOKONLY
+  Else If Name = 'if' Then
+    ParseTagKind := TAG_IF
+  Else If Name = 'ifnot' Then
+    ParseTagKind := TAG_IFNOT
+  Else If Name = 'else' Then
+    ParseTagKind := TAG_ELSE
+  Else If Name = 'elseif' Then
+    ParseTagKind := TAG_ELSEIF
+  Else If Name = 'endif' Then
+    ParseTagKind := TAG_ENDIF
+  Else If Name = 'cond' Then
+    ParseTagKind := TAG_COND
+  Else If Name = 'endcond' Then
+    ParseTagKind := TAG_ENDCOND
+  Else If Name = 'copydoc' Then
+    ParseTagKind := TAG_COPYDOC
+  Else If Name = 'copybrief' Then
+    ParseTagKind := TAG_COPYBRIEF
+  Else If Name = 'copydetails' Then
+    ParseTagKind := TAG_COPYDETAILS
+  Else If Name = 'internal' Then
+    ParseTagKind := TAG_INTERNAL
+  Else If Name = 'endinternal' Then
+    ParseTagKind := TAG_ENDINTERNAL
+  Else If Name = 'par' Then
+    ParseTagKind := TAG_PAR
+  Else If Name = 'parblock' Then
+    ParseTagKind := TAG_PARBLOCK
+  Else If Name = 'endparblock' Then
+    ParseTagKind := TAG_ENDPARBLOCK
+  Else If Name = 'pure' Then
+    ParseTagKind := TAG_PURE
+  Else If Name = 'static' Then
+    ParseTagKind := TAG_STATIC
+  Else If Name = 'private' Then
+    ParseTagKind := TAG_PRIVATE
+  Else If Name = 'protected' Then
+    ParseTagKind := TAG_PROTECTED
+  Else If Name = 'public' Then
+    ParseTagKind := TAG_PUBLIC
+  Else If Name = 'nosubgrouping' Then
+    ParseTagKind := TAG_NOSUBGROUPING
+  Else If Name = 'showinitializer' Then
+    ParseTagKind := TAG_SHOWINITIALIZER
+  Else If Name = 'hideinitializer' Then
+    ParseTagKind := TAG_HIDEINITIALIZER
+  Else If Name = 'callgraph' Then
+    ParseTagKind := TAG_CALLGRAPH
+  Else If Name = 'hidecallgraph' Then
+    ParseTagKind := TAG_HIDECALLGRAPH
+  Else If Name = 'callergraph' Then
+    ParseTagKind := TAG_CALLERGRAPH
+  Else If Name = 'hidecallergraph' Then
+    ParseTagKind := TAG_HIDECALLERGRAPH
+  Else If Name = 'dir' Then
+    ParseTagKind := TAG_DIR
+  Else If Name = 'dontinclude' Then
+    ParseTagKind := TAG_DONTINCLUDE
+  Else If Name = 'line' Then
+    ParseTagKind := TAG_LINE
+  Else If Name = 'skip' Then
+    ParseTagKind := TAG_SKIP
+  Else If Name = 'skipline' Then
+    ParseTagKind := TAG_SKIPLINE
+  Else If Name = 'until' Then
+    ParseTagKind := TAG_UNTIL
+  Else If Name = 'test' Then
+    ParseTagKind := TAG_TEST
+  Else If Name = 'xrefitem' Then
+    ParseTagKind := TAG_XREFITEM
+  Else If Name = 'invariant' Then
+    ParseTagKind := TAG_INVARIANT
+  Else If Name = 'pre' Then
+    ParseTagKind := TAG_PRE
+  Else If Name = 'post' Then
+    ParseTagKind := TAG_POST
+  Else
+    ParseTagKind := TAG_UNKNOWN;
+End;
+
+Function TagKindToStr(Kind: TDoxyTagKind): String;
+{ Convertit un TDoxyTagKind en chaine pour affichage }
+Begin
+  Case Kind Of
+    TAG_BRIEF:       TagKindToStr := '@brief';
+    TAG_DETAILS:     TagKindToStr := '@details';
+    TAG_PARAM:       TagKindToStr := '@param';
+    TAG_RETURN:      TagKindToStr := '@return';
+    TAG_RETURNS:     TagKindToStr := '@returns';
+    TAG_RETVAL:      TagKindToStr := '@retval';
+    TAG_TPARAM:      TagKindToStr := '@tparam';
+    TAG_EXCEPTION:   TagKindToStr := '@exception';
+    TAG_NOTE:        TagKindToStr := '@note';
+    TAG_WARNING:     TagKindToStr := '@warning';
+    TAG_ATTENTION:   TagKindToStr := '@attention';
+    TAG_REMARK:      TagKindToStr := '@remark';
+    TAG_TODO:        TagKindToStr := '@todo';
+    TAG_BUG:         TagKindToStr := '@bug';
+    TAG_DEPRECATED:  TagKindToStr := '@deprecated';
+    TAG_AUTHOR:      TagKindToStr := '@author';
+    TAG_VERSION:     TagKindToStr := '@version';
+    TAG_DATE:        TagKindToStr := '@date';
+    TAG_SINCE:       TagKindToStr := '@since';
+    TAG_COPYRIGHT:   TagKindToStr := '@copyright';
+    TAG_LICENSE:     TagKindToStr := '@license';
+    TAG_SEE:         TagKindToStr := '@see';
+    TAG_REF:         TagKindToStr := '@ref';
+    TAG_LINK:        TagKindToStr := '@link';
+    TAG_CODE:        TagKindToStr := '@code';
+    TAG_ENDCODE:     TagKindToStr := '@endcode';
+    TAG_VERBATIM:    TagKindToStr := '@verbatim';
+    TAG_ENDVERBATIM: TagKindToStr := '@endverbatim';
+    TAG_EXAMPLE:     TagKindToStr := '@example';
+    TAG_FILE:        TagKindToStr := '@file';
+    TAG_CLASS:       TagKindToStr := '@class';
+    TAG_STRUCT:      TagKindToStr := '@struct';
+    TAG_ENUM:        TagKindToStr := '@enum';
+    TAG_VAR:         TagKindToStr := '@var';
+    TAG_FN:          TagKindToStr := '@fn';
+    TAG_NAMESPACE:   TagKindToStr := '@namespace';
+    TAG_PACKAGE:     TagKindToStr := '@package';
+    TAG_INTERFACE:   TagKindToStr := '@interface';
+    TAG_MAINPAGE:    TagKindToStr := '@mainpage';
+    TAG_PAGE:        TagKindToStr := '@page';
+    TAG_SECTION:     TagKindToStr := '@section';
+    TAG_SUBSECTION:  TagKindToStr := '@subsection';
+    TAG_INVARIANT:   TagKindToStr := '@invariant';
+    TAG_PRE:         TagKindToStr := '@pre';
+    TAG_POST:        TagKindToStr := '@post';
+    TAG_TEXT:        TagKindToStr := '(text)';
+  Else
+    TagKindToStr := '@unknown';
+  End;
+End;
+
+Function IsTagStart(Ch: Char): Boolean;
+{ Verifie si un caractere est un debut de balise (@ ou \) }
+Begin
+  IsTagStart := (Ch = '@') Or (Ch = '\');
+End;
+
+Function IsIdentChar(Ch: Char): Boolean;
+{ Verifie si un caractere est valide dans un identifiant }
+Begin
+  IsIdentChar := ((Ch >= 'a') And (Ch <= 'z')) Or
+                 ((Ch >= 'A') And (Ch <= 'Z')) Or
+                 ((Ch >= '0') And (Ch <= '9')) Or
+                 (Ch = '_');
+End;
+
+Function TagNeedsParamName(Kind: TDoxyTagKind): Boolean;
+{ Verifie si une balise prend un nom de parametre comme premier argument }
+Begin
+  TagNeedsParamName := (Kind = TAG_PARAM) Or (Kind = TAG_TPARAM) Or
+                       (Kind = TAG_RETVAL) Or (Kind = TAG_EXCEPTION) Or
+                       (Kind = TAG_THROW) Or (Kind = TAG_THROWS);
+End;
+
+Procedure ParseDocComment(Const Comment: String; CommentLine: Integer);
+{ Parse un commentaire de documentation et extrait les balises Doxygen.
+  Les balises sont stockees dans le tableau global DocTags. }
+Var
+  I, J: Integer;
+  TagName, ParamName: String;
+  Kind: TDoxyTagKind;
+  InTag: Boolean;
+  CurrentContent: String;
+  CurrentTagKind: TDoxyTagKind;
+  CurrentParamName: String;
+  CurrentTagName: String;
+  CurrentTagLine: Integer;
+Begin
+  InitDocTags;
+
+  If Length(Comment) = 0 Then Exit;
+
+  I := 1;
+  InTag := False;
+  CurrentContent := '';
+  CurrentTagKind := TAG_TEXT;
+  CurrentParamName := '';
+  CurrentTagName := '';
+  CurrentTagLine := CommentLine;
+
+  While I <= Length(Comment) Do
+  Begin
+    { Detecter le debut d'une balise @ ou \ }
+    If IsTagStart(Comment[I]) And (I < Length(Comment)) And
+       IsIdentChar(Comment[I + 1]) Then
+    Begin
+      { Sauvegarder la balise/contenu precedent }
+      If InTag Or (TrimStr(CurrentContent) <> '') Then
+      Begin
+        AddDocTag(CurrentTagKind, CurrentTagName, CurrentParamName,
+                  TrimStr(CurrentContent), CurrentTagLine);
+      End;
+
+      { Extraire le nom de la nouvelle balise }
+      Inc(I); { Sauter @ ou \ }
+      J := I;
+      While (J <= Length(Comment)) And IsIdentChar(Comment[J]) Do Inc(J);
+      TagName := Copy(Comment, I, J - I);
+      I := J;
+
+      { Identifier le type de balise }
+      Kind := ParseTagKind(TagName);
+
+      { Sauter les espaces apres le nom de balise }
+      While (I <= Length(Comment)) And (Comment[I] = ' ') Do Inc(I);
+
+      { Pour certaines balises, extraire le nom du parametre }
+      ParamName := '';
+      If TagNeedsParamName(Kind) And (I <= Length(Comment)) Then
+      Begin
+        J := I;
+        While (J <= Length(Comment)) And (Comment[J] <> ' ') And
+              (Comment[J] <> #9) And (Not IsTagStart(Comment[J])) Do Inc(J);
+        ParamName := Copy(Comment, I, J - I);
+        I := J;
+        { Sauter les espaces apres le nom du parametre }
+        While (I <= Length(Comment)) And (Comment[I] = ' ') Do Inc(I);
+      End;
+
+      { Initialiser la nouvelle balise }
+      CurrentTagKind := Kind;
+      CurrentTagName := TagName;
+      CurrentParamName := ParamName;
+      CurrentContent := '';
+      CurrentTagLine := CommentLine;
+      InTag := True;
+    End
+    Else
+    Begin
+      { Ajouter le caractere au contenu courant }
+      CurrentContent := CurrentContent + Comment[I];
+      Inc(I);
+    End;
+  End;
+
+  { Sauvegarder la derniere balise/contenu }
+  If InTag Or (TrimStr(CurrentContent) <> '') Then
+  Begin
+    AddDocTag(CurrentTagKind, CurrentTagName, CurrentParamName,
+              TrimStr(CurrentContent), CurrentTagLine);
+  End;
+End;
+
+Procedure ParseAllDocComments;
+{ Parse tous les commentaires de documentation extraits et
+  collecte toutes les balises dans DocTags }
+Var
+  I: Integer;
+  TotalTags: Integer;
+  Tags: Array[1..MAX_TAGS] Of TDoxyTag;
+  J: Integer;
+Begin
+  InitDocTags;
+  TotalTags := 0;
+
+  For I := 1 To DocTokenCount Do
+  Begin
+    ParseDocComment(DocTokens[I].Text, DocTokens[I].Line);
+    { Accumuler les tags de ce commentaire }
+    For J := 1 To DocTagCount Do
+    Begin
+      If TotalTags < MAX_TAGS Then
+      Begin
+        Inc(TotalTags);
+        Tags[TotalTags] := DocTags[J];
+      End;
+    End;
+  End;
+
+  { Copier tous les tags accumules dans DocTags }
+  InitDocTags;
+  For I := 1 To TotalTags Do
+  Begin
+    Inc(DocTagCount);
+    DocTags[DocTagCount] := Tags[I];
+  End;
+End;
+
+Function GetBriefDescription: String;
+{ Extrait la description breve (@brief ou premiere phrase si pas de @brief) }
+Var
+  I, J: Integer;
+  Result: String;
+  DotPos: Integer;
+Begin
+  Result := '';
+
+  { Chercher d'abord un tag @brief explicite }
+  For I := 1 To DocTagCount Do
+  Begin
+    If DocTags[I].Kind = TAG_BRIEF Then
+    Begin
+      Result := DocTags[I].Content;
+      GetBriefDescription := Result;
+      Exit;
+    End;
+  End;
+
+  { Sinon, prendre la premiere phrase du premier texte ou du @details }
+  For I := 1 To DocTagCount Do
+  Begin
+    If (DocTags[I].Kind = TAG_TEXT) Or (DocTags[I].Kind = TAG_DETAILS) Then
+    Begin
+      Result := DocTags[I].Content;
+      { Trouver le premier point suivi d'un espace ou fin de chaine }
+      DotPos := 0;
+      For J := 1 To Length(Result) Do
+      Begin
+        If (Result[J] = '.') Then
+        Begin
+          If (J = Length(Result)) Or (Result[J + 1] = ' ') Then
+          Begin
+            DotPos := J;
+            Break;
+          End;
+        End;
+      End;
+      If DotPos > 0 Then
+        Result := Copy(Result, 1, DotPos);
+      GetBriefDescription := Result;
+      Exit;
+    End;
+  End;
+
+  GetBriefDescription := '';
+End;
+
+Function GetDetailedDescription: String;
+{ Extrait la description detaillee (@details ou texte apres @brief) }
+Var
+  I: Integer;
+  Result: String;
+  HasBrief: Boolean;
+  BriefContent: String;
+Begin
+  Result := '';
+  HasBrief := False;
+  BriefContent := '';
+
+  { Verifier s'il y a un @brief }
+  For I := 1 To DocTagCount Do
+  Begin
+    If DocTags[I].Kind = TAG_BRIEF Then
+    Begin
+      HasBrief := True;
+      BriefContent := DocTags[I].Content;
+      Break;
+    End;
+  End;
+
+  { Chercher un tag @details explicite }
+  For I := 1 To DocTagCount Do
+  Begin
+    If DocTags[I].Kind = TAG_DETAILS Then
+    Begin
+      If Result <> '' Then Result := Result + ' ';
+      Result := Result + DocTags[I].Content;
+    End;
+  End;
+
+  { Si pas de @details, prendre le texte libre (sauf si c'est le @brief) }
+  If Result = '' Then
+  Begin
+    For I := 1 To DocTagCount Do
+    Begin
+      If DocTags[I].Kind = TAG_TEXT Then
+      Begin
+        If HasBrief And (DocTags[I].Content = BriefContent) Then
+          Continue;
+        If Result <> '' Then Result := Result + ' ';
+        Result := Result + DocTags[I].Content;
+      End;
+    End;
+  End;
+
+  GetDetailedDescription := Result;
+End;
+
 Procedure ShowVersion;
 Begin
   WriteLn('DOXYGEN version ', DOXYGEN_VERSION, ' (', DOXYGEN_DATE, ')');
@@ -1667,6 +2330,7 @@ Procedure ProcessInputFile(Const FileName: String);
 Var
   Lang: TSourceLanguage;
   I: Integer;
+  Brief, Details: String;
 Begin
   { Valider le fichier d entree }
   ValidateInputFile(FileName);
@@ -1702,13 +2366,51 @@ Begin
         WriteLn(DocTokens[I].Text);
     End;
     WriteLn;
+
+    { Parser les balises Doxygen (TODO 04) }
+    ParseAllDocComments;
+
+    If DocTagCount > 0 Then
+    Begin
+      WriteLn('Balises Doxygen extraites: ', DocTagCount);
+      WriteLn;
+      For I := 1 To DocTagCount Do
+      Begin
+        Write('  [', I, '] ', TagKindToStr(DocTags[I].Kind));
+        If DocTags[I].ParamName <> '' Then
+          Write(' ', DocTags[I].ParamName);
+        Write(': ');
+        If Length(DocTags[I].Content) > 50 Then
+          WriteLn(Copy(DocTags[I].Content, 1, 47), '...')
+        Else
+          WriteLn(DocTags[I].Content);
+      End;
+      WriteLn;
+
+      { Afficher le resume }
+      Brief := GetBriefDescription;
+      Details := GetDetailedDescription;
+      If Brief <> '' Then
+      Begin
+        WriteLn('Description breve: ', Brief);
+      End;
+      If Details <> '' Then
+      Begin
+        WriteLn('Description detaillee: ');
+        If Length(Details) > 70 Then
+          WriteLn('  ', Copy(Details, 1, 67), '...')
+        Else
+          WriteLn('  ', Details);
+      End;
+      WriteLn;
+    End;
   End
   Else
     WriteLn('Aucun commentaire de documentation trouve.');
 
   WriteLn;
-  WriteLn('Note: L''analyse des balises est en cours d''implementation.');
-  WriteLn('      Voir les TODOs 04 a 25 pour la feuille de route complete.');
+  WriteLn('Note: La generation de documentation HTML est en cours d''implementation.');
+  WriteLn('      Voir les TODOs 05 a 25 pour la feuille de route complete.');
 End;
 
 { ============================================================
