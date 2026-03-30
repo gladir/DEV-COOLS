@@ -476,7 +476,7 @@
             Transactions imbriquees (semantique SQL Server :
               seul le COMMIT externe valide reellement)
 
-  TODO 29 - FORMATAGE DE LA SORTIE ET COMPATIBILITE SQLCMD
+  TODO 29 - FORMATAGE DE LA SORTIE ET COMPATIBILITE SQLCMD [IMPLEMENTE]
             Affichage tabulaire des resultats (colonnes alignees
               avec en-tetes et separateurs)
             SET NOCOUNT ON/OFF : masquer/afficher le compteur
@@ -1413,6 +1413,9 @@ Type
     OutputFile : TString;   { -o : fichier de sortie               }
     Verbose    : Boolean;   { -v : mode verbeux                    }
     Interactive: Boolean;   { REPL interactif (si pas -q/-i)       }
+    Separator  : Char;      { -s : caractere separateur colonnes   }
+    TrimTrailing : Boolean; { -W : supprimer espaces de fin        }
+    VerticalMode : Boolean; { --vertical : affichage vertical      }
   End;
 
   { ---- Colonne d un result set (TODO 15) --------------------- }
@@ -1533,6 +1536,19 @@ Var
                                   { tables impactees                   }
   XactState      : Integer;       { 0=no tran, 1=active, -1=doomed    }
 
+  { ---- Formatage sortie et compatibilite SQLCMD (TODO 29) -------- }
+  ShowNoCount        : Boolean;     { SET NOCOUNT ON/OFF                 }
+  QuotedIdentifier   : Boolean;     { SET QUOTED_IDENTIFIER ON/OFF       }
+  AnsiNulls          : Boolean;     { SET ANSI_NULLS ON/OFF              }
+  DateFormatStr      : TTokenText;  { SET DATEFORMAT mdy/dmy/ymd         }
+  SetLanguageStr     : TTokenText;  { SET LANGUAGE francais/english/...   }
+  ColumnSeparator    : Char;        { separateur de colonnes (defaut ' ') }
+  TrimTrailingSpaces : Boolean;     { supprimer les espaces de fin       }
+  VerticalOutput     : Boolean;     { affichage vertical par colonne     }
+  LastErrorSeverity  : Integer;     { severite derniere erreur           }
+  LastErrorNumber    : Integer;     { numero derniere erreur             }
+  LastErrorMessage   : TString;     { message derniere erreur            }
+
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
@@ -1629,6 +1645,9 @@ Begin
   WriteLn('  -q "requete"   : executer une requete et quitter');
   WriteLn('  -i script.sql  : executer un script SQL et quitter');
   WriteLn('  -o sortie.txt  : rediriger la sortie vers un fichier');
+  WriteLn('  -s sep         : caractere separateur de colonnes (defaut: espace)');
+  WriteLn('  -W             : supprimer les espaces de fin (mode CSV)');
+  WriteLn('  --vertical     : afficher chaque colonne sur une ligne');
   WriteLn('  -v             : mode verbeux');
   WriteLn('  -h             : afficher cette aide');
   WriteLn;
@@ -1656,6 +1675,9 @@ Begin
   Opts.OutputFile := '';
   Opts.Verbose    := False;
   Opts.Interactive := False;
+  Opts.Separator   := ' ';
+  Opts.TrimTrailing := False;
+  Opts.VerticalMode := False;
 End;
 
 { ---- Analyse des arguments de la ligne de commande ----------- }
@@ -1679,7 +1701,7 @@ Begin
       ShowHelp
     Else If (Arg = '-v') Or (Arg = '--verbose') Then
       Opts.Verbose := True
-    Else If (Arg = '-S') Or (Arg = '-s') Then
+    Else If (Arg = '-S') Then
     Begin
       Inc(I);
       If I > ParamCount Then
@@ -1714,6 +1736,17 @@ Begin
         FatalError('option -o requiert un argument (fichier sortie)');
       Opts.OutputFile := ParamStr(I);
     End
+    Else If (Arg = '-s') Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('option -s requiert un argument (separateur)');
+      Opts.Separator := ParamStr(I)[1];
+    End
+    Else If (Arg = '-W') Then
+      Opts.TrimTrailing := True
+    Else If (Arg = '--vertical') Then
+      Opts.VerticalMode := True
     Else If Arg[1] = '-' Then
     Begin
       WriteLn('SQLCMD: option inconnue: ', Arg);
@@ -11071,6 +11104,69 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 29 : SET QUOTED_IDENTIFIER ON|OFF ---- }
+    If VarName = 'QUOTED_IDENTIFIER' Then
+    Begin
+      Advance;
+      If KwIs(KW_ON) Then
+        N := NewNode(ND_SET_OPTION, 'QUOTED_IDENTIFIER ON',
+                     LexCurTok.Line, LexCurTok.Col)
+      Else
+        N := NewNode(ND_SET_OPTION, 'QUOTED_IDENTIFIER OFF',
+                     LexCurTok.Line, LexCurTok.Col);
+      Advance;
+      ParseSetStmt := N;
+      Exit;
+    End;
+
+    { SET ANSI_NULLS ON|OFF }
+    If VarName = 'ANSI_NULLS' Then
+    Begin
+      Advance;
+      If KwIs(KW_ON) Then
+        N := NewNode(ND_SET_OPTION, 'ANSI_NULLS ON',
+                     LexCurTok.Line, LexCurTok.Col)
+      Else
+        N := NewNode(ND_SET_OPTION, 'ANSI_NULLS OFF',
+                     LexCurTok.Line, LexCurTok.Col);
+      Advance;
+      ParseSetStmt := N;
+      Exit;
+    End;
+
+    { SET DATEFORMAT mdy|dmy|ymd }
+    If VarName = 'DATEFORMAT' Then
+    Begin
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or
+         (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        N := NewNode(ND_SET_OPTION,
+                     'DATEFORMAT ' + StrUpperCase(LexCurTok.Text),
+                     LexCurTok.Line, LexCurTok.Col);
+        Advance;
+        ParseSetStmt := N;
+        Exit;
+      End;
+    End;
+
+    { SET LANGUAGE francais|english|... }
+    If VarName = 'LANGUAGE' Then
+    Begin
+      Advance;
+      If (LexCurTok.Kind = TOK_IDENT) Or
+         (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        N := NewNode(ND_SET_OPTION,
+                     'LANGUAGE ' + LexCurTok.Text,
+                     LexCurTok.Line, LexCurTok.Col);
+        Advance;
+        ParseSetStmt := N;
+        Exit;
+      End;
+    End;
+    { ---- Fin TODO 29 SET options ---- }
+
     { ---- TODO 28 : SET TRANSACTION ISOLATION LEVEL ---- }
     If VarName = 'TRANSACTION' Then
     Begin
@@ -17674,7 +17770,8 @@ Begin
           Inc(Cnt);
         End;
       End;
-      OutputLine('(' + IntToStr(Cnt) + ' row(s) affected)');
+      If Not ShowNoCount Then
+        OutputLine('(' + IntToStr(Cnt) + ' row(s) affected)');
     End
     Else
     Begin
@@ -17728,7 +17825,8 @@ Begin
         End;
       End;
     End;
-    OutputLine('(' + IntToStr(Cnt) + ' row(s) affected)');
+    If Not ShowNoCount Then
+      OutputLine('(' + IntToStr(Cnt) + ' row(s) affected)');
   End
   Else If U = 'SP_TABLES' Then
   Begin
@@ -17747,27 +17845,31 @@ Begin
         Inc(Cnt);
       End;
     End;
-    OutputLine('(' + IntToStr(Cnt) + ' row(s) affected)');
+    If Not ShowNoCount Then
+      OutputLine('(' + IntToStr(Cnt) + ' row(s) affected)');
   End
   Else If U = 'SP_DATABASES' Then
   Begin
     OutputLine('DATABASE_NAME  DATABASE_SIZE  REMARKS');
     OutputLine('-------------- -------------- -------');
     OutputLine('master         0              (default)');
-    OutputLine('(1 row(s) affected)');
+    If Not ShowNoCount Then
+      OutputLine('(1 row(s) affected)');
   End
   Else If U = 'SP_WHO' Then
   Begin
     OutputLine('spid  status     loginame  hostname');
     OutputLine('----  ---------  --------  --------');
     OutputLine('1     runnable   sa        localhost');
-    OutputLine('(1 row(s) affected)');
+    If Not ShowNoCount Then
+      OutputLine('(1 row(s) affected)');
   End
   Else If U = 'SP_LOCK' Then
   Begin
     OutputLine('spid  dbid  ObjId  Type  Mode');
     OutputLine('----  ----  -----  ----  ----');
-    OutputLine('(0 row(s) affected)');
+    If Not ShowNoCount Then
+      OutputLine('(0 row(s) affected)');
   End
   Else If U = 'SP_SPACEUSED' Then
   Begin
@@ -18489,6 +18591,73 @@ End;
 
 { ===== Fin TODO 28 ===== }
 
+{ ===== TODO 29 - FORMATAGE DE LA SORTIE ET COMPATIBILITE SQLCMD ===== }
+
+{ ---- TrimRight : supprimer les espaces de fin -------------------- }
+Function TrimRight(Const S : TString) : TString;
+Var
+  L : Integer;
+Begin
+  L := Length(S);
+  While (L > 0) And (S[L] = ' ') Do
+    Dec(L);
+  TrimRight := Copy(S, 1, L);
+End;
+
+{ ---- SqlErrorMsg : formater un message d erreur avec severite ---- }
+Function SqlErrorMsg(Severity, Number : Integer;
+                     Const Msg : TString) : TString;
+Begin
+  SqlErrorMsg := 'Msg ' + IntToStr(Number) +
+                 ', Level ' + IntToStr(Severity) +
+                 ': ' + Msg;
+End;
+
+{ ---- SqlRaiseError : signaler une erreur avec severite ----------- }
+Procedure SqlRaiseError(Severity, Number : Integer;
+                        Const Msg : TString);
+Begin
+  LastErrorSeverity := Severity;
+  LastErrorNumber   := Number;
+  LastErrorMessage  := Msg;
+  OutputLine(SqlErrorMsg(Severity, Number, Msg));
+  If Severity >= 11 Then
+    Inc(ErrorCount);
+End;
+
+{ ---- QEFormatVertical : affichage vertical des resultats --------- }
+Procedure QEFormatVertical(Var Res : TQEResult);
+Var
+  I, J    : Integer;
+  MaxName : Integer;
+  Cell    : TString;
+Begin
+  MaxName := 0;
+  For J := 0 To Res.ColCnt - 1 Do
+    If Length(Res.Cols[J].Name) > MaxName Then
+      MaxName := Length(Res.Cols[J].Name);
+
+  For I := 0 To Res.RowCnt - 1 Do
+  Begin
+    OutputLine('-- Record #' + IntToStr(I + 1));
+    For J := 0 To Res.ColCnt - 1 Do
+    Begin
+      Cell := Res.Cols[J].Name;
+      While Length(Cell) < MaxName Do
+        Cell := Cell + ' ';
+      Cell := Cell + ' : ' + SqlValueToStr(Res.Rows[I].Vals[J]);
+      If TrimTrailingSpaces Then
+        Cell := TrimRight(Cell);
+      OutputLine(Cell);
+    End;
+    OutputLine('');
+  End;
+  If Not ShowNoCount Then
+    OutputLine('(' + IntToStr(Res.RowCnt) + ' ligne(s) affectee(s))');
+End;
+
+{ ===== Fin TODO 29 ===== }
+
 { ---- Tri QuickSort des lignes -------------------------------- }
 { Trie le result set en memoire par les colonnes d ORDER BY.      }
 
@@ -18575,12 +18744,22 @@ Var
   S, Cell  : TString;
   W        : Integer;
   Len      : Integer;
+  Sep      : TString;
 Begin
   If Res.ColCnt = 0 Then
   Begin
     OutputLine('(0 colonnes)');
     Exit;
   End;
+
+  { Mode vertical : afficher chaque colonne sur une ligne }
+  If VerticalOutput Then
+  Begin
+    QEFormatVertical(Res);
+    Exit;
+  End;
+
+  Sep := ColumnSeparator;
 
   { Ajuster les largeurs selon les donnees }
   For I := 0 To Res.RowCnt - 1 Do
@@ -18600,20 +18779,23 @@ Begin
   S := '';
   For J := 0 To Res.ColCnt - 1 Do
   Begin
-    If J > 0 Then S := S + ' ';
+    If J > 0 Then S := S + Sep;
     Cell := Res.Cols[J].Name;
     W := Res.Cols[J].Width;
-    While Length(Cell) < W Do Cell := Cell + ' ';
+    If Not TrimTrailingSpaces Then
+      While Length(Cell) < W Do Cell := Cell + ' ';
     If Length(Cell) > W Then Cell[0] := Chr(W);
     S := S + Cell;
   End;
+  If TrimTrailingSpaces Then
+    S := TrimRight(S);
   OutputLine(S);
 
   { Ligne de separation }
   S := '';
   For J := 0 To Res.ColCnt - 1 Do
   Begin
-    If J > 0 Then S := S + ' ';
+    If J > 0 Then S := S + Sep;
     W := Res.Cols[J].Width;
     Cell := '';
     For I := 1 To W Do Cell := Cell + '-';
@@ -18627,19 +18809,25 @@ Begin
     S := '';
     For J := 0 To Res.ColCnt - 1 Do
     Begin
-      If J > 0 Then S := S + ' ';
+      If J > 0 Then S := S + Sep;
       Cell := SqlValueToStr(Res.Rows[I].Vals[J]);
       W := Res.Cols[J].Width;
-      While Length(Cell) < W Do Cell := Cell + ' ';
+      If Not TrimTrailingSpaces Then
+        While Length(Cell) < W Do Cell := Cell + ' ';
       If Length(Cell) > W Then Cell[0] := Chr(W);
       S := S + Cell;
     End;
+    If TrimTrailingSpaces Then
+      S := TrimRight(S);
     OutputLine(S);
   End;
 
   { Compteur de lignes }
-  OutputLine('');
-  OutputLine('(' + IntToStr(Res.RowCnt) + ' ligne(s) affectee(s))');
+  If Not ShowNoCount Then
+  Begin
+    OutputLine('');
+    OutputLine('(' + IntToStr(Res.RowCnt) + ' ligne(s) affectee(s))');
+  End;
 End;
 
 { ============================================================
@@ -21577,9 +21765,49 @@ Begin
         OutputLine('-- SET STATISTICS TIME OFF');
       End
       Else If ASTPool[Root].Text = 'NOCOUNT ON' Then
-        OutputLine('-- SET NOCOUNT ON (acknowledged)')
+      Begin
+        ShowNoCount := True;
+        OutputLine('-- SET NOCOUNT ON');
+      End
       Else If ASTPool[Root].Text = 'NOCOUNT OFF' Then
-        OutputLine('-- SET NOCOUNT OFF (acknowledged)')
+      Begin
+        ShowNoCount := False;
+        OutputLine('-- SET NOCOUNT OFF');
+      End
+      { ---- TODO 29 : SET QUOTED_IDENTIFIER / ANSI_NULLS / DATEFORMAT / LANGUAGE ---- }
+      Else If ASTPool[Root].Text = 'QUOTED_IDENTIFIER ON' Then
+      Begin
+        QuotedIdentifier := True;
+        OutputLine('-- SET QUOTED_IDENTIFIER ON');
+      End
+      Else If ASTPool[Root].Text = 'QUOTED_IDENTIFIER OFF' Then
+      Begin
+        QuotedIdentifier := False;
+        OutputLine('-- SET QUOTED_IDENTIFIER OFF');
+      End
+      Else If ASTPool[Root].Text = 'ANSI_NULLS ON' Then
+      Begin
+        AnsiNulls := True;
+        OutputLine('-- SET ANSI_NULLS ON');
+      End
+      Else If ASTPool[Root].Text = 'ANSI_NULLS OFF' Then
+      Begin
+        AnsiNulls := False;
+        OutputLine('-- SET ANSI_NULLS OFF');
+      End
+      Else If Copy(ASTPool[Root].Text, 1, 11) = 'DATEFORMAT ' Then
+      Begin
+        DateFormatStr := Copy(ASTPool[Root].Text, 12,
+                              Length(ASTPool[Root].Text) - 11);
+        OutputLine('-- SET DATEFORMAT ' + DateFormatStr);
+      End
+      Else If Copy(ASTPool[Root].Text, 1, 9) = 'LANGUAGE ' Then
+      Begin
+        SetLanguageStr := Copy(ASTPool[Root].Text, 10,
+                               Length(ASTPool[Root].Text) - 9);
+        OutputLine('-- SET LANGUAGE ' + SetLanguageStr);
+      End
+      { ---- Fin TODO 29 SET options ---- }
       Else If Copy(ASTPool[Root].Text, 1, 9) = 'ISOLATION' Then
       Begin
         If Pos('READ UNCOMMITTED', ASTPool[Root].Text) > 0 Then
@@ -21782,8 +22010,25 @@ Begin
   IsolationLevel := ISO_READ_COMMITTED;
   TranLogCount   := 0;
   XactState      := 0;
+  { ---- TODO 29 : initialisation du formatage et compatibilite ---- }
+  ShowNoCount        := False;
+  QuotedIdentifier   := True;
+  AnsiNulls          := True;
+  DateFormatStr      := 'mdy';
+  SetLanguageStr     := 'english';
+  ColumnSeparator    := ' ';
+  TrimTrailingSpaces := False;
+  VerticalOutput     := False;
+  LastErrorSeverity  := 0;
+  LastErrorNumber    := 0;
+  LastErrorMessage   := '';
 
   ParseArgs;
+
+  { Appliquer les options de formatage de la ligne de commande }
+  ColumnSeparator    := Opts.Separator;
+  TrimTrailingSpaces := Opts.TrimTrailing;
+  VerticalOutput     := Opts.VerticalMode;
 
   If Opts.Verbose Then
     ShowBanner;
