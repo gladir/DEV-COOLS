@@ -12,3 +12,4 @@ ASM68
 SQLCMD
 *.o
 *.ppu
+*.mdf
