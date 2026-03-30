@@ -21437,12 +21437,13 @@ Var
   GrpCnt           : Integer;
   Key              : TSqlValueStr;
   Found            : Boolean;
-  Sorted           : TQEResult;
+  SortedPtr        : TQEResultPtr;
   NbCols           : Integer;
   CI               : Integer;
   V                : TSqlValue;
   ProjNames        : Array[0..MAX_QE_COLS - 1] Of TQEColName;
 Begin
+  New(SortedPtr);
   If QERes = Nil Then New(QERes);
   QERes^.ColCnt := 0;
   QERes^.RowCnt := 0;
@@ -21538,14 +21539,14 @@ Begin
     { groupes non contigus. On passe la plage originale.             }
     { Pour GROUP BY, les lignes ne sont pas forcement contigues.     }
     { On collecte les indices des lignes du groupe.                  }
-    Sorted.ColCnt := SrcRes.ColCnt;
+    SortedPtr^.ColCnt := SrcRes.ColCnt;
     For J := 0 To SrcRes.ColCnt - 1 Do
-      Sorted.Cols[J] := SrcRes.Cols[J];
-    Sorted.RowCnt := 0;
+      SortedPtr^.Cols[J] := SrcRes.Cols[J];
+    SortedPtr^.RowCnt := 0;
     If GroupNode < 0 Then
     Begin
       { Un seul groupe = toutes les lignes }
-      Sorted := SrcRes;
+      SortedPtr^ := SrcRes;
     End
     Else
     Begin
@@ -21554,16 +21555,16 @@ Begin
         Key := QEGroupKey(SrcRes.Rows[J], SrcRes, GroupNode);
         If Key = GrpKeys[I] Then
         Begin
-          If Sorted.RowCnt < MAX_QE_ROWS Then
+          If SortedPtr^.RowCnt < MAX_QE_ROWS Then
           Begin
-            Sorted.Rows[Sorted.RowCnt] := SrcRes.Rows[J];
-            Inc(Sorted.RowCnt);
+            SortedPtr^.Rows[SortedPtr^.RowCnt] := SrcRes.Rows[J];
+            Inc(SortedPtr^.RowCnt);
           End;
         End;
       End;
     End;
 
-    If Sorted.RowCnt = 0 Then Continue;
+    If SortedPtr^.RowCnt = 0 Then Continue;
 
     { Evaluer chaque colonne SELECT pour ce groupe }
     QERes^.Rows[QERes^.RowCnt].ColCnt := NbCols;
@@ -21579,8 +21580,8 @@ Begin
       Begin
         CI := ASTPool[N].Children[0];
         QERes^.Rows[QERes^.RowCnt].Vals[K] :=
-          QEEvalExprAggr(CI, Sorted.Rows[0], Sorted,
-                          0, Sorted.RowCnt - 1);
+          QEEvalExprAggr(CI, SortedPtr^.Rows[0], SortedPtr^,
+                          0, SortedPtr^.RowCnt - 1);
       End
       Else
       Begin
@@ -21623,6 +21624,7 @@ Begin
     End;
     QERes^.RowCnt := J;
   End;
+  Dispose(SortedPtr);
 End;
 
 { ---- Executer un SELECT ------------------------------------- }
@@ -22199,12 +22201,13 @@ Var
   ProjAll    : Boolean;
   OrdCol     : Integer;
   OrdDesc    : Boolean;
-  SrcRes     : TQEResult;
-  JoinRes    : TQEResult;
-  TmpRes     : TQEResult;
+  SrcResPtr  : TQEResultPtr;
+  JoinResPtr : TQEResultPtr;
+  TmpResPtr  : TQEResultPtr;
   OnNode     : Integer;
   MainTblName: TTokenText;   { TODO 25 : nom de la table principale }
 Begin
+  New(SrcResPtr); New(JoinResPtr); New(TmpResPtr);
   If QERes = Nil Then New(QERes);
   QERes^.ColCnt := 0;
   QERes^.RowCnt := 0;
@@ -22212,12 +22215,14 @@ Begin
   If (Root < 0) Or (Root >= ASTCount) Then
   Begin
     OutputLine('-- Erreur : noeud SELECT invalide');
+    Dispose(SrcResPtr); Dispose(JoinResPtr); Dispose(TmpResPtr);
     Exit;
   End;
 
   If ASTPool[Root].Kind <> ND_SELECT_STMT Then
   Begin
     OutputLine('-- Erreur : noeud n''est pas un SELECT');
+    Dispose(SrcResPtr); Dispose(JoinResPtr); Dispose(TmpResPtr);
     Exit;
   End;
 
@@ -22293,6 +22298,7 @@ Begin
     QERes^.ColCnt := J;
     QERes^.Rows[0].ColCnt := J;
     QEFormatResult(QERes^);
+    Dispose(SrcResPtr); Dispose(JoinResPtr); Dispose(TmpResPtr);
     Exit;
   End;
 
@@ -22338,6 +22344,7 @@ Begin
     QEShowPlan(Root, TblName, WhereNode, OrderNode, GroupNode,
                HasDistinct, J);
     { En mode SHOWPLAN_TEXT, on ne execute pas la requete }
+    Dispose(SrcResPtr); Dispose(JoinResPtr); Dispose(TmpResPtr);
     Exit;
   End;
   { ---- Fin TODO 25 SHOWPLAN_TEXT ---- }
@@ -22346,19 +22353,21 @@ Begin
   If Not CatalogValid Then
   Begin
     OutputLine('-- Erreur : catalogue systeme non charge');
+    Dispose(SrcResPtr); Dispose(JoinResPtr); Dispose(TmpResPtr);
     Exit;
   End;
 
   { Charger la premiere table }
   MainTblName := TblName;  { TODO 25 : sauvegarder pour STATISTICS IO }
-  If Not QELoadTable(TblName, SrcRes) Then
+  If Not QELoadTable(TblName, SrcResPtr^) Then
   Begin
     OutputLine('-- Erreur : table ''' + TblName + ''' introuvable');
+    Dispose(SrcResPtr); Dispose(JoinResPtr); Dispose(TmpResPtr);
     Exit;
   End;
 
   If Opts.Verbose Then
-    OutputLine('-- Table scan : ' + IntToStr(SrcRes.RowCnt) +
+    OutputLine('-- Table scan : ' + IntToStr(SrcResPtr^.RowCnt) +
                ' ligne(s) trouvee(s) dans ' + TblName);
 
   { ---- Traitement des JOINs (TODO 16) ---- }
@@ -22381,13 +22390,13 @@ Begin
       End;
       If TblName <> '' Then
       Begin
-        If QELoadTable(TblName, JoinRes) Then
+        If QELoadTable(TblName, JoinResPtr^) Then
         Begin
           If Opts.Verbose Then
             OutputLine('-- Cross join avec ' + TblName +
-                       ' (' + IntToStr(JoinRes.RowCnt) + ' ligne(s))');
-          QECrossJoin(SrcRes, JoinRes, TmpRes);
-          SrcRes := TmpRes;
+                       ' (' + IntToStr(JoinResPtr^.RowCnt) + ' ligne(s))');
+          QECrossJoin(SrcResPtr^, JoinResPtr^, TmpResPtr^);
+          SrcResPtr^ := TmpResPtr^;
         End;
       End;
     End;
@@ -22409,7 +22418,7 @@ Begin
             If (K >= 0) And (K < ASTCount) Then
               TblName := ASTPool[K].Text;
           End;
-          If (TblName <> '') And QELoadTable(TblName, JoinRes) Then
+          If (TblName <> '') And QELoadTable(TblName, JoinResPtr^) Then
           Begin
             { Determiner la condition ON (deuxieme enfant) }
             OnNode := -1;
@@ -22421,9 +22430,9 @@ Begin
             End;
             If Opts.Verbose Then
               OutputLine('-- ' + ASTPool[N].Text + ' avec ' + TblName +
-                         ' (' + IntToStr(JoinRes.RowCnt) + ' ligne(s))');
-            QEExecJoin(SrcRes, JoinRes, OnNode, ASTPool[N].Text, TmpRes);
-            SrcRes := TmpRes;
+                         ' (' + IntToStr(JoinResPtr^.RowCnt) + ' ligne(s))');
+            QEExecJoin(SrcResPtr^, JoinResPtr^, OnNode, ASTPool[N].Text, TmpResPtr^);
+            SrcResPtr^ := TmpResPtr^;
           End;
         End;
       End;
@@ -22445,16 +22454,16 @@ Begin
             If (K >= 0) And (K < ASTCount) Then
               TblName := ASTPool[K].Text;
           End;
-          If (TblName <> '') And QELoadTable(TblName, JoinRes) Then
+          If (TblName <> '') And QELoadTable(TblName, JoinResPtr^) Then
           Begin
             If Opts.Verbose Then
               OutputLine('-- ' + ASTPool[N].Text + ' avec ' + TblName +
-                         ' (' + IntToStr(JoinRes.RowCnt) + ' ligne(s))');
+                         ' (' + IntToStr(JoinResPtr^.RowCnt) + ' ligne(s))');
             If Pos('OUTER', StrUpperCase(ASTPool[N].Text)) > 0 Then
-              QENestedLoopJoin(SrcRes, JoinRes, -1, 'LEFT', TmpRes)
+              QENestedLoopJoin(SrcResPtr^, JoinResPtr^, -1, 'LEFT', TmpResPtr^)
             Else
-              QECrossJoin(SrcRes, JoinRes, TmpRes);
-            SrcRes := TmpRes;
+              QECrossJoin(SrcResPtr^, JoinResPtr^, TmpResPtr^);
+            SrcResPtr^ := TmpResPtr^;
           End;
         End;
       End;
@@ -22468,16 +22477,16 @@ Begin
     Begin
       N := ASTPool[WhereNode].Children[0];
       J := 0;
-      For I := 0 To SrcRes.RowCnt - 1 Do
+      For I := 0 To SrcResPtr^.RowCnt - 1 Do
       Begin
-        If QEEvalBool(N, SrcRes.Rows[I], SrcRes) Then
+        If QEEvalBool(N, SrcResPtr^.Rows[I], SrcResPtr^) Then
         Begin
           If J <> I Then
-            SrcRes.Rows[J] := SrcRes.Rows[I];
+            SrcResPtr^.Rows[J] := SrcResPtr^.Rows[I];
           Inc(J);
         End;
       End;
-      SrcRes.RowCnt := J;
+      SrcResPtr^.RowCnt := J;
     End;
   End;
 
@@ -22507,15 +22516,15 @@ Begin
   { GROUP BY / Agregation (TODO 17) }
   If (GroupNode >= 0) Or HasAggr Then
   Begin
-    QEExecGroupBy(SrcRes, Root, GroupNode, HavingNode);
+    QEExecGroupBy(SrcResPtr^, Root, GroupNode, HavingNode);
     { QEExecGroupBy a ecrit dans QERes^, continuer avec ORDER BY etc. }
-    { Copier le resultat dans SrcRes pour la suite du pipeline }
-    SrcRes.ColCnt := QERes^.ColCnt;
+    { Copier le resultat dans SrcResPtr^ pour la suite du pipeline }
+    SrcResPtr^.ColCnt := QERes^.ColCnt;
     For J := 0 To QERes^.ColCnt - 1 Do
-      SrcRes.Cols[J] := QERes^.Cols[J];
-    SrcRes.RowCnt := QERes^.RowCnt;
+      SrcResPtr^.Cols[J] := QERes^.Cols[J];
+    SrcResPtr^.RowCnt := QERes^.RowCnt;
     For I := 0 To QERes^.RowCnt - 1 Do
-      SrcRes.Rows[I] := QERes^.Rows[I];
+      SrcResPtr^.Rows[I] := QERes^.Rows[I];
 
     { Copier directement dans QERes pour la suite }
     { (pas besoin de reprojeter, QEExecGroupBy l a deja fait) }
@@ -22580,6 +22589,7 @@ Begin
 
     { Afficher le result set }
     QEFormatResult(QERes^);
+    Dispose(SrcResPtr); Dispose(JoinResPtr); Dispose(TmpResPtr);
     Exit;
   End;
 
@@ -22606,7 +22616,7 @@ Begin
         { Chercher le nom de la colonne }
         If ASTPool[CI].Kind = ND_IDENT Then
         Begin
-          ProjCols[NbCols] := QEFindColByName(ASTPool[CI].Text, SrcRes);
+          ProjCols[NbCols] := QEFindColByName(ASTPool[CI].Text, SrcResPtr^);
           ProjNames[NbCols] := ASTPool[CI].Text;
           { Chercher alias }
           For K := 0 To ASTPool[N].ChildCnt - 1 Do
@@ -22627,7 +22637,7 @@ Begin
             If (J >= 0) And (J < ASTCount) Then
             Begin
               ProjCols[NbCols] := QEFindColByName(ASTPool[J].Text,
-                                                    SrcRes);
+                                                    SrcResPtr^);
               ProjNames[NbCols] := ASTPool[J].Text;
             End;
           End
@@ -22662,7 +22672,7 @@ Begin
           ProjAll := True;
           Break;
         End;
-        ProjCols[NbCols] := QEFindColByName(ASTPool[N].Text, SrcRes);
+        ProjCols[NbCols] := QEFindColByName(ASTPool[N].Text, SrcResPtr^);
         ProjNames[NbCols] := ASTPool[N].Text;
         Inc(NbCols);
       End;
@@ -22673,12 +22683,12 @@ Begin
   If ProjAll Then
   Begin
     { SELECT * : copier toutes les colonnes }
-    QERes^.ColCnt := SrcRes.ColCnt;
-    For J := 0 To SrcRes.ColCnt - 1 Do
-      QERes^.Cols[J] := SrcRes.Cols[J];
-    QERes^.RowCnt := SrcRes.RowCnt;
-    For I := 0 To SrcRes.RowCnt - 1 Do
-      QERes^.Rows[I] := SrcRes.Rows[I];
+    QERes^.ColCnt := SrcResPtr^.ColCnt;
+    For J := 0 To SrcResPtr^.ColCnt - 1 Do
+      QERes^.Cols[J] := SrcResPtr^.Cols[J];
+    QERes^.RowCnt := SrcResPtr^.RowCnt;
+    For I := 0 To SrcResPtr^.RowCnt - 1 Do
+      QERes^.Rows[I] := SrcResPtr^.Rows[I];
   End
   Else If NbCols > 0 Then
   Begin
@@ -22686,7 +22696,7 @@ Begin
     For J := 0 To NbCols - 1 Do
     Begin
       If ProjCols[J] >= 0 Then
-        QERes^.Cols[J] := SrcRes.Cols[ProjCols[J]]
+        QERes^.Cols[J] := SrcResPtr^.Cols[ProjCols[J]]
       Else
       Begin
         QERes^.Cols[J].Name   := ProjNames[J];
@@ -22699,14 +22709,14 @@ Begin
       End;
       QERes^.Cols[J].Name := ProjNames[J];
     End;
-    QERes^.RowCnt := SrcRes.RowCnt;
-    For I := 0 To SrcRes.RowCnt - 1 Do
+    QERes^.RowCnt := SrcResPtr^.RowCnt;
+    For I := 0 To SrcResPtr^.RowCnt - 1 Do
     Begin
       QERes^.Rows[I].ColCnt := NbCols;
       For J := 0 To NbCols - 1 Do
       Begin
         If ProjCols[J] >= 0 Then
-          QERes^.Rows[I].Vals[J] := SrcRes.Rows[I].Vals[ProjCols[J]]
+          QERes^.Rows[I].Vals[J] := SrcResPtr^.Rows[I].Vals[ProjCols[J]]
         Else
         Begin
           { Evaluer l expression }
@@ -22723,7 +22733,7 @@ Begin
                 If ASTPool[N].ChildCnt > 0 Then
                   QERes^.Rows[I].Vals[J] :=
                     QEEvalExpr(ASTPool[N].Children[0],
-                               SrcRes.Rows[I], SrcRes);
+                               SrcResPtr^.Rows[I], SrcResPtr^);
                 Break;
               End;
               Inc(K);
@@ -22736,12 +22746,12 @@ Begin
   Else
   Begin
     { Pas de colonnes trouvees, copier tout }
-    QERes^.ColCnt := SrcRes.ColCnt;
-    For J := 0 To SrcRes.ColCnt - 1 Do
-      QERes^.Cols[J] := SrcRes.Cols[J];
-    QERes^.RowCnt := SrcRes.RowCnt;
-    For I := 0 To SrcRes.RowCnt - 1 Do
-      QERes^.Rows[I] := SrcRes.Rows[I];
+    QERes^.ColCnt := SrcResPtr^.ColCnt;
+    For J := 0 To SrcResPtr^.ColCnt - 1 Do
+      QERes^.Cols[J] := SrcResPtr^.Cols[J];
+    QERes^.RowCnt := SrcResPtr^.RowCnt;
+    For I := 0 To SrcResPtr^.RowCnt - 1 Do
+      QERes^.Rows[I] := SrcResPtr^.Rows[I];
   End;
 
   { ORDER BY : trier le result set }
@@ -22817,6 +22827,7 @@ Begin
                      QERes^.RowCnt);
   End;
   { ---- Fin TODO 25 STATISTICS IO ---- }
+  Dispose(SrcResPtr); Dispose(JoinResPtr); Dispose(TmpResPtr);
 End;
 
 { ---- TODO 26 : Implementations des fonctions Forward ----------- }
@@ -23174,6 +23185,13 @@ Begin
     If ASTPool[Root].Kind = ND_SAVE_TRAN Then
       ExecSaveTran(Root);
     { ---- Fin TODO 28 ---- }
+    { ---- USE database ---- }
+    If ASTPool[Root].Kind = ND_USE_STMT Then
+    Begin
+      If Not ShowNoCount Then
+        OutputLine('Changed database context to ''' +
+                   ASTPool[Root].Text + '''.');
+    End;
   End
   Else
     OutputLine('-- Erreur de syntaxe dans : ' + SQL);
