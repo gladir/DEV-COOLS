@@ -460,6 +460,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>SNOBOL86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Snobol 4 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
+		<tr>
+			<td><b>SQLCMD.PAS</b></td>
+			<td>Cette commande permet de lancer un clone SQL Server en ligne de commande. Lit directement dans un fichier «.MDF».</td>
+		</tr>
     	<tr>
 			<td><b>SYMDEB.PAS</b></td>
 			<td>Cette commande permet de lancer le débogueur DOS. Cette commande est inspiré du SYMDEB du MASM.</td>
