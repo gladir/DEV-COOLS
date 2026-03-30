@@ -1,0 +1,2072 @@
+============================================================
+SPECIFICATION DU LANGAGE SQL SERVER (TRANSACT-SQL)
+Sous-ensemble supporte par SQLCMD.PAS
+Clone SQL Server en ligne de commande
+============================================================
+Programme  : SQLCMD.PAS (clone sqlcmd lisant les fichiers .MDF)
+Cible      : Turbo Pascal 7 / Free Pascal (-Mtp)
+Version    : 1.0 - 2026
+
+Reference  : Microsoft - « Transact-SQL Reference (Database Engine) »
+             ISO/IEC 9075 - SQL Standard
+             Microsoft SQL Server 2022 Documentation
+
+============================================================
+TABLE DES MATIERES
+============================================================
+
+ 1. INTRODUCTION
+ 2. CONVENTIONS LEXICALES
+ 3. TYPES DE DONNEES
+ 4. EXPRESSIONS
+ 5. OPERATEURS
+ 6. INSTRUCTIONS DML (DATA MANIPULATION LANGUAGE)
+ 7. INSTRUCTIONS DDL (DATA DEFINITION LANGUAGE)
+ 8. INSTRUCTIONS DCL (DATA CONTROL LANGUAGE)
+ 9. INSTRUCTIONS DE CONTROLE DE FLUX (T-SQL)
+10. TRANSACTIONS
+11. FONCTIONS INTEGREES
+12. FONCTIONS D AGREGATION
+13. FONCTIONS DE FENETRE (WINDOW FUNCTIONS)
+14. SOUS-REQUETES ET EXPRESSIONS DE TABLE
+15. JOINTURES
+16. OPERATEURS ENSEMBLISTES
+17. CURSEURS
+18. PROCEDURES STOCKEES ET FONCTIONS UTILISATEUR
+19. DECLENCHEURS (TRIGGERS)
+20. GESTION DES ERREURS
+21. FORMATS DE SORTIE (FOR XML / FOR JSON)
+22. VARIABLES ET FONCTIONS SYSTEME
+23. LIMITATIONS DE L IMPLEMENTATION SQLCMD.PAS
+24. LIEN AVEC LE PROJET DEV-COOLS
+
+============================================================
+1. INTRODUCTION
+============================================================
+
+Transact-SQL (T-SQL) est l extension proprietaire de Microsoft
+du langage SQL standard (Structured Query Language). Il est
+le langage principal de Microsoft SQL Server et de Azure SQL
+Database. T-SQL ajoute au SQL standard des instructions de
+controle de flux, des variables locales, des fonctions
+integrees supplementaires, la gestion d erreurs structuree
+et des fonctionnalites de programmation procedurale.
+
+SQL a ete cree en 1970 par Edgar F. Codd chez IBM, base sur
+le modele relationnel. Le langage a ete normalise par l ANSI
+en 1986 (SQL-86) puis par l ISO. Les versions successives
+(SQL-89, SQL-92, SQL:1999, SQL:2003, SQL:2008, SQL:2011,
+SQL:2016, SQL:2023) ont progressivement enrichi le langage.
+
+Microsoft a introduit Transact-SQL avec SQL Server 1.0 en
+1989 (a l origine Sybase SQL Server). Depuis, T-SQL a evolue
+a chaque version de SQL Server : 6.5, 7.0, 2000, 2005, 2008,
+2012, 2014, 2016, 2017, 2019 et 2022.
+
+Le programme SQLCMD.PAS implemente un sous-ensemble
+substantiel de T-SQL en lisant directement les fichiers .MDF
+de SQL Server sans necessiter d instance SQL Server.
+
+Paradigme : declaratif (requetes), imperatif (controle de
+            flux T-SQL), ensembliste (operations sur les
+            lignes)
+Typage    : statique fort (chaque colonne a un type defini)
+
+============================================================
+2. CONVENTIONS LEXICALES
+============================================================
+
+2.1 Commentaires
+
+    -- commentaire sur une ligne (jusqu a la fin de ligne)
+    /* commentaire sur
+       plusieurs lignes */
+
+    Les commentaires bloc peuvent etre imbriques :
+    /* niveau 1 /* niveau 2 */ fin niveau 1 */
+
+2.2 Identificateurs
+
+    Les identificateurs nomment les objets de la base :
+    tables, colonnes, variables, procedures, fonctions, etc.
+
+    Identificateurs reguliers :
+      Commencent par une lettre (a-z, A-Z) ou un underscore (_),
+      at (@) pour les variables, dieise (#) pour les objets
+      temporaires, double dieise (##) pour les objets temporaires
+      globaux.
+      Suivis de lettres, chiffres, underscores, @ ou #.
+      Longueur maximale : 128 caracteres.
+      Non sensibles a la casse (selon la collation par defaut).
+
+    Identificateurs delimites :
+      [nom avec espaces]    -- crochets (specifique T-SQL)
+      "nom avec espaces"    -- guillemets doubles (SQL standard)
+
+    Exemples :
+      NomTable     _compte     @variable     #temp
+      ##global     [Nom Colonne]     "Schema"."Table"
+
+2.3 Variables
+
+    Les variables locales commencent par @ :
+      @nom_variable
+
+    Les variables systeme commencent par @@ :
+      @@ROWCOUNT  @@ERROR  @@IDENTITY  @@VERSION
+
+    Les parametres de procedures stockees commencent par @ :
+      @param1  @param2
+
+2.4 Litteraux numeriques
+
+    Entiers          : 42, -17, 0
+    Decimaux         : 3.14, -0.5, 123.456
+    Scientifiques    : 1.5E3, 2.7E-4
+    Hexadecimaux     : 0x1A2B, 0xFF
+    Monetaires       : $12.50, -$99.99
+
+2.5 Litteraux chaines
+
+    Chaines ANSI :
+      'texte simple'
+      'l''apostrophe est doublee'
+      ''                          -- chaine vide
+
+    Chaines Unicode :
+      N'texte unicode'
+      N'l''apostrophe est doublee'
+
+    Chaines binaires :
+      0x48656C6C6F                -- octets hexadecimaux
+
+2.6 Mots-cles reserves
+
+    T-SQL comporte un grand nombre de mots-cles reserves.
+    Les principaux sont :
+
+    -- DML
+    SELECT  INSERT  UPDATE  DELETE  MERGE  TRUNCATE
+    BULK INSERT
+
+    -- Clauses SELECT
+    FROM  WHERE  GROUP BY  HAVING  ORDER BY
+    TOP  DISTINCT  ALL  AS  INTO
+
+    -- Jointures
+    JOIN  INNER  LEFT  RIGHT  FULL  OUTER  CROSS
+    ON  APPLY
+
+    -- Operateurs ensemblistes
+    UNION  INTERSECT  EXCEPT
+
+    -- Predicats
+    AND  OR  NOT  IN  EXISTS  BETWEEN  LIKE
+    IS  NULL  SOME  ANY  ALL
+
+    -- Expressions
+    CASE  WHEN  THEN  ELSE  END
+    CAST  CONVERT  TRY_CAST  TRY_CONVERT
+    COLLATE  COALESCE  NULLIF  IIF  CHOOSE
+
+    -- DDL
+    CREATE  ALTER  DROP  TABLE  VIEW  INDEX
+    PROCEDURE  FUNCTION  TRIGGER  DATABASE
+    SCHEMA  SEQUENCE  TYPE  SYNONYM
+    CONSTRAINT  PRIMARY KEY  FOREIGN KEY
+    REFERENCES  UNIQUE  CHECK  DEFAULT
+    IDENTITY  CLUSTERED  NONCLUSTERED
+    COLUMNSTORE  IF EXISTS
+
+    -- Controle de flux
+    BEGIN  END  IF  ELSE  WHILE  BREAK  CONTINUE
+    GOTO  RETURN  WAITFOR  THROW  TRY  CATCH
+    RAISERROR  PRINT
+
+    -- Transactions
+    BEGIN TRAN  COMMIT  ROLLBACK  SAVE  TRANSACTION
+
+    -- DCL
+    GRANT  REVOKE  DENY
+
+    -- Divers
+    DECLARE  SET  USE  GO  EXEC  EXECUTE
+    WITH  OVER  PARTITION BY  ROWS  RANGE
+    PIVOT  UNPIVOT  OFFSET  FETCH  NEXT  ONLY
+    PERCENT  TIES  OUTPUT  INSERTED  DELETED
+    FOR  XML  JSON  PATH  RAW  AUTO
+
+2.7 Sensibilite a la casse
+
+    Par defaut, T-SQL n est pas sensible a la casse pour les
+    mots-cles et les identificateurs. Cependant, la
+    sensibilite depend de la collation de la base :
+
+    SQL_Latin1_General_CP1_CI_AS : insensible a la casse (CI)
+    SQL_Latin1_General_CP1_CS_AS : sensible a la casse (CS)
+
+    Les litteraux chaines respectent toujours la collation.
+
+2.8 Separateur de batch
+
+    GO
+      Separateur de batch (lots d instructions). Ce n est pas
+      un mot-cle T-SQL mais une commande reconnue par les
+      outils client (sqlcmd, SSMS). Chaque batch est compile
+      et execute independamment.
+
+    Le point-virgule (;) est le terminateur d instruction
+    recommande :
+      SELECT 1;
+      SELECT 2;
+
+============================================================
+3. TYPES DE DONNEES
+============================================================
+
+3.1 Types numeriques exacts
+
+    Type              Taille   Plage / Description
+    ----------------  -------  --------------------------------
+    BIT               1 bit    0 ou 1
+    TINYINT           1 octet  0 a 255
+    SMALLINT          2 octets -32768 a 32767
+    INT               4 octets -2^31 a 2^31-1
+    BIGINT            8 octets -2^63 a 2^63-1
+    DECIMAL(p,s)      5-17 oct Precision p (1-38), echelle s
+    NUMERIC(p,s)      5-17 oct Synonyme de DECIMAL
+    SMALLMONEY        4 octets -214748.3648 a 214748.3647
+    MONEY             8 octets -922337203685477.5808 a
+                                922337203685477.5807
+
+3.2 Types numeriques approches
+
+    Type              Taille   Description
+    ----------------  -------  --------------------------------
+    REAL              4 octets IEEE 754 simple precision
+    FLOAT [(n)]       4 ou 8   n=1-24: 4 oct, n=25-53: 8 oct
+                      octets   IEEE 754 double par defaut
+
+3.3 Types chaines de caracteres
+
+    Type              Taille     Description
+    ----------------  ---------  ----------------------------
+    CHAR(n)           n octets   Chaine fixe (1-8000)
+    VARCHAR(n)        variable   Chaine variable (1-8000)
+    VARCHAR(MAX)      variable   Jusqu a 2^31-1 octets
+    TEXT              variable   Obsolete, remplace par
+                                 VARCHAR(MAX)
+
+    Les types CHAR/VARCHAR utilisent la page de code de la
+    collation de la colonne (ex: Latin1, CP1252).
+
+3.4 Types chaines Unicode
+
+    Type              Taille     Description
+    ----------------  ---------  ----------------------------
+    NCHAR(n)          2*n oct.   Unicode fixe (1-4000)
+    NVARCHAR(n)       variable   Unicode variable (1-4000)
+    NVARCHAR(MAX)     variable   Jusqu a 2^31-1 octets
+    NTEXT             variable   Obsolete, remplace par
+                                 NVARCHAR(MAX)
+
+    Encodage : UTF-16 Little-Endian.
+
+3.5 Types date et heure
+
+    Type              Taille   Description
+    ----------------  -------  --------------------------------
+    DATE              3 octets 0001-01-01 a 9999-12-31
+    TIME(p)           3-5 oct. 00:00:00.0000000 a
+                               23:59:59.9999999 (precision p)
+    DATETIME          8 octets 1753-01-01 a 9999-12-31
+                               Precision : 3.33 ms
+    DATETIME2(p)      6-8 oct. 0001-01-01 a 9999-12-31
+                               Precision : 100 ns (p=7)
+    SMALLDATETIME     4 octets 1900-01-01 a 2079-06-06
+                               Precision : 1 minute
+    DATETIMEOFFSET(p) 8-10 oct DATETIME2 + fuseau horaire
+                               (-14:00 a +14:00)
+
+    Formats de litteraux :
+      '2026-03-21'                  -- DATE (ISO 8601)
+      '14:30:00'                    -- TIME
+      '2026-03-21 14:30:00'         -- DATETIME
+      '2026-03-21T14:30:00.123'     -- DATETIME2
+      '2026-03-21 14:30:00 +02:00'  -- DATETIMEOFFSET
+
+3.6 Types binaires
+
+    Type              Taille     Description
+    ----------------  ---------  ----------------------------
+    BINARY(n)         n octets   Binaire fixe (1-8000)
+    VARBINARY(n)      variable   Binaire variable (1-8000)
+    VARBINARY(MAX)    variable   Jusqu a 2^31-1 octets
+    IMAGE             variable   Obsolete, remplace par
+                                 VARBINARY(MAX)
+    TIMESTAMP         8 octets   Synonyme de ROWVERSION
+    ROWVERSION        8 octets   Valeur auto-incrementee
+
+3.7 Types speciaux
+
+    Type               Taille    Description
+    -----------------  --------  ----------------------------
+    UNIQUEIDENTIFIER   16 octets GUID (ex: '6F9619FF-...')
+    SQL_VARIANT        variable  Peut stocker la plupart des
+                                 types de base
+    XML                variable  Document ou fragment XML
+    HIERARCHYID        variable  Position dans une hierarchie
+    GEOGRAPHY          variable  Donnees geospatiales
+    GEOMETRY           variable  Donnees geometriques planes
+    TABLE              variable  Variable de type table
+    CURSOR             -         Pointeur de curseur
+
+3.8 Conversion de types
+
+    Conversion implicite :
+      T-SQL convertit automatiquement certains types dans les
+      expressions mixtes selon les regles de precedence :
+        sql_variant > datetimeoffset > datetime2 > datetime >
+        smalldatetime > date > time > float > real > decimal >
+        money > smallmoney > bigint > int > smallint > tinyint >
+        bit > nvarchar > nchar > varchar > char > varbinary >
+        binary > uniqueidentifier
+
+    Conversion explicite :
+      CAST(expression AS type)
+      CONVERT(type, expression [, style])
+      TRY_CAST(expression AS type)      -- retourne NULL si echec
+      TRY_CONVERT(type, expression)     -- retourne NULL si echec
+
+    Exemples :
+      CAST(42 AS VARCHAR(10))           -- '42'
+      CAST('2026-03-21' AS DATE)        -- conversion de date
+      CONVERT(VARCHAR, GETDATE(), 120)  -- format ISO
+      TRY_CAST('abc' AS INT)            -- retourne NULL
+
+============================================================
+4. EXPRESSIONS
+============================================================
+
+4.1 Expressions scalaires
+
+    Une expression scalaire produit une valeur unique :
+
+    42                          -- litteraux
+    'texte'
+    @variable                   -- variable locale
+    @@ROWCOUNT                  -- variable systeme
+    nom_colonne                 -- reference de colonne
+    table.colonne               -- reference qualifiee
+    schema.table.colonne        -- reference completement qualifiee
+    (expression)                -- parentheses
+    fonction(args)              -- appel de fonction
+    (SELECT expr FROM ...)      -- sous-requete scalaire
+
+4.2 Expression CASE
+
+    Forme simple :
+      CASE expression
+        WHEN valeur1 THEN resultat1
+        WHEN valeur2 THEN resultat2
+        ...
+        ELSE resultat_defaut
+      END
+
+    Forme recherchee :
+      CASE
+        WHEN condition1 THEN resultat1
+        WHEN condition2 THEN resultat2
+        ...
+        ELSE resultat_defaut
+      END
+
+    Exemples :
+      CASE status WHEN 'A' THEN 'Actif' ELSE 'Inactif' END
+      CASE WHEN age >= 18 THEN 'Majeur' ELSE 'Mineur' END
+
+4.3 Expression COALESCE et NULLIF
+
+    COALESCE(expr1, expr2, ..., exprN)
+      Retourne la premiere expression non NULL.
+      Equivalent a CASE WHEN expr1 IS NOT NULL THEN expr1
+                        WHEN expr2 IS NOT NULL THEN expr2
+                        ... END
+
+    NULLIF(expr1, expr2)
+      Retourne NULL si expr1 = expr2, sinon retourne expr1.
+
+4.4 Expression IIF et CHOOSE
+
+    IIF(condition, valeur_vrai, valeur_faux)
+      Equivalent a CASE WHEN condition THEN valeur_vrai
+                        ELSE valeur_faux END
+
+    CHOOSE(index, val1, val2, ..., valN)
+      Retourne la valeur a la position index (base 1).
+
+============================================================
+5. OPERATEURS
+============================================================
+
+5.1 Operateurs arithmetiques
+
+    +   addition
+    -   soustraction ou negation unaire
+    *   multiplication
+    /   division (entiere si les deux operandes sont entiers)
+    %   modulo (reste de la division)
+
+    Exemples :
+      10 + 3       -- 13
+      10 / 3       -- 3 (division entiere)
+      10.0 / 3     -- 3.333... (division decimale)
+      10 % 3       -- 1
+
+5.2 Operateurs de comparaison
+
+    =    egalite
+    <>   difference (SQL standard)
+    !=   difference (non standard, accepte par T-SQL)
+    <    inferieur strict
+    >    superieur strict
+    <=   inferieur ou egal
+    >=   superieur ou egal
+    !<   non inferieur (equivalent a >=, specifique T-SQL)
+    !>   non superieur (equivalent a <=, specifique T-SQL)
+
+5.3 Operateurs logiques
+
+    AND       ET logique
+    OR        OU logique
+    NOT       negation logique
+
+    Logique tri-valuee SQL (TRUE, FALSE, UNKNOWN) :
+      TRUE AND UNKNOWN  = UNKNOWN
+      FALSE AND UNKNOWN = FALSE
+      TRUE OR UNKNOWN   = TRUE
+      FALSE OR UNKNOWN  = UNKNOWN
+      NOT UNKNOWN       = UNKNOWN
+
+    Les valeurs NULL produisent UNKNOWN dans les comparaisons :
+      NULL = NULL       -- UNKNOWN (pas TRUE)
+      NULL <> 1         -- UNKNOWN (pas TRUE)
+      NULL IS NULL      -- TRUE
+
+5.4 Operateurs de chaine
+
+    +   concatenation de chaines
+      'Hello' + ' ' + 'World'  -- 'Hello World'
+      NULL + 'texte'           -- NULL (propagation de NULL)
+
+    CONCAT(str1, str2, ...)
+      Concatenation avec gestion des NULLs :
+      CONCAT(NULL, 'texte')    -- 'texte'
+
+5.5 Operateurs d affectation
+
+    =    affectation simple
+    +=   addition et affectation
+    -=   soustraction et affectation
+    *=   multiplication et affectation
+    /=   division et affectation
+    %=   modulo et affectation
+    &=   ET bit a bit et affectation
+    |=   OU bit a bit et affectation
+    ^=   OU exclusif bit a bit et affectation
+
+    Exemples :
+      SET @x = 10
+      SET @x += 5    -- @x vaut 15
+
+5.6 Operateurs bit a bit
+
+    &    ET bit a bit
+    |    OU bit a bit
+    ^    OU exclusif bit a bit
+    ~    complement bit a bit (unaire)
+
+5.7 Predicats speciaux
+
+    expr IS NULL                -- teste si l expression est NULL
+    expr IS NOT NULL            -- teste si l expression n est pas NULL
+    expr BETWEEN a AND b        -- equivalent a expr >= a AND expr <= b
+    expr NOT BETWEEN a AND b
+    expr IN (val1, val2, ...)   -- teste l appartenance a une liste
+    expr NOT IN (val1, ...)
+    expr IN (SELECT ...)        -- teste l appartenance a un sous-ensemble
+    EXISTS (SELECT ...)         -- teste si la sous-requete retourne
+                                   au moins une ligne
+    NOT EXISTS (SELECT ...)
+    expr LIKE motif [ESCAPE car]
+      Caracteres jokers du LIKE :
+        %    : zero ou plusieurs caracteres
+        _    : exactement un caractere
+        [abc]  : un caractere parmi a, b ou c
+        [a-z]  : un caractere dans la plage a-z
+        [^abc] : un caractere qui n est ni a, ni b, ni c
+
+      Exemples :
+        nom LIKE 'Mart%'         -- commence par 'Mart'
+        nom LIKE '_a%'           -- deuxieme caractere 'a'
+        nom LIKE '[A-C]%'        -- commence par A, B ou C
+        nom LIKE '%[_]%' ESCAPE '\' -- contient un underscore
+
+    expr ALL (SELECT ...)       -- TRUE si la condition est vraie
+                                   pour toutes les valeurs
+    expr ANY (SELECT ...)       -- TRUE si la condition est vraie
+    expr SOME (SELECT ...)         pour au moins une valeur
+
+5.8 Precedence des operateurs (du plus fort au plus faible)
+
+     1. ~ (complement bit a bit)
+     2. * / %
+     3. + - (arithmetiques)
+     4. = <> < > <= >= != !< !>
+     5. ^ (XOR bit a bit)
+     6. & (ET bit a bit)
+     7. | (OU bit a bit)
+     8. NOT
+     9. AND
+    10. ALL ANY BETWEEN IN LIKE OR SOME
+    11. = (affectation)
+
+============================================================
+6. INSTRUCTIONS DML (DATA MANIPULATION LANGUAGE)
+============================================================
+
+6.1 SELECT
+
+    Syntaxe complete :
+
+    [WITH cte AS (requete)]
+    SELECT [ALL | DISTINCT]
+           [TOP (n) [PERCENT] [WITH TIES]]
+           liste_colonnes | *
+    [INTO nouvelle_table]
+    FROM source_table [AS alias]
+         [WITH (hint_table)]
+    [jointures]
+    [WHERE condition]
+    [GROUP BY colonnes [WITH ROLLUP | CUBE]
+             | GROUPING SETS ((cols), ...)]
+    [HAVING condition]
+    [ORDER BY colonnes [ASC | DESC]
+              [OFFSET n ROWS [FETCH NEXT m ROWS ONLY]]]
+    [FOR XML PATH('element') | RAW | AUTO | EXPLICIT]
+    [FOR JSON PATH | AUTO]
+    [OPTION (query_hints)]
+
+    Exemples :
+
+    -- Requete simple
+    SELECT nom, prenom, age FROM Employes WHERE age > 30
+
+    -- Avec alias
+    SELECT e.nom AS NomEmploye, d.nom AS NomDepartement
+    FROM Employes e
+    INNER JOIN Departements d ON e.dept_id = d.id
+
+    -- Top 10 avec tri
+    SELECT TOP 10 nom, salaire
+    FROM Employes
+    ORDER BY salaire DESC
+
+    -- Pagination (SQL Server 2012+)
+    SELECT nom, prenom
+    FROM Employes
+    ORDER BY nom
+    OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY
+
+    -- CTE (Common Table Expression)
+    WITH VentesParRegion AS (
+      SELECT region, SUM(montant) AS total
+      FROM Ventes
+      GROUP BY region
+    )
+    SELECT * FROM VentesParRegion WHERE total > 10000
+
+    -- CTE recursive
+    WITH Hierarchie AS (
+      SELECT id, nom, manager_id, 0 AS niveau
+      FROM Employes WHERE manager_id IS NULL
+      UNION ALL
+      SELECT e.id, e.nom, e.manager_id, h.niveau + 1
+      FROM Employes e
+      INNER JOIN Hierarchie h ON e.manager_id = h.id
+    )
+    SELECT * FROM Hierarchie
+
+    -- SELECT INTO (creation de table)
+    SELECT * INTO #TempEmployes FROM Employes WHERE actif = 1
+
+6.2 INSERT
+
+    -- Insertion de valeurs explicites
+    INSERT INTO table (col1, col2, col3)
+    VALUES (val1, val2, val3)
+
+    -- Insertion de plusieurs lignes (SQL Server 2008+)
+    INSERT INTO table (col1, col2)
+    VALUES (1, 'a'), (2, 'b'), (3, 'c')
+
+    -- Insertion par requete
+    INSERT INTO table (col1, col2)
+    SELECT colA, colB FROM autre_table WHERE condition
+
+    -- Insertion avec valeurs par defaut
+    INSERT INTO table DEFAULT VALUES
+
+    -- Insertion avec OUTPUT
+    INSERT INTO table (col1, col2)
+    OUTPUT INSERTED.id, INSERTED.col1
+    VALUES (val1, val2)
+
+    -- Insertion par execution de procedure
+    INSERT INTO table
+    EXEC nom_procedure @param1, @param2
+
+6.3 UPDATE
+
+    -- Mise a jour simple
+    UPDATE table
+    SET col1 = val1, col2 = val2
+    WHERE condition
+
+    -- Mise a jour avec FROM (jointure, specifique T-SQL)
+    UPDATE t
+    SET t.col1 = s.valeur
+    FROM table_cible t
+    INNER JOIN table_source s ON t.id = s.id
+    WHERE s.status = 'actif'
+
+    -- Mise a jour avec TOP
+    UPDATE TOP (100) table
+    SET traite = 1
+    WHERE traite = 0
+
+    -- Mise a jour avec OUTPUT
+    UPDATE table
+    SET status = 'archive'
+    OUTPUT DELETED.id, DELETED.status, INSERTED.status
+    WHERE date_creation < '2020-01-01'
+
+    -- Affectation composee
+    UPDATE table SET compteur += 1 WHERE id = @id
+
+6.4 DELETE
+
+    -- Suppression simple
+    DELETE FROM table WHERE condition
+
+    -- Suppression avec TOP
+    DELETE TOP (1000) FROM table WHERE archive = 1
+
+    -- Suppression avec FROM (jointure, specifique T-SQL)
+    DELETE t
+    FROM table_cible t
+    INNER JOIN table_ref r ON t.ref_id = r.id
+    WHERE r.expire = 1
+
+    -- Suppression avec OUTPUT
+    DELETE FROM table
+    OUTPUT DELETED.*
+    WHERE id = @id
+
+6.5 TRUNCATE TABLE
+
+    TRUNCATE TABLE nom_table
+
+    Supprime toutes les lignes de la table sans journaliser
+    chaque suppression individuelle. Plus rapide que DELETE
+    sans WHERE. Reinitialise les colonnes IDENTITY.
+
+6.6 MERGE
+
+    MERGE INTO table_cible AS cible
+    USING table_source AS source
+    ON cible.id = source.id
+    WHEN MATCHED THEN
+      UPDATE SET cible.col1 = source.col1
+    WHEN NOT MATCHED [BY TARGET] THEN
+      INSERT (col1, col2) VALUES (source.col1, source.col2)
+    WHEN NOT MATCHED BY SOURCE THEN
+      DELETE
+    OUTPUT $action, INSERTED.*, DELETED.*;
+
+    L instruction MERGE permet de combiner INSERT, UPDATE et
+    DELETE en une seule instruction basee sur une condition
+    de correspondance.
+
+6.7 BULK INSERT
+
+    BULK INSERT table
+    FROM 'chemin\fichier.csv'
+    WITH (
+      FIELDTERMINATOR = ',',
+      ROWTERMINATOR = '\n',
+      FIRSTROW = 2,
+      CODEPAGE = '65001',
+      TABLOCK
+    )
+
+============================================================
+7. INSTRUCTIONS DDL (DATA DEFINITION LANGUAGE)
+============================================================
+
+7.1 CREATE TABLE
+
+    CREATE TABLE nom_schema.nom_table (
+      col1 type [IDENTITY(seed, increment)]
+                [NOT NULL | NULL]
+                [PRIMARY KEY [CLUSTERED | NONCLUSTERED]]
+                [UNIQUE]
+                [DEFAULT valeur]
+                [CHECK (condition)]
+                [REFERENCES table_ref(col_ref)]
+                [COLLATE collation],
+      col2 type ...,
+      ...
+      [CONSTRAINT nom_pk PRIMARY KEY [CLUSTERED] (col1, ...)],
+      [CONSTRAINT nom_uq UNIQUE [NONCLUSTERED] (col1, ...)],
+      [CONSTRAINT nom_fk FOREIGN KEY (col1)
+                  REFERENCES table_ref(col_ref)
+                  [ON DELETE CASCADE | SET NULL | NO ACTION]
+                  [ON UPDATE CASCADE | SET NULL | NO ACTION]],
+      [CONSTRAINT nom_ck CHECK (condition)],
+      [CONSTRAINT nom_df DEFAULT valeur FOR col1]
+    )
+
+    Exemples :
+
+    CREATE TABLE Employes (
+      id INT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+      nom NVARCHAR(100) NOT NULL,
+      prenom NVARCHAR(100) NOT NULL,
+      email VARCHAR(255) UNIQUE,
+      date_embauche DATE DEFAULT GETDATE(),
+      salaire DECIMAL(10,2) CHECK (salaire > 0),
+      dept_id INT REFERENCES Departements(id)
+    )
+
+    -- Table temporaire locale
+    CREATE TABLE #TempTable (id INT, valeur VARCHAR(100))
+
+    -- Table temporaire globale
+    CREATE TABLE ##GlobalTemp (id INT, valeur VARCHAR(100))
+
+7.2 ALTER TABLE
+
+    ALTER TABLE table ADD colonne type [contraintes]
+    ALTER TABLE table ALTER COLUMN col nouveau_type [NULL|NOT NULL]
+    ALTER TABLE table DROP COLUMN colonne
+    ALTER TABLE table ADD CONSTRAINT nom_contrainte ...
+    ALTER TABLE table DROP CONSTRAINT nom_contrainte
+    ALTER TABLE table ENABLE TRIGGER nom_trigger
+    ALTER TABLE table DISABLE TRIGGER nom_trigger
+
+    Exemples :
+
+    ALTER TABLE Employes ADD telephone VARCHAR(20) NULL
+    ALTER TABLE Employes ALTER COLUMN nom NVARCHAR(200) NOT NULL
+    ALTER TABLE Employes DROP COLUMN telephone
+
+7.3 DROP TABLE
+
+    DROP TABLE [IF EXISTS] nom_table
+
+7.4 CREATE INDEX
+
+    CREATE [UNIQUE] [CLUSTERED | NONCLUSTERED] INDEX nom_index
+    ON table (col1 [ASC|DESC], col2 [ASC|DESC], ...)
+    [INCLUDE (col3, col4, ...)]
+    [WHERE condition_filtre]
+    [WITH (
+      FILLFACTOR = n,
+      PAD_INDEX = ON | OFF,
+      ONLINE = ON | OFF,
+      SORT_IN_TEMPDB = ON | OFF
+    )]
+
+    Exemples :
+
+    CREATE INDEX IX_Emp_Nom ON Employes (nom)
+    CREATE UNIQUE INDEX UX_Emp_Email ON Employes (email)
+      WHERE email IS NOT NULL
+    CREATE INDEX IX_Emp_Dept_Salaire ON Employes (dept_id, salaire DESC)
+      INCLUDE (nom, prenom)
+
+    -- Index columnstore (SQL Server 2012+)
+    CREATE CLUSTERED COLUMNSTORE INDEX CCI_Ventes ON Ventes
+    CREATE NONCLUSTERED COLUMNSTORE INDEX NCCI_Ventes
+      ON Ventes (date_vente, montant, region)
+
+7.5 ALTER INDEX
+
+    ALTER INDEX nom_index ON table REBUILD
+    ALTER INDEX nom_index ON table REORGANIZE
+    ALTER INDEX nom_index ON table DISABLE
+    ALTER INDEX ALL ON table REBUILD
+
+7.6 DROP INDEX
+
+    DROP INDEX [IF EXISTS] nom_index ON table
+
+7.7 CREATE VIEW
+
+    CREATE [OR ALTER] VIEW nom_vue
+    [WITH SCHEMABINDING]
+    AS
+      SELECT ...
+    [WITH CHECK OPTION]
+
+    Exemple :
+
+    CREATE VIEW vw_EmployesActifs
+    WITH SCHEMABINDING
+    AS
+      SELECT id, nom, prenom, dept_id
+      FROM dbo.Employes
+      WHERE actif = 1
+
+7.8 CREATE PROCEDURE
+
+    CREATE [OR ALTER] PROCEDURE nom_procedure
+      @param1 type [= valeur_defaut] [OUTPUT],
+      @param2 type [= valeur_defaut]
+    AS
+    BEGIN
+      -- corps de la procedure
+    END
+
+    Exemple :
+
+    CREATE PROCEDURE sp_GetEmployes
+      @dept_id INT,
+      @count INT OUTPUT
+    AS
+    BEGIN
+      SELECT * FROM Employes WHERE dept_id = @dept_id
+      SET @count = @@ROWCOUNT
+    END
+
+7.9 CREATE FUNCTION
+
+    -- Fonction scalaire
+    CREATE [OR ALTER] FUNCTION nom_fonction (
+      @param1 type,
+      @param2 type
+    )
+    RETURNS type_retour
+    AS
+    BEGIN
+      DECLARE @resultat type_retour
+      -- calculs
+      RETURN @resultat
+    END
+
+    -- Fonction table en ligne
+    CREATE FUNCTION fn_GetEmployes (@dept_id INT)
+    RETURNS TABLE
+    AS
+    RETURN (
+      SELECT * FROM Employes WHERE dept_id = @dept_id
+    )
+
+    -- Fonction table multi-instructions
+    CREATE FUNCTION fn_Hierarchie (@id INT)
+    RETURNS @result TABLE (id INT, nom NVARCHAR(100), niveau INT)
+    AS
+    BEGIN
+      -- logique d insertion dans @result
+      RETURN
+    END
+
+7.10 CREATE TRIGGER
+
+     CREATE [OR ALTER] TRIGGER nom_trigger
+     ON table
+     FOR | AFTER | INSTEAD OF [INSERT] [,] [UPDATE] [,] [DELETE]
+     AS
+     BEGIN
+       -- corps du trigger
+       -- Tables virtuelles : INSERTED, DELETED
+     END
+
+     Exemple :
+
+     CREATE TRIGGER trg_AuditEmployes
+     ON Employes
+     AFTER UPDATE
+     AS
+     BEGIN
+       INSERT INTO AuditLog (table_name, action, date_modif)
+       SELECT 'Employes', 'UPDATE', GETDATE()
+       FROM INSERTED
+     END
+
+7.11 Autres objets DDL
+
+     CREATE SCHEMA nom_schema
+     CREATE SEQUENCE nom_sequence
+       AS type START WITH n INCREMENT BY n
+       [MINVALUE n] [MAXVALUE n] [CYCLE | NO CYCLE]
+     CREATE TYPE nom_type FROM type_base [NOT NULL]
+     CREATE TYPE nom_type AS TABLE (col type, ...)
+     CREATE SYNONYM nom FOR objet_cible
+     CREATE DATABASE nom_base
+
+     DROP VIEW [IF EXISTS] nom_vue
+     DROP PROCEDURE [IF EXISTS] nom_procedure
+     DROP FUNCTION [IF EXISTS] nom_fonction
+     DROP TRIGGER [IF EXISTS] nom_trigger
+     DROP SCHEMA nom_schema
+     DROP SEQUENCE nom_sequence
+     DROP TYPE nom_type
+
+============================================================
+8. INSTRUCTIONS DCL (DATA CONTROL LANGUAGE)
+============================================================
+
+8.1 GRANT
+
+    GRANT permission ON objet TO principal
+    GRANT permission TO role
+
+    Permissions :
+      SELECT, INSERT, UPDATE, DELETE, EXECUTE,
+      ALTER, CONTROL, VIEW DEFINITION, REFERENCES,
+      TAKE OWNERSHIP
+
+    Exemples :
+      GRANT SELECT ON dbo.Employes TO UtilisateurRH
+      GRANT EXECUTE ON dbo.sp_GetEmployes TO AppRole
+      GRANT SELECT, INSERT ON SCHEMA::dbo TO DeveloppeurRole
+
+8.2 REVOKE
+
+    REVOKE permission ON objet FROM principal
+
+    Exemple :
+      REVOKE SELECT ON dbo.Employes FROM UtilisateurRH
+
+8.3 DENY
+
+    DENY permission ON objet TO principal
+
+    Exemple :
+      DENY DELETE ON dbo.Employes TO StagiaireRole
+
+    DENY a priorite sur GRANT : si un utilisateur a GRANT
+    et DENY sur la meme permission, DENY l emporte.
+
+8.4 Gestion des utilisateurs et roles
+
+    CREATE LOGIN nom WITH PASSWORD = 'mot_de_passe'
+    CREATE USER nom FOR LOGIN nom_login
+    ALTER ROLE nom_role ADD MEMBER nom_utilisateur
+    ALTER ROLE nom_role DROP MEMBER nom_utilisateur
+    ALTER LOGIN nom WITH PASSWORD = 'nouveau'
+    DROP LOGIN nom
+    DROP USER nom
+
+============================================================
+9. INSTRUCTIONS DE CONTROLE DE FLUX (T-SQL)
+============================================================
+
+9.1 DECLARE (declaration de variables)
+
+    DECLARE @variable type [= valeur_initiale]
+    DECLARE @v1 INT, @v2 VARCHAR(50), @v3 DATE
+
+    -- Variable table
+    DECLARE @table TABLE (
+      id INT,
+      nom NVARCHAR(100),
+      valeur DECIMAL(10,2)
+    )
+
+9.2 SET et SELECT (affectation)
+
+    SET @variable = expression
+    SELECT @variable = expression
+
+    -- Affectation depuis une requete
+    SELECT @nom = nom, @age = age
+    FROM Employes
+    WHERE id = @id
+
+    Difference entre SET et SELECT :
+    - SET affecte une seule variable a la fois
+    - SELECT peut affecter plusieurs variables
+    - SET leve une erreur si la sous-requete retourne
+      plus d une ligne ; SELECT prend la derniere valeur
+
+9.3 IF ... ELSE
+
+    IF condition
+      instruction_ou_bloc
+    [ELSE
+      instruction_ou_bloc]
+
+    Exemples :
+      IF @age >= 18
+        PRINT 'Majeur'
+      ELSE
+        PRINT 'Mineur'
+
+      IF EXISTS (SELECT 1 FROM Employes WHERE id = @id)
+      BEGIN
+        UPDATE Employes SET actif = 1 WHERE id = @id
+        PRINT 'Employe active'
+      END
+      ELSE
+      BEGIN
+        PRINT 'Employe non trouve'
+      END
+
+9.4 BEGIN ... END (blocs)
+
+    BEGIN
+      instruction1
+      instruction2
+      ...
+    END
+
+    Les blocs sont necessaires quand IF, ELSE, WHILE
+    contiennent plus d une instruction.
+
+9.5 WHILE
+
+    WHILE condition
+    BEGIN
+      instructions
+      [BREAK]
+      [CONTINUE]
+    END
+
+    Exemple :
+      DECLARE @i INT = 1
+      WHILE @i <= 10
+      BEGIN
+        PRINT @i
+        SET @i += 1
+      END
+
+9.6 BREAK et CONTINUE
+
+    BREAK     : sort de la boucle WHILE englobante
+    CONTINUE  : passe a l iteration suivante
+
+9.7 GOTO et labels
+
+    GOTO label_name
+    label_name:
+
+    Exemple :
+      IF @erreur = 1 GOTO Nettoyage
+      -- traitement normal
+      Nettoyage:
+      PRINT 'Nettoyage en cours'
+
+9.8 RETURN
+
+    RETURN [valeur_entiere]
+
+    Termine l execution du batch, de la procedure ou de la
+    fonction. Pour les procedures, la valeur de retour est
+    un entier (0 = succes par convention).
+
+9.9 WAITFOR
+
+    WAITFOR DELAY 'hh:mm:ss'     -- pause de duree fixe
+    WAITFOR TIME 'hh:mm:ss'      -- attente jusqu a une heure
+
+    Exemples :
+      WAITFOR DELAY '00:00:05'    -- pause de 5 secondes
+      WAITFOR TIME '23:00:00'     -- attend 23 heures
+
+9.10 PRINT
+
+     PRINT expression
+
+     Affiche un message texte au client.
+     Exemples :
+       PRINT 'Traitement termine'
+       PRINT 'Nombre de lignes : ' + CAST(@count AS VARCHAR)
+
+9.11 EXEC / EXECUTE
+
+     EXEC nom_procedure @param1, @param2
+     EXEC nom_procedure @param1 = valeur1, @param2 = valeur2
+     EXEC @ret = nom_procedure @param1
+
+     -- SQL dynamique
+     EXEC('SELECT * FROM ' + @nom_table)
+     EXEC sp_executesql N'SELECT * FROM table WHERE id = @p',
+                        N'@p INT', @p = 42
+
+9.12 USE et GO
+
+     USE nom_base    -- change la base de donnees courante
+     GO              -- separateur de batch
+
+============================================================
+10. TRANSACTIONS
+============================================================
+
+10.1 Transactions explicites
+
+     BEGIN TRANSACTION [nom_transaction]
+     BEGIN TRAN [nom_transaction]
+
+     COMMIT [TRANSACTION] [nom_transaction]
+     COMMIT [TRAN] [nom_transaction]
+
+     ROLLBACK [TRANSACTION] [nom_transaction | nom_savepoint]
+     ROLLBACK [TRAN] [nom_transaction | nom_savepoint]
+
+     SAVE TRANSACTION nom_savepoint
+     SAVE TRAN nom_savepoint
+
+     Exemple :
+       BEGIN TRAN
+         UPDATE Comptes SET solde -= 100 WHERE id = @source
+         UPDATE Comptes SET solde += 100 WHERE id = @dest
+         IF @@ERROR <> 0
+           ROLLBACK TRAN
+         ELSE
+           COMMIT TRAN
+
+10.2 Niveaux d isolation
+
+     SET TRANSACTION ISOLATION LEVEL niveau
+
+     Niveaux disponibles :
+       READ UNCOMMITTED  : lectures sales possibles (dirty reads)
+       READ COMMITTED    : defaut, pas de lectures sales
+       REPEATABLE READ   : pas de lectures non repetables
+       SERIALIZABLE      : isolation maximale
+       SNAPSHOT          : versionnement de lignes
+
+     Hints de table equivalents :
+       WITH (NOLOCK)     -- READ UNCOMMITTED
+       WITH (HOLDLOCK)   -- SERIALIZABLE
+       WITH (READPAST)   -- saute les lignes verrouillees
+
+10.3 @@TRANCOUNT
+
+     @@TRANCOUNT retourne le niveau d imbrication des
+     transactions. COMMIT decremente @@TRANCOUNT ; la
+     transaction n est reellement validee que quand
+     @@TRANCOUNT atteint 0.
+
+============================================================
+11. FONCTIONS INTEGREES
+============================================================
+
+11.1 Fonctions de chaines
+
+     LEN(chaine)                  longueur (sans espaces fin)
+     DATALENGTH(chaine)           taille en octets
+     LEFT(chaine, n)              n premiers caracteres
+     RIGHT(chaine, n)             n derniers caracteres
+     SUBSTRING(chaine, debut, n)  sous-chaine
+     CHARINDEX(cherche, chaine)   position de la premiere
+                                  occurrence (base 1, 0 si absent)
+     PATINDEX(motif, chaine)      position avec pattern LIKE
+     REPLACE(chaine, ancien, nouveau)  remplacement
+     STUFF(chaine, debut, n, ins) supprime n car. et insere ins
+     UPPER(chaine)                majuscules
+     LOWER(chaine)                minuscules
+     LTRIM(chaine)                supprime espaces a gauche
+     RTRIM(chaine)                supprime espaces a droite
+     TRIM(chaine)                 supprime espaces des deux cotes
+                                  (SQL Server 2017+)
+     REVERSE(chaine)              inversion
+     REPLICATE(chaine, n)         repetition n fois
+     SPACE(n)                     n espaces
+     STR(nombre [, long [, dec]]) nombre vers chaine
+     CHAR(code)                   caractere ASCII
+     ASCII(chaine)                code ASCII du premier caractere
+     NCHAR(code)                  caractere Unicode
+     UNICODE(chaine)              code Unicode du premier caractere
+     CONCAT(s1, s2, ...)          concatenation (NULLs traites
+                                  comme chaines vides)
+     CONCAT_WS(sep, s1, s2, ...) concatenation avec separateur
+     STRING_AGG(expr, sep)        agregation de chaines
+     FORMAT(valeur, format)       formatage .NET
+     QUOTENAME(chaine [, delim])  delimite un identificateur
+     STRING_SPLIT(chaine, sep)    decoupe en lignes (table)
+     STRING_ESCAPE(chaine, type)  echappe les caracteres speciaux
+     TRANSLATE(chaine, cars, rpl) remplace caractere par caractere
+
+11.2 Fonctions de date et heure
+
+     GETDATE()                    date/heure courante
+     GETUTCDATE()                 date/heure UTC
+     SYSDATETIME()                date/heure haute precision
+     SYSUTCDATETIME()             date/heure UTC haute precision
+     SYSDATETIMEOFFSET()          date/heure avec fuseau
+
+     DATEADD(partie, n, date)     ajoute un intervalle
+     DATEDIFF(partie, debut, fin) difference entre deux dates
+     DATEDIFF_BIG(part, deb, fin) difference en BIGINT
+     DATEPART(partie, date)       extrait une partie (entier)
+     DATENAME(partie, date)       extrait une partie (chaine)
+     YEAR(date)                   annee
+     MONTH(date)                  mois (1-12)
+     DAY(date)                    jour (1-31)
+     EOMONTH(date [, mois])       dernier jour du mois
+     ISDATE(expression)           teste si c est une date valide
+     DATEFROMPARTS(y, m, d)       construit un DATE
+     DATETIME2FROMPARTS(y,m,d,h,mn,s,f,p)  construit un DATETIME2
+     SMALLDATETIMEFROMPARTS(y,m,d,h,mn)     construit un SMALLDATETIME
+     DATETIMEFROMPARTS(y,m,d,h,mn,s,ms)     construit un DATETIME
+     TIMEFROMPARTS(h, mn, s, f, p)          construit un TIME
+     SWITCHOFFSET(dto, zone)      change le fuseau
+
+     Parties de date (partie) :
+       year (yy)    quarter (qq)  month (mm)    dayofyear (dy)
+       day (dd)     week (wk)     weekday (dw)  hour (hh)
+       minute (mi)  second (ss)   millisecond (ms)
+       microsecond (mcs)          nanosecond (ns)
+
+11.3 Fonctions mathematiques
+
+     ABS(n)              valeur absolue
+     CEILING(n)          arrondi superieur
+     FLOOR(n)            arrondi inferieur
+     ROUND(n, d [, f])   arrondi a d decimales
+                         (f<>0 : troncature au lieu d arrondi)
+     SIGN(n)             signe (-1, 0 ou 1)
+     POWER(n, p)         puissance
+     SQRT(n)             racine carree
+     SQUARE(n)           carre
+     LOG(n)              logarithme naturel
+     LOG10(n)            logarithme base 10
+     LOG(n, base)        logarithme base quelconque
+     EXP(n)              exponentielle
+     PI()                pi (3.14159...)
+     RAND([seed])        nombre aleatoire 0..1
+     SIN(n)  COS(n)  TAN(n)    fonctions trigonometriques
+     ASIN(n) ACOS(n) ATAN(n)   fonctions trigo inverses
+     ATN2(y, x)                 arc tangente de y/x
+     COT(n)                     cotangente
+     DEGREES(radians)           conversion radians -> degres
+     RADIANS(degres)            conversion degres -> radians
+
+11.4 Fonctions de conversion
+
+     CAST(expr AS type)              conversion de type
+     CONVERT(type, expr [, style])   conversion avec format
+     TRY_CAST(expr AS type)          retourne NULL si echec
+     TRY_CONVERT(type, expr)         retourne NULL si echec
+     PARSE(chaine AS type [USING culture])
+     TRY_PARSE(chaine AS type [USING culture])
+
+     Styles de conversion courants (CONVERT) :
+       0   : format par defaut
+       1   : mm/dd/yy (US)
+       3   : dd/mm/yy (Britannique)
+       4   : dd.mm.yy (Allemand)
+       20  : yyyy-mm-dd hh:mi:ss (ODBC canonique)
+       120 : yyyy-mm-dd hh:mi:ss (ODBC canonique, 4 chiffres)
+       121 : yyyy-mm-dd hh:mi:ss.mmm (ODBC, millisecondes)
+       126 : yyyy-mm-ddThh:mi:ss.mmm (ISO 8601)
+       127 : yyyy-mm-ddThh:mi:ss.mmmZ (ISO 8601 UTC)
+
+11.5 Fonctions systeme
+
+     ISNULL(expr, remplacement)     remplace NULL
+     COALESCE(expr1, expr2, ...)    premiere valeur non NULL
+     NULLIF(expr1, expr2)           NULL si egal
+     IIF(cond, vrai, faux)          if inline
+     CHOOSE(index, v1, v2, ...)     selection par index
+
+     NEWID()                        genere un GUID aleatoire
+     NEWSEQUENTIALID()              GUID sequentiel
+     OBJECT_ID('nom')               ID d un objet
+     OBJECT_NAME(id)                nom d un objet
+     DB_ID('nom')                   ID d une base
+     DB_NAME([id])                  nom d une base
+     SCHEMA_ID('nom')               ID d un schema
+     SCHEMA_NAME([id])              nom d un schema
+     COL_LENGTH('table', 'col')     longueur d une colonne
+     COLUMNPROPERTY(...)            propriete d une colonne
+     DATABASEPROPERTYEX(...)        propriete d une base
+     SERVERPROPERTY(prop)           propriete du serveur
+
+     HOST_NAME()                    nom de la machine client
+     APP_NAME()                     nom de l application
+     SUSER_NAME()                   nom du login
+     SUSER_SNAME()                  nom du login (sysname)
+     USER_NAME()                    nom de l utilisateur
+     CURRENT_USER                   utilisateur courant
+     SYSTEM_USER                    login systeme
+     SESSION_USER                   utilisateur de session
+     ORIGINAL_LOGIN()               login d origine
+
+11.6 Fonctions JSON (SQL Server 2016+)
+
+     ISJSON(chaine)                 teste si JSON valide
+     JSON_VALUE(json, chemin)       extrait une valeur scalaire
+     JSON_QUERY(json, chemin)       extrait un objet/tableau
+     JSON_MODIFY(json, chemin, val) modifie une valeur
+     OPENJSON(json [, chemin])      parse en lignes/colonnes
+
+     Exemples :
+       SELECT JSON_VALUE(@json, '$.nom')
+       SELECT * FROM OPENJSON(@json) WITH (
+         nom NVARCHAR(100) '$.nom',
+         age INT '$.age'
+       )
+
+11.7 Fonctions XML
+
+     FOR XML PATH('element')
+     FOR XML RAW('row')
+     FOR XML AUTO
+     FOR XML EXPLICIT
+
+     col.value('xpath', 'type')         extrait une valeur
+     col.query('xpath')                 retourne un fragment XML
+     col.exist('xpath')                 teste l existence
+     col.nodes('xpath')                 decoupe en lignes
+
+============================================================
+12. FONCTIONS D AGREGATION
+============================================================
+
+Les fonctions d agregation operent sur un ensemble de lignes
+et retournent une valeur unique.
+
+    COUNT(*)                  nombre de lignes
+    COUNT(expression)         nombre de valeurs non NULL
+    COUNT(DISTINCT expr)      nombre de valeurs distinctes
+    SUM(expression)           somme
+    AVG(expression)           moyenne
+    MIN(expression)           minimum
+    MAX(expression)           maximum
+    STDEV(expression)         ecart-type (echantillon)
+    STDEVP(expression)        ecart-type (population)
+    VAR(expression)           variance (echantillon)
+    VARP(expression)          variance (population)
+    STRING_AGG(expr, sep)     concatenation de chaines
+      [WITHIN GROUP (ORDER BY ...)]
+    GROUPING(colonne)         0 si non aggrege, 1 si total
+    GROUPING_ID(col1, col2)   bitmask des colonnes agregees
+    CHECKSUM_AGG(expr)        checksum agregee
+    COUNT_BIG(*)              comme COUNT mais retourne BIGINT
+    APPROX_COUNT_DISTINCT(expr)  estimation de COUNT DISTINCT
+
+    Les agregats ignorent les valeurs NULL (sauf COUNT(*)).
+
+    GROUP BY avec ROLLUP, CUBE et GROUPING SETS :
+
+    -- ROLLUP : sous-totaux hierarchiques
+    SELECT dept, poste, SUM(salaire)
+    FROM Employes
+    GROUP BY ROLLUP (dept, poste)
+
+    -- CUBE : toutes les combinaisons de sous-totaux
+    SELECT dept, poste, SUM(salaire)
+    FROM Employes
+    GROUP BY CUBE (dept, poste)
+
+    -- GROUPING SETS : combinaisons explicites
+    SELECT dept, poste, SUM(salaire)
+    FROM Employes
+    GROUP BY GROUPING SETS ((dept, poste), (dept), ())
+
+============================================================
+13. FONCTIONS DE FENETRE (WINDOW FUNCTIONS)
+============================================================
+
+Les fonctions de fenetre calculent une valeur pour chaque
+ligne en relation avec un ensemble de lignes (la fenetre).
+
+13.1 Fonctions de classement
+
+     ROW_NUMBER() OVER (
+       [PARTITION BY colonnes]
+       ORDER BY colonnes [ASC|DESC])
+     Numero de ligne sequentiel (1, 2, 3, ...) sans doublons.
+
+     RANK() OVER (...)
+     Rang avec trous (ex: 1, 2, 2, 4).
+
+     DENSE_RANK() OVER (...)
+     Rang sans trous (ex: 1, 2, 2, 3).
+
+     NTILE(n) OVER (...)
+     Repartit les lignes en n groupes a peu pres egaux.
+
+13.2 Fonctions de decalage
+
+     LAG(colonne [, offset [, defaut]])
+       OVER ([PARTITION BY ...] ORDER BY ...)
+     Valeur de la ligne precedente (offset par defaut = 1).
+
+     LEAD(colonne [, offset [, defaut]])
+       OVER ([PARTITION BY ...] ORDER BY ...)
+     Valeur de la ligne suivante.
+
+     FIRST_VALUE(colonne)
+       OVER ([PARTITION BY ...] ORDER BY ... [frame])
+     Premiere valeur de la fenetre.
+
+     LAST_VALUE(colonne)
+       OVER ([PARTITION BY ...] ORDER BY ... [frame])
+     Derniere valeur de la fenetre.
+
+13.3 Fonctions de distribution
+
+     PERCENT_RANK() OVER (...)
+     Rang relatif : (RANK - 1) / (nombre de lignes - 1).
+
+     CUME_DIST() OVER (...)
+     Distribution cumulative.
+
+     PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)
+       OVER (PARTITION BY ...)
+     Percentile continu (interpolation).
+
+     PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)
+       OVER (PARTITION BY ...)
+     Percentile discret (valeur existante).
+
+13.4 Agregats en fenetre
+
+     SUM(col) OVER ([PARTITION BY ...] [ORDER BY ...] [frame])
+     AVG(col) OVER (...)
+     COUNT(col) OVER (...)
+     MIN(col) OVER (...)
+     MAX(col) OVER (...)
+
+     Exemple (somme cumulative) :
+       SELECT date_vente, montant,
+              SUM(montant) OVER (ORDER BY date_vente) AS cumul
+       FROM Ventes
+
+13.5 Clause de cadre (frame)
+
+     ROWS BETWEEN debut AND fin
+     RANGE BETWEEN debut AND fin
+
+     Bornes possibles :
+       UNBOUNDED PRECEDING   -- debut de la partition
+       n PRECEDING            -- n lignes avant
+       CURRENT ROW            -- ligne courante
+       n FOLLOWING            -- n lignes apres
+       UNBOUNDED FOLLOWING   -- fin de la partition
+
+     Exemples :
+       -- Moyenne mobile sur 3 lignes
+       AVG(montant) OVER (ORDER BY date_vente
+         ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)
+
+       -- Somme cumulative
+       SUM(montant) OVER (ORDER BY date_vente
+         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+
+============================================================
+14. SOUS-REQUETES ET EXPRESSIONS DE TABLE
+============================================================
+
+14.1 Sous-requetes scalaires
+
+     Une sous-requete scalaire retourne une seule valeur :
+
+     SELECT nom,
+            (SELECT COUNT(*) FROM Commandes c
+             WHERE c.client_id = cl.id) AS nb_commandes
+     FROM Clients cl
+
+14.2 Sous-requetes de table
+
+     Sous-requete dans la clause FROM :
+
+     SELECT * FROM (
+       SELECT nom, salaire,
+              ROW_NUMBER() OVER (ORDER BY salaire DESC) AS rn
+       FROM Employes
+     ) sub
+     WHERE sub.rn <= 10
+
+14.3 Sous-requetes correlees
+
+     Sous-requete qui reference la requete externe :
+
+     SELECT * FROM Employes e
+     WHERE salaire > (
+       SELECT AVG(salaire) FROM Employes
+       WHERE dept_id = e.dept_id
+     )
+
+14.4 CTE (Common Table Expressions)
+
+     WITH nom_cte [(colonnes)] AS (
+       requete_definition
+     )
+     SELECT ... FROM nom_cte
+
+     -- CTE multiple
+     WITH cte1 AS (...),
+          cte2 AS (...)
+     SELECT ... FROM cte1 JOIN cte2
+
+     -- CTE recursive
+     WITH cte_recursive AS (
+       -- membre ancre
+       SELECT id, nom, 0 AS niveau FROM Employes
+       WHERE manager_id IS NULL
+       UNION ALL
+       -- membre recursif
+       SELECT e.id, e.nom, r.niveau + 1
+       FROM Employes e
+       INNER JOIN cte_recursive r ON e.manager_id = r.id
+     )
+     SELECT * FROM cte_recursive
+     OPTION (MAXRECURSION 100)
+
+14.5 PIVOT et UNPIVOT
+
+     -- PIVOT : lignes vers colonnes
+     SELECT *
+     FROM (
+       SELECT departement, trimestre, montant
+       FROM Ventes
+     ) src
+     PIVOT (
+       SUM(montant) FOR trimestre IN ([Q1], [Q2], [Q3], [Q4])
+     ) pvt
+
+     -- UNPIVOT : colonnes vers lignes
+     SELECT departement, trimestre, montant
+     FROM Ventes_Pivot
+     UNPIVOT (
+       montant FOR trimestre IN ([Q1], [Q2], [Q3], [Q4])
+     ) unpvt
+
+14.6 APPLY
+
+     CROSS APPLY : jointure laterale (lignes de gauche uniquement
+     si la fonction retourne des lignes)
+
+     OUTER APPLY : jointure laterale (toutes les lignes de gauche,
+     NULLs si la fonction ne retourne rien)
+
+     Exemples :
+       SELECT e.nom, a.adresse
+       FROM Employes e
+       CROSS APPLY fn_GetAdresses(e.id) a
+
+       SELECT e.nom, top3.montant
+       FROM Employes e
+       OUTER APPLY (
+         SELECT TOP 3 montant FROM Ventes v
+         WHERE v.employe_id = e.id
+         ORDER BY montant DESC
+       ) top3
+
+============================================================
+15. JOINTURES
+============================================================
+
+15.1 INNER JOIN
+
+     Retourne les lignes qui ont une correspondance dans les
+     deux tables :
+
+     SELECT e.nom, d.nom_departement
+     FROM Employes e
+     INNER JOIN Departements d ON e.dept_id = d.id
+
+15.2 LEFT [OUTER] JOIN
+
+     Retourne toutes les lignes de la table de gauche et les
+     correspondances de la table de droite (NULL si pas de
+     correspondance) :
+
+     SELECT e.nom, d.nom_departement
+     FROM Employes e
+     LEFT JOIN Departements d ON e.dept_id = d.id
+
+15.3 RIGHT [OUTER] JOIN
+
+     Retourne toutes les lignes de la table de droite :
+
+     SELECT e.nom, d.nom_departement
+     FROM Employes e
+     RIGHT JOIN Departements d ON e.dept_id = d.id
+
+15.4 FULL [OUTER] JOIN
+
+     Retourne toutes les lignes des deux tables :
+
+     SELECT e.nom, d.nom_departement
+     FROM Employes e
+     FULL OUTER JOIN Departements d ON e.dept_id = d.id
+
+15.5 CROSS JOIN
+
+     Produit cartesien (chaque ligne combinee avec chaque
+     ligne de l autre table) :
+
+     SELECT a.lettre, b.chiffre
+     FROM Lettres a CROSS JOIN Chiffres b
+
+15.6 Self join
+
+     Jointure d une table avec elle-meme :
+
+     SELECT e.nom AS employe, m.nom AS manager
+     FROM Employes e
+     LEFT JOIN Employes m ON e.manager_id = m.id
+
+15.7 Jointures multiples
+
+     SELECT e.nom, d.nom_dept, p.nom_poste
+     FROM Employes e
+     INNER JOIN Departements d ON e.dept_id = d.id
+     INNER JOIN Postes p ON e.poste_id = p.id
+     WHERE d.actif = 1
+
+============================================================
+16. OPERATEURS ENSEMBLISTES
+============================================================
+
+16.1 UNION
+
+     Combine les resultats de deux requetes en eliminant
+     les doublons :
+
+     SELECT nom FROM Clients
+     UNION
+     SELECT nom FROM Fournisseurs
+
+16.2 UNION ALL
+
+     Combine les resultats sans eliminer les doublons :
+
+     SELECT nom FROM Clients
+     UNION ALL
+     SELECT nom FROM Fournisseurs
+
+16.3 INTERSECT
+
+     Retourne les lignes communes aux deux requetes :
+
+     SELECT nom FROM Clients
+     INTERSECT
+     SELECT nom FROM Fournisseurs
+
+16.4 EXCEPT
+
+     Retourne les lignes de la premiere requete qui ne
+     sont pas dans la seconde :
+
+     SELECT nom FROM Clients
+     EXCEPT
+     SELECT nom FROM Fournisseurs
+
+     Regles communes :
+     - Les requetes doivent avoir le meme nombre de colonnes
+     - Les types doivent etre compatibles
+     - L ORDER BY s applique au resultat final
+
+============================================================
+17. CURSEURS
+============================================================
+
+Les curseurs permettent le traitement ligne par ligne des
+resultats d une requete.
+
+    DECLARE nom_curseur CURSOR
+      [LOCAL | GLOBAL]
+      [FORWARD_ONLY | SCROLL]
+      [STATIC | KEYSET | DYNAMIC | FAST_FORWARD]
+      [READ_ONLY | SCROLL_LOCKS | OPTIMISTIC]
+    FOR requete_select
+    [FOR UPDATE [OF colonnes]]
+
+    OPEN nom_curseur
+    FETCH NEXT FROM nom_curseur INTO @var1, @var2, ...
+    CLOSE nom_curseur
+    DEALLOCATE nom_curseur
+
+    @@FETCH_STATUS : 0 = succes, -1 = fin, -2 = ligne absente
+
+    Exemple :
+      DECLARE @nom NVARCHAR(100), @salaire DECIMAL(10,2)
+      DECLARE cur_emp CURSOR FAST_FORWARD FOR
+        SELECT nom, salaire FROM Employes WHERE dept_id = 1
+      OPEN cur_emp
+      FETCH NEXT FROM cur_emp INTO @nom, @salaire
+      WHILE @@FETCH_STATUS = 0
+      BEGIN
+        PRINT @nom + ' : ' + CAST(@salaire AS VARCHAR)
+        FETCH NEXT FROM cur_emp INTO @nom, @salaire
+      END
+      CLOSE cur_emp
+      DEALLOCATE cur_emp
+
+    Note : les curseurs sont generalement deconseilles au
+    profit des operations ensemblistes plus performantes.
+
+============================================================
+18. PROCEDURES STOCKEES ET FONCTIONS UTILISATEUR
+============================================================
+
+18.1 Procedures stockees
+
+     Creation :
+       CREATE [OR ALTER] PROCEDURE nom
+         @p1 type [= defaut] [OUTPUT],
+         @p2 type [= defaut]
+       AS
+       BEGIN
+         -- corps
+       END
+
+     Appel :
+       EXEC nom @param1, @param2
+       EXEC nom @p1 = valeur1, @p2 = valeur2
+       DECLARE @ret INT
+       EXEC @ret = nom @param1
+
+     Procedures systeme courantes :
+       sp_help 'nom_objet'           info sur un objet
+       sp_helptext 'nom_procedure'   texte source
+       sp_columns 'nom_table'        colonnes d une table
+       sp_tables                     liste des tables
+       sp_who                        sessions actives
+       sp_executesql @sql, @params   SQL dynamique
+
+18.2 Fonctions scalaires
+
+     CREATE FUNCTION fn_Nom (@p1 type, @p2 type)
+     RETURNS type_retour
+     AS
+     BEGIN
+       DECLARE @r type_retour
+       SET @r = ...
+       RETURN @r
+     END
+
+     Appel : SELECT dbo.fn_Nom(val1, val2)
+
+18.3 Fonctions table en ligne (Inline TVF)
+
+     CREATE FUNCTION fn_Nom (@p1 type)
+     RETURNS TABLE
+     AS
+     RETURN (
+       SELECT col1, col2 FROM table WHERE col = @p1
+     )
+
+     Appel : SELECT * FROM dbo.fn_Nom(valeur)
+
+18.4 Fonctions table multi-instructions (MSTVF)
+
+     CREATE FUNCTION fn_Nom (@p1 type)
+     RETURNS @result TABLE (col1 type, col2 type)
+     AS
+     BEGIN
+       INSERT INTO @result SELECT ... FROM ...
+       RETURN
+     END
+
+============================================================
+19. DECLENCHEURS (TRIGGERS)
+============================================================
+
+19.1 Triggers DML
+
+     CREATE TRIGGER nom ON table
+     AFTER | INSTEAD OF [INSERT] [,] [UPDATE] [,] [DELETE]
+     AS
+     BEGIN
+       -- Tables virtuelles disponibles :
+       -- INSERTED : lignes inserees ou nouvelles valeurs
+       -- DELETED  : lignes supprimees ou anciennes valeurs
+     END
+
+     Exemple (audit) :
+       CREATE TRIGGER trg_Audit ON Employes
+       AFTER INSERT, UPDATE, DELETE
+       AS
+       BEGIN
+         INSERT INTO AuditLog (action, date_modif, details)
+         SELECT
+           CASE
+             WHEN EXISTS(SELECT 1 FROM INSERTED) AND
+                  EXISTS(SELECT 1 FROM DELETED) THEN 'UPDATE'
+             WHEN EXISTS(SELECT 1 FROM INSERTED) THEN 'INSERT'
+             ELSE 'DELETE'
+           END,
+           GETDATE(),
+           (SELECT COUNT(*) FROM INSERTED)
+       END
+
+19.2 Triggers DDL
+
+     CREATE TRIGGER nom ON DATABASE
+     FOR CREATE_TABLE, ALTER_TABLE, DROP_TABLE
+     AS
+     BEGIN
+       -- EVENTDATA() retourne un XML decrivant l evenement
+     END
+
+19.3 INSTEAD OF triggers
+
+     Les triggers INSTEAD OF remplacent l action originale :
+
+     CREATE TRIGGER trg_VueInsert ON ma_vue
+     INSTEAD OF INSERT
+     AS
+     BEGIN
+       INSERT INTO table_base
+       SELECT col1, col2 FROM INSERTED
+     END
+
+============================================================
+20. GESTION DES ERREURS
+============================================================
+
+20.1 TRY ... CATCH
+
+     BEGIN TRY
+       -- instructions susceptibles de lever une erreur
+     END TRY
+     BEGIN CATCH
+       -- gestion de l erreur
+       SELECT
+         ERROR_NUMBER() AS numero,
+         ERROR_SEVERITY() AS severite,
+         ERROR_STATE() AS etat,
+         ERROR_PROCEDURE() AS procedure_name,
+         ERROR_LINE() AS ligne,
+         ERROR_MESSAGE() AS message
+     END CATCH
+
+     Exemple complet :
+       BEGIN TRY
+         BEGIN TRAN
+           UPDATE Comptes SET solde -= 100 WHERE id = @source
+           UPDATE Comptes SET solde += 100 WHERE id = @dest
+         COMMIT TRAN
+       END TRY
+       BEGIN CATCH
+         IF @@TRANCOUNT > 0
+           ROLLBACK TRAN
+         THROW
+       END CATCH
+
+20.2 THROW
+
+     THROW [numero, message, state]
+
+     Sans parametres, releve l erreur courante (dans CATCH).
+     Avec parametres, leve une nouvelle erreur :
+       THROW 50001, 'Erreur personnalisee', 1
+
+     Le numero doit etre >= 50000 pour les erreurs utilisateur.
+
+20.3 RAISERROR
+
+     RAISERROR (message, severity, state [, arguments])
+
+     Severites :
+       0-10  : messages informatifs
+       11-16 : erreurs utilisateur (attrapees par TRY/CATCH)
+       17-19 : erreurs de ressources
+       20-25 : erreurs fatales (connexion terminee)
+
+     Exemples :
+       RAISERROR('Erreur : %s', 16, 1, @detail)
+       RAISERROR(50001, 16, 1)  -- par numero de message
+
+20.4 @@ERROR
+
+     Retourne le code d erreur de la derniere instruction.
+     0 = pas d erreur. Valeur reintialisee apres chaque
+     instruction.
+
+============================================================
+21. FORMATS DE SORTIE (FOR XML / FOR JSON)
+============================================================
+
+21.1 FOR XML
+
+     SELECT colonnes FROM table FOR XML PATH('element')
+     SELECT colonnes FROM table FOR XML RAW('row')
+     SELECT colonnes FROM table FOR XML AUTO
+     SELECT colonnes FROM table FOR XML EXPLICIT
+
+     Options :
+       , ROOT('racine')         element racine
+       , ELEMENTS               colonnes comme elements
+       , TYPE                   retourne un type XML
+
+     Exemple :
+       SELECT id AS '@id', nom, prenom
+       FROM Employes
+       FOR XML PATH('employe'), ROOT('employes'), TYPE
+
+       Resultat :
+       <employes>
+         <employe id="1">
+           <nom>Dupont</nom>
+           <prenom>Jean</prenom>
+         </employe>
+       </employes>
+
+21.2 FOR JSON
+
+     SELECT colonnes FROM table FOR JSON PATH
+     SELECT colonnes FROM table FOR JSON AUTO
+
+     Options :
+       , ROOT('racine')         element racine
+       , INCLUDE_NULL_VALUES    inclure les NULLs
+       , WITHOUT_ARRAY_WRAPPER  pas de crochets [ ]
+
+     Exemple :
+       SELECT id, nom, prenom
+       FROM Employes
+       FOR JSON PATH, ROOT('employes')
+
+       Resultat :
+       {"employes":[
+         {"id":1,"nom":"Dupont","prenom":"Jean"},
+         {"id":2,"nom":"Martin","prenom":"Marie"}
+       ]}
+
+============================================================
+22. VARIABLES ET FONCTIONS SYSTEME
+============================================================
+
+22.1 Variables systeme (@@)
+
+     @@ROWCOUNT        nombre de lignes affectees par la
+                       derniere instruction
+     @@ERROR           code d erreur de la derniere instruction
+     @@IDENTITY        derniere valeur IDENTITY inseree
+     @@TRANCOUNT       niveau d imbrication des transactions
+     @@FETCH_STATUS    statut du dernier FETCH de curseur
+     @@SPID            ID de la session courante
+     @@VERSION         version de SQL Server
+     @@SERVERNAME      nom du serveur
+     @@DBTS            derniere valeur timestamp
+     @@LANGUAGE        langue courante
+     @@NESTLEVEL       niveau d imbrication des procedures
+     @@MAX_CONNECTIONS nombre max de connexions
+     @@LOCK_TIMEOUT    delai d attente de verrou
+     @@DATEFIRST       premier jour de la semaine (1-7)
+     @@OPTIONS         options SET actives (bitmask)
+     @@TEXTSIZE        taille max des donnees TEXT retournees
+     @@CURSOR_ROWS     nombre de lignes du dernier curseur
+     @@PROCID          Object ID de la procedure courante
+
+22.2 SCOPE_IDENTITY et IDENT_CURRENT
+
+     SCOPE_IDENTITY()
+       Derniere valeur IDENTITY dans la portee courante.
+       Plus fiable que @@IDENTITY (non affecte par les triggers).
+
+     IDENT_CURRENT('nom_table')
+       Derniere valeur IDENTITY de la table specifiee,
+       toutes sessions confondues.
+
+============================================================
+23. LIMITATIONS DE L IMPLEMENTATION SQLCMD.PAS
+============================================================
+
+23.1 Lecture seule
+     SQLCMD.PAS lit les fichiers .MDF en mode lecture seule.
+     Les instructions INSERT, UPDATE, DELETE et DDL ne
+     modifient pas le fichier. Seules les requetes SELECT
+     retournent des resultats reels a partir des donnees
+     du fichier .MDF.
+
+23.2 Pas de serveur reseau
+     SQLCMD.PAS n implemente pas le protocole TDS (Tabular
+     Data Stream). Il fonctionne uniquement en ligne de
+     commande locale, lisant directement les fichiers .MDF.
+
+23.3 Types de donnees
+     Les types GEOGRAPHY, GEOMETRY, HIERARCHYID, XML et
+     SQL_VARIANT ne sont pas entierement decodables. Ils
+     sont affiches sous forme hexadecimale brute.
+
+23.4 Compression
+     Les pages comprimees (ROW et PAGE compression) ne sont
+     pas decodees. Les tables utilisant la compression sont
+     signalees mais leur contenu n est pas lisible.
+
+23.5 Index columnstore
+     Les index columnstore ne sont pas lus. Les tables ayant
+     uniquement un index columnstore clustered ne sont pas
+     accessibles.
+
+23.6 Chiffrement
+     Les colonnes chiffrees (Always Encrypted) et le TDE
+     (Transparent Data Encryption) ne sont pas supportes.
+     Les fichiers MDF chiffres ne sont pas lisibles.
+
+23.7 Memoire
+     La taille du buffer pool est limitee (Turbo Pascal :
+     64 Ko segment, Free Pascal : memoire disponible).
+     Les requetes sur de tres grandes tables peuvent echouer
+     par manque de memoire pour le tri ou les jointures.
+
+23.8 Jointures
+     Seuls les algorithmes Nested Loop et Hash Join de base
+     sont implementes. Le Merge Join est implemente si les
+     deux tables sont deja triees par la cle de jointure.
+
+23.9 Fonctionnalites T-SQL non supportees
+     - Procedures CLR (.NET)
+     - Extended stored procedures
+     - Service Broker
+     - Change Data Capture (CDC)
+     - Linked servers et requetes distribuees
+     - Full-text search
+     - Always On / replication
+     - In-Memory OLTP (Hekaton)
+     - Temporal tables (tables temporelles systeme)
+     - Graph tables
+     - Ledger tables
+
+============================================================
+24. LIEN AVEC LE PROJET DEV-COOLS
+============================================================
+
+Le programme SQLCMD.PAS du projet DEV-COOLS implemente un
+clone de la commande sqlcmd de Microsoft SQL Server.
+
+Au lieu de se connecter a une instance SQL Server via le
+protocole TDS, il lit directement les fichiers .MDF en
+utilisant les specifications decrites dans DOC/MDF_FORMAT.txt.
+
+La feuille de route de SQLCMD.PAS couvre 30 TODOs :
+  - TODO 01-06 : Infrastructure MDF (pages, allocation maps,
+    decodage des enregistrements, catalogue systeme, types)
+  - TODO 07-14 : Parseur SQL (lexer, mots-cles, expressions,
+    SELECT, INSERT/UPDATE/DELETE/MERGE, DDL, controle T-SQL, DCL)
+  - TODO 15-18 : Moteur d execution (scans, jointures,
+    agregation, fonctions de fenetre)
+  - TODO 19-23 : Fonctions integrees (chaines, date/heure,
+    math, conversion, JSON/XML)
+  - TODO 24-25 : Index B-Tree et optimiseur de requetes
+  - TODO 26-28 : Curseurs, procedures stockees, transactions
+  - TODO 29-30 : Formatage de sortie et tests
+
+Ce document sert de reference pour les TODOs 07 a 14 (parseur
+SQL) et 15 a 23 (moteur d execution et fonctions).
+
+============================================================
+  Fin du document - SQL_SPEC_LANG.txt
+============================================================

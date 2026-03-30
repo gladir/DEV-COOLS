@@ -1,0 +1,7 @@
+GO
+SELECT CASE WHEN 1 = 1 THEN 'Egal' ELSE 'Different' END AS Expr1
+GO
+SELECT CASE WHEN 1 > 2 THEN 'Plus grand' WHEN 1 = 2 THEN 'Egal' ELSE 'Plus petit' END AS Expr1
+GO
+SELECT CASE 2 WHEN 1 THEN 'Un' WHEN 2 THEN 'Deux' WHEN 3 THEN 'Trois' ELSE 'Autre' END AS Expr1
+GO

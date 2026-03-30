@@ -1,0 +1,37 @@
+GO
+SELECT LEN('Hello') AS Expr1
+GO
+SELECT UPPER('hello world') AS Expr1
+GO
+SELECT LOWER('HELLO WORLD') AS Expr1
+GO
+SELECT LEFT('Hello World', 5) AS Expr1
+GO
+SELECT RIGHT('Hello World', 5) AS Expr1
+GO
+SELECT SUBSTRING('Hello World', 7, 5) AS Expr1
+GO
+SELECT LTRIM('   Hello') AS Expr1
+GO
+SELECT RTRIM('Hello   ') AS Expr1
+GO
+SELECT REPLACE('Hello World', 'World', 'SQL') AS Expr1
+GO
+SELECT REPLICATE('Ab', 3) AS Expr1
+GO
+SELECT REVERSE('Hello') AS Expr1
+GO
+SELECT CHARINDEX('World', 'Hello World') AS Expr1
+GO
+SELECT SPACE(5) AS Expr1
+GO
+SELECT STR(123.456, 10, 2) AS Expr1
+GO
+SELECT ASCII('A') AS Expr1, ASCII('Z') AS Expr2
+GO
+SELECT CHAR(65) AS Expr1, CHAR(90) AS Expr2
+GO
+SELECT CONCAT('Hello', ' ', 'World') AS Expr1
+GO
+SELECT STUFF('Hello World', 7, 5, 'SQL') AS Expr1
+GO
