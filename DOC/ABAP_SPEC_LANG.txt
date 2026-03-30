@@ -42,15 +42,45 @@ TABLE DES MATIERES
 1.1 Introduction
 ----------------
 
-Un programme ABAP est une unite de code stockee dans le systeme SAP.
-Chaque instruction se termine obligatoirement par un point (.).
-Les instructions peuvent s'etendre sur plusieurs lignes.
-ABAP n'est pas sensible a la casse (majuscules/minuscules equivalentes).
+ABAP (Advanced Business Application Programming) est le langage de
+programmation proprietaire developpe par SAP AG pour personnaliser et
+etendre les fonctionnalites des systemes SAP. Depuis sa creation en
+1983, ABAP a evolue d'un simple langage de generation de rapports
+vers un langage de programmation complet supportant les paradigmes
+procedural et oriente objet.
+
+Un programme ABAP est une unite de code stockee dans la base de donnees
+du systeme SAP, et non dans des fichiers externes comme la plupart des
+langages de programmation. Cette architecture permet une integration
+etroite avec le systeme de transport SAP, facilitant le deploiement
+des developpements entre les environnements (developpement, qualite,
+production).
+
+Chaque instruction ABAP se termine obligatoirement par un point (.).
+Ce point joue le role de delimiteur d'instruction, similaire au
+point-virgule dans d'autres langages comme C ou Java. Les instructions
+peuvent s'etendre sur plusieurs lignes sans caractere de continuation
+particulier, ce qui ameliore la lisibilite du code pour les instructions
+complexes.
+
+ABAP n'est pas sensible a la casse : les mots-cles, les noms de variables
+et les identificateurs peuvent etre ecrits en majuscules, minuscules ou
+en casse mixte. Cependant, par convention, les mots-cles ABAP sont
+generalement ecrits en majuscules pour les distinguer des identificateurs
+definis par le programmeur.
+
+L'editeur ABAP integre a l'environnement SAP GUI offre des fonctionnalites
+avancees comme la coloration syntaxique, la verification en temps reel,
+et l'acces direct au dictionnaire de donnees (DDIC) pour consulter les
+definitions de tables et de types.
 
 1.2 Types de programmes
 -----------------------
 
-ABAP distingue plusieurs types de programmes :
+Le systeme SAP distingue plusieurs types de programmes ABAP, chacun
+ayant un role specifique dans l'architecture applicative. Le choix du
+type de programme depend de la nature de l'application a developper
+et de son mode d'interaction avec l'utilisateur.
 
   Type         Description
   -----------  ----------------------------------------------------------
@@ -66,8 +96,48 @@ ABAP distingue plusieurs types de programmes :
                Stocke dans des groupes de fonctions.
   CLASS POOL   Classe globale ABAP Objects, type K.
 
+Les programmes REPORT constituent le type le plus frequemment utilise
+pour les developpements specifiques. Ils sont concus pour extraire des
+donnees de la base de donnees, les traiter et les presenter sous forme
+de liste a l'utilisateur. Les rapports peuvent etre executes directement
+via la transaction SE38 ou SE80, ou associes a un code de transaction
+personnalise.
+
+Les programmes INCLUDE servent a structurer le code en unites logiques
+reutilisables. Contrairement aux autres types de programmes, un INCLUDE
+ne peut pas etre execute de maniere autonome ; il doit etre incorpore
+dans un programme principal via l'instruction INCLUDE. Cette approche
+favorise la maintenance du code en separant les declarations de types,
+les definitions de donnees et les sous-programmes dans des fichiers
+distincts.
+
+Les MODULE POOL sont utilises pour les applications de dialogue
+necessitant une interface utilisateur graphique avec plusieurs ecrans
+(dynpro). Ces programmes implementent la logique metier derriere les
+transactions SAP et gerent les interactions complexes avec l'utilisateur
+a travers des enchainements d'ecrans.
+
+Les groupes de fonctions encapsulent des modules de fonction reutilisables.
+Un module de fonction est une unite de code independante, avec une
+interface bien definie (parametres d'importation, d'exportation, de
+modification et exceptions). Les modules de fonction peuvent etre
+appeles depuis n'importe quel programme ABAP ou exposes comme services
+RFC (Remote Function Call) pour les integrations systeme.
+
+Les CLASS POOL contiennent les definitions de classes globales ABAP
+Objects. Ces classes sont accessibles depuis tous les programmes du
+systeme et constituent la base de la programmation orientee objet en
+ABAP. Elles supportent l'heritage, l'encapsulation, le polymorphisme
+et les interfaces.
+
 1.3 Structure generale
 ----------------------
+
+Un programme ABAP bien structure suit une organisation logique qui
+facilite la comprehension, la maintenance et l'evolution du code.
+Cette structure n'est pas imposee par le compilateur mais represente
+une convention de programmation largement adoptee par la communaute
+SAP.
 
 Un programme ABAP se compose generalement de plusieurs zones :
 
@@ -84,12 +154,47 @@ Un programme ABAP se compose generalement de plusieurs zones :
   +-------------------------------------------+
 
 L'ordre de ces zones est important : les declarations doivent
-preceder leur utilisation.
+preceder leur utilisation. Bien que certains compilateurs ABAP tolerent
+des declarations tardives, il est fortement recommande de grouper
+toutes les declarations en debut de programme pour une meilleure
+lisibilite.
+
+La zone d'ouverture contient l'instruction REPORT ou PROGRAM qui
+identifie le programme et definit ses proprietes globales comme la
+classe de messages ou le format de la liste de sortie.
+
+La zone de declarations regroupe toutes les definitions de types
+personnalises (TYPES), les declarations de variables (DATA), les
+constantes (CONSTANTS) et les structures complexes. Cette zone peut
+egalement contenir les declarations de tables internes et de ranges.
+
+La zone d'ecran de selection definit les parametres de saisie que
+l'utilisateur devra renseigner avant l'execution du rapport. Ces
+elements incluent les champs simples (PARAMETERS) et les intervalles
+de selection (SELECT-OPTIONS).
+
+La zone d'evenements contient les blocs de code associes aux differents
+evenements du cycle de vie du programme (INITIALIZATION, AT SELECTION-
+SCREEN, START-OF-SELECTION, etc.). Chaque evenement declenche
+l'execution du code correspondant a un moment precis.
+
+La zone des sous-programmes (FORM...ENDFORM) regroupe les procedures
+locales au programme. Ces sous-programmes permettent de structurer
+la logique metier en unites fonctionnelles reutilisables au sein du
+meme programme.
 
 1.4 Instruction REPORT
 ----------------------
 
-L'instruction REPORT definit un programme de type rapport.
+L'instruction REPORT est la pierre angulaire de tout programme de type
+rapport en ABAP. Elle doit apparaitre comme premiere instruction
+executable du programme et definit les caracteristiques globales de
+l'application.
+
+Le nom du programme specifie dans l'instruction REPORT doit correspondre
+exactement au nom technique du programme stocke dans le Repository SAP.
+Cette coherence est verifiee par le systeme lors de l'activation du
+programme.
 
   Syntaxe complete :
 
@@ -109,6 +214,24 @@ L'instruction REPORT definit un programme de type rapport.
                              pour le pied de page.
     DEFINING DATABASE      : Associe une base de donnees logique (LDB).
 
+L'option MESSAGE-ID est particulierement importante pour les programmes
+qui utilisent l'instruction MESSAGE pour afficher des messages a
+l'utilisateur. La classe de messages (par exemple ZMV) regroupe les
+textes de messages dans le Repository et facilite leur maintenance
+et leur traduction.
+
+L'option NO STANDARD PAGE HEADING desactive l'en-tete de page automatique
+que SAP genere par defaut. Cet en-tete contient le titre du rapport,
+le nom du systeme, la date et l'heure. En desactivant cet en-tete, le
+developpeur peut creer son propre en-tete personnalise via l'evenement
+TOP-OF-PAGE.
+
+Les options LINE-SIZE et LINE-COUNT controlent les dimensions de la
+liste de sortie. LINE-SIZE definit la largeur maximale en caracteres
+(par defaut 83), tandis que LINE-COUNT specifie le nombre de lignes
+par page et optionnellement le nombre de lignes reservees pour le
+pied de page.
+
   Exemples :
 
     REPORT ZMONPROG.
@@ -118,36 +241,104 @@ L'instruction REPORT definit un programme de type rapport.
                            LINE-SIZE 132
                            LINE-COUNT 65(3).
 
+Dans le second exemple, le rapport utilise une largeur de 132 caracteres
+(format paysage), 65 lignes par page dont 3 sont reservees pour un
+eventuel pied de page.
+
 1.5 Instruction PROGRAM
 -----------------------
 
-L'instruction PROGRAM est similaire a REPORT mais generalement utilisee
-pour les programmes sans sortie de liste standard.
+L'instruction PROGRAM est fonctionnellement similaire a REPORT mais
+son utilisation est generalement reservee aux programmes qui ne
+produisent pas de sortie de liste standard. Elle est souvent employee
+dans les programmes d'arriere-plan (batch), les programmes de
+traitement de donnees ou les programmes auxiliaires.
+
+Historiquement, REPORT etait destine aux programmes interactifs avec
+sortie liste, tandis que PROGRAM convenait mieux aux traitements batch.
+Aujourd'hui, cette distinction est moins stricte et les deux
+instructions peuvent etre utilisees de maniere interchangeable dans
+la plupart des cas.
 
   Syntaxe :
 
     PROGRAM nom_programme [MESSAGE-ID classe_messages].
 
+L'instruction PROGRAM accepte moins d'options que REPORT car elle ne
+presuppose pas une sortie liste. Les options relatives au formatage
+de la liste (LINE-SIZE, LINE-COUNT, NO STANDARD PAGE HEADING) ne sont
+donc pas disponibles.
+
   Exemple :
 
     PROGRAM ZMONPROGRAMME MESSAGE-ID ZM.
 
+Dans la pratique moderne, REPORT est utilise pour la grande majorite
+des developpements, meme pour les programmes batch, car il offre plus
+de flexibilite pour la gestion des messages et la sortie eventuelle
+d'informations de suivi.
+
 1.6 Convention de nommage
 -------------------------
 
+Les conventions de nommage en SAP jouent un role crucial pour
+distinguer les objets standards des developpements specifiques
+(customizing) et pour maintenir une organisation coherente du code.
+Ces conventions sont parfois imposees par le systeme et parfois
+recommandees comme bonnes pratiques.
+
 Dans un systeme SAP, les objets client (developpements specifiques)
-commencent par Y ou Z. Exemples :
+commencent par Y ou Z. Cette regle est appliquee par le systeme SAP
+lors de la creation de nouveaux objets dans l'espace de noms client.
+Les lettres Y et Z ont ete reservees par SAP pour garantir qu'aucun
+objet standard n'entrera jamais en conflit avec les developpements
+specifiques lors des mises a niveau du systeme.
 
   - ZRAP_COMMANDES  : Rapport sur les commandes
   - ZCLI_FOURNISSEUR : Classe fournisseur
   - ZFM_CALCUL_TVA  : Groupe de fonctions pour la TVA
 
 Les noms sans prefixe Y/Z sont reserves aux objets standards SAP.
+Modifier ces objets (a l'exception des user-exits et des BAdI prevus
+a cet effet) constitue une modification du standard et peut entrainer
+des problemes lors des mises a niveau.
+
+Au-dela du prefixe Y/Z, de nombreuses organisations adoptent des
+conventions internes pour structurer leurs noms d'objets. Une convention
+courante inclut :
+
+  - Un prefixe d'application (ex: ZSD_ pour Sales & Distribution)
+  - Un indicateur de type d'objet (ex: _R pour rapport, _F pour fonction)
+  - Un nom descriptif en anglais ou dans la langue locale
+
+Par exemple : ZSD_R_SALES_ANALYSIS pourrait designer un rapport
+d'analyse des ventes dans le module SD.
+
+Pour les variables locales, les conventions SAP recommandent des
+prefixes indiquant la portee et le type :
+
+  - gv_ : variable globale (global variable)
+  - lv_ : variable locale (local variable)
+  - gt_ : table interne globale (global table)
+  - lt_ : table interne locale (local table)
+  - gs_ : structure globale (global structure)
+  - ls_ : structure locale (local structure)
+  - gc_ : constante globale (global constant)
+  - p_  : parametre d'ecran de selection
+  - s_  : select-option
 
 1.7 Exemple complet
 -------------------
 
-Voici un exemple de programme ABAP complet illustrant la structure :
+Voici un exemple de programme ABAP complet illustrant la structure
+et les bonnes pratiques de codage. Ce programme demonstratif charge
+une liste de clients et l'affiche a l'ecran en fonction des criteres
+de selection saisis par l'utilisateur.
+
+L'exemple montre l'organisation typique d'un rapport ABAP avec ses
+differentes zones clairement delimitees par des commentaires. Cette
+structure facilite la navigation dans le code et la maintenance
+future du programme.
 
     *----------------------------------------------------------------------*
     * Programme : ZEXEMPLE_STRUCTURE
@@ -209,15 +400,41 @@ Voici un exemple de programme ABAP complet illustrant la structure :
       ENDLOOP.
     ENDFORM.
 
+Dans cet exemple, on remarque plusieurs elements importants :
+
+- L'en-tete de programme documente l'auteur, la date et la finalite
+  du programme.
+- Les declarations TYPES definissent des structures personnalisees
+  avant leur utilisation dans DATA.
+- Les noms de variables suivent les conventions (gv_ pour les
+  variables globales, gt_ pour les tables, gs_ pour les structures).
+- L'evenement INITIALIZATION initialise les valeurs par defaut
+  avant l'affichage de l'ecran de selection.
+- Le traitement principal est encapsule dans des sous-programmes
+  (FORM) pour une meilleure structuration.
+
 1.8 Instruction INCLUDE
 -----------------------
 
-L'instruction INCLUDE permet d'inserer le code d'un autre programme.
-Cela favorise la modularite et la reutilisation du code.
+L'instruction INCLUDE est un mecanisme fondamental pour la modularisation
+du code ABAP. Elle permet d'inserer le contenu d'un programme INCLUDE
+a l'emplacement de l'instruction, comme si le code etait directement
+ecrit a cet endroit. Cette technique favorise la modularite et la
+reutilisation du code entre plusieurs programmes.
+
+Lors de la compilation, le systeme SAP remplace chaque instruction
+INCLUDE par le contenu du programme reference. Cette operation est
+transparente pour le developpeur et n'a aucun impact sur les
+performances d'execution.
 
   Syntaxe :
 
     INCLUDE nom_include.
+
+Un programme de type INCLUDE (type I) ne peut pas etre execute de
+maniere autonome. Il ne contient generalement pas d'instruction
+REPORT ou PROGRAM et se compose uniquement de declarations ou de
+sous-programmes destines a etre incorpores dans d'autres programmes.
 
   Exemple d'utilisation :
 
@@ -226,16 +443,44 @@ Cela favorise la modularite et la reutilisation du code.
     INCLUDE ZMONPROG_DATA.     " Declarations de donnees
     INCLUDE ZMONPROG_FORMS.    " Sous-programmes
 
+L'utilisation d'INCLUDEs permet de diviser un programme volumineux
+en plusieurs fichiers logiques, facilitant le travail collaboratif
+et la maintenance. Chaque developpeur peut travailler sur un INCLUDE
+different sans risquer de conflits.
+
+SAP a etabli des conventions de nommage pour les INCLUDEs qui sont
+largement adoptees dans les programmes standards et recommandees pour
+les developpements specifiques :
+
   Convention SAP pour les includes :
-    - nom_TOP : Declarations globales
+    - nom_TOP : Declarations globales (types, donnees, constantes)
     - nom_FXX : Sous-programmes (F01, F02, ...)
     - nom_IXX : Modules PBO/PAI (I01, I02, ...)
     - nom_OXX : Modules PBO (O01, O02, ...)
+    - nom_EXX : Evenements (E01, E02, ...)
+
+Par exemple, un programme ZMM_COMMANDES pourrait avoir les INCLUDEs
+suivants :
+    - ZMM_COMMANDES_TOP : Declarations globales
+    - ZMM_COMMANDES_F01 : Sous-programmes de lecture des donnees
+    - ZMM_COMMANDES_F02 : Sous-programmes d'affichage
+    - ZMM_COMMANDES_E01 : Gestion des evenements utilisateur
+
+Cette organisation permet de localiser rapidement le code recherche
+et facilite grandement la maintenance des applications complexes.
 
 1.9 Ordre d'execution
 ---------------------
 
-L'execution d'un programme ABAP suit un ordre precis :
+La comprehension de l'ordre d'execution des evenements est essentielle
+pour developper des programmes ABAP corrects et efficaces. Contrairement
+a de nombreux langages ou le code s'execute sequentiellement du debut
+a la fin, ABAP utilise un modele evenementiel ou differents blocs de
+code sont declenches a des moments specifiques du cycle de vie du
+programme.
+
+L'execution d'un programme ABAP de type rapport suit un ordre precis
+qui peut etre decompose en plusieurs phases :
 
   1. Chargement du programme en memoire
   2. Execution du bloc LOAD-OF-PROGRAM (si present)
@@ -246,9 +491,59 @@ L'execution d'un programme ABAP suit un ordre precis :
   7. Execution du bloc END-OF-SELECTION
   8. Fin du programme
 
-Dans un programme simple sans evenements declares, le code est
-execute sequentiellement comme dans un bloc START-OF-SELECTION
-implicite.
+Examinons chaque phase en detail :
+
+Phase 1 - Chargement : Le systeme charge le programme compile depuis
+la base de donnees vers la memoire de travail. Les variables sont
+initialisees a leurs valeurs par defaut.
+
+Phase 2 - LOAD-OF-PROGRAM : Cet evenement est rarement utilise. Il
+est declenche une seule fois lors du premier chargement du programme
+dans une session utilisateur.
+
+Phase 3 - INITIALIZATION : C'est le premier bloc execute dans le
+flux normal. Il permet d'initialiser les valeurs par defaut des
+parametres d'ecran de selection et de preparer l'environnement
+d'execution. Les valeurs affectees aux parametres dans ce bloc
+apparaitront comme valeurs par defaut a l'ecran.
+
+Phase 4 - Ecran de selection : Le systeme affiche l'ecran de selection
+(s'il existe) et attend la saisie de l'utilisateur. L'utilisateur
+remplit les criteres et appuie sur Executer (F8).
+
+Phase 5 - AT SELECTION-SCREEN : Ce bloc est declenche apres que
+l'utilisateur a valide l'ecran de selection. Il permet de valider
+les saisies, d'afficher des messages d'erreur ou de modifier les
+valeurs avant le traitement principal.
+
+Phase 6 - START-OF-SELECTION : C'est le coeur du programme. Ce bloc
+contient la logique principale : lecture des donnees, traitements,
+calculs et preparation de la sortie. Pour les rapports utilisant une
+base de donnees logique (LDB), c'est a ce moment que les donnees
+sont lues.
+
+Phase 7 - END-OF-SELECTION : Ce bloc est execute apres la fin de
+START-OF-SELECTION. Il est utilise pour les traitements finaux comme
+le calcul des totaux, l'affichage des statistiques ou la generation
+de la sortie finale.
+
+Phase 8 - Fin : Le programme se termine et libere les ressources
+memoire.
+
+Dans un programme simple sans evenements declares explicitement, le
+code est execute sequentiellement comme s'il etait contenu dans un
+bloc START-OF-SELECTION implicite. Cela permet d'ecrire des
+programmes simples sans se soucier des evenements.
+
+Il existe d'autres evenements specifiques a certains contextes :
+    - TOP-OF-PAGE : En-tete de chaque nouvelle page de liste
+    - END-OF-PAGE : Pied de page
+    - AT LINE-SELECTION : Action double-clic sur une ligne
+    - AT USER-COMMAND : Action sur un bouton ou menu personnalise
+    - AT PFnn : Action sur une touche de fonction
+
+La maitrise de ces evenements permet de creer des rapports interactifs
+offrant une experience utilisateur riche et intuitive.
 
 
 =========================================================================
