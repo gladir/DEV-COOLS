@@ -207,7 +207,7 @@
               TagCount: Integer): String
               extraire la description detaillee (@details ou texte apres @brief)
 
-  TODO 05 - LECTURE ET PARSING DU FICHIER DE CONFIGURATION (DOXYFILE) [A FAIRE]
+  TODO 05 - LECTURE ET PARSING DU FICHIER DE CONFIGURATION (DOXYFILE) [IMPLEMENTE]
             TConfigOption : record
               Name     : String   (nom de l option, ex: PROJECT_NAME)
               Value    : String   (valeur de l option)
@@ -1000,6 +1000,14 @@ Type
     Line      : Integer;
   End;
 
+  { Types pour la configuration Doxyfile (TODO 05) }
+  TConfigOption = Record
+    Name   : String;    { Nom de l'option, ex: PROJECT_NAME }
+    Value  : String;    { Valeur de l'option }
+    IsSet  : Boolean;   { True si explicitement definie }
+    Line   : Integer;   { Ligne dans le fichier }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1013,6 +1021,10 @@ Var
   { Variables pour les balises Doxygen (TODO 04) }
   DocTags       : Array[1..MAX_TAGS] Of TDoxyTag;
   DocTagCount   : Integer;
+
+  { Variables pour la configuration Doxyfile (TODO 05) }
+  Config        : Array[1..MAX_CONFIG_OPTIONS] Of TConfigOption;
+  ConfigCount   : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -2120,6 +2132,602 @@ Begin
   GetDetailedDescription := Result;
 End;
 
+{ ============================================================
+  TODO 05 - LECTURE ET PARSING DU FICHIER DE CONFIGURATION
+  ============================================================ }
+
+Procedure InitConfig;
+{ Initialise le tableau de configuration }
+Begin
+  ConfigCount := 0;
+End;
+
+Function FindConfigOption(Const Name: String): Integer;
+{ Trouve l'index d'une option par son nom, retourne 0 si non trouvee }
+Var
+  I: Integer;
+  UpName: String;
+Begin
+  UpName := UpStr(Name);
+  For I := 1 To ConfigCount Do
+  Begin
+    If UpStr(Config[I].Name) = UpName Then
+    Begin
+      FindConfigOption := I;
+      Exit;
+    End;
+  End;
+  FindConfigOption := 0;
+End;
+
+Procedure SetConfigOption(Const Name, Value: String; LineNum: Integer; Append: Boolean);
+{ Definit ou ajoute une valeur a une option de configuration }
+Var
+  Idx: Integer;
+Begin
+  Idx := FindConfigOption(Name);
+  If Idx > 0 Then
+  Begin
+    { Option existante }
+    If Append Then
+      Config[Idx].Value := Config[Idx].Value + ' ' + Value
+    Else
+      Config[Idx].Value := Value;
+    Config[Idx].IsSet := True;
+  End
+  Else If ConfigCount < MAX_CONFIG_OPTIONS Then
+  Begin
+    { Nouvelle option }
+    Inc(ConfigCount);
+    Config[ConfigCount].Name := Name;
+    Config[ConfigCount].Value := Value;
+    Config[ConfigCount].IsSet := True;
+    Config[ConfigCount].Line := LineNum;
+  End;
+End;
+
+Function GetConfigValue(Const Name: String): String;
+{ Retourne la valeur d'une option de configuration }
+Var
+  Idx: Integer;
+Begin
+  Idx := FindConfigOption(Name);
+  If Idx > 0 Then
+    GetConfigValue := Config[Idx].Value
+  Else
+    GetConfigValue := '';
+End;
+
+Function GetConfigBool(Const Name: String): Boolean;
+{ Retourne True si la valeur est YES/TRUE/1/ON }
+Var
+  Val: String;
+Begin
+  Val := UpStr(GetConfigValue(Name));
+  GetConfigBool := (Val = 'YES') Or (Val = 'TRUE') Or 
+                   (Val = '1') Or (Val = 'ON');
+End;
+
+Function GetConfigInt(Const Name: String): Integer;
+{ Retourne la valeur numerique d'une option }
+Var
+  ValStr: String;
+  N, Code: Integer;
+Begin
+  ValStr := GetConfigValue(Name);
+  If ValStr = '' Then
+    GetConfigInt := 0
+  Else
+  Begin
+    System.Val(ValStr, N, Code);
+    If Code = 0 Then
+      GetConfigInt := N
+    Else
+      GetConfigInt := 0;
+  End;
+End;
+
+Function StripQuotes(Const S: String): String;
+{ Supprime les guillemets autour d'une chaine }
+Var
+  Temp: String;
+Begin
+  Temp := TrimStr(S);
+  If Length(Temp) >= 2 Then
+  Begin
+    If ((Temp[1] = '"') And (Temp[Length(Temp)] = '"')) Or
+       ((Temp[1] = '''') And (Temp[Length(Temp)] = '''')) Then
+      StripQuotes := Copy(Temp, 2, Length(Temp) - 2)
+    Else
+      StripQuotes := Temp;
+  End
+  Else
+    StripQuotes := Temp;
+End;
+
+Procedure ReadConfigFile(Const FileName: String);
+{ Lit et parse un fichier de configuration Doxyfile }
+Var
+  F: Text;
+  Line, TempLine: String;
+  LineNum: Integer;
+  EqPos, PlusEqPos: Integer;
+  Name, Value: String;
+  Append: Boolean;
+  I: Integer;
+  InContinuation: Boolean;
+  ContinuedValue: String;
+Begin
+  InitConfig;
+  
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Impossible d''ouvrir le fichier: ' + FileName);
+    Exit;
+  End;
+
+  LineNum := 0;
+  InContinuation := False;
+  ContinuedValue := '';
+  Name := '';
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    
+    { Supprimer les espaces en debut et fin }
+    Line := TrimStr(Line);
+    
+    { Ignorer les lignes vides }
+    If Length(Line) = 0 Then Continue;
+    
+    { Ignorer les commentaires (lignes commencant par #) }
+    If Line[1] = '#' Then Continue;
+    
+    { Gerer les continuations de ligne }
+    If InContinuation Then
+    Begin
+      { Verifier si la ligne continue encore }
+      If (Length(Line) > 0) And (Line[Length(Line)] = '\') Then
+      Begin
+        ContinuedValue := ContinuedValue + ' ' + Copy(Line, 1, Length(Line) - 1);
+      End
+      Else
+      Begin
+        ContinuedValue := ContinuedValue + ' ' + Line;
+        SetConfigOption(Name, TrimStr(ContinuedValue), LineNum, False);
+        InContinuation := False;
+      End;
+      Continue;
+    End;
+    
+    { Chercher l'operateur = ou += }
+    EqPos := 0;
+    PlusEqPos := 0;
+    Append := False;
+    
+    For I := 1 To Length(Line) Do
+    Begin
+      If (I < Length(Line)) And (Line[I] = '+') And (Line[I + 1] = '=') Then
+      Begin
+        PlusEqPos := I;
+        Break;
+      End;
+      If Line[I] = '=' Then
+      Begin
+        EqPos := I;
+        Break;
+      End;
+    End;
+    
+    If PlusEqPos > 0 Then
+    Begin
+      Name := TrimStr(Copy(Line, 1, PlusEqPos - 1));
+      Value := TrimStr(Copy(Line, PlusEqPos + 2, Length(Line)));
+      Append := True;
+    End
+    Else If EqPos > 0 Then
+    Begin
+      Name := TrimStr(Copy(Line, 1, EqPos - 1));
+      Value := TrimStr(Copy(Line, EqPos + 1, Length(Line)));
+      Append := False;
+    End
+    Else
+      Continue; { Ligne invalide }
+    
+    { Supprimer les guillemets }
+    Value := StripQuotes(Value);
+    
+    { Verifier si la ligne continue }
+    If (Length(Value) > 0) And (Value[Length(Value)] = '\') Then
+    Begin
+      InContinuation := True;
+      ContinuedValue := Copy(Value, 1, Length(Value) - 1);
+    End
+    Else
+    Begin
+      SetConfigOption(Name, Value, LineNum, Append);
+    End;
+  End;
+  
+  Close(F);
+  
+  InfoMsg('Configuration chargee: ' + IntToStr(ConfigCount) + ' options');
+End;
+
+Procedure SetDefaultConfigOptions;
+{ Definit les valeurs par defaut des options principales }
+Begin
+  { Projet }
+  SetConfigOption('PROJECT_NAME', 'My Project', 0, False);
+  SetConfigOption('PROJECT_NUMBER', '', 0, False);
+  SetConfigOption('PROJECT_BRIEF', '', 0, False);
+  SetConfigOption('PROJECT_LOGO', '', 0, False);
+  SetConfigOption('OUTPUT_DIRECTORY', '', 0, False);
+  SetConfigOption('OUTPUT_LANGUAGE', 'English', 0, False);
+  
+  { Build }
+  SetConfigOption('EXTRACT_ALL', 'NO', 0, False);
+  SetConfigOption('EXTRACT_PRIVATE', 'NO', 0, False);
+  SetConfigOption('EXTRACT_STATIC', 'NO', 0, False);
+  SetConfigOption('HIDE_UNDOC_MEMBERS', 'NO', 0, False);
+  SetConfigOption('HIDE_UNDOC_CLASSES', 'NO', 0, False);
+  SetConfigOption('BRIEF_MEMBER_DESC', 'YES', 0, False);
+  SetConfigOption('REPEAT_BRIEF', 'YES', 0, False);
+  SetConfigOption('ALWAYS_DETAILED_SEC', 'NO', 0, False);
+  SetConfigOption('INLINE_INHERITED_MEMB', 'NO', 0, False);
+  SetConfigOption('FULL_PATH_NAMES', 'YES', 0, False);
+  SetConfigOption('SHORT_NAMES', 'NO', 0, False);
+  SetConfigOption('JAVADOC_AUTOBRIEF', 'NO', 0, False);
+  SetConfigOption('QT_AUTOBRIEF', 'NO', 0, False);
+  SetConfigOption('MULTILINE_CPP_IS_BRIEF', 'NO', 0, False);
+  SetConfigOption('INHERIT_DOCS', 'YES', 0, False);
+  SetConfigOption('SEPARATE_MEMBER_PAGES', 'NO', 0, False);
+  SetConfigOption('TAB_SIZE', '4', 0, False);
+  SetConfigOption('OPTIMIZE_OUTPUT_FOR_C', 'NO', 0, False);
+  SetConfigOption('OPTIMIZE_OUTPUT_JAVA', 'NO', 0, False);
+  SetConfigOption('OPTIMIZE_FOR_FORTRAN', 'NO', 0, False);
+  SetConfigOption('OPTIMIZE_OUTPUT_VHDL', 'NO', 0, False);
+  
+  { Messages }
+  SetConfigOption('QUIET', 'NO', 0, False);
+  SetConfigOption('WARNINGS', 'YES', 0, False);
+  SetConfigOption('WARN_IF_UNDOCUMENTED', 'YES', 0, False);
+  SetConfigOption('WARN_IF_DOC_ERROR', 'YES', 0, False);
+  SetConfigOption('WARN_NO_PARAMDOC', 'NO', 0, False);
+  SetConfigOption('WARN_FORMAT', '$file:$line: $text', 0, False);
+  
+  { Input }
+  SetConfigOption('INPUT', '', 0, False);
+  SetConfigOption('INPUT_ENCODING', 'UTF-8', 0, False);
+  SetConfigOption('FILE_PATTERNS', '*.c *.cc *.cxx *.cpp *.c++ *.java *.ii *.ixx *.ipp *.i++ *.inl *.idl *.ddl *.odl *.h *.hh *.hxx *.hpp *.h++ *.l *.cs *.d *.php *.php4 *.php5 *.phtml *.inc *.m *.markdown *.md *.mm *.dox *.py *.pyw *.f90 *.f95 *.f03 *.f08 *.f18 *.f *.for *.vhd *.vhdl *.ucf *.qsf *.ice *.pas *.pp *.p', 0, False);
+  SetConfigOption('RECURSIVE', 'NO', 0, False);
+  SetConfigOption('EXCLUDE', '', 0, False);
+  SetConfigOption('EXCLUDE_SYMLINKS', 'NO', 0, False);
+  SetConfigOption('EXCLUDE_PATTERNS', '', 0, False);
+  SetConfigOption('EXAMPLE_PATH', '', 0, False);
+  SetConfigOption('EXAMPLE_PATTERNS', '*', 0, False);
+  SetConfigOption('EXAMPLE_RECURSIVE', 'NO', 0, False);
+  SetConfigOption('IMAGE_PATH', '', 0, False);
+  
+  { Source browsing }
+  SetConfigOption('SOURCE_BROWSER', 'NO', 0, False);
+  SetConfigOption('INLINE_SOURCES', 'NO', 0, False);
+  SetConfigOption('STRIP_CODE_COMMENTS', 'YES', 0, False);
+  SetConfigOption('REFERENCED_BY_RELATION', 'NO', 0, False);
+  SetConfigOption('REFERENCES_RELATION', 'NO', 0, False);
+  SetConfigOption('VERBATIM_HEADERS', 'YES', 0, False);
+  
+  { Alphabetical index }
+  SetConfigOption('ALPHABETICAL_INDEX', 'YES', 0, False);
+  
+  { HTML }
+  SetConfigOption('GENERATE_HTML', 'YES', 0, False);
+  SetConfigOption('HTML_OUTPUT', 'html', 0, False);
+  SetConfigOption('HTML_FILE_EXTENSION', '.html', 0, False);
+  SetConfigOption('HTML_HEADER', '', 0, False);
+  SetConfigOption('HTML_FOOTER', '', 0, False);
+  SetConfigOption('HTML_STYLESHEET', '', 0, False);
+  SetConfigOption('HTML_EXTRA_STYLESHEET', '', 0, False);
+  SetConfigOption('HTML_EXTRA_FILES', '', 0, False);
+  SetConfigOption('HTML_COLORSTYLE_HUE', '220', 0, False);
+  SetConfigOption('HTML_COLORSTYLE_SAT', '100', 0, False);
+  SetConfigOption('HTML_COLORSTYLE_GAMMA', '80', 0, False);
+  SetConfigOption('GENERATE_TREEVIEW', 'NO', 0, False);
+  SetConfigOption('TREEVIEW_WIDTH', '250', 0, False);
+  
+  { LaTeX }
+  SetConfigOption('GENERATE_LATEX', 'YES', 0, False);
+  SetConfigOption('LATEX_OUTPUT', 'latex', 0, False);
+  SetConfigOption('LATEX_CMD_NAME', 'latex', 0, False);
+  SetConfigOption('COMPACT_LATEX', 'NO', 0, False);
+  SetConfigOption('PAPER_TYPE', 'a4', 0, False);
+  SetConfigOption('PDF_HYPERLINKS', 'YES', 0, False);
+  SetConfigOption('USE_PDFLATEX', 'YES', 0, False);
+  SetConfigOption('LATEX_BATCHMODE', 'NO', 0, False);
+  
+  { RTF }
+  SetConfigOption('GENERATE_RTF', 'NO', 0, False);
+  SetConfigOption('RTF_OUTPUT', 'rtf', 0, False);
+  SetConfigOption('COMPACT_RTF', 'NO', 0, False);
+  
+  { MAN }
+  SetConfigOption('GENERATE_MAN', 'NO', 0, False);
+  SetConfigOption('MAN_OUTPUT', 'man', 0, False);
+  SetConfigOption('MAN_EXTENSION', '.3', 0, False);
+  
+  { XML }
+  SetConfigOption('GENERATE_XML', 'NO', 0, False);
+  SetConfigOption('XML_OUTPUT', 'xml', 0, False);
+  SetConfigOption('XML_PROGRAMLISTING', 'YES', 0, False);
+  
+  { DOT }
+  SetConfigOption('HAVE_DOT', 'NO', 0, False);
+  SetConfigOption('DOT_NUM_THREADS', '0', 0, False);
+  SetConfigOption('DOT_FONTNAME', 'Helvetica', 0, False);
+  SetConfigOption('DOT_FONTSIZE', '10', 0, False);
+  SetConfigOption('CLASS_GRAPH', 'YES', 0, False);
+  SetConfigOption('COLLABORATION_GRAPH', 'YES', 0, False);
+  SetConfigOption('GROUP_GRAPHS', 'YES', 0, False);
+  SetConfigOption('UML_LOOK', 'NO', 0, False);
+  SetConfigOption('TEMPLATE_RELATIONS', 'NO', 0, False);
+  SetConfigOption('INCLUDE_GRAPH', 'YES', 0, False);
+  SetConfigOption('INCLUDED_BY_GRAPH', 'YES', 0, False);
+  SetConfigOption('CALL_GRAPH', 'NO', 0, False);
+  SetConfigOption('CALLER_GRAPH', 'NO', 0, False);
+  SetConfigOption('GRAPHICAL_HIERARCHY', 'YES', 0, False);
+  SetConfigOption('DIRECTORY_GRAPH', 'YES', 0, False);
+  SetConfigOption('DOT_IMAGE_FORMAT', 'png', 0, False);
+  SetConfigOption('MAX_DOT_GRAPH_DEPTH', '0', 0, False);
+  SetConfigOption('DOT_TRANSPARENT', 'NO', 0, False);
+  SetConfigOption('DOT_MULTI_TARGETS', 'NO', 0, False);
+  SetConfigOption('GENERATE_LEGEND', 'YES', 0, False);
+  SetConfigOption('DOT_CLEANUP', 'YES', 0, False);
+End;
+
+Procedure GenerateDefaultConfig(Const FileName: String);
+{ Genere un fichier Doxyfile avec toutes les options par defaut }
+Var
+  F: Text;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Impossible de creer le fichier: ' + FileName);
+    Exit;
+  End;
+
+  WriteLn(F, '# Doxyfile 1.0');
+  WriteLn(F, '# Genere par DOXYGEN ', DOXYGEN_VERSION, ' (DEV-COOLS)');
+  WriteLn(F, '#');
+  WriteLn(F, '# Ce fichier decrit les parametres utilises par doxygen.');
+  WriteLn(F, '# Toutes les valeurs par defaut peuvent etre modifiees.');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration du projet');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Le nom du projet.');
+  WriteLn(F, 'PROJECT_NAME           = "My Project"');
+  WriteLn(F, '');
+  WriteLn(F, '# Numero de version ou de revision du projet.');
+  WriteLn(F, 'PROJECT_NUMBER         = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Description courte du projet (une ligne).');
+  WriteLn(F, 'PROJECT_BRIEF          = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Chemin vers le logo du projet.');
+  WriteLn(F, 'PROJECT_LOGO           = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Repertoire de sortie pour la documentation generee.');
+  WriteLn(F, 'OUTPUT_DIRECTORY       = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Langue de la documentation generee.');
+  WriteLn(F, 'OUTPUT_LANGUAGE        = English');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration de l''extraction');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Extraire tous les membres, meme non documentes.');
+  WriteLn(F, 'EXTRACT_ALL            = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Inclure les membres prives.');
+  WriteLn(F, 'EXTRACT_PRIVATE        = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Inclure les membres statiques.');
+  WriteLn(F, 'EXTRACT_STATIC         = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Utiliser le style Javadoc pour la description breve.');
+  WriteLn(F, 'JAVADOC_AUTOBRIEF      = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Utiliser le style Qt pour la description breve.');
+  WriteLn(F, 'QT_AUTOBRIEF           = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Taille des tabulations.');
+  WriteLn(F, 'TAB_SIZE               = 4');
+  WriteLn(F, '');
+  WriteLn(F, '# Optimiser pour le langage C.');
+  WriteLn(F, 'OPTIMIZE_OUTPUT_FOR_C  = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Optimiser pour Java.');
+  WriteLn(F, 'OPTIMIZE_OUTPUT_JAVA   = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Optimiser pour Fortran.');
+  WriteLn(F, 'OPTIMIZE_FOR_FORTRAN   = NO');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration des messages');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Mode silencieux.');
+  WriteLn(F, 'QUIET                  = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Afficher les avertissements.');
+  WriteLn(F, 'WARNINGS               = YES');
+  WriteLn(F, '');
+  WriteLn(F, '# Avertir si une entite n''est pas documentee.');
+  WriteLn(F, 'WARN_IF_UNDOCUMENTED   = YES');
+  WriteLn(F, '');
+  WriteLn(F, '# Avertir en cas d''erreur de documentation.');
+  WriteLn(F, 'WARN_IF_DOC_ERROR      = YES');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration des fichiers d''entree');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Fichiers ou repertoires source a analyser.');
+  WriteLn(F, '# Utiliser les espaces ou les retours a la ligne pour separer les elements.');
+  WriteLn(F, 'INPUT                  = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Encodage des fichiers source.');
+  WriteLn(F, 'INPUT_ENCODING         = UTF-8');
+  WriteLn(F, '');
+  WriteLn(F, '# Patterns des fichiers a analyser.');
+  WriteLn(F, 'FILE_PATTERNS          = *.c *.cc *.cxx *.cpp *.h *.hh *.hxx *.hpp \');
+  WriteLn(F, '                         *.java *.cs *.py *.pas *.pp *.php *.js \');
+  WriteLn(F, '                         *.f90 *.f95 *.f *.for *.vhd *.vhdl \');
+  WriteLn(F, '                         *.ada *.adb *.ads *.d *.go *.rs *.swift *.kt');
+  WriteLn(F, '');
+  WriteLn(F, '# Parcourir les sous-repertoires.');
+  WriteLn(F, 'RECURSIVE              = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Fichiers ou repertoires a exclure.');
+  WriteLn(F, 'EXCLUDE                = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Patterns d''exclusion.');
+  WriteLn(F, 'EXCLUDE_PATTERNS       = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Chemin vers les exemples.');
+  WriteLn(F, 'EXAMPLE_PATH           = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Chemin vers les images.');
+  WriteLn(F, 'IMAGE_PATH             = ');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration du navigateur de source');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Inclure le code source dans la documentation.');
+  WriteLn(F, 'SOURCE_BROWSER         = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Inclure le code inline.');
+  WriteLn(F, 'INLINE_SOURCES         = NO');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration de la sortie HTML');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer la documentation HTML.');
+  WriteLn(F, 'GENERATE_HTML          = YES');
+  WriteLn(F, '');
+  WriteLn(F, '# Repertoire de sortie HTML.');
+  WriteLn(F, 'HTML_OUTPUT            = html');
+  WriteLn(F, '');
+  WriteLn(F, '# Extension des fichiers HTML.');
+  WriteLn(F, 'HTML_FILE_EXTENSION    = .html');
+  WriteLn(F, '');
+  WriteLn(F, '# Header HTML personnalise.');
+  WriteLn(F, 'HTML_HEADER            = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Footer HTML personnalise.');
+  WriteLn(F, 'HTML_FOOTER            = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Feuille de style CSS personnalisee.');
+  WriteLn(F, 'HTML_STYLESHEET        = ');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer un treeview pour la navigation.');
+  WriteLn(F, 'GENERATE_TREEVIEW      = NO');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration de la sortie LaTeX');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer la documentation LaTeX.');
+  WriteLn(F, 'GENERATE_LATEX         = YES');
+  WriteLn(F, '');
+  WriteLn(F, '# Repertoire de sortie LaTeX.');
+  WriteLn(F, 'LATEX_OUTPUT           = latex');
+  WriteLn(F, '');
+  WriteLn(F, '# Utiliser pdflatex.');
+  WriteLn(F, 'USE_PDFLATEX           = YES');
+  WriteLn(F, '');
+  WriteLn(F, '# Type de papier (a4, letter, legal, executive).');
+  WriteLn(F, 'PAPER_TYPE             = a4');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration de la sortie RTF');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer la documentation RTF.');
+  WriteLn(F, 'GENERATE_RTF           = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Repertoire de sortie RTF.');
+  WriteLn(F, 'RTF_OUTPUT             = rtf');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration de la sortie MAN');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer les pages MAN.');
+  WriteLn(F, 'GENERATE_MAN           = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Repertoire de sortie MAN.');
+  WriteLn(F, 'MAN_OUTPUT             = man');
+  WriteLn(F, '');
+  WriteLn(F, '# Extension des fichiers MAN.');
+  WriteLn(F, 'MAN_EXTENSION          = .3');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration de la sortie XML');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer la documentation XML.');
+  WriteLn(F, 'GENERATE_XML           = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Repertoire de sortie XML.');
+  WriteLn(F, 'XML_OUTPUT             = xml');
+  WriteLn(F, '');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '# Configuration de DOT (Graphviz)');
+  WriteLn(F, '#---------------------------------------------------------------------------');
+  WriteLn(F, '');
+  WriteLn(F, '# Utiliser DOT pour generer des graphes.');
+  WriteLn(F, 'HAVE_DOT               = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer les graphes de classes.');
+  WriteLn(F, 'CLASS_GRAPH            = YES');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer les graphes de collaboration.');
+  WriteLn(F, 'COLLABORATION_GRAPH    = YES');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer les graphes d''inclusion.');
+  WriteLn(F, 'INCLUDE_GRAPH          = YES');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer les graphes d''appel.');
+  WriteLn(F, 'CALL_GRAPH             = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Generer les graphes d''appelants.');
+  WriteLn(F, 'CALLER_GRAPH           = NO');
+  WriteLn(F, '');
+  WriteLn(F, '# Format des images DOT (png, svg, etc.).');
+  WriteLn(F, 'DOT_IMAGE_FORMAT       = png');
+  WriteLn(F, '');
+
+  Close(F);
+  
+  If Not Opts.Quiet Then
+    WriteLn('Fichier de configuration genere: ', FileName);
+End;
+
 Procedure ShowVersion;
 Begin
   WriteLn('DOXYGEN version ', DOXYGEN_VERSION, ' (', DOXYGEN_DATE, ')');
@@ -2445,9 +3053,9 @@ Begin
   { Generation d'un fichier de configuration }
   If Opts.GenConfig Then
   Begin
-    WriteLn('Generation du fichier de configuration: ', Opts.ConfigFile);
-    WriteLn('Note: Cette fonctionnalite est en cours d''implementation.');
-    WriteLn('      Voir TODO 05 pour les details.');
+    If Opts.ConfigFile = '' Then
+      Opts.ConfigFile := 'Doxyfile';
+    GenerateDefaultConfig(Opts.ConfigFile);
     Halt(EXIT_OK);
   End;
 
@@ -2494,11 +3102,40 @@ Begin
 
   InfoMsg('Lecture du fichier de configuration: ' + Opts.ConfigFile);
 
-  { TODO: Implementer la lecture du Doxyfile et la generation }
-  WriteLn('Lecture de ', Opts.ConfigFile, '...');
+  { Lecture du fichier de configuration (TODO 05) }
+  ReadConfigFile(Opts.ConfigFile);
+  
+  { Afficher les informations du projet }
+  WriteLn('Lecture de ', Opts.ConfigFile, '... OK');
   WriteLn;
-  WriteLn('Note: L''implementation complete est en cours.');
-  WriteLn('      Voir les TODOs 05 a 25 pour la feuille de route.');
+  WriteLn('Configuration chargee:');
+  WriteLn('  Nombre d''options: ', ConfigCount);
+  If GetConfigValue('PROJECT_NAME') <> '' Then
+    WriteLn('  Projet: ', GetConfigValue('PROJECT_NAME'));
+  If GetConfigValue('PROJECT_BRIEF') <> '' Then
+    WriteLn('  Description: ', GetConfigValue('PROJECT_BRIEF'));
+  If GetConfigValue('OUTPUT_DIRECTORY') <> '' Then
+    WriteLn('  Sortie: ', GetConfigValue('OUTPUT_DIRECTORY'));
+  WriteLn('  HTML: ', GetConfigValue('GENERATE_HTML'));
+  WriteLn('  LaTeX: ', GetConfigValue('GENERATE_LATEX'));
+  WriteLn('  XML: ', GetConfigValue('GENERATE_XML'));
+  WriteLn('  MAN: ', GetConfigValue('GENERATE_MAN'));
+  WriteLn;
+  
+  { Verifier les fichiers d'entree }
+  If GetConfigValue('INPUT') = '' Then
+  Begin
+    WriteLn('Avertissement: Aucun fichier d''entree specifie (INPUT).');
+    WriteLn('Utilisez doxygen -INPUT fichier.c pour analyser un fichier directement.');
+  End
+  Else
+  Begin
+    WriteLn('Fichiers d''entree: ', GetConfigValue('INPUT'));
+  End;
+  
+  WriteLn;
+  WriteLn('Note: La generation de documentation est en cours d''implementation.');
+  WriteLn('      Voir les TODOs 06 a 25 pour la feuille de route.');
 End;
 
 { ============================================================
