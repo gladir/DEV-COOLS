@@ -4,12 +4,4 @@
 *.obj
 *.ppu
 *.prg
-/TPCW32
-*.exe
-/TESTS/EMU8086
-ASM68
-/SQLCMD
-SQLCMD
-*.o
-*.ppu
-*.mdf
+

@@ -2,7 +2,7 @@
   @created: 2026
   @version: 0.1
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Compilateur Ada 83/95 (sous-ensemble) vers assembleur 80386 pour Windows 32 bits
   @license: MIT
 }
@@ -7908,8 +7908,7 @@ End;
 { AIDE EN LIGNE                                                }
 { ============================================================ }
 
-Procedure ShowHelp;
-Begin
+Procedure ShowHelp;Begin
   WriteLn('ADACW32 v', ADACW32_VERSION, ' (', ADACW32_DATE,
           ') - Compilateur Ada 83/95 vers 80386 (Windows PE 32 bits)');
   WriteLn('ADACW32 - Cette commande permet de lancer le compilateur ',
@@ -10308,28 +10307,22 @@ End;
 { ============================================================ }
 
 BEGIN
-  If (ParamCount > 0) And
-     ((ParamStr(1) = '/?') Or (ParamStr(1) = '--help') Or
-      (ParamStr(1) = '-h') Or (ParamStr(1) = '/h') Or
-      (ParamStr(1) = '/H')) Then
-  Begin
-    ShowHelp;
-    Halt(EXIT_OK);
-  End;
-
-  ErrorCount := 0;
-  WarnCount  := 0;
-  TotalLines := 0;
-  OutFOpen   := False;
-
-  ParseArgs;
-  ShowBanner;
-  Run;
-  Cleanup;
-  If Opts.Verbose Then ShowStats;
-
-  If ErrorCount > 0 Then
-    Halt(EXIT_ERROR)
-  Else
-    Halt(EXIT_OK);
+ If (ParamCount > 0) And
+    ((ParamStr(1) = '/?') Or (ParamStr(1) = '--help') Or
+     (ParamStr(1) = '-h') Or (ParamStr(1) = '/h') Or
+     (ParamStr(1) = '/H')) Then Begin
+  ShowHelp;
+  Halt(EXIT_OK);
+ End;
+ ErrorCount := 0;
+ WarnCount  := 0;
+ TotalLines := 0;
+ OutFOpen   := False;
+ ParseArgs;
+ ShowBanner;
+ Run;
+ Cleanup;
+ If Opts.Verbose Then ShowStats;
+ If ErrorCount > 0 Then Halt(EXIT_ERROR)
+                   Else Halt(EXIT_OK);
 END.

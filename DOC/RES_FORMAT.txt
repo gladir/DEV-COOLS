@@ -1,0 +1,500 @@
+================================================================================
+FORMAT DU FICHIER .RES (RESSOURCE WINDOWS / BORLAND PASCAL)
+================================================================================
+
+Fichier produit par la compilation d'un fichier .RC avec la commande :
+  rc ressource.rc
+
+Supporte : Windows 3.0, Windows 3.1, Windows 9x, Windows NT/2000/XP/Vista/7+,
+           Borland Pascal, Turbo Pascal pour Windows, Delphi, C++Builder,
+           Microsoft Visual C++, Watcom C/C++, Free Pascal (avec windres).
+
+================================================================================
+HISTORIQUE ET VERSIONS
+================================================================================
+
+Version 16 bits (Windows 3.x, Borland Pascal, Turbo Pascal pour Windows) :
+  - Format « RES 16 bits » (aussi appelé format NE Resource)
+  - Utilisé par : Windows 3.0, Windows 3.1, Windows 3.11
+  - Compilateurs : Borland Pascal 7.x, Turbo Pascal pour Windows, BC++ 3.x
+
+Version 32 bits (Windows NT, Windows 9x et suivants) :
+  - Format « RES 32 bits » (aussi appelé format PE Resource)
+  - Utilisé par : Windows NT 3.1+, Windows 95+, Windows 2000+, XP, Vista, 7+
+  - Compilateurs : MSVC, Borland C++, Delphi, Free Pascal (windres), etc.
+
+================================================================================
+STRUCTURE DU FICHIER .RES 16 BITS (Windows 3.x / Borland Pascal)
+================================================================================
+
+Le fichier .RES 16 bits est une séquence de ressources individuelles,
+chacune précédée d'un en-tête.
+
+------------------------------------------------------------------------
+EN-TÊTE D'UNE RESSOURCE 16 BITS
+------------------------------------------------------------------------
+
+Offset  Taille  Description
+------  ------  ----------------------------------------------------------
+ 0      2       Type de ressource (WORD) — voir table des types ci-dessous
+                Si bit 15 = 1 : identifiant numérique (0x8000 | ID)
+                Si bit 15 = 0 : offset vers une chaîne de nom (pascal string)
+ 2      2       Identifiant de la ressource (WORD)
+                Si bit 15 = 1 : identifiant numérique (0x8000 | ID)
+                Si bit 15 = 0 : offset vers une chaîne de nom (pascal string)
+ 4      4       Taille des données de la ressource en octets (DWORD)
+ 8      2       Attributs (WORD) — voir table des attributs ci-dessous
+10      2       Réservé (WORD) — doit être 0
+12      2       Longueur du nom de la ressource (WORD, optionnel)
+14      N       Données de la ressource (alignées sur 2 octets)
+
+Note : Les chaînes de type/nom sont des Pascal strings (1 octet longueur
+       suivi des caractères). Alignement sur 2 octets après chaque entrée.
+
+------------------------------------------------------------------------
+STRUCTURE GLOBALE DU FICHIER .RES 16 BITS
+------------------------------------------------------------------------
+
+[Ressource 1 : En-tête + Données]
+[Ressource 2 : En-tête + Données]
+...
+[Ressource N : En-tête + Données]
+[Marqueur de fin : WORD 0x0000]
+
+================================================================================
+STRUCTURE DU FICHIER .RES 32 BITS (Windows NT/9x et suivants)
+================================================================================
+
+Le fichier .RES 32 bits commence toujours par une ressource nulle (32 octets),
+puis est suivi d'une séquence de ressources individuelles.
+
+------------------------------------------------------------------------
+RESSOURCE NULLE (EN-TÊTE DE FICHIER — 32 OCTETS)
+------------------------------------------------------------------------
+
+Offset  Taille  Description
+------  ------  ----------------------------------------------------------
+ 0      4       DataSize    = 0x00000000 (DWORD) — taille données = 0
+ 4      4       HeaderSize  = 0x00000020 (DWORD) — taille en-tête = 32
+ 8      4       Type        = 0x0000FFFF (DWORD) — type nul (0xFFFF)
+12      4       Name        = 0x0000FFFF (DWORD) — nom nul (0xFFFF)
+16      4       DataVersion = 0x00000000 (DWORD)
+20      2       MemoryFlags = 0x0000     (WORD)
+22      2       LanguageId  = 0x0000     (WORD) — langue neutre
+24      4       Version     = 0x00000000 (DWORD)
+28      4       Characteristics = 0x00000000 (DWORD)
+
+------------------------------------------------------------------------
+EN-TÊTE D'UNE RESSOURCE 32 BITS (RESHEADER)
+------------------------------------------------------------------------
+
+Offset  Taille  Type    Description
+------  ------  ------  --------------------------------------------------
+ 0      4       DWORD   DataSize      — Taille des données en octets
+ 4      4       DWORD   HeaderSize    — Taille de l'en-tête (variable)
+ 8      ?       WORD[]  Type          — Type de la ressource
+                                        Si 0xFFFF suivi de WORD : ID numérique
+                                        Sinon : chaîne Unicode terminée par \0
+ ?      ?       WORD[]  Name          — Nom/ID de la ressource
+                                        Même encodage que Type
+ ?      0-2     BYTE[]  Padding       — Alignement sur 4 octets
+ ?      4       DWORD   DataVersion   — Version (généralement 0)
+ ?      2       WORD    MemoryFlags   — Attributs mémoire
+ ?      2       WORD    LanguageId    — Identifiant de langue (LCID)
+ ?      4       DWORD   Version       — Version définie par l'utilisateur
+ ?      4       DWORD   Characteristics — Défini par l'utilisateur
+
+[Données de la ressource — DataSize octets]
+[Padding — alignement sur 4 octets]
+
+------------------------------------------------------------------------
+ENCODAGE DU TYPE ET DU NOM (32 BITS)
+------------------------------------------------------------------------
+
+Cas 1 — Identifiant numérique :
+  WORD 0xFFFF
+  WORD <id>          (ex. : 0xFFFF 0x0003 = RT_ICON avec ID 3)
+
+Cas 2 — Chaîne Unicode :
+  WCHAR[] <nom>      (chaîne Unicode UTF-16LE terminée par WCHAR 0x0000)
+
+================================================================================
+TYPES DE RESSOURCES STANDARDS (RT_*)
+================================================================================
+
+Valeur  Nom symbolique      Description
+------  ------------------  --------------------------------------------------
+  1     RT_CURSOR           Curseur (16x16 ou 32x32, format AND/XOR)
+  2     RT_BITMAP           Bitmap (BITMAPINFOHEADER + données pixels)
+  3     RT_ICON             Icône (format DIB)
+  4     RT_MENU             Menu (MENUTEMPLATE ou MENUEX)
+  5     RT_DIALOG           Boîte de dialogue (DLGTEMPLATE ou DLGTEMPLATEEX)
+  6     RT_STRING           Table de chaînes (blocs de 16 chaînes Unicode)
+  7     RT_FONTDIR          Répertoire de polices
+  8     RT_FONT             Police de caractères
+  9     RT_ACCELERATOR      Table des accélérateurs clavier
+ 10     RT_RCDATA           Données binaires arbitraires
+ 11     RT_MESSAGETABLE     Table de messages (format MESSAGE_RESOURCE_DATA)
+ 12     RT_GROUP_CURSOR     Répertoire de groupe de curseurs
+ 14     RT_GROUP_ICON       Répertoire de groupe d'icônes
+ 16     RT_VERSION          Informations de version (VS_VERSIONINFO)
+ 17     RT_DLGINCLUDE       Fichier include de boîte de dialogue
+ 19     RT_PLUGPLAY         Plug and Play
+ 20     RT_VXD              VxD (pilote virtuel)
+ 21     RT_ANICURSOR        Curseur animé
+ 22     RT_ANIICON          Icône animée
+ 23     RT_HTML             Page HTML embarquée
+ 24     RT_MANIFEST         Manifeste d'assembly (XML)
+241     RT_TOOLBAR          Barre d'outils (Borland/Delphi spécifique)
+
+================================================================================
+ATTRIBUTS MÉMOIRE (MemoryFlags / WORD)
+================================================================================
+
+Bit(s)  Constante           Valeur   Description
+------  ------------------  -------  ------------------------------------------
+  0     MOVEABLE            0x0010   Ressource peut être déplacée en mémoire
+  1     PURE                0x0020   Ressource pure (peut être jetée)
+  2     PRELOAD             0x0040   Chargée au démarrage de l'application
+  3     DISCARDABLE         0x1000   Ressource jetable (libérable par Windows)
+  —     (16 bits seulement)
+        FIXED               0x0000   Ressource fixe en mémoire (non MOVEABLE)
+
+Exemples typiques :
+  0x0030 = MOVEABLE | PURE
+  0x0050 = MOVEABLE | PRELOAD
+  0x1030 = MOVEABLE | PURE | DISCARDABLE
+
+================================================================================
+IDENTIFIANTS DE LANGUE (LanguageId — LCID partiel)
+================================================================================
+
+Valeur  Description
+------  --------------------------------------------------
+0x0000  LANG_NEUTRAL / SUBLANG_NEUTRAL (langue neutre)
+0x0409  Anglais (États-Unis)
+0x0809  Anglais (Royaume-Uni)
+0x040C  Français (France)
+0x080C  Français (Belgique)
+0x0C0C  Français (Canada)
+0x0407  Allemand (Allemagne)
+0x0410  Italien (Italie)
+0x0C0A  Espagnol (Espagne, moderne)
+0x0416  Portugais (Brésil)
+0x0816  Portugais (Portugal)
+0x0419  Russe
+0x0411  Japonais
+0x0804  Chinois (simplifié)
+0x0404  Chinois (traditionnel)
+
+================================================================================
+DÉTAIL DES RESSOURCES COURANTES
+================================================================================
+
+------------------------------------------------------------------------
+RT_STRING (type 6) — Table de chaînes
+------------------------------------------------------------------------
+
+Les chaînes sont regroupées en blocs de 16 (IDs consécutifs).
+Le bloc contenant l'ID N se trouve dans la ressource d'ID (N div 16) + 1.
+
+Structure d'un bloc de chaînes :
+  Pour chaque entrée i = 0 à 15 :
+    WORD    Longueur de la chaîne (en caractères WCHAR, 0 = chaîne absente)
+    WCHAR[] Caractères (sans terminateur nul, encodage UTF-16LE)
+
+------------------------------------------------------------------------
+RT_ACCELERATOR (type 9) — Table des accélérateurs
+------------------------------------------------------------------------
+
+Structure d'une entrée (8 octets, 32 bits) :
+  WORD    fVirt   — Drapeaux (voir ci-dessous)
+  WORD    key     — Code de touche virtuelle ou caractère ASCII
+  WORD    cmd     — Identifiant de commande (WM_COMMAND wParam)
+  WORD    Padding — Réservé (= 0)
+
+Drapeaux fVirt :
+  0x01 = FVIRTKEY  — key est un code de touche virtuelle (VK_*)
+  0x02 = FNOINVERT — Ne pas inverser la barre de menu
+  0x04 = FSHIFT    — Touche Maj requise
+  0x08 = FCONTROL  — Touche Ctrl requise
+  0x10 = FALT      — Touche Alt requise
+  0x80 = Dernier accélérateur du tableau (bit de fin)
+
+------------------------------------------------------------------------
+RT_MENU (type 4) — Menu standard (16 et 32 bits)
+------------------------------------------------------------------------
+
+En-tête MENUTEMPLATE :
+  WORD  wVersion   = 0 (menu standard) ou 1 (menu étendu MENUEX)
+  WORD  cbHeaderSize = 4 (pour wVersion = 0)
+
+Chaque élément de menu :
+  WORD  fItemFlags  — Drapeaux (voir ci-dessous)
+  WORD  wMenuID     — Identifiant de commande (0 pour sous-menu)
+  WCHAR[] szItemText — Texte Unicode terminé par \0
+
+Drapeaux fItemFlags :
+  0x0001 = MF_GRAYED      — Grisé
+  0x0002 = MF_DISABLED    — Désactivé
+  0x0008 = MF_BITMAP      — Bitmap
+  0x0010 = MF_CHECKED     — Coché
+  0x0020 = MF_POPUP       — Sous-menu (popup)
+  0x0040 = MF_MENUBARBREAK — Séparateur avec barre
+  0x0080 = MF_MENUBREAK   — Séparateur sans barre
+  0x0800 = MF_SEPARATOR   — Séparateur horizontal
+  0x0080 = MF_END         — Dernier élément du niveau courant
+
+------------------------------------------------------------------------
+RT_DIALOG (type 5) — Boîte de dialogue (DLGTEMPLATE)
+------------------------------------------------------------------------
+
+En-tête DLGTEMPLATE (18 octets) :
+  DWORD  style          — Styles de fenêtre (WS_* | DS_*)
+  DWORD  dwExtendedStyle — Styles étendus (WS_EX_*)
+  WORD   cdit           — Nombre de contrôles
+  short  x, y           — Position (unités de dialogue)
+  short  cx, cy         — Dimensions (unités de dialogue)
+
+Suivi de :
+  WCHAR[] menu          — Nom/ID du menu (ou 0x0000 = aucun, 0xFFFF ID)
+  WCHAR[] windowClass   — Classe de fenêtre (ou 0x0000 = défaut "DIALOG")
+  WCHAR[] title         — Titre de la boîte de dialogue
+  [Si style & DS_SETFONT :]
+    WORD    pointSize   — Taille de la police (en points)
+    WCHAR[] typeface    — Nom de la police (ex. "MS Sans Serif")
+
+Chaque contrôle DLGITEMTEMPLATE :
+  (Aligné sur 4 octets)
+  DWORD  style
+  DWORD  dwExtendedStyle
+  short  x, y, cx, cy
+  WORD   id
+  WCHAR[] windowClass   — Classe ou atom prédéfini (0xFFFF + WORD)
+  WCHAR[] title         — Texte ou ID
+  WORD    extraCount    — Taille des données supplémentaires (généralement 0)
+
+Classes prédéfinies (atom) pour les contrôles :
+  0x0080 = BUTTON
+  0x0081 = EDIT
+  0x0082 = STATIC
+  0x0083 = LISTBOX
+  0x0084 = SCROLLBAR
+  0x0085 = COMBOBOX
+
+------------------------------------------------------------------------
+RT_VERSION (type 16) — Informations de version (VS_VERSIONINFO)
+------------------------------------------------------------------------
+
+Structure VS_VERSIONINFO :
+  WORD    wLength         — Taille totale de VS_VERSIONINFO
+  WORD    wValueLength    — Taille de VS_FIXEDFILEINFO (= 52)
+  WORD    wType           = 0 (données binaires)
+  WCHAR[] szKey           = L"VS_VERSION_INFO" (terminé par \0)
+  [Padding pour alignement DWORD]
+
+  VS_FIXEDFILEINFO (52 octets) :
+    DWORD  dwSignature        = 0xFEEF04BD
+    DWORD  dwStrucVersion     = 0x00010000
+    DWORD  dwFileVersionMS    — Version majeure/mineure (ex. 0x00010002)
+    DWORD  dwFileVersionLS    — Build/révision
+    DWORD  dwProductVersionMS
+    DWORD  dwProductVersionLS
+    DWORD  dwFileFlagsMask
+    DWORD  dwFileFlags        — VS_FF_DEBUG, VS_FF_PRERELEASE, etc.
+    DWORD  dwFileOS           — VOS_NT, VOS_WINDOWS32, etc.
+    DWORD  dwFileType         — VFT_APP, VFT_DLL, VFT_DRV, etc.
+    DWORD  dwFileSubtype
+    DWORD  dwFileDateMS
+    DWORD  dwFileDateLS
+
+  [Padding pour alignement DWORD]
+  [StringFileInfo et/ou VarFileInfo — structures imbriquées]
+
+------------------------------------------------------------------------
+RT_BITMAP (type 2) — Bitmap
+------------------------------------------------------------------------
+
+Les données correspondent à un BITMAPINFOHEADER suivi des pixels.
+L'en-tête BITMAPFILEHEADER (14 octets) est absent dans les ressources.
+
+BITMAPINFOHEADER (40 octets) :
+  DWORD  biSize          = 40
+  LONG   biWidth         — Largeur en pixels
+  LONG   biHeight        — Hauteur (positif = bottom-up, négatif = top-down)
+  WORD   biPlanes        = 1
+  WORD   biBitCount      — Bits par pixel (1, 4, 8, 16, 24, 32)
+  DWORD  biCompression   — BI_RGB(0), BI_RLE8(1), BI_RLE4(2), BI_BITFIELDS(3)
+  DWORD  biSizeImage     — Taille des données pixels (0 si BI_RGB)
+  LONG   biXPelsPerMeter
+  LONG   biYPelsPerMeter
+  DWORD  biClrUsed       — Entrées dans la palette (0 = max)
+  DWORD  biClrImportant
+
+  [Table de couleurs RGBQUAD[] si biBitCount <= 8]
+  [Données pixels]
+
+------------------------------------------------------------------------
+RT_ICON / RT_GROUP_ICON (types 3 et 14) — Icône
+------------------------------------------------------------------------
+
+RT_ICON : une seule image DIB (format BITMAPINFOHEADER, sans BITMAPFILEHEADER)
+           avec le masque AND en fin de données.
+
+RT_GROUP_ICON : répertoire listant toutes les variantes de l'icône.
+
+Structure GRPICONDIR :
+  WORD  idReserved = 0
+  WORD  idType     = 1 (icône) ou 2 (curseur)
+  WORD  idCount    — Nombre d'images
+
+  Pour chaque image (GRPICONDIRENTRY, 14 octets) :
+    BYTE   bWidth       — Largeur (0 = 256)
+    BYTE   bHeight      — Hauteur (0 = 256)
+    BYTE   bColorCount  — Nb couleurs (0 si >= 8 bpp)
+    BYTE   bReserved    = 0
+    WORD   wPlanes      — Nb plans
+    WORD   wBitCount    — Bits par pixel
+    DWORD  dwBytesInRes — Taille des données de l'image RT_ICON
+    WORD   nId          — ID de la ressource RT_ICON correspondante
+
+------------------------------------------------------------------------
+RT_CURSOR / RT_GROUP_CURSOR (types 1 et 12) — Curseur
+------------------------------------------------------------------------
+
+Similaire aux icônes mais idType = 2 dans le répertoire de groupe.
+Chaque RT_CURSOR contient :
+  WORD  xHotspot   — Point d'accroche horizontal
+  WORD  yHotspot   — Point d'accroche vertical
+  [Données DIB (BITMAPINFOHEADER + pixels AND/XOR)]
+
+------------------------------------------------------------------------
+RT_RCDATA (type 10) — Données binaires arbitraires
+------------------------------------------------------------------------
+
+Données brutes quelconques. Aucune structure imposée.
+Utilisé pour embarquer des fichiers, tables, etc.
+
+------------------------------------------------------------------------
+RT_MANIFEST (type 24) — Manifeste d'assembly
+------------------------------------------------------------------------
+
+Données XML UTF-8 (ou UTF-16) décrivant les dépendances de l'application
+(Common Controls 6.0, version de l'assembly, niveau d'exécution UAC, etc.).
+
+IDs de nom conventionnels :
+  1 = Manifeste de l'application (.exe)
+  2 = Manifeste d'un DLL isolé
+
+================================================================================
+ALIGNEMENT ET RÈGLES D'ENCODAGE
+================================================================================
+
+Format 16 bits :
+  - En-têtes et données alignés sur 2 octets (WORD boundary).
+  - Les chaînes de type/nom sont des Pascal strings (longueur sur 1 octet).
+
+Format 32 bits :
+  - En-têtes alignés sur 4 octets (DWORD boundary).
+  - Données alignées sur 4 octets.
+  - Les chaînes de type/nom sont des chaînes Unicode UTF-16LE (WCHAR[])
+    terminées par WCHAR(0).
+  - Type/Nom numériques encodés comme : WORD(0xFFFF) WORD(id).
+  - Padding d'alignement rempli avec des octets nuls (0x00).
+
+================================================================================
+EXEMPLE DE SCRIPT RESSOURCE (.RC) ET SON ÉQUIVALENT BINAIRE (.RES)
+================================================================================
+
+Exemple de fichier .RC :
+  #include <windows.h>
+
+  IDI_MAINICON  ICON    "appicon.ico"
+  IDR_MENU1     MENU
+  BEGIN
+    POPUP "&Fichier"
+    BEGIN
+      MENUITEM "&Nouveau\tCtrl+N",  ID_FILE_NEW
+      MENUITEM "&Ouvrir...\tCtrl+O", ID_FILE_OPEN
+      MENUITEM SEPARATOR
+      MENUITEM "&Quitter",           ID_FILE_EXIT
+    END
+  END
+
+  VS_VERSION_INFO VERSIONINFO
+    FILEVERSION    1,0,0,0
+    PRODUCTVERSION 1,0,0,0
+    FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+    FILEFLAGS      0
+    FILEOS         VOS_NT_WINDOWS32
+    FILETYPE       VFT_APP
+    FILESUBTYPE    VFT_UNKNOWN
+  BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+      BLOCK "040C04B0"
+      BEGIN
+        VALUE "CompanyName",      "Mon Entreprise"
+        VALUE "FileDescription",  "Mon Application"
+        VALUE "FileVersion",      "1.0.0.0"
+        VALUE "ProductName",      "MonApp"
+        VALUE "ProductVersion",   "1.0.0.0"
+      END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+      VALUE "Translation", 0x040C, 0x04B0
+    END
+  END
+
+Compilation :
+  rc ressource.rc
+  -> produit : ressource.res
+
+Utilisation avec Borland Pascal / Turbo Pascal pour Windows :
+  {$R RESSOURCE.RES}
+
+Utilisation avec Free Pascal / Lazarus :
+  {$R ressource.res}
+  ou via windres : windres ressource.rc -O coff -o ressource.res
+
+================================================================================
+OUTILS ASSOCIÉS
+================================================================================
+
+Compilateurs de ressources :
+  rc.exe          — Microsoft Resource Compiler (MSVC, SDK Windows)
+  brcc.exe        — Borland Resource Compiler (Borland C++, Delphi)
+  brcc32.exe      — Borland Resource Compiler 32 bits (Delphi, C++Builder)
+  windres.exe     — GNU Resource Compiler (MinGW, Cygwin, Free Pascal)
+  gorc.exe        — GOASM Resource Compiler
+
+Éditeurs / Visualiseurs de ressources :
+  Resource Hacker  — Éditeur de ressources (freeware, Windows)
+  ResEdit          — Éditeur de ressources (freeware)
+  XN Resource Editor
+  PE Explorer
+
+Extensions de fichier associées :
+  .RC   — Script source de ressources (texte)
+  .RES  — Ressources compilées (binaire)
+  .DLL  — Bibliothèque dynamique (contient des ressources PE)
+  .EXE  — Exécutable Windows (contient des ressources PE)
+
+================================================================================
+RÉFÉRENCES
+================================================================================
+
+- Microsoft Portable Executable and Common Object File Format Specification
+- MSDN : Resource File Formats
+  https://learn.microsoft.com/en-us/windows/win32/menurc/resource-file-formats
+- MSDN : About Resource Files
+  https://learn.microsoft.com/en-us/windows/win32/menurc/about-resource-files
+- Borland Pascal 7.0 — Developer's Guide, chapitre Resources
+- Ralf Brown's Interrupt List — Resources Windows
+- Free Pascal Documentation — Using resources
+  https://www.freepascal.org/docs-html/prog/progch4.html
+
+================================================================================
+FIN DU DOCUMENT
+================================================================================

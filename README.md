@@ -21,6 +21,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Ada 83/95 pour de l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>ADACW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Ada 83/95 pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>ABAP86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur ABAP/4 pour de l'assembleur du microprocesseur 8086.</td>
 		</tr>
@@ -137,6 +141,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur 6502.</td>
 		</tr>
 		<tr>
+			<td><b>ASM68.PAS</b></td>
+			<td>Cette commande permet de lancer le clone du Motorola Macro Assembler (ASM68). Assembleur pour la famille Motorola 68000.</td>
+		</tr>
+		<tr>
 			<td><b>ASM8080.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur 8080.</td>
 		</tr>
@@ -194,7 +202,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>C2PAS.PAS</b></td>
-			<td>Cette commande permet de convertir un fichier «.C» en «.PAS».</td>
+			<td>Cette commande permet de transpiler un fichier «.C» en «.PAS».</td>
 		</tr>	
 		<tr>
 			<td><b>CC09.PAS</b></td>
@@ -229,6 +237,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur COBOL pour 8086/8088.</td>
 		</tr>
 		<tr>
+			<td><b>CODEQL.PAS</b></td>
+			<td>Cette commande permet d'utiliser l'outil CodeQL en ligne de commande afin d'analyser automatiquement le code source d'un programme, de créer une base d'analyse et d'exécuter des requêtes permettant de détecter des vulnérabilités, des erreurs de programmation et des problèmes de qualité logicielle.</td>
+		</tr>
+		<tr>
 			<td><b>COM2EXE.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
 		</tr>
@@ -237,8 +249,16 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier de code source Pascal en minuscule, majuscule ou capitale. Cette commande est inspiré de la commande CONVERT du Pascal pour FLEX.</td>
 		</tr>
 		<tr>
+			<td><b>CREF.PAS</b></td>
+			<td>Cette commande permet de produire une liste de symboles croisés.</td>
+		</tr>
+		<tr>
 			<td><b>CSC86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur C# (C Sharp) pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
+			<td><b>CSCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur C# (C Sharp) pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
 		<tr>
 			<td><b>CSV2SQL.PAS</b></td>
@@ -289,6 +309,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de désassembler un code binaire de microprocesseur 8086 en langage de programmation assembleur 8086.</td>
 		</tr>	
 		<tr>
+			<td><b>DISEXE.PAS</b></td>
+			<td>Cette commande permet de lancer le désassembleur de fichiers EXE (MZ DOS 16 bits / PE Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>DISOBJ.PAS</b></td>
 			<td>Cette commande permet d'analyser et de désassembler un fichier d'extension «.OBJ».</td>
 		</tr>
@@ -326,7 +350,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>JASMIN.PAS</b></td>
-			<td>Cette commande permet d'aassembler un fichier source Jasmin (.j) en fichier .class (bytecode Java) compatible avec la JVM.</td>
+			<td>Cette commande permet d'assembler un fichier source Jasmin (.j) en fichier .class (bytecode Java) compatible avec la JVM.</td>
 		</tr>
 		<tr>
 			<td><b>JAVAC86.PAS</b></td>
@@ -443,7 +467,11 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
     	<tr>
 			<td><b>TOKEN2BAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de TOKEN (GWBASIC, CoCo,...) de BASIC en BASIC ASCII.</td>
-		</tr>	
+		</tr>
+		<tr>
+			<td><b>TPCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Turbo Pascal pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
 		<tr>
 			<td><b>TP2JS.PAS</b></td>
 			<td>Cette commande permet de compiler un fichier Turbo Pascal en code JavaScript.</td>
