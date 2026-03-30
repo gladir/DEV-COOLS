@@ -13129,6 +13129,15 @@ Begin
         V.IsNull := False;
         If VL.IsNull Or VR.IsNull Then
           V.IsNull := True
+        { Concatenation de chaines avec + }
+        Else If (Op = '+') And
+                ((VL.Category = SQLCAT_STRING) Or
+                 (VR.Category = SQLCAT_STRING)) Then
+        Begin
+          V.Category := SQLCAT_STRING;
+          V.XType    := XT_VARCHAR;
+          V.StrVal   := SqlValueToStr(VL) + SqlValueToStr(VR);
+        End
         Else If (VL.Category = SQLCAT_INTEGER) And
                 (VR.Category = SQLCAT_INTEGER) Then
         Begin
