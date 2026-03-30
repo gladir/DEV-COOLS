@@ -627,8 +627,6 @@ Function RandomNext: LongInt;
 Begin
   { Linear Congruential Generator (parametres de MINSTD) }
   RandomState := (RandomState * 48271) Mod 2147483647;
-  If RandomState < 0 Then
-    RandomState := RandomState + 2147483647;
   RandomNext := RandomState;
 End;
 
