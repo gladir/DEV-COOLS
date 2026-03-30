@@ -1417,6 +1417,7 @@ Type
     TrimTrailing : Boolean; { -W : supprimer espaces de fin        }
     VerticalMode : Boolean; { --vertical : affichage vertical      }
     SelfTest   : Boolean;   { --selftest : lancer les tests internes }
+    CreateMdf  : TString;   { --createmdf : creer un fichier MDF   }
   End;
 
   { ---- Colonne d un result set (TODO 15) --------------------- }
@@ -1645,6 +1646,7 @@ End;
 Procedure ShowUsage;
 Begin
   WriteLn('Usage: SQLCMD -S <fichier.mdf> [options]');
+  WriteLn('       SQLCMD --createmdf[=fichier.mdf]');
   WriteLn;
   WriteLn('  -S fichier.mdf : fichier MDF a ouvrir (obligatoire)');
   WriteLn('  -d database    : nom de la base de donnees');
@@ -1655,6 +1657,8 @@ Begin
   WriteLn('  -W             : supprimer les espaces de fin (mode CSV)');
   WriteLn('  --vertical     : afficher chaque colonne sur une ligne');
   WriteLn('  --selftest     : lancer la suite de tests internes');
+  WriteLn('  --createmdf    : creer un fichier master.mdf vide');
+  WriteLn('  --createmdf=f  : creer un fichier MDF nomme f');
   WriteLn('  -v             : mode verbeux');
   WriteLn('  -h             : afficher cette aide');
   WriteLn;
@@ -1687,6 +1691,7 @@ Begin
   Opts.TrimTrailing := False;
   Opts.VerticalMode := False;
   Opts.SelfTest    := False;
+  Opts.CreateMdf   := '';
 End;
 
 { ---- Analyse des arguments de la ligne de commande ----------- }
@@ -1758,6 +1763,10 @@ Begin
       Opts.VerticalMode := True
     Else If (Arg = '--selftest') Then
       Opts.SelfTest := True
+    Else If (Arg = '--createmdf') Then
+      Opts.CreateMdf := 'master.mdf'
+    Else If (Copy(Arg, 1, 12) = '--createmdf=') Then
+      Opts.CreateMdf := Copy(Arg, 13, Length(Arg) - 12)
     Else If Arg[1] = '-' Then
     Begin
       WriteLn('SQLCMD: option inconnue: ', Arg);
@@ -1778,15 +1787,15 @@ Begin
     Inc(I);
   End;
 
-  { Valider le fichier MDF obligatoire (sauf mode selftest) }
-  If (Opts.MdfFile = '') And (Not Opts.SelfTest) Then
+  { Valider le fichier MDF obligatoire (sauf mode selftest ou createmdf) }
+  If (Opts.MdfFile = '') And (Not Opts.SelfTest) And (Opts.CreateMdf = '') Then
   Begin
     WriteLn('SQLCMD: fichier .MDF manquant (option -S)');
     ShowUsage;
   End;
 
-  { Verifier l extension (sauf mode selftest) }
-  If Not Opts.SelfTest Then
+  { Verifier l extension (sauf mode selftest ou createmdf) }
+  If Not Opts.SelfTest And (Opts.CreateMdf = '') Then
   Begin
     Ext := ExtractExt(Opts.MdfFile);
     If (Ext <> '.mdf') Then
@@ -23288,6 +23297,146 @@ End;
 
 { ---- Nettoyage ----------------------------------------------- }
 
+{ ============================================================
+  CREATION D UN FICHIER MDF VIDE
+  ============================================================ }
+
+Procedure CreateMinimalMdf(Const FileName : TString);
+Var
+  F         : File;
+  PageBuf   : Array[0..MDF_PAGE_SIZE - 1] Of Byte;
+  PageNum   : Integer;
+  I         : Integer;
+  DbName    : String;
+  NameLen   : Integer;
+  NameOfs   : Integer;
+
+  Procedure WriteByte(Ofs : Integer; Val : Byte);
+  Begin
+    PageBuf[Ofs] := Val;
+  End;
+
+  Procedure WriteWord(Ofs : Integer; Val : Word);
+  Begin
+    PageBuf[Ofs]     := Val And $FF;
+    PageBuf[Ofs + 1] := (Val Shr 8) And $FF;
+  End;
+
+  Procedure WriteLong(Ofs : Integer; Val : LongInt);
+  Begin
+    PageBuf[Ofs]     := Val And $FF;
+    PageBuf[Ofs + 1] := (Val Shr 8) And $FF;
+    PageBuf[Ofs + 2] := (Val Shr 16) And $FF;
+    PageBuf[Ofs + 3] := (Val Shr 24) And $FF;
+  End;
+
+  Procedure WritePageHeader(PageType, ObjId, SlotCnt, FreeData : Integer);
+  Begin
+    WriteByte(0, 1);             { HeaderVer = 1 }
+    WriteByte(1, PageType);      { PageType }
+    WriteByte(2, 0);             { TypeFlagBits }
+    WriteByte(3, 0);             { Level (leaf) }
+    WriteWord(4, 0);             { FlagBits }
+    WriteWord(6, 0);             { IndexId }
+    WriteLong(8, 0);             { PrevPage }
+    WriteWord(12, 0);            { PrevFile }
+    WriteWord(14, 0);            { PMinLen }
+    WriteLong(16, 0);            { NextPage }
+    WriteWord(20, 0);            { NextFile }
+    WriteWord(22, SlotCnt);      { SlotCnt }
+    WriteLong(24, ObjId);        { ObjId }
+    WriteWord(28, 0);            { FreeCnt }
+    WriteWord(30, FreeData);     { FreeData }
+    WriteWord(32, 0);            { ReservedCnt }
+  End;
+
+  Procedure ClearPage;
+  Begin
+    FillChar(PageBuf, SizeOf(PageBuf), 0);
+  End;
+
+  Procedure WritePage;
+  Begin
+    BlockWrite(F, PageBuf, MDF_PAGE_SIZE);
+  End;
+
+Begin
+  { Extraire le nom de la base de donnees du nom de fichier }
+  DbName := FileName;
+  { Retirer le chemin }
+  For I := Length(DbName) DownTo 1 Do
+    If (DbName[I] = '/') Or (DbName[I] = '\') Then
+    Begin
+      DbName := Copy(DbName, I + 1, Length(DbName) - I);
+      Break;
+    End;
+  { Retirer l extension }
+  For I := Length(DbName) DownTo 1 Do
+    If DbName[I] = '.' Then
+    Begin
+      DbName := Copy(DbName, 1, I - 1);
+      Break;
+    End;
+  If DbName = '' Then
+    DbName := 'master';
+
+  { Creer le fichier }
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('SQLCMD: impossible de creer le fichier: ', FileName);
+    Halt(EXIT_ERROR);
+  End;
+
+  WriteLn('Creation du fichier MDF: ', FileName);
+  WriteLn('  Nom de la base: ', DbName);
+
+  { ---- Page 0: File Header (type 15) ---- }
+  ClearPage;
+  WritePageHeader(MDF_PT_FILEHDR, 0, 0, MDF_PAGE_HDR_SIZE);
+  WritePage;
+
+  { ---- Pages 1-8: Pages vides (filler) ---- }
+  For PageNum := 1 To 8 Do
+  Begin
+    ClearPage;
+    WritePage;
+  End;
+
+  { ---- Page 9: Boot Page (type 13) ---- }
+  ClearPage;
+  WritePageHeader(MDF_PT_BOOT, 0, 0, MDF_PAGE_HDR_SIZE);
+  { dbi_version at offset 96+0 }
+  WriteLong(MDF_PAGE_HDR_SIZE + 0, 904);     { SQL Server 2019 }
+  { dbi_createVersion at offset 96+4 }
+  WriteLong(MDF_PAGE_HDR_SIZE + 4, 904);
+  { dbi_status at offset 96+24 }
+  WriteLong(MDF_PAGE_HDR_SIZE + 24, 0);
+  { dbi_dbname at offset 96+100 (UTF-16 LE) }
+  NameOfs := MDF_PAGE_HDR_SIZE + 100;
+  NameLen := Length(DbName);
+  If NameLen > 128 Then NameLen := 128;
+  For I := 1 To NameLen Do
+  Begin
+    PageBuf[NameOfs] := Ord(DbName[I]);
+    PageBuf[NameOfs + 1] := 0;
+    Inc(NameOfs, 2);
+  End;
+  { dbi_dbid at offset 96+356 }
+  WriteWord(MDF_PAGE_HDR_SIZE + 356, 5);     { DBID = 5 }
+  { dbi_cmptlevel at offset 96+396 }
+  WriteWord(MDF_PAGE_HDR_SIZE + 396, 150);   { Compat level 150 }
+  WritePage;
+
+  Close(F);
+  WriteLn('  Pages creees: 10');
+  WriteLn('  Taille: ', 10 * MDF_PAGE_SIZE, ' octets');
+  WriteLn('Fichier MDF cree avec succes.');
+End;
+
 Procedure Cleanup;
 Begin
   CloseMdfFile;
@@ -23363,6 +23512,13 @@ Begin
 
   If Opts.Verbose Then
     ShowBanner;
+
+  { Mode creation de fichier MDF (--createmdf) }
+  If Opts.CreateMdf <> '' Then
+  Begin
+    CreateMinimalMdf(Opts.CreateMdf);
+    Halt(EXIT_OK);
+  End;
 
   If Not Opts.SelfTest Then
   Begin
