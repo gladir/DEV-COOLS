@@ -458,7 +458,7 @@
             Fonctions systeme : OBJECT_ID, OBJECT_NAME,
               COL_NAME, TYPE_NAME, INDEX_COL
 
-  TODO 28 - TRANSACTIONS ET VERROUILLAGE
+  TODO 28 - TRANSACTIONS ET VERROUILLAGE [IMPLEMENTE]
             BEGIN TRANSACTION [nom]
             COMMIT TRANSACTION [nom]
             ROLLBACK TRANSACTION [nom | savepoint]
@@ -1152,6 +1152,12 @@ Const
   ND_STORED_PROC   = 142;    { corps de procedure stockee            }
   ND_USER_FUNC     = 143;    { corps de fonction utilisateur         }
 
+  { -- Transaction nodes (TODO 28) -- }
+  ND_BEGIN_TRAN    = 144;    { BEGIN TRANSACTION [nom]               }
+  ND_COMMIT_TRAN   = 145;    { COMMIT TRANSACTION [nom]             }
+  ND_ROLLBACK_TRAN = 146;    { ROLLBACK TRANSACTION [nom|savepoint] }
+  ND_SAVE_TRAN     = 147;    { SAVE TRANSACTION savepoint           }
+
   { Taille max du pool de noeuds AST }
   MAX_AST_NODES   = 1024;
 
@@ -1173,6 +1179,16 @@ Const
 
   { ---- Constantes des procedures stockees (TODO 27) ------------ }
   MAX_STORED_PROCS = 32;           { procedures/fonctions enregistrees }
+
+  { ---- Constantes des transactions (TODO 28) -------------------- }
+  MAX_SAVEPOINTS   = 16;             { savepoints simultanes          }
+  MAX_TRAN_LOG     = 256;            { entrees journal de transaction }
+  { Niveaux d isolation }
+  ISO_READ_UNCOMMITTED = 1;
+  ISO_READ_COMMITTED   = 2;
+  ISO_REPEATABLE_READ  = 3;
+  ISO_SERIALIZABLE     = 4;
+  ISO_SNAPSHOT         = 5;
 
   { ---- Constantes du moteur de jointure (TODO 16) -------------- }
   MAX_QE_HASH     = {$IFDEF FPC}4096{$ELSE}256{$ENDIF};
@@ -1501,6 +1517,21 @@ Var
                                   { liste de params serialisee        }
   StoredProcRetType : Array[0..MAX_STORED_PROCS - 1] Of TTokenText;
                                   { type de retour pour fonctions     }
+
+  { ---- Transactions et verrouillage (TODO 28) -------------------- }
+  TranCount      : Integer;       { profondeur transaction imbriquee   }
+  TranNames      : Array[0..15] Of TTokenText;
+                                  { noms des transactions imbriquees   }
+  SavePointCount : Integer;       { nombre de savepoints actifs        }
+  SavePointNames : Array[0..MAX_SAVEPOINTS - 1] Of TTokenText;
+                                  { noms des savepoints                }
+  IsolationLevel : Integer;       { niveau d isolation courant         }
+  TranLogCount   : Integer;       { nombre d entrees dans le journal   }
+  TranLogOps     : Array[0..MAX_TRAN_LOG - 1] Of TTokenText;
+                                  { operations journalisees            }
+  TranLogTables  : Array[0..MAX_TRAN_LOG - 1] Of TTokenText;
+                                  { tables impactees                   }
+  XactState      : Integer;       { 0=no tran, 1=active, -1=doomed    }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -5673,6 +5704,11 @@ Begin
     { Stored procedures/functions (TODO 27) }
     ND_STORED_PROC  : NodeKindName := 'STORED_PROC';
     ND_USER_FUNC    : NodeKindName := 'USER_FUNC';
+    { Transaction nodes (TODO 28) }
+    ND_BEGIN_TRAN    : NodeKindName := 'BEGIN_TRAN';
+    ND_COMMIT_TRAN   : NodeKindName := 'COMMIT_TRAN';
+    ND_ROLLBACK_TRAN : NodeKindName := 'ROLLBACK_TRAN';
+    ND_SAVE_TRAN     : NodeKindName := 'SAVE_TRAN';
   Else
     NodeKindName := '?';
   End;
@@ -11034,6 +11070,60 @@ Begin
       ParseSetStmt := N;
       Exit;
     End;
+
+    { ---- TODO 28 : SET TRANSACTION ISOLATION LEVEL ---- }
+    If VarName = 'TRANSACTION' Then
+    Begin
+      Advance; { skip TRANSACTION }
+      If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+      Begin
+        VarName := StrUpperCase(LexCurTok.Text);
+        If VarName = 'ISOLATION' Then
+        Begin
+          Advance; { skip ISOLATION }
+          If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+          Begin
+            VarName := StrUpperCase(LexCurTok.Text);
+            If VarName = 'LEVEL' Then
+            Begin
+              Advance; { skip LEVEL }
+              VarName := StrUpperCase(LexCurTok.Text);
+              If VarName = 'READ' Then
+              Begin
+                Advance;
+                VarName := StrUpperCase(LexCurTok.Text);
+                Advance;
+                N := NewNode(ND_SET_OPTION, 'ISOLATION READ ' + VarName,
+                             LexCurTok.Line, LexCurTok.Col);
+                ParseSetStmt := N;
+                Exit;
+              End
+              Else If VarName = 'REPEATABLE' Then
+              Begin
+                Advance;
+                If (LexCurTok.Kind = TOK_IDENT) Or
+                   (LexCurTok.Kind = TOK_KEYWORD) Then
+                  Advance; { skip READ }
+                N := NewNode(ND_SET_OPTION, 'ISOLATION REPEATABLE READ',
+                             LexCurTok.Line, LexCurTok.Col);
+                ParseSetStmt := N;
+                Exit;
+              End
+              Else
+              Begin
+                Advance;
+                N := NewNode(ND_SET_OPTION, 'ISOLATION ' + VarName,
+                             LexCurTok.Line, LexCurTok.Col);
+                ParseSetStmt := N;
+                Exit;
+              End;
+            End;
+          End;
+        End;
+      End;
+    End;
+    { ---- Fin TODO 28 SET TRANSACTION ISOLATION LEVEL ---- }
+
   End;
   { ---- Fin TODO 25 SET options ---------------------------------- }
 
@@ -11073,6 +11163,13 @@ End;
 { IF condition instruction | BEGIN...END [ELSE instruction | BEGIN...END] }
 
 Function ParseStatement : Integer; Forward;
+
+{ ---- TODO 28 : Forward declarations ---- }
+Function ParseBeginOrTranStmt : Integer; Forward;
+Function ParseBeginTranStmt : Integer; Forward;
+Function ParseCommitTranStmt : Integer; Forward;
+Function ParseRollbackTranStmt : Integer; Forward;
+Function ParseSaveTranStmt : Integer; Forward;
 
 Function ParseIfStmt : Integer;
 Var
@@ -11742,6 +11839,26 @@ Begin
   End;
   { ---- Fin TODO 26 : Dispatchers curseurs ---- }
 
+  { ---- TODO 28 : Dispatchers transactions ---- }
+  If KwIs(KW_COMMIT) Then
+  Begin
+    ParseStatement := ParseCommitTranStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_ROLLBACK) Then
+  Begin
+    ParseStatement := ParseRollbackTranStmt;
+    Exit;
+  End;
+
+  If KwIs(KW_SAVE) Then
+  Begin
+    ParseStatement := ParseSaveTranStmt;
+    Exit;
+  End;
+  { ---- Fin TODO 28 : Dispatchers transactions ---- }
+
   If KwIs(KW_IF) Then
   Begin
     ParseStatement := ParseIfStmt;
@@ -11756,8 +11873,10 @@ Begin
 
   If KwIs(KW_BEGIN) Then
   Begin
-    ParseStatement := ParseBlockStmt;
+    { ---- TODO 28 : BEGIN TRANSACTION vs BEGIN block ---- }
+    ParseStatement := ParseBeginOrTranStmt;
     Exit;
+    { ---- Fin TODO 28 ---- }
   End;
 
   If KwIs(KW_BREAK) Then
@@ -12483,6 +12602,15 @@ Function GetUserVar(Const Name : TTokenText) : TSqlValue; Forward;
 { ---- TODO 27 : Forward declarations ---- }
 Function XTypeToName(XType : Integer) : TTokenText; Forward;
 Procedure ExecuteQuery(Const SQL : TString); Forward;
+
+{ ---- TODO 28 : Forward declarations (exec) ---- }
+Procedure ExecBeginTran(Root : Integer); Forward;
+Procedure ExecCommitTran(Root : Integer); Forward;
+Procedure ExecRollbackTran(Root : Integer); Forward;
+Procedure ExecSaveTran(Root : Integer); Forward;
+Function IsolationLevelName(Level : Integer) : TString; Forward;
+Procedure TranLogAdd(Const Op, Tbl : TTokenText); Forward;
+Function ParseBlockBody : Integer; Forward;
 
 Function QEEvalBool(Node : Integer;
                      Const Row : TQERow;
@@ -15270,7 +15398,7 @@ Begin
         V.XType    := XT_SMALLINT;
         V.Valid    := True;
         V.IsNull   := False;
-        V.IntVal   := 0;
+        V.IntVal   := XactState;
       End
       { ===== TODO 23 : Fonctions JSON et XML ===== }
       Else If (Op = 'ISJSON') And (Child0 >= 0) Then
@@ -15851,7 +15979,7 @@ Begin
         V.Category := SQLCAT_INTEGER;
         V.XType    := XT_INT;
         V.IsNull   := False;
-        V.IntVal   := 0;
+        V.IntVal   := TranCount;
       End
       Else If Op = '@@VERSION' Then
       Begin
@@ -17999,6 +18127,367 @@ Begin
 End;
 
 { ===== Fin TODO 27 ===== }
+
+{ ===== TODO 28 : Transactions et Verrouillage ===== }
+
+{ ---- IsolationLevelName : nom textuel du niveau d isolation ---- }
+Function IsolationLevelName(Level : Integer) : TString;
+Begin
+  Case Level Of
+    ISO_READ_UNCOMMITTED : IsolationLevelName := 'READ UNCOMMITTED';
+    ISO_READ_COMMITTED   : IsolationLevelName := 'READ COMMITTED';
+    ISO_REPEATABLE_READ  : IsolationLevelName := 'REPEATABLE READ';
+    ISO_SERIALIZABLE     : IsolationLevelName := 'SERIALIZABLE';
+    ISO_SNAPSHOT         : IsolationLevelName := 'SNAPSHOT';
+  Else
+    IsolationLevelName := 'READ COMMITTED';
+  End;
+End;
+
+{ ---- TranLogAdd : ajouter une entree au journal de transaction --- }
+Procedure TranLogAdd(Const Op, Tbl : TTokenText);
+Begin
+  If TranLogCount < MAX_TRAN_LOG Then
+  Begin
+    TranLogOps[TranLogCount]    := Op;
+    TranLogTables[TranLogCount] := Tbl;
+    Inc(TranLogCount);
+  End;
+End;
+
+{ ---- ParseBeginTranStmt : BEGIN TRANSACTION [nom] -------------- }
+Function ParseBeginTranStmt : Integer;
+Var
+  N : Integer;
+  TName : TTokenText;
+Begin
+  ParseBeginTranStmt := -1;
+  If Not ParseOk Then Exit;
+  { BEGIN already consumed by ParseBeginOrTranStmt }
+  { Current token is TRANSACTION or TRAN }
+  Advance; { skip TRANSACTION/TRAN }
+  TName := '';
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    TName := LexCurTok.Text;
+    Advance;
+  End;
+  N := NewNode(ND_BEGIN_TRAN, TName, LexCurTok.Line, LexCurTok.Col);
+  ParseBeginTranStmt := N;
+End;
+
+{ ---- ParseBeginOrTranStmt : BEGIN TRANSACTION ou BEGIN block ---- }
+Function ParseBeginOrTranStmt : Integer;
+Begin
+  ParseBeginOrTranStmt := -1;
+  If Not ParseOk Then Exit;
+  Advance; { skip BEGIN }
+  If KwIs(KW_TRANSACTION) Or
+     ((LexCurTok.Kind = TOK_IDENT) And
+      (StrUpperCase(LexCurTok.Text) = 'TRAN')) Then
+  Begin
+    ParseBeginOrTranStmt := ParseBeginTranStmt;
+    Exit;
+  End;
+  { Not a transaction - parse as block (BEGIN ... END) }
+  { Re-use ParseBlockStmt logic for the block body }
+  ParseBeginOrTranStmt := ParseBlockBody;
+End;
+
+{ ---- ParseBlockBody : parse block body after BEGIN consumed ---- }
+Function ParseBlockBody : Integer;
+Var
+  N, S, TryBlk, CatchBlk : Integer;
+  IsTry                   : Boolean;
+Begin
+  ParseBlockBody := -1;
+  If Not ParseOk Then Exit;
+
+  { Detecter BEGIN TRY (BEGIN already consumed) }
+  IsTry := KwIs(KW_TRY);
+  If IsTry Then
+  Begin
+    Advance; { skip TRY }
+    N := NewNode(ND_TRY_CATCH, 'TRY_CATCH', LexCurTok.Line, LexCurTok.Col);
+
+    { Corps du TRY : lire les instructions jusqu a END TRY }
+    TryBlk := NewNode(ND_BLOCK_STMT, 'TRY', LexCurTok.Line, LexCurTok.Col);
+    While ParseOk And Not (KwIs(KW_END)) And
+          (LexCurTok.Kind <> TOK_EOF) Do
+    Begin
+      S := ParseStatement;
+      If S >= 0 Then
+        AddChild(TryBlk, S)
+      Else
+        Break;
+    End;
+    AddChild(N, TryBlk);
+
+    { END TRY }
+    If KwIs(KW_END) Then
+    Begin
+      Advance; { skip END }
+      If KwIs(KW_TRY) Then
+        Advance; { skip TRY }
+    End;
+
+    { BEGIN CATCH }
+    If KwIs(KW_BEGIN) Then
+    Begin
+      Advance; { skip BEGIN }
+      If KwIs(KW_CATCH) Then
+        Advance; { skip CATCH }
+
+      CatchBlk := NewNode(ND_BLOCK_STMT, 'CATCH', LexCurTok.Line,
+                           LexCurTok.Col);
+      While ParseOk And Not (KwIs(KW_END)) And
+            (LexCurTok.Kind <> TOK_EOF) Do
+      Begin
+        S := ParseStatement;
+        If S >= 0 Then
+          AddChild(CatchBlk, S)
+        Else
+          Break;
+      End;
+      AddChild(N, CatchBlk);
+
+      { END CATCH }
+      If KwIs(KW_END) Then
+      Begin
+        Advance; { skip END }
+        If KwIs(KW_CATCH) Then
+          Advance; { skip CATCH }
+      End;
+    End;
+
+    ParseBlockBody := N;
+    Exit;
+  End;
+
+  { BEGIN ... END bloc normal }
+  N := NewNode(ND_BLOCK_STMT, 'BEGIN...END', LexCurTok.Line, LexCurTok.Col);
+  While ParseOk And Not KwIs(KW_END) And
+        (LexCurTok.Kind <> TOK_EOF) Do
+  Begin
+    S := ParseStatement;
+    If S >= 0 Then
+      AddChild(N, S)
+    Else
+      Break;
+  End;
+  If KwIs(KW_END) Then
+    Advance { skip END }
+  Else
+    ParseError('END attendu pour fermer le bloc BEGIN');
+
+  ParseBlockBody := N;
+End;
+
+{ ---- ParseCommitTranStmt : COMMIT [TRANSACTION [nom]] ---------- }
+Function ParseCommitTranStmt : Integer;
+Var
+  N : Integer;
+  TName : TTokenText;
+Begin
+  ParseCommitTranStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_COMMIT) Then
+  Begin
+    ParseError('COMMIT attendu');
+    Exit;
+  End;
+  Advance; { skip COMMIT }
+  TName := '';
+  If KwIs(KW_TRANSACTION) Or
+     ((LexCurTok.Kind = TOK_IDENT) And
+      (StrUpperCase(LexCurTok.Text) = 'TRAN')) Then
+  Begin
+    Advance; { skip TRANSACTION/TRAN }
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      TName := LexCurTok.Text;
+      Advance;
+    End;
+  End;
+  N := NewNode(ND_COMMIT_TRAN, TName, LexCurTok.Line, LexCurTok.Col);
+  ParseCommitTranStmt := N;
+End;
+
+{ ---- ParseRollbackTranStmt : ROLLBACK [TRANSACTION [nom|sp]] --- }
+Function ParseRollbackTranStmt : Integer;
+Var
+  N : Integer;
+  TName : TTokenText;
+Begin
+  ParseRollbackTranStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_ROLLBACK) Then
+  Begin
+    ParseError('ROLLBACK attendu');
+    Exit;
+  End;
+  Advance; { skip ROLLBACK }
+  TName := '';
+  If KwIs(KW_TRANSACTION) Or
+     ((LexCurTok.Kind = TOK_IDENT) And
+      (StrUpperCase(LexCurTok.Text) = 'TRAN')) Then
+  Begin
+    Advance; { skip TRANSACTION/TRAN }
+    If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+    Begin
+      TName := LexCurTok.Text;
+      Advance;
+    End;
+  End;
+  N := NewNode(ND_ROLLBACK_TRAN, TName, LexCurTok.Line, LexCurTok.Col);
+  ParseRollbackTranStmt := N;
+End;
+
+{ ---- ParseSaveTranStmt : SAVE TRANSACTION savepoint_name ------- }
+Function ParseSaveTranStmt : Integer;
+Var
+  N : Integer;
+  TName : TTokenText;
+Begin
+  ParseSaveTranStmt := -1;
+  If Not ParseOk Then Exit;
+  If Not KwIs(KW_SAVE) Then
+  Begin
+    ParseError('SAVE attendu');
+    Exit;
+  End;
+  Advance; { skip SAVE }
+  If KwIs(KW_TRANSACTION) Or
+     ((LexCurTok.Kind = TOK_IDENT) And
+      (StrUpperCase(LexCurTok.Text) = 'TRAN')) Then
+    Advance; { skip TRANSACTION/TRAN }
+  TName := '';
+  If (LexCurTok.Kind = TOK_IDENT) Or (LexCurTok.Kind = TOK_KEYWORD) Then
+  Begin
+    TName := LexCurTok.Text;
+    Advance;
+  End;
+  N := NewNode(ND_SAVE_TRAN, TName, LexCurTok.Line, LexCurTok.Col);
+  ParseSaveTranStmt := N;
+End;
+
+{ ---- ExecBeginTran : executer BEGIN TRANSACTION --------------- }
+Procedure ExecBeginTran(Root : Integer);
+Var
+  TName : TTokenText;
+Begin
+  TName := ASTPool[Root].Text;
+  If TranCount < 16 Then
+  Begin
+    TranNames[TranCount] := TName;
+    Inc(TranCount);
+  End;
+  XactState := 1;
+  TranLogAdd('BEGIN', TName);
+  If TName <> '' Then
+    OutputLine('-- Transaction ''' + TName + ''' demarree (niveau ' +
+              IntToStr(TranCount) + ')')
+  Else
+    OutputLine('-- Transaction demarree (niveau ' +
+              IntToStr(TranCount) + ')');
+End;
+
+{ ---- ExecCommitTran : executer COMMIT TRANSACTION ------------- }
+Procedure ExecCommitTran(Root : Integer);
+Var
+  TName : TTokenText;
+Begin
+  TName := ASTPool[Root].Text;
+  If TranCount <= 0 Then
+  Begin
+    OutputLine('-- Erreur : COMMIT sans transaction active');
+    Exit;
+  End;
+  Dec(TranCount);
+  TranLogAdd('COMMIT', TName);
+  If TranCount = 0 Then
+  Begin
+    { Transaction externe validee : vider le journal }
+    XactState    := 0;
+    TranLogCount := 0;
+    SavePointCount := 0;
+    If TName <> '' Then
+      OutputLine('-- Transaction ''' + TName + ''' validee')
+    Else
+      OutputLine('-- Transaction validee');
+  End
+  Else
+  Begin
+    If TName <> '' Then
+      OutputLine('-- COMMIT ''' + TName + ''' (niveau ' +
+                IntToStr(TranCount) + ', pas encore effectif)')
+    Else
+      OutputLine('-- COMMIT imbriquee (niveau ' +
+                IntToStr(TranCount) + ', pas encore effectif)');
+  End;
+End;
+
+{ ---- ExecRollbackTran : executer ROLLBACK TRANSACTION --------- }
+Procedure ExecRollbackTran(Root : Integer);
+Var
+  TName : TTokenText;
+  I, SpIdx : Integer;
+Begin
+  TName := ASTPool[Root].Text;
+  If (TranCount <= 0) And (TName = '') Then
+  Begin
+    OutputLine('-- Erreur : ROLLBACK sans transaction active');
+    Exit;
+  End;
+  { Verifier si c est un rollback vers un savepoint }
+  If TName <> '' Then
+  Begin
+    SpIdx := -1;
+    For I := 0 To SavePointCount - 1 Do
+      If StrUpperCase(SavePointNames[I]) = StrUpperCase(TName) Then
+        SpIdx := I;
+    If SpIdx >= 0 Then
+    Begin
+      { Rollback vers le savepoint : supprimer les savepoints ulterieurs }
+      SavePointCount := SpIdx;
+      TranLogAdd('ROLLBACK_SP', TName);
+      OutputLine('-- Rollback vers savepoint ''' + TName + '''');
+      Exit;
+    End;
+  End;
+  { Rollback complet }
+  TranLogAdd('ROLLBACK', TName);
+  TranCount      := 0;
+  XactState      := 0;
+  TranLogCount   := 0;
+  SavePointCount := 0;
+  If TName <> '' Then
+    OutputLine('-- Transaction ''' + TName + ''' annulee (rollback)')
+  Else
+    OutputLine('-- Transaction annulee (rollback)');
+End;
+
+{ ---- ExecSaveTran : executer SAVE TRANSACTION ----------------- }
+Procedure ExecSaveTran(Root : Integer);
+Var
+  TName : TTokenText;
+Begin
+  TName := ASTPool[Root].Text;
+  If TranCount <= 0 Then
+  Begin
+    OutputLine('-- Erreur : SAVE TRANSACTION sans transaction active');
+    Exit;
+  End;
+  If SavePointCount < MAX_SAVEPOINTS Then
+  Begin
+    SavePointNames[SavePointCount] := TName;
+    Inc(SavePointCount);
+  End;
+  TranLogAdd('SAVEPOINT', TName);
+  OutputLine('-- Savepoint ''' + TName + ''' cree');
+End;
+
+{ ===== Fin TODO 28 ===== }
 
 { ---- Tri QuickSort des lignes -------------------------------- }
 { Trie le result set en memoire par les colonnes d ORDER BY.      }
@@ -20974,12 +21463,20 @@ Begin
   Else If KwIs(KW_DEALLOCATE) Then
     Root := ParseDeallocateCursorStmt
   { ---- Fin TODO 26 ---- }
+  { ---- TODO 28 : Dispatchers transactions (ExecuteQuery) ---- }
+  Else If KwIs(KW_COMMIT) Then
+    Root := ParseCommitTranStmt
+  Else If KwIs(KW_ROLLBACK) Then
+    Root := ParseRollbackTranStmt
+  Else If KwIs(KW_SAVE) Then
+    Root := ParseSaveTranStmt
+  { ---- Fin TODO 28 ---- }
   Else If KwIs(KW_IF) Then
     Root := ParseIfStmt
   Else If KwIs(KW_WHILE) Then
     Root := ParseWhileStmt
   Else If KwIs(KW_BEGIN) Then
-    Root := ParseBlockStmt
+    Root := ParseBeginOrTranStmt
   Else If KwIs(KW_RETURN) Then
     Root := ParseReturnStmt
   Else If KwIs(KW_WAITFOR) Then
@@ -21083,6 +21580,21 @@ Begin
         OutputLine('-- SET NOCOUNT ON (acknowledged)')
       Else If ASTPool[Root].Text = 'NOCOUNT OFF' Then
         OutputLine('-- SET NOCOUNT OFF (acknowledged)')
+      Else If Copy(ASTPool[Root].Text, 1, 9) = 'ISOLATION' Then
+      Begin
+        If Pos('READ UNCOMMITTED', ASTPool[Root].Text) > 0 Then
+          IsolationLevel := ISO_READ_UNCOMMITTED
+        Else If Pos('READ COMMITTED', ASTPool[Root].Text) > 0 Then
+          IsolationLevel := ISO_READ_COMMITTED
+        Else If Pos('REPEATABLE READ', ASTPool[Root].Text) > 0 Then
+          IsolationLevel := ISO_REPEATABLE_READ
+        Else If Pos('SERIALIZABLE', ASTPool[Root].Text) > 0 Then
+          IsolationLevel := ISO_SERIALIZABLE
+        Else If Pos('SNAPSHOT', ASTPool[Root].Text) > 0 Then
+          IsolationLevel := ISO_SNAPSHOT;
+        OutputLine('-- Isolation level set to ' +
+                  IsolationLevelName(IsolationLevel));
+      End
       Else
         OutputLine('-- SET ' + ASTPool[Root].Text + ' (acknowledged)');
     End;
@@ -21116,6 +21628,16 @@ Begin
     If ASTPool[Root].Kind = ND_EXEC_SQL Then
       ExecExecSql(Root);
     { ---- Fin TODO 27 ---- }
+    { ---- TODO 28 : Transactions ---- }
+    If ASTPool[Root].Kind = ND_BEGIN_TRAN Then
+      ExecBeginTran(Root);
+    If ASTPool[Root].Kind = ND_COMMIT_TRAN Then
+      ExecCommitTran(Root);
+    If ASTPool[Root].Kind = ND_ROLLBACK_TRAN Then
+      ExecRollbackTran(Root);
+    If ASTPool[Root].Kind = ND_SAVE_TRAN Then
+      ExecSaveTran(Root);
+    { ---- Fin TODO 28 ---- }
   End
   Else
     OutputLine('-- Erreur de syntaxe dans : ' + SQL);
@@ -21254,6 +21776,12 @@ Begin
   UserVarCount   := 0;
   { ---- TODO 27 : initialisation des procedures stockees ---- }
   StoredProcCount := 0;
+  { ---- TODO 28 : initialisation des transactions ---- }
+  TranCount      := 0;
+  SavePointCount := 0;
+  IsolationLevel := ISO_READ_COMMITTED;
+  TranLogCount   := 0;
+  XactState      := 0;
 
   ParseArgs;
 
