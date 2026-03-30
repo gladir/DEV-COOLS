@@ -1,0 +1,257 @@
+TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
+
+  1.  [A FAIRE] Infrastructure de base et options CLI.
+      Programme principal CSMITH en Turbo Pascal / Free Pascal.
+      Options de ligne de commande : --seed <n> (graine aleatoire),
+      --max-funcs <n> (nombre max de fonctions), --max-block-depth <n>
+      (profondeur max des blocs), --max-expr-complexity <n> (complexite
+      max des expressions), --no-pointers (desactiver les pointeurs),
+      --no-structs (desactiver les structures), --no-unions (desactiver
+      les unions), --no-bitfields (desactiver les champs de bits),
+      --no-volatiles (desactiver volatile), --no-consts (desactiver
+      const), -o <file> (fichier de sortie), -h/--help (aide).
+      Constantes globales : MAX_FUNCS, MAX_VARS, MAX_PARAMS,
+      MAX_STRUCT_FIELDS, MAX_ARRAY_DIM, MAX_BLOCK_DEPTH, MAX_EXPR_DEPTH.
+
+  2.  [A FAIRE] Types internes et structures de donnees.
+      Definir les types internes pour la representation du code C :
+      TTypeKind (TK_VOID, TK_CHAR, TK_SCHAR, TK_UCHAR, TK_SHORT,
+      TK_USHORT, TK_INT, TK_UINT, TK_LONG, TK_ULONG, TK_LONGLONG,
+      TK_ULONGLONG, TK_FLOAT, TK_DOUBLE, TK_STRUCT, TK_UNION,
+      TK_ENUM, TK_POINTER, TK_ARRAY, TK_FUNC).
+      TQualifier (Q_NONE, Q_CONST, Q_VOLATILE, Q_RESTRICT).
+      TStorageClass (SC_AUTO, SC_STATIC, SC_EXTERN, SC_REGISTER).
+      TCType : record avec Kind, Quals, Pointee, ArraySize, StructDef.
+      TVariable : record avec Name, VType, Storage, Initialized, Scope.
+      TFunction : record avec Name, RetType, Params, Body, NumParams.
+
+  3.  [A FAIRE] Generateur aleatoire et seed.
+      Implanter un generateur de nombres pseudo-aleatoires reproductible
+      (LCG - Linear Congruential Generator ou Xorshift).
+      Fonctions : InitRandom(seed), RandomInt(max), RandomBool,
+      RandomChoice(probability), RandomRange(min, max).
+      Variables globales : RandomSeed, RandomState.
+      La graine peut etre specifiee par --seed pour reproduire les
+      tests. Si non specifiee, utiliser l'heure systeme.
+      Afficher la graine utilisee en commentaire du fichier genere.
+
+  4.  [A FAIRE] Emission de code : utilitaires de base.
+      Fonctions d'emission de code C : EmitOpen (ouvrir fichier),
+      EmitClose (fermer fichier), EmitRaw (ecrire texte brut),
+      EmitLine (ecrire ligne avec indentation), EmitIndent (augmenter
+      indentation), EmitUnindent (diminuer indentation), EmitComment
+      (ecrire commentaire), EmitBlankLine, EmitChar, EmitStr.
+      Variables globales : OutFile (Text), IndentLevel (Integer),
+      IndentStr (String de 2 ou 4 espaces), LineCount (compteur).
+      Gerer les niveaux d'imbrication pour une indentation propre.
+
+  5.  [A FAIRE] Emission des types de base C.
+      Fonctions pour emettre les types C de base :
+      TypeToStr(T: TCType): String - convertir type en chaine C.
+      EmitTypeDecl - emettre une declaration de type.
+      EmitVarDecl - emettre une declaration de variable.
+      EmitArrayDecl - emettre une declaration de tableau.
+      EmitPointerDecl - emettre une declaration de pointeur.
+      Gerer les qualificateurs (const, volatile, restrict) et
+      les classes de stockage (static, extern, register).
+      Supporter les types signes/non-signes, short/long/long long.
+
+  6.  [A FAIRE] Generation de structures (struct).
+      Generateur de definitions de structures C :
+      GenStructDef - generer une definition de structure aleatoire.
+      GenStructField - generer un champ de structure.
+      GenStructName - generer un nom de structure unique.
+      Supporter les champs : scalaires, tableaux, pointeurs,
+      structures imbriquees (avec limite de profondeur).
+      Eviter les cycles de structures (struct A contient struct A).
+      Table des structures : StructDefs[], NumStructs.
+      Emettre les declarations typedef struct { ... } NomStruct;
+
+  7.  [A FAIRE] Generation d'unions.
+      Generateur de definitions d'unions C :
+      GenUnionDef - generer une definition d'union aleatoire.
+      GenUnionField - generer un champ d'union.
+      Memes regles que les structures mais avec semantique union.
+      Table des unions : UnionDefs[], NumUnions.
+      Emettre les declarations typedef union { ... } NomUnion;
+      Gerer l'alignement des champs pour eviter les comportements
+      indefinis lors de l'acces au mauvais champ.
+
+  8.  [A FAIRE] Generation de champs de bits (bitfields).
+      Generateur de champs de bits dans les structures :
+      GenBitfieldDecl - generer un champ de bits (type : width).
+      Regles C : seuls int, unsigned int, signed int autorises.
+      Largeur entre 1 et sizeof(int)*8 bits.
+      Champ anonyme (: width) pour padding.
+      Champ de largeur 0 (: 0) pour forcer l'alignement.
+      Option --no-bitfields pour desactiver.
+      Eviter les comportements indefinis (debordement de champ).
+
+  9.  [A FAIRE] Generation d'enumerations (enum).
+      Generateur de definitions d'enumerations C :
+      GenEnumDef - generer une definition d'enum aleatoire.
+      GenEnumConstant - generer une constante d'enum.
+      Supporter les valeurs implicites (auto-incrementees) et
+      explicites (= valeur). Generer des noms uniques.
+      Table des enums : EnumDefs[], NumEnums.
+      Emettre typedef enum { A, B=5, C } NomEnum;
+
+  10. [A FAIRE] Generation de tableaux.
+      Generateur de declarations de tableaux C :
+      GenArrayType - generer un type tableau aleatoire.
+      GenArrayDimension - generer une dimension (1D, 2D, 3D...).
+      GenArrayInit - generer un initialiseur de tableau.
+      Supporter les tableaux de scalaires, structures, pointeurs.
+      Limiter les dimensions (MAX_ARRAY_DIM) et la taille totale.
+      Emettre int arr[10][20]; ou int arr[] = {1, 2, 3};
+
+  11. [A FAIRE] Generation de pointeurs.
+      Generateur de declarations et usages de pointeurs C :
+      GenPointerType - generer un type pointeur aleatoire.
+      GenPointerOp - generer une operation sur pointeur.
+      Supporter les pointeurs vers : scalaires, tableaux, structs,
+      fonctions, autres pointeurs (avec limite de niveaux).
+      Operations : dereferencement (*p), adresse (&x), arithmetique
+      (p++, p--, p+n, p-n, p1-p2). Option --no-pointers.
+      Eviter les pointeurs invalides (UB) : NULL deref, out of bounds.
+
+  12. [A FAIRE] Generation de constantes litterales.
+      Generateur de constantes litterales C :
+      GenIntLiteral - entier (decimal, octal 0n, hex 0xn).
+      GenFloatLiteral - flottant (1.5, 1.5f, 1.5e10, .5, 5.).
+      GenCharLiteral - caractere ('a', '\n', '\x41', '\0').
+      GenStringLiteral - chaine ("hello", "line\n", escapes).
+      Suffixes entiers : U, L, UL, LL, ULL.
+      Suffixes flottants : F, L.
+      Eviter les debordements (valeurs dans les limites du type).
+
+  13. [A FAIRE] Generation d'operateurs arithmetiques.
+      Generateur d'expressions arithmetiques C :
+      GenArithExpr - generer une expression arithmetique.
+      Operateurs : + - * / % (modulo entier seulement).
+      Gerer la precedence et l'associativite via parentheses.
+      Eviter les comportements indefinis : division par zero,
+      debordement signe (INT_MIN / -1, INT_MIN % -1).
+      GenSafeDiv - generer une division securisee avec garde.
+      Limiter la profondeur des expressions (MAX_EXPR_DEPTH).
+
+  14. [A FAIRE] Generation d'operateurs relationnels et logiques.
+      Generateur d'expressions relationnelles et logiques C :
+      GenRelExpr - generer expression relationnelle (< > <= >= == !=).
+      GenLogExpr - generer expression logique (&& || !).
+      Gerer l'evaluation court-circuit (short-circuit).
+      GenCompareExpr - comparaison de pointeurs (meme objet/tableau).
+      Eviter les comparaisons de pointeurs non lies (UB).
+      Produire des expressions booleennes pour les conditions.
+
+  15. [A FAIRE] Generation d'operateurs bit-a-bit.
+      Generateur d'expressions bit-a-bit C :
+      GenBitExpr - generer expression bit-a-bit.
+      Operateurs : & | ^ ~ (complement) << >> (decalages).
+      Regles : operandes entiers seulement.
+      Eviter les UB : decalage negatif, decalage >= largeur du type,
+      decalage gauche d'une valeur negative.
+      GenSafeShift - generer un decalage securise.
+      Appliquer les promotions entieres implicites.
+
+  16. [A FAIRE] Generation d'operateurs d'affectation.
+      Generateur d'expressions d'affectation C :
+      GenAssignExpr - generer une affectation (=).
+      GenCompoundAssign - operateurs composes (+=, -=, *=, /=, %=,
+      &=, |=, ^=, <<=, >>=). Operateur virgule (e1, e2).
+      Operateurs d'increment/decrement (++x, x++, --x, x--).
+      Respecter les regles de lvalue (cible modifiable).
+      Eviter les effets de bord multiples sur meme variable.
+
+  17. [A FAIRE] Generation d'expressions conditionnelles.
+      Generateur d'expressions conditionnelles C :
+      GenCondExpr - generer expression ternaire (cond ? e1 : e2).
+      GenCastExpr - generer un cast explicite ((type)expr).
+      GenSizeofExpr - generer sizeof(type) ou sizeof(expr).
+      GenCommaExpr - generer expression virgule (e1, e2).
+      Regles : types compatibles pour e1 et e2 dans ternaire.
+      Gerer les conversions implicites et explicites.
+
+  18. [A FAIRE] Generation de statements simples.
+      Generateur de statements simples C :
+      GenExprStmt - statement expression (expr;).
+      GenDeclStmt - declaration de variable locale.
+      GenReturnStmt - return avec/sans valeur.
+      GenBreakStmt - break dans boucle/switch.
+      GenContinueStmt - continue dans boucle.
+      GenGotoStmt - goto label (optionnel, peut etre desactive).
+      GenLabelStmt - etiquette pour goto.
+      GenNullStmt - statement vide (;).
+
+  19. [A FAIRE] Generation de blocs et portees.
+      Generateur de blocs et portees C :
+      GenBlock - generer un bloc { statements }.
+      GenScope - gerer la portee des variables locales.
+      PushScope / PopScope - empiler/depiler les portees.
+      Variables locales masquant les globales (shadowing).
+      Limiter la profondeur des blocs (MAX_BLOCK_DEPTH).
+      Table des symboles : ScopeStack[], CurrScope.
+
+  20. [A FAIRE] Generation de conditionnelles (if/else).
+      Generateur de statements conditionnels C :
+      GenIfStmt - generer if (cond) stmt [else stmt].
+      GenIfElseChain - generer if/else if/else enchaines.
+      GenSwitchStmt - generer switch (expr) { case/default }.
+      GenCaseLabel - generer case constante: ou default:.
+      Regles switch : constantes entieres uniques, break optionnel,
+      fall-through possible. Gerer la couverture des cas.
+
+  21. [A FAIRE] Generation de boucles.
+      Generateur de boucles C :
+      GenWhileStmt - generer while (cond) stmt.
+      GenDoWhileStmt - generer do stmt while (cond);
+      GenForStmt - generer for (init; cond; update) stmt.
+      Boucles bornees pour eviter les boucles infinies.
+      Variable de boucle incrementee/decrementee vers une limite.
+      Limiter les iterations max (guard counter).
+      GenLoopGuard - compteur de garde pour terminer les boucles.
+
+  22. [A FAIRE] Generation de fonctions.
+      Generateur de fonctions C :
+      GenFuncDecl - generer une declaration de fonction (prototype).
+      GenFuncDef - generer une definition de fonction complete.
+      GenFuncParams - generer la liste des parametres.
+      GenFuncBody - generer le corps de la fonction.
+      GenFuncCall - generer un appel de fonction.
+      Fonctions : retour void ou type, 0 a MAX_PARAMS parametres.
+      Gerer les appels recursifs (avec limite de profondeur).
+      Fonctions statiques (static) ou externes.
+
+  23. [A FAIRE] Generation du programme complet.
+      Generateur de programme C complet :
+      GenProgram - generer un programme C complet.
+      GenIncludes - generer #include <stdio.h> etc.
+      GenGlobalVars - generer les variables globales.
+      GenTypeDefs - generer les typedef struct/union/enum.
+      GenFuncPrototypes - generer les prototypes de fonctions.
+      GenMainFunc - generer la fonction main().
+      GenChecksum - generer le calcul de checksum pour verification.
+      Structure : includes, types, globales, prototypes, foncs, main.
+
+  24. [A FAIRE] Verification et evitement des comportements indefinis.
+      Systeme de verification pour eviter les undefined behaviors :
+      CheckDivByZero - verifier division par zero.
+      CheckOverflow - verifier debordement entier.
+      CheckNullDeref - verifier dereferencement NULL.
+      CheckArrayBounds - verifier acces tableau hors limites.
+      CheckShiftAmount - verifier decalage valide.
+      CheckUninitRead - verifier lecture de variable non initialisee.
+      GenSafeExpr - generer expression avec gardes de securite.
+      Utiliser les fonctions safe_* dans l'en-tete csmith.h.
+
+  25. [A FAIRE] Options avancees et statistiques.
+      Options avancees et statistiques de generation :
+      ParseArgs - analyser les arguments de ligne de commande.
+      ShowHelp - afficher l'aide (csmith --help).
+      ShowStats - afficher les statistiques de generation.
+      Statistiques : nombre de fonctions, variables, types, lignes,
+      expressions, statements, profondeur max, complexite cyclomatique.
+      Generer un en-tete de commentaire avec les parametres utilises.
+      Mode verbeux (-v) pour afficher les etapes de generation.
+      Mode quiet (-q) pour supprimer les messages.
+      Verification de coherence du programme genere.
