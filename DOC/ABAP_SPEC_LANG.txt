@@ -565,24 +565,570 @@ ABAP supporte deux styles de commentaires :
 3. TYPES DE DONNEES
 =========================================================================
 
+3.1 Introduction aux types de donnees ABAP
+------------------------------------------
+
+Le systeme de types ABAP est un element fondamental du langage qui
+determine comment les donnees sont stockees, manipulees et converties.
+Une bonne comprehension des types de donnees est essentielle pour
+developper des applications ABAP efficaces et eviter les erreurs de
+conversion ou de perte de precision.
+
+ABAP distingue deux grandes categories de types de donnees :
+
+  - Les types elementaires (scalaires) : types de base pour stocker
+    des valeurs simples comme des nombres, des chaines de caracteres,
+    des dates ou des heures.
+
+  - Les types complexes : structures et tables internes qui permettent
+    de regrouper plusieurs valeurs sous un meme identificateur.
+
+Le typage en ABAP est statique : le type d'une variable est defini a
+la compilation et ne peut pas changer pendant l'execution. Cependant,
+ABAP effectue automatiquement des conversions implicites entre types
+compatibles, ce qui peut parfois entrainer des resultats inattendus
+si le programmeur n'est pas vigilant.
+
+3.2 Vue d'ensemble des types elementaires
+-----------------------------------------
+
+Voici un tableau recapitulatif des principaux types elementaires ABAP :
+
   Type     Description                  Taille     Valeur initiale
   -------  ---------------------------  ---------  ----------------
   I        Entier 32 bits signe         4 octets   0
+  INT8     Entier 64 bits signe         8 octets   0
   F        Nombre a virgule flottante   8 octets   0.0
+  DECFLOAT16 Decimal flottant 16 chif.  8 octets   0.0
+  DECFLOAT34 Decimal flottant 34 chif.  16 octets  0.0
   C        Chaine de caracteres fixe    n octets   espaces
   N        Chaine numerique             n octets   '0...0'
   D        Date (AAAAMMJJ)              8 octets   '00000000'
   T        Heure (HHMMSS)               6 octets   '000000'
-  P        Decimal compacte (BCD)       4 octets   0
-  STRING   Chaine longueur variable     4 octets   '' (vide)
-  XSTRING  Chaine binaire               4 octets   '' (vide)
-  TABLE    Table interne                variable   vide
+  P        Decimal compacte (BCD)       1-16 oct.  0
+  STRING   Chaine longueur variable     variable   '' (vide)
+  XSTRING  Chaine binaire variable      variable   '' (vide)
+  X        Chaine hexadecimale fixe     n octets   '00...00'
 
-  Les types C et N acceptent une longueur explicite :
+Chaque type possede des caracteristiques specifiques qui le rendent
+adapte a certains usages. Le choix du type appropriet est crucial pour
+la performance et l'integrite des donnees dans les applications SAP.
 
-    DATA nom TYPE C LENGTH 20.
-    DATA code TYPE N LENGTH 10.
-    DATA nom(20) TYPE C.         " syntaxe courte
+3.3 Type I - Entiers
+--------------------
+
+Le type I represente un entier signe sur 32 bits. C'est le type
+numerique le plus couramment utilise pour les compteurs, les indices
+de boucles et les calculs avec des nombres entiers.
+
+Caracteristiques :
+  - Stockage : 4 octets (32 bits)
+  - Valeur minimale : -2 147 483 648 (-2^31)
+  - Valeur maximale :  2 147 483 647 (2^31 - 1)
+  - Valeur initiale : 0
+  - Precision : exacte (pas d'erreur d'arrondi)
+
+Le type I est adapte pour :
+  - Les compteurs et indices de boucles
+  - Les calculs arithmetiques entiers
+  - Le stockage de quantites discretes
+  - Les references a des numeros de ligne ou d'enregistrement
+
+Exemples de declarations :
+
+    DATA gv_compteur TYPE I.
+    DATA gv_index TYPE I VALUE 1.
+    DATA gv_quantite TYPE I VALUE 100.
+
+Attention : les depassements de capacite (overflow) ne sont pas
+detectes automatiquement en ABAP standard. Un calcul depassant les
+limites du type I peut produire des resultats incorrects sans lever
+d'exception.
+
+Depuis ABAP 7.40, le type INT8 (entier 64 bits) est disponible pour
+les besoins de tres grands nombres entiers, avec une plage allant de
+-9 223 372 036 854 775 808 a 9 223 372 036 854 775 807.
+
+3.4 Type F - Nombres a virgule flottante
+----------------------------------------
+
+Le type F represente un nombre a virgule flottante en double precision
+selon la norme IEEE 754. Il est utilise pour les calculs scientifiques
+ou les situations necessitant une grande plage de valeurs.
+
+Caracteristiques :
+  - Stockage : 8 octets (64 bits)
+  - Precision : environ 15-16 chiffres significatifs
+  - Plage : de 2.2E-308 a 1.8E+308 (en valeur absolue)
+  - Valeur initiale : 0.0
+  - Notation : decimale ou scientifique (1.5E10)
+
+Le type F est adapte pour :
+  - Les calculs scientifiques
+  - Les applications necessitant une tres grande plage de valeurs
+  - Les calculs ou une precision approximative est acceptable
+
+Exemples de declarations :
+
+    DATA gv_pi TYPE F VALUE '3.14159265358979'.
+    DATA gv_vitesse_lumiere TYPE F VALUE '2.998E8'.
+    DATA gv_masse TYPE F.
+
+Attention importante : le type F utilise une representation binaire
+qui ne peut pas representer exactement certains nombres decimaux.
+Par exemple, 0.1 en base 10 ne peut pas etre represente exactement
+en virgule flottante binaire. Pour les calculs financiers ou les
+montants monetaires, il faut absolument utiliser le type P (decimal
+compacte) qui garantit une precision decimale exacte.
+
+    " Exemple de perte de precision avec F
+    DATA: gv_f TYPE F,
+          gv_p TYPE P DECIMALS 2.
+    gv_f = '0.1'.
+    gv_p = '0.1'.
+    " gv_f peut contenir 0.09999999999... au lieu de 0.1 exactement
+    " gv_p contient exactement 0.10
+
+3.5 Types DECFLOAT16 et DECFLOAT34 - Decimaux flottants
+-------------------------------------------------------
+
+Introduits dans les versions recentes d'ABAP, les types DECFLOAT16 et
+DECFLOAT34 offrent une representation decimale flottante selon la
+norme IEEE 754-2008. Contrairement au type F (binaire flottant), ces
+types representent exactement les nombres decimaux.
+
+Caracteristiques de DECFLOAT16 :
+  - Stockage : 8 octets
+  - Precision : 16 chiffres decimaux significatifs
+  - Plage : de 10^-383 a 10^384
+
+Caracteristiques de DECFLOAT34 :
+  - Stockage : 16 octets
+  - Precision : 34 chiffres decimaux significatifs
+  - Plage : de 10^-6143 a 10^6144
+
+Ces types sont particulierement adaptes pour :
+  - Les calculs financiers de haute precision
+  - Les applications scientifiques necessitant une precision decimale
+  - Le stockage de montants monetaires avec une grande precision
+
+Exemple :
+
+    DATA gv_montant_precise TYPE DECFLOAT34.
+    gv_montant_precise = '123456789012345678901234.5678901234'.
+
+3.6 Type C - Chaines de caracteres a longueur fixe
+--------------------------------------------------
+
+Le type C represente une chaine de caracteres a longueur fixe. C'est
+l'un des types les plus utilises en ABAP, notamment pour les champs
+de base de donnees et les zones d'ecran.
+
+Caracteristiques :
+  - Longueur : de 1 a 262 143 caracteres
+  - Stockage : 1 octet par caractere (en code page simple)
+  - Valeur initiale : espaces (blancs)
+  - Remplissage : espaces a droite si la valeur est plus courte
+
+Le type C est adapte pour :
+  - Les champs de base de donnees
+  - Les noms, descriptions et libelles
+  - Les codes et identifiants de longueur fixe
+  - L'interaction avec les ecrans dynpro
+
+Syntaxes de declaration :
+
+    " Syntaxe standard avec LENGTH
+    DATA gv_nom TYPE C LENGTH 30.
+    DATA gv_code TYPE C LENGTH 10.
+
+    " Syntaxe courte avec parentheses
+    DATA gv_nom(30) TYPE C.
+    DATA gv_code(10).           " TYPE C est implicite
+
+    " Avec valeur initiale
+    DATA gv_pays TYPE C LENGTH 3 VALUE 'FRA'.
+
+Comportement important : les comparaisons de chaines de type C
+ignorent les espaces de fin (trailing spaces). Ainsi, 'ABC' et
+'ABC   ' sont consideres comme egaux lors d'une comparaison.
+
+Le type C ne gere pas les caracteres Unicode multi-octets de maniere
+native. Pour les applications Unicode, le nombre de caracteres peut
+differer du nombre d'octets utilises.
+
+3.7 Type N - Chaines numeriques
+-------------------------------
+
+Le type N represente une chaine de caracteres contenant uniquement
+des chiffres (0-9). Il est utilise pour les codes numeriques qui
+doivent conserver les zeros en tete, comme les numeros de document,
+les codes postaux ou les numeros de compte.
+
+Caracteristiques :
+  - Longueur : de 1 a 262 143 caracteres
+  - Caracteres autorises : uniquement 0-9
+  - Valeur initiale : '0...0' (zeros)
+  - Remplissage : zeros a gauche (padding)
+
+Le type N est adapte pour :
+  - Les numeros de document SAP (VBELN, EBELN, etc.)
+  - Les codes postaux
+  - Les numeros de compte bancaire
+  - Tout code numerique devant conserver ses zeros
+
+Exemples de declarations :
+
+    DATA gv_numero_doc TYPE N LENGTH 10.
+    DATA gv_code_postal TYPE N LENGTH 5 VALUE '75001'.
+    DATA gv_matricule(8) TYPE N.
+
+Comportement specifique : lors d'une affectation numerique a un
+champ de type N, la valeur est automatiquement convertie en chaine
+et completee par des zeros a gauche.
+
+    DATA gv_doc TYPE N LENGTH 10.
+    gv_doc = 123.
+    " gv_doc contient '0000000123'
+
+Le type N peut etre utilise dans des operations arithmetiques, mais
+il est converti implicitement en entier pour le calcul, puis le
+resultat est reconverti en chaine numerique.
+
+3.8 Type D - Dates
+------------------
+
+Le type D represente une date au format AAAAMMJJ (annee sur 4 chiffres,
+mois sur 2 chiffres, jour sur 2 chiffres). C'est le type standard
+pour manipuler les dates dans les applications SAP.
+
+Caracteristiques :
+  - Longueur fixe : 8 caracteres
+  - Format : AAAAMMJJ (ex: '20240315' pour le 15 mars 2024)
+  - Valeur initiale : '00000000'
+  - Stockage : 8 octets
+
+Le type D est adapte pour :
+  - Les dates de documents (date de facture, de livraison, etc.)
+  - Les dates d'echeance et de validite
+  - Les calculs de duree en jours
+  - La comparaison de dates
+
+Exemples de declarations :
+
+    DATA gv_date_jour TYPE D.
+    DATA gv_date_debut TYPE D VALUE '20240101'.
+    DATA gv_date_fin TYPE D.
+
+    " Initialisation avec la date systeme
+    gv_date_jour = sy-datum.
+
+Calculs sur les dates : ABAP permet d'effectuer des operations
+arithmetiques sur les dates. L'addition ou la soustraction de nombres
+entiers ajoute ou retire des jours.
+
+    DATA: gv_date TYPE D,
+          gv_jours_delta TYPE I.
+    gv_date = sy-datum.
+    gv_date = gv_date + 30.      " Date dans 30 jours
+    gv_jours_delta = gv_date_fin - gv_date_debut.  " Nombre de jours
+
+La variable systeme sy-datum contient toujours la date du jour au
+format D. D'autres variables systeme liees aux dates incluent :
+  - sy-datlo : date locale du systeme
+  - sy-datfm : format d'affichage des dates configure pour l'utilisateur
+
+3.9 Type T - Heures
+-------------------
+
+Le type T represente une heure au format HHMMSS (heures sur 2 chiffres,
+minutes sur 2 chiffres, secondes sur 2 chiffres). Il complement le
+type D pour la gestion complete des horodatages.
+
+Caracteristiques :
+  - Longueur fixe : 6 caracteres
+  - Format : HHMMSS (ex: '143055' pour 14:30:55)
+  - Plage : de '000000' a '235959'
+  - Valeur initiale : '000000'
+  - Stockage : 6 octets
+
+Le type T est adapte pour :
+  - Les heures de debut et fin de processus
+  - L'horodatage des documents
+  - Le calcul de durees en secondes
+  - La planification d'evenements
+
+Exemples de declarations :
+
+    DATA gv_heure TYPE T.
+    DATA gv_heure_debut TYPE T VALUE '080000'.
+    DATA gv_heure_fin TYPE T.
+
+    " Initialisation avec l'heure systeme
+    gv_heure = sy-uzeit.
+
+Calculs sur les heures : comme pour les dates, on peut effectuer des
+operations arithmetiques sur les heures. L'addition ou soustraction
+de nombres entiers ajoute ou retire des secondes.
+
+    DATA: gv_heure TYPE T,
+          gv_secondes TYPE I.
+    gv_heure = sy-uzeit.
+    gv_heure = gv_heure + 3600.   " Heure + 1 heure (3600 secondes)
+    gv_secondes = gv_heure_fin - gv_heure_debut.  " Duree en secondes
+
+La variable systeme sy-uzeit contient toujours l'heure courante au
+format T. La variable sy-timlo contient l'heure locale du systeme.
+
+3.10 Type P - Nombres decimaux compactes (BCD)
+----------------------------------------------
+
+Le type P represente un nombre decimal a precision fixe en format
+BCD (Binary Coded Decimal). C'est le type recommande pour tous les
+calculs financiers et monetaires car il garantit une precision
+decimale exacte, sans erreur d'arrondi.
+
+Caracteristiques :
+  - Longueur : de 1 a 16 octets (1 a 31 chiffres)
+  - Decimales : de 0 a 14
+  - Valeur initiale : 0
+  - Stockage : chaque octet contient 2 chiffres decimaux
+
+Le type P est adapte pour :
+  - Les montants financiers et monetaires
+  - Les prix et quantites
+  - Les pourcentages et taux
+  - Tout calcul necessitant une precision decimale exacte
+
+Syntaxe de declaration :
+
+    DATA variable TYPE P [LENGTH longueur] DECIMALS nb_decimales.
+
+Exemples :
+
+    DATA gv_montant TYPE P DECIMALS 2.
+    DATA gv_prix TYPE P LENGTH 8 DECIMALS 2.
+    DATA gv_quantite TYPE P DECIMALS 3 VALUE '123.456'.
+    DATA gv_pourcentage TYPE P LENGTH 4 DECIMALS 2.
+
+Relation entre longueur et nombre de chiffres :
+  - Longueur 1 octet  : 1 chiffre + signe
+  - Longueur 2 octets : 3 chiffres
+  - Longueur 4 octets : 7 chiffres
+  - Longueur 8 octets : 15 chiffres
+  - Longueur 16 octets : 31 chiffres
+
+La precision decimale est garantie dans les limites de la longueur
+declaree. Les calculs internes utilisent une precision intermediaire
+plus elevee pour eviter les pertes de precision.
+
+    " Comparaison F vs P pour calcul financier
+    DATA: gv_f TYPE F,
+          gv_p TYPE P DECIMALS 2.
+    gv_f = '0.1' * 3.
+    gv_p = '0.1' * 3.
+    " gv_p = 0.30 exactement
+    " gv_f peut contenir 0.30000000000000004...
+
+3.11 Types STRING et XSTRING - Chaines a longueur variable
+----------------------------------------------------------
+
+Les types STRING et XSTRING representent des chaines de caracteres
+et des donnees binaires a longueur variable. Contrairement aux types
+C et X a longueur fixe, ces types ajustent dynamiquement leur taille
+en fonction du contenu.
+
+Type STRING :
+  - Longueur : variable, jusqu'a 2 Go theorique
+  - Contenu : caracteres texte
+  - Valeur initiale : chaine vide ''
+  - Stockage : reference + donnees
+
+Le type STRING est adapte pour :
+  - Les textes de longueur variable ou inconnue
+  - Le contenu de fichiers texte
+  - Les messages et logs
+  - La manipulation de texte dynamique
+
+Type XSTRING :
+  - Longueur : variable, jusqu'a 2 Go theorique
+  - Contenu : donnees binaires (octets)
+  - Valeur initiale : chaine vide ''
+  - Stockage : reference + donnees
+
+Le type XSTRING est adapte pour :
+  - Les fichiers binaires (images, PDF, etc.)
+  - Les donnees cryptees
+  - Les flux de communication
+  - Tout contenu non-textuel
+
+Exemples de declarations :
+
+    DATA gv_texte TYPE STRING.
+    DATA gv_message TYPE STRING VALUE 'Bonjour le monde'.
+    DATA gv_fichier TYPE XSTRING.
+
+Manipulation de STRING :
+
+    DATA: gv_str1 TYPE STRING VALUE 'Hello',
+          gv_str2 TYPE STRING VALUE 'World',
+          gv_result TYPE STRING.
+
+    " Concatenation avec &&
+    gv_result = gv_str1 && ' ' && gv_str2.  " 'Hello World'
+
+    " Longueur avec strlen()
+    DATA lv_len TYPE I.
+    lv_len = strlen( gv_result ).            " 11
+
+    " Recherche avec find()
+    DATA lv_pos TYPE I.
+    lv_pos = find( val = gv_result sub = 'World' ).  " 6
+
+Contrairement au type C, le type STRING ne contient pas d'espaces
+de remplissage (padding). La longueur correspond exactement au
+contenu reel de la chaine.
+
+3.12 Type X - Chaines hexadecimales a longueur fixe
+---------------------------------------------------
+
+Le type X represente une chaine de donnees binaires (hexadecimales)
+a longueur fixe. Chaque octet est represente par deux caracteres
+hexadecimaux (0-9, A-F).
+
+Caracteristiques :
+  - Longueur : de 1 a 65 535 octets
+  - Contenu : octets bruts
+  - Valeur initiale : '00...00' (zeros)
+  - Notation : hexadecimale ('FF', '0A', etc.)
+
+Le type X est adapte pour :
+  - Les tampons de donnees fixes
+  - Les masques binaires et flags
+  - L'interaction avec des API bas niveau
+  - Le stockage de donnees binaires de taille connue
+
+Exemples :
+
+    DATA gv_octet TYPE X LENGTH 1.
+    DATA gv_buffer TYPE X LENGTH 256.
+    DATA gv_header TYPE X LENGTH 4 VALUE 'DEADBEEF'.
+
+Les operations bit-a-bit peuvent etre effectuees sur les types X :
+
+    DATA: gv_a TYPE X LENGTH 1 VALUE 'F0',
+          gv_b TYPE X LENGTH 1 VALUE '0F',
+          gv_result TYPE X LENGTH 1.
+
+    " Les operations bit-a-bit necessitent des fonctions specifiques
+    " ou des traitements octet par octet
+
+3.13 Conversions entre types
+----------------------------
+
+ABAP effectue automatiquement des conversions implicites entre types
+compatibles lors des affectations. Cependant, certaines conversions
+peuvent entrainer des pertes de donnees ou de precision.
+
+Regles de conversion principales :
+
+  De       Vers     Comportement
+  -------  -------  ------------------------------------------
+  I        C/N      Conversion en chaine numerique
+  C/N      I        Extraction de la valeur numerique
+  I        P        Conversion exacte (si capacite suffisante)
+  P        I        Troncature des decimales
+  F        P        Arrondi aux decimales de P
+  P        F        Conversion (possible perte de precision)
+  D        C        Copie directe de la representation AAAAMMJJ
+  C        D        Interpretation comme date (doit etre valide)
+  T        C        Copie directe de la representation HHMMSS
+  C        T        Interpretation comme heure (doit etre valide)
+
+Exemples de conversions :
+
+    DATA: gv_i TYPE I,
+          gv_c TYPE C LENGTH 10,
+          gv_n TYPE N LENGTH 10,
+          gv_p TYPE P DECIMALS 2,
+          gv_f TYPE F.
+
+    " Entier vers chaine
+    gv_i = 42.
+    gv_c = gv_i.           " gv_c = '        42'
+    gv_n = gv_i.           " gv_n = '0000000042'
+
+    " Chaine vers entier
+    gv_c = '123'.
+    gv_i = gv_c.           " gv_i = 123
+
+    " Decimal vers entier (troncature)
+    gv_p = '3.75'.
+    gv_i = gv_p.           " gv_i = 3 (pas d'arrondi)
+
+    " Flottant vers decimal (arrondi)
+    gv_f = '3.456789'.
+    gv_p = gv_f.           " gv_p = 3.46 (arrondi a 2 decimales)
+
+Pour les conversions explicites et un meilleur controle, utiliser
+l'operateur CONV introduit dans ABAP 7.40 :
+
+    DATA(lv_string) = CONV string( gv_i ).
+    DATA(lv_int) = CONV i( '123' ).
+
+3.14 Types de reference et types complexes
+------------------------------------------
+
+Au-dela des types elementaires, ABAP supporte des types plus complexes
+pour structurer les donnees :
+
+Types structures :
+  Les structures regroupent plusieurs champs de types differents sous
+  un meme identificateur. Elles sont definies avec TYPES...BEGIN OF
+  ou DATA...BEGIN OF.
+
+Tables internes :
+  Les tables internes sont des tableaux dynamiques pouvant contenir
+  plusieurs lignes du meme type. Elles sont essentielles pour le
+  traitement de collections de donnees en ABAP.
+
+Types reference :
+  Les types reference pointent vers des objets ou des donnees stockes
+  ailleurs en memoire. Ils incluent :
+  - REF TO data : reference a des donnees
+  - REF TO class : reference a des objets
+
+Ces types complexes seront detailles dans les sections suivantes
+(Declarations de donnees, Tables internes, ABAP Objects).
+
+3.15 Bonnes pratiques pour le choix des types
+---------------------------------------------
+
+Le choix du type de donnees appropriet est crucial pour la performance,
+la precision et la maintenabilite du code ABAP :
+
+Pour les nombres entiers :
+  - Utiliser I pour les compteurs, indices et petits nombres
+  - Utiliser INT8 pour les tres grands nombres entiers
+
+Pour les nombres decimaux :
+  - Toujours utiliser P pour les montants financiers
+  - Utiliser F uniquement pour les calculs scientifiques
+  - Considerer DECFLOAT pour une haute precision decimale
+
+Pour les chaines de caracteres :
+  - Utiliser C pour les champs de longueur fixe connue
+  - Utiliser STRING pour les textes de longueur variable
+  - Utiliser N pour les codes numeriques avec zeros en tete
+
+Pour les dates et heures :
+  - Utiliser D et T pour les dates et heures separees
+  - Combiner D et T pour les horodatages complets
+  - Considerer les types TIMESTAMP pour les besoins de precision
+
+Pour les donnees binaires :
+  - Utiliser X pour les tampons de taille fixe
+  - Utiliser XSTRING pour les donnees binaires de taille variable
 
 
 =========================================================================
