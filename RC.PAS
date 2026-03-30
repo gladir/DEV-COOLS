@@ -85,7 +85,7 @@
             Function StrToUniStr(Const S: String): Array Of Word
               convertir une String Pascal en tableau de WCHAR
 
-  TODO 03 - LEXER RC (TOKENISATION) [A FAIRE]
+  TODO 03 - LEXER RC (TOKENISATION) [IMPLEMENTE]
             Type TTokenKind : enumeration des types de tokens
               TK_EOF, TK_IDENT, TK_NUMBER, TK_STRING, TK_CHAR,
               TK_COMMA, TK_LPAREN, TK_RPAREN, TK_LBRACE, TK_RBRACE,
@@ -1128,6 +1128,540 @@ Begin
   Inc(Len); { Len inclut le terminateur null }
 End;
 
+{ ============================================================
+  TODO 03 : LEXER RC (TOKENISATION)
+  ============================================================ }
+
+{ ----- Type TTokenKind ----- }
+Type
+  TTokenKind = (
+    TK_EOF,           { Fin de fichier }
+    TK_IDENT,         { Identifiant ou mot-cle }
+    TK_NUMBER,        { Nombre decimal ou hexadecimal }
+    TK_STRING,        { Chaine entre guillemets "..." }
+    TK_CHAR,          { Caractere unique }
+    TK_COMMA,         (* , *)
+    TK_LPAREN,        (* ( *)
+    TK_RPAREN,        (* ) *)
+    TK_LBRACE,        (* accolade ouvrante *)
+    TK_RBRACE,        (* accolade fermante *)
+    TK_PIPE,          (* | *)
+    TK_PLUS,          { + }
+    TK_MINUS,         { - }
+    TK_NOT,           { ~ ou NOT }
+    TK_COLON,         { : }
+    TK_BEGIN,         { BEGIN }
+    TK_END,           { END }
+    TK_PREPROCESSOR,  { #directive }
+    TK_COMMENT,       { Commentaire }
+    TK_NEWLINE        { Nouvelle ligne }
+  );
+
+{ ----- Type TToken ----- }
+Type
+  TToken = Record
+    Kind   : TTokenKind;  { Type du token }
+    Value  : TString;     { Contenu textuel du token }
+    IntVal : LongInt;     { Valeur numerique si TK_NUMBER }
+    Line   : Integer;     { Numero de ligne pour les erreurs }
+    Col    : Integer;     { Colonne pour les erreurs }
+  End;
+
+{ ----- Variables globales du lexer ----- }
+Var
+  LexFile    : Text;       { Fichier source ouvert }
+  LexLine    : Integer;    { Numero de ligne courant }
+  LexCol     : Integer;    { Colonne courante }
+  LexChar    : Char;       { Caractere courant }
+  LexEOF     : Boolean;    { True si fin de fichier atteinte }
+  CurrToken  : TToken;     { Token courant }
+  PeekToken  : TToken;     { Token en avance si peek actif }
+  HasPeek    : Boolean;    { True si PeekToken est valide }
+
+{ ----- Procedure OpenSourceFile ----- }
+Procedure OpenSourceFile(Const FName : TString);
+Begin
+  {$I-}
+  Assign(LexFile, FName);
+  Reset(LexFile);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier : ' + FName);
+
+  LexLine := 1;
+  LexCol := 0;
+  LexEOF := False;
+  HasPeek := False;
+
+  { Lire le premier caractere }
+  If Not Eof(LexFile) Then
+  Begin
+    Read(LexFile, LexChar);
+    LexCol := 1;
+  End
+  Else
+  Begin
+    LexChar := #0;
+    LexEOF := True;
+  End;
+End;
+
+{ ----- Procedure CloseSourceFile ----- }
+Procedure CloseSourceFile;
+Begin
+  {$I-}
+  Close(LexFile);
+  {$I+}
+End;
+
+{ ----- Function ReadChar ----- }
+Function ReadChar : Char;
+Begin
+  If LexEOF Then
+  Begin
+    ReadChar := #0;
+    Exit;
+  End;
+
+  ReadChar := LexChar;
+
+  { Lire le caractere suivant }
+  If Not Eof(LexFile) Then
+  Begin
+    Read(LexFile, LexChar);
+    If LexChar = #10 Then
+    Begin
+      Inc(LexLine);
+      LexCol := 0;
+    End
+    Else If LexChar <> #13 Then
+      Inc(LexCol);
+  End
+  Else
+  Begin
+    LexChar := #0;
+    LexEOF := True;
+  End;
+End;
+
+{ ----- Function PeekChar ----- }
+Function PeekChar : Char;
+Begin
+  PeekChar := LexChar;
+End;
+
+{ ----- Procedure SkipWhitespace ----- }
+Procedure SkipWhitespace;
+Var
+  C : Char;
+Begin
+  While Not LexEOF Do
+  Begin
+    C := PeekChar;
+    If (C = ' ') Or (C = #9) Or (C = #13) Then
+      ReadChar
+    Else
+      Exit;
+  End;
+End;
+
+{ ----- Procedure SkipLineComment ----- }
+Procedure SkipLineComment;
+Var
+  C : Char;
+Begin
+  { On a deja lu les // }
+  While Not LexEOF Do
+  Begin
+    C := PeekChar;
+    If (C = #10) Or (C = #13) Then
+      Exit;
+    ReadChar;
+  End;
+End;
+
+{ ----- Procedure SkipBlockComment ----- }
+Procedure SkipBlockComment;
+Var
+  C : Char;
+Begin
+  { On a deja lu le /* }
+  While Not LexEOF Do
+  Begin
+    C := ReadChar;
+    If (C = '*') And (PeekChar = '/') Then
+    Begin
+      ReadChar; { Consommer le / }
+      Exit;
+    End;
+  End;
+End;
+
+{ ----- Function LexNumber ----- }
+Function LexNumber : TToken;
+Var
+  Tok    : TToken;
+  S      : TString;
+  C      : Char;
+  IsHex  : Boolean;
+Begin
+  Tok.Kind := TK_NUMBER;
+  Tok.Line := LexLine;
+  Tok.Col := LexCol;
+  S := '';
+  IsHex := False;
+
+  C := PeekChar;
+
+  { Verifier si c est un nombre hexadecimal 0x... }
+  If C = '0' Then
+  Begin
+    S := S + ReadChar;
+    C := PeekChar;
+    If (C = 'x') Or (C = 'X') Then
+    Begin
+      S := S + ReadChar;
+      IsHex := True;
+      { Lire les chiffres hexadecimaux }
+      While Not LexEOF Do
+      Begin
+        C := PeekChar;
+        If ((C >= '0') And (C <= '9')) Or
+           ((C >= 'A') And (C <= 'F')) Or
+           ((C >= 'a') And (C <= 'f')) Then
+          S := S + ReadChar
+        Else
+          Break;
+      End;
+    End;
+  End;
+
+  { Lire les chiffres decimaux si pas hexadecimal }
+  If Not IsHex Then
+  Begin
+    While Not LexEOF Do
+    Begin
+      C := PeekChar;
+      If (C >= '0') And (C <= '9') Then
+        S := S + ReadChar
+      Else
+        Break;
+    End;
+
+    { Verifier le suffixe h ou H pour hexadecimal }
+    C := PeekChar;
+    If (C = 'h') Or (C = 'H') Then
+    Begin
+      S := S + ReadChar;
+      IsHex := True;
+    End;
+  End;
+
+  Tok.Value := S;
+  Tok.IntVal := StrToInt(S);
+  LexNumber := Tok;
+End;
+
+{ ----- Function LexString ----- }
+Function LexString : TToken;
+Var
+  Tok   : TToken;
+  S     : TString;
+  C     : Char;
+  Quote : Char;
+Begin
+  Tok.Kind := TK_STRING;
+  Tok.Line := LexLine;
+  Tok.Col := LexCol;
+  S := '';
+
+  Quote := ReadChar; { Lire le guillemet ouvrant }
+
+  While Not LexEOF Do
+  Begin
+    C := PeekChar;
+    If C = Quote Then
+    Begin
+      ReadChar; { Consommer le guillemet fermant }
+      Break;
+    End
+    Else If C = '\' Then
+    Begin
+      { Sequence d echappement }
+      ReadChar;
+      C := ReadChar;
+      Case C Of
+        'n' : S := S + #10;
+        't' : S := S + #9;
+        'r' : S := S + #13;
+        '\' : S := S + '\';
+        '"' : S := S + '"';
+        '''' : S := S + '''';
+        '0' : S := S + #0;
+      Else
+        S := S + C;
+      End;
+    End
+    Else If (C = #10) Or (C = #13) Then
+    Begin
+      FatalError('Chaine non terminee a la ligne ' + IntToStr(LexLine));
+    End
+    Else
+      S := S + ReadChar;
+  End;
+
+  Tok.Value := S;
+  Tok.IntVal := 0;
+  LexString := Tok;
+End;
+
+{ ----- Function LexIdent ----- }
+Function LexIdent : TToken;
+Var
+  Tok : TToken;
+  S   : TString;
+  C   : Char;
+  SUp : TString;
+Begin
+  Tok.Kind := TK_IDENT;
+  Tok.Line := LexLine;
+  Tok.Col := LexCol;
+  S := '';
+
+  While Not LexEOF Do
+  Begin
+    C := PeekChar;
+    If ((C >= 'A') And (C <= 'Z')) Or
+       ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or
+       (C = '_') Then
+      S := S + ReadChar
+    Else
+      Break;
+  End;
+
+  Tok.Value := S;
+  Tok.IntVal := 0;
+
+  { Verifier les mots-cles speciaux }
+  SUp := UpCaseStr(S);
+  If SUp = 'BEGIN' Then
+    Tok.Kind := TK_BEGIN
+  Else If SUp = 'END' Then
+    Tok.Kind := TK_END
+  Else If SUp = 'NOT' Then
+    Tok.Kind := TK_NOT;
+
+  LexIdent := Tok;
+End;
+
+{ ----- Function NextToken ----- }
+Function NextToken : TToken;
+Var
+  Tok      : TToken;
+  C        : Char;
+  C2       : Char;
+  Continue : Boolean;
+Begin
+  { Verifier si on a un token en avance }
+  If HasPeek Then
+  Begin
+    CurrToken := PeekToken;
+    HasPeek := False;
+    NextToken := CurrToken;
+    Exit;
+  End;
+
+  { Initialiser le token }
+  Tok.Kind := TK_EOF;
+  Tok.Value := '';
+  Tok.IntVal := 0;
+  Tok.Line := LexLine;
+  Tok.Col := LexCol;
+
+  { Boucle pour sauter les commentaires }
+  Continue := True;
+  While Continue Do
+  Begin
+    Continue := False;
+
+    { Sauter les espaces }
+    SkipWhitespace;
+
+    If LexEOF Then
+    Begin
+      CurrToken := Tok;
+      NextToken := Tok;
+      Exit;
+    End;
+
+    Tok.Line := LexLine;
+    Tok.Col := LexCol;
+    C := PeekChar;
+
+    { Nouvelle ligne }
+    If C = #10 Then
+    Begin
+      Tok.Kind := TK_NEWLINE;
+      Tok.Value := ReadChar;
+      CurrToken := Tok;
+      NextToken := Tok;
+      Exit;
+    End;
+
+    { Commentaire // ou /* }
+    If C = '/' Then
+    Begin
+      ReadChar;
+      C2 := PeekChar;
+      If C2 = '/' Then
+      Begin
+        ReadChar;
+        SkipLineComment;
+        Continue := True;
+      End
+      Else If C2 = '*' Then
+      Begin
+        ReadChar;
+        SkipBlockComment;
+        Continue := True;
+      End
+      Else
+      Begin
+        { C est juste un / (rare en RC) }
+        Tok.Kind := TK_IDENT;
+        Tok.Value := '/';
+        CurrToken := Tok;
+        NextToken := Tok;
+        Exit;
+      End;
+    End;
+  End;
+
+  { Preprocesseur # }
+  C := PeekChar;
+  If C = '#' Then
+  Begin
+    Tok.Kind := TK_PREPROCESSOR;
+    Tok.Value := ReadChar;
+    { Lire le nom de la directive }
+    While Not LexEOF Do
+    Begin
+      C := PeekChar;
+      If ((C >= 'A') And (C <= 'Z')) Or
+         ((C >= 'a') And (C <= 'z')) Or
+         (C = '_') Then
+        Tok.Value := Tok.Value + ReadChar
+      Else
+        Break;
+    End;
+    CurrToken := Tok;
+    NextToken := Tok;
+    Exit;
+  End;
+
+  { Nombre }
+  If (C >= '0') And (C <= '9') Then
+  Begin
+    Tok := LexNumber;
+    CurrToken := Tok;
+    NextToken := Tok;
+    Exit;
+  End;
+
+  { Chaine }
+  If (C = '"') Or (C = '''') Then
+  Begin
+    Tok := LexString;
+    CurrToken := Tok;
+    NextToken := Tok;
+    Exit;
+  End;
+
+  { Identifiant }
+  If ((C >= 'A') And (C <= 'Z')) Or
+     ((C >= 'a') And (C <= 'z')) Or
+     (C = '_') Then
+  Begin
+    Tok := LexIdent;
+    CurrToken := Tok;
+    NextToken := Tok;
+    Exit;
+  End;
+
+  { Ponctuation et operateurs }
+  Case C Of
+    ',' :
+    Begin
+      Tok.Kind := TK_COMMA;
+      Tok.Value := ReadChar;
+    End;
+    '(' :
+    Begin
+      Tok.Kind := TK_LPAREN;
+      Tok.Value := ReadChar;
+    End;
+    ')' :
+    Begin
+      Tok.Kind := TK_RPAREN;
+      Tok.Value := ReadChar;
+    End;
+    '{' :
+    Begin
+      Tok.Kind := TK_LBRACE;
+      Tok.Value := ReadChar;
+    End;
+    '}' :
+    Begin
+      Tok.Kind := TK_RBRACE;
+      Tok.Value := ReadChar;
+    End;
+    '|' :
+    Begin
+      Tok.Kind := TK_PIPE;
+      Tok.Value := ReadChar;
+    End;
+    '+' :
+    Begin
+      Tok.Kind := TK_PLUS;
+      Tok.Value := ReadChar;
+    End;
+    '-' :
+    Begin
+      Tok.Kind := TK_MINUS;
+      Tok.Value := ReadChar;
+    End;
+    '~' :
+    Begin
+      Tok.Kind := TK_NOT;
+      Tok.Value := ReadChar;
+    End;
+    ':' :
+    Begin
+      Tok.Kind := TK_COLON;
+      Tok.Value := ReadChar;
+    End;
+  Else
+    { Caractere inconnu - le sauter }
+    Tok.Kind := TK_CHAR;
+    Tok.Value := ReadChar;
+  End;
+
+  CurrToken := Tok;
+  NextToken := Tok;
+End;
+
+{ ----- Function PeekTokenFn ----- }
+Function PeekTokenFn : TToken;
+Begin
+  If Not HasPeek Then
+  Begin
+    PeekToken := NextToken;
+    HasPeek := True;
+  End;
+  PeekTokenFn := PeekToken;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -1191,7 +1725,7 @@ Begin
         AOpts.Defines[AOpts.DefineCount] := Copy(Arg, 3, Length(Arg) - 2);
       End;
     End
-    Else If (Arg[1] <> '-') And (AOpts.SrcFile = '') Then
+    Else If (Length(Arg) > 0) And (Arg[1] <> '-') And (AOpts.SrcFile = '') Then
       AOpts.SrcFile := Arg;
   End;
 
@@ -1230,9 +1764,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 03-25 }
+  { TODO : Implementation des TODOs 04-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-02 [IMPLEMENTE]. TODOs 03-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-03 [IMPLEMENTE]. TODOs 04-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
