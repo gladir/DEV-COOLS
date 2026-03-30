@@ -39,22 +39,216 @@ TABLE DES MATIERES
 1. STRUCTURE D'UN PROGRAMME ABAP
 =========================================================================
 
-Un programme ABAP commence par une instruction REPORT ou PROGRAM,
-suivie de declarations de donnees, puis des instructions executables.
-Chaque instruction se termine par un point (.).
+1.1 Introduction
+----------------
+
+Un programme ABAP est une unite de code stockee dans le systeme SAP.
+Chaque instruction se termine obligatoirement par un point (.).
+Les instructions peuvent s'etendre sur plusieurs lignes.
+ABAP n'est pas sensible a la casse (majuscules/minuscules equivalentes).
+
+1.2 Types de programmes
+-----------------------
+
+ABAP distingue plusieurs types de programmes :
+
+  Type         Description
+  -----------  ----------------------------------------------------------
+  REPORT       Programme de type rapport (liste), executable directement.
+               C'est le type le plus courant pour les developpements Z.
+  PROGRAM      Programme executable similaire a REPORT, souvent utilise
+               pour les programmes sans sortie de liste standard.
+  INCLUDE      Module de code reutilisable, insere dans d'autres programmes.
+               Ne peut pas etre execute seul.
+  MODULE POOL  Programme de dialogue (ecrans dynpro), type M.
+               Utilise pour les transactions avec plusieurs ecrans.
+  FUNCTION     Groupe de fonctions contenant des modules de fonction.
+               Stocke dans des groupes de fonctions.
+  CLASS POOL   Classe globale ABAP Objects, type K.
+
+1.3 Structure generale
+----------------------
+
+Un programme ABAP se compose generalement de plusieurs zones :
+
+  +-------------------------------------------+
+  | 1. Instruction d'ouverture (REPORT/PROGRAM)
+  +-------------------------------------------+
+  | 2. Zone de declarations globales (DATA, TYPES, CONSTANTS...)
+  +-------------------------------------------+
+  | 3. Zone d'ecran de selection (PARAMETERS, SELECT-OPTIONS)
+  +-------------------------------------------+
+  | 4. Zone d'evenements (INITIALIZATION, START-OF-SELECTION...)
+  +-------------------------------------------+
+  | 5. Sous-programmes (FORM...ENDFORM)
+  +-------------------------------------------+
+
+L'ordre de ces zones est important : les declarations doivent
+preceder leur utilisation.
+
+1.4 Instruction REPORT
+----------------------
+
+L'instruction REPORT definit un programme de type rapport.
+
+  Syntaxe complete :
+
+    REPORT nom_programme
+      [MESSAGE-ID classe_messages]
+      [NO STANDARD PAGE HEADING]
+      [LINE-SIZE largeur]
+      [LINE-COUNT hauteur[(reserve)]]
+      [DEFINING DATABASE nom_ldb].
+
+  Options :
+
+    MESSAGE-ID             : Classe de messages pour les instructions MESSAGE.
+    NO STANDARD PAGE HEADING : Supprime l'en-tete de page standard SAP.
+    LINE-SIZE              : Largeur de la liste en caracteres (max 1023).
+    LINE-COUNT             : Nombre de lignes par page et lignes reservees
+                             pour le pied de page.
+    DEFINING DATABASE      : Associe une base de donnees logique (LDB).
+
+  Exemples :
+
+    REPORT ZMONPROG.
+
+    REPORT ZRAPPORT_VENTES MESSAGE-ID ZMV
+                           NO STANDARD PAGE HEADING
+                           LINE-SIZE 132
+                           LINE-COUNT 65(3).
+
+1.5 Instruction PROGRAM
+-----------------------
+
+L'instruction PROGRAM est similaire a REPORT mais generalement utilisee
+pour les programmes sans sortie de liste standard.
 
   Syntaxe :
 
-    REPORT nom_programme [MESSAGE-ID id]
-                         [NO STANDARD PAGE HEADING].
-
-    PROGRAM nom_programme.
+    PROGRAM nom_programme [MESSAGE-ID classe_messages].
 
   Exemple :
 
+    PROGRAM ZMONPROGRAMME MESSAGE-ID ZM.
+
+1.6 Convention de nommage
+-------------------------
+
+Dans un systeme SAP, les objets client (developpements specifiques)
+commencent par Y ou Z. Exemples :
+
+  - ZRAP_COMMANDES  : Rapport sur les commandes
+  - ZCLI_FOURNISSEUR : Classe fournisseur
+  - ZFM_CALCUL_TVA  : Groupe de fonctions pour la TVA
+
+Les noms sans prefixe Y/Z sont reserves aux objets standards SAP.
+
+1.7 Exemple complet
+-------------------
+
+Voici un exemple de programme ABAP complet illustrant la structure :
+
+    *----------------------------------------------------------------------*
+    * Programme : ZEXEMPLE_STRUCTURE
+    * Auteur    : Developpeur SAP
+    * Date      : 2024
+    * Description : Exemple de structure d'un programme ABAP
+    *----------------------------------------------------------------------*
+    REPORT ZEXEMPLE_STRUCTURE MESSAGE-ID ZM
+                              NO STANDARD PAGE HEADING
+                              LINE-SIZE 80.
+
+    *----------------------------------------------------------------------*
+    * Declarations globales
+    *----------------------------------------------------------------------*
+    TYPES: BEGIN OF ty_client,
+             numero TYPE I,
+             nom    TYPE C LENGTH 30,
+             ville  TYPE C LENGTH 20,
+           END OF ty_client.
+
+    DATA: gv_compteur TYPE I,
+          gt_clients  TYPE TABLE OF ty_client,
+          gs_client   TYPE ty_client.
+
+    CONSTANTS: gc_max_clients TYPE I VALUE 100.
+
+    *----------------------------------------------------------------------*
+    * Ecran de selection
+    *----------------------------------------------------------------------*
+    PARAMETERS: p_ville TYPE C LENGTH 20.
+
+    *----------------------------------------------------------------------*
+    * Evenement INITIALIZATION
+    *----------------------------------------------------------------------*
+    INITIALIZATION.
+      p_ville = 'PARIS'.
+
+    *----------------------------------------------------------------------*
+    * Evenement START-OF-SELECTION (traitement principal)
+    *----------------------------------------------------------------------*
+    START-OF-SELECTION.
+      PERFORM charger_donnees.
+      PERFORM afficher_liste.
+
+    *----------------------------------------------------------------------*
+    * Sous-programmes
+    *----------------------------------------------------------------------*
+    FORM charger_donnees.
+      " Chargement des donnees (simulation)
+      gs_client-numero = 1.
+      gs_client-nom = 'Dupont'.
+      gs_client-ville = p_ville.
+      APPEND gs_client TO gt_clients.
+    ENDFORM.
+
+    FORM afficher_liste.
+      LOOP AT gt_clients INTO gs_client.
+        WRITE: / gs_client-numero, gs_client-nom, gs_client-ville.
+      ENDLOOP.
+    ENDFORM.
+
+1.8 Instruction INCLUDE
+-----------------------
+
+L'instruction INCLUDE permet d'inserer le code d'un autre programme.
+Cela favorise la modularite et la reutilisation du code.
+
+  Syntaxe :
+
+    INCLUDE nom_include.
+
+  Exemple d'utilisation :
+
     REPORT ZMONPROG.
-    DATA gv_nombre TYPE I VALUE 10.
-    WRITE gv_nombre.
+    INCLUDE ZMONPROG_TYPES.    " Declarations de types
+    INCLUDE ZMONPROG_DATA.     " Declarations de donnees
+    INCLUDE ZMONPROG_FORMS.    " Sous-programmes
+
+  Convention SAP pour les includes :
+    - nom_TOP : Declarations globales
+    - nom_FXX : Sous-programmes (F01, F02, ...)
+    - nom_IXX : Modules PBO/PAI (I01, I02, ...)
+    - nom_OXX : Modules PBO (O01, O02, ...)
+
+1.9 Ordre d'execution
+---------------------
+
+L'execution d'un programme ABAP suit un ordre precis :
+
+  1. Chargement du programme en memoire
+  2. Execution du bloc LOAD-OF-PROGRAM (si present)
+  3. Execution du bloc INITIALIZATION
+  4. Affichage de l'ecran de selection
+  5. Execution du bloc AT SELECTION-SCREEN
+  6. Execution du bloc START-OF-SELECTION
+  7. Execution du bloc END-OF-SELECTION
+  8. Fin du programme
+
+Dans un programme simple sans evenements declares, le code est
+execute sequentiellement comme dans un bloc START-OF-SELECTION
+implicite.
 
 
 =========================================================================
