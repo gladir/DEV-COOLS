@@ -4,7 +4,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Programme principal CSMITH en Turbo Pascal / Free Pascal.
       Options de ligne de commande : --seed <n> (graine aleatoire),
       --max-funcs <n> (nombre max de fonctions), --max-block-depth <n>
-      (profondeur max des blocs), --max-expr-complexity <n> (complexite
+      (profondeur max des blocs), --max-expr-depth <n> (profondeur
       max des expressions), --no-pointers (desactiver les pointeurs),
       --no-structs (desactiver les structures), --no-unions (desactiver
       les unions), --no-bitfields (desactiver les champs de bits),
