@@ -251,7 +251,7 @@
             Function ResourceTypeName(TypeId: Word): String
               retourner le nom symbolique RT_xxx correspondant
 
-  TODO 08 - TRAITEMENT DE LANGUAGE ID [A FAIRE]
+  TODO 08 - TRAITEMENT DE LANGUAGE ID [IMPLEMENTE]
             Variables globales :
               CurrentLangId : Word (langue courante, defaut = $0000)
             Constantes de langues courantes :
@@ -866,6 +866,9 @@ Type
   ============================================================ }
 Var
   Opts : TOptions;
+  
+  { TODO 08 : Variables pour le traitement des Language IDs }
+  CurrentLangId : Word;
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -2660,6 +2663,225 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 08 : TRAITEMENT DE LANGUAGE ID
+  ============================================================ }
+
+{ ----- Function MakeLangId ----- }
+{ Combine PRIMARYLANGID et SUBLANGID en un LANGID complet }
+{ Formule : (Sub shl 10) or Primary }
+Function MakeLangId(Primary, Sub : Word) : Word;
+Begin
+  MakeLangId := (Sub Shl 10) Or Primary;
+End;
+
+{ ----- Function PrimaryLangIdFromName ----- }
+{ Retourne le PRIMARYLANGID depuis le nom de la langue }
+Function PrimaryLangIdFromName(Const Name : TString) : Word;
+Var
+  N : TString;
+Begin
+  N := UpCaseStr(Name);
+  
+  { Langues principales - PRIMARYLANGID }
+  If (N = 'NEUTRAL') Or (N = 'LANG_NEUTRAL') Then
+    PrimaryLangIdFromName := $00
+  Else If (N = 'ARABIC') Or (N = 'LANG_ARABIC') Then
+    PrimaryLangIdFromName := $01
+  Else If (N = 'BULGARIAN') Or (N = 'LANG_BULGARIAN') Then
+    PrimaryLangIdFromName := $02
+  Else If (N = 'CATALAN') Or (N = 'LANG_CATALAN') Then
+    PrimaryLangIdFromName := $03
+  Else If (N = 'CHINESE') Or (N = 'LANG_CHINESE') Then
+    PrimaryLangIdFromName := $04
+  Else If (N = 'CZECH') Or (N = 'LANG_CZECH') Then
+    PrimaryLangIdFromName := $05
+  Else If (N = 'DANISH') Or (N = 'LANG_DANISH') Then
+    PrimaryLangIdFromName := $06
+  Else If (N = 'GERMAN') Or (N = 'LANG_GERMAN') Then
+    PrimaryLangIdFromName := $07
+  Else If (N = 'GREEK') Or (N = 'LANG_GREEK') Then
+    PrimaryLangIdFromName := $08
+  Else If (N = 'ENGLISH') Or (N = 'LANG_ENGLISH') Then
+    PrimaryLangIdFromName := $09
+  Else If (N = 'SPANISH') Or (N = 'LANG_SPANISH') Then
+    PrimaryLangIdFromName := $0A
+  Else If (N = 'FINNISH') Or (N = 'LANG_FINNISH') Then
+    PrimaryLangIdFromName := $0B
+  Else If (N = 'FRENCH') Or (N = 'LANG_FRENCH') Then
+    PrimaryLangIdFromName := $0C
+  Else If (N = 'HEBREW') Or (N = 'LANG_HEBREW') Then
+    PrimaryLangIdFromName := $0D
+  Else If (N = 'HUNGARIAN') Or (N = 'LANG_HUNGARIAN') Then
+    PrimaryLangIdFromName := $0E
+  Else If (N = 'ICELANDIC') Or (N = 'LANG_ICELANDIC') Then
+    PrimaryLangIdFromName := $0F
+  Else If (N = 'ITALIAN') Or (N = 'LANG_ITALIAN') Then
+    PrimaryLangIdFromName := $10
+  Else If (N = 'JAPANESE') Or (N = 'LANG_JAPANESE') Then
+    PrimaryLangIdFromName := $11
+  Else If (N = 'KOREAN') Or (N = 'LANG_KOREAN') Then
+    PrimaryLangIdFromName := $12
+  Else If (N = 'DUTCH') Or (N = 'LANG_DUTCH') Then
+    PrimaryLangIdFromName := $13
+  Else If (N = 'NORWEGIAN') Or (N = 'LANG_NORWEGIAN') Then
+    PrimaryLangIdFromName := $14
+  Else If (N = 'POLISH') Or (N = 'LANG_POLISH') Then
+    PrimaryLangIdFromName := $15
+  Else If (N = 'PORTUGUESE') Or (N = 'LANG_PORTUGUESE') Then
+    PrimaryLangIdFromName := $16
+  Else If (N = 'ROMANIAN') Or (N = 'LANG_ROMANIAN') Then
+    PrimaryLangIdFromName := $18
+  Else If (N = 'RUSSIAN') Or (N = 'LANG_RUSSIAN') Then
+    PrimaryLangIdFromName := $19
+  Else If (N = 'SERBIAN') Or (N = 'LANG_SERBIAN') Then
+    PrimaryLangIdFromName := $1A
+  Else If (N = 'SLOVAK') Or (N = 'LANG_SLOVAK') Then
+    PrimaryLangIdFromName := $1B
+  Else If (N = 'SLOVENIAN') Or (N = 'LANG_SLOVENIAN') Then
+    PrimaryLangIdFromName := $24
+  Else If (N = 'SWEDISH') Or (N = 'LANG_SWEDISH') Then
+    PrimaryLangIdFromName := $1D
+  Else If (N = 'THAI') Or (N = 'LANG_THAI') Then
+    PrimaryLangIdFromName := $1E
+  Else If (N = 'TURKISH') Or (N = 'LANG_TURKISH') Then
+    PrimaryLangIdFromName := $1F
+  Else If (N = 'UKRAINIAN') Or (N = 'LANG_UKRAINIAN') Then
+    PrimaryLangIdFromName := $22
+  Else If (N = 'VIETNAMESE') Or (N = 'LANG_VIETNAMESE') Then
+    PrimaryLangIdFromName := $2A
+  Else
+    PrimaryLangIdFromName := $00; { LANG_NEUTRAL par defaut }
+End;
+
+{ ----- Function SubLangIdFromName ----- }
+{ Retourne le SUBLANGID depuis le nom de la sous-langue }
+Function SubLangIdFromName(Const Name : TString) : Word;
+Var
+  N : TString;
+Begin
+  N := UpCaseStr(Name);
+  
+  { Sous-langues - SUBLANGID }
+  If (N = 'NEUTRAL') Or (N = 'SUBLANG_NEUTRAL') Then
+    SubLangIdFromName := $00
+  Else If (N = 'DEFAULT') Or (N = 'SUBLANG_DEFAULT') Then
+    SubLangIdFromName := $01
+  Else If (N = 'SYS_DEFAULT') Or (N = 'SUBLANG_SYS_DEFAULT') Then
+    SubLangIdFromName := $02
+  Else If (N = 'CUSTOM_DEFAULT') Or (N = 'SUBLANG_CUSTOM_DEFAULT') Then
+    SubLangIdFromName := $03
+  { Anglais }
+  Else If (N = 'ENGLISH_US') Or (N = 'SUBLANG_ENGLISH_US') Then
+    SubLangIdFromName := $01
+  Else If (N = 'ENGLISH_UK') Or (N = 'SUBLANG_ENGLISH_UK') Then
+    SubLangIdFromName := $02
+  Else If (N = 'ENGLISH_AUS') Or (N = 'SUBLANG_ENGLISH_AUS') Then
+    SubLangIdFromName := $03
+  Else If (N = 'ENGLISH_CAN') Or (N = 'SUBLANG_ENGLISH_CAN') Then
+    SubLangIdFromName := $04
+  { Francais }
+  Else If (N = 'FRENCH') Or (N = 'SUBLANG_FRENCH') Then
+    SubLangIdFromName := $01
+  Else If (N = 'FRENCH_BELGIAN') Or (N = 'SUBLANG_FRENCH_BELGIAN') Then
+    SubLangIdFromName := $02
+  Else If (N = 'FRENCH_CANADIAN') Or (N = 'SUBLANG_FRENCH_CANADIAN') Then
+    SubLangIdFromName := $03
+  Else If (N = 'FRENCH_SWISS') Or (N = 'SUBLANG_FRENCH_SWISS') Then
+    SubLangIdFromName := $04
+  { Allemand }
+  Else If (N = 'GERMAN') Or (N = 'SUBLANG_GERMAN') Then
+    SubLangIdFromName := $01
+  Else If (N = 'GERMAN_SWISS') Or (N = 'SUBLANG_GERMAN_SWISS') Then
+    SubLangIdFromName := $02
+  Else If (N = 'GERMAN_AUSTRIAN') Or (N = 'SUBLANG_GERMAN_AUSTRIAN') Then
+    SubLangIdFromName := $03
+  { Espagnol }
+  Else If (N = 'SPANISH') Or (N = 'SUBLANG_SPANISH') Then
+    SubLangIdFromName := $01
+  Else If (N = 'SPANISH_MEXICAN') Or (N = 'SUBLANG_SPANISH_MEXICAN') Then
+    SubLangIdFromName := $02
+  Else If (N = 'SPANISH_MODERN') Or (N = 'SUBLANG_SPANISH_MODERN') Then
+    SubLangIdFromName := $03
+  { Italien }
+  Else If (N = 'ITALIAN') Or (N = 'SUBLANG_ITALIAN') Then
+    SubLangIdFromName := $01
+  Else If (N = 'ITALIAN_SWISS') Or (N = 'SUBLANG_ITALIAN_SWISS') Then
+    SubLangIdFromName := $02
+  { Portugais }
+  Else If (N = 'PORTUGUESE') Or (N = 'SUBLANG_PORTUGUESE') Then
+    SubLangIdFromName := $02
+  Else If (N = 'PORTUGUESE_BRAZILIAN') Or (N = 'SUBLANG_PORTUGUESE_BRAZILIAN') Then
+    SubLangIdFromName := $01
+  { Chinois }
+  Else If (N = 'CHINESE_TRADITIONAL') Or (N = 'SUBLANG_CHINESE_TRADITIONAL') Then
+    SubLangIdFromName := $01
+  Else If (N = 'CHINESE_SIMPLIFIED') Or (N = 'SUBLANG_CHINESE_SIMPLIFIED') Then
+    SubLangIdFromName := $02
+  { Neerlandais }
+  Else If (N = 'DUTCH') Or (N = 'SUBLANG_DUTCH') Then
+    SubLangIdFromName := $01
+  Else If (N = 'DUTCH_BELGIAN') Or (N = 'SUBLANG_DUTCH_BELGIAN') Then
+    SubLangIdFromName := $02
+  { Autres }
+  Else If (N = 'KOREAN') Or (N = 'SUBLANG_KOREAN') Then
+    SubLangIdFromName := $01
+  Else If (N = 'SERBIAN_LATIN') Or (N = 'SUBLANG_SERBIAN_LATIN') Then
+    SubLangIdFromName := $02
+  Else If (N = 'SERBIAN_CYRILLIC') Or (N = 'SUBLANG_SERBIAN_CYRILLIC') Then
+    SubLangIdFromName := $03
+  Else
+    SubLangIdFromName := $00; { SUBLANG_NEUTRAL par defaut }
+End;
+
+{ ----- Procedure ParseLanguageDirective ----- }
+{ Parse la directive LANGUAGE LANG_xxx, SUBLANG_xxx }
+{ et met a jour CurrentLangId }
+Procedure ParseLanguageDirective;
+Var
+  PrimaryId : Word;
+  SubId     : Word;
+  LangName  : TString;
+  SubName   : TString;
+Begin
+  { On suppose que le token LANGUAGE a deja ete lu }
+  { Lire le token de langue primaire }
+  NextToken;
+  
+  If CurrToken.Kind <> TK_IDENT Then
+    SyntaxError('Identifiant de langue attendu')
+  Else
+  Begin
+    LangName := CurrToken.Value;
+    PrimaryId := PrimaryLangIdFromName(LangName);
+    
+    { Lire la virgule }
+    NextToken;
+    If CurrToken.Kind = TK_COMMA Then
+    Begin
+      { Lire le sous-identifiant de langue }
+      NextToken;
+      
+      If CurrToken.Kind <> TK_IDENT Then
+        SyntaxError('Identifiant de sous-langue attendu')
+      Else
+      Begin
+        SubName := CurrToken.Value;
+        SubId := SubLangIdFromName(SubName);
+        
+        { Combiner les IDs pour former le LANGID complet }
+        CurrentLangId := MakeLangId(PrimaryId, SubId);
+      End;
+    End
+    Else
+    Begin
+      { Pas de sous-langue specifiee, utiliser SUBLANG_NEUTRAL }
+      SubId := $00;
+      CurrentLangId := MakeLangId(PrimaryId, SubId);
+    End;
+  End;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -2762,9 +2984,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 08-25 }
+  { TODO : Implementation des TODOs 09-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-07 [IMPLEMENTE]. TODOs 08-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-08 [IMPLEMENTE]. TODOs 09-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
