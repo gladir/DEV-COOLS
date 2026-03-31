@@ -41,14 +41,15 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       tests. Si non specifiee, utiliser l'heure systeme.
       Afficher la graine utilisee en commentaire du fichier genere.
 
-  4.  [A FAIRE] Emission de code : utilitaires de base.
+  4.  [IMPLEMENTE] Emission de code : utilitaires de base.
       Fonctions d'emission de code C : EmitOpen (ouvrir fichier),
       EmitClose (fermer fichier), EmitRaw (ecrire texte brut),
       EmitLine (ecrire ligne avec indentation), EmitIndent (augmenter
       indentation), EmitUnindent (diminuer indentation), EmitComment
       (ecrire commentaire), EmitBlankLine, EmitChar, EmitStr.
-      Variables globales : OutFile (Text), IndentLevel (Integer),
-      IndentStr (String de 2 ou 4 espaces), LineCount (compteur).
+      Variables globales : OutFile (Text), OutFileOpen (Boolean),
+      IndentLevel (Integer), IndentStr (String de 4 espaces),
+      LineCount (compteur).
       Gerer les niveaux d'imbrication pour une indentation propre.
 
   5.  [A FAIRE] Emission des types de base C.

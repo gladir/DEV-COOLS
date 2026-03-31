@@ -56,14 +56,15 @@
             tests. Si non specifiee, utiliser l'heure systeme.
             Afficher la graine utilisee en commentaire du fichier genere.
 
-  TODO 04 - [A FAIRE] EMISSION DE CODE : UTILITAIRES DE BASE
+  TODO 04 - [IMPLEMENTE] EMISSION DE CODE : UTILITAIRES DE BASE
             Fonctions d'emission de code C : EmitOpen (ouvrir fichier),
             EmitClose (fermer fichier), EmitRaw (ecrire texte brut),
             EmitLine (ecrire ligne avec indentation), EmitIndent (augmenter
             indentation), EmitUnindent (diminuer indentation), EmitComment
             (ecrire commentaire), EmitBlankLine, EmitChar, EmitStr.
-            Variables globales : OutFile (Text), IndentLevel (Integer),
-            IndentStr (String de 2 ou 4 espaces), LineCount (compteur).
+            Variables globales : OutFile (Text), OutFileOpen (Boolean),
+            IndentLevel (Integer), IndentStr (String de 4 espaces),
+            LineCount (compteur).
             Gerer les niveaux d'imbrication pour une indentation propre.
 
   TODO 05 - [A FAIRE] EMISSION DES TYPES DE BASE C
@@ -512,7 +513,9 @@ Var
   { Emission }
   OutFile     : Text;
   OutFileName : TString;
+  OutFileOpen : Boolean;
   IndentLevel : Integer;
+  IndentStr   : TString;   { Chaine d'indentation (2 ou 4 espaces) }
   LineCount   : LongInt;
 
   { Generateur aleatoire }
@@ -975,10 +978,21 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 : EMISSION DE CODE [A FAIRE]
+  TODO 04 : EMISSION DE CODE [IMPLEMENTE]
   ============================================================ }
 
+Procedure InitEmitter;
+{ Initialise les variables d'emission. }
+Begin
+  OutFileName := '';
+  OutFileOpen := False;
+  IndentLevel := 0;
+  IndentStr := '    ';  { 4 espaces par defaut }
+  LineCount := 0;
+End;
+
 Procedure EmitOpen(Const FileName: TString);
+{ Ouvre un fichier pour l'emission de code C. }
 Begin
   OutFileName := FileName;
   Assign(OutFile, FileName);
@@ -990,32 +1004,60 @@ Begin
     WriteLn('Erreur: Impossible de creer le fichier ', FileName);
     Halt(EXIT_ERROR);
   End;
+  OutFileOpen := True;
   IndentLevel := 0;
   LineCount := 0;
 End;
 
 Procedure EmitClose;
+{ Ferme le fichier de sortie. }
 Begin
-  {$I-}
-  Close(OutFile);
-  {$I+}
+  If OutFileOpen Then
+  Begin
+    {$I-}
+    Close(OutFile);
+    {$I+}
+    OutFileOpen := False;
+  End;
   StatLines := LineCount;
 End;
 
-Procedure EmitRaw(Const S: TString);
+Procedure EmitChar(C: Char);
+{ Ecrit un seul caractere dans le fichier de sortie. }
+Begin
+  Write(OutFile, C);
+End;
+
+Procedure EmitStr(Const S: TString);
+{ Ecrit une chaine dans le fichier de sortie sans retour a la ligne. }
 Begin
   Write(OutFile, S);
 End;
 
+Procedure EmitRaw(Const S: TString);
+{ Ecrit du texte brut (alias de EmitStr pour compatibilite). }
+Begin
+  Write(OutFile, S);
+End;
+
+Procedure EmitLn;
+{ Ecrit un retour a la ligne. }
+Begin
+  WriteLn(OutFile);
+  Inc(LineCount);
+End;
+
 Procedure EmitIndentStr;
+{ Ecrit l'indentation courante selon IndentLevel. }
 Var
   I: Integer;
 Begin
   For I := 1 To IndentLevel Do
-    Write(OutFile, '    ');
+    Write(OutFile, IndentStr);
 End;
 
 Procedure EmitLine(Const S: TString);
+{ Ecrit une ligne avec indentation. }
 Begin
   EmitIndentStr;
   WriteLn(OutFile, S);
@@ -1023,12 +1065,14 @@ Begin
 End;
 
 Procedure EmitBlankLine;
+{ Ecrit une ligne vide. }
 Begin
   WriteLn(OutFile);
   Inc(LineCount);
 End;
 
 Procedure EmitComment(Const S: TString);
+{ Ecrit un commentaire C de style /* ... */. }
 Begin
   EmitIndentStr;
   WriteLn(OutFile, '/* ', S, ' */');
@@ -1036,21 +1080,53 @@ Begin
 End;
 
 Procedure EmitLineComment(Const S: TString);
+{ Ecrit un commentaire C de style // ... }
 Begin
   EmitIndentStr;
   WriteLn(OutFile, '// ', S);
   Inc(LineCount);
 End;
 
+Procedure EmitMultiLineComment(Const Lines: Array Of TString);
+{ Ecrit un commentaire multi-lignes. }
+Var
+  I: Integer;
+Begin
+  EmitIndentStr;
+  WriteLn(OutFile, '/*');
+  Inc(LineCount);
+  For I := Low(Lines) To High(Lines) Do
+  Begin
+    EmitIndentStr;
+    WriteLn(OutFile, ' * ', Lines[I]);
+    Inc(LineCount);
+  End;
+  EmitIndentStr;
+  WriteLn(OutFile, ' */');
+  Inc(LineCount);
+End;
+
 Procedure EmitIndent;
+{ Augmente le niveau d'indentation. }
 Begin
   Inc(IndentLevel);
 End;
 
 Procedure EmitUnindent;
+{ Diminue le niveau d'indentation. }
 Begin
   If IndentLevel > 0 Then
     Dec(IndentLevel);
+End;
+
+Procedure SetIndentStr(NumSpaces: Integer);
+{ Configure la chaine d'indentation (2 ou 4 espaces typiquement). }
+Var
+  I: Integer;
+Begin
+  IndentStr := '';
+  For I := 1 To NumSpaces Do
+    IndentStr := IndentStr + ' ';
 End;
 
 { ============================================================
@@ -1124,8 +1200,6 @@ Begin
   NumEnums := 0;
   NumLabels := 0;
   CurrScope := 0;
-  IndentLevel := 0;
-  LineCount := 0;
   VarCounter := 0;
   FuncCounter := 0;
   StructCounter := 0;
@@ -1138,6 +1212,8 @@ Begin
   StatStmts := 0;
   StatLines := 0;
   StatMaxDepth := 0;
+  { Initialiser l'emetteur }
+  InitEmitter;
 End;
 
 Procedure InitOptions;
