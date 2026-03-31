@@ -1,0 +1,208 @@
+============================================================
+  PASCHAT.PAS - Agent conversationnel generateur de code Pascal
+  Turbo Pascal / Free Pascal (-Mtp)
+  Interface de clavardage en francais
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [A FAIRE]
+            TOptions (Verbose, DebugMode, LearnFiles)
+            ParseArgs : analyser argv ([-v] [-d] [-h] [fichiers.txt...])
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Charger la liste des fichiers .txt d'apprentissage en ligne de commande
+            Programme principal : validation des arguments et appel Run
+            Version, Date, aide en ligne (option -h)
+
+  TODO 02 - CHARGEMENT DES FICHIERS D'APPRENTISSAGE [A FAIRE]
+            TLearnFile : FileName, Content, LineCount
+            LoadLearnFile(FileName) : charger un fichier .txt en memoire
+            LearnFiles[0..MAX_LEARN-1], LearnCount
+            Supporter les fichiers DOC/*.txt comme base de connaissances
+            IndexLearnContent : indexer le contenu pour recherche rapide
+            FindInLearnFiles(Query) : rechercher dans les fichiers charges
+
+  TODO 03 - HISTORIQUE DE CONVERSATION [A FAIRE]
+            THistoryEntry : UserInput, BotResponse, Timestamp
+            History[0..MAX_HISTORY-1], HistoryCount
+            AddToHistory(User, Bot) : ajouter une entree a l'historique
+            GetRecentHistory(N) : obtenir les N dernieres entrees
+            ClearHistory : vider l'historique de conversation
+            SaveHistory(FileName) : sauvegarder l'historique dans un fichier
+            LoadHistory(FileName) : charger l'historique depuis un fichier
+
+  TODO 04 - ANALYSEUR DE REQUETES UTILISATEUR [A FAIRE]
+            TIntentKind : IK_UNKNOWN, IK_HELLO, IK_PROGRAM, IK_UNIT,
+              IK_PROCEDURE, IK_FUNCTION, IK_EXPLAIN, IK_HELP, IK_QUIT
+            TIntent : Kind, Subject, Keywords, Params
+            ParseUserInput(Input) : analyser l'entree utilisateur
+            DetectIntent(Input) : determiner l'intention de l'utilisateur
+            ExtractKeywords(Input) : extraire les mots-cles de la requete
+            KeywordMatch(Input, Keywords) : verifier la presence de mots-cles
+
+  TODO 05 - GENERATEUR DE CODE PASCAL - STRUCTURES DE BASE [A FAIRE]
+            GenProgramHeader(Name) : generer l'entete PROGRAM
+            GenUnitHeader(Name) : generer l'entete UNIT
+            GenUsesClause(Units) : generer la clause USES
+            GenConstSection(Consts) : generer la section CONST
+            GenVarSection(Vars) : generer la section VAR
+            GenTypeSection(Types) : generer la section TYPE
+            GenBeginEnd : generer le bloc BEGIN...END principal
+
+  TODO 06 - GENERATEUR DE CODE PASCAL - TYPES ET VARIABLES [A FAIRE]
+            TTypeInfo : Name, Kind (TK_INTEGER, TK_STRING, TK_REAL,
+              TK_BOOLEAN, TK_CHAR, TK_ARRAY, TK_RECORD, TK_POINTER)
+            TVarInfo : Name, TypeName, InitValue
+            GenVarDecl(Var) : generer une declaration de variable
+            GenConstDecl(Name, Value) : generer une declaration de constante
+            GenTypeDecl(Type) : generer une declaration de type
+            GenArrayType(Name, Bounds, BaseType) : generer un type tableau
+            GenRecordType(Name, Fields) : generer un type enregistrement
+
+  TODO 07 - GENERATEUR DE CODE PASCAL - EXPRESSIONS [A FAIRE]
+            GenExpression(Expr) : generer une expression
+            GenAssignment(Var, Expr) : generer une affectation
+            GenArithExpr(Op, Left, Right) : generer une expression arithmetique
+            GenCompareExpr(Op, Left, Right) : generer une comparaison
+            GenLogicalExpr(Op, Left, Right) : generer une expression logique
+            GenFunctionCall(Name, Args) : generer un appel de fonction
+            GenStringExpr(Parts) : generer une concatenation de chaines
+
+  TODO 08 - GENERATEUR DE CODE PASCAL - STRUCTURES DE CONTROLE [A FAIRE]
+            GenIfThenElse(Cond, ThenPart, ElsePart) : generer IF..THEN..ELSE
+            GenForLoop(Var, Start, End, Body) : generer FOR..TO..DO
+            GenWhileLoop(Cond, Body) : generer WHILE..DO
+            GenRepeatUntil(Body, Cond) : generer REPEAT..UNTIL
+            GenCaseOf(Expr, Cases) : generer CASE..OF
+            GenWithDo(Vars, Body) : generer WITH..DO
+
+  TODO 09 - GENERATEUR DE CODE PASCAL - PROCEDURES ET FONCTIONS [A FAIRE]
+            TProcInfo : Name, Params, LocalVars, Body, IsFunction, ReturnType
+            TParamInfo : Name, TypeName, IsVar, IsConst
+            GenProcedure(Proc) : generer une procedure
+            GenFunction(Func) : generer une fonction
+            GenParamList(Params) : generer la liste des parametres
+            GenLocalVars(Vars) : generer les variables locales
+            GenProcCall(Name, Args) : generer un appel de procedure
+
+  TODO 10 - GENERATEUR DE CODE PASCAL - UNITES (UNIT) [A FAIRE]
+            TUnitInfo : Name, InterfaceSection, ImplementSection, InitSection
+            GenUnitInterface(Unit) : generer la section INTERFACE
+            GenUnitImplementation(Unit) : generer la section IMPLEMENTATION
+            GenUnitInitialization(Unit) : generer la section INITIALIZATION
+            GenUnitFinalization(Unit) : generer la section FINALIZATION
+            GenCompleteUnit(Unit) : generer une unite complete
+
+  TODO 11 - BIBLIOTHEQUE DE TEMPLATES DE CODE [A FAIRE]
+            TTemplate : Name, Description, Code, Parameters
+            Templates[0..MAX_TEMPLATES-1], TemplateCount
+            LoadBuiltinTemplates : charger les templates predefinies
+            FindTemplate(Name) : chercher un template par nom
+            ApplyTemplate(Template, Params) : appliquer un template avec parametres
+            ListTemplates : lister les templates disponibles
+
+  TODO 12 - GENERATION DE PROGRAMMES "BONJOUR" [A FAIRE]
+            GenHelloWorld : generer un programme "Bonjour le monde"
+            GenHelloName(Name) : generer un programme avec nom personnalise
+            GenHelloInteractive : generer un programme avec saisie du nom
+            GenHelloMultilingual : generer un programme multilingue
+            GenHelloGraphic : generer un programme avec affichage graphique
+
+  TODO 13 - GENERATION DE PROGRAMMES MATHEMATIQUES [A FAIRE]
+            GenPrimeNumbers(N) : generer un programme affichant N premiers
+            GenFibonacci(N) : generer un programme de suite de Fibonacci
+            GenFactorial : generer un programme de calcul de factorielle
+            GenGCD : generer un programme de calcul de PGCD
+            GenCalculator : generer une calculatrice simple
+            GenPrimeCheck : generer un verificateur de nombre premier
+
+  TODO 14 - GENERATION DE PROGRAMMES DATE/HEURE [A FAIRE]
+            GenCurrentDateTime : generer un programme affichant date et heure
+            GenDateFormat : generer un programme formatant une date
+            GenTimeCalc : generer un programme de calcul de durees
+            GenCalendar(Month, Year) : generer un calendrier mensuel
+            GenStopwatch : generer un chronometre simple
+            GenCountdown : generer un compte a rebours
+
+  TODO 15 - GENERATION D'UNITES PERSONNALISEES [A FAIRE]
+            GenTimeUnit : generer une unite pour le temps
+            GenStringUnit : generer une unite pour les chaines
+            GenMathUnit : generer une unite mathematique etendue
+            GenFileUnit : generer une unite pour les fichiers
+            GenConsoleUnit : generer une unite pour la console
+
+  TODO 16 - INTERFACE DE CLAVARDAGE EN FRANCAIS [A FAIRE]
+            InitChat : initialiser l'interface de clavardage
+            ShowWelcome : afficher le message de bienvenue
+            ShowPrompt : afficher l'invite de commande
+            ReadUserInput : lire l'entree utilisateur
+            DisplayResponse(Text) : afficher une reponse formatee
+            DisplayCode(Code) : afficher du code avec coloration
+            ShowGoodbye : afficher le message d'au revoir
+
+  TODO 17 - SYSTEME DE REPONSES CONTEXTUELLES [A FAIRE]
+            TResponseKind : RK_TEXT, RK_CODE, RK_MIXED, RK_ERROR, RK_HELP
+            TResponse : Kind, Text, Code, Suggestions
+            GenerateResponse(Intent, Context) : generer une reponse
+            GetContextualHelp(Topic) : obtenir de l'aide contextuelle
+            SuggestRelated(Topic) : suggerer des sujets connexes
+            FormatResponse(Response) : formater la reponse pour affichage
+
+  TODO 18 - FORMATAGE ET INDENTATION DU CODE GENERE [A FAIRE]
+            TFormatOptions : IndentSize, MaxLineWidth, BraceStyle
+            FormatCode(Code) : formater le code genere
+            IndentCode(Code, Level) : indenter le code
+            WrapLongLines(Code, MaxWidth) : couper les lignes trop longues
+            AddComments(Code) : ajouter des commentaires explicatifs
+            PrettyPrint(Code) : affichage elegant du code
+
+  TODO 19 - AIDE EN LIGNE ET EXEMPLES [A FAIRE]
+            ShowHelp : afficher l'aide generale
+            ShowExamples : afficher des exemples de requetes
+            ShowSyntax(Topic) : afficher la syntaxe Pascal d'un element
+            ShowKeywords : lister les mots-cles reconnus
+            ShowCapabilities : lister les capacites du chatbot
+
+  TODO 20 - SAUVEGARDE DES PROGRAMMES GENERES [A FAIRE]
+            SaveProgram(Code, FileName) : sauvegarder dans un fichier .pas
+            AutoSuggestFileName(Code) : suggerer un nom de fichier
+            CheckFileExists(FileName) : verifier si le fichier existe
+            ConfirmOverwrite : demander confirmation pour ecrasement
+            ListSavedPrograms : lister les programmes sauvegardes
+
+  TODO 21 - VALIDATION SYNTAXIQUE DU CODE GENERE [A FAIRE]
+            ValidateSyntax(Code) : verifier la syntaxe du code genere
+            CheckBalancedBlocks(Code) : verifier l'equilibrage BEGIN/END
+            CheckSemicolons(Code) : verifier les points-virgules
+            CheckIdentifiers(Code) : verifier les identificateurs
+            ReportSyntaxErrors(Errors) : rapporter les erreurs trouvees
+
+  TODO 22 - SUGGESTIONS ET AUTO-COMPLETION [A FAIRE]
+            TSuggestion : Text, Description, Priority
+            GetSuggestions(PartialInput) : obtenir des suggestions
+            AutoComplete(Input) : completer automatiquement l'entree
+            ShowSuggestions(Suggestions) : afficher les suggestions
+            ApplySuggestion(Index) : appliquer une suggestion
+
+  TODO 23 - MODE INTERACTIF AMELIORE [A FAIRE]
+            TInteractiveMode : IM_NORMAL, IM_EDIT, IM_REVIEW, IM_LEARN
+            SetMode(Mode) : changer de mode interactif
+            EditLastCode : editer le dernier code genere
+            ReviewCode(Code) : passer en revue le code ligne par ligne
+            LearnFromUser(Input) : apprendre de l'utilisateur
+
+  TODO 24 - EXPORT ET HISTORIQUE DE SESSION [A FAIRE]
+            ExportSession(FileName) : exporter la session complete
+            ExportCode(FileName) : exporter uniquement le code genere
+            ImportSession(FileName) : importer une session precedente
+            ShowSessionStats : afficher les statistiques de session
+            ClearSession : reinitialiser la session
+
+  TODO 25 - PROGRAMME PRINCIPAL ET BOUCLE DE CLAVARDAGE [A FAIRE]
+            Run : lancer le chatbot
+            MainLoop : boucle principale de clavardage
+            ProcessCommand(Input) : traiter une commande utilisateur
+            HandleSpecialCommands : gerer les commandes speciales (/help, /quit, /save)
+            Cleanup : nettoyage avant sortie
+            Programme principal : initialiser et demarrer le chatbot
+
