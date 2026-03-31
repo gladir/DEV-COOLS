@@ -463,7 +463,7 @@
               style, exstyle, x, y, cx, cy, id, class (IdOrName),
               title (IdOrName), extraCount=0
 
-  TODO 15 - COMPILATION VERSIONINFO [A FAIRE]
+  TODO 15 - COMPILATION VERSIONINFO [IMPLEMENTE]
             Type TVersionInfo : record
               FileVersionMS, FileVersionLS : LongInt
               ProductVersionMS, ProductVersionLS : LongInt
@@ -1029,6 +1029,65 @@ Const
   CBS_AUTOHSCROLL  = $0040;
   CBS_SORT         = $0100;
   CBS_HASSTRINGS   = $0200;
+  
+  { TODO 15 : Constantes pour VERSIONINFO }
+  { Types de fichier (VFT_*) }
+  VFT_UNKNOWN    = $00000000;   { Type inconnu }
+  VFT_APP        = $00000001;   { Application }
+  VFT_DLL        = $00000002;   { DLL }
+  VFT_DRV        = $00000003;   { Driver }
+  VFT_FONT       = $00000004;   { Police }
+  VFT_VXD        = $00000005;   { VxD }
+  VFT_STATIC_LIB = $00000007;   { Bibliotheque statique }
+  
+  { Sous-types de fichier (VFT2_*) }
+  VFT2_UNKNOWN         = $00000000;
+  VFT2_DRV_PRINTER     = $00000001;
+  VFT2_DRV_KEYBOARD    = $00000002;
+  VFT2_DRV_LANGUAGE    = $00000003;
+  VFT2_DRV_DISPLAY     = $00000004;
+  VFT2_DRV_MOUSE       = $00000005;
+  VFT2_DRV_NETWORK     = $00000006;
+  VFT2_DRV_SYSTEM      = $00000007;
+  VFT2_DRV_INSTALLABLE = $00000008;
+  VFT2_DRV_SOUND       = $00000009;
+  VFT2_DRV_COMM        = $0000000A;
+  VFT2_FONT_RASTER     = $00000001;
+  VFT2_FONT_VECTOR     = $00000002;
+  VFT2_FONT_TRUETYPE   = $00000003;
+  
+  { Systemes d exploitation cibles (VOS_*) }
+  VOS_UNKNOWN    = $00000000;   { OS inconnu }
+  VOS_DOS        = $00010000;   { DOS }
+  VOS_OS216      = $00020000;   { OS/2 16 bits }
+  VOS_OS232      = $00030000;   { OS/2 32 bits }
+  VOS_NT         = $00040000;   { Windows NT }
+  VOS__WINDOWS16 = $00000001;   { Windows 16 bits }
+  VOS__PM16      = $00000002;   { Presentation Manager 16 bits }
+  VOS__PM32      = $00000003;   { Presentation Manager 32 bits }
+  VOS__WINDOWS32 = $00000004;   { Windows 32 bits }
+  VOS_DOS_WINDOWS16 = $00010001;
+  VOS_DOS_WINDOWS32 = $00010004;
+  VOS_OS216_PM16 = $00020002;
+  VOS_OS232_PM32 = $00030003;
+  VOS_NT_WINDOWS32 = $00040004; { Windows NT 32 bits }
+  
+  { Drapeaux de fichier (VS_FF_*) }
+  VS_FF_DEBUG        = $00000001;   { Fichier debug }
+  VS_FF_PRERELEASE   = $00000002;   { Version prerelease }
+  VS_FF_PATCHED      = $00000004;   { Fichier patche }
+  VS_FF_PRIVATEBUILD = $00000008;   { Build prive }
+  VS_FF_INFOINFERRED = $00000010;   { Info inferee }
+  VS_FF_SPECIALBUILD = $00000020;   { Build special }
+  VS_FFI_FILEFLAGSMASK = $0000003F; { Masque valide }
+  
+  { Signature VS_FIXEDFILEINFO }
+  VS_FFI_SIGNATURE_LO = $04BD;       { Partie basse de la signature }
+  VS_FFI_SIGNATURE_HI = $FEEF;       { Partie haute de la signature }
+  VS_FFI_STRUCVERSION= $00010000;   { Version de structure }
+  
+  { Taille maximale pour les valeurs de version }
+  MAX_VERSION_STRINGS = 64;
 
 { ============================================================
   TYPES
@@ -1117,6 +1176,31 @@ Type
     TextIsId : Boolean;     { True si texte est un ID ressource }
     TextId   : Word;        { ID de ressource si TextIsId }
   End;
+  
+  { TODO 15 : VERSIONINFO }
+  TVersionStringValue = Record
+    Key   : TString;        { cle (CompanyName, FileVersion, etc.) }
+    Value : TString;        { valeur de la chaine }
+  End;
+  
+  TVersionInfo = Record
+    { VS_FIXEDFILEINFO }
+    FileVersionMS     : LongInt;  { HIWORD=majeur, LOWORD=mineur }
+    FileVersionLS     : LongInt;  { HIWORD=build, LOWORD=revision }
+    ProductVersionMS  : LongInt;  { HIWORD=majeur, LOWORD=mineur }
+    ProductVersionLS  : LongInt;  { HIWORD=build, LOWORD=revision }
+    FileFlagsMask     : LongInt;  { Masque des drapeaux valides }
+    FileFlags         : LongInt;  { Drapeaux du fichier }
+    FileOS            : LongInt;  { OS cible }
+    FileType          : LongInt;  { Type de fichier }
+    FileSubtype       : LongInt;  { Sous-type de fichier }
+    { StringFileInfo }
+    StringValues      : Array[1..MAX_VERSION_STRINGS] Of TVersionStringValue;
+    StringCount       : Integer;  { Nombre de paires cle/valeur }
+    { VarFileInfo - Translation }
+    TranslationLang   : Word;     { Langue (ex: $0409 = anglais US) }
+    TranslationCP     : Word;     { Code page (ex: $04B0 = Unicode) }
+  End;
 
 { ============================================================
   VARIABLES GLOBALES
@@ -1150,6 +1234,9 @@ Var
   DialogTemplate  : TDialogTemplate;
   DialogControls  : Array[1..MAX_DIALOG_CTRL] Of TDialogControl;
   DialogCtrlCount : Integer;
+  
+  { TODO 15 : VERSIONINFO }
+  VersionInfo : TVersionInfo;
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -4995,6 +5082,709 @@ Begin
   SetResourceDataSize(ResIdx, DataSize);
 End;
 
+{ ============================================================
+  TODO 15 - COMPILATION VERSIONINFO
+  ============================================================ }
+
+{ ----- Forward declarations pour TODO 15 ----- }
+Procedure WriteVersionInfo(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word; LangId : Word); Forward;
+
+{ ----- Function IsVersionOption ----- }
+{ Verifie si le token est une option VERSIONINFO }
+Function IsVersionOption(Const S : TString) : Boolean;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  IsVersionOption := (U = 'FILEVERSION') Or
+                     (U = 'PRODUCTVERSION') Or
+                     (U = 'FILEFLAGSMASK') Or
+                     (U = 'FILEFLAGS') Or
+                     (U = 'FILEOS') Or
+                     (U = 'FILETYPE') Or
+                     (U = 'FILESUBTYPE');
+End;
+
+{ ----- Function VersionFlagFromName ----- }
+{ Retourne la valeur d une constante VERSIONINFO }
+Function VersionFlagFromName(Const S : TString) : LongInt;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  { Types de fichier VFT_* }
+  If U = 'VFT_UNKNOWN'    Then VersionFlagFromName := VFT_UNKNOWN
+  Else If U = 'VFT_APP'   Then VersionFlagFromName := VFT_APP
+  Else If U = 'VFT_DLL'   Then VersionFlagFromName := VFT_DLL
+  Else If U = 'VFT_DRV'   Then VersionFlagFromName := VFT_DRV
+  Else If U = 'VFT_FONT'  Then VersionFlagFromName := VFT_FONT
+  Else If U = 'VFT_VXD'   Then VersionFlagFromName := VFT_VXD
+  Else If U = 'VFT_STATIC_LIB' Then VersionFlagFromName := VFT_STATIC_LIB
+  { Sous-types VFT2_* }
+  Else If U = 'VFT2_UNKNOWN' Then VersionFlagFromName := VFT2_UNKNOWN
+  Else If U = 'VFT2_DRV_PRINTER' Then VersionFlagFromName := VFT2_DRV_PRINTER
+  Else If U = 'VFT2_DRV_KEYBOARD' Then VersionFlagFromName := VFT2_DRV_KEYBOARD
+  Else If U = 'VFT2_DRV_LANGUAGE' Then VersionFlagFromName := VFT2_DRV_LANGUAGE
+  Else If U = 'VFT2_DRV_DISPLAY' Then VersionFlagFromName := VFT2_DRV_DISPLAY
+  Else If U = 'VFT2_DRV_MOUSE' Then VersionFlagFromName := VFT2_DRV_MOUSE
+  Else If U = 'VFT2_DRV_NETWORK' Then VersionFlagFromName := VFT2_DRV_NETWORK
+  Else If U = 'VFT2_DRV_SYSTEM' Then VersionFlagFromName := VFT2_DRV_SYSTEM
+  Else If U = 'VFT2_DRV_INSTALLABLE' Then VersionFlagFromName := VFT2_DRV_INSTALLABLE
+  Else If U = 'VFT2_DRV_SOUND' Then VersionFlagFromName := VFT2_DRV_SOUND
+  Else If U = 'VFT2_DRV_COMM' Then VersionFlagFromName := VFT2_DRV_COMM
+  Else If U = 'VFT2_FONT_RASTER' Then VersionFlagFromName := VFT2_FONT_RASTER
+  Else If U = 'VFT2_FONT_VECTOR' Then VersionFlagFromName := VFT2_FONT_VECTOR
+  Else If U = 'VFT2_FONT_TRUETYPE' Then VersionFlagFromName := VFT2_FONT_TRUETYPE
+  { OS cibles VOS_* }
+  Else If U = 'VOS_UNKNOWN' Then VersionFlagFromName := VOS_UNKNOWN
+  Else If U = 'VOS_DOS'   Then VersionFlagFromName := VOS_DOS
+  Else If U = 'VOS_OS216' Then VersionFlagFromName := VOS_OS216
+  Else If U = 'VOS_OS232' Then VersionFlagFromName := VOS_OS232
+  Else If U = 'VOS_NT'    Then VersionFlagFromName := VOS_NT
+  Else If U = 'VOS__WINDOWS16' Then VersionFlagFromName := VOS__WINDOWS16
+  Else If U = 'VOS__PM16' Then VersionFlagFromName := VOS__PM16
+  Else If U = 'VOS__PM32' Then VersionFlagFromName := VOS__PM32
+  Else If U = 'VOS__WINDOWS32' Then VersionFlagFromName := VOS__WINDOWS32
+  Else If U = 'VOS_DOS_WINDOWS16' Then VersionFlagFromName := VOS_DOS_WINDOWS16
+  Else If U = 'VOS_DOS_WINDOWS32' Then VersionFlagFromName := VOS_DOS_WINDOWS32
+  Else If U = 'VOS_OS216_PM16' Then VersionFlagFromName := VOS_OS216_PM16
+  Else If U = 'VOS_OS232_PM32' Then VersionFlagFromName := VOS_OS232_PM32
+  Else If U = 'VOS_NT_WINDOWS32' Then VersionFlagFromName := VOS_NT_WINDOWS32
+  { Drapeaux VS_FF_* }
+  Else If U = 'VS_FF_DEBUG' Then VersionFlagFromName := VS_FF_DEBUG
+  Else If U = 'VS_FF_PRERELEASE' Then VersionFlagFromName := VS_FF_PRERELEASE
+  Else If U = 'VS_FF_PATCHED' Then VersionFlagFromName := VS_FF_PATCHED
+  Else If U = 'VS_FF_PRIVATEBUILD' Then VersionFlagFromName := VS_FF_PRIVATEBUILD
+  Else If U = 'VS_FF_INFOINFERRED' Then VersionFlagFromName := VS_FF_INFOINFERRED
+  Else If U = 'VS_FF_SPECIALBUILD' Then VersionFlagFromName := VS_FF_SPECIALBUILD
+  Else If U = 'VS_FFI_FILEFLAGSMASK' Then VersionFlagFromName := VS_FFI_FILEFLAGSMASK
+  Else VersionFlagFromName := 0;
+End;
+
+{ ----- Procedure InitVersionInfo ----- }
+{ Initialise la structure VersionInfo avec des valeurs par defaut }
+Procedure InitVersionInfo;
+Begin
+  VersionInfo.FileVersionMS := 0;
+  VersionInfo.FileVersionLS := 0;
+  VersionInfo.ProductVersionMS := 0;
+  VersionInfo.ProductVersionLS := 0;
+  VersionInfo.FileFlagsMask := VS_FFI_FILEFLAGSMASK;
+  VersionInfo.FileFlags := 0;
+  VersionInfo.FileOS := VOS_NT_WINDOWS32;
+  VersionInfo.FileType := VFT_APP;
+  VersionInfo.FileSubtype := VFT2_UNKNOWN;
+  VersionInfo.StringCount := 0;
+  VersionInfo.TranslationLang := $0409;  { Anglais US par defaut }
+  VersionInfo.TranslationCP := $04B0;    { Unicode }
+End;
+
+{ ----- Procedure AddVersionString ----- }
+{ Ajoute une paire cle/valeur a VersionInfo }
+Procedure AddVersionString(Const Key, Value : TString);
+Begin
+  If VersionInfo.StringCount < MAX_VERSION_STRINGS Then
+  Begin
+    Inc(VersionInfo.StringCount);
+    VersionInfo.StringValues[VersionInfo.StringCount].Key := Key;
+    VersionInfo.StringValues[VersionInfo.StringCount].Value := Value;
+  End;
+End;
+
+{ ----- Function ParseVersionExpression ----- }
+{ Parse une expression pour VERSIONINFO (nombre, constante, ou combinaison) }
+Function ParseVersionExpression : LongInt;
+Var
+  Result : LongInt;
+  Val    : LongInt;
+  Tok    : TToken;
+  Done   : Boolean;
+Begin
+  Result := 0;
+  Done := False;
+  
+  While Not Done Do
+  Begin
+    Tok := CurrToken;
+    If Tok.Kind = TK_NUMBER Then
+    Begin
+      Result := Result Or Tok.IntVal;
+      NextToken;
+    End
+    Else If Tok.Kind = TK_IDENT Then
+    Begin
+      Val := VersionFlagFromName(Tok.Value);
+      Result := Result Or Val;
+      NextToken;
+    End
+    Else
+      Done := True;
+    
+    { Verifier si on continue avec | }
+    If (CurrToken.Kind = TK_PIPE) Then
+      NextToken
+    Else
+      Done := True;
+  End;
+  
+  ParseVersionExpression := Result;
+End;
+
+{ ----- Procedure ParseVersionInfoBlock ----- }
+{ Parse le contenu d un bloc VERSIONINFO }
+Procedure ParseVersionInfoBlock;
+Var
+  Tok    : TToken;
+  InBlock : Boolean;
+  Key    : TString;
+  Value  : TString;
+  BlockName : TString;
+  CodePage  : TString;
+Begin
+  InBlock := True;
+  
+  While InBlock Do
+  Begin
+    Tok := CurrToken;
+    
+    If Tok.Kind = TK_EOF Then
+      InBlock := False
+    Else If (Tok.Kind = TK_IDENT) And (UpCaseStr(Tok.Value) = 'END') Then
+    Begin
+      NextToken;
+      InBlock := False;
+    End
+    Else If (Tok.Kind = TK_IDENT) And (UpCaseStr(Tok.Value) = 'BLOCK') Then
+    Begin
+      NextToken;  { Passer BLOCK }
+      
+      { Lire le nom du bloc entre guillemets }
+      If CurrToken.Kind = TK_STRING Then
+      Begin
+        BlockName := UpCaseStr(CurrToken.Value);
+        NextToken;
+        
+        { Chercher BEGIN }
+        While (CurrToken.Kind <> TK_EOF) And
+              Not ((CurrToken.Kind = TK_IDENT) And 
+                   ((UpCaseStr(CurrToken.Value) = 'BEGIN') Or
+                    (CurrToken.Value = '{'))) Do
+          NextToken;
+        
+        If CurrToken.Kind <> TK_EOF Then
+          NextToken;  { Passer BEGIN ou { }
+        
+        If BlockName = 'STRINGFILEINFO' Then
+        Begin
+          { Parser StringFileInfo - contient un bloc avec code page }
+          While (CurrToken.Kind <> TK_EOF) And
+                Not ((CurrToken.Kind = TK_IDENT) And 
+                     (UpCaseStr(CurrToken.Value) = 'END')) Do
+          Begin
+            If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'BLOCK') Then
+            Begin
+              NextToken;
+              If CurrToken.Kind = TK_STRING Then
+              Begin
+                CodePage := CurrToken.Value;  { Ex: "040904B0" }
+                { Extraire langue et code page }
+                If Length(CodePage) >= 8 Then
+                Begin
+                  VersionInfo.TranslationLang := StrToInt('$' + Copy(CodePage, 1, 4));
+                  VersionInfo.TranslationCP := StrToInt('$' + Copy(CodePage, 5, 4));
+                End;
+                NextToken;
+              End;
+              
+              { Chercher BEGIN du bloc code page }
+              While (CurrToken.Kind <> TK_EOF) And
+                    Not ((CurrToken.Kind = TK_IDENT) And 
+                         ((UpCaseStr(CurrToken.Value) = 'BEGIN') Or
+                          (CurrToken.Value = '{'))) Do
+                NextToken;
+              
+              If CurrToken.Kind <> TK_EOF Then
+                NextToken;
+              
+              { Parser les VALUE }
+              While (CurrToken.Kind <> TK_EOF) And
+                    Not ((CurrToken.Kind = TK_IDENT) And 
+                         (UpCaseStr(CurrToken.Value) = 'END')) Do
+              Begin
+                If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'VALUE') Then
+                Begin
+                  NextToken;
+                  If CurrToken.Kind = TK_STRING Then
+                  Begin
+                    Key := CurrToken.Value;
+                    NextToken;
+                    If CurrToken.Kind = TK_COMMA Then
+                      NextToken;
+                    If CurrToken.Kind = TK_STRING Then
+                    Begin
+                      Value := CurrToken.Value;
+                      AddVersionString(Key, Value);
+                      NextToken;
+                    End;
+                  End;
+                End
+                Else
+                  NextToken;
+              End;
+              
+              If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'END') Then
+                NextToken;  { Fin du bloc code page }
+            End
+            Else
+              NextToken;
+          End;
+          
+          If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'END') Then
+            NextToken;  { Fin StringFileInfo }
+        End
+        Else If BlockName = 'VARFILEINFO' Then
+        Begin
+          { Parser VarFileInfo - contient VALUE "Translation", lang, cp }
+          While (CurrToken.Kind <> TK_EOF) And
+                Not ((CurrToken.Kind = TK_IDENT) And 
+                     (UpCaseStr(CurrToken.Value) = 'END')) Do
+          Begin
+            If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'VALUE') Then
+            Begin
+              NextToken;
+              If (CurrToken.Kind = TK_STRING) And (UpCaseStr(CurrToken.Value) = 'TRANSLATION') Then
+              Begin
+                NextToken;
+                If CurrToken.Kind = TK_COMMA Then
+                  NextToken;
+                If CurrToken.Kind = TK_NUMBER Then
+                Begin
+                  VersionInfo.TranslationLang := CurrToken.IntVal;
+                  NextToken;
+                  If CurrToken.Kind = TK_COMMA Then
+                    NextToken;
+                  If CurrToken.Kind = TK_NUMBER Then
+                  Begin
+                    VersionInfo.TranslationCP := CurrToken.IntVal;
+                    NextToken;
+                  End;
+                End;
+              End
+              Else
+                NextToken;
+            End
+            Else
+              NextToken;
+          End;
+          
+          If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'END') Then
+            NextToken;  { Fin VarFileInfo }
+        End
+        Else
+        Begin
+          { Bloc inconnu - sauter jusqu'au END correspondant }
+          While (CurrToken.Kind <> TK_EOF) And
+                Not ((CurrToken.Kind = TK_IDENT) And 
+                     (UpCaseStr(CurrToken.Value) = 'END')) Do
+            NextToken;
+          If CurrToken.Kind <> TK_EOF Then
+            NextToken;
+        End;
+      End;
+    End
+    Else
+      NextToken;  { Passer les tokens inconnus }
+  End;
+End;
+
+{ ----- Procedure ParseVersionInfo ----- }
+{ Parse le bloc VERSIONINFO complet }
+Procedure ParseVersionInfo(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word);
+Var
+  Tok   : TToken;
+  TokUp : TString;
+  V1, V2, V3, V4 : LongInt;
+Begin
+  { Initialiser la structure }
+  InitVersionInfo;
+  
+  { Parser les options avant BEGIN }
+  While (CurrToken.Kind <> TK_EOF) And
+        Not ((CurrToken.Kind = TK_IDENT) And 
+             ((UpCaseStr(CurrToken.Value) = 'BEGIN') Or
+              (CurrToken.Value = '{'))) Do
+  Begin
+    Tok := CurrToken;
+    If Tok.Kind = TK_IDENT Then
+    Begin
+      TokUp := UpCaseStr(Tok.Value);
+      
+      If TokUp = 'FILEVERSION' Then
+      Begin
+        NextToken;
+        V1 := 0; V2 := 0; V3 := 0; V4 := 0;
+        If CurrToken.Kind = TK_NUMBER Then
+        Begin
+          V1 := CurrToken.IntVal;
+          NextToken;
+          If CurrToken.Kind = TK_COMMA Then NextToken;
+          If CurrToken.Kind = TK_NUMBER Then
+          Begin
+            V2 := CurrToken.IntVal;
+            NextToken;
+            If CurrToken.Kind = TK_COMMA Then NextToken;
+            If CurrToken.Kind = TK_NUMBER Then
+            Begin
+              V3 := CurrToken.IntVal;
+              NextToken;
+              If CurrToken.Kind = TK_COMMA Then NextToken;
+              If CurrToken.Kind = TK_NUMBER Then
+              Begin
+                V4 := CurrToken.IntVal;
+                NextToken;
+              End;
+            End;
+          End;
+        End;
+        VersionInfo.FileVersionMS := (V1 Shl 16) Or V2;
+        VersionInfo.FileVersionLS := (V3 Shl 16) Or V4;
+      End
+      Else If TokUp = 'PRODUCTVERSION' Then
+      Begin
+        NextToken;
+        V1 := 0; V2 := 0; V3 := 0; V4 := 0;
+        If CurrToken.Kind = TK_NUMBER Then
+        Begin
+          V1 := CurrToken.IntVal;
+          NextToken;
+          If CurrToken.Kind = TK_COMMA Then NextToken;
+          If CurrToken.Kind = TK_NUMBER Then
+          Begin
+            V2 := CurrToken.IntVal;
+            NextToken;
+            If CurrToken.Kind = TK_COMMA Then NextToken;
+            If CurrToken.Kind = TK_NUMBER Then
+            Begin
+              V3 := CurrToken.IntVal;
+              NextToken;
+              If CurrToken.Kind = TK_COMMA Then NextToken;
+              If CurrToken.Kind = TK_NUMBER Then
+              Begin
+                V4 := CurrToken.IntVal;
+                NextToken;
+              End;
+            End;
+          End;
+        End;
+        VersionInfo.ProductVersionMS := (V1 Shl 16) Or V2;
+        VersionInfo.ProductVersionLS := (V3 Shl 16) Or V4;
+      End
+      Else If TokUp = 'FILEFLAGSMASK' Then
+      Begin
+        NextToken;
+        VersionInfo.FileFlagsMask := ParseVersionExpression;
+      End
+      Else If TokUp = 'FILEFLAGS' Then
+      Begin
+        NextToken;
+        VersionInfo.FileFlags := ParseVersionExpression;
+      End
+      Else If TokUp = 'FILEOS' Then
+      Begin
+        NextToken;
+        VersionInfo.FileOS := ParseVersionExpression;
+      End
+      Else If TokUp = 'FILETYPE' Then
+      Begin
+        NextToken;
+        VersionInfo.FileType := ParseVersionExpression;
+      End
+      Else If TokUp = 'FILESUBTYPE' Then
+      Begin
+        NextToken;
+        VersionInfo.FileSubtype := ParseVersionExpression;
+      End
+      Else
+        NextToken;
+    End
+    Else
+      NextToken;
+  End;
+  
+  { Passer BEGIN ou { }
+  If (CurrToken.Kind = TK_IDENT) Or (CurrToken.Value = '{') Then
+    NextToken;
+  
+  { Parser le contenu du bloc }
+  ParseVersionInfoBlock;
+  
+  { Ecrire la ressource }
+  WriteVersionInfo(NameIsId, NameId, NameStr, MemFlags, CurrentLangId);
+End;
+
+{ ----- Procedure WriteVersionInfoString ----- }
+{ Ecrit un bloc String (cle, valeur) aligne }
+Procedure WriteVersionInfoString(Const Key, Value : TString);
+Var
+  BlockStart, BlockLen : LongInt;
+  ValLen : Integer;
+  I : Integer;
+Begin
+  { Aligner sur DWORD }
+  PadToAlignment(4);
+  
+  { Memoriser la position de debut }
+  BlockStart := GetResPos;
+  
+  { Calculer la longueur de la valeur }
+  ValLen := Length(Value) + 1;  { +1 pour le null terminator }
+  
+  { WORD wLength - sera mis a jour }
+  WriteWord(0);
+  { WORD wValueLength - taille de la valeur en WORDs }
+  WriteWord(ValLen);
+  { WORD wType = 1 (texte) }
+  WriteWord(1);
+  
+  { szKey - nom de la cle en Unicode }
+  For I := 1 To Length(Key) Do
+    WriteWChar(CharToWChar(Key[I]));
+  WriteWChar(0);  { Null terminator }
+  
+  { Aligner sur DWORD }
+  PadToAlignment(4);
+  
+  { Value - valeur en Unicode }
+  For I := 1 To Length(Value) Do
+    WriteWChar(CharToWChar(Value[I]));
+  WriteWChar(0);  { Null terminator }
+  
+  { Calculer et mettre a jour la taille du bloc }
+  BlockLen := GetResPos - BlockStart;
+  SeekResPos(BlockStart);
+  WriteWord(BlockLen);
+  SeekResPos(BlockStart + BlockLen);
+End;
+
+{ ----- Procedure WriteVersionInfo ----- }
+{ Ecrit une ressource VERSIONINFO complete }
+Procedure WriteVersionInfo(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word; LangId : Word);
+Var
+  ResIdx      : Integer;
+  DataStart   : LongInt;
+  DataSize    : LongInt;
+  VerInfoStart: LongInt;
+  VerInfoLen  : LongInt;
+  SFIStart    : LongInt;
+  SFILen      : LongInt;
+  STStart     : LongInt;
+  STLen       : LongInt;
+  VFIStart    : LongInt;
+  VFILen      : LongInt;
+  TransStart  : LongInt;
+  TransLen    : LongInt;
+  I           : Integer;
+  S           : TString;
+  LangCP      : TString;
+Begin
+  { Ajouter a la table des ressources }
+  ResIdx := AddResource(True, RT_VERSION, '',
+                        NameIsId, NameId, NameStr, MemFlags, LangId);
+  
+  { Ecrire l en-tete de ressource 32 bits }
+  WriteResHeader32(True, RT_VERSION, '',
+                   NameIsId, NameId, NameStr, 0, MemFlags, LangId);
+  
+  { Memoriser la position de debut des donnees }
+  DataStart := GetResPos;
+  
+  { ===== VS_VERSIONINFO ===== }
+  VerInfoStart := GetResPos;
+  
+  { WORD wLength - sera mis a jour a la fin }
+  WriteWord(0);
+  { WORD wValueLength = 52 (taille de VS_FIXEDFILEINFO) }
+  WriteWord(52);
+  { WORD wType = 0 (binaire) }
+  WriteWord(0);
+  
+  { szKey = "VS_VERSION_INFO" en Unicode }
+  S := 'VS_VERSION_INFO';
+  For I := 1 To Length(S) Do
+    WriteWChar(CharToWChar(S[I]));
+  WriteWChar(0);  { Null terminator }
+  
+  { Aligner sur DWORD }
+  PadToAlignment(4);
+  
+  { ===== VS_FIXEDFILEINFO (52 octets) ===== }
+  { DWORD dwSignature - ecrit en deux WORDs pour eviter overflow }
+  WriteWord(VS_FFI_SIGNATURE_LO);
+  WriteWord(VS_FFI_SIGNATURE_HI);
+  { DWORD dwStrucVersion }
+  WriteDWord(VS_FFI_STRUCVERSION);
+  { DWORD dwFileVersionMS }
+  WriteDWord(VersionInfo.FileVersionMS);
+  { DWORD dwFileVersionLS }
+  WriteDWord(VersionInfo.FileVersionLS);
+  { DWORD dwProductVersionMS }
+  WriteDWord(VersionInfo.ProductVersionMS);
+  { DWORD dwProductVersionLS }
+  WriteDWord(VersionInfo.ProductVersionLS);
+  { DWORD dwFileFlagsMask }
+  WriteDWord(VersionInfo.FileFlagsMask);
+  { DWORD dwFileFlags }
+  WriteDWord(VersionInfo.FileFlags);
+  { DWORD dwFileOS }
+  WriteDWord(VersionInfo.FileOS);
+  { DWORD dwFileType }
+  WriteDWord(VersionInfo.FileType);
+  { DWORD dwFileSubtype }
+  WriteDWord(VersionInfo.FileSubtype);
+  { DWORD dwFileDateMS }
+  WriteDWord(0);
+  { DWORD dwFileDateLS }
+  WriteDWord(0);
+  
+  { ===== StringFileInfo ===== }
+  If VersionInfo.StringCount > 0 Then
+  Begin
+    { Aligner sur DWORD }
+    PadToAlignment(4);
+    
+    SFIStart := GetResPos;
+    
+    { WORD wLength - sera mis a jour }
+    WriteWord(0);
+    { WORD wValueLength = 0 }
+    WriteWord(0);
+    { WORD wType = 1 (texte) }
+    WriteWord(1);
+    
+    { szKey = "StringFileInfo" en Unicode }
+    S := 'StringFileInfo';
+    For I := 1 To Length(S) Do
+      WriteWChar(CharToWChar(S[I]));
+    WriteWChar(0);
+    
+    { Aligner sur DWORD }
+    PadToAlignment(4);
+    
+    { ===== StringTable ===== }
+    STStart := GetResPos;
+    
+    { WORD wLength - sera mis a jour }
+    WriteWord(0);
+    { WORD wValueLength = 0 }
+    WriteWord(0);
+    { WORD wType = 1 (texte) }
+    WriteWord(1);
+    
+    { szKey = "hhhhHHHH" (langue + codepage) en Unicode }
+    LangCP := HexWord(VersionInfo.TranslationLang) + 
+              HexWord(VersionInfo.TranslationCP);
+    For I := 1 To Length(LangCP) Do
+      WriteWChar(CharToWChar(LangCP[I]));
+    WriteWChar(0);
+    
+    { Aligner sur DWORD }
+    PadToAlignment(4);
+    
+    { Ecrire chaque paire String (cle, valeur) }
+    For I := 1 To VersionInfo.StringCount Do
+      WriteVersionInfoString(VersionInfo.StringValues[I].Key,
+                             VersionInfo.StringValues[I].Value);
+    
+    { Mettre a jour la taille de StringTable }
+    STLen := GetResPos - STStart;
+    SeekResPos(STStart);
+    WriteWord(STLen);
+    SeekResPos(STStart + STLen);
+    
+    { Mettre a jour la taille de StringFileInfo }
+    SFILen := GetResPos - SFIStart;
+    SeekResPos(SFIStart);
+    WriteWord(SFILen);
+    SeekResPos(SFIStart + SFILen);
+  End;
+  
+  { ===== VarFileInfo ===== }
+  { Aligner sur DWORD }
+  PadToAlignment(4);
+  
+  VFIStart := GetResPos;
+  
+  { WORD wLength - sera mis a jour }
+  WriteWord(0);
+  { WORD wValueLength = 0 }
+  WriteWord(0);
+  { WORD wType = 1 (texte) }
+  WriteWord(1);
+  
+  { szKey = "VarFileInfo" en Unicode }
+  S := 'VarFileInfo';
+  For I := 1 To Length(S) Do
+    WriteWChar(CharToWChar(S[I]));
+  WriteWChar(0);
+  
+  { Aligner sur DWORD }
+  PadToAlignment(4);
+  
+  { ===== Var (Translation) ===== }
+  TransStart := GetResPos;
+  
+  { WORD wLength - sera mis a jour }
+  WriteWord(0);
+  { WORD wValueLength = 4 (taille de Translation) }
+  WriteWord(4);
+  { WORD wType = 0 (binaire) }
+  WriteWord(0);
+  
+  { szKey = "Translation" en Unicode }
+  S := 'Translation';
+  For I := 1 To Length(S) Do
+    WriteWChar(CharToWChar(S[I]));
+  WriteWChar(0);
+  
+  { Aligner sur DWORD }
+  PadToAlignment(4);
+  
+  { Value = WORD langID, WORD codepage }
+  WriteWord(VersionInfo.TranslationLang);
+  WriteWord(VersionInfo.TranslationCP);
+  
+  { Mettre a jour la taille de Var (Translation) }
+  TransLen := GetResPos - TransStart;
+  SeekResPos(TransStart);
+  WriteWord(TransLen);
+  SeekResPos(TransStart + TransLen);
+  
+  { Mettre a jour la taille de VarFileInfo }
+  VFILen := GetResPos - VFIStart;
+  SeekResPos(VFIStart);
+  WriteWord(VFILen);
+  SeekResPos(VFIStart + VFILen);
+  
+  { Mettre a jour la taille totale de VS_VERSIONINFO }
+  VerInfoLen := GetResPos - VerInfoStart;
+  SeekResPos(VerInfoStart);
+  WriteWord(VerInfoLen);
+  SeekResPos(VerInfoStart + VerInfoLen);
+  
+  { Calculer la taille des donnees }
+  DataSize := GetResPos - DataStart;
+  
+  { Aligner sur 4 octets }
+  PadToAlignment(4);
+  
+  { Mettre a jour la taille et l offset dans la table des ressources }
+  SetResourceDataOfs(ResIdx, DataStart);
+  SetResourceDataSize(ResIdx, DataSize);
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -5089,6 +5879,7 @@ Begin
   AccelCount := 0;
   MenuItemCount := 0;
   DialogCtrlCount := 0;
+  InitVersionInfo;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -5104,9 +5895,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 15-25 }
+  { TODO : Implementation des TODOs 16-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-14 [IMPLEMENTE]. TODOs 15-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-15 [IMPLEMENTE]. TODOs 16-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
