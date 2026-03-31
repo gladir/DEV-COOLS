@@ -347,7 +347,7 @@
                 puis les WCHARs (0 si slot vide)
               aligner les donnees sur 4 octets
 
-  TODO 12 - COMPILATION ACCELERATORS [A FAIRE]
+  TODO 12 - COMPILATION ACCELERATORS [IMPLEMENTE]
             Type TAccelEntry : record
               fVirt  : Word   (drapeaux de l accelerateur)
               Key    : Word   (code de touche ou ASCII)
@@ -355,23 +355,27 @@
             End
             Constantes fVirt :
               FVIRTKEY = $01, FNOINVERT = $02, FSHIFT = $04,
-              FCONTROL = $08, FALT = $10
+              FCONTROL = $08, FALT = $10, FLAST = $80
             Constantes de touches virtuelles :
               VK_BACK = $08, VK_TAB = $09, VK_RETURN = $0D,
               VK_ESCAPE = $1B, VK_SPACE = $20, VK_END = $23,
               VK_HOME = $24, VK_LEFT = $25, VK_UP = $26,
               VK_RIGHT = $27, VK_DOWN = $28, VK_INSERT = $2D,
               VK_DELETE = $2E, VK_F1..$7B = VK_F12
+            Variables globales :
+              AccelEntries : Array[1..MAX_ACCEL] Of TAccelEntry
+              AccelCount   : Integer
             Function VKeyFromName(Const Name: String): Word
-              retourner le code de touche virtuelle depuis le nom
+              retourne le code de touche virtuelle depuis le nom
+            Function IsAccelOption(Const S: String): Boolean
+              verifie si le token est une option d accelerateur
             Procedure ParseAccelerators(NameIsId: Boolean; NameId: Word;
               Const NameStr: String; MemFlags: Word)
               lire le bloc ACCELERATORS ... BEGIN ... END :
               pour chaque ligne : lire touche, virgule, commande,
               options (VIRTKEY, SHIFT, CONTROL, ALT, NOINVERT)
               compiler en TAccelEntry
-            Procedure WriteAccelerators(Const Entries: Array Of TAccelEntry;
-              Count: Integer; NameIsId: Boolean; NameId: Word;
+            Procedure WriteAccelerators(NameIsId: Boolean; NameId: Word;
               Const NameStr: String; MemFlags: Word; LangId: Word)
               ecrire l en-tete de ressource RT_ACCELERATOR,
               puis pour chaque entree : WORD fVirt, WORD key, WORD cmd,
@@ -851,6 +855,57 @@ Const
   LANG_JAPANESE     = $0411;
   LANG_CHINESE_SIMPL = $0804;
 
+  { TODO 12 : Constantes pour accelerateurs }
+  { Drapeaux fVirt }
+  FVIRTKEY   = $01;   { La touche est une touche virtuelle }
+  FNOINVERT  = $02;   { Ne pas inverser l element de menu }
+  FSHIFT     = $04;   { Touche SHIFT enfoncee }
+  FCONTROL   = $08;   { Touche CONTROL enfoncee }
+  FALT       = $10;   { Touche ALT enfoncee }
+  FLAST      = $80;   { Dernier accelerateur dans la table }
+  
+  { Codes de touches virtuelles }
+  VK_BACK    = $08;   { Backspace }
+  VK_TAB     = $09;   { Tab }
+  VK_CLEAR   = $0C;   { Clear }
+  VK_RETURN  = $0D;   { Enter }
+  VK_SHIFT   = $10;   { Shift }
+  VK_CONTROL = $11;   { Ctrl }
+  VK_MENU    = $12;   { Alt }
+  VK_PAUSE   = $13;   { Pause }
+  VK_CAPITAL = $14;   { Caps Lock }
+  VK_ESCAPE  = $1B;   { Escape }
+  VK_SPACE   = $20;   { Space }
+  VK_PRIOR   = $21;   { Page Up }
+  VK_NEXT    = $22;   { Page Down }
+  VK_END     = $23;   { End }
+  VK_HOME    = $24;   { Home }
+  VK_LEFT    = $25;   { Left Arrow }
+  VK_UP      = $26;   { Up Arrow }
+  VK_RIGHT   = $27;   { Right Arrow }
+  VK_DOWN    = $28;   { Down Arrow }
+  VK_SELECT  = $29;   { Select }
+  VK_PRINT   = $2A;   { Print }
+  VK_EXECUTE = $2B;   { Execute }
+  VK_SNAPSHOT= $2C;   { Print Screen }
+  VK_INSERT  = $2D;   { Insert }
+  VK_DELETE  = $2E;   { Delete }
+  VK_HELP    = $2F;   { Help }
+  VK_F1      = $70;   { F1 }
+  VK_F2      = $71;   { F2 }
+  VK_F3      = $72;   { F3 }
+  VK_F4      = $73;   { F4 }
+  VK_F5      = $74;   { F5 }
+  VK_F6      = $75;   { F6 }
+  VK_F7      = $76;   { F7 }
+  VK_F8      = $77;   { F8 }
+  VK_F9      = $78;   { F9 }
+  VK_F10     = $79;   { F10 }
+  VK_F11     = $7A;   { F11 }
+  VK_F12     = $7B;   { F12 }
+  VK_NUMLOCK = $90;   { Num Lock }
+  VK_SCROLL  = $91;   { Scroll Lock }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -889,6 +944,13 @@ Type
     Text     : TString;     { texte de la chaine }
     LangId   : Word;        { langue }
   End;
+  
+  { TODO 12 : Accelerateurs }
+  TAccelEntry = Record
+    fVirt : Word;           { drapeaux de l accelerateur }
+    Key   : Word;           { code de touche ou ASCII }
+    Cmd   : Word;           { identifiant de commande }
+  End;
 
 { ============================================================
   VARIABLES GLOBALES
@@ -909,6 +971,10 @@ Var
   { TODO 11 : Table des chaines STRINGTABLE }
   StringEntries : Array[1..MAX_STRINGS] Of TStringEntry;
   StringCount   : Integer;
+  
+  { TODO 12 : Table des accelerateurs }
+  AccelEntries : Array[1..MAX_ACCEL] Of TAccelEntry;
+  AccelCount   : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -3325,6 +3391,281 @@ Begin
   End;
 End;
 
+{ =============================================================
+  TODO 12 - COMPILATION ACCELERATORS
+  ============================================================= }
+
+{ ----- Function VKeyFromName ----- }
+{ Retourne le code de touche virtuelle depuis le nom }
+Function VKeyFromName(Const Name: TString): Word;
+Var
+  UpName : TString;
+Begin
+  UpName := UpCaseStr(Name);
+  
+  { Touches de fonction }
+  If UpName = 'VK_F1' Then VKeyFromName := VK_F1
+  Else If UpName = 'VK_F2' Then VKeyFromName := VK_F2
+  Else If UpName = 'VK_F3' Then VKeyFromName := VK_F3
+  Else If UpName = 'VK_F4' Then VKeyFromName := VK_F4
+  Else If UpName = 'VK_F5' Then VKeyFromName := VK_F5
+  Else If UpName = 'VK_F6' Then VKeyFromName := VK_F6
+  Else If UpName = 'VK_F7' Then VKeyFromName := VK_F7
+  Else If UpName = 'VK_F8' Then VKeyFromName := VK_F8
+  Else If UpName = 'VK_F9' Then VKeyFromName := VK_F9
+  Else If UpName = 'VK_F10' Then VKeyFromName := VK_F10
+  Else If UpName = 'VK_F11' Then VKeyFromName := VK_F11
+  Else If UpName = 'VK_F12' Then VKeyFromName := VK_F12
+  { Touches de navigation }
+  Else If UpName = 'VK_LEFT' Then VKeyFromName := VK_LEFT
+  Else If UpName = 'VK_RIGHT' Then VKeyFromName := VK_RIGHT
+  Else If UpName = 'VK_UP' Then VKeyFromName := VK_UP
+  Else If UpName = 'VK_DOWN' Then VKeyFromName := VK_DOWN
+  Else If UpName = 'VK_HOME' Then VKeyFromName := VK_HOME
+  Else If UpName = 'VK_END' Then VKeyFromName := VK_END
+  Else If UpName = 'VK_PRIOR' Then VKeyFromName := VK_PRIOR
+  Else If (UpName = 'VK_NEXT') Or (UpName = 'VK_PAGEDOWN') Then VKeyFromName := VK_NEXT
+  Else If UpName = 'VK_PAGEUP' Then VKeyFromName := VK_PRIOR
+  { Touches speciales }
+  Else If UpName = 'VK_BACK' Then VKeyFromName := VK_BACK
+  Else If UpName = 'VK_TAB' Then VKeyFromName := VK_TAB
+  Else If (UpName = 'VK_RETURN') Or (UpName = 'VK_ENTER') Then VKeyFromName := VK_RETURN
+  Else If (UpName = 'VK_ESCAPE') Or (UpName = 'VK_ESC') Then VKeyFromName := VK_ESCAPE
+  Else If UpName = 'VK_SPACE' Then VKeyFromName := VK_SPACE
+  Else If UpName = 'VK_INSERT' Then VKeyFromName := VK_INSERT
+  Else If UpName = 'VK_DELETE' Then VKeyFromName := VK_DELETE
+  Else If UpName = 'VK_HELP' Then VKeyFromName := VK_HELP
+  Else If UpName = 'VK_PAUSE' Then VKeyFromName := VK_PAUSE
+  Else If UpName = 'VK_CAPITAL' Then VKeyFromName := VK_CAPITAL
+  Else If UpName = 'VK_CLEAR' Then VKeyFromName := VK_CLEAR
+  Else If UpName = 'VK_SELECT' Then VKeyFromName := VK_SELECT
+  Else If UpName = 'VK_PRINT' Then VKeyFromName := VK_PRINT
+  Else If UpName = 'VK_EXECUTE' Then VKeyFromName := VK_EXECUTE
+  Else If UpName = 'VK_SNAPSHOT' Then VKeyFromName := VK_SNAPSHOT
+  Else If UpName = 'VK_NUMLOCK' Then VKeyFromName := VK_NUMLOCK
+  Else If UpName = 'VK_SCROLL' Then VKeyFromName := VK_SCROLL
+  Else If UpName = 'VK_SHIFT' Then VKeyFromName := VK_SHIFT
+  Else If UpName = 'VK_CONTROL' Then VKeyFromName := VK_CONTROL
+  Else If UpName = 'VK_MENU' Then VKeyFromName := VK_MENU
+  { Valeur inconnue }
+  Else VKeyFromName := 0;
+End;
+
+{ ----- Function IsAccelOption ----- }
+{ Verifie si le token est une option d accelerateur }
+Function IsAccelOption(Const S: TString): Boolean;
+Var
+  UpS : TString;
+Begin
+  UpS := UpCaseStr(S);
+  IsAccelOption := (UpS = 'VIRTKEY') Or (UpS = 'ASCII') Or
+                   (UpS = 'SHIFT') Or (UpS = 'CONTROL') Or
+                   (UpS = 'ALT') Or (UpS = 'NOINVERT');
+End;
+
+{ ----- Procedure ParseAccelerators ----- }
+{ Parse un bloc ACCELERATORS ... BEGIN ... END }
+Procedure ParseAccelerators(NameIsId: Boolean; NameId: Word;
+  Const NameStr: TString; MemFlags: Word);
+Var
+  Key      : Word;
+  Cmd      : Word;
+  fVirt    : Word;
+  KeyStr   : TString;
+  IsVirtKey: Boolean;
+Begin
+  { Reinitialiser le compteur d accelerateurs }
+  AccelCount := 0;
+  
+  { Attendre BEGIN ou accolade ouvrante }
+  If (CurrToken.Kind <> TK_BEGIN) And (CurrToken.Kind <> TK_LBRACE) Then
+  Begin
+    SyntaxError('BEGIN ou accolade ouvrante attendu apres ACCELERATORS');
+    Exit;
+  End;
+  NextToken; (* Consommer BEGIN ou accolade ouvrante *)
+  
+  (* Lire les entrees jusqu a END ou accolade fermante *)
+  While (CurrToken.Kind <> TK_END) And (CurrToken.Kind <> TK_RBRACE) And
+        (CurrToken.Kind <> TK_EOF) Do
+  Begin
+    { Ignorer les commentaires et nouvelles lignes }
+    If CurrToken.Kind = TK_NEWLINE Then
+    Begin
+      NextToken;
+      Continue;
+    End;
+    
+    If CurrToken.Kind = TK_COMMENT Then
+    Begin
+      NextToken;
+      Continue;
+    End;
+    
+    { Lire la touche (chaine ASCII ou identifiant VK_xxx) }
+    Key := 0;
+    fVirt := 0;
+    IsVirtKey := False;
+    
+    If CurrToken.Kind = TK_STRING Then
+    Begin
+      { Caractere ASCII entre guillemets }
+      KeyStr := CurrToken.Value;
+      If Length(KeyStr) > 0 Then
+        Key := Ord(KeyStr[1]);
+      NextToken;
+    End
+    Else If CurrToken.Kind = TK_NUMBER Then
+    Begin
+      { Code numerique }
+      Key := Word(CurrToken.IntVal);
+      NextToken;
+    End
+    Else If CurrToken.Kind = TK_IDENT Then
+    Begin
+      { Identifiant de touche virtuelle }
+      KeyStr := CurrToken.Value;
+      Key := VKeyFromName(KeyStr);
+      If Key = 0 Then
+      Begin
+        { Peut etre une lettre simple comme A, B, etc. }
+        If Length(KeyStr) = 1 Then
+          Key := Ord(UpCase(KeyStr[1]))
+        Else
+          SyntaxError('Touche inconnue: ' + KeyStr);
+      End
+      Else
+        IsVirtKey := True;
+      NextToken;
+    End
+    Else
+    Begin
+      SyntaxError('Touche attendue dans ACCELERATORS');
+      SkipToEndBlock;
+      Exit;
+    End;
+    
+    { Attendre une virgule }
+    If CurrToken.Kind = TK_COMMA Then
+      NextToken;
+    
+    { Lire l identifiant de commande }
+    If CurrToken.Kind = TK_NUMBER Then
+    Begin
+      Cmd := Word(CurrToken.IntVal);
+      NextToken;
+    End
+    Else If CurrToken.Kind = TK_IDENT Then
+    Begin
+      { Identificateur symbolique - convertir en nombre si possible }
+      Cmd := Word(StrToInt(CurrToken.Value));
+      NextToken;
+    End
+    Else
+    Begin
+      SyntaxError('Identifiant de commande attendu dans ACCELERATORS');
+      SkipToEndBlock;
+      Exit;
+    End;
+    
+    { Lire les options (virgule puis VIRTKEY, SHIFT, CONTROL, ALT, NOINVERT) }
+    While CurrToken.Kind = TK_COMMA Do
+    Begin
+      NextToken;
+      
+      If CurrToken.Kind = TK_IDENT Then
+      Begin
+        KeyStr := UpCaseStr(CurrToken.Value);
+        
+        If KeyStr = 'VIRTKEY' Then
+        Begin
+          fVirt := fVirt Or FVIRTKEY;
+          IsVirtKey := True;
+        End
+        Else If KeyStr = 'ASCII' Then
+        Begin
+          { ASCII = pas VIRTKEY, ne rien faire }
+        End
+        Else If KeyStr = 'SHIFT' Then
+          fVirt := fVirt Or FSHIFT
+        Else If KeyStr = 'CONTROL' Then
+          fVirt := fVirt Or FCONTROL
+        Else If KeyStr = 'ALT' Then
+          fVirt := fVirt Or FALT
+        Else If KeyStr = 'NOINVERT' Then
+          fVirt := fVirt Or FNOINVERT;
+        
+        NextToken;
+      End;
+    End;
+    
+    { Si la touche est virtuelle, ajouter le flag }
+    If IsVirtKey Then
+      fVirt := fVirt Or FVIRTKEY;
+    
+    { Ajouter l entree dans la table }
+    If AccelCount < MAX_ACCEL Then
+    Begin
+      Inc(AccelCount);
+      AccelEntries[AccelCount].fVirt := fVirt;
+      AccelEntries[AccelCount].Key := Key;
+      AccelEntries[AccelCount].Cmd := Cmd;
+    End;
+  End;
+  
+  (* Consommer END ou accolade fermante *)
+  If (CurrToken.Kind = TK_END) Or (CurrToken.Kind = TK_RBRACE) Then
+    NextToken;
+End;
+
+{ ----- Procedure WriteAccelerators ----- }
+{ Ecrit une table d accelerateurs dans le fichier .RES }
+Procedure WriteAccelerators(NameIsId: Boolean; NameId: Word;
+  Const NameStr: TString; MemFlags: Word; LangId: Word);
+Var
+  I         : Integer;
+  DataStart : LongInt;
+  DataSize  : LongInt;
+  ResIdx    : Integer;
+  fVirt     : Word;
+Begin
+  If AccelCount = 0 Then
+    Exit;
+  
+  { Enregistrer la ressource dans la table }
+  ResIdx := AddResource(True, RT_ACCELERATOR, '', NameIsId, NameId, NameStr,
+                       MemFlags, LangId);
+  
+  { Memoriser la position de debut des donnees }
+  DataStart := GetResPos;
+  
+  { Ecrire chaque entree d accelerateur }
+  { Format: WORD fVirt, WORD key, WORD cmd, WORD padding }
+  For I := 1 To AccelCount Do
+  Begin
+    fVirt := AccelEntries[I].fVirt;
+    
+    { Marquer la derniere entree avec le bit $80 }
+    If I = AccelCount Then
+      fVirt := fVirt Or FLAST;
+    
+    WriteWord(fVirt);
+    WriteWord(AccelEntries[I].Key);
+    WriteWord(AccelEntries[I].Cmd);
+    WriteWord(0);  { Padding }
+  End;
+  
+  { Calculer la taille des donnees }
+  DataSize := GetResPos - DataStart;
+  
+  { Aligner sur 4 octets }
+  PadToAlignment(4);
+  
+  { Mettre a jour la taille et l offset dans la table des ressources }
+  SetResourceDataOfs(ResIdx, DataStart);
+  SetResourceDataSize(ResIdx, DataSize);
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -3416,6 +3757,7 @@ Begin
   { Initialiser les compteurs }
   ResCount := 0;
   StringCount := 0;
+  AccelCount := 0;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -3431,9 +3773,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 12-25 }
+  { TODO : Implementation des TODOs 13-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-11 [IMPLEMENTE]. TODOs 12-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-12 [IMPLEMENTE]. TODOs 13-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
