@@ -52,7 +52,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       LineCount (compteur).
       Gerer les niveaux d'imbrication pour une indentation propre.
 
-  5.  [A FAIRE] Emission des types de base C.
+  5.  [IMPLEMENTE] Emission des types de base C.
       Fonctions pour emettre les types C de base :
       TypeToStr(T: TCType): String - convertir type en chaine C.
       EmitTypeDecl - emettre une declaration de type.

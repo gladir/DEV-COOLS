@@ -67,7 +67,7 @@
             LineCount (compteur).
             Gerer les niveaux d'imbrication pour une indentation propre.
 
-  TODO 05 - [A FAIRE] EMISSION DES TYPES DE BASE C
+  TODO 05 - [IMPLEMENTE] EMISSION DES TYPES DE BASE C
             Fonctions pour emettre les types C de base :
             TypeToStr(T: TCType): String - convertir type en chaine C.
             EmitTypeDecl - emettre une declaration de type.
@@ -1130,7 +1130,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 : EMISSION DES TYPES [A FAIRE]
+  TODO 05 : EMISSION DES TYPES [IMPLEMENTE]
   ============================================================ }
 
 Function TypeKindToStr(Kind: TTypeKind): TString;
@@ -1185,6 +1185,221 @@ Begin
   Else
     StorageClassToStr := '';
   End;
+End;
+
+Function TypeToStr(Const T: TCType): TString;
+{ Convertit un type C complet en chaine C.
+  Pour les types simples : retourne le nom du type avec qualificateurs.
+  Pour les pointeurs : retourne le type pointe avec *.
+  Pour les tableaux : retourne le type element avec [].
+  Pour les struct/union/enum : retourne struct/union/enum + nom. }
+Var
+  Result: TString;
+  BaseStr: TString;
+Begin
+  Result := QualifierToStr(T.Quals);
+  
+  Case T.Kind Of
+    TK_VOID..TK_LONGDOUBLE:
+      Begin
+        Result := Result + TypeKindToStr(T.Kind);
+      End;
+    TK_STRUCT:
+      Begin
+        If (T.StructIdx >= 1) And (T.StructIdx <= NumStructs) Then
+          Result := Result + 'struct ' + Structs[T.StructIdx].Name
+        Else
+          Result := Result + 'struct';
+      End;
+    TK_UNION:
+      Begin
+        If (T.StructIdx >= 1) And (T.StructIdx <= NumUnions) Then
+          Result := Result + 'union ' + Unions[T.StructIdx].Name
+        Else
+          Result := Result + 'union';
+      End;
+    TK_ENUM:
+      Begin
+        If (T.StructIdx >= 1) And (T.StructIdx <= NumEnums) Then
+          Result := Result + 'enum ' + Enums[T.StructIdx].Name
+        Else
+          Result := Result + 'enum';
+      End;
+    TK_POINTER:
+      Begin
+        { Pour un pointeur, on a besoin du type pointe }
+        If (T.PointeeIdx >= 1) And (T.PointeeIdx <= NumVars) Then
+          Result := TypeToStr(Vars[T.PointeeIdx].VType) + ' *'
+        Else
+          Result := 'void *';
+      End;
+    TK_ARRAY:
+      Begin
+        { Pour un tableau, type element + [taille] }
+        If (T.ElemIdx >= 1) And (T.ElemIdx <= NumVars) Then
+          BaseStr := TypeToStr(Vars[T.ElemIdx].VType)
+        Else
+          BaseStr := 'int';
+        Result := BaseStr;
+        { La taille du tableau sera ajoutee par EmitArrayDecl }
+      End;
+    TK_FUNC:
+      Begin
+        { Type fonction - simplifie }
+        Result := Result + 'function';
+      End;
+  Else
+    Result := Result + '?';
+  End;
+  
+  TypeToStr := Result;
+End;
+
+Function GetBaseTypeStr(Const T: TCType): TString;
+{ Retourne seulement le type de base sans qualificateurs }
+Begin
+  Case T.Kind Of
+    TK_VOID..TK_LONGDOUBLE:
+      GetBaseTypeStr := TypeKindToStr(T.Kind);
+    TK_STRUCT:
+      If (T.StructIdx >= 1) And (T.StructIdx <= NumStructs) Then
+        GetBaseTypeStr := 'struct ' + Structs[T.StructIdx].Name
+      Else
+        GetBaseTypeStr := 'struct';
+    TK_UNION:
+      If (T.StructIdx >= 1) And (T.StructIdx <= NumUnions) Then
+        GetBaseTypeStr := 'union ' + Unions[T.StructIdx].Name
+      Else
+        GetBaseTypeStr := 'union';
+    TK_ENUM:
+      If (T.StructIdx >= 1) And (T.StructIdx <= NumEnums) Then
+        GetBaseTypeStr := 'enum ' + Enums[T.StructIdx].Name
+      Else
+        GetBaseTypeStr := 'enum';
+  Else
+    GetBaseTypeStr := TypeKindToStr(T.Kind);
+  End;
+End;
+
+Procedure EmitTypeDecl(Const TypeName: TString; Const T: TCType);
+{ Emet une declaration de type (typedef).
+  Exemple : typedef int MonType; }
+Var
+  S: TString;
+Begin
+  S := 'typedef ' + TypeToStr(T) + ' ' + TypeName + ';';
+  EmitLine(S);
+End;
+
+Procedure EmitVarDecl(Const V: TVariable);
+{ Emet une declaration de variable.
+  Gere les classes de stockage et les qualificateurs.
+  Exemple : static const int maVar; }
+Var
+  S: TString;
+Begin
+  S := StorageClassToStr(V.Storage) + TypeToStr(V.VType) + ' ' + V.Name + ';';
+  EmitLine(S);
+End;
+
+Procedure EmitVarDeclInit(Const V: TVariable; Const InitVal: TString);
+{ Emet une declaration de variable avec initialisation.
+  Exemple : static int maVar = 42; }
+Var
+  S: TString;
+Begin
+  S := StorageClassToStr(V.Storage) + TypeToStr(V.VType) + ' ' + V.Name + ' = ' + InitVal + ';';
+  EmitLine(S);
+End;
+
+Procedure EmitArrayDecl(Const Name: TString; Const ElemType: TCType;
+                        Size: Integer; SC: TStorageClass);
+{ Emet une declaration de tableau.
+  Exemple : static int arr[10]; }
+Var
+  S: TString;
+Begin
+  S := StorageClassToStr(SC) + TypeToStr(ElemType) + ' ' + Name + '[' + IntToStr(Size) + '];';
+  EmitLine(S);
+End;
+
+Procedure EmitArrayDeclMulti(Const Name: TString; Const ElemType: TCType;
+                             Sizes: Array Of Integer; NumDims: Integer;
+                             SC: TStorageClass);
+{ Emet une declaration de tableau multidimensionnel.
+  Exemple : int arr[10][20][5]; }
+Var
+  S: TString;
+  I: Integer;
+Begin
+  S := StorageClassToStr(SC) + TypeToStr(ElemType) + ' ' + Name;
+  For I := 0 To NumDims - 1 Do
+    S := S + '[' + IntToStr(Sizes[I]) + ']';
+  S := S + ';';
+  EmitLine(S);
+End;
+
+Procedure EmitPointerDecl(Const Name: TString; Const PointeeType: TCType;
+                          Levels: Integer; SC: TStorageClass; Q: TQualifier);
+{ Emet une declaration de pointeur.
+  Levels : nombre de niveaux d'indirection (1 = *, 2 = **, etc.)
+  Exemple : static const int **ptrPtr; }
+Var
+  S: TString;
+  I: Integer;
+Begin
+  S := StorageClassToStr(SC) + QualifierToStr(Q) + TypeToStr(PointeeType) + ' ';
+  For I := 1 To Levels Do
+    S := S + '*';
+  S := S + Name + ';';
+  EmitLine(S);
+End;
+
+Procedure EmitFuncPtrDecl(Const Name: TString; Const RetType: TCType;
+                          Const ParamTypes: Array Of TString;
+                          NumParams: Integer; SC: TStorageClass);
+{ Emet une declaration de pointeur de fonction.
+  Exemple : int (*funcPtr)(int, char); }
+Var
+  S: TString;
+  I: Integer;
+Begin
+  S := StorageClassToStr(SC) + TypeToStr(RetType) + ' (*' + Name + ')(';
+  If NumParams = 0 Then
+    S := S + 'void'
+  Else
+  Begin
+    For I := 0 To NumParams - 1 Do
+    Begin
+      If I > 0 Then S := S + ', ';
+      S := S + ParamTypes[I];
+    End;
+  End;
+  S := S + ');';
+  EmitLine(S);
+End;
+
+Procedure EmitSimpleVarDecl(Const Name: TString; Kind: TTypeKind;
+                            SC: TStorageClass; Q: TQualifier);
+{ Raccourci pour emettre une declaration de variable simple.
+  Exemple : static volatile int count; }
+Var
+  S: TString;
+Begin
+  S := StorageClassToStr(SC) + QualifierToStr(Q) + TypeKindToStr(Kind) + ' ' + Name + ';';
+  EmitLine(S);
+End;
+
+Procedure EmitSimpleVarDeclInit(Const Name: TString; Kind: TTypeKind;
+                                SC: TStorageClass; Q: TQualifier;
+                                Const InitVal: TString);
+{ Raccourci pour emettre une declaration de variable simple avec init.
+  Exemple : const int MAX = 100; }
+Var
+  S: TString;
+Begin
+  S := StorageClassToStr(SC) + QualifierToStr(Q) + TypeKindToStr(Kind) + ' ' + Name + ' = ' + InitVal + ';';
+  EmitLine(S);
 End;
 
 { ============================================================
