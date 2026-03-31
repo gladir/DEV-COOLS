@@ -381,7 +381,7 @@
               puis pour chaque entree : WORD fVirt, WORD key, WORD cmd,
               WORD padding (bit $80 dans fVirt pour la derniere entree)
 
-  TODO 13 - COMPILATION MENU [A FAIRE]
+  TODO 13 - COMPILATION MENU [IMPLEMENTE]
             Type TMenuItem : record
               Flags    : Word    (fItemFlags)
               MenuID   : Word    (identifiant ou 0 si popup)
@@ -905,6 +905,21 @@ Const
   VK_F12     = $7B;   { F12 }
   VK_NUMLOCK = $90;   { Num Lock }
   VK_SCROLL  = $91;   { Scroll Lock }
+  
+  { TODO 13 : Constantes pour menus }
+  { Drapeaux fItemFlags }
+  MFT_STRING     = $0000;   { Element texte normal }
+  MF_GRAYED      = $0001;   { Element grise }
+  MF_DISABLED    = $0002;   { Element desactive }
+  MF_BITMAP      = $0004;   { Element bitmap }
+  MF_CHECKED     = $0008;   { Element coche }
+  MF_POPUP       = $0010;   { Sous-menu popup }
+  MF_MENUBARBREAK= $0020;   { Nouvelle colonne avec separateur }
+  MF_MENUBREAK   = $0040;   { Nouvelle colonne }
+  MF_END         = $0080;   { Dernier element au niveau courant }
+  MF_OWNERDRAW   = $0100;   { Element dessine par le proprietaire }
+  MF_SEPARATOR   = $0800;   { Separateur }
+  MF_HELP        = $4000;   { Element d aide }
 
 { ============================================================
   TYPES
@@ -951,6 +966,16 @@ Type
     Key   : Word;           { code de touche ou ASCII }
     Cmd   : Word;           { identifiant de commande }
   End;
+  
+  { TODO 13 : Menus }
+  TMenuItem = Record
+    Flags   : Word;         { drapeaux fItemFlags }
+    MenuID  : Word;         { identifiant ou 0 si popup }
+    Text    : TString;      { texte de l element }
+    IsPopup : Boolean;      { True si sous-menu }
+    IsSep   : Boolean;      { True si separateur }
+    Level   : Integer;      { niveau d imbrication }
+  End;
 
 { ============================================================
   VARIABLES GLOBALES
@@ -975,6 +1000,10 @@ Var
   { TODO 12 : Table des accelerateurs }
   AccelEntries : Array[1..MAX_ACCEL] Of TAccelEntry;
   AccelCount   : Integer;
+  
+  { TODO 13 : Table des elements de menu }
+  MenuItems    : Array[1..MAX_MENU_ITEMS] Of TMenuItem;
+  MenuItemCount: Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -3666,6 +3695,293 @@ Begin
   SetResourceDataSize(ResIdx, DataSize);
 End;
 
+{ =============================================================
+  TODO 13 - COMPILATION MENU
+  ============================================================= }
+
+{ ----- Function IsMenuOption ----- }
+{ Verifie si le token est une option de menu }
+Function IsMenuOption(Const S: TString): Boolean;
+Var
+  UpS : TString;
+Begin
+  UpS := UpCaseStr(S);
+  IsMenuOption := (UpS = 'GRAYED') Or (UpS = 'INACTIVE') Or
+                  (UpS = 'CHECKED') Or (UpS = 'MENUBARBREAK') Or
+                  (UpS = 'MENUBREAK') Or (UpS = 'HELP') Or
+                  (UpS = 'OWNERDRAW');
+End;
+
+{ ----- Function MenuFlagFromName ----- }
+{ Retourne le flag MF_* depuis le nom }
+Function MenuFlagFromName(Const Name: TString): Word;
+Var
+  UpName : TString;
+Begin
+  UpName := UpCaseStr(Name);
+  
+  If (UpName = 'GRAYED') Or (UpName = 'INACTIVE') Then
+    MenuFlagFromName := MF_GRAYED
+  Else If UpName = 'CHECKED' Then
+    MenuFlagFromName := MF_CHECKED
+  Else If UpName = 'MENUBARBREAK' Then
+    MenuFlagFromName := MF_MENUBARBREAK
+  Else If UpName = 'MENUBREAK' Then
+    MenuFlagFromName := MF_MENUBREAK
+  Else If UpName = 'HELP' Then
+    MenuFlagFromName := MF_HELP
+  Else If UpName = 'OWNERDRAW' Then
+    MenuFlagFromName := MF_OWNERDRAW
+  Else
+    MenuFlagFromName := 0;
+End;
+
+{ ----- Procedure AddMenuItem ----- }
+{ Ajoute un element de menu a la table }
+Procedure AddMenuItem(Flags: Word; MenuID: Word; Const Text: TString;
+                      IsPopup, IsSep: Boolean; Level: Integer);
+Begin
+  If MenuItemCount < MAX_MENU_ITEMS Then
+  Begin
+    Inc(MenuItemCount);
+    MenuItems[MenuItemCount].Flags := Flags;
+    MenuItems[MenuItemCount].MenuID := MenuID;
+    MenuItems[MenuItemCount].Text := Text;
+    MenuItems[MenuItemCount].IsPopup := IsPopup;
+    MenuItems[MenuItemCount].IsSep := IsSep;
+    MenuItems[MenuItemCount].Level := Level;
+  End;
+End;
+
+{ ----- Procedure ParseMenuBlock ----- }
+{ Parse un bloc de menu recursivement (entre BEGIN et END) }
+Procedure ParseMenuBlock(Level: Integer); Forward;
+
+Procedure ParseMenuBlock(Level: Integer);
+Var
+  ItemText  : TString;
+  ItemId    : Word;
+  ItemFlags : Word;
+  KeyWord   : TString;
+Begin
+  (* Consommer BEGIN ou accolade ouvrante *)
+  If (CurrToken.Kind = TK_BEGIN) Or (CurrToken.Kind = TK_LBRACE) Then
+    NextToken;
+  
+  (* Lire les elements jusqu a END ou accolade fermante *)
+  While (CurrToken.Kind <> TK_END) And (CurrToken.Kind <> TK_RBRACE) And
+        (CurrToken.Kind <> TK_EOF) Do
+  Begin
+    { Ignorer les nouvelles lignes et commentaires }
+    If CurrToken.Kind = TK_NEWLINE Then
+    Begin
+      NextToken;
+      Continue;
+    End;
+    
+    If CurrToken.Kind = TK_COMMENT Then
+    Begin
+      NextToken;
+      Continue;
+    End;
+    
+    If CurrToken.Kind = TK_IDENT Then
+    Begin
+      KeyWord := UpCaseStr(CurrToken.Value);
+      
+      If KeyWord = 'POPUP' Then
+      Begin
+        { POPUP "text" ... BEGIN ... END }
+        NextToken;
+        
+        { Lire le texte du popup }
+        ItemText := '';
+        If CurrToken.Kind = TK_STRING Then
+        Begin
+          ItemText := CurrToken.Value;
+          NextToken;
+        End;
+        
+        { Lire les options }
+        ItemFlags := MF_POPUP;
+        While CurrToken.Kind = TK_COMMA Do
+        Begin
+          NextToken;
+          If CurrToken.Kind = TK_IDENT Then
+          Begin
+            ItemFlags := ItemFlags Or MenuFlagFromName(CurrToken.Value);
+            NextToken;
+          End;
+        End;
+        
+        { Ajouter l element popup }
+        AddMenuItem(ItemFlags, 0, ItemText, True, False, Level);
+        
+        { Parser le sous-menu }
+        If (CurrToken.Kind = TK_BEGIN) Or (CurrToken.Kind = TK_LBRACE) Then
+          ParseMenuBlock(Level + 1);
+      End
+      Else If KeyWord = 'MENUITEM' Then
+      Begin
+        { MENUITEM "text", id [, options] ou MENUITEM SEPARATOR }
+        NextToken;
+        
+        { Verifier si c est un separateur }
+        If (CurrToken.Kind = TK_IDENT) And 
+           (UpCaseStr(CurrToken.Value) = 'SEPARATOR') Then
+        Begin
+          NextToken;
+          AddMenuItem(MF_SEPARATOR, 0, '', False, True, Level);
+        End
+        Else
+        Begin
+          { MENUITEM "text", id [, options] }
+          ItemText := '';
+          If CurrToken.Kind = TK_STRING Then
+          Begin
+            ItemText := CurrToken.Value;
+            NextToken;
+          End;
+          
+          { Virgule et identifiant }
+          ItemId := 0;
+          If CurrToken.Kind = TK_COMMA Then
+          Begin
+            NextToken;
+            If CurrToken.Kind = TK_NUMBER Then
+            Begin
+              ItemId := Word(CurrToken.IntVal);
+              NextToken;
+            End
+            Else If CurrToken.Kind = TK_IDENT Then
+            Begin
+              ItemId := Word(StrToInt(CurrToken.Value));
+              NextToken;
+            End;
+          End;
+          
+          { Options supplementaires }
+          ItemFlags := 0;
+          While CurrToken.Kind = TK_COMMA Do
+          Begin
+            NextToken;
+            If CurrToken.Kind = TK_IDENT Then
+            Begin
+              ItemFlags := ItemFlags Or MenuFlagFromName(CurrToken.Value);
+              NextToken;
+            End;
+          End;
+          
+          AddMenuItem(ItemFlags, ItemId, ItemText, False, False, Level);
+        End;
+      End
+      Else
+      Begin
+        { Mot-cle inconnu, ignorer }
+        NextToken;
+      End;
+    End
+    Else
+    Begin
+      NextToken;
+    End;
+  End;
+  
+  { Marquer le dernier element du niveau avec MF_END }
+  If MenuItemCount > 0 Then
+  Begin
+    { Trouver le dernier element au niveau courant }
+    If MenuItems[MenuItemCount].Level = Level Then
+      MenuItems[MenuItemCount].Flags := MenuItems[MenuItemCount].Flags Or MF_END;
+  End;
+  
+  (* Consommer END ou accolade fermante *)
+  If (CurrToken.Kind = TK_END) Or (CurrToken.Kind = TK_RBRACE) Then
+    NextToken;
+End;
+
+{ ----- Procedure ParseMenu ----- }
+{ Parse un bloc MENU ... BEGIN ... END }
+Procedure ParseMenu(NameIsId: Boolean; NameId: Word;
+  Const NameStr: TString; MemFlags: Word);
+Begin
+  { Reinitialiser le compteur d elements de menu }
+  MenuItemCount := 0;
+  
+  { Attendre BEGIN ou accolade ouvrante }
+  If (CurrToken.Kind <> TK_BEGIN) And (CurrToken.Kind <> TK_LBRACE) Then
+  Begin
+    SyntaxError('BEGIN ou accolade ouvrante attendu apres MENU');
+    Exit;
+  End;
+  
+  { Parser le bloc de menu }
+  ParseMenuBlock(0);
+End;
+
+{ ----- Procedure WriteMenu ----- }
+{ Ecrit une ressource menu dans le fichier .RES }
+Procedure WriteMenu(NameIsId: Boolean; NameId: Word;
+  Const NameStr: TString; MemFlags: Word; LangId: Word);
+Var
+  I         : Integer;
+  DataStart : LongInt;
+  DataSize  : LongInt;
+  ResIdx    : Integer;
+  ItemFlags : Word;
+  S         : TString;
+  J         : Integer;
+Begin
+  If MenuItemCount = 0 Then
+    Exit;
+  
+  { Enregistrer la ressource dans la table }
+  ResIdx := AddResource(True, RT_MENU, '', NameIsId, NameId, NameStr,
+                       MemFlags, LangId);
+  
+  { Memoriser la position de debut des donnees }
+  DataStart := GetResPos;
+  
+  { Ecrire l en-tete de menu (WORD wVersion=0, WORD cbHeaderSize=0) }
+  WriteWord(0);  { wVersion }
+  WriteWord(0);  { cbHeaderSize }
+  
+  { Ecrire chaque element de menu }
+  For I := 1 To MenuItemCount Do
+  Begin
+    ItemFlags := MenuItems[I].Flags;
+    
+    { Ajuster les flags pour le format binaire }
+    If MenuItems[I].IsSep Then
+      ItemFlags := ItemFlags Or MF_SEPARATOR;
+    If MenuItems[I].IsPopup Then
+      ItemFlags := ItemFlags Or MF_POPUP;
+    
+    { Ecrire les flags }
+    WriteWord(ItemFlags);
+    
+    { Ecrire l ID seulement si ce n est pas un popup }
+    If Not MenuItems[I].IsPopup Then
+      WriteWord(MenuItems[I].MenuID);
+    
+    { Ecrire le texte en Unicode termine par $0000 }
+    S := MenuItems[I].Text;
+    For J := 1 To Length(S) Do
+      WriteWChar(CharToWChar(S[J]));
+    WriteWChar(0);  { Terminateur Unicode }
+  End;
+  
+  { Calculer la taille des donnees }
+  DataSize := GetResPos - DataStart;
+  
+  { Aligner sur 4 octets }
+  PadToAlignment(4);
+  
+  { Mettre a jour la taille et l offset dans la table des ressources }
+  SetResourceDataOfs(ResIdx, DataStart);
+  SetResourceDataSize(ResIdx, DataSize);
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -3758,6 +4074,7 @@ Begin
   ResCount := 0;
   StringCount := 0;
   AccelCount := 0;
+  MenuItemCount := 0;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -3773,9 +4090,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 13-25 }
+  { TODO : Implementation des TODOs 14-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-12 [IMPLEMENTE]. TODOs 13-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-13 [IMPLEMENTE]. TODOs 14-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
