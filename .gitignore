@@ -1,7 +1,11 @@
+# Object files and compiled outputs
 *.S68
 *.class
 *.o
 *.obj
 *.ppu
 *.prg
+
+# Compiled executables
 SQLCMD
+/RC

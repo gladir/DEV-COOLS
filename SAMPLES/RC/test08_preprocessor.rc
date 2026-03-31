@@ -1,0 +1,63 @@
+// test08_preprocessor.rc - Test directives preprocesseur
+// Test: Compilation avec #define, #ifdef, #ifndef, #else, #endif
+
+// Definitions
+#define VERSION_MAJOR 1
+#define VERSION_MINOR 0
+#define APP_NAME "Test Application"
+#define DEBUG_MODE
+
+// Test #ifdef
+#ifdef DEBUG_MODE
+STRINGTABLE
+BEGIN
+    1000 "Mode DEBUG active"
+    1001 "Messages de debug disponibles"
+END
+#endif
+
+// Test #ifndef
+#ifndef RELEASE_MODE
+STRINGTABLE
+BEGIN
+    2000 "Ce n'est pas une version release"
+END
+#endif
+
+// Test #ifdef avec #else
+#ifdef FEATURE_ADVANCED
+STRINGTABLE
+BEGIN
+    3000 "Fonctionnalites avancees activees"
+END
+#else
+STRINGTABLE
+BEGIN
+    3000 "Version standard"
+END
+#endif
+
+// Menu conditionnel
+#ifdef DEBUG_MODE
+100 MENU
+BEGIN
+    POPUP "&Debug"
+    BEGIN
+        MENUITEM "&Console",     101
+        MENUITEM "&Journaux",    102
+        MENUITEM SEPARATOR
+        MENUITEM "&Tests",       103
+    END
+END
+#endif
+
+// Test #undef
+#undef DEBUG_MODE
+
+// Ce bloc ne devrait pas etre inclus car DEBUG_MODE est indefini
+#ifdef DEBUG_MODE
+STRINGTABLE
+BEGIN
+    4000 "Cette chaine ne devrait pas apparaitre"
+END
+#endif
