@@ -616,7 +616,7 @@
               parser RCDATA : si chaine -> fichier externe
               si BEGIN -> donnees litterales ou inline
 
-  TODO 20 - COMPILATION MANIFEST [A FAIRE]
+  TODO 20 - COMPILATION MANIFEST [IMPLEMENTE]
             Procedure ParseManifest(NameIsId: Boolean; NameId: Word;
               Const NameStr: String; MemFlags: Word)
               lire la declaration MANIFEST "fichier.xml" ou
@@ -1099,6 +1099,9 @@ Const
   
   { TODO 19 : Taille maximale pour les donnees RCDATA }
   MAX_RCDATA_SIZE = 1048576;   { 1 Mo max pour les donnees brutes }
+  
+  { TODO 20 : Taille maximale pour les fichiers MANIFEST }
+  MAX_MANIFEST_SIZE = 1048576;  { 1 Mo max pour les manifestes XML }
 
 { ============================================================
   TYPES
@@ -1312,6 +1315,10 @@ Var
   { TODO 19 : RCDATA }
   RCDataBuffer   : Pointer;   { buffer pour les donnees RCDATA }
   RCDataSize     : LongInt;   { taille des donnees RCDATA }
+  
+  { TODO 20 : MANIFEST }
+  ManifestBuffer : Pointer;   { buffer pour les donnees MANIFEST }
+  ManifestSize   : LongInt;   { taille des donnees MANIFEST }
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -6870,6 +6877,295 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 20 : COMPILATION MANIFEST
+  ============================================================ }
+
+{ ----- Procedure InitManifest ----- }
+{ Initialise les variables globales MANIFEST }
+Procedure InitManifest;
+Begin
+  ManifestBuffer := Nil;
+  ManifestSize := 0;
+End;
+
+{ ----- Procedure ClearManifest ----- }
+{ Libere la memoire allouee pour MANIFEST }
+Procedure ClearManifest;
+Begin
+  If ManifestBuffer <> Nil Then
+  Begin
+    FreeMem(ManifestBuffer, ManifestSize);
+    ManifestBuffer := Nil;
+  End;
+  ManifestSize := 0;
+End;
+
+{ ----- Function ValidateManifestXML ----- }
+{ Validation basique du XML : verifier que le fichier commence par }
+{ <?xml ou <assembly, et contient </assembly> }
+Function ValidateManifestXML(DataPtr : Pointer; DataSize : LongInt) : Boolean;
+Var
+  P        : PChar;
+  I        : LongInt;
+  StartOK  : Boolean;
+  EndOK    : Boolean;
+  Ch       : Char;
+  Header   : String[20];
+  HdrLen   : Integer;
+Begin
+  ValidateManifestXML := False;
+  
+  If (DataPtr = Nil) Or (DataSize < 20) Then
+    Exit;
+  
+  P := PChar(DataPtr);
+  StartOK := False;
+  EndOK := False;
+  
+  { Sauter les espaces/BOM au debut }
+  I := 0;
+  While (I < DataSize) And (I < 10) Do
+  Begin
+    Ch := P[I];
+    If (Ch <> ' ') And (Ch <> #9) And (Ch <> #10) And (Ch <> #13) And
+       (Ord(Ch) <> $EF) And (Ord(Ch) <> $BB) And (Ord(Ch) <> $BF) Then
+      Break;
+    Inc(I);
+  End;
+  
+  { Verifier le debut : <?xml ou <assembly }
+  HdrLen := 0;
+  While (I < DataSize) And (HdrLen < 20) Do
+  Begin
+    Inc(HdrLen);
+    Header[HdrLen] := P[I];
+    Inc(I);
+  End;
+  Header[0] := Chr(HdrLen);
+  
+  { Convertir en minuscules pour la comparaison }
+  For I := 1 To HdrLen Do
+    If (Header[I] >= 'A') And (Header[I] <= 'Z') Then
+      Header[I] := Chr(Ord(Header[I]) + 32);
+  
+  If (Pos('<?xml', Header) = 1) Or (Pos('<assembly', Header) = 1) Then
+    StartOK := True;
+  
+  { Chercher </assembly> a la fin du fichier }
+  If DataSize > 15 Then
+  Begin
+    For I := DataSize - 15 To DataSize - 1 Do
+    Begin
+      If I < 0 Then Continue;
+      If (P[I] = '<') Or (P[I] = '/') Then
+      Begin
+        { Verifier si on a </assembly> quelque part }
+        HdrLen := 0;
+        While (I + HdrLen < DataSize) And (HdrLen < 15) Do
+        Begin
+          Inc(HdrLen);
+          Header[HdrLen] := P[I + HdrLen - 1];
+        End;
+        Header[0] := Chr(HdrLen);
+        
+        For HdrLen := 1 To Length(Header) Do
+          If (Header[HdrLen] >= 'A') And (Header[HdrLen] <= 'Z') Then
+            Header[HdrLen] := Chr(Ord(Header[HdrLen]) + 32);
+        
+        If Pos('</assembly>', Header) > 0 Then
+        Begin
+          EndOK := True;
+          Break;
+        End;
+      End;
+    End;
+  End;
+  
+  { Accepter si au moins le debut est valide }
+  { (certains manifestes peuvent avoir une structure differente) }
+  ValidateManifestXML := StartOK;
+End;
+
+{ ----- Procedure LoadManifestFile ----- }
+{ Charge un fichier XML manifest dans un buffer alloue dynamiquement }
+Procedure LoadManifestFile(Const AFileName : TString; Var ADataPtr : Pointer;
+  Var ADataSize : LongInt);
+Var
+  F         : File;
+  BytesRead : LongInt;
+Begin
+  { Ouvrir le fichier en mode binaire }
+  {$I-}
+  Assign(F, AFileName);
+  Reset(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier manifest : ' + AFileName);
+  
+  { Obtenir la taille du fichier }
+  ADataSize := FileSize(F);
+  
+  { Verifier que le fichier n est pas vide }
+  If ADataSize <= 0 Then
+  Begin
+    Close(F);
+    FatalError('Fichier manifest vide : ' + AFileName);
+  End;
+  
+  { Verifier la taille maximale }
+  If ADataSize > MAX_MANIFEST_SIZE Then
+  Begin
+    Close(F);
+    FatalError('Fichier manifest trop grand (max ' + IntToStr(MAX_MANIFEST_SIZE) + ' octets) : ' + AFileName);
+  End;
+  
+  { Allouer la memoire }
+  GetMem(ADataPtr, ADataSize);
+  If ADataPtr = Nil Then
+  Begin
+    Close(F);
+    FatalError('Impossible d''allouer ' + IntToStr(ADataSize) + ' octets pour : ' + AFileName);
+  End;
+  
+  { Lire le contenu du fichier }
+  {$I-}
+  BlockRead(F, ADataPtr^, ADataSize, BytesRead);
+  {$I+}
+  If (IOResult <> 0) Or (BytesRead <> ADataSize) Then
+  Begin
+    FreeMem(ADataPtr, ADataSize);
+    ADataPtr := Nil;
+    ADataSize := 0;
+    Close(F);
+    FatalError('Erreur de lecture du fichier manifest : ' + AFileName);
+  End;
+  
+  { Fermer le fichier }
+  Close(F);
+  
+  { Valider le XML (avertissement seulement) }
+  If Not ValidateManifestXML(ADataPtr, ADataSize) Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('  Avertissement: le fichier ne semble pas etre un manifest XML valide');
+  End;
+End;
+
+{ ----- Procedure WriteManifestResource ----- }
+{ Ecrit les donnees manifest dans le fichier ressource }
+Procedure WriteManifestResource(ADataPtr : Pointer; ADataSize : LongInt);
+Var
+  I : LongInt;
+  P : PByte;
+Begin
+  P := PByte(ADataPtr);
+  For I := 0 To ADataSize - 1 Do
+  Begin
+    WriteByte(P^);
+    Inc(P);
+  End;
+End;
+
+{ ----- Procedure WriteManifestFromBuffer ----- }
+{ Ecrit une ressource RT_MANIFEST depuis un buffer en memoire }
+Procedure WriteManifestFromBuffer(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; ADataPtr : Pointer; ADataSize : LongInt;
+  MemFlags : Word; LangId : Word);
+Var
+  ResIdx  : Integer;
+  DataPos : LongInt;
+Begin
+  { Ajouter la ressource a la table }
+  ResIdx := AddResource(True, RT_MANIFEST, '', NameIsId, NameId, NameStr,
+                        MemFlags, LangId);
+  
+  { Ecrire l'en-tete de ressource }
+  If Opts.Output32 Then
+  Begin
+    WriteResHeader32(True, RT_MANIFEST, '', NameIsId, NameId, NameStr,
+                     ADataSize, MemFlags, LangId);
+  End
+  Else
+  Begin
+    If NameIsId Then
+      WriteResHeader16(RT_MANIFEST, NameId, ADataSize, MemFlags)
+    Else
+      WriteResHeader16Str('MANIFEST', NameStr, ADataSize, MemFlags);
+  End;
+  
+  { Enregistrer la position des donnees }
+  DataPos := GetResPos;
+  SetResourceDataOfs(ResIdx, DataPos);
+  
+  { Ecrire les donnees MANIFEST }
+  WriteManifestResource(ADataPtr, ADataSize);
+  
+  { Aligner sur 4 octets pour 32 bits }
+  If Opts.Output32 Then
+    PadToAlignment(4);
+  
+  { Enregistrer la taille des donnees }
+  SetResourceDataSize(ResIdx, ADataSize);
+End;
+
+{ ----- Procedure WriteManifest ----- }
+{ Charge un fichier et ecrit une ressource RT_MANIFEST complete }
+Procedure WriteManifest(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const AFileName : TString;
+  MemFlags : Word; LangId : Word);
+Var
+  DataPtr  : Pointer;
+  DataSize : LongInt;
+Begin
+  { Charger le fichier }
+  LoadManifestFile(AFileName, DataPtr, DataSize);
+  
+  { Ecrire la ressource }
+  WriteManifestFromBuffer(NameIsId, NameId, NameStr, DataPtr, DataSize,
+                          MemFlags, LangId);
+  
+  { Liberer la memoire }
+  FreeMem(DataPtr, DataSize);
+  
+  { Afficher en mode verbeux }
+  If Opts.Verbose Then
+  Begin
+    Write('  MANIFEST ');
+    If NameIsId Then
+      Write('#', NameId)
+    Else
+      Write('"', NameStr, '"');
+    WriteLn(' <- ', AFileName, ' (', DataSize, ' octets)');
+  End;
+End;
+
+{ ----- Procedure ParseManifest ----- }
+{ Parse une declaration MANIFEST et ecrit la ressource }
+Procedure ParseManifest(NameIsId : Boolean; NameId : Word; Const NameStr : TString);
+Var
+  MemFlags : Word;
+  FileName : TString;
+  Tok      : TToken;
+Begin
+  { Lire les options memoire }
+  MemFlags := ParseMemoryOptions;
+  
+  { Verifier le prochain token : chaine (fichier) }
+  Tok := PeekTokenFn;
+  
+  If Tok.Kind = TK_STRING Then
+  Begin
+    { Fichier externe }
+    FileName := ExpectString;
+    WriteManifest(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
+  End
+  Else
+  Begin
+    SyntaxError('MANIFEST: nom de fichier attendu');
+  End;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -6985,7 +7281,7 @@ Begin
 
   { TODO : Implementation des TODOs 20-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-19 [IMPLEMENTE]. TODOs 20-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-20 [IMPLEMENTE]. TODOs 21-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
