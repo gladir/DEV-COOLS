@@ -674,7 +674,7 @@
             Function FindIncludeFile(Const FileName: String): String
               chercher le fichier dans les chemins IncludePaths
 
-  TODO 22 - RESOLUTION DES CHEMINS DE FICHIERS [A FAIRE]
+  TODO 22 - RESOLUTION DES CHEMINS DE FICHIERS [IMPLEMENTE]
             Variables globales :
               BasePath : String (repertoire du fichier .RC source)
             Procedure InitBasePath(Const SrcFileName: String)
@@ -693,6 +693,10 @@
               et resoudre les .. et .
             Function IsAbsolutePath(Const Path: String): Boolean
               determiner si un chemin est absolu
+            Function CombinePath(Const BasePath, FileName: String): String
+              combine deux chemins en un chemin complet
+            Function ResolveResourcePathOrError(Const FileName: String): String
+              resout le chemin ou genere une erreur fatale
 
   TODO 23 - VALIDATION ET MESSAGES D'ERREUR [A FAIRE]
             Variables globales :
@@ -1349,6 +1353,9 @@ Var
   IncludeLevel   : Integer;
   IfdefStack     : Array[1..MAX_IFDEF_STACK] Of TIfdefEntry;
   IfdefLevel     : Integer;
+  
+  { TODO 22 : RESOLUTION DES CHEMINS DE FICHIERS }
+  BasePath       : TString;   { repertoire du fichier .RC source }
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -7785,6 +7792,193 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 22 : RESOLUTION DES CHEMINS DE FICHIERS
+  ============================================================ }
+
+{ ----- Procedure InitBasePath ----- }
+{ Extrait le chemin du fichier source pour resoudre les chemins relatifs }
+Procedure InitBasePath(Const SrcFileName : TString);
+Begin
+  BasePath := ExtractFilePath(SrcFileName);
+  { Si le chemin est vide, utiliser le repertoire courant }
+  If BasePath = '' Then
+    BasePath := '.' + DirectorySeparator;
+End;
+
+{ ----- Function IsAbsolutePath ----- }
+{ Determine si un chemin est absolu }
+Function IsAbsolutePath(Const APath : TString) : Boolean;
+Begin
+  IsAbsolutePath := False;
+  
+  If Length(APath) = 0 Then
+    Exit;
+  
+  { Chemin Unix absolu : commence par / }
+  If APath[1] = '/' Then
+  Begin
+    IsAbsolutePath := True;
+    Exit;
+  End;
+  
+  { Chemin Windows absolu : commence par X:\ ou X:/ }
+  If (Length(APath) >= 3) And
+     (((APath[1] >= 'A') And (APath[1] <= 'Z')) Or
+      ((APath[1] >= 'a') And (APath[1] <= 'z'))) And
+     (APath[2] = ':') And
+     ((APath[3] = '\') Or (APath[3] = '/')) Then
+  Begin
+    IsAbsolutePath := True;
+    Exit;
+  End;
+  
+  { Chemin UNC Windows : commence par \\ }
+  If (Length(APath) >= 2) And (APath[1] = '\') And (APath[2] = '\') Then
+  Begin
+    IsAbsolutePath := True;
+    Exit;
+  End;
+End;
+
+{ ----- Function NormalizePath ----- }
+{ Normalise les separateurs de chemin et resout les .. et . }
+Function NormalizePath(Const APath : TString) : TString;
+Var
+  Result : TString;
+  I      : Integer;
+  Ch     : Char;
+Begin
+  Result := '';
+  
+  { Convertir les separateurs en separateur systeme }
+  For I := 1 To Length(APath) Do
+  Begin
+    Ch := APath[I];
+    {$IFDEF WINDOWS}
+    If Ch = '/' Then
+      Ch := '\';
+    {$ELSE}
+    If Ch = '\' Then
+      Ch := '/';
+    {$ENDIF}
+    Result := Result + Ch;
+  End;
+  
+  { Supprimer les doubles separateurs }
+  I := 1;
+  While I < Length(Result) Do
+  Begin
+    If (Result[I] = DirectorySeparator) And 
+       (Result[I + 1] = DirectorySeparator) Then
+    Begin
+      { Garder les doubles \ pour les chemins UNC Windows }
+      {$IFDEF WINDOWS}
+      If I = 1 Then
+      Begin
+        Inc(I);
+        Continue;
+      End;
+      {$ENDIF}
+      Delete(Result, I, 1);
+    End
+    Else
+      Inc(I);
+  End;
+  
+  NormalizePath := Result;
+End;
+
+{ ----- Function CombinePath ----- }
+{ Combine deux chemins en un chemin complet }
+Function CombinePath(Const ABasePath, AFileName : TString) : TString;
+Var
+  Base : TString;
+Begin
+  Base := ABasePath;
+  
+  { Ajouter un separateur a la fin du chemin de base si necessaire }
+  If (Length(Base) > 0) And (Base[Length(Base)] <> DirectorySeparator) And
+     (Base[Length(Base)] <> '/') And (Base[Length(Base)] <> '\') Then
+    Base := Base + DirectorySeparator;
+  
+  CombinePath := NormalizePath(Base + AFileName);
+End;
+
+{ ----- Function ResolveResourcePath ----- }
+{ Resout le chemin d'un fichier ressource (icone, bitmap, etc.)
+  Essaie dans l'ordre :
+  1. chemin absolu si commence par / ou X:\
+  2. chemin relatif a BasePath
+  3. chemins dans IncludePaths
+  4. chemin relatif au repertoire courant }
+Function ResolveResourcePath(Const FileName : TString) : TString;
+Var
+  TestPath : TString;
+  I        : Integer;
+Begin
+  ResolveResourcePath := '';
+  
+  { Si le nom de fichier est vide, retourner vide }
+  If Length(FileName) = 0 Then
+    Exit;
+  
+  { Normaliser le nom de fichier }
+  TestPath := NormalizePath(FileName);
+  
+  { 1. Chemin absolu : verifier directement }
+  If IsAbsolutePath(TestPath) Then
+  Begin
+    If FileExists(TestPath) Then
+      ResolveResourcePath := TestPath;
+    Exit;
+  End;
+  
+  { 2. Chemin relatif a BasePath }
+  TestPath := CombinePath(BasePath, FileName);
+  If FileExists(TestPath) Then
+  Begin
+    ResolveResourcePath := TestPath;
+    Exit;
+  End;
+  
+  { 3. Chemins dans IncludePaths }
+  For I := 1 To Opts.IncludeCount Do
+  Begin
+    TestPath := CombinePath(Opts.IncludePaths[I], FileName);
+    If FileExists(TestPath) Then
+    Begin
+      ResolveResourcePath := TestPath;
+      Exit;
+    End;
+  End;
+  
+  { 4. Chemin relatif au repertoire courant }
+  TestPath := NormalizePath(FileName);
+  If FileExists(TestPath) Then
+  Begin
+    ResolveResourcePath := TestPath;
+    Exit;
+  End;
+  
+  { Fichier non trouve - retourner le nom original pour le message d'erreur }
+  ResolveResourcePath := '';
+End;
+
+{ ----- Function ResolveResourcePathOrError ----- }
+{ Resout le chemin d'un fichier ressource ou genere une erreur }
+Function ResolveResourcePathOrError(Const FileName : TString) : TString;
+Var
+  Resolved : TString;
+Begin
+  Resolved := ResolveResourcePath(FileName);
+  
+  If Length(Resolved) = 0 Then
+    FatalError('Fichier ressource non trouve: ' + FileName);
+  
+  ResolveResourcePathOrError := Resolved;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -7899,9 +8093,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 22-25 }
+  { TODO : Implementation des TODOs 23-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-21 [IMPLEMENTE]. TODOs 22-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-22 [IMPLEMENTE]. TODOs 23-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
