@@ -31,11 +31,11 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       IsUnionType, IsEnumType, IsFuncType, IsCompositeType, IsArithType,
       GetTypeSize, GetTypeSizeBits, AreTypesCompatible, CanConvertTo.
 
-  3.  [A FAIRE] Generateur aleatoire et seed.
+  3.  [IMPLEMENTE] Generateur aleatoire et seed.
       Implanter un generateur de nombres pseudo-aleatoires reproductible
       (LCG - Linear Congruential Generator ou Xorshift).
       Fonctions : InitRandom(seed), RandomInt(max), RandomBool,
-      RandomChoice(probability), RandomRange(min, max).
+      RandomChoice(probability), RandomRange(min, max), RandomNext.
       Variables globales : RandomSeed, RandomState.
       La graine peut etre specifiee par --seed pour reproduire les
       tests. Si non specifiee, utiliser l'heure systeme.

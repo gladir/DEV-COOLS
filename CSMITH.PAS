@@ -46,11 +46,11 @@
             IsUnionType, IsEnumType, IsFuncType, IsCompositeType, IsArithType,
             GetTypeSize, GetTypeSizeBits, AreTypesCompatible.
 
-  TODO 03 - [A FAIRE] GENERATEUR ALEATOIRE ET SEED
+  TODO 03 - [IMPLEMENTE] GENERATEUR ALEATOIRE ET SEED
             Implanter un generateur de nombres pseudo-aleatoires reproductible
             (LCG - Linear Congruential Generator ou Xorshift).
             Fonctions : InitRandom(seed), RandomInt(max), RandomBool,
-            RandomChoice(probability), RandomRange(min, max).
+            RandomChoice(probability), RandomRange(min, max), RandomNext.
             Variables globales : RandomSeed, RandomState.
             La graine peut etre specifiee par --seed pour reproduire les
             tests. Si non specifiee, utiliser l'heure systeme.
@@ -922,7 +922,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 : GENERATEUR ALEATOIRE [A FAIRE]
+  TODO 03 : GENERATEUR ALEATOIRE [IMPLEMENTE]
   ============================================================ }
 
 Procedure InitRandom(Seed: LongInt);
