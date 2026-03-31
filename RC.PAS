@@ -593,23 +593,28 @@
               EntryCount: Integer; MemFlags: Word; LangId: Word)
               similaire avec ResType=2 (CUR) pour RT_GROUP_CURSOR
 
-  TODO 19 - COMPILATION RCDATA [A FAIRE]
-            Procedure ParseRCData(NameIsId: Boolean; NameId: Word;
-              Const NameStr: String; MemFlags: Word)
-              lire le bloc RCDATA ... BEGIN ... END :
-              donnees litterales : nombres (octets/words), chaines "...",
-              ou reference a un fichier externe "fichier.bin"
-              si donnees litterales : parser chaque valeur hexadecimale
-              ou chaine et stocker dans un tampon
-              si fichier externe : lire le contenu binaire du fichier
+  TODO 19 - COMPILATION RCDATA [IMPLEMENTE]
+            Procedure InitRCData
+              initialiser RCDataBuffer a Nil et RCDataSize a 0
+            Procedure ClearRCData
+              liberer RCDataBuffer si alloue, reinitialiser a Nil/0
+            Procedure LoadRCDataFile(Const FileName: String;
+              Var DataPtr: Pointer; Var DataSize: LongInt)
+              ouvrir le fichier binaire, allouer memoire, lire le contenu
+            Procedure WriteRCDataResource(DataPtr: Pointer; DataSize: LongInt)
+              ecrire les donnees brutes dans le fichier ressource
             Procedure WriteRCData(NameIsId: Boolean; NameId: Word;
-              Const NameStr: String; Const Data: Array Of Byte;
-              DataSize: LongInt; MemFlags: Word; LangId: Word)
-              ecrire une ressource RT_RCDATA avec les donnees brutes
-            Procedure WriteRCDataFromFile(NameIsId: Boolean; NameId: Word;
               Const NameStr: String; Const FileName: String;
               MemFlags: Word; LangId: Word)
-              lire le fichier externe et ecrire comme RT_RCDATA
+              charger le fichier et ecrire la ressource RT_RCDATA complete
+            Procedure WriteRCDataFromBuffer(NameIsId: Boolean; NameId: Word;
+              Const NameStr: String; DataPtr: Pointer; DataSize: LongInt;
+              MemFlags: Word; LangId: Word)
+              ecrire une ressource RT_RCDATA depuis un buffer en memoire
+            Procedure ParseRCData(NameIsId: Boolean; NameId: Word;
+              Const NameStr: String)
+              parser RCDATA : si chaine -> fichier externe
+              si BEGIN -> donnees litterales ou inline
 
   TODO 20 - COMPILATION MANIFEST [A FAIRE]
             Procedure ParseManifest(NameIsId: Boolean; NameId: Word;
@@ -1091,6 +1096,9 @@ Const
   
   { TODO 16 : Taille maximale pour les entrees icone/curseur }
   MAX_ICON_ENTRIES = 64;
+  
+  { TODO 19 : Taille maximale pour les donnees RCDATA }
+  MAX_RCDATA_SIZE = 1048576;   { 1 Mo max pour les donnees brutes }
 
 { ============================================================
   TYPES
@@ -1300,6 +1308,10 @@ Var
   { TODO 17 : BITMAP }
   BitmapData     : Pointer;   { donnees du bitmap (sans BITMAPFILEHEADER) }
   BitmapDataSize : LongInt;   { taille des donnees du bitmap }
+  
+  { TODO 19 : RCDATA }
+  RCDataBuffer   : Pointer;   { buffer pour les donnees RCDATA }
+  RCDataSize     : LongInt;   { taille des donnees RCDATA }
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -6517,6 +6529,347 @@ Begin
   WriteBitmap(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
 End;
 
+{ ============================================================
+  TODO 19 : COMPILATION RCDATA
+  ============================================================ }
+
+{ ----- Procedure InitRCData ----- }
+{ Initialise les variables globales RCDATA }
+Procedure InitRCData;
+Begin
+  RCDataBuffer := Nil;
+  RCDataSize := 0;
+End;
+
+{ ----- Procedure ClearRCData ----- }
+{ Libere la memoire allouee pour RCDATA }
+Procedure ClearRCData;
+Begin
+  If RCDataBuffer <> Nil Then
+  Begin
+    FreeMem(RCDataBuffer, RCDataSize);
+    RCDataBuffer := Nil;
+  End;
+  RCDataSize := 0;
+End;
+
+{ ----- Procedure LoadRCDataFile ----- }
+{ Charge un fichier binaire dans un buffer alloue dynamiquement }
+Procedure LoadRCDataFile(Const AFileName : TString; Var ADataPtr : Pointer;
+  Var ADataSize : LongInt);
+Var
+  F         : File;
+  BytesRead : LongInt;
+Begin
+  { Ouvrir le fichier en mode binaire }
+  {$I-}
+  Assign(F, AFileName);
+  Reset(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier : ' + AFileName);
+  
+  { Obtenir la taille du fichier }
+  ADataSize := FileSize(F);
+  
+  { Verifier que le fichier n est pas vide }
+  If ADataSize <= 0 Then
+  Begin
+    Close(F);
+    FatalError('Fichier vide ou taille invalide : ' + AFileName);
+  End;
+  
+  { Verifier la taille maximale }
+  If ADataSize > MAX_RCDATA_SIZE Then
+  Begin
+    Close(F);
+    FatalError('Fichier trop grand (max ' + IntToStr(MAX_RCDATA_SIZE) + ' octets) : ' + AFileName);
+  End;
+  
+  { Allouer la memoire }
+  GetMem(ADataPtr, ADataSize);
+  If ADataPtr = Nil Then
+  Begin
+    Close(F);
+    FatalError('Impossible d''allouer ' + IntToStr(ADataSize) + ' octets pour : ' + AFileName);
+  End;
+  
+  { Lire le contenu du fichier }
+  {$I-}
+  BlockRead(F, ADataPtr^, ADataSize, BytesRead);
+  {$I+}
+  If (IOResult <> 0) Or (BytesRead <> ADataSize) Then
+  Begin
+    FreeMem(ADataPtr, ADataSize);
+    ADataPtr := Nil;
+    ADataSize := 0;
+    Close(F);
+    FatalError('Erreur de lecture du fichier : ' + AFileName);
+  End;
+  
+  { Fermer le fichier }
+  Close(F);
+End;
+
+{ ----- Procedure WriteRCDataResource ----- }
+{ Ecrit les donnees brutes RCDATA dans le fichier ressource }
+Procedure WriteRCDataResource(ADataPtr : Pointer; ADataSize : LongInt);
+Var
+  I : LongInt;
+  P : PByte;
+Begin
+  P := PByte(ADataPtr);
+  For I := 0 To ADataSize - 1 Do
+  Begin
+    WriteByte(P^);
+    Inc(P);
+  End;
+End;
+
+{ ----- Procedure WriteRCDataFromBuffer ----- }
+{ Ecrit une ressource RT_RCDATA depuis un buffer en memoire }
+Procedure WriteRCDataFromBuffer(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; ADataPtr : Pointer; ADataSize : LongInt;
+  MemFlags : Word; LangId : Word);
+Var
+  ResIdx  : Integer;
+  DataPos : LongInt;
+Begin
+  { Ajouter la ressource a la table }
+  ResIdx := AddResource(True, RT_RCDATA, '', NameIsId, NameId, NameStr,
+                        MemFlags, LangId);
+  
+  { Ecrire l'en-tete de ressource }
+  If Opts.Output32 Then
+  Begin
+    WriteResHeader32(True, RT_RCDATA, '', NameIsId, NameId, NameStr,
+                     ADataSize, MemFlags, LangId);
+  End
+  Else
+  Begin
+    If NameIsId Then
+      WriteResHeader16(RT_RCDATA, NameId, ADataSize, MemFlags)
+    Else
+      WriteResHeader16Str('RCDATA', NameStr, ADataSize, MemFlags);
+  End;
+  
+  { Enregistrer la position des donnees }
+  DataPos := GetResPos;
+  SetResourceDataOfs(ResIdx, DataPos);
+  
+  { Ecrire les donnees RCDATA }
+  WriteRCDataResource(ADataPtr, ADataSize);
+  
+  { Aligner sur 4 octets pour 32 bits }
+  If Opts.Output32 Then
+    PadToAlignment(4);
+  
+  { Enregistrer la taille des donnees }
+  SetResourceDataSize(ResIdx, ADataSize);
+End;
+
+{ ----- Procedure WriteRCData ----- }
+{ Charge un fichier et ecrit une ressource RT_RCDATA complete }
+Procedure WriteRCData(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const AFileName : TString;
+  MemFlags : Word; LangId : Word);
+Var
+  DataPtr  : Pointer;
+  DataSize : LongInt;
+Begin
+  { Charger le fichier }
+  LoadRCDataFile(AFileName, DataPtr, DataSize);
+  
+  { Ecrire la ressource }
+  WriteRCDataFromBuffer(NameIsId, NameId, NameStr, DataPtr, DataSize,
+                        MemFlags, LangId);
+  
+  { Liberer la memoire }
+  FreeMem(DataPtr, DataSize);
+  
+  { Afficher en mode verbeux }
+  If Opts.Verbose Then
+  Begin
+    Write('  RCDATA ');
+    If NameIsId Then
+      Write('#', NameId)
+    Else
+      Write('"', NameStr, '"');
+    WriteLn(' <- ', AFileName, ' (', DataSize, ' octets)');
+  End;
+End;
+
+{ ----- Procedure ParseRCDataBlock ----- }
+{ Parse un bloc BEGIN ... END avec des donnees litterales }
+Procedure ParseRCDataBlock(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word; LangId : Word);
+Var
+  Buffer    : Array[0..65535] Of Byte;  { Buffer temporaire 64Ko }
+  BufSize   : LongInt;
+  Tok       : TToken;
+  I         : Integer;
+  StrVal    : TString;
+  NumVal    : LongInt;
+  DataPtr   : Pointer;
+Begin
+  BufSize := 0;
+  
+  { Lire les donnees jusqu'a END }
+  Tok := PeekTokenFn;
+  While (Tok.Kind <> TK_END) And (Tok.Kind <> TK_EOF) Do
+  Begin
+    If Tok.Kind = TK_STRING Then
+    Begin
+      { Chaine de caracteres : ajouter chaque caractere au buffer }
+      Tok := NextToken;
+      StrVal := Tok.Value;
+      For I := 1 To Length(StrVal) Do
+      Begin
+        If BufSize < 65536 Then
+        Begin
+          Buffer[BufSize] := Ord(StrVal[I]);
+          Inc(BufSize);
+        End
+        Else
+          FatalError('RCDATA: donnees trop grandes (max 64 Ko en mode inline)');
+      End;
+    End
+    Else If Tok.Kind = TK_NUMBER Then
+    Begin
+      { Nombre : ajouter comme octet(s) }
+      Tok := NextToken;
+      NumVal := Tok.IntVal;
+      
+      { Si la valeur tient dans un octet }
+      If (NumVal >= 0) And (NumVal <= 255) Then
+      Begin
+        If BufSize < 65536 Then
+        Begin
+          Buffer[BufSize] := Byte(NumVal);
+          Inc(BufSize);
+        End
+        Else
+          FatalError('RCDATA: donnees trop grandes (max 64 Ko en mode inline)');
+      End
+      Else If (NumVal >= 0) And (NumVal <= 65535) Then
+      Begin
+        { WORD : 2 octets little-endian }
+        If BufSize + 2 <= 65536 Then
+        Begin
+          Buffer[BufSize] := Byte(NumVal And $FF);
+          Inc(BufSize);
+          Buffer[BufSize] := Byte((NumVal Shr 8) And $FF);
+          Inc(BufSize);
+        End
+        Else
+          FatalError('RCDATA: donnees trop grandes (max 64 Ko en mode inline)');
+      End
+      Else
+      Begin
+        { DWORD : 4 octets little-endian }
+        If BufSize + 4 <= 65536 Then
+        Begin
+          Buffer[BufSize] := Byte(NumVal And $FF);
+          Inc(BufSize);
+          Buffer[BufSize] := Byte((NumVal Shr 8) And $FF);
+          Inc(BufSize);
+          Buffer[BufSize] := Byte((NumVal Shr 16) And $FF);
+          Inc(BufSize);
+          Buffer[BufSize] := Byte((NumVal Shr 24) And $FF);
+          Inc(BufSize);
+        End
+        Else
+          FatalError('RCDATA: donnees trop grandes (max 64 Ko en mode inline)');
+      End;
+    End
+    Else If Tok.Kind = TK_COMMA Then
+    Begin
+      { Ignorer les virgules }
+      NextToken;
+    End
+    Else If Tok.Kind = TK_IDENT Then
+    Begin
+      { Identifiant : traiter comme 0 (ou chercher dans defines) }
+      Tok := NextToken;
+      { Pour l'instant, on ignore les identifiants non reconnus }
+    End
+    Else
+    Begin
+      { Token inattendu }
+      SyntaxError('RCDATA: valeur inattendue: ' + Tok.Value);
+      NextToken;
+    End;
+    
+    Tok := PeekTokenFn;
+  End;
+  
+  { Consommer END }
+  If Tok.Kind = TK_END Then
+    NextToken
+  Else
+    SyntaxError('RCDATA: END attendu');
+  
+  { Verifier qu'il y a des donnees }
+  If BufSize = 0 Then
+    FatalError('RCDATA: bloc vide');
+  
+  { Allouer et copier les donnees }
+  GetMem(DataPtr, BufSize);
+  If DataPtr = Nil Then
+    FatalError('Impossible d''allouer ' + IntToStr(BufSize) + ' octets pour RCDATA');
+  Move(Buffer, DataPtr^, BufSize);
+  
+  { Ecrire la ressource }
+  WriteRCDataFromBuffer(NameIsId, NameId, NameStr, DataPtr, BufSize,
+                        MemFlags, LangId);
+  
+  { Liberer la memoire }
+  FreeMem(DataPtr, BufSize);
+  
+  { Afficher en mode verbeux }
+  If Opts.Verbose Then
+  Begin
+    Write('  RCDATA ');
+    If NameIsId Then
+      Write('#', NameId)
+    Else
+      Write('"', NameStr, '"');
+    WriteLn(' (inline, ', BufSize, ' octets)');
+  End;
+End;
+
+{ ----- Procedure ParseRCData ----- }
+{ Parse une declaration RCDATA et ecrit la ressource }
+Procedure ParseRCData(NameIsId : Boolean; NameId : Word; Const NameStr : TString);
+Var
+  MemFlags : Word;
+  FileName : TString;
+  Tok      : TToken;
+Begin
+  { Lire les options memoire }
+  MemFlags := ParseMemoryOptions;
+  
+  { Verifier le prochain token : chaine (fichier) ou BEGIN (inline) }
+  Tok := PeekTokenFn;
+  
+  If Tok.Kind = TK_STRING Then
+  Begin
+    { Fichier externe }
+    FileName := ExpectString;
+    WriteRCData(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
+  End
+  Else If Tok.Kind = TK_BEGIN Then
+  Begin
+    { Donnees inline BEGIN ... END }
+    NextToken;  { Consommer BEGIN }
+    ParseRCDataBlock(NameIsId, NameId, NameStr, MemFlags, CurrentLangId);
+  End
+  Else
+  Begin
+    SyntaxError('RCDATA: nom de fichier ou BEGIN attendu');
+  End;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -6614,6 +6967,7 @@ Begin
   InitVersionInfo;
   InitIconCursor;
   InitBitmap;
+  InitRCData;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -6629,9 +6983,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 18-25 }
+  { TODO : Implementation des TODOs 20-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-18 [IMPLEMENTE]. TODOs 19-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-19 [IMPLEMENTE]. TODOs 20-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
