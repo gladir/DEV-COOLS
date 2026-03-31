@@ -317,7 +317,7 @@
             Procedure SetResourceDataSize(Index: Integer; Size: LongInt)
               mettre a jour la taille des donnees pour une ressource
 
-  TODO 11 - COMPILATION STRINGTABLE [A FAIRE]
+  TODO 11 - COMPILATION STRINGTABLE [IMPLEMENTE]
             Type TStringEntry : record
               StringId : Word   (identifiant de la chaine)
               Text     : String (texte de la chaine)
@@ -326,10 +326,18 @@
             Variables globales :
               StringEntries : Array[1..MAX_STRINGS] Of TStringEntry
               StringCount   : Integer
+            Procedure AddStringEntry
+              ajoute une entree dans la table des chaines
             Procedure ParseStringTable
               lire le bloc STRINGTABLE ... BEGIN ... END :
               pour chaque ligne : lire ID, virgule, chaine entre ""
               ajouter dans StringEntries avec CurrentLangId
+            Function FindStringBlock
+              trouve si un bloc de 16 chaines contient au moins une chaine
+            Function GetStringFromBlock
+              retourne la chaine pour un slot dans un bloc
+            Function GetMaxStringBlockId
+              retourne le numero de bloc maximal utilise
             Procedure WriteStringTable
               grouper les StringEntries par bloc de 16 IDs consecutifs
               (bloc N contient les IDs (N-1)*16 a (N-1)*16+15)
@@ -874,6 +882,13 @@ Type
     MemFlags   : Word;      { attributs memoire }
     LangId     : Word;      { identifiant de langue }
   End;
+  
+  { TODO 11 : Table des chaines STRINGTABLE }
+  TStringEntry = Record
+    StringId : Word;        { identifiant de la chaine }
+    Text     : TString;     { texte de la chaine }
+    LangId   : Word;        { langue }
+  End;
 
 { ============================================================
   VARIABLES GLOBALES
@@ -890,6 +905,10 @@ Var
   { TODO 10 : Table des ressources }
   Resources : Array[1..MAX_RESOURCES] Of TResourceEntry;
   ResCount  : Integer;
+  
+  { TODO 11 : Table des chaines STRINGTABLE }
+  StringEntries : Array[1..MAX_STRINGS] Of TStringEntry;
+  StringCount   : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -3046,6 +3065,266 @@ Begin
     FatalError('Index de ressource invalide: ' + IntToStr(Index));
 End;
 
+{ =============================================================
+  TODO 11 - COMPILATION STRINGTABLE
+  ============================================================= }
+
+{ ----- Procedure AddStringEntry ----- }
+{ Ajoute une entree dans la table des chaines }
+Procedure AddStringEntry(AStringId: Word; Const AText: TString; ALangId: Word);
+Begin
+  If StringCount >= MAX_STRINGS Then
+  Begin
+    FatalError('Nombre maximal de chaines atteint (' + IntToStr(MAX_STRINGS) + ')');
+    Exit;
+  End;
+  
+  Inc(StringCount);
+  
+  With StringEntries[StringCount] Do
+  Begin
+    StringId := AStringId;
+    Text     := AText;
+    LangId   := ALangId;
+  End;
+End;
+
+{ ----- Procedure ParseStringTable ----- }
+{ Parse un bloc STRINGTABLE ... BEGIN ... END }
+{ Format : STRINGTABLE [options memoire]
+           BEGIN
+             id, "texte"
+             id, "texte"
+             ...
+           END }
+Procedure ParseStringTable;
+Var
+  StringId : LongInt;
+  Text     : TString;
+  MemFlags : Word;
+Begin
+  { Lire les options memoire optionnelles }
+  MemFlags := ParseMemoryOptions;
+  
+  { Attendre BEGIN ou { }
+  If (CurrToken.Kind <> TK_BEGIN) And (CurrToken.Kind <> TK_LBRACE) Then
+  Begin
+    SyntaxError('BEGIN ou accolade ouvrante attendu apres STRINGTABLE');
+    Exit;
+  End;
+  NextToken; (* Consommer BEGIN ou accolade ouvrante *)
+  
+  (* Lire les entrees jusqu a END ou accolade fermante *)
+  While (CurrToken.Kind <> TK_END) And (CurrToken.Kind <> TK_RBRACE) And
+        (CurrToken.Kind <> TK_EOF) Do
+  Begin
+    { Ignorer les commentaires et nouvelles lignes }
+    If CurrToken.Kind = TK_NEWLINE Then
+    Begin
+      NextToken;
+      Continue;
+    End;
+    
+    If CurrToken.Kind = TK_COMMENT Then
+    Begin
+      NextToken;
+      Continue;
+    End;
+    
+    { Lire l identifiant de la chaine (nombre) }
+    If CurrToken.Kind <> TK_NUMBER Then
+    Begin
+      SyntaxError('Identifiant numerique attendu dans STRINGTABLE');
+      SkipToEndBlock;
+      Exit;
+    End;
+    StringId := CurrToken.IntVal;
+    NextToken;
+    
+    { Optionnel : virgule ou comma }
+    If CurrToken.Kind = TK_COMMA Then
+      NextToken;
+    
+    { Lire la chaine entre guillemets }
+    If CurrToken.Kind <> TK_STRING Then
+    Begin
+      SyntaxError('Chaine entre guillemets attendue dans STRINGTABLE');
+      SkipToEndBlock;
+      Exit;
+    End;
+    Text := CurrToken.Value;
+    NextToken;
+    
+    { Ajouter l entree dans la table }
+    AddStringEntry(Word(StringId), Text, CurrentLangId);
+  End;
+  
+  (* Consommer END ou accolade fermante *)
+  If (CurrToken.Kind = TK_END) Or (CurrToken.Kind = TK_RBRACE) Then
+    NextToken;
+End;
+
+{ ----- Function FindStringBlock ----- }
+{ Trouve si un bloc de 16 chaines contient au moins une chaine }
+{ BlockId = 1..n, contient les chaines (BlockId-1)*16 a (BlockId-1)*16+15 }
+Function FindStringBlock(BlockId: Integer; LangId: Word): Boolean;
+Var
+  I       : Integer;
+  MinId   : Word;
+  MaxId   : Word;
+Begin
+  MinId := Word((BlockId - 1) * 16);
+  MaxId := MinId + 15;
+  FindStringBlock := False;
+  
+  For I := 1 To StringCount Do
+  Begin
+    If (StringEntries[I].LangId = LangId) And
+       (StringEntries[I].StringId >= MinId) And
+       (StringEntries[I].StringId <= MaxId) Then
+    Begin
+      FindStringBlock := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ ----- Function GetStringFromBlock ----- }
+{ Retourne la chaine pour un slot dans un bloc }
+{ BlockId = 1..n, Slot = 0..15 }
+Function GetStringFromBlock(BlockId: Integer; Slot: Integer; LangId: Word): TString;
+Var
+  I        : Integer;
+  TargetId : Word;
+Begin
+  TargetId := Word((BlockId - 1) * 16 + Slot);
+  GetStringFromBlock := '';
+  
+  For I := 1 To StringCount Do
+  Begin
+    If (StringEntries[I].LangId = LangId) And
+       (StringEntries[I].StringId = TargetId) Then
+    Begin
+      GetStringFromBlock := StringEntries[I].Text;
+      Exit;
+    End;
+  End;
+End;
+
+{ ----- Function GetMaxStringBlockId ----- }
+{ Retourne le numero de bloc maximal utilise }
+Function GetMaxStringBlockId(LangId: Word): Integer;
+Var
+  I       : Integer;
+  BlockId : Integer;
+  MaxBlock: Integer;
+Begin
+  MaxBlock := 0;
+  
+  For I := 1 To StringCount Do
+  Begin
+    If StringEntries[I].LangId = LangId Then
+    Begin
+      BlockId := (StringEntries[I].StringId Div 16) + 1;
+      If BlockId > MaxBlock Then
+        MaxBlock := BlockId;
+    End;
+  End;
+  
+  GetMaxStringBlockId := MaxBlock;
+End;
+
+{ ----- Procedure WriteStringTable ----- }
+{ Ecrit les blocs STRINGTABLE dans le fichier .RES }
+{ Format 32 bits : chaque bloc contient 16 chaines }
+{ Pour chaque chaine : WORD longueur (en WCHARs), puis WCHARs }
+Procedure WriteStringTable;
+Var
+  BlockId    : Integer;
+  MaxBlock   : Integer;
+  Slot       : Integer;
+  Str        : TString;
+  I          : Integer;
+  DataStart  : LongInt;
+  DataSize   : LongInt;
+  LangId     : Word;
+  LangList   : Array[1..256] Of Word;
+  LangCount  : Integer;
+  LangIdx    : Integer;
+  Found      : Boolean;
+  ResIdx     : Integer;
+Begin
+  If StringCount = 0 Then
+    Exit;
+  
+  { Collecter la liste des langues utilisees }
+  LangCount := 0;
+  For I := 1 To StringCount Do
+  Begin
+    LangId := StringEntries[I].LangId;
+    Found := False;
+    For LangIdx := 1 To LangCount Do
+    Begin
+      If LangList[LangIdx] = LangId Then
+      Begin
+        Found := True;
+        Break;
+      End;
+    End;
+    If Not Found Then
+    Begin
+      Inc(LangCount);
+      If LangCount <= 256 Then
+        LangList[LangCount] := LangId;
+    End;
+  End;
+  
+  { Pour chaque langue, ecrire les blocs de chaines }
+  For LangIdx := 1 To LangCount Do
+  Begin
+    LangId := LangList[LangIdx];
+    MaxBlock := GetMaxStringBlockId(LangId);
+    
+    { Pour chaque bloc qui contient des chaines }
+    For BlockId := 1 To MaxBlock Do
+    Begin
+      If Not FindStringBlock(BlockId, LangId) Then
+        Continue;
+      
+      { Enregistrer la ressource dans la table }
+      ResIdx := AddResource(True, RT_STRING, '', True, Word(BlockId), '',
+                           DefaultMemFlags, LangId);
+      
+      { Ecrire l en-tete 32 bits }
+      { On va d abord calculer la taille des donnees }
+      DataStart := GetResPos;
+      
+      { Ecrire les 16 slots du bloc }
+      For Slot := 0 To 15 Do
+      Begin
+        Str := GetStringFromBlock(BlockId, Slot, LangId);
+        
+        { Ecrire la longueur en WCHARs }
+        WriteWord(Word(Length(Str)));
+        
+        { Ecrire les caracteres en Unicode }
+        For I := 1 To Length(Str) Do
+          WriteWChar(CharToWChar(Str[I]));
+      End;
+      
+      { Calculer la taille des donnees }
+      DataSize := GetResPos - DataStart;
+      
+      { Aligner sur 4 octets }
+      PadToAlignment(4);
+      
+      { Mettre a jour la taille et l offset dans la table des ressources }
+      SetResourceDataOfs(ResIdx, DataStart);
+      SetResourceDataSize(ResIdx, DataSize);
+    End;
+  End;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -3134,8 +3413,9 @@ Begin
           'Compilateur de ressources Windows');
   WriteLn;
   
-  { Initialiser le compteur de ressources }
+  { Initialiser les compteurs }
   ResCount := 0;
+  StringCount := 0;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -3151,9 +3431,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 11-25 }
+  { TODO : Implementation des TODOs 12-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-10 [IMPLEMENTE]. TODOs 11-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-11 [IMPLEMENTE]. TODOs 12-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
