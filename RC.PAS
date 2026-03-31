@@ -698,7 +698,7 @@
             Function ResolveResourcePathOrError(Const FileName: String): String
               resout le chemin ou genere une erreur fatale
 
-  TODO 23 - VALIDATION ET MESSAGES D'ERREUR [A FAIRE]
+  TODO 23 - VALIDATION ET MESSAGES D'ERREUR [IMPLEMENTE]
             Variables globales :
               ErrorCount   : Integer
               WarningCount : Integer
@@ -1356,6 +1356,10 @@ Var
   
   { TODO 22 : RESOLUTION DES CHEMINS DE FICHIERS }
   BasePath       : TString;   { repertoire du fichier .RC source }
+  
+  { TODO 23 : VALIDATION ET MESSAGES D'ERREUR }
+  ErrorCount     : Integer;   { nombre d'erreurs rencontrees }
+  WarningCount   : Integer;   { nombre d'avertissements }
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -7979,6 +7983,189 @@ Begin
   ResolveResourcePathOrError := Resolved;
 End;
 
+{ ============================================================
+  TODO 23 : VALIDATION ET MESSAGES D'ERREUR
+  ============================================================ }
+
+{ ----- Procedure InitErrorTracking ----- }
+{ Initialise les compteurs d'erreurs et d'avertissements }
+Procedure InitErrorTracking;
+Begin
+  ErrorCount := 0;
+  WarningCount := 0;
+End;
+
+{ ----- Procedure Error ----- }
+{ Affiche une erreur avec le numero de ligne et colonne, incremente ErrorCount }
+Procedure Error(Const Msg : TString);
+Begin
+  WriteLn('RC: Erreur ligne ', LexLine, ', colonne ', LexCol, ': ', Msg);
+  Inc(ErrorCount);
+End;
+
+{ ----- Procedure ErrorFmt ----- }
+{ Erreur formatee avec arguments (remplace %1, %2, ... par les arguments) }
+Procedure ErrorFmt(Const Fmt : TString; Const Arg1 : TString);
+Var
+  Result : TString;
+  P      : Integer;
+Begin
+  Result := Fmt;
+  P := Pos('%1', Result);
+  If P > 0 Then
+  Begin
+    Delete(Result, P, 2);
+    Insert(Arg1, Result, P);
+  End;
+  Error(Result);
+End;
+
+{ ----- Procedure ErrorFmt2 ----- }
+{ Erreur formatee avec 2 arguments }
+Procedure ErrorFmt2(Const Fmt : TString; Const Arg1, Arg2 : TString);
+Var
+  Result : TString;
+  P      : Integer;
+Begin
+  Result := Fmt;
+  P := Pos('%1', Result);
+  If P > 0 Then
+  Begin
+    Delete(Result, P, 2);
+    Insert(Arg1, Result, P);
+  End;
+  P := Pos('%2', Result);
+  If P > 0 Then
+  Begin
+    Delete(Result, P, 2);
+    Insert(Arg2, Result, P);
+  End;
+  Error(Result);
+End;
+
+{ ----- Procedure Warning ----- }
+{ Affiche un avertissement, incremente WarningCount }
+Procedure Warning(Const Msg : TString);
+Begin
+  WriteLn('RC: Avertissement ligne ', LexLine, ', colonne ', LexCol, ': ', Msg);
+  Inc(WarningCount);
+End;
+
+{ ----- Procedure WarningFmt ----- }
+{ Avertissement formate avec 1 argument }
+Procedure WarningFmt(Const Fmt : TString; Const Arg1 : TString);
+Var
+  Result : TString;
+  P      : Integer;
+Begin
+  Result := Fmt;
+  P := Pos('%1', Result);
+  If P > 0 Then
+  Begin
+    Delete(Result, P, 2);
+    Insert(Arg1, Result, P);
+  End;
+  Warning(Result);
+End;
+
+{ ----- Procedure WarningFmt2 ----- }
+{ Avertissement formate avec 2 arguments }
+Procedure WarningFmt2(Const Fmt : TString; Const Arg1, Arg2 : TString);
+Var
+  Result : TString;
+  P      : Integer;
+Begin
+  Result := Fmt;
+  P := Pos('%1', Result);
+  If P > 0 Then
+  Begin
+    Delete(Result, P, 2);
+    Insert(Arg1, Result, P);
+  End;
+  P := Pos('%2', Result);
+  If P > 0 Then
+  Begin
+    Delete(Result, P, 2);
+    Insert(Arg2, Result, P);
+  End;
+  Warning(Result);
+End;
+
+{ ----- Procedure ExpectError ----- }
+{ Affiche une erreur "Attendu expected, trouve found" }
+Procedure ExpectError(Const Expected, Found : TString);
+Begin
+  Error('Attendu "' + Expected + '", trouve "' + Found + '"');
+End;
+
+{ ----- Procedure SyntaxErrorMsg ----- }
+{ Erreur de syntaxe fatale, arreter la compilation }
+Procedure SyntaxErrorMsg(Const Msg : TString);
+Begin
+  WriteLn('RC: Erreur de syntaxe ligne ', LexLine, ', colonne ', LexCol, ': ', Msg);
+  Inc(ErrorCount);
+  { Erreur fatale - on pourrait continuer pour collecter plus d'erreurs, }
+  { mais pour simplifier, on arrete la compilation }
+  Halt(EXIT_ERROR);
+End;
+
+{ ----- Procedure FileNotFoundError ----- }
+{ Erreur fichier non trouve }
+Procedure FileNotFoundError(Const FileName : TString);
+Begin
+  Error('Fichier non trouve: "' + FileName + '"');
+End;
+
+{ ----- Procedure DuplicateResourceError ----- }
+{ Erreur ressource deja definie }
+Procedure DuplicateResourceError(TypeId, NameId : Word; Const NameStr : TString);
+Begin
+  If Length(NameStr) > 0 Then
+    Error('Ressource deja definie: type=' + IntToStr(TypeId) + ', nom="' + NameStr + '"')
+  Else
+    Error('Ressource deja definie: type=' + IntToStr(TypeId) + ', id=' + IntToStr(NameId));
+End;
+
+{ ----- Function HasErrors ----- }
+{ Retourne True si ErrorCount > 0 }
+Function HasErrors : Boolean;
+Begin
+  HasErrors := ErrorCount > 0;
+End;
+
+{ ----- Procedure DisplayErrorSummary ----- }
+{ Affiche le nombre d'erreurs et d'avertissements }
+Procedure DisplayErrorSummary;
+Begin
+  WriteLn;
+  If ErrorCount = 0 Then
+  Begin
+    If WarningCount = 0 Then
+      WriteLn('Compilation terminee sans erreur.')
+    Else If WarningCount = 1 Then
+      WriteLn('Compilation terminee avec 1 avertissement.')
+    Else
+      WriteLn('Compilation terminee avec ', WarningCount, ' avertissements.');
+  End
+  Else
+  Begin
+    If ErrorCount = 1 Then
+      Write('1 erreur')
+    Else
+      Write(ErrorCount, ' erreurs');
+    
+    If WarningCount > 0 Then
+    Begin
+      If WarningCount = 1 Then
+        Write(', 1 avertissement')
+      Else
+        Write(', ', WarningCount, ' avertissements');
+    End;
+    
+    WriteLn('.');
+  End;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -8078,6 +8265,7 @@ Begin
   InitBitmap;
   InitRCData;
   InitPreprocessor;
+  InitErrorTracking;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -8093,9 +8281,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 23-25 }
+  { TODO : Implementation des TODOs 24-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-22 [IMPLEMENTE]. TODOs 23-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-23 [IMPLEMENTE]. TODOs 24-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
