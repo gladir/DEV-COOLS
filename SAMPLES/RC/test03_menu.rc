@@ -1,0 +1,36 @@
+// test03_menu.rc - Test MENU
+// Test: Compilation des ressources MENU
+
+100 MENU
+BEGIN
+    POPUP "&Fichier"
+    BEGIN
+        MENUITEM "&Nouveau\tCtrl+N",    101
+        MENUITEM "&Ouvrir...\tCtrl+O",  102
+        MENUITEM "&Enregistrer\tCtrl+S", 103
+        MENUITEM SEPARATOR
+        MENUITEM "&Quitter",             104
+    END
+    POPUP "&Edition"
+    BEGIN
+        MENUITEM "&Annuler\tCtrl+Z",    201
+        MENUITEM SEPARATOR
+        MENUITEM "&Couper\tCtrl+X",     202
+        MENUITEM "Co&pier\tCtrl+C",     203
+        MENUITEM "C&oller\tCtrl+V",     204
+    END
+    POPUP "&Aide"
+    BEGIN
+        MENUITEM "&A propos...",        301
+    END
+END
+
+// Menu avec un nom de chaine
+MAINMENU MENU
+BEGIN
+    POPUP "&Test"
+    BEGIN
+        MENUITEM "Element 1", 1001
+        MENUITEM "Element 2", 1002
+    END
+END

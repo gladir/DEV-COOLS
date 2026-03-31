@@ -1,0 +1,10 @@
+// test01_empty.rc - Fichier RC minimal
+// Test: Compilation d'un fichier RC vide (commentaires seulement)
+//
+// Ce fichier contient uniquement des commentaires et devrait
+// compiler en un fichier .RES valide mais vide.
+
+/* Commentaire multi-lignes
+   pour tester le lexer */
+
+// Fin du fichier

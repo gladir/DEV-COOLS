@@ -1,0 +1,18 @@
+// test02_stringtable.rc - Test STRINGTABLE
+// Test: Compilation des tables de chaines
+
+STRINGTABLE
+BEGIN
+    1 "Premiere chaine"
+    2 "Deuxieme chaine"
+    3 "Troisieme chaine avec caracteres speciaux: &amp; < > !"
+    100 "Chaine numero 100"
+    101 "Chaine numero 101"
+END
+
+STRINGTABLE
+BEGIN
+    200 "Bloc STRINGTABLE numero 2"
+    201 "Encore une chaine"
+    202 "Et une derniere"
+END
