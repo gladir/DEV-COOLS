@@ -503,7 +503,7 @@
               VS_FIXEDFILEINFO (52 octets), blocs StringFileInfo et
               VarFileInfo recursivement avec alignement sur 4 octets
 
-  TODO 16 - COMPILATION ICON/CURSOR [A FAIRE]
+  TODO 16 - COMPILATION ICON/CURSOR [IMPLEMENTE]
             Type TIconDirEntry : record
               Width    : Byte   (largeur, 0 = 256)
               Height   : Byte   (hauteur, 0 = 256)
@@ -1088,6 +1088,9 @@ Const
   
   { Taille maximale pour les valeurs de version }
   MAX_VERSION_STRINGS = 64;
+  
+  { TODO 16 : Taille maximale pour les entrees icone/curseur }
+  MAX_ICON_ENTRIES = 64;
 
 { ============================================================
   TYPES
@@ -1201,6 +1204,30 @@ Type
     TranslationLang   : Word;     { Langue (ex: $0409 = anglais US) }
     TranslationCP     : Word;     { Code page (ex: $04B0 = Unicode) }
   End;
+  
+  { TODO 16 : Structure pour les entrees de repertoire icone/curseur }
+  TIconDirEntry = Record
+    Width      : Byte;      { largeur, 0 = 256 }
+    Height     : Byte;      { hauteur, 0 = 256 }
+    ColorCount : Byte;      { nombre de couleurs, 0 si >= 256 }
+    Reserved   : Byte;      { = 0 }
+    Planes     : Word;      { 1 pour ICO; hotspot X pour CUR }
+    BitCount   : Word;      { bits par pixel; hotspot Y pour CUR }
+    BytesInRes : LongInt;   { taille des donnees DIB }
+    ImageOffset: LongInt;   { offset dans le fichier .ico/.cur }
+  End;
+  
+  { TODO 16 : Structure pour le repertoire de groupe }
+  TGrpIconDirEntry = Record
+    Width      : Byte;      { largeur, 0 = 256 }
+    Height     : Byte;      { hauteur, 0 = 256 }
+    ColorCount : Byte;      { nombre de couleurs, 0 si >= 256 }
+    Reserved   : Byte;      { = 0 }
+    Planes     : Word;      { 1 pour ICO; hotspot X pour CUR }
+    BitCount   : Word;      { bits par pixel; hotspot Y pour CUR }
+    BytesInRes : LongInt;   { taille des donnees DIB }
+    Id         : Word;      { identifiant de la ressource RT_ICON associee }
+  End;
 
 { ============================================================
   VARIABLES GLOBALES
@@ -1237,6 +1264,14 @@ Var
   
   { TODO 15 : VERSIONINFO }
   VersionInfo : TVersionInfo;
+  
+  { TODO 16 : ICON/CURSOR }
+  NextIconId   : Word;     { prochain ID pour RT_ICON }
+  NextCursorId : Word;     { prochain ID pour RT_CURSOR }
+  IconEntries  : Array[1..MAX_ICON_ENTRIES] Of TIconDirEntry;
+  IconCount    : Integer;
+  IconData     : Array[1..MAX_ICON_ENTRIES] Of Pointer;
+  IconDataSizes: Array[1..MAX_ICON_ENTRIES] Of LongInt;
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -2713,6 +2748,20 @@ Var
 Begin
   For I := 0 To Count - 1 Do
     WriteByte(Buf[I]);
+End;
+
+{ ----- Procedure WriteBytesFromPtr ----- }
+Procedure WriteBytesFromPtr(Ptr : Pointer; Count : LongInt);
+Var
+  I   : LongInt;
+  P   : PByte;
+Begin
+  P := PByte(Ptr);
+  For I := 0 To Count - 1 Do
+  Begin
+    WriteByte(P^);
+    Inc(P);
+  End;
 End;
 
 { ----- Procedure WriteString ----- }
@@ -5785,6 +5834,448 @@ Begin
   SetResourceDataSize(ResIdx, DataSize);
 End;
 
+{ ============================================================
+  TODO 16 - COMPILATION ICON/CURSOR
+  ============================================================ }
+
+{ ----- Procedure InitIconCursor ----- }
+Procedure InitIconCursor;
+Begin
+  NextIconId   := 1;
+  NextCursorId := 1;
+  IconCount    := 0;
+End;
+
+{ ----- Procedure ClearIconData ----- }
+Procedure ClearIconData;
+Var
+  I : Integer;
+Begin
+  For I := 1 To IconCount Do
+  Begin
+    If IconData[I] <> Nil Then
+    Begin
+      FreeMem(IconData[I], IconDataSizes[I]);
+      IconData[I] := Nil;
+    End;
+  End;
+  IconCount := 0;
+End;
+
+{ ----- Function LoadIconFile ----- }
+Function LoadIconFile(Const FileName : TString) : Boolean;
+Var
+  F         : File;
+  Reserved  : Word;
+  ResType   : Word;
+  ImageCount: Word;
+  I         : Integer;
+  Entry     : TIconDirEntry;
+  Buffer    : Pointer;
+Begin
+  LoadIconFile := False;
+  ClearIconData;
+  
+  {$I-}
+  Assign(F, FileName);
+  Reset(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('RC: Erreur: Impossible d''ouvrir le fichier ', FileName);
+    Exit;
+  End;
+  
+  { Lire l'en-tete du fichier ICO/CUR (6 octets) }
+  { WORD Reserved = 0, WORD Type = 1 (ICO) ou 2 (CUR), WORD Count }
+  BlockRead(F, Reserved, 2);
+  BlockRead(F, ResType, 2);
+  BlockRead(F, ImageCount, 2);
+  
+  If (Reserved <> 0) Or ((ResType <> 1) And (ResType <> 2)) Then
+  Begin
+    WriteLn('RC: Erreur: Format de fichier icone/curseur invalide');
+    Close(F);
+    Exit;
+  End;
+  
+  If ImageCount > MAX_ICON_ENTRIES Then
+    ImageCount := MAX_ICON_ENTRIES;
+  
+  IconCount := ImageCount;
+  
+  { Lire le repertoire des images (16 octets par entree) }
+  For I := 1 To IconCount Do
+  Begin
+    BlockRead(F, Entry.Width, 1);
+    BlockRead(F, Entry.Height, 1);
+    BlockRead(F, Entry.ColorCount, 1);
+    BlockRead(F, Entry.Reserved, 1);
+    BlockRead(F, Entry.Planes, 2);
+    BlockRead(F, Entry.BitCount, 2);
+    BlockRead(F, Entry.BytesInRes, 4);
+    BlockRead(F, Entry.ImageOffset, 4);
+    IconEntries[I] := Entry;
+    IconData[I] := Nil;
+    IconDataSizes[I] := Entry.BytesInRes;
+  End;
+  
+  { Lire les donnees de chaque image }
+  For I := 1 To IconCount Do
+  Begin
+    If IconDataSizes[I] > 0 Then
+    Begin
+      GetMem(Buffer, IconDataSizes[I]);
+      Seek(F, IconEntries[I].ImageOffset);
+      BlockRead(F, Buffer^, IconDataSizes[I]);
+      IconData[I] := Buffer;
+    End;
+  End;
+  
+  Close(F);
+  LoadIconFile := True;
+End;
+
+{ ----- Function LoadCursorFile ----- }
+Function LoadCursorFile(Const FileName : TString) : Boolean;
+Begin
+  { Les fichiers .CUR ont le meme format que .ICO }
+  { La seule difference est ResType = 2 et Planes/BitCount = hotspot X/Y }
+  LoadCursorFile := LoadIconFile(FileName);
+End;
+
+{ ----- Procedure WriteIconResource ----- }
+Procedure WriteIconResource(IconId : Word; DataPtr : Pointer;
+  DataSize : LongInt; MemFlags : Word; LangId : Word);
+Var
+  ResIdx    : Integer;
+  DataStart : LongInt;
+Begin
+  { Ajouter a la table des ressources }
+  ResIdx := AddResource(True, RT_ICON, '', True, IconId, '', MemFlags, LangId);
+  
+  { Ecrire l'en-tete }
+  If Opts.Output32 Then
+    WriteResHeader32(True, RT_ICON, '', True, IconId, '', DataSize, MemFlags, LangId)
+  Else
+    WriteResHeader16(RT_ICON, IconId, DataSize, MemFlags);
+  
+  { Enregistrer la position de debut des donnees }
+  DataStart := GetResPos;
+  
+  { Ecrire les donnees de l'icone (donnees DIB) }
+  WriteBytesFromPtr(DataPtr, DataSize);
+  
+  { Aligner sur 4 octets }
+  PadToAlignment(4);
+  
+  { Mettre a jour la taille et l'offset }
+  SetResourceDataOfs(ResIdx, DataStart);
+  SetResourceDataSize(ResIdx, DataSize);
+End;
+
+{ ----- Procedure WriteCursorResource ----- }
+Procedure WriteCursorResource(CursorId : Word; DataPtr : Pointer;
+  DataSize : LongInt; HotspotX, HotspotY : Word; MemFlags : Word; LangId : Word);
+Var
+  ResIdx      : Integer;
+  DataStart   : LongInt;
+  TotalSize   : LongInt;
+Begin
+  { Pour les curseurs, on doit ajouter un en-tete de 4 octets (hotspot) }
+  TotalSize := DataSize + 4;
+  
+  { Ajouter a la table des ressources }
+  ResIdx := AddResource(True, RT_CURSOR, '', True, CursorId, '', MemFlags, LangId);
+  
+  { Ecrire l'en-tete }
+  If Opts.Output32 Then
+    WriteResHeader32(True, RT_CURSOR, '', True, CursorId, '', TotalSize, MemFlags, LangId)
+  Else
+    WriteResHeader16(RT_CURSOR, CursorId, TotalSize, MemFlags);
+  
+  { Enregistrer la position de debut des donnees }
+  DataStart := GetResPos;
+  
+  { Ecrire le hotspot (2 WORDs) }
+  WriteWord(HotspotX);
+  WriteWord(HotspotY);
+  
+  { Ecrire les donnees du curseur (donnees DIB) }
+  WriteBytesFromPtr(DataPtr, DataSize);
+  
+  { Aligner sur 4 octets }
+  PadToAlignment(4);
+  
+  { Mettre a jour la taille et l'offset }
+  SetResourceDataOfs(ResIdx, DataStart);
+  SetResourceDataSize(ResIdx, TotalSize);
+End;
+
+{ ----- Procedure WriteGroupIconHeader ----- }
+Procedure WriteGroupIconHeader(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const GrpEntries : Array Of TGrpIconDirEntry;
+  GrpCount : Integer; MemFlags : Word; LangId : Word);
+Var
+  ResIdx    : Integer;
+  DataStart : LongInt;
+  DataSize  : LongInt;
+  I         : Integer;
+Begin
+  { Calculer la taille des donnees :
+    6 octets pour l'en-tete + 14 octets par entree }
+  DataSize := 6 + (GrpCount * 14);
+  
+  { Ajouter a la table des ressources }
+  ResIdx := AddResource(True, RT_GROUP_ICON, '', NameIsId, NameId, NameStr, 
+                        MemFlags, LangId);
+  
+  { Ecrire l'en-tete }
+  If Opts.Output32 Then
+    WriteResHeader32(True, RT_GROUP_ICON, '', NameIsId, NameId, NameStr, 
+                     DataSize, MemFlags, LangId)
+  Else
+    WriteResHeader16(RT_GROUP_ICON, NameId, DataSize, MemFlags);
+  
+  { Enregistrer la position de debut des donnees }
+  DataStart := GetResPos;
+  
+  { Ecrire l'en-tete du groupe (GRPICONDIR) }
+  { WORD Reserved = 0 }
+  WriteWord(0);
+  { WORD ResType = 1 (ICON) }
+  WriteWord(1);
+  { WORD Count }
+  WriteWord(GrpCount);
+  
+  { Ecrire chaque entree (GRPICONDIRENTRY) }
+  For I := 0 To GrpCount - 1 Do
+  Begin
+    WriteByte(GrpEntries[I].Width);
+    WriteByte(GrpEntries[I].Height);
+    WriteByte(GrpEntries[I].ColorCount);
+    WriteByte(GrpEntries[I].Reserved);
+    WriteWord(GrpEntries[I].Planes);
+    WriteWord(GrpEntries[I].BitCount);
+    WriteDWord(GrpEntries[I].BytesInRes);
+    WriteWord(GrpEntries[I].Id);
+  End;
+  
+  { Aligner sur 4 octets }
+  PadToAlignment(4);
+  
+  { Mettre a jour la taille et l'offset }
+  SetResourceDataOfs(ResIdx, DataStart);
+  SetResourceDataSize(ResIdx, DataSize);
+End;
+
+{ ----- Procedure WriteGroupCursorHeader ----- }
+Procedure WriteGroupCursorHeader(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const GrpEntries : Array Of TGrpIconDirEntry;
+  GrpCount : Integer; MemFlags : Word; LangId : Word);
+Var
+  ResIdx    : Integer;
+  DataStart : LongInt;
+  DataSize  : LongInt;
+  I         : Integer;
+Begin
+  { Calculer la taille des donnees :
+    6 octets pour l'en-tete + 14 octets par entree }
+  DataSize := 6 + (GrpCount * 14);
+  
+  { Ajouter a la table des ressources }
+  ResIdx := AddResource(True, RT_GROUP_CURSOR, '', NameIsId, NameId, NameStr, 
+                        MemFlags, LangId);
+  
+  { Ecrire l'en-tete }
+  If Opts.Output32 Then
+    WriteResHeader32(True, RT_GROUP_CURSOR, '', NameIsId, NameId, NameStr, 
+                     DataSize, MemFlags, LangId)
+  Else
+    WriteResHeader16(RT_GROUP_CURSOR, NameId, DataSize, MemFlags);
+  
+  { Enregistrer la position de debut des donnees }
+  DataStart := GetResPos;
+  
+  { Ecrire l'en-tete du groupe (GRPCURSORDIR) }
+  { WORD Reserved = 0 }
+  WriteWord(0);
+  { WORD ResType = 2 (CURSOR) }
+  WriteWord(2);
+  { WORD Count }
+  WriteWord(GrpCount);
+  
+  { Ecrire chaque entree (GRPCURSORDIRENTRY) }
+  For I := 0 To GrpCount - 1 Do
+  Begin
+    { Pour les curseurs, Width et Height sont des WORDs }
+    WriteWord(GrpEntries[I].Width);
+    WriteWord(GrpEntries[I].Height);
+    WriteWord(GrpEntries[I].Planes);
+    WriteWord(GrpEntries[I].BitCount);
+    WriteDWord(GrpEntries[I].BytesInRes + 4); { +4 pour le hotspot }
+    WriteWord(GrpEntries[I].Id);
+  End;
+  
+  { Aligner sur 4 octets }
+  PadToAlignment(4);
+  
+  { Mettre a jour la taille et l'offset }
+  SetResourceDataOfs(ResIdx, DataStart);
+  SetResourceDataSize(ResIdx, DataSize);
+End;
+
+{ ----- Procedure WriteIcon ----- }
+Procedure WriteIcon(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const FileName : TString;
+  MemFlags : Word; LangId : Word);
+Var
+  I          : Integer;
+  GrpEntries : Array[0..MAX_ICON_ENTRIES-1] Of TGrpIconDirEntry;
+  IconIds    : Array[1..MAX_ICON_ENTRIES] Of Word;
+Begin
+  { Charger le fichier icone }
+  If Not LoadIconFile(FileName) Then
+  Begin
+    FatalError('Impossible de charger le fichier icone: ' + FileName);
+    Exit;
+  End;
+  
+  If IconCount = 0 Then
+  Begin
+    FatalError('Fichier icone vide ou invalide: ' + FileName);
+    Exit;
+  End;
+  
+  { Ecrire chaque image comme ressource RT_ICON individuelle }
+  For I := 1 To IconCount Do
+  Begin
+    IconIds[I] := NextIconId;
+    WriteIconResource(NextIconId, IconData[I], IconDataSizes[I], MemFlags, LangId);
+    Inc(NextIconId);
+  End;
+  
+  { Creer les entrees pour le groupe }
+  For I := 1 To IconCount Do
+  Begin
+    GrpEntries[I-1].Width      := IconEntries[I].Width;
+    GrpEntries[I-1].Height     := IconEntries[I].Height;
+    GrpEntries[I-1].ColorCount := IconEntries[I].ColorCount;
+    GrpEntries[I-1].Reserved   := 0;
+    GrpEntries[I-1].Planes     := IconEntries[I].Planes;
+    GrpEntries[I-1].BitCount   := IconEntries[I].BitCount;
+    GrpEntries[I-1].BytesInRes := IconEntries[I].BytesInRes;
+    GrpEntries[I-1].Id         := IconIds[I];
+  End;
+  
+  { Ecrire la ressource RT_GROUP_ICON }
+  WriteGroupIconHeader(NameIsId, NameId, NameStr, GrpEntries, IconCount, 
+                       MemFlags, LangId);
+  
+  { Liberer les donnees }
+  ClearIconData;
+  
+  If Opts.Verbose Then
+    WriteLn('  ICON ', FileName, ' -> ', IconCount, ' image(s)');
+End;
+
+{ ----- Procedure WriteCursor ----- }
+Procedure WriteCursor(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const FileName : TString;
+  MemFlags : Word; LangId : Word);
+Var
+  I          : Integer;
+  GrpEntries : Array[0..MAX_ICON_ENTRIES-1] Of TGrpIconDirEntry;
+  CursorIds  : Array[1..MAX_ICON_ENTRIES] Of Word;
+  HotspotX   : Word;
+  HotspotY   : Word;
+Begin
+  { Charger le fichier curseur }
+  If Not LoadCursorFile(FileName) Then
+  Begin
+    FatalError('Impossible de charger le fichier curseur: ' + FileName);
+    Exit;
+  End;
+  
+  If IconCount = 0 Then
+  Begin
+    FatalError('Fichier curseur vide ou invalide: ' + FileName);
+    Exit;
+  End;
+  
+  { Ecrire chaque image comme ressource RT_CURSOR individuelle }
+  For I := 1 To IconCount Do
+  Begin
+    CursorIds[I] := NextCursorId;
+    { Pour les curseurs, Planes contient hotspot X et BitCount contient hotspot Y }
+    HotspotX := IconEntries[I].Planes;
+    HotspotY := IconEntries[I].BitCount;
+    WriteCursorResource(NextCursorId, IconData[I], IconDataSizes[I], 
+                        HotspotX, HotspotY, MemFlags, LangId);
+    Inc(NextCursorId);
+  End;
+  
+  { Creer les entrees pour le groupe }
+  For I := 1 To IconCount Do
+  Begin
+    GrpEntries[I-1].Width      := IconEntries[I].Width;
+    GrpEntries[I-1].Height     := IconEntries[I].Height;
+    GrpEntries[I-1].ColorCount := IconEntries[I].ColorCount;
+    GrpEntries[I-1].Reserved   := 0;
+    { Pour les curseurs dans le groupe, Planes et BitCount sont les vraies valeurs }
+    GrpEntries[I-1].Planes     := 1;  { Toujours 1 pour les curseurs }
+    GrpEntries[I-1].BitCount   := 1;  { Bits par pixel, typiquement 1 pour curseurs }
+    GrpEntries[I-1].BytesInRes := IconEntries[I].BytesInRes;
+    GrpEntries[I-1].Id         := CursorIds[I];
+  End;
+  
+  { Ecrire la ressource RT_GROUP_CURSOR }
+  WriteGroupCursorHeader(NameIsId, NameId, NameStr, GrpEntries, IconCount, 
+                         MemFlags, LangId);
+  
+  { Liberer les donnees }
+  ClearIconData;
+  
+  If Opts.Verbose Then
+    WriteLn('  CURSOR ', FileName, ' -> ', IconCount, ' image(s)');
+End;
+
+{ ----- Procedure ParseIcon ----- }
+Procedure ParseIcon(NameIsId : Boolean; NameId : Word; Const NameStr : TString);
+Var
+  MemFlags : Word;
+  FileName : TString;
+Begin
+  { Lire les options memoire }
+  MemFlags := ParseMemoryOptions;
+  
+  { Lire le nom du fichier }
+  ExpectString;
+  FileName := CurrToken.Value;
+  NextToken;
+  
+  { Ecrire la ressource }
+  WriteIcon(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
+End;
+
+{ ----- Procedure ParseCursor ----- }
+Procedure ParseCursor(NameIsId : Boolean; NameId : Word; Const NameStr : TString);
+Var
+  MemFlags : Word;
+  FileName : TString;
+Begin
+  { Lire les options memoire }
+  MemFlags := ParseMemoryOptions;
+  
+  { Lire le nom du fichier }
+  ExpectString;
+  FileName := CurrToken.Value;
+  NextToken;
+  
+  { Ecrire la ressource }
+  WriteCursor(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -5880,6 +6371,7 @@ Begin
   MenuItemCount := 0;
   DialogCtrlCount := 0;
   InitVersionInfo;
+  InitIconCursor;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -5895,9 +6387,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 16-25 }
+  { TODO : Implementation des TODOs 17-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-15 [IMPLEMENTE]. TODOs 16-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-16 [IMPLEMENTE]. TODOs 17-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
