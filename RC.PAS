@@ -1102,6 +1102,11 @@ Const
   
   { TODO 20 : Taille maximale pour les fichiers MANIFEST }
   MAX_MANIFEST_SIZE = 1048576;  { 1 Mo max pour les manifestes XML }
+  
+  { TODO 21 : Preprocesseur }
+  MAX_DEFINES = 256;           { nombre max de #define }
+  MAX_INCLUDE_STACK = 16;      { profondeur max de #include imbriques }
+  MAX_IFDEF_STACK = 32;        { profondeur max de #ifdef imbriques }
 
 { ============================================================
   TYPES
@@ -1262,6 +1267,26 @@ Type
     biYPelsPerMeter : LongInt;  { resolution verticale }
     biClrUsed       : LongInt;  { nombre de couleurs utilisees }
     biClrImportant  : LongInt;  { nombre de couleurs importantes }
+  End;
+  
+  { TODO 21 : Structure pour une definition de preprocesseur }
+  TDefineEntry = Record
+    Name  : TString;    { nom du symbole }
+    Value : TString;    { valeur (peut etre vide) }
+  End;
+  
+  { TODO 21 : Structure pour la pile d'inclusion }
+  TIncludeEntry = Record
+    FileName   : TString;   { nom du fichier }
+    FileHandle : Text;      { handle du fichier }
+    Line       : Integer;   { ligne courante }
+    Col        : Integer;   { colonne courante }
+  End;
+  
+  { TODO 21 : Structure pour la pile ifdef/ifndef }
+  TIfdefEntry = Record
+    Active   : Boolean;     { True si on execute ce bloc }
+    ElseSeen : Boolean;     { True si on a deja vu #else }
   End;
 
 { ============================================================
