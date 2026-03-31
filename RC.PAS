@@ -747,7 +747,7 @@
               optionnel : trier les ressources par type pour optimiser
               la structure du fichier .RES
 
-  TODO 25 - VERIFICATION ET RAPPORT FINAL [A FAIRE]
+  TODO 25 - VERIFICATION ET RAPPORT FINAL [IMPLEMENTE]
             Function GetFileSize(Const FName: String): LongInt
               ouvrir le fichier, chercher la fin, retourner la taille
             Procedure VerifyResFile(Const OutFileName: String)
@@ -8383,6 +8383,274 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 25 : VERIFICATION ET RAPPORT FINAL
+  ============================================================ }
+
+{ ----- Function GetFileSize ----- }
+{ Retourne la taille d'un fichier en octets, ou -1 si erreur }
+Function GetFileSize(Const FName: TString): LongInt;
+Var
+  F      : File Of Byte;
+  OldFM  : Byte;
+Begin
+  GetFileSize := -1;
+  
+  If Not FileExists(FName) Then
+    Exit;
+  
+  OldFM := FileMode;
+  FileMode := 0;  { Lecture seule }
+  
+  Assign(F, FName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  
+  If IOResult <> 0 Then
+  Begin
+    FileMode := OldFM;
+    Exit;
+  End;
+  
+  GetFileSize := FileSize(F);
+  
+  Close(F);
+  FileMode := OldFM;
+End;
+
+{ ----- Procedure VerifyResFile ----- }
+{ Verifie que le fichier .RES genere est valide }
+Procedure VerifyResFile(Const OutFileName: TString; OutputFormat: Integer);
+Var
+  F         : File;
+  ResSize   : LongInt;
+  Header    : Array[0..31] Of Byte;
+  BytesRead : Word;
+  Valid     : Boolean;
+Begin
+  Valid := True;
+  
+  { Verifier que le fichier existe }
+  If Not FileExists(OutFileName) Then
+  Begin
+    Warning('Le fichier de sortie n''a pas ete cree: ' + OutFileName);
+    Exit;
+  End;
+  
+  { Verifier que le fichier n'est pas vide }
+  ResSize := GetFileSize(OutFileName);
+  If ResSize <= 0 Then
+  Begin
+    Warning('Le fichier de sortie est vide ou inaccessible');
+    Exit;
+  End;
+  
+  { Ouvrir le fichier en mode binaire }
+  Assign(F, OutFileName);
+  {$I-}
+  Reset(F, 1);
+  {$I+}
+  
+  If IOResult <> 0 Then
+  Begin
+    Warning('Impossible d''ouvrir le fichier pour verification');
+    Exit;
+  End;
+  
+  { Lire les premiers octets pour verifier l'en-tete }
+  {$I-}
+  BlockRead(F, Header, SizeOf(Header), BytesRead);
+  {$I+}
+  
+  If IOResult <> 0 Then
+  Begin
+    Close(F);
+    Warning('Erreur de lecture du fichier .RES');
+    Exit;
+  End;
+  
+  { Verifier selon le format }
+  If OutputFormat = FMT_RES32 Then
+  Begin
+    { Format 32 bits : doit commencer par ressource nulle (32 octets de zeros) }
+    If BytesRead < 32 Then
+    Begin
+      Warning('Fichier RES 32 bits trop court (moins de 32 octets)');
+      Valid := False;
+    End
+    Else
+    Begin
+      { Verifier la ressource nulle : DataSize=0, HeaderSize=32 }
+      If (Header[0] <> 0) Or (Header[1] <> 0) Or 
+         (Header[2] <> 0) Or (Header[3] <> 0) Then
+      Begin
+        { DataSize devrait etre 0 }
+        Warning('En-tete RES 32 bits invalide: DataSize non nul');
+        Valid := False;
+      End;
+      If (Header[4] <> 32) Or (Header[5] <> 0) Or
+         (Header[6] <> 0) Or (Header[7] <> 0) Then
+      Begin
+        { HeaderSize devrait etre 32 }
+        Warning('En-tete RES 32 bits invalide: HeaderSize incorrect');
+        Valid := False;
+      End;
+    End;
+  End
+  Else
+  Begin
+    { Format 16 bits : verifier la presence d'un en-tete de ressource }
+    { Les fichiers 16 bits commencent directement par une ressource }
+    If BytesRead < 8 Then
+    Begin
+      Warning('Fichier RES 16 bits trop court');
+      Valid := False;
+    End;
+  End;
+  
+  Close(F);
+  
+  If Valid And (Opts.Verbose) Then
+    WriteLn('Verification du fichier .RES : OK');
+End;
+
+{ ----- Function CountResourcesByType ----- }
+{ Compte le nombre de ressources d'un type donne }
+Function CountResourcesByType(TypeId: Word): Integer;
+Var
+  I     : Integer;
+  Count : Integer;
+Begin
+  Count := 0;
+  For I := 1 To ResCount Do
+  Begin
+    If Resources[I].TypeIsId And (Resources[I].TypeId = TypeId) Then
+      Inc(Count);
+  End;
+  CountResourcesByType := Count;
+End;
+
+{ ----- Procedure DisplayFinalReport ----- }
+{ Affiche le rapport complet de compilation }
+Procedure DisplayFinalReport(Const AOpts: TOptions);
+Var
+  ResSize   : LongInt;
+  TypeCount : Integer;
+  I         : Integer;
+Begin
+  WriteLn;
+  WriteLn('=== RC - Rapport de compilation ===');
+  WriteLn;
+  
+  WriteLn('Fichier source    : ', AOpts.SrcFile);
+  
+  If AOpts.Output16 Then
+    WriteLn('Format genere     : RES 16 bits')
+  Else
+    WriteLn('Format genere     : RES 32 bits');
+  
+  WriteLn;
+  WriteLn('--- Ressources ---');
+  WriteLn('Total             : ', ResCount, ' ressource(s)');
+  
+  { Afficher le detail par type de ressource }
+  TypeCount := CountResourcesByType(RT_CURSOR);
+  If TypeCount > 0 Then
+    WriteLn('  RT_CURSOR       : ', TypeCount, ' ressource(s)');
+  
+  TypeCount := CountResourcesByType(RT_BITMAP);
+  If TypeCount > 0 Then
+    WriteLn('  RT_BITMAP       : ', TypeCount, ' ressource(s)');
+  
+  TypeCount := CountResourcesByType(RT_ICON);
+  If TypeCount > 0 Then
+    WriteLn('  RT_ICON         : ', TypeCount, ' ressource(s)');
+  
+  TypeCount := CountResourcesByType(RT_MENU);
+  If TypeCount > 0 Then
+    WriteLn('  RT_MENU         : ', TypeCount, ' ressource(s)');
+  
+  TypeCount := CountResourcesByType(RT_DIALOG);
+  If TypeCount > 0 Then
+    WriteLn('  RT_DIALOG       : ', TypeCount, ' ressource(s)');
+  
+  { Pour les chaines, afficher le nombre de blocs et de chaines }
+  If StringCount > 0 Then
+  Begin
+    TypeCount := CountResourcesByType(RT_STRING);
+    WriteLn('  RT_STRING       : ', TypeCount, ' bloc(s), ', StringCount, ' chaine(s)');
+  End;
+  
+  TypeCount := CountResourcesByType(RT_ACCELERATOR);
+  If TypeCount > 0 Then
+    WriteLn('  RT_ACCELERATOR  : ', TypeCount, ' table(s)');
+  
+  TypeCount := CountResourcesByType(RT_GROUP_CURSOR);
+  If TypeCount > 0 Then
+    WriteLn('  RT_GROUP_CURSOR : ', TypeCount, ' ressource(s)');
+  
+  TypeCount := CountResourcesByType(RT_GROUP_ICON);
+  If TypeCount > 0 Then
+    WriteLn('  RT_GROUP_ICON   : ', TypeCount, ' ressource(s)');
+  
+  TypeCount := CountResourcesByType(RT_VERSION);
+  If TypeCount > 0 Then
+    WriteLn('  RT_VERSION      : ', TypeCount, ' ressource(s)');
+  
+  TypeCount := CountResourcesByType(RT_RCDATA);
+  If TypeCount > 0 Then
+    WriteLn('  RT_RCDATA       : ', TypeCount, ' ressource(s)');
+  
+  TypeCount := CountResourcesByType(RT_MANIFEST);
+  If TypeCount > 0 Then
+    WriteLn('  RT_MANIFEST     : ', TypeCount, ' ressource(s)');
+  
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Erreurs           : ', ErrorCount);
+  WriteLn('Avertissements    : ', WarningCount);
+  
+  WriteLn;
+  WriteLn('--- Sortie ---');
+  WriteLn('Fichier RES genere: ', AOpts.OutFile);
+  
+  ResSize := GetFileSize(AOpts.OutFile);
+  If ResSize >= 0 Then
+    WriteLn('Taille RES        : ', ResSize, ' octets')
+  Else
+    WriteLn('Taille RES        : (erreur de lecture)');
+  
+  { En mode verbeux, afficher le detail de chaque ressource }
+  If AOpts.Verbose Then
+  Begin
+    WriteLn;
+    WriteLn('--- Detail des ressources ---');
+    For I := 1 To ResCount Do
+    Begin
+      Write('  [', I, '] Type=');
+      If Resources[I].TypeIsId Then
+        Write(ResourceTypeName(Resources[I].TypeId))
+      Else
+        Write('"', Resources[I].TypeName, '"');
+      
+      Write(', Nom=');
+      If Resources[I].NameIsId Then
+        Write('#', Resources[I].NameId)
+      Else
+        Write('"', Resources[I].NameStr, '"');
+      
+      Write(', Langue=$', HexWord(Resources[I].LangId));
+      Write(', Taille=', Resources[I].DataSize);
+      Write(', Flags=$', HexWord(Resources[I].MemFlags));
+      WriteLn;
+    End;
+  End;
+  
+  WriteLn;
+  WriteLn('=== Fin du rapport ===');
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -8489,7 +8757,16 @@ Begin
   { Compiler le fichier .RC }
   CompileRC(Opts);
   
+  { Verifier le fichier genere }
+  If Opts.Output16 Then
+    VerifyResFile(Opts.OutFile, FMT_RES16)
+  Else
+    VerifyResFile(Opts.OutFile, FMT_RES32);
+  
+  { Afficher le rapport final }
+  DisplayFinalReport(Opts);
+  
   { Message de status des TODOs }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-24 [IMPLEMENTE]. TODO 25 est [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-25 [IMPLEMENTE]. Tous les TODOs sont completes!');
 End.
