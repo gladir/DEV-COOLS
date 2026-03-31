@@ -725,7 +725,7 @@
             Procedure DisplayErrorSummary
               afficher le nombre d erreurs et d avertissements
 
-  TODO 24 - GENERATION FICHIER .RES COMPLET [A FAIRE]
+  TODO 24 - GENERATION FICHIER .RES COMPLET [IMPLEMENTE]
             Procedure CompileRC(Const Opts: TOptions)
               orchestrateur principal :
               1. initialiser les structures (ressources, chaines, defines)
@@ -8166,6 +8166,223 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 24 : GENERATION FICHIER .RES COMPLET
+  ============================================================ }
+
+{ ----- Procedure SortResourcesByType ----- }
+{ Trie les ressources par type puis par nom pour optimiser la structure }
+Procedure SortResourcesByType;
+Var
+  I, J   : Integer;
+  Temp   : TResourceEntry;
+  Swapped: Boolean;
+Begin
+  If ResCount < 2 Then
+    Exit;
+  
+  { Tri a bulles stable par type de ressource }
+  Repeat
+    Swapped := False;
+    For I := 1 To ResCount - 1 Do
+    Begin
+      { Comparer par type d abord }
+      If Resources[I].TypeId > Resources[I + 1].TypeId Then
+      Begin
+        { Echanger les ressources }
+        Temp := Resources[I];
+        Resources[I] := Resources[I + 1];
+        Resources[I + 1] := Temp;
+        Swapped := True;
+      End
+      Else If Resources[I].TypeId = Resources[I + 1].TypeId Then
+      Begin
+        { Meme type, comparer par nom/ID }
+        If Resources[I].NameIsId And Resources[I + 1].NameIsId Then
+        Begin
+          If Resources[I].NameId > Resources[I + 1].NameId Then
+          Begin
+            Temp := Resources[I];
+            Resources[I] := Resources[I + 1];
+            Resources[I + 1] := Temp;
+            Swapped := True;
+          End;
+        End
+        Else If (Not Resources[I].NameIsId) And Resources[I + 1].NameIsId Then
+        Begin
+          { Les noms textuels viennent apres les IDs numeriques }
+          Temp := Resources[I];
+          Resources[I] := Resources[I + 1];
+          Resources[I + 1] := Temp;
+          Swapped := True;
+        End;
+      End;
+    End;
+  Until Not Swapped;
+End;
+
+{ ----- Procedure WriteAllResources ----- }
+{ Parcourt la table des ressources et ecrit chaque ressource }
+Procedure WriteAllResources(OutputFormat : Integer);
+Var
+  I         : Integer;
+  Res       : TResourceEntry;
+  DataStart : LongInt;
+  HdrStart  : LongInt;
+Begin
+  { Trier les ressources par type }
+  SortResourcesByType;
+  
+  { Ecrire chaque ressource de la table }
+  For I := 1 To ResCount Do
+  Begin
+    Res := Resources[I];
+    
+    { Enregistrer la position de debut des donnees }
+    DataStart := GetResPos;
+    
+    { Note: La plupart des ressources (ICON, CURSOR, BITMAP, RCDATA, etc.)
+      sont deja ecrites lors du parsing dans leurs procedures respectives
+      (WriteIcon, WriteCursor, WriteBitmap, WriteRCData, etc.).
+      
+      Cette procedure est principalement utilisee pour les ressources
+      qui n'ont pas ete ecrites immediatement, ou pour une reecriture
+      complete du fichier .RES apres collecte de toutes les ressources. }
+    
+    { Les ressources individuelles sont ecrites par leurs procedures
+      specifiques lors du parsing (WriteIcon, WriteBitmap, etc.)
+      Cette boucle permet de verifier et afficher le contenu en mode verbeux }
+    
+    If Opts.Verbose Then
+    Begin
+      Write('  ');
+      If Res.TypeIsId Then
+        Write(ResourceTypeName(Res.TypeId))
+      Else
+        Write('"', Res.TypeName, '"');
+      
+      Write(' ');
+      If Res.NameIsId Then
+        Write('#', Res.NameId)
+      Else
+        Write('"', Res.NameStr, '"');
+      
+      Write(' (', Res.DataSize, ' octets');
+      If Res.LangId <> 0 Then
+        Write(', lang=', HexWord(Res.LangId));
+      WriteLn(')');
+    End;
+  End;
+End;
+
+{ ----- Procedure CompileRC ----- }
+{ Orchestrateur principal de la compilation .RC -> .RES }
+Procedure CompileRC(Const AOpts : TOptions);
+Var
+  OutputFormat : Integer;
+Begin
+  { Determiner le format de sortie }
+  If AOpts.Output16 Then
+    OutputFormat := FMT_RES16
+  Else
+    OutputFormat := FMT_RES32;
+  
+  { 1. Initialiser les structures }
+  ResCount := 0;
+  StringCount := 0;
+  AccelCount := 0;
+  MenuItemCount := 0;
+  DialogCtrlCount := 0;
+  CurrentLangId := $0409;    { Defaut : anglais US }
+  DefaultMemFlags := MF_MOVEABLE Or MF_PURE;
+  InitVersionInfo;
+  InitIconCursor;
+  InitBitmap;
+  InitRCData;
+  InitPreprocessor;
+  InitErrorTracking;
+  
+  { 2. Initialiser le chemin de base pour les fichiers relatifs }
+  InitBasePath(AOpts.SrcFile);
+  
+  { 3. Ouvrir le fichier source .RC }
+  If Not FileExists(AOpts.SrcFile) Then
+  Begin
+    FileNotFoundError(AOpts.SrcFile);
+    FatalError('Fichier source introuvable: ' + AOpts.SrcFile);
+  End;
+  
+  OpenSourceFile(AOpts.SrcFile);
+  
+  { 4. Creer le fichier de sortie .RES }
+  CreateResFile(AOpts.OutFile);
+  
+  { 5. Si format 32 bits : ecrire l en-tete nul }
+  If OutputFormat = FMT_RES32 Then
+    WriteNullHeader32;
+  
+  { 6. Parser le fichier source }
+  If AOpts.Verbose Then
+    WriteLn('Parsing ', AOpts.SrcFile, '...');
+  
+  ParseFile;
+  
+  { Fermer le fichier source }
+  CloseSourceFile;
+  
+  { Verifier les erreurs de parsing }
+  If ParseError Then
+  Begin
+    Error(ParseErrorMsg);
+    CloseResFile;
+    DisplayErrorSummary;
+    Halt(EXIT_ERROR);
+  End;
+  
+  { 7. Ecrire les chaines STRINGTABLE groupees }
+  WriteStringTable;
+  
+  { 8. Afficher les ressources en mode verbeux }
+  If AOpts.Verbose Then
+  Begin
+    WriteLn;
+    WriteLn('Ressources compilees:');
+    WriteAllResources(OutputFormat);
+  End;
+  
+  { 9. Si format 16 bits : ecrire le marqueur de fin }
+  If OutputFormat = FMT_RES16 Then
+    WriteEndMarker16;
+  
+  { 10. Fermer le fichier .RES }
+  CloseResFile;
+  
+  { 11. Afficher le rapport de compilation }
+  WriteLn;
+  If HasErrors Then
+  Begin
+    DisplayErrorSummary;
+    Halt(EXIT_ERROR);
+  End
+  Else
+  Begin
+    WriteLn('Compilation reussie.');
+    WriteLn('  Fichier source : ', AOpts.SrcFile);
+    WriteLn('  Fichier sortie : ', AOpts.OutFile);
+    If OutputFormat = FMT_RES16 Then
+      WriteLn('  Format         : RES 16 bits')
+    Else
+      WriteLn('  Format         : RES 32 bits');
+    WriteLn('  Ressources     : ', ResCount);
+    If StringCount > 0 Then
+      WriteLn('  Chaines        : ', StringCount);
+    WriteLn('  Taille         : ', ResFileSize, ' octets');
+    
+    If WarningCount > 0 Then
+      DisplayErrorSummary;
+  End;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -8254,19 +8471,6 @@ Begin
           'Compilateur de ressources Windows');
   WriteLn;
   
-  { Initialiser les compteurs }
-  ResCount := 0;
-  StringCount := 0;
-  AccelCount := 0;
-  MenuItemCount := 0;
-  DialogCtrlCount := 0;
-  InitVersionInfo;
-  InitIconCursor;
-  InitBitmap;
-  InitRCData;
-  InitPreprocessor;
-  InitErrorTracking;
-
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
 
@@ -8279,11 +8483,13 @@ Begin
       WriteLn('Format         : RES 16 bits')
     Else
       WriteLn('Format         : RES 32 bits');
+    WriteLn;
   End;
 
-  { TODO : Implementation des TODOs 24-25 }
+  { Compiler le fichier .RC }
+  CompileRC(Opts);
+  
+  { Message de status des TODOs }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-23 [IMPLEMENTE]. TODOs 24-25 sont [A FAIRE].');
-  WriteLn('      Ce fichier contient la structure et les specifications');
-  WriteLn('      pour un compilateur de ressources .RC vers .RES.');
+  WriteLn('NOTE: TODOs 01-24 [IMPLEMENTE]. TODO 25 est [A FAIRE].');
 End.
