@@ -633,7 +633,7 @@
               validation basique du XML : verifier que le fichier commence
               par <?xml ou <assembly, et contient </assembly>
 
-  TODO 21 - PREPROCESSEUR #INCLUDE / #DEFINE [A FAIRE]
+  TODO 21 - PREPROCESSEUR #INCLUDE / #DEFINE [IMPLEMENTE]
             Variables globales :
               Defines      : Array[1..256] Of record
                 Name  : String
@@ -838,6 +838,8 @@ Const
   MAX_INCLUDES    = 64;
   MAX_DEFINES     = 256;
   MAX_INCLUDE_PATHS = 16;
+  MAX_INCLUDE_STACK = 16;     { TODO 21 : profondeur max de #include imbriques }
+  MAX_IFDEF_STACK = 32;       { TODO 21 : profondeur max de #ifdef imbriques }
 
   { Flags memoire }
   MF_MOVEABLE    = $0010;
@@ -1102,11 +1104,6 @@ Const
   
   { TODO 20 : Taille maximale pour les fichiers MANIFEST }
   MAX_MANIFEST_SIZE = 1048576;  { 1 Mo max pour les manifestes XML }
-  
-  { TODO 21 : Preprocesseur }
-  MAX_DEFINES = 256;           { nombre max de #define }
-  MAX_INCLUDE_STACK = 16;      { profondeur max de #include imbriques }
-  MAX_IFDEF_STACK = 32;        { profondeur max de #ifdef imbriques }
 
 { ============================================================
   TYPES
@@ -1344,6 +1341,14 @@ Var
   { TODO 20 : MANIFEST }
   ManifestBuffer : Pointer;   { buffer pour les donnees MANIFEST }
   ManifestSize   : LongInt;   { taille des donnees MANIFEST }
+  
+  { TODO 21 : PREPROCESSEUR }
+  DefineEntries  : Array[1..MAX_DEFINES] Of TDefineEntry;
+  DefineCount    : Integer;
+  IncludeStack   : Array[1..MAX_INCLUDE_STACK] Of TIncludeEntry;
+  IncludeLevel   : Integer;
+  IfdefStack     : Array[1..MAX_IFDEF_STACK] Of TIfdefEntry;
+  IfdefLevel     : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -7191,6 +7196,595 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 21 : PREPROCESSEUR #INCLUDE / #DEFINE
+  ============================================================ }
+
+{ ----- Procedure InitPreprocessor ----- }
+{ Initialise les variables globales du preprocesseur }
+Procedure InitPreprocessor;
+Var
+  I : Integer;
+Begin
+  DefineCount := 0;
+  IncludeLevel := 0;
+  IfdefLevel := 0;
+  
+  { Initialiser les tableaux }
+  For I := 1 To MAX_DEFINES Do
+  Begin
+    DefineEntries[I].Name := '';
+    DefineEntries[I].Value := '';
+  End;
+  
+  For I := 1 To MAX_IFDEF_STACK Do
+  Begin
+    IfdefStack[I].Active := True;
+    IfdefStack[I].ElseSeen := False;
+  End;
+End;
+
+{ ----- Procedure AddDefine ----- }
+{ Ajoute une definition au tableau Defines }
+Procedure AddDefine(Const AName, AValue : TString);
+Var
+  I     : Integer;
+  UName : TString;
+Begin
+  UName := UpCaseStr(AName);
+  
+  { Verifier si deja defini, si oui, mettre a jour }
+  For I := 1 To DefineCount Do
+  Begin
+    If UpCaseStr(DefineEntries[I].Name) = UName Then
+    Begin
+      DefineEntries[I].Value := AValue;
+      Exit;
+    End;
+  End;
+  
+  { Ajouter une nouvelle definition }
+  If DefineCount >= MAX_DEFINES Then
+    FatalError('Trop de definitions de preprocesseur')
+  Else
+  Begin
+    Inc(DefineCount);
+    DefineEntries[DefineCount].Name := AName;
+    DefineEntries[DefineCount].Value := AValue;
+  End;
+End;
+
+{ ----- Procedure RemoveDefine ----- }
+{ Supprime une definition (#undef) }
+Procedure RemoveDefine(Const AName : TString);
+Var
+  I, J  : Integer;
+  UName : TString;
+Begin
+  UName := UpCaseStr(AName);
+  
+  For I := 1 To DefineCount Do
+  Begin
+    If UpCaseStr(DefineEntries[I].Name) = UName Then
+    Begin
+      { Decaler les elements suivants }
+      For J := I To DefineCount - 1 Do
+        DefineEntries[J] := DefineEntries[J + 1];
+      Dec(DefineCount);
+      Exit;
+    End;
+  End;
+End;
+
+{ ----- Function IsDefined ----- }
+{ Verifie si un symbole est defini }
+Function IsDefined(Const AName : TString) : Boolean;
+Var
+  I     : Integer;
+  UName : TString;
+Begin
+  IsDefined := False;
+  UName := UpCaseStr(AName);
+  
+  For I := 1 To DefineCount Do
+  Begin
+    If UpCaseStr(DefineEntries[I].Name) = UName Then
+    Begin
+      IsDefined := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ ----- Function GetDefineValue ----- }
+{ Retourne la valeur d'un symbole defini }
+Function GetDefineValue(Const AName : TString) : TString;
+Var
+  I     : Integer;
+  UName : TString;
+Begin
+  GetDefineValue := '';
+  UName := UpCaseStr(AName);
+  
+  For I := 1 To DefineCount Do
+  Begin
+    If UpCaseStr(DefineEntries[I].Name) = UName Then
+    Begin
+      GetDefineValue := DefineEntries[I].Value;
+      Exit;
+    End;
+  End;
+End;
+
+{ ----- Function ExpandDefines ----- }
+{ Remplace les occurrences des symboles definis par leur valeur }
+Function ExpandDefines(Const ALine : TString) : TString;
+Var
+  Result  : TString;
+  I       : Integer;
+  InIdent : Boolean;
+  Ident   : TString;
+  Ch      : Char;
+Begin
+  Result := '';
+  I := 1;
+  
+  While I <= Length(ALine) Do
+  Begin
+    Ch := ALine[I];
+    
+    { Detecter le debut d'un identifiant }
+    If ((Ch >= 'A') And (Ch <= 'Z')) Or
+       ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_') Then
+    Begin
+      Ident := '';
+      InIdent := True;
+      
+      { Lire l'identifiant complet }
+      While (I <= Length(ALine)) And InIdent Do
+      Begin
+        Ch := ALine[I];
+        If ((Ch >= 'A') And (Ch <= 'Z')) Or
+           ((Ch >= 'a') And (Ch <= 'z')) Or
+           ((Ch >= '0') And (Ch <= '9')) Or (Ch = '_') Then
+        Begin
+          Ident := Ident + Ch;
+          Inc(I);
+        End
+        Else
+          InIdent := False;
+      End;
+      
+      { Verifier si c'est un symbole defini }
+      If IsDefined(Ident) Then
+        Result := Result + GetDefineValue(Ident)
+      Else
+        Result := Result + Ident;
+    End
+    Else
+    Begin
+      Result := Result + Ch;
+      Inc(I);
+    End;
+  End;
+  
+  ExpandDefines := Result;
+End;
+
+{ ----- Function FindIncludeFile ----- }
+{ Cherche le fichier dans les chemins IncludePaths }
+Function FindIncludeFile(Const AFileName : TString) : TString;
+Var
+  I        : Integer;
+  TestPath : TString;
+Begin
+  { D'abord essayer le chemin tel quel }
+  If FileExists(AFileName) Then
+  Begin
+    FindIncludeFile := AFileName;
+    Exit;
+  End;
+  
+  { Ensuite essayer avec les chemins d'inclusion }
+  For I := 1 To Opts.IncludeCount Do
+  Begin
+    TestPath := Opts.IncludePaths[I];
+    If (Length(TestPath) > 0) And 
+       (TestPath[Length(TestPath)] <> '/') And
+       (TestPath[Length(TestPath)] <> '\') Then
+      TestPath := TestPath + '/';
+    TestPath := TestPath + AFileName;
+    
+    If FileExists(TestPath) Then
+    Begin
+      FindIncludeFile := TestPath;
+      Exit;
+    End;
+  End;
+  
+  { Non trouve }
+  FindIncludeFile := '';
+End;
+
+{ ----- Function IsPreprocessorActive ----- }
+{ Retourne True si on est dans un bloc conditionnel actif }
+Function IsPreprocessorActive : Boolean;
+Var
+  I : Integer;
+Begin
+  IsPreprocessorActive := True;
+  
+  For I := 1 To IfdefLevel Do
+  Begin
+    If Not IfdefStack[I].Active Then
+    Begin
+      IsPreprocessorActive := False;
+      Exit;
+    End;
+  End;
+End;
+
+{ ----- Procedure ProcessDefine ----- }
+{ Lit #define NOM [valeur] et appelle AddDefine }
+Procedure ProcessDefine(Const ALine : TString);
+Var
+  I        : Integer;
+  Name     : TString;
+  Value    : TString;
+Begin
+  { Sauter #define et les espaces }
+  I := 1;
+  While (I <= Length(ALine)) And (ALine[I] = ' ') Do
+    Inc(I);
+  
+  { Sauter le mot "define" }
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') Do
+    Inc(I);
+  
+  { Sauter les espaces }
+  While (I <= Length(ALine)) And (ALine[I] = ' ') Do
+    Inc(I);
+  
+  { Lire le nom }
+  Name := '';
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And (ALine[I] <> #9) Do
+  Begin
+    Name := Name + ALine[I];
+    Inc(I);
+  End;
+  
+  { Sauter les espaces }
+  While (I <= Length(ALine)) And ((ALine[I] = ' ') Or (ALine[I] = #9)) Do
+    Inc(I);
+  
+  { Lire la valeur (le reste de la ligne) }
+  Value := '';
+  While I <= Length(ALine) Do
+  Begin
+    Value := Value + ALine[I];
+    Inc(I);
+  End;
+  
+  { Supprimer les espaces de fin }
+  While (Length(Value) > 0) And 
+        ((Value[Length(Value)] = ' ') Or (Value[Length(Value)] = #9) Or
+         (Value[Length(Value)] = #13) Or (Value[Length(Value)] = #10)) Do
+    Delete(Value, Length(Value), 1);
+  
+  If Length(Name) > 0 Then
+    AddDefine(Name, Value);
+End;
+
+{ ----- Procedure ProcessUndef ----- }
+{ Lit #undef NOM et appelle RemoveDefine }
+Procedure ProcessUndef(Const ALine : TString);
+Var
+  I    : Integer;
+  Name : TString;
+Begin
+  { Sauter #undef et les espaces }
+  I := 1;
+  While (I <= Length(ALine)) And (ALine[I] = ' ') Do
+    Inc(I);
+  
+  { Sauter le mot "undef" }
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') Do
+    Inc(I);
+  
+  { Sauter les espaces }
+  While (I <= Length(ALine)) And (ALine[I] = ' ') Do
+    Inc(I);
+  
+  { Lire le nom }
+  Name := '';
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+        (ALine[I] <> #9) And (ALine[I] <> #13) And (ALine[I] <> #10) Do
+  Begin
+    Name := Name + ALine[I];
+    Inc(I);
+  End;
+  
+  If Length(Name) > 0 Then
+    RemoveDefine(Name);
+End;
+
+{ ----- Procedure ProcessIfdef ----- }
+{ Lit #ifdef NOM, si non defini : sauter jusqu'a #else/#endif }
+Procedure ProcessIfdef(Const ALine : TString);
+Var
+  I    : Integer;
+  Name : TString;
+Begin
+  If IfdefLevel >= MAX_IFDEF_STACK Then
+    FatalError('Trop de #ifdef imbriques');
+  
+  { Sauter #ifdef et les espaces }
+  I := 1;
+  While (I <= Length(ALine)) And (ALine[I] = ' ') Do
+    Inc(I);
+  
+  { Sauter le mot "ifdef" }
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') Do
+    Inc(I);
+  
+  { Sauter les espaces }
+  While (I <= Length(ALine)) And (ALine[I] = ' ') Do
+    Inc(I);
+  
+  { Lire le nom }
+  Name := '';
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+        (ALine[I] <> #9) And (ALine[I] <> #13) And (ALine[I] <> #10) Do
+  Begin
+    Name := Name + ALine[I];
+    Inc(I);
+  End;
+  
+  Inc(IfdefLevel);
+  IfdefStack[IfdefLevel].ElseSeen := False;
+  
+  { Si le bloc parent n'est pas actif, ce bloc est inactif aussi }
+  If (IfdefLevel > 1) And (Not IfdefStack[IfdefLevel - 1].Active) Then
+    IfdefStack[IfdefLevel].Active := False
+  Else
+    IfdefStack[IfdefLevel].Active := IsDefined(Name);
+End;
+
+{ ----- Procedure ProcessIfndef ----- }
+{ Lit #ifndef NOM, si defini : sauter jusqu'a #else/#endif }
+Procedure ProcessIfndef(Const ALine : TString);
+Var
+  I    : Integer;
+  Name : TString;
+Begin
+  If IfdefLevel >= MAX_IFDEF_STACK Then
+    FatalError('Trop de #ifndef imbriques');
+  
+  { Sauter #ifndef et les espaces }
+  I := 1;
+  While (I <= Length(ALine)) And (ALine[I] = ' ') Do
+    Inc(I);
+  
+  { Sauter le mot "ifndef" }
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') Do
+    Inc(I);
+  
+  { Sauter les espaces }
+  While (I <= Length(ALine)) And (ALine[I] = ' ') Do
+    Inc(I);
+  
+  { Lire le nom }
+  Name := '';
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+        (ALine[I] <> #9) And (ALine[I] <> #13) And (ALine[I] <> #10) Do
+  Begin
+    Name := Name + ALine[I];
+    Inc(I);
+  End;
+  
+  Inc(IfdefLevel);
+  IfdefStack[IfdefLevel].ElseSeen := False;
+  
+  { Si le bloc parent n'est pas actif, ce bloc est inactif aussi }
+  If (IfdefLevel > 1) And (Not IfdefStack[IfdefLevel - 1].Active) Then
+    IfdefStack[IfdefLevel].Active := False
+  Else
+    IfdefStack[IfdefLevel].Active := Not IsDefined(Name);
+End;
+
+{ ----- Procedure ProcessElse ----- }
+{ Inverse l'etat conditionnel }
+Procedure ProcessElse;
+Begin
+  If IfdefLevel <= 0 Then
+    FatalError('#else sans #ifdef/#ifndef correspondant');
+  
+  If IfdefStack[IfdefLevel].ElseSeen Then
+    FatalError('#else duplique');
+  
+  IfdefStack[IfdefLevel].ElseSeen := True;
+  
+  { Inverser seulement si le bloc parent est actif }
+  If (IfdefLevel = 1) Or IfdefStack[IfdefLevel - 1].Active Then
+    IfdefStack[IfdefLevel].Active := Not IfdefStack[IfdefLevel].Active;
+End;
+
+{ ----- Procedure ProcessEndif ----- }
+{ Termine le bloc conditionnel }
+Procedure ProcessEndif;
+Begin
+  If IfdefLevel <= 0 Then
+    FatalError('#endif sans #ifdef/#ifndef correspondant');
+  
+  Dec(IfdefLevel);
+End;
+
+{ ----- Function ExtractIncludeFileName ----- }
+{ Extrait le nom de fichier d'une directive #include }
+Function ExtractIncludeFileName(Const ALine : TString) : TString;
+Var
+  I      : Integer;
+  Ch     : Char;
+  Name   : TString;
+  QuoteChar: Char;
+Begin
+  ExtractIncludeFileName := '';
+  Name := '';
+  
+  { Sauter #include et les espaces }
+  I := 1;
+  While (I <= Length(ALine)) And (ALine[I] = ' ') Do
+    Inc(I);
+  
+  { Sauter le mot "include" }
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+        (ALine[I] <> '"') And (ALine[I] <> '<') Do
+    Inc(I);
+  
+  { Sauter les espaces }
+  While (I <= Length(ALine)) And (ALine[I] = ' ') Do
+    Inc(I);
+  
+  If I > Length(ALine) Then Exit;
+  
+  Ch := ALine[I];
+  
+  { Determiner le type de quote }
+  If Ch = '"' Then
+  Begin
+    QuoteChar := '"';
+    Inc(I);
+  End
+  Else If Ch = '<' Then
+  Begin
+    QuoteChar := '>';
+    Inc(I);
+  End
+  Else
+  Begin
+    { Pas de quotes, lire jusqu'a l'espace }
+    While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+          (ALine[I] <> #9) And (ALine[I] <> #13) And (ALine[I] <> #10) Do
+    Begin
+      Name := Name + ALine[I];
+      Inc(I);
+    End;
+    ExtractIncludeFileName := Name;
+    Exit;
+  End;
+  
+  { Lire le nom de fichier }
+  While (I <= Length(ALine)) And (ALine[I] <> QuoteChar) Do
+  Begin
+    Name := Name + ALine[I];
+    Inc(I);
+  End;
+  
+  ExtractIncludeFileName := Name;
+End;
+
+{ ----- Function IsPreprocessorDirective ----- }
+{ Verifie si une ligne est une directive de preprocesseur }
+Function IsPreprocessorDirective(Const ALine : TString) : Boolean;
+Var
+  I  : Integer;
+Begin
+  IsPreprocessorDirective := False;
+  
+  { Sauter les espaces au debut }
+  I := 1;
+  While (I <= Length(ALine)) And ((ALine[I] = ' ') Or (ALine[I] = #9)) Do
+    Inc(I);
+  
+  If I <= Length(ALine) Then
+  Begin
+    If ALine[I] = '#' Then
+      IsPreprocessorDirective := True;
+  End;
+End;
+
+{ ----- Function GetPreprocessorDirective ----- }
+{ Retourne le type de directive (#define, #include, etc.) }
+Function GetPreprocessorDirective(Const ALine : TString) : TString;
+Var
+  I    : Integer;
+  Dir  : TString;
+Begin
+  Dir := '';
+  
+  { Sauter les espaces au debut }
+  I := 1;
+  While (I <= Length(ALine)) And ((ALine[I] = ' ') Or (ALine[I] = #9)) Do
+    Inc(I);
+  
+  { Sauter le # }
+  If (I <= Length(ALine)) And (ALine[I] = '#') Then
+    Inc(I);
+  
+  { Sauter les espaces apres # }
+  While (I <= Length(ALine)) And ((ALine[I] = ' ') Or (ALine[I] = #9)) Do
+    Inc(I);
+  
+  { Lire le nom de la directive }
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+        (ALine[I] <> #9) And (ALine[I] <> #13) And (ALine[I] <> #10) Do
+  Begin
+    Dir := Dir + ALine[I];
+    Inc(I);
+  End;
+  
+  GetPreprocessorDirective := UpCaseStr(Dir);
+End;
+
+{ ----- Procedure HandlePreprocessorDirective ----- }
+{ Traite une directive de preprocesseur }
+Procedure HandlePreprocessorDirective(Const ALine : TString);
+Var
+  Dir      : TString;
+  FileName : TString;
+  FullPath : TString;
+Begin
+  Dir := GetPreprocessorDirective(ALine);
+  
+  { Directives qui doivent toujours etre traitees }
+  If Dir = 'IFDEF' Then
+    ProcessIfdef(ALine)
+  Else If Dir = 'IFNDEF' Then
+    ProcessIfndef(ALine)
+  Else If Dir = 'ELSE' Then
+    ProcessElse
+  Else If Dir = 'ENDIF' Then
+    ProcessEndif
+  Else If IsPreprocessorActive Then
+  Begin
+    { Directives conditionnelles }
+    If Dir = 'DEFINE' Then
+      ProcessDefine(ALine)
+    Else If Dir = 'UNDEF' Then
+      ProcessUndef(ALine)
+    Else If Dir = 'INCLUDE' Then
+    Begin
+      FileName := ExtractIncludeFileName(ALine);
+      If Length(FileName) > 0 Then
+      Begin
+        FullPath := FindIncludeFile(FileName);
+        If Length(FullPath) = 0 Then
+          FatalError('Fichier include non trouve: ' + FileName);
+        { Note: L'inclusion de fichier sera geree par le lexer }
+        If Opts.Verbose Then
+          WriteLn('  #include "', FileName, '" -> ', FullPath);
+      End;
+    End
+    Else If (Dir = 'PRAGMA') Or (Dir = 'ERROR') Or (Dir = 'WARNING') Or
+            (Dir = 'LINE') Or (Dir = 'IF') Or (Dir = 'ELIF') Then
+    Begin
+      { Directives ignorees ou non supportees pour l'instant }
+      If Opts.Verbose Then
+        WriteLn('  Directive ignoree: #', Dir);
+    End;
+  End;
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -7289,6 +7883,7 @@ Begin
   InitIconCursor;
   InitBitmap;
   InitRCData;
+  InitPreprocessor;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -7304,9 +7899,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 20-25 }
+  { TODO : Implementation des TODOs 22-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-20 [IMPLEMENTE]. TODOs 21-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-21 [IMPLEMENTE]. TODOs 22-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
