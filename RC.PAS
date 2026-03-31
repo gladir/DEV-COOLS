@@ -568,7 +568,7 @@
               contenant TBitmapInfoHeader + palette + pixels (sans
               TBitmapFileHeader)
 
-  TODO 18 - COMPILATION GROUP_ICON/GROUP_CURSOR [A FAIRE]
+  TODO 18 - COMPILATION GROUP_ICON/GROUP_CURSOR [IMPLEMENTE]
             Type TGrpIconDirEntry : record
               Width    : Byte
               Height   : Byte
@@ -6631,7 +6631,7 @@ Begin
 
   { TODO : Implementation des TODOs 18-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-17 [IMPLEMENTE]. TODOs 18-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-18 [IMPLEMENTE]. TODOs 19-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
