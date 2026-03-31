@@ -534,7 +534,7 @@
               MemFlags: Word; LangId: Word)
               similaire a WriteIcon pour RT_CURSOR / RT_GROUP_CURSOR
 
-  TODO 17 - COMPILATION BITMAP [A FAIRE]
+  TODO 17 - COMPILATION BITMAP [IMPLEMENTE]
             Type TBitmapFileHeader : record
               bfType      : Word    (doit etre 'BM' = $4D42)
               bfSize      : LongInt (taille totale du fichier)
@@ -1228,6 +1228,30 @@ Type
     BytesInRes : LongInt;   { taille des donnees DIB }
     Id         : Word;      { identifiant de la ressource RT_ICON associee }
   End;
+  
+  { TODO 17 : Structure pour l'en-tete de fichier bitmap }
+  TBitmapFileHeader = Record
+    bfType      : Word;     { doit etre 'BM' = $4D42 }
+    bfSize      : LongInt;  { taille totale du fichier }
+    bfReserved1 : Word;     { reserve, = 0 }
+    bfReserved2 : Word;     { reserve, = 0 }
+    bfOffBits   : LongInt;  { offset des donnees pixels }
+  End;
+  
+  { TODO 17 : Structure pour l'en-tete d'info bitmap }
+  TBitmapInfoHeader = Record
+    biSize          : LongInt;  { = 40 }
+    biWidth         : LongInt;  { largeur en pixels }
+    biHeight        : LongInt;  { hauteur en pixels }
+    biPlanes        : Word;     { = 1 }
+    biBitCount      : Word;     { bits par pixel }
+    biCompression   : LongInt;  { type de compression }
+    biSizeImage     : LongInt;  { taille des donnees image }
+    biXPelsPerMeter : LongInt;  { resolution horizontale }
+    biYPelsPerMeter : LongInt;  { resolution verticale }
+    biClrUsed       : LongInt;  { nombre de couleurs utilisees }
+    biClrImportant  : LongInt;  { nombre de couleurs importantes }
+  End;
 
 { ============================================================
   VARIABLES GLOBALES
@@ -1272,6 +1296,10 @@ Var
   IconCount    : Integer;
   IconData     : Array[1..MAX_ICON_ENTRIES] Of Pointer;
   IconDataSizes: Array[1..MAX_ICON_ENTRIES] Of LongInt;
+  
+  { TODO 17 : BITMAP }
+  BitmapData     : Pointer;   { donnees du bitmap (sans BITMAPFILEHEADER) }
+  BitmapDataSize : LongInt;   { taille des donnees du bitmap }
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -6272,6 +6300,223 @@ Begin
   WriteCursor(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
 End;
 
+{ ============================================================
+  TODO 17 : COMPILATION BITMAP
+  ============================================================ }
+
+{ ----- Procedure InitBitmap ----- }
+{ Initialise les variables globales pour le traitement des bitmaps }
+Procedure InitBitmap;
+Begin
+  BitmapData := Nil;
+  BitmapDataSize := 0;
+End;
+
+{ ----- Procedure ClearBitmapData ----- }
+{ Libere la memoire du bitmap }
+Procedure ClearBitmapData;
+Begin
+  If BitmapData <> Nil Then
+  Begin
+    FreeMem(BitmapData, BitmapDataSize);
+    BitmapData := Nil;
+    BitmapDataSize := 0;
+  End;
+End;
+
+{ ----- Procedure LoadBitmapFile ----- }
+{ Charge un fichier .bmp et extrait les donnees DIB (sans BITMAPFILEHEADER) }
+Procedure LoadBitmapFile(Const AFileName : TString;
+  Var AHeader : TBitmapInfoHeader; Var ADataPtr : Pointer;
+  Var ADataSize : LongInt);
+Var
+  F          : File;
+  FileHdr    : TBitmapFileHeader;
+  BytesRead  : LongInt;
+Begin
+  { Initialiser les sorties }
+  ADataPtr := Nil;
+  ADataSize := 0;
+  FillChar(AHeader, SizeOf(AHeader), 0);
+  
+  { Ouvrir le fichier }
+  {$I-}
+  Assign(F, AFileName);
+  Reset(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier bitmap : ' + AFileName);
+  
+  { Lire l'en-tete du fichier bitmap }
+  {$I-}
+  BlockRead(F, FileHdr, SizeOf(FileHdr), BytesRead);
+  {$I+}
+  If (IOResult <> 0) Or (BytesRead <> SizeOf(FileHdr)) Then
+  Begin
+    Close(F);
+    FatalError('Erreur de lecture de l''en-tete du fichier bitmap : ' + AFileName);
+  End;
+  
+  { Verifier la signature 'BM' }
+  If FileHdr.bfType <> $4D42 Then
+  Begin
+    Close(F);
+    FatalError('Fichier bitmap invalide (signature incorrecte) : ' + AFileName);
+  End;
+  
+  { Lire l'en-tete d'info bitmap }
+  {$I-}
+  BlockRead(F, AHeader, SizeOf(AHeader), BytesRead);
+  {$I+}
+  If (IOResult <> 0) Or (BytesRead <> SizeOf(AHeader)) Then
+  Begin
+    Close(F);
+    FatalError('Erreur de lecture de l''en-tete info bitmap : ' + AFileName);
+  End;
+  
+  { Verifier la taille de l'en-tete }
+  If AHeader.biSize < 40 Then
+  Begin
+    Close(F);
+    FatalError('En-tete bitmap non supporte (taille < 40) : ' + AFileName);
+  End;
+  
+  { Calculer la taille des donnees (tout apres BITMAPFILEHEADER) }
+  ADataSize := FileHdr.bfSize - SizeOf(FileHdr);
+  
+  { Allouer la memoire }
+  GetMem(ADataPtr, ADataSize);
+  If ADataPtr = Nil Then
+  Begin
+    Close(F);
+    FatalError('Memoire insuffisante pour le bitmap : ' + AFileName);
+  End;
+  
+  { Revenir au debut des donnees DIB (apres BITMAPFILEHEADER) }
+  {$I-}
+  Seek(F, SizeOf(FileHdr));
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FreeMem(ADataPtr, ADataSize);
+    ADataPtr := Nil;
+    ADataSize := 0;
+    Close(F);
+    FatalError('Erreur de positionnement dans le fichier bitmap : ' + AFileName);
+  End;
+  
+  { Lire les donnees DIB (BITMAPINFOHEADER + palette + pixels) }
+  {$I-}
+  BlockRead(F, ADataPtr^, ADataSize, BytesRead);
+  {$I+}
+  If (IOResult <> 0) Or (BytesRead <> ADataSize) Then
+  Begin
+    FreeMem(ADataPtr, ADataSize);
+    ADataPtr := Nil;
+    ADataSize := 0;
+    Close(F);
+    FatalError('Erreur de lecture des donnees bitmap : ' + AFileName);
+  End;
+  
+  { Fermer le fichier }
+  Close(F);
+End;
+
+{ ----- Procedure WriteBitmapResource ----- }
+{ Ecrit les donnees brutes d'un bitmap dans le fichier ressource }
+Procedure WriteBitmapResource(ADataPtr : Pointer; ADataSize : LongInt);
+Var
+  I : LongInt;
+  P : PByte;
+Begin
+  P := PByte(ADataPtr);
+  For I := 0 To ADataSize - 1 Do
+  Begin
+    WriteByte(P^);
+    Inc(P);
+  End;
+End;
+
+{ ----- Procedure WriteBitmap ----- }
+{ Ecrit une ressource RT_BITMAP complete }
+Procedure WriteBitmap(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const AFileName : TString;
+  MemFlags : Word; LangId : Word);
+Var
+  Header   : TBitmapInfoHeader;
+  DataPtr  : Pointer;
+  DataSize : LongInt;
+  ResIdx   : Integer;
+  DataPos  : LongInt;
+Begin
+  { Charger le fichier bitmap }
+  LoadBitmapFile(AFileName, Header, DataPtr, DataSize);
+  
+  { Ajouter la ressource a la table }
+  ResIdx := AddResource(True, RT_BITMAP, '', NameIsId, NameId, NameStr, 
+                        MemFlags, LangId);
+  
+  { Ecrire l'en-tete de ressource }
+  If Opts.Output32 Then
+  Begin
+    WriteResHeader32(True, RT_BITMAP, '', NameIsId, NameId, NameStr,
+                     DataSize, MemFlags, LangId);
+  End
+  Else
+  Begin
+    If NameIsId Then
+      WriteResHeader16(RT_BITMAP, NameId, DataSize, MemFlags)
+    Else
+      WriteResHeader16Str('BITMAP', NameStr, DataSize, MemFlags);
+  End;
+  
+  { Enregistrer la position des donnees }
+  DataPos := GetResPos;
+  SetResourceDataOfs(ResIdx, DataPos);
+  
+  { Ecrire les donnees du bitmap }
+  WriteBitmapResource(DataPtr, DataSize);
+  
+  { Aligner sur 4 octets pour 32 bits }
+  If Opts.Output32 Then
+    PadToAlignment(4);
+  
+  { Enregistrer la taille des donnees }
+  SetResourceDataSize(ResIdx, DataSize);
+  
+  { Liberer la memoire }
+  FreeMem(DataPtr, DataSize);
+  
+  { Afficher en mode verbeux }
+  If Opts.Verbose Then
+  Begin
+    Write('  BITMAP ');
+    If NameIsId Then
+      Write('#', NameId)
+    Else
+      Write('"', NameStr, '"');
+    WriteLn(' <- ', AFileName, ' (', DataSize, ' octets, ',
+            Header.biWidth, 'x', Header.biHeight, ' ', Header.biBitCount, 'bpp)');
+  End;
+End;
+
+{ ----- Procedure ParseBitmap ----- }
+{ Parse une declaration BITMAP et ecrit la ressource }
+Procedure ParseBitmap(NameIsId : Boolean; NameId : Word; Const NameStr : TString);
+Var
+  MemFlags : Word;
+  FileName : TString;
+Begin
+  { Lire les options memoire }
+  MemFlags := ParseMemoryOptions;
+  
+  { Lire le nom du fichier }
+  FileName := ExpectString;
+  
+  { Ecrire la ressource }
+  WriteBitmap(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -6368,6 +6613,7 @@ Begin
   DialogCtrlCount := 0;
   InitVersionInfo;
   InitIconCursor;
+  InitBitmap;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -6383,9 +6629,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 17-25 }
+  { TODO : Implementation des TODOs 18-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-16 [IMPLEMENTE]. TODOs 17-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-17 [IMPLEMENTE]. TODOs 18-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
