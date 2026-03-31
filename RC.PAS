@@ -412,7 +412,7 @@
               WORD fItemFlags, WORD menuId (si non popup),
               chaine Unicode terminee par $0000
 
-  TODO 14 - COMPILATION DIALOG [A FAIRE]
+  TODO 14 - COMPILATION DIALOG [IMPLEMENTE]
             Type TDialogTemplate : record
               Style    : LongInt  (styles de fenetre)
               ExStyle  : LongInt  (styles etendus)
@@ -920,6 +920,115 @@ Const
   MF_OWNERDRAW   = $0100;   { Element dessine par le proprietaire }
   MF_SEPARATOR   = $0800;   { Separateur }
   MF_HELP        = $4000;   { Element d aide }
+  
+  { TODO 14 : Constantes pour dialogues }
+  { Classes predefinies de controles }
+  DC_BUTTON    = $0080;     { Boutons }
+  DC_EDIT      = $0081;     { Zone de texte editable }
+  DC_STATIC    = $0082;     { Texte statique }
+  DC_LISTBOX   = $0083;     { Liste }
+  DC_SCROLLBAR = $0084;     { Barre de defilement }
+  DC_COMBOBOX  = $0085;     { Liste deroulante }
+  
+  { Styles de dialogue (DS_*) }
+  DS_ABSALIGN      = $0001;  { Alignement absolu }
+  DS_SYSMODAL      = $0002;  { Modal systeme }
+  DS_3DLOOK        = $0004;  { Apparence 3D }
+  DS_FIXEDSYS      = $0008;  { Police fixe }
+  DS_NOFAILCREATE  = $0010;  { Ne pas echouer la creation }
+  DS_LOCALEDIT     = $0020;  { Edition locale }
+  DS_SETFONT       = $0040;  { Definir une police }
+  DS_MODALFRAME    = $0080;  { Cadre modal }
+  DS_NOIDLEMSG     = $0100;  { Pas de message idle }
+  DS_SETFOREGROUND = $0200;  { Mettre au premier plan }
+  DS_CONTROL       = $0400;  { Controle enfant }
+  DS_CENTER        = $0800;  { Centrer sur l ecran }
+  DS_CENTERMOUSE   = $1000;  { Centrer sur la souris }
+  DS_CONTEXTHELP   = $2000;  { Aide contextuelle }
+  DS_SHELLFONT     = $0048;  { Police shell (DS_SETFONT + DS_FIXEDSYS) }
+  
+  { Styles de fenetre (WS_*) pour dialogues }
+  WS_POPUP         = LongInt($80000000);
+  WS_CHILD         = $40000000;
+  WS_MINIMIZE      = $20000000;
+  WS_VISIBLE       = $10000000;
+  WS_DISABLED      = $08000000;
+  WS_CLIPSIBLINGS  = $04000000;
+  WS_CLIPCHILDREN  = $02000000;
+  WS_MAXIMIZE      = $01000000;
+  WS_CAPTION       = $00C00000;
+  WS_BORDER        = $00800000;
+  WS_DLGFRAME      = $00400000;
+  WS_VSCROLL       = $00200000;
+  WS_HSCROLL       = $00100000;
+  WS_SYSMENU       = $00080000;
+  WS_THICKFRAME    = $00040000;
+  WS_GROUP         = $00020000;
+  WS_TABSTOP       = $00010000;
+  WS_MINIMIZEBOX   = $00020000;
+  WS_MAXIMIZEBOX   = $00010000;
+  
+  { Styles de boutons (BS_*) }
+  BS_PUSHBUTTON    = $0000;
+  BS_DEFPUSHBUTTON = $0001;
+  BS_CHECKBOX      = $0002;
+  BS_AUTOCHECKBOX  = $0003;
+  BS_RADIOBUTTON   = $0004;
+  BS_3STATE        = $0005;
+  BS_AUTO3STATE    = $0006;
+  BS_GROUPBOX      = $0007;
+  BS_AUTORADIOBUTTON = $0009;
+  BS_PUSHBOX       = $000A;
+  BS_LEFTTEXT      = $0020;
+  
+  { Styles de texte statique (SS_*) }
+  SS_LEFT          = $0000;
+  SS_CENTER        = $0001;
+  SS_RIGHT         = $0002;
+  SS_ICON          = $0003;
+  SS_BLACKRECT     = $0004;
+  SS_GRAYRECT      = $0005;
+  SS_WHITERECT     = $0006;
+  SS_BLACKFRAME    = $0007;
+  SS_GRAYFRAME     = $0008;
+  SS_WHITEFRAME    = $0009;
+  SS_SIMPLE        = $000B;
+  SS_LEFTNOWORDWRAP= $000C;
+  SS_OWNERDRAW     = $000D;
+  SS_BITMAP        = $000E;
+  SS_CENTERIMAGE   = $0200;
+  
+  { Styles d editbox (ES_*) }
+  ES_LEFT          = $0000;
+  ES_CENTER        = $0001;
+  ES_RIGHT         = $0002;
+  ES_MULTILINE     = $0004;
+  ES_UPPERCASE     = $0008;
+  ES_LOWERCASE     = $0010;
+  ES_PASSWORD      = $0020;
+  ES_AUTOVSCROLL   = $0040;
+  ES_AUTOHSCROLL   = $0080;
+  ES_NOHIDESEL     = $0100;
+  ES_READONLY      = $0800;
+  ES_WANTRETURN    = $1000;
+  
+  { Styles de listbox (LBS_*) }
+  LBS_NOTIFY       = $0001;
+  LBS_SORT         = $0002;
+  LBS_NOREDRAW     = $0004;
+  LBS_MULTIPLESEL  = $0008;
+  LBS_HASSTRINGS   = $0040;
+  LBS_USETABSTOPS  = $0080;
+  LBS_NOINTEGRALHEIGHT = $0100;
+  
+  { Styles de combobox (CBS_*) }
+  CBS_SIMPLE       = $0001;
+  CBS_DROPDOWN     = $0002;
+  CBS_DROPDOWNLIST = $0003;
+  CBS_OWNERDRAWFIXED = $0010;
+  CBS_AUTOHSCROLL  = $0040;
+  CBS_SORT         = $0100;
+  CBS_HASSTRINGS   = $0200;
 
 { ============================================================
   TYPES
@@ -976,6 +1085,38 @@ Type
     IsSep   : Boolean;      { True si separateur }
     Level   : Integer;      { niveau d imbrication }
   End;
+  
+  { TODO 14 : Dialogues }
+  TDialogTemplate = Record
+    Style    : LongInt;     { styles de fenetre }
+    ExStyle  : LongInt;     { styles etendus }
+    X, Y     : Integer;     { position }
+    CX, CY   : Integer;     { dimensions }
+    Menu     : TString;     { ressource menu ou vide }
+    MenuIsId : Boolean;     { True si menu est un ID }
+    MenuId   : Word;        { ID du menu }
+    DlgClass : TString;     { classe de fenetre ou vide }
+    ClassIsId: Boolean;     { True si classe est un ID }
+    ClassId  : Word;        { ID de classe }
+    Title    : TString;     { titre de la boite }
+    FontName : TString;     { nom de police si DS_SETFONT }
+    FontSize : Word;        { taille de police si DS_SETFONT }
+    IsEx     : Boolean;     { True si DIALOGEX }
+  End;
+  
+  TDialogControl = Record
+    Style    : LongInt;     { styles du controle }
+    ExStyle  : LongInt;     { styles etendus }
+    X, Y     : Integer;     { position }
+    CX, CY   : Integer;     { dimensions }
+    Id       : Word;        { identifiant de controle }
+    CtrlClass: TString;     { classe ou vide si atom }
+    ClassIsId: Boolean;     { True si classe predefinie }
+    ClassId  : Word;        { atom de classe predefinie }
+    Text     : TString;     { texte ou ressource }
+    TextIsId : Boolean;     { True si texte est un ID ressource }
+    TextId   : Word;        { ID de ressource si TextIsId }
+  End;
 
 { ============================================================
   VARIABLES GLOBALES
@@ -1004,6 +1145,11 @@ Var
   { TODO 13 : Table des elements de menu }
   MenuItems    : Array[1..MAX_MENU_ITEMS] Of TMenuItem;
   MenuItemCount: Integer;
+  
+  { TODO 14 : Dialogues }
+  DialogTemplate  : TDialogTemplate;
+  DialogControls  : Array[1..MAX_DIALOG_CTRL] Of TDialogControl;
+  DialogCtrlCount : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS
@@ -3982,6 +4128,873 @@ Begin
   SetResourceDataSize(ResIdx, DataSize);
 End;
 
+{ ============================================================
+  TODO 14 - COMPILATION DIALOG
+  ============================================================ }
+
+{ ----- Function IsDialogOption ----- }
+{ Verifie si le token actuel est une option de style de dialogue }
+Function IsDialogOption(Const S: TString): Boolean;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  IsDialogOption := (U = 'STYLE') Or (U = 'EXSTYLE') Or (U = 'CAPTION') Or
+                   (U = 'FONT') Or (U = 'CLASS') Or (U = 'MENU') Or
+                   (U = 'CHARACTERISTICS') Or (U = 'VERSION') Or
+                   (U = 'LANGUAGE');
+End;
+
+{ ----- Function DialogStyleFromName ----- }
+{ Convertit un nom de style en valeur }
+Function DialogStyleFromName(Const S: TString): LongInt;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  DialogStyleFromName := 0;
+  { Styles de fenetre WS_* }
+  If U = 'WS_POPUP'         Then DialogStyleFromName := WS_POPUP
+  Else If U = 'WS_CHILD'         Then DialogStyleFromName := WS_CHILD
+  Else If U = 'WS_MINIMIZE'      Then DialogStyleFromName := WS_MINIMIZE
+  Else If U = 'WS_VISIBLE'       Then DialogStyleFromName := WS_VISIBLE
+  Else If U = 'WS_DISABLED'      Then DialogStyleFromName := WS_DISABLED
+  Else If U = 'WS_CLIPSIBLINGS'  Then DialogStyleFromName := WS_CLIPSIBLINGS
+  Else If U = 'WS_CLIPCHILDREN'  Then DialogStyleFromName := WS_CLIPCHILDREN
+  Else If U = 'WS_MAXIMIZE'      Then DialogStyleFromName := WS_MAXIMIZE
+  Else If U = 'WS_CAPTION'       Then DialogStyleFromName := WS_CAPTION
+  Else If U = 'WS_BORDER'        Then DialogStyleFromName := WS_BORDER
+  Else If U = 'WS_DLGFRAME'      Then DialogStyleFromName := WS_DLGFRAME
+  Else If U = 'WS_VSCROLL'       Then DialogStyleFromName := WS_VSCROLL
+  Else If U = 'WS_HSCROLL'       Then DialogStyleFromName := WS_HSCROLL
+  Else If U = 'WS_SYSMENU'       Then DialogStyleFromName := WS_SYSMENU
+  Else If U = 'WS_THICKFRAME'    Then DialogStyleFromName := WS_THICKFRAME
+  Else If U = 'WS_GROUP'         Then DialogStyleFromName := WS_GROUP
+  Else If U = 'WS_TABSTOP'       Then DialogStyleFromName := WS_TABSTOP
+  Else If U = 'WS_MINIMIZEBOX'   Then DialogStyleFromName := WS_MINIMIZEBOX
+  Else If U = 'WS_MAXIMIZEBOX'   Then DialogStyleFromName := WS_MAXIMIZEBOX
+  { Styles de dialogue DS_* }
+  Else If U = 'DS_ABSALIGN'      Then DialogStyleFromName := DS_ABSALIGN
+  Else If U = 'DS_SYSMODAL'      Then DialogStyleFromName := DS_SYSMODAL
+  Else If U = 'DS_3DLOOK'        Then DialogStyleFromName := DS_3DLOOK
+  Else If U = 'DS_FIXEDSYS'      Then DialogStyleFromName := DS_FIXEDSYS
+  Else If U = 'DS_NOFAILCREATE'  Then DialogStyleFromName := DS_NOFAILCREATE
+  Else If U = 'DS_LOCALEDIT'     Then DialogStyleFromName := DS_LOCALEDIT
+  Else If U = 'DS_SETFONT'       Then DialogStyleFromName := DS_SETFONT
+  Else If U = 'DS_MODALFRAME'    Then DialogStyleFromName := DS_MODALFRAME
+  Else If U = 'DS_NOIDLEMSG'     Then DialogStyleFromName := DS_NOIDLEMSG
+  Else If U = 'DS_SETFOREGROUND' Then DialogStyleFromName := DS_SETFOREGROUND
+  Else If U = 'DS_CONTROL'       Then DialogStyleFromName := DS_CONTROL
+  Else If U = 'DS_CENTER'        Then DialogStyleFromName := DS_CENTER
+  Else If U = 'DS_CENTERMOUSE'   Then DialogStyleFromName := DS_CENTERMOUSE
+  Else If U = 'DS_CONTEXTHELP'   Then DialogStyleFromName := DS_CONTEXTHELP
+  Else If U = 'DS_SHELLFONT'     Then DialogStyleFromName := DS_SHELLFONT;
+End;
+
+{ ----- Function ControlStyleFromName ----- }
+{ Convertit un nom de style de controle en valeur }
+Function ControlStyleFromName(Const S: TString): LongInt;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  ControlStyleFromName := 0;
+  { Styles de boutons BS_* }
+  If U = 'BS_PUSHBUTTON'       Then ControlStyleFromName := BS_PUSHBUTTON
+  Else If U = 'BS_DEFPUSHBUTTON'   Then ControlStyleFromName := BS_DEFPUSHBUTTON
+  Else If U = 'BS_CHECKBOX'        Then ControlStyleFromName := BS_CHECKBOX
+  Else If U = 'BS_AUTOCHECKBOX'    Then ControlStyleFromName := BS_AUTOCHECKBOX
+  Else If U = 'BS_RADIOBUTTON'     Then ControlStyleFromName := BS_RADIOBUTTON
+  Else If U = 'BS_3STATE'          Then ControlStyleFromName := BS_3STATE
+  Else If U = 'BS_AUTO3STATE'      Then ControlStyleFromName := BS_AUTO3STATE
+  Else If U = 'BS_GROUPBOX'        Then ControlStyleFromName := BS_GROUPBOX
+  Else If U = 'BS_AUTORADIOBUTTON' Then ControlStyleFromName := BS_AUTORADIOBUTTON
+  Else If U = 'BS_LEFTTEXT'        Then ControlStyleFromName := BS_LEFTTEXT
+  { Styles de texte statique SS_* }
+  Else If U = 'SS_LEFT'            Then ControlStyleFromName := SS_LEFT
+  Else If U = 'SS_CENTER'          Then ControlStyleFromName := SS_CENTER
+  Else If U = 'SS_RIGHT'           Then ControlStyleFromName := SS_RIGHT
+  Else If U = 'SS_ICON'            Then ControlStyleFromName := SS_ICON
+  Else If U = 'SS_BLACKRECT'       Then ControlStyleFromName := SS_BLACKRECT
+  Else If U = 'SS_GRAYRECT'        Then ControlStyleFromName := SS_GRAYRECT
+  Else If U = 'SS_WHITERECT'       Then ControlStyleFromName := SS_WHITERECT
+  Else If U = 'SS_BLACKFRAME'      Then ControlStyleFromName := SS_BLACKFRAME
+  Else If U = 'SS_GRAYFRAME'       Then ControlStyleFromName := SS_GRAYFRAME
+  Else If U = 'SS_WHITEFRAME'      Then ControlStyleFromName := SS_WHITEFRAME
+  Else If U = 'SS_SIMPLE'          Then ControlStyleFromName := SS_SIMPLE
+  Else If U = 'SS_BITMAP'          Then ControlStyleFromName := SS_BITMAP
+  Else If U = 'SS_CENTERIMAGE'     Then ControlStyleFromName := SS_CENTERIMAGE
+  { Styles d editbox ES_* }
+  Else If U = 'ES_LEFT'            Then ControlStyleFromName := ES_LEFT
+  Else If U = 'ES_CENTER'          Then ControlStyleFromName := ES_CENTER
+  Else If U = 'ES_RIGHT'           Then ControlStyleFromName := ES_RIGHT
+  Else If U = 'ES_MULTILINE'       Then ControlStyleFromName := ES_MULTILINE
+  Else If U = 'ES_UPPERCASE'       Then ControlStyleFromName := ES_UPPERCASE
+  Else If U = 'ES_LOWERCASE'       Then ControlStyleFromName := ES_LOWERCASE
+  Else If U = 'ES_PASSWORD'        Then ControlStyleFromName := ES_PASSWORD
+  Else If U = 'ES_AUTOVSCROLL'     Then ControlStyleFromName := ES_AUTOVSCROLL
+  Else If U = 'ES_AUTOHSCROLL'     Then ControlStyleFromName := ES_AUTOHSCROLL
+  Else If U = 'ES_NOHIDESEL'       Then ControlStyleFromName := ES_NOHIDESEL
+  Else If U = 'ES_READONLY'        Then ControlStyleFromName := ES_READONLY
+  Else If U = 'ES_WANTRETURN'      Then ControlStyleFromName := ES_WANTRETURN
+  { Styles de listbox LBS_* }
+  Else If U = 'LBS_NOTIFY'         Then ControlStyleFromName := LBS_NOTIFY
+  Else If U = 'LBS_SORT'           Then ControlStyleFromName := LBS_SORT
+  Else If U = 'LBS_NOREDRAW'       Then ControlStyleFromName := LBS_NOREDRAW
+  Else If U = 'LBS_MULTIPLESEL'    Then ControlStyleFromName := LBS_MULTIPLESEL
+  Else If U = 'LBS_HASSTRINGS'     Then ControlStyleFromName := LBS_HASSTRINGS
+  Else If U = 'LBS_USETABSTOPS'    Then ControlStyleFromName := LBS_USETABSTOPS
+  { Styles de combobox CBS_* }
+  Else If U = 'CBS_SIMPLE'         Then ControlStyleFromName := CBS_SIMPLE
+  Else If U = 'CBS_DROPDOWN'       Then ControlStyleFromName := CBS_DROPDOWN
+  Else If U = 'CBS_DROPDOWNLIST'   Then ControlStyleFromName := CBS_DROPDOWNLIST
+  Else If U = 'CBS_AUTOHSCROLL'    Then ControlStyleFromName := CBS_AUTOHSCROLL
+  Else If U = 'CBS_SORT'           Then ControlStyleFromName := CBS_SORT
+  Else If U = 'CBS_HASSTRINGS'     Then ControlStyleFromName := CBS_HASSTRINGS
+  { Styles generiques WS_* pour controles }
+  Else If U = 'WS_CHILD'           Then ControlStyleFromName := WS_CHILD
+  Else If U = 'WS_VISIBLE'         Then ControlStyleFromName := WS_VISIBLE
+  Else If U = 'WS_DISABLED'        Then ControlStyleFromName := WS_DISABLED
+  Else If U = 'WS_GROUP'           Then ControlStyleFromName := WS_GROUP
+  Else If U = 'WS_TABSTOP'         Then ControlStyleFromName := WS_TABSTOP
+  Else If U = 'WS_BORDER'          Then ControlStyleFromName := WS_BORDER
+  Else If U = 'WS_VSCROLL'         Then ControlStyleFromName := WS_VSCROLL
+  Else If U = 'WS_HSCROLL'         Then ControlStyleFromName := WS_HSCROLL;
+End;
+
+{ ----- Function IsControlKeyword ----- }
+{ Verifie si le token est un mot-cle de controle de dialogue }
+Function IsControlKeyword(Const S: TString): Boolean;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  IsControlKeyword := (U = 'PUSHBUTTON') Or (U = 'DEFPUSHBUTTON') Or
+                     (U = 'CHECKBOX') Or (U = 'AUTOCHECKBOX') Or
+                     (U = 'RADIOBUTTON') Or (U = 'AUTORADIOBUTTON') Or
+                     (U = 'GROUPBOX') Or (U = 'LTEXT') Or
+                     (U = 'RTEXT') Or (U = 'CTEXT') Or
+                     (U = 'EDITTEXT') Or (U = 'COMBOBOX') Or
+                     (U = 'LISTBOX') Or (U = 'SCROLLBAR') Or
+                     (U = 'ICON') Or (U = 'CONTROL') Or
+                     (U = 'STATE3') Or (U = 'AUTO3STATE');
+End;
+
+{ ----- Procedure InitDialogTemplate ----- }
+{ Initialise le template de dialogue }
+Procedure InitDialogTemplate;
+Begin
+  DialogTemplate.Style    := 0;
+  DialogTemplate.ExStyle  := 0;
+  DialogTemplate.X        := 0;
+  DialogTemplate.Y        := 0;
+  DialogTemplate.CX       := 0;
+  DialogTemplate.CY       := 0;
+  DialogTemplate.Menu     := '';
+  DialogTemplate.MenuIsId := False;
+  DialogTemplate.MenuId   := 0;
+  DialogTemplate.DlgClass := '';
+  DialogTemplate.ClassIsId:= False;
+  DialogTemplate.ClassId  := 0;
+  DialogTemplate.Title    := '';
+  DialogTemplate.FontName := '';
+  DialogTemplate.FontSize := 8;
+  DialogTemplate.IsEx     := False;
+  DialogCtrlCount := 0;
+End;
+
+{ ----- Procedure AddDialogControl ----- }
+{ Ajoute un controle a la liste }
+Procedure AddDialogControl(Style, ExStyle: LongInt; X, Y, CX, CY: Integer;
+  Id: Word; Const CtrlClass: TString; ClassIsId: Boolean; ClassId: Word;
+  Const Text: TString; TextIsId: Boolean; TextId: Word);
+Begin
+  If DialogCtrlCount < MAX_DIALOG_CTRL Then
+  Begin
+    Inc(DialogCtrlCount);
+    DialogControls[DialogCtrlCount].Style     := Style;
+    DialogControls[DialogCtrlCount].ExStyle   := ExStyle;
+    DialogControls[DialogCtrlCount].X         := X;
+    DialogControls[DialogCtrlCount].Y         := Y;
+    DialogControls[DialogCtrlCount].CX        := CX;
+    DialogControls[DialogCtrlCount].CY        := CY;
+    DialogControls[DialogCtrlCount].Id        := Id;
+    DialogControls[DialogCtrlCount].CtrlClass := CtrlClass;
+    DialogControls[DialogCtrlCount].ClassIsId := ClassIsId;
+    DialogControls[DialogCtrlCount].ClassId   := ClassId;
+    DialogControls[DialogCtrlCount].Text      := Text;
+    DialogControls[DialogCtrlCount].TextIsId  := TextIsId;
+    DialogControls[DialogCtrlCount].TextId    := TextId;
+  End;
+End;
+
+{ ----- Procedure ParseDialogControl ----- }
+{ Parse un controle de dialogue }
+Procedure ParseDialogControl;
+Var
+  CtrlType    : TString;
+  CtrlText    : TString;
+  CtrlId      : Word;
+  CtrlX       : Integer;
+  CtrlY       : Integer;
+  CtrlCX      : Integer;
+  CtrlCY      : Integer;
+  CtrlStyle   : LongInt;
+  CtrlExStyle : LongInt;
+  CtrlClass   : TString;
+  ClassIsId   : Boolean;
+  ClassId     : Word;
+  TextIsId    : Boolean;
+  TextId      : Word;
+  U           : TString;
+Begin
+  CtrlType := UpCaseStr(CurrToken.Value);
+  NextToken;  { Consommer le mot-cle }
+  
+  CtrlText    := '';
+  CtrlId      := 0;
+  CtrlX       := 0;
+  CtrlY       := 0;
+  CtrlCX      := 0;
+  CtrlCY      := 0;
+  CtrlStyle   := WS_CHILD Or WS_VISIBLE;
+  CtrlExStyle := 0;
+  CtrlClass   := '';
+  ClassIsId   := False;
+  ClassId     := 0;
+  TextIsId    := False;
+  TextId      := 0;
+  
+  { Determiner la classe et les styles par defaut selon le type }
+  If CtrlType = 'PUSHBUTTON' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_BUTTON;
+    CtrlStyle := CtrlStyle Or BS_PUSHBUTTON Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'DEFPUSHBUTTON' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_BUTTON;
+    CtrlStyle := CtrlStyle Or BS_DEFPUSHBUTTON Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'CHECKBOX' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_BUTTON;
+    CtrlStyle := CtrlStyle Or BS_CHECKBOX Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'AUTOCHECKBOX' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_BUTTON;
+    CtrlStyle := CtrlStyle Or BS_AUTOCHECKBOX Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'RADIOBUTTON' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_BUTTON;
+    CtrlStyle := CtrlStyle Or BS_RADIOBUTTON Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'AUTORADIOBUTTON' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_BUTTON;
+    CtrlStyle := CtrlStyle Or BS_AUTORADIOBUTTON Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'GROUPBOX' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_BUTTON;
+    CtrlStyle := CtrlStyle Or BS_GROUPBOX;
+  End
+  Else If CtrlType = 'LTEXT' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_STATIC;
+    CtrlStyle := CtrlStyle Or SS_LEFT;
+  End
+  Else If CtrlType = 'RTEXT' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_STATIC;
+    CtrlStyle := CtrlStyle Or SS_RIGHT;
+  End
+  Else If CtrlType = 'CTEXT' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_STATIC;
+    CtrlStyle := CtrlStyle Or SS_CENTER;
+  End
+  Else If CtrlType = 'ICON' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_STATIC;
+    CtrlStyle := CtrlStyle Or SS_ICON;
+  End
+  Else If CtrlType = 'EDITTEXT' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_EDIT;
+    CtrlStyle := CtrlStyle Or ES_LEFT Or WS_BORDER Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'COMBOBOX' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_COMBOBOX;
+    CtrlStyle := CtrlStyle Or CBS_DROPDOWN Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'LISTBOX' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_LISTBOX;
+    CtrlStyle := CtrlStyle Or LBS_NOTIFY Or WS_BORDER Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'SCROLLBAR' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_SCROLLBAR;
+  End
+  Else If CtrlType = 'STATE3' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_BUTTON;
+    CtrlStyle := CtrlStyle Or BS_3STATE Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'AUTO3STATE' Then
+  Begin
+    ClassIsId := True;
+    ClassId   := DC_BUTTON;
+    CtrlStyle := CtrlStyle Or BS_AUTO3STATE Or WS_TABSTOP;
+  End
+  Else If CtrlType = 'CONTROL' Then
+  Begin
+    { Format generique CONTROL text, id, class, style, x, y, cx, cy }
+    ClassIsId := False;
+  End;
+  
+  { Lire le texte du controle (sauf pour certains types) }
+  If (CtrlType <> 'EDITTEXT') And (CtrlType <> 'COMBOBOX') And 
+     (CtrlType <> 'LISTBOX') And (CtrlType <> 'SCROLLBAR') Then
+  Begin
+    If CurrToken.Kind = TK_STRING Then
+    Begin
+      CtrlText := CurrToken.Value;
+      NextToken;
+    End
+    Else If CurrToken.Kind = TK_NUMBER Then
+    Begin
+      { Texte est un ID de ressource (ex: pour ICON) }
+      TextIsId := True;
+      TextId   := StrToInt(CurrToken.Value);
+      NextToken;
+    End;
+    
+    { Attendre la virgule }
+    If CurrToken.Kind = TK_COMMA Then
+      NextToken;
+  End;
+  
+  { Lire l identifiant du controle }
+  If CurrToken.Kind = TK_NUMBER Then
+    CtrlId := StrToInt(CurrToken.Value)
+  Else If CurrToken.Kind = TK_IDENT Then
+    CtrlId := ParseExpression;  { Peut etre une constante }
+  NextToken;
+  
+  { Pour CONTROL, lire la classe apres l ID }
+  If CtrlType = 'CONTROL' Then
+  Begin
+    If CurrToken.Kind = TK_COMMA Then
+      NextToken;
+    If CurrToken.Kind = TK_STRING Then
+    Begin
+      CtrlClass := CurrToken.Value;
+      U := UpCaseStr(CtrlClass);
+      { Verifier si c est une classe predefinie }
+      If U = 'BUTTON' Then
+      Begin
+        ClassIsId := True;
+        ClassId := DC_BUTTON;
+      End
+      Else If U = 'EDIT' Then
+      Begin
+        ClassIsId := True;
+        ClassId := DC_EDIT;
+      End
+      Else If U = 'STATIC' Then
+      Begin
+        ClassIsId := True;
+        ClassId := DC_STATIC;
+      End
+      Else If U = 'LISTBOX' Then
+      Begin
+        ClassIsId := True;
+        ClassId := DC_LISTBOX;
+      End
+      Else If U = 'SCROLLBAR' Then
+      Begin
+        ClassIsId := True;
+        ClassId := DC_SCROLLBAR;
+      End
+      Else If U = 'COMBOBOX' Then
+      Begin
+        ClassIsId := True;
+        ClassId := DC_COMBOBOX;
+      End;
+      NextToken;
+    End;
+    
+    { Lire le style pour CONTROL }
+    If CurrToken.Kind = TK_COMMA Then
+      NextToken;
+    If CurrToken.Kind = TK_NUMBER Then
+    Begin
+      CtrlStyle := StrToInt(CurrToken.Value);
+      NextToken;
+    End
+    Else If CurrToken.Kind = TK_IDENT Then
+    Begin
+      CtrlStyle := WS_CHILD Or WS_VISIBLE;
+      While (CurrToken.Kind = TK_IDENT) Or (CurrToken.Kind = TK_PIPE) Do
+      Begin
+        If CurrToken.Kind = TK_IDENT Then
+        Begin
+          CtrlStyle := CtrlStyle Or ControlStyleFromName(CurrToken.Value);
+          CtrlStyle := CtrlStyle Or DialogStyleFromName(CurrToken.Value);
+        End;
+        NextToken;
+      End;
+    End;
+  End;
+  
+  { Lire les coordonnees : x, y, cx, cy }
+  If CurrToken.Kind = TK_COMMA Then
+    NextToken;
+  If CurrToken.Kind = TK_NUMBER Then
+  Begin
+    CtrlX := StrToInt(CurrToken.Value);
+    NextToken;
+  End;
+  
+  If CurrToken.Kind = TK_COMMA Then
+    NextToken;
+  If CurrToken.Kind = TK_NUMBER Then
+  Begin
+    CtrlY := StrToInt(CurrToken.Value);
+    NextToken;
+  End;
+  
+  If CurrToken.Kind = TK_COMMA Then
+    NextToken;
+  If CurrToken.Kind = TK_NUMBER Then
+  Begin
+    CtrlCX := StrToInt(CurrToken.Value);
+    NextToken;
+  End;
+  
+  If CurrToken.Kind = TK_COMMA Then
+    NextToken;
+  If CurrToken.Kind = TK_NUMBER Then
+  Begin
+    CtrlCY := StrToInt(CurrToken.Value);
+    NextToken;
+  End;
+  
+  { Lire les styles optionnels supplementaires }
+  While CurrToken.Kind = TK_COMMA Do
+  Begin
+    NextToken;
+    If CurrToken.Kind = TK_NUMBER Then
+    Begin
+      CtrlStyle := CtrlStyle Or StrToInt(CurrToken.Value);
+      NextToken;
+    End
+    Else If CurrToken.Kind = TK_IDENT Then
+    Begin
+      CtrlStyle := CtrlStyle Or ControlStyleFromName(CurrToken.Value);
+      CtrlStyle := CtrlStyle Or DialogStyleFromName(CurrToken.Value);
+      NextToken;
+    End;
+    
+    While CurrToken.Kind = TK_PIPE Do
+    Begin
+      NextToken;
+      If CurrToken.Kind = TK_IDENT Then
+      Begin
+        CtrlStyle := CtrlStyle Or ControlStyleFromName(CurrToken.Value);
+        CtrlStyle := CtrlStyle Or DialogStyleFromName(CurrToken.Value);
+        NextToken;
+      End
+      Else If CurrToken.Kind = TK_NUMBER Then
+      Begin
+        CtrlStyle := CtrlStyle Or StrToInt(CurrToken.Value);
+        NextToken;
+      End;
+    End;
+  End;
+  
+  { Ajouter le controle }
+  AddDialogControl(CtrlStyle, CtrlExStyle, CtrlX, CtrlY, CtrlCX, CtrlCY,
+    CtrlId, CtrlClass, ClassIsId, ClassId, CtrlText, TextIsId, TextId);
+End;
+
+{ ----- Procedure ParseDialog ----- }
+{ Parse un bloc DIALOG ... BEGIN ... END }
+Procedure ParseDialog(NameIsId: Boolean; NameId: Word;
+  Const NameStr: TString; MemFlags: Word; IsEx: Boolean);
+Var
+  DlgX, DlgY, DlgCX, DlgCY : Integer;
+  U : TString;
+Begin
+  { Initialiser le template }
+  InitDialogTemplate;
+  DialogTemplate.IsEx := IsEx;
+  
+  { Styles par defaut pour un dialogue }
+  DialogTemplate.Style := WS_POPUP Or WS_BORDER Or WS_SYSMENU Or DS_MODALFRAME;
+  
+  { Lire les coordonnees x, y, cx, cy }
+  If CurrToken.Kind = TK_NUMBER Then
+  Begin
+    DlgX := StrToInt(CurrToken.Value);
+    DialogTemplate.X := DlgX;
+    NextToken;
+  End;
+  
+  If CurrToken.Kind = TK_COMMA Then
+    NextToken;
+  If CurrToken.Kind = TK_NUMBER Then
+  Begin
+    DlgY := StrToInt(CurrToken.Value);
+    DialogTemplate.Y := DlgY;
+    NextToken;
+  End;
+  
+  If CurrToken.Kind = TK_COMMA Then
+    NextToken;
+  If CurrToken.Kind = TK_NUMBER Then
+  Begin
+    DlgCX := StrToInt(CurrToken.Value);
+    DialogTemplate.CX := DlgCX;
+    NextToken;
+  End;
+  
+  If CurrToken.Kind = TK_COMMA Then
+    NextToken;
+  If CurrToken.Kind = TK_NUMBER Then
+  Begin
+    DlgCY := StrToInt(CurrToken.Value);
+    DialogTemplate.CY := DlgCY;
+    NextToken;
+  End;
+  
+  { Lire les options du dialogue avant BEGIN }
+  While (CurrToken.Kind <> TK_BEGIN) And (CurrToken.Kind <> TK_LBRACE) And
+        (CurrToken.Kind <> TK_EOF) Do
+  Begin
+    If CurrToken.Kind = TK_IDENT Then
+    Begin
+      U := UpCaseStr(CurrToken.Value);
+      
+      If U = 'STYLE' Then
+      Begin
+        NextToken;
+        DialogTemplate.Style := 0;
+        While (CurrToken.Kind = TK_NUMBER) Or (CurrToken.Kind = TK_IDENT) Or
+              (CurrToken.Kind = TK_PIPE) Or (CurrToken.Kind = TK_NOT) Do
+        Begin
+          If CurrToken.Kind = TK_NUMBER Then
+            DialogTemplate.Style := DialogTemplate.Style Or StrToInt(CurrToken.Value)
+          Else If CurrToken.Kind = TK_IDENT Then
+            DialogTemplate.Style := DialogTemplate.Style Or DialogStyleFromName(CurrToken.Value)
+          Else If CurrToken.Kind = TK_NOT Then
+          Begin
+            NextToken;
+            If CurrToken.Kind = TK_IDENT Then
+              DialogTemplate.Style := DialogTemplate.Style And Not DialogStyleFromName(CurrToken.Value);
+          End;
+          NextToken;
+        End;
+      End
+      Else If U = 'EXSTYLE' Then
+      Begin
+        NextToken;
+        DialogTemplate.ExStyle := 0;
+        While (CurrToken.Kind = TK_NUMBER) Or (CurrToken.Kind = TK_IDENT) Or
+              (CurrToken.Kind = TK_PIPE) Do
+        Begin
+          If CurrToken.Kind = TK_NUMBER Then
+            DialogTemplate.ExStyle := DialogTemplate.ExStyle Or StrToInt(CurrToken.Value)
+          Else If CurrToken.Kind = TK_IDENT Then
+            DialogTemplate.ExStyle := DialogTemplate.ExStyle Or DialogStyleFromName(CurrToken.Value);
+          NextToken;
+        End;
+      End
+      Else If U = 'CAPTION' Then
+      Begin
+        NextToken;
+        If CurrToken.Kind = TK_STRING Then
+        Begin
+          DialogTemplate.Title := CurrToken.Value;
+          DialogTemplate.Style := DialogTemplate.Style Or WS_CAPTION;
+          NextToken;
+        End;
+      End
+      Else If U = 'FONT' Then
+      Begin
+        NextToken;
+        { Lire la taille de police }
+        If CurrToken.Kind = TK_NUMBER Then
+        Begin
+          DialogTemplate.FontSize := StrToInt(CurrToken.Value);
+          NextToken;
+        End;
+        If CurrToken.Kind = TK_COMMA Then
+          NextToken;
+        { Lire le nom de la police }
+        If CurrToken.Kind = TK_STRING Then
+        Begin
+          DialogTemplate.FontName := CurrToken.Value;
+          DialogTemplate.Style := DialogTemplate.Style Or DS_SETFONT;
+          NextToken;
+        End;
+      End
+      Else If U = 'CLASS' Then
+      Begin
+        NextToken;
+        If CurrToken.Kind = TK_STRING Then
+        Begin
+          DialogTemplate.DlgClass := CurrToken.Value;
+          NextToken;
+        End
+        Else If CurrToken.Kind = TK_NUMBER Then
+        Begin
+          DialogTemplate.ClassIsId := True;
+          DialogTemplate.ClassId := StrToInt(CurrToken.Value);
+          NextToken;
+        End;
+      End
+      Else If U = 'MENU' Then
+      Begin
+        NextToken;
+        If CurrToken.Kind = TK_STRING Then
+        Begin
+          DialogTemplate.Menu := CurrToken.Value;
+          NextToken;
+        End
+        Else If CurrToken.Kind = TK_NUMBER Then
+        Begin
+          DialogTemplate.MenuIsId := True;
+          DialogTemplate.MenuId := StrToInt(CurrToken.Value);
+          NextToken;
+        End
+        Else If CurrToken.Kind = TK_IDENT Then
+        Begin
+          DialogTemplate.Menu := CurrToken.Value;
+          NextToken;
+        End;
+      End
+      Else If U = 'LANGUAGE' Then
+      Begin
+        NextToken;
+        ParseLanguageDirective;
+      End
+      Else
+      Begin
+        { Ignorer les options inconnues }
+        NextToken;
+      End;
+    End
+    Else
+    Begin
+      NextToken;
+    End;
+  End;
+  
+  { Verifier BEGIN ou accolade }
+  If (CurrToken.Kind <> TK_BEGIN) And (CurrToken.Kind <> TK_LBRACE) Then
+  Begin
+    SyntaxError('BEGIN ou { attendu apres les options du dialogue');
+    Exit;
+  End;
+  NextToken;  { Consommer BEGIN }
+  
+  { Lire les controles }
+  While (CurrToken.Kind <> TK_END) And (CurrToken.Kind <> TK_RBRACE) And
+        (CurrToken.Kind <> TK_EOF) Do
+  Begin
+    If CurrToken.Kind = TK_IDENT Then
+    Begin
+      If IsControlKeyword(CurrToken.Value) Then
+        ParseDialogControl
+      Else
+        NextToken;  { Ignorer les mots-cles inconnus }
+    End
+    Else
+    Begin
+      NextToken;
+    End;
+  End;
+  
+  { Consommer END }
+  If (CurrToken.Kind = TK_END) Or (CurrToken.Kind = TK_RBRACE) Then
+    NextToken;
+End;
+
+{ ----- Procedure WriteDialog ----- }
+{ Ecrit une ressource dialogue dans le fichier .RES }
+Procedure WriteDialog(NameIsId: Boolean; NameId: Word;
+  Const NameStr: TString; MemFlags: Word; LangId: Word);
+Var
+  I         : Integer;
+  J         : Integer;
+  DataStart : LongInt;
+  DataSize  : LongInt;
+  ResIdx    : Integer;
+  S         : TString;
+Begin
+  { Enregistrer la ressource dans la table }
+  ResIdx := AddResource(True, RT_DIALOG, '', NameIsId, NameId, NameStr,
+                       MemFlags, LangId);
+  
+  { Memoriser la position de debut des donnees }
+  DataStart := GetResPos;
+  
+  { Ecrire l en-tete DLGTEMPLATE }
+  { DWORD style }
+  WriteDWord(DialogTemplate.Style);
+  { DWORD dwExtendedStyle }
+  WriteDWord(DialogTemplate.ExStyle);
+  { WORD cdit (nombre de controles) }
+  WriteWord(DialogCtrlCount);
+  { short x }
+  WriteWord(DialogTemplate.X);
+  { short y }
+  WriteWord(DialogTemplate.Y);
+  { short cx }
+  WriteWord(DialogTemplate.CX);
+  { short cy }
+  WriteWord(DialogTemplate.CY);
+  
+  { Menu (sz_Or_Ord) }
+  If DialogTemplate.MenuIsId Then
+  Begin
+    WriteWord($FFFF);
+    WriteWord(DialogTemplate.MenuId);
+  End
+  Else If DialogTemplate.Menu <> '' Then
+  Begin
+    S := DialogTemplate.Menu;
+    For J := 1 To Length(S) Do
+      WriteWChar(CharToWChar(S[J]));
+    WriteWChar(0);
+  End
+  Else
+    WriteWord(0);  { Pas de menu }
+  
+  { Classe de fenetre (sz_Or_Ord) }
+  If DialogTemplate.ClassIsId Then
+  Begin
+    WriteWord($FFFF);
+    WriteWord(DialogTemplate.ClassId);
+  End
+  Else If DialogTemplate.DlgClass <> '' Then
+  Begin
+    S := DialogTemplate.DlgClass;
+    For J := 1 To Length(S) Do
+      WriteWChar(CharToWChar(S[J]));
+    WriteWChar(0);
+  End
+  Else
+    WriteWord(0);  { Classe par defaut }
+  
+  { Titre (Unicode) }
+  S := DialogTemplate.Title;
+  For J := 1 To Length(S) Do
+    WriteWChar(CharToWChar(S[J]));
+  WriteWChar(0);
+  
+  { Police si DS_SETFONT }
+  If (DialogTemplate.Style And DS_SETFONT) <> 0 Then
+  Begin
+    WriteWord(DialogTemplate.FontSize);
+    S := DialogTemplate.FontName;
+    For J := 1 To Length(S) Do
+      WriteWChar(CharToWChar(S[J]));
+    WriteWChar(0);
+  End;
+  
+  { Ecrire chaque controle }
+  For I := 1 To DialogCtrlCount Do
+  Begin
+    { Aligner sur DWORD }
+    PadToAlignment(4);
+    
+    { DLGITEMTEMPLATE }
+    { DWORD style }
+    WriteDWord(DialogControls[I].Style);
+    { DWORD dwExtendedStyle }
+    WriteDWord(DialogControls[I].ExStyle);
+    { short x }
+    WriteWord(DialogControls[I].X);
+    { short y }
+    WriteWord(DialogControls[I].Y);
+    { short cx }
+    WriteWord(DialogControls[I].CX);
+    { short cy }
+    WriteWord(DialogControls[I].CY);
+    { WORD id }
+    WriteWord(DialogControls[I].Id);
+    
+    { Classe du controle (sz_Or_Ord) }
+    If DialogControls[I].ClassIsId Then
+    Begin
+      WriteWord($FFFF);
+      WriteWord(DialogControls[I].ClassId);
+    End
+    Else If DialogControls[I].CtrlClass <> '' Then
+    Begin
+      S := DialogControls[I].CtrlClass;
+      For J := 1 To Length(S) Do
+        WriteWChar(CharToWChar(S[J]));
+      WriteWChar(0);
+    End
+    Else
+    Begin
+      WriteWord($FFFF);
+      WriteWord(DC_STATIC);  { Par defaut }
+    End;
+    
+    { Texte du controle (sz_Or_Ord) }
+    If DialogControls[I].TextIsId Then
+    Begin
+      WriteWord($FFFF);
+      WriteWord(DialogControls[I].TextId);
+    End
+    Else
+    Begin
+      S := DialogControls[I].Text;
+      For J := 1 To Length(S) Do
+        WriteWChar(CharToWChar(S[J]));
+      WriteWChar(0);
+    End;
+    
+    { WORD extraCount (toujours 0) }
+    WriteWord(0);
+  End;
+  
+  { Calculer la taille des donnees }
+  DataSize := GetResPos - DataStart;
+  
+  { Aligner sur 4 octets }
+  PadToAlignment(4);
+  
+  { Mettre a jour la taille et l offset dans la table des ressources }
+  SetResourceDataOfs(ResIdx, DataStart);
+  SetResourceDataSize(ResIdx, DataSize);
+End;
+
 { ----- Procedure ParseCommandLine ----- }
 Procedure ParseCommandLine(Var AOpts : TOptions);
 Var
@@ -4075,6 +5088,7 @@ Begin
   StringCount := 0;
   AccelCount := 0;
   MenuItemCount := 0;
+  DialogCtrlCount := 0;
 
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
@@ -4090,9 +5104,9 @@ Begin
       WriteLn('Format         : RES 32 bits');
   End;
 
-  { TODO : Implementation des TODOs 14-25 }
+  { TODO : Implementation des TODOs 15-25 }
   WriteLn;
-  WriteLn('NOTE: TODOs 01-13 [IMPLEMENTE]. TODOs 14-25 sont [A FAIRE].');
+  WriteLn('NOTE: TODOs 01-14 [IMPLEMENTE]. TODOs 15-25 sont [A FAIRE].');
   WriteLn('      Ce fichier contient la structure et les specifications');
   WriteLn('      pour un compilateur de ressources .RC vers .RES.');
 End.
