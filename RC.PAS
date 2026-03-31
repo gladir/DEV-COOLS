@@ -6250,9 +6250,7 @@ Begin
   MemFlags := ParseMemoryOptions;
   
   { Lire le nom du fichier }
-  ExpectString;
-  FileName := CurrToken.Value;
-  NextToken;
+  FileName := ExpectString;
   
   { Ecrire la ressource }
   WriteIcon(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
@@ -6268,9 +6266,7 @@ Begin
   MemFlags := ParseMemoryOptions;
   
   { Lire le nom du fichier }
-  ExpectString;
-  FileName := CurrToken.Value;
-  NextToken;
+  FileName := ExpectString;
   
   { Ecrire la ressource }
   WriteCursor(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
