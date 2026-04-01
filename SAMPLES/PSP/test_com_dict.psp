@@ -1,0 +1,32 @@
+<%@ Language="PascalScript" %>
+<html>
+<head><title>Test COM Dictionary</title></head>
+<body>
+<h1>Test COM Scripting.Dictionary</h1>
+<%
+{ Test de CreateObject avec Scripting.Dictionary }
+Var
+  dict : Object;
+  
+Begin
+  WriteLn('<p>Creation d''un objet Scripting.Dictionary...</p>');
+  
+  dict := CreateObject('Scripting.Dictionary');
+  
+  If dict <> NIL Then
+  Begin
+    WriteLn('<p style="color:green">Dictionary cree!</p>');
+    
+    { Utiliser la propriete Count (devrait etre 0) }
+    { dict.Count serait accessible via IDispatch }
+    
+    { Liberer }
+    dict := NIL;
+    WriteLn('<p>Dictionary libere.</p>');
+  End
+  Else
+    WriteLn('<p style="color:red">Echec creation Dictionary.</p>');
+End.
+%>
+</body>
+</html>
