@@ -84,7 +84,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Gerer l'alignement des champs pour eviter les comportements
       indefinis lors de l'acces au mauvais champ.
 
-  8.  [A FAIRE] Generation de champs de bits (bitfields).
+  8.  [IMPLEMENTE] Generation de champs de bits (bitfields).
       Generateur de champs de bits dans les structures :
       GenBitfieldDecl - generer un champ de bits (type : width).
       Regles C : seuls int, unsigned int, signed int autorises.

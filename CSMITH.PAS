@@ -99,7 +99,7 @@
             Gerer l'alignement des champs pour eviter les comportements
             indefinis lors de l'acces au mauvais champ.
 
-  TODO 08 - [A FAIRE] GENERATION DE CHAMPS DE BITS (BITFIELDS)
+  TODO 08 - [IMPLEMENTE] GENERATION DE CHAMPS DE BITS (BITFIELDS)
             Generateur de champs de bits dans les structures :
             GenBitfieldDecl - generer un champ de bits (type : width).
             Regles C : seuls int, unsigned int, signed int autorises.
@@ -1505,7 +1505,7 @@ Begin
   InitField(F);
   F.Name := GenFieldName(StructIdx, FieldNum);
   F.FType := GenRandomFieldType(CurrentDepth);
-  F.BitWidth := 0;  { Pas de champ de bits pour l'instant (TODO 08) }
+  F.BitWidth := 0;  { Champ normal, voir GenStructFieldWithBitfield pour bitfields }
   GenStructField := F;
 End;
 
@@ -1887,6 +1887,230 @@ Begin
   T.Kind := TK_UNION;
   T.StructIdx := UnionIdx;  { Reutilise StructIdx pour les unions aussi }
   MakeUnionType := T;
+End;
+
+{ ============================================================
+  TODO 08 : GENERATION DE CHAMPS DE BITS (BITFIELDS) [IMPLEMENTE]
+  ============================================================ }
+
+{ Constantes pour la generation de champs de bits }
+Const
+  MIN_BITFIELD_WIDTH = 1;   { Largeur minimale d'un champ de bits }
+  MAX_BITFIELD_WIDTH = 32;  { Largeur maximale (sizeof(int)*8) }
+  INT_BITS = 32;            { Nombre de bits dans un int }
+
+{ --- Fonctions utilitaires pour les champs de bits --- }
+
+Function IsValidBitfieldType(Kind: TTypeKind): Boolean;
+{ Verifie si un type peut etre utilise pour un champ de bits.
+  En C standard, seuls int, signed int et unsigned int sont autorises. }
+Begin
+  Case Kind Of
+    TK_INT,         { int }
+    TK_UINT,        { unsigned int }
+    TK_SCHAR:       { signed int (equivalent) }
+      IsValidBitfieldType := True;
+  Else
+    IsValidBitfieldType := False;
+  End;
+End;
+
+Function GenBitfieldType: TTypeKind;
+{ Genere un type aleatoire valide pour un champ de bits. }
+Var
+  R: Integer;
+Begin
+  R := RandomInt(3);
+  Case R Of
+    0: GenBitfieldType := TK_INT;
+    1: GenBitfieldType := TK_UINT;
+    2: GenBitfieldType := TK_INT;  { signed int }
+  Else
+    GenBitfieldType := TK_UINT;
+  End;
+End;
+
+Function GenBitfieldWidth(IsZeroAllowed: Boolean): Integer;
+{ Genere une largeur aleatoire pour un champ de bits.
+  IsZeroAllowed: True si on peut generer un champ de largeur 0.
+  Une largeur de 0 force l'alignement au prochain int. }
+Var
+  Width: Integer;
+Begin
+  If IsZeroAllowed And RandomChoice(10) Then
+  Begin
+    { 10% : Champ de largeur 0 pour alignement }
+    GenBitfieldWidth := 0;
+  End
+  Else
+  Begin
+    { Largeur entre 1 et 31 (pas la totalite d'un int) }
+    Width := RandomRange(MIN_BITFIELD_WIDTH, MAX_BITFIELD_WIDTH - 1);
+    { Eviter les largeurs trop grandes pour reduire les UB }
+    If Width > 16 Then
+      Width := RandomRange(1, 16);
+    GenBitfieldWidth := Width;
+  End;
+End;
+
+Function GenBitfieldFieldName(StructIdx, FieldNum: Integer): TString;
+{ Genere un nom de champ de bits unique de la forme 'bf_N'. }
+Begin
+  GenBitfieldFieldName := 'bf' + IntToStr(FieldNum);
+End;
+
+Function GenBitfieldField(StructIdx, FieldNum: Integer; IsAnonymous: Boolean): TField;
+{ Genere un champ de bits aleatoire.
+  IsAnonymous: True si le champ est anonyme (pour padding). }
+Var
+  F: TField;
+Begin
+  InitField(F);
+  
+  If IsAnonymous Then
+  Begin
+    { Champ anonyme : pas de nom }
+    F.Name := '';
+    { Les champs anonymes peuvent avoir une largeur de 0 }
+    F.BitWidth := GenBitfieldWidth(True);
+  End
+  Else
+  Begin
+    { Champ nomme }
+    F.Name := GenBitfieldFieldName(StructIdx, FieldNum);
+    { Les champs nommes ont une largeur > 0 }
+    F.BitWidth := GenBitfieldWidth(False);
+    If F.BitWidth = 0 Then
+      F.BitWidth := 1;  { Assurer au moins 1 bit pour les champs nommes }
+  End;
+  
+  { Type du champ de bits : int ou unsigned int }
+  InitCType(F.FType);
+  F.FType.Kind := GenBitfieldType;
+  F.FType.Quals := Q_NONE;  { Les bitfields sont rarement const/volatile }
+  
+  GenBitfieldField := F;
+End;
+
+Function GenAnonymousBitfield(StructIdx, FieldNum: Integer): TField;
+{ Genere un champ de bits anonyme pour padding. }
+Begin
+  GenAnonymousBitfield := GenBitfieldField(StructIdx, FieldNum, True);
+End;
+
+Function GenZeroBitfield(StructIdx: Integer): TField;
+{ Genere un champ de bits de largeur 0 pour forcer l'alignement. }
+Var
+  F: TField;
+Begin
+  InitField(F);
+  F.Name := '';  { Champ anonyme }
+  F.BitWidth := 0;
+  InitCType(F.FType);
+  F.FType.Kind := GenBitfieldType;
+  F.FType.Quals := Q_NONE;
+  GenZeroBitfield := F;
+End;
+
+Function ShouldGenerateBitfield: Boolean;
+{ Decide si le prochain champ doit etre un champ de bits.
+  Depend de l'option --no-bitfields et d'une probabilite. }
+Begin
+  If Opts.NoBitfields Then
+    ShouldGenerateBitfield := False
+  Else
+    { 20% de chance de generer un bitfield }
+    ShouldGenerateBitfield := RandomChoice(20);
+End;
+
+{ --- Fonctions d'emission pour les champs de bits --- }
+
+Procedure EmitBitfieldDecl(Const F: TField);
+{ Emet la declaration d'un champ de bits.
+  Formats: 
+    - "type name : width;" pour un champ nomme
+    - "type : width;" pour un champ anonyme
+    - "type : 0;" pour forcer l'alignement }
+Var
+  S: TString;
+Begin
+  S := '    ' + TypeToStr(F.FType);
+  
+  If F.Name <> '' Then
+    S := S + ' ' + F.Name;
+  
+  S := S + ' : ' + IntToStr(F.BitWidth) + ';';
+  
+  EmitLine(S);
+End;
+
+Function IsBitfieldField(Const F: TField): Boolean;
+{ Verifie si un champ est un champ de bits. }
+Begin
+  IsBitfieldField := (F.BitWidth > 0) Or 
+                     ((F.BitWidth = 0) And (F.Name = ''));
+End;
+
+{ --- Fonctions de generation de structures avec bitfields --- }
+
+Function GenStructFieldWithBitfield(StructIdx, FieldNum, CurrentDepth: Integer): TField;
+{ Genere un champ de structure qui peut etre un bitfield. }
+Var
+  F: TField;
+Begin
+  If ShouldGenerateBitfield Then
+  Begin
+    { Generer un champ de bits }
+    If RandomChoice(15) Then
+      { 15% : Champ anonyme pour padding }
+      F := GenAnonymousBitfield(StructIdx, FieldNum)
+    Else
+      { 85% : Champ nomme }
+      F := GenBitfieldField(StructIdx, FieldNum, False);
+  End
+  Else
+  Begin
+    { Generer un champ normal via GenStructField existant }
+    F := GenStructField(StructIdx, FieldNum, CurrentDepth);
+  End;
+  
+  GenStructFieldWithBitfield := F;
+End;
+
+Procedure EmitFieldDeclWithBitfield(Const F: TField);
+{ Emet la declaration d'un champ, qu'il soit bitfield ou non. }
+Begin
+  If (F.BitWidth > 0) Or ((F.BitWidth = 0) And (F.Name = '')) Then
+    { C'est un champ de bits }
+    EmitBitfieldDecl(F)
+  Else
+    { C'est un champ normal }
+    EmitFieldDecl(F);
+End;
+
+Function GetTotalBitfieldBits(Const S: TStructDef): Integer;
+{ Calcule le nombre total de bits utilises par les bitfields dans une structure. }
+Var
+  Total, I: Integer;
+Begin
+  Total := 0;
+  For I := 1 To S.NumFields Do
+    If S.Fields[I].BitWidth > 0 Then
+      Total := Total + S.Fields[I].BitWidth;
+  GetTotalBitfieldBits := Total;
+End;
+
+Function CountBitfields(Const S: TStructDef): Integer;
+{ Compte le nombre de champs de bits dans une structure. }
+Var
+  Count, I: Integer;
+Begin
+  Count := 0;
+  For I := 1 To S.NumFields Do
+    If (S.Fields[I].BitWidth > 0) Or 
+       ((S.Fields[I].BitWidth = 0) And (S.Fields[I].Name = '')) Then
+      Inc(Count);
+  CountBitfields := Count;
 End;
 
 { ============================================================
