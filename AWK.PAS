@@ -795,56 +795,99 @@ End;
 Procedure PrintCommand;
 Var
  R:Real;
- VarName,StrVal:String;
+ VarName,StrVal,OutputStr,TempStr:String;
  SavePos:Integer;
+ HasOutput:Boolean;
 Begin
  SkipSpace;
+ OutputStr:='';
+ HasOutput:=False;
+ 
  If CurrPos>Length(CurrLine)Then Begin
   { print sans argument - affiche $0 }
   WriteLn(Fields[0]);
   Exit;
  End;
- If GetSeparator='"'Then Begin
-  WriteLn(GetStringValue);
- End
-  Else
- If CurrLine[CurrPos]in['A'..'Z','a'..'z','_']Then Begin
-  { C'est peut-etre une variable }
-  SavePos:=CurrPos;
-  VarName:='';
-  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
-   VarName:=VarName+CurrLine[CurrPos];
-   Inc(CurrPos);
-  End;
-  VarName:=StrToUpper(VarName);
-  If VariableExist(VarName)Then Begin
-   Case VariableType(VarName)of
-    _String:WriteLn(GetVariableString(VarName));
-    _Integer:WriteLn(GetVariableInt(VarName));
-    _LongInt:WriteLn(GetVariableLongInt(VarName));
-    _Real:Begin
-     R:=GetVariableReal(VarName);
-     If Frac(R)=0.0Then WriteLn(R:0:0)
-                   Else WriteLn(R);
+ 
+ { Boucle pour gerer la concatenation de chaines et variables }
+ While(CurrPos<=Length(CurrLine))and(Not(CurrLine[CurrPos]in[';','}','#']))do Begin
+  SkipSpace;
+  If CurrPos>Length(CurrLine)Then Break;
+  If CurrLine[CurrPos]in[';','}','#']Then Break;
+  
+  { Chaine literale }
+  If CurrLine[CurrPos]='"'Then Begin
+   TempStr:=GetStringValue;
+   OutputStr:=OutputStr+TempStr;
+   HasOutput:=True;
+  End
+   Else
+  { Variable ou expression }
+  If CurrLine[CurrPos]in['A'..'Z','a'..'z','_']Then Begin
+   SavePos:=CurrPos;
+   VarName:='';
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+    VarName:=VarName+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   VarName:=StrToUpper(VarName);
+   If VariableExist(VarName)Then Begin
+    Case VariableType(VarName)of
+     _String:OutputStr:=OutputStr+GetVariableString(VarName);
+     _Integer:Begin
+      Str(GetVariableInt(VarName),TempStr);
+      OutputStr:=OutputStr+TempStr;
+     End;
+     _LongInt:Begin
+      Str(GetVariableLongInt(VarName),TempStr);
+      OutputStr:=OutputStr+TempStr;
+     End;
+     _Real:Begin
+      R:=GetVariableReal(VarName);
+      If Frac(R)=0.0Then Str(R:0:0,TempStr)
+                    Else Str(R,TempStr);
+      OutputStr:=OutputStr+TempStr;
+     End;
     End;
-    Else WriteLn;
+    HasOutput:=True;
+   End
+    Else
+   Begin
+    { Pas une variable connue, restaurer et traiter comme expression }
+    CurrPos:=SavePos;
+    R:=GetNumberValue(1);
+    If Frac(R)=0.0Then Str(R:0:0,TempStr)
+                  Else Str(R,TempStr);
+    OutputStr:=OutputStr+TempStr;
+    HasOutput:=True;
    End;
   End
    Else
-  Begin
-   { Pas une variable connue, restaurer et traiter comme expression }
-   CurrPos:=SavePos;
+  If CurrLine[CurrPos]in['0'..'9','-','+','(']Then Begin
+   { Expression numerique }
    R:=GetNumberValue(1);
-   If Frac(R)=0.0Then WriteLn(R:0:0)
-                 Else WriteLn(R);
+   If Frac(R)=0.0Then Str(R:0:0,TempStr)
+                 Else Str(R,TempStr);
+   OutputStr:=OutputStr+TempStr;
+   HasOutput:=True;
+  End
+   Else
+  If CurrLine[CurrPos]=','Then Begin
+   { Separateur d'arguments - ajouter un espace (OFS) }
+   OutputStr:=OutputStr+' ';
+   Inc(CurrPos);
+  End
+   Else
+  Begin
+   { Caractere inconnu - arreter }
+   Break;
   End;
- End
-  Else
- Begin
-  R:=GetNumberValue(1);
-  If Frac(R)=0.0Then WriteLn(R:0:0)
-                Else WriteLn(R);
+  
+  SkipSpace;
  End;
+ 
+ If HasOutput Then WriteLn(OutputStr)
+              Else WriteLn;
 End;
 
 Procedure CosCommand;
@@ -856,6 +899,129 @@ Begin
  Begin
   WriteLn('Erreur de syntaxe : cos attend une valeur numerique');
   Halt;
+ End;
+End;
+
+{ Fonction sqrt - racine carree }
+Procedure SqrtCommand;
+Var
+ R:Real;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ R:=GetNumberValue(1);
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ If R>=0 Then Begin
+  R:=Sqrt(R);
+  If Frac(R)=0.0 Then WriteLn(R:0:0)
+                 Else WriteLn(R);
+ End
+  Else
+ WriteLn('Erreur: sqrt d''un nombre negatif');
+End;
+
+{ Commande printf - affichage formate }
+Procedure PrintfCommand;
+Var
+ FormatStr,OutputStr,TempStr:String;
+ I:Integer;
+ R:Real;
+ InFormat:Boolean;
+ Width,Precision:Integer;
+ WidthStr,PrecStr:String;
+Begin
+ SkipSpace;
+ OutputStr:='';
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+  FormatStr:=GetStringValue;
+  I:=1;
+  While I<=Length(FormatStr) do Begin
+   If(FormatStr[I]='%')and(I<Length(FormatStr))Then Begin
+    Inc(I);
+    { Gerer %% comme un seul % }
+    If FormatStr[I]='%'Then Begin
+     OutputStr:=OutputStr+'%';
+     Inc(I);
+    End
+     Else
+    Begin
+     { Lire la largeur optionnelle }
+     WidthStr:='';
+     While(I<=Length(FormatStr))and(FormatStr[I]in['0'..'9','-'])do Begin
+      WidthStr:=WidthStr+FormatStr[I];
+      Inc(I);
+     End;
+     { Lire la precision optionnelle }
+     PrecStr:='';
+     If(I<=Length(FormatStr))and(FormatStr[I]='.')Then Begin
+      Inc(I);
+      While(I<=Length(FormatStr))and(FormatStr[I]in['0'..'9'])do Begin
+       PrecStr:=PrecStr+FormatStr[I];
+       Inc(I);
+      End;
+     End;
+     { Traiter le specifier de format }
+     If I<=Length(FormatStr)Then Begin
+      SkipSpace;
+      If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=',')Then Inc(CurrPos);
+      SkipSpace;
+      Case FormatStr[I] of
+       'd','i':Begin { Entier }
+        R:=GetNumberValue(1);
+        Str(Round(R),TempStr);
+        OutputStr:=OutputStr+TempStr;
+       End;
+       's':Begin { Chaine }
+        If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then
+         TempStr:=GetStringValue
+        Else Begin
+         TempStr:='';
+         While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+          TempStr:=TempStr+CurrLine[CurrPos];
+          Inc(CurrPos);
+         End;
+         If VariableExist(StrToUpper(TempStr))Then
+          TempStr:=GetVariableString(StrToUpper(TempStr));
+        End;
+        OutputStr:=OutputStr+TempStr;
+       End;
+       'f','g','e':Begin { Reel }
+        R:=GetNumberValue(1);
+        If PrecStr<>''Then Begin
+         Str(R:0:2,TempStr);
+        End
+         Else
+        Str(R,TempStr);
+        OutputStr:=OutputStr+TempStr;
+       End;
+       'c':Begin { Caractere }
+        R:=GetNumberValue(1);
+        OutputStr:=OutputStr+Chr(Round(R));
+       End;
+      End;
+      Inc(I);
+     End;
+    End;
+   End
+    Else
+   If(FormatStr[I]='\')and(I<Length(FormatStr))Then Begin
+    Inc(I);
+    Case FormatStr[I] of
+     'n':OutputStr:=OutputStr+#13#10;
+     't':OutputStr:=OutputStr+#9;
+     '\':OutputStr:=OutputStr+'\';
+     '"':OutputStr:=OutputStr+'"';
+    End;
+    Inc(I);
+   End
+    Else
+   Begin
+    OutputStr:=OutputStr+FormatStr[I];
+    Inc(I);
+   End;
+  End;
+  Write(OutputStr);
  End;
 End;
 
@@ -1497,14 +1663,14 @@ Begin
    46: NoImplementation:=True; { or }
    47: NoImplementation:=True; { patsplit }
    48: PrintCommand; { print }
-   49: NoImplementation:=True; { printf }
+   49: PrintfCommand; { printf }
    50: NoImplementation:=True; { rand }
    51: NoImplementation:=True; { return }
    52: NoImplementation:=True; { rshift }
    53: NoImplementation:=True; { sin }
    54: NoImplementation:=True; { split }
    55: NoImplementation:=True; { sprintf }
-   56: NoImplementation:=True; { sqrt }
+   56: SqrtCommand; { sqrt }
    57: NoImplementation:=True; { srand }
    58: NoImplementation:=True; { strftime }
    59: NoImplementation:=True; { strtonum }
