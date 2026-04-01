@@ -2272,6 +2272,40 @@ End;
 { ----- Forward declaration pour ParseExpression ----- }
 Function ParseExpression : LongInt; Forward;
 
+{ ----- Forward declarations pour ParseStatement ----- }
+Function ParseMemoryOptions : Word; Forward;
+Procedure SkipNewlines; Forward;
+Procedure ParseStringTable; Forward;
+Function ResolveResourcePath(Const FileName : TString) : TString; Forward;
+Procedure WriteIcon(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const FileName : TString;
+  MemFlags : Word; LangId : Word); Forward;
+Procedure WriteCursor(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const FileName : TString;
+  MemFlags : Word; LangId : Word); Forward;
+Procedure WriteBitmap(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const AFileName : TString;
+  MemFlags : Word; LangId : Word); Forward;
+Procedure WriteManifest(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; Const AFileName : TString;
+  MemFlags : Word; LangId : Word); Forward;
+Procedure ParseRCData(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString); Forward;
+Procedure ParseVersionInfo(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word); Forward;
+Procedure ParseDialog(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word; IsEx : Boolean); Forward;
+Procedure WriteDialog(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word; LangId : Word); Forward;
+Procedure ParseMenu(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word); Forward;
+Procedure WriteMenu(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word; LangId : Word); Forward;
+Procedure ParseAccelerators(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word); Forward;
+Procedure WriteAccelerators(NameIsId : Boolean; NameId : Word;
+  Const NameStr : TString; MemFlags : Word; LangId : Word); Forward;
+
 { ----- Function ParsePrimaryExpr ----- }
 Function ParsePrimaryExpr : LongInt;
 Var
@@ -2594,6 +2628,8 @@ Var
   ResId    : TResourceId;
   StmtKind : TStatementKind;
   IdUp     : TString;
+  MemFlags : Word;
+  FileName : TString;
 Begin
   Tok := PeekTokenFn;
 
@@ -2643,19 +2679,9 @@ Begin
     { Verifier si c est STRINGTABLE sans ID }
     If IdUp = 'STRINGTABLE' Then
     Begin
-      Tok := NextToken; { Consommer STRINGTABLE }
-      { Attendre BEGIN ou { }
-      Tok := PeekTokenFn;
-      While (Tok.Kind <> TK_BEGIN) And (Tok.Kind <> TK_LBRACE) And (Tok.Kind <> TK_EOF) Do
-      Begin
-        Tok := NextToken;
-        Tok := PeekTokenFn;
-      End;
-      If (Tok.Kind = TK_BEGIN) Or (Tok.Kind = TK_LBRACE) Then
-      Begin
-        Tok := NextToken;
-        SkipToEndBlock;
-      End;
+      NextToken; { Consommer STRINGTABLE : CurrToken := STRINGTABLE }
+      NextToken; { Avancer CurrToken au premier token apres STRINGTABLE }
+      ParseStringTable;
       Exit;
     End;
 
@@ -2670,47 +2696,80 @@ Begin
       StmtKind := GetStatementKind(Tok.Value);
 
       { Pour les ressources simples (ICON, CURSOR, BITMAP, etc.), }
-      { lire le nom de fichier }
+      { lire le nom de fichier et ecrire la ressource }
       If (StmtKind = ST_ICON) Or (StmtKind = ST_CURSOR) Or
          (StmtKind = ST_BITMAP) Or (StmtKind = ST_FONT) Or
          (StmtKind = ST_MANIFEST) Or (StmtKind = ST_HTML) Then
       Begin
+        { Avancer CurrToken au premier token apres le mot-cle de type }
+        NextToken;
         { Options memoire optionnelles }
-        Tok := PeekTokenFn;
-        While (Tok.Kind = TK_IDENT) And
-              ((UpCaseStr(Tok.Value) = 'DISCARDABLE') Or
-               (UpCaseStr(Tok.Value) = 'PRELOAD') Or
-               (UpCaseStr(Tok.Value) = 'LOADONCALL') Or
-               (UpCaseStr(Tok.Value) = 'MOVEABLE') Or
-               (UpCaseStr(Tok.Value) = 'FIXED') Or
-               (UpCaseStr(Tok.Value) = 'PURE') Or
-               (UpCaseStr(Tok.Value) = 'IMPURE')) Do
-        Begin
-          Tok := NextToken;
-          Tok := PeekTokenFn;
-        End;
+        MemFlags := ParseMemoryOptions;
+        SkipNewlines;
         { Lire le nom du fichier }
-        If Tok.Kind = TK_STRING Then
-          Tok := NextToken;
+        If CurrToken.Kind = TK_STRING Then
+        Begin
+          FileName := CurrToken.Value;
+          NextToken;
+          FileName := ResolveResourcePath(FileName);
+          If StmtKind = ST_ICON Then
+            WriteIcon(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId,
+                      FileName, MemFlags, CurrentLangId)
+          Else If StmtKind = ST_CURSOR Then
+            WriteCursor(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId,
+                        FileName, MemFlags, CurrentLangId)
+          Else If StmtKind = ST_BITMAP Then
+            WriteBitmap(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId,
+                        FileName, MemFlags, CurrentLangId)
+          Else If StmtKind = ST_MANIFEST Then
+            WriteManifest(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId,
+                          FileName, MemFlags, CurrentLangId)
+          { ST_FONT, ST_HTML : non implemente, ignorer }
+        End;
       End
       { Pour DIALOG, DIALOGEX, MENU, MENUEX, ACCELERATORS, RCDATA, VERSIONINFO }
-      { lire jusqu au END du bloc }
+      { appeler le vrai parseur }
       Else If (StmtKind = ST_DIALOG) Or (StmtKind = ST_DIALOGEX) Or
               (StmtKind = ST_MENU) Or (StmtKind = ST_MENUEX) Or
               (StmtKind = ST_ACCELERATORS) Or (StmtKind = ST_RCDATA) Or
               (StmtKind = ST_VERSIONINFO) Or (StmtKind = ST_MESSAGETABLE) Then
       Begin
-        (* Sauter jusqu a BEGIN puis jusqu a END *)
-        Tok := PeekTokenFn;
-        While (Tok.Kind <> TK_BEGIN) And (Tok.Kind <> TK_LBRACE) And (Tok.Kind <> TK_EOF) Do
+        { Avancer CurrToken au premier token apres le mot-cle de type }
+        NextToken;
+        If StmtKind = ST_RCDATA Then
         Begin
-          Tok := NextToken;
-          Tok := PeekTokenFn;
-        End;
-        If (Tok.Kind = TK_BEGIN) Or (Tok.Kind = TK_LBRACE) Then
+          { ParseRCData gere ses propres options memoire et ecriture }
+          ParseRCData(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId);
+        End
+        Else If StmtKind = ST_VERSIONINFO Then
         Begin
-          Tok := NextToken;
-          SkipToEndBlock;
+          { ParseVersionInfo gere son propre BEGIN et appelle WriteVersionInfo }
+          MemFlags := ParseMemoryOptions;
+          ParseVersionInfo(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId, MemFlags);
+        End
+        Else If (StmtKind = ST_DIALOG) Or (StmtKind = ST_DIALOGEX) Then
+        Begin
+          MemFlags := ParseMemoryOptions;
+          ParseDialog(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId,
+                      MemFlags, (StmtKind = ST_DIALOGEX));
+          WriteDialog(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId,
+                      MemFlags, CurrentLangId);
+        End
+        Else If (StmtKind = ST_MENU) Or (StmtKind = ST_MENUEX) Then
+        Begin
+          MemFlags := ParseMemoryOptions;
+          SkipNewlines;
+          ParseMenu(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId, MemFlags);
+          WriteMenu(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId,
+                    MemFlags, CurrentLangId);
+        End
+        Else If StmtKind = ST_ACCELERATORS Then
+        Begin
+          MemFlags := ParseMemoryOptions;
+          SkipNewlines;
+          ParseAccelerators(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId, MemFlags);
+          WriteAccelerators(ResId.IsNumeric, Word(ResId.NumId), ResId.StrId,
+                            MemFlags, CurrentLangId);
         End;
       End
       { Type utilisateur ou inconnu }
@@ -3554,6 +3613,14 @@ Begin
   End;
 End;
 
+{ ----- Procedure SkipNewlines ----- }
+{ Avance CurrToken en sautant les tokens NEWLINE et COMMENT }
+Procedure SkipNewlines;
+Begin
+  While (CurrToken.Kind = TK_NEWLINE) Or (CurrToken.Kind = TK_COMMENT) Do
+    NextToken;
+End;
+
 { ----- Procedure ParseStringTable ----- }
 { Parse un bloc STRINGTABLE ... BEGIN ... END }
 { Format : STRINGTABLE [options memoire]
@@ -3571,6 +3638,9 @@ Begin
   { Lire les options memoire optionnelles }
   MemFlags := ParseMemoryOptions;
   
+  { Sauter les nouvelles lignes entre la ligne STRINGTABLE et BEGIN }
+  SkipNewlines;
+
   { Attendre BEGIN ou { }
   If (CurrToken.Kind <> TK_BEGIN) And (CurrToken.Kind <> TK_LBRACE) Then
   Begin
@@ -6840,6 +6910,11 @@ Begin
       { Identifiant : traiter comme 0 (ou chercher dans defines) }
       Tok := NextToken;
       { Pour l'instant, on ignore les identifiants non reconnus }
+    End
+    Else If (Tok.Kind = TK_NEWLINE) Or (Tok.Kind = TK_COMMENT) Then
+    Begin
+      { Ignorer les nouvelles lignes et commentaires }
+      NextToken;
     End
     Else
     Begin
