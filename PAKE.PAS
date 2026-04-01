@@ -53,7 +53,7 @@
 
   Voir DOC/TODO/PAKE.txt pour la feuille de route complete.
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [A FAIRE]
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             PAKE_VERSION ('1.0') et PAKE_DATE ('2026-03-30')
             Directive $I- pour desactiver les erreurs I/O automatiques
             Type TOptions : record
