@@ -705,6 +705,43 @@ Begin
         End;
         Inc(I);
        End;
+       6:Begin{LENGTH}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        { Lire argument - chaine ou variable }
+        If Infix[I]='"'Then Begin
+         Inc(I);
+         Value:='';
+         While(I<=Length(Infix))and(Infix[I]<>'"')do Begin
+          Value:=Value+Infix[I];
+          Inc(I);
+         End;
+         If I<=Length(Infix)Then Inc(I); { passer le " }
+         Str(System.Length(Value),Value);
+        End
+         Else
+        Begin
+         { Variable ou $0 }
+         VarName:='';
+         While(I<=Length(Infix))and(Infix[I]in['A'..'Z','a'..'z','0'..'9','_','$'])do Begin
+          VarName:=VarName+Infix[I];
+          Inc(I);
+         End;
+         VarName:=StrToUpper(VarName);
+         If VariableExist(VarName)Then Begin
+          If VariableType(VarName)=_String Then
+           Str(System.Length(GetVariableString(VarName)),Value)
+          Else
+           Value:='0';
+         End
+          Else
+         Str(System.Length(Fields[0]),Value); { $0 par defaut }
+        End;
+        If(I<=Length(Infix))and(Infix[I]=')')Then Inc(I);
+       End;
       End;
       Break;
      End
@@ -746,14 +783,16 @@ Begin
    StackPushChar(Infix[I]);
    Inc(I);
   End
-  Else If Infix[I]in['*','+','-','/']Then Begin
+  Else If Infix[I]in['*','+','-','/','%','^']Then Begin
    While(TopOfStack>1)and(StackPeek <> '(')do Begin
     Top:=StackPeek;
     P_2:=Infix[I];
     AppendOk:=True;
     If(Top='+')and(P_2='*')Then AppendOk:=False
     Else If(Top='*')and(P_2='-')Then AppendOk:=True
-    Else If(Top='+')and(P_2='-')Then AppendOk:=True;
+    Else If(Top='+')and(P_2='-')Then AppendOk:=True
+    Else If(Top in['+','-'])and(P_2='^')Then AppendOk:=False
+    Else If(Top in['*','/','%'])and(P_2='^')Then AppendOk:=False;
     If(AppendOk)Then PostFix:=PostFix+StackPop
                 Else Break;
    End;
@@ -779,14 +818,16 @@ Begin
   { Transformation en POSTFIX }
  I:=1;
  Repeat
-  If PostFix[I]in['*','+','-','/']Then Begin
+  If PostFix[I]in['*','+','-','/','%','^']Then Begin
    P:=ResultStackPop;
    P2:=ResultStackPop;
    Case PostFix[I]of
     '+':_Result:=P2+P;
     '-':_Result:=P2-P;
     '*':_Result:=P2*P;
-    '/':_Result:=P2/P;
+    '/':If P<>0 Then _Result:=P2/P Else _Result:=0;
+    '%':If P<>0 Then _Result:=Trunc(P2) mod Trunc(P) Else _Result:=0;
+    '^':If P2>0 Then _Result:=Exp(P*Ln(P2)) Else If P2=0 Then _Result:=0 Else _Result:=-Exp(P*Ln(-P2));
     Else _Result:=-1;
    End;
    ResultStackPush(_Result);
@@ -1861,7 +1902,12 @@ Begin
    34: NoImplementation:=True; { index }
    35: NoImplementation:=True; { int }
    36: NoImplementation:=True; { isarray }
-   37: NoImplementation:=True; { length }
+   37: Begin { length - gere comme fonction dans GetNumberValue }
+    SkipSpace;
+    If(CurrPos<=System.Length(CurrLine))and(CurrLine[CurrPos]='(')Then Begin
+     WriteLn(GetNumberValue(1):0:0);
+    End;
+   End;
    38: NoImplementation:=True; { load }
    39: NoImplementation:=True; { log }
    40: NoImplementation:=True; { lshift }
