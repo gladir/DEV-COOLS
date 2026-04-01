@@ -1,0 +1,34 @@
+<%@ Language="PascalScript" %>
+<html>
+<head><title>Test COM/OLE CreateObject</title></head>
+<body>
+<h1>Test COM/OLE CreateObject</h1>
+<%
+{ Test de CreateObject - creation d'un objet COM }
+Var
+  obj : Object;
+  
+Begin
+  { Afficher un message de debut }
+  WriteLn('<p>Test de CreateObject avec Scripting.FileSystemObject...</p>');
+  
+  { Creer un objet FileSystemObject }
+  obj := CreateObject('Scripting.FileSystemObject');
+  
+  { Verifier si l'objet a ete cree }
+  If obj <> NIL Then
+  Begin
+    WriteLn('<p style="color:green">Objet cree avec succes!</p>');
+    
+    { Liberer l'objet }
+    obj := NIL;
+    WriteLn('<p>Objet libere.</p>');
+  End
+  Else
+    WriteLn('<p style="color:red">Echec de creation de l''objet.</p>');
+    
+  WriteLn('<p>Test termine.</p>');
+End.
+%>
+</body>
+</html>
