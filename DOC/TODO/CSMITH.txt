@@ -112,7 +112,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Limiter les dimensions (MAX_ARRAY_DIM) et la taille totale.
       Emettre int arr[10][20]; ou int arr[] = {1, 2, 3};
 
-  11. [A FAIRE] Generation de pointeurs.
+  11. [IMPLEMENTE] Generation de pointeurs.
       Generateur de declarations et usages de pointeurs C :
       GenPointerType - generer un type pointeur aleatoire.
       GenPointerOp - generer une operation sur pointeur.

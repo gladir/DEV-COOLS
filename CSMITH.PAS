@@ -312,6 +312,8 @@ Const
   MAX_LOOP_ITER      = 1000;
   MAX_RECURSION      = 10;
   MAX_POINTER_DEPTH  = 3;
+  POINTER_INIT_PROB  = 40;   { TODO 11 : 40% de chance d'initialiser a NULL }
+  POINTER_MULTI_PROB = 20;   { TODO 11 : 20% de chance de double/triple pointeur }
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_ENUMS          = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -537,6 +539,7 @@ Var
   UnionCounter  : Integer;
   EnumCounter   : Integer;
   LabelCounter  : Integer;
+  PointerCounter: Integer;  { TODO 11 : compteur de pointeurs }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -2880,8 +2883,396 @@ Begin
 End;
 
 { ============================================================
-  INITIALISATION
+  TODO 11 : GENERATION DE POINTEURS [IMPLEMENTE]
   ============================================================ }
+
+{ Constantes pour la generation de pointeurs }
+{ MAX_POINTER_DEPTH deja defini dans les constantes globales }
+{ POINTER_INIT_PROB et POINTER_MULTI_PROB deja definis }
+
+{ --- Fonctions utilitaires pour les pointeurs --- }
+
+Function GenPointerName: TString;
+{ Genere un nom de pointeur unique de la forme 'ptr_N'. }
+Begin
+  Inc(PointerCounter);
+  GenPointerName := 'ptr_' + IntToStr(PointerCounter);
+End;
+
+Function IsValidPointerBaseType(Const T: TCType): Boolean;
+{ Verifie si un type peut etre le type de base d'un pointeur.
+  En C, presque tous les types sont valides sauf void (sauf void*). }
+Begin
+  { Tous les types sont valides comme base de pointeur }
+  IsValidPointerBaseType := True;
+End;
+
+Function GenRandomPointerBaseType: TCType;
+{ Genere un type de base aleatoire pour un pointeur.
+  Peut etre : scalaire, struct, union, enum, ou void. }
+Var
+  T: TCType;
+  Choice: Integer;
+Begin
+  InitCType(T);
+  
+  { Distribution : 40% scalaire, 20% void, 15% struct, 15% union, 10% enum }
+  Choice := RandomInt(100);
+  
+  If Choice < 40 Then
+  Begin
+    { Type scalaire }
+    Case RandomInt(10) Of
+      0: T.Kind := TK_CHAR;
+      1: T.Kind := TK_SCHAR;
+      2: T.Kind := TK_UCHAR;
+      3: T.Kind := TK_SHORT;
+      4: T.Kind := TK_USHORT;
+      5: T.Kind := TK_INT;
+      6: T.Kind := TK_UINT;
+      7: T.Kind := TK_LONG;
+      8: T.Kind := TK_ULONG;
+      9: If Not Opts.NoFloats Then
+           T.Kind := TK_FLOAT
+         Else
+           T.Kind := TK_INT;
+    End;
+  End
+  Else If Choice < 60 Then
+  Begin
+    { void* - pointeur generique }
+    T.Kind := TK_VOID;
+  End
+  Else If (Choice < 75) And (NumStructs > 0) And (Not Opts.NoStructs) Then
+  Begin
+    { Pointeur vers structure }
+    T.Kind := TK_STRUCT;
+    T.StructIdx := RandomRange(1, NumStructs);
+  End
+  Else If (Choice < 90) And (NumUnions > 0) And (Not Opts.NoUnions) Then
+  Begin
+    { Pointeur vers union }
+    T.Kind := TK_UNION;
+    T.StructIdx := RandomRange(1, NumUnions);  { StructIdx utilise pour unions aussi }
+  End
+  Else If NumEnums > 0 Then
+  Begin
+    { Pointeur vers enum }
+    T.Kind := TK_ENUM;
+    T.StructIdx := RandomRange(1, NumEnums);  { StructIdx utilise pour enums aussi }
+  End
+  Else
+  Begin
+    { Par defaut, int* }
+    T.Kind := TK_INT;
+  End;
+  
+  GenRandomPointerBaseType := T;
+End;
+
+Function GenPointerLevel(MaxLevel: Integer): Integer;
+{ Genere le niveau d'indirection (1 = *, 2 = **, 3 = ***).
+  Favorise les niveaux faibles. }
+Var
+  Level: Integer;
+Begin
+  { Distribution : 70% niveau 1, 20% niveau 2, 10% niveau 3+ }
+  If RandomChoice(70) Then
+    Level := 1
+  Else If RandomChoice(67) Then  { 20% des 30% restants }
+    Level := 2
+  Else
+    Level := RandomRange(3, MaxLevel);
+  
+  If Level > MaxLevel Then
+    Level := MaxLevel;
+  
+  GenPointerLevel := Level;
+End;
+
+Function MakePointerType(BaseType: TCType; Level: Integer): TCType;
+{ Cree un type pointeur avec le niveau d'indirection specifie.
+  Level = 1 -> T*
+  Level = 2 -> T**
+  Level = 3 -> T***
+  Note: Le niveau est encode dans PointeeIdx (negatif = niveau > 1) }
+Var
+  PtrType: TCType;
+Begin
+  InitCType(PtrType);
+  PtrType.Kind := TK_POINTER;
+  { Encoder le niveau dans PointeeIdx: valeur negative indique le niveau }
+  { -1 = niveau 1, -2 = niveau 2, etc. }
+  PtrType.PointeeIdx := -Level;
+  { Copier le type de base dans ElemIdx (on reutilise ce champ) }
+  PtrType.ElemIdx := Ord(BaseType.Kind);
+  { Copier l'index de structure/union/enum si applicable }
+  PtrType.StructIdx := BaseType.StructIdx;
+  
+  MakePointerType := PtrType;
+End;
+
+Function GenPointerType(Depth: Integer): TCType;
+{ Genere un type pointeur aleatoire.
+  Depth limite la profondeur de generation. }
+Var
+  BaseType, ResultType: TCType;
+  Level: Integer;
+Begin
+  { Si pointeurs desactives, retourner int }
+  If Opts.NoPointers Then
+  Begin
+    InitCType(ResultType);
+    ResultType.Kind := TK_INT;
+    GenPointerType := ResultType;
+    Exit;
+  End;
+  
+  { Generer le type de base }
+  BaseType := GenRandomPointerBaseType;
+  
+  { Generer le niveau d'indirection }
+  Level := GenPointerLevel(MAX_POINTER_DEPTH - Depth);
+  
+  { Creer le type pointeur }
+  GenPointerType := MakePointerType(BaseType, Level);
+End;
+
+{ --- Fonctions d'emission pour les pointeurs --- }
+
+Function PointerStarsStr(Level: Integer): TString;
+{ Retourne une chaine d'etoiles pour le niveau de pointeur. }
+Var
+  S: TString;
+  I: Integer;
+Begin
+  S := '';
+  For I := 1 To Level Do
+    S := S + '*';
+  PointerStarsStr := S;
+End;
+
+Procedure EmitPointerVarDecl(Name: TString; BaseType: TCType; Level: Integer;
+                             SC: TStorageClass);
+{ Emet une declaration de variable pointeur sans initialisation.
+  Exemple : int *ptr_1; ou static char **ptr_2; }
+Var
+  S: TString;
+Begin
+  S := '';
+  
+  { Classe de stockage }
+  If SC = SC_STATIC Then
+    S := 'static ';
+  
+  { Type de base }
+  S := S + TypeToStr(BaseType) + ' ';
+  
+  { Etoiles et nom }
+  S := S + PointerStarsStr(Level) + Name + ';';
+  
+  EmitLine(S);
+End;
+
+Procedure EmitPointerVarDeclInit(Name: TString; BaseType: TCType; Level: Integer;
+                                 SC: TStorageClass; InitNull: Boolean);
+{ Emet une declaration de variable pointeur avec initialisation.
+  Si InitNull = True, initialise a NULL.
+  Exemple : int *ptr_1 = NULL; }
+Var
+  S: TString;
+Begin
+  S := '';
+  
+  { Classe de stockage }
+  If SC = SC_STATIC Then
+    S := 'static ';
+  
+  { Type de base }
+  S := S + TypeToStr(BaseType) + ' ';
+  
+  { Etoiles et nom }
+  S := S + PointerStarsStr(Level) + Name;
+  
+  { Initialisation }
+  If InitNull Then
+    S := S + ' = NULL';
+  
+  S := S + ';';
+  
+  EmitLine(S);
+End;
+
+{ --- Generation d'operations sur pointeurs --- }
+
+Function GenPointerDeref(VarName: TString; Level: Integer): TString;
+{ Genere une expression de dereferencement.
+  Level = 1 -> *ptr
+  Level = 2 -> **ptr }
+Var
+  S: TString;
+  I: Integer;
+Begin
+  S := '';
+  For I := 1 To Level Do
+    S := S + '*';
+  S := S + VarName;
+  GenPointerDeref := S;
+End;
+
+Function GenPointerAddr(VarName: TString): TString;
+{ Genere une expression d'adresse.
+  Exemple : &var }
+Begin
+  GenPointerAddr := '&' + VarName;
+End;
+
+Function GenPointerArith(VarName: TString; Op: Char; Offset: Integer): TString;
+{ Genere une expression d'arithmetique de pointeur.
+  Op = '+' -> ptr + n
+  Op = '-' -> ptr - n }
+Begin
+  If Offset = 0 Then
+    GenPointerArith := VarName
+  Else
+    GenPointerArith := VarName + ' ' + Op + ' ' + IntToStr(Offset);
+End;
+
+Function GenPointerIncDec(VarName: TString; IsInc: Boolean; IsPrefix: Boolean): TString;
+{ Genere une expression d'increment/decrement de pointeur.
+  IsInc = True, IsPrefix = True  -> ++ptr
+  IsInc = True, IsPrefix = False -> ptr++
+  IsInc = False, IsPrefix = True -> --ptr
+  IsInc = False, IsPrefix = False -> ptr-- }
+Var
+  Op: TString;
+Begin
+  If IsInc Then
+    Op := '++'
+  Else
+    Op := '--';
+  
+  If IsPrefix Then
+    GenPointerIncDec := Op + VarName
+  Else
+    GenPointerIncDec := VarName + Op;
+End;
+
+Function GenPointerOp(VarName: TString; Level: Integer): TString;
+{ Genere une operation aleatoire sur pointeur.
+  Choisit parmi : dereferencement, increment, decrement, arithmetique. }
+Var
+  Choice: Integer;
+Begin
+  Choice := RandomInt(5);
+  
+  Case Choice Of
+    0: { Dereferencement }
+       GenPointerOp := GenPointerDeref(VarName, 1);
+    1: { Increment prefix }
+       GenPointerOp := GenPointerIncDec(VarName, True, True);
+    2: { Increment postfix }
+       GenPointerOp := GenPointerIncDec(VarName, True, False);
+    3: { Decrement }
+       GenPointerOp := GenPointerIncDec(VarName, False, RandomBool);
+    4: { Arithmetique }
+       GenPointerOp := GenPointerArith(VarName, '+', RandomRange(1, 10));
+  Else
+    GenPointerOp := VarName;
+  End;
+End;
+
+{ --- Generation de declarations de pointeurs --- }
+
+Function GenPointerDecl(SC: TStorageClass): TString;
+{ Genere une declaration de pointeur complete.
+  Retourne le nom de la variable generee. }
+Var
+  Name: TString;
+  BaseType: TCType;
+  Level: Integer;
+  HasInit: Boolean;
+Begin
+  { Verifier si pointeurs desactives }
+  If Opts.NoPointers Then
+  Begin
+    GenPointerDecl := '';
+    Exit;
+  End;
+  
+  { Generer le nom }
+  Name := GenPointerName;
+  
+  { Generer le type de base }
+  BaseType := GenRandomPointerBaseType;
+  
+  { Generer le niveau d'indirection }
+  Level := GenPointerLevel(MAX_POINTER_DEPTH);
+  
+  { Decider si on initialise a NULL }
+  HasInit := RandomChoice(POINTER_INIT_PROB);
+  
+  If HasInit Then
+    EmitPointerVarDeclInit(Name, BaseType, Level, SC, True)
+  Else
+    EmitPointerVarDecl(Name, BaseType, Level, SC);
+  
+  GenPointerDecl := Name;
+End;
+
+Function GenGlobalPointerDecl: TString;
+{ Genere une declaration de pointeur global (static ou non). }
+Var
+  SC: TStorageClass;
+Begin
+  { Verifier si pointeurs desactives }
+  If Opts.NoPointers Then
+  Begin
+    GenGlobalPointerDecl := '';
+    Exit;
+  End;
+  
+  { 70% static, 30% sans classe de stockage }
+  If RandomChoice(70) Then
+    SC := SC_STATIC
+  Else
+    SC := SC_AUTO;
+  
+  GenGlobalPointerDecl := GenPointerDecl(SC);
+End;
+
+Function GenLocalPointerDecl: TString;
+{ Genere une declaration de pointeur local. }
+Begin
+  { Verifier si pointeurs desactives }
+  If Opts.NoPointers Then
+  Begin
+    GenLocalPointerDecl := '';
+    Exit;
+  End;
+  
+  { Les pointeurs locaux sont auto par defaut }
+  GenLocalPointerDecl := GenPointerDecl(SC_AUTO);
+End;
+
+Procedure EmitPointerComment;
+{ Emet un commentaire pour la section des pointeurs. }
+Begin
+  EmitComment('Declarations de pointeurs');
+End;
+
+Function GetPointerTypeStr(BaseType: TCType; Level: Integer): TString;
+{ Retourne une chaine representant le type pointeur complet.
+  Exemple : "int **" ou "struct S *" }
+Begin
+  GetPointerTypeStr := TypeToStr(BaseType) + ' ' + PointerStarsStr(Level);
+End;
+
+Function CountPointers: Integer;
+{ Retourne le nombre de pointeurs generes. }
+Begin
+  CountPointers := PointerCounter;
+End;
 
 Procedure InitTables;
 Begin
@@ -2899,6 +3290,7 @@ Begin
   EnumCounter := 0;
   LabelCounter := 0;
   ArrayCounter := 0;  { TODO 10 : compteur de tableaux }
+  PointerCounter := 0;  { TODO 11 : compteur de pointeurs }
   StatFuncs := 0;
   StatVars := 0;
   StatExprs := 0;
@@ -3115,6 +3507,16 @@ Begin
   NumGen := RandomRange(1, 4);  { Generer 1 a 4 tableaux }
   For I := 1 To NumGen Do
     GenGlobalArrayDecl;
+  
+  { Generer quelques pointeurs globaux si autorises - TODO 11 }
+  If Not Opts.NoPointers Then
+  Begin
+    EmitBlankLine;
+    EmitPointerComment;
+    NumGen := RandomRange(1, 4);  { Generer 1 a 4 pointeurs }
+    For I := 1 To NumGen Do
+      GenGlobalPointerDecl;
+  End;
   
   GenChecksumVars;
   GenChecksumFunc;
