@@ -366,6 +366,10 @@ Var
   CompilerMode    : TString;  { 'TP' ou 'FPC' }
   ContentTypeLbl  : TString;  { label content-type ou '' }
 
+  { COM/OLE object member access }
+  ObjMemberCounter : Integer;  { compteur pour noms de membres uniques }
+  ObjMemberName    : TString;  { nom du membre COM en cours d'acces }
+
   { Variables pour generation binaire }
 {$IFDEF FPC}
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
@@ -4772,7 +4776,7 @@ Begin
                 EmitComment('COM method call: ' + ObjMemberName);
                 EmitInstrA('PUSH', 'EAX');
                 EmitInstrAB('LEA', 'ESI', PSP_STR_PFX + 'OBJM_' + IntToStr(ObjMemberCounter));
-                DataAdd(PSP_STR_PFX + 'OBJM_' + IntToStr(ObjMemberCounter), ObjMemberName);
+                DataAdd(PSP_STR_PFX + 'OBJM_' + IntToStr(ObjMemberCounter), DK_STR, 0, ObjMemberName);
                 Inc(ObjMemberCounter);
                 EmitInstrA('POP', 'EAX');
                 EmitInstrA('CALL', PSP_RT_PFX + 'OBJCALL');
@@ -4790,7 +4794,7 @@ Begin
                 EmitComment('COM property get: ' + ObjMemberName);
                 EmitInstrA('PUSH', 'EAX');
                 EmitInstrAB('LEA', 'ESI', PSP_STR_PFX + 'OBJP_' + IntToStr(ObjMemberCounter));
-                DataAdd(PSP_STR_PFX + 'OBJP_' + IntToStr(ObjMemberCounter), ObjMemberName);
+                DataAdd(PSP_STR_PFX + 'OBJP_' + IntToStr(ObjMemberCounter), DK_STR, 0, ObjMemberName);
                 Inc(ObjMemberCounter);
                 EmitInstrA('POP', 'EAX');
                 { Stub: propriete retourne dans EAX }
