@@ -105,8 +105,9 @@ Const
   TY_IDX_REAL    = 6;   { tronque en entier      }
   TY_IDX_POINTER = 7;   { pointeur generique 32 bits }
   TY_IDX_NIL     = 8;   { pointeur nul           }
-  TY_IDX_TEXT    = 9;    { fichier texte (handle Win32) }
-  TY_PRIM_COUNT  = 10;
+  TY_IDX_TEXT    = 9;   { fichier texte (handle Win32) }
+  TY_IDX_OBJECT  = 10;  { objet COM/OLE (IDispatch*) }
+  TY_PRIM_COUNT  = 11;
   TY_UNKNOWN     = -1;
 
 { ============================================================
@@ -202,6 +203,7 @@ Type
     TKP_POINTER,   { pointeur generique 32 bits                }
     TKP_NIL,       { pointeur nul                              }
     TKP_TEXT,      { fichier texte (handle Win32)              }
+    TKP_OBJECT,    { objet COM/OLE (IDispatch*)                }
     TKP_VOID       { procedure, pas de valeur de retour        }
   );
 
@@ -2380,6 +2382,8 @@ Begin
   If Idx >= 0 Then SymTab[Idx].MangledName := 'POINTER';
   Idx := SymAdd('text', SC_TYPE, TY_IDX_TEXT);
   If Idx >= 0 Then SymTab[Idx].MangledName := 'TEXT';
+  Idx := SymAdd('tcreateobject', SC_TYPE, TY_IDX_OBJECT);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'TCREATEOBJECT';
 
   { Constantes predefinies : true, false, nil, maxint }
   Idx := SymAdd('true', SC_CONST, TY_IDX_BOOLEAN);
@@ -2447,7 +2451,8 @@ Begin
   AddPrim(TY_IDX_REAL,    TKP_REAL,    4);   { Real    : 4 (tronque en entier 32 bits) }
   AddPrim(TY_IDX_POINTER, TKP_POINTER, 4);   { Pointer : 4 octets (32 bits)           }
   AddPrim(TY_IDX_NIL,     TKP_NIL,     4);   { nil     : 4 octets                     }
-  AddPrim(TY_IDX_TEXT,    TKP_TEXT,    4);    { Text    : 4 (handle Win32)             }
+  AddPrim(TY_IDX_TEXT,    TKP_TEXT,    4);   { Text    : 4 (handle Win32)             }
+  AddPrim(TY_IDX_OBJECT,  TKP_OBJECT,  4);   { Object  : 4 (IDispatch* 32 bits)       }
 End;
 
 { ---- TypeSizeof : retourner la taille d un type en octets ---- }
@@ -2866,6 +2871,12 @@ Begin
   EmitRaw('EXTRN   _HeapAlloc@12        : PROC');
   EmitRaw('EXTRN   _HeapFree@12         : PROC');
   EmitRaw('EXTRN   _GetTickCount@0      : PROC');
+  EmitBlankLine;
+  EmitComment('--- Declarations externes COM/OLE32 ---');
+  EmitRaw('EXTRN   _CoInitialize@4      : PROC');
+  EmitRaw('EXTRN   _CoUninitialize@0    : PROC');
+  EmitRaw('EXTRN   _CoCreateInstance@20 : PROC');
+  EmitRaw('EXTRN   _CLSIDFromProgID@8   : PROC');
   EmitBlankLine;
   EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
   EmitBlankLine;
@@ -4402,6 +4413,24 @@ Begin
         EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'CRLF + 2');
         Res.Kind    := EK_AX;
         Res.TypeIdx := TY_IDX_STRING;
+        Res.SymIdx  := -1;
+      End
+      Else If StrLowerCase(CurToken.Val) = 'createobject' Then
+      Begin
+        { CreateObject('ProgID') : creer un objet COM via IDispatch }
+        TplNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          TplNextToken;
+        ParseExpr(Res);
+        ExprFlushToEAX(Res);
+        { EAX = pointeur vers ProgID (chaine ASCIIZ) }
+        EmitInstrAB('MOV', 'ESI', 'EAX');
+        EmitInstrA('CALL', PSP_RT_PFX + 'CREATEOBJECT');
+        { EAX = pointeur IDispatch ou 0 si echec }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          TplNextToken;
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_OBJECT;
         Res.SymIdx  := -1;
       End
 
@@ -9348,7 +9377,7 @@ End;
 
 Procedure ShowUsage;Begin
   WriteLn('PSPCW32 - Compilateur de PSP (Pascal Server Pages) pour ',
-          'l''assembleur du microprocesseur 80386 (en ex‚cutable Windows 32 bits).');
+          'l''assembleur du microprocesseur 80386 (en exï¿½cutable Windows 32 bits).');
   WriteLn;
   WriteLn('Syntaxe : PSPCW32 <page.psp> [-o sortie] [-v] [-d] [-w] [-obj] [-asm]');
   WriteLn;
