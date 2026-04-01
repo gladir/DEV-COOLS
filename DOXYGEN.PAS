@@ -3117,14 +3117,7 @@ Begin
   IsTagStart := (Ch = '@') Or (Ch = '\');
 End;
 
-Function IsIdentChar(Ch: Char): Boolean;
-{ Verifie si un caractere est valide dans un identifiant }
-Begin
-  IsIdentChar := ((Ch >= 'a') And (Ch <= 'z')) Or
-                 ((Ch >= 'A') And (Ch <= 'Z')) Or
-                 ((Ch >= '0') And (Ch <= '9')) Or
-                 (Ch = '_');
-End;
+{ Note: IsIdentChar est definie dans TODO 08 - EXTRACTION DES ENTITES DOCUMENTEES }
 
 Function TagNeedsParamName(Kind: TDoxyTagKind): Boolean;
 { Verifie si une balise prend un nom de parametre comme premier argument }
