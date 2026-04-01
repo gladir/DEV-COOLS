@@ -314,7 +314,7 @@
               ex: C -> '//, /*, /**'
               ex: Pascal -> '{, (*, {**, (*!'
 
-  TODO 08 - EXTRACTION DES ENTITES DOCUMENTEES [A FAIRE]
+  TODO 08 - EXTRACTION DES ENTITES DOCUMENTEES [IMPLEMENTE]
             TEntityKind : (ENT_UNKNOWN, ENT_FILE, ENT_NAMESPACE, ENT_CLASS,
               ENT_STRUCT, ENT_UNION, ENT_INTERFACE, ENT_ENUM, ENT_TYPEDEF,
               ENT_FUNCTION, ENT_VARIABLE, ENT_DEFINE, ENT_PROPERTY,
@@ -1008,6 +1008,43 @@ Type
     Line   : Integer;   { Ligne dans le fichier }
   End;
 
+  { Types pour l'extraction des entites (TODO 08) }
+  TEntityKind = (ENT_UNKNOWN, ENT_FILE, ENT_NAMESPACE, ENT_CLASS,
+    ENT_STRUCT, ENT_UNION, ENT_INTERFACE, ENT_ENUM, ENT_TYPEDEF,
+    ENT_FUNCTION, ENT_VARIABLE, ENT_DEFINE, ENT_PROPERTY,
+    ENT_SIGNAL, ENT_SLOT, ENT_FRIEND, ENT_MODULE, ENT_GROUP,
+    ENT_PAGE, ENT_EXAMPLE, ENT_DIR, ENT_CONCEPT, ENT_SEQUENCE,
+    ENT_DICTIONARY, ENT_SERVICE, ENT_SINGLETON, ENT_EXCEPTION);
+
+  TEntityVisibility = (VIS_PUBLIC, VIS_PROTECTED, VIS_PRIVATE,
+    VIS_PACKAGE);
+
+  TEntity = Record
+    Kind         : TEntityKind;    { Type d entite }
+    Name         : String;         { Nom de l entite }
+    FullName     : String;         { Nom qualifie complet }
+    FileName     : String;         { Fichier source }
+    Line         : Integer;        { Ligne de debut }
+    EndLine      : Integer;        { Ligne de fin }
+    Visibility   : TEntityVisibility; { Visibilite }
+    IsStatic     : Boolean;        { Membre statique }
+    IsConst      : Boolean;        { Constante }
+    IsVirtual    : Boolean;        { Virtuelle }
+    IsAbstract   : Boolean;        { Abstraite }
+    IsFinal      : Boolean;        { Finale }
+    IsOverride   : Boolean;        { Override }
+    IsInline     : Boolean;        { Inline }
+    IsExplicit   : Boolean;        { Explicit }
+    IsTemplate   : Boolean;        { Template/generic }
+    ReturnType   : String;         { Type de retour }
+    Parameters   : String;         { Liste des parametres }
+    Signature    : String;         { Signature complete }
+    ParentId     : Integer;        { ID de l entite parente }
+    DocComment   : String;         { Commentaire de documentation }
+    BriefDesc    : String;         { Description breve }
+    DetailedDesc : String;         { Description detaillee }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1025,6 +1062,10 @@ Var
   { Variables pour la configuration Doxyfile (TODO 05) }
   Config        : Array[1..MAX_CONFIG_OPTIONS] Of TConfigOption;
   ConfigCount   : Integer;
+
+  { Variables pour l'extraction des entites (TODO 08) }
+  Entities      : Array[1..MAX_SYMBOLS] Of TEntity;
+  EntityCount   : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -1544,6 +1585,851 @@ Begin
   End;
   
   DetectLanguage := Lang;
+End;
+
+{ ============================================================
+  TODO 08 - EXTRACTION DES ENTITES DOCUMENTEES
+  ============================================================ }
+
+Procedure InitEntities;
+{ Initialise le tableau des entites }
+Begin
+  EntityCount := 0;
+End;
+
+Function EntityKindToStr(Kind: TEntityKind): String;
+{ Convertit un type d entite en chaine }
+Begin
+  Case Kind Of
+    ENT_UNKNOWN:    EntityKindToStr := 'unknown';
+    ENT_FILE:       EntityKindToStr := 'file';
+    ENT_NAMESPACE:  EntityKindToStr := 'namespace';
+    ENT_CLASS:      EntityKindToStr := 'class';
+    ENT_STRUCT:     EntityKindToStr := 'struct';
+    ENT_UNION:      EntityKindToStr := 'union';
+    ENT_INTERFACE:  EntityKindToStr := 'interface';
+    ENT_ENUM:       EntityKindToStr := 'enum';
+    ENT_TYPEDEF:    EntityKindToStr := 'typedef';
+    ENT_FUNCTION:   EntityKindToStr := 'function';
+    ENT_VARIABLE:   EntityKindToStr := 'variable';
+    ENT_DEFINE:     EntityKindToStr := 'define';
+    ENT_PROPERTY:   EntityKindToStr := 'property';
+    ENT_SIGNAL:     EntityKindToStr := 'signal';
+    ENT_SLOT:       EntityKindToStr := 'slot';
+    ENT_FRIEND:     EntityKindToStr := 'friend';
+    ENT_MODULE:     EntityKindToStr := 'module';
+    ENT_GROUP:      EntityKindToStr := 'group';
+    ENT_PAGE:       EntityKindToStr := 'page';
+    ENT_EXAMPLE:    EntityKindToStr := 'example';
+    ENT_DIR:        EntityKindToStr := 'dir';
+    ENT_CONCEPT:    EntityKindToStr := 'concept';
+    ENT_SEQUENCE:   EntityKindToStr := 'sequence';
+    ENT_DICTIONARY: EntityKindToStr := 'dictionary';
+    ENT_SERVICE:    EntityKindToStr := 'service';
+    ENT_SINGLETON:  EntityKindToStr := 'singleton';
+    ENT_EXCEPTION:  EntityKindToStr := 'exception';
+  Else
+    EntityKindToStr := 'unknown';
+  End;
+End;
+
+Function VisibilityToStr(Vis: TEntityVisibility): String;
+{ Convertit une visibilite en chaine }
+Begin
+  Case Vis Of
+    VIS_PUBLIC:    VisibilityToStr := 'public';
+    VIS_PROTECTED: VisibilityToStr := 'protected';
+    VIS_PRIVATE:   VisibilityToStr := 'private';
+    VIS_PACKAGE:   VisibilityToStr := 'package';
+  Else
+    VisibilityToStr := 'public';
+  End;
+End;
+
+Procedure AddEntity(Kind: TEntityKind; Const Name, FullName, FileName: String;
+  Line: Integer; Vis: TEntityVisibility);
+{ Ajoute une entite au tableau }
+Begin
+  If EntityCount >= MAX_SYMBOLS Then Exit;
+  Inc(EntityCount);
+  With Entities[EntityCount] Do
+  Begin
+    Entities[EntityCount].Kind := Kind;
+    Entities[EntityCount].Name := Name;
+    Entities[EntityCount].FullName := FullName;
+    Entities[EntityCount].FileName := FileName;
+    Entities[EntityCount].Line := Line;
+    Entities[EntityCount].EndLine := Line;
+    Entities[EntityCount].Visibility := Vis;
+    Entities[EntityCount].IsStatic := False;
+    Entities[EntityCount].IsConst := False;
+    Entities[EntityCount].IsVirtual := False;
+    Entities[EntityCount].IsAbstract := False;
+    Entities[EntityCount].IsFinal := False;
+    Entities[EntityCount].IsOverride := False;
+    Entities[EntityCount].IsInline := False;
+    Entities[EntityCount].IsExplicit := False;
+    Entities[EntityCount].IsTemplate := False;
+    Entities[EntityCount].ReturnType := '';
+    Entities[EntityCount].Parameters := '';
+    Entities[EntityCount].Signature := '';
+    Entities[EntityCount].ParentId := 0;
+    Entities[EntityCount].DocComment := '';
+    Entities[EntityCount].BriefDesc := '';
+    Entities[EntityCount].DetailedDesc := '';
+  End;
+End;
+
+Function IsIdentChar(Ch: Char): Boolean;
+{ Retourne True si Ch est un caractere valide dans un identificateur }
+Begin
+  IsIdentChar := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                 ((Ch >= 'a') And (Ch <= 'z')) Or
+                 ((Ch >= '0') And (Ch <= '9')) Or
+                 (Ch = '_');
+End;
+
+Function IsIdentStart(Ch: Char): Boolean;
+{ Retourne True si Ch peut demarrer un identificateur }
+Begin
+  IsIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                  ((Ch >= 'a') And (Ch <= 'z')) Or
+                  (Ch = '_');
+End;
+
+Function ExtractIdent(Const Line: String; StartPos: Integer): String;
+{ Extrait un identificateur a partir de la position donnee }
+Var
+  I: Integer;
+  R: String;
+Begin
+  R := '';
+  I := StartPos;
+  { Sauter les espaces }
+  While (I <= Length(Line)) And (Line[I] = ' ') Do
+    Inc(I);
+  { Extraire l identificateur }
+  If (I <= Length(Line)) And IsIdentStart(Line[I]) Then
+  Begin
+    While (I <= Length(Line)) And IsIdentChar(Line[I]) Do
+    Begin
+      R := R + Line[I];
+      Inc(I);
+    End;
+  End;
+  ExtractIdent := R;
+End;
+
+Function TrimLine(Const S: String): String;
+{ Supprime les espaces en debut et fin de chaine }
+Var
+  L, R: Integer;
+Begin
+  L := 1;
+  R := Length(S);
+  While (L <= R) And (S[L] = ' ') Do Inc(L);
+  While (R >= L) And (S[R] = ' ') Do Dec(R);
+  TrimLine := Copy(S, L, R - L + 1);
+End;
+
+Procedure ExtractEntitiesC(Const FileName: String);
+{ Extraction des entites pour C/C++ }
+Var
+  F: Text;
+  Line, TrimmedLine, UpperLine: String;
+  LineNum: Integer;
+  P: Integer;
+  Name: String;
+  InComment: Boolean;
+  InClass: Boolean;
+  CurrentClass: String;
+  BraceDepth: Integer;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNum := 0;
+  InComment := False;
+  InClass := False;
+  CurrentClass := '';
+  BraceDepth := 0;
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    TrimmedLine := TrimLine(Line);
+    UpperLine := UpStr(TrimmedLine);
+    
+    { Gerer les commentaires multiligne }
+    If InComment Then
+    Begin
+      P := Pos('*/', TrimmedLine);
+      If P > 0 Then
+        InComment := False;
+      Continue;
+    End;
+    
+    { Detecter debut de commentaire multiligne }
+    P := Pos('/*', TrimmedLine);
+    If (P > 0) And (Pos('*/', TrimmedLine) = 0) Then
+    Begin
+      InComment := True;
+      Continue;
+    End;
+    
+    { Ignorer les lignes de commentaire simple }
+    If (Length(TrimmedLine) >= 2) And (Copy(TrimmedLine, 1, 2) = '//') Then
+      Continue;
+    
+    { Compter les accolades }
+    For P := 1 To Length(TrimmedLine) Do
+    Begin
+      If TrimmedLine[P] = '{' Then Inc(BraceDepth)
+      Else If TrimmedLine[P] = '}' Then
+      Begin
+        Dec(BraceDepth);
+        If InClass And (BraceDepth = 0) Then
+        Begin
+          InClass := False;
+          CurrentClass := '';
+        End;
+      End;
+    End;
+    
+    { Detecter #define }
+    If Copy(TrimmedLine, 1, 7) = '#define' Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, 8);
+      If Name <> '' Then
+        AddEntity(ENT_DEFINE, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      Continue;
+    End;
+    
+    { Detecter les classes }
+    P := Pos('CLASS ', UpperLine);
+    If P > 0 Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, P + 6);
+      If Name <> '' Then
+      Begin
+        AddEntity(ENT_CLASS, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        InClass := True;
+        CurrentClass := Name;
+      End;
+      Continue;
+    End;
+    
+    { Detecter les structures }
+    P := Pos('STRUCT ', UpperLine);
+    If P > 0 Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, P + 7);
+      If Name <> '' Then
+        AddEntity(ENT_STRUCT, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      Continue;
+    End;
+    
+    { Detecter les unions }
+    P := Pos('UNION ', UpperLine);
+    If P > 0 Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, P + 6);
+      If Name <> '' Then
+        AddEntity(ENT_UNION, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      Continue;
+    End;
+    
+    { Detecter les enumerations }
+    P := Pos('ENUM ', UpperLine);
+    If P > 0 Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, P + 5);
+      If Name <> '' Then
+        AddEntity(ENT_ENUM, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      Continue;
+    End;
+    
+    { Detecter typedef }
+    If Copy(UpperLine, 1, 8) = 'TYPEDEF ' Then
+    Begin
+      { Le nom du typedef est generalement a la fin avant ; }
+      P := Pos(';', TrimmedLine);
+      If P > 1 Then
+      Begin
+        { Trouver le dernier mot avant ; }
+        P := P - 1;
+        While (P > 0) And (TrimmedLine[P] = ' ') Do Dec(P);
+        If P > 0 Then
+        Begin
+          Name := '';
+          While (P > 0) And IsIdentChar(TrimmedLine[P]) Do
+          Begin
+            Name := TrimmedLine[P] + Name;
+            Dec(P);
+          End;
+          If Name <> '' Then
+            AddEntity(ENT_TYPEDEF, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        End;
+      End;
+      Continue;
+    End;
+    
+    { Detecter les fonctions (pattern simplifie: type nom(...) ) }
+    P := Pos('(', TrimmedLine);
+    If P > 1 Then
+    Begin
+      { Verifier que ce n est pas un if, while, for, switch }
+      If (Pos('IF ', UpperLine) = 0) And
+         (Pos('WHILE ', UpperLine) = 0) And
+         (Pos('FOR ', UpperLine) = 0) And
+         (Pos('SWITCH ', UpperLine) = 0) And
+         (Pos('RETURN ', UpperLine) = 0) And
+         (Pos('#', TrimmedLine) = 0) Then
+      Begin
+        { Extraire le nom de la fonction (dernier mot avant la parenthese) }
+        P := P - 1;
+        While (P > 0) And (TrimmedLine[P] = ' ') Do Dec(P);
+        If P > 0 Then
+        Begin
+          Name := '';
+          While (P > 0) And IsIdentChar(TrimmedLine[P]) Do
+          Begin
+            Name := TrimmedLine[P] + Name;
+            Dec(P);
+          End;
+          { Verifier que ce n est pas un mot-cle }
+          If (Name <> '') And (UpStr(Name) <> 'IF') And 
+             (UpStr(Name) <> 'WHILE') And (UpStr(Name) <> 'FOR') And
+             (UpStr(Name) <> 'SWITCH') And (UpStr(Name) <> 'RETURN') And
+             (UpStr(Name) <> 'SIZEOF') And (UpStr(Name) <> 'TYPEOF') Then
+          Begin
+            If InClass Then
+              AddEntity(ENT_FUNCTION, Name, CurrentClass + '::' + Name, 
+                FileName, LineNum, VIS_PUBLIC)
+            Else
+              AddEntity(ENT_FUNCTION, Name, Name, FileName, LineNum, VIS_PUBLIC);
+          End;
+        End;
+      End;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure ExtractEntitiesPascal(Const FileName: String);
+{ Extraction des entites pour Pascal/Delphi }
+Var
+  F: Text;
+  Line, TrimmedLine, UpperLine: String;
+  LineNum: Integer;
+  P: Integer;
+  Name: String;
+  InComment, InBraceComment: Boolean;
+  InClass, InInterface: Boolean;
+  CurrentClass: String;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNum := 0;
+  InComment := False;
+  InBraceComment := False;
+  InClass := False;
+  InInterface := False;
+  CurrentClass := '';
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    TrimmedLine := TrimLine(Line);
+    UpperLine := UpStr(TrimmedLine);
+    
+    { Gerer les commentaires }
+    If InComment Then
+    Begin
+      P := Pos('*)', TrimmedLine);
+      If P > 0 Then InComment := False;
+      Continue;
+    End;
+    If InBraceComment Then
+    Begin
+      P := Pos('}', TrimmedLine);
+      If P > 0 Then InBraceComment := False;
+      Continue;
+    End;
+    
+    { Detecter debut de commentaire }
+    P := Pos('(*', TrimmedLine);
+    If (P > 0) And (Pos('*)', TrimmedLine) = 0) Then
+    Begin
+      InComment := True;
+      Continue;
+    End;
+    P := Pos('{', TrimmedLine);
+    If (P > 0) And (Pos('}', TrimmedLine) = 0) And 
+       (Copy(TrimmedLine, P, 2) <> '{$') Then
+    Begin
+      InBraceComment := True;
+      Continue;
+    End;
+    
+    { Detecter unit }
+    If Copy(UpperLine, 1, 5) = 'UNIT ' Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, 6);
+      If Name <> '' Then
+        AddEntity(ENT_MODULE, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      Continue;
+    End;
+    
+    { Detecter program }
+    If Copy(UpperLine, 1, 8) = 'PROGRAM ' Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, 9);
+      If Name <> '' Then
+        AddEntity(ENT_MODULE, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      Continue;
+    End;
+    
+    { Detecter les classes (Delphi) }
+    P := Pos('= CLASS', UpperLine);
+    If P > 0 Then
+    Begin
+      { Le nom est avant le = }
+      Name := '';
+      P := P - 1;
+      While (P > 0) And (TrimmedLine[P] = ' ') Do Dec(P);
+      While (P > 0) And IsIdentChar(TrimmedLine[P]) Do
+      Begin
+        Name := TrimmedLine[P] + Name;
+        Dec(P);
+      End;
+      If Name <> '' Then
+      Begin
+        AddEntity(ENT_CLASS, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        InClass := True;
+        CurrentClass := Name;
+      End;
+      Continue;
+    End;
+    
+    { Detecter les records }
+    P := Pos('= RECORD', UpperLine);
+    If P > 0 Then
+    Begin
+      Name := '';
+      P := P - 1;
+      While (P > 0) And (TrimmedLine[P] = ' ') Do Dec(P);
+      While (P > 0) And IsIdentChar(TrimmedLine[P]) Do
+      Begin
+        Name := TrimmedLine[P] + Name;
+        Dec(P);
+      End;
+      If Name <> '' Then
+        AddEntity(ENT_STRUCT, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      Continue;
+    End;
+    
+    { Detecter les interfaces }
+    P := Pos('= INTERFACE', UpperLine);
+    If P > 0 Then
+    Begin
+      Name := '';
+      P := P - 1;
+      While (P > 0) And (TrimmedLine[P] = ' ') Do Dec(P);
+      While (P > 0) And IsIdentChar(TrimmedLine[P]) Do
+      Begin
+        Name := TrimmedLine[P] + Name;
+        Dec(P);
+      End;
+      If Name <> '' Then
+      Begin
+        AddEntity(ENT_INTERFACE, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        InInterface := True;
+      End;
+      Continue;
+    End;
+    
+    { Detecter fin de classe/interface }
+    If (UpperLine = 'END;') Or (Copy(UpperLine, 1, 4) = 'END;') Then
+    Begin
+      If InClass Then
+      Begin
+        InClass := False;
+        CurrentClass := '';
+      End;
+      If InInterface Then InInterface := False;
+    End;
+    
+    { Detecter les procedures }
+    If Copy(UpperLine, 1, 10) = 'PROCEDURE ' Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, 11);
+      If Name <> '' Then
+      Begin
+        If InClass Then
+          AddEntity(ENT_FUNCTION, Name, CurrentClass + '.' + Name,
+            FileName, LineNum, VIS_PUBLIC)
+        Else
+          AddEntity(ENT_FUNCTION, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      End;
+      Continue;
+    End;
+    
+    { Detecter les fonctions }
+    If Copy(UpperLine, 1, 9) = 'FUNCTION ' Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, 10);
+      If Name <> '' Then
+      Begin
+        If InClass Then
+          AddEntity(ENT_FUNCTION, Name, CurrentClass + '.' + Name,
+            FileName, LineNum, VIS_PUBLIC)
+        Else
+          AddEntity(ENT_FUNCTION, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      End;
+      Continue;
+    End;
+    
+    { Detecter les types enumeres }
+    P := Pos('= (', UpperLine);
+    If (P > 0) And (Pos('TYPE', UpperLine) > 0) Then
+    Begin
+      Name := '';
+      P := P - 1;
+      While (P > 0) And (TrimmedLine[P] = ' ') Do Dec(P);
+      While (P > 0) And IsIdentChar(TrimmedLine[P]) Do
+      Begin
+        Name := TrimmedLine[P] + Name;
+        Dec(P);
+      End;
+      If Name <> '' Then
+        AddEntity(ENT_ENUM, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      Continue;
+    End;
+    
+    { Detecter les constantes }
+    If Copy(UpperLine, 1, 6) = 'CONST ' Then
+    Begin
+      { La ligne suivante devrait avoir le nom de la constante }
+      Continue;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure ExtractEntitiesJava(Const FileName: String);
+{ Extraction des entites pour Java }
+Var
+  F: Text;
+  Line, TrimmedLine, UpperLine: String;
+  LineNum: Integer;
+  P: Integer;
+  Name: String;
+  InComment: Boolean;
+  PackageName: String;
+  CurrentClass: String;
+  BraceDepth: Integer;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNum := 0;
+  InComment := False;
+  PackageName := '';
+  CurrentClass := '';
+  BraceDepth := 0;
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    TrimmedLine := TrimLine(Line);
+    UpperLine := UpStr(TrimmedLine);
+    
+    { Gerer les commentaires multiligne }
+    If InComment Then
+    Begin
+      P := Pos('*/', TrimmedLine);
+      If P > 0 Then InComment := False;
+      Continue;
+    End;
+    
+    P := Pos('/*', TrimmedLine);
+    If (P > 0) And (Pos('*/', TrimmedLine) = 0) Then
+    Begin
+      InComment := True;
+      Continue;
+    End;
+    
+    If (Length(TrimmedLine) >= 2) And (Copy(TrimmedLine, 1, 2) = '//') Then
+      Continue;
+    
+    { Compter les accolades }
+    For P := 1 To Length(TrimmedLine) Do
+    Begin
+      If TrimmedLine[P] = '{' Then Inc(BraceDepth)
+      Else If TrimmedLine[P] = '}' Then
+      Begin
+        Dec(BraceDepth);
+        If BraceDepth = 0 Then CurrentClass := '';
+      End;
+    End;
+    
+    { Detecter package }
+    If Copy(UpperLine, 1, 8) = 'PACKAGE ' Then
+    Begin
+      P := Pos(';', TrimmedLine);
+      If P > 9 Then
+        PackageName := TrimLine(Copy(TrimmedLine, 9, P - 9));
+      Continue;
+    End;
+    
+    { Detecter class }
+    P := Pos(' CLASS ', UpperLine);
+    If P > 0 Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, P + 7);
+      If Name <> '' Then
+      Begin
+        If PackageName <> '' Then
+          AddEntity(ENT_CLASS, Name, PackageName + '.' + Name,
+            FileName, LineNum, VIS_PUBLIC)
+        Else
+          AddEntity(ENT_CLASS, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        CurrentClass := Name;
+      End;
+      Continue;
+    End;
+    
+    { Detecter interface }
+    P := Pos(' INTERFACE ', UpperLine);
+    If P > 0 Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, P + 11);
+      If Name <> '' Then
+      Begin
+        If PackageName <> '' Then
+          AddEntity(ENT_INTERFACE, Name, PackageName + '.' + Name,
+            FileName, LineNum, VIS_PUBLIC)
+        Else
+          AddEntity(ENT_INTERFACE, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      End;
+      Continue;
+    End;
+    
+    { Detecter enum }
+    P := Pos(' ENUM ', UpperLine);
+    If P > 0 Then
+    Begin
+      Name := ExtractIdent(TrimmedLine, P + 6);
+      If Name <> '' Then
+        AddEntity(ENT_ENUM, Name, Name, FileName, LineNum, VIS_PUBLIC);
+      Continue;
+    End;
+    
+    { Detecter les methodes }
+    P := Pos('(', TrimmedLine);
+    If (P > 1) And (CurrentClass <> '') And
+       (Pos('IF ', UpperLine) = 0) And
+       (Pos('WHILE ', UpperLine) = 0) And
+       (Pos('FOR ', UpperLine) = 0) And
+       (Pos('SWITCH ', UpperLine) = 0) Then
+    Begin
+      P := P - 1;
+      While (P > 0) And (TrimmedLine[P] = ' ') Do Dec(P);
+      If P > 0 Then
+      Begin
+        Name := '';
+        While (P > 0) And IsIdentChar(TrimmedLine[P]) Do
+        Begin
+          Name := TrimmedLine[P] + Name;
+          Dec(P);
+        End;
+        If (Name <> '') And (Name <> CurrentClass) And
+           (UpStr(Name) <> 'IF') And (UpStr(Name) <> 'WHILE') And
+           (UpStr(Name) <> 'FOR') And (UpStr(Name) <> 'NEW') Then
+          AddEntity(ENT_FUNCTION, Name, CurrentClass + '.' + Name,
+            FileName, LineNum, VIS_PUBLIC);
+      End;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure ExtractEntitiesPython(Const FileName: String);
+{ Extraction des entites pour Python }
+Var
+  F: Text;
+  Line, TrimmedLine: String;
+  LineNum: Integer;
+  P: Integer;
+  Name: String;
+  InDocString: Boolean;
+  CurrentClass: String;
+  IndentLevel: Integer;
+  ClassIndent: Integer;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNum := 0;
+  InDocString := False;
+  CurrentClass := '';
+  ClassIndent := 0;
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    TrimmedLine := TrimLine(Line);
+    
+    { Calculer l indentation }
+    IndentLevel := 0;
+    P := 1;
+    While (P <= Length(Line)) And ((Line[P] = ' ') Or (Line[P] = #9)) Do
+    Begin
+      If Line[P] = #9 Then
+        Inc(IndentLevel, 4)
+      Else
+        Inc(IndentLevel);
+      Inc(P);
+    End;
+    
+    { Gerer les docstrings triple quotes }
+    If InDocString Then
+    Begin
+      If (Pos('"""', TrimmedLine) > 0) Or (Pos('''''''', TrimmedLine) > 0) Then
+        InDocString := False;
+      Continue;
+    End;
+    
+    If (Pos('"""', TrimmedLine) > 0) Or (Pos('''''''', TrimmedLine) > 0) Then
+    Begin
+      { Verifier si la docstring se termine sur la meme ligne }
+      P := Pos('"""', TrimmedLine);
+      If P > 0 Then
+      Begin
+        If Pos('"""', Copy(TrimmedLine, P + 3, Length(TrimmedLine))) = 0 Then
+          InDocString := True;
+      End;
+      Continue;
+    End;
+    
+    { Ignorer les commentaires }
+    If (Length(TrimmedLine) > 0) And (TrimmedLine[1] = '#') Then
+      Continue;
+    
+    { Sortir de la classe si l indentation diminue }
+    If (CurrentClass <> '') And (IndentLevel <= ClassIndent) And
+       (TrimmedLine <> '') Then
+    Begin
+      CurrentClass := '';
+    End;
+    
+    { Detecter class }
+    If Copy(TrimmedLine, 1, 6) = 'class ' Then
+    Begin
+      P := Pos('(', TrimmedLine);
+      If P = 0 Then P := Pos(':', TrimmedLine);
+      If P > 7 Then
+      Begin
+        Name := TrimLine(Copy(TrimmedLine, 7, P - 7));
+        If Name <> '' Then
+        Begin
+          AddEntity(ENT_CLASS, Name, Name, FileName, LineNum, VIS_PUBLIC);
+          CurrentClass := Name;
+          ClassIndent := IndentLevel;
+        End;
+      End;
+      Continue;
+    End;
+    
+    { Detecter def (fonctions/methodes) }
+    If Copy(TrimmedLine, 1, 4) = 'def ' Then
+    Begin
+      P := Pos('(', TrimmedLine);
+      If P > 5 Then
+      Begin
+        Name := TrimLine(Copy(TrimmedLine, 5, P - 5));
+        If Name <> '' Then
+        Begin
+          If CurrentClass <> '' Then
+            AddEntity(ENT_FUNCTION, Name, CurrentClass + '.' + Name,
+              FileName, LineNum, VIS_PUBLIC)
+          Else
+            AddEntity(ENT_FUNCTION, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        End;
+      End;
+      Continue;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure ExtractEntities(Const FileName: String; Lang: TSourceLanguage);
+{ Dispatcher vers l extracteur specifique au langage }
+Begin
+  InitEntities;
+  
+  Case Lang Of
+    LANG_C, LANG_CPP, LANG_CSHARP, LANG_D, LANG_OBJC:
+      ExtractEntitiesC(FileName);
+    LANG_PASCAL:
+      ExtractEntitiesPascal(FileName);
+    LANG_JAVA, LANG_KOTLIN:
+      ExtractEntitiesJava(FileName);
+    LANG_PYTHON:
+      ExtractEntitiesPython(FileName);
+  Else
+    { Pour les autres langages, utiliser l extracteur C comme base }
+    ExtractEntitiesC(FileName);
+  End;
+End;
+
+Procedure ShowExtractedEntities;
+{ Affiche les entites extraites }
+Var
+  I: Integer;
+Begin
+  If EntityCount = 0 Then
+  Begin
+    WriteLn('Aucune entite extraite.');
+    Exit;
+  End;
+  
+  WriteLn('Entites documentees extraites: ', EntityCount);
+  WriteLn;
+  
+  For I := 1 To EntityCount Do
+  Begin
+    Write('  [', I, '] ');
+    Write(EntityKindToStr(Entities[I].Kind), ' ');
+    Write(Entities[I].Name);
+    If Entities[I].FullName <> Entities[I].Name Then
+      Write(' (', Entities[I].FullName, ')');
+    WriteLn(' - ligne ', Entities[I].Line);
+  End;
+  
+  WriteLn;
 End;
 
 Function IsDocCommentStart(Const Line: String; Pos: Integer): TDocCommentKind;
