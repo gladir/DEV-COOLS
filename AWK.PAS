@@ -17,6 +17,9 @@ Uses
   {$IFDEF UNIX}
   BaseUnix,
   {$ENDIF}
+  {$IFDEF FPC}
+  SysUtils,
+  {$ENDIF}
   DOS;
 
 Const
@@ -86,16 +89,21 @@ Function GetRawCommandLine:String;
  {$ELSE}
   {$IFDEF LINUX}
    Var
-     f:File;
-     buffer:RawByteString;
+     f:Text;
+     S,Result:String;
    Begin
+    Result:='';
     Assign(f, '/proc/self/cmdline');
-    Reset(f, 1);
-    SetLength(buffer, FileSize(f));
-    BlockRead(f, buffer[1], Length(buffer));
-    Close(f);
+    {$I-}Reset(f);{$I+}
+    If IOResult=0 Then Begin
+     While Not EOF(f)do Begin
+      Read(f, S);
+      Result:=Result+S;
+     End;
+     Close(f);
+    End;
     { /proc/self/cmdline s�pare les param�tres avec #0 }
-    GetRawCommandLine:= StringReplace(buffer, #0, ' ', [rfReplaceAll]);
+    GetRawCommandLine:= StringReplace(Result, #0, ' ', [rfReplaceAll]);
    End;
   {$ELSE}
    {$IFDEF DARWIN}
@@ -555,7 +563,7 @@ Var
  StopChar:Set Of Char;
  Infix:String;
 Begin
- StopChar:=[',',':',';','"','<','=','>'];
+ StopChar:=[',',':',';','"','<','=','>','!'];
  TopOfStack:=1;
  TopOfStackInt:=1;
  PostFix:='';
@@ -803,6 +811,428 @@ Begin
  End;
 End;
 
+{ Evaluation des conditions pour if et switch }
+Function EvaluateCondition:Boolean;
+Var
+ LeftStr,RightStr:String;
+ LeftNum,RightNum:Real;
+ Op:String;
+ I,SavePos:Integer;
+ IsStringCompare:Boolean;
+ Err:Integer;
+Begin
+ EvaluateCondition:=False;
+ SkipSpace;
+
+ { Verifie si c'est une parenthese ouvrante }
+ If CurrLine[CurrPos]='('Then Inc(CurrPos);
+ SkipSpace;
+
+ { Recupere la partie gauche de la condition }
+ IsStringCompare:=False;
+ If CurrLine[CurrPos]='"'Then Begin
+  IsStringCompare:=True;
+  LeftStr:=GetStringValue;
+ End
+  Else
+ Begin
+  SavePos:=CurrPos;
+  LeftNum:=GetNumberValue(1);
+ End;
+
+ SkipSpace;
+
+ { Recupere l'operateur de comparaison }
+ Op:='';
+ If(CurrPos<=Length(CurrLine))Then Begin
+  If(CurrLine[CurrPos]='=')and(CurrPos+1<=Length(CurrLine))and(CurrLine[CurrPos+1]='=')Then Begin
+   Op:='==';
+   Inc(CurrPos,2);
+  End
+   Else
+  If(CurrLine[CurrPos]='!')and(CurrPos+1<=Length(CurrLine))and(CurrLine[CurrPos+1]='=')Then Begin
+   Op:='!=';
+   Inc(CurrPos,2);
+  End
+   Else
+  If(CurrLine[CurrPos]='<')and(CurrPos+1<=Length(CurrLine))and(CurrLine[CurrPos+1]='=')Then Begin
+   Op:='<=';
+   Inc(CurrPos,2);
+  End
+   Else
+  If(CurrLine[CurrPos]='>')and(CurrPos+1<=Length(CurrLine))and(CurrLine[CurrPos+1]='=')Then Begin
+   Op:='>=';
+   Inc(CurrPos,2);
+  End
+   Else
+  If CurrLine[CurrPos]='<'Then Begin
+   Op:='<';
+   Inc(CurrPos);
+  End
+   Else
+  If CurrLine[CurrPos]='>'Then Begin
+   Op:='>';
+   Inc(CurrPos);
+  End
+   Else
+  If CurrLine[CurrPos]='~'Then Begin
+   Op:='~'; { regex match }
+   Inc(CurrPos);
+  End;
+ End;
+
+ { Si pas d'operateur, on evalue la valeur comme booleen }
+ If Op=''Then Begin
+  If IsStringCompare Then EvaluateCondition:=(LeftStr<>'')
+                     Else EvaluateCondition:=(LeftNum<>0);
+  { Ferme la parenthese si presente }
+  SkipSpace;
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+  Exit;
+ End;
+
+ SkipSpace;
+
+ { Recupere la partie droite de la condition }
+ If CurrLine[CurrPos]='"'Then Begin
+  IsStringCompare:=True;
+  RightStr:=GetStringValue;
+ End
+  Else
+ Begin
+  RightNum:=GetNumberValue(1);
+  If IsStringCompare Then Begin
+   Str(RightNum:0:0,RightStr);
+  End;
+ End;
+
+ { Ferme la parenthese si presente }
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+
+ { Effectue la comparaison }
+ If IsStringCompare Then Begin
+  { Convertit LeftNum en string si necessaire }
+  If LeftStr=''Then Str(LeftNum:0:0,LeftStr);
+
+  If Op='=='Then EvaluateCondition:=(LeftStr=RightStr)
+  Else If Op='!='Then EvaluateCondition:=(LeftStr<>RightStr)
+  Else If Op='<'Then EvaluateCondition:=(LeftStr<RightStr)
+  Else If Op='>'Then EvaluateCondition:=(LeftStr>RightStr)
+  Else If Op='<='Then EvaluateCondition:=(LeftStr<=RightStr)
+  Else If Op='>='Then EvaluateCondition:=(LeftStr>=RightStr);
+ End
+  Else
+ Begin
+  If Op='=='Then EvaluateCondition:=(LeftNum=RightNum)
+  Else If Op='!='Then EvaluateCondition:=(LeftNum<>RightNum)
+  Else If Op='<'Then EvaluateCondition:=(LeftNum<RightNum)
+  Else If Op='>'Then EvaluateCondition:=(LeftNum>RightNum)
+  Else If Op='<='Then EvaluateCondition:=(LeftNum<=RightNum)
+  Else If Op='>='Then EvaluateCondition:=(LeftNum>=RightNum);
+ End;
+End;
+
+{ Saute les espaces et le mot-cle 'then' }
+Procedure SkipThen;
+Begin
+ SkipSpace;
+ If StrToUpper(Copy(CurrLine,CurrPos,4))='THEN'Then Inc(CurrPos,4);
+ SkipSpace;
+End;
+
+{ Trouve la position de fin du bloc (accolade fermante correspondante) }
+Function FindBlockEnd(StartLine:Integer):Integer;
+Var
+ BraceCount:Integer;
+ I,J:Integer;
+ Line:String;
+Begin
+ FindBlockEnd:=StartLine;
+ BraceCount:=0;
+
+ For I:=StartLine to NumberLine do Begin
+  Line:=PA[I]^;
+  For J:=1 to Length(Line)do Begin
+   If Line[J]='{'Then Inc(BraceCount)
+   Else If Line[J]='}'Then Begin
+    Dec(BraceCount);
+    If BraceCount<=0 Then Begin
+     FindBlockEnd:=I;
+     Exit;
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ Execute le bloc de code entre accolades sur la meme ligne }
+Function RunBlock:Boolean;
+Var
+ SavePos:Integer;
+ BraceCount:Integer;
+ BlockStart,BlockEnd:Integer;
+Begin
+ RunBlock:=True;
+ SkipSpace;
+
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+  Inc(CurrPos);
+  Inc(AccoladeBlock);
+ End;
+End;
+
+{ Saute le bloc de code (ne l'execute pas) }
+Procedure SkipBlock;
+Var
+ BraceCount:Integer;
+Begin
+ SkipSpace;
+ BraceCount:=0;
+
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+  BraceCount:=1;
+  Inc(CurrPos);
+
+  While(CurrPos<=Length(CurrLine))and(BraceCount>0)do Begin
+   If CurrLine[CurrPos]='{'Then Inc(BraceCount)
+   Else If CurrLine[CurrPos]='}'Then Dec(BraceCount);
+   Inc(CurrPos);
+  End;
+ End
+  Else
+ Begin
+  { Saute jusqu'au point-virgule ou fin de ligne pour instructions simples }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>';')and(CurrLine[CurrPos]<>'}')do Begin
+   Inc(CurrPos);
+  End;
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+ End;
+End;
+
+{ Implementation de la commande if }
+Procedure IfCommand;
+Var
+ Condition:Boolean;
+Begin
+ SkipSpace;
+ Condition:=EvaluateCondition;
+ SkipThen;
+
+ If Condition Then Begin
+  { Execute le bloc then }
+  RunBlock;
+ End
+  Else
+ Begin
+  { Saute le bloc then }
+  SkipBlock;
+
+  { Verifie s'il y a un else }
+  SkipSpace;
+  If StrToUpper(Copy(CurrLine,CurrPos,4))='ELSE'Then Begin
+   Inc(CurrPos,4);
+   SkipSpace;
+   RunBlock;
+  End;
+ End;
+End;
+
+{ Recupere la valeur d'expression pour switch }
+Function GetSwitchValue:String;
+Var
+ V:Real;
+ S:String;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ SkipSpace;
+
+ If CurrLine[CurrPos]='"'Then Begin
+  GetSwitchValue:=GetStringValue;
+ End
+  Else
+ Begin
+  V:=GetNumberValue(1);
+  If Frac(V)=0.0 Then Str(V:0:0,S)
+                 Else Str(V,S);
+  GetSwitchValue:=S;
+ End;
+
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+End;
+
+{ Recupere la valeur d'un case }
+Function GetCaseValue:String;
+Var
+ V:Real;
+ S:String;
+Begin
+ SkipSpace;
+ If CurrLine[CurrPos]='"'Then Begin
+  GetCaseValue:=GetStringValue;
+ End
+  Else
+ Begin
+  V:=GetNumberValue(1);
+  If Frac(V)=0.0 Then Str(V:0:0,S)
+                 Else Str(V,S);
+  GetCaseValue:=S;
+ End;
+
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=':')Then Inc(CurrPos);
+End;
+
+{ Implementation de la commande switch }
+Procedure SwitchCommand;
+Var
+ SwitchVal,CaseVal:String;
+ Found,BreakFound,Executing:Boolean;
+ SaveCmd:String;
+ CmdIndex:Byte;
+ SavePos:Integer;
+ InString:Boolean;
+Begin
+ SkipSpace;
+ SwitchVal:=GetSwitchValue;
+ SkipSpace;
+
+ { Attend l'accolade ouvrante }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+  Inc(CurrPos);
+  Inc(AccoladeBlock);
+ End
+  Else
+ Begin
+  WriteLn('Erreur de syntaxe : "{" attendu apres switch');
+  Halt(1);
+ End;
+
+ Found:=False;
+ BreakFound:=False;
+ Executing:=False;
+
+ { Parcourt les cases }
+ While(CurrPos<=Length(CurrLine))do Begin
+  SkipSpace;
+  If CurrPos>Length(CurrLine)Then Break;
+
+  If CurrLine[CurrPos]='}'Then Begin
+   Dec(AccoladeBlock);
+   Inc(CurrPos);
+   Break;
+  End;
+
+  { Extrait le mot-cle }
+  SavePos:=CurrPos;
+  SaveCmd:='';
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z'])do Begin
+   SaveCmd:=SaveCmd+CurrLine[CurrPos];
+   Inc(CurrPos);
+  End;
+
+  If StrToUpper(SaveCmd)='CASE'Then Begin
+   CaseVal:=GetCaseValue;
+   If(Not Found)and(SwitchVal=CaseVal)Then Begin
+    Found:=True;
+    Executing:=True;
+   End;
+  End
+   Else
+  If StrToUpper(SaveCmd)='DEFAULT'Then Begin
+   SkipSpace;
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=':')Then Inc(CurrPos);
+   If Not Found Then Begin
+    Found:=True;
+    Executing:=True;
+   End;
+  End
+   Else
+  If StrToUpper(SaveCmd)='BREAK'Then Begin
+   SkipSpace;
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+   If Executing Then Begin
+    BreakFound:=True;
+    Break; { Sort de la boucle switch }
+   End;
+  End
+   Else
+  If SaveCmd<>''Then Begin
+   { C'est une commande a executer }
+   If Executing Then Begin
+    CurrPos:=SavePos;
+    CmdIndex:=ExtractCommand;
+    Case CmdIndex of
+     48: PrintCommand; { print }
+     31: IfCommand; { if }
+     Else Begin
+      { Saute les commandes non supportees dans switch }
+      InString:=False;
+      While(CurrPos<=Length(CurrLine))do Begin
+       If CurrLine[CurrPos]='"'Then InString:=Not InString;
+       If(Not InString)and((CurrLine[CurrPos]=';')or(CurrLine[CurrPos]='}'))Then Break;
+       If(Not InString)and(CurrLine[CurrPos]in['A'..'Z','a'..'z'])Then Begin
+        { Peut-etre un nouveau mot-cle }
+        SavePos:=CurrPos;
+        SaveCmd:='';
+        While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z'])do Begin
+         SaveCmd:=SaveCmd+CurrLine[CurrPos];
+         Inc(CurrPos);
+        End;
+        If(StrToUpper(SaveCmd)='CASE')or(StrToUpper(SaveCmd)='DEFAULT')or
+          (StrToUpper(SaveCmd)='BREAK')or(StrToUpper(SaveCmd)='PRINT')Then Begin
+         CurrPos:=SavePos;
+         Break;
+        End;
+       End
+        Else
+       Inc(CurrPos);
+      End;
+      If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+     End;
+    End;
+   End
+    Else
+   Begin
+    { Pas en execution, saute cette commande en tenant compte des strings }
+    InString:=False;
+    While(CurrPos<=Length(CurrLine))do Begin
+     If CurrLine[CurrPos]='"'Then InString:=Not InString;
+     If(Not InString)and((CurrLine[CurrPos]=';')or(CurrLine[CurrPos]='}'))Then Break;
+     { Verifie si on arrive a un mot-cle }
+     If(Not InString)and(CurrLine[CurrPos]in['A'..'Z','a'..'z'])Then Begin
+      SavePos:=CurrPos;
+      SaveCmd:='';
+      While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z'])do Begin
+       SaveCmd:=SaveCmd+CurrLine[CurrPos];
+       Inc(CurrPos);
+      End;
+      If(StrToUpper(SaveCmd)='CASE')or(StrToUpper(SaveCmd)='DEFAULT')or
+        (StrToUpper(SaveCmd)='BREAK')Then Begin
+       CurrPos:=SavePos;
+       Break;
+      End;
+     End
+      Else
+     Inc(CurrPos);
+    End;
+    If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+   End;
+  End;
+
+  SkipSpace;
+ End;
+
+ { Assure que l'accolade est fermee si on n'a pas atteint la fin }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>'}')do Inc(CurrPos);
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='}')Then Begin
+  Dec(AccoladeBlock);
+  Inc(CurrPos);
+ End;
+End;
+
 Procedure SplitIntoFields(Line:String);
 Var
  I,Start:Integer;
@@ -901,7 +1331,7 @@ Begin
    28: NoImplementation:=True; { gensub }
    29: NoImplementation:=True; { getline }
    30: NoImplementation:=True; { gsub }
-   31: NoImplementation:=True; { if }
+   31: IfCommand; { if }
    32: NoImplementation:=True; { in }
    33: NoImplementation:=True; { include }
    34: NoImplementation:=True; { index }
@@ -932,7 +1362,7 @@ Begin
    59: NoImplementation:=True; { strtonum }
    60: NoImplementation:=True; { sub }
    61: NoImplementation:=True; { substr }
-   62: NoImplementation:=True; { switch }
+   62: SwitchCommand; { switch }
    63: NoImplementation:=True; { system }
    64: NoImplementation:=True; { systime }
    65: NoImplementation:=True; { tolower }
@@ -1017,137 +1447,6 @@ BEGIN
    If Mode=_F Then Begin
     FileName:=CurrParam;
     Mode:=_None_;
-   End
-    Else
-   If(Copy(CurrParam,1,1)='''')and(CurrParam[Length(CurrParam)]='''')Then Begin
-    CurrCommand:=Copy(CurrParam,2,Length(CurrParam)-2);
-   End
-    Else
-   If CurrParam='-f'Then Mode:=_F Else
-   If(Copy(CurrParam,1,1)='''')Then Begin
-    Mode:=_InStringSimpleQuote;
-    CurrCommand:=Copy(CurrParam,2,Length(CurrParam)-1);
-   End
-    Else
-   Begin
-    WriteLn('Param�tre non reconnu');
-    Halt(1);
-   End;
-  End;
-  If CurrCommand<>''Then Begin
-   CurrLine:=CurrCommand;
-   CurrPos:=1;
-   RunLine;
-  End;
-  If FileName<>''Then Begin
-   {$I-}Assign(FileAWK,FileName);
-   Reset(FileAWK);{$I+}
-   If IoResult<>0Then Begin
-    WriteLn('Fichier introuvable');
-    Exit;
-   End;
-   While Not EOF(FileAWK) do Begin
-    ReadLn(FileAWK,CurrLine);
-    If Not AddLine(CurrLine)Then Begin
-     WriteLn('Manque de m�moire');
-     Break;
-    End;
-   End;
-   Close(FileAWK);
-   RunProgram;
-  End;
- End;
-END.
-   56: NoImplementation:=True; { sqrt }
-   57: NoImplementation:=True; { srand }
-   58: NoImplementation:=True; { strftime }
-   59: NoImplementation:=True; { strtonum }
-   60: NoImplementation:=True; { sub }
-   61: NoImplementation:=True; { substr }
-   62: NoImplementation:=True; { switch }
-   63: NoImplementation:=True; { system }
-   64: NoImplementation:=True; { systime }
-   65: NoImplementation:=True; { tolower }
-   66: NoImplementation:=True; { toupper }
-   67: NoImplementation:=True; { typeof }
-   68: NoImplementation:=True; { while }
-   69: NoImplementation:=True; { xor }
-   Else UnknownCommand:=True;
-  End;
-  If(UnknownCommand)Then Begin
-   WriteLn('Commande non reconnu a la position ',CurrPos,' de la ligne ',CurrNumberLine+1);
-   Exit;
-  End;
-  If(NoImplementation)Then Begin
-   WriteLn('La commande ',CurrCommand,' n''a pas ete implemente');
-   Exit;
-  End;
-  While(CurrLine[CurrPos]in[' ',';'])and(CurrPos<=Length(CurrLine)) do Inc(CurrPos);
-  If CurrPos>=Length(CurrLine)Then Break;
-  If Not(CurrLine[CurrPos]in['A'..'Z','a'..'z','_'])Then Begin
-   WriteLn('Erreur de syntaxe a la position ',CurrPos,' de la ligne ',CurrNumberLine+1);
-   Exit;
-  End;
- Until CurrPos>Length(CurrLine);
- RunLine:=True;
-End;
-
-Procedure RunProgram;
-Var
- J:Integer;
- Err:Integer;
-Begin
- If NumberLine>0Then Begin
-  CurrLinePtr:=1;
-  While(CurrLinePtr<=NumberLine) do Begin
-   CurrLine:=PA[CurrLinePtr]^;
-   CurrNumberLine:=0;
-   J:=1;
-   While(J<Length(CurrLine))do Begin
-    If Not(CurrLine[J]in['0'..'9'])Then Begin
-     Val(Copy(CurrLine,1,J-1),CurrNumberLine,Err);
-     Break;
-    End;
-    Inc(J);
-   End;
-   While J<=Length(CurrLine)do Begin
-    If CurrLine[J]in[' ',#9]Then Inc(J)
-                            Else Break;
-   End;
-   CurrPos:=J;
-   If Not RunLine Then Break;
-   Inc(CurrLinePtr);
-  End;
- End;
-End;
-
-BEGIN
- If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')Then Begin
-  WriteLn('AWK : Cette commande permet de lancer le langage de programmation AWK.');
-  WriteLn;
-  WriteLn('Syntaxe : AWK [-f nomfichier]');
- End
-  Else
- If ParamCount>=1Then Begin
-  NumberLine:=0;CurrNumberLine:=0;
-  NumberVariable:=0;
-  Mode:=_None;FileName:='';
-  CurrCommand:='';
-  AccoladeBlock:=0;
-  For I:=1 to RawParamCount do Begin
-   CurrParam:=RawParamStr(I);
-   If Mode=_InStringSimpleQuote Then Begin
-    If CurrParam[Length(CurrParam)]=''''Then Begin
-     CurrCommand:=CurrCommand+' '+Copy(CurrParam,1,Length(CurrParam)-1);
-     Mode:=_None;
-    End
-     Else
-    CurrCommand:=CurrCommand+' '+CurrParam;
-   End
-    Else
-   If Mode=_F Then Begin
-    FileName:=CurrParam;
-    Mode:=_None;
    End
     Else
    If(Copy(CurrParam,1,1)='''')and(CurrParam[Length(CurrParam)]='''')Then Begin
