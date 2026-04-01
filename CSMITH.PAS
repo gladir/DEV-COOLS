@@ -2972,14 +2972,14 @@ End;
 
 Function GenPointerLevel(MaxLevel: Integer): Integer;
 { Genere le niveau d'indirection (1 = *, 2 = **, 3 = ***).
-  Favorise les niveaux faibles. }
+  Favorise les niveaux faibles. Utilise POINTER_MULTI_PROB. }
 Var
   Level: Integer;
 Begin
-  { Distribution : 70% niveau 1, 20% niveau 2, 10% niveau 3+ }
-  If RandomChoice(70) Then
+  { Distribution : (100-POINTER_MULTI_PROB)% niveau 1, reste reparti entre 2 et 3+ }
+  If RandomChoice(100 - POINTER_MULTI_PROB) Then
     Level := 1
-  Else If RandomChoice(67) Then  { 20% des 30% restants }
+  Else If RandomChoice(67) Then  { 2/3 des cas multi-niveau = niveau 2 }
     Level := 2
   Else
     Level := RandomRange(3, MaxLevel);
