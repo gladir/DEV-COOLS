@@ -19,8 +19,9 @@
 
   Usage :
     RC fichier.rc [-o sortie.res] [-16|-32] [-I<chemin>] [-D<sym>] [-v] [-h]
+    RC [options MSVC] fichier.rc
 
-  Options :
+  Options principales :
     -o nom        : specifier le nom du fichier de sortie .RES
     -16           : generer en format 16 bits
     -32           : generer en format 32 bits (defaut)
@@ -28,6 +29,26 @@
     -D<sym>       : definir un symbole de preprocesseur
     -v            : mode verbeux (afficher details des ressources)
     -h            : afficher l aide
+
+  Options supplementaires (compatibilite MSVC rc.exe) :
+    /r            : emettre un fichier .RES (facultatif)
+    /v            : mode verbeux
+    /d<sym>       : definir un symbole
+    /u<sym>       : supprimer la definition d un symbole
+    /fo<fichier>  : renommer le fichier .RES
+    /l<hex>       : ID de langue par defaut en hexadecimal
+    /x            : ignorer la variable d environnement INCLUDE
+    /c<cp>        : page de codes pour la conversion NLS
+    /w            : avertir en cas de page de codes invalide
+    /y            : ne pas avertir en cas d ID de controle dupliques
+    /n            : ajouter des valeurs nulles aux chaines
+    /fm<fichier>  : nom du fichier DLL de ressources localisables
+    /j<types>     : types de ressources localisables
+    /k<types>     : types de ressources a conserver
+    /q<fichier>   : fichier de configuration RC
+    /g<hex>       : ID de langue de repli
+    /g1           : fichier MUI de version uniquement
+    /g2<version>  : version personnalisee pour la somme de controle MUI
 
   Voir DOC/RES_FORMAT.txt pour la description complete du format .RES.
 
@@ -38,7 +59,14 @@
               Output16 (Boolean), Output32 (Boolean),
               Verbose (Boolean), IncludePaths (Array[1..16] Of String),
               IncludeCount (Integer), Defines (Array[1..64] Of String),
-              DefineCount (Integer)
+              DefineCount (Integer),
+              EmitRes (Boolean), Undefines (Array), UndefineCount (Integer),
+              ResFileName (String), DefaultLangId (Word), IgnoreInclude (Boolean),
+              CodePage (Word), WarnCodePage (Boolean), NoWarnDupCtrl (Boolean),
+              NullStrings (Boolean), MUIFileName (String), LocalTypes (Array),
+              LocalTypeCount (Integer), KeepTypes (Array), KeepTypeCount (Integer),
+              ConfigFile (String), FallbackLangId (Word), MUIVersionOnly (Boolean),
+              MUICustomVersion (String)
             Constantes de codes de retour : EXIT_OK = 0, EXIT_ERROR = 1,
               EXIT_USAGE = 2
             Constantes de format : FMT_RES16 = 1, FMT_RES32 = 2
@@ -52,6 +80,8 @@
               analyser ParamStr(1..ParamCount), detecter les options
               -o / -16 / -32 / -I / -D / -v / -h / --help, valider que
               SrcFile est fourni et se termine par .rc ou .RC
+              Options MSVC (compatibilite rc.exe) :
+              /r /v /d /u /fo /l /x /c /w /y /n /fm /j /k /q /g /g1 /g2
             Procedure ShowHelp : afficher la syntaxe, les options et
               la version, puis quitter avec EXIT_OK
             Afficher la banniere de version au demarrage
@@ -1125,6 +1155,26 @@ Type
     IncludeCount : Integer;
     Defines      : Array[1..64] Of TString;
     DefineCount  : Integer;
+    { Options supplementaires }
+    EmitRes      : Boolean;     { /r - Emettre un fichier .RES (facultatif) }
+    Undefines    : Array[1..64] Of TString;  { /u - Symboles a supprimer }
+    UndefineCount: Integer;
+    ResFileName  : TString;     { /fo - Renommer le fichier .RES }
+    DefaultLangId: Word;        { /l - ID de langue par defaut en hexadecimal }
+    IgnoreInclude: Boolean;     { /x - Ignorer la variable d'environnement INCLUDE }
+    CodePage     : Word;        { /c - Page de codes utilisee par la conversion NLS }
+    WarnCodePage : Boolean;     { /w - Avertir en cas de page de codes invalide }
+    NoWarnDupCtrl: Boolean;     { /y - Ne pas avertir en cas d'ID de controle dupliques }
+    NullStrings  : Boolean;     { /n - Ajouter des valeurs nulles aux chaines }
+    MUIFileName  : TString;     { /fm - Nom du fichier DLL de ressources localisables }
+    LocalTypes   : Array[1..32] Of TString;  { /j - Types de ressources localisables }
+    LocalTypeCount: Integer;
+    KeepTypes    : Array[1..32] Of TString;  { /k - Types de ressources a conserver }
+    KeepTypeCount: Integer;
+    ConfigFile   : TString;     { /q - Fichier de configuration RC }
+    FallbackLangId: Word;       { /g - ID de langue de repli en hexadecimal }
+    MUIVersionOnly: Boolean;    { /g1 - Fichier MUI de version uniquement }
+    MUICustomVersion: TString;  { /g2 - Version personnalisee pour la somme de controle MUI }
   End;
 
   { TODO 10 : Table des ressources }
@@ -1379,9 +1429,9 @@ Begin
           ' - Cette commande permet de lancer le compilateur de ',
           'ressources Windows (.RC -> .RES).');
   WriteLn;
-  WriteLn('Syntaxe : RC fichier.rc [-o sortie.res] [-16|-32] [-I<chemin>] [-D<sym>] [-v] [-h]');
+  WriteLn('Syntaxe : RC fichier.rc [options]');
   WriteLn;
-  WriteLn('Options :');
+  WriteLn('Options principales :');
   WriteLn('  -o nom       : specifier le nom du fichier de sortie .RES');
   WriteLn('                 (defaut : meme nom que le fichier source, extension .RES)');
   WriteLn('  -16          : generer en format RES 16 bits');
@@ -1393,11 +1443,33 @@ Begin
   WriteLn('  -v           : mode verbeux (afficher details des ressources)');
   WriteLn('  -h, --help   : afficher cette aide');
   WriteLn;
+  WriteLn('Options supplementaires (compatibilite MSVC rc.exe) :');
+  WriteLn('  /r           : emettre un fichier .RES (facultatif)');
+  WriteLn('  /v           : mode verbeux (afficher les messages de progression)');
+  WriteLn('  /d<symbole>  : definir un symbole');
+  WriteLn('  /u<symbole>  : supprimer la definition d''un symbole');
+  WriteLn('  /fo<fichier> : renommer le fichier .RES de sortie');
+  WriteLn('  /l<hex>      : ID de langue par defaut en hexadecimal');
+  WriteLn('  /x           : ignorer la variable d''environnement INCLUDE');
+  WriteLn('  /c<cp>       : definir une page de codes utilisee par la conversion NLS');
+  WriteLn('  /w           : avertir en cas de page de codes invalide (defaut: erreur)');
+  WriteLn('  /y           : ne pas avertir en cas d''ID de controle dupliques');
+  WriteLn('  /n           : ajouter des valeurs nulles aux chaines dans les tables');
+  WriteLn('  /fm<fichier> : nom du fichier DLL de ressources localisables uniquement');
+  WriteLn('  /j<types>    : ajouter un ou plusieurs types de ressources localisables');
+  WriteLn('  /k<types>    : ajouter des types de ressources a conserver (avec /j)');
+  WriteLn('  /q<fichier>  : fichier de configuration RC pour la DLL de ressources');
+  WriteLn('  /g<hex>      : specifier l''ID de langue de repli ultime en hexadecimal');
+  WriteLn('  /g1          : specifier si un fichier MUI de version uniquement peut etre cree');
+  WriteLn('  /g2<version> : specifier la version personnalisee pour la somme de controle MUI');
+  WriteLn;
   WriteLn('Exemples :');
   WriteLn('  RC monapp.rc                    Compile monapp.rc -> monapp.res (32 bits)');
   WriteLn('  RC monapp.rc -o sortie.res      Compile vers sortie.res');
   WriteLn('  RC monapp.rc -16                Compile en format 16 bits');
   WriteLn('  RC monapp.rc -Iinclude -DDEBUG  Avec chemin include et symbole DEBUG');
+  WriteLn('  RC /r /fo output.res monapp.rc  Style MSVC avec sortie personnalisee');
+  WriteLn('  RC /l 040C monapp.rc            Definir la langue par defaut en francais');
   Halt(EXIT_OK);
 End;
 
@@ -8733,26 +8805,45 @@ Var
   I      : Integer;
   Arg    : TString;
   ArgUp  : TString;
+  TmpVal : TString;
 Begin
-  AOpts.SrcFile      := '';
-  AOpts.OutFile      := '';
-  AOpts.Output16     := False;
-  AOpts.Output32     := True;  { Defaut : 32 bits }
-  AOpts.Verbose      := False;
-  AOpts.IncludeCount := 0;
-  AOpts.DefineCount  := 0;
+  AOpts.SrcFile        := '';
+  AOpts.OutFile        := '';
+  AOpts.Output16       := False;
+  AOpts.Output32       := True;  { Defaut : 32 bits }
+  AOpts.Verbose        := False;
+  AOpts.IncludeCount   := 0;
+  AOpts.DefineCount    := 0;
+  { Initialiser les nouvelles options }
+  AOpts.EmitRes        := False;
+  AOpts.UndefineCount  := 0;
+  AOpts.ResFileName    := '';
+  AOpts.DefaultLangId  := LANG_NEUTRAL;
+  AOpts.IgnoreInclude  := False;
+  AOpts.CodePage       := 0;       { 0 = page de codes par defaut }
+  AOpts.WarnCodePage   := False;
+  AOpts.NoWarnDupCtrl  := False;
+  AOpts.NullStrings    := False;
+  AOpts.MUIFileName    := '';
+  AOpts.LocalTypeCount := 0;
+  AOpts.KeepTypeCount  := 0;
+  AOpts.ConfigFile     := '';
+  AOpts.FallbackLangId := LANG_NEUTRAL;
+  AOpts.MUIVersionOnly := False;
+  AOpts.MUICustomVersion := '';
 
   If ParamCount = 0 Then
     ShowHelp;
 
-  For I := 1 To ParamCount Do
+  I := 1;
+  While I <= ParamCount Do
   Begin
     Arg   := ParamStr(I);
     ArgUp := UpCaseStr(Arg);
 
     If (ArgUp = '-H') Or (ArgUp = '--HELP') Or (ArgUp = '/?') Then
       ShowHelp
-    Else If ArgUp = '-V' Then
+    Else If (ArgUp = '-V') Or (ArgUp = '/V') Then
       AOpts.Verbose := True
     Else If ArgUp = '-16' Then
     Begin
@@ -8790,8 +8881,210 @@ Begin
         AOpts.Defines[AOpts.DefineCount] := Copy(Arg, 3, Length(Arg) - 2);
       End;
     End
-    Else If (Length(Arg) > 0) And (Arg[1] <> '-') And (AOpts.SrcFile = '') Then
+    { --- Options style MSVC (/) --- }
+    Else If ArgUp = '/R' Then
+      AOpts.EmitRes := True
+    Else If Copy(ArgUp, 1, 3) = '/FO' Then
+    Begin
+      TmpVal := Copy(Arg, 4, Length(Arg) - 3);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      AOpts.ResFileName := TmpVal;
+      If AOpts.OutFile = '' Then
+        AOpts.OutFile := TmpVal;
+    End
+    Else If Copy(ArgUp, 1, 3) = '/FM' Then
+    Begin
+      TmpVal := Copy(Arg, 4, Length(Arg) - 3);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      AOpts.MUIFileName := TmpVal;
+    End
+    Else If Copy(ArgUp, 1, 2) = '/D' Then
+    Begin
+      TmpVal := Copy(Arg, 3, Length(Arg) - 2);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      If (TmpVal <> '') And (AOpts.DefineCount < 64) Then
+      Begin
+        Inc(AOpts.DefineCount);
+        AOpts.Defines[AOpts.DefineCount] := TmpVal;
+      End;
+    End
+    Else If Copy(ArgUp, 1, 2) = '/U' Then
+    Begin
+      TmpVal := Copy(Arg, 3, Length(Arg) - 2);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      If (TmpVal <> '') And (AOpts.UndefineCount < 64) Then
+      Begin
+        Inc(AOpts.UndefineCount);
+        AOpts.Undefines[AOpts.UndefineCount] := TmpVal;
+      End;
+    End
+    Else If Copy(ArgUp, 1, 2) = '/L' Then
+    Begin
+      TmpVal := Copy(Arg, 3, Length(Arg) - 2);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      { Convertir l'ID de langue hexadecimal }
+      If TmpVal <> '' Then
+        AOpts.DefaultLangId := Word(StrToInt('0x' + TmpVal));
+    End
+    Else If ArgUp = '/X' Then
+      AOpts.IgnoreInclude := True
+    Else If Copy(ArgUp, 1, 2) = '/C' Then
+    Begin
+      TmpVal := Copy(Arg, 3, Length(Arg) - 2);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      If TmpVal <> '' Then
+        AOpts.CodePage := Word(StrToInt(TmpVal));
+    End
+    Else If ArgUp = '/W' Then
+      AOpts.WarnCodePage := True
+    Else If ArgUp = '/Y' Then
+      AOpts.NoWarnDupCtrl := True
+    Else If ArgUp = '/N' Then
+      AOpts.NullStrings := True
+    Else If Copy(ArgUp, 1, 2) = '/J' Then
+    Begin
+      TmpVal := Copy(Arg, 3, Length(Arg) - 2);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      If (TmpVal <> '') And (AOpts.LocalTypeCount < 32) Then
+      Begin
+        Inc(AOpts.LocalTypeCount);
+        AOpts.LocalTypes[AOpts.LocalTypeCount] := TmpVal;
+      End;
+    End
+    Else If Copy(ArgUp, 1, 2) = '/K' Then
+    Begin
+      TmpVal := Copy(Arg, 3, Length(Arg) - 2);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      If (TmpVal <> '') And (AOpts.KeepTypeCount < 32) Then
+      Begin
+        Inc(AOpts.KeepTypeCount);
+        AOpts.KeepTypes[AOpts.KeepTypeCount] := TmpVal;
+      End;
+    End
+    Else If Copy(ArgUp, 1, 2) = '/Q' Then
+    Begin
+      TmpVal := Copy(Arg, 3, Length(Arg) - 2);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      AOpts.ConfigFile := TmpVal;
+    End
+    Else If Copy(ArgUp, 1, 3) = '/G2' Then
+    Begin
+      TmpVal := Copy(Arg, 4, Length(Arg) - 3);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      AOpts.MUICustomVersion := TmpVal;
+    End
+    Else If ArgUp = '/G1' Then
+      AOpts.MUIVersionOnly := True
+    Else If Copy(ArgUp, 1, 2) = '/G' Then
+    Begin
+      TmpVal := Copy(Arg, 3, Length(Arg) - 2);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      { Convertir l'ID de langue de repli hexadecimal }
+      If TmpVal <> '' Then
+        AOpts.FallbackLangId := Word(StrToInt('0x' + TmpVal));
+    End
+    Else If Copy(ArgUp, 1, 2) = '/I' Then
+    Begin
+      TmpVal := Copy(Arg, 3, Length(Arg) - 2);
+      If TmpVal = '' Then
+      Begin
+        If I < ParamCount Then
+        Begin
+          Inc(I);
+          TmpVal := ParamStr(I);
+        End;
+      End;
+      If (TmpVal <> '') And (AOpts.IncludeCount < MAX_INCLUDE_PATHS) Then
+      Begin
+        Inc(AOpts.IncludeCount);
+        AOpts.IncludePaths[AOpts.IncludeCount] := TmpVal;
+      End;
+    End
+    { Detecter le fichier source par son extension .RC }
+    Else If (AOpts.SrcFile = '') And (Length(ArgUp) > 3) And
+            (Copy(ArgUp, Length(ArgUp) - 2, 3) = '.RC') Then
+      AOpts.SrcFile := Arg
+    Else If (Length(Arg) > 0) And (Arg[1] <> '-') And (Arg[1] <> '/') And
+            (AOpts.SrcFile = '') Then
       AOpts.SrcFile := Arg;
+    Inc(I);
   End;
 
   { Verifier que le fichier source est fourni }
@@ -8806,6 +9099,10 @@ Begin
   { Generer le nom de sortie par defaut }
   If AOpts.OutFile = '' Then
     AOpts.OutFile := ChangeFileExt(AOpts.SrcFile, '.RES');
+
+  { Appliquer l'ID de langue par defaut si specifie }
+  If AOpts.DefaultLangId <> LANG_NEUTRAL Then
+    CurrentLangId := AOpts.DefaultLangId;
 End;
 
 { ----- Programme principal ----- }
