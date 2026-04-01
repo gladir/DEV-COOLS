@@ -1138,7 +1138,7 @@ End;
 { ---- Aide en ligne ---------------------------------------- }
 Procedure ShowHelp;Begin
   WriteLn('DISRES v', DISRES_VERSION,
-          ' - Cette commande permert de lancer le desassembleur ',
+          ' - Cette commande permet de lancer le desassembleur ',
           'de fichiers .RES (ressources Windows) vers .RC');
   WriteLn;
   WriteLn('Syntaxe : DISRES fichier.res [-o sortie.rc] [-16|-32] [-x] [-v] [-h]');
