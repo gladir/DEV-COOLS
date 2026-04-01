@@ -73,6 +73,9 @@ Var
  CurrNumberLine:Integer;
  AccoladeBlock:Integer;
  I,NumberVariable:Integer;
+ EndBlockStart:Integer;  { Ligne de debut du bloc END }
+ EndBlockEnd:Integer;    { Ligne de fin du bloc END }
+ InEndBlock:Boolean;     { Indique si on est dans un bloc END }
 
 { Remplace tous les caracteres OldChar par NewChar dans une chaine }
 Function ReplaceChar(S:String;OldChar,NewChar:Char):String;
@@ -882,6 +885,51 @@ End;
 Procedure BeginCommand;Begin
 End;
 
+{ Implementation de la commande END }
+Procedure EndCommand;
+Var
+ BlockLevel:Integer;
+ SaveLinePtr:Integer;
+Begin
+ { END est execute a la fin du programme, on sauvegarde la position }
+ EndBlockStart:=CurrLinePtr;
+ 
+ { Sauter le bloc END pour l'instant - il sera execute a la fin }
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+  BlockLevel:=1;
+  Inc(CurrPos);
+  While BlockLevel>0 do Begin
+   While CurrPos<=Length(CurrLine)do Begin
+    If CurrLine[CurrPos]='{' Then Inc(BlockLevel)
+    Else If CurrLine[CurrPos]='}' Then Dec(BlockLevel);
+    If BlockLevel=0 Then Break;
+    Inc(CurrPos);
+   End;
+   If BlockLevel>0 Then Begin
+    { Passer a la ligne suivante }
+    Inc(CurrLinePtr);
+    If CurrLinePtr>NumberLine Then Break;
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+   End;
+  End;
+ End;
+ EndBlockEnd:=CurrLinePtr;
+End;
+
+{ Implementation de getline - lit une ligne depuis l'entree standard }
+Procedure GetlineCommand;
+Var
+ InputLine:String;
+Begin
+ If Not EOF Then Begin
+  ReadLn(InputLine);
+  Fields[0]:=InputLine;
+  { Mettre a jour NR ou autre variable }
+ End;
+End;
+
 Procedure PrintCommand;
 Var
  R:Real;
@@ -1591,10 +1639,27 @@ Var
  SavePos:Integer;
  R:Real;
  StrValue:String;
+ IsIncrement,IsDecrement:Boolean;
 Begin
  TryAssignment:=False;
  SavePos:=CurrPos;
  VarName:='';
+ IsIncrement:=False;
+ IsDecrement:=False;
+
+ { Verifier operateur prefixe ++ ou -- }
+ If(CurrPos+1<=Length(CurrLine))Then Begin
+  If(CurrLine[CurrPos]='+')and(CurrLine[CurrPos+1]='+')Then Begin
+   IsIncrement:=True;
+   Inc(CurrPos,2);
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+  End
+  Else If(CurrLine[CurrPos]='-')and(CurrLine[CurrPos+1]='-')Then Begin
+   IsDecrement:=True;
+   Inc(CurrPos,2);
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+  End;
+ End;
 
  { Extraire le nom de la variable }
  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
@@ -1609,6 +1674,55 @@ Begin
 
  { Sauter les espaces }
  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+
+ { Si c'etait un prefix ++/-- }
+ If IsIncrement or IsDecrement Then Begin
+  VarName:=StrToUpper(VarName);
+  TryAssignment:=True;
+  If VariableExist(VarName)Then Begin
+   R:=GetVariableLongInt(VarName);
+   If IsIncrement Then SetVariableLongInt(VarName,Round(R)+1)
+                  Else SetVariableLongInt(VarName,Round(R)-1);
+  End
+   Else
+  Begin
+   If IsIncrement Then AddVariableLongInt(VarName,1)
+                  Else AddVariableLongInt(VarName,-1);
+  End;
+  Exit;
+ End;
+
+ { Verifier operateur postfixe ++ ou -- }
+ If(CurrPos+1<=Length(CurrLine))Then Begin
+  If(CurrLine[CurrPos]='+')and(CurrLine[CurrPos+1]='+')Then Begin
+   VarName:=StrToUpper(VarName);
+   TryAssignment:=True;
+   If VariableExist(VarName)Then Begin
+    R:=GetVariableLongInt(VarName);
+    SetVariableLongInt(VarName,Round(R)+1);
+   End
+    Else
+   Begin
+    AddVariableLongInt(VarName,1);
+   End;
+   Inc(CurrPos,2);
+   Exit;
+  End
+  Else If(CurrLine[CurrPos]='-')and(CurrLine[CurrPos+1]='-')Then Begin
+   VarName:=StrToUpper(VarName);
+   TryAssignment:=True;
+   If VariableExist(VarName)Then Begin
+    R:=GetVariableLongInt(VarName);
+    SetVariableLongInt(VarName,Round(R)-1);
+   End
+    Else
+   Begin
+    AddVariableLongInt(VarName,-1);
+   End;
+   Inc(CurrPos,2);
+   Exit;
+  End;
+ End;
 
  { Verifier si c'est une assignation }
  If(CurrPos>Length(CurrLine))or(CurrLine[CurrPos]<>'=')Then Begin
@@ -1862,7 +1976,7 @@ Begin
   Case CmdResult of
    0: BeginCommand;{BEGIN}
    1: NoImplementation:=True; {BEGINFILE}
-   2: NoImplementation:=True; { END }
+   2: EndCommand; { END }
    3: NoImplementation:=True; {ENDFILE}
    4: NoImplementation:=True; { and }
    5: NoImplementation:=True; { asort }
@@ -1894,7 +2008,7 @@ Begin
    26: NoImplementation:=True; { func }
    27: NoImplementation:=True; { function }
    28: NoImplementation:=True; { gensub }
-   29: NoImplementation:=True; { getline }
+   29: GetlineCommand; { getline }
    30: NoImplementation:=True; { gsub }
    31: IfCommand; { if }
    32: NoImplementation:=True; { in }
