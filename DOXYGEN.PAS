@@ -1078,6 +1078,18 @@ Type
     IsVirtual  : Boolean;           { Heritage virtuel }
   End;
 
+  { Types pour l'analyse des dependances (TODO 10) }
+  TDependencyKind = (DEP_INCLUDE, DEP_INCLUDE_LOCAL, DEP_IMPORT,
+    DEP_USES, DEP_REQUIRE, DEP_MODULE, DEP_PACKAGE, DEP_FROM);
+
+  TDependency = Record
+    SourceFile : String;            { Fichier qui depend }
+    TargetFile : String;            { Fichier dont on depend }
+    Kind       : TDependencyKind;   { Type de dependance }
+    Line       : Integer;           { Ligne de la directive }
+    IsSystem   : Boolean;           { Include systeme <> ou local "" }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1103,6 +1115,10 @@ Var
   { Variables pour l'analyse des hierarchies de classes (TODO 09) }
   Inheritances     : Array[1..MAX_INHERITANCES] Of TInheritance;
   InheritanceCount : Integer;
+
+  { Variables pour l'analyse des dependances (TODO 10) }
+  Dependencies     : Array[1..MAX_DEPENDENCIES] Of TDependency;
+  DependencyCount  : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
