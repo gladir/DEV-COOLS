@@ -109,7 +109,7 @@
             Option --no-bitfields pour desactiver.
             Eviter les comportements indefinis (debordement de champ).
 
-  TODO 09 - [A FAIRE] GENERATION D'ENUMERATIONS (ENUM)
+  TODO 09 - [IMPLEMENTE] GENERATION D'ENUMERATIONS (ENUM)
             Generateur de definitions d'enumerations C :
             GenEnumDef - generer une definition d'enum aleatoire.
             GenEnumConstant - generer une constante d'enum.
@@ -2114,6 +2114,326 @@ Begin
 End;
 
 { ============================================================
+  TODO 09 : GENERATION D'ENUMERATIONS (ENUM) [IMPLEMENTE]
+  ============================================================ }
+
+{ Constantes pour la generation d'enumerations }
+Const
+  MIN_ENUM_CONSTS = 2;    { Nombre minimum de constantes dans une enum }
+  MAX_ENUM_VALUE  = 1000; { Valeur maximale pour les constantes explicites }
+
+{ --- Fonctions utilitaires pour les enumerations --- }
+
+Function GenEnumName: TString;
+{ Genere un nom d'enumeration unique de la forme 'e_N'. }
+Begin
+  Inc(EnumCounter);
+  GenEnumName := 'e_' + IntToStr(EnumCounter);
+End;
+
+Function GenEnumConstName(EnumIdx, ConstNum: Integer): TString;
+{ Genere un nom de constante d'enum unique de la forme 'EC_enumIdx_N'. }
+Begin
+  GenEnumConstName := 'EC_' + IntToStr(EnumIdx) + '_' + IntToStr(ConstNum);
+End;
+
+Function GenEnumConstValue(LastValue: LongInt; IsFirst: Boolean): LongInt;
+{ Genere une valeur pour une constante d'enum.
+  Peut etre incrementale ou explicite aleatoire. }
+Var
+  Val: LongInt;
+Begin
+  If IsFirst Then
+  Begin
+    { Premiere constante : 0, ou valeur aleatoire (50%) }
+    If RandomChoice(50) Then
+      Val := 0
+    Else
+      Val := RandomRange(0, 100);
+  End
+  Else
+  Begin
+    { Constantes suivantes : incrementale (+1) ou explicite (30%) }
+    If RandomChoice(30) Then
+    Begin
+      { Valeur explicite : saut aleatoire }
+      Val := LastValue + RandomRange(2, 20);
+    End
+    Else
+    Begin
+      { Valeur implicite : +1 }
+      Val := LastValue + 1;
+    End;
+  End;
+  
+  { Limiter la valeur maximum }
+  If Val > MAX_ENUM_VALUE Then
+    Val := MAX_ENUM_VALUE;
+  
+  GenEnumConstValue := Val;
+End;
+
+Function ShouldHaveExplicitValue(IsFirst: Boolean): Boolean;
+{ Decide si une constante doit avoir une valeur explicite. }
+Begin
+  If IsFirst Then
+    { Premiere constante : 40% de chance d'avoir valeur explicite }
+    ShouldHaveExplicitValue := RandomChoice(40)
+  Else
+    { Constantes suivantes : 25% de chance }
+    ShouldHaveExplicitValue := RandomChoice(25);
+End;
+
+Function AddEnumConst(Var E: TEnumDef; Const Name: TString; Value: LongInt; 
+                       HasVal: Boolean): Integer;
+{ Ajoute une constante a une enumeration.
+  Retourne l'index de la constante (1-based) ou 0 si erreur. }
+Begin
+  If E.NumConsts >= MAX_ENUM_CONSTS Then
+  Begin
+    AddEnumConst := 0;
+    Exit;
+  End;
+  Inc(E.NumConsts);
+  E.Consts[E.NumConsts].Name := Name;
+  E.Consts[E.NumConsts].Value := Value;
+  E.Consts[E.NumConsts].HasVal := HasVal;
+  AddEnumConst := E.NumConsts;
+End;
+
+Function AddEnumDef(Const E: TEnumDef): Integer;
+{ Ajoute une definition d'enumeration a la table globale.
+  Retourne l'index de l'enum (1-based) ou 0 si erreur. }
+Begin
+  If NumEnums >= MAX_ENUMS Then
+  Begin
+    AddEnumDef := 0;
+    Exit;
+  End;
+  Inc(NumEnums);
+  Enums[NumEnums] := E;
+  AddEnumDef := NumEnums;
+End;
+
+Function GenEnumDef: Integer;
+{ Genere une definition d'enumeration aleatoire.
+  Retourne l'index de la nouvelle enum (1-based) ou 0 si erreur. }
+Var
+  E: TEnumDef;
+  NumConsts: Integer;
+  I: Integer;
+  ConstName: TString;
+  ConstValue: LongInt;
+  LastValue: LongInt;
+  HasExplicit: Boolean;
+  EnumIdx: Integer;
+Begin
+  InitEnumDef(E);
+  
+  { Generer un nom unique }
+  E.Name := GenEnumName;
+  
+  { Determiner le nombre de constantes (entre MIN_ENUM_CONSTS et MAX_ENUM_CONSTS) }
+  NumConsts := RandomRange(MIN_ENUM_CONSTS, MAX_ENUM_CONSTS);
+  If NumConsts > 8 Then
+    NumConsts := RandomRange(MIN_ENUM_CONSTS, 8); { Limiter pour lisibilite }
+  
+  { L'index de cette enum sera NumEnums + 1 }
+  EnumIdx := NumEnums + 1;
+  
+  { Generer les constantes }
+  LastValue := -1; { Valeur precedente pour auto-increment }
+  
+  For I := 1 To NumConsts Do
+  Begin
+    ConstName := GenEnumConstName(EnumIdx, I);
+    HasExplicit := ShouldHaveExplicitValue(I = 1);
+    
+    If HasExplicit Then
+    Begin
+      { Valeur explicite }
+      ConstValue := GenEnumConstValue(LastValue, I = 1);
+      AddEnumConst(E, ConstName, ConstValue, True);
+    End
+    Else
+    Begin
+      { Valeur implicite : auto-increment }
+      ConstValue := LastValue + 1;
+      AddEnumConst(E, ConstName, ConstValue, False);
+    End;
+    
+    LastValue := ConstValue;
+  End;
+  
+  { Ajouter a la table }
+  GenEnumDef := AddEnumDef(E);
+End;
+
+{ --- Fonctions d'emission pour les enumerations --- }
+
+Procedure EmitEnumConstDecl(Const C: TEnumConst; IsLast: Boolean);
+{ Emet la declaration d'une constante d'enumeration. }
+Var
+  S: TString;
+Begin
+  S := '    ' + C.Name;
+  
+  If C.HasVal Then
+    S := S + ' = ' + IntToStr(C.Value);
+  
+  If Not IsLast Then
+    S := S + ',';
+  
+  EmitLine(S);
+End;
+
+Procedure EmitEnumDef(EnumIdx: Integer);
+(* Emet la definition complete d'une enumeration.
+   Format : typedef enum ... NomEnum; *)
+Var
+  I: Integer;
+Begin
+  If (EnumIdx < 1) Or (EnumIdx > NumEnums) Then
+    Exit;
+  
+  With Enums[EnumIdx] Do
+  Begin
+    EmitLine('typedef enum {');
+    
+    { Emettre les constantes }
+    For I := 1 To NumConsts Do
+      EmitEnumConstDecl(Consts[I], I = NumConsts);
+    
+    EmitLine('} ' + Name + ';');
+  End;
+End;
+
+Procedure EmitAllEnumDefs;
+{ Emet toutes les definitions d'enumerations. }
+Var
+  I: Integer;
+Begin
+  If NumEnums > 0 Then
+  Begin
+    EmitComment('Definitions d''enumerations');
+    For I := 1 To NumEnums Do
+    Begin
+      EmitEnumDef(I);
+      EmitBlankLine;
+    End;
+  End;
+End;
+
+{ --- Fonctions de recherche pour les enumerations --- }
+
+Function GetEnumByName(Const Name: TString): Integer;
+{ Recherche une enumeration par son nom.
+  Retourne l'index (1-based) ou 0 si non trouvee. }
+Var
+  I: Integer;
+Begin
+  GetEnumByName := 0;
+  For I := 1 To NumEnums Do
+    If Enums[I].Name = Name Then
+    Begin
+      GetEnumByName := I;
+      Exit;
+    End;
+End;
+
+Function GetEnumConst(EnumIdx, ConstIdx: Integer): TEnumConst;
+{ Retourne une constante d'une enumeration. }
+Var
+  C: TEnumConst;
+Begin
+  InitEnumConst(C);
+  If (EnumIdx >= 1) And (EnumIdx <= NumEnums) And
+     (ConstIdx >= 1) And (ConstIdx <= Enums[EnumIdx].NumConsts) Then
+    C := Enums[EnumIdx].Consts[ConstIdx];
+  GetEnumConst := C;
+End;
+
+Function GetEnumConstByName(EnumIdx: Integer; Const Name: TString): Integer;
+{ Recherche une constante d'enum par son nom.
+  Retourne l'index (1-based) ou 0 si non trouvee. }
+Var
+  I: Integer;
+Begin
+  GetEnumConstByName := 0;
+  If (EnumIdx < 1) Or (EnumIdx > NumEnums) Then
+    Exit;
+  
+  For I := 1 To Enums[EnumIdx].NumConsts Do
+    If Enums[EnumIdx].Consts[I].Name = Name Then
+    Begin
+      GetEnumConstByName := I;
+      Exit;
+    End;
+End;
+
+Function MakeEnumType(EnumIdx: Integer): TCType;
+{ Cree un type enumeration a partir de l'index d'une definition. }
+Var
+  T: TCType;
+Begin
+  InitCType(T);
+  T.Kind := TK_ENUM;
+  T.StructIdx := EnumIdx;  { Reutilise StructIdx pour les enums aussi }
+  MakeEnumType := T;
+End;
+
+Function CountEnumConsts(EnumIdx: Integer): Integer;
+{ Compte le nombre de constantes dans une enumeration. }
+Begin
+  If (EnumIdx >= 1) And (EnumIdx <= NumEnums) Then
+    CountEnumConsts := Enums[EnumIdx].NumConsts
+  Else
+    CountEnumConsts := 0;
+End;
+
+Function GetEnumMinValue(EnumIdx: Integer): LongInt;
+{ Retourne la valeur minimale des constantes d'une enum. }
+Var
+  I: Integer;
+  MinVal: LongInt;
+Begin
+  GetEnumMinValue := 0;
+  If (EnumIdx < 1) Or (EnumIdx > NumEnums) Then
+    Exit;
+  
+  If Enums[EnumIdx].NumConsts = 0 Then
+    Exit;
+  
+  MinVal := Enums[EnumIdx].Consts[1].Value;
+  For I := 2 To Enums[EnumIdx].NumConsts Do
+    If Enums[EnumIdx].Consts[I].Value < MinVal Then
+      MinVal := Enums[EnumIdx].Consts[I].Value;
+  
+  GetEnumMinValue := MinVal;
+End;
+
+Function GetEnumMaxValue(EnumIdx: Integer): LongInt;
+{ Retourne la valeur maximale des constantes d'une enum. }
+Var
+  I: Integer;
+  MaxVal: LongInt;
+Begin
+  GetEnumMaxValue := 0;
+  If (EnumIdx < 1) Or (EnumIdx > NumEnums) Then
+    Exit;
+  
+  If Enums[EnumIdx].NumConsts = 0 Then
+    Exit;
+  
+  MaxVal := Enums[EnumIdx].Consts[1].Value;
+  For I := 2 To Enums[EnumIdx].NumConsts Do
+    If Enums[EnumIdx].Consts[I].Value > MaxVal Then
+      MaxVal := Enums[EnumIdx].Consts[I].Value;
+  
+  GetEnumMaxValue := MaxVal;
+End;
+
+{ ============================================================
   INITIALISATION
   ============================================================ }
 
@@ -2317,6 +2637,12 @@ Begin
   EmitComment('Date: ' + CSMITH_DATE);
   EmitBlankLine;
   GenIncludes;
+  
+  { Generer quelques enumerations }
+  NumGen := RandomRange(1, 3);  { Generer 1 a 3 enums }
+  For I := 1 To NumGen Do
+    GenEnumDef;
+  EmitAllEnumDefs;
   
   { Generer quelques structures si autorisees }
   If Not Opts.NoStructs Then

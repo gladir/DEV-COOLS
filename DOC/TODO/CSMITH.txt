@@ -94,7 +94,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Option --no-bitfields pour desactiver.
       Eviter les comportements indefinis (debordement de champ).
 
-  9.  [A FAIRE] Generation d'enumerations (enum).
+  9.  [IMPLEMENTE] Generation d'enumerations (enum).
       Generateur de definitions d'enumerations C :
       GenEnumDef - generer une definition d'enum aleatoire.
       GenEnumConstant - generer une constante d'enum.
