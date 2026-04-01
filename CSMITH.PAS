@@ -118,7 +118,7 @@
             Table des enums : EnumDefs[], NumEnums.
             Emettre typedef enum { A, B=5, C } NomEnum;
 
-  TODO 10 - [A FAIRE] GENERATION DE TABLEAUX
+  TODO 10 - [IMPLEMENTE] GENERATION DE TABLEAUX
             Generateur de declarations de tableaux C :
             GenArrayType - generer un type tableau aleatoire.
             GenArrayDimension - generer une dimension (1D, 2D, 3D...).
@@ -2434,6 +2434,452 @@ Begin
 End;
 
 { ============================================================
+  TODO 10 : GENERATION DE TABLEAUX [IMPLEMENTE]
+  ============================================================ }
+
+{ Constantes pour la generation de tableaux }
+Const
+  MIN_ARRAY_DIM        = 1;    { Nombre minimum de dimensions }
+  MIN_ARRAY_SIZE       = 1;    { Taille minimum d'une dimension }
+  MAX_ARRAY_TOTAL_SIZE = 1000; { Taille totale maximum (elements) }
+  ARRAY_INIT_PROB      = 30;   { 30% de chance d'avoir un initialiseur }
+
+Var
+  ArrayCounter: Integer;  { Compteur pour noms de tableaux uniques }
+
+{ --- Fonctions utilitaires pour les tableaux --- }
+
+Function GenArrayName: TString;
+{ Genere un nom de tableau unique de la forme 'arr_N'. }
+Begin
+  Inc(ArrayCounter);
+  GenArrayName := 'arr_' + IntToStr(ArrayCounter);
+End;
+
+Function GenArrayDimension: Integer;
+{ Genere une taille de dimension aleatoire entre MIN_ARRAY_SIZE et MAX_ARRAY_SIZE.
+  Favorise les petites tailles pour eviter les tableaux trop grands. }
+Var
+  Size: Integer;
+Begin
+  { 60% : petite taille (1-10), 30% : moyenne (11-30), 10% : grande (31-MAX) }
+  If RandomChoice(60) Then
+    Size := RandomRange(MIN_ARRAY_SIZE, 10)
+  Else If RandomChoice(75) Then  { 30% des 40% restants }
+    Size := RandomRange(11, 30)
+  Else
+    Size := RandomRange(31, MAX_ARRAY_SIZE);
+  
+  GenArrayDimension := Size;
+End;
+
+Function GenNumDimensions: Integer;
+{ Genere le nombre de dimensions d'un tableau (1D, 2D, 3D, ...).
+  Favorise les tableaux a moins de dimensions. }
+Var
+  NumDims: Integer;
+Begin
+  { 50% : 1D, 30% : 2D, 15% : 3D, 5% : 4D }
+  If RandomChoice(50) Then
+    NumDims := 1
+  Else If RandomChoice(60) Then  { 30% des 50% restants }
+    NumDims := 2
+  Else If RandomChoice(75) Then  { 15% des 20% restants }
+    NumDims := 3
+  Else
+    NumDims := MAX_ARRAY_DIM;
+  
+  GenNumDimensions := NumDims;
+End;
+
+Function IsValidArrayElemType(Const T: TCType): Boolean;
+{ Verifie si un type peut etre le type element d'un tableau.
+  En C, presque tous les types complets sont valides sauf void. }
+Begin
+  { void n'est pas un type element valide }
+  If T.Kind = TK_VOID Then
+  Begin
+    IsValidArrayElemType := False;
+    Exit;
+  End;
+  { Les fonctions ne sont pas des types element valides }
+  If T.Kind = TK_FUNC Then
+  Begin
+    IsValidArrayElemType := False;
+    Exit;
+  End;
+  IsValidArrayElemType := True;
+End;
+
+Function GenRandomArrayElemType: TCType;
+{ Genere un type element aleatoire pour un tableau.
+  Choisit parmi les types scalaires, structs, enums. }
+Var
+  T: TCType;
+  Choice: Integer;
+Begin
+  InitCType(T);
+  
+  { 70% : types scalaires, 15% : struct, 10% : enum, 5% : union }
+  Choice := RandomInt(100);
+  
+  If Choice < 70 Then
+  Begin
+    { Type scalaire aleatoire }
+    Case RandomInt(10) Of
+      0: T.Kind := TK_CHAR;
+      1: T.Kind := TK_UCHAR;
+      2: T.Kind := TK_SHORT;
+      3: T.Kind := TK_USHORT;
+      4: T.Kind := TK_INT;
+      5: T.Kind := TK_UINT;
+      6: T.Kind := TK_LONG;
+      7: T.Kind := TK_ULONG;
+      8: Begin
+           If Not Opts.NoFloats Then
+             T.Kind := TK_FLOAT
+           Else
+             T.Kind := TK_INT;
+         End;
+      9: Begin
+           If Not Opts.NoFloats Then
+             T.Kind := TK_DOUBLE
+           Else
+             T.Kind := TK_LONG;
+         End;
+    End;
+  End
+  Else If Choice < 85 Then
+  Begin
+    { Structure si disponible et autorisee }
+    If (Not Opts.NoStructs) And (NumStructs > 0) Then
+    Begin
+      T.Kind := TK_STRUCT;
+      T.StructIdx := RandomRange(1, NumStructs);
+    End
+    Else
+      T.Kind := TK_INT;
+  End
+  Else If Choice < 95 Then
+  Begin
+    { Enum si disponible }
+    If NumEnums > 0 Then
+    Begin
+      T.Kind := TK_ENUM;
+      T.StructIdx := RandomRange(1, NumEnums);
+    End
+    Else
+      T.Kind := TK_INT;
+  End
+  Else
+  Begin
+    { Union si disponible et autorisee }
+    If (Not Opts.NoUnions) And (NumUnions > 0) Then
+    Begin
+      T.Kind := TK_UNION;
+      T.StructIdx := RandomRange(1, NumUnions);
+    End
+    Else
+      T.Kind := TK_INT;
+  End;
+  
+  { Ajouter un qualificateur const (20% de chance) }
+  If (Not Opts.NoConsts) And RandomChoice(20) Then
+    T.Quals := Q_CONST;
+  
+  GenRandomArrayElemType := T;
+End;
+
+Function GetArrayTotalSize(Sizes: Array Of Integer; NumDims: Integer): LongInt;
+{ Calcule la taille totale d'un tableau multidimensionnel. }
+Var
+  Total: LongInt;
+  I: Integer;
+Begin
+  Total := 1;
+  For I := 0 To NumDims - 1 Do
+    Total := Total * Sizes[I];
+  GetArrayTotalSize := Total;
+End;
+
+Procedure GenArrayDimensions(Var Sizes: Array Of Integer; Var NumDims: Integer);
+{ Genere les dimensions d'un tableau en s'assurant que la taille totale
+  ne depasse pas MAX_ARRAY_TOTAL_SIZE. }
+Var
+  I: Integer;
+  TotalSize: LongInt;
+  MaxDimSize: Integer;
+Begin
+  NumDims := GenNumDimensions;
+  TotalSize := 1;
+  
+  For I := 0 To NumDims - 1 Do
+  Begin
+    { Calculer la taille maximum pour cette dimension }
+    If TotalSize > 0 Then
+      MaxDimSize := MAX_ARRAY_TOTAL_SIZE Div TotalSize
+    Else
+      MaxDimSize := MAX_ARRAY_SIZE;
+    
+    If MaxDimSize > MAX_ARRAY_SIZE Then
+      MaxDimSize := MAX_ARRAY_SIZE;
+    If MaxDimSize < MIN_ARRAY_SIZE Then
+      MaxDimSize := MIN_ARRAY_SIZE;
+    
+    { Generer la taille de cette dimension }
+    Sizes[I] := RandomRange(MIN_ARRAY_SIZE, MaxDimSize);
+    TotalSize := TotalSize * Sizes[I];
+  End;
+End;
+
+Function MakeArrayType(Const ElemType: TCType; Size: Integer): TCType;
+{ Cree un type tableau avec le type element et la taille specifies. }
+Var
+  T: TCType;
+Begin
+  InitCType(T);
+  T.Kind := TK_ARRAY;
+  T.ArraySize := Size;
+  { Note: ElemIdx devrait pointer vers une representation du type element
+    Pour l'instant, on stocke juste la taille }
+  MakeArrayType := T;
+End;
+
+{ --- Generation d'initialiseurs de tableaux --- }
+
+Function GenIntArrayInitValue: TString;
+{ Genere une valeur d'initialisation pour un element entier. }
+Var
+  Val: LongInt;
+Begin
+  { Generer une valeur entiere simple }
+  If RandomChoice(70) Then
+    Val := RandomRange(-100, 100)
+  Else If RandomChoice(80) Then
+    Val := RandomRange(-1000, 1000)
+  Else
+    Val := RandomRange(-32768, 32767);
+  
+  GenIntArrayInitValue := IntToStr(Val);
+End;
+
+Function GenFloatArrayInitValue: TString;
+{ Genere une valeur d'initialisation pour un element flottant. }
+Var
+  IntPart, FracPart: Integer;
+  S: TString;
+Begin
+  IntPart := RandomRange(-100, 100);
+  FracPart := RandomRange(0, 99);
+  
+  Str(IntPart, S);
+  S := S + '.';
+  If FracPart < 10 Then
+    S := S + '0';
+  S := S + IntToStr(FracPart);
+  
+  { Ajouter suffixe f pour float (50% de chance) }
+  If RandomChoice(50) Then
+    S := S + 'f';
+  
+  GenFloatArrayInitValue := S;
+End;
+
+Function GenArrayInitValue(Const ElemType: TCType): TString;
+{ Genere une valeur d'initialisation pour un element de tableau. }
+Begin
+  Case ElemType.Kind Of
+    TK_CHAR, TK_SCHAR:
+      GenArrayInitValue := '''' + Chr(RandomRange(Ord('a'), Ord('z'))) + '''';
+    TK_UCHAR:
+      GenArrayInitValue := IntToStr(RandomRange(0, 255));
+    TK_SHORT, TK_INT, TK_LONG:
+      GenArrayInitValue := GenIntArrayInitValue;
+    TK_USHORT, TK_UINT, TK_ULONG:
+      GenArrayInitValue := IntToStr(Abs(RandomRange(0, 10000))) + 'U';
+    TK_FLOAT, TK_DOUBLE:
+      GenArrayInitValue := GenFloatArrayInitValue;
+    TK_ENUM:
+      { Utiliser une constante de l'enum si possible }
+      If (ElemType.StructIdx >= 1) And (ElemType.StructIdx <= NumEnums) And
+         (Enums[ElemType.StructIdx].NumConsts > 0) Then
+        GenArrayInitValue := Enums[ElemType.StructIdx].Consts[
+          RandomRange(1, Enums[ElemType.StructIdx].NumConsts)].Name
+      Else
+        GenArrayInitValue := '0';
+  Else
+    GenArrayInitValue := '0';
+  End;
+End;
+
+Procedure GenArrayInit1D(Const ElemType: TCType; Size: Integer; Var Init: TString);
+(* Genere un initialiseur pour un tableau 1D.
+   Format: val1, val2, val3, ... entre accolades *)
+Var
+  I: Integer;
+  MaxElems: Integer;
+Begin
+  Init := '{';
+  
+  { Limiter le nombre d'elements initialises pour lisibilite }
+  MaxElems := Size;
+  If MaxElems > 10 Then
+    MaxElems := 10;
+  
+  For I := 1 To MaxElems Do
+  Begin
+    If I > 1 Then
+      Init := Init + ', ';
+    Init := Init + GenArrayInitValue(ElemType);
+  End;
+  
+  { Si on n'a pas initialise tous les elements, les autres seront 0 }
+  If MaxElems < Size Then
+    Init := Init + ' /* ... */';
+  
+  Init := Init + '}';
+End;
+
+{ --- Emission de declarations de tableaux --- }
+
+Procedure EmitArrayVarDecl(Const Name: TString; Const ElemType: TCType;
+                           Sizes: Array Of Integer; NumDims: Integer;
+                           SC: TStorageClass);
+{ Emet une declaration de variable tableau sans initialisation.
+  Exemple: static int arr[10][20]; }
+Var
+  S: TString;
+  I: Integer;
+Begin
+  S := StorageClassToStr(SC) + TypeToStr(ElemType) + ' ' + Name;
+  For I := 0 To NumDims - 1 Do
+    S := S + '[' + IntToStr(Sizes[I]) + ']';
+  S := S + ';';
+  EmitLine(S);
+End;
+
+Procedure EmitArrayVarDeclInit(Const Name: TString; Const ElemType: TCType;
+                                Size: Integer; SC: TStorageClass;
+                                Const Init: TString);
+(* Emet une declaration de variable tableau avec initialisation.
+   Exemple: static int arr[5] = 1, 2, 3, 4, 5 entre accolades *)
+Var
+  S: TString;
+Begin
+  S := StorageClassToStr(SC) + TypeToStr(ElemType) + ' ' + Name + 
+       '[' + IntToStr(Size) + '] = ' + Init + ';';
+  EmitLine(S);
+End;
+
+Procedure EmitArrayVarDeclInitAuto(Const Name: TString; Const ElemType: TCType;
+                                    SC: TStorageClass; Const Init: TString);
+(* Emet une declaration de tableau avec taille deduite de l'initialiseur.
+   Exemple: int arr[] = 1, 2, 3 entre accolades *)
+Var
+  S: TString;
+Begin
+  S := StorageClassToStr(SC) + TypeToStr(ElemType) + ' ' + Name + 
+       '[] = ' + Init + ';';
+  EmitLine(S);
+End;
+
+{ --- Fonctions de generation de tableaux --- }
+
+Function GenArrayDecl(SC: TStorageClass): TString;
+{ Genere une declaration complete de tableau et l'emet.
+  Retourne le nom du tableau genere. }
+Var
+  Name: TString;
+  ElemType: TCType;
+  Sizes: Array[0..MAX_ARRAY_DIM-1] Of Integer;
+  NumDims: Integer;
+  Init: TString;
+  HasInit: Boolean;
+Begin
+  { Generer le nom }
+  Name := GenArrayName;
+  
+  { Generer le type element }
+  ElemType := GenRandomArrayElemType;
+  
+  { Generer les dimensions }
+  GenArrayDimensions(Sizes, NumDims);
+  
+  { Decider si on genere un initialiseur }
+  { Seulement pour les tableaux 1D de types simples }
+  HasInit := (NumDims = 1) And 
+             (ElemType.Kind In [TK_CHAR..TK_ULONG, TK_FLOAT, TK_DOUBLE, TK_ENUM]) And
+             RandomChoice(ARRAY_INIT_PROB);
+  
+  If HasInit Then
+  Begin
+    GenArrayInit1D(ElemType, Sizes[0], Init);
+    { 20% de chance d'omettre la taille (deduite de l'init) }
+    If RandomChoice(20) Then
+      EmitArrayVarDeclInitAuto(Name, ElemType, SC, Init)
+    Else
+      EmitArrayVarDeclInit(Name, ElemType, Sizes[0], SC, Init);
+  End
+  Else
+  Begin
+    EmitArrayVarDecl(Name, ElemType, Sizes, NumDims, SC);
+  End;
+  
+  GenArrayDecl := Name;
+End;
+
+Function GenGlobalArrayDecl: TString;
+{ Genere une declaration de tableau global (static ou non). }
+Var
+  SC: TStorageClass;
+Begin
+  { 60% static, 40% sans classe de stockage }
+  If RandomChoice(60) Then
+    SC := SC_STATIC
+  Else
+    SC := SC_AUTO;
+  
+  GenGlobalArrayDecl := GenArrayDecl(SC);
+End;
+
+Function GenLocalArrayDecl: TString;
+{ Genere une declaration de tableau local. }
+Begin
+  { Les tableaux locaux sont auto par defaut }
+  GenLocalArrayDecl := GenArrayDecl(SC_AUTO);
+End;
+
+Procedure EmitArrayComment;
+{ Emet un commentaire pour la section des tableaux. }
+Begin
+  EmitComment('Declarations de tableaux');
+End;
+
+Function GetArrayElemCount(Sizes: Array Of Integer; NumDims: Integer): LongInt;
+{ Retourne le nombre total d'elements dans un tableau. }
+Var
+  Count: LongInt;
+  I: Integer;
+Begin
+  Count := 1;
+  For I := 0 To NumDims - 1 Do
+    Count := Count * Sizes[I];
+  GetArrayElemCount := Count;
+End;
+
+Function GetArrayDimStr(Sizes: Array Of Integer; NumDims: Integer): TString;
+{ Retourne une chaine representant les dimensions (ex: "[10][20]"). }
+Var
+  S: TString;
+  I: Integer;
+Begin
+  S := '';
+  For I := 0 To NumDims - 1 Do
+    S := S + '[' + IntToStr(Sizes[I]) + ']';
+  GetArrayDimStr := S;
+End;
+
+{ ============================================================
   INITIALISATION
   ============================================================ }
 
@@ -2452,6 +2898,7 @@ Begin
   UnionCounter := 0;
   EnumCounter := 0;
   LabelCounter := 0;
+  ArrayCounter := 0;  { TODO 10 : compteur de tableaux }
   StatFuncs := 0;
   StatVars := 0;
   StatExprs := 0;
@@ -2661,6 +3108,13 @@ Begin
       GenUnionDef(0);  { Profondeur initiale = 0 }
     EmitAllUnionDefs;
   End;
+  
+  { Generer quelques tableaux globaux }
+  EmitBlankLine;
+  EmitArrayComment;
+  NumGen := RandomRange(1, 4);  { Generer 1 a 4 tableaux }
+  For I := 1 To NumGen Do
+    GenGlobalArrayDecl;
   
   GenChecksumVars;
   GenChecksumFunc;

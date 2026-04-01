@@ -103,7 +103,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Table des enums : EnumDefs[], NumEnums.
       Emettre typedef enum { A, B=5, C } NomEnum;
 
-  10. [A FAIRE] Generation de tableaux.
+  10. [IMPLEMENTE] Generation de tableaux.
       Generateur de declarations de tableaux C :
       GenArrayType - generer un type tableau aleatoire.
       GenArrayDimension - generer une dimension (1D, 2D, 3D...).
