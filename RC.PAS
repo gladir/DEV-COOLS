@@ -874,7 +874,7 @@ Const
   FCONTROL   = $08;   { Touche CONTROL enfoncee }
   FALT       = $10;   { Touche ALT enfoncee }
   FLAST      = $80;   { Dernier accelerateur dans la table }
-  
+
   { Codes de touches virtuelles }
   VK_BACK    = $08;   { Backspace }
   VK_TAB     = $09;   { Tab }
@@ -916,7 +916,7 @@ Const
   VK_F12     = $7B;   { F12 }
   VK_NUMLOCK = $90;   { Num Lock }
   VK_SCROLL  = $91;   { Scroll Lock }
-  
+
   { TODO 13 : Constantes pour menus }
   { Drapeaux fItemFlags }
   MFT_STRING     = $0000;   { Element texte normal }
@@ -931,7 +931,7 @@ Const
   MF_OWNERDRAW   = $0100;   { Element dessine par le proprietaire }
   MF_SEPARATOR   = $0800;   { Separateur }
   MF_HELP        = $4000;   { Element d aide }
-  
+
   { TODO 14 : Constantes pour dialogues }
   { Classes predefinies de controles }
   DC_BUTTON    = $0080;     { Boutons }
@@ -940,7 +940,7 @@ Const
   DC_LISTBOX   = $0083;     { Liste }
   DC_SCROLLBAR = $0084;     { Barre de defilement }
   DC_COMBOBOX  = $0085;     { Liste deroulante }
-  
+
   { Styles de dialogue (DS_*) }
   DS_ABSALIGN      = $0001;  { Alignement absolu }
   DS_SYSMODAL      = $0002;  { Modal systeme }
@@ -957,7 +957,7 @@ Const
   DS_CENTERMOUSE   = $1000;  { Centrer sur la souris }
   DS_CONTEXTHELP   = $2000;  { Aide contextuelle }
   DS_SHELLFONT     = $0048;  { Police shell (DS_SETFONT + DS_FIXEDSYS) }
-  
+
   { Styles de fenetre (WS_*) pour dialogues }
   WS_POPUP         = LongInt($80000000);
   WS_CHILD         = $40000000;
@@ -978,7 +978,7 @@ Const
   WS_TABSTOP       = $00010000;
   WS_MINIMIZEBOX   = $00020000;
   WS_MAXIMIZEBOX   = $00010000;
-  
+
   { Styles de boutons (BS_*) }
   BS_PUSHBUTTON    = $0000;
   BS_DEFPUSHBUTTON = $0001;
@@ -991,7 +991,7 @@ Const
   BS_AUTORADIOBUTTON = $0009;
   BS_PUSHBOX       = $000A;
   BS_LEFTTEXT      = $0020;
-  
+
   { Styles de texte statique (SS_*) }
   SS_LEFT          = $0000;
   SS_CENTER        = $0001;
@@ -1008,7 +1008,7 @@ Const
   SS_OWNERDRAW     = $000D;
   SS_BITMAP        = $000E;
   SS_CENTERIMAGE   = $0200;
-  
+
   { Styles d editbox (ES_*) }
   ES_LEFT          = $0000;
   ES_CENTER        = $0001;
@@ -1022,7 +1022,7 @@ Const
   ES_NOHIDESEL     = $0100;
   ES_READONLY      = $0800;
   ES_WANTRETURN    = $1000;
-  
+
   { Styles de listbox (LBS_*) }
   LBS_NOTIFY       = $0001;
   LBS_SORT         = $0002;
@@ -1031,7 +1031,7 @@ Const
   LBS_HASSTRINGS   = $0040;
   LBS_USETABSTOPS  = $0080;
   LBS_NOINTEGRALHEIGHT = $0100;
-  
+
   { Styles de combobox (CBS_*) }
   CBS_SIMPLE       = $0001;
   CBS_DROPDOWN     = $0002;
@@ -1040,7 +1040,7 @@ Const
   CBS_AUTOHSCROLL  = $0040;
   CBS_SORT         = $0100;
   CBS_HASSTRINGS   = $0200;
-  
+
   { TODO 15 : Constantes pour VERSIONINFO }
   { Types de fichier (VFT_*) }
   VFT_UNKNOWN    = $00000000;   { Type inconnu }
@@ -1050,7 +1050,7 @@ Const
   VFT_FONT       = $00000004;   { Police }
   VFT_VXD        = $00000005;   { VxD }
   VFT_STATIC_LIB = $00000007;   { Bibliotheque statique }
-  
+
   { Sous-types de fichier (VFT2_*) }
   VFT2_UNKNOWN         = $00000000;
   VFT2_DRV_PRINTER     = $00000001;
@@ -1066,7 +1066,7 @@ Const
   VFT2_FONT_RASTER     = $00000001;
   VFT2_FONT_VECTOR     = $00000002;
   VFT2_FONT_TRUETYPE   = $00000003;
-  
+
   { Systemes d exploitation cibles (VOS_*) }
   VOS_UNKNOWN    = $00000000;   { OS inconnu }
   VOS_DOS        = $00010000;   { DOS }
@@ -1082,7 +1082,7 @@ Const
   VOS_OS216_PM16 = $00020002;
   VOS_OS232_PM32 = $00030003;
   VOS_NT_WINDOWS32 = $00040004; { Windows NT 32 bits }
-  
+
   { Drapeaux de fichier (VS_FF_*) }
   VS_FF_DEBUG        = $00000001;   { Fichier debug }
   VS_FF_PRERELEASE   = $00000002;   { Version prerelease }
@@ -1091,21 +1091,21 @@ Const
   VS_FF_INFOINFERRED = $00000010;   { Info inferee }
   VS_FF_SPECIALBUILD = $00000020;   { Build special }
   VS_FFI_FILEFLAGSMASK = $0000003F; { Masque valide }
-  
+
   { Signature VS_FIXEDFILEINFO }
   VS_FFI_SIGNATURE_LO = $04BD;       { Partie basse de la signature }
   VS_FFI_SIGNATURE_HI = $FEEF;       { Partie haute de la signature }
   VS_FFI_STRUCVERSION= $00010000;   { Version de structure }
-  
+
   { Taille maximale pour les valeurs de version }
   MAX_VERSION_STRINGS = 64;
-  
+
   { TODO 16 : Taille maximale pour les entrees icone/curseur }
   MAX_ICON_ENTRIES = 64;
-  
+
   { TODO 19 : Taille maximale pour les donnees RCDATA }
   MAX_RCDATA_SIZE = 1048576;   { 1 Mo max pour les donnees brutes }
-  
+
   { TODO 20 : Taille maximale pour les fichiers MANIFEST }
   MAX_MANIFEST_SIZE = 1048576;  { 1 Mo max pour les manifestes XML }
 
@@ -1126,7 +1126,7 @@ Type
     Defines      : Array[1..64] Of TString;
     DefineCount  : Integer;
   End;
-  
+
   { TODO 10 : Table des ressources }
   TResourceEntry = Record
     TypeIsId   : Boolean;   { True si type numerique }
@@ -1140,21 +1140,21 @@ Type
     MemFlags   : Word;      { attributs memoire }
     LangId     : Word;      { identifiant de langue }
   End;
-  
+
   { TODO 11 : Table des chaines STRINGTABLE }
   TStringEntry = Record
     StringId : Word;        { identifiant de la chaine }
     Text     : TString;     { texte de la chaine }
     LangId   : Word;        { langue }
   End;
-  
+
   { TODO 12 : Accelerateurs }
   TAccelEntry = Record
     fVirt : Word;           { drapeaux de l accelerateur }
     Key   : Word;           { code de touche ou ASCII }
     Cmd   : Word;           { identifiant de commande }
   End;
-  
+
   { TODO 13 : Menus }
   TMenuItem = Record
     Flags   : Word;         { drapeaux fItemFlags }
@@ -1164,7 +1164,7 @@ Type
     IsSep   : Boolean;      { True si separateur }
     Level   : Integer;      { niveau d imbrication }
   End;
-  
+
   { TODO 14 : Dialogues }
   TDialogTemplate = Record
     Style    : LongInt;     { styles de fenetre }
@@ -1182,7 +1182,7 @@ Type
     FontSize : Word;        { taille de police si DS_SETFONT }
     IsEx     : Boolean;     { True si DIALOGEX }
   End;
-  
+
   TDialogControl = Record
     Style    : LongInt;     { styles du controle }
     ExStyle  : LongInt;     { styles etendus }
@@ -1196,13 +1196,13 @@ Type
     TextIsId : Boolean;     { True si texte est un ID ressource }
     TextId   : Word;        { ID de ressource si TextIsId }
   End;
-  
+
   { TODO 15 : VERSIONINFO }
   TVersionStringValue = Record
     Key   : TString;        { cle (CompanyName, FileVersion, etc.) }
     Value : TString;        { valeur de la chaine }
   End;
-  
+
   TVersionInfo = Record
     { VS_FIXEDFILEINFO }
     FileVersionMS     : LongInt;  { HIWORD=majeur, LOWORD=mineur }
@@ -1221,7 +1221,7 @@ Type
     TranslationLang   : Word;     { Langue (ex: $0409 = anglais US) }
     TranslationCP     : Word;     { Code page (ex: $04B0 = Unicode) }
   End;
-  
+
   { TODO 16 : Structure pour les entrees de repertoire icone/curseur }
   TIconDirEntry = Record
     Width      : Byte;      { largeur, 0 = 256 }
@@ -1233,7 +1233,7 @@ Type
     BytesInRes : LongInt;   { taille des donnees DIB }
     ImageOffset: LongInt;   { offset dans le fichier .ico/.cur }
   End;
-  
+
   { TODO 16 : Structure pour le repertoire de groupe }
   TGrpIconDirEntry = Record
     Width      : Byte;      { largeur, 0 = 256 }
@@ -1245,7 +1245,7 @@ Type
     BytesInRes : LongInt;   { taille des donnees DIB }
     Id         : Word;      { identifiant de la ressource RT_ICON associee }
   End;
-  
+
   { TODO 17 : Structure pour l'en-tete de fichier bitmap }
   TBitmapFileHeader = Record
     bfType      : Word;     { doit etre 'BM' = $4D42 }
@@ -1254,7 +1254,7 @@ Type
     bfReserved2 : Word;     { reserve, = 0 }
     bfOffBits   : LongInt;  { offset des donnees pixels }
   End;
-  
+
   { TODO 17 : Structure pour l'en-tete d'info bitmap }
   TBitmapInfoHeader = Record
     biSize          : LongInt;  { = 40 }
@@ -1269,13 +1269,13 @@ Type
     biClrUsed       : LongInt;  { nombre de couleurs utilisees }
     biClrImportant  : LongInt;  { nombre de couleurs importantes }
   End;
-  
+
   { TODO 21 : Structure pour une definition de preprocesseur }
   TDefineEntry = Record
     Name  : TString;    { nom du symbole }
     Value : TString;    { valeur (peut etre vide) }
   End;
-  
+
   { TODO 21 : Structure pour la pile d'inclusion }
   TIncludeEntry = Record
     FileName   : TString;   { nom du fichier }
@@ -1283,7 +1283,7 @@ Type
     Line       : Integer;   { ligne courante }
     Col        : Integer;   { colonne courante }
   End;
-  
+
   { TODO 21 : Structure pour la pile ifdef/ifndef }
   TIfdefEntry = Record
     Active   : Boolean;     { True si on execute ce bloc }
@@ -1295,37 +1295,37 @@ Type
   ============================================================ }
 Var
   Opts : TOptions;
-  
+
   { TODO 08 : Variables pour le traitement des Language IDs }
   CurrentLangId : Word;
-  
+
   { TODO 09 : Variables pour le traitement des flags memoire }
   DefaultMemFlags : Word;
-  
+
   { TODO 10 : Table des ressources }
   Resources : Array[1..MAX_RESOURCES] Of TResourceEntry;
   ResCount  : Integer;
-  
+
   { TODO 11 : Table des chaines STRINGTABLE }
   StringEntries : Array[1..MAX_STRINGS] Of TStringEntry;
   StringCount   : Integer;
-  
+
   { TODO 12 : Table des accelerateurs }
   AccelEntries : Array[1..MAX_ACCEL] Of TAccelEntry;
   AccelCount   : Integer;
-  
+
   { TODO 13 : Table des elements de menu }
   MenuItems    : Array[1..MAX_MENU_ITEMS] Of TMenuItem;
   MenuItemCount: Integer;
-  
+
   { TODO 14 : Dialogues }
   DialogTemplate  : TDialogTemplate;
   DialogControls  : Array[1..MAX_DIALOG_CTRL] Of TDialogControl;
   DialogCtrlCount : Integer;
-  
+
   { TODO 15 : VERSIONINFO }
   VersionInfo : TVersionInfo;
-  
+
   { TODO 16 : ICON/CURSOR }
   NextIconId   : Word;     { prochain ID pour RT_ICON }
   NextCursorId : Word;     { prochain ID pour RT_CURSOR }
@@ -1333,19 +1333,19 @@ Var
   IconCount    : Integer;
   IconData     : Array[1..MAX_ICON_ENTRIES] Of Pointer;
   IconDataSizes: Array[1..MAX_ICON_ENTRIES] Of LongInt;
-  
+
   { TODO 17 : BITMAP }
   BitmapData     : Pointer;   { donnees du bitmap (sans BITMAPFILEHEADER) }
   BitmapDataSize : LongInt;   { taille des donnees du bitmap }
-  
+
   { TODO 19 : RCDATA }
   RCDataBuffer   : Pointer;   { buffer pour les donnees RCDATA }
   RCDataSize     : LongInt;   { taille des donnees RCDATA }
-  
+
   { TODO 20 : MANIFEST }
   ManifestBuffer : Pointer;   { buffer pour les donnees MANIFEST }
   ManifestSize   : LongInt;   { taille des donnees MANIFEST }
-  
+
   { TODO 21 : PREPROCESSEUR }
   DefineEntries  : Array[1..MAX_DEFINES] Of TDefineEntry;
   DefineCount    : Integer;
@@ -1353,10 +1353,10 @@ Var
   IncludeLevel   : Integer;
   IfdefStack     : Array[1..MAX_IFDEF_STACK] Of TIfdefEntry;
   IfdefLevel     : Integer;
-  
+
   { TODO 22 : RESOLUTION DES CHEMINS DE FICHIERS }
   BasePath       : TString;   { repertoire du fichier .RC source }
-  
+
   { TODO 23 : VALIDATION ET MESSAGES D'ERREUR }
   ErrorCount     : Integer;   { nombre d'erreurs rencontrees }
   WarningCount   : Integer;   { nombre d'avertissements }
@@ -1376,7 +1376,8 @@ End;
 Procedure ShowHelp;
 Begin
   WriteLn('RC v', RC_VERSION,
-          ' - Compilateur de ressources Windows (.RC -> .RES)');
+          ' - Cette commande permet de lancer le compilateur de ',
+          'ressources Windows (.RC -> .RES).');
   WriteLn;
   WriteLn('Syntaxe : RC fichier.rc [-o sortie.res] [-16|-32] [-I<chemin>] [-D<sym>] [-v] [-h]');
   WriteLn;
@@ -3018,12 +3019,12 @@ Begin
   For I := 1 To Length(TypeName) Do
     WriteByte(Ord(TypeName[I]));
   WriteByte(0);
-  
+
   { ResName - chaine terminee par null }
   For I := 1 To Length(ResName) Do
     WriteByte(Ord(ResName[I]));
   WriteByte(0);
-  
+
   { DataSize en DWORD }
   WriteDWord(DataSize);
   { Attributs }
@@ -3041,27 +3042,27 @@ Var
 Begin
   { Taille de base : DataSize(4) + HeaderSize(4) = 8 }
   Size := 8;
-  
+
   { Type : FFFF+ID (4 octets) ou Unicode (2 octets par char + 2 null) }
   If TypeIsId Then
     Size := Size + 4
   Else
     Size := Size + (Length(TypeName) + 1) * 2;
-  
+
   { Name : FFFF+ID (4 octets) ou Unicode (2 octets par char + 2 null) }
   If NameIsId Then
     Size := Size + 4
   Else
     Size := Size + (Length(ResName) + 1) * 2;
-  
+
   { Alignement sur DWORD (4 octets) }
   If (Size Mod 4) <> 0 Then
     Size := Size + (4 - (Size Mod 4));
-  
+
   { Reste de l'en-tete : DataVersion(4) + MemFlags(2) + LangId(2) + }
   { Version(4) + Characteristics(4) = 16 }
   Size := Size + 16;
-  
+
   CalculateHeaderSize32 := Size;
 End;
 
@@ -3079,13 +3080,13 @@ Var
 Begin
   { Calculer la taille de l'en-tete }
   HeaderSize := CalculateHeaderSize32(TypeIsId, TypeName, NameIsId, ResName);
-  
+
   { DataSize }
   WriteDWord(DataSize);
-  
+
   { HeaderSize }
   WriteDWord(HeaderSize);
-  
+
   { Type : FFFF+ID ou chaine Unicode }
   If TypeIsId Then
   Begin
@@ -3098,7 +3099,7 @@ Begin
       WriteWChar(CharToWChar(TypeName[I]));
     WriteWChar(0);
   End;
-  
+
   { Name : FFFF+ID ou chaine Unicode }
   If NameIsId Then
   Begin
@@ -3111,22 +3112,22 @@ Begin
       WriteWChar(CharToWChar(ResName[I]));
     WriteWChar(0);
   End;
-  
+
   { Alignement sur DWORD }
   PadToAlignment(4);
-  
+
   { DataVersion = 0 }
   WriteDWord(0);
-  
+
   { MemFlags }
   WriteWord(MemFlags);
-  
+
   { LangId }
   WriteWord(LangId);
-  
+
   { Version = 0 }
   WriteDWord(0);
-  
+
   { Characteristics = 0 }
   WriteDWord(0);
 End;
@@ -3150,7 +3151,7 @@ Var
   KwUp : TString;
 Begin
   KwUp := UpCaseStr(Kw);
-  
+
   If KwUp = 'CURSOR' Then
     ResourceTypeFromKeyword := RT_CURSOR
   Else If KwUp = 'BITMAP' Then
@@ -3246,7 +3247,7 @@ Var
   N : TString;
 Begin
   N := UpCaseStr(Name);
-  
+
   { Langues principales - PRIMARYLANGID }
   If (N = 'NEUTRAL') Or (N = 'LANG_NEUTRAL') Then
     PrimaryLangIdFromName := $00
@@ -3325,7 +3326,7 @@ Var
   N : TString;
 Begin
   N := UpCaseStr(Name);
-  
+
   { Sous-langues - SUBLANGID }
   If (N = 'NEUTRAL') Or (N = 'SUBLANG_NEUTRAL') Then
     SubLangIdFromName := $00
@@ -3411,28 +3412,28 @@ Begin
   { On suppose que le token LANGUAGE a deja ete lu }
   { Lire le token de langue primaire }
   NextToken;
-  
+
   If CurrToken.Kind <> TK_IDENT Then
     SyntaxError('Identifiant de langue attendu')
   Else
   Begin
     LangName := CurrToken.Value;
     PrimaryId := PrimaryLangIdFromName(LangName);
-    
+
     { Lire la virgule }
     NextToken;
     If CurrToken.Kind = TK_COMMA Then
     Begin
       { Lire le sous-identifiant de langue }
       NextToken;
-      
+
       If CurrToken.Kind <> TK_IDENT Then
         SyntaxError('Identifiant de sous-langue attendu')
       Else
       Begin
         SubName := CurrToken.Value;
         SubId := SubLangIdFromName(SubName);
-        
+
         { Combiner les IDs pour former le LANGID complet }
         CurrentLangId := MakeLangId(PrimaryId, SubId);
       End;
@@ -3457,7 +3458,7 @@ Var
   N : TString;
 Begin
   N := UpCaseStr(Name);
-  
+
   If N = 'MOVEABLE' Then
     MemFlagFromName := MF_MOVEABLE       { $0010 }
   Else If N = 'MOVABLE' Then
@@ -3508,12 +3509,12 @@ Var
 Begin
   Flags := 0;
   HasFlags := False;
-  
+
   { Lire les options de memoire tant qu'il y en a }
   While (CurrToken.Kind = TK_IDENT) And IsMemoryOption(CurrToken.Value) Do
   Begin
     FlagVal := MemFlagFromName(CurrToken.Value);
-    
+
     { FIXED et MOVEABLE sont exclusifs mutuellement }
     If (FlagVal = MF_MOVEABLE) Then
       Flags := (Flags And (Not MF_FIXED)) Or MF_MOVEABLE
@@ -3521,11 +3522,11 @@ Begin
       Flags := (Flags And (Not MF_MOVEABLE)) Or MF_FIXED
     Else
       Flags := Flags Or FlagVal;
-    
+
     HasFlags := True;
     NextToken;
   End;
-  
+
   { Si aucune option specifiee, utiliser les flags par defaut }
   If Not HasFlags Then
     ParseMemoryOptions := DefaultMemFlags
@@ -3549,9 +3550,9 @@ Begin
     AddResource := 0;
     Exit;
   End;
-  
+
   Inc(ResCount);
-  
+
   With Resources[ResCount] Do
   Begin
     TypeIsId := ATypeIsId;
@@ -3565,7 +3566,7 @@ Begin
     MemFlags := AMemFlags;
     LangId   := ALangId;
   End;
-  
+
   AddResource := ResCount;
 End;
 
@@ -3602,9 +3603,9 @@ Begin
     FatalError('Nombre maximal de chaines atteint (' + IntToStr(MAX_STRINGS) + ')');
     Exit;
   End;
-  
+
   Inc(StringCount);
-  
+
   With StringEntries[StringCount] Do
   Begin
     StringId := AStringId;
@@ -3637,7 +3638,7 @@ Var
 Begin
   { Lire les options memoire optionnelles }
   MemFlags := ParseMemoryOptions;
-  
+
   { Sauter les nouvelles lignes entre la ligne STRINGTABLE et BEGIN }
   SkipNewlines;
 
@@ -3648,7 +3649,7 @@ Begin
     Exit;
   End;
   NextToken; (* Consommer BEGIN ou accolade ouvrante *)
-  
+
   (* Lire les entrees jusqu a END ou accolade fermante *)
   While (CurrToken.Kind <> TK_END) And (CurrToken.Kind <> TK_RBRACE) And
         (CurrToken.Kind <> TK_EOF) Do
@@ -3659,13 +3660,13 @@ Begin
       NextToken;
       Continue;
     End;
-    
+
     If CurrToken.Kind = TK_COMMENT Then
     Begin
       NextToken;
       Continue;
     End;
-    
+
     { Lire l identifiant de la chaine (nombre) }
     If CurrToken.Kind <> TK_NUMBER Then
     Begin
@@ -3675,11 +3676,11 @@ Begin
     End;
     StringId := CurrToken.IntVal;
     NextToken;
-    
+
     { Optionnel : virgule ou comma }
     If CurrToken.Kind = TK_COMMA Then
       NextToken;
-    
+
     { Lire la chaine entre guillemets }
     If CurrToken.Kind <> TK_STRING Then
     Begin
@@ -3689,11 +3690,11 @@ Begin
     End;
     Text := CurrToken.Value;
     NextToken;
-    
+
     { Ajouter l entree dans la table }
     AddStringEntry(Word(StringId), Text, CurrentLangId);
   End;
-  
+
   (* Consommer END ou accolade fermante *)
   If (CurrToken.Kind = TK_END) Or (CurrToken.Kind = TK_RBRACE) Then
     NextToken;
@@ -3711,7 +3712,7 @@ Begin
   MinId := Word((BlockId - 1) * 16);
   MaxId := MinId + 15;
   FindStringBlock := False;
-  
+
   For I := 1 To StringCount Do
   Begin
     If (StringEntries[I].LangId = LangId) And
@@ -3734,7 +3735,7 @@ Var
 Begin
   TargetId := Word((BlockId - 1) * 16 + Slot);
   GetStringFromBlock := '';
-  
+
   For I := 1 To StringCount Do
   Begin
     If (StringEntries[I].LangId = LangId) And
@@ -3755,7 +3756,7 @@ Var
   MaxBlock: Integer;
 Begin
   MaxBlock := 0;
-  
+
   For I := 1 To StringCount Do
   Begin
     If StringEntries[I].LangId = LangId Then
@@ -3765,7 +3766,7 @@ Begin
         MaxBlock := BlockId;
     End;
   End;
-  
+
   GetMaxStringBlockId := MaxBlock;
 End;
 
@@ -3791,7 +3792,7 @@ Var
 Begin
   If StringCount = 0 Then
     Exit;
-  
+
   { Collecter la liste des langues utilisees }
   LangCount := 0;
   For I := 1 To StringCount Do
@@ -3813,46 +3814,46 @@ Begin
         LangList[LangCount] := LangId;
     End;
   End;
-  
+
   { Pour chaque langue, ecrire les blocs de chaines }
   For LangIdx := 1 To LangCount Do
   Begin
     LangId := LangList[LangIdx];
     MaxBlock := GetMaxStringBlockId(LangId);
-    
+
     { Pour chaque bloc qui contient des chaines }
     For BlockId := 1 To MaxBlock Do
     Begin
       If Not FindStringBlock(BlockId, LangId) Then
         Continue;
-      
+
       { Enregistrer la ressource dans la table }
       ResIdx := AddResource(True, RT_STRING, '', True, Word(BlockId), '',
                            DefaultMemFlags, LangId);
-      
+
       { Ecrire l en-tete 32 bits }
       { On va d abord calculer la taille des donnees }
       DataStart := GetResPos;
-      
+
       { Ecrire les 16 slots du bloc }
       For Slot := 0 To 15 Do
       Begin
         Str := GetStringFromBlock(BlockId, Slot, LangId);
-        
+
         { Ecrire la longueur en WCHARs }
         WriteWord(Word(Length(Str)));
-        
+
         { Ecrire les caracteres en Unicode }
         For I := 1 To Length(Str) Do
           WriteWChar(CharToWChar(Str[I]));
       End;
-      
+
       { Calculer la taille des donnees }
       DataSize := GetResPos - DataStart;
-      
+
       { Aligner sur 4 octets }
       PadToAlignment(4);
-      
+
       { Mettre a jour la taille et l offset dans la table des ressources }
       SetResourceDataOfs(ResIdx, DataStart);
       SetResourceDataSize(ResIdx, DataSize);
@@ -3871,7 +3872,7 @@ Var
   UpName : TString;
 Begin
   UpName := UpCaseStr(Name);
-  
+
   { Touches de fonction }
   If UpName = 'VK_F1' Then VKeyFromName := VK_F1
   Else If UpName = 'VK_F2' Then VKeyFromName := VK_F2
@@ -3945,7 +3946,7 @@ Var
 Begin
   { Reinitialiser le compteur d accelerateurs }
   AccelCount := 0;
-  
+
   { Attendre BEGIN ou accolade ouvrante }
   If (CurrToken.Kind <> TK_BEGIN) And (CurrToken.Kind <> TK_LBRACE) Then
   Begin
@@ -3953,7 +3954,7 @@ Begin
     Exit;
   End;
   NextToken; (* Consommer BEGIN ou accolade ouvrante *)
-  
+
   (* Lire les entrees jusqu a END ou accolade fermante *)
   While (CurrToken.Kind <> TK_END) And (CurrToken.Kind <> TK_RBRACE) And
         (CurrToken.Kind <> TK_EOF) Do
@@ -3964,18 +3965,18 @@ Begin
       NextToken;
       Continue;
     End;
-    
+
     If CurrToken.Kind = TK_COMMENT Then
     Begin
       NextToken;
       Continue;
     End;
-    
+
     { Lire la touche (chaine ASCII ou identifiant VK_xxx) }
     Key := 0;
     fVirt := 0;
     IsVirtKey := False;
-    
+
     If CurrToken.Kind = TK_STRING Then
     Begin
       { Caractere ASCII entre guillemets }
@@ -4013,11 +4014,11 @@ Begin
       SkipToEndBlock;
       Exit;
     End;
-    
+
     { Attendre une virgule }
     If CurrToken.Kind = TK_COMMA Then
       NextToken;
-    
+
     { Lire l identifiant de commande }
     If CurrToken.Kind = TK_NUMBER Then
     Begin
@@ -4036,16 +4037,16 @@ Begin
       SkipToEndBlock;
       Exit;
     End;
-    
+
     { Lire les options (virgule puis VIRTKEY, SHIFT, CONTROL, ALT, NOINVERT) }
     While CurrToken.Kind = TK_COMMA Do
     Begin
       NextToken;
-      
+
       If CurrToken.Kind = TK_IDENT Then
       Begin
         KeyStr := UpCaseStr(CurrToken.Value);
-        
+
         If KeyStr = 'VIRTKEY' Then
         Begin
           fVirt := fVirt Or FVIRTKEY;
@@ -4063,15 +4064,15 @@ Begin
           fVirt := fVirt Or FALT
         Else If KeyStr = 'NOINVERT' Then
           fVirt := fVirt Or FNOINVERT;
-        
+
         NextToken;
       End;
     End;
-    
+
     { Si la touche est virtuelle, ajouter le flag }
     If IsVirtKey Then
       fVirt := fVirt Or FVIRTKEY;
-    
+
     { Ajouter l entree dans la table }
     If AccelCount < MAX_ACCEL Then
     Begin
@@ -4081,7 +4082,7 @@ Begin
       AccelEntries[AccelCount].Cmd := Cmd;
     End;
   End;
-  
+
   (* Consommer END ou accolade fermante *)
   If (CurrToken.Kind = TK_END) Or (CurrToken.Kind = TK_RBRACE) Then
     NextToken;
@@ -4100,36 +4101,36 @@ Var
 Begin
   If AccelCount = 0 Then
     Exit;
-  
+
   { Enregistrer la ressource dans la table }
   ResIdx := AddResource(True, RT_ACCELERATOR, '', NameIsId, NameId, NameStr,
                        MemFlags, LangId);
-  
+
   { Memoriser la position de debut des donnees }
   DataStart := GetResPos;
-  
+
   { Ecrire chaque entree d accelerateur }
   { Format: WORD fVirt, WORD key, WORD cmd, WORD padding }
   For I := 1 To AccelCount Do
   Begin
     fVirt := AccelEntries[I].fVirt;
-    
+
     { Marquer la derniere entree avec le bit $80 }
     If I = AccelCount Then
       fVirt := fVirt Or FLAST;
-    
+
     WriteWord(fVirt);
     WriteWord(AccelEntries[I].Key);
     WriteWord(AccelEntries[I].Cmd);
     WriteWord(0);  { Padding }
   End;
-  
+
   { Calculer la taille des donnees }
   DataSize := GetResPos - DataStart;
-  
+
   { Aligner sur 4 octets }
   PadToAlignment(4);
-  
+
   { Mettre a jour la taille et l offset dans la table des ressources }
   SetResourceDataOfs(ResIdx, DataStart);
   SetResourceDataSize(ResIdx, DataSize);
@@ -4159,7 +4160,7 @@ Var
   UpName : TString;
 Begin
   UpName := UpCaseStr(Name);
-  
+
   If (UpName = 'GRAYED') Or (UpName = 'INACTIVE') Then
     MenuFlagFromName := MF_GRAYED
   Else If UpName = 'CHECKED' Then
@@ -4207,7 +4208,7 @@ Begin
   (* Consommer BEGIN ou accolade ouvrante *)
   If (CurrToken.Kind = TK_BEGIN) Or (CurrToken.Kind = TK_LBRACE) Then
     NextToken;
-  
+
   (* Lire les elements jusqu a END ou accolade fermante *)
   While (CurrToken.Kind <> TK_END) And (CurrToken.Kind <> TK_RBRACE) And
         (CurrToken.Kind <> TK_EOF) Do
@@ -4218,22 +4219,22 @@ Begin
       NextToken;
       Continue;
     End;
-    
+
     If CurrToken.Kind = TK_COMMENT Then
     Begin
       NextToken;
       Continue;
     End;
-    
+
     If CurrToken.Kind = TK_IDENT Then
     Begin
       KeyWord := UpCaseStr(CurrToken.Value);
-      
+
       If KeyWord = 'POPUP' Then
       Begin
         { POPUP "text" ... BEGIN ... END }
         NextToken;
-        
+
         { Lire le texte du popup }
         ItemText := '';
         If CurrToken.Kind = TK_STRING Then
@@ -4241,7 +4242,7 @@ Begin
           ItemText := CurrToken.Value;
           NextToken;
         End;
-        
+
         { Lire les options }
         ItemFlags := MF_POPUP;
         While CurrToken.Kind = TK_COMMA Do
@@ -4253,10 +4254,10 @@ Begin
             NextToken;
           End;
         End;
-        
+
         { Ajouter l element popup }
         AddMenuItem(ItemFlags, 0, ItemText, True, False, Level);
-        
+
         { Parser le sous-menu }
         If (CurrToken.Kind = TK_BEGIN) Or (CurrToken.Kind = TK_LBRACE) Then
           ParseMenuBlock(Level + 1);
@@ -4265,9 +4266,9 @@ Begin
       Begin
         { MENUITEM "text", id [, options] ou MENUITEM SEPARATOR }
         NextToken;
-        
+
         { Verifier si c est un separateur }
-        If (CurrToken.Kind = TK_IDENT) And 
+        If (CurrToken.Kind = TK_IDENT) And
            (UpCaseStr(CurrToken.Value) = 'SEPARATOR') Then
         Begin
           NextToken;
@@ -4282,7 +4283,7 @@ Begin
             ItemText := CurrToken.Value;
             NextToken;
           End;
-          
+
           { Virgule et identifiant }
           ItemId := 0;
           If CurrToken.Kind = TK_COMMA Then
@@ -4299,7 +4300,7 @@ Begin
               NextToken;
             End;
           End;
-          
+
           { Options supplementaires }
           ItemFlags := 0;
           While CurrToken.Kind = TK_COMMA Do
@@ -4311,7 +4312,7 @@ Begin
               NextToken;
             End;
           End;
-          
+
           AddMenuItem(ItemFlags, ItemId, ItemText, False, False, Level);
         End;
       End
@@ -4326,7 +4327,7 @@ Begin
       NextToken;
     End;
   End;
-  
+
   { Marquer le dernier element du niveau avec MF_END }
   If MenuItemCount > 0 Then
   Begin
@@ -4334,7 +4335,7 @@ Begin
     If MenuItems[MenuItemCount].Level = Level Then
       MenuItems[MenuItemCount].Flags := MenuItems[MenuItemCount].Flags Or MF_END;
   End;
-  
+
   (* Consommer END ou accolade fermante *)
   If (CurrToken.Kind = TK_END) Or (CurrToken.Kind = TK_RBRACE) Then
     NextToken;
@@ -4347,14 +4348,14 @@ Procedure ParseMenu(NameIsId: Boolean; NameId: Word;
 Begin
   { Reinitialiser le compteur d elements de menu }
   MenuItemCount := 0;
-  
+
   { Attendre BEGIN ou accolade ouvrante }
   If (CurrToken.Kind <> TK_BEGIN) And (CurrToken.Kind <> TK_LBRACE) Then
   Begin
     SyntaxError('BEGIN ou accolade ouvrante attendu apres MENU');
     Exit;
   End;
-  
+
   { Parser le bloc de menu }
   ParseMenuBlock(0);
 End;
@@ -4374,49 +4375,49 @@ Var
 Begin
   If MenuItemCount = 0 Then
     Exit;
-  
+
   { Enregistrer la ressource dans la table }
   ResIdx := AddResource(True, RT_MENU, '', NameIsId, NameId, NameStr,
                        MemFlags, LangId);
-  
+
   { Memoriser la position de debut des donnees }
   DataStart := GetResPos;
-  
+
   { Ecrire l en-tete de menu (WORD wVersion=0, WORD cbHeaderSize=0) }
   WriteWord(0);  { wVersion }
   WriteWord(0);  { cbHeaderSize }
-  
+
   { Ecrire chaque element de menu }
   For I := 1 To MenuItemCount Do
   Begin
     ItemFlags := MenuItems[I].Flags;
-    
+
     { Ajuster les flags pour le format binaire }
     If MenuItems[I].IsSep Then
       ItemFlags := ItemFlags Or MF_SEPARATOR;
     If MenuItems[I].IsPopup Then
       ItemFlags := ItemFlags Or MF_POPUP;
-    
+
     { Ecrire les flags }
     WriteWord(ItemFlags);
-    
+
     { Ecrire l ID seulement si ce n est pas un popup }
     If Not MenuItems[I].IsPopup Then
       WriteWord(MenuItems[I].MenuID);
-    
+
     { Ecrire le texte en Unicode termine par $0000 }
     S := MenuItems[I].Text;
     For J := 1 To Length(S) Do
       WriteWChar(CharToWChar(S[J]));
     WriteWChar(0);  { Terminateur Unicode }
   End;
-  
+
   { Calculer la taille des donnees }
   DataSize := GetResPos - DataStart;
-  
+
   { Aligner sur 4 octets }
   PadToAlignment(4);
-  
+
   { Mettre a jour la taille et l offset dans la table des ressources }
   SetResourceDataOfs(ResIdx, DataStart);
   SetResourceDataSize(ResIdx, DataSize);
@@ -4644,7 +4645,7 @@ Var
 Begin
   CtrlType := UpCaseStr(CurrToken.Value);
   NextToken;  { Consommer le mot-cle }
-  
+
   CtrlText    := '';
   CtrlId      := 0;
   CtrlX       := 0;
@@ -4658,7 +4659,7 @@ Begin
   ClassId     := 0;
   TextIsId    := False;
   TextId      := 0;
-  
+
   { Determiner la classe et les styles par defaut selon le type }
   If CtrlType = 'PUSHBUTTON' Then
   Begin
@@ -4766,9 +4767,9 @@ Begin
     { Format generique CONTROL text, id, class, style, x, y, cx, cy }
     ClassIsId := False;
   End;
-  
+
   { Lire le texte du controle (sauf pour certains types) }
-  If (CtrlType <> 'EDITTEXT') And (CtrlType <> 'COMBOBOX') And 
+  If (CtrlType <> 'EDITTEXT') And (CtrlType <> 'COMBOBOX') And
      (CtrlType <> 'LISTBOX') And (CtrlType <> 'SCROLLBAR') Then
   Begin
     If CurrToken.Kind = TK_STRING Then
@@ -4783,19 +4784,19 @@ Begin
       TextId   := StrToInt(CurrToken.Value);
       NextToken;
     End;
-    
+
     { Attendre la virgule }
     If CurrToken.Kind = TK_COMMA Then
       NextToken;
   End;
-  
+
   { Lire l identifiant du controle }
   If CurrToken.Kind = TK_NUMBER Then
     CtrlId := StrToInt(CurrToken.Value)
   Else If CurrToken.Kind = TK_IDENT Then
     CtrlId := ParseExpression;  { Peut etre une constante }
   NextToken;
-  
+
   { Pour CONTROL, lire la classe apres l ID }
   If CtrlType = 'CONTROL' Then
   Begin
@@ -4838,7 +4839,7 @@ Begin
       End;
       NextToken;
     End;
-    
+
     { Lire le style pour CONTROL }
     If CurrToken.Kind = TK_COMMA Then
       NextToken;
@@ -4861,7 +4862,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Lire les coordonnees : x, y, cx, cy }
   If CurrToken.Kind = TK_COMMA Then
     NextToken;
@@ -4870,7 +4871,7 @@ Begin
     CtrlX := StrToInt(CurrToken.Value);
     NextToken;
   End;
-  
+
   If CurrToken.Kind = TK_COMMA Then
     NextToken;
   If CurrToken.Kind = TK_NUMBER Then
@@ -4878,7 +4879,7 @@ Begin
     CtrlY := StrToInt(CurrToken.Value);
     NextToken;
   End;
-  
+
   If CurrToken.Kind = TK_COMMA Then
     NextToken;
   If CurrToken.Kind = TK_NUMBER Then
@@ -4886,7 +4887,7 @@ Begin
     CtrlCX := StrToInt(CurrToken.Value);
     NextToken;
   End;
-  
+
   If CurrToken.Kind = TK_COMMA Then
     NextToken;
   If CurrToken.Kind = TK_NUMBER Then
@@ -4894,7 +4895,7 @@ Begin
     CtrlCY := StrToInt(CurrToken.Value);
     NextToken;
   End;
-  
+
   { Lire les styles optionnels supplementaires }
   While CurrToken.Kind = TK_COMMA Do
   Begin
@@ -4910,7 +4911,7 @@ Begin
       CtrlStyle := CtrlStyle Or DialogStyleFromName(CurrToken.Value);
       NextToken;
     End;
-    
+
     While CurrToken.Kind = TK_PIPE Do
     Begin
       NextToken;
@@ -4927,7 +4928,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Ajouter le controle }
   AddDialogControl(CtrlStyle, CtrlExStyle, CtrlX, CtrlY, CtrlCX, CtrlCY,
     CtrlId, CtrlClass, ClassIsId, ClassId, CtrlText, TextIsId, TextId);
@@ -4944,10 +4945,10 @@ Begin
   { Initialiser le template }
   InitDialogTemplate;
   DialogTemplate.IsEx := IsEx;
-  
+
   { Styles par defaut pour un dialogue }
   DialogTemplate.Style := WS_POPUP Or WS_BORDER Or WS_SYSMENU Or DS_MODALFRAME;
-  
+
   { Lire les coordonnees x, y, cx, cy }
   If CurrToken.Kind = TK_NUMBER Then
   Begin
@@ -4955,7 +4956,7 @@ Begin
     DialogTemplate.X := DlgX;
     NextToken;
   End;
-  
+
   If CurrToken.Kind = TK_COMMA Then
     NextToken;
   If CurrToken.Kind = TK_NUMBER Then
@@ -4964,7 +4965,7 @@ Begin
     DialogTemplate.Y := DlgY;
     NextToken;
   End;
-  
+
   If CurrToken.Kind = TK_COMMA Then
     NextToken;
   If CurrToken.Kind = TK_NUMBER Then
@@ -4973,7 +4974,7 @@ Begin
     DialogTemplate.CX := DlgCX;
     NextToken;
   End;
-  
+
   If CurrToken.Kind = TK_COMMA Then
     NextToken;
   If CurrToken.Kind = TK_NUMBER Then
@@ -4982,7 +4983,7 @@ Begin
     DialogTemplate.CY := DlgCY;
     NextToken;
   End;
-  
+
   { Lire les options du dialogue avant BEGIN }
   While (CurrToken.Kind <> TK_BEGIN) And (CurrToken.Kind <> TK_LBRACE) And
         (CurrToken.Kind <> TK_EOF) Do
@@ -4990,7 +4991,7 @@ Begin
     If CurrToken.Kind = TK_IDENT Then
     Begin
       U := UpCaseStr(CurrToken.Value);
-      
+
       If U = 'STYLE' Then
       Begin
         NextToken;
@@ -5105,7 +5106,7 @@ Begin
       NextToken;
     End;
   End;
-  
+
   { Verifier BEGIN ou accolade }
   If (CurrToken.Kind <> TK_BEGIN) And (CurrToken.Kind <> TK_LBRACE) Then
   Begin
@@ -5113,7 +5114,7 @@ Begin
     Exit;
   End;
   NextToken;  { Consommer BEGIN }
-  
+
   { Lire les controles }
   While (CurrToken.Kind <> TK_END) And (CurrToken.Kind <> TK_RBRACE) And
         (CurrToken.Kind <> TK_EOF) Do
@@ -5130,7 +5131,7 @@ Begin
       NextToken;
     End;
   End;
-  
+
   { Consommer END }
   If (CurrToken.Kind = TK_END) Or (CurrToken.Kind = TK_RBRACE) Then
     NextToken;
@@ -5151,10 +5152,10 @@ Begin
   { Enregistrer la ressource dans la table }
   ResIdx := AddResource(True, RT_DIALOG, '', NameIsId, NameId, NameStr,
                        MemFlags, LangId);
-  
+
   { Memoriser la position de debut des donnees }
   DataStart := GetResPos;
-  
+
   { Ecrire l en-tete DLGTEMPLATE }
   { DWORD style }
   WriteDWord(DialogTemplate.Style);
@@ -5170,7 +5171,7 @@ Begin
   WriteWord(DialogTemplate.CX);
   { short cy }
   WriteWord(DialogTemplate.CY);
-  
+
   { Menu (sz_Or_Ord) }
   If DialogTemplate.MenuIsId Then
   Begin
@@ -5186,7 +5187,7 @@ Begin
   End
   Else
     WriteWord(0);  { Pas de menu }
-  
+
   { Classe de fenetre (sz_Or_Ord) }
   If DialogTemplate.ClassIsId Then
   Begin
@@ -5202,13 +5203,13 @@ Begin
   End
   Else
     WriteWord(0);  { Classe par defaut }
-  
+
   { Titre (Unicode) }
   S := DialogTemplate.Title;
   For J := 1 To Length(S) Do
     WriteWChar(CharToWChar(S[J]));
   WriteWChar(0);
-  
+
   { Police si DS_SETFONT }
   If (DialogTemplate.Style And DS_SETFONT) <> 0 Then
   Begin
@@ -5218,13 +5219,13 @@ Begin
       WriteWChar(CharToWChar(S[J]));
     WriteWChar(0);
   End;
-  
+
   { Ecrire chaque controle }
   For I := 1 To DialogCtrlCount Do
   Begin
     { Aligner sur DWORD }
     PadToAlignment(4);
-    
+
     { DLGITEMTEMPLATE }
     { DWORD style }
     WriteDWord(DialogControls[I].Style);
@@ -5240,7 +5241,7 @@ Begin
     WriteWord(DialogControls[I].CY);
     { WORD id }
     WriteWord(DialogControls[I].Id);
-    
+
     { Classe du controle (sz_Or_Ord) }
     If DialogControls[I].ClassIsId Then
     Begin
@@ -5259,7 +5260,7 @@ Begin
       WriteWord($FFFF);
       WriteWord(DC_STATIC);  { Par defaut }
     End;
-    
+
     { Texte du controle (sz_Or_Ord) }
     If DialogControls[I].TextIsId Then
     Begin
@@ -5273,17 +5274,17 @@ Begin
         WriteWChar(CharToWChar(S[J]));
       WriteWChar(0);
     End;
-    
+
     { WORD extraCount (toujours 0) }
     WriteWord(0);
   End;
-  
+
   { Calculer la taille des donnees }
   DataSize := GetResPos - DataStart;
-  
+
   { Aligner sur 4 octets }
   PadToAlignment(4);
-  
+
   { Mettre a jour la taille et l offset dans la table des ressources }
   SetResourceDataOfs(ResIdx, DataStart);
   SetResourceDataSize(ResIdx, DataSize);
@@ -5410,7 +5411,7 @@ Var
 Begin
   Result := 0;
   Done := False;
-  
+
   While Not Done Do
   Begin
     Tok := CurrToken;
@@ -5427,14 +5428,14 @@ Begin
     End
     Else
       Done := True;
-    
+
     { Verifier si on continue avec | }
     If (CurrToken.Kind = TK_PIPE) Then
       NextToken
     Else
       Done := True;
   End;
-  
+
   ParseVersionExpression := Result;
 End;
 
@@ -5450,11 +5451,11 @@ Var
   CodePage  : TString;
 Begin
   InBlock := True;
-  
+
   While InBlock Do
   Begin
     Tok := CurrToken;
-    
+
     If Tok.Kind = TK_EOF Then
       InBlock := False
     Else If (Tok.Kind = TK_IDENT) And (UpCaseStr(Tok.Value) = 'END') Then
@@ -5465,28 +5466,28 @@ Begin
     Else If (Tok.Kind = TK_IDENT) And (UpCaseStr(Tok.Value) = 'BLOCK') Then
     Begin
       NextToken;  { Passer BLOCK }
-      
+
       { Lire le nom du bloc entre guillemets }
       If CurrToken.Kind = TK_STRING Then
       Begin
         BlockName := UpCaseStr(CurrToken.Value);
         NextToken;
-        
+
         { Chercher BEGIN }
         While (CurrToken.Kind <> TK_EOF) And
-              Not ((CurrToken.Kind = TK_IDENT) And 
+              Not ((CurrToken.Kind = TK_IDENT) And
                    ((UpCaseStr(CurrToken.Value) = 'BEGIN') Or
                     (CurrToken.Value = '{'))) Do
           NextToken;
-        
+
         If CurrToken.Kind <> TK_EOF Then
           NextToken;  { Passer BEGIN ou { }
-        
+
         If BlockName = 'STRINGFILEINFO' Then
         Begin
           { Parser StringFileInfo - contient un bloc avec code page }
           While (CurrToken.Kind <> TK_EOF) And
-                Not ((CurrToken.Kind = TK_IDENT) And 
+                Not ((CurrToken.Kind = TK_IDENT) And
                      (UpCaseStr(CurrToken.Value) = 'END')) Do
           Begin
             If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'BLOCK') Then
@@ -5503,20 +5504,20 @@ Begin
                 End;
                 NextToken;
               End;
-              
+
               { Chercher BEGIN du bloc code page }
               While (CurrToken.Kind <> TK_EOF) And
-                    Not ((CurrToken.Kind = TK_IDENT) And 
+                    Not ((CurrToken.Kind = TK_IDENT) And
                          ((UpCaseStr(CurrToken.Value) = 'BEGIN') Or
                           (CurrToken.Value = '{'))) Do
                 NextToken;
-              
+
               If CurrToken.Kind <> TK_EOF Then
                 NextToken;
-              
+
               { Parser les VALUE }
               While (CurrToken.Kind <> TK_EOF) And
-                    Not ((CurrToken.Kind = TK_IDENT) And 
+                    Not ((CurrToken.Kind = TK_IDENT) And
                          (UpCaseStr(CurrToken.Value) = 'END')) Do
               Begin
                 If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'VALUE') Then
@@ -5539,14 +5540,14 @@ Begin
                 Else
                   NextToken;
               End;
-              
+
               If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'END') Then
                 NextToken;  { Fin du bloc code page }
             End
             Else
               NextToken;
           End;
-          
+
           If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'END') Then
             NextToken;  { Fin StringFileInfo }
         End
@@ -5554,7 +5555,7 @@ Begin
         Begin
           { Parser VarFileInfo - contient VALUE "Translation", lang, cp }
           While (CurrToken.Kind <> TK_EOF) And
-                Not ((CurrToken.Kind = TK_IDENT) And 
+                Not ((CurrToken.Kind = TK_IDENT) And
                      (UpCaseStr(CurrToken.Value) = 'END')) Do
           Begin
             If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'VALUE') Then
@@ -5584,7 +5585,7 @@ Begin
             Else
               NextToken;
           End;
-          
+
           If (CurrToken.Kind = TK_IDENT) And (UpCaseStr(CurrToken.Value) = 'END') Then
             NextToken;  { Fin VarFileInfo }
         End
@@ -5592,7 +5593,7 @@ Begin
         Begin
           { Bloc inconnu - sauter jusqu'au END correspondant }
           While (CurrToken.Kind <> TK_EOF) And
-                Not ((CurrToken.Kind = TK_IDENT) And 
+                Not ((CurrToken.Kind = TK_IDENT) And
                      (UpCaseStr(CurrToken.Value) = 'END')) Do
             NextToken;
           If CurrToken.Kind <> TK_EOF Then
@@ -5616,10 +5617,10 @@ Var
 Begin
   { Initialiser la structure }
   InitVersionInfo;
-  
+
   { Parser les options avant BEGIN }
   While (CurrToken.Kind <> TK_EOF) And
-        Not ((CurrToken.Kind = TK_IDENT) And 
+        Not ((CurrToken.Kind = TK_IDENT) And
              ((UpCaseStr(CurrToken.Value) = 'BEGIN') Or
               (CurrToken.Value = '{'))) Do
   Begin
@@ -5627,7 +5628,7 @@ Begin
     If Tok.Kind = TK_IDENT Then
     Begin
       TokUp := UpCaseStr(Tok.Value);
-      
+
       If TokUp = 'FILEVERSION' Then
       Begin
         NextToken;
@@ -5719,14 +5720,14 @@ Begin
     Else
       NextToken;
   End;
-  
+
   { Passer BEGIN ou { }
   If (CurrToken.Kind = TK_IDENT) Or (CurrToken.Value = '{') Then
     NextToken;
-  
+
   { Parser le contenu du bloc }
   ParseVersionInfoBlock;
-  
+
   { Ecrire la ressource }
   WriteVersionInfo(NameIsId, NameId, NameStr, MemFlags, CurrentLangId);
 End;
@@ -5741,33 +5742,33 @@ Var
 Begin
   { Aligner sur DWORD }
   PadToAlignment(4);
-  
+
   { Memoriser la position de debut }
   BlockStart := GetResPos;
-  
+
   { Calculer la longueur de la valeur }
   ValLen := Length(Value) + 1;  { +1 pour le null terminator }
-  
+
   { WORD wLength - sera mis a jour }
   WriteWord(0);
   { WORD wValueLength - taille de la valeur en WORDs }
   WriteWord(ValLen);
   { WORD wType = 1 (texte) }
   WriteWord(1);
-  
+
   { szKey - nom de la cle en Unicode }
   For I := 1 To Length(Key) Do
     WriteWChar(CharToWChar(Key[I]));
   WriteWChar(0);  { Null terminator }
-  
+
   { Aligner sur DWORD }
   PadToAlignment(4);
-  
+
   { Value - valeur en Unicode }
   For I := 1 To Length(Value) Do
     WriteWChar(CharToWChar(Value[I]));
   WriteWChar(0);  { Null terminator }
-  
+
   { Calculer et mettre a jour la taille du bloc }
   BlockLen := GetResPos - BlockStart;
   SeekResPos(BlockStart);
@@ -5800,33 +5801,33 @@ Begin
   { Ajouter a la table des ressources }
   ResIdx := AddResource(True, RT_VERSION, '',
                         NameIsId, NameId, NameStr, MemFlags, LangId);
-  
+
   { Ecrire l en-tete de ressource 32 bits }
   WriteResHeader32(True, RT_VERSION, '',
                    NameIsId, NameId, NameStr, 0, MemFlags, LangId);
-  
+
   { Memoriser la position de debut des donnees }
   DataStart := GetResPos;
-  
+
   { ===== VS_VERSIONINFO ===== }
   VerInfoStart := GetResPos;
-  
+
   { WORD wLength - sera mis a jour a la fin }
   WriteWord(0);
   { WORD wValueLength = 52 (taille de VS_FIXEDFILEINFO) }
   WriteWord(52);
   { WORD wType = 0 (binaire) }
   WriteWord(0);
-  
+
   { szKey = "VS_VERSION_INFO" en Unicode }
   S := 'VS_VERSION_INFO';
   For I := 1 To Length(S) Do
     WriteWChar(CharToWChar(S[I]));
   WriteWChar(0);  { Null terminator }
-  
+
   { Aligner sur DWORD }
   PadToAlignment(4);
-  
+
   { ===== VS_FIXEDFILEINFO (52 octets) ===== }
   { DWORD dwSignature - ecrit en deux WORDs pour eviter overflow }
   WriteWord(VS_FFI_SIGNATURE_LO);
@@ -5855,138 +5856,138 @@ Begin
   WriteDWord(0);
   { DWORD dwFileDateLS }
   WriteDWord(0);
-  
+
   { ===== StringFileInfo ===== }
   If VersionInfo.StringCount > 0 Then
   Begin
     { Aligner sur DWORD }
     PadToAlignment(4);
-    
+
     SFIStart := GetResPos;
-    
+
     { WORD wLength - sera mis a jour }
     WriteWord(0);
     { WORD wValueLength = 0 }
     WriteWord(0);
     { WORD wType = 1 (texte) }
     WriteWord(1);
-    
+
     { szKey = "StringFileInfo" en Unicode }
     S := 'StringFileInfo';
     For I := 1 To Length(S) Do
       WriteWChar(CharToWChar(S[I]));
     WriteWChar(0);
-    
+
     { Aligner sur DWORD }
     PadToAlignment(4);
-    
+
     { ===== StringTable ===== }
     STStart := GetResPos;
-    
+
     { WORD wLength - sera mis a jour }
     WriteWord(0);
     { WORD wValueLength = 0 }
     WriteWord(0);
     { WORD wType = 1 (texte) }
     WriteWord(1);
-    
+
     { szKey = "hhhhHHHH" (langue + codepage) en Unicode }
-    LangCP := HexWord(VersionInfo.TranslationLang) + 
+    LangCP := HexWord(VersionInfo.TranslationLang) +
               HexWord(VersionInfo.TranslationCP);
     For I := 1 To Length(LangCP) Do
       WriteWChar(CharToWChar(LangCP[I]));
     WriteWChar(0);
-    
+
     { Aligner sur DWORD }
     PadToAlignment(4);
-    
+
     { Ecrire chaque paire String (cle, valeur) }
     For I := 1 To VersionInfo.StringCount Do
       WriteVersionInfoString(VersionInfo.StringValues[I].Key,
                              VersionInfo.StringValues[I].Value);
-    
+
     { Mettre a jour la taille de StringTable }
     STLen := GetResPos - STStart;
     SeekResPos(STStart);
     WriteWord(STLen);
     SeekResPos(STStart + STLen);
-    
+
     { Mettre a jour la taille de StringFileInfo }
     SFILen := GetResPos - SFIStart;
     SeekResPos(SFIStart);
     WriteWord(SFILen);
     SeekResPos(SFIStart + SFILen);
   End;
-  
+
   { ===== VarFileInfo ===== }
   { Aligner sur DWORD }
   PadToAlignment(4);
-  
+
   VFIStart := GetResPos;
-  
+
   { WORD wLength - sera mis a jour }
   WriteWord(0);
   { WORD wValueLength = 0 }
   WriteWord(0);
   { WORD wType = 1 (texte) }
   WriteWord(1);
-  
+
   { szKey = "VarFileInfo" en Unicode }
   S := 'VarFileInfo';
   For I := 1 To Length(S) Do
     WriteWChar(CharToWChar(S[I]));
   WriteWChar(0);
-  
+
   { Aligner sur DWORD }
   PadToAlignment(4);
-  
+
   { ===== Var (Translation) ===== }
   TransStart := GetResPos;
-  
+
   { WORD wLength - sera mis a jour }
   WriteWord(0);
   { WORD wValueLength = 4 (taille de Translation) }
   WriteWord(4);
   { WORD wType = 0 (binaire) }
   WriteWord(0);
-  
+
   { szKey = "Translation" en Unicode }
   S := 'Translation';
   For I := 1 To Length(S) Do
     WriteWChar(CharToWChar(S[I]));
   WriteWChar(0);
-  
+
   { Aligner sur DWORD }
   PadToAlignment(4);
-  
+
   { Value = WORD langID, WORD codepage }
   WriteWord(VersionInfo.TranslationLang);
   WriteWord(VersionInfo.TranslationCP);
-  
+
   { Mettre a jour la taille de Var (Translation) }
   TransLen := GetResPos - TransStart;
   SeekResPos(TransStart);
   WriteWord(TransLen);
   SeekResPos(TransStart + TransLen);
-  
+
   { Mettre a jour la taille de VarFileInfo }
   VFILen := GetResPos - VFIStart;
   SeekResPos(VFIStart);
   WriteWord(VFILen);
   SeekResPos(VFIStart + VFILen);
-  
+
   { Mettre a jour la taille totale de VS_VERSIONINFO }
   VerInfoLen := GetResPos - VerInfoStart;
   SeekResPos(VerInfoStart);
   WriteWord(VerInfoLen);
   SeekResPos(VerInfoStart + VerInfoLen);
-  
+
   { Calculer la taille des donnees }
   DataSize := GetResPos - DataStart;
-  
+
   { Aligner sur 4 octets }
   PadToAlignment(4);
-  
+
   { Mettre a jour la taille et l offset dans la table des ressources }
   SetResourceDataOfs(ResIdx, DataStart);
   SetResourceDataSize(ResIdx, DataSize);
@@ -6033,7 +6034,7 @@ Var
 Begin
   LoadIconFile := False;
   ClearIconData;
-  
+
   {$I-}
   Assign(F, FileName);
   Reset(F, 1);
@@ -6043,25 +6044,25 @@ Begin
     WriteLn('RC: Erreur: Impossible d''ouvrir le fichier ', FileName);
     Exit;
   End;
-  
+
   { Lire l'en-tete du fichier ICO/CUR (6 octets) }
   { WORD Reserved = 0, WORD Type = 1 (ICO) ou 2 (CUR), WORD Count }
   BlockRead(F, Reserved, 2);
   BlockRead(F, ResType, 2);
   BlockRead(F, ImageCount, 2);
-  
+
   If (Reserved <> 0) Or ((ResType <> 1) And (ResType <> 2)) Then
   Begin
     WriteLn('RC: Erreur: Format de fichier icone/curseur invalide');
     Close(F);
     Exit;
   End;
-  
+
   If ImageCount > MAX_ICON_ENTRIES Then
     ImageCount := MAX_ICON_ENTRIES;
-  
+
   IconCount := ImageCount;
-  
+
   { Lire le repertoire des images (16 octets par entree) }
   For I := 1 To IconCount Do
   Begin
@@ -6077,7 +6078,7 @@ Begin
     IconData[I] := Nil;
     IconDataSizes[I] := Entry.BytesInRes;
   End;
-  
+
   { Lire les donnees de chaque image }
   For I := 1 To IconCount Do
   Begin
@@ -6089,7 +6090,7 @@ Begin
       IconData[I] := Buffer;
     End;
   End;
-  
+
   Close(F);
   LoadIconFile := True;
 End;
@@ -6111,22 +6112,22 @@ Var
 Begin
   { Ajouter a la table des ressources }
   ResIdx := AddResource(True, RT_ICON, '', True, IconId, '', MemFlags, LangId);
-  
+
   { Ecrire l'en-tete }
   If Opts.Output32 Then
     WriteResHeader32(True, RT_ICON, '', True, IconId, '', DataSize, MemFlags, LangId)
   Else
     WriteResHeader16(RT_ICON, IconId, DataSize, MemFlags);
-  
+
   { Enregistrer la position de debut des donnees }
   DataStart := GetResPos;
-  
+
   { Ecrire les donnees de l'icone (donnees DIB) }
   WriteBytesFromPtr(DataPtr, DataSize);
-  
+
   { Aligner sur 4 octets }
   PadToAlignment(4);
-  
+
   { Mettre a jour la taille et l'offset }
   SetResourceDataOfs(ResIdx, DataStart);
   SetResourceDataSize(ResIdx, DataSize);
@@ -6142,29 +6143,29 @@ Var
 Begin
   { Pour les curseurs, on doit ajouter un en-tete de 4 octets (hotspot) }
   TotalSize := DataSize + 4;
-  
+
   { Ajouter a la table des ressources }
   ResIdx := AddResource(True, RT_CURSOR, '', True, CursorId, '', MemFlags, LangId);
-  
+
   { Ecrire l'en-tete }
   If Opts.Output32 Then
     WriteResHeader32(True, RT_CURSOR, '', True, CursorId, '', TotalSize, MemFlags, LangId)
   Else
     WriteResHeader16(RT_CURSOR, CursorId, TotalSize, MemFlags);
-  
+
   { Enregistrer la position de debut des donnees }
   DataStart := GetResPos;
-  
+
   { Ecrire le hotspot (2 WORDs) }
   WriteWord(HotspotX);
   WriteWord(HotspotY);
-  
+
   { Ecrire les donnees du curseur (donnees DIB) }
   WriteBytesFromPtr(DataPtr, DataSize);
-  
+
   { Aligner sur 4 octets }
   PadToAlignment(4);
-  
+
   { Mettre a jour la taille et l'offset }
   SetResourceDataOfs(ResIdx, DataStart);
   SetResourceDataSize(ResIdx, TotalSize);
@@ -6183,21 +6184,21 @@ Begin
   { Calculer la taille des donnees :
     6 octets pour l'en-tete + 14 octets par entree }
   DataSize := 6 + (GrpCount * 14);
-  
+
   { Ajouter a la table des ressources }
-  ResIdx := AddResource(True, RT_GROUP_ICON, '', NameIsId, NameId, NameStr, 
+  ResIdx := AddResource(True, RT_GROUP_ICON, '', NameIsId, NameId, NameStr,
                         MemFlags, LangId);
-  
+
   { Ecrire l'en-tete }
   If Opts.Output32 Then
-    WriteResHeader32(True, RT_GROUP_ICON, '', NameIsId, NameId, NameStr, 
+    WriteResHeader32(True, RT_GROUP_ICON, '', NameIsId, NameId, NameStr,
                      DataSize, MemFlags, LangId)
   Else
     WriteResHeader16(RT_GROUP_ICON, NameId, DataSize, MemFlags);
-  
+
   { Enregistrer la position de debut des donnees }
   DataStart := GetResPos;
-  
+
   { Ecrire l'en-tete du groupe (GRPICONDIR) }
   { WORD Reserved = 0 }
   WriteWord(0);
@@ -6205,7 +6206,7 @@ Begin
   WriteWord(1);
   { WORD Count }
   WriteWord(GrpCount);
-  
+
   { Ecrire chaque entree (GRPICONDIRENTRY) }
   For I := 0 To GrpCount - 1 Do
   Begin
@@ -6218,10 +6219,10 @@ Begin
     WriteDWord(GrpEntries[I].BytesInRes);
     WriteWord(GrpEntries[I].Id);
   End;
-  
+
   { Aligner sur 4 octets }
   PadToAlignment(4);
-  
+
   { Mettre a jour la taille et l'offset }
   SetResourceDataOfs(ResIdx, DataStart);
   SetResourceDataSize(ResIdx, DataSize);
@@ -6240,21 +6241,21 @@ Begin
   { Calculer la taille des donnees :
     6 octets pour l'en-tete + 14 octets par entree }
   DataSize := 6 + (GrpCount * 14);
-  
+
   { Ajouter a la table des ressources }
-  ResIdx := AddResource(True, RT_GROUP_CURSOR, '', NameIsId, NameId, NameStr, 
+  ResIdx := AddResource(True, RT_GROUP_CURSOR, '', NameIsId, NameId, NameStr,
                         MemFlags, LangId);
-  
+
   { Ecrire l'en-tete }
   If Opts.Output32 Then
-    WriteResHeader32(True, RT_GROUP_CURSOR, '', NameIsId, NameId, NameStr, 
+    WriteResHeader32(True, RT_GROUP_CURSOR, '', NameIsId, NameId, NameStr,
                      DataSize, MemFlags, LangId)
   Else
     WriteResHeader16(RT_GROUP_CURSOR, NameId, DataSize, MemFlags);
-  
+
   { Enregistrer la position de debut des donnees }
   DataStart := GetResPos;
-  
+
   { Ecrire l'en-tete du groupe (GRPCURSORDIR) }
   { WORD Reserved = 0 }
   WriteWord(0);
@@ -6262,7 +6263,7 @@ Begin
   WriteWord(2);
   { WORD Count }
   WriteWord(GrpCount);
-  
+
   { Ecrire chaque entree (GRPCURSORDIRENTRY) }
   For I := 0 To GrpCount - 1 Do
   Begin
@@ -6274,10 +6275,10 @@ Begin
     WriteDWord(GrpEntries[I].BytesInRes + 4); { +4 pour le hotspot }
     WriteWord(GrpEntries[I].Id);
   End;
-  
+
   { Aligner sur 4 octets }
   PadToAlignment(4);
-  
+
   { Mettre a jour la taille et l'offset }
   SetResourceDataOfs(ResIdx, DataStart);
   SetResourceDataSize(ResIdx, DataSize);
@@ -6298,13 +6299,13 @@ Begin
     FatalError('Impossible de charger le fichier icone: ' + FileName);
     Exit;
   End;
-  
+
   If IconCount = 0 Then
   Begin
     FatalError('Fichier icone vide ou invalide: ' + FileName);
     Exit;
   End;
-  
+
   { Ecrire chaque image comme ressource RT_ICON individuelle }
   For I := 1 To IconCount Do
   Begin
@@ -6312,7 +6313,7 @@ Begin
     WriteIconResource(NextIconId, IconData[I], IconDataSizes[I], MemFlags, LangId);
     Inc(NextIconId);
   End;
-  
+
   { Creer les entrees pour le groupe }
   For I := 1 To IconCount Do
   Begin
@@ -6325,14 +6326,14 @@ Begin
     GrpEntries[I-1].BytesInRes := IconEntries[I].BytesInRes;
     GrpEntries[I-1].Id         := IconIds[I];
   End;
-  
+
   { Ecrire la ressource RT_GROUP_ICON }
-  WriteGroupIconHeader(NameIsId, NameId, NameStr, GrpEntries, IconCount, 
+  WriteGroupIconHeader(NameIsId, NameId, NameStr, GrpEntries, IconCount,
                        MemFlags, LangId);
-  
+
   { Liberer les donnees }
   ClearIconData;
-  
+
   If Opts.Verbose Then
     WriteLn('  ICON ', FileName, ' -> ', IconCount, ' image(s)');
 End;
@@ -6354,13 +6355,13 @@ Begin
     FatalError('Impossible de charger le fichier curseur: ' + FileName);
     Exit;
   End;
-  
+
   If IconCount = 0 Then
   Begin
     FatalError('Fichier curseur vide ou invalide: ' + FileName);
     Exit;
   End;
-  
+
   { Ecrire chaque image comme ressource RT_CURSOR individuelle }
   For I := 1 To IconCount Do
   Begin
@@ -6368,11 +6369,11 @@ Begin
     { Pour les curseurs, Planes contient hotspot X et BitCount contient hotspot Y }
     HotspotX := IconEntries[I].Planes;
     HotspotY := IconEntries[I].BitCount;
-    WriteCursorResource(NextCursorId, IconData[I], IconDataSizes[I], 
+    WriteCursorResource(NextCursorId, IconData[I], IconDataSizes[I],
                         HotspotX, HotspotY, MemFlags, LangId);
     Inc(NextCursorId);
   End;
-  
+
   { Creer les entrees pour le groupe }
   For I := 1 To IconCount Do
   Begin
@@ -6386,14 +6387,14 @@ Begin
     GrpEntries[I-1].BytesInRes := IconEntries[I].BytesInRes;
     GrpEntries[I-1].Id         := CursorIds[I];
   End;
-  
+
   { Ecrire la ressource RT_GROUP_CURSOR }
-  WriteGroupCursorHeader(NameIsId, NameId, NameStr, GrpEntries, IconCount, 
+  WriteGroupCursorHeader(NameIsId, NameId, NameStr, GrpEntries, IconCount,
                          MemFlags, LangId);
-  
+
   { Liberer les donnees }
   ClearIconData;
-  
+
   If Opts.Verbose Then
     WriteLn('  CURSOR ', FileName, ' -> ', IconCount, ' image(s)');
 End;
@@ -6406,10 +6407,10 @@ Var
 Begin
   { Lire les options memoire }
   MemFlags := ParseMemoryOptions;
-  
+
   { Lire le nom du fichier }
   FileName := ExpectString;
-  
+
   { Ecrire la ressource }
   WriteIcon(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
 End;
@@ -6422,10 +6423,10 @@ Var
 Begin
   { Lire les options memoire }
   MemFlags := ParseMemoryOptions;
-  
+
   { Lire le nom du fichier }
   FileName := ExpectString;
-  
+
   { Ecrire la ressource }
   WriteCursor(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
 End;
@@ -6468,7 +6469,7 @@ Begin
   ADataPtr := Nil;
   ADataSize := 0;
   FillChar(AHeader, SizeOf(AHeader), 0);
-  
+
   { Ouvrir le fichier }
   {$I-}
   Assign(F, AFileName);
@@ -6476,7 +6477,7 @@ Begin
   {$I+}
   If IOResult <> 0 Then
     FatalError('Impossible d''ouvrir le fichier bitmap : ' + AFileName);
-  
+
   { Lire l'en-tete du fichier bitmap }
   {$I-}
   BlockRead(F, FileHdr, SizeOf(FileHdr), BytesRead);
@@ -6486,14 +6487,14 @@ Begin
     Close(F);
     FatalError('Erreur de lecture de l''en-tete du fichier bitmap : ' + AFileName);
   End;
-  
+
   { Verifier la signature 'BM' }
   If FileHdr.bfType <> $4D42 Then
   Begin
     Close(F);
     FatalError('Fichier bitmap invalide (signature incorrecte) : ' + AFileName);
   End;
-  
+
   { Lire l'en-tete d'info bitmap }
   {$I-}
   BlockRead(F, AHeader, SizeOf(AHeader), BytesRead);
@@ -6503,17 +6504,17 @@ Begin
     Close(F);
     FatalError('Erreur de lecture de l''en-tete info bitmap : ' + AFileName);
   End;
-  
+
   { Verifier la taille de l'en-tete }
   If AHeader.biSize < 40 Then
   Begin
     Close(F);
     FatalError('En-tete bitmap non supporte (taille < 40) : ' + AFileName);
   End;
-  
+
   { Calculer la taille des donnees (tout apres BITMAPFILEHEADER) }
   ADataSize := FileHdr.bfSize - SizeOf(FileHdr);
-  
+
   { Allouer la memoire }
   GetMem(ADataPtr, ADataSize);
   If ADataPtr = Nil Then
@@ -6521,7 +6522,7 @@ Begin
     Close(F);
     FatalError('Memoire insuffisante pour le bitmap : ' + AFileName);
   End;
-  
+
   { Revenir au debut des donnees DIB (apres BITMAPFILEHEADER) }
   {$I-}
   Seek(F, SizeOf(FileHdr));
@@ -6534,7 +6535,7 @@ Begin
     Close(F);
     FatalError('Erreur de positionnement dans le fichier bitmap : ' + AFileName);
   End;
-  
+
   { Lire les donnees DIB (BITMAPINFOHEADER + palette + pixels) }
   {$I-}
   BlockRead(F, ADataPtr^, ADataSize, BytesRead);
@@ -6547,7 +6548,7 @@ Begin
     Close(F);
     FatalError('Erreur de lecture des donnees bitmap : ' + AFileName);
   End;
-  
+
   { Fermer le fichier }
   Close(F);
 End;
@@ -6581,11 +6582,11 @@ Var
 Begin
   { Charger le fichier bitmap }
   LoadBitmapFile(AFileName, Header, DataPtr, DataSize);
-  
+
   { Ajouter la ressource a la table }
-  ResIdx := AddResource(True, RT_BITMAP, '', NameIsId, NameId, NameStr, 
+  ResIdx := AddResource(True, RT_BITMAP, '', NameIsId, NameId, NameStr,
                         MemFlags, LangId);
-  
+
   { Ecrire l'en-tete de ressource }
   If Opts.Output32 Then
   Begin
@@ -6599,24 +6600,24 @@ Begin
     Else
       WriteResHeader16Str('BITMAP', NameStr, DataSize, MemFlags);
   End;
-  
+
   { Enregistrer la position des donnees }
   DataPos := GetResPos;
   SetResourceDataOfs(ResIdx, DataPos);
-  
+
   { Ecrire les donnees du bitmap }
   WriteBitmapResource(DataPtr, DataSize);
-  
+
   { Aligner sur 4 octets pour 32 bits }
   If Opts.Output32 Then
     PadToAlignment(4);
-  
+
   { Enregistrer la taille des donnees }
   SetResourceDataSize(ResIdx, DataSize);
-  
+
   { Liberer la memoire }
   FreeMem(DataPtr, DataSize);
-  
+
   { Afficher en mode verbeux }
   If Opts.Verbose Then
   Begin
@@ -6639,10 +6640,10 @@ Var
 Begin
   { Lire les options memoire }
   MemFlags := ParseMemoryOptions;
-  
+
   { Lire le nom du fichier }
   FileName := ExpectString;
-  
+
   { Ecrire la ressource }
   WriteBitmap(NameIsId, NameId, NameStr, FileName, MemFlags, CurrentLangId);
 End;
@@ -6686,24 +6687,24 @@ Begin
   {$I+}
   If IOResult <> 0 Then
     FatalError('Impossible d''ouvrir le fichier : ' + AFileName);
-  
+
   { Obtenir la taille du fichier }
   ADataSize := FileSize(F);
-  
+
   { Verifier que le fichier n est pas vide }
   If ADataSize <= 0 Then
   Begin
     Close(F);
     FatalError('Fichier vide ou taille invalide : ' + AFileName);
   End;
-  
+
   { Verifier la taille maximale }
   If ADataSize > MAX_RCDATA_SIZE Then
   Begin
     Close(F);
     FatalError('Fichier trop grand (max ' + IntToStr(MAX_RCDATA_SIZE) + ' octets) : ' + AFileName);
   End;
-  
+
   { Allouer la memoire }
   GetMem(ADataPtr, ADataSize);
   If ADataPtr = Nil Then
@@ -6711,7 +6712,7 @@ Begin
     Close(F);
     FatalError('Impossible d''allouer ' + IntToStr(ADataSize) + ' octets pour : ' + AFileName);
   End;
-  
+
   { Lire le contenu du fichier }
   {$I-}
   BlockRead(F, ADataPtr^, ADataSize, BytesRead);
@@ -6724,7 +6725,7 @@ Begin
     Close(F);
     FatalError('Erreur de lecture du fichier : ' + AFileName);
   End;
-  
+
   { Fermer le fichier }
   Close(F);
 End;
@@ -6756,7 +6757,7 @@ Begin
   { Ajouter la ressource a la table }
   ResIdx := AddResource(True, RT_RCDATA, '', NameIsId, NameId, NameStr,
                         MemFlags, LangId);
-  
+
   { Ecrire l'en-tete de ressource }
   If Opts.Output32 Then
   Begin
@@ -6770,18 +6771,18 @@ Begin
     Else
       WriteResHeader16Str('RCDATA', NameStr, ADataSize, MemFlags);
   End;
-  
+
   { Enregistrer la position des donnees }
   DataPos := GetResPos;
   SetResourceDataOfs(ResIdx, DataPos);
-  
+
   { Ecrire les donnees RCDATA }
   WriteRCDataResource(ADataPtr, ADataSize);
-  
+
   { Aligner sur 4 octets pour 32 bits }
   If Opts.Output32 Then
     PadToAlignment(4);
-  
+
   { Enregistrer la taille des donnees }
   SetResourceDataSize(ResIdx, ADataSize);
 End;
@@ -6797,14 +6798,14 @@ Var
 Begin
   { Charger le fichier }
   LoadRCDataFile(AFileName, DataPtr, DataSize);
-  
+
   { Ecrire la ressource }
   WriteRCDataFromBuffer(NameIsId, NameId, NameStr, DataPtr, DataSize,
                         MemFlags, LangId);
-  
+
   { Liberer la memoire }
   FreeMem(DataPtr, DataSize);
-  
+
   { Afficher en mode verbeux }
   If Opts.Verbose Then
   Begin
@@ -6831,7 +6832,7 @@ Var
   DataPtr   : Pointer;
 Begin
   BufSize := 0;
-  
+
   { Lire les donnees jusqu'a END }
   Tok := PeekTokenFn;
   While (Tok.Kind <> TK_END) And (Tok.Kind <> TK_EOF) Do
@@ -6857,7 +6858,7 @@ Begin
       { Nombre : ajouter comme octet(s) }
       Tok := NextToken;
       NumVal := Tok.IntVal;
-      
+
       { Si la valeur tient dans un octet }
       If (NumVal >= 0) And (NumVal <= 255) Then
       Begin
@@ -6922,33 +6923,33 @@ Begin
       SyntaxError('RCDATA: valeur inattendue: ' + Tok.Value);
       NextToken;
     End;
-    
+
     Tok := PeekTokenFn;
   End;
-  
+
   { Consommer END }
   If Tok.Kind = TK_END Then
     NextToken
   Else
     SyntaxError('RCDATA: END attendu');
-  
+
   { Verifier qu'il y a des donnees }
   If BufSize = 0 Then
     FatalError('RCDATA: bloc vide');
-  
+
   { Allouer et copier les donnees }
   GetMem(DataPtr, BufSize);
   If DataPtr = Nil Then
     FatalError('Impossible d''allouer ' + IntToStr(BufSize) + ' octets pour RCDATA');
   Move(Buffer, DataPtr^, BufSize);
-  
+
   { Ecrire la ressource }
   WriteRCDataFromBuffer(NameIsId, NameId, NameStr, DataPtr, BufSize,
                         MemFlags, LangId);
-  
+
   { Liberer la memoire }
   FreeMem(DataPtr, BufSize);
-  
+
   { Afficher en mode verbeux }
   If Opts.Verbose Then
   Begin
@@ -6971,10 +6972,10 @@ Var
 Begin
   { Lire les options memoire }
   MemFlags := ParseMemoryOptions;
-  
+
   { Verifier le prochain token : chaine (fichier) ou BEGIN (inline) }
   Tok := PeekTokenFn;
-  
+
   If Tok.Kind = TK_STRING Then
   Begin
     { Fichier externe }
@@ -7031,14 +7032,14 @@ Var
   HdrLen   : Integer;
 Begin
   ValidateManifestXML := False;
-  
+
   If (DataPtr = Nil) Or (DataSize < 20) Then
     Exit;
-  
+
   P := PChar(DataPtr);
   StartOK := False;
   EndOK := False;
-  
+
   { Sauter les espaces/BOM au debut }
   I := 0;
   While (I < DataSize) And (I < 10) Do
@@ -7049,7 +7050,7 @@ Begin
       Break;
     Inc(I);
   End;
-  
+
   { Verifier le debut : <?xml ou <assembly }
   HdrLen := 0;
   While (I < DataSize) And (HdrLen < 20) Do
@@ -7059,15 +7060,15 @@ Begin
     Inc(I);
   End;
   Header[0] := Chr(HdrLen);
-  
+
   { Convertir en minuscules pour la comparaison }
   For I := 1 To HdrLen Do
     If (Header[I] >= 'A') And (Header[I] <= 'Z') Then
       Header[I] := Chr(Ord(Header[I]) + 32);
-  
+
   If (Pos('<?xml', Header) = 1) Or (Pos('<assembly', Header) = 1) Then
     StartOK := True;
-  
+
   { Chercher </assembly> a la fin du fichier }
   If DataSize > 15 Then
   Begin
@@ -7084,11 +7085,11 @@ Begin
           Header[HdrLen] := P[I + HdrLen - 1];
         End;
         Header[0] := Chr(HdrLen);
-        
+
         For HdrLen := 1 To Length(Header) Do
           If (Header[HdrLen] >= 'A') And (Header[HdrLen] <= 'Z') Then
             Header[HdrLen] := Chr(Ord(Header[HdrLen]) + 32);
-        
+
         If Pos('</assembly>', Header) > 0 Then
         Begin
           EndOK := True;
@@ -7097,7 +7098,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Accepter si au moins le debut est valide }
   { (certains manifestes peuvent avoir une structure differente) }
   ValidateManifestXML := StartOK;
@@ -7118,24 +7119,24 @@ Begin
   {$I+}
   If IOResult <> 0 Then
     FatalError('Impossible d''ouvrir le fichier manifest : ' + AFileName);
-  
+
   { Obtenir la taille du fichier }
   ADataSize := FileSize(F);
-  
+
   { Verifier que le fichier n est pas vide }
   If ADataSize <= 0 Then
   Begin
     Close(F);
     FatalError('Fichier manifest vide : ' + AFileName);
   End;
-  
+
   { Verifier la taille maximale }
   If ADataSize > MAX_MANIFEST_SIZE Then
   Begin
     Close(F);
     FatalError('Fichier manifest trop grand (max ' + IntToStr(MAX_MANIFEST_SIZE) + ' octets) : ' + AFileName);
   End;
-  
+
   { Allouer la memoire }
   GetMem(ADataPtr, ADataSize);
   If ADataPtr = Nil Then
@@ -7143,7 +7144,7 @@ Begin
     Close(F);
     FatalError('Impossible d''allouer ' + IntToStr(ADataSize) + ' octets pour : ' + AFileName);
   End;
-  
+
   { Lire le contenu du fichier }
   {$I-}
   BlockRead(F, ADataPtr^, ADataSize, BytesRead);
@@ -7156,10 +7157,10 @@ Begin
     Close(F);
     FatalError('Erreur de lecture du fichier manifest : ' + AFileName);
   End;
-  
+
   { Fermer le fichier }
   Close(F);
-  
+
   { Valider le XML (avertissement seulement) }
   If Not ValidateManifestXML(ADataPtr, ADataSize) Then
   Begin
@@ -7195,7 +7196,7 @@ Begin
   { Ajouter la ressource a la table }
   ResIdx := AddResource(True, RT_MANIFEST, '', NameIsId, NameId, NameStr,
                         MemFlags, LangId);
-  
+
   { Ecrire l'en-tete de ressource }
   If Opts.Output32 Then
   Begin
@@ -7209,18 +7210,18 @@ Begin
     Else
       WriteResHeader16Str('MANIFEST', NameStr, ADataSize, MemFlags);
   End;
-  
+
   { Enregistrer la position des donnees }
   DataPos := GetResPos;
   SetResourceDataOfs(ResIdx, DataPos);
-  
+
   { Ecrire les donnees MANIFEST }
   WriteManifestResource(ADataPtr, ADataSize);
-  
+
   { Aligner sur 4 octets pour 32 bits }
   If Opts.Output32 Then
     PadToAlignment(4);
-  
+
   { Enregistrer la taille des donnees }
   SetResourceDataSize(ResIdx, ADataSize);
 End;
@@ -7236,14 +7237,14 @@ Var
 Begin
   { Charger le fichier }
   LoadManifestFile(AFileName, DataPtr, DataSize);
-  
+
   { Ecrire la ressource }
   WriteManifestFromBuffer(NameIsId, NameId, NameStr, DataPtr, DataSize,
                           MemFlags, LangId);
-  
+
   { Liberer la memoire }
   FreeMem(DataPtr, DataSize);
-  
+
   { Afficher en mode verbeux }
   If Opts.Verbose Then
   Begin
@@ -7266,10 +7267,10 @@ Var
 Begin
   { Lire les options memoire }
   MemFlags := ParseMemoryOptions;
-  
+
   { Verifier le prochain token : chaine (fichier) }
   Tok := PeekTokenFn;
-  
+
   If Tok.Kind = TK_STRING Then
   Begin
     { Fichier externe }
@@ -7295,14 +7296,14 @@ Begin
   DefineCount := 0;
   IncludeLevel := 0;
   IfdefLevel := 0;
-  
+
   { Initialiser les tableaux }
   For I := 1 To MAX_DEFINES Do
   Begin
     DefineEntries[I].Name := '';
     DefineEntries[I].Value := '';
   End;
-  
+
   For I := 1 To MAX_IFDEF_STACK Do
   Begin
     IfdefStack[I].Active := True;
@@ -7318,7 +7319,7 @@ Var
   UName : TString;
 Begin
   UName := UpCaseStr(AName);
-  
+
   { Verifier si deja defini, si oui, mettre a jour }
   For I := 1 To DefineCount Do
   Begin
@@ -7328,7 +7329,7 @@ Begin
       Exit;
     End;
   End;
-  
+
   { Ajouter une nouvelle definition }
   If DefineCount >= MAX_DEFINES Then
     FatalError('Trop de definitions de preprocesseur')
@@ -7348,7 +7349,7 @@ Var
   UName : TString;
 Begin
   UName := UpCaseStr(AName);
-  
+
   For I := 1 To DefineCount Do
   Begin
     If UpCaseStr(DefineEntries[I].Name) = UName Then
@@ -7371,7 +7372,7 @@ Var
 Begin
   IsDefined := False;
   UName := UpCaseStr(AName);
-  
+
   For I := 1 To DefineCount Do
   Begin
     If UpCaseStr(DefineEntries[I].Name) = UName Then
@@ -7391,7 +7392,7 @@ Var
 Begin
   GetDefineValue := '';
   UName := UpCaseStr(AName);
-  
+
   For I := 1 To DefineCount Do
   Begin
     If UpCaseStr(DefineEntries[I].Name) = UName Then
@@ -7414,18 +7415,18 @@ Var
 Begin
   Result := '';
   I := 1;
-  
+
   While I <= Length(ALine) Do
   Begin
     Ch := ALine[I];
-    
+
     { Detecter le debut d'un identifiant }
     If ((Ch >= 'A') And (Ch <= 'Z')) Or
        ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_') Then
     Begin
       Ident := '';
       InIdent := True;
-      
+
       { Lire l'identifiant complet }
       While (I <= Length(ALine)) And InIdent Do
       Begin
@@ -7440,7 +7441,7 @@ Begin
         Else
           InIdent := False;
       End;
-      
+
       { Verifier si c'est un symbole defini }
       If IsDefined(Ident) Then
         Result := Result + GetDefineValue(Ident)
@@ -7453,7 +7454,7 @@ Begin
       Inc(I);
     End;
   End;
-  
+
   ExpandDefines := Result;
 End;
 
@@ -7470,24 +7471,24 @@ Begin
     FindIncludeFile := AFileName;
     Exit;
   End;
-  
+
   { Ensuite essayer avec les chemins d'inclusion }
   For I := 1 To Opts.IncludeCount Do
   Begin
     TestPath := Opts.IncludePaths[I];
-    If (Length(TestPath) > 0) And 
+    If (Length(TestPath) > 0) And
        (TestPath[Length(TestPath)] <> '/') And
        (TestPath[Length(TestPath)] <> '\') Then
       TestPath := TestPath + '/';
     TestPath := TestPath + AFileName;
-    
+
     If FileExists(TestPath) Then
     Begin
       FindIncludeFile := TestPath;
       Exit;
     End;
   End;
-  
+
   { Non trouve }
   FindIncludeFile := '';
 End;
@@ -7499,7 +7500,7 @@ Var
   I : Integer;
 Begin
   IsPreprocessorActive := True;
-  
+
   For I := 1 To IfdefLevel Do
   Begin
     If Not IfdefStack[I].Active Then
@@ -7522,15 +7523,15 @@ Begin
   I := 1;
   While (I <= Length(ALine)) And (ALine[I] = ' ') Do
     Inc(I);
-  
+
   { Sauter le mot "define" }
   While (I <= Length(ALine)) And (ALine[I] <> ' ') Do
     Inc(I);
-  
+
   { Sauter les espaces }
   While (I <= Length(ALine)) And (ALine[I] = ' ') Do
     Inc(I);
-  
+
   { Lire le nom }
   Name := '';
   While (I <= Length(ALine)) And (ALine[I] <> ' ') And (ALine[I] <> #9) Do
@@ -7538,11 +7539,11 @@ Begin
     Name := Name + ALine[I];
     Inc(I);
   End;
-  
+
   { Sauter les espaces }
   While (I <= Length(ALine)) And ((ALine[I] = ' ') Or (ALine[I] = #9)) Do
     Inc(I);
-  
+
   { Lire la valeur (le reste de la ligne) }
   Value := '';
   While I <= Length(ALine) Do
@@ -7550,13 +7551,13 @@ Begin
     Value := Value + ALine[I];
     Inc(I);
   End;
-  
+
   { Supprimer les espaces de fin }
-  While (Length(Value) > 0) And 
+  While (Length(Value) > 0) And
         ((Value[Length(Value)] = ' ') Or (Value[Length(Value)] = #9) Or
          (Value[Length(Value)] = #13) Or (Value[Length(Value)] = #10)) Do
     Delete(Value, Length(Value), 1);
-  
+
   If Length(Name) > 0 Then
     AddDefine(Name, Value);
 End;
@@ -7572,24 +7573,24 @@ Begin
   I := 1;
   While (I <= Length(ALine)) And (ALine[I] = ' ') Do
     Inc(I);
-  
+
   { Sauter le mot "undef" }
   While (I <= Length(ALine)) And (ALine[I] <> ' ') Do
     Inc(I);
-  
+
   { Sauter les espaces }
   While (I <= Length(ALine)) And (ALine[I] = ' ') Do
     Inc(I);
-  
+
   { Lire le nom }
   Name := '';
-  While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And
         (ALine[I] <> #9) And (ALine[I] <> #13) And (ALine[I] <> #10) Do
   Begin
     Name := Name + ALine[I];
     Inc(I);
   End;
-  
+
   If Length(Name) > 0 Then
     RemoveDefine(Name);
 End;
@@ -7603,32 +7604,32 @@ Var
 Begin
   If IfdefLevel >= MAX_IFDEF_STACK Then
     FatalError('Trop de #ifdef imbriques');
-  
+
   { Sauter #ifdef et les espaces }
   I := 1;
   While (I <= Length(ALine)) And (ALine[I] = ' ') Do
     Inc(I);
-  
+
   { Sauter le mot "ifdef" }
   While (I <= Length(ALine)) And (ALine[I] <> ' ') Do
     Inc(I);
-  
+
   { Sauter les espaces }
   While (I <= Length(ALine)) And (ALine[I] = ' ') Do
     Inc(I);
-  
+
   { Lire le nom }
   Name := '';
-  While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And
         (ALine[I] <> #9) And (ALine[I] <> #13) And (ALine[I] <> #10) Do
   Begin
     Name := Name + ALine[I];
     Inc(I);
   End;
-  
+
   Inc(IfdefLevel);
   IfdefStack[IfdefLevel].ElseSeen := False;
-  
+
   { Si le bloc parent n'est pas actif, ce bloc est inactif aussi }
   If (IfdefLevel > 1) And (Not IfdefStack[IfdefLevel - 1].Active) Then
     IfdefStack[IfdefLevel].Active := False
@@ -7645,32 +7646,32 @@ Var
 Begin
   If IfdefLevel >= MAX_IFDEF_STACK Then
     FatalError('Trop de #ifndef imbriques');
-  
+
   { Sauter #ifndef et les espaces }
   I := 1;
   While (I <= Length(ALine)) And (ALine[I] = ' ') Do
     Inc(I);
-  
+
   { Sauter le mot "ifndef" }
   While (I <= Length(ALine)) And (ALine[I] <> ' ') Do
     Inc(I);
-  
+
   { Sauter les espaces }
   While (I <= Length(ALine)) And (ALine[I] = ' ') Do
     Inc(I);
-  
+
   { Lire le nom }
   Name := '';
-  While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And
         (ALine[I] <> #9) And (ALine[I] <> #13) And (ALine[I] <> #10) Do
   Begin
     Name := Name + ALine[I];
     Inc(I);
   End;
-  
+
   Inc(IfdefLevel);
   IfdefStack[IfdefLevel].ElseSeen := False;
-  
+
   { Si le bloc parent n'est pas actif, ce bloc est inactif aussi }
   If (IfdefLevel > 1) And (Not IfdefStack[IfdefLevel - 1].Active) Then
     IfdefStack[IfdefLevel].Active := False
@@ -7684,12 +7685,12 @@ Procedure ProcessElse;
 Begin
   If IfdefLevel <= 0 Then
     FatalError('#else sans #ifdef/#ifndef correspondant');
-  
+
   If IfdefStack[IfdefLevel].ElseSeen Then
     FatalError('#else duplique');
-  
+
   IfdefStack[IfdefLevel].ElseSeen := True;
-  
+
   { Inverser seulement si le bloc parent est actif }
   If (IfdefLevel = 1) Or IfdefStack[IfdefLevel - 1].Active Then
     IfdefStack[IfdefLevel].Active := Not IfdefStack[IfdefLevel].Active;
@@ -7701,7 +7702,7 @@ Procedure ProcessEndif;
 Begin
   If IfdefLevel <= 0 Then
     FatalError('#endif sans #ifdef/#ifndef correspondant');
-  
+
   Dec(IfdefLevel);
 End;
 
@@ -7716,25 +7717,25 @@ Var
 Begin
   ExtractIncludeFileName := '';
   Name := '';
-  
+
   { Sauter #include et les espaces }
   I := 1;
   While (I <= Length(ALine)) And (ALine[I] = ' ') Do
     Inc(I);
-  
+
   { Sauter le mot "include" }
-  While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And
         (ALine[I] <> '"') And (ALine[I] <> '<') Do
     Inc(I);
-  
+
   { Sauter les espaces }
   While (I <= Length(ALine)) And (ALine[I] = ' ') Do
     Inc(I);
-  
+
   If I > Length(ALine) Then Exit;
-  
+
   Ch := ALine[I];
-  
+
   { Determiner le type de quote }
   If Ch = '"' Then
   Begin
@@ -7749,7 +7750,7 @@ Begin
   Else
   Begin
     { Pas de quotes, lire jusqu'a l'espace }
-    While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+    While (I <= Length(ALine)) And (ALine[I] <> ' ') And
           (ALine[I] <> #9) And (ALine[I] <> #13) And (ALine[I] <> #10) Do
     Begin
       Name := Name + ALine[I];
@@ -7758,14 +7759,14 @@ Begin
     ExtractIncludeFileName := Name;
     Exit;
   End;
-  
+
   { Lire le nom de fichier }
   While (I <= Length(ALine)) And (ALine[I] <> QuoteChar) Do
   Begin
     Name := Name + ALine[I];
     Inc(I);
   End;
-  
+
   ExtractIncludeFileName := Name;
 End;
 
@@ -7776,12 +7777,12 @@ Var
   I  : Integer;
 Begin
   IsPreprocessorDirective := False;
-  
+
   { Sauter les espaces au debut }
   I := 1;
   While (I <= Length(ALine)) And ((ALine[I] = ' ') Or (ALine[I] = #9)) Do
     Inc(I);
-  
+
   If I <= Length(ALine) Then
   Begin
     If ALine[I] = '#' Then
@@ -7797,28 +7798,28 @@ Var
   Dir  : TString;
 Begin
   Dir := '';
-  
+
   { Sauter les espaces au debut }
   I := 1;
   While (I <= Length(ALine)) And ((ALine[I] = ' ') Or (ALine[I] = #9)) Do
     Inc(I);
-  
+
   { Sauter le # }
   If (I <= Length(ALine)) And (ALine[I] = '#') Then
     Inc(I);
-  
+
   { Sauter les espaces apres # }
   While (I <= Length(ALine)) And ((ALine[I] = ' ') Or (ALine[I] = #9)) Do
     Inc(I);
-  
+
   { Lire le nom de la directive }
-  While (I <= Length(ALine)) And (ALine[I] <> ' ') And 
+  While (I <= Length(ALine)) And (ALine[I] <> ' ') And
         (ALine[I] <> #9) And (ALine[I] <> #13) And (ALine[I] <> #10) Do
   Begin
     Dir := Dir + ALine[I];
     Inc(I);
   End;
-  
+
   GetPreprocessorDirective := UpCaseStr(Dir);
 End;
 
@@ -7831,7 +7832,7 @@ Var
   FullPath : TString;
 Begin
   Dir := GetPreprocessorDirective(ALine);
-  
+
   { Directives qui doivent toujours etre traitees }
   If Dir = 'IFDEF' Then
     ProcessIfdef(ALine)
@@ -7890,17 +7891,17 @@ End;
 Function IsAbsolutePath(Const APath : TString) : Boolean;
 Begin
   IsAbsolutePath := False;
-  
+
   If Length(APath) = 0 Then
     Exit;
-  
+
   { Chemin Unix absolu : commence par / }
   If APath[1] = '/' Then
   Begin
     IsAbsolutePath := True;
     Exit;
   End;
-  
+
   { Chemin Windows absolu : commence par X:\ ou X:/ }
   If (Length(APath) >= 3) And
      (((APath[1] >= 'A') And (APath[1] <= 'Z')) Or
@@ -7911,7 +7912,7 @@ Begin
     IsAbsolutePath := True;
     Exit;
   End;
-  
+
   { Chemin UNC Windows : commence par \\ }
   If (Length(APath) >= 2) And (APath[1] = '\') And (APath[2] = '\') Then
   Begin
@@ -7929,7 +7930,7 @@ Var
   Ch     : Char;
 Begin
   Result := '';
-  
+
   { Convertir les separateurs en separateur systeme }
   For I := 1 To Length(APath) Do
   Begin
@@ -7943,12 +7944,12 @@ Begin
     {$ENDIF}
     Result := Result + Ch;
   End;
-  
+
   { Supprimer les doubles separateurs }
   I := 1;
   While I < Length(Result) Do
   Begin
-    If (Result[I] = DirectorySeparator) And 
+    If (Result[I] = DirectorySeparator) And
        (Result[I + 1] = DirectorySeparator) Then
     Begin
       { Garder les doubles \ pour les chemins UNC Windows }
@@ -7964,7 +7965,7 @@ Begin
     Else
       Inc(I);
   End;
-  
+
   NormalizePath := Result;
 End;
 
@@ -7975,12 +7976,12 @@ Var
   Base : TString;
 Begin
   Base := ABasePath;
-  
+
   { Ajouter un separateur a la fin du chemin de base si necessaire }
   If (Length(Base) > 0) And (Base[Length(Base)] <> DirectorySeparator) And
      (Base[Length(Base)] <> '/') And (Base[Length(Base)] <> '\') Then
     Base := Base + DirectorySeparator;
-  
+
   CombinePath := NormalizePath(Base + AFileName);
 End;
 
@@ -7997,14 +7998,14 @@ Var
   I        : Integer;
 Begin
   ResolveResourcePath := '';
-  
+
   { Si le nom de fichier est vide, retourner vide }
   If Length(FileName) = 0 Then
     Exit;
-  
+
   { Normaliser le nom de fichier }
   TestPath := NormalizePath(FileName);
-  
+
   { 1. Chemin absolu : verifier directement }
   If IsAbsolutePath(TestPath) Then
   Begin
@@ -8012,7 +8013,7 @@ Begin
       ResolveResourcePath := TestPath;
     Exit;
   End;
-  
+
   { 2. Chemin relatif a BasePath }
   TestPath := CombinePath(BasePath, FileName);
   If FileExists(TestPath) Then
@@ -8020,7 +8021,7 @@ Begin
     ResolveResourcePath := TestPath;
     Exit;
   End;
-  
+
   { 3. Chemins dans IncludePaths }
   For I := 1 To Opts.IncludeCount Do
   Begin
@@ -8031,7 +8032,7 @@ Begin
       Exit;
     End;
   End;
-  
+
   { 4. Chemin relatif au repertoire courant }
   TestPath := NormalizePath(FileName);
   If FileExists(TestPath) Then
@@ -8039,7 +8040,7 @@ Begin
     ResolveResourcePath := TestPath;
     Exit;
   End;
-  
+
   { Fichier non trouve - retourner le nom original pour le message d'erreur }
   ResolveResourcePath := '';
 End;
@@ -8051,10 +8052,10 @@ Var
   Resolved : TString;
 Begin
   Resolved := ResolveResourcePath(FileName);
-  
+
   If Length(Resolved) = 0 Then
     FatalError('Fichier ressource non trouve: ' + FileName);
-  
+
   ResolveResourcePathOrError := Resolved;
 End;
 
@@ -8228,7 +8229,7 @@ Begin
       Write('1 erreur')
     Else
       Write(ErrorCount, ' erreurs');
-    
+
     If WarningCount > 0 Then
     Begin
       If WarningCount = 1 Then
@@ -8236,7 +8237,7 @@ Begin
       Else
         Write(', ', WarningCount, ' avertissements');
     End;
-    
+
     WriteLn('.');
   End;
 End;
@@ -8255,7 +8256,7 @@ Var
 Begin
   If ResCount < 2 Then
     Exit;
-  
+
   { Tri a bulles stable par type de ressource }
   Repeat
     Swapped := False;
@@ -8307,27 +8308,27 @@ Var
 Begin
   { Trier les ressources par type }
   SortResourcesByType;
-  
+
   { Ecrire chaque ressource de la table }
   For I := 1 To ResCount Do
   Begin
     Res := Resources[I];
-    
+
     { Enregistrer la position de debut des donnees }
     DataStart := GetResPos;
-    
+
     { Note: La plupart des ressources (ICON, CURSOR, BITMAP, RCDATA, etc.)
       sont deja ecrites lors du parsing dans leurs procedures respectives
       (WriteIcon, WriteCursor, WriteBitmap, WriteRCData, etc.).
-      
+
       Cette procedure est principalement utilisee pour les ressources
       qui n'ont pas ete ecrites immediatement, ou pour une reecriture
       complete du fichier .RES apres collecte de toutes les ressources. }
-    
+
     { Les ressources individuelles sont ecrites par leurs procedures
       specifiques lors du parsing (WriteIcon, WriteBitmap, etc.)
       Cette boucle permet de verifier et afficher le contenu en mode verbeux }
-    
+
     If Opts.Verbose Then
     Begin
       Write('  ');
@@ -8335,13 +8336,13 @@ Begin
         Write(ResourceTypeName(Res.TypeId))
       Else
         Write('"', Res.TypeName, '"');
-      
+
       Write(' ');
       If Res.NameIsId Then
         Write('#', Res.NameId)
       Else
         Write('"', Res.NameStr, '"');
-      
+
       Write(' (', Res.DataSize, ' octets');
       If Res.LangId <> 0 Then
         Write(', lang=', HexWord(Res.LangId));
@@ -8361,7 +8362,7 @@ Begin
     OutputFormat := FMT_RES16
   Else
     OutputFormat := FMT_RES32;
-  
+
   { 1. Initialiser les structures }
   ResCount := 0;
   StringCount := 0;
@@ -8376,35 +8377,35 @@ Begin
   InitRCData;
   InitPreprocessor;
   InitErrorTracking;
-  
+
   { 2. Initialiser le chemin de base pour les fichiers relatifs }
   InitBasePath(AOpts.SrcFile);
-  
+
   { 3. Ouvrir le fichier source .RC }
   If Not FileExists(AOpts.SrcFile) Then
   Begin
     FileNotFoundError(AOpts.SrcFile);
     FatalError('Fichier source introuvable: ' + AOpts.SrcFile);
   End;
-  
+
   OpenSourceFile(AOpts.SrcFile);
-  
+
   { 4. Creer le fichier de sortie .RES }
   CreateResFile(AOpts.OutFile);
-  
+
   { 5. Si format 32 bits : ecrire l en-tete nul }
   If OutputFormat = FMT_RES32 Then
     WriteNullHeader32;
-  
+
   { 6. Parser le fichier source }
   If AOpts.Verbose Then
     WriteLn('Parsing ', AOpts.SrcFile, '...');
-  
+
   ParseFile;
-  
+
   { Fermer le fichier source }
   CloseSourceFile;
-  
+
   { Verifier les erreurs de parsing }
   If ParseError Then
   Begin
@@ -8413,10 +8414,10 @@ Begin
     DisplayErrorSummary;
     Halt(EXIT_ERROR);
   End;
-  
+
   { 7. Ecrire les chaines STRINGTABLE groupees }
   WriteStringTable;
-  
+
   { 8. Afficher les ressources en mode verbeux }
   If AOpts.Verbose Then
   Begin
@@ -8424,14 +8425,14 @@ Begin
     WriteLn('Ressources compilees:');
     WriteAllResources(OutputFormat);
   End;
-  
+
   { 9. Si format 16 bits : ecrire le marqueur de fin }
   If OutputFormat = FMT_RES16 Then
     WriteEndMarker16;
-  
+
   { 10. Fermer le fichier .RES }
   CloseResFile;
-  
+
   { 11. Afficher le rapport de compilation }
   WriteLn;
   If HasErrors Then
@@ -8452,7 +8453,7 @@ Begin
     If StringCount > 0 Then
       WriteLn('  Chaines        : ', StringCount);
     WriteLn('  Taille         : ', ResFileSize, ' octets');
-    
+
     If WarningCount > 0 Then
       DisplayErrorSummary;
   End;
@@ -8470,26 +8471,26 @@ Var
   OldFM  : Byte;
 Begin
   GetFileSize := -1;
-  
+
   If Not FileExists(FName) Then
     Exit;
-  
+
   OldFM := FileMode;
   FileMode := 0;  { Lecture seule }
-  
+
   Assign(F, FName);
   {$I-}
   Reset(F);
   {$I+}
-  
+
   If IOResult <> 0 Then
   Begin
     FileMode := OldFM;
     Exit;
   End;
-  
+
   GetFileSize := FileSize(F);
-  
+
   Close(F);
   FileMode := OldFM;
 End;
@@ -8505,14 +8506,14 @@ Var
   Valid     : Boolean;
 Begin
   Valid := True;
-  
+
   { Verifier que le fichier existe }
   If Not FileExists(OutFileName) Then
   Begin
     Warning('Le fichier de sortie n''a pas ete cree: ' + OutFileName);
     Exit;
   End;
-  
+
   { Verifier que le fichier n'est pas vide }
   ResSize := GetFileSize(OutFileName);
   If ResSize <= 0 Then
@@ -8520,31 +8521,31 @@ Begin
     Warning('Le fichier de sortie est vide ou inaccessible');
     Exit;
   End;
-  
+
   { Ouvrir le fichier en mode binaire }
   Assign(F, OutFileName);
   {$I-}
   Reset(F, 1);
   {$I+}
-  
+
   If IOResult <> 0 Then
   Begin
     Warning('Impossible d''ouvrir le fichier pour verification');
     Exit;
   End;
-  
+
   { Lire les premiers octets pour verifier l'en-tete }
   {$I-}
   BlockRead(F, Header, SizeOf(Header), BytesRead);
   {$I+}
-  
+
   If IOResult <> 0 Then
   Begin
     Close(F);
     Warning('Erreur de lecture du fichier .RES');
     Exit;
   End;
-  
+
   { Verifier selon le format }
   If OutputFormat = FMT_RES32 Then
   Begin
@@ -8557,7 +8558,7 @@ Begin
     Else
     Begin
       { Verifier la ressource nulle : DataSize=0, HeaderSize=32 }
-      If (Header[0] <> 0) Or (Header[1] <> 0) Or 
+      If (Header[0] <> 0) Or (Header[1] <> 0) Or
          (Header[2] <> 0) Or (Header[3] <> 0) Then
       Begin
         { DataSize devrait etre 0 }
@@ -8583,9 +8584,9 @@ Begin
       Valid := False;
     End;
   End;
-  
+
   Close(F);
-  
+
   If Valid And (Opts.Verbose) Then
     WriteLn('Verification du fichier .RES : OK');
 End;
@@ -8617,85 +8618,85 @@ Begin
   WriteLn;
   WriteLn('=== RC - Rapport de compilation ===');
   WriteLn;
-  
+
   WriteLn('Fichier source    : ', AOpts.SrcFile);
-  
+
   If AOpts.Output16 Then
     WriteLn('Format genere     : RES 16 bits')
   Else
     WriteLn('Format genere     : RES 32 bits');
-  
+
   WriteLn;
   WriteLn('--- Ressources ---');
   WriteLn('Total             : ', ResCount, ' ressource(s)');
-  
+
   { Afficher le detail par type de ressource }
   TypeCount := CountResourcesByType(RT_CURSOR);
   If TypeCount > 0 Then
     WriteLn('  RT_CURSOR       : ', TypeCount, ' ressource(s)');
-  
+
   TypeCount := CountResourcesByType(RT_BITMAP);
   If TypeCount > 0 Then
     WriteLn('  RT_BITMAP       : ', TypeCount, ' ressource(s)');
-  
+
   TypeCount := CountResourcesByType(RT_ICON);
   If TypeCount > 0 Then
     WriteLn('  RT_ICON         : ', TypeCount, ' ressource(s)');
-  
+
   TypeCount := CountResourcesByType(RT_MENU);
   If TypeCount > 0 Then
     WriteLn('  RT_MENU         : ', TypeCount, ' ressource(s)');
-  
+
   TypeCount := CountResourcesByType(RT_DIALOG);
   If TypeCount > 0 Then
     WriteLn('  RT_DIALOG       : ', TypeCount, ' ressource(s)');
-  
+
   { Pour les chaines, afficher le nombre de blocs et de chaines }
   If StringCount > 0 Then
   Begin
     TypeCount := CountResourcesByType(RT_STRING);
     WriteLn('  RT_STRING       : ', TypeCount, ' bloc(s), ', StringCount, ' chaine(s)');
   End;
-  
+
   TypeCount := CountResourcesByType(RT_ACCELERATOR);
   If TypeCount > 0 Then
     WriteLn('  RT_ACCELERATOR  : ', TypeCount, ' table(s)');
-  
+
   TypeCount := CountResourcesByType(RT_GROUP_CURSOR);
   If TypeCount > 0 Then
     WriteLn('  RT_GROUP_CURSOR : ', TypeCount, ' ressource(s)');
-  
+
   TypeCount := CountResourcesByType(RT_GROUP_ICON);
   If TypeCount > 0 Then
     WriteLn('  RT_GROUP_ICON   : ', TypeCount, ' ressource(s)');
-  
+
   TypeCount := CountResourcesByType(RT_VERSION);
   If TypeCount > 0 Then
     WriteLn('  RT_VERSION      : ', TypeCount, ' ressource(s)');
-  
+
   TypeCount := CountResourcesByType(RT_RCDATA);
   If TypeCount > 0 Then
     WriteLn('  RT_RCDATA       : ', TypeCount, ' ressource(s)');
-  
+
   TypeCount := CountResourcesByType(RT_MANIFEST);
   If TypeCount > 0 Then
     WriteLn('  RT_MANIFEST     : ', TypeCount, ' ressource(s)');
-  
+
   WriteLn;
   WriteLn('--- Statistiques ---');
   WriteLn('Erreurs           : ', ErrorCount);
   WriteLn('Avertissements    : ', WarningCount);
-  
+
   WriteLn;
   WriteLn('--- Sortie ---');
   WriteLn('Fichier RES genere: ', AOpts.OutFile);
-  
+
   ResSize := GetFileSize(AOpts.OutFile);
   If ResSize >= 0 Then
     WriteLn('Taille RES        : ', ResSize, ' octets')
   Else
     WriteLn('Taille RES        : (erreur de lecture)');
-  
+
   { En mode verbeux, afficher le detail de chaque ressource }
   If AOpts.Verbose Then
   Begin
@@ -8708,20 +8709,20 @@ Begin
         Write(ResourceTypeName(Resources[I].TypeId))
       Else
         Write('"', Resources[I].TypeName, '"');
-      
+
       Write(', Nom=');
       If Resources[I].NameIsId Then
         Write('#', Resources[I].NameId)
       Else
         Write('"', Resources[I].NameStr, '"');
-      
+
       Write(', Langue=$', HexWord(Resources[I].LangId));
       Write(', Taille=', Resources[I].DataSize);
       Write(', Flags=$', HexWord(Resources[I].MemFlags));
       WriteLn;
     End;
   End;
-  
+
   WriteLn;
   WriteLn('=== Fin du rapport ===');
 End;
@@ -8813,7 +8814,7 @@ Begin
   WriteLn('RC v', RC_VERSION, ' (', RC_DATE, ') - ',
           'Compilateur de ressources Windows');
   WriteLn;
-  
+
   { Analyser la ligne de commande }
   ParseCommandLine(Opts);
 
@@ -8831,16 +8832,16 @@ Begin
 
   { Compiler le fichier .RC }
   CompileRC(Opts);
-  
+
   { Verifier le fichier genere }
   If Opts.Output16 Then
     VerifyResFile(Opts.OutFile, FMT_RES16)
   Else
     VerifyResFile(Opts.OutFile, FMT_RES32);
-  
+
   { Afficher le rapport final }
   DisplayFinalReport(Opts);
-  
+
   { Message de status des TODOs }
   WriteLn;
   WriteLn('NOTE: TODOs 01-25 [IMPLEMENTE]. Tous les TODOs sont completes!');
