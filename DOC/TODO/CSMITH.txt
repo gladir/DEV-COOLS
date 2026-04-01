@@ -63,7 +63,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       les classes de stockage (static, extern, register).
       Supporter les types signes/non-signes, short/long/long long.
 
-  6.  [A FAIRE] Generation de structures (struct).
+  6.  [IMPLEMENTE] Generation de structures (struct).
       Generateur de definitions de structures C :
       GenStructDef - generer une definition de structure aleatoire.
       GenStructField - generer un champ de structure.

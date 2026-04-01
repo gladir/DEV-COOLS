@@ -78,7 +78,7 @@
             les classes de stockage (static, extern, register).
             Supporter les types signes/non-signes, short/long/long long.
 
-  TODO 06 - [A FAIRE] GENERATION DE STRUCTURES (STRUCT)
+  TODO 06 - [IMPLEMENTE] GENERATION DE STRUCTURES (STRUCT)
             Generateur de definitions de structures C :
             GenStructDef - generer une definition de structure aleatoire.
             GenStructField - generer un champ de structure.
@@ -1403,6 +1403,244 @@ Begin
 End;
 
 { ============================================================
+  TODO 06 : GENERATION DE STRUCTURES (STRUCT) [IMPLEMENTE]
+  ============================================================ }
+
+{ Constantes pour la generation de structures }
+Const
+  MIN_STRUCT_FIELDS = 1;
+  MAX_STRUCT_DEPTH  = 3;  { Profondeur max pour les structures imbriquees }
+
+{ --- Fonctions utilitaires pour les structures --- }
+
+Function GenStructName: TString;
+{ Genere un nom de structure unique de la forme 'struct_N'. }
+Begin
+  Inc(StructCounter);
+  GenStructName := 's_' + IntToStr(StructCounter);
+End;
+
+Function GenFieldName(StructIdx, FieldNum: Integer): TString;
+{ Genere un nom de champ unique de la forme 'f_N'. }
+Begin
+  GenFieldName := 'f' + IntToStr(FieldNum);
+End;
+
+Function IsValidFieldType(Kind: TTypeKind; CurrentDepth: Integer): Boolean;
+{ Verifie si un type est valide pour un champ de structure.
+  Evite les types void et limite la profondeur des structures imbriquees. }
+Begin
+  If Kind = TK_VOID Then
+    IsValidFieldType := False
+  Else If Kind = TK_FUNC Then
+    IsValidFieldType := False  { Pas de fonctions dans les structs }
+  Else If (Kind = TK_STRUCT) And (CurrentDepth >= MAX_STRUCT_DEPTH) Then
+    IsValidFieldType := False  { Limite la profondeur }
+  Else
+    IsValidFieldType := True;
+End;
+
+Function GenRandomFieldType(CurrentDepth: Integer): TCType;
+{ Genere un type aleatoire valide pour un champ de structure. }
+Var
+  T: TCType;
+  R: Integer;
+Begin
+  InitCType(T);
+  
+  { Choix du type de base : privilegier les types simples }
+  R := RandomInt(100);
+  
+  If R < 70 Then
+  Begin
+    { 70% : Type scalaire simple }
+    Case RandomInt(8) Of
+      0: T.Kind := TK_CHAR;
+      1: T.Kind := TK_SCHAR;
+      2: T.Kind := TK_UCHAR;
+      3: T.Kind := TK_SHORT;
+      4: T.Kind := TK_USHORT;
+      5: T.Kind := TK_INT;
+      6: T.Kind := TK_UINT;
+      7: T.Kind := TK_LONG;
+    End;
+  End
+  Else If (R < 85) And (Not Opts.NoFloats) Then
+  Begin
+    { 15% : Type flottant si autorise }
+    If RandomBool Then
+      T.Kind := TK_FLOAT
+    Else
+      T.Kind := TK_DOUBLE;
+  End
+  Else If (R < 95) And (CurrentDepth < MAX_STRUCT_DEPTH) And
+          (Not Opts.NoStructs) And (NumStructs > 0) Then
+  Begin
+    { 10% : Structure imbriquee si possible }
+    T.Kind := TK_STRUCT;
+    T.StructIdx := RandomInt(NumStructs) + 1;
+  End
+  Else
+  Begin
+    { 5% : Retour au type int par defaut }
+    T.Kind := TK_INT;
+  End;
+  
+  { Ajouter des qualificateurs aleatoirement }
+  If (Not Opts.NoConsts) And RandomChoice(10) Then
+    T.Quals := Q_CONST
+  Else If (Not Opts.NoVolatiles) And RandomChoice(5) Then
+    T.Quals := Q_VOLATILE
+  Else
+    T.Quals := Q_NONE;
+  
+  GenRandomFieldType := T;
+End;
+
+Function GenStructField(StructIdx, FieldNum, CurrentDepth: Integer): TField;
+{ Genere un champ de structure aleatoire. }
+Var
+  F: TField;
+Begin
+  InitField(F);
+  F.Name := GenFieldName(StructIdx, FieldNum);
+  F.FType := GenRandomFieldType(CurrentDepth);
+  F.BitWidth := 0;  { Pas de champ de bits pour l'instant (TODO 08) }
+  GenStructField := F;
+End;
+
+Function AddStructDef(Const S: TStructDef): Integer;
+{ Ajoute une definition de structure a la table.
+  Retourne l'index de la structure (1-based) ou 0 si erreur. }
+Begin
+  If NumStructs >= MAX_STRUCTS Then
+  Begin
+    AddStructDef := 0;
+    Exit;
+  End;
+  Inc(NumStructs);
+  Structs[NumStructs] := S;
+  AddStructDef := NumStructs;
+End;
+
+Function GenStructDef(CurrentDepth: Integer): Integer;
+{ Genere une definition de structure aleatoire.
+  CurrentDepth permet de limiter l'imbrication des structures.
+  Retourne l'index de la nouvelle structure (1-based) ou 0 si erreur. }
+Var
+  S: TStructDef;
+  NumFields: Integer;
+  I: Integer;
+Begin
+  InitStructDef(S);
+  
+  { Generer un nom unique }
+  S.Name := GenStructName;
+  
+  { Determiner le nombre de champs }
+  NumFields := RandomRange(MIN_STRUCT_FIELDS, MAX_STRUCT_FIELDS);
+  S.NumFields := NumFields;
+  
+  { Generer les champs }
+  For I := 1 To NumFields Do
+    S.Fields[I] := GenStructField(NumStructs + 1, I, CurrentDepth);
+  
+  S.IsComplete := True;
+  
+  { Ajouter a la table }
+  GenStructDef := AddStructDef(S);
+End;
+
+{ --- Fonctions d'emission pour les structures --- }
+
+Procedure EmitFieldDecl(Const F: TField);
+{ Emet la declaration d'un champ de structure. }
+Var
+  S: TString;
+Begin
+  S := '    ' + TypeToStr(F.FType) + ' ' + F.Name;
+  If F.BitWidth > 0 Then
+    S := S + ' : ' + IntToStr(F.BitWidth);
+  S := S + ';';
+  EmitLine(S);
+End;
+
+Procedure EmitStructDef(StructIdx: Integer);
+{ Emet la definition complete d'une structure.
+  Format : typedef struct ... Name; }
+Var
+  I: Integer;
+Begin
+  If (StructIdx < 1) Or (StructIdx > NumStructs) Then
+    Exit;
+  
+  With Structs[StructIdx] Do
+  Begin
+    EmitLine('typedef struct {');
+    
+    { Emettre les champs }
+    For I := 1 To NumFields Do
+      EmitFieldDecl(Fields[I]);
+    
+    EmitLine('} ' + Name + ';');
+  End;
+End;
+
+Procedure EmitAllStructDefs;
+{ Emet toutes les definitions de structures. }
+Var
+  I: Integer;
+Begin
+  If NumStructs > 0 Then
+  Begin
+    EmitComment('Definitions de structures');
+    For I := 1 To NumStructs Do
+    Begin
+      EmitStructDef(I);
+      EmitBlankLine;
+    End;
+  End;
+End;
+
+Function GetStructByName(Const Name: TString): Integer;
+{ Recherche une structure par son nom.
+  Retourne l'index (1-based) ou 0 si non trouvee. }
+Var
+  I: Integer;
+Begin
+  GetStructByName := 0;
+  For I := 1 To NumStructs Do
+    If Structs[I].Name = Name Then
+    Begin
+      GetStructByName := I;
+      Exit;
+    End;
+End;
+
+Function GetStructField(StructIdx, FieldIdx: Integer): TField;
+{ Retourne un champ d'une structure. }
+Var
+  F: TField;
+Begin
+  InitField(F);
+  If (StructIdx >= 1) And (StructIdx <= NumStructs) And
+     (FieldIdx >= 1) And (FieldIdx <= Structs[StructIdx].NumFields) Then
+    F := Structs[StructIdx].Fields[FieldIdx];
+  GetStructField := F;
+End;
+
+Function MakeStructType(StructIdx: Integer): TCType;
+{ Cree un type structure a partir de l'index d'une definition. }
+Var
+  T: TCType;
+Begin
+  InitCType(T);
+  T.Kind := TK_STRUCT;
+  T.StructIdx := StructIdx;
+  MakeStructType := T;
+End;
+
+{ ============================================================
   INITIALISATION
   ============================================================ }
 
@@ -1598,15 +1836,27 @@ Begin
 End;
 
 Procedure GenProgram;
+Var
+  I, NumGen: Integer;
 Begin
   EmitComment('Programme C genere par CSMITH v' + CSMITH_VERSION);
   EmitComment('Graine: ' + IntToStr(RandomSeed));
   EmitComment('Date: ' + CSMITH_DATE);
   EmitBlankLine;
   GenIncludes;
+  
+  { Generer quelques structures si autorisees }
+  If Not Opts.NoStructs Then
+  Begin
+    NumGen := RandomRange(1, 4);  { Generer 1 a 4 structures }
+    For I := 1 To NumGen Do
+      GenStructDef(0);  { Profondeur initiale = 0 }
+    EmitAllStructDefs;
+  End;
+  
   GenChecksumVars;
   GenChecksumFunc;
-  { TODO: Generer les types, variables globales et fonctions }
+  { TODO: Generer les variables globales et fonctions }
   EmitBlankLine;
   GenMainFunc;
 End;
