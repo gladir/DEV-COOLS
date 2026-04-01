@@ -441,6 +441,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier .QPU de QuickPascal en code source Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>RC.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur de ressources Windows (.RC -> .RES).</td>
+		</tr>
+		<tr>
 			<td><b>READELF.PAS</b></td>
 			<td>Cette commande permet d'afficher des informations sur un ELF.</td>
 		</tr>
