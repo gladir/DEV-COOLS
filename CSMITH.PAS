@@ -127,7 +127,7 @@
             Limiter les dimensions (MAX_ARRAY_DIM) et la taille totale.
             Emettre int arr[10][20]; ou int arr[] = {1, 2, 3};
 
-  TODO 11 - [A FAIRE] GENERATION DE POINTEURS
+  TODO 11 - [IMPLEMENTE] GENERATION DE POINTEURS
             Generateur de declarations et usages de pointeurs C :
             GenPointerType - generer un type pointeur aleatoire.
             GenPointerOp - generer une operation sur pointeur.
