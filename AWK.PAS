@@ -656,6 +656,55 @@ Begin
         End;
         Inc(I);
        End;
+       5:Begin{INT}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        CurrPos:=I;
+        _Result:=GetNumberValue(TopOfStack);
+        Str(Trunc(_Result):0,Value);
+        I:=CurrPos;
+        If Infix[I]<>')'Then Begin
+         WriteLn('")" attendu');
+         Exit;
+        End;
+        Inc(I);
+       End;
+       10:Begin{SIN}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        CurrPos:=I;
+        _Result:=GetNumberValue(TopOfStack);
+        Str(Sin(_Result),Value);
+        I:=CurrPos;
+        If Infix[I]<>')'Then Begin
+         WriteLn('")" attendu');
+         Exit;
+        End;
+        Inc(I);
+       End;
+       13:Begin{SQRT}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        CurrPos:=I;
+        _Result:=GetNumberValue(TopOfStack);
+        If _Result>=0 Then Str(Sqrt(_Result),Value)
+                      Else Value:='0';
+        I:=CurrPos;
+        If Infix[I]<>')'Then Begin
+         WriteLn('")" attendu');
+         Exit;
+        End;
+        Inc(I);
+       End;
       End;
       Break;
      End
@@ -1236,6 +1285,13 @@ Begin
  If Condition Then Begin
   { Execute le bloc then }
   RunBlock;
+  { Apres le bloc then, il peut y avoir un else a sauter }
+  SkipSpace;
+  If StrToUpper(Copy(CurrLine,CurrPos,4))='ELSE'Then Begin
+   Inc(CurrPos,4);
+   SkipSpace;
+   SkipBlock;
+  End;
  End
   Else
  Begin
@@ -1247,6 +1303,13 @@ Begin
   If StrToUpper(Copy(CurrLine,CurrPos,4))='ELSE'Then Begin
    Inc(CurrPos,4);
    SkipSpace;
+   { Verifie s'il y a un "if" apres le else (else if) }
+   If StrToUpper(Copy(CurrLine,CurrPos,2))='IF'Then Begin
+    Inc(CurrPos,2);
+    SkipSpace;
+    IfCommand;
+   End
+    Else
    RunBlock;
   End;
  End;
@@ -1555,6 +1618,151 @@ Begin
  End;
 End;
 
+{ Implementation de la commande while }
+Procedure WhileCommand;
+Var
+ Condition:Boolean;
+ SaveLinePtr:Integer;
+ SaveCurrLine:String;
+ LoopStart:Integer;
+ BlockStartPos:Integer;
+Begin
+ SkipSpace;
+ 
+ { Sauvegarder position pour la condition }
+ SaveLinePtr:=CurrLinePtr;
+ SaveCurrLine:=CurrLine;
+ LoopStart:=CurrPos;
+ 
+ { Evaluer la condition initiale }
+ Condition:=EvaluateCondition;
+ SkipSpace;
+ 
+ { Memoriser le debut du bloc }
+ BlockStartPos:=CurrPos;
+ 
+ If Not Condition Then Begin
+  { Condition fausse des le depart - sauter le bloc }
+  SkipBlock;
+  Exit;
+ End;
+ 
+ { Boucle while }
+ While Condition do Begin
+  { Sauvegarder la position apres la condition }
+  CurrPos:=BlockStartPos;
+  
+  { Executer le bloc }
+  RunBlock;
+  
+  { Revenir a la condition }
+  CurrLinePtr:=SaveLinePtr;
+  CurrLine:=SaveCurrLine;
+  CurrPos:=LoopStart;
+  
+  { Reevaluer la condition }
+  Condition:=EvaluateCondition;
+  SkipSpace;
+ End;
+ 
+ { Sauter le bloc apres la derniere iteration }
+ CurrPos:=BlockStartPos;
+ SkipBlock;
+End;
+
+{ Implementation de la commande for }
+Procedure ForCommand;
+Var
+ Condition:Boolean;
+ SavePos:Integer;
+ InitStartPos,CondStartPos,IncrStartPos,BlockStartPos:Integer;
+ SaveLinePtr:Integer;
+ SaveCurrLine:String;
+ InParen:Integer;
+Begin
+ SkipSpace;
+ 
+ { Attendre ( }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ SkipSpace;
+ 
+ { Partie initialisation (avant le premier ;) }
+ InitStartPos:=CurrPos;
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>';')do Inc(CurrPos);
+ 
+ { Executer l'initialisation }
+ SavePos:=CurrPos;
+ CurrPos:=InitStartPos;
+ TryAssignment;
+ CurrPos:=SavePos;
+ 
+ { Sauter le premier ; }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+ SkipSpace;
+ 
+ { Partie condition (entre le premier et deuxieme ;) }
+ CondStartPos:=CurrPos;
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>';')do Inc(CurrPos);
+ 
+ { Sauter le deuxieme ; }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+ SkipSpace;
+ 
+ { Partie increment (entre le deuxieme ; et ) ) }
+ IncrStartPos:=CurrPos;
+ InParen:=1;
+ While(CurrPos<=Length(CurrLine))and(InParen>0)do Begin
+  If CurrLine[CurrPos]='('Then Inc(InParen)
+  Else If CurrLine[CurrPos]=')'Then Dec(InParen);
+  If InParen>0 Then Inc(CurrPos);
+ End;
+ 
+ { Sauter ) }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ SkipSpace;
+ 
+ { Position du bloc }
+ BlockStartPos:=CurrPos;
+ 
+ { Sauvegarder la ligne courante }
+ SaveLinePtr:=CurrLinePtr;
+ SaveCurrLine:=CurrLine;
+ 
+ { Evaluer la condition initiale }
+ CurrPos:=CondStartPos;
+ If CurrPos<Length(CurrLine)Then Condition:=EvaluateCondition
+                            Else Condition:=True;
+ 
+ If Not Condition Then Begin
+  { Condition fausse des le depart }
+  CurrPos:=BlockStartPos;
+  SkipBlock;
+  Exit;
+ End;
+ 
+ { Boucle for }
+ While Condition do Begin
+  { Executer le bloc }
+  CurrPos:=BlockStartPos;
+  RunBlock;
+  
+  { Executer l'increment }
+  CurrLinePtr:=SaveLinePtr;
+  CurrLine:=SaveCurrLine;
+  CurrPos:=IncrStartPos;
+  TryAssignment;
+  
+  { Reevaluer la condition }
+  CurrPos:=CondStartPos;
+  If CurrPos<Length(CurrLine)Then Condition:=EvaluateCondition
+                             Else Condition:=True;
+ End;
+ 
+ { Sauter le bloc apres la derniere iteration }
+ CurrPos:=BlockStartPos;
+ SkipBlock;
+End;
+
 Function RunLine:Boolean;
 Var
  UnknownCommand:Boolean;
@@ -1631,7 +1839,9 @@ Begin
    17: NoImplementation:=True; { default }
    18: NoImplementation:=True; { delete }
    19: NoImplementation:=True; { do }
-   20: NoImplementation:=True; { else }
+   20: Begin { else - gere par IfCommand, sauter ici }
+    SkipBlock;
+   End;
    21: NoImplementation:=True; { eval }
    22:Begin
     Terminated:=True;
@@ -1639,7 +1849,7 @@ Begin
    End;{ exit }
    23: NoImplementation:=True; { exp }
    24: NoImplementation:=True; { fflush }
-   25: NoImplementation:=True; { for }
+   25: ForCommand; { for }
    26: NoImplementation:=True; { func }
    27: NoImplementation:=True; { function }
    28: NoImplementation:=True; { gensub }
@@ -1682,7 +1892,7 @@ Begin
    65: NoImplementation:=True; { tolower }
    66: NoImplementation:=True; { toupper }
    67: NoImplementation:=True; { typeof }
-   68: NoImplementation:=True; { while }
+   68: WhileCommand; { while }
    69: NoImplementation:=True; { xor }
    Else UnknownCommand:=True;
   End;
