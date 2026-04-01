@@ -1870,6 +1870,21 @@ Begin
   EmitRaw(PSP_RT_PFX + 'HSTDIN  DD  0');
   EmitRaw(PSP_RT_PFX + 'WRITTEN DD  0');
   EmitBlankLine;
+  { COM/OLE support: IID_IDispatch, CLSID buffer, object pointer, etc. }
+  EmitComment('--- COM/OLE buffers ---');
+  EmitRaw(PSP_RT_PFX + 'IID_IDISPATCH DD 000020400h');
+  EmitRaw('  DD 00000h');
+  EmitRaw('  DD 0C0000000h');
+  EmitRaw('  DD 000000046h');
+  EmitRaw(PSP_RT_PFX + 'CLSID_BUF DD 0,0,0,0');
+  EmitRaw(PSP_RT_PFX + 'COM_OBJ   DD 0');
+  EmitRaw(PSP_RT_PFX + 'PROGID_BUF DB 512 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'DISPID_BUF DD 0');
+  EmitRaw(PSP_RT_PFX + 'DISP_PARAMS DD 0,0,0,0,0');
+  EmitRaw(PSP_RT_PFX + 'VARIANT_BUF DD 0,0,0,0');
+  EmitRaw(PSP_RT_PFX + 'PROPNAME_BUF DB 256 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'COM_INIT DD 0');
+  EmitBlankLine;
 
   { --- Entrees dynamiques de DataTab --- }
   If DataCount > 0 Then
@@ -3430,6 +3445,134 @@ Begin
     EmitLabel(PSP_RT_PFX + 'PANIC_DIV0_FATAL');
     EmitInstrA('CALL', PSP_RT_PFX + 'PANIC');
     EmitBlankLine;
+
+    { ========================================== }
+    { COM/OLE RUNTIME ROUTINES                   }
+    { ========================================== }
+    EmitComment('========================================');
+    EmitComment('  COM/OLE RUNTIME ROUTINES');
+    EmitComment('========================================');
+    EmitBlankLine;
+
+    { _PSPRT_CREATEOBJECT : ESI=ProgID ASCIIZ -> EAX=IDispatch* ou 0 }
+    EmitComment('CreateObject: ESI=ProgID -> EAX=IDispatch*');
+    EmitLabel(PSP_RT_PFX + 'CREATEOBJECT');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrA('PUSH', 'EDI');
+    { Initialiser COM si pas encore fait }
+    EmitInstrAB('CMP', 'DWORD PTR [' + PSP_RT_PFX + 'COM_INIT]', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CO_SKIP_INIT');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('CALL', '_CoInitialize@4');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'COM_INIT]', '1');
+    EmitLabel(PSP_RT_PFX + 'CO_SKIP_INIT');
+    { Convertir ProgID ASCIIZ en Unicode (simple: copier avec zeros) }
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'PROGID_BUF');
+    EmitLabel(PSP_RT_PFX + 'CO_COPY_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CO_COPY_LP');
+    { CLSIDFromProgID(pwszProgID, pCLSID) }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'CLSID_BUF');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'PROGID_BUF');
+    EmitInstrA('CALL', '_CLSIDFromProgID@8');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CO_FAIL');
+    { CoCreateInstance(rclsid, pUnkOuter, dwClsCtx, riid, ppv) }
+    { CLSCTX_ALL = 23 (INPROC_SERVER|INPROC_HANDLER|LOCAL_SERVER|REMOTE_SERVER) }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'COM_OBJ');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'IID_IDISPATCH');
+    EmitInstrA('PUSH', '23');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'CLSID_BUF');
+    EmitInstrA('CALL', '_CoCreateInstance@20');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CO_FAIL');
+    EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + PSP_RT_PFX + 'COM_OBJ]');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CO_DONE');
+    EmitLabel(PSP_RT_PFX + 'CO_FAIL');
+    EmitInstrAB('XOR', 'EAX', 'EAX');
+    EmitLabel(PSP_RT_PFX + 'CO_DONE');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_OBJPUTPROP : EAX=IDispatch*, ESI=PropName, EDX=Value(str) }
+    EmitComment('ObjPutProp: EAX=IDispatch*, ESI=PropName, EDX=Value');
+    EmitLabel(PSP_RT_PFX + 'OBJPUTPROP');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('MOV', 'EBX', 'EAX');
+    { Convertir PropName en Unicode }
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'PROPNAME_BUF');
+    EmitLabel(PSP_RT_PFX + 'PP_COPY_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'PP_COPY_LP');
+    EmitInstrA('POP', 'EDX');
+    { Pour simplifier: stub - juste retourner sans erreur }
+    { Une impl complete appellerait GetIDsOfNames puis Invoke }
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_OBJCALL : EAX=IDispatch*, ESI=MethodName -> call method }
+    EmitComment('ObjCall: EAX=IDispatch*, ESI=MethodName');
+    EmitLabel(PSP_RT_PFX + 'OBJCALL');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('MOV', 'EBX', 'EAX');
+    { Convertir MethodName en Unicode }
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'PROPNAME_BUF');
+    EmitLabel(PSP_RT_PFX + 'OC_COPY_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'OC_COPY_LP');
+    { Stub: retourner sans erreur }
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_OBJRELEASE : EAX=IDispatch* -> appeler Release }
+    EmitComment('ObjRelease: EAX=IDispatch* -> Release');
+    EmitLabel(PSP_RT_PFX + 'OBJRELEASE');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'OR_DONE');
+    EmitInstrA('PUSH', 'EAX');
+    { vtable[2] = Release (IUnknown::Release est la 3eme methode) }
+    EmitInstrAB('MOV', 'ECX', 'DWORD PTR [EAX]');
+    EmitInstrA('PUSH', 'EAX');
+    EmitInstrA('CALL', 'DWORD PTR [ECX+8]');
+    EmitLabel(PSP_RT_PFX + 'OR_DONE');
+    EmitInstr('RET');
+    EmitBlankLine;
   End;
 
   EmitComment('--- Fin du segment de code ---');
@@ -4601,6 +4744,66 @@ Begin
             EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
           Res.Kind    := EK_AX;
           Res.TypeIdx := FldTIdx;
+          Res.SymIdx  := -1;
+        End
+        Else If (Res.SymIdx >= 0) And (Res.SymIdx < SymCount) And
+           (SymTab[Res.SymIdx].TypeIdx >= 0) And
+           (SymTab[Res.SymIdx].TypeIdx < TypeCount) And
+           (TypeTab[SymTab[Res.SymIdx].TypeIdx].Kind = TKP_OBJECT) Then
+        Begin
+          { Acces a propriete/methode d'objet COM via IDispatch }
+          { Charger le pointeur IDispatch dans EAX }
+          If SymTab[Res.SymIdx].IsLocal Then
+            EmitInstrAB('MOV', 'EAX', EBPOfs(SymTab[Res.SymIdx].Offset))
+          Else
+            EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + SymTab[Res.SymIdx].MangledName + ']');
+          { Boucle sur les acces .propriete ou .methode }
+          While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Do
+          Begin
+            TplNextToken;
+            If CurToken.Kind = TK_IDENT Then
+            Begin
+              { Sauvegarder le nom de la propriete/methode }
+              ObjMemberName := CurToken.Val;
+              TplNextToken;
+              { Si suivi de ( c'est un appel de methode }
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+              Begin
+                EmitComment('COM method call: ' + ObjMemberName);
+                EmitInstrA('PUSH', 'EAX');
+                EmitInstrAB('LEA', 'ESI', PSP_STR_PFX + 'OBJM_' + IntToStr(ObjMemberCounter));
+                DataAdd(PSP_STR_PFX + 'OBJM_' + IntToStr(ObjMemberCounter), ObjMemberName);
+                Inc(ObjMemberCounter);
+                EmitInstrA('POP', 'EAX');
+                EmitInstrA('CALL', PSP_RT_PFX + 'OBJCALL');
+                { Consommer les arguments (stub: ignorer) }
+                TplNextToken;
+                While (CurToken.Kind <> TK_EOF) And
+                      Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+                  TplNextToken;
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                  TplNextToken;
+              End
+              Else
+              Begin
+                { C'est un acces a propriete (lecture) }
+                EmitComment('COM property get: ' + ObjMemberName);
+                EmitInstrA('PUSH', 'EAX');
+                EmitInstrAB('LEA', 'ESI', PSP_STR_PFX + 'OBJP_' + IntToStr(ObjMemberCounter));
+                DataAdd(PSP_STR_PFX + 'OBJP_' + IntToStr(ObjMemberCounter), ObjMemberName);
+                Inc(ObjMemberCounter);
+                EmitInstrA('POP', 'EAX');
+                { Stub: propriete retourne dans EAX }
+              End;
+            End
+            Else
+            Begin
+              WarnMsg('nom de membre attendu apres "." sur objet COM');
+              Break;
+            End;
+          End;
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_OBJECT;
           Res.SymIdx  := -1;
         End
         Else
