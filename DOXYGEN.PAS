@@ -364,7 +364,7 @@
             Procedure ExtractEntitiesPython(Const FileName: String)
               extraction specifique pour Python
 
-  TODO 09 - ANALYSE DES HIERARCHIES DE CLASSES [A FAIRE]
+  TODO 09 - ANALYSE DES HIERARCHIES DE CLASSES [IMPLEMENTE]
             TClassRelation : (REL_INHERITS, REL_IMPLEMENTS, REL_USES,
               REL_CONTAINS, REL_AGGREGATES, REL_ASSOCIATES, REL_DEPENDS,
               REL_FRIEND)
@@ -379,6 +379,23 @@
             Variables globales :
               Inheritances     : Array[1..MAX_INHERITANCES] Of TInheritance
               InheritanceCount : Integer
+            Procedure InitInheritances
+              initialise le tableau des heritages
+            Procedure AddInheritance(ChildId: Integer; ParentName: String;
+              Rel: TClassRelation; Vis: TEntityVisibility; IsVirt: Boolean)
+              ajoute une relation d heritage au tableau
+            Function ClassRelationToStr(Rel: TClassRelation): String
+              convertit un type de relation en chaine
+            Function FindEntityByName(Name: String): Integer
+              recherche une entite par son nom
+            Function IsClassEntity(Kind: TEntityKind): Boolean
+              verifie si le type d entite est une classe/struct/interface
+            Procedure ParseCppInheritance(Line: String; EntityId: Integer)
+              parse les heritages C++ (class Derived : public Base)
+            Procedure ParseJavaInheritance(Line: String; EntityId: Integer)
+              parse les heritages Java (extends/implements)
+            Procedure ParsePascalInheritance(Line: String; EntityId: Integer)
+              parse les heritages Pascal (= class(TBase))
             Procedure BuildClassHierarchy
               parcourir toutes les entites de type classe/interface
               extraire les relations d heritage et d implementation
@@ -391,6 +408,8 @@
               retourner la liste des interfaces implementees
             Procedure DetectDiamondInheritance
               detecter et signaler les heritages en diamant
+            Procedure ShowClassHierarchy
+              affiche la hierarchie des classes extraite
 
   TODO 10 - ANALYSE DES DEPENDANCES (INCLUDE, USES, IMPORT) [A FAIRE]
             TDependencyKind : (DEP_INCLUDE, DEP_INCLUDE_LOCAL, DEP_IMPORT,
@@ -1045,6 +1064,20 @@ Type
     DetailedDesc : String;         { Description detaillee }
   End;
 
+  { Types pour l'analyse des hierarchies de classes (TODO 09) }
+  TClassRelation = (REL_INHERITS, REL_IMPLEMENTS, REL_USES,
+    REL_CONTAINS, REL_AGGREGATES, REL_ASSOCIATES, REL_DEPENDS,
+    REL_FRIEND);
+
+  TInheritance = Record
+    ChildId    : Integer;           { ID de la classe enfant }
+    ParentId   : Integer;           { ID de la classe parente }
+    ParentName : String;            { Nom de la classe parente }
+    Relation   : TClassRelation;    { Type de relation }
+    Visibility : TEntityVisibility; { Visibilite de l heritage }
+    IsVirtual  : Boolean;           { Heritage virtuel }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1066,6 +1099,10 @@ Var
   { Variables pour l'extraction des entites (TODO 08) }
   Entities      : Array[1..MAX_SYMBOLS] Of TEntity;
   EntityCount   : Integer;
+
+  { Variables pour l'analyse des hierarchies de classes (TODO 09) }
+  Inheritances     : Array[1..MAX_INHERITANCES] Of TInheritance;
+  InheritanceCount : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -2430,6 +2467,598 @@ Begin
   End;
   
   WriteLn;
+End;
+
+{ ============================================================
+  TODO 09 - ANALYSE DES HIERARCHIES DE CLASSES
+  ============================================================ }
+
+Procedure InitInheritances;
+{ Initialise le tableau des heritages }
+Begin
+  InheritanceCount := 0;
+End;
+
+Function ClassRelationToStr(Rel: TClassRelation): String;
+{ Convertit un type de relation en chaine }
+Begin
+  Case Rel Of
+    REL_INHERITS:   ClassRelationToStr := 'inherits';
+    REL_IMPLEMENTS: ClassRelationToStr := 'implements';
+    REL_USES:       ClassRelationToStr := 'uses';
+    REL_CONTAINS:   ClassRelationToStr := 'contains';
+    REL_AGGREGATES: ClassRelationToStr := 'aggregates';
+    REL_ASSOCIATES: ClassRelationToStr := 'associates';
+    REL_DEPENDS:    ClassRelationToStr := 'depends';
+    REL_FRIEND:     ClassRelationToStr := 'friend';
+  Else
+    ClassRelationToStr := 'unknown';
+  End;
+End;
+
+Procedure AddInheritance(ChildId: Integer; Const ParentName: String;
+  Rel: TClassRelation; Vis: TEntityVisibility; IsVirt: Boolean);
+{ Ajoute une relation d heritage au tableau }
+Var
+  I, ParentId: Integer;
+Begin
+  If InheritanceCount >= MAX_INHERITANCES Then
+  Begin
+    WarnMsg('Trop de relations d''heritage (max=' + IntToStr(MAX_INHERITANCES) + ')');
+    Exit;
+  End;
+  
+  { Rechercher l ID de la classe parente }
+  ParentId := -1;
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].Name = ParentName) Or (Entities[I].FullName = ParentName) Then
+    Begin
+      If (Entities[I].Kind = ENT_CLASS) Or (Entities[I].Kind = ENT_STRUCT) Or
+         (Entities[I].Kind = ENT_INTERFACE) Then
+      Begin
+        ParentId := I;
+        Break;
+      End;
+    End;
+  End;
+  
+  Inc(InheritanceCount);
+  Inheritances[InheritanceCount].ChildId := ChildId;
+  Inheritances[InheritanceCount].ParentId := ParentId;
+  Inheritances[InheritanceCount].ParentName := ParentName;
+  Inheritances[InheritanceCount].Relation := Rel;
+  Inheritances[InheritanceCount].Visibility := Vis;
+  Inheritances[InheritanceCount].IsVirtual := IsVirt;
+End;
+
+Function FindEntityByName(Const Name: String): Integer;
+{ Recherche une entite par son nom, retourne l index ou -1 si non trouve }
+Var
+  I: Integer;
+Begin
+  FindEntityByName := -1;
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].Name = Name) Or (Entities[I].FullName = Name) Then
+    Begin
+      FindEntityByName := I;
+      Exit;
+    End;
+  End;
+End;
+
+Function IsClassEntity(Kind: TEntityKind): Boolean;
+{ Verifie si le type d entite est une classe, struct ou interface }
+Begin
+  IsClassEntity := (Kind = ENT_CLASS) Or (Kind = ENT_STRUCT) Or
+                   (Kind = ENT_INTERFACE) Or (Kind = ENT_EXCEPTION);
+End;
+
+Procedure ParseCppInheritance(Const Line: String; EntityId: Integer);
+{ Parse une ligne de declaration C++ pour extraire les heritages.
+  Ex: class Derived : public Base, private Base2, virtual public Base3 }
+Var
+  Pos, ColonPos, I, StartPos: Integer;
+  ParentName: String;
+  Vis: TEntityVisibility;
+  IsVirtual: Boolean;
+Begin
+  { Chercher le : qui indique l heritage }
+  ColonPos := 0;
+  For I := 1 To Length(Line) Do
+  Begin
+    If Line[I] = ':' Then
+    Begin
+      { Verifier que ce n est pas :: }
+      If (I > 1) And (Line[I-1] = ':') Then Continue;
+      If (I < Length(Line)) And (Line[I+1] = ':') Then Continue;
+      ColonPos := I;
+      Break;
+    End;
+  End;
+  
+  If ColonPos = 0 Then Exit;
+  
+  { Parser les classes parentes apres le : }
+  Pos := ColonPos + 1;
+  While Pos <= Length(Line) Do
+  Begin
+    { Sauter les espaces }
+    While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
+    If Pos > Length(Line) Then Break;
+    
+    { Detecter les modificateurs }
+    Vis := VIS_PRIVATE;  { Par defaut pour class }
+    IsVirtual := False;
+    
+    { Boucle pour parser virtual et visibilite }
+    While Pos <= Length(Line) Do
+    Begin
+      { virtual }
+      If (Pos + 6 <= Length(Line)) And 
+         (Copy(Line, Pos, 7) = 'virtual') And
+         ((Pos + 7 > Length(Line)) Or (Line[Pos+7] = ' ')) Then
+      Begin
+        IsVirtual := True;
+        Inc(Pos, 7);
+        While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
+        Continue;
+      End;
+      
+      { public }
+      If (Pos + 5 <= Length(Line)) And 
+         (Copy(Line, Pos, 6) = 'public') And
+         ((Pos + 6 > Length(Line)) Or (Line[Pos+6] = ' ')) Then
+      Begin
+        Vis := VIS_PUBLIC;
+        Inc(Pos, 6);
+        While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
+        Continue;
+      End;
+      
+      { protected }
+      If (Pos + 8 <= Length(Line)) And 
+         (Copy(Line, Pos, 9) = 'protected') And
+         ((Pos + 9 > Length(Line)) Or (Line[Pos+9] = ' ')) Then
+      Begin
+        Vis := VIS_PROTECTED;
+        Inc(Pos, 9);
+        While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
+        Continue;
+      End;
+      
+      { private }
+      If (Pos + 6 <= Length(Line)) And 
+         (Copy(Line, Pos, 7) = 'private') And
+         ((Pos + 7 > Length(Line)) Or (Line[Pos+7] = ' ')) Then
+      Begin
+        Vis := VIS_PRIVATE;
+        Inc(Pos, 7);
+        While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
+        Continue;
+      End;
+      
+      Break;
+    End;
+    
+    { Extraire le nom de la classe parente }
+    StartPos := Pos;
+    While (Pos <= Length(Line)) And 
+          (Line[Pos] <> ',') And (Line[Pos] <> '{') And 
+          (Line[Pos] <> ' ') And (Line[Pos] <> '<') Do
+    Begin
+      { Gerer les noms qualifies avec :: }
+      If (Pos < Length(Line)) And (Line[Pos] = ':') And (Line[Pos+1] = ':') Then
+        Inc(Pos, 2)
+      Else
+        Inc(Pos);
+    End;
+    
+    ParentName := Copy(Line, StartPos, Pos - StartPos);
+    
+    { Sauter les templates <...> }
+    If (Pos <= Length(Line)) And (Line[Pos] = '<') Then
+    Begin
+      I := 1;  { Compteur de < }
+      Inc(Pos);
+      While (Pos <= Length(Line)) And (I > 0) Do
+      Begin
+        If Line[Pos] = '<' Then Inc(I)
+        Else If Line[Pos] = '>' Then Dec(I);
+        Inc(Pos);
+      End;
+    End;
+    
+    { Ajouter l heritage si le nom est valide }
+    If Length(ParentName) > 0 Then
+      AddInheritance(EntityId, ParentName, REL_INHERITS, Vis, IsVirtual);
+    
+    { Chercher la prochaine classe parente (apres la virgule) }
+    While (Pos <= Length(Line)) And (Line[Pos] <> ',') And (Line[Pos] <> '{') Do
+      Inc(Pos);
+    
+    If (Pos <= Length(Line)) And (Line[Pos] = ',') Then
+      Inc(Pos)
+    Else
+      Break;
+  End;
+End;
+
+Procedure ParseJavaInheritance(Const Line: String; EntityId: Integer);
+{ Parse une declaration Java pour extraire extends et implements.
+  Ex: class Derived extends Base implements Interface1, Interface2 }
+Var
+  Pos, StartPos: Integer;
+  ParentName: String;
+  InExtends, InImplements: Boolean;
+Begin
+  InExtends := False;
+  InImplements := False;
+  Pos := 1;
+  
+  While Pos <= Length(Line) Do
+  Begin
+    { Chercher extends }
+    If (Pos + 6 <= Length(Line)) And (Copy(Line, Pos, 7) = 'extends') Then
+    Begin
+      InExtends := True;
+      InImplements := False;
+      Inc(Pos, 7);
+      While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
+      Continue;
+    End;
+    
+    { Chercher implements }
+    If (Pos + 9 <= Length(Line)) And (Copy(Line, Pos, 10) = 'implements') Then
+    Begin
+      InExtends := False;
+      InImplements := True;
+      Inc(Pos, 10);
+      While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
+      Continue;
+    End;
+    
+    { Si on est dans extends ou implements, extraire le nom }
+    If InExtends Or InImplements Then
+    Begin
+      StartPos := Pos;
+      While (Pos <= Length(Line)) And 
+            (Line[Pos] <> ',') And (Line[Pos] <> '{') And 
+            (Line[Pos] <> ' ') And (Line[Pos] <> '<') Do
+        Inc(Pos);
+      
+      ParentName := Copy(Line, StartPos, Pos - StartPos);
+      
+      { Sauter les generics <...> }
+      If (Pos <= Length(Line)) And (Line[Pos] = '<') Then
+      Begin
+        StartPos := 1;
+        Inc(Pos);
+        While (Pos <= Length(Line)) And (StartPos > 0) Do
+        Begin
+          If Line[Pos] = '<' Then Inc(StartPos)
+          Else If Line[Pos] = '>' Then Dec(StartPos);
+          Inc(Pos);
+        End;
+      End;
+      
+      If Length(ParentName) > 0 Then
+      Begin
+        If InExtends Then
+          AddInheritance(EntityId, ParentName, REL_INHERITS, VIS_PUBLIC, False)
+        Else
+          AddInheritance(EntityId, ParentName, REL_IMPLEMENTS, VIS_PUBLIC, False);
+      End;
+      
+      { Passer a la prochaine classe/interface }
+      While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
+      If (Pos <= Length(Line)) And (Line[Pos] = ',') Then
+      Begin
+        Inc(Pos);
+        While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
+        Continue;
+      End;
+      
+      { Fin de extends/implements }
+      If (Pos <= Length(Line)) And (Line[Pos] = '{') Then Break;
+      InExtends := False;
+      InImplements := False;
+    End
+    Else
+      Inc(Pos);
+  End;
+End;
+
+Procedure ParsePascalInheritance(Const Line: String; EntityId: Integer);
+{ Parse une declaration Pascal pour extraire l heritage.
+  Ex: TDerived = class(TBase, IInterface1) }
+Var
+  ParenPos, Pos, StartPos, EndPos: Integer;
+  ParentName: String;
+  IsFirst: Boolean;
+Begin
+  { Chercher la parenthese ouvrante apres class/object }
+  ParenPos := 0;
+  For Pos := 1 To Length(Line) Do
+  Begin
+    If Line[Pos] = '(' Then
+    Begin
+      ParenPos := Pos;
+      Break;
+    End;
+  End;
+  
+  If ParenPos = 0 Then Exit;
+  
+  { Chercher la parenthese fermante }
+  EndPos := 0;
+  For Pos := ParenPos + 1 To Length(Line) Do
+  Begin
+    If Line[Pos] = ')' Then
+    Begin
+      EndPos := Pos;
+      Break;
+    End;
+  End;
+  
+  If EndPos = 0 Then EndPos := Length(Line) + 1;
+  
+  { Parser les classes parentes entre parentheses }
+  Pos := ParenPos + 1;
+  IsFirst := True;
+  
+  While Pos < EndPos Do
+  Begin
+    { Sauter les espaces }
+    While (Pos < EndPos) And (Line[Pos] = ' ') Do Inc(Pos);
+    If Pos >= EndPos Then Break;
+    
+    { Extraire le nom }
+    StartPos := Pos;
+    While (Pos < EndPos) And (Line[Pos] <> ',') And (Line[Pos] <> ' ') Do
+      Inc(Pos);
+    
+    ParentName := Copy(Line, StartPos, Pos - StartPos);
+    
+    If Length(ParentName) > 0 Then
+    Begin
+      { En Pascal, la premiere classe est la classe de base,
+        les suivantes sont des interfaces }
+      If IsFirst Then
+        AddInheritance(EntityId, ParentName, REL_INHERITS, VIS_PUBLIC, False)
+      Else
+        AddInheritance(EntityId, ParentName, REL_IMPLEMENTS, VIS_PUBLIC, False);
+      IsFirst := False;
+    End;
+    
+    { Passer a la prochaine classe/interface }
+    While (Pos < EndPos) And ((Line[Pos] = ' ') Or (Line[Pos] = ',')) Do Inc(Pos);
+  End;
+End;
+
+Procedure BuildClassHierarchy;
+{ Parcourt toutes les entites de type classe/interface
+  et extrait les relations d heritage et d implementation }
+Var
+  I: Integer;
+Begin
+  InitInheritances;
+  
+  For I := 1 To EntityCount Do
+  Begin
+    If IsClassEntity(Entities[I].Kind) Then
+    Begin
+      { Analyser la signature pour extraire les heritages }
+      If Length(Entities[I].Signature) > 0 Then
+      Begin
+        { Detecter le langage a partir du contenu }
+        If (Pos('class ', Entities[I].Signature) > 0) Or
+           (Pos('struct ', Entities[I].Signature) > 0) Then
+        Begin
+          { C++ ou Java }
+          If (Pos(' extends ', Entities[I].Signature) > 0) Or
+             (Pos(' implements ', Entities[I].Signature) > 0) Then
+            ParseJavaInheritance(Entities[I].Signature, I)
+          Else If Pos(':', Entities[I].Signature) > 0 Then
+            ParseCppInheritance(Entities[I].Signature, I);
+        End
+        Else If (Pos('= class', Entities[I].Signature) > 0) Or
+                (Pos('= object', Entities[I].Signature) > 0) Or
+                (Pos('= interface', Entities[I].Signature) > 0) Then
+        Begin
+          { Pascal }
+          ParsePascalInheritance(Entities[I].Signature, I);
+        End;
+      End;
+    End;
+  End;
+End;
+
+Function GetBaseClasses(EntityId: Integer): String;
+{ Retourne la liste des classes de base (separees par des virgules) }
+Var
+  I: Integer;
+  Result: String;
+Begin
+  Result := '';
+  For I := 1 To InheritanceCount Do
+  Begin
+    If (Inheritances[I].ChildId = EntityId) And 
+       (Inheritances[I].Relation = REL_INHERITS) Then
+    Begin
+      If Length(Result) > 0 Then Result := Result + ', ';
+      Result := Result + Inheritances[I].ParentName;
+    End;
+  End;
+  GetBaseClasses := Result;
+End;
+
+Function GetDerivedClasses(EntityId: Integer): String;
+{ Retourne la liste des classes derivees (separees par des virgules) }
+Var
+  I: Integer;
+  Result: String;
+Begin
+  Result := '';
+  For I := 1 To InheritanceCount Do
+  Begin
+    If (Inheritances[I].ParentId = EntityId) And 
+       (Inheritances[I].Relation = REL_INHERITS) Then
+    Begin
+      If Length(Result) > 0 Then Result := Result + ', ';
+      If Inheritances[I].ChildId > 0 Then
+        Result := Result + Entities[Inheritances[I].ChildId].Name;
+    End;
+  End;
+  GetDerivedClasses := Result;
+End;
+
+Function GetImplementedInterfaces(EntityId: Integer): String;
+{ Retourne la liste des interfaces implementees (separees par des virgules) }
+Var
+  I: Integer;
+  Result: String;
+Begin
+  Result := '';
+  For I := 1 To InheritanceCount Do
+  Begin
+    If (Inheritances[I].ChildId = EntityId) And 
+       (Inheritances[I].Relation = REL_IMPLEMENTS) Then
+    Begin
+      If Length(Result) > 0 Then Result := Result + ', ';
+      Result := Result + Inheritances[I].ParentName;
+    End;
+  End;
+  GetImplementedInterfaces := Result;
+End;
+
+Procedure DetectDiamondInheritance;
+{ Detecte et signale les heritages en diamant.
+  Un heritage en diamant se produit quand une classe herite de deux classes
+  qui ont elles-memes un ancetre commun. }
+Var
+  I, J, K: Integer;
+  Class1, Class2: Integer;
+  Ancestors1, Ancestors2: Array[1..100] Of Integer;
+  Count1, Count2: Integer;
+  Found: Boolean;
+  
+  Procedure CollectAncestors(EntityId: Integer; Var Ancestors: Array Of Integer;
+    Var Count: Integer; Depth: Integer);
+  { Collecte recursivement tous les ancetres d une classe }
+  Var
+    M: Integer;
+  Begin
+    If Depth > 50 Then Exit;  { Protection contre les boucles infinies }
+    
+    For M := 1 To InheritanceCount Do
+    Begin
+      If (Inheritances[M].ChildId = EntityId) And 
+         (Inheritances[M].Relation = REL_INHERITS) And
+         (Inheritances[M].ParentId > 0) Then
+      Begin
+        If Count < 100 Then
+        Begin
+          Inc(Count);
+          Ancestors[Count] := Inheritances[M].ParentId;
+          CollectAncestors(Inheritances[M].ParentId, Ancestors, Count, Depth + 1);
+        End;
+      End;
+    End;
+  End;
+  
+Begin
+  { Parcourir toutes les classes }
+  For I := 1 To EntityCount Do
+  Begin
+    If Not IsClassEntity(Entities[I].Kind) Then Continue;
+    
+    { Trouver toutes les classes parentes directes }
+    Class1 := 0;
+    Class2 := 0;
+    For J := 1 To InheritanceCount Do
+    Begin
+      If (Inheritances[J].ChildId = I) And 
+         (Inheritances[J].Relation = REL_INHERITS) And
+         (Inheritances[J].ParentId > 0) Then
+      Begin
+        If Class1 = 0 Then
+          Class1 := Inheritances[J].ParentId
+        Else If Class2 = 0 Then
+          Class2 := Inheritances[J].ParentId
+        Else
+          Break;  { Plus de 2 parents - verifier chaque paire }
+      End;
+    End;
+    
+    { Si la classe a au moins 2 parents, verifier le diamant }
+    If (Class1 > 0) And (Class2 > 0) Then
+    Begin
+      { Collecter les ancetres de chaque parent }
+      Count1 := 0;
+      Count2 := 0;
+      CollectAncestors(Class1, Ancestors1, Count1, 0);
+      CollectAncestors(Class2, Ancestors2, Count2, 0);
+      
+      { Chercher un ancetre commun }
+      Found := False;
+      For J := 1 To Count1 Do
+      Begin
+        For K := 1 To Count2 Do
+        Begin
+          If Ancestors1[J] = Ancestors2[K] Then
+          Begin
+            Found := True;
+            WarnMsg('Heritage en diamant detecte: ' + Entities[I].Name +
+                    ' herite de ' + Entities[Class1].Name + ' et ' +
+                    Entities[Class2].Name + ', qui ont un ancetre commun: ' +
+                    Entities[Ancestors1[J]].Name);
+            Break;
+          End;
+        End;
+        If Found Then Break;
+      End;
+    End;
+  End;
+End;
+
+Procedure ShowClassHierarchy;
+{ Affiche la hierarchie des classes }
+Var
+  I: Integer;
+  BaseClasses, DerivedClasses, Interfaces: String;
+Begin
+  If InheritanceCount = 0 Then
+  Begin
+    WriteLn('Aucune relation d''heritage trouvee.');
+    Exit;
+  End;
+  
+  WriteLn('Hierarchie des classes:');
+  WriteLn;
+  
+  For I := 1 To EntityCount Do
+  Begin
+    If Not IsClassEntity(Entities[I].Kind) Then Continue;
+    
+    BaseClasses := GetBaseClasses(I);
+    DerivedClasses := GetDerivedClasses(I);
+    Interfaces := GetImplementedInterfaces(I);
+    
+    If (Length(BaseClasses) > 0) Or (Length(DerivedClasses) > 0) Or 
+       (Length(Interfaces) > 0) Then
+    Begin
+      WriteLn('  ', EntityKindToStr(Entities[I].Kind), ' ', Entities[I].Name);
+      If Length(BaseClasses) > 0 Then
+        WriteLn('    Herite de: ', BaseClasses);
+      If Length(Interfaces) > 0 Then
+        WriteLn('    Implemente: ', Interfaces);
+      If Length(DerivedClasses) > 0 Then
+        WriteLn('    Classes derivees: ', DerivedClasses);
+      WriteLn;
+    End;
+  End;
 End;
 
 Function IsDocCommentStart(Const Line: String; Pos: Integer): TDocCommentKind;
