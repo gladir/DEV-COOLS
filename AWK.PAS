@@ -795,9 +795,49 @@ End;
 Procedure PrintCommand;
 Var
  R:Real;
+ VarName,StrVal:String;
+ SavePos:Integer;
 Begin
+ SkipSpace;
+ If CurrPos>Length(CurrLine)Then Begin
+  { print sans argument - affiche $0 }
+  WriteLn(Fields[0]);
+  Exit;
+ End;
  If GetSeparator='"'Then Begin
   WriteLn(GetStringValue);
+ End
+  Else
+ If CurrLine[CurrPos]in['A'..'Z','a'..'z','_']Then Begin
+  { C'est peut-etre une variable }
+  SavePos:=CurrPos;
+  VarName:='';
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+   VarName:=VarName+CurrLine[CurrPos];
+   Inc(CurrPos);
+  End;
+  VarName:=StrToUpper(VarName);
+  If VariableExist(VarName)Then Begin
+   Case VariableType(VarName)of
+    _String:WriteLn(GetVariableString(VarName));
+    _Integer:WriteLn(GetVariableInt(VarName));
+    _LongInt:WriteLn(GetVariableLongInt(VarName));
+    _Real:Begin
+     R:=GetVariableReal(VarName);
+     If Frac(R)=0.0Then WriteLn(R:0:0)
+                   Else WriteLn(R);
+    End;
+    Else WriteLn;
+   End;
+  End
+   Else
+  Begin
+   { Pas une variable connue, restaurer et traiter comme expression }
+   CurrPos:=SavePos;
+   R:=GetNumberValue(1);
+   If Frac(R)=0.0Then WriteLn(R:0:0)
+                 Else WriteLn(R);
+  End;
  End
   Else
  Begin
@@ -1273,22 +1313,110 @@ Begin
  End;
 End;
 
+{ Tente de traiter une assignation de variable }
+{ Retourne True si c'est une assignation, False sinon }
+Function TryAssignment:Boolean;
+Var
+ VarName:String;
+ SavePos:Integer;
+ R:Real;
+ StrValue:String;
+Begin
+ TryAssignment:=False;
+ SavePos:=CurrPos;
+ VarName:='';
+
+ { Extraire le nom de la variable }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+  VarName:=VarName+CurrLine[CurrPos];
+  Inc(CurrPos);
+ End;
+
+ If VarName=''Then Begin
+  CurrPos:=SavePos;
+  Exit;
+ End;
+
+ { Sauter les espaces }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+
+ { Verifier si c'est une assignation }
+ If(CurrPos>Length(CurrLine))or(CurrLine[CurrPos]<>'=')Then Begin
+  CurrPos:=SavePos;
+  Exit;
+ End;
+
+ { Verifier que ce n'est pas == }
+ If(CurrPos+1<=Length(CurrLine))and(CurrLine[CurrPos+1]='=')Then Begin
+  CurrPos:=SavePos;
+  Exit;
+ End;
+
+ { C'est une assignation! }
+ Inc(CurrPos); { passer le = }
+ TryAssignment:=True;
+
+ { Sauter les espaces }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+
+ { Determiner si c'est une chaine ou un nombre }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+  { Assignation de chaine }
+  StrValue:=GetStringValue;
+  VarName:=StrToUpper(VarName);
+  If VariableExist(VarName)Then Begin
+   SetVariableString(VarName,StrValue);
+  End
+   Else
+  Begin
+   AddVariableString(VarName,StrValue);
+  End;
+ End
+  Else
+ Begin
+  { Assignation numerique }
+  R:=GetNumberValue(1);
+  VarName:=StrToUpper(VarName);
+  If VariableExist(VarName)Then Begin
+   If Frac(R)=0.0 Then SetVariableLongInt(VarName,Round(R))
+                  Else SetVariableReal(VarName,R);
+  End
+   Else
+  Begin
+   If Frac(R)=0.0 Then AddVariableLongInt(VarName,Round(R))
+                  Else AddVariableReal(VarName,R);
+  End;
+ End;
+End;
+
 Function RunLine:Boolean;
 Var
  UnknownCommand:Boolean;
  NoImplementation:Boolean;
  J,Err:Integer;
+ CmdResult:Byte;
 Begin
  RunLine:=False;
  Repeat
+  { Sauter les espaces en debut de ligne }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
+
+  { Verifier fin de ligne }
+  If CurrPos>Length(CurrLine)Then Begin
+   RunLine:=True;
+   Exit;
+  End;
+
   If CurrLine[CurrPos]='{'Then  Begin
    Inc(AccoladeBlock);
    Inc(CurrPos);
+   Continue;
   End;
   If CurrLine[CurrPos]='}'Then  Begin
    If(AccoladeBlock>0)Then Begin
     Dec(AccoladeBlock);
     Inc(CurrPos);
+    Continue;
    End
     Else
    Begin
@@ -1298,13 +1426,25 @@ Begin
    End;
   End;
   If CurrLine[CurrPos]='#'Then Begin
-   CurrPos:=Length(CurrLine);
+   CurrPos:=Length(CurrLine)+1;
    RunLine:=True;
    Exit;
   End;
+
+  { Essayer d'abord une assignation de variable }
+  If TryAssignment Then Begin
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',';'])do Inc(CurrPos);
+   If CurrPos>Length(CurrLine)Then Begin
+    RunLine:=True;
+    Exit;
+   End;
+   Continue;
+  End;
+
   NoImplementation:=False;
   UnknownCommand:=False;
-  Case ExtractCommand of
+  CmdResult:=ExtractCommand;
+  Case CmdResult of
    0: BeginCommand;{BEGIN}
    1: NoImplementation:=True; {BEGINFILE}
    2: NoImplementation:=True; { END }
@@ -1390,7 +1530,7 @@ Begin
   End;
   While(CurrLine[CurrPos]in[' ',';'])and(CurrPos<=Length(CurrLine)) do Inc(CurrPos);
   If CurrPos>=Length(CurrLine)Then Break;
-  If Not(CurrLine[CurrPos]in['A'..'Z','a'..'z','_'])Then Begin
+  If Not(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','{','}','#'])Then Begin
    WriteLn('Erreur de syntaxe a la position ',CurrPos,' de la ligne ',CurrNumberLine+1);
    Exit;
   End;
