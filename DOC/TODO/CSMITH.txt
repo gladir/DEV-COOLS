@@ -74,7 +74,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Table des structures : StructDefs[], NumStructs.
       Emettre les declarations typedef struct { ... } NomStruct;
 
-  7.  [A FAIRE] Generation d'unions.
+  7.  [IMPLEMENTE] Generation d'unions.
       Generateur de definitions d'unions C :
       GenUnionDef - generer une definition d'union aleatoire.
       GenUnionField - generer un champ d'union.

@@ -89,7 +89,7 @@
             Table des structures : StructDefs[], NumStructs.
             Emettre les declarations typedef struct { ... } NomStruct;
 
-  TODO 07 - [A FAIRE] GENERATION DE UNIONS
+  TODO 07 - [IMPLEMENTE] GENERATION DE UNIONS
             Generateur de definitions d'unions C :
             GenUnionDef - generer une definition d'union aleatoire.
             GenUnionField - generer un champ d'union.
@@ -1641,6 +1641,255 @@ Begin
 End;
 
 { ============================================================
+  TODO 07 : GENERATION DE UNIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ Constantes pour la generation d'unions }
+Const
+  MIN_UNION_FIELDS = 2;  { Une union a au moins 2 champs (sinon inutile) }
+  MAX_UNION_DEPTH  = 2;  { Profondeur max pour les unions imbriquees }
+
+{ --- Fonctions utilitaires pour les unions --- }
+
+Function GenUnionName: TString;
+{ Genere un nom d'union unique de la forme 'u_N'. }
+Begin
+  Inc(UnionCounter);
+  GenUnionName := 'u_' + IntToStr(UnionCounter);
+End;
+
+Function GenUnionFieldName(UnionIdx, FieldNum: Integer): TString;
+{ Genere un nom de champ d'union unique de la forme 'uf_N'. }
+Begin
+  GenUnionFieldName := 'uf' + IntToStr(FieldNum);
+End;
+
+Function IsValidUnionFieldType(Kind: TTypeKind; CurrentDepth: Integer): Boolean;
+{ Verifie si un type est valide pour un champ d'union.
+  Evite les types void et limite la profondeur des unions imbriquees. }
+Begin
+  If Kind = TK_VOID Then
+    IsValidUnionFieldType := False
+  Else If Kind = TK_FUNC Then
+    IsValidUnionFieldType := False  { Pas de fonctions dans les unions }
+  Else If (Kind = TK_UNION) And (CurrentDepth >= MAX_UNION_DEPTH) Then
+    IsValidUnionFieldType := False  { Limite la profondeur }
+  Else
+    IsValidUnionFieldType := True;
+End;
+
+Function GenRandomUnionFieldType(CurrentDepth: Integer): TCType;
+{ Genere un type aleatoire valide pour un champ d'union.
+  Les unions peuvent contenir differentes representations d'une meme donnee. }
+Var
+  T: TCType;
+  R: Integer;
+Begin
+  InitCType(T);
+  
+  { Choix du type de base : privilegier les types simples pour les unions }
+  R := RandomInt(100);
+  
+  If R < 50 Then
+  Begin
+    { 50% : Type entier de differentes tailles (utile pour unions) }
+    Case RandomInt(6) Of
+      0: T.Kind := TK_CHAR;
+      1: T.Kind := TK_SHORT;
+      2: T.Kind := TK_INT;
+      3: T.Kind := TK_LONG;
+      4: T.Kind := TK_UINT;
+      5: T.Kind := TK_ULONG;
+    End;
+  End
+  Else If R < 70 Then
+  Begin
+    { 20% : Type unsigned pour reinterpretation de bits }
+    Case RandomInt(4) Of
+      0: T.Kind := TK_UCHAR;
+      1: T.Kind := TK_USHORT;
+      2: T.Kind := TK_UINT;
+      3: T.Kind := TK_ULONG;
+    End;
+  End
+  Else If (R < 85) And (Not Opts.NoFloats) Then
+  Begin
+    { 15% : Type flottant si autorise }
+    If RandomBool Then
+      T.Kind := TK_FLOAT
+    Else
+      T.Kind := TK_DOUBLE;
+  End
+  Else If (R < 92) And (CurrentDepth < MAX_UNION_DEPTH) And
+          (Not Opts.NoUnions) And (NumUnions > 0) Then
+  Begin
+    { 7% : Union imbriquee si possible }
+    T.Kind := TK_UNION;
+    T.StructIdx := RandomInt(NumUnions) + 1;
+  End
+  Else If (R < 98) And (CurrentDepth < MAX_STRUCT_DEPTH) And
+          (Not Opts.NoStructs) And (NumStructs > 0) Then
+  Begin
+    { 6% : Structure comme membre d'union }
+    T.Kind := TK_STRUCT;
+    T.StructIdx := RandomInt(NumStructs) + 1;
+  End
+  Else
+  Begin
+    { 2% : Retour au type int par defaut }
+    T.Kind := TK_INT;
+  End;
+  
+  { Les champs d'union sont rarement const/volatile }
+  If (Not Opts.NoVolatiles) And RandomChoice(3) Then
+    T.Quals := Q_VOLATILE
+  Else
+    T.Quals := Q_NONE;
+  
+  GenRandomUnionFieldType := T;
+End;
+
+Function GenUnionField(UnionIdx, FieldNum, CurrentDepth: Integer): TField;
+{ Genere un champ d'union aleatoire. }
+Var
+  F: TField;
+Begin
+  InitField(F);
+  F.Name := GenUnionFieldName(UnionIdx, FieldNum);
+  F.FType := GenRandomUnionFieldType(CurrentDepth);
+  F.BitWidth := 0;  { Pas de champ de bits dans les unions normalement }
+  GenUnionField := F;
+End;
+
+Function AddUnionDef(Const U: TUnionDef): Integer;
+{ Ajoute une definition d'union a la table.
+  Retourne l'index de l'union (1-based) ou 0 si erreur. }
+Begin
+  If NumUnions >= MAX_UNIONS Then
+  Begin
+    AddUnionDef := 0;
+    Exit;
+  End;
+  Inc(NumUnions);
+  Unions[NumUnions] := U;
+  AddUnionDef := NumUnions;
+End;
+
+Function GenUnionDef(CurrentDepth: Integer): Integer;
+{ Genere une definition d'union aleatoire.
+  CurrentDepth permet de limiter l'imbrication des unions.
+  Retourne l'index de la nouvelle union (1-based) ou 0 si erreur. }
+Var
+  U: TUnionDef;
+  NumFields: Integer;
+  I: Integer;
+Begin
+  InitUnionDef(U);
+  
+  { Generer un nom unique }
+  U.Name := GenUnionName;
+  
+  { Determiner le nombre de champs (minimum 2 pour une union utile) }
+  NumFields := RandomRange(MIN_UNION_FIELDS, MAX_UNION_FIELDS);
+  U.NumFields := NumFields;
+  
+  { Generer les champs }
+  For I := 1 To NumFields Do
+    U.Fields[I] := GenUnionField(NumUnions + 1, I, CurrentDepth);
+  
+  U.IsComplete := True;
+  
+  { Ajouter a la table }
+  GenUnionDef := AddUnionDef(U);
+End;
+
+{ --- Fonctions d'emission pour les unions --- }
+
+Procedure EmitUnionFieldDecl(Const F: TField);
+{ Emet la declaration d'un champ d'union. }
+Var
+  S: TString;
+Begin
+  S := '    ' + TypeToStr(F.FType) + ' ' + F.Name + ';';
+  EmitLine(S);
+End;
+
+Procedure EmitUnionDef(UnionIdx: Integer);
+{ Emet la definition complete d'une union.
+  Format : typedef union ... Name; }
+Var
+  I: Integer;
+Begin
+  If (UnionIdx < 1) Or (UnionIdx > NumUnions) Then
+    Exit;
+  
+  With Unions[UnionIdx] Do
+  Begin
+    EmitLine('typedef union {');
+    
+    { Emettre les champs }
+    For I := 1 To NumFields Do
+      EmitUnionFieldDecl(Fields[I]);
+    
+    EmitLine('} ' + Name + ';');
+  End;
+End;
+
+Procedure EmitAllUnionDefs;
+{ Emet toutes les definitions d'unions. }
+Var
+  I: Integer;
+Begin
+  If NumUnions > 0 Then
+  Begin
+    EmitComment('Definitions d''unions');
+    For I := 1 To NumUnions Do
+    Begin
+      EmitUnionDef(I);
+      EmitBlankLine;
+    End;
+  End;
+End;
+
+Function GetUnionByName(Const Name: TString): Integer;
+{ Recherche une union par son nom.
+  Retourne l'index (1-based) ou 0 si non trouvee. }
+Var
+  I: Integer;
+Begin
+  GetUnionByName := 0;
+  For I := 1 To NumUnions Do
+    If Unions[I].Name = Name Then
+    Begin
+      GetUnionByName := I;
+      Exit;
+    End;
+End;
+
+Function GetUnionField(UnionIdx, FieldIdx: Integer): TField;
+{ Retourne un champ d'une union. }
+Var
+  F: TField;
+Begin
+  InitField(F);
+  If (UnionIdx >= 1) And (UnionIdx <= NumUnions) And
+     (FieldIdx >= 1) And (FieldIdx <= Unions[UnionIdx].NumFields) Then
+    F := Unions[UnionIdx].Fields[FieldIdx];
+  GetUnionField := F;
+End;
+
+Function MakeUnionType(UnionIdx: Integer): TCType;
+{ Cree un type union a partir de l'index d'une definition. }
+Var
+  T: TCType;
+Begin
+  InitCType(T);
+  T.Kind := TK_UNION;
+  T.StructIdx := UnionIdx;  { Reutilise StructIdx pour les unions aussi }
+  MakeUnionType := T;
+End;
+
+{ ============================================================
   INITIALISATION
   ============================================================ }
 
@@ -1852,6 +2101,15 @@ Begin
     For I := 1 To NumGen Do
       GenStructDef(0);  { Profondeur initiale = 0 }
     EmitAllStructDefs;
+  End;
+  
+  { Generer quelques unions si autorisees }
+  If Not Opts.NoUnions Then
+  Begin
+    NumGen := RandomRange(1, 3);  { Generer 1 a 3 unions }
+    For I := 1 To NumGen Do
+      GenUnionDef(0);  { Profondeur initiale = 0 }
+    EmitAllUnionDefs;
   End;
   
   GenChecksumVars;
