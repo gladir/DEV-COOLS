@@ -1136,10 +1136,10 @@ Begin
 End;
 
 { ---- Aide en ligne ---------------------------------------- }
-Procedure ShowHelp;
-Begin
+Procedure ShowHelp;Begin
   WriteLn('DISRES v', DISRES_VERSION,
-          ' - Desassembleur de fichiers .RES (ressources Windows) vers .RC');
+          ' - Cette commande permert de lancer le desassembleur ',
+          'de fichiers .RES (ressources Windows) vers .RC');
   WriteLn;
   WriteLn('Syntaxe : DISRES fichier.res [-o sortie.rc] [-16|-32] [-x] [-v] [-h]');
   WriteLn;
@@ -4775,8 +4775,12 @@ Begin
   End;
 End;
 
-
-Begin
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowHelp;
+  Halt(0);
+ End;
   { Banniere de version }
   WriteLn('DISRES v', DISRES_VERSION, ' (', DISRES_DATE, ') - ',
           'Desassembleur de fichiers .RES vers .RC');
@@ -4860,4 +4864,4 @@ Begin
 
   { Fermer le fichier source }
   CloseResFile;
-End.
+END.
