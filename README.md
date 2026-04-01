@@ -316,7 +316,11 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>DISOBJ.PAS</b></td>
 			<td>Cette commande permet d'analyser et de désassembler un fichier d'extension «.OBJ».</td>
 		</tr>
-			<tr>
+		<tr>
+			<td><b>DISRES.PAS</b></td>
+			<td>Cette commande permert de lancer le desassembleur de fichiers .RES (ressources Windows) vers .RC</td>
+		</tr>
+		<tr>
 			<td><b>DISZ80.PAS</b></td>
 			<td>Cette commande permet de désassembler un code binaire de microprocesseur Z80 en langage de programmation assembleur Z80.</td>
 		</tr>
