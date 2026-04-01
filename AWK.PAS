@@ -41,6 +41,8 @@ Const
  MaxLine=1024;
  MaxVariable=100;
  MaxFields=10;
+ MaxUserFunctions=50;
+ MaxFunctionParams=10;
 
 Type
  StrPointer=^String;
@@ -57,6 +59,15 @@ Type
   VarName:String[20];
  End;
  VarPointer=^VarRec;
+ { Type pour les fonctions utilisateur }
+ TUserFunc=Record
+  FuncName:String[32];
+  ParamNames:Array[1..MaxFunctionParams]of String[20];
+  ParamCount:Integer;
+  BodyStartLine:Integer;  { Ligne de debut du corps de la fonction }
+  BodyEndLine:Integer;    { Ligne de fin du corps de la fonction }
+  BodyStartPos:Integer;   { Position dans la ligne de debut }
+ End;
 
 Var
  Fields:FieldArray;
@@ -76,6 +87,16 @@ Var
  EndBlockStart:Integer;  { Ligne de debut du bloc END }
  EndBlockEnd:Integer;    { Ligne de fin du bloc END }
  InEndBlock:Boolean;     { Indique si on est dans un bloc END }
+ { Variables pour les fonctions utilisateur }
+ UserFuncs:Array[1..MaxUserFunctions]of TUserFunc;
+ UserFuncCount:Integer;
+ InFunctionCall:Boolean;
+ FunctionReturnValue:Real;
+ FunctionReturnStr:String;
+ HasFunctionReturn:Boolean;
+
+{ Declaration anticipee de RunLine }
+Function RunLine:Boolean; forward;
 
 { Remplace tous les caracteres OldChar par NewChar dans une chaine }
 Function ReplaceChar(S:String;OldChar,NewChar:Char):String;
@@ -928,6 +949,189 @@ Begin
   Fields[0]:=InputLine;
   { Mettre a jour NR ou autre variable }
  End;
+End;
+
+{ Recherche une fonction utilisateur par son nom }
+Function FindUserFunction(const FName:String):Integer;
+Var
+ J:Integer;
+ UpperName:String;
+Begin
+ FindUserFunction:=0;
+ UpperName:=FName;
+ For J:=1 to Length(UpperName)do
+  If UpperName[J] in ['a'..'z'] Then
+   UpperName[J]:=Chr(Ord(UpperName[J])-32);
+ For J:=1 to UserFuncCount do Begin
+  If UserFuncs[J].FuncName=UpperName Then Begin
+   FindUserFunction:=J;
+   Exit;
+  End;
+ End;
+End;
+
+{ Parse une definition de fonction: function name(params) ... }
+Procedure ParseFunctionDef;
+Var
+ FuncName,ParamName:String;
+ BlockLevel:Integer;
+ FuncIdx:Integer;
+Begin
+ SkipSpace;
+ { Lire le nom de la fonction }
+ FuncName:='';
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+  FuncName:=FuncName+CurrLine[CurrPos];
+  Inc(CurrPos);
+ End;
+ 
+ If FuncName='' Then Exit;
+ 
+ { Convertir en majuscules }
+ FuncName:=StrToUpper(FuncName);
+ 
+ { Incrementer le compteur de fonctions }
+ Inc(UserFuncCount);
+ FuncIdx:=UserFuncCount;
+ UserFuncs[FuncIdx].FuncName:=FuncName;
+ UserFuncs[FuncIdx].ParamCount:=0;
+ 
+ { Sauter les espaces }
+ SkipSpace;
+ 
+ { Parser les parametres }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Begin
+  Inc(CurrPos); { Passer '(' }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>')')do Begin
+   SkipSpace;
+   ParamName:='';
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+    ParamName:=ParamName+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   If ParamName<>'' Then Begin
+    Inc(UserFuncs[FuncIdx].ParamCount);
+    UserFuncs[FuncIdx].ParamNames[UserFuncs[FuncIdx].ParamCount]:=StrToUpper(ParamName);
+   End;
+   SkipSpace;
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=',')Then Inc(CurrPos);
+  End;
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ End;
+ 
+ { Sauter les espaces et chercher '{' }
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+  { Enregistrer le debut du corps de la fonction }
+  UserFuncs[FuncIdx].BodyStartLine:=CurrLinePtr;
+  UserFuncs[FuncIdx].BodyStartPos:=CurrPos+1;
+  
+  { Sauter le bloc de la fonction }
+  BlockLevel:=1;
+  Inc(CurrPos);
+  While BlockLevel>0 do Begin
+   While CurrPos<=Length(CurrLine)do Begin
+    If CurrLine[CurrPos]='{' Then Inc(BlockLevel)
+    Else If CurrLine[CurrPos]='}' Then Dec(BlockLevel);
+    If BlockLevel=0 Then Break;
+    Inc(CurrPos);
+   End;
+   If BlockLevel>0 Then Begin
+    Inc(CurrLinePtr);
+    If CurrLinePtr>NumberLine Then Break;
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+   End;
+  End;
+  UserFuncs[FuncIdx].BodyEndLine:=CurrLinePtr;
+ End;
+End;
+
+{ Commande function - parse et enregistre une fonction utilisateur }
+Procedure FunctionCommand;
+Begin
+ ParseFunctionDef;
+End;
+
+{ Commande return - retourne une valeur depuis une fonction }
+Procedure ReturnCommand;
+Var
+ R:Real;
+Begin
+ SkipSpace;
+ HasFunctionReturn:=True;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+  { Retour de chaine }
+  FunctionReturnStr:=GetStringValue;
+  FunctionReturnValue:=0;
+ End
+  Else
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9','-','+','(','A'..'Z','a'..'z','_','$'])Then Begin
+  { Retour numerique }
+  R:=GetNumberValue(1);
+  FunctionReturnValue:=R;
+  FunctionReturnStr:='';
+ End
+  Else
+ Begin
+  { Retour vide }
+  FunctionReturnValue:=0;
+  FunctionReturnStr:='';
+ End;
+End;
+
+{ Appel d'une fonction utilisateur }
+Function CallUserFunction(FuncIdx:Integer):Real;
+Var
+ SaveLinePtr:Integer;
+ SaveCurrLine:String;
+ SavePos:Integer;
+ OldReturnValue:Real;
+ OldReturnStr:String;
+ OldHasReturn:Boolean;
+Begin
+ CallUserFunction:=0;
+ If(FuncIdx<1)or(FuncIdx>UserFuncCount)Then Exit;
+ 
+ { Sauvegarder l'etat courant }
+ SaveLinePtr:=CurrLinePtr;
+ SaveCurrLine:=CurrLine;
+ SavePos:=CurrPos;
+ OldReturnValue:=FunctionReturnValue;
+ OldReturnStr:=FunctionReturnStr;
+ OldHasReturn:=HasFunctionReturn;
+ 
+ { Initialiser pour l'appel }
+ HasFunctionReturn:=False;
+ FunctionReturnValue:=0;
+ FunctionReturnStr:='';
+ InFunctionCall:=True;
+ 
+ { Executer le corps de la fonction }
+ CurrLinePtr:=UserFuncs[FuncIdx].BodyStartLine;
+ CurrLine:=PA[CurrLinePtr]^;
+ CurrPos:=UserFuncs[FuncIdx].BodyStartPos;
+ 
+ While(CurrLinePtr<=UserFuncs[FuncIdx].BodyEndLine)and(Not HasFunctionReturn)do Begin
+  If Not RunLine Then Break;
+  Inc(CurrLinePtr);
+  If CurrLinePtr<=UserFuncs[FuncIdx].BodyEndLine Then Begin
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrPos:=1;
+  End;
+ End;
+ 
+ { Recuperer la valeur de retour }
+ CallUserFunction:=FunctionReturnValue;
+ 
+ { Restaurer l'etat }
+ CurrLinePtr:=SaveLinePtr;
+ CurrLine:=SaveCurrLine;
+ CurrPos:=SavePos;
+ FunctionReturnValue:=OldReturnValue;
+ FunctionReturnStr:=OldReturnStr;
+ HasFunctionReturn:=OldHasReturn;
+ InFunctionCall:=False;
 End;
 
 Procedure PrintCommand;
@@ -2005,8 +2209,8 @@ Begin
    23: NoImplementation:=True; { exp }
    24: NoImplementation:=True; { fflush }
    25: ForCommand; { for }
-   26: NoImplementation:=True; { func }
-   27: NoImplementation:=True; { function }
+   26: FunctionCommand; { func }
+   27: FunctionCommand; { function }
    28: NoImplementation:=True; { gensub }
    29: GetlineCommand; { getline }
    30: NoImplementation:=True; { gsub }
@@ -2035,7 +2239,7 @@ Begin
    48: PrintCommand; { print }
    49: PrintfCommand; { printf }
    50: NoImplementation:=True; { rand }
-   51: NoImplementation:=True; { return }
+   51: ReturnCommand; { return }
    52: NoImplementation:=True; { rshift }
    53: NoImplementation:=True; { sin }
    54: NoImplementation:=True; { split }
