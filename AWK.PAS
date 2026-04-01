@@ -89,21 +89,21 @@ Function GetRawCommandLine:String;
  {$ELSE}
   {$IFDEF LINUX}
    Var
-     f:Text;
-     S,Result:String;
+     CmdFile:Text;
+     Buffer,CmdResult:String;
    Begin
-    Result:='';
-    Assign(f, '/proc/self/cmdline');
-    {$I-}Reset(f);{$I+}
+    CmdResult:='';
+    Assign(CmdFile, '/proc/self/cmdline');
+    {$I-}Reset(CmdFile);{$I+}
     If IOResult=0 Then Begin
-     While Not EOF(f)do Begin
-      Read(f, S);
-      Result:=Result+S;
+     While Not EOF(CmdFile)do Begin
+      Read(CmdFile, Buffer);
+      CmdResult:=CmdResult+Buffer;
      End;
-     Close(f);
+     Close(CmdFile);
     End;
     { /proc/self/cmdline s�pare les param�tres avec #0 }
-    GetRawCommandLine:= StringReplace(Result, #0, ' ', [rfReplaceAll]);
+    GetRawCommandLine:= StringReplace(CmdResult, #0, ' ', [rfReplaceAll]);
    End;
   {$ELSE}
    {$IFDEF DARWIN}
