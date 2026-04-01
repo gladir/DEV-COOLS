@@ -17,9 +17,6 @@ Uses
   {$IFDEF UNIX}
   BaseUnix,
   {$ENDIF}
-  {$IFDEF FPC}
-  SysUtils,
-  {$ENDIF}
   DOS;
 
 Const
@@ -77,6 +74,17 @@ Var
  AccoladeBlock:Integer;
  I,NumberVariable:Integer;
 
+{ Remplace tous les caracteres OldChar par NewChar dans une chaine }
+Function ReplaceChar(S:String;OldChar,NewChar:Char):String;
+Var
+ J:Integer;
+Begin
+ For J:=1 to Length(S)do Begin
+  If S[J]=OldChar Then S[J]:=NewChar;
+ End;
+ ReplaceChar:=S;
+End;
+
 Function GetRawCommandLine:String;
 {$IFDEF FPC}
  {$IFDEF WINDOWS}
@@ -103,7 +111,7 @@ Function GetRawCommandLine:String;
      Close(CmdFile);
     End;
     { /proc/self/cmdline s�pare les param�tres avec #0 }
-    GetRawCommandLine:= StringReplace(CmdResult, #0, ' ', [rfReplaceAll]);
+    GetRawCommandLine:= ReplaceChar(CmdResult, #0, ' ');
    End;
   {$ELSE}
    {$IFDEF DARWIN}
