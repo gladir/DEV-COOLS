@@ -1529,7 +1529,7 @@ Begin
    Exit;
   End;
   While(CurrLine[CurrPos]in[' ',';'])and(CurrPos<=Length(CurrLine)) do Inc(CurrPos);
-  If CurrPos>=Length(CurrLine)Then Break;
+  If CurrPos>Length(CurrLine)Then Break;
   If Not(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','{','}','#'])Then Begin
    WriteLn('Erreur de syntaxe a la position ',CurrPos,' de la ligne ',CurrNumberLine+1);
    Exit;
