@@ -43,6 +43,8 @@ Const
  MaxFields=10;
  MaxUserFunctions=50;
  MaxFunctionParams=10;
+ MaxArrays=50;
+ MaxArrayElements=100;
 
 Type
  StrPointer=^String;
@@ -67,6 +69,17 @@ Type
   BodyStartLine:Integer;  { Ligne de debut du corps de la fonction }
   BodyEndLine:Integer;    { Ligne de fin du corps de la fonction }
   BodyStartPos:Integer;   { Position dans la ligne de debut }
+ End;
+ { Type pour les elements de tableaux associatifs }
+ TArrayElement=Record
+  Key:String[64];
+  Value:String[255];
+ End;
+ { Type pour les tableaux associatifs }
+ TAssocArray=Record
+  Name:String[32];
+  Elements:Array[1..MaxArrayElements]of TArrayElement;
+  Count:Integer;
  End;
 
 Var
@@ -94,6 +107,13 @@ Var
  FunctionReturnValue:Real;
  FunctionReturnStr:String;
  HasFunctionReturn:Boolean;
+ { Variables pour les boucles (break/continue) }
+ BreakFlag:Boolean;
+ ContinueFlag:Boolean;
+ LoopDepth:Integer;
+ { Variables pour les tableaux associatifs }
+ AssocArrays:Array[1..MaxArrays]of TAssocArray;
+ AssocArrayCount:Integer;
 
 { Declaration anticipee de RunLine }
 Function RunLine:Boolean; forward;
@@ -481,6 +501,117 @@ Begin
  AddLine:=True;
 End;
 
+{ === Fonctions pour les tableaux associatifs === }
+
+Function FindArray(ArrayName:String):Integer;
+Var
+ J:Integer;
+ UpperName:String;
+Begin
+ FindArray:=0;
+ UpperName:=StrToUpper(ArrayName);
+ For J:=1 to AssocArrayCount do Begin
+  If StrToUpper(AssocArrays[J].Name)=UpperName Then Begin
+   FindArray:=J;
+   Exit;
+  End;
+ End;
+End;
+
+Function CreateArray(ArrayName:String):Integer;
+Begin
+ If AssocArrayCount>=MaxArrays Then Begin
+  WriteLn('Trop de tableaux');
+  CreateArray:=0;
+  Exit;
+ End;
+ Inc(AssocArrayCount);
+ AssocArrays[AssocArrayCount].Name:=ArrayName;
+ AssocArrays[AssocArrayCount].Count:=0;
+ CreateArray:=AssocArrayCount;
+End;
+
+Function FindArrayElement(ArrayIdx:Integer;Key:String):Integer;
+Var
+ J:Integer;
+Begin
+ FindArrayElement:=0;
+ If(ArrayIdx<1)or(ArrayIdx>AssocArrayCount)Then Exit;
+ For J:=1 to AssocArrays[ArrayIdx].Count do Begin
+  If AssocArrays[ArrayIdx].Elements[J].Key=Key Then Begin
+   FindArrayElement:=J;
+   Exit;
+  End;
+ End;
+End;
+
+Procedure SetArrayElement(ArrayName,Key,Value:String);
+Var
+ ArrayIdx,ElemIdx:Integer;
+Begin
+ ArrayIdx:=FindArray(ArrayName);
+ If ArrayIdx=0 Then ArrayIdx:=CreateArray(ArrayName);
+ If ArrayIdx=0 Then Exit;
+ 
+ ElemIdx:=FindArrayElement(ArrayIdx,Key);
+ If ElemIdx>0 Then Begin
+  AssocArrays[ArrayIdx].Elements[ElemIdx].Value:=Value;
+ End
+  Else
+ Begin
+  If AssocArrays[ArrayIdx].Count>=MaxArrayElements Then Begin
+   WriteLn('Trop d''elements dans le tableau');
+   Exit;
+  End;
+  Inc(AssocArrays[ArrayIdx].Count);
+  ElemIdx:=AssocArrays[ArrayIdx].Count;
+  AssocArrays[ArrayIdx].Elements[ElemIdx].Key:=Key;
+  AssocArrays[ArrayIdx].Elements[ElemIdx].Value:=Value;
+ End;
+End;
+
+Function GetArrayElement(ArrayName,Key:String):String;
+Var
+ ArrayIdx,ElemIdx:Integer;
+Begin
+ GetArrayElement:='';
+ ArrayIdx:=FindArray(ArrayName);
+ If ArrayIdx=0 Then Exit;
+ 
+ ElemIdx:=FindArrayElement(ArrayIdx,Key);
+ If ElemIdx>0 Then
+  GetArrayElement:=AssocArrays[ArrayIdx].Elements[ElemIdx].Value;
+End;
+
+Function KeyInArray(ArrayName,Key:String):Boolean;
+Var
+ ArrayIdx,ElemIdx:Integer;
+Begin
+ KeyInArray:=False;
+ ArrayIdx:=FindArray(ArrayName);
+ If ArrayIdx=0 Then Exit;
+ 
+ ElemIdx:=FindArrayElement(ArrayIdx,Key);
+ KeyInArray:=(ElemIdx>0);
+End;
+
+Procedure DeleteArrayElement(ArrayName,Key:String);
+Var
+ ArrayIdx,ElemIdx,J:Integer;
+Begin
+ ArrayIdx:=FindArray(ArrayName);
+ If ArrayIdx=0 Then Exit;
+ 
+ ElemIdx:=FindArrayElement(ArrayIdx,Key);
+ If ElemIdx>0 Then Begin
+  { Decaler les elements }
+  For J:=ElemIdx to AssocArrays[ArrayIdx].Count-1 do Begin
+   AssocArrays[ArrayIdx].Elements[J]:=AssocArrays[ArrayIdx].Elements[J+1];
+  End;
+  Dec(AssocArrays[ArrayIdx].Count);
+ End;
+End;
+
 Function ExtractCommand:Byte;
 Var
  I:Byte;
@@ -532,8 +663,8 @@ Var
 Begin
  Dec(TopOfStack);
  If TopOfStack<1Then Begin
-  WriteLn('Pile vide');
-  Halt;
+  TopOfStack:=1;
+  StackPop:='';
  End
   Else
  StackPop:=Stack[TopOfStack];
@@ -558,8 +689,8 @@ End;
 Function ResultStackPop:Real;Begin
  Dec(TopOfStackInt);
  If TopOfStackInt<1Then Begin
-  WriteLn('Pile vide');
-  Halt;
+  TopOfStackInt:=1;
+  ResultStackPop:=0;
  End
   Else
  ResultStackPop:=ResultStack[TopOfStackInt];
@@ -1987,6 +2118,7 @@ Var
  BlockStartPos:Integer;
 Begin
  SkipSpace;
+ Inc(LoopDepth);
  
  { Sauvegarder position pour la condition }
  SaveLinePtr:=CurrLinePtr;
@@ -2003,16 +2135,26 @@ Begin
  If Not Condition Then Begin
   { Condition fausse des le depart - sauter le bloc }
   SkipBlock;
+  Dec(LoopDepth);
   Exit;
  End;
  
  { Boucle while }
  While Condition do Begin
+  { Reinitialiser les flags }
+  ContinueFlag:=False;
+  
   { Sauvegarder la position apres la condition }
   CurrPos:=BlockStartPos;
   
   { Executer le bloc }
   RunBlock;
+  
+  { Verifier break }
+  If BreakFlag Then Begin
+   BreakFlag:=False;
+   Break;
+  End;
   
   { Revenir a la condition }
   CurrLinePtr:=SaveLinePtr;
@@ -2027,6 +2169,7 @@ Begin
  { Sauter le bloc apres la derniere iteration }
  CurrPos:=BlockStartPos;
  SkipBlock;
+ Dec(LoopDepth);
 End;
 
 { Implementation de la commande for }
@@ -2040,6 +2183,7 @@ Var
  InParen:Integer;
 Begin
  SkipSpace;
+ Inc(LoopDepth);
  
  { Attendre ( }
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
@@ -2096,14 +2240,24 @@ Begin
   { Condition fausse des le depart }
   CurrPos:=BlockStartPos;
   SkipBlock;
+  Dec(LoopDepth);
   Exit;
  End;
  
  { Boucle for }
  While Condition do Begin
+  { Reinitialiser les flags }
+  ContinueFlag:=False;
+  
   { Executer le bloc }
   CurrPos:=BlockStartPos;
   RunBlock;
+  
+  { Verifier break }
+  If BreakFlag Then Begin
+   BreakFlag:=False;
+   Break;
+  End;
   
   { Executer l'increment }
   CurrLinePtr:=SaveLinePtr;
@@ -2120,6 +2274,7 @@ Begin
  { Sauter le bloc apres la derniere iteration }
  CurrPos:=BlockStartPos;
  SkipBlock;
+ Dec(LoopDepth);
 End;
 
 Function RunLine:Boolean;
@@ -2187,11 +2342,15 @@ Begin
    6: NoImplementation:=True; { asorti }
    7: NoImplementation:=True; { atan2 }
    8: NoImplementation:=True; { bindtextdomain }
-   9: NoImplementation:=True; { break }
+   9: Begin { break }
+    BreakFlag:=True;
+   End;
    10: NoImplementation:=True; { case }
    11: NoImplementation:=True; { close }
    12: NoImplementation:=True; { compl }
-   13: NoImplementation:=True; { continue }
+   13: Begin { continue }
+    ContinueFlag:=True;
+   End;
    14: CosCommand; { cos }
    15: NoImplementation:=True; { dcgettext }
    16: NoImplementation:=True; { dcngettext }
