@@ -118,6 +118,392 @@ Var
 { Declaration anticipee de RunLine }
 Function RunLine:Boolean; forward;
 
+{ ========================================================= }
+{ SECTION: Expressions Regex                                }
+{ ========================================================= }
+
+{ Verifie si un caractere correspond a une classe de caracteres }
+Function MatchCharClass(C:Char;const CharClass:String):Boolean;
+Var
+ I:Integer;
+ Negated:Boolean;
+ InRange:Boolean;
+ PrevChar:Char;
+Begin
+ MatchCharClass:=False;
+ If Length(CharClass)=0 Then Exit;
+ 
+ I:=1;
+ Negated:=False;
+ 
+ { Verifie si la classe est negativee }
+ If CharClass[1]='^'Then Begin
+  Negated:=True;
+  Inc(I);
+ End;
+ 
+ InRange:=False;
+ PrevChar:=#0;
+ 
+ While I<=Length(CharClass)do Begin
+  If(CharClass[I]='-')and(I>1)and(I<Length(CharClass))and(PrevChar<>#0)Then Begin
+   { Range de caracteres, ex: a-z }
+   Inc(I);
+   If(C>=PrevChar)and(C<=CharClass[I])Then Begin
+    MatchCharClass:=Not Negated;
+    Exit;
+   End;
+   PrevChar:=#0;
+  End
+   Else
+  Begin
+   If C=CharClass[I]Then Begin
+    MatchCharClass:=Not Negated;
+    Exit;
+   End;
+   PrevChar:=CharClass[I];
+  End;
+  Inc(I);
+ End;
+ 
+ MatchCharClass:=Negated;
+End;
+
+{ Fonction de matching regex simplifiee }
+{ Supporte: . (tout caractere), * (0 ou plus), + (1 ou plus), ? (0 ou 1),
+           ^ (debut), $ (fin), [...] (classes), \d \w \s }
+Function RegexMatch(const Text,Pattern:String):Boolean;
+Var
+ TPos,PPos:Integer;
+ AnchorStart,AnchorEnd:Boolean;
+ PatternWork:String;
+ 
+ { Fonction interne recursive pour le matching }
+ Function DoMatch(TI,PI:Integer):Boolean;
+ Var
+  CharClass:String;
+  BracketEnd:Integer;
+  Matched:Boolean;
+  NextChar:Char;
+  Quantifier:Char;
+  MinMatch,I:Integer;
+ Begin
+  DoMatch:=False;
+  
+  { Si on a atteint la fin du pattern }
+  If PI>Length(PatternWork)Then Begin
+   If AnchorEnd Then DoMatch:=(TI>Length(Text))
+                Else DoMatch:=True;
+   Exit;
+  End;
+  
+  { Si on a atteint la fin du texte mais pas du pattern }
+  If TI>Length(Text)Then Begin
+   { On peut encore matcher si le reste du pattern est optionnel }
+   While PI<=Length(PatternWork)do Begin
+    If PI<Length(PatternWork)Then Begin
+     If PatternWork[PI+1]in['*','?']Then Begin
+      Inc(PI,2);
+      Continue;
+     End;
+    End;
+    Exit; { Pattern non termine = pas de match }
+   End;
+   DoMatch:=True;
+   Exit;
+  End;
+  
+  { Traite les classes de caracteres [...] }
+  If PatternWork[PI]='['Then Begin
+   BracketEnd:=PI+1;
+   While(BracketEnd<=Length(PatternWork))and(PatternWork[BracketEnd]<>']')do
+    Inc(BracketEnd);
+   CharClass:=Copy(PatternWork,PI+1,BracketEnd-PI-1);
+   
+   { Verifie le quantificateur apres la classe }
+   Quantifier:=#0;
+   If BracketEnd<Length(PatternWork)Then Begin
+    If PatternWork[BracketEnd+1]in['*','+','?']Then
+     Quantifier:=PatternWork[BracketEnd+1];
+   End;
+   
+   If Quantifier='*'Then Begin
+    { 0 ou plus }
+    If DoMatch(TI,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
+    I:=TI;
+    While(I<=Length(Text))and MatchCharClass(Text[I],CharClass)do Begin
+     Inc(I);
+     If DoMatch(I,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
+    End;
+   End
+    Else If Quantifier='+'Then Begin
+    { 1 ou plus }
+    If Not MatchCharClass(Text[TI],CharClass)Then Exit;
+    I:=TI+1;
+    If DoMatch(I,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
+    While(I<=Length(Text))and MatchCharClass(Text[I],CharClass)do Begin
+     Inc(I);
+     If DoMatch(I,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
+    End;
+   End
+    Else If Quantifier='?'Then Begin
+    { 0 ou 1 }
+    If DoMatch(TI,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
+    If MatchCharClass(Text[TI],CharClass)Then
+     DoMatch:=DoMatch(TI+1,BracketEnd+2);
+   End
+    Else
+   Begin
+    { Exactement 1 }
+    If MatchCharClass(Text[TI],CharClass)Then
+     DoMatch:=DoMatch(TI+1,BracketEnd+1);
+   End;
+   Exit;
+  End;
+  
+  { Traite les sequences d'echappement \d \w \s \. etc }
+  If PatternWork[PI]='\'Then Begin
+   If PI>=Length(PatternWork)Then Exit;
+   Inc(PI);
+   Case PatternWork[PI]of
+    'd':Matched:=Text[TI]in['0'..'9'];
+    'D':Matched:=Not(Text[TI]in['0'..'9']);
+    'w':Matched:=Text[TI]in['A'..'Z','a'..'z','0'..'9','_'];
+    'W':Matched:=Not(Text[TI]in['A'..'Z','a'..'z','0'..'9','_']);
+    's':Matched:=Text[TI]in[' ',#9,#10,#13];
+    'S':Matched:=Not(Text[TI]in[' ',#9,#10,#13]);
+    Else Matched:=(Text[TI]=PatternWork[PI]); { Caractere echappe }
+   End;
+   
+   { Verifie le quantificateur }
+   Quantifier:=#0;
+   If PI<Length(PatternWork)Then Begin
+    If PatternWork[PI+1]in['*','+','?']Then
+     Quantifier:=PatternWork[PI+1];
+   End;
+   
+   If Quantifier=#0 Then Begin
+    If Matched Then DoMatch:=DoMatch(TI+1,PI+1);
+   End
+    Else
+   Begin
+    { Gere les quantificateurs pour \d, \w, etc }
+    Case Quantifier of
+     '*':Begin
+      If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+      I:=TI;
+      While I<=Length(Text)do Begin
+       Case PatternWork[PI]of
+        'd':Matched:=Text[I]in['0'..'9'];
+        'D':Matched:=Not(Text[I]in['0'..'9']);
+        'w':Matched:=Text[I]in['A'..'Z','a'..'z','0'..'9','_'];
+        'W':Matched:=Not(Text[I]in['A'..'Z','a'..'z','0'..'9','_']);
+        's':Matched:=Text[I]in[' ',#9,#10,#13];
+        'S':Matched:=Not(Text[I]in[' ',#9,#10,#13]);
+        Else Matched:=(Text[I]=PatternWork[PI]);
+       End;
+       If Not Matched Then Break;
+       Inc(I);
+       If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+      End;
+     End;
+     '+':Begin
+      If Not Matched Then Exit;
+      I:=TI+1;
+      If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+      While I<=Length(Text)do Begin
+       Case PatternWork[PI]of
+        'd':Matched:=Text[I]in['0'..'9'];
+        'D':Matched:=Not(Text[I]in['0'..'9']);
+        'w':Matched:=Text[I]in['A'..'Z','a'..'z','0'..'9','_'];
+        'W':Matched:=Not(Text[I]in['A'..'Z','a'..'z','0'..'9','_']);
+        's':Matched:=Text[I]in[' ',#9,#10,#13];
+        'S':Matched:=Not(Text[I]in[' ',#9,#10,#13]);
+        Else Matched:=(Text[I]=PatternWork[PI]);
+       End;
+       If Not Matched Then Break;
+       Inc(I);
+       If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+      End;
+     End;
+     '?':Begin
+      If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+      If Matched Then DoMatch:=DoMatch(TI+1,PI+2);
+     End;
+    End;
+   End;
+   Exit;
+  End;
+  
+  { Le point matche tout caractere }
+  If PatternWork[PI]='.'Then Begin
+   { Verifie le quantificateur }
+   Quantifier:=#0;
+   If PI<Length(PatternWork)Then Begin
+    If PatternWork[PI+1]in['*','+','?']Then
+     Quantifier:=PatternWork[PI+1];
+   End;
+   
+   Case Quantifier of
+    '*':Begin
+     If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+     I:=TI;
+     While I<=Length(Text)do Begin
+      Inc(I);
+      If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+     End;
+    End;
+    '+':Begin
+     I:=TI+1;
+     If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+     While I<=Length(Text)do Begin
+      Inc(I);
+      If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+     End;
+    End;
+    '?':Begin
+     If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+     DoMatch:=DoMatch(TI+1,PI+2);
+    End;
+    Else DoMatch:=DoMatch(TI+1,PI+1);
+   End;
+   Exit;
+  End;
+  
+  { Caractere litteral }
+  Quantifier:=#0;
+  If PI<Length(PatternWork)Then Begin
+   If PatternWork[PI+1]in['*','+','?']Then
+    Quantifier:=PatternWork[PI+1];
+  End;
+  
+  Case Quantifier of
+   '*':Begin
+    If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+    I:=TI;
+    While(I<=Length(Text))and(Text[I]=PatternWork[PI])do Begin
+     Inc(I);
+     If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+    End;
+   End;
+   '+':Begin
+    If Text[TI]<>PatternWork[PI]Then Exit;
+    I:=TI+1;
+    If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+    While(I<=Length(Text))and(Text[I]=PatternWork[PI])do Begin
+     Inc(I);
+     If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+    End;
+   End;
+   '?':Begin
+    If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+    If Text[TI]=PatternWork[PI]Then DoMatch:=DoMatch(TI+1,PI+2);
+   End;
+   Else Begin
+    If Text[TI]=PatternWork[PI]Then DoMatch:=DoMatch(TI+1,PI+1);
+   End;
+  End;
+ End;
+
+Begin
+ RegexMatch:=False;
+ If Length(Pattern)=0 Then Begin
+  RegexMatch:=True;
+  Exit;
+ End;
+ 
+ PatternWork:=Pattern;
+ AnchorStart:=False;
+ AnchorEnd:=False;
+ 
+ { Traite les ancres }
+ If PatternWork[1]='^'Then Begin
+  AnchorStart:=True;
+  Delete(PatternWork,1,1);
+ End;
+ If(Length(PatternWork)>0)and(PatternWork[Length(PatternWork)]='$')Then Begin
+  AnchorEnd:=True;
+  Delete(PatternWork,Length(PatternWork),1);
+ End;
+ 
+ If AnchorStart Then Begin
+  RegexMatch:=DoMatch(1,1);
+ End
+  Else
+ Begin
+  { Essaie de matcher a partir de chaque position }
+  For TPos:=1 to Length(Text)do Begin
+   If DoMatch(TPos,1)Then Begin
+    RegexMatch:=True;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ ========================================================= }
+{ SECTION: Parsing Multi-lignes                             }
+{ ========================================================= }
+
+{ Compte les accolades dans une ligne en ignorant les strings et commentaires }
+Function CountBracesInLine(const Line:String):Integer;
+Var
+ I:Integer;
+ InQuote,InApos:Boolean;
+ BraceBalance:Integer;
+Begin
+ BraceBalance:=0;
+ InQuote:=False;
+ InApos:=False;
+ 
+ For I:=1 to Length(Line)do Begin
+  If Line[I]='"'Then Begin
+   If Not InApos Then InQuote:=Not InQuote;
+  End
+   Else If Line[I]=''''Then Begin
+   If Not InQuote Then InApos:=Not InApos;
+  End
+   Else If Not InQuote and Not InApos Then Begin
+   If Line[I]='#'Then Begin
+    CountBracesInLine:=BraceBalance;
+    Exit;
+   End;
+   If Line[I]='{'Then Inc(BraceBalance)
+   Else If Line[I]='}'Then Dec(BraceBalance);
+  End;
+ End;
+ CountBracesInLine:=BraceBalance;
+End;
+
+{ Execute une ligne specifique du programme }
+Function ExecuteLine(LineNum:Integer):Boolean;
+Var
+ SaveLine:String;
+ SavePos:Integer;
+ SaveLineNum:Integer;
+Begin
+ ExecuteLine:=True;
+ If(LineNum<1)or(LineNum>NumberLine)Then Exit;
+ 
+ SaveLine:=CurrLine;
+ SavePos:=CurrPos;
+ SaveLineNum:=CurrLinePtr;
+ 
+ CurrLine:=PA[LineNum]^;
+ CurrPos:=1;
+ CurrLinePtr:=LineNum;
+ 
+ { Saute les espaces }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
+ 
+ If CurrPos<=Length(CurrLine)Then
+  ExecuteLine:=RunLine;
+ 
+ CurrLine:=SaveLine;
+ CurrPos:=SavePos;
+ CurrLinePtr:=SaveLineNum;
+End;
+
 { Remplace tous les caracteres OldChar par NewChar dans une chaine }
 Function ReplaceChar(S:String;OldChar,NewChar:Char):String;
 Var
@@ -1663,6 +2049,39 @@ Begin
  SkipSpace;
 
  { Recupere la partie droite de la condition }
+ { Pour l'operateur regex, on peut avoir /pattern/ ou "pattern" }
+ If Op='~'Then Begin
+  IsStringCompare:=True;
+  If CurrLine[CurrPos]='/'Then Begin
+   { Pattern regex entre slashes }
+   Inc(CurrPos);
+   RightStr:='';
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>'/')do Begin
+    If(CurrLine[CurrPos]='\')and(CurrPos<Length(CurrLine))Then Begin
+     { Caractere echappe }
+     Inc(CurrPos);
+     RightStr:=RightStr+CurrLine[CurrPos];
+    End
+     Else
+    RightStr:=RightStr+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   If CurrPos<=Length(CurrLine)Then Inc(CurrPos); { Saute le / final }
+  End
+   Else If CurrLine[CurrPos]='"'Then Begin
+   RightStr:=GetStringValue;
+  End
+   Else
+  Begin
+   { Pattern sans delimiteurs }
+   RightStr:='';
+   While(CurrPos<=Length(CurrLine))and Not(CurrLine[CurrPos]in[' ',#9,')',';','}'])do Begin
+    RightStr:=RightStr+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+  End;
+ End
+  Else
  If CurrLine[CurrPos]='"'Then Begin
   IsStringCompare:=True;
   RightStr:=GetStringValue;
@@ -1680,6 +2099,12 @@ Begin
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
 
  { Effectue la comparaison }
+ If Op='~'Then Begin
+  { Regex match - convertit LeftNum en string si necessaire }
+  If LeftStr=''Then Str(LeftNum:0:0,LeftStr);
+  EvaluateCondition:=RegexMatch(LeftStr,RightStr);
+ End
+  Else
  If IsStringCompare Then Begin
   { Convertit LeftNum en string si necessaire }
   If LeftStr=''Then Str(LeftNum:0:0,LeftStr);
@@ -1751,23 +2176,60 @@ Begin
  End;
 End;
 
-{ Saute le bloc de code (ne l'execute pas) }
+{ Saute le bloc de code (ne l'execute pas) - supporte multi-lignes }
 Procedure SkipBlock;
 Var
  BraceCount:Integer;
+ InQuote,InApos:Boolean;
 Begin
  SkipSpace;
  BraceCount:=0;
+ InQuote:=False;
+ InApos:=False;
 
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
   BraceCount:=1;
   Inc(CurrPos);
 
+  { Parcourt la ligne courante }
   While(CurrPos<=Length(CurrLine))and(BraceCount>0)do Begin
-   If CurrLine[CurrPos]='{'Then Inc(BraceCount)
-   Else If CurrLine[CurrPos]='}'Then Dec(BraceCount);
-   Inc(CurrPos);
+   Case CurrLine[CurrPos]of
+    '"':If Not InApos Then InQuote:=Not InQuote;
+    '''':If Not InQuote Then InApos:=Not InApos;
+    '{':If Not InQuote and Not InApos Then Inc(BraceCount);
+    '}':If Not InQuote and Not InApos Then Dec(BraceCount);
+   End;
+   If BraceCount>0 Then Inc(CurrPos);
   End;
+  If BraceCount=0 Then Begin
+   Inc(CurrPos); { Saute l'accolade fermante }
+   Exit;
+  End;
+  
+  { Continue sur les lignes suivantes si necessaire }
+  While(BraceCount>0)and(CurrLinePtr<NumberLine)do Begin
+   Inc(CurrLinePtr);
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrPos:=1;
+   InQuote:=False;
+   InApos:=False;
+   
+   While(CurrPos<=Length(CurrLine))and(BraceCount>0)do Begin
+    Case CurrLine[CurrPos]of
+     '"':If Not InApos Then InQuote:=Not InQuote;
+     '''':If Not InQuote Then InApos:=Not InApos;
+     '#':If Not InQuote and Not InApos Then Begin
+       CurrPos:=Length(CurrLine)+1; { Commentaire, saute le reste }
+       Continue;
+      End;
+     '{':If Not InQuote and Not InApos Then Inc(BraceCount);
+     '}':If Not InQuote and Not InApos Then Dec(BraceCount);
+    End;
+    If BraceCount>0 Then Inc(CurrPos);
+   End;
+  End;
+  
+  If BraceCount=0 Then Inc(CurrPos); { Saute l'accolade fermante }
  End
   Else
  Begin
