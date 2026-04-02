@@ -2927,6 +2927,88 @@ Begin
  Dec(LoopDepth);
 End;
 
+{ Implementation de la boucle do-while }
+Procedure DoWhileCommand;
+Var
+ Condition:Boolean;
+ BlockStartLinePtr:Integer;
+ BlockStartLine:String;
+ BlockStartPos:Integer;
+ HasBrace:Boolean;
+Begin
+ SkipSpace;
+ Inc(LoopDepth);
+ 
+ { Memoriser le debut du bloc }
+ HasBrace:=(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{');
+ 
+ If Not HasBrace Then Begin
+  { Pas d'accolade - le bloc est sur la ligne suivante si fin de ligne }
+  If CurrPos>Length(CurrLine)Then Begin
+   If CurrLinePtr<NumberLine Then Begin
+    Inc(CurrLinePtr);
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+   End;
+  End;
+ End;
+ 
+ BlockStartLinePtr:=CurrLinePtr;
+ BlockStartLine:=CurrLine;
+ BlockStartPos:=CurrPos;
+ 
+ { Boucle do-while - executer au moins une fois }
+ Repeat
+  { Reinitialiser les flags }
+  ContinueFlag:=False;
+  
+  { Revenir au debut du bloc }
+  CurrLinePtr:=BlockStartLinePtr;
+  CurrLine:=BlockStartLine;
+  CurrPos:=BlockStartPos;
+  
+  { Executer le bloc }
+  RunBlock;
+  
+  { Verifier break }
+  If BreakFlag Then Begin
+   BreakFlag:=False;
+   Break;
+  End;
+  
+  { Chercher le mot-cle while }
+  SkipSpace;
+  { Peut etre sur la ligne suivante }
+  While(CurrPos>Length(CurrLine))and(CurrLinePtr<NumberLine)do Begin
+   Inc(CurrLinePtr);
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrPos:=1;
+   SkipSpace;
+  End;
+  
+  { Verifier qu'on a 'while' }
+  If(CurrPos+4<=Length(CurrLine))and
+    (StrToUpper(Copy(CurrLine,CurrPos,5))='WHILE')Then Begin
+   Inc(CurrPos,5);
+   SkipSpace;
+  End
+   Else
+  Begin
+   { Pas de while trouve - erreur de syntaxe }
+   WriteLn('Erreur: while attendu apres do');
+   Dec(LoopDepth);
+   Exit;
+  End;
+  
+  { Evaluer la condition }
+  Condition:=EvaluateCondition;
+  
+ Until Not Condition;
+ 
+ Dec(LoopDepth);
+End;
+
 { Implementation de la boucle for-in }
 Procedure ForInCommand(IterVar,ArrayName:String);
 Var
@@ -3265,7 +3347,7 @@ Begin
    16: NoImplementation:=True; { dcngettext }
    17: NoImplementation:=True; { default }
    18: DeleteCommand; { delete }
-   19: NoImplementation:=True; { do }
+   19: DoWhileCommand; { do }
    20: Begin { else - gere par IfCommand, sauter ici }
     SkipBlock;
    End;
