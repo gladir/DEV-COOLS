@@ -2980,6 +2980,13 @@ Begin
    Break;
   End;
   
+  { Pour trouver 'while', revenir au debut et utiliser SkipBlock }
+  { car RunBlock ne positionne pas correctement le curseur apres le bloc }
+  CurrLinePtr:=BlockStartLinePtr;
+  CurrLine:=BlockStartLine;
+  CurrPos:=BlockStartPos;
+  SkipBlock;
+  
   { Chercher le mot-cle while }
   SkipSpace;
   { Peut etre sur la ligne suivante }
