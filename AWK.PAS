@@ -118,6 +118,10 @@ Var
 { Declaration anticipee de RunLine }
 Function RunLine:Boolean; forward;
 
+{ Declarations anticipees pour les fonctions utilisateur }
+Function FindUserFunction(const FName:String):Integer; forward;
+Function CallUserFunction(FuncIdx:Integer):Real; forward;
+
 { ========================================================= }
 { SECTION: Expressions Regex                                }
 { ========================================================= }
@@ -1111,6 +1115,11 @@ Var
  Exposant:Boolean;
  StopChar:Set Of Char;
  Infix:String;
+ FuncIdx,ParamIdx:Integer;
+ ParamVarName:String;
+ ArgValue:Real;
+ SavedParams:Array[1..MaxFunctionParams]of Real;
+ SavedParamCount:Integer;
 Begin
  StopChar:=[',',':',';','"','<','=','>','!'];
  TopOfStack:=1;
@@ -1123,10 +1132,10 @@ Begin
   Dec(CurrPos,3);
  End;
  Repeat
-  If(I<=Length(Infix))and(Infix[I]in['A'..'Z','a'..'z'])Then Begin
+  If(I<=Length(Infix))and(Infix[I]in['A'..'Z','a'..'z','_'])Then Begin
    VarName:=Infix[I];
    Inc(I);
-   While(I<=Length(Infix))and(Infix[I]in['A'..'Z','a'..'z','%','!','#'])do Begin
+   While(I<=Length(Infix))and(Infix[I]in['A'..'Z','a'..'z','_','0'..'9','%','!','#'])do Begin
     VarName:=VarName+Infix[I];
     Inc(I);
    End;
@@ -1135,7 +1144,7 @@ Begin
     Case VariableType(VarName)of
      _Integer:Str(GetVariableInt(VarName),Value);
      _LongInt:Str(GetVariableLongInt(VarName),Value);
-     _Real:Str(GetVariableReal(VarName),Value);
+     _Real:Str(GetVariableReal(VarName):0:6,Value);
      Else Begin
       WriteLn('Type incompatiable');
       Exit;
@@ -1289,6 +1298,62 @@ Begin
       Else
      Begin { Variable vide }
       Value:='0';
+     End;
+    End;
+    { Si pas une fonction builtin, verifier les fonctions utilisateur }
+    If Not FunctionFound Then Begin
+     FuncIdx:=FindUserFunction(VarName);
+     If(FuncIdx>0)and(I<=Length(Infix))and(Infix[I]='(')Then Begin
+      FunctionFound:=True;
+      Inc(I);
+      { Sauvegarder les anciennes valeurs des parametres }
+      For ParamIdx:=1 to UserFuncs[FuncIdx].ParamCount do Begin
+       ParamVarName:=UserFuncs[FuncIdx].ParamNames[ParamIdx];
+       If VariableExist(ParamVarName)Then
+        SavedParams[ParamIdx]:=GetVariableReal(ParamVarName)
+       Else
+        SavedParams[ParamIdx]:=0;
+      End;
+      SavedParamCount:=UserFuncs[FuncIdx].ParamCount;
+      { Lire les arguments et les assigner aux parametres }
+      ParamIdx:=0;
+      While(I<=Length(Infix))and(Infix[I]<>')')do Begin
+       { Sauter les espaces }
+       While(I<=Length(Infix))and(Infix[I]=' ')do Inc(I);
+       If Infix[I]=')'Then Break;
+       Inc(ParamIdx);
+       { Lire l'argument (nombre ou variable) }
+       CurrPos:=I;
+       ArgValue:=GetNumberValue(TopOfStack);
+       I:=CurrPos;
+       { Assigner a la variable de parametre }
+       If ParamIdx<=UserFuncs[FuncIdx].ParamCount Then Begin
+        ParamVarName:=UserFuncs[FuncIdx].ParamNames[ParamIdx];
+        If Frac(ArgValue)=0.0 Then Begin
+         If VariableExist(ParamVarName)Then SetVariableLongInt(ParamVarName,Round(ArgValue))
+                                       Else AddVariableLongInt(ParamVarName,Round(ArgValue));
+        End
+         Else
+        Begin
+         If VariableExist(ParamVarName)Then SetVariableReal(ParamVarName,ArgValue)
+                                       Else AddVariableReal(ParamVarName,ArgValue);
+        End;
+       End;
+       { Sauter la virgule }
+       While(I<=Length(Infix))and(Infix[I]in[' ',','])do Inc(I);
+      End;
+      If(I<=Length(Infix))and(Infix[I]=')')Then Inc(I);
+      { Appeler la fonction }
+      _Result:=CallUserFunction(FuncIdx);
+      Str(_Result,Value);
+      { Restaurer les anciennes valeurs des parametres }
+      For ParamIdx:=1 to SavedParamCount do Begin
+       ParamVarName:=UserFuncs[FuncIdx].ParamNames[ParamIdx];
+       If VariableExist(ParamVarName)Then Begin
+        If Frac(SavedParams[ParamIdx])=0.0 Then SetVariableLongInt(ParamVarName,Round(SavedParams[ParamIdx]))
+                                           Else SetVariableReal(ParamVarName,SavedParams[ParamIdx]);
+       End;
+      End;
      End;
     End;
    End;
@@ -1561,6 +1626,8 @@ Begin
    End;
   End;
   UserFuncs[FuncIdx].BodyEndLine:=CurrLinePtr;
+  { Avancer apres l'accolade fermante }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='}')Then Inc(CurrPos);
  End;
 End;
 
@@ -2160,12 +2227,10 @@ Begin
  End;
 End;
 
-{ Execute le bloc de code entre accolades sur la meme ligne }
+{ Execute le bloc de code entre accolades ou une seule instruction }
 Function RunBlock:Boolean;
 Var
- SavePos:Integer;
- BraceCount:Integer;
- BlockStart,BlockEnd:Integer;
+ SaveLinePtr:Integer;
 Begin
  RunBlock:=True;
  SkipSpace;
@@ -2173,6 +2238,27 @@ Begin
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
   Inc(CurrPos);
   Inc(AccoladeBlock);
+ End
+  Else
+ Begin
+  { Pas d'accolade - executer une seule instruction }
+  { Si fin de ligne, passer a la ligne suivante }
+  If CurrPos>Length(CurrLine)Then Begin
+   SaveLinePtr:=CurrLinePtr;
+   Inc(CurrLinePtr);
+   If CurrLinePtr<=NumberLine Then Begin
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+    { Executer cette ligne comme le corps du if }
+    RunLine;
+   End;
+  End
+   Else
+  Begin
+   { Il reste du contenu sur la ligne - l'executer }
+   { Ne rien faire ici, le contenu sera execute par le retour a RunLine }
+  End;
  End;
 End;
 
@@ -2234,6 +2320,16 @@ Begin
   Else
  Begin
   { Saute jusqu'au point-virgule ou fin de ligne pour instructions simples }
+  { Si on est en fin de ligne, passer a la ligne suivante }
+  If CurrPos>Length(CurrLine)Then Begin
+   If CurrLinePtr<NumberLine Then Begin
+    Inc(CurrLinePtr);
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+   End;
+  End;
+  { Sauter l'instruction }
   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>';')and(CurrLine[CurrPos]<>'}')do Begin
    Inc(CurrPos);
   End;
@@ -2255,6 +2351,15 @@ Begin
   RunBlock;
   { Apres le bloc then, il peut y avoir un else a sauter }
   SkipSpace;
+  If CurrPos>Length(CurrLine)Then Begin
+   { Passer a la ligne suivante pour chercher else }
+   If CurrLinePtr<NumberLine Then Begin
+    Inc(CurrLinePtr);
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+   End;
+  End;
   If StrToUpper(Copy(CurrLine,CurrPos,4))='ELSE'Then Begin
    Inc(CurrPos,4);
    SkipSpace;
@@ -2266,8 +2371,17 @@ Begin
   { Saute le bloc then }
   SkipBlock;
 
-  { Verifie s'il y a un else }
+  { Verifie s'il y a un else - possiblement sur la ligne suivante }
   SkipSpace;
+  If CurrPos>Length(CurrLine)Then Begin
+   { Passer a la ligne suivante pour chercher else }
+   If CurrLinePtr<NumberLine Then Begin
+    Inc(CurrLinePtr);
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+   End;
+  End;
   If StrToUpper(Copy(CurrLine,CurrPos,4))='ELSE'Then Begin
    Inc(CurrPos,4);
    SkipSpace;
@@ -2969,6 +3083,58 @@ Begin
  Dec(LoopDepth);
 End;
 
+{ Implementation de la commande delete }
+Procedure DeleteCommand;
+Var
+ ArrayName,Key:String;
+Begin
+ SkipSpace;
+ 
+ { Lire le nom du tableau }
+ ArrayName:='';
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+  ArrayName:=ArrayName+CurrLine[CurrPos];
+  Inc(CurrPos);
+ End;
+ 
+ { Sauter les espaces }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+ 
+ { Lire la cle entre crochets }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='[')Then Begin
+  Inc(CurrPos);
+  Key:='';
+  
+  { Lire la cle - peut etre une chaine entre guillemets ou une variable }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+   Key:=GetStringValue;
+  End
+   Else
+  Begin
+   { Variable ou expression }
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+    Key:=Key+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   { Si c'est une variable, recuperer sa valeur }
+   If VariableExist(StrToUpper(Key))Then Begin
+    Case VariableType(StrToUpper(Key))of
+     _String:Key:=GetVariableString(StrToUpper(Key));
+     _Integer:Str(GetVariableInt(StrToUpper(Key)),Key);
+     _LongInt:Str(GetVariableLongInt(StrToUpper(Key)),Key);
+     _Real:Str(GetVariableReal(StrToUpper(Key)):0:0,Key);
+    End;
+   End;
+  End;
+  
+  { Sauter le crochet fermant }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=']')Then Inc(CurrPos);
+  
+  { Supprimer l'element }
+  DeleteArrayElement(ArrayName,Key);
+ End;
+End;
+
 Function RunLine:Boolean;
 Var
  UnknownCommand:Boolean;
@@ -3047,7 +3213,7 @@ Begin
    15: NoImplementation:=True; { dcgettext }
    16: NoImplementation:=True; { dcngettext }
    17: NoImplementation:=True; { default }
-   18: NoImplementation:=True; { delete }
+   18: DeleteCommand; { delete }
    19: NoImplementation:=True; { do }
    20: Begin { else - gere par IfCommand, sauter ici }
     SkipBlock;
@@ -3119,13 +3285,18 @@ Begin
    WriteLn('La commande ',CurrCommand,' n''a pas ete implemente');
    Exit;
   End;
+  { Verifier si un return a ete execute }
+  If HasFunctionReturn Then Begin
+   RunLine:=True;
+   Exit;
+  End;
   While(CurrLine[CurrPos]in[' ',';'])and(CurrPos<=Length(CurrLine)) do Inc(CurrPos);
   If CurrPos>Length(CurrLine)Then Break;
   If Not(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','{','}','#'])Then Begin
    WriteLn('Erreur de syntaxe a la position ',CurrPos,' de la ligne ',CurrNumberLine+1);
    Exit;
   End;
- Until CurrPos>Length(CurrLine);
+ Until (CurrPos>Length(CurrLine))or HasFunctionReturn;
  RunLine:=True;
 End;
 
