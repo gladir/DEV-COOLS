@@ -2231,13 +2231,32 @@ End;
 Function RunBlock:Boolean;
 Var
  SaveLinePtr:Integer;
+ SaveAccoladeBlock:Integer;
 Begin
  RunBlock:=True;
  SkipSpace;
 
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
   Inc(CurrPos);
+  SaveAccoladeBlock:=AccoladeBlock;
   Inc(AccoladeBlock);
+  
+  { Executer le contenu du bloc jusqu'a l'accolade fermante }
+  While AccoladeBlock>SaveAccoladeBlock do Begin
+   If Not RunLine Then Break;
+   { Verifier si on a atteint la fin du bloc }
+   If AccoladeBlock<=SaveAccoladeBlock Then Break;
+   { Passer a la ligne suivante si necessaire }
+   If CurrPos>Length(CurrLine)Then Begin
+    Inc(CurrLinePtr);
+    If CurrLinePtr<=NumberLine Then Begin
+     CurrLine:=PA[CurrLinePtr]^;
+     CurrPos:=1;
+    End
+     Else
+    Break;
+   End;
+  End;
  End
   Else
  Begin
@@ -2257,7 +2276,7 @@ Begin
    Else
   Begin
    { Il reste du contenu sur la ligne - l'executer }
-   { Ne rien faire ici, le contenu sera execute par le retour a RunLine }
+   RunLine;
   End;
  End;
 End;
@@ -2819,7 +2838,10 @@ Var
  SaveLinePtr:Integer;
  SaveCurrLine:String;
  LoopStart:Integer;
+ BlockStartLinePtr:Integer;
+ BlockStartLine:String;
  BlockStartPos:Integer;
+ HasBrace:Boolean;
 Begin
  SkipSpace;
  Inc(LoopDepth);
@@ -2833,11 +2855,36 @@ Begin
  Condition:=EvaluateCondition;
  SkipSpace;
  
+ { Determiner si le bloc a une accolade }
+ HasBrace:=(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{');
+ 
  { Memoriser le debut du bloc }
- BlockStartPos:=CurrPos;
+ If HasBrace Then Begin
+  BlockStartLinePtr:=CurrLinePtr;
+  BlockStartLine:=CurrLine;
+  BlockStartPos:=CurrPos;
+ End
+  Else
+ Begin
+  { Pas d'accolade - le bloc est sur la ligne suivante si fin de ligne }
+  If CurrPos>Length(CurrLine)Then Begin
+   If CurrLinePtr<NumberLine Then Begin
+    Inc(CurrLinePtr);
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+   End;
+  End;
+  BlockStartLinePtr:=CurrLinePtr;
+  BlockStartLine:=CurrLine;
+  BlockStartPos:=CurrPos;
+ End;
  
  If Not Condition Then Begin
   { Condition fausse des le depart - sauter le bloc }
+  CurrLinePtr:=BlockStartLinePtr;
+  CurrLine:=BlockStartLine;
+  CurrPos:=BlockStartPos;
   SkipBlock;
   Dec(LoopDepth);
   Exit;
@@ -2848,7 +2895,9 @@ Begin
   { Reinitialiser les flags }
   ContinueFlag:=False;
   
-  { Sauvegarder la position apres la condition }
+  { Revenir au debut du bloc }
+  CurrLinePtr:=BlockStartLinePtr;
+  CurrLine:=BlockStartLine;
   CurrPos:=BlockStartPos;
   
   { Executer le bloc }
@@ -2871,6 +2920,8 @@ Begin
  End;
  
  { Sauter le bloc apres la derniere iteration }
+ CurrLinePtr:=BlockStartLinePtr;
+ CurrLine:=BlockStartLine;
  CurrPos:=BlockStartPos;
  SkipBlock;
  Dec(LoopDepth);
