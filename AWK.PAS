@@ -45,6 +45,7 @@ Const
  MaxFunctionParams=10;
  MaxArrays=50;
  MaxArrayElements=100;
+ MaxRules=50;           { Maximum de regles pattern-action }
 
 Type
  StrPointer=^String;
@@ -81,6 +82,15 @@ Type
   Elements:Array[1..MaxArrayElements]of TArrayElement;
   Count:Integer;
  End;
+ { Type pour les regles pattern-action }
+ TRuleKind=(RK_BEGIN,RK_END,RK_REGEX,RK_EXPR,RK_ALL);
+ TRule=Record
+  Kind:TRuleKind;           { Type de regle }
+  Pattern:String[128];      { Pattern regex ou expression }
+  ActionLine:Integer;       { Ligne de debut de l'action }
+  ActionPos:Integer;        { Position dans la ligne }
+  ActionEndLine:Integer;    { Ligne de fin de l'action }
+ End;
 
 Var
  Fields:FieldArray;
@@ -114,6 +124,13 @@ Var
  { Variables pour les tableaux associatifs }
  AssocArrays:Array[1..MaxArrays]of TAssocArray;
  AssocArrayCount:Integer;
+ { Variables pour les regles pattern-action }
+ Rules:Array[1..MaxRules]of TRule;
+ RuleCount:Integer;
+ InputFile:Text;         { Fichier de donnees en entree }
+ InputFileName:String;   { Nom du fichier de donnees }
+ HasInputFile:Boolean;   { Indique si un fichier d'entree est specifie }
+ NRValue:LongInt;        { Variable NR (numero d'enregistrement) }
 
 { Declaration anticipee de RunLine }
 Function RunLine:Boolean; forward;
@@ -1522,14 +1539,55 @@ Begin
 End;
 
 { Implementation de getline - lit une ligne depuis l'entree standard }
+{ Formes supportees:                                                  }
+{   getline             -> lit dans $0, retourne 1 si ok, 0 si EOF   }
+{   getline var         -> lit dans var, retourne 1 si ok, 0 si EOF  }
+{   getline < "fichier" -> lit depuis un fichier                     }
 Procedure GetlineCommand;
 Var
  InputLine:String;
+ VarName:String;
+ SavePos:Integer;
+ NRVal:LongInt;
 Begin
+ SkipSpace;
+ SavePos:=CurrPos;
+ 
+ { Verifier si c'est "getline var" ou juste "getline" }
+ VarName:='';
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+  VarName:=VarName+CurrLine[CurrPos];
+  Inc(CurrPos);
+ End;
+ SkipSpace;
+ 
+ { Lire depuis l'entree standard }
  If Not EOF Then Begin
   ReadLn(InputLine);
-  Fields[0]:=InputLine;
-  { Mettre a jour NR ou autre variable }
+  
+  If VarName<>''Then Begin
+   { getline var - stocker dans la variable }
+   SetVariableString(StrToUpper(VarName),InputLine);
+  End
+   Else
+  Begin
+   { getline - stocker dans $0 et mettre a jour les champs }
+   Fields[0]:=InputLine;
+   SplitIntoFields(InputLine);
+  End;
+  
+  { Mettre a jour NR }
+  NRVal:=GetVariableLongInt('NR');
+  Inc(NRVal);
+  SetVariable('NR',NRVal,_LongInt);
+  
+  { Retourner 1 (succes) via variable speciale GETLINE_STATUS }
+  SetVariable('_GETLINE_STATUS',1,_Integer);
+ End
+  Else
+ Begin
+  { EOF atteint - retourner 0 }
+  SetVariable('_GETLINE_STATUS',0,_Integer);
  End;
 End;
 
@@ -3479,6 +3537,273 @@ Begin
  RunLine:=True;
 End;
 
+{ ========================================================= }
+{ SECTION: Regles Pattern-Action                            }
+{ ========================================================= }
+
+{ Initialise le tableau des regles }
+Procedure InitRules;
+Begin
+ RuleCount:=0;
+ HasInputFile:=False;
+ InputFileName:='';
+ NRValue:=0;
+End;
+
+{ Ajoute une regle pattern-action }
+Procedure AddRule(Kind:TRuleKind;const Pattern:String;ActionLine,ActionPos,ActionEndLine:Integer);
+Begin
+ If RuleCount<MaxRules Then Begin
+  Inc(RuleCount);
+  Rules[RuleCount].Kind:=Kind;
+  Rules[RuleCount].Pattern:=Pattern;
+  Rules[RuleCount].ActionLine:=ActionLine;
+  Rules[RuleCount].ActionPos:=ActionPos;
+  Rules[RuleCount].ActionEndLine:=ActionEndLine;
+ End;
+End;
+
+{ Execute une action (bloc de code) pour une regle }
+Procedure ExecuteRuleAction(RuleIdx:Integer);
+Var
+ SaveLinePtr:Integer;
+ SavePos:Integer;
+ SaveLine:String;
+Begin
+ SaveLinePtr:=CurrLinePtr;
+ SavePos:=CurrPos;
+ SaveLine:=CurrLine;
+ 
+ CurrLinePtr:=Rules[RuleIdx].ActionLine;
+ CurrLine:=PA[CurrLinePtr]^;
+ CurrPos:=Rules[RuleIdx].ActionPos;
+ 
+ { Executer jusqu'a la fin de l'action }
+ While CurrLinePtr<=Rules[RuleIdx].ActionEndLine do Begin
+  If Not RunLine Then Break;
+  Inc(CurrLinePtr);
+  If CurrLinePtr<=Rules[RuleIdx].ActionEndLine Then Begin
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrPos:=1;
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
+  End;
+ End;
+ 
+ CurrLinePtr:=SaveLinePtr;
+ CurrPos:=SavePos;
+ CurrLine:=SaveLine;
+End;
+
+{ Verifie si un pattern correspond a la ligne courante }
+Function MatchesPattern(RuleIdx:Integer):Boolean;
+Begin
+ MatchesPattern:=False;
+ Case Rules[RuleIdx].Kind of
+  RK_BEGIN: MatchesPattern:=False; { BEGIN deja execute }
+  RK_END: MatchesPattern:=False;   { END execute a la fin }
+  RK_ALL: MatchesPattern:=True;    { Toujours vrai }
+  RK_REGEX: Begin
+   { Matcher le pattern regex contre $0 }
+   MatchesPattern:=RegexMatch(Fields[0],Rules[RuleIdx].Pattern);
+  End;
+  RK_EXPR: Begin
+   { TODO: Evaluer l'expression - pour l'instant, toujours vrai }
+   MatchesPattern:=True;
+  End;
+ End;
+End;
+
+{ Execute les regles BEGIN }
+Procedure ExecuteBeginRules;
+Var
+ I:Integer;
+Begin
+ For I:=1 to RuleCount do Begin
+  If Rules[I].Kind=RK_BEGIN Then
+   ExecuteRuleAction(I);
+ End;
+End;
+
+{ Execute les regles END }
+Procedure ExecuteEndRules;
+Var
+ I:Integer;
+Begin
+ For I:=1 to RuleCount do Begin
+  If Rules[I].Kind=RK_END Then
+   ExecuteRuleAction(I);
+ End;
+End;
+
+{ Execute les regles pattern sur la ligne courante }
+Procedure ExecutePatternRules;
+Var
+ I:Integer;
+Begin
+ For I:=1 to RuleCount do Begin
+  If Rules[I].Kind in[RK_ALL,RK_REGEX,RK_EXPR]Then Begin
+   If MatchesPattern(I)Then
+    ExecuteRuleAction(I);
+  End;
+ End;
+End;
+
+{ Parse le programme AWK pour extraire les regles }
+Procedure ParseRulesFromProgram;
+Var
+ J,Err:Integer;
+ LineStart:Integer;
+ RuleKind:TRuleKind;
+ Pattern:String;
+ BlockLevel:Integer;
+ ActionStart,ActionStartPos,ActionEnd:Integer;
+ SaveLinePtr:Integer;
+ InPattern:Boolean;
+Begin
+ InitRules;
+ If NumberLine=0 Then Exit;
+ 
+ CurrLinePtr:=1;
+ While CurrLinePtr<=NumberLine do Begin
+  CurrLine:=PA[CurrLinePtr]^;
+  
+  { Extraire le numero de ligne s'il y en a un }
+  J:=1;
+  While(J<Length(CurrLine))and(CurrLine[J]in['0'..'9'])do Inc(J);
+  While(J<=Length(CurrLine))and(CurrLine[J]in[' ',#9])do Inc(J);
+  CurrPos:=J;
+  
+  { Sauter les lignes vides et commentaires }
+  If CurrPos>Length(CurrLine)Then Begin
+   Inc(CurrLinePtr);
+   Continue;
+  End;
+  If CurrLine[CurrPos]='#'Then Begin
+   Inc(CurrLinePtr);
+   Continue;
+  End;
+  
+  { Detecter le type de regle }
+  RuleKind:=RK_ALL;
+  Pattern:='';
+  InPattern:=False;
+  
+  { Verifier BEGIN }
+  If(CurrPos+4<=Length(CurrLine))and
+    (UpCase(CurrLine[CurrPos])='B')and
+    (UpCase(CurrLine[CurrPos+1])='E')and
+    (UpCase(CurrLine[CurrPos+2])='G')and
+    (UpCase(CurrLine[CurrPos+3])='I')and
+    (UpCase(CurrLine[CurrPos+4])='N')Then Begin
+   RuleKind:=RK_BEGIN;
+   Inc(CurrPos,5);
+  End
+  { Verifier END }
+  Else If(CurrPos+2<=Length(CurrLine))and
+         (UpCase(CurrLine[CurrPos])='E')and
+         (UpCase(CurrLine[CurrPos+1])='N')and
+         (UpCase(CurrLine[CurrPos+2])='D')Then Begin
+   RuleKind:=RK_END;
+   Inc(CurrPos,3);
+  End
+  { Verifier pattern regex /.../ }
+  Else If CurrLine[CurrPos]='/'Then Begin
+   RuleKind:=RK_REGEX;
+   Inc(CurrPos); { Passer le premier / }
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>'/')do Begin
+    Pattern:=Pattern+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   If CurrPos<=Length(CurrLine)Then Inc(CurrPos); { Passer le / final }
+  End
+  { Verifier si c'est juste un bloc { } sans pattern }
+  Else If CurrLine[CurrPos]<>'{'Then Begin
+   { Pas de pattern reconnu et pas d'accolade - sauter }
+   Inc(CurrLinePtr);
+   Continue;
+  End;
+  
+  { Sauter les espaces avant l'accolade }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
+  
+  { Trouver le bloc d'action { ... } }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+   ActionStart:=CurrLinePtr;
+   ActionStartPos:=CurrPos+1;
+   BlockLevel:=1;
+   Inc(CurrPos);
+   
+   { Chercher la fin du bloc }
+   While BlockLevel>0 do Begin
+    While CurrPos<=Length(CurrLine)do Begin
+     If CurrLine[CurrPos]='{'Then Inc(BlockLevel)
+     Else If CurrLine[CurrPos]='}'Then Dec(BlockLevel);
+     If BlockLevel=0 Then Break;
+     Inc(CurrPos);
+    End;
+    If BlockLevel>0 Then Begin
+     Inc(CurrLinePtr);
+     If CurrLinePtr>NumberLine Then Break;
+     CurrLine:=PA[CurrLinePtr]^;
+     CurrPos:=1;
+    End;
+   End;
+   ActionEnd:=CurrLinePtr;
+   
+   { Ajouter la regle }
+   AddRule(RuleKind,Pattern,ActionStart,ActionStartPos,ActionEnd);
+  End;
+  
+  Inc(CurrLinePtr);
+ End;
+End;
+
+{ Traite un fichier de donnees avec les regles pattern }
+Procedure ProcessInputWithRules;
+Var
+ InputLine:String;
+Begin
+ { Executer les regles BEGIN d'abord }
+ ExecuteBeginRules;
+ 
+ { Si pas de fichier d'entree, lire depuis stdin }
+ If HasInputFile Then Begin
+  {$I-}Assign(InputFile,InputFileName);
+  Reset(InputFile);{$I+}
+  If IoResult<>0Then Begin
+   WriteLn('Fichier d''entree introuvable: ',InputFileName);
+   Exit;
+  End;
+  
+  While Not EOF(InputFile)do Begin
+   ReadLn(InputFile,InputLine);
+   Inc(NRValue);
+   SetVariable('NR',NRValue,_LongInt);
+   Fields[0]:=InputLine;
+   SplitIntoFields(InputLine);
+   SetVariable('NF',NumFields,_Integer);
+   ExecutePatternRules;
+  End;
+  Close(InputFile);
+ End
+  Else
+ Begin
+  { Lire depuis l'entree standard }
+  While Not EOF do Begin
+   ReadLn(InputLine);
+   Inc(NRValue);
+   SetVariable('NR',NRValue,_LongInt);
+   Fields[0]:=InputLine;
+   SplitIntoFields(InputLine);
+   SetVariable('NF',NumFields,_Integer);
+   ExecutePatternRules;
+  End;
+ End;
+ 
+ { Executer les regles END a la fin }
+ ExecuteEndRules;
+End;
+
 Procedure RunProgram;
 Var
  J:Integer;
@@ -3512,9 +3837,10 @@ BEGIN
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')Then Begin
   WriteLn('AWK : Cette commande permet de lancer le langage de programmation AWK.');
   WriteLn;
-  WriteLn('Syntaxe : AWK [-f nomfichier]');
+  WriteLn('Syntaxe : AWK [-f nomfichier] [fichier_donnees]');
   WriteLn;
-  WriteLn(' -f   Ce param�tre permet d''indiquer un fichier de code source AWK');
+  WriteLn(' -f   Ce parametre permet d''indiquer un fichier de code source AWK');
+  WriteLn(' fichier_donnees   Fichier de donnees a traiter avec les regles AWK');
  End
   Else
  If ParamCount>=1Then Begin
@@ -3522,6 +3848,7 @@ BEGIN
   Mode:=_None_;FileName:='';
   CurrCommand:='';
   AccoladeBlock:=0;
+  InitRules;
   For I:=1 to RawParamCount do Begin
    CurrParam:=RawParamStr(I);
    If Mode=_InStringSimpleQuote Then Begin
@@ -3549,8 +3876,21 @@ BEGIN
    End
     Else
    Begin
-    WriteLn('Param�tre non reconnu');
-    Halt(1);
+    { C'est peut-etre un fichier de donnees }
+    If(FileName<>'')and(Not HasInputFile)Then Begin
+     InputFileName:=CurrParam;
+     HasInputFile:=True;
+    End
+     Else
+    If FileName=''Then Begin
+     { Premier parametre non reconnu - peut-etre un fichier AWK sans -f }
+     FileName:=CurrParam;
+    End
+     Else
+    Begin
+     WriteLn('Parametre non reconnu: ',CurrParam);
+     Halt(1);
+    End;
    End;
   End;
   If CurrCommand<>''Then Begin
@@ -3568,12 +3908,24 @@ BEGIN
    While Not EOF(FileAWK) do Begin
     ReadLn(FileAWK,CurrLine);
     If Not AddLine(CurrLine)Then Begin
-     WriteLn('Manque de m�moire');
+     WriteLn('Manque de memoire');
      Break;
     End;
    End;
    Close(FileAWK);
-   RunProgram;
+   
+   { Parser les regles du programme AWK }
+   ParseRulesFromProgram;
+   
+   { Si des regles ont ete trouvees, les executer avec les donnees }
+   If RuleCount>0 Then Begin
+    ProcessInputWithRules;
+   End
+    Else
+   Begin
+    { Pas de regles detectees, executer normalement }
+    RunProgram;
+   End;
   End;
  End;
 END.
