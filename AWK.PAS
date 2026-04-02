@@ -1114,7 +1114,7 @@ Begin
  S:='';
  If CurrLine[CurrPos]='"'Then Begin
   Inc(CurrPos);
-  While(CurrLine[CurrPos]<>'"')and(CurrPos<=Length(CurrLine))do Begin
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>'"')do Begin
    S:=S+CurrLine[CurrPos];
    Inc(CurrPos);
   End;
@@ -1492,7 +1492,7 @@ Begin
 End;
 
 Procedure SkipSpace;Begin
- While(CurrLine[CurrPos]in[' '])and(CurrPos<Length(CurrLine))do Inc(CurrPos);
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' '])do Inc(CurrPos);
 End;
 
 Function GetSeparator:Char;Begin
@@ -3549,7 +3549,7 @@ Begin
    RunLine:=True;
    Exit;
   End;
-  While(CurrLine[CurrPos]in[' ',';'])and(CurrPos<=Length(CurrLine)) do Inc(CurrPos);
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',';']) do Inc(CurrPos);
   If CurrPos>Length(CurrLine)Then Break;
   If Not(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','{','}','#','$','0'..'9','+','-'])Then Begin
    WriteLn('Erreur de syntaxe a la position ',CurrPos,' de la ligne ',CurrNumberLine+1);
