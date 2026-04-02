@@ -785,7 +785,7 @@ Var
   UrlCount : Integer;
 
 { ============================================================
-  TODO 01 : INFRASTRUCTURE ET OPTIONS [A FAIRE]
+  TODO 01 : INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
 
 Procedure FatalError(Const Msg: String);
@@ -1195,7 +1195,7 @@ Begin
   WriteLn;
 
   { TODO: Implementer les TODOs 05-25 }
-  WriteLn('*** NOTE: TODOs 01-04 partiellement implementes ***');
+  WriteLn('*** NOTE: TODO 01 [IMPLEMENTE], TODOs 02-04 partiellement implementes ***');
   WriteLn('*** Les TODOs 05-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
