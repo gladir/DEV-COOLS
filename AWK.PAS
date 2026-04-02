@@ -1783,7 +1783,7 @@ Procedure PrintCommand;
 Var
  R:Real;
  VarName,StrVal,OutputStr,TempStr:String;
- SavePos:Integer;
+ SavePos,I:Integer;
  HasOutput:Boolean;
 Begin
  SkipSpace;
@@ -1878,6 +1878,25 @@ Begin
      OutputStr:=OutputStr+TempStr;
      HasOutput:=True;
     End;
+   End;
+  End
+   Else
+  If CurrLine[CurrPos]='$'Then Begin
+   { Acces a un champ $0, $1, $2, ... }
+   Inc(CurrPos);
+   TempStr:='';
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9'])do Begin
+    TempStr:=TempStr+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   If TempStr<>''Then Begin
+    I:=0;
+    Val(TempStr,I,SavePos);
+    If(I>=0)and(I<=NumFields)Then
+     OutputStr:=OutputStr+Fields[I]
+    Else
+     OutputStr:=OutputStr+'';
+    HasOutput:=True;
    End;
   End
    Else
@@ -3532,7 +3551,7 @@ Begin
   End;
   While(CurrLine[CurrPos]in[' ',';'])and(CurrPos<=Length(CurrLine)) do Inc(CurrPos);
   If CurrPos>Length(CurrLine)Then Break;
-  If Not(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','{','}','#'])Then Begin
+  If Not(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','{','}','#','$','0'..'9','+','-'])Then Begin
    WriteLn('Erreur de syntaxe a la position ',CurrPos,' de la ligne ',CurrNumberLine+1);
    Exit;
   End;
@@ -3572,10 +3591,15 @@ Var
  SaveLinePtr:Integer;
  SavePos:Integer;
  SaveLine:String;
+ SaveAccoladeBlock:Integer;
 Begin
  SaveLinePtr:=CurrLinePtr;
  SavePos:=CurrPos;
  SaveLine:=CurrLine;
+ SaveAccoladeBlock:=AccoladeBlock;
+ 
+ { Initialiser AccoladeBlock a 1 car on est deja dans le bloc }
+ AccoladeBlock:=1;
  
  CurrLinePtr:=Rules[RuleIdx].ActionLine;
  CurrLine:=PA[CurrLinePtr]^;
@@ -3584,6 +3608,8 @@ Begin
  { Executer jusqu'a la fin de l'action }
  While CurrLinePtr<=Rules[RuleIdx].ActionEndLine do Begin
   If Not RunLine Then Break;
+  { Si AccoladeBlock est revenu a 0, on a atteint la fin du bloc }
+  If AccoladeBlock<=0 Then Break;
   Inc(CurrLinePtr);
   If CurrLinePtr<=Rules[RuleIdx].ActionEndLine Then Begin
    CurrLine:=PA[CurrLinePtr]^;
@@ -3595,6 +3621,7 @@ Begin
  CurrLinePtr:=SaveLinePtr;
  CurrPos:=SavePos;
  CurrLine:=SaveLine;
+ AccoladeBlock:=SaveAccoladeBlock;
 End;
 
 { Verifie si un pattern correspond a la ligne courante }
@@ -3635,6 +3662,20 @@ Begin
  For I:=1 to RuleCount do Begin
   If Rules[I].Kind=RK_END Then
    ExecuteRuleAction(I);
+ End;
+End;
+
+{ Verifie si des regles pattern (qui necessitent des donnees) existent }
+Function HasPatternRules:Boolean;
+Var
+ I:Integer;
+Begin
+ HasPatternRules:=False;
+ For I:=1 to RuleCount do Begin
+  If Rules[I].Kind in[RK_ALL,RK_REGEX,RK_EXPR]Then Begin
+   HasPatternRules:=True;
+   Exit;
+  End;
  End;
 End;
 
@@ -3769,6 +3810,13 @@ Begin
  { Executer les regles BEGIN d'abord }
  ExecuteBeginRules;
  
+ { Si pas de fichier d'entree et pas de regles pattern, ne pas lire stdin }
+ If(Not HasInputFile)and(Not HasPatternRules)Then Begin
+  { Pas de donnees a traiter, executer seulement END }
+  ExecuteEndRules;
+  Exit;
+ End;
+ 
  { Si pas de fichier d'entree, lire depuis stdin }
  If HasInputFile Then Begin
   {$I-}Assign(InputFile,InputFileName);
@@ -3791,15 +3839,17 @@ Begin
  End
   Else
  Begin
-  { Lire depuis l'entree standard }
-  While Not EOF do Begin
-   ReadLn(InputLine);
-   Inc(NRValue);
-   SetVariableLongInt('NR',NRValue);
-   Fields[0]:=InputLine;
-   SplitIntoFields(InputLine);
-   SetVariableInt('NF',NumFields);
-   ExecutePatternRules;
+  { Lire depuis l'entree standard seulement si des regles pattern existent }
+  If HasPatternRules Then Begin
+   While Not EOF do Begin
+    ReadLn(InputLine);
+    Inc(NRValue);
+    SetVariableLongInt('NR',NRValue);
+    Fields[0]:=InputLine;
+    SplitIntoFields(InputLine);
+    SetVariableInt('NF',NumFields);
+    ExecutePatternRules;
+   End;
   End;
  End;
  
