@@ -3704,7 +3704,9 @@ Var
  SaveLinePtr:Integer;
  InPattern:Boolean;
 Begin
- InitRules;
+ { Reinitialiser seulement le compteur de regles, pas HasInputFile/InputFileName }
+ RuleCount:=0;
+ NRValue:=0;
  If NumberLine=0 Then Exit;
  
  CurrLinePtr:=1;
