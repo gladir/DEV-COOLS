@@ -1303,36 +1303,67 @@ Begin
     VarName:=VarName+CurrLine[CurrPos];
     Inc(CurrPos);
    End;
-   VarName:=StrToUpper(VarName);
-   If VariableExist(VarName)Then Begin
-    Case VariableType(VarName)of
-     _String:OutputStr:=OutputStr+GetVariableString(VarName);
-     _Integer:Begin
-      Str(GetVariableInt(VarName),TempStr);
-      OutputStr:=OutputStr+TempStr;
+   { Verifier si c'est un acces tableau }
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='[')Then Begin
+    { Acces tableau }
+    Inc(CurrPos);
+    TempStr:='';
+    If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+     TempStr:=GetStringValue;
+    End
+     Else
+    Begin
+     While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+      TempStr:=TempStr+CurrLine[CurrPos];
+      Inc(CurrPos);
      End;
-     _LongInt:Begin
-      Str(GetVariableLongInt(VarName),TempStr);
-      OutputStr:=OutputStr+TempStr;
-     End;
-     _Real:Begin
-      R:=GetVariableReal(VarName);
-      If Frac(R)=0.0Then Str(R:0:0,TempStr)
-                    Else Str(R,TempStr);
-      OutputStr:=OutputStr+TempStr;
+     { Si c'est une variable, recuperer sa valeur }
+     If VariableExist(StrToUpper(TempStr))Then Begin
+      Case VariableType(StrToUpper(TempStr))of
+       _String:TempStr:=GetVariableString(StrToUpper(TempStr));
+       _Integer:Str(GetVariableInt(StrToUpper(TempStr)),TempStr);
+       _LongInt:Str(GetVariableLongInt(StrToUpper(TempStr)),TempStr);
+       _Real:Str(GetVariableReal(StrToUpper(TempStr)):0:0,TempStr);
+      End;
      End;
     End;
+    If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=']')Then Inc(CurrPos);
+    OutputStr:=OutputStr+GetArrayElement(VarName,TempStr);
     HasOutput:=True;
    End
     Else
    Begin
-    { Pas une variable connue, restaurer et traiter comme expression }
-    CurrPos:=SavePos;
-    R:=GetNumberValue(1);
-    If Frac(R)=0.0Then Str(R:0:0,TempStr)
-                  Else Str(R,TempStr);
-    OutputStr:=OutputStr+TempStr;
-    HasOutput:=True;
+    VarName:=StrToUpper(VarName);
+    If VariableExist(VarName)Then Begin
+     Case VariableType(VarName)of
+      _String:OutputStr:=OutputStr+GetVariableString(VarName);
+      _Integer:Begin
+       Str(GetVariableInt(VarName),TempStr);
+       OutputStr:=OutputStr+TempStr;
+      End;
+      _LongInt:Begin
+       Str(GetVariableLongInt(VarName),TempStr);
+       OutputStr:=OutputStr+TempStr;
+      End;
+      _Real:Begin
+       R:=GetVariableReal(VarName);
+       If Frac(R)=0.0Then Str(R:0:0,TempStr)
+                     Else Str(R,TempStr);
+       OutputStr:=OutputStr+TempStr;
+      End;
+     End;
+     HasOutput:=True;
+    End
+     Else
+    Begin
+     { Pas une variable connue, restaurer et traiter comme expression }
+     CurrPos:=SavePos;
+     R:=GetNumberValue(1);
+     If Frac(R)=0.0Then Str(R:0:0,TempStr)
+                   Else Str(R,TempStr);
+     OutputStr:=OutputStr+TempStr;
+     HasOutput:=True;
+    End;
    End;
   End
    Else
@@ -1507,6 +1538,8 @@ Var
  I,SavePos:Integer;
  IsStringCompare:Boolean;
  Err:Integer;
+ KeyStr,ArrayName:String;
+ ScanPos:Integer;
 Begin
  EvaluateCondition:=False;
  SkipSpace;
@@ -1514,6 +1547,55 @@ Begin
  { Verifie si c'est une parenthese ouvrante }
  If CurrLine[CurrPos]='('Then Inc(CurrPos);
  SkipSpace;
+
+ { Detecter l'operateur "in" pour les tableaux }
+ { Format: "key" in array ou (key in array) }
+ SavePos:=CurrPos;
+ KeyStr:='';
+ ArrayName:='';
+ 
+ { Lire la cle (string ou variable) }
+ If CurrLine[CurrPos]='"'Then Begin
+  KeyStr:=GetStringValue;
+ End
+  Else
+ Begin
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+   KeyStr:=KeyStr+CurrLine[CurrPos];
+   Inc(CurrPos);
+  End;
+  { Si c'est une variable, recuperer sa valeur }
+  If VariableExist(KeyStr)Then Begin
+   Case VariableType(KeyStr)of
+    _String:KeyStr:=GetVariableString(KeyStr);
+    _Integer:Str(GetVariableInt(KeyStr),KeyStr);
+    _LongInt:Str(GetVariableLongInt(KeyStr),KeyStr);
+    _Real:Str(GetVariableReal(KeyStr):0:0,KeyStr);
+   End;
+  End;
+ End;
+ 
+ SkipSpace;
+ 
+ { Verifier si "in" suit }
+ If(CurrPos+1<=Length(CurrLine))and(Copy(CurrLine,CurrPos,3)='in ')Then Begin
+  Inc(CurrPos,2);
+  SkipSpace;
+  { Lire le nom du tableau }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+   ArrayName:=ArrayName+CurrLine[CurrPos];
+   Inc(CurrPos);
+  End;
+  SkipSpace;
+  { Ferme la parenthese si presente }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+  { Evaluer l'appartenance }
+  EvaluateCondition:=KeyInArray(ArrayName,KeyStr);
+  Exit;
+ End;
+ 
+ { Sinon, revenir en arriere et traiter normalement }
+ CurrPos:=SavePos;
 
  { Recupere la partie gauche de la condition }
  IsStringCompare:=False;
@@ -1975,12 +2057,16 @@ Var
  R:Real;
  StrValue:String;
  IsIncrement,IsDecrement:Boolean;
+ ArrayKey:String;
+ IsArrayAssign:Boolean;
 Begin
  TryAssignment:=False;
  SavePos:=CurrPos;
  VarName:='';
  IsIncrement:=False;
  IsDecrement:=False;
+ IsArrayAssign:=False;
+ ArrayKey:='';
 
  { Verifier operateur prefixe ++ ou -- }
  If(CurrPos+1<=Length(CurrLine))Then Begin
@@ -2005,6 +2091,34 @@ Begin
  If VarName=''Then Begin
   CurrPos:=SavePos;
   Exit;
+ End;
+
+ { Verifier si c'est un acces tableau array[key] }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='[')Then Begin
+  Inc(CurrPos);
+  { Lire la cle }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+   ArrayKey:=GetStringValue;
+  End
+   Else
+  Begin
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+    ArrayKey:=ArrayKey+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   { Si c'est une variable, recuperer sa valeur }
+   If VariableExist(StrToUpper(ArrayKey))Then Begin
+    Case VariableType(StrToUpper(ArrayKey))of
+     _String:ArrayKey:=GetVariableString(StrToUpper(ArrayKey));
+     _Integer:Str(GetVariableInt(StrToUpper(ArrayKey)),ArrayKey);
+     _LongInt:Str(GetVariableLongInt(StrToUpper(ArrayKey)),ArrayKey);
+     _Real:Str(GetVariableReal(StrToUpper(ArrayKey)):0:0,ArrayKey);
+    End;
+   End;
+  End;
+  { Sauter ] }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=']')Then Inc(CurrPos);
+  IsArrayAssign:=True;
  End;
 
  { Sauter les espaces }
@@ -2077,6 +2191,20 @@ Begin
 
  { Sauter les espaces }
  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+
+ { Si c'est une assignation de tableau }
+ If IsArrayAssign Then Begin
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+   StrValue:=GetStringValue;
+  End
+   Else
+  Begin
+   R:=GetNumberValue(1);
+   Str(R:0:0,StrValue);
+  End;
+  SetArrayElement(VarName,ArrayKey,StrValue);
+  Exit;
+ End;
 
  { Determiner si c'est une chaine ou un nombre }
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
@@ -2172,6 +2300,65 @@ Begin
  Dec(LoopDepth);
 End;
 
+{ Implementation de la boucle for-in }
+Procedure ForInCommand(IterVar,ArrayName:String);
+Var
+ ArrayIdx,ElemIdx:Integer;
+ BlockStartPos:Integer;
+ SaveLinePtr:Integer;
+ SaveCurrLine:String;
+Begin
+ Inc(LoopDepth);
+ 
+ { Position du bloc }
+ BlockStartPos:=CurrPos;
+ 
+ { Sauvegarder la ligne courante }
+ SaveLinePtr:=CurrLinePtr;
+ SaveCurrLine:=CurrLine;
+ 
+ { Trouver le tableau }
+ ArrayIdx:=FindArray(ArrayName);
+ If ArrayIdx=0 Then Begin
+  { Tableau vide ou inexistant - sauter le bloc }
+  SkipBlock;
+  Dec(LoopDepth);
+  Exit;
+ End;
+ 
+ { Iterer sur chaque element }
+ For ElemIdx:=1 to AssocArrays[ArrayIdx].Count do Begin
+  { Reinitialiser les flags }
+  ContinueFlag:=False;
+  
+  { Assigner la cle a la variable d'iteration }
+  If VariableExist(IterVar)Then Begin
+   SetVariableString(IterVar,AssocArrays[ArrayIdx].Elements[ElemIdx].Key);
+  End
+   Else
+  AddVariableString(IterVar,AssocArrays[ArrayIdx].Elements[ElemIdx].Key);
+  
+  { Executer le bloc }
+  CurrLinePtr:=SaveLinePtr;
+  CurrLine:=SaveCurrLine;
+  CurrPos:=BlockStartPos;
+  RunBlock;
+  
+  { Verifier break }
+  If BreakFlag Then Begin
+   BreakFlag:=False;
+   Break;
+  End;
+ End;
+ 
+ { Sauter le bloc apres la derniere iteration }
+ CurrLinePtr:=SaveLinePtr;
+ CurrLine:=SaveCurrLine;
+ CurrPos:=BlockStartPos;
+ SkipBlock;
+ Dec(LoopDepth);
+End;
+
 { Implementation de la commande for }
 Procedure ForCommand;
 Var
@@ -2181,13 +2368,56 @@ Var
  SaveLinePtr:Integer;
  SaveCurrLine:String;
  InParen:Integer;
+ IterVar,ArrayName:String;
+ IsForIn:Boolean;
+ ScanPos:Integer;
 Begin
  SkipSpace;
- Inc(LoopDepth);
  
  { Attendre ( }
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
  SkipSpace;
+ 
+ { Detecter si c'est un for-in en cherchant "var in array" }
+ IsForIn:=False;
+ IterVar:='';
+ ArrayName:='';
+ ScanPos:=CurrPos;
+ 
+ { Lire la variable potentielle }
+ While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+  IterVar:=IterVar+CurrLine[ScanPos];
+  Inc(ScanPos);
+ End;
+ 
+ { Sauter les espaces }
+ While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in[' ',#9])do Inc(ScanPos);
+ 
+ { Verifier si "in" suit }
+ If(ScanPos+1<=Length(CurrLine))and(Copy(CurrLine,ScanPos,3)='in ')Then Begin
+  Inc(ScanPos,2);
+  While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in[' ',#9])do Inc(ScanPos);
+  { Lire le nom du tableau }
+  While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+   ArrayName:=ArrayName+CurrLine[ScanPos];
+   Inc(ScanPos);
+  End;
+  { Sauter les espaces et la parenthese fermante }
+  While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in[' ',#9])do Inc(ScanPos);
+  If(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]=')')Then Begin
+   IsForIn:=True;
+   CurrPos:=ScanPos+1;
+   SkipSpace;
+  End;
+ End;
+ 
+ { Si c'est un for-in, deleguer a ForInCommand }
+ If IsForIn Then Begin
+  ForInCommand(IterVar,ArrayName);
+  Exit;
+ End;
+ 
+ Inc(LoopDepth);
  
  { Partie initialisation (avant le premier ;) }
  InitStartPos:=CurrPos;
