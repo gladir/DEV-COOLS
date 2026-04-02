@@ -2935,9 +2935,11 @@ Var
  BlockStartLine:String;
  BlockStartPos:Integer;
  HasBrace:Boolean;
+ DidBreak:Boolean;
 Begin
  SkipSpace;
  Inc(LoopDepth);
+ DidBreak:=False;
  
  { Memoriser le debut du bloc }
  HasBrace:=(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{');
@@ -2974,6 +2976,7 @@ Begin
   { Verifier break }
   If BreakFlag Then Begin
    BreakFlag:=False;
+   DidBreak:=True;
    Break;
   End;
   
@@ -3005,6 +3008,42 @@ Begin
   Condition:=EvaluateCondition;
   
  Until Not Condition;
+ 
+ { Si on a fait break, on doit sauter le bloc et chercher le while final }
+ If DidBreak Then Begin
+  { Revenir au debut du bloc et le sauter }
+  CurrLinePtr:=BlockStartLinePtr;
+  CurrLine:=BlockStartLine;
+  CurrPos:=BlockStartPos;
+  SkipBlock;
+  
+  { Chercher le mot-cle while }
+  SkipSpace;
+  While(CurrPos>Length(CurrLine))and(CurrLinePtr<NumberLine)do Begin
+   Inc(CurrLinePtr);
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrPos:=1;
+   SkipSpace;
+  End;
+  
+  { Sauter 'while' et la condition }
+  If(CurrPos+4<=Length(CurrLine))and
+    (StrToUpper(Copy(CurrLine,CurrPos,5))='WHILE')Then Begin
+   Inc(CurrPos,5);
+   SkipSpace;
+   { Sauter la condition entre parentheses }
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Begin
+    Inc(CurrPos);
+    { Trouver la parenthese fermante }
+    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>')')do Inc(CurrPos);
+    If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+   End;
+  End;
+ End;
+ 
+ { Sauter le point-virgule final si present }
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
  
  Dec(LoopDepth);
 End;
