@@ -411,7 +411,7 @@
             Procedure ShowClassHierarchy
               affiche la hierarchie des classes extraite
 
-  TODO 10 - ANALYSE DES DEPENDANCES (INCLUDE, USES, IMPORT) [A FAIRE]
+  TODO 10 - ANALYSE DES DEPENDANCES (INCLUDE, USES, IMPORT) [IMPLEMENTE]
             TDependencyKind : (DEP_INCLUDE, DEP_INCLUDE_LOCAL, DEP_IMPORT,
               DEP_USES, DEP_REQUIRE, DEP_MODULE, DEP_PACKAGE, DEP_FROM)
             TDependency : record
@@ -3075,6 +3075,705 @@ Begin
       WriteLn;
     End;
   End;
+End;
+
+{ ============================================================
+  TODO 10 - ANALYSE DES DEPENDANCES (INCLUDE, USES, IMPORT)
+  ============================================================ }
+
+Procedure InitDependencies;
+{ Initialise le compteur de dependances }
+Begin
+  DependencyCount := 0;
+End;
+
+Function DependencyKindToStr(Kind: TDependencyKind): String;
+{ Convertit un type de dependance en chaine }
+Begin
+  Case Kind Of
+    DEP_INCLUDE:       DependencyKindToStr := '#include';
+    DEP_INCLUDE_LOCAL: DependencyKindToStr := '#include (local)';
+    DEP_IMPORT:        DependencyKindToStr := 'import';
+    DEP_USES:          DependencyKindToStr := 'uses';
+    DEP_REQUIRE:       DependencyKindToStr := 'require';
+    DEP_MODULE:        DependencyKindToStr := 'module';
+    DEP_PACKAGE:       DependencyKindToStr := 'package';
+    DEP_FROM:          DependencyKindToStr := 'from...import';
+  Else
+    DependencyKindToStr := 'unknown';
+  End;
+End;
+
+Procedure AddDependency(Const Source, Target: String; Kind: TDependencyKind;
+  LineNum: Integer; IsSys: Boolean);
+{ Ajoute une dependance au tableau global }
+Begin
+  If DependencyCount >= MAX_DEPENDENCIES Then Exit;
+  Inc(DependencyCount);
+  Dependencies[DependencyCount].SourceFile := Source;
+  Dependencies[DependencyCount].TargetFile := Target;
+  Dependencies[DependencyCount].Kind := Kind;
+  Dependencies[DependencyCount].Line := LineNum;
+  Dependencies[DependencyCount].IsSystem := IsSys;
+End;
+
+Procedure ExtractCppDependencies(Const FileName: String);
+{ Extrait les directives #include des fichiers C/C++ }
+Var
+  F: Text;
+  Line, TrimLine, Target: String;
+  LineNum, I, StartPos, EndPos: Integer;
+  IsSystem: Boolean;
+  Kind: TDependencyKind;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNum := 0;
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    
+    { Enlever les espaces au debut }
+    TrimLine := Line;
+    While (Length(TrimLine) > 0) And (TrimLine[1] = ' ') Do
+      Delete(TrimLine, 1, 1);
+    
+    { Chercher #include }
+    If (Length(TrimLine) >= 8) And (Copy(TrimLine, 1, 8) = '#include') Then
+    Begin
+      { Trouver le delimiteur < ou " }
+      I := 9;
+      While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
+      
+      If I <= Length(TrimLine) Then
+      Begin
+        If TrimLine[I] = '<' Then
+        Begin
+          { Include systeme <fichier> }
+          IsSystem := True;
+          Kind := DEP_INCLUDE;
+          StartPos := I + 1;
+          EndPos := StartPos;
+          While (EndPos <= Length(TrimLine)) And (TrimLine[EndPos] <> '>') Do
+            Inc(EndPos);
+          Target := Copy(TrimLine, StartPos, EndPos - StartPos);
+        End
+        Else If TrimLine[I] = '"' Then
+        Begin
+          { Include local "fichier" }
+          IsSystem := False;
+          Kind := DEP_INCLUDE_LOCAL;
+          StartPos := I + 1;
+          EndPos := StartPos;
+          While (EndPos <= Length(TrimLine)) And (TrimLine[EndPos] <> '"') Do
+            Inc(EndPos);
+          Target := Copy(TrimLine, StartPos, EndPos - StartPos);
+        End
+        Else
+          Continue;
+        
+        If Length(Target) > 0 Then
+          AddDependency(FileName, Target, Kind, LineNum, IsSystem);
+      End;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure ExtractPascalDependencies(Const FileName: String);
+{ Extrait les clauses uses des fichiers Pascal }
+Var
+  F: Text;
+  Line, TrimLine, UpLine, UnitName: String;
+  LineNum, I, StartPos: Integer;
+  InUsesClause: Boolean;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNum := 0;
+  InUsesClause := False;
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    
+    { Enlever les espaces au debut }
+    TrimLine := Line;
+    While (Length(TrimLine) > 0) And (TrimLine[1] = ' ') Do
+      Delete(TrimLine, 1, 1);
+    
+    UpLine := UpStr(TrimLine);
+    
+    { Chercher le mot-cle uses }
+    If (Length(UpLine) >= 4) And (Copy(UpLine, 1, 4) = 'USES') And
+       ((Length(UpLine) = 4) Or (UpLine[5] = ' ') Or (UpLine[5] = #9)) Then
+    Begin
+      InUsesClause := True;
+      { Commencer apres 'uses' }
+      Delete(TrimLine, 1, 4);
+    End;
+    
+    If InUsesClause Then
+    Begin
+      { Parser les noms d'unites }
+      I := 1;
+      While I <= Length(TrimLine) Do
+      Begin
+        { Passer les espaces et virgules }
+        While (I <= Length(TrimLine)) And 
+              ((TrimLine[I] = ' ') Or (TrimLine[I] = ',') Or
+               (TrimLine[I] = #9)) Do
+          Inc(I);
+        
+        { Verifier si fin de clause }
+        If (I <= Length(TrimLine)) And (TrimLine[I] = ';') Then
+        Begin
+          InUsesClause := False;
+          Break;
+        End;
+        
+        { Extraire le nom d'unite }
+        StartPos := I;
+        While (I <= Length(TrimLine)) And 
+              (TrimLine[I] <> ' ') And (TrimLine[I] <> ',') And
+              (TrimLine[I] <> ';') And (TrimLine[I] <> #9) And
+              (TrimLine[I] <> '{') Do
+          Inc(I);
+        
+        If I > StartPos Then
+        Begin
+          UnitName := Copy(TrimLine, StartPos, I - StartPos);
+          { Ignorer le mot-cle 'in' pour les chemins specifiques }
+          If UpStr(UnitName) <> 'IN' Then
+            AddDependency(FileName, UnitName, DEP_USES, LineNum, False);
+        End;
+      End;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure ExtractJavaDependencies(Const FileName: String);
+{ Extrait les declarations import des fichiers Java }
+Var
+  F: Text;
+  Line, TrimLine, Target: String;
+  LineNum, I, StartPos: Integer;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNum := 0;
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    
+    { Enlever les espaces au debut }
+    TrimLine := Line;
+    While (Length(TrimLine) > 0) And (TrimLine[1] = ' ') Do
+      Delete(TrimLine, 1, 1);
+    
+    { Chercher import }
+    If (Length(TrimLine) >= 6) And (Copy(TrimLine, 1, 6) = 'import') And
+       ((Length(TrimLine) = 6) Or (TrimLine[7] = ' ')) Then
+    Begin
+      I := 7;
+      While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
+      
+      { Passer 'static' si present }
+      If (I + 5 <= Length(TrimLine)) And
+         (Copy(TrimLine, I, 6) = 'static') Then
+      Begin
+        I := I + 6;
+        While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
+      End;
+      
+      StartPos := I;
+      While (I <= Length(TrimLine)) And (TrimLine[I] <> ';') And
+            (TrimLine[I] <> ' ') Do Inc(I);
+      
+      Target := Copy(TrimLine, StartPos, I - StartPos);
+      If Length(Target) > 0 Then
+        AddDependency(FileName, Target, DEP_IMPORT, LineNum, False);
+    End;
+    
+    { Chercher package (pour reference) }
+    If (Length(TrimLine) >= 7) And (Copy(TrimLine, 1, 7) = 'package') And
+       ((Length(TrimLine) = 7) Or (TrimLine[8] = ' ')) Then
+    Begin
+      I := 8;
+      While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
+      
+      StartPos := I;
+      While (I <= Length(TrimLine)) And (TrimLine[I] <> ';') And
+            (TrimLine[I] <> ' ') Do Inc(I);
+      
+      Target := Copy(TrimLine, StartPos, I - StartPos);
+      If Length(Target) > 0 Then
+        AddDependency(FileName, Target, DEP_PACKAGE, LineNum, False);
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure ExtractPythonDependencies(Const FileName: String);
+{ Extrait les declarations import et from...import des fichiers Python }
+Var
+  F: Text;
+  Line, TrimLine, Target, Module: String;
+  LineNum, I, StartPos: Integer;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNum := 0;
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    
+    { Enlever les espaces au debut }
+    TrimLine := Line;
+    While (Length(TrimLine) > 0) And (TrimLine[1] = ' ') Do
+      Delete(TrimLine, 1, 1);
+    While (Length(TrimLine) > 0) And (TrimLine[1] = #9) Do
+      Delete(TrimLine, 1, 1);
+    
+    { Chercher from ... import }
+    If (Length(TrimLine) >= 4) And (Copy(TrimLine, 1, 4) = 'from') And
+       ((Length(TrimLine) = 4) Or (TrimLine[5] = ' ')) Then
+    Begin
+      I := 5;
+      While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
+      
+      StartPos := I;
+      While (I <= Length(TrimLine)) And (TrimLine[I] <> ' ') Do Inc(I);
+      
+      Module := Copy(TrimLine, StartPos, I - StartPos);
+      If Length(Module) > 0 Then
+        AddDependency(FileName, Module, DEP_FROM, LineNum, False);
+    End
+    { Chercher import simple }
+    Else If (Length(TrimLine) >= 6) And (Copy(TrimLine, 1, 6) = 'import') And
+       ((Length(TrimLine) = 6) Or (TrimLine[7] = ' ')) Then
+    Begin
+      I := 7;
+      While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
+      
+      { Parser les modules separes par des virgules }
+      While I <= Length(TrimLine) Do
+      Begin
+        StartPos := I;
+        While (I <= Length(TrimLine)) And (TrimLine[I] <> ',') And
+              (TrimLine[I] <> ' ') And (TrimLine[I] <> #9) Do Inc(I);
+        
+        Target := Copy(TrimLine, StartPos, I - StartPos);
+        
+        { Ignorer 'as' et le reste }
+        If UpStr(Target) = 'AS' Then Break;
+        
+        If Length(Target) > 0 Then
+          AddDependency(FileName, Target, DEP_IMPORT, LineNum, False);
+        
+        { Passer la virgule et les espaces }
+        While (I <= Length(TrimLine)) And 
+              ((TrimLine[I] = ',') Or (TrimLine[I] = ' ') Or
+               (TrimLine[I] = #9)) Do Inc(I);
+      End;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure ExtractAdaDependencies(Const FileName: String);
+{ Extrait les clauses with des fichiers Ada }
+Var
+  F: Text;
+  Line, TrimLine, UpLine, UnitName: String;
+  LineNum, I, StartPos: Integer;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNum := 0;
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    
+    { Enlever les espaces au debut }
+    TrimLine := Line;
+    While (Length(TrimLine) > 0) And (TrimLine[1] = ' ') Do
+      Delete(TrimLine, 1, 1);
+    
+    UpLine := UpStr(TrimLine);
+    
+    { Chercher with }
+    If (Length(UpLine) >= 4) And (Copy(UpLine, 1, 4) = 'WITH') And
+       ((Length(UpLine) = 4) Or (UpLine[5] = ' ')) Then
+    Begin
+      I := 5;
+      { Parser les noms d'unites }
+      While I <= Length(TrimLine) Do
+      Begin
+        { Passer les espaces et virgules }
+        While (I <= Length(TrimLine)) And 
+              ((TrimLine[I] = ' ') Or (TrimLine[I] = ',')) Do
+          Inc(I);
+        
+        { Verifier si fin de clause }
+        If (I <= Length(TrimLine)) And (TrimLine[I] = ';') Then Break;
+        
+        { Extraire le nom d'unite }
+        StartPos := I;
+        While (I <= Length(TrimLine)) And 
+              (TrimLine[I] <> ' ') And (TrimLine[I] <> ',') And
+              (TrimLine[I] <> ';') Do
+          Inc(I);
+        
+        If I > StartPos Then
+        Begin
+          UnitName := Copy(TrimLine, StartPos, I - StartPos);
+          AddDependency(FileName, UnitName, DEP_USES, LineNum, False);
+        End;
+      End;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure ExtractDependencies(Const FileName: String; Lang: TSourceLanguage);
+{ Extrait les dependances d un fichier source selon son langage }
+Begin
+  Case Lang Of
+    LANG_C, LANG_CPP, LANG_OBJC:
+      ExtractCppDependencies(FileName);
+    LANG_PASCAL:
+      ExtractPascalDependencies(FileName);
+    LANG_JAVA, LANG_KOTLIN:
+      ExtractJavaDependencies(FileName);
+    LANG_PYTHON:
+      ExtractPythonDependencies(FileName);
+    LANG_ADA:
+      ExtractAdaDependencies(FileName);
+  End;
+End;
+
+Function ExtractFileName(Const Path: String): String;
+{ Extrait le nom de fichier d un chemin }
+Var
+  I: Integer;
+Begin
+  ExtractFileName := Path;
+  For I := Length(Path) DownTo 1 Do
+  Begin
+    If (Path[I] = '/') Or (Path[I] = '\') Then
+    Begin
+      ExtractFileName := Copy(Path, I + 1, Length(Path) - I);
+      Exit;
+    End;
+  End;
+End;
+
+Function ExtractFilePath(Const Path: String): String;
+{ Extrait le chemin d un fichier }
+Var
+  I: Integer;
+Begin
+  ExtractFilePath := '';
+  For I := Length(Path) DownTo 1 Do
+  Begin
+    If (Path[I] = '/') Or (Path[I] = '\') Then
+    Begin
+      ExtractFilePath := Copy(Path, 1, I);
+      Exit;
+    End;
+  End;
+End;
+
+Function ResolveDependencyPath(Const BaseFile, FileName: String;
+  Const IncludePaths: String): String;
+{ Resout le chemin complet d un fichier inclus en parcourant les repertoires.
+  IncludePaths est une liste de chemins separes par ';' }
+Var
+  BasePath, TestPath, PathItem: String;
+  I, Start: Integer;
+Begin
+  ResolveDependencyPath := FileName;
+  
+  { D abord essayer dans le meme repertoire que le fichier source }
+  BasePath := ExtractFilePath(BaseFile);
+  If Length(BasePath) > 0 Then
+  Begin
+    TestPath := BasePath + FileName;
+    If FileExists(TestPath) Then
+    Begin
+      ResolveDependencyPath := TestPath;
+      Exit;
+    End;
+  End;
+  
+  { Essayer le fichier tel quel }
+  If FileExists(FileName) Then
+  Begin
+    ResolveDependencyPath := FileName;
+    Exit;
+  End;
+  
+  { Parcourir les chemins d include }
+  If Length(IncludePaths) > 0 Then
+  Begin
+    Start := 1;
+    For I := 1 To Length(IncludePaths) + 1 Do
+    Begin
+      If (I > Length(IncludePaths)) Or (IncludePaths[I] = ';') Then
+      Begin
+        PathItem := Copy(IncludePaths, Start, I - Start);
+        If Length(PathItem) > 0 Then
+        Begin
+          { Ajouter separateur si necessaire }
+          If (PathItem[Length(PathItem)] <> '/') And
+             (PathItem[Length(PathItem)] <> '\') Then
+            PathItem := PathItem + '/';
+          TestPath := PathItem + FileName;
+          If FileExists(TestPath) Then
+          Begin
+            ResolveDependencyPath := TestPath;
+            Exit;
+          End;
+        End;
+        Start := I + 1;
+      End;
+    End;
+  End;
+End;
+
+Procedure BuildDependencyGraph;
+{ Construit le graphe de dependances et detecte les cycles.
+  Affiche un avertissement pour chaque dependance circulaire trouvee. }
+Var
+  I, J: Integer;
+  Visited: Array[1..MAX_DEPENDENCIES] Of Boolean;
+  InStack: Array[1..MAX_DEPENDENCIES] Of Boolean;
+  
+  Function FindDepsForFile(Const FileName: String): Integer;
+  { Retourne l index de la premiere dependance pour un fichier, ou 0 }
+  Var
+    K: Integer;
+  Begin
+    FindDepsForFile := 0;
+    For K := 1 To DependencyCount Do
+    Begin
+      If Dependencies[K].SourceFile = FileName Then
+      Begin
+        FindDepsForFile := K;
+        Exit;
+      End;
+    End;
+  End;
+  
+  Procedure DetectCycleDFS(Const CurrentFile: String; Depth: Integer);
+  { Parcours en profondeur pour detecter les cycles }
+  Var
+    M: Integer;
+  Begin
+    If Depth > 100 Then Exit;  { Protection contre les recursions trop profondes }
+    
+    For M := 1 To DependencyCount Do
+    Begin
+      If Dependencies[M].SourceFile = CurrentFile Then
+      Begin
+        { Verifier si on revient sur un fichier deja dans la pile }
+        If InStack[M] Then
+        Begin
+          WriteLn('Avertissement: Dependance circulaire detectee impliquant: ',
+            Dependencies[M].TargetFile);
+        End
+        Else If Not Visited[M] Then
+        Begin
+          Visited[M] := True;
+          InStack[M] := True;
+          DetectCycleDFS(Dependencies[M].TargetFile, Depth + 1);
+          InStack[M] := False;
+        End;
+      End;
+    End;
+  End;
+  
+Begin
+  If DependencyCount = 0 Then Exit;
+  
+  { Initialiser les tableaux }
+  For I := 1 To DependencyCount Do
+  Begin
+    Visited[I] := False;
+    InStack[I] := False;
+  End;
+  
+  { Lancer la detection de cycles depuis chaque fichier source }
+  For I := 1 To DependencyCount Do
+  Begin
+    If Not Visited[I] Then
+    Begin
+      Visited[I] := True;
+      InStack[I] := True;
+      DetectCycleDFS(Dependencies[I].TargetFile, 1);
+      InStack[I] := False;
+    End;
+  End;
+End;
+
+Function GetFileDependencies(Const FileName: String): String;
+{ Retourne la liste des fichiers dont depend FileName }
+Var
+  I: Integer;
+  Result: String;
+  BaseName: String;
+Begin
+  Result := '';
+  BaseName := ExtractFileName(FileName);
+  
+  For I := 1 To DependencyCount Do
+  Begin
+    If (Dependencies[I].SourceFile = FileName) Or
+       (ExtractFileName(Dependencies[I].SourceFile) = BaseName) Then
+    Begin
+      If Length(Result) > 0 Then Result := Result + ', ';
+      Result := Result + Dependencies[I].TargetFile;
+    End;
+  End;
+  
+  GetFileDependencies := Result;
+End;
+
+Function GetFileDependents(Const FileName: String): String;
+{ Retourne la liste des fichiers qui dependent de FileName }
+Var
+  I: Integer;
+  Result: String;
+  BaseName: String;
+Begin
+  Result := '';
+  BaseName := ExtractFileName(FileName);
+  
+  For I := 1 To DependencyCount Do
+  Begin
+    If (Dependencies[I].TargetFile = FileName) Or
+       (Dependencies[I].TargetFile = BaseName) Or
+       (ExtractFileName(Dependencies[I].TargetFile) = BaseName) Then
+    Begin
+      If Length(Result) > 0 Then Result := Result + ', ';
+      Result := Result + Dependencies[I].SourceFile;
+    End;
+  End;
+  
+  GetFileDependents := Result;
+End;
+
+Function CountDependencies(Const FileName: String): Integer;
+{ Compte le nombre de dependances d un fichier }
+Var
+  I, Count: Integer;
+  BaseName: String;
+Begin
+  Count := 0;
+  BaseName := ExtractFileName(FileName);
+  
+  For I := 1 To DependencyCount Do
+  Begin
+    If (Dependencies[I].SourceFile = FileName) Or
+       (ExtractFileName(Dependencies[I].SourceFile) = BaseName) Then
+      Inc(Count);
+  End;
+  
+  CountDependencies := Count;
+End;
+
+Function CountDependents(Const FileName: String): Integer;
+{ Compte le nombre de fichiers qui dependent de FileName }
+Var
+  I, Count: Integer;
+  BaseName: String;
+Begin
+  Count := 0;
+  BaseName := ExtractFileName(FileName);
+  
+  For I := 1 To DependencyCount Do
+  Begin
+    If (Dependencies[I].TargetFile = FileName) Or
+       (Dependencies[I].TargetFile = BaseName) Or
+       (ExtractFileName(Dependencies[I].TargetFile) = BaseName) Then
+      Inc(Count);
+  End;
+  
+  CountDependents := Count;
+End;
+
+Procedure ShowDependencies;
+{ Affiche le graphe des dependances extrait }
+Var
+  I: Integer;
+  LastSource: String;
+Begin
+  If DependencyCount = 0 Then
+  Begin
+    WriteLn('Aucune dependance trouvee.');
+    Exit;
+  End;
+  
+  WriteLn('Dependances extraites (', DependencyCount, ' total):');
+  WriteLn;
+  
+  LastSource := '';
+  For I := 1 To DependencyCount Do
+  Begin
+    If Dependencies[I].SourceFile <> LastSource Then
+    Begin
+      If LastSource <> '' Then WriteLn;
+      WriteLn('Fichier: ', Dependencies[I].SourceFile);
+      LastSource := Dependencies[I].SourceFile;
+    End;
+    
+    Write('  L', Dependencies[I].Line, ': ');
+    Write(DependencyKindToStr(Dependencies[I].Kind), ' ');
+    Write(Dependencies[I].TargetFile);
+    If Dependencies[I].IsSystem Then
+      Write(' (systeme)');
+    WriteLn;
+  End;
+  WriteLn;
+  
+  { Afficher le resume }
+  WriteLn('Resume:');
+  WriteLn('  Total dependances: ', DependencyCount);
+  
+  { Detecter les cycles }
+  BuildDependencyGraph;
 End;
 
 Function IsDocCommentStart(Const Line: String; Pos: Integer): TDocCommentKind;
