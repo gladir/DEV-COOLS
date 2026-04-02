@@ -188,7 +188,7 @@ Const
   PF_FASTLOAD    = $0001;   { Effacer seulement BSS au chargement }
   PF_TTRAMLOAD   = $0002;   { Charger en TT-RAM }
   PF_TTRAMMEM    = $0004;   { Allouer en TT-RAM }
-  PF_SHARED_TEXT  = $10000000; { Partager la section TEXT (MiNT) }
+  PF_SHARED_TEXT = $10000000;  { Partager la section TEXT (MiNT) }
 
   { Types de symboles DRI }
   SYM_DEFINED    = $0001;
@@ -351,11 +351,15 @@ End;
 Function FileExists(FileName: String): Boolean;
 Var
   F: File;
+  R: Integer;
 Begin
   Assign(F, FileName);
+  R := IOResult; { vider IOResult precedent }
   Reset(F, 1);
-  If IOResult = 0 Then Begin
+  R := IOResult;
+  If R = 0 Then Begin
     Close(F);
+    R := IOResult;
     FileExists := True;
   End Else
     FileExists := False;
