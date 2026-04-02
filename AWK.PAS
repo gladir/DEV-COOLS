@@ -139,6 +139,9 @@ Function RunLine:Boolean; forward;
 Function FindUserFunction(const FName:String):Integer; forward;
 Function CallUserFunction(FuncIdx:Integer):Real; forward;
 
+{ Declaration anticipee pour SplitIntoFields }
+Procedure SplitIntoFields(Line:String); forward;
+
 { ========================================================= }
 { SECTION: Expressions Regex                                }
 { ========================================================= }
@@ -1579,15 +1582,15 @@ Begin
   { Mettre a jour NR }
   NRVal:=GetVariableLongInt('NR');
   Inc(NRVal);
-  SetVariable('NR',NRVal,_LongInt);
+  SetVariableLongInt('NR',NRVal);
   
   { Retourner 1 (succes) via variable speciale GETLINE_STATUS }
-  SetVariable('_GETLINE_STATUS',1,_Integer);
+  SetVariableInt('_GETLINE_STATUS',1);
  End
   Else
  Begin
   { EOF atteint - retourner 0 }
-  SetVariable('_GETLINE_STATUS',0,_Integer);
+  SetVariableInt('_GETLINE_STATUS',0);
  End;
 End;
 
@@ -3716,9 +3719,9 @@ Begin
    End;
    If CurrPos<=Length(CurrLine)Then Inc(CurrPos); { Passer le / final }
   End
-  { Verifier si c'est juste un bloc { } sans pattern }
+  (* Verifier si c'est juste un bloc sans pattern *)
   Else If CurrLine[CurrPos]<>'{'Then Begin
-   { Pas de pattern reconnu et pas d'accolade - sauter }
+   (* Pas de pattern reconnu et pas d'accolade - sauter *)
    Inc(CurrLinePtr);
    Continue;
   End;
@@ -3726,7 +3729,7 @@ Begin
   { Sauter les espaces avant l'accolade }
   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
   
-  { Trouver le bloc d'action { ... } }
+  (* Trouver le bloc d'action *)
   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
    ActionStart:=CurrLinePtr;
    ActionStartPos:=CurrPos+1;
@@ -3778,10 +3781,10 @@ Begin
   While Not EOF(InputFile)do Begin
    ReadLn(InputFile,InputLine);
    Inc(NRValue);
-   SetVariable('NR',NRValue,_LongInt);
+   SetVariableLongInt('NR',NRValue);
    Fields[0]:=InputLine;
    SplitIntoFields(InputLine);
-   SetVariable('NF',NumFields,_Integer);
+   SetVariableInt('NF',NumFields);
    ExecutePatternRules;
   End;
   Close(InputFile);
@@ -3792,10 +3795,10 @@ Begin
   While Not EOF do Begin
    ReadLn(InputLine);
    Inc(NRValue);
-   SetVariable('NR',NRValue,_LongInt);
+   SetVariableLongInt('NR',NRValue);
    Fields[0]:=InputLine;
    SplitIntoFields(InputLine);
-   SetVariable('NF',NumFields,_Integer);
+   SetVariableInt('NF',NumFields);
    ExecutePatternRules;
   End;
  End;
