@@ -31,7 +31,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       ReadBEWordMem(Ofs: LongInt): Word - lire un Word big-endian en memoire.
       ReadBELongMem(Ofs: LongInt): LongInt - lire un LongInt big-endian en memoire.
 
-  4.  [A FAIRE] Chargement des sections TEXT, DATA et symboles en memoire.
+  4.  [IMPLEMENTE] Chargement des sections TEXT, DATA et symboles en memoire.
       Allouer un tampon dynamique pour l'image du programme.
       Charger la section TEXT (ph_tlen octets a partir de l'offset $001C).
       Charger la section DATA (ph_dlen octets apres TEXT).

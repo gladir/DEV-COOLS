@@ -64,7 +64,8 @@
             SwapWord, SwapLong, ReadBEWord, ReadBELong,
             ReadBEWordMem, ReadBELongMem.
 
-  TODO 04 - CHARGEMENT DES SECTIONS EN MEMOIRE [A FAIRE]
+  TODO 04 - CHARGEMENT DES SECTIONS EN MEMOIRE [IMPLEMENTE]
+            LoadSections, FreeSections, ShowSections.
             Charger TEXT, DATA et la table des symboles dans un
             tampon dynamique. Calculer les offsets de chaque section.
 
@@ -664,6 +665,96 @@ Begin
 End;
 
 { ============================================================
+  TODO 04 - CHARGEMENT DES SECTIONS EN MEMOIRE [IMPLEMENTE]
+  ============================================================ }
+
+{ --- LoadSections : charger TEXT, DATA et symboles en memoire --- }
+{     Le fichier doit etre ouvert et positionne apres l'en-tete   }
+
+Procedure LoadSections(Var F: File; Var H: TPrgHeader);
+Var
+  TotalSize  : LongInt;
+  BytesRead  : Word;
+  Remaining  : LongInt;
+  ChunkSize  : Word;
+  P          : Pointer;
+  Offset     : LongInt;
+Begin
+  { Calculer la taille totale a charger }
+  TotalSize := H.ph_tlen + H.ph_dlen + H.ph_slen;
+  If TotalSize <= 0 Then
+    FatalError('Fichier PRG vide: aucune section a charger');
+  If TotalSize > MAX_IMAGE_SIZE Then
+    FatalError('Image trop grande: ' + IntToStr(TotalSize) +
+               ' octets (max ' + IntToStr(MAX_IMAGE_SIZE) + ')');
+  { Allouer le tampon dynamique }
+  GetMem(ImageBuffer, TotalSize);
+  If ImageBuffer = Nil Then
+    FatalError('Memoire insuffisante pour ' + IntToStr(TotalSize) +
+               ' octets');
+  ImageSize := TotalSize;
+  { Calculer les offsets des sections dans le tampon }
+  TextOffset := 0;
+  DataOffset := H.ph_tlen;
+  SymOffset  := H.ph_tlen + H.ph_dlen;
+  { Le fichier est deja positionne apres l'en-tete (offset $001C) }
+  { Charger toute l'image par blocs de BUFFER_SIZE }
+  Offset := 0;
+  Remaining := TotalSize;
+  While Remaining > 0 Do Begin
+    If Remaining > LongInt(BUFFER_SIZE - 1) Then
+      ChunkSize := BUFFER_SIZE - 1
+    Else
+      ChunkSize := Word(Remaining);
+    { Calculer l'adresse de destination dans le tampon }
+    P := Pointer(PtrUInt(ImageBuffer) + PtrUInt(Offset));
+    BlockRead(F, P^, ChunkSize, BytesRead);
+    If BytesRead <> ChunkSize Then
+      FatalError('Lecture incomplete: attendu ' + IntToStr(ChunkSize) +
+                 ' octets, lu ' + IntToStr(BytesRead) +
+                 ' (offset $' + HexLong(Offset) + ')');
+    Inc(Offset, BytesRead);
+    Dec(Remaining, BytesRead);
+  End;
+End;
+
+{ --- FreeSections : liberer la memoire du tampon image --- }
+
+Procedure FreeSections;
+Begin
+  If ImageBuffer <> Nil Then Begin
+    FreeMem(ImageBuffer, ImageSize);
+    ImageBuffer := Nil;
+    ImageSize   := 0;
+    TextOffset  := 0;
+    DataOffset  := 0;
+    SymOffset   := 0;
+  End;
+End;
+
+{ --- ShowSections : afficher les informations des sections chargees --- }
+
+Procedure ShowSections(Var H: TPrgHeader; Verbose: Boolean);
+Var
+  TotalSize: LongInt;
+Begin
+  If Not Verbose Then Exit;
+  TotalSize := H.ph_tlen + H.ph_dlen + H.ph_slen;
+  WriteLn;
+  WriteLn('=== Sections chargees en memoire ===');
+  WriteLn('  Section TEXT    : offset $', HexLong(TextOffset),
+          ', taille ', IntToStr(H.ph_tlen), ' octets');
+  WriteLn('  Section DATA    : offset $', HexLong(DataOffset),
+          ', taille ', IntToStr(H.ph_dlen), ' octets');
+  If H.ph_slen > 0 Then
+    WriteLn('  Table symboles  : offset $', HexLong(SymOffset),
+            ', taille ', IntToStr(H.ph_slen), ' octets');
+  WriteLn('  Taille tampon   : ', IntToStr(TotalSize), ' octets');
+  WriteLn('  Section BSS     : ', IntToStr(H.ph_blen),
+          ' octets (non chargee, non initialisee)');
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -706,10 +797,15 @@ Begin
   ReadPrgHeader(InFile, Header);
   ValidatePrgHeader(Header);
   ShowPrgHeader(Header, Opts.Verbose);
-  { Fermer le fichier pour l'instant }
+  { Charger les sections TEXT, DATA et symboles en memoire }
+  LoadSections(InFile, Header);
+  ShowSections(Header, Opts.Verbose);
+  { Fermer le fichier PRG }
   Close(InFile);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
-  { TODO 04-25 : chargement, desassemblage, generation .S }
+  { TODO 05-25 : symboles, relocalisation, desassemblage, generation .S }
+  { Liberer la memoire }
+  FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-03 [IMPLEMENTE], TODOs 04-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-04 [IMPLEMENTE], TODOs 05-25 [A FAIRE]');
 End.
