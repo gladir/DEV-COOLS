@@ -60,7 +60,7 @@
             Convertir les valeurs big-endian en little-endian.
             Afficher un resume de l en-tete si -v est active.
 
-  TODO 03 - CONVERSION BIG-ENDIAN / LITTLE-ENDIAN [A FAIRE]
+  TODO 03 - CONVERSION BIG-ENDIAN / LITTLE-ENDIAN [IMPLEMENTE]
             SwapWord, SwapLong, ReadBEWord, ReadBELong,
             ReadBEWordMem, ReadBELongMem.
 
@@ -574,6 +574,96 @@ Begin
 End;
 
 { ============================================================
+  TODO 03 - CONVERSION BIG-ENDIAN / LITTLE-ENDIAN [IMPLEMENTE]
+  ============================================================ }
+
+{ --- SwapWord : permuter les 2 octets d'un Word --- }
+
+Function SwapWord(W: Word): Word;
+Begin
+  SwapWord := (W Shr 8) Or ((W And $FF) Shl 8);
+End;
+
+{ --- SwapLong : permuter les 4 octets d'un LongInt --- }
+
+Function SwapLong(L: LongInt): LongInt;
+Var
+  B0, B1, B2, B3: Byte;
+Begin
+  B0 := Byte(L And $FF);
+  B1 := Byte((L Shr 8) And $FF);
+  B2 := Byte((L Shr 16) And $FF);
+  B3 := Byte((L Shr 24) And $FF);
+  SwapLong := LongInt(B0) Shl 24 Or LongInt(B1) Shl 16 Or
+              LongInt(B2) Shl 8 Or LongInt(B3);
+End;
+
+{ --- ReadBEWord : lire un Word big-endian depuis un fichier --- }
+
+Function ReadBEWord(Var F: File): Word;
+Var
+  Buf: Array[0..1] Of Byte;
+  BytesRead: Word;
+Begin
+  BlockRead(F, Buf, 2, BytesRead);
+  If BytesRead <> 2 Then
+    FatalError('Lecture fichier echouee: attendu 2 octets, lu ' +
+               IntToStr(BytesRead));
+  ReadBEWord := BEToWord(Buf[0], Buf[1]);
+End;
+
+{ --- ReadBELong : lire un LongInt big-endian depuis un fichier --- }
+
+Function ReadBELong(Var F: File): LongInt;
+Var
+  Buf: Array[0..3] Of Byte;
+  BytesRead: Word;
+Begin
+  BlockRead(F, Buf, 4, BytesRead);
+  If BytesRead <> 4 Then
+    FatalError('Lecture fichier echouee: attendu 4 octets, lu ' +
+               IntToStr(BytesRead));
+  ReadBELong := BEToLong(Buf[0], Buf[1], Buf[2], Buf[3]);
+End;
+
+{ --- ReadBEWordMem : lire un Word big-endian en memoire --- }
+{     Ofs = offset dans ImageBuffer                         }
+
+Function ReadBEWordMem(Ofs: LongInt): Word;
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  P: PByteArray;
+Begin
+  If ImageBuffer = Nil Then
+    FatalError('ReadBEWordMem: tampon image non alloue');
+  If (Ofs < 0) Or (Ofs + 1 >= ImageSize) Then
+    FatalError('ReadBEWordMem: offset hors limites: $' + HexLong(Ofs));
+  P := PByteArray(ImageBuffer);
+  ReadBEWordMem := BEToWord(P^[Ofs], P^[Ofs + 1]);
+End;
+
+{ --- ReadBELongMem : lire un LongInt big-endian en memoire --- }
+{     Ofs = offset dans ImageBuffer                             }
+
+Function ReadBELongMem(Ofs: LongInt): LongInt;
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  P: PByteArray;
+Begin
+  If ImageBuffer = Nil Then
+    FatalError('ReadBELongMem: tampon image non alloue');
+  If (Ofs < 0) Or (Ofs + 3 >= ImageSize) Then
+    FatalError('ReadBELongMem: offset hors limites: $' + HexLong(Ofs));
+  P := PByteArray(ImageBuffer);
+  ReadBELongMem := BEToLong(P^[Ofs], P^[Ofs + 1],
+                             P^[Ofs + 2], P^[Ofs + 3]);
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -619,7 +709,7 @@ Begin
   { Fermer le fichier pour l'instant }
   Close(InFile);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
-  { TODO 03-25 : conversion, chargement, desassemblage, generation .S }
+  { TODO 04-25 : chargement, desassemblage, generation .S }
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-02 [IMPLEMENTE], TODOs 03-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-03 [IMPLEMENTE], TODOs 04-25 [A FAIRE]');
 End.

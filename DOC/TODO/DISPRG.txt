@@ -21,7 +21,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       little-endian pour la lecture sur PC.
       Afficher un resume de l'en-tete si -v est active.
 
-  3.  [A FAIRE] Conversion big-endian / little-endian.
+  3.  [IMPLEMENTE] Conversion big-endian / little-endian.
       Le Motorola 68000 utilise l'ordre big-endian (octet de poids fort
       en premier). Implementer les fonctions de conversion :
       SwapWord(W: Word): Word - permuter les 2 octets d'un Word.
