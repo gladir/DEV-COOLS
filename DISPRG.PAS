@@ -2186,7 +2186,7 @@ Function DecodeEA(Mode, Reg: Byte; Ofs: LongInt; OpSize: Byte;
                   PC: LongInt; Var ExtBytes: Byte): String;
 Var
   Kind      : Byte;
-  Disp16    : Integer;
+  Disp16    : LongInt;
   Disp8     : ShortInt;
   ExtWord   : Word;
   Addr32    : LongInt;
@@ -2224,7 +2224,7 @@ Begin
     AM_AN_DISP: Begin
       { Lire le deplacement 16 bits signe }
       ExtWord := ReadBEWordMem(Ofs);
-      Disp16 := Integer(SmallInt(ExtWord));
+      Disp16 := SignExtWord(ExtWord);
       ExtBytes := 2;
       If Disp16 >= 0 Then
         DecodeEA := IntToStr(Disp16) + '(A' + IntToStr(Reg) + ')'
@@ -2282,7 +2282,7 @@ Begin
     AM_PC_DISP: Begin
       { Relatif au PC avec deplacement 16 bits }
       ExtWord := ReadBEWordMem(Ofs);
-      Disp16 := Integer(SmallInt(ExtWord));
+      Disp16 := SignExtWord(ExtWord);
       ExtBytes := 2;
       TargetAddr := PC + 2 + LongInt(Disp16);
       DecodeEA := '$' + HexLong(TargetAddr) + '(PC)';
