@@ -1902,6 +1902,12 @@ Var
  OldReturnValue:Real;
  OldReturnStr:String;
  OldHasReturn:Boolean;
+ { Sauvegarde des piles pour les appels recursifs }
+ SaveStack:Array[0..100]of Char;
+ SaveResultStack:Array[0..100]of Real;
+ SaveTopOfStack:Byte;
+ SaveTopOfStackInt:Byte;
+ StackIdx:Integer;
 Begin
  CallUserFunction:=0;
  If(FuncIdx<1)or(FuncIdx>UserFuncCount)Then Exit;
@@ -1913,6 +1919,16 @@ Begin
  OldReturnValue:=FunctionReturnValue;
  OldReturnStr:=FunctionReturnStr;
  OldHasReturn:=HasFunctionReturn;
+ 
+ { Sauvegarder les piles d'evaluation d'expressions pour les appels recursifs }
+ SaveTopOfStack:=TopOfStack;
+ SaveTopOfStackInt:=TopOfStackInt;
+ For StackIdx:=0 to TopOfStack-1 do SaveStack[StackIdx]:=Stack[StackIdx];
+ For StackIdx:=0 to TopOfStackInt-1 do SaveResultStack[StackIdx]:=ResultStack[StackIdx];
+ 
+ { Reinitialiser les piles pour l'appel recursif }
+ TopOfStack:=1;
+ TopOfStackInt:=1;
  
  { Initialiser pour l'appel }
  HasFunctionReturn:=False;
@@ -1936,6 +1952,12 @@ Begin
  
  { Recuperer la valeur de retour }
  CallUserFunction:=FunctionReturnValue;
+ 
+ { Restaurer les piles d'evaluation d'expressions }
+ For StackIdx:=0 to SaveTopOfStack-1 do Stack[StackIdx]:=SaveStack[StackIdx];
+ For StackIdx:=0 to SaveTopOfStackInt-1 do ResultStack[StackIdx]:=SaveResultStack[StackIdx];
+ TopOfStack:=SaveTopOfStack;
+ TopOfStackInt:=SaveTopOfStackInt;
  
  { Restaurer l'etat }
  CurrLinePtr:=SaveLinePtr;
