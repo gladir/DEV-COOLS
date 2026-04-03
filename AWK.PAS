@@ -772,7 +772,7 @@ Procedure SetVariableInt(S:String;Value:Integer);
 Var
  I:Integer;
 Begin
- For I:=1 to NumberVariable do If(S=VarList[I]^.VarName)Then Begin
+ For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
   VarList[I]^.Variant.I:=Value;
   Exit;
  End;
@@ -810,7 +810,7 @@ Procedure SetVariableLongInt(S:String;Value:LongInt);
 Var
  I:Integer;
 Begin
- For I:=1 to NumberVariable do If(S=VarList[I]^.VarName)Then Begin
+ For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
   VarList[I]^.Variant.L:=Value;
   Exit;
  End;
@@ -848,7 +848,7 @@ Procedure SetVariableReal(S:String;Value:Real);
 Var
  I:Integer;
 Begin
- For I:=1 to NumberVariable do If(S=VarList[I]^.VarName)Then Begin
+ For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
   VarList[I]^.Variant.R:=Value;
   Exit;
  End;
@@ -889,7 +889,7 @@ Procedure SetVariableString(S:String;Value:String);
 Var
  I:Integer;
 Begin
- For I:=1 to NumberVariable do If(S=VarList[I]^.VarName)Then Begin
+ For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
   VarList[I]^.Variant.S^:=Value;
   Exit;
  End;
