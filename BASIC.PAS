@@ -1084,7 +1084,9 @@ Begin
     '^':Begin { Puissance: P2^P }
           If P2>0 Then _Result:=Exp(P*Ln(P2))
           Else If P2=0 Then Begin
-           If P>0 Then _Result:=0 Else _Result:=1; { 0^0 = 1 par convention }
+           If P>0 Then _Result:=0
+           Else If P=0 Then _Result:=1 { 0^0 = 1 par convention }
+           Else _Result:=0; { 0^(negatif) = indefini, retourne 0 }
           End
           Else Begin { P2 < 0 }
            If(Frac(P)=0)Then Begin { Exposant entier }
