@@ -75,7 +75,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       Pour chaque instruction : masque de bits, valeur attendue,
       mnemonique, format des operandes, taille de l'instruction.
 
-  9.  [A FAIRE] Table des opcodes 68000 - Arithmetique et logique.
+  9.  [IMPLEMENTE] Table des opcodes 68000 - Arithmetique et logique.
       Definir les opcodes arithmetiques et logiques :
       ADD, ADDA, ADDI, ADDQ, ADDX,
       SUB, SUBA, SUBI, SUBQ, SUBX,

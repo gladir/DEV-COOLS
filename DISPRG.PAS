@@ -93,9 +93,10 @@
             MOVE, MOVEA, MOVEQ, MOVEM, MOVEP, EXG, SWAP,
             LEA, PEA, LINK, UNLK.
 
-  TODO 09 - TABLE DES OPCODES 68000 - ARITHMETIQUE/LOGIQUE [A FAIRE]
-            ADD, SUB, MUL, DIV, AND, OR, EOR, NOT, NEG,
-            CMP, CLR, EXT, TST, TAS.
+  TODO 09 - TABLE DES OPCODES 68000 - ARITHMETIQUE/LOGIQUE [IMPLEMENTE]
+            ADD, ADDA, ADDI, ADDQ, ADDX, SUB, SUBA, SUBI, SUBQ, SUBX,
+            MULU, MULS, DIVU, DIVS, AND, ANDI, OR, ORI, EOR, EORI,
+            NOT, NEG, NEGX, CMP, CMPA, CMPI, CMPM, CLR, EXT, TST, TAS.
 
   TODO 10 - TABLE DES OPCODES 68000 - DECALAGES/ROTATIONS [A FAIRE]
             ASL, ASR, LSL, LSR, ROL, ROR, ROXL, ROXR.
@@ -1244,6 +1245,14 @@ Const
   FMT_EA       = 9;   { PEA ea / CLR ea / TST ea etc.         }
   FMT_AN_DISP  = 10;  { LINK An,#disp / UNLK An               }
   FMT_AN       = 11;  { UNLK An                               }
+  FMT_EA_DN    = 12;  { ADD ea,Dn / SUB ea,Dn / AND ea,Dn etc. }
+  FMT_DN_EA    = 13;  { ADD Dn,ea / SUB Dn,ea / AND Dn,ea etc. }
+  FMT_EA_AN3   = 14;  { ADDA ea,An / SUBA ea,An / CMPA ea,An   }
+  FMT_IMM_EA   = 15;  { ADDI #imm,ea / SUBI / ANDI / ORI etc.  }
+  FMT_IMM3_EA  = 16;  { ADDQ #1-8,ea / SUBQ #1-8,ea            }
+  FMT_DN_DN2   = 17;  { ADDX Dn,Dn / SUBX Dn,Dn / CMPM (An)+  }
+  FMT_WORD_DN  = 18;  { MULU ea,Dn / MULS ea,Dn / DIVU / DIVS  }
+  FMT_DN2      = 19;  { NOT Dn / NEG Dn / NEGX Dn / EXT Dn     }
 
 { --- AddOpcode : ajouter une entree dans la table --- }
 
@@ -1317,13 +1326,226 @@ Begin
   AddOpcode($FFF8, $4E58, 'UNLK', FMT_AN, 2, GRP_TRANSFER);
 End;
 
+{ ============================================================
+  TODO 09 - TABLE DES OPCODES 68000 - ARITH/LOGIQUE [IMPLEMENTE]
+  ============================================================ }
+
+{ --- InitArithLogicOpcodes : opcodes arithmetiques et logiques --- }
+
+Procedure InitArithLogicOpcodes;
+Begin
+  { === ADD / ADDA / ADDI / ADDQ / ADDX === }
+
+  { ADDI.B #imm8,ea : 0000 0110 00xx xxxx }
+  AddOpcode($FFC0, $0600, 'ADDI.B', FMT_IMM_EA, 4, GRP_ARITH);
+  { ADDI.W #imm16,ea : 0000 0110 01xx xxxx }
+  AddOpcode($FFC0, $0640, 'ADDI.W', FMT_IMM_EA, 4, GRP_ARITH);
+  { ADDI.L #imm32,ea : 0000 0110 10xx xxxx }
+  AddOpcode($FFC0, $0680, 'ADDI.L', FMT_IMM_EA, 6, GRP_ARITH);
+  { ADDQ.B #data3,ea : 0101 xxx0 00xx xxxx }
+  AddOpcode($F1C0, $5000, 'ADDQ.B', FMT_IMM3_EA, 2, GRP_ARITH);
+  { ADDQ.W #data3,ea : 0101 xxx0 01xx xxxx }
+  AddOpcode($F1C0, $5040, 'ADDQ.W', FMT_IMM3_EA, 2, GRP_ARITH);
+  { ADDQ.L #data3,ea : 0101 xxx0 10xx xxxx }
+  AddOpcode($F1C0, $5080, 'ADDQ.L', FMT_IMM3_EA, 2, GRP_ARITH);
+  { ADDX.B Dn,Dn : 1101 xxx1 0000 0xxx }
+  AddOpcode($F1F8, $D100, 'ADDX.B', FMT_DN_DN2, 2, GRP_ARITH);
+  { ADDX.W Dn,Dn : 1101 xxx1 0100 0xxx }
+  AddOpcode($F1F8, $D140, 'ADDX.W', FMT_DN_DN2, 2, GRP_ARITH);
+  { ADDX.L Dn,Dn : 1101 xxx1 1000 0xxx }
+  AddOpcode($F1F8, $D180, 'ADDX.L', FMT_DN_DN2, 2, GRP_ARITH);
+  { ADDA.W ea,An : 1101 xxx0 11xx xxxx }
+  AddOpcode($F1C0, $D0C0, 'ADDA.W', FMT_EA_AN3, 2, GRP_ARITH);
+  { ADDA.L ea,An : 1101 xxx1 11xx xxxx }
+  AddOpcode($F1C0, $D1C0, 'ADDA.L', FMT_EA_AN3, 2, GRP_ARITH);
+  { ADD.B ea,Dn : 1101 xxx0 00xx xxxx }
+  AddOpcode($F1C0, $D000, 'ADD.B', FMT_EA_DN, 2, GRP_ARITH);
+  { ADD.W ea,Dn : 1101 xxx0 01xx xxxx }
+  AddOpcode($F1C0, $D040, 'ADD.W', FMT_EA_DN, 2, GRP_ARITH);
+  { ADD.L ea,Dn : 1101 xxx0 10xx xxxx }
+  AddOpcode($F1C0, $D080, 'ADD.L', FMT_EA_DN, 2, GRP_ARITH);
+  { ADD.B Dn,ea : 1101 xxx1 00xx xxxx }
+  AddOpcode($F1C0, $D100, 'ADD.B', FMT_DN_EA, 2, GRP_ARITH);
+  { ADD.W Dn,ea : 1101 xxx1 01xx xxxx }
+  AddOpcode($F1C0, $D140, 'ADD.W', FMT_DN_EA, 2, GRP_ARITH);
+  { ADD.L Dn,ea : 1101 xxx1 10xx xxxx }
+  AddOpcode($F1C0, $D180, 'ADD.L', FMT_DN_EA, 2, GRP_ARITH);
+
+  { === SUB / SUBA / SUBI / SUBQ / SUBX === }
+
+  { SUBI.B #imm8,ea : 0000 0100 00xx xxxx }
+  AddOpcode($FFC0, $0400, 'SUBI.B', FMT_IMM_EA, 4, GRP_ARITH);
+  { SUBI.W #imm16,ea : 0000 0100 01xx xxxx }
+  AddOpcode($FFC0, $0440, 'SUBI.W', FMT_IMM_EA, 4, GRP_ARITH);
+  { SUBI.L #imm32,ea : 0000 0100 10xx xxxx }
+  AddOpcode($FFC0, $0480, 'SUBI.L', FMT_IMM_EA, 6, GRP_ARITH);
+  { SUBQ.B #data3,ea : 0101 xxx1 00xx xxxx }
+  AddOpcode($F1C0, $5100, 'SUBQ.B', FMT_IMM3_EA, 2, GRP_ARITH);
+  { SUBQ.W #data3,ea : 0101 xxx1 01xx xxxx }
+  AddOpcode($F1C0, $5140, 'SUBQ.W', FMT_IMM3_EA, 2, GRP_ARITH);
+  { SUBQ.L #data3,ea : 0101 xxx1 10xx xxxx }
+  AddOpcode($F1C0, $5180, 'SUBQ.L', FMT_IMM3_EA, 2, GRP_ARITH);
+  { SUBX.B Dn,Dn : 1001 xxx1 0000 0xxx }
+  AddOpcode($F1F8, $9100, 'SUBX.B', FMT_DN_DN2, 2, GRP_ARITH);
+  { SUBX.W Dn,Dn : 1001 xxx1 0100 0xxx }
+  AddOpcode($F1F8, $9140, 'SUBX.W', FMT_DN_DN2, 2, GRP_ARITH);
+  { SUBX.L Dn,Dn : 1001 xxx1 1000 0xxx }
+  AddOpcode($F1F8, $9180, 'SUBX.L', FMT_DN_DN2, 2, GRP_ARITH);
+  { SUBA.W ea,An : 1001 xxx0 11xx xxxx }
+  AddOpcode($F1C0, $90C0, 'SUBA.W', FMT_EA_AN3, 2, GRP_ARITH);
+  { SUBA.L ea,An : 1001 xxx1 11xx xxxx }
+  AddOpcode($F1C0, $91C0, 'SUBA.L', FMT_EA_AN3, 2, GRP_ARITH);
+  { SUB.B ea,Dn : 1001 xxx0 00xx xxxx }
+  AddOpcode($F1C0, $9000, 'SUB.B', FMT_EA_DN, 2, GRP_ARITH);
+  { SUB.W ea,Dn : 1001 xxx0 01xx xxxx }
+  AddOpcode($F1C0, $9040, 'SUB.W', FMT_EA_DN, 2, GRP_ARITH);
+  { SUB.L ea,Dn : 1001 xxx0 10xx xxxx }
+  AddOpcode($F1C0, $9080, 'SUB.L', FMT_EA_DN, 2, GRP_ARITH);
+  { SUB.B Dn,ea : 1001 xxx1 00xx xxxx }
+  AddOpcode($F1C0, $9100, 'SUB.B', FMT_DN_EA, 2, GRP_ARITH);
+  { SUB.W Dn,ea : 1001 xxx1 01xx xxxx }
+  AddOpcode($F1C0, $9140, 'SUB.W', FMT_DN_EA, 2, GRP_ARITH);
+  { SUB.L Dn,ea : 1001 xxx1 10xx xxxx }
+  AddOpcode($F1C0, $9180, 'SUB.L', FMT_DN_EA, 2, GRP_ARITH);
+
+  { === MULU / MULS / DIVU / DIVS === }
+
+  { MULU.W ea,Dn : 1100 xxx0 11xx xxxx }
+  AddOpcode($F1C0, $C0C0, 'MULU.W', FMT_WORD_DN, 2, GRP_ARITH);
+  { MULS.W ea,Dn : 1100 xxx1 11xx xxxx }
+  AddOpcode($F1C0, $C1C0, 'MULS.W', FMT_WORD_DN, 2, GRP_ARITH);
+  { DIVU.W ea,Dn : 1000 xxx0 11xx xxxx }
+  AddOpcode($F1C0, $80C0, 'DIVU.W', FMT_WORD_DN, 2, GRP_ARITH);
+  { DIVS.W ea,Dn : 1000 xxx1 11xx xxxx }
+  AddOpcode($F1C0, $81C0, 'DIVS.W', FMT_WORD_DN, 2, GRP_ARITH);
+
+  { === AND / ANDI / OR / ORI / EOR / EORI === }
+
+  { ANDI.B #imm8,ea : 0000 0010 00xx xxxx }
+  AddOpcode($FFC0, $0200, 'ANDI.B', FMT_IMM_EA, 4, GRP_ARITH);
+  { ANDI.W #imm16,ea : 0000 0010 01xx xxxx }
+  AddOpcode($FFC0, $0240, 'ANDI.W', FMT_IMM_EA, 4, GRP_ARITH);
+  { ANDI.L #imm32,ea : 0000 0010 10xx xxxx }
+  AddOpcode($FFC0, $0280, 'ANDI.L', FMT_IMM_EA, 6, GRP_ARITH);
+  { AND.B ea,Dn : 1100 xxx0 00xx xxxx }
+  AddOpcode($F1C0, $C000, 'AND.B', FMT_EA_DN, 2, GRP_ARITH);
+  { AND.W ea,Dn : 1100 xxx0 01xx xxxx }
+  AddOpcode($F1C0, $C040, 'AND.W', FMT_EA_DN, 2, GRP_ARITH);
+  { AND.L ea,Dn : 1100 xxx0 10xx xxxx }
+  AddOpcode($F1C0, $C080, 'AND.L', FMT_EA_DN, 2, GRP_ARITH);
+  { AND.B Dn,ea : 1100 xxx1 00xx xxxx }
+  AddOpcode($F1C0, $C100, 'AND.B', FMT_DN_EA, 2, GRP_ARITH);
+  { AND.W Dn,ea : 1100 xxx1 01xx xxxx }
+  AddOpcode($F1C0, $C140, 'AND.W', FMT_DN_EA, 2, GRP_ARITH);
+  { AND.L Dn,ea : 1100 xxx1 10xx xxxx }
+  AddOpcode($F1C0, $C180, 'AND.L', FMT_DN_EA, 2, GRP_ARITH);
+  { ORI.B #imm8,ea : 0000 0000 00xx xxxx }
+  AddOpcode($FFC0, $0000, 'ORI.B', FMT_IMM_EA, 4, GRP_ARITH);
+  { ORI.W #imm16,ea : 0000 0000 01xx xxxx }
+  AddOpcode($FFC0, $0040, 'ORI.W', FMT_IMM_EA, 4, GRP_ARITH);
+  { ORI.L #imm32,ea : 0000 0000 10xx xxxx }
+  AddOpcode($FFC0, $0080, 'ORI.L', FMT_IMM_EA, 6, GRP_ARITH);
+  { OR.B ea,Dn : 1000 xxx0 00xx xxxx }
+  AddOpcode($F1C0, $8000, 'OR.B', FMT_EA_DN, 2, GRP_ARITH);
+  { OR.W ea,Dn : 1000 xxx0 01xx xxxx }
+  AddOpcode($F1C0, $8040, 'OR.W', FMT_EA_DN, 2, GRP_ARITH);
+  { OR.L ea,Dn : 1000 xxx0 10xx xxxx }
+  AddOpcode($F1C0, $8080, 'OR.L', FMT_EA_DN, 2, GRP_ARITH);
+  { OR.B Dn,ea : 1000 xxx1 00xx xxxx }
+  AddOpcode($F1C0, $8100, 'OR.B', FMT_DN_EA, 2, GRP_ARITH);
+  { OR.W Dn,ea : 1000 xxx1 01xx xxxx }
+  AddOpcode($F1C0, $8140, 'OR.W', FMT_DN_EA, 2, GRP_ARITH);
+  { OR.L Dn,ea : 1000 xxx1 10xx xxxx }
+  AddOpcode($F1C0, $8180, 'OR.L', FMT_DN_EA, 2, GRP_ARITH);
+  { EORI.B #imm8,ea : 0000 1010 00xx xxxx }
+  AddOpcode($FFC0, $0A00, 'EORI.B', FMT_IMM_EA, 4, GRP_ARITH);
+  { EORI.W #imm16,ea : 0000 1010 01xx xxxx }
+  AddOpcode($FFC0, $0A40, 'EORI.W', FMT_IMM_EA, 4, GRP_ARITH);
+  { EORI.L #imm32,ea : 0000 1010 10xx xxxx }
+  AddOpcode($FFC0, $0A80, 'EORI.L', FMT_IMM_EA, 6, GRP_ARITH);
+  { EOR.B Dn,ea : 1011 xxx1 00xx xxxx }
+  AddOpcode($F1C0, $B100, 'EOR.B', FMT_DN_EA, 2, GRP_ARITH);
+  { EOR.W Dn,ea : 1011 xxx1 01xx xxxx }
+  AddOpcode($F1C0, $B140, 'EOR.W', FMT_DN_EA, 2, GRP_ARITH);
+  { EOR.L Dn,ea : 1011 xxx1 10xx xxxx }
+  AddOpcode($F1C0, $B180, 'EOR.L', FMT_DN_EA, 2, GRP_ARITH);
+
+  { === NOT / NEG / NEGX === }
+
+  { NOT.B ea : 0100 0110 00xx xxxx }
+  AddOpcode($FFC0, $4600, 'NOT.B', FMT_EA, 2, GRP_ARITH);
+  { NOT.W ea : 0100 0110 01xx xxxx }
+  AddOpcode($FFC0, $4640, 'NOT.W', FMT_EA, 2, GRP_ARITH);
+  { NOT.L ea : 0100 0110 10xx xxxx }
+  AddOpcode($FFC0, $4680, 'NOT.L', FMT_EA, 2, GRP_ARITH);
+  { NEG.B ea : 0100 0100 00xx xxxx }
+  AddOpcode($FFC0, $4400, 'NEG.B', FMT_EA, 2, GRP_ARITH);
+  { NEG.W ea : 0100 0100 01xx xxxx }
+  AddOpcode($FFC0, $4440, 'NEG.W', FMT_EA, 2, GRP_ARITH);
+  { NEG.L ea : 0100 0100 10xx xxxx }
+  AddOpcode($FFC0, $4480, 'NEG.L', FMT_EA, 2, GRP_ARITH);
+  { NEGX.B ea : 0100 0000 00xx xxxx }
+  AddOpcode($FFC0, $4000, 'NEGX.B', FMT_EA, 2, GRP_ARITH);
+  { NEGX.W ea : 0100 0000 01xx xxxx }
+  AddOpcode($FFC0, $4040, 'NEGX.W', FMT_EA, 2, GRP_ARITH);
+  { NEGX.L ea : 0100 0000 10xx xxxx }
+  AddOpcode($FFC0, $4080, 'NEGX.L', FMT_EA, 2, GRP_ARITH);
+
+  { === CMP / CMPA / CMPI / CMPM === }
+
+  { CMPI.B #imm8,ea : 0000 1100 00xx xxxx }
+  AddOpcode($FFC0, $0C00, 'CMPI.B', FMT_IMM_EA, 4, GRP_ARITH);
+  { CMPI.W #imm16,ea : 0000 1100 01xx xxxx }
+  AddOpcode($FFC0, $0C40, 'CMPI.W', FMT_IMM_EA, 4, GRP_ARITH);
+  { CMPI.L #imm32,ea : 0000 1100 10xx xxxx }
+  AddOpcode($FFC0, $0C80, 'CMPI.L', FMT_IMM_EA, 6, GRP_ARITH);
+  { CMPM.B (An)+,(An)+ : 1011 xxx1 0000 1xxx }
+  AddOpcode($F1F8, $B108, 'CMPM.B', FMT_DN_DN2, 2, GRP_ARITH);
+  { CMPM.W (An)+,(An)+ : 1011 xxx1 0100 1xxx }
+  AddOpcode($F1F8, $B148, 'CMPM.W', FMT_DN_DN2, 2, GRP_ARITH);
+  { CMPM.L (An)+,(An)+ : 1011 xxx1 1000 1xxx }
+  AddOpcode($F1F8, $B188, 'CMPM.L', FMT_DN_DN2, 2, GRP_ARITH);
+  { CMPA.W ea,An : 1011 xxx0 11xx xxxx }
+  AddOpcode($F1C0, $B0C0, 'CMPA.W', FMT_EA_AN3, 2, GRP_ARITH);
+  { CMPA.L ea,An : 1011 xxx1 11xx xxxx }
+  AddOpcode($F1C0, $B1C0, 'CMPA.L', FMT_EA_AN3, 2, GRP_ARITH);
+  { CMP.B ea,Dn : 1011 xxx0 00xx xxxx }
+  AddOpcode($F1C0, $B000, 'CMP.B', FMT_EA_DN, 2, GRP_ARITH);
+  { CMP.W ea,Dn : 1011 xxx0 01xx xxxx }
+  AddOpcode($F1C0, $B040, 'CMP.W', FMT_EA_DN, 2, GRP_ARITH);
+  { CMP.L ea,Dn : 1011 xxx0 10xx xxxx }
+  AddOpcode($F1C0, $B080, 'CMP.L', FMT_EA_DN, 2, GRP_ARITH);
+
+  { === CLR / EXT / TST / TAS === }
+
+  { CLR.B ea : 0100 0010 00xx xxxx }
+  AddOpcode($FFC0, $4200, 'CLR.B', FMT_EA, 2, GRP_ARITH);
+  { CLR.W ea : 0100 0010 01xx xxxx }
+  AddOpcode($FFC0, $4240, 'CLR.W', FMT_EA, 2, GRP_ARITH);
+  { CLR.L ea : 0100 0010 10xx xxxx }
+  AddOpcode($FFC0, $4280, 'CLR.L', FMT_EA, 2, GRP_ARITH);
+  { EXT.W Dn : 0100 1000 1000 0xxx }
+  AddOpcode($FFF8, $4880, 'EXT.W', FMT_DN2, 2, GRP_ARITH);
+  { EXT.L Dn : 0100 1000 1100 0xxx }
+  AddOpcode($FFF8, $48C0, 'EXT.L', FMT_DN2, 2, GRP_ARITH);
+  { TST.B ea : 0100 1010 00xx xxxx }
+  AddOpcode($FFC0, $4A00, 'TST.B', FMT_EA, 2, GRP_ARITH);
+  { TST.W ea : 0100 1010 01xx xxxx }
+  AddOpcode($FFC0, $4A40, 'TST.W', FMT_EA, 2, GRP_ARITH);
+  { TST.L ea : 0100 1010 10xx xxxx }
+  AddOpcode($FFC0, $4A80, 'TST.L', FMT_EA, 2, GRP_ARITH);
+  { TAS.B ea : 0100 1010 11xx xxxx }
+  AddOpcode($FFC0, $4AC0, 'TAS.B', FMT_EA, 2, GRP_ARITH);
+End;
+
 { --- InitOpcodeTable : initialiser la table des opcodes --- }
 
 Procedure InitOpcodeTable;
 Begin
   OpcodeCount := 0;
   InitTransferOpcodes;
-  { Les groupes suivants seront ajoutes par les TODOs 09-12 }
+  InitArithLogicOpcodes;
+  { Les groupes suivants seront ajoutes par les TODOs 10-12 }
 End;
 
 { --- FindOpcode : chercher un opcode par son mot d'instruction --- }
@@ -1468,7 +1690,7 @@ Begin
   { Fermer le fichier PRG }
   Close(InFile);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
-  { TODO 09-25 : desassemblage, generation .S }
+  { TODO 10-25 : desassemblage, generation .S }
   { Lire la table des symboles DRI }
   ReadSymbolTable(Header);
   ShowSymbolTable(Opts.ShowSymbols Or Opts.Verbose);
@@ -1486,9 +1708,10 @@ Begin
   ShowOpcodeTable(Opts.Verbose);
   If Opts.Verbose Then
     WriteLn('Opcodes 68000   : ', IntToStr(OpcodeCount),
-            ' (transfert: ', IntToStr(CountOpcodesByGroup(GRP_TRANSFER)), ')');
+            ' (transfert: ', IntToStr(CountOpcodesByGroup(GRP_TRANSFER)),
+            ', arith: ', IntToStr(CountOpcodesByGroup(GRP_ARITH)), ')');
   { Liberer la memoire }
   FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-08 [IMPLEMENTE], TODOs 09-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-09 [IMPLEMENTE], TODOs 10-25 [A FAIRE]');
 End.
