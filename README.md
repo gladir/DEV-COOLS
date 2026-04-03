@@ -173,6 +173,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur AWK vers l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>AWKCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur AWK pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>BASIC.PAS</b></td>
 			<td>Cette commande permet de lancer l'interpréteur de langage de programmation BASIC.</td>
 		</tr>
