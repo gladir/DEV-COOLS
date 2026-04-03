@@ -143,6 +143,20 @@ Function CallUserFunction(FuncIdx:Integer):Real; forward;
 Procedure SplitIntoFields(Line:String); forward;
 
 { ========================================================= }
+{ SECTION: Acces securise au tableau PA                     }
+{ ========================================================= }
+
+{ Retourne la ligne a l'index donne de maniere securisee }
+{ Evite les runtime error 216 (GPF) si le pointeur est nil }
+Function GetPALine(LineNum:Integer):String;
+Begin
+ GetPALine:='';
+ If(LineNum<1)or(LineNum>NumberLine)Then Exit;
+ If PA[LineNum]=nil Then Exit;
+ GetPALine:=PA[LineNum]^;
+End;
+
+{ ========================================================= }
 { SECTION: Expressions Regex                                }
 { ========================================================= }
 
@@ -508,6 +522,8 @@ Var
 Begin
  ExecuteLine:=True;
  If(LineNum<1)or(LineNum>NumberLine)Then Exit;
+ { Protection contre pointeur nil - evite runtime error 216 }
+ If PA[LineNum]=nil Then Exit;
  
  SaveLine:=CurrLine;
  SavePos:=CurrPos;
@@ -697,6 +713,55 @@ Begin
  While(I<=Length(s)) and (S[I] in [#9,' ']) do Inc(I);
  Delete(S,1,I-1);
  LTrim:=S;
+End;
+
+{ Convertit une chaine hexadecimale en valeur entiere }
+{ Supporte les formats: 0xFF, 0XFF, $FF }
+Function HexToInt(S:String):LongInt;
+Var
+ I:Integer;
+ Val:LongInt;
+ C:Char;
+Begin
+ HexToInt:=0;
+ Val:=0;
+ S:=LTrim(S);
+ If Length(S)=0 Then Exit;
+ { Gerer le prefixe 0x ou 0X }
+ If(Length(S)>=2)and(S[1]='0')and(S[2]in['x','X'])Then
+  Delete(S,1,2)
+ { Gerer le prefixe $ (style Pascal) }
+ Else If S[1]='$' Then
+  Delete(S,1,1);
+ If Length(S)=0 Then Exit;
+ For I:=1 to Length(S)do Begin
+  C:=S[I];
+  Val:=Val*16;
+  Case C of
+   '0'..'9':Val:=Val+(Ord(C)-Ord('0'));
+   'A'..'F':Val:=Val+(Ord(C)-Ord('A')+10);
+   'a'..'f':Val:=Val+(Ord(C)-Ord('a')+10);
+   Else Begin { Caractere invalide }
+    HexToInt:=0;
+    Exit;
+   End;
+  End;
+ End;
+ HexToInt:=Val;
+End;
+
+{ Verifie si une chaine est une constante hexadecimale }
+Function IsHexConstant(S:String):Boolean;
+Begin
+ IsHexConstant:=False;
+ S:=LTrim(S);
+ If Length(S)<2 Then Exit;
+ { Format 0x ou 0X }
+ If(S[1]='0')and(S[2]in['x','X'])Then
+  IsHexConstant:=True
+ { Format $ (style Pascal) }
+ Else If S[1]='$' Then
+  IsHexConstant:=True;
 End;
 
 Function PadRight(S:String;Space:Byte):String;
@@ -1385,26 +1450,45 @@ Begin
   If Infix[I]in['0'..'9']Then Begin
    Value:='';
    Exposant:=False;
-   Repeat
-    If Infix[I]in['E','e']Then Begin
-     Exposant:=True;
+   { Verifier si c'est une constante hexadecimale (0x...) }
+   If(Infix[I]='0')and(I<Length(Infix))and(Infix[I+1]in['x','X'])Then Begin
+    { C'est une constante hexadecimale }
+    Value:='0';
+    Inc(I);
+    Value:=Value+Infix[I]; { Ajoute 'x' ou 'X' }
+    Inc(I);
+    While(I<=Length(Infix))and(Infix[I]in['0'..'9','A'..'F','a'..'f'])do Begin
      Value:=Value+Infix[I];
      Inc(I);
-    End
-     Else
-    If(Exposant)and(Infix[I]in['-','+'])Then Begin
-     Value:=Value+Infix[I];
-     Inc(I);
-    End
-     Else
-    If Infix[I]in['0'..'9','.']Then Begin
-     Value:=Value+Infix[I];
-     Inc(I);
-    End
-     Else
-    Break;
-   Until I>Length(Infix);
-   PostFix:=PostFix+'('+Value+')';
+    End;
+    { Convertir la valeur hex en decimal pour le postfix }
+    Str(HexToInt(Value),Value);
+    PostFix:=PostFix+'('+Value+')';
+   End
+    Else
+   Begin
+    { Nombre decimal normal }
+    Repeat
+     If Infix[I]in['E','e']Then Begin
+      Exposant:=True;
+      Value:=Value+Infix[I];
+      Inc(I);
+     End
+      Else
+     If(Exposant)and(Infix[I]in['-','+'])Then Begin
+      Value:=Value+Infix[I];
+      Inc(I);
+     End
+      Else
+     If Infix[I]in['0'..'9','.']Then Begin
+      Value:=Value+Infix[I];
+      Inc(I);
+     End
+      Else
+     Break;
+    Until I>Length(Infix);
+    PostFix:=PostFix+'('+Value+')';
+   End;
   End
   Else If Infix[I]='('Then Begin
    StackPushChar(Infix[I]);
@@ -2331,7 +2415,8 @@ Begin
  BraceCount:=0;
 
  For I:=StartLine to NumberLine do Begin
-  Line:=PA[I]^;
+  Line:=GetPALine(I);
+  If Line='' Then Continue; { Protection nil }
   For J:=1 to Length(Line)do Begin
    If Line[J]='{'Then Inc(BraceCount)
    Else If Line[J]='}'Then Begin
