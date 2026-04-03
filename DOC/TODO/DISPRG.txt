@@ -170,7 +170,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       (listes de mots longs pointant vers du code), les
       constantes numeriques et les tables de donnees.
 
-  19. [A FAIRE] Desassemblage de la section DATA.
+  19. [IMPLEMENTE] Desassemblage de la section DATA.
       Si l'option -data est active, tenter de desassembler
       la section DATA. Par defaut, emettre la section DATA
       en directives DC.B, DC.W, DC.L. Detecter les chaines

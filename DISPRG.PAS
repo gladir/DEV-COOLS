@@ -144,9 +144,11 @@
             CountCodeBytes, CountDataBytes, CountASCIIRegions,
             CountJumpTables.
 
-  TODO 19 - DESASSEMBLAGE DE LA SECTION DATA [A FAIRE]
-            Emettre DC.B/DC.W/DC.L, detecter les chaines,
-            utiliser symboles DRI et relocalisations.
+  TODO 19 - DESASSEMBLAGE DE LA SECTION DATA [IMPLEMENTE]
+            DetectASCIIInData, IsDataRelocated,
+            GetDataSymbolName, ShowDataSection,
+            CountDataSymbols, CountDataStrings,
+            CountDataPointers.
 
   TODO 20 - GENERATION FICHIER .S : EN-TETE ET DIRECTIVES [A FAIRE]
             En-tete, directives section TEXT/DATA/BSS,
@@ -4594,6 +4596,253 @@ Begin
 End;
 
 { ============================================================
+  TODO 19 - DESASSEMBLAGE DE LA SECTION DATA [IMPLEMENTE]
+  ============================================================ }
+
+{ --- DetectASCIIInData : detecter une chaine ASCII dans DATA --- }
+{     DataOfs = offset dans la section DATA (0-based)             }
+{     DataLen = taille de la section DATA                          }
+{     Retourne la longueur totale (incluant le 0 terminal) ou 0   }
+
+Function DetectASCIIInData(DataOfs: LongInt; DataLen: LongInt): LongInt;
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  P   : PByteArray;
+  Ofs : LongInt;
+  Len : LongInt;
+  B   : Byte;
+Begin
+  DetectASCIIInData := 0;
+  If ImageBuffer = Nil Then Exit;
+  If DataOfs >= DataLen Then Exit;
+  P := PByteArray(ImageBuffer);
+  Ofs := DataOffset + DataOfs;
+  Len := 0;
+  While (DataOfs + Len < DataLen) And (Ofs + Len < ImageSize) Do Begin
+    B := P^[Ofs + Len];
+    If B = 0 Then Begin
+      If Len >= MIN_ASCII_LEN Then Begin
+        DetectASCIIInData := Len + 1;
+        Exit;
+      End Else Begin
+        DetectASCIIInData := 0;
+        Exit;
+      End;
+    End;
+    If Not IsASCIIPrintable(B) Then Begin
+      DetectASCIIInData := 0;
+      Exit;
+    End;
+    Inc(Len);
+  End;
+  DetectASCIIInData := 0;
+End;
+
+{ --- IsDataRelocated : verifier si un offset DATA est relocalise --- }
+{     DataOfs = offset dans la section DATA (0-based)                 }
+{     TextLen = taille de la section TEXT                              }
+{     Les relocalisations sont stockees en offset absolu (TEXT+DATA)  }
+
+Function IsDataRelocated(DataOfs: LongInt; TextLen: LongInt): Boolean;
+Var
+  AbsOfs: LongInt;
+  I: LongInt;
+Begin
+  IsDataRelocated := False;
+  AbsOfs := TextLen + DataOfs;
+  For I := 1 To RelocCount Do Begin
+    If Relocs[I] = AbsOfs Then Begin
+      IsDataRelocated := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- GetDataSymbolName : obtenir le nom du symbole DRI a un offset DATA --- }
+{     DataOfs = offset dans la section DATA (0-based)                         }
+{     Retourne le nom du symbole ou '' si aucun                               }
+
+Function GetDataSymbolName(DataOfs: LongInt): String;
+Var
+  Idx: Integer;
+Begin
+  Idx := FindSymbolByAddr(DataOfs, 1);  { Section 1 = DATA }
+  If Idx > 0 Then
+    GetDataSymbolName := GetSymbolName(Symbols[Idx])
+  Else
+    GetDataSymbolName := '';
+End;
+
+{ --- ShowDataSection : afficher le desassemblage de la section DATA --- }
+{     DataLen = taille de la section DATA                                 }
+{     TextLen = taille de la section TEXT                                  }
+{     Verbose = afficher le detail ?                                       }
+
+Procedure ShowDataSection(DataLen: LongInt; TextLen: LongInt; Verbose: Boolean);
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  P        : PByteArray;
+  Pos      : LongInt;
+  StrLen   : LongInt;
+  SymName  : String;
+  B        : Byte;
+  L        : LongInt;
+  I        : LongInt;
+  ByteCol  : Integer;
+  StrCount : LongInt;
+  PtrCount : LongInt;
+  ByteCount: LongInt;
+  SymIdx   : Integer;
+Begin
+  If Not Verbose Then Exit;
+  If DataLen <= 0 Then Exit;
+  If ImageBuffer = Nil Then Exit;
+
+  WriteLn;
+  WriteLn('=== Desassemblage de la section DATA (',
+          IntToStr(DataLen), ' octets) ===');
+  WriteLn;
+
+  P := PByteArray(ImageBuffer);
+  Pos := 0;
+  StrCount := 0;
+  PtrCount := 0;
+  ByteCount := 0;
+
+  While Pos < DataLen Do Begin
+    { Afficher le label s'il existe }
+    SymName := GetDataSymbolName(Pos);
+    If SymName <> '' Then
+      WriteLn(SymName, ':');
+
+    { Verifier si c'est un pointeur relocalise (DC.L) }
+    If (Pos + 3 < DataLen) And IsDataRelocated(Pos, TextLen) Then Begin
+      L := ReadBELongMem(DataOffset + Pos);
+      Write('  $', HexLong(Pos), '  DC.L  $', HexLong(L));
+      { Chercher un label pour la cible }
+      If L < TextLen Then Begin
+        SymIdx := FindSymbolByAddr(L, 0);
+        If SymIdx > 0 Then
+          Write('  ; -> ', GetSymbolName(Symbols[SymIdx]));
+      End Else If (L >= TextLen) And (L < TextLen + DataLen) Then Begin
+        SymIdx := FindSymbolByAddr(L - TextLen, 1);
+        If SymIdx > 0 Then
+          Write('  ; -> ', GetSymbolName(Symbols[SymIdx]));
+      End;
+      Write('  ; (reloc)');
+      WriteLn;
+      Inc(Pos, 4);
+      Inc(PtrCount);
+      Continue;
+    End;
+
+    { Verifier si c'est une chaine ASCII }
+    StrLen := DetectASCIIInData(Pos, DataLen);
+    If StrLen > 0 Then Begin
+      Write('  $', HexLong(Pos), '  DC.B  ''');
+      For I := 0 To StrLen - 2 Do Begin
+        B := P^[DataOffset + Pos + I];
+        If (B >= 32) And (B <= 126) Then Begin
+          If Chr(B) = '''' Then
+            Write('''''')
+          Else
+            Write(Chr(B));
+        End Else
+          Write('\', HexByte(B));
+      End;
+      WriteLn(''',0');
+      Inc(Pos, StrLen);
+      Inc(StrCount);
+      Continue;
+    End;
+
+    { Emettre en DC.B par paquets de 16 octets max }
+    Write('  $', HexLong(Pos), '  DC.B  ');
+    ByteCol := 0;
+    While (Pos < DataLen) And (ByteCol < 16) Do Begin
+      { Arreter si le prochain octet commence une entite speciale }
+      If ByteCol > 0 Then Begin
+        SymName := GetDataSymbolName(Pos);
+        If SymName <> '' Then Break;
+        If (Pos + 3 < DataLen) And IsDataRelocated(Pos, TextLen) Then Break;
+        StrLen := DetectASCIIInData(Pos, DataLen);
+        If StrLen > 0 Then Break;
+      End;
+      B := P^[DataOffset + Pos];
+      If ByteCol > 0 Then Write(',');
+      Write('$', HexByte(B));
+      Inc(Pos);
+      Inc(ByteCol);
+      Inc(ByteCount);
+    End;
+    WriteLn;
+  End;
+
+  WriteLn;
+  WriteLn('Section DATA    : ',
+          IntToStr(StrCount), ' chaines, ',
+          IntToStr(PtrCount), ' pointeurs, ',
+          IntToStr(ByteCount), ' octets bruts');
+End;
+
+{ --- CountDataSymbols : compter les symboles DRI dans la section DATA --- }
+
+Function CountDataSymbols: Integer;
+Var
+  I     : Integer;
+  Count : Integer;
+Begin
+  Count := 0;
+  For I := 1 To SymbolCount Do Begin
+    If GetSymbolSection(Symbols[I].sym_type) = 1 Then
+      Inc(Count);
+  End;
+  CountDataSymbols := Count;
+End;
+
+{ --- CountDataStrings : compter les chaines ASCII dans DATA --- }
+
+Function CountDataStrings(DataLen: LongInt): LongInt;
+Var
+  Pos    : LongInt;
+  StrLen : LongInt;
+  Count  : LongInt;
+Begin
+  Count := 0;
+  Pos := 0;
+  While Pos < DataLen Do Begin
+    StrLen := DetectASCIIInData(Pos, DataLen);
+    If StrLen > 0 Then Begin
+      Inc(Count);
+      Inc(Pos, StrLen);
+    End Else
+      Inc(Pos);
+  End;
+  CountDataStrings := Count;
+End;
+
+{ --- CountDataPointers : compter les pointeurs relocalises dans DATA --- }
+
+Function CountDataPointers(DataLen: LongInt; TextLen: LongInt): LongInt;
+Var
+  I     : LongInt;
+  AbsOfs: LongInt;
+  Count : LongInt;
+Begin
+  Count := 0;
+  For I := 1 To RelocCount Do Begin
+    AbsOfs := Relocs[I];
+    If (AbsOfs >= TextLen) And (AbsOfs < TextLen + DataLen) Then
+      Inc(Count);
+  End;
+  CountDataPointers := Count;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -4738,9 +4987,22 @@ Begin
     End;
     FreeCodeMap;
   End;
+  { Desassemblage de la section DATA }
+  If Header.ph_dlen > 0 Then Begin
+    ShowDataSection(Header.ph_dlen, Header.ph_tlen,
+                    Opts.DisasmData Or Opts.Verbose);
+    If Opts.Verbose Then Begin
+      WriteLn;
+      WriteLn('Section DATA    : ',
+              IntToStr(CountDataSymbols), ' symboles, ',
+              IntToStr(CountDataStrings(Header.ph_dlen)), ' chaines, ',
+              IntToStr(CountDataPointers(Header.ph_dlen, Header.ph_tlen)),
+              ' pointeurs');
+    End;
+  End;
   { Liberer la memoire }
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-18 [IMPLEMENTE], TODOs 19-25 [A FAIRE]');
+          ' - TODOs 01-19 [IMPLEMENTE], TODOs 20-25 [A FAIRE]');
 End.
