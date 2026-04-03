@@ -157,7 +157,7 @@
             GenSafeDiv - generer une division securisee avec garde.
             Limiter la profondeur des expressions (MAX_EXPR_DEPTH).
 
-  TODO 14 - [A FAIRE] GENERATION D'OPERATEURS RELATIONNELS ET LOGIQUES
+  TODO 14 - [IMPLEMENTE] GENERATION D'OPERATEURS RELATIONNELS ET LOGIQUES
             Generateur d'expressions relationnelles et logiques C :
             GenRelExpr - generer expression relationnelle (< > <= >= == !=).
             GenLogExpr - generer expression logique (&& || !).
@@ -331,6 +331,13 @@ Const
   ARITH_LITERAL_PROB = 50;          { 50% de chance d'utiliser un litteral vs variable }
   SAFE_DIV_PROB      = 80;          { 80% de chance de generer une division securisee }
   ARITH_RECURSE_PROB = 40;          { 40% de chance de recursion dans expression }
+  
+  { TODO 14 : Constantes pour les expressions relationnelles et logiques }
+  REL_PAREN_PROB     = 25;          { 25% de chance d'ajouter des parentheses }
+  REL_LITERAL_PROB   = 40;          { 40% de chance d'utiliser un litteral vs variable }
+  REL_RECURSE_PROB   = 30;          { 30% de chance de recursion dans expression }
+  LOG_RECURSE_PROB   = 35;          { 35% de chance de recursion logique }
+  LOG_NOT_PROB       = 20;          { 20% de chance de generer un NOT }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -560,6 +567,7 @@ Var
   PointerCounter: Integer;  { TODO 11 : compteur de pointeurs }
   LiteralCounter: Integer;  { TODO 12 : compteur de litteraux }
   ArithExprCounter: Integer;  { TODO 13 : compteur d'expressions arithmetiques }
+  RelLogExprCounter: Integer;  { TODO 14 : compteur d'expressions relationnelles/logiques }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -3945,6 +3953,361 @@ Begin
   CountArithExprs := ArithExprCounter;
 End;
 
+{ ============================================================
+  TODO 14 : GENERATION D'OPERATEURS RELATIONNELS ET LOGIQUES [IMPLEMENTE]
+  ============================================================ }
+
+Type
+  { Operateurs relationnels C }
+  TRelOp = (
+    RO_LT,     { < }
+    RO_GT,     { > }
+    RO_LE,     { <= }
+    RO_GE,     { >= }
+    RO_EQ,     { == }
+    RO_NE      { != }
+  );
+
+  { Operateurs logiques C }
+  TLogOp = (
+    LO_AND,    { && }
+    LO_OR,     { || }
+    LO_NOT     { ! }
+  );
+
+Function RelOpToStr(Op: TRelOp): TString;
+{ Convertit un operateur relationnel en chaine C. }
+Begin
+  Case Op Of
+    RO_LT: RelOpToStr := '<';
+    RO_GT: RelOpToStr := '>';
+    RO_LE: RelOpToStr := '<=';
+    RO_GE: RelOpToStr := '>=';
+    RO_EQ: RelOpToStr := '==';
+    RO_NE: RelOpToStr := '!=';
+  Else
+    RelOpToStr := '==';
+  End;
+End;
+
+Function LogOpToStr(Op: TLogOp): TString;
+{ Convertit un operateur logique en chaine C. }
+Begin
+  Case Op Of
+    LO_AND: LogOpToStr := '&&';
+    LO_OR:  LogOpToStr := '||';
+    LO_NOT: LogOpToStr := '!';
+  Else
+    LogOpToStr := '&&';
+  End;
+End;
+
+Function GenRandomRelOp: TRelOp;
+{ Genere un operateur relationnel aleatoire. }
+Begin
+  Case RandomInt(6) Of
+    0: GenRandomRelOp := RO_LT;
+    1: GenRandomRelOp := RO_GT;
+    2: GenRandomRelOp := RO_LE;
+    3: GenRandomRelOp := RO_GE;
+    4: GenRandomRelOp := RO_EQ;
+    5: GenRandomRelOp := RO_NE;
+  Else
+    GenRandomRelOp := RO_EQ;
+  End;
+End;
+
+Function GenRandomLogOp(AllowNot: Boolean): TLogOp;
+{ Genere un operateur logique aleatoire.
+  AllowNot: si True, peut generer l'operateur NOT (!). }
+Var
+  NumOps: Integer;
+Begin
+  If AllowNot Then
+    NumOps := 3   { 3 operateurs: &&, ||, ! }
+  Else
+    NumOps := 2;  { 2 operateurs binaires: &&, || }
+  Case RandomInt(NumOps) Of
+    0: GenRandomLogOp := LO_AND;
+    1: GenRandomLogOp := LO_OR;
+    2: GenRandomLogOp := LO_NOT;
+  Else
+    GenRandomLogOp := LO_AND;
+  End;
+End;
+
+Function IsEqualityOp(Op: TRelOp): Boolean;
+{ Verifie si l'operateur est un operateur d'egalite (== ou !=). }
+Begin
+  IsEqualityOp := (Op = RO_EQ) Or (Op = RO_NE);
+End;
+
+Function IsOrderingOp(Op: TRelOp): Boolean;
+{ Verifie si l'operateur est un operateur d'ordre (< > <= >=). }
+Begin
+  IsOrderingOp := (Op = RO_LT) Or (Op = RO_GT) Or (Op = RO_LE) Or (Op = RO_GE);
+End;
+
+Function IsBinaryLogOp(Op: TLogOp): Boolean;
+{ Verifie si l'operateur logique est binaire (pas NOT). }
+Begin
+  IsBinaryLogOp := (Op = LO_AND) Or (Op = LO_OR);
+End;
+
+Function IsUnaryLogOp(Op: TLogOp): Boolean;
+{ Verifie si l'operateur logique est unaire (NOT). }
+Begin
+  IsUnaryLogOp := (Op = LO_NOT);
+End;
+
+Function IsValidRelOperandType(T: TTypeKind): Boolean;
+{ Verifie si le type est valide pour les operateurs relationnels.
+  En C, on peut comparer des scalaires (entiers, flottants, pointeurs). }
+Begin
+  IsValidRelOperandType := IsScalarType(T);
+End;
+
+Function IsValidLogOperandType(T: TTypeKind): Boolean;
+{ Verifie si le type est valide pour les operateurs logiques.
+  En C, tout scalaire peut etre utilise en contexte booleens. }
+Begin
+  IsValidLogOperandType := IsScalarType(T);
+End;
+
+Function GetRelOpPrecedence(Op: TRelOp): Integer;
+{ Retourne la precedence de l'operateur relationnel.
+  En C: == != ont precedence 7, < > <= >= ont precedence 8. }
+Begin
+  Case Op Of
+    RO_LT, RO_GT, RO_LE, RO_GE: GetRelOpPrecedence := 8;
+    RO_EQ, RO_NE: GetRelOpPrecedence := 7;
+  Else
+    GetRelOpPrecedence := 7;
+  End;
+End;
+
+Function GetLogOpPrecedence(Op: TLogOp): Integer;
+{ Retourne la precedence de l'operateur logique.
+  En C: ! a precedence 14, && a precedence 5, || a precedence 4. }
+Begin
+  Case Op Of
+    LO_NOT: GetLogOpPrecedence := 14;
+    LO_AND: GetLogOpPrecedence := 5;
+    LO_OR:  GetLogOpPrecedence := 4;
+  Else
+    GetLogOpPrecedence := 5;
+  End;
+End;
+
+Function GenSimpleRelOperand(T: TTypeKind): TString;
+{ Genere un operande simple pour une comparaison.
+  Utilise soit un litteral, soit une variable existante. }
+Var
+  UseVar: Boolean;
+Begin
+  UseVar := Not RandomChoice(REL_LITERAL_PROB);
+  
+  If UseVar And (NumVars > 0) Then
+  Begin
+    { Utiliser une variable existante de type compatible }
+    GenSimpleRelOperand := Vars[RandomInt(NumVars) + 1].Name;
+  End
+  Else
+  Begin
+    { Generer un litteral du type demande }
+    If IsIntegerType(T) Then
+      GenSimpleRelOperand := GenIntLiteral
+    Else If IsFloatType(T) Then
+      GenSimpleRelOperand := GenFloatLiteral
+    Else
+      GenSimpleRelOperand := GenIntLiteral;  { Par defaut entier }
+  End;
+End;
+
+Function GenRelExprRec(Depth: Integer): TString;
+{ Genere une expression relationnelle recursive.
+  Depth: profondeur actuelle (pour limiter la recursion). }
+Var
+  Op: TRelOp;
+  Left, Right: TString;
+  OpType: TTypeKind;
+  Result: TString;
+Begin
+  Inc(RelLogExprCounter);
+  
+  { Choisir un type pour les operandes }
+  If Opts.NoFloats Then
+    OpType := TK_INT
+  Else If RandomBool Then
+    OpType := TK_INT
+  Else
+    OpType := TK_DOUBLE;
+  
+  { Generer l'operateur }
+  Op := GenRandomRelOp;
+  
+  { Generer les operandes }
+  If (Depth < Opts.MaxExprDepth) And RandomChoice(REL_RECURSE_PROB) Then
+  Begin
+    { Operande gauche peut etre une expression arithmetique }
+    Left := GenArithExpr(OpType, Depth + 1);
+  End
+  Else
+    Left := GenSimpleRelOperand(OpType);
+  
+  If (Depth < Opts.MaxExprDepth) And RandomChoice(REL_RECURSE_PROB) Then
+    Right := GenArithExpr(OpType, Depth + 1)
+  Else
+    Right := GenSimpleRelOperand(OpType);
+  
+  { Construire l'expression }
+  Result := Left + ' ' + RelOpToStr(Op) + ' ' + Right;
+  
+  { Ajouter des parentheses si demande }
+  If RandomChoice(REL_PAREN_PROB) Then
+    Result := '(' + Result + ')';
+  
+  GenRelExprRec := Result;
+End;
+
+Function GenRelExpr(Depth: Integer): TString;
+{ Genere une expression relationnelle (< > <= >= == !=).
+  Depth: profondeur initiale pour la recursion. }
+Begin
+  GenRelExpr := GenRelExprRec(Depth);
+End;
+
+Function GenLogExprRec(Depth: Integer): TString;
+{ Genere une expression logique recursive (&& || !).
+  Depth: profondeur actuelle. }
+Var
+  Op: TLogOp;
+  Left, Right, Operand: TString;
+  Result: TString;
+Begin
+  Inc(RelLogExprCounter);
+  
+  { Decider si on genere un NOT ou un operateur binaire }
+  If RandomChoice(LOG_NOT_PROB) Then
+  Begin
+    { Generer une negation logique }
+    Op := LO_NOT;
+    
+    If (Depth < Opts.MaxExprDepth) And RandomChoice(LOG_RECURSE_PROB) Then
+      Operand := GenRelExprRec(Depth + 1)
+    Else
+      Operand := GenRelExprRec(Depth);
+    
+    Result := '!' + '(' + Operand + ')';
+  End
+  Else
+  Begin
+    { Generer un && ou || }
+    Op := GenRandomLogOp(False);  { Pas de NOT ici }
+    
+    { Generer operande gauche }
+    If (Depth < Opts.MaxExprDepth) And RandomChoice(LOG_RECURSE_PROB) Then
+      Left := GenLogExprRec(Depth + 1)
+    Else
+      Left := GenRelExprRec(Depth);
+    
+    { Generer operande droit }
+    If (Depth < Opts.MaxExprDepth) And RandomChoice(LOG_RECURSE_PROB) Then
+      Right := GenLogExprRec(Depth + 1)
+    Else
+      Right := GenRelExprRec(Depth);
+    
+    { Construire l'expression avec evaluation court-circuit }
+    Result := '(' + Left + ') ' + LogOpToStr(Op) + ' (' + Right + ')';
+  End;
+  
+  GenLogExprRec := Result;
+End;
+
+Function GenLogExpr(Depth: Integer): TString;
+{ Genere une expression logique (&& || !).
+  Depth: profondeur initiale pour la recursion. }
+Begin
+  GenLogExpr := GenLogExprRec(Depth);
+End;
+
+Function GenCompareExpr(PtrName: TString): TString;
+{ Genere une comparaison de pointeur (meme objet/tableau).
+  Evite les comparaisons de pointeurs non lies (UB en C).
+  Compare uniquement le pointeur a lui-meme ou a NULL. }
+Var
+  Op: TRelOp;
+  Result: TString;
+Begin
+  Inc(RelLogExprCounter);
+  
+  { Choisir entre comparaison avec NULL ou avec soi-meme }
+  If RandomBool Then
+  Begin
+    { Comparaison avec NULL - toujours valide }
+    Op := GenRandomRelOp;
+    If IsEqualityOp(Op) Then
+      Result := PtrName + ' ' + RelOpToStr(Op) + ' NULL'
+    Else
+      { Pour les operateurs d'ordre, utiliser seulement == ou != avec NULL }
+      Result := PtrName + ' ' + RelOpToStr(RO_NE) + ' NULL';
+  End
+  Else
+  Begin
+    { Comparaison avec soi-meme (toujours vrai pour ==, faux pour !=) }
+    If RandomBool Then
+      Result := PtrName + ' == ' + PtrName
+    Else
+      Result := PtrName + ' != ' + PtrName;
+  End;
+  
+  GenCompareExpr := Result;
+End;
+
+Function GenBoolExpr(Depth: Integer): TString;
+{ Genere une expression booleenne pour les conditions.
+  Peut etre une expression relationnelle ou logique. }
+Begin
+  If RandomBool Then
+    GenBoolExpr := GenRelExpr(Depth)
+  Else
+    GenBoolExpr := GenLogExpr(Depth);
+End;
+
+Procedure EmitRelLogComment;
+{ Emet un commentaire pour la section d'expressions relationnelles/logiques. }
+Begin
+  EmitLineComment('Expressions relationnelles et logiques');
+End;
+
+Function RelOpNeedsParens(InnerOp: TRelOp; OuterOp: TLogOp): Boolean;
+{ Determine si une expression relationnelle a besoin de parentheses
+  quand utilisee dans une expression logique. }
+Begin
+  { Les operateurs relationnels ont une precedence plus haute que && et ||
+    donc normalement pas besoin de parentheses, mais on les ajoute
+    pour la lisibilite }
+  RelOpNeedsParens := True;  { Toujours ajouter pour clarte }
+End;
+
+Function LogOpNeedsParens(InnerOp, OuterOp: TLogOp): Boolean;
+{ Determine si une expression logique a besoin de parentheses. }
+Var
+  InnerPrec, OuterPrec: Integer;
+Begin
+  InnerPrec := GetLogOpPrecedence(InnerOp);
+  OuterPrec := GetLogOpPrecedence(OuterOp);
+  
+  { Si la precedence interieure est plus basse, il faut des parentheses }
+  LogOpNeedsParens := InnerPrec < OuterPrec;
+End;
+
+Function CountRelLogExprs: Integer;
+{ Retourne le nombre d'expressions relationnelles/logiques generees. }
+Begin
+  CountRelLogExprs := RelLogExprCounter;
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -3964,6 +4327,7 @@ Begin
   PointerCounter := 0;  { TODO 11 : compteur de pointeurs }
   LiteralCounter := 0;  { TODO 12 : compteur de litteraux }
   ArithExprCounter := 0;  { TODO 13 : compteur d'expressions arithmetiques }
+  RelLogExprCounter := 0;  { TODO 14 : compteur d'expressions relationnelles/logiques }
   StatFuncs := 0;
   StatVars := 0;
   StatExprs := 0;

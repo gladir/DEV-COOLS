@@ -142,7 +142,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       GenSafeDiv - generer une division securisee avec garde.
       Limiter la profondeur des expressions (MAX_EXPR_DEPTH).
 
-  14. [A FAIRE] Generation d'operateurs relationnels et logiques.
+  14. [IMPLEMENTE] Generation d'operateurs relationnels et logiques.
       Generateur d'expressions relationnelles et logiques C :
       GenRelExpr - generer expression relationnelle (< > <= >= == !=).
       GenLogExpr - generer expression logique (&& || !).
