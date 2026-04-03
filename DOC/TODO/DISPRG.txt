@@ -91,7 +91,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       (avec compteur immediat ou registre) ou sur une adresse
       memoire (decalage de 1 bit seulement).
 
-  11. [A FAIRE] Table des opcodes 68000 - Branchements et controle.
+  11. [IMPLEMENTE] Table des opcodes 68000 - Branchements et controle.
       Definir les opcodes de branchement et de controle :
       BRA, BSR, Bcc (BEQ, BNE, BGT, BGE, BLT, BLE, BHI, BLS,
       BCC, BCS, BPL, BMI, BVS, BVC), DBcc, Scc,

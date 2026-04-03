@@ -101,7 +101,7 @@
   TODO 10 - TABLE DES OPCODES 68000 - DECALAGES/ROTATIONS [IMPLEMENTE]
             ASL, ASR, LSL, LSR, ROL, ROR, ROXL, ROXR.
 
-  TODO 11 - TABLE DES OPCODES 68000 - BRANCHEMENTS/CONTROLE [A FAIRE]
+  TODO 11 - TABLE DES OPCODES 68000 - BRANCHEMENTS/CONTROLE [IMPLEMENTE]
             BRA, BSR, Bcc, DBcc, Scc, JMP, JSR, RTS, RTE,
             RTR, NOP, STOP, RESET, ILLEGAL.
 
@@ -1256,6 +1256,12 @@ Const
   FMT_SH_REG   = 20;  { ASL/ASR/LSL/LSR/ROL/ROR Dn (reg count) }
   FMT_SH_IMM   = 21;  { ASL/ASR/LSL/LSR/ROL/ROR #imm3,Dn       }
   FMT_SH_MEM   = 22;  { ASL/ASR/LSL/LSR/ROL/ROR ea (1 bit)     }
+  FMT_BRA      = 23;  { BRA/BSR/Bcc d8/d16                     }
+  FMT_DBCC     = 24;  { DBcc Dn,d16                            }
+  FMT_SCC      = 25;  { Scc ea                                 }
+  FMT_EA2      = 26;  { JMP ea / JSR ea                        }
+  FMT_IMM16    = 27;  { STOP #imm16                            }
+  FMT_TRAP     = 28;  { TRAP #vector (0-15)                    }
 
 { --- AddOpcode : ajouter une entree dans la table --- }
 
@@ -1686,6 +1692,157 @@ Begin
   AddOpcode($FFC0, $E4C0, 'ROXR.W', FMT_SH_MEM, 2, GRP_SHIFT);
 End;
 
+{ ============================================================
+  TODO 11 - TABLE DES OPCODES 68000 - BRANCHEMENTS/CONTROLE [IMPLEMENTE]
+  ============================================================ }
+
+{ --- InitBranchControlOpcodes : opcodes de branchement et controle --- }
+
+Procedure InitBranchControlOpcodes;
+Begin
+  { === Bcc - Branchements conditionnels === }
+  { Bcc : 0110 cccc dddd dddd (cccc=condition, d=deplacement 8/16) }
+
+  { BRA : 0110 0000 dddd dddd }
+  AddOpcode($FF00, $6000, 'BRA', FMT_BRA, 2, GRP_BRANCH);
+  { BSR : 0110 0001 dddd dddd }
+  AddOpcode($FF00, $6100, 'BSR', FMT_BRA, 2, GRP_BRANCH);
+  { BHI : 0110 0010 dddd dddd }
+  AddOpcode($FF00, $6200, 'BHI', FMT_BRA, 2, GRP_BRANCH);
+  { BLS : 0110 0011 dddd dddd }
+  AddOpcode($FF00, $6300, 'BLS', FMT_BRA, 2, GRP_BRANCH);
+  { BCC : 0110 0100 dddd dddd }
+  AddOpcode($FF00, $6400, 'BCC', FMT_BRA, 2, GRP_BRANCH);
+  { BCS : 0110 0101 dddd dddd }
+  AddOpcode($FF00, $6500, 'BCS', FMT_BRA, 2, GRP_BRANCH);
+  { BNE : 0110 0110 dddd dddd }
+  AddOpcode($FF00, $6600, 'BNE', FMT_BRA, 2, GRP_BRANCH);
+  { BEQ : 0110 0111 dddd dddd }
+  AddOpcode($FF00, $6700, 'BEQ', FMT_BRA, 2, GRP_BRANCH);
+  { BVC : 0110 1000 dddd dddd }
+  AddOpcode($FF00, $6800, 'BVC', FMT_BRA, 2, GRP_BRANCH);
+  { BVS : 0110 1001 dddd dddd }
+  AddOpcode($FF00, $6900, 'BVS', FMT_BRA, 2, GRP_BRANCH);
+  { BPL : 0110 1010 dddd dddd }
+  AddOpcode($FF00, $6A00, 'BPL', FMT_BRA, 2, GRP_BRANCH);
+  { BMI : 0110 1011 dddd dddd }
+  AddOpcode($FF00, $6B00, 'BMI', FMT_BRA, 2, GRP_BRANCH);
+  { BGE : 0110 1100 dddd dddd }
+  AddOpcode($FF00, $6C00, 'BGE', FMT_BRA, 2, GRP_BRANCH);
+  { BLT : 0110 1101 dddd dddd }
+  AddOpcode($FF00, $6D00, 'BLT', FMT_BRA, 2, GRP_BRANCH);
+  { BGT : 0110 1110 dddd dddd }
+  AddOpcode($FF00, $6E00, 'BGT', FMT_BRA, 2, GRP_BRANCH);
+  { BLE : 0110 1111 dddd dddd }
+  AddOpcode($FF00, $6F00, 'BLE', FMT_BRA, 2, GRP_BRANCH);
+
+  { === DBcc - Decrement and Branch === }
+  { DBcc Dn,d16 : 0101 cccc 1100 1xxx }
+
+  { DBT : 0101 0000 1100 1xxx }
+  AddOpcode($FFF8, $50C8, 'DBT', FMT_DBCC, 4, GRP_BRANCH);
+  { DBF/DBRA : 0101 0001 1100 1xxx }
+  AddOpcode($FFF8, $51C8, 'DBF', FMT_DBCC, 4, GRP_BRANCH);
+  { DBHI : 0101 0010 1100 1xxx }
+  AddOpcode($FFF8, $52C8, 'DBHI', FMT_DBCC, 4, GRP_BRANCH);
+  { DBLS : 0101 0011 1100 1xxx }
+  AddOpcode($FFF8, $53C8, 'DBLS', FMT_DBCC, 4, GRP_BRANCH);
+  { DBCC : 0101 0100 1100 1xxx }
+  AddOpcode($FFF8, $54C8, 'DBCC', FMT_DBCC, 4, GRP_BRANCH);
+  { DBCS : 0101 0101 1100 1xxx }
+  AddOpcode($FFF8, $55C8, 'DBCS', FMT_DBCC, 4, GRP_BRANCH);
+  { DBNE : 0101 0110 1100 1xxx }
+  AddOpcode($FFF8, $56C8, 'DBNE', FMT_DBCC, 4, GRP_BRANCH);
+  { DBEQ : 0101 0111 1100 1xxx }
+  AddOpcode($FFF8, $57C8, 'DBEQ', FMT_DBCC, 4, GRP_BRANCH);
+  { DBVC : 0101 1000 1100 1xxx }
+  AddOpcode($FFF8, $58C8, 'DBVC', FMT_DBCC, 4, GRP_BRANCH);
+  { DBVS : 0101 1001 1100 1xxx }
+  AddOpcode($FFF8, $59C8, 'DBVS', FMT_DBCC, 4, GRP_BRANCH);
+  { DBPL : 0101 1010 1100 1xxx }
+  AddOpcode($FFF8, $5AC8, 'DBPL', FMT_DBCC, 4, GRP_BRANCH);
+  { DBMI : 0101 1011 1100 1xxx }
+  AddOpcode($FFF8, $5BC8, 'DBMI', FMT_DBCC, 4, GRP_BRANCH);
+  { DBGE : 0101 1100 1100 1xxx }
+  AddOpcode($FFF8, $5CC8, 'DBGE', FMT_DBCC, 4, GRP_BRANCH);
+  { DBLT : 0101 1101 1100 1xxx }
+  AddOpcode($FFF8, $5DC8, 'DBLT', FMT_DBCC, 4, GRP_BRANCH);
+  { DBGT : 0101 1110 1100 1xxx }
+  AddOpcode($FFF8, $5EC8, 'DBGT', FMT_DBCC, 4, GRP_BRANCH);
+  { DBLE : 0101 1111 1100 1xxx }
+  AddOpcode($FFF8, $5FC8, 'DBLE', FMT_DBCC, 4, GRP_BRANCH);
+
+  { === Scc - Set According to Condition === }
+  { Scc ea : 0101 cccc 11xx xxxx }
+
+  { ST : 0101 0000 11xx xxxx }
+  AddOpcode($FFC0, $50C0, 'ST', FMT_SCC, 2, GRP_BRANCH);
+  { SF : 0101 0001 11xx xxxx }
+  AddOpcode($FFC0, $51C0, 'SF', FMT_SCC, 2, GRP_BRANCH);
+  { SHI : 0101 0010 11xx xxxx }
+  AddOpcode($FFC0, $52C0, 'SHI', FMT_SCC, 2, GRP_BRANCH);
+  { SLS : 0101 0011 11xx xxxx }
+  AddOpcode($FFC0, $53C0, 'SLS', FMT_SCC, 2, GRP_BRANCH);
+  { SCC : 0101 0100 11xx xxxx }
+  AddOpcode($FFC0, $54C0, 'SCC', FMT_SCC, 2, GRP_BRANCH);
+  { SCS : 0101 0101 11xx xxxx }
+  AddOpcode($FFC0, $55C0, 'SCS', FMT_SCC, 2, GRP_BRANCH);
+  { SNE : 0101 0110 11xx xxxx }
+  AddOpcode($FFC0, $56C0, 'SNE', FMT_SCC, 2, GRP_BRANCH);
+  { SEQ : 0101 0111 11xx xxxx }
+  AddOpcode($FFC0, $57C0, 'SEQ', FMT_SCC, 2, GRP_BRANCH);
+  { SVC : 0101 1000 11xx xxxx }
+  AddOpcode($FFC0, $58C0, 'SVC', FMT_SCC, 2, GRP_BRANCH);
+  { SVS : 0101 1001 11xx xxxx }
+  AddOpcode($FFC0, $59C0, 'SVS', FMT_SCC, 2, GRP_BRANCH);
+  { SPL : 0101 1010 11xx xxxx }
+  AddOpcode($FFC0, $5AC0, 'SPL', FMT_SCC, 2, GRP_BRANCH);
+  { SMI : 0101 1011 11xx xxxx }
+  AddOpcode($FFC0, $5BC0, 'SMI', FMT_SCC, 2, GRP_BRANCH);
+  { SGE : 0101 1100 11xx xxxx }
+  AddOpcode($FFC0, $5CC0, 'SGE', FMT_SCC, 2, GRP_BRANCH);
+  { SLT : 0101 1101 11xx xxxx }
+  AddOpcode($FFC0, $5DC0, 'SLT', FMT_SCC, 2, GRP_BRANCH);
+  { SGT : 0101 1110 11xx xxxx }
+  AddOpcode($FFC0, $5EC0, 'SGT', FMT_SCC, 2, GRP_BRANCH);
+  { SLE : 0101 1111 11xx xxxx }
+  AddOpcode($FFC0, $5FC0, 'SLE', FMT_SCC, 2, GRP_BRANCH);
+
+  { === JMP / JSR === }
+
+  { JMP ea : 0100 1110 11xx xxxx }
+  AddOpcode($FFC0, $4EC0, 'JMP', FMT_EA2, 2, GRP_BRANCH);
+  { JSR ea : 0100 1110 10xx xxxx }
+  AddOpcode($FFC0, $4E80, 'JSR', FMT_EA2, 2, GRP_BRANCH);
+
+  { === RTS / RTE / RTR === }
+
+  { RTS : 0100 1110 0111 0101 = $4E75 }
+  AddOpcode($FFFF, $4E75, 'RTS', FMT_NONE, 2, GRP_BRANCH);
+  { RTE : 0100 1110 0111 0011 = $4E73 }
+  AddOpcode($FFFF, $4E73, 'RTE', FMT_NONE, 2, GRP_BRANCH);
+  { RTR : 0100 1110 0111 0111 = $4E77 }
+  AddOpcode($FFFF, $4E77, 'RTR', FMT_NONE, 2, GRP_BRANCH);
+
+  { === NOP / STOP / RESET / ILLEGAL === }
+
+  { NOP : 0100 1110 0111 0001 = $4E71 }
+  AddOpcode($FFFF, $4E71, 'NOP', FMT_NONE, 2, GRP_BRANCH);
+  { STOP #imm16 : 0100 1110 0111 0010 = $4E72 }
+  AddOpcode($FFFF, $4E72, 'STOP', FMT_IMM16, 4, GRP_BRANCH);
+  { RESET : 0100 1110 0111 0000 = $4E70 }
+  AddOpcode($FFFF, $4E70, 'RESET', FMT_NONE, 2, GRP_BRANCH);
+  { ILLEGAL : 0100 1010 1111 1100 = $4AFC }
+  AddOpcode($FFFF, $4AFC, 'ILLEGAL', FMT_NONE, 2, GRP_BRANCH);
+
+  { === TRAP === }
+
+  { TRAP #vector : 0100 1110 0100 vvvv = $4E40-$4E4F }
+  AddOpcode($FFF0, $4E40, 'TRAP', FMT_TRAP, 2, GRP_BRANCH);
+  { TRAPV : 0100 1110 0111 0110 = $4E76 }
+  AddOpcode($FFFF, $4E76, 'TRAPV', FMT_NONE, 2, GRP_BRANCH);
+End;
+
 { --- InitOpcodeTable : initialiser la table des opcodes --- }
 
 Procedure InitOpcodeTable;
@@ -1694,7 +1851,8 @@ Begin
   InitTransferOpcodes;
   InitArithLogicOpcodes;
   InitShiftRotateOpcodes;
-  { Les groupes suivants seront ajoutes par les TODOs 11-12 }
+  InitBranchControlOpcodes;
+  { Les groupes suivants seront ajoutes par le TODO 12 }
 End;
 
 { --- FindOpcode : chercher un opcode par son mot d'instruction --- }
@@ -1839,7 +1997,7 @@ Begin
   { Fermer le fichier PRG }
   Close(InFile);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
-  { TODO 11-25 : desassemblage, generation .S }
+  { TODO 12-25 : desassemblage, generation .S }
   { Lire la table des symboles DRI }
   ReadSymbolTable(Header);
   ShowSymbolTable(Opts.ShowSymbols Or Opts.Verbose);
@@ -1859,9 +2017,10 @@ Begin
     WriteLn('Opcodes 68000   : ', IntToStr(OpcodeCount),
             ' (transfert: ', IntToStr(CountOpcodesByGroup(GRP_TRANSFER)),
             ', arith: ', IntToStr(CountOpcodesByGroup(GRP_ARITH)),
-            ', shift: ', IntToStr(CountOpcodesByGroup(GRP_SHIFT)), ')');
+            ', shift: ', IntToStr(CountOpcodesByGroup(GRP_SHIFT)),
+            ', branch: ', IntToStr(CountOpcodesByGroup(GRP_BRANCH)), ')');
   { Liberer la memoire }
   FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-10 [IMPLEMENTE], TODOs 11-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-11 [IMPLEMENTE], TODOs 12-25 [A FAIRE]');
 End.
