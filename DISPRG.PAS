@@ -1301,10 +1301,15 @@ Begin
   { EXG Dn,An : 1100 xxx1 1000 1xxx }
   AddOpcode($F1F8, $C188, 'EXG', FMT_DN_DN, 2, GRP_TRANSFER);
   { SWAP Dn : 0100 1000 0100 0xxx }
+  { Note: SWAP ($FFF8/$4840) doit etre avant PEA ($FFC0/$4840) }
+  { car ils partagent la meme valeur de base. La recherche      }
+  { lineaire dans FindOpcode trouvera SWAP en premier pour les  }
+  { registres Dn (bits 0-2), et PEA pour les autres modes.     }
   AddOpcode($FFF8, $4840, 'SWAP', FMT_DN, 2, GRP_TRANSFER);
   { LEA ea,An : 0100 xxx1 11xx xxxx }
   AddOpcode($F1C0, $41C0, 'LEA', FMT_EA_AN2, 2, GRP_TRANSFER);
   { PEA ea : 0100 1000 01xx xxxx }
+  { Note: voir commentaire SWAP ci-dessus pour le chevauchement }
   AddOpcode($FFC0, $4840, 'PEA', FMT_EA, 2, GRP_TRANSFER);
   { LINK An,#d16 : 0100 1110 0101 0xxx }
   AddOpcode($FFF8, $4E50, 'LINK', FMT_AN_DISP, 4, GRP_TRANSFER);
