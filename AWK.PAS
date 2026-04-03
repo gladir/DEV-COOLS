@@ -1222,8 +1222,13 @@ Var
  ArgValue:Real;
  SavedParams:Array[1..MaxFunctionParams]of Real;
  SavedParamCount:Integer;
+ SaveTopOfStack:Byte;
+ SaveTopOfStackInt:Byte;
 Begin
  StopChar:=[',',':',';','"','<','=','>','!'];
+ { Sauvegarder l'etat de la pile pour les appels recursifs }
+ SaveTopOfStack:=TopOfStack;
+ SaveTopOfStackInt:=TopOfStackInt;
  TopOfStack:=1;
  TopOfStackInt:=1;
  PostFix:='';
@@ -1625,6 +1630,9 @@ Begin
   Inc(I);
  Until I>Length(Postfix);
  GetNumberValue:=ResultStackPop;
+ { Restaurer l'etat de la pile pour les appels recursifs }
+ TopOfStack:=SaveTopOfStack;
+ TopOfStackInt:=SaveTopOfStackInt;
 End;
 
 Procedure SkipSpace;Begin
