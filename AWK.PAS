@@ -1593,12 +1593,15 @@ Begin
    { getline - stocker dans $0 et mettre a jour les champs }
    Fields[0]:=InputLine;
    SplitIntoFields(InputLine);
+   { Mettre a jour NF avec le nombre de champs }
+   SetVariableInt('NF',NumFields);
   End;
   
   { Mettre a jour NR }
   NRVal:=GetVariableLongInt('NR');
   Inc(NRVal);
   SetVariableLongInt('NR',NRVal);
+  Inc(NRValue);
   
   { Retourner 1 (succes) via variable speciale GETLINE_STATUS }
   SetVariableInt('_GETLINE_STATUS',1);
