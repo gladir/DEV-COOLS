@@ -49,7 +49,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       Stocker les symboles dans une table pour les utiliser comme
       labels lors du desassemblage. Afficher la table si -sym est active.
 
-  6.  [A FAIRE] Lecture et application de la table de relocalisation.
+  6.  [IMPLEMENTE] Lecture et application de la table de relocalisation.
       Si ph_absflag vaut 0, lire la table de relocalisation apres
       la table des symboles. Premier mot long = offset de la premiere
       relocalisation. Ensuite, sequence d'octets incrementaux :

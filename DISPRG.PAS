@@ -76,7 +76,8 @@
             sym_value (LongInt). Decoder les types ($0001 defini,
             $0004 global, $0040 TEXT, $0020 DATA, $0080 BSS, etc.).
 
-  TODO 06 - LECTURE DE LA TABLE DE RELOCALISATION [A FAIRE]
+  TODO 06 - LECTURE DE LA TABLE DE RELOCALISATION [IMPLEMENTE]
+            ReadRelocTable, ShowRelocTable, IsRelocatedAddr, CountRelocs.
             Premier mot long = offset, puis octets incrementaux.
             $00 = fin, $01 = +254, $02-$FD = relocaliser.
 
@@ -299,6 +300,10 @@ Var
   { Table des references croisees }
   XRefs       : Array[1..MAX_XREFS] Of TXRef;
   XRefCount   : Integer;
+
+  { Table des relocalisations (offsets dans TEXT+DATA) }
+  Relocs      : Array[1..MAX_RELOCS] Of LongInt;
+  RelocCount  : LongInt;
 
   { Compteurs de statistiques }
   InstrCount  : LongInt;
@@ -988,6 +993,113 @@ Begin
 End;
 
 { ============================================================
+  TODO 06 - LECTURE DE LA TABLE DE RELOCALISATION [IMPLEMENTE]
+  ============================================================ }
+
+{ --- ReadRelocTable : lire la table de relocalisation --- }
+{     depuis le fichier PRG (apres TEXT+DATA+symboles).     }
+{     Le fichier doit etre ouvert et positionne apres les   }
+{     sections (offset $001C + ph_tlen + ph_dlen + ph_slen).}
+{     Si ph_absflag <> 0, le programme est absolu (pas de   }
+{     table de relocalisation).                              }
+
+Procedure ReadRelocTable(Var F: File; Var H: TPrgHeader);
+Var
+  FirstOffset : LongInt;
+  CurOffset   : LongInt;
+  Delta       : Byte;
+  BytesRead   : Word;
+  Buf         : Array[0..3] Of Byte;
+Begin
+  RelocCount := 0;
+  { Si le programme est absolu, pas de table de relocalisation }
+  If H.ph_absflag <> 0 Then Exit;
+  { Lire le premier mot long (offset de la premiere relocalisation) }
+  BlockRead(F, Buf, 4, BytesRead);
+  If BytesRead < 4 Then Exit;  { pas de table de relocalisation }
+  FirstOffset := BEToLong(Buf[0], Buf[1], Buf[2], Buf[3]);
+  { Si le premier offset est 0, pas de relocalisation }
+  If FirstOffset = 0 Then Exit;
+  { Enregistrer la premiere relocalisation }
+  CurOffset := FirstOffset;
+  If RelocCount < MAX_RELOCS Then Begin
+    Inc(RelocCount);
+    Relocs[RelocCount] := CurOffset;
+  End;
+  { Lire la sequence d'octets incrementaux }
+  Repeat
+    BlockRead(F, Delta, 1, BytesRead);
+    If BytesRead < 1 Then Break;  { fin de fichier }
+    If Delta = 0 Then
+      Break                       { $00 = fin de la table }
+    Else If Delta = 1 Then
+      Inc(CurOffset, 254)         { $01 = avancer de 254, pas de reloc }
+    Else Begin
+      Inc(CurOffset, LongInt(Delta));  { $02-$FD = avancer et relocaliser }
+      If RelocCount < MAX_RELOCS Then Begin
+        Inc(RelocCount);
+        Relocs[RelocCount] := CurOffset;
+      End;
+    End;
+  Until False;
+End;
+
+{ --- ShowRelocTable : afficher la table de relocalisation --- }
+
+Procedure ShowRelocTable(ShowReloc: Boolean);
+Var
+  I      : LongInt;
+  ColCnt : Integer;
+Begin
+  If Not ShowReloc Then Exit;
+  WriteLn;
+  If RelocCount = 0 Then Begin
+    WriteLn('=== Table de relocalisation ===');
+    WriteLn('  (aucune relocalisation)');
+    Exit;
+  End;
+  WriteLn('=== Table de relocalisation (', IntToStr(RelocCount),
+          ' entrees) ===');
+  ColCnt := 0;
+  For I := 1 To RelocCount Do Begin
+    If ColCnt = 0 Then
+      Write('  ');
+    Write('$', HexLong(Relocs[I]));
+    Inc(ColCnt);
+    If ColCnt >= 8 Then Begin
+      WriteLn;
+      ColCnt := 0;
+    End Else
+      If I < RelocCount Then
+        Write('  ');
+  End;
+  If ColCnt > 0 Then
+    WriteLn;
+End;
+
+{ --- IsRelocatedAddr : verifier si une adresse est relocalisee --- }
+
+Function IsRelocatedAddr(Addr: LongInt): Boolean;
+Var
+  I: LongInt;
+Begin
+  IsRelocatedAddr := False;
+  For I := 1 To RelocCount Do Begin
+    If Relocs[I] = Addr Then Begin
+      IsRelocatedAddr := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- CountRelocs : retourner le nombre de relocalisations --- }
+
+Function CountRelocs: LongInt;
+Begin
+  CountRelocs := RelocCount;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -1000,6 +1112,7 @@ Begin
   SymbolCount := 0;
   LabelCount  := 0;
   XRefCount   := 0;
+  RelocCount  := 0;
   InstrCount  := 0;
   SubCount    := 0;
   TrapCount   := 0;
@@ -1033,18 +1146,24 @@ Begin
   { Charger les sections TEXT, DATA et symboles en memoire }
   LoadSections(InFile, Header);
   ShowSections(Header, Opts.Verbose);
+  { Lire la table de relocalisation (si relocalisable) }
+  ReadRelocTable(InFile, Header);
   { Fermer le fichier PRG }
   Close(InFile);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
-  { TODO 06-25 : relocalisation, desassemblage, generation .S }
+  { TODO 07-25 : drapeaux, desassemblage, generation .S }
   { Lire la table des symboles DRI }
   ReadSymbolTable(Header);
   ShowSymbolTable(Opts.ShowSymbols Or Opts.Verbose);
   AddSymbolLabels;
   If Opts.Verbose And (SymbolCount > 0) Then
     WriteLn('Labels ajoutes depuis symboles DRI: ', IntToStr(LabelCount));
+  { Afficher la table de relocalisation }
+  ShowRelocTable(Opts.ShowRelocs Or Opts.Verbose);
+  If Opts.Verbose Then
+    WriteLn('Relocalisations : ', IntToStr(RelocCount));
   { Liberer la memoire }
   FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-05 [IMPLEMENTE], TODOs 06-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-06 [IMPLEMENTE], TODOs 07-25 [A FAIRE]');
 End.
