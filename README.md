@@ -409,6 +409,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Modula-2 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>MODIII86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Modula-3 pour de l'assembleur de microprocesseur 8086 ou 8088.</td>
+		</tr>
+		<tr>
 			<td><b>OBERON86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Oberon pour l'assembleur du microprocesseur 8086.</td>
 		</td>
