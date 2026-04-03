@@ -53,7 +53,7 @@
             Function FileExists(FileName: String): Boolean
             Function ChangeFileExt(FileName, NewExt: String): String
 
-  TODO 02 - LECTURE ET VALIDATION DE L'EN-TETE PRG [A FAIRE]
+  TODO 02 - LECTURE ET VALIDATION DE L'EN-TETE PRG [IMPLEMENTE]
             Lire les 28 octets de l en-tete : ph_branch ($601A),
             ph_tlen, ph_dlen, ph_blen, ph_slen, ph_res1,
             ph_prgflags, ph_absflag. Valider la signature $601A.
@@ -488,6 +488,92 @@ Begin
 End;
 
 { ============================================================
+  TODO 02 - LECTURE ET VALIDATION DE L'EN-TETE PRG [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Conversion big-endian vers little-endian (16 bits) --- }
+
+Function BEToWord(B0, B1: Byte): Word;
+Begin
+  BEToWord := Word(B0) Shl 8 Or B1;
+End;
+
+{ --- Conversion big-endian vers little-endian (32 bits) --- }
+
+Function BEToLong(B0, B1, B2, B3: Byte): LongInt;
+Begin
+  BEToLong := LongInt(B0) Shl 24 Or LongInt(B1) Shl 16 Or
+              LongInt(B2) Shl 8 Or LongInt(B3);
+End;
+
+{ --- Lecture de l'en-tete PRG (28 octets, big-endian) --- }
+
+Procedure ReadPrgHeader(Var F: File; Var H: TPrgHeader);
+Var
+  Buf: Array[0..27] Of Byte;
+  BytesRead: Word;
+Begin
+  BlockRead(F, Buf, PRG_HEADER_SIZE, BytesRead);
+  If BytesRead <> PRG_HEADER_SIZE Then
+    FatalError('Fichier tronque: impossible de lire l''en-tete PRG (' +
+               IntToStr(BytesRead) + '/' + IntToStr(PRG_HEADER_SIZE) +
+               ' octets)');
+  { Convertir les champs big-endian en little-endian }
+  H.ph_branch   := BEToWord(Buf[0], Buf[1]);
+  H.ph_tlen     := BEToLong(Buf[2], Buf[3], Buf[4], Buf[5]);
+  H.ph_dlen     := BEToLong(Buf[6], Buf[7], Buf[8], Buf[9]);
+  H.ph_blen     := BEToLong(Buf[10], Buf[11], Buf[12], Buf[13]);
+  H.ph_slen     := BEToLong(Buf[14], Buf[15], Buf[16], Buf[17]);
+  H.ph_res1     := BEToLong(Buf[18], Buf[19], Buf[20], Buf[21]);
+  H.ph_prgflags := BEToLong(Buf[22], Buf[23], Buf[24], Buf[25]);
+  H.ph_absflag  := BEToWord(Buf[26], Buf[27]);
+End;
+
+{ --- Validation de la signature magique $601A --- }
+
+Procedure ValidatePrgHeader(Var H: TPrgHeader);
+Begin
+  If H.ph_branch <> PRG_MAGIC Then
+    FatalError('Signature invalide: $' + HexWord(H.ph_branch) +
+               ' (attendu $' + HexWord(PRG_MAGIC) + ')');
+End;
+
+{ --- Affichage de l'en-tete si mode verbeux --- }
+
+Procedure ShowPrgHeader(Var H: TPrgHeader; Verbose: Boolean);
+Var
+  RelocStr: String;
+  TotalSize: LongInt;
+Begin
+  If Not Verbose Then Exit;
+  If H.ph_absflag = 0 Then
+    RelocStr := 'relocalisable'
+  Else
+    RelocStr := 'absolu';
+  TotalSize := H.ph_tlen + H.ph_dlen + H.ph_blen;
+  WriteLn;
+  WriteLn('=== En-tete PRG (', IntToStr(PRG_HEADER_SIZE), ' octets) ===');
+  WriteLn('  ph_branch   : $', HexWord(H.ph_branch));
+  WriteLn('  ph_tlen     : $', HexLong(H.ph_tlen),
+          ' (', IntToStr(H.ph_tlen), ' octets = section TEXT)');
+  WriteLn('  ph_dlen     : $', HexLong(H.ph_dlen),
+          ' (', IntToStr(H.ph_dlen), ' octets = section DATA)');
+  WriteLn('  ph_blen     : $', HexLong(H.ph_blen),
+          ' (', IntToStr(H.ph_blen), ' octets = section BSS)');
+  WriteLn('  ph_slen     : $', HexLong(H.ph_slen),
+          ' (', IntToStr(H.ph_slen), ' octets = table symboles)');
+  WriteLn('  ph_res1     : $', HexLong(H.ph_res1));
+  WriteLn('  ph_prgflags : $', HexLong(H.ph_prgflags));
+  WriteLn('  ph_absflag  : $', HexWord(H.ph_absflag),
+          ' (', RelocStr, ')');
+  WriteLn('  Taille programme : ', IntToStr(TotalSize),
+          ' octets (TEXT+DATA+BSS)');
+  If H.ph_slen > 0 Then
+    WriteLn('  Nombre symboles  : ',
+            IntToStr(H.ph_slen Div SYM_ENTRY_SIZE), ' entrees');
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -521,7 +607,19 @@ Begin
     If Opts.DisasmData Then
       WriteLn('Desasm DATA     : Oui');
   End;
-  { TODO 02-25 : lecture en-tete, chargement, desassemblage, generation .S }
+  { Ouvrir le fichier PRG }
+  Assign(InFile, Opts.SrcFile);
+  Reset(InFile, 1);
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier: ' + Opts.SrcFile);
+  { Lire et valider l'en-tete PRG }
+  ReadPrgHeader(InFile, Header);
+  ValidatePrgHeader(Header);
+  ShowPrgHeader(Header, Opts.Verbose);
+  { Fermer le fichier pour l'instant }
+  Close(InFile);
+  If IOResult <> 0 Then;  { ignorer erreur de fermeture }
+  { TODO 03-25 : conversion, chargement, desassemblage, generation .S }
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODO 01 [IMPLEMENTE], TODOs 02-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-02 [IMPLEMENTE], TODOs 03-25 [A FAIRE]');
 End.

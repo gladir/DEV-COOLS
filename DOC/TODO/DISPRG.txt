@@ -12,7 +12,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       Fonctions utilitaires : UpCaseStr, HexByte, HexWord, HexLong,
       IntToStr, FileExists, ChangeFileExt.
 
-  2.  [A FAIRE] Lecture et validation de l'en-tete PRG (28 octets).
+  2.  [IMPLEMENTE] Lecture et validation de l'en-tete PRG (28 octets).
       Lire les 28 octets de l'en-tete PRG : ph_branch ($601A),
       ph_tlen (taille TEXT), ph_dlen (taille DATA), ph_blen (taille BSS),
       ph_slen (taille table symboles), ph_res1 (reserve, doit etre 0),
