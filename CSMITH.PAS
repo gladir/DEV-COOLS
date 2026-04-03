@@ -137,7 +137,7 @@
             (p++, p--, p+n, p-n, p1-p2). Option --no-pointers.
             Eviter les pointeurs invalides (UB) : NULL deref, out of bounds.
 
-  TODO 12 - [A FAIRE] GENERATION DE CONSTANTES LITTERALES
+  TODO 12 - [IMPLEMENTE] GENERATION DE CONSTANTES LITTERALES
             Generateur de constantes litterales C :
             GenIntLiteral - entier (decimal, octal 0n, hex 0xn).
             GenFloatLiteral - flottant (1.5, 1.5f, 1.5e10, .5, 5.).
@@ -314,6 +314,17 @@ Const
   MAX_POINTER_DEPTH  = 3;
   POINTER_INIT_PROB  = 40;   { TODO 11 : 40% de chance d'initialiser a NULL }
   POINTER_MULTI_PROB = 20;   { TODO 11 : 20% de chance de double/triple pointeur }
+  
+  { TODO 12 : Limites pour les constantes litterales }
+  MAX_INT_VALUE      = 2147483647;  { max signed 32-bit }
+  MAX_CHAR_VALUE     = 127;         { max printable ASCII }
+  MIN_CHAR_VALUE     = 32;          { min printable ASCII }
+  MAX_STRING_LEN     = 64;          { longueur max des chaines generees }
+  MAX_FLOAT_EXP      = 10;          { exposant max pour flottants }
+  OCTAL_PROB         = 10;          { 10% de chance de generer un octal }
+  HEX_PROB           = 20;          { 20% de chance de generer un hex }
+  SUFFIX_PROB        = 30;          { 30% de chance d'ajouter un suffixe }
+  ESCAPE_PROB        = 20;          { 20% de chance d'echappement dans chaines }
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_ENUMS          = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -540,6 +551,7 @@ Var
   EnumCounter   : Integer;
   LabelCounter  : Integer;
   PointerCounter: Integer;  { TODO 11 : compteur de pointeurs }
+  LiteralCounter: Integer;  { TODO 12 : compteur de litteraux }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -3274,6 +3286,419 @@ Begin
   CountPointers := PointerCounter;
 End;
 
+{ ============================================================
+  TODO 12 : GENERATION DE CONSTANTES LITTERALES [IMPLEMENTE]
+  ============================================================ }
+
+Function GenIntLiteral(T: TTypeKind): TString;
+{ Genere un entier litteral aleatoire.
+  Formats supportes: decimal, octal (0n), hex (0xn).
+  Suffixes: U, L, UL, LL, ULL selon le type. }
+Var
+  Value: LongInt;
+  S: TString;
+  IsUnsigned: Boolean;
+  IsLong: Boolean;
+  IsLongLong: Boolean;
+  Format: Integer;
+Begin
+  { Determiner les caracteristiques du type }
+  IsUnsigned := (T = TK_UINT) Or (T = TK_ULONG) Or (T = TK_ULONGLONG) Or 
+                (T = TK_UCHAR) Or (T = TK_USHORT);
+  IsLong := (T = TK_LONG) Or (T = TK_ULONG);
+  IsLongLong := (T = TK_LONGLONG) Or (T = TK_ULONGLONG);
+  
+  { Generer une valeur dans les limites du type }
+  Case T Of
+    TK_CHAR, TK_SCHAR: Value := RandomRange(-128, 127);
+    TK_UCHAR: Value := RandomRange(0, 255);
+    TK_SHORT: Value := RandomRange(-32000, 32000);
+    TK_USHORT: Value := RandomRange(0, 32000);
+    TK_INT, TK_LONG: Value := RandomRange(-30000, 30000);
+    TK_UINT, TK_ULONG: Value := RandomRange(0, 30000);
+    TK_LONGLONG: Value := RandomRange(-30000, 30000);
+    TK_ULONGLONG: Value := RandomRange(0, 30000);
+  Else
+    Value := RandomRange(0, 1000);
+  End;
+  
+  { Assurer valeur positive pour octal/hex }
+  If Value < 0 Then
+    If RandomChoice(50) Then Value := -Value;
+  
+  { Choisir le format de representation }
+  Format := RandomInt(100);
+  If (Value >= 0) And (Format < OCTAL_PROB) Then
+  Begin
+    { Format octal }
+    S := '0';
+    If Value = 0 Then
+      S := '0'
+    Else
+    Begin
+      S := '';
+      While Value > 0 Do
+      Begin
+        S := Chr(Ord('0') + (Value Mod 8)) + S;
+        Value := Value Div 8;
+      End;
+      S := '0' + S;
+    End;
+  End
+  Else If (Value >= 0) And (Format < OCTAL_PROB + HEX_PROB) Then
+  Begin
+    { Format hexadecimal }
+    S := '';
+    If Value = 0 Then
+      S := '0x0'
+    Else
+    Begin
+      While Value > 0 Do
+      Begin
+        If (Value Mod 16) < 10 Then
+          S := Chr(Ord('0') + (Value Mod 16)) + S
+        Else
+          S := Chr(Ord('A') + (Value Mod 16) - 10) + S;
+        Value := Value Div 16;
+      End;
+      { Alterner majuscules/minuscules pour le prefixe }
+      If RandomBool Then
+        S := '0x' + S
+      Else
+        S := '0X' + S;
+    End;
+  End
+  Else
+  Begin
+    { Format decimal }
+    Str(Value, S);
+  End;
+  
+  { Ajouter les suffixes si necessaire }
+  If RandomChoice(SUFFIX_PROB) Then
+  Begin
+    If IsLongLong Then
+    Begin
+      If IsUnsigned Then
+        S := S + 'ULL'
+      Else
+        S := S + 'LL';
+    End
+    Else If IsLong Then
+    Begin
+      If IsUnsigned Then
+        S := S + 'UL'
+      Else
+        S := S + 'L';
+    End
+    Else If IsUnsigned Then
+      S := S + 'U';
+  End;
+  
+  Inc(LiteralCounter);
+  GenIntLiteral := S;
+End;
+
+Function GenFloatLiteral(T: TTypeKind): TString;
+{ Genere un flottant litteral aleatoire.
+  Formats: 1.5, .5, 5., 1.5e10, 1.5E-5
+  Suffixes: f/F (float), l/L (long double) }
+Var
+  IntPart: LongInt;
+  FracPart: LongInt;
+  Exp: Integer;
+  S, FracStr: TString;
+  HasInt, HasFrac, HasExp: Boolean;
+  Format: Integer;
+Begin
+  { Generer les parties de la valeur }
+  IntPart := RandomRange(0, 1000);
+  FracPart := RandomRange(0, 9999);
+  Exp := RandomRange(-MAX_FLOAT_EXP, MAX_FLOAT_EXP);
+  
+  { Choisir le format }
+  Format := RandomInt(5);
+  Case Format Of
+    0: Begin { 1.5 - format standard }
+         HasInt := True;
+         HasFrac := True;
+         HasExp := False;
+       End;
+    1: Begin { .5 - sans partie entiere }
+         HasInt := False;
+         HasFrac := True;
+         HasExp := False;
+       End;
+    2: Begin { 5. - sans partie fractionnaire }
+         HasInt := True;
+         HasFrac := False;
+         HasExp := False;
+       End;
+    3: Begin { 1.5e10 - notation scientifique }
+         HasInt := True;
+         HasFrac := True;
+         HasExp := True;
+       End;
+    4: Begin { 5e10 - entier avec exposant }
+         HasInt := True;
+         HasFrac := False;
+         HasExp := True;
+       End;
+  Else
+    HasInt := True;
+    HasFrac := True;
+    HasExp := False;
+  End;
+  
+  { Construire la chaine }
+  S := '';
+  
+  If HasInt Then
+    Str(IntPart, S)
+  Else
+    S := '';
+  
+  S := S + '.';
+  
+  If HasFrac Then
+  Begin
+    Str(FracPart, FracStr);
+    { Ajouter des zeros de padding pour la partie fractionnaire }
+    While Length(FracStr) < 2 Do
+      FracStr := '0' + FracStr;
+    { Limiter a quelques chiffres }
+    If Length(FracStr) > 4 Then
+      FracStr := Copy(FracStr, 1, 4);
+    S := S + FracStr;
+  End;
+  
+  If HasExp Then
+  Begin
+    If RandomBool Then
+      S := S + 'e'
+    Else
+      S := S + 'E';
+    If Exp >= 0 Then
+    Begin
+      If RandomBool Then
+        S := S + '+';
+    End;
+    Str(Exp, FracStr);
+    S := S + FracStr;
+  End;
+  
+  { Ajouter le suffixe }
+  If T = TK_FLOAT Then
+  Begin
+    If RandomBool Then
+      S := S + 'f'
+    Else
+      S := S + 'F';
+  End
+  Else If RandomChoice(20) Then { 20% chance de long double suffix }
+  Begin
+    If RandomBool Then
+      S := S + 'l'
+    Else
+      S := S + 'L';
+  End;
+  
+  Inc(LiteralCounter);
+  GenFloatLiteral := S;
+End;
+
+Function CharToEscape(C: Char): TString;
+{ Convertit un caractere en sequence d'echappement C. }
+Begin
+  Case C Of
+    #0:  CharToEscape := '\0';
+    #7:  CharToEscape := '\a';
+    #8:  CharToEscape := '\b';
+    #9:  CharToEscape := '\t';
+    #10: CharToEscape := '\n';
+    #11: CharToEscape := '\v';
+    #12: CharToEscape := '\f';
+    #13: CharToEscape := '\r';
+    '\': CharToEscape := '\\';
+    '''': CharToEscape := '\''';
+    '"': CharToEscape := '\"';
+  Else
+    CharToEscape := C;
+  End;
+End;
+
+Function GenCharLiteral: TString;
+{ Genere un caractere litteral aleatoire.
+  Formats: 'a', '\n', '\x41', '\0' }
+Var
+  C: Char;
+  S: TString;
+  Format: Integer;
+Begin
+  Format := RandomInt(4);
+  Case Format Of
+    0: Begin { Caractere ASCII imprimable }
+         C := Chr(RandomRange(MIN_CHAR_VALUE, MAX_CHAR_VALUE));
+         If (C = '''') Or (C = '\') Then
+           S := '''' + CharToEscape(C) + ''''
+         Else
+           S := '''' + C + '''';
+       End;
+    1: Begin { Sequence d'echappement commune }
+         Case RandomInt(8) Of
+           0: S := '''\0''';   { null }
+           1: S := '''\n''';   { newline }
+           2: S := '''\t''';   { tab }
+           3: S := '''\r''';   { carriage return }
+           4: S := '''\'''''''; { single quote }
+           5: S := '''\\''';   { backslash }
+           6: S := '''\a''';   { bell }
+           7: S := '''\b''';   { backspace }
+         End;
+       End;
+    2: Begin { Format hexadecimal \xNN }
+         C := Chr(RandomRange(0, 127));
+         S := '''\x' + Chr(Ord('0') + ((Ord(C) Div 16) Mod 10));
+         If (Ord(C) Div 16) >= 10 Then
+           S := '''\x' + Chr(Ord('A') + (Ord(C) Div 16) - 10);
+         If (Ord(C) Mod 16) < 10 Then
+           S := S + Chr(Ord('0') + (Ord(C) Mod 16))
+         Else
+           S := S + Chr(Ord('A') + (Ord(C) Mod 16) - 10);
+         S := S + '''';
+       End;
+    3: Begin { Format octal \NNN }
+         C := Chr(RandomRange(0, 127));
+         S := '''\' + Chr(Ord('0') + ((Ord(C) Div 64) Mod 8)) +
+              Chr(Ord('0') + ((Ord(C) Div 8) Mod 8)) +
+              Chr(Ord('0') + (Ord(C) Mod 8)) + '''';
+       End;
+  Else
+    S := '''A''';
+  End;
+  
+  Inc(LiteralCounter);
+  GenCharLiteral := S;
+End;
+
+Function GenStringLiteral: TString;
+{ Genere une chaine litterale aleatoire.
+  Supporte les sequences d'echappement. }
+Var
+  Len, I: Integer;
+  S: TString;
+  C: Char;
+Begin
+  Len := RandomRange(1, MAX_STRING_LEN);
+  S := '"';
+  
+  For I := 1 To Len Do
+  Begin
+    If RandomChoice(ESCAPE_PROB) Then
+    Begin
+      { Inserer une sequence d'echappement }
+      Case RandomInt(6) Of
+        0: S := S + '\n';
+        1: S := S + '\t';
+        2: S := S + '\\';
+        3: S := S + '\"';
+        4: S := S + '\r';
+        5: S := S + '\0';
+      End;
+    End
+    Else
+    Begin
+      { Caractere ASCII imprimable }
+      C := Chr(RandomRange(MIN_CHAR_VALUE, MAX_CHAR_VALUE));
+      If C = '"' Then
+        S := S + '\"'
+      Else If C = '\' Then
+        S := S + '\\'
+      Else
+        S := S + C;
+    End;
+    
+    { Eviter les chaines trop longues }
+    If Length(S) > MAX_STRING_LEN - 5 Then
+      Break;
+  End;
+  
+  S := S + '"';
+  
+  Inc(LiteralCounter);
+  GenStringLiteral := S;
+End;
+
+Function GenRandomLiteral(T: TTypeKind): TString;
+{ Genere un litteral aleatoire en fonction du type. }
+Begin
+  Case T Of
+    TK_CHAR, TK_SCHAR, TK_UCHAR:
+      If RandomChoice(70) Then
+        GenRandomLiteral := GenIntLiteral(T)
+      Else
+        GenRandomLiteral := GenCharLiteral;
+    TK_SHORT, TK_USHORT, TK_INT, TK_UINT,
+    TK_LONG, TK_ULONG, TK_LONGLONG, TK_ULONGLONG:
+      GenRandomLiteral := GenIntLiteral(T);
+    TK_FLOAT, TK_DOUBLE:
+      GenRandomLiteral := GenFloatLiteral(T);
+  Else
+    GenRandomLiteral := GenIntLiteral(TK_INT);
+  End;
+End;
+
+Function GenLiteralOfType(T: TCType): TString;
+{ Genere un litteral aleatoire compatible avec le type TCType donne. }
+Begin
+  GenLiteralOfType := GenRandomLiteral(T.Kind);
+End;
+
+Procedure EmitLiteralComment;
+{ Emet un commentaire pour la section des litteraux. }
+Begin
+  EmitComment('Constantes litterales');
+End;
+
+Function GetIntSuffix(T: TTypeKind): TString;
+{ Retourne le suffixe C pour un type entier. }
+Begin
+  Case T Of
+    TK_UINT: GetIntSuffix := 'U';
+    TK_LONG: GetIntSuffix := 'L';
+    TK_ULONG: GetIntSuffix := 'UL';
+    TK_LONGLONG: GetIntSuffix := 'LL';
+    TK_ULONGLONG: GetIntSuffix := 'ULL';
+  Else
+    GetIntSuffix := '';
+  End;
+End;
+
+Function GetFloatSuffix(T: TTypeKind): TString;
+{ Retourne le suffixe C pour un type flottant. }
+Begin
+  Case T Of
+    TK_FLOAT: GetFloatSuffix := 'f';
+    TK_DOUBLE: GetFloatSuffix := '';
+  Else
+    GetFloatSuffix := 'L';  { long double }
+  End;
+End;
+
+Function IsValidLiteralType(T: TTypeKind): Boolean;
+{ Verifie si un type peut avoir un litteral. }
+Begin
+  IsValidLiteralType := T In [TK_CHAR, TK_SCHAR, TK_UCHAR, TK_SHORT, TK_USHORT,
+                              TK_INT, TK_UINT, TK_LONG, TK_ULONG,
+                              TK_LONGLONG, TK_ULONGLONG, TK_FLOAT, TK_DOUBLE];
+End;
+
+Function CountLiterals: Integer;
+{ Retourne le nombre de litteraux generes. }
+Begin
+  CountLiterals := LiteralCounter;
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -3291,6 +3716,7 @@ Begin
   LabelCounter := 0;
   ArrayCounter := 0;  { TODO 10 : compteur de tableaux }
   PointerCounter := 0;  { TODO 11 : compteur de pointeurs }
+  LiteralCounter := 0;  { TODO 12 : compteur de litteraux }
   StatFuncs := 0;
   StatVars := 0;
   StatExprs := 0;

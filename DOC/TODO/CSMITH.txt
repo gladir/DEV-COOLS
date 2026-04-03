@@ -122,7 +122,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       (p++, p--, p+n, p-n, p1-p2). Option --no-pointers.
       Eviter les pointeurs invalides (UB) : NULL deref, out of bounds.
 
-  12. [A FAIRE] Generation de constantes litterales.
+  12. [IMPLEMENTE] Generation de constantes litterales.
       Generateur de constantes litterales C :
       GenIntLiteral - entier (decimal, octal 0n, hex 0xn).
       GenFloatLiteral - flottant (1.5, 1.5f, 1.5e10, .5, 5.).
