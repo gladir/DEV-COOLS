@@ -1,7 +1,7 @@
 { @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Desassembleur de fichiers .PRG (Atari ST, Motorola 68000)
                 genere un fichier de sortie .S (assembleur 68000)
   @license: MIT
@@ -9,7 +9,7 @@
 
 (* ============================================================
   DISPRG.PAS - Desassembleur de fichiers .PRG Atari ST
-  Turbo Pascal / Free Pascal (-Mtp)
+  Free Pascal (-Mtp)
 
   Le format .PRG est le format executable natif de l Atari ST
   sous TOS (The Operating System). Il contient du code machine
@@ -494,9 +494,9 @@ Begin
   WriteLn('Motorola 68000 -> assembleur 68000 (.S)');
 End;
 
-Procedure ShowHelp;
-Begin
-  ShowVersion;
+Procedure ShowHelp;Begin
+  WriteLn('DISPRG - Cette commande permet de lancer le dessembleur ',
+          'de fichiers .PRG du Atari ST.');
   WriteLn;
   WriteLn('Usage: DISPRG fichier.prg [options]');
   WriteLn;
@@ -6423,73 +6423,81 @@ Begin
     ShowDetailedStats(TextLen, DataLen, BssLen);
 End;
 
-Begin
-  ShowVersion;
-  WriteLn;
-  InitOptions(Opts);
-  ParseCommandLine(Opts);
+BEGIN
+ If (ParamCount >= 1) And
+    ((ParamStr(1) = '-h') Or (ParamStr(1) = '--help') Or
+     (ParamStr(1) = '/?') Or (ParamStr(1) = '/h') Or
+     (ParamStr(1) = '/H')) Then
+ Begin
+  ShowHelp;
+  Halt(0);
+ End;
+ ShowVersion;
+ WriteLn;
+ InitOptions(Opts);
+ ParseCommandLine(Opts);
   { Initialiser les compteurs }
-  SymbolCount := 0;
-  LabelCount  := 0;
-  XRefCount   := 0;
-  RelocCount  := 0;
-  InstrCount  := 0;
-  SubCount    := 0;
-  TrapCount   := 0;
-  ImageBuffer := Nil;
-  ImageSize   := 0;
-  CodeMap     := Nil;
-  CodeMapSize := 0;
-  TextOffset  := 0;
-  DataOffset  := 0;
-  SymOffset   := 0;
-  WriteLn('Fichier source  : ', Opts.SrcFile);
-  WriteLn('Fichier sortie  : ', Opts.OutFile);
-  If Opts.Verbose Then Begin
-    WriteLn('Mode verbeux    : Oui');
-    If Opts.HexDump Then
-      WriteLn('Dump hexa       : Oui');
-    If Opts.ShowSymbols Then
-      WriteLn('Table symboles  : Oui');
-    If Opts.ShowRelocs Then
-      WriteLn('Table reloc     : Oui');
-    If Opts.DisasmData Then
-      WriteLn('Desasm DATA     : Oui');
-  End;
+ SymbolCount := 0;
+ LabelCount  := 0;
+ XRefCount   := 0;
+ RelocCount  := 0;
+ InstrCount  := 0;
+ SubCount    := 0;
+ TrapCount   := 0;
+ ImageBuffer := Nil;
+ ImageSize   := 0;
+ CodeMap     := Nil;
+ CodeMapSize := 0;
+ TextOffset  := 0;
+ DataOffset  := 0;
+ SymOffset   := 0;
+ WriteLn('Fichier source  : ', Opts.SrcFile);
+ WriteLn('Fichier sortie  : ', Opts.OutFile);
+ If Opts.Verbose Then Begin
+   WriteLn('Mode verbeux    : Oui');
+   If Opts.HexDump Then
+     WriteLn('Dump hexa       : Oui');
+   If Opts.ShowSymbols Then
+     WriteLn('Table symboles  : Oui');
+   If Opts.ShowRelocs Then
+     WriteLn('Table reloc     : Oui');
+   If Opts.DisasmData Then
+     WriteLn('Desasm DATA     : Oui');
+ End;
   { Ouvrir le fichier PRG }
-  Assign(InFile, Opts.SrcFile);
-  Reset(InFile, 1);
-  If IOResult <> 0 Then
-    FatalError('Impossible d''ouvrir le fichier: ' + Opts.SrcFile);
+ Assign(InFile, Opts.SrcFile);
+ Reset(InFile, 1);
+ If IOResult <> 0 Then
+   FatalError('Impossible d''ouvrir le fichier: ' + Opts.SrcFile);
   { Lire et valider l'en-tete PRG }
-  ReadPrgHeader(InFile, Header);
-  ValidatePrgHeader(Header);
-  ShowPrgHeader(Header, Opts.Verbose);
+ ReadPrgHeader(InFile, Header);
+ ValidatePrgHeader(Header);
+ ShowPrgHeader(Header, Opts.Verbose);
   { Charger les sections TEXT, DATA et symboles en memoire }
-  LoadSections(InFile, Header);
-  ShowSections(Header, Opts.Verbose);
+ LoadSections(InFile, Header);
+ ShowSections(Header, Opts.Verbose);
   { Lire la table de relocalisation (si relocalisable) }
-  ReadRelocTable(InFile, Header);
+ ReadRelocTable(InFile, Header);
   { Fermer le fichier PRG }
-  Close(InFile);
-  If IOResult <> 0 Then;  { ignorer erreur de fermeture }
+ Close(InFile);
+ If IOResult <> 0 Then;  { ignorer erreur de fermeture }
   { TODO 13-25 : desassemblage, generation .S }
   { Lire la table des symboles DRI }
-  ReadSymbolTable(Header);
-  ShowSymbolTable(Opts.ShowSymbols Or Opts.Verbose);
-  AddSymbolLabels;
-  If Opts.Verbose And (SymbolCount > 0) Then
+ ReadSymbolTable(Header);
+ ShowSymbolTable(Opts.ShowSymbols Or Opts.Verbose);
+ AddSymbolLabels;
+ If Opts.Verbose And (SymbolCount > 0) Then
     WriteLn('Labels ajoutes depuis symboles DRI: ', IntToStr(LabelCount));
   { Afficher la table de relocalisation }
-  ShowRelocTable(Opts.ShowRelocs Or Opts.Verbose);
-  If Opts.Verbose Then
+ ShowRelocTable(Opts.ShowRelocs Or Opts.Verbose);
+ If Opts.Verbose Then
     WriteLn('Relocalisations : ', IntToStr(RelocCount));
   { Analyser et afficher les drapeaux du programme }
-  ShowPrgFlags(Header, Opts.Verbose);
+ ShowPrgFlags(Header, Opts.Verbose);
   { Initialiser et afficher la table des opcodes 68000 }
-  InitOpcodeTable;
-  ShowOpcodeTable(Opts.Verbose);
-  If Opts.Verbose Then
+ InitOpcodeTable;
+ ShowOpcodeTable(Opts.Verbose);
+ If Opts.Verbose Then
     WriteLn('Opcodes 68000   : ', IntToStr(OpcodeCount),
             ' (transfert: ', IntToStr(CountOpcodesByGroup(GRP_TRANSFER)),
             ', arith: ', IntToStr(CountOpcodesByGroup(GRP_ARITH)),
@@ -6609,4 +6617,4 @@ Begin
           ' - TODOs 01-25 [IMPLEMENTE]');
   { Code de retour : 0 = succes }
   Halt(EXIT_OK);
-End.
+END.
