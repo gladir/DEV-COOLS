@@ -161,7 +161,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       Mfree ($49), Super ($20), Crawio ($06), etc.
       Gerer aussi TRAP #2 (GEM AES/VDI).
 
-  18. [A FAIRE] Discrimination code/donnees dans la section TEXT.
+  18. [IMPLEMENTE] Discrimination code/donnees dans la section TEXT.
       Utiliser les informations de flux de controle (TODO 15)
       pour separer le code des donnees dans la section TEXT.
       Les octets non atteints par le parcours du flux sont

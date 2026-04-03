@@ -135,9 +135,14 @@
             XbiosFuncName, GetTrapComment, DetectTrapCalls,
             ShowTrapCalls, CountTrapCalls, IsTrapCall.
 
-  TODO 18 - DISCRIMINATION CODE/DONNEES DANS TEXT [A FAIRE]
-            Octets non atteints = donnees (DC.B/DC.W/DC.L).
-            Detecter chaines ASCII, tables de saut, constantes.
+  TODO 18 - DISCRIMINATION CODE/DONNEES DANS TEXT [IMPLEMENTE]
+            AllocCodeMap, FreeCodeMap, GetCodeMapByte,
+            MarkRegion, IsASCIIPrintable, DetectASCIIStringAt,
+            IsJumpTableEntry, DetectJumpTableAt,
+            MarkCodeRegions, ClassifyDataRegions,
+            ClassifyTextRegions, ShowTextRegions,
+            CountCodeBytes, CountDataBytes, CountASCIIRegions,
+            CountJumpTables.
 
   TODO 19 - DESASSEMBLAGE DE LA SECTION DATA [A FAIRE]
             Emettre DC.B/DC.W/DC.L, detecter les chaines,
@@ -237,6 +242,16 @@ Const
   EXIT_OK        = 0;
   EXIT_ERROR     = 1;
   EXIT_USAGE     = 2;
+
+  { Classification code/donnees (TODO 18) }
+  CM_UNKNOWN     = 0;   { non classe }
+  CM_CODE        = 1;   { instruction 68000 }
+  CM_DATA        = 2;   { donnee generique }
+  CM_ASCII       = 3;   { chaine ASCII terminee par 0 }
+  CM_JUMPTBL     = 4;   { table de saut (mots longs) }
+
+  { Seuil minimum pour une chaine ASCII }
+  MIN_ASCII_LEN  = 4;
 
 { ============================================================
   TYPES
@@ -362,6 +377,10 @@ Var
   { Variables pour le desassemblage }
   CurOfs      : LongInt;
   EndOfs      : LongInt;
+
+  { Carte code/donnees de la section TEXT (TODO 18) }
+  CodeMap     : Pointer;
+  CodeMapSize : LongInt;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -4059,6 +4078,522 @@ Begin
 End;
 
 { ============================================================
+  TODO 18 - DISCRIMINATION CODE/DONNEES DANS TEXT [IMPLEMENTE]
+  ============================================================ }
+
+{ --- AllocCodeMap : allouer la carte code/donnees --- }
+{     Un octet par octet de la section TEXT             }
+
+Procedure AllocCodeMap(TextLen: LongInt);
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  P: PByteArray;
+  I: LongInt;
+Begin
+  If TextLen <= 0 Then Begin
+    CodeMap := Nil;
+    CodeMapSize := 0;
+    Exit;
+  End;
+  CodeMapSize := TextLen;
+  GetMem(CodeMap, CodeMapSize);
+  If CodeMap = Nil Then
+    FatalError('AllocCodeMap: memoire insuffisante');
+  { Initialiser tout a CM_UNKNOWN }
+  P := PByteArray(CodeMap);
+  For I := 0 To CodeMapSize - 1 Do
+    P^[I] := CM_UNKNOWN;
+End;
+
+{ --- FreeCodeMap : liberer la carte code/donnees --- }
+
+Procedure FreeCodeMap;
+Begin
+  If CodeMap <> Nil Then Begin
+    FreeMem(CodeMap, CodeMapSize);
+    CodeMap := Nil;
+    CodeMapSize := 0;
+  End;
+End;
+
+{ --- GetCodeMapByte : lire la classification d'un octet --- }
+
+Function GetCodeMapByte(TextOfs: LongInt): Byte;
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Begin
+  GetCodeMapByte := CM_UNKNOWN;
+  If CodeMap = Nil Then Exit;
+  If (TextOfs < 0) Or (TextOfs >= CodeMapSize) Then Exit;
+  GetCodeMapByte := PByteArray(CodeMap)^[TextOfs];
+End;
+
+{ --- MarkRegion : marquer une plage dans la carte --- }
+
+Procedure MarkRegion(StartOfs, Len: LongInt; MarkType: Byte);
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  P: PByteArray;
+  I: LongInt;
+Begin
+  If CodeMap = Nil Then Exit;
+  P := PByteArray(CodeMap);
+  For I := StartOfs To StartOfs + Len - 1 Do Begin
+    If (I >= 0) And (I < CodeMapSize) Then
+      P^[I] := MarkType;
+  End;
+End;
+
+{ --- IsASCIIPrintable : est-ce un caractere ASCII imprimable ? --- }
+{     Accepte 32..126 (espace a tilde) et les codes 9 (tab),       }
+{     10 (LF), 13 (CR).                                             }
+
+Function IsASCIIPrintable(B: Byte): Boolean;
+Begin
+  IsASCIIPrintable := ((B >= 32) And (B <= 126)) Or
+                      (B = 9) Or (B = 10) Or (B = 13);
+End;
+
+{ --- DetectASCIIStringAt : detecter une chaine ASCII terminee par 0 --- }
+{     TextOfs = offset dans la section TEXT (0-based)                     }
+{     Retourne la longueur totale (incluant le 0 terminal) ou 0           }
+
+Function DetectASCIIStringAt(TextOfs: LongInt): LongInt;
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  P   : PByteArray;
+  Ofs : LongInt;
+  Len : LongInt;
+  B   : Byte;
+Begin
+  DetectASCIIStringAt := 0;
+  If ImageBuffer = Nil Then Exit;
+  If CodeMap = Nil Then Exit;
+  P := PByteArray(ImageBuffer);
+  Ofs := TextOffset + TextOfs;
+  Len := 0;
+  While (TextOfs + Len < CodeMapSize) And (Ofs + Len < ImageSize) Do Begin
+    B := P^[Ofs + Len];
+    If B = 0 Then Begin
+      { Terminateur nul trouve }
+      If Len >= MIN_ASCII_LEN Then Begin
+        DetectASCIIStringAt := Len + 1;  { inclure le 0 terminal }
+        Exit;
+      End Else Begin
+        DetectASCIIStringAt := 0;
+        Exit;
+      End;
+    End;
+    If Not IsASCIIPrintable(B) Then Begin
+      DetectASCIIStringAt := 0;
+      Exit;
+    End;
+    Inc(Len);
+  End;
+  { Fin de section sans 0 terminal : pas une chaine }
+  DetectASCIIStringAt := 0;
+End;
+
+{ --- IsJumpTableEntry : verifier si un mot long pointe vers du code --- }
+{     Addr = adresse logique (PC-relative) a verifier                    }
+
+Function IsJumpTableEntry(Addr: LongInt; TextLen: LongInt): Boolean;
+Var
+  Idx: Integer;
+Begin
+  IsJumpTableEntry := False;
+  If (Addr < 0) Or (Addr >= TextLen) Then Exit;
+  { Verifier si l'adresse est un label connu ou tombe sur une limite paire }
+  If (Addr And 1) <> 0 Then Exit;  { les instructions 68000 sont alignees }
+  { Si c'est un label connu, c'est probablement une entree de table }
+  Idx := FindLabelByAddr(Addr, 0);
+  If Idx > 0 Then Begin
+    IsJumpTableEntry := True;
+    Exit;
+  End;
+  { Verifier si c'est dans la zone code de la carte }
+  If GetCodeMapByte(Addr) = CM_CODE Then
+    IsJumpTableEntry := True;
+End;
+
+{ --- DetectJumpTableAt : detecter une table de saut --- }
+{     TextOfs = offset dans la section TEXT (0-based)     }
+{     TextLen = taille de la section TEXT                  }
+{     Retourne le nombre d'entrees (0 si pas une table)   }
+
+Function DetectJumpTableAt(TextOfs: LongInt; TextLen: LongInt): LongInt;
+Var
+  Ofs    : LongInt;
+  Count  : LongInt;
+  Addr   : LongInt;
+Begin
+  DetectJumpTableAt := 0;
+  If ImageBuffer = Nil Then Exit;
+  { Verifier l'alignement }
+  If (TextOfs And 1) <> 0 Then Exit;
+  Ofs := TextOffset + TextOfs;
+  Count := 0;
+  While (TextOfs + Count * 4 + 3 < CodeMapSize) And
+        (Ofs + Count * 4 + 3 < ImageSize) Do Begin
+    Addr := ReadBELongMem(Ofs + Count * 4);
+    If Not IsJumpTableEntry(Addr, TextLen) Then Break;
+    Inc(Count);
+  End;
+  { Au moins 2 entrees pour considerer comme une table de saut }
+  If Count >= 2 Then
+    DetectJumpTableAt := Count;
+End;
+
+{ --- MarkCodeRegions : marquer les instructions comme code --- }
+{     Parcourt lineairement la section TEXT en utilisant le      }
+{     decodeur d'instructions et marque les octets code.         }
+{     Suit le flux de controle : apres un RTS/BRA/JMP, les      }
+{     octets suivants non cibles par un label sont non-code.     }
+
+Procedure MarkCodeRegions(TextLen: LongInt);
+Var
+  Ofs      : LongInt;
+  PC       : LongInt;
+  Inf      : TInstructionInfo;
+  ISize    : LongInt;
+  InCode   : Boolean;
+  Idx      : Integer;
+Begin
+  If TextLen <= 0 Then Exit;
+  If CodeMap = Nil Then Exit;
+  InCode := True;  { on commence au point d'entree = code }
+  Ofs := TextOffset;
+  While Ofs < TextOffset + TextLen Do Begin
+    PC := Ofs - TextOffset;
+    { Verifier si un label pointe ici (reprend le flux) }
+    Idx := FindLabelByAddr(PC, 0);
+    If Idx > 0 Then
+      InCode := True;
+    If InCode Then Begin
+      { Decoder l'instruction }
+      DecodeInstruction(Ofs, PC, Inf);
+      If Inf.IsValid Then Begin
+        ISize := Inf.TotalSize;
+        If ISize < 2 Then ISize := 2;
+        MarkRegion(PC, ISize, CM_CODE);
+        { Verifier si le flux est interrompu }
+        If IsReturn(Inf) Or IsUnconditionalJump(Inf) Then
+          InCode := False;
+        Ofs := Ofs + ISize;
+      End Else Begin
+        { Instruction invalide : quitter le mode code }
+        InCode := False;
+        Ofs := Ofs + 2;
+      End;
+    End Else Begin
+      { Pas en mode code : avancer octet par octet }
+      Ofs := Ofs + 2;
+    End;
+  End;
+End;
+
+{ --- ClassifyDataRegions : classifier les zones non-code --- }
+{     Parcourt la carte et pour chaque zone non marquee code,  }
+{     tente de detecter :                                       }
+{     1) Chaines ASCII terminee par 0                           }
+{     2) Tables de saut (listes de mots longs vers du code)    }
+{     3) Sinon, marque comme donnees generiques                 }
+
+Procedure ClassifyDataRegions(TextLen: LongInt);
+Var
+  PC     : LongInt;
+  StrLen : LongInt;
+  TblCnt : LongInt;
+Begin
+  If TextLen <= 0 Then Exit;
+  If CodeMap = Nil Then Exit;
+  PC := 0;
+  While PC < TextLen Do Begin
+    If GetCodeMapByte(PC) = CM_UNKNOWN Then Begin
+      { Essayer de detecter une chaine ASCII }
+      StrLen := DetectASCIIStringAt(PC);
+      If StrLen > 0 Then Begin
+        MarkRegion(PC, StrLen, CM_ASCII);
+        PC := PC + StrLen;
+        { Aligner sur un mot si necessaire }
+        If (PC < TextLen) And ((PC And 1) <> 0) Then Begin
+          If GetCodeMapByte(PC) = CM_UNKNOWN Then
+            MarkRegion(PC, 1, CM_DATA);
+          Inc(PC);
+        End;
+        Continue;
+      End;
+      { Essayer de detecter une table de saut }
+      If (PC And 1) = 0 Then Begin
+        TblCnt := DetectJumpTableAt(PC, TextLen);
+        If TblCnt > 0 Then Begin
+          MarkRegion(PC, TblCnt * 4, CM_JUMPTBL);
+          PC := PC + TblCnt * 4;
+          Continue;
+        End;
+      End;
+      { Sinon marquer comme donnee generique }
+      MarkRegion(PC, 1, CM_DATA);
+      Inc(PC);
+    End Else
+      Inc(PC);
+  End;
+End;
+
+{ --- ClassifyTextRegions : fonction principale de classification --- }
+{     Alloue la carte, marque le code, classifie les donnees         }
+
+Procedure ClassifyTextRegions(TextLen: LongInt);
+Begin
+  If TextLen <= 0 Then Exit;
+  AllocCodeMap(TextLen);
+  MarkCodeRegions(TextLen);
+  ClassifyDataRegions(TextLen);
+End;
+
+{ --- ShowTextRegions : afficher les resultats de la classification --- }
+
+Procedure ShowTextRegions(TextLen: LongInt; Verbose: Boolean);
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  PC         : LongInt;
+  RegStart   : LongInt;
+  RegType    : Byte;
+  CurType    : Byte;
+  CodeCnt    : LongInt;
+  DataCnt    : LongInt;
+  AsciiCnt   : LongInt;
+  JmpTblCnt  : LongInt;
+  RegionCnt  : LongInt;
+  CodeBytes  : LongInt;
+  DataBytes  : LongInt;
+  AsciiBytes : LongInt;
+  JmpBytes   : LongInt;
+  TypeStr    : String;
+  P          : PByteArray;
+  MaxShow    : Integer;
+  ShowLen    : LongInt;
+  I          : LongInt;
+Begin
+  If Not Verbose Then Exit;
+  If TextLen <= 0 Then Exit;
+  If CodeMap = Nil Then Exit;
+
+  WriteLn;
+  WriteLn('=== Discrimination code/donnees dans TEXT ===');
+  WriteLn;
+
+  { Compter les statistiques }
+  CodeBytes := 0;
+  DataBytes := 0;
+  AsciiBytes := 0;
+  JmpBytes := 0;
+  CodeCnt := 0;
+  DataCnt := 0;
+  AsciiCnt := 0;
+  JmpTblCnt := 0;
+  RegionCnt := 0;
+
+  If TextLen > 0 Then Begin
+    RegStart := 0;
+    RegType := GetCodeMapByte(0);
+    For PC := 0 To TextLen - 1 Do Begin
+      CurType := GetCodeMapByte(PC);
+      If CurType <> RegType Then Begin
+        { Fin de region }
+        Inc(RegionCnt);
+        Case RegType Of
+          CM_CODE:    Begin Inc(CodeCnt); CodeBytes := CodeBytes + (PC - RegStart); End;
+          CM_DATA:    Begin Inc(DataCnt); DataBytes := DataBytes + (PC - RegStart); End;
+          CM_ASCII:   Begin Inc(AsciiCnt); AsciiBytes := AsciiBytes + (PC - RegStart); End;
+          CM_JUMPTBL: Begin Inc(JmpTblCnt); JmpBytes := JmpBytes + (PC - RegStart); End;
+        Else
+          DataBytes := DataBytes + (PC - RegStart);
+        End;
+        RegStart := PC;
+        RegType := CurType;
+      End;
+    End;
+    { Derniere region }
+    Inc(RegionCnt);
+    Case RegType Of
+      CM_CODE:    Begin Inc(CodeCnt); CodeBytes := CodeBytes + (TextLen - RegStart); End;
+      CM_DATA:    Begin Inc(DataCnt); DataBytes := DataBytes + (TextLen - RegStart); End;
+      CM_ASCII:   Begin Inc(AsciiCnt); AsciiBytes := AsciiBytes + (TextLen - RegStart); End;
+      CM_JUMPTBL: Begin Inc(JmpTblCnt); JmpBytes := JmpBytes + (TextLen - RegStart); End;
+    Else
+      DataBytes := DataBytes + (TextLen - RegStart);
+    End;
+  End;
+
+  WriteLn('Taille section TEXT : ', IntToStr(TextLen), ' octets');
+  WriteLn('Code                : ', IntToStr(CodeBytes), ' octets (',
+          IntToStr(CodeCnt), ' regions)');
+  WriteLn('Donnees generiques  : ', IntToStr(DataBytes), ' octets (',
+          IntToStr(DataCnt), ' regions)');
+  WriteLn('Chaines ASCII       : ', IntToStr(AsciiBytes), ' octets (',
+          IntToStr(AsciiCnt), ' chaines)');
+  WriteLn('Tables de saut      : ', IntToStr(JmpBytes), ' octets (',
+          IntToStr(JmpTblCnt), ' tables)');
+  WriteLn('Regions totales     : ', IntToStr(RegionCnt));
+
+  { Afficher les regions non-code detectees }
+  MaxShow := 50;  { limiter l'affichage }
+  P := PByteArray(ImageBuffer);
+
+  If (AsciiCnt > 0) Or (JmpTblCnt > 0) Or (DataCnt > 0) Then Begin
+    WriteLn;
+    WriteLn('--- Regions non-code ---');
+    WriteLn('  Adresse     Type           Taille  Detail');
+    WriteLn('  ----------  -------------  ------  ------');
+
+    RegStart := 0;
+    RegType := GetCodeMapByte(0);
+    PC := 1;
+    While (PC <= TextLen) And (MaxShow > 0) Do Begin
+      If PC < TextLen Then
+        CurType := GetCodeMapByte(PC)
+      Else
+        CurType := 255;  { forcer la fin de la derniere region }
+      If CurType <> RegType Then Begin
+        { Afficher si c'est non-code }
+        If RegType <> CM_CODE Then Begin
+          Dec(MaxShow);
+          Case RegType Of
+            CM_DATA:    TypeStr := 'donnees      ';
+            CM_ASCII:   TypeStr := 'chaine ASCII ';
+            CM_JUMPTBL: TypeStr := 'table saut   ';
+          Else
+            TypeStr := 'inconnu      ';
+          End;
+          ShowLen := PC - RegStart;
+          Write('  $', HexLong(RegStart));
+          Write('  ', TypeStr);
+          Write('  ', IntToStr(ShowLen));
+          If Length(IntToStr(ShowLen)) < 6 Then
+            Write('' : 6 - Length(IntToStr(ShowLen)));
+          { Detail selon le type }
+          If (RegType = CM_ASCII) And (P <> Nil) Then Begin
+            Write('  "');
+            I := RegStart;
+            While (I < PC) And (I < RegStart + 40) Do Begin
+              If (TextOffset + I < ImageSize) And
+                 (P^[TextOffset + I] >= 32) And
+                 (P^[TextOffset + I] <= 126) Then
+                Write(Chr(P^[TextOffset + I]))
+              Else If P^[TextOffset + I] <> 0 Then
+                Write('.');
+              Inc(I);
+            End;
+            If PC - RegStart > 40 Then Write('...');
+            Write('"');
+          End Else If RegType = CM_JUMPTBL Then Begin
+            Write('  ', IntToStr(ShowLen Div 4), ' entrees');
+          End Else If (RegType = CM_DATA) And (ShowLen <= 8) And (P <> Nil) Then Begin
+            Write('  ');
+            For I := RegStart To PC - 1 Do Begin
+              If TextOffset + I < ImageSize Then
+                Write('$', HexByte(P^[TextOffset + I]))
+              Else
+                Write('$??');
+              If I < PC - 1 Then Write(',');
+            End;
+          End;
+          WriteLn;
+        End;
+        RegStart := PC;
+        RegType := CurType;
+      End;
+      Inc(PC);
+    End;
+    If MaxShow <= 0 Then
+      WriteLn('  ... (tronque)');
+  End;
+End;
+
+{ --- CountCodeBytes : compter les octets de code --- }
+
+Function CountCodeBytes(TextLen: LongInt): LongInt;
+Var
+  PC    : LongInt;
+  Count : LongInt;
+Begin
+  Count := 0;
+  For PC := 0 To TextLen - 1 Do
+    If GetCodeMapByte(PC) = CM_CODE Then
+      Inc(Count);
+  CountCodeBytes := Count;
+End;
+
+{ --- CountDataBytes : compter les octets de donnees --- }
+{     Inclut CM_DATA, CM_ASCII, CM_JUMPTBL et CM_UNKNOWN }
+
+Function CountDataBytes(TextLen: LongInt): LongInt;
+Var
+  PC    : LongInt;
+  Count : LongInt;
+Begin
+  Count := 0;
+  For PC := 0 To TextLen - 1 Do
+    If GetCodeMapByte(PC) <> CM_CODE Then
+      Inc(Count);
+  CountDataBytes := Count;
+End;
+
+{ --- CountASCIIRegions : compter les regions de chaines ASCII --- }
+
+Function CountASCIIRegions(TextLen: LongInt): LongInt;
+Var
+  PC     : LongInt;
+  Count  : LongInt;
+  InStr  : Boolean;
+Begin
+  Count := 0;
+  InStr := False;
+  For PC := 0 To TextLen - 1 Do Begin
+    If GetCodeMapByte(PC) = CM_ASCII Then Begin
+      If Not InStr Then Begin
+        Inc(Count);
+        InStr := True;
+      End;
+    End Else
+      InStr := False;
+  End;
+  CountASCIIRegions := Count;
+End;
+
+{ --- CountJumpTables : compter les tables de saut --- }
+
+Function CountJumpTables(TextLen: LongInt): LongInt;
+Var
+  PC     : LongInt;
+  Count  : LongInt;
+  InTbl  : Boolean;
+Begin
+  Count := 0;
+  InTbl := False;
+  For PC := 0 To TextLen - 1 Do Begin
+    If GetCodeMapByte(PC) = CM_JUMPTBL Then Begin
+      If Not InTbl Then Begin
+        Inc(Count);
+        InTbl := True;
+      End;
+    End Else
+      InTbl := False;
+  End;
+  CountJumpTables := Count;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -4077,6 +4612,8 @@ Begin
   TrapCount   := 0;
   ImageBuffer := Nil;
   ImageSize   := 0;
+  CodeMap     := Nil;
+  CodeMapSize := 0;
   TextOffset  := 0;
   DataOffset  := 0;
   SymOffset   := 0;
@@ -4187,9 +4724,23 @@ Begin
       WriteLn('Appels systeme  : ', IntToStr(CountTrapCalls));
     End;
   End;
+  { Discrimination code/donnees dans la section TEXT }
+  If Header.ph_tlen > 0 Then Begin
+    ClassifyTextRegions(Header.ph_tlen);
+    ShowTextRegions(Header.ph_tlen, Opts.Verbose);
+    If Opts.Verbose Then Begin
+      WriteLn;
+      WriteLn('Code/Donnees    : ',
+              IntToStr(CountCodeBytes(Header.ph_tlen)), ' octets code, ',
+              IntToStr(CountDataBytes(Header.ph_tlen)), ' octets donnees (',
+              IntToStr(CountASCIIRegions(Header.ph_tlen)), ' chaines, ',
+              IntToStr(CountJumpTables(Header.ph_tlen)), ' tables saut)');
+    End;
+    FreeCodeMap;
+  End;
   { Liberer la memoire }
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-17 [IMPLEMENTE], TODOs 18-25 [A FAIRE]');
+          ' - TODOs 01-18 [IMPLEMENTE], TODOs 19-25 [A FAIRE]');
 End.
