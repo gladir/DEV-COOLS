@@ -86,7 +86,10 @@
             PF_FASTLOAD, PF_TTRAMLOAD, PF_TTRAMMEM,
             protection memoire MiNT, PF_SHARED_TEXT.
 
-  TODO 08 - TABLE DES OPCODES 68000 - TRANSFERT [A FAIRE]
+  TODO 08 - TABLE DES OPCODES 68000 - TRANSFERT [IMPLEMENTE]
+            AddOpcode, InitTransferOpcodes, InitOpcodeTable,
+            FindOpcode, GetOpcodeMnemonic, OpcodeGroupToStr,
+            ShowOpcodeTable, CountOpcodes, CountOpcodesByGroup.
             MOVE, MOVEA, MOVEQ, MOVEM, MOVEP, EXG, SWAP,
             LEA, PEA, LINK, UNLK.
 
@@ -217,6 +220,7 @@ Const
   MAX_RELOCS     = 65536;
   MAX_LABELS     = 65536;
   MAX_XREFS      = 65536;
+  MAX_OPCODES    = 256;
   BUFFER_SIZE    = 65536;
 
   { Taille maximale de l'image en memoire (4 Mo) }
@@ -268,6 +272,18 @@ Type
     IsCall   : Boolean;   { BSR/JSR (True) ou BRA/Bcc/JMP (False) }
   End;
 
+  { Entree de la table des opcodes 68000 }
+  TOpcodeEntry = Record
+    Mask     : Word;      { masque de bits pour l'identification       }
+    Value    : Word;      { valeur attendue apres application du masque }
+    Mnemonic : String[10]; { mnemonique de l'instruction                }
+    OpFormat : Byte;      { format des operandes (0=aucun, 1=Dn,       }
+                          {   2=An, 3=EA, 4=imm, 5=reglist, etc.)      }
+    BaseSize : Byte;      { taille de base en octets (2, 4 ou 6)       }
+    Group    : Byte;      { groupe: 0=transfert, 1=arith, 2=shift,     }
+                          {   3=branch, 4=bit, 5=divers                }
+  End;
+
   { Options de ligne de commande }
   TOptions = Record
     SrcFile    : TString;   { fichier .PRG en entree }
@@ -317,6 +333,10 @@ Var
   InstrCount  : LongInt;
   SubCount    : LongInt;
   TrapCount   : LongInt;
+
+  { Table des opcodes 68000 }
+  OpcodeTable : Array[1..MAX_OPCODES] Of TOpcodeEntry;
+  OpcodeCount : Integer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -1198,6 +1218,200 @@ Begin
 End;
 
 { ============================================================
+  TODO 08 - TABLE DES OPCODES 68000 - TRANSFERT [IMPLEMENTE]
+  ============================================================ }
+
+{ Groupes d'opcodes }
+Const
+  GRP_TRANSFER = 0;   { transfert de donnees }
+  GRP_ARITH    = 1;   { arithmetique/logique }
+  GRP_SHIFT    = 2;   { decalages/rotations }
+  GRP_BRANCH   = 3;   { branchements/controle }
+  GRP_BIT      = 4;   { manipulation de bits }
+  GRP_MISC     = 5;   { divers }
+
+{ Formats d'operandes }
+Const
+  FMT_NONE     = 0;   { pas d'operande (NOP, RTS, etc.)       }
+  FMT_EA_EA    = 1;   { MOVE ea,ea                            }
+  FMT_EA_AN    = 2;   { MOVEA ea,An                           }
+  FMT_IMM8_DN  = 3;   { MOVEQ #imm8,Dn                       }
+  FMT_REGLIST  = 4;   { MOVEM reglist,ea / ea,reglist          }
+  FMT_DN_AN    = 5;   { MOVEP Dn,d16(An) / d16(An),Dn         }
+  FMT_DN_DN    = 6;   { EXG Dn,Dn / An,An / Dn,An             }
+  FMT_DN       = 7;   { SWAP Dn                               }
+  FMT_EA_AN2   = 8;   { LEA ea,An                             }
+  FMT_EA       = 9;   { PEA ea / CLR ea / TST ea etc.         }
+  FMT_AN_DISP  = 10;  { LINK An,#disp / UNLK An               }
+  FMT_AN       = 11;  { UNLK An                               }
+
+{ --- AddOpcode : ajouter une entree dans la table --- }
+
+Procedure AddOpcode(AMask, AValue: Word; AMnemonic: String;
+                    AFormat, ABaseSize, AGroup: Byte);
+Begin
+  If OpcodeCount >= MAX_OPCODES Then
+    FatalError('Table des opcodes pleine (max ' +
+               IntToStr(MAX_OPCODES) + ')');
+  Inc(OpcodeCount);
+  OpcodeTable[OpcodeCount].Mask     := AMask;
+  OpcodeTable[OpcodeCount].Value    := AValue;
+  OpcodeTable[OpcodeCount].Mnemonic := AMnemonic;
+  OpcodeTable[OpcodeCount].OpFormat := AFormat;
+  OpcodeTable[OpcodeCount].BaseSize := ABaseSize;
+  OpcodeTable[OpcodeCount].Group    := AGroup;
+End;
+
+{ --- InitTransferOpcodes : opcodes de transfert de donnees --- }
+
+Procedure InitTransferOpcodes;
+Begin
+  { MOVE.B ea,ea : 0001 xxxx xxxx xxxx }
+  AddOpcode($F000, $1000, 'MOVE.B', FMT_EA_EA, 2, GRP_TRANSFER);
+  { MOVEA.W ea,An : 0011 xxx0 01xx xxxx }
+  AddOpcode($F1C0, $3040, 'MOVEA.W', FMT_EA_AN, 2, GRP_TRANSFER);
+  { MOVE.W ea,ea : 0011 xxxx xxxx xxxx }
+  AddOpcode($F000, $3000, 'MOVE.W', FMT_EA_EA, 2, GRP_TRANSFER);
+  { MOVEA.L ea,An : 0010 xxx0 01xx xxxx }
+  AddOpcode($F1C0, $2040, 'MOVEA.L', FMT_EA_AN, 2, GRP_TRANSFER);
+  { MOVE.L ea,ea : 0010 xxxx xxxx xxxx }
+  AddOpcode($F000, $2000, 'MOVE.L', FMT_EA_EA, 2, GRP_TRANSFER);
+  { MOVEQ #imm8,Dn : 0111 xxx0 xxxx xxxx }
+  AddOpcode($F100, $7000, 'MOVEQ', FMT_IMM8_DN, 2, GRP_TRANSFER);
+  { MOVEM.W reglist,ea : 0100 1000 10xx xxxx }
+  AddOpcode($FFC0, $4880, 'MOVEM.W', FMT_REGLIST, 4, GRP_TRANSFER);
+  { MOVEM.L reglist,ea : 0100 1000 11xx xxxx }
+  AddOpcode($FFC0, $48C0, 'MOVEM.L', FMT_REGLIST, 4, GRP_TRANSFER);
+  { MOVEM.W ea,reglist : 0100 1100 10xx xxxx }
+  AddOpcode($FFC0, $4C80, 'MOVEM.W', FMT_REGLIST, 4, GRP_TRANSFER);
+  { MOVEM.L ea,reglist : 0100 1100 11xx xxxx }
+  AddOpcode($FFC0, $4CC0, 'MOVEM.L', FMT_REGLIST, 4, GRP_TRANSFER);
+  { MOVEP.W Dn,d16(An) : 0000 xxx1 1000 1xxx }
+  AddOpcode($F1F8, $0188, 'MOVEP.W', FMT_DN_AN, 4, GRP_TRANSFER);
+  { MOVEP.L Dn,d16(An) : 0000 xxx1 1100 1xxx }
+  AddOpcode($F1F8, $01C8, 'MOVEP.L', FMT_DN_AN, 4, GRP_TRANSFER);
+  { MOVEP.W d16(An),Dn : 0000 xxx1 0000 1xxx }
+  AddOpcode($F1F8, $0108, 'MOVEP.W', FMT_DN_AN, 4, GRP_TRANSFER);
+  { MOVEP.L d16(An),Dn : 0000 xxx1 0100 1xxx }
+  AddOpcode($F1F8, $0148, 'MOVEP.L', FMT_DN_AN, 4, GRP_TRANSFER);
+  { EXG Dn,Dn : 1100 xxx1 0100 0xxx }
+  AddOpcode($F1F8, $C140, 'EXG', FMT_DN_DN, 2, GRP_TRANSFER);
+  { EXG An,An : 1100 xxx1 0100 1xxx }
+  AddOpcode($F1F8, $C148, 'EXG', FMT_DN_DN, 2, GRP_TRANSFER);
+  { EXG Dn,An : 1100 xxx1 1000 1xxx }
+  AddOpcode($F1F8, $C188, 'EXG', FMT_DN_DN, 2, GRP_TRANSFER);
+  { SWAP Dn : 0100 1000 0100 0xxx }
+  AddOpcode($FFF8, $4840, 'SWAP', FMT_DN, 2, GRP_TRANSFER);
+  { LEA ea,An : 0100 xxx1 11xx xxxx }
+  AddOpcode($F1C0, $41C0, 'LEA', FMT_EA_AN2, 2, GRP_TRANSFER);
+  { PEA ea : 0100 1000 01xx xxxx }
+  AddOpcode($FFC0, $4840, 'PEA', FMT_EA, 2, GRP_TRANSFER);
+  { LINK An,#d16 : 0100 1110 0101 0xxx }
+  AddOpcode($FFF8, $4E50, 'LINK', FMT_AN_DISP, 4, GRP_TRANSFER);
+  { UNLK An : 0100 1110 0101 1xxx }
+  AddOpcode($FFF8, $4E58, 'UNLK', FMT_AN, 2, GRP_TRANSFER);
+End;
+
+{ --- InitOpcodeTable : initialiser la table des opcodes --- }
+
+Procedure InitOpcodeTable;
+Begin
+  OpcodeCount := 0;
+  InitTransferOpcodes;
+  { Les groupes suivants seront ajoutes par les TODOs 09-12 }
+End;
+
+{ --- FindOpcode : chercher un opcode par son mot d'instruction --- }
+
+Function FindOpcode(InstrWord: Word): Integer;
+Var
+  I: Integer;
+Begin
+  FindOpcode := 0;
+  For I := 1 To OpcodeCount Do Begin
+    If (InstrWord And OpcodeTable[I].Mask) = OpcodeTable[I].Value Then Begin
+      FindOpcode := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- GetOpcodeMnemonic : retourner le mnemonique d'un opcode --- }
+
+Function GetOpcodeMnemonic(Index: Integer): String;
+Begin
+  If (Index >= 1) And (Index <= OpcodeCount) Then
+    GetOpcodeMnemonic := OpcodeTable[Index].Mnemonic
+  Else
+    GetOpcodeMnemonic := '???';
+End;
+
+{ --- OpcodeGroupToStr : nom du groupe d'opcodes --- }
+
+Function OpcodeGroupToStr(G: Byte): String;
+Begin
+  Case G Of
+    GRP_TRANSFER : OpcodeGroupToStr := 'Transfert';
+    GRP_ARITH    : OpcodeGroupToStr := 'Arithmetique';
+    GRP_SHIFT    : OpcodeGroupToStr := 'Decalages';
+    GRP_BRANCH   : OpcodeGroupToStr := 'Branchements';
+    GRP_BIT      : OpcodeGroupToStr := 'Bits';
+    GRP_MISC     : OpcodeGroupToStr := 'Divers';
+  Else
+    OpcodeGroupToStr := 'Inconnu';
+  End;
+End;
+
+{ --- ShowOpcodeTable : afficher la table des opcodes --- }
+
+Procedure ShowOpcodeTable(Show: Boolean);
+Var
+  I: Integer;
+Begin
+  If Not Show Then Exit;
+  WriteLn;
+  WriteLn('=== Table des opcodes 68000 (', IntToStr(OpcodeCount),
+          ' entrees) ===');
+  WriteLn('  #    Masque  Valeur  Taille  Groupe        Mnemonique');
+  WriteLn('  ---- ------- ------- ------- ------------- ----------');
+  For I := 1 To OpcodeCount Do Begin
+    Write('  ');
+    If I < 10 Then Write(' ');
+    If I < 100 Then Write(' ');
+    Write(IntToStr(I), '  ');
+    Write(' $', HexWord(OpcodeTable[I].Mask));
+    Write('  $', HexWord(OpcodeTable[I].Value));
+    Write('  ', IntToStr(OpcodeTable[I].BaseSize));
+    If OpcodeTable[I].BaseSize < 10 Then Write(' ');
+    Write('      ');
+    Write(OpcodeGroupToStr(OpcodeTable[I].Group));
+    { Remplir jusqu'a 14 caracteres }
+    Write('':14 - Length(OpcodeGroupToStr(OpcodeTable[I].Group)));
+    WriteLn(OpcodeTable[I].Mnemonic);
+  End;
+End;
+
+{ --- CountOpcodes : retourner le nombre total d'opcodes --- }
+
+Function CountOpcodes: Integer;
+Begin
+  CountOpcodes := OpcodeCount;
+End;
+
+{ --- CountOpcodesByGroup : compter les opcodes d'un groupe --- }
+
+Function CountOpcodesByGroup(G: Byte): Integer;
+Var
+  I, C: Integer;
+Begin
+  C := 0;
+  For I := 1 To OpcodeCount Do
+    If OpcodeTable[I].Group = G Then
+      Inc(C);
+  CountOpcodesByGroup := C;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -1249,7 +1463,7 @@ Begin
   { Fermer le fichier PRG }
   Close(InFile);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
-  { TODO 08-25 : desassemblage, generation .S }
+  { TODO 09-25 : desassemblage, generation .S }
   { Lire la table des symboles DRI }
   ReadSymbolTable(Header);
   ShowSymbolTable(Opts.ShowSymbols Or Opts.Verbose);
@@ -1262,8 +1476,14 @@ Begin
     WriteLn('Relocalisations : ', IntToStr(RelocCount));
   { Analyser et afficher les drapeaux du programme }
   ShowPrgFlags(Header, Opts.Verbose);
+  { Initialiser et afficher la table des opcodes 68000 }
+  InitOpcodeTable;
+  ShowOpcodeTable(Opts.Verbose);
+  If Opts.Verbose Then
+    WriteLn('Opcodes 68000   : ', IntToStr(OpcodeCount),
+            ' (transfert: ', IntToStr(CountOpcodesByGroup(GRP_TRANSFER)), ')');
   { Liberer la memoire }
   FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-07 [IMPLEMENTE], TODOs 08-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-08 [IMPLEMENTE], TODOs 09-25 [A FAIRE]');
 End.

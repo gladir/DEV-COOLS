@@ -68,7 +68,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       Bit 28 ($10000000) : PF_SHARED_TEXT (partager TEXT).
       Generer un commentaire dans le fichier .S decrivant les drapeaux.
 
-  8.  [A FAIRE] Table des opcodes Motorola 68000 - Transfert de donnees.
+  8.  [IMPLEMENTE] Table des opcodes Motorola 68000 - Transfert de donnees.
       Definir les opcodes de transfert de donnees du 68000 :
       MOVE.B/W/L, MOVEA.W/L, MOVEQ, MOVEM, MOVEP,
       EXG, SWAP, LEA, PEA, LINK, UNLK.
