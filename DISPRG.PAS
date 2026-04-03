@@ -117,9 +117,11 @@
             DecodeInstruction : lire le mot d instruction,
             extraire les champs, decoder les extensions.
 
-  TODO 15 - PREMIERE PASSE : ANALYSE DU FLUX DE CONTROLE [A FAIRE]
-            Parcourir TEXT, collecter les cibles de branchement,
-            construire le graphe de flux, marquer code/donnees.
+  TODO 15 - PREMIERE PASSE : ANALYSE DU FLUX DE CONTROLE [IMPLEMENTE]
+            FindLabelByAddr, AddLabel, AddXRef, IsReturn,
+            IsUnconditionalJump, GetBranchTarget, IsCodeAddr,
+            FirstPass, ShowFirstPassResults, CountXRefs,
+            CountCallXRefs, CountBranchXRefs.
 
   TODO 16 - DETECTION DES SOUS-PROGRAMMES [A FAIRE]
             Identifier les cibles de BSR/JSR, detecter LINK/UNLK,
@@ -3157,6 +3159,305 @@ Begin
 End;
 
 { ============================================================
+  TODO 15 - PREMIERE PASSE : ANALYSE DU FLUX DE CONTROLE [IMPLEMENTE]
+  ============================================================ }
+
+{ --- FindLabelByAddr : chercher un label par adresse et section --- }
+{     Retourne l'index (1..LabelCount) ou 0 si non trouve           }
+
+Function FindLabelByAddr(Addr: LongInt; Sec: Byte): Integer;
+Var
+  I: Integer;
+Begin
+  FindLabelByAddr := 0;
+  For I := 1 To LabelCount Do Begin
+    If (Labels[I].Address = Addr) And (Labels[I].Section = Sec) Then Begin
+      FindLabelByAddr := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- AddLabel : ajouter un label s'il n'existe pas deja --- }
+{     Si le label existe, met a jour IsProc si necessaire    }
+
+Procedure AddLabel(Addr: LongInt; AName: String;
+                   AIsProc, AIsData: Boolean; Sec: Byte);
+Var
+  Idx: Integer;
+Begin
+  Idx := FindLabelByAddr(Addr, Sec);
+  If Idx > 0 Then Begin
+    { Le label existe deja, mettre a jour IsProc si necessaire }
+    If AIsProc Then Labels[Idx].IsProc := True;
+    { Mettre a jour le nom si c'est un sub_ et qu'on avait loc_ }
+    If AIsProc And (Pos('loc_', Labels[Idx].Name) = 1) Then
+      Labels[Idx].Name := AName;
+    Exit;
+  End;
+  If LongInt(LabelCount) >= LongInt(MAX_LABELS) Then Exit;
+  Inc(LabelCount);
+  Labels[LabelCount].Address := Addr;
+  Labels[LabelCount].Name    := AName;
+  Labels[LabelCount].IsProc  := AIsProc;
+  Labels[LabelCount].IsData  := AIsData;
+  Labels[LabelCount].Section := Sec;
+End;
+
+{ --- AddXRef : ajouter une reference croisee --- }
+
+Procedure AddXRef(FromAddr, ToAddr: LongInt; AIsCall: Boolean);
+Begin
+  If LongInt(XRefCount) >= LongInt(MAX_XREFS) Then Exit;
+  Inc(XRefCount);
+  XRefs[XRefCount].FromAddr := FromAddr;
+  XRefs[XRefCount].ToAddr   := ToAddr;
+  XRefs[XRefCount].IsCall   := AIsCall;
+End;
+
+{ --- IsReturn : est-ce une instruction de retour (RTS/RTE/RTR) ? --- }
+
+Function IsReturn(Var Info: TInstructionInfo): Boolean;
+Begin
+  IsReturn := False;
+  If Not Info.IsValid Then Exit;
+  If (Info.Mnemonic = 'RTS') Or (Info.Mnemonic = 'RTE') Or
+     (Info.Mnemonic = 'RTR') Then
+    IsReturn := True;
+End;
+
+{ --- IsUnconditionalJump : est-ce un saut inconditionnel ? --- }
+{     BRA ou JMP (interrompt le flux lineaire)                  }
+
+Function IsUnconditionalJump(Var Info: TInstructionInfo): Boolean;
+Begin
+  IsUnconditionalJump := False;
+  If Not Info.IsValid Then Exit;
+  If (Pos('BRA', Info.Mnemonic) = 1) Or (Info.Mnemonic = 'JMP') Then
+    IsUnconditionalJump := True;
+End;
+
+{ --- GetBranchTarget : extraire l'adresse cible d'un branchement --- }
+{     Retourne l'adresse cible (PC logique), ou -1 si non             }
+{     determinable statiquement (mode indirect registre, etc.)        }
+
+Function GetBranchTarget(Ofs: LongInt; PC: LongInt;
+                          Var Info: TInstructionInfo): LongInt;
+Var
+  OpW      : Word;
+  Disp8    : LongInt;
+  Disp16   : LongInt;
+  Fmt      : Byte;
+  SMode    : Byte;
+  SReg     : Byte;
+Begin
+  GetBranchTarget := -1;
+  If Not Info.IsValid Then Exit;
+  If Info.OpcIdx = 0 Then Exit;
+  OpW := Info.OpWord;
+  Fmt := OpcodeTable[Info.OpcIdx].OpFormat;
+  Case Fmt Of
+    FMT_BRA: Begin
+      { BRA/BSR/Bcc : deplacement 8 ou 16 bits relatif a PC+2 }
+      Disp8 := SignExtByte(Byte(OpW And $FF));
+      If Disp8 = 0 Then Begin
+        { Deplacement 16 bits dans le mot suivant }
+        Disp16 := SignExtWord(ReadBEWordMem(Ofs + 2));
+        GetBranchTarget := PC + 2 + Disp16;
+      End Else
+        GetBranchTarget := PC + 2 + Disp8;
+    End;
+    FMT_DBCC: Begin
+      { DBcc Dn,d16 : deplacement 16 bits relatif a PC+2 }
+      Disp16 := SignExtWord(ReadBEWordMem(Ofs + 2));
+      GetBranchTarget := PC + 2 + Disp16;
+    End;
+    FMT_EA2: Begin
+      { JMP/JSR ea : seulement si mode adresse absolue ou PC-relatif }
+      SMode := (OpW Shr 3) And 7;
+      SReg  := OpW And 7;
+      If (SMode = 7) And (SReg = 0) Then Begin
+        { Adresse absolue courte 16 bits (sign-extended) }
+        GetBranchTarget := SignExtWord(ReadBEWordMem(Ofs + 2));
+      End
+      Else If (SMode = 7) And (SReg = 1) Then Begin
+        { Adresse absolue longue 32 bits }
+        GetBranchTarget := ReadBELongMem(Ofs + 2);
+      End
+      Else If (SMode = 7) And (SReg = 2) Then Begin
+        { PC-relatif d16(PC) }
+        Disp16 := SignExtWord(ReadBEWordMem(Ofs + 2));
+        GetBranchTarget := PC + 2 + Disp16;
+      End;
+      { Modes (An), d16(An), d8(An,Xn) : cible non determinable }
+    End;
+  End; { Case }
+End;
+
+{ --- IsCodeAddr : verifier si une adresse est dans la section TEXT --- }
+
+Function IsCodeAddr(Addr: LongInt; TextLen: LongInt): Boolean;
+Begin
+  IsCodeAddr := (Addr >= 0) And (Addr < TextLen);
+End;
+
+{ --- FirstPass : premiere passe d'analyse du flux de controle --- }
+{     Parcourt lineairement la section TEXT, collecte les cibles   }
+{     de branchement (labels) et les references croisees.          }
+{     Pour chaque BRA/Bcc/BSR/JMP/JSR, calcule l'adresse cible    }
+{     et l'ajoute a la table des labels.                           }
+{     Pour chaque RTS/RTE/RTR, marque la fin d'un bloc de code.    }
+
+Procedure FirstPass(TextLen: LongInt);
+Var
+  Ofs      : LongInt;
+  PC       : LongInt;
+  Inf      : TInstructionInfo;
+  Target   : LongInt;
+  LblName  : String;
+  IsCallI  : Boolean;
+Begin
+  If TextLen <= 0 Then Exit;
+  { Ajouter le point d'entree comme premier label }
+  AddLabel(0, 'start', True, False, 0);
+  { Parcourir lineairement la section TEXT instruction par instruction }
+  Ofs := TextOffset;
+  While Ofs < TextOffset + TextLen Do Begin
+    PC := Ofs - TextOffset;
+    DecodeInstruction(Ofs, PC, Inf);
+    { Verifier si c'est un branchement ou un appel }
+    If Inf.IsValid And (IsBranch(Inf) Or IsCall(Inf)) Then Begin
+      Target := GetBranchTarget(Ofs, PC, Inf);
+      IsCallI := IsCall(Inf);
+      If (Target >= 0) And IsCodeAddr(Target, TextLen) Then Begin
+        { Generer le nom du label }
+        If IsCallI Then
+          LblName := 'sub_' + HexLong(Target)
+        Else
+          LblName := 'loc_' + HexLong(Target);
+        { Ajouter le label cible }
+        AddLabel(Target, LblName, IsCallI, False, 0);
+        { Ajouter la reference croisee }
+        AddXRef(PC, Target, IsCallI);
+      End;
+    End;
+    { Avancer a l'instruction suivante }
+    If Inf.TotalSize < 2 Then
+      Ofs := Ofs + 2
+    Else
+      Ofs := Ofs + Inf.TotalSize;
+  End;
+End;
+
+{ --- ShowFirstPassResults : afficher les resultats de la premiere passe --- }
+
+Procedure ShowFirstPassResults(Verbose: Boolean);
+Var
+  I: Integer;
+  CallCnt: LongInt;
+  BranchCnt: LongInt;
+  TextLblCnt: LongInt;
+  ProcCnt: LongInt;
+Begin
+  If Not Verbose Then Exit;
+  WriteLn;
+  WriteLn('=== Premiere passe : analyse du flux de controle ===');
+  WriteLn;
+  { Compter les appels et branchements }
+  CallCnt := 0;
+  BranchCnt := 0;
+  For I := 1 To XRefCount Do Begin
+    If XRefs[I].IsCall Then
+      Inc(CallCnt)
+    Else
+      Inc(BranchCnt);
+  End;
+  { Compter les labels TEXT et les sous-programmes }
+  TextLblCnt := 0;
+  ProcCnt := 0;
+  For I := 1 To LabelCount Do Begin
+    If Labels[I].Section = 0 Then Begin
+      Inc(TextLblCnt);
+      If Labels[I].IsProc Then
+        Inc(ProcCnt);
+    End;
+  End;
+  WriteLn('Labels TEXT         : ', IntToStr(TextLblCnt));
+  WriteLn('Sous-programmes     : ', IntToStr(ProcCnt));
+  WriteLn('Labels total        : ', IntToStr(LabelCount));
+  WriteLn('References croisees : ', IntToStr(XRefCount));
+  WriteLn('  Appels (BSR/JSR)  : ', IntToStr(CallCnt));
+  WriteLn('  Branchements      : ', IntToStr(BranchCnt));
+  { Afficher les labels de la section TEXT }
+  If TextLblCnt > 0 Then Begin
+    WriteLn;
+    WriteLn('--- Labels de la section TEXT ---');
+    WriteLn('  Adresse     Nom              Type');
+    WriteLn('  ----------  ---------------  -----------');
+    For I := 1 To LabelCount Do Begin
+      If Labels[I].Section = 0 Then Begin
+        Write('  $', HexLong(Labels[I].Address));
+        Write('  ', Labels[I].Name);
+        If Length(Labels[I].Name) < 15 Then
+          Write('' : 15 - Length(Labels[I].Name));
+        If Labels[I].IsProc Then
+          WriteLn('  sous-programme')
+        Else
+          WriteLn('  cible de saut');
+      End;
+    End;
+  End;
+  { Afficher les references croisees }
+  If XRefCount > 0 Then Begin
+    WriteLn;
+    WriteLn('--- References croisees ---');
+    WriteLn('  Source      Type     Cible');
+    WriteLn('  ----------  -------  ----------');
+    For I := 1 To XRefCount Do Begin
+      Write('  $', HexLong(XRefs[I].FromAddr));
+      If XRefs[I].IsCall Then
+        Write('  appel    ')
+      Else
+        Write('  saut     ');
+      WriteLn('$', HexLong(XRefs[I].ToAddr));
+    End;
+  End;
+End;
+
+{ --- CountXRefs : compter les references croisees --- }
+
+Function CountXRefs: LongInt;
+Begin
+  CountXRefs := XRefCount;
+End;
+
+{ --- CountCallXRefs : compter les appels (BSR/JSR) --- }
+
+Function CountCallXRefs: LongInt;
+Var
+  I: Integer;
+  Count: LongInt;
+Begin
+  Count := 0;
+  For I := 1 To XRefCount Do
+    If XRefs[I].IsCall Then Inc(Count);
+  CountCallXRefs := Count;
+End;
+
+{ --- CountBranchXRefs : compter les branchements (BRA/Bcc/DBcc/JMP) --- }
+
+Function CountBranchXRefs: LongInt;
+Var
+  I: Integer;
+  Count: LongInt;
+Begin
+  Count := 0;
+  For I := 1 To XRefCount Do
+    If Not XRefs[I].IsCall Then Inc(Count);
+  CountBranchXRefs := Count;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -3255,9 +3556,21 @@ Begin
     WriteLn;
     WriteLn('Instructions    : ', IntToStr(CountInstructions(Header.ph_tlen)));
   End;
+  { Premiere passe : analyse du flux de controle }
+  If Header.ph_tlen > 0 Then Begin
+    FirstPass(Header.ph_tlen);
+    ShowFirstPassResults(Opts.Verbose);
+    If Opts.Verbose Then Begin
+      WriteLn;
+      WriteLn('Flux de controle : ',
+              IntToStr(CountXRefs), ' refs (',
+              IntToStr(CountCallXRefs), ' appels, ',
+              IntToStr(CountBranchXRefs), ' branchements)');
+    End;
+  End;
   { Liberer la memoire }
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-14 [IMPLEMENTE], TODOs 15-25 [A FAIRE]');
+          ' - TODOs 01-15 [IMPLEMENTE], TODOs 16-25 [A FAIRE]');
 End.

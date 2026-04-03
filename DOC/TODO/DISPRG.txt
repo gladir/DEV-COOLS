@@ -133,7 +133,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       - Decode les mots d'extension (adresses, immediats, deplacements)
       - Retourne le mnemonique, les operandes et la taille totale
 
-  15. [A FAIRE] Premiere passe : analyse du flux de controle.
+  15. [IMPLEMENTE] Premiere passe : analyse du flux de controle.
       Parcourir lineairement la section TEXT instruction par instruction.
       Pour chaque instruction de branchement (BRA, Bcc, BSR, JMP, JSR),
       calculer l'adresse cible et l'ajouter a la table des labels.
