@@ -1167,7 +1167,7 @@ Begin
      _Real:Str(GetVariableReal(VarName):0:6,Value);
      _String:Value:=GetVariableString(VarName);
      Else Begin
-      WriteLn('Type incompatiable');
+      WriteLn('Type incompatible');
       Exit;
      End;
     End;

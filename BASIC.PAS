@@ -681,7 +681,7 @@ Begin
      _LongInt:Str(GetVariableLongInt(VarName),Value);
      _Real:Str(GetVariableReal(VarName),Value);
      Else Begin
-      WriteLn('Type incompatiable');
+      WriteLn('Type incompatible');
       Exit;
      End;
     End;
