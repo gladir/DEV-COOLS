@@ -39,7 +39,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       Calculer les offsets de chaque section dans le tampon.
       Verifier que la taille totale ne depasse pas la memoire disponible.
 
-  5.  [A FAIRE] Lecture de la table des symboles DRI.
+  5.  [IMPLEMENTE] Lecture de la table des symboles DRI.
       Chaque entree fait 14 octets : sym_name (8 caracteres),
       sym_type (Word), sym_value (LongInt). Nombre d'entrees =
       ph_slen Div 14. Decoder les types de symboles : $0001 (defini),

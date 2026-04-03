@@ -69,7 +69,9 @@
             Charger TEXT, DATA et la table des symboles dans un
             tampon dynamique. Calculer les offsets de chaque section.
 
-  TODO 05 - LECTURE DE LA TABLE DES SYMBOLES DRI [A FAIRE]
+  TODO 05 - LECTURE DE LA TABLE DES SYMBOLES DRI [IMPLEMENTE]
+            ReadSymbolTable, SymTypeToStr, GetSymbolSection,
+            ShowSymbolTable, FindSymbolByAddr, AddSymbolLabels.
             Entrees de 14 octets : sym_name (8 car), sym_type (Word),
             sym_value (LongInt). Decoder les types ($0001 defini,
             $0004 global, $0040 TEXT, $0020 DATA, $0080 BSS, etc.).
@@ -755,6 +757,236 @@ Begin
 End;
 
 { ============================================================
+  TODO 05 - LECTURE DE LA TABLE DES SYMBOLES DRI [IMPLEMENTE]
+  ============================================================ }
+
+{ --- SymTypeToStr : decoder les bits de type d'un symbole DRI --- }
+
+Function SymTypeToStr(T: Word): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (T And SYM_DEFINED) <> 0 Then Begin
+    If S <> '' Then S := S + ',';
+    S := S + 'DEF';
+  End;
+  If (T And SYM_EQUATE) <> 0 Then Begin
+    If S <> '' Then S := S + ',';
+    S := S + 'EQU';
+  End;
+  If (T And SYM_GLOBAL) <> 0 Then Begin
+    If S <> '' Then S := S + ',';
+    S := S + 'GLB';
+  End;
+  If (T And SYM_REGISTER) <> 0 Then Begin
+    If S <> '' Then S := S + ',';
+    S := S + 'REG';
+  End;
+  If (T And SYM_EXTERNAL) <> 0 Then Begin
+    If S <> '' Then S := S + ',';
+    S := S + 'EXT';
+  End;
+  If (T And SYM_DATA_REF) <> 0 Then Begin
+    If S <> '' Then S := S + ',';
+    S := S + 'DATA';
+  End;
+  If (T And SYM_TEXT_REF) <> 0 Then Begin
+    If S <> '' Then S := S + ',';
+    S := S + 'TEXT';
+  End;
+  If (T And SYM_BSS_REF) <> 0 Then Begin
+    If S <> '' Then S := S + ',';
+    S := S + 'BSS';
+  End;
+  If S = '' Then
+    S := '???';
+  SymTypeToStr := S;
+End;
+
+{ --- GetSymbolSection : determiner la section d'un symbole --- }
+{     Retourne 0=TEXT, 1=DATA, 2=BSS, 3=inconnu                }
+
+Function GetSymbolSection(T: Word): Byte;
+Begin
+  If (T And SYM_TEXT_REF) <> 0 Then
+    GetSymbolSection := 0
+  Else If (T And SYM_DATA_REF) <> 0 Then
+    GetSymbolSection := 1
+  Else If (T And SYM_BSS_REF) <> 0 Then
+    GetSymbolSection := 2
+  Else
+    GetSymbolSection := 3;
+End;
+
+{ --- ReadSymbolTable : lire la table des symboles DRI --- }
+{     depuis ImageBuffer a l'offset SymOffset                }
+
+Procedure ReadSymbolTable(Var H: TPrgHeader);
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  NumEntries : LongInt;
+  I, J       : LongInt;
+  Ofs        : LongInt;
+  P          : PByteArray;
+  C          : Char;
+Begin
+  SymbolCount := 0;
+  If H.ph_slen <= 0 Then Exit;
+  If ImageBuffer = Nil Then
+    FatalError('ReadSymbolTable: tampon image non alloue');
+  NumEntries := H.ph_slen Div SYM_ENTRY_SIZE;
+  If NumEntries > MAX_SYMBOLS Then Begin
+    WriteLn('Avertissement: ', IntToStr(NumEntries),
+            ' symboles, limite a ', IntToStr(MAX_SYMBOLS));
+    NumEntries := MAX_SYMBOLS;
+  End;
+  P := PByteArray(ImageBuffer);
+  For I := 1 To NumEntries Do Begin
+    Ofs := SymOffset + (I - 1) * LongInt(SYM_ENTRY_SIZE);
+    { Verifier les limites }
+    If Ofs + SYM_ENTRY_SIZE > ImageSize Then Begin
+      WriteLn('Avertissement: table symboles tronquee a l''entree ',
+              IntToStr(I));
+      Break;
+    End;
+    { Lire le nom (8 caracteres) }
+    For J := 0 To 7 Do Begin
+      C := Chr(P^[Ofs + J]);
+      If (C < ' ') Or (C > '~') Then C := ' ';
+      Symbols[I].sym_name[J] := C;
+    End;
+    { Lire le type (Word big-endian) }
+    Symbols[I].sym_type := BEToWord(P^[Ofs + 8], P^[Ofs + 9]);
+    { Lire la valeur (LongInt big-endian) }
+    Symbols[I].sym_value := BEToLong(P^[Ofs + 10], P^[Ofs + 11],
+                                      P^[Ofs + 12], P^[Ofs + 13]);
+    SymbolCount := I;
+  End;
+End;
+
+{ --- GetSymbolName : extraire le nom d'un symbole (8 car, trim) --- }
+
+Function GetSymbolName(Var Sym: TPrgSymbol): String;
+Var
+  S: String;
+  I: Integer;
+Begin
+  S := '';
+  For I := 0 To 7 Do Begin
+    If Sym.sym_name[I] = #0 Then Break;
+    If (Sym.sym_name[I] >= ' ') And (Sym.sym_name[I] <= '~') Then
+      S := S + Sym.sym_name[I];
+  End;
+  { Retirer les espaces de fin }
+  While (Length(S) > 0) And (S[Length(S)] = ' ') Do
+    Delete(S, Length(S), 1);
+  GetSymbolName := S;
+End;
+
+{ --- ShowSymbolTable : afficher la table des symboles DRI --- }
+
+Procedure ShowSymbolTable(ShowSym: Boolean);
+Var
+  I       : Integer;
+  SymName : String;
+  SecStr  : String;
+  Sec     : Byte;
+Begin
+  If Not ShowSym Then Exit;
+  If SymbolCount = 0 Then Begin
+    WriteLn;
+    WriteLn('=== Table des symboles DRI ===');
+    WriteLn('  (aucun symbole)');
+    Exit;
+  End;
+  WriteLn;
+  WriteLn('=== Table des symboles DRI (', IntToStr(SymbolCount),
+          ' entrees) ===');
+  WriteLn('  #     Nom        Type    Valeur     Section  Attributs');
+  WriteLn('  ----  --------  ------  ----------  -------  ---------');
+  For I := 1 To SymbolCount Do Begin
+    SymName := GetSymbolName(Symbols[I]);
+    Sec := GetSymbolSection(Symbols[I].sym_type);
+    Case Sec Of
+      0: SecStr := 'TEXT';
+      1: SecStr := 'DATA';
+      2: SecStr := 'BSS ';
+    Else
+      SecStr := '??? ';
+    End;
+    Write('  ');
+    { Numero }
+    If I < 10 Then Write(' ');
+    If I < 100 Then Write(' ');
+    If I < 1000 Then Write(' ');
+    Write(IntToStr(I), '  ');
+    { Nom (8 car) }
+    Write(SymName);
+    If Length(SymName) < 8 Then
+      Write('' : 8 - Length(SymName));
+    Write('  ');
+    { Type hex }
+    Write('$', HexWord(Symbols[I].sym_type), '  ');
+    { Valeur }
+    Write('$', HexLong(Symbols[I].sym_value), '  ');
+    { Section }
+    Write(SecStr, '     ');
+    { Attributs }
+    WriteLn(SymTypeToStr(Symbols[I].sym_type));
+  End;
+End;
+
+{ --- FindSymbolByAddr : trouver un symbole par adresse et section --- }
+{     Retourne l'index (1..SymbolCount) ou 0 si non trouve            }
+
+Function FindSymbolByAddr(Addr: LongInt; Section: Byte): Integer;
+Var
+  I: Integer;
+Begin
+  FindSymbolByAddr := 0;
+  For I := 1 To SymbolCount Do Begin
+    If (Symbols[I].sym_value = Addr) And
+       (GetSymbolSection(Symbols[I].sym_type) = Section) Then Begin
+      FindSymbolByAddr := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- AddSymbolLabels : ajouter les symboles DRI comme labels --- }
+
+Procedure AddSymbolLabels;
+Var
+  I       : Integer;
+  Sec     : Byte;
+  SymName : String;
+Begin
+  For I := 1 To SymbolCount Do Begin
+    If LongInt(LabelCount) >= LongInt(MAX_LABELS) Then Begin
+      WriteLn('Avertissement: limite de labels atteinte (',
+              IntToStr(MAX_LABELS), ')');
+      Exit;
+    End;
+    SymName := GetSymbolName(Symbols[I]);
+    If SymName = '' Then Continue;
+    { Ne pas ajouter les symboles externes ou registres }
+    If (Symbols[I].sym_type And SYM_EXTERNAL) <> 0 Then Continue;
+    If (Symbols[I].sym_type And SYM_REGISTER) <> 0 Then Continue;
+    Sec := GetSymbolSection(Symbols[I].sym_type);
+    If Sec > 2 Then Continue;  { section inconnue }
+    Inc(LabelCount);
+    Labels[LabelCount].Address := Symbols[I].sym_value;
+    Labels[LabelCount].Name    := SymName;
+    Labels[LabelCount].IsProc  := (Sec = 0);  { TEXT = sous-programme potentiel }
+    Labels[LabelCount].IsData  := (Sec > 0);  { DATA ou BSS = donnee }
+    Labels[LabelCount].Section := Sec;
+  End;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -803,9 +1035,15 @@ Begin
   { Fermer le fichier PRG }
   Close(InFile);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
-  { TODO 05-25 : symboles, relocalisation, desassemblage, generation .S }
+  { TODO 06-25 : relocalisation, desassemblage, generation .S }
+  { Lire la table des symboles DRI }
+  ReadSymbolTable(Header);
+  ShowSymbolTable(Opts.ShowSymbols Or Opts.Verbose);
+  AddSymbolLabels;
+  If Opts.Verbose And (SymbolCount > 0) Then
+    WriteLn('Labels ajoutes depuis symboles DRI: ', IntToStr(LabelCount));
   { Liberer la memoire }
   FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-04 [IMPLEMENTE], TODOs 05-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-05 [IMPLEMENTE], TODOs 06-25 [A FAIRE]');
 End.
