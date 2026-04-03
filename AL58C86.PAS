@@ -436,18 +436,21 @@ Begin
   WriteLn;
 End;
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: AL58C86 <source.a58> [sortie.asm] [-v] [-d] [-w]');
-  WriteLn;
-  WriteLn('  source.a58 : fichier Algol 58 source (.a58 ou .alg)');
-  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
-  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
-  WriteLn('  -d         : debug tokens (affiche chaque token)');
-  WriteLn('  -w         : activer les avertissements');
-  WriteLn('  -h, --help : cette aide');
-  WriteLn;
-  Halt(EXIT_USAGE);
+Procedure ShowUsage;Begin
+ WriteLn('AL58C86 - Cette commande permet de lancer le compilateur ',
+         'de langage de programmation Algol 58 pour l''assembleur ',
+         'des microprocesseurs 8086.');
+ WriteLn;
+ WriteLn('Syntaxe: AL58C86 <source.a58> [sortie.asm] [-v] [-d] [-w]');
+ WriteLn;
+ WriteLn('  source.a58 : fichier Algol 58 source (.a58 ou .alg)');
+ WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+ WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+ WriteLn('  -d         : debug tokens (affiche chaque token)');
+ WriteLn('  -w         : activer les avertissements');
+ WriteLn('  -h, --help : cette aide');
+ WriteLn;
+ Halt(EXIT_USAGE);
 End;
 
 { ---- Utilitaires chaines ------------------------------------ }
@@ -5069,7 +5072,7 @@ End;
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
-  ParseArgs;
-  Run;
-End.
+BEGIN
+ ParseArgs;
+ Run;
+END.
