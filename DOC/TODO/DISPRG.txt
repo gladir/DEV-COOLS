@@ -59,7 +59,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       symboliques dans le fichier de sortie.
       Afficher la table si -reloc est active.
 
-  7.  [A FAIRE] Analyse des drapeaux du programme (ph_prgflags).
+  7.  [IMPLEMENTE] Analyse des drapeaux du programme (ph_prgflags).
       Decoder les bits de ph_prgflags :
       Bit 0 ($0001) : PF_FASTLOAD (effacer seulement BSS).
       Bit 1 ($0002) : PF_TTRAMLOAD (charger en TT-RAM).

@@ -81,7 +81,8 @@
             Premier mot long = offset, puis octets incrementaux.
             $00 = fin, $01 = +254, $02-$FD = relocaliser.
 
-  TODO 07 - ANALYSE DES DRAPEAUX (PH_PRGFLAGS) [A FAIRE]
+  TODO 07 - ANALYSE DES DRAPEAUX (PH_PRGFLAGS) [IMPLEMENTE]
+            PrgFlagsToStr, GetMemProtection, ShowPrgFlags, HasPrgFlag.
             PF_FASTLOAD, PF_TTRAMLOAD, PF_TTRAMMEM,
             protection memoire MiNT, PF_SHARED_TEXT.
 
@@ -193,6 +194,13 @@ Const
   PF_TTRAMLOAD   = $0002;   { Charger en TT-RAM }
   PF_TTRAMMEM    = $0004;   { Allouer en TT-RAM }
   PF_SHARED_TEXT = $10000000;  { Partager la section TEXT (MiNT) }
+
+  { Masque et valeurs de protection memoire MiNT (bits 4-7) }
+  PF_MEMPROTECT_MASK = $00F0;  { masque pour bits 4-7 }
+  PF_MEMPRIVATE      = $0000;  { memoire privee (defaut) }
+  PF_MEMGLOBAL       = $0010;  { memoire globale }
+  PF_MEMSUPER        = $0020;  { memoire accessible en mode superviseur }
+  PF_MEMREADABLE     = $0030;  { memoire lisible par tous }
 
   { Types de symboles DRI }
   SYM_DEFINED    = $0001;
@@ -1100,6 +1108,96 @@ Begin
 End;
 
 { ============================================================
+  TODO 07 - ANALYSE DES DRAPEAUX (PH_PRGFLAGS) [IMPLEMENTE]
+  ============================================================ }
+
+{ --- BoolToStr : convertir un Boolean en 'Oui'/'Non' --- }
+
+Function BoolToStr(B: Boolean): String;
+Begin
+  If B Then
+    BoolToStr := 'Oui'
+  Else
+    BoolToStr := 'Non';
+End;
+
+{ --- PrgFlagsToStr : decoder les bits de ph_prgflags en texte --- }
+
+Function PrgFlagsToStr(Flags: LongInt): String;
+Var
+  S: String;
+Begin
+  S := '';
+  If (Flags And PF_FASTLOAD) <> 0 Then Begin
+    If Length(S) > 0 Then S := S + ', ';
+    S := S + 'FASTLOAD';
+  End;
+  If (Flags And PF_TTRAMLOAD) <> 0 Then Begin
+    If Length(S) > 0 Then S := S + ', ';
+    S := S + 'TTRAMLOAD';
+  End;
+  If (Flags And PF_TTRAMMEM) <> 0 Then Begin
+    If Length(S) > 0 Then S := S + ', ';
+    S := S + 'TTRAMMEM';
+  End;
+  If (Flags And LongInt(PF_SHARED_TEXT)) <> 0 Then Begin
+    If Length(S) > 0 Then S := S + ', ';
+    S := S + 'SHARED_TEXT';
+  End;
+  If Length(S) = 0 Then
+    S := '(aucun)';
+  PrgFlagsToStr := S;
+End;
+
+{ --- GetMemProtection : extraire et decoder les bits 4-7 --- }
+{     protection memoire MiNT/MultiTOS                        }
+
+Function GetMemProtection(Flags: LongInt): String;
+Var
+  MemProt: LongInt;
+Begin
+  MemProt := Flags And PF_MEMPROTECT_MASK;
+  Case MemProt Of
+    PF_MEMPRIVATE  : GetMemProtection := 'privee (defaut)';
+    PF_MEMGLOBAL   : GetMemProtection := 'globale';
+    PF_MEMSUPER    : GetMemProtection := 'superviseur seulement';
+    PF_MEMREADABLE : GetMemProtection := 'lisible par tous';
+  Else
+    GetMemProtection := 'inconnue ($' + HexByte(Byte(MemProt)) + ')';
+  End;
+End;
+
+{ --- ShowPrgFlags : affichage detaille des drapeaux du programme --- }
+
+Procedure ShowPrgFlags(Var H: TPrgHeader; Verbose: Boolean);
+Var
+  Flags: LongInt;
+Begin
+  If Not Verbose Then Exit;
+  Flags := H.ph_prgflags;
+  WriteLn;
+  WriteLn('=== Drapeaux du programme (ph_prgflags = $',
+          HexLong(Flags), ') ===');
+  WriteLn('  Drapeaux actifs : ', PrgFlagsToStr(Flags));
+  WriteLn('  Bit 0 FASTLOAD  : ',
+    BoolToStr((Flags And PF_FASTLOAD) <> 0));
+  WriteLn('  Bit 1 TTRAMLOAD : ',
+    BoolToStr((Flags And PF_TTRAMLOAD) <> 0));
+  WriteLn('  Bit 2 TTRAMMEM  : ',
+    BoolToStr((Flags And PF_TTRAMMEM) <> 0));
+  WriteLn('  Bits 4-7 memoire: ', GetMemProtection(Flags));
+  WriteLn('  Bit 28 SHARED   : ',
+    BoolToStr((Flags And LongInt(PF_SHARED_TEXT)) <> 0));
+End;
+
+{ --- HasPrgFlag : tester si un drapeau est actif --- }
+
+Function HasPrgFlag(Var H: TPrgHeader; Flag: LongInt): Boolean;
+Begin
+  HasPrgFlag := (H.ph_prgflags And Flag) <> 0;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -1151,7 +1249,7 @@ Begin
   { Fermer le fichier PRG }
   Close(InFile);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
-  { TODO 07-25 : drapeaux, desassemblage, generation .S }
+  { TODO 08-25 : desassemblage, generation .S }
   { Lire la table des symboles DRI }
   ReadSymbolTable(Header);
   ShowSymbolTable(Opts.ShowSymbols Or Opts.Verbose);
@@ -1162,8 +1260,10 @@ Begin
   ShowRelocTable(Opts.ShowRelocs Or Opts.Verbose);
   If Opts.Verbose Then
     WriteLn('Relocalisations : ', IntToStr(RelocCount));
+  { Analyser et afficher les drapeaux du programme }
+  ShowPrgFlags(Header, Opts.Verbose);
   { Liberer la memoire }
   FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-06 [IMPLEMENTE], TODOs 07-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-07 [IMPLEMENTE], TODOs 08-25 [A FAIRE]');
 End.
