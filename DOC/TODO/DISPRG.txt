@@ -98,7 +98,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       JMP, JSR, RTS, RTE, RTR, NOP, STOP, RESET, ILLEGAL.
       Decoder les deplacements 8 bits et 16 bits pour les Bcc.
 
-  12. [A FAIRE] Table des opcodes 68000 - Manipulation de bits et divers.
+  12. [IMPLEMENTE] Table des opcodes 68000 - Manipulation de bits et divers.
       Definir les opcodes de manipulation de bits :
       BTST, BSET, BCLR, BCHG (registre ou immediat).
       Instructions de pile et de trap :

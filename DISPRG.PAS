@@ -105,7 +105,7 @@
             BRA, BSR, Bcc, DBcc, Scc, JMP, JSR, RTS, RTE,
             RTR, NOP, STOP, RESET, ILLEGAL.
 
-  TODO 12 - TABLE DES OPCODES 68000 - BITS ET DIVERS [A FAIRE]
+  TODO 12 - TABLE DES OPCODES 68000 - BITS ET DIVERS [IMPLEMENTE]
             BTST, BSET, BCLR, BCHG, TRAP, TRAPV, CHK,
             MOVE SR/CCR/USP, ANDI/ORI/EORI to SR/CCR.
 
@@ -1262,6 +1262,14 @@ Const
   FMT_EA2      = 26;  { JMP ea / JSR ea                        }
   FMT_IMM16    = 27;  { STOP #imm16                            }
   FMT_TRAP     = 28;  { TRAP #vector (0-15)                    }
+  FMT_BIT_DN   = 29;  { BTST/BSET/BCLR/BCHG Dn,ea             }
+  FMT_BIT_IMM  = 30;  { BTST/BSET/BCLR/BCHG #imm,ea           }
+  FMT_SR       = 31;  { MOVE ea,SR / MOVE SR,ea                }
+  FMT_CCR      = 32;  { MOVE ea,CCR / MOVE CCR,ea              }
+  FMT_USP      = 33;  { MOVE USP,An / MOVE An,USP              }
+  FMT_IMM_SR   = 34;  { ANDI/ORI/EORI #imm,SR                  }
+  FMT_IMM_CCR  = 35;  { ANDI/ORI/EORI #imm,CCR                 }
+  FMT_CHK      = 36;  { CHK ea,Dn                              }
 
 { --- AddOpcode : ajouter une entree dans la table --- }
 
@@ -1843,6 +1851,73 @@ Begin
   AddOpcode($FFFF, $4E76, 'TRAPV', FMT_NONE, 2, GRP_BRANCH);
 End;
 
+{ ============================================================
+  TODO 12 - TABLE DES OPCODES 68000 - BITS ET DIVERS [IMPLEMENTE]
+  ============================================================ }
+
+{ --- InitBitMiscOpcodes : opcodes de manipulation de bits et divers --- }
+
+Procedure InitBitMiscOpcodes;
+Begin
+  { === BTST/BCHG/BCLR/BSET - Registre === }
+  { BTST Dn,ea : 0000 xxx1 00xx xxxx }
+  AddOpcode($F1C0, $0100, 'BTST', FMT_BIT_DN, 2, GRP_BIT);
+  { BCHG Dn,ea : 0000 xxx1 01xx xxxx }
+  AddOpcode($F1C0, $0140, 'BCHG', FMT_BIT_DN, 2, GRP_BIT);
+  { BCLR Dn,ea : 0000 xxx1 10xx xxxx }
+  AddOpcode($F1C0, $0180, 'BCLR', FMT_BIT_DN, 2, GRP_BIT);
+  { BSET Dn,ea : 0000 xxx1 11xx xxxx }
+  AddOpcode($F1C0, $01C0, 'BSET', FMT_BIT_DN, 2, GRP_BIT);
+
+  { === BTST/BCHG/BCLR/BSET - Immediat === }
+  { BTST #imm,ea : 0000 1000 00xx xxxx }
+  AddOpcode($FFC0, $0800, 'BTST', FMT_BIT_IMM, 4, GRP_BIT);
+  { BCHG #imm,ea : 0000 1000 01xx xxxx }
+  AddOpcode($FFC0, $0840, 'BCHG', FMT_BIT_IMM, 4, GRP_BIT);
+  { BCLR #imm,ea : 0000 1000 10xx xxxx }
+  AddOpcode($FFC0, $0880, 'BCLR', FMT_BIT_IMM, 4, GRP_BIT);
+  { BSET #imm,ea : 0000 1000 11xx xxxx }
+  AddOpcode($FFC0, $08C0, 'BSET', FMT_BIT_IMM, 4, GRP_BIT);
+
+  { === MOVE to/from SR === }
+  { MOVE ea,SR : 0100 0110 11xx xxxx }
+  AddOpcode($FFC0, $46C0, 'MOVE', FMT_SR, 2, GRP_MISC);
+  { MOVE SR,ea : 0100 0000 11xx xxxx }
+  AddOpcode($FFC0, $40C0, 'MOVE', FMT_SR, 2, GRP_MISC);
+
+  { === MOVE to/from CCR === }
+  { MOVE ea,CCR : 0100 0100 11xx xxxx }
+  AddOpcode($FFC0, $44C0, 'MOVE', FMT_CCR, 2, GRP_MISC);
+  { MOVE CCR,ea : 0100 0010 11xx xxxx (68010+) }
+  AddOpcode($FFC0, $42C0, 'MOVE', FMT_CCR, 2, GRP_MISC);
+
+  { === MOVE USP === }
+  { MOVE USP,An : 0100 1110 0110 1xxx = $4E68-$4E6F }
+  AddOpcode($FFF8, $4E68, 'MOVE', FMT_USP, 2, GRP_MISC);
+  { MOVE An,USP : 0100 1110 0110 0xxx = $4E60-$4E67 }
+  AddOpcode($FFF8, $4E60, 'MOVE', FMT_USP, 2, GRP_MISC);
+
+  { === ANDI/ORI/EORI to CCR === }
+  { ANDI #imm,CCR : 0000 0010 0011 1100 = $023C }
+  AddOpcode($FFFF, $023C, 'ANDI', FMT_IMM_CCR, 4, GRP_MISC);
+  { ORI #imm,CCR : 0000 0000 0011 1100 = $003C }
+  AddOpcode($FFFF, $003C, 'ORI', FMT_IMM_CCR, 4, GRP_MISC);
+  { EORI #imm,CCR : 0000 1010 0011 1100 = $0A3C }
+  AddOpcode($FFFF, $0A3C, 'EORI', FMT_IMM_CCR, 4, GRP_MISC);
+
+  { === ANDI/ORI/EORI to SR === }
+  { ANDI #imm,SR : 0000 0010 0111 1100 = $027C }
+  AddOpcode($FFFF, $027C, 'ANDI', FMT_IMM_SR, 4, GRP_MISC);
+  { ORI #imm,SR : 0000 0000 0111 1100 = $007C }
+  AddOpcode($FFFF, $007C, 'ORI', FMT_IMM_SR, 4, GRP_MISC);
+  { EORI #imm,SR : 0000 1010 0111 1100 = $0A7C }
+  AddOpcode($FFFF, $0A7C, 'EORI', FMT_IMM_SR, 4, GRP_MISC);
+
+  { === CHK === }
+  { CHK ea,Dn : 0100 xxx1 10xx xxxx }
+  AddOpcode($F1C0, $4180, 'CHK', FMT_CHK, 2, GRP_MISC);
+End;
+
 { --- InitOpcodeTable : initialiser la table des opcodes --- }
 
 Procedure InitOpcodeTable;
@@ -1852,7 +1927,8 @@ Begin
   InitArithLogicOpcodes;
   InitShiftRotateOpcodes;
   InitBranchControlOpcodes;
-  { Les groupes suivants seront ajoutes par le TODO 12 }
+  InitBitMiscOpcodes;
+  { Les groupes suivants seront ajoutes par les TODOs 13+ }
 End;
 
 { --- FindOpcode : chercher un opcode par son mot d'instruction --- }
@@ -1997,7 +2073,7 @@ Begin
   { Fermer le fichier PRG }
   Close(InFile);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
-  { TODO 12-25 : desassemblage, generation .S }
+  { TODO 13-25 : desassemblage, generation .S }
   { Lire la table des symboles DRI }
   ReadSymbolTable(Header);
   ShowSymbolTable(Opts.ShowSymbols Or Opts.Verbose);
@@ -2018,9 +2094,11 @@ Begin
             ' (transfert: ', IntToStr(CountOpcodesByGroup(GRP_TRANSFER)),
             ', arith: ', IntToStr(CountOpcodesByGroup(GRP_ARITH)),
             ', shift: ', IntToStr(CountOpcodesByGroup(GRP_SHIFT)),
-            ', branch: ', IntToStr(CountOpcodesByGroup(GRP_BRANCH)), ')');
+            ', branch: ', IntToStr(CountOpcodesByGroup(GRP_BRANCH)),
+            ', bit: ', IntToStr(CountOpcodesByGroup(GRP_BIT)),
+            ', misc: ', IntToStr(CountOpcodesByGroup(GRP_MISC)), ')');
   { Liberer la memoire }
   FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-11 [IMPLEMENTE], TODOs 12-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-12 [IMPLEMENTE], TODOs 13-25 [A FAIRE]');
 End.
