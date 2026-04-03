@@ -84,7 +84,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       CMP, CMPA, CMPI, CMPM,
       CLR, EXT, TST, TAS.
 
-  10. [A FAIRE] Table des opcodes 68000 - Decalages et rotations.
+  10. [IMPLEMENTE] Table des opcodes 68000 - Decalages et rotations.
       Definir les opcodes de decalage et rotation :
       ASL, ASR, LSL, LSR, ROL, ROR, ROXL, ROXR.
       Chaque instruction peut operer sur un registre de donnees

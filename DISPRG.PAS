@@ -98,7 +98,7 @@
             MULU, MULS, DIVU, DIVS, AND, ANDI, OR, ORI, EOR, EORI,
             NOT, NEG, NEGX, CMP, CMPA, CMPI, CMPM, CLR, EXT, TST, TAS.
 
-  TODO 10 - TABLE DES OPCODES 68000 - DECALAGES/ROTATIONS [A FAIRE]
+  TODO 10 - TABLE DES OPCODES 68000 - DECALAGES/ROTATIONS [IMPLEMENTE]
             ASL, ASR, LSL, LSR, ROL, ROR, ROXL, ROXR.
 
   TODO 11 - TABLE DES OPCODES 68000 - BRANCHEMENTS/CONTROLE [A FAIRE]
@@ -1253,6 +1253,9 @@ Const
   FMT_DN_DN2   = 17;  { ADDX Dn,Dn / SUBX Dn,Dn / CMPM (An)+  }
   FMT_WORD_DN  = 18;  { MULU ea,Dn / MULS ea,Dn / DIVU / DIVS  }
   FMT_DN2      = 19;  { NOT Dn / NEG Dn / NEGX Dn / EXT Dn     }
+  FMT_SH_REG   = 20;  { ASL/ASR/LSL/LSR/ROL/ROR Dn (reg count) }
+  FMT_SH_IMM   = 21;  { ASL/ASR/LSL/LSR/ROL/ROR #imm3,Dn       }
+  FMT_SH_MEM   = 22;  { ASL/ASR/LSL/LSR/ROL/ROR ea (1 bit)     }
 
 { --- AddOpcode : ajouter une entree dans la table --- }
 
@@ -1538,6 +1541,151 @@ Begin
   AddOpcode($FFC0, $4AC0, 'TAS.B', FMT_EA, 2, GRP_ARITH);
 End;
 
+{ ============================================================
+  TODO 10 - TABLE DES OPCODES 68000 - DECALAGES/ROTATIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ --- InitShiftRotateOpcodes : opcodes de decalage et rotation --- }
+
+Procedure InitShiftRotateOpcodes;
+Begin
+  { === ASL - Arithmetic Shift Left === }
+
+  { ASL.B Dn,Dn : 1110 xxx1 0010 0xxx }
+  AddOpcode($F1F8, $E120, 'ASL.B', FMT_SH_REG, 2, GRP_SHIFT);
+  { ASL.W Dn,Dn : 1110 xxx1 0110 0xxx }
+  AddOpcode($F1F8, $E160, 'ASL.W', FMT_SH_REG, 2, GRP_SHIFT);
+  { ASL.L Dn,Dn : 1110 xxx1 1010 0xxx }
+  AddOpcode($F1F8, $E1A0, 'ASL.L', FMT_SH_REG, 2, GRP_SHIFT);
+  { ASL.B #imm3,Dn : 1110 xxx1 0000 0xxx }
+  AddOpcode($F1F8, $E100, 'ASL.B', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ASL.W #imm3,Dn : 1110 xxx1 0100 0xxx }
+  AddOpcode($F1F8, $E140, 'ASL.W', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ASL.L #imm3,Dn : 1110 xxx1 1000 0xxx }
+  AddOpcode($F1F8, $E180, 'ASL.L', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ASL.W ea : 1110 0001 11xx xxxx }
+  AddOpcode($FFC0, $E1C0, 'ASL.W', FMT_SH_MEM, 2, GRP_SHIFT);
+
+  { === ASR - Arithmetic Shift Right === }
+
+  { ASR.B Dn,Dn : 1110 xxx0 0010 0xxx }
+  AddOpcode($F1F8, $E020, 'ASR.B', FMT_SH_REG, 2, GRP_SHIFT);
+  { ASR.W Dn,Dn : 1110 xxx0 0110 0xxx }
+  AddOpcode($F1F8, $E060, 'ASR.W', FMT_SH_REG, 2, GRP_SHIFT);
+  { ASR.L Dn,Dn : 1110 xxx0 1010 0xxx }
+  AddOpcode($F1F8, $E0A0, 'ASR.L', FMT_SH_REG, 2, GRP_SHIFT);
+  { ASR.B #imm3,Dn : 1110 xxx0 0000 0xxx }
+  AddOpcode($F1F8, $E000, 'ASR.B', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ASR.W #imm3,Dn : 1110 xxx0 0100 0xxx }
+  AddOpcode($F1F8, $E040, 'ASR.W', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ASR.L #imm3,Dn : 1110 xxx0 1000 0xxx }
+  AddOpcode($F1F8, $E080, 'ASR.L', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ASR.W ea : 1110 0000 11xx xxxx }
+  AddOpcode($FFC0, $E0C0, 'ASR.W', FMT_SH_MEM, 2, GRP_SHIFT);
+
+  { === LSL - Logical Shift Left === }
+
+  { LSL.B Dn,Dn : 1110 xxx1 0010 1xxx }
+  AddOpcode($F1F8, $E128, 'LSL.B', FMT_SH_REG, 2, GRP_SHIFT);
+  { LSL.W Dn,Dn : 1110 xxx1 0110 1xxx }
+  AddOpcode($F1F8, $E168, 'LSL.W', FMT_SH_REG, 2, GRP_SHIFT);
+  { LSL.L Dn,Dn : 1110 xxx1 1010 1xxx }
+  AddOpcode($F1F8, $E1A8, 'LSL.L', FMT_SH_REG, 2, GRP_SHIFT);
+  { LSL.B #imm3,Dn : 1110 xxx1 0000 1xxx }
+  AddOpcode($F1F8, $E108, 'LSL.B', FMT_SH_IMM, 2, GRP_SHIFT);
+  { LSL.W #imm3,Dn : 1110 xxx1 0100 1xxx }
+  AddOpcode($F1F8, $E148, 'LSL.W', FMT_SH_IMM, 2, GRP_SHIFT);
+  { LSL.L #imm3,Dn : 1110 xxx1 1000 1xxx }
+  AddOpcode($F1F8, $E188, 'LSL.L', FMT_SH_IMM, 2, GRP_SHIFT);
+  { LSL.W ea : 1110 0011 11xx xxxx }
+  AddOpcode($FFC0, $E3C0, 'LSL.W', FMT_SH_MEM, 2, GRP_SHIFT);
+
+  { === LSR - Logical Shift Right === }
+
+  { LSR.B Dn,Dn : 1110 xxx0 0010 1xxx }
+  AddOpcode($F1F8, $E028, 'LSR.B', FMT_SH_REG, 2, GRP_SHIFT);
+  { LSR.W Dn,Dn : 1110 xxx0 0110 1xxx }
+  AddOpcode($F1F8, $E068, 'LSR.W', FMT_SH_REG, 2, GRP_SHIFT);
+  { LSR.L Dn,Dn : 1110 xxx0 1010 1xxx }
+  AddOpcode($F1F8, $E0A8, 'LSR.L', FMT_SH_REG, 2, GRP_SHIFT);
+  { LSR.B #imm3,Dn : 1110 xxx0 0000 1xxx }
+  AddOpcode($F1F8, $E008, 'LSR.B', FMT_SH_IMM, 2, GRP_SHIFT);
+  { LSR.W #imm3,Dn : 1110 xxx0 0100 1xxx }
+  AddOpcode($F1F8, $E048, 'LSR.W', FMT_SH_IMM, 2, GRP_SHIFT);
+  { LSR.L #imm3,Dn : 1110 xxx0 1000 1xxx }
+  AddOpcode($F1F8, $E088, 'LSR.L', FMT_SH_IMM, 2, GRP_SHIFT);
+  { LSR.W ea : 1110 0010 11xx xxxx }
+  AddOpcode($FFC0, $E2C0, 'LSR.W', FMT_SH_MEM, 2, GRP_SHIFT);
+
+  { === ROL - Rotate Left === }
+
+  { ROL.B Dn,Dn : 1110 xxx1 0011 1xxx }
+  AddOpcode($F1F8, $E138, 'ROL.B', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROL.W Dn,Dn : 1110 xxx1 0111 1xxx }
+  AddOpcode($F1F8, $E178, 'ROL.W', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROL.L Dn,Dn : 1110 xxx1 1011 1xxx }
+  AddOpcode($F1F8, $E1B8, 'ROL.L', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROL.B #imm3,Dn : 1110 xxx1 0001 1xxx }
+  AddOpcode($F1F8, $E118, 'ROL.B', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROL.W #imm3,Dn : 1110 xxx1 0101 1xxx }
+  AddOpcode($F1F8, $E158, 'ROL.W', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROL.L #imm3,Dn : 1110 xxx1 1001 1xxx }
+  AddOpcode($F1F8, $E198, 'ROL.L', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROL.W ea : 1110 0111 11xx xxxx }
+  AddOpcode($FFC0, $E7C0, 'ROL.W', FMT_SH_MEM, 2, GRP_SHIFT);
+
+  { === ROR - Rotate Right === }
+
+  { ROR.B Dn,Dn : 1110 xxx0 0011 1xxx }
+  AddOpcode($F1F8, $E038, 'ROR.B', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROR.W Dn,Dn : 1110 xxx0 0111 1xxx }
+  AddOpcode($F1F8, $E078, 'ROR.W', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROR.L Dn,Dn : 1110 xxx0 1011 1xxx }
+  AddOpcode($F1F8, $E0B8, 'ROR.L', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROR.B #imm3,Dn : 1110 xxx0 0001 1xxx }
+  AddOpcode($F1F8, $E018, 'ROR.B', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROR.W #imm3,Dn : 1110 xxx0 0101 1xxx }
+  AddOpcode($F1F8, $E058, 'ROR.W', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROR.L #imm3,Dn : 1110 xxx0 1001 1xxx }
+  AddOpcode($F1F8, $E098, 'ROR.L', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROR.W ea : 1110 0110 11xx xxxx }
+  AddOpcode($FFC0, $E6C0, 'ROR.W', FMT_SH_MEM, 2, GRP_SHIFT);
+
+  { === ROXL - Rotate Left with Extend === }
+
+  { ROXL.B Dn,Dn : 1110 xxx1 0011 0xxx }
+  AddOpcode($F1F8, $E130, 'ROXL.B', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROXL.W Dn,Dn : 1110 xxx1 0111 0xxx }
+  AddOpcode($F1F8, $E170, 'ROXL.W', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROXL.L Dn,Dn : 1110 xxx1 1011 0xxx }
+  AddOpcode($F1F8, $E1B0, 'ROXL.L', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROXL.B #imm3,Dn : 1110 xxx1 0001 0xxx }
+  AddOpcode($F1F8, $E110, 'ROXL.B', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROXL.W #imm3,Dn : 1110 xxx1 0101 0xxx }
+  AddOpcode($F1F8, $E150, 'ROXL.W', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROXL.L #imm3,Dn : 1110 xxx1 1001 0xxx }
+  AddOpcode($F1F8, $E190, 'ROXL.L', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROXL.W ea : 1110 0101 11xx xxxx }
+  AddOpcode($FFC0, $E5C0, 'ROXL.W', FMT_SH_MEM, 2, GRP_SHIFT);
+
+  { === ROXR - Rotate Right with Extend === }
+
+  { ROXR.B Dn,Dn : 1110 xxx0 0011 0xxx }
+  AddOpcode($F1F8, $E030, 'ROXR.B', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROXR.W Dn,Dn : 1110 xxx0 0111 0xxx }
+  AddOpcode($F1F8, $E070, 'ROXR.W', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROXR.L Dn,Dn : 1110 xxx0 1011 0xxx }
+  AddOpcode($F1F8, $E0B0, 'ROXR.L', FMT_SH_REG, 2, GRP_SHIFT);
+  { ROXR.B #imm3,Dn : 1110 xxx0 0001 0xxx }
+  AddOpcode($F1F8, $E010, 'ROXR.B', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROXR.W #imm3,Dn : 1110 xxx0 0101 0xxx }
+  AddOpcode($F1F8, $E050, 'ROXR.W', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROXR.L #imm3,Dn : 1110 xxx0 1001 0xxx }
+  AddOpcode($F1F8, $E090, 'ROXR.L', FMT_SH_IMM, 2, GRP_SHIFT);
+  { ROXR.W ea : 1110 0100 11xx xxxx }
+  AddOpcode($FFC0, $E4C0, 'ROXR.W', FMT_SH_MEM, 2, GRP_SHIFT);
+End;
+
 { --- InitOpcodeTable : initialiser la table des opcodes --- }
 
 Procedure InitOpcodeTable;
@@ -1545,7 +1693,8 @@ Begin
   OpcodeCount := 0;
   InitTransferOpcodes;
   InitArithLogicOpcodes;
-  { Les groupes suivants seront ajoutes par les TODOs 10-12 }
+  InitShiftRotateOpcodes;
+  { Les groupes suivants seront ajoutes par les TODOs 11-12 }
 End;
 
 { --- FindOpcode : chercher un opcode par son mot d'instruction --- }
@@ -1690,7 +1839,7 @@ Begin
   { Fermer le fichier PRG }
   Close(InFile);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
-  { TODO 10-25 : desassemblage, generation .S }
+  { TODO 11-25 : desassemblage, generation .S }
   { Lire la table des symboles DRI }
   ReadSymbolTable(Header);
   ShowSymbolTable(Opts.ShowSymbols Or Opts.Verbose);
@@ -1709,9 +1858,10 @@ Begin
   If Opts.Verbose Then
     WriteLn('Opcodes 68000   : ', IntToStr(OpcodeCount),
             ' (transfert: ', IntToStr(CountOpcodesByGroup(GRP_TRANSFER)),
-            ', arith: ', IntToStr(CountOpcodesByGroup(GRP_ARITH)), ')');
+            ', arith: ', IntToStr(CountOpcodesByGroup(GRP_ARITH)),
+            ', shift: ', IntToStr(CountOpcodesByGroup(GRP_SHIFT)), ')');
   { Liberer la memoire }
   FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-09 [IMPLEMENTE], TODOs 10-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-10 [IMPLEMENTE], TODOs 11-25 [A FAIRE]');
 End.
