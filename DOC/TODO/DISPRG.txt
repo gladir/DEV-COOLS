@@ -179,7 +179,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       dans la section DATA. Utiliser les informations de
       relocalisation pour identifier les pointeurs.
 
-  20. [A FAIRE] Generation du fichier .S : en-tete et directives.
+  20. [IMPLEMENTE] Generation du fichier .S : en-tete et directives.
       Emettre l'en-tete du fichier .S avec des commentaires
       (nom du fichier source, date, outil DISPRG).
       Emettre les directives d'assembleur 68000 :

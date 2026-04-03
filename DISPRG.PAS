@@ -150,9 +150,11 @@
             CountDataSymbols, CountDataStrings,
             CountDataPointers.
 
-  TODO 20 - GENERATION FICHIER .S : EN-TETE ET DIRECTIVES [A FAIRE]
-            En-tete, directives section TEXT/DATA/BSS,
-            XDEF, XREF, format Devpac/vasm compatible.
+  TODO 20 - GENERATION FICHIER .S : EN-TETE ET DIRECTIVES [IMPLEMENTE]
+            EmitFileHeader, EmitSectionDirectives, EmitXDEFs,
+            EmitXREFs, EmitAsmPreamble, GetGlobalSymbols,
+            GetExternalSymbols, CountGlobalSymbols,
+            CountExternalSymbols, ShowAsmPreamble.
 
   TODO 21 - GENERATION FICHIER .S : SECTION TEXT [A FAIRE]
             Code desassemble : label, mnemonique, suffixe taille,
@@ -4843,6 +4845,184 @@ Begin
 End;
 
 { ============================================================
+  TODO 20 - GENERATION FICHIER .S : EN-TETE ET DIRECTIVES [IMPLEMENTE]
+  ============================================================ }
+
+{ --- EmitFileHeader : ecrire l'en-tete commentaire du fichier .S --- }
+
+Procedure EmitFileHeader(Var F: Text; SrcFile: String; Var H: TPrgHeader);
+Var
+  Y, M, D, DoW: Word;
+  DateStr: String;
+Begin
+  GetDate(Y, M, D, DoW);
+  DateStr := IntToStr(Y) + '-';
+  If M < 10 Then DateStr := DateStr + '0';
+  DateStr := DateStr + IntToStr(M) + '-';
+  If D < 10 Then DateStr := DateStr + '0';
+  DateStr := DateStr + IntToStr(D);
+  WriteLn(F, '; ============================================================');
+  WriteLn(F, '; Fichier genere par DISPRG v', DISPRG_VERSION);
+  WriteLn(F, '; Source : ', SrcFile);
+  WriteLn(F, '; Date   : ', DateStr);
+  WriteLn(F, '; Format : Assembleur 68000 (compatible Devpac/vasm/AS)');
+  WriteLn(F, '; ============================================================');
+  WriteLn(F);
+  WriteLn(F, '; Tailles des sections :');
+  WriteLn(F, ';   TEXT : ', IntToStr(H.ph_tlen), ' octets ($',
+          HexLong(H.ph_tlen), ')');
+  WriteLn(F, ';   DATA : ', IntToStr(H.ph_dlen), ' octets ($',
+          HexLong(H.ph_dlen), ')');
+  WriteLn(F, ';   BSS  : ', IntToStr(H.ph_blen), ' octets ($',
+          HexLong(H.ph_blen), ')');
+  WriteLn(F);
+End;
+
+{ --- EmitSectionDirectives : emettre les directives de section --- }
+
+Procedure EmitSectionDirectives(Var F: Text; SectionName: String);
+Begin
+  WriteLn(F);
+  WriteLn(F, '; ------------------------------------------------------------');
+  WriteLn(F, '        SECTION ', SectionName);
+  WriteLn(F, '; ------------------------------------------------------------');
+  WriteLn(F);
+End;
+
+{ --- GetGlobalSymbols : obtenir la liste des symboles globaux --- }
+{     Retourne le nombre de symboles globaux trouves.             }
+{     Section: 0=TEXT, 1=DATA, 2=BSS, 255=toutes.                }
+
+Function GetGlobalSymbols(Section: Byte): LongInt;
+Var
+  I    : Integer;
+  Sec  : Byte;
+  Count: LongInt;
+Begin
+  Count := 0;
+  For I := 1 To SymbolCount Do Begin
+    If (Symbols[I].sym_type And SYM_GLOBAL) <> 0 Then Begin
+      If (Symbols[I].sym_type And SYM_DEFINED) <> 0 Then Begin
+        If Section = 255 Then
+          Inc(Count)
+        Else Begin
+          Sec := GetSymbolSection(Symbols[I].sym_type);
+          If Sec = Section Then
+            Inc(Count);
+        End;
+      End;
+    End;
+  End;
+  GetGlobalSymbols := Count;
+End;
+
+{ --- GetExternalSymbols : obtenir le nombre de symboles externes --- }
+
+Function GetExternalSymbols: LongInt;
+Var
+  I    : Integer;
+  Count: LongInt;
+Begin
+  Count := 0;
+  For I := 1 To SymbolCount Do Begin
+    If (Symbols[I].sym_type And SYM_EXTERNAL) <> 0 Then
+      Inc(Count);
+  End;
+  GetExternalSymbols := Count;
+End;
+
+{ --- EmitXDEFs : emettre les directives XDEF pour symboles globaux --- }
+
+Procedure EmitXDEFs(Var F: Text);
+Var
+  I       : Integer;
+  SymName : String;
+  Count   : LongInt;
+Begin
+  Count := GetGlobalSymbols(255);
+  If Count = 0 Then Exit;
+  WriteLn(F, '; --- Symboles globaux (XDEF) ---');
+  For I := 1 To SymbolCount Do Begin
+    If (Symbols[I].sym_type And SYM_GLOBAL) <> 0 Then Begin
+      If (Symbols[I].sym_type And SYM_DEFINED) <> 0 Then Begin
+        SymName := GetSymbolName(Symbols[I]);
+        If SymName <> '' Then
+          WriteLn(F, '        XDEF    ', SymName);
+      End;
+    End;
+  End;
+  WriteLn(F);
+End;
+
+{ --- EmitXREFs : emettre les directives XREF pour symboles externes --- }
+
+Procedure EmitXREFs(Var F: Text);
+Var
+  I       : Integer;
+  SymName : String;
+  Count   : LongInt;
+Begin
+  Count := GetExternalSymbols;
+  If Count = 0 Then Exit;
+  WriteLn(F, '; --- References externes (XREF) ---');
+  For I := 1 To SymbolCount Do Begin
+    If (Symbols[I].sym_type And SYM_EXTERNAL) <> 0 Then Begin
+      SymName := GetSymbolName(Symbols[I]);
+      If SymName <> '' Then
+        WriteLn(F, '        XREF    ', SymName);
+    End;
+  End;
+  WriteLn(F);
+End;
+
+{ --- EmitAsmPreamble : generer l'en-tete complet du fichier .S --- }
+{     Ecrit l'en-tete, les XDEF, les XREF, puis la directive      }
+{     de section TEXT.                                              }
+
+Procedure EmitAsmPreamble(Var F: Text; SrcFile: String;
+                          Var H: TPrgHeader);
+Begin
+  EmitFileHeader(F, SrcFile, H);
+  EmitXDEFs(F);
+  EmitXREFs(F);
+  EmitSectionDirectives(F, 'TEXT');
+End;
+
+{ --- CountGlobalSymbols : compter les symboles globaux definis --- }
+
+Function CountGlobalSymbols: LongInt;
+Begin
+  CountGlobalSymbols := GetGlobalSymbols(255);
+End;
+
+{ --- CountExternalSymbols : compter les symboles externes --- }
+
+Function CountExternalSymbols: LongInt;
+Begin
+  CountExternalSymbols := GetExternalSymbols;
+End;
+
+{ --- ShowAsmPreamble : generer le preambule et informer sur stdout --- }
+
+Procedure ShowAsmPreamble(SrcFile: String; Var H: TPrgHeader;
+                          Verbose: Boolean);
+Begin
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('Impossible de creer le fichier de sortie');
+  EmitAsmPreamble(OutF, SrcFile, H);
+  If Verbose Then Begin
+    WriteLn;
+    WriteLn('=== Generation du fichier .S ===');
+    WriteLn('  En-tete et directives emis');
+    WriteLn('  Symboles globaux (XDEF) : ',
+            IntToStr(CountGlobalSymbols));
+    WriteLn('  References externes (XREF) : ',
+            IntToStr(CountExternalSymbols));
+  End;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -5000,9 +5180,18 @@ Begin
               ' pointeurs');
     End;
   End;
+  { Generation du fichier .S : en-tete et directives }
+  Assign(OutF, Opts.OutFile);
+  ShowAsmPreamble(Opts.SrcFile, Header, Opts.Verbose);
+  Close(OutF);
+  If IOResult <> 0 Then;  { ignorer erreur de fermeture }
+  If Opts.Verbose Then Begin
+    WriteLn;
+    WriteLn('Fichier .S      : ', Opts.OutFile, ' cree');
+  End;
   { Liberer la memoire }
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-19 [IMPLEMENTE], TODOs 20-25 [A FAIRE]');
+          ' - TODOs 01-20 [IMPLEMENTE], TODOs 21-25 [A FAIRE]');
 End.
