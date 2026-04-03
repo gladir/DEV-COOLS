@@ -3737,15 +3737,16 @@ End;
 
 Function GenRandomArithOp(AllowMod: Boolean): TArithOp;
 { Genere un operateur arithmetique aleatoire.
-  AllowMod: si False, exclut le modulo (pour les flottants). }
+  AllowMod: si False, exclut le modulo (pour les flottants). 
+  RandomInt(N) retourne une valeur de 0 a N-1. }
 Var
-  MaxOp: Integer;
+  NumOps: Integer;
 Begin
   If AllowMod Then
-    MaxOp := 4
+    NumOps := 5   { 5 operateurs: +, -, *, /, % }
   Else
-    MaxOp := 3;  { Exclure modulo pour les flottants }
-  Case RandomInt(MaxOp + 1) Of
+    NumOps := 4;  { 4 operateurs sans modulo: +, -, *, / }
+  Case RandomInt(NumOps) Of
     0: GenRandomArithOp := AO_ADD;
     1: GenRandomArithOp := AO_SUB;
     2: GenRandomArithOp := AO_MUL;
