@@ -587,26 +587,29 @@ End;
 
 Procedure ShowHelp;
 Begin
-  WriteLn('KOTLIN86 v', KT86_VERSION, ' - Compilateur Kotlin -> assembleur 8086');
-  WriteLn;
-  WriteLn('Usage: KOTLIN86 <source.kt> [sortie.asm] [-v] [-d] [-w]');
-  WriteLn;
-  WriteLn('  source.kt  : fichier Kotlin source (.kt)');
-  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
-  WriteLn;
-  WriteLn('Options:');
-  WriteLn('  -v   mode verbeux (banniere + statistiques en fin de compilation)');
-  WriteLn('  -d   debug tokens (affiche chaque token lu par le lexeur)');
-  WriteLn('  -w   activer les avertissements');
-  WriteLn('  -h   afficher cette aide');
-  WriteLn;
-  WriteLn('Sous-ensemble Kotlin supporte:');
-  WriteLn('  val/var, fun, if/else/when, while/do-while/for, class/data class,');
-  WriteLn('  object, interface, enum class, lambdas, null safety (?. ?: !!),');
-  WriteLn('  println/print/readLine, String templates, ranges (..)');
-  WriteLn;
-  WriteLn('Sortie: code assembleur MASM 8086 .MODEL SMALL (DOS 16 bits)');
-  Halt(EXIT_OK);
+ WriteLn('KOTLIN86 - Cette commande permet de lancer le compilateur ',
+         'Kotlin pour l''assembleur du microprocesseur 8086.');
+ WriteLn;
+ WriteLn('KOTLIN86 v', KT86_VERSION, ' - Compilateur Kotlin -> assembleur 8086');
+ WriteLn;
+ WriteLn('Usage: KOTLIN86 <source.kt> [sortie.asm] [-v] [-d] [-w]');
+ WriteLn;
+ WriteLn('  source.kt  : fichier Kotlin source (.kt)');
+ WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+ WriteLn;
+ WriteLn('Options:');
+ WriteLn('  -v   mode verbeux (banniere + statistiques en fin de compilation)');
+ WriteLn('  -d   debug tokens (affiche chaque token lu par le lexeur)');
+ WriteLn('  -w   activer les avertissements');
+ WriteLn('  -h   afficher cette aide');
+ WriteLn;
+ WriteLn('Sous-ensemble Kotlin supporte:');
+ WriteLn('  val/var, fun, if/else/when, while/do-while/for, class/data class,');
+ WriteLn('  object, interface, enum class, lambdas, null safety (?. ?: !!),');
+ WriteLn('  println/print/readLine, String templates, ranges (..)');
+ WriteLn;
+ WriteLn('Sortie: code assembleur MASM 8086 .MODEL SMALL (DOS 16 bits)');
+ Halt(EXIT_OK);
 End;
 
 { ---- Utilitaires chaines ------------------------------------ }
