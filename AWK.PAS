@@ -1804,13 +1804,34 @@ Begin
  { Sauter les espaces et chercher '{' }
  SkipSpace;
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
-  { Enregistrer le debut du corps de la fonction }
-  UserFuncs[FuncIdx].BodyStartLine:=CurrLinePtr;
-  UserFuncs[FuncIdx].BodyStartPos:=CurrPos+1;
+  { Avancer apres l'accolade ouvrante }
+  Inc(CurrPos);
+  
+  { Verifier si le reste de la ligne est vide ou juste des espaces }
+  { Si oui, le corps commence a la ligne suivante }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+  
+  If CurrPos>Length(CurrLine) Then Begin
+   { Le reste de la ligne est vide, le corps commence a la ligne suivante }
+   Inc(CurrLinePtr);
+   If CurrLinePtr<=NumberLine Then Begin
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    { Sauter les espaces en debut de ligne }
+    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+   End;
+   UserFuncs[FuncIdx].BodyStartLine:=CurrLinePtr;
+   UserFuncs[FuncIdx].BodyStartPos:=CurrPos;
+  End
+   Else
+  Begin
+   { Le corps commence sur la meme ligne, juste apres { }
+   UserFuncs[FuncIdx].BodyStartLine:=CurrLinePtr;
+   UserFuncs[FuncIdx].BodyStartPos:=CurrPos;
+  End;
   
   { Sauter le bloc de la fonction }
   BlockLevel:=1;
-  Inc(CurrPos);
   While BlockLevel>0 do Begin
    While CurrPos<=Length(CurrLine)do Begin
     If CurrLine[CurrPos]='{' Then Inc(BlockLevel)
@@ -2164,8 +2185,8 @@ Begin
  WriteLn('Erreur: sqrt d''un nombre negatif');
 End;
 
-{ Commande printf - affichage formate }
-Procedure PrintfCommand;
+{ Fonction interne pour le formatage sprintf/printf }
+Function DoSprintf:String;
 Var
  FormatStr,OutputStr,TempStr:String;
  I:Integer;
@@ -2176,6 +2197,8 @@ Var
  IntVal:LongInt;
  Err:Integer;
 Begin
+ DoSprintf:='';
+ OutputStr:='';
  SkipSpace;
  OutputStr:='';
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
@@ -2333,8 +2356,26 @@ Begin
     Inc(I);
    End;
   End;
-  Write(OutputStr);
+  DoSprintf:=OutputStr;
  End;
+End;
+
+{ Commande printf - affichage formate }
+Procedure PrintfCommand;
+Begin
+ Write(DoSprintf);
+End;
+
+{ Commande sprintf - retourne une chaine formatee }
+Procedure SprintfCommand;
+Var
+ ResultStr:String;
+Begin
+ ResultStr:=DoSprintf;
+ { Stocker le resultat dans la variable de retour de fonction }
+ FunctionReturnStr:=ResultStr;
+ FunctionReturnValue:=0;
+ HasFunctionReturn:=True;
 End;
 
 { Evaluation des conditions pour if et switch }
@@ -3797,7 +3838,7 @@ Begin
    52: NoImplementation:=True; { rshift }
    53: SinCommand; { sin }
    54: NoImplementation:=True; { split }
-   55: NoImplementation:=True; { sprintf }
+   55: SprintfCommand; { sprintf }
    56: SqrtCommand; { sqrt }
    57: SRandCommand; { srand }
    58: NoImplementation:=True; { strftime }
@@ -4029,6 +4070,22 @@ Begin
          (UpCase(CurrLine[CurrPos+2])='D')Then Begin
    RuleKind:=RK_END;
    Inc(CurrPos,3);
+  End
+  { Verifier definition de fonction }
+  Else If(CurrPos+7<=Length(CurrLine))and
+        (UpCase(CurrLine[CurrPos])='F')and
+        (UpCase(CurrLine[CurrPos+1])='U')and
+        (UpCase(CurrLine[CurrPos+2])='N')and
+        (UpCase(CurrLine[CurrPos+3])='C')and
+        (UpCase(CurrLine[CurrPos+4])='T')and
+        (UpCase(CurrLine[CurrPos+5])='I')and
+        (UpCase(CurrLine[CurrPos+6])='O')and
+        (UpCase(CurrLine[CurrPos+7])='N')Then Begin
+   { Parser la definition de fonction }
+   Inc(CurrPos,8);
+   ParseFunctionDef;
+   Inc(CurrLinePtr);
+   Continue;
   End
   { Verifier pattern regex /.../ }
   Else If CurrLine[CurrPos]='/'Then Begin
