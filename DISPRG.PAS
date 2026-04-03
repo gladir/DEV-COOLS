@@ -840,7 +840,8 @@ Begin
   NumEntries := H.ph_slen Div SYM_ENTRY_SIZE;
   If NumEntries > MAX_SYMBOLS Then Begin
     WriteLn('Avertissement: ', IntToStr(NumEntries),
-            ' symboles, limite a ', IntToStr(MAX_SYMBOLS));
+            ' symboles trouves, seuls les ', IntToStr(MAX_SYMBOLS),
+            ' premiers seront traites');
     NumEntries := MAX_SYMBOLS;
   End;
   P := PByteArray(ImageBuffer);
@@ -855,7 +856,7 @@ Begin
     { Lire le nom (8 caracteres) }
     For J := 0 To 7 Do Begin
       C := Chr(P^[Ofs + J]);
-      If (C < ' ') Or (C > '~') Then C := ' ';
+      If (C < ' ') Or (C > '~') Then C := '_';
       Symbols[I].sym_name[J] := C;
     End;
     { Lire le type (Word big-endian) }
