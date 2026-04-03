@@ -123,9 +123,11 @@
             FirstPass, ShowFirstPassResults, CountXRefs,
             CountCallXRefs, CountBranchXRefs.
 
-  TODO 16 - DETECTION DES SOUS-PROGRAMMES [A FAIRE]
-            Identifier les cibles de BSR/JSR, detecter LINK/UNLK,
-            MOVEM, prologues et epilogues de fonctions.
+  TODO 16 - DETECTION DES SOUS-PROGRAMMES [IMPLEMENTE]
+            IsLinkA6, IsUnlkA6, IsMovemPush, IsMovemPop, IsRtsAt,
+            GetLinkDisp, RegMaskToStr, HasStdPrologue,
+            HasStdEpilogue, DetectSubroutines, ShowSubroutines,
+            CountSubroutines, IsSubroutine.
 
   TODO 17 - DETECTION DES APPELS SYSTEME TOS [A FAIRE]
             TRAP #1 (GEMDOS), TRAP #13 (BIOS), TRAP #14 (XBIOS),
@@ -3458,6 +3460,244 @@ Begin
 End;
 
 { ============================================================
+  TODO 16 - DETECTION DES SOUS-PROGRAMMES [IMPLEMENTE]
+  ============================================================ }
+
+{ --- IsLinkA6 : est-ce une instruction LINK A6,#disp ? --- }
+{     LINK A6 = $4E56 (opcode $4E50 | registre A6 = 6)      }
+
+Function IsLinkA6(Ofs: LongInt): Boolean;
+Begin
+  IsLinkA6 := False;
+  If Ofs + 3 >= ImageSize Then Exit;
+  IsLinkA6 := (ReadBEWordMem(Ofs) = $4E56);
+End;
+
+{ --- IsUnlkA6 : est-ce une instruction UNLK A6 ? --- }
+{     UNLK A6 = $4E5E (opcode $4E58 | registre A6 = 6) }
+
+Function IsUnlkA6(Ofs: LongInt): Boolean;
+Begin
+  IsUnlkA6 := False;
+  If Ofs + 1 >= ImageSize Then Exit;
+  IsUnlkA6 := (ReadBEWordMem(Ofs) = $4E5E);
+End;
+
+{ --- IsMovemPush : est-ce MOVEM.L reglist,-(SP) ? --- }
+{     MOVEM.L reglist,-(A7) = $48E7                     }
+
+Function IsMovemPush(Ofs: LongInt): Boolean;
+Begin
+  IsMovemPush := False;
+  If Ofs + 3 >= ImageSize Then Exit;
+  IsMovemPush := (ReadBEWordMem(Ofs) = $48E7);
+End;
+
+{ --- IsMovemPop : est-ce MOVEM.L (SP)+,reglist ? --- }
+{     MOVEM.L (A7)+,reglist = $4CDF                    }
+
+Function IsMovemPop(Ofs: LongInt): Boolean;
+Begin
+  IsMovemPop := False;
+  If Ofs + 3 >= ImageSize Then Exit;
+  IsMovemPop := (ReadBEWordMem(Ofs) = $4CDF);
+End;
+
+{ --- IsRtsAt : est-ce une instruction RTS ($4E75) ? --- }
+
+Function IsRtsAt(Ofs: LongInt): Boolean;
+Begin
+  IsRtsAt := False;
+  If Ofs + 1 >= ImageSize Then Exit;
+  IsRtsAt := (ReadBEWordMem(Ofs) = $4E75);
+End;
+
+{ --- GetLinkDisp : obtenir le deplacement LINK A6,#disp --- }
+
+Function GetLinkDisp(Ofs: LongInt): LongInt;
+Begin
+  GetLinkDisp := SignExtWord(ReadBEWordMem(Ofs + 2));
+End;
+
+{ --- RegMaskToStr : convertir un masque de registres en texte --- }
+{     Si Reversed=True (push -(SP)) : bit 15=D0, bit 0=A7        }
+{     Si Reversed=False (pop (SP)+) : bit 0=D0, bit 15=A7        }
+
+Function RegMaskToStr(Mask: Word; Reversed: Boolean): String;
+Var
+  S: String;
+  Reg: Integer;
+  BitPos: Integer;
+Begin
+  S := '';
+  For Reg := 0 To 15 Do Begin
+    If Reversed Then
+      BitPos := 15 - Reg
+    Else
+      BitPos := Reg;
+    If ((Mask Shr BitPos) And 1) <> 0 Then Begin
+      If S <> '' Then S := S + '/';
+      If Reg < 8 Then
+        S := S + 'D' + Chr(Ord('0') + Reg)
+      Else
+        S := S + 'A' + Chr(Ord('0') + (Reg - 8));
+    End;
+  End;
+  RegMaskToStr := S;
+End;
+
+{ --- HasStdPrologue : est-ce un prologue standard ? --- }
+{     LINK A6,#-nn et/ou MOVEM.L reglist,-(SP)          }
+
+Function HasStdPrologue(Addr: LongInt): Boolean;
+Var
+  Ofs: LongInt;
+Begin
+  Ofs := TextOffset + Addr;
+  HasStdPrologue := IsLinkA6(Ofs) Or IsMovemPush(Ofs);
+End;
+
+{ --- HasStdEpilogue : a-t-il un epilogue standard ? --- }
+{     Scanne depuis Addr jusqu'au premier RTS et verifie }
+{     UNLK A6 et/ou MOVEM.L (SP)+,reglist avant le RTS  }
+
+Function HasStdEpilogue(Addr: LongInt; TextLen: LongInt): Boolean;
+Var
+  Ofs: LongInt;
+  Inf: TInstructionInfo;
+  PC: LongInt;
+  Limit: LongInt;
+Begin
+  HasStdEpilogue := False;
+  Ofs := TextOffset + Addr;
+  Limit := TextOffset + TextLen;
+  If Ofs + 2048 < Limit Then
+    Limit := Ofs + 2048;
+  While Ofs < Limit Do Begin
+    PC := Ofs - TextOffset;
+    If IsRtsAt(Ofs) Then Begin
+      { Verifier UNLK A6 juste avant RTS }
+      If (Ofs >= TextOffset + 2) And IsUnlkA6(Ofs - 2) Then Begin
+        HasStdEpilogue := True;
+        Exit;
+      End;
+      { Verifier MOVEM.L (SP)+,reglist juste avant RTS }
+      If (Ofs >= TextOffset + 4) And IsMovemPop(Ofs - 4) Then Begin
+        HasStdEpilogue := True;
+        Exit;
+      End;
+      Exit; { Premier RTS trouve, arreter }
+    End;
+    DecodeInstruction(Ofs, PC, Inf);
+    If Inf.TotalSize < 2 Then
+      Ofs := Ofs + 2
+    Else
+      Ofs := Ofs + Inf.TotalSize;
+  End;
+End;
+
+{ --- DetectSubroutines : detecter les sous-programmes --- }
+{     Parcourt les labels et identifie les sous-programmes }
+{     par les cibles BSR/JSR et les prologues standards.   }
+{     Les labels avec prologue mais sans IsProc sont        }
+{     promus en sous-programmes (sub_XXXXXXXX).            }
+
+Procedure DetectSubroutines(TextLen: LongInt);
+Var
+  I: Integer;
+Begin
+  SubCount := 0;
+  For I := 1 To LabelCount Do Begin
+    If (Labels[I].Section = 0) And Labels[I].IsProc Then Begin
+      Inc(SubCount);
+    End Else If (Labels[I].Section = 0) And (Not Labels[I].IsProc)
+              And HasStdPrologue(Labels[I].Address) Then Begin
+      { Ce label n'etait pas marque comme sous-programme mais a }
+      { un prologue standard : le promouvoir en sous-programme  }
+      Labels[I].IsProc := True;
+      If Pos('loc_', Labels[I].Name) = 1 Then
+        Labels[I].Name := 'sub_' + HexLong(Labels[I].Address);
+      Inc(SubCount);
+    End;
+  End;
+End;
+
+{ --- ShowSubroutines : afficher les sous-programmes detectes --- }
+
+Procedure ShowSubroutines(Verbose: Boolean);
+Var
+  I: Integer;
+  Ofs: LongInt;
+  Disp: LongInt;
+  RegMask: Word;
+  ProStr: String;
+  EpiStr: String;
+Begin
+  If Not Verbose Then Exit;
+  WriteLn;
+  WriteLn('=== Detection des sous-programmes ===');
+  WriteLn;
+  WriteLn('Sous-programmes detectes : ', IntToStr(SubCount));
+  If SubCount = 0 Then Exit;
+  WriteLn;
+  WriteLn('  Adresse     Nom              Prologue             Epilogue');
+  WriteLn('  ----------  ---------------  -------------------  --------');
+  For I := 1 To LabelCount Do Begin
+    If (Labels[I].Section = 0) And Labels[I].IsProc Then Begin
+      Ofs := TextOffset + Labels[I].Address;
+      { Analyser le prologue }
+      ProStr := '';
+      If IsLinkA6(Ofs) Then Begin
+        Disp := GetLinkDisp(Ofs);
+        ProStr := 'LINK A6,#' + IntToStr(Disp);
+        If IsMovemPush(Ofs + 4) Then Begin
+          RegMask := ReadBEWordMem(Ofs + 6);
+          ProStr := ProStr + '+MOVEM';
+        End;
+      End Else If IsMovemPush(Ofs) Then Begin
+        RegMask := ReadBEWordMem(Ofs + 2);
+        ProStr := 'MOVEM ' + RegMaskToStr(RegMask, True);
+      End;
+      If ProStr = '' Then
+        ProStr := '(aucun)';
+      { Analyser l'epilogue }
+      If HasStdEpilogue(Labels[I].Address, Header.ph_tlen) Then
+        EpiStr := 'oui'
+      Else
+        EpiStr := '(aucun)';
+      { Afficher la ligne }
+      Write('  $', HexLong(Labels[I].Address));
+      Write('  ', Labels[I].Name);
+      If Length(Labels[I].Name) < 15 Then
+        Write('' : 15 - Length(Labels[I].Name));
+      Write('  ', ProStr);
+      If Length(ProStr) < 19 Then
+        Write('' : 19 - Length(ProStr));
+      WriteLn('  ', EpiStr);
+    End;
+  End;
+End;
+
+{ --- CountSubroutines : compter les sous-programmes --- }
+
+Function CountSubroutines: LongInt;
+Begin
+  CountSubroutines := SubCount;
+End;
+
+{ --- IsSubroutine : verifier si une adresse est un sous-programme --- }
+
+Function IsSubroutine(Addr: LongInt): Boolean;
+Var
+  Idx: Integer;
+Begin
+  IsSubroutine := False;
+  Idx := FindLabelByAddr(Addr, 0);
+  If Idx > 0 Then
+    IsSubroutine := Labels[Idx].IsProc;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -3568,9 +3808,18 @@ Begin
               IntToStr(CountBranchXRefs), ' branchements)');
     End;
   End;
+  { Detection des sous-programmes et des points d'entree }
+  If Header.ph_tlen > 0 Then Begin
+    DetectSubroutines(Header.ph_tlen);
+    ShowSubroutines(Opts.Verbose);
+    If Opts.Verbose Then Begin
+      WriteLn;
+      WriteLn('Sous-programmes : ', IntToStr(CountSubroutines));
+    End;
+  End;
   { Liberer la memoire }
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-15 [IMPLEMENTE], TODOs 16-25 [A FAIRE]');
+          ' - TODOs 01-16 [IMPLEMENTE], TODOs 17-25 [A FAIRE]');
 End.

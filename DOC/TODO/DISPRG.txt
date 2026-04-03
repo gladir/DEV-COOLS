@@ -142,7 +142,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       distinguer le code des donnees intercalees.
       Utiliser les symboles de la table DRI comme labels initiaux.
 
-  16. [A FAIRE] Detection des sous-programmes et des points d'entree.
+  16. [IMPLEMENTE] Detection des sous-programmes et des points d'entree.
       A partir du point d'entree (offset 0 de TEXT) et des cibles
       de BSR/JSR, identifier les debuts de sous-programmes.
       Attribuer un label automatique a chaque sous-programme
