@@ -273,6 +273,17 @@ Type
     IsCall   : Boolean;   { BSR/JSR (True) ou BRA/Bcc/JMP (False) }
   End;
 
+  { Information d'une instruction decodee }
+  TInstructionInfo = Record
+    Offset    : LongInt;    { offset dans l'image memoire         }
+    OpWord    : Word;       { mot d'instruction (16 bits)         }
+    Mnemonic  : String[15]; { mnemonique avec suffixe de taille   }
+    Operands  : TString;    { operandes formatees                 }
+    TotalSize : Byte;       { taille totale en octets (2,4,6,...) }
+    OpcIdx    : Integer;    { index dans OpcodeTable (0=inconnu)  }
+    IsValid   : Boolean;    { instruction valide ?                }
+  End;
+
   { Entree de la table des opcodes 68000 }
   TOpcodeEntry = Record
     Mask     : Word;      { masque de bits pour l'identification       }
@@ -338,6 +349,13 @@ Var
   { Table des opcodes 68000 }
   OpcodeTable : Array[1..MAX_OPCODES] Of TOpcodeEntry;
   OpcodeCount : Integer;
+
+  { Instruction en cours de decodage }
+  TmpInfo     : TInstructionInfo;
+
+  { Variables pour le desassemblage }
+  CurOfs      : LongInt;
+  EndOfs      : LongInt;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
@@ -2440,6 +2458,705 @@ Begin
 End;
 
 { ============================================================
+  TODO 14 - DECODAGE D'UNE INSTRUCTION COMPLETE [IMPLEMENTE]
+  ============================================================ }
+
+{ --- CondCodeToStr : convertir un code condition 68000 en chaine --- }
+
+Function CondCodeToStr(CC: Byte): String;
+Begin
+  Case CC Of
+    0:  CondCodeToStr := 'T';    { True (always)    }
+    1:  CondCodeToStr := 'F';    { False (never)    }
+    2:  CondCodeToStr := 'HI';   { HIgher           }
+    3:  CondCodeToStr := 'LS';   { Lower or Same    }
+    4:  CondCodeToStr := 'CC';   { Carry Clear      }
+    5:  CondCodeToStr := 'CS';   { Carry Set        }
+    6:  CondCodeToStr := 'NE';   { Not Equal        }
+    7:  CondCodeToStr := 'EQ';   { EQual            }
+    8:  CondCodeToStr := 'VC';   { oVerflow Clear   }
+    9:  CondCodeToStr := 'VS';   { oVerflow Set     }
+    10: CondCodeToStr := 'PL';   { PLus             }
+    11: CondCodeToStr := 'MI';   { MInus            }
+    12: CondCodeToStr := 'GE';   { Greater or Equal }
+    13: CondCodeToStr := 'LT';   { Less Than        }
+    14: CondCodeToStr := 'GT';   { Greater Than     }
+    15: CondCodeToStr := 'LE';   { Less or Equal    }
+  Else
+    CondCodeToStr := '??';
+  End;
+End;
+
+{ --- MnemonicSize : retourner le mnemonique avec le suffixe de taille --- }
+
+Function MnemonicSize(Mnem: String; Size: Byte): String;
+Begin
+  MnemonicSize := Mnem + SizeToStr(Size);
+End;
+
+{ --- DecodeInstruction : decoder une instruction complete 68000 --- }
+{     Ofs = offset dans ImageBuffer (relatif a TextOffset)          }
+{     PC  = adresse logique de l'instruction (pour Bcc/PC-relatif)  }
+
+Procedure DecodeInstruction(Ofs: LongInt; PC: LongInt;
+                            Var Info: TInstructionInfo);
+Var
+  OpWord     : Word;
+  Idx        : Integer;
+  Fmt        : Byte;
+  OpSize     : Byte;
+  SrcMode    : Byte;
+  SrcReg     : Byte;
+  DstMode    : Byte;
+  DstReg     : Byte;
+  Reg9       : Byte;
+  ExtB       : Byte;
+  ExtB2      : Byte;
+  TotalExt   : Byte;
+  Disp8      : LongInt;
+  Disp16     : LongInt;
+  ImmW       : Word;
+  ImmL       : LongInt;
+  ImmVal     : LongInt;
+  CC         : Byte;
+  VecNum     : Byte;
+  RegMask    : Word;
+  Direction  : Byte;
+  BitNum     : Byte;
+  SrcStr     : String;
+  DstStr     : String;
+  Mnem       : String;
+  TargetAddr : LongInt;
+Begin
+  Info.Offset    := Ofs;
+  Info.Operands  := '';
+  Info.TotalSize := 2;
+  Info.OpcIdx    := 0;
+  Info.IsValid   := False;
+  Info.Mnemonic  := '';
+
+  { Lire le mot d'instruction }
+  If Ofs + 1 >= ImageSize Then Begin
+    Info.Mnemonic := 'DC.W';
+    Info.IsValid  := False;
+    Exit;
+  End;
+  OpWord := ReadBEWordMem(Ofs);
+  Info.OpWord := OpWord;
+
+  { Chercher dans la table des opcodes }
+  Idx := FindOpcode(OpWord);
+  If Idx = 0 Then Begin
+    Info.Mnemonic  := 'DC.W';
+    Info.Operands  := '$' + HexWord(OpWord);
+    Info.TotalSize := 2;
+    Exit;
+  End;
+
+  Info.OpcIdx  := Idx;
+  Info.IsValid := True;
+  Fmt  := OpcodeTable[Idx].OpFormat;
+  Mnem := OpcodeTable[Idx].Mnemonic;
+  TotalExt := 0;
+
+  { Extraire les champs courants du mot d'instruction }
+  SrcMode := (OpWord Shr 3) And 7;
+  SrcReg  := OpWord And 7;
+  Reg9    := (OpWord Shr 9) And 7;
+
+  Case Fmt Of
+
+    { --- FMT_NONE : pas d'operande (NOP, RTS, RTE, RTR, RESET, ILLEGAL) --- }
+    FMT_NONE: Begin
+      Info.Mnemonic := Mnem;
+    End;
+
+    { --- FMT_EA_EA : MOVE ea,ea --- }
+    FMT_EA_EA: Begin
+      { Taille : bits 13-12 : 01=B, 11=W, 10=L }
+      Case (OpWord Shr 12) And 3 Of
+        1: OpSize := 0; { byte }
+        3: OpSize := 1; { word }
+        2: OpSize := 2; { long }
+      Else
+        OpSize := 1;
+      End;
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      { Source : mode=bits 5-3, reg=bits 2-0 }
+      SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, OpSize, PC, ExtB);
+      TotalExt := ExtB;
+      { Destination : mode=bits 8-6, reg=bits 11-9 }
+      DstMode := (OpWord Shr 6) And 7;
+      DstReg  := Reg9;
+      DstStr := DecodeEA(DstMode, DstReg, Ofs + 2 + TotalExt, OpSize,
+                          PC, ExtB2);
+      TotalExt := TotalExt + ExtB2;
+      Info.Operands := SrcStr + ',' + DstStr;
+    End;
+
+    { --- FMT_EA_AN : MOVEA ea,An --- }
+    FMT_EA_AN: Begin
+      { Taille : bit 12 : 0=W, 1=L (dans le mot d'opcode) }
+      If (OpWord And $1000) <> 0 Then
+        OpSize := 1  { word }
+      Else
+        OpSize := 2; { long }
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, OpSize, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := SrcStr + ',A' + IntToStr(Reg9);
+    End;
+
+    { --- FMT_IMM8_DN : MOVEQ #imm8,Dn --- }
+    FMT_IMM8_DN: Begin
+      Info.Mnemonic := Mnem;
+      Disp8 := SignExtByte(Byte(OpWord And $FF));
+      Info.Operands := '#' + IntToStr(Disp8) + ',D' + IntToStr(Reg9);
+    End;
+
+    { --- FMT_REGLIST : MOVEM reglist,ea / ea,reglist --- }
+    FMT_REGLIST: Begin
+      { Taille : bit 6 : 0=W, 1=L }
+      If (OpWord And $0040) <> 0 Then
+        OpSize := 2  { long }
+      Else
+        OpSize := 1; { word }
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      { Direction : bit 10 : 0 = reg-to-mem, 1 = mem-to-reg }
+      Direction := (OpWord Shr 10) And 1;
+      { Masque de registres = mot suivant }
+      RegMask := ReadBEWordMem(Ofs + 2);
+      TotalExt := 2;
+      SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 4, OpSize, PC, ExtB);
+      TotalExt := TotalExt + ExtB;
+      If Direction = 0 Then
+        { reg-to-mem : reglist,ea }
+        Info.Operands := DecodeRegList(RegMask, Direction) + ',' + SrcStr
+      Else
+        { mem-to-reg : ea,reglist }
+        Info.Operands := SrcStr + ',' + DecodeRegList(RegMask, Direction);
+    End;
+
+    { --- FMT_DN_AN : MOVEP Dn,d16(An) / d16(An),Dn --- }
+    FMT_DN_AN: Begin
+      { Taille : bit 6 : 0=W, 1=L }
+      If (OpWord And $0040) <> 0 Then
+        OpSize := 2
+      Else
+        OpSize := 1;
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      Disp16 := SignExtWord(ReadBEWordMem(Ofs + 2));
+      TotalExt := 2;
+      { Direction : bit 7 : 0 = mem-to-reg, 1 = reg-to-mem }
+      If (OpWord And $0080) <> 0 Then Begin
+        { reg-to-mem : Dn,d16(An) }
+        If Disp16 >= 0 Then
+          Info.Operands := 'D' + IntToStr(Reg9) + ',' +
+                           IntToStr(Disp16) + '(A' + IntToStr(SrcReg) + ')'
+        Else
+          Info.Operands := 'D' + IntToStr(Reg9) + ',-' +
+                           IntToStr(-Disp16) + '(A' + IntToStr(SrcReg) + ')';
+      End Else Begin
+        { mem-to-reg : d16(An),Dn }
+        If Disp16 >= 0 Then
+          Info.Operands := IntToStr(Disp16) + '(A' + IntToStr(SrcReg) +
+                           ')' + ',D' + IntToStr(Reg9)
+        Else
+          Info.Operands := '-' + IntToStr(-Disp16) + '(A' +
+                           IntToStr(SrcReg) + ')' + ',D' + IntToStr(Reg9);
+      End;
+    End;
+
+    { --- FMT_DN_DN : EXG Dn,Dn / An,An / Dn,An --- }
+    FMT_DN_DN: Begin
+      Info.Mnemonic := Mnem;
+      Case (OpWord Shr 3) And $1F Of
+        $08: { Dn,Dn }
+          Info.Operands := 'D' + IntToStr(Reg9) + ',D' + IntToStr(SrcReg);
+        $09: { An,An }
+          Info.Operands := 'A' + IntToStr(Reg9) + ',A' + IntToStr(SrcReg);
+        $11: { Dn,An }
+          Info.Operands := 'D' + IntToStr(Reg9) + ',A' + IntToStr(SrcReg);
+      Else
+        Info.Operands := '???';
+      End;
+    End;
+
+    { --- FMT_DN : SWAP Dn --- }
+    FMT_DN: Begin
+      Info.Mnemonic := Mnem;
+      Info.Operands := 'D' + IntToStr(SrcReg);
+    End;
+
+    { --- FMT_EA_AN2 : LEA ea,An --- }
+    FMT_EA_AN2: Begin
+      Info.Mnemonic := Mnem;
+      SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, 2, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := SrcStr + ',A' + IntToStr(Reg9);
+    End;
+
+    { --- FMT_EA : PEA ea / CLR ea / TST ea / TAS ea --- }
+    FMT_EA: Begin
+      { Verifier si le mnemonique contient un suffixe de taille }
+      OpSize := 1; { defaut word }
+      If Pos('.B', Mnem) > 0 Then OpSize := 0
+      Else If Pos('.L', Mnem) > 0 Then OpSize := 2
+      Else If Pos('.W', Mnem) > 0 Then OpSize := 1;
+      Info.Mnemonic := Mnem;
+      SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, OpSize, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := SrcStr;
+    End;
+
+    { --- FMT_AN_DISP : LINK An,#disp --- }
+    FMT_AN_DISP: Begin
+      Info.Mnemonic := Mnem;
+      Disp16 := SignExtWord(ReadBEWordMem(Ofs + 2));
+      TotalExt := 2;
+      Info.Operands := 'A' + IntToStr(SrcReg) + ',#' + IntToStr(Disp16);
+    End;
+
+    { --- FMT_AN : UNLK An --- }
+    FMT_AN: Begin
+      Info.Mnemonic := Mnem;
+      Info.Operands := 'A' + IntToStr(SrcReg);
+    End;
+
+    { --- FMT_EA_DN : ADD ea,Dn / SUB ea,Dn / AND ea,Dn / OR ea,Dn --- }
+    { ---             CMP ea,Dn                                        --- }
+    FMT_EA_DN: Begin
+      { Taille : bits 7-6 : 00=B, 01=W, 10=L }
+      OpSize := (OpWord Shr 6) And 3;
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, OpSize, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := SrcStr + ',D' + IntToStr(Reg9);
+    End;
+
+    { --- FMT_DN_EA : ADD Dn,ea / SUB Dn,ea / AND Dn,ea / OR Dn,ea --- }
+    { ---             EOR Dn,ea                                       --- }
+    FMT_DN_EA: Begin
+      { Taille : bits 7-6 : 00=B, 01=W, 10=L }
+      OpSize := (OpWord Shr 6) And 3;
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      DstStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, OpSize, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := 'D' + IntToStr(Reg9) + ',' + DstStr;
+    End;
+
+    { --- FMT_EA_AN3 : ADDA ea,An / SUBA ea,An / CMPA ea,An --- }
+    FMT_EA_AN3: Begin
+      { Taille : bit 8 : 0=W, 1=L }
+      If (OpWord And $0100) <> 0 Then
+        OpSize := 2
+      Else
+        OpSize := 1;
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, OpSize, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := SrcStr + ',A' + IntToStr(Reg9);
+    End;
+
+    { --- FMT_IMM_EA : ADDI #imm,ea / SUBI / ANDI / ORI / EORI / CMPI --- }
+    FMT_IMM_EA: Begin
+      { Taille : bits 7-6 : 00=B, 01=W, 10=L }
+      OpSize := (OpWord Shr 6) And 3;
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      { Lire l'immediat }
+      If OpSize = 2 Then Begin
+        ImmL := ReadBELongMem(Ofs + 2);
+        TotalExt := 4;
+        SrcStr := '#$' + HexLong(ImmL);
+      End Else If OpSize = 0 Then Begin
+        ImmW := ReadBEWordMem(Ofs + 2);
+        TotalExt := 2;
+        SrcStr := '#$' + HexByte(Byte(ImmW And $FF));
+      End Else Begin
+        ImmW := ReadBEWordMem(Ofs + 2);
+        TotalExt := 2;
+        SrcStr := '#$' + HexWord(ImmW);
+      End;
+      DstStr := DecodeEA(SrcMode, SrcReg, Ofs + 2 + TotalExt, OpSize,
+                          PC, ExtB);
+      TotalExt := TotalExt + ExtB;
+      Info.Operands := SrcStr + ',' + DstStr;
+    End;
+
+    { --- FMT_IMM3_EA : ADDQ #1-8,ea / SUBQ #1-8,ea --- }
+    FMT_IMM3_EA: Begin
+      { Taille : bits 7-6 : 00=B, 01=W, 10=L }
+      OpSize := (OpWord Shr 6) And 3;
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      { Immediat 3 bits : bits 11-9, 0 signifie 8 }
+      ImmVal := Reg9;
+      If ImmVal = 0 Then ImmVal := 8;
+      DstStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, OpSize, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := '#' + IntToStr(ImmVal) + ',' + DstStr;
+    End;
+
+    { --- FMT_DN_DN2 : ADDX Dn,Dn / SUBX Dn,Dn / CMPM (An)+,(An)+ --- }
+    FMT_DN_DN2: Begin
+      { Taille : bits 7-6 : 00=B, 01=W, 10=L }
+      OpSize := (OpWord Shr 6) And 3;
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      { Verifier si c'est CMPM (mode (An)+) ou ADDX/SUBX (Dn ou -(An)) }
+      If Pos('CMPM', Mnem) > 0 Then
+        Info.Operands := '(A' + IntToStr(SrcReg) + ')+,(A' +
+                          IntToStr(Reg9) + ')+'
+      Else If (OpWord And $0008) <> 0 Then
+        { Mode -(An) }
+        Info.Operands := '-(A' + IntToStr(SrcReg) + '),-(A' +
+                          IntToStr(Reg9) + ')'
+      Else
+        Info.Operands := 'D' + IntToStr(SrcReg) + ',D' + IntToStr(Reg9);
+    End;
+
+    { --- FMT_WORD_DN : MULU ea,Dn / MULS ea,Dn / DIVU / DIVS --- }
+    FMT_WORD_DN: Begin
+      OpSize := 1;  { toujours word }
+      Info.Mnemonic := Mnem;
+      SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, OpSize, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := SrcStr + ',D' + IntToStr(Reg9);
+    End;
+
+    { --- FMT_DN2 : NOT / NEG / NEGX / EXT --- }
+    FMT_DN2: Begin
+      { Verifier si le mnemonique contient deja un suffixe }
+      OpSize := 1;
+      If Pos('.B', Mnem) > 0 Then OpSize := 0
+      Else If Pos('.L', Mnem) > 0 Then OpSize := 2
+      Else If Pos('.W', Mnem) > 0 Then OpSize := 1;
+      Info.Mnemonic := Mnem;
+      Info.Operands := 'D' + IntToStr(SrcReg);
+    End;
+
+    { --- FMT_SH_REG : ASL/ASR/LSL/LSR/ROL/ROR Dn,Dn (register count) --- }
+    FMT_SH_REG: Begin
+      { Taille : bits 7-6 : 00=B, 01=W, 10=L }
+      OpSize := (OpWord Shr 6) And 3;
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      Info.Operands := 'D' + IntToStr(Reg9) + ',D' + IntToStr(SrcReg);
+    End;
+
+    { --- FMT_SH_IMM : ASL/ASR/LSL/LSR/ROL/ROR #imm3,Dn --- }
+    FMT_SH_IMM: Begin
+      { Taille : bits 7-6 : 00=B, 01=W, 10=L }
+      OpSize := (OpWord Shr 6) And 3;
+      Info.Mnemonic := MnemonicSize(Mnem, OpSize);
+      { Immediat 3 bits : bits 11-9, 0 signifie 8 }
+      ImmVal := Reg9;
+      If ImmVal = 0 Then ImmVal := 8;
+      Info.Operands := '#' + IntToStr(ImmVal) + ',D' + IntToStr(SrcReg);
+    End;
+
+    { --- FMT_SH_MEM : ASL/ASR/LSL/LSR/ROL/ROR ea (1 bit, word) --- }
+    FMT_SH_MEM: Begin
+      OpSize := 1;  { toujours word pour les decalages memoire }
+      Info.Mnemonic := Mnem;
+      DstStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, OpSize, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := DstStr;
+    End;
+
+    { --- FMT_BRA : BRA/BSR/Bcc d8/d16 --- }
+    FMT_BRA: Begin
+      Disp8 := SignExtByte(Byte(OpWord And $FF));
+      { Extraire le code condition (bits 11-8) }
+      CC := (OpWord Shr 8) And $0F;
+      If Disp8 = 0 Then Begin
+        { Deplacement 16 bits dans le mot suivant }
+        Disp16 := SignExtWord(ReadBEWordMem(Ofs + 2));
+        TotalExt := 2;
+        TargetAddr := PC + 2 + Disp16;
+      End Else Begin
+        { Deplacement 8 bits dans le mot d'instruction }
+        TargetAddr := PC + 2 + Disp8;
+      End;
+      { Construire le mnemonique avec le code condition }
+      If CC = 0 Then
+        Info.Mnemonic := 'BRA'
+      Else If CC = 1 Then
+        Info.Mnemonic := 'BSR'
+      Else
+        Info.Mnemonic := 'B' + CondCodeToStr(CC);
+      If Disp8 = 0 Then
+        Info.Mnemonic := Info.Mnemonic + '.W'
+      Else
+        Info.Mnemonic := Info.Mnemonic + '.S';
+      Info.Operands := '$' + HexLong(TargetAddr);
+    End;
+
+    { --- FMT_DBCC : DBcc Dn,d16 --- }
+    FMT_DBCC: Begin
+      CC := (OpWord Shr 8) And $0F;
+      Disp16 := SignExtWord(ReadBEWordMem(Ofs + 2));
+      TotalExt := 2;
+      TargetAddr := PC + 2 + Disp16;
+      If CC = 0 Then
+        Info.Mnemonic := 'DBT'
+      Else If CC = 1 Then
+        Info.Mnemonic := 'DBRA'
+      Else
+        Info.Mnemonic := 'DB' + CondCodeToStr(CC);
+      Info.Operands := 'D' + IntToStr(SrcReg) + ',$' +
+                        HexLong(TargetAddr);
+    End;
+
+    { --- FMT_SCC : Scc ea --- }
+    FMT_SCC: Begin
+      CC := (OpWord Shr 8) And $0F;
+      If CC = 0 Then
+        Info.Mnemonic := 'ST'
+      Else If CC = 1 Then
+        Info.Mnemonic := 'SF'
+      Else
+        Info.Mnemonic := 'S' + CondCodeToStr(CC);
+      OpSize := 0;  { byte }
+      DstStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, OpSize, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := DstStr;
+    End;
+
+    { --- FMT_EA2 : JMP ea / JSR ea --- }
+    FMT_EA2: Begin
+      Info.Mnemonic := Mnem;
+      SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, 2, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := SrcStr;
+    End;
+
+    { --- FMT_IMM16 : STOP #imm16 --- }
+    FMT_IMM16: Begin
+      Info.Mnemonic := Mnem;
+      ImmW := ReadBEWordMem(Ofs + 2);
+      TotalExt := 2;
+      Info.Operands := '#$' + HexWord(ImmW);
+    End;
+
+    { --- FMT_TRAP : TRAP #vector (0-15) --- }
+    FMT_TRAP: Begin
+      Info.Mnemonic := Mnem;
+      VecNum := OpWord And $000F;
+      Info.Operands := '#' + IntToStr(VecNum);
+    End;
+
+    { --- FMT_BIT_DN : BTST/BSET/BCLR/BCHG Dn,ea --- }
+    FMT_BIT_DN: Begin
+      Info.Mnemonic := Mnem;
+      DstStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, 0, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := 'D' + IntToStr(Reg9) + ',' + DstStr;
+    End;
+
+    { --- FMT_BIT_IMM : BTST/BSET/BCLR/BCHG #imm,ea --- }
+    FMT_BIT_IMM: Begin
+      Info.Mnemonic := Mnem;
+      ImmW := ReadBEWordMem(Ofs + 2);
+      BitNum := Byte(ImmW And $FF);
+      TotalExt := 2;
+      DstStr := DecodeEA(SrcMode, SrcReg, Ofs + 4, 0, PC, ExtB);
+      TotalExt := TotalExt + ExtB;
+      Info.Operands := '#' + IntToStr(BitNum) + ',' + DstStr;
+    End;
+
+    { --- FMT_SR : MOVE ea,SR / MOVE SR,ea --- }
+    FMT_SR: Begin
+      Info.Mnemonic := Mnem;
+      If (OpWord And $0400) <> 0 Then Begin
+        { MOVE ea,SR }
+        SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, 1, PC, ExtB);
+        TotalExt := ExtB;
+        Info.Operands := SrcStr + ',SR';
+      End Else Begin
+        { MOVE SR,ea }
+        DstStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, 1, PC, ExtB);
+        TotalExt := ExtB;
+        Info.Operands := 'SR,' + DstStr;
+      End;
+    End;
+
+    { --- FMT_CCR : MOVE ea,CCR / MOVE CCR,ea --- }
+    FMT_CCR: Begin
+      Info.Mnemonic := Mnem;
+      If (OpWord And $0400) <> 0 Then Begin
+        { MOVE ea,CCR }
+        SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, 1, PC, ExtB);
+        TotalExt := ExtB;
+        Info.Operands := SrcStr + ',CCR';
+      End Else Begin
+        { MOVE CCR,ea }
+        DstStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, 1, PC, ExtB);
+        TotalExt := ExtB;
+        Info.Operands := 'CCR,' + DstStr;
+      End;
+    End;
+
+    { --- FMT_USP : MOVE USP,An / MOVE An,USP --- }
+    FMT_USP: Begin
+      Info.Mnemonic := Mnem;
+      If (OpWord And $0008) <> 0 Then
+        { MOVE USP,An }
+        Info.Operands := 'USP,A' + IntToStr(SrcReg)
+      Else
+        { MOVE An,USP }
+        Info.Operands := 'A' + IntToStr(SrcReg) + ',USP';
+    End;
+
+    { --- FMT_IMM_SR : ANDI/ORI/EORI #imm,SR --- }
+    FMT_IMM_SR: Begin
+      Info.Mnemonic := Mnem;
+      ImmW := ReadBEWordMem(Ofs + 2);
+      TotalExt := 2;
+      Info.Operands := '#$' + HexWord(ImmW) + ',SR';
+    End;
+
+    { --- FMT_IMM_CCR : ANDI/ORI/EORI #imm,CCR --- }
+    FMT_IMM_CCR: Begin
+      Info.Mnemonic := Mnem;
+      ImmW := ReadBEWordMem(Ofs + 2);
+      TotalExt := 2;
+      Info.Operands := '#$' + HexByte(Byte(ImmW And $FF)) + ',CCR';
+    End;
+
+    { --- FMT_CHK : CHK ea,Dn --- }
+    FMT_CHK: Begin
+      Info.Mnemonic := Mnem;
+      SrcStr := DecodeEA(SrcMode, SrcReg, Ofs + 2, 1, PC, ExtB);
+      TotalExt := ExtB;
+      Info.Operands := SrcStr + ',D' + IntToStr(Reg9);
+    End;
+
+  Else
+    { Format inconnu }
+    Info.Mnemonic  := 'DC.W';
+    Info.Operands  := '$' + HexWord(OpWord);
+    Info.IsValid   := False;
+  End;
+
+  Info.TotalSize := 2 + TotalExt;
+End;
+
+{ --- FormatInstruction : formater une instruction pour l'affichage --- }
+
+Function FormatInstruction(Var Info: TInstructionInfo): String;
+Var
+  S: String;
+Begin
+  S := '$' + HexLong(Info.Offset) + '  ';
+  S := S + Info.Mnemonic;
+  { Padding pour aligner les operandes }
+  While Length(S) < 28 Do
+    S := S + ' ';
+  If Info.Operands <> '' Then
+    S := S + Info.Operands;
+  FormatInstruction := S;
+End;
+
+{ --- ShowInstruction : afficher une instruction decodee --- }
+
+Procedure ShowInstruction(Var Info: TInstructionInfo; HexDump: Boolean);
+Var
+  S      : String;
+  I      : Integer;
+  HexStr : String;
+Begin
+  S := FormatInstruction(Info);
+  If HexDump Then Begin
+    { Ajouter les octets hexa en commentaire }
+    HexStr := '';
+    For I := 0 To Info.TotalSize - 1 Do Begin
+      If I > 0 Then HexStr := HexStr + ' ';
+      If Info.Offset + I < ImageSize Then
+        HexStr := HexStr + HexByte(Byte(PChar(ImageBuffer)[Info.Offset + I]))
+      Else
+        HexStr := HexStr + '??';
+    End;
+    While Length(S) < 52 Do
+      S := S + ' ';
+    S := S + ' ; ' + HexStr;
+  End;
+  WriteLn(S);
+End;
+
+{ --- GetInstrSize : retourner la taille d'une instruction --- }
+
+Function GetInstrSize(Var Info: TInstructionInfo): Byte;
+Begin
+  GetInstrSize := Info.TotalSize;
+End;
+
+{ --- IsControlFlow : est-ce une instruction de controle de flux ? --- }
+
+Function IsControlFlow(Var Info: TInstructionInfo): Boolean;
+Var
+  M: String;
+Begin
+  IsControlFlow := False;
+  If Not Info.IsValid Then Exit;
+  M := Info.Mnemonic;
+  If (Pos('BRA', M) = 1) Or (Pos('BSR', M) = 1) Or
+     (Pos('B', M) = 1) Or (Pos('DB', M) = 1) Or
+     (M = 'JMP') Or (M = 'JSR') Or
+     (M = 'RTS') Or (M = 'RTE') Or (M = 'RTR') Then
+    IsControlFlow := True;
+End;
+
+{ --- IsBranch : est-ce un branchement (pas un appel) ? --- }
+
+Function IsBranch(Var Info: TInstructionInfo): Boolean;
+Var
+  M: String;
+Begin
+  IsBranch := False;
+  If Not Info.IsValid Then Exit;
+  M := Info.Mnemonic;
+  If (Pos('BRA', M) = 1) Or (M = 'JMP') Or
+     (Pos('DB', M) = 1) Then
+    IsBranch := True
+  Else If (Pos('B', M) = 1) And (Pos('BSR', M) <> 1) And
+          (Pos('BTST', M) <> 1) And (Pos('BSET', M) <> 1) And
+          (Pos('BCLR', M) <> 1) And (Pos('BCHG', M) <> 1) Then
+    IsBranch := True;
+End;
+
+{ --- IsCall : est-ce un appel de sous-programme ? --- }
+
+Function IsCall(Var Info: TInstructionInfo): Boolean;
+Var
+  M: String;
+Begin
+  IsCall := False;
+  If Not Info.IsValid Then Exit;
+  M := Info.Mnemonic;
+  If (Pos('BSR', M) = 1) Or (M = 'JSR') Then
+    IsCall := True;
+End;
+
+{ --- CountInstructions : compter les instructions dans la section TEXT --- }
+
+Function CountInstructions(TextLen: LongInt): LongInt;
+Var
+  Ofs   : LongInt;
+  Count : LongInt;
+  Inf   : TInstructionInfo;
+Begin
+  Count := 0;
+  Ofs := TextOffset;
+  While Ofs < TextOffset + TextLen Do Begin
+    DecodeInstruction(Ofs, Ofs - TextOffset, Inf);
+    Inc(Count);
+    If Inf.TotalSize < 2 Then
+      Ofs := Ofs + 2
+    Else
+      Ofs := Ofs + Inf.TotalSize;
+  End;
+  CountInstructions := Count;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -2519,8 +3236,28 @@ Begin
   ShowAddrModes(Opts.Verbose);
   If Opts.Verbose Then
     WriteLn('Modes adressage : ', IntToStr(CountAddrModes));
+  { Decoder et afficher les instructions de la section TEXT }
+  If Opts.Verbose And (Header.ph_tlen > 0) Then Begin
+    WriteLn;
+    WriteLn('=== Desassemblage de la section TEXT (',
+            IntToStr(Header.ph_tlen), ' octets) ===');
+    WriteLn;
+    CurOfs := TextOffset;
+    EndOfs := TextOffset + Header.ph_tlen;
+    While CurOfs < EndOfs Do Begin
+      DecodeInstruction(CurOfs, CurOfs - TextOffset, TmpInfo);
+      ShowInstruction(TmpInfo, Opts.HexDump);
+      If TmpInfo.TotalSize < 2 Then
+        CurOfs := CurOfs + 2
+      Else
+        CurOfs := CurOfs + TmpInfo.TotalSize;
+    End;
+    WriteLn;
+    WriteLn('Instructions    : ', IntToStr(CountInstructions(Header.ph_tlen)));
+  End;
   { Liberer la memoire }
   FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-13 [IMPLEMENTE], TODOs 14-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION,
+          ' - TODOs 01-14 [IMPLEMENTE], TODOs 15-25 [A FAIRE]');
 End.

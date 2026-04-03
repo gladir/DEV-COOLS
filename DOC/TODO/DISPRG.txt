@@ -123,7 +123,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
         011 d8(PC,Xn) - relatif au PC indexe
         100 #imm      - immediat
 
-  14. [A FAIRE] Decodage d'une instruction complete 68000.
+  14. [IMPLEMENTE] Decodage d'une instruction complete 68000.
       Procedure DecodeInstruction(Offset: LongInt) qui :
       - Lit le mot d'instruction (16 bits big-endian)
       - Extrait les champs : taille (bits 6-7 ou 8-9 selon le groupe),
