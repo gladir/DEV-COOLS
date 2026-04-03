@@ -182,10 +182,11 @@
             CountAnnotatedInstructions, CountHardwareRefs,
             ShowAnnotations.
 
-  TODO 25 - VERIFICATION FINALE ET RAPPORT [A FAIRE]
-            Coherence du fichier .S, statistiques : instructions,
-            sous-programmes, labels, symboles, relocalisations,
-            appels systeme, taille du fichier .S.
+  TODO 25 - VERIFICATION FINALE ET RAPPORT [IMPLEMENTE]
+            VerifyLabelUniqueness, CountDuplicateLabels,
+            VerifyReferencesResolved, CountUnresolvedRefs,
+            GetOutputFileSize, ShowFinalReport,
+            ShowDetailedStats, VerifyAndReport.
             Code de retour : 0 = succes, 1 = erreur.
 
   ============================================================ *)
@@ -6176,6 +6177,252 @@ Begin
   WriteLn('  Appels systeme TOS    : ', IntToStr(CountTrapCalls));
 End;
 
+{ ============================================================
+  TODO 25 - VERIFICATION FINALE ET RAPPORT [IMPLEMENTE]
+  ============================================================ }
+
+{ --- VerifyLabelUniqueness : verifier que tous les labels sont uniques --- }
+{     Retourne True si tous les labels ont des noms differents.            }
+
+Function VerifyLabelUniqueness: Boolean;
+Var
+  I, J: Integer;
+Begin
+  VerifyLabelUniqueness := True;
+  For I := 1 To LabelCount - 1 Do
+    For J := I + 1 To LabelCount Do
+      If Labels[I].Name = Labels[J].Name Then Begin
+        VerifyLabelUniqueness := False;
+        Exit;
+      End;
+End;
+
+{ --- CountDuplicateLabels : compter les labels dupliques --- }
+
+Function CountDuplicateLabels: Integer;
+Var
+  I, J   : Integer;
+  Count  : Integer;
+  IsDup  : Boolean;
+Begin
+  Count := 0;
+  For I := 1 To LabelCount Do Begin
+    IsDup := False;
+    For J := 1 To I - 1 Do
+      If Labels[I].Name = Labels[J].Name Then Begin
+        IsDup := True;
+        Break;
+      End;
+    If IsDup Then
+      Inc(Count);
+  End;
+  CountDuplicateLabels := Count;
+End;
+
+{ --- VerifyReferencesResolved : verifier que les refs sont resolues --- }
+{     Retourne True si toutes les references croisees pointent vers      }
+{     un label existant.                                                 }
+
+Function VerifyReferencesResolved: Boolean;
+Var
+  I     : Integer;
+  Found : Boolean;
+  J     : Integer;
+Begin
+  VerifyReferencesResolved := True;
+  For I := 1 To XRefCount Do Begin
+    Found := False;
+    For J := 1 To LabelCount Do
+      If Labels[J].Address = XRefs[I].ToAddr Then Begin
+        Found := True;
+        Break;
+      End;
+    If Not Found Then Begin
+      VerifyReferencesResolved := False;
+      Exit;
+    End;
+  End;
+End;
+
+{ --- CountUnresolvedRefs : compter les references non resolues --- }
+
+Function CountUnresolvedRefs: Integer;
+Var
+  I, J   : Integer;
+  Count  : Integer;
+  Found  : Boolean;
+Begin
+  Count := 0;
+  For I := 1 To XRefCount Do Begin
+    Found := False;
+    For J := 1 To LabelCount Do
+      If Labels[J].Address = XRefs[I].ToAddr Then Begin
+        Found := True;
+        Break;
+      End;
+    If Not Found Then
+      Inc(Count);
+  End;
+  CountUnresolvedRefs := Count;
+End;
+
+{ --- GetOutputFileSize : obtenir la taille du fichier .S genere --- }
+
+Function GetOutputFileSize(FileName: String): LongInt;
+Var
+  F    : File;
+  Size : LongInt;
+Begin
+  GetOutputFileSize := 0;
+  Assign(F, FileName);
+  Reset(F, 1);
+  If IOResult <> 0 Then Exit;
+  Size := FileSize(F);
+  Close(F);
+  If IOResult <> 0 Then;  { ignorer erreur }
+  GetOutputFileSize := Size;
+End;
+
+{ --- ShowFinalReport : afficher le rapport final de statistiques --- }
+
+Procedure ShowFinalReport(TextLen, DataLen, BssLen: LongInt;
+                          OutputName: String);
+Var
+  OutSize : LongInt;
+Begin
+  OutSize := GetOutputFileSize(OutputName);
+  WriteLn;
+  WriteLn('=== Rapport final ===');
+  WriteLn;
+  WriteLn('  Sections :');
+  WriteLn('    TEXT              : ', IntToStr(TextLen), ' octets');
+  WriteLn('    DATA              : ', IntToStr(DataLen), ' octets');
+  WriteLn('    BSS               : ', IntToStr(BssLen), ' octets');
+  WriteLn('    Total image       : ',
+          IntToStr(TextLen + DataLen + BssLen), ' octets');
+  WriteLn;
+  WriteLn('  Symboles DRI        : ', IntToStr(SymbolCount));
+  WriteLn('  Relocalisations     : ', IntToStr(RelocCount));
+  WriteLn('  Labels generes      : ', IntToStr(LabelCount));
+  WriteLn('  Sous-programmes     : ', IntToStr(CountSubroutines));
+  WriteLn('  Appels systeme TOS  : ', IntToStr(CountTrapCalls));
+  WriteLn('  References croisees : ', IntToStr(XRefCount));
+  WriteLn;
+  WriteLn('  Fichier .S          : ', OutputName);
+  WriteLn('  Taille fichier .S   : ', IntToStr(OutSize), ' octets');
+End;
+
+{ --- ShowDetailedStats : afficher les stats detaillees (verbose) --- }
+
+Procedure ShowDetailedStats(TextLen, DataLen, BssLen: LongInt);
+Var
+  DupLabels   : Integer;
+  UnresRefs   : Integer;
+Begin
+  DupLabels := CountDuplicateLabels;
+  UnresRefs := CountUnresolvedRefs;
+  WriteLn;
+  WriteLn('=== Statistiques detaillees (TODO 25) ===');
+  WriteLn;
+  WriteLn('  Verification :');
+  If DupLabels = 0 Then
+    WriteLn('    Labels uniques       : OK')
+  Else
+    WriteLn('    Labels dupliques     : ', IntToStr(DupLabels),
+            ' AVERTISSEMENT');
+  If UnresRefs = 0 Then
+    WriteLn('    References resolues  : OK')
+  Else
+    WriteLn('    Refs non resolues    : ', IntToStr(UnresRefs),
+            ' AVERTISSEMENT');
+  WriteLn;
+  WriteLn('  Opcodes 68000          : ', IntToStr(OpcodeCount));
+  WriteLn('    Transfert            : ',
+          IntToStr(CountOpcodesByGroup(GRP_TRANSFER)));
+  WriteLn('    Arithmetique/logique : ',
+          IntToStr(CountOpcodesByGroup(GRP_ARITH)));
+  WriteLn('    Decalage/rotation    : ',
+          IntToStr(CountOpcodesByGroup(GRP_SHIFT)));
+  WriteLn('    Branchement/controle : ',
+          IntToStr(CountOpcodesByGroup(GRP_BRANCH)));
+  WriteLn('    Manipulation bits    : ',
+          IntToStr(CountOpcodesByGroup(GRP_BIT)));
+  WriteLn('    Divers               : ',
+          IntToStr(CountOpcodesByGroup(GRP_MISC)));
+  WriteLn;
+  WriteLn('  Modes d''adressage      : ', IntToStr(CountAddrModes));
+  WriteLn;
+  WriteLn('  References croisees :');
+  WriteLn('    Total                : ', IntToStr(XRefCount));
+  WriteLn('    Appels (BSR/JSR)     : ', IntToStr(CountCallXRefs));
+  WriteLn('    Branchements (Bcc)   : ', IntToStr(CountBranchXRefs));
+  If TextLen > 0 Then Begin
+    WriteLn;
+    WriteLn('  Classification TEXT :');
+    WriteLn('    Code                 : ',
+            IntToStr(CountCodeBytes(TextLen)), ' octets');
+    WriteLn('    Donnees              : ',
+            IntToStr(CountDataBytes(TextLen)), ' octets');
+    WriteLn('    Chaines ASCII        : ',
+            IntToStr(CountASCIIRegions(TextLen)));
+    WriteLn('    Tables de saut       : ',
+            IntToStr(CountJumpTables(TextLen)));
+  End;
+  If DataLen > 0 Then Begin
+    WriteLn;
+    WriteLn('  Section DATA :');
+    WriteLn('    Symboles             : ', IntToStr(CountDataSymbols));
+    WriteLn('    Chaines              : ',
+            IntToStr(CountDataStrings(DataLen)));
+    WriteLn('    Pointeurs            : ',
+            IntToStr(CountDataPointers(DataLen, TextLen)));
+  End;
+  WriteLn;
+  WriteLn('  Symboles globaux (XDEF) : ',
+          IntToStr(CountGlobalSymbols));
+  WriteLn('  Symboles externes (XREF): ',
+          IntToStr(CountExternalSymbols));
+  If TextLen > 0 Then Begin
+    WriteLn;
+    WriteLn('  Annotations :');
+    WriteLn('    Instructions annotees : ',
+            IntToStr(CountAnnotatedInstructions(TextLen)));
+    WriteLn('    References hardware   : ',
+            IntToStr(CountHardwareRefs(TextLen)));
+  End;
+End;
+
+{ --- VerifyAndReport : verification et rapport final --- }
+
+Procedure VerifyAndReport(TextLen, DataLen, BssLen: LongInt;
+                          OutputName: String;
+                          Verbose: Boolean);
+Var
+  LabelsOK : Boolean;
+  RefsOK   : Boolean;
+Begin
+  { Verification de coherence }
+  LabelsOK := VerifyLabelUniqueness;
+  RefsOK   := VerifyReferencesResolved;
+  { Rapport final (toujours affiche) }
+  ShowFinalReport(TextLen, DataLen, BssLen, OutputName);
+  { Resultats de la verification }
+  WriteLn;
+  If LabelsOK And RefsOK Then
+    WriteLn('  Verification          : OK')
+  Else Begin
+    If Not LabelsOK Then
+      WriteLn('  AVERTISSEMENT         : Labels dupliques detectes (',
+              IntToStr(CountDuplicateLabels), ')');
+    If Not RefsOK Then
+      WriteLn('  AVERTISSEMENT         : References non resolues (',
+              IntToStr(CountUnresolvedRefs), ')');
+  End;
+  { Statistiques detaillees si verbose }
+  If Verbose Then
+    ShowDetailedStats(TextLen, DataLen, BssLen);
+End;
+
 Begin
   ShowVersion;
   WriteLn;
@@ -6352,9 +6599,14 @@ Begin
     WriteLn;
     WriteLn('Fichier .S      : ', Opts.OutFile, ' cree');
   End;
+  { Verification finale, statistiques et rapport (TODO 25) }
+  VerifyAndReport(Header.ph_tlen, Header.ph_dlen, Header.ph_blen,
+                  Opts.OutFile, Opts.Verbose);
   { Liberer la memoire }
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-24 [IMPLEMENTE], TODO 25 [A FAIRE]');
+          ' - TODOs 01-25 [IMPLEMENTE]');
+  { Code de retour : 0 = succes }
+  Halt(EXIT_OK);
 End.

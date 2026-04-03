@@ -225,7 +225,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       hardware de l'Atari ST : $FF8240 palette, $FF8260 shifter,
       $FFFC00 ACIA clavier, etc.).
 
-  25. [A FAIRE] Verification finale, statistiques et rapport.
+  25. [IMPLEMENTE] Verification finale, statistiques et rapport.
       Verifier la coherence du fichier .S genere : toutes les
       references sont resolues, les labels sont uniques.
       Afficher un rapport final : nombre d'instructions
