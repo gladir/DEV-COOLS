@@ -129,9 +129,11 @@
             HasStdEpilogue, DetectSubroutines, ShowSubroutines,
             CountSubroutines, IsSubroutine.
 
-  TODO 17 - DETECTION DES APPELS SYSTEME TOS [A FAIRE]
-            TRAP #1 (GEMDOS), TRAP #13 (BIOS), TRAP #14 (XBIOS),
-            TRAP #2 (GEM AES/VDI). Noms des fonctions TOS.
+  TODO 17 - DETECTION DES APPELS SYSTEME TOS [IMPLEMENTE]
+            IsTrapGemdos, IsTrapBios, IsTrapXbios, IsTrapGem,
+            GetTrapFuncNum, GemdosFuncName, BiosFuncName,
+            XbiosFuncName, GetTrapComment, DetectTrapCalls,
+            ShowTrapCalls, CountTrapCalls, IsTrapCall.
 
   TODO 18 - DISCRIMINATION CODE/DONNEES DANS TEXT [A FAIRE]
             Octets non atteints = donnees (DC.B/DC.W/DC.L).
@@ -3698,6 +3700,365 @@ Begin
 End;
 
 { ============================================================
+  TODO 17 - DETECTION DES APPELS SYSTEME TOS [IMPLEMENTE]
+  ============================================================ }
+
+{ --- IsTrapGemdos : est-ce un TRAP #1 (GEMDOS) ? --- }
+{     TRAP #1 = $4E41                                  }
+
+Function IsTrapGemdos(Ofs: LongInt): Boolean;
+Begin
+  IsTrapGemdos := False;
+  If Ofs + 1 < ImageSize Then
+    If ReadBEWordMem(Ofs) = $4E41 Then
+      IsTrapGemdos := True;
+End;
+
+{ --- IsTrapBios : est-ce un TRAP #13 (BIOS) ? --- }
+{     TRAP #13 = $4E4D                               }
+
+Function IsTrapBios(Ofs: LongInt): Boolean;
+Begin
+  IsTrapBios := False;
+  If Ofs + 1 < ImageSize Then
+    If ReadBEWordMem(Ofs) = $4E4D Then
+      IsTrapBios := True;
+End;
+
+{ --- IsTrapXbios : est-ce un TRAP #14 (XBIOS) ? --- }
+{     TRAP #14 = $4E4E                                 }
+
+Function IsTrapXbios(Ofs: LongInt): Boolean;
+Begin
+  IsTrapXbios := False;
+  If Ofs + 1 < ImageSize Then
+    If ReadBEWordMem(Ofs) = $4E4E Then
+      IsTrapXbios := True;
+End;
+
+{ --- IsTrapGem : est-ce un TRAP #2 (GEM AES/VDI) ? --- }
+{     TRAP #2 = $4E42                                     }
+
+Function IsTrapGem(Ofs: LongInt): Boolean;
+Begin
+  IsTrapGem := False;
+  If Ofs + 1 < ImageSize Then
+    If ReadBEWordMem(Ofs) = $4E42 Then
+      IsTrapGem := True;
+End;
+
+{ --- GetTrapFuncNum : lire le numero de fonction empile --- }
+{     Cherche un MOVE.W #nn,-(SP) juste avant le TRAP       }
+{     MOVE.W #imm,-(SP) = $3F3C suivi du mot immediat       }
+
+Function GetTrapFuncNum(TrapOfs: LongInt): Integer;
+Var
+  PrevOfs: LongInt;
+  PrevW  : Word;
+Begin
+  GetTrapFuncNum := -1;
+  PrevOfs := TrapOfs - 4;
+  If PrevOfs >= TextOffset Then Begin
+    PrevW := ReadBEWordMem(PrevOfs);
+    If PrevW = $3F3C Then
+      GetTrapFuncNum := ReadBEWordMem(PrevOfs + 2);
+  End;
+End;
+
+{ --- GemdosFuncName : nom d'une fonction GEMDOS --- }
+
+Function GemdosFuncName(FuncNum: Integer): String;
+Begin
+  Case FuncNum Of
+    $00: GemdosFuncName := 'Pterm0';
+    $01: GemdosFuncName := 'Cconin';
+    $02: GemdosFuncName := 'Cconout';
+    $03: GemdosFuncName := 'Cauxin';
+    $04: GemdosFuncName := 'Cauxout';
+    $05: GemdosFuncName := 'Cprnout';
+    $06: GemdosFuncName := 'Crawio';
+    $07: GemdosFuncName := 'Crawcin';
+    $08: GemdosFuncName := 'Cnecin';
+    $09: GemdosFuncName := 'Cconws';
+    $0A: GemdosFuncName := 'Cconrs';
+    $0B: GemdosFuncName := 'Cconis';
+    $0E: GemdosFuncName := 'Dsetdrv';
+    $10: GemdosFuncName := 'Cconos';
+    $11: GemdosFuncName := 'Cprnos';
+    $12: GemdosFuncName := 'Cauxis';
+    $13: GemdosFuncName := 'Cauxos';
+    $19: GemdosFuncName := 'Dgetdrv';
+    $1A: GemdosFuncName := 'Fsetdta';
+    $20: GemdosFuncName := 'Super';
+    $2A: GemdosFuncName := 'Tgetdate';
+    $2B: GemdosFuncName := 'Tsetdate';
+    $2C: GemdosFuncName := 'Tgettime';
+    $2D: GemdosFuncName := 'Tsettime';
+    $2F: GemdosFuncName := 'Fgetdta';
+    $30: GemdosFuncName := 'Sversion';
+    $31: GemdosFuncName := 'Ptermres';
+    $36: GemdosFuncName := 'Dfree';
+    $39: GemdosFuncName := 'Dcreate';
+    $3A: GemdosFuncName := 'Ddelete';
+    $3B: GemdosFuncName := 'Dsetpath';
+    $3C: GemdosFuncName := 'Fcreate';
+    $3D: GemdosFuncName := 'Fopen';
+    $3E: GemdosFuncName := 'Fclose';
+    $3F: GemdosFuncName := 'Fread';
+    $40: GemdosFuncName := 'Fwrite';
+    $41: GemdosFuncName := 'Fdelete';
+    $42: GemdosFuncName := 'Fseek';
+    $43: GemdosFuncName := 'Fattrib';
+    $44: GemdosFuncName := 'Mxalloc';
+    $45: GemdosFuncName := 'Fdup';
+    $46: GemdosFuncName := 'Fforce';
+    $47: GemdosFuncName := 'Dgetpath';
+    $48: GemdosFuncName := 'Malloc';
+    $49: GemdosFuncName := 'Mfree';
+    $4A: GemdosFuncName := 'Mshrink';
+    $4B: GemdosFuncName := 'Pexec';
+    $4C: GemdosFuncName := 'Pterm';
+    $4E: GemdosFuncName := 'Fsfirst';
+    $4F: GemdosFuncName := 'Fsnext';
+    $56: GemdosFuncName := 'Frename';
+    $57: GemdosFuncName := 'Fdatime';
+  Else
+    GemdosFuncName := 'GEMDOS_$' + HexWord(FuncNum);
+  End;
+End;
+
+{ --- BiosFuncName : nom d'une fonction BIOS --- }
+
+Function BiosFuncName(FuncNum: Integer): String;
+Begin
+  Case FuncNum Of
+    $00: BiosFuncName := 'Getmpb';
+    $01: BiosFuncName := 'Bconstat';
+    $02: BiosFuncName := 'Bconin';
+    $03: BiosFuncName := 'Bconout';
+    $04: BiosFuncName := 'Rwabs';
+    $05: BiosFuncName := 'Setexc';
+    $06: BiosFuncName := 'Tickcal';
+    $07: BiosFuncName := 'Getbpb';
+    $08: BiosFuncName := 'Bcostat';
+    $09: BiosFuncName := 'Mediach';
+    $0A: BiosFuncName := 'Drvmap';
+    $0B: BiosFuncName := 'Kbshift';
+  Else
+    BiosFuncName := 'BIOS_$' + HexWord(FuncNum);
+  End;
+End;
+
+{ --- XbiosFuncName : nom d'une fonction XBIOS --- }
+
+Function XbiosFuncName(FuncNum: Integer): String;
+Begin
+  Case FuncNum Of
+    $00: XbiosFuncName := 'Initmous';
+    $01: XbiosFuncName := 'Ssbrk';
+    $02: XbiosFuncName := 'Physbase';
+    $03: XbiosFuncName := 'Logbase';
+    $04: XbiosFuncName := 'Getrez';
+    $05: XbiosFuncName := 'Setscreen';
+    $06: XbiosFuncName := 'Setpalette';
+    $07: XbiosFuncName := 'Setcolor';
+    $08: XbiosFuncName := 'Floprd';
+    $09: XbiosFuncName := 'Flopwr';
+    $0A: XbiosFuncName := 'Flopfmt';
+    $0B: XbiosFuncName := 'Dbmsg';
+    $0C: XbiosFuncName := 'Midiws';
+    $0D: XbiosFuncName := 'Mfpint';
+    $0E: XbiosFuncName := 'Iorec';
+    $0F: XbiosFuncName := 'Rsconf';
+    $10: XbiosFuncName := 'Keytbl';
+    $11: XbiosFuncName := 'Random';
+    $12: XbiosFuncName := 'Protobt';
+    $13: XbiosFuncName := 'Flopver';
+    $14: XbiosFuncName := 'Scrdmp';
+    $15: XbiosFuncName := 'Cursconf';
+    $16: XbiosFuncName := 'Settime';
+    $17: XbiosFuncName := 'Gettime';
+    $18: XbiosFuncName := 'Bioskeys';
+    $19: XbiosFuncName := 'Ikbdws';
+    $1A: XbiosFuncName := 'Jdisint';
+    $1B: XbiosFuncName := 'Jenabint';
+    $1C: XbiosFuncName := 'Giaccess';
+    $1D: XbiosFuncName := 'Offgibit';
+    $1E: XbiosFuncName := 'Ongibit';
+    $1F: XbiosFuncName := 'Xbtimer';
+    $20: XbiosFuncName := 'Dosound';
+    $21: XbiosFuncName := 'Setprt';
+    $22: XbiosFuncName := 'Kbdvbase';
+    $23: XbiosFuncName := 'Kbrate';
+    $24: XbiosFuncName := 'Prtblk';
+    $25: XbiosFuncName := 'Vsync';
+    $26: XbiosFuncName := 'Supexec';
+    $27: XbiosFuncName := 'Puntaes';
+  Else
+    XbiosFuncName := 'XBIOS_$' + HexWord(FuncNum);
+  End;
+End;
+
+{ --- GetTrapComment : generer un commentaire pour un TRAP --- }
+
+Function GetTrapComment(Ofs: LongInt): String;
+Var
+  FuncNum: Integer;
+  TrapW  : Word;
+  VecNum : Integer;
+Begin
+  GetTrapComment := '';
+  If Ofs + 1 >= ImageSize Then Exit;
+  TrapW := ReadBEWordMem(Ofs);
+  If (TrapW And $FFF0) <> $4E40 Then Exit;
+  VecNum := TrapW And $000F;
+  FuncNum := GetTrapFuncNum(Ofs);
+  Case VecNum Of
+    1: Begin { GEMDOS }
+      If FuncNum >= 0 Then
+        GetTrapComment := '; GEMDOS ' + GemdosFuncName(FuncNum) +
+                          ' ($' + HexWord(FuncNum) + ')'
+      Else
+        GetTrapComment := '; GEMDOS (fonction inconnue)';
+    End;
+    2: Begin { GEM AES/VDI }
+      GetTrapComment := '; GEM AES/VDI';
+    End;
+    13: Begin { BIOS }
+      If FuncNum >= 0 Then
+        GetTrapComment := '; BIOS ' + BiosFuncName(FuncNum) +
+                          ' ($' + HexWord(FuncNum) + ')'
+      Else
+        GetTrapComment := '; BIOS (fonction inconnue)';
+    End;
+    14: Begin { XBIOS }
+      If FuncNum >= 0 Then
+        GetTrapComment := '; XBIOS ' + XbiosFuncName(FuncNum) +
+                          ' ($' + HexWord(FuncNum) + ')'
+      Else
+        GetTrapComment := '; XBIOS (fonction inconnue)';
+    End;
+  Else
+    GetTrapComment := '; TRAP #' + IntToStr(VecNum);
+  End;
+End;
+
+{ --- DetectTrapCalls : scanner TEXT pour les appels TRAP --- }
+
+Procedure DetectTrapCalls(TextLen: LongInt);
+Var
+  Ofs : LongInt;
+  W   : Word;
+  Vec : Integer;
+Begin
+  TrapCount := 0;
+  Ofs := TextOffset;
+  While Ofs + 1 < TextOffset + TextLen Do Begin
+    W := ReadBEWordMem(Ofs);
+    If (W And $FFF0) = $4E40 Then Begin
+      Vec := W And $000F;
+      If (Vec = 1) Or (Vec = 2) Or (Vec = 13) Or (Vec = 14) Then
+        TrapCount := TrapCount + 1;
+    End;
+    Ofs := Ofs + 2;
+  End;
+End;
+
+{ --- ShowTrapCalls : afficher les appels systeme TOS detectes --- }
+
+Procedure ShowTrapCalls(Verbose: Boolean);
+Var
+  Ofs     : LongInt;
+  W       : Word;
+  Vec     : Integer;
+  FuncNum : Integer;
+  FuncName: String;
+  TrapType: String;
+  Cnt     : LongInt;
+Begin
+  If Not Verbose Then Exit;
+  If TrapCount = 0 Then Exit;
+  WriteLn;
+  WriteLn('=== Appels systeme TOS (', IntToStr(TrapCount), ' appels) ===');
+  WriteLn;
+  WriteLn('  Adresse    TRAP         Fonction');
+  WriteLn('  --------   ----------   --------------------------------');
+  Cnt := 0;
+  Ofs := TextOffset;
+  While Ofs + 1 < ImageSize Do Begin
+    W := ReadBEWordMem(Ofs);
+    If (W And $FFF0) = $4E40 Then Begin
+      Vec := W And $000F;
+      If (Vec = 1) Or (Vec = 2) Or (Vec = 13) Or (Vec = 14) Then Begin
+        Cnt := Cnt + 1;
+        FuncNum := GetTrapFuncNum(Ofs);
+        Case Vec Of
+          1: Begin
+            TrapType := 'TRAP #1  ';
+            If FuncNum >= 0 Then
+              FuncName := 'GEMDOS ' + GemdosFuncName(FuncNum) +
+                          ' ($' + HexWord(FuncNum) + ')'
+            Else
+              FuncName := 'GEMDOS (inconnu)';
+          End;
+          2: Begin
+            TrapType := 'TRAP #2  ';
+            FuncName := 'GEM AES/VDI';
+          End;
+          13: Begin
+            TrapType := 'TRAP #13 ';
+            If FuncNum >= 0 Then
+              FuncName := 'BIOS ' + BiosFuncName(FuncNum) +
+                          ' ($' + HexWord(FuncNum) + ')'
+            Else
+              FuncName := 'BIOS (inconnu)';
+          End;
+          14: Begin
+            TrapType := 'TRAP #14 ';
+            If FuncNum >= 0 Then
+              FuncName := 'XBIOS ' + XbiosFuncName(FuncNum) +
+                          ' ($' + HexWord(FuncNum) + ')'
+            Else
+              FuncName := 'XBIOS (inconnu)';
+          End;
+        Else
+          TrapType := 'TRAP #' + IntToStr(Vec);
+          FuncName := '';
+        End;
+        Write('  $', HexLong(Ofs - TextOffset));
+        Write('   ', TrapType);
+        WriteLn('   ', FuncName);
+      End;
+    End;
+    Ofs := Ofs + 2;
+  End;
+End;
+
+{ --- CountTrapCalls : nombre d'appels systeme detectes --- }
+
+Function CountTrapCalls: LongInt;
+Begin
+  CountTrapCalls := TrapCount;
+End;
+
+{ --- IsTrapCall : verifier si une adresse est un appel systeme --- }
+
+Function IsTrapCall(Ofs: LongInt): Boolean;
+Var
+  W  : Word;
+  Vec: Integer;
+Begin
+  IsTrapCall := False;
+  If Ofs + 1 >= ImageSize Then Exit;
+  W := ReadBEWordMem(Ofs);
+  If (W And $FFF0) = $4E40 Then Begin
+    Vec := W And $000F;
+    If (Vec = 1) Or (Vec = 2) Or (Vec = 13) Or (Vec = 14) Then
+      IsTrapCall := True;
+  End;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -3817,9 +4178,18 @@ Begin
       WriteLn('Sous-programmes : ', IntToStr(CountSubroutines));
     End;
   End;
+  { Detection des appels systeme TOS (TRAP) }
+  If Header.ph_tlen > 0 Then Begin
+    DetectTrapCalls(Header.ph_tlen);
+    ShowTrapCalls(Opts.Verbose);
+    If Opts.Verbose Then Begin
+      WriteLn;
+      WriteLn('Appels systeme  : ', IntToStr(CountTrapCalls));
+    End;
+  End;
   { Liberer la memoire }
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-16 [IMPLEMENTE], TODOs 17-25 [A FAIRE]');
+          ' - TODOs 01-17 [IMPLEMENTE], TODOs 18-25 [A FAIRE]');
 End.

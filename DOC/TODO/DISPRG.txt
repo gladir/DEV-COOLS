@@ -151,7 +151,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       MOVEM.L reglist,-(SP) (sauvegarde des registres).
       Detecter les epilogues : MOVEM.L (SP)+,reglist / UNLK A6 / RTS.
 
-  17. [A FAIRE] Detection des appels systeme TOS (TRAP).
+  17. [IMPLEMENTE] Detection des appels systeme TOS (TRAP).
       Reconnaitre les sequences d'appels systeme TOS :
       TRAP #1 (GEMDOS), TRAP #13 (BIOS), TRAP #14 (XBIOS).
       Identifier le numero de fonction empile avant le TRAP
