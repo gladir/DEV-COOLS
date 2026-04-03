@@ -1224,11 +1224,17 @@ Var
  SavedParamCount:Integer;
  SaveTopOfStack:Byte;
  SaveTopOfStackInt:Byte;
+ { Sauvegarde des contenus de piles pour recursion }
+ SaveStack:Array[0..100]of Char;
+ SaveResultStack:Array[0..100]of Real;
+ StackIdx:Integer;
 Begin
  StopChar:=[',',':',';','"','<','=','>','!'];
- { Sauvegarder l'etat de la pile pour les appels recursifs }
+ { Sauvegarder l'etat complet des piles pour les appels recursifs }
  SaveTopOfStack:=TopOfStack;
  SaveTopOfStackInt:=TopOfStackInt;
+ For StackIdx:=0 to TopOfStack-1 do SaveStack[StackIdx]:=Stack[StackIdx];
+ For StackIdx:=0 to TopOfStackInt-1 do SaveResultStack[StackIdx]:=ResultStack[StackIdx];
  TopOfStack:=1;
  TopOfStackInt:=1;
  PostFix:='';
@@ -1630,7 +1636,9 @@ Begin
   Inc(I);
  Until I>Length(Postfix);
  GetNumberValue:=ResultStackPop;
- { Restaurer l'etat de la pile pour les appels recursifs }
+ { Restaurer l'etat complet des piles pour les appels recursifs }
+ For StackIdx:=0 to SaveTopOfStack-1 do Stack[StackIdx]:=SaveStack[StackIdx];
+ For StackIdx:=0 to SaveTopOfStackInt-1 do ResultStack[StackIdx]:=SaveResultStack[StackIdx];
  TopOfStack:=SaveTopOfStack;
  TopOfStackInt:=SaveTopOfStackInt;
 End;
