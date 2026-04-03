@@ -215,7 +215,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       a 8 caracteres. Generer des commentaires de references
       croisees (XREF from sub_XXXXXX+offset).
 
-  24. [A FAIRE] Commentaires et annotations dans le fichier .S.
+  24. [IMPLEMENTE] Commentaires et annotations dans le fichier .S.
       Generer des commentaires automatiques pour les appels
       systeme TOS (GEMDOS, BIOS, XBIOS) avec le nom de la
       fonction et ses parametres. Annoter les prologues et

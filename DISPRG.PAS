@@ -174,9 +174,13 @@
             EmitXRefComments, CountAutoLabels,
             CountXRefComments, ShowAutoLabelsAndXRefs.
 
-  TODO 24 - COMMENTAIRES ET ANNOTATIONS [A FAIRE]
-            Noms des fonctions GEMDOS/BIOS/XBIOS, prologues,
-            epilogues, adresses hardware ($FF8240, $FFFC00, ...).
+  TODO 24 - COMMENTAIRES ET ANNOTATIONS [IMPLEMENTE]
+            HardwareAddrName, TosErrorName, IsHardwareAddr,
+            GetPrologueComment, GetEpilogueComment,
+            GetHardwareRefComment, GetInstructionAnnotation,
+            EmitInstructionAnnotation, EmitSubSeparator,
+            CountAnnotatedInstructions, CountHardwareRefs,
+            ShowAnnotations.
 
   TODO 25 - VERIFICATION FINALE ET RAPPORT [A FAIRE]
             Coherence du fichier .S, statistiques : instructions,
@@ -5031,6 +5035,14 @@ End;
 { Declaration avancee pour EmitXRefComments (definie dans TODO 23) }
 Procedure EmitXRefComments(Var F: Text; Addr: LongInt); Forward;
 
+{ Declarations avancees pour les annotations (definies dans TODO 24) }
+Function GetInstructionAnnotation(Ofs: LongInt;
+                                  Var Info: TInstructionInfo): String; Forward;
+Procedure EmitInstructionAnnotation(Var F: Text; Ofs: LongInt;
+                                    Var Info: TInstructionInfo); Forward;
+Procedure EmitSubSeparator(Var F: Text; LblIdx: Integer;
+                           Addr: LongInt); Forward;
+
 { ============================================================
   TODO 21 - GENERATION FICHIER .S : SECTION TEXT [IMPLEMENTE]
   ============================================================ }
@@ -5108,11 +5120,11 @@ Begin
     { Verifier s'il y a un label a cette adresse }
     CurLabel := FindLabelByAddr(PC, 0);
     If CurLabel > 0 Then Begin
-      { Inserer une ligne vide et un separateur avant chaque sous-programme }
-      If Labels[CurLabel].IsProc And (Ofs > TextOffset) Then Begin
-        WriteLn(F);
-        WriteLn(F, '; ----------------------------------------');
-        WriteLn(F);
+      { Inserer un separateur ameliore avant chaque sous-programme (TODO 24) }
+      If Labels[CurLabel].IsProc And (Ofs > TextOffset) Then
+        EmitSubSeparator(F, CurLabel, PC)
+      Else If Ofs > TextOffset Then Begin
+        { Ligne vide avant les labels non-sous-programme }
       End;
       WriteLn(F, Labels[CurLabel].Name, ':');
       { Emettre les commentaires de references croisees (TODO 23) }
@@ -5121,6 +5133,8 @@ Begin
     { Decoder et emettre l'instruction }
     DecodeInstruction(Ofs, PC, Inf);
     EmitTextInstruction(F, Inf, HexDump);
+    { Emettre un commentaire d'annotation si applicable (TODO 24) }
+    EmitInstructionAnnotation(F, Ofs, Inf);
     If Inf.TotalSize < 2 Then
       Ofs := Ofs + 2
     Else
@@ -5764,8 +5778,403 @@ Begin
 End;
 
 { ============================================================
-  PROGRAMME PRINCIPAL
+  TODO 24 - COMMENTAIRES ET ANNOTATIONS [IMPLEMENTE]
   ============================================================ }
+
+{ --- HardwareAddrName : nom d'un registre hardware Atari ST --- }
+{     Retourne le nom du registre si Addr est une adresse         }
+{     hardware connue de l'Atari ST, sinon chaine vide.           }
+
+Function HardwareAddrName(Addr: LongInt): String;
+Begin
+  { Palette couleurs (16 registres, adresses paires) }
+  If (Addr >= $FF8240) And (Addr <= $FF825E) And
+     ((Addr And 1) = 0) Then Begin
+    HardwareAddrName := 'PALETTE_' + IntToStr((Addr - $FF8240) Div 2);
+    Exit;
+  End;
+  Case Addr Of
+    { MMU }
+    $FF8001: HardwareAddrName := 'MMU_CONFIG';
+    { Video / Shifter }
+    $FF8201: HardwareAddrName := 'VIDEO_BASE_HI';
+    $FF8203: HardwareAddrName := 'VIDEO_BASE_MID';
+    $FF8205: HardwareAddrName := 'VIDEO_ADDR_HI';
+    $FF8207: HardwareAddrName := 'VIDEO_ADDR_MID';
+    $FF8209: HardwareAddrName := 'VIDEO_ADDR_LO';
+    $FF820A: HardwareAddrName := 'VIDEO_SYNC';
+    $FF820D: HardwareAddrName := 'VIDEO_BASE_LO';
+    $FF8260: HardwareAddrName := 'SHIFTER_RES';
+    { Floppy / DMA }
+    $FF8604: HardwareAddrName := 'FDC_ACCESS';
+    $FF8606: HardwareAddrName := 'DMA_MODE';
+    $FF8609: HardwareAddrName := 'DMA_ADDR_HI';
+    $FF860B: HardwareAddrName := 'DMA_ADDR_MID';
+    $FF860D: HardwareAddrName := 'DMA_ADDR_LO';
+    { YM2149 PSG son }
+    $FF8800: HardwareAddrName := 'PSG_REG_SELECT';
+    $FF8802: HardwareAddrName := 'PSG_REG_WRITE';
+    { DMA son (STE/TT) }
+    $FF8900: HardwareAddrName := 'DMA_SOUND_CTRL';
+    $FF8903: HardwareAddrName := 'DMA_SOUND_START_HI';
+    $FF8905: HardwareAddrName := 'DMA_SOUND_START_MID';
+    $FF8907: HardwareAddrName := 'DMA_SOUND_START_LO';
+    $FF890F: HardwareAddrName := 'DMA_SOUND_END_HI';
+    $FF8911: HardwareAddrName := 'DMA_SOUND_END_MID';
+    $FF8913: HardwareAddrName := 'DMA_SOUND_END_LO';
+    $FF8921: HardwareAddrName := 'DMA_SOUND_MODE';
+    { Blitter (STE) }
+    $FF8A00: HardwareAddrName := 'BLITTER_HALFTONE';
+    $FF8A20: HardwareAddrName := 'BLITTER_SRC_INC_X';
+    $FF8A22: HardwareAddrName := 'BLITTER_SRC_INC_Y';
+    $FF8A24: HardwareAddrName := 'BLITTER_SRC_ADDR';
+    $FF8A28: HardwareAddrName := 'BLITTER_ENDMASK1';
+    $FF8A2A: HardwareAddrName := 'BLITTER_ENDMASK2';
+    $FF8A2C: HardwareAddrName := 'BLITTER_ENDMASK3';
+    $FF8A2E: HardwareAddrName := 'BLITTER_DST_INC_X';
+    $FF8A30: HardwareAddrName := 'BLITTER_DST_INC_Y';
+    $FF8A32: HardwareAddrName := 'BLITTER_DST_ADDR';
+    $FF8A36: HardwareAddrName := 'BLITTER_X_COUNT';
+    $FF8A38: HardwareAddrName := 'BLITTER_Y_COUNT';
+    $FF8A3A: HardwareAddrName := 'BLITTER_HOP';
+    $FF8A3B: HardwareAddrName := 'BLITTER_OP';
+    $FF8A3C: HardwareAddrName := 'BLITTER_CTRL';
+    { MFP 68901 }
+    $FFFA01: HardwareAddrName := 'MFP_GPIP';
+    $FFFA03: HardwareAddrName := 'MFP_AER';
+    $FFFA05: HardwareAddrName := 'MFP_DDR';
+    $FFFA07: HardwareAddrName := 'MFP_IERA';
+    $FFFA09: HardwareAddrName := 'MFP_IERB';
+    $FFFA0B: HardwareAddrName := 'MFP_IPRA';
+    $FFFA0D: HardwareAddrName := 'MFP_IPRB';
+    $FFFA0F: HardwareAddrName := 'MFP_ISRA';
+    $FFFA11: HardwareAddrName := 'MFP_ISRB';
+    $FFFA13: HardwareAddrName := 'MFP_IMRA';
+    $FFFA15: HardwareAddrName := 'MFP_IMRB';
+    $FFFA17: HardwareAddrName := 'MFP_VR';
+    $FFFA19: HardwareAddrName := 'MFP_TACR';
+    $FFFA1B: HardwareAddrName := 'MFP_TBCR';
+    $FFFA1D: HardwareAddrName := 'MFP_TCDCR';
+    $FFFA1F: HardwareAddrName := 'MFP_TADR';
+    $FFFA21: HardwareAddrName := 'MFP_TBDR';
+    $FFFA23: HardwareAddrName := 'MFP_TCDR';
+    $FFFA25: HardwareAddrName := 'MFP_TDDR';
+    $FFFA27: HardwareAddrName := 'MFP_SCR';
+    $FFFA29: HardwareAddrName := 'MFP_UCR';
+    $FFFA2B: HardwareAddrName := 'MFP_RSR';
+    $FFFA2D: HardwareAddrName := 'MFP_TSR';
+    $FFFA2F: HardwareAddrName := 'MFP_UDR';
+    { ACIA clavier }
+    $FFFC00: HardwareAddrName := 'ACIA_KBD_CTRL';
+    $FFFC02: HardwareAddrName := 'ACIA_KBD_DATA';
+    { ACIA MIDI }
+    $FFFC04: HardwareAddrName := 'ACIA_MIDI_CTRL';
+    $FFFC06: HardwareAddrName := 'ACIA_MIDI_DATA';
+  Else
+    HardwareAddrName := '';
+  End;
+End;
+
+{ --- TosErrorName : nom d'un code d'erreur TOS --- }
+{     Retourne le nom du code d'erreur GEMDOS si connu, sinon vide. }
+
+Function TosErrorName(Code: LongInt): String;
+Begin
+  Case Code Of
+     0: TosErrorName := 'E_OK';
+    -1: TosErrorName := 'ERROR';
+    -2: TosErrorName := 'EDRVNR';
+    -3: TosErrorName := 'EUNCMD';
+    -4: TosErrorName := 'E_CRC';
+    -5: TosErrorName := 'EBADRQ';
+    -6: TosErrorName := 'E_SEEK';
+    -7: TosErrorName := 'EMEDIA';
+    -8: TosErrorName := 'ESECNF';
+    -9: TosErrorName := 'EPAPER';
+   -10: TosErrorName := 'EWRITF';
+   -11: TosErrorName := 'EREADF';
+   -12: TosErrorName := 'EWRPRO';
+   -14: TosErrorName := 'E_CHNG';
+   -15: TosErrorName := 'EUNDEV';
+   -16: TosErrorName := 'EBADSF';
+   -17: TosErrorName := 'EOTHER';
+   -32: TosErrorName := 'EINVFN';
+   -33: TosErrorName := 'EFILNF';
+   -34: TosErrorName := 'EPTHNF';
+   -35: TosErrorName := 'ENHNDL';
+   -36: TosErrorName := 'EACCDN';
+   -37: TosErrorName := 'EIHNDL';
+   -39: TosErrorName := 'ENSMEM';
+   -40: TosErrorName := 'EIMBA';
+   -46: TosErrorName := 'EDRIVE';
+   -48: TosErrorName := 'ENSAME';
+   -49: TosErrorName := 'ENMFIL';
+   -64: TosErrorName := 'ERANGE';
+   -65: TosErrorName := 'EINTRN';
+   -66: TosErrorName := 'EPLFMT';
+   -67: TosErrorName := 'EGSBF';
+   -68: TosErrorName := 'EBREAK';
+  Else
+    TosErrorName := '';
+  End;
+End;
+
+{ --- IsHardwareAddr : est-ce une adresse hardware Atari ST connue ? --- }
+
+Function IsHardwareAddr(Addr: LongInt): Boolean;
+Begin
+  IsHardwareAddr := (HardwareAddrName(Addr) <> '');
+End;
+
+{ --- GetPrologueComment : commentaire pour un prologue de fonction --- }
+{     Detecte LINK A6,#disp et MOVEM.L reglist,-(SP)                   }
+
+Function GetPrologueComment(Ofs: LongInt): String;
+Var
+  Disp: LongInt;
+  Mask: Word;
+Begin
+  GetPrologueComment := '';
+  If Ofs + 1 >= ImageSize Then Exit;
+  If IsLinkA6(Ofs) Then Begin
+    Disp := GetLinkDisp(Ofs);
+    GetPrologueComment := '; Prologue: trame locale ' +
+                          IntToStr(-Disp) + ' octets';
+  End Else If IsMovemPush(Ofs) Then Begin
+    Mask := ReadBEWordMem(Ofs + 2);
+    GetPrologueComment := '; Prologue: sauvegarder ' +
+                          RegMaskToStr(Mask, True);
+  End;
+End;
+
+{ --- GetEpilogueComment : commentaire pour un epilogue de fonction --- }
+{     Detecte MOVEM.L (SP)+,reglist, UNLK A6 et RTS                    }
+
+Function GetEpilogueComment(Ofs: LongInt): String;
+Var
+  Mask: Word;
+Begin
+  GetEpilogueComment := '';
+  If Ofs + 1 >= ImageSize Then Exit;
+  If IsMovemPop(Ofs) Then Begin
+    Mask := ReadBEWordMem(Ofs + 2);
+    GetEpilogueComment := '; Epilogue: restaurer ' +
+                          RegMaskToStr(Mask, False);
+  End Else If IsUnlkA6(Ofs) Then Begin
+    GetEpilogueComment := '; Epilogue: liberer trame locale';
+  End Else If IsRtsAt(Ofs) Then Begin
+    { RTS apres UNLK ou MOVEM pop = fin d'epilogue }
+    If Ofs >= TextOffset + 2 Then Begin
+      If IsUnlkA6(Ofs - 2) Or
+         ((Ofs >= TextOffset + 4) And IsMovemPop(Ofs - 4)) Then
+        GetEpilogueComment := '; Epilogue: retour de sous-programme';
+    End;
+  End;
+End;
+
+{ --- GetHardwareRefComment : commentaire si adresse hardware referencee --- }
+{     Parcourt la chaine Operands pour trouver des adresses $FFxxxx          }
+{     et retourne un commentaire avec le nom du registre hardware.           }
+
+Function GetHardwareRefComment(Var Info: TInstructionInfo): String;
+Var
+  S     : String;
+  P, I  : Integer;
+  HexS  : String;
+  Addr  : LongInt;
+  Name  : String;
+  Nibble: Integer;
+  Valid : Boolean;
+Begin
+  GetHardwareRefComment := '';
+  S := Info.Operands;
+  P := Pos('$', S);
+  While P > 0 Do Begin
+    { Extraire les chiffres hex apres le $ }
+    HexS := '';
+    I := P + 1;
+    While (I <= Length(S)) And (
+          ((S[I] >= '0') And (S[I] <= '9')) Or
+          ((S[I] >= 'A') And (S[I] <= 'F')) Or
+          ((S[I] >= 'a') And (S[I] <= 'f'))) Do Begin
+      HexS := HexS + S[I];
+      Inc(I);
+    End;
+    If (Length(HexS) >= 6) And (Length(HexS) <= 8) Then Begin
+      { Convertir le hex en nombre }
+      Addr := 0;
+      Valid := True;
+      For I := 1 To Length(HexS) Do Begin
+        If (HexS[I] >= '0') And (HexS[I] <= '9') Then
+          Nibble := Ord(HexS[I]) - Ord('0')
+        Else If (HexS[I] >= 'A') And (HexS[I] <= 'F') Then
+          Nibble := Ord(HexS[I]) - Ord('A') + 10
+        Else If (HexS[I] >= 'a') And (HexS[I] <= 'f') Then
+          Nibble := Ord(HexS[I]) - Ord('a') + 10
+        Else Begin
+          Valid := False;
+          Break;
+        End;
+        Addr := (Addr Shl 4) Or Nibble;
+      End;
+      If Valid Then Begin
+        Name := HardwareAddrName(Addr);
+        If Name <> '' Then Begin
+          GetHardwareRefComment := '; HW: ' + Name;
+          Exit;
+        End;
+      End;
+    End;
+    { Continuer la recherche apres ce $ }
+    If P < Length(S) Then Begin
+      S := Copy(S, P + 1, Length(S) - P);
+      P := Pos('$', S);
+    End Else
+      P := 0;
+  End;
+End;
+
+{ --- GetInstructionAnnotation : commentaire combine pour une instruction --- }
+{     Verifie successivement : appel systeme TOS, prologue, epilogue,         }
+{     reference hardware. Retourne le premier commentaire trouve.             }
+
+Function GetInstructionAnnotation(Ofs: LongInt;
+                                  Var Info: TInstructionInfo): String;
+Var
+  Comment: String;
+Begin
+  { 1. Appels systeme TOS (TRAP) }
+  Comment := GetTrapComment(Ofs);
+  If Comment <> '' Then Begin
+    GetInstructionAnnotation := Comment;
+    Exit;
+  End;
+  { 2. Prologue de fonction }
+  Comment := GetPrologueComment(Ofs);
+  If Comment <> '' Then Begin
+    GetInstructionAnnotation := Comment;
+    Exit;
+  End;
+  { 3. Epilogue de fonction }
+  Comment := GetEpilogueComment(Ofs);
+  If Comment <> '' Then Begin
+    GetInstructionAnnotation := Comment;
+    Exit;
+  End;
+  { 4. Reference a une adresse hardware }
+  Comment := GetHardwareRefComment(Info);
+  If Comment <> '' Then Begin
+    GetInstructionAnnotation := Comment;
+    Exit;
+  End;
+  GetInstructionAnnotation := '';
+End;
+
+{ --- EmitInstructionAnnotation : emettre un commentaire d'annotation --- }
+{     Ecrit le commentaire comme ligne separee si non vide                }
+
+Procedure EmitInstructionAnnotation(Var F: Text; Ofs: LongInt;
+                                    Var Info: TInstructionInfo);
+Var
+  Comment: String;
+Begin
+  Comment := GetInstructionAnnotation(Ofs, Info);
+  If Comment <> '' Then
+    WriteLn(F, '                                        ', Comment);
+End;
+
+{ --- EmitSubSeparator : separateur ameliore entre sous-programmes --- }
+{     Emet un bloc de commentaires avec le nom du sous-programme et    }
+{     des informations sur le prologue (LINK disp, registres sauves). }
+
+Procedure EmitSubSeparator(Var F: Text; LblIdx: Integer; Addr: LongInt);
+Var
+  Ofs  : LongInt;
+  Disp : LongInt;
+  Mask : Word;
+Begin
+  WriteLn(F);
+  WriteLn(F, '; ========================================');
+  WriteLn(F, '; Sous-programme: ', Labels[LblIdx].Name);
+  Ofs := TextOffset + Addr;
+  If IsLinkA6(Ofs) Then Begin
+    Disp := GetLinkDisp(Ofs);
+    WriteLn(F, '; Trame locale : ', IntToStr(-Disp), ' octets');
+    If (Ofs + 4 < ImageSize) And IsMovemPush(Ofs + 4) Then Begin
+      Mask := ReadBEWordMem(Ofs + 6);
+      WriteLn(F, '; Registres    : ', RegMaskToStr(Mask, True));
+    End;
+  End Else If IsMovemPush(Ofs) Then Begin
+    Mask := ReadBEWordMem(Ofs + 2);
+    WriteLn(F, '; Registres    : ', RegMaskToStr(Mask, True));
+  End;
+  WriteLn(F, '; ========================================');
+  WriteLn(F);
+End;
+
+{ --- CountAnnotatedInstructions : compter les instructions annotees --- }
+
+Function CountAnnotatedInstructions(TextLen: LongInt): LongInt;
+Var
+  Ofs   : LongInt;
+  PC    : LongInt;
+  Inf   : TInstructionInfo;
+  Count : LongInt;
+Begin
+  Count := 0;
+  Ofs := TextOffset;
+  While Ofs < TextOffset + TextLen Do Begin
+    PC := Ofs - TextOffset;
+    DecodeInstruction(Ofs, PC, Inf);
+    If GetInstructionAnnotation(Ofs, Inf) <> '' Then
+      Inc(Count);
+    If Inf.TotalSize < 2 Then
+      Ofs := Ofs + 2
+    Else
+      Ofs := Ofs + Inf.TotalSize;
+  End;
+  CountAnnotatedInstructions := Count;
+End;
+
+{ --- CountHardwareRefs : compter les references hardware --- }
+
+Function CountHardwareRefs(TextLen: LongInt): LongInt;
+Var
+  Ofs   : LongInt;
+  PC    : LongInt;
+  Inf   : TInstructionInfo;
+  Count : LongInt;
+Begin
+  Count := 0;
+  Ofs := TextOffset;
+  While Ofs < TextOffset + TextLen Do Begin
+    PC := Ofs - TextOffset;
+    DecodeInstruction(Ofs, PC, Inf);
+    If GetHardwareRefComment(Inf) <> '' Then
+      Inc(Count);
+    If Inf.TotalSize < 2 Then
+      Ofs := Ofs + 2
+    Else
+      Ofs := Ofs + Inf.TotalSize;
+  End;
+  CountHardwareRefs := Count;
+End;
+
+{ --- ShowAnnotations : afficher les statistiques d'annotation --- }
+
+Procedure ShowAnnotations(TextLen: LongInt; Verbose: Boolean);
+Begin
+  If Not Verbose Then Exit;
+  If TextLen = 0 Then Exit;
+  WriteLn;
+  WriteLn('=== Annotations et commentaires (TODO 24) ===');
+  WriteLn;
+  WriteLn('  Instructions annotees : ',
+          IntToStr(CountAnnotatedInstructions(TextLen)));
+  WriteLn('  References hardware   : ',
+          IntToStr(CountHardwareRefs(TextLen)));
+  WriteLn('  Appels systeme TOS    : ', IntToStr(CountTrapCalls));
+End;
 
 Begin
   ShowVersion;
@@ -5926,6 +6335,8 @@ Begin
   { Etiquettes automatiques et references croisees (TODO 23) }
   ShowAutoLabelsAndXRefs(Header.ph_tlen, Header.ph_dlen,
                          Header.ph_blen, Opts.Verbose);
+  { Commentaires et annotations (TODO 24) }
+  ShowAnnotations(Header.ph_tlen, Opts.Verbose);
   { Generation du fichier .S : en-tete et directives }
   Assign(OutF, Opts.OutFile);
   ShowAsmPreamble(Opts.SrcFile, Header, Opts.Verbose);
@@ -5945,5 +6356,5 @@ Begin
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-23 [IMPLEMENTE], TODOs 24-25 [A FAIRE]');
+          ' - TODOs 01-24 [IMPLEMENTE], TODO 25 [A FAIRE]');
 End.
