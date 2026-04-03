@@ -156,9 +156,10 @@
             GetExternalSymbols, CountGlobalSymbols,
             CountExternalSymbols, ShowAsmPreamble.
 
-  TODO 21 - GENERATION FICHIER .S : SECTION TEXT [A FAIRE]
-            Code desassemble : label, mnemonique, suffixe taille,
-            operandes. Labels de saut loc_XXXXXX.
+  TODO 21 - GENERATION FICHIER .S : SECTION TEXT [IMPLEMENTE]
+            FormatAsmInstruction, EmitTextLabel, EmitTextInstruction,
+            EmitTextSection, CountEmittedLabels,
+            CountEmittedInstructions, ShowEmitTextSection.
 
   TODO 22 - GENERATION FICHIER .S : SECTIONS DATA ET BSS [A FAIRE]
             DC.B/DC.W/DC.L pour DATA, DS.B/DS.W/DS.L pour BSS.
@@ -5023,6 +5024,140 @@ Begin
 End;
 
 { ============================================================
+  TODO 21 - GENERATION FICHIER .S : SECTION TEXT [IMPLEMENTE]
+  ============================================================ }
+
+{ --- FormatAsmInstruction : formater une instruction pour le .S --- }
+{     Format assembleur 68000 : tabulation, mnemonique, operandes   }
+
+Function FormatAsmInstruction(Var Info: TInstructionInfo): String;
+Var
+  S: String;
+Begin
+  S := '        ' + Info.Mnemonic;
+  While Length(S) < 24 Do
+    S := S + ' ';
+  If Info.Operands <> '' Then
+    S := S + Info.Operands;
+  FormatAsmInstruction := S;
+End;
+
+{ --- EmitTextLabel : emettre un label a l'adresse donnee (section TEXT) --- }
+{     Addr est l'adresse relative au debut de la section TEXT               }
+
+Procedure EmitTextLabel(Var F: Text; Addr: LongInt);
+Var
+  Idx: Integer;
+Begin
+  Idx := FindLabelByAddr(Addr, 0);
+  If Idx > 0 Then
+    WriteLn(F, Labels[Idx].Name, ':');
+End;
+
+{ --- EmitTextInstruction : emettre une instruction dans le fichier .S --- }
+{     Ecrit la ligne d'instruction formatee, avec en option les octets    }
+{     hexadecimaux en commentaire si HexDump est True.                    }
+
+Procedure EmitTextInstruction(Var F: Text; Var Info: TInstructionInfo;
+                              HexDump: Boolean);
+Var
+  S      : String;
+  I      : Integer;
+  HexStr : String;
+Begin
+  S := FormatAsmInstruction(Info);
+  If HexDump Then Begin
+    HexStr := '';
+    For I := 0 To Info.TotalSize - 1 Do Begin
+      If I > 0 Then HexStr := HexStr + ' ';
+      If Info.Offset + I < ImageSize Then
+        HexStr := HexStr + HexByte(Byte(PChar(ImageBuffer)[Info.Offset + I]))
+      Else
+        HexStr := HexStr + '??';
+    End;
+    While Length(S) < 48 Do
+      S := S + ' ';
+    S := S + ' ; ' + HexStr;
+  End;
+  WriteLn(F, S);
+End;
+
+{ --- EmitTextSection : emettre la section TEXT complete dans le .S --- }
+{     Parcourt le code instruction par instruction, emet les labels    }
+{     aux adresses cibles, insere des lignes vides entre les           }
+{     sous-programmes et genere les labels de saut loc_XXXXXX.         }
+
+Procedure EmitTextSection(Var F: Text; TextLen: LongInt; HexDump: Boolean);
+Var
+  Ofs      : LongInt;
+  PC       : LongInt;
+  Inf      : TInstructionInfo;
+  CurLabel : Integer;
+Begin
+  Ofs := TextOffset;
+  While Ofs < TextOffset + TextLen Do Begin
+    PC := Ofs - TextOffset;
+    { Verifier s'il y a un label a cette adresse }
+    CurLabel := FindLabelByAddr(PC, 0);
+    If CurLabel > 0 Then Begin
+      { Inserer une ligne vide et un separateur avant chaque sous-programme }
+      If Labels[CurLabel].IsProc And (Ofs > TextOffset) Then Begin
+        WriteLn(F);
+        WriteLn(F, '; ----------------------------------------');
+        WriteLn(F);
+      End;
+      WriteLn(F, Labels[CurLabel].Name, ':');
+    End;
+    { Decoder et emettre l'instruction }
+    DecodeInstruction(Ofs, PC, Inf);
+    EmitTextInstruction(F, Inf, HexDump);
+    If Inf.TotalSize < 2 Then
+      Ofs := Ofs + 2
+    Else
+      Ofs := Ofs + Inf.TotalSize;
+  End;
+End;
+
+{ --- CountEmittedLabels : compter les labels de la section TEXT --- }
+
+Function CountEmittedLabels: LongInt;
+Var
+  I     : Integer;
+  Count : LongInt;
+Begin
+  Count := 0;
+  For I := 1 To LabelCount Do Begin
+    If Labels[I].Section = 0 Then
+      Inc(Count);
+  End;
+  CountEmittedLabels := Count;
+End;
+
+{ --- CountEmittedInstructions : compter les instructions emises --- }
+
+Function CountEmittedInstructions(TextLen: LongInt): LongInt;
+Begin
+  CountEmittedInstructions := CountInstructions(TextLen);
+End;
+
+{ --- ShowEmitTextSection : emettre la section TEXT et afficher stats --- }
+{     Appelle EmitTextSection pour ecrire dans le fichier .S, puis      }
+{     affiche les statistiques si le mode verbeux est actif.            }
+
+Procedure ShowEmitTextSection(TextLen: LongInt; HexDump, Verbose: Boolean);
+Begin
+  If TextLen = 0 Then Exit;
+  EmitTextSection(OutF, TextLen, HexDump);
+  If Verbose Then Begin
+    WriteLn;
+    WriteLn('  Section TEXT emise : ',
+            IntToStr(CountEmittedInstructions(TextLen)),
+            ' instructions, ',
+            IntToStr(CountEmittedLabels), ' labels');
+  End;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -5183,6 +5318,9 @@ Begin
   { Generation du fichier .S : en-tete et directives }
   Assign(OutF, Opts.OutFile);
   ShowAsmPreamble(Opts.SrcFile, Header, Opts.Verbose);
+  { Generation du fichier .S : section TEXT }
+  If Header.ph_tlen > 0 Then
+    ShowEmitTextSection(Header.ph_tlen, Opts.HexDump, Opts.Verbose);
   Close(OutF);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
   If Opts.Verbose Then Begin
@@ -5193,5 +5331,5 @@ Begin
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-20 [IMPLEMENTE], TODOs 21-25 [A FAIRE]');
+          ' - TODOs 01-21 [IMPLEMENTE], TODOs 22-25 [A FAIRE]');
 End.

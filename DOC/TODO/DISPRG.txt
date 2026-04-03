@@ -189,7 +189,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       Format compatible avec les assembleurs Atari ST
       (Devpac, vasm, AS).
 
-  21. [A FAIRE] Generation du fichier .S : section TEXT (instructions).
+  21. [IMPLEMENTE] Generation du fichier .S : section TEXT (instructions).
       Emettre le code desassemble instruction par instruction.
       Format : label (si reference), tabulation, mnemonique,
       suffixe de taille (.B/.W/.L), operandes.
