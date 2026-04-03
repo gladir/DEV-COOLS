@@ -161,9 +161,11 @@
             EmitTextSection, CountEmittedLabels,
             CountEmittedInstructions, ShowEmitTextSection.
 
-  TODO 22 - GENERATION FICHIER .S : SECTIONS DATA ET BSS [A FAIRE]
-            DC.B/DC.W/DC.L pour DATA, DS.B/DS.W/DS.L pour BSS.
-            Labels dat_XXXXXX, bss_XXXXXX.
+  TODO 22 - GENERATION FICHIER .S : SECTIONS DATA ET BSS [IMPLEMENTE]
+            EmitDataLabel, EmitDataString, EmitDataPointer,
+            EmitDataSection, EmitBssLabel, EmitBssSection,
+            CountEmittedDataLabels, CountEmittedBssLabels,
+            ShowEmitDataBssSections.
 
   TODO 23 - ETIQUETTES AUTOMATIQUES ET REFERENCES CROISEES [A FAIRE]
             sub_XXXXXX, loc_XXXXXX, dat_XXXXXX, dta_XXXXXX,
@@ -5158,6 +5160,307 @@ Begin
 End;
 
 { ============================================================
+  TODO 22 - GENERATION FICHIER .S : SECTIONS DATA ET BSS [IMPLEMENTE]
+  ============================================================ }
+
+{ --- EmitDataLabel : emettre un label a un offset de la section DATA --- }
+{     DataOfs = offset relatif au debut de la section DATA               }
+{     Emet le symbole DRI s'il existe, sinon rien.                       }
+
+Procedure EmitDataLabel(Var F: Text; DataOfs: LongInt);
+Var
+  Idx: Integer;
+Begin
+  Idx := FindSymbolByAddr(DataOfs, 1);
+  If Idx > 0 Then
+    WriteLn(F, GetSymbolName(Symbols[Idx]), ':');
+End;
+
+{ --- EmitDataString : emettre une chaine ASCII en DC.B 'texte',0 --- }
+{     DataOfs = offset dans DATA (0-based)                             }
+{     StrLen = longueur totale incluant le 0 terminal                  }
+
+Procedure EmitDataString(Var F: Text; DataOfs: LongInt; StrLen: LongInt);
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  P : PByteArray;
+  I : LongInt;
+  B : Byte;
+Begin
+  P := PByteArray(ImageBuffer);
+  Write(F, '        DC.B    ''');
+  For I := 0 To StrLen - 2 Do Begin
+    B := P^[DataOffset + DataOfs + I];
+    If (B >= 32) And (B <= 126) Then Begin
+      If Chr(B) = '''' Then
+        Write(F, '''''')
+      Else
+        Write(F, Chr(B));
+    End Else
+      Write(F, ''',', '$', HexByte(B), ',''');
+  End;
+  WriteLn(F, ''',0');
+End;
+
+{ --- EmitDataPointer : emettre un pointeur relocalise en DC.L --- }
+{     DataOfs = offset dans DATA (0-based)                         }
+{     TextLen = taille de la section TEXT                           }
+
+Procedure EmitDataPointer(Var F: Text; DataOfs: LongInt; TextLen: LongInt);
+Var
+  L      : LongInt;
+  SymIdx : Integer;
+  S      : String;
+Begin
+  L := ReadBELongMem(DataOffset + DataOfs);
+  S := '        DC.L    ';
+  { Chercher un label pour la cible }
+  If L < TextLen Then Begin
+    SymIdx := FindSymbolByAddr(L, 0);
+    If SymIdx > 0 Then Begin
+      S := S + GetSymbolName(Symbols[SymIdx]);
+      WriteLn(F, S);
+      Exit;
+    End;
+  End Else If (L >= TextLen) Then Begin
+    SymIdx := FindSymbolByAddr(L - TextLen, 1);
+    If SymIdx > 0 Then Begin
+      S := S + GetSymbolName(Symbols[SymIdx]);
+      WriteLn(F, S);
+      Exit;
+    End;
+  End;
+  S := S + '$' + HexLong(L);
+  WriteLn(F, S);
+End;
+
+{ --- EmitDataSection : emettre la section DATA dans le fichier .S --- }
+{     DataLen = taille de la section DATA                               }
+{     TextLen = taille de la section TEXT                                }
+
+Procedure EmitDataSection(Var F: Text; DataLen: LongInt; TextLen: LongInt);
+Type
+  TByteArray = Array[0..0] Of Byte;
+  PByteArray = ^TByteArray;
+Var
+  P        : PByteArray;
+  Pos      : LongInt;
+  StrLen   : LongInt;
+  SymName  : String;
+  B        : Byte;
+  ByteCol  : Integer;
+Begin
+  If DataLen <= 0 Then Exit;
+  If ImageBuffer = Nil Then Exit;
+
+  EmitSectionDirectives(F, 'DATA');
+
+  P := PByteArray(ImageBuffer);
+  Pos := 0;
+
+  While Pos < DataLen Do Begin
+    { Emettre un label s'il existe a cette adresse }
+    EmitDataLabel(F, Pos);
+
+    { Verifier si c'est un pointeur relocalise (DC.L) }
+    If (Pos + 3 < DataLen) And IsDataRelocated(Pos, TextLen) Then Begin
+      EmitDataPointer(F, Pos, TextLen);
+      Inc(Pos, 4);
+      Continue;
+    End;
+
+    { Verifier si c'est une chaine ASCII }
+    StrLen := DetectASCIIInData(Pos, DataLen);
+    If StrLen > 0 Then Begin
+      EmitDataString(F, Pos, StrLen);
+      Inc(Pos, StrLen);
+      Continue;
+    End;
+
+    { Emettre en DC.B par paquets de 16 octets max }
+    Write(F, '        DC.B    ');
+    ByteCol := 0;
+    While (Pos < DataLen) And (ByteCol < 16) Do Begin
+      { Arreter si le prochain octet commence une entite speciale }
+      If ByteCol > 0 Then Begin
+        SymName := GetDataSymbolName(Pos);
+        If SymName <> '' Then Break;
+        If (Pos + 3 < DataLen) And IsDataRelocated(Pos, TextLen) Then Break;
+        StrLen := DetectASCIIInData(Pos, DataLen);
+        If StrLen > 0 Then Break;
+      End;
+      B := P^[DataOffset + Pos];
+      If ByteCol > 0 Then Write(F, ',');
+      Write(F, '$', HexByte(B));
+      Inc(Pos);
+      Inc(ByteCol);
+    End;
+    WriteLn(F);
+  End;
+End;
+
+{ --- EmitBssLabel : emettre un label a un offset de la section BSS --- }
+{     BssOfs = offset relatif au debut de la section BSS                }
+
+Procedure EmitBssLabel(Var F: Text; BssOfs: LongInt);
+Var
+  Idx: Integer;
+Begin
+  Idx := FindSymbolByAddr(BssOfs, 2);
+  If Idx > 0 Then
+    WriteLn(F, GetSymbolName(Symbols[Idx]), ':');
+End;
+
+{ --- EmitBssSection : emettre la section BSS dans le fichier .S --- }
+{     BssLen = taille de la section BSS                               }
+{     Emet les symboles DRI BSS comme labels, et utilise DS.B        }
+{     pour reserver l'espace entre les symboles.                     }
+
+Procedure EmitBssSection(Var F: Text; BssLen: LongInt);
+Type
+  TSortEntry = Record
+    Offset : LongInt;
+    Name   : TString;
+  End;
+Var
+  Sorted  : Array[1..MAX_SYMBOLS] Of TSortEntry;
+  SCount  : Integer;
+  I, J    : Integer;
+  Sec     : Byte;
+  TmpOfs  : LongInt;
+  TmpName : TString;
+  CurPos  : LongInt;
+  NextPos : LongInt;
+  Gap     : LongInt;
+Begin
+  If BssLen <= 0 Then Exit;
+
+  EmitSectionDirectives(F, 'BSS');
+
+  { Collecter les symboles BSS et les trier par offset }
+  SCount := 0;
+  For I := 1 To SymbolCount Do Begin
+    Sec := GetSymbolSection(Symbols[I].sym_type);
+    If Sec = 2 Then Begin
+      Inc(SCount);
+      If SCount <= MAX_SYMBOLS Then Begin
+        Sorted[SCount].Offset := Symbols[I].sym_value;
+        Sorted[SCount].Name   := GetSymbolName(Symbols[I]);
+      End;
+    End;
+  End;
+
+  { Tri par insertion sur les offsets }
+  For I := 2 To SCount Do Begin
+    TmpOfs  := Sorted[I].Offset;
+    TmpName := Sorted[I].Name;
+    J := I - 1;
+    While (J >= 1) And (Sorted[J].Offset > TmpOfs) Do Begin
+      Sorted[J + 1].Offset := Sorted[J].Offset;
+      Sorted[J + 1].Name   := Sorted[J].Name;
+      Dec(J);
+    End;
+    Sorted[J + 1].Offset := TmpOfs;
+    Sorted[J + 1].Name   := TmpName;
+  End;
+
+  { Si aucun symbole BSS, emettre un seul DS.B }
+  If SCount = 0 Then Begin
+    WriteLn(F, '        DS.B    ', IntToStr(BssLen));
+    Exit;
+  End;
+
+  { Emettre les labels et les gaps entre eux }
+  CurPos := 0;
+  For I := 1 To SCount Do Begin
+    { Gap avant ce symbole }
+    If Sorted[I].Offset > CurPos Then Begin
+      Gap := Sorted[I].Offset - CurPos;
+      WriteLn(F, '        DS.B    ', IntToStr(Gap));
+    End;
+    { Emettre le label }
+    WriteLn(F, Sorted[I].Name, ':');
+    CurPos := Sorted[I].Offset;
+    { Calculer la taille de cette variable }
+    If I < SCount Then
+      NextPos := Sorted[I + 1].Offset
+    Else
+      NextPos := BssLen;
+    Gap := NextPos - CurPos;
+    If Gap > 0 Then Begin
+      If (Gap Mod 4 = 0) And (Gap >= 4) Then
+        WriteLn(F, '        DS.L    ', IntToStr(Gap Div 4))
+      Else If (Gap Mod 2 = 0) And (Gap >= 2) Then
+        WriteLn(F, '        DS.W    ', IntToStr(Gap Div 2))
+      Else
+        WriteLn(F, '        DS.B    ', IntToStr(Gap));
+      CurPos := NextPos;
+    End;
+  End;
+
+  { Gap restant apres le dernier symbole }
+  If CurPos < BssLen Then Begin
+    Gap := BssLen - CurPos;
+    WriteLn(F, '        DS.B    ', IntToStr(Gap));
+  End;
+End;
+
+{ --- CountEmittedDataLabels : compter les labels de la section DATA --- }
+
+Function CountEmittedDataLabels: LongInt;
+Var
+  I     : Integer;
+  Count : LongInt;
+Begin
+  Count := 0;
+  For I := 1 To SymbolCount Do Begin
+    If GetSymbolSection(Symbols[I].sym_type) = 1 Then
+      Inc(Count);
+  End;
+  CountEmittedDataLabels := Count;
+End;
+
+{ --- CountEmittedBssLabels : compter les labels de la section BSS --- }
+
+Function CountEmittedBssLabels: LongInt;
+Var
+  I     : Integer;
+  Count : LongInt;
+Begin
+  Count := 0;
+  For I := 1 To SymbolCount Do Begin
+    If GetSymbolSection(Symbols[I].sym_type) = 2 Then
+      Inc(Count);
+  End;
+  CountEmittedBssLabels := Count;
+End;
+
+{ --- ShowEmitDataBssSections : emettre DATA/BSS et afficher stats --- }
+{     Appelle EmitDataSection et EmitBssSection pour ecrire dans le   }
+{     fichier .S, puis affiche les statistiques si le mode verbeux    }
+{     est actif.                                                      }
+
+Procedure ShowEmitDataBssSections(DataLen: LongInt; BssLen: LongInt;
+                                  TextLen: LongInt; Verbose: Boolean);
+Begin
+  If DataLen > 0 Then
+    EmitDataSection(OutF, DataLen, TextLen);
+  If BssLen > 0 Then
+    EmitBssSection(OutF, BssLen);
+  If Verbose Then Begin
+    WriteLn;
+    WriteLn('  Section DATA emise : ',
+            IntToStr(DataLen), ' octets, ',
+            IntToStr(CountEmittedDataLabels), ' labels');
+    WriteLn('  Section BSS emise  : ',
+            IntToStr(BssLen), ' octets, ',
+            IntToStr(CountEmittedBssLabels), ' labels');
+  End;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -5321,6 +5624,9 @@ Begin
   { Generation du fichier .S : section TEXT }
   If Header.ph_tlen > 0 Then
     ShowEmitTextSection(Header.ph_tlen, Opts.HexDump, Opts.Verbose);
+  { Generation du fichier .S : sections DATA et BSS }
+  ShowEmitDataBssSections(Header.ph_dlen, Header.ph_blen,
+                          Header.ph_tlen, Opts.Verbose);
   Close(OutF);
   If IOResult <> 0 Then;  { ignorer erreur de fermeture }
   If Opts.Verbose Then Begin
@@ -5331,5 +5637,5 @@ Begin
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-21 [IMPLEMENTE], TODOs 22-25 [A FAIRE]');
+          ' - TODOs 01-22 [IMPLEMENTE], TODOs 23-25 [A FAIRE]');
 End.

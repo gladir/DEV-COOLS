@@ -198,7 +198,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       Si -hex est active, ajouter en commentaire les octets
       hexadecimaux de chaque instruction.
 
-  22. [A FAIRE] Generation du fichier .S : sections DATA et BSS.
+  22. [IMPLEMENTE] Generation du fichier .S : sections DATA et BSS.
       Emettre les donnees de la section DATA avec les directives
       DC.B, DC.W, DC.L selon le contexte. Detecter les chaines
       ASCII et les emettre avec DC.B 'texte',0.
