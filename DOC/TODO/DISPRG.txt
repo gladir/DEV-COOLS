@@ -107,7 +107,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       MOVE SR/CCR/USP, ANDI/ORI/EORI to SR/CCR,
       RESET, RTE, STOP.
 
-  13. [A FAIRE] Decodage des modes d'adressage 68000.
+  13. [IMPLEMENTE] Decodage des modes d'adressage 68000.
       Decoder les 8 modes d'adressage principaux du 68000 :
       000 Dn          - registre de donnees direct
       001 An          - registre d'adresses direct

@@ -109,7 +109,7 @@
             BTST, BSET, BCLR, BCHG, TRAP, TRAPV, CHK,
             MOVE SR/CCR/USP, ANDI/ORI/EORI to SR/CCR.
 
-  TODO 13 - DECODAGE DES MODES D'ADRESSAGE 68000 [A FAIRE]
+  TODO 13 - DECODAGE DES MODES D'ADRESSAGE 68000 [IMPLEMENTE]
             Dn, An, (An), (An)+, -(An), d16(An), d8(An,Xn),
             xxx.W, xxx.L, d16(PC), d8(PC,Xn), #imm.
 
@@ -2022,6 +2022,424 @@ Begin
 End;
 
 { ============================================================
+  TODO 13 - DECODAGE DES MODES D'ADRESSAGE 68000 [IMPLEMENTE]
+  ============================================================ }
+
+{ Constantes des modes d'adressage 68000 }
+Const
+  AM_DN        = 0;   { Dn          - registre de donnees direct       }
+  AM_AN        = 1;   { An          - registre d'adresses direct       }
+  AM_AN_IND    = 2;   { (An)        - registre d'adresses indirect     }
+  AM_AN_POST   = 3;   { (An)+       - post-increment                   }
+  AM_AN_PRE    = 4;   { -(An)       - pre-decrement                    }
+  AM_AN_DISP   = 5;   { d16(An)     - deplacement 16 bits              }
+  AM_AN_IDX    = 6;   { d8(An,Xn)   - indexe avec deplacement 8 bits   }
+  AM_ABS_W     = 7;   { xxx.W       - adresse absolue courte (16 bits) }
+  AM_ABS_L     = 8;   { xxx.L       - adresse absolue longue (32 bits) }
+  AM_PC_DISP   = 9;   { d16(PC)     - relatif au PC avec deplacement   }
+  AM_PC_IDX    = 10;  { d8(PC,Xn)   - relatif au PC indexe             }
+  AM_IMM       = 11;  { #imm        - immediat                         }
+
+{ --- SizeToStr : suffixe de taille (.B, .W, .L) --- }
+
+Function SizeToStr(Size: Byte): String;
+Begin
+  Case Size Of
+    0: SizeToStr := '.B';
+    1: SizeToStr := '.W';
+    2: SizeToStr := '.L';
+  Else
+    SizeToStr := '';
+  End;
+End;
+
+{ --- SizeInBytes : nombre d'octets pour une taille --- }
+
+Function SizeInBytes(Size: Byte): Byte;
+Begin
+  Case Size Of
+    0: SizeInBytes := 1;  { byte }
+    1: SizeInBytes := 2;  { word }
+    2: SizeInBytes := 4;  { long }
+  Else
+    SizeInBytes := 2;
+  End;
+End;
+
+{ --- SignExtByte : extension de signe d'un octet vers un LongInt --- }
+
+Function SignExtByte(B: Byte): LongInt;
+Begin
+  If B >= $80 Then
+    SignExtByte := LongInt(B) - 256
+  Else
+    SignExtByte := LongInt(B);
+End;
+
+{ --- SignExtWord : extension de signe d'un Word vers un LongInt --- }
+
+Function SignExtWord(W: Word): LongInt;
+Begin
+  If W >= $8000 Then
+    SignExtWord := LongInt(W) - 65536
+  Else
+    SignExtWord := LongInt(W);
+End;
+
+{ --- GetAddrModeKind : retourner le type de mode d'adressage --- }
+{     Mode = bits 3-5, Reg = bits 0-2 du mot d'instruction        }
+
+Function GetAddrModeKind(Mode, Reg: Byte): Byte;
+Begin
+  Case Mode Of
+    0: GetAddrModeKind := AM_DN;
+    1: GetAddrModeKind := AM_AN;
+    2: GetAddrModeKind := AM_AN_IND;
+    3: GetAddrModeKind := AM_AN_POST;
+    4: GetAddrModeKind := AM_AN_PRE;
+    5: GetAddrModeKind := AM_AN_DISP;
+    6: GetAddrModeKind := AM_AN_IDX;
+    7: Case Reg Of
+         0: GetAddrModeKind := AM_ABS_W;
+         1: GetAddrModeKind := AM_ABS_L;
+         2: GetAddrModeKind := AM_PC_DISP;
+         3: GetAddrModeKind := AM_PC_IDX;
+         4: GetAddrModeKind := AM_IMM;
+       Else
+         GetAddrModeKind := 255;  { invalide }
+       End;
+  Else
+    GetAddrModeKind := 255;  { invalide }
+  End;
+End;
+
+{ --- AddrModeToStr : nom du mode d'adressage --- }
+
+Function AddrModeToStr(Kind: Byte): String;
+Begin
+  Case Kind Of
+    AM_DN:       AddrModeToStr := 'Dn';
+    AM_AN:       AddrModeToStr := 'An';
+    AM_AN_IND:   AddrModeToStr := '(An)';
+    AM_AN_POST:  AddrModeToStr := '(An)+';
+    AM_AN_PRE:   AddrModeToStr := '-(An)';
+    AM_AN_DISP:  AddrModeToStr := 'd16(An)';
+    AM_AN_IDX:   AddrModeToStr := 'd8(An,Xn)';
+    AM_ABS_W:    AddrModeToStr := 'xxx.W';
+    AM_ABS_L:    AddrModeToStr := 'xxx.L';
+    AM_PC_DISP:  AddrModeToStr := 'd16(PC)';
+    AM_PC_IDX:   AddrModeToStr := 'd8(PC,Xn)';
+    AM_IMM:      AddrModeToStr := '#imm';
+  Else
+    AddrModeToStr := '???';
+  End;
+End;
+
+{ --- ExtensionSize : taille des mots d'extension pour un mode --- }
+{     OpSize : 0=byte, 1=word, 2=long (utilise pour #imm)          }
+
+Function ExtensionSize(Kind, OpSize: Byte): Byte;
+Begin
+  Case Kind Of
+    AM_DN:       ExtensionSize := 0;
+    AM_AN:       ExtensionSize := 0;
+    AM_AN_IND:   ExtensionSize := 0;
+    AM_AN_POST:  ExtensionSize := 0;
+    AM_AN_PRE:   ExtensionSize := 0;
+    AM_AN_DISP:  ExtensionSize := 2;  { 1 mot d'extension : deplacement 16 bits }
+    AM_AN_IDX:   ExtensionSize := 2;  { 1 mot d'extension : brief extension word }
+    AM_ABS_W:    ExtensionSize := 2;  { 1 mot d'extension : adresse 16 bits }
+    AM_ABS_L:    ExtensionSize := 4;  { 2 mots d'extension : adresse 32 bits }
+    AM_PC_DISP:  ExtensionSize := 2;  { 1 mot d'extension : deplacement 16 bits }
+    AM_PC_IDX:   ExtensionSize := 2;  { 1 mot d'extension : brief extension word }
+    AM_IMM:      Begin                { immediat : taille depend de OpSize }
+                   If OpSize = 2 Then
+                     ExtensionSize := 4  { long = 2 mots }
+                   Else
+                     ExtensionSize := 2; { byte ou word = 1 mot }
+                 End;
+  Else
+    ExtensionSize := 0;
+  End;
+End;
+
+{ --- IsValidEA : verifier si un mode d'adressage est valide --- }
+
+Function IsValidEA(Mode, Reg: Byte): Boolean;
+Begin
+  If Mode <= 6 Then
+    IsValidEA := True
+  Else If Mode = 7 Then
+    IsValidEA := (Reg <= 4)
+  Else
+    IsValidEA := False;
+End;
+
+{ --- DecodeEA : decoder un operande effectif 68000 en texte --- }
+{     Mode = bits 3-5, Reg = bits 0-2                            }
+{     Ofs  = offset dans ImageBuffer (apres le mot d'instruction)}
+{     OpSize = 0=byte, 1=word, 2=long (pour #imm)               }
+{     PC   = adresse courante (pour modes PC-relatifs)           }
+{     ExtBytes = retourne le nombre d'octets d'extension lus     }
+
+Function DecodeEA(Mode, Reg: Byte; Ofs: LongInt; OpSize: Byte;
+                  PC: LongInt; Var ExtBytes: Byte): String;
+Var
+  Kind      : Byte;
+  Disp16    : Integer;
+  Disp8     : ShortInt;
+  ExtWord   : Word;
+  Addr32    : LongInt;
+  ImmVal    : LongInt;
+  IdxReg    : Byte;
+  IdxIsAddr : Boolean;
+  IdxSize   : Boolean;  { False = word, True = long }
+  TargetAddr: LongInt;
+  S         : String;
+Begin
+  ExtBytes := 0;
+  Kind := GetAddrModeKind(Mode, Reg);
+
+  Case Kind Of
+    AM_DN: Begin
+      DecodeEA := 'D' + IntToStr(Reg);
+    End;
+
+    AM_AN: Begin
+      DecodeEA := 'A' + IntToStr(Reg);
+    End;
+
+    AM_AN_IND: Begin
+      DecodeEA := '(A' + IntToStr(Reg) + ')';
+    End;
+
+    AM_AN_POST: Begin
+      DecodeEA := '(A' + IntToStr(Reg) + ')+';
+    End;
+
+    AM_AN_PRE: Begin
+      DecodeEA := '-(A' + IntToStr(Reg) + ')';
+    End;
+
+    AM_AN_DISP: Begin
+      { Lire le deplacement 16 bits signe }
+      ExtWord := ReadBEWordMem(Ofs);
+      Disp16 := Integer(SmallInt(ExtWord));
+      ExtBytes := 2;
+      If Disp16 >= 0 Then
+        DecodeEA := IntToStr(Disp16) + '(A' + IntToStr(Reg) + ')'
+      Else
+        DecodeEA := '-' + IntToStr(-Disp16) + '(A' + IntToStr(Reg) + ')';
+    End;
+
+    AM_AN_IDX: Begin
+      { Lire le mot d'extension (brief extension word) }
+      ExtWord := ReadBEWordMem(Ofs);
+      ExtBytes := 2;
+      { Bit 15 : 0=Dn, 1=An }
+      IdxIsAddr := (ExtWord And $8000) <> 0;
+      { Bits 14-12 : numero du registre index }
+      IdxReg := (ExtWord Shr 12) And 7;
+      { Bit 11 : 0=word, 1=long }
+      IdxSize := (ExtWord And $0800) <> 0;
+      { Bits 7-0 : deplacement 8 bits signe }
+      Disp8 := ShortInt(ExtWord And $FF);
+      S := '';
+      If Disp8 <> 0 Then Begin
+        If Disp8 > 0 Then
+          S := IntToStr(Disp8)
+        Else
+          S := '-' + IntToStr(-Integer(Disp8));
+      End;
+      S := S + '(A' + IntToStr(Reg) + ',';
+      If IdxIsAddr Then
+        S := S + 'A'
+      Else
+        S := S + 'D';
+      S := S + IntToStr(IdxReg);
+      If IdxSize Then
+        S := S + '.L)'
+      Else
+        S := S + '.W)';
+      DecodeEA := S;
+    End;
+
+    AM_ABS_W: Begin
+      { Adresse absolue courte (16 bits, extension de signe a 32 bits) }
+      ExtWord := ReadBEWordMem(Ofs);
+      ExtBytes := 2;
+      TargetAddr := SignExtWord(ExtWord);
+      DecodeEA := '$' + HexLong(TargetAddr) + '.W';
+    End;
+
+    AM_ABS_L: Begin
+      { Adresse absolue longue (32 bits) }
+      Addr32 := ReadBELongMem(Ofs);
+      ExtBytes := 4;
+      DecodeEA := '$' + HexLong(Addr32);
+    End;
+
+    AM_PC_DISP: Begin
+      { Relatif au PC avec deplacement 16 bits }
+      ExtWord := ReadBEWordMem(Ofs);
+      Disp16 := Integer(SmallInt(ExtWord));
+      ExtBytes := 2;
+      TargetAddr := PC + 2 + LongInt(Disp16);
+      DecodeEA := '$' + HexLong(TargetAddr) + '(PC)';
+    End;
+
+    AM_PC_IDX: Begin
+      { Relatif au PC indexe (brief extension word) }
+      ExtWord := ReadBEWordMem(Ofs);
+      ExtBytes := 2;
+      IdxIsAddr := (ExtWord And $8000) <> 0;
+      IdxReg := (ExtWord Shr 12) And 7;
+      IdxSize := (ExtWord And $0800) <> 0;
+      Disp8 := ShortInt(ExtWord And $FF);
+      TargetAddr := PC + 2 + LongInt(Disp8);
+      S := '$' + HexLong(TargetAddr) + '(PC,';
+      If IdxIsAddr Then
+        S := S + 'A'
+      Else
+        S := S + 'D';
+      S := S + IntToStr(IdxReg);
+      If IdxSize Then
+        S := S + '.L)'
+      Else
+        S := S + '.W)';
+      DecodeEA := S;
+    End;
+
+    AM_IMM: Begin
+      { Immediat : taille depend de OpSize }
+      If OpSize = 2 Then Begin
+        { Long : 4 octets }
+        ImmVal := ReadBELongMem(Ofs);
+        ExtBytes := 4;
+        DecodeEA := '#$' + HexLong(ImmVal);
+      End Else If OpSize = 0 Then Begin
+        { Byte : 2 octets (poids fort ignore) }
+        ExtWord := ReadBEWordMem(Ofs);
+        ExtBytes := 2;
+        DecodeEA := '#$' + HexByte(Byte(ExtWord And $FF));
+      End Else Begin
+        { Word : 2 octets }
+        ExtWord := ReadBEWordMem(Ofs);
+        ExtBytes := 2;
+        DecodeEA := '#$' + HexWord(ExtWord);
+      End;
+    End;
+
+  Else
+    DecodeEA := '???';
+  End;
+End;
+
+{ --- DecodeRegList : decoder un masque de registres MOVEM --- }
+{     Mask = mot de 16 bits, Direction: 0 = reg-to-mem, 1 = mem-to-reg }
+
+Function DecodeRegList(Mask: Word; Direction: Byte): String;
+Var
+  S    : String;
+  I    : Integer;
+  First: Boolean;
+  Bit  : Integer;
+  RunStart, RunEnd: Integer;
+
+  Procedure AppendReg(RegNum: Integer);
+  Begin
+    If Not First Then
+      S := S + '/';
+    If RegNum < 8 Then
+      S := S + 'D' + IntToStr(RegNum)
+    Else
+      S := S + 'A' + IntToStr(RegNum - 8);
+    First := False;
+  End;
+
+  Procedure AppendRange(StartReg, EndReg: Integer);
+  Begin
+    If Not First Then
+      S := S + '/';
+    If StartReg < 8 Then
+      S := S + 'D' + IntToStr(StartReg)
+    Else
+      S := S + 'A' + IntToStr(StartReg - 8);
+    S := S + '-';
+    If EndReg < 8 Then
+      S := S + 'D' + IntToStr(EndReg)
+    Else
+      S := S + 'A' + IntToStr(EndReg - 8);
+    First := False;
+  End;
+
+Begin
+  S := '';
+  First := True;
+  I := 0;
+  While I <= 15 Do Begin
+    { Pour reg-to-mem (predecrement), les bits sont inverses :
+      bit 0 = A7, bit 15 = D0
+      Pour mem-to-reg (normal), bit 0 = D0, bit 15 = A7 }
+    If Direction = 0 Then
+      Bit := 15 - I   { predecrement : bit inverse }
+    Else
+      Bit := I;        { normal }
+    If (Mask And (1 Shl Bit)) <> 0 Then Begin
+      RunStart := I;
+      RunEnd := I;
+      While (RunEnd < 15) Do Begin
+        If Direction = 0 Then
+          Bit := 15 - (RunEnd + 1)
+        Else
+          Bit := RunEnd + 1;
+        If (Mask And (1 Shl Bit)) <> 0 Then
+          Inc(RunEnd)
+        Else
+          Break;
+      End;
+      If RunEnd > RunStart Then
+        AppendRange(RunStart, RunEnd)
+      Else
+        AppendReg(RunStart);
+      I := RunEnd + 1;
+    End Else
+      Inc(I);
+  End;
+  If S = '' Then
+    S := '#$' + HexWord(Mask);
+  DecodeRegList := S;
+End;
+
+{ --- ShowAddrModes : afficher les modes d'adressage supportes (verbose) --- }
+
+Procedure ShowAddrModes(Verbose: Boolean);
+Begin
+  If Not Verbose Then Exit;
+  WriteLn;
+  WriteLn('=== Modes d''adressage 68000 (12 modes) ===');
+  WriteLn('  000 Dn          : registre de donnees direct');
+  WriteLn('  001 An          : registre d''adresses direct');
+  WriteLn('  010 (An)        : registre d''adresses indirect');
+  WriteLn('  011 (An)+       : post-increment');
+  WriteLn('  100 -(An)       : pre-decrement');
+  WriteLn('  101 d16(An)     : deplacement 16 bits');
+  WriteLn('  110 d8(An,Xn)   : indexe (deplacement 8 bits)');
+  WriteLn('  111/000 xxx.W   : adresse absolue courte');
+  WriteLn('  111/001 xxx.L   : adresse absolue longue');
+  WriteLn('  111/010 d16(PC) : relatif au PC');
+  WriteLn('  111/011 d8(PC,Xn) : relatif au PC indexe');
+  WriteLn('  111/100 #imm    : immediat');
+End;
+
+{ --- CountAddrModes : retourner le nombre de modes supportes --- }
+
+Function CountAddrModes: Integer;
+Begin
+  CountAddrModes := 12;  { AM_DN..AM_IMM }
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -2097,8 +2515,12 @@ Begin
             ', branch: ', IntToStr(CountOpcodesByGroup(GRP_BRANCH)),
             ', bit: ', IntToStr(CountOpcodesByGroup(GRP_BIT)),
             ', misc: ', IntToStr(CountOpcodesByGroup(GRP_MISC)), ')');
+  { Afficher les modes d'adressage }
+  ShowAddrModes(Opts.Verbose);
+  If Opts.Verbose Then
+    WriteLn('Modes adressage : ', IntToStr(CountAddrModes));
   { Liberer la memoire }
   FreeSections;
   WriteLn;
-  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-12 [IMPLEMENTE], TODOs 13-25 [A FAIRE]');
+  WriteLn('DISPRG v', DISPRG_VERSION, ' - TODOs 01-13 [IMPLEMENTE], TODOs 14-25 [A FAIRE]');
 End.
