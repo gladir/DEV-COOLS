@@ -245,6 +245,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur ColdFusion pour l'assembleur du microprocesseur 8086 ou 8088.</td>
 		</tr>
 		<tr>
+			<td><b>CLIPPER86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Clipper pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>CLOJ86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Clojure pour de l'assembleur de microprocesseur 8086 ou 8088.</td>
 		</tr>
