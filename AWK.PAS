@@ -1414,11 +1414,14 @@ Begin
     Top:=StackPeek;
     P_2:=Infix[I];
     AppendOk:=True;
-    If(Top='+')and(P_2='*')Then AppendOk:=False
-    Else If(Top='*')and(P_2='-')Then AppendOk:=True
-    Else If(Top='+')and(P_2='-')Then AppendOk:=True
-    Else If(Top in['+','-'])and(P_2='^')Then AppendOk:=False
-    Else If(Top in['*','/','%'])and(P_2='^')Then AppendOk:=False;
+    { Priorite: ^ > * / % > + - }
+    { ^ est associatif a droite }
+    If(Top='^')and(P_2='^')Then AppendOk:=False { ^ associatif a droite }
+    Else If(Top='^')Then AppendOk:=True { ^ sur pile, autre operateur: pop ^ }
+    Else If(P_2='^')Then AppendOk:=False { ^ arrive, ne pas pop operateurs moins prioritaires }
+    Else If(Top in['*','/','%'])and(P_2 in['+','-'])Then AppendOk:=True { * / % plus prioritaires que + - }
+    Else If(Top in['+','-'])and(P_2 in['*','/','%'])Then AppendOk:=False { + - moins prioritaires que * / % }
+    Else AppendOk:=True; { Meme priorite, associatif a gauche: pop }
     If(AppendOk)Then PostFix:=PostFix+StackPop
                 Else Break;
    End;
@@ -1453,7 +1456,20 @@ Begin
     '*':_Result:=P2*P;
     '/':If P<>0 Then _Result:=P2/P Else _Result:=0;
     '%':If P<>0 Then _Result:=Trunc(P2) mod Trunc(P) Else _Result:=0;
-    '^':If P2>0 Then _Result:=Exp(P*Ln(P2)) Else If P2=0 Then _Result:=0 Else _Result:=-Exp(P*Ln(-P2));
+    '^':Begin { Puissance: P2^P }
+          If P2>0 Then _Result:=Exp(P*Ln(P2))
+          Else If P2=0 Then Begin
+           If P>0 Then _Result:=0 Else _Result:=1; { 0^0 = 1 par convention }
+          End
+          Else Begin { P2 < 0 }
+           If(Frac(P)=0)Then Begin { Exposant entier }
+            If(Trunc(P) mod 2 = 0)Then _Result:=Exp(P*Ln(-P2)) { Exposant pair: resultat positif }
+                                  Else _Result:=-Exp(P*Ln(-P2)); { Exposant impair: resultat negatif }
+           End
+            Else
+           _Result:=0; { Base negative avec exposant non-entier: indefini, retourne 0 }
+          End;
+         End;
     Else _Result:=-1;
    End;
    ResultStackPush(_Result);
