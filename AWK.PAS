@@ -1165,6 +1165,7 @@ Begin
      _Integer:Str(GetVariableInt(VarName),Value);
      _LongInt:Str(GetVariableLongInt(VarName),Value);
      _Real:Str(GetVariableReal(VarName):0:6,Value);
+     _String:Value:=GetVariableString(VarName);
      Else Begin
       WriteLn('Type incompatiable');
       Exit;
@@ -1901,22 +1902,40 @@ Begin
   End
    Else
   If CurrLine[CurrPos]='$'Then Begin
-   { Acces a un champ $0, $1, $2, ... }
+   { Acces a un champ $0, $1, $2, ..., $NF }
    Inc(CurrPos);
    TempStr:='';
-   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9'])do Begin
-    TempStr:=TempStr+CurrLine[CurrPos];
-    Inc(CurrPos);
-   End;
-   If TempStr<>''Then Begin
+   { Verifier si c'est un numero ou une variable }
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9'])Then Begin
+    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9'])do Begin
+     TempStr:=TempStr+CurrLine[CurrPos];
+     Inc(CurrPos);
+    End;
     I:=0;
     Val(TempStr,I,SavePos);
-    If(I>=0)and(I<=NumFields)Then
-     OutputStr:=OutputStr+Fields[I]
+   End
     Else
-     OutputStr:=OutputStr+'';
-    HasOutput:=True;
-   End;
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_'])Then Begin
+    { Variable comme $NF }
+    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+     TempStr:=TempStr+CurrLine[CurrPos];
+     Inc(CurrPos);
+    End;
+    If VariableExist(StrToUpper(TempStr))Then Begin
+     Case VariableType(StrToUpper(TempStr))of
+      _Integer:I:=GetVariableInt(StrToUpper(TempStr));
+      _LongInt:I:=GetVariableLongInt(StrToUpper(TempStr));
+      Else I:=-1;
+     End;
+    End
+     Else I:=-1;
+   End
+    Else I:=-1;
+   If(I>=0)and(I<=NumFields)Then
+    OutputStr:=OutputStr+Fields[I]
+   Else
+    OutputStr:=OutputStr+'';
+   HasOutput:=True;
   End
    Else
   If CurrLine[CurrPos]in['0'..'9','-','+','(']Then Begin
@@ -2722,8 +2741,9 @@ Begin
  While I<=Length(Line)do Begin
   If(Line[I]in[' ',#9])Then Begin
    If Not InSpace Then Begin
-    Fields[NumFields]:=Copy(Line,Start,I-Start);
     Inc(NumFields);
+    If NumFields<=MaxFields Then
+     Fields[NumFields]:=Copy(Line,Start,I-Start);
     InSpace:=True;
    End;
   End
@@ -2737,8 +2757,9 @@ Begin
   Inc(I);
  End;
  If Not InSpace Then Begin
-  Fields[NumFields]:=Copy(Line,Start,I-Start);
   Inc(NumFields);
+  If NumFields<=MaxFields Then
+   Fields[NumFields]:=Copy(Line,Start,I-Start);
  End;
 End;
 
@@ -3828,6 +3849,12 @@ Procedure ProcessInputWithRules;
 Var
  InputLine:String;
 Begin
+ { Initialiser les variables integrees AWK }
+ NRValue:=0;
+ NumFields:=0;
+ AddVariableLongInt('NR',0);
+ AddVariableInt('NF',0);
+ 
  { Executer les regles BEGIN d'abord }
  ExecuteBeginRules;
  
