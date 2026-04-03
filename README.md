@@ -381,6 +381,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur JavaScript pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>KOTLIN86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Kotlin pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>LINK.PAS</b></td>
 			<td>Cette commande permet de lancer le fabricant de liaison.</td>
 		</tr>
