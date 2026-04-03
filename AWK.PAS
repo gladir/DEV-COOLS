@@ -942,8 +942,10 @@ End;
 Function GetVariableString(S:String):String;
 Var
  I:Integer;
+ TempStr:String;
 Begin
  GetVariableString:='';
+ TempStr:='';
  For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
   If VarList[I]^.VarType=_String Then Begin
    If VarList[I]^.Variant.S<>Nil Then
@@ -953,9 +955,9 @@ Begin
   Begin
    { Convertir les autres types en chaine }
    Case VarList[I]^.VarType of
-    _Integer:Str(VarList[I]^.Variant.I,GetVariableString);
-    _LongInt:Str(VarList[I]^.Variant.L,GetVariableString);
-    _Real:Str(VarList[I]^.Variant.R:0:6,GetVariableString);
+    _Integer:Begin Str(VarList[I]^.Variant.I,TempStr); GetVariableString:=TempStr; End;
+    _LongInt:Begin Str(VarList[I]^.Variant.L,TempStr); GetVariableString:=TempStr; End;
+    _Real:Begin Str(VarList[I]^.Variant.R:0:6,TempStr); GetVariableString:=TempStr; End;
    End;
   End;
   Exit;
