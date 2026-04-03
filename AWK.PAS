@@ -945,7 +945,19 @@ Var
 Begin
  GetVariableString:='';
  For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  GetVariableString:=VarList[I]^.Variant.S^;
+  If VarList[I]^.VarType=_String Then Begin
+   If VarList[I]^.Variant.S<>Nil Then
+    GetVariableString:=VarList[I]^.Variant.S^;
+  End
+   Else
+  Begin
+   { Convertir les autres types en chaine }
+   Case VarList[I]^.VarType of
+    _Integer:Str(VarList[I]^.Variant.I,GetVariableString);
+    _LongInt:Str(VarList[I]^.Variant.L,GetVariableString);
+    _Real:Str(VarList[I]^.Variant.R:0:6,GetVariableString);
+   End;
+  End;
   Exit;
  End;
 End;
@@ -955,7 +967,10 @@ Var
  I:Integer;
 Begin
  For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  VarList[I]^.Variant.S^:=Value;
+  If VarList[I]^.VarType=_String Then Begin
+   If VarList[I]^.Variant.S<>Nil Then
+    VarList[I]^.Variant.S^:=Value;
+  End;
   Exit;
  End;
 End;
@@ -1307,6 +1322,24 @@ Begin
          Exit;
         End;
         Inc(I);
+       End;
+       9:Begin{RAND}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        { RAND() n'a pas d'argument }
+        While(I<=Length(Infix))and(Infix[I]=' ')do Inc(I);
+        If(I<=Length(Infix))and(Infix[I]=')')Then Begin
+         Str(Random:0:10,Value);
+         Inc(I);
+        End
+         Else
+        Begin
+         WriteLn('")" attendu pour rand()');
+         Exit;
+        End;
        End;
        10:Begin{SIN}
         If Infix[I]<>'('Then Begin
@@ -2050,14 +2083,63 @@ Begin
 End;
 
 Procedure CosCommand;
+Var
+ R:Real;
 Begin
- If GetSeparator<>'"'Then Begin
-  WriteLn(Cos(GetNumberValue(1)));
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ R:=GetNumberValue(1);
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ R:=Cos(R);
+ If Frac(R)=0.0 Then WriteLn(R:0:0)
+                Else WriteLn(R);
+End;
+
+{ Fonction sin - sinus }
+Procedure SinCommand;
+Var
+ R:Real;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ R:=GetNumberValue(1);
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ R:=Sin(R);
+ If Frac(R)=0.0 Then WriteLn(R:0:0)
+                Else WriteLn(R);
+End;
+
+{ Fonction rand - nombre aleatoire entre 0 et 1 }
+Procedure RandCommand;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ WriteLn(Random);
+End;
+
+{ Fonction srand - initialise le generateur aleatoire }
+Procedure SRandCommand;
+Var
+ Seed:LongInt;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Begin
+  { srand() sans argument - utilise l'heure }
+  Randomize;
+  Inc(CurrPos);
  End
   Else
  Begin
-  WriteLn('Erreur de syntaxe : cos attend une valeur numerique');
-  Halt;
+  Seed:=Round(GetNumberValue(1));
+  RandSeed:=Seed;
+  SkipSpace;
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
  End;
 End;
 
@@ -2086,9 +2168,11 @@ Var
  FormatStr,OutputStr,TempStr:String;
  I:Integer;
  R:Real;
- InFormat:Boolean;
  Width,Precision:Integer;
  WidthStr,PrecStr:String;
+ LeftAlign:Boolean;
+ IntVal:LongInt;
+ Err:Integer;
 Begin
  SkipSpace;
  OutputStr:='';
@@ -2105,20 +2189,31 @@ Begin
     End
      Else
     Begin
+     { Lire les flags optionnels }
+     LeftAlign:=False;
+     If(I<=Length(FormatStr))and(FormatStr[I]='-')Then Begin
+      LeftAlign:=True;
+      Inc(I);
+     End;
      { Lire la largeur optionnelle }
      WidthStr:='';
-     While(I<=Length(FormatStr))and(FormatStr[I]in['0'..'9','-'])do Begin
+     While(I<=Length(FormatStr))and(FormatStr[I]in['0'..'9'])do Begin
       WidthStr:=WidthStr+FormatStr[I];
       Inc(I);
      End;
+     Width:=0;
+     If WidthStr<>''Then Val(WidthStr,Width,Err);
      { Lire la precision optionnelle }
      PrecStr:='';
+     Precision:=6;
      If(I<=Length(FormatStr))and(FormatStr[I]='.')Then Begin
       Inc(I);
       While(I<=Length(FormatStr))and(FormatStr[I]in['0'..'9'])do Begin
        PrecStr:=PrecStr+FormatStr[I];
        Inc(I);
       End;
+      If PrecStr<>''Then Val(PrecStr,Precision,Err)
+                    Else Precision:=0;
      End;
      { Traiter le specifier de format }
      If I<=Length(FormatStr)Then Begin
@@ -2126,9 +2221,51 @@ Begin
       If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=',')Then Inc(CurrPos);
       SkipSpace;
       Case FormatStr[I] of
-       'd','i':Begin { Entier }
+       'd','i':Begin { Entier decimal }
         R:=GetNumberValue(1);
         Str(Round(R),TempStr);
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
+        OutputStr:=OutputStr+TempStr;
+       End;
+       'x','X':Begin { Hexadecimal }
+        R:=GetNumberValue(1);
+        IntVal:=Round(R);
+        TempStr:='';
+        If IntVal=0 Then TempStr:='0'
+         Else
+        Begin
+         While IntVal>0 do Begin
+          If(IntVal mod 16)<10 Then TempStr:=Chr(Ord('0')+(IntVal mod 16))+TempStr
+                               Else If FormatStr[I]='X'Then TempStr:=Chr(Ord('A')+(IntVal mod 16)-10)+TempStr
+                                                       Else TempStr:=Chr(Ord('a')+(IntVal mod 16)-10)+TempStr;
+          IntVal:=IntVal div 16;
+         End;
+        End;
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
+        OutputStr:=OutputStr+TempStr;
+       End;
+       'o':Begin { Octal }
+        R:=GetNumberValue(1);
+        IntVal:=Round(R);
+        TempStr:='';
+        If IntVal=0 Then TempStr:='0'
+         Else
+        Begin
+         While IntVal>0 do Begin
+          TempStr:=Chr(Ord('0')+(IntVal mod 8))+TempStr;
+          IntVal:=IntVal div 8;
+         End;
+        End;
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
         OutputStr:=OutputStr+TempStr;
        End;
        's':Begin { Chaine }
@@ -2136,22 +2273,35 @@ Begin
          TempStr:=GetStringValue
         Else Begin
          TempStr:='';
-         While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+         While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9','$'])do Begin
           TempStr:=TempStr+CurrLine[CurrPos];
           Inc(CurrPos);
          End;
          If VariableExist(StrToUpper(TempStr))Then
           TempStr:=GetVariableString(StrToUpper(TempStr));
         End;
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
         OutputStr:=OutputStr+TempStr;
        End;
-       'f','g','e':Begin { Reel }
+       'f':Begin { Reel format fixe }
         R:=GetNumberValue(1);
-        If PrecStr<>''Then Begin
-         Str(R:0:2,TempStr);
-        End
-         Else
+        Str(R:0:Precision,TempStr);
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
+        OutputStr:=OutputStr+TempStr;
+       End;
+       'g','e':Begin { Reel format exponentiel/general }
+        R:=GetNumberValue(1);
         Str(R,TempStr);
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
         OutputStr:=OutputStr+TempStr;
        End;
        'c':Begin { Caractere }
@@ -2167,7 +2317,8 @@ Begin
    If(FormatStr[I]='\')and(I<Length(FormatStr))Then Begin
     Inc(I);
     Case FormatStr[I] of
-     'n':OutputStr:=OutputStr+#13#10;
+     'n':OutputStr:=OutputStr+#10;
+     'r':OutputStr:=OutputStr+#13;
      't':OutputStr:=OutputStr+#9;
      '\':OutputStr:=OutputStr+'\';
      '"':OutputStr:=OutputStr+'"';
@@ -3639,14 +3790,14 @@ Begin
    47: NoImplementation:=True; { patsplit }
    48: PrintCommand; { print }
    49: PrintfCommand; { printf }
-   50: NoImplementation:=True; { rand }
+   50: RandCommand; { rand }
    51: ReturnCommand; { return }
    52: NoImplementation:=True; { rshift }
-   53: NoImplementation:=True; { sin }
+   53: SinCommand; { sin }
    54: NoImplementation:=True; { split }
    55: NoImplementation:=True; { sprintf }
    56: SqrtCommand; { sqrt }
-   57: NoImplementation:=True; { srand }
+   57: SRandCommand; { srand }
    58: NoImplementation:=True; { strftime }
    59: NoImplementation:=True; { strtonum }
    60: NoImplementation:=True; { sub }
