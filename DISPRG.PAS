@@ -113,7 +113,7 @@
             Dn, An, (An), (An)+, -(An), d16(An), d8(An,Xn),
             xxx.W, xxx.L, d16(PC), d8(PC,Xn), #imm.
 
-  TODO 14 - DECODAGE D'UNE INSTRUCTION COMPLETE [A FAIRE]
+  TODO 14 - DECODAGE D'UNE INSTRUCTION COMPLETE [IMPLEMENTE]
             DecodeInstruction : lire le mot d instruction,
             extraire les champs, decoder les extensions.
 
