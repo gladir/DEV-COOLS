@@ -167,9 +167,12 @@
             CountEmittedDataLabels, CountEmittedBssLabels,
             ShowEmitDataBssSections.
 
-  TODO 23 - ETIQUETTES AUTOMATIQUES ET REFERENCES CROISEES [A FAIRE]
-            sub_XXXXXX, loc_XXXXXX, dat_XXXXXX, dta_XXXXXX,
-            bss_XXXXXX. Commentaires XREF.
+  TODO 23 - ETIQUETTES AUTOMATIQUES ET REFERENCES CROISEES [IMPLEMENTE]
+            AddDataTextLabels, AddDataSectionLabels,
+            AddBssSectionLabels, UnifyLabelNames,
+            FindNearestLabel, FormatXRefComment,
+            EmitXRefComments, CountAutoLabels,
+            CountXRefComments, ShowAutoLabelsAndXRefs.
 
   TODO 24 - COMMENTAIRES ET ANNOTATIONS [A FAIRE]
             Noms des fonctions GEMDOS/BIOS/XBIOS, prologues,
@@ -5025,6 +5028,9 @@ Begin
   End;
 End;
 
+{ Declaration avancee pour EmitXRefComments (definie dans TODO 23) }
+Procedure EmitXRefComments(Var F: Text; Addr: LongInt); Forward;
+
 { ============================================================
   TODO 21 - GENERATION FICHIER .S : SECTION TEXT [IMPLEMENTE]
   ============================================================ }
@@ -5109,6 +5115,8 @@ Begin
         WriteLn(F);
       End;
       WriteLn(F, Labels[CurLabel].Name, ':');
+      { Emettre les commentaires de references croisees (TODO 23) }
+      EmitXRefComments(F, PC);
     End;
     { Decoder et emettre l'instruction }
     DecodeInstruction(Ofs, PC, Inf);
@@ -5461,6 +5469,301 @@ Begin
 End;
 
 { ============================================================
+  TODO 23 - ETIQUETTES AUTOMATIQUES ET REFERENCES CROISEES [IMPLEMENTE]
+  ============================================================ }
+
+{ --- AddDataTextLabels : ajouter des labels dat_ pour les donnees --- }
+{     dans la section TEXT (detectees par la carte code/donnees)        }
+{     Doit etre appele AVANT FreeCodeMap.                              }
+
+Procedure AddDataTextLabels(TextLen: LongInt);
+Var
+  I       : LongInt;
+  InData  : Boolean;
+  RegType : Byte;
+  LblName : String;
+Begin
+  If CodeMap = Nil Then Exit;
+  If TextLen <= 0 Then Exit;
+  InData := False;
+  For I := 0 To TextLen - 1 Do Begin
+    RegType := GetCodeMapByte(I);
+    If (RegType = CM_DATA) Or (RegType = CM_ASCII) Or
+       (RegType = CM_JUMPTBL) Then Begin
+      If Not InData Then Begin
+        { Debut d'une region de donnees dans TEXT }
+        If FindLabelByAddr(I, 0) = 0 Then Begin
+          LblName := 'dat_' + HexLong(I);
+          AddLabel(I, LblName, False, True, 0);
+        End;
+        InData := True;
+      End;
+    End Else
+      InData := False;
+  End;
+End;
+
+{ --- AddDataSectionLabels : ajouter des labels dta_ pour DATA --- }
+{     Ajoute les symboles DRI comme labels dans la table, et       }
+{     genere des labels dta_XXXXXXXX pour les offsets references    }
+{     qui n'ont pas de symbole DRI.                                }
+
+Procedure AddDataSectionLabels(DataLen, TextLen: LongInt);
+Var
+  I        : Integer;
+  Sec      : Byte;
+  SymAddr  : LongInt;
+  RelocOfs : LongInt;
+  RefAddr  : LongInt;
+  DataOfs  : LongInt;
+  LblName  : String;
+Begin
+  If DataLen <= 0 Then Exit;
+  { 1. Ajouter les symboles DRI de la section DATA }
+  For I := 1 To SymbolCount Do Begin
+    Sec := GetSymbolSection(Symbols[I].sym_type);
+    If Sec = 1 Then Begin
+      SymAddr := Symbols[I].sym_value;
+      If (SymAddr >= 0) And (SymAddr < DataLen) Then Begin
+        If FindLabelByAddr(SymAddr, 1) = 0 Then
+          AddLabel(SymAddr, GetSymbolName(Symbols[I]),
+                   False, True, 1);
+      End;
+    End;
+  End;
+  { 2. Scanner la table de relocalisation pour les references DATA }
+  For I := 1 To RelocCount Do Begin
+    RelocOfs := Relocs[I];
+    If (RelocOfs >= 0) And (RelocOfs + 3 < ImageSize) Then Begin
+      RefAddr := ReadBELongMem(RelocOfs);
+      { Verifier si l'adresse pointe dans la section DATA }
+      If (RefAddr >= TextLen) And (RefAddr < TextLen + DataLen) Then Begin
+        DataOfs := RefAddr - TextLen;
+        If FindLabelByAddr(DataOfs, 1) = 0 Then Begin
+          LblName := 'dta_' + HexLong(DataOfs);
+          AddLabel(DataOfs, LblName, False, True, 1);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- AddBssSectionLabels : ajouter des labels bss_ pour BSS --- }
+{     Ajoute les symboles DRI comme labels dans la table, et     }
+{     genere des labels bss_XXXXXXXX pour les offsets references  }
+{     qui n'ont pas de symbole DRI.                              }
+
+Procedure AddBssSectionLabels(BssLen, TextLen, DataLen: LongInt);
+Var
+  I        : Integer;
+  Sec      : Byte;
+  SymAddr  : LongInt;
+  RelocOfs : LongInt;
+  RefAddr  : LongInt;
+  BssOfs   : LongInt;
+  LblName  : String;
+  BssBase  : LongInt;
+Begin
+  If BssLen <= 0 Then Exit;
+  BssBase := TextLen + DataLen;
+  { 1. Ajouter les symboles DRI de la section BSS }
+  For I := 1 To SymbolCount Do Begin
+    Sec := GetSymbolSection(Symbols[I].sym_type);
+    If Sec = 2 Then Begin
+      SymAddr := Symbols[I].sym_value;
+      If (SymAddr >= 0) And (SymAddr < BssLen) Then Begin
+        If FindLabelByAddr(SymAddr, 2) = 0 Then
+          AddLabel(SymAddr, GetSymbolName(Symbols[I]),
+                   False, True, 2);
+      End;
+    End;
+  End;
+  { 2. Scanner la table de relocalisation pour les references BSS }
+  For I := 1 To RelocCount Do Begin
+    RelocOfs := Relocs[I];
+    If (RelocOfs >= 0) And (RelocOfs + 3 < ImageSize) Then Begin
+      RefAddr := ReadBELongMem(RelocOfs);
+      { Verifier si l'adresse pointe dans la section BSS }
+      If (RefAddr >= BssBase) And (RefAddr < BssBase + BssLen) Then Begin
+        BssOfs := RefAddr - BssBase;
+        If FindLabelByAddr(BssOfs, 2) = 0 Then Begin
+          LblName := 'bss_' + HexLong(BssOfs);
+          AddLabel(BssOfs, LblName, False, True, 2);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ --- UnifyLabelNames : remplacer les noms auto par les noms DRI --- }
+{     Pour chaque label de la section TEXT, si un symbole DRI existe }
+{     a la meme adresse, utiliser le nom reel du symbole.           }
+
+Procedure UnifyLabelNames;
+Var
+  I   : Integer;
+  Idx : Integer;
+Begin
+  For I := 1 To LabelCount Do Begin
+    { Section TEXT : chercher un symbole DRI }
+    If Labels[I].Section = 0 Then Begin
+      Idx := FindSymbolByAddr(Labels[I].Address, 0);
+      If Idx > 0 Then Begin
+        { Remplacer le nom auto-genere par le nom DRI reel }
+        If (Pos('sub_', Labels[I].Name) = 1) Or
+           (Pos('loc_', Labels[I].Name) = 1) Or
+           (Pos('dat_', Labels[I].Name) = 1) Then
+          Labels[I].Name := GetSymbolName(Symbols[Idx]);
+      End;
+    End;
+    { Section DATA : chercher un symbole DRI }
+    If Labels[I].Section = 1 Then Begin
+      Idx := FindSymbolByAddr(Labels[I].Address, 1);
+      If Idx > 0 Then Begin
+        If Pos('dta_', Labels[I].Name) = 1 Then
+          Labels[I].Name := GetSymbolName(Symbols[Idx]);
+      End;
+    End;
+    { Section BSS : chercher un symbole DRI }
+    If Labels[I].Section = 2 Then Begin
+      Idx := FindSymbolByAddr(Labels[I].Address, 2);
+      If Idx > 0 Then Begin
+        If Pos('bss_', Labels[I].Name) = 1 Then
+          Labels[I].Name := GetSymbolName(Symbols[Idx]);
+      End;
+    End;
+  End;
+End;
+
+{ --- FindNearestLabel : trouver le label le plus proche (<=) --- }
+{     Retourne l'index du label dans la section Sec dont          }
+{     l'adresse est la plus grande parmi celles <= Addr.          }
+{     Retourne 0 si aucun label trouve.                           }
+
+Function FindNearestLabel(Addr: LongInt; Sec: Byte): Integer;
+Var
+  I       : Integer;
+  BestIdx : Integer;
+  BestAdr : LongInt;
+Begin
+  BestIdx := 0;
+  BestAdr := -1;
+  For I := 1 To LabelCount Do Begin
+    If (Labels[I].Section = Sec) And
+       (Labels[I].Address <= Addr) And
+       (Labels[I].Address > BestAdr) Then Begin
+      BestIdx := I;
+      BestAdr := Labels[I].Address;
+    End;
+  End;
+  FindNearestLabel := BestIdx;
+End;
+
+{ --- FormatXRefComment : formater un commentaire de reference --- }
+{     XIdx = index dans la table XRefs                             }
+{     Retourne '; XREF: nom+$XXXX (BSR)' ou '; XREF: nom (BRA)'  }
+
+Function FormatXRefComment(XIdx: Integer): String;
+Var
+  NearIdx : Integer;
+  Offset  : LongInt;
+  S       : String;
+Begin
+  FormatXRefComment := '';
+  If (XIdx < 1) Or (XIdx > XRefCount) Then Exit;
+  { Trouver le label le plus proche de l'adresse source }
+  NearIdx := FindNearestLabel(XRefs[XIdx].FromAddr, 0);
+  S := '; XREF: ';
+  If NearIdx > 0 Then Begin
+    S := S + Labels[NearIdx].Name;
+    Offset := XRefs[XIdx].FromAddr - Labels[NearIdx].Address;
+    If Offset > 0 Then
+      S := S + '+$' + HexLong(Offset);
+  End Else
+    S := S + '$' + HexLong(XRefs[XIdx].FromAddr);
+  If XRefs[XIdx].IsCall Then
+    S := S + ' (BSR)'
+  Else
+    S := S + ' (BRA)';
+  FormatXRefComment := S;
+End;
+
+{ --- EmitXRefComments : emettre les commentaires XREF pour un label --- }
+{     Addr = adresse cible (dans la section TEXT, 0-based)               }
+{     Emet un commentaire par reference croisee vers cette adresse.      }
+
+Procedure EmitXRefComments(Var F: Text; Addr: LongInt);
+Var
+  I     : Integer;
+  Count : Integer;
+Begin
+  Count := 0;
+  For I := 1 To XRefCount Do Begin
+    If XRefs[I].ToAddr = Addr Then Begin
+      Inc(Count);
+      If Count <= 10 Then  { Limiter a 10 XREFs par label }
+        WriteLn(F, FormatXRefComment(I));
+    End;
+  End;
+  If Count > 10 Then
+    WriteLn(F, '; ... et ', IntToStr(Count - 10), ' autres references');
+End;
+
+{ --- CountAutoLabels : compter les labels auto-generes --- }
+
+Function CountAutoLabels: LongInt;
+Var
+  I     : Integer;
+  Count : LongInt;
+Begin
+  Count := 0;
+  For I := 1 To LabelCount Do Begin
+    If (Pos('sub_', Labels[I].Name) = 1) Or
+       (Pos('loc_', Labels[I].Name) = 1) Or
+       (Pos('dat_', Labels[I].Name) = 1) Or
+       (Pos('dta_', Labels[I].Name) = 1) Or
+       (Pos('bss_', Labels[I].Name) = 1) Then
+      Inc(Count);
+  End;
+  CountAutoLabels := Count;
+End;
+
+{ --- CountXRefComments : compter les commentaires XREF a emettre --- }
+
+Function CountXRefComments: LongInt;
+Begin
+  CountXRefComments := XRefCount;
+End;
+
+{ --- ShowAutoLabelsAndXRefs : construire les labels et afficher --- }
+{     Appelle AddDataTextLabels, AddDataSectionLabels,              }
+{     AddBssSectionLabels et UnifyLabelNames.                       }
+{     Affiche les statistiques en mode verbeux.                     }
+
+Procedure ShowAutoLabelsAndXRefs(TextLen, DataLen, BssLen: LongInt;
+                                 Verbose: Boolean);
+Var
+  LblBefore : Integer;
+Begin
+  LblBefore := LabelCount;
+  { Ajouter les labels pour DATA et BSS }
+  AddDataSectionLabels(DataLen, TextLen);
+  AddBssSectionLabels(BssLen, TextLen, DataLen);
+  { Unifier les noms avec les symboles DRI }
+  UnifyLabelNames;
+  If Verbose Then Begin
+    WriteLn;
+    WriteLn('Labels unifies  : ', IntToStr(LabelCount),
+            ' total (', IntToStr(LblBefore), ' TEXT, ',
+            IntToStr(LabelCount - LblBefore), ' DATA/BSS)');
+    WriteLn('Labels auto     : ', IntToStr(CountAutoLabels),
+            ' auto-generes');
+    WriteLn('Refs croisees   : ', IntToStr(CountXRefComments),
+            ' XREF a emettre');
+  End;
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 
@@ -5603,6 +5906,8 @@ Begin
               IntToStr(CountASCIIRegions(Header.ph_tlen)), ' chaines, ',
               IntToStr(CountJumpTables(Header.ph_tlen)), ' tables saut)');
     End;
+    { Ajouter les labels dat_ pour les donnees dans TEXT (avant FreeCodeMap) }
+    AddDataTextLabels(Header.ph_tlen);
     FreeCodeMap;
   End;
   { Desassemblage de la section DATA }
@@ -5618,6 +5923,9 @@ Begin
               ' pointeurs');
     End;
   End;
+  { Etiquettes automatiques et references croisees (TODO 23) }
+  ShowAutoLabelsAndXRefs(Header.ph_tlen, Header.ph_dlen,
+                         Header.ph_blen, Opts.Verbose);
   { Generation du fichier .S : en-tete et directives }
   Assign(OutF, Opts.OutFile);
   ShowAsmPreamble(Opts.SrcFile, Header, Opts.Verbose);
@@ -5637,5 +5945,5 @@ Begin
   FreeSections;
   WriteLn;
   WriteLn('DISPRG v', DISPRG_VERSION,
-          ' - TODOs 01-22 [IMPLEMENTE], TODOs 23-25 [A FAIRE]');
+          ' - TODOs 01-23 [IMPLEMENTE], TODOs 24-25 [A FAIRE]');
 End.

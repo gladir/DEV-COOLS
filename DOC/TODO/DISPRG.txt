@@ -206,7 +206,7 @@ TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
       pour les zones non-initialisees.
       Generer des labels pour les variables referencees.
 
-  23. [A FAIRE] Etiquettes automatiques et references croisees.
+  23. [IMPLEMENTE] Etiquettes automatiques et references croisees.
       Gerer une table de symboles unifiant les labels generes
       automatiquement : sub_XXXXXX (sous-programmes),
       loc_XXXXXX (cibles de saut), dat_XXXXXX (donnees TEXT),
