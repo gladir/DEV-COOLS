@@ -501,6 +501,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Rust vers l'assembleur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>SAS86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur SAS vers l'assembleur du microprocesseur 8086 (MASM/TASM).</td>
+		</tr>
+		<tr>
 			<td><b>SNOBOL86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Snobol 4 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
