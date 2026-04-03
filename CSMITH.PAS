@@ -147,7 +147,7 @@
             Suffixes flottants : F, L.
             Eviter les debordements (valeurs dans les limites du type).
 
-  TODO 13 - [A FAIRE] GENERATION D'OPERATEURS ARITHMETIQUES
+  TODO 13 - [IMPLEMENTE] GENERATION D'OPERATEURS ARITHMETIQUES
             Generateur d'expressions arithmetiques C :
             GenArithExpr - generer une expression arithmetique.
             Operateurs : + - * / % (modulo entier seulement).
@@ -325,6 +325,13 @@ Const
   HEX_PROB           = 20;          { 20% de chance de generer un hex }
   SUFFIX_PROB        = 30;          { 30% de chance d'ajouter un suffixe }
   ESCAPE_PROB        = 20;          { 20% de chance d'echappement dans chaines }
+  
+  { TODO 13 : Constantes pour les expressions arithmetiques }
+  ARITH_PAREN_PROB   = 30;          { 30% de chance d'ajouter des parentheses }
+  ARITH_LITERAL_PROB = 50;          { 50% de chance d'utiliser un litteral vs variable }
+  SAFE_DIV_PROB      = 80;          { 80% de chance de generer une division securisee }
+  ARITH_RECURSE_PROB = 40;          { 40% de chance de recursion dans expression }
+  
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_ENUMS          = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -552,6 +559,7 @@ Var
   LabelCounter  : Integer;
   PointerCounter: Integer;  { TODO 11 : compteur de pointeurs }
   LiteralCounter: Integer;  { TODO 12 : compteur de litteraux }
+  ArithExprCounter: Integer;  { TODO 13 : compteur d'expressions arithmetiques }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -3699,6 +3707,243 @@ Begin
   CountLiterals := LiteralCounter;
 End;
 
+{ ============================================================
+  TODO 13 : GENERATION D'OPERATEURS ARITHMETIQUES [IMPLEMENTE]
+  ============================================================ }
+
+Type
+  { Operateurs arithmetiques C }
+  TArithOp = (
+    AO_ADD,    { + }
+    AO_SUB,    { - }
+    AO_MUL,    { * }
+    AO_DIV,    { / }
+    AO_MOD     { % }
+  );
+
+Function ArithOpToStr(Op: TArithOp): TString;
+{ Convertit un operateur arithmetique en chaine C. }
+Begin
+  Case Op Of
+    AO_ADD: ArithOpToStr := '+';
+    AO_SUB: ArithOpToStr := '-';
+    AO_MUL: ArithOpToStr := '*';
+    AO_DIV: ArithOpToStr := '/';
+    AO_MOD: ArithOpToStr := '%';
+  Else
+    ArithOpToStr := '+';
+  End;
+End;
+
+Function GenRandomArithOp(AllowMod: Boolean): TArithOp;
+{ Genere un operateur arithmetique aleatoire.
+  AllowMod: si False, exclut le modulo (pour les flottants). }
+Var
+  MaxOp: Integer;
+Begin
+  If AllowMod Then
+    MaxOp := 4
+  Else
+    MaxOp := 3;  { Exclure modulo pour les flottants }
+  Case RandomInt(MaxOp + 1) Of
+    0: GenRandomArithOp := AO_ADD;
+    1: GenRandomArithOp := AO_SUB;
+    2: GenRandomArithOp := AO_MUL;
+    3: GenRandomArithOp := AO_DIV;
+    4: GenRandomArithOp := AO_MOD;
+  Else
+    GenRandomArithOp := AO_ADD;
+  End;
+End;
+
+Function IsIntegerArithOp(Op: TArithOp): Boolean;
+{ Verifie si l'operateur est reserve aux entiers (modulo). }
+Begin
+  IsIntegerArithOp := (Op = AO_MOD);
+End;
+
+Function IsDivOrModOp(Op: TArithOp): Boolean;
+{ Verifie si l'operateur est une division ou un modulo. }
+Begin
+  IsDivOrModOp := (Op = AO_DIV) Or (Op = AO_MOD);
+End;
+
+Function GenSimpleOperand(T: TTypeKind): TString;
+{ Genere un operande simple pour une expression arithmetique.
+  Retourne soit un litteral, soit une variable existante. }
+Begin
+  { Pour l'instant, generer toujours un litteral
+    Les variables seront ajoutees quand le systeme de variables sera complet }
+  If IsFloatType(T) Then
+    GenSimpleOperand := GenFloatLiteral(T)
+  Else If IsIntegerType(T) Then
+    GenSimpleOperand := GenIntLiteral(T)
+  Else
+    GenSimpleOperand := '0';
+End;
+
+Function WrapInParens(Const Expr: TString): TString;
+{ Entoure une expression de parentheses. }
+Begin
+  WrapInParens := '(' + Expr + ')';
+End;
+
+Function GenSafeDiv(Const Dividend, Divisor: TString; T: TTypeKind): TString;
+{ Genere une division securisee avec garde contre division par zero.
+  Utilise l'operateur ternaire: (divisor != 0) ? (dividend / divisor) : 0 }
+Var
+  S: TString;
+Begin
+  If IsFloatType(T) Then
+    { Pour les flottants, utiliser 0.0 }
+    S := '((' + Divisor + ' != 0.0) ? (' + Dividend + ' / ' + Divisor + ') : 0.0)'
+  Else
+    { Pour les entiers, verification supplementaire pour INT_MIN / -1 }
+    S := '((' + Divisor + ' != 0) ? (' + Dividend + ' / ' + Divisor + ') : 0)';
+  Inc(ArithExprCounter);
+  GenSafeDiv := S;
+End;
+
+Function GenSafeMod(Const Dividend, Divisor: TString): TString;
+{ Genere un modulo securise avec garde contre division par zero.
+  Utilise l'operateur ternaire: (divisor != 0) ? (dividend % divisor) : 0 }
+Var
+  S: TString;
+Begin
+  { Modulo seulement pour les entiers }
+  S := '((' + Divisor + ' != 0) ? (' + Dividend + ' % ' + Divisor + ') : 0)';
+  Inc(ArithExprCounter);
+  GenSafeMod := S;
+End;
+
+Function GenArithExprRec(T: TTypeKind; Depth: Integer): TString; Forward;
+
+Function GenArithExprRec(T: TTypeKind; Depth: Integer): TString;
+{ Genere une expression arithmetique recursive.
+  T: type de l'expression.
+  Depth: profondeur actuelle de recursion.
+  Limite la profondeur a MAX_EXPR_DEPTH. }
+Var
+  Op: TArithOp;
+  Left, Right: TString;
+  AllowMod: Boolean;
+  S: TString;
+Begin
+  Inc(ArithExprCounter);
+  
+  { Si profondeur max atteinte, retourner un operande simple }
+  If Depth >= Opts.MaxExprDepth Then
+  Begin
+    GenArithExprRec := GenSimpleOperand(T);
+    Exit;
+  End;
+  
+  { Decider si on genere une expression composee ou un operande simple }
+  If (Depth > 0) And (Not RandomChoice(ARITH_RECURSE_PROB)) Then
+  Begin
+    GenArithExprRec := GenSimpleOperand(T);
+    Exit;
+  End;
+  
+  { Generer un operateur aleatoire }
+  AllowMod := IsIntegerType(T);  { Modulo seulement pour les entiers }
+  Op := GenRandomArithOp(AllowMod);
+  
+  { Generer les operandes gauche et droit }
+  Left := GenArithExprRec(T, Depth + 1);
+  Right := GenArithExprRec(T, Depth + 1);
+  
+  { Gerer la division et le modulo de maniere securisee }
+  If Op = AO_DIV Then
+  Begin
+    If RandomChoice(SAFE_DIV_PROB) Then
+      S := GenSafeDiv(Left, Right, T)
+    Else
+      S := Left + ' / ' + Right;
+  End
+  Else If Op = AO_MOD Then
+  Begin
+    If RandomChoice(SAFE_DIV_PROB) Then
+      S := GenSafeMod(Left, Right)
+    Else
+      S := Left + ' % ' + Right;
+  End
+  Else
+  Begin
+    { Autres operateurs: +, -, * }
+    S := Left + ' ' + ArithOpToStr(Op) + ' ' + Right;
+  End;
+  
+  { Ajouter des parentheses aleatoirement pour controler la precedence }
+  If RandomChoice(ARITH_PAREN_PROB) Then
+    S := WrapInParens(S);
+  
+  GenArithExprRec := S;
+End;
+
+Function GenArithExpr(T: TTypeKind): TString;
+{ Genere une expression arithmetique complete.
+  Point d'entree principal pour la generation d'expressions. }
+Begin
+  GenArithExpr := GenArithExprRec(T, 0);
+End;
+
+Function GenArithExprOfType(T: TTypeKind): TString;
+{ Genere une expression arithmetique du type specifie.
+  Equivalent a GenArithExpr mais avec un nom plus explicite. }
+Begin
+  GenArithExprOfType := GenArithExpr(T);
+End;
+
+Procedure EmitArithComment;
+{ Emet un commentaire pour la section d'expressions arithmetiques. }
+Begin
+  EmitLineComment('Expressions arithmetiques');
+End;
+
+Function GetArithOpPrecedence(Op: TArithOp): Integer;
+{ Retourne la precedence de l'operateur (plus haut = plus prioritaire).
+  Conforme aux precedences C: * / % > + - }
+Begin
+  Case Op Of
+    AO_MUL, AO_DIV, AO_MOD: GetArithOpPrecedence := 2;
+    AO_ADD, AO_SUB: GetArithOpPrecedence := 1;
+  Else
+    GetArithOpPrecedence := 0;
+  End;
+End;
+
+Function NeedsParens(InnerOp, OuterOp: TArithOp; IsRight: Boolean): Boolean;
+{ Determine si des parentheses sont necessaires pour l'operande.
+  Prend en compte la precedence et l'associativite. }
+Var
+  InnerPrec, OuterPrec: Integer;
+Begin
+  InnerPrec := GetArithOpPrecedence(InnerOp);
+  OuterPrec := GetArithOpPrecedence(OuterOp);
+  
+  If InnerPrec < OuterPrec Then
+    NeedsParens := True
+  Else If (InnerPrec = OuterPrec) And IsRight And 
+          ((OuterOp = AO_SUB) Or (OuterOp = AO_DIV) Or (OuterOp = AO_MOD)) Then
+    { Soustraction et division/modulo ne sont pas associatifs a droite }
+    NeedsParens := True
+  Else
+    NeedsParens := False;
+End;
+
+Function IsValidArithType(T: TTypeKind): Boolean;
+{ Verifie si le type est valide pour les operations arithmetiques. }
+Begin
+  IsValidArithType := IsArithType(T);
+End;
+
+Function CountArithExprs: Integer;
+{ Retourne le nombre d'expressions arithmetiques generees. }
+Begin
+  CountArithExprs := ArithExprCounter;
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -3717,6 +3962,7 @@ Begin
   ArrayCounter := 0;  { TODO 10 : compteur de tableaux }
   PointerCounter := 0;  { TODO 11 : compteur de pointeurs }
   LiteralCounter := 0;  { TODO 12 : compteur de litteraux }
+  ArithExprCounter := 0;  { TODO 13 : compteur d'expressions arithmetiques }
   StatFuncs := 0;
   StatVars := 0;
   StatExprs := 0;

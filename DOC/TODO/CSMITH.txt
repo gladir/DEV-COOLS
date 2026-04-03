@@ -132,7 +132,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Suffixes flottants : F, L.
       Eviter les debordements (valeurs dans les limites du type).
 
-  13. [A FAIRE] Generation d'operateurs arithmetiques.
+  13. [IMPLEMENTE] Generation d'operateurs arithmetiques.
       Generateur d'expressions arithmetiques C :
       GenArithExpr - generer une expression arithmetique.
       Operateurs : + - * / % (modulo entier seulement).
