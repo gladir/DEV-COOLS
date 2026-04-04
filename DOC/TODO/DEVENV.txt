@@ -233,7 +233,7 @@
             Double-clic : naviguer vers la source.
             Parsing des sorties compilateurs DEV-COOLS.
 
-  TODO 21 - BOITES DE DIALOGUE : FICHIERS [A FAIRE]
+  TODO 21 - BOITES DE DIALOGUE : FICHIERS [IMPLEMENTE]
             TDialog, TFileDialog, TFolderDialog, TMessageBox,
             TInputBox.
             ShowOpenDialog, ShowSaveDialog, ShowFolderDialog,

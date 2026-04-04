@@ -1099,7 +1099,7 @@ Const
  DLG_MSG_WIDTH         = 360;     { largeur message box             }
  DLG_MSG_HEIGHT        = 160;     { hauteur message box             }
  DLG_INPUT_WIDTH       = 340;     { largeur input box               }
- DLG_INPUT_HEIGHT      = 140;     { hauteur input box               }
+ DLG_INPBOX_HEIGHT     = 140;     { hauteur input box               }
  DLG_FOLDER_WIDTH      = 400;     { largeur boite dossier           }
  DLG_FOLDER_HEIGHT     = 320;     { hauteur boite dossier           }
 
@@ -13452,7 +13452,7 @@ End;
 
 Procedure InitInputBox(Var IB: TInputBox; T, Prompt, Default: String);
 Begin
- InitDialog(IB.Base, T, DLG_INPUT_WIDTH, DLG_INPUT_HEIGHT);
+ InitDialog(IB.Base, T, DLG_INPUT_WIDTH, DLG_INPBOX_HEIGHT);
  IB.Base.HasCancel := True;
  IB.Prompt := Prompt;
  IB.InputText := Default;
