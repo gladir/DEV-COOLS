@@ -277,6 +277,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur C# (C Sharp) pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>CSMITH.PAS</b></td>
+			<td>Cette commande permet de lancer un générateur de code C aleatoire.</td>
+		</tr>
+		<tr>
 			<td><b>CSCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur C# (C Sharp) pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
