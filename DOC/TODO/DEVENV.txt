@@ -251,7 +251,7 @@
             ShowNewProjectDialog, ShowNewFileDialog,
             ShowAddReferenceDialog, ShowProjectPropertiesDialog.
 
-  TODO 23 - BOITES DE DIALOGUE : OPTIONS DE L IDE [A FAIRE]
+  TODO 23 - BOITES DE DIALOGUE : OPTIONS DE L IDE [IMPLEMENTE]
             TOptionsDialog : arbre de categories + panneau
               parametres.
             Categories : Environnement (General, Polices/Couleurs,

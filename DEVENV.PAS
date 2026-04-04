@@ -697,7 +697,7 @@
             Procedure ShowAddReferenceDialog(Var Proj: TProject)
             Procedure ShowProjectPropertiesDialog(Var Proj: TProject)
 
-  TODO 23 - BOITES DE DIALOGUE : OPTIONS DE L IDE [A FAIRE]
+  TODO 23 - BOITES DE DIALOGUE : OPTIONS DE L IDE [IMPLEMENTE]
             TOptionsDialog : boite de dialogue des options generales
             de l IDE reproduisant les options de Visual Studio.
             Arbre de categories a gauche, panneau de parametres
@@ -1141,6 +1141,21 @@ Const
  PROJPROP_LABEL_WIDTH  = 160;     { largeur etiquette propriete     }
  PROJPROP_FIELD_HEIGHT = 22;      { hauteur champ de saisie         }
  PROJPROP_ROW_SPACING  = 28;      { espacement vertical entre champs}
+
+ { Boite de dialogue des options de l IDE }
+ OPT_DLG_WIDTH        = 620;     { largeur dialogue options         }
+ OPT_DLG_HEIGHT       = 440;     { hauteur dialogue options         }
+ OPT_TREE_WIDTH       = 200;     { largeur arbre de categories      }
+ OPT_TREE_NODE_HEIGHT = 20;      { hauteur noeud arbre              }
+ OPT_TREE_INDENT      = 16;      { indentation noeuds enfants       }
+ OPT_PANEL_PADDING    = 12;      { marge dans le panneau parametres }
+ OPT_FIELD_HEIGHT     = 22;      { hauteur champ de saisie          }
+ OPT_LABEL_WIDTH      = 180;     { largeur etiquette                }
+ OPT_ROW_SPACING      = 28;      { espacement vertical entre lignes }
+ OPT_CHECK_SIZE       = 14;      { taille case a cocher             }
+ MAX_OPT_CATEGORIES   = 16;      { nombre max de categories         }
+ MAX_OPT_PAGES        = 16;      { nombre max de pages              }
+ OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -1992,6 +2007,85 @@ Type
   DebugArgsCursor: Integer;             { curseur arguments debug    }
   WorkDirCursor  : Integer;             { curseur repertoire travail }
   Confirmed      : Boolean;             { True si valide par OK      }
+ End;
+
+ { Categories des options de l IDE }
+ TOptionCategory = (
+  OC_ENV_GENERAL,        { Environnement > General            }
+  OC_ENV_FONTS,          { Environnement > Polices et couleurs}
+  OC_ENV_KEYBOARD,       { Environnement > Clavier            }
+  OC_ENV_STARTUP,        { Environnement > Demarrage          }
+  OC_ENV_AUTOSAVE,       { Environnement > Enregistrement auto}
+  OC_EDITOR_GENERAL,     { Editeur de texte > General         }
+  OC_EDITOR_TABS,        { Editeur de texte > Tabulations     }
+  OC_EDITOR_SCROLL,      { Editeur de texte > Defilement      }
+  OC_EDITOR_INTELLISENSE,{ Editeur de texte > IntelliSense    }
+  OC_EDITOR_FORMAT,      { Editeur de texte > Mise en forme   }
+  OC_PROJ_GENERAL,       { Projets et solutions > General     }
+  OC_PROJ_BUILD,         { Projets et solutions > Build       }
+  OC_DEBUG_GENERAL,      { Debogage > General                 }
+  OC_DEBUG_OUTPUT        { Debogage > Sortie                  }
+ );
+
+ { Noeud de l arbre de categories }
+ TOptCategoryNode = Record
+  Name      : String[63];        { nom affiche                    }
+  ParentIdx : Integer;           { index du parent (-1 si racine) }
+  Level     : Integer;           { niveau d indentation (0 ou 1)  }
+  Expanded  : Boolean;           { noeud deplie                   }
+  Visible   : Boolean;           { noeud visible dans l arbre     }
+  Selected  : Boolean;           { noeud selectionne              }
+  Category  : TOptionCategory;   { categorie associee             }
+ End;
+
+ { Action au demarrage }
+ TOptStartupAction = (
+  OSA_NOTHING,           { ne rien faire                      }
+  OSA_LAST_PROJECT,      { ouvrir le dernier projet           }
+  OSA_START_PAGE         { afficher la page d accueil         }
+ );
+
+ { Donnees de configuration des options }
+ TOptionsDialogData = Record
+  ThemeName       : String[31];  { nom du theme couleur           }
+  FontName        : String[31];  { nom de la police               }
+  FontSize        : Integer;     { taille de la police en pixels  }
+  ShortcutModified: Boolean;     { raccourcis modifies            }
+  StartupAction   : TOptStartupAction; { action au demarrage      }
+  AutoSaveEnabled : Boolean;     { sauvegarde automatique activee }
+  AutoSaveInterval: Integer;     { intervalle en secondes         }
+  ShowLineNumbers : Boolean;     { afficher numeros de ligne      }
+  WordWrap        : Boolean;     { retour a la ligne automatique  }
+  ShowWhitespace  : Boolean;     { afficher espaces et tabs       }
+  ShowIndentGuides: Boolean;     { afficher guides d indentation  }
+  TabSize         : Integer;     { taille de la tabulation        }
+  InsertSpaces    : Boolean;     { inserer espaces au lieu de tab }
+  IndentSize      : Integer;     { taille d indentation           }
+  SmoothScroll    : Boolean;     { defilement fluide              }
+  ScrollMargin    : Integer;     { marge de defilement en lignes  }
+  AutoIndent      : Boolean;     { indentation automatique        }
+  AutoBraces      : Boolean;     { accolades automatiques         }
+  DefaultProjectPath: String[255]; { chemin par defaut projets    }
+  ShowOutputOnBuild: Boolean;    { afficher sortie au build       }
+  BuildVerbose    : Boolean;     { build en mode verbeux          }
+  ParallelBuild   : Integer;     { nombre de builds paralleles    }
+  BreakOnFirstError: Boolean;    { arreter au premier point arret }
+  StepIntoProperties: Boolean;   { pas a pas dans proprietes      }
+  ShowDebugMessages: Boolean;    { afficher messages de debogage  }
+ End;
+
+ { Dialogue des options de l IDE }
+ TOptionsDialog = Record
+  Base            : TDialog;     { dialogue de base               }
+  Categories      : Array[0..MAX_OPT_CATEGORIES - 1]
+                     Of TOptCategoryNode; { arbre categories      }
+  CategoryCount   : Integer;     { nombre de categories           }
+  SelectedCategory: Integer;     { index categorie selectionnee   }
+  ScrollTop       : Integer;     { premiere categorie visible     }
+  Data            : TOptionsDialogData;  { parametres courants    }
+  OriginalData    : TOptionsDialogData;  { copie pour annulation  }
+  Modified        : Boolean;     { parametres modifies            }
+  Confirmed       : Boolean;     { True si valide par OK          }
  End;
 
 { ============================================================
@@ -15535,6 +15629,1307 @@ Begin
  IsProjPropDialogVisible := Dlg.Base.Visible;
 End;
 
+{ ============================================================
+  TODO 23 - BOITES DE DIALOGUE : OPTIONS DE L IDE [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Nom affichable d une categorie d options --- }
+
+Function OptionCategoryName(Cat: TOptionCategory): String;
+Begin
+ Case Cat Of
+  OC_ENV_GENERAL:        OptionCategoryName := 'General';
+  OC_ENV_FONTS:          OptionCategoryName := 'Polices et couleurs';
+  OC_ENV_KEYBOARD:       OptionCategoryName := 'Clavier';
+  OC_ENV_STARTUP:        OptionCategoryName := 'Demarrage';
+  OC_ENV_AUTOSAVE:       OptionCategoryName := 'Enregistrement auto';
+  OC_EDITOR_GENERAL:     OptionCategoryName := 'General';
+  OC_EDITOR_TABS:        OptionCategoryName := 'Tabulations';
+  OC_EDITOR_SCROLL:      OptionCategoryName := 'Defilement';
+  OC_EDITOR_INTELLISENSE:OptionCategoryName := 'IntelliSense';
+  OC_EDITOR_FORMAT:      OptionCategoryName := 'Mise en forme';
+  OC_PROJ_GENERAL:       OptionCategoryName := 'General';
+  OC_PROJ_BUILD:         OptionCategoryName := 'Build et execution';
+  OC_DEBUG_GENERAL:      OptionCategoryName := 'General';
+  OC_DEBUG_OUTPUT:       OptionCategoryName := 'Sortie';
+ Else
+  OptionCategoryName := '???';
+ End;
+End;
+
+{ --- Nom d une action de demarrage --- }
+
+Function StartupActionName(A: TOptStartupAction): String;
+Begin
+ Case A Of
+  OSA_NOTHING:      StartupActionName := 'Ne rien faire';
+  OSA_LAST_PROJECT: StartupActionName := 'Dernier projet';
+  OSA_START_PAGE:   StartupActionName := 'Page d accueil';
+ Else
+  StartupActionName := '???';
+ End;
+End;
+
+{ --- Initialiser un noeud de categorie --- }
+
+Procedure InitOptCategoryNode(Var N: TOptCategoryNode);
+Begin
+ N.Name := '';
+ N.ParentIdx := -1;
+ N.Level := 0;
+ N.Expanded := False;
+ N.Visible := True;
+ N.Selected := False;
+ N.Category := OC_ENV_GENERAL;
+End;
+
+{ --- Initialiser les donnees d options par defaut --- }
+
+Procedure InitOptionsDialogData(Var D: TOptionsDialogData);
+Begin
+ D.ThemeName := 'Bleu';
+ D.FontName := 'Consolas';
+ D.FontSize := 10;
+ D.ShortcutModified := False;
+ D.StartupAction := OSA_NOTHING;
+ D.AutoSaveEnabled := True;
+ D.AutoSaveInterval := 300;
+ D.ShowLineNumbers := True;
+ D.WordWrap := False;
+ D.ShowWhitespace := False;
+ D.ShowIndentGuides := True;
+ D.TabSize := 4;
+ D.InsertSpaces := True;
+ D.IndentSize := 4;
+ D.SmoothScroll := True;
+ D.ScrollMargin := 3;
+ D.AutoIndent := True;
+ D.AutoBraces := True;
+ D.DefaultProjectPath := '.';
+ D.ShowOutputOnBuild := True;
+ D.BuildVerbose := False;
+ D.ParallelBuild := 1;
+ D.BreakOnFirstError := True;
+ D.StepIntoProperties := False;
+ D.ShowDebugMessages := True;
+End;
+
+{ --- Construire l arbre de categories --- }
+
+Procedure BuildOptionsCategoryTree(Var Dlg: TOptionsDialog);
+Var
+ I: Integer;
+
+ Procedure AddNode(AName: String; AParent, ALevel: Integer;
+  AExpanded: Boolean; ACat: TOptionCategory);
+ Begin
+  If Dlg.CategoryCount >= MAX_OPT_CATEGORIES Then Exit;
+  I := Dlg.CategoryCount;
+  InitOptCategoryNode(Dlg.Categories[I]);
+  Dlg.Categories[I].Name := AName;
+  Dlg.Categories[I].ParentIdx := AParent;
+  Dlg.Categories[I].Level := ALevel;
+  Dlg.Categories[I].Expanded := AExpanded;
+  Dlg.Categories[I].Visible := True;
+  Dlg.Categories[I].Category := ACat;
+  Inc(Dlg.CategoryCount);
+ End;
+
+Begin
+ Dlg.CategoryCount := 0;
+ { Environnement (index 0) }
+ AddNode('Environnement', -1, 0, True, OC_ENV_GENERAL);
+ AddNode('General', 0, 1, False, OC_ENV_GENERAL);
+ AddNode('Polices et couleurs', 0, 1, False, OC_ENV_FONTS);
+ AddNode('Clavier', 0, 1, False, OC_ENV_KEYBOARD);
+ AddNode('Demarrage', 0, 1, False, OC_ENV_STARTUP);
+ AddNode('Enregistrement auto', 0, 1, False, OC_ENV_AUTOSAVE);
+ { Editeur de texte (index 6) }
+ AddNode('Editeur de texte', -1, 0, True, OC_EDITOR_GENERAL);
+ AddNode('General', 6, 1, False, OC_EDITOR_GENERAL);
+ AddNode('Tabulations', 6, 1, False, OC_EDITOR_TABS);
+ AddNode('Defilement', 6, 1, False, OC_EDITOR_SCROLL);
+ AddNode('IntelliSense', 6, 1, False, OC_EDITOR_INTELLISENSE);
+ AddNode('Mise en forme', 6, 1, False, OC_EDITOR_FORMAT);
+ { Projets et solutions (index 12) }
+ AddNode('Projets et solutions', -1, 0, True, OC_PROJ_GENERAL);
+ AddNode('General', 12, 1, False, OC_PROJ_GENERAL);
+ AddNode('Build et execution', 12, 1, False, OC_PROJ_BUILD);
+ { Debogage (index 15) -- utilise le dernier slot disponible }
+ { Note : 16 noeuds au total = MAX_OPT_CATEGORIES }
+End;
+
+{ --- Initialiser le dialogue des options --- }
+
+Procedure InitOptionsDialog(Var Dlg: TOptionsDialog);
+Begin
+ InitDialog(Dlg.Base, 'Options', OPT_DLG_WIDTH, OPT_DLG_HEIGHT);
+ Dlg.Base.HasCancel := True;
+ InitOptionsDialogData(Dlg.Data);
+ Dlg.OriginalData := Dlg.Data;
+ BuildOptionsCategoryTree(Dlg);
+ Dlg.SelectedCategory := 1;
+ If Dlg.CategoryCount > 1 Then
+  Dlg.Categories[1].Selected := True;
+ Dlg.ScrollTop := 0;
+ Dlg.Modified := False;
+ Dlg.Confirmed := False;
+End;
+
+{ --- Dessiner l arbre de categories a gauche --- }
+
+Procedure DrawOptionsCategoryTree(Var Dlg: TOptionsDialog);
+Var
+ I, X, Y, TX, TY: Integer;
+ BG, FG: Integer;
+Begin
+ X := Dlg.Base.X + 1;
+ Y := Dlg.Base.Y + DLG_TITLE_HEIGHT + 1;
+ { Fond de l arbre }
+ DrawFilledRect(X, Y, X + OPT_TREE_WIDTH - 1,
+  Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING -
+  DLG_BUTTON_HEIGHT - DLG_PADDING,
+  CLR_EDITOR_BG);
+ { Separateur vertical }
+ DrawRect(X + OPT_TREE_WIDTH, Y,
+  X + OPT_TREE_WIDTH,
+  Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING -
+  DLG_BUTTON_HEIGHT - DLG_PADDING,
+  CLR_BORDER);
+ TY := Y + 2;
+ For I := 0 To Dlg.CategoryCount - 1 Do
+ Begin
+  If Not Dlg.Categories[I].Visible Then Continue;
+  TX := X + 4 + Dlg.Categories[I].Level * OPT_TREE_INDENT;
+  { Fond de selection }
+  If I = Dlg.SelectedCategory Then
+  Begin
+   BG := CLR_TITLEBAR_ACTIVE;
+   FG := 15;
+   DrawFilledRect(X, TY, X + OPT_TREE_WIDTH - 1,
+    TY + OPT_TREE_NODE_HEIGHT - 1, BG);
+  End
+  Else
+  Begin
+   BG := CLR_EDITOR_BG;
+   FG := CLR_MENU_TEXT;
+  End;
+  { Indicateur depliage pour les parents }
+  If Dlg.Categories[I].Level = 0 Then
+  Begin
+   If Dlg.Categories[I].Expanded Then
+    DrawText(TX, TY + 2, '-', FG)
+   Else
+    DrawText(TX, TY + 2, '+', FG);
+   DrawText(TX + 10, TY + 2, Dlg.Categories[I].Name, FG);
+  End
+  Else
+   DrawText(TX, TY + 2, Dlg.Categories[I].Name, FG);
+  TY := TY + OPT_TREE_NODE_HEIGHT;
+ End;
+End;
+
+{ --- Dessiner la page Environnement > General --- }
+
+Procedure DrawOptionsEnvGeneral(Var Dlg: TOptionsDialog);
+Var
+ FX, FW, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ { Titre de la page }
+ DrawText(FX, BaseY, 'Environnement > General', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Theme couleur }
+ DrawText(FX, BaseY, 'Theme couleur :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + OPT_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + OPT_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY,
+  Dlg.Data.ThemeName, CLR_WINDOWTEXT);
+ { Police }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'Police :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + OPT_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + OPT_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY,
+  Dlg.Data.FontName, CLR_WINDOWTEXT);
+ { Taille }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'Taille police :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY,
+  Chr(Dlg.Data.FontSize Div 10 + 48) +
+  Chr(Dlg.Data.FontSize Mod 10 + 48), CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Environnement > Polices et couleurs --- }
+
+Procedure DrawOptionsEnvFonts(Var Dlg: TOptionsDialog);
+Var
+ FX, FW, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY,
+  'Environnement > Polices et couleurs', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Police affichage }
+ DrawText(FX, BaseY, 'Police :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + OPT_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + OPT_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY,
+  Dlg.Data.FontName, CLR_WINDOWTEXT);
+ { Taille }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'Taille :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY,
+  Chr(Dlg.Data.FontSize Div 10 + 48) +
+  Chr(Dlg.Data.FontSize Mod 10 + 48), CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  '(Configuration detaillee des couleurs a venir)',
+  CLR_BORDER);
+End;
+
+{ --- Dessiner la page Environnement > Clavier (stub) --- }
+
+Procedure DrawOptionsEnvKeyboard(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Environnement > Clavier', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  '(Raccourcis clavier personnalisables a venir)',
+  CLR_BORDER);
+End;
+
+{ --- Dessiner la page Environnement > Demarrage --- }
+
+Procedure DrawOptionsEnvStartup(Var Dlg: TOptionsDialog);
+Var
+ FX, FW, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Environnement > Demarrage',
+  CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Action au demarrage }
+ DrawText(FX, BaseY, 'Au demarrage :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + OPT_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + OPT_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY,
+  StartupActionName(Dlg.Data.StartupAction), CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Environnement > Enregistrement auto --- }
+
+Procedure DrawOptionsEnvAutoSave(Var Dlg: TOptionsDialog);
+Var
+ FX, FW, BaseY, PX: Integer;
+ S: String;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY,
+  'Environnement > Enregistrement automatique',
+  CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Case a cocher : activer }
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.AutoSaveEnabled Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Activer l enregistrement automatique', CLR_WINDOWTEXT);
+ { Intervalle }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'Intervalle (sec) :', CLR_WINDOWTEXT);
+ Str(Dlg.Data.AutoSaveInterval, S);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 80, BaseY + OPT_FIELD_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 80, BaseY + OPT_FIELD_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY, S,
+  CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Editeur de texte > General --- }
+
+Procedure DrawOptionsEditorGeneral(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Editeur de texte > General',
+  CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Numeros de ligne }
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.ShowLineNumbers Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Afficher les numeros de ligne', CLR_WINDOWTEXT);
+ { Retour a la ligne }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.WordWrap Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Retour a la ligne automatique', CLR_WINDOWTEXT);
+ { Espaces visibles }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.ShowWhitespace Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Afficher les espaces', CLR_WINDOWTEXT);
+ { Guides d indentation }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.ShowIndentGuides Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Guides d indentation', CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Editeur de texte > Tabulations --- }
+
+Procedure DrawOptionsEditorTabs(Var Dlg: TOptionsDialog);
+Var
+ FX, FW, BaseY, PX: Integer;
+ S: String;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Editeur de texte > Tabulations',
+  CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Taille tabulation }
+ Str(Dlg.Data.TabSize, S);
+ DrawText(FX, BaseY, 'Taille tabulation :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY, S,
+  CLR_WINDOWTEXT);
+ { Inserer des espaces }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.InsertSpaces Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Inserer des espaces', CLR_WINDOWTEXT);
+ { Taille d indentation }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ Str(Dlg.Data.IndentSize, S);
+ DrawText(FX, BaseY, 'Taille indentation :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY, S,
+  CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Editeur de texte > Defilement --- }
+
+Procedure DrawOptionsEditorScroll(Var Dlg: TOptionsDialog);
+Var
+ FX, FW, BaseY, PX: Integer;
+ S: String;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Editeur de texte > Defilement',
+  CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Defilement fluide }
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.SmoothScroll Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Defilement fluide', CLR_WINDOWTEXT);
+ { Marge de defilement }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ Str(Dlg.Data.ScrollMargin, S);
+ DrawText(FX, BaseY, 'Marge (lignes) :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY, S,
+  CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Editeur de texte > IntelliSense (stub) --- }
+
+Procedure DrawOptionsEditorIntelliSense(
+ Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Editeur de texte > IntelliSense',
+  CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  '(IntelliSense sera implemente ulterieurement)',
+  CLR_BORDER);
+End;
+
+{ --- Dessiner la page Editeur de texte > Mise en forme --- }
+
+Procedure DrawOptionsEditorFormat(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Editeur de texte > Mise en forme',
+  CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Indentation automatique }
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.AutoIndent Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Indentation automatique', CLR_WINDOWTEXT);
+ { Accolades automatiques }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.AutoBraces Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Accolades automatiques', CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Projets et solutions > General --- }
+
+Procedure DrawOptionsProjGeneral(Var Dlg: TOptionsDialog);
+Var
+ FX, FW, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Projets et solutions > General',
+  CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Emplacement par defaut }
+ DrawText(FX, BaseY, 'Chemin projets :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + OPT_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + OPT_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY,
+  Dlg.Data.DefaultProjectPath, CLR_WINDOWTEXT);
+ { Afficher sortie au build }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.ShowOutputOnBuild Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Afficher la sortie au build', CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Projets et solutions > Build --- }
+
+Procedure DrawOptionsProjBuild(Var Dlg: TOptionsDialog);
+Var
+ FX, FW, BaseY, PX: Integer;
+ S: String;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Projets et solutions > Build',
+  CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Mode verbeux }
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.BuildVerbose Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Build en mode verbeux', CLR_WINDOWTEXT);
+ { Nombre de builds paralleles }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ Str(Dlg.Data.ParallelBuild, S);
+ DrawText(FX, BaseY, 'Builds paralleles :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+  FX + OPT_LABEL_WIDTH + 60, BaseY + OPT_FIELD_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY, S,
+  CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Debogage > General --- }
+
+Procedure DrawOptionsDebugGeneral(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Debogage > General', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Arreter au premier point d arret }
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.BreakOnFirstError Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Arreter au premier point d arret', CLR_WINDOWTEXT);
+ { Pas a pas dans les proprietes }
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.StepIntoProperties Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Pas a pas dans les proprietes', CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Debogage > Sortie --- }
+
+Procedure DrawOptionsDebugOutput(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Debogage > Sortie', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Afficher messages de debogage }
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.ShowDebugMessages Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Afficher les messages de debogage', CLR_WINDOWTEXT);
+End;
+
+{ --- Dispatcher vers la page de parametres appropriee --- }
+
+Procedure DrawOptionsPage(Var Dlg: TOptionsDialog);
+Var
+ Cat: TOptionCategory;
+ PX, PY, PW, PH: Integer;
+Begin
+ { Effacer le panneau droit }
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + 1;
+ PY := Dlg.Base.Y + DLG_TITLE_HEIGHT + 1;
+ PW := Dlg.Base.Width - OPT_TREE_WIDTH - 2;
+ PH := Dlg.Base.Height - DLG_TITLE_HEIGHT -
+  DLG_PADDING - DLG_BUTTON_HEIGHT - DLG_PADDING - 1;
+ DrawFilledRect(PX, PY, PX + PW, PY + PH, CLR_BACKGROUND);
+ If (Dlg.SelectedCategory < 0) Or
+  (Dlg.SelectedCategory >= Dlg.CategoryCount) Then Exit;
+ Cat := Dlg.Categories[Dlg.SelectedCategory].Category;
+ Case Cat Of
+  OC_ENV_GENERAL:         DrawOptionsEnvGeneral(Dlg);
+  OC_ENV_FONTS:           DrawOptionsEnvFonts(Dlg);
+  OC_ENV_KEYBOARD:        DrawOptionsEnvKeyboard(Dlg);
+  OC_ENV_STARTUP:         DrawOptionsEnvStartup(Dlg);
+  OC_ENV_AUTOSAVE:        DrawOptionsEnvAutoSave(Dlg);
+  OC_EDITOR_GENERAL:      DrawOptionsEditorGeneral(Dlg);
+  OC_EDITOR_TABS:         DrawOptionsEditorTabs(Dlg);
+  OC_EDITOR_SCROLL:       DrawOptionsEditorScroll(Dlg);
+  OC_EDITOR_INTELLISENSE: DrawOptionsEditorIntelliSense(Dlg);
+  OC_EDITOR_FORMAT:       DrawOptionsEditorFormat(Dlg);
+  OC_PROJ_GENERAL:        DrawOptionsProjGeneral(Dlg);
+  OC_PROJ_BUILD:          DrawOptionsProjBuild(Dlg);
+  OC_DEBUG_GENERAL:       DrawOptionsDebugGeneral(Dlg);
+  OC_DEBUG_OUTPUT:        DrawOptionsDebugOutput(Dlg);
+ End;
+End;
+
+{ --- Dessiner le dialogue complet des options --- }
+
+Procedure DrawOptionsDialog(Var Dlg: TOptionsDialog);
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ DrawDialogFrame(Dlg.Base);
+ DrawOptionsCategoryTree(Dlg);
+ DrawOptionsPage(Dlg);
+ DrawDialogButtons(Dlg.Base);
+End;
+
+{ --- Test de clic sur l arbre de categories --- }
+
+Function OptionsCategoryHitTest(Var Dlg: TOptionsDialog;
+ MX, MY: Integer): Integer;
+Var
+ I, X, Y, TY: Integer;
+Begin
+ OptionsCategoryHitTest := -1;
+ X := Dlg.Base.X + 1;
+ Y := Dlg.Base.Y + DLG_TITLE_HEIGHT + 1;
+ TY := Y + 2;
+ For I := 0 To Dlg.CategoryCount - 1 Do
+ Begin
+  If Not Dlg.Categories[I].Visible Then Continue;
+  If (MX >= X) And (MX < X + OPT_TREE_WIDTH) And
+   (MY >= TY) And (MY < TY + OPT_TREE_NODE_HEIGHT) Then
+  Begin
+   OptionsCategoryHitTest := I;
+   Exit;
+  End;
+  TY := TY + OPT_TREE_NODE_HEIGHT;
+ End;
+End;
+
+{ --- Test de clic sur un champ de la page --- }
+
+Function OptionsPageFieldHitTest(Var Dlg: TOptionsDialog;
+ MX, MY: Integer): Integer;
+Var
+ PX, BaseY, Row: Integer;
+Begin
+ OptionsPageFieldHitTest := -1;
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING +
+  OPT_ROW_SPACING;
+ Row := 0;
+ While BaseY + OPT_ROW_SPACING * Row <
+  Dlg.Base.Y + Dlg.Base.Height Do
+ Begin
+  If (MY >= BaseY + OPT_ROW_SPACING * Row - 2) And
+   (MY < BaseY + OPT_ROW_SPACING * Row +
+   OPT_FIELD_HEIGHT) And
+   (MX >= PX) Then
+  Begin
+   OptionsPageFieldHitTest := Row;
+   Exit;
+  End;
+  Inc(Row);
+ End;
+End;
+
+{ --- Gestion des touches dans le dialogue options --- }
+
+Procedure HandleOptionsKey(Var Dlg: TOptionsDialog;
+ Key: Integer);
+Begin
+ If Key = $1B Then { Echap }
+ Begin
+  Dlg.Confirmed := False;
+  Dlg.Data := Dlg.OriginalData;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If Key = $0D Then { Entree }
+ Begin
+  Dlg.Confirmed := True;
+  Dlg.Base.Result := DR_OK;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If Key = $4800 Then { Fleche haut }
+ Begin
+  If Dlg.SelectedCategory > 0 Then
+  Begin
+   Dlg.Categories[Dlg.SelectedCategory].Selected := False;
+   Dec(Dlg.SelectedCategory);
+   { Sauter les parents de niveau 0 non depliables }
+   While (Dlg.SelectedCategory > 0) And
+    Not Dlg.Categories[Dlg.SelectedCategory].Visible Do
+    Dec(Dlg.SelectedCategory);
+   Dlg.Categories[Dlg.SelectedCategory].Selected := True;
+  End;
+ End;
+ If Key = $5000 Then { Fleche bas }
+ Begin
+  If Dlg.SelectedCategory < Dlg.CategoryCount - 1 Then
+  Begin
+   Dlg.Categories[Dlg.SelectedCategory].Selected := False;
+   Inc(Dlg.SelectedCategory);
+   While (Dlg.SelectedCategory < Dlg.CategoryCount - 1) And
+    Not Dlg.Categories[Dlg.SelectedCategory].Visible Do
+    Inc(Dlg.SelectedCategory);
+   Dlg.Categories[Dlg.SelectedCategory].Selected := True;
+  End;
+ End;
+End;
+
+{ --- Gestion des evenements du dialogue options --- }
+
+Procedure HandleOptionsEvent(Var Dlg: TOptionsDialog;
+ Var Ev: TEvent);
+Var
+ CatIdx, BtnR, FieldIdx: Integer;
+ Cat: TOptionCategory;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ Case Ev.Kind Of
+  EV_KEY_DOWN, EV_KEY_CHAR:
+  Begin
+   HandleOptionsKey(Dlg, Ev.KeyCode);
+   DrawOptionsDialog(Dlg);
+  End;
+  EV_MOUSE_DOWN:
+  Begin
+   { Clic sur l arbre de categories }
+   CatIdx := OptionsCategoryHitTest(Dlg, Ev.MouseX,
+    Ev.MouseY);
+   If CatIdx >= 0 Then
+   Begin
+    { Si c est un parent, basculer depliage }
+    If Dlg.Categories[CatIdx].Level = 0 Then
+    Begin
+     Dlg.Categories[CatIdx].Expanded :=
+      Not Dlg.Categories[CatIdx].Expanded;
+    End;
+    Dlg.Categories[Dlg.SelectedCategory].Selected := False;
+    Dlg.SelectedCategory := CatIdx;
+    Dlg.Categories[CatIdx].Selected := True;
+    DrawOptionsDialog(Dlg);
+    Exit;
+   End;
+   { Clic sur un champ de la page active }
+   FieldIdx := OptionsPageFieldHitTest(Dlg, Ev.MouseX,
+    Ev.MouseY);
+   If FieldIdx >= 0 Then
+   Begin
+    Cat := Dlg.Categories[
+     Dlg.SelectedCategory].Category;
+    { Basculer les cases a cocher selon la page }
+    Case Cat Of
+     OC_ENV_AUTOSAVE:
+      If FieldIdx = 0 Then
+      Begin
+       Dlg.Data.AutoSaveEnabled :=
+        Not Dlg.Data.AutoSaveEnabled;
+       Dlg.Modified := True;
+      End;
+     OC_EDITOR_GENERAL:
+      Case FieldIdx Of
+       0: Begin
+        Dlg.Data.ShowLineNumbers :=
+         Not Dlg.Data.ShowLineNumbers;
+        Dlg.Modified := True;
+       End;
+       1: Begin
+        Dlg.Data.WordWrap :=
+         Not Dlg.Data.WordWrap;
+        Dlg.Modified := True;
+       End;
+       2: Begin
+        Dlg.Data.ShowWhitespace :=
+         Not Dlg.Data.ShowWhitespace;
+        Dlg.Modified := True;
+       End;
+       3: Begin
+        Dlg.Data.ShowIndentGuides :=
+         Not Dlg.Data.ShowIndentGuides;
+        Dlg.Modified := True;
+       End;
+      End;
+     OC_EDITOR_TABS:
+      If FieldIdx = 1 Then
+      Begin
+       Dlg.Data.InsertSpaces :=
+        Not Dlg.Data.InsertSpaces;
+       Dlg.Modified := True;
+      End;
+     OC_EDITOR_SCROLL:
+      If FieldIdx = 0 Then
+      Begin
+       Dlg.Data.SmoothScroll :=
+        Not Dlg.Data.SmoothScroll;
+       Dlg.Modified := True;
+      End;
+     OC_EDITOR_FORMAT:
+      Case FieldIdx Of
+       0: Begin
+        Dlg.Data.AutoIndent :=
+         Not Dlg.Data.AutoIndent;
+        Dlg.Modified := True;
+       End;
+       1: Begin
+        Dlg.Data.AutoBraces :=
+         Not Dlg.Data.AutoBraces;
+        Dlg.Modified := True;
+       End;
+      End;
+     OC_PROJ_GENERAL:
+      If FieldIdx = 1 Then
+      Begin
+       Dlg.Data.ShowOutputOnBuild :=
+        Not Dlg.Data.ShowOutputOnBuild;
+       Dlg.Modified := True;
+      End;
+     OC_PROJ_BUILD:
+      If FieldIdx = 0 Then
+      Begin
+       Dlg.Data.BuildVerbose :=
+        Not Dlg.Data.BuildVerbose;
+       Dlg.Modified := True;
+      End;
+     OC_DEBUG_GENERAL:
+      Case FieldIdx Of
+       0: Begin
+        Dlg.Data.BreakOnFirstError :=
+         Not Dlg.Data.BreakOnFirstError;
+        Dlg.Modified := True;
+       End;
+       1: Begin
+        Dlg.Data.StepIntoProperties :=
+         Not Dlg.Data.StepIntoProperties;
+        Dlg.Modified := True;
+       End;
+      End;
+     OC_DEBUG_OUTPUT:
+      If FieldIdx = 0 Then
+      Begin
+       Dlg.Data.ShowDebugMessages :=
+        Not Dlg.Data.ShowDebugMessages;
+       Dlg.Modified := True;
+      End;
+    End;
+    DrawOptionsDialog(Dlg);
+    Exit;
+   End;
+   { Clic sur les boutons OK / Annuler }
+   BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX,
+    Ev.MouseY);
+   If BtnR >= 0 Then
+   Begin
+    If BtnR = 0 Then
+    Begin
+     Dlg.Confirmed := True;
+     Dlg.Base.Result := DR_OK;
+    End
+    Else
+    Begin
+     Dlg.Confirmed := False;
+     Dlg.Data := Dlg.OriginalData;
+     Dlg.Base.Result := DR_CANCEL;
+    End;
+    CloseDialog(Dlg.Base);
+   End;
+  End;
+ End;
+End;
+
+{ --- Afficher le dialogue des options --- }
+
+Procedure ShowOptionsDialog(Var Dlg: TOptionsDialog);
+Begin
+ InitOptionsDialog(Dlg);
+ Dlg.Base.Visible := True;
+ DrawOptionsDialog(Dlg);
+End;
+
+{ --- Ecrire une ligne cle=valeur dans le fichier INI --- }
+
+Procedure WriteCfgLine(Var F: Text; Key, Value: String);
+Begin
+ WriteLn(F, Key, '=', Value);
+End;
+
+{ --- Lire une ligne cle=valeur depuis une chaine --- }
+
+Function ReadCfgLine(Line: String;
+ Var Key, Value: String): Boolean;
+Var
+ P: Integer;
+Begin
+ ReadCfgLine := False;
+ Key := '';
+ Value := '';
+ If Length(Line) = 0 Then Exit;
+ If Line[1] = '[' Then Exit;
+ If Line[1] = ';' Then Exit;
+ P := Pos('=', Line);
+ If P = 0 Then Exit;
+ Key := Copy(Line, 1, P - 1);
+ Value := Copy(Line, P + 1, Length(Line) - P);
+ ReadCfgLine := True;
+End;
+
+{ --- Convertir un booleen en chaine --- }
+
+Function BoolToStr(B: Boolean): String;
+Begin
+ If B Then
+  BoolToStr := '1'
+ Else
+  BoolToStr := '0';
+End;
+
+{ --- Convertir une chaine en booleen --- }
+
+Function StrToBool(S: String): Boolean;
+Begin
+ StrToBool := (S = '1') Or (S = 'True') Or (S = 'true');
+End;
+
+{ --- Sauvegarder les options dans un fichier INI --- }
+
+Procedure SaveOptions(Var Data: TOptionsDialogData;
+ FileName: String);
+Var
+ F: Text;
+ S: String;
+Begin
+ Assign(F, FileName);
+ {$I-}
+ Rewrite(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ WriteLn(F, '[Environnement]');
+ WriteCfgLine(F, 'ThemeName', Data.ThemeName);
+ WriteCfgLine(F, 'FontName', Data.FontName);
+ Str(Data.FontSize, S);
+ WriteCfgLine(F, 'FontSize', S);
+ Str(Ord(Data.StartupAction), S);
+ WriteCfgLine(F, 'StartupAction', S);
+ WriteCfgLine(F, 'AutoSaveEnabled',
+  BoolToStr(Data.AutoSaveEnabled));
+ Str(Data.AutoSaveInterval, S);
+ WriteCfgLine(F, 'AutoSaveInterval', S);
+ WriteLn(F, '');
+ WriteLn(F, '[Editeur]');
+ WriteCfgLine(F, 'ShowLineNumbers',
+  BoolToStr(Data.ShowLineNumbers));
+ WriteCfgLine(F, 'WordWrap', BoolToStr(Data.WordWrap));
+ WriteCfgLine(F, 'ShowWhitespace',
+  BoolToStr(Data.ShowWhitespace));
+ WriteCfgLine(F, 'ShowIndentGuides',
+  BoolToStr(Data.ShowIndentGuides));
+ Str(Data.TabSize, S);
+ WriteCfgLine(F, 'TabSize', S);
+ WriteCfgLine(F, 'InsertSpaces',
+  BoolToStr(Data.InsertSpaces));
+ Str(Data.IndentSize, S);
+ WriteCfgLine(F, 'IndentSize', S);
+ WriteCfgLine(F, 'SmoothScroll',
+  BoolToStr(Data.SmoothScroll));
+ Str(Data.ScrollMargin, S);
+ WriteCfgLine(F, 'ScrollMargin', S);
+ WriteCfgLine(F, 'AutoIndent',
+  BoolToStr(Data.AutoIndent));
+ WriteCfgLine(F, 'AutoBraces',
+  BoolToStr(Data.AutoBraces));
+ WriteLn(F, '');
+ WriteLn(F, '[Projets]');
+ WriteCfgLine(F, 'DefaultProjectPath',
+  Data.DefaultProjectPath);
+ WriteCfgLine(F, 'ShowOutputOnBuild',
+  BoolToStr(Data.ShowOutputOnBuild));
+ WriteCfgLine(F, 'BuildVerbose',
+  BoolToStr(Data.BuildVerbose));
+ Str(Data.ParallelBuild, S);
+ WriteCfgLine(F, 'ParallelBuild', S);
+ WriteLn(F, '');
+ WriteLn(F, '[Debogage]');
+ WriteCfgLine(F, 'BreakOnFirstError',
+  BoolToStr(Data.BreakOnFirstError));
+ WriteCfgLine(F, 'StepIntoProperties',
+  BoolToStr(Data.StepIntoProperties));
+ WriteCfgLine(F, 'ShowDebugMessages',
+  BoolToStr(Data.ShowDebugMessages));
+ Close(F);
+End;
+
+{ --- Charger les options depuis un fichier INI --- }
+
+Procedure LoadOptions(Var Data: TOptionsDialogData;
+ FileName: String);
+Var
+ F: Text;
+ Line, Key, Value: String;
+ Code: Integer;
+Begin
+ InitOptionsDialogData(Data);
+ Assign(F, FileName);
+ {$I-}
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  If Not ReadCfgLine(Line, Key, Value) Then Continue;
+  If Key = 'ThemeName' Then
+   Data.ThemeName := Value
+  Else If Key = 'FontName' Then
+   Data.FontName := Value
+  Else If Key = 'FontSize' Then
+  Begin
+   Val(Value, Data.FontSize, Code);
+   If Code <> 0 Then Data.FontSize := 10;
+  End
+  Else If Key = 'StartupAction' Then
+  Begin
+   Val(Value, Code, Code);
+   Case Code Of
+    0: Data.StartupAction := OSA_NOTHING;
+    1: Data.StartupAction := OSA_LAST_PROJECT;
+    2: Data.StartupAction := OSA_START_PAGE;
+   End;
+  End
+  Else If Key = 'AutoSaveEnabled' Then
+   Data.AutoSaveEnabled := StrToBool(Value)
+  Else If Key = 'AutoSaveInterval' Then
+  Begin
+   Val(Value, Data.AutoSaveInterval, Code);
+   If Code <> 0 Then Data.AutoSaveInterval := 300;
+  End
+  Else If Key = 'ShowLineNumbers' Then
+   Data.ShowLineNumbers := StrToBool(Value)
+  Else If Key = 'WordWrap' Then
+   Data.WordWrap := StrToBool(Value)
+  Else If Key = 'ShowWhitespace' Then
+   Data.ShowWhitespace := StrToBool(Value)
+  Else If Key = 'ShowIndentGuides' Then
+   Data.ShowIndentGuides := StrToBool(Value)
+  Else If Key = 'TabSize' Then
+  Begin
+   Val(Value, Data.TabSize, Code);
+   If Code <> 0 Then Data.TabSize := 4;
+  End
+  Else If Key = 'InsertSpaces' Then
+   Data.InsertSpaces := StrToBool(Value)
+  Else If Key = 'IndentSize' Then
+  Begin
+   Val(Value, Data.IndentSize, Code);
+   If Code <> 0 Then Data.IndentSize := 4;
+  End
+  Else If Key = 'SmoothScroll' Then
+   Data.SmoothScroll := StrToBool(Value)
+  Else If Key = 'ScrollMargin' Then
+  Begin
+   Val(Value, Data.ScrollMargin, Code);
+   If Code <> 0 Then Data.ScrollMargin := 3;
+  End
+  Else If Key = 'AutoIndent' Then
+   Data.AutoIndent := StrToBool(Value)
+  Else If Key = 'AutoBraces' Then
+   Data.AutoBraces := StrToBool(Value)
+  Else If Key = 'DefaultProjectPath' Then
+   Data.DefaultProjectPath := Value
+  Else If Key = 'ShowOutputOnBuild' Then
+   Data.ShowOutputOnBuild := StrToBool(Value)
+  Else If Key = 'BuildVerbose' Then
+   Data.BuildVerbose := StrToBool(Value)
+  Else If Key = 'ParallelBuild' Then
+  Begin
+   Val(Value, Data.ParallelBuild, Code);
+   If Code <> 0 Then Data.ParallelBuild := 1;
+  End
+  Else If Key = 'BreakOnFirstError' Then
+   Data.BreakOnFirstError := StrToBool(Value)
+  Else If Key = 'StepIntoProperties' Then
+   Data.StepIntoProperties := StrToBool(Value)
+  Else If Key = 'ShowDebugMessages' Then
+   Data.ShowDebugMessages := StrToBool(Value);
+ End;
+ Close(F);
+End;
+
+{ --- Obtenir la categorie selectionnee --- }
+
+Function GetSelectedOptionCategory(
+ Var Dlg: TOptionsDialog): TOptionCategory;
+Begin
+ If (Dlg.SelectedCategory >= 0) And
+  (Dlg.SelectedCategory < Dlg.CategoryCount) Then
+  GetSelectedOptionCategory :=
+   Dlg.Categories[Dlg.SelectedCategory].Category
+ Else
+  GetSelectedOptionCategory := OC_ENV_GENERAL;
+End;
+
+{ --- Verifier si le dialogue options est visible --- }
+
+Function IsOptionsDialogVisible(
+ Var Dlg: TOptionsDialog): Boolean;
+Begin
+ IsOptionsDialogVisible := Dlg.Base.Visible;
+End;
+
+{ --- Verifier si les options ont ete modifiees --- }
+
+Function IsOptionsModified(
+ Var Dlg: TOptionsDialog): Boolean;
+Begin
+ IsOptionsModified := Dlg.Modified;
+End;
+
+{ --- Accesseurs pour les donnees d options --- }
+
+Function GetOptionThemeName(
+ Var D: TOptionsDialogData): String;
+Begin
+ GetOptionThemeName := D.ThemeName;
+End;
+
+Function GetOptionFontSize(
+ Var D: TOptionsDialogData): Integer;
+Begin
+ GetOptionFontSize := D.FontSize;
+End;
+
+Function GetOptionTabSize(
+ Var D: TOptionsDialogData): Integer;
+Begin
+ GetOptionTabSize := D.TabSize;
+End;
+
+Function IsOptionAutoSaveEnabled(
+ Var D: TOptionsDialogData): Boolean;
+Begin
+ IsOptionAutoSaveEnabled := D.AutoSaveEnabled;
+End;
+
+Function GetOptionAutoSaveInterval(
+ Var D: TOptionsDialogData): Integer;
+Begin
+ GetOptionAutoSaveInterval := D.AutoSaveInterval;
+End;
+
+Function IsOptionShowLineNumbers(
+ Var D: TOptionsDialogData): Boolean;
+Begin
+ IsOptionShowLineNumbers := D.ShowLineNumbers;
+End;
+
+Function IsOptionWordWrap(
+ Var D: TOptionsDialogData): Boolean;
+Begin
+ IsOptionWordWrap := D.WordWrap;
+End;
+
+Function IsOptionShowWhitespace(
+ Var D: TOptionsDialogData): Boolean;
+Begin
+ IsOptionShowWhitespace := D.ShowWhitespace;
+End;
+
+Function IsOptionAutoIndent(
+ Var D: TOptionsDialogData): Boolean;
+Begin
+ IsOptionAutoIndent := D.AutoIndent;
+End;
+
+Function IsOptionInsertSpaces(
+ Var D: TOptionsDialogData): Boolean;
+Begin
+ IsOptionInsertSpaces := D.InsertSpaces;
+End;
+
+Function GetOptionDefaultProjectPath(
+ Var D: TOptionsDialogData): String;
+Begin
+ GetOptionDefaultProjectPath := D.DefaultProjectPath;
+End;
+
+Function IsOptionShowOutputOnBuild(
+ Var D: TOptionsDialogData): Boolean;
+Begin
+ IsOptionShowOutputOnBuild := D.ShowOutputOnBuild;
+End;
+
+Function IsOptionBuildVerbose(
+ Var D: TOptionsDialogData): Boolean;
+Begin
+ IsOptionBuildVerbose := D.BuildVerbose;
+End;
+
+Function IsOptionBreakOnFirstError(
+ Var D: TOptionsDialogData): Boolean;
+Begin
+ IsOptionBreakOnFirstError := D.BreakOnFirstError;
+End;
+
+Function IsOptionShowDebugMessages(
+ Var D: TOptionsDialogData): Boolean;
+Begin
+ IsOptionShowDebugMessages := D.ShowDebugMessages;
+End;
+
+Function GetOptionStartupAction(
+ Var D: TOptionsDialogData): TOptStartupAction;
+Begin
+ GetOptionStartupAction := D.StartupAction;
+End;
+
+{ --- Nombre de categories dans le dialogue --- }
+
+Function OptionCategoryCount(
+ Var Dlg: TOptionsDialog): Integer;
+Begin
+ OptionCategoryCount := Dlg.CategoryCount;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -15562,6 +16957,6 @@ BEGIN
  DrawOutputPanel(OutputPanel);
  InitErrorList(ErrorList);
  DrawErrorList(ErrorList);
- { Boucle principale a venir (TODO 23+) }
+ { Boucle principale a venir (TODO 24+) }
  ShutdownGraphics;
 END.
