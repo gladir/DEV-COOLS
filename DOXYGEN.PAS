@@ -473,7 +473,7 @@
             Procedure GenerateTOC(Var OutFile: Text)
               generer la table des matieres hierarchique
 
-  TODO 12 - GENERATION DE LA DOCUMENTATION HTML [A FAIRE]
+  TODO 12 - GENERATION DE LA DOCUMENTATION HTML [IMPLEMENTE]
             Variables globales :
               HtmlOutputDir : String  (repertoire de sortie HTML)
               HtmlHeader    : String  (contenu du header HTML)
@@ -913,6 +913,19 @@ Const
   MAX_SEARCH_ENTRIES = 65536;
   MAX_WARNINGS       = 4096;
 
+  { Constantes pour la generation HTML (TODO 12) }
+  HTML_DOCTYPE       = '<!DOCTYPE html>';
+  HTML_CHARSET       = 'UTF-8';
+  HTML_CSS_FILE      = 'doxygen.css';
+  HTML_JS_FILE       = 'doxygen.js';
+  HTML_SEARCH_FILE   = 'search.js';
+  HTML_INDEX_FILE    = 'index.html';
+  HTML_CLASSES_FILE  = 'classes.html';
+  HTML_FILES_FILE    = 'files.html';
+  HTML_NAMESPACES_FILE = 'namespaces.html';
+  HTML_HIERARCHY_FILE = 'hierarchy.html';
+  HTML_SEARCH_DIR    = 'search';
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1133,6 +1146,16 @@ Var
   { Variables pour la generation de l'index (TODO 11) }
   IndexEntries     : Array[1..MAX_INDEX_ENTRIES] Of TIndexEntry;
   IndexCount       : Integer;
+
+  { Variables pour la generation HTML (TODO 12) }
+  HtmlOutputDir    : String;
+  HtmlHeader       : String;
+  HtmlFooter       : String;
+  HtmlStylesheet   : String;
+  HtmlProjectName  : String;
+  HtmlProjectBrief : String;
+  HtmlTimestamp    : String;
+  HtmlInitialized  : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -6761,6 +6784,669 @@ Begin
   WriteLn;
   WriteLn('Note: La generation de documentation HTML est en cours d''implementation.');
   WriteLn('      Voir les TODOs 05 a 25 pour la feuille de route complete.');
+End;
+
+{ ============================================================
+  TODO 12 - GENERATION DE LA DOCUMENTATION HTML
+  ============================================================ }
+
+Function EscapeHtml(Const S: String): String;
+{ Echappe les caracteres speciaux HTML }
+Var
+  I: Integer;
+  R: String;
+  C: Char;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    C := S[I];
+    Case C Of
+      '<': R := R + '&lt;';
+      '>': R := R + '&gt;';
+      '&': R := R + '&amp;';
+      '"': R := R + '&quot;';
+      '''': R := R + '&#39;';
+    Else
+      R := R + C;
+    End;
+  End;
+  EscapeHtml := R;
+End;
+
+Procedure InitHtmlGenerator;
+{ Initialise le generateur HTML }
+Begin
+  HtmlOutputDir := GetConfigValue('OUTPUT_DIRECTORY');
+  If HtmlOutputDir = '' Then
+    HtmlOutputDir := 'html';
+  If HtmlOutputDir[Length(HtmlOutputDir)] <> '/' Then
+    HtmlOutputDir := HtmlOutputDir + '/';
+  HtmlOutputDir := HtmlOutputDir + 'html/';
+  
+  HtmlProjectName := GetConfigValue('PROJECT_NAME');
+  If HtmlProjectName = '' Then
+    HtmlProjectName := 'Documentation';
+  
+  HtmlProjectBrief := GetConfigValue('PROJECT_BRIEF');
+  
+  HtmlTimestamp := GetConfigValue('HTML_TIMESTAMP');
+  If HtmlTimestamp = '' Then
+    HtmlTimestamp := 'YES';
+  
+  { CSS par defaut }
+  HtmlStylesheet := 'body{font-family:Arial,sans-serif;margin:0;padding:0}';
+  HtmlStylesheet := HtmlStylesheet + '.header{background:#3f51b5;color:white;padding:20px}';
+  HtmlStylesheet := HtmlStylesheet + '.header h1{margin:0}.nav{background:#f5f5f5;padding:10px}';
+  HtmlStylesheet := HtmlStylesheet + '.nav a{margin-right:15px;color:#3f51b5}';
+  HtmlStylesheet := HtmlStylesheet + '.content{padding:20px;max-width:1200px;margin:0 auto}';
+  HtmlStylesheet := HtmlStylesheet + '.entity{margin-bottom:30px;padding:15px;background:#fafafa}';
+  HtmlStylesheet := HtmlStylesheet + '.signature{background:#263238;color:#aed581;padding:10px}';
+  HtmlStylesheet := HtmlStylesheet + '.footer{background:#f5f5f5;padding:15px;text-align:center}';
+  HtmlStylesheet := HtmlStylesheet + 'table{border-collapse:collapse;width:100%}';
+  HtmlStylesheet := HtmlStylesheet + 'th,td{border:1px solid #ddd;padding:10px}';
+  
+  { Header HTML par defaut }
+  HtmlHeader := '<!DOCTYPE html><html><head>';
+  HtmlHeader := HtmlHeader + '<meta charset="UTF-8">';
+  HtmlHeader := HtmlHeader + '<title>%TITLE% - %PROJECT%</title>';
+  HtmlHeader := HtmlHeader + '<link rel="stylesheet" href="doxygen.css">';
+  HtmlHeader := HtmlHeader + '</head><body>';
+  HtmlHeader := HtmlHeader + '<div class="header"><h1>%PROJECT%</h1>';
+  HtmlHeader := HtmlHeader + '<p>%BRIEF%</p></div>';
+  HtmlHeader := HtmlHeader + '<div class="nav">';
+  HtmlHeader := HtmlHeader + '<a href="index.html">Index</a>';
+  HtmlHeader := HtmlHeader + '<a href="classes.html">Classes</a>';
+  HtmlHeader := HtmlHeader + '<a href="files.html">Fichiers</a>';
+  HtmlHeader := HtmlHeader + '</div><div class="content">';
+  
+  { Footer HTML par defaut }
+  HtmlFooter := '</div><div class="footer">';
+  HtmlFooter := HtmlFooter + '<p>Documentation generee par DOXYGEN Clone</p>';
+  HtmlFooter := HtmlFooter + '</div></body></html>';
+  
+  HtmlInitialized := True;
+  InfoMsg('Generateur HTML initialise');
+  InfoMsg('Repertoire de sortie: ' + HtmlOutputDir);
+End;
+
+Function GetHtmlHeader(Const Title: String): String;
+{ Retourne le header HTML avec titre personnalise }
+Var
+  H: String;
+  P: Integer;
+Begin
+  H := HtmlHeader;
+  { Remplacer %TITLE% }
+  P := Pos('%TITLE%', H);
+  While P > 0 Do
+  Begin
+    H := Copy(H, 1, P - 1) + EscapeHtml(Title) + Copy(H, P + 7, Length(H));
+    P := Pos('%TITLE%', H);
+  End;
+  { Remplacer %PROJECT% }
+  P := Pos('%PROJECT%', H);
+  While P > 0 Do
+  Begin
+    H := Copy(H, 1, P - 1) + EscapeHtml(HtmlProjectName) + Copy(H, P + 9, Length(H));
+    P := Pos('%PROJECT%', H);
+  End;
+  { Remplacer %BRIEF% }
+  P := Pos('%BRIEF%', H);
+  While P > 0 Do
+  Begin
+    H := Copy(H, 1, P - 1) + EscapeHtml(HtmlProjectBrief) + Copy(H, P + 7, Length(H));
+    P := Pos('%BRIEF%', H);
+  End;
+  GetHtmlHeader := H;
+End;
+
+Procedure WriteHtmlHeader(Var F: Text; Const Title: String);
+{ Ecrit le header HTML dans un fichier }
+Begin
+  Write(F, GetHtmlHeader(Title));
+End;
+
+Procedure WriteHtmlFooter(Var F: Text);
+{ Ecrit le footer HTML dans un fichier }
+Begin
+  Write(F, HtmlFooter);
+End;
+
+Procedure GenerateHtmlFile(Const Entity: TEntity; Var OutFile: Text);
+{ Genere la page HTML pour une entite }
+Begin
+  WriteHtmlHeader(OutFile, Entity.Name);
+  
+  WriteLn(OutFile, '<div class="entity">');
+  WriteLn(OutFile, '<h2>', EscapeHtml(EntityKindToStr(Entity.Kind)), ': ',
+    EscapeHtml(Entity.Name), '</h2>');
+  
+  { Signature }
+  If Entity.Signature <> '' Then
+  Begin
+    WriteLn(OutFile, '<div class="signature">');
+    WriteLn(OutFile, EscapeHtml(Entity.Signature));
+    WriteLn(OutFile, '</div>');
+  End;
+  
+  { Brief description }
+  If Entity.BriefDesc <> '' Then
+    WriteLn(OutFile, '<p><strong>', EscapeHtml(Entity.BriefDesc), '</strong></p>');
+  
+  { Detailed description }
+  If Entity.DetailedDesc <> '' Then
+    WriteLn(OutFile, '<p>', EscapeHtml(Entity.DetailedDesc), '</p>');
+  
+  { Return type }
+  If Entity.ReturnType <> '' Then
+    WriteLn(OutFile, '<p>Type de retour: <code>', EscapeHtml(Entity.ReturnType), '</code></p>');
+  
+  { Parameters }
+  If Entity.Parameters <> '' Then
+    WriteLn(OutFile, '<p>Parametres: <code>', EscapeHtml(Entity.Parameters), '</code></p>');
+  
+  { File location }
+  WriteLn(OutFile, '<p class="location">');
+  WriteLn(OutFile, 'Defini dans <code>', EscapeHtml(Entity.FileName), '</code>');
+  If Entity.Line > 0 Then
+    Write(OutFile, ' a la ligne ', Entity.Line);
+  WriteLn(OutFile, '</p>');
+  
+  WriteLn(OutFile, '</div>');
+  
+  WriteHtmlFooter(OutFile);
+End;
+
+Procedure GenerateHtmlIndex(Var OutFile: Text);
+{ Genere la page d'index principale (index.html) }
+Var
+  I, ClassCount, FuncCount, FileCount: Integer;
+Begin
+  WriteHtmlHeader(OutFile, 'Index');
+  
+  WriteLn(OutFile, '<h1>Documentation</h1>');
+  
+  If HtmlProjectBrief <> '' Then
+    WriteLn(OutFile, '<p>', EscapeHtml(HtmlProjectBrief), '</p>');
+  
+  { Statistiques }
+  ClassCount := 0;
+  FuncCount := 0;
+  FileCount := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    Case Entities[I].Kind Of
+      ENT_CLASS, ENT_STRUCT, ENT_INTERFACE: Inc(ClassCount);
+      ENT_FUNCTION: Inc(FuncCount);
+      ENT_FILE: Inc(FileCount);
+    End;
+  End;
+  
+  WriteLn(OutFile, '<h2>Resume</h2>');
+  WriteLn(OutFile, '<table>');
+  WriteLn(OutFile, '<tr><th>Type</th><th>Nombre</th></tr>');
+  WriteLn(OutFile, '<tr><td>Classes/Structures</td><td>', ClassCount, '</td></tr>');
+  WriteLn(OutFile, '<tr><td>Fonctions</td><td>', FuncCount, '</td></tr>');
+  WriteLn(OutFile, '<tr><td>Fichiers</td><td>', FileCount, '</td></tr>');
+  WriteLn(OutFile, '<tr><td><strong>Total</strong></td><td><strong>', 
+    EntityCount, '</strong></td></tr>');
+  WriteLn(OutFile, '</table>');
+  
+  { Liens de navigation }
+  WriteLn(OutFile, '<h2>Navigation</h2>');
+  WriteLn(OutFile, '<ul>');
+  WriteLn(OutFile, '<li><a href="classes.html">Liste des classes</a></li>');
+  WriteLn(OutFile, '<li><a href="files.html">Liste des fichiers</a></li>');
+  WriteLn(OutFile, '<li><a href="namespaces.html">Liste des namespaces</a></li>');
+  WriteLn(OutFile, '<li><a href="hierarchy.html">Hierarchie des classes</a></li>');
+  WriteLn(OutFile, '</ul>');
+  
+  WriteHtmlFooter(OutFile);
+End;
+
+Procedure GenerateHtmlClasses(Var OutFile: Text);
+{ Genere la page de liste des classes (classes.html) }
+Var
+  I: Integer;
+  HasClasses: Boolean;
+Begin
+  WriteHtmlHeader(OutFile, 'Classes');
+  
+  WriteLn(OutFile, '<h1>Liste des classes</h1>');
+  
+  HasClasses := False;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE] Then
+    Begin
+      If Not HasClasses Then
+      Begin
+        WriteLn(OutFile, '<ul>');
+        HasClasses := True;
+      End;
+      WriteLn(OutFile, '<li>');
+      WriteLn(OutFile, '<a href="', EscapeHtml(Entities[I].Name), '.html">',
+        EscapeHtml(Entities[I].Name), '</a>');
+      WriteLn(OutFile, ' [', EntityKindToStr(Entities[I].Kind), ']');
+      If Entities[I].BriefDesc <> '' Then
+        WriteLn(OutFile, ' - ', EscapeHtml(Entities[I].BriefDesc));
+      WriteLn(OutFile, '</li>');
+    End;
+  End;
+  
+  If HasClasses Then
+    WriteLn(OutFile, '</ul>')
+  Else
+    WriteLn(OutFile, '<p>Aucune classe documentee.</p>');
+  
+  WriteHtmlFooter(OutFile);
+End;
+
+Procedure GenerateHtmlFiles(Var OutFile: Text);
+{ Genere la page de liste des fichiers (files.html) }
+Var
+  I: Integer;
+  HasFiles: Boolean;
+Begin
+  WriteHtmlHeader(OutFile, 'Fichiers');
+  
+  WriteLn(OutFile, '<h1>Liste des fichiers</h1>');
+  
+  HasFiles := False;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = ENT_FILE Then
+    Begin
+      If Not HasFiles Then
+      Begin
+        WriteLn(OutFile, '<ul>');
+        HasFiles := True;
+      End;
+      WriteLn(OutFile, '<li>');
+      WriteLn(OutFile, '<a href="', EscapeHtml(Entities[I].Name), '.html">',
+        EscapeHtml(Entities[I].Name), '</a>');
+      If Entities[I].BriefDesc <> '' Then
+        WriteLn(OutFile, ' - ', EscapeHtml(Entities[I].BriefDesc));
+      WriteLn(OutFile, '</li>');
+    End;
+  End;
+  
+  If HasFiles Then
+    WriteLn(OutFile, '</ul>')
+  Else
+    WriteLn(OutFile, '<p>Aucun fichier documente.</p>');
+  
+  WriteHtmlFooter(OutFile);
+End;
+
+Procedure GenerateHtmlNamespaces(Var OutFile: Text);
+{ Genere la page de liste des namespaces (namespaces.html) }
+Var
+  I: Integer;
+  HasNS: Boolean;
+Begin
+  WriteHtmlHeader(OutFile, 'Namespaces');
+  
+  WriteLn(OutFile, '<h1>Liste des namespaces</h1>');
+  
+  HasNS := False;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_NAMESPACE, ENT_MODULE] Then
+    Begin
+      If Not HasNS Then
+      Begin
+        WriteLn(OutFile, '<ul>');
+        HasNS := True;
+      End;
+      WriteLn(OutFile, '<li>');
+      WriteLn(OutFile, '<a href="', EscapeHtml(Entities[I].Name), '.html">',
+        EscapeHtml(Entities[I].Name), '</a>');
+      WriteLn(OutFile, ' [', EntityKindToStr(Entities[I].Kind), ']');
+      If Entities[I].BriefDesc <> '' Then
+        WriteLn(OutFile, ' - ', EscapeHtml(Entities[I].BriefDesc));
+      WriteLn(OutFile, '</li>');
+    End;
+  End;
+  
+  If HasNS Then
+    WriteLn(OutFile, '</ul>')
+  Else
+    WriteLn(OutFile, '<p>Aucun namespace documente.</p>');
+  
+  WriteHtmlFooter(OutFile);
+End;
+
+Procedure WriteHierarchyNode(Var OutFile: Text; ParentId: Integer; Depth: Integer);
+{ Ecrit recursivement les noeuds de la hierarchie }
+Var
+  I: Integer;
+  HasChildren: Boolean;
+Begin
+  If Depth > 20 Then Exit; { Protection contre recursion infinie }
+  
+  HasChildren := False;
+  For I := 1 To InheritanceCount Do
+  Begin
+    If Inheritances[I].ParentId = ParentId Then
+    Begin
+      If Not HasChildren Then
+      Begin
+        WriteLn(OutFile, '<ul>');
+        HasChildren := True;
+      End;
+      WriteLn(OutFile, '<li>');
+      WriteLn(OutFile, '<a href="', EscapeHtml(Entities[Inheritances[I].ChildId].Name),
+        '.html">', EscapeHtml(Entities[Inheritances[I].ChildId].Name), '</a>');
+      WriteHierarchyNode(OutFile, Inheritances[I].ChildId, Depth + 1);
+      WriteLn(OutFile, '</li>');
+    End;
+  End;
+  
+  If HasChildren Then
+    WriteLn(OutFile, '</ul>');
+End;
+
+Procedure GenerateHtmlHierarchy(Var OutFile: Text);
+{ Genere la page de hierarchie de classes (hierarchy.html) }
+Var
+  I, J: Integer;
+  IsRoot, HasRoots: Boolean;
+Begin
+  WriteHtmlHeader(OutFile, 'Hierarchie');
+  
+  WriteLn(OutFile, '<h1>Hierarchie des classes</h1>');
+  
+  If InheritanceCount = 0 Then
+  Begin
+    WriteLn(OutFile, '<p>Aucune hierarchie de classes documentee.</p>');
+    WriteHtmlFooter(OutFile);
+    Exit;
+  End;
+  
+  WriteLn(OutFile, '<div class="hierarchy">');
+  
+  { Trouver les classes racines (sans parent) }
+  HasRoots := False;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE] Then
+    Begin
+      IsRoot := True;
+      For J := 1 To InheritanceCount Do
+      Begin
+        If Inheritances[J].ChildId = I Then
+        Begin
+          IsRoot := False;
+          Break;
+        End;
+      End;
+      
+      If IsRoot Then
+      Begin
+        If Not HasRoots Then
+        Begin
+          WriteLn(OutFile, '<ul>');
+          HasRoots := True;
+        End;
+        WriteLn(OutFile, '<li>');
+        WriteLn(OutFile, '<a href="', EscapeHtml(Entities[I].Name), '.html">',
+          EscapeHtml(Entities[I].Name), '</a>');
+        WriteHierarchyNode(OutFile, I, 1);
+        WriteLn(OutFile, '</li>');
+      End;
+    End;
+  End;
+  
+  If HasRoots Then
+    WriteLn(OutFile, '</ul>');
+  
+  WriteLn(OutFile, '</div>');
+  
+  WriteHtmlFooter(OutFile);
+End;
+
+Procedure GenerateHtmlSearch;
+{ Genere les fichiers de recherche JavaScript }
+Var
+  F: Text;
+  I: Integer;
+Begin
+  Assign(F, HtmlOutputDir + 'search.js');
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Impossible de creer le fichier de recherche');
+    Exit;
+  End;
+  
+  WriteLn(F, '// Donnees de recherche generees par DOXYGEN Clone');
+  WriteLn(F, 'var searchData = [');
+  
+  For I := 1 To EntityCount Do
+  Begin
+    Write(F, '  { name: "', EscapeHtml(Entities[I].Name), '", ');
+    Write(F, 'kind: "', EntityKindToStr(Entities[I].Kind), '", ');
+    Write(F, 'file: "', EscapeHtml(Entities[I].Name), '.html" }');
+    If I < EntityCount Then WriteLn(F, ',')
+    Else WriteLn(F);
+  End;
+  
+  WriteLn(F, '];');
+  
+  Close(F);
+  InfoMsg('Fichier de recherche genere: search.js');
+End;
+
+Procedure CopyHtmlResources;
+{ Copie les fichiers CSS et ressources necessaires }
+Var
+  F: Text;
+Begin
+  Assign(F, HtmlOutputDir + 'doxygen.css');
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Impossible de creer le fichier CSS');
+    Exit;
+  End;
+  
+  WriteLn(F, '/* Feuille de style generee par DOXYGEN Clone */');
+  WriteLn(F, HtmlStylesheet);
+  
+  Close(F);
+  InfoMsg('Fichier CSS genere: doxygen.css');
+End;
+
+Procedure CreateHtmlDirectory;
+{ Cree le repertoire de sortie HTML }
+Begin
+  {$I-}
+  MkDir(HtmlOutputDir);
+  {$I+}
+  If IOResult <> 0 Then
+    InfoMsg('Repertoire HTML existe deja ou creation impossible');
+End;
+
+Procedure GenerateHtmlDocumentation;
+{ Orchestrateur : genere toute la documentation HTML }
+Var
+  F: Text;
+  I: Integer;
+Begin
+  InfoMsg('Debut de la generation HTML...');
+  
+  If Not HtmlInitialized Then
+    InitHtmlGenerator;
+  
+  CreateHtmlDirectory;
+  CopyHtmlResources;
+  
+  { Generer la page d'index }
+  Assign(F, HtmlOutputDir + 'index.html');
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateHtmlIndex(F);
+    Close(F);
+    InfoMsg('Page index generee: index.html');
+  End
+  Else
+    WarnMsg('Impossible de creer index.html');
+  
+  { Generer la page des classes }
+  Assign(F, HtmlOutputDir + 'classes.html');
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateHtmlClasses(F);
+    Close(F);
+    InfoMsg('Page classes generee: classes.html');
+  End
+  Else
+    WarnMsg('Impossible de creer classes.html');
+  
+  { Generer la page des fichiers }
+  Assign(F, HtmlOutputDir + 'files.html');
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateHtmlFiles(F);
+    Close(F);
+    InfoMsg('Page fichiers generee: files.html');
+  End
+  Else
+    WarnMsg('Impossible de creer files.html');
+  
+  { Generer la page des namespaces }
+  Assign(F, HtmlOutputDir + 'namespaces.html');
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateHtmlNamespaces(F);
+    Close(F);
+    InfoMsg('Page namespaces generee: namespaces.html');
+  End
+  Else
+    WarnMsg('Impossible de creer namespaces.html');
+  
+  { Generer la page de hierarchie }
+  Assign(F, HtmlOutputDir + 'hierarchy.html');
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateHtmlHierarchy(F);
+    Close(F);
+    InfoMsg('Page hierarchie generee: hierarchy.html');
+  End
+  Else
+    WarnMsg('Impossible de creer hierarchy.html');
+  
+  { Generer une page pour chaque entite }
+  For I := 1 To EntityCount Do
+  Begin
+    Assign(F, HtmlOutputDir + Entities[I].Name + '.html');
+    {$I-}
+    Rewrite(F);
+    {$I+}
+    If IOResult = 0 Then
+    Begin
+      GenerateHtmlFile(Entities[I], F);
+      Close(F);
+    End;
+  End;
+  
+  GenerateHtmlSearch;
+  
+  WriteLn;
+  WriteLn('Generation HTML terminee.');
+  WriteLn('  Repertoire: ', HtmlOutputDir);
+  WriteLn('  Fichiers generes: ', EntityCount + 5);
+End;
+
+{ Fonctions accesseurs pour le generateur HTML }
+
+Function GetHtmlOutputDir: String;
+Begin
+  GetHtmlOutputDir := HtmlOutputDir;
+End;
+
+Procedure SetHtmlOutputDir(Const Dir: String);
+Begin
+  HtmlOutputDir := Dir;
+  If (Length(HtmlOutputDir) > 0) And 
+     (HtmlOutputDir[Length(HtmlOutputDir)] <> '/') Then
+    HtmlOutputDir := HtmlOutputDir + '/';
+End;
+
+Function GetHtmlProjectName: String;
+Begin
+  GetHtmlProjectName := HtmlProjectName;
+End;
+
+Procedure SetHtmlProjectName(Const Name: String);
+Begin
+  HtmlProjectName := Name;
+End;
+
+Function GetHtmlProjectBrief: String;
+Begin
+  GetHtmlProjectBrief := HtmlProjectBrief;
+End;
+
+Procedure SetHtmlProjectBrief(Const Brief: String);
+Begin
+  HtmlProjectBrief := Brief;
+End;
+
+Function IsHtmlInitialized: Boolean;
+Begin
+  IsHtmlInitialized := HtmlInitialized;
+End;
+
+Function GetHtmlStylesheet: String;
+Begin
+  GetHtmlStylesheet := HtmlStylesheet;
+End;
+
+Procedure SetHtmlStylesheet(Const Css: String);
+Begin
+  HtmlStylesheet := Css;
+End;
+
+Function GetHtmlHeaderTemplate: String;
+Begin
+  GetHtmlHeaderTemplate := HtmlHeader;
+End;
+
+Procedure SetHtmlHeaderTemplate(Const Header: String);
+Begin
+  HtmlHeader := Header;
+End;
+
+Function GetHtmlFooterTemplate: String;
+Begin
+  GetHtmlFooterTemplate := HtmlFooter;
+End;
+
+Procedure SetHtmlFooterTemplate(Const Footer: String);
+Begin
+  HtmlFooter := Footer;
 End;
 
 { ============================================================
