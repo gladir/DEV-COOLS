@@ -109,7 +109,7 @@
             Indicateur de modification (*).
             Maximum MAX_WINDOWS fenetres simultanees.
 
-  TODO 08 - TAMPON DE TEXTE ET GESTION DES LIGNES [A FAIRE]
+  TODO 08 - TAMPON DE TEXTE ET GESTION DES LIGNES [IMPLEMENTE]
             TTextBuffer : Lines, LineCount, Modified, FileName,
               FileEncoding, LineEnding.
             InitBuffer, FreeBuffer, LoadFile, SaveFile,

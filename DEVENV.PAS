@@ -252,7 +252,7 @@
             Indicateur de modification (asterisque) dans l onglet.
             Maximum MAX_WINDOWS fenetres simultanees.
 
-  TODO 08 - TAMPON DE TEXTE ET GESTION DES LIGNES [A FAIRE]
+  TODO 08 - TAMPON DE TEXTE ET GESTION DES LIGNES [IMPLEMENTE]
             TTextBuffer : structure de donnees pour le texte edite.
               Lignes stockees dans un tableau dynamique de String.
               Champs : Lines (Array of String), LineCount, Modified,
@@ -1273,6 +1273,30 @@ Type
   TabScrollX : Integer;       { defilement des onglets          }
   SplitMode  : Boolean;       { vue fractionnee active          }
   SplitPos   : Integer;       { position du separateur (pixels) }
+ End;
+
+ { Type de fin de ligne }
+ TLineEnding = (
+  LE_CRLF,              { Windows (CR+LF)                      }
+  LE_LF,                { Unix/Linux/macOS (LF)                 }
+  LE_CR                  { ancien Mac (CR)                       }
+ );
+
+ { Type d encodage de fichier }
+ TFileEncoding = (
+  FE_ASCII,             { ASCII 7 bits                          }
+  FE_UTF8               { UTF-8 (stub, traite comme ASCII)      }
+ );
+
+ { Tampon de texte }
+ TTextBuffer = Record
+  Lines      : Array[0..MAX_LINES - 1] Of String;
+  LineCount  : LongInt;        { nombre de lignes en usage      }
+  Modified   : Boolean;        { tampon modifie depuis derniere }
+                               {   sauvegarde                   }
+  FileName   : String[255];    { chemin du fichier associe      }
+  Encoding   : TFileEncoding;  { encodage detecte               }
+  LineEnd    : TLineEnding;    { type de fin de ligne           }
  End;
 
 { ============================================================
@@ -4291,6 +4315,398 @@ Begin
   WinMgr.Windows[Index].Modified := False;
 End;
 
+{ ============================================================
+  TODO 08 - TAMPON DE TEXTE ET GESTION DES LIGNES [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser un tampon de texte --- }
+
+Procedure InitBuffer(Var Buf: TTextBuffer);
+Var
+ I: LongInt;
+Begin
+ For I := 0 To MAX_LINES - 1 Do
+  Buf.Lines[I] := '';
+ Buf.LineCount := 1;  { au moins une ligne vide }
+ Buf.Modified := False;
+ Buf.FileName := '';
+ Buf.Encoding := FE_ASCII;
+ Buf.LineEnd := LE_CRLF;
+End;
+
+{ --- Liberer un tampon de texte --- }
+
+Procedure FreeBuffer(Var Buf: TTextBuffer);
+Var
+ I: LongInt;
+Begin
+ For I := 0 To MAX_LINES - 1 Do
+  Buf.Lines[I] := '';
+ Buf.LineCount := 0;
+ Buf.Modified := False;
+ Buf.FileName := '';
+End;
+
+{ --- Detecter l encodage d une ligne --- }
+
+Function DetectEncoding(S: String): TFileEncoding;
+Var
+ I: Integer;
+Begin
+ DetectEncoding := FE_ASCII;
+ For I := 1 To Length(S) Do
+  If Ord(S[I]) > 127 Then Begin
+   DetectEncoding := FE_UTF8;
+   Exit;
+  End;
+End;
+
+{ --- Detecter le type de fin de ligne --- }
+
+Function DetectLineEnding(S: String): TLineEnding;
+Var
+ I: Integer;
+Begin
+ DetectLineEnding := LE_LF;  { defaut Unix }
+ For I := 1 To Length(S) Do Begin
+  If S[I] = #13 Then Begin
+   If (I < Length(S)) And (S[I + 1] = #10) Then Begin
+    DetectLineEnding := LE_CRLF;
+    Exit;
+   End Else Begin
+    DetectLineEnding := LE_CR;
+    Exit;
+   End;
+  End;
+  If S[I] = #10 Then Begin
+   DetectLineEnding := LE_LF;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Charger un fichier dans le tampon --- }
+
+Procedure LoadFile(Var Buf: TTextBuffer; AFileName: String);
+Var
+ F: Text;
+ S: String;
+ FirstLine: Boolean;
+Begin
+ InitBuffer(Buf);
+ Buf.FileName := AFileName;
+ Buf.LineCount := 0;
+ {$I-}
+ Assign(F, AFileName);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  Buf.LineCount := 1;
+  Buf.Lines[0] := '';
+  Exit;
+ End;
+ FirstLine := True;
+ While Not Eof(F) Do Begin
+  ReadLn(F, S);
+  If FirstLine Then Begin
+   Buf.Encoding := DetectEncoding(S);
+   FirstLine := False;
+  End;
+  If Buf.LineCount < MAX_LINES Then Begin
+   Buf.Lines[Buf.LineCount] := S;
+   Inc(Buf.LineCount);
+  End;
+ End;
+ Close(F);
+ If Buf.LineCount = 0 Then Begin
+  Buf.LineCount := 1;
+  Buf.Lines[0] := '';
+ End;
+ Buf.Modified := False;
+End;
+
+{ --- Obtenir le suffixe de fin de ligne --- }
+
+Function LineEndStr(LE: TLineEnding): String;
+Begin
+ Case LE Of
+  LE_CRLF: LineEndStr := #13#10;
+  LE_LF:   LineEndStr := #10;
+  LE_CR:   LineEndStr := #13;
+ Else
+  LineEndStr := #13#10;
+ End;
+End;
+
+{ --- Sauvegarder le tampon dans un fichier --- }
+
+Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String);
+Var
+ F: Text;
+ I: LongInt;
+Begin
+ If Length(AFileName) = 0 Then Exit;
+ {$I-}
+ Assign(F, AFileName);
+ Rewrite(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ For I := 0 To Buf.LineCount - 1 Do
+  WriteLn(F, Buf.Lines[I]);
+ Close(F);
+ Buf.FileName := AFileName;
+ Buf.Modified := False;
+End;
+
+{ --- Obtenir une ligne du tampon --- }
+
+Function GetLine(Var Buf: TTextBuffer; N: LongInt): String;
+Begin
+ If (N >= 0) And (N < Buf.LineCount) Then
+  GetLine := Buf.Lines[N]
+ Else
+  GetLine := '';
+End;
+
+{ --- Definir une ligne du tampon --- }
+
+Procedure SetLine(Var Buf: TTextBuffer; N: LongInt; S: String);
+Begin
+ If (N >= 0) And (N < Buf.LineCount) Then Begin
+  Buf.Lines[N] := S;
+  Buf.Modified := True;
+ End;
+End;
+
+{ --- Inserer une ligne dans le tampon --- }
+
+Procedure InsertLine(Var Buf: TTextBuffer; N: LongInt; S: String);
+Var
+ I: LongInt;
+Begin
+ If Buf.LineCount >= MAX_LINES Then Exit;
+ If N < 0 Then N := 0;
+ If N > Buf.LineCount Then N := Buf.LineCount;
+ { Decaler vers le bas }
+ For I := Buf.LineCount - 1 DownTo N Do
+  Buf.Lines[I + 1] := Buf.Lines[I];
+ Buf.Lines[N] := S;
+ Inc(Buf.LineCount);
+ Buf.Modified := True;
+End;
+
+{ --- Supprimer une ligne du tampon --- }
+
+Procedure DeleteLine(Var Buf: TTextBuffer; N: LongInt);
+Var
+ I: LongInt;
+Begin
+ If (N < 0) Or (N >= Buf.LineCount) Then Exit;
+ If Buf.LineCount <= 1 Then Begin
+  Buf.Lines[0] := '';
+  Buf.Modified := True;
+  Exit;
+ End;
+ For I := N To Buf.LineCount - 2 Do
+  Buf.Lines[I] := Buf.Lines[I + 1];
+ Buf.Lines[Buf.LineCount - 1] := '';
+ Dec(Buf.LineCount);
+ Buf.Modified := True;
+End;
+
+{ --- Inserer un caractere dans le tampon --- }
+
+Procedure InsertChar(Var Buf: TTextBuffer; ALine, ACol: LongInt;
+                     Ch: Char);
+Var
+ S: String;
+Begin
+ If (ALine < 0) Or (ALine >= Buf.LineCount) Then Exit;
+ S := Buf.Lines[ALine];
+ If ACol < 1 Then ACol := 1;
+ If ACol > Length(S) + 1 Then Begin
+  { Etendre avec des espaces }
+  While Length(S) < ACol - 1 Do
+   S := S + ' ';
+ End;
+ Insert(Ch, S, ACol);
+ Buf.Lines[ALine] := S;
+ Buf.Modified := True;
+End;
+
+{ --- Supprimer un caractere du tampon --- }
+
+Procedure DeleteChar(Var Buf: TTextBuffer; ALine, ACol: LongInt);
+Var
+ S: String;
+Begin
+ If (ALine < 0) Or (ALine >= Buf.LineCount) Then Exit;
+ S := Buf.Lines[ALine];
+ If (ACol >= 1) And (ACol <= Length(S)) Then Begin
+  Delete(S, ACol, 1);
+  Buf.Lines[ALine] := S;
+  Buf.Modified := True;
+ End Else If (ACol > Length(S)) And (ALine < Buf.LineCount - 1) Then Begin
+  { Joindre avec la ligne suivante }
+  Buf.Lines[ALine] := S + Buf.Lines[ALine + 1];
+  DeleteLine(Buf, ALine + 1);
+ End;
+End;
+
+{ --- Inserer du texte (sans retour a la ligne) --- }
+
+Procedure InsertText(Var Buf: TTextBuffer; ALine, ACol: LongInt;
+                     AText: String);
+Var
+ S: String;
+Begin
+ If (ALine < 0) Or (ALine >= Buf.LineCount) Then Exit;
+ S := Buf.Lines[ALine];
+ If ACol < 1 Then ACol := 1;
+ While Length(S) < ACol - 1 Do
+  S := S + ' ';
+ Insert(AText, S, ACol);
+ Buf.Lines[ALine] := S;
+ Buf.Modified := True;
+End;
+
+{ --- Supprimer une plage de texte --- }
+
+Procedure DeleteRange(Var Buf: TTextBuffer;
+                      L1, C1, L2, C2: LongInt);
+Var
+ Before, After: String;
+ I: LongInt;
+Begin
+ If L1 > L2 Then Exit;
+ If (L1 = L2) And (C1 > C2) Then Exit;
+ If (L1 < 0) Or (L2 >= Buf.LineCount) Then Exit;
+ { Partie a garder avant la selection }
+ Before := Copy(Buf.Lines[L1], 1, C1 - 1);
+ { Partie a garder apres la selection }
+ If C2 <= Length(Buf.Lines[L2]) Then
+  After := Copy(Buf.Lines[L2], C2 + 1,
+                Length(Buf.Lines[L2]) - C2)
+ Else
+  After := '';
+ { Remplacer la premiere ligne }
+ Buf.Lines[L1] := Before + After;
+ { Supprimer les lignes intermediaires }
+ If L2 > L1 Then Begin
+  For I := 1 To L2 - L1 Do
+   DeleteLine(Buf, L1 + 1);
+ End;
+ Buf.Modified := True;
+End;
+
+{ --- Obtenir le texte d une plage --- }
+
+Function GetTextRange(Var Buf: TTextBuffer;
+                      L1, C1, L2, C2: LongInt): String;
+Var
+ R: String;
+ I: LongInt;
+Begin
+ R := '';
+ If (L1 < 0) Or (L2 >= Buf.LineCount) Then Begin
+  GetTextRange := '';
+  Exit;
+ End;
+ If L1 = L2 Then Begin
+  { Selection sur une seule ligne }
+  R := Copy(Buf.Lines[L1], C1, C2 - C1 + 1);
+ End Else Begin
+  { Premiere ligne partielle }
+  R := Copy(Buf.Lines[L1], C1,
+            Length(Buf.Lines[L1]) - C1 + 1);
+  R := R + #13#10;
+  { Lignes intermediaires completes }
+  For I := L1 + 1 To L2 - 1 Do Begin
+   R := R + Buf.Lines[I] + #13#10;
+  End;
+  { Derniere ligne partielle }
+  R := R + Copy(Buf.Lines[L2], 1, C2);
+ End;
+ GetTextRange := R;
+End;
+
+{ --- Obtenir le nombre de lignes --- }
+
+Function GetLineCount(Var Buf: TTextBuffer): LongInt;
+Begin
+ GetLineCount := Buf.LineCount;
+End;
+
+{ --- Obtenir le nombre total de caracteres --- }
+
+Function GetTotalChars(Var Buf: TTextBuffer): LongInt;
+Var
+ I: LongInt;
+ Total: LongInt;
+Begin
+ Total := 0;
+ For I := 0 To Buf.LineCount - 1 Do
+  Total := Total + Length(Buf.Lines[I]);
+ GetTotalChars := Total;
+End;
+
+{ --- Tampon modifie ? --- }
+
+Function IsBufferModified(Var Buf: TTextBuffer): Boolean;
+Begin
+ IsBufferModified := Buf.Modified;
+End;
+
+{ --- Marquer le tampon comme sauvegarde --- }
+
+Procedure MarkBufferSaved(Var Buf: TTextBuffer);
+Begin
+ Buf.Modified := False;
+End;
+
+{ --- Compter les lignes non vides --- }
+
+Function CountNonEmptyLines(Var Buf: TTextBuffer): LongInt;
+Var
+ I: LongInt;
+ Total: LongInt;
+Begin
+ Total := 0;
+ For I := 0 To Buf.LineCount - 1 Do
+  If Length(Buf.Lines[I]) > 0 Then
+   Inc(Total);
+ CountNonEmptyLines := Total;
+End;
+
+{ --- Chercher du texte dans le tampon (premiere occurrence) --- }
+
+Function FindInBuffer(Var Buf: TTextBuffer; AText: String;
+                      StartLine, StartCol: LongInt;
+                      Var FoundLine, FoundCol: LongInt): Boolean;
+Var
+ I: LongInt;
+ P: Integer;
+ S: String;
+Begin
+ FindInBuffer := False;
+ For I := StartLine To Buf.LineCount - 1 Do Begin
+  S := Buf.Lines[I];
+  If I = StartLine Then
+   P := Pos(AText, Copy(S, StartCol, Length(S) - StartCol + 1))
+  Else
+   P := Pos(AText, S);
+  If P > 0 Then Begin
+   FoundLine := I;
+   If I = StartLine Then
+    FoundCol := StartCol + P - 1
+   Else
+    FoundCol := P;
+   FindInBuffer := True;
+   Exit;
+  End;
+ End;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -4307,6 +4723,6 @@ BEGIN
  DrawToolBar;
  InitWindowManager;
  DrawWindowTabs;
- { Boucle principale a venir (TODO 08+) }
+ { Boucle principale a venir (TODO 09+) }
  ShutdownGraphics;
 END.
