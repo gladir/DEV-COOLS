@@ -133,7 +133,7 @@
             EnsureCursorVisible, GotoLine, GotoColumn.
             DrawCursor, DrawGutter, DrawLineHighlight.
 
-  TODO 10 - EDITEUR DE TEXTE : SELECTION, PRESSE-PAPIER, ANNULER [A FAIRE]
+  TODO 10 - EDITEUR DE TEXTE : SELECTION, PRESSE-PAPIER, ANNULER [IMPLEMENTE]
             TSelection, Shift+Fleches, Ctrl+A, clic souris,
               double-clic, triple-clic.
             DrawSelection.

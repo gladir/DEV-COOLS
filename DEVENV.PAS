@@ -316,7 +316,7 @@
             Procedure DrawLineHighlight(Var Ed: TEditor) : ligne
               courante en surbrillance.
 
-  TODO 10 - EDITEUR DE TEXTE : SELECTION, PRESSE-PAPIER, ANNULER [A FAIRE]
+  TODO 10 - EDITEUR DE TEXTE : SELECTION, PRESSE-PAPIER, ANNULER [IMPLEMENTE]
             Selection de texte :
               Shift+Fleches : etendre la selection caractere par
                 caractere ou ligne par ligne.
@@ -1320,6 +1320,49 @@ Type
   Y              : Integer;      { position Y de la zone editeur  }
   Width          : Integer;      { largeur de la zone editeur     }
   Height         : Integer;      { hauteur de la zone editeur     }
+ End;
+
+ { Selection de texte }
+ TSelection = Record
+  StartLine  : LongInt;         { ligne de debut (0-based)       }
+  StartCol   : LongInt;         { colonne de debut (1-based)     }
+  EndLine    : LongInt;         { ligne de fin (0-based)         }
+  EndCol     : LongInt;         { colonne de fin (1-based)       }
+  Active     : Boolean;         { selection en cours              }
+ End;
+
+ { Presse-papier interne }
+ TClipboard = Record
+  Text       : String;          { contenu du presse-papier       }
+  HasData    : Boolean;         { True si contient des donnees   }
+ End;
+
+ { Type d action d annulation }
+ TUndoAction = (
+  UA_INSERT,            { insertion de texte                      }
+  UA_DELETE,            { suppression de texte                    }
+  UA_REPLACE,           { remplacement de texte                   }
+  UA_INSERT_LINE,       { insertion d une ligne                   }
+  UA_DELETE_LINE,       { suppression d une ligne                 }
+  UA_JOIN_LINE,         { jonction de deux lignes                 }
+  UA_SPLIT_LINE         { scission d une ligne                    }
+ );
+
+ { Enregistrement d une action undo }
+ TUndoRecord = Record
+  Action     : TUndoAction;     { type d action                  }
+  Line       : LongInt;         { ligne concernee (0-based)      }
+  Col        : LongInt;         { colonne concernee (1-based)    }
+  Text       : String;          { texte insere ou nouveau        }
+  OldText    : String;          { texte avant modification       }
+  GroupId    : LongInt;         { id de groupe (actions liees)   }
+ End;
+
+ { Pile d annulation }
+ TUndoStack = Record
+  Items      : Array[0..MAX_UNDO - 1] Of TUndoRecord;
+  Count      : Integer;         { nombre d elements              }
+  Top        : Integer;         { indice sommet (circulaire)     }
  End;
 
 { ============================================================
@@ -5222,6 +5265,642 @@ Begin
  IsInsertMode := Ed.InsertMode;
 End;
 
+{ ============================================================
+  TODO 10 - EDITEUR DE TEXTE : SELECTION, PRESSE-PAPIER, ANNULER
+  ============================================================ }
+
+{ --- Initialiser une selection --- }
+
+Procedure InitSelection(Var Sel: TSelection);
+Begin
+ Sel.StartLine := 0;
+ Sel.StartCol := 1;
+ Sel.EndLine := 0;
+ Sel.EndCol := 1;
+ Sel.Active := False;
+End;
+
+{ --- Demarrer une selection --- }
+
+Procedure StartSelection(Var Sel: TSelection; Line, Col: LongInt);
+Begin
+ Sel.StartLine := Line;
+ Sel.StartCol := Col;
+ Sel.EndLine := Line;
+ Sel.EndCol := Col;
+ Sel.Active := True;
+End;
+
+{ --- Etendre la selection --- }
+
+Procedure ExtendSelection(Var Sel: TSelection; Line, Col: LongInt);
+Begin
+ If Not Sel.Active Then Begin
+  Sel.StartLine := Line;
+  Sel.StartCol := Col;
+  Sel.Active := True;
+ End;
+ Sel.EndLine := Line;
+ Sel.EndCol := Col;
+End;
+
+{ --- Desactiver la selection --- }
+
+Procedure ClearSelection(Var Sel: TSelection);
+Begin
+ Sel.Active := False;
+End;
+
+{ --- Verifier si la selection est active --- }
+
+Function IsSelectionActive(Var Sel: TSelection): Boolean;
+Begin
+ IsSelectionActive := Sel.Active;
+End;
+
+{ --- Obtenir la selection ordonnee (debut <= fin) --- }
+
+Procedure GetOrderedSelection(Var Sel: TSelection;
+ Var SL, SC, EL, EC: LongInt);
+Begin
+ If (Sel.StartLine < Sel.EndLine) Or
+    ((Sel.StartLine = Sel.EndLine) And
+     (Sel.StartCol <= Sel.EndCol)) Then Begin
+  SL := Sel.StartLine;
+  SC := Sel.StartCol;
+  EL := Sel.EndLine;
+  EC := Sel.EndCol;
+ End Else Begin
+  SL := Sel.EndLine;
+  SC := Sel.EndCol;
+  EL := Sel.StartLine;
+  EC := Sel.StartCol;
+ End;
+End;
+
+{ --- Dessiner la selection --- }
+
+Procedure DrawSelection(Var Ed: TEditor; Var Sel: TSelection);
+Var
+ SL, SC, EL, EC: LongInt;
+ I: LongInt;
+ X1, X2, Y1: Integer;
+ LineLen: Integer;
+Begin
+ If Not Sel.Active Then Exit;
+ GetOrderedSelection(Sel, SL, SC, EL, EC);
+ For I := SL To EL Do Begin
+  If (I < Ed.ScrollLine) Or
+     (I >= Ed.ScrollLine + Ed.VisibleLines) Then Continue;
+  Y1 := Ed.Y + (I - Ed.ScrollLine) * Ed.CharHeight;
+  If I = SL Then
+   X1 := Ed.X + Ed.GutterWidth +
+    (SC - Ed.ScrollCol) * Ed.CharWidth
+  Else
+   X1 := Ed.X + Ed.GutterWidth;
+  If I = EL Then
+   X2 := Ed.X + Ed.GutterWidth +
+    (EC - Ed.ScrollCol) * Ed.CharWidth
+  Else Begin
+   If (I >= 0) And (I < Ed.Buffer.LineCount) Then
+    LineLen := Length(Ed.Buffer.Lines[I])
+   Else
+    LineLen := 0;
+   X2 := Ed.X + Ed.GutterWidth +
+    (LineLen + 1 - Ed.ScrollCol) * Ed.CharWidth;
+  End;
+  If X1 < Ed.X + Ed.GutterWidth Then
+   X1 := Ed.X + Ed.GutterWidth;
+  If X2 > Ed.X + Ed.Width Then
+   X2 := Ed.X + Ed.Width;
+  If X2 > X1 Then Begin
+   SetFillStyle(SolidFill, CLR_SELECTION);
+   Bar(X1, Y1, X2 - 1, Y1 + Ed.CharHeight - 1);
+  End;
+ End;
+End;
+
+{ --- Obtenir le texte selectionne --- }
+
+Function GetSelectedText(Var Ed: TEditor;
+ Var Sel: TSelection): String;
+Var
+ SL, SC, EL, EC: LongInt;
+ Result: String;
+ I: LongInt;
+ Line: String;
+Begin
+ Result := '';
+ If Not Sel.Active Then Begin
+  GetSelectedText := '';
+  Exit;
+ End;
+ GetOrderedSelection(Sel, SL, SC, EL, EC);
+ If SL = EL Then Begin
+  Line := GetLine(Ed.Buffer, SL);
+  If (SC >= 1) And (EC >= SC) And (SC <= Length(Line) + 1) Then Begin
+   If EC > Length(Line) + 1 Then
+    EC := Length(Line) + 1;
+   Result := Copy(Line, SC, EC - SC);
+  End;
+ End Else Begin
+  Line := GetLine(Ed.Buffer, SL);
+  If SC <= Length(Line) Then
+   Result := Copy(Line, SC, Length(Line) - SC + 1)
+  Else
+   Result := '';
+  For I := SL + 1 To EL - 1 Do
+   Result := Result + #10 + GetLine(Ed.Buffer, I);
+  Line := GetLine(Ed.Buffer, EL);
+  If EC > 1 Then
+   Result := Result + #10 + Copy(Line, 1, EC - 1)
+  Else
+   Result := Result + #10;
+ End;
+ GetSelectedText := Result;
+End;
+
+{ --- Supprimer le texte selectionne --- }
+
+Procedure DeleteSelectedText(Var Ed: TEditor; Var Sel: TSelection);
+Var
+ SL, SC, EL, EC: LongInt;
+ HeadPart, TailPart: String;
+ I: LongInt;
+Begin
+ If Not Sel.Active Then Exit;
+ GetOrderedSelection(Sel, SL, SC, EL, EC);
+ If SL = EL Then Begin
+  HeadPart := GetLine(Ed.Buffer, SL);
+  TailPart := Copy(HeadPart, EC, Length(HeadPart) - EC + 1);
+  HeadPart := Copy(HeadPart, 1, SC - 1);
+  SetLine(Ed.Buffer, SL, HeadPart + TailPart);
+ End Else Begin
+  HeadPart := Copy(GetLine(Ed.Buffer, SL), 1, SC - 1);
+  TailPart := GetLine(Ed.Buffer, EL);
+  If EC <= Length(TailPart) Then
+   TailPart := Copy(TailPart, EC, Length(TailPart) - EC + 1)
+  Else
+   TailPart := '';
+  For I := EL DownTo SL + 1 Do
+   DeleteLine(Ed.Buffer, I);
+  SetLine(Ed.Buffer, SL, HeadPart + TailPart);
+ End;
+ Ed.CursorLine := SL;
+ Ed.CursorCol := SC;
+ ClearSelection(Sel);
+End;
+
+{ --- Selectionner tout --- }
+
+Procedure SelectAll(Var Ed: TEditor; Var Sel: TSelection);
+Var
+ LastLine: LongInt;
+Begin
+ Sel.StartLine := 0;
+ Sel.StartCol := 1;
+ LastLine := Ed.Buffer.LineCount - 1;
+ If LastLine < 0 Then LastLine := 0;
+ Sel.EndLine := LastLine;
+ Sel.EndCol := Length(Ed.Buffer.Lines[LastLine]) + 1;
+ Sel.Active := True;
+End;
+
+{ --- Selectionner le mot sous le curseur --- }
+
+Procedure SelectWordAtCursor(Var Ed: TEditor; Var Sel: TSelection);
+Var
+ Line: String;
+ StartC, EndC: LongInt;
+Begin
+ Line := GetLine(Ed.Buffer, Ed.CursorLine);
+ If (Ed.CursorCol < 1) Or (Ed.CursorCol > Length(Line)) Then Exit;
+ If Not ((Line[Ed.CursorCol] In ['A'..'Z', 'a'..'z', '0'..'9', '_']))
+  Then Exit;
+ StartC := Ed.CursorCol;
+ While (StartC > 1) And
+  (Line[StartC - 1] In ['A'..'Z', 'a'..'z', '0'..'9', '_']) Do
+  Dec(StartC);
+ EndC := Ed.CursorCol;
+ While (EndC < Length(Line)) And
+  (Line[EndC + 1] In ['A'..'Z', 'a'..'z', '0'..'9', '_']) Do
+  Inc(EndC);
+ Sel.StartLine := Ed.CursorLine;
+ Sel.StartCol := StartC;
+ Sel.EndLine := Ed.CursorLine;
+ Sel.EndCol := EndC + 1;
+ Sel.Active := True;
+End;
+
+{ --- Selectionner la ligne entiere --- }
+
+Procedure SelectLineAtCursor(Var Ed: TEditor; Var Sel: TSelection);
+Var
+ Line: String;
+Begin
+ Line := GetLine(Ed.Buffer, Ed.CursorLine);
+ Sel.StartLine := Ed.CursorLine;
+ Sel.StartCol := 1;
+ Sel.EndLine := Ed.CursorLine;
+ Sel.EndCol := Length(Line) + 1;
+ Sel.Active := True;
+End;
+
+{ --- Initialiser le presse-papier --- }
+
+Procedure InitClipboard(Var Clip: TClipboard);
+Begin
+ Clip.Text := '';
+ Clip.HasData := False;
+End;
+
+{ --- Copier dans le presse-papier --- }
+
+Procedure ClipboardCopy(Var Ed: TEditor; Var Sel: TSelection;
+ Var Clip: TClipboard);
+Begin
+ If Not Sel.Active Then Exit;
+ Clip.Text := GetSelectedText(Ed, Sel);
+ Clip.HasData := Length(Clip.Text) > 0;
+End;
+
+{ --- Couper dans le presse-papier --- }
+
+Procedure ClipboardCut(Var Ed: TEditor; Var Sel: TSelection;
+ Var Clip: TClipboard);
+Begin
+ If Not Sel.Active Then Exit;
+ Clip.Text := GetSelectedText(Ed, Sel);
+ Clip.HasData := Length(Clip.Text) > 0;
+ DeleteSelectedText(Ed, Sel);
+End;
+
+{ --- Coller depuis le presse-papier --- }
+
+Procedure ClipboardPaste(Var Ed: TEditor; Var Sel: TSelection;
+ Var Clip: TClipboard);
+Var
+ I: Integer;
+ Ch: Char;
+ LineStart: Integer;
+ Fragment: String;
+Begin
+ If Not Clip.HasData Then Exit;
+ If Sel.Active Then
+  DeleteSelectedText(Ed, Sel);
+ LineStart := 1;
+ For I := 1 To Length(Clip.Text) Do Begin
+  Ch := Clip.Text[I];
+  If Ch = #10 Then Begin
+   Fragment := Copy(Clip.Text, LineStart, I - LineStart);
+   InsertText(Ed.Buffer, Ed.CursorLine, Ed.CursorCol, Fragment);
+   Ed.CursorCol := Ed.CursorCol + Length(Fragment);
+   { Inserer nouvelle ligne }
+   InsertLine(Ed.Buffer, Ed.CursorLine + 1,
+    Copy(GetLine(Ed.Buffer, Ed.CursorLine), Ed.CursorCol,
+     Length(GetLine(Ed.Buffer, Ed.CursorLine)) - Ed.CursorCol + 1));
+   SetLine(Ed.Buffer, Ed.CursorLine,
+    Copy(GetLine(Ed.Buffer, Ed.CursorLine), 1, Ed.CursorCol - 1));
+   Inc(Ed.CursorLine);
+   Ed.CursorCol := 1;
+   LineStart := I + 1;
+  End;
+ End;
+ If LineStart <= Length(Clip.Text) Then Begin
+  Fragment := Copy(Clip.Text, LineStart,
+   Length(Clip.Text) - LineStart + 1);
+  InsertText(Ed.Buffer, Ed.CursorLine, Ed.CursorCol, Fragment);
+  Ed.CursorCol := Ed.CursorCol + Length(Fragment);
+ End;
+End;
+
+{ --- Initialiser la pile d annulation --- }
+
+Procedure InitUndoStack(Var Stack: TUndoStack);
+Begin
+ Stack.Count := 0;
+ Stack.Top := 0;
+End;
+
+{ --- Empiler une action undo --- }
+
+Procedure PushUndo(Var Stack: TUndoStack; Action: TUndoAction;
+ Line, Col: LongInt; Text, OldText: String; GroupId: LongInt);
+Var
+ Idx: Integer;
+Begin
+ Idx := Stack.Top;
+ Stack.Items[Idx].Action := Action;
+ Stack.Items[Idx].Line := Line;
+ Stack.Items[Idx].Col := Col;
+ Stack.Items[Idx].Text := Text;
+ Stack.Items[Idx].OldText := OldText;
+ Stack.Items[Idx].GroupId := GroupId;
+ Stack.Top := (Stack.Top + 1) Mod MAX_UNDO;
+ If Stack.Count < MAX_UNDO Then
+  Inc(Stack.Count);
+End;
+
+{ --- Depiler une action undo --- }
+
+Function PopUndo(Var Stack: TUndoStack;
+ Var Rec: TUndoRecord): Boolean;
+Begin
+ If Stack.Count = 0 Then Begin
+  PopUndo := False;
+  Exit;
+ End;
+ Dec(Stack.Count);
+ Stack.Top := (Stack.Top - 1 + MAX_UNDO) Mod MAX_UNDO;
+ Rec := Stack.Items[Stack.Top];
+ PopUndo := True;
+End;
+
+{ --- Vider la pile d annulation --- }
+
+Procedure ClearUndoStack(Var Stack: TUndoStack);
+Begin
+ Stack.Count := 0;
+ Stack.Top := 0;
+End;
+
+{ --- Executer un Undo sur l editeur --- }
+
+Procedure Undo(Var Ed: TEditor; Var UndoStk, RedoStk: TUndoStack);
+Var
+ Rec: TUndoRecord;
+ Line: String;
+Begin
+ If Not PopUndo(UndoStk, Rec) Then Exit;
+ Case Rec.Action Of
+  UA_INSERT: Begin
+   { On avait insere du texte, on le supprime }
+   Line := GetLine(Ed.Buffer, Rec.Line);
+   SetLine(Ed.Buffer, Rec.Line,
+    Copy(Line, 1, Rec.Col - 1) +
+    Copy(Line, Rec.Col + Length(Rec.Text),
+     Length(Line) - Rec.Col - Length(Rec.Text) + 1));
+   PushUndo(RedoStk, UA_INSERT, Rec.Line, Rec.Col,
+    Rec.Text, '', Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := Rec.Col;
+  End;
+  UA_DELETE: Begin
+   { On avait supprime du texte, on le reinsere }
+   Line := GetLine(Ed.Buffer, Rec.Line);
+   SetLine(Ed.Buffer, Rec.Line,
+    Copy(Line, 1, Rec.Col - 1) + Rec.OldText +
+    Copy(Line, Rec.Col, Length(Line) - Rec.Col + 1));
+   PushUndo(RedoStk, UA_DELETE, Rec.Line, Rec.Col,
+    '', Rec.OldText, Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := Rec.Col + Length(Rec.OldText);
+  End;
+  UA_REPLACE: Begin
+   Line := GetLine(Ed.Buffer, Rec.Line);
+   SetLine(Ed.Buffer, Rec.Line,
+    Copy(Line, 1, Rec.Col - 1) + Rec.OldText +
+    Copy(Line, Rec.Col + Length(Rec.Text),
+     Length(Line) - Rec.Col - Length(Rec.Text) + 1));
+   PushUndo(RedoStk, UA_REPLACE, Rec.Line, Rec.Col,
+    Rec.OldText, Rec.Text, Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := Rec.Col;
+  End;
+  UA_INSERT_LINE: Begin
+   DeleteLine(Ed.Buffer, Rec.Line);
+   PushUndo(RedoStk, UA_INSERT_LINE, Rec.Line, Rec.Col,
+    Rec.Text, '', Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   If Ed.CursorLine >= Ed.Buffer.LineCount Then
+    Ed.CursorLine := Ed.Buffer.LineCount - 1;
+   If Ed.CursorLine < 0 Then Ed.CursorLine := 0;
+   Ed.CursorCol := Rec.Col;
+  End;
+  UA_DELETE_LINE: Begin
+   InsertLine(Ed.Buffer, Rec.Line, Rec.OldText);
+   PushUndo(RedoStk, UA_DELETE_LINE, Rec.Line, Rec.Col,
+    '', Rec.OldText, Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := Rec.Col;
+  End;
+  UA_JOIN_LINE: Begin
+   { On avait joint deux lignes, on les re-scinde }
+   Line := GetLine(Ed.Buffer, Rec.Line);
+   SetLine(Ed.Buffer, Rec.Line,
+    Copy(Line, 1, Rec.Col - 1));
+   InsertLine(Ed.Buffer, Rec.Line + 1,
+    Copy(Line, Rec.Col, Length(Line) - Rec.Col + 1));
+   PushUndo(RedoStk, UA_JOIN_LINE, Rec.Line, Rec.Col,
+    '', '', Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := Rec.Col;
+  End;
+  UA_SPLIT_LINE: Begin
+   { On avait scinde une ligne, on les rejoint }
+   Line := GetLine(Ed.Buffer, Rec.Line);
+   If Rec.Line + 1 < Ed.Buffer.LineCount Then Begin
+    SetLine(Ed.Buffer, Rec.Line,
+     Line + GetLine(Ed.Buffer, Rec.Line + 1));
+    DeleteLine(Ed.Buffer, Rec.Line + 1);
+   End;
+   PushUndo(RedoStk, UA_SPLIT_LINE, Rec.Line, Rec.Col,
+    '', '', Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := Rec.Col;
+  End;
+ End;
+End;
+
+{ --- Executer un Redo sur l editeur --- }
+
+Procedure Redo(Var Ed: TEditor; Var UndoStk, RedoStk: TUndoStack);
+Var
+ Rec: TUndoRecord;
+ Line: String;
+Begin
+ If Not PopUndo(RedoStk, Rec) Then Exit;
+ Case Rec.Action Of
+  UA_INSERT: Begin
+   Line := GetLine(Ed.Buffer, Rec.Line);
+   SetLine(Ed.Buffer, Rec.Line,
+    Copy(Line, 1, Rec.Col - 1) + Rec.Text +
+    Copy(Line, Rec.Col, Length(Line) - Rec.Col + 1));
+   PushUndo(UndoStk, UA_INSERT, Rec.Line, Rec.Col,
+    Rec.Text, '', Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := Rec.Col + Length(Rec.Text);
+  End;
+  UA_DELETE: Begin
+   Line := GetLine(Ed.Buffer, Rec.Line);
+   SetLine(Ed.Buffer, Rec.Line,
+    Copy(Line, 1, Rec.Col - 1) +
+    Copy(Line, Rec.Col + Length(Rec.OldText),
+     Length(Line) - Rec.Col - Length(Rec.OldText) + 1));
+   PushUndo(UndoStk, UA_DELETE, Rec.Line, Rec.Col,
+    '', Rec.OldText, Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := Rec.Col;
+  End;
+  UA_REPLACE: Begin
+   Line := GetLine(Ed.Buffer, Rec.Line);
+   SetLine(Ed.Buffer, Rec.Line,
+    Copy(Line, 1, Rec.Col - 1) + Rec.Text +
+    Copy(Line, Rec.Col + Length(Rec.OldText),
+     Length(Line) - Rec.Col - Length(Rec.OldText) + 1));
+   PushUndo(UndoStk, UA_REPLACE, Rec.Line, Rec.Col,
+    Rec.Text, Rec.OldText, Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := Rec.Col + Length(Rec.Text);
+  End;
+  UA_INSERT_LINE: Begin
+   InsertLine(Ed.Buffer, Rec.Line, Rec.Text);
+   PushUndo(UndoStk, UA_INSERT_LINE, Rec.Line, Rec.Col,
+    Rec.Text, '', Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := 1;
+  End;
+  UA_DELETE_LINE: Begin
+   DeleteLine(Ed.Buffer, Rec.Line);
+   PushUndo(UndoStk, UA_DELETE_LINE, Rec.Line, Rec.Col,
+    '', Rec.OldText, Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   If Ed.CursorLine >= Ed.Buffer.LineCount Then
+    Ed.CursorLine := Ed.Buffer.LineCount - 1;
+   If Ed.CursorLine < 0 Then Ed.CursorLine := 0;
+   Ed.CursorCol := 1;
+  End;
+  UA_JOIN_LINE: Begin
+   Line := GetLine(Ed.Buffer, Rec.Line);
+   If Rec.Line + 1 < Ed.Buffer.LineCount Then Begin
+    SetLine(Ed.Buffer, Rec.Line,
+     Line + GetLine(Ed.Buffer, Rec.Line + 1));
+    DeleteLine(Ed.Buffer, Rec.Line + 1);
+   End;
+   PushUndo(UndoStk, UA_JOIN_LINE, Rec.Line, Rec.Col,
+    '', '', Rec.GroupId);
+   Ed.CursorLine := Rec.Line;
+   Ed.CursorCol := Length(Line) + 1;
+  End;
+  UA_SPLIT_LINE: Begin
+   Line := GetLine(Ed.Buffer, Rec.Line);
+   SetLine(Ed.Buffer, Rec.Line,
+    Copy(Line, 1, Rec.Col - 1));
+   InsertLine(Ed.Buffer, Rec.Line + 1,
+    Copy(Line, Rec.Col, Length(Line) - Rec.Col + 1));
+   PushUndo(UndoStk, UA_SPLIT_LINE, Rec.Line, Rec.Col,
+    '', '', Rec.GroupId);
+   Ed.CursorLine := Rec.Line + 1;
+   Ed.CursorCol := 1;
+  End;
+ End;
+End;
+
+{ --- Gerer les raccourcis clavier de selection et edition --- }
+
+Procedure HandleSelectionKey(Var Ed: TEditor; Var Sel: TSelection;
+ Var Clip: TClipboard; Var UndoStk, RedoStk: TUndoStack;
+ Ev: TEvent);
+Var
+ ShiftHeld: Boolean;
+Begin
+ ShiftHeld := (Ev.ShiftState And 1) <> 0;
+ If Ev.Kind = EV_KEY_DOWN Then Begin
+  { Ctrl+A : selectionner tout }
+  If (Ev.KeyChar = #1) Then Begin
+   SelectAll(Ed, Sel);
+   Exit;
+  End;
+  { Ctrl+C : copier }
+  If (Ev.KeyChar = #3) Then Begin
+   ClipboardCopy(Ed, Sel, Clip);
+   Exit;
+  End;
+  { Ctrl+X : couper }
+  If (Ev.KeyChar = #24) Then Begin
+   ClipboardCut(Ed, Sel, Clip);
+   Exit;
+  End;
+  { Ctrl+V : coller }
+  If (Ev.KeyChar = #22) Then Begin
+   ClipboardPaste(Ed, Sel, Clip);
+   Exit;
+  End;
+  { Ctrl+Z : annuler }
+  If (Ev.KeyChar = #26) Then Begin
+   Undo(Ed, UndoStk, RedoStk);
+   Exit;
+  End;
+  { Ctrl+Y : retablir }
+  If (Ev.KeyChar = #25) Then Begin
+   Redo(Ed, UndoStk, RedoStk);
+   Exit;
+  End;
+ End;
+ { Shift+fleches : etendre la selection }
+ If ShiftHeld And (Ev.Kind = EV_KEY_DOWN) Then Begin
+  If Not Sel.Active Then
+   StartSelection(Sel, Ed.CursorLine, Ed.CursorCol);
+  HandleEditorKey(Ed, Ev);
+  ExtendSelection(Sel, Ed.CursorLine, Ed.CursorCol);
+ End Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  If Sel.Active Then
+   ClearSelection(Sel);
+  HandleEditorKey(Ed, Ev);
+ End;
+End;
+
+{ --- Compter les actions dans la pile undo --- }
+
+Function CountUndoActions(Var Stack: TUndoStack): Integer;
+Begin
+ CountUndoActions := Stack.Count;
+End;
+
+{ --- Verifier si le presse-papier a des donnees --- }
+
+Function HasClipboardData(Var Clip: TClipboard): Boolean;
+Begin
+ HasClipboardData := Clip.HasData;
+End;
+
+{ --- Obtenir la longueur du texte du presse-papier --- }
+
+Function GetClipboardLength(Var Clip: TClipboard): Integer;
+Begin
+ GetClipboardLength := Length(Clip.Text);
+End;
+
+{ --- Compter les lignes selectionnees --- }
+
+Function CountSelectedLines(Var Sel: TSelection): LongInt;
+Var
+ SL, SC, EL, EC: LongInt;
+Begin
+ If Not Sel.Active Then Begin
+  CountSelectedLines := 0;
+  Exit;
+ End;
+ GetOrderedSelection(Sel, SL, SC, EL, EC);
+ CountSelectedLines := EL - SL + 1;
+End;
+
+{ --- Verifier si une position est dans la selection --- }
+
+Function IsInSelection(Var Sel: TSelection;
+ Line, Col: LongInt): Boolean;
+Var
+ SL, SC, EL, EC: LongInt;
+Begin
+ IsInSelection := False;
+ If Not Sel.Active Then Exit;
+ GetOrderedSelection(Sel, SL, SC, EL, EC);
+ If (Line < SL) Or (Line > EL) Then Exit;
+ If (Line = SL) And (Col < SC) Then Exit;
+ If (Line = EL) And (Col >= EC) Then Exit;
+ IsInSelection := True;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -5238,6 +5917,6 @@ BEGIN
  DrawToolBar;
  InitWindowManager;
  DrawWindowTabs;
- { Boucle principale a venir (TODO 10+) }
+ { Boucle principale a venir (TODO 11+) }
  ShutdownGraphics;
 END.
