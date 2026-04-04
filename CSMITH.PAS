@@ -176,7 +176,7 @@
             GenSafeShift - generer un decalage securise.
             Appliquer les promotions entieres implicites.
 
-  TODO 16 - [A FAIRE] GENERATION D'OPERATEURS D'AFFECTATION
+  TODO 16 - [IMPLEMENTE] GENERATION D'OPERATEURS D'AFFECTATION
             Generateur d'expressions d'affectation C :
             GenAssignExpr - generer une affectation (=).
             GenCompoundAssign - operateurs composes (+=, -=, *=, /=, %=,
@@ -346,6 +346,14 @@ Const
   BIT_NOT_PROB       = 15;          { 15% de chance de generer un complement (~) }
   SHIFT_SAFE_PROB    = 90;          { 90% de chance de generer un decalage securise }
   MAX_SHIFT_AMOUNT   = 31;          { Decalage max pour un int 32 bits }
+  
+  { TODO 16 : Constantes pour les expressions d'affectation }
+  ASSIGN_COMPOUND_PROB = 40;        { 40% de chance de generer un operateur compose }
+  ASSIGN_INCDEC_PROB = 30;          { 30% de chance de generer ++/-- }
+  ASSIGN_PREFIX_PROB = 50;          { 50% de chance de generer prefix vs postfix }
+  ASSIGN_COMMA_PROB  = 15;          { 15% de chance de generer une expression virgule }
+  ASSIGN_SAFE_DIV_PROB = 90;        { 90% de chance de generer /= et %= securises }
+  ASSIGN_SAFE_SHIFT_PROB = 90;      { 90% de chance de generer <<= et >>= securises }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -577,6 +585,7 @@ Var
   ArithExprCounter: Integer;  { TODO 13 : compteur d'expressions arithmetiques }
   RelLogExprCounter: Integer;  { TODO 14 : compteur d'expressions relationnelles/logiques }
   BitExprCounter: Integer;  { TODO 15 : compteur d'expressions bit-a-bit }
+  AssignExprCounter: Integer;  { TODO 16 : compteur d'expressions d'affectation }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -4617,6 +4626,472 @@ Begin
   CountBitExprs := BitExprCounter;
 End;
 
+{ ============================================================
+  TODO 16 : GENERATION D'OPERATEURS D'AFFECTATION [IMPLEMENTE]
+  ============================================================ }
+
+Type
+  { Operateurs d'affectation C }
+  TAssignOp = (
+    AO_ASSIGN,     { = (affectation simple) }
+    AO_ADD_ASSIGN, { += (addition et affectation) }
+    AO_SUB_ASSIGN, { -= (soustraction et affectation) }
+    AO_MUL_ASSIGN, { *= (multiplication et affectation) }
+    AO_DIV_ASSIGN, { /= (division et affectation) }
+    AO_MOD_ASSIGN, { %= (modulo et affectation) }
+    AO_AND_ASSIGN, { &= (et bit-a-bit et affectation) }
+    AO_OR_ASSIGN,  { |= (ou bit-a-bit et affectation) }
+    AO_XOR_ASSIGN, { ^= (ou exclusif et affectation) }
+    AO_SHL_ASSIGN, { <<= (decalage gauche et affectation) }
+    AO_SHR_ASSIGN  { >>= (decalage droit et affectation) }
+  );
+  
+  { Operateurs d'increment/decrement C }
+  TIncDecOp = (
+    ID_PRE_INC,    { ++x (pre-increment) }
+    ID_POST_INC,   { x++ (post-increment) }
+    ID_PRE_DEC,    { --x (pre-decrement) }
+    ID_POST_DEC    { x-- (post-decrement) }
+  );
+
+Function AssignOpToStr(Op: TAssignOp): TString;
+{ Convertit un operateur d'affectation en chaine C. }
+Begin
+  Case Op Of
+    AO_ASSIGN:     AssignOpToStr := '=';
+    AO_ADD_ASSIGN: AssignOpToStr := '+=';
+    AO_SUB_ASSIGN: AssignOpToStr := '-=';
+    AO_MUL_ASSIGN: AssignOpToStr := '*=';
+    AO_DIV_ASSIGN: AssignOpToStr := '/=';
+    AO_MOD_ASSIGN: AssignOpToStr := '%=';
+    AO_AND_ASSIGN: AssignOpToStr := '&=';
+    AO_OR_ASSIGN:  AssignOpToStr := '|=';
+    AO_XOR_ASSIGN: AssignOpToStr := '^=';
+    AO_SHL_ASSIGN: AssignOpToStr := '<<=';
+    AO_SHR_ASSIGN: AssignOpToStr := '>>=';
+  Else
+    AssignOpToStr := '=';
+  End;
+End;
+
+Function IncDecOpToStr(Op: TIncDecOp; VarName: TString): TString;
+{ Convertit un operateur d'increment/decrement en expression C.
+  VarName: nom de la variable cible. }
+Begin
+  Case Op Of
+    ID_PRE_INC:  IncDecOpToStr := '++' + VarName;
+    ID_POST_INC: IncDecOpToStr := VarName + '++';
+    ID_PRE_DEC:  IncDecOpToStr := '--' + VarName;
+    ID_POST_DEC: IncDecOpToStr := VarName + '--';
+  Else
+    IncDecOpToStr := '++' + VarName;
+  End;
+End;
+
+Function GenRandomAssignOp(AllowCompound: Boolean): TAssignOp;
+{ Genere un operateur d'affectation aleatoire.
+  AllowCompound: si True, peut generer des operateurs composes (+=, -=, etc.). }
+Var
+  NumOps: Integer;
+Begin
+  If AllowCompound Then
+    NumOps := 11  { 11 operateurs: = += -= *= /= %= &= |= ^= <<= >>= }
+  Else
+    NumOps := 1;  { Seulement = }
+  Case RandomInt(NumOps) Of
+    0: GenRandomAssignOp := AO_ASSIGN;
+    1: GenRandomAssignOp := AO_ADD_ASSIGN;
+    2: GenRandomAssignOp := AO_SUB_ASSIGN;
+    3: GenRandomAssignOp := AO_MUL_ASSIGN;
+    4: GenRandomAssignOp := AO_DIV_ASSIGN;
+    5: GenRandomAssignOp := AO_MOD_ASSIGN;
+    6: GenRandomAssignOp := AO_AND_ASSIGN;
+    7: GenRandomAssignOp := AO_OR_ASSIGN;
+    8: GenRandomAssignOp := AO_XOR_ASSIGN;
+    9: GenRandomAssignOp := AO_SHL_ASSIGN;
+    10: GenRandomAssignOp := AO_SHR_ASSIGN;
+  Else
+    GenRandomAssignOp := AO_ASSIGN;
+  End;
+End;
+
+Function GenRandomIncDecOp: TIncDecOp;
+{ Genere un operateur d'increment/decrement aleatoire (++/--, prefix/postfix). }
+Begin
+  Case RandomInt(4) Of
+    0: GenRandomIncDecOp := ID_PRE_INC;
+    1: GenRandomIncDecOp := ID_POST_INC;
+    2: GenRandomIncDecOp := ID_PRE_DEC;
+    3: GenRandomIncDecOp := ID_POST_DEC;
+  Else
+    GenRandomIncDecOp := ID_PRE_INC;
+  End;
+End;
+
+Function IsSimpleAssign(Op: TAssignOp): Boolean;
+{ Verifie si l'operateur est une affectation simple (=). }
+Begin
+  IsSimpleAssign := Op = AO_ASSIGN;
+End;
+
+Function IsCompoundAssign(Op: TAssignOp): Boolean;
+{ Verifie si l'operateur est une affectation composee (+=, -=, etc.). }
+Begin
+  IsCompoundAssign := Op <> AO_ASSIGN;
+End;
+
+Function IsArithAssign(Op: TAssignOp): Boolean;
+{ Verifie si l'operateur est une affectation arithmetique (+=, -=, *=, /=, %=). }
+Begin
+  IsArithAssign := Op In [AO_ADD_ASSIGN, AO_SUB_ASSIGN, AO_MUL_ASSIGN,
+                          AO_DIV_ASSIGN, AO_MOD_ASSIGN];
+End;
+
+Function IsBitAssign(Op: TAssignOp): Boolean;
+{ Verifie si l'operateur est une affectation bit-a-bit (&=, |=, ^=, <<=, >>=). }
+Begin
+  IsBitAssign := Op In [AO_AND_ASSIGN, AO_OR_ASSIGN, AO_XOR_ASSIGN,
+                        AO_SHL_ASSIGN, AO_SHR_ASSIGN];
+End;
+
+Function IsShiftAssign(Op: TAssignOp): Boolean;
+{ Verifie si l'operateur est une affectation de decalage (<<=, >>=). }
+Begin
+  IsShiftAssign := Op In [AO_SHL_ASSIGN, AO_SHR_ASSIGN];
+End;
+
+Function IsPrefixIncDec(Op: TIncDecOp): Boolean;
+{ Verifie si l'operateur est un pre-increment/decrement (++x, --x). }
+Begin
+  IsPrefixIncDec := Op In [ID_PRE_INC, ID_PRE_DEC];
+End;
+
+Function IsPostfixIncDec(Op: TIncDecOp): Boolean;
+{ Verifie si l'operateur est un post-increment/decrement (x++, x--). }
+Begin
+  IsPostfixIncDec := Op In [ID_POST_INC, ID_POST_DEC];
+End;
+
+Function IsIncrement(Op: TIncDecOp): Boolean;
+{ Verifie si l'operateur est un increment (++). }
+Begin
+  IsIncrement := Op In [ID_PRE_INC, ID_POST_INC];
+End;
+
+Function IsDecrement(Op: TIncDecOp): Boolean;
+{ Verifie si l'operateur est un decrement (--). }
+Begin
+  IsDecrement := Op In [ID_PRE_DEC, ID_POST_DEC];
+End;
+
+Function GetAssignOpPrecedence(Op: TAssignOp): Integer;
+{ Retourne la precedence de l'operateur d'affectation.
+  En C, tous les operateurs d'affectation ont la precedence 2
+  (juste au-dessus de l'operateur virgule). }
+Begin
+  GetAssignOpPrecedence := 2;  { Tous les operateurs d'affectation }
+End;
+
+Function GetIncDecPrecedence(Op: TIncDecOp): Integer;
+{ Retourne la precedence de l'operateur d'increment/decrement.
+  En C: prefix ++ et -- ont precedence 14 (unaire),
+  postfix ++ et -- ont precedence 15 (postfix). }
+Begin
+  If IsPrefixIncDec(Op) Then
+    GetIncDecPrecedence := 14
+  Else
+    GetIncDecPrecedence := 15;
+End;
+
+Function IsValidAssignTarget(T: TTypeKind): Boolean;
+{ Verifie si le type est une cible valide pour une affectation.
+  Les types void et fonctions ne peuvent pas etre affectes. }
+Begin
+  IsValidAssignTarget := Not (T In [TK_VOID, TK_FUNC]);
+End;
+
+Function IsValidCompoundAssignType(Op: TAssignOp; T: TTypeKind): Boolean;
+{ Verifie si le type est valide pour l'operateur d'affectation compose.
+  Les operateurs bit-a-bit ne fonctionnent qu'avec des types entiers.
+  Les operateurs arithmetiques fonctionnent avec entiers et flottants
+  sauf %= qui ne fonctionne qu'avec des entiers. }
+Var
+  IsInteger: Boolean;
+  IsScalar: Boolean;
+Begin
+  { Verifier si le type est entier }
+  IsInteger := T In [TK_CHAR, TK_SCHAR, TK_UCHAR, TK_SHORT, TK_USHORT,
+                     TK_INT, TK_UINT, TK_LONG, TK_ULONG,
+                     TK_LONGLONG, TK_ULONGLONG];
+  { Verifier si le type est scalaire (entier, flottant, pointeur, enum) }
+  IsScalar := IsInteger Or (T In [TK_FLOAT, TK_DOUBLE, TK_LONGDOUBLE,
+                                  TK_POINTER, TK_ENUM]);
+  
+  If IsBitAssign(Op) Then
+    { Les operateurs bit-a-bit ne fonctionnent qu'avec des entiers }
+    IsValidCompoundAssignType := IsInteger
+  Else If Op = AO_MOD_ASSIGN Then
+    { Le modulo ne fonctionne qu'avec des entiers }
+    IsValidCompoundAssignType := IsInteger
+  Else
+    { Les autres operateurs fonctionnent avec tous les types scalaires }
+    IsValidCompoundAssignType := IsScalar;
+End;
+
+Function GenLValue: TString;
+{ Genere une lvalue (cible d'affectation valide).
+  Une lvalue peut etre: un nom de variable, un element de tableau,
+  un champ de structure, un pointeur dereference (*p). }
+Var
+  I, Choice: Integer;
+  Result: TString;
+Begin
+  Result := '';
+  
+  { S'il n'y a pas de variables, en creer une simple }
+  If NumVars = 0 Then
+  Begin
+    Result := 'temp_var';
+    GenLValue := Result;
+    Exit;
+  End;
+  
+  { Choisir une variable existante qui peut etre une lvalue }
+  Choice := RandomInt(NumVars) + 1;
+  
+  { Trouver une variable modifiable (pas const) }
+  For I := Choice To NumVars Do
+  Begin
+    If IsValidAssignTarget(Vars[I].VType.Kind) Then
+    Begin
+      Result := Vars[I].Name;
+      Break;
+    End;
+  End;
+  
+  { Si pas trouve, chercher depuis le debut }
+  If Result = '' Then
+  Begin
+    For I := 1 To Choice - 1 Do
+    Begin
+      If IsValidAssignTarget(Vars[I].VType.Kind) Then
+      Begin
+        Result := Vars[I].Name;
+        Break;
+      End;
+    End;
+  End;
+  
+  { Dernier recours: utiliser la premiere variable ou un nom par defaut }
+  If Result = '' Then
+  Begin
+    If NumVars > 0 Then
+      Result := Vars[1].Name
+    Else
+      Result := 'temp_var';
+  End;
+  
+  GenLValue := Result;
+End;
+
+Function GenAssignExpr(Depth: Integer): TString;
+{ Genere une expression d'affectation simple (lvalue = rvalue).
+  Depth: profondeur pour limiter la recursion. }
+Var
+  LVal, RVal: TString;
+  Result: TString;
+  VarType: TTypeKind;
+Begin
+  Inc(AssignExprCounter);
+  
+  { Generer la lvalue (cible de l'affectation) }
+  LVal := GenLValue;
+  
+  { Determiner le type de la variable pour generer une rvalue compatible }
+  VarType := TK_INT;  { Type par defaut }
+  
+  { Generer la rvalue (valeur a affecter) }
+  If (Depth < Opts.MaxExprDepth) And RandomChoice(ARITH_RECURSE_PROB) Then
+    RVal := GenArithExprRec(VarType, Depth + 1)
+  Else
+    RVal := GenIntLiteral(VarType);
+  
+  { Construire l'expression d'affectation }
+  Result := LVal + ' = ' + RVal;
+  
+  GenAssignExpr := Result;
+End;
+
+Function GenCompoundAssign(Depth: Integer): TString;
+{ Genere une expression d'affectation composee (+=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=).
+  Depth: profondeur pour limiter la recursion. }
+Var
+  Op: TAssignOp;
+  LVal, RVal: TString;
+  Result: TString;
+  VarType: TTypeKind;
+  ShiftAmount: Integer;
+Begin
+  Inc(AssignExprCounter);
+  
+  { Generer un operateur d'affectation compose (pas simple =) }
+  Op := GenRandomAssignOp(True);
+  If Op = AO_ASSIGN Then
+    Op := AO_ADD_ASSIGN;  { S'assurer d'avoir un operateur compose }
+  
+  { Generer la lvalue }
+  LVal := GenLValue;
+  VarType := TK_INT;  { Type par defaut pour les operateurs composes }
+  
+  { Generer la rvalue selon le type d'operateur }
+  If IsShiftAssign(Op) Then
+  Begin
+    { Pour les decalages, generer un montant securise }
+    If RandomChoice(ASSIGN_SAFE_SHIFT_PROB) Then
+    Begin
+      ShiftAmount := RandomRange(0, MAX_SHIFT_AMOUNT);
+      Str(ShiftAmount, RVal);
+    End
+    Else
+      RVal := GenIntLiteral(VarType);
+  End
+  Else If (Op = AO_DIV_ASSIGN) Or (Op = AO_MOD_ASSIGN) Then
+  Begin
+    { Pour division et modulo, eviter la division par zero }
+    If RandomChoice(ASSIGN_SAFE_DIV_PROB) Then
+    Begin
+      { Generer une valeur non-nulle (1 a 100) }
+      RVal := IntToStr(RandomRange(1, 100));
+    End
+    Else
+    Begin
+      RVal := GenIntLiteral(VarType);
+      { S'assurer que ce n'est pas zero }
+      If RVal = '0' Then
+        RVal := '1';
+    End;
+  End
+  Else If IsBitAssign(Op) Then
+  Begin
+    { Pour les operateurs bit-a-bit, generer un litteral entier }
+    RVal := GenIntLiteral(VarType);
+  End
+  Else
+  Begin
+    { Pour les operateurs arithmetiques, generer une expression }
+    If (Depth < Opts.MaxExprDepth) And RandomChoice(ARITH_RECURSE_PROB) Then
+      RVal := GenArithExprRec(VarType, Depth + 1)
+    Else
+      RVal := GenIntLiteral(VarType);
+  End;
+  
+  { Construire l'expression d'affectation composee }
+  Result := LVal + ' ' + AssignOpToStr(Op) + ' ' + RVal;
+  
+  GenCompoundAssign := Result;
+End;
+
+Function GenIncDecExpr: TString;
+{ Genere une expression d'increment ou decrement (++x, x++, --x, x--). }
+Var
+  Op: TIncDecOp;
+  LVal: TString;
+Begin
+  Inc(AssignExprCounter);
+  
+  { Generer un operateur d'increment/decrement aleatoire }
+  Op := GenRandomIncDecOp;
+  
+  { Generer la lvalue }
+  LVal := GenLValue;
+  
+  { Construire l'expression d'increment/decrement }
+  GenIncDecExpr := IncDecOpToStr(Op, LVal);
+End;
+
+Function GenCommaExpr(Depth: Integer): TString;
+{ Genere une expression virgule (e1, e2).
+  La valeur de l'expression est celle de e2.
+  Depth: profondeur pour limiter la recursion. }
+Var
+  Expr1, Expr2: TString;
+  Result: TString;
+Begin
+  Inc(AssignExprCounter);
+  
+  { Generer la premiere expression (son resultat est ignore) }
+  If RandomChoice(ASSIGN_INCDEC_PROB) Then
+    Expr1 := GenIncDecExpr
+  Else If RandomChoice(ASSIGN_COMPOUND_PROB) Then
+    Expr1 := GenCompoundAssign(Depth + 1)
+  Else
+    Expr1 := GenAssignExpr(Depth + 1);
+  
+  { Generer la deuxieme expression (sa valeur est le resultat) }
+  If (Depth < Opts.MaxExprDepth) And RandomChoice(ASSIGN_COMMA_PROB) Then
+    Expr2 := GenCommaExpr(Depth + 1)
+  Else If RandomChoice(ASSIGN_INCDEC_PROB) Then
+    Expr2 := GenIncDecExpr
+  Else
+    Expr2 := GenAssignExpr(Depth + 1);
+  
+  { Construire l'expression virgule avec parentheses }
+  Result := '(' + Expr1 + ', ' + Expr2 + ')';
+  
+  GenCommaExpr := Result;
+End;
+
+Function GenRandomAssignExpr(Depth: Integer): TString;
+{ Genere une expression d'affectation aleatoire parmi:
+  - Affectation simple (=)
+  - Affectation composee (+=, -=, etc.)
+  - Increment/decrement (++, --)
+  - Expression virgule (e1, e2)
+  Depth: profondeur pour limiter la recursion. }
+Var
+  Choice: Integer;
+Begin
+  Inc(AssignExprCounter);
+  
+  { Choisir le type d'expression a generer }
+  Choice := RandomInt(100);
+  
+  If Choice < ASSIGN_INCDEC_PROB Then
+    { Generer un increment/decrement }
+    GenRandomAssignExpr := GenIncDecExpr
+  Else If Choice < ASSIGN_INCDEC_PROB + ASSIGN_COMPOUND_PROB Then
+    { Generer une affectation composee }
+    GenRandomAssignExpr := GenCompoundAssign(Depth)
+  Else If (Depth < Opts.MaxExprDepth) And (Choice < ASSIGN_INCDEC_PROB + ASSIGN_COMPOUND_PROB + ASSIGN_COMMA_PROB) Then
+    { Generer une expression virgule }
+    GenRandomAssignExpr := GenCommaExpr(Depth)
+  Else
+    { Generer une affectation simple }
+    GenRandomAssignExpr := GenAssignExpr(Depth);
+End;
+
+Procedure EmitAssignComment;
+{ Emet un commentaire pour la section d'expressions d'affectation. }
+Begin
+  EmitLineComment('Expressions d''affectation');
+End;
+
+Function AssignOpNeedsParens(Op: TAssignOp): Boolean;
+{ Determine si une expression d'affectation a besoin de parentheses
+  quand utilisee dans une expression plus grande.
+  Les affectations ont une precedence basse (2), donc elles ont
+  generalement besoin de parentheses. }
+Begin
+  { Les affectations ont toujours besoin de parentheses dans les expressions }
+  AssignOpNeedsParens := True;
+End;
+
+Function CountAssignExprs: Integer;
+{ Retourne le nombre d'expressions d'affectation generees. }
+Begin
+  CountAssignExprs := AssignExprCounter;
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -4638,6 +5113,7 @@ Begin
   ArithExprCounter := 0;  { TODO 13 : compteur d'expressions arithmetiques }
   RelLogExprCounter := 0;  { TODO 14 : compteur d'expressions relationnelles/logiques }
   BitExprCounter := 0;  { TODO 15 : compteur d'expressions bit-a-bit }
+  AssignExprCounter := 0;  { TODO 16 : compteur d'expressions d'affectation }
   StatFuncs := 0;
   StatVars := 0;
   StatExprs := 0;

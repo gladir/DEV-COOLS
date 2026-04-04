@@ -161,7 +161,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       GenSafeShift - generer un decalage securise.
       Appliquer les promotions entieres implicites.
 
-  16. [A FAIRE] Generation d'operateurs d'affectation.
+  16. [IMPLEMENTE] Generation d'operateurs d'affectation.
       Generateur d'expressions d'affectation C :
       GenAssignExpr - generer une affectation (=).
       GenCompoundAssign - operateurs composes (+=, -=, *=, /=, %=,
