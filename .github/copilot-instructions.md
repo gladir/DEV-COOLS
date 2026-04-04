@@ -33,3 +33,22 @@ fpc -Mtp CODEQL.PAS
 Ne **pas** utiliser l'outil intégré `codeql_checker` pour les fichiers Pascal
 (`.PAS`), car il ne supporte pas ce langage. Toujours utiliser le CODEQL.PAS
 du projet à la place.
+
+## Binaires Linux ELF
+
+Lors de la compilation d'un fichier `*.PAS` en binaire Linux de format ELF,
+le fichier exécutable généré doit être placé dans le dossier **BINLINUX** et
+non pas laissé dans le répertoire racine du projet.
+
+### Exemple de compilation
+
+```bash
+fpc -Mtp MONFICHIER.PAS -o./BINLINUX/MONFICHIER
+```
+
+Ou déplacer le binaire après compilation :
+
+```bash
+fpc -Mtp MONFICHIER.PAS
+mv MONFICHIER ./BINLINUX/
+```
