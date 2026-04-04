@@ -73,7 +73,7 @@
               DirectoryExists, HexByte, HexWord, HexLong,
               Min, Max, Clamp, PadLeft, PadRight, StringReplace
 
-  TODO 02 - INITIALISATION GRAPHIQUE MULTIPLATEFORME [A FAIRE]
+  TODO 02 - INITIALISATION GRAPHIQUE MULTIPLATEFORME [IMPLEMENTE]
             Abstraction du mode graphique pour Turbo Pascal 7 et
             Free Pascal (PtcGraph). Resolution 800x600 ou 1024x768.
             Procedure InitializeGraphics : detecter et initialiser
@@ -1005,6 +1005,26 @@ Const
  EXIT_ERROR            = 1;
  EXIT_USAGE            = 2;
 
+ { Couleurs du theme Visual Studio (palette VGA 16 couleurs) }
+ CLR_BACKGROUND        = 7;    { gris clair : fond general           }
+ CLR_TITLEBAR          = 8;    { gris fonce : barre de titre inactive}
+ CLR_TITLEBAR_ACTIVE   = 1;    { bleu : barre de titre active        }
+ CLR_MENUBAR           = 7;    { gris clair : barre de menus         }
+ CLR_MENU_HIGHLIGHT    = 1;    { bleu : element de menu survole      }
+ CLR_MENU_TEXT         = 0;    { noir : texte des menus              }
+ CLR_TOOLBAR           = 7;    { gris clair : barre d outils         }
+ CLR_EDITOR_BG         = 15;   { blanc : fond de l editeur           }
+ CLR_EDITOR_TEXT       = 0;    { noir : texte de l editeur           }
+ CLR_EDITOR_GUTTER     = 7;    { gris clair : gouttiere (numeros)    }
+ CLR_EXPLORER_BG       = 7;    { gris clair : explorateur de solution}
+ CLR_OUTPUT_BG         = 15;   { blanc : panneau de sortie           }
+ CLR_STATUSBAR         = 1;    { bleu : barre d etat                 }
+ CLR_SCROLLBAR         = 7;    { gris clair : barre de defilement    }
+ CLR_SELECTION         = 1;    { bleu : texte selectionne            }
+ CLR_CURSOR            = 0;    { noir : curseur de texte             }
+ CLR_LINE_HIGHLIGHT    = 14;   { jaune : ligne courante              }
+ CLR_BORDER            = 8;    { gris fonce : bordures               }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1351,7 +1371,11 @@ Begin
  End;
 End;
 
-{ === TODO 02 : InitializeGraphics === }
+{ ============================================================
+  TODO 02 - INITIALISATION GRAPHIQUE MULTIPLATEFORME [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialisation du mode graphique --- }
 
 Procedure InitializeGraphics;
 Var
@@ -1359,23 +1383,96 @@ Var
  ErrCode: Integer;
 Begin
  {$IFDEF FPC}
-  Driver:=VGA;
-  Mode:=VGAHi;
+  Driver := VGA;
+  Mode := VGAHi;
  {$ELSE}
-  Driver:=Detect;
-  Mode:=VGAHi;
+  Driver := Detect;
+  Mode := 0;
  {$ENDIF}
- InitGraph(Driver,Mode,'');
- ErrCode:=GraphResult;
- If ErrCode=grOk Then Begin
-  SetColor(White);
-  SetLineStyle(0,0,1);
- End
-  Else
- Begin
-  WriteLn('Erreur graphique : ',GraphErrorMsg(ErrCode));
-  Halt;
+ InitGraph(Driver, Mode, '');
+ ErrCode := GraphResult;
+ If ErrCode <> grOk Then Begin
+  WriteLn('DEVENV: Erreur graphique: ', GraphErrorMsg(ErrCode));
+  Halt(EXIT_ERROR);
  End;
+ SetColor(CLR_EDITOR_TEXT);
+ SetBkColor(CLR_BACKGROUND);
+ SetLineStyle(SolidLn, 0, NormWidth);
+End;
+
+{ --- Fermeture du mode graphique --- }
+
+Procedure ShutdownGraphics;
+Begin
+ CloseGraph;
+End;
+
+{ --- Changement de resolution --- }
+
+Procedure SetResolution(W, H: Integer);
+Var
+ Driver, Mode: Integer;
+ ErrCode: Integer;
+Begin
+ CloseGraph;
+ {$IFDEF FPC}
+  Driver := VGA;
+  If (W >= 1024) And (H >= 768) Then
+   Mode := VGAHi
+  Else
+   Mode := VGAHi;
+ {$ELSE}
+  Driver := Detect;
+  Mode := 0;
+ {$ENDIF}
+ InitGraph(Driver, Mode, '');
+ ErrCode := GraphResult;
+ If ErrCode <> grOk Then Begin
+  WriteLn('DEVENV: Erreur graphique: ', GraphErrorMsg(ErrCode));
+  Halt(EXIT_ERROR);
+ End;
+ SetColor(CLR_EDITOR_TEXT);
+ SetBkColor(CLR_BACKGROUND);
+ SetLineStyle(SolidLn, 0, NormWidth);
+End;
+
+{ --- Dimensions de l ecran --- }
+
+Function GetScreenWidth: Integer;
+Begin
+ GetScreenWidth := GetMaxX + 1;
+End;
+
+Function GetScreenHeight: Integer;
+Begin
+ GetScreenHeight := GetMaxY + 1;
+End;
+
+{ --- Nombre maximal de couleurs --- }
+
+Function GetMaxColors: Integer;
+Begin
+ GetMaxColors := GetMaxColor + 1;
+End;
+
+{ --- Zone de decoupage (clipping) --- }
+
+Procedure SetClipRect(X1, Y1, X2, Y2: Integer);
+Begin
+ SetViewPort(X1, Y1, X2, Y2, ClipOn);
+End;
+
+Procedure ResetClipRect;
+Begin
+ SetViewPort(0, 0, GetMaxX, GetMaxY, ClipOn);
+End;
+
+{ --- Effacement de l ecran avec une couleur --- }
+
+Procedure ClearScreen(Color: Integer);
+Begin
+ SetBkColor(Color);
+ ClearDevice;
 End;
 
 { === TODO 03 : Gestion de la souris multiplateforme === }
@@ -1439,4 +1536,7 @@ BEGIN
  If Opts.Verbose Then
   ShowVersion;
  InitializeGraphics;
+ ClearScreen(CLR_BACKGROUND);
+ { Boucle principale a venir (TODO 03+) }
+ ShutdownGraphics;
 END.

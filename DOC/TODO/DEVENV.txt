@@ -35,7 +35,7 @@
               DirectoryExists, HexByte, HexWord, HexLong,
               Min, Max, Clamp, PadLeft, PadRight, StringReplace.
 
-  TODO 02 - INITIALISATION GRAPHIQUE MULTIPLATEFORME [A FAIRE]
+  TODO 02 - INITIALISATION GRAPHIQUE MULTIPLATEFORME [IMPLEMENTE]
             Abstraction du mode graphique pour Turbo Pascal 7 et
             Free Pascal (PtcGraph). Resolution 800x600 ou 1024x768.
             InitializeGraphics, ShutdownGraphics, SetResolution,
