@@ -2,7 +2,7 @@
   @created: 2026
   @version: 0.1
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Transpileur PHP vers C# (C Sharp) avec support
                 des versions C# specifiques et des frameworks cibles
   @license: MIT
@@ -10,7 +10,7 @@
 
 (* ============================================================
   PHP2CS.PAS - Transpileur PHP vers C# (C Sharp)
-  Turbo Pascal / Free Pascal (-Mtp)
+  Free Pascal (-Mtp)
   Source : PHP 5.x / PHP 7.x / PHP 8.x
   Cible  : C# 6.0 / 7.0 / 8.0 / 9.0 / 10.0 / 11.0 / 12.0
 
@@ -1104,7 +1104,8 @@ End;
 
 Procedure ShowHelp;
 Begin
-  WriteLn('PHP2CS - Transpileur PHP vers C#');
+  WriteLn('PHP2CS - Cette commande permet de lancer le transpileur ',
+          'PHP vers C#');
   WriteLn;
   WriteLn('Syntaxe : PHP2CS source.php [sortie.cs] [options]');
   WriteLn;

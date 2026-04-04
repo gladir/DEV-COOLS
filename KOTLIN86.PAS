@@ -2,14 +2,14 @@
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Compilateur Kotlin vers assembleur 8086
 }
 
 
 (* ============================================================
   KOTLIN86.PAS - Compilateur Kotlin vers assembleur 8086
-  Turbo Pascal / Free Pascal (-Mtp)
+  Free Pascal (-Mtp)
   Cible : MASM .MODEL SMALL, DOS 16 bits
 
   FEUILLE DE ROUTE - 25 TODOS
@@ -565,46 +565,51 @@ Procedure ShowBanner;
 Begin
   WriteLn('KOTLIN86 v', KT86_VERSION, ' (', KT86_DATE, ')');
   WriteLn('Compilateur Kotlin -> assembleur 8086 (MASM .MODEL SMALL)');
-  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn('Free Pascal (-Mtp)');
   WriteLn;
 End;
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: KOTLIN86 <source.kt> [sortie.asm] [-v] [-d] [-w]');
-  WriteLn;
-  WriteLn('  source.kt  : fichier Kotlin source');
-  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
-  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
-  WriteLn('  -d         : debug tokens (affiche chaque token)');
-  WriteLn('  -w         : activer les avertissements');
-  WriteLn('  -h         : afficher cette aide');
-  WriteLn;
-  Halt(EXIT_USAGE);
+Procedure ShowUsage;Begin
+ WriteLn('KOTLIN86 - Cette commande permet de lancer le compilateur ',
+         'Kotlin pour l''assembleur du microprocesseur 8086.');
+ WriteLn;
+ WriteLn('Syntaxe: KOTLIN86 <source.kt> [sortie.asm] [-v] [-d] [-w]');
+ WriteLn;
+ WriteLn('  source.kt  : fichier Kotlin source');
+ WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+ WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+ WriteLn('  -d         : debug tokens (affiche chaque token)');
+ WriteLn('  -w         : activer les avertissements');
+ WriteLn('  -h         : afficher cette aide');
+ WriteLn;
+ Halt(EXIT_USAGE);
 End;
 
 Procedure ShowHelp;
 Begin
-  WriteLn('KOTLIN86 v', KT86_VERSION, ' - Compilateur Kotlin -> assembleur 8086');
-  WriteLn;
-  WriteLn('Usage: KOTLIN86 <source.kt> [sortie.asm] [-v] [-d] [-w]');
-  WriteLn;
-  WriteLn('  source.kt  : fichier Kotlin source (.kt)');
-  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
-  WriteLn;
-  WriteLn('Options:');
-  WriteLn('  -v   mode verbeux (banniere + statistiques en fin de compilation)');
-  WriteLn('  -d   debug tokens (affiche chaque token lu par le lexeur)');
-  WriteLn('  -w   activer les avertissements');
-  WriteLn('  -h   afficher cette aide');
-  WriteLn;
-  WriteLn('Sous-ensemble Kotlin supporte:');
-  WriteLn('  val/var, fun, if/else/when, while/do-while/for, class/data class,');
-  WriteLn('  object, interface, enum class, lambdas, null safety (?. ?: !!),');
-  WriteLn('  println/print/readLine, String templates, ranges (..)');
-  WriteLn;
-  WriteLn('Sortie: code assembleur MASM 8086 .MODEL SMALL (DOS 16 bits)');
-  Halt(EXIT_OK);
+ WriteLn('KOTLIN86 - Cette commande permet de lancer le compilateur ',
+         'Kotlin pour l''assembleur du microprocesseur 8086.');
+ WriteLn;
+ WriteLn('KOTLIN86 v', KT86_VERSION, ' - Compilateur Kotlin -> assembleur 8086');
+ WriteLn;
+ WriteLn('Usage: KOTLIN86 <source.kt> [sortie.asm] [-v] [-d] [-w]');
+ WriteLn;
+ WriteLn('  source.kt  : fichier Kotlin source (.kt)');
+ WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+ WriteLn;
+ WriteLn('Options:');
+ WriteLn('  -v   mode verbeux (banniere + statistiques en fin de compilation)');
+ WriteLn('  -d   debug tokens (affiche chaque token lu par le lexeur)');
+ WriteLn('  -w   activer les avertissements');
+ WriteLn('  -h   afficher cette aide');
+ WriteLn;
+ WriteLn('Sous-ensemble Kotlin supporte:');
+ WriteLn('  val/var, fun, if/else/when, while/do-while/for, class/data class,');
+ WriteLn('  object, interface, enum class, lambdas, null safety (?. ?: !!),');
+ WriteLn('  println/print/readLine, String templates, ranges (..)');
+ WriteLn;
+ WriteLn('Sortie: code assembleur MASM 8086 .MODEL SMALL (DOS 16 bits)');
+ Halt(EXIT_OK);
 End;
 
 { ---- Utilitaires chaines ------------------------------------ }

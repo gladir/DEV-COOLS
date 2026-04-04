@@ -2,13 +2,13 @@
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Compilateur Modula-3 vers assembleur 8086
 }
 
 {  ============================================================
    MODIII86.PAS - Compilateur Modula-3 vers assembleur 8086
-   Turbo Pascal / Free Pascal (-Mtp)
+   Free Pascal (-Mtp)
    Cible : MASM .MODEL SMALL, DOS 16 bits
 
    FEUILLE DE ROUTE - 25 TODOS
@@ -495,7 +495,7 @@ Procedure ShowBanner;
 Begin
   WriteLn('MODIII86 v', MODIII86_VERSION, ' (', MODIII86_DATE, ')');
   WriteLn('Compilateur Modula-3 -> assembleur 8086 (MASM .MODEL SMALL)');
-  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn('Free Pascal (-Mtp)');
   WriteLn;
 End;
 

@@ -2,7 +2,7 @@
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Compilateur Lua vers assembleur 8086
 }
 
@@ -474,13 +474,16 @@ Procedure ShowBanner;
 Begin
   WriteLn('LUA86 v', LUA86_VERSION, ' (', LUA86_DATE, ')');
   WriteLn('Compilateur Lua -> assembleur 8086 (MASM .MODEL SMALL)');
-  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn('Free Pascal (-Mtp)');
   WriteLn;
 End;
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: LUA86 <source.lua> [sortie.asm] [-v] [-d] [-w]');
+Procedure ShowUsage;Begin
+ WriteLn('LUA86 - Cette commande permet de lancer le compilateur ',
+         'de langage de programmation Lua pour l''assembleur ',
+         'du microprocesseur 8086.');
+ WriteLn;
+  WriteLn('Syntaxe: LUA86 <source.lua> [sortie.asm] [-v] [-d] [-w]');
   WriteLn;
   WriteLn('  source.lua : fichier Lua source');
   WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
@@ -8602,7 +8605,7 @@ End;
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
+BEGIN
   GlobalInit;
   ParseArgs;
   If Opts.Verbose Then ShowBanner;

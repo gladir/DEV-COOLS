@@ -1,0 +1,237 @@
+TODO - Liste des 25 points a implementer pour le desassembleur PRG (Atari ST) :
+
+  1.  [IMPLEMENTE] Infrastructure, options de ligne de commande et constantes globales.
+      Programme principal DISPRG en Turbo Pascal / Free Pascal.
+      Analyse des options : nom du fichier .PRG en entree, nom du
+      fichier .S en sortie (par defaut meme nom avec extension .S),
+      options -v (verbose), -hex (inclure les octets hex en commentaire),
+      -sym (afficher la table des symboles), -reloc (afficher la table
+      de relocalisation), -data (desassembler aussi la section DATA).
+      Constantes de dimensionnement : MAX_SYMBOLS, MAX_RELOCS,
+      MAX_LABELS, MAX_XREFS, BUFFER_SIZE, PRG_MAGIC.
+      Fonctions utilitaires : UpCaseStr, HexByte, HexWord, HexLong,
+      IntToStr, FileExists, ChangeFileExt.
+
+  2.  [IMPLEMENTE] Lecture et validation de l'en-tete PRG (28 octets).
+      Lire les 28 octets de l'en-tete PRG : ph_branch ($601A),
+      ph_tlen (taille TEXT), ph_dlen (taille DATA), ph_blen (taille BSS),
+      ph_slen (taille table symboles), ph_res1 (reserve, doit etre 0),
+      ph_prgflags (drapeaux du programme), ph_absflag (0 = relocalisable).
+      Valider la signature $601A. Convertir les valeurs big-endian en
+      little-endian pour la lecture sur PC.
+      Afficher un resume de l'en-tete si -v est active.
+
+  3.  [IMPLEMENTE] Conversion big-endian / little-endian.
+      Le Motorola 68000 utilise l'ordre big-endian (octet de poids fort
+      en premier). Implementer les fonctions de conversion :
+      SwapWord(W: Word): Word - permuter les 2 octets d'un Word.
+      SwapLong(L: LongInt): LongInt - permuter les 4 octets d'un LongInt.
+      ReadBEWord(Var F: File): Word - lire un Word big-endian depuis un fichier.
+      ReadBELong(Var F: File): LongInt - lire un LongInt big-endian.
+      ReadBEWordMem(Ofs: LongInt): Word - lire un Word big-endian en memoire.
+      ReadBELongMem(Ofs: LongInt): LongInt - lire un LongInt big-endian en memoire.
+
+  4.  [IMPLEMENTE] Chargement des sections TEXT, DATA et symboles en memoire.
+      Allouer un tampon dynamique pour l'image du programme.
+      Charger la section TEXT (ph_tlen octets a partir de l'offset $001C).
+      Charger la section DATA (ph_dlen octets apres TEXT).
+      Charger la table des symboles (ph_slen octets apres DATA).
+      Calculer les offsets de chaque section dans le tampon.
+      Verifier que la taille totale ne depasse pas la memoire disponible.
+
+  5.  [IMPLEMENTE] Lecture de la table des symboles DRI.
+      Chaque entree fait 14 octets : sym_name (8 caracteres),
+      sym_type (Word), sym_value (LongInt). Nombre d'entrees =
+      ph_slen Div 14. Decoder les types de symboles : $0001 (defini),
+      $0002 (equate), $0004 (global), $0008 (registre equate),
+      $0010 (reference externe), $0020 (reference DATA), $0040
+      (reference TEXT), $0080 (reference BSS).
+      Stocker les symboles dans une table pour les utiliser comme
+      labels lors du desassemblage. Afficher la table si -sym est active.
+
+  6.  [IMPLEMENTE] Lecture et application de la table de relocalisation.
+      Si ph_absflag vaut 0, lire la table de relocalisation apres
+      la table des symboles. Premier mot long = offset de la premiere
+      relocalisation. Ensuite, sequence d'octets incrementaux :
+      $00 = fin, $01 = avancer de 254 sans relocaliser,
+      $02-$FD = avancer de cette valeur et relocaliser le mot long.
+      Marquer les adresses relocalisees pour generer des references
+      symboliques dans le fichier de sortie.
+      Afficher la table si -reloc est active.
+
+  7.  [IMPLEMENTE] Analyse des drapeaux du programme (ph_prgflags).
+      Decoder les bits de ph_prgflags :
+      Bit 0 ($0001) : PF_FASTLOAD (effacer seulement BSS).
+      Bit 1 ($0002) : PF_TTRAMLOAD (charger en TT-RAM).
+      Bit 2 ($0004) : PF_TTRAMMEM (allouer en TT-RAM).
+      Bits 4-7 ($00F0) : protection memoire (MiNT/MultiTOS).
+      Bit 28 ($10000000) : PF_SHARED_TEXT (partager TEXT).
+      Generer un commentaire dans le fichier .S decrivant les drapeaux.
+
+  8.  [IMPLEMENTE] Table des opcodes Motorola 68000 - Transfert de donnees.
+      Definir les opcodes de transfert de donnees du 68000 :
+      MOVE.B/W/L, MOVEA.W/L, MOVEQ, MOVEM, MOVEP,
+      EXG, SWAP, LEA, PEA, LINK, UNLK.
+      Pour chaque instruction : masque de bits, valeur attendue,
+      mnemonique, format des operandes, taille de l'instruction.
+
+  9.  [IMPLEMENTE] Table des opcodes 68000 - Arithmetique et logique.
+      Definir les opcodes arithmetiques et logiques :
+      ADD, ADDA, ADDI, ADDQ, ADDX,
+      SUB, SUBA, SUBI, SUBQ, SUBX,
+      MULU, MULS, DIVU, DIVS,
+      AND, ANDI, OR, ORI, EOR, EORI, NOT, NEG, NEGX,
+      CMP, CMPA, CMPI, CMPM,
+      CLR, EXT, TST, TAS.
+
+  10. [IMPLEMENTE] Table des opcodes 68000 - Decalages et rotations.
+      Definir les opcodes de decalage et rotation :
+      ASL, ASR, LSL, LSR, ROL, ROR, ROXL, ROXR.
+      Chaque instruction peut operer sur un registre de donnees
+      (avec compteur immediat ou registre) ou sur une adresse
+      memoire (decalage de 1 bit seulement).
+
+  11. [IMPLEMENTE] Table des opcodes 68000 - Branchements et controle.
+      Definir les opcodes de branchement et de controle :
+      BRA, BSR, Bcc (BEQ, BNE, BGT, BGE, BLT, BLE, BHI, BLS,
+      BCC, BCS, BPL, BMI, BVS, BVC), DBcc, Scc,
+      JMP, JSR, RTS, RTE, RTR, NOP, STOP, RESET, ILLEGAL.
+      Decoder les deplacements 8 bits et 16 bits pour les Bcc.
+
+  12. [IMPLEMENTE] Table des opcodes 68000 - Manipulation de bits et divers.
+      Definir les opcodes de manipulation de bits :
+      BTST, BSET, BCLR, BCHG (registre ou immediat).
+      Instructions de pile et de trap :
+      TRAP #n, TRAPV, CHK, LINK, UNLK.
+      Instructions privilegiees :
+      MOVE SR/CCR/USP, ANDI/ORI/EORI to SR/CCR,
+      RESET, RTE, STOP.
+
+  13. [IMPLEMENTE] Decodage des modes d'adressage 68000.
+      Decoder les 8 modes d'adressage principaux du 68000 :
+      000 Dn          - registre de donnees direct
+      001 An          - registre d'adresses direct
+      010 (An)        - registre d'adresses indirect
+      011 (An)+       - post-increment
+      100 -(An)       - pre-decrement
+      101 d16(An)     - deplacement 16 bits
+      110 d8(An,Xn)   - indexe avec deplacement 8 bits
+      111 selon reg :
+        000 xxx.W     - adresse absolue courte (16 bits)
+        001 xxx.L     - adresse absolue longue (32 bits)
+        010 d16(PC)   - relatif au PC avec deplacement 16 bits
+        011 d8(PC,Xn) - relatif au PC indexe
+        100 #imm      - immediat
+
+  14. [IMPLEMENTE] Decodage d'une instruction complete 68000.
+      Procedure DecodeInstruction(Offset: LongInt) qui :
+      - Lit le mot d'instruction (16 bits big-endian)
+      - Extrait les champs : taille (bits 6-7 ou 8-9 selon le groupe),
+        mode source (bits 3-5), registre source (bits 0-2),
+        mode destination (bits 6-8), registre destination (bits 9-11)
+      - Parcourt la table des opcodes pour trouver la correspondance
+      - Decode les mots d'extension (adresses, immediats, deplacements)
+      - Retourne le mnemonique, les operandes et la taille totale
+
+  15. [IMPLEMENTE] Premiere passe : analyse du flux de controle.
+      Parcourir lineairement la section TEXT instruction par instruction.
+      Pour chaque instruction de branchement (BRA, Bcc, BSR, JMP, JSR),
+      calculer l'adresse cible et l'ajouter a la table des labels.
+      Pour chaque RTS/RTE/RTR, marquer la fin d'un bloc de code.
+      Construire un graphe de flux de controle simplifie pour
+      distinguer le code des donnees intercalees.
+      Utiliser les symboles de la table DRI comme labels initiaux.
+
+  16. [IMPLEMENTE] Detection des sous-programmes et des points d'entree.
+      A partir du point d'entree (offset 0 de TEXT) et des cibles
+      de BSR/JSR, identifier les debuts de sous-programmes.
+      Attribuer un label automatique a chaque sous-programme
+      (sub_XXXXXX). Detecter les prologues standards :
+      LINK A6,#-nn (allocation de trame locale) et
+      MOVEM.L reglist,-(SP) (sauvegarde des registres).
+      Detecter les epilogues : MOVEM.L (SP)+,reglist / UNLK A6 / RTS.
+
+  17. [IMPLEMENTE] Detection des appels systeme TOS (TRAP).
+      Reconnaitre les sequences d'appels systeme TOS :
+      TRAP #1 (GEMDOS), TRAP #13 (BIOS), TRAP #14 (XBIOS).
+      Identifier le numero de fonction empile avant le TRAP
+      (MOVE.W #nn,-(SP)) et generer un commentaire avec le nom
+      de la fonction : Cconws ($09), Pterm0 ($00), Fopen ($3D),
+      Fclose ($3E), Fread ($3F), Fwrite ($40), Malloc ($48),
+      Mfree ($49), Super ($20), Crawio ($06), etc.
+      Gerer aussi TRAP #2 (GEM AES/VDI).
+
+  18. [IMPLEMENTE] Discrimination code/donnees dans la section TEXT.
+      Utiliser les informations de flux de controle (TODO 15)
+      pour separer le code des donnees dans la section TEXT.
+      Les octets non atteints par le parcours du flux sont
+      marques comme donnees (DC.B/DC.W/DC.L). Detecter les
+      chaines ASCII (terminee par 0), les tables de saut
+      (listes de mots longs pointant vers du code), les
+      constantes numeriques et les tables de donnees.
+
+  19. [IMPLEMENTE] Desassemblage de la section DATA.
+      Si l'option -data est active, tenter de desassembler
+      la section DATA. Par defaut, emettre la section DATA
+      en directives DC.B, DC.W, DC.L. Detecter les chaines
+      ASCII et les emettre avec DC.B 'texte',0.
+      Utiliser les symboles DRI pour generer des labels
+      dans la section DATA. Utiliser les informations de
+      relocalisation pour identifier les pointeurs.
+
+  20. [IMPLEMENTE] Generation du fichier .S : en-tete et directives.
+      Emettre l'en-tete du fichier .S avec des commentaires
+      (nom du fichier source, date, outil DISPRG).
+      Emettre les directives d'assembleur 68000 :
+      Section TEXT/DATA/BSS avec les tailles.
+      Definir les symboles globaux avec XDEF.
+      Declarer les references externes avec XREF.
+      Format compatible avec les assembleurs Atari ST
+      (Devpac, vasm, AS).
+
+  21. [IMPLEMENTE] Generation du fichier .S : section TEXT (instructions).
+      Emettre le code desassemble instruction par instruction.
+      Format : label (si reference), tabulation, mnemonique,
+      suffixe de taille (.B/.W/.L), operandes.
+      Inserer des lignes vides entre les sous-programmes.
+      Generer les labels de saut (loc_XXXXXX) aux adresses cibles.
+      Si -hex est active, ajouter en commentaire les octets
+      hexadecimaux de chaque instruction.
+
+  22. [IMPLEMENTE] Generation du fichier .S : sections DATA et BSS.
+      Emettre les donnees de la section DATA avec les directives
+      DC.B, DC.W, DC.L selon le contexte. Detecter les chaines
+      ASCII et les emettre avec DC.B 'texte',0.
+      Emettre la section BSS avec les directives DS.B/DS.W/DS.L
+      pour les zones non-initialisees.
+      Generer des labels pour les variables referencees.
+
+  23. [IMPLEMENTE] Etiquettes automatiques et references croisees.
+      Gerer une table de symboles unifiant les labels generes
+      automatiquement : sub_XXXXXX (sous-programmes),
+      loc_XXXXXX (cibles de saut), dat_XXXXXX (donnees TEXT),
+      dta_XXXXXX (donnees dans DATA), bss_XXXXXX (variables BSS).
+      Pour les symboles DRI, utiliser les noms reels tronques
+      a 8 caracteres. Generer des commentaires de references
+      croisees (XREF from sub_XXXXXX+offset).
+
+  24. [IMPLEMENTE] Commentaires et annotations dans le fichier .S.
+      Generer des commentaires automatiques pour les appels
+      systeme TOS (GEMDOS, BIOS, XBIOS) avec le nom de la
+      fonction et ses parametres. Annoter les prologues et
+      epilogues de fonctions. Inserer des separateurs visuels
+      entre les sous-programmes. Generer des commentaires pour
+      les constantes connues (codes d'erreur TOS, adresses
+      hardware de l'Atari ST : $FF8240 palette, $FF8260 shifter,
+      $FFFC00 ACIA clavier, etc.).
+
+  25. [IMPLEMENTE] Verification finale, statistiques et rapport.
+      Verifier la coherence du fichier .S genere : toutes les
+      references sont resolues, les labels sont uniques.
+      Afficher un rapport final : nombre d'instructions
+      desassemblees, nombre de sous-programmes detectes,
+      nombre de labels generes, taille des sections TEXT/DATA/BSS,
+      nombre de symboles DRI, nombre de relocalisations,
+      nombre d'appels systeme TOS detectes, taille du fichier .S.
+      Si -v est active, afficher des statistiques detaillees.
+      Gerer le code de retour (0=succes, 1=erreur).
