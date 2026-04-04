@@ -2,10 +2,10 @@
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Generateur de code C aleatoire pour tester les compilateurs.
-                Clone de Csmith (https://github.com/csmith-project/csmith)
-                en Turbo Pascal / Free Pascal.
+                Clone de Csmith
+                en Free Pascal.
 }
 
 (* Voir DOC/TODO/CSMITH.txt pour la feuille de route des 25 TODOs *)
@@ -16,7 +16,7 @@
   ============================================================
 
   TODO 01 - [IMPLEMENTE] INFRASTRUCTURE DE BASE ET OPTIONS CLI
-            Programme principal CSMITH en Turbo Pascal / Free Pascal.
+            Programme principal CSMITH en Free Pascal.
             Options de ligne de commande : --seed <n> (graine aleatoire),
             --max-funcs <n> (nombre max de fonctions), --max-block-depth <n>
             (profondeur max des blocs), --max-expr-depth <n> (profondeur
@@ -133,7 +133,7 @@
             GenPointerOp - generer une operation sur pointeur.
             Supporter les pointeurs vers : scalaires, tableaux, structs,
             fonctions, autres pointeurs (avec limite de niveaux).
-            Operations : dereferencement (*p), adresse (&x), arithmetique
+            Operations : dereferencement ( *p), adresse (&x), arithmetique
             (p++, p--, p+n, p-n, p1-p2). Option --no-pointers.
             Eviter les pointeurs invalides (UB) : NULL deref, out of bounds.
 
@@ -314,7 +314,7 @@ Const
   MAX_POINTER_DEPTH  = 3;
   POINTER_INIT_PROB  = 40;   { TODO 11 : 40% de chance d'initialiser a NULL }
   POINTER_MULTI_PROB = 20;   { TODO 11 : 20% de chance de double/triple pointeur }
-  
+
   { TODO 12 : Limites pour les constantes litterales }
   MAX_INT_VALUE      = 2147483647;  { max signed 32-bit }
   MAX_CHAR_VALUE     = 127;         { max printable ASCII }
@@ -325,20 +325,20 @@ Const
   HEX_PROB           = 20;          { 20% de chance de generer un hex }
   SUFFIX_PROB        = 30;          { 30% de chance d'ajouter un suffixe }
   ESCAPE_PROB        = 20;          { 20% de chance d'echappement dans chaines }
-  
+
   { TODO 13 : Constantes pour les expressions arithmetiques }
   ARITH_PAREN_PROB   = 30;          { 30% de chance d'ajouter des parentheses }
   ARITH_LITERAL_PROB = 50;          { 50% de chance d'utiliser un litteral vs variable }
   SAFE_DIV_PROB      = 80;          { 80% de chance de generer une division securisee }
   ARITH_RECURSE_PROB = 40;          { 40% de chance de recursion dans expression }
-  
+
   { TODO 14 : Constantes pour les expressions relationnelles et logiques }
   REL_PAREN_PROB     = 25;          { 25% de chance d'ajouter des parentheses }
   REL_LITERAL_PROB   = 40;          { 40% de chance d'utiliser un litteral vs variable }
   REL_RECURSE_PROB   = 30;          { 30% de chance de recursion dans expression }
   LOG_RECURSE_PROB   = 35;          { 35% de chance de recursion logique }
   LOG_NOT_PROB       = 20;          { 20% de chance de generer un NOT }
-  
+
   { TODO 15 : Constantes pour les expressions bit-a-bit }
   BIT_PAREN_PROB     = 30;          { 30% de chance d'ajouter des parentheses }
   BIT_LITERAL_PROB   = 45;          { 45% de chance d'utiliser un litteral vs variable }
@@ -346,7 +346,7 @@ Const
   BIT_NOT_PROB       = 15;          { 15% de chance de generer un complement (~) }
   SHIFT_SAFE_PROB    = 90;          { 90% de chance de generer un decalage securise }
   MAX_SHIFT_AMOUNT   = 31;          { Decalage max pour un int 32 bits }
-  
+
   { TODO 16 : Constantes pour les expressions d'affectation }
   ASSIGN_COMPOUND_PROB = 40;        { 40% de chance de generer un operateur compose }
   ASSIGN_INCDEC_PROB = 30;          { 30% de chance de generer ++/-- }
@@ -354,7 +354,7 @@ Const
   ASSIGN_COMMA_PROB  = 15;          { 15% de chance de generer une expression virgule }
   ASSIGN_SAFE_DIV_PROB = 90;        { 90% de chance de generer /= et %= securises }
   ASSIGN_SAFE_SHIFT_PROB = 90;      { 90% de chance de generer <<= et >>= securises }
-  
+
   { TODO 17 : Constantes pour les expressions conditionnelles }
   COND_TERNARY_PROB = 50;           { 50% de chance de generer une expression ternaire }
   COND_CAST_PROB = 30;              { 30% de chance de generer un cast }
@@ -362,7 +362,7 @@ Const
   COND_SIZEOF_TYPE_PROB = 60;       { 60% de chance de sizeof(type) vs sizeof(expr) }
   COND_NESTED_PROB = 30;            { 30% de chance de generer une expression imbriquee }
   COND_SAFE_CAST_PROB = 85;         { 85% de chance de generer des casts securises }
-  
+
   { TODO 18 : Constantes pour les statements simples }
   STMT_EXPR_PROB = 40;              { 40% de chance de generer un statement expression }
   STMT_DECL_PROB = 25;              { 25% de chance de generer une declaration locale }
@@ -372,7 +372,7 @@ Const
   STMT_GOTO_PROB = 5;               { 5% de chance de generer un goto }
   STMT_NULL_PROB = 5;               { 5% de chance de generer un statement vide }
   STMT_LABEL_PREFIX = 'lbl_';       { Prefixe pour les labels goto }
-  
+
   { TODO 19 : Constantes pour les blocs et portees }
   BLOCK_MIN_STMTS = 1;              { Minimum de statements par bloc }
   BLOCK_MAX_STMTS = 8;              { Maximum de statements par bloc }
@@ -380,7 +380,7 @@ Const
   BLOCK_SHADOW_PROB = 20;           { 20% de chance de shadowing variable }
   BLOCK_LOCAL_DECL_PROB = 40;       { 40% de chance de declarer une variable locale }
   SCOPE_VAR_PREFIX = 'l_';          { Prefixe pour les variables locales }
-  
+
   { TODO 20 : Constantes pour les conditionnelles if/else et switch }
   IF_ELSE_PROB = 50;                { 50% de chance d'avoir un else }
   IF_ELSEIF_PROB = 30;              { 30% de chance d'avoir un else if }
@@ -393,7 +393,7 @@ Const
   SWITCH_BREAK_PROB = 85;           { 85% de chance d'avoir un break apres chaque case }
   SWITCH_FALLTHROUGH_PROB = 15;     { 15% de chance de fall-through }
   SWITCH_EMPTY_CASE_PROB = 5;       { 5% de chance d'avoir un case vide }
-  
+
   { TODO 21 : Constantes pour les boucles }
   LOOP_MAX_ITERATIONS = 100;        { Maximum d'iterations pour eviter boucles infinies }
   LOOP_GUARD_COUNTER = 1000;        { Compteur de garde pour les boucles }
@@ -409,7 +409,7 @@ Const
   LOOP_BREAK_PROB = 10;             { 10% de chance d'avoir un break dans une boucle }
   LOOP_CONTINUE_PROB = 5;           { 5% de chance d'avoir un continue dans une boucle }
   LOOP_VAR_PREFIX = 'i_loop_';      { Prefixe pour les variables de boucle }
-  
+
   { TODO 22 : Constantes pour la generation de fonctions }
   FUNC_MAX_PARAMS = 6;              { Maximum de parametres par fonction }
   FUNC_MAX_RECURSION_DEPTH = 3;     { Profondeur max de recursion }
@@ -424,7 +424,7 @@ Const
   FUNC_EARLY_RETURN_PROB = 20;      { 20% de chance d'avoir un return anticipé }
   FUNC_NAME_PREFIX = 'func_';       { Prefixe pour les noms de fonctions }
   FUNC_PARAM_PREFIX = 'p_';         { Prefixe pour les noms de parametres }
-  
+
   { TODO 23 : Constantes pour la generation du programme complet }
   PROG_MIN_FUNCS = 2;               { Minimum de fonctions a generer }
   PROG_MAX_FUNCS = 5;               { Maximum de fonctions a generer }
@@ -446,7 +446,7 @@ Const
   GLOBAL_VAR_INIT_PROB = 70;        { 70% de chance d'initialiser une variable globale }
   GLOBAL_VAR_CONST_PROB = 20;       { 20% de chance d'avoir une variable const }
   GLOBAL_VAR_VOLATILE_PROB = 10;    { 10% de chance d'avoir une variable volatile }
-  
+
   { TODO 24 : Constantes pour la verification et evitement des comportements indefinis }
   SAFE_DIV_CHECK_PROB = 95;         { 95% de chance de generer un garde pour division }
   SAFE_OVERFLOW_CHECK_PROB = 90;    { 90% de chance de verifier le debordement }
@@ -459,12 +459,12 @@ Const
   INT_MIN_VALUE = -2147483648;      { INT_MIN pour 32 bits }
   SAFE_SHIFT_MAX = 31;              { Decalage max securise pour int 32 bits }
   SAFE_ARRAY_MAX_INDEX = 99;        { Index max securise pour les tableaux }
-  
+
   { TODO 25 : Constantes pour les statistiques avancees }
   STAT_VERSION = '1.0';             { Version du systeme de statistiques }
   STAT_MAX_DEPTH = 100;             { Profondeur max pour les statistiques }
   STAT_VERBOSE_INDENT = 2;          { Indentation pour le mode verbeux }
-  
+
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_ENUMS          = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -698,13 +698,13 @@ Var
   AssignExprCounter: Integer;  { TODO 16 : compteur d'expressions d'affectation }
   CondExprCounter: Integer;  { TODO 17 : compteur d'expressions conditionnelles }
   StmtCounter: Integer;  { TODO 18 : compteur de statements simples }
-  
+
   { TODO 18 : contexte pour les statements }
   InLoop: Boolean;       { Vrai si on est dans une boucle (pour break/continue) }
   InSwitch: Boolean;     { Vrai si on est dans un switch (pour break) }
   InFunction: Boolean;   { Vrai si on est dans une fonction (pour return) }
   CurrentRetType: TTypeKind;  { Type de retour de la fonction courante }
-  
+
   { TODO 19 : compteurs et contexte pour les blocs et portees }
   BlockCounter: Integer;  { Compteur de blocs generes }
   BlockDepth: Integer;    { Profondeur courante d'imbrication des blocs }
@@ -1488,7 +1488,7 @@ Var
   BaseStr: TString;
 Begin
   Result := QualifierToStr(T.Quals);
-  
+
   Case T.Kind Of
     TK_VOID..TK_LONGDOUBLE:
       Begin
@@ -1541,7 +1541,7 @@ Begin
   Else
     Result := Result + '?';
   End;
-  
+
   TypeToStr := Result;
 End;
 
@@ -1649,7 +1649,7 @@ Procedure EmitFuncPtrDecl(Const Name: TString; Const RetType: TCType;
                           Const ParamTypes: Array Of TString;
                           NumParams: Integer; SC: TStorageClass);
 { Emet une declaration de pointeur de fonction.
-  Exemple : int (*funcPtr)(int, char); }
+  Exemple : int ( *funcPtr)(int, char); }
 Var
   S: TString;
   I: Integer;
@@ -1737,10 +1737,10 @@ Var
   R: Integer;
 Begin
   InitCType(T);
-  
+
   { Choix du type de base : privilegier les types simples }
   R := RandomInt(100);
-  
+
   If R < 70 Then
   Begin
     { 70% : Type scalaire simple }
@@ -1775,7 +1775,7 @@ Begin
     { 5% : Retour au type int par defaut }
     T.Kind := TK_INT;
   End;
-  
+
   { Ajouter des qualificateurs aleatoirement }
   If (Not Opts.NoConsts) And RandomChoice(10) Then
     T.Quals := Q_CONST
@@ -1783,7 +1783,7 @@ Begin
     T.Quals := Q_VOLATILE
   Else
     T.Quals := Q_NONE;
-  
+
   GenRandomFieldType := T;
 End;
 
@@ -1823,20 +1823,20 @@ Var
   I: Integer;
 Begin
   InitStructDef(S);
-  
+
   { Generer un nom unique }
   S.Name := GenStructName;
-  
+
   { Determiner le nombre de champs }
   NumFields := RandomRange(MIN_STRUCT_FIELDS, MAX_STRUCT_FIELDS);
   S.NumFields := NumFields;
-  
+
   { Generer les champs }
   For I := 1 To NumFields Do
     S.Fields[I] := GenStructField(NumStructs + 1, I, CurrentDepth);
-  
+
   S.IsComplete := True;
-  
+
   { Ajouter a la table }
   GenStructDef := AddStructDef(S);
 End;
@@ -1863,15 +1863,15 @@ Var
 Begin
   If (StructIdx < 1) Or (StructIdx > NumStructs) Then
     Exit;
-  
+
   With Structs[StructIdx] Do
   Begin
     EmitLine('typedef struct {');
-    
+
     { Emettre les champs }
     For I := 1 To NumFields Do
       EmitFieldDecl(Fields[I]);
-    
+
     EmitLine('} ' + Name + ';');
   End;
 End;
@@ -1976,10 +1976,10 @@ Var
   R: Integer;
 Begin
   InitCType(T);
-  
+
   { Choix du type de base : privilegier les types simples pour les unions }
   R := RandomInt(100);
-  
+
   If R < 50 Then
   Begin
     { 50% : Type entier de differentes tailles (utile pour unions) }
@@ -2029,13 +2029,13 @@ Begin
     { 2% : Retour au type int par defaut }
     T.Kind := TK_INT;
   End;
-  
+
   { Les champs d'union sont rarement const/volatile }
   If (Not Opts.NoVolatiles) And RandomChoice(3) Then
     T.Quals := Q_VOLATILE
   Else
     T.Quals := Q_NONE;
-  
+
   GenRandomUnionFieldType := T;
 End;
 
@@ -2075,20 +2075,20 @@ Var
   I: Integer;
 Begin
   InitUnionDef(U);
-  
+
   { Generer un nom unique }
   U.Name := GenUnionName;
-  
+
   { Determiner le nombre de champs (minimum 2 pour une union utile) }
   NumFields := RandomRange(MIN_UNION_FIELDS, MAX_UNION_FIELDS);
   U.NumFields := NumFields;
-  
+
   { Generer les champs }
   For I := 1 To NumFields Do
     U.Fields[I] := GenUnionField(NumUnions + 1, I, CurrentDepth);
-  
+
   U.IsComplete := True;
-  
+
   { Ajouter a la table }
   GenUnionDef := AddUnionDef(U);
 End;
@@ -2112,15 +2112,15 @@ Var
 Begin
   If (UnionIdx < 1) Or (UnionIdx > NumUnions) Then
     Exit;
-  
+
   With Unions[UnionIdx] Do
   Begin
     EmitLine('typedef union {');
-    
+
     { Emettre les champs }
     For I := 1 To NumFields Do
       EmitUnionFieldDecl(Fields[I]);
-    
+
     EmitLine('} ' + Name + ';');
   End;
 End;
@@ -2256,7 +2256,7 @@ Var
   F: TField;
 Begin
   InitField(F);
-  
+
   If IsAnonymous Then
   Begin
     { Champ anonyme : pas de nom }
@@ -2273,12 +2273,12 @@ Begin
     If F.BitWidth = 0 Then
       F.BitWidth := 1;  { Assurer au moins 1 bit pour les champs nommes }
   End;
-  
+
   { Type du champ de bits : int ou unsigned int }
   InitCType(F.FType);
   F.FType.Kind := GenBitfieldType;
   F.FType.Quals := Q_NONE;  { Les bitfields sont rarement const/volatile }
-  
+
   GenBitfieldField := F;
 End;
 
@@ -2317,7 +2317,7 @@ End;
 
 Procedure EmitBitfieldDecl(Const F: TField);
 { Emet la declaration d'un champ de bits.
-  Formats: 
+  Formats:
     - "type name : width;" pour un champ nomme
     - "type : width;" pour un champ anonyme
     - "type : 0;" pour forcer l'alignement }
@@ -2325,19 +2325,19 @@ Var
   S: TString;
 Begin
   S := '    ' + TypeToStr(F.FType);
-  
+
   If F.Name <> '' Then
     S := S + ' ' + F.Name;
-  
+
   S := S + ' : ' + IntToStr(F.BitWidth) + ';';
-  
+
   EmitLine(S);
 End;
 
 Function IsBitfieldField(Const F: TField): Boolean;
 { Verifie si un champ est un champ de bits. }
 Begin
-  IsBitfieldField := (F.BitWidth > 0) Or 
+  IsBitfieldField := (F.BitWidth > 0) Or
                      ((F.BitWidth = 0) And (F.Name = ''));
 End;
 
@@ -2363,7 +2363,7 @@ Begin
     { Generer un champ normal via GenStructField existant }
     F := GenStructField(StructIdx, FieldNum, CurrentDepth);
   End;
-  
+
   GenStructFieldWithBitfield := F;
 End;
 
@@ -2397,7 +2397,7 @@ Var
 Begin
   Count := 0;
   For I := 1 To S.NumFields Do
-    If (S.Fields[I].BitWidth > 0) Or 
+    If (S.Fields[I].BitWidth > 0) Or
        ((S.Fields[I].BitWidth = 0) And (S.Fields[I].Name = '')) Then
       Inc(Count);
   CountBitfields := Count;
@@ -2455,11 +2455,11 @@ Begin
       Val := LastValue + 1;
     End;
   End;
-  
+
   { Limiter la valeur maximum }
   If Val > MAX_ENUM_VALUE Then
     Val := MAX_ENUM_VALUE;
-  
+
   GenEnumConstValue := Val;
 End;
 
@@ -2474,7 +2474,7 @@ Begin
     ShouldHaveExplicitValue := RandomChoice(25);
 End;
 
-Function AddEnumConst(Var E: TEnumDef; Const Name: TString; Value: LongInt; 
+Function AddEnumConst(Var E: TEnumDef; Const Name: TString; Value: LongInt;
                        HasVal: Boolean): Integer;
 { Ajoute une constante a une enumeration.
   Retourne l'index de la constante (1-based) ou 0 si erreur. }
@@ -2519,26 +2519,26 @@ Var
   EnumIdx: Integer;
 Begin
   InitEnumDef(E);
-  
+
   { Generer un nom unique }
   E.Name := GenEnumName;
-  
+
   { Determiner le nombre de constantes (entre MIN_ENUM_CONSTS et MAX_ENUM_CONSTS) }
   NumConsts := RandomRange(MIN_ENUM_CONSTS, MAX_ENUM_CONSTS);
   If NumConsts > 8 Then
     NumConsts := RandomRange(MIN_ENUM_CONSTS, 8); { Limiter pour lisibilite }
-  
+
   { L'index de cette enum sera NumEnums + 1 }
   EnumIdx := NumEnums + 1;
-  
+
   { Generer les constantes }
   LastValue := -1; { Valeur precedente pour auto-increment }
-  
+
   For I := 1 To NumConsts Do
   Begin
     ConstName := GenEnumConstName(EnumIdx, I);
     HasExplicit := ShouldHaveExplicitValue(I = 1);
-    
+
     If HasExplicit Then
     Begin
       { Valeur explicite }
@@ -2551,10 +2551,10 @@ Begin
       ConstValue := LastValue + 1;
       AddEnumConst(E, ConstName, ConstValue, False);
     End;
-    
+
     LastValue := ConstValue;
   End;
-  
+
   { Ajouter a la table }
   GenEnumDef := AddEnumDef(E);
 End;
@@ -2567,13 +2567,13 @@ Var
   S: TString;
 Begin
   S := '    ' + C.Name;
-  
+
   If C.HasVal Then
     S := S + ' = ' + IntToStr(C.Value);
-  
+
   If Not IsLast Then
     S := S + ',';
-  
+
   EmitLine(S);
 End;
 
@@ -2585,15 +2585,15 @@ Var
 Begin
   If (EnumIdx < 1) Or (EnumIdx > NumEnums) Then
     Exit;
-  
+
   With Enums[EnumIdx] Do
   Begin
     EmitLine('typedef enum {');
-    
+
     { Emettre les constantes }
     For I := 1 To NumConsts Do
       EmitEnumConstDecl(Consts[I], I = NumConsts);
-    
+
     EmitLine('} ' + Name + ';');
   End;
 End;
@@ -2652,7 +2652,7 @@ Begin
   GetEnumConstByName := 0;
   If (EnumIdx < 1) Or (EnumIdx > NumEnums) Then
     Exit;
-  
+
   For I := 1 To Enums[EnumIdx].NumConsts Do
     If Enums[EnumIdx].Consts[I].Name = Name Then
     Begin
@@ -2690,15 +2690,15 @@ Begin
   GetEnumMinValue := 0;
   If (EnumIdx < 1) Or (EnumIdx > NumEnums) Then
     Exit;
-  
+
   If Enums[EnumIdx].NumConsts = 0 Then
     Exit;
-  
+
   MinVal := Enums[EnumIdx].Consts[1].Value;
   For I := 2 To Enums[EnumIdx].NumConsts Do
     If Enums[EnumIdx].Consts[I].Value < MinVal Then
       MinVal := Enums[EnumIdx].Consts[I].Value;
-  
+
   GetEnumMinValue := MinVal;
 End;
 
@@ -2711,15 +2711,15 @@ Begin
   GetEnumMaxValue := 0;
   If (EnumIdx < 1) Or (EnumIdx > NumEnums) Then
     Exit;
-  
+
   If Enums[EnumIdx].NumConsts = 0 Then
     Exit;
-  
+
   MaxVal := Enums[EnumIdx].Consts[1].Value;
   For I := 2 To Enums[EnumIdx].NumConsts Do
     If Enums[EnumIdx].Consts[I].Value > MaxVal Then
       MaxVal := Enums[EnumIdx].Consts[I].Value;
-  
+
   GetEnumMaxValue := MaxVal;
 End;
 
@@ -2759,7 +2759,7 @@ Begin
     Size := RandomRange(11, 30)
   Else
     Size := RandomRange(31, MAX_ARRAY_SIZE);
-  
+
   GenArrayDimension := Size;
 End;
 
@@ -2778,7 +2778,7 @@ Begin
     NumDims := 3
   Else
     NumDims := MAX_ARRAY_DIM;
-  
+
   GenNumDimensions := NumDims;
 End;
 
@@ -2809,10 +2809,10 @@ Var
   Choice: Integer;
 Begin
   InitCType(T);
-  
+
   { 70% : types scalaires, 15% : struct, 10% : enum, 5% : union }
   Choice := RandomInt(100);
-  
+
   If Choice < 70 Then
   Begin
     { Type scalaire aleatoire }
@@ -2872,11 +2872,11 @@ Begin
     Else
       T.Kind := TK_INT;
   End;
-  
+
   { Ajouter un qualificateur const (20% de chance) }
   If (Not Opts.NoConsts) And RandomChoice(20) Then
     T.Quals := Q_CONST;
-  
+
   GenRandomArrayElemType := T;
 End;
 
@@ -2902,7 +2902,7 @@ Var
 Begin
   NumDims := GenNumDimensions;
   TotalSize := 1;
-  
+
   For I := 0 To NumDims - 1 Do
   Begin
     { Calculer la taille maximum pour cette dimension }
@@ -2910,12 +2910,12 @@ Begin
       MaxDimSize := MAX_ARRAY_TOTAL_SIZE Div TotalSize
     Else
       MaxDimSize := MAX_ARRAY_SIZE;
-    
+
     If MaxDimSize > MAX_ARRAY_SIZE Then
       MaxDimSize := MAX_ARRAY_SIZE;
     If MaxDimSize < MIN_ARRAY_SIZE Then
       MaxDimSize := MIN_ARRAY_SIZE;
-    
+
     { Generer la taille de cette dimension }
     Sizes[I] := RandomRange(MIN_ARRAY_SIZE, MaxDimSize);
     TotalSize := TotalSize * Sizes[I];
@@ -2949,7 +2949,7 @@ Begin
     Val := RandomRange(-1000, 1000)
   Else
     Val := RandomRange(-32768, 32767);
-  
+
   GenIntArrayInitValue := IntToStr(Val);
 End;
 
@@ -2961,17 +2961,17 @@ Var
 Begin
   IntPart := RandomRange(-100, 100);
   FracPart := RandomRange(0, 99);
-  
+
   Str(IntPart, S);
   S := S + '.';
   If FracPart < 10 Then
     S := S + '0';
   S := S + IntToStr(FracPart);
-  
+
   { Ajouter suffixe f pour float (50% de chance) }
   If RandomChoice(50) Then
     S := S + 'f';
-  
+
   GenFloatArrayInitValue := S;
 End;
 
@@ -3010,23 +3010,23 @@ Var
   MaxElems: Integer;
 Begin
   Init := '{';
-  
+
   { Limiter le nombre d'elements initialises pour lisibilite }
   MaxElems := Size;
   If MaxElems > 10 Then
     MaxElems := 10;
-  
+
   For I := 1 To MaxElems Do
   Begin
     If I > 1 Then
       Init := Init + ', ';
     Init := Init + GenArrayInitValue(ElemType);
   End;
-  
+
   { Si on n'a pas initialise tous les elements, les autres seront 0 }
   If MaxElems < Size Then
     Init := Init + ' /* ... */';
-  
+
   Init := Init + '}';
 End;
 
@@ -3056,7 +3056,7 @@ Procedure EmitArrayVarDeclInit(Const Name: TString; Const ElemType: TCType;
 Var
   S: TString;
 Begin
-  S := StorageClassToStr(SC) + TypeToStr(ElemType) + ' ' + Name + 
+  S := StorageClassToStr(SC) + TypeToStr(ElemType) + ' ' + Name +
        '[' + IntToStr(Size) + '] = ' + Init + ';';
   EmitLine(S);
 End;
@@ -3068,7 +3068,7 @@ Procedure EmitArrayVarDeclInitAuto(Const Name: TString; Const ElemType: TCType;
 Var
   S: TString;
 Begin
-  S := StorageClassToStr(SC) + TypeToStr(ElemType) + ' ' + Name + 
+  S := StorageClassToStr(SC) + TypeToStr(ElemType) + ' ' + Name +
        '[] = ' + Init + ';';
   EmitLine(S);
 End;
@@ -3088,19 +3088,19 @@ Var
 Begin
   { Generer le nom }
   Name := GenArrayName;
-  
+
   { Generer le type element }
   ElemType := GenRandomArrayElemType;
-  
+
   { Generer les dimensions }
   GenArrayDimensions(Sizes, NumDims);
-  
+
   { Decider si on genere un initialiseur }
   { Seulement pour les tableaux 1D de types simples }
-  HasInit := (NumDims = 1) And 
+  HasInit := (NumDims = 1) And
              (ElemType.Kind In [TK_CHAR..TK_ULONG, TK_FLOAT, TK_DOUBLE, TK_ENUM]) And
              RandomChoice(ARRAY_INIT_PROB);
-  
+
   If HasInit Then
   Begin
     GenArrayInit1D(ElemType, Sizes[0], Init);
@@ -3114,7 +3114,7 @@ Begin
   Begin
     EmitArrayVarDecl(Name, ElemType, Sizes, NumDims, SC);
   End;
-  
+
   GenArrayDecl := Name;
 End;
 
@@ -3128,7 +3128,7 @@ Begin
     SC := SC_STATIC
   Else
     SC := SC_AUTO;
-  
+
   GenGlobalArrayDecl := GenArrayDecl(SC);
 End;
 
@@ -3202,10 +3202,10 @@ Var
   Choice: Integer;
 Begin
   InitCType(T);
-  
+
   { Distribution : 40% scalaire, 20% void, 15% struct, 15% union, 10% enum }
   Choice := RandomInt(100);
-  
+
   If Choice < 40 Then
   Begin
     { Type scalaire }
@@ -3253,7 +3253,7 @@ Begin
     { Par defaut, int* }
     T.Kind := TK_INT;
   End;
-  
+
   GenRandomPointerBaseType := T;
 End;
 
@@ -3270,10 +3270,10 @@ Begin
     Level := 2
   Else
     Level := RandomRange(3, MaxLevel);
-  
+
   If Level > MaxLevel Then
     Level := MaxLevel;
-  
+
   GenPointerLevel := Level;
 End;
 
@@ -3295,7 +3295,7 @@ Begin
   PtrType.ElemIdx := Ord(BaseType.Kind);
   { Copier l'index de structure/union/enum si applicable }
   PtrType.StructIdx := BaseType.StructIdx;
-  
+
   MakePointerType := PtrType;
 End;
 
@@ -3314,13 +3314,13 @@ Begin
     GenPointerType := ResultType;
     Exit;
   End;
-  
+
   { Generer le type de base }
   BaseType := GenRandomPointerBaseType;
-  
+
   { Generer le niveau d'indirection }
   Level := GenPointerLevel(MAX_POINTER_DEPTH - Depth);
-  
+
   { Creer le type pointeur }
   GenPointerType := MakePointerType(BaseType, Level);
 End;
@@ -3347,17 +3347,17 @@ Var
   S: TString;
 Begin
   S := '';
-  
+
   { Classe de stockage }
   If SC = SC_STATIC Then
     S := 'static ';
-  
+
   { Type de base }
   S := S + TypeToStr(BaseType) + ' ';
-  
+
   { Etoiles et nom }
   S := S + PointerStarsStr(Level) + Name + ';';
-  
+
   EmitLine(S);
 End;
 
@@ -3370,23 +3370,23 @@ Var
   S: TString;
 Begin
   S := '';
-  
+
   { Classe de stockage }
   If SC = SC_STATIC Then
     S := 'static ';
-  
+
   { Type de base }
   S := S + TypeToStr(BaseType) + ' ';
-  
+
   { Etoiles et nom }
   S := S + PointerStarsStr(Level) + Name;
-  
+
   { Initialisation }
   If InitNull Then
     S := S + ' = NULL';
-  
+
   S := S + ';';
-  
+
   EmitLine(S);
 End;
 
@@ -3438,7 +3438,7 @@ Begin
     Op := '++'
   Else
     Op := '--';
-  
+
   If IsPrefix Then
     GenPointerIncDec := Op + VarName
   Else
@@ -3452,7 +3452,7 @@ Var
   Choice: Integer;
 Begin
   Choice := RandomInt(5);
-  
+
   Case Choice Of
     0: { Dereferencement }
        GenPointerOp := GenPointerDeref(VarName, 1);
@@ -3486,24 +3486,24 @@ Begin
     GenPointerDecl := '';
     Exit;
   End;
-  
+
   { Generer le nom }
   Name := GenPointerName;
-  
+
   { Generer le type de base }
   BaseType := GenRandomPointerBaseType;
-  
+
   { Generer le niveau d'indirection }
   Level := GenPointerLevel(MAX_POINTER_DEPTH);
-  
+
   { Decider si on initialise a NULL }
   HasInit := RandomChoice(POINTER_INIT_PROB);
-  
+
   If HasInit Then
     EmitPointerVarDeclInit(Name, BaseType, Level, SC, True)
   Else
     EmitPointerVarDecl(Name, BaseType, Level, SC);
-  
+
   GenPointerDecl := Name;
 End;
 
@@ -3518,13 +3518,13 @@ Begin
     GenGlobalPointerDecl := '';
     Exit;
   End;
-  
+
   { 70% static, 30% sans classe de stockage }
   If RandomChoice(70) Then
     SC := SC_STATIC
   Else
     SC := SC_AUTO;
-  
+
   GenGlobalPointerDecl := GenPointerDecl(SC);
 End;
 
@@ -3537,7 +3537,7 @@ Begin
     GenLocalPointerDecl := '';
     Exit;
   End;
-  
+
   { Les pointeurs locaux sont auto par defaut }
   GenLocalPointerDecl := GenPointerDecl(SC_AUTO);
 End;
@@ -3578,11 +3578,11 @@ Var
   Format: Integer;
 Begin
   { Determiner les caracteristiques du type }
-  IsUnsigned := (T = TK_UINT) Or (T = TK_ULONG) Or (T = TK_ULONGLONG) Or 
+  IsUnsigned := (T = TK_UINT) Or (T = TK_ULONG) Or (T = TK_ULONGLONG) Or
                 (T = TK_UCHAR) Or (T = TK_USHORT);
   IsLong := (T = TK_LONG) Or (T = TK_ULONG);
   IsLongLong := (T = TK_LONGLONG) Or (T = TK_ULONGLONG);
-  
+
   { Generer une valeur dans les limites du type }
   Case T Of
     TK_CHAR, TK_SCHAR: Value := RandomRange(-128, 127);
@@ -3596,11 +3596,11 @@ Begin
   Else
     Value := RandomRange(0, 1000);
   End;
-  
+
   { Assurer valeur positive pour octal/hex }
   If Value < 0 Then
     If RandomChoice(50) Then Value := -Value;
-  
+
   { Choisir le format de representation }
   Format := RandomInt(100);
   If (Value >= 0) And (Format < OCTAL_PROB) Then
@@ -3648,7 +3648,7 @@ Begin
     { Format decimal }
     Str(Value, S);
   End;
-  
+
   { Ajouter les suffixes si necessaire }
   If RandomChoice(SUFFIX_PROB) Then
   Begin
@@ -3669,7 +3669,7 @@ Begin
     Else If IsUnsigned Then
       S := S + 'U';
   End;
-  
+
   Inc(LiteralCounter);
   GenIntLiteral := S;
 End;
@@ -3690,7 +3690,7 @@ Begin
   IntPart := RandomRange(0, 1000);
   FracPart := RandomRange(0, 9999);
   Exp := RandomRange(-MAX_FLOAT_EXP, MAX_FLOAT_EXP);
-  
+
   { Choisir le format }
   Format := RandomInt(5);
   Case Format Of
@@ -3724,17 +3724,17 @@ Begin
     HasFrac := True;
     HasExp := False;
   End;
-  
+
   { Construire la chaine }
   S := '';
-  
+
   If HasInt Then
     Str(IntPart, S)
   Else
     S := '';
-  
+
   S := S + '.';
-  
+
   If HasFrac Then
   Begin
     Str(FracPart, FracStr);
@@ -3746,7 +3746,7 @@ Begin
       FracStr := Copy(FracStr, 1, 4);
     S := S + FracStr;
   End;
-  
+
   If HasExp Then
   Begin
     If RandomBool Then
@@ -3761,7 +3761,7 @@ Begin
     Str(Exp, FracStr);
     S := S + FracStr;
   End;
-  
+
   { Ajouter le suffixe }
   If T = TK_FLOAT Then
   Begin
@@ -3777,7 +3777,7 @@ Begin
     Else
       S := S + 'L';
   End;
-  
+
   Inc(LiteralCounter);
   GenFloatLiteral := S;
 End;
@@ -3851,7 +3851,7 @@ Begin
   Else
     S := '''A''';
   End;
-  
+
   Inc(LiteralCounter);
   GenCharLiteral := S;
 End;
@@ -3866,7 +3866,7 @@ Var
 Begin
   Len := RandomRange(1, MAX_STRING_LEN);
   S := '"';
-  
+
   For I := 1 To Len Do
   Begin
     If RandomChoice(ESCAPE_PROB) Then
@@ -3892,14 +3892,14 @@ Begin
       Else
         S := S + C;
     End;
-    
+
     { Eviter les chaines trop longues }
     If Length(S) > MAX_STRING_LEN - 5 Then
       Break;
   End;
-  
+
   S := S + '"';
-  
+
   Inc(LiteralCounter);
   GenStringLiteral := S;
 End;
@@ -4004,7 +4004,7 @@ End;
 
 Function GenRandomArithOp(AllowMod: Boolean): TArithOp;
 { Genere un operateur arithmetique aleatoire.
-  AllowMod: si False, exclut le modulo (pour les flottants). 
+  AllowMod: si False, exclut le modulo (pour les flottants).
   RandomInt(N) retourne une valeur de 0 a N-1. }
 Var
   NumOps: Integer;
@@ -4098,29 +4098,29 @@ Var
   S: TString;
 Begin
   Inc(ArithExprCounter);
-  
+
   { Si profondeur max atteinte, retourner un operande simple }
   If Depth >= Opts.MaxExprDepth Then
   Begin
     GenArithExprRec := GenSimpleOperand(T);
     Exit;
   End;
-  
+
   { Decider si on genere une expression composee ou un operande simple }
   If (Depth > 0) And (Not RandomChoice(ARITH_RECURSE_PROB)) Then
   Begin
     GenArithExprRec := GenSimpleOperand(T);
     Exit;
   End;
-  
+
   { Generer un operateur aleatoire }
   AllowMod := IsIntegerTypeKind(T);  { Modulo seulement pour les entiers }
   Op := GenRandomArithOp(AllowMod);
-  
+
   { Generer les operandes gauche et droit }
   Left := GenArithExprRec(T, Depth + 1);
   Right := GenArithExprRec(T, Depth + 1);
-  
+
   { Gerer la division et le modulo de maniere securisee }
   If Op = AO_DIV Then
   Begin
@@ -4141,11 +4141,11 @@ Begin
     { Autres operateurs: +, -, * }
     S := Left + ' ' + ArithOpToStr(Op) + ' ' + Right;
   End;
-  
+
   { Ajouter des parentheses aleatoirement pour controler la precedence }
   If RandomChoice(ARITH_PAREN_PROB) Then
     S := WrapInParens(S);
-  
+
   GenArithExprRec := S;
 End;
 
@@ -4189,10 +4189,10 @@ Var
 Begin
   InnerPrec := GetArithOpPrecedence(InnerOp);
   OuterPrec := GetArithOpPrecedence(OuterOp);
-  
+
   If InnerPrec < OuterPrec Then
     NeedsParens := True
-  Else If (InnerPrec = OuterPrec) And IsRight And 
+  Else If (InnerPrec = OuterPrec) And IsRight And
           ((OuterOp = AO_SUB) Or (OuterOp = AO_DIV) Or (OuterOp = AO_MOD)) Then
     { Soustraction et division/modulo ne sont pas associatifs a droite }
     NeedsParens := True
@@ -4365,7 +4365,7 @@ Var
   UseVar: Boolean;
 Begin
   UseVar := Not RandomChoice(REL_LITERAL_PROB);
-  
+
   If UseVar And (NumVars > 0) Then
   Begin
     { Utiliser une variable existante de type compatible }
@@ -4393,7 +4393,7 @@ Var
   Result: TString;
 Begin
   Inc(RelLogExprCounter);
-  
+
   { Choisir un type pour les operandes }
   If Opts.NoFloats Then
     OpType := TK_INT
@@ -4401,10 +4401,10 @@ Begin
     OpType := TK_INT
   Else
     OpType := TK_DOUBLE;
-  
+
   { Generer l'operateur }
   Op := GenRandomRelOp;
-  
+
   { Generer les operandes }
   If (Depth < Opts.MaxExprDepth) And RandomChoice(REL_RECURSE_PROB) Then
   Begin
@@ -4413,19 +4413,19 @@ Begin
   End
   Else
     Left := GenSimpleRelOperand(OpType);
-  
+
   If (Depth < Opts.MaxExprDepth) And RandomChoice(REL_RECURSE_PROB) Then
     Right := GenArithExprRec(OpType, Depth + 1)
   Else
     Right := GenSimpleRelOperand(OpType);
-  
+
   { Construire l'expression }
   Result := Left + ' ' + RelOpToStr(Op) + ' ' + Right;
-  
+
   { Ajouter des parentheses si demande }
   If RandomChoice(REL_PAREN_PROB) Then
     Result := '(' + Result + ')';
-  
+
   GenRelExprRec := Result;
 End;
 
@@ -4445,41 +4445,41 @@ Var
   Result: TString;
 Begin
   Inc(RelLogExprCounter);
-  
+
   { Decider si on genere un NOT ou un operateur binaire }
   If RandomChoice(LOG_NOT_PROB) Then
   Begin
     { Generer une negation logique }
     Op := LO_NOT;
-    
+
     If (Depth < Opts.MaxExprDepth) And RandomChoice(LOG_RECURSE_PROB) Then
       Operand := GenRelExprRec(Depth + 1)
     Else
       Operand := GenRelExprRec(Depth);
-    
+
     Result := '!' + '(' + Operand + ')';
   End
   Else
   Begin
     { Generer un && ou || }
     Op := GenRandomLogOp(False);  { Pas de NOT ici }
-    
+
     { Generer operande gauche }
     If (Depth < Opts.MaxExprDepth) And RandomChoice(LOG_RECURSE_PROB) Then
       Left := GenLogExprRec(Depth + 1)
     Else
       Left := GenRelExprRec(Depth);
-    
+
     { Generer operande droit }
     If (Depth < Opts.MaxExprDepth) And RandomChoice(LOG_RECURSE_PROB) Then
       Right := GenLogExprRec(Depth + 1)
     Else
       Right := GenRelExprRec(Depth);
-    
+
     { Construire l'expression avec evaluation court-circuit }
     Result := '(' + Left + ') ' + LogOpToStr(Op) + ' (' + Right + ')';
   End;
-  
+
   GenLogExprRec := Result;
 End;
 
@@ -4499,7 +4499,7 @@ Var
   Result: TString;
 Begin
   Inc(RelLogExprCounter);
-  
+
   { Choisir entre comparaison avec NULL ou avec soi-meme }
   If RandomBool Then
   Begin
@@ -4519,7 +4519,7 @@ Begin
     Else
       Result := PtrName + ' != ' + PtrName;
   End;
-  
+
   GenCompareExpr := Result;
 End;
 
@@ -4556,7 +4556,7 @@ Var
 Begin
   InnerPrec := GetLogOpPrecedence(InnerOp);
   OuterPrec := GetLogOpPrecedence(OuterOp);
-  
+
   { Si la precedence interieure est plus basse, il faut des parentheses }
   LogOpNeedsParens := InnerPrec < OuterPrec;
 End;
@@ -4681,11 +4681,11 @@ Begin
   Else
     MaxShift := MAX_SHIFT_AMOUNT;
   End;
-  
+
   { Generer un montant de decalage valide (0 a MaxShift inclus) }
   ShiftVal := RandomRange(0, MaxShift);
   Str(ShiftVal, Result);
-  
+
   GenSafeShiftAmount := Result;
 End;
 
@@ -4701,12 +4701,12 @@ Var
   IsUnsigned: Boolean;
 Begin
   Inc(BitExprCounter);
-  
+
   { Verifier si le type est unsigned }
   IsUnsigned := OpType In [TK_UCHAR, TK_USHORT, TK_UINT, TK_ULONG, TK_ULONGLONG];
-  
+
   ShiftAmount := GenSafeShiftAmount(OpType);
-  
+
   If RandomChoice(SHIFT_SAFE_PROB) Then
   Begin
     { Version securisee avec cast unsigned pour eviter UB sur decalage gauche
@@ -4724,7 +4724,7 @@ Begin
     { Version simple }
     Result := '(' + Operand + ' ' + BitOpToStr(Op) + ' ' + ShiftAmount + ')';
   End;
-  
+
   GenSafeShift := Result;
 End;
 
@@ -4737,7 +4737,7 @@ Var
   I: Integer;
 Begin
   UseVar := Not RandomChoice(BIT_LITERAL_PROB);
-  
+
   If UseVar And (NumVars > 0) Then
   Begin
     { Chercher une variable de type entier }
@@ -4769,7 +4769,7 @@ Var
   Result: TString;
 Begin
   Inc(BitExprCounter);
-  
+
   { Choisir un type entier pour les operandes (obligatoire pour bit-a-bit) }
   Case RandomInt(4) Of
     0: OpType := TK_INT;
@@ -4779,7 +4779,7 @@ Begin
   Else
     OpType := TK_INT;
   End;
-  
+
   { Decider si on genere un NOT (~) ou un operateur binaire }
   If RandomChoice(BIT_NOT_PROB) Then
   Begin
@@ -4788,14 +4788,14 @@ Begin
       Operand := GenBitExprRec(Depth + 1)
     Else
       Operand := GenSimpleBitOperand(OpType);
-    
+
     Result := '~(' + Operand + ')';
   End
   Else
   Begin
     { Generer un operateur binaire }
     Op := GenRandomBitOp(False);  { Pas de NOT ici }
-    
+
     { Traiter les operateurs de decalage specialement }
     If IsShiftOp(Op) Then
     Begin
@@ -4804,34 +4804,34 @@ Begin
         Left := GenBitExprRec(Depth + 1)
       Else
         Left := GenSimpleBitOperand(OpType);
-      
+
       Result := GenSafeShift(Left, Op, OpType);
     End
     Else
     Begin
       { Operateurs bit-a-bit normaux: & | ^ }
-      
+
       { Generer operande gauche }
       If (Depth < Opts.MaxExprDepth) And RandomChoice(BIT_RECURSE_PROB) Then
         Left := GenBitExprRec(Depth + 1)
       Else
         Left := GenSimpleBitOperand(OpType);
-      
+
       { Generer operande droit }
       If (Depth < Opts.MaxExprDepth) And RandomChoice(BIT_RECURSE_PROB) Then
         Right := GenBitExprRec(Depth + 1)
       Else
         Right := GenSimpleBitOperand(OpType);
-      
+
       { Construire l'expression }
       Result := Left + ' ' + BitOpToStr(Op) + ' ' + Right;
-      
+
       { Ajouter des parentheses si demande }
       If RandomChoice(BIT_PAREN_PROB) Then
         Result := '(' + Result + ')';
     End;
   End;
-  
+
   GenBitExprRec := Result;
 End;
 
@@ -4856,7 +4856,7 @@ Var
 Begin
   InnerPrec := GetBitOpPrecedence(InnerOp);
   OuterPrec := GetBitOpPrecedence(OuterOp);
-  
+
   { Si la precedence interieure est plus basse ou egale, il faut des parentheses }
   BitOpNeedsParens := InnerPrec <= OuterPrec;
 End;
@@ -4886,7 +4886,7 @@ Type
     AO_SHL_ASSIGN, { <<= (decalage gauche et affectation) }
     AO_SHR_ASSIGN  { >>= (decalage droit et affectation) }
   );
-  
+
   { Operateurs d'increment/decrement C }
   TIncDecOp = (
     ID_PRE_INC,    { ++x (pre-increment) }
@@ -5067,7 +5067,7 @@ Begin
   { Verifier si le type est scalaire (entier, flottant, pointeur, enum) }
   IsScalar := IsInteger Or (T In [TK_FLOAT, TK_DOUBLE, TK_LONGDOUBLE,
                                   TK_POINTER, TK_ENUM]);
-  
+
   If IsBitAssign(Op) Then
     { Les operateurs bit-a-bit ne fonctionnent qu'avec des entiers }
     IsValidCompoundAssignType := IsInteger
@@ -5082,13 +5082,13 @@ End;
 Function GenLValue: TString;
 { Genere une lvalue (cible d'affectation valide).
   Une lvalue peut etre: un nom de variable, un element de tableau,
-  un champ de structure, un pointeur dereference (*p). }
+  un champ de structure, un pointeur dereference ( *p). }
 Var
   I, Choice: Integer;
   Result: TString;
 Begin
   Result := '';
-  
+
   { S'il n'y a pas de variables, en creer une simple }
   If NumVars = 0 Then
   Begin
@@ -5096,10 +5096,10 @@ Begin
     GenLValue := Result;
     Exit;
   End;
-  
+
   { Choisir une variable existante qui peut etre une lvalue }
   Choice := RandomInt(NumVars) + 1;
-  
+
   { Trouver une variable modifiable (pas const) }
   For I := Choice To NumVars Do
   Begin
@@ -5109,7 +5109,7 @@ Begin
       Break;
     End;
   End;
-  
+
   { Si pas trouve, chercher depuis le debut }
   If Result = '' Then
   Begin
@@ -5122,7 +5122,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Dernier recours: utiliser la premiere variable ou un nom par defaut }
   If Result = '' Then
   Begin
@@ -5131,7 +5131,7 @@ Begin
     Else
       Result := 'temp_var';
   End;
-  
+
   GenLValue := Result;
 End;
 
@@ -5144,22 +5144,22 @@ Var
   VarType: TTypeKind;
 Begin
   Inc(AssignExprCounter);
-  
+
   { Generer la lvalue (cible de l'affectation) }
   LVal := GenLValue;
-  
+
   { Determiner le type de la variable pour generer une rvalue compatible }
   VarType := TK_INT;  { Type par defaut }
-  
+
   { Generer la rvalue (valeur a affecter) }
   If (Depth < Opts.MaxExprDepth) And RandomChoice(ARITH_RECURSE_PROB) Then
     RVal := GenArithExprRec(VarType, Depth + 1)
   Else
     RVal := GenIntLiteral(VarType);
-  
+
   { Construire l'expression d'affectation }
   Result := LVal + ' = ' + RVal;
-  
+
   GenAssignExpr := Result;
 End;
 
@@ -5174,16 +5174,16 @@ Var
   ShiftAmount: Integer;
 Begin
   Inc(AssignExprCounter);
-  
+
   { Generer un operateur d'affectation compose (pas simple =) }
   Op := GenRandomAssignOp(True);
   If Op = AO_ASSIGN Then
     Op := AO_ADD_ASSIGN;  { S'assurer d'avoir un operateur compose }
-  
+
   { Generer la lvalue }
   LVal := GenLValue;
   VarType := TK_INT;  { Type par defaut pour les operateurs composes }
-  
+
   { Generer la rvalue selon le type d'operateur }
   If IsShiftAssign(Op) Then
   Begin
@@ -5225,10 +5225,10 @@ Begin
     Else
       RVal := GenIntLiteral(VarType);
   End;
-  
+
   { Construire l'expression d'affectation composee }
   Result := LVal + ' ' + AssignOpToStr(Op) + ' ' + RVal;
-  
+
   GenCompoundAssign := Result;
 End;
 
@@ -5239,13 +5239,13 @@ Var
   LVal: TString;
 Begin
   Inc(AssignExprCounter);
-  
+
   { Generer un operateur d'increment/decrement aleatoire }
   Op := GenRandomIncDecOp;
-  
+
   { Generer la lvalue }
   LVal := GenLValue;
-  
+
   { Construire l'expression d'increment/decrement }
   GenIncDecExpr := IncDecOpToStr(Op, LVal);
 End;
@@ -5259,7 +5259,7 @@ Var
   Result: TString;
 Begin
   Inc(AssignExprCounter);
-  
+
   { Generer la premiere expression (son resultat est ignore) }
   If RandomChoice(ASSIGN_INCDEC_PROB) Then
     Expr1 := GenIncDecExpr
@@ -5267,7 +5267,7 @@ Begin
     Expr1 := GenCompoundAssign(Depth + 1)
   Else
     Expr1 := GenAssignExpr(Depth + 1);
-  
+
   { Generer la deuxieme expression (sa valeur est le resultat) }
   If (Depth < Opts.MaxExprDepth) And RandomChoice(ASSIGN_COMMA_PROB) Then
     Expr2 := GenCommaExpr(Depth + 1)
@@ -5275,10 +5275,10 @@ Begin
     Expr2 := GenIncDecExpr
   Else
     Expr2 := GenAssignExpr(Depth + 1);
-  
+
   { Construire l'expression virgule avec parentheses }
   Result := '(' + Expr1 + ', ' + Expr2 + ')';
-  
+
   GenCommaExpr := Result;
 End;
 
@@ -5293,10 +5293,10 @@ Var
   Choice: Integer;
 Begin
   Inc(AssignExprCounter);
-  
+
   { Choisir le type d'expression a generer }
   Choice := RandomInt(100);
-  
+
   If Choice < ASSIGN_INCDEC_PROB Then
     { Generer un increment/decrement }
     GenRandomAssignExpr := GenIncDecExpr
@@ -5396,7 +5396,7 @@ Begin
     IsSafeCast := True;
     Exit;
   End;
-  
+
   { Cast entre types entiers de meme signe et taille croissante }
   If IsIntegerType(FromType) And IsIntegerType(ToType) Then
   Begin
@@ -5407,14 +5407,14 @@ Begin
         Exit;
       End;
   End;
-  
+
   { Cast vers void* est generalement securise }
   If IsPointerType(ToType) And (ToType.Kind = TK_VOID) Then
   Begin
     IsSafeCast := True;
     Exit;
   End;
-  
+
   { Par defaut, le cast peut etre risque }
   IsSafeCast := False;
 End;
@@ -5425,7 +5425,7 @@ Var
   T: TCType;
 Begin
   InitCType(T);
-  
+
   { Generer un type entier ou flottant pour le cast }
   If RandomChoice(70) Then
   Begin
@@ -5454,7 +5454,7 @@ Begin
       Else
         T.Kind := TK_DOUBLE;
   End;
-  
+
   GenRandomCastType := T;
 End;
 
@@ -5464,7 +5464,7 @@ Var
   T: TCType;
 Begin
   InitCType(T);
-  
+
   { Pour un type entier, generer un type entier de taille >= }
   If IsIntegerType(SourceType) Then
   Begin
@@ -5498,7 +5498,7 @@ Begin
   End
   Else
     T.Kind := TK_INT;
-  
+
   GenSafeTargetType := T;
 End;
 
@@ -5510,7 +5510,7 @@ Var
   InnerExpr: TString;
 Begin
   Inc(CondExprCounter);
-  
+
   { Generer le type cible du cast }
   If RandomChoice(COND_SAFE_CAST_PROB) Then
   Begin
@@ -5519,13 +5519,13 @@ Begin
   End
   Else
     TargetType := GenRandomCastType;
-  
+
   { Generer l'expression interieure }
   If (Depth < Opts.MaxExprDepth) And RandomChoice(COND_NESTED_PROB) Then
     InnerExpr := GenArithExprRec(TK_INT, Depth + 1)
   Else
     InnerExpr := GenIntLiteral(TK_INT);
-  
+
   GenCastExpr := '((' + TypeToStr(TargetType) + ')' + InnerExpr + ')';
 End;
 
@@ -5535,7 +5535,7 @@ Var
   T: TCType;
 Begin
   Inc(CondExprCounter);
-  
+
   { Choisir un type pour sizeof }
   InitCType(T);
   Case RandomInt(12) Of
@@ -5554,12 +5554,12 @@ Begin
   Else
     T.Kind := TK_INT;
   End;
-  
+
   { Eviter les types flottants si desactives }
   If Opts.NoFloats Then
     If IsFloatType(T) Then
       T.Kind := TK_INT;
-  
+
   GenSizeofTypeExpr := 'sizeof(' + TypeToStr(T) + ')';
 End;
 
@@ -5570,7 +5570,7 @@ Var
   VarIdx: Integer;
 Begin
   Inc(CondExprCounter);
-  
+
   { Utiliser une variable existante si disponible }
   If NumVars > 0 Then
   Begin
@@ -5587,7 +5587,7 @@ Function GenSizeofExpr: TString;
 { Genere une expression sizeof : sizeof(type) ou sizeof(expr). }
 Begin
   Inc(CondExprCounter);
-  
+
   If RandomChoice(COND_SIZEOF_TYPE_PROB) Then
     GenSizeofExpr := GenSizeofTypeExpr
   Else
@@ -5602,7 +5602,7 @@ Begin
     GenTernaryCondition := GenRelExprRec(Depth + 1)
   Else
     { Condition simple avec comparaison }
-    GenTernaryCondition := '(' + GenIntLiteral(TK_INT) + ' ' + 
+    GenTernaryCondition := '(' + GenIntLiteral(TK_INT) + ' ' +
                            RelOpToStr(GenRandomRelOp) + ' ' +
                            GenIntLiteral(TK_INT) + ')';
 End;
@@ -5632,18 +5632,18 @@ Var
   ResultType: TCType;
 Begin
   Inc(CondExprCounter);
-  
+
   { Generer la condition }
   Cond := GenTernaryCondition(Depth);
-  
+
   { Determiner le type du resultat }
   InitCType(ResultType);
   ResultType.Kind := TK_INT;  { Type par defaut }
-  
+
   { Generer les deux branches avec types compatibles }
   ThenExpr := GenTernaryBranch(Depth + 1, ResultType);
   ElseExpr := GenTernaryBranch(Depth + 1, ResultType);
-  
+
   GenCondExpr := '(' + Cond + ' ? ' + ThenExpr + ' : ' + ElseExpr + ')';
 End;
 
@@ -5653,18 +5653,18 @@ Var
   Cond1, Cond2, Expr1, Expr2, Expr3: TString;
 Begin
   Inc(CondExprCounter);
-  
+
   { Generer les conditions }
   Cond1 := GenTernaryCondition(Depth);
   Cond2 := GenTernaryCondition(Depth);
-  
+
   { Generer les expressions }
   Expr1 := GenIntLiteral(TK_INT);
   Expr2 := GenIntLiteral(TK_INT);
   Expr3 := GenIntLiteral(TK_INT);
-  
+
   { Ternaire imbriquee dans la branche then }
-  GenNestedCondExpr := '(' + Cond1 + ' ? (' + Cond2 + ' ? ' + Expr1 + 
+  GenNestedCondExpr := '(' + Cond1 + ' ? (' + Cond2 + ' ? ' + Expr1 +
                        ' : ' + Expr2 + ') : ' + Expr3 + ')';
 End;
 
@@ -5676,18 +5676,18 @@ Var
   Expr1, Expr2: TString;
 Begin
   Inc(CondExprCounter);
-  
+
   { Generer deux expressions }
   If (Depth < Opts.MaxExprDepth) And RandomChoice(30) Then
     Expr1 := GenArithExprRec(TK_INT, Depth + 1)
   Else
     Expr1 := GenIntLiteral(TK_INT);
-  
+
   If (Depth < Opts.MaxExprDepth) And RandomChoice(30) Then
     Expr2 := GenArithExprRec(TK_INT, Depth + 1)
   Else
     Expr2 := GenIntLiteral(TK_INT);
-  
+
   { L'expression virgule doit etre parenthesee pour eviter les ambiguites }
   GenCondCommaExpr := '(' + Expr1 + ', ' + Expr2 + ')';
 End;
@@ -5700,10 +5700,10 @@ Var
   Choice: Integer;
 Begin
   Inc(CondExprCounter);
-  
+
   { Choisir le type d'expression a generer }
   Choice := RandomInt(100);
-  
+
   If Choice < COND_TERNARY_PROB Then
   Begin
     { Generer une expression ternaire }
@@ -5760,7 +5760,7 @@ Begin
   If Length(Expr) < 4 Then Exit;
   If Expr[1] <> '(' Then Exit;
   If Expr[2] <> '(' Then Exit;
-  
+
   { Verifier si c'est de la forme ((type)expr) }
   ParenCount := 0;
   For I := 1 To Length(Expr) Do
@@ -5811,10 +5811,10 @@ Var
   Choice: Integer;
 Begin
   Inc(StmtCounter);
-  
+
   { Choisir le type d'expression a generer }
   Choice := RandomInt(100);
-  
+
   If Choice < 40 Then
     { Expression d'affectation }
     Expr := GenAssignExpr(0)
@@ -5827,7 +5827,7 @@ Begin
   Else
     { Expression conditionnelle }
     Expr := GenRandomCondExpr(0);
-  
+
   EmitLine(Expr + ';');
 End;
 
@@ -5842,10 +5842,10 @@ Var
 Begin
   Inc(StmtCounter);
   Inc(VarCounter);
-  
+
   { Generer un nom de variable unique }
   VarName := 'local_' + IntToStr(VarCounter);
-  
+
   { Choisir un type aleatoire }
   Case RandomInt(6) Of
     0: VarType := TK_INT;
@@ -5856,10 +5856,10 @@ Begin
   Else
     VarType := TK_INT;
   End;
-  
+
   { Decider si on initialise la variable }
   UseInit := RandomChoice(70);  { 70% de chance d'initialiser }
-  
+
   If UseInit Then
   Begin
     InitValue := GenIntLiteral(VarType);
@@ -5876,14 +5876,14 @@ Var
   RetValue: TString;
 Begin
   Inc(StmtCounter);
-  
+
   If Not InFunction Then
   Begin
     { Si pas dans une fonction, generer un statement vide a la place }
     GenNullStmt;
     Exit;
   End;
-  
+
   If CurrentRetType = TK_VOID Then
     { Fonction void: return sans valeur }
     EmitLine('return;')
@@ -5905,14 +5905,14 @@ Procedure GenBreakStmt;
   Ne peut etre genere que dans une boucle ou un switch. }
 Begin
   Inc(StmtCounter);
-  
+
   If Not (InLoop Or InSwitch) Then
   Begin
     { Si pas dans un contexte valide, generer un statement vide }
     GenNullStmt;
     Exit;
   End;
-  
+
   EmitLine('break;');
 End;
 
@@ -5921,14 +5921,14 @@ Procedure GenContinueStmt;
   Ne peut etre genere que dans une boucle. }
 Begin
   Inc(StmtCounter);
-  
+
   If Not InLoop Then
   Begin
     { Si pas dans une boucle, generer un statement vide }
     GenNullStmt;
     Exit;
   End;
-  
+
   EmitLine('continue;');
 End;
 
@@ -5939,7 +5939,7 @@ Var
   LabelName: TString;
 Begin
   Inc(StmtCounter);
-  
+
   { Si des labels ont ete definis, goto vers un label existant }
   If NumLabels > 0 Then
     LabelName := Labels[RandomInt(NumLabels) + 1].Name
@@ -5956,7 +5956,7 @@ Begin
       Labels[NumLabels].Used := True;  { Utilise par ce goto }
     End;
   End;
-  
+
   EmitLine('goto ' + LabelName + ';');
 End;
 
@@ -5967,10 +5967,10 @@ Var
   LabelName: TString;
 Begin
   Inc(StmtCounter);
-  
+
   { Generer un nouveau label }
   LabelName := GenLabelName;
-  
+
   { Stocker le label }
   If NumLabels < MAX_LABELS Then
   Begin
@@ -5979,7 +5979,7 @@ Begin
     Labels[NumLabels].Defined := True;  { Marquer comme defini }
     Labels[NumLabels].Used := False;  { Pas encore utilise }
   End;
-  
+
   { Emettre le label suivi d'un statement vide }
   EmitLine(LabelName + ':');
   EmitLine('  ;');  { Statement vide apres le label }
@@ -5993,7 +5993,7 @@ Var
   Choice: Integer;
 Begin
   Choice := RandomInt(100);
-  
+
   If Choice < STMT_EXPR_PROB Then
     GenExprStmt
   Else If Choice < STMT_EXPR_PROB + STMT_DECL_PROB Then
@@ -6256,7 +6256,7 @@ Begin
   VType.ArraySize := 0;
   VType.ElemIdx := 0;
   VType.StructIdx := 0;
-  
+
   If AddLocalVar(VarName, VType) Then
   Begin
     EmitLine(TypeToStr(VType) + ' ' + VarName + ';');
@@ -6273,7 +6273,7 @@ Var
 Begin
   If NumVars = 0 Then Exit;
   If CurrScope = 0 Then Exit;
-  
+
   { Prendre une variable dans une portee parente }
   ParentVarIdx := RandomRange(1, ScopeStack[CurrScope].StartVarIdx - 1);
   If ParentVarIdx > 0 Then
@@ -6291,7 +6291,7 @@ Begin
       VType.ElemIdx := 0;
       VType.StructIdx := 0;
     End;
-    
+
     If AddLocalVar(VarName, VType) Then
     Begin
       EmitLine('/* shadow */ ' + TypeToStr(VType) + ' ' + VarName + ';');
@@ -6310,13 +6310,13 @@ Begin
   { D'abord generer quelques declarations locales optionnelles }
   If RandomChoice(BLOCK_LOCAL_DECL_PROB) Then
   Begin
-    If RandomChoice(BLOCK_SHADOW_PROB) And (CurrScope > 1) And 
+    If RandomChoice(BLOCK_SHADOW_PROB) And (CurrScope > 1) And
        (ScopeStack[CurrScope].StartVarIdx > 1) Then
       GenShadowVarDecl
     Else
       GenLocalVarDecl;
   End;
-  
+
   { Puis generer les statements }
   For I := 1 To NumStmts Do
   Begin
@@ -6339,17 +6339,17 @@ Begin
     GenRandomStmt;
     Exit;
   End;
-  
+
   Inc(BlockCounter);
-  
+
   EmitLine('{');
   EmitIndent;
   PushScope;
-  
+
   { Determiner le nombre de statements dans le bloc }
   NumStmts := RandomRange(BLOCK_MIN_STMTS, BLOCK_MAX_STMTS);
   GenBlockContent(NumStmts);
-  
+
   PopScope;
   EmitUnindent;
   EmitLine('}');
@@ -6572,7 +6572,7 @@ Begin
     End;
     Inc(StatStmts);
   End;
-  
+
   { Ajouter un break selon la probabilite }
   If RandomChoice(SWITCH_BREAK_PROB) Then
     EmitLine('break;');
@@ -6590,7 +6590,7 @@ Begin
     EmitLine('{');
     EmitIndent;
     PushScope;
-    
+
     { Generer 1 a 3 statements }
     If (NumVars > 0) And RandomChoice(60) Then
       EmitLine(Vars[RandomRange(1, NumVars)].Name + ' = ' + IntToStr(RandomRange(0, 50)) + ';')
@@ -6599,11 +6599,11 @@ Begin
     Else
       EmitLine(';');
     Inc(StatStmts);
-    
+
     { Possibilite de if imbrique si pas trop profond }
     If (Depth < Opts.MaxBlockDepth - 1) And RandomChoice(IF_NESTED_PROB) Then
       GenIfStmt(Depth + 1);
-    
+
     PopScope;
     EmitUnindent;
     EmitLine('}');
@@ -6632,14 +6632,14 @@ Var
   I: Integer;
 Begin
   If Depth >= Opts.MaxBlockDepth Then Exit;
-  
+
   Inc(IfStmtCounter);
   Cond := GenCondition;
-  
+
   { Generer le if }
   EmitLine('if (' + Cond + ')');
   GenIfBody(Depth);
-  
+
   { Decider si on a des else if }
   HasElseIf := RandomChoice(IF_ELSEIF_PROB);
   If HasElseIf Then
@@ -6653,7 +6653,7 @@ Begin
       Inc(IfStmtCounter);
     End;
   End;
-  
+
   { Decider si on a un else final }
   HasElse := RandomChoice(IF_ELSE_PROB);
   If HasElse Then
@@ -6671,14 +6671,14 @@ Var
   Cond: TString;
 Begin
   If Depth >= Opts.MaxBlockDepth Then Exit;
-  
+
   Inc(IfStmtCounter);
-  
+
   { Premier if }
   Cond := GenCondition;
   EmitLine('if (' + Cond + ')');
   GenIfBody(Depth);
-  
+
   { Plusieurs else if }
   NumElseIf := RandomRange(2, IF_ELSEIF_MAX);
   For I := 1 To NumElseIf Do
@@ -6688,7 +6688,7 @@ Begin
     GenIfBody(Depth);
     Inc(IfStmtCounter);
   End;
-  
+
   { Else final obligatoire }
   EmitLine('else');
   GenIfBody(Depth);
@@ -6707,28 +6707,28 @@ Var
   OldInSwitch: Boolean;
 Begin
   If Depth >= Opts.MaxBlockDepth Then Exit;
-  
+
   Inc(SwitchStmtCounter);
-  
+
   { Sauvegarder le contexte }
   OldInSwitch := InSwitch;
   InSwitch := True;
-  
+
   { Initialiser le tableau des cases utilises }
   For I := 0 To SWITCH_MAX_CASES - 1 Do
     UsedCases[I] := -1;
-  
+
   { Generer l'expression du switch }
   Expr := GenSwitchExpr;
-  
+
   { Emettre le switch }
   EmitLine('switch (' + Expr + ')');
   EmitLine('{');
   EmitIndent;
-  
+
   { Determiner le nombre de cases }
   NumCases := RandomRange(SWITCH_MIN_CASES, SWITCH_MAX_CASES);
-  
+
   { Generer les cases avec des valeurs uniques }
   For I := 0 To NumCases - 1 Do
   Begin
@@ -6743,9 +6743,9 @@ Begin
         End;
     Until Not AlreadyUsed;
     UsedCases[I] := CaseValue;
-    
+
     GenCaseLabel(CaseValue);
-    
+
     { Generer le corps du case }
     If RandomChoice(SWITCH_EMPTY_CASE_PROB) And (I < NumCases - 1) Then
     Begin
@@ -6755,7 +6755,7 @@ Begin
     Else
       GenCaseBody;
   End;
-  
+
   { Generer le default si requis }
   HasDefault := RandomChoice(SWITCH_DEFAULT_PROB);
   If HasDefault Then
@@ -6763,10 +6763,10 @@ Begin
     GenDefaultLabel;
     GenCaseBody;
   End;
-  
+
   EmitUnindent;
   EmitLine('}');
-  
+
   { Restaurer le contexte }
   InSwitch := OldInSwitch;
 End;
@@ -6782,7 +6782,7 @@ Procedure GenRandomCondStmt(Depth: Integer);
 { Genere un statement conditionnel aleatoire (if ou switch). }
 Begin
   If Depth >= Opts.MaxBlockDepth Then Exit;
-  
+
   If RandomChoice(70) Then
   Begin
     { Generer un if }
@@ -6929,7 +6929,7 @@ Begin
     EmitLine('{');
     EmitIndent;
     PushScope;
-    
+
     { Generer 1 a 4 statements }
     NumStmts := RandomRange(1, 4);
     For I := 1 To NumStmts Do
@@ -6942,7 +6942,7 @@ Begin
         EmitLine(';');
       Inc(StatStmts);
     End;
-    
+
     { Possibilite de break ou continue }
     If InLoop Then
     Begin
@@ -6951,7 +6951,7 @@ Begin
       Else If RandomChoice(LOOP_CONTINUE_PROB) Then
         EmitLine('continue;');
     End;
-    
+
     { Possibilite de boucle imbriquee si pas trop profond }
     If (Depth < Opts.MaxBlockDepth - 1) And RandomChoice(LOOP_NESTED_PROB) Then
     Begin
@@ -6961,7 +6961,7 @@ Begin
         2: GenForStmt(Depth + 1);
       End;
     End;
-    
+
     PopScope;
     EmitUnindent;
     EmitLine('}');
@@ -6989,20 +6989,20 @@ Var
 Begin
   If Depth >= Opts.MaxBlockDepth Then Exit;
   If Not CanNestLoop Then Exit;
-  
+
   Inc(WhileStmtCounter);
   Inc(LoopDepth);
-  
+
   { Sauvegarder le contexte }
   OldInLoop := InLoop;
   InLoop := True;
-  
+
   { Generer un garde pour eviter les boucles infinies }
   GuardVar := GenLoopGuard;
-  
+
   { Declarer le compteur de garde }
   EmitLine('int ' + GuardVar + ' = ' + IntToStr(LOOP_GUARD_COUNTER) + ';');
-  
+
   { Generer la condition }
   If RandomChoice(50) Then
     Cond := GenCondition
@@ -7011,11 +7011,11 @@ Begin
     { Utiliser le garde comme condition }
     Cond := GuardVar + ' > 0';
   End;
-  
+
   { Emettre le while avec garde supplementaire }
   EmitLine('while ((' + Cond + ') && (' + GuardVar + '-- > 0))');
   GenLoopBody(Depth);
-  
+
   { Restaurer le contexte }
   InLoop := OldInLoop;
   Dec(LoopDepth);
@@ -7031,33 +7031,33 @@ Var
 Begin
   If Depth >= Opts.MaxBlockDepth Then Exit;
   If Not CanNestLoop Then Exit;
-  
+
   Inc(DoWhileStmtCounter);
   Inc(LoopDepth);
-  
+
   { Sauvegarder le contexte }
   OldInLoop := InLoop;
   InLoop := True;
-  
+
   { Generer un garde pour eviter les boucles infinies }
   GuardVar := GenLoopGuard;
-  
+
   { Declarer le compteur de garde }
   EmitLine('int ' + GuardVar + ' = ' + IntToStr(LOOP_GUARD_COUNTER) + ';');
-  
+
   { Emettre le do }
   EmitLine('do');
   GenLoopBody(Depth);
-  
+
   { Generer la condition }
   If RandomChoice(50) Then
     Cond := GenCondition
   Else
     Cond := GuardVar + ' > 0';
-  
+
   { Emettre le while avec garde }
   EmitLine('while ((' + Cond + ') && (--' + GuardVar + ' > 0));');
-  
+
   { Restaurer le contexte }
   InLoop := OldInLoop;
   Dec(LoopDepth);
@@ -7078,24 +7078,24 @@ Var
 Begin
   If Depth >= Opts.MaxBlockDepth Then Exit;
   If Not CanNestLoop Then Exit;
-  
+
   Inc(ForStmtCounter);
   Inc(LoopDepth);
-  
+
   { Sauvegarder le contexte }
   OldInLoop := InLoop;
   InLoop := True;
-  
+
   { Generer le nom de la variable de boucle }
   LoopVar := GenLoopVarName;
-  
+
   { Decider si on utilise la declaration C99 dans l'init }
   UseC99Decl := RandomChoice(FOR_DECL_PROB);
-  
+
   { Valeurs pour la boucle bornee }
   InitVal := RandomRange(0, 5);
   LimitVal := RandomRange(InitVal + 1, InitVal + LOOP_MAX_ITERATIONS);
-  
+
   { Generer les parties du for }
   If RandomChoice(FOR_INIT_PROB) Then
   Begin
@@ -7114,21 +7114,21 @@ Begin
       EmitLine('int ' + LoopVar + ' = 0;');
     InitPart := '';
   End;
-  
+
   If RandomChoice(FOR_COND_PROB) Then
     CondPart := LoopVar + ' < ' + IntToStr(LimitVal)
   Else
     CondPart := '';
-  
+
   If RandomChoice(FOR_UPDATE_PROB) Then
     UpdatePart := GenLoopUpdate(LoopVar)
   Else
     UpdatePart := '';
-  
+
   { Emettre le for }
   EmitLine('for (' + InitPart + '; ' + CondPart + '; ' + UpdatePart + ')');
   GenLoopBody(Depth);
-  
+
   { Restaurer le contexte }
   InLoop := OldInLoop;
   Dec(LoopDepth);
@@ -7141,9 +7141,9 @@ Var
 Begin
   If Depth >= Opts.MaxBlockDepth Then Exit;
   If Not CanNestLoop Then Exit;
-  
+
   R := RandomInt(100);
-  
+
   If R < WHILE_PROB Then
     GenWhileStmt(Depth)
   Else If R < WHILE_PROB + DO_WHILE_PROB Then
@@ -7230,7 +7230,7 @@ Var
   R: Integer;
 Begin
   InitCType(T);
-  
+
   If RandomChoice(FUNC_VOID_RETURN_PROB) Then
   Begin
     T.Kind := TK_VOID;
@@ -7251,7 +7251,7 @@ Begin
     Else
       T.Kind := TK_UINT;
   End;
-  
+
   GenRandomReturnType := T;
 End;
 
@@ -7263,7 +7263,7 @@ Var
 Begin
   InitCType(T);
   R := RandomInt(100);
-  
+
   { Choisir le type de base }
   If R < 35 Then
     T.Kind := TK_INT
@@ -7275,15 +7275,15 @@ Begin
     T.Kind := TK_SHORT
   Else
     T.Kind := TK_UINT;
-  
+
   { Peut-etre un pointeur ? }
   If (Not Opts.NoPointers) And RandomChoice(FUNC_POINTER_PARAM_PROB) Then
     T.Kind := TK_POINTER;
-  
+
   { Peut-etre const ? }
   If (Not Opts.NoConsts) And RandomChoice(25) Then
     T.Quals := Q_CONST;
-  
+
   GenRandomParamType := T;
 End;
 
@@ -7294,9 +7294,9 @@ Var
 Begin
   NParams := RandomRange(0, FUNC_MAX_PARAMS);
   F.NumParams := NParams;
-  
+
   FuncParamCounter := 0;  { Reset pour cette fonction }
-  
+
   For I := 1 To NParams Do
   Begin
     F.Params[I].Name := GenParamName;
@@ -7327,7 +7327,7 @@ Begin
     FuncParamsToStr := 'void';
     Exit;
   End;
-  
+
   S := '';
   For I := 1 To F.NumParams Do
   Begin
@@ -7335,7 +7335,7 @@ Begin
       S := S + ', ';
     S := S + ParamToStr(F.Params[I]);
   End;
-  
+
   FuncParamsToStr := S;
 End;
 
@@ -7345,20 +7345,20 @@ Var
   Decl: TString;
 Begin
   Decl := '';
-  
+
   { Ajouter static si necessaire }
   If F.IsStatic Then
     Decl := 'static ';
-  
+
   { Type de retour }
   Decl := Decl + TypeToStr(F.RetType);
-  
+
   { Nom de la fonction }
   Decl := Decl + ' ' + F.Name;
-  
+
   { Parametres }
   Decl := Decl + '(' + FuncParamsToStr(F) + ');';
-  
+
   EmitLine(Decl);
 End;
 
@@ -7368,13 +7368,13 @@ Var
   I: Integer;
 Begin
   If NumFuncs = 0 Then Exit;
-  
+
   EmitBlankLine;
   EmitComment('Function prototypes');
-  
+
   For I := 1 To NumFuncs Do
     GenFuncDecl(Funcs[I]);
-  
+
   EmitBlankLine;
 End;
 
@@ -7391,33 +7391,33 @@ Begin
   { Sauvegarder le contexte }
   OldFuncIdx := CurrentFuncIdx;
   OldInFuncDef := InFuncDef;
-  
+
   { Mettre a jour le contexte }
   CurrentFuncIdx := NumFuncs;  { Index de cette fonction }
   InFuncDef := True;
   Inc(FuncDefCounter);
-  
+
   { Construire l'en-tete de la fonction }
   Decl := '';
-  
+
   { Ajouter static si necessaire }
   If F.IsStatic Then
     Decl := 'static ';
-  
+
   { Type de retour }
   Decl := Decl + TypeToStr(F.RetType);
-  
+
   { Nom de la fonction }
   Decl := Decl + ' ' + F.Name;
-  
+
   { Parametres }
   Decl := Decl + '(' + FuncParamsToStr(F) + ')';
-  
+
   EmitBlankLine;
   EmitLine(Decl);
   EmitLine('{');
   EmitIndent;
-  
+
   { Ajouter les parametres comme variables locales dans la portee }
   PushScope;
   For I := 1 To F.NumParams Do
@@ -7434,10 +7434,10 @@ Begin
       Vars[NumVars].IsGlobal := False;
     End;
   End;
-  
+
   { Generer le corps de la fonction }
   GenFuncBody(F, 1);
-  
+
   { Generer un return si le type n'est pas void et qu'on n'a pas encore de return }
   If F.RetType.Kind <> TK_VOID Then
   Begin
@@ -7448,12 +7448,12 @@ Begin
     Else
       EmitLine('return 0;');
   End;
-  
+
   PopScope;
-  
+
   EmitUnindent;
   EmitLine('}');
-  
+
   { Restaurer le contexte }
   CurrentFuncIdx := OldFuncIdx;
   InFuncDef := OldInFuncDef;
@@ -7472,7 +7472,7 @@ Begin
   OldCurrentRetType := CurrentRetType;
   InFunction := True;
   CurrentRetType := F.RetType.Kind;
-  
+
   { Generer quelques variables locales }
   If RandomChoice(60) Then
   Begin
@@ -7480,13 +7480,13 @@ Begin
     For I := 1 To NumStmts Do
       GenLocalVarDecl;
   End;
-  
+
   { Generer quelques statements }
   NumStmts := RandomRange(2, 6);
   For I := 1 To NumStmts Do
   Begin
     R := RandomInt(100);
-    
+
     If R < 30 Then
       GenExprStmt
     Else If R < 50 Then
@@ -7507,7 +7507,7 @@ Begin
     Else
       GenExprStmt;
   End;
-  
+
   { Restaurer le contexte }
   InFunction := OldInFunction;
   CurrentRetType := OldCurrentRetType;
@@ -7524,17 +7524,17 @@ Begin
     GenFuncCallExpr := '0';
     Exit;
   End;
-  
+
   Inc(FuncCallCounter);
-  
+
   S := Funcs[FuncIdx].Name + '(';
-  
+
   { Generer les arguments }
   For I := 1 To Funcs[FuncIdx].NumParams Do
   Begin
     If I > 1 Then
       S := S + ', ';
-    
+
     { Generer un argument du bon type }
     If IsIntegerType(Funcs[FuncIdx].Params[I].PType) Then
       S := S + IntToStr(RandomRange(0, 100))
@@ -7543,7 +7543,7 @@ Begin
     Else
       S := S + '0';
   End;
-  
+
   S := S + ')';
   GenFuncCallExpr := S;
 End;
@@ -7558,19 +7558,19 @@ Begin
     CreateNewFunc := 0;
     Exit;
   End;
-  
+
   Inc(NumFuncs);
   Idx := NumFuncs;
-  
+
   { Initialiser la fonction }
   Funcs[Idx].Name := GenFuncName;
   Funcs[Idx].RetType := GenRandomReturnType;
   Funcs[Idx].IsStatic := RandomChoice(FUNC_STATIC_PROB);
   Funcs[Idx].IsDefined := False;
-  
+
   { Generer les parametres }
   InitFuncParams(Funcs[Idx]);
-  
+
   CreateNewFunc := Idx;
 End;
 
@@ -7580,10 +7580,10 @@ Var
   I: Integer;
 Begin
   If NumFuncs = 0 Then Exit;
-  
+
   EmitBlankLine;
   EmitFuncComment;
-  
+
   For I := 1 To NumFuncs Do
   Begin
     If Not Funcs[I].IsDefined Then
@@ -7927,7 +7927,7 @@ Function VerifyProgramCoherence: Boolean;
   Retourne True si le programme est coherent. }
 Begin
   StatCoherenceOK := True;
-  
+
   { Verifier qu'il y a au moins une fonction (main) }
   If ProgFuncCount < 1 Then
   Begin
@@ -7935,7 +7935,7 @@ Begin
       WriteLn('Warning: No functions generated');
     StatCoherenceOK := False;
   End;
-  
+
   { Verifier que le nombre de lignes est raisonnable }
   If ProgTotalLines < 10 Then
   Begin
@@ -7943,7 +7943,7 @@ Begin
       WriteLn('Warning: Very few lines generated (', ProgTotalLines, ')');
     StatCoherenceOK := False;
   End;
-  
+
   { Verifier la profondeur des blocs }
   If StatMaxBlockDepth > MAX_BLOCK_DEPTH Then
   Begin
@@ -7951,7 +7951,7 @@ Begin
       WriteLn('Warning: Block depth exceeded maximum (', StatMaxBlockDepth, ' > ', MAX_BLOCK_DEPTH, ')');
     StatCoherenceOK := False;
   End;
-  
+
   VerifyProgramCoherence := StatCoherenceOK;
 End;
 
@@ -8011,7 +8011,7 @@ End;
 Function GetStatsString: TString;
 { Retourne une chaine avec les statistiques principales. }
 Begin
-  GetStatsString := 'Funcs=' + IntToStr(ProgFuncCount) + 
+  GetStatsString := 'Funcs=' + IntToStr(ProgFuncCount) +
                     ', Vars=' + IntToStr(StatVars) +
                     ', Stmts=' + IntToStr(StatStmts) +
                     ', Depth=' + IntToStr(StatMaxBlockDepth) +
@@ -8024,33 +8024,32 @@ Begin
   AreStatsEmpty := (ProgFuncCount = 0) And (StatVars = 0) And (StatStmts = 0);
 End;
 
-Procedure ShowHelp;
-Begin
-  WriteLn('CSMITH v', CSMITH_VERSION, ' - Generateur de code C aleatoire');
-  WriteLn('Copyright (c) 2026 Gladir.com - Turbo Pascal / Free Pascal');
-  WriteLn;
-  WriteLn('Usage: CSMITH [options]');
-  WriteLn;
-  WriteLn('Options:');
-  WriteLn('  --seed <n>           Graine pour le generateur aleatoire');
-  WriteLn('  --max-funcs <n>      Nombre maximum de fonctions (defaut: 10)');
-  WriteLn('  --max-block-depth <n>  Profondeur max des blocs (defaut: ', MAX_BLOCK_DEPTH, ')');
-  WriteLn('  --max-expr-depth <n>   Complexite max des expressions (defaut: ', MAX_EXPR_DEPTH, ')');
-  WriteLn('  -o <file>            Fichier de sortie (defaut: stdout)');
-  WriteLn('  --no-pointers        Desactiver les pointeurs');
-  WriteLn('  --no-structs         Desactiver les structures');
-  WriteLn('  --no-unions          Desactiver les unions');
-  WriteLn('  --no-bitfields       Desactiver les champs de bits');
-  WriteLn('  --no-volatiles       Desactiver volatile');
-  WriteLn('  --no-consts          Desactiver const');
-  WriteLn('  --no-floats          Desactiver les types flottants');
-  WriteLn('  --enable-goto        Activer les goto (desactive par defaut)');
-  WriteLn('  -v, --verbose        Mode verbeux');
-  WriteLn('  -q, --quiet          Mode silencieux');
-  WriteLn('  -h, --help           Afficher cette aide');
-  WriteLn;
-  WriteLn('Exemple:');
-  WriteLn('  CSMITH --seed 12345 -o test.c');
+Procedure ShowHelp;Begin
+ WriteLn('CSMITH v', CSMITH_VERSION, ' - Cette commande permet de lancer un ',
+         'generateur de code C aleatoire.');
+ WriteLn;
+ WriteLn('Syntaxe: CSMITH [options]');
+ WriteLn;
+ WriteLn('Options:');
+ WriteLn('  --seed <n>             Graine pour le generateur aleatoire');
+ WriteLn('  --max-funcs <n>        Nombre maximum de fonctions (defaut: 10)');
+ WriteLn('  --max-block-depth <n>  Profondeur max des blocs (defaut: ', MAX_BLOCK_DEPTH, ')');
+ WriteLn('  --max-expr-depth <n>   Complexite max des expressions (defaut: ', MAX_EXPR_DEPTH, ')');
+ WriteLn('  -o <file>              Fichier de sortie (defaut: stdout)');
+ WriteLn('  --no-pointers          Desactiver les pointeurs');
+ WriteLn('  --no-structs           Desactiver les structures');
+ WriteLn('  --no-unions            Desactiver les unions');
+ WriteLn('  --no-bitfields         Desactiver les champs de bits');
+ WriteLn('  --no-volatiles         Desactiver volatile');
+ WriteLn('  --no-consts            Desactiver const');
+ WriteLn('  --no-floats            Desactiver les types flottants');
+ WriteLn('  --enable-goto          Activer les goto (desactive par defaut)');
+ WriteLn('  -v, --verbose          Mode verbeux');
+ WriteLn('  -q, --quiet            Mode silencieux');
+ WriteLn('  -h, --help             Afficher cette aide');
+ WriteLn;
+ WriteLn('Exemple:');
+ WriteLn('  CSMITH --seed 12345 -o test.c');
 End;
 
 Procedure ParseArgs;
@@ -8222,7 +8221,7 @@ Begin
   EmitUnindent;
   EmitLine('}');
   EmitBlankLine;
-  
+
   EmitComment('Checksum update for long values');
   EmitLine('static void update_checksum_long(long val) {');
   EmitIndent;
@@ -8244,7 +8243,7 @@ Var
 Begin
   VarName := GenGlobalVarName;
   InitCType(T);
-  
+
   { Choisir un type aleatoire }
   R := RandomInt(100);
   If R < 40 Then
@@ -8259,7 +8258,7 @@ Begin
     T.Kind := TK_UINT
   Else
     T.Kind := TK_ULONG;
-  
+
   { Ajouter qualificateur optionnel }
   If (Not Opts.NoConsts) And RandomChoice(GLOBAL_VAR_CONST_PROB) Then
     T.Quals := Q_CONST
@@ -8267,16 +8266,16 @@ Begin
     T.Quals := Q_VOLATILE
   Else
     T.Quals := Q_NONE;
-  
+
   { Construire la declaration }
   Decl := '';
   If T.Quals = Q_CONST Then
     Decl := 'const '
   Else If T.Quals = Q_VOLATILE Then
     Decl := 'volatile ';
-  
+
   Decl := Decl + TypeToStr(T) + ' ' + VarName;
-  
+
   { Initialiser si c'est const ou aleatoirement }
   If (T.Quals = Q_CONST) Or RandomChoice(GLOBAL_VAR_INIT_PROB) Then
   Begin
@@ -8292,7 +8291,7 @@ Begin
     End;
     Decl := Decl + ' = ' + InitVal;
   End;
-  
+
   Decl := Decl + ';';
   EmitLine(Decl);
   Inc(ProgGlobalCount);
@@ -8305,11 +8304,11 @@ Var
 Begin
   EmitBlankLine;
   EmitComment('Global variables');
-  
+
   NumVarsGen := RandomRange(PROG_MIN_GLOBAL_VARS, PROG_MAX_GLOBAL_VARS);
   For I := 1 To NumVarsGen Do
     GenGlobalVarDecl;
-  
+
   EmitBlankLine;
 End;
 
@@ -8326,7 +8325,7 @@ Begin
     Inc(ProgEnumCount);
   End;
   EmitAllEnumDefs;
-  
+
   { Generer quelques structures si autorisees }
   If Not Opts.NoStructs Then
   Begin
@@ -8338,7 +8337,7 @@ Begin
     End;
     EmitAllStructDefs;
   End;
-  
+
   { Generer quelques unions si autorisees }
   If Not Opts.NoUnions Then
   Begin
@@ -8363,7 +8362,7 @@ Begin
   NumGen := RandomRange(PROG_MIN_ARRAYS, PROG_MAX_ARRAYS);
   For I := 1 To NumGen Do
     GenGlobalArrayDecl;
-  
+
   { Generer quelques pointeurs globaux si autorises }
   If Not Opts.NoPointers Then
   Begin
@@ -8387,10 +8386,10 @@ Begin
     CreateNewFunc;
     Inc(ProgFuncCount);
   End;
-  
+
   { Generer les prototypes }
   GenFuncPrototypes;
-  
+
   { Generer les definitions }
   GenAllFuncDefs;
 End;
@@ -8407,7 +8406,7 @@ Begin
   EmitComment('Main function');
   EmitLine('int main(void) {');
   EmitIndent;
-  
+
   { Declarer des variables pour stocker les resultats }
   HasNonVoidFuncs := False;
   For I := 1 To NumFuncs Do
@@ -8419,7 +8418,7 @@ Begin
       Break;
     End;
   End;
-  
+
   If HasNonVoidFuncs Then
   Begin
     EmitComment('Variables for function return values');
@@ -8428,7 +8427,7 @@ Begin
     EmitLine('char result_c = 0;');
     EmitBlankLine;
   End;
-  
+
   { Appeler toutes les fonctions generees }
   If MAIN_CALL_ALL_FUNCS And (NumFuncs > 0) Then
   Begin
@@ -8437,7 +8436,7 @@ Begin
     Begin
       FuncName := Funcs[I].Name;
       RetType := Funcs[I].RetType;
-      
+
       { Construire l'appel de fonction avec des arguments par defaut }
       If RetType.Kind = TK_VOID Then
         EmitLine(FuncName + '(' + GenDefaultArgs(I) + ');')
@@ -8470,12 +8469,12 @@ Begin
     End;
     EmitBlankLine;
   End;
-  
+
   { Afficher le checksum final }
   EmitComment('Print final checksum');
   EmitLine('printf("checksum = %lu\\n", g_checksum);');
   EmitLine('printf("call_count = %lu\\n", g_call_count);');
-  
+
   EmitBlankLine;
   EmitLine('return 0;');
   EmitUnindent;
@@ -8495,12 +8494,12 @@ Begin
     GenDefaultArgs := S;
     Exit;
   End;
-  
+
   For I := 1 To Funcs[FuncIdx].NumParams Do
   Begin
     If I > 1 Then
       S := S + ', ';
-    
+
     PType := Funcs[FuncIdx].Params[I].PType;
     Case PType.Kind Of
       TK_CHAR:   S := S + '''a''';
@@ -8516,7 +8515,7 @@ Begin
       S := S + '0';
     End;
   End;
-  
+
   GenDefaultArgs := S;
 End;
 
@@ -8556,7 +8555,7 @@ End;
 Function GetProgramStats: TString;
 { Retourne une chaine avec les statistiques du programme. }
 Begin
-  GetProgramStats := 'Structs=' + IntToStr(ProgStructCount) + 
+  GetProgramStats := 'Structs=' + IntToStr(ProgStructCount) +
                      ', Unions=' + IntToStr(ProgUnionCount) +
                      ', Enums=' + IntToStr(ProgEnumCount) +
                      ', Funcs=' + IntToStr(ProgFuncCount) +
@@ -8566,10 +8565,10 @@ End;
 Function IsProgramEmpty: Boolean;
 { Retourne True si le programme n'a aucun element genere. }
 Begin
-  IsProgramEmpty := (ProgStructCount = 0) And 
-                    (ProgUnionCount = 0) And 
-                    (ProgEnumCount = 0) And 
-                    (ProgFuncCount = 0) And 
+  IsProgramEmpty := (ProgStructCount = 0) And
+                    (ProgUnionCount = 0) And
+                    (ProgEnumCount = 0) And
+                    (ProgFuncCount = 0) And
                     (ProgGlobalCount = 0);
 End;
 
@@ -8578,35 +8577,35 @@ Procedure GenProgram;
 Begin
   { Initialiser le contexte }
   InitProgramContext;
-  
+
   { En-tete du programme }
   GenProgramHeader;
-  
+
   { Includes }
   GenIncludes;
-  
+
   { Definitions de types (enum, struct, union) }
   GenTypeDefs;
-  
+
   { Tableaux et pointeurs globaux }
   GenGlobalArraysAndPointers;
-  
+
   { Variables globales }
   GenGlobalVars;
-  
+
   { Variables et fonctions pour le checksum }
   GenChecksumVars;
   GenChecksumFunc;
-  
+
   { Fonctions }
   GenAllFuncs;
-  
+
   { Fonction main }
   GenMainFunc;
-  
+
   { Statistiques a la fin en commentaire }
   GenProgramStats;
-  
+
   { Sauvegarder le nombre de lignes }
   ProgTotalLines := LineCount;
 End;
@@ -8645,7 +8644,7 @@ Begin
     CheckDivByZero := Divisor;
     Exit;
   End;
-  
+
   If RandomChoice(SAFE_DIV_CHECK_PROB) Then
   Begin
     CheckDivByZero := '((' + Divisor + ') == 0 ? 1 : (' + Divisor + '))';
@@ -8667,7 +8666,7 @@ Begin
     GenSafeDivExpr := '(' + Dividend + ') / (' + Divisor + ')';
     Exit;
   End;
-  
+
   { Generer une division securisee avec garde }
   SafeDivisor := CheckDivByZero(Divisor);
   GenSafeDivExpr := '(' + Dividend + ') / ' + SafeDivisor;
@@ -8685,7 +8684,7 @@ Begin
     GenSafeModExpr := '(' + Dividend + ') % (' + Divisor + ')';
     Exit;
   End;
-  
+
   { Generer un modulo securise avec garde }
   SafeDivisor := CheckDivByZero(Divisor);
   GenSafeModExpr := '(' + Dividend + ') % ' + SafeDivisor;
@@ -8701,7 +8700,7 @@ Begin
     CheckOverflow := Expr;
     Exit;
   End;
-  
+
   If RandomChoice(SAFE_OVERFLOW_CHECK_PROB) Then
   Begin
     { Pour les types signes, on verifie que la valeur est dans les limites }
@@ -8732,7 +8731,7 @@ Begin
     GenSafeAdd := '(' + A + ') + (' + B + ')';
     Exit;
   End;
-  
+
   { Utiliser un cast pour forcer la verification }
   GenSafeAdd := '((int)((' + A + ') + (' + B + ')))';
   Inc(UBSafeExprCount);
@@ -8746,7 +8745,7 @@ Begin
     GenSafeSub := '(' + A + ') - (' + B + ')';
     Exit;
   End;
-  
+
   { Utiliser un cast pour forcer la verification }
   GenSafeSub := '((int)((' + A + ') - (' + B + ')))';
   Inc(UBSafeExprCount);
@@ -8760,7 +8759,7 @@ Begin
     GenSafeMul := '(' + A + ') * (' + B + ')';
     Exit;
   End;
-  
+
   { Utiliser un cast pour forcer la verification }
   GenSafeMul := '((int)((' + A + ') * (' + B + ')))';
   Inc(UBSafeExprCount);
@@ -8775,7 +8774,7 @@ Begin
     CheckNullDeref := PtrExpr;
     Exit;
   End;
-  
+
   If RandomChoice(SAFE_NULL_CHECK_PROB) Then
   Begin
     { On ne peut pas vraiment eviter le NULL en expression simple,
@@ -8797,7 +8796,7 @@ Begin
     GenSafeDeref := '*(' + PtrExpr + ')';
     Exit;
   End;
-  
+
   GenSafeDeref := '((' + PtrExpr + ') != NULL ? *(' + PtrExpr + ') : ' + DefaultVal + ')';
   Inc(UBNullDerefCount);
   Inc(UBSafeExprCount);
@@ -8825,11 +8824,11 @@ Begin
     CheckArrayBounds := IndexExpr;
     Exit;
   End;
-  
+
   If RandomChoice(SAFE_BOUNDS_CHECK_PROB) Then
   Begin
     MaxStr := IntToStr(MaxIndex);
-    CheckArrayBounds := '((' + IndexExpr + ') >= 0 && (' + IndexExpr + ') < ' + 
+    CheckArrayBounds := '((' + IndexExpr + ') >= 0 && (' + IndexExpr + ') < ' +
                         MaxStr + ' ? (' + IndexExpr + ') : 0)';
     Inc(UBBoundsCount);
     Inc(UBTotalChecks);
@@ -8848,7 +8847,7 @@ Begin
     GenSafeArrayAccess := ArrayName + '[' + IndexExpr + ']';
     Exit;
   End;
-  
+
   SafeIndex := CheckArrayBounds(IndexExpr, MaxIndex);
   GenSafeArrayAccess := ArrayName + '[' + SafeIndex + ']';
   Inc(UBSafeExprCount);
@@ -8866,11 +8865,11 @@ Begin
     CheckShiftAmount := ShiftExpr;
     Exit;
   End;
-  
+
   If RandomChoice(SAFE_SHIFT_CHECK_PROB) Then
   Begin
     WidthStr := IntToStr(BitWidth);
-    CheckShiftAmount := '((' + ShiftExpr + ') >= 0 && (' + ShiftExpr + ') < ' + 
+    CheckShiftAmount := '((' + ShiftExpr + ') >= 0 && (' + ShiftExpr + ') < ' +
                         WidthStr + ' ? (' + ShiftExpr + ') : 0)';
     Inc(UBShiftCount);
     Inc(UBTotalChecks);
@@ -8891,7 +8890,7 @@ Begin
     GenSafeLeftShift := '(' + Value + ') << (' + Amount + ')';
     Exit;
   End;
-  
+
   SafeAmount := CheckShiftAmount(Amount, 32);  { Assume int 32 bits }
   { Pour eviter UB avec valeur negative, on cast en unsigned }
   GenSafeLeftShift := '(int)((unsigned int)(' + Value + ') << ' + SafeAmount + ')';
@@ -8909,7 +8908,7 @@ Begin
     GenSafeRightShift := '(' + Value + ') >> (' + Amount + ')';
     Exit;
   End;
-  
+
   SafeAmount := CheckShiftAmount(Amount, 32);  { Assume int 32 bits }
   GenSafeRightShift := '(' + Value + ') >> ' + SafeAmount;
   Inc(UBSafeExprCount);
@@ -8924,7 +8923,7 @@ Begin
     CheckUninitRead := VarName;
     Exit;
   End;
-  
+
   If RandomChoice(SAFE_INIT_CHECK_PROB) Then
   Begin
     If IsInit Then
@@ -8947,7 +8946,7 @@ Begin
     GenSafeExpr := Expr;
     Exit;
   End;
-  
+
   If RandomChoice(SAFE_EXPR_WRAP_PROB) Then
   Begin
     Case ExprKind Of
@@ -9113,7 +9112,7 @@ End;
 Function GetUBStats: TString;
 { Retourne une chaine avec les statistiques UB. }
 Begin
-  GetUBStats := 'DivZero=' + IntToStr(UBDivByZeroCount) + 
+  GetUBStats := 'DivZero=' + IntToStr(UBDivByZeroCount) +
                 ', Overflow=' + IntToStr(UBOverflowCount) +
                 ', NullDeref=' + IntToStr(UBNullDerefCount) +
                 ', Bounds=' + IntToStr(UBBoundsCount) +
@@ -9196,7 +9195,7 @@ Begin
   End;
 
   ShowVerbose('Verifying program coherence...');
-  
+
   { Verification de coherence du programme - TODO 25 }
   If Not VerifyProgramCoherence Then
   Begin
@@ -9214,6 +9213,11 @@ End;
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
-  Run;
-End.
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowHelp;
+  Halt(0);
+ End;
+ Run;
+END.
