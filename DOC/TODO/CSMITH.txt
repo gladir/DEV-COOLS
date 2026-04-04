@@ -179,7 +179,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Regles : types compatibles pour e1 et e2 dans ternaire.
       Gerer les conversions implicites et explicites.
 
-  18. [A FAIRE] Generation de statements simples.
+  18. [IMPLEMENTE] Generation de statements simples.
       Generateur de statements simples C :
       GenExprStmt - statement expression (expr;).
       GenDeclStmt - declaration de variable locale.

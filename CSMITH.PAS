@@ -194,7 +194,7 @@
             Regles : types compatibles pour e1 et e2 dans ternaire.
             Gerer les conversions implicites et explicites.
 
-  TODO 18 - [A FAIRE] GENERATION DE STATEMENTS SIMPLES
+  TODO 18 - [IMPLEMENTE] GENERATION DE STATEMENTS SIMPLES
             Generateur de statements simples C :
             GenExprStmt - statement expression (expr;).
             GenDeclStmt - declaration de variable locale.
@@ -362,6 +362,16 @@ Const
   COND_SIZEOF_TYPE_PROB = 60;       { 60% de chance de sizeof(type) vs sizeof(expr) }
   COND_NESTED_PROB = 30;            { 30% de chance de generer une expression imbriquee }
   COND_SAFE_CAST_PROB = 85;         { 85% de chance de generer des casts securises }
+  
+  { TODO 18 : Constantes pour les statements simples }
+  STMT_EXPR_PROB = 40;              { 40% de chance de generer un statement expression }
+  STMT_DECL_PROB = 25;              { 25% de chance de generer une declaration locale }
+  STMT_RETURN_PROB = 10;            { 10% de chance de generer un return }
+  STMT_BREAK_PROB = 5;              { 5% de chance de generer un break }
+  STMT_CONTINUE_PROB = 5;           { 5% de chance de generer un continue }
+  STMT_GOTO_PROB = 5;               { 5% de chance de generer un goto }
+  STMT_NULL_PROB = 5;               { 5% de chance de generer un statement vide }
+  STMT_LABEL_PREFIX = 'lbl_';       { Prefixe pour les labels goto }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -595,6 +605,13 @@ Var
   BitExprCounter: Integer;  { TODO 15 : compteur d'expressions bit-a-bit }
   AssignExprCounter: Integer;  { TODO 16 : compteur d'expressions d'affectation }
   CondExprCounter: Integer;  { TODO 17 : compteur d'expressions conditionnelles }
+  StmtCounter: Integer;  { TODO 18 : compteur de statements simples }
+  
+  { TODO 18 : contexte pour les statements }
+  InLoop: Boolean;       { Vrai si on est dans une boucle (pour break/continue) }
+  InSwitch: Boolean;     { Vrai si on est dans un switch (pour break) }
+  InFunction: Boolean;   { Vrai si on est dans une fonction (pour return) }
+  CurrentRetType: TTypeKind;  { Type de retour de la fonction courante }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -980,6 +997,72 @@ Begin
     Exit;
   End;
   CanConvertTo := False;
+End;
+
+{ --- Fonctions helpers pour TTypeKind direct --- }
+
+Function IsIntegerTypeKind(T: TTypeKind): Boolean;
+{ Verifie si un TTypeKind est un type entier. }
+Begin
+  IsIntegerTypeKind := T In [TK_CHAR, TK_SCHAR, TK_UCHAR, TK_SHORT, TK_USHORT,
+                              TK_INT, TK_UINT, TK_LONG, TK_ULONG,
+                              TK_LONGLONG, TK_ULONGLONG];
+End;
+
+Function IsFloatTypeKind(T: TTypeKind): Boolean;
+{ Verifie si un TTypeKind est un type flottant. }
+Begin
+  IsFloatTypeKind := T In [TK_FLOAT, TK_DOUBLE, TK_LONGDOUBLE];
+End;
+
+Function IsSignedTypeKind(T: TTypeKind): Boolean;
+{ Verifie si un TTypeKind est un type signe. }
+Begin
+  IsSignedTypeKind := T In [TK_SCHAR, TK_SHORT, TK_INT, TK_LONG, TK_LONGLONG];
+End;
+
+Function IsUnsignedTypeKind(T: TTypeKind): Boolean;
+{ Verifie si un TTypeKind est un type non signe. }
+Begin
+  IsUnsignedTypeKind := T In [TK_UCHAR, TK_USHORT, TK_UINT, TK_ULONG, TK_ULONGLONG];
+End;
+
+Function GetTypeSizeFromKind(T: TTypeKind): Integer;
+{ Retourne la taille en octets d'un TTypeKind. }
+Begin
+  Case T Of
+    TK_VOID:       GetTypeSizeFromKind := 0;
+    TK_CHAR,
+    TK_SCHAR,
+    TK_UCHAR:      GetTypeSizeFromKind := 1;
+    TK_SHORT,
+    TK_USHORT:     GetTypeSizeFromKind := 2;
+    TK_INT,
+    TK_UINT,
+    TK_FLOAT:      GetTypeSizeFromKind := 4;
+    TK_LONG,
+    TK_ULONG:      GetTypeSizeFromKind := 4;
+    TK_LONGLONG,
+    TK_ULONGLONG,
+    TK_DOUBLE:     GetTypeSizeFromKind := 8;
+    TK_LONGDOUBLE: GetTypeSizeFromKind := 10;
+    TK_POINTER:    GetTypeSizeFromKind := 4;
+    TK_ENUM:       GetTypeSizeFromKind := 4;
+  Else
+    GetTypeSizeFromKind := 0;
+  End;
+End;
+
+Function IsArithTypeKind(T: TTypeKind): Boolean;
+{ Verifie si un TTypeKind est un type arithmetique (entier ou flottant). }
+Begin
+  IsArithTypeKind := IsIntegerTypeKind(T) Or IsFloatTypeKind(T);
+End;
+
+Function IsScalarTypeKind(T: TTypeKind): Boolean;
+{ Verifie si un TTypeKind est un type scalaire (arithmetique, pointeur ou enum). }
+Begin
+  IsScalarTypeKind := IsArithTypeKind(T) Or (T = TK_POINTER) Or (T = TK_ENUM);
 End;
 
 { ============================================================
@@ -3810,9 +3893,9 @@ Function GenSimpleOperand(T: TTypeKind): TString;
 Begin
   { Pour l'instant, generer toujours un litteral
     Les variables seront ajoutees quand le systeme de variables sera complet }
-  If IsFloatType(T) Then
+  If IsFloatTypeKind(T) Then
     GenSimpleOperand := GenFloatLiteral(T)
-  Else If IsIntegerType(T) Then
+  Else If IsIntegerTypeKind(T) Then
     GenSimpleOperand := GenIntLiteral(T)
   Else
     GenSimpleOperand := '0';
@@ -3830,7 +3913,7 @@ Function GenSafeDiv(Const Dividend, Divisor: TString; T: TTypeKind): TString;
 Var
   S: TString;
 Begin
-  If IsFloatType(T) Then
+  If IsFloatTypeKind(T) Then
     { Pour les flottants, utiliser 0.0 }
     S := '((' + Divisor + ' != 0.0) ? (' + Dividend + ' / ' + Divisor + ') : 0.0)'
   Else
@@ -3882,7 +3965,7 @@ Begin
   End;
   
   { Generer un operateur aleatoire }
-  AllowMod := IsIntegerType(T);  { Modulo seulement pour les entiers }
+  AllowMod := IsIntegerTypeKind(T);  { Modulo seulement pour les entiers }
   Op := GenRandomArithOp(AllowMod);
   
   { Generer les operandes gauche et droit }
@@ -3971,7 +4054,7 @@ End;
 Function IsValidArithType(T: TTypeKind): Boolean;
 { Verifie si le type est valide pour les operations arithmetiques. }
 Begin
-  IsValidArithType := IsArithType(T);
+  IsValidArithType := IsArithTypeKind(T);
 End;
 
 Function CountArithExprs: Integer;
@@ -4091,14 +4174,14 @@ Function IsValidRelOperandType(T: TTypeKind): Boolean;
 { Verifie si le type est valide pour les operateurs relationnels.
   En C, on peut comparer des scalaires (entiers, flottants, pointeurs). }
 Begin
-  IsValidRelOperandType := IsScalarType(T);
+  IsValidRelOperandType := IsScalarTypeKind(T);
 End;
 
 Function IsValidLogOperandType(T: TTypeKind): Boolean;
 { Verifie si le type est valide pour les operateurs logiques.
   En C, tout scalaire peut etre utilise en contexte booleens. }
 Begin
-  IsValidLogOperandType := IsScalarType(T);
+  IsValidLogOperandType := IsScalarTypeKind(T);
 End;
 
 Function GetRelOpPrecedence(Op: TRelOp): Integer;
@@ -4142,12 +4225,12 @@ Begin
   Else
   Begin
     { Generer un litteral du type demande }
-    If IsIntegerType(T) Then
-      GenSimpleRelOperand := GenIntLiteral
-    Else If IsFloatType(T) Then
-      GenSimpleRelOperand := GenFloatLiteral
+    If IsIntegerTypeKind(T) Then
+      GenSimpleRelOperand := GenIntLiteral(T)
+    Else If IsFloatTypeKind(T) Then
+      GenSimpleRelOperand := GenFloatLiteral(T)
     Else
-      GenSimpleRelOperand := GenIntLiteral;  { Par defaut entier }
+      GenSimpleRelOperand := GenIntLiteral(TK_INT);  { Par defaut entier }
   End;
 End;
 
@@ -4177,13 +4260,13 @@ Begin
   If (Depth < Opts.MaxExprDepth) And RandomChoice(REL_RECURSE_PROB) Then
   Begin
     { Operande gauche peut etre une expression arithmetique }
-    Left := GenArithExpr(OpType, Depth + 1);
+    Left := GenArithExprRec(OpType, Depth + 1);
   End
   Else
     Left := GenSimpleRelOperand(OpType);
   
   If (Depth < Opts.MaxExprDepth) And RandomChoice(REL_RECURSE_PROB) Then
-    Right := GenArithExpr(OpType, Depth + 1)
+    Right := GenArithExprRec(OpType, Depth + 1)
   Else
     Right := GenSimpleRelOperand(OpType);
   
@@ -5552,6 +5635,324 @@ Begin
   IsSizeofExpr := Copy(Expr, 1, 6) = 'sizeof';
 End;
 
+{ ============================================================
+  TODO 18 : GENERATION DE STATEMENTS SIMPLES [IMPLEMENTE]
+  ============================================================ }
+
+Function GenLabelName: TString;
+{ Genere un nom de label unique pour goto. }
+Begin
+  Inc(LabelCounter);
+  GenLabelName := STMT_LABEL_PREFIX + IntToStr(LabelCounter);
+End;
+
+Procedure GenNullStmt;
+{ Genere un statement vide (;).
+  Utile comme placeholder ou dans certaines constructions. }
+Begin
+  Inc(StmtCounter);
+  EmitLine(';');
+End;
+
+Procedure GenExprStmt;
+{ Genere un statement expression (expr;).
+  L'expression peut etre une affectation, un appel de fonction, etc. }
+Var
+  Expr: TString;
+  Choice: Integer;
+Begin
+  Inc(StmtCounter);
+  
+  { Choisir le type d'expression a generer }
+  Choice := RandomInt(100);
+  
+  If Choice < 40 Then
+    { Expression d'affectation }
+    Expr := GenAssignExpr(0)
+  Else If Choice < 70 Then
+    { Expression arithmetique }
+    Expr := GenArithExpr(TK_INT)
+  Else If Choice < 85 Then
+    { Expression avec increment/decrement }
+    Expr := GenIncDecExpr
+  Else
+    { Expression conditionnelle }
+    Expr := GenRandomCondExpr(0);
+  
+  EmitLine(Expr + ';');
+End;
+
+Procedure GenDeclStmt;
+{ Genere une declaration de variable locale.
+  Format: type nom [= initializer]; }
+Var
+  VarName: TString;
+  VarType: TTypeKind;
+  InitValue: TString;
+  UseInit: Boolean;
+Begin
+  Inc(StmtCounter);
+  Inc(VarCounter);
+  
+  { Generer un nom de variable unique }
+  VarName := 'local_' + IntToStr(VarCounter);
+  
+  { Choisir un type aleatoire }
+  Case RandomInt(6) Of
+    0: VarType := TK_INT;
+    1: VarType := TK_UINT;
+    2: VarType := TK_LONG;
+    3: VarType := TK_SHORT;
+    4: VarType := TK_CHAR;
+  Else
+    VarType := TK_INT;
+  End;
+  
+  { Decider si on initialise la variable }
+  UseInit := RandomChoice(70);  { 70% de chance d'initialiser }
+  
+  If UseInit Then
+  Begin
+    InitValue := GenIntLiteral(VarType);
+    EmitLine(TypeKindToStr(VarType) + ' ' + VarName + ' = ' + InitValue + ';');
+  End
+  Else
+    EmitLine(TypeKindToStr(VarType) + ' ' + VarName + ';');
+End;
+
+Procedure GenReturnStmt;
+{ Genere un statement return avec ou sans valeur.
+  Ne peut etre genere que si on est dans une fonction. }
+Var
+  RetValue: TString;
+Begin
+  Inc(StmtCounter);
+  
+  If Not InFunction Then
+  Begin
+    { Si pas dans une fonction, generer un statement vide a la place }
+    GenNullStmt;
+    Exit;
+  End;
+  
+  If CurrentRetType = TK_VOID Then
+    { Fonction void: return sans valeur }
+    EmitLine('return;')
+  Else
+  Begin
+    { Fonction avec type de retour: generer une valeur }
+    If IsIntegerTypeKind(CurrentRetType) Then
+      RetValue := GenIntLiteral(CurrentRetType)
+    Else If IsFloatTypeKind(CurrentRetType) Then
+      RetValue := GenFloatLiteral(CurrentRetType)
+    Else
+      RetValue := '0';
+    EmitLine('return ' + RetValue + ';');
+  End;
+End;
+
+Procedure GenBreakStmt;
+{ Genere un statement break.
+  Ne peut etre genere que dans une boucle ou un switch. }
+Begin
+  Inc(StmtCounter);
+  
+  If Not (InLoop Or InSwitch) Then
+  Begin
+    { Si pas dans un contexte valide, generer un statement vide }
+    GenNullStmt;
+    Exit;
+  End;
+  
+  EmitLine('break;');
+End;
+
+Procedure GenContinueStmt;
+{ Genere un statement continue.
+  Ne peut etre genere que dans une boucle. }
+Begin
+  Inc(StmtCounter);
+  
+  If Not InLoop Then
+  Begin
+    { Si pas dans une boucle, generer un statement vide }
+    GenNullStmt;
+    Exit;
+  End;
+  
+  EmitLine('continue;');
+End;
+
+Procedure GenGotoStmt;
+{ Genere un statement goto label.
+  Note: goto est generalement deconseille, mais fait partie du langage C. }
+Var
+  LabelName: TString;
+Begin
+  Inc(StmtCounter);
+  
+  { Si des labels ont ete definis, goto vers un label existant }
+  If NumLabels > 0 Then
+    LabelName := Labels[RandomInt(NumLabels) + 1].Name
+  Else
+  Begin
+    { Sinon, generer un nouveau label qu'on definira plus tard }
+    LabelName := GenLabelName;
+    { Stocker le label pour une utilisation future }
+    If NumLabels < MAX_LABELS Then
+    Begin
+      Inc(NumLabels);
+      Labels[NumLabels].Name := LabelName;
+      Labels[NumLabels].Defined := False;  { Pas encore defini }
+      Labels[NumLabels].Used := True;  { Utilise par ce goto }
+    End;
+  End;
+  
+  EmitLine('goto ' + LabelName + ';');
+End;
+
+Procedure GenLabelStmt;
+{ Genere une etiquette pour goto (label:).
+  Le label peut etre suivi d'un statement ou etre vide. }
+Var
+  LabelName: TString;
+Begin
+  Inc(StmtCounter);
+  
+  { Generer un nouveau label }
+  LabelName := GenLabelName;
+  
+  { Stocker le label }
+  If NumLabels < MAX_LABELS Then
+  Begin
+    Inc(NumLabels);
+    Labels[NumLabels].Name := LabelName;
+    Labels[NumLabels].Defined := True;  { Marquer comme defini }
+    Labels[NumLabels].Used := False;  { Pas encore utilise }
+  End;
+  
+  { Emettre le label suivi d'un statement vide }
+  EmitLine(LabelName + ':');
+  EmitLine('  ;');  { Statement vide apres le label }
+End;
+
+Procedure GenRandomStmt;
+{ Genere un statement simple aleatoire.
+  Le type de statement est choisi en fonction des probabilites definies
+  et du contexte actuel (boucle, switch, fonction). }
+Var
+  Choice: Integer;
+Begin
+  Choice := RandomInt(100);
+  
+  If Choice < STMT_EXPR_PROB Then
+    GenExprStmt
+  Else If Choice < STMT_EXPR_PROB + STMT_DECL_PROB Then
+    GenDeclStmt
+  Else If Choice < STMT_EXPR_PROB + STMT_DECL_PROB + STMT_RETURN_PROB Then
+  Begin
+    If InFunction Then
+      GenReturnStmt
+    Else
+      GenExprStmt;  { Fallback si pas dans une fonction }
+  End
+  Else If Choice < STMT_EXPR_PROB + STMT_DECL_PROB + STMT_RETURN_PROB + STMT_BREAK_PROB Then
+  Begin
+    If InLoop Or InSwitch Then
+      GenBreakStmt
+    Else
+      GenExprStmt;  { Fallback si pas dans le bon contexte }
+  End
+  Else If Choice < STMT_EXPR_PROB + STMT_DECL_PROB + STMT_RETURN_PROB + STMT_BREAK_PROB + STMT_CONTINUE_PROB Then
+  Begin
+    If InLoop Then
+      GenContinueStmt
+    Else
+      GenExprStmt;  { Fallback }
+  End
+  Else If Choice < STMT_EXPR_PROB + STMT_DECL_PROB + STMT_RETURN_PROB + STMT_BREAK_PROB + STMT_CONTINUE_PROB + STMT_GOTO_PROB Then
+    GenGotoStmt
+  Else
+    GenNullStmt;
+End;
+
+Procedure EmitStmtComment;
+{ Emet un commentaire pour la section de statements. }
+Begin
+  EmitLineComment('Statements simples (expr, decl, return, break, continue, goto)');
+End;
+
+Function CountStmts: Integer;
+{ Retourne le nombre de statements simples generes. }
+Begin
+  CountStmts := StmtCounter;
+End;
+
+Function IsInLoop: Boolean;
+{ Retourne True si on est actuellement dans une boucle. }
+Begin
+  IsInLoop := InLoop;
+End;
+
+Function IsInSwitch: Boolean;
+{ Retourne True si on est actuellement dans un switch. }
+Begin
+  IsInSwitch := InSwitch;
+End;
+
+Function IsInFunction: Boolean;
+{ Retourne True si on est actuellement dans une fonction. }
+Begin
+  IsInFunction := InFunction;
+End;
+
+Procedure EnterLoop;
+{ Marque l'entree dans une boucle. }
+Begin
+  InLoop := True;
+End;
+
+Procedure ExitLoop;
+{ Marque la sortie d'une boucle. }
+Begin
+  InLoop := False;
+End;
+
+Procedure EnterSwitch;
+{ Marque l'entree dans un switch. }
+Begin
+  InSwitch := True;
+End;
+
+Procedure ExitSwitch;
+{ Marque la sortie d'un switch. }
+Begin
+  InSwitch := False;
+End;
+
+Procedure EnterFunction(RetType: TTypeKind);
+{ Marque l'entree dans une fonction avec le type de retour specifie. }
+Begin
+  InFunction := True;
+  CurrentRetType := RetType;
+End;
+
+Procedure ExitFunction;
+{ Marque la sortie d'une fonction. }
+Begin
+  InFunction := False;
+  CurrentRetType := TK_VOID;
+End;
+
+Procedure InitStmtContext;
+{ Initialise le contexte pour la generation de statements. }
+Begin
+  InLoop := False;
+  InSwitch := False;
+  InFunction := False;
+  CurrentRetType := TK_VOID;
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -5575,12 +5976,15 @@ Begin
   BitExprCounter := 0;  { TODO 15 : compteur d'expressions bit-a-bit }
   AssignExprCounter := 0;  { TODO 16 : compteur d'expressions d'affectation }
   CondExprCounter := 0;  { TODO 17 : compteur d'expressions conditionnelles }
+  StmtCounter := 0;  { TODO 18 : compteur de statements simples }
   StatFuncs := 0;
   StatVars := 0;
   StatExprs := 0;
   StatStmts := 0;
   StatLines := 0;
   StatMaxDepth := 0;
+  { Initialiser le contexte des statements - TODO 18 }
+  InitStmtContext;
   { Initialiser l'emetteur }
   InitEmitter;
 End;
