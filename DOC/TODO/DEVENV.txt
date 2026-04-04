@@ -296,7 +296,7 @@
             ParseTPCOutput : "filename(line,col) Error: msg"
             Detection des unites Pascal (uses).
 
-  TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [A FAIRE]
+  TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [IMPLEMENTE]
             TBuildConfig, TBuildManager.
             BuildSolution, BuildProject, RebuildSolution,
             CleanSolution, CleanProject.

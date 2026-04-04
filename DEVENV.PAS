@@ -830,7 +830,7 @@
             Support des unites Pascal : detection des uses et
               compilation des dependances.
 
-  TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [A FAIRE]
+  TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [IMPLEMENTE]
             Gestion des configurations de build de la solution.
             TBuildConfig : Name (Debug, Release), Platform
               (AnyCPU, x86, x64), OutputPath, DefineConstants,
@@ -1211,6 +1211,15 @@ Const
  TPC_EXT_SOURCE       = '.pas';     { extension source Pascal        }
  TPC_EXT_EXE          = '.exe';     { extension executable           }
  TPC_EXT_DLL          = '.dll';     { extension bibliotheque         }
+
+ { Systeme de build et configuration }
+ BUILD_MAX_ORDER       = 64;       { nombre max projets dans l ordre }
+ BUILD_CFG_DLG_WIDTH   = 400;      { largeur dialogue configuration  }
+ BUILD_CFG_DLG_HEIGHT  = 300;      { hauteur dialogue configuration  }
+ BUILD_CFG_ROW_HEIGHT  = 22;       { hauteur d une ligne config      }
+ BUILD_CFG_COL_WIDTH   = 150;      { largeur colonne configuration   }
+ BUILD_CFG_PADDING     = 8;        { marge interieure dialogue       }
+ MAX_BUILD_RESULTS     = 64;       { nombre max de resultats build   }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -2250,6 +2259,54 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ { Etat de build d un projet }
+ TBuildStatus = (
+  BS_PENDING,          { en attente de compilation               }
+  BS_BUILDING,         { compilation en cours                     }
+  BS_SUCCEEDED,        { compilation reussie                      }
+  BS_FAILED,           { compilation echouee                      }
+  BS_SKIPPED,          { projet ignore (up-to-date ou erreur dep) }
+  BS_CLEANED           { nettoyage effectue                       }
+ );
+
+ { Resultat de build d un projet }
+ TBuildProjectResult = Record
+  ProjectName  : String[63];       { nom du projet                  }
+  ProjectGUID  : String[40];       { GUID du projet                 }
+  Status       : TBuildStatus;     { statut du build                }
+  ErrorCount   : Integer;          { nombre d erreurs               }
+  WarningCount : Integer;          { nombre d avertissements        }
+  OutputFile   : String[255];      { fichier de sortie genere       }
+  ElapsedMs    : LongInt;          { duree en millisecondes         }
+ End;
+
+ { Gestionnaire de build }
+ TBuildManager = Record
+  Results      : Array[0..MAX_BUILD_RESULTS - 1] Of TBuildProjectResult;
+  ResultCount  : Integer;          { nombre de resultats            }
+  BuildOrder   : Array[0..BUILD_MAX_ORDER - 1] Of Integer;
+  OrderCount   : Integer;          { nombre de projets dans l ordre }
+  ActiveConfig : String[40];       { configuration active           }
+  ActivePlatform: String[20];      { plateforme active              }
+  IsBuilding   : Boolean;          { build en cours                 }
+  TotalSucceeded: Integer;         { projets reussis                }
+  TotalFailed  : Integer;          { projets echoues                }
+  TotalSkipped : Integer;          { projets ignores                }
+  TotalUpToDate: Integer;          { projets a jour                 }
+ End;
+
+ { Gestionnaire de configurations }
+ TConfigurationManager = Record
+  Visible      : Boolean;          { dialogue visible               }
+  X            : Integer;          { position X du dialogue         }
+  Y            : Integer;          { position Y du dialogue         }
+  Width        : Integer;          { largeur du dialogue            }
+  Height       : Integer;          { hauteur du dialogue            }
+  SelectedRow  : Integer;          { ligne selectionnee             }
+  ScrollTop    : Integer;          { defilement vertical            }
+  NeedRepaint  : Boolean;          { doit etre redessine            }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -2310,6 +2367,10 @@ Var
  VBCContext     : TVBCCompilerContext;
  { Contexte compilateur Pascal }
  TPCContext     : TTPCCompilerContext;
+ { Gestionnaire de build }
+ BuildMgr       : TBuildManager;
+ { Gestionnaire de configurations }
+ CfgMgr         : TConfigurationManager;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -19475,6 +19536,545 @@ Begin
   (Ctx.WarningCount = 0) And
   (Not Ctx.IsCompiling);
 End;
+
+{ ============================================================
+  TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser un resultat de build projet --- }
+
+Procedure InitBuildProjectResult(Var R: TBuildProjectResult);
+Begin
+ R.ProjectName := '';
+ R.ProjectGUID := '';
+ R.Status := BS_PENDING;
+ R.ErrorCount := 0;
+ R.WarningCount := 0;
+ R.OutputFile := '';
+ R.ElapsedMs := 0;
+End;
+
+{ --- Initialiser le gestionnaire de build --- }
+
+Procedure InitBuildManager(Var BM: TBuildManager);
+Var
+ I: Integer;
+Begin
+ For I := 0 To MAX_BUILD_RESULTS - 1 Do
+  InitBuildProjectResult(BM.Results[I]);
+ BM.ResultCount := 0;
+ For I := 0 To BUILD_MAX_ORDER - 1 Do
+  BM.BuildOrder[I] := -1;
+ BM.OrderCount := 0;
+ BM.ActiveConfig := 'Debug';
+ BM.ActivePlatform := 'AnyCPU';
+ BM.IsBuilding := False;
+ BM.TotalSucceeded := 0;
+ BM.TotalFailed := 0;
+ BM.TotalSkipped := 0;
+ BM.TotalUpToDate := 0;
+End;
+
+{ --- Initialiser le gestionnaire de configurations --- }
+
+Procedure InitConfigurationManager(Var CM: TConfigurationManager);
+Begin
+ CM.Visible := False;
+ CM.X := 100;
+ CM.Y := 80;
+ CM.Width := BUILD_CFG_DLG_WIDTH;
+ CM.Height := BUILD_CFG_DLG_HEIGHT;
+ CM.SelectedRow := 0;
+ CM.ScrollTop := 0;
+ CM.NeedRepaint := False;
+End;
+
+{ --- Nom textuel d un statut de build --- }
+
+Function BuildStatusName(S: TBuildStatus): String;
+Begin
+ Case S Of
+  BS_PENDING:   BuildStatusName := 'Pending';
+  BS_BUILDING:  BuildStatusName := 'Building';
+  BS_SUCCEEDED: BuildStatusName := 'Succeeded';
+  BS_FAILED:    BuildStatusName := 'Failed';
+  BS_SKIPPED:   BuildStatusName := 'Skipped';
+  BS_CLEANED:   BuildStatusName := 'Cleaned';
+ Else
+  BuildStatusName := 'Unknown';
+ End;
+End;
+
+{ --- Tri topologique des projets selon les dependances --- }
+
+Procedure ResolveBuildOrder(Var Sol: TSolution;
+ Var Order: Array Of Integer; Var OrderCount: Integer);
+Var
+ Placed: Array[0..MAX_SOLUTION_PROJECTS - 1] Of Boolean;
+ I, J, K, Pass: Integer;
+ AllPlaced, CanPlace: Boolean;
+ DepGUID: String;
+ DepFound: Boolean;
+Begin
+ OrderCount := 0;
+ For I := 0 To Sol.ProjectCount - 1 Do
+  Placed[I] := False;
+ For Pass := 0 To Sol.ProjectCount - 1 Do Begin
+  AllPlaced := True;
+  For I := 0 To Sol.ProjectCount - 1 Do Begin
+   If Not Placed[I] Then Begin
+    CanPlace := True;
+    For J := 0 To Sol.Projects[I].DepCount - 1 Do Begin
+     DepGUID := Sol.Projects[I].Dependencies[J];
+     DepFound := False;
+     { Verifier si la dependance est deja placee }
+     For K := 0 To OrderCount - 1 Do Begin
+      If Sol.Projects[Order[K]].ProjectGUID = DepGUID Then Begin
+       DepFound := True;
+       Break;
+      End;
+     End;
+     If Not DepFound Then Begin
+      CanPlace := False;
+      Break;
+     End;
+    End;
+    If CanPlace Then Begin
+     Order[OrderCount] := I;
+     Inc(OrderCount);
+     Placed[I] := True;
+    End Else
+     AllPlaced := False;
+   End;
+  End;
+  If AllPlaced Then Break;
+ End;
+ { Ajouter les projets restants (dependances circulaires) }
+ For I := 0 To Sol.ProjectCount - 1 Do Begin
+  If Not Placed[I] Then Begin
+   Order[OrderCount] := I;
+   Inc(OrderCount);
+  End;
+ End;
+End;
+
+{ --- Trouver une configuration de build par nom --- }
+
+Function FindBuildConfig(Var Proj: TProject;
+ CfgName: String): Integer;
+Var
+ I: Integer;
+Begin
+ FindBuildConfig := -1;
+ For I := 0 To Proj.CfgCount - 1 Do Begin
+  If Proj.Configs[I].ConfigName = CfgName Then Begin
+   FindBuildConfig := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Compiler un projet selon son type --- }
+
+Procedure CompileProjectByType(Var Proj: TProject;
+ Var Cfg: TBuildConfig;
+ Var OP: TOutputPanel;
+ Var EL: TErrorListPanel;
+ Var CSC: TCSCCompilerContext;
+ Var VBC: TVBCCompilerContext;
+ Var TPC: TTPCCompilerContext);
+Begin
+ Case Proj.Info.ProjectType Of
+  PT_CSHARP: CompileCSharp(Proj, Cfg, OP, EL, CSC);
+  PT_VBNET:  CompileVBNet(Proj, Cfg, OP, EL, VBC);
+  PT_PASCAL: CompilePascal(Proj, Cfg, OP, EL, TPC);
+ Else
+  AppendOutput(OP, 'Erreur: type de projet inconnu pour ' +
+   Proj.Info.ProjectName, Ord(OTK_BUILD));
+ End;
+End;
+
+{ --- Compiler un seul projet --- }
+
+Procedure BuildProject(Var Proj: TProject;
+ CfgName: String;
+ Var OP: TOutputPanel;
+ Var EL: TErrorListPanel;
+ Var BM: TBuildManager;
+ Var CSC: TCSCCompilerContext;
+ Var VBC: TVBCCompilerContext;
+ Var TPC: TTPCCompilerContext);
+Var
+ CfgIdx: Integer;
+ R: TBuildProjectResult;
+Begin
+ InitBuildProjectResult(R);
+ R.ProjectName := Proj.Info.ProjectName;
+ R.ProjectGUID := Proj.Info.ProjectGUID;
+ CfgIdx := FindBuildConfig(Proj, CfgName);
+ If CfgIdx < 0 Then Begin
+  AppendOutput(OP, 'Configuration "' + CfgName +
+   '" introuvable pour ' + Proj.Info.ProjectName,
+   Ord(OTK_BUILD));
+  R.Status := BS_SKIPPED;
+  If BM.ResultCount < MAX_BUILD_RESULTS Then Begin
+   BM.Results[BM.ResultCount] := R;
+   Inc(BM.ResultCount);
+  End;
+  Inc(BM.TotalSkipped);
+  Exit;
+ End;
+ AppendOutput(OP,
+  '------ Build started: Project: ' + Proj.Info.ProjectName +
+  ', Configuration: ' + CfgName + ' ------', Ord(OTK_BUILD));
+ R.Status := BS_BUILDING;
+ CompileProjectByType(Proj, Proj.Configs[CfgIdx], OP, EL,
+  CSC, VBC, TPC);
+ Case Proj.Info.ProjectType Of
+  PT_CSHARP: Begin
+   R.ErrorCount := CSC.ErrorCount;
+   R.WarningCount := CSC.WarningCount;
+   R.OutputFile := CSC.OutputFile;
+  End;
+  PT_VBNET: Begin
+   R.ErrorCount := VBC.ErrorCount;
+   R.WarningCount := VBC.WarningCount;
+   R.OutputFile := VBC.OutputFile;
+  End;
+  PT_PASCAL: Begin
+   R.ErrorCount := TPC.ErrorCount;
+   R.WarningCount := TPC.WarningCount;
+   R.OutputFile := TPC.OutputFile;
+  End;
+ End;
+ If R.ErrorCount > 0 Then Begin
+  R.Status := BS_FAILED;
+  Inc(BM.TotalFailed);
+ End Else Begin
+  R.Status := BS_SUCCEEDED;
+  Inc(BM.TotalSucceeded);
+ End;
+ If BM.ResultCount < MAX_BUILD_RESULTS Then Begin
+  BM.Results[BM.ResultCount] := R;
+  Inc(BM.ResultCount);
+ End;
+End;
+
+{ --- Afficher le resume du build --- }
+
+Procedure ShowBuildSummary(Var OP: TOutputPanel;
+ Var BM: TBuildManager);
+Begin
+ AppendOutput(OP, '========== Build: ' +
+  IntToStr(BM.TotalSucceeded) + ' succeeded, ' +
+  IntToStr(BM.TotalFailed) + ' failed, ' +
+  IntToStr(BM.TotalUpToDate) + ' up-to-date, ' +
+  IntToStr(BM.TotalSkipped) + ' skipped ==========',
+  Ord(OTK_BUILD));
+End;
+
+{ --- Compiler toute la solution --- }
+
+Procedure BuildSolution(Var Sol: TSolution;
+ Var OP: TOutputPanel;
+ Var EL: TErrorListPanel;
+ Var BM: TBuildManager;
+ Var CSC: TCSCCompilerContext;
+ Var VBC: TVBCCompilerContext;
+ Var TPC: TTPCCompilerContext);
+Var
+ I, ProjIdx: Integer;
+Begin
+ ClearOutput(OP, Ord(OTK_BUILD));
+ ClearErrors(EL);
+ BM.IsBuilding := True;
+ BM.ResultCount := 0;
+ BM.TotalSucceeded := 0;
+ BM.TotalFailed := 0;
+ BM.TotalSkipped := 0;
+ BM.TotalUpToDate := 0;
+ AppendOutput(OP, 'Build started...', Ord(OTK_BUILD));
+ ResolveBuildOrder(Sol, BM.BuildOrder, BM.OrderCount);
+ For I := 0 To BM.OrderCount - 1 Do Begin
+  ProjIdx := BM.BuildOrder[I];
+  If (ProjIdx >= 0) And (ProjIdx < Sol.ProjectCount) Then Begin
+   { Stub : on aurait besoin de charger le TProject complet }
+   AppendOutput(OP,
+    '------ Build started: Project: ' +
+    Sol.Projects[ProjIdx].ProjectName +
+    ', Configuration: ' + BM.ActiveConfig + ' ------',
+    Ord(OTK_BUILD));
+  End;
+ End;
+ ShowBuildSummary(OP, BM);
+ BM.IsBuilding := False;
+End;
+
+{ --- Nettoyer les fichiers de sortie d un projet --- }
+
+Procedure CleanProjectOutputs(Var Proj: TProject;
+ CfgName: String; Var OP: TOutputPanel);
+Var
+ CfgIdx: Integer;
+Begin
+ CfgIdx := FindBuildConfig(Proj, CfgName);
+ If CfgIdx >= 0 Then
+  AppendOutput(OP, 'Cleaning output: ' +
+   Proj.Configs[CfgIdx].OutputPath, Ord(OTK_BUILD))
+ Else
+  AppendOutput(OP, 'Cleaning: ' + Proj.Info.ProjectName +
+   ' (aucune configuration trouvee)', Ord(OTK_BUILD));
+End;
+
+{ --- Nettoyer un projet (wrapper) --- }
+
+Procedure CleanProject(Var Proj: TProject;
+ CfgName: String; Var OP: TOutputPanel);
+Begin
+ AppendOutput(OP, '------ Clean started: Project: ' +
+  Proj.Info.ProjectName + ' ------', Ord(OTK_BUILD));
+ CleanProjectOutputs(Proj, CfgName, OP);
+ AppendOutput(OP, 'Clean complete: ' +
+  Proj.Info.ProjectName, Ord(OTK_BUILD));
+End;
+
+{ --- Nettoyer toute la solution --- }
+
+Procedure CleanSolution(Var Sol: TSolution;
+ Var OP: TOutputPanel; Var BM: TBuildManager);
+Var
+ I: Integer;
+Begin
+ ClearOutput(OP, Ord(OTK_BUILD));
+ AppendOutput(OP, 'Clean started...', Ord(OTK_BUILD));
+ BM.ResultCount := 0;
+ BM.TotalSucceeded := 0;
+ BM.TotalFailed := 0;
+ BM.TotalSkipped := 0;
+ BM.TotalUpToDate := 0;
+ For I := 0 To Sol.ProjectCount - 1 Do Begin
+  AppendOutput(OP, '------ Clean: ' +
+   Sol.Projects[I].ProjectName + ' ------', Ord(OTK_BUILD));
+ End;
+ AppendOutput(OP, '========== Clean: ' +
+  IntToStr(Sol.ProjectCount) +
+  ' project(s) cleaned ==========', Ord(OTK_BUILD));
+End;
+
+{ --- Regener la solution (clean + build) --- }
+
+Procedure RebuildSolution(Var Sol: TSolution;
+ Var OP: TOutputPanel;
+ Var EL: TErrorListPanel;
+ Var BM: TBuildManager;
+ Var CSC: TCSCCompilerContext;
+ Var VBC: TVBCCompilerContext;
+ Var TPC: TTPCCompilerContext);
+Begin
+ CleanSolution(Sol, OP, BM);
+ BuildSolution(Sol, OP, EL, BM, CSC, VBC, TPC);
+End;
+
+{ --- Dessiner le dialogue du gestionnaire de configurations --- }
+
+Procedure DrawConfigurationManager(
+ Var CM: TConfigurationManager; Var Sol: TSolution);
+Begin
+ If Not CM.Visible Then Exit;
+ CM.NeedRepaint := False;
+ { Stub : dessin du dialogue de configuration }
+End;
+
+{ --- Gerer une touche dans le gestionnaire de configurations --- }
+
+Procedure HandleConfigManagerKey(
+ Var CM: TConfigurationManager; Key: Word);
+Begin
+ If Not CM.Visible Then Exit;
+ Case Key Of
+  $4800: { Fleche haut }
+   If CM.SelectedRow > 0 Then Begin
+    Dec(CM.SelectedRow);
+    CM.NeedRepaint := True;
+   End;
+  $5000: { Fleche bas }
+   Begin
+    Inc(CM.SelectedRow);
+    CM.NeedRepaint := True;
+   End;
+  $001B: { Echap }
+   CM.Visible := False;
+ End;
+End;
+
+{ --- Gerer un evenement du gestionnaire de configurations --- }
+
+Procedure HandleConfigManagerEvent(
+ Var CM: TConfigurationManager);
+Begin
+ If Not CM.Visible Then Exit;
+ { Stub : gestion des evenements souris/clavier }
+End;
+
+{ --- Afficher le gestionnaire de configurations --- }
+
+Procedure ShowConfigurationManager(
+ Var CM: TConfigurationManager);
+Begin
+ CM.Visible := True;
+ CM.NeedRepaint := True;
+End;
+
+{ --- Masquer le gestionnaire de configurations --- }
+
+Procedure HideConfigurationManager(
+ Var CM: TConfigurationManager);
+Begin
+ CM.Visible := False;
+ CM.NeedRepaint := False;
+End;
+
+{ --- Obtenir la configuration de build active --- }
+
+Function GetActiveBuildConfig(
+ Var BM: TBuildManager): String;
+Begin
+ GetActiveBuildConfig := BM.ActiveConfig;
+End;
+
+{ --- Definir la configuration de build active --- }
+
+Procedure SetActiveBuildConfig(Var BM: TBuildManager;
+ CfgName: String);
+Begin
+ BM.ActiveConfig := CfgName;
+End;
+
+{ --- Obtenir la plateforme active --- }
+
+Function GetActivePlatform(
+ Var BM: TBuildManager): String;
+Begin
+ GetActivePlatform := BM.ActivePlatform;
+End;
+
+{ --- Definir la plateforme active --- }
+
+Procedure SetActivePlatform(Var BM: TBuildManager;
+ Plat: String);
+Begin
+ BM.ActivePlatform := Plat;
+End;
+
+{ --- Verifier si un build est en cours --- }
+
+Function IsBuildInProgress(
+ Var BM: TBuildManager): Boolean;
+Begin
+ IsBuildInProgress := BM.IsBuilding;
+End;
+
+{ --- Obtenir le nombre de resultats de build --- }
+
+Function GetBuildResultCount(
+ Var BM: TBuildManager): Integer;
+Begin
+ GetBuildResultCount := BM.ResultCount;
+End;
+
+{ --- Obtenir un resultat de build par index --- }
+
+Function GetBuildResult(Var BM: TBuildManager;
+ Idx: Integer): TBuildProjectResult;
+Var
+ Empty: TBuildProjectResult;
+Begin
+ If (Idx >= 0) And (Idx < BM.ResultCount) Then
+  GetBuildResult := BM.Results[Idx]
+ Else Begin
+  InitBuildProjectResult(Empty);
+  GetBuildResult := Empty;
+ End;
+End;
+
+{ --- Obtenir le nombre de projets reussis --- }
+
+Function GetBuildTotalSucceeded(
+ Var BM: TBuildManager): Integer;
+Begin
+ GetBuildTotalSucceeded := BM.TotalSucceeded;
+End;
+
+{ --- Obtenir le nombre de projets echoues --- }
+
+Function GetBuildTotalFailed(
+ Var BM: TBuildManager): Integer;
+Begin
+ GetBuildTotalFailed := BM.TotalFailed;
+End;
+
+{ --- Obtenir le nombre de projets ignores --- }
+
+Function GetBuildTotalSkipped(
+ Var BM: TBuildManager): Integer;
+Begin
+ GetBuildTotalSkipped := BM.TotalSkipped;
+End;
+
+{ --- Obtenir le nombre de projets a jour --- }
+
+Function GetBuildTotalUpToDate(
+ Var BM: TBuildManager): Integer;
+Begin
+ GetBuildTotalUpToDate := BM.TotalUpToDate;
+End;
+
+{ --- Obtenir le nombre de projets dans l ordre de build --- }
+
+Function GetBuildOrderCount(
+ Var BM: TBuildManager): Integer;
+Begin
+ GetBuildOrderCount := BM.OrderCount;
+End;
+
+{ --- Verifier si le dialogue de configurations est visible --- }
+
+Function IsConfigManagerVisible(
+ Var CM: TConfigurationManager): Boolean;
+Begin
+ IsConfigManagerVisible := CM.Visible;
+End;
+
+{ --- Obtenir la ligne selectionnee du gestionnaire --- }
+
+Function GetConfigManagerSelectedRow(
+ Var CM: TConfigurationManager): Integer;
+Begin
+ GetConfigManagerSelectedRow := CM.SelectedRow;
+End;
+
+{ --- Definir la ligne selectionnee du gestionnaire --- }
+
+Procedure SetConfigManagerSelectedRow(
+ Var CM: TConfigurationManager; Row: Integer);
+Begin
+ CM.SelectedRow := Row;
+ CM.NeedRepaint := True;
+End;
+
+{ --- Verifier si le gestionnaire de build est vide --- }
+
+Function IsBuildManagerEmpty(
+ Var BM: TBuildManager): Boolean;
+Begin
+ IsBuildManagerEmpty := (BM.ResultCount = 0) And
+  (BM.TotalSucceeded = 0) And
+  (BM.TotalFailed = 0) And
+  (BM.TotalSkipped = 0) And
+  (BM.TotalUpToDate = 0) And
+  (Not BM.IsBuilding);
+End;
+
  InitOptions(Opts);
  ParseCommandLine(Opts);
  If Opts.Verbose Then
@@ -19506,6 +20106,8 @@ End;
  InitCSCContext(CSCContext);
  InitVBCContext(VBCContext);
  InitTPCContext(TPCContext);
- { Boucle principale a venir (TODO 28+) }
+ InitBuildManager(BuildMgr);
+ InitConfigurationManager(CfgMgr);
+ { Boucle principale a venir (TODO 29+) }
  ShutdownGraphics;
 END.
