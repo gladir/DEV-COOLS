@@ -554,7 +554,7 @@
               orchestrateur : generer la documentation RTF complete
               (fichier unique refman.rtf)
 
-  TODO 15 - GENERATION DE LA DOCUMENTATION XML [A FAIRE]
+  TODO 15 - GENERATION DE LA DOCUMENTATION XML [IMPLEMENTE]
             Variables globales :
               XmlOutputDir : String  (repertoire de sortie XML)
               XmlSchemaLoc : String  (emplacement du schema XSD)
@@ -946,6 +946,15 @@ Const
   RTF_TITLE_FONTSIZE  = 48;   { 24pt }
   RTF_HEADING_FONTSIZE = 28;  { 14pt }
 
+  { Constantes pour la generation XML (TODO 15) }
+  XML_INDEX_FILE       = 'index.xml';
+  XML_COMPOUND_PREFIX  = 'compound_';
+  XML_MEMBER_PREFIX    = 'member_';
+  XML_SCHEMA_LOC       = 'compound.xsd';
+  XML_VERSION          = '1.0';
+  XML_ENCODING         = 'UTF-8';
+  XML_DOXYFILE_VERSION = '1.9.8';
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1195,6 +1204,13 @@ Var
   RtfProjectName  : String;
   RtfProjectBrief : String;
   RtfInitialized  : Boolean;
+
+  { Variables pour la generation XML (TODO 15) }
+  XmlOutputDir    : String;
+  XmlSchemaLoc    : String;
+  XmlProjectName  : String;
+  XmlProjectBrief : String;
+  XmlInitialized  : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -8276,6 +8292,288 @@ Function IsRtfEmpty: Boolean;
 { Verifie si le generateur RTF est vide }
 Begin
   IsRtfEmpty := (EntityCount = 0);
+End;
+
+{ ============================================================
+  TODO 15 - GENERATION DE LA DOCUMENTATION XML
+  ============================================================ }
+
+Procedure InitXmlGenerator;
+{ Initialise le generateur XML }
+Begin
+  If GetConfigValue('XML_OUTPUT') <> '' Then
+    XmlOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + GetConfigValue('XML_OUTPUT') + '/'
+  Else
+    XmlOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + 'xml/';
+  
+  XmlSchemaLoc := XML_SCHEMA_LOC;
+  XmlProjectName := GetConfigValue('PROJECT_NAME');
+  If XmlProjectName = '' Then
+    XmlProjectName := 'Documentation';
+  XmlProjectBrief := GetConfigValue('PROJECT_BRIEF');
+  
+  { Creer le repertoire de sortie }
+  {$I-}
+  MkDir(XmlOutputDir);
+  {$I+}
+  If IOResult <> 0 Then; { Ignorer si existe deja }
+  
+  XmlInitialized := True;
+End;
+
+Function EscapeXml(Const S: String): String;
+{ Echappe les caracteres speciaux XML }
+Var
+  I: Integer;
+  R: String;
+  C: Char;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    C := S[I];
+    Case C Of
+      '<': R := R + '&lt;';
+      '>': R := R + '&gt;';
+      '&': R := R + '&amp;';
+      '"': R := R + '&quot;';
+      '''': R := R + '&apos;';
+    Else
+      R := R + C;
+    End;
+  End;
+  EscapeXml := R;
+End;
+
+Procedure WriteXmlHeader(Var OutFile: Text);
+{ Ecrit l entete XML avec la declaration }
+Begin
+  WriteLn(OutFile, '<?xml version="', XML_VERSION, '" encoding="', XML_ENCODING, '"?>');
+End;
+
+Procedure GenerateXmlMember(Const Entity: TEntity; EntityIdx: Integer; Var OutFile: Text);
+{ Genere la section XML pour un membre }
+Begin
+  WriteLn(OutFile, '      <memberdef kind="', EntityKindToStr(Entity.Kind), 
+          '" id="member_', EntityIdx, '">');
+  WriteLn(OutFile, '        <name>', EscapeXml(Entity.Name), '</name>');
+  
+  If Entity.BriefDesc <> '' Then
+  Begin
+    WriteLn(OutFile, '        <briefdescription>');
+    WriteLn(OutFile, '          <para>', EscapeXml(Entity.BriefDesc), '</para>');
+    WriteLn(OutFile, '        </briefdescription>');
+  End
+  Else
+    WriteLn(OutFile, '        <briefdescription/>');
+  
+  If Entity.DetailedDesc <> '' Then
+  Begin
+    WriteLn(OutFile, '        <detaileddescription>');
+    WriteLn(OutFile, '          <para>', EscapeXml(Entity.DetailedDesc), '</para>');
+    WriteLn(OutFile, '        </detaileddescription>');
+  End
+  Else
+    WriteLn(OutFile, '        <detaileddescription/>');
+  
+  If Entity.Signature <> '' Then
+    WriteLn(OutFile, '        <definition>', EscapeXml(Entity.Signature), '</definition>');
+  
+  If Entity.ReturnType <> '' Then
+    WriteLn(OutFile, '        <type>', EscapeXml(Entity.ReturnType), '</type>');
+  
+  If Entity.Parameters <> '' Then
+    WriteLn(OutFile, '        <argsstring>', EscapeXml(Entity.Parameters), '</argsstring>');
+  
+  WriteLn(OutFile, '        <location file="', EscapeXml(Entity.FileName), 
+          '" line="', Entity.Line, '"/>');
+  WriteLn(OutFile, '      </memberdef>');
+End;
+
+Procedure GenerateXmlCompound(Const Entity: TEntity; EntityIdx: Integer; Var OutFile: Text);
+{ Genere le fichier XML pour un compound (classe, fichier, etc.) }
+Var
+  CompoundKind: String;
+Begin
+  Case Entity.Kind Of
+    ENT_CLASS: CompoundKind := 'class';
+    ENT_STRUCT: CompoundKind := 'struct';
+    ENT_UNION: CompoundKind := 'union';
+    ENT_FILE: CompoundKind := 'file';
+    ENT_NAMESPACE: CompoundKind := 'namespace';
+    ENT_INTERFACE: CompoundKind := 'interface';
+    ENT_ENUM: CompoundKind := 'enum';
+  Else
+    CompoundKind := 'unknown';
+  End;
+  
+  WriteXmlHeader(OutFile);
+  WriteLn(OutFile, '<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"');
+  WriteLn(OutFile, '         xsi:noNamespaceSchemaLocation="', XmlSchemaLoc, '"');
+  WriteLn(OutFile, '         version="', XML_DOXYFILE_VERSION, '">');
+  WriteLn(OutFile, '  <compounddef id="compound_', EntityIdx, '" kind="', CompoundKind, '">');
+  WriteLn(OutFile, '    <compoundname>', EscapeXml(Entity.Name), '</compoundname>');
+  
+  If Entity.BriefDesc <> '' Then
+  Begin
+    WriteLn(OutFile, '    <briefdescription>');
+    WriteLn(OutFile, '      <para>', EscapeXml(Entity.BriefDesc), '</para>');
+    WriteLn(OutFile, '    </briefdescription>');
+  End
+  Else
+    WriteLn(OutFile, '    <briefdescription/>');
+  
+  If Entity.DetailedDesc <> '' Then
+  Begin
+    WriteLn(OutFile, '    <detaileddescription>');
+    WriteLn(OutFile, '      <para>', EscapeXml(Entity.DetailedDesc), '</para>');
+    WriteLn(OutFile, '    </detaileddescription>');
+  End
+  Else
+    WriteLn(OutFile, '    <detaileddescription/>');
+  
+  WriteLn(OutFile, '    <location file="', EscapeXml(Entity.FileName), 
+          '" line="', Entity.Line, '"/>');
+  WriteLn(OutFile, '  </compounddef>');
+  WriteLn(OutFile, '</doxygen>');
+End;
+
+Procedure GenerateXmlIndex(Var OutFile: Text);
+{ Genere le fichier index.xml avec la liste des fichiers XML generes }
+Var
+  I: Integer;
+  RefKind: String;
+Begin
+  WriteXmlHeader(OutFile);
+  WriteLn(OutFile, '<doxygenindex xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"');
+  WriteLn(OutFile, '              xsi:noNamespaceSchemaLocation="index.xsd"');
+  WriteLn(OutFile, '              version="', XML_DOXYFILE_VERSION, '">');
+  
+  For I := 1 To EntityCount Do
+  Begin
+    Case Entities[I].Kind Of
+      ENT_CLASS: RefKind := 'class';
+      ENT_STRUCT: RefKind := 'struct';
+      ENT_UNION: RefKind := 'union';
+      ENT_FILE: RefKind := 'file';
+      ENT_NAMESPACE: RefKind := 'namespace';
+      ENT_INTERFACE: RefKind := 'interface';
+      ENT_ENUM: RefKind := 'enum';
+      ENT_FUNCTION: RefKind := 'function';
+      ENT_VARIABLE: RefKind := 'variable';
+      ENT_TYPEDEF: RefKind := 'typedef';
+      ENT_DEFINE: RefKind := 'define';
+    Else
+      RefKind := 'unknown';
+    End;
+    
+    WriteLn(OutFile, '  <compound refid="compound_', I, '" kind="', RefKind, '">');
+    WriteLn(OutFile, '    <name>', EscapeXml(Entities[I].Name), '</name>');
+    WriteLn(OutFile, '  </compound>');
+  End;
+  
+  WriteLn(OutFile, '</doxygenindex>');
+End;
+
+Procedure GenerateXmlDocumentation;
+{ Orchestrateur : genere toute la documentation XML }
+Var
+  F: Text;
+  I: Integer;
+  FileName: String;
+Begin
+  If Not XmlInitialized Then
+    InitXmlGenerator;
+  
+  { Generer les fichiers compound pour chaque entite majeure }
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_UNION, ENT_FILE, 
+                            ENT_NAMESPACE, ENT_INTERFACE, ENT_ENUM] Then
+    Begin
+      FileName := XmlOutputDir + XML_COMPOUND_PREFIX + IntToStr(I) + '.xml';
+      Assign(F, FileName);
+      Rewrite(F);
+      GenerateXmlCompound(Entities[I], I, F);
+      Close(F);
+    End;
+  End;
+  
+  { Generer le fichier index.xml }
+  Assign(F, XmlOutputDir + XML_INDEX_FILE);
+  Rewrite(F);
+  GenerateXmlIndex(F);
+  Close(F);
+  
+  WriteLn('Documentation XML generee dans: ', XmlOutputDir);
+End;
+
+{ Fonctions accesseurs pour XML }
+
+Function GetXmlOutputDir: String;
+Begin
+  GetXmlOutputDir := XmlOutputDir;
+End;
+
+Procedure SetXmlOutputDir(Const Dir: String);
+Begin
+  XmlOutputDir := Dir;
+End;
+
+Function GetXmlProjectName: String;
+Begin
+  GetXmlProjectName := XmlProjectName;
+End;
+
+Procedure SetXmlProjectName(Const Name: String);
+Begin
+  XmlProjectName := Name;
+End;
+
+Function GetXmlProjectBrief: String;
+Begin
+  GetXmlProjectBrief := XmlProjectBrief;
+End;
+
+Procedure SetXmlProjectBrief(Const Brief: String);
+Begin
+  XmlProjectBrief := Brief;
+End;
+
+Function IsXmlInitialized: Boolean;
+Begin
+  IsXmlInitialized := XmlInitialized;
+End;
+
+Function GetXmlSchemaLoc: String;
+Begin
+  GetXmlSchemaLoc := XmlSchemaLoc;
+End;
+
+Procedure SetXmlSchemaLoc(Const SchemaLoc: String);
+Begin
+  XmlSchemaLoc := SchemaLoc;
+End;
+
+Function CountXmlFiles: Integer;
+{ Compte le nombre de fichiers XML a generer }
+Var
+  I, Count: Integer;
+Begin
+  Count := 1; { Pour index.xml }
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_UNION, ENT_FILE, 
+                            ENT_NAMESPACE, ENT_INTERFACE, ENT_ENUM] Then
+      Inc(Count);
+  End;
+  CountXmlFiles := Count;
+End;
+
+Function IsXmlEmpty: Boolean;
+{ Verifie si le generateur XML est vide }
+Begin
+  IsXmlEmpty := (EntityCount = 0);
 End;
 
 { ============================================================
