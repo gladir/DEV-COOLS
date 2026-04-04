@@ -577,7 +577,7 @@
               orchestrateur : generer toute la documentation XML
               compatible avec le format Doxygen XML natif
 
-  TODO 16 - GENERATION DE LA DOCUMENTATION MAN PAGES [A FAIRE]
+  TODO 16 - GENERATION DE LA DOCUMENTATION MAN PAGES [IMPLEMENTE]
             Variables globales :
               ManOutputDir : String  (repertoire de sortie man)
               ManExtension : String  (extension des pages man, ex: .3)
@@ -955,6 +955,14 @@ Const
   XML_ENCODING         = 'UTF-8';
   XML_DOXYFILE_VERSION = '1.9.8';
 
+  { Constantes pour la generation MAN pages (TODO 16) }
+  MAN_DEFAULT_EXTENSION = '.3';
+  MAN_DEFAULT_SUBDIR    = 'man3';
+  MAN_OUTPUT_DIR        = 'man';
+  MAN_DATE_FORMAT       = '%B %Y';
+  MAN_SOURCE_DEFAULT    = 'Documentation';
+  MAN_MANUAL_DEFAULT    = 'Programmer''s Manual';
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1211,6 +1219,14 @@ Var
   XmlProjectName  : String;
   XmlProjectBrief : String;
   XmlInitialized  : Boolean;
+
+  { Variables pour la generation MAN pages (TODO 16) }
+  ManOutputDir    : String;
+  ManExtension    : String;
+  ManSubdir       : String;
+  ManProjectName  : String;
+  ManProjectBrief : String;
+  ManInitialized  : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -8574,6 +8590,358 @@ Function IsXmlEmpty: Boolean;
 { Verifie si le generateur XML est vide }
 Begin
   IsXmlEmpty := (EntityCount = 0);
+End;
+
+{ ============================================================
+  TODO 16 - GENERATION DE LA DOCUMENTATION MAN PAGES
+  ============================================================ }
+
+Procedure InitManGenerator;
+{ Initialise le generateur de pages MAN }
+Begin
+  If GetConfigValue('MAN_OUTPUT') <> '' Then
+    ManOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + GetConfigValue('MAN_OUTPUT') + '/'
+  Else
+    ManOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + MAN_OUTPUT_DIR + '/';
+  
+  If GetConfigValue('MAN_EXTENSION') <> '' Then
+    ManExtension := GetConfigValue('MAN_EXTENSION')
+  Else
+    ManExtension := MAN_DEFAULT_EXTENSION;
+  
+  If GetConfigValue('MAN_SUBDIR') <> '' Then
+    ManSubdir := GetConfigValue('MAN_SUBDIR')
+  Else
+    ManSubdir := MAN_DEFAULT_SUBDIR;
+  
+  ManProjectName := GetConfigValue('PROJECT_NAME');
+  If ManProjectName = '' Then
+    ManProjectName := MAN_SOURCE_DEFAULT;
+  ManProjectBrief := GetConfigValue('PROJECT_BRIEF');
+  
+  { Creer le repertoire de sortie }
+  {$I-}
+  MkDir(ManOutputDir);
+  {$I+}
+  If IOResult <> 0 Then; { Ignorer si existe deja }
+  
+  { Creer le sous-repertoire man3 ou autre }
+  {$I-}
+  MkDir(ManOutputDir + ManSubdir);
+  {$I+}
+  If IOResult <> 0 Then; { Ignorer si existe deja }
+  
+  ManInitialized := True;
+End;
+
+Function EscapeMan(Const S: String): String;
+{ Echappe les caracteres speciaux pour les pages MAN }
+Var
+  I: Integer;
+  R: String;
+  C: Char;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    C := S[I];
+    Case C Of
+      '-': R := R + '\-';
+      '\': R := R + '\\';
+      '.': 
+        Begin
+          { Echapper le point seulement en debut de ligne }
+          If (I = 1) Or (S[I-1] = #10) Then
+            R := R + '\&.'
+          Else
+            R := R + '.';
+        End;
+      '''': R := R + '\''';
+    Else
+      R := R + C;
+    End;
+  End;
+  EscapeMan := R;
+End;
+
+Procedure GenerateManHeader(Var OutFile: Text;
+  Const Name, Section, TheDate, Source, Manual: String);
+{ Ecrit l entete .TH de la page MAN }
+Begin
+  WriteLn(OutFile, '.TH "', EscapeMan(Name), '" ', Section, ' "', 
+          TheDate, '" "', EscapeMan(Source), '" "', EscapeMan(Manual), '"');
+End;
+
+Procedure GenerateManSection(Var OutFile: Text; Const Title: String);
+{ Ecrit une section .SH }
+Begin
+  WriteLn(OutFile, '.SH "', Title, '"');
+End;
+
+Procedure GenerateManParagraph(Var OutFile: Text);
+{ Ecrit un indicateur de paragraphe .PP }
+Begin
+  WriteLn(OutFile, '.PP');
+End;
+
+Procedure GenerateManBold(Var OutFile: Text; Const Text: String);
+{ Ecrit du texte en gras }
+Begin
+  Write(OutFile, '\fB', EscapeMan(Text), '\fP');
+End;
+
+Procedure GenerateManItalic(Var OutFile: Text; Const Text: String);
+{ Ecrit du texte en italique }
+Begin
+  Write(OutFile, '\fI', EscapeMan(Text), '\fP');
+End;
+
+Procedure GenerateManPage(Const Entity: TEntity; EntityIdx: Integer; Var OutFile: Text);
+{ Genere la page MAN pour une entite (fonction, structure) }
+Var
+  I: Integer;
+  MemberEntity: TEntity;
+  CurrentDate: String;
+Begin
+  { Date courante }
+  CurrentDate := 'April 2026';
+  
+  { Entete de la page MAN }
+  GenerateManHeader(OutFile, Entity.Name, '3', CurrentDate, 
+                    ManProjectName, MAN_MANUAL_DEFAULT);
+  
+  { Section NAME }
+  GenerateManSection(OutFile, 'NAME');
+  Write(OutFile, Entity.Name);
+  If Entity.Brief <> '' Then
+    WriteLn(OutFile, ' \- ', EscapeMan(Entity.Brief))
+  Else
+    WriteLn(OutFile, ' \- ', EscapeMan(EntityKindToStr(Entity.Kind)));
+  
+  { Section SYNOPSIS }
+  GenerateManSection(OutFile, 'SYNOPSIS');
+  GenerateManParagraph(OutFile);
+  Case Entity.Kind Of
+    ENT_FUNCTION, ENT_METHOD:
+      Begin
+        If Entity.ReturnType <> '' Then
+        Begin
+          GenerateManBold(OutFile, Entity.ReturnType);
+          Write(OutFile, ' ');
+        End;
+        GenerateManBold(OutFile, Entity.Name);
+        WriteLn(OutFile, '(', EscapeMan(Entity.Params), ')');
+      End;
+    ENT_CLASS, ENT_STRUCT, ENT_UNION:
+      Begin
+        GenerateManBold(OutFile, EntityKindToStr(Entity.Kind));
+        Write(OutFile, ' ');
+        GenerateManBold(OutFile, Entity.Name);
+        WriteLn(OutFile);
+      End;
+    ENT_TYPEDEF:
+      Begin
+        Write(OutFile, 'typedef ');
+        GenerateManBold(OutFile, Entity.Name);
+        WriteLn(OutFile);
+      End;
+    ENT_ENUM:
+      Begin
+        Write(OutFile, 'enum ');
+        GenerateManBold(OutFile, Entity.Name);
+        WriteLn(OutFile);
+      End;
+    ENT_VARIABLE:
+      Begin
+        If Entity.ReturnType <> '' Then
+        Begin
+          Write(OutFile, Entity.ReturnType, ' ');
+        End;
+        GenerateManBold(OutFile, Entity.Name);
+        WriteLn(OutFile);
+      End;
+  Else
+    Begin
+      GenerateManBold(OutFile, Entity.Name);
+      WriteLn(OutFile);
+    End;
+  End;
+  
+  { Section DESCRIPTION }
+  GenerateManSection(OutFile, 'DESCRIPTION');
+  GenerateManParagraph(OutFile);
+  If Entity.Description <> '' Then
+    WriteLn(OutFile, EscapeMan(Entity.Description))
+  Else If Entity.Brief <> '' Then
+    WriteLn(OutFile, EscapeMan(Entity.Brief))
+  Else
+    WriteLn(OutFile, 'No description available.');
+  
+  { Section MEMBERS pour les classes/structures }
+  If Entity.Kind In [ENT_CLASS, ENT_STRUCT, ENT_UNION, ENT_ENUM] Then
+  Begin
+    If Entity.MemberCount > 0 Then
+    Begin
+      GenerateManSection(OutFile, 'MEMBERS');
+      For I := 1 To Entity.MemberCount Do
+      Begin
+        If (Entity.Members[I] >= 1) And (Entity.Members[I] <= EntityCount) Then
+        Begin
+          MemberEntity := Entities[Entity.Members[I]];
+          GenerateManParagraph(OutFile);
+          GenerateManBold(OutFile, MemberEntity.Name);
+          WriteLn(OutFile);
+          If MemberEntity.Brief <> '' Then
+            WriteLn(OutFile, EscapeMan(MemberEntity.Brief));
+        End;
+      End;
+    End;
+  End;
+  
+  { Section RETURN VALUE pour les fonctions }
+  If Entity.Kind In [ENT_FUNCTION, ENT_METHOD] Then
+  Begin
+    If Entity.ReturnType <> '' Then
+    Begin
+      GenerateManSection(OutFile, 'RETURN VALUE');
+      GenerateManParagraph(OutFile);
+      WriteLn(OutFile, 'Returns a value of type ', 
+              EscapeMan(Entity.ReturnType), '.');
+    End;
+  End;
+  
+  { Section SEE ALSO }
+  GenerateManSection(OutFile, 'SEE ALSO');
+  GenerateManParagraph(OutFile);
+  If Entity.SeeAlso <> '' Then
+    WriteLn(OutFile, EscapeMan(Entity.SeeAlso))
+  Else
+    WriteLn(OutFile, 'Documentation generated by DOXYGEN.');
+  
+  { Section AUTHORS }
+  If Entity.Author <> '' Then
+  Begin
+    GenerateManSection(OutFile, 'AUTHORS');
+    GenerateManParagraph(OutFile);
+    WriteLn(OutFile, EscapeMan(Entity.Author));
+  End;
+End;
+
+Procedure GenerateManDocumentation;
+{ Orchestrateur : genere toutes les pages MAN }
+Var
+  I: Integer;
+  F: Text;
+  FileName: String;
+Begin
+  If Not ManInitialized Then
+    InitManGenerator;
+  
+  WriteLn('Generation des pages MAN...');
+  
+  { Generer une page pour chaque entite documentable }
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_FUNCTION, ENT_CLASS, ENT_STRUCT, 
+                            ENT_UNION, ENT_TYPEDEF, ENT_ENUM,
+                            ENT_METHOD, ENT_INTERFACE] Then
+    Begin
+      FileName := ManOutputDir + ManSubdir + '/' + 
+                  Entities[I].Name + ManExtension;
+      Assign(F, FileName);
+      {$I-}
+      Rewrite(F);
+      {$I+}
+      If IOResult = 0 Then
+      Begin
+        GenerateManPage(Entities[I], I, F);
+        Close(F);
+      End
+      Else
+        WarnMsg('Impossible de creer: ' + FileName);
+    End;
+  End;
+  
+  WriteLn('Documentation MAN generee dans: ', ManOutputDir + ManSubdir);
+End;
+
+{ Fonctions accesseurs pour MAN }
+
+Function GetManOutputDir: String;
+Begin
+  GetManOutputDir := ManOutputDir;
+End;
+
+Procedure SetManOutputDir(Const Dir: String);
+Begin
+  ManOutputDir := Dir;
+End;
+
+Function GetManExtension: String;
+Begin
+  GetManExtension := ManExtension;
+End;
+
+Procedure SetManExtension(Const Ext: String);
+Begin
+  ManExtension := Ext;
+End;
+
+Function GetManSubdir: String;
+Begin
+  GetManSubdir := ManSubdir;
+End;
+
+Procedure SetManSubdir(Const Subdir: String);
+Begin
+  ManSubdir := Subdir;
+End;
+
+Function GetManProjectName: String;
+Begin
+  GetManProjectName := ManProjectName;
+End;
+
+Procedure SetManProjectName(Const Name: String);
+Begin
+  ManProjectName := Name;
+End;
+
+Function GetManProjectBrief: String;
+Begin
+  GetManProjectBrief := ManProjectBrief;
+End;
+
+Procedure SetManProjectBrief(Const Brief: String);
+Begin
+  ManProjectBrief := Brief;
+End;
+
+Function IsManInitialized: Boolean;
+Begin
+  IsManInitialized := ManInitialized;
+End;
+
+Function CountManPages: Integer;
+{ Compte le nombre de pages MAN a generer }
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_FUNCTION, ENT_CLASS, ENT_STRUCT, 
+                            ENT_UNION, ENT_TYPEDEF, ENT_ENUM,
+                            ENT_METHOD, ENT_INTERFACE] Then
+      Inc(Count);
+  End;
+  CountManPages := Count;
+End;
+
+Function IsManEmpty: Boolean;
+{ Verifie si le generateur MAN est vide }
+Begin
+  IsManEmpty := (EntityCount = 0);
 End;
 
 { ============================================================
