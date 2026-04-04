@@ -440,7 +440,7 @@
             Function GetFileDependents(Const FileName: String): String
               retourner la liste des fichiers qui dependent de ce fichier
 
-  TODO 11 - GENERATION DE LA TABLE DES MATIERES ET INDEX [A FAIRE]
+  TODO 11 - GENERATION DE LA TABLE DES MATIERES ET INDEX [IMPLEMENTE]
             TIndexEntry : record
               Name       : String   (nom pour l index)
               EntityId   : Integer  (ID de l entite)
@@ -1090,6 +1090,16 @@ Type
     IsSystem   : Boolean;           { Include systeme <> ou local "" }
   End;
 
+  { Types pour la generation de l'index et table des matieres (TODO 11) }
+  TIndexEntry = Record
+    Name       : String;            { Nom pour l'index }
+    EntityId   : Integer;           { ID de l'entite }
+    FileName   : String;            { Fichier de documentation }
+    Anchor     : String;            { Ancre HTML }
+    Kind       : TEntityKind;       { Type d'entite }
+    SortKey    : String;            { Cle de tri }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1119,6 +1129,10 @@ Var
   { Variables pour l'analyse des dependances (TODO 10) }
   Dependencies     : Array[1..MAX_DEPENDENCIES] Of TDependency;
   DependencyCount  : Integer;
+
+  { Variables pour la generation de l'index (TODO 11) }
+  IndexEntries     : Array[1..MAX_INDEX_ENTRIES] Of TIndexEntry;
+  IndexCount       : Integer;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -3774,6 +3788,346 @@ Begin
   
   { Detecter les cycles }
   BuildDependencyGraph;
+End;
+
+{ ============================================================
+  TODO 11 - GENERATION DE LA TABLE DES MATIERES ET INDEX
+  ============================================================ }
+
+Procedure InitIndex;
+{ Initialise l'index }
+Begin
+  IndexCount := 0;
+End;
+
+Function MakeAnchor(Const Name: String; Kind: TEntityKind): String;
+{ Genere un identifiant d'ancre HTML a partir du nom et du type }
+Var
+  R: String;
+  I: Integer;
+  C: Char;
+Begin
+  R := EntityKindToStr(Kind) + '_';
+  For I := 1 To Length(Name) Do
+  Begin
+    C := Name[I];
+    If ((C >= 'a') And (C <= 'z')) Or
+       ((C >= 'A') And (C <= 'Z')) Or
+       ((C >= '0') And (C <= '9')) Or
+       (C = '_') Then
+      R := R + C
+    Else If (C = ':') Or (C = ' ') Or (C = '.') Then
+      R := R + '_'
+    Else
+      R := R + '_';
+  End;
+  MakeAnchor := R;
+End;
+
+Function MakeSortKey(Const Name: String): String;
+{ Genere une cle de tri (nom en minuscules sans prefixes) }
+Var
+  R: String;
+  I: Integer;
+Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    If (Name[I] >= 'A') And (Name[I] <= 'Z') Then
+      R := R + Chr(Ord(Name[I]) + 32)
+    Else If (Name[I] >= 'a') And (Name[I] <= 'z') Then
+      R := R + Name[I]
+    Else If (Name[I] >= '0') And (Name[I] <= '9') Then
+      R := R + Name[I]
+    Else If Name[I] = '_' Then
+      R := R + Name[I];
+  End;
+  MakeSortKey := R;
+End;
+
+Procedure AddIndexEntry(Const Name, FileName: String; EntityId: Integer;
+  Kind: TEntityKind);
+{ Ajoute une entree dans l'index }
+Begin
+  If IndexCount >= MAX_INDEX_ENTRIES Then Exit;
+  Inc(IndexCount);
+  IndexEntries[IndexCount].Name := Name;
+  IndexEntries[IndexCount].EntityId := EntityId;
+  IndexEntries[IndexCount].FileName := FileName;
+  IndexEntries[IndexCount].Anchor := MakeAnchor(Name, Kind);
+  IndexEntries[IndexCount].Kind := Kind;
+  IndexEntries[IndexCount].SortKey := MakeSortKey(Name);
+End;
+
+Procedure SortIndex;
+{ Trie l'index par ordre alphabetique (tri a bulles) }
+Var
+  I, J: Integer;
+  Temp: TIndexEntry;
+  Swapped: Boolean;
+Begin
+  If IndexCount < 2 Then Exit;
+  
+  For I := 1 To IndexCount - 1 Do
+  Begin
+    Swapped := False;
+    For J := 1 To IndexCount - I Do
+    Begin
+      If IndexEntries[J].SortKey > IndexEntries[J + 1].SortKey Then
+      Begin
+        Temp := IndexEntries[J];
+        IndexEntries[J] := IndexEntries[J + 1];
+        IndexEntries[J + 1] := Temp;
+        Swapped := True;
+      End;
+    End;
+    If Not Swapped Then Exit;
+  End;
+End;
+
+Procedure BuildClassIndex;
+{ Construit l'index des classes/structures/interfaces }
+Var
+  I: Integer;
+Begin
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].Kind = ENT_CLASS) Or
+       (Entities[I].Kind = ENT_STRUCT) Or
+       (Entities[I].Kind = ENT_INTERFACE) Then
+    Begin
+      AddIndexEntry(Entities[I].Name, Entities[I].FileName, I, Entities[I].Kind);
+    End;
+  End;
+End;
+
+Procedure BuildFileIndex;
+{ Construit l'index des fichiers documentes }
+Var
+  I: Integer;
+Begin
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = ENT_FILE Then
+      AddIndexEntry(Entities[I].Name, Entities[I].FileName, I, ENT_FILE);
+  End;
+End;
+
+Procedure BuildNamespaceIndex;
+{ Construit l'index des namespaces/packages/modules }
+Var
+  I: Integer;
+Begin
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].Kind = ENT_NAMESPACE) Or
+       (Entities[I].Kind = ENT_MODULE) Then
+    Begin
+      AddIndexEntry(Entities[I].Name, Entities[I].FileName, I, Entities[I].Kind);
+    End;
+  End;
+End;
+
+Procedure BuildFunctionIndex;
+{ Construit l'index des fonctions/methodes/procedures }
+Var
+  I: Integer;
+Begin
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = ENT_FUNCTION Then
+      AddIndexEntry(Entities[I].Name, Entities[I].FileName, I, ENT_FUNCTION);
+  End;
+End;
+
+Procedure BuildVariableIndex;
+{ Construit l'index des variables/constantes/defines }
+Var
+  I: Integer;
+Begin
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].Kind = ENT_VARIABLE) Or
+       (Entities[I].Kind = ENT_DEFINE) Then
+    Begin
+      AddIndexEntry(Entities[I].Name, Entities[I].FileName, I, Entities[I].Kind);
+    End;
+  End;
+End;
+
+Procedure BuildPageIndex;
+{ Construit l'index des pages personnalisees (@page) }
+Var
+  I: Integer;
+Begin
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = ENT_PAGE Then
+      AddIndexEntry(Entities[I].Name, Entities[I].FileName, I, ENT_PAGE);
+  End;
+End;
+
+Procedure BuildGroupIndex;
+{ Construit l'index des groupes (@defgroup) }
+Var
+  I: Integer;
+Begin
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = ENT_GROUP Then
+      AddIndexEntry(Entities[I].Name, Entities[I].FileName, I, ENT_GROUP);
+  End;
+End;
+
+Procedure BuildIndex;
+{ Construit l'index global de toutes les entites }
+Begin
+  InitIndex;
+  BuildClassIndex;
+  BuildFileIndex;
+  BuildNamespaceIndex;
+  BuildFunctionIndex;
+  BuildVariableIndex;
+  BuildPageIndex;
+  BuildGroupIndex;
+  SortIndex;
+End;
+
+Procedure GenerateTOC(Var OutFile: Text);
+{ Genere la table des matieres hierarchique }
+Var
+  I, Level, LastLevel: Integer;
+  LastKind: TEntityKind;
+Begin
+  WriteLn(OutFile, '<!-- Table des matieres generee par DOXYGEN.PAS -->');
+  WriteLn(OutFile, '<div class="toc">');
+  WriteLn(OutFile, '<h2>Table des matieres</h2>');
+  WriteLn(OutFile, '<ul>');
+  
+  LastLevel := 0;
+  LastKind := ENT_UNKNOWN;
+  
+  { Grouper par type d'entite }
+  For I := 1 To IndexCount Do
+  Begin
+    { Nouveau type d'entite = nouveau groupe }
+    If IndexEntries[I].Kind <> LastKind Then
+    Begin
+      If LastKind <> ENT_UNKNOWN Then
+        WriteLn(OutFile, '</ul></li>');
+      
+      WriteLn(OutFile, '<li><strong>', 
+        UpStr(EntityKindToStr(IndexEntries[I].Kind)), 'S</strong>');
+      WriteLn(OutFile, '<ul>');
+      LastKind := IndexEntries[I].Kind;
+    End;
+    
+    WriteLn(OutFile, '<li><a href="', IndexEntries[I].FileName, 
+      '#', IndexEntries[I].Anchor, '">', IndexEntries[I].Name, '</a></li>');
+  End;
+  
+  If IndexCount > 0 Then
+    WriteLn(OutFile, '</ul></li>');
+  
+  WriteLn(OutFile, '</ul>');
+  WriteLn(OutFile, '</div>');
+End;
+
+Function CountIndexEntries: Integer;
+{ Retourne le nombre d'entrees dans l'index }
+Begin
+  CountIndexEntries := IndexCount;
+End;
+
+Function CountIndexEntriesByKind(Kind: TEntityKind): Integer;
+{ Compte les entrees d'index d'un type donne }
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To IndexCount Do
+  Begin
+    If IndexEntries[I].Kind = Kind Then
+      Inc(Count);
+  End;
+  CountIndexEntriesByKind := Count;
+End;
+
+Function GetIndexEntry(Index: Integer): TIndexEntry;
+{ Retourne une entree d'index }
+Var
+  Empty: TIndexEntry;
+Begin
+  If (Index >= 1) And (Index <= IndexCount) Then
+    GetIndexEntry := IndexEntries[Index]
+  Else
+  Begin
+    Empty.Name := '';
+    Empty.EntityId := 0;
+    Empty.FileName := '';
+    Empty.Anchor := '';
+    Empty.Kind := ENT_UNKNOWN;
+    Empty.SortKey := '';
+    GetIndexEntry := Empty;
+  End;
+End;
+
+Function FindIndexEntry(Const Name: String): Integer;
+{ Recherche une entree par nom, retourne l'index ou 0 si non trouve }
+Var
+  I: Integer;
+  NameUp: String;
+Begin
+  FindIndexEntry := 0;
+  NameUp := UpStr(Name);
+  For I := 1 To IndexCount Do
+  Begin
+    If UpStr(IndexEntries[I].Name) = NameUp Then
+    Begin
+      FindIndexEntry := I;
+      Exit;
+    End;
+  End;
+End;
+
+Function IsIndexEmpty: Boolean;
+{ Verifie si l'index est vide }
+Begin
+  IsIndexEmpty := (IndexCount = 0);
+End;
+
+Procedure ShowIndex;
+{ Affiche l'index (pour debug) }
+Var
+  I: Integer;
+Begin
+  If IndexCount = 0 Then
+  Begin
+    WriteLn('Index vide.');
+    Exit;
+  End;
+  
+  WriteLn('Index (', IndexCount, ' entrees):');
+  WriteLn;
+  For I := 1 To IndexCount Do
+  Begin
+    WriteLn(I:4, '. [', EntityKindToStr(IndexEntries[I].Kind):10, '] ',
+      IndexEntries[I].Name);
+    WriteLn('     Fichier: ', IndexEntries[I].FileName);
+    WriteLn('     Ancre: ', IndexEntries[I].Anchor);
+  End;
+  WriteLn;
+  WriteLn('Resume par type:');
+  WriteLn('  Classes/Structures: ', CountIndexEntriesByKind(ENT_CLASS) + 
+    CountIndexEntriesByKind(ENT_STRUCT) + CountIndexEntriesByKind(ENT_INTERFACE));
+  WriteLn('  Fichiers: ', CountIndexEntriesByKind(ENT_FILE));
+  WriteLn('  Namespaces/Modules: ', CountIndexEntriesByKind(ENT_NAMESPACE) +
+    CountIndexEntriesByKind(ENT_MODULE));
+  WriteLn('  Fonctions: ', CountIndexEntriesByKind(ENT_FUNCTION));
+  WriteLn('  Variables/Defines: ', CountIndexEntriesByKind(ENT_VARIABLE) +
+    CountIndexEntriesByKind(ENT_DEFINE));
+  WriteLn('  Pages: ', CountIndexEntriesByKind(ENT_PAGE));
+  WriteLn('  Groupes: ', CountIndexEntriesByKind(ENT_GROUP));
 End;
 
 Function IsDocCommentStart(Const Line: String; Pos: Integer): TDocCommentKind;
