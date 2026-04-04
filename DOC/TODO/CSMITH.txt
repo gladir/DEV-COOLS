@@ -170,7 +170,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Respecter les regles de lvalue (cible modifiable).
       Eviter les effets de bord multiples sur meme variable.
 
-  17. [A FAIRE] Generation d'expressions conditionnelles.
+  17. [IMPLEMENTE] Generation d'expressions conditionnelles.
       Generateur d'expressions conditionnelles C :
       GenCondExpr - generer expression ternaire (cond ? e1 : e2).
       GenCastExpr - generer un cast explicite ((type)expr).

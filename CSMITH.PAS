@@ -185,7 +185,7 @@
             Respecter les regles de lvalue (cible modifiable).
             Eviter les effets de bord multiples sur meme variable.
 
-  TODO 17 - [A FAIRE] GENERATION D'EXPRESSIONS CONDITIONNELLES
+  TODO 17 - [IMPLEMENTE] GENERATION D'EXPRESSIONS CONDITIONNELLES
             Generateur d'expressions conditionnelles C :
             GenCondExpr - generer expression ternaire (cond ? e1 : e2).
             GenCastExpr - generer un cast explicite ((type)expr).
@@ -354,6 +354,14 @@ Const
   ASSIGN_COMMA_PROB  = 15;          { 15% de chance de generer une expression virgule }
   ASSIGN_SAFE_DIV_PROB = 90;        { 90% de chance de generer /= et %= securises }
   ASSIGN_SAFE_SHIFT_PROB = 90;      { 90% de chance de generer <<= et >>= securises }
+  
+  { TODO 17 : Constantes pour les expressions conditionnelles }
+  COND_TERNARY_PROB = 50;           { 50% de chance de generer une expression ternaire }
+  COND_CAST_PROB = 30;              { 30% de chance de generer un cast }
+  COND_SIZEOF_PROB = 20;            { 20% de chance de generer sizeof }
+  COND_SIZEOF_TYPE_PROB = 60;       { 60% de chance de sizeof(type) vs sizeof(expr) }
+  COND_NESTED_PROB = 30;            { 30% de chance de generer une expression imbriquee }
+  COND_SAFE_CAST_PROB = 85;         { 85% de chance de generer des casts securises }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -586,6 +594,7 @@ Var
   RelLogExprCounter: Integer;  { TODO 14 : compteur d'expressions relationnelles/logiques }
   BitExprCounter: Integer;  { TODO 15 : compteur d'expressions bit-a-bit }
   AssignExprCounter: Integer;  { TODO 16 : compteur d'expressions d'affectation }
+  CondExprCounter: Integer;  { TODO 17 : compteur d'expressions conditionnelles }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -5092,6 +5101,457 @@ Begin
   CountAssignExprs := AssignExprCounter;
 End;
 
+{ ============================================================
+  TODO 17 : GENERATION D'EXPRESSIONS CONDITIONNELLES [IMPLEMENTE]
+  ============================================================ }
+
+Type
+  { Type de cast C }
+  TCastKind = (
+    CK_NUMERIC,    { Cast entre types numeriques (int, float, etc.) }
+    CK_POINTER,    { Cast vers/depuis pointeur }
+    CK_VOID_PTR,   { Cast vers/depuis void* }
+    CK_TRUNCATE,   { Cast qui tronque (long -> int) }
+    CK_EXTEND      { Cast qui etend (int -> long) }
+  );
+
+Function GenRandomCastType: TCType; Forward;
+Function GenCondExpr(Depth: Integer): TString; Forward;
+Function GenCastExpr(Depth: Integer): TString; Forward;
+Function GenSizeofExpr: TString; Forward;
+Function GenCondCommaExpr(Depth: Integer): TString; Forward;
+
+Function CastKindToStr(Kind: TCastKind): TString;
+{ Retourne une description du type de cast. }
+Begin
+  Case Kind Of
+    CK_NUMERIC:   CastKindToStr := 'numeric';
+    CK_POINTER:   CastKindToStr := 'pointer';
+    CK_VOID_PTR:  CastKindToStr := 'void_ptr';
+    CK_TRUNCATE:  CastKindToStr := 'truncate';
+    CK_EXTEND:    CastKindToStr := 'extend';
+  Else
+    CastKindToStr := 'unknown';
+  End;
+End;
+
+Function DetermineCastKind(FromType, ToType: TCType): TCastKind;
+{ Determine le type de cast a effectuer entre deux types. }
+Begin
+  If IsPointerType(FromType) Or IsPointerType(ToType) Then
+  Begin
+    If (ToType.Kind = TK_VOID) And IsPointerType(ToType) Then
+      DetermineCastKind := CK_VOID_PTR
+    Else If (FromType.Kind = TK_VOID) And IsPointerType(FromType) Then
+      DetermineCastKind := CK_VOID_PTR
+    Else
+      DetermineCastKind := CK_POINTER;
+  End
+  Else If GetTypeSize(FromType) > GetTypeSize(ToType) Then
+    DetermineCastKind := CK_TRUNCATE
+  Else If GetTypeSize(FromType) < GetTypeSize(ToType) Then
+    DetermineCastKind := CK_EXTEND
+  Else
+    DetermineCastKind := CK_NUMERIC;
+End;
+
+Function IsSafeCast(FromType, ToType: TCType): Boolean;
+{ Verifie si un cast est securise (ne cause pas de UB). }
+Begin
+  { Cast vers le meme type est toujours securise }
+  If AreTypesCompatible(FromType, ToType) Then
+  Begin
+    IsSafeCast := True;
+    Exit;
+  End;
+  
+  { Cast entre types entiers de meme signe et taille croissante }
+  If IsIntegerType(FromType) And IsIntegerType(ToType) Then
+  Begin
+    If GetTypeSize(FromType) <= GetTypeSize(ToType) Then
+      If IsSignedType(FromType) = IsSignedType(ToType) Then
+      Begin
+        IsSafeCast := True;
+        Exit;
+      End;
+  End;
+  
+  { Cast vers void* est generalement securise }
+  If IsPointerType(ToType) And (ToType.Kind = TK_VOID) Then
+  Begin
+    IsSafeCast := True;
+    Exit;
+  End;
+  
+  { Par defaut, le cast peut etre risque }
+  IsSafeCast := False;
+End;
+
+Function GenRandomCastType: TCType;
+{ Genere un type aleatoire pour un cast. }
+Var
+  T: TCType;
+Begin
+  InitCType(T);
+  
+  { Generer un type entier ou flottant pour le cast }
+  If RandomChoice(70) Then
+  Begin
+    { Type entier }
+    Case RandomInt(8) Of
+      0: T.Kind := TK_CHAR;
+      1: T.Kind := TK_UCHAR;
+      2: T.Kind := TK_SHORT;
+      3: T.Kind := TK_USHORT;
+      4: T.Kind := TK_INT;
+      5: T.Kind := TK_UINT;
+      6: T.Kind := TK_LONG;
+      7: T.Kind := TK_ULONG;
+    Else
+      T.Kind := TK_INT;
+    End;
+  End
+  Else
+  Begin
+    { Type flottant (si autorise) }
+    If Opts.NoFloats Then
+      T.Kind := TK_INT
+    Else
+      If RandomBool Then
+        T.Kind := TK_FLOAT
+      Else
+        T.Kind := TK_DOUBLE;
+  End;
+  
+  GenRandomCastType := T;
+End;
+
+Function GenSafeTargetType(SourceType: TCType): TCType;
+{ Genere un type cible securise pour un cast. }
+Var
+  T: TCType;
+Begin
+  InitCType(T);
+  
+  { Pour un type entier, generer un type entier de taille >= }
+  If IsIntegerType(SourceType) Then
+  Begin
+    Case SourceType.Kind Of
+      TK_CHAR, TK_SCHAR:
+        If RandomBool Then T.Kind := TK_INT Else T.Kind := TK_LONG;
+      TK_UCHAR:
+        If RandomBool Then T.Kind := TK_UINT Else T.Kind := TK_ULONG;
+      TK_SHORT:
+        If RandomBool Then T.Kind := TK_INT Else T.Kind := TK_LONG;
+      TK_USHORT:
+        If RandomBool Then T.Kind := TK_UINT Else T.Kind := TK_ULONG;
+      TK_INT:
+        T.Kind := TK_LONG;
+      TK_UINT:
+        T.Kind := TK_ULONG;
+      TK_LONG:
+        T.Kind := TK_LONGLONG;
+      TK_ULONG:
+        T.Kind := TK_ULONGLONG;
+    Else
+      T.Kind := TK_LONG;
+    End;
+  End
+  Else If IsFloatType(SourceType) Then
+  Begin
+    If SourceType.Kind = TK_FLOAT Then
+      T.Kind := TK_DOUBLE
+    Else
+      T.Kind := TK_LONGDOUBLE;
+  End
+  Else
+    T.Kind := TK_INT;
+  
+  GenSafeTargetType := T;
+End;
+
+Function GenCastExpr(Depth: Integer): TString;
+{ Genere une expression de cast explicite : ((type)expr).
+  Depth: profondeur pour limiter la recursion. }
+Var
+  TargetType: TCType;
+  InnerExpr: TString;
+Begin
+  Inc(CondExprCounter);
+  
+  { Generer le type cible du cast }
+  If RandomChoice(COND_SAFE_CAST_PROB) Then
+  Begin
+    { Cast securise - generer un type compatible }
+    TargetType := GenRandomCastType;
+  End
+  Else
+    TargetType := GenRandomCastType;
+  
+  { Generer l'expression interieure }
+  If (Depth < Opts.MaxExprDepth) And RandomChoice(COND_NESTED_PROB) Then
+    InnerExpr := GenArithExprRec(TK_INT, Depth + 1)
+  Else
+    InnerExpr := GenIntLiteral(TK_INT);
+  
+  GenCastExpr := '((' + TypeToStr(TargetType) + ')' + InnerExpr + ')';
+End;
+
+Function GenSizeofTypeExpr: TString;
+{ Genere sizeof(type). }
+Var
+  T: TCType;
+Begin
+  Inc(CondExprCounter);
+  
+  { Choisir un type pour sizeof }
+  InitCType(T);
+  Case RandomInt(12) Of
+    0: T.Kind := TK_CHAR;
+    1: T.Kind := TK_SHORT;
+    2: T.Kind := TK_INT;
+    3: T.Kind := TK_LONG;
+    4: T.Kind := TK_LONGLONG;
+    5: T.Kind := TK_FLOAT;
+    6: T.Kind := TK_DOUBLE;
+    7: T.Kind := TK_UCHAR;
+    8: T.Kind := TK_USHORT;
+    9: T.Kind := TK_UINT;
+    10: T.Kind := TK_ULONG;
+    11: T.Kind := TK_ULONGLONG;
+  Else
+    T.Kind := TK_INT;
+  End;
+  
+  { Eviter les types flottants si desactives }
+  If Opts.NoFloats Then
+    If IsFloatType(T) Then
+      T.Kind := TK_INT;
+  
+  GenSizeofTypeExpr := 'sizeof(' + TypeToStr(T) + ')';
+End;
+
+Function GenSizeofVarExpr: TString;
+{ Genere sizeof(variable) ou sizeof(expression). }
+Var
+  VarName: TString;
+  VarIdx: Integer;
+Begin
+  Inc(CondExprCounter);
+  
+  { Utiliser une variable existante si disponible }
+  If NumVars > 0 Then
+  Begin
+    VarIdx := RandomInt(NumVars);
+    VarName := Vars[VarIdx].Name;
+    GenSizeofVarExpr := 'sizeof(' + VarName + ')';
+  End
+  Else
+    { Sinon, utiliser une expression litterale }
+    GenSizeofVarExpr := 'sizeof(' + GenIntLiteral(TK_INT) + ')';
+End;
+
+Function GenSizeofExpr: TString;
+{ Genere une expression sizeof : sizeof(type) ou sizeof(expr). }
+Begin
+  Inc(CondExprCounter);
+  
+  If RandomChoice(COND_SIZEOF_TYPE_PROB) Then
+    GenSizeofExpr := GenSizeofTypeExpr
+  Else
+    GenSizeofExpr := GenSizeofVarExpr;
+End;
+
+Function GenTernaryCondition(Depth: Integer): TString;
+{ Genere une condition pour l'expression ternaire. }
+Begin
+  { Generer une expression booleenne }
+  If (Depth < Opts.MaxExprDepth) And RandomChoice(40) Then
+    GenTernaryCondition := GenRelExprRec(Depth + 1)
+  Else
+    { Condition simple avec comparaison }
+    GenTernaryCondition := '(' + GenIntLiteral(TK_INT) + ' ' + 
+                           RelOpToStr(GenRandomRelOp) + ' ' +
+                           GenIntLiteral(TK_INT) + ')';
+End;
+
+Function GenTernaryBranch(Depth: Integer; BranchType: TCType): TString;
+{ Genere une branche (then ou else) pour l'expression ternaire.
+  BranchType: type attendu pour la branche (pour compatibilite). }
+Begin
+  If (Depth < Opts.MaxExprDepth) And RandomChoice(COND_NESTED_PROB) Then
+  Begin
+    { Expression complexe }
+    If RandomBool Then
+      GenTernaryBranch := GenArithExprRec(BranchType.Kind, Depth + 1)
+    Else
+      GenTernaryBranch := GenIntLiteral(BranchType.Kind);
+  End
+  Else
+    { Expression simple - litteral }
+    GenTernaryBranch := GenIntLiteral(BranchType.Kind);
+End;
+
+Function GenCondExpr(Depth: Integer): TString;
+{ Genere une expression conditionnelle ternaire : (cond ? e1 : e2).
+  Depth: profondeur pour limiter la recursion. }
+Var
+  Cond, ThenExpr, ElseExpr: TString;
+  ResultType: TCType;
+Begin
+  Inc(CondExprCounter);
+  
+  { Generer la condition }
+  Cond := GenTernaryCondition(Depth);
+  
+  { Determiner le type du resultat }
+  InitCType(ResultType);
+  ResultType.Kind := TK_INT;  { Type par defaut }
+  
+  { Generer les deux branches avec types compatibles }
+  ThenExpr := GenTernaryBranch(Depth + 1, ResultType);
+  ElseExpr := GenTernaryBranch(Depth + 1, ResultType);
+  
+  GenCondExpr := '(' + Cond + ' ? ' + ThenExpr + ' : ' + ElseExpr + ')';
+End;
+
+Function GenNestedCondExpr(Depth: Integer): TString;
+{ Genere une expression ternaire imbriquee. }
+Var
+  Cond1, Cond2, Expr1, Expr2, Expr3: TString;
+Begin
+  Inc(CondExprCounter);
+  
+  { Generer les conditions }
+  Cond1 := GenTernaryCondition(Depth);
+  Cond2 := GenTernaryCondition(Depth);
+  
+  { Generer les expressions }
+  Expr1 := GenIntLiteral(TK_INT);
+  Expr2 := GenIntLiteral(TK_INT);
+  Expr3 := GenIntLiteral(TK_INT);
+  
+  { Ternaire imbriquee dans la branche then }
+  GenNestedCondExpr := '(' + Cond1 + ' ? (' + Cond2 + ' ? ' + Expr1 + 
+                       ' : ' + Expr2 + ') : ' + Expr3 + ')';
+End;
+
+Function GenCondCommaExpr(Depth: Integer): TString;
+{ Genere une expression virgule dans un contexte conditionnel.
+  Note: L'expression virgule (e1, e2) evalue e1, puis e2, et retourne e2.
+  Depth: profondeur pour limiter la recursion. }
+Var
+  Expr1, Expr2: TString;
+Begin
+  Inc(CondExprCounter);
+  
+  { Generer deux expressions }
+  If (Depth < Opts.MaxExprDepth) And RandomChoice(30) Then
+    Expr1 := GenArithExprRec(TK_INT, Depth + 1)
+  Else
+    Expr1 := GenIntLiteral(TK_INT);
+  
+  If (Depth < Opts.MaxExprDepth) And RandomChoice(30) Then
+    Expr2 := GenArithExprRec(TK_INT, Depth + 1)
+  Else
+    Expr2 := GenIntLiteral(TK_INT);
+  
+  { L'expression virgule doit etre parenthesee pour eviter les ambiguites }
+  GenCondCommaExpr := '(' + Expr1 + ', ' + Expr2 + ')';
+End;
+
+Function GenRandomCondExpr(Depth: Integer): TString;
+{ Genere une expression conditionnelle aleatoire.
+  Peut etre: ternaire, cast, sizeof, ou expression virgule.
+  Depth: profondeur pour limiter la recursion. }
+Var
+  Choice: Integer;
+Begin
+  Inc(CondExprCounter);
+  
+  { Choisir le type d'expression a generer }
+  Choice := RandomInt(100);
+  
+  If Choice < COND_TERNARY_PROB Then
+  Begin
+    { Generer une expression ternaire }
+    If RandomChoice(25) And (Depth < Opts.MaxExprDepth - 1) Then
+      GenRandomCondExpr := GenNestedCondExpr(Depth)
+    Else
+      GenRandomCondExpr := GenCondExpr(Depth);
+  End
+  Else If Choice < COND_TERNARY_PROB + COND_CAST_PROB Then
+    { Generer un cast }
+    GenRandomCondExpr := GenCastExpr(Depth)
+  Else If Choice < COND_TERNARY_PROB + COND_CAST_PROB + COND_SIZEOF_PROB Then
+    { Generer sizeof }
+    GenRandomCondExpr := GenSizeofExpr
+  Else
+    { Generer une expression virgule }
+    GenRandomCondExpr := GenCondCommaExpr(Depth);
+End;
+
+Procedure EmitCondComment;
+{ Emet un commentaire pour la section d'expressions conditionnelles. }
+Begin
+  EmitLineComment('Expressions conditionnelles (ternaire, cast, sizeof)');
+End;
+
+Function CondExprNeedsParens: Boolean;
+{ Determine si une expression conditionnelle a besoin de parentheses
+  quand utilisee dans une expression plus grande.
+  Les ternaires ont une precedence basse, donc elles ont
+  generalement besoin de parentheses. }
+Begin
+  { Les expressions ternaires ont toujours besoin de parentheses }
+  CondExprNeedsParens := True;
+End;
+
+Function CountCondExprs: Integer;
+{ Retourne le nombre d'expressions conditionnelles generees. }
+Begin
+  CountCondExprs := CondExprCounter;
+End;
+
+Function IsTernaryExpr(Const Expr: TString): Boolean;
+{ Verifie si une expression est une expression ternaire. }
+Begin
+  IsTernaryExpr := (Pos('?', Expr) > 0) And (Pos(':', Expr) > 0);
+End;
+
+Function IsCastExpr(Const Expr: TString): Boolean;
+{ Verifie si une expression est un cast. }
+Var
+  I, ParenCount: Integer;
+Begin
+  IsCastExpr := False;
+  If Length(Expr) < 4 Then Exit;
+  If Expr[1] <> '(' Then Exit;
+  If Expr[2] <> '(' Then Exit;
+  
+  { Verifier si c'est de la forme ((type)expr) }
+  ParenCount := 0;
+  For I := 1 To Length(Expr) Do
+  Begin
+    If Expr[I] = '(' Then Inc(ParenCount);
+    If Expr[I] = ')' Then
+    Begin
+      Dec(ParenCount);
+      If (ParenCount = 1) And (I < Length(Expr)) Then
+      Begin
+        IsCastExpr := True;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+Function IsSizeofExpr(Const Expr: TString): Boolean;
+{ Verifie si une expression est un sizeof. }
+Begin
+  IsSizeofExpr := Copy(Expr, 1, 6) = 'sizeof';
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -5114,6 +5574,7 @@ Begin
   RelLogExprCounter := 0;  { TODO 14 : compteur d'expressions relationnelles/logiques }
   BitExprCounter := 0;  { TODO 15 : compteur d'expressions bit-a-bit }
   AssignExprCounter := 0;  { TODO 16 : compteur d'expressions d'affectation }
+  CondExprCounter := 0;  { TODO 17 : compteur d'expressions conditionnelles }
   StatFuncs := 0;
   StatVars := 0;
   StatExprs := 0;
