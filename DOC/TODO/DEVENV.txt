@@ -189,7 +189,7 @@
             GUIDs projets C#, VB.NET, Pascal.
             Configurations : Debug|AnyCPU, Release|AnyCPU.
 
-  TODO 16 - PARSEUR DE FICHIERS PROJET (.CSPROJ, .VBPROJ, .DPPROJ) [A FAIRE]
+  TODO 16 - PARSEUR DE FICHIERS PROJET (.CSPROJ, .VBPROJ, .DPPROJ) [IMPLEMENTE]
             TProjectInfo, TProjectFile, TProjectRef, TProject.
             ParseProjectFile, SaveProjectFile, FreeProject,
             CreateNewProject, AddFileToProject,

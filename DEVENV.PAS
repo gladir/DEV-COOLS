@@ -508,7 +508,7 @@
               Pascal  : {00000000-0000-0000-0000-000000000001}
             Configurations : Debug|AnyCPU, Release|AnyCPU.
 
-  TODO 16 - PARSEUR DE FICHIERS PROJET (.CSPROJ, .VBPROJ, .DPPROJ) [A FAIRE]
+  TODO 16 - PARSEUR DE FICHIERS PROJET (.CSPROJ, .VBPROJ, .DPPROJ) [IMPLEMENTE]
             Parseur XML simplifie pour lire les fichiers projet.
             TProjectInfo : ProjectName, RootNamespace,
               AssemblyName, OutputType (Exe, Library, WinExe),
@@ -1028,6 +1028,10 @@ Const
  GUID_VBNET            = '{F184B08F-C81C-45F6-A57F-5ABD9991F28F}';
  GUID_PASCAL           = '{00000000-0000-0000-0000-000000000001}';
 
+ { Parseur de fichiers projet }
+ MAX_PROJECT_REFS      = 64;       { nombre max de references       }
+ MAX_BUILD_CONFIGS     = 10;       { nombre max de configs build    }
+
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
  TAB_MAX_WIDTH         = 160;     { largeur max d un onglet        }
@@ -1464,6 +1468,61 @@ Type
   ProjectCount : Integer;             { nombre de projets           }
   Configs      : Array[0..MAX_SOLUTION_CONFIGS - 1] Of String[40];
   ConfigCount  : Integer;             { nombre de configurations    }
+ End;
+
+ { Action de build pour un fichier projet }
+ TBuildAction = (BA_COMPILE, BA_CONTENT, BA_NONE,
+                 BA_EMBEDDED_RESOURCE);
+
+ { Type de sortie du projet }
+ TOutputType = (OT_EXE, OT_LIBRARY, OT_WINEXE);
+
+ { Informations sur le projet }
+ TProjectInfo = Record
+  ProjectName    : String[63];        { nom du projet               }
+  RootNamespace  : String[63];        { espace de noms racine       }
+  AssemblyName   : String[63];        { nom de l assembly           }
+  OutputType     : TOutputType;       { type de sortie              }
+  TargetFramework: String[40];        { framework cible             }
+  OutputPath     : String[255];       { chemin de sortie            }
+  DefineConstants: String[255];       { constantes de compilation   }
+  ProjectType    : TProjectType;      { type de projet              }
+  ProjectGUID    : String[40];        { GUID du projet              }
+ End;
+
+ { Fichier dans le projet }
+ TProjectFile = Record
+  FileName     : String[255];         { chemin relatif du fichier   }
+  BuildAction  : TBuildAction;        { action de build             }
+  DependentUpon: String[255];         { fichier parent              }
+  SubType      : String[40];          { sous-type (Form, etc.)      }
+ End;
+
+ { Reference dans le projet }
+ TProjectRef = Record
+  ReferenceName: String[63];          { nom de la reference         }
+  HintPath     : String[255];         { chemin de la DLL            }
+  ProjectGUID  : String[40];          { GUID du projet reference    }
+ End;
+
+ { Configuration de build }
+ TBuildConfig = Record
+  ConfigName   : String[40];          { nom (Debug, Release, etc.)  }
+  OutputPath   : String[255];         { chemin de sortie            }
+  DefineConst  : String[255];         { constantes de compilation   }
+  Optimize     : Boolean;             { optimisation activee        }
+  DebugSymbols : Boolean;             { symboles de debogage        }
+ End;
+
+ { Structure complete du projet }
+ TProject = Record
+  Info       : TProjectInfo;          { informations globales       }
+  Files      : Array[0..MAX_PROJECT_FILES - 1] Of TProjectFile;
+  FileCount  : Integer;               { nombre de fichiers          }
+  Refs       : Array[0..MAX_PROJECT_REFS - 1] Of TProjectRef;
+  RefCount   : Integer;               { nombre de references        }
+  Configs    : Array[0..MAX_BUILD_CONFIGS - 1] Of TBuildConfig;
+  CfgCount   : Integer;               { nombre de configurations    }
  End;
 
 { ============================================================
@@ -8338,6 +8397,700 @@ Begin
  IsSolutionEmpty := Sol.ProjectCount = 0;
 End;
 
+{ ============================================================
+  TODO 16 - PARSEUR DE FICHIERS PROJET (.CSPROJ, .VBPROJ, .DPPROJ) [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser les informations de projet --- }
+
+Procedure InitProjectInfo(Var Info: TProjectInfo);
+Begin
+ Info.ProjectName := '';
+ Info.RootNamespace := '';
+ Info.AssemblyName := '';
+ Info.OutputType := OT_EXE;
+ Info.TargetFramework := 'v4.8';
+ Info.OutputPath := 'bin\Debug\';
+ Info.DefineConstants := '';
+ Info.ProjectType := PT_CSHARP;
+ Info.ProjectGUID := '';
+End;
+
+{ --- Initialiser un fichier de projet --- }
+
+Procedure InitProjectFile(Var PF: TProjectFile);
+Begin
+ PF.FileName := '';
+ PF.BuildAction := BA_COMPILE;
+ PF.DependentUpon := '';
+ PF.SubType := '';
+End;
+
+{ --- Initialiser une reference de projet --- }
+
+Procedure InitProjectRef(Var PR: TProjectRef);
+Begin
+ PR.ReferenceName := '';
+ PR.HintPath := '';
+ PR.ProjectGUID := '';
+End;
+
+{ --- Initialiser une configuration de build --- }
+
+Procedure InitBuildConfig(Var Cfg: TBuildConfig);
+Begin
+ Cfg.ConfigName := '';
+ Cfg.OutputPath := '';
+ Cfg.DefineConst := '';
+ Cfg.Optimize := False;
+ Cfg.DebugSymbols := False;
+End;
+
+{ --- Initialiser un projet complet --- }
+
+Procedure InitProject(Var Proj: TProject);
+Var
+ I: Integer;
+Begin
+ InitProjectInfo(Proj.Info);
+ For I := 0 To MAX_PROJECT_FILES - 1 Do
+  InitProjectFile(Proj.Files[I]);
+ Proj.FileCount := 0;
+ For I := 0 To MAX_PROJECT_REFS - 1 Do
+  InitProjectRef(Proj.Refs[I]);
+ Proj.RefCount := 0;
+ For I := 0 To MAX_BUILD_CONFIGS - 1 Do
+  InitBuildConfig(Proj.Configs[I]);
+ Proj.CfgCount := 0;
+End;
+
+{ --- Convertir une chaine en type de sortie --- }
+
+Function OutputTypeFromStr(S: String): TOutputType;
+Var
+ Low: String;
+Begin
+ Low := LowerCaseStr(S);
+ If Low = 'library' Then
+  OutputTypeFromStr := OT_LIBRARY
+ Else If Low = 'winexe' Then
+  OutputTypeFromStr := OT_WINEXE
+ Else
+  OutputTypeFromStr := OT_EXE;
+End;
+
+{ --- Convertir un type de sortie en chaine --- }
+
+Function OutputTypeToStr(OT: TOutputType): String;
+Begin
+ Case OT Of
+  OT_EXE: OutputTypeToStr := 'Exe';
+  OT_LIBRARY: OutputTypeToStr := 'Library';
+  OT_WINEXE: OutputTypeToStr := 'WinExe';
+ End;
+End;
+
+{ --- Convertir une chaine en action de build --- }
+
+Function BuildActionFromStr(S: String): TBuildAction;
+Var
+ Low: String;
+Begin
+ Low := LowerCaseStr(S);
+ If Low = 'content' Then
+  BuildActionFromStr := BA_CONTENT
+ Else If Low = 'none' Then
+  BuildActionFromStr := BA_NONE
+ Else If Low = 'embeddedresource' Then
+  BuildActionFromStr := BA_EMBEDDED_RESOURCE
+ Else
+  BuildActionFromStr := BA_COMPILE;
+End;
+
+{ --- Convertir une action de build en chaine --- }
+
+Function BuildActionToStr(BA: TBuildAction): String;
+Begin
+ Case BA Of
+  BA_COMPILE: BuildActionToStr := 'Compile';
+  BA_CONTENT: BuildActionToStr := 'Content';
+  BA_NONE: BuildActionToStr := 'None';
+  BA_EMBEDDED_RESOURCE: BuildActionToStr := 'EmbeddedResource';
+ End;
+End;
+
+{ --- Creer un nouveau projet --- }
+
+Function CreateNewProject(Name, Path: String;
+  ProjType: TProjectType): TProject;
+Var
+ Proj: TProject;
+Begin
+ InitProject(Proj);
+ Proj.Info.ProjectName := Name;
+ Proj.Info.RootNamespace := Name;
+ Proj.Info.AssemblyName := Name;
+ Proj.Info.ProjectType := ProjType;
+ Proj.Info.OutputType := OT_EXE;
+ Proj.Info.OutputPath := 'bin\Debug\';
+ { Ajouter configurations par defaut }
+ Proj.Configs[0].ConfigName := 'Debug|AnyCPU';
+ Proj.Configs[0].OutputPath := 'bin\Debug\';
+ Proj.Configs[0].DefineConst := 'DEBUG;TRACE';
+ Proj.Configs[0].Optimize := False;
+ Proj.Configs[0].DebugSymbols := True;
+ Proj.Configs[1].ConfigName := 'Release|AnyCPU';
+ Proj.Configs[1].OutputPath := 'bin\Release\';
+ Proj.Configs[1].DefineConst := 'TRACE';
+ Proj.Configs[1].Optimize := True;
+ Proj.Configs[1].DebugSymbols := False;
+ Proj.CfgCount := 2;
+ CreateNewProject := Proj;
+End;
+
+{ --- Liberer un projet --- }
+
+Procedure FreeProject(Var Proj: TProject);
+Begin
+ InitProject(Proj);
+End;
+
+{ --- Ajouter un fichier au projet --- }
+
+Procedure AddFileToProject(Var Proj: TProject;
+  FileName: String);
+Begin
+ If Proj.FileCount >= MAX_PROJECT_FILES Then Exit;
+ InitProjectFile(Proj.Files[Proj.FileCount]);
+ Proj.Files[Proj.FileCount].FileName := FileName;
+ Proj.Files[Proj.FileCount].BuildAction := BA_COMPILE;
+ Inc(Proj.FileCount);
+End;
+
+{ --- Supprimer un fichier du projet --- }
+
+Procedure RemoveFileFromProject(Var Proj: TProject;
+  Index: Integer);
+Var
+ I: Integer;
+Begin
+ If (Index < 0) Or (Index >= Proj.FileCount) Then Exit;
+ For I := Index To Proj.FileCount - 2 Do
+  Proj.Files[I] := Proj.Files[I + 1];
+ Dec(Proj.FileCount);
+ InitProjectFile(Proj.Files[Proj.FileCount]);
+End;
+
+{ --- Ajouter une reference au projet --- }
+
+Procedure AddReferenceToProject(Var Proj: TProject;
+  RefName: String);
+Begin
+ If Proj.RefCount >= MAX_PROJECT_REFS Then Exit;
+ InitProjectRef(Proj.Refs[Proj.RefCount]);
+ Proj.Refs[Proj.RefCount].ReferenceName := RefName;
+ Inc(Proj.RefCount);
+End;
+
+{ --- Supprimer une reference du projet --- }
+
+Procedure RemoveReferenceFromProject(Var Proj: TProject;
+  Index: Integer);
+Var
+ I: Integer;
+Begin
+ If (Index < 0) Or (Index >= Proj.RefCount) Then Exit;
+ For I := Index To Proj.RefCount - 2 Do
+  Proj.Refs[I] := Proj.Refs[I + 1];
+ Dec(Proj.RefCount);
+ InitProjectRef(Proj.Refs[Proj.RefCount]);
+End;
+
+{ --- Extraire le contenu d une balise XML --- }
+
+Function ExtractTagContent(Line, Tag: String): String;
+Var
+ P1, P2: Integer;
+ OpenTag, CloseTag: String;
+Begin
+ ExtractTagContent := '';
+ OpenTag := '<' + Tag + '>';
+ CloseTag := '</' + Tag + '>';
+ P1 := Pos(OpenTag, Line);
+ If P1 = 0 Then Exit;
+ P1 := P1 + Length(OpenTag);
+ P2 := Pos(CloseTag, Line);
+ If P2 = 0 Then Exit;
+ If P2 > P1 Then
+  ExtractTagContent := Copy(Line, P1, P2 - P1);
+End;
+
+{ --- Extraire un attribut XML --- }
+
+Function ExtractAttribute(Line, AttrName: String): String;
+Var
+ P1, P2: Integer;
+ Search: String;
+Begin
+ ExtractAttribute := '';
+ Search := AttrName + '="';
+ P1 := Pos(Search, Line);
+ If P1 = 0 Then Exit;
+ P1 := P1 + Length(Search);
+ P2 := P1;
+ While (P2 <= Length(Line)) And (Line[P2] <> '"') Do
+  Inc(P2);
+ If P2 > P1 Then
+  ExtractAttribute := Copy(Line, P1, P2 - P1);
+End;
+
+{ --- Verifier si une ligne contient une balise --- }
+
+Function HasTag(Line, Tag: String): Boolean;
+Begin
+ HasTag := (Pos('<' + Tag + '>', Line) > 0) Or
+           (Pos('<' + Tag + ' ', Line) > 0);
+End;
+
+{ --- Verifier si une ligne contient une balise fermante --- }
+
+Function HasClosingTag(Line, Tag: String): Boolean;
+Begin
+ HasClosingTag := Pos('</' + Tag + '>', Line) > 0;
+End;
+
+{ --- Parser un fichier projet --- }
+
+Procedure ParseProjectFile(FileName: String;
+  Var Proj: TProject);
+Var
+ F: Text;
+ Line, Trimmed: String;
+ InPropertyGroup: Boolean;
+ InItemGroup: Boolean;
+ CondStr: String;
+ CfgIdx: Integer;
+Begin
+ InitProject(Proj);
+ Assign(F, FileName);
+ {$I-}
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ InPropertyGroup := False;
+ InItemGroup := False;
+ CfgIdx := -1;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  Trimmed := TrimStr(Line);
+  { PropertyGroup }
+  If HasTag(Trimmed, 'PropertyGroup') Then Begin
+   InPropertyGroup := True;
+   CondStr := ExtractAttribute(Trimmed, 'Condition');
+   If CondStr <> '' Then Begin
+    If Proj.CfgCount < MAX_BUILD_CONFIGS Then Begin
+     CfgIdx := Proj.CfgCount;
+     Inc(Proj.CfgCount);
+     InitBuildConfig(Proj.Configs[CfgIdx]);
+     If Pos('Debug', CondStr) > 0 Then
+      Proj.Configs[CfgIdx].ConfigName := 'Debug|AnyCPU'
+     Else If Pos('Release', CondStr) > 0 Then
+      Proj.Configs[CfgIdx].ConfigName := 'Release|AnyCPU'
+     Else
+      Proj.Configs[CfgIdx].ConfigName := CondStr;
+    End;
+   End Else
+    CfgIdx := -1;
+  End;
+  If HasClosingTag(Trimmed, 'PropertyGroup') Then Begin
+   InPropertyGroup := False;
+   CfgIdx := -1;
+  End;
+  { ItemGroup }
+  If HasTag(Trimmed, 'ItemGroup') Then
+   InItemGroup := True;
+  If HasClosingTag(Trimmed, 'ItemGroup') Then
+   InItemGroup := False;
+  { Proprietes du projet dans PropertyGroup }
+  If InPropertyGroup Then Begin
+   If ExtractTagContent(Trimmed, 'RootNamespace') <> '' Then
+    Proj.Info.RootNamespace := ExtractTagContent(Trimmed, 'RootNamespace');
+   If ExtractTagContent(Trimmed, 'AssemblyName') <> '' Then
+    Proj.Info.AssemblyName := ExtractTagContent(Trimmed, 'AssemblyName');
+   If ExtractTagContent(Trimmed, 'OutputType') <> '' Then
+    Proj.Info.OutputType := OutputTypeFromStr(
+      ExtractTagContent(Trimmed, 'OutputType'));
+   If ExtractTagContent(Trimmed, 'TargetFrameworkVersion') <> '' Then
+    Proj.Info.TargetFramework := ExtractTagContent(
+      Trimmed, 'TargetFrameworkVersion');
+   If ExtractTagContent(Trimmed, 'ProjectGuid') <> '' Then
+    Proj.Info.ProjectGUID := ExtractTagContent(Trimmed, 'ProjectGuid');
+   If CfgIdx >= 0 Then Begin
+    If ExtractTagContent(Trimmed, 'OutputPath') <> '' Then
+     Proj.Configs[CfgIdx].OutputPath := ExtractTagContent(
+       Trimmed, 'OutputPath');
+    If ExtractTagContent(Trimmed, 'DefineConstants') <> '' Then
+     Proj.Configs[CfgIdx].DefineConst := ExtractTagContent(
+       Trimmed, 'DefineConstants');
+    If ExtractTagContent(Trimmed, 'Optimize') <> '' Then
+     Proj.Configs[CfgIdx].Optimize :=
+       LowerCaseStr(ExtractTagContent(Trimmed, 'Optimize')) = 'true';
+    If ExtractTagContent(Trimmed, 'DebugSymbols') <> '' Then
+     Proj.Configs[CfgIdx].DebugSymbols :=
+       LowerCaseStr(ExtractTagContent(Trimmed, 'DebugSymbols')) = 'true';
+   End Else Begin
+    If ExtractTagContent(Trimmed, 'OutputPath') <> '' Then
+     Proj.Info.OutputPath := ExtractTagContent(Trimmed, 'OutputPath');
+    If ExtractTagContent(Trimmed, 'DefineConstants') <> '' Then
+     Proj.Info.DefineConstants := ExtractTagContent(
+       Trimmed, 'DefineConstants');
+   End;
+  End;
+  { Fichiers Compile dans ItemGroup }
+  If InItemGroup And HasTag(Trimmed, 'Compile') Then Begin
+   If Proj.FileCount < MAX_PROJECT_FILES Then Begin
+    InitProjectFile(Proj.Files[Proj.FileCount]);
+    Proj.Files[Proj.FileCount].FileName :=
+      ExtractAttribute(Trimmed, 'Include');
+    Proj.Files[Proj.FileCount].BuildAction := BA_COMPILE;
+    Inc(Proj.FileCount);
+   End;
+  End;
+  { Fichiers Content dans ItemGroup }
+  If InItemGroup And HasTag(Trimmed, 'Content') Then Begin
+   If Proj.FileCount < MAX_PROJECT_FILES Then Begin
+    InitProjectFile(Proj.Files[Proj.FileCount]);
+    Proj.Files[Proj.FileCount].FileName :=
+      ExtractAttribute(Trimmed, 'Include');
+    Proj.Files[Proj.FileCount].BuildAction := BA_CONTENT;
+    Inc(Proj.FileCount);
+   End;
+  End;
+  { Fichiers None dans ItemGroup }
+  If InItemGroup And HasTag(Trimmed, 'None') Then Begin
+   If Proj.FileCount < MAX_PROJECT_FILES Then Begin
+    InitProjectFile(Proj.Files[Proj.FileCount]);
+    Proj.Files[Proj.FileCount].FileName :=
+      ExtractAttribute(Trimmed, 'Include');
+    Proj.Files[Proj.FileCount].BuildAction := BA_NONE;
+    Inc(Proj.FileCount);
+   End;
+  End;
+  { Fichiers EmbeddedResource dans ItemGroup }
+  If InItemGroup And HasTag(Trimmed, 'EmbeddedResource') Then Begin
+   If Proj.FileCount < MAX_PROJECT_FILES Then Begin
+    InitProjectFile(Proj.Files[Proj.FileCount]);
+    Proj.Files[Proj.FileCount].FileName :=
+      ExtractAttribute(Trimmed, 'Include');
+    Proj.Files[Proj.FileCount].BuildAction := BA_EMBEDDED_RESOURCE;
+    Inc(Proj.FileCount);
+   End;
+  End;
+  { DependentUpon pour le dernier fichier ajoute }
+  If InItemGroup And (ExtractTagContent(Trimmed,
+      'DependentUpon') <> '') Then Begin
+   If Proj.FileCount > 0 Then
+    Proj.Files[Proj.FileCount - 1].DependentUpon :=
+      ExtractTagContent(Trimmed, 'DependentUpon');
+  End;
+  { SubType pour le dernier fichier ajoute }
+  If InItemGroup And (ExtractTagContent(Trimmed,
+      'SubType') <> '') Then Begin
+   If Proj.FileCount > 0 Then
+    Proj.Files[Proj.FileCount - 1].SubType :=
+      ExtractTagContent(Trimmed, 'SubType');
+  End;
+  { References dans ItemGroup }
+  If InItemGroup And HasTag(Trimmed, 'Reference') Then Begin
+   If Proj.RefCount < MAX_PROJECT_REFS Then Begin
+    InitProjectRef(Proj.Refs[Proj.RefCount]);
+    Proj.Refs[Proj.RefCount].ReferenceName :=
+      ExtractAttribute(Trimmed, 'Include');
+    Inc(Proj.RefCount);
+   End;
+  End;
+  { HintPath pour la derniere reference ajoutee }
+  If InItemGroup And (ExtractTagContent(Trimmed,
+      'HintPath') <> '') Then Begin
+   If Proj.RefCount > 0 Then
+    Proj.Refs[Proj.RefCount - 1].HintPath :=
+      ExtractTagContent(Trimmed, 'HintPath');
+  End;
+  { ProjectReference dans ItemGroup }
+  If InItemGroup And HasTag(Trimmed, 'ProjectReference') Then Begin
+   If Proj.RefCount < MAX_PROJECT_REFS Then Begin
+    InitProjectRef(Proj.Refs[Proj.RefCount]);
+    Proj.Refs[Proj.RefCount].ReferenceName :=
+      ExtractAttribute(Trimmed, 'Include');
+    Inc(Proj.RefCount);
+   End;
+  End;
+  { Project GUID dans ProjectReference }
+  If InItemGroup And (ExtractTagContent(Trimmed,
+      'Project') <> '') Then Begin
+   If Proj.RefCount > 0 Then
+    Proj.Refs[Proj.RefCount - 1].ProjectGUID :=
+      ExtractTagContent(Trimmed, 'Project');
+  End;
+ End;
+ Close(F);
+ { Deduire le nom du projet si non defini }
+ If Proj.Info.ProjectName = '' Then
+  Proj.Info.ProjectName := Proj.Info.AssemblyName;
+End;
+
+{ --- Sauvegarder un fichier projet --- }
+
+Procedure SaveProjectFile(FileName: String;
+  Var Proj: TProject);
+Var
+ F: Text;
+ I: Integer;
+ Ext: String;
+Begin
+ Assign(F, FileName);
+ {$I-}
+ Rewrite(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ WriteLn(F, '<?xml version="1.0" encoding="utf-8"?>');
+ WriteLn(F, '<Project ToolsVersion="15.0" ' +
+   'xmlns="http://schemas.microsoft.com/developer/msbuild/2003">');
+ { PropertyGroup globale }
+ WriteLn(F, '  <PropertyGroup>');
+ If Proj.Info.ProjectGUID <> '' Then
+  WriteLn(F, '    <ProjectGuid>' + Proj.Info.ProjectGUID +
+    '</ProjectGuid>');
+ WriteLn(F, '    <OutputType>' +
+   OutputTypeToStr(Proj.Info.OutputType) + '</OutputType>');
+ WriteLn(F, '    <RootNamespace>' + Proj.Info.RootNamespace +
+   '</RootNamespace>');
+ WriteLn(F, '    <AssemblyName>' + Proj.Info.AssemblyName +
+   '</AssemblyName>');
+ If Proj.Info.TargetFramework <> '' Then
+  WriteLn(F, '    <TargetFrameworkVersion>' +
+    Proj.Info.TargetFramework + '</TargetFrameworkVersion>');
+ WriteLn(F, '  </PropertyGroup>');
+ { PropertyGroups de configuration }
+ For I := 0 To Proj.CfgCount - 1 Do Begin
+  WriteLn(F, '  <PropertyGroup Condition=" ''$(Configuration)' +
+    '|$(Platform)'' == ''' + Proj.Configs[I].ConfigName +
+    ''' ">');
+  If Proj.Configs[I].OutputPath <> '' Then
+   WriteLn(F, '    <OutputPath>' + Proj.Configs[I].OutputPath +
+     '</OutputPath>');
+  If Proj.Configs[I].DefineConst <> '' Then
+   WriteLn(F, '    <DefineConstants>' +
+     Proj.Configs[I].DefineConst + '</DefineConstants>');
+  If Proj.Configs[I].Optimize Then
+   WriteLn(F, '    <Optimize>true</Optimize>')
+  Else
+   WriteLn(F, '    <Optimize>false</Optimize>');
+  If Proj.Configs[I].DebugSymbols Then
+   WriteLn(F, '    <DebugSymbols>true</DebugSymbols>')
+  Else
+   WriteLn(F, '    <DebugSymbols>false</DebugSymbols>');
+  WriteLn(F, '  </PropertyGroup>');
+ End;
+ { ItemGroup des references }
+ If Proj.RefCount > 0 Then Begin
+  WriteLn(F, '  <ItemGroup>');
+  For I := 0 To Proj.RefCount - 1 Do Begin
+   If Proj.Refs[I].ProjectGUID <> '' Then Begin
+    WriteLn(F, '    <ProjectReference Include="' +
+      Proj.Refs[I].ReferenceName + '">');
+    WriteLn(F, '      <Project>' + Proj.Refs[I].ProjectGUID +
+      '</Project>');
+    WriteLn(F, '    </ProjectReference>');
+   End Else If Proj.Refs[I].HintPath <> '' Then Begin
+    WriteLn(F, '    <Reference Include="' +
+      Proj.Refs[I].ReferenceName + '">');
+    WriteLn(F, '      <HintPath>' + Proj.Refs[I].HintPath +
+      '</HintPath>');
+    WriteLn(F, '    </Reference>');
+   End Else
+    WriteLn(F, '    <Reference Include="' +
+      Proj.Refs[I].ReferenceName + '" />');
+  End;
+  WriteLn(F, '  </ItemGroup>');
+ End;
+ { ItemGroup des fichiers par type de build action }
+ If Proj.FileCount > 0 Then Begin
+  WriteLn(F, '  <ItemGroup>');
+  For I := 0 To Proj.FileCount - 1 Do Begin
+   Ext := BuildActionToStr(Proj.Files[I].BuildAction);
+   If (Proj.Files[I].DependentUpon <> '') Or
+      (Proj.Files[I].SubType <> '') Then Begin
+    WriteLn(F, '    <' + Ext + ' Include="' +
+      Proj.Files[I].FileName + '">');
+    If Proj.Files[I].SubType <> '' Then
+     WriteLn(F, '      <SubType>' + Proj.Files[I].SubType +
+       '</SubType>');
+    If Proj.Files[I].DependentUpon <> '' Then
+     WriteLn(F, '      <DependentUpon>' +
+       Proj.Files[I].DependentUpon + '</DependentUpon>');
+    WriteLn(F, '    </' + Ext + '>');
+   End Else
+    WriteLn(F, '    <' + Ext + ' Include="' +
+      Proj.Files[I].FileName + '" />');
+  End;
+  WriteLn(F, '  </ItemGroup>');
+ End;
+ { Import MSBuild }
+ Ext := '';
+ Case Proj.Info.ProjectType Of
+  PT_CSHARP: Ext := 'Microsoft.CSharp.targets';
+  PT_VBNET: Ext := 'Microsoft.VisualBasic.targets';
+  PT_PASCAL: Ext := 'Microsoft.Pascal.targets';
+  PT_UNKNOWN: Ext := 'Microsoft.Common.targets';
+ End;
+ WriteLn(F, '  <Import Project="$(MSBuildToolsPath)\' +
+   Ext + '" />');
+ WriteLn(F, '</Project>');
+ Close(F);
+End;
+
+{ --- Obtenir le nombre de fichiers --- }
+
+Function GetProjectFileCount(Var Proj: TProject): Integer;
+Begin
+ GetProjectFileCount := Proj.FileCount;
+End;
+
+{ --- Obtenir le nombre de references --- }
+
+Function GetProjectRefCount(Var Proj: TProject): Integer;
+Begin
+ GetProjectRefCount := Proj.RefCount;
+End;
+
+{ --- Obtenir un fichier par index --- }
+
+Function GetProjectFileByIndex(Var Proj: TProject;
+  Index: Integer): TProjectFile;
+Var
+ PF: TProjectFile;
+Begin
+ InitProjectFile(PF);
+ If (Index >= 0) And (Index < Proj.FileCount) Then
+  PF := Proj.Files[Index];
+ GetProjectFileByIndex := PF;
+End;
+
+{ --- Obtenir une reference par index --- }
+
+Function GetProjectRefByIndex(Var Proj: TProject;
+  Index: Integer): TProjectRef;
+Var
+ PR: TProjectRef;
+Begin
+ InitProjectRef(PR);
+ If (Index >= 0) And (Index < Proj.RefCount) Then
+  PR := Proj.Refs[Index];
+ GetProjectRefByIndex := PR;
+End;
+
+{ --- Rechercher un fichier dans le projet --- }
+
+Function FindFileInProject(Var Proj: TProject;
+  FileName: String): Integer;
+Var
+ I: Integer;
+ LowFN, LowPF: String;
+Begin
+ FindFileInProject := -1;
+ LowFN := LowerCaseStr(FileName);
+ For I := 0 To Proj.FileCount - 1 Do Begin
+  LowPF := LowerCaseStr(Proj.Files[I].FileName);
+  If LowPF = LowFN Then Begin
+   FindFileInProject := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Rechercher une reference dans le projet --- }
+
+Function FindReferenceInProject(Var Proj: TProject;
+  RefName: String): Integer;
+Var
+ I: Integer;
+ LowRN, LowPR: String;
+Begin
+ FindReferenceInProject := -1;
+ LowRN := LowerCaseStr(RefName);
+ For I := 0 To Proj.RefCount - 1 Do Begin
+  LowPR := LowerCaseStr(Proj.Refs[I].ReferenceName);
+  If LowPR = LowRN Then Begin
+   FindReferenceInProject := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier un index de fichier --- }
+
+Function IsValidFileIndex(Var Proj: TProject;
+  Index: Integer): Boolean;
+Begin
+ IsValidFileIndex := (Index >= 0) And (Index < Proj.FileCount);
+End;
+
+{ --- Verifier un index de reference --- }
+
+Function IsValidRefIndex(Var Proj: TProject;
+  Index: Integer): Boolean;
+Begin
+ IsValidRefIndex := (Index >= 0) And (Index < Proj.RefCount);
+End;
+
+{ --- Obtenir le type de sortie du projet --- }
+
+Function GetProjectOutputType(Var Proj: TProject): TOutputType;
+Begin
+ GetProjectOutputType := Proj.Info.OutputType;
+End;
+
+{ --- Obtenir le nom du projet --- }
+
+Function GetProjectName(Var Proj: TProject): String;
+Begin
+ GetProjectName := Proj.Info.ProjectName;
+End;
+
+{ --- Obtenir le nom de l assembly --- }
+
+Function GetProjectAssemblyName(Var Proj: TProject): String;
+Begin
+ GetProjectAssemblyName := Proj.Info.AssemblyName;
+End;
+
+{ --- Obtenir l extension de fichier selon le type de projet --- }
+
+Function GetProjectFileExtension(ProjType: TProjectType): String;
+Begin
+ Case ProjType Of
+  PT_CSHARP: GetProjectFileExtension := '.csproj';
+  PT_VBNET: GetProjectFileExtension := '.vbproj';
+  PT_PASCAL: GetProjectFileExtension := '.dpproj';
+  PT_UNKNOWN: GetProjectFileExtension := '.proj';
+ End;
+End;
+
+{ --- Verifier si le projet est vide --- }
+
+Function IsProjectEmpty(Var Proj: TProject): Boolean;
+Begin
+ IsProjectEmpty := Proj.FileCount = 0;
+End;
+
+{ --- Nombre de configurations de build --- }
+
+Function GetBuildConfigCount(Var Proj: TProject): Integer;
+Begin
+ GetBuildConfigCount := Proj.CfgCount;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -8357,6 +9110,6 @@ BEGIN
  InitCSharpHighlighter(CSharpHL);
  InitVBNetHighlighter(VBNetHL);
  InitPascalHighlighter(PascalHL);
- { Boucle principale a venir (TODO 16+) }
+ { Boucle principale a venir (TODO 17+) }
  ShutdownGraphics;
 END.
