@@ -153,7 +153,7 @@
             Procedure SetFocus(W: PWidget)
             Function GetFocusedWidget: PWidget
 
-  TODO 05 - BARRE DE MENUS ET MENUS DEROULANTS [A FAIRE]
+  TODO 05 - BARRE DE MENUS ET MENUS DEROULANTS [IMPLEMENTE]
             Menus deroulants reproduisant ceux de Visual Studio.
             TMenuItem : Caption, ShortCut, Enabled, Checked,
               Separator, SubMenu, OnClick, Tag, IconIndex.
@@ -1167,6 +1167,36 @@ Type
   Tag        : LongInt;       { valeur utilisateur             }
  End;
 
+ { Element de menu }
+ PMenuItem = ^TMenuItem;
+ TMenuItem = Record
+  Caption    : String[63];    { texte de l element              }
+  ShortCut   : String[15];    { raccourci clavier affiche       }
+  Enabled    : Boolean;       { actif ou grise                  }
+  Checked    : Boolean;       { coche devant l element          }
+  Separator  : Boolean;       { barre de separation             }
+  Tag        : LongInt;       { identifiant de commande         }
+  IconIndex  : Integer;       { index d icone (futur)           }
+ End;
+
+ { Menu deroulant }
+ PMenu = ^TMenu;
+ TMenu = Record
+  Title      : String[31];    { titre affiche dans la barre     }
+  Items      : Array[0..MAX_MENU_ITEMS - 1] Of TMenuItem;
+  ItemCount  : Integer;       { nombre d elements               }
+  X          : Integer;       { position X du menu ouvert       }
+  Width      : Integer;       { largeur du menu ouvert          }
+ End;
+
+ { Barre de menus }
+ TMenuBar = Record
+  Menus      : Array[0..MAX_MENUS - 1] Of TMenu;
+  MenuCount  : Integer;       { nombre de menus                 }
+  Y          : Integer;       { position Y (0 = haut)           }
+  Height     : Integer;       { hauteur de la barre             }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1191,6 +1221,11 @@ Var
  TabLabels    : Array[0..MAX_TAB_ITEMS - 1] Of String[63];
  { Items de liste }
  ListItems    : Array[0..MAX_LIST_ITEMS - 1] Of String[127];
+ { Barre de menus }
+ MainMenuBar  : TMenuBar;
+ OpenMenuIdx  : Integer;      { index du menu ouvert (-1=aucun) }
+ SelItemIdx   : Integer;      { index de l item selectionne     }
+ MenuActive   : Boolean;      { barre de menus active           }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -2531,6 +2566,546 @@ Begin
  End;
 End;
 
+{ ============================================================
+  TODO 05 - BARRE DE MENUS ET MENUS DEROULANTS [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Utilitaires de menu --- }
+
+Procedure InitMenuItem(Var MI: TMenuItem; ACaption: String;
+                       AShortCut: String; ATag: LongInt;
+                       ASep: Boolean);
+Begin
+ MI.Caption := ACaption;
+ MI.ShortCut := AShortCut;
+ MI.Enabled := True;
+ MI.Checked := False;
+ MI.Separator := ASep;
+ MI.Tag := ATag;
+ MI.IconIndex := -1;
+End;
+
+Procedure AddMenuItem(Var M: TMenu; ACaption: String;
+                      AShortCut: String; ATag: LongInt);
+Begin
+ If M.ItemCount < MAX_MENU_ITEMS Then Begin
+  InitMenuItem(M.Items[M.ItemCount], ACaption, AShortCut, ATag, False);
+  Inc(M.ItemCount);
+ End;
+End;
+
+Procedure AddMenuSeparator(Var M: TMenu);
+Begin
+ If M.ItemCount < MAX_MENU_ITEMS Then Begin
+  InitMenuItem(M.Items[M.ItemCount], '', '', 0, True);
+  Inc(M.ItemCount);
+ End;
+End;
+
+Procedure InitMenu(Var M: TMenu; ATitle: String);
+Begin
+ M.Title := ATitle;
+ M.ItemCount := 0;
+ M.X := 0;
+ M.Width := 0;
+End;
+
+Function MenuItemWidth(Var M: TMenu): Integer;
+Var
+ I, W, MaxW: Integer;
+Begin
+ MaxW := 0;
+ For I := 0 To M.ItemCount - 1 Do Begin
+  If Not M.Items[I].Separator Then Begin
+   W := Length(M.Items[I].Caption) + Length(M.Items[I].ShortCut) + 4;
+   If W > MaxW Then
+    MaxW := W;
+  End;
+ End;
+ MenuItemWidth := MaxW * 8 + 16;
+End;
+
+{ --- Initialisation de la barre de menus Visual Studio --- }
+
+Procedure InitMenuBar;
+Var
+ XPos, I: Integer;
+Begin
+ MainMenuBar.MenuCount := 0;
+ MainMenuBar.Y := 0;
+ MainMenuBar.Height := MENUBAR_HEIGHT;
+ OpenMenuIdx := -1;
+ SelItemIdx := -1;
+ MenuActive := False;
+
+ { Menu Fichier }
+ InitMenu(MainMenuBar.Menus[0], 'Fichier');
+ AddMenuItem(MainMenuBar.Menus[0], 'Nouveau projet...', 'Ctrl+Maj+N', 100);
+ AddMenuItem(MainMenuBar.Menus[0], 'Nouveau fichier...', 'Ctrl+N', 101);
+ AddMenuItem(MainMenuBar.Menus[0], 'Nouvelle solution...', '', 102);
+ AddMenuSeparator(MainMenuBar.Menus[0]);
+ AddMenuItem(MainMenuBar.Menus[0], 'Ouvrir projet/solution...', 'Ctrl+Maj+O', 110);
+ AddMenuItem(MainMenuBar.Menus[0], 'Ouvrir fichier...', 'Ctrl+O', 111);
+ AddMenuItem(MainMenuBar.Menus[0], 'Ouvrir dossier...', '', 112);
+ AddMenuSeparator(MainMenuBar.Menus[0]);
+ AddMenuItem(MainMenuBar.Menus[0], 'Fermer', 'Ctrl+W', 120);
+ AddMenuItem(MainMenuBar.Menus[0], 'Fermer la solution', '', 121);
+ AddMenuSeparator(MainMenuBar.Menus[0]);
+ AddMenuItem(MainMenuBar.Menus[0], 'Enregistrer', 'Ctrl+S', 130);
+ AddMenuItem(MainMenuBar.Menus[0], 'Enregistrer sous...', '', 131);
+ AddMenuItem(MainMenuBar.Menus[0], 'Enregistrer tout', 'Ctrl+Maj+S', 132);
+ AddMenuSeparator(MainMenuBar.Menus[0]);
+ AddMenuItem(MainMenuBar.Menus[0], 'Imprimer...', 'Ctrl+P', 140);
+ AddMenuItem(MainMenuBar.Menus[0], 'Apercu avant impression', '', 141);
+ AddMenuSeparator(MainMenuBar.Menus[0]);
+ AddMenuItem(MainMenuBar.Menus[0], 'Fichiers recents', '', 150);
+ AddMenuItem(MainMenuBar.Menus[0], 'Projets recents', '', 151);
+ AddMenuSeparator(MainMenuBar.Menus[0]);
+ AddMenuItem(MainMenuBar.Menus[0], 'Quitter', 'Alt+F4', 199);
+ MainMenuBar.MenuCount := 1;
+
+ { Menu Edition }
+ InitMenu(MainMenuBar.Menus[1], 'Edition');
+ AddMenuItem(MainMenuBar.Menus[1], 'Annuler', 'Ctrl+Z', 200);
+ AddMenuItem(MainMenuBar.Menus[1], 'Retablir', 'Ctrl+Y', 201);
+ AddMenuSeparator(MainMenuBar.Menus[1]);
+ AddMenuItem(MainMenuBar.Menus[1], 'Couper', 'Ctrl+X', 210);
+ AddMenuItem(MainMenuBar.Menus[1], 'Copier', 'Ctrl+C', 211);
+ AddMenuItem(MainMenuBar.Menus[1], 'Coller', 'Ctrl+V', 212);
+ AddMenuItem(MainMenuBar.Menus[1], 'Supprimer', 'Suppr', 213);
+ AddMenuSeparator(MainMenuBar.Menus[1]);
+ AddMenuItem(MainMenuBar.Menus[1], 'Selectionner tout', 'Ctrl+A', 220);
+ AddMenuSeparator(MainMenuBar.Menus[1]);
+ AddMenuItem(MainMenuBar.Menus[1], 'Rechercher...', 'Ctrl+F', 230);
+ AddMenuItem(MainMenuBar.Menus[1], 'Remplacer...', 'Ctrl+H', 231);
+ AddMenuItem(MainMenuBar.Menus[1], 'Aller a la ligne...', 'Ctrl+G', 232);
+ AddMenuSeparator(MainMenuBar.Menus[1]);
+ AddMenuItem(MainMenuBar.Menus[1], 'Indenter', 'Tab', 240);
+ AddMenuItem(MainMenuBar.Menus[1], 'Desindenter', 'Maj+Tab', 241);
+ AddMenuItem(MainMenuBar.Menus[1], 'Mettre en majuscules', '', 242);
+ AddMenuItem(MainMenuBar.Menus[1], 'Mettre en minuscules', '', 243);
+ AddMenuSeparator(MainMenuBar.Menus[1]);
+ AddMenuItem(MainMenuBar.Menus[1], 'Signet : activer', 'Ctrl+K,K', 250);
+ AddMenuItem(MainMenuBar.Menus[1], 'Signet : suivant', 'Ctrl+K,N', 251);
+ AddMenuItem(MainMenuBar.Menus[1], 'Signet : precedent', 'Ctrl+K,P', 252);
+ AddMenuItem(MainMenuBar.Menus[1], 'Signet : effacer tout', 'Ctrl+K,L', 253);
+ MainMenuBar.MenuCount := 2;
+
+ { Menu Affichage }
+ InitMenu(MainMenuBar.Menus[2], 'Affichage');
+ AddMenuItem(MainMenuBar.Menus[2], 'Explorateur de solution', 'Ctrl+Alt+L', 300);
+ AddMenuItem(MainMenuBar.Menus[2], 'Sortie', 'Ctrl+Alt+O', 301);
+ AddMenuItem(MainMenuBar.Menus[2], 'Liste d erreurs', 'Ctrl+\+E', 302);
+ AddMenuSeparator(MainMenuBar.Menus[2]);
+ AddMenuItem(MainMenuBar.Menus[2], 'Barre d outils', '', 310);
+ AddMenuItem(MainMenuBar.Menus[2], 'Plein ecran', 'Maj+Alt+Entree', 311);
+ AddMenuSeparator(MainMenuBar.Menus[2]);
+ AddMenuItem(MainMenuBar.Menus[2], 'Signets', '', 320);
+ AddMenuItem(MainMenuBar.Menus[2], 'Pile d appels', '', 321);
+ AddMenuItem(MainMenuBar.Menus[2], 'Espion', '', 322);
+ AddMenuItem(MainMenuBar.Menus[2], 'Points d arret', '', 323);
+ AddMenuSeparator(MainMenuBar.Menus[2]);
+ AddMenuItem(MainMenuBar.Menus[2], 'Naviguer en arriere', 'Ctrl+-', 330);
+ AddMenuItem(MainMenuBar.Menus[2], 'Naviguer en avant', 'Ctrl+Maj+-', 331);
+ MainMenuBar.MenuCount := 3;
+
+ { Menu Projet }
+ InitMenu(MainMenuBar.Menus[3], 'Projet');
+ AddMenuItem(MainMenuBar.Menus[3], 'Ajouter un element existant...', 'Maj+Alt+A', 400);
+ AddMenuItem(MainMenuBar.Menus[3], 'Ajouter un nouvel element...', 'Ctrl+Maj+A', 401);
+ AddMenuItem(MainMenuBar.Menus[3], 'Exclure du projet', '', 402);
+ AddMenuSeparator(MainMenuBar.Menus[3]);
+ AddMenuItem(MainMenuBar.Menus[3], 'Proprietes du projet', '', 410);
+ AddMenuItem(MainMenuBar.Menus[3], 'Ajouter une reference...', '', 411);
+ AddMenuItem(MainMenuBar.Menus[3], 'Gerer les packages NuGet...', '', 412);
+ MainMenuBar.MenuCount := 4;
+
+ { Menu Generer }
+ InitMenu(MainMenuBar.Menus[4], 'Generer');
+ AddMenuItem(MainMenuBar.Menus[4], 'Generer la solution', 'F6', 500);
+ AddMenuItem(MainMenuBar.Menus[4], 'Regenerer la solution', '', 501);
+ AddMenuSeparator(MainMenuBar.Menus[4]);
+ AddMenuItem(MainMenuBar.Menus[4], 'Generer le projet', '', 510);
+ AddMenuSeparator(MainMenuBar.Menus[4]);
+ AddMenuItem(MainMenuBar.Menus[4], 'Nettoyer la solution', '', 520);
+ AddMenuItem(MainMenuBar.Menus[4], 'Nettoyer le projet', '', 521);
+ AddMenuSeparator(MainMenuBar.Menus[4]);
+ AddMenuItem(MainMenuBar.Menus[4], 'Gestionnaire de configuration...', '', 530);
+ MainMenuBar.MenuCount := 5;
+
+ { Menu Deboguer }
+ InitMenu(MainMenuBar.Menus[5], 'Deboguer');
+ AddMenuItem(MainMenuBar.Menus[5], 'Demarrer le debogage', 'F5', 600);
+ AddMenuItem(MainMenuBar.Menus[5], 'Demarrer sans debogage', 'Ctrl+F5', 601);
+ AddMenuSeparator(MainMenuBar.Menus[5]);
+ AddMenuItem(MainMenuBar.Menus[5], 'Point d arret', 'F9', 610);
+ AddMenuSeparator(MainMenuBar.Menus[5]);
+ AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas principal', 'F10', 620);
+ AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas detaille', 'F11', 621);
+ AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas sortant', 'Maj+F11', 622);
+ AddMenuSeparator(MainMenuBar.Menus[5]);
+ AddMenuItem(MainMenuBar.Menus[5], 'Arreter le debogage', 'Maj+F5', 630);
+ MainMenuBar.MenuCount := 6;
+
+ { Menu Outils }
+ InitMenu(MainMenuBar.Menus[6], 'Outils');
+ AddMenuItem(MainMenuBar.Menus[6], 'Options...', '', 700);
+ AddMenuItem(MainMenuBar.Menus[6], 'Personnaliser...', '', 701);
+ AddMenuSeparator(MainMenuBar.Menus[6]);
+ AddMenuItem(MainMenuBar.Menus[6], 'Gestionnaire d extensions...', '', 710);
+ AddMenuSeparator(MainMenuBar.Menus[6]);
+ AddMenuItem(MainMenuBar.Menus[6], 'Ligne de commande externe', '', 720);
+ MainMenuBar.MenuCount := 7;
+
+ { Menu Fenetre }
+ InitMenu(MainMenuBar.Menus[7], 'Fenetre');
+ AddMenuItem(MainMenuBar.Menus[7], 'Nouvelle fenetre', '', 800);
+ AddMenuItem(MainMenuBar.Menus[7], 'Fractionner', '', 801);
+ AddMenuSeparator(MainMenuBar.Menus[7]);
+ AddMenuItem(MainMenuBar.Menus[7], 'Fermer toutes les fenetres', '', 810);
+ AddMenuSeparator(MainMenuBar.Menus[7]);
+ AddMenuItem(MainMenuBar.Menus[7], 'Fenetre suivante', 'Ctrl+F6', 820);
+ AddMenuItem(MainMenuBar.Menus[7], 'Fenetre precedente', 'Ctrl+Maj+F6', 821);
+ MainMenuBar.MenuCount := 8;
+
+ { Menu Aide }
+ InitMenu(MainMenuBar.Menus[8], 'Aide');
+ AddMenuItem(MainMenuBar.Menus[8], 'A propos de DEVENV', '', 900);
+ AddMenuItem(MainMenuBar.Menus[8], 'Documentation en ligne', '', 901);
+ AddMenuSeparator(MainMenuBar.Menus[8]);
+ AddMenuItem(MainMenuBar.Menus[8], 'Raccourcis clavier', '', 910);
+ AddMenuItem(MainMenuBar.Menus[8], 'Bienvenue', '', 911);
+ MainMenuBar.MenuCount := 9;
+
+ { Calculer les positions X et largeurs }
+ XPos := 4;
+ For I := 0 To MainMenuBar.MenuCount - 1 Do Begin
+  MainMenuBar.Menus[I].X := XPos;
+  MainMenuBar.Menus[I].Width := MenuItemWidth(MainMenuBar.Menus[I]);
+  XPos := XPos + Length(MainMenuBar.Menus[I].Title) * 8 + 16;
+ End;
+End;
+
+{ --- Dessin de la barre de menus --- }
+
+Procedure DrawMenuBar;
+Var
+ I, TX: Integer;
+Begin
+ { Fond de la barre }
+ SetColor(CLR_MENUBAR);
+ Bar(0, MainMenuBar.Y, GetScreenWidth - 1,
+     MainMenuBar.Y + MainMenuBar.Height - 1);
+ { Ligne de separation }
+ SetColor(CLR_BORDER);
+ Line(0, MainMenuBar.Y + MainMenuBar.Height - 1,
+      GetScreenWidth - 1, MainMenuBar.Y + MainMenuBar.Height - 1);
+ { Titres des menus }
+ TX := 4;
+ For I := 0 To MainMenuBar.MenuCount - 1 Do Begin
+  If I = OpenMenuIdx Then Begin
+   SetColor(CLR_MENU_HIGHLIGHT);
+   Bar(TX - 4, MainMenuBar.Y,
+       TX + Length(MainMenuBar.Menus[I].Title) * 8 + 12,
+       MainMenuBar.Y + MainMenuBar.Height - 2);
+   SetColor(CLR_EDITOR_BG);
+  End Else
+   SetColor(CLR_MENU_TEXT);
+  OutTextXY(TX, MainMenuBar.Y + 4, MainMenuBar.Menus[I].Title);
+  TX := TX + Length(MainMenuBar.Menus[I].Title) * 8 + 16;
+ End;
+End;
+
+{ --- Ouverture d un menu deroulant --- }
+
+Procedure DrawOpenMenu;
+Var
+ I, YPos, MX, MW, MH: Integer;
+ M: TMenu;
+Begin
+ If OpenMenuIdx < 0 Then Exit;
+ M := MainMenuBar.Menus[OpenMenuIdx];
+ MX := M.X;
+ MW := M.Width;
+ If MW < 160 Then MW := 160;
+ MH := 4;
+ For I := 0 To M.ItemCount - 1 Do Begin
+  If M.Items[I].Separator Then
+   MH := MH + 8
+  Else
+   MH := MH + 16;
+ End;
+ { Ombre }
+ SetColor(CLR_TITLEBAR);
+ Bar(MX + 2, MainMenuBar.Height + 2, MX + MW + 2,
+     MainMenuBar.Height + MH + 2);
+ { Fond du menu }
+ SetColor(CLR_EDITOR_BG);
+ Bar(MX, MainMenuBar.Height, MX + MW, MainMenuBar.Height + MH);
+ { Bordure }
+ SetColor(CLR_BORDER);
+ Rectangle(MX, MainMenuBar.Height, MX + MW, MainMenuBar.Height + MH);
+ { Items }
+ YPos := MainMenuBar.Height + 2;
+ For I := 0 To M.ItemCount - 1 Do Begin
+  If M.Items[I].Separator Then Begin
+   SetColor(CLR_BORDER);
+   Line(MX + 2, YPos + 3, MX + MW - 2, YPos + 3);
+   YPos := YPos + 8;
+  End Else Begin
+   If I = SelItemIdx Then Begin
+    SetColor(CLR_MENU_HIGHLIGHT);
+    Bar(MX + 1, YPos, MX + MW - 1, YPos + 15);
+    SetColor(CLR_EDITOR_BG);
+   End Else Begin
+    If Not M.Items[I].Enabled Then
+     SetColor(CLR_BORDER)
+    Else
+     SetColor(CLR_MENU_TEXT);
+   End;
+   { Coche }
+   If M.Items[I].Checked Then
+    OutTextXY(MX + 4, YPos + 2, #251);
+   { Caption }
+   OutTextXY(MX + 16, YPos + 2, M.Items[I].Caption);
+   { Raccourci }
+   If Length(M.Items[I].ShortCut) > 0 Then Begin
+    If I = SelItemIdx Then
+     SetColor(CLR_EDITOR_BG)
+    Else
+     SetColor(CLR_BORDER);
+    OutTextXY(MX + MW - Length(M.Items[I].ShortCut) * 8 - 8,
+              YPos + 2, M.Items[I].ShortCut);
+   End;
+   YPos := YPos + 16;
+  End;
+ End;
+End;
+
+Procedure OpenMenu(Index: Integer);
+Begin
+ If (Index >= 0) And (Index < MainMenuBar.MenuCount) Then Begin
+  OpenMenuIdx := Index;
+  SelItemIdx := -1;
+  MenuActive := True;
+  DrawMenuBar;
+  DrawOpenMenu;
+ End;
+End;
+
+Procedure CloseMenu;
+Begin
+ OpenMenuIdx := -1;
+ SelItemIdx := -1;
+ MenuActive := False;
+End;
+
+{ --- Execution d un element de menu --- }
+
+Procedure ExecuteMenuItem(Var Item: TMenuItem);
+Begin
+ CloseMenu;
+ { Actions de base - les commandes seront connectees
+   aux futurs TODOs (editeur, projet, debogueur, etc.) }
+ Case Item.Tag Of
+  199: Begin { Quitter }
+        ShutdownGraphics;
+        Halt(EXIT_OK);
+       End;
+ End;
+End;
+
+{ --- Trouver l index de menu sous la souris --- }
+
+Function MenuBarHitTest(MX, MY: Integer): Integer;
+Var
+ I, TX, TW: Integer;
+Begin
+ MenuBarHitTest := -1;
+ If (MY < MainMenuBar.Y) Or
+    (MY >= MainMenuBar.Y + MainMenuBar.Height) Then Exit;
+ TX := 0;
+ For I := 0 To MainMenuBar.MenuCount - 1 Do Begin
+  TW := Length(MainMenuBar.Menus[I].Title) * 8 + 16;
+  If (MX >= TX) And (MX < TX + TW) Then Begin
+   MenuBarHitTest := I;
+   Exit;
+  End;
+  TX := TX + TW;
+ End;
+End;
+
+{ --- Trouver l item sous la souris dans le menu ouvert --- }
+
+Function MenuItemHitTest(MX, MY: Integer): Integer;
+Var
+ I, YPos, MW: Integer;
+ M: TMenu;
+Begin
+ MenuItemHitTest := -1;
+ If OpenMenuIdx < 0 Then Exit;
+ M := MainMenuBar.Menus[OpenMenuIdx];
+ MW := M.Width;
+ If MW < 160 Then MW := 160;
+ If (MX < M.X) Or (MX > M.X + MW) Then Exit;
+ YPos := MainMenuBar.Height + 2;
+ For I := 0 To M.ItemCount - 1 Do Begin
+  If M.Items[I].Separator Then
+   YPos := YPos + 8
+  Else Begin
+   If (MY >= YPos) And (MY < YPos + 16) Then Begin
+    If M.Items[I].Enabled Then
+     MenuItemHitTest := I;
+    Exit;
+   End;
+   YPos := YPos + 16;
+  End;
+ End;
+End;
+
+{ --- Gestion des evenements de menu --- }
+
+Procedure HandleMenuEvent(Var Ev: TEvent);
+Var
+ Hit, ItemHit: Integer;
+Begin
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  { Clic sur la barre de menus }
+  Hit := MenuBarHitTest(Ev.MouseX, Ev.MouseY);
+  If Hit >= 0 Then Begin
+   If (OpenMenuIdx = Hit) And MenuActive Then
+    CloseMenu
+   Else
+    OpenMenu(Hit);
+   Exit;
+  End;
+  { Clic dans un menu ouvert }
+  If MenuActive And (OpenMenuIdx >= 0) Then Begin
+   ItemHit := MenuItemHitTest(Ev.MouseX, Ev.MouseY);
+   If ItemHit >= 0 Then Begin
+    ExecuteMenuItem(MainMenuBar.Menus[OpenMenuIdx].Items[ItemHit]);
+    Exit;
+   End;
+   { Clic ailleurs : fermer }
+   CloseMenu;
+  End;
+ End
+ Else If Ev.Kind = EV_MOUSE_MOVE Then Begin
+  { Survol de la barre de menus avec menu ouvert }
+  If MenuActive And (OpenMenuIdx >= 0) Then Begin
+   Hit := MenuBarHitTest(Ev.MouseX, Ev.MouseY);
+   If (Hit >= 0) And (Hit <> OpenMenuIdx) Then
+    OpenMenu(Hit);
+   { Survol des items }
+   ItemHit := MenuItemHitTest(Ev.MouseX, Ev.MouseY);
+   If ItemHit <> SelItemIdx Then Begin
+    SelItemIdx := ItemHit;
+    DrawOpenMenu;
+   End;
+  End;
+ End
+ Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  If MenuActive Then Begin
+   Case Ev.KeyCode Of
+    72: { Fleche haut }
+     Begin
+      If OpenMenuIdx >= 0 Then Begin
+       If SelItemIdx > 0 Then
+        Dec(SelItemIdx)
+       Else
+        SelItemIdx := MainMenuBar.Menus[OpenMenuIdx].ItemCount - 1;
+       { Sauter les separateurs }
+       While (SelItemIdx >= 0) And
+             MainMenuBar.Menus[OpenMenuIdx].Items[SelItemIdx].Separator Do
+        Dec(SelItemIdx);
+       DrawOpenMenu;
+      End;
+     End;
+    80: { Fleche bas }
+     Begin
+      If OpenMenuIdx >= 0 Then Begin
+       If SelItemIdx < MainMenuBar.Menus[OpenMenuIdx].ItemCount - 1 Then
+        Inc(SelItemIdx)
+       Else
+        SelItemIdx := 0;
+       { Sauter les separateurs }
+       While (SelItemIdx < MainMenuBar.Menus[OpenMenuIdx].ItemCount) And
+             MainMenuBar.Menus[OpenMenuIdx].Items[SelItemIdx].Separator Do
+        Inc(SelItemIdx);
+       DrawOpenMenu;
+      End;
+     End;
+    75: { Fleche gauche }
+     Begin
+      If OpenMenuIdx > 0 Then
+       OpenMenu(OpenMenuIdx - 1)
+      Else
+       OpenMenu(MainMenuBar.MenuCount - 1);
+     End;
+    77: { Fleche droite }
+     Begin
+      If OpenMenuIdx < MainMenuBar.MenuCount - 1 Then
+       OpenMenu(OpenMenuIdx + 1)
+      Else
+       OpenMenu(0);
+     End;
+    28: { Entree }
+     Begin
+      If (SelItemIdx >= 0) And (OpenMenuIdx >= 0) Then
+       ExecuteMenuItem(MainMenuBar.Menus[OpenMenuIdx].Items[SelItemIdx]);
+     End;
+    1:  { Echap }
+     CloseMenu;
+   End;
+  End Else Begin
+   { Alt+lettre pour ouvrir un menu depuis l etat inactif }
+   If (Ev.ShiftState And $08) <> 0 Then Begin { Alt }
+    Case Ev.KeyChar Of
+     'f','F': OpenMenu(0); { Fichier }
+     'e','E': OpenMenu(1); { Edition }
+     'a','A': OpenMenu(2); { Affichage }
+     'p','P': OpenMenu(3); { Projet }
+     'g','G': OpenMenu(4); { Generer }
+     'd','D': OpenMenu(5); { Deboguer }
+     'o','O': OpenMenu(6); { Outils }
+     'n','N': OpenMenu(7); { Fenetre }
+     'i','I': OpenMenu(8); { Aide }
+    End;
+   End;
+  End;
+ End
+ Else If Ev.Kind = EV_KEY_CHAR Then Begin
+  { Raccourcis clavier globaux }
+  If MenuActive Then Exit;
+  { Pas de raccourcis ici pour l instant, les TODOs futurs
+    connecteront les raccourcis aux commandes reelles. }
+ End;
+End;
+
+{ --- Compter les elements de menu --- }
+
+Function CountMenuItems: Integer;
+Var
+ I, Total: Integer;
+Begin
+ Total := 0;
+ For I := 0 To MainMenuBar.MenuCount - 1 Do
+  Total := Total + MainMenuBar.Menus[I].ItemCount;
+ CountMenuItems := Total;
+End;
+
+Function CountMenuSeparators: Integer;
+Var
+ I, J, Total: Integer;
+Begin
+ Total := 0;
+ For I := 0 To MainMenuBar.MenuCount - 1 Do
+  For J := 0 To MainMenuBar.Menus[I].ItemCount - 1 Do
+   If MainMenuBar.Menus[I].Items[J].Separator Then
+    Inc(Total);
+ CountMenuSeparators := Total;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -2541,6 +3116,8 @@ BEGIN
  InitEventQueue;
  InitMouse;
  InitWidgetSystem;
- { Boucle principale a venir (TODO 05+) }
+ InitMenuBar;
+ DrawMenuBar;
+ { Boucle principale a venir (TODO 06+) }
  ShutdownGraphics;
 END.

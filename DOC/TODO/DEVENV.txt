@@ -79,7 +79,7 @@
             RegisterWidget, UnregisterWidget, DrawAllWidgets,
             DispatchEvent, SetFocus, GetFocusedWidget.
 
-  TODO 05 - BARRE DE MENUS ET MENUS DEROULANTS [A FAIRE]
+  TODO 05 - BARRE DE MENUS ET MENUS DEROULANTS [IMPLEMENTE]
             TMenuItem, TMenu, TMenuBar.
             Menus : Fichier, Edition, Affichage, Projet, Generer,
               Deboguer, Outils, Fenetre, Aide.
