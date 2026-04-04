@@ -233,7 +233,7 @@
             Limiter les iterations max (guard counter).
             GenLoopGuard - compteur de garde pour terminer les boucles.
 
-  TODO 22 - [A FAIRE] GENERATION DE FONCTIONS
+  TODO 22 - [IMPLEMENTE] GENERATION DE FONCTIONS
             Generateur de fonctions C :
             GenFuncDecl - generer une declaration de fonction (prototype).
             GenFuncDef - generer une definition de fonction complete.
@@ -409,6 +409,21 @@ Const
   LOOP_BREAK_PROB = 10;             { 10% de chance d'avoir un break dans une boucle }
   LOOP_CONTINUE_PROB = 5;           { 5% de chance d'avoir un continue dans une boucle }
   LOOP_VAR_PREFIX = 'i_loop_';      { Prefixe pour les variables de boucle }
+  
+  { TODO 22 : Constantes pour la generation de fonctions }
+  FUNC_MAX_PARAMS = 6;              { Maximum de parametres par fonction }
+  FUNC_MAX_RECURSION_DEPTH = 3;     { Profondeur max de recursion }
+  FUNC_STATIC_PROB = 40;            { 40% de chance d'avoir une fonction static }
+  FUNC_VOID_RETURN_PROB = 30;       { 30% de chance de retourner void }
+  FUNC_POINTER_PARAM_PROB = 20;     { 20% de chance d'avoir un parametre pointeur }
+  FUNC_ARRAY_PARAM_PROB = 15;       { 15% de chance d'avoir un parametre tableau }
+  FUNC_STRUCT_PARAM_PROB = 10;      { 10% de chance d'avoir un parametre struct }
+  FUNC_RECURSIVE_CALL_PROB = 10;    { 10% de chance d'avoir un appel recursif }
+  FUNC_CALL_PROB = 25;              { 25% de chance de generer un appel de fonction }
+  FUNC_MULTIPLE_RETURN_PROB = 30;   { 30% de chance d'avoir plusieurs return }
+  FUNC_EARLY_RETURN_PROB = 20;      { 20% de chance d'avoir un return anticipé }
+  FUNC_NAME_PREFIX = 'func_';       { Prefixe pour les noms de fonctions }
+  FUNC_PARAM_PREFIX = 'p_';         { Prefixe pour les noms de parametres }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -666,6 +681,14 @@ Var
   ForStmtCounter: Integer;      { Compteur de statements for generes }
   LoopVarCounter: Integer;      { Compteur pour nommer les variables de boucle }
   LoopDepth: Integer;           { Profondeur courante d'imbrication des boucles }
+
+  { TODO 22 : compteurs et contexte pour les fonctions }
+  FuncDefCounter: Integer;      { Compteur de definitions de fonctions generees }
+  FuncCallCounter: Integer;     { Compteur d'appels de fonctions generes }
+  FuncParamCounter: Integer;    { Compteur pour nommer les parametres }
+  CurrentFuncIdx: Integer;      { Index de la fonction courante (-1 si globale) }
+  FuncRecursionDepth: Integer;  { Profondeur courante de recursion }
+  InFuncDef: Boolean;           { True si on est dans une definition de fonction }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -7063,6 +7086,515 @@ Begin
   CountAllLoopStmts := WhileStmtCounter + DoWhileStmtCounter + ForStmtCounter;
 End;
 
+{ ============================================================
+  TODO 22 : GENERATION DE FONCTIONS [IMPLEMENTE]
+  ============================================================ }
+
+Procedure InitFuncContext;
+{ Initialise le contexte de generation de fonctions. }
+Begin
+  FuncDefCounter := 0;
+  FuncCallCounter := 0;
+  FuncParamCounter := 0;
+  CurrentFuncIdx := -1;  { Pas dans une fonction }
+  FuncRecursionDepth := 0;
+  InFuncDef := False;
+End;
+
+Procedure EmitFuncComment;
+{ Emet un commentaire pour les fonctions. }
+Begin
+  EmitComment('Function definitions - TODO 22');
+End;
+
+Function CountFuncDefs: Integer;
+{ Retourne le nombre de definitions de fonctions generees. }
+Begin
+  CountFuncDefs := FuncDefCounter;
+End;
+
+Function CountFuncCalls: Integer;
+{ Retourne le nombre d'appels de fonctions generes. }
+Begin
+  CountFuncCalls := FuncCallCounter;
+End;
+
+Function GetCurrentFuncIdx: Integer;
+{ Retourne l'index de la fonction courante, -1 si pas dans une fonction. }
+Begin
+  GetCurrentFuncIdx := CurrentFuncIdx;
+End;
+
+Function IsInFuncDef: Boolean;
+{ Retourne True si on est dans une definition de fonction. }
+Begin
+  IsInFuncDef := InFuncDef;
+End;
+
+Function CanRecurse: Boolean;
+{ Verifie si on peut faire un appel recursif (pas trop profond). }
+Begin
+  CanRecurse := FuncRecursionDepth < FUNC_MAX_RECURSION_DEPTH;
+End;
+
+Function GenFuncName: TString;
+{ Genere un nom de fonction unique. }
+Begin
+  Inc(FuncCounter);
+  GenFuncName := FUNC_NAME_PREFIX + IntToStr(FuncCounter);
+End;
+
+Function GenParamName: TString;
+{ Genere un nom de parametre unique. }
+Begin
+  Inc(FuncParamCounter);
+  GenParamName := FUNC_PARAM_PREFIX + IntToStr(FuncParamCounter);
+End;
+
+Function GenRandomReturnType: TCType;
+{ Genere un type de retour aleatoire pour une fonction. }
+Var
+  T: TCType;
+  R: Integer;
+Begin
+  InitCType(T);
+  
+  If RandomChoice(FUNC_VOID_RETURN_PROB) Then
+  Begin
+    T.Kind := TK_VOID;
+  End
+  Else
+  Begin
+    R := RandomInt(100);
+    If R < 40 Then
+      T.Kind := TK_INT
+    Else If R < 60 Then
+      T.Kind := TK_LONG
+    Else If R < 75 Then
+      T.Kind := TK_CHAR
+    Else If R < 85 Then
+      T.Kind := TK_SHORT
+    Else If (Not Opts.NoFloats) And (R < 95) Then
+      T.Kind := TK_DOUBLE
+    Else
+      T.Kind := TK_UINT;
+  End;
+  
+  GenRandomReturnType := T;
+End;
+
+Function GenRandomParamType: TCType;
+{ Genere un type aleatoire pour un parametre de fonction. }
+Var
+  T: TCType;
+  R: Integer;
+Begin
+  InitCType(T);
+  R := RandomInt(100);
+  
+  { Choisir le type de base }
+  If R < 35 Then
+    T.Kind := TK_INT
+  Else If R < 55 Then
+    T.Kind := TK_LONG
+  Else If R < 70 Then
+    T.Kind := TK_CHAR
+  Else If R < 85 Then
+    T.Kind := TK_SHORT
+  Else
+    T.Kind := TK_UINT;
+  
+  { Peut-etre un pointeur ? }
+  If (Not Opts.NoPointers) And RandomChoice(FUNC_POINTER_PARAM_PROB) Then
+    T.Kind := TK_POINTER;
+  
+  { Peut-etre const ? }
+  If (Not Opts.NoConsts) And RandomChoice(25) Then
+    T.Quals := Q_CONST;
+  
+  GenRandomParamType := T;
+End;
+
+Procedure InitFuncParams(Var F: TFunction);
+{ Initialise les parametres d'une fonction avec des valeurs aleatoires. }
+Var
+  I, NParams: Integer;
+Begin
+  NParams := RandomRange(0, FUNC_MAX_PARAMS);
+  F.NumParams := NParams;
+  
+  FuncParamCounter := 0;  { Reset pour cette fonction }
+  
+  For I := 1 To NParams Do
+  Begin
+    F.Params[I].Name := GenParamName;
+    F.Params[I].PType := GenRandomParamType;
+  End;
+End;
+
+Function ParamToStr(Const P: TParam): TString;
+{ Convertit un parametre en chaine pour l'emission. }
+Var
+  S: TString;
+Begin
+  S := TypeToStr(P.PType);
+  If P.PType.Kind = TK_POINTER Then
+    S := S + '*';
+  S := S + ' ' + P.Name;
+  ParamToStr := S;
+End;
+
+Function FuncParamsToStr(Const F: TFunction): TString;
+{ Convertit la liste des parametres en chaine pour l'emission. }
+Var
+  S: TString;
+  I: Integer;
+Begin
+  If F.NumParams = 0 Then
+  Begin
+    FuncParamsToStr := 'void';
+    Exit;
+  End;
+  
+  S := '';
+  For I := 1 To F.NumParams Do
+  Begin
+    If I > 1 Then
+      S := S + ', ';
+    S := S + ParamToStr(F.Params[I]);
+  End;
+  
+  FuncParamsToStr := S;
+End;
+
+Procedure GenFuncDecl(Const F: TFunction);
+{ Genere une declaration de fonction (prototype). }
+Var
+  Decl: TString;
+Begin
+  Decl := '';
+  
+  { Ajouter static si necessaire }
+  If F.IsStatic Then
+    Decl := 'static ';
+  
+  { Type de retour }
+  Decl := Decl + TypeToStr(F.RetType);
+  
+  { Nom de la fonction }
+  Decl := Decl + ' ' + F.Name;
+  
+  { Parametres }
+  Decl := Decl + '(' + FuncParamsToStr(F) + ');';
+  
+  EmitLine(Decl);
+End;
+
+Procedure GenFuncPrototypes;
+{ Genere les prototypes de toutes les fonctions definies. }
+Var
+  I: Integer;
+Begin
+  If NumFuncs = 0 Then Exit;
+  
+  EmitBlankLine;
+  EmitComment('Function prototypes');
+  
+  For I := 1 To NumFuncs Do
+    GenFuncDecl(Funcs[I]);
+  
+  EmitBlankLine;
+End;
+
+Procedure GenFuncBody(Const F: TFunction; Depth: Integer); Forward;
+
+Procedure GenFuncDef(Const F: TFunction);
+{ Genere une definition complete de fonction. }
+Var
+  Decl: TString;
+  OldFuncIdx: Integer;
+  OldInFuncDef: Boolean;
+  I: Integer;
+Begin
+  { Sauvegarder le contexte }
+  OldFuncIdx := CurrentFuncIdx;
+  OldInFuncDef := InFuncDef;
+  
+  { Mettre a jour le contexte }
+  CurrentFuncIdx := NumFuncs;  { Index de cette fonction }
+  InFuncDef := True;
+  Inc(FuncDefCounter);
+  
+  { Construire l'en-tete de la fonction }
+  Decl := '';
+  
+  { Ajouter static si necessaire }
+  If F.IsStatic Then
+    Decl := 'static ';
+  
+  { Type de retour }
+  Decl := Decl + TypeToStr(F.RetType);
+  
+  { Nom de la fonction }
+  Decl := Decl + ' ' + F.Name;
+  
+  { Parametres }
+  Decl := Decl + '(' + FuncParamsToStr(F) + ')';
+  
+  EmitBlankLine;
+  EmitLine(Decl);
+  EmitLine('{');
+  EmitIndent;
+  
+  { Ajouter les parametres comme variables locales dans la portee }
+  PushScope;
+  For I := 1 To F.NumParams Do
+  Begin
+    If NumVars < MAX_VARS Then
+    Begin
+      Inc(NumVars);
+      Vars[NumVars].Name := F.Params[I].Name;
+      Vars[NumVars].VType := F.Params[I].PType;
+      Vars[NumVars].Storage := SC_AUTO;
+      Vars[NumVars].Initialized := True;
+      Vars[NumVars].ScopeLevel := CurrScope;
+      Vars[NumVars].IsParam := True;
+      Vars[NumVars].IsGlobal := False;
+    End;
+  End;
+  
+  { Generer le corps de la fonction }
+  GenFuncBody(F, 1);
+  
+  { Generer un return si le type n'est pas void et qu'on n'a pas encore de return }
+  If F.RetType.Kind <> TK_VOID Then
+  Begin
+    If IsIntegerType(F.RetType) Then
+      EmitLine('return 0;')
+    Else If IsFloatType(F.RetType) Then
+      EmitLine('return 0.0;')
+    Else
+      EmitLine('return 0;');
+  End;
+  
+  PopScope;
+  
+  EmitUnindent;
+  EmitLine('}');
+  
+  { Restaurer le contexte }
+  CurrentFuncIdx := OldFuncIdx;
+  InFuncDef := OldInFuncDef;
+End;
+
+Procedure GenFuncBody(Const F: TFunction; Depth: Integer);
+{ Genere le corps d'une fonction avec des statements aleatoires. }
+Var
+  NumStmts, I: Integer;
+  R: Integer;
+  OldInFunction: Boolean;
+  OldCurrentRetType: TTypeKind;
+Begin
+  { Sauvegarder et mettre a jour le contexte de fonction }
+  OldInFunction := InFunction;
+  OldCurrentRetType := CurrentRetType;
+  InFunction := True;
+  CurrentRetType := F.RetType.Kind;
+  
+  { Generer quelques variables locales }
+  If RandomChoice(60) Then
+  Begin
+    NumStmts := RandomRange(1, 3);
+    For I := 1 To NumStmts Do
+      GenLocalVarDecl;
+  End;
+  
+  { Generer quelques statements }
+  NumStmts := RandomRange(2, 6);
+  For I := 1 To NumStmts Do
+  Begin
+    R := RandomInt(100);
+    
+    If R < 30 Then
+      GenExprStmt
+    Else If R < 50 Then
+      GenIfStmt(Depth)
+    Else If R < 65 Then
+      GenRandomLoopStmt(Depth)
+    Else If R < 80 Then
+      GenExprStmt
+    Else If RandomChoice(FUNC_EARLY_RETURN_PROB) And (F.RetType.Kind <> TK_VOID) Then
+    Begin
+      { Return anticipe }
+      GenReturnStmt;
+      { Restaurer le contexte }
+      InFunction := OldInFunction;
+      CurrentRetType := OldCurrentRetType;
+      Exit;  { On sort apres un return }
+    End
+    Else
+      GenExprStmt;
+  End;
+  
+  { Restaurer le contexte }
+  InFunction := OldInFunction;
+  CurrentRetType := OldCurrentRetType;
+End;
+
+Function GenFuncCallExpr(FuncIdx: Integer): TString;
+{ Genere une expression d'appel de fonction. }
+Var
+  S: TString;
+  I: Integer;
+Begin
+  If (FuncIdx < 1) Or (FuncIdx > NumFuncs) Then
+  Begin
+    GenFuncCallExpr := '0';
+    Exit;
+  End;
+  
+  Inc(FuncCallCounter);
+  
+  S := Funcs[FuncIdx].Name + '(';
+  
+  { Generer les arguments }
+  For I := 1 To Funcs[FuncIdx].NumParams Do
+  Begin
+    If I > 1 Then
+      S := S + ', ';
+    
+    { Generer un argument du bon type }
+    If IsIntegerType(Funcs[FuncIdx].Params[I].PType) Then
+      S := S + IntToStr(RandomRange(0, 100))
+    Else If IsFloatType(Funcs[FuncIdx].Params[I].PType) Then
+      S := S + IntToStr(RandomInt(10)) + '.0'
+    Else
+      S := S + '0';
+  End;
+  
+  S := S + ')';
+  GenFuncCallExpr := S;
+End;
+
+Function CreateNewFunc: Integer;
+{ Cree une nouvelle fonction aleatoire et retourne son index. }
+Var
+  Idx: Integer;
+Begin
+  If NumFuncs >= MAX_FUNCS Then
+  Begin
+    CreateNewFunc := 0;
+    Exit;
+  End;
+  
+  Inc(NumFuncs);
+  Idx := NumFuncs;
+  
+  { Initialiser la fonction }
+  Funcs[Idx].Name := GenFuncName;
+  Funcs[Idx].RetType := GenRandomReturnType;
+  Funcs[Idx].IsStatic := RandomChoice(FUNC_STATIC_PROB);
+  Funcs[Idx].IsDefined := False;
+  
+  { Generer les parametres }
+  InitFuncParams(Funcs[Idx]);
+  
+  CreateNewFunc := Idx;
+End;
+
+Procedure GenAllFuncDefs;
+{ Genere les definitions de toutes les fonctions. }
+Var
+  I: Integer;
+Begin
+  If NumFuncs = 0 Then Exit;
+  
+  EmitBlankLine;
+  EmitFuncComment;
+  
+  For I := 1 To NumFuncs Do
+  Begin
+    If Not Funcs[I].IsDefined Then
+    Begin
+      GenFuncDef(Funcs[I]);
+      Funcs[I].IsDefined := True;
+    End;
+  End;
+End;
+
+Function GetFuncByName(Const Name: TString): Integer;
+{ Trouve une fonction par son nom, retourne 0 si non trouvee. }
+Var
+  I: Integer;
+Begin
+  GetFuncByName := 0;
+  For I := 1 To NumFuncs Do
+    If Funcs[I].Name = Name Then
+    Begin
+      GetFuncByName := I;
+      Exit;
+    End;
+End;
+
+Function GetFuncReturnType(FuncIdx: Integer): TCType;
+{ Retourne le type de retour d'une fonction. }
+Var
+  T: TCType;
+Begin
+  InitCType(T);
+  If (FuncIdx >= 1) And (FuncIdx <= NumFuncs) Then
+    T := Funcs[FuncIdx].RetType;
+  GetFuncReturnType := T;
+End;
+
+Function GetFuncParamCount(FuncIdx: Integer): Integer;
+{ Retourne le nombre de parametres d'une fonction. }
+Begin
+  If (FuncIdx >= 1) And (FuncIdx <= NumFuncs) Then
+    GetFuncParamCount := Funcs[FuncIdx].NumParams
+  Else
+    GetFuncParamCount := 0;
+End;
+
+Function IsFuncStatic(FuncIdx: Integer): Boolean;
+{ Retourne True si la fonction est statique. }
+Begin
+  If (FuncIdx >= 1) And (FuncIdx <= NumFuncs) Then
+    IsFuncStatic := Funcs[FuncIdx].IsStatic
+  Else
+    IsFuncStatic := False;
+End;
+
+Function IsFuncDefined(FuncIdx: Integer): Boolean;
+{ Retourne True si la fonction a ete definie. }
+Begin
+  If (FuncIdx >= 1) And (FuncIdx <= NumFuncs) Then
+    IsFuncDefined := Funcs[FuncIdx].IsDefined
+  Else
+    IsFuncDefined := False;
+End;
+
+Function GetFuncName(FuncIdx: Integer): TString;
+{ Retourne le nom d'une fonction. }
+Begin
+  If (FuncIdx >= 1) And (FuncIdx <= NumFuncs) Then
+    GetFuncName := Funcs[FuncIdx].Name
+  Else
+    GetFuncName := '';
+End;
+
+Function CountDefinedFuncs: Integer;
+{ Compte le nombre de fonctions definies. }
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To NumFuncs Do
+    If Funcs[I].IsDefined Then
+      Inc(Count);
+  CountDefinedFuncs := Count;
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -7101,6 +7633,8 @@ Begin
   InitCondContext;
   { Initialiser le contexte des boucles - TODO 21 }
   InitLoopContext;
+  { Initialiser le contexte des fonctions - TODO 22 }
+  InitFuncContext;
   { Initialiser l'emetteur }
   InitEmitter;
 End;

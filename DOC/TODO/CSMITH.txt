@@ -218,7 +218,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Limiter les iterations max (guard counter).
       GenLoopGuard - compteur de garde pour terminer les boucles.
 
-  22. [A FAIRE] Generation de fonctions.
+  22. [IMPLEMENTE] Generation de fonctions.
       Generateur de fonctions C :
       GenFuncDecl - generer une declaration de fonction (prototype).
       GenFuncDef - generer une definition de fonction complete.
