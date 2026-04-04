@@ -51,6 +51,7 @@ Type
  StrPointer=^String;
  FieldArray=Array[0..MaxFields]of String;
  VarTypeEnum=(_None,_Integer,_LongInt,_Real,_String);
+ VarPointer=^VarRec;
  VarRec=Record
   Variant:Record Case Integer of
    0:(I:Integer);
@@ -60,8 +61,8 @@ Type
   End;
   VarType:VarTypeEnum;
   VarName:String[20];
+  Next:VarPointer;         { Noeud suivant dans la liste chainee }
  End;
- VarPointer=^VarRec;
  { Type pour les fonctions utilisateur - liste chainee }
  PUserFunc=^TUserFunc;
  TUserFunc=Record
@@ -106,11 +107,13 @@ Var
  FileName,CurrLine:String;
  CurrPos:Byte;
  PA:Array[1..MaxLine] of StrPointer;
- VarList:Array[1..MaxVariable]of VarPointer;
+ { Variables pour les variables utilisateur - liste chainee sans limite }
+ VarListHead:VarPointer;  { Tete de la liste }
+ VarListLast:VarPointer;  { Queue de la liste (insertion rapide) }
  CurrLinePtr,NumberLine:Integer;
  CurrNumberLine:Integer;
  AccoladeBlock:Integer;
- I,NumberVariable:Integer;
+ I:Integer;
  EndBlockStart:Integer;  { Ligne de debut du bloc END }
  EndBlockEnd:Integer;    { Ligne de fin du bloc END }
  InEndBlock:Boolean;     { Indique si on est dans un bloc END }
@@ -789,23 +792,31 @@ End;
  { Traitement des variables }
 Function VariableExist(S:String):Boolean;
 Var
- I:Integer;
+ P:VarPointer;
 Begin
  VariableExist:=False;
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  VariableExist:=True;
-  Exit;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   VariableExist:=True;
+   Exit;
+  End;
+  P:=P^.Next;
  End;
 End;
 
 Function VariableType(S:String):VarTypeEnum;
 Var
- I:Integer;
+ P:VarPointer;
 Begin
  VariableType:=_None;
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  VariableType:=VarList[I]^.VarType;
-  Exit;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   VariableType:=P^.VarType;
+   Exit;
+  End;
+  P:=P^.Next;
  End;
 End;
 
@@ -813,37 +824,42 @@ Function AddVariableInt(S:String;Value:Integer):Boolean;
 Var
  P:VarPointer;
 Begin
- If NumberVariable>=MaxVariable Then Begin
-  AddVariableInt:=False;
-  Exit;
- End;
- Inc(NumberVariable);
  GetMem(P,SizeOf(VarRec));
  P^.VarName:=Copy(StrToUpper(S),1,20);
  P^.VarType:=_Integer;
  P^.Variant.I:=Value;
- VarList[NumberVariable]:=P;
+ P^.Next:=nil;
+ If VarListLast=nil Then Begin VarListHead:=P; VarListLast:=P; End
+                    Else Begin VarListLast^.Next:=P; VarListLast:=P; End;
  AddVariableInt:=True;
 End;
 
 Function GetVariableInt(S:String):Integer;
 Var
- I:Integer;
+ P:VarPointer;
 Begin
  GetVariableInt:=0;
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  GetVariableInt:=VarList[I]^.Variant.I;
-  Exit;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   GetVariableInt:=P^.Variant.I;
+   Exit;
+  End;
+  P:=P^.Next;
  End;
 End;
 
 Procedure SetVariableInt(S:String;Value:Integer);
 Var
- I:Integer;
+ P:VarPointer;
 Begin
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  VarList[I]^.Variant.I:=Value;
-  Exit;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   P^.Variant.I:=Value;
+   Exit;
+  End;
+  P:=P^.Next;
  End;
 End;
 
@@ -851,37 +867,42 @@ Function AddVariableLongInt(S:String;Value:LongInt):Boolean;
 Var
  P:VarPointer;
 Begin
- If NumberVariable>=MaxVariable Then Begin
-  AddVariableLongInt:=False;
-  Exit;
- End;
- Inc(NumberVariable);
  GetMem(P,SizeOf(VarRec));
  P^.VarName:=Copy(StrToUpper(S),1,20);
  P^.VarType:=_LongInt;
  P^.Variant.L:=Value;
- VarList[NumberVariable]:=P;
+ P^.Next:=nil;
+ If VarListLast=nil Then Begin VarListHead:=P; VarListLast:=P; End
+                    Else Begin VarListLast^.Next:=P; VarListLast:=P; End;
  AddVariableLongInt:=True;
 End;
 
 Function GetVariableLongInt(S:String):LongInt;
 Var
- I:Integer;
+ P:VarPointer;
 Begin
  GetVariableLongInt:=0;
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  GetVariableLongInt:=VarList[I]^.Variant.L;
-  Exit;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   GetVariableLongInt:=P^.Variant.L;
+   Exit;
+  End;
+  P:=P^.Next;
  End;
 End;
 
 Procedure SetVariableLongInt(S:String;Value:LongInt);
 Var
- I:Integer;
+ P:VarPointer;
 Begin
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  VarList[I]^.Variant.L:=Value;
-  Exit;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   P^.Variant.L:=Value;
+   Exit;
+  End;
+  P:=P^.Next;
  End;
 End;
 
@@ -889,37 +910,42 @@ Function AddVariableReal(S:String;Value:Real):Boolean;
 Var
  P:VarPointer;
 Begin
- If NumberVariable>=MaxVariable Then Begin
-  AddVariableReal:=False;
-  Exit;
- End;
- Inc(NumberVariable);
  GetMem(P,SizeOf(VarRec));
  P^.VarName:=Copy(StrToUpper(S),1,20);
  P^.VarType:=_Real;
  P^.Variant.R:=Value;
- VarList[NumberVariable]:=P;
+ P^.Next:=nil;
+ If VarListLast=nil Then Begin VarListHead:=P; VarListLast:=P; End
+                    Else Begin VarListLast^.Next:=P; VarListLast:=P; End;
  AddVariableReal:=True;
 End;
 
 Function GetVariableReal(S:String):Real;
 Var
- I:Integer;
+ P:VarPointer;
 Begin
  GetVariableReal:=0;
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  GetVariableReal:=VarList[I]^.Variant.R;
-  Exit;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   GetVariableReal:=P^.Variant.R;
+   Exit;
+  End;
+  P:=P^.Next;
  End;
 End;
 
 Procedure SetVariableReal(S:String;Value:Real);
 Var
- I:Integer;
+ P:VarPointer;
 Begin
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  VarList[I]^.Variant.R:=Value;
-  Exit;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   P^.Variant.R:=Value;
+   Exit;
+  End;
+  P:=P^.Next;
  End;
 End;
 
@@ -928,56 +954,61 @@ Var
  P:VarPointer;
  PS:StrPointer;
 Begin
- If NumberVariable>=MaxVariable Then Begin
-  AddVariableString:=False;
-  Exit;
- End;
- Inc(NumberVariable);
  GetMem(P,SizeOf(VarRec));
  P^.VarName:=Copy(StrToUpper(S),1,20);
  P^.VarType:=_String;
  GetMem(PS,SizeOf(String));
  PS^:=Value;
  P^.Variant.S:=PS;
- VarList[NumberVariable]:=P;
+ P^.Next:=nil;
+ If VarListLast=nil Then Begin VarListHead:=P; VarListLast:=P; End
+                    Else Begin VarListLast^.Next:=P; VarListLast:=P; End;
  AddVariableString:=True;
 End;
 
 Function GetVariableString(S:String):String;
 Var
- I:Integer;
+ P:VarPointer;
  TempStr:String;
 Begin
  GetVariableString:='';
  TempStr:='';
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  If VarList[I]^.VarType=_String Then Begin
-   If VarList[I]^.Variant.S<>Nil Then
-    GetVariableString:=VarList[I]^.Variant.S^;
-  End
-   Else
-  Begin
-   { Convertir les autres types en chaine }
-   Case VarList[I]^.VarType of
-    _Integer:Begin Str(VarList[I]^.Variant.I,TempStr); GetVariableString:=TempStr; End;
-    _LongInt:Begin Str(VarList[I]^.Variant.L,TempStr); GetVariableString:=TempStr; End;
-    _Real:Begin Str(VarList[I]^.Variant.R:0:6,TempStr); GetVariableString:=TempStr; End;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   If P^.VarType=_String Then Begin
+    If P^.Variant.S<>Nil Then
+     GetVariableString:=P^.Variant.S^;
+   End
+    Else
+   Begin
+    { Convertir les autres types en chaine }
+    Case P^.VarType of
+     _Integer:Begin Str(P^.Variant.I,TempStr); GetVariableString:=TempStr; End;
+     _LongInt:Begin Str(P^.Variant.L,TempStr); GetVariableString:=TempStr; End;
+     _Real:Begin Str(P^.Variant.R:0:6,TempStr); GetVariableString:=TempStr; End;
+    End;
    End;
+   Exit;
   End;
-  Exit;
+  P:=P^.Next;
  End;
 End;
 
 Procedure SetVariableString(S:String;Value:String);
 Var
- I:Integer;
+ P:VarPointer;
 Begin
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  If VarList[I]^.VarType=_String Then Begin
-   If VarList[I]^.Variant.S<>Nil Then
-    VarList[I]^.Variant.S^:=Value;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   If P^.VarType=_String Then Begin
+    If P^.Variant.S<>Nil Then
+     P^.Variant.S^:=Value;
+   End;
+   Exit;
   End;
-  Exit;
+  P:=P^.Next;
  End;
 End;
 
