@@ -1,0 +1,58 @@
+// test09_language.rc - Test directive LANGUAGE
+// Test: Compilation avec differentes langues
+
+// Langue par defaut: Anglais US
+LANGUAGE 0x0409, 0x0001
+
+STRINGTABLE
+BEGIN
+    1 "Hello"
+    2 "Goodbye"
+    3 "Welcome"
+END
+
+// Changer en Francais
+LANGUAGE 0x040C, 0x0001
+
+STRINGTABLE
+BEGIN
+    101 "Bonjour"
+    102 "Au revoir"
+    103 "Bienvenue"
+END
+
+// Changer en Allemand
+LANGUAGE 0x0407, 0x0001
+
+STRINGTABLE
+BEGIN
+    201 "Hallo"
+    202 "Auf Wiedersehen"
+    203 "Willkommen"
+END
+
+// Retour a l'anglais
+LANGUAGE 0x0409, 0x0001
+
+100 MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&New",     1001
+        MENUITEM "&Open",    1002
+        MENUITEM "&Exit",    1003
+    END
+END
+
+// Menu en francais
+LANGUAGE 0x040C, 0x0001
+
+200 MENU
+BEGIN
+    POPUP "&Fichier"
+    BEGIN
+        MENUITEM "&Nouveau",   2001
+        MENUITEM "&Ouvrir",    2002
+        MENUITEM "&Quitter",   2003
+    END
+END

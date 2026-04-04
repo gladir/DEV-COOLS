@@ -105,8 +105,9 @@ Const
   TY_IDX_REAL    = 6;   { tronque en entier      }
   TY_IDX_POINTER = 7;   { pointeur generique 32 bits }
   TY_IDX_NIL     = 8;   { pointeur nul           }
-  TY_IDX_TEXT    = 9;    { fichier texte (handle Win32) }
-  TY_PRIM_COUNT  = 10;
+  TY_IDX_TEXT    = 9;   { fichier texte (handle Win32) }
+  TY_IDX_OBJECT  = 10;  { objet COM/OLE (IDispatch*) }
+  TY_PRIM_COUNT  = 11;
   TY_UNKNOWN     = -1;
 
 { ============================================================
@@ -202,6 +203,7 @@ Type
     TKP_POINTER,   { pointeur generique 32 bits                }
     TKP_NIL,       { pointeur nul                              }
     TKP_TEXT,      { fichier texte (handle Win32)              }
+    TKP_OBJECT,    { objet COM/OLE (IDispatch*)                }
     TKP_VOID       { procedure, pas de valeur de retour        }
   );
 
@@ -363,6 +365,10 @@ Var
   DefineCount     : Integer;  { nombre de defines actifs }
   CompilerMode    : TString;  { 'TP' ou 'FPC' }
   ContentTypeLbl  : TString;  { label content-type ou '' }
+
+  { COM/OLE object member access }
+  ObjMemberCounter : Integer;  { compteur pour noms de membres uniques }
+  ObjMemberName    : TString;  { nom du membre COM en cours d'acces }
 
   { Variables pour generation binaire }
 {$IFDEF FPC}
@@ -1868,6 +1874,28 @@ Begin
   EmitRaw(PSP_RT_PFX + 'HSTDIN  DD  0');
   EmitRaw(PSP_RT_PFX + 'WRITTEN DD  0');
   EmitBlankLine;
+  { COM/OLE support: IID_IDispatch, CLSID buffer, object pointer, etc. }
+  EmitComment('--- COM/OLE buffers ---');
+  EmitRaw(PSP_RT_PFX + 'IID_IDISPATCH DD 000020400h');
+  EmitRaw('  DD 00000h');
+  EmitRaw('  DD 0C0000000h');
+  EmitRaw('  DD 000000046h');
+  EmitRaw(PSP_RT_PFX + 'CLSID_BUF DD 0,0,0,0');
+  EmitRaw(PSP_RT_PFX + 'COM_OBJ   DD 0');
+  EmitRaw(PSP_RT_PFX + 'PROGID_BUF DB 512 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'DISPID_BUF DD 0');
+  { DISPPARAMS: rgvarg, rgdispidNamedArgs, cArgs, cNamedArgs }
+  EmitRaw(PSP_RT_PFX + 'DISP_PARAMS DD 0,0,0,0');
+  { VARIANT: vt(WORD)+wReserved1-3(WORD)+val(8 bytes) = 16 bytes }
+  EmitRaw(PSP_RT_PFX + 'VARIANT_BUF DD 0,0,0,0');
+  EmitRaw(PSP_RT_PFX + 'VARIANT_RET DD 0,0,0,0');
+  EmitRaw(PSP_RT_PFX + 'PROPNAME_BUF DB 256 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'PROPNAME_PTR DD 0');
+  EmitRaw(PSP_RT_PFX + 'EXCEP_INFO DD 0,0,0,0,0,0,0,0,0');
+  EmitRaw(PSP_RT_PFX + 'ARG_ERR DD 0');
+  EmitRaw(PSP_RT_PFX + 'DISPID_PROPPUT DD 0FFFFFFFDh');
+  EmitRaw(PSP_RT_PFX + 'COM_INIT DD 0');
+  EmitBlankLine;
 
   { --- Entrees dynamiques de DataTab --- }
   If DataCount > 0 Then
@@ -2380,6 +2408,8 @@ Begin
   If Idx >= 0 Then SymTab[Idx].MangledName := 'POINTER';
   Idx := SymAdd('text', SC_TYPE, TY_IDX_TEXT);
   If Idx >= 0 Then SymTab[Idx].MangledName := 'TEXT';
+  Idx := SymAdd('tcreateobject', SC_TYPE, TY_IDX_OBJECT);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'TCREATEOBJECT';
 
   { Constantes predefinies : true, false, nil, maxint }
   Idx := SymAdd('true', SC_CONST, TY_IDX_BOOLEAN);
@@ -2447,7 +2477,8 @@ Begin
   AddPrim(TY_IDX_REAL,    TKP_REAL,    4);   { Real    : 4 (tronque en entier 32 bits) }
   AddPrim(TY_IDX_POINTER, TKP_POINTER, 4);   { Pointer : 4 octets (32 bits)           }
   AddPrim(TY_IDX_NIL,     TKP_NIL,     4);   { nil     : 4 octets                     }
-  AddPrim(TY_IDX_TEXT,    TKP_TEXT,    4);    { Text    : 4 (handle Win32)             }
+  AddPrim(TY_IDX_TEXT,    TKP_TEXT,    4);   { Text    : 4 (handle Win32)             }
+  AddPrim(TY_IDX_OBJECT,  TKP_OBJECT,  4);   { Object  : 4 (IDispatch* 32 bits)       }
 End;
 
 { ---- TypeSizeof : retourner la taille d un type en octets ---- }
@@ -2866,6 +2897,12 @@ Begin
   EmitRaw('EXTRN   _HeapAlloc@12        : PROC');
   EmitRaw('EXTRN   _HeapFree@12         : PROC');
   EmitRaw('EXTRN   _GetTickCount@0      : PROC');
+  EmitBlankLine;
+  EmitComment('--- Declarations externes COM/OLE32 ---');
+  EmitRaw('EXTRN   _CoInitialize@4      : PROC');
+  EmitRaw('EXTRN   _CoUninitialize@0    : PROC');
+  EmitRaw('EXTRN   _CoCreateInstance@20 : PROC');
+  EmitRaw('EXTRN   _CLSIDFromProgID@8   : PROC');
   EmitBlankLine;
   EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
   EmitBlankLine;
@@ -3418,6 +3455,227 @@ Begin
     EmitInstrA('JMP', 'DWORD PTR [' + PSP_EX_PFX + 'HANDLER]');
     EmitLabel(PSP_RT_PFX + 'PANIC_DIV0_FATAL');
     EmitInstrA('CALL', PSP_RT_PFX + 'PANIC');
+    EmitBlankLine;
+
+    { ========================================== }
+    { COM/OLE RUNTIME ROUTINES                   }
+    { ========================================== }
+    EmitComment('========================================');
+    EmitComment('  COM/OLE RUNTIME ROUTINES');
+    EmitComment('========================================');
+    EmitBlankLine;
+
+    { _PSPRT_CREATEOBJECT : ESI=ProgID ASCIIZ -> EAX=IDispatch* ou 0 }
+    EmitComment('CreateObject: ESI=ProgID -> EAX=IDispatch*');
+    EmitLabel(PSP_RT_PFX + 'CREATEOBJECT');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrA('PUSH', 'EDI');
+    { Initialiser COM si pas encore fait }
+    EmitInstrAB('CMP', 'DWORD PTR [' + PSP_RT_PFX + 'COM_INIT]', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CO_SKIP_INIT');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('CALL', '_CoInitialize@4');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'COM_INIT]', '1');
+    EmitLabel(PSP_RT_PFX + 'CO_SKIP_INIT');
+    { Convertir ProgID ASCIIZ en Unicode (simple: copier avec zeros) }
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'PROGID_BUF');
+    EmitLabel(PSP_RT_PFX + 'CO_COPY_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CO_COPY_LP');
+    { CLSIDFromProgID(pwszProgID, pCLSID) }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'CLSID_BUF');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'PROGID_BUF');
+    EmitInstrA('CALL', '_CLSIDFromProgID@8');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CO_FAIL');
+    { CoCreateInstance(rclsid, pUnkOuter, dwClsCtx, riid, ppv) }
+    { CLSCTX_ALL = 23 (INPROC_SERVER|INPROC_HANDLER|LOCAL_SERVER|REMOTE_SERVER) }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'COM_OBJ');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'IID_IDISPATCH');
+    EmitInstrA('PUSH', '23');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'CLSID_BUF');
+    EmitInstrA('CALL', '_CoCreateInstance@20');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'CO_FAIL');
+    EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + PSP_RT_PFX + 'COM_OBJ]');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CO_DONE');
+    EmitLabel(PSP_RT_PFX + 'CO_FAIL');
+    EmitInstrAB('XOR', 'EAX', 'EAX');
+    EmitLabel(PSP_RT_PFX + 'CO_DONE');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_OBJPUTPROP : EAX=IDispatch*, ESI=PropName, EDX=Value(str) }
+    { IDispatch vtable: [0]=QueryInterface, [4]=AddRef, [8]=Release,   }
+    {                   [12]=GetTypeInfoCount, [16]=GetTypeInfo,       }
+    {                   [20]=GetIDsOfNames, [24]=Invoke                }
+    EmitComment('ObjPutProp: EAX=IDispatch*, ESI=PropName, EDX=Value');
+    EmitLabel(PSP_RT_PFX + 'OBJPUTPROP');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrAB('MOV', 'EBX', 'EAX');   { EBX = IDispatch* }
+    EmitInstrA('PUSH', 'EDX');          { sauver la valeur string }
+    { Convertir PropName ASCIIZ en Unicode }
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'PROPNAME_BUF');
+    EmitLabel(PSP_RT_PFX + 'PP_COPY_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'PP_COPY_LP');
+    { Preparer pointeur sur nom Unicode }
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'PROPNAME_PTR]',
+                'OFFSET ' + PSP_RT_PFX + 'PROPNAME_BUF');
+    { Appeler IDispatch::GetIDsOfNames(riid, rgszNames, cNames, lcid, rgDispId) }
+    { vtable[20] = GetIDsOfNames }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'DISPID_BUF');  { rgDispId }
+    EmitInstrA('PUSH', '0');                                     { lcid = 0 }
+    EmitInstrA('PUSH', '1');                                     { cNames = 1 }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'PROPNAME_PTR'); { rgszNames }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'IID_IDISPATCH'); { riid=IID_NULL }
+    EmitInstrA('PUSH', 'EBX');                                   { this }
+    EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');                 { vtable }
+    EmitInstrA('CALL', 'DWORD PTR [EAX+20]');                     { GetIDsOfNames }
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'PP_FAIL');
+    { Preparer le VARIANT pour la valeur (VT_BSTR=8) }
+    EmitInstrA('POP', 'EDX');           { recuperer la valeur string }
+    { Convertir string ASCIIZ en BSTR (via SysAllocStringLen) }
+    { Pour simplifier, on stocke juste le pointeur comme VT_LPSTR (31) }
+    EmitInstrAB('MOV', 'WORD PTR [' + PSP_RT_PFX + 'VARIANT_BUF]', '31');  { VT_LPSTR }
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'VARIANT_BUF+8]', 'EDX');
+    { Preparer DISPPARAMS pour PROPERTYPUT }
+    { rgvarg=&VARIANT_BUF, rgdispidNamedArgs=&DISPID_PROPPUT, cArgs=1, cNamedArgs=1 }
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'DISP_PARAMS]',
+                'OFFSET ' + PSP_RT_PFX + 'VARIANT_BUF');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'DISP_PARAMS+4]',
+                'OFFSET ' + PSP_RT_PFX + 'DISPID_PROPPUT');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'DISP_PARAMS+8]', '1');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'DISP_PARAMS+12]', '1');
+    { Appeler IDispatch::Invoke(dispid, riid, lcid, wFlags, pDispParams, pVarResult, pExcepInfo, puArgErr) }
+    { DISPATCH_PROPERTYPUT = 4 }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'ARG_ERR');       { puArgErr }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'EXCEP_INFO');    { pExcepInfo }
+    EmitInstrA('PUSH', '0');                                       { pVarResult=NULL }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'DISP_PARAMS');   { pDispParams }
+    EmitInstrA('PUSH', '4');                                       { wFlags=PROPERTYPUT }
+    EmitInstrA('PUSH', '0');                                       { lcid=0 }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'IID_IDISPATCH'); { riid=IID_NULL }
+    EmitInstrA('PUSH', 'DWORD PTR [' + PSP_RT_PFX + 'DISPID_BUF]'); { dispid }
+    EmitInstrA('PUSH', 'EBX');                                     { this }
+    EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');                   { vtable }
+    EmitInstrA('CALL', 'DWORD PTR [EAX+24]');                       { Invoke }
+    EmitInstrA('JMP', PSP_RT_PFX + 'PP_DONE');
+    EmitLabel(PSP_RT_PFX + 'PP_FAIL');
+    EmitInstrA('POP', 'EDX');           { nettoyer la pile }
+    EmitLabel(PSP_RT_PFX + 'PP_DONE');
+    EmitInstrA('POP', 'ESI');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_OBJCALL : EAX=IDispatch*, ESI=MethodName -> call method }
+    { Appelle une methode sans arguments, retourne resultat dans EAX }
+    EmitComment('ObjCall: EAX=IDispatch*, ESI=MethodName');
+    EmitLabel(PSP_RT_PFX + 'OBJCALL');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrAB('MOV', 'EBX', 'EAX');   { EBX = IDispatch* }
+    { Convertir MethodName en Unicode }
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'PROPNAME_BUF');
+    EmitLabel(PSP_RT_PFX + 'OC_COPY_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'OC_COPY_LP');
+    { Preparer pointeur sur nom Unicode }
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'PROPNAME_PTR]',
+                'OFFSET ' + PSP_RT_PFX + 'PROPNAME_BUF');
+    { Appeler IDispatch::GetIDsOfNames }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'DISPID_BUF');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('PUSH', '1');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'PROPNAME_PTR');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'IID_IDISPATCH');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+    EmitInstrA('CALL', 'DWORD PTR [EAX+20]');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'OC_FAIL');
+    { Preparer DISPPARAMS vide (pas d'arguments) }
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'DISP_PARAMS]', '0');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'DISP_PARAMS+4]', '0');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'DISP_PARAMS+8]', '0');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'DISP_PARAMS+12]', '0');
+    { Initialiser VARIANT_RET }
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'VARIANT_RET]', '0');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'VARIANT_RET+4]', '0');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'VARIANT_RET+8]', '0');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'VARIANT_RET+12]', '0');
+    { Appeler IDispatch::Invoke }
+    { DISPATCH_METHOD = 1 }
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'ARG_ERR');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'EXCEP_INFO');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'VARIANT_RET');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'DISP_PARAMS');
+    EmitInstrA('PUSH', '1');                                       { wFlags=METHOD }
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'IID_IDISPATCH');
+    EmitInstrA('PUSH', 'DWORD PTR [' + PSP_RT_PFX + 'DISPID_BUF]');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+    EmitInstrA('CALL', 'DWORD PTR [EAX+24]');
+    { Extraire le resultat du VARIANT_RET }
+    EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + PSP_RT_PFX + 'VARIANT_RET+8]');
+    EmitInstrA('JMP', PSP_RT_PFX + 'OC_DONE');
+    EmitLabel(PSP_RT_PFX + 'OC_FAIL');
+    EmitInstrAB('XOR', 'EAX', 'EAX');
+    EmitLabel(PSP_RT_PFX + 'OC_DONE');
+    EmitInstrA('POP', 'ESI');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_OBJRELEASE : EAX=IDispatch* -> appeler Release }
+    EmitComment('ObjRelease: EAX=IDispatch* -> Release');
+    EmitLabel(PSP_RT_PFX + 'OBJRELEASE');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'OR_DONE');
+    EmitInstrA('PUSH', 'EAX');
+    { vtable[2] = Release (IUnknown::Release est la 3eme methode) }
+    EmitInstrAB('MOV', 'ECX', 'DWORD PTR [EAX]');
+    EmitInstrA('PUSH', 'EAX');
+    EmitInstrA('CALL', 'DWORD PTR [ECX+8]');
+    EmitLabel(PSP_RT_PFX + 'OR_DONE');
+    EmitInstr('RET');
     EmitBlankLine;
   End;
 
@@ -4404,6 +4662,24 @@ Begin
         Res.TypeIdx := TY_IDX_STRING;
         Res.SymIdx  := -1;
       End
+      Else If StrLowerCase(CurToken.Val) = 'createobject' Then
+      Begin
+        { CreateObject('ProgID') : creer un objet COM via IDispatch }
+        TplNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          TplNextToken;
+        ParseExpr(Res);
+        ExprFlushToEAX(Res);
+        { EAX = pointeur vers ProgID (chaine ASCIIZ) }
+        EmitInstrAB('MOV', 'ESI', 'EAX');
+        EmitInstrA('CALL', PSP_RT_PFX + 'CREATEOBJECT');
+        { EAX = pointeur IDispatch ou 0 si echec }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          TplNextToken;
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_OBJECT;
+        Res.SymIdx  := -1;
+      End
 
       Else
       Begin
@@ -4572,6 +4848,66 @@ Begin
             EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
           Res.Kind    := EK_AX;
           Res.TypeIdx := FldTIdx;
+          Res.SymIdx  := -1;
+        End
+        Else If (Res.SymIdx >= 0) And (Res.SymIdx < SymCount) And
+           (SymTab[Res.SymIdx].TypeIdx >= 0) And
+           (SymTab[Res.SymIdx].TypeIdx < TypeCount) And
+           (TypeTab[SymTab[Res.SymIdx].TypeIdx].Kind = TKP_OBJECT) Then
+        Begin
+          { Acces a propriete/methode d'objet COM via IDispatch }
+          { Charger le pointeur IDispatch dans EAX }
+          If SymTab[Res.SymIdx].IsLocal Then
+            EmitInstrAB('MOV', 'EAX', EBPOfs(SymTab[Res.SymIdx].Offset))
+          Else
+            EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + SymTab[Res.SymIdx].MangledName + ']');
+          { Boucle sur les acces .propriete ou .methode }
+          While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Do
+          Begin
+            TplNextToken;
+            If CurToken.Kind = TK_IDENT Then
+            Begin
+              { Sauvegarder le nom de la propriete/methode }
+              ObjMemberName := CurToken.Val;
+              TplNextToken;
+              { Si suivi de ( c'est un appel de methode }
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+              Begin
+                EmitComment('COM method call: ' + ObjMemberName);
+                EmitInstrA('PUSH', 'EAX');
+                EmitInstrAB('LEA', 'ESI', PSP_STR_PFX + 'OBJM_' + IntToStr(ObjMemberCounter));
+                DataAdd(PSP_STR_PFX + 'OBJM_' + IntToStr(ObjMemberCounter), DK_STR, 0, ObjMemberName);
+                Inc(ObjMemberCounter);
+                EmitInstrA('POP', 'EAX');
+                EmitInstrA('CALL', PSP_RT_PFX + 'OBJCALL');
+                { Consommer les arguments (stub: ignorer) }
+                TplNextToken;
+                While (CurToken.Kind <> TK_EOF) And
+                      Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+                  TplNextToken;
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                  TplNextToken;
+              End
+              Else
+              Begin
+                { C'est un acces a propriete (lecture) }
+                EmitComment('COM property get: ' + ObjMemberName);
+                EmitInstrA('PUSH', 'EAX');
+                EmitInstrAB('LEA', 'ESI', PSP_STR_PFX + 'OBJP_' + IntToStr(ObjMemberCounter));
+                DataAdd(PSP_STR_PFX + 'OBJP_' + IntToStr(ObjMemberCounter), DK_STR, 0, ObjMemberName);
+                Inc(ObjMemberCounter);
+                EmitInstrA('POP', 'EAX');
+                { Stub: propriete retourne dans EAX }
+              End;
+            End
+            Else
+            Begin
+              WarnMsg('nom de membre attendu apres "." sur objet COM');
+              Break;
+            End;
+          End;
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_OBJECT;
           Res.SymIdx  := -1;
         End
         Else
@@ -5554,6 +5890,26 @@ Begin
 
   { Evaluer l expression }
   ParseExpr(Ev);
+
+  { Detection de obj := NIL pour les objets COM }
+  { Si on affecte NIL a un objet, on doit d'abord liberer l'ancien objet }
+  If (SymTab[SIdx].TypeIdx = TY_IDX_OBJECT) And
+     (Ev.TypeIdx = TY_IDX_NIL) Then
+  Begin
+    EmitComment('releasing COM object before NIL assignment');
+    { Charger l'ancien pointeur dans EAX via ExprLoad + ExprFlushToEAX }
+    ExprLoad(SIdx, Ev);
+    ExprFlushToEAX(Ev);
+    { Appeler Release si non-nul }
+    EmitCall(PSP_RT_PFX + 'OBJRELEASE');
+    { Stocker NIL (0) dans la variable }
+    EmitInstrAB('XOR', 'EAX', 'EAX');
+    ExprStore(SIdx);
+    { Point-virgule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
 
   { Verification de compatibilite de type }
   If (SymTab[SIdx].TypeIdx <> TY_UNKNOWN) And
@@ -9348,7 +9704,7 @@ End;
 
 Procedure ShowUsage;Begin
   WriteLn('PSPCW32 - Compilateur de PSP (Pascal Server Pages) pour ',
-          'l''assembleur du microprocesseur 80386 (en ex‚cutable Windows 32 bits).');
+          'l''assembleur du microprocesseur 80386 (en exï¿½cutable Windows 32 bits).');
   WriteLn;
   WriteLn('Syntaxe : PSPCW32 <page.psp> [-o sortie] [-v] [-d] [-w] [-obj] [-asm]');
   WriteLn;

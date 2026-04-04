@@ -1,8 +1,7 @@
+# Fichiers objet et sortie compilers
 *.S68
 *.class
 *.o
 *.obj
 *.ppu
 *.prg
-SQLCMD
-CSMITH

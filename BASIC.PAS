@@ -127,15 +127,15 @@ Function GetErrorMessage(Code:Word):String;Begin
   5:GetErrorMessage:='Acces refuse';
   6:GetErrorMessage:='Handle de fichier invalide';
   12:GetErrorMessage:='Mode d''acces sur disque invalide';
-  15:GetErrorMessage:='Num‚ro de disque invalide';
-  16:GetErrorMessage:='Impossible de supprimer le r‚pertoire';
+  15:GetErrorMessage:='Numï¿½ro de disque invalide';
+  16:GetErrorMessage:='Impossible de supprimer le rï¿½pertoire';
   17:GetErrorMessage:='Impossible de renommer sur plusieurs volumes';
-  100:GetErrorMessage:='Erreur de lecture … partir du disque';
+  100:GetErrorMessage:='Erreur de lecture ï¿½ partir du disque';
   101:GetErrorMessage:='Erreur d''ecriture sur le disque';
   102:GetErrorMessage:='Fichier non attribue';
   103:GetErrorMessage:='Le fichier n''est pas ouvert';
-  104:GetErrorMessage:='Le fichier n''est pas ouvert … l''entree';
-  105:GetErrorMessage:='Le fichier n''est pas ouvert … la sortie';
+  104:GetErrorMessage:='Le fichier n''est pas ouvert ï¿½ l''entree';
+  105:GetErrorMessage:='Le fichier n''est pas ouvert ï¿½ la sortie';
   106:GetErrorMessage:='Numero invalide';
   150:GetErrorMessage:='Disque protege en ecriture';
   151:GetErrorMessage:='Peripherique est inconnu';
@@ -681,7 +681,7 @@ Begin
      _LongInt:Str(GetVariableLongInt(VarName),Value);
      _Real:Str(GetVariableReal(VarName),Value);
      Else Begin
-      WriteLn('Type incompatiable');
+      WriteLn('Type incompatible');
       Exit;
      End;
     End;
@@ -1035,14 +1035,19 @@ Begin
    Inc(I);
   End
    Else
-  If Infix[I]in['*','+','-','/']Then Begin
+  If Infix[I]in['*','+','-','/','^']Then Begin
    While(TopOfStack>MinTopOfStack)and(StackPeek <> '(')do Begin
     Top:=StackPeek;
     P_2:=Infix[I];
     AppendOk:=True;
-    If(Top='+')and(P_2='*')Then AppendOk:=False
-    Else If(Top='*')and(P_2='-')Then AppendOk:=True
-    Else If(Top='+')and(P_2='-')Then AppendOk:=True;
+    { Priorite: ^ > * / > + - }
+    { ^ est associatif a droite }
+    If(Top='^')and(P_2='^')Then AppendOk:=False { ^ associatif a droite }
+    Else If(Top='^')Then AppendOk:=True { ^ sur pile, autre operateur: pop ^ }
+    Else If(P_2='^')Then AppendOk:=False { ^ arrive, ne pas pop operateurs moins prioritaires }
+    Else If(Top in['*','/'])and(P_2 in['+','-'])Then AppendOk:=True { * / plus prioritaires que + - }
+    Else If(Top in['+','-'])and(P_2 in['*','/'])Then AppendOk:=False { + - moins prioritaires que * / }
+    Else AppendOk:=True; { Meme priorite, associatif a gauche: pop }
     If(AppendOk)Then PostFix:=PostFix+StackPop
                 Else Break;
    End;
@@ -1068,14 +1073,30 @@ Begin
   { Transformation en POSTFIX }
  I:=1;
  Repeat
-  If PostFix[I]in['*','+','-',' ']Then Begin
+  If PostFix[I]in['*','+','-','/','^']Then Begin
    P:=ResultStackPop;
    P2:=ResultStackPop;
    Case PostFix[I]of
     '+':_Result:=P2+P;
     '-':_Result:=P2-P;
     '*':_Result:=P2*P;
-    '/':_Result:=P2/P;
+    '/':If P<>0 Then _Result:=P2/P Else _Result:=0;
+    '^':Begin { Puissance: P2^P }
+          If P2>0 Then _Result:=Exp(P*Ln(P2))
+          Else If P2=0 Then Begin
+           If P>0 Then _Result:=0
+           Else If P=0 Then _Result:=1 { 0^0 = 1 par convention }
+           Else _Result:=0; { 0^(negatif) = indefini, retourne 0 }
+          End
+          Else Begin { P2 < 0 }
+           If(Frac(P)=0)Then Begin { Exposant entier }
+            If(Trunc(P) mod 2 = 0)Then _Result:=Exp(P*Ln(-P2)) { Exposant pair: resultat positif }
+                                  Else _Result:=-Exp(P*Ln(-P2)); { Exposant impair: resultat negatif }
+           End
+            Else
+           _Result:=0; { Base negative avec exposant non-entier: indefini, retourne 0 }
+          End;
+         End;
     Else _Result:=-1;
    End;
    ResultStackPush(_Result);
@@ -1187,7 +1208,7 @@ Begin
   AddVariableReal(ForStack[ForPos].VarName,Trunc(R1));
  SkipSpace;
  If StrToUpper(ReadWord)<>'TO'Then Begin
-  WriteLn('Mot r‚serv‚ "TO" attendu');
+  WriteLn('Mot rï¿½servï¿½ "TO" attendu');
   Exit;
  End;
  SkipSpace;
@@ -1429,7 +1450,7 @@ Begin
    While Not EOF(FileLoad) do Begin
     ReadLn(FileLoad,S);
     If Not AddLine(LTrim(S))Then Begin
-     WriteLn('Manque de m‚moire');
+     WriteLn('Manque de mï¿½moire');
      Break;
     End;
    End;
@@ -1440,7 +1461,7 @@ Begin
   WriteLn('Nom du fichier absent');
  End
   Else
- WriteLn('Chaine de caractŠres attendu');
+ WriteLn('Chaine de caractï¿½res attendu');
 End;
 
 Procedure LocateCommand;

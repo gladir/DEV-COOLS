@@ -2,13 +2,13 @@
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Compilateur SAS (Statistical Analysis System) vers assembleur 8086
 }
 
 (* ============================================================
   SAS86.PAS - Compilateur SAS vers assembleur 8086
-  Turbo Pascal / Free Pascal (-Mtp)
+  Free Pascal (-Mtp)
   Cible : MASM .MODEL SMALL, DOS 16 bits
 
   FEUILLE DE ROUTE - 25 TODOS
@@ -67,7 +67,7 @@ Const
   MAX_BY_VARS    = 16;     (* nombre max de variables BY dans DATA  *)
 
   (* Caracteres speciaux (accolades = delimiteurs d indices tableau) *)
-  (* En Turbo Pascal, { et } sont des delimiteurs de commentaire,   *)
+  (* Les accolades sont des delimiteurs de commentaire,              *)
   (* on utilise donc les codes ASCII.                                *)
   CH_LBRACE = Chr(123);  (* '{' *)
   CH_RBRACE = Chr(125);  (* '}' *)
@@ -638,7 +638,8 @@ End;
 
 Procedure ShowHelp;
 Begin
-  WriteLn('SAS86 - Compilateur SAS vers assembleur 8086 (MASM/TASM)');
+  WriteLn('SAS86 - Cette commande permet de lancer le compilateur ',
+         'SAS vers l''assembleur du microprocesseur 8086 (MASM/TASM)');
   WriteLn;
   WriteLn('Syntaxe : SAS86 [options] <source.sas> [sortie.asm]');
   WriteLn;

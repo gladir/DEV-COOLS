@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 ASM2PAS="$ROOT_DIR/ASM2PAS"
 TEST_DIR="$ROOT_DIR/SAMPLES/ASM8086"
 OUT_DIR="/tmp/asm2pas_test_out"

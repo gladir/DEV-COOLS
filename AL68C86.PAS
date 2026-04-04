@@ -2,7 +2,7 @@
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Compilateur Algol 68 vers assembleur 8086
 }
 
@@ -513,7 +513,7 @@ Procedure ShowBanner;
 Begin
   WriteLn('AL68C86 v', AL68_VERSION, ' (', AL68_DATE, ')');
   WriteLn('Compilateur Algol 68 -> assembleur 8086 (MASM .MODEL SMALL)');
-  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn('Free Pascal (-Mtp)');
   WriteLn;
 End;
 
