@@ -198,7 +198,7 @@
               <ItemGroup>, <Compile>, <Reference>,
               <ProjectReference>, <OutputType>, etc.
 
-  TODO 17 - EXPLORATEUR DE SOLUTION (PANNEAU DROIT) [A FAIRE]
+  TODO 17 - EXPLORATEUR DE SOLUTION (PANNEAU DROIT) [IMPLEMENTE]
             TSolutionExplorer : arbre hierarchique.
             InitExplorer, DrawExplorer, HandleExplorerEvent,
             RefreshExplorer, ExpandNode, CollapseNode.

@@ -538,7 +538,7 @@
               <OutputType>, <RootNamespace>, <AssemblyName>.
             Generation de fichier .csproj, .vbproj, .dpproj.
 
-  TODO 17 - EXPLORATEUR DE SOLUTION (PANNEAU DROIT) [A FAIRE]
+  TODO 17 - EXPLORATEUR DE SOLUTION (PANNEAU DROIT) [IMPLEMENTE]
             Panneau a droite de la zone d edition (largeur
             EXPLORER_WIDTH = 220 pixels).
             TSolutionExplorer : arbre hierarchique affichant :
@@ -1032,6 +1032,17 @@ Const
  MAX_PROJECT_REFS      = 64;       { nombre max de references       }
  MAX_BUILD_CONFIGS     = 10;       { nombre max de configs build    }
 
+ { Explorateur de solution }
+ EXPLORER_WIDTH        = 220;      { largeur du panneau en pixels   }
+ EXPLORER_MIN_WIDTH    = 100;      { largeur minimale en pixels     }
+ EXPLORER_MAX_WIDTH    = 400;      { largeur maximale en pixels     }
+ EXPLORER_NODE_HEIGHT  = 20;       { hauteur d un noeud en pixels   }
+ EXPLORER_INDENT       = 16;       { indentation par niveau         }
+ EXPLORER_ICON_SIZE    = 16;       { taille des icones              }
+ EXPLORER_SCROLL_STEP  = 3;        { pas de defilement              }
+ SPLITTER_WIDTH        = 4;        { largeur du splitter vertical   }
+ MAX_EXPLORER_NODES    = 512;      { nombre max de noeuds           }
+
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
  TAB_MAX_WIDTH         = 160;     { largeur max d un onglet        }
@@ -1042,7 +1053,6 @@ Const
  TOOLBAR_HEIGHT        = 28;
  MENUBAR_HEIGHT        = 20;
  STATUSBAR_HEIGHT      = 20;
- EXPLORER_WIDTH        = 220;
  OUTPUT_HEIGHT         = 150;
 
  { Codes de retour }
@@ -1525,6 +1535,48 @@ Type
   CfgCount   : Integer;               { nombre de configurations    }
  End;
 
+ { Type de noeud dans l explorateur de solution }
+ TExplorerNodeKind = (
+  ENK_SOLUTION,        { noeud racine : solution                 }
+  ENK_PROJECT,         { noeud projet                            }
+  ENK_PROPERTIES,      { noeud special Properties                }
+  ENK_REFERENCES,      { noeud special References                }
+  ENK_REFERENCE,       { une reference individuelle              }
+  ENK_FOLDER,          { dossier                                 }
+  ENK_FILE_CS,         { fichier C# (.cs)                        }
+  ENK_FILE_VB,         { fichier VB.NET (.vb)                    }
+  ENK_FILE_PAS,        { fichier Pascal (.pas)                   }
+  ENK_FILE_OTHER       { autre type de fichier                   }
+ );
+
+ { Noeud dans l arbre de l explorateur }
+ TExplorerNode = Record
+  Caption    : String[127];         { texte affiche                  }
+  Kind       : TExplorerNodeKind;   { type de noeud                  }
+  ParentIdx  : Integer;             { index du parent (-1 = racine)  }
+  Level      : Integer;             { profondeur dans l arbre        }
+  Expanded   : Boolean;             { noeud deplie                   }
+  Visible    : Boolean;             { visible dans l affichage       }
+  Selected   : Boolean;             { noeud selectionne              }
+  HasChildren: Boolean;             { possede des enfants            }
+  Tag        : LongInt;             { valeur utilisateur             }
+ End;
+
+ { Explorateur de solution }
+ TSolutionExplorer = Record
+  Nodes      : Array[0..MAX_EXPLORER_NODES - 1] Of TExplorerNode;
+  NodeCount  : Integer;             { nombre de noeuds               }
+  SelectedIdx: Integer;             { index du noeud selectionne     }
+  ScrollTop  : Integer;             { premier noeud visible          }
+  X          : Integer;             { position X du panneau          }
+  Y          : Integer;             { position Y du panneau          }
+  Width      : Integer;             { largeur du panneau             }
+  Height     : Integer;             { hauteur du panneau             }
+  SplitterX  : Integer;             { position X du splitter         }
+  Dragging   : Boolean;             { splitter en cours de drag      }
+  NeedRepaint: Boolean;             { doit etre redessine            }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1567,6 +1619,8 @@ Var
  VBNetHL      : TVBNetHighlighter;
  { Coloration syntaxique Pascal }
  PascalHL     : TPascalHighlighter;
+ { Explorateur de solution }
+ SolExplorer  : TSolutionExplorer;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -9091,6 +9145,610 @@ Begin
  GetBuildConfigCount := Proj.CfgCount;
 End;
 
+
+{ ============================================================
+  TODO 17 - EXPLORATEUR DE SOLUTION (PANNEAU DROIT) [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser un noeud de l explorateur --- }
+
+Procedure InitExplorerNode(Var Node: TExplorerNode);
+Begin
+ Node.Caption := '';
+ Node.Kind := ENK_FILE_OTHER;
+ Node.ParentIdx := -1;
+ Node.Level := 0;
+ Node.Expanded := False;
+ Node.Visible := True;
+ Node.Selected := False;
+ Node.HasChildren := False;
+ Node.Tag := 0;
+End;
+
+{ --- Initialiser l explorateur de solution --- }
+
+Procedure InitExplorer(Var Exp: TSolutionExplorer);
+Var
+ I: Integer;
+Begin
+ Exp.NodeCount := 0;
+ Exp.SelectedIdx := -1;
+ Exp.ScrollTop := 0;
+ Exp.X := GetScreenWidth - EXPLORER_WIDTH;
+ Exp.Y := TOOLBTN_HEIGHT + TAB_HEIGHT + 2;
+ Exp.Width := EXPLORER_WIDTH;
+ Exp.Height := GetScreenHeight - Exp.Y - 20;
+ Exp.SplitterX := Exp.X - SPLITTER_WIDTH;
+ Exp.Dragging := False;
+ Exp.NeedRepaint := True;
+ For I := 0 To MAX_EXPLORER_NODES - 1 Do
+  InitExplorerNode(Exp.Nodes[I]);
+End;
+
+{ --- Vider l explorateur --- }
+
+Procedure ClearExplorer(Var Exp: TSolutionExplorer);
+Var
+ I: Integer;
+Begin
+ For I := 0 To Exp.NodeCount - 1 Do
+  InitExplorerNode(Exp.Nodes[I]);
+ Exp.NodeCount := 0;
+ Exp.SelectedIdx := -1;
+ Exp.ScrollTop := 0;
+ Exp.NeedRepaint := True;
+End;
+
+{ --- Ajouter un noeud a l explorateur --- }
+
+Function AddExplorerNode(Var Exp: TSolutionExplorer;
+ ACaption: String; Kind: TExplorerNodeKind;
+ ParentIdx: Integer): Integer;
+Begin
+ If Exp.NodeCount >= MAX_EXPLORER_NODES Then Begin
+  AddExplorerNode := -1;
+  Exit;
+ End;
+ InitExplorerNode(Exp.Nodes[Exp.NodeCount]);
+ Exp.Nodes[Exp.NodeCount].Caption := ACaption;
+ Exp.Nodes[Exp.NodeCount].Kind := Kind;
+ Exp.Nodes[Exp.NodeCount].ParentIdx := ParentIdx;
+ If ParentIdx >= 0 Then
+  Exp.Nodes[Exp.NodeCount].Level :=
+   Exp.Nodes[ParentIdx].Level + 1
+ Else
+  Exp.Nodes[Exp.NodeCount].Level := 0;
+ Exp.Nodes[Exp.NodeCount].Visible := True;
+ If ParentIdx >= 0 Then
+  Exp.Nodes[ParentIdx].HasChildren := True;
+ AddExplorerNode := Exp.NodeCount;
+ Inc(Exp.NodeCount);
+ Exp.NeedRepaint := True;
+End;
+
+{ --- Supprimer un noeud de l explorateur --- }
+
+Procedure RemoveExplorerNode(Var Exp: TSolutionExplorer;
+ Index: Integer);
+Var
+ I: Integer;
+Begin
+ If (Index < 0) Or (Index >= Exp.NodeCount) Then Exit;
+ For I := Index To Exp.NodeCount - 2 Do
+  Exp.Nodes[I] := Exp.Nodes[I + 1];
+ Dec(Exp.NodeCount);
+ For I := 0 To Exp.NodeCount - 1 Do Begin
+  If Exp.Nodes[I].ParentIdx = Index Then
+   Exp.Nodes[I].ParentIdx := -1
+  Else If Exp.Nodes[I].ParentIdx > Index Then
+   Dec(Exp.Nodes[I].ParentIdx);
+ End;
+ If Exp.SelectedIdx = Index Then
+  Exp.SelectedIdx := -1
+ Else If Exp.SelectedIdx > Index Then
+  Dec(Exp.SelectedIdx);
+ Exp.NeedRepaint := True;
+End;
+
+{ --- Determiner le type de noeud selon l extension --- }
+
+Function NodeKindFromExtension(FileName: String): TExplorerNodeKind;
+Var
+ Ext: String;
+ I: Integer;
+Begin
+ Ext := '';
+ For I := Length(FileName) DownTo 1 Do Begin
+  If FileName[I] = '.' Then Begin
+   Ext := LowerCaseStr(Copy(FileName, I, Length(FileName) - I + 1));
+   Break;
+  End;
+ End;
+ If Ext = '.cs' Then
+  NodeKindFromExtension := ENK_FILE_CS
+ Else If Ext = '.vb' Then
+  NodeKindFromExtension := ENK_FILE_VB
+ Else If (Ext = '.pas') Or (Ext = '.pp') Then
+  NodeKindFromExtension := ENK_FILE_PAS
+ Else
+  NodeKindFromExtension := ENK_FILE_OTHER;
+End;
+
+{ --- Rafraichir la visibilite des noeuds --- }
+
+Procedure RefreshExplorer(Var Exp: TSolutionExplorer);
+Var
+ I, Parent: Integer;
+Begin
+ For I := 0 To Exp.NodeCount - 1 Do Begin
+  Exp.Nodes[I].Visible := True;
+  Parent := Exp.Nodes[I].ParentIdx;
+  While Parent >= 0 Do Begin
+   If Not Exp.Nodes[Parent].Expanded Then Begin
+    Exp.Nodes[I].Visible := False;
+    Break;
+   End;
+   Parent := Exp.Nodes[Parent].ParentIdx;
+  End;
+ End;
+ Exp.NeedRepaint := True;
+End;
+
+{ --- Construire l arbre depuis la solution --- }
+
+Procedure BuildSolutionTree(Var Exp: TSolutionExplorer;
+ Var Sol: TSolution);
+Var
+ SolIdx, ProjIdx, RefIdx: Integer;
+ I: Integer;
+ ProjEntry: TProjectEntry;
+Begin
+ ClearExplorer(Exp);
+ SolIdx := AddExplorerNode(Exp, Sol.Info.SolutionName,
+  ENK_SOLUTION, -1);
+ If SolIdx < 0 Then Exit;
+ Exp.Nodes[SolIdx].Expanded := True;
+ For I := 0 To Sol.ProjectCount - 1 Do Begin
+  ProjEntry := Sol.Projects[I];
+  ProjIdx := AddExplorerNode(Exp, ProjEntry.ProjectName,
+   ENK_PROJECT, SolIdx);
+  If ProjIdx < 0 Then Exit;
+  Exp.Nodes[ProjIdx].Expanded := True;
+  AddExplorerNode(Exp, 'Properties', ENK_PROPERTIES, ProjIdx);
+  RefIdx := AddExplorerNode(Exp, 'References', ENK_REFERENCES,
+   ProjIdx);
+  If RefIdx >= 0 Then Begin
+   Exp.Nodes[RefIdx].HasChildren := True;
+   AddExplorerNode(Exp, 'System', ENK_REFERENCE, RefIdx);
+   AddExplorerNode(Exp, 'System.Core', ENK_REFERENCE, RefIdx);
+   AddExplorerNode(Exp, 'System.Data', ENK_REFERENCE, RefIdx);
+  End;
+ End;
+ If Exp.NodeCount > 0 Then Begin
+  Exp.SelectedIdx := 0;
+  Exp.Nodes[0].Selected := True;
+ End;
+ Exp.NeedRepaint := True;
+End;
+
+{ --- Deplier un noeud --- }
+
+Procedure ExpandNode(Var Exp: TSolutionExplorer; NodeIdx: Integer);
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
+ If Not Exp.Nodes[NodeIdx].HasChildren Then Exit;
+ Exp.Nodes[NodeIdx].Expanded := True;
+ RefreshExplorer(Exp);
+End;
+
+{ --- Replier un noeud --- }
+
+Procedure CollapseNode(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer);
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
+ Exp.Nodes[NodeIdx].Expanded := False;
+ RefreshExplorer(Exp);
+End;
+
+{ --- Basculer l etat deplie/replie --- }
+
+Procedure ToggleNode(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer);
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
+ If Not Exp.Nodes[NodeIdx].HasChildren Then Exit;
+ If Exp.Nodes[NodeIdx].Expanded Then
+  CollapseNode(Exp, NodeIdx)
+ Else
+  ExpandNode(Exp, NodeIdx);
+End;
+
+{ --- Nombre total de noeuds --- }
+
+Function GetExplorerNodeCount(Var Exp: TSolutionExplorer): Integer;
+Begin
+ GetExplorerNodeCount := Exp.NodeCount;
+End;
+
+{ --- Nombre de noeuds visibles --- }
+
+Function GetVisibleNodeCount(Var Exp: TSolutionExplorer): Integer;
+Var
+ I, Cnt: Integer;
+Begin
+ Cnt := 0;
+ For I := 0 To Exp.NodeCount - 1 Do
+  If Exp.Nodes[I].Visible Then Inc(Cnt);
+ GetVisibleNodeCount := Cnt;
+End;
+
+{ --- Couleur du noeud selon son type --- }
+
+Function NodeKindColor(Kind: TExplorerNodeKind): Integer;
+Begin
+ Case Kind Of
+  ENK_SOLUTION:    NodeKindColor := CLR_TITLEBAR_ACTIVE;
+  ENK_PROJECT:     NodeKindColor := CLR_TITLEBAR_ACTIVE;
+  ENK_PROPERTIES:  NodeKindColor := CLR_EDITOR_GUTTER;
+  ENK_REFERENCES:  NodeKindColor := CLR_EDITOR_GUTTER;
+  ENK_REFERENCE:   NodeKindColor := CLR_LINE_HIGHLIGHT;
+  ENK_FOLDER:      NodeKindColor := CLR_LINE_HIGHLIGHT;
+  ENK_FILE_CS:     NodeKindColor := CLR_TITLEBAR_ACTIVE;
+  ENK_FILE_VB:     NodeKindColor := CLR_TITLEBAR_ACTIVE;
+  ENK_FILE_PAS:    NodeKindColor := CLR_LINE_HIGHLIGHT;
+  ENK_FILE_OTHER:  NodeKindColor := CLR_MENU_TEXT;
+ Else
+  NodeKindColor := CLR_MENU_TEXT;
+ End;
+End;
+
+{ --- Dessiner un noeud de l explorateur --- }
+
+Procedure DrawExplorerNode(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer; DrawY: Integer);
+Var
+ DrawX: Integer;
+ TriX, TriY: Integer;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
+ DrawX := Exp.X + 4 + Exp.Nodes[NodeIdx].Level * EXPLORER_INDENT;
+ { Fond de selection }
+ If Exp.Nodes[NodeIdx].Selected Then Begin
+  SetFillStyle(SolidFill, CLR_SELECTION);
+  Bar(Exp.X, DrawY, Exp.X + Exp.Width - 1,
+   DrawY + EXPLORER_NODE_HEIGHT - 1);
+ End;
+ { Triangle de depliage si le noeud a des enfants }
+ If Exp.Nodes[NodeIdx].HasChildren Then Begin
+  TriX := DrawX;
+  TriY := DrawY + EXPLORER_NODE_HEIGHT Div 2;
+  If Exp.Nodes[NodeIdx].Expanded Then Begin
+   SetColor(CLR_MENU_TEXT);
+   Line(TriX, TriY - 3, TriX + 6, TriY - 3);
+   Line(TriX, TriY - 3, TriX + 3, TriY + 3);
+   Line(TriX + 6, TriY - 3, TriX + 3, TriY + 3);
+  End Else Begin
+   SetColor(CLR_MENU_TEXT);
+   Line(TriX, TriY - 4, TriX, TriY + 4);
+   Line(TriX, TriY - 4, TriX + 6, TriY);
+   Line(TriX, TriY + 4, TriX + 6, TriY);
+  End;
+  DrawX := DrawX + 10;
+ End Else
+  DrawX := DrawX + 10;
+ { Petit carre d icone }
+ SetFillStyle(SolidFill,
+  NodeKindColor(Exp.Nodes[NodeIdx].Kind));
+ Bar(DrawX, DrawY + 2, DrawX + EXPLORER_ICON_SIZE - 4,
+  DrawY + EXPLORER_NODE_HEIGHT - 4);
+ DrawX := DrawX + EXPLORER_ICON_SIZE;
+ { Texte du noeud }
+ If Exp.Nodes[NodeIdx].Selected Then
+  SetColor(CLR_EDITOR_BG)
+ Else
+  SetColor(CLR_MENU_TEXT);
+ OutTextXY(DrawX, DrawY + 3, Exp.Nodes[NodeIdx].Caption);
+End;
+
+{ --- Dessiner l explorateur de solution --- }
+
+Procedure DrawExplorer(Var Exp: TSolutionExplorer);
+Var
+ I, DrawY, VisCount, VisTot, MaxVis: Integer;
+Begin
+ { Fond du panneau }
+ SetFillStyle(SolidFill, CLR_EXPLORER_BG);
+ Bar(Exp.X, Exp.Y, Exp.X + Exp.Width - 1,
+  Exp.Y + Exp.Height - 1);
+ { Titre }
+ SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+ Bar(Exp.X, Exp.Y, Exp.X + Exp.Width - 1,
+  Exp.Y + EXPLORER_NODE_HEIGHT - 1);
+ SetColor(CLR_EDITOR_BG);
+ OutTextXY(Exp.X + 4, Exp.Y + 3, 'Explorateur de solutions');
+ { Splitter }
+ SetFillStyle(SolidFill, CLR_BORDER);
+ Bar(Exp.SplitterX, Exp.Y,
+  Exp.SplitterX + SPLITTER_WIDTH - 1,
+  Exp.Y + Exp.Height - 1);
+ { Dessiner les noeuds visibles }
+ DrawY := Exp.Y + EXPLORER_NODE_HEIGHT + 2;
+ VisCount := 0;
+ For I := 0 To Exp.NodeCount - 1 Do Begin
+  If Not Exp.Nodes[I].Visible Then Continue;
+  If VisCount < Exp.ScrollTop Then Begin
+   Inc(VisCount);
+   Continue;
+  End;
+  If DrawY + EXPLORER_NODE_HEIGHT > Exp.Y + Exp.Height Then
+   Break;
+  DrawExplorerNode(Exp, I, DrawY);
+  DrawY := DrawY + EXPLORER_NODE_HEIGHT;
+  Inc(VisCount);
+ End;
+ { Barre de defilement si necessaire }
+ VisTot := GetVisibleNodeCount(Exp);
+ MaxVis := (Exp.Height - EXPLORER_NODE_HEIGHT) Div
+  EXPLORER_NODE_HEIGHT;
+ If VisTot > MaxVis Then Begin
+  SetFillStyle(SolidFill, CLR_SCROLLBAR);
+  Bar(Exp.X + Exp.Width - 12, Exp.Y + EXPLORER_NODE_HEIGHT,
+   Exp.X + Exp.Width - 1, Exp.Y + Exp.Height - 1);
+  SetFillStyle(SolidFill, CLR_BORDER);
+  If VisTot > 0 Then
+   Bar(Exp.X + Exp.Width - 11,
+    Exp.Y + EXPLORER_NODE_HEIGHT + 2 +
+    (Exp.ScrollTop * (Exp.Height - EXPLORER_NODE_HEIGHT - 20)
+     Div VisTot),
+    Exp.X + Exp.Width - 2,
+    Exp.Y + EXPLORER_NODE_HEIGHT + 22 +
+    (Exp.ScrollTop * (Exp.Height - EXPLORER_NODE_HEIGHT - 20)
+     Div VisTot));
+ End;
+ { Bordure }
+ SetColor(CLR_BORDER);
+ Rectangle(Exp.X, Exp.Y, Exp.X + Exp.Width - 1,
+  Exp.Y + Exp.Height - 1);
+ Exp.NeedRepaint := False;
+End;
+
+{ --- Trouver le noeud sous la souris --- }
+
+Function ExplorerNodeHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Integer;
+Var
+ I, DrawY, VisCount: Integer;
+Begin
+ ExplorerNodeHitTest := -1;
+ If (MX < Exp.X) Or (MX >= Exp.X + Exp.Width) Then Exit;
+ If (MY < Exp.Y + EXPLORER_NODE_HEIGHT) Or
+    (MY >= Exp.Y + Exp.Height) Then Exit;
+ DrawY := Exp.Y + EXPLORER_NODE_HEIGHT + 2;
+ VisCount := 0;
+ For I := 0 To Exp.NodeCount - 1 Do Begin
+  If Not Exp.Nodes[I].Visible Then Continue;
+  If VisCount < Exp.ScrollTop Then Begin
+   Inc(VisCount);
+   Continue;
+  End;
+  If DrawY + EXPLORER_NODE_HEIGHT > Exp.Y + Exp.Height Then
+   Break;
+  If (MY >= DrawY) And (MY < DrawY + EXPLORER_NODE_HEIGHT) Then Begin
+   ExplorerNodeHitTest := I;
+   Exit;
+  End;
+  DrawY := DrawY + EXPLORER_NODE_HEIGHT;
+  Inc(VisCount);
+ End;
+End;
+
+{ --- Gerer les evenements de l explorateur --- }
+
+Procedure HandleExplorerEvent(Var Exp: TSolutionExplorer;
+ Ev: TEvent);
+Var
+ HitIdx: Integer;
+ MaxScroll: Integer;
+Begin
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  { Verifier le clic sur le splitter }
+  If (Ev.MouseX >= Exp.SplitterX) And
+     (Ev.MouseX < Exp.SplitterX + SPLITTER_WIDTH) Then Begin
+   Exp.Dragging := True;
+   Exit;
+  End;
+  { Trouver le noeud clique }
+  HitIdx := ExplorerNodeHitTest(Exp, Ev.MouseX, Ev.MouseY);
+  If HitIdx >= 0 Then Begin
+   If (Exp.SelectedIdx >= 0) And
+      (Exp.SelectedIdx < Exp.NodeCount) Then
+    Exp.Nodes[Exp.SelectedIdx].Selected := False;
+   Exp.SelectedIdx := HitIdx;
+   Exp.Nodes[HitIdx].Selected := True;
+   If Exp.Nodes[HitIdx].HasChildren Then
+    ToggleNode(Exp, HitIdx);
+   Exp.NeedRepaint := True;
+  End;
+ End
+ Else If Ev.Kind = EV_MOUSE_UP Then Begin
+  If Exp.Dragging Then
+   Exp.Dragging := False;
+ End
+ Else If Ev.Kind = EV_MOUSE_MOVE Then Begin
+  If Exp.Dragging Then Begin
+   If (Ev.MouseX >= GetScreenWidth - EXPLORER_MAX_WIDTH) And
+      (Ev.MouseX <= GetScreenWidth - EXPLORER_MIN_WIDTH) Then Begin
+    Exp.Width := GetScreenWidth - Ev.MouseX;
+    Exp.X := Ev.MouseX;
+    Exp.SplitterX := Exp.X - SPLITTER_WIDTH;
+    Exp.NeedRepaint := True;
+   End;
+  End;
+ End
+ Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  Case Ev.KeyCode Of
+   72: Begin { Fleche haut }
+    If Exp.SelectedIdx > 0 Then Begin
+     Exp.Nodes[Exp.SelectedIdx].Selected := False;
+     Dec(Exp.SelectedIdx);
+     While (Exp.SelectedIdx > 0) And
+      (Not Exp.Nodes[Exp.SelectedIdx].Visible) Do
+      Dec(Exp.SelectedIdx);
+     Exp.Nodes[Exp.SelectedIdx].Selected := True;
+     Exp.NeedRepaint := True;
+    End;
+   End;
+   80: Begin { Fleche bas }
+    If Exp.SelectedIdx < Exp.NodeCount - 1 Then Begin
+     Exp.Nodes[Exp.SelectedIdx].Selected := False;
+     Inc(Exp.SelectedIdx);
+     While (Exp.SelectedIdx < Exp.NodeCount - 1) And
+      (Not Exp.Nodes[Exp.SelectedIdx].Visible) Do
+      Inc(Exp.SelectedIdx);
+     Exp.Nodes[Exp.SelectedIdx].Selected := True;
+     Exp.NeedRepaint := True;
+    End;
+   End;
+   75: Begin { Fleche gauche : replier }
+    If (Exp.SelectedIdx >= 0) And
+       (Exp.SelectedIdx < Exp.NodeCount) Then Begin
+     If Exp.Nodes[Exp.SelectedIdx].Expanded Then
+      CollapseNode(Exp, Exp.SelectedIdx)
+     Else If Exp.Nodes[Exp.SelectedIdx].ParentIdx >= 0 Then Begin
+      Exp.Nodes[Exp.SelectedIdx].Selected := False;
+      Exp.SelectedIdx := Exp.Nodes[Exp.SelectedIdx].ParentIdx;
+      Exp.Nodes[Exp.SelectedIdx].Selected := True;
+      Exp.NeedRepaint := True;
+     End;
+    End;
+   End;
+   77: Begin { Fleche droite : deplier }
+    If (Exp.SelectedIdx >= 0) And
+       (Exp.SelectedIdx < Exp.NodeCount) Then Begin
+     If Exp.Nodes[Exp.SelectedIdx].HasChildren And
+        (Not Exp.Nodes[Exp.SelectedIdx].Expanded) Then
+      ExpandNode(Exp, Exp.SelectedIdx);
+    End;
+   End;
+   13: Begin { Entree : basculer }
+    If (Exp.SelectedIdx >= 0) And
+       (Exp.SelectedIdx < Exp.NodeCount) Then
+     ToggleNode(Exp, Exp.SelectedIdx);
+   End;
+  End;
+ End;
+ { Ajuster le defilement }
+ MaxScroll := GetVisibleNodeCount(Exp) -
+  ((Exp.Height - EXPLORER_NODE_HEIGHT) Div EXPLORER_NODE_HEIGHT);
+ If MaxScroll < 0 Then MaxScroll := 0;
+ If Exp.ScrollTop > MaxScroll Then Begin
+  Exp.ScrollTop := MaxScroll;
+  Exp.NeedRepaint := True;
+ End;
+End;
+
+{ --- Trouver un noeud par son nom --- }
+
+Function FindExplorerNode(Var Exp: TSolutionExplorer;
+ ACaption: String): Integer;
+Var
+ I: Integer;
+Begin
+ FindExplorerNode := -1;
+ For I := 0 To Exp.NodeCount - 1 Do
+  If Exp.Nodes[I].Caption = ACaption Then Begin
+   FindExplorerNode := I;
+   Exit;
+  End;
+End;
+
+{ --- Verifier si un noeud est deplie --- }
+
+Function IsExplorerNodeExpanded(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer): Boolean;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then
+  IsExplorerNodeExpanded := False
+ Else
+  IsExplorerNodeExpanded := Exp.Nodes[NodeIdx].Expanded;
+End;
+
+{ --- Verifier si un noeud est visible --- }
+
+Function IsExplorerNodeVisible(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer): Boolean;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then
+  IsExplorerNodeVisible := False
+ Else
+  IsExplorerNodeVisible := Exp.Nodes[NodeIdx].Visible;
+End;
+
+{ --- Obtenir le niveau d un noeud --- }
+
+Function GetExplorerNodeLevel(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer): Integer;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then
+  GetExplorerNodeLevel := -1
+ Else
+  GetExplorerNodeLevel := Exp.Nodes[NodeIdx].Level;
+End;
+
+{ --- Obtenir le texte d un noeud --- }
+
+Function GetExplorerNodeCaption(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer): String;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then
+  GetExplorerNodeCaption := ''
+ Else
+  GetExplorerNodeCaption := Exp.Nodes[NodeIdx].Caption;
+End;
+
+{ --- Obtenir le type d un noeud --- }
+
+Function GetExplorerNodeKind(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer): TExplorerNodeKind;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then
+  GetExplorerNodeKind := ENK_FILE_OTHER
+ Else
+  GetExplorerNodeKind := Exp.Nodes[NodeIdx].Kind;
+End;
+
+{ --- Obtenir l index du noeud selectionne --- }
+
+Function GetExplorerSelectedNode(
+ Var Exp: TSolutionExplorer): Integer;
+Begin
+ GetExplorerSelectedNode := Exp.SelectedIdx;
+End;
+
+{ --- Definir le noeud selectionne --- }
+
+Procedure SetExplorerSelectedNode(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer);
+Begin
+ If (Exp.SelectedIdx >= 0) And
+    (Exp.SelectedIdx < Exp.NodeCount) Then
+  Exp.Nodes[Exp.SelectedIdx].Selected := False;
+ If (NodeIdx >= 0) And (NodeIdx < Exp.NodeCount) Then Begin
+  Exp.SelectedIdx := NodeIdx;
+  Exp.Nodes[NodeIdx].Selected := True;
+ End Else
+  Exp.SelectedIdx := -1;
+ Exp.NeedRepaint := True;
+End;
+
+{ --- Verifier si l explorateur est vide --- }
+
+Function IsExplorerEmpty(Var Exp: TSolutionExplorer): Boolean;
+Begin
+ IsExplorerEmpty := Exp.NodeCount = 0;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -9110,6 +9768,8 @@ BEGIN
  InitCSharpHighlighter(CSharpHL);
  InitVBNetHighlighter(VBNetHL);
  InitPascalHighlighter(PascalHL);
- { Boucle principale a venir (TODO 17+) }
+ InitExplorer(SolExplorer);
+ DrawExplorer(SolExplorer);
+ { Boucle principale a venir (TODO 18+) }
  ShutdownGraphics;
 END.
