@@ -223,7 +223,7 @@
             Regles switch : constantes entieres uniques, break optionnel,
             fall-through possible. Gerer la couverture des cas.
 
-  TODO 21 - [A FAIRE] GENERATION DE BOUCLES
+  TODO 21 - [IMPLEMENTE] GENERATION DE BOUCLES
             Generateur de boucles C :
             GenWhileStmt - generer while (cond) stmt.
             GenDoWhileStmt - generer do stmt while (cond);
@@ -393,6 +393,22 @@ Const
   SWITCH_BREAK_PROB = 85;           { 85% de chance d'avoir un break apres chaque case }
   SWITCH_FALLTHROUGH_PROB = 15;     { 15% de chance de fall-through }
   SWITCH_EMPTY_CASE_PROB = 5;       { 5% de chance d'avoir un case vide }
+  
+  { TODO 21 : Constantes pour les boucles }
+  LOOP_MAX_ITERATIONS = 100;        { Maximum d'iterations pour eviter boucles infinies }
+  LOOP_GUARD_COUNTER = 1000;        { Compteur de garde pour les boucles }
+  LOOP_NESTED_PROB = 30;            { 30% de chance de boucle imbriquee }
+  LOOP_BLOCK_PROB = 80;             { 80% de chance d'avoir un bloc au lieu d'un statement simple }
+  WHILE_PROB = 35;                  { 35% de chance de generer un while }
+  DO_WHILE_PROB = 20;               { 20% de chance de generer un do-while }
+  FOR_PROB = 45;                    { 45% de chance de generer un for }
+  FOR_INIT_PROB = 90;               { 90% de chance d'avoir une initialisation dans le for }
+  FOR_COND_PROB = 95;               { 95% de chance d'avoir une condition dans le for }
+  FOR_UPDATE_PROB = 95;             { 95% de chance d'avoir un update dans le for }
+  FOR_DECL_PROB = 50;               { 50% de chance d'avoir une declaration dans l'init (C99) }
+  LOOP_BREAK_PROB = 10;             { 10% de chance d'avoir un break dans une boucle }
+  LOOP_CONTINUE_PROB = 5;           { 5% de chance d'avoir un continue dans une boucle }
+  LOOP_VAR_PREFIX = 'i_loop_';      { Prefixe pour les variables de boucle }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -643,6 +659,13 @@ Var
   IfStmtCounter: Integer;      { Compteur de statements if generes }
   SwitchStmtCounter: Integer;  { Compteur de statements switch generes }
   CaseCounter: Integer;        { Compteur de cases generes }
+
+  { TODO 21 : compteurs pour les boucles }
+  WhileStmtCounter: Integer;    { Compteur de statements while generes }
+  DoWhileStmtCounter: Integer;  { Compteur de statements do-while generes }
+  ForStmtCounter: Integer;      { Compteur de statements for generes }
+  LoopVarCounter: Integer;      { Compteur pour nommer les variables de boucle }
+  LoopDepth: Integer;           { Profondeur courante d'imbrication des boucles }
 
 { ============================================================
   FONCTIONS UTILITAIRES
