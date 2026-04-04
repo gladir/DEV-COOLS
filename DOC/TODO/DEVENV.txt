@@ -316,7 +316,7 @@
               Pile d appels (stub).
             F5, Ctrl+F5, F9, F10, F11, Shift+F5.
 
-  TODO 30 - BARRE D ETAT, INTEGRATION FINALE ET POLISSAGE [A FAIRE]
+  TODO 30 - BARRE D ETAT, INTEGRATION FINALE ET POLISSAGE [IMPLEMENTE]
             TStatusBar : position curseur, mode INS/OVR,
               encodage, fin de ligne, langage, fichier, etat build.
             InitStatusBar, DrawStatusBar, UpdateStatusBar.

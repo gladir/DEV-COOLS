@@ -893,7 +893,7 @@
               F9 (point d arret), F10 (pas a pas principal stub),
               F11 (pas a pas detaille stub), Shift+F5 (arreter).
 
-  TODO 30 - BARRE D ETAT, INTEGRATION FINALE ET POLISSAGE [A FAIRE]
+  TODO 30 - BARRE D ETAT, INTEGRATION FINALE ET POLISSAGE [IMPLEMENTE]
             TStatusBar : barre en bas de l ecran affichant :
               - Position du curseur : "Ln X, Col Y"
               - Mode d insertion : "INS" ou "OVR"
@@ -1230,6 +1230,20 @@ Const
  DEBUG_PANEL_HEIGHT    = 200;      { hauteur panneau debogage        }
  DEBUG_PANEL_ROW_HEIGHT= 20;       { hauteur d une ligne panneau     }
  DEBUG_PANEL_PADDING   = 6;        { marge interieure panneau        }
+
+ { Barre d etat, integration finale et polissage }
+ STATUS_BAR_PADDING    = 6;        { marge interieure barre etat    }
+ STATUS_BAR_SEP_WIDTH  = 1;        { largeur separateur             }
+ STATUS_BAR_FIELD_GAP  = 12;       { espacement entre champs        }
+ MRU_MAX_ENTRIES       = 16;       { nombre max de fichiers recents }
+ MRU_FILENAME          = 'DEVENV.MRU'; { fichier MRU                }
+ START_PAGE_TITLE_Y    = 40;       { position Y du titre            }
+ START_PAGE_LIST_Y     = 100;      { position Y de la liste         }
+ START_PAGE_BTN_Y      = 60;       { position Y des boutons         }
+ START_PAGE_BTN_WIDTH  = 140;      { largeur bouton demarrage       }
+ START_PAGE_BTN_HEIGHT = 28;       { hauteur bouton demarrage       }
+ START_PAGE_ITEM_HEIGHT= 20;       { hauteur element liste recents  }
+ IDE_VERSION           = '1.0.0';  { version de l IDE               }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -2363,11 +2377,56 @@ Type
   NeedRepaint  : Boolean;          { doit etre redessine            }
  End;
 
+ { Mode d insertion }
+ TInsertMode = (
+  IM_INSERT,           { mode insertion                             }
+  IM_OVERWRITE         { mode ecrasement                            }
+ );
 
+ { Type de fin de ligne }
+ TLineEnding = (
+  LE_CRLF,            { Windows (CR+LF)                            }
+  LE_LF,              { Unix/Linux (LF)                             }
+  LE_CR               { ancien Mac (CR)                              }
+ );
 
-{ ============================================================
-  VARIABLES GLOBALES
-  ============================================================ }
+ { Encodage de fichier }
+ TFileEncoding = (
+  FE_ASCII,           { ASCII 7 bits                                }
+  FE_UTF8             { UTF-8                                       }
+ );
+
+ { Barre d etat }
+ TStatusBar = Record
+  CursorLine   : Integer;          { ligne du curseur               }
+  CursorCol    : Integer;          { colonne du curseur             }
+  InsertMode   : TInsertMode;      { mode INS ou OVR                }
+  Encoding     : TFileEncoding;    { encodage du fichier            }
+  LineEnding   : TLineEnding;      { type de fin de ligne           }
+  Language     : String[31];       { langage courant                }
+  FileName     : String[255];      { nom du fichier courant         }
+  BuildStatus  : String[31];       { etat du build                  }
+  NeedRepaint  : Boolean;          { doit etre redessine            }
+ End;
+
+ { Entree de la liste des fichiers recents }
+ TMRUEntry = Record
+  FilePath     : String[255];      { chemin complet du fichier      }
+ End;
+
+ { Liste des fichiers recents (Most Recently Used) }
+ TMRUList = Record
+  Entries      : Array[0..MRU_MAX_ENTRIES - 1] Of TMRUEntry;
+  Count        : Integer;          { nombre d entrees               }
+ End;
+
+ { Page de demarrage }
+ TStartPage = Record
+  Visible      : Boolean;          { page visible                   }
+  SelectedItem : Integer;          { element selectionne            }
+  ScrollTop    : Integer;          { defilement vertical            }
+  NeedRepaint  : Boolean;          { doit etre redessine            }
+ End;
 Var
  Opts       : TDevEnvOptions;
  EvQueue    : TEventQueue;
@@ -2433,6 +2492,14 @@ Var
  BPMgr          : TBreakpointManager;
  { Panneau de debogage }
  DbgPanel       : TDebugPanel;
+ { Barre d etat }
+ StatusBar      : TStatusBar;
+ { Liste des fichiers recents }
+ MRUList        : TMRUList;
+ { Page de demarrage }
+ StartPage      : TStartPage;
+ { Indicateur de sortie }
+ QuitRequested  : Boolean;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -20686,6 +20753,665 @@ Begin
   (BPM.State = DS_IDLE);
 End;
 
+{ ============================================================
+  TODO 30 - BARRE D ETAT, INTEGRATION FINALE ET POLISSAGE
+            [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser la barre d etat --- }
+
+Procedure InitStatusBar(Var SB: TStatusBar);
+Begin
+ SB.CursorLine := 1;
+ SB.CursorCol := 1;
+ SB.InsertMode := IM_INSERT;
+ SB.Encoding := FE_ASCII;
+ SB.LineEnding := LE_CRLF;
+ SB.Language := '';
+ SB.FileName := '';
+ SB.BuildStatus := 'Ready';
+ SB.NeedRepaint := True;
+End;
+
+{ --- Nom du mode d insertion --- }
+
+Function InsertModeName(Mode: TInsertMode): String;
+Begin
+ Case Mode Of
+  IM_INSERT:    InsertModeName := 'INS';
+  IM_OVERWRITE: InsertModeName := 'OVR';
+ Else
+  InsertModeName := '???';
+ End;
+End;
+
+{ --- Nom de l encodage --- }
+
+Function FileEncodingName(Enc: TFileEncoding): String;
+Begin
+ Case Enc Of
+  FE_ASCII: FileEncodingName := 'ASCII';
+  FE_UTF8:  FileEncodingName := 'UTF-8';
+ Else
+  FileEncodingName := '???';
+ End;
+End;
+
+{ --- Nom du type de fin de ligne --- }
+
+Function LineEndingName(LE: TLineEnding): String;
+Begin
+ Case LE Of
+  LE_CRLF: LineEndingName := 'CRLF';
+  LE_LF:   LineEndingName := 'LF';
+  LE_CR:   LineEndingName := 'CR';
+ Else
+  LineEndingName := '???';
+ End;
+End;
+
+{ --- Mettre a jour la barre d etat depuis l editeur actif --- }
+
+Procedure UpdateStatusBar(Var SB: TStatusBar;
+ Var WM: TWindowManager);
+Var
+ Idx: Integer;
+Begin
+ Idx := WM.ActiveIdx;
+ If (Idx >= 0) And (Idx < WM.Count) Then Begin
+  SB.CursorLine := WM.Editors[Idx].CursorLine + 1;
+  SB.CursorCol := WM.Editors[Idx].CursorCol + 1;
+  SB.FileName := WM.Editors[Idx].FileName;
+  If WM.Editors[Idx].Language = LANG_CSHARP Then
+   SB.Language := 'C#'
+  Else If WM.Editors[Idx].Language = LANG_VBNET Then
+   SB.Language := 'VB.NET'
+  Else If WM.Editors[Idx].Language = LANG_PASCAL Then
+   SB.Language := 'Pascal'
+  Else
+   SB.Language := 'Text';
+ End Else Begin
+  SB.CursorLine := 1;
+  SB.CursorCol := 1;
+  SB.FileName := '';
+  SB.Language := '';
+ End;
+ SB.NeedRepaint := True;
+End;
+
+{ --- Dessiner la barre d etat --- }
+
+Procedure DrawStatusBar(Var SB: TStatusBar);
+Var
+ Y, ScreenW, X: Integer;
+ PosStr: String;
+Begin
+ ScreenW := GetScreenWidth;
+ Y := GetScreenHeight - STATUSBAR_HEIGHT;
+ FillRect(0, Y, ScreenW, STATUSBAR_HEIGHT, CLR_STATUSBAR);
+ X := STATUS_BAR_PADDING;
+ { Position du curseur }
+ PosStr := 'Ln ' + IntToStr(SB.CursorLine) + ', Col ' +
+  IntToStr(SB.CursorCol);
+ DrawString(X, Y + 3, PosStr, 15);
+ X := X + Length(PosStr) * 8 + STATUS_BAR_FIELD_GAP;
+ { Mode d insertion }
+ DrawString(X, Y + 3, InsertModeName(SB.InsertMode), 15);
+ X := X + 24 + STATUS_BAR_FIELD_GAP;
+ { Encodage }
+ DrawString(X, Y + 3, FileEncodingName(SB.Encoding), 15);
+ X := X + 40 + STATUS_BAR_FIELD_GAP;
+ { Fin de ligne }
+ DrawString(X, Y + 3, LineEndingName(SB.LineEnding), 15);
+ X := X + 32 + STATUS_BAR_FIELD_GAP;
+ { Langage }
+ If SB.Language <> '' Then Begin
+  DrawString(X, Y + 3, SB.Language, 15);
+  X := X + Length(SB.Language) * 8 + STATUS_BAR_FIELD_GAP;
+ End;
+ { Nom du fichier }
+ If SB.FileName <> '' Then
+  DrawString(X, Y + 3, SB.FileName, 15);
+ { Etat du build a droite }
+ If SB.BuildStatus <> '' Then
+  DrawString(ScreenW - Length(SB.BuildStatus) * 8 -
+   STATUS_BAR_PADDING, Y + 3, SB.BuildStatus, 15);
+ SB.NeedRepaint := False;
+End;
+
+{ --- Initialiser la liste MRU --- }
+
+Procedure InitMRUList(Var MRU: TMRUList);
+Var
+ I: Integer;
+Begin
+ For I := 0 To MRU_MAX_ENTRIES - 1 Do
+  MRU.Entries[I].FilePath := '';
+ MRU.Count := 0;
+End;
+
+{ --- Ajouter un fichier a la liste MRU --- }
+
+Procedure AddMRUEntry(Var MRU: TMRUList; FilePath: String);
+Var
+ I, J: Integer;
+Begin
+ { Verifier si deja present et le retirer }
+ For I := 0 To MRU.Count - 1 Do Begin
+  If MRU.Entries[I].FilePath = FilePath Then Begin
+   For J := I To MRU.Count - 2 Do
+    MRU.Entries[J] := MRU.Entries[J + 1];
+   Dec(MRU.Count);
+  End;
+ End;
+ { Decaler les entrees vers le bas }
+ If MRU.Count >= MRU_MAX_ENTRIES Then
+  MRU.Count := MRU_MAX_ENTRIES - 1;
+ For I := MRU.Count DownTo 1 Do
+  MRU.Entries[I] := MRU.Entries[I - 1];
+ { Inserer en premiere position }
+ MRU.Entries[0].FilePath := FilePath;
+ Inc(MRU.Count);
+End;
+
+{ --- Sauvegarder la liste MRU --- }
+
+Procedure SaveMRUList(Var MRU: TMRUList);
+Var
+ F: Text;
+ I: Integer;
+Begin
+ Assign(F, MRU_FILENAME);
+ {$I-}
+ Rewrite(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ For I := 0 To MRU.Count - 1 Do
+  WriteLn(F, MRU.Entries[I].FilePath);
+ Close(F);
+End;
+
+{ --- Charger la liste MRU --- }
+
+Procedure LoadMRUList(Var MRU: TMRUList);
+Var
+ F: Text;
+ Line: String;
+Begin
+ InitMRUList(MRU);
+ Assign(F, MRU_FILENAME);
+ {$I-}
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While (Not Eof(F)) And (MRU.Count < MRU_MAX_ENTRIES) Do Begin
+  ReadLn(F, Line);
+  If Line <> '' Then Begin
+   MRU.Entries[MRU.Count].FilePath := Line;
+   Inc(MRU.Count);
+  End;
+ End;
+ Close(F);
+End;
+
+{ --- Obtenir le nombre d entrees MRU --- }
+
+Function GetMRUCount(Var MRU: TMRUList): Integer;
+Begin
+ GetMRUCount := MRU.Count;
+End;
+
+{ --- Obtenir une entree MRU par index --- }
+
+Function GetMRUEntry(Var MRU: TMRUList; Idx: Integer): String;
+Begin
+ If (Idx >= 0) And (Idx < MRU.Count) Then
+  GetMRUEntry := MRU.Entries[Idx].FilePath
+ Else
+  GetMRUEntry := '';
+End;
+
+{ --- Effacer la liste MRU --- }
+
+Procedure ClearMRUList(Var MRU: TMRUList);
+Begin
+ InitMRUList(MRU);
+End;
+
+{ --- Verifier si la liste MRU est vide --- }
+
+Function IsMRUListEmpty(Var MRU: TMRUList): Boolean;
+Begin
+ IsMRUListEmpty := MRU.Count = 0;
+End;
+
+{ --- Initialiser la page de demarrage --- }
+
+Procedure InitStartPage(Var SP: TStartPage);
+Begin
+ SP.Visible := True;
+ SP.SelectedItem := -1;
+ SP.ScrollTop := 0;
+ SP.NeedRepaint := True;
+End;
+
+{ --- Dessiner la page de demarrage --- }
+
+Procedure DrawStartPage(Var SP: TStartPage;
+ Var MRU: TMRUList);
+Var
+ ScreenW, CenterX, I, Y: Integer;
+ Title: String;
+Begin
+ If Not SP.Visible Then Exit;
+ ScreenW := GetScreenWidth;
+ CenterX := ScreenW Div 2;
+ { Titre }
+ Title := 'DEVENV - IDE Visual Studio';
+ DrawString(CenterX - (Length(Title) * 8 Div 2),
+  START_PAGE_TITLE_Y, Title, CLR_EDITOR_TEXT);
+ { Sous-titre }
+ Title := 'DEV-COOLS v' + IDE_VERSION;
+ DrawString(CenterX - (Length(Title) * 8 Div 2),
+  START_PAGE_TITLE_Y + 20, Title, 8);
+ { Boutons }
+ FillRect(CenterX - START_PAGE_BTN_WIDTH - 10,
+  START_PAGE_BTN_Y + 50, START_PAGE_BTN_WIDTH,
+  START_PAGE_BTN_HEIGHT, CLR_STATUSBAR);
+ DrawString(CenterX - START_PAGE_BTN_WIDTH - 10 + 12,
+  START_PAGE_BTN_Y + 50 + 6, 'Nouveau projet', 15);
+ FillRect(CenterX + 10, START_PAGE_BTN_Y + 50,
+  START_PAGE_BTN_WIDTH, START_PAGE_BTN_HEIGHT, CLR_STATUSBAR);
+ DrawString(CenterX + 10 + 16,
+  START_PAGE_BTN_Y + 50 + 6, 'Ouvrir projet', 15);
+ { Liste des fichiers recents }
+ If MRU.Count > 0 Then Begin
+  DrawString(CenterX - 100, START_PAGE_LIST_Y + 20,
+   'Fichiers recents :', CLR_EDITOR_TEXT);
+  Y := START_PAGE_LIST_Y + 44;
+  For I := 0 To MRU.Count - 1 Do Begin
+   If I >= 10 Then Break;
+   If I = SP.SelectedItem Then
+    FillRect(CenterX - 200, Y, 400,
+     START_PAGE_ITEM_HEIGHT, CLR_SELECTION);
+   DrawString(CenterX - 196, Y + 2,
+    MRU.Entries[I].FilePath, CLR_EDITOR_TEXT);
+   Y := Y + START_PAGE_ITEM_HEIGHT;
+  End;
+ End Else Begin
+  DrawString(CenterX - 80, START_PAGE_LIST_Y + 20,
+   'Aucun fichier recent', 8);
+ End;
+ SP.NeedRepaint := False;
+End;
+
+{ --- Gerer les evenements de la page de demarrage --- }
+
+Procedure HandleStartPageEvent(Var SP: TStartPage;
+ Var MRU: TMRUList; Var Ev: TEvent);
+Var
+ ScreenW, CenterX, BtnY, ItemIdx: Integer;
+Begin
+ If Not SP.Visible Then Exit;
+ ScreenW := GetScreenWidth;
+ CenterX := ScreenW Div 2;
+ If Ev.Kind = EV_MOUSE Then Begin
+  If Ev.Buttons > 0 Then Begin
+   { Verifier clic sur bouton Nouveau }
+   BtnY := START_PAGE_BTN_Y + 50;
+   If (Ev.X >= CenterX - START_PAGE_BTN_WIDTH - 10) And
+      (Ev.X < CenterX - 10) And
+      (Ev.Y >= BtnY) And
+      (Ev.Y < BtnY + START_PAGE_BTN_HEIGHT) Then Begin
+    SP.Visible := False;
+    SP.NeedRepaint := True;
+    Exit;
+   End;
+   { Verifier clic sur bouton Ouvrir }
+   If (Ev.X >= CenterX + 10) And
+      (Ev.X < CenterX + 10 + START_PAGE_BTN_WIDTH) And
+      (Ev.Y >= BtnY) And
+      (Ev.Y < BtnY + START_PAGE_BTN_HEIGHT) Then Begin
+    SP.Visible := False;
+    SP.NeedRepaint := True;
+    Exit;
+   End;
+   { Verifier clic sur un element de la liste MRU }
+   If MRU.Count > 0 Then Begin
+    ItemIdx := (Ev.Y - (START_PAGE_LIST_Y + 44)) Div
+     START_PAGE_ITEM_HEIGHT;
+    If (ItemIdx >= 0) And (ItemIdx < MRU.Count) And
+       (ItemIdx < 10) Then Begin
+     SP.SelectedItem := ItemIdx;
+     SP.Visible := False;
+     SP.NeedRepaint := True;
+    End;
+   End;
+  End;
+ End;
+ If Ev.Kind = EV_KEY Then Begin
+  Case Ev.KeyCode Of
+   $1C0D: Begin { Entree }
+    SP.Visible := False;
+    SP.NeedRepaint := True;
+   End;
+   $011B: Begin { Echap }
+    SP.Visible := False;
+    SP.NeedRepaint := True;
+   End;
+  End;
+ End;
+End;
+
+{ --- Masquer la page de demarrage --- }
+
+Procedure HideStartPage(Var SP: TStartPage);
+Begin
+ SP.Visible := False;
+ SP.NeedRepaint := True;
+End;
+
+{ --- Verifier si la page de demarrage est visible --- }
+
+Function IsStartPageVisible(Var SP: TStartPage): Boolean;
+Begin
+ IsStartPageVisible := SP.Visible;
+End;
+
+{ --- Obtenir l element selectionne de la page de demarrage --- }
+
+Function GetStartPageSelectedItem(
+ Var SP: TStartPage): Integer;
+Begin
+ GetStartPageSelectedItem := SP.SelectedItem;
+End;
+
+{ --- Dessiner tous les widgets de l IDE --- }
+
+Procedure DrawAllWidgets;
+Begin
+ If StartPage.Visible Then Begin
+  ClearScreen(CLR_BACKGROUND);
+  DrawStartPage(StartPage, MRUList);
+  DrawStatusBar(StatusBar);
+  Exit;
+ End;
+ DrawMenuBar;
+ DrawToolBar;
+ DrawWindowTabs;
+ If WinMgr.Count > 0 Then
+  DrawEditor(WinMgr.Editors[WinMgr.ActiveIdx]);
+ DrawExplorer(SolExplorer);
+ DrawPropertiesPanel(PropsPanel);
+ DrawOutputPanel(OutputPanel);
+ DrawErrorList(ErrorList);
+ DrawStatusBar(StatusBar);
+End;
+
+{ --- Traiter un evenement global --- }
+
+Procedure DispatchEvent(Var Ev: TEvent);
+Begin
+ If Ev.Kind = EV_NONE Then Exit;
+ { Page de demarrage en priorite si visible }
+ If StartPage.Visible Then Begin
+  HandleStartPageEvent(StartPage, MRUList, Ev);
+  Exit;
+ End;
+ { Raccourcis clavier globaux }
+ If Ev.Kind = EV_KEY Then Begin
+  Case Ev.KeyCode Of
+   $2D00: Begin { Alt+X : quitter }
+    QuitRequested := True;
+    Exit;
+   End;
+   $3B00: Begin { F1 : aide (stub) }
+    { A implementer }
+    Exit;
+   End;
+  End;
+ End;
+ { Distribuer aux panneaux dans l ordre de priorite }
+ If MenuActive Then Begin
+  HandleMenuEvent(MainMenuBar, Ev);
+  Exit;
+ End;
+ If FindReplaceDlg.Base.Visible Then Begin
+  HandleFindDialogEvent(FindReplaceDlg, Ev);
+  Exit;
+ End;
+ If GoToLineDlg.Visible Then Begin
+  HandleGoToLineEvent(GoToLineDlg, Ev);
+  Exit;
+ End;
+ If DbgPanel.Visible Then Begin
+  HandleDebugPanelEvent(DbgPanel, BPMgr, Ev);
+  Exit;
+ End;
+ { Evenements pour la barre de menus }
+ HandleMenuBarEvent(MainMenuBar, Ev);
+ { Evenements pour la barre d outils }
+ HandleToolBarEvent(MainToolBar, Ev);
+ { Evenements pour l explorateur }
+ HandleExplorerEvent(SolExplorer, Ev);
+ { Evenements pour le panneau de proprietes }
+ HandlePropertiesEvent(PropsPanel, Ev);
+ { Evenements pour le panneau de sortie }
+ HandleOutputEvent(OutputPanel, Ev);
+ { Evenements pour la liste d erreurs }
+ HandleErrorListEvent(ErrorList, Ev);
+ { Evenements pour l editeur actif }
+ If (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.ActiveIdx < WinMgr.Count) Then
+  HandleEditorEvent(WinMgr.Editors[WinMgr.ActiveIdx], Ev);
+End;
+
+{ --- Boucle principale de l IDE --- }
+
+Procedure MainLoop;
+Var
+ Ev: TEvent;
+Begin
+ QuitRequested := False;
+ While Not QuitRequested Do Begin
+  PollEvents(EvQueue, Ev);
+  If Ev.Kind <> EV_NONE Then Begin
+   DispatchEvent(Ev);
+   UpdateStatusBar(StatusBar, WinMgr);
+   DrawAllWidgets;
+  End;
+ End;
+End;
+
+{ --- Demarrage de l IDE (procedure Run) --- }
+
+Procedure Run;
+Begin
+ InitStatusBar(StatusBar);
+ InitMRUList(MRUList);
+ LoadMRUList(MRUList);
+ InitStartPage(StartPage);
+ QuitRequested := False;
+ DrawAllWidgets;
+ MainLoop;
+ SaveMRUList(MRUList);
+End;
+
+{ --- Obtenir la position du curseur (ligne) --- }
+
+Function GetStatusBarLine(Var SB: TStatusBar): Integer;
+Begin
+ GetStatusBarLine := SB.CursorLine;
+End;
+
+{ --- Obtenir la position du curseur (colonne) --- }
+
+Function GetStatusBarCol(Var SB: TStatusBar): Integer;
+Begin
+ GetStatusBarCol := SB.CursorCol;
+End;
+
+{ --- Obtenir le mode d insertion --- }
+
+Function GetStatusBarInsertMode(
+ Var SB: TStatusBar): TInsertMode;
+Begin
+ GetStatusBarInsertMode := SB.InsertMode;
+End;
+
+{ --- Definir le mode d insertion --- }
+
+Procedure SetStatusBarInsertMode(Var SB: TStatusBar;
+ Mode: TInsertMode);
+Begin
+ SB.InsertMode := Mode;
+ SB.NeedRepaint := True;
+End;
+
+{ --- Basculer le mode d insertion --- }
+
+Procedure ToggleInsertMode(Var SB: TStatusBar);
+Begin
+ If SB.InsertMode = IM_INSERT Then
+  SB.InsertMode := IM_OVERWRITE
+ Else
+  SB.InsertMode := IM_INSERT;
+ SB.NeedRepaint := True;
+End;
+
+{ --- Obtenir l encodage --- }
+
+Function GetStatusBarEncoding(
+ Var SB: TStatusBar): TFileEncoding;
+Begin
+ GetStatusBarEncoding := SB.Encoding;
+End;
+
+{ --- Definir l encodage --- }
+
+Procedure SetStatusBarEncoding(Var SB: TStatusBar;
+ Enc: TFileEncoding);
+Begin
+ SB.Encoding := Enc;
+ SB.NeedRepaint := True;
+End;
+
+{ --- Obtenir le type de fin de ligne --- }
+
+Function GetStatusBarLineEnding(
+ Var SB: TStatusBar): TLineEnding;
+Begin
+ GetStatusBarLineEnding := SB.LineEnding;
+End;
+
+{ --- Definir le type de fin de ligne --- }
+
+Procedure SetStatusBarLineEnding(Var SB: TStatusBar;
+ LE: TLineEnding);
+Begin
+ SB.LineEnding := LE;
+ SB.NeedRepaint := True;
+End;
+
+{ --- Obtenir le langage --- }
+
+Function GetStatusBarLanguage(Var SB: TStatusBar): String;
+Begin
+ GetStatusBarLanguage := SB.Language;
+End;
+
+{ --- Definir le langage --- }
+
+Procedure SetStatusBarLanguage(Var SB: TStatusBar;
+ Lang: String);
+Begin
+ SB.Language := Lang;
+ SB.NeedRepaint := True;
+End;
+
+{ --- Obtenir le nom du fichier --- }
+
+Function GetStatusBarFileName(Var SB: TStatusBar): String;
+Begin
+ GetStatusBarFileName := SB.FileName;
+End;
+
+{ --- Definir le nom du fichier --- }
+
+Procedure SetStatusBarFileName(Var SB: TStatusBar;
+ FName: String);
+Begin
+ SB.FileName := FName;
+ SB.NeedRepaint := True;
+End;
+
+{ --- Obtenir l etat du build --- }
+
+Function GetStatusBarBuildStatus(Var SB: TStatusBar): String;
+Begin
+ GetStatusBarBuildStatus := SB.BuildStatus;
+End;
+
+{ --- Definir l etat du build --- }
+
+Procedure SetStatusBarBuildStatus(Var SB: TStatusBar;
+ Status: String);
+Begin
+ SB.BuildStatus := Status;
+ SB.NeedRepaint := True;
+End;
+
+{ --- Verifier si la barre d etat doit etre redessinee --- }
+
+Function IsStatusBarDirty(Var SB: TStatusBar): Boolean;
+Begin
+ IsStatusBarDirty := SB.NeedRepaint;
+End;
+
+{ --- Verifier si la sortie est demandee --- }
+
+Function IsQuitRequested: Boolean;
+Begin
+ IsQuitRequested := QuitRequested;
+End;
+
+{ --- Demander la sortie --- }
+
+Procedure RequestQuit;
+Begin
+ QuitRequested := True;
+End;
+
+{ --- Annuler la demande de sortie --- }
+
+Procedure CancelQuit;
+Begin
+ QuitRequested := False;
+End;
+
+{ --- Rapport de version --- }
+
+Function GetIDEVersion: String;
+Begin
+ GetIDEVersion := IDE_VERSION;
+End;
+
+{ --- Verifier si la page de demarrage doit etre redessinee --- }
+
+Function IsStartPageDirty(Var SP: TStartPage): Boolean;
+Begin
+ IsStartPageDirty := SP.NeedRepaint;
+End;
+
+{ --- Verifier si la barre d etat est vide (defaut) --- }
+
+Function IsStatusBarEmpty(Var SB: TStatusBar): Boolean;
+Begin
+ IsStatusBarEmpty := (SB.FileName = '') And
+  (SB.Language = '') And (SB.CursorLine = 1) And
+  (SB.CursorCol = 1);
+End;
+
 
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -20722,6 +21448,6 @@ End;
  InitConfigurationManager(CfgMgr);
  InitBreakpointManager(BPMgr);
  InitDebugPanel(DbgPanel);
- { Boucle principale a venir (TODO 30+) }
+ Run;
  ShutdownGraphics;
 END.
