@@ -229,7 +229,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Gerer les appels recursifs (avec limite de profondeur).
       Fonctions statiques (static) ou externes.
 
-  23. [A FAIRE] Generation du programme complet.
+  23. [IMPLEMENTE] Generation du programme complet.
       Generateur de programme C complet :
       GenProgram - generer un programme C complet.
       GenIncludes - generer #include <stdio.h> etc.

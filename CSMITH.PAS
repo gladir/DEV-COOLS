@@ -244,7 +244,7 @@
             Gerer les appels recursifs (avec limite de profondeur).
             Fonctions statiques (static) ou externes.
 
-  TODO 23 - [A FAIRE] GENERATION DU PROGRAMME COMPLET
+  TODO 23 - [IMPLEMENTE] GENERATION DU PROGRAMME COMPLET
             Generateur de programme C complet :
             GenProgram - generer un programme C complet.
             GenIncludes - generer #include <stdio.h> etc.
@@ -424,6 +424,28 @@ Const
   FUNC_EARLY_RETURN_PROB = 20;      { 20% de chance d'avoir un return anticipé }
   FUNC_NAME_PREFIX = 'func_';       { Prefixe pour les noms de fonctions }
   FUNC_PARAM_PREFIX = 'p_';         { Prefixe pour les noms de parametres }
+  
+  { TODO 23 : Constantes pour la generation du programme complet }
+  PROG_MIN_FUNCS = 2;               { Minimum de fonctions a generer }
+  PROG_MAX_FUNCS = 5;               { Maximum de fonctions a generer }
+  PROG_MIN_GLOBAL_VARS = 3;         { Minimum de variables globales }
+  PROG_MAX_GLOBAL_VARS = 8;         { Maximum de variables globales }
+  PROG_MIN_STRUCTS = 1;             { Minimum de structures a generer }
+  PROG_MAX_STRUCTS = 4;             { Maximum de structures a generer }
+  PROG_MIN_UNIONS = 1;              { Minimum d'unions a generer }
+  PROG_MAX_UNIONS = 3;              { Maximum d'unions a generer }
+  PROG_MIN_ENUMS = 1;               { Minimum d'enumerations a generer }
+  PROG_MAX_ENUMS = 3;               { Maximum d'enumerations a generer }
+  PROG_MIN_ARRAYS = 1;              { Minimum de tableaux globaux }
+  PROG_MAX_ARRAYS = 4;              { Maximum de tableaux globaux }
+  PROG_MIN_POINTERS = 1;            { Minimum de pointeurs globaux }
+  PROG_MAX_POINTERS = 4;            { Maximum de pointeurs globaux }
+  MAIN_CALL_ALL_FUNCS = True;       { True pour appeler toutes les fonctions dans main }
+  MAIN_UPDATE_CHECKSUM = True;      { True pour mettre a jour le checksum }
+  GLOBAL_VAR_PREFIX = 'g_';         { Prefixe pour les variables globales }
+  GLOBAL_VAR_INIT_PROB = 70;        { 70% de chance d'initialiser une variable globale }
+  GLOBAL_VAR_CONST_PROB = 20;       { 20% de chance d'avoir une variable const }
+  GLOBAL_VAR_VOLATILE_PROB = 10;    { 10% de chance d'avoir une variable volatile }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -689,6 +711,15 @@ Var
   CurrentFuncIdx: Integer;      { Index de la fonction courante (-1 si globale) }
   FuncRecursionDepth: Integer;  { Profondeur courante de recursion }
   InFuncDef: Boolean;           { True si on est dans une definition de fonction }
+
+  { TODO 23 : compteurs et contexte pour le programme complet }
+  GlobalVarCounter: Integer;    { Compteur de variables globales generees }
+  ProgStructCount: Integer;     { Nombre de structures dans le programme }
+  ProgUnionCount: Integer;      { Nombre d'unions dans le programme }
+  ProgEnumCount: Integer;       { Nombre d'enumerations dans le programme }
+  ProgFuncCount: Integer;       { Nombre de fonctions dans le programme }
+  ProgGlobalCount: Integer;     { Nombre de variables globales dans le programme }
+  ProgTotalLines: Integer;      { Nombre total de lignes generees }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -7595,6 +7626,9 @@ Begin
   CountDefinedFuncs := Count;
 End;
 
+{ Forward declaration for TODO 23 }
+Procedure InitProgramContext; Forward;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -7635,6 +7669,8 @@ Begin
   InitLoopContext;
   { Initialiser le contexte des fonctions - TODO 22 }
   InitFuncContext;
+  { Initialiser le contexte du programme - TODO 23 }
+  InitProgramContext;
   { Initialiser l'emetteur }
   InitEmitter;
 End;
@@ -7764,10 +7800,75 @@ Begin
 End;
 
 { ============================================================
-  TODO 23 : GENERATION DU PROGRAMME COMPLET [A FAIRE]
+  TODO 23 : GENERATION DU PROGRAMME COMPLET [IMPLEMENTE]
   ============================================================ }
 
+{ Forward declaration for GenDefaultArgs }
+Function GenDefaultArgs(FuncIdx: Integer): TString; Forward;
+
+Procedure InitProgramContext;
+{ Initialise le contexte de generation du programme. }
+Begin
+  GlobalVarCounter := 0;
+  ProgStructCount := 0;
+  ProgUnionCount := 0;
+  ProgEnumCount := 0;
+  ProgFuncCount := 0;
+  ProgGlobalCount := 0;
+  ProgTotalLines := 0;
+End;
+
+Procedure EmitProgramComment;
+{ Emet un commentaire pour le programme. }
+Begin
+  EmitComment('Program generation - TODO 23');
+End;
+
+Function CountGlobalVars: Integer;
+{ Retourne le nombre de variables globales generees. }
+Begin
+  CountGlobalVars := GlobalVarCounter;
+End;
+
+Function GetProgStructCount: Integer;
+{ Retourne le nombre de structures dans le programme. }
+Begin
+  GetProgStructCount := ProgStructCount;
+End;
+
+Function GetProgUnionCount: Integer;
+{ Retourne le nombre d'unions dans le programme. }
+Begin
+  GetProgUnionCount := ProgUnionCount;
+End;
+
+Function GetProgEnumCount: Integer;
+{ Retourne le nombre d'enumerations dans le programme. }
+Begin
+  GetProgEnumCount := ProgEnumCount;
+End;
+
+Function GetProgFuncCount: Integer;
+{ Retourne le nombre de fonctions dans le programme. }
+Begin
+  GetProgFuncCount := ProgFuncCount;
+End;
+
+Function GetProgGlobalCount: Integer;
+{ Retourne le nombre de variables globales dans le programme. }
+Begin
+  GetProgGlobalCount := ProgGlobalCount;
+End;
+
+Function GenGlobalVarName: TString;
+{ Genere un nom de variable globale unique. }
+Begin
+  Inc(GlobalVarCounter);
+  GenGlobalVarName := GLOBAL_VAR_PREFIX + 'var_' + IntToStr(GlobalVarCounter);
+End;
+
 Procedure GenIncludes;
+{ Genere les directives #include. }
 Begin
   EmitLine('#include <stdio.h>');
   EmitLine('#include <stdlib.h>');
@@ -7777,90 +7878,412 @@ Begin
 End;
 
 Procedure GenChecksumVars;
+{ Genere les variables pour le checksum. }
 Begin
-  EmitComment('Variables globales pour le checksum');
+  EmitComment('Checksum variables for verification');
   EmitLine('static unsigned long g_checksum = 0;');
+  EmitLine('static unsigned long g_call_count = 0;');
   EmitBlankLine;
 End;
 
 Procedure GenChecksumFunc;
+{ Genere les fonctions de mise a jour du checksum. }
 Begin
-  EmitComment('Fonction de mise a jour du checksum');
+  EmitComment('Checksum update function');
   EmitLine('static void update_checksum(int val) {');
   EmitIndent;
-  EmitLine('g_checksum = (g_checksum + val) * 31;');
+  EmitLine('g_checksum = (g_checksum + (unsigned long)val) * 31UL;');
+  EmitLine('g_call_count++;');
   EmitUnindent;
   EmitLine('}');
   EmitBlankLine;
-End;
-
-Procedure GenMainFunc;
-Begin
-  EmitComment('Fonction principale');
-  EmitLine('int main(void) {');
-  EmitIndent;
-  EmitLine('printf("checksum = %lu\\n", g_checksum);');
-  EmitLine('return 0;');
-  EmitUnindent;
-  EmitLine('}');
-End;
-
-Procedure GenProgram;
-Var
-  I, NumGen: Integer;
-Begin
-  EmitComment('Programme C genere par CSMITH v' + CSMITH_VERSION);
-  EmitComment('Graine: ' + IntToStr(RandomSeed));
-  EmitComment('Date: ' + CSMITH_DATE);
-  EmitBlankLine;
-  GenIncludes;
   
+  EmitComment('Checksum update for long values');
+  EmitLine('static void update_checksum_long(long val) {');
+  EmitIndent;
+  EmitLine('g_checksum = (g_checksum + (unsigned long)val) * 31UL;');
+  EmitLine('g_call_count++;');
+  EmitUnindent;
+  EmitLine('}');
+  EmitBlankLine;
+End;
+
+Procedure GenGlobalVarDecl;
+{ Genere une declaration de variable globale aleatoire. }
+Var
+  VarName: TString;
+  T: TCType;
+  Decl: TString;
+  InitVal: TString;
+  R: Integer;
+Begin
+  VarName := GenGlobalVarName;
+  InitCType(T);
+  
+  { Choisir un type aleatoire }
+  R := RandomInt(100);
+  If R < 40 Then
+    T.Kind := TK_INT
+  Else If R < 60 Then
+    T.Kind := TK_LONG
+  Else If R < 75 Then
+    T.Kind := TK_CHAR
+  Else If R < 85 Then
+    T.Kind := TK_SHORT
+  Else If R < 92 Then
+    T.Kind := TK_UINT
+  Else
+    T.Kind := TK_ULONG;
+  
+  { Ajouter qualificateur optionnel }
+  If (Not Opts.NoConsts) And RandomChoice(GLOBAL_VAR_CONST_PROB) Then
+    T.Quals := Q_CONST
+  Else If (Not Opts.NoVolatiles) And RandomChoice(GLOBAL_VAR_VOLATILE_PROB) Then
+    T.Quals := Q_VOLATILE
+  Else
+    T.Quals := Q_NONE;
+  
+  { Construire la declaration }
+  Decl := '';
+  If T.Quals = Q_CONST Then
+    Decl := 'const '
+  Else If T.Quals = Q_VOLATILE Then
+    Decl := 'volatile ';
+  
+  Decl := Decl + TypeToStr(T) + ' ' + VarName;
+  
+  { Initialiser si c'est const ou aleatoirement }
+  If (T.Quals = Q_CONST) Or RandomChoice(GLOBAL_VAR_INIT_PROB) Then
+  Begin
+    Case T.Kind Of
+      TK_CHAR:   InitVal := IntToStr(RandomRange(MIN_CHAR_VALUE, MAX_CHAR_VALUE));
+      TK_SHORT:  InitVal := IntToStr(RandomRange(-1000, 1000));
+      TK_INT:    InitVal := IntToStr(RandomRange(-10000, 10000));
+      TK_UINT:   InitVal := IntToStr(RandomRange(0, 20000)) + 'U';
+      TK_LONG:   InitVal := IntToStr(RandomRange(-30000, 30000)) + 'L';
+      TK_ULONG:  InitVal := IntToStr(RandomRange(0, 30000)) + 'UL';
+    Else
+      InitVal := '0';
+    End;
+    Decl := Decl + ' = ' + InitVal;
+  End;
+  
+  Decl := Decl + ';';
+  EmitLine(Decl);
+  Inc(ProgGlobalCount);
+End;
+
+Procedure GenGlobalVars;
+{ Genere les variables globales du programme. }
+Var
+  NumVarsGen, I: Integer;
+Begin
+  EmitBlankLine;
+  EmitComment('Global variables');
+  
+  NumVarsGen := RandomRange(PROG_MIN_GLOBAL_VARS, PROG_MAX_GLOBAL_VARS);
+  For I := 1 To NumVarsGen Do
+    GenGlobalVarDecl;
+  
+  EmitBlankLine;
+End;
+
+Procedure GenTypeDefs;
+{ Genere les typedef pour les structures, unions et enumerations. }
+Var
+  NumGen, I: Integer;
+Begin
   { Generer quelques enumerations }
-  NumGen := RandomRange(1, 3);  { Generer 1 a 3 enums }
+  NumGen := RandomRange(PROG_MIN_ENUMS, PROG_MAX_ENUMS);
   For I := 1 To NumGen Do
+  Begin
     GenEnumDef;
+    Inc(ProgEnumCount);
+  End;
   EmitAllEnumDefs;
   
   { Generer quelques structures si autorisees }
   If Not Opts.NoStructs Then
   Begin
-    NumGen := RandomRange(1, 4);  { Generer 1 a 4 structures }
+    NumGen := RandomRange(PROG_MIN_STRUCTS, PROG_MAX_STRUCTS);
     For I := 1 To NumGen Do
+    Begin
       GenStructDef(0);  { Profondeur initiale = 0 }
+      Inc(ProgStructCount);
+    End;
     EmitAllStructDefs;
   End;
   
   { Generer quelques unions si autorisees }
   If Not Opts.NoUnions Then
   Begin
-    NumGen := RandomRange(1, 3);  { Generer 1 a 3 unions }
+    NumGen := RandomRange(PROG_MIN_UNIONS, PROG_MAX_UNIONS);
     For I := 1 To NumGen Do
+    Begin
       GenUnionDef(0);  { Profondeur initiale = 0 }
+      Inc(ProgUnionCount);
+    End;
     EmitAllUnionDefs;
   End;
-  
+End;
+
+Procedure GenGlobalArraysAndPointers;
+{ Genere les tableaux et pointeurs globaux. }
+Var
+  NumGen, I: Integer;
+Begin
   { Generer quelques tableaux globaux }
   EmitBlankLine;
   EmitArrayComment;
-  NumGen := RandomRange(1, 4);  { Generer 1 a 4 tableaux }
+  NumGen := RandomRange(PROG_MIN_ARRAYS, PROG_MAX_ARRAYS);
   For I := 1 To NumGen Do
     GenGlobalArrayDecl;
   
-  { Generer quelques pointeurs globaux si autorises - TODO 11 }
+  { Generer quelques pointeurs globaux si autorises }
   If Not Opts.NoPointers Then
   Begin
     EmitBlankLine;
     EmitPointerComment;
-    NumGen := RandomRange(1, 4);  { Generer 1 a 4 pointeurs }
+    NumGen := RandomRange(PROG_MIN_POINTERS, PROG_MAX_POINTERS);
     For I := 1 To NumGen Do
       GenGlobalPointerDecl;
   End;
+End;
+
+Procedure GenAllFuncs;
+{ Genere toutes les fonctions du programme. }
+Var
+  NumGen, I: Integer;
+Begin
+  { Creer quelques fonctions }
+  NumGen := RandomRange(PROG_MIN_FUNCS, PROG_MAX_FUNCS);
+  For I := 1 To NumGen Do
+  Begin
+    CreateNewFunc;
+    Inc(ProgFuncCount);
+  End;
   
+  { Generer les prototypes }
+  GenFuncPrototypes;
+  
+  { Generer les definitions }
+  GenAllFuncDefs;
+End;
+
+Procedure GenMainFunc;
+{ Genere la fonction main() qui appelle les fonctions et affiche le checksum. }
+Var
+  I: Integer;
+  FuncName: TString;
+  RetType: TCType;
+  HasNonVoidFuncs: Boolean;
+Begin
+  EmitBlankLine;
+  EmitComment('Main function');
+  EmitLine('int main(void) {');
+  EmitIndent;
+  
+  { Declarer des variables pour stocker les resultats }
+  HasNonVoidFuncs := False;
+  For I := 1 To NumFuncs Do
+  Begin
+    RetType := Funcs[I].RetType;
+    If RetType.Kind <> TK_VOID Then
+    Begin
+      HasNonVoidFuncs := True;
+      Break;
+    End;
+  End;
+  
+  If HasNonVoidFuncs Then
+  Begin
+    EmitComment('Variables for function return values');
+    EmitLine('int result_i = 0;');
+    EmitLine('long result_l = 0;');
+    EmitLine('char result_c = 0;');
+    EmitBlankLine;
+  End;
+  
+  { Appeler toutes les fonctions generees }
+  If MAIN_CALL_ALL_FUNCS And (NumFuncs > 0) Then
+  Begin
+    EmitComment('Call all generated functions');
+    For I := 1 To NumFuncs Do
+    Begin
+      FuncName := Funcs[I].Name;
+      RetType := Funcs[I].RetType;
+      
+      { Construire l'appel de fonction avec des arguments par defaut }
+      If RetType.Kind = TK_VOID Then
+        EmitLine(FuncName + '(' + GenDefaultArgs(I) + ');')
+      Else
+      Begin
+        { Stocker le resultat et mettre a jour le checksum }
+        Case RetType.Kind Of
+          TK_CHAR:
+          Begin
+            EmitLine('result_c = ' + FuncName + '(' + GenDefaultArgs(I) + ');');
+            If MAIN_UPDATE_CHECKSUM Then
+              EmitLine('update_checksum((int)result_c);');
+          End;
+          TK_SHORT, TK_INT, TK_UINT:
+          Begin
+            EmitLine('result_i = ' + FuncName + '(' + GenDefaultArgs(I) + ');');
+            If MAIN_UPDATE_CHECKSUM Then
+              EmitLine('update_checksum(result_i);');
+          End;
+          TK_LONG, TK_ULONG:
+          Begin
+            EmitLine('result_l = ' + FuncName + '(' + GenDefaultArgs(I) + ');');
+            If MAIN_UPDATE_CHECKSUM Then
+              EmitLine('update_checksum_long(result_l);');
+          End;
+        Else
+          EmitLine(FuncName + '(' + GenDefaultArgs(I) + ');');
+        End;
+      End;
+    End;
+    EmitBlankLine;
+  End;
+  
+  { Afficher le checksum final }
+  EmitComment('Print final checksum');
+  EmitLine('printf("checksum = %lu\\n", g_checksum);');
+  EmitLine('printf("call_count = %lu\\n", g_call_count);');
+  
+  EmitBlankLine;
+  EmitLine('return 0;');
+  EmitUnindent;
+  EmitLine('}');
+End;
+
+Function GenDefaultArgs(FuncIdx: Integer): TString;
+{ Genere des arguments par defaut pour un appel de fonction. }
+Var
+  S: TString;
+  I: Integer;
+  PType: TCType;
+Begin
+  S := '';
+  If (FuncIdx < 1) Or (FuncIdx > NumFuncs) Then
+  Begin
+    GenDefaultArgs := S;
+    Exit;
+  End;
+  
+  For I := 1 To Funcs[FuncIdx].NumParams Do
+  Begin
+    If I > 1 Then
+      S := S + ', ';
+    
+    PType := Funcs[FuncIdx].Params[I].PType;
+    Case PType.Kind Of
+      TK_CHAR:   S := S + '''a''';
+      TK_SHORT:  S := S + '1';
+      TK_INT:    S := S + '0';
+      TK_UINT:   S := S + '0U';
+      TK_LONG:   S := S + '0L';
+      TK_ULONG:  S := S + '0UL';
+      TK_FLOAT:  S := S + '0.0f';
+      TK_DOUBLE: S := S + '0.0';
+      TK_POINTER: S := S + 'NULL';
+    Else
+      S := S + '0';
+    End;
+  End;
+  
+  GenDefaultArgs := S;
+End;
+
+Procedure GenProgramHeader;
+{ Genere l'en-tete du programme avec les informations de generation. }
+Begin
+  EmitComment('========================================');
+  EmitComment('C program generated by CSMITH v' + CSMITH_VERSION);
+  EmitComment('========================================');
+  EmitComment('Seed: ' + IntToStr(RandomSeed));
+  EmitComment('Date: ' + CSMITH_DATE);
+  EmitComment('Options:');
+  If Opts.NoPointers Then EmitComment('  --no-pointers');
+  If Opts.NoStructs Then EmitComment('  --no-structs');
+  If Opts.NoUnions Then EmitComment('  --no-unions');
+  If Opts.NoBitfields Then EmitComment('  --no-bitfields');
+  If Opts.NoVolatiles Then EmitComment('  --no-volatiles');
+  If Opts.NoConsts Then EmitComment('  --no-consts');
+  EmitComment('========================================');
+  EmitBlankLine;
+End;
+
+Procedure GenProgramStats;
+{ Genere un commentaire avec les statistiques du programme. }
+Begin
+  EmitBlankLine;
+  EmitComment('========================================');
+  EmitComment('Program statistics:');
+  EmitComment('  Structs: ' + IntToStr(ProgStructCount));
+  EmitComment('  Unions: ' + IntToStr(ProgUnionCount));
+  EmitComment('  Enums: ' + IntToStr(ProgEnumCount));
+  EmitComment('  Functions: ' + IntToStr(ProgFuncCount));
+  EmitComment('  Global variables: ' + IntToStr(ProgGlobalCount));
+  EmitComment('========================================');
+End;
+
+Function GetProgramStats: TString;
+{ Retourne une chaine avec les statistiques du programme. }
+Begin
+  GetProgramStats := 'Structs=' + IntToStr(ProgStructCount) + 
+                     ', Unions=' + IntToStr(ProgUnionCount) +
+                     ', Enums=' + IntToStr(ProgEnumCount) +
+                     ', Funcs=' + IntToStr(ProgFuncCount) +
+                     ', Globals=' + IntToStr(ProgGlobalCount);
+End;
+
+Function IsProgramEmpty: Boolean;
+{ Retourne True si le programme n'a aucun element genere. }
+Begin
+  IsProgramEmpty := (ProgStructCount = 0) And 
+                    (ProgUnionCount = 0) And 
+                    (ProgEnumCount = 0) And 
+                    (ProgFuncCount = 0) And 
+                    (ProgGlobalCount = 0);
+End;
+
+Procedure GenProgram;
+{ Genere un programme C complet. }
+Begin
+  { Initialiser le contexte }
+  InitProgramContext;
+  
+  { En-tete du programme }
+  GenProgramHeader;
+  
+  { Includes }
+  GenIncludes;
+  
+  { Definitions de types (enum, struct, union) }
+  GenTypeDefs;
+  
+  { Tableaux et pointeurs globaux }
+  GenGlobalArraysAndPointers;
+  
+  { Variables globales }
+  GenGlobalVars;
+  
+  { Variables et fonctions pour le checksum }
   GenChecksumVars;
   GenChecksumFunc;
-  { TODO: Generer les variables globales et fonctions }
-  EmitBlankLine;
+  
+  { Fonctions }
+  GenAllFuncs;
+  
+  { Fonction main }
   GenMainFunc;
+  
+  { Statistiques a la fin en commentaire }
+  GenProgramStats;
+  
+  { Sauvegarder le nombre de lignes }
+  ProgTotalLines := LineCount;
 End;
 
 { ============================================================
