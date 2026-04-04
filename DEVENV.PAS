@@ -1222,7 +1222,6 @@ Const
  MAX_BUILD_RESULTS     = 64;       { nombre max de resultats build   }
 
  { Points d arret et debogage }
- MAX_BREAKPOINTS       = 256;      { nombre max de points d arret    }
  BP_MARKER_SIZE        = 10;       { taille du marqueur (pixels)     }
  BP_MARKER_COLOR       = 4;        { couleur du marqueur (rouge)     }
  BP_DISABLED_COLOR     = 8;        { couleur marqueur desactive      }
@@ -1281,6 +1280,12 @@ Const
  CLR_CURSOR            = 0;    { noir : curseur de texte             }
  CLR_LINE_HIGHLIGHT    = 14;   { jaune : ligne courante              }
  CLR_BORDER            = 8;    { gris fonce : bordures               }
+ CLR_WINDOW            = 15;   { blanc : fond de fenetre/dialogue     }
+ CLR_WINDOWTEXT        = 0;    { noir : texte de fenetre/dialogue     }
+ CLR_HIGHLIGHT         = 1;    { bleu : element selectionne           }
+ CLR_HIGHLIGHTTEXT     = 15;   { blanc : texte element selectionne    }
+ CLR_BTNFACE           = 7;    { gris clair : face de bouton          }
+ CLR_GRAYTEXT          = 8;    { gris fonce : texte desactive         }
 
 { ============================================================
   TYPES
@@ -2381,19 +2386,6 @@ Type
  TInsertMode = (
   IM_INSERT,           { mode insertion                             }
   IM_OVERWRITE         { mode ecrasement                            }
- );
-
- { Type de fin de ligne }
- TLineEnding = (
-  LE_CRLF,            { Windows (CR+LF)                            }
-  LE_LF,              { Unix/Linux (LF)                             }
-  LE_CR               { ancien Mac (CR)                              }
- );
-
- { Encodage de fichier }
- TFileEncoding = (
-  FE_ASCII,           { ASCII 7 bits                                }
-  FE_UTF8             { UTF-8                                       }
  );
 
  { Barre d etat }
@@ -3676,9 +3668,9 @@ Begin
   DrawWidget(Idx);
 End;
 
-{ --- Dessin de tous les widgets --- }
+{ --- Dessin de tous les widgets de base --- }
 
-Procedure DrawAllWidgets;
+Procedure DrawAllBaseWidgets;
 Var
  I: Integer;
 Begin
@@ -3784,9 +3776,9 @@ Begin
  End;
 End;
 
-{ --- Distribution des evenements --- }
+{ --- Distribution des evenements de base --- }
 
-Procedure DispatchEvent(Var Ev: TEvent);
+Procedure DispatchBaseEvent(Var Ev: TEvent);
 Var
  I: Integer;
 Begin
@@ -14301,6 +14293,26 @@ Begin
  End;
 End;
 
+{ --- Fonctions graphiques helper pour dialogues --- }
+
+Procedure DrawFilledRect(X1, Y1, X2, Y2: Integer; Color: LongInt);
+Begin
+ SetFillStyle(SolidFill, Color);
+ Bar(X1, Y1, X2, Y2);
+End;
+
+Procedure DrawRect(X1, Y1, X2, Y2: Integer; Color: LongInt);
+Begin
+ SetColor(Color);
+ Rectangle(X1, Y1, X2, Y2);
+End;
+
+Procedure DrawText(X, Y: Integer; S: String; Color: LongInt);
+Begin
+ SetColor(Color);
+ OutTextXY(X, Y, S);
+End;
+
 { ============================================================
   TODO 22 - BOITES DE DIALOGUE : PROJET ET SOLUTION [IMPLEMENTE]
   ============================================================ }
@@ -14646,7 +14658,7 @@ Var
  Idx, BtnR: Integer;
 Begin
  If Not Dlg.Base.Visible Then Exit;
- Case Ev.What Of
+ Case Ev.Kind Of
   EV_KEY_DOWN, EV_KEY_CHAR:
    HandleNewProjectDialogKey(Dlg, Ev.KeyCode, Ev.KeyChar);
   EV_MOUSE_DOWN:
@@ -14826,7 +14838,7 @@ Var
  Idx, BtnR: Integer;
 Begin
  If Not Dlg.Base.Visible Then Exit;
- Case Ev.What Of
+ Case Ev.Kind Of
   EV_KEY_DOWN, EV_KEY_CHAR:
    HandleNewFileDialogKey(Dlg, Ev.KeyCode, Ev.KeyChar);
   EV_MOUSE_DOWN:
@@ -15081,7 +15093,7 @@ Var
  TabIdx, ItemIdx, ChkIdx, BtnR: Integer;
 Begin
  If Not Dlg.Base.Visible Then Exit;
- Case Ev.What Of
+ Case Ev.Kind Of
   EV_KEY_DOWN, EV_KEY_CHAR:
   Begin
    If Ev.KeyCode = $1B Then
@@ -15692,7 +15704,7 @@ Var
  TabIdx, BtnR: Integer;
 Begin
  If Not Dlg.Base.Visible Then Exit;
- Case Ev.What Of
+ Case Ev.Kind Of
   EV_KEY_DOWN, EV_KEY_CHAR:
   Begin
    HandleProjectPropertiesDialogKey(Dlg, Ev.KeyCode, Ev.KeyChar);
@@ -20818,18 +20830,11 @@ Var
  Idx: Integer;
 Begin
  Idx := WM.ActiveIdx;
- If (Idx >= 0) And (Idx < WM.Count) Then Begin
-  SB.CursorLine := WM.Editors[Idx].CursorLine + 1;
-  SB.CursorCol := WM.Editors[Idx].CursorCol + 1;
-  SB.FileName := WM.Editors[Idx].FileName;
-  If WM.Editors[Idx].Language = LANG_CSHARP Then
-   SB.Language := 'C#'
-  Else If WM.Editors[Idx].Language = LANG_VBNET Then
-   SB.Language := 'VB.NET'
-  Else If WM.Editors[Idx].Language = LANG_PASCAL Then
-   SB.Language := 'Pascal'
-  Else
-   SB.Language := 'Text';
+ If (Idx >= 0) And (Idx < WM.WinCount) Then Begin
+  SB.CursorLine := WM.Windows[Idx].CursorY + 1;
+  SB.CursorCol := WM.Windows[Idx].CursorX + 1;
+  SB.FileName := WM.Windows[Idx].FileName;
+  SB.Language := 'Text';
  End Else Begin
   SB.CursorLine := 1;
   SB.CursorCol := 1;
@@ -20848,33 +20853,33 @@ Var
 Begin
  ScreenW := GetScreenWidth;
  Y := GetScreenHeight - STATUSBAR_HEIGHT;
- FillRect(0, Y, ScreenW, STATUSBAR_HEIGHT, CLR_STATUSBAR);
+ DrawFilledRect(0, Y, ScreenW, Y + STATUSBAR_HEIGHT, CLR_STATUSBAR);
  X := STATUS_BAR_PADDING;
  { Position du curseur }
  PosStr := 'Ln ' + IntToStr(SB.CursorLine) + ', Col ' +
   IntToStr(SB.CursorCol);
- DrawString(X, Y + 3, PosStr, 15);
+ DrawText(X, Y + 3, PosStr, 15);
  X := X + Length(PosStr) * 8 + STATUS_BAR_FIELD_GAP;
  { Mode d insertion }
- DrawString(X, Y + 3, InsertModeName(SB.InsertMode), 15);
+ DrawText(X, Y + 3, InsertModeName(SB.InsertMode), 15);
  X := X + 24 + STATUS_BAR_FIELD_GAP;
  { Encodage }
- DrawString(X, Y + 3, FileEncodingName(SB.Encoding), 15);
+ DrawText(X, Y + 3, FileEncodingName(SB.Encoding), 15);
  X := X + 40 + STATUS_BAR_FIELD_GAP;
  { Fin de ligne }
- DrawString(X, Y + 3, LineEndingName(SB.LineEnding), 15);
+ DrawText(X, Y + 3, LineEndingName(SB.LineEnding), 15);
  X := X + 32 + STATUS_BAR_FIELD_GAP;
  { Langage }
  If SB.Language <> '' Then Begin
-  DrawString(X, Y + 3, SB.Language, 15);
+  DrawText(X, Y + 3, SB.Language, 15);
   X := X + Length(SB.Language) * 8 + STATUS_BAR_FIELD_GAP;
  End;
  { Nom du fichier }
  If SB.FileName <> '' Then
-  DrawString(X, Y + 3, SB.FileName, 15);
+  DrawText(X, Y + 3, SB.FileName, 15);
  { Etat du build a droite }
  If SB.BuildStatus <> '' Then
-  DrawString(ScreenW - Length(SB.BuildStatus) * 8 -
+  DrawText(ScreenW - Length(SB.BuildStatus) * 8 -
    STATUS_BAR_PADDING, Y + 3, SB.BuildStatus, 15);
  SB.NeedRepaint := False;
 End;
@@ -21008,38 +21013,40 @@ Begin
  CenterX := ScreenW Div 2;
  { Titre }
  Title := 'DEVENV - IDE Visual Studio';
- DrawString(CenterX - (Length(Title) * 8 Div 2),
+ DrawText(CenterX - (Length(Title) * 8 Div 2),
   START_PAGE_TITLE_Y, Title, CLR_EDITOR_TEXT);
  { Sous-titre }
  Title := 'DEV-COOLS v' + IDE_VERSION;
- DrawString(CenterX - (Length(Title) * 8 Div 2),
+ DrawText(CenterX - (Length(Title) * 8 Div 2),
   START_PAGE_TITLE_Y + 20, Title, 8);
  { Boutons }
- FillRect(CenterX - START_PAGE_BTN_WIDTH - 10,
-  START_PAGE_BTN_Y + 50, START_PAGE_BTN_WIDTH,
-  START_PAGE_BTN_HEIGHT, CLR_STATUSBAR);
- DrawString(CenterX - START_PAGE_BTN_WIDTH - 10 + 12,
+ DrawFilledRect(CenterX - START_PAGE_BTN_WIDTH - 10,
+  START_PAGE_BTN_Y + 50,
+  CenterX - 10,
+  START_PAGE_BTN_Y + 50 + START_PAGE_BTN_HEIGHT, CLR_STATUSBAR);
+ DrawText(CenterX - START_PAGE_BTN_WIDTH - 10 + 12,
   START_PAGE_BTN_Y + 50 + 6, 'Nouveau projet', 15);
- FillRect(CenterX + 10, START_PAGE_BTN_Y + 50,
-  START_PAGE_BTN_WIDTH, START_PAGE_BTN_HEIGHT, CLR_STATUSBAR);
- DrawString(CenterX + 10 + 16,
+ DrawFilledRect(CenterX + 10, START_PAGE_BTN_Y + 50,
+  CenterX + 10 + START_PAGE_BTN_WIDTH,
+  START_PAGE_BTN_Y + 50 + START_PAGE_BTN_HEIGHT, CLR_STATUSBAR);
+ DrawText(CenterX + 10 + 16,
   START_PAGE_BTN_Y + 50 + 6, 'Ouvrir projet', 15);
  { Liste des fichiers recents }
  If MRU.Count > 0 Then Begin
-  DrawString(CenterX - 100, START_PAGE_LIST_Y + 20,
+  DrawText(CenterX - 100, START_PAGE_LIST_Y + 20,
    'Fichiers recents :', CLR_EDITOR_TEXT);
   Y := START_PAGE_LIST_Y + 44;
   For I := 0 To MRU.Count - 1 Do Begin
    If I >= 10 Then Break;
    If I = SP.SelectedItem Then
-    FillRect(CenterX - 200, Y, 400,
-     START_PAGE_ITEM_HEIGHT, CLR_SELECTION);
-   DrawString(CenterX - 196, Y + 2,
+    DrawFilledRect(CenterX - 200, Y, CenterX + 200,
+     Y + START_PAGE_ITEM_HEIGHT, CLR_SELECTION);
+   DrawText(CenterX - 196, Y + 2,
     MRU.Entries[I].FilePath, CLR_EDITOR_TEXT);
    Y := Y + START_PAGE_ITEM_HEIGHT;
   End;
  End Else Begin
-  DrawString(CenterX - 80, START_PAGE_LIST_Y + 20,
+  DrawText(CenterX - 80, START_PAGE_LIST_Y + 20,
    'Aucun fichier recent', 8);
  End;
  SP.NeedRepaint := False;
@@ -21055,30 +21062,29 @@ Begin
  If Not SP.Visible Then Exit;
  ScreenW := GetScreenWidth;
  CenterX := ScreenW Div 2;
- If Ev.Kind = EV_MOUSE Then Begin
-  If Ev.Buttons > 0 Then Begin
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
    { Verifier clic sur bouton Nouveau }
    BtnY := START_PAGE_BTN_Y + 50;
-   If (Ev.X >= CenterX - START_PAGE_BTN_WIDTH - 10) And
-      (Ev.X < CenterX - 10) And
-      (Ev.Y >= BtnY) And
-      (Ev.Y < BtnY + START_PAGE_BTN_HEIGHT) Then Begin
+   If (Ev.MouseX >= CenterX - START_PAGE_BTN_WIDTH - 10) And
+      (Ev.MouseX < CenterX - 10) And
+      (Ev.MouseY >= BtnY) And
+      (Ev.MouseY < BtnY + START_PAGE_BTN_HEIGHT) Then Begin
     SP.Visible := False;
     SP.NeedRepaint := True;
     Exit;
    End;
    { Verifier clic sur bouton Ouvrir }
-   If (Ev.X >= CenterX + 10) And
-      (Ev.X < CenterX + 10 + START_PAGE_BTN_WIDTH) And
-      (Ev.Y >= BtnY) And
-      (Ev.Y < BtnY + START_PAGE_BTN_HEIGHT) Then Begin
+   If (Ev.MouseX >= CenterX + 10) And
+      (Ev.MouseX < CenterX + 10 + START_PAGE_BTN_WIDTH) And
+      (Ev.MouseY >= BtnY) And
+      (Ev.MouseY < BtnY + START_PAGE_BTN_HEIGHT) Then Begin
     SP.Visible := False;
     SP.NeedRepaint := True;
     Exit;
    End;
    { Verifier clic sur un element de la liste MRU }
    If MRU.Count > 0 Then Begin
-    ItemIdx := (Ev.Y - (START_PAGE_LIST_Y + 44)) Div
+    ItemIdx := (Ev.MouseY - (START_PAGE_LIST_Y + 44)) Div
      START_PAGE_ITEM_HEIGHT;
     If (ItemIdx >= 0) And (ItemIdx < MRU.Count) And
        (ItemIdx < 10) Then Begin
@@ -21087,9 +21093,8 @@ Begin
      SP.NeedRepaint := True;
     End;
    End;
-  End;
  End;
- If Ev.Kind = EV_KEY Then Begin
+ If (Ev.Kind = EV_KEY_DOWN) Or (Ev.Kind = EV_KEY_CHAR) Then Begin
   Case Ev.KeyCode Of
    $1C0D: Begin { Entree }
     SP.Visible := False;
@@ -21139,8 +21144,6 @@ Begin
  DrawMenuBar;
  DrawToolBar;
  DrawWindowTabs;
- If WinMgr.Count > 0 Then
-  DrawEditor(WinMgr.Editors[WinMgr.ActiveIdx]);
  DrawExplorer(SolExplorer);
  DrawPropertiesPanel(PropsPanel);
  DrawOutputPanel(OutputPanel);
@@ -21159,7 +21162,7 @@ Begin
   Exit;
  End;
  { Raccourcis clavier globaux }
- If Ev.Kind = EV_KEY Then Begin
+ If (Ev.Kind = EV_KEY_DOWN) Or (Ev.Kind = EV_KEY_CHAR) Then Begin
   Case Ev.KeyCode Of
    $2D00: Begin { Alt+X : quitter }
     QuitRequested := True;
