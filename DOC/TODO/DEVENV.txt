@@ -120,7 +120,7 @@
             Fichiers jusqu a MAX_LINES lignes.
             Detection automatique encodage et fins de ligne.
 
-  TODO 09 - EDITEUR DE TEXTE : EDITION DE BASE [A FAIRE]
+  TODO 09 - EDITEUR DE TEXTE : EDITION DE BASE [IMPLEMENTE]
             TEditor : Buffer, CursorLine, CursorCol, ScrollLine,
               ScrollCol, InsertMode, TabSize, AutoIndent,
               ShowLineNumbers, ShowWhitespace, GutterWidth,

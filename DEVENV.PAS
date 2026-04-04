@@ -282,7 +282,7 @@
             Detection automatique de l encodage (ASCII, UTF-8 stub).
             Detection automatique des fins de ligne (CR/LF/CRLF).
 
-  TODO 09 - EDITEUR DE TEXTE : EDITION DE BASE [A FAIRE]
+  TODO 09 - EDITEUR DE TEXTE : EDITION DE BASE [IMPLEMENTE]
             TEditor : composant d edition de texte complet.
               Champs : Buffer (TTextBuffer), CursorLine, CursorCol,
                 ScrollLine, ScrollCol, InsertMode, TabSize,
@@ -1297,6 +1297,29 @@ Type
   FileName   : String[255];    { chemin du fichier associe      }
   Encoding   : TFileEncoding;  { encodage detecte               }
   LineEnd    : TLineEnding;    { type de fin de ligne           }
+ End;
+
+ { Editeur de texte }
+ TEditor = Record
+  Buffer         : TTextBuffer;  { tampon de texte                }
+  CursorLine     : LongInt;      { ligne du curseur (0-based)     }
+  CursorCol      : LongInt;      { colonne du curseur (1-based)   }
+  ScrollLine     : LongInt;      { premiere ligne visible         }
+  ScrollCol      : LongInt;      { premiere colonne visible       }
+  InsertMode     : Boolean;      { True=insert, False=replace     }
+  TabSize        : Integer;      { taille de tabulation (espaces) }
+  AutoIndent     : Boolean;      { indentation automatique        }
+  ShowLineNumbers: Boolean;      { afficher numeros de ligne      }
+  ShowWhitespace : Boolean;      { afficher les espaces/tabs      }
+  GutterWidth    : Integer;      { largeur de la gouttiere (px)   }
+  CharWidth      : Integer;      { largeur d un caractere (px)    }
+  CharHeight     : Integer;      { hauteur d un caractere (px)    }
+  VisibleLines   : Integer;      { nombre de lignes visibles      }
+  VisibleCols    : Integer;      { nombre de colonnes visibles    }
+  X              : Integer;      { position X de la zone editeur  }
+  Y              : Integer;      { position Y de la zone editeur  }
+  Width          : Integer;      { largeur de la zone editeur     }
+  Height         : Integer;      { hauteur de la zone editeur     }
  End;
 
 { ============================================================
@@ -4707,6 +4730,498 @@ Begin
  End;
 End;
 
+{ ============================================================
+  TODO 09 - EDITEUR DE TEXTE : EDITION DE BASE [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser un editeur --- }
+
+Procedure InitEditor(Var Ed: TEditor);
+Begin
+ InitBuffer(Ed.Buffer);
+ Ed.CursorLine := 0;
+ Ed.CursorCol := 1;
+ Ed.ScrollLine := 0;
+ Ed.ScrollCol := 1;
+ Ed.InsertMode := True;
+ Ed.TabSize := 4;
+ Ed.AutoIndent := True;
+ Ed.ShowLineNumbers := True;
+ Ed.ShowWhitespace := False;
+ Ed.GutterWidth := 50;
+ Ed.CharWidth := 8;
+ Ed.CharHeight := 14;
+ Ed.X := EXPLORER_WIDTH;
+ Ed.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Ed.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Ed.Height := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT
+              - TAB_HEIGHT - STATUSBAR_HEIGHT - OUTPUT_HEIGHT;
+ If Ed.Height < Ed.CharHeight Then
+  Ed.Height := Ed.CharHeight;
+ If Ed.Width < Ed.GutterWidth + Ed.CharWidth Then
+  Ed.Width := Ed.GutterWidth + Ed.CharWidth;
+ Ed.VisibleLines := Ed.Height Div Ed.CharHeight;
+ Ed.VisibleCols := (Ed.Width - Ed.GutterWidth) Div Ed.CharWidth;
+End;
+
+{ --- Calculer la largeur de gouttiere selon le nombre de lignes --- }
+
+Function CalcGutterWidth(LineCount: LongInt; CharWidth: Integer): Integer;
+Var
+ Digits: Integer;
+ N: LongInt;
+Begin
+ Digits := 1;
+ N := LineCount;
+ While N >= 10 Do Begin
+  Inc(Digits);
+  N := N Div 10;
+ End;
+ If Digits < 4 Then Digits := 4;  { minimum 4 chiffres }
+ CalcGutterWidth := (Digits + 1) * CharWidth;
+End;
+
+{ --- Dessiner la gouttiere (numeros de ligne) --- }
+
+Procedure DrawGutter(Var Ed: TEditor);
+Var
+ I: Integer;
+ LineNo: LongInt;
+ S: String;
+ YPos: Integer;
+Begin
+ SetColor(CLR_EDITOR_GUTTER);
+ SetFillStyle(SolidFill, CLR_EDITOR_GUTTER);
+ Bar(Ed.X, Ed.Y, Ed.X + Ed.GutterWidth - 1, Ed.Y + Ed.Height - 1);
+ SetColor(CLR_BORDER);
+ Line(Ed.X + Ed.GutterWidth - 1, Ed.Y,
+      Ed.X + Ed.GutterWidth - 1, Ed.Y + Ed.Height - 1);
+ For I := 0 To Ed.VisibleLines - 1 Do Begin
+  LineNo := Ed.ScrollLine + I;
+  If LineNo < Ed.Buffer.LineCount Then Begin
+   Str(LineNo + 1, S);
+   YPos := Ed.Y + I * Ed.CharHeight;
+   If LineNo = Ed.CursorLine Then
+    SetColor(CLR_EDITOR_TEXT)
+   Else
+    SetColor(CLR_BORDER);
+   OutTextXY(Ed.X + Ed.GutterWidth - (Length(S) + 1) * Ed.CharWidth,
+             YPos + 1, S);
+  End;
+ End;
+End;
+
+{ --- Dessiner la surbrillance de la ligne courante --- }
+
+Procedure DrawLineHighlight(Var Ed: TEditor);
+Var
+ YPos: Integer;
+Begin
+ If (Ed.CursorLine >= Ed.ScrollLine) And
+    (Ed.CursorLine < Ed.ScrollLine + Ed.VisibleLines) Then Begin
+  YPos := Ed.Y + (Ed.CursorLine - Ed.ScrollLine) * Ed.CharHeight;
+  SetColor(CLR_LINE_HIGHLIGHT);
+  SetFillStyle(SolidFill, CLR_LINE_HIGHLIGHT);
+  Bar(Ed.X + Ed.GutterWidth, YPos,
+      Ed.X + Ed.Width - 1, YPos + Ed.CharHeight - 1);
+ End;
+End;
+
+{ --- Dessiner le curseur --- }
+
+Procedure DrawCursor(Var Ed: TEditor);
+Var
+ XPos, YPos: Integer;
+Begin
+ If (Ed.CursorLine >= Ed.ScrollLine) And
+    (Ed.CursorLine < Ed.ScrollLine + Ed.VisibleLines) And
+    (Ed.CursorCol >= Ed.ScrollCol) And
+    (Ed.CursorCol < Ed.ScrollCol + Ed.VisibleCols) Then Begin
+  XPos := Ed.X + Ed.GutterWidth +
+          (Ed.CursorCol - Ed.ScrollCol) * Ed.CharWidth;
+  YPos := Ed.Y + (Ed.CursorLine - Ed.ScrollLine) * Ed.CharHeight;
+  SetColor(CLR_CURSOR);
+  If Ed.InsertMode Then Begin
+   { Mode insertion : barre verticale }
+   Line(XPos, YPos, XPos, YPos + Ed.CharHeight - 1);
+  End Else Begin
+   { Mode remplacement : bloc plein }
+   SetFillStyle(SolidFill, CLR_CURSOR);
+   Bar(XPos, YPos, XPos + Ed.CharWidth - 1, YPos + Ed.CharHeight - 1);
+  End;
+ End;
+End;
+
+{ --- Dessiner l editeur complet --- }
+
+Procedure DrawEditor(Var Ed: TEditor);
+Var
+ I: Integer;
+ LineNo: LongInt;
+ S: String;
+ XPos, YPos: Integer;
+ Len: Integer;
+Begin
+ { Mettre a jour la gouttiere }
+ Ed.GutterWidth := CalcGutterWidth(Ed.Buffer.LineCount, Ed.CharWidth);
+ Ed.VisibleCols := (Ed.Width - Ed.GutterWidth) Div Ed.CharWidth;
+ { Effacer la zone de l editeur }
+ SetColor(CLR_EDITOR_BG);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(Ed.X + Ed.GutterWidth, Ed.Y,
+     Ed.X + Ed.Width - 1, Ed.Y + Ed.Height - 1);
+ { Dessiner la surbrillance de la ligne courante }
+ DrawLineHighlight(Ed);
+ { Dessiner le texte }
+ SetColor(CLR_EDITOR_TEXT);
+ For I := 0 To Ed.VisibleLines - 1 Do Begin
+  LineNo := Ed.ScrollLine + I;
+  If LineNo < Ed.Buffer.LineCount Then Begin
+   S := Ed.Buffer.Lines[LineNo];
+   YPos := Ed.Y + I * Ed.CharHeight;
+   XPos := Ed.X + Ed.GutterWidth;
+   { Extraire la partie visible }
+   If Ed.ScrollCol <= Length(S) Then Begin
+    Len := Length(S) - Ed.ScrollCol + 1;
+    If Len > Ed.VisibleCols Then Len := Ed.VisibleCols;
+    S := Copy(S, Ed.ScrollCol, Len);
+   End Else
+    S := '';
+   If LineNo = Ed.CursorLine Then
+    SetColor(CLR_EDITOR_TEXT)
+   Else
+    SetColor(CLR_EDITOR_TEXT);
+   OutTextXY(XPos, YPos + 1, S);
+  End;
+ End;
+ { Dessiner la gouttiere }
+ DrawGutter(Ed);
+ { Dessiner le curseur }
+ DrawCursor(Ed);
+End;
+
+{ --- Assurer que le curseur est visible (defilement automatique) --- }
+
+Procedure EnsureCursorVisible(Var Ed: TEditor);
+Begin
+ { Defilement vertical }
+ If Ed.CursorLine < Ed.ScrollLine Then
+  Ed.ScrollLine := Ed.CursorLine;
+ If Ed.CursorLine >= Ed.ScrollLine + Ed.VisibleLines Then
+  Ed.ScrollLine := Ed.CursorLine - Ed.VisibleLines + 1;
+ If Ed.ScrollLine < 0 Then
+  Ed.ScrollLine := 0;
+ { Defilement horizontal }
+ If Ed.CursorCol < Ed.ScrollCol Then
+  Ed.ScrollCol := Ed.CursorCol;
+ If Ed.CursorCol >= Ed.ScrollCol + Ed.VisibleCols Then
+  Ed.ScrollCol := Ed.CursorCol - Ed.VisibleCols + 1;
+ If Ed.ScrollCol < 1 Then
+  Ed.ScrollCol := 1;
+End;
+
+{ --- Aller a une ligne donnee --- }
+
+Procedure GotoLine(Var Ed: TEditor; ALine: LongInt);
+Begin
+ If ALine < 0 Then ALine := 0;
+ If ALine >= Ed.Buffer.LineCount Then
+  ALine := Ed.Buffer.LineCount - 1;
+ Ed.CursorLine := ALine;
+ EnsureCursorVisible(Ed);
+End;
+
+{ --- Aller a une colonne donnee --- }
+
+Procedure GotoColumn(Var Ed: TEditor; ACol: LongInt);
+Begin
+ If ACol < 1 Then ACol := 1;
+ Ed.CursorCol := ACol;
+ EnsureCursorVisible(Ed);
+End;
+
+{ --- Obtenir l indentation de la ligne courante --- }
+
+Function GetIndentation(S: String): String;
+Var
+ I: Integer;
+Begin
+ I := 1;
+ While (I <= Length(S)) And (S[I] In [' ', #9]) Do
+  Inc(I);
+ GetIndentation := Copy(S, 1, I - 1);
+End;
+
+{ --- Gerer les touches de l editeur --- }
+
+Procedure HandleEditorKey(Var Ed: TEditor; Ev: TEvent);
+Var
+ S, Indent: String;
+ LineLen: Integer;
+ TabStr: String;
+ I: Integer;
+Begin
+ { Traiter les caracteres (EV_KEY_CHAR) }
+ If Ev.Kind = EV_KEY_CHAR Then Begin
+  Case Ev.KeyChar Of
+   { Backspace }
+   #8: Begin
+    If Ed.CursorCol > 1 Then Begin
+     Dec(Ed.CursorCol);
+     DeleteChar(Ed.Buffer, Ed.CursorLine, Ed.CursorCol);
+    End Else If Ed.CursorLine > 0 Then Begin
+     LineLen := Length(Ed.Buffer.Lines[Ed.CursorLine - 1]);
+     Ed.Buffer.Lines[Ed.CursorLine - 1] :=
+      Ed.Buffer.Lines[Ed.CursorLine - 1] +
+      Ed.Buffer.Lines[Ed.CursorLine];
+     DeleteLine(Ed.Buffer, Ed.CursorLine);
+     Dec(Ed.CursorLine);
+     Ed.CursorCol := LineLen + 1;
+     Ed.Buffer.Modified := True;
+    End;
+    EnsureCursorVisible(Ed);
+   End;
+   { Tab }
+   #9: Begin
+    TabStr := '';
+    For I := 1 To Ed.TabSize Do
+     TabStr := TabStr + ' ';
+    InsertText(Ed.Buffer, Ed.CursorLine, Ed.CursorCol, TabStr);
+    Inc(Ed.CursorCol, Ed.TabSize);
+    EnsureCursorVisible(Ed);
+   End;
+   { Enter }
+   #13: Begin
+    S := Ed.Buffer.Lines[Ed.CursorLine];
+    InsertLine(Ed.Buffer, Ed.CursorLine + 1,
+               Copy(S, Ed.CursorCol, Length(S) - Ed.CursorCol + 1));
+    Ed.Buffer.Lines[Ed.CursorLine] :=
+     Copy(S, 1, Ed.CursorCol - 1);
+    Ed.Buffer.Modified := True;
+    Inc(Ed.CursorLine);
+    If Ed.AutoIndent Then Begin
+     Indent := GetIndentation(
+      Ed.Buffer.Lines[Ed.CursorLine - 1]);
+     If Length(Indent) > 0 Then Begin
+      Ed.Buffer.Lines[Ed.CursorLine] :=
+       Indent + Ed.Buffer.Lines[Ed.CursorLine];
+      Ed.CursorCol := Length(Indent) + 1;
+     End Else
+      Ed.CursorCol := 1;
+    End Else
+     Ed.CursorCol := 1;
+    EnsureCursorVisible(Ed);
+   End;
+  Else
+   { Caracteres imprimables }
+   If (Ord(Ev.KeyChar) >= 32) And (Ord(Ev.KeyChar) <= 126) Then Begin
+    If Ed.InsertMode Then Begin
+     InsertChar(Ed.Buffer, Ed.CursorLine, Ed.CursorCol,
+                Ev.KeyChar);
+    End Else Begin
+     S := Ed.Buffer.Lines[Ed.CursorLine];
+     If Ed.CursorCol <= Length(S) Then
+      S[Ed.CursorCol] := Ev.KeyChar
+     Else
+      S := S + Ev.KeyChar;
+     Ed.Buffer.Lines[Ed.CursorLine] := S;
+     Ed.Buffer.Modified := True;
+    End;
+    Inc(Ed.CursorCol);
+    EnsureCursorVisible(Ed);
+   End;
+  End;
+  Exit;
+ End;
+
+ { Traiter les touches speciales (EV_KEY_DOWN) }
+ If Ev.Kind <> EV_KEY_DOWN Then Exit;
+
+ Case Ev.KeyCode Of
+  { Fleche haut }
+  72: Begin
+   If Ed.CursorLine > 0 Then Begin
+    Dec(Ed.CursorLine);
+    LineLen := Length(Ed.Buffer.Lines[Ed.CursorLine]);
+    If Ed.CursorCol > LineLen + 1 Then
+     Ed.CursorCol := LineLen + 1;
+   End;
+   EnsureCursorVisible(Ed);
+  End;
+  { Fleche bas }
+  80: Begin
+   If Ed.CursorLine < Ed.Buffer.LineCount - 1 Then Begin
+    Inc(Ed.CursorLine);
+    LineLen := Length(Ed.Buffer.Lines[Ed.CursorLine]);
+    If Ed.CursorCol > LineLen + 1 Then
+     Ed.CursorCol := LineLen + 1;
+   End;
+   EnsureCursorVisible(Ed);
+  End;
+  { Fleche gauche }
+  75: Begin
+   If Ed.CursorCol > 1 Then
+    Dec(Ed.CursorCol)
+   Else If Ed.CursorLine > 0 Then Begin
+    Dec(Ed.CursorLine);
+    Ed.CursorCol := Length(Ed.Buffer.Lines[Ed.CursorLine]) + 1;
+   End;
+   EnsureCursorVisible(Ed);
+  End;
+  { Fleche droite }
+  77: Begin
+   LineLen := Length(Ed.Buffer.Lines[Ed.CursorLine]);
+   If Ed.CursorCol <= LineLen Then
+    Inc(Ed.CursorCol)
+   Else If Ed.CursorLine < Ed.Buffer.LineCount - 1 Then Begin
+    Inc(Ed.CursorLine);
+    Ed.CursorCol := 1;
+   End;
+   EnsureCursorVisible(Ed);
+  End;
+  { Home }
+  71: Begin
+   Ed.CursorCol := 1;
+   EnsureCursorVisible(Ed);
+  End;
+  { End }
+  79: Begin
+   Ed.CursorCol := Length(Ed.Buffer.Lines[Ed.CursorLine]) + 1;
+   EnsureCursorVisible(Ed);
+  End;
+  { PgUp }
+  73: Begin
+   Dec(Ed.CursorLine, Ed.VisibleLines);
+   If Ed.CursorLine < 0 Then Ed.CursorLine := 0;
+   Dec(Ed.ScrollLine, Ed.VisibleLines);
+   If Ed.ScrollLine < 0 Then Ed.ScrollLine := 0;
+   LineLen := Length(Ed.Buffer.Lines[Ed.CursorLine]);
+   If Ed.CursorCol > LineLen + 1 Then
+    Ed.CursorCol := LineLen + 1;
+   EnsureCursorVisible(Ed);
+  End;
+  { PgDn }
+  81: Begin
+   Inc(Ed.CursorLine, Ed.VisibleLines);
+   If Ed.CursorLine >= Ed.Buffer.LineCount Then
+    Ed.CursorLine := Ed.Buffer.LineCount - 1;
+   Inc(Ed.ScrollLine, Ed.VisibleLines);
+   If Ed.ScrollLine > Ed.Buffer.LineCount - Ed.VisibleLines Then Begin
+    Ed.ScrollLine := Ed.Buffer.LineCount - Ed.VisibleLines;
+    If Ed.ScrollLine < 0 Then Ed.ScrollLine := 0;
+   End;
+   LineLen := Length(Ed.Buffer.Lines[Ed.CursorLine]);
+   If Ed.CursorCol > LineLen + 1 Then
+    Ed.CursorCol := LineLen + 1;
+   EnsureCursorVisible(Ed);
+  End;
+  { Insert }
+  82: Begin
+   Ed.InsertMode := Not Ed.InsertMode;
+  End;
+  { Delete }
+  83: Begin
+   DeleteChar(Ed.Buffer, Ed.CursorLine, Ed.CursorCol);
+  End;
+ End;
+End;
+
+{ --- Ctrl+Home : debut du fichier --- }
+
+Procedure EditorCtrlHome(Var Ed: TEditor);
+Begin
+ Ed.CursorLine := 0;
+ Ed.CursorCol := 1;
+ Ed.ScrollLine := 0;
+ Ed.ScrollCol := 1;
+End;
+
+{ --- Ctrl+End : fin du fichier --- }
+
+Procedure EditorCtrlEnd(Var Ed: TEditor);
+Begin
+ If Ed.Buffer.LineCount > 0 Then Begin
+  Ed.CursorLine := Ed.Buffer.LineCount - 1;
+  Ed.CursorCol := Length(Ed.Buffer.Lines[Ed.CursorLine]) + 1;
+ End Else Begin
+  Ed.CursorLine := 0;
+  Ed.CursorCol := 1;
+ End;
+ EnsureCursorVisible(Ed);
+End;
+
+{ --- Verifier si le curseur est a une position valide --- }
+
+Function IsCursorValid(Var Ed: TEditor): Boolean;
+Begin
+ IsCursorValid := (Ed.CursorLine >= 0) And
+                  (Ed.CursorLine < Ed.Buffer.LineCount) And
+                  (Ed.CursorCol >= 1);
+End;
+
+{ --- Obtenir le numero de la ligne courante (1-based) --- }
+
+Function GetCursorLineNumber(Var Ed: TEditor): LongInt;
+Begin
+ GetCursorLineNumber := Ed.CursorLine + 1;
+End;
+
+{ --- Obtenir le numero de la colonne courante --- }
+
+Function GetCursorColumnNumber(Var Ed: TEditor): LongInt;
+Begin
+ GetCursorColumnNumber := Ed.CursorCol;
+End;
+
+{ --- Obtenir le contenu de la ligne courante --- }
+
+Function GetCurrentLine(Var Ed: TEditor): String;
+Begin
+ If (Ed.CursorLine >= 0) And
+    (Ed.CursorLine < Ed.Buffer.LineCount) Then
+  GetCurrentLine := Ed.Buffer.Lines[Ed.CursorLine]
+ Else
+  GetCurrentLine := '';
+End;
+
+{ --- Obtenir le caractere sous le curseur --- }
+
+Function GetCharAtCursor(Var Ed: TEditor): Char;
+Var
+ S: String;
+Begin
+ S := GetCurrentLine(Ed);
+ If (Ed.CursorCol >= 1) And (Ed.CursorCol <= Length(S)) Then
+  GetCharAtCursor := S[Ed.CursorCol]
+ Else
+  GetCharAtCursor := ' ';
+End;
+
+{ --- Compter les lignes visibles non vides --- }
+
+Function CountVisibleNonEmpty(Var Ed: TEditor): Integer;
+Var
+ I: Integer;
+ Count: Integer;
+ LineNo: LongInt;
+Begin
+ Count := 0;
+ For I := 0 To Ed.VisibleLines - 1 Do Begin
+  LineNo := Ed.ScrollLine + I;
+  If (LineNo >= 0) And (LineNo < Ed.Buffer.LineCount) Then
+   If Length(Ed.Buffer.Lines[LineNo]) > 0 Then
+    Inc(Count);
+ End;
+ CountVisibleNonEmpty := Count;
+End;
+
+{ --- Verifier si l editeur est en mode insertion --- }
+
+Function IsInsertMode(Var Ed: TEditor): Boolean;
+Begin
+ IsInsertMode := Ed.InsertMode;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -4723,6 +5238,6 @@ BEGIN
  DrawToolBar;
  InitWindowManager;
  DrawWindowTabs;
- { Boucle principale a venir (TODO 09+) }
+ { Boucle principale a venir (TODO 10+) }
  ShutdownGraphics;
 END.
