@@ -166,7 +166,7 @@
             Eviter les comparaisons de pointeurs non lies (UB).
             Produire des expressions booleennes pour les conditions.
 
-  TODO 15 - [A FAIRE] GENERATION D'OPERATEURS BIT-A-BIT
+  TODO 15 - [IMPLEMENTE] GENERATION D'OPERATEURS BIT-A-BIT
             Generateur d'expressions bit-a-bit C :
             GenBitExpr - generer expression bit-a-bit.
             Operateurs : & | ^ ~ (complement) << >> (decalages).
@@ -338,6 +338,14 @@ Const
   REL_RECURSE_PROB   = 30;          { 30% de chance de recursion dans expression }
   LOG_RECURSE_PROB   = 35;          { 35% de chance de recursion logique }
   LOG_NOT_PROB       = 20;          { 20% de chance de generer un NOT }
+  
+  { TODO 15 : Constantes pour les expressions bit-a-bit }
+  BIT_PAREN_PROB     = 30;          { 30% de chance d'ajouter des parentheses }
+  BIT_LITERAL_PROB   = 45;          { 45% de chance d'utiliser un litteral vs variable }
+  BIT_RECURSE_PROB   = 35;          { 35% de chance de recursion dans expression }
+  BIT_NOT_PROB       = 15;          { 15% de chance de generer un complement (~) }
+  SHIFT_SAFE_PROB    = 90;          { 90% de chance de generer un decalage securise }
+  MAX_SHIFT_AMOUNT   = 31;          { Decalage max pour un int 32 bits }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -568,6 +576,7 @@ Var
   LiteralCounter: Integer;  { TODO 12 : compteur de litteraux }
   ArithExprCounter: Integer;  { TODO 13 : compteur d'expressions arithmetiques }
   RelLogExprCounter: Integer;  { TODO 14 : compteur d'expressions relationnelles/logiques }
+  BitExprCounter: Integer;  { TODO 15 : compteur d'expressions bit-a-bit }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -4308,6 +4317,306 @@ Begin
   CountRelLogExprs := RelLogExprCounter;
 End;
 
+{ ============================================================
+  TODO 15 : GENERATION D'OPERATEURS BIT-A-BIT [IMPLEMENTE]
+  ============================================================ }
+
+Type
+  { Operateurs bit-a-bit C }
+  TBitOp = (
+    BO_AND,    { & (et bit-a-bit) }
+    BO_OR,     { | (ou bit-a-bit) }
+    BO_XOR,    { ^ (ou exclusif) }
+    BO_NOT,    { ~ (complement a un) }
+    BO_SHL,    { << (decalage a gauche) }
+    BO_SHR     { >> (decalage a droite) }
+  );
+
+Function BitOpToStr(Op: TBitOp): TString;
+{ Convertit un operateur bit-a-bit en chaine C. }
+Begin
+  Case Op Of
+    BO_AND: BitOpToStr := '&';
+    BO_OR:  BitOpToStr := '|';
+    BO_XOR: BitOpToStr := '^';
+    BO_NOT: BitOpToStr := '~';
+    BO_SHL: BitOpToStr := '<<';
+    BO_SHR: BitOpToStr := '>>';
+  Else
+    BitOpToStr := '&';
+  End;
+End;
+
+Function GenRandomBitOp(AllowUnary: Boolean): TBitOp;
+{ Genere un operateur bit-a-bit aleatoire.
+  AllowUnary: si True, peut generer l'operateur NOT (~). }
+Var
+  NumOps: Integer;
+Begin
+  If AllowUnary Then
+    NumOps := 6   { 6 operateurs: & | ^ ~ << >> }
+  Else
+    NumOps := 5;  { 5 operateurs binaires: & | ^ << >> }
+  Case RandomInt(NumOps) Of
+    0: GenRandomBitOp := BO_AND;
+    1: GenRandomBitOp := BO_OR;
+    2: GenRandomBitOp := BO_XOR;
+    3: GenRandomBitOp := BO_SHL;
+    4: GenRandomBitOp := BO_SHR;
+    5: GenRandomBitOp := BO_NOT;
+  Else
+    GenRandomBitOp := BO_AND;
+  End;
+End;
+
+Function IsBinaryBitOp(Op: TBitOp): Boolean;
+{ Verifie si l'operateur bit-a-bit est binaire (pas NOT). }
+Begin
+  IsBinaryBitOp := Op <> BO_NOT;
+End;
+
+Function IsUnaryBitOp(Op: TBitOp): Boolean;
+{ Verifie si l'operateur bit-a-bit est unaire (NOT ~). }
+Begin
+  IsUnaryBitOp := Op = BO_NOT;
+End;
+
+Function IsShiftOp(Op: TBitOp): Boolean;
+{ Verifie si l'operateur est un operateur de decalage (<< ou >>). }
+Begin
+  IsShiftOp := (Op = BO_SHL) Or (Op = BO_SHR);
+End;
+
+Function IsValidBitOperandType(T: TTypeKind): Boolean;
+{ Verifie si le type est valide pour les operateurs bit-a-bit.
+  En C, seuls les types entiers sont autorises pour les operations bit-a-bit. }
+Begin
+  IsValidBitOperandType := T In [TK_CHAR, TK_SCHAR, TK_UCHAR, TK_SHORT, TK_USHORT,
+                                 TK_INT, TK_UINT, TK_LONG, TK_ULONG,
+                                 TK_LONGLONG, TK_ULONGLONG];
+End;
+
+Function GetBitOpPrecedence(Op: TBitOp): Integer;
+{ Retourne la precedence de l'operateur bit-a-bit.
+  En C: ~ a precedence 14, << >> ont precedence 11,
+  & a precedence 8, ^ a precedence 7, | a precedence 6. }
+Begin
+  Case Op Of
+    BO_NOT: GetBitOpPrecedence := 14;  { Unaire, plus haute }
+    BO_SHL, BO_SHR: GetBitOpPrecedence := 11;
+    BO_AND: GetBitOpPrecedence := 8;
+    BO_XOR: GetBitOpPrecedence := 7;
+    BO_OR:  GetBitOpPrecedence := 6;
+  Else
+    GetBitOpPrecedence := 8;
+  End;
+End;
+
+Function GenSafeShiftAmount(OpType: TTypeKind): TString;
+{ Genere un montant de decalage securise (0 a 31 pour int 32 bits).
+  Evite les comportements indefinis:
+  - Decalage negatif
+  - Decalage >= largeur du type }
+Var
+  MaxShift, ShiftVal: Integer;
+  Result: TString;
+Begin
+  { Determiner le decalage max selon le type }
+  Case OpType Of
+    TK_CHAR, TK_SCHAR, TK_UCHAR: MaxShift := 7;   { 8 bits }
+    TK_SHORT, TK_USHORT: MaxShift := 15;          { 16 bits }
+    TK_INT, TK_UINT: MaxShift := MAX_SHIFT_AMOUNT;  { 32 bits }
+    TK_LONG, TK_ULONG: MaxShift := MAX_SHIFT_AMOUNT;  { 32 bits }
+    TK_LONGLONG, TK_ULONGLONG: MaxShift := 63;   { 64 bits }
+  Else
+    MaxShift := MAX_SHIFT_AMOUNT;
+  End;
+  
+  { Generer un montant de decalage valide (0 a MaxShift inclus) }
+  ShiftVal := RandomRange(0, MaxShift);
+  Str(ShiftVal, Result);
+  
+  GenSafeShiftAmount := Result;
+End;
+
+Function GenSafeShift(Operand: TString; Op: TBitOp; OpType: TTypeKind): TString;
+{ Genere une expression de decalage securisee.
+  Evite les comportements indefinis:
+  - Decalage d'une valeur negative vers la gauche
+  - Decalage >= largeur du type
+  Pour la securite, on utilise un cast vers unsigned si c'est un decalage gauche. }
+Var
+  ShiftAmount: TString;
+  Result: TString;
+  IsUnsigned: Boolean;
+Begin
+  Inc(BitExprCounter);
+  
+  { Verifier si le type est unsigned }
+  IsUnsigned := OpType In [TK_UCHAR, TK_USHORT, TK_UINT, TK_ULONG, TK_ULONGLONG];
+  
+  ShiftAmount := GenSafeShiftAmount(OpType);
+  
+  If RandomChoice(SHIFT_SAFE_PROB) Then
+  Begin
+    { Version securisee avec cast unsigned pour eviter UB sur decalage gauche
+      de valeurs signees negatives }
+    If (Op = BO_SHL) And Not IsUnsigned Then
+    Begin
+      { Cast vers unsigned pour eviter le UB de decalage gauche d'une valeur negative }
+      Result := '((unsigned int)(' + Operand + ') ' + BitOpToStr(Op) + ' ' + ShiftAmount + ')';
+    End
+    Else
+      Result := '(' + Operand + ' ' + BitOpToStr(Op) + ' ' + ShiftAmount + ')';
+  End
+  Else
+  Begin
+    { Version simple }
+    Result := '(' + Operand + ' ' + BitOpToStr(Op) + ' ' + ShiftAmount + ')';
+  End;
+  
+  GenSafeShift := Result;
+End;
+
+Function GenSimpleBitOperand(T: TTypeKind): TString;
+{ Genere un operande simple pour une operation bit-a-bit.
+  Utilise soit un litteral, soit une variable existante.
+  Seuls les types entiers sont valides. }
+Var
+  UseVar: Boolean;
+  I: Integer;
+Begin
+  UseVar := Not RandomChoice(BIT_LITERAL_PROB);
+  
+  If UseVar And (NumVars > 0) Then
+  Begin
+    { Chercher une variable de type entier }
+    For I := 1 To NumVars Do
+    Begin
+      If IsIntegerType(Vars[I].VType) Then
+      Begin
+        GenSimpleBitOperand := Vars[I].Name;
+        Exit;
+      End;
+    End;
+    { Pas de variable entiere trouvee, utiliser un litteral }
+    GenSimpleBitOperand := GenIntLiteral(T);
+  End
+  Else
+  Begin
+    { Generer un litteral entier }
+    GenSimpleBitOperand := GenIntLiteral(T);
+  End;
+End;
+
+Function GenBitExprRec(Depth: Integer): TString;
+{ Genere une expression bit-a-bit recursive.
+  Depth: profondeur actuelle (pour limiter la recursion). }
+Var
+  Op: TBitOp;
+  Left, Right, Operand: TString;
+  OpType: TTypeKind;
+  Result: TString;
+Begin
+  Inc(BitExprCounter);
+  
+  { Choisir un type entier pour les operandes (obligatoire pour bit-a-bit) }
+  Case RandomInt(4) Of
+    0: OpType := TK_INT;
+    1: OpType := TK_UINT;
+    2: OpType := TK_LONG;
+    3: OpType := TK_ULONG;
+  Else
+    OpType := TK_INT;
+  End;
+  
+  { Decider si on genere un NOT (~) ou un operateur binaire }
+  If RandomChoice(BIT_NOT_PROB) Then
+  Begin
+    { Generer un complement a un (~) }
+    If (Depth < Opts.MaxExprDepth) And RandomChoice(BIT_RECURSE_PROB) Then
+      Operand := GenBitExprRec(Depth + 1)
+    Else
+      Operand := GenSimpleBitOperand(OpType);
+    
+    Result := '~(' + Operand + ')';
+  End
+  Else
+  Begin
+    { Generer un operateur binaire }
+    Op := GenRandomBitOp(False);  { Pas de NOT ici }
+    
+    { Traiter les operateurs de decalage specialement }
+    If IsShiftOp(Op) Then
+    Begin
+      { Generer un decalage securise }
+      If (Depth < Opts.MaxExprDepth) And RandomChoice(BIT_RECURSE_PROB) Then
+        Left := GenBitExprRec(Depth + 1)
+      Else
+        Left := GenSimpleBitOperand(OpType);
+      
+      Result := GenSafeShift(Left, Op, OpType);
+    End
+    Else
+    Begin
+      { Operateurs bit-a-bit normaux: & | ^ }
+      
+      { Generer operande gauche }
+      If (Depth < Opts.MaxExprDepth) And RandomChoice(BIT_RECURSE_PROB) Then
+        Left := GenBitExprRec(Depth + 1)
+      Else
+        Left := GenSimpleBitOperand(OpType);
+      
+      { Generer operande droit }
+      If (Depth < Opts.MaxExprDepth) And RandomChoice(BIT_RECURSE_PROB) Then
+        Right := GenBitExprRec(Depth + 1)
+      Else
+        Right := GenSimpleBitOperand(OpType);
+      
+      { Construire l'expression }
+      Result := Left + ' ' + BitOpToStr(Op) + ' ' + Right;
+      
+      { Ajouter des parentheses si demande }
+      If RandomChoice(BIT_PAREN_PROB) Then
+        Result := '(' + Result + ')';
+    End;
+  End;
+  
+  GenBitExprRec := Result;
+End;
+
+Function GenBitExpr(Depth: Integer): TString;
+{ Genere une expression bit-a-bit (& | ^ ~ << >>).
+  Depth: profondeur initiale pour la recursion. }
+Begin
+  GenBitExpr := GenBitExprRec(Depth);
+End;
+
+Procedure EmitBitComment;
+{ Emet un commentaire pour la section d'expressions bit-a-bit. }
+Begin
+  EmitLineComment('Expressions bit-a-bit');
+End;
+
+Function BitOpNeedsParens(InnerOp, OuterOp: TBitOp): Boolean;
+{ Determine si une expression bit-a-bit a besoin de parentheses
+  quand imbriquee dans une autre expression bit-a-bit. }
+Var
+  InnerPrec, OuterPrec: Integer;
+Begin
+  InnerPrec := GetBitOpPrecedence(InnerOp);
+  OuterPrec := GetBitOpPrecedence(OuterOp);
+  
+  { Si la precedence interieure est plus basse ou egale, il faut des parentheses }
+  BitOpNeedsParens := InnerPrec <= OuterPrec;
+End;
+
+Function CountBitExprs: Integer;
+{ Retourne le nombre d'expressions bit-a-bit generees. }
+Begin
+  CountBitExprs := BitExprCounter;
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -4328,6 +4637,7 @@ Begin
   LiteralCounter := 0;  { TODO 12 : compteur de litteraux }
   ArithExprCounter := 0;  { TODO 13 : compteur d'expressions arithmetiques }
   RelLogExprCounter := 0;  { TODO 14 : compteur d'expressions relationnelles/logiques }
+  BitExprCounter := 0;  { TODO 15 : compteur d'expressions bit-a-bit }
   StatFuncs := 0;
   StatVars := 0;
   StatExprs := 0;

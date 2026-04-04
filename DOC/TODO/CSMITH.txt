@@ -151,7 +151,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Eviter les comparaisons de pointeurs non lies (UB).
       Produire des expressions booleennes pour les conditions.
 
-  15. [A FAIRE] Generation d'operateurs bit-a-bit.
+  15. [IMPLEMENTE] Generation d'operateurs bit-a-bit.
       Generateur d'expressions bit-a-bit C :
       GenBitExpr - generer expression bit-a-bit.
       Operateurs : & | ^ ~ (complement) << >> (decalages).
