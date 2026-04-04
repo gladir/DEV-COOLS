@@ -207,7 +207,7 @@
             Barre de separation entre groupes de commandes.
             Mise en surbrillance de l element selectionne.
 
-  TODO 06 - BARRE D OUTILS ET BOUTONS D ICONES [A FAIRE]
+  TODO 06 - BARRE D OUTILS ET BOUTONS D ICONES [IMPLEMENTE]
             TToolBar : barre horizontale sous la barre de menus.
             TToolButton : bouton avec icone 16x16 dessinee en
               mode graphique (pas de fichier externe).
@@ -1000,6 +1000,14 @@ Const
  { Taille du tampon generique }
  BUFFER_SIZE           = 65536;
 
+ { Barre d outils }
+ MAX_TOOLBAR_BUTTONS   = 24;
+ TOOLTIP_DELAY         = 500;     { delai infobulle en ms          }
+ ICON_SIZE             = 16;      { taille d une icone en pixels   }
+ TOOLBTN_WIDTH         = 24;      { largeur d un bouton            }
+ TOOLBTN_HEIGHT        = 24;      { hauteur d un bouton            }
+ TOOLSEP_WIDTH         = 8;       { largeur d un separateur        }
+
  { Dimensions de l interface en pixels }
  TOOLBAR_HEIGHT        = 28;
  MENUBAR_HEIGHT        = 20;
@@ -1197,6 +1205,36 @@ Type
   Height     : Integer;       { hauteur de la barre             }
  End;
 
+ { Icone 16x16 }
+ TIcon16 = Array[0..15, 0..15] Of Byte;
+
+ { Etat d un bouton de barre d outils }
+ TToolBtnState = (
+  TB_NORMAL,              { etat normal                         }
+  TB_HOVER,               { souris au-dessus                    }
+  TB_PRESSED,             { bouton enfonce                      }
+  TB_DISABLED             { desactive                           }
+ );
+
+ { Bouton de barre d outils }
+ TToolButton = Record
+  Icon       : TIcon16;       { matrice 16x16 de pixels         }
+  Tooltip    : String[63];    { texte de l infobulle            }
+  Tag        : LongInt;       { identifiant de commande         }
+  Enabled    : Boolean;       { actif ou grise                  }
+  Separator  : Boolean;       { separateur (pas un bouton)      }
+  State      : TToolBtnState; { etat visuel courant             }
+  X          : Integer;       { position X calculee             }
+ End;
+
+ { Barre d outils }
+ TToolBar = Record
+  Buttons    : Array[0..MAX_TOOLBAR_BUTTONS - 1] Of TToolButton;
+  BtnCount   : Integer;       { nombre de boutons               }
+  Y          : Integer;       { position Y                      }
+  Height     : Integer;       { hauteur de la barre             }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1226,6 +1264,11 @@ Var
  OpenMenuIdx  : Integer;      { index du menu ouvert (-1=aucun) }
  SelItemIdx   : Integer;      { index de l item selectionne     }
  MenuActive   : Boolean;      { barre de menus active           }
+ { Barre d outils }
+ MainToolBar  : TToolBar;
+ TooltipTimer : LongInt;      { timestamp du debut de survol    }
+ TooltipBtnIdx: Integer;      { index du bouton survole         }
+ TooltipVisible: Boolean;     { infobulle affichee              }
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -3106,6 +3149,687 @@ Begin
  CountMenuSeparators := Total;
 End;
 
+{ ============================================================
+  TODO 06 - BARRE D OUTILS ET BOUTONS D ICONES [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Dessin d une icone 16x16 --- }
+
+Procedure DrawIcon16x16(X, Y: Integer; Var Icon: TIcon16);
+Var
+ IX, IY: Integer;
+ C: Byte;
+Begin
+ For IY := 0 To 15 Do
+  For IX := 0 To 15 Do Begin
+   C := Icon[IY, IX];
+   If C <> 255 Then Begin { 255 = transparent }
+    PutPixel(X + IX, Y + IY, C);
+   End;
+  End;
+End;
+
+{ --- Initialisation d une icone vide --- }
+
+Procedure ClearIcon(Var Icon: TIcon16; Color: Byte);
+Var
+ IX, IY: Integer;
+Begin
+ For IY := 0 To 15 Do
+  For IX := 0 To 15 Do
+   Icon[IY, IX] := Color;
+End;
+
+{ --- Dessiner un pixel dans une icone --- }
+
+Procedure IconPutPixel(Var Icon: TIcon16; X, Y: Integer; C: Byte);
+Begin
+ If (X >= 0) And (X <= 15) And (Y >= 0) And (Y <= 15) Then
+  Icon[Y, X] := C;
+End;
+
+{ --- Dessiner une ligne horizontale dans une icone --- }
+
+Procedure IconHLine(Var Icon: TIcon16; X1, X2, Y: Integer; C: Byte);
+Var
+ X: Integer;
+Begin
+ For X := X1 To X2 Do
+  IconPutPixel(Icon, X, Y, C);
+End;
+
+{ --- Dessiner une ligne verticale dans une icone --- }
+
+Procedure IconVLine(Var Icon: TIcon16; X, Y1, Y2: Integer; C: Byte);
+Var
+ Y: Integer;
+Begin
+ For Y := Y1 To Y2 Do
+  IconPutPixel(Icon, X, Y, C);
+End;
+
+{ --- Dessiner un rectangle dans une icone --- }
+
+Procedure IconRect(Var Icon: TIcon16; X1, Y1, X2, Y2: Integer; C: Byte);
+Begin
+ IconHLine(Icon, X1, X2, Y1, C);
+ IconHLine(Icon, X1, X2, Y2, C);
+ IconVLine(Icon, X1, Y1, Y2, C);
+ IconVLine(Icon, X2, Y1, Y2, C);
+End;
+
+{ --- Dessiner un rectangle plein dans une icone --- }
+
+Procedure IconFillRect(Var Icon: TIcon16; X1, Y1, X2, Y2: Integer;
+                       C: Byte);
+Var
+ Y: Integer;
+Begin
+ For Y := Y1 To Y2 Do
+  IconHLine(Icon, X1, X2, Y, C);
+End;
+
+{ --- Icone : Nouveau fichier --- }
+
+Procedure MakeIconNewFile(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Feuille blanche avec coin plie }
+ IconFillRect(Icon, 3, 1, 11, 14, 15);   { fond blanc }
+ IconRect(Icon, 3, 1, 11, 14, 0);        { bordure noire }
+ IconHLine(Icon, 9, 11, 1, 255);
+ IconVLine(Icon, 11, 1, 3, 255);
+ IconPutPixel(Icon, 9, 1, 0);
+ IconPutPixel(Icon, 10, 2, 0);
+ IconPutPixel(Icon, 11, 3, 0);
+ IconHLine(Icon, 9, 10, 1, 255);
+ IconVLine(Icon, 11, 1, 2, 255);
+ IconPutPixel(Icon, 9, 3, 8);
+ IconPutPixel(Icon, 10, 3, 8);
+ { Lignes de texte }
+ IconHLine(Icon, 5, 9, 6, 8);
+ IconHLine(Icon, 5, 9, 8, 8);
+ IconHLine(Icon, 5, 8, 10, 8);
+End;
+
+{ --- Icone : Ouvrir --- }
+
+Procedure MakeIconOpen(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Dossier jaune ouvert }
+ IconFillRect(Icon, 1, 5, 14, 13, 14);  { fond jaune }
+ IconRect(Icon, 1, 5, 14, 13, 0);       { bordure }
+ IconFillRect(Icon, 1, 3, 6, 5, 14);    { onglet }
+ IconRect(Icon, 1, 3, 6, 5, 0);
+ IconHLine(Icon, 2, 13, 7, 0);          { pli }
+End;
+
+{ --- Icone : Enregistrer --- }
+
+Procedure MakeIconSave(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Disquette }
+ IconFillRect(Icon, 2, 1, 13, 14, 1);   { fond bleu }
+ IconRect(Icon, 2, 1, 13, 14, 0);       { bordure }
+ IconFillRect(Icon, 4, 1, 11, 5, 15);   { etiquette }
+ IconRect(Icon, 4, 1, 11, 5, 0);
+ IconFillRect(Icon, 5, 9, 10, 14, 8);   { volet metal }
+ IconRect(Icon, 5, 9, 10, 14, 0);
+End;
+
+{ --- Icone : Enregistrer tout --- }
+
+Procedure MakeIconSaveAll(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Deux disquettes decalees }
+ IconFillRect(Icon, 4, 3, 13, 14, 1);
+ IconRect(Icon, 4, 3, 13, 14, 0);
+ IconFillRect(Icon, 6, 3, 11, 7, 15);
+ IconRect(Icon, 6, 3, 11, 7, 0);
+ IconFillRect(Icon, 1, 0, 10, 11, 1);
+ IconRect(Icon, 1, 0, 10, 11, 0);
+ IconFillRect(Icon, 3, 0, 8, 4, 15);
+ IconRect(Icon, 3, 0, 8, 4, 0);
+End;
+
+{ --- Icone : Couper --- }
+
+Procedure MakeIconCut(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Ciseaux }
+ IconPutPixel(Icon, 5, 2, 0);
+ IconPutPixel(Icon, 10, 2, 0);
+ IconPutPixel(Icon, 6, 3, 0);
+ IconPutPixel(Icon, 9, 3, 0);
+ IconPutPixel(Icon, 7, 4, 0);
+ IconPutPixel(Icon, 8, 4, 0);
+ IconPutPixel(Icon, 7, 5, 0);
+ IconPutPixel(Icon, 8, 5, 0);
+ IconPutPixel(Icon, 7, 6, 0);
+ IconPutPixel(Icon, 8, 6, 0);
+ IconPutPixel(Icon, 6, 7, 0);
+ IconPutPixel(Icon, 9, 7, 0);
+ IconPutPixel(Icon, 5, 8, 0);
+ IconPutPixel(Icon, 10, 8, 0);
+ { Poignees circulaires }
+ IconRect(Icon, 3, 9, 6, 12, 0);
+ IconRect(Icon, 9, 9, 12, 12, 0);
+End;
+
+{ --- Icone : Copier --- }
+
+Procedure MakeIconCopy(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Deux feuilles decalees }
+ IconFillRect(Icon, 4, 3, 13, 14, 15);
+ IconRect(Icon, 4, 3, 13, 14, 0);
+ IconFillRect(Icon, 1, 0, 10, 11, 15);
+ IconRect(Icon, 1, 0, 10, 11, 0);
+ IconHLine(Icon, 3, 8, 3, 8);
+ IconHLine(Icon, 3, 8, 5, 8);
+ IconHLine(Icon, 3, 7, 7, 8);
+End;
+
+{ --- Icone : Coller --- }
+
+Procedure MakeIconPaste(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Presse-papiers }
+ IconFillRect(Icon, 2, 2, 13, 14, 14);  { fond jaune }
+ IconRect(Icon, 2, 2, 13, 14, 0);       { bordure }
+ IconFillRect(Icon, 5, 0, 10, 3, 8);    { clip }
+ IconRect(Icon, 5, 0, 10, 3, 0);
+ { Feuille collee }
+ IconFillRect(Icon, 4, 5, 11, 13, 15);
+ IconRect(Icon, 4, 5, 11, 13, 0);
+ IconHLine(Icon, 6, 9, 7, 8);
+ IconHLine(Icon, 6, 9, 9, 8);
+End;
+
+{ --- Icone : Annuler --- }
+
+Procedure MakeIconUndo(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Fleche courbe vers la gauche }
+ IconPutPixel(Icon, 3, 6, 1);
+ IconPutPixel(Icon, 4, 5, 1);
+ IconPutPixel(Icon, 5, 4, 1);
+ IconHLine(Icon, 5, 11, 6, 1);
+ IconHLine(Icon, 5, 11, 7, 1);
+ IconPutPixel(Icon, 5, 8, 1);
+ IconPutPixel(Icon, 4, 7, 1);
+ IconPutPixel(Icon, 3, 8, 1);
+ IconVLine(Icon, 11, 7, 11, 1);
+ IconVLine(Icon, 12, 7, 11, 1);
+ IconHLine(Icon, 7, 11, 11, 1);
+End;
+
+{ --- Icone : Retablir --- }
+
+Procedure MakeIconRedo(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Fleche courbe vers la droite }
+ IconPutPixel(Icon, 12, 6, 1);
+ IconPutPixel(Icon, 11, 5, 1);
+ IconPutPixel(Icon, 10, 4, 1);
+ IconHLine(Icon, 4, 10, 6, 1);
+ IconHLine(Icon, 4, 10, 7, 1);
+ IconPutPixel(Icon, 10, 8, 1);
+ IconPutPixel(Icon, 11, 7, 1);
+ IconPutPixel(Icon, 12, 8, 1);
+ IconVLine(Icon, 4, 7, 11, 1);
+ IconVLine(Icon, 3, 7, 11, 1);
+ IconHLine(Icon, 4, 8, 11, 1);
+End;
+
+{ --- Icone : Demarrer (F5) --- }
+
+Procedure MakeIconStart(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Triangle vert (play) }
+ IconVLine(Icon, 4, 2, 13, 2);
+ IconVLine(Icon, 5, 3, 12, 2);
+ IconVLine(Icon, 6, 4, 11, 2);
+ IconVLine(Icon, 7, 5, 10, 2);
+ IconVLine(Icon, 8, 6, 9, 2);
+ IconVLine(Icon, 9, 7, 8, 2);
+ IconPutPixel(Icon, 10, 7, 2);
+End;
+
+{ --- Icone : Arreter --- }
+
+Procedure MakeIconStop(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Carre rouge }
+ IconFillRect(Icon, 3, 3, 12, 12, 4);
+ IconRect(Icon, 3, 3, 12, 12, 0);
+End;
+
+{ --- Icone : Pas a pas (F10) --- }
+
+Procedure MakeIconStepOver(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Fleche vers le bas avec barre }
+ IconHLine(Icon, 3, 12, 3, 1);
+ IconHLine(Icon, 3, 12, 4, 1);
+ IconVLine(Icon, 7, 4, 10, 1);
+ IconVLine(Icon, 8, 4, 10, 1);
+ { Pointe de fleche }
+ IconPutPixel(Icon, 5, 9, 1);
+ IconPutPixel(Icon, 6, 10, 1);
+ IconPutPixel(Icon, 7, 11, 1);
+ IconPutPixel(Icon, 8, 11, 1);
+ IconPutPixel(Icon, 9, 10, 1);
+ IconPutPixel(Icon, 10, 9, 1);
+End;
+
+{ --- Icone : Point d arret --- }
+
+Procedure MakeIconBreakpoint(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Cercle rouge }
+ IconHLine(Icon, 5, 10, 3, 4);
+ IconHLine(Icon, 4, 11, 4, 4);
+ IconHLine(Icon, 3, 12, 5, 4);
+ IconHLine(Icon, 3, 12, 6, 4);
+ IconHLine(Icon, 3, 12, 7, 4);
+ IconHLine(Icon, 3, 12, 8, 4);
+ IconHLine(Icon, 3, 12, 9, 4);
+ IconHLine(Icon, 3, 12, 10, 4);
+ IconHLine(Icon, 4, 11, 11, 4);
+ IconHLine(Icon, 5, 10, 12, 4);
+End;
+
+{ --- Icone : Rechercher --- }
+
+Procedure MakeIconFind(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Loupe }
+ IconHLine(Icon, 4, 8, 1, 0);
+ IconPutPixel(Icon, 3, 2, 0);
+ IconPutPixel(Icon, 9, 2, 0);
+ IconVLine(Icon, 2, 3, 6, 0);
+ IconVLine(Icon, 10, 3, 6, 0);
+ IconPutPixel(Icon, 3, 7, 0);
+ IconPutPixel(Icon, 9, 7, 0);
+ IconHLine(Icon, 4, 8, 8, 0);
+ { Interieur clair }
+ IconFillRect(Icon, 4, 3, 8, 6, 15);
+ { Manche }
+ IconPutPixel(Icon, 10, 9, 0);
+ IconPutPixel(Icon, 11, 10, 0);
+ IconPutPixel(Icon, 12, 11, 0);
+ IconPutPixel(Icon, 13, 12, 0);
+End;
+
+{ --- Icone : Naviguer en arriere --- }
+
+Procedure MakeIconNavBack(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Fleche gauche }
+ IconHLine(Icon, 3, 12, 7, 1);
+ IconHLine(Icon, 3, 12, 8, 1);
+ IconPutPixel(Icon, 5, 5, 1);
+ IconPutPixel(Icon, 4, 6, 1);
+ IconPutPixel(Icon, 3, 7, 1);
+ IconPutPixel(Icon, 4, 8, 1);
+ IconPutPixel(Icon, 5, 9, 1);
+End;
+
+{ --- Icone : Naviguer en avant --- }
+
+Procedure MakeIconNavForward(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Fleche droite }
+ IconHLine(Icon, 3, 12, 7, 1);
+ IconHLine(Icon, 3, 12, 8, 1);
+ IconPutPixel(Icon, 10, 5, 1);
+ IconPutPixel(Icon, 11, 6, 1);
+ IconPutPixel(Icon, 12, 7, 1);
+ IconPutPixel(Icon, 11, 8, 1);
+ IconPutPixel(Icon, 10, 9, 1);
+End;
+
+{ --- Initialiser toutes les icones de la barre d outils --- }
+
+Procedure InitToolBarIcons;
+Begin
+ MakeIconNewFile(MainToolBar.Buttons[0].Icon);
+ MakeIconOpen(MainToolBar.Buttons[1].Icon);
+ MakeIconSave(MainToolBar.Buttons[2].Icon);
+ MakeIconSaveAll(MainToolBar.Buttons[3].Icon);
+ { index 4 = separateur, pas d icone }
+ MakeIconCut(MainToolBar.Buttons[5].Icon);
+ MakeIconCopy(MainToolBar.Buttons[6].Icon);
+ MakeIconPaste(MainToolBar.Buttons[7].Icon);
+ { index 8 = separateur }
+ MakeIconUndo(MainToolBar.Buttons[9].Icon);
+ MakeIconRedo(MainToolBar.Buttons[10].Icon);
+ { index 11 = separateur }
+ MakeIconStart(MainToolBar.Buttons[12].Icon);
+ MakeIconStop(MainToolBar.Buttons[13].Icon);
+ MakeIconStepOver(MainToolBar.Buttons[14].Icon);
+ MakeIconBreakpoint(MainToolBar.Buttons[15].Icon);
+ { index 16 = separateur }
+ MakeIconFind(MainToolBar.Buttons[17].Icon);
+ { index 18 = separateur }
+ MakeIconNavBack(MainToolBar.Buttons[19].Icon);
+ MakeIconNavForward(MainToolBar.Buttons[20].Icon);
+End;
+
+{ --- Ajouter un bouton a la barre d outils --- }
+
+Procedure AddToolButton(Var TB: TToolBar; ATooltip: String;
+                        ATag: LongInt);
+Begin
+ If TB.BtnCount < MAX_TOOLBAR_BUTTONS Then Begin
+  TB.Buttons[TB.BtnCount].Tooltip := ATooltip;
+  TB.Buttons[TB.BtnCount].Tag := ATag;
+  TB.Buttons[TB.BtnCount].Enabled := True;
+  TB.Buttons[TB.BtnCount].Separator := False;
+  TB.Buttons[TB.BtnCount].State := TB_NORMAL;
+  TB.Buttons[TB.BtnCount].X := 0;
+  ClearIcon(TB.Buttons[TB.BtnCount].Icon, 255);
+  Inc(TB.BtnCount);
+ End;
+End;
+
+{ --- Ajouter un separateur a la barre d outils --- }
+
+Procedure AddToolSeparator(Var TB: TToolBar);
+Begin
+ If TB.BtnCount < MAX_TOOLBAR_BUTTONS Then Begin
+  TB.Buttons[TB.BtnCount].Tooltip := '';
+  TB.Buttons[TB.BtnCount].Tag := 0;
+  TB.Buttons[TB.BtnCount].Enabled := False;
+  TB.Buttons[TB.BtnCount].Separator := True;
+  TB.Buttons[TB.BtnCount].State := TB_NORMAL;
+  TB.Buttons[TB.BtnCount].X := 0;
+  ClearIcon(TB.Buttons[TB.BtnCount].Icon, 255);
+  Inc(TB.BtnCount);
+ End;
+End;
+
+{ --- Initialiser la barre d outils Visual Studio --- }
+
+Procedure InitToolBar;
+Var
+ I, XPos: Integer;
+Begin
+ MainToolBar.BtnCount := 0;
+ MainToolBar.Y := MENUBAR_HEIGHT;
+ MainToolBar.Height := TOOLBAR_HEIGHT;
+ TooltipTimer := 0;
+ TooltipBtnIdx := -1;
+ TooltipVisible := False;
+
+ { Groupe Fichier }
+ AddToolButton(MainToolBar, 'Nouveau fichier (Ctrl+N)', 101);
+ AddToolButton(MainToolBar, 'Ouvrir (Ctrl+O)', 111);
+ AddToolButton(MainToolBar, 'Enregistrer (Ctrl+S)', 130);
+ AddToolButton(MainToolBar, 'Enregistrer tout (Ctrl+Maj+S)', 132);
+ AddToolSeparator(MainToolBar);
+
+ { Groupe Presse-papiers }
+ AddToolButton(MainToolBar, 'Couper (Ctrl+X)', 210);
+ AddToolButton(MainToolBar, 'Copier (Ctrl+C)', 211);
+ AddToolButton(MainToolBar, 'Coller (Ctrl+V)', 212);
+ AddToolSeparator(MainToolBar);
+
+ { Groupe Annuler/Retablir }
+ AddToolButton(MainToolBar, 'Annuler (Ctrl+Z)', 200);
+ AddToolButton(MainToolBar, 'Retablir (Ctrl+Y)', 201);
+ AddToolSeparator(MainToolBar);
+
+ { Groupe Debogage }
+ AddToolButton(MainToolBar, 'Demarrer le debogage (F5)', 600);
+ AddToolButton(MainToolBar, 'Arreter le debogage (Maj+F5)', 630);
+ AddToolButton(MainToolBar, 'Pas a pas principal (F10)', 620);
+ AddToolButton(MainToolBar, 'Point d arret (F9)', 610);
+ AddToolSeparator(MainToolBar);
+
+ { Groupe Recherche }
+ AddToolButton(MainToolBar, 'Rechercher (Ctrl+F)', 230);
+ AddToolSeparator(MainToolBar);
+
+ { Groupe Navigation }
+ AddToolButton(MainToolBar, 'Naviguer en arriere (Ctrl+-)', 330);
+ AddToolButton(MainToolBar, 'Naviguer en avant (Ctrl+Maj+-)', 331);
+
+ { Initialiser les icones }
+ InitToolBarIcons;
+
+ { Calculer les positions X }
+ XPos := 4;
+ For I := 0 To MainToolBar.BtnCount - 1 Do Begin
+  MainToolBar.Buttons[I].X := XPos;
+  If MainToolBar.Buttons[I].Separator Then
+   XPos := XPos + TOOLSEP_WIDTH
+  Else
+   XPos := XPos + TOOLBTN_WIDTH;
+ End;
+End;
+
+{ --- Dessiner la barre d outils --- }
+
+Procedure DrawToolBar;
+Var
+ I, BX, BY: Integer;
+Begin
+ { Fond de la barre }
+ SetColor(CLR_TOOLBAR);
+ Bar(0, MainToolBar.Y, GetScreenWidth - 1,
+     MainToolBar.Y + MainToolBar.Height - 1);
+ { Ligne de separation en bas }
+ SetColor(CLR_BORDER);
+ Line(0, MainToolBar.Y + MainToolBar.Height - 1,
+      GetScreenWidth - 1, MainToolBar.Y + MainToolBar.Height - 1);
+
+ For I := 0 To MainToolBar.BtnCount - 1 Do Begin
+  BX := MainToolBar.Buttons[I].X;
+  BY := MainToolBar.Y + 2;
+  If MainToolBar.Buttons[I].Separator Then Begin
+   { Separateur : ligne verticale }
+   SetColor(CLR_BORDER);
+   Line(BX + 3, BY + 2, BX + 3, BY + TOOLBTN_HEIGHT - 4);
+  End Else Begin
+   { Bouton }
+   Case MainToolBar.Buttons[I].State Of
+    TB_HOVER: Begin
+     SetColor(CLR_MENU_HIGHLIGHT);
+     Bar(BX, BY, BX + TOOLBTN_WIDTH - 1, BY + TOOLBTN_HEIGHT - 1);
+    End;
+    TB_PRESSED: Begin
+     SetColor(CLR_SELECTION);
+     Bar(BX, BY, BX + TOOLBTN_WIDTH - 1, BY + TOOLBTN_HEIGHT - 1);
+    End;
+   End;
+   { Dessiner l icone centree }
+   DrawIcon16x16(BX + (TOOLBTN_WIDTH - ICON_SIZE) Div 2,
+                 BY + (TOOLBTN_HEIGHT - ICON_SIZE) Div 2,
+                 MainToolBar.Buttons[I].Icon);
+   { Effet grise si desactive }
+   If Not MainToolBar.Buttons[I].Enabled Then Begin
+    SetColor(CLR_TOOLBAR);
+    { Demi-transparence par hachure }
+   End;
+  End;
+ End;
+End;
+
+{ --- Trouver le bouton sous la souris --- }
+
+Function ToolBarHitTest(MX, MY: Integer): Integer;
+Var
+ I, BX, BY: Integer;
+Begin
+ ToolBarHitTest := -1;
+ If (MY < MainToolBar.Y) Or
+    (MY >= MainToolBar.Y + MainToolBar.Height) Then Exit;
+ For I := 0 To MainToolBar.BtnCount - 1 Do Begin
+  If MainToolBar.Buttons[I].Separator Then Continue;
+  BX := MainToolBar.Buttons[I].X;
+  BY := MainToolBar.Y + 2;
+  If (MX >= BX) And (MX < BX + TOOLBTN_WIDTH) And
+     (MY >= BY) And (MY < BY + TOOLBTN_HEIGHT) Then Begin
+   ToolBarHitTest := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Afficher une infobulle --- }
+
+Procedure DrawTooltip(BtnIdx: Integer);
+Var
+ TX, TY, TW: Integer;
+ Tip: String;
+Begin
+ If (BtnIdx < 0) Or (BtnIdx >= MainToolBar.BtnCount) Then Exit;
+ Tip := MainToolBar.Buttons[BtnIdx].Tooltip;
+ If Length(Tip) = 0 Then Exit;
+ TX := MainToolBar.Buttons[BtnIdx].X;
+ TY := MainToolBar.Y + MainToolBar.Height + 2;
+ TW := Length(Tip) * 8 + 8;
+ { Fond }
+ SetColor(14);  { jaune clair }
+ Bar(TX, TY, TX + TW, TY + 16);
+ SetColor(0);
+ Rectangle(TX, TY, TX + TW, TY + 16);
+ OutTextXY(TX + 4, TY + 3, Tip);
+End;
+
+{ --- Effacer une infobulle --- }
+
+Procedure HideTooltip;
+Begin
+ If TooltipVisible Then Begin
+  TooltipVisible := False;
+  TooltipBtnIdx := -1;
+ End;
+End;
+
+{ --- Executer la commande d un bouton --- }
+
+Procedure ExecuteToolButton(BtnIdx: Integer);
+Var
+ Item: TMenuItem;
+Begin
+ If (BtnIdx < 0) Or (BtnIdx >= MainToolBar.BtnCount) Then Exit;
+ If Not MainToolBar.Buttons[BtnIdx].Enabled Then Exit;
+ HideTooltip;
+ { Reutiliser le meme systeme de tags que les menus }
+ Item.Tag := MainToolBar.Buttons[BtnIdx].Tag;
+ Item.Caption := MainToolBar.Buttons[BtnIdx].Tooltip;
+ Item.ShortCut := '';
+ Item.Enabled := True;
+ Item.Checked := False;
+ Item.Separator := False;
+ Item.IconIndex := -1;
+ ExecuteMenuItem(Item);
+End;
+
+{ --- Gestion des evenements de la barre d outils --- }
+
+Procedure HandleToolBarEvent(Var Ev: TEvent);
+Var
+ Hit: Integer;
+ Now: LongInt;
+Begin
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  Hit := ToolBarHitTest(Ev.MouseX, Ev.MouseY);
+  If Hit >= 0 Then Begin
+   MainToolBar.Buttons[Hit].State := TB_PRESSED;
+   DrawToolBar;
+  End;
+ End
+ Else If Ev.Kind = EV_MOUSE_UP Then Begin
+  Hit := ToolBarHitTest(Ev.MouseX, Ev.MouseY);
+  If Hit >= 0 Then Begin
+   If MainToolBar.Buttons[Hit].State = TB_PRESSED Then Begin
+    MainToolBar.Buttons[Hit].State := TB_HOVER;
+    ExecuteToolButton(Hit);
+   End;
+  End;
+  { Remettre tous les boutons a normal/hover }
+  For Hit := 0 To MainToolBar.BtnCount - 1 Do
+   If MainToolBar.Buttons[Hit].State = TB_PRESSED Then
+    MainToolBar.Buttons[Hit].State := TB_NORMAL;
+  DrawToolBar;
+ End
+ Else If Ev.Kind = EV_MOUSE_MOVE Then Begin
+  Hit := ToolBarHitTest(Ev.MouseX, Ev.MouseY);
+  Now := GetTimestamp;
+  { Mettre a jour les etats de survol }
+  For TooltipBtnIdx := 0 To MainToolBar.BtnCount - 1 Do Begin
+   If TooltipBtnIdx = Hit Then Begin
+    If MainToolBar.Buttons[TooltipBtnIdx].State = TB_NORMAL Then
+     MainToolBar.Buttons[TooltipBtnIdx].State := TB_HOVER;
+   End Else Begin
+    If MainToolBar.Buttons[TooltipBtnIdx].State = TB_HOVER Then
+     MainToolBar.Buttons[TooltipBtnIdx].State := TB_NORMAL;
+   End;
+  End;
+  { Gestion infobulle }
+  If Hit >= 0 Then Begin
+   If Hit <> TooltipBtnIdx Then Begin
+    TooltipBtnIdx := Hit;
+    TooltipTimer := Now;
+    HideTooltip;
+   End Else Begin
+    If (Not TooltipVisible) And
+       (Now - TooltipTimer >= TOOLTIP_DELAY) Then Begin
+     TooltipVisible := True;
+     DrawTooltip(Hit);
+    End;
+   End;
+  End Else Begin
+   HideTooltip;
+   TooltipBtnIdx := -1;
+  End;
+  DrawToolBar;
+ End;
+End;
+
+{ --- Compter les boutons de la barre d outils --- }
+
+Function CountToolButtons: Integer;
+Var
+ I, Total: Integer;
+Begin
+ Total := 0;
+ For I := 0 To MainToolBar.BtnCount - 1 Do
+  If Not MainToolBar.Buttons[I].Separator Then
+   Inc(Total);
+ CountToolButtons := Total;
+End;
+
+Function CountToolSeparators: Integer;
+Var
+ I, Total: Integer;
+Begin
+ Total := 0;
+ For I := 0 To MainToolBar.BtnCount - 1 Do
+  If MainToolBar.Buttons[I].Separator Then
+   Inc(Total);
+ CountToolSeparators := Total;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -3118,6 +3842,8 @@ BEGIN
  InitWidgetSystem;
  InitMenuBar;
  DrawMenuBar;
- { Boucle principale a venir (TODO 06+) }
+ InitToolBar;
+ DrawToolBar;
+ { Boucle principale a venir (TODO 07+) }
  ShutdownGraphics;
 END.

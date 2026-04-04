@@ -89,7 +89,7 @@
             Sous-menus imbriques (cascade).
             Barres de separation entre groupes.
 
-  TODO 06 - BARRE D OUTILS ET BOUTONS D ICONES [A FAIRE]
+  TODO 06 - BARRE D OUTILS ET BOUTONS D ICONES [IMPLEMENTE]
             TToolBar, TToolButton.
             Boutons : Nouveau, Ouvrir, Enregistrer, Enregistrer tout,
               Couper, Copier, Coller, Annuler, Retablir,
