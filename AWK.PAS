@@ -74,17 +74,19 @@ Type
   BodyStartPos:Integer;   { Position dans la ligne de debut }
   Next:PUserFunc;         { Noeud suivant dans la liste chainee }
  End;
- { Type pour les elements de tableaux associatifs }
+ { Type pour les elements de tableaux associatifs - liste chainee }
+ PArrayElement=^TArrayElement;
  TArrayElement=Record
   Key:String[64];
   Value:String[255];
+  Next:PArrayElement;      { Noeud suivant dans la liste chainee }
  End;
  { Type pour les tableaux associatifs - liste chainee }
  PAssocArray=^TAssocArray;
  TAssocArray=Record
   Name:String[32];
-  Elements:Array[1..MaxArrayElements]of TArrayElement;
-  Count:Integer;
+  ElemHead:PArrayElement;  { Tete de la liste d'elements }
+  ElemLast:PArrayElement;  { Queue de la liste d'elements }
   Next:PAssocArray;         { Noeud suivant dans la liste chainee }
  End;
  { Type pour les regles pattern-action }
@@ -1053,7 +1055,8 @@ Var
 Begin
  New(P);
  P^.Name:=ArrayName;
- P^.Count:=0;
+ P^.ElemHead:=nil;
+ P^.ElemLast:=nil;
  P^.Next:=nil;
  If AssocArrayLast=nil Then Begin
   AssocArrayList:=P;
@@ -1067,88 +1070,96 @@ Begin
  CreateArray:=P;
 End;
 
-Function FindArrayElement(ArrayPtr:PAssocArray;Key:String):Integer;
+Function FindArrayElement(ArrayPtr:PAssocArray;Key:String):PArrayElement;
 Var
- J:Integer;
+ P:PArrayElement;
 Begin
- FindArrayElement:=0;
+ FindArrayElement:=nil;
  If ArrayPtr=nil Then Exit;
- For J:=1 to ArrayPtr^.Count do Begin
-  If ArrayPtr^.Elements[J].Key=Key Then Begin
-   FindArrayElement:=J;
+ P:=ArrayPtr^.ElemHead;
+ While P<>nil do Begin
+  If P^.Key=Key Then Begin
+   FindArrayElement:=P;
    Exit;
   End;
+  P:=P^.Next;
  End;
 End;
 
 Procedure SetArrayElement(ArrayName,Key,Value:String);
 Var
  ArrayPtr:PAssocArray;
- ElemIdx:Integer;
+ ElemPtr:PArrayElement;
 Begin
  ArrayPtr:=FindArray(ArrayName);
  If ArrayPtr=nil Then ArrayPtr:=CreateArray(ArrayName);
  If ArrayPtr=nil Then Exit;
  
- ElemIdx:=FindArrayElement(ArrayPtr,Key);
- If ElemIdx>0 Then Begin
-  ArrayPtr^.Elements[ElemIdx].Value:=Value;
+ ElemPtr:=FindArrayElement(ArrayPtr,Key);
+ If ElemPtr<>nil Then Begin
+  ElemPtr^.Value:=Value;
  End
   Else
  Begin
-  If ArrayPtr^.Count>=MaxArrayElements Then Begin
-   WriteLn('Trop d''elements dans le tableau');
-   Exit;
+  New(ElemPtr);
+  ElemPtr^.Key:=Key;
+  ElemPtr^.Value:=Value;
+  ElemPtr^.Next:=nil;
+  If ArrayPtr^.ElemLast=nil Then Begin
+   ArrayPtr^.ElemHead:=ElemPtr;
+   ArrayPtr^.ElemLast:=ElemPtr;
+  End
+   Else
+  Begin
+   ArrayPtr^.ElemLast^.Next:=ElemPtr;
+   ArrayPtr^.ElemLast:=ElemPtr;
   End;
-  Inc(ArrayPtr^.Count);
-  ElemIdx:=ArrayPtr^.Count;
-  ArrayPtr^.Elements[ElemIdx].Key:=Key;
-  ArrayPtr^.Elements[ElemIdx].Value:=Value;
  End;
 End;
 
 Function GetArrayElement(ArrayName,Key:String):String;
 Var
  ArrayPtr:PAssocArray;
- ElemIdx:Integer;
+ ElemPtr:PArrayElement;
 Begin
  GetArrayElement:='';
  ArrayPtr:=FindArray(ArrayName);
  If ArrayPtr=nil Then Exit;
  
- ElemIdx:=FindArrayElement(ArrayPtr,Key);
- If ElemIdx>0 Then
-  GetArrayElement:=ArrayPtr^.Elements[ElemIdx].Value;
+ ElemPtr:=FindArrayElement(ArrayPtr,Key);
+ If ElemPtr<>nil Then
+  GetArrayElement:=ElemPtr^.Value;
 End;
 
 Function KeyInArray(ArrayName,Key:String):Boolean;
 Var
  ArrayPtr:PAssocArray;
- ElemIdx:Integer;
 Begin
  KeyInArray:=False;
  ArrayPtr:=FindArray(ArrayName);
  If ArrayPtr=nil Then Exit;
- 
- ElemIdx:=FindArrayElement(ArrayPtr,Key);
- KeyInArray:=(ElemIdx>0);
+ KeyInArray:=(FindArrayElement(ArrayPtr,Key)<>nil);
 End;
 
 Procedure DeleteArrayElement(ArrayName,Key:String);
 Var
  ArrayPtr:PAssocArray;
- ElemIdx,J:Integer;
+ Prev,Curr:PArrayElement;
 Begin
  ArrayPtr:=FindArray(ArrayName);
  If ArrayPtr=nil Then Exit;
- 
- ElemIdx:=FindArrayElement(ArrayPtr,Key);
- If ElemIdx>0 Then Begin
-  { Decaler les elements }
-  For J:=ElemIdx to ArrayPtr^.Count-1 do Begin
-   ArrayPtr^.Elements[J]:=ArrayPtr^.Elements[J+1];
+ Prev:=nil;
+ Curr:=ArrayPtr^.ElemHead;
+ While Curr<>nil do Begin
+  If Curr^.Key=Key Then Begin
+   If Prev=nil Then ArrayPtr^.ElemHead:=Curr^.Next
+               Else Prev^.Next:=Curr^.Next;
+   If ArrayPtr^.ElemLast=Curr Then ArrayPtr^.ElemLast:=Prev;
+   Dispose(Curr);
+   Exit;
   End;
-  Dec(ArrayPtr^.Count);
+  Prev:=Curr;
+  Curr:=Curr^.Next;
  End;
 End;
 
@@ -3569,7 +3580,7 @@ End;
 Procedure ForInCommand(IterVar,ArrayName:String);
 Var
  ArrayPtr:PAssocArray;
- ElemIdx:Integer;
+ ElemPtr:PArrayElement;
  BlockStartPos:Integer;
  SaveLinePtr:Integer;
  SaveCurrLine:String;
@@ -3593,16 +3604,17 @@ Begin
  End;
  
  { Iterer sur chaque element }
- For ElemIdx:=1 to ArrayPtr^.Count do Begin
+ ElemPtr:=ArrayPtr^.ElemHead;
+ While ElemPtr<>nil do Begin
   { Reinitialiser les flags }
   ContinueFlag:=False;
   
   { Assigner la cle a la variable d'iteration }
   If VariableExist(IterVar)Then Begin
-   SetVariableString(IterVar,ArrayPtr^.Elements[ElemIdx].Key);
+   SetVariableString(IterVar,ElemPtr^.Key);
   End
    Else
-  AddVariableString(IterVar,ArrayPtr^.Elements[ElemIdx].Key);
+  AddVariableString(IterVar,ElemPtr^.Key);
   
   { Executer le bloc }
   CurrLinePtr:=SaveLinePtr;
@@ -3615,6 +3627,7 @@ Begin
    BreakFlag:=False;
    Break;
   End;
+  ElemPtr:=ElemPtr^.Next;
  End;
  
  { Sauter le bloc apres la derniere iteration }
