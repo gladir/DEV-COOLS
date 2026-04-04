@@ -282,7 +282,7 @@
             ParseCSCOutput : "filename(line,col): error CSnnnn: msg"
             Configurations Debug/Release.
 
-  TODO 26 - INTEGRATION COMPILATEUR VB.NET (VBCW32/VBC86) [A FAIRE]
+  TODO 26 - INTEGRATION COMPILATEUR VB.NET (VBCW32/VBC86) [IMPLEMENTE]
             CompileVBNet.
             Ligne de commande : VBCW32 source.vb [-o sortie.exe]
               ou VBC86 source.vb.

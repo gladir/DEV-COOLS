@@ -790,7 +790,7 @@
             Compilation de tous les fichiers .cs du projet.
             Affichage de la progression dans le panneau de sortie.
 
-  TODO 26 - INTEGRATION COMPILATEUR VB.NET (VBCW32/VBC86) [A FAIRE]
+  TODO 26 - INTEGRATION COMPILATEUR VB.NET (VBCW32/VBC86) [IMPLEMENTE]
             Integration des compilateurs VB.NET du projet DEV-COOLS.
             Note : les compilateurs VB.NET (VBCW32.PAS, VBC86.PAS)
             sont prevus dans le projet DEV-COOLS mais peuvent ne
@@ -1184,6 +1184,19 @@ Const
  CSC_EXT_SOURCE       = '.cs';      { extension source C#            }
  CSC_EXT_EXE          = '.exe';     { extension executable           }
  CSC_EXT_DLL          = '.dll';     { extension bibliotheque         }
+
+ { Integration compilateur VB.NET }
+ VBC_COMPILER_WIN32   = 'VBCW32';   { compilateur VB.NET Win32 PE    }
+ VBC_COMPILER_DOS     = 'VBC86';    { compilateur VB.NET DOS 8086    }
+ VBC_TEMP_OUTPUT      = '_vbcout.tmp'; { fichier temp sortie compil  }
+ VBC_MAX_SOURCE_FILES = 128;        { nombre max fichiers source     }
+ VBC_FLAG_VERBOSE     = '-v';       { option verbeux                 }
+ VBC_FLAG_DEBUG       = '-d';       { option symboles debogage       }
+ VBC_FLAG_WARNINGS    = '-w';       { option afficher avertissements }
+ VBC_FLAG_OUTPUT      = '-o';       { option fichier sortie          }
+ VBC_EXT_SOURCE       = '.vb';      { extension source VB.NET        }
+ VBC_EXT_EXE          = '.exe';     { extension executable           }
+ VBC_EXT_DLL          = '.dll';     { extension bibliotheque         }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -2187,6 +2200,24 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ { Contexte du compilateur VB.NET }
+ TVBCCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur (VBCW32/VBC86) }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -2243,6 +2274,8 @@ Var
  GoToLineDlg    : TGoToLineDialog;
  { Contexte compilateur C# }
  CSCContext     : TCSCCompilerContext;
+ { Contexte compilateur VB.NET }
+ VBCContext     : TVBCCompilerContext;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -18476,6 +18509,468 @@ Begin
   (Ctx.WarningCount = 0) And
   (Not Ctx.IsCompiling);
 End;
+
+{ ============================================================
+  TODO 26 - INTEGRATION COMPILATEUR VB.NET (VBCW32/VBC86) [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser le contexte du compilateur VB.NET --- }
+
+Procedure InitVBCContext(Var Ctx: TVBCCompilerContext);
+Begin
+ Ctx.CompilerPath := '';
+ Ctx.CompilerName := '';
+ Ctx.CompilerFound := False;
+ Ctx.LastResult := CR_NOT_FOUND;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ Ctx.TotalFiles := 0;
+ Ctx.OutputFile := '';
+ Ctx.TempFile := VBC_TEMP_OUTPUT;
+ Ctx.IsCompiling := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose := False;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Detecter le compilateur VB.NET disponible --- }
+
+Procedure DetectVBCCompiler(Var Ctx: TVBCCompilerContext);
+Var
+ Path: String;
+Begin
+ { Essayer d abord VBCW32 (Win32 PE) }
+ Path := FindCompiler(VBC_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := VBC_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer VBC86 (DOS 8086) }
+ Path := FindCompiler(VBC_COMPILER_DOS);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := VBC_COMPILER_DOS;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
+{ --- Construire le chemin de sortie du fichier compile --- }
+
+Function BuildVBCOutputPath(Var Proj: TProject;
+ Var Cfg: TBuildConfig): String;
+Var
+ OutPath, Ext: String;
+Begin
+ If Cfg.OutputPath <> '' Then
+  OutPath := Cfg.OutputPath
+ Else If Proj.Info.OutputPath <> '' Then
+  OutPath := Proj.Info.OutputPath
+ Else
+  OutPath := '.';
+ Case Proj.Info.OutputType Of
+  OT_EXE, OT_WINEXE:
+   Ext := VBC_EXT_EXE;
+  OT_LIBRARY:
+   Ext := VBC_EXT_DLL;
+ End;
+ If Proj.Info.AssemblyName <> '' Then
+  BuildVBCOutputPath := OutPath + '/' + Proj.Info.AssemblyName + Ext
+ Else If Proj.Info.ProjectName <> '' Then
+  BuildVBCOutputPath := OutPath + '/' + Proj.Info.ProjectName + Ext
+ Else
+  BuildVBCOutputPath := OutPath + '/output' + Ext;
+End;
+
+{ --- Construire la ligne de commande pour un fichier source --- }
+
+Function BuildVBCCommandLine(Var Ctx: TVBCCompilerContext;
+ SourceFile, OutputFile: String): String;
+Var
+ Cmd: String;
+Begin
+ Cmd := Ctx.CompilerPath + ' ' + SourceFile;
+ If OutputFile <> '' Then
+  Cmd := Cmd + ' ' + VBC_FLAG_OUTPUT + ' ' + OutputFile;
+ If Ctx.UseVerbose Then
+  Cmd := Cmd + ' ' + VBC_FLAG_VERBOSE;
+ If Ctx.UseDebugSymbols Then
+  Cmd := Cmd + ' ' + VBC_FLAG_DEBUG;
+ If Ctx.UseWarnings Then
+  Cmd := Cmd + ' ' + VBC_FLAG_WARNINGS;
+ BuildVBCCommandLine := Cmd;
+End;
+
+{ --- Compter les fichiers source VB.NET dans le projet --- }
+
+Function CountVBSourceFiles(Var Proj: TProject): Integer;
+Var
+ I, Count: Integer;
+ Ext: String;
+Begin
+ Count := 0;
+ For I := 0 To Proj.FileCount - 1 Do Begin
+  Ext := '';
+  If Length(Proj.Files[I].FileName) >= 3 Then
+   Ext := Copy(Proj.Files[I].FileName,
+    Length(Proj.Files[I].FileName) - 2, 3);
+  If (Ext = VBC_EXT_SOURCE) And
+     (Proj.Files[I].BuildAction = BA_COMPILE) Then
+   Inc(Count);
+ End;
+ CountVBSourceFiles := Count;
+End;
+
+{ --- Collecter les fichiers source VB.NET du projet --- }
+
+Procedure CollectVBSourceFiles(Var Proj: TProject;
+ Var FileList: Array Of String; Var Count: Integer);
+Var
+ I: Integer;
+ Ext: String;
+Begin
+ Count := 0;
+ For I := 0 To Proj.FileCount - 1 Do Begin
+  If Count >= VBC_MAX_SOURCE_FILES Then Exit;
+  Ext := '';
+  If Length(Proj.Files[I].FileName) >= 3 Then
+   Ext := Copy(Proj.Files[I].FileName,
+    Length(Proj.Files[I].FileName) - 2, 3);
+  If (Ext = VBC_EXT_SOURCE) And
+     (Proj.Files[I].BuildAction = BA_COMPILE) Then Begin
+   FileList[Count] := Proj.Files[I].FileName;
+   Inc(Count);
+  End;
+ End;
+End;
+
+{ --- Parser le fichier de sortie du compilateur VB.NET --- }
+
+Procedure ParseVBCOutput(TempFile, ProjName: String;
+ Var EL: TErrorListPanel; Var ErrCount, WarnCount: Integer);
+Var
+ F: Text;
+ Line: String;
+ E: TErrorEntry;
+Begin
+ ErrCount := 0;
+ WarnCount := 0;
+ {$I-}
+ Assign(F, TempFile);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  If ParseVBCError(Line, E) Then Begin
+   E.Project := ProjName;
+   AddError(EL, E);
+   If E.Severity = ES_ERROR Then
+    Inc(ErrCount)
+   Else If E.Severity = ES_WARNING Then
+    Inc(WarnCount);
+  End;
+ End;
+ Close(F);
+End;
+
+{ --- Compiler un seul fichier VB.NET --- }
+
+Function CompileSingleVBFile(Var Ctx: TVBCCompilerContext;
+ SourceFile, OutputFile: String;
+ Var OP: TOutputPanel;
+ Var EL: TErrorListPanel;
+ ProjName: String): TCompilerResult;
+Var
+ CmdLine: String;
+ ExitCode: Integer;
+ EC, WC: Integer;
+Begin
+ CompileSingleVBFile := CR_EXEC_FAILED;
+ CmdLine := BuildVBCCommandLine(Ctx, SourceFile, OutputFile);
+ AppendOutput(OP, '> ' + CmdLine, Ord(OTK_BUILD));
+ ExitCode := ExecuteCompiler(CmdLine, Ctx.TempFile);
+ ReadOutputFile(Ctx.TempFile, OP, Ord(OTK_BUILD));
+ ParseVBCOutput(Ctx.TempFile, ProjName, EL, EC, WC);
+ CleanupTempFile(Ctx.TempFile);
+ Ctx.ErrorCount := Ctx.ErrorCount + EC;
+ Ctx.WarningCount := Ctx.WarningCount + WC;
+ If EC > 0 Then
+  CompileSingleVBFile := CR_ERRORS
+ Else If WC > 0 Then
+  CompileSingleVBFile := CR_WARNINGS
+ Else If ExitCode = 0 Then
+  CompileSingleVBFile := CR_SUCCESS
+ Else
+  CompileSingleVBFile := CR_EXEC_FAILED;
+End;
+
+{ --- Appliquer la configuration de build au contexte VB.NET --- }
+
+Procedure ApplyVBCBuildConfig(Var Ctx: TVBCCompilerContext;
+ Var Cfg: TBuildConfig);
+Begin
+ Ctx.UseDebugSymbols := Cfg.DebugSymbols;
+ If Cfg.Optimize Then
+  Ctx.UseVerbose := False
+ Else
+  Ctx.UseVerbose := Ctx.UseVerbose;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Compiler un projet VB.NET complet --- }
+
+Procedure CompileVBNet(Var Proj: TProject;
+ Var Cfg: TBuildConfig;
+ Var OP: TOutputPanel;
+ Var EL: TErrorListPanel;
+ Var Ctx: TVBCCompilerContext);
+Var
+ SourceFiles: Array[0..VBC_MAX_SOURCE_FILES - 1] Of String;
+ FileCount: Integer;
+ I: Integer;
+ OutputPath: String;
+ ProjName: String;
+ Res: TCompilerResult;
+Begin
+ Ctx.IsCompiling := True;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ ProjName := Proj.Info.ProjectName;
+ { Effacer les sorties precedentes }
+ ClearOutput(OP, Ord(OTK_BUILD));
+ ClearErrors(EL);
+ AppendOutput(OP, '------ Build started: Project: ' +
+  ProjName + ', Configuration: ' +
+  Cfg.ConfigName + ' ------', Ord(OTK_BUILD));
+ { Detecter le compilateur }
+ DetectVBCCompiler(Ctx);
+ If Not Ctx.CompilerFound Then Begin
+  AppendOutputEx(OP,
+   'Error: VB.NET compiler not found (VBCW32 or VBC86). ' +
+   'Please ensure the compiler is installed and available in PATH.',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Ctx.LastResult := CR_NOT_FOUND;
+  Ctx.IsCompiling := False;
+  Exit;
+ End;
+ AppendOutput(OP, 'Using compiler: ' + Ctx.CompilerName +
+  ' (' + Ctx.CompilerPath + ')', Ord(OTK_BUILD));
+ { Appliquer la configuration }
+ ApplyVBCBuildConfig(Ctx, Cfg);
+ { Collecter les fichiers source }
+ CollectVBSourceFiles(Proj, SourceFiles, FileCount);
+ Ctx.TotalFiles := FileCount;
+ If FileCount = 0 Then Begin
+  AppendOutputEx(OP,
+   'Error: No VB.NET source files found in project',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Ctx.LastResult := CR_NO_SOURCE;
+  Ctx.IsCompiling := False;
+  Exit;
+ End;
+ AppendOutput(OP, 'Compiling ' + IntToStr(FileCount) +
+  ' file(s)...', Ord(OTK_BUILD));
+ { Determiner le fichier de sortie }
+ OutputPath := BuildVBCOutputPath(Proj, Cfg);
+ Ctx.OutputFile := OutputPath;
+ { Compiler chaque fichier source }
+ For I := 0 To FileCount - 1 Do Begin
+  AppendOutput(OP, '  ' + SourceFiles[I],
+   Ord(OTK_BUILD));
+  Res := CompileSingleVBFile(Ctx,
+   SourceFiles[I], OutputPath,
+   OP, EL, ProjName);
+  Inc(Ctx.FilesCompiled);
+  If Res = CR_ERRORS Then Begin
+   Ctx.LastResult := CR_ERRORS;
+   AppendOutputEx(OP,
+    'Build FAILED for ' + SourceFiles[I],
+    Ord(OTK_BUILD), OLK_ERROR, SourceFiles[I], 0, 0);
+  End;
+ End;
+ { Resume de la compilation }
+ If Ctx.ErrorCount > 0 Then Begin
+  Ctx.LastResult := CR_ERRORS;
+  AppendOutputEx(OP,
+   '========== Build: 0 succeeded, 1 failed, ' +
+   IntToStr(Ctx.ErrorCount) + ' error(s), ' +
+   IntToStr(Ctx.WarningCount) + ' warning(s) ==========',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+ End Else If Ctx.WarningCount > 0 Then Begin
+  Ctx.LastResult := CR_WARNINGS;
+  AppendOutputEx(OP,
+   '========== Build: 1 succeeded, 0 failed, ' +
+   IntToStr(Ctx.WarningCount) + ' warning(s) ==========',
+   Ord(OTK_BUILD), OLK_WARNING, '', 0, 0);
+ End Else Begin
+  Ctx.LastResult := CR_SUCCESS;
+  AppendOutputEx(OP,
+   '========== Build: 1 succeeded, 0 failed ==========',
+   Ord(OTK_BUILD), OLK_SUCCESS, '', 0, 0);
+ End;
+ Ctx.IsCompiling := False;
+End;
+
+{ --- Obtenir le chemin du compilateur VB.NET --- }
+
+Function GetVBCCompilerPath(
+ Var Ctx: TVBCCompilerContext): String;
+Begin
+ GetVBCCompilerPath := Ctx.CompilerPath;
+End;
+
+{ --- Obtenir le nom du compilateur VB.NET --- }
+
+Function GetVBCCompilerName(
+ Var Ctx: TVBCCompilerContext): String;
+Begin
+ GetVBCCompilerName := Ctx.CompilerName;
+End;
+
+{ --- Le compilateur VB.NET est-il disponible --- }
+
+Function IsVBCCompilerFound(
+ Var Ctx: TVBCCompilerContext): Boolean;
+Begin
+ IsVBCCompilerFound := Ctx.CompilerFound;
+End;
+
+{ --- Obtenir le dernier resultat de compilation VB.NET --- }
+
+Function GetVBCLastResult(
+ Var Ctx: TVBCCompilerContext): TCompilerResult;
+Begin
+ GetVBCLastResult := Ctx.LastResult;
+End;
+
+{ --- Obtenir le nombre d erreurs de la derniere compilation VB.NET --- }
+
+Function GetVBCErrorCount(
+ Var Ctx: TVBCCompilerContext): Integer;
+Begin
+ GetVBCErrorCount := Ctx.ErrorCount;
+End;
+
+{ --- Obtenir le nombre d avertissements VB.NET --- }
+
+Function GetVBCWarningCount(
+ Var Ctx: TVBCCompilerContext): Integer;
+Begin
+ GetVBCWarningCount := Ctx.WarningCount;
+End;
+
+{ --- Obtenir le nombre de fichiers VB.NET compiles --- }
+
+Function GetVBCFilesCompiled(
+ Var Ctx: TVBCCompilerContext): Integer;
+Begin
+ GetVBCFilesCompiled := Ctx.FilesCompiled;
+End;
+
+{ --- Obtenir le nombre total de fichiers source VB.NET --- }
+
+Function GetVBCTotalFiles(
+ Var Ctx: TVBCCompilerContext): Integer;
+Begin
+ GetVBCTotalFiles := Ctx.TotalFiles;
+End;
+
+{ --- Obtenir le fichier de sortie genere VB.NET --- }
+
+Function GetVBCOutputFile(
+ Var Ctx: TVBCCompilerContext): String;
+Begin
+ GetVBCOutputFile := Ctx.OutputFile;
+End;
+
+{ --- La compilation VB.NET est-elle en cours --- }
+
+Function IsVBCCompiling(
+ Var Ctx: TVBCCompilerContext): Boolean;
+Begin
+ IsVBCCompiling := Ctx.IsCompiling;
+End;
+
+{ --- Activer/desactiver les symboles de debogage VB.NET --- }
+
+Procedure SetVBCDebugSymbols(
+ Var Ctx: TVBCCompilerContext; Enable: Boolean);
+Begin
+ Ctx.UseDebugSymbols := Enable;
+End;
+
+{ --- Activer/desactiver le mode verbeux VB.NET --- }
+
+Procedure SetVBCVerbose(
+ Var Ctx: TVBCCompilerContext; Enable: Boolean);
+Begin
+ Ctx.UseVerbose := Enable;
+End;
+
+{ --- Activer/desactiver les avertissements VB.NET --- }
+
+Procedure SetVBCWarnings(
+ Var Ctx: TVBCCompilerContext; Enable: Boolean);
+Begin
+ Ctx.UseWarnings := Enable;
+End;
+
+{ --- Les symboles de debogage VB.NET sont-ils actives --- }
+
+Function AreVBCDebugSymbolsEnabled(
+ Var Ctx: TVBCCompilerContext): Boolean;
+Begin
+ AreVBCDebugSymbolsEnabled := Ctx.UseDebugSymbols;
+End;
+
+{ --- Le mode verbeux VB.NET est-il active --- }
+
+Function IsVBCVerboseEnabled(
+ Var Ctx: TVBCCompilerContext): Boolean;
+Begin
+ IsVBCVerboseEnabled := Ctx.UseVerbose;
+End;
+
+{ --- Les avertissements VB.NET sont-ils actives --- }
+
+Function AreVBCWarningsEnabled(
+ Var Ctx: TVBCCompilerContext): Boolean;
+Begin
+ AreVBCWarningsEnabled := Ctx.UseWarnings;
+End;
+
+{ --- Obtenir le fichier temporaire de sortie VB.NET --- }
+
+Function GetVBCTempFile(
+ Var Ctx: TVBCCompilerContext): String;
+Begin
+ GetVBCTempFile := Ctx.TempFile;
+End;
+
+{ --- Definir le fichier temporaire de sortie VB.NET --- }
+
+Procedure SetVBCTempFile(
+ Var Ctx: TVBCCompilerContext; AFile: String);
+Begin
+ Ctx.TempFile := AFile;
+End;
+
+{ --- Le contexte VB.NET est-il vide (pas de compilation effectuee) --- }
+
+Function IsVBCContextEmpty(
+ Var Ctx: TVBCCompilerContext): Boolean;
+Begin
+ IsVBCContextEmpty := (Ctx.FilesCompiled = 0) And
+  (Ctx.ErrorCount = 0) And
+  (Ctx.WarningCount = 0) And
+  (Not Ctx.IsCompiling);
+End;
  InitOptions(Opts);
  ParseCommandLine(Opts);
  If Opts.Verbose Then
@@ -18505,6 +19000,7 @@ End;
  InitFindReplaceDialog(FindReplaceDlg);
  InitGoToLineDialog(GoToLineDlg);
  InitCSCContext(CSCContext);
- { Boucle principale a venir (TODO 26+) }
+ InitVBCContext(VBCContext);
+ { Boucle principale a venir (TODO 27+) }
  ShutdownGraphics;
 END.
