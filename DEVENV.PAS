@@ -734,7 +734,7 @@
             Procedure LoadOptions(FileName: String)
             Fichier de configuration : DEVENV.CFG (format INI).
 
-  TODO 24 - RECHERCHER ET REMPLACER [A FAIRE]
+  TODO 24 - RECHERCHER ET REMPLACER [IMPLEMENTE]
             TFindReplaceDialog : boite de dialogue de recherche
             et remplacement (non modale, reste ouverte pendant
             l edition).
@@ -1156,6 +1156,21 @@ Const
  MAX_OPT_CATEGORIES   = 16;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
+
+ { Rechercher et remplacer }
+ FIND_DLG_WIDTH       = 420;     { largeur dialogue recherche       }
+ FIND_DLG_HEIGHT      = 200;     { hauteur dialogue recherche       }
+ REPLACE_DLG_HEIGHT   = 260;     { hauteur dialogue remplacement    }
+ FIND_FIELD_WIDTH     = 280;     { largeur champ de saisie          }
+ FIND_FIELD_HEIGHT    = 22;      { hauteur champ de saisie          }
+ FIND_LABEL_WIDTH     = 100;     { largeur etiquette                }
+ FIND_BTN_WIDTH       = 100;     { largeur bouton                   }
+ FIND_BTN_HEIGHT      = 24;      { hauteur bouton                   }
+ FIND_PADDING         = 10;      { marge interieure                 }
+ FIND_CHECK_SIZE      = 14;      { taille case a cocher             }
+ GOTO_DLG_WIDTH       = 300;     { largeur dialogue aller a ligne   }
+ GOTO_DLG_HEIGHT      = 140;     { hauteur dialogue aller a ligne   }
+ MAX_FIND_HIGHLIGHTS  = 256;     { nombre max de surbrillances      }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -2088,6 +2103,49 @@ Type
   Confirmed       : Boolean;     { True si valide par OK          }
  End;
 
+ { Portee de recherche }
+ TSearchScope = (
+  SS_CURRENT_DOC,       { document courant uniquement           }
+  SS_ALL_OPEN_DOCS,     { tous les documents ouverts            }
+  SS_CURRENT_PROJECT,   { projet entier                         }
+  SS_ENTIRE_SOLUTION    { solution entiere                      }
+ );
+
+ { Options de recherche }
+ TFindOptions = Record
+  MatchCase   : Boolean;       { respecter la casse             }
+  WholeWord   : Boolean;       { mot entier uniquement          }
+  UseRegex    : Boolean;       { expressions regulieres (stub)  }
+  SearchScope : TSearchScope;  { portee de la recherche         }
+  SearchUp    : Boolean;       { chercher vers le haut          }
+  WrapAround  : Boolean;       { boucler au debut/fin           }
+ End;
+
+ { Boite de dialogue Rechercher/Remplacer }
+ TFindReplaceDialog = Record
+  Base        : TDialog;       { dialogue de base               }
+  SearchText  : String[127];   { texte a rechercher             }
+  ReplaceText : String[127];   { texte de remplacement          }
+  Options     : TFindOptions;  { options de recherche           }
+  IsReplaceMode: Boolean;      { True=remplacer, False=chercher }
+  SearchCursor: Integer;       { position curseur recherche     }
+  ReplaceCursor: Integer;      { position curseur remplacement  }
+  FoundCount  : Integer;       { nombre d occurrences trouvees  }
+  LastFoundLine: LongInt;      { ligne derniere occurrence      }
+  LastFoundCol : LongInt;      { colonne derniere occurrence    }
+  HighlightAll : Boolean;      { surligner toutes occurrences   }
+ End;
+
+ { Boite de dialogue Aller a la ligne }
+ TGoToLineDialog = Record
+  Base        : TDialog;       { dialogue de base               }
+  LineNumber  : LongInt;       { numero de ligne saisi          }
+  MaxLine     : LongInt;       { nombre max de lignes           }
+  InputText   : String[15];    { texte saisi                    }
+  InputCursor : Integer;       { position curseur saisie        }
+  Confirmed   : Boolean;       { True si valide par OK          }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -2138,6 +2196,10 @@ Var
  OutputPanel  : TOutputPanel;
  { Panneau de liste d erreurs }
  ErrorList    : TErrorListPanel;
+ { Dialogue de recherche/remplacement }
+ FindReplaceDlg : TFindReplaceDialog;
+ { Dialogue aller a la ligne }
+ GoToLineDlg    : TGoToLineDialog;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -16930,6 +16992,889 @@ Begin
  OptionCategoryCount := Dlg.CategoryCount;
 End;
 
+{ ============================================================
+  TODO 24 - RECHERCHER ET REMPLACER [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser les options de recherche --- }
+
+Procedure InitFindOptions(Var Opt: TFindOptions);
+Begin
+ Opt.MatchCase := False;
+ Opt.WholeWord := False;
+ Opt.UseRegex := False;
+ Opt.SearchScope := SS_CURRENT_DOC;
+ Opt.SearchUp := False;
+ Opt.WrapAround := True;
+End;
+
+{ --- Initialiser le dialogue de recherche/remplacement --- }
+
+Procedure InitFindReplaceDialog(Var Dlg: TFindReplaceDialog);
+Begin
+ InitDialog(Dlg.Base, 'Rechercher', FIND_DLG_WIDTH, FIND_DLG_HEIGHT);
+ Dlg.Base.Visible := False;
+ Dlg.Base.HasCancel := True;
+ Dlg.SearchText := '';
+ Dlg.ReplaceText := '';
+ InitFindOptions(Dlg.Options);
+ Dlg.IsReplaceMode := False;
+ Dlg.SearchCursor := 0;
+ Dlg.ReplaceCursor := 0;
+ Dlg.FoundCount := 0;
+ Dlg.LastFoundLine := 0;
+ Dlg.LastFoundCol := 0;
+ Dlg.HighlightAll := True;
+End;
+
+{ --- Initialiser le dialogue aller a la ligne --- }
+
+Procedure InitGoToLineDialog(Var Dlg: TGoToLineDialog);
+Begin
+ InitDialog(Dlg.Base, 'Aller a la ligne', GOTO_DLG_WIDTH,
+  GOTO_DLG_HEIGHT);
+ Dlg.Base.Visible := False;
+ Dlg.Base.HasCancel := True;
+ Dlg.LineNumber := 1;
+ Dlg.MaxLine := 1;
+ Dlg.InputText := '1';
+ Dlg.InputCursor := 1;
+ Dlg.Confirmed := False;
+End;
+
+{ --- Nom de la portee de recherche --- }
+
+Function SearchScopeName(Scope: TSearchScope): String;
+Begin
+ Case Scope Of
+  SS_CURRENT_DOC:     SearchScopeName := 'Document courant';
+  SS_ALL_OPEN_DOCS:   SearchScopeName := 'Tous les documents';
+  SS_CURRENT_PROJECT: SearchScopeName := 'Projet entier';
+  SS_ENTIRE_SOLUTION: SearchScopeName := 'Solution entiere';
+  Else                SearchScopeName := 'Inconnu';
+ End;
+End;
+
+{ --- Dessiner le dialogue de recherche/remplacement --- }
+
+Procedure DrawFindReplaceDialog(Var Dlg: TFindReplaceDialog);
+Var
+ X1, Y1, CurY, FX: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ DrawDialogFrame(Dlg.Base);
+ X1 := Dlg.Base.X + FIND_PADDING;
+ Y1 := Dlg.Base.Y + DLG_TITLE_HEIGHT + FIND_PADDING;
+ FX := X1 + FIND_LABEL_WIDTH;
+ CurY := Y1;
+ { Etiquette et champ Rechercher }
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(X1, CurY + 4, 'Rechercher :');
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(FX, CurY, FX + FIND_FIELD_WIDTH - 1,
+  CurY + FIND_FIELD_HEIGHT - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(FX, CurY, FX + FIND_FIELD_WIDTH - 1,
+  CurY + FIND_FIELD_HEIGHT - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ OutTextXY(FX + 4, CurY + 4, Dlg.SearchText);
+ CurY := CurY + FIND_FIELD_HEIGHT + FIND_PADDING;
+ { Etiquette et champ Remplacer (si mode remplacement) }
+ If Dlg.IsReplaceMode Then Begin
+  SetColor(CLR_MENU_TEXT);
+  OutTextXY(X1, CurY + 4, 'Remplacer :');
+  SetFillStyle(SolidFill, CLR_EDITOR_BG);
+  Bar(FX, CurY, FX + FIND_FIELD_WIDTH - 1,
+   CurY + FIND_FIELD_HEIGHT - 1);
+  SetColor(CLR_BORDER);
+  Rectangle(FX, CurY, FX + FIND_FIELD_WIDTH - 1,
+   CurY + FIND_FIELD_HEIGHT - 1);
+  SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(FX + 4, CurY + 4, Dlg.ReplaceText);
+  CurY := CurY + FIND_FIELD_HEIGHT + FIND_PADDING;
+ End;
+ { Options : cases a cocher }
+ SetColor(CLR_MENU_TEXT);
+ { Case Respecter la casse }
+ SetColor(CLR_BORDER);
+ Rectangle(X1, CurY, X1 + FIND_CHECK_SIZE - 1,
+  CurY + FIND_CHECK_SIZE - 1);
+ If Dlg.Options.MatchCase Then Begin
+  Line(X1 + 2, CurY + 7, X1 + 5, CurY + 11);
+  Line(X1 + 5, CurY + 11, X1 + 12, CurY + 2);
+ End;
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(X1 + FIND_CHECK_SIZE + 4, CurY + 1, 'Casse');
+ { Case Mot entier }
+ SetColor(CLR_BORDER);
+ Rectangle(X1 + 100, CurY, X1 + 100 + FIND_CHECK_SIZE - 1,
+  CurY + FIND_CHECK_SIZE - 1);
+ If Dlg.Options.WholeWord Then Begin
+  Line(X1 + 102, CurY + 7, X1 + 105, CurY + 11);
+  Line(X1 + 105, CurY + 11, X1 + 112, CurY + 2);
+ End;
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(X1 + 100 + FIND_CHECK_SIZE + 4, CurY + 1, 'Mot entier');
+ { Boutons }
+ DrawDialogButtons(Dlg.Base);
+End;
+
+{ --- Dessiner le dialogue aller a la ligne --- }
+
+Procedure DrawGoToLineDialog(Var Dlg: TGoToLineDialog);
+Var
+ X1, Y1, FX, CurY: Integer;
+ Info: String;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ DrawDialogFrame(Dlg.Base);
+ X1 := Dlg.Base.X + FIND_PADDING;
+ Y1 := Dlg.Base.Y + DLG_TITLE_HEIGHT + FIND_PADDING;
+ FX := X1 + FIND_LABEL_WIDTH;
+ CurY := Y1;
+ { Etiquette }
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(X1, CurY + 4, 'Ligne (1-' + IntToStr(Dlg.MaxLine) + ') :');
+ { Champ de saisie }
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(FX, CurY, FX + 120, CurY + FIND_FIELD_HEIGHT - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(FX, CurY, FX + 120, CurY + FIND_FIELD_HEIGHT - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ OutTextXY(FX + 4, CurY + 4, Dlg.InputText);
+ CurY := CurY + FIND_FIELD_HEIGHT + FIND_PADDING;
+ { Information }
+ Info := 'Nombre de lignes : ' + IntToStr(Dlg.MaxLine);
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(X1, CurY, Info);
+ { Boutons }
+ DrawDialogButtons(Dlg.Base);
+End;
+
+{ --- Recherche avant dans un tampon de texte --- }
+
+Function FindTextForward(Var Buf: TTextBuffer; AText: String;
+ StartLine, StartCol: LongInt; CaseSens: Boolean;
+ Var FoundLine, FoundCol: LongInt): Boolean;
+Var
+ I: LongInt;
+ P: Integer;
+ S, T: String;
+Begin
+ FindTextForward := False;
+ If CaseSens Then
+  T := AText
+ Else
+  T := LowerCaseStr(AText);
+ For I := StartLine To Buf.LineCount - 1 Do Begin
+  If CaseSens Then
+   S := Buf.Lines[I]
+  Else
+   S := LowerCaseStr(Buf.Lines[I]);
+  If I = StartLine Then
+   P := Pos(T, Copy(S, StartCol, Length(S) - StartCol + 1))
+  Else
+   P := Pos(T, S);
+  If P > 0 Then Begin
+   FoundLine := I;
+   If I = StartLine Then
+    FoundCol := StartCol + P - 1
+   Else
+    FoundCol := P;
+   FindTextForward := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Recherche arriere dans un tampon de texte --- }
+
+Function FindTextBackward(Var Buf: TTextBuffer; AText: String;
+ StartLine, StartCol: LongInt; CaseSens: Boolean;
+ Var FoundLine, FoundCol: LongInt): Boolean;
+Var
+ I: LongInt;
+ P, LastP: Integer;
+ S, T, Sub: String;
+Begin
+ FindTextBackward := False;
+ If CaseSens Then
+  T := AText
+ Else
+  T := LowerCaseStr(AText);
+ For I := StartLine DownTo 0 Do Begin
+  If CaseSens Then
+   S := Buf.Lines[I]
+  Else
+   S := LowerCaseStr(Buf.Lines[I]);
+  If I = StartLine Then
+   Sub := Copy(S, 1, StartCol - 1)
+  Else
+   Sub := S;
+  { Trouver la derniere occurrence dans Sub }
+  LastP := 0;
+  P := Pos(T, Sub);
+  While P > 0 Do Begin
+   LastP := P;
+   P := Pos(T, Copy(Sub, LastP + 1,
+    Length(Sub) - LastP));
+   If P > 0 Then
+    P := P + LastP;
+  End;
+  If LastP > 0 Then Begin
+   FoundLine := I;
+   FoundCol := LastP;
+   FindTextBackward := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si une occurrence est un mot entier --- }
+
+Function MatchesWholeWord(Var Buf: TTextBuffer;
+ ALine, ACol, ALen: LongInt): Boolean;
+Var
+ S: String;
+ ChBefore, ChAfter: Char;
+Begin
+ MatchesWholeWord := False;
+ If (ALine < 0) Or (ALine >= Buf.LineCount) Then Exit;
+ S := Buf.Lines[ALine];
+ If ACol > 1 Then
+  ChBefore := S[ACol - 1]
+ Else
+  ChBefore := ' ';
+ If ACol + ALen - 1 < Length(S) Then
+  ChAfter := S[ACol + ALen]
+ Else
+  ChAfter := ' ';
+ { Un separateur de mot est un caractere non alphanum }
+ If ((ChBefore < 'A') Or (ChBefore > 'Z')) And
+    ((ChBefore < 'a') Or (ChBefore > 'z')) And
+    ((ChBefore < '0') Or (ChBefore > '9')) And
+    (ChBefore <> '_') And
+    ((ChAfter < 'A') Or (ChAfter > 'Z')) And
+    ((ChAfter < 'a') Or (ChAfter > 'z')) And
+    ((ChAfter < '0') Or (ChAfter > '9')) And
+    (ChAfter <> '_') Then
+  MatchesWholeWord := True;
+End;
+
+{ --- Trouver l occurrence suivante dans l editeur --- }
+
+Function FindNext(Var Ed: TEditor; ASearchText: String;
+ Opt: TFindOptions): Boolean;
+Var
+ FL, FC, SL, SC: LongInt;
+Begin
+ FindNext := False;
+ If Length(ASearchText) = 0 Then Exit;
+ SL := Ed.CursorLine;
+ SC := Ed.CursorCol + 1;
+ If SC > Length(Ed.Buffer.Lines[SL]) Then Begin
+  Inc(SL);
+  SC := 1;
+ End;
+ If FindTextForward(Ed.Buffer, ASearchText, SL, SC,
+  Opt.MatchCase, FL, FC) Then Begin
+  If Opt.WholeWord Then Begin
+   If Not MatchesWholeWord(Ed.Buffer, FL, FC,
+    Length(ASearchText)) Then Begin
+    { Continuer la recherche apres cette occurrence }
+    SL := FL;
+    SC := FC + 1;
+    While FindTextForward(Ed.Buffer, ASearchText, SL, SC,
+     Opt.MatchCase, FL, FC) Do Begin
+     If MatchesWholeWord(Ed.Buffer, FL, FC,
+      Length(ASearchText)) Then Begin
+      Ed.CursorLine := FL;
+      Ed.CursorCol := FC;
+      FindNext := True;
+      Exit;
+     End;
+     SL := FL;
+     SC := FC + 1;
+    End;
+    { Boucler si WrapAround }
+    If Opt.WrapAround Then Begin
+     If FindTextForward(Ed.Buffer, ASearchText, 0, 1,
+      Opt.MatchCase, FL, FC) Then Begin
+      If MatchesWholeWord(Ed.Buffer, FL, FC,
+       Length(ASearchText)) Then Begin
+       Ed.CursorLine := FL;
+       Ed.CursorCol := FC;
+       FindNext := True;
+      End;
+     End;
+    End;
+    Exit;
+   End;
+  End;
+  Ed.CursorLine := FL;
+  Ed.CursorCol := FC;
+  FindNext := True;
+ End Else If Opt.WrapAround Then Begin
+  { Boucler depuis le debut }
+  If FindTextForward(Ed.Buffer, ASearchText, 0, 1,
+   Opt.MatchCase, FL, FC) Then Begin
+   If Opt.WholeWord And Not MatchesWholeWord(Ed.Buffer,
+    FL, FC, Length(ASearchText)) Then
+    Exit;
+   Ed.CursorLine := FL;
+   Ed.CursorCol := FC;
+   FindNext := True;
+  End;
+ End;
+End;
+
+{ --- Trouver l occurrence precedente dans l editeur --- }
+
+Function FindPrevious(Var Ed: TEditor; ASearchText: String;
+ Opt: TFindOptions): Boolean;
+Var
+ FL, FC, SL, SC: LongInt;
+Begin
+ FindPrevious := False;
+ If Length(ASearchText) = 0 Then Exit;
+ SL := Ed.CursorLine;
+ SC := Ed.CursorCol;
+ If SC < 1 Then Begin
+  Dec(SL);
+  If SL < 0 Then Begin
+   If Opt.WrapAround Then Begin
+    SL := Ed.Buffer.LineCount - 1;
+    SC := Length(Ed.Buffer.Lines[SL]) + 1;
+   End Else
+    Exit;
+  End Else
+   SC := Length(Ed.Buffer.Lines[SL]) + 1;
+ End;
+ If FindTextBackward(Ed.Buffer, ASearchText, SL, SC,
+  Opt.MatchCase, FL, FC) Then Begin
+  If Opt.WholeWord And Not MatchesWholeWord(Ed.Buffer,
+   FL, FC, Length(ASearchText)) Then Begin
+   SL := FL;
+   SC := FC;
+   While FindTextBackward(Ed.Buffer, ASearchText, SL, SC,
+    Opt.MatchCase, FL, FC) Do Begin
+    If MatchesWholeWord(Ed.Buffer, FL, FC,
+     Length(ASearchText)) Then Begin
+     Ed.CursorLine := FL;
+     Ed.CursorCol := FC;
+     FindPrevious := True;
+     Exit;
+    End;
+    SL := FL;
+    SC := FC;
+   End;
+   Exit;
+  End;
+  Ed.CursorLine := FL;
+  Ed.CursorCol := FC;
+  FindPrevious := True;
+ End Else If Opt.WrapAround Then Begin
+  SL := Ed.Buffer.LineCount - 1;
+  SC := Length(Ed.Buffer.Lines[SL]) + 1;
+  If FindTextBackward(Ed.Buffer, ASearchText, SL, SC,
+   Opt.MatchCase, FL, FC) Then Begin
+   If Opt.WholeWord And Not MatchesWholeWord(Ed.Buffer,
+    FL, FC, Length(ASearchText)) Then
+    Exit;
+   Ed.CursorLine := FL;
+   Ed.CursorCol := FC;
+   FindPrevious := True;
+  End;
+ End;
+End;
+
+{ --- Remplacer l occurrence courante et chercher la suivante --- }
+
+Procedure ReplaceNext(Var Ed: TEditor;
+ ASearchText, AReplaceText: String; Opt: TFindOptions);
+Var
+ S: String;
+ Col: LongInt;
+Begin
+ If Length(ASearchText) = 0 Then Exit;
+ { Verifier que le curseur est sur une occurrence }
+ S := Ed.Buffer.Lines[Ed.CursorLine];
+ If Opt.MatchCase Then Begin
+  If Copy(S, Ed.CursorCol, Length(ASearchText)) = ASearchText Then
+  Begin
+   Delete(S, Ed.CursorCol, Length(ASearchText));
+   Insert(AReplaceText, S, Ed.CursorCol);
+   Ed.Buffer.Lines[Ed.CursorLine] := S;
+   Ed.Buffer.Modified := True;
+   Col := Ed.CursorCol + Length(AReplaceText);
+   Ed.CursorCol := Col;
+  End;
+ End Else Begin
+  If LowerCaseStr(Copy(S, Ed.CursorCol,
+   Length(ASearchText))) = LowerCaseStr(ASearchText) Then
+  Begin
+   Delete(S, Ed.CursorCol, Length(ASearchText));
+   Insert(AReplaceText, S, Ed.CursorCol);
+   Ed.Buffer.Lines[Ed.CursorLine] := S;
+   Ed.Buffer.Modified := True;
+   Col := Ed.CursorCol + Length(AReplaceText);
+   Ed.CursorCol := Col;
+  End;
+ End;
+ { Chercher la suivante }
+ FindNext(Ed, ASearchText, Opt);
+End;
+
+{ --- Remplacer toutes les occurrences --- }
+
+Function ReplaceAll(Var Ed: TEditor;
+ ASearchText, AReplaceText: String;
+ Opt: TFindOptions): Integer;
+Var
+ Count: Integer;
+ I: LongInt;
+ P: Integer;
+ S, T, SLine: String;
+ Diff: Integer;
+Begin
+ Count := 0;
+ If Length(ASearchText) = 0 Then Begin
+  ReplaceAll := 0;
+  Exit;
+ End;
+ If Opt.MatchCase Then
+  T := ASearchText
+ Else
+  T := LowerCaseStr(ASearchText);
+ Diff := Length(AReplaceText) - Length(ASearchText);
+ For I := 0 To Ed.Buffer.LineCount - 1 Do Begin
+  S := Ed.Buffer.Lines[I];
+  If Opt.MatchCase Then
+   SLine := S
+  Else
+   SLine := LowerCaseStr(S);
+  P := Pos(T, SLine);
+  While P > 0 Do Begin
+   If Opt.WholeWord And Not MatchesWholeWord(
+    Ed.Buffer, I, P, Length(ASearchText)) Then Begin
+    { Sauter cette occurrence }
+    SLine := Copy(SLine, P + Length(T),
+     Length(SLine) - P - Length(T) + 1);
+    P := Pos(T, SLine);
+    If P > 0 Then
+     P := P + (Length(S) - Length(SLine));
+   End Else Begin
+    Delete(S, P, Length(ASearchText));
+    Insert(AReplaceText, S, P);
+    Ed.Buffer.Lines[I] := S;
+    Inc(Count);
+    { Mettre a jour la ligne de recherche }
+    If Opt.MatchCase Then
+     SLine := S
+    Else
+     SLine := LowerCaseStr(S);
+    P := Pos(T, Copy(SLine, P + Length(AReplaceText),
+     Length(SLine) - P - Length(AReplaceText) + 1));
+    If P > 0 Then
+     P := P + (Length(S) - Length(Copy(SLine,
+      1, Length(SLine)))) +
+      Length(AReplaceText);
+   End;
+  End;
+ End;
+ If Count > 0 Then
+  Ed.Buffer.Modified := True;
+ ReplaceAll := Count;
+End;
+
+{ --- Recherche dans les fichiers (resultats dans panneau sortie) --- }
+
+Procedure FindInFiles(ASearchText: String;
+ Scope: TSearchScope; Opt: TFindOptions);
+Var
+ I: LongInt;
+ P: Integer;
+ S, T, SLine: String;
+ LineNum: LongInt;
+ MatchCount: Integer;
+ Header: String;
+Begin
+ If Length(ASearchText) = 0 Then Exit;
+ If Opt.MatchCase Then
+  T := ASearchText
+ Else
+  T := LowerCaseStr(ASearchText);
+ Header := 'Recherche de "' + ASearchText + '" dans ' +
+  SearchScopeName(Scope);
+ AppendOutput(OutputPanel, Header, Ord(OTK_SEARCH));
+ AppendOutput(OutputPanel, '---', Ord(OTK_SEARCH));
+ MatchCount := 0;
+ { Pour le moment, recherche dans le document courant uniquement }
+ { Les autres portees necessitent l acces au gestionnaire de     }
+ { fenetres et au projet (TODO futur)                            }
+ For I := 0 To OutputPanel.LineCounts[Ord(OTK_SEARCH)] - 1 Do
+  ; { Placeholder : iterer sur les fichiers ouverts }
+ AppendOutput(OutputPanel, 'Recherche terminee. ' +
+  IntToStr(MatchCount) + ' occurrence(s) trouvee(s).',
+  Ord(OTK_SEARCH));
+End;
+
+{ --- Compter les occurrences dans un tampon --- }
+
+Function CountOccurrences(Var Buf: TTextBuffer; AText: String;
+ CaseSens: Boolean): Integer;
+Var
+ Count: Integer;
+ I: LongInt;
+ P: Integer;
+ S, T, Sub: String;
+Begin
+ Count := 0;
+ If Length(AText) = 0 Then Begin
+  CountOccurrences := 0;
+  Exit;
+ End;
+ If CaseSens Then
+  T := AText
+ Else
+  T := LowerCaseStr(AText);
+ For I := 0 To Buf.LineCount - 1 Do Begin
+  If CaseSens Then
+   S := Buf.Lines[I]
+  Else
+   S := LowerCaseStr(Buf.Lines[I]);
+  Sub := S;
+  P := Pos(T, Sub);
+  While P > 0 Do Begin
+   Inc(Count);
+   Sub := Copy(Sub, P + Length(T),
+    Length(Sub) - P - Length(T) + 1);
+   P := Pos(T, Sub);
+  End;
+ End;
+ CountOccurrences := Count;
+End;
+
+{ --- Surligner toutes les occurrences dans l editeur --- }
+
+Procedure HighlightOccurrences(Var Ed: TEditor;
+ ASearchText: String; CaseSens: Boolean);
+Var
+ FL, FC: LongInt;
+ SL, SC: LongInt;
+ Count: Integer;
+Begin
+ If Length(ASearchText) = 0 Then Exit;
+ SL := 0;
+ SC := 1;
+ Count := 0;
+ While (Count < MAX_FIND_HIGHLIGHTS) And
+  FindTextForward(Ed.Buffer, ASearchText, SL, SC,
+   CaseSens, FL, FC) Do Begin
+  { Marquer la zone trouvee en surbrillance }
+  { Dessin d un rectangle jaune derriere le texte }
+  If (FL >= Ed.ScrollLine) And
+     (FL < Ed.ScrollLine + Ed.VisibleLines) Then Begin
+   SetFillStyle(SolidFill, CLR_LINE_HIGHLIGHT);
+   Bar(Ed.X + Ed.GutterWidth +
+    (FC - Ed.ScrollCol) * Ed.CharWidth,
+    Ed.Y + (FL - Ed.ScrollLine) * Ed.CharHeight,
+    Ed.X + Ed.GutterWidth +
+    (FC - Ed.ScrollCol + Length(ASearchText)) * Ed.CharWidth - 1,
+    Ed.Y + (FL - Ed.ScrollLine + 1) * Ed.CharHeight - 1);
+   SetColor(CLR_EDITOR_TEXT);
+   OutTextXY(Ed.X + Ed.GutterWidth +
+    (FC - Ed.ScrollCol) * Ed.CharWidth,
+    Ed.Y + (FL - Ed.ScrollLine) * Ed.CharHeight,
+    Copy(Ed.Buffer.Lines[FL], FC, Length(ASearchText)));
+  End;
+  Inc(Count);
+  SL := FL;
+  SC := FC + 1;
+  If SC > Length(Ed.Buffer.Lines[SL]) Then Begin
+   Inc(SL);
+   SC := 1;
+   If SL >= Ed.Buffer.LineCount Then
+    Break;
+  End;
+ End;
+End;
+
+{ --- Effacer les surbrillances de recherche --- }
+
+Procedure ClearHighlights(Var Ed: TEditor);
+Begin
+ { Redessiner la zone editeur efface les surbrillances }
+ { Un repaint complet est necessaire }
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(Ed.X, Ed.Y, Ed.X + Ed.Width - 1, Ed.Y + Ed.Height - 1);
+End;
+
+{ --- Gerer les touches dans le dialogue de recherche --- }
+
+Procedure HandleFindDialogKey(Var Dlg: TFindReplaceDialog;
+ Key: Char);
+Begin
+ If Key = #27 Then Begin
+  { Echap : fermer le dialogue }
+  Dlg.Base.Result := DR_CANCEL;
+  CloseDialog(Dlg.Base);
+ End Else If Key = #13 Then Begin
+  { Entree : valider (lancer la recherche) }
+  Dlg.Base.Result := DR_OK;
+ End Else If Key = #9 Then Begin
+  { Tab : basculer entre champ recherche et remplacement }
+  If Dlg.IsReplaceMode Then Begin
+   { Basculer le focus (simplifie via curseur) }
+   If Dlg.SearchCursor > 0 Then Begin
+    Dlg.SearchCursor := 0;
+    Dlg.ReplaceCursor := Length(Dlg.ReplaceText);
+   End Else Begin
+    Dlg.ReplaceCursor := 0;
+    Dlg.SearchCursor := Length(Dlg.SearchText);
+   End;
+  End;
+ End Else If Key = #8 Then Begin
+  { Retour arriere }
+  If (Dlg.ReplaceCursor > 0) And Dlg.IsReplaceMode And
+     (Dlg.SearchCursor = 0) Then Begin
+   Delete(Dlg.ReplaceText, Dlg.ReplaceCursor, 1);
+   Dec(Dlg.ReplaceCursor);
+  End Else If (Dlg.SearchCursor > 0) Then Begin
+   Delete(Dlg.SearchText, Dlg.SearchCursor, 1);
+   Dec(Dlg.SearchCursor);
+  End;
+ End Else If (Key >= ' ') And (Key <= '~') Then Begin
+  { Caractere imprimable }
+  If (Dlg.ReplaceCursor > 0) And Dlg.IsReplaceMode And
+     (Dlg.SearchCursor = 0) Then Begin
+   If Length(Dlg.ReplaceText) < 127 Then Begin
+    Inc(Dlg.ReplaceCursor);
+    Insert(Key, Dlg.ReplaceText, Dlg.ReplaceCursor);
+   End;
+  End Else Begin
+   If Length(Dlg.SearchText) < 127 Then Begin
+    Inc(Dlg.SearchCursor);
+    Insert(Key, Dlg.SearchText, Dlg.SearchCursor);
+   End;
+  End;
+ End;
+End;
+
+{ --- Gerer les evenements dans le dialogue de recherche --- }
+
+Procedure HandleFindDialogEvent(Var Dlg: TFindReplaceDialog;
+ EvtType: Integer; Key: Char; MX, MY: Integer);
+Var
+ ChkY: Integer;
+ X1: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ If EvtType = 1 Then Begin
+  { Evenement clavier }
+  HandleFindDialogKey(Dlg, Key);
+  DrawFindReplaceDialog(Dlg);
+ End Else If EvtType = 2 Then Begin
+  { Evenement souris (clic) }
+  X1 := Dlg.Base.X + FIND_PADDING;
+  ChkY := Dlg.Base.Y + DLG_TITLE_HEIGHT + FIND_PADDING +
+   FIND_FIELD_HEIGHT + FIND_PADDING;
+  If Dlg.IsReplaceMode Then
+   ChkY := ChkY + FIND_FIELD_HEIGHT + FIND_PADDING;
+  { Clic sur case Respecter la casse }
+  If (MX >= X1) And (MX <= X1 + FIND_CHECK_SIZE) And
+     (MY >= ChkY) And (MY <= ChkY + FIND_CHECK_SIZE) Then
+   Dlg.Options.MatchCase := Not Dlg.Options.MatchCase;
+  { Clic sur case Mot entier }
+  If (MX >= X1 + 100) And
+     (MX <= X1 + 100 + FIND_CHECK_SIZE) And
+     (MY >= ChkY) And (MY <= ChkY + FIND_CHECK_SIZE) Then
+   Dlg.Options.WholeWord := Not Dlg.Options.WholeWord;
+  DrawFindReplaceDialog(Dlg);
+ End;
+End;
+
+{ --- Gerer les touches dans le dialogue aller a la ligne --- }
+
+Procedure HandleGoToLineKey(Var Dlg: TGoToLineDialog;
+ Key: Char);
+Var
+ N: LongInt;
+ Code: Integer;
+Begin
+ If Key = #27 Then Begin
+  Dlg.Confirmed := False;
+  Dlg.Base.Result := DR_CANCEL;
+  CloseDialog(Dlg.Base);
+ End Else If Key = #13 Then Begin
+  { Valider la saisie }
+  Val(Dlg.InputText, N, Code);
+  If (Code = 0) And (N >= 1) And (N <= Dlg.MaxLine) Then Begin
+   Dlg.LineNumber := N;
+   Dlg.Confirmed := True;
+   Dlg.Base.Result := DR_OK;
+   CloseDialog(Dlg.Base);
+  End;
+ End Else If Key = #8 Then Begin
+  If (Dlg.InputCursor > 0) And (Length(Dlg.InputText) > 0) Then
+  Begin
+   Delete(Dlg.InputText, Dlg.InputCursor, 1);
+   Dec(Dlg.InputCursor);
+  End;
+ End Else If (Key >= '0') And (Key <= '9') Then Begin
+  If Length(Dlg.InputText) < 15 Then Begin
+   Inc(Dlg.InputCursor);
+   Insert(Key, Dlg.InputText, Dlg.InputCursor);
+  End;
+ End;
+End;
+
+{ --- Gerer les evenements dans le dialogue aller a la ligne --- }
+
+Procedure HandleGoToLineEvent(Var Dlg: TGoToLineDialog;
+ EvtType: Integer; Key: Char; MX, MY: Integer);
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ If EvtType = 1 Then Begin
+  HandleGoToLineKey(Dlg, Key);
+  DrawGoToLineDialog(Dlg);
+ End;
+End;
+
+{ --- Afficher le dialogue de recherche (Ctrl+F) --- }
+
+Procedure ShowFindDialog(Var Dlg: TFindReplaceDialog);
+Begin
+ Dlg.IsReplaceMode := False;
+ InitDialog(Dlg.Base, 'Rechercher', FIND_DLG_WIDTH,
+  FIND_DLG_HEIGHT);
+ Dlg.Base.HasCancel := True;
+ Dlg.SearchCursor := Length(Dlg.SearchText);
+ Dlg.FoundCount := 0;
+ Dlg.Base.Visible := True;
+ DrawFindReplaceDialog(Dlg);
+End;
+
+{ --- Afficher le dialogue de remplacement (Ctrl+H) --- }
+
+Procedure ShowReplaceDialog(Var Dlg: TFindReplaceDialog);
+Begin
+ Dlg.IsReplaceMode := True;
+ InitDialog(Dlg.Base, 'Remplacer', FIND_DLG_WIDTH,
+  REPLACE_DLG_HEIGHT);
+ Dlg.Base.HasCancel := True;
+ Dlg.SearchCursor := Length(Dlg.SearchText);
+ Dlg.ReplaceCursor := Length(Dlg.ReplaceText);
+ Dlg.FoundCount := 0;
+ Dlg.Base.Visible := True;
+ DrawFindReplaceDialog(Dlg);
+End;
+
+{ --- Afficher le dialogue aller a la ligne --- }
+
+Procedure ShowGoToLineDialog(Var Ed: TEditor);
+Begin
+ GoToLineDlg.MaxLine := Ed.Buffer.LineCount;
+ GoToLineDlg.InputText := IntToStr(Ed.CursorLine + 1);
+ GoToLineDlg.InputCursor := Length(GoToLineDlg.InputText);
+ GoToLineDlg.Confirmed := False;
+ InitDialog(GoToLineDlg.Base, 'Aller a la ligne',
+  GOTO_DLG_WIDTH, GOTO_DLG_HEIGHT);
+ GoToLineDlg.Base.HasCancel := True;
+ GoToLineDlg.Base.Visible := True;
+ DrawGoToLineDialog(GoToLineDlg);
+End;
+
+{ --- Obtenir le texte de recherche --- }
+
+Function GetFindSearchText(
+ Var Dlg: TFindReplaceDialog): String;
+Begin
+ GetFindSearchText := Dlg.SearchText;
+End;
+
+{ --- Obtenir le texte de remplacement --- }
+
+Function GetFindReplaceText(
+ Var Dlg: TFindReplaceDialog): String;
+Begin
+ GetFindReplaceText := Dlg.ReplaceText;
+End;
+
+{ --- Obtenir les options de recherche --- }
+
+Function GetFindOptions(
+ Var Dlg: TFindReplaceDialog): TFindOptions;
+Begin
+ GetFindOptions := Dlg.Options;
+End;
+
+{ --- Definir le texte de recherche --- }
+
+Procedure SetFindSearchText(Var Dlg: TFindReplaceDialog;
+ AText: String);
+Begin
+ Dlg.SearchText := AText;
+ Dlg.SearchCursor := Length(AText);
+End;
+
+{ --- Definir le texte de remplacement --- }
+
+Procedure SetFindReplaceText(Var Dlg: TFindReplaceDialog;
+ AText: String);
+Begin
+ Dlg.ReplaceText := AText;
+ Dlg.ReplaceCursor := Length(AText);
+End;
+
+{ --- Le dialogue de recherche est-il visible --- }
+
+Function IsFindDialogVisible(
+ Var Dlg: TFindReplaceDialog): Boolean;
+Begin
+ IsFindDialogVisible := Dlg.Base.Visible;
+End;
+
+{ --- Le dialogue aller a la ligne est-il visible --- }
+
+Function IsGoToLineDialogVisible(
+ Var Dlg: TGoToLineDialog): Boolean;
+Begin
+ IsGoToLineDialogVisible := Dlg.Base.Visible;
+End;
+
+{ --- Obtenir le numero de ligne saisi --- }
+
+Function GetGoToLineNumber(
+ Var Dlg: TGoToLineDialog): LongInt;
+Begin
+ GetGoToLineNumber := Dlg.LineNumber;
+End;
+
+{ --- La saisie aller a la ligne est-elle confirmee --- }
+
+Function IsGoToLineConfirmed(
+ Var Dlg: TGoToLineDialog): Boolean;
+Begin
+ IsGoToLineConfirmed := Dlg.Confirmed;
+End;
+
+{ --- Obtenir le nombre d occurrences trouvees --- }
+
+Function GetFindFoundCount(
+ Var Dlg: TFindReplaceDialog): Integer;
+Begin
+ GetFindFoundCount := Dlg.FoundCount;
+End;
+
+{ --- Le dialogue est-il en mode remplacement --- }
+
+Function IsFindReplaceMode(
+ Var Dlg: TFindReplaceDialog): Boolean;
+Begin
+ IsFindReplaceMode := Dlg.IsReplaceMode;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -16957,6 +17902,8 @@ BEGIN
  DrawOutputPanel(OutputPanel);
  InitErrorList(ErrorList);
  DrawErrorList(ErrorList);
- { Boucle principale a venir (TODO 24+) }
+ InitFindReplaceDialog(FindReplaceDlg);
+ InitGoToLineDialog(GoToLineDlg);
+ { Boucle principale a venir (TODO 25+) }
  ShutdownGraphics;
 END.

@@ -262,7 +262,7 @@
             ShowOptionsDialog, SaveOptions, LoadOptions.
             Fichier de configuration : DEVENV.CFG (format INI).
 
-  TODO 24 - RECHERCHER ET REMPLACER [A FAIRE]
+  TODO 24 - RECHERCHER ET REMPLACER [IMPLEMENTE]
             TFindReplaceDialog (non modale).
             FindNext, FindPrevious, ReplaceNext, ReplaceAll,
             FindInFiles.
