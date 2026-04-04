@@ -178,7 +178,7 @@
             Nombres : $FF, %1010, &77.
             Directives : {$IFDEF}, {$MODE}, etc.
 
-  TODO 15 - PARSEUR DE FICHIERS SOLUTION (.SLN) [A FAIRE]
+  TODO 15 - PARSEUR DE FICHIERS SOLUTION (.SLN) [IMPLEMENTE]
             TSolutionInfo, TProjectEntry, TSolution.
             ParseSolutionFile, SaveSolutionFile, FreeSolution,
             CreateNewSolution, AddProjectToSolution,

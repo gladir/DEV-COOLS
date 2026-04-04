@@ -475,7 +475,7 @@
               Boolean, Char, String, Real, Double, Extended,
               Pointer, Text, etc.
 
-  TODO 15 - PARSEUR DE FICHIERS SOLUTION (.SLN) [A FAIRE]
+  TODO 15 - PARSEUR DE FICHIERS SOLUTION (.SLN) [IMPLEMENTE]
             Format de fichier Solution Microsoft Visual Studio.
             TSolutionInfo : FormatVersion, VSVersion, MinVSVersion,
               GUID, SolutionName, SolutionPath.
@@ -1018,6 +1018,16 @@ Const
  { Coloration syntaxique Pascal }
  MAX_PASCAL_KEYWORDS   = 65;      { nombre de mots-cles Pascal     }
 
+ { Parseur de fichiers solution }
+ MAX_SOLUTION_CONFIGS  = 10;      { nombre max de configurations   }
+ MAX_DEPENDENCIES      = 20;      { nombre max de dependances      }
+ SLN_FORMAT_VERSION    = '12.00'; { version du format solution     }
+ SLN_VS_VERSION        = 'Visual Studio Version 17';
+ SLN_MIN_VS_VERSION    = '10.0.40219.1';
+ GUID_CSHARP           = '{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}';
+ GUID_VBNET            = '{F184B08F-C81C-45F6-A57F-5ABD9991F28F}';
+ GUID_PASCAL           = '{00000000-0000-0000-0000-000000000001}';
+
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
  TAB_MAX_WIDTH         = 160;     { largeur max d un onglet        }
@@ -1422,6 +1432,38 @@ Type
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_PASCAL_KEYWORDS - 1] Of String[20];
   KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Types de projet reconnus }
+ TProjectType = (PT_CSHARP, PT_VBNET, PT_PASCAL, PT_UNKNOWN);
+
+ { Informations sur la solution }
+ TSolutionInfo = Record
+  FormatVersion : String[20];         { version du format           }
+  VSVersion     : String[40];         { version de Visual Studio    }
+  MinVSVersion  : String[40];         { version minimale VS         }
+  GUID          : String[40];         { GUID de la solution         }
+  SolutionName  : String[63];         { nom de la solution          }
+  SolutionPath  : String[255];        { chemin de la solution       }
+ End;
+
+ { Entree de projet dans la solution }
+ TProjectEntry = Record
+  ProjectTypeGUID : String[40];       { GUID du type de projet      }
+  ProjectGUID     : String[40];       { GUID unique du projet       }
+  ProjectName     : String[63];       { nom du projet               }
+  ProjectPath     : String[255];      { chemin relatif du projet    }
+  Dependencies    : Array[0..MAX_DEPENDENCIES - 1] Of String[40];
+  DepCount        : Integer;          { nombre de dependances       }
+ End;
+
+ { Structure complete de la solution }
+ TSolution = Record
+  Info         : TSolutionInfo;       { informations globales       }
+  Projects     : Array[0..MAX_SOLUTION_PROJECTS - 1] Of TProjectEntry;
+  ProjectCount : Integer;             { nombre de projets           }
+  Configs      : Array[0..MAX_SOLUTION_CONFIGS - 1] Of String[40];
+  ConfigCount  : Integer;             { nombre de configurations    }
  End;
 
 { ============================================================
@@ -7860,6 +7902,442 @@ Begin
  PascalLowerCase := LowerCaseStr(Word);
 End;
 
+{ ============================================================
+  TODO 15 - PARSEUR DE FICHIERS SOLUTION (.SLN) [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser les informations de solution --- }
+
+Procedure InitSolutionInfo(Var Info: TSolutionInfo);
+Begin
+ Info.FormatVersion := SLN_FORMAT_VERSION;
+ Info.VSVersion := SLN_VS_VERSION;
+ Info.MinVSVersion := SLN_MIN_VS_VERSION;
+ Info.GUID := '';
+ Info.SolutionName := '';
+ Info.SolutionPath := '';
+End;
+
+{ --- Initialiser une entree de projet --- }
+
+Procedure InitProjectEntry(Var Entry: TProjectEntry);
+Var
+ I: Integer;
+Begin
+ Entry.ProjectTypeGUID := '';
+ Entry.ProjectGUID := '';
+ Entry.ProjectName := '';
+ Entry.ProjectPath := '';
+ Entry.DepCount := 0;
+ For I := 0 To MAX_DEPENDENCIES - 1 Do
+  Entry.Dependencies[I] := '';
+End;
+
+{ --- Initialiser une structure de solution --- }
+
+Procedure InitSolution(Var Sol: TSolution);
+Var
+ I: Integer;
+Begin
+ InitSolutionInfo(Sol.Info);
+ Sol.ProjectCount := 0;
+ Sol.ConfigCount := 0;
+ For I := 0 To MAX_SOLUTION_PROJECTS - 1 Do
+  InitProjectEntry(Sol.Projects[I]);
+ For I := 0 To MAX_SOLUTION_CONFIGS - 1 Do
+  Sol.Configs[I] := '';
+End;
+
+{ --- Obtenir le GUID du type de projet --- }
+
+Function GetProjectTypeGUID(ProjType: TProjectType): String;
+Begin
+ Case ProjType Of
+  PT_CSHARP  : GetProjectTypeGUID := GUID_CSHARP;
+  PT_VBNET   : GetProjectTypeGUID := GUID_VBNET;
+  PT_PASCAL  : GetProjectTypeGUID := GUID_PASCAL;
+ Else
+  GetProjectTypeGUID := '';
+ End;
+End;
+
+{ --- Determiner le type de projet a partir du GUID --- }
+
+Function ProjectTypeFromGUID(GUID: String): TProjectType;
+Var
+ Upper: String;
+Begin
+ Upper := UpCaseStr(GUID);
+ If Upper = UpCaseStr(GUID_CSHARP) Then
+  ProjectTypeFromGUID := PT_CSHARP
+ Else If Upper = UpCaseStr(GUID_VBNET) Then
+  ProjectTypeFromGUID := PT_VBNET
+ Else If Upper = UpCaseStr(GUID_PASCAL) Then
+  ProjectTypeFromGUID := PT_PASCAL
+ Else
+  ProjectTypeFromGUID := PT_UNKNOWN;
+End;
+
+{ --- Creer une nouvelle solution --- }
+
+Function CreateNewSolution(Name, Path: String): TSolution;
+Var
+ Sol: TSolution;
+Begin
+ InitSolution(Sol);
+ Sol.Info.SolutionName := Name;
+ Sol.Info.SolutionPath := Path;
+ Sol.Info.FormatVersion := SLN_FORMAT_VERSION;
+ Sol.Info.VSVersion := SLN_VS_VERSION;
+ Sol.Info.MinVSVersion := SLN_MIN_VS_VERSION;
+ Sol.ConfigCount := 2;
+ Sol.Configs[0] := 'Debug|Any CPU';
+ Sol.Configs[1] := 'Release|Any CPU';
+ CreateNewSolution := Sol;
+End;
+
+{ --- Liberer les ressources d une solution --- }
+
+Procedure FreeSolution(Var Sol: TSolution);
+Begin
+ InitSolution(Sol);
+End;
+
+{ --- Ajouter un projet a la solution --- }
+
+Procedure AddProjectToSolution(Var Sol: TSolution;
+  ProjName, ProjPath: String; ProjType: TProjectType);
+Begin
+ If Sol.ProjectCount >= MAX_SOLUTION_PROJECTS Then
+  Exit;
+ With Sol.Projects[Sol.ProjectCount] Do
+ Begin
+  ProjectTypeGUID := GetProjectTypeGUID(ProjType);
+  ProjectGUID := '';
+  ProjectName := ProjName;
+  ProjectPath := ProjPath;
+  DepCount := 0;
+ End;
+ Inc(Sol.ProjectCount);
+End;
+
+{ --- Retirer un projet de la solution --- }
+
+Procedure RemoveProjectFromSolution(Var Sol: TSolution;
+  Index: Integer);
+Var
+ I: Integer;
+Begin
+ If (Index < 0) Or (Index >= Sol.ProjectCount) Then
+  Exit;
+ For I := Index To Sol.ProjectCount - 2 Do
+  Sol.Projects[I] := Sol.Projects[I + 1];
+ Dec(Sol.ProjectCount);
+ InitProjectEntry(Sol.Projects[Sol.ProjectCount]);
+End;
+
+{ --- Extraire une valeur entre guillemets --- }
+
+Function ExtractQuoted(Line: String; StartPos: Integer;
+  Var Value: String): Integer;
+Var
+ P: Integer;
+Begin
+ Value := '';
+ ExtractQuoted := StartPos;
+ P := StartPos;
+ While (P <= Length(Line)) And (Line[P] <> '"') Do
+  Inc(P);
+ If P > Length(Line) Then Exit;
+ Inc(P); { depasser le guillemet ouvrant }
+ While (P <= Length(Line)) And (Line[P] <> '"') Do
+ Begin
+  Value := Value + Line[P];
+  Inc(P);
+ End;
+ If P <= Length(Line) Then
+  Inc(P); { depasser le guillemet fermant }
+ ExtractQuoted := P;
+End;
+
+{ --- Parser un fichier solution (.SLN) --- }
+
+Procedure ParseSolutionFile(FileName: String;
+  Var Sol: TSolution);
+Var
+ F: Text;
+ Line, Trimmed: String;
+ P: Integer;
+ TypeGUID, PName, PPath, PGUID: String;
+ InGlobal, InConfigSection: Boolean;
+Begin
+ InitSolution(Sol);
+ Sol.Info.SolutionPath := ExtractFilePath(FileName);
+ Sol.Info.SolutionName := ExtractFileName(FileName);
+ Assign(F, FileName);
+ {$I-}
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ InGlobal := False;
+ InConfigSection := False;
+ While Not Eof(F) Do
+ Begin
+  ReadLn(F, Line);
+  Trimmed := TrimStr(Line);
+  { Version du format }
+  If Copy(Trimmed, 1, 34) = 'Microsoft Visual Studio Solution F' Then
+  Begin
+   P := System.Pos('Format Version ', Trimmed);
+   If P > 0 Then
+    Sol.Info.FormatVersion := Copy(Trimmed, P + 15,
+      Length(Trimmed) - P - 14);
+  End
+  Else If Copy(Trimmed, 1, 20) = 'VisualStudioVersion ' Then
+  Begin
+   P := System.Pos('= ', Trimmed);
+   If P > 0 Then
+    Sol.Info.VSVersion := TrimStr(Copy(Trimmed, P + 2,
+      Length(Trimmed) - P - 1));
+  End
+  Else If Copy(Trimmed, 1, 27) = 'MinimumVisualStudioVersion ' Then
+  Begin
+   P := System.Pos('= ', Trimmed);
+   If P > 0 Then
+    Sol.Info.MinVSVersion := TrimStr(Copy(Trimmed, P + 2,
+      Length(Trimmed) - P - 1));
+  End
+  { Ligne Project }
+  Else If Copy(Trimmed, 1, 8) = 'Project(' Then
+  Begin
+   If Sol.ProjectCount < MAX_SOLUTION_PROJECTS Then
+   Begin
+    P := 9;
+    P := ExtractQuoted(Trimmed, P, TypeGUID);
+    { Chercher le signe = }
+    While (P <= Length(Trimmed)) And (Trimmed[P] <> '=') Do
+     Inc(P);
+    Inc(P);
+    P := ExtractQuoted(Trimmed, P, PName);
+    { Passer la virgule }
+    While (P <= Length(Trimmed)) And (Trimmed[P] <> ',') Do
+     Inc(P);
+    Inc(P);
+    P := ExtractQuoted(Trimmed, P, PPath);
+    { Passer la virgule }
+    While (P <= Length(Trimmed)) And (Trimmed[P] <> ',') Do
+     Inc(P);
+    Inc(P);
+    P := ExtractQuoted(Trimmed, P, PGUID);
+    With Sol.Projects[Sol.ProjectCount] Do
+    Begin
+     ProjectTypeGUID := TypeGUID;
+     ProjectGUID := PGUID;
+     ProjectName := PName;
+     ProjectPath := PPath;
+     DepCount := 0;
+    End;
+    Inc(Sol.ProjectCount);
+   End;
+  End
+  { Sections Global }
+  Else If Trimmed = 'Global' Then
+   InGlobal := True
+  Else If Trimmed = 'EndGlobal' Then
+  Begin
+   InGlobal := False;
+   InConfigSection := False;
+  End
+  Else If InGlobal Then
+  Begin
+   If System.Pos('SolutionConfigurationPlatforms', Trimmed) > 0 Then
+   Begin
+    InConfigSection := True;
+   End
+   Else If System.Pos('ProjectConfigurationPlatforms', Trimmed) > 0 Then
+   Begin
+    InConfigSection := False;
+   End
+   Else If System.Pos('EndGlobalSection', Trimmed) > 0 Then
+   Begin
+    InConfigSection := False;
+   End
+   Else If InConfigSection Then
+   Begin
+    { Lire les configurations : "Debug|Any CPU = Debug|Any CPU" }
+    P := System.Pos('=', Trimmed);
+    If (P > 0) And (Sol.ConfigCount < MAX_SOLUTION_CONFIGS) Then
+    Begin
+     Sol.Configs[Sol.ConfigCount] := TrimStr(Copy(Trimmed, 1, P - 1));
+     Inc(Sol.ConfigCount);
+    End;
+   End;
+  End;
+ End;
+ Close(F);
+ P := IOResult;
+End;
+
+{ --- Enregistrer un fichier solution (.SLN) --- }
+
+Procedure SaveSolutionFile(FileName: String;
+  Var Sol: TSolution);
+Var
+ F: Text;
+ I, J: Integer;
+Begin
+ Assign(F, FileName);
+ {$I-}
+ Rewrite(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ WriteLn(F, '');
+ WriteLn(F, 'Microsoft Visual Studio Solution File, Format Version ',
+   Sol.Info.FormatVersion);
+ WriteLn(F, '# ', Sol.Info.VSVersion);
+ WriteLn(F, 'VisualStudioVersion = ', Sol.Info.VSVersion);
+ WriteLn(F, 'MinimumVisualStudioVersion = ', Sol.Info.MinVSVersion);
+ { Ecrire les projets }
+ For I := 0 To Sol.ProjectCount - 1 Do
+ Begin
+  With Sol.Projects[I] Do
+  Begin
+   WriteLn(F, 'Project("', ProjectTypeGUID, '") = "',
+     ProjectName, '", "', ProjectPath, '", "', ProjectGUID, '"');
+   WriteLn(F, 'EndProject');
+  End;
+ End;
+ { Ecrire la section Global }
+ WriteLn(F, 'Global');
+ { Configurations de solution }
+ WriteLn(F, #9, 'GlobalSection(SolutionConfigurationPlatforms) = preSolution');
+ For I := 0 To Sol.ConfigCount - 1 Do
+  WriteLn(F, #9, #9, Sol.Configs[I], ' = ', Sol.Configs[I]);
+ WriteLn(F, #9, 'EndGlobalSection');
+ { Configurations de projet }
+ WriteLn(F, #9, 'GlobalSection(ProjectConfigurationPlatforms) = postSolution');
+ For I := 0 To Sol.ProjectCount - 1 Do
+  For J := 0 To Sol.ConfigCount - 1 Do
+  Begin
+   WriteLn(F, #9, #9, Sol.Projects[I].ProjectGUID, '.',
+     Sol.Configs[J], '.ActiveCfg = ', Sol.Configs[J]);
+   WriteLn(F, #9, #9, Sol.Projects[I].ProjectGUID, '.',
+     Sol.Configs[J], '.Build.0 = ', Sol.Configs[J]);
+  End;
+ WriteLn(F, #9, 'EndGlobalSection');
+ { Proprietes de solution }
+ WriteLn(F, #9, 'GlobalSection(SolutionProperties) = preSolution');
+ WriteLn(F, #9, #9, 'HideSolutionNode = FALSE');
+ WriteLn(F, #9, 'EndGlobalSection');
+ WriteLn(F, 'EndGlobal');
+ Close(F);
+ I := IOResult;
+End;
+
+{ --- Obtenir le nombre de projets --- }
+
+Function GetProjectCount(Var Sol: TSolution): Integer;
+Begin
+ GetProjectCount := Sol.ProjectCount;
+End;
+
+{ --- Obtenir un projet par son index --- }
+
+Function GetProjectByIndex(Var Sol: TSolution;
+  Index: Integer): TProjectEntry;
+Var
+ Empty: TProjectEntry;
+Begin
+ If (Index >= 0) And (Index < Sol.ProjectCount) Then
+  GetProjectByIndex := Sol.Projects[Index]
+ Else
+ Begin
+  InitProjectEntry(Empty);
+  GetProjectByIndex := Empty;
+ End;
+End;
+
+{ --- Chercher un projet par son nom --- }
+
+Function FindProjectByName(Var Sol: TSolution;
+  Name: String): Integer;
+Var
+ I: Integer;
+ LName: String;
+Begin
+ FindProjectByName := -1;
+ LName := LowerCaseStr(Name);
+ For I := 0 To Sol.ProjectCount - 1 Do
+  If LowerCaseStr(Sol.Projects[I].ProjectName) = LName Then
+  Begin
+   FindProjectByName := I;
+   Exit;
+  End;
+End;
+
+{ --- Chercher un projet par son GUID --- }
+
+Function FindProjectByGUID(Var Sol: TSolution;
+  GUID: String): Integer;
+Var
+ I: Integer;
+ UGUID: String;
+Begin
+ FindProjectByGUID := -1;
+ UGUID := UpCaseStr(GUID);
+ For I := 0 To Sol.ProjectCount - 1 Do
+  If UpCaseStr(Sol.Projects[I].ProjectGUID) = UGUID Then
+  Begin
+   FindProjectByGUID := I;
+   Exit;
+  End;
+End;
+
+{ --- Verifier si un index de projet est valide --- }
+
+Function IsValidProjectIndex(Var Sol: TSolution;
+  Index: Integer): Boolean;
+Begin
+ IsValidProjectIndex := (Index >= 0) And
+   (Index < Sol.ProjectCount);
+End;
+
+{ --- Verifier si un projet existe par son nom --- }
+
+Function HasProject(Var Sol: TSolution;
+  Name: String): Boolean;
+Begin
+ HasProject := FindProjectByName(Sol, Name) >= 0;
+End;
+
+{ --- Obtenir le nombre de configurations --- }
+
+Function GetConfigurationCount(Var Sol: TSolution): Integer;
+Begin
+ GetConfigurationCount := Sol.ConfigCount;
+End;
+
+{ --- Obtenir le nom de la solution --- }
+
+Function GetSolutionName(Var Sol: TSolution): String;
+Begin
+ GetSolutionName := Sol.Info.SolutionName;
+End;
+
+{ --- Obtenir le chemin de la solution --- }
+
+Function GetSolutionPath(Var Sol: TSolution): String;
+Begin
+ GetSolutionPath := Sol.Info.SolutionPath;
+End;
+
+{ --- Verifier si la solution est vide --- }
+
+Function IsSolutionEmpty(Var Sol: TSolution): Boolean;
+Begin
+ IsSolutionEmpty := Sol.ProjectCount = 0;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -7879,6 +8357,6 @@ BEGIN
  InitCSharpHighlighter(CSharpHL);
  InitVBNetHighlighter(VBNetHL);
  InitPascalHighlighter(PascalHL);
- { Boucle principale a venir (TODO 15+) }
+ { Boucle principale a venir (TODO 16+) }
  ShutdownGraphics;
 END.
