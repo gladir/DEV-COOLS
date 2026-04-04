@@ -669,7 +669,7 @@
             TInputBox : boite de saisie d une valeur.
             Function ShowInputBox(Title, Prompt, Default: String): String
 
-  TODO 22 - BOITES DE DIALOGUE : PROJET ET SOLUTION [A FAIRE]
+  TODO 22 - BOITES DE DIALOGUE : PROJET ET SOLUTION [IMPLEMENTE]
             TNewProjectDialog : creation d un nouveau projet.
               Choix du type : Application console C#, Application
                 console VB.NET, Application console Pascal,
@@ -1121,6 +1121,26 @@ Const
  DR_YES                = 3;       { bouton Oui appuye               }
  DR_NO                 = 4;       { bouton Non appuye               }
  DR_NONE               = 0;       { aucun resultat                  }
+
+ { Boites de dialogue projet/solution }
+ NEWPROJ_WIDTH         = 520;     { largeur dialogue nouveau projet }
+ NEWPROJ_HEIGHT        = 340;     { hauteur dialogue nouveau projet }
+ NEWPROJ_TYPE_COUNT    = 5;       { nombre de types de projet       }
+ NEWPROJ_LIST_HEIGHT   = 120;     { hauteur liste des types         }
+ NEWFILE_WIDTH         = 420;     { largeur dialogue nouveau fichier}
+ NEWFILE_HEIGHT        = 280;     { hauteur dialogue nouveau fichier}
+ NEWFILE_TYPE_COUNT    = 5;       { nombre de types de fichier      }
+ NEWFILE_LIST_HEIGHT   = 100;     { hauteur liste des types         }
+ ADDREF_WIDTH          = 480;     { largeur dialogue references     }
+ ADDREF_HEIGHT         = 360;     { hauteur dialogue references     }
+ ADDREF_TAB_COUNT      = 3;       { nombre d onglets                }
+ MAX_ADDREF_ITEMS      = 64;      { nombre max d items references   }
+ PROJPROP_WIDTH        = 560;     { largeur dialogue proprietes     }
+ PROJPROP_HEIGHT       = 400;     { hauteur dialogue proprietes     }
+ PROJPROP_TAB_COUNT    = 4;       { nombre d onglets proprietes     }
+ PROJPROP_LABEL_WIDTH  = 160;     { largeur etiquette propriete     }
+ PROJPROP_FIELD_HEIGHT = 22;      { hauteur champ de saisie         }
+ PROJPROP_ROW_SPACING  = 28;      { espacement vertical entre champs}
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -1866,6 +1886,112 @@ Type
   InputText: String[255];           { texte saisi                    }
   InputCursor: Integer;             { position curseur               }
   Cancelled: Boolean;               { True si annule                 }
+ End;
+
+ { Type de nouveau projet }
+ TNewProjectType = (
+  NPT_CONSOLE_CS,      { Application console C#                  }
+  NPT_CONSOLE_VB,      { Application console VB.NET              }
+  NPT_CONSOLE_PAS,     { Application console Pascal              }
+  NPT_LIBRARY_CS,      { Bibliotheque de classes C#              }
+  NPT_LIBRARY_VB       { Bibliotheque de classes VB.NET          }
+ );
+
+ { Type de nouveau fichier }
+ TNewFileType = (
+  NFT_CLASS_CS,        { Classe C# (.cs)                         }
+  NFT_MODULE_VB,       { Module VB.NET (.vb)                     }
+  NFT_UNIT_PAS,        { Unite Pascal (.pas)                     }
+  NFT_TEXT,            { Fichier texte (.txt)                    }
+  NFT_XML              { Fichier XML (.xml)                      }
+ );
+
+ { Onglet du dialogue d ajout de reference }
+ TRefTabKind = (
+  RTK_ASSEMBLIES,      { onglet Assemblies                       }
+  RTK_PROJECTS,        { onglet Projets                          }
+  RTK_BROWSE           { onglet Parcourir                        }
+ );
+
+ { Onglet du dialogue proprietes de projet }
+ TProjPropTab = (
+  PPT_APPLICATION,     { onglet Application                      }
+  PPT_BUILD,           { onglet Build                            }
+  PPT_BUILD_EVENTS,    { onglet Build Events                     }
+  PPT_DEBUG            { onglet Debug                            }
+ );
+
+ { Entree de reference dans la liste }
+ TRefListEntry = Record
+  Name     : String[63];            { nom de la reference            }
+  Version  : String[31];            { version de l assembly          }
+  Path     : String[255];           { chemin du fichier              }
+  Checked  : Boolean;               { case cochee                    }
+  IsProject: Boolean;               { True si reference projet       }
+ End;
+
+ { Boite de dialogue Nouveau projet }
+ TNewProjectDialog = Record
+  Base         : TDialog;               { dialogue de base           }
+  SelType      : Integer;               { type selectionne (0..4)    }
+  ProjectName  : String[63];            { nom du projet              }
+  Location     : String[255];           { emplacement                }
+  SolutionName : String[63];            { nom de la solution         }
+  CreateSolDir : Boolean;               { creer repertoire solution  }
+  ProjNameCursor : Integer;             { curseur champ nom projet   }
+  LocCursor    : Integer;               { curseur champ emplacement  }
+  SolNameCursor: Integer;               { curseur champ nom solution }
+  FocusField   : Integer;               { champ actif (0..3)         }
+  ScrollTop    : Integer;               { premiere ligne visible     }
+  Confirmed    : Boolean;               { True si valide par OK      }
+ End;
+
+ { Boite de dialogue Nouveau fichier }
+ TNewFileDialog = Record
+  Base         : TDialog;               { dialogue de base           }
+  SelType      : Integer;               { type selectionne (0..4)    }
+  FileName     : String[127];           { nom du fichier             }
+  FileNameCursor: Integer;              { curseur champ nom          }
+  ScrollTop    : Integer;               { premiere ligne visible     }
+  Confirmed    : Boolean;               { True si valide par OK      }
+ End;
+
+ { Boite de dialogue Ajouter une reference }
+ TAddReferenceDialog = Record
+  Base         : TDialog;               { dialogue de base           }
+  ActiveTab    : TRefTabKind;           { onglet actif               }
+  Items        : Array[0..MAX_ADDREF_ITEMS - 1] Of TRefListEntry;
+  ItemCount    : Integer;               { nombre d items             }
+  SelIndex     : Integer;               { index selectionne          }
+  ScrollTop    : Integer;               { premiere ligne visible     }
+  Confirmed    : Boolean;               { True si valide par OK      }
+ End;
+
+ { Boite de dialogue Proprietes du projet }
+ TProjectPropertiesDialog = Record
+  Base           : TDialog;             { dialogue de base           }
+  ActiveTab      : TProjPropTab;        { onglet actif               }
+  AssemblyName   : String[63];          { nom de l assembly          }
+  RootNamespace  : String[63];          { espace de noms racine      }
+  OutputTypeIdx  : Integer;             { index type de sortie       }
+  DefineConstants: String[255];         { constantes de compilation  }
+  OutputPath     : String[255];         { chemin de sortie           }
+  WarningLevel   : Integer;             { niveau d avertissement     }
+  TreatWarningsAsErrors: Boolean;       { avertissements = erreurs   }
+  PreBuildEvent  : String[255];         { commande pre-build         }
+  PostBuildEvent : String[255];         { commande post-build        }
+  DebugArgs      : String[255];         { arguments de debogage      }
+  WorkingDir     : String[255];         { repertoire de travail      }
+  FocusField     : Integer;             { champ actif                }
+  AsmNameCursor  : Integer;             { curseur nom assembly       }
+  NsCursor       : Integer;             { curseur namespace          }
+  DefCursor      : Integer;             { curseur constantes         }
+  OutPathCursor  : Integer;             { curseur chemin sortie      }
+  PreBuildCursor : Integer;             { curseur pre-build          }
+  PostBuildCursor: Integer;             { curseur post-build         }
+  DebugArgsCursor: Integer;             { curseur arguments debug    }
+  WorkDirCursor  : Integer;             { curseur repertoire travail }
+  Confirmed      : Boolean;             { True si valide par OK      }
  End;
 
 { ============================================================
@@ -13719,6 +13845,1696 @@ Begin
  End;
 End;
 
+{ ============================================================
+  TODO 22 - BOITES DE DIALOGUE : PROJET ET SOLUTION [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Nom d un type de nouveau projet --- }
+
+Function NewProjectTypeName(T: Integer): String;
+Begin
+ Case T Of
+  0: NewProjectTypeName := 'Application console C#';
+  1: NewProjectTypeName := 'Application console VB.NET';
+  2: NewProjectTypeName := 'Application console Pascal';
+  3: NewProjectTypeName := 'Bibliotheque de classes C#';
+  4: NewProjectTypeName := 'Bibliotheque de classes VB.NET';
+ Else
+  NewProjectTypeName := 'Inconnu';
+ End;
+End;
+
+{ --- Extension associee a un type de projet --- }
+
+Function NewProjectTypeExtension(T: Integer): String;
+Begin
+ Case T Of
+  0: NewProjectTypeExtension := '.csproj';
+  1: NewProjectTypeExtension := '.vbproj';
+  2: NewProjectTypeExtension := '.pasproj';
+  3: NewProjectTypeExtension := '.csproj';
+  4: NewProjectTypeExtension := '.vbproj';
+ Else
+  NewProjectTypeExtension := '';
+ End;
+End;
+
+{ --- Type de projet associe a un index --- }
+
+Function NewProjectTypeToProjectType(T: Integer): TProjectType;
+Begin
+ Case T Of
+  0: NewProjectTypeToProjectType := PT_CSHARP;
+  1: NewProjectTypeToProjectType := PT_VBNET;
+  2: NewProjectTypeToProjectType := PT_PASCAL;
+  3: NewProjectTypeToProjectType := PT_CSHARP;
+  4: NewProjectTypeToProjectType := PT_VBNET;
+ Else
+  NewProjectTypeToProjectType := PT_UNKNOWN;
+ End;
+End;
+
+{ --- Type de sortie associe a un index de type de projet --- }
+
+Function NewProjectTypeToOutputType(T: Integer): TOutputType;
+Begin
+ Case T Of
+  0: NewProjectTypeToOutputType := OT_EXE;
+  1: NewProjectTypeToOutputType := OT_EXE;
+  2: NewProjectTypeToOutputType := OT_EXE;
+  3: NewProjectTypeToOutputType := OT_LIBRARY;
+  4: NewProjectTypeToOutputType := OT_LIBRARY;
+ Else
+  NewProjectTypeToOutputType := OT_EXE;
+ End;
+End;
+
+{ --- Nom d un type de nouveau fichier --- }
+
+Function NewFileTypeName(T: Integer): String;
+Begin
+ Case T Of
+  0: NewFileTypeName := 'Classe C# (.cs)';
+  1: NewFileTypeName := 'Module VB.NET (.vb)';
+  2: NewFileTypeName := 'Unite Pascal (.pas)';
+  3: NewFileTypeName := 'Fichier texte (.txt)';
+  4: NewFileTypeName := 'Fichier XML (.xml)';
+ Else
+  NewFileTypeName := 'Inconnu';
+ End;
+End;
+
+{ --- Extension associee a un type de fichier --- }
+
+Function NewFileTypeExtension(T: Integer): String;
+Begin
+ Case T Of
+  0: NewFileTypeExtension := '.cs';
+  1: NewFileTypeExtension := '.vb';
+  2: NewFileTypeExtension := '.pas';
+  3: NewFileTypeExtension := '.txt';
+  4: NewFileTypeExtension := '.xml';
+ Else
+  NewFileTypeExtension := '';
+ End;
+End;
+
+{ --- Nom d un onglet de reference --- }
+
+Function RefTabName(Tab: TRefTabKind): String;
+Begin
+ Case Tab Of
+  RTK_ASSEMBLIES: RefTabName := 'Assemblies';
+  RTK_PROJECTS:   RefTabName := 'Projets';
+  RTK_BROWSE:     RefTabName := 'Parcourir';
+ Else
+  RefTabName := '';
+ End;
+End;
+
+{ --- Nom d un onglet de proprietes projet --- }
+
+Function ProjPropTabName(Tab: TProjPropTab): String;
+Begin
+ Case Tab Of
+  PPT_APPLICATION:  ProjPropTabName := 'Application';
+  PPT_BUILD:        ProjPropTabName := 'Build';
+  PPT_BUILD_EVENTS: ProjPropTabName := 'Build Events';
+  PPT_DEBUG:        ProjPropTabName := 'Debug';
+ Else
+  ProjPropTabName := '';
+ End;
+End;
+
+{ --- Initialiser le dialogue Nouveau projet --- }
+
+Procedure InitNewProjectDialog(Var Dlg: TNewProjectDialog);
+Var
+ ScrW, ScrH: Integer;
+Begin
+ InitDialog(Dlg.Base, 'Nouveau projet', NEWPROJ_WIDTH,
+  NEWPROJ_HEIGHT);
+ Dlg.Base.HasCancel := True;
+ Dlg.SelType := 0;
+ Dlg.ProjectName := 'MonProjet';
+ Dlg.Location := '.';
+ Dlg.SolutionName := 'MaSolution';
+ Dlg.CreateSolDir := True;
+ Dlg.ProjNameCursor := Length(Dlg.ProjectName);
+ Dlg.LocCursor := Length(Dlg.Location);
+ Dlg.SolNameCursor := Length(Dlg.SolutionName);
+ Dlg.FocusField := 0;
+ Dlg.ScrollTop := 0;
+ Dlg.Confirmed := False;
+End;
+
+{ --- Dessiner la liste des types de projet --- }
+
+Procedure DrawNewProjectTypeList(Var Dlg: TNewProjectDialog);
+Var
+ I: Integer;
+ LX, LY, LW, LH: Integer;
+ RH: Integer;
+ Bg, Fg: LongInt;
+Begin
+ LX := Dlg.Base.X + DLG_PADDING;
+ LY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := Dlg.Base.Width - DLG_PADDING * 2;
+ LH := NEWPROJ_LIST_HEIGHT;
+ RH := DLG_LIST_ROW_HEIGHT;
+ DrawFilledRect(LX, LY, LX + LW, LY + LH, CLR_WINDOW);
+ DrawRect(LX, LY, LX + LW, LY + LH, CLR_BORDER);
+ For I := 0 To NEWPROJ_TYPE_COUNT - 1 Do
+ Begin
+  If I = Dlg.SelType Then
+  Begin
+   Bg := CLR_HIGHLIGHT;
+   Fg := CLR_HIGHLIGHTTEXT;
+   DrawFilledRect(LX + 1, LY + 1 + I * RH,
+    LX + LW - 1, LY + 1 + (I + 1) * RH, Bg);
+  End
+  Else
+  Begin
+   Bg := CLR_WINDOW;
+   Fg := CLR_WINDOWTEXT;
+  End;
+  DrawText(LX + 4, LY + 2 + I * RH, NewProjectTypeName(I), Fg);
+ End;
+End;
+
+{ --- Dessiner les champs de saisie du dialogue Nouveau projet --- }
+
+Procedure DrawNewProjectFields(Var Dlg: TNewProjectDialog);
+Var
+ FX, FY, FW: Integer;
+ BaseY: Integer;
+Begin
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  NEWPROJ_LIST_HEIGHT + DLG_PADDING;
+ { Etiquette et champ Nom du projet }
+ DrawText(FX, BaseY, 'Nom :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + 84, BaseY, Dlg.ProjectName, CLR_WINDOWTEXT);
+ { Etiquette et champ Emplacement }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ DrawText(FX, BaseY, 'Emplacement :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + 84, BaseY, Dlg.Location, CLR_WINDOWTEXT);
+ { Etiquette et champ Nom de la solution }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ DrawText(FX, BaseY, 'Solution :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + 80, BaseY - 2, FX + FW, BaseY + DLG_INPUT_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + 84, BaseY, Dlg.SolutionName, CLR_WINDOWTEXT);
+ { Case a cocher Creer un repertoire pour la solution }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + 12, BaseY + 12, CLR_BORDER);
+ If Dlg.CreateSolDir Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + 18, BaseY,
+  'Creer un repertoire pour la solution', CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner le dialogue Nouveau projet --- }
+
+Procedure DrawNewProjectDialog(Var Dlg: TNewProjectDialog);
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ DrawDialogFrame(Dlg.Base);
+ DrawNewProjectTypeList(Dlg);
+ DrawNewProjectFields(Dlg);
+ DrawDialogButtons(Dlg.Base);
+End;
+
+{ --- Test de clic sur la liste des types (nouveau projet) --- }
+
+Function NewProjectTypeHitTest(Var Dlg: TNewProjectDialog;
+ MX, MY: Integer): Integer;
+Var
+ LX, LY, LW, RH, I: Integer;
+Begin
+ NewProjectTypeHitTest := -1;
+ LX := Dlg.Base.X + DLG_PADDING;
+ LY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := Dlg.Base.Width - DLG_PADDING * 2;
+ RH := DLG_LIST_ROW_HEIGHT;
+ If (MX >= LX) And (MX < LX + LW) And (MY >= LY) And
+  (MY < LY + NEWPROJ_LIST_HEIGHT) Then
+ Begin
+  I := (MY - LY) Div RH;
+  If (I >= 0) And (I < NEWPROJ_TYPE_COUNT) Then
+   NewProjectTypeHitTest := I;
+ End;
+End;
+
+{ --- Test de clic sur le checkbox CreateSolDir --- }
+
+Function NewProjectCheckboxHitTest(Var Dlg: TNewProjectDialog;
+ MX, MY: Integer): Boolean;
+Var
+ FX, BaseY: Integer;
+Begin
+ FX := Dlg.Base.X + DLG_PADDING;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  NEWPROJ_LIST_HEIGHT + DLG_PADDING + PROJPROP_ROW_SPACING * 3;
+ NewProjectCheckboxHitTest :=
+  (MX >= FX) And (MX <= FX + 12) And
+  (MY >= BaseY) And (MY <= BaseY + 12);
+End;
+
+{ --- Gestion des touches du dialogue Nouveau projet --- }
+
+Procedure HandleNewProjectDialogKey(Var Dlg: TNewProjectDialog;
+ Key: Word; Ch: Char);
+Begin
+ If Key = $1B Then { Escape }
+ Begin
+  Dlg.Confirmed := False;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If Key = $0D Then { Entree }
+ Begin
+  Dlg.Confirmed := True;
+  Dlg.Base.Result := DR_OK;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If Key = $09 Then { Tab }
+ Begin
+  Dlg.FocusField := (Dlg.FocusField + 1) Mod 4;
+  Exit;
+ End;
+ { Saisie dans le champ actif }
+ Case Dlg.FocusField Of
+  0: { Nom du projet }
+   If (Ch >= ' ') And (Length(Dlg.ProjectName) < 63) Then
+   Begin
+    Dlg.ProjectName := Dlg.ProjectName + Ch;
+    Inc(Dlg.ProjNameCursor);
+   End
+   Else If Key = $08 Then { Backspace }
+   Begin
+    If Length(Dlg.ProjectName) > 0 Then
+    Begin
+     Delete(Dlg.ProjectName, Length(Dlg.ProjectName), 1);
+     Dec(Dlg.ProjNameCursor);
+    End;
+   End;
+  1: { Emplacement }
+   If (Ch >= ' ') And (Length(Dlg.Location) < 255) Then
+   Begin
+    Dlg.Location := Dlg.Location + Ch;
+    Inc(Dlg.LocCursor);
+   End
+   Else If Key = $08 Then
+   Begin
+    If Length(Dlg.Location) > 0 Then
+    Begin
+     Delete(Dlg.Location, Length(Dlg.Location), 1);
+     Dec(Dlg.LocCursor);
+    End;
+   End;
+  2: { Nom de la solution }
+   If (Ch >= ' ') And (Length(Dlg.SolutionName) < 63) Then
+   Begin
+    Dlg.SolutionName := Dlg.SolutionName + Ch;
+    Inc(Dlg.SolNameCursor);
+   End
+   Else If Key = $08 Then
+   Begin
+    If Length(Dlg.SolutionName) > 0 Then
+    Begin
+     Delete(Dlg.SolutionName, Length(Dlg.SolutionName), 1);
+     Dec(Dlg.SolNameCursor);
+    End;
+   End;
+ End;
+End;
+
+{ --- Gestion des evenements du dialogue Nouveau projet --- }
+
+Procedure HandleNewProjectDialogEvent(Var Dlg: TNewProjectDialog;
+ Var Ev: TEvent);
+Var
+ Idx, BtnR: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ Case Ev.What Of
+  EV_KEY_DOWN, EV_KEY_CHAR:
+   HandleNewProjectDialogKey(Dlg, Ev.KeyCode, Ev.KeyChar);
+  EV_MOUSE_DOWN:
+  Begin
+   Idx := NewProjectTypeHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If Idx >= 0 Then
+   Begin
+    Dlg.SelType := Idx;
+    DrawNewProjectDialog(Dlg);
+    Exit;
+   End;
+   If NewProjectCheckboxHitTest(Dlg, Ev.MouseX, Ev.MouseY) Then
+   Begin
+    Dlg.CreateSolDir := Not Dlg.CreateSolDir;
+    DrawNewProjectDialog(Dlg);
+    Exit;
+   End;
+   BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY);
+   If BtnR <> DR_NONE Then
+   Begin
+    If BtnR = DR_OK Then
+     Dlg.Confirmed := True
+    Else
+     Dlg.Confirmed := False;
+    Dlg.Base.Result := BtnR;
+    CloseDialog(Dlg.Base);
+   End;
+  End;
+ End;
+End;
+
+{ --- Afficher le dialogue Nouveau projet --- }
+
+Procedure ShowNewProjectDialog(Var Dlg: TNewProjectDialog);
+Begin
+ InitNewProjectDialog(Dlg);
+ Dlg.Base.Visible := True;
+ DrawNewProjectDialog(Dlg);
+End;
+
+{ --- Initialiser le dialogue Nouveau fichier --- }
+
+Procedure InitNewFileDialog(Var Dlg: TNewFileDialog);
+Begin
+ InitDialog(Dlg.Base, 'Ajouter un nouveau fichier', NEWFILE_WIDTH,
+  NEWFILE_HEIGHT);
+ Dlg.Base.HasCancel := True;
+ Dlg.SelType := 0;
+ Dlg.FileName := 'NouveauFichier';
+ Dlg.FileNameCursor := Length(Dlg.FileName);
+ Dlg.ScrollTop := 0;
+ Dlg.Confirmed := False;
+End;
+
+{ --- Dessiner la liste des types de fichier --- }
+
+Procedure DrawNewFileTypeList(Var Dlg: TNewFileDialog);
+Var
+ I: Integer;
+ LX, LY, LW, LH: Integer;
+ RH: Integer;
+ Bg, Fg: LongInt;
+Begin
+ LX := Dlg.Base.X + DLG_PADDING;
+ LY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := Dlg.Base.Width - DLG_PADDING * 2;
+ LH := NEWFILE_LIST_HEIGHT;
+ RH := DLG_LIST_ROW_HEIGHT;
+ DrawFilledRect(LX, LY, LX + LW, LY + LH, CLR_WINDOW);
+ DrawRect(LX, LY, LX + LW, LY + LH, CLR_BORDER);
+ For I := 0 To NEWFILE_TYPE_COUNT - 1 Do
+ Begin
+  If I = Dlg.SelType Then
+  Begin
+   Bg := CLR_HIGHLIGHT;
+   Fg := CLR_HIGHLIGHTTEXT;
+   DrawFilledRect(LX + 1, LY + 1 + I * RH,
+    LX + LW - 1, LY + 1 + (I + 1) * RH, Bg);
+  End
+  Else
+  Begin
+   Bg := CLR_WINDOW;
+   Fg := CLR_WINDOWTEXT;
+  End;
+  DrawText(LX + 4, LY + 2 + I * RH, NewFileTypeName(I), Fg);
+ End;
+End;
+
+{ --- Dessiner le champ de saisie du nom de fichier --- }
+
+Procedure DrawNewFileNameField(Var Dlg: TNewFileDialog);
+Var
+ FX, FY, FW: Integer;
+Begin
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ FY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  NEWFILE_LIST_HEIGHT + DLG_PADDING;
+ DrawText(FX, FY, 'Nom :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + 80, FY - 2, FX + FW, FY + DLG_INPUT_HEIGHT,
+  CLR_WINDOW);
+ DrawRect(FX + 80, FY - 2, FX + FW, FY + DLG_INPUT_HEIGHT,
+  CLR_BORDER);
+ DrawText(FX + 84, FY, Dlg.FileName, CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner le dialogue Nouveau fichier --- }
+
+Procedure DrawNewFileDialog(Var Dlg: TNewFileDialog);
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ DrawDialogFrame(Dlg.Base);
+ DrawNewFileTypeList(Dlg);
+ DrawNewFileNameField(Dlg);
+ DrawDialogButtons(Dlg.Base);
+End;
+
+{ --- Test de clic sur la liste des types (nouveau fichier) --- }
+
+Function NewFileTypeHitTest(Var Dlg: TNewFileDialog;
+ MX, MY: Integer): Integer;
+Var
+ LX, LY, LW, RH, I: Integer;
+Begin
+ NewFileTypeHitTest := -1;
+ LX := Dlg.Base.X + DLG_PADDING;
+ LY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := Dlg.Base.Width - DLG_PADDING * 2;
+ RH := DLG_LIST_ROW_HEIGHT;
+ If (MX >= LX) And (MX < LX + LW) And (MY >= LY) And
+  (MY < LY + NEWFILE_LIST_HEIGHT) Then
+ Begin
+  I := (MY - LY) Div RH;
+  If (I >= 0) And (I < NEWFILE_TYPE_COUNT) Then
+   NewFileTypeHitTest := I;
+ End;
+End;
+
+{ --- Gestion des touches du dialogue Nouveau fichier --- }
+
+Procedure HandleNewFileDialogKey(Var Dlg: TNewFileDialog;
+ Key: Word; Ch: Char);
+Begin
+ If Key = $1B Then
+ Begin
+  Dlg.Confirmed := False;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If Key = $0D Then
+ Begin
+  Dlg.Confirmed := True;
+  Dlg.Base.Result := DR_OK;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If (Ch >= ' ') And (Length(Dlg.FileName) < 127) Then
+ Begin
+  Dlg.FileName := Dlg.FileName + Ch;
+  Inc(Dlg.FileNameCursor);
+ End
+ Else If Key = $08 Then
+ Begin
+  If Length(Dlg.FileName) > 0 Then
+  Begin
+   Delete(Dlg.FileName, Length(Dlg.FileName), 1);
+   Dec(Dlg.FileNameCursor);
+  End;
+ End;
+End;
+
+{ --- Gestion des evenements du dialogue Nouveau fichier --- }
+
+Procedure HandleNewFileDialogEvent(Var Dlg: TNewFileDialog;
+ Var Ev: TEvent);
+Var
+ Idx, BtnR: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ Case Ev.What Of
+  EV_KEY_DOWN, EV_KEY_CHAR:
+   HandleNewFileDialogKey(Dlg, Ev.KeyCode, Ev.KeyChar);
+  EV_MOUSE_DOWN:
+  Begin
+   Idx := NewFileTypeHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If Idx >= 0 Then
+   Begin
+    Dlg.SelType := Idx;
+    DrawNewFileDialog(Dlg);
+    Exit;
+   End;
+   BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY);
+   If BtnR <> DR_NONE Then
+   Begin
+    If BtnR = DR_OK Then
+     Dlg.Confirmed := True
+    Else
+     Dlg.Confirmed := False;
+    Dlg.Base.Result := BtnR;
+    CloseDialog(Dlg.Base);
+   End;
+  End;
+ End;
+End;
+
+{ --- Afficher le dialogue Nouveau fichier --- }
+
+Procedure ShowNewFileDialog(Var Dlg: TNewFileDialog);
+Begin
+ InitNewFileDialog(Dlg);
+ Dlg.Base.Visible := True;
+ DrawNewFileDialog(Dlg);
+End;
+
+{ --- Initialiser une entree de reference --- }
+
+Procedure InitRefListEntry(Var E: TRefListEntry);
+Begin
+ E.Name := '';
+ E.Version := '';
+ E.Path := '';
+ E.Checked := False;
+ E.IsProject := False;
+End;
+
+{ --- Initialiser le dialogue Ajouter une reference --- }
+
+Procedure InitAddReferenceDialog(Var Dlg: TAddReferenceDialog);
+Var
+ I: Integer;
+Begin
+ InitDialog(Dlg.Base, 'Ajouter une reference', ADDREF_WIDTH,
+  ADDREF_HEIGHT);
+ Dlg.Base.HasCancel := True;
+ Dlg.ActiveTab := RTK_ASSEMBLIES;
+ Dlg.ItemCount := 0;
+ Dlg.SelIndex := -1;
+ Dlg.ScrollTop := 0;
+ Dlg.Confirmed := False;
+ For I := 0 To MAX_ADDREF_ITEMS - 1 Do
+  InitRefListEntry(Dlg.Items[I]);
+End;
+
+{ --- Ajouter un item de reference --- }
+
+Procedure AddRefItem(Var Dlg: TAddReferenceDialog;
+ AName, AVersion, APath: String; IsProj: Boolean);
+Var
+ Idx: Integer;
+Begin
+ If Dlg.ItemCount >= MAX_ADDREF_ITEMS Then Exit;
+ Idx := Dlg.ItemCount;
+ Dlg.Items[Idx].Name := AName;
+ Dlg.Items[Idx].Version := AVersion;
+ Dlg.Items[Idx].Path := APath;
+ Dlg.Items[Idx].Checked := False;
+ Dlg.Items[Idx].IsProject := IsProj;
+ Inc(Dlg.ItemCount);
+End;
+
+{ --- Dessiner les onglets du dialogue reference --- }
+
+Procedure DrawRefTabs(Var Dlg: TAddReferenceDialog);
+Var
+ TX, TY, TW, I: Integer;
+ TabN: String;
+ Bg, Fg: LongInt;
+Begin
+ TX := Dlg.Base.X + DLG_PADDING;
+ TY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ TW := (Dlg.Base.Width - DLG_PADDING * 2) Div ADDREF_TAB_COUNT;
+ For I := 0 To ADDREF_TAB_COUNT - 1 Do
+ Begin
+  Case I Of
+   0: TabN := RefTabName(RTK_ASSEMBLIES);
+   1: TabN := RefTabName(RTK_PROJECTS);
+   2: TabN := RefTabName(RTK_BROWSE);
+  Else
+   TabN := '';
+  End;
+  If I = Ord(Dlg.ActiveTab) Then
+  Begin
+   Bg := CLR_WINDOW;
+   Fg := CLR_WINDOWTEXT;
+  End
+  Else
+  Begin
+   Bg := CLR_BTNFACE;
+   Fg := CLR_GRAYTEXT;
+  End;
+  DrawFilledRect(TX + I * TW, TY, TX + (I + 1) * TW, TY + TAB_HEIGHT,
+   Bg);
+  DrawRect(TX + I * TW, TY, TX + (I + 1) * TW, TY + TAB_HEIGHT,
+   CLR_BORDER);
+  DrawText(TX + I * TW + 8, TY + 3, TabN, Fg);
+ End;
+End;
+
+{ --- Dessiner la liste des references --- }
+
+Procedure DrawRefList(Var Dlg: TAddReferenceDialog);
+Var
+ I: Integer;
+ LX, LY, LW, LH: Integer;
+ RH, VisCount, Idx: Integer;
+ Bg, Fg: LongInt;
+Begin
+ LX := Dlg.Base.X + DLG_PADDING;
+ LY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + 2;
+ LW := Dlg.Base.Width - DLG_PADDING * 2;
+ LH := Dlg.Base.Height - DLG_TITLE_HEIGHT - DLG_PADDING * 3 -
+  TAB_HEIGHT - DLG_BUTTON_HEIGHT - 10;
+ RH := DLG_LIST_ROW_HEIGHT;
+ DrawFilledRect(LX, LY, LX + LW, LY + LH, CLR_WINDOW);
+ DrawRect(LX, LY, LX + LW, LY + LH, CLR_BORDER);
+ VisCount := LH Div RH;
+ For I := 0 To VisCount - 1 Do
+ Begin
+  Idx := Dlg.ScrollTop + I;
+  If Idx >= Dlg.ItemCount Then Break;
+  If Idx = Dlg.SelIndex Then
+  Begin
+   Bg := CLR_HIGHLIGHT;
+   Fg := CLR_HIGHLIGHTTEXT;
+   DrawFilledRect(LX + 1, LY + 1 + I * RH,
+    LX + LW - 1, LY + 1 + (I + 1) * RH, Bg);
+  End
+  Else
+  Begin
+   Bg := CLR_WINDOW;
+   Fg := CLR_WINDOWTEXT;
+  End;
+  { Case a cocher }
+  DrawRect(LX + 4, LY + 2 + I * RH, LX + 16,
+   LY + 14 + I * RH, CLR_BORDER);
+  If Dlg.Items[Idx].Checked Then
+   DrawText(LX + 6, LY + 1 + I * RH, 'X', Fg);
+  DrawText(LX + 22, LY + 2 + I * RH, Dlg.Items[Idx].Name, Fg);
+  If Dlg.Items[Idx].Version <> '' Then
+   DrawText(LX + 200, LY + 2 + I * RH,
+    Dlg.Items[Idx].Version, Fg);
+ End;
+End;
+
+{ --- Dessiner le dialogue Ajouter une reference --- }
+
+Procedure DrawAddReferenceDialog(Var Dlg: TAddReferenceDialog);
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ DrawDialogFrame(Dlg.Base);
+ DrawRefTabs(Dlg);
+ DrawRefList(Dlg);
+ DrawDialogButtons(Dlg.Base);
+End;
+
+{ --- Test de clic sur les onglets de reference --- }
+
+Function RefTabHitTest(Var Dlg: TAddReferenceDialog;
+ MX, MY: Integer): Integer;
+Var
+ TX, TY, TW, I: Integer;
+Begin
+ RefTabHitTest := -1;
+ TX := Dlg.Base.X + DLG_PADDING;
+ TY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ TW := (Dlg.Base.Width - DLG_PADDING * 2) Div ADDREF_TAB_COUNT;
+ If (MY >= TY) And (MY < TY + TAB_HEIGHT) Then
+ Begin
+  For I := 0 To ADDREF_TAB_COUNT - 1 Do
+  Begin
+   If (MX >= TX + I * TW) And (MX < TX + (I + 1) * TW) Then
+   Begin
+    RefTabHitTest := I;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ --- Test de clic sur la liste de references --- }
+
+Function RefListItemHitTest(Var Dlg: TAddReferenceDialog;
+ MX, MY: Integer): Integer;
+Var
+ LX, LY, LW, LH, RH, I, Idx: Integer;
+Begin
+ RefListItemHitTest := -1;
+ LX := Dlg.Base.X + DLG_PADDING;
+ LY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + 2;
+ LW := Dlg.Base.Width - DLG_PADDING * 2;
+ LH := Dlg.Base.Height - DLG_TITLE_HEIGHT - DLG_PADDING * 3 -
+  TAB_HEIGHT - DLG_BUTTON_HEIGHT - 10;
+ RH := DLG_LIST_ROW_HEIGHT;
+ If (MX >= LX) And (MX < LX + LW) And
+  (MY >= LY) And (MY < LY + LH) Then
+ Begin
+  I := (MY - LY) Div RH;
+  Idx := Dlg.ScrollTop + I;
+  If (Idx >= 0) And (Idx < Dlg.ItemCount) Then
+   RefListItemHitTest := Idx;
+ End;
+End;
+
+{ --- Test de clic sur la case a cocher d un item --- }
+
+Function RefCheckboxHitTest(Var Dlg: TAddReferenceDialog;
+ MX, MY: Integer): Integer;
+Var
+ LX, LY, RH, I, Idx: Integer;
+Begin
+ RefCheckboxHitTest := -1;
+ LX := Dlg.Base.X + DLG_PADDING;
+ LY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + 2;
+ RH := DLG_LIST_ROW_HEIGHT;
+ If (MX >= LX + 4) And (MX <= LX + 16) Then
+ Begin
+  I := (MY - LY) Div RH;
+  Idx := Dlg.ScrollTop + I;
+  If (Idx >= 0) And (Idx < Dlg.ItemCount) Then
+   RefCheckboxHitTest := Idx;
+ End;
+End;
+
+{ --- Gestion des evenements du dialogue Ajouter une reference --- }
+
+Procedure HandleAddReferenceDialogEvent(Var Dlg: TAddReferenceDialog;
+ Var Ev: TEvent);
+Var
+ TabIdx, ItemIdx, ChkIdx, BtnR: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ Case Ev.What Of
+  EV_KEY_DOWN, EV_KEY_CHAR:
+  Begin
+   If Ev.KeyCode = $1B Then
+   Begin
+    Dlg.Confirmed := False;
+    CloseDialog(Dlg.Base);
+    Exit;
+   End;
+   If Ev.KeyCode = $0D Then
+   Begin
+    Dlg.Confirmed := True;
+    Dlg.Base.Result := DR_OK;
+    CloseDialog(Dlg.Base);
+    Exit;
+   End;
+   If Ev.KeyCode = $4800 Then { Fleche haut }
+   Begin
+    If Dlg.SelIndex > 0 Then
+     Dec(Dlg.SelIndex);
+    DrawAddReferenceDialog(Dlg);
+   End;
+   If Ev.KeyCode = $5000 Then { Fleche bas }
+   Begin
+    If Dlg.SelIndex < Dlg.ItemCount - 1 Then
+     Inc(Dlg.SelIndex);
+    DrawAddReferenceDialog(Dlg);
+   End;
+   If Ev.KeyChar = ' ' Then { Espace = toggle check }
+   Begin
+    If (Dlg.SelIndex >= 0) And
+     (Dlg.SelIndex < Dlg.ItemCount) Then
+    Begin
+     Dlg.Items[Dlg.SelIndex].Checked :=
+      Not Dlg.Items[Dlg.SelIndex].Checked;
+     DrawAddReferenceDialog(Dlg);
+    End;
+   End;
+  End;
+  EV_MOUSE_DOWN:
+  Begin
+   TabIdx := RefTabHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If TabIdx >= 0 Then
+   Begin
+    Case TabIdx Of
+     0: Dlg.ActiveTab := RTK_ASSEMBLIES;
+     1: Dlg.ActiveTab := RTK_PROJECTS;
+     2: Dlg.ActiveTab := RTK_BROWSE;
+    End;
+    DrawAddReferenceDialog(Dlg);
+    Exit;
+   End;
+   ChkIdx := RefCheckboxHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If ChkIdx >= 0 Then
+   Begin
+    Dlg.Items[ChkIdx].Checked :=
+     Not Dlg.Items[ChkIdx].Checked;
+    DrawAddReferenceDialog(Dlg);
+    Exit;
+   End;
+   ItemIdx := RefListItemHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If ItemIdx >= 0 Then
+   Begin
+    Dlg.SelIndex := ItemIdx;
+    DrawAddReferenceDialog(Dlg);
+    Exit;
+   End;
+   BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY);
+   If BtnR <> DR_NONE Then
+   Begin
+    If BtnR = DR_OK Then
+     Dlg.Confirmed := True
+    Else
+     Dlg.Confirmed := False;
+    Dlg.Base.Result := BtnR;
+    CloseDialog(Dlg.Base);
+   End;
+  End;
+ End;
+End;
+
+{ --- Afficher le dialogue Ajouter une reference --- }
+
+Procedure ShowAddReferenceDialog(Var Dlg: TAddReferenceDialog);
+Begin
+ InitAddReferenceDialog(Dlg);
+ Dlg.Base.Visible := True;
+ DrawAddReferenceDialog(Dlg);
+End;
+
+{ --- Initialiser le dialogue Proprietes du projet --- }
+
+Procedure InitProjectPropertiesDialog(
+ Var Dlg: TProjectPropertiesDialog);
+Begin
+ InitDialog(Dlg.Base, 'Proprietes du projet', PROJPROP_WIDTH,
+  PROJPROP_HEIGHT);
+ Dlg.Base.HasCancel := True;
+ Dlg.ActiveTab := PPT_APPLICATION;
+ Dlg.AssemblyName := '';
+ Dlg.RootNamespace := '';
+ Dlg.OutputTypeIdx := 0;
+ Dlg.DefineConstants := '';
+ Dlg.OutputPath := 'bin\Debug\';
+ Dlg.WarningLevel := 4;
+ Dlg.TreatWarningsAsErrors := False;
+ Dlg.PreBuildEvent := '';
+ Dlg.PostBuildEvent := '';
+ Dlg.DebugArgs := '';
+ Dlg.WorkingDir := '';
+ Dlg.FocusField := 0;
+ Dlg.AsmNameCursor := 0;
+ Dlg.NsCursor := 0;
+ Dlg.DefCursor := 0;
+ Dlg.OutPathCursor := 0;
+ Dlg.PreBuildCursor := 0;
+ Dlg.PostBuildCursor := 0;
+ Dlg.DebugArgsCursor := 0;
+ Dlg.WorkDirCursor := 0;
+ Dlg.Confirmed := False;
+End;
+
+{ --- Charger les proprietes d un projet dans le dialogue --- }
+
+Procedure LoadProjectProperties(Var Dlg: TProjectPropertiesDialog;
+ Var Proj: TProject);
+Begin
+ Dlg.AssemblyName := Proj.Info.AssemblyName;
+ Dlg.RootNamespace := Proj.Info.RootNamespace;
+ Case Proj.Info.OutputType Of
+  OT_EXE:     Dlg.OutputTypeIdx := 0;
+  OT_LIBRARY:  Dlg.OutputTypeIdx := 1;
+  OT_WINEXE:   Dlg.OutputTypeIdx := 2;
+ Else
+  Dlg.OutputTypeIdx := 0;
+ End;
+ Dlg.DefineConstants := Proj.Info.DefineConstants;
+ Dlg.OutputPath := Proj.Info.OutputPath;
+ Dlg.AsmNameCursor := Length(Dlg.AssemblyName);
+ Dlg.NsCursor := Length(Dlg.RootNamespace);
+ Dlg.DefCursor := Length(Dlg.DefineConstants);
+ Dlg.OutPathCursor := Length(Dlg.OutputPath);
+End;
+
+{ --- Enregistrer les proprietes du dialogue dans un projet --- }
+
+Procedure SaveProjectProperties(Var Dlg: TProjectPropertiesDialog;
+ Var Proj: TProject);
+Begin
+ Proj.Info.AssemblyName := Dlg.AssemblyName;
+ Proj.Info.RootNamespace := Dlg.RootNamespace;
+ Case Dlg.OutputTypeIdx Of
+  0: Proj.Info.OutputType := OT_EXE;
+  1: Proj.Info.OutputType := OT_LIBRARY;
+  2: Proj.Info.OutputType := OT_WINEXE;
+ End;
+ Proj.Info.DefineConstants := Dlg.DefineConstants;
+ Proj.Info.OutputPath := Dlg.OutputPath;
+End;
+
+{ --- Dessiner les onglets du dialogue proprietes --- }
+
+Procedure DrawProjPropTabs(Var Dlg: TProjectPropertiesDialog);
+Var
+ TX, TY, TW, I: Integer;
+ TabN: String;
+ Bg, Fg: LongInt;
+Begin
+ TX := Dlg.Base.X + DLG_PADDING;
+ TY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ TW := (Dlg.Base.Width - DLG_PADDING * 2) Div PROJPROP_TAB_COUNT;
+ For I := 0 To PROJPROP_TAB_COUNT - 1 Do
+ Begin
+  Case I Of
+   0: TabN := ProjPropTabName(PPT_APPLICATION);
+   1: TabN := ProjPropTabName(PPT_BUILD);
+   2: TabN := ProjPropTabName(PPT_BUILD_EVENTS);
+   3: TabN := ProjPropTabName(PPT_DEBUG);
+  Else
+   TabN := '';
+  End;
+  If I = Ord(Dlg.ActiveTab) Then
+  Begin
+   Bg := CLR_WINDOW;
+   Fg := CLR_WINDOWTEXT;
+  End
+  Else
+  Begin
+   Bg := CLR_BTNFACE;
+   Fg := CLR_GRAYTEXT;
+  End;
+  DrawFilledRect(TX + I * TW, TY, TX + (I + 1) * TW,
+   TY + TAB_HEIGHT, Bg);
+  DrawRect(TX + I * TW, TY, TX + (I + 1) * TW,
+   TY + TAB_HEIGHT, CLR_BORDER);
+  DrawText(TX + I * TW + 6, TY + 3, TabN, Fg);
+ End;
+End;
+
+{ --- Nom du type de sortie --- }
+
+Function OutputTypeIdxToStr(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: OutputTypeIdxToStr := 'Application console';
+  1: OutputTypeIdxToStr := 'Bibliotheque de classes';
+  2: OutputTypeIdxToStr := 'Application Windows';
+ Else
+  OutputTypeIdxToStr := 'Inconnu';
+ End;
+End;
+
+{ --- Dessiner l onglet Application --- }
+
+Procedure DrawProjPropApplication(Var Dlg: TProjectPropertiesDialog);
+Var
+ FX, FY, FW, BaseY: Integer;
+Begin
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + DLG_PADDING;
+ { Nom de l assembly }
+ DrawText(FX, BaseY, 'Nom assembly :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
+  Dlg.AssemblyName, CLR_WINDOWTEXT);
+ { Espace de noms racine }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ DrawText(FX, BaseY, 'Namespace racine :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
+  Dlg.RootNamespace, CLR_WINDOWTEXT);
+ { Type de sortie }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ DrawText(FX, BaseY, 'Type de sortie :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
+  OutputTypeIdxToStr(Dlg.OutputTypeIdx), CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner l onglet Build --- }
+
+Procedure DrawProjPropBuild(Var Dlg: TProjectPropertiesDialog);
+Var
+ FX, FW, BaseY: Integer;
+ S: String;
+Begin
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + DLG_PADDING;
+ { Constantes de compilation }
+ DrawText(FX, BaseY, 'Symboles :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
+  Dlg.DefineConstants, CLR_WINDOWTEXT);
+ { Chemin de sortie }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ DrawText(FX, BaseY, 'Chemin sortie :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
+  Dlg.OutputPath, CLR_WINDOWTEXT);
+ { Niveau d avertissement }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ Str(Dlg.WarningLevel, S);
+ DrawText(FX, BaseY, 'Warning level :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + PROJPROP_LABEL_WIDTH + 40,
+  BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + PROJPROP_LABEL_WIDTH + 40,
+  BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY, S,
+  CLR_WINDOWTEXT);
+ { Case a cocher : traiter avertissements comme erreurs }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + 12, BaseY + 12, CLR_BORDER);
+ If Dlg.TreatWarningsAsErrors Then
+  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+ DrawText(FX + 18, BaseY,
+  'Traiter avertissements comme erreurs', CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner l onglet Build Events --- }
+
+Procedure DrawProjPropBuildEvents(
+ Var Dlg: TProjectPropertiesDialog);
+Var
+ FX, FW, BaseY: Integer;
+Begin
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + DLG_PADDING;
+ { Commande pre-build }
+ DrawText(FX, BaseY, 'Pre-build :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
+  Dlg.PreBuildEvent, CLR_WINDOWTEXT);
+ { Commande post-build }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ DrawText(FX, BaseY, 'Post-build :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
+  Dlg.PostBuildEvent, CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner l onglet Debug --- }
+
+Procedure DrawProjPropDebug(Var Dlg: TProjectPropertiesDialog);
+Var
+ FX, FW, BaseY: Integer;
+Begin
+ FX := Dlg.Base.X + DLG_PADDING;
+ FW := Dlg.Base.Width - DLG_PADDING * 2;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + DLG_PADDING;
+ { Arguments de debogage }
+ DrawText(FX, BaseY, 'Arguments :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
+  Dlg.DebugArgs, CLR_WINDOWTEXT);
+ { Repertoire de travail }
+ BaseY := BaseY + PROJPROP_ROW_SPACING;
+ DrawText(FX, BaseY, 'Rep. travail :', CLR_WINDOWTEXT);
+ DrawFilledRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_WINDOW);
+ DrawRect(FX + PROJPROP_LABEL_WIDTH, BaseY - 2,
+  FX + FW, BaseY + PROJPROP_FIELD_HEIGHT, CLR_BORDER);
+ DrawText(FX + PROJPROP_LABEL_WIDTH + 4, BaseY,
+  Dlg.WorkingDir, CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner le contenu de l onglet actif --- }
+
+Procedure DrawProjPropContent(Var Dlg: TProjectPropertiesDialog);
+Var
+ CX, CY, CW, CH: Integer;
+Begin
+ CX := Dlg.Base.X + DLG_PADDING;
+ CY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING + TAB_HEIGHT;
+ CW := Dlg.Base.Width - DLG_PADDING * 2;
+ CH := Dlg.Base.Height - DLG_TITLE_HEIGHT - DLG_PADDING * 3 -
+  TAB_HEIGHT - DLG_BUTTON_HEIGHT - 10;
+ DrawFilledRect(CX, CY, CX + CW, CY + CH, CLR_WINDOW);
+ Case Dlg.ActiveTab Of
+  PPT_APPLICATION:  DrawProjPropApplication(Dlg);
+  PPT_BUILD:        DrawProjPropBuild(Dlg);
+  PPT_BUILD_EVENTS: DrawProjPropBuildEvents(Dlg);
+  PPT_DEBUG:        DrawProjPropDebug(Dlg);
+ End;
+End;
+
+{ --- Dessiner le dialogue Proprietes du projet --- }
+
+Procedure DrawProjectPropertiesDialog(
+ Var Dlg: TProjectPropertiesDialog);
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ DrawDialogFrame(Dlg.Base);
+ DrawProjPropTabs(Dlg);
+ DrawProjPropContent(Dlg);
+ DrawDialogButtons(Dlg.Base);
+End;
+
+{ --- Test de clic sur les onglets de proprietes projet --- }
+
+Function ProjPropTabHitTest(Var Dlg: TProjectPropertiesDialog;
+ MX, MY: Integer): Integer;
+Var
+ TX, TY, TW, I: Integer;
+Begin
+ ProjPropTabHitTest := -1;
+ TX := Dlg.Base.X + DLG_PADDING;
+ TY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ TW := (Dlg.Base.Width - DLG_PADDING * 2) Div PROJPROP_TAB_COUNT;
+ If (MY >= TY) And (MY < TY + TAB_HEIGHT) Then
+ Begin
+  For I := 0 To PROJPROP_TAB_COUNT - 1 Do
+  Begin
+   If (MX >= TX + I * TW) And (MX < TX + (I + 1) * TW) Then
+   Begin
+    ProjPropTabHitTest := I;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ --- Test de clic sur le checkbox TreatWarningsAsErrors --- }
+
+Function ProjPropWarningCheckHitTest(
+ Var Dlg: TProjectPropertiesDialog;
+ MX, MY: Integer): Boolean;
+Var
+ FX, BaseY: Integer;
+Begin
+ ProjPropWarningCheckHitTest := False;
+ If Dlg.ActiveTab <> PPT_BUILD Then Exit;
+ FX := Dlg.Base.X + DLG_PADDING;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  TAB_HEIGHT + DLG_PADDING + PROJPROP_ROW_SPACING * 3;
+ ProjPropWarningCheckHitTest :=
+  (MX >= FX) And (MX <= FX + 12) And
+  (MY >= BaseY) And (MY <= BaseY + 12);
+End;
+
+{ --- Gestion des touches du dialogue Proprietes du projet --- }
+
+Procedure HandleProjectPropertiesDialogKey(
+ Var Dlg: TProjectPropertiesDialog; Key: Word; Ch: Char);
+Begin
+ If Key = $1B Then
+ Begin
+  Dlg.Confirmed := False;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If Key = $0D Then
+ Begin
+  Dlg.Confirmed := True;
+  Dlg.Base.Result := DR_OK;
+  CloseDialog(Dlg.Base);
+  Exit;
+ End;
+ If Key = $09 Then
+ Begin
+  Inc(Dlg.FocusField);
+  Case Dlg.ActiveTab Of
+   PPT_APPLICATION:
+    If Dlg.FocusField > 2 Then Dlg.FocusField := 0;
+   PPT_BUILD:
+    If Dlg.FocusField > 2 Then Dlg.FocusField := 0;
+   PPT_BUILD_EVENTS:
+    If Dlg.FocusField > 1 Then Dlg.FocusField := 0;
+   PPT_DEBUG:
+    If Dlg.FocusField > 1 Then Dlg.FocusField := 0;
+  End;
+  Exit;
+ End;
+ { Saisie dans le champ actif selon l onglet }
+ Case Dlg.ActiveTab Of
+  PPT_APPLICATION:
+   Case Dlg.FocusField Of
+    0: { AssemblyName }
+     If (Ch >= ' ') And (Length(Dlg.AssemblyName) < 63) Then
+     Begin
+      Dlg.AssemblyName := Dlg.AssemblyName + Ch;
+      Inc(Dlg.AsmNameCursor);
+     End
+     Else If Key = $08 Then
+     Begin
+      If Length(Dlg.AssemblyName) > 0 Then
+      Begin
+       Delete(Dlg.AssemblyName, Length(Dlg.AssemblyName), 1);
+       Dec(Dlg.AsmNameCursor);
+      End;
+     End;
+    1: { RootNamespace }
+     If (Ch >= ' ') And (Length(Dlg.RootNamespace) < 63) Then
+     Begin
+      Dlg.RootNamespace := Dlg.RootNamespace + Ch;
+      Inc(Dlg.NsCursor);
+     End
+     Else If Key = $08 Then
+     Begin
+      If Length(Dlg.RootNamespace) > 0 Then
+      Begin
+       Delete(Dlg.RootNamespace, Length(Dlg.RootNamespace), 1);
+       Dec(Dlg.NsCursor);
+      End;
+     End;
+    2: { OutputType toggle }
+     If (Ch = ' ') Or (Key = $0D) Then
+      Dlg.OutputTypeIdx := (Dlg.OutputTypeIdx + 1) Mod 3;
+   End;
+  PPT_BUILD:
+   Case Dlg.FocusField Of
+    0: { DefineConstants }
+     If (Ch >= ' ') And (Length(Dlg.DefineConstants) < 255) Then
+     Begin
+      Dlg.DefineConstants := Dlg.DefineConstants + Ch;
+      Inc(Dlg.DefCursor);
+     End
+     Else If Key = $08 Then
+     Begin
+      If Length(Dlg.DefineConstants) > 0 Then
+      Begin
+       Delete(Dlg.DefineConstants,
+        Length(Dlg.DefineConstants), 1);
+       Dec(Dlg.DefCursor);
+      End;
+     End;
+    1: { OutputPath }
+     If (Ch >= ' ') And (Length(Dlg.OutputPath) < 255) Then
+     Begin
+      Dlg.OutputPath := Dlg.OutputPath + Ch;
+      Inc(Dlg.OutPathCursor);
+     End
+     Else If Key = $08 Then
+     Begin
+      If Length(Dlg.OutputPath) > 0 Then
+      Begin
+       Delete(Dlg.OutputPath, Length(Dlg.OutputPath), 1);
+       Dec(Dlg.OutPathCursor);
+      End;
+     End;
+    2: { WarningLevel }
+     If (Ch >= '0') And (Ch <= '4') Then
+      Dlg.WarningLevel := Ord(Ch) - Ord('0');
+   End;
+  PPT_BUILD_EVENTS:
+   Case Dlg.FocusField Of
+    0: { PreBuildEvent }
+     If (Ch >= ' ') And (Length(Dlg.PreBuildEvent) < 255) Then
+     Begin
+      Dlg.PreBuildEvent := Dlg.PreBuildEvent + Ch;
+      Inc(Dlg.PreBuildCursor);
+     End
+     Else If Key = $08 Then
+     Begin
+      If Length(Dlg.PreBuildEvent) > 0 Then
+      Begin
+       Delete(Dlg.PreBuildEvent,
+        Length(Dlg.PreBuildEvent), 1);
+       Dec(Dlg.PreBuildCursor);
+      End;
+     End;
+    1: { PostBuildEvent }
+     If (Ch >= ' ') And (Length(Dlg.PostBuildEvent) < 255) Then
+     Begin
+      Dlg.PostBuildEvent := Dlg.PostBuildEvent + Ch;
+      Inc(Dlg.PostBuildCursor);
+     End
+     Else If Key = $08 Then
+     Begin
+      If Length(Dlg.PostBuildEvent) > 0 Then
+      Begin
+       Delete(Dlg.PostBuildEvent,
+        Length(Dlg.PostBuildEvent), 1);
+       Dec(Dlg.PostBuildCursor);
+      End;
+     End;
+   End;
+  PPT_DEBUG:
+   Case Dlg.FocusField Of
+    0: { DebugArgs }
+     If (Ch >= ' ') And (Length(Dlg.DebugArgs) < 255) Then
+     Begin
+      Dlg.DebugArgs := Dlg.DebugArgs + Ch;
+      Inc(Dlg.DebugArgsCursor);
+     End
+     Else If Key = $08 Then
+     Begin
+      If Length(Dlg.DebugArgs) > 0 Then
+      Begin
+       Delete(Dlg.DebugArgs, Length(Dlg.DebugArgs), 1);
+       Dec(Dlg.DebugArgsCursor);
+      End;
+     End;
+    1: { WorkingDir }
+     If (Ch >= ' ') And (Length(Dlg.WorkingDir) < 255) Then
+     Begin
+      Dlg.WorkingDir := Dlg.WorkingDir + Ch;
+      Inc(Dlg.WorkDirCursor);
+     End
+     Else If Key = $08 Then
+     Begin
+      If Length(Dlg.WorkingDir) > 0 Then
+      Begin
+       Delete(Dlg.WorkingDir, Length(Dlg.WorkingDir), 1);
+       Dec(Dlg.WorkDirCursor);
+      End;
+     End;
+   End;
+ End;
+End;
+
+{ --- Gestion des evenements du dialogue Proprietes du projet --- }
+
+Procedure HandleProjectPropertiesDialogEvent(
+ Var Dlg: TProjectPropertiesDialog; Var Ev: TEvent);
+Var
+ TabIdx, BtnR: Integer;
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ Case Ev.What Of
+  EV_KEY_DOWN, EV_KEY_CHAR:
+  Begin
+   HandleProjectPropertiesDialogKey(Dlg, Ev.KeyCode, Ev.KeyChar);
+   DrawProjectPropertiesDialog(Dlg);
+  End;
+  EV_MOUSE_DOWN:
+  Begin
+   TabIdx := ProjPropTabHitTest(Dlg, Ev.MouseX, Ev.MouseY);
+   If TabIdx >= 0 Then
+   Begin
+    Case TabIdx Of
+     0: Dlg.ActiveTab := PPT_APPLICATION;
+     1: Dlg.ActiveTab := PPT_BUILD;
+     2: Dlg.ActiveTab := PPT_BUILD_EVENTS;
+     3: Dlg.ActiveTab := PPT_DEBUG;
+    End;
+    Dlg.FocusField := 0;
+    DrawProjectPropertiesDialog(Dlg);
+    Exit;
+   End;
+   If ProjPropWarningCheckHitTest(Dlg, Ev.MouseX, Ev.MouseY) Then
+   Begin
+    Dlg.TreatWarningsAsErrors :=
+     Not Dlg.TreatWarningsAsErrors;
+    DrawProjectPropertiesDialog(Dlg);
+    Exit;
+   End;
+   BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY);
+   If BtnR <> DR_NONE Then
+   Begin
+    If BtnR = DR_OK Then
+     Dlg.Confirmed := True
+    Else
+     Dlg.Confirmed := False;
+    Dlg.Base.Result := BtnR;
+    CloseDialog(Dlg.Base);
+   End;
+  End;
+ End;
+End;
+
+{ --- Afficher le dialogue Proprietes du projet --- }
+
+Procedure ShowProjectPropertiesDialog(
+ Var Dlg: TProjectPropertiesDialog);
+Begin
+ Dlg.Base.Visible := True;
+ DrawProjectPropertiesDialog(Dlg);
+End;
+
+{ --- Obtenir le type de projet selectionne (nouveau projet) --- }
+
+Function GetNewProjectSelectedType(
+ Var Dlg: TNewProjectDialog): Integer;
+Begin
+ GetNewProjectSelectedType := Dlg.SelType;
+End;
+
+{ --- Obtenir le nom du projet saisi --- }
+
+Function GetNewProjectName(Var Dlg: TNewProjectDialog): String;
+Begin
+ GetNewProjectName := Dlg.ProjectName;
+End;
+
+{ --- Obtenir l emplacement saisi --- }
+
+Function GetNewProjectLocation(Var Dlg: TNewProjectDialog): String;
+Begin
+ GetNewProjectLocation := Dlg.Location;
+End;
+
+{ --- Obtenir le nom de solution saisi --- }
+
+Function GetNewProjectSolutionName(
+ Var Dlg: TNewProjectDialog): String;
+Begin
+ GetNewProjectSolutionName := Dlg.SolutionName;
+End;
+
+{ --- Verifier si creer un repertoire solution est coche --- }
+
+Function IsNewProjectCreateSolDir(
+ Var Dlg: TNewProjectDialog): Boolean;
+Begin
+ IsNewProjectCreateSolDir := Dlg.CreateSolDir;
+End;
+
+{ --- Verifier si le dialogue nouveau projet est confirme --- }
+
+Function IsNewProjectConfirmed(
+ Var Dlg: TNewProjectDialog): Boolean;
+Begin
+ IsNewProjectConfirmed := Dlg.Confirmed;
+End;
+
+{ --- Obtenir le type de fichier selectionne --- }
+
+Function GetNewFileSelectedType(
+ Var Dlg: TNewFileDialog): Integer;
+Begin
+ GetNewFileSelectedType := Dlg.SelType;
+End;
+
+{ --- Obtenir le nom de fichier saisi --- }
+
+Function GetNewFileName(Var Dlg: TNewFileDialog): String;
+Begin
+ GetNewFileName := Dlg.FileName;
+End;
+
+{ --- Obtenir le nom complet du fichier avec extension --- }
+
+Function GetNewFileFullName(Var Dlg: TNewFileDialog): String;
+Begin
+ GetNewFileFullName := Dlg.FileName +
+  NewFileTypeExtension(Dlg.SelType);
+End;
+
+{ --- Verifier si le dialogue nouveau fichier est confirme --- }
+
+Function IsNewFileConfirmed(Var Dlg: TNewFileDialog): Boolean;
+Begin
+ IsNewFileConfirmed := Dlg.Confirmed;
+End;
+
+{ --- Obtenir l onglet actif du dialogue reference --- }
+
+Function GetAddRefActiveTab(
+ Var Dlg: TAddReferenceDialog): TRefTabKind;
+Begin
+ GetAddRefActiveTab := Dlg.ActiveTab;
+End;
+
+{ --- Obtenir le nombre d items dans le dialogue reference --- }
+
+Function GetAddRefItemCount(
+ Var Dlg: TAddReferenceDialog): Integer;
+Begin
+ GetAddRefItemCount := Dlg.ItemCount;
+End;
+
+{ --- Obtenir le nombre d items coches --- }
+
+Function GetAddRefCheckedCount(
+ Var Dlg: TAddReferenceDialog): Integer;
+Var
+ I, C: Integer;
+Begin
+ C := 0;
+ For I := 0 To Dlg.ItemCount - 1 Do
+  If Dlg.Items[I].Checked Then
+   Inc(C);
+ GetAddRefCheckedCount := C;
+End;
+
+{ --- Verifier si un item est coche --- }
+
+Function IsAddRefItemChecked(Var Dlg: TAddReferenceDialog;
+ Idx: Integer): Boolean;
+Begin
+ IsAddRefItemChecked := False;
+ If (Idx >= 0) And (Idx < Dlg.ItemCount) Then
+  IsAddRefItemChecked := Dlg.Items[Idx].Checked;
+End;
+
+{ --- Obtenir le nom d un item de reference --- }
+
+Function GetAddRefItemName(Var Dlg: TAddReferenceDialog;
+ Idx: Integer): String;
+Begin
+ GetAddRefItemName := '';
+ If (Idx >= 0) And (Idx < Dlg.ItemCount) Then
+  GetAddRefItemName := Dlg.Items[Idx].Name;
+End;
+
+{ --- Obtenir le chemin d un item de reference --- }
+
+Function GetAddRefItemPath(Var Dlg: TAddReferenceDialog;
+ Idx: Integer): String;
+Begin
+ GetAddRefItemPath := '';
+ If (Idx >= 0) And (Idx < Dlg.ItemCount) Then
+  GetAddRefItemPath := Dlg.Items[Idx].Path;
+End;
+
+{ --- Verifier si le dialogue reference est confirme --- }
+
+Function IsAddRefConfirmed(
+ Var Dlg: TAddReferenceDialog): Boolean;
+Begin
+ IsAddRefConfirmed := Dlg.Confirmed;
+End;
+
+{ --- Obtenir l onglet actif du dialogue proprietes projet --- }
+
+Function GetProjPropActiveTab(
+ Var Dlg: TProjectPropertiesDialog): TProjPropTab;
+Begin
+ GetProjPropActiveTab := Dlg.ActiveTab;
+End;
+
+{ --- Obtenir le nom d assembly du dialogue proprietes --- }
+
+Function GetProjPropAssemblyName(
+ Var Dlg: TProjectPropertiesDialog): String;
+Begin
+ GetProjPropAssemblyName := Dlg.AssemblyName;
+End;
+
+{ --- Obtenir le namespace racine du dialogue proprietes --- }
+
+Function GetProjPropRootNamespace(
+ Var Dlg: TProjectPropertiesDialog): String;
+Begin
+ GetProjPropRootNamespace := Dlg.RootNamespace;
+End;
+
+{ --- Obtenir l index du type de sortie --- }
+
+Function GetProjPropOutputTypeIdx(
+ Var Dlg: TProjectPropertiesDialog): Integer;
+Begin
+ GetProjPropOutputTypeIdx := Dlg.OutputTypeIdx;
+End;
+
+{ --- Obtenir les constantes de compilation --- }
+
+Function GetProjPropDefineConstants(
+ Var Dlg: TProjectPropertiesDialog): String;
+Begin
+ GetProjPropDefineConstants := Dlg.DefineConstants;
+End;
+
+{ --- Obtenir le chemin de sortie --- }
+
+Function GetProjPropOutputPath(
+ Var Dlg: TProjectPropertiesDialog): String;
+Begin
+ GetProjPropOutputPath := Dlg.OutputPath;
+End;
+
+{ --- Obtenir le niveau d avertissement --- }
+
+Function GetProjPropWarningLevel(
+ Var Dlg: TProjectPropertiesDialog): Integer;
+Begin
+ GetProjPropWarningLevel := Dlg.WarningLevel;
+End;
+
+{ --- Verifier si les avertissements sont traites comme erreurs --- }
+
+Function IsProjPropWarningsAsErrors(
+ Var Dlg: TProjectPropertiesDialog): Boolean;
+Begin
+ IsProjPropWarningsAsErrors := Dlg.TreatWarningsAsErrors;
+End;
+
+{ --- Verifier si le dialogue proprietes projet est confirme --- }
+
+Function IsProjPropConfirmed(
+ Var Dlg: TProjectPropertiesDialog): Boolean;
+Begin
+ IsProjPropConfirmed := Dlg.Confirmed;
+End;
+
+{ --- Verifier si un dialogue projet est visible --- }
+
+Function IsNewProjectDialogVisible(
+ Var Dlg: TNewProjectDialog): Boolean;
+Begin
+ IsNewProjectDialogVisible := Dlg.Base.Visible;
+End;
+
+{ --- Verifier si un dialogue nouveau fichier est visible --- }
+
+Function IsNewFileDialogVisible(
+ Var Dlg: TNewFileDialog): Boolean;
+Begin
+ IsNewFileDialogVisible := Dlg.Base.Visible;
+End;
+
+{ --- Verifier si le dialogue reference est visible --- }
+
+Function IsAddRefDialogVisible(
+ Var Dlg: TAddReferenceDialog): Boolean;
+Begin
+ IsAddRefDialogVisible := Dlg.Base.Visible;
+End;
+
+{ --- Verifier si le dialogue proprietes projet est visible --- }
+
+Function IsProjPropDialogVisible(
+ Var Dlg: TProjectPropertiesDialog): Boolean;
+Begin
+ IsProjPropDialogVisible := Dlg.Base.Visible;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -13746,6 +15562,6 @@ BEGIN
  DrawOutputPanel(OutputPanel);
  InitErrorList(ErrorList);
  DrawErrorList(ErrorList);
- { Boucle principale a venir (TODO 22+) }
+ { Boucle principale a venir (TODO 23+) }
  ShutdownGraphics;
 END.

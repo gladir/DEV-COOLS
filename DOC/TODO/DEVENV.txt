@@ -241,7 +241,7 @@
             Constantes MB_OK, MB_OKCANCEL, MB_YESNO, etc.
             Entierement dessinees en mode graphique.
 
-  TODO 22 - BOITES DE DIALOGUE : PROJET ET SOLUTION [A FAIRE]
+  TODO 22 - BOITES DE DIALOGUE : PROJET ET SOLUTION [IMPLEMENTE]
             TNewProjectDialog : types (console C#, console VB,
               console Pascal, bibliotheque C#, bibliotheque VB).
             TNewFileDialog : types (.cs, .vb, .pas, .txt, .xml).
