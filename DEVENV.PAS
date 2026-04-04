@@ -953,7 +953,7 @@ Program DEVENV;
 
 Uses DOS,
      {$IFDEF FPC}
-      Crt,PtcGraph,PtcCrt,PtcMouse
+      cthreads,Crt,PtcGraph,PtcCrt,PtcMouse
      {$ELSE}
       Crt,Graph
      {$ENDIF};
@@ -21176,25 +21176,27 @@ Begin
  End;
  { Distribuer aux panneaux dans l ordre de priorite }
  If MenuActive Then Begin
-  HandleMenuEvent(MainMenuBar, Ev);
+  HandleMenuEvent(Ev);
   Exit;
  End;
  If FindReplaceDlg.Base.Visible Then Begin
-  HandleFindDialogEvent(FindReplaceDlg, Ev);
+  HandleFindDialogEvent(FindReplaceDlg,
+   Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
   Exit;
  End;
- If GoToLineDlg.Visible Then Begin
-  HandleGoToLineEvent(GoToLineDlg, Ev);
+ If GoToLineDlg.Base.Visible Then Begin
+  HandleGoToLineEvent(GoToLineDlg,
+   Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
   Exit;
  End;
  If DbgPanel.Visible Then Begin
-  HandleDebugPanelEvent(DbgPanel, BPMgr, Ev);
+  HandleDebugPanelEvent(DbgPanel, BPMgr);
   Exit;
  End;
  { Evenements pour la barre de menus }
- HandleMenuBarEvent(MainMenuBar, Ev);
+ HandleMenuEvent(Ev);
  { Evenements pour la barre d outils }
- HandleToolBarEvent(MainToolBar, Ev);
+ HandleToolBarEvent(Ev);
  { Evenements pour l explorateur }
  HandleExplorerEvent(SolExplorer, Ev);
  { Evenements pour le panneau de proprietes }
@@ -21203,10 +21205,6 @@ Begin
  HandleOutputEvent(OutputPanel, Ev);
  { Evenements pour la liste d erreurs }
  HandleErrorListEvent(ErrorList, Ev);
- { Evenements pour l editeur actif }
- If (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.ActiveIdx < WinMgr.Count) Then
-  HandleEditorEvent(WinMgr.Editors[WinMgr.ActiveIdx], Ev);
 End;
 
 { --- Boucle principale de l IDE --- }
@@ -21217,7 +21215,7 @@ Var
 Begin
  QuitRequested := False;
  While Not QuitRequested Do Begin
-  PollEvents(EvQueue, Ev);
+  PollEvents(Ev);
   If Ev.Kind <> EV_NONE Then Begin
    DispatchEvent(Ev);
    UpdateStatusBar(StatusBar, WinMgr);
@@ -21416,6 +21414,7 @@ Begin
 End;
 
 
+BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
  If Opts.Verbose Then
