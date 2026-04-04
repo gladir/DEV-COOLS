@@ -1418,9 +1418,11 @@ Begin
  {$IFDEF FPC}
   Driver := VGA;
   If (W >= 1024) And (H >= 768) Then
-   Mode := VGAHi
+   Mode := VGAHi    { 640x480, plus haute resolution VGA standard }
+  Else If (W >= 640) And (H >= 350) Then
+   Mode := VGAMed   { 640x350 }
   Else
-   Mode := VGAHi;
+   Mode := VGALo;   { 640x200 }
  {$ELSE}
   Driver := Detect;
   Mode := 0;
