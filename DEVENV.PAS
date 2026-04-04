@@ -863,7 +863,7 @@
             Barre d outils : liste deroulante de la configuration
               active (Debug/Release).
 
-  TODO 29 - SUPPORT DU DEBOGAGE ET POINTS D ARRET [A FAIRE]
+  TODO 29 - SUPPORT DU DEBOGAGE ET POINTS D ARRET [IMPLEMENTE]
             Support de base pour le debogage (interface utilisateur,
             les fonctionnalites avancees seront des stubs).
             TBreakpoint : FileName, Line, Enabled, Condition,
@@ -1220,6 +1220,16 @@ Const
  BUILD_CFG_COL_WIDTH   = 150;      { largeur colonne configuration   }
  BUILD_CFG_PADDING     = 8;        { marge interieure dialogue       }
  MAX_BUILD_RESULTS     = 64;       { nombre max de resultats build   }
+
+ { Points d arret et debogage }
+ MAX_BREAKPOINTS       = 256;      { nombre max de points d arret    }
+ BP_MARKER_SIZE        = 10;       { taille du marqueur (pixels)     }
+ BP_MARKER_COLOR       = 4;        { couleur du marqueur (rouge)     }
+ BP_DISABLED_COLOR     = 8;        { couleur marqueur desactive      }
+ DEBUG_PANEL_WIDTH     = 300;      { largeur panneau debogage        }
+ DEBUG_PANEL_HEIGHT    = 200;      { hauteur panneau debogage        }
+ DEBUG_PANEL_ROW_HEIGHT= 20;       { hauteur d une ligne panneau     }
+ DEBUG_PANEL_PADDING   = 6;        { marge interieure panneau        }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -2307,6 +2317,54 @@ Type
   NeedRepaint  : Boolean;          { doit etre redessine            }
  End;
 
+ { Point d arret }
+ TBreakpoint = Record
+  FileName       : String[255];     { fichier source                 }
+  Line           : Integer;         { numero de ligne (1-based)      }
+  Enabled        : Boolean;         { point d arret actif            }
+  Condition      : String[127];     { condition (vide = toujours)    }
+  HitCount       : Integer;         { nombre de passages effectues   }
+  HitCountTarget : Integer;         { cible de passages (0 = ignore) }
+ End;
+
+ { Etat du debogueur }
+ TDebugState = (
+  DS_IDLE,             { aucun debogage en cours                    }
+  DS_RUNNING,          { programme en cours d execution             }
+  DS_PAUSED,           { programme en pause (stub)                  }
+  DS_STOPPED           { programme arrete                           }
+ );
+
+ { Gestionnaire de points d arret }
+ TBreakpointManager = Record
+  Breakpoints  : Array[0..MAX_BREAKPOINTS - 1] Of TBreakpoint;
+  Count        : Integer;          { nombre de points d arret       }
+  State        : TDebugState;      { etat du debogueur              }
+  ExecutablePath: String[255];     { chemin de l executable         }
+  LastExitCode : Integer;          { code retour du dernier run     }
+ End;
+
+ { Panneau de debogage (breakpoints / watch / call stack) }
+ TDebugPanelTab = (
+  DPT_BREAKPOINTS,     { onglet points d arret                     }
+  DPT_WATCH,           { onglet espion (stub)                       }
+  DPT_CALLSTACK        { onglet pile d appels (stub)                }
+ );
+
+ TDebugPanel = Record
+  Visible      : Boolean;          { panneau visible                }
+  ActiveTab    : TDebugPanelTab;   { onglet actif                   }
+  X            : Integer;          { position X                     }
+  Y            : Integer;          { position Y                     }
+  Width        : Integer;          { largeur                        }
+  Height       : Integer;          { hauteur                        }
+  SelectedRow  : Integer;          { ligne selectionnee             }
+  ScrollTop    : Integer;          { defilement vertical            }
+  NeedRepaint  : Boolean;          { doit etre redessine            }
+ End;
+
+
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -2371,6 +2429,10 @@ Var
  BuildMgr       : TBuildManager;
  { Gestionnaire de configurations }
  CfgMgr         : TConfigurationManager;
+ { Gestionnaire de points d arret }
+ BPMgr          : TBreakpointManager;
+ { Panneau de debogage }
+ DbgPanel       : TDebugPanel;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -20075,6 +20137,556 @@ Begin
   (Not BM.IsBuilding);
 End;
 
+{ ============================================================
+  TODO 29 - SUPPORT DU DEBOGAGE ET POINTS D ARRET [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser un point d arret --- }
+
+Procedure InitBreakpoint(Var BP: TBreakpoint);
+Begin
+ BP.FileName := '';
+ BP.Line := 0;
+ BP.Enabled := True;
+ BP.Condition := '';
+ BP.HitCount := 0;
+ BP.HitCountTarget := 0;
+End;
+
+{ --- Initialiser le gestionnaire de points d arret --- }
+
+Procedure InitBreakpointManager(Var BPM: TBreakpointManager);
+Var
+ I: Integer;
+Begin
+ For I := 0 To MAX_BREAKPOINTS - 1 Do
+  InitBreakpoint(BPM.Breakpoints[I]);
+ BPM.Count := 0;
+ BPM.State := DS_IDLE;
+ BPM.ExecutablePath := '';
+ BPM.LastExitCode := 0;
+End;
+
+{ --- Initialiser le panneau de debogage --- }
+
+Procedure InitDebugPanel(Var DP: TDebugPanel);
+Begin
+ DP.Visible := False;
+ DP.ActiveTab := DPT_BREAKPOINTS;
+ DP.X := 100;
+ DP.Y := 80;
+ DP.Width := DEBUG_PANEL_WIDTH;
+ DP.Height := DEBUG_PANEL_HEIGHT;
+ DP.SelectedRow := 0;
+ DP.ScrollTop := 0;
+ DP.NeedRepaint := False;
+End;
+
+{ --- Trouver un point d arret par fichier et ligne --- }
+
+Function FindBreakpoint(Var BPM: TBreakpointManager;
+ FileName: String; Line: Integer): Integer;
+Var
+ I: Integer;
+Begin
+ FindBreakpoint := -1;
+ For I := 0 To BPM.Count - 1 Do Begin
+  If (BPM.Breakpoints[I].FileName = FileName) And
+     (BPM.Breakpoints[I].Line = Line) Then Begin
+   FindBreakpoint := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Ajouter un point d arret --- }
+
+Procedure AddBreakpoint(Var BPM: TBreakpointManager;
+ FileName: String; Line: Integer);
+Var
+ Idx: Integer;
+Begin
+ Idx := FindBreakpoint(BPM, FileName, Line);
+ If Idx >= 0 Then Exit; { deja present }
+ If BPM.Count >= MAX_BREAKPOINTS Then Exit;
+ BPM.Breakpoints[BPM.Count].FileName := FileName;
+ BPM.Breakpoints[BPM.Count].Line := Line;
+ BPM.Breakpoints[BPM.Count].Enabled := True;
+ BPM.Breakpoints[BPM.Count].Condition := '';
+ BPM.Breakpoints[BPM.Count].HitCount := 0;
+ BPM.Breakpoints[BPM.Count].HitCountTarget := 0;
+ Inc(BPM.Count);
+End;
+
+{ --- Supprimer un point d arret --- }
+
+Procedure RemoveBreakpoint(Var BPM: TBreakpointManager;
+ FileName: String; Line: Integer);
+Var
+ Idx, I: Integer;
+Begin
+ Idx := FindBreakpoint(BPM, FileName, Line);
+ If Idx < 0 Then Exit;
+ For I := Idx To BPM.Count - 2 Do
+  BPM.Breakpoints[I] := BPM.Breakpoints[I + 1];
+ Dec(BPM.Count);
+ InitBreakpoint(BPM.Breakpoints[BPM.Count]);
+End;
+
+{ --- Basculer un point d arret (ajouter ou supprimer) --- }
+
+Procedure ToggleBreakpoint(Var BPM: TBreakpointManager;
+ FileName: String; Line: Integer);
+Var
+ Idx: Integer;
+Begin
+ Idx := FindBreakpoint(BPM, FileName, Line);
+ If Idx >= 0 Then
+  RemoveBreakpoint(BPM, FileName, Line)
+ Else
+  AddBreakpoint(BPM, FileName, Line);
+End;
+
+{ --- Activer un point d arret par index --- }
+
+Procedure EnableBreakpoint(Var BPM: TBreakpointManager;
+ Index: Integer);
+Begin
+ If (Index >= 0) And (Index < BPM.Count) Then
+  BPM.Breakpoints[Index].Enabled := True;
+End;
+
+{ --- Desactiver un point d arret par index --- }
+
+Procedure DisableBreakpoint(Var BPM: TBreakpointManager;
+ Index: Integer);
+Begin
+ If (Index >= 0) And (Index < BPM.Count) Then
+  BPM.Breakpoints[Index].Enabled := False;
+End;
+
+{ --- Supprimer tous les points d arret --- }
+
+Procedure ClearAllBreakpoints(Var BPM: TBreakpointManager);
+Var
+ I: Integer;
+Begin
+ For I := 0 To BPM.Count - 1 Do
+  InitBreakpoint(BPM.Breakpoints[I]);
+ BPM.Count := 0;
+End;
+
+{ --- Dessiner un marqueur de point d arret dans la gouttiere --- }
+
+Procedure DrawBreakpointMarker(Var Ed: TEditor;
+ Line: Integer; Enabled: Boolean);
+Var
+ ScreenY, CenterX, CenterY, Radius: Integer;
+Begin
+ If Line < Ed.ScrollLine Then Exit;
+ If Line >= Ed.ScrollLine + Ed.VisibleLines Then Exit;
+ ScreenY := Ed.Y + (Line - Ed.ScrollLine) * Ed.CharHeight;
+ CenterX := Ed.X - Ed.GutterWidth Div 2;
+ CenterY := ScreenY + Ed.CharHeight Div 2;
+ Radius := BP_MARKER_SIZE Div 2;
+ If CenterX < Radius Then CenterX := Radius;
+ { Stub : dessin du cercle du point d arret }
+ { En mode reel, on utiliserait FillEllipse/Circle }
+ If Enabled Then Begin
+  { Point rouge plein }
+ End Else Begin
+  { Cercle rouge vide (desactive) }
+ End;
+End;
+
+{ --- Dessiner les marqueurs de tous les points d arret visibles --- }
+
+Procedure DrawAllBreakpointMarkers(Var Ed: TEditor;
+ Var BPM: TBreakpointManager; FileName: String);
+Var
+ I: Integer;
+Begin
+ For I := 0 To BPM.Count - 1 Do Begin
+  If BPM.Breakpoints[I].FileName = FileName Then
+   DrawBreakpointMarker(Ed, BPM.Breakpoints[I].Line,
+    BPM.Breakpoints[I].Enabled);
+ End;
+End;
+
+{ --- Nom textuel de l etat du debogueur --- }
+
+Function DebugStateName(S: TDebugState): String;
+Begin
+ Case S Of
+  DS_IDLE:    DebugStateName := 'Idle';
+  DS_RUNNING: DebugStateName := 'Running';
+  DS_PAUSED:  DebugStateName := 'Paused';
+  DS_STOPPED: DebugStateName := 'Stopped';
+ Else
+  DebugStateName := 'Unknown';
+ End;
+End;
+
+{ --- Nom textuel d un onglet du panneau de debogage --- }
+
+Function DebugPanelTabName(T: TDebugPanelTab): String;
+Begin
+ Case T Of
+  DPT_BREAKPOINTS: DebugPanelTabName := 'Breakpoints';
+  DPT_WATCH:       DebugPanelTabName := 'Watch';
+  DPT_CALLSTACK:   DebugPanelTabName := 'Call Stack';
+ Else
+  DebugPanelTabName := 'Unknown';
+ End;
+End;
+
+{ --- Demarrer sans debogage (Ctrl+F5) --- }
+
+Procedure StartWithoutDebugging(Var BPM: TBreakpointManager;
+ Var OP: TOutputPanel);
+Begin
+ If BPM.ExecutablePath = '' Then Begin
+  AppendOutput(OP,
+   'Erreur: aucun executable defini. Compilez d abord le projet.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ BPM.State := DS_RUNNING;
+ AppendOutput(OP, 'Demarrage sans debogage: ' +
+  BPM.ExecutablePath, Ord(OTK_BUILD));
+ { Stub : lancement du processus externe }
+ { En mode reel on utiliserait Exec() ou SwapVectors + Exec }
+ AppendOutput(OP,
+  'Programme termine (stub - execution non implementee).',
+  Ord(OTK_BUILD));
+ BPM.State := DS_STOPPED;
+ BPM.LastExitCode := 0;
+End;
+
+{ --- Demarrer avec debogage (F5) --- }
+
+Procedure StartWithDebugging(Var BPM: TBreakpointManager;
+ Var OP: TOutputPanel);
+Begin
+ AppendOutput(OP,
+  'Le debogage interactif n est pas encore supporte.',
+  Ord(OTK_BUILD));
+ AppendOutput(OP,
+  'Lancement sans debogage a la place...', Ord(OTK_BUILD));
+ StartWithoutDebugging(BPM, OP);
+End;
+
+{ --- Arreter le debogage (Shift+F5) --- }
+
+Procedure StopDebugging(Var BPM: TBreakpointManager;
+ Var OP: TOutputPanel);
+Begin
+ If BPM.State = DS_IDLE Then Exit;
+ BPM.State := DS_STOPPED;
+ AppendOutput(OP, 'Debogage arrete.', Ord(OTK_BUILD));
+ BPM.State := DS_IDLE;
+End;
+
+{ --- Pas a pas principal (F10) - stub --- }
+
+Procedure StepOver(Var BPM: TBreakpointManager;
+ Var OP: TOutputPanel);
+Begin
+ AppendOutput(OP,
+  'Pas a pas principal (Step Over) non supporte.',
+  Ord(OTK_BUILD));
+End;
+
+{ --- Pas a pas detaille (F11) - stub --- }
+
+Procedure StepInto(Var BPM: TBreakpointManager;
+ Var OP: TOutputPanel);
+Begin
+ AppendOutput(OP,
+  'Pas a pas detaille (Step Into) non supporte.',
+  Ord(OTK_BUILD));
+End;
+
+{ --- Dessiner le panneau de points d arret --- }
+
+Procedure DrawBreakpointPanel(Var DP: TDebugPanel;
+ Var BPM: TBreakpointManager);
+Begin
+ If Not DP.Visible Then Exit;
+ If DP.ActiveTab <> DPT_BREAKPOINTS Then Exit;
+ DP.NeedRepaint := False;
+ { Stub : dessin de la liste des points d arret }
+End;
+
+{ --- Dessiner le panneau espion (Watch) - stub --- }
+
+Procedure DrawWatchPanel(Var DP: TDebugPanel);
+Begin
+ If Not DP.Visible Then Exit;
+ If DP.ActiveTab <> DPT_WATCH Then Exit;
+ DP.NeedRepaint := False;
+ { Stub : affiche "Non disponible" }
+End;
+
+{ --- Dessiner le panneau pile d appels (Call Stack) - stub --- }
+
+Procedure DrawCallStackPanel(Var DP: TDebugPanel);
+Begin
+ If Not DP.Visible Then Exit;
+ If DP.ActiveTab <> DPT_CALLSTACK Then Exit;
+ DP.NeedRepaint := False;
+ { Stub : affiche "Non disponible" }
+End;
+
+{ --- Dessiner le panneau de debogage selon l onglet actif --- }
+
+Procedure DrawDebugPanel(Var DP: TDebugPanel;
+ Var BPM: TBreakpointManager);
+Begin
+ If Not DP.Visible Then Exit;
+ Case DP.ActiveTab Of
+  DPT_BREAKPOINTS: DrawBreakpointPanel(DP, BPM);
+  DPT_WATCH:       DrawWatchPanel(DP);
+  DPT_CALLSTACK:   DrawCallStackPanel(DP);
+ End;
+End;
+
+{ --- Gerer une touche dans le panneau de debogage --- }
+
+Procedure HandleDebugPanelKey(Var DP: TDebugPanel;
+ Var BPM: TBreakpointManager; Key: Word);
+Begin
+ If Not DP.Visible Then Exit;
+ Case Key Of
+  $4800: { Fleche haut }
+   If DP.SelectedRow > 0 Then Begin
+    Dec(DP.SelectedRow);
+    DP.NeedRepaint := True;
+   End;
+  $5000: { Fleche bas }
+   Begin
+    If (DP.ActiveTab = DPT_BREAKPOINTS) And
+       (DP.SelectedRow < BPM.Count - 1) Then Begin
+     Inc(DP.SelectedRow);
+     DP.NeedRepaint := True;
+    End;
+   End;
+  $0020: { Espace : basculer enable/disable }
+   If (DP.ActiveTab = DPT_BREAKPOINTS) And
+      (DP.SelectedRow >= 0) And
+      (DP.SelectedRow < BPM.Count) Then Begin
+    BPM.Breakpoints[DP.SelectedRow].Enabled :=
+     Not BPM.Breakpoints[DP.SelectedRow].Enabled;
+    DP.NeedRepaint := True;
+   End;
+  $5300: { Suppr : supprimer le point d arret selectionne }
+   If (DP.ActiveTab = DPT_BREAKPOINTS) And
+      (DP.SelectedRow >= 0) And
+      (DP.SelectedRow < BPM.Count) Then Begin
+    RemoveBreakpoint(BPM,
+     BPM.Breakpoints[DP.SelectedRow].FileName,
+     BPM.Breakpoints[DP.SelectedRow].Line);
+    If DP.SelectedRow >= BPM.Count Then
+     DP.SelectedRow := BPM.Count - 1;
+    If DP.SelectedRow < 0 Then
+     DP.SelectedRow := 0;
+    DP.NeedRepaint := True;
+   End;
+  $001B: { Echap }
+   DP.Visible := False;
+  $000F: { Tab : changer d onglet }
+   Begin
+    Case DP.ActiveTab Of
+     DPT_BREAKPOINTS: DP.ActiveTab := DPT_WATCH;
+     DPT_WATCH:       DP.ActiveTab := DPT_CALLSTACK;
+     DPT_CALLSTACK:   DP.ActiveTab := DPT_BREAKPOINTS;
+    End;
+    DP.SelectedRow := 0;
+    DP.ScrollTop := 0;
+    DP.NeedRepaint := True;
+   End;
+ End;
+End;
+
+{ --- Gerer un evenement du panneau de debogage --- }
+
+Procedure HandleDebugPanelEvent(Var DP: TDebugPanel;
+ Var BPM: TBreakpointManager);
+Begin
+ If Not DP.Visible Then Exit;
+ { Stub : gestion des evenements souris }
+End;
+
+{ --- Afficher le panneau de debogage --- }
+
+Procedure ShowDebugPanel(Var DP: TDebugPanel);
+Begin
+ DP.Visible := True;
+ DP.NeedRepaint := True;
+End;
+
+{ --- Masquer le panneau de debogage --- }
+
+Procedure HideDebugPanel(Var DP: TDebugPanel);
+Begin
+ DP.Visible := False;
+End;
+
+{ --- Definir l onglet actif du panneau --- }
+
+Procedure SetDebugPanelTab(Var DP: TDebugPanel;
+ Tab: TDebugPanelTab);
+Begin
+ DP.ActiveTab := Tab;
+ DP.SelectedRow := 0;
+ DP.ScrollTop := 0;
+ DP.NeedRepaint := True;
+End;
+
+{ --- Definir le chemin de l executable --- }
+
+Procedure SetExecutablePath(Var BPM: TBreakpointManager;
+ Path: String);
+Begin
+ BPM.ExecutablePath := Path;
+End;
+
+{ --- Obtenir le chemin de l executable --- }
+
+Function GetExecutablePath(
+ Var BPM: TBreakpointManager): String;
+Begin
+ GetExecutablePath := BPM.ExecutablePath;
+End;
+
+{ --- Obtenir le nombre de points d arret --- }
+
+Function GetBreakpointCount(
+ Var BPM: TBreakpointManager): Integer;
+Begin
+ GetBreakpointCount := BPM.Count;
+End;
+
+{ --- Obtenir un point d arret par index --- }
+
+Function GetBreakpointByIndex(Var BPM: TBreakpointManager;
+ Idx: Integer): TBreakpoint;
+Var
+ Empty: TBreakpoint;
+Begin
+ If (Idx >= 0) And (Idx < BPM.Count) Then
+  GetBreakpointByIndex := BPM.Breakpoints[Idx]
+ Else Begin
+  InitBreakpoint(Empty);
+  GetBreakpointByIndex := Empty;
+ End;
+End;
+
+{ --- Verifier si un index de point d arret est valide --- }
+
+Function IsValidBreakpointIndex(
+ Var BPM: TBreakpointManager; Idx: Integer): Boolean;
+Begin
+ IsValidBreakpointIndex := (Idx >= 0) And (Idx < BPM.Count);
+End;
+
+{ --- Obtenir l etat du debogueur --- }
+
+Function GetDebugState(
+ Var BPM: TBreakpointManager): TDebugState;
+Begin
+ GetDebugState := BPM.State;
+End;
+
+{ --- Obtenir le code de sortie du dernier run --- }
+
+Function GetLastExitCode(
+ Var BPM: TBreakpointManager): Integer;
+Begin
+ GetLastExitCode := BPM.LastExitCode;
+End;
+
+{ --- Verifier si le panneau de debogage est visible --- }
+
+Function IsDebugPanelVisible(
+ Var DP: TDebugPanel): Boolean;
+Begin
+ IsDebugPanelVisible := DP.Visible;
+End;
+
+{ --- Obtenir l onglet actif du panneau de debogage --- }
+
+Function GetDebugPanelActiveTab(
+ Var DP: TDebugPanel): TDebugPanelTab;
+Begin
+ GetDebugPanelActiveTab := DP.ActiveTab;
+End;
+
+{ --- Obtenir la ligne selectionnee dans le panneau --- }
+
+Function GetDebugPanelSelectedRow(
+ Var DP: TDebugPanel): Integer;
+Begin
+ GetDebugPanelSelectedRow := DP.SelectedRow;
+End;
+
+{ --- Definir la ligne selectionnee dans le panneau --- }
+
+Procedure SetDebugPanelSelectedRow(Var DP: TDebugPanel;
+ Row: Integer);
+Begin
+ DP.SelectedRow := Row;
+ DP.NeedRepaint := True;
+End;
+
+{ --- Compter les points d arret actifs --- }
+
+Function CountEnabledBreakpoints(
+ Var BPM: TBreakpointManager): Integer;
+Var
+ I, N: Integer;
+Begin
+ N := 0;
+ For I := 0 To BPM.Count - 1 Do Begin
+  If BPM.Breakpoints[I].Enabled Then
+   Inc(N);
+ End;
+ CountEnabledBreakpoints := N;
+End;
+
+{ --- Compter les points d arret dans un fichier --- }
+
+Function CountFileBreakpoints(Var BPM: TBreakpointManager;
+ FileName: String): Integer;
+Var
+ I, N: Integer;
+Begin
+ N := 0;
+ For I := 0 To BPM.Count - 1 Do Begin
+  If BPM.Breakpoints[I].FileName = FileName Then
+   Inc(N);
+ End;
+ CountFileBreakpoints := N;
+End;
+
+{ --- Verifier si une ligne a un point d arret --- }
+
+Function HasBreakpointAtLine(Var BPM: TBreakpointManager;
+ FileName: String; Line: Integer): Boolean;
+Begin
+ HasBreakpointAtLine := FindBreakpoint(BPM, FileName, Line) >= 0;
+End;
+
+{ --- Verifier si le gestionnaire est vide --- }
+
+Function IsBreakpointManagerEmpty(
+ Var BPM: TBreakpointManager): Boolean;
+Begin
+ IsBreakpointManagerEmpty := (BPM.Count = 0) And
+  (BPM.State = DS_IDLE);
+End;
+
+
  InitOptions(Opts);
  ParseCommandLine(Opts);
  If Opts.Verbose Then
@@ -20108,6 +20720,8 @@ End;
  InitTPCContext(TPCContext);
  InitBuildManager(BuildMgr);
  InitConfigurationManager(CfgMgr);
- { Boucle principale a venir (TODO 29+) }
+ InitBreakpointManager(BPMgr);
+ InitDebugPanel(DbgPanel);
+ { Boucle principale a venir (TODO 30+) }
  ShutdownGraphics;
 END.

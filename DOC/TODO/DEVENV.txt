@@ -305,7 +305,7 @@
             F6 (solution), F7 (projet), Ctrl+Shift+B (regener).
             Liste deroulante Debug/Release dans la barre d outils.
 
-  TODO 29 - SUPPORT DU DEBOGAGE ET POINTS D ARRET [A FAIRE]
+  TODO 29 - SUPPORT DU DEBOGAGE ET POINTS D ARRET [IMPLEMENTE]
             TBreakpoint, TBreakpointManager.
             AddBreakpoint, RemoveBreakpoint, ToggleBreakpoint,
             EnableBreakpoint, DisableBreakpoint, ClearAllBreakpoints,
