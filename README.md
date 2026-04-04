@@ -337,6 +337,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet d'analyser et de désassembler un fichier d'extension «.OBJ».</td>
 		</tr>
 		<tr>
+			<td><b>DISPRG.PAS</b></td>
+			<td>Cette commande permet de lancer le désassembler de fichiers .PRG du Atari ST.</td>
+		</tr>
+		<tr>
 			<td><b>DISRES.PAS</b></td>
 			<td>Cette commande permert de lancer le desassembleur de fichiers .RES (ressources Windows) vers .RC</td>
 		</tr>
