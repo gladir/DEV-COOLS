@@ -154,9 +154,9 @@
             Commentaires multi-lignes, chaines multi-lignes.
             Couleurs theme Visual Studio.
 
-  TODO 12 - COLORATION SYNTAXIQUE C# [A FAIRE]
+  TODO 12 - COLORATION SYNTAXIQUE C# [IMPLEMENTE]
             TCSharpHighlighter.
-            79 mots-cles C# + mots-cles contextuels.
+            79 mots-cles C# + 28 mots-cles contextuels.
             Commentaires : //, /* */, ///.
             Chaines : "...", @"...", $"...".
             Nombres, attributs [Attribute].

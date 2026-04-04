@@ -381,7 +381,7 @@
               Attribut : bleu clair
               Documentation XML : vert olive
 
-  TODO 12 - COLORATION SYNTAXIQUE C# [A FAIRE]
+  TODO 12 - COLORATION SYNTAXIQUE C# [IMPLEMENTE]
             TCSharpHighlighter : specialisation pour le langage C#.
             Mots-cles C# (79 mots) : abstract, as, base, bool,
               break, byte, case, catch, char, checked, class,
@@ -1008,6 +1008,10 @@ Const
  TOOLBTN_HEIGHT        = 24;      { hauteur d un bouton            }
  TOOLSEP_WIDTH         = 8;       { largeur d un separateur        }
 
+ { Coloration syntaxique C# }
+ MAX_CSHARP_KEYWORDS   = 79;      { nombre de mots-cles C#         }
+ MAX_CSHARP_CTXKW      = 28;      { nombre de mots-cles contextuels}
+
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
  TAB_MAX_WIDTH         = 160;     { largeur max d un onglet        }
@@ -1391,6 +1395,15 @@ Type
   StateTop       : Integer;     { sommet de la pile d etats        }
  End;
 
+ { Coloration syntaxique specialisee C# }
+ TCSharpHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_CSHARP_KEYWORDS - 1] Of String[15];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+  CtxKeywords  : Array[0..MAX_CSHARP_CTXKW - 1] Of String[15];
+  CtxKWCount   : Integer;             { nombre de mots-cles ctx     }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1427,6 +1440,8 @@ Var
  TooltipVisible: Boolean;     { infobulle affichee              }
  { Gestionnaire de fenetres }
  WinMgr       : TWindowManager;
+ { Coloration syntaxique C# }
+ CSharpHL     : TCSharpHighlighter;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -6496,6 +6511,422 @@ Begin
  H.StateTop := SaveTop;
 End;
 
+{ ============================================================
+  TODO 12 - COLORATION SYNTAXIQUE C#
+  ============================================================ }
+
+{ --- Initialiser les mots-cles C# --- }
+
+Procedure InitCSharpKeywords(Var HL: TCSharpHighlighter);
+Begin
+ HL.KeywordCount := MAX_CSHARP_KEYWORDS;
+ HL.Keywords[0]  := 'abstract';
+ HL.Keywords[1]  := 'as';
+ HL.Keywords[2]  := 'base';
+ HL.Keywords[3]  := 'bool';
+ HL.Keywords[4]  := 'break';
+ HL.Keywords[5]  := 'byte';
+ HL.Keywords[6]  := 'case';
+ HL.Keywords[7]  := 'catch';
+ HL.Keywords[8]  := 'char';
+ HL.Keywords[9]  := 'checked';
+ HL.Keywords[10] := 'class';
+ HL.Keywords[11] := 'const';
+ HL.Keywords[12] := 'continue';
+ HL.Keywords[13] := 'decimal';
+ HL.Keywords[14] := 'default';
+ HL.Keywords[15] := 'delegate';
+ HL.Keywords[16] := 'do';
+ HL.Keywords[17] := 'double';
+ HL.Keywords[18] := 'else';
+ HL.Keywords[19] := 'enum';
+ HL.Keywords[20] := 'event';
+ HL.Keywords[21] := 'explicit';
+ HL.Keywords[22] := 'extern';
+ HL.Keywords[23] := 'false';
+ HL.Keywords[24] := 'finally';
+ HL.Keywords[25] := 'fixed';
+ HL.Keywords[26] := 'float';
+ HL.Keywords[27] := 'for';
+ HL.Keywords[28] := 'foreach';
+ HL.Keywords[29] := 'goto';
+ HL.Keywords[30] := 'if';
+ HL.Keywords[31] := 'implicit';
+ HL.Keywords[32] := 'in';
+ HL.Keywords[33] := 'int';
+ HL.Keywords[34] := 'interface';
+ HL.Keywords[35] := 'internal';
+ HL.Keywords[36] := 'is';
+ HL.Keywords[37] := 'lock';
+ HL.Keywords[38] := 'long';
+ HL.Keywords[39] := 'namespace';
+ HL.Keywords[40] := 'new';
+ HL.Keywords[41] := 'null';
+ HL.Keywords[42] := 'object';
+ HL.Keywords[43] := 'operator';
+ HL.Keywords[44] := 'out';
+ HL.Keywords[45] := 'override';
+ HL.Keywords[46] := 'params';
+ HL.Keywords[47] := 'private';
+ HL.Keywords[48] := 'protected';
+ HL.Keywords[49] := 'public';
+ HL.Keywords[50] := 'readonly';
+ HL.Keywords[51] := 'ref';
+ HL.Keywords[52] := 'return';
+ HL.Keywords[53] := 'sbyte';
+ HL.Keywords[54] := 'sealed';
+ HL.Keywords[55] := 'short';
+ HL.Keywords[56] := 'sizeof';
+ HL.Keywords[57] := 'stackalloc';
+ HL.Keywords[58] := 'static';
+ HL.Keywords[59] := 'string';
+ HL.Keywords[60] := 'struct';
+ HL.Keywords[61] := 'switch';
+ HL.Keywords[62] := 'this';
+ HL.Keywords[63] := 'throw';
+ HL.Keywords[64] := 'true';
+ HL.Keywords[65] := 'try';
+ HL.Keywords[66] := 'typeof';
+ HL.Keywords[67] := 'uint';
+ HL.Keywords[68] := 'ulong';
+ HL.Keywords[69] := 'unchecked';
+ HL.Keywords[70] := 'unsafe';
+ HL.Keywords[71] := 'ushort';
+ HL.Keywords[72] := 'using';
+ HL.Keywords[73] := 'var';
+ HL.Keywords[74] := 'virtual';
+ HL.Keywords[75] := 'void';
+ HL.Keywords[76] := 'volatile';
+ HL.Keywords[77] := 'while';
+ HL.Keywords[78] := 'yield';
+End;
+
+{ --- Initialiser les mots-cles contextuels C# --- }
+
+Procedure InitCSharpContextualKW(Var HL: TCSharpHighlighter);
+Begin
+ HL.CtxKWCount := MAX_CSHARP_CTXKW;
+ HL.CtxKeywords[0]  := 'add';
+ HL.CtxKeywords[1]  := 'alias';
+ HL.CtxKeywords[2]  := 'ascending';
+ HL.CtxKeywords[3]  := 'async';
+ HL.CtxKeywords[4]  := 'await';
+ HL.CtxKeywords[5]  := 'by';
+ HL.CtxKeywords[6]  := 'descending';
+ HL.CtxKeywords[7]  := 'dynamic';
+ HL.CtxKeywords[8]  := 'equals';
+ HL.CtxKeywords[9]  := 'from';
+ HL.CtxKeywords[10] := 'get';
+ HL.CtxKeywords[11] := 'global';
+ HL.CtxKeywords[12] := 'group';
+ HL.CtxKeywords[13] := 'into';
+ HL.CtxKeywords[14] := 'join';
+ HL.CtxKeywords[15] := 'let';
+ HL.CtxKeywords[16] := 'nameof';
+ HL.CtxKeywords[17] := 'on';
+ HL.CtxKeywords[18] := 'orderby';
+ HL.CtxKeywords[19] := 'partial';
+ HL.CtxKeywords[20] := 'remove';
+ HL.CtxKeywords[21] := 'select';
+ HL.CtxKeywords[22] := 'set';
+ HL.CtxKeywords[23] := 'value';
+ HL.CtxKeywords[24] := 'when';
+ HL.CtxKeywords[25] := 'where';
+ HL.CtxKeywords[26] := 'yield';
+ HL.CtxKeywords[27] := 'unmanaged';
+End;
+
+{ --- Initialiser le moteur de coloration C# --- }
+
+Procedure InitCSharpHighlighter(Var HL: TCSharpHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'C#');
+ InitCSharpKeywords(HL);
+ InitCSharpContextualKW(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle C# --- }
+
+Function IsCSharpKeyword(Var HL: TCSharpHighlighter;
+                         Word: String): Boolean;
+Var
+ I: Integer;
+Begin
+ IsCSharpKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+ Begin
+  If Word = HL.Keywords[I] Then
+  Begin
+   IsCSharpKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est un mot-cle contextuel C# --- }
+
+Function IsCSharpContextualKeyword(Var HL: TCSharpHighlighter;
+                                   Word: String): Boolean;
+Var
+ I: Integer;
+Begin
+ IsCSharpContextualKeyword := False;
+ For I := 0 To HL.CtxKWCount - 1 Do
+ Begin
+  If Word = HL.CtxKeywords[I] Then
+  Begin
+   IsCSharpContextualKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est un type predefini C# --- }
+
+Function IsCSharpType(Word: String): Boolean;
+Begin
+ IsCSharpType :=
+  (Word = 'bool') Or (Word = 'byte') Or (Word = 'char') Or
+  (Word = 'decimal') Or (Word = 'double') Or (Word = 'float') Or
+  (Word = 'int') Or (Word = 'long') Or (Word = 'object') Or
+  (Word = 'sbyte') Or (Word = 'short') Or (Word = 'string') Or
+  (Word = 'uint') Or (Word = 'ulong') Or (Word = 'ushort') Or
+  (Word = 'void') Or (Word = 'dynamic') Or (Word = 'var');
+End;
+
+{ --- Classifier un jeton C# (identifier -> keyword/type) --- }
+
+Function ClassifyCSharpToken(Var HL: TCSharpHighlighter;
+                             Line: String;
+                             StartPos, EndPos: Integer): TTokenClass;
+Var
+ Word: String;
+Begin
+ Word := Copy(Line, StartPos, EndPos - StartPos);
+ If IsCSharpType(Word) Then
+  ClassifyCSharpToken := TC_TYPE
+ Else If IsCSharpKeyword(HL, Word) Then
+  ClassifyCSharpToken := TC_KEYWORD
+ Else If IsCSharpContextualKeyword(HL, Word) Then
+  ClassifyCSharpToken := TC_KEYWORD
+ Else
+  ClassifyCSharpToken := TC_IDENTIFIER;
+End;
+
+{ --- Obtenir la classe de jeton C# a une position --- }
+
+Function GetCSharpTokenClass(Var HL: TCSharpHighlighter;
+                             Line: String;
+                             Var Pos: Integer): TTokenClass;
+Var
+ StartPos: Integer;
+ TC: TTokenClass;
+Begin
+ StartPos := Pos;
+ TC := GetTokenClass(HL.Base, Line, Pos);
+ If TC = TC_IDENTIFIER Then
+  GetCSharpTokenClass := ClassifyCSharpToken(HL, Line, StartPos, Pos)
+ Else
+  GetCSharpTokenClass := TC;
+End;
+
+{ --- Colorier une ligne C# entiere --- }
+
+Procedure HighlightCSharpLine(Var HL: TCSharpHighlighter;
+                              Line: String;
+                              Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetCSharpTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ --- Obtenir le nom d un type de jeton C# --- }
+
+Function CSharpTokenClassName(TC: TTokenClass): String;
+Begin
+ CSharpTokenClassName := TokenClassName(TC);
+End;
+
+{ --- Compter les mots-cles C# --- }
+
+Function CountCSharpKeywords(Var HL: TCSharpHighlighter): Integer;
+Begin
+ CountCSharpKeywords := HL.KeywordCount;
+End;
+
+{ --- Compter les mots-cles contextuels C# --- }
+
+Function CountCSharpContextualKW(Var HL: TCSharpHighlighter): Integer;
+Begin
+ CountCSharpContextualKW := HL.CtxKWCount;
+End;
+
+{ --- Verifier si un mot est une directive preprocesseur C# --- }
+
+Function IsCSharpPreprocessorDirective(Word: String): Boolean;
+Begin
+ IsCSharpPreprocessorDirective :=
+  (Word = 'if') Or (Word = 'else') Or (Word = 'elif') Or
+  (Word = 'endif') Or (Word = 'define') Or (Word = 'undef') Or
+  (Word = 'region') Or (Word = 'endregion') Or
+  (Word = 'pragma') Or (Word = 'warning') Or (Word = 'error') Or
+  (Word = 'line') Or (Word = 'nullable');
+End;
+
+{ --- Verifier si un caractere est un operateur C# --- }
+
+Function IsCSharpOperator(Ch: Char): Boolean;
+Begin
+ IsCSharpOperator :=
+  (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+  (Ch = '%') Or (Ch = '&') Or (Ch = '|') Or (Ch = '^') Or
+  (Ch = '~') Or (Ch = '!') Or (Ch = '=') Or (Ch = '<') Or
+  (Ch = '>') Or (Ch = '?') Or (Ch = ':');
+End;
+
+{ --- Verifier si un caractere est un prefixe de chaine C# --- }
+
+Function IsCSharpStringPrefix(Ch: Char): Boolean;
+Begin
+ IsCSharpStringPrefix := (Ch = '@') Or (Ch = '$');
+End;
+
+{ --- Verifier si une ligne contient une chaine verbatim --- }
+
+Function HasCSharpVerbatimString(Line: String): Boolean;
+Var
+ I: Integer;
+Begin
+ HasCSharpVerbatimString := False;
+ For I := 1 To Length(Line) - 1 Do
+ Begin
+  If (Line[I] = '@') And (Line[I + 1] = '"') Then
+  Begin
+   HasCSharpVerbatimString := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si une ligne contient une chaine interpolee --- }
+
+Function HasCSharpInterpolatedString(Line: String): Boolean;
+Var
+ I: Integer;
+Begin
+ HasCSharpInterpolatedString := False;
+ For I := 1 To Length(Line) - 1 Do
+ Begin
+  If (Line[I] = '$') And (Line[I + 1] = '"') Then
+  Begin
+   HasCSharpInterpolatedString := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Compter les classes de jetons C# dans une ligne --- }
+
+Function CountCSharpTokensInLine(Var HL: TCSharpHighlighter;
+                                 Line: String): Integer;
+Var
+ Pos, Count: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ Count := 0;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetCSharpTokenClass(HL, Line, Pos);
+  Inc(Count);
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+ CountCSharpTokensInLine := Count;
+End;
+
+{ --- Verifier si une ligne C# contient un commentaire --- }
+
+Function CSharpLineHasComment(Var HL: TCSharpHighlighter;
+                               Line: String): Boolean;
+Var
+ Pos: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ CSharpLineHasComment := False;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetCSharpTokenClass(HL, Line, Pos);
+  If (TC = TC_COMMENT) Or (TC = TC_XMLDOC) Then
+  Begin
+   CSharpLineHasComment := True;
+   Break;
+  End;
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+End;
+
+{ --- Verifier si une ligne C# contient une chaine --- }
+
+Function CSharpLineHasString(Var HL: TCSharpHighlighter;
+                              Line: String): Boolean;
+Var
+ Pos: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ CSharpLineHasString := False;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetCSharpTokenClass(HL, Line, Pos);
+  If (TC = TC_STRING) Or (TC = TC_CHAR) Then
+  Begin
+   CSharpLineHasString := True;
+   Break;
+  End;
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -6512,6 +6943,7 @@ BEGIN
  DrawToolBar;
  InitWindowManager;
  DrawWindowTabs;
- { Boucle principale a venir (TODO 12+) }
+ InitCSharpHighlighter(CSharpHL);
+ { Boucle principale a venir (TODO 13+) }
  ShutdownGraphics;
 END.
