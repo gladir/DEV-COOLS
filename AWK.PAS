@@ -62,7 +62,8 @@ Type
   VarName:String[20];
  End;
  VarPointer=^VarRec;
- { Type pour les fonctions utilisateur }
+ { Type pour les fonctions utilisateur - liste chainee }
+ PUserFunc=^TUserFunc;
  TUserFunc=Record
   FuncName:String[32];
   ParamNames:Array[1..MaxFunctionParams]of String[20];
@@ -70,6 +71,7 @@ Type
   BodyStartLine:Integer;  { Ligne de debut du corps de la fonction }
   BodyEndLine:Integer;    { Ligne de fin du corps de la fonction }
   BodyStartPos:Integer;   { Position dans la ligne de debut }
+  Next:PUserFunc;         { Noeud suivant dans la liste chainee }
  End;
  { Type pour les elements de tableaux associatifs }
  TArrayElement=Record
@@ -110,9 +112,9 @@ Var
  EndBlockStart:Integer;  { Ligne de debut du bloc END }
  EndBlockEnd:Integer;    { Ligne de fin du bloc END }
  InEndBlock:Boolean;     { Indique si on est dans un bloc END }
- { Variables pour les fonctions utilisateur }
- UserFuncs:Array[1..MaxUserFunctions]of TUserFunc;
- UserFuncCount:Integer;
+ { Variables pour les fonctions utilisateur - liste chainee sans limite }
+ UserFuncList:PUserFunc;  { Tete de la liste }
+ UserFuncLast:PUserFunc;  { Queue de la liste (insertion rapide) }
  InFunctionCall:Boolean;
  FunctionReturnValue:Real;
  FunctionReturnStr:String;
@@ -136,8 +138,8 @@ Var
 Function RunLine:Boolean; forward;
 
 { Declarations anticipees pour les fonctions utilisateur }
-Function FindUserFunction(const FName:String):Integer; forward;
-Function CallUserFunction(FuncIdx:Integer):Real; forward;
+Function FindUserFunction(const FName:String):PUserFunc; forward;
+Function CallUserFunction(FuncPtr:PUserFunc):Real; forward;
 
 { Declaration anticipee pour SplitIntoFields }
 Procedure SplitIntoFields(Line:String); forward;
@@ -1217,7 +1219,8 @@ Var
  Exposant:Boolean;
  StopChar:Set Of Char;
  Infix:String;
- FuncIdx,ParamIdx:Integer;
+ FuncPtr:PUserFunc;
+ ParamIdx:Integer;
  ParamVarName:String;
  ArgValue:Real;
  SavedParams:Array[1..MaxFunctionParams]of Real;
@@ -1438,19 +1441,19 @@ Begin
     End;
     { Si pas une fonction builtin, verifier les fonctions utilisateur }
     If Not FunctionFound Then Begin
-     FuncIdx:=FindUserFunction(VarName);
-     If(FuncIdx>0)and(I<=Length(Infix))and(Infix[I]='(')Then Begin
+     FuncPtr:=FindUserFunction(VarName);
+     If(FuncPtr<>nil)and(I<=Length(Infix))and(Infix[I]='(')Then Begin
       FunctionFound:=True;
       Inc(I);
       { Sauvegarder les anciennes valeurs des parametres }
-      For ParamIdx:=1 to UserFuncs[FuncIdx].ParamCount do Begin
-       ParamVarName:=UserFuncs[FuncIdx].ParamNames[ParamIdx];
+      For ParamIdx:=1 to FuncPtr^.ParamCount do Begin
+       ParamVarName:=FuncPtr^.ParamNames[ParamIdx];
        If VariableExist(ParamVarName)Then
         SavedParams[ParamIdx]:=GetVariableReal(ParamVarName)
        Else
         SavedParams[ParamIdx]:=0;
       End;
-      SavedParamCount:=UserFuncs[FuncIdx].ParamCount;
+      SavedParamCount:=FuncPtr^.ParamCount;
       { Lire les arguments et les assigner aux parametres }
       ParamIdx:=0;
       While(I<=Length(Infix))and(Infix[I]<>')')do Begin
@@ -1463,8 +1466,8 @@ Begin
        ArgValue:=GetNumberValue(TopOfStack);
        I:=CurrPos;
        { Assigner a la variable de parametre }
-       If ParamIdx<=UserFuncs[FuncIdx].ParamCount Then Begin
-        ParamVarName:=UserFuncs[FuncIdx].ParamNames[ParamIdx];
+       If ParamIdx<=FuncPtr^.ParamCount Then Begin
+        ParamVarName:=FuncPtr^.ParamNames[ParamIdx];
         If Frac(ArgValue)=0.0 Then Begin
          If VariableExist(ParamVarName)Then SetVariableLongInt(ParamVarName,Round(ArgValue))
                                        Else AddVariableLongInt(ParamVarName,Round(ArgValue));
@@ -1484,7 +1487,7 @@ Begin
       SaveInfix:=Infix;
       SavePostFix:=PostFix;
       { Appeler la fonction }
-      _Result:=CallUserFunction(FuncIdx);
+      _Result:=CallUserFunction(FuncPtr);
       { Restaurer l'etat de l'expression apres appel fonction }
       I:=SaveI;
       Infix:=SaveInfix;
@@ -1492,7 +1495,7 @@ Begin
       Str(_Result,Value);
       { Restaurer les anciennes valeurs des parametres }
       For ParamIdx:=1 to SavedParamCount do Begin
-       ParamVarName:=UserFuncs[FuncIdx].ParamNames[ParamIdx];
+       ParamVarName:=FuncPtr^.ParamNames[ParamIdx];
        If VariableExist(ParamVarName)Then Begin
         If Frac(SavedParams[ParamIdx])=0.0 Then SetVariableLongInt(ParamVarName,Round(SavedParams[ParamIdx]))
                                            Else SetVariableReal(ParamVarName,SavedParams[ParamIdx]);
@@ -1762,21 +1765,24 @@ Begin
 End;
 
 { Recherche une fonction utilisateur par son nom }
-Function FindUserFunction(const FName:String):Integer;
+Function FindUserFunction(const FName:String):PUserFunc;
 Var
  J:Integer;
  UpperName:String;
+ P:PUserFunc;
 Begin
- FindUserFunction:=0;
+ FindUserFunction:=nil;
  UpperName:=FName;
  For J:=1 to Length(UpperName)do
   If UpperName[J] in ['a'..'z'] Then
    UpperName[J]:=Chr(Ord(UpperName[J])-32);
- For J:=1 to UserFuncCount do Begin
-  If UserFuncs[J].FuncName=UpperName Then Begin
-   FindUserFunction:=J;
+ P:=UserFuncList;
+ While P<>nil do Begin
+  If P^.FuncName=UpperName Then Begin
+   FindUserFunction:=P;
    Exit;
   End;
+  P:=P^.Next;
  End;
 End;
 
@@ -1785,7 +1791,7 @@ Procedure ParseFunctionDef;
 Var
  FuncName,ParamName:String;
  BlockLevel:Integer;
- FuncIdx:Integer;
+ FuncPtr:PUserFunc;
 Begin
  SkipSpace;
  { Lire le nom de la fonction }
@@ -1800,11 +1806,20 @@ Begin
  { Convertir en majuscules }
  FuncName:=StrToUpper(FuncName);
  
- { Incrementer le compteur de fonctions }
- Inc(UserFuncCount);
- FuncIdx:=UserFuncCount;
- UserFuncs[FuncIdx].FuncName:=FuncName;
- UserFuncs[FuncIdx].ParamCount:=0;
+ { Allouer un nouveau noeud dans la liste chainee }
+ New(FuncPtr);
+ FuncPtr^.FuncName:=FuncName;
+ FuncPtr^.ParamCount:=0;
+ FuncPtr^.Next:=nil;
+ If UserFuncLast=nil Then Begin
+  UserFuncList:=FuncPtr;
+  UserFuncLast:=FuncPtr;
+ End
+  Else
+ Begin
+  UserFuncLast^.Next:=FuncPtr;
+  UserFuncLast:=FuncPtr;
+ End;
  
  { Sauter les espaces }
  SkipSpace;
@@ -1820,8 +1835,8 @@ Begin
     Inc(CurrPos);
    End;
    If ParamName<>'' Then Begin
-    Inc(UserFuncs[FuncIdx].ParamCount);
-    UserFuncs[FuncIdx].ParamNames[UserFuncs[FuncIdx].ParamCount]:=StrToUpper(ParamName);
+    Inc(FuncPtr^.ParamCount);
+    FuncPtr^.ParamNames[FuncPtr^.ParamCount]:=StrToUpper(ParamName);
    End;
    SkipSpace;
    If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=',')Then Inc(CurrPos);
@@ -1848,14 +1863,14 @@ Begin
     { Sauter les espaces en debut de ligne }
     While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
    End;
-   UserFuncs[FuncIdx].BodyStartLine:=CurrLinePtr;
-   UserFuncs[FuncIdx].BodyStartPos:=CurrPos;
+   FuncPtr^.BodyStartLine:=CurrLinePtr;
+   FuncPtr^.BodyStartPos:=CurrPos;
   End
    Else
   Begin
    { Le corps commence sur la meme ligne, juste apres l'accolade ouvrante }
-   UserFuncs[FuncIdx].BodyStartLine:=CurrLinePtr;
-   UserFuncs[FuncIdx].BodyStartPos:=CurrPos;
+   FuncPtr^.BodyStartLine:=CurrLinePtr;
+   FuncPtr^.BodyStartPos:=CurrPos;
   End;
   
   { Sauter le bloc de la fonction }
@@ -1874,7 +1889,7 @@ Begin
     CurrPos:=1;
    End;
   End;
-  UserFuncs[FuncIdx].BodyEndLine:=CurrLinePtr;
+  FuncPtr^.BodyEndLine:=CurrLinePtr;
   { Avancer apres l'accolade fermante }
   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='}')Then Inc(CurrPos);
  End;
@@ -1914,7 +1929,7 @@ Begin
 End;
 
 { Appel d'une fonction utilisateur }
-Function CallUserFunction(FuncIdx:Integer):Real;
+Function CallUserFunction(FuncPtr:PUserFunc):Real;
 Var
  SaveLinePtr:Integer;
  SaveCurrLine:String;
@@ -1930,7 +1945,7 @@ Var
  StackIdx:Integer;
 Begin
  CallUserFunction:=0;
- If(FuncIdx<1)or(FuncIdx>UserFuncCount)Then Exit;
+ If FuncPtr=nil Then Exit;
  
  { Sauvegarder l'etat courant }
  SaveLinePtr:=CurrLinePtr;
@@ -1957,14 +1972,14 @@ Begin
  InFunctionCall:=True;
  
  { Executer le corps de la fonction }
- CurrLinePtr:=UserFuncs[FuncIdx].BodyStartLine;
+ CurrLinePtr:=FuncPtr^.BodyStartLine;
  CurrLine:=PA[CurrLinePtr]^;
- CurrPos:=UserFuncs[FuncIdx].BodyStartPos;
+ CurrPos:=FuncPtr^.BodyStartPos;
  
- While(CurrLinePtr<=UserFuncs[FuncIdx].BodyEndLine)and(Not HasFunctionReturn)do Begin
+ While(CurrLinePtr<=FuncPtr^.BodyEndLine)and(Not HasFunctionReturn)do Begin
   If Not RunLine Then Break;
   Inc(CurrLinePtr);
-  If CurrLinePtr<=UserFuncs[FuncIdx].BodyEndLine Then Begin
+  If CurrLinePtr<=FuncPtr^.BodyEndLine Then Begin
    CurrLine:=PA[CurrLinePtr]^;
    CurrPos:=1;
   End;
