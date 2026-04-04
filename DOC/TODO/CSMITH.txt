@@ -199,7 +199,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Limiter la profondeur des blocs (MAX_BLOCK_DEPTH).
       Table des symboles : ScopeStack[], CurrScope.
 
-  20. [A FAIRE] Generation de conditionnelles (if/else).
+  20. [IMPLEMENTE] Generation de conditionnelles (if/else).
       Generateur de statements conditionnels C :
       GenIfStmt - generer if (cond) stmt [else stmt].
       GenIfElseChain - generer if/else if/else enchaines.

@@ -214,7 +214,7 @@
             Limiter la profondeur des blocs (MAX_BLOCK_DEPTH).
             Table des symboles : ScopeStack[], CurrScope.
 
-  TODO 20 - [A FAIRE] GENERATION DE CONDITIONNELLES (IF/ELSE)
+  TODO 20 - [IMPLEMENTE] GENERATION DE CONDITIONNELLES (IF/ELSE)
             Generateur de statements conditionnels C :
             GenIfStmt - generer if (cond) stmt [else stmt].
             GenIfElseChain - generer if/else if/else enchaines.
@@ -380,6 +380,19 @@ Const
   BLOCK_SHADOW_PROB = 20;           { 20% de chance de shadowing variable }
   BLOCK_LOCAL_DECL_PROB = 40;       { 40% de chance de declarer une variable locale }
   SCOPE_VAR_PREFIX = 'l_';          { Prefixe pour les variables locales }
+  
+  { TODO 20 : Constantes pour les conditionnelles if/else et switch }
+  IF_ELSE_PROB = 50;                { 50% de chance d'avoir un else }
+  IF_ELSEIF_PROB = 30;              { 30% de chance d'avoir un else if }
+  IF_ELSEIF_MAX = 4;                { Maximum de else if enchaines }
+  IF_NESTED_PROB = 25;              { 25% de chance de if imbrique }
+  IF_BLOCK_PROB = 70;               { 70% de chance d'avoir un bloc au lieu d'un statement simple }
+  SWITCH_MIN_CASES = 2;             { Minimum de cases dans un switch }
+  SWITCH_MAX_CASES = 8;             { Maximum de cases dans un switch }
+  SWITCH_DEFAULT_PROB = 80;         { 80% de chance d'avoir un default }
+  SWITCH_BREAK_PROB = 85;           { 85% de chance d'avoir un break apres chaque case }
+  SWITCH_FALLTHROUGH_PROB = 15;     { 15% de chance de fall-through }
+  SWITCH_EMPTY_CASE_PROB = 5;       { 5% de chance d'avoir un case vide }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -625,6 +638,11 @@ Var
   BlockCounter: Integer;  { Compteur de blocs generes }
   BlockDepth: Integer;    { Profondeur courante d'imbrication des blocs }
   LocalVarCounter: Integer;  { Compteur de variables locales }
+
+  { TODO 20 : compteurs pour les conditionnelles if/else et switch }
+  IfStmtCounter: Integer;      { Compteur de statements if generes }
+  SwitchStmtCounter: Integer;  { Compteur de statements switch generes }
+  CaseCounter: Integer;        { Compteur de cases generes }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -6278,6 +6296,390 @@ Begin
   LocalVarCounter := 0;
 End;
 
+{ ============================================================
+  TODO 20 : GENERATION DE CONDITIONNELLES (IF/ELSE) [IMPLEMENTE]
+  ============================================================ }
+
+Procedure InitCondContext;
+{ Initialise les compteurs pour les conditionnelles. }
+Begin
+  IfStmtCounter := 0;
+  SwitchStmtCounter := 0;
+  CaseCounter := 0;
+End;
+
+Procedure EmitIfComment;
+{ Emet un commentaire pour la section des conditionnelles. }
+Begin
+  EmitLineComment('Conditionnelles (if/else/switch)');
+End;
+
+Function CountIfStmts: Integer;
+{ Retourne le nombre de statements if generes. }
+Begin
+  CountIfStmts := IfStmtCounter;
+End;
+
+Function CountSwitchStmts: Integer;
+{ Retourne le nombre de statements switch generes. }
+Begin
+  CountSwitchStmts := SwitchStmtCounter;
+End;
+
+Function CountCases: Integer;
+{ Retourne le nombre de cases generes. }
+Begin
+  CountCases := CaseCounter;
+End;
+
+Function GenCondition: TString;
+{ Genere une condition booleenne aleatoire pour if/while. }
+Var
+  R: Integer;
+  VarIdx: Integer;
+Begin
+  R := RandomInt(100);
+  If R < 40 Then
+  Begin
+    { Utiliser une variable existante dans une comparaison }
+    If NumVars > 0 Then
+    Begin
+      VarIdx := RandomRange(1, NumVars);
+      Case RandomInt(6) Of
+        0: GenCondition := Vars[VarIdx].Name + ' != 0';
+        1: GenCondition := Vars[VarIdx].Name + ' == 0';
+        2: GenCondition := Vars[VarIdx].Name + ' > 0';
+        3: GenCondition := Vars[VarIdx].Name + ' < 10';
+        4: GenCondition := Vars[VarIdx].Name + ' >= 0';
+        5: GenCondition := Vars[VarIdx].Name + ' <= 100';
+      End;
+    End
+    Else
+      GenCondition := '1';
+  End
+  Else If R < 70 Then
+  Begin
+    { Generer une comparaison entre deux litteraux ou variables }
+    Case RandomInt(4) Of
+      0: GenCondition := IntToStr(RandomRange(0, 10)) + ' < ' + IntToStr(RandomRange(5, 20));
+      1: GenCondition := IntToStr(RandomRange(0, 10)) + ' != ' + IntToStr(RandomRange(0, 10));
+      2: GenCondition := '(' + IntToStr(RandomRange(0, 100)) + ' % 2) == 0';
+      3: GenCondition := '(' + IntToStr(RandomRange(1, 50)) + ' & 1) != 0';
+    End;
+  End
+  Else If R < 85 Then
+  Begin
+    { Generer une expression logique }
+    Case RandomInt(3) Of
+      0: GenCondition := '(' + IntToStr(RandomInt(2)) + ' && ' + IntToStr(RandomInt(2)) + ')';
+      1: GenCondition := '(' + IntToStr(RandomInt(2)) + ' || ' + IntToStr(RandomInt(2)) + ')';
+      2: GenCondition := '!' + IntToStr(RandomInt(2));
+    End;
+  End
+  Else
+  Begin
+    { Litteraux booleens simples }
+    If RandomBool Then
+      GenCondition := '1'
+    Else
+      GenCondition := '0';
+  End;
+End;
+
+Function GenSwitchExpr: TString;
+{ Genere une expression entiere pour un switch. }
+Var
+  VarIdx: Integer;
+Begin
+  If (NumVars > 0) And RandomChoice(70) Then
+  Begin
+    { Utiliser une variable existante }
+    VarIdx := RandomRange(1, NumVars);
+    { S'assurer que c'est un type entier }
+    If IsIntegerType(Vars[VarIdx].VType) Then
+      GenSwitchExpr := Vars[VarIdx].Name
+    Else
+      GenSwitchExpr := IntToStr(RandomRange(0, 10));
+  End
+  Else
+  Begin
+    { Generer une expression simple }
+    Case RandomInt(3) Of
+      0: GenSwitchExpr := IntToStr(RandomRange(0, 10));
+      1: GenSwitchExpr := '(' + IntToStr(RandomRange(0, 100)) + ' % ' + IntToStr(RandomRange(2, 10)) + ')';
+      2: GenSwitchExpr := '(' + IntToStr(RandomRange(0, 20)) + ' / ' + IntToStr(RandomRange(1, 5)) + ')';
+    End;
+  End;
+End;
+
+Procedure GenCaseLabel(CaseValue: Integer);
+{ Genere un label case avec une valeur constante. }
+Begin
+  EmitUnindent;
+  EmitLine('case ' + IntToStr(CaseValue) + ':');
+  EmitIndent;
+  Inc(CaseCounter);
+End;
+
+Procedure GenDefaultLabel;
+{ Genere un label default. }
+Begin
+  EmitUnindent;
+  EmitLine('default:');
+  EmitIndent;
+End;
+
+Procedure GenCaseBody;
+{ Genere le corps d'un case (statements + break optionnel). }
+Var
+  NumStmts: Integer;
+  I: Integer;
+Begin
+  { Generer 1 a 3 statements simples }
+  NumStmts := RandomRange(1, 3);
+  For I := 1 To NumStmts Do
+  Begin
+    If (NumVars > 0) And RandomChoice(70) Then
+    Begin
+      { Affectation a une variable existante }
+      EmitLine(Vars[RandomRange(1, NumVars)].Name + ' = ' + IntToStr(RandomRange(0, 100)) + ';');
+    End
+    Else
+    Begin
+      { Instruction vide ou commentaire }
+      If RandomChoice(50) Then
+        EmitLine('/* case action */;')
+      Else
+        EmitLine(';');
+    End;
+    Inc(StatStmts);
+  End;
+  
+  { Ajouter un break selon la probabilite }
+  If RandomChoice(SWITCH_BREAK_PROB) Then
+    EmitLine('break;');
+End;
+
+Procedure GenIfStmt(Depth: Integer); Forward;
+Procedure GenSwitchStmt(Depth: Integer); Forward;
+
+Procedure GenIfBody(Depth: Integer);
+{ Genere le corps d'un if (bloc ou statement simple). }
+Begin
+  If RandomChoice(IF_BLOCK_PROB) Or (Depth > 1) Then
+  Begin
+    { Generer un bloc }
+    EmitLine('{');
+    EmitIndent;
+    PushScope;
+    
+    { Generer 1 a 3 statements }
+    If (NumVars > 0) And RandomChoice(60) Then
+      EmitLine(Vars[RandomRange(1, NumVars)].Name + ' = ' + IntToStr(RandomRange(0, 50)) + ';')
+    Else If RandomChoice(30) Then
+      EmitLine('/* if body */;')
+    Else
+      EmitLine(';');
+    Inc(StatStmts);
+    
+    { Possibilite de if imbrique si pas trop profond }
+    If (Depth < Opts.MaxBlockDepth - 1) And RandomChoice(IF_NESTED_PROB) Then
+      GenIfStmt(Depth + 1);
+    
+    PopScope;
+    EmitUnindent;
+    EmitLine('}');
+  End
+  Else
+  Begin
+    { Statement simple }
+    EmitIndent;
+    If (NumVars > 0) And RandomChoice(70) Then
+      EmitLine(Vars[RandomRange(1, NumVars)].Name + '++;')
+    Else
+      EmitLine(';');
+    EmitUnindent;
+    Inc(StatStmts);
+  End;
+End;
+
+Procedure GenIfStmt(Depth: Integer);
+{ Genere un statement if complet avec condition et corps.
+  Peut inclure un else et/ou des else if. }
+Var
+  Cond: TString;
+  HasElse: Boolean;
+  HasElseIf: Boolean;
+  ElseIfCount: Integer;
+  I: Integer;
+Begin
+  If Depth >= Opts.MaxBlockDepth Then Exit;
+  
+  Inc(IfStmtCounter);
+  Cond := GenCondition;
+  
+  { Generer le if }
+  EmitLine('if (' + Cond + ')');
+  GenIfBody(Depth);
+  
+  { Decider si on a des else if }
+  HasElseIf := RandomChoice(IF_ELSEIF_PROB);
+  If HasElseIf Then
+  Begin
+    ElseIfCount := RandomRange(1, IF_ELSEIF_MAX);
+    For I := 1 To ElseIfCount Do
+    Begin
+      Cond := GenCondition;
+      EmitLine('else if (' + Cond + ')');
+      GenIfBody(Depth);
+      Inc(IfStmtCounter);
+    End;
+  End;
+  
+  { Decider si on a un else final }
+  HasElse := RandomChoice(IF_ELSE_PROB);
+  If HasElse Then
+  Begin
+    EmitLine('else');
+    GenIfBody(Depth);
+  End;
+End;
+
+Procedure GenIfElseChain(Depth: Integer);
+{ Genere une chaine if/else if/else plus longue. }
+Var
+  NumElseIf: Integer;
+  I: Integer;
+  Cond: TString;
+Begin
+  If Depth >= Opts.MaxBlockDepth Then Exit;
+  
+  Inc(IfStmtCounter);
+  
+  { Premier if }
+  Cond := GenCondition;
+  EmitLine('if (' + Cond + ')');
+  GenIfBody(Depth);
+  
+  { Plusieurs else if }
+  NumElseIf := RandomRange(2, IF_ELSEIF_MAX);
+  For I := 1 To NumElseIf Do
+  Begin
+    Cond := GenCondition;
+    EmitLine('else if (' + Cond + ')');
+    GenIfBody(Depth);
+    Inc(IfStmtCounter);
+  End;
+  
+  { Else final obligatoire }
+  EmitLine('else');
+  GenIfBody(Depth);
+End;
+
+Procedure GenSwitchStmt(Depth: Integer);
+{ Genere un statement switch complet avec cases et default. }
+Var
+  Expr: TString;
+  NumCases: Integer;
+  UsedCases: Array[0..SWITCH_MAX_CASES-1] Of Integer;
+  CaseValue: Integer;
+  I, J: Integer;
+  AlreadyUsed: Boolean;
+  HasDefault: Boolean;
+  OldInSwitch: Boolean;
+Begin
+  If Depth >= Opts.MaxBlockDepth Then Exit;
+  
+  Inc(SwitchStmtCounter);
+  
+  { Sauvegarder le contexte }
+  OldInSwitch := InSwitch;
+  InSwitch := True;
+  
+  { Initialiser le tableau des cases utilises }
+  For I := 0 To SWITCH_MAX_CASES - 1 Do
+    UsedCases[I] := -1;
+  
+  { Generer l'expression du switch }
+  Expr := GenSwitchExpr;
+  
+  { Emettre le switch }
+  EmitLine('switch (' + Expr + ')');
+  EmitLine('{');
+  EmitIndent;
+  
+  { Determiner le nombre de cases }
+  NumCases := RandomRange(SWITCH_MIN_CASES, SWITCH_MAX_CASES);
+  
+  { Generer les cases avec des valeurs uniques }
+  For I := 0 To NumCases - 1 Do
+  Begin
+    Repeat
+      CaseValue := RandomRange(0, 20);
+      AlreadyUsed := False;
+      For J := 0 To I - 1 Do
+        If UsedCases[J] = CaseValue Then
+        Begin
+          AlreadyUsed := True;
+          Break;
+        End;
+    Until Not AlreadyUsed;
+    UsedCases[I] := CaseValue;
+    
+    GenCaseLabel(CaseValue);
+    
+    { Generer le corps du case }
+    If RandomChoice(SWITCH_EMPTY_CASE_PROB) And (I < NumCases - 1) Then
+    Begin
+      { Case vide (fall-through intentionnel) }
+      EmitLine('/* fall through */');
+    End
+    Else
+      GenCaseBody;
+  End;
+  
+  { Generer le default si requis }
+  HasDefault := RandomChoice(SWITCH_DEFAULT_PROB);
+  If HasDefault Then
+  Begin
+    GenDefaultLabel;
+    GenCaseBody;
+  End;
+  
+  EmitUnindent;
+  EmitLine('}');
+  
+  { Restaurer le contexte }
+  InSwitch := OldInSwitch;
+End;
+
+Function IsInCondition: Boolean;
+{ Retourne True si on est dans un contexte conditionnel. }
+Begin
+  { Pour l'instant, on peut toujours generer des conditionnelles }
+  IsInCondition := True;
+End;
+
+Procedure GenRandomCondStmt(Depth: Integer);
+{ Genere un statement conditionnel aleatoire (if ou switch). }
+Begin
+  If Depth >= Opts.MaxBlockDepth Then Exit;
+  
+  If RandomChoice(70) Then
+  Begin
+    { Generer un if }
+    If RandomChoice(30) Then
+      GenIfElseChain(Depth)
+    Else
+      GenIfStmt(Depth);
+  End
+  Else
+  Begin
+    { Generer un switch }
+    GenSwitchStmt(Depth);
+  End;
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -6312,6 +6714,8 @@ Begin
   InitStmtContext;
   { Initialiser le contexte des blocs - TODO 19 }
   InitBlockContext;
+  { Initialiser le contexte des conditionnelles - TODO 20 }
+  InitCondContext;
   { Initialiser l'emetteur }
   InitEmitter;
 End;
