@@ -273,7 +273,7 @@
             Ctrl+F, Ctrl+H, F3, Shift+F3, Ctrl+Shift+F.
             TGoToLineDialog : ShowGoToLineDialog.
 
-  TODO 25 - INTEGRATION COMPILATEUR C# (CSCW32/CSC86) [A FAIRE]
+  TODO 25 - INTEGRATION COMPILATEUR C# (CSCW32/CSC86) [IMPLEMENTE]
             CompileCSharp, FindCompiler.
             Ligne de commande : CSCW32 source.cs [-o sortie.exe]
               ou CSC86 source.cs.

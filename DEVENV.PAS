@@ -764,7 +764,7 @@
             TGoToLineDialog : aller a une ligne specifique.
             Procedure ShowGoToLineDialog(Var Ed: TEditor)
 
-  TODO 25 - INTEGRATION COMPILATEUR C# (CSCW32/CSC86) [A FAIRE]
+  TODO 25 - INTEGRATION COMPILATEUR C# (CSCW32/CSC86) [IMPLEMENTE]
             Integration des compilateurs C# du projet DEV-COOLS.
             Procedure CompileCSharp(Var Proj: TProject;
               Config: TBuildConfig; Var Output: TOutputPanel)
@@ -1171,6 +1171,19 @@ Const
  GOTO_DLG_WIDTH       = 300;     { largeur dialogue aller a ligne   }
  GOTO_DLG_HEIGHT      = 140;     { hauteur dialogue aller a ligne   }
  MAX_FIND_HIGHLIGHTS  = 256;     { nombre max de surbrillances      }
+
+ { Integration compilateur C# }
+ CSC_COMPILER_WIN32   = 'CSCW32';   { compilateur C# Win32 PE        }
+ CSC_COMPILER_DOS     = 'CSC86';    { compilateur C# DOS 8086        }
+ CSC_TEMP_OUTPUT      = '_cscout.tmp'; { fichier temp sortie compil  }
+ CSC_MAX_SOURCE_FILES = 128;        { nombre max fichiers source     }
+ CSC_FLAG_VERBOSE     = '-v';       { option verbeux                 }
+ CSC_FLAG_DEBUG       = '-d';       { option symboles debogage       }
+ CSC_FLAG_WARNINGS    = '-w';       { option afficher avertissements }
+ CSC_FLAG_OUTPUT      = '-o';       { option fichier sortie          }
+ CSC_EXT_SOURCE       = '.cs';      { extension source C#            }
+ CSC_EXT_EXE          = '.exe';     { extension executable           }
+ CSC_EXT_DLL          = '.dll';     { extension bibliotheque         }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -2146,6 +2159,34 @@ Type
   Confirmed   : Boolean;       { True si valide par OK          }
  End;
 
+ { Resultat de compilation }
+ TCompilerResult = (
+  CR_SUCCESS,           { compilation reussie                     }
+  CR_ERRORS,            { compilation avec erreurs                }
+  CR_WARNINGS,          { compilation avec avertissements         }
+  CR_NOT_FOUND,         { compilateur introuvable                 }
+  CR_NO_SOURCE,         { aucun fichier source                    }
+  CR_EXEC_FAILED        { echec d execution du compilateur        }
+ );
+
+ { Contexte du compilateur C# }
+ TCSCCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur (CSCW32/CSC86) }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -2200,6 +2241,8 @@ Var
  FindReplaceDlg : TFindReplaceDialog;
  { Dialogue aller a la ligne }
  GoToLineDlg    : TGoToLineDialog;
+ { Contexte compilateur C# }
+ CSCContext     : TCSCCompilerContext;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -17875,7 +17918,564 @@ Begin
  IsFindReplaceMode := Dlg.IsReplaceMode;
 End;
 
-BEGIN
+{ ============================================================
+  TODO 25 - INTEGRATION COMPILATEUR C# (CSCW32/CSC86) [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser le contexte du compilateur C# --- }
+
+Procedure InitCSCContext(Var Ctx: TCSCCompilerContext);
+Begin
+ Ctx.CompilerPath := '';
+ Ctx.CompilerName := '';
+ Ctx.CompilerFound := False;
+ Ctx.LastResult := CR_NOT_FOUND;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ Ctx.TotalFiles := 0;
+ Ctx.OutputFile := '';
+ Ctx.TempFile := CSC_TEMP_OUTPUT;
+ Ctx.IsCompiling := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose := False;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Chercher un compilateur dans le PATH ou repertoire courant --- }
+
+Function FindCompiler(Name: String): String;
+Var
+ FullPath: String;
+Begin
+ FindCompiler := '';
+ {$IFDEF WINDOWS}
+ FullPath := FSearch(Name + '.exe', GetEnv('PATH'));
+ {$ELSE}
+ FullPath := FSearch(Name, GetEnv('PATH'));
+ {$ENDIF}
+ If FullPath <> '' Then Begin
+  FindCompiler := FullPath;
+  Exit;
+ End;
+ { Chercher dans le repertoire courant }
+ {$IFDEF WINDOWS}
+ FullPath := Name + '.exe';
+ {$ELSE}
+ FullPath := Name;
+ {$ENDIF}
+ { Verifier si le fichier existe }
+ If FSearch(FullPath, '.') <> '' Then
+  FindCompiler := FullPath;
+End;
+
+{ --- Detecter le compilateur C# disponible --- }
+
+Procedure DetectCSCCompiler(Var Ctx: TCSCCompilerContext);
+Var
+ Path: String;
+Begin
+ { Essayer d abord CSCW32 (Win32 PE) }
+ Path := FindCompiler(CSC_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := CSC_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer CSC86 (DOS 8086) }
+ Path := FindCompiler(CSC_COMPILER_DOS);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := CSC_COMPILER_DOS;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
+{ --- Construire le chemin de sortie du fichier compile --- }
+
+Function BuildCSCOutputPath(Var Proj: TProject;
+ Var Cfg: TBuildConfig): String;
+Var
+ OutPath, Ext: String;
+Begin
+ If Cfg.OutputPath <> '' Then
+  OutPath := Cfg.OutputPath
+ Else If Proj.Info.OutputPath <> '' Then
+  OutPath := Proj.Info.OutputPath
+ Else
+  OutPath := '.';
+ Case Proj.Info.OutputType Of
+  OT_EXE, OT_WINEXE:
+   Ext := CSC_EXT_EXE;
+  OT_LIBRARY:
+   Ext := CSC_EXT_DLL;
+ End;
+ If Proj.Info.AssemblyName <> '' Then
+  BuildCSCOutputPath := OutPath + '/' + Proj.Info.AssemblyName + Ext
+ Else If Proj.Info.ProjectName <> '' Then
+  BuildCSCOutputPath := OutPath + '/' + Proj.Info.ProjectName + Ext
+ Else
+  BuildCSCOutputPath := OutPath + '/output' + Ext;
+End;
+
+{ --- Construire la ligne de commande pour un fichier source --- }
+
+Function BuildCSCCommandLine(Var Ctx: TCSCCompilerContext;
+ SourceFile, OutputFile: String): String;
+Var
+ Cmd: String;
+Begin
+ Cmd := Ctx.CompilerPath + ' ' + SourceFile;
+ If OutputFile <> '' Then
+  Cmd := Cmd + ' ' + CSC_FLAG_OUTPUT + ' ' + OutputFile;
+ If Ctx.UseVerbose Then
+  Cmd := Cmd + ' ' + CSC_FLAG_VERBOSE;
+ If Ctx.UseDebugSymbols Then
+  Cmd := Cmd + ' ' + CSC_FLAG_DEBUG;
+ If Ctx.UseWarnings Then
+  Cmd := Cmd + ' ' + CSC_FLAG_WARNINGS;
+ BuildCSCCommandLine := Cmd;
+End;
+
+{ --- Compter les fichiers source C# dans le projet --- }
+
+Function CountCSSourceFiles(Var Proj: TProject): Integer;
+Var
+ I, Count: Integer;
+ Ext: String;
+Begin
+ Count := 0;
+ For I := 0 To Proj.FileCount - 1 Do Begin
+  Ext := '';
+  If Length(Proj.Files[I].FileName) >= 3 Then
+   Ext := Copy(Proj.Files[I].FileName,
+    Length(Proj.Files[I].FileName) - 2, 3);
+  If (Ext = CSC_EXT_SOURCE) And
+     (Proj.Files[I].BuildAction = BA_COMPILE) Then
+   Inc(Count);
+ End;
+ CountCSSourceFiles := Count;
+End;
+
+{ --- Collecter les fichiers source C# du projet --- }
+
+Procedure CollectCSSourceFiles(Var Proj: TProject;
+ Var FileList: Array Of String; Var Count: Integer);
+Var
+ I: Integer;
+ Ext: String;
+Begin
+ Count := 0;
+ For I := 0 To Proj.FileCount - 1 Do Begin
+  If Count >= CSC_MAX_SOURCE_FILES Then Exit;
+  Ext := '';
+  If Length(Proj.Files[I].FileName) >= 3 Then
+   Ext := Copy(Proj.Files[I].FileName,
+    Length(Proj.Files[I].FileName) - 2, 3);
+  If (Ext = CSC_EXT_SOURCE) And
+     (Proj.Files[I].BuildAction = BA_COMPILE) Then Begin
+   FileList[Count] := Proj.Files[I].FileName;
+   Inc(Count);
+  End;
+ End;
+End;
+
+{ --- Executer le compilateur et rediriger la sortie --- }
+
+Function ExecuteCompiler(CmdLine, TempOutputFile: String): Integer;
+Var
+ FullCmd: String;
+Begin
+ ExecuteCompiler := -1;
+ {$IFDEF FPC}
+ { Free Pascal : utiliser redirection shell }
+ FullCmd := CmdLine + ' > ' + TempOutputFile + ' 2>&1';
+  {$IFDEF WINDOWS}
+  Exec(GetEnv('COMSPEC'), '/C ' + FullCmd);
+  {$ELSE}
+  Exec('/bin/sh', '-c ' + FullCmd);
+  {$ENDIF}
+ ExecuteCompiler := DosExitCode;
+ {$ELSE}
+ { Turbo Pascal : utiliser COMSPEC }
+ FullCmd := CmdLine + ' > ' + TempOutputFile;
+ Exec(GetEnv('COMSPEC'), '/C ' + FullCmd);
+ ExecuteCompiler := DosExitCode;
+ {$ENDIF}
+End;
+
+{ --- Lire le fichier de sortie du compilateur --- }
+
+Procedure ReadOutputFile(TempFile: String;
+ Var OP: TOutputPanel; Tab: Integer);
+Var
+ F: Text;
+ Line: String;
+Begin
+ {$I-}
+ Assign(F, TempFile);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  AppendOutput(OP, Line, Tab);
+ End;
+ Close(F);
+End;
+
+{ --- Parser le fichier de sortie du compilateur C# --- }
+
+Procedure ParseCSCOutput(TempFile, ProjName: String;
+ Var EL: TErrorListPanel; Var ErrCount, WarnCount: Integer);
+Var
+ F: Text;
+ Line: String;
+ E: TErrorEntry;
+Begin
+ ErrCount := 0;
+ WarnCount := 0;
+ {$I-}
+ Assign(F, TempFile);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  If ParseCSCError(Line, E) Then Begin
+   E.Project := ProjName;
+   AddError(EL, E);
+   If E.Severity = ES_ERROR Then
+    Inc(ErrCount)
+   Else If E.Severity = ES_WARNING Then
+    Inc(WarnCount);
+  End;
+ End;
+ Close(F);
+End;
+
+{ --- Supprimer le fichier temporaire --- }
+
+Procedure CleanupTempFile(TempFile: String);
+Var
+ F: File;
+Begin
+ {$I-}
+ Assign(F, TempFile);
+ Erase(F);
+ {$I+}
+ If IOResult <> 0 Then ; { ignorer l erreur }
+End;
+
+{ --- Compiler un seul fichier C# --- }
+
+Function CompileSingleCSFile(Var Ctx: TCSCCompilerContext;
+ SourceFile, OutputFile: String;
+ Var OP: TOutputPanel;
+ Var EL: TErrorListPanel;
+ ProjName: String): TCompilerResult;
+Var
+ CmdLine: String;
+ ExitCode: Integer;
+ EC, WC: Integer;
+Begin
+ CompileSingleCSFile := CR_EXEC_FAILED;
+ CmdLine := BuildCSCCommandLine(Ctx, SourceFile, OutputFile);
+ AppendOutput(OP, '> ' + CmdLine, Ord(OTK_BUILD));
+ ExitCode := ExecuteCompiler(CmdLine, Ctx.TempFile);
+ ReadOutputFile(Ctx.TempFile, OP, Ord(OTK_BUILD));
+ ParseCSCOutput(Ctx.TempFile, ProjName, EL, EC, WC);
+ CleanupTempFile(Ctx.TempFile);
+ Ctx.ErrorCount := Ctx.ErrorCount + EC;
+ Ctx.WarningCount := Ctx.WarningCount + WC;
+ If EC > 0 Then
+  CompileSingleCSFile := CR_ERRORS
+ Else If WC > 0 Then
+  CompileSingleCSFile := CR_WARNINGS
+ Else If ExitCode = 0 Then
+  CompileSingleCSFile := CR_SUCCESS
+ Else
+  CompileSingleCSFile := CR_EXEC_FAILED;
+End;
+
+{ --- Appliquer la configuration de build au contexte --- }
+
+Procedure ApplyBuildConfig(Var Ctx: TCSCCompilerContext;
+ Var Cfg: TBuildConfig);
+Begin
+ Ctx.UseDebugSymbols := Cfg.DebugSymbols;
+ If Cfg.Optimize Then
+  Ctx.UseVerbose := False
+ Else
+  Ctx.UseVerbose := Ctx.UseVerbose;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Compiler un projet C# complet --- }
+
+Procedure CompileCSharp(Var Proj: TProject;
+ Var Cfg: TBuildConfig;
+ Var OP: TOutputPanel;
+ Var EL: TErrorListPanel;
+ Var Ctx: TCSCCompilerContext);
+Var
+ SourceFiles: Array[0..CSC_MAX_SOURCE_FILES - 1] Of String;
+ FileCount: Integer;
+ I: Integer;
+ OutputPath: String;
+ ProjName: String;
+ Res: TCompilerResult;
+Begin
+ Ctx.IsCompiling := True;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ ProjName := Proj.Info.ProjectName;
+ { Effacer les sorties precedentes }
+ ClearOutput(OP, Ord(OTK_BUILD));
+ ClearErrors(EL);
+ AppendOutput(OP, '------ Build started: Project: ' +
+  ProjName + ', Configuration: ' +
+  Cfg.ConfigName + ' ------', Ord(OTK_BUILD));
+ { Detecter le compilateur }
+ DetectCSCCompiler(Ctx);
+ If Not Ctx.CompilerFound Then Begin
+  AppendOutputEx(OP,
+   'Error: C# compiler not found (CSCW32 or CSC86)',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Ctx.LastResult := CR_NOT_FOUND;
+  Ctx.IsCompiling := False;
+  Exit;
+ End;
+ AppendOutput(OP, 'Using compiler: ' + Ctx.CompilerName +
+  ' (' + Ctx.CompilerPath + ')', Ord(OTK_BUILD));
+ { Appliquer la configuration }
+ ApplyBuildConfig(Ctx, Cfg);
+ { Collecter les fichiers source }
+ CollectCSSourceFiles(Proj, SourceFiles, FileCount);
+ Ctx.TotalFiles := FileCount;
+ If FileCount = 0 Then Begin
+  AppendOutputEx(OP,
+   'Error: No C# source files found in project',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Ctx.LastResult := CR_NO_SOURCE;
+  Ctx.IsCompiling := False;
+  Exit;
+ End;
+ AppendOutput(OP, 'Compiling ' + IntToStr(FileCount) +
+  ' file(s)...', Ord(OTK_BUILD));
+ { Determiner le fichier de sortie }
+ OutputPath := BuildCSCOutputPath(Proj, Cfg);
+ Ctx.OutputFile := OutputPath;
+ { Compiler chaque fichier source }
+ For I := 0 To FileCount - 1 Do Begin
+  AppendOutput(OP, '  ' + SourceFiles[I],
+   Ord(OTK_BUILD));
+  Res := CompileSingleCSFile(Ctx,
+   SourceFiles[I], OutputPath,
+   OP, EL, ProjName);
+  Inc(Ctx.FilesCompiled);
+  If Res = CR_ERRORS Then Begin
+   Ctx.LastResult := CR_ERRORS;
+   AppendOutputEx(OP,
+    'Build FAILED for ' + SourceFiles[I],
+    Ord(OTK_BUILD), OLK_ERROR, SourceFiles[I], 0, 0);
+  End;
+ End;
+ { Resume de la compilation }
+ If Ctx.ErrorCount > 0 Then Begin
+  Ctx.LastResult := CR_ERRORS;
+  AppendOutputEx(OP,
+   '========== Build: 0 succeeded, 1 failed, ' +
+   IntToStr(Ctx.ErrorCount) + ' error(s), ' +
+   IntToStr(Ctx.WarningCount) + ' warning(s) ==========',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+ End Else If Ctx.WarningCount > 0 Then Begin
+  Ctx.LastResult := CR_WARNINGS;
+  AppendOutputEx(OP,
+   '========== Build: 1 succeeded, 0 failed, ' +
+   IntToStr(Ctx.WarningCount) + ' warning(s) ==========',
+   Ord(OTK_BUILD), OLK_WARNING, '', 0, 0);
+ End Else Begin
+  Ctx.LastResult := CR_SUCCESS;
+  AppendOutputEx(OP,
+   '========== Build: 1 succeeded, 0 failed ==========',
+   Ord(OTK_BUILD), OLK_SUCCESS, '', 0, 0);
+ End;
+ Ctx.IsCompiling := False;
+End;
+
+{ --- Nom du resultat de compilation --- }
+
+Function CompilerResultName(R: TCompilerResult): String;
+Begin
+ Case R Of
+  CR_SUCCESS:    CompilerResultName := 'Success';
+  CR_ERRORS:     CompilerResultName := 'Errors';
+  CR_WARNINGS:   CompilerResultName := 'Warnings';
+  CR_NOT_FOUND:  CompilerResultName := 'Compiler not found';
+  CR_NO_SOURCE:  CompilerResultName := 'No source files';
+  CR_EXEC_FAILED:CompilerResultName := 'Execution failed';
+ End;
+End;
+
+{ --- Obtenir le chemin du compilateur C# --- }
+
+Function GetCSCCompilerPath(
+ Var Ctx: TCSCCompilerContext): String;
+Begin
+ GetCSCCompilerPath := Ctx.CompilerPath;
+End;
+
+{ --- Obtenir le nom du compilateur C# --- }
+
+Function GetCSCCompilerName(
+ Var Ctx: TCSCCompilerContext): String;
+Begin
+ GetCSCCompilerName := Ctx.CompilerName;
+End;
+
+{ --- Le compilateur C# est-il disponible --- }
+
+Function IsCSCCompilerFound(
+ Var Ctx: TCSCCompilerContext): Boolean;
+Begin
+ IsCSCCompilerFound := Ctx.CompilerFound;
+End;
+
+{ --- Obtenir le dernier resultat de compilation --- }
+
+Function GetCSCLastResult(
+ Var Ctx: TCSCCompilerContext): TCompilerResult;
+Begin
+ GetCSCLastResult := Ctx.LastResult;
+End;
+
+{ --- Obtenir le nombre d erreurs de la derniere compilation --- }
+
+Function GetCSCErrorCount(
+ Var Ctx: TCSCCompilerContext): Integer;
+Begin
+ GetCSCErrorCount := Ctx.ErrorCount;
+End;
+
+{ --- Obtenir le nombre d avertissements --- }
+
+Function GetCSCWarningCount(
+ Var Ctx: TCSCCompilerContext): Integer;
+Begin
+ GetCSCWarningCount := Ctx.WarningCount;
+End;
+
+{ --- Obtenir le nombre de fichiers compiles --- }
+
+Function GetCSCFilesCompiled(
+ Var Ctx: TCSCCompilerContext): Integer;
+Begin
+ GetCSCFilesCompiled := Ctx.FilesCompiled;
+End;
+
+{ --- Obtenir le nombre total de fichiers source --- }
+
+Function GetCSCTotalFiles(
+ Var Ctx: TCSCCompilerContext): Integer;
+Begin
+ GetCSCTotalFiles := Ctx.TotalFiles;
+End;
+
+{ --- Obtenir le fichier de sortie genere --- }
+
+Function GetCSCOutputFile(
+ Var Ctx: TCSCCompilerContext): String;
+Begin
+ GetCSCOutputFile := Ctx.OutputFile;
+End;
+
+{ --- La compilation est-elle en cours --- }
+
+Function IsCSCCompiling(
+ Var Ctx: TCSCCompilerContext): Boolean;
+Begin
+ IsCSCCompiling := Ctx.IsCompiling;
+End;
+
+{ --- Activer/desactiver les symboles de debogage --- }
+
+Procedure SetCSCDebugSymbols(
+ Var Ctx: TCSCCompilerContext; Enable: Boolean);
+Begin
+ Ctx.UseDebugSymbols := Enable;
+End;
+
+{ --- Activer/desactiver le mode verbeux --- }
+
+Procedure SetCSCVerbose(
+ Var Ctx: TCSCCompilerContext; Enable: Boolean);
+Begin
+ Ctx.UseVerbose := Enable;
+End;
+
+{ --- Activer/desactiver les avertissements --- }
+
+Procedure SetCSCWarnings(
+ Var Ctx: TCSCCompilerContext; Enable: Boolean);
+Begin
+ Ctx.UseWarnings := Enable;
+End;
+
+{ --- Les symboles de debogage sont-ils actives --- }
+
+Function AreCSCDebugSymbolsEnabled(
+ Var Ctx: TCSCCompilerContext): Boolean;
+Begin
+ AreCSCDebugSymbolsEnabled := Ctx.UseDebugSymbols;
+End;
+
+{ --- Le mode verbeux est-il active --- }
+
+Function IsCSCVerboseEnabled(
+ Var Ctx: TCSCCompilerContext): Boolean;
+Begin
+ IsCSCVerboseEnabled := Ctx.UseVerbose;
+End;
+
+{ --- Les avertissements sont-ils actives --- }
+
+Function AreCSCWarningsEnabled(
+ Var Ctx: TCSCCompilerContext): Boolean;
+Begin
+ AreCSCWarningsEnabled := Ctx.UseWarnings;
+End;
+
+{ --- Obtenir le fichier temporaire de sortie --- }
+
+Function GetCSCTempFile(
+ Var Ctx: TCSCCompilerContext): String;
+Begin
+ GetCSCTempFile := Ctx.TempFile;
+End;
+
+{ --- Definir le fichier temporaire de sortie --- }
+
+Procedure SetCSCTempFile(
+ Var Ctx: TCSCCompilerContext; AFile: String);
+Begin
+ Ctx.TempFile := AFile;
+End;
+
+{ --- Le contexte est-il vide (pas de compilation effectuee) --- }
+
+Function IsCSCContextEmpty(
+ Var Ctx: TCSCCompilerContext): Boolean;
+Begin
+ IsCSCContextEmpty := (Ctx.FilesCompiled = 0) And
+  (Ctx.ErrorCount = 0) And
+  (Ctx.WarningCount = 0) And
+  (Not Ctx.IsCompiling);
+End;
  InitOptions(Opts);
  ParseCommandLine(Opts);
  If Opts.Verbose Then
@@ -17904,6 +18504,7 @@ BEGIN
  DrawErrorList(ErrorList);
  InitFindReplaceDialog(FindReplaceDlg);
  InitGoToLineDialog(GoToLineDlg);
- { Boucle principale a venir (TODO 25+) }
+ InitCSCContext(CSCContext);
+ { Boucle principale a venir (TODO 26+) }
  ShutdownGraphics;
 END.
