@@ -224,7 +224,7 @@
             Clic sur erreur : naviguer vers la source.
             Splitter horizontal redimensionnable.
 
-  TODO 20 - PANNEAU LISTE D ERREURS (ERROR LIST) [A FAIRE]
+  TODO 20 - PANNEAU LISTE D ERREURS (ERROR LIST) [IMPLEMENTE]
             TErrorEntry, TErrorListPanel.
             InitErrorList, DrawErrorList, HandleErrorListEvent,
             AddError, ClearErrors, SortErrors.

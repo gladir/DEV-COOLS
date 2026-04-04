@@ -616,7 +616,7 @@
             Masquer/afficher le panneau (double-clic sur la barre
               de titre ou raccourci clavier).
 
-  TODO 20 - PANNEAU LISTE D ERREURS (ERROR LIST) [A FAIRE]
+  TODO 20 - PANNEAU LISTE D ERREURS (ERROR LIST) [IMPLEMENTE]
             Panneau en bas affichant les erreurs, avertissements
             et messages de la derniere compilation.
             TErrorEntry : Severity (Error, Warning, Info),
@@ -1063,6 +1063,21 @@ Const
  MAX_OUTPUT_LINES      = 1024;     { nombre max de lignes           }
  OUTPUT_SPLITTER_HEIGHT= 4;        { hauteur du splitter horizontal }
  OUTPUT_TAB_COUNT      = 3;        { nombre d onglets               }
+
+ { Panneau de liste d erreurs }
+ ERRLIST_MIN_HEIGHT    = 60;       { hauteur minimale en pixels     }
+ ERRLIST_MAX_HEIGHT    = 400;      { hauteur maximale en pixels     }
+ ERRLIST_HEADER_HEIGHT = 26;       { hauteur de l en-tete (filtres) }
+ ERRLIST_ROW_HEIGHT    = 18;       { hauteur d une ligne            }
+ ERRLIST_SCROLL_STEP   = 3;        { pas de defilement              }
+ ERRLIST_SPLITTER_HEIGHT = 4;      { hauteur du splitter            }
+ ERRLIST_COL_COUNT     = 6;        { nombre de colonnes             }
+ MAX_ERROR_ENTRIES     = 1024;     { nombre max d entrees           }
+ ERRLIST_SEV_WIDTH     = 24;       { largeur icone severite         }
+ ERRLIST_CODE_WIDTH    = 70;       { largeur colonne code           }
+ ERRLIST_LINE_WIDTH    = 50;       { largeur colonne ligne          }
+ ERRLIST_FILE_WIDTH    = 160;      { largeur colonne fichier        }
+ ERRLIST_PROJECT_WIDTH = 120;      { largeur colonne projet         }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -1684,6 +1699,55 @@ Type
   NeedRepaint: Boolean;            { doit etre redessine            }
  End;
 
+ { Severite d une erreur }
+ TErrorSeverity = (
+  ES_ERROR,             { erreur                              }
+  ES_WARNING,           { avertissement                       }
+  ES_INFO               { message d information               }
+ );
+
+ { Colonne de tri de la liste d erreurs }
+ TErrorSortColumn = (
+  ESC_SEVERITY,         { trier par severite                  }
+  ESC_CODE,             { trier par code                      }
+  ESC_DESCRIPTION,      { trier par description               }
+  ESC_FILE,             { trier par fichier                   }
+  ESC_LINE,             { trier par ligne                     }
+  ESC_PROJECT           { trier par projet                    }
+ );
+
+ { Entree dans la liste d erreurs }
+ TErrorEntry = Record
+  Severity : TErrorSeverity;       { severite du message            }
+  Code     : String[15];           { code d erreur (ex. CS0001)     }
+  Description : String[255];       { description du message         }
+  FileName : String[127];          { fichier source                 }
+  Line     : Integer;              { numero de ligne                }
+  Col      : Integer;              { numero de colonne              }
+  Project  : String[63];           { nom du projet                  }
+ End;
+
+ { Panneau de liste d erreurs }
+ TErrorListPanel = Record
+  Entries  : Array[0..MAX_ERROR_ENTRIES - 1] Of TErrorEntry;
+  Count    : Integer;              { nombre d entrees               }
+  SelectedIdx: Integer;            { index selectionne              }
+  ScrollTop: Integer;              { premiere ligne visible         }
+  SortColumn: TErrorSortColumn;    { colonne de tri active          }
+  SortAscending: Boolean;          { tri ascendant                  }
+  ShowErrors: Boolean;             { afficher les erreurs           }
+  ShowWarnings: Boolean;           { afficher les avertissements    }
+  ShowInfos: Boolean;              { afficher les messages          }
+  X        : Integer;              { position X du panneau          }
+  Y        : Integer;              { position Y du panneau          }
+  Width    : Integer;              { largeur du panneau             }
+  Height   : Integer;              { hauteur du panneau             }
+  SplitterY: Integer;              { position Y du splitter         }
+  Dragging : Boolean;              { splitter en cours de drag      }
+  Visible  : Boolean;              { panneau visible                }
+  NeedRepaint: Boolean;            { doit etre redessine            }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1732,6 +1796,8 @@ Var
  PropsPanel   : TPropertiesPanel;
  { Panneau de sortie }
  OutputPanel  : TOutputPanel;
+ { Panneau de liste d erreurs }
+ ErrorList    : TErrorListPanel;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -11226,6 +11292,1032 @@ Begin
  CountOutputWarnings := Count;
 End;
 
+{ ============================================================
+  TODO 20 - PANNEAU LISTE D ERREURS (ERROR LIST) [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser une entree d erreur --- }
+
+Procedure InitErrorEntry(Var E: TErrorEntry);
+Begin
+ E.Severity := ES_INFO;
+ E.Code := '';
+ E.Description := '';
+ E.FileName := '';
+ E.Line := 0;
+ E.Col := 0;
+ E.Project := '';
+End;
+
+{ --- Initialiser le panneau de liste d erreurs --- }
+
+Procedure InitErrorList(Var EL: TErrorListPanel);
+Var
+ I: Integer;
+ ScrW, ScrH: Integer;
+Begin
+ EL.Count := 0;
+ EL.SelectedIdx := -1;
+ EL.ScrollTop := 0;
+ EL.SortColumn := ESC_SEVERITY;
+ EL.SortAscending := True;
+ EL.ShowErrors := True;
+ EL.ShowWarnings := True;
+ EL.ShowInfos := True;
+ ScrW := GetScreenWidth;
+ ScrH := GetScreenHeight;
+ EL.X := 0;
+ EL.Y := ScrH - OUTPUT_HEIGHT;
+ EL.Width := ScrW;
+ EL.Height := OUTPUT_HEIGHT;
+ EL.SplitterY := EL.Y;
+ EL.Dragging := False;
+ EL.Visible := False;
+ EL.NeedRepaint := True;
+ For I := 0 To MAX_ERROR_ENTRIES - 1 Do
+  InitErrorEntry(EL.Entries[I]);
+End;
+
+{ --- Effacer toutes les erreurs --- }
+
+Procedure ClearErrors(Var EL: TErrorListPanel);
+Var
+ I: Integer;
+Begin
+ For I := 0 To EL.Count - 1 Do
+  InitErrorEntry(EL.Entries[I]);
+ EL.Count := 0;
+ EL.SelectedIdx := -1;
+ EL.ScrollTop := 0;
+ EL.NeedRepaint := True;
+End;
+
+{ --- Ajouter une erreur --- }
+
+Procedure AddError(Var EL: TErrorListPanel; Entry: TErrorEntry);
+Begin
+ If EL.Count >= MAX_ERROR_ENTRIES Then Exit;
+ EL.Entries[EL.Count] := Entry;
+ Inc(EL.Count);
+ EL.NeedRepaint := True;
+End;
+
+{ --- Supprimer une erreur par index --- }
+
+Procedure RemoveError(Var EL: TErrorListPanel; Idx: Integer);
+Var
+ I: Integer;
+Begin
+ If (Idx < 0) Or (Idx >= EL.Count) Then Exit;
+ For I := Idx To EL.Count - 2 Do
+  EL.Entries[I] := EL.Entries[I + 1];
+ Dec(EL.Count);
+ InitErrorEntry(EL.Entries[EL.Count]);
+ If EL.SelectedIdx >= EL.Count Then
+  EL.SelectedIdx := EL.Count - 1;
+ EL.NeedRepaint := True;
+End;
+
+{ --- Compter les erreurs --- }
+
+Function CountErrors(Var EL: TErrorListPanel): Integer;
+Var
+ I, C: Integer;
+Begin
+ C := 0;
+ For I := 0 To EL.Count - 1 Do
+  If EL.Entries[I].Severity = ES_ERROR Then Inc(C);
+ CountErrors := C;
+End;
+
+{ --- Compter les avertissements --- }
+
+Function CountWarnings(Var EL: TErrorListPanel): Integer;
+Var
+ I, C: Integer;
+Begin
+ C := 0;
+ For I := 0 To EL.Count - 1 Do
+  If EL.Entries[I].Severity = ES_WARNING Then Inc(C);
+ CountWarnings := C;
+End;
+
+{ --- Compter les messages d information --- }
+
+Function CountInfos(Var EL: TErrorListPanel): Integer;
+Var
+ I, C: Integer;
+Begin
+ C := 0;
+ For I := 0 To EL.Count - 1 Do
+  If EL.Entries[I].Severity = ES_INFO Then Inc(C);
+ CountInfos := C;
+End;
+
+{ --- Severite vers chaine --- }
+
+Function SeverityToStr(Sev: TErrorSeverity): String;
+Begin
+ Case Sev Of
+  ES_ERROR:   SeverityToStr := 'Erreur';
+  ES_WARNING: SeverityToStr := 'Avertissement';
+  ES_INFO:    SeverityToStr := 'Message';
+ Else
+  SeverityToStr := '';
+ End;
+End;
+
+{ --- Couleur de la severite --- }
+
+Function SeverityColor(Sev: TErrorSeverity): Integer;
+Begin
+ Case Sev Of
+  ES_ERROR:   SeverityColor := 4;   { rouge                 }
+  ES_WARNING: SeverityColor := 6;   { jaune/orange          }
+  ES_INFO:    SeverityColor := 15;  { blanc                 }
+ Else
+  SeverityColor := 7;
+ End;
+End;
+
+{ --- Nom de colonne de tri --- }
+
+Function ErrorSortColumnName(Col: TErrorSortColumn): String;
+Begin
+ Case Col Of
+  ESC_SEVERITY:    ErrorSortColumnName := '!';
+  ESC_CODE:        ErrorSortColumnName := 'Code';
+  ESC_DESCRIPTION: ErrorSortColumnName := 'Description';
+  ESC_FILE:        ErrorSortColumnName := 'Fichier';
+  ESC_LINE:        ErrorSortColumnName := 'Ligne';
+  ESC_PROJECT:     ErrorSortColumnName := 'Projet';
+ Else
+  ErrorSortColumnName := '';
+ End;
+End;
+
+{ --- Trier les erreurs par colonne --- }
+
+Procedure SortErrors(Var EL: TErrorListPanel; Col: TErrorSortColumn);
+Var
+ I, J: Integer;
+ Tmp: TErrorEntry;
+ Swap: Boolean;
+Begin
+ If Col = EL.SortColumn Then
+  EL.SortAscending := Not EL.SortAscending
+ Else Begin
+  EL.SortColumn := Col;
+  EL.SortAscending := True;
+ End;
+ { Tri a bulles }
+ For I := 0 To EL.Count - 2 Do
+  For J := 0 To EL.Count - 2 - I Do Begin
+   Swap := False;
+   Case Col Of
+    ESC_SEVERITY:
+     If EL.SortAscending Then
+      Swap := Ord(EL.Entries[J].Severity) > Ord(EL.Entries[J+1].Severity)
+     Else
+      Swap := Ord(EL.Entries[J].Severity) < Ord(EL.Entries[J+1].Severity);
+    ESC_CODE:
+     If EL.SortAscending Then
+      Swap := EL.Entries[J].Code > EL.Entries[J+1].Code
+     Else
+      Swap := EL.Entries[J].Code < EL.Entries[J+1].Code;
+    ESC_DESCRIPTION:
+     If EL.SortAscending Then
+      Swap := EL.Entries[J].Description > EL.Entries[J+1].Description
+     Else
+      Swap := EL.Entries[J].Description < EL.Entries[J+1].Description;
+    ESC_FILE:
+     If EL.SortAscending Then
+      Swap := EL.Entries[J].FileName > EL.Entries[J+1].FileName
+     Else
+      Swap := EL.Entries[J].FileName < EL.Entries[J+1].FileName;
+    ESC_LINE:
+     If EL.SortAscending Then
+      Swap := EL.Entries[J].Line > EL.Entries[J+1].Line
+     Else
+      Swap := EL.Entries[J].Line < EL.Entries[J+1].Line;
+    ESC_PROJECT:
+     If EL.SortAscending Then
+      Swap := EL.Entries[J].Project > EL.Entries[J+1].Project
+     Else
+      Swap := EL.Entries[J].Project < EL.Entries[J+1].Project;
+   End;
+   If Swap Then Begin
+    Tmp := EL.Entries[J];
+    EL.Entries[J] := EL.Entries[J+1];
+    EL.Entries[J+1] := Tmp;
+   End;
+  End;
+ EL.NeedRepaint := True;
+End;
+
+{ --- Compter les entrees visibles (filtrees) --- }
+
+Function GetVisibleErrorCount(Var EL: TErrorListPanel): Integer;
+Var
+ I, C: Integer;
+Begin
+ C := 0;
+ For I := 0 To EL.Count - 1 Do Begin
+  Case EL.Entries[I].Severity Of
+   ES_ERROR:   If EL.ShowErrors Then Inc(C);
+   ES_WARNING: If EL.ShowWarnings Then Inc(C);
+   ES_INFO:    If EL.ShowInfos Then Inc(C);
+  End;
+ End;
+ GetVisibleErrorCount := C;
+End;
+
+{ --- Obtenir l index reel depuis l index visible --- }
+
+Function VisibleToRealIndex(Var EL: TErrorListPanel;
+ VisIdx: Integer): Integer;
+Var
+ I, C: Integer;
+Begin
+ C := -1;
+ For I := 0 To EL.Count - 1 Do Begin
+  Case EL.Entries[I].Severity Of
+   ES_ERROR:   If EL.ShowErrors Then Inc(C);
+   ES_WARNING: If EL.ShowWarnings Then Inc(C);
+   ES_INFO:    If EL.ShowInfos Then Inc(C);
+  Else
+   Inc(C);
+  End;
+  If C = VisIdx Then Begin
+   VisibleToRealIndex := I;
+   Exit;
+  End;
+ End;
+ VisibleToRealIndex := -1;
+End;
+
+{ --- Dessiner l en-tete avec filtres et compteurs --- }
+
+Procedure DrawErrorListHeader(Var EL: TErrorListPanel);
+Var
+ ErrCnt, WarnCnt, InfoCnt: Integer;
+ BX, TY: Integer;
+ S: String;
+Begin
+ ErrCnt := CountErrors(EL);
+ WarnCnt := CountWarnings(EL);
+ InfoCnt := CountInfos(EL);
+ { Fond de l en-tete }
+ SetColor(CLR_TOOLBAR);
+ Bar(EL.X, EL.Y, EL.X + EL.Width - 1,
+  EL.Y + ERRLIST_HEADER_HEIGHT - 1);
+ { Titre }
+ SetColor(CLR_MENU_TEXT);
+ TY := EL.Y + 6;
+ OutTextXY(EL.X + 4, TY, 'Liste d''erreurs');
+ { Bouton Erreurs }
+ BX := EL.X + 130;
+ If EL.ShowErrors Then SetColor(4) Else SetColor(8);
+ S := IntToStr(ErrCnt) + ' Erreur';
+ If ErrCnt <> 1 Then S := S + 's';
+ OutTextXY(BX, TY, S);
+ { Bouton Avertissements }
+ BX := BX + 90;
+ If EL.ShowWarnings Then SetColor(6) Else SetColor(8);
+ S := IntToStr(WarnCnt) + ' Avertissement';
+ If WarnCnt <> 1 Then S := S + 's';
+ OutTextXY(BX, TY, S);
+ { Bouton Messages }
+ BX := BX + 130;
+ If EL.ShowInfos Then SetColor(15) Else SetColor(8);
+ S := IntToStr(InfoCnt) + ' Message';
+ If InfoCnt <> 1 Then S := S + 's';
+ OutTextXY(BX, TY, S);
+ { Bordure basse }
+ SetColor(CLR_BORDER);
+ Line(EL.X, EL.Y + ERRLIST_HEADER_HEIGHT - 1,
+  EL.X + EL.Width - 1, EL.Y + ERRLIST_HEADER_HEIGHT - 1);
+End;
+
+{ --- Dessiner les en-tetes de colonnes --- }
+
+Procedure DrawErrorColumnHeaders(Var EL: TErrorListPanel);
+Var
+ CY, CX: Integer;
+Begin
+ CY := EL.Y + ERRLIST_HEADER_HEIGHT;
+ SetColor(CLR_MENUBAR);
+ Bar(EL.X, CY, EL.X + EL.Width - 1, CY + ERRLIST_ROW_HEIGHT - 1);
+ SetColor(CLR_MENU_TEXT);
+ CX := EL.X + 2;
+ OutTextXY(CX, CY + 2, '!');
+ CX := CX + ERRLIST_SEV_WIDTH;
+ OutTextXY(CX, CY + 2, 'Code');
+ CX := CX + ERRLIST_CODE_WIDTH;
+ OutTextXY(CX, CY + 2, 'Description');
+ CX := EL.X + EL.Width - ERRLIST_PROJECT_WIDTH - ERRLIST_LINE_WIDTH
+  - ERRLIST_FILE_WIDTH;
+ OutTextXY(CX, CY + 2, 'Fichier');
+ CX := CX + ERRLIST_FILE_WIDTH;
+ OutTextXY(CX, CY + 2, 'Ligne');
+ CX := CX + ERRLIST_LINE_WIDTH;
+ OutTextXY(CX, CY + 2, 'Projet');
+ { Bordure basse }
+ SetColor(CLR_BORDER);
+ Line(EL.X, CY + ERRLIST_ROW_HEIGHT - 1,
+  EL.X + EL.Width - 1, CY + ERRLIST_ROW_HEIGHT - 1);
+End;
+
+{ --- Dessiner une ligne d erreur --- }
+
+Procedure DrawErrorRow(Var EL: TErrorListPanel;
+ Idx, VisRow: Integer);
+Var
+ RY, CX: Integer;
+ BgColor: Integer;
+Begin
+ If (Idx < 0) Or (Idx >= EL.Count) Then Exit;
+ RY := EL.Y + ERRLIST_HEADER_HEIGHT + ERRLIST_ROW_HEIGHT
+  + VisRow * ERRLIST_ROW_HEIGHT;
+ If RY + ERRLIST_ROW_HEIGHT > EL.Y + EL.Height Then Exit;
+ { Fond }
+ If Idx = EL.SelectedIdx Then
+  BgColor := CLR_SELECTION
+ Else If (VisRow Mod 2) = 0 Then
+  BgColor := CLR_EDITOR_BG
+ Else
+  BgColor := CLR_OUTPUT_BG;
+ SetColor(BgColor);
+ Bar(EL.X, RY, EL.X + EL.Width - 1, RY + ERRLIST_ROW_HEIGHT - 1);
+ { Icone severite }
+ CX := EL.X + 2;
+ SetColor(SeverityColor(EL.Entries[Idx].Severity));
+ Case EL.Entries[Idx].Severity Of
+  ES_ERROR:   OutTextXY(CX, RY + 2, 'E');
+  ES_WARNING: OutTextXY(CX, RY + 2, 'W');
+  ES_INFO:    OutTextXY(CX, RY + 2, 'I');
+ End;
+ { Code }
+ CX := EL.X + 2 + ERRLIST_SEV_WIDTH;
+ SetColor(CLR_EDITOR_TEXT);
+ OutTextXY(CX, RY + 2, EL.Entries[Idx].Code);
+ { Description }
+ CX := CX + ERRLIST_CODE_WIDTH;
+ SetColor(SeverityColor(EL.Entries[Idx].Severity));
+ OutTextXY(CX, RY + 2, Copy(EL.Entries[Idx].Description, 1, 60));
+ { Fichier }
+ CX := EL.X + EL.Width - ERRLIST_PROJECT_WIDTH - ERRLIST_LINE_WIDTH
+  - ERRLIST_FILE_WIDTH;
+ SetColor(CLR_EDITOR_TEXT);
+ OutTextXY(CX, RY + 2, ExtractFileName(EL.Entries[Idx].FileName));
+ { Ligne }
+ CX := CX + ERRLIST_FILE_WIDTH;
+ If EL.Entries[Idx].Line > 0 Then
+  OutTextXY(CX, RY + 2, IntToStr(EL.Entries[Idx].Line));
+ { Projet }
+ CX := CX + ERRLIST_LINE_WIDTH;
+ OutTextXY(CX, RY + 2, EL.Entries[Idx].Project);
+End;
+
+{ --- Dessiner le panneau de liste d erreurs --- }
+
+Procedure DrawErrorList(Var EL: TErrorListPanel);
+Var
+ I, VisCount, VisRow, Visible, RealIdx: Integer;
+Begin
+ If Not EL.Visible Then Exit;
+ { Splitter }
+ SetColor(CLR_TOOLBAR);
+ Bar(EL.X, EL.SplitterY, EL.X + EL.Width - 1,
+  EL.SplitterY + ERRLIST_SPLITTER_HEIGHT - 1);
+ { Fond }
+ SetColor(CLR_OUTPUT_BG);
+ Bar(EL.X, EL.Y, EL.X + EL.Width - 1, EL.Y + EL.Height - 1);
+ { En-tete }
+ DrawErrorListHeader(EL);
+ DrawErrorColumnHeaders(EL);
+ { Lignes visibles }
+ Visible := (EL.Height - ERRLIST_HEADER_HEIGHT - ERRLIST_ROW_HEIGHT)
+  Div ERRLIST_ROW_HEIGHT;
+ VisCount := GetVisibleErrorCount(EL);
+ VisRow := 0;
+ For I := 0 To VisCount - 1 Do Begin
+  If I < EL.ScrollTop Then Continue;
+  If VisRow >= Visible Then Break;
+  RealIdx := VisibleToRealIndex(EL, I);
+  If RealIdx >= 0 Then Begin
+   DrawErrorRow(EL, RealIdx, VisRow);
+   Inc(VisRow);
+  End;
+ End;
+ EL.NeedRepaint := False;
+End;
+
+{ --- Test de clic dans le panneau --- }
+
+Function ErrorListHitTest(Var EL: TErrorListPanel;
+ MX, MY: Integer): Boolean;
+Begin
+ ErrorListHitTest := EL.Visible And
+  (MX >= EL.X) And (MX < EL.X + EL.Width) And
+  (MY >= EL.Y) And (MY < EL.Y + EL.Height);
+End;
+
+{ --- Test de clic sur le splitter --- }
+
+Function ErrorListSplitterHitTest(Var EL: TErrorListPanel;
+ MX, MY: Integer): Boolean;
+Begin
+ ErrorListSplitterHitTest := EL.Visible And
+  (MX >= EL.X) And (MX < EL.X + EL.Width) And
+  (MY >= EL.SplitterY) And
+  (MY < EL.SplitterY + ERRLIST_SPLITTER_HEIGHT);
+End;
+
+{ --- Test de clic sur l en-tete de filtre --- }
+
+Function ErrorHeaderHitTest(Var EL: TErrorListPanel;
+ MX, MY: Integer): Integer;
+Begin
+ ErrorHeaderHitTest := -1;
+ If Not EL.Visible Then Exit;
+ If (MY < EL.Y) Or (MY >= EL.Y + ERRLIST_HEADER_HEIGHT) Then Exit;
+ If (MX >= EL.X + 130) And (MX < EL.X + 220) Then
+  ErrorHeaderHitTest := 0   { Erreurs }
+ Else If (MX >= EL.X + 220) And (MX < EL.X + 350) Then
+  ErrorHeaderHitTest := 1   { Avertissements }
+ Else If (MX >= EL.X + 350) And (MX < EL.X + 450) Then
+  ErrorHeaderHitTest := 2;  { Messages }
+End;
+
+{ --- Test de clic sur une ligne d erreur --- }
+
+Function ErrorRowHitTest(Var EL: TErrorListPanel;
+ MX, MY: Integer): Integer;
+Var
+ ListY, Row, VisCount: Integer;
+Begin
+ ErrorRowHitTest := -1;
+ If Not EL.Visible Then Exit;
+ ListY := EL.Y + ERRLIST_HEADER_HEIGHT + ERRLIST_ROW_HEIGHT;
+ If (MY < ListY) Or (MY >= EL.Y + EL.Height) Then Exit;
+ Row := (MY - ListY) Div ERRLIST_ROW_HEIGHT;
+ Row := Row + EL.ScrollTop;
+ VisCount := GetVisibleErrorCount(EL);
+ If (Row >= 0) And (Row < VisCount) Then
+  ErrorRowHitTest := VisibleToRealIndex(EL, Row);
+End;
+
+{ --- Test de clic sur les en-tetes de colonnes --- }
+
+Function ErrorColumnHitTest(Var EL: TErrorListPanel;
+ MX, MY: Integer): TErrorSortColumn;
+Var
+ CY, CX: Integer;
+Begin
+ ErrorColumnHitTest := ESC_SEVERITY;
+ CY := EL.Y + ERRLIST_HEADER_HEIGHT;
+ If (MY < CY) Or (MY >= CY + ERRLIST_ROW_HEIGHT) Then Exit;
+ CX := EL.X + 2;
+ If MX < CX + ERRLIST_SEV_WIDTH Then Begin
+  ErrorColumnHitTest := ESC_SEVERITY; Exit;
+ End;
+ CX := CX + ERRLIST_SEV_WIDTH;
+ If MX < CX + ERRLIST_CODE_WIDTH Then Begin
+  ErrorColumnHitTest := ESC_CODE; Exit;
+ End;
+ CX := EL.X + EL.Width - ERRLIST_PROJECT_WIDTH - ERRLIST_LINE_WIDTH
+  - ERRLIST_FILE_WIDTH;
+ If MX < CX Then Begin
+  ErrorColumnHitTest := ESC_DESCRIPTION; Exit;
+ End;
+ If MX < CX + ERRLIST_FILE_WIDTH Then Begin
+  ErrorColumnHitTest := ESC_FILE; Exit;
+ End;
+ CX := CX + ERRLIST_FILE_WIDTH;
+ If MX < CX + ERRLIST_LINE_WIDTH Then Begin
+  ErrorColumnHitTest := ESC_LINE; Exit;
+ End;
+ ErrorColumnHitTest := ESC_PROJECT;
+End;
+
+{ --- Gestion des evenements du panneau --- }
+
+Procedure HandleErrorListEvent(Var EL: TErrorListPanel;
+ Ev: TEvent);
+Var
+ VisCount, Visible, HdrBtn, RowIdx: Integer;
+ ColY: Integer;
+Begin
+ If Not EL.Visible Then Exit;
+ VisCount := GetVisibleErrorCount(EL);
+ Visible := (EL.Height - ERRLIST_HEADER_HEIGHT - ERRLIST_ROW_HEIGHT)
+  Div ERRLIST_ROW_HEIGHT;
+ If Visible < 1 Then Visible := 1;
+ Case Ev.Kind Of
+  EV_MOUSE_DOWN: Begin
+   { Splitter drag }
+   If ErrorListSplitterHitTest(EL, Ev.MouseX, Ev.MouseY) Then Begin
+    EL.Dragging := True;
+    Exit;
+   End;
+   { En-tete de filtre }
+   HdrBtn := ErrorHeaderHitTest(EL, Ev.MouseX, Ev.MouseY);
+   If HdrBtn >= 0 Then Begin
+    Case HdrBtn Of
+     0: EL.ShowErrors := Not EL.ShowErrors;
+     1: EL.ShowWarnings := Not EL.ShowWarnings;
+     2: EL.ShowInfos := Not EL.ShowInfos;
+    End;
+    EL.ScrollTop := 0;
+    EL.SelectedIdx := -1;
+    EL.NeedRepaint := True;
+    Exit;
+   End;
+   { En-tete de colonne (tri) }
+   ColY := EL.Y + ERRLIST_HEADER_HEIGHT;
+   If (Ev.MouseY >= ColY) And
+      (Ev.MouseY < ColY + ERRLIST_ROW_HEIGHT) Then Begin
+    SortErrors(EL, ErrorColumnHitTest(EL, Ev.MouseX, Ev.MouseY));
+    Exit;
+   End;
+   { Ligne d erreur }
+   RowIdx := ErrorRowHitTest(EL, Ev.MouseX, Ev.MouseY);
+   If RowIdx >= 0 Then Begin
+    EL.SelectedIdx := RowIdx;
+    EL.NeedRepaint := True;
+   End;
+  End;
+  EV_MOUSE_UP: Begin
+   If EL.Dragging Then Begin
+    EL.Dragging := False;
+    EL.NeedRepaint := True;
+   End;
+  End;
+  EV_MOUSE_MOVE: Begin
+   If EL.Dragging Then Begin
+    EL.Height := EL.Y + EL.Height - Ev.MouseY;
+    If EL.Height < ERRLIST_MIN_HEIGHT Then
+     EL.Height := ERRLIST_MIN_HEIGHT;
+    If EL.Height > ERRLIST_MAX_HEIGHT Then
+     EL.Height := ERRLIST_MAX_HEIGHT;
+    EL.Y := Ev.MouseY;
+    EL.SplitterY := EL.Y - ERRLIST_SPLITTER_HEIGHT;
+    EL.NeedRepaint := True;
+   End;
+  End;
+  EV_MOUSE_DBLCLICK: Begin
+   { Double-clic : naviguer vers la source }
+   RowIdx := ErrorRowHitTest(EL, Ev.MouseX, Ev.MouseY);
+   If (RowIdx >= 0) And (RowIdx < EL.Count) Then Begin
+    EL.SelectedIdx := RowIdx;
+    EL.NeedRepaint := True;
+    { Navigation vers le fichier serait traitee par l appelant }
+   End;
+  End;
+  EV_KEY_DOWN: Begin
+   Case Ev.KeyCode Of
+    $5000: Begin { Fleche bas }
+     If EL.SelectedIdx < 0 Then
+      EL.SelectedIdx := 0
+     Else If EL.SelectedIdx < EL.Count - 1 Then
+      Inc(EL.SelectedIdx);
+     If EL.SelectedIdx >= EL.ScrollTop + Visible Then
+      EL.ScrollTop := EL.SelectedIdx - Visible + 1;
+     EL.NeedRepaint := True;
+    End;
+    $4800: Begin { Fleche haut }
+     If EL.SelectedIdx > 0 Then Begin
+      Dec(EL.SelectedIdx);
+      If EL.SelectedIdx < EL.ScrollTop Then
+       EL.ScrollTop := EL.SelectedIdx;
+      EL.NeedRepaint := True;
+     End;
+    End;
+    $4700: Begin { Home }
+     EL.SelectedIdx := 0;
+     EL.ScrollTop := 0;
+     EL.NeedRepaint := True;
+    End;
+    $4F00: Begin { End }
+     If VisCount > 0 Then Begin
+      EL.SelectedIdx := VisibleToRealIndex(EL, VisCount - 1);
+      If VisCount > Visible Then
+       EL.ScrollTop := VisCount - Visible
+      Else
+       EL.ScrollTop := 0;
+     End;
+     EL.NeedRepaint := True;
+    End;
+    $4900: Begin { Page haut }
+     Dec(EL.ScrollTop, Visible);
+     If EL.ScrollTop < 0 Then EL.ScrollTop := 0;
+     Dec(EL.SelectedIdx, Visible);
+     If EL.SelectedIdx < 0 Then EL.SelectedIdx := 0;
+     EL.NeedRepaint := True;
+    End;
+    $5100: Begin { Page bas }
+     Inc(EL.ScrollTop, Visible);
+     If EL.ScrollTop > VisCount - Visible Then Begin
+      EL.ScrollTop := VisCount - Visible;
+      If EL.ScrollTop < 0 Then EL.ScrollTop := 0;
+     End;
+     Inc(EL.SelectedIdx, Visible);
+     If EL.SelectedIdx >= EL.Count Then
+      EL.SelectedIdx := EL.Count - 1;
+     EL.NeedRepaint := True;
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ --- Trouver une erreur par code et fichier --- }
+
+Function FindError(Var EL: TErrorListPanel;
+ ACode, AFile: String): Integer;
+Var
+ I: Integer;
+Begin
+ For I := 0 To EL.Count - 1 Do
+  If (EL.Entries[I].Code = ACode) And
+     (EL.Entries[I].FileName = AFile) Then Begin
+   FindError := I;
+   Exit;
+  End;
+ FindError := -1;
+End;
+
+{ --- Obtenir le nombre total d entrees --- }
+
+Function GetErrorCount(Var EL: TErrorListPanel): Integer;
+Begin
+ GetErrorCount := EL.Count;
+End;
+
+{ --- Obtenir une entree par index --- }
+
+Function GetErrorByIndex(Var EL: TErrorListPanel;
+ Idx: Integer; Var E: TErrorEntry): Boolean;
+Begin
+ If (Idx >= 0) And (Idx < EL.Count) Then Begin
+  E := EL.Entries[Idx];
+  GetErrorByIndex := True;
+ End Else
+  GetErrorByIndex := False;
+End;
+
+{ --- Verifier si l index est valide --- }
+
+Function IsValidErrorIndex(Var EL: TErrorListPanel;
+ Idx: Integer): Boolean;
+Begin
+ IsValidErrorIndex := (Idx >= 0) And (Idx < EL.Count);
+End;
+
+{ --- Obtenir l index selectionne --- }
+
+Function GetSelectedErrorIndex(Var EL: TErrorListPanel): Integer;
+Begin
+ GetSelectedErrorIndex := EL.SelectedIdx;
+End;
+
+{ --- Definir l index selectionne --- }
+
+Procedure SetSelectedErrorIndex(Var EL: TErrorListPanel;
+ Idx: Integer);
+Begin
+ If (Idx >= -1) And (Idx < EL.Count) Then
+  EL.SelectedIdx := Idx
+ Else
+  EL.SelectedIdx := -1;
+ EL.NeedRepaint := True;
+End;
+
+{ --- Obtenir le fichier source de l entree selectionnee --- }
+
+Function GetSelectedErrorFile(Var EL: TErrorListPanel): String;
+Begin
+ If (EL.SelectedIdx >= 0) And (EL.SelectedIdx < EL.Count) Then
+  GetSelectedErrorFile := EL.Entries[EL.SelectedIdx].FileName
+ Else
+  GetSelectedErrorFile := '';
+End;
+
+{ --- Obtenir la ligne source de l entree selectionnee --- }
+
+Function GetSelectedErrorLine(Var EL: TErrorListPanel): Integer;
+Begin
+ If (EL.SelectedIdx >= 0) And (EL.SelectedIdx < EL.Count) Then
+  GetSelectedErrorLine := EL.Entries[EL.SelectedIdx].Line
+ Else
+  GetSelectedErrorLine := 0;
+End;
+
+{ --- Obtenir la colonne source de l entree selectionnee --- }
+
+Function GetSelectedErrorCol(Var EL: TErrorListPanel): Integer;
+Begin
+ If (EL.SelectedIdx >= 0) And (EL.SelectedIdx < EL.Count) Then
+  GetSelectedErrorCol := EL.Entries[EL.SelectedIdx].Col
+ Else
+  GetSelectedErrorCol := 0;
+End;
+
+{ --- Verifier si le panneau est visible --- }
+
+Function IsErrorListVisible(Var EL: TErrorListPanel): Boolean;
+Begin
+ IsErrorListVisible := EL.Visible;
+End;
+
+{ --- Afficher le panneau --- }
+
+Procedure ShowErrorList(Var EL: TErrorListPanel);
+Begin
+ EL.Visible := True;
+ EL.NeedRepaint := True;
+End;
+
+{ --- Masquer le panneau --- }
+
+Procedure HideErrorList(Var EL: TErrorListPanel);
+Begin
+ EL.Visible := False;
+ EL.NeedRepaint := True;
+End;
+
+{ --- Basculer la visibilite --- }
+
+Procedure ToggleErrorList(Var EL: TErrorListPanel);
+Begin
+ EL.Visible := Not EL.Visible;
+ EL.NeedRepaint := True;
+End;
+
+{ --- Verifier si la liste est vide --- }
+
+Function IsErrorListEmpty(Var EL: TErrorListPanel): Boolean;
+Begin
+ IsErrorListEmpty := EL.Count = 0;
+End;
+
+{ --- Obtenir la colonne de tri --- }
+
+Function GetErrorSortColumn(Var EL: TErrorListPanel): TErrorSortColumn;
+Begin
+ GetErrorSortColumn := EL.SortColumn;
+End;
+
+{ --- Definir la colonne de tri --- }
+
+Procedure SetErrorSortColumn(Var EL: TErrorListPanel;
+ Col: TErrorSortColumn);
+Begin
+ SortErrors(EL, Col);
+End;
+
+{ --- Les erreurs sont-elles affichees ? --- }
+
+Function AreErrorsShown(Var EL: TErrorListPanel): Boolean;
+Begin
+ AreErrorsShown := EL.ShowErrors;
+End;
+
+{ --- Les avertissements sont-ils affiches ? --- }
+
+Function AreWarningsShown(Var EL: TErrorListPanel): Boolean;
+Begin
+ AreWarningsShown := EL.ShowWarnings;
+End;
+
+{ --- Les messages sont-ils affiches ? --- }
+
+Function AreInfosShown(Var EL: TErrorListPanel): Boolean;
+Begin
+ AreInfosShown := EL.ShowInfos;
+End;
+
+{ --- Basculer l affichage des erreurs --- }
+
+Procedure ToggleShowErrors(Var EL: TErrorListPanel);
+Begin
+ EL.ShowErrors := Not EL.ShowErrors;
+ EL.ScrollTop := 0;
+ EL.NeedRepaint := True;
+End;
+
+{ --- Basculer l affichage des avertissements --- }
+
+Procedure ToggleShowWarnings(Var EL: TErrorListPanel);
+Begin
+ EL.ShowWarnings := Not EL.ShowWarnings;
+ EL.ScrollTop := 0;
+ EL.NeedRepaint := True;
+End;
+
+{ --- Basculer l affichage des messages --- }
+
+Procedure ToggleShowInfos(Var EL: TErrorListPanel);
+Begin
+ EL.ShowInfos := Not EL.ShowInfos;
+ EL.ScrollTop := 0;
+ EL.NeedRepaint := True;
+End;
+
+{ --- Parser une ligne de sortie CSC --- }
+{ Format: filename(line,col): error CSnnnn: message }
+
+Function ParseCSCError(S: String; Var E: TErrorEntry): Boolean;
+Var
+ P1, P2, P3: Integer;
+ LStr, CStr: String;
+Begin
+ ParseCSCError := False;
+ InitErrorEntry(E);
+ P1 := Pos('(', S);
+ If P1 = 0 Then Exit;
+ E.FileName := Copy(S, 1, P1 - 1);
+ P2 := Pos(')', S);
+ If P2 <= P1 Then Exit;
+ LStr := Copy(S, P1 + 1, P2 - P1 - 1);
+ P3 := Pos(',', LStr);
+ If P3 > 0 Then Begin
+  CStr := Copy(LStr, P3 + 1, Length(LStr) - P3);
+  LStr := Copy(LStr, 1, P3 - 1);
+  E.Col := StrToInt(CStr);
+ End;
+ E.Line := StrToInt(LStr);
+ { Apres ): }
+ S := Copy(S, P2 + 2, Length(S) - P2 - 1);
+ S := TrimStr(S);
+ If Pos('error ', S) = 1 Then Begin
+  E.Severity := ES_ERROR;
+  S := Copy(S, 7, Length(S) - 6);
+ End Else If Pos('warning ', S) = 1 Then Begin
+  E.Severity := ES_WARNING;
+  S := Copy(S, 9, Length(S) - 8);
+ End Else Begin
+  E.Severity := ES_INFO;
+ End;
+ P1 := Pos(':', S);
+ If P1 > 0 Then Begin
+  E.Code := TrimStr(Copy(S, 1, P1 - 1));
+  E.Description := TrimStr(Copy(S, P1 + 1, Length(S) - P1));
+ End Else
+  E.Description := S;
+ ParseCSCError := True;
+End;
+
+{ --- Parser une ligne de sortie VBC --- }
+{ Format: filename(line): error BCnnnn: message }
+
+Function ParseVBCError(S: String; Var E: TErrorEntry): Boolean;
+Var
+ P1, P2: Integer;
+ LStr: String;
+Begin
+ ParseVBCError := False;
+ InitErrorEntry(E);
+ P1 := Pos('(', S);
+ If P1 = 0 Then Exit;
+ E.FileName := Copy(S, 1, P1 - 1);
+ P2 := Pos(')', S);
+ If P2 <= P1 Then Exit;
+ LStr := Copy(S, P1 + 1, P2 - P1 - 1);
+ E.Line := StrToInt(LStr);
+ { Apres ): }
+ S := Copy(S, P2 + 2, Length(S) - P2 - 1);
+ S := TrimStr(S);
+ If Pos('error ', S) = 1 Then Begin
+  E.Severity := ES_ERROR;
+  S := Copy(S, 7, Length(S) - 6);
+ End Else If Pos('warning ', S) = 1 Then Begin
+  E.Severity := ES_WARNING;
+  S := Copy(S, 9, Length(S) - 8);
+ End Else
+  E.Severity := ES_INFO;
+ P1 := Pos(':', S);
+ If P1 > 0 Then Begin
+  E.Code := TrimStr(Copy(S, 1, P1 - 1));
+  E.Description := TrimStr(Copy(S, P1 + 1, Length(S) - P1));
+ End Else
+  E.Description := S;
+ ParseVBCError := True;
+End;
+
+{ --- Parser une ligne de sortie TPC --- }
+{ Format: filename(line,col) Error: message }
+
+Function ParseTPCError(S: String; Var E: TErrorEntry): Boolean;
+Var
+ P1, P2, P3: Integer;
+ LStr, CStr: String;
+Begin
+ ParseTPCError := False;
+ InitErrorEntry(E);
+ P1 := Pos('(', S);
+ If P1 = 0 Then Exit;
+ E.FileName := Copy(S, 1, P1 - 1);
+ P2 := Pos(')', S);
+ If P2 <= P1 Then Exit;
+ LStr := Copy(S, P1 + 1, P2 - P1 - 1);
+ P3 := Pos(',', LStr);
+ If P3 > 0 Then Begin
+  CStr := Copy(LStr, P3 + 1, Length(LStr) - P3);
+  LStr := Copy(LStr, 1, P3 - 1);
+  E.Col := StrToInt(CStr);
+ End;
+ E.Line := StrToInt(LStr);
+ { Apres ) }
+ S := Copy(S, P2 + 1, Length(S) - P2);
+ S := TrimStr(S);
+ If Pos('Error:', S) = 1 Then Begin
+  E.Severity := ES_ERROR;
+  E.Description := TrimStr(Copy(S, 7, Length(S) - 6));
+  E.Code := 'TPC';
+ End Else If Pos('Warning:', S) = 1 Then Begin
+  E.Severity := ES_WARNING;
+  E.Description := TrimStr(Copy(S, 9, Length(S) - 8));
+  E.Code := 'TPC';
+ End Else If Pos('Note:', S) = 1 Then Begin
+  E.Severity := ES_INFO;
+  E.Description := TrimStr(Copy(S, 6, Length(S) - 5));
+  E.Code := 'TPC';
+ End Else Begin
+  E.Severity := ES_INFO;
+  E.Description := S;
+  E.Code := 'TPC';
+ End;
+ ParseTPCError := True;
+End;
+
+{ --- Parser une ligne de sortie compilateur generique --- }
+
+Function ParseCompilerOutput(S, Proj: String;
+ Var EL: TErrorListPanel): Boolean;
+Var
+ E: TErrorEntry;
+Begin
+ ParseCompilerOutput := False;
+ If ParseCSCError(S, E) Then Begin
+  E.Project := Proj;
+  AddError(EL, E);
+  ParseCompilerOutput := True;
+ End Else If ParseVBCError(S, E) Then Begin
+  E.Project := Proj;
+  AddError(EL, E);
+  ParseCompilerOutput := True;
+ End Else If ParseTPCError(S, E) Then Begin
+  E.Project := Proj;
+  AddError(EL, E);
+  ParseCompilerOutput := True;
+ End;
+End;
+
+{ --- Obtenir la description de l entree selectionnee --- }
+
+Function GetSelectedErrorDescription(
+ Var EL: TErrorListPanel): String;
+Begin
+ If (EL.SelectedIdx >= 0) And (EL.SelectedIdx < EL.Count) Then
+  GetSelectedErrorDescription :=
+   EL.Entries[EL.SelectedIdx].Description
+ Else
+  GetSelectedErrorDescription := '';
+End;
+
+{ --- Obtenir le code de l entree selectionnee --- }
+
+Function GetSelectedErrorCode(Var EL: TErrorListPanel): String;
+Begin
+ If (EL.SelectedIdx >= 0) And (EL.SelectedIdx < EL.Count) Then
+  GetSelectedErrorCode := EL.Entries[EL.SelectedIdx].Code
+ Else
+  GetSelectedErrorCode := '';
+End;
+
+{ --- Obtenir la severite de l entree selectionnee --- }
+
+Function GetSelectedErrorSeverity(
+ Var EL: TErrorListPanel): TErrorSeverity;
+Begin
+ If (EL.SelectedIdx >= 0) And (EL.SelectedIdx < EL.Count) Then
+  GetSelectedErrorSeverity := EL.Entries[EL.SelectedIdx].Severity
+ Else
+  GetSelectedErrorSeverity := ES_INFO;
+End;
+
+{ --- Obtenir le projet de l entree selectionnee --- }
+
+Function GetSelectedErrorProject(Var EL: TErrorListPanel): String;
+Begin
+ If (EL.SelectedIdx >= 0) And (EL.SelectedIdx < EL.Count) Then
+  GetSelectedErrorProject := EL.Entries[EL.SelectedIdx].Project
+ Else
+  GetSelectedErrorProject := '';
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -11251,6 +12343,8 @@ BEGIN
  DrawPropertiesPanel(PropsPanel);
  InitOutputPanel(OutputPanel);
  DrawOutputPanel(OutputPanel);
- { Boucle principale a venir (TODO 20+) }
+ InitErrorList(ErrorList);
+ DrawErrorList(ErrorList);
+ { Boucle principale a venir (TODO 21+) }
  ShutdownGraphics;
 END.
