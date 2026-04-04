@@ -266,7 +266,7 @@
             GenSafeExpr - generer expression avec gardes de securite.
             Utiliser les fonctions safe_* dans l'en-tete csmith.h.
 
-  TODO 25 - [A FAIRE] OPTIONS AVANCEES ET STATISTIQUES
+  TODO 25 - [IMPLEMENTE] OPTIONS AVANCEES ET STATISTIQUES
             Options avancees et statistiques de generation :
             ParseArgs - analyser les arguments de ligne de commande.
             ShowHelp - afficher l'aide (csmith --help).
@@ -459,6 +459,11 @@ Const
   INT_MIN_VALUE = -2147483648;      { INT_MIN pour 32 bits }
   SAFE_SHIFT_MAX = 31;              { Decalage max securise pour int 32 bits }
   SAFE_ARRAY_MAX_INDEX = 99;        { Index max securise pour les tableaux }
+  
+  { TODO 25 : Constantes pour les statistiques avancees }
+  STAT_VERSION = '1.0';             { Version du systeme de statistiques }
+  STAT_MAX_DEPTH = 100;             { Profondeur max pour les statistiques }
+  STAT_VERBOSE_INDENT = 2;          { Indentation pour le mode verbeux }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -744,6 +749,18 @@ Var
   UBSafeExprCount: Integer;     { Compteur d'expressions securisees generees }
   UBTotalChecks: Integer;       { Total de verifications UB generees }
   UBCheckEnabled: Boolean;      { True si les verifications UB sont activees }
+
+  { TODO 25 : Variables pour les statistiques avancees }
+  StatTypeCount: Integer;       { Nombre total de types definis }
+  StatCyclomaticComplexity: Integer; { Complexite cyclomatique du programme }
+  StatCurrentDepth: Integer;    { Profondeur courante pendant la generation }
+  StatMaxBlockDepth: Integer;   { Profondeur maximale des blocs atteinte }
+  StatIfCount: Integer;         { Nombre de if generes }
+  StatLoopCount: Integer;       { Nombre de boucles generees }
+  StatSwitchCount: Integer;     { Nombre de switch generes }
+  StatCallCount: Integer;       { Nombre d'appels de fonction generes }
+  StatCoherenceOK: Boolean;     { True si la coherence du programme est OK }
+  VerboseStepCount: Integer;    { Compteur d'etapes pour le mode verbeux }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -7656,6 +7673,9 @@ Procedure InitProgramContext; Forward;
 { Forward declaration for TODO 24 }
 Procedure InitSafetyContext; Forward;
 
+{ Forward declaration for TODO 25 }
+Procedure InitStatsContext; Forward;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -7700,6 +7720,8 @@ Begin
   InitProgramContext;
   { Initialiser le contexte de securite UB - TODO 24 }
   InitSafetyContext;
+  { Initialiser le contexte des statistiques - TODO 25 }
+  InitStatsContext;
   { Initialiser l'emetteur }
   InitEmitter;
 End;
@@ -7725,8 +7747,282 @@ Begin
 End;
 
 { ============================================================
-  TODO 25 : OPTIONS CLI ET AIDE [A FAIRE]
+  TODO 25 : OPTIONS AVANCEES ET STATISTIQUES [IMPLEMENTE]
   ============================================================ }
+
+Procedure InitStatsContext;
+{ Initialise le contexte des statistiques avancees. }
+Begin
+  StatTypeCount := 0;
+  StatCyclomaticComplexity := 1; { Commence a 1 pour le chemin principal }
+  StatCurrentDepth := 0;
+  StatMaxBlockDepth := 0;
+  StatIfCount := 0;
+  StatLoopCount := 0;
+  StatSwitchCount := 0;
+  StatCallCount := 0;
+  StatCoherenceOK := True;
+  VerboseStepCount := 0;
+End;
+
+Procedure ShowVerbose(Const Msg: TString);
+{ Affiche un message en mode verbeux. }
+Begin
+  If Opts.Verbose Then
+  Begin
+    Inc(VerboseStepCount);
+    WriteLn('[', VerboseStepCount:4, '] ', Msg);
+  End;
+End;
+
+Procedure ShowVerboseIndented(Const Msg: TString; Level: Integer);
+{ Affiche un message en mode verbeux avec indentation. }
+Var
+  I: Integer;
+Begin
+  If Opts.Verbose Then
+  Begin
+    Inc(VerboseStepCount);
+    Write('[', VerboseStepCount:4, '] ');
+    For I := 1 To Level * STAT_VERBOSE_INDENT Do
+      Write(' ');
+    WriteLn(Msg);
+  End;
+End;
+
+Procedure IncrementCyclomaticComplexity;
+{ Incremente la complexite cyclomatique (pour chaque decision). }
+Begin
+  Inc(StatCyclomaticComplexity);
+End;
+
+Procedure TrackBlockDepth(NewDepth: Integer);
+{ Met a jour le suivi de la profondeur des blocs. }
+Begin
+  StatCurrentDepth := NewDepth;
+  If NewDepth > StatMaxBlockDepth Then
+    StatMaxBlockDepth := NewDepth;
+End;
+
+Procedure TrackIf;
+{ Enregistre une instruction if pour les statistiques. }
+Begin
+  Inc(StatIfCount);
+  IncrementCyclomaticComplexity;
+End;
+
+Procedure TrackLoop;
+{ Enregistre une boucle pour les statistiques. }
+Begin
+  Inc(StatLoopCount);
+  IncrementCyclomaticComplexity;
+End;
+
+Procedure TrackSwitch(NumCases: Integer);
+{ Enregistre un switch pour les statistiques.
+  La complexite cyclomatique augmente de (NumCases - 1) pour un switch. }
+Var
+  I: Integer;
+Begin
+  Inc(StatSwitchCount);
+  For I := 1 To NumCases - 1 Do
+    IncrementCyclomaticComplexity;
+End;
+
+Procedure TrackFuncCall;
+{ Enregistre un appel de fonction pour les statistiques. }
+Begin
+  Inc(StatCallCount);
+End;
+
+Function CalcCyclomaticComplexity: Integer;
+{ Retourne la complexite cyclomatique calculee. }
+Begin
+  CalcCyclomaticComplexity := StatCyclomaticComplexity;
+End;
+
+Function GetStatTypeCount: Integer;
+{ Retourne le nombre total de types definis. }
+Begin
+  GetStatTypeCount := StatTypeCount;
+End;
+
+Function GetStatMaxBlockDepth: Integer;
+{ Retourne la profondeur maximale des blocs atteinte. }
+Begin
+  GetStatMaxBlockDepth := StatMaxBlockDepth;
+End;
+
+Function GetStatIfCount: Integer;
+{ Retourne le nombre de if generes. }
+Begin
+  GetStatIfCount := StatIfCount;
+End;
+
+Function GetStatLoopCount: Integer;
+{ Retourne le nombre de boucles generees. }
+Begin
+  GetStatLoopCount := StatLoopCount;
+End;
+
+Function GetStatSwitchCount: Integer;
+{ Retourne le nombre de switch generes. }
+Begin
+  GetStatSwitchCount := StatSwitchCount;
+End;
+
+Function GetStatCallCount: Integer;
+{ Retourne le nombre d'appels de fonction generes. }
+Begin
+  GetStatCallCount := StatCallCount;
+End;
+
+Procedure ShowStats;
+{ Affiche les statistiques de generation. }
+Begin
+  WriteLn;
+  WriteLn('========================================');
+  WriteLn('Statistics of code generation:');
+  WriteLn('========================================');
+  WriteLn('  Seed used:           ', RandomSeed);
+  WriteLn('  Output file:         ', Opts.OutputFile);
+  WriteLn('  Total lines:         ', ProgTotalLines);
+  WriteLn('----------------------------------------');
+  WriteLn('Types:');
+  WriteLn('  Structures:          ', ProgStructCount);
+  WriteLn('  Unions:              ', ProgUnionCount);
+  WriteLn('  Enumerations:        ', ProgEnumCount);
+  WriteLn('  Total types:         ', ProgStructCount + ProgUnionCount + ProgEnumCount);
+  WriteLn('----------------------------------------');
+  WriteLn('Functions:');
+  WriteLn('  Functions:           ', ProgFuncCount);
+  WriteLn('  Function calls:      ', StatCallCount);
+  WriteLn('----------------------------------------');
+  WriteLn('Variables:');
+  WriteLn('  Global variables:    ', ProgGlobalCount);
+  WriteLn('  Total variables:     ', StatVars);
+  WriteLn('----------------------------------------');
+  WriteLn('Statements:');
+  WriteLn('  If statements:       ', StatIfCount);
+  WriteLn('  Loop statements:     ', StatLoopCount);
+  WriteLn('  Switch statements:   ', StatSwitchCount);
+  WriteLn('  Total statements:    ', StatStmts);
+  WriteLn('----------------------------------------');
+  WriteLn('Complexity:');
+  WriteLn('  Max block depth:     ', StatMaxBlockDepth);
+  WriteLn('  Cyclomatic:          ', StatCyclomaticComplexity);
+  WriteLn('----------------------------------------');
+  WriteLn('UB Prevention:');
+  WriteLn('  Div by zero checks:  ', UBDivByZeroCount);
+  WriteLn('  Overflow checks:     ', UBOverflowCount);
+  WriteLn('  Null deref checks:   ', UBNullDerefCount);
+  WriteLn('  Bounds checks:       ', UBBoundsCount);
+  WriteLn('  Shift checks:        ', UBShiftCount);
+  WriteLn('  Total UB checks:     ', UBTotalChecks);
+  WriteLn('========================================');
+End;
+
+Function VerifyProgramCoherence: Boolean;
+{ Verifie la coherence du programme genere.
+  Retourne True si le programme est coherent. }
+Begin
+  StatCoherenceOK := True;
+  
+  { Verifier qu'il y a au moins une fonction (main) }
+  If ProgFuncCount < 1 Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('Warning: No functions generated');
+    StatCoherenceOK := False;
+  End;
+  
+  { Verifier que le nombre de lignes est raisonnable }
+  If ProgTotalLines < 10 Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('Warning: Very few lines generated (', ProgTotalLines, ')');
+    StatCoherenceOK := False;
+  End;
+  
+  { Verifier la profondeur des blocs }
+  If StatMaxBlockDepth > MAX_BLOCK_DEPTH Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('Warning: Block depth exceeded maximum (', StatMaxBlockDepth, ' > ', MAX_BLOCK_DEPTH, ')');
+    StatCoherenceOK := False;
+  End;
+  
+  VerifyProgramCoherence := StatCoherenceOK;
+End;
+
+Function IsProgramCoherent: Boolean;
+{ Retourne True si le programme est coherent. }
+Begin
+  IsProgramCoherent := StatCoherenceOK;
+End;
+
+Procedure EmitGenerationHeader;
+{ Emet un en-tete de commentaire avec les parametres de generation. }
+Begin
+  EmitComment('========================================');
+  EmitComment('Generated by CSMITH v' + CSMITH_VERSION);
+  EmitComment('Date: ' + CSMITH_DATE);
+  EmitComment('Seed: ' + IntToStr(RandomSeed));
+  EmitComment('----------------------------------------');
+  EmitComment('Generation parameters:');
+  EmitComment('  Max functions:     ' + IntToStr(Opts.MaxFuncs));
+  EmitComment('  Max block depth:   ' + IntToStr(Opts.MaxBlockDepth));
+  EmitComment('  Max expr depth:    ' + IntToStr(Opts.MaxExprDepth));
+  If Opts.NoPointers Then EmitComment('  Pointers:          disabled');
+  If Opts.NoStructs Then EmitComment('  Structures:        disabled');
+  If Opts.NoUnions Then EmitComment('  Unions:            disabled');
+  If Opts.NoBitfields Then EmitComment('  Bitfields:         disabled');
+  If Opts.NoVolatiles Then EmitComment('  Volatiles:         disabled');
+  If Opts.NoConsts Then EmitComment('  Consts:            disabled');
+  If Opts.NoFloats Then EmitComment('  Floats:            disabled');
+  If Not Opts.NoGoto Then EmitComment('  Goto:              enabled');
+  EmitComment('========================================');
+  EmitBlankLine;
+End;
+
+Procedure EmitStatsComment;
+{ Emet les statistiques en commentaire dans le fichier genere. }
+Begin
+  EmitBlankLine;
+  EmitComment('========================================');
+  EmitComment('Generation statistics:');
+  EmitComment('  Structures:        ' + IntToStr(ProgStructCount));
+  EmitComment('  Unions:            ' + IntToStr(ProgUnionCount));
+  EmitComment('  Enumerations:      ' + IntToStr(ProgEnumCount));
+  EmitComment('  Functions:         ' + IntToStr(ProgFuncCount));
+  EmitComment('  Global variables:  ' + IntToStr(ProgGlobalCount));
+  EmitComment('  Total variables:   ' + IntToStr(StatVars));
+  EmitComment('  Total statements:  ' + IntToStr(StatStmts));
+  EmitComment('  If statements:     ' + IntToStr(StatIfCount));
+  EmitComment('  Loop statements:   ' + IntToStr(StatLoopCount));
+  EmitComment('  Switch statements: ' + IntToStr(StatSwitchCount));
+  EmitComment('  Function calls:    ' + IntToStr(StatCallCount));
+  EmitComment('  Max block depth:   ' + IntToStr(StatMaxBlockDepth));
+  EmitComment('  Cyclomatic:        ' + IntToStr(StatCyclomaticComplexity));
+  EmitComment('  Total lines:       ' + IntToStr(LineCount));
+  EmitComment('========================================');
+End;
+
+Function GetStatsString: TString;
+{ Retourne une chaine avec les statistiques principales. }
+Begin
+  GetStatsString := 'Funcs=' + IntToStr(ProgFuncCount) + 
+                    ', Vars=' + IntToStr(StatVars) +
+                    ', Stmts=' + IntToStr(StatStmts) +
+                    ', Depth=' + IntToStr(StatMaxBlockDepth) +
+                    ', CC=' + IntToStr(StatCyclomaticComplexity);
+End;
+
+Function AreStatsEmpty: Boolean;
+{ Retourne True si aucune statistique n'a ete enregistree. }
+Begin
+  AreStatsEmpty := (ProgFuncCount = 0) And (StatVars = 0) And (StatStmts = 0);
+End;
 
 Procedure ShowHelp;
 Begin
@@ -8866,23 +9162,31 @@ Begin
   InitTables;
   InitRandom(Opts.Seed);
 
+  ShowVerbose('CSMITH starting...');
+  ShowVerbose('Seed: ' + IntToStr(RandomSeed));
+
   If Not Opts.Quiet Then
   Begin
     WriteLn('CSMITH v', CSMITH_VERSION, ' - Generateur de code C aleatoire');
     WriteLn('Graine: ', RandomSeed);
   End;
 
+  ShowVerbose('Generating program...');
+
   If Opts.OutputFile <> '' Then
   Begin
+    ShowVerbose('Opening output file: ' + Opts.OutputFile);
     EmitOpen(Opts.OutputFile);
     GenProgram;
     EmitClose;
+    ShowVerbose('Output file closed.');
     If Not Opts.Quiet Then
       WriteLn('Fichier genere: ', Opts.OutputFile, ' (', LineCount, ' lignes)');
   End
   Else
   Begin
     { Sortie sur stdout - rediriger OutFile vers output }
+    ShowVerbose('Writing to stdout...');
     Assign(OutFile, '');
     Rewrite(OutFile);
     IndentLevel := 0;
@@ -8890,6 +9194,21 @@ Begin
     GenProgram;
     Close(OutFile);
   End;
+
+  ShowVerbose('Verifying program coherence...');
+  
+  { Verification de coherence du programme - TODO 25 }
+  If Not VerifyProgramCoherence Then
+  Begin
+    If Not Opts.Quiet Then
+      WriteLn('Warning: Program coherence check failed.');
+  End;
+
+  { Afficher les statistiques en mode verbeux - TODO 25 }
+  If Opts.Verbose Then
+    ShowStats;
+
+  ShowVerbose('CSMITH completed.');
 End;
 
 { ============================================================

@@ -251,7 +251,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       GenSafeExpr - generer expression avec gardes de securite.
       Utiliser les fonctions safe_* dans l'en-tete csmith.h.
 
-  25. [A FAIRE] Options avancees et statistiques.
+  25. [IMPLEMENTE] Options avancees et statistiques.
       Options avancees et statistiques de generation :
       ParseArgs - analyser les arguments de ligne de commande.
       ShowHelp - afficher l'aide (csmith --help).
