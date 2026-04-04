@@ -45,7 +45,7 @@
   Pour le moment, seule la TODO est definie afin de bien
   planifier les 30 taches d implementation.
 
-  TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
             DEVENV_VERSION ('1.0') et DEVENV_DATE ('2026-04-03')
             Constantes de dimensionnement :
               MAX_WINDOWS (32), MAX_TABS (64), MAX_MENUS (16),
@@ -249,7 +249,7 @@
             Procedure NextWindow / PreviousWindow
             Procedure SaveAllWindows
             Procedure CloseAllWindows
-            Indicateur de modification (*) dans l onglet.
+            Indicateur de modification (asterisque) dans l onglet.
             Maximum MAX_WINDOWS fenetres simultanees.
 
   TODO 08 - TAMPON DE TEXTE ET GESTION DES LIGNES [A FAIRE]
@@ -464,14 +464,13 @@
               except, finally, raise, property, public, private,
               protected, published, override, virtual, abstract,
               reintroduce, operator, generic, specialize.
-            Commentaires : { } (accolades), (* *) (parentheses
-              etoiles), // (ligne, Delphi/FPC).
-            Chaines : '...' (apostrophes simples), #nn (caractere
+            Commentaires : accolades, parentheses-etoiles, // ligne.
+            Chaines : apostrophes simples, #nn (caractere
               par code ASCII).
             Nombres : 123, $FF (hexadecimal), %1010 (binaire FPC),
               &77 (octal FPC), 1.5, 1.5E10.
-            Directives de compilation : {$I}, {$IFDEF}, {$ENDIF},
-              {$MODE}, {$H+}, etc. (colores comme preprocesseur).
+            Directives de compilation : dollar-I, dollar-IFDEF,
+              dollar-ENDIF, dollar-MODE, dollar-H+, etc.
             Types predefinis : Integer, LongInt, Word, Byte,
               Boolean, Char, String, Real, Double, Extended,
               Pointer, Text, etc.
@@ -653,7 +652,7 @@
             TFileDialog : boite d ouverture/enregistrement de
               fichier avec navigation dans les repertoires.
               Champs : CurrentPath, FileList, SelectedFile,
-                Filter (*.cs, *.vb, *.pas, *.*), FilterIndex.
+                Filter : .cs .vb .pas et jokers, FilterIndex.
               Navigation : liste des fichiers et dossiers du
                 repertoire courant, champ de saisie du nom,
                 bouton Parcourir, liste deroulante des filtres.
@@ -952,15 +951,406 @@ Program DEVENV;
  {$H-}
 {$ENDIF}
 
-Uses {$IFDEF FPC}
+Uses DOS,
+     {$IFDEF FPC}
       Crt,PtcGraph,PtcCrt,PtcMouse
      {$ELSE}
       Crt,Graph
      {$ENDIF};
 
+{ ============================================================
+  CONSTANTES GLOBALES
+  ============================================================ }
 Const
  DEVENV_VERSION = '1.0';
  DEVENV_DATE    = '2026-04-03';
+
+ { Limites des fenetres et onglets }
+ MAX_WINDOWS           = 32;
+ MAX_TABS              = 64;
+
+ { Limites des menus }
+ MAX_MENUS             = 16;
+ MAX_MENU_ITEMS        = 32;
+
+ { Limites de l editeur de texte }
+ MAX_LINES             = 65536;
+ MAX_LINE_LEN          = 1024;
+ MAX_UNDO              = 512;
+
+ { Limites des projets et solutions }
+ MAX_SOLUTION_PROJECTS = 64;
+ MAX_PROJECT_FILES     = 256;
+
+ { Limites des signets et points d arret }
+ MAX_BOOKMARKS         = 128;
+ MAX_BREAKPOINTS       = 256;
+
+ { Limites des erreurs et resultats de recherche }
+ MAX_ERRORS            = 1024;
+ MAX_FIND_RESULTS      = 4096;
+
+ { Taille du tampon generique }
+ BUFFER_SIZE           = 65536;
+
+ { Dimensions de l interface en pixels }
+ TOOLBAR_HEIGHT        = 28;
+ MENUBAR_HEIGHT        = 20;
+ STATUSBAR_HEIGHT      = 20;
+ EXPLORER_WIDTH        = 220;
+ OUTPUT_HEIGHT         = 150;
+
+ { Codes de retour }
+ EXIT_OK               = 0;
+ EXIT_ERROR            = 1;
+ EXIT_USAGE            = 2;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+ TString = String;
+
+ { Options de l IDE }
+ TDevEnvOptions = Record
+  SolutionFile    : TString;   { fichier .sln a ouvrir              }
+  Verbose         : Boolean;   { -v : mode verbeux                  }
+  DebugMode       : Boolean;   { -d : mode debogage interne         }
+  ThemeName       : TString;   { nom du theme de couleurs           }
+  FontSize        : Integer;   { taille de la police en pixels      }
+  TabSize         : Integer;   { nombre d espaces par tabulation    }
+  AutoSave        : Boolean;   { sauvegarde automatique             }
+  ShowLineNumbers : Boolean;   { afficher les numeros de ligne      }
+  WordWrap        : Boolean;   { retour a la ligne automatique      }
+  AutoIndent      : Boolean;   { indentation automatique            }
+  ShowWhitespace  : Boolean;   { afficher les espaces et tabs       }
+ End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+ Opts : TDevEnvOptions;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Fonctions utilitaires --- }
+
+Function IntToStr(N: LongInt): String;
+Var
+ S: String;
+Begin
+ Str(N, S);
+ IntToStr := S;
+End;
+
+Function StrToInt(S: String): LongInt;
+Var
+ N: LongInt;
+ Code: Integer;
+Begin
+ Val(S, N, Code);
+ If Code <> 0 Then
+  StrToInt := 0
+ Else
+  StrToInt := N;
+End;
+
+Function UpCaseStr(S: String): String;
+Var
+ I: Integer;
+Begin
+ For I := 1 To Length(S) Do
+  S[I] := UpCase(S[I]);
+ UpCaseStr := S;
+End;
+
+Function LowerCaseStr(S: String): String;
+Var
+ I: Integer;
+Begin
+ For I := 1 To Length(S) Do
+  If (S[I] >= 'A') And (S[I] <= 'Z') Then
+   S[I] := Chr(Ord(S[I]) + 32);
+ LowerCaseStr := S;
+End;
+
+Function TrimStr(S: String): String;
+Var
+ Lo, Hi: Integer;
+Begin
+ Lo := 1;
+ While (Lo <= Length(S)) And (S[Lo] = ' ') Do
+  Inc(Lo);
+ Hi := Length(S);
+ While (Hi >= Lo) And (S[Hi] = ' ') Do
+  Dec(Hi);
+ If Lo > Hi Then
+  TrimStr := ''
+ Else
+  TrimStr := Copy(S, Lo, Hi - Lo + 1);
+End;
+
+Function ExtractFileName(Path: String): String;
+Var
+ I: Integer;
+Begin
+ For I := Length(Path) DownTo 1 Do
+  If (Path[I] = '\') Or (Path[I] = '/') Then Begin
+   ExtractFileName := Copy(Path, I + 1, Length(Path) - I);
+   Exit;
+  End;
+ ExtractFileName := Path;
+End;
+
+Function ExtractFileExt(FileName: String): String;
+Var
+ I: Integer;
+Begin
+ For I := Length(FileName) DownTo 1 Do Begin
+  If FileName[I] = '.' Then Begin
+   ExtractFileExt := Copy(FileName, I, Length(FileName) - I + 1);
+   Exit;
+  End;
+  If (FileName[I] = '\') Or (FileName[I] = '/') Then
+   Break;
+ End;
+ ExtractFileExt := '';
+End;
+
+Function ExtractFilePath(Path: String): String;
+Var
+ I: Integer;
+Begin
+ For I := Length(Path) DownTo 1 Do
+  If (Path[I] = '\') Or (Path[I] = '/') Then Begin
+   ExtractFilePath := Copy(Path, 1, I);
+   Exit;
+  End;
+ ExtractFilePath := '';
+End;
+
+Function ChangeFileExt(FileName, NewExt: String): String;
+Var
+ I: Integer;
+ Base: String;
+Begin
+ Base := FileName;
+ For I := Length(FileName) DownTo 1 Do Begin
+  If FileName[I] = '.' Then Begin
+   Base := Copy(FileName, 1, I - 1);
+   Break;
+  End;
+  If (FileName[I] = '\') Or (FileName[I] = '/') Then
+   Break;
+ End;
+ ChangeFileExt := Base + NewExt;
+End;
+
+Function FileExists(FileName: String): Boolean;
+Var
+ F: File;
+ R: Integer;
+Begin
+ Assign(F, FileName);
+ R := IOResult;
+ {$I-}
+ Reset(F, 1);
+ {$I+}
+ R := IOResult;
+ If R = 0 Then Begin
+  Close(F);
+  R := IOResult;
+  FileExists := True;
+ End Else
+  FileExists := False;
+End;
+
+Function DirectoryExists(DirName: String): Boolean;
+Var
+ SR: SearchRec;
+Begin
+ FindFirst(DirName, Directory, SR);
+ DirectoryExists := (DosError = 0) And ((SR.Attr And Directory) <> 0);
+ FindClose(SR);
+End;
+
+Function HexNibble(N: Byte): Char;
+Begin
+ If N < 10 Then
+  HexNibble := Chr(Ord('0') + N)
+ Else
+  HexNibble := Chr(Ord('A') + N - 10);
+End;
+
+Function HexByte(B: Byte): String;
+Begin
+ HexByte := HexNibble(B Shr 4) + HexNibble(B And $0F);
+End;
+
+Function HexWord(W: Word): String;
+Begin
+ HexWord := HexByte(Hi(W)) + HexByte(Lo(W));
+End;
+
+Function HexLong(L: LongInt): String;
+Begin
+ HexLong := HexWord(Word(L Shr 16)) + HexWord(Word(L And $FFFF));
+End;
+
+Function MinInt(A, B: LongInt): LongInt;
+Begin
+ If A < B Then MinInt := A Else MinInt := B;
+End;
+
+Function MaxInt(A, B: LongInt): LongInt;
+Begin
+ If A > B Then MaxInt := A Else MaxInt := B;
+End;
+
+Function Clamp(Value, Lo, Hi: LongInt): LongInt;
+Begin
+ If Value < Lo Then
+  Clamp := Lo
+ Else If Value > Hi Then
+  Clamp := Hi
+ Else
+  Clamp := Value;
+End;
+
+Function PadLeft(S: String; Len: Integer; PadCh: Char): String;
+Begin
+ While Length(S) < Len Do
+  S := PadCh + S;
+ PadLeft := S;
+End;
+
+Function PadRight(S: String; Len: Integer; PadCh: Char): String;
+Begin
+ While Length(S) < Len Do
+  S := S + PadCh;
+ PadRight := S;
+End;
+
+Function StringReplace(Source, OldPat, NewPat: String): String;
+Var
+ Pos, OldLen, SrcLen: Integer;
+ Result: String;
+Begin
+ Result := '';
+ OldLen := Length(OldPat);
+ SrcLen := Length(Source);
+ If OldLen = 0 Then Begin
+  StringReplace := Source;
+  Exit;
+ End;
+ Pos := 1;
+ While Pos <= SrcLen Do Begin
+  If (Pos + OldLen - 1 <= SrcLen) And
+     (Copy(Source, Pos, OldLen) = OldPat) Then Begin
+   Result := Result + NewPat;
+   Inc(Pos, OldLen);
+  End Else Begin
+   Result := Result + Source[Pos];
+   Inc(Pos);
+  End;
+ End;
+ StringReplace := Result;
+End;
+
+{ --- Gestion des erreurs --- }
+
+Procedure FatalError(Msg: String);
+Begin
+ WriteLn('DEVENV: Erreur: ', Msg);
+ Halt(EXIT_ERROR);
+End;
+
+{ --- Aide et version --- }
+
+Procedure ShowVersion;
+Begin
+ WriteLn('DEVENV - Clone de Visual Studio en mode graphique');
+ WriteLn('Version ', DEVENV_VERSION, ' (', DEVENV_DATE, ')');
+ WriteLn('Projet DEV-COOLS - https://www.gladir.com/dev-cools');
+ WriteLn('Compilateurs integres : C# (CSC), VB.NET (VBC), Pascal (TPC)');
+End;
+
+Procedure ShowHelp;
+Begin
+ ShowVersion;
+ WriteLn;
+ WriteLn('Usage: DEVENV [solution.sln] [options]');
+ WriteLn;
+ WriteLn('Options:');
+ WriteLn('  solution.sln   Ouvrir une solution existante au demarrage');
+ WriteLn('  -v             Mode verbeux (afficher details de demarrage)');
+ WriteLn('  -d             Mode debogage interne de l IDE');
+ WriteLn('  -h             Afficher cette aide');
+ WriteLn('  --help         Afficher cette aide');
+ WriteLn;
+ WriteLn('Langages supportes:');
+ WriteLn('  C#      (.cs)   Compilateur CSCW32 / CSC86');
+ WriteLn('  VB.NET  (.vb)   Compilateur VBCW32 / VBC86');
+ WriteLn('  Pascal  (.pas)  Compilateur TPCW32 / VAXPAS86 / VAXPCW32');
+ WriteLn;
+ WriteLn('Format de solution:');
+ WriteLn('  .sln            Format Microsoft Visual Studio');
+ Halt(EXIT_OK);
+End;
+
+{ --- Initialisation des options --- }
+
+Procedure InitOptions(Var Opts: TDevEnvOptions);
+Begin
+ Opts.SolutionFile    := '';
+ Opts.Verbose         := False;
+ Opts.DebugMode       := False;
+ Opts.ThemeName       := 'Default';
+ Opts.FontSize        := 8;
+ Opts.TabSize         := 4;
+ Opts.AutoSave        := False;
+ Opts.ShowLineNumbers := True;
+ Opts.WordWrap        := False;
+ Opts.AutoIndent      := True;
+ Opts.ShowWhitespace  := False;
+End;
+
+{ --- Analyse de la ligne de commande --- }
+
+Procedure ParseCommandLine(Var Opts: TDevEnvOptions);
+Var
+ I: Integer;
+ Arg, Ext: String;
+Begin
+ For I := 1 To ParamCount Do Begin
+  Arg := ParamStr(I);
+  If (Arg = '-h') Or (Arg = '--help') Or (Arg = '-?') Or
+     (Arg = '/?') Then
+   ShowHelp
+  Else If (Arg = '-v') Or (Arg = '-V') Then
+   Opts.Verbose := True
+  Else If (Arg = '-d') Or (Arg = '-D') Then
+   Opts.DebugMode := True
+  Else If Arg[1] = '-' Then
+   FatalError('Option inconnue: ' + Arg)
+  Else Begin
+   { Argument sans tiret : fichier solution }
+   If Opts.SolutionFile = '' Then Begin
+    Ext := UpCaseStr(ExtractFileExt(Arg));
+    If Ext <> '.SLN' Then
+     FatalError('Format de fichier non reconnu: ' + Arg +
+                ' (attendu: .sln)');
+    If Not FileExists(Arg) Then
+     FatalError('Fichier introuvable: ' + Arg);
+    Opts.SolutionFile := Arg;
+   End Else
+    FatalError('Fichier solution deja specifie: ' + Arg);
+  End;
+ End;
+End;
 
 { === TODO 02 : InitializeGraphics === }
 
@@ -1045,8 +1435,10 @@ End;
 {$ENDIF}
 
 BEGIN
- WriteLn('DEVENV ',DEVENV_VERSION,' (',DEVENV_DATE,')');
- WriteLn('Clone de Visual Studio - Projet DEV-COOLS');
- WriteLn('TODO 01 a 30 : A FAIRE');
+ InitOptions(Opts);
+ ParseCommandLine(Opts);
+ If Opts.Verbose Then
+  ShowVersion;
  InitializeGraphics;
+END.
 END.
