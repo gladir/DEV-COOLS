@@ -1829,7 +1829,7 @@ Begin
   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
  End;
  
- { Sauter les espaces et chercher '{' }
+ { Sauter les espaces et chercher l'accolade ouvrante }
  SkipSpace;
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
   { Avancer apres l'accolade ouvrante }
@@ -1853,7 +1853,7 @@ Begin
   End
    Else
   Begin
-   { Le corps commence sur la meme ligne, juste apres { }
+   { Le corps commence sur la meme ligne, juste apres l'accolade ouvrante }
    UserFuncs[FuncIdx].BodyStartLine:=CurrLinePtr;
    UserFuncs[FuncIdx].BodyStartPos:=CurrPos;
   End;
