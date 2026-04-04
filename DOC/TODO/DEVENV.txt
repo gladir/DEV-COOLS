@@ -170,7 +170,7 @@
             Nombres : &HFF, &O77, &B1010.
             Directives : #If, #Else, #End If, #Region.
 
-  TODO 14 - COLORATION SYNTAXIQUE PASCAL [A FAIRE]
+  TODO 14 - COLORATION SYNTAXIQUE PASCAL [IMPLEMENTE]
             TPascalHighlighter.
             Mots-cles Turbo Pascal + Free Pascal.
             Commentaires : { }, (* *), //.

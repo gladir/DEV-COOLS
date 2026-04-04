@@ -450,7 +450,7 @@
             Operateurs speciaux : Is, IsNot, Like, Mod, And,
               Or, Xor, Not, AndAlso, OrElse (colores comme mots-cles).
 
-  TODO 14 - COLORATION SYNTAXIQUE PASCAL [A FAIRE]
+  TODO 14 - COLORATION SYNTAXIQUE PASCAL [IMPLEMENTE]
             TPascalHighlighter : specialisation pour Pascal
               (Turbo Pascal et Free Pascal).
             Mots-cles Pascal : and, array, begin, case, const,
@@ -1015,6 +1015,9 @@ Const
  { Coloration syntaxique VB.NET }
  MAX_VBNET_KEYWORDS    = 152;     { nombre de mots-cles VB.NET     }
 
+ { Coloration syntaxique Pascal }
+ MAX_PASCAL_KEYWORDS   = 65;      { nombre de mots-cles Pascal     }
+
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
  TAB_MAX_WIDTH         = 160;     { largeur max d un onglet        }
@@ -1414,6 +1417,13 @@ Type
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
+ { Coloration syntaxique specialisee Pascal }
+ TPascalHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_PASCAL_KEYWORDS - 1] Of String[20];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1454,6 +1464,8 @@ Var
  CSharpHL     : TCSharpHighlighter;
  { Coloration syntaxique VB.NET }
  VBNetHL      : TVBNetHighlighter;
+ { Coloration syntaxique Pascal }
+ PascalHL     : TPascalHighlighter;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -7430,6 +7442,424 @@ Begin
  VBNetLowerCase := LowerCaseStr(Word);
 End;
 
+{ ============================================================
+  TODO 14 - COLORATION SYNTAXIQUE PASCAL
+  ============================================================ }
+
+{ --- Initialiser les mots-cles Pascal (Turbo Pascal + Free Pascal) --- }
+
+Procedure InitPascalKeywords(Var HL: TPascalHighlighter);
+Begin
+ { Mots-cles Turbo Pascal }
+ HL.Keywords[0]   := 'and';
+ HL.Keywords[1]   := 'array';
+ HL.Keywords[2]   := 'begin';
+ HL.Keywords[3]   := 'case';
+ HL.Keywords[4]   := 'const';
+ HL.Keywords[5]   := 'constructor';
+ HL.Keywords[6]   := 'destructor';
+ HL.Keywords[7]   := 'div';
+ HL.Keywords[8]   := 'do';
+ HL.Keywords[9]   := 'downto';
+ HL.Keywords[10]  := 'else';
+ HL.Keywords[11]  := 'end';
+ HL.Keywords[12]  := 'file';
+ HL.Keywords[13]  := 'for';
+ HL.Keywords[14]  := 'function';
+ HL.Keywords[15]  := 'goto';
+ HL.Keywords[16]  := 'if';
+ HL.Keywords[17]  := 'implementation';
+ HL.Keywords[18]  := 'in';
+ HL.Keywords[19]  := 'inherited';
+ HL.Keywords[20]  := 'inline';
+ HL.Keywords[21]  := 'interface';
+ HL.Keywords[22]  := 'label';
+ HL.Keywords[23]  := 'mod';
+ HL.Keywords[24]  := 'nil';
+ HL.Keywords[25]  := 'not';
+ HL.Keywords[26]  := 'object';
+ HL.Keywords[27]  := 'of';
+ HL.Keywords[28]  := 'or';
+ HL.Keywords[29]  := 'packed';
+ HL.Keywords[30]  := 'procedure';
+ HL.Keywords[31]  := 'program';
+ HL.Keywords[32]  := 'record';
+ HL.Keywords[33]  := 'repeat';
+ HL.Keywords[34]  := 'set';
+ HL.Keywords[35]  := 'shl';
+ HL.Keywords[36]  := 'shr';
+ HL.Keywords[37]  := 'string';
+ HL.Keywords[38]  := 'then';
+ HL.Keywords[39]  := 'to';
+ HL.Keywords[40]  := 'type';
+ HL.Keywords[41]  := 'unit';
+ HL.Keywords[42]  := 'until';
+ HL.Keywords[43]  := 'uses';
+ HL.Keywords[44]  := 'var';
+ HL.Keywords[45]  := 'while';
+ HL.Keywords[46]  := 'with';
+ HL.Keywords[47]  := 'xor';
+ { Mots-cles supplementaires Free Pascal }
+ HL.Keywords[48]  := 'class';
+ HL.Keywords[49]  := 'try';
+ HL.Keywords[50]  := 'except';
+ HL.Keywords[51]  := 'finally';
+ HL.Keywords[52]  := 'raise';
+ HL.Keywords[53]  := 'property';
+ HL.Keywords[54]  := 'public';
+ HL.Keywords[55]  := 'private';
+ HL.Keywords[56]  := 'protected';
+ HL.Keywords[57]  := 'published';
+ HL.Keywords[58]  := 'override';
+ HL.Keywords[59]  := 'virtual';
+ HL.Keywords[60]  := 'abstract';
+ HL.Keywords[61]  := 'reintroduce';
+ HL.Keywords[62]  := 'operator';
+ HL.Keywords[63]  := 'generic';
+ HL.Keywords[64]  := 'specialize';
+ HL.KeywordCount := MAX_PASCAL_KEYWORDS;
+End;
+
+{ --- Initialiser le surligneur Pascal --- }
+
+Procedure InitPascalHighlighter(Var HL: TPascalHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'Pascal');
+ InitPascalKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle Pascal (insensible casse) --- }
+
+Function IsPascalKeyword(Var HL: TPascalHighlighter;
+                         Word: String): Boolean;
+Var
+ I: Integer;
+ LW: String;
+Begin
+ IsPascalKeyword := False;
+ LW := LowerCaseStr(Word);
+ For I := 0 To HL.KeywordCount - 1 Do
+ Begin
+  If LW = HL.Keywords[I] Then
+  Begin
+   IsPascalKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est un type predefini Pascal --- }
+
+Function IsPascalType(Word: String): Boolean;
+Var
+ LW: String;
+Begin
+ LW := LowerCaseStr(Word);
+ IsPascalType :=
+  (LW = 'integer') Or (LW = 'longint') Or (LW = 'word') Or
+  (LW = 'byte') Or (LW = 'boolean') Or (LW = 'char') Or
+  (LW = 'string') Or (LW = 'real') Or (LW = 'double') Or
+  (LW = 'extended') Or (LW = 'pointer') Or (LW = 'text') Or
+  (LW = 'shortint') Or (LW = 'smallint') Or (LW = 'cardinal') Or
+  (LW = 'int64') Or (LW = 'qword') Or (LW = 'single') Or
+  (LW = 'comp') Or (LW = 'currency') Or (LW = 'ansistring') Or
+  (LW = 'widestring') Or (LW = 'pchar') Or (LW = 'longword');
+End;
+
+{ --- Classifier un jeton Pascal (identifier -> keyword/type) --- }
+
+Function ClassifyPascalToken(Var HL: TPascalHighlighter;
+                             Line: String;
+                             StartPos, EndPos: Integer): TTokenClass;
+Var
+ Word: String;
+Begin
+ Word := Copy(Line, StartPos, EndPos - StartPos);
+ If IsPascalType(Word) Then
+  ClassifyPascalToken := TC_TYPE
+ Else If IsPascalKeyword(HL, Word) Then
+  ClassifyPascalToken := TC_KEYWORD
+ Else
+  ClassifyPascalToken := TC_IDENTIFIER;
+End;
+
+{ --- Obtenir la classe de jeton Pascal a une position --- }
+
+Function GetPascalTokenClass(Var HL: TPascalHighlighter;
+                             Line: String;
+                             Var Pos: Integer): TTokenClass;
+Var
+ StartPos: Integer;
+ TC: TTokenClass;
+Begin
+ StartPos := Pos;
+ TC := GetTokenClass(HL.Base, Line, Pos);
+ If TC = TC_IDENTIFIER Then
+  GetPascalTokenClass := ClassifyPascalToken(HL, Line, StartPos, Pos)
+ Else
+  GetPascalTokenClass := TC;
+End;
+
+{ --- Colorier une ligne Pascal entiere --- }
+
+Procedure HighlightPascalLine(Var HL: TPascalHighlighter;
+                              Line: String;
+                              Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetPascalTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ --- Obtenir le nom d un type de jeton Pascal --- }
+
+Function PascalTokenClassName(TC: TTokenClass): String;
+Begin
+ PascalTokenClassName := TokenClassName(TC);
+End;
+
+{ --- Compter les mots-cles Pascal --- }
+
+Function CountPascalKeywords(Var HL: TPascalHighlighter): Integer;
+Begin
+ CountPascalKeywords := HL.KeywordCount;
+End;
+
+{ --- Verifier si un mot est une directive de compilation Pascal --- }
+
+Function IsPascalDirective(Word: String): Boolean;
+Var
+ LW: String;
+Begin
+ LW := LowerCaseStr(Word);
+ IsPascalDirective :=
+  (LW = 'i') Or (LW = 'ifdef') Or (LW = 'ifndef') Or
+  (LW = 'endif') Or (LW = 'else') Or (LW = 'define') Or
+  (LW = 'undef') Or (LW = 'mode') Or (LW = 'h+') Or
+  (LW = 'h-') Or (LW = 'r+') Or (LW = 'r-') Or
+  (LW = 'q+') Or (LW = 'q-') Or (LW = 'include') Or
+  (LW = 'linklib') Or (LW = 'macro') Or (LW = 'ifopt');
+End;
+
+{ --- Verifier si un caractere est un operateur Pascal --- }
+
+Function IsPascalOperator(Ch: Char): Boolean;
+Begin
+ IsPascalOperator :=
+  (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+  (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or (Ch = ':') Or
+  (Ch = '.') Or (Ch = '@') Or (Ch = '^');
+End;
+
+{ --- Verifier si une position est un debut de commentaire Pascal --- }
+
+Function IsPascalCommentStart(Line: String; Pos: Integer): Boolean;
+Begin
+ IsPascalCommentStart := False;
+ If Pos > Length(Line) Then Exit;
+ If Line[Pos] = '{' Then
+ Begin
+  IsPascalCommentStart := True;
+  Exit;
+ End;
+ If Pos + 1 <= Length(Line) Then
+ Begin
+  If (Line[Pos] = '(') And (Line[Pos + 1] = '*') Then
+  Begin
+   IsPascalCommentStart := True;
+   Exit;
+  End;
+  If (Line[Pos] = '/') And (Line[Pos + 1] = '/') Then
+   IsPascalCommentStart := True;
+ End;
+End;
+
+{ --- Verifier si une ligne contient un nombre hexadecimal Pascal --- }
+
+Function HasPascalHexLiteral(Line: String): Boolean;
+Var
+ I: Integer;
+Begin
+ HasPascalHexLiteral := False;
+ For I := 1 To Length(Line) Do
+ Begin
+  If Line[I] = '$' Then
+  Begin
+   If (I + 1 <= Length(Line)) And (IsHexDigit(Line[I + 1])) Then
+   Begin
+    HasPascalHexLiteral := True;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ --- Verifier si une ligne contient un nombre binaire Pascal (FPC) --- }
+
+Function HasPascalBinaryLiteral(Line: String): Boolean;
+Var
+ I: Integer;
+Begin
+ HasPascalBinaryLiteral := False;
+ For I := 1 To Length(Line) Do
+ Begin
+  If Line[I] = '%' Then
+  Begin
+   If (I + 1 <= Length(Line)) And
+      ((Line[I + 1] = '0') Or (Line[I + 1] = '1')) Then
+   Begin
+    HasPascalBinaryLiteral := True;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ --- Verifier si une ligne contient un nombre octal Pascal (FPC) --- }
+
+Function HasPascalOctalLiteral(Line: String): Boolean;
+Var
+ I: Integer;
+Begin
+ HasPascalOctalLiteral := False;
+ For I := 1 To Length(Line) Do
+ Begin
+  If Line[I] = '&' Then
+  Begin
+   If (I + 1 <= Length(Line)) And
+      (Line[I + 1] >= '0') And (Line[I + 1] <= '7') Then
+   Begin
+    HasPascalOctalLiteral := True;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ --- Compter les classes de jetons Pascal dans une ligne --- }
+
+Function CountPascalTokensInLine(Var HL: TPascalHighlighter;
+                                 Line: String): Integer;
+Var
+ Pos, Count: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ Count := 0;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetPascalTokenClass(HL, Line, Pos);
+  Inc(Count);
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+ CountPascalTokensInLine := Count;
+End;
+
+{ --- Verifier si une ligne Pascal contient un commentaire --- }
+
+Function PascalLineHasComment(Var HL: TPascalHighlighter;
+                               Line: String): Boolean;
+Var
+ Pos: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ PascalLineHasComment := False;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetPascalTokenClass(HL, Line, Pos);
+  If TC = TC_COMMENT Then
+  Begin
+   PascalLineHasComment := True;
+   Break;
+  End;
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+End;
+
+{ --- Verifier si une ligne Pascal contient une chaine --- }
+
+Function PascalLineHasString(Var HL: TPascalHighlighter;
+                              Line: String): Boolean;
+Var
+ Pos: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ PascalLineHasString := False;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetPascalTokenClass(HL, Line, Pos);
+  If TC = TC_STRING Then
+  Begin
+   PascalLineHasString := True;
+   Break;
+  End;
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+End;
+
+{ --- Verifier si une position contient un caractere literal Pascal --- }
+
+Function IsPascalCharLiteral(Line: String; Pos: Integer): Boolean;
+Begin
+ IsPascalCharLiteral := False;
+ If (Pos >= 1) And (Pos <= Length(Line)) Then
+ Begin
+  If Line[Pos] = '#' Then
+  Begin
+   If (Pos + 1 <= Length(Line)) And
+      (Line[Pos + 1] >= '0') And (Line[Pos + 1] <= '9') Then
+    IsPascalCharLiteral := True;
+  End;
+ End;
+End;
+
+{ --- Convertir un mot Pascal en minuscules pour comparaison --- }
+
+Function PascalLowerCase(Word: String): String;
+Begin
+ PascalLowerCase := LowerCaseStr(Word);
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -7448,6 +7878,7 @@ BEGIN
  DrawWindowTabs;
  InitCSharpHighlighter(CSharpHL);
  InitVBNetHighlighter(VBNetHL);
- { Boucle principale a venir (TODO 14+) }
+ InitPascalHighlighter(PascalHL);
+ { Boucle principale a venir (TODO 15+) }
  ShutdownGraphics;
 END.
