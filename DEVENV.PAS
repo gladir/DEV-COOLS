@@ -123,7 +123,7 @@
               Home, End, PgUp, PgDn, Insert, Delete, Backspace,
               Tab, Enter, Escape, Ctrl+A..Z, Alt+A..Z, Shift+*.
 
-  TODO 04 - SYSTEME DE WIDGETS GUI (BASE) [A FAIRE]
+  TODO 04 - SYSTEME DE WIDGETS GUI (BASE) [IMPLEMENTE]
             TWidget = objet de base pour tous les controles.
               Champs : X, Y, Width, Height, Visible, Enabled,
                 Focused, Parent, Tag, Name.
@@ -982,6 +982,13 @@ Const
  MAX_SOLUTION_PROJECTS = 64;
  MAX_PROJECT_FILES     = 256;
 
+ { Limites des widgets }
+ MAX_WIDGETS           = 512;
+ MAX_TREE_NODES        = 1024;
+ MAX_TAB_ITEMS         = 64;
+ MAX_LIST_ITEMS        = 256;
+ MAX_EDIT_LEN          = 1024;
+
  { Limites des signets et points d arret }
  MAX_BOOKMARKS         = 128;
  MAX_BREAKPOINTS       = 256;
@@ -1087,6 +1094,79 @@ Type
   Count : Integer;                  { nombre d elements     }
  End;
 
+ { Types de widgets }
+ TWidgetKind = (
+  WK_PANEL,            { conteneur rectangulaire             }
+  WK_LABEL,            { texte statique                      }
+  WK_BUTTON,           { bouton cliquable                    }
+  WK_CHECKBOX,         { case a cocher                       }
+  WK_RADIOBUTTON,      { bouton radio                        }
+  WK_EDITFIELD,        { champ de saisie une ligne           }
+  WK_LISTBOX,          { liste avec defilement               }
+  WK_COMBOBOX,         { saisie avec liste deroulante        }
+  WK_SCROLLBAR,        { barre de defilement                 }
+  WK_PROGRESSBAR,      { barre de progression                }
+  WK_SPLITTER,         { separateur redimensionnable         }
+  WK_TREEVIEW,         { arbre hierarchique                  }
+  WK_TABCONTROL        { onglets                             }
+ );
+
+ TWidgetState = (
+  WS_NORMAL,           { etat normal                         }
+  WS_HOVER,            { souris au-dessus                    }
+  WS_PRESSED,          { bouton enfonce                      }
+  WS_DISABLED          { desactive                           }
+ );
+
+ PWidget = ^TWidget;
+
+ { Widget de base }
+ TWidget = Record
+  Kind       : TWidgetKind;   { type du widget                 }
+  X          : Integer;       { position X en pixels           }
+  Y          : Integer;       { position Y en pixels           }
+  Width      : Integer;       { largeur en pixels              }
+  Height     : Integer;       { hauteur en pixels              }
+  Visible    : Boolean;       { visible ou non                 }
+  Enabled    : Boolean;       { actif ou non                   }
+  Focused    : Boolean;       { a le focus clavier             }
+  Parent     : PWidget;       { widget parent (nil = racine)   }
+  Tag        : LongInt;       { valeur utilisateur             }
+  Name       : String[63];    { nom du widget                  }
+  State      : TWidgetState;  { etat visuel courant            }
+  NeedRepaint: Boolean;       { doit etre redessine            }
+  { Donnees specifiques aux types de widgets }
+  Caption    : String[127];   { texte (label, bouton, etc.)    }
+  Checked    : Boolean;       { coche (checkbox, radio)        }
+  GroupID    : Integer;       { groupe radio d exclusion       }
+  TextBuf    : String[255];   { tampon texte (editfield)       }
+  CursorPos  : Integer;       { position curseur (editfield)   }
+  ItemCount  : Integer;       { nombre d items (list/combo)    }
+  SelIndex   : Integer;       { index selectionne (list/combo) }
+  ScrollPos  : Integer;       { position defilement            }
+  ScrollMax  : Integer;       { valeur max de defilement       }
+  Horizontal : Boolean;       { orientation scrollbar/splitter }
+  Progress   : Integer;       { valeur 0..100 (progressbar)    }
+  TabCount   : Integer;       { nombre d onglets (tabcontrol)  }
+  ActiveTab  : Integer;       { onglet actif (tabcontrol)      }
+  Expanded   : Boolean;       { noeud deplie (treeview)        }
+  TreeRoot   : Integer;       { index racine (treeview)        }
+  ShowBorder : Boolean;       { afficher la bordure (panel)    }
+  BgColor    : Integer;       { couleur de fond                }
+  FgColor    : Integer;       { couleur du texte               }
+ End;
+
+ { Noeud d arbre pour TTreeView }
+ PTreeNode = ^TTreeNode;
+ TTreeNode = Record
+  Caption    : String[127];   { texte du noeud                 }
+  ParentIdx  : Integer;       { index du parent (-1 = racine)  }
+  Expanded   : Boolean;       { noeud deplie                   }
+  Level      : Integer;       { profondeur dans l arbre        }
+  IconIndex  : Integer;       { index d icone                  }
+  Tag        : LongInt;       { valeur utilisateur             }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1100,6 +1180,17 @@ Var
  PrevMouseX : Integer;
  PrevMouseY : Integer;
  PrevMouseBtn : LongInt;
+ { Widgets }
+ WidgetList   : Array[0..MAX_WIDGETS - 1] Of TWidget;
+ WidgetCount  : Integer;
+ FocusedIdx   : Integer;
+ { Noeuds d arbre }
+ TreeNodes    : Array[0..MAX_TREE_NODES - 1] Of TTreeNode;
+ TreeNodeCount: Integer;
+ { Etiquettes d onglets }
+ TabLabels    : Array[0..MAX_TAB_ITEMS - 1] Of String[63];
+ { Items de liste }
+ ListItems    : Array[0..MAX_LIST_ITEMS - 1] Of String[127];
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -1788,6 +1879,658 @@ Begin
  PrevMouseBtn := MBtn;
 End;
 
+{ ============================================================
+  TODO 04 - SYSTEME DE WIDGETS GUI (BASE) [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialisation du systeme de widgets --- }
+
+Procedure InitWidgetSystem;
+Begin
+ WidgetCount := 0;
+ FocusedIdx := -1;
+ TreeNodeCount := 0;
+End;
+
+{ --- Initialisation d un widget --- }
+
+Procedure InitWidget(Var W: TWidget; AKind: TWidgetKind;
+                     AX, AY, AW, AH: Integer;
+                     AName: String);
+Begin
+ W.Kind := AKind;
+ W.X := AX;
+ W.Y := AY;
+ W.Width := AW;
+ W.Height := AH;
+ W.Visible := True;
+ W.Enabled := True;
+ W.Focused := False;
+ W.Parent := Nil;
+ W.Tag := 0;
+ W.Name := AName;
+ W.State := WS_NORMAL;
+ W.NeedRepaint := True;
+ W.Caption := '';
+ W.Checked := False;
+ W.GroupID := 0;
+ W.TextBuf := '';
+ W.CursorPos := 0;
+ W.ItemCount := 0;
+ W.SelIndex := -1;
+ W.ScrollPos := 0;
+ W.ScrollMax := 0;
+ W.Horizontal := False;
+ W.Progress := 0;
+ W.TabCount := 0;
+ W.ActiveTab := 0;
+ W.Expanded := False;
+ W.TreeRoot := -1;
+ W.ShowBorder := False;
+ W.BgColor := CLR_BACKGROUND;
+ W.FgColor := CLR_MENU_TEXT;
+End;
+
+{ --- Geometrie et visibilite --- }
+
+Procedure SetBounds(Var W: TWidget; AX, AY, AW, AH: Integer);
+Begin
+ W.X := AX;
+ W.Y := AY;
+ W.Width := AW;
+ W.Height := AH;
+ W.NeedRepaint := True;
+End;
+
+Function WidgetContains(Var W: TWidget; PX, PY: Integer): Boolean;
+Begin
+ WidgetContains := (PX >= W.X) And (PX < W.X + W.Width) And
+                   (PY >= W.Y) And (PY < W.Y + W.Height);
+End;
+
+Procedure ShowWidget(Var W: TWidget);
+Begin
+ W.Visible := True;
+ W.NeedRepaint := True;
+End;
+
+Procedure HideWidget(Var W: TWidget);
+Begin
+ W.Visible := False;
+ W.NeedRepaint := True;
+End;
+
+Procedure EnableWidget(Var W: TWidget);
+Begin
+ W.Enabled := True;
+ W.State := WS_NORMAL;
+ W.NeedRepaint := True;
+End;
+
+Procedure DisableWidget(Var W: TWidget);
+Begin
+ W.Enabled := False;
+ W.State := WS_DISABLED;
+ W.NeedRepaint := True;
+End;
+
+Procedure InvalidateWidget(Var W: TWidget);
+Begin
+ W.NeedRepaint := True;
+End;
+
+{ --- Enregistrement des widgets --- }
+
+Function RegisterWidget(AKind: TWidgetKind;
+                        AX, AY, AW, AH: Integer;
+                        AName: String): Integer;
+Begin
+ If WidgetCount < MAX_WIDGETS Then Begin
+  InitWidget(WidgetList[WidgetCount], AKind, AX, AY, AW, AH, AName);
+  RegisterWidget := WidgetCount;
+  Inc(WidgetCount);
+ End Else
+  RegisterWidget := -1;
+End;
+
+Procedure UnregisterWidget(Idx: Integer);
+Var
+ I: Integer;
+Begin
+ If (Idx >= 0) And (Idx < WidgetCount) Then Begin
+  For I := Idx To WidgetCount - 2 Do
+   WidgetList[I] := WidgetList[I + 1];
+  Dec(WidgetCount);
+  If FocusedIdx = Idx Then
+   FocusedIdx := -1
+  Else If FocusedIdx > Idx Then
+   Dec(FocusedIdx);
+ End;
+End;
+
+{ --- Gestion du focus --- }
+
+Procedure SetFocus(Idx: Integer);
+Begin
+ If (FocusedIdx >= 0) And (FocusedIdx < WidgetCount) Then
+  WidgetList[FocusedIdx].Focused := False;
+ If (Idx >= 0) And (Idx < WidgetCount) Then Begin
+  FocusedIdx := Idx;
+  WidgetList[Idx].Focused := True;
+  WidgetList[Idx].NeedRepaint := True;
+ End Else
+  FocusedIdx := -1;
+End;
+
+Function GetFocusedWidget: Integer;
+Begin
+ GetFocusedWidget := FocusedIdx;
+End;
+
+{ --- Dessin des widgets --- }
+
+Procedure DrawPanel(Var W: TWidget);
+Begin
+ If Not W.Visible Then Exit;
+ {$IFDEF FPC}
+ SetColor(W.BgColor);
+ Bar(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ If W.ShowBorder Then Begin
+  SetColor(CLR_BORDER);
+  Rectangle(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ End;
+ If Length(W.Caption) > 0 Then Begin
+  SetColor(W.FgColor);
+  OutTextXY(W.X + 4, W.Y + 2, W.Caption);
+ End;
+ {$ELSE}
+ SetColor(W.BgColor);
+ Bar(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ If W.ShowBorder Then Begin
+  SetColor(CLR_BORDER);
+  Rectangle(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ End;
+ If Length(W.Caption) > 0 Then Begin
+  SetColor(W.FgColor);
+  OutTextXY(W.X + 4, W.Y + 2, W.Caption);
+ End;
+ {$ENDIF}
+End;
+
+Procedure DrawLabel(Var W: TWidget);
+Begin
+ If Not W.Visible Then Exit;
+ SetColor(W.FgColor);
+ OutTextXY(W.X, W.Y, W.Caption);
+End;
+
+Procedure DrawButton(Var W: TWidget);
+Var
+ TX, TY: Integer;
+Begin
+ If Not W.Visible Then Exit;
+ { Fond du bouton }
+ If W.State = WS_PRESSED Then
+  SetColor(CLR_MENU_HIGHLIGHT)
+ Else If W.State = WS_HOVER Then
+  SetColor(CLR_LINE_HIGHLIGHT)
+ Else If W.State = WS_DISABLED Then
+  SetColor(CLR_SCROLLBAR)
+ Else
+  SetColor(CLR_BACKGROUND);
+ Bar(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Bordure }
+ SetColor(CLR_BORDER);
+ Rectangle(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Texte centre }
+ TX := W.X + (W.Width - Length(W.Caption) * 8) Div 2;
+ TY := W.Y + (W.Height - 8) Div 2;
+ If W.State = WS_DISABLED Then
+  SetColor(CLR_SCROLLBAR)
+ Else
+  SetColor(W.FgColor);
+ OutTextXY(TX, TY, W.Caption);
+End;
+
+Procedure DrawCheckBox(Var W: TWidget);
+Var
+ BX, BY: Integer;
+Begin
+ If Not W.Visible Then Exit;
+ BX := W.X;
+ BY := W.Y + (W.Height - 10) Div 2;
+ { Case }
+ SetColor(CLR_EDITOR_BG);
+ Bar(BX, BY, BX + 10, BY + 10);
+ SetColor(CLR_BORDER);
+ Rectangle(BX, BY, BX + 10, BY + 10);
+ { Coche }
+ If W.Checked Then Begin
+  SetColor(W.FgColor);
+  Line(BX + 2, BY + 5, BX + 4, BY + 8);
+  Line(BX + 4, BY + 8, BX + 8, BY + 2);
+ End;
+ { Label }
+ SetColor(W.FgColor);
+ OutTextXY(BX + 14, W.Y + (W.Height - 8) Div 2, W.Caption);
+End;
+
+Procedure DrawRadioButton(Var W: TWidget);
+Var
+ CX, CY: Integer;
+Begin
+ If Not W.Visible Then Exit;
+ CX := W.X + 6;
+ CY := W.Y + W.Height Div 2;
+ { Cercle exterieur }
+ SetColor(CLR_BORDER);
+ Circle(CX, CY, 5);
+ { Point interieur si selectionne }
+ If W.Checked Then Begin
+  SetColor(W.FgColor);
+  Circle(CX, CY, 2);
+ End;
+ { Label }
+ SetColor(W.FgColor);
+ OutTextXY(W.X + 14, W.Y + (W.Height - 8) Div 2, W.Caption);
+End;
+
+Procedure DrawEditField(Var W: TWidget);
+Begin
+ If Not W.Visible Then Exit;
+ { Fond }
+ SetColor(CLR_EDITOR_BG);
+ Bar(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Bordure }
+ If W.Focused Then
+  SetColor(CLR_TITLEBAR_ACTIVE)
+ Else
+  SetColor(CLR_BORDER);
+ Rectangle(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Texte }
+ SetColor(CLR_EDITOR_TEXT);
+ OutTextXY(W.X + 2, W.Y + (W.Height - 8) Div 2, W.TextBuf);
+ { Curseur }
+ If W.Focused Then Begin
+  SetColor(CLR_CURSOR);
+  Line(W.X + 2 + W.CursorPos * 8, W.Y + 2,
+       W.X + 2 + W.CursorPos * 8, W.Y + W.Height - 3);
+ End;
+End;
+
+Procedure DrawListBox(Var W: TWidget);
+Var
+ I, YPos, MaxVisible: Integer;
+Begin
+ If Not W.Visible Then Exit;
+ { Fond }
+ SetColor(CLR_EDITOR_BG);
+ Bar(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Bordure }
+ SetColor(CLR_BORDER);
+ Rectangle(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Items }
+ MaxVisible := (W.Height - 4) Div 12;
+ For I := 0 To MaxVisible - 1 Do Begin
+  If (I + W.ScrollPos) >= W.ItemCount Then Break;
+  YPos := W.Y + 2 + I * 12;
+  If (I + W.ScrollPos) = W.SelIndex Then Begin
+   SetColor(CLR_SELECTION);
+   Bar(W.X + 1, YPos, W.X + W.Width - 2, YPos + 11);
+   SetColor(CLR_EDITOR_BG);
+  End Else
+   SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(W.X + 4, YPos + 2, ListItems[I + W.ScrollPos]);
+ End;
+End;
+
+Procedure DrawComboBox(Var W: TWidget);
+Begin
+ If Not W.Visible Then Exit;
+ { Champ de saisie }
+ SetColor(CLR_EDITOR_BG);
+ Bar(W.X, W.Y, W.X + W.Width - 17, W.Y + W.Height - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Bouton fleche }
+ SetColor(CLR_BACKGROUND);
+ Bar(W.X + W.Width - 16, W.Y + 1, W.X + W.Width - 2, W.Y + W.Height - 2);
+ SetColor(CLR_BORDER);
+ Line(W.X + W.Width - 16, W.Y, W.X + W.Width - 16, W.Y + W.Height - 1);
+ { Fleche vers le bas }
+ SetColor(W.FgColor);
+ Line(W.X + W.Width - 12, W.Y + 6, W.X + W.Width - 8, W.Y + W.Height - 6);
+ Line(W.X + W.Width - 8, W.Y + W.Height - 6,
+      W.X + W.Width - 4, W.Y + 6);
+ { Texte }
+ SetColor(CLR_EDITOR_TEXT);
+ OutTextXY(W.X + 2, W.Y + (W.Height - 8) Div 2, W.TextBuf);
+End;
+
+Procedure DrawScrollBar(Var W: TWidget);
+Var
+ ThumbPos, ThumbSize, TrackLen: Integer;
+Begin
+ If Not W.Visible Then Exit;
+ { Piste }
+ SetColor(CLR_SCROLLBAR);
+ Bar(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Poignee }
+ If W.ScrollMax > 0 Then Begin
+  If W.Horizontal Then Begin
+   TrackLen := W.Width - 4;
+   ThumbSize := TrackLen Div 4;
+   If ThumbSize < 16 Then ThumbSize := 16;
+   ThumbPos := W.X + 2 + (LongInt(W.ScrollPos) *
+               LongInt(TrackLen - ThumbSize)) Div LongInt(W.ScrollMax);
+   SetColor(CLR_TITLEBAR);
+   Bar(ThumbPos, W.Y + 2, ThumbPos + ThumbSize - 1, W.Y + W.Height - 3);
+  End Else Begin
+   TrackLen := W.Height - 4;
+   ThumbSize := TrackLen Div 4;
+   If ThumbSize < 16 Then ThumbSize := 16;
+   ThumbPos := W.Y + 2 + (LongInt(W.ScrollPos) *
+               LongInt(TrackLen - ThumbSize)) Div LongInt(W.ScrollMax);
+   SetColor(CLR_TITLEBAR);
+   Bar(W.X + 2, ThumbPos, W.X + W.Width - 3, ThumbPos + ThumbSize - 1);
+  End;
+ End;
+End;
+
+Procedure DrawProgressBar(Var W: TWidget);
+Var
+ FillW: Integer;
+Begin
+ If Not W.Visible Then Exit;
+ { Fond }
+ SetColor(CLR_SCROLLBAR);
+ Bar(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Barre de progression }
+ If W.Progress > 0 Then Begin
+  FillW := (LongInt(W.Width - 4) * LongInt(W.Progress)) Div 100;
+  SetColor(CLR_TITLEBAR_ACTIVE);
+  Bar(W.X + 2, W.Y + 2, W.X + 2 + FillW - 1, W.Y + W.Height - 3);
+ End;
+End;
+
+Procedure DrawSplitter(Var W: TWidget);
+Begin
+ If Not W.Visible Then Exit;
+ SetColor(CLR_BORDER);
+ If W.Horizontal Then Begin
+  Line(W.X, W.Y + W.Height Div 2, W.X + W.Width - 1, W.Y + W.Height Div 2);
+ End Else Begin
+  Line(W.X + W.Width Div 2, W.Y, W.X + W.Width Div 2, W.Y + W.Height - 1);
+ End;
+End;
+
+Procedure DrawTreeView(Var W: TWidget);
+Var
+ I, YPos, MaxVisible, DrawCount: Integer;
+Begin
+ If Not W.Visible Then Exit;
+ { Fond }
+ SetColor(CLR_EDITOR_BG);
+ Bar(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Noeuds visibles }
+ MaxVisible := (W.Height - 4) Div 14;
+ DrawCount := 0;
+ For I := 0 To TreeNodeCount - 1 Do Begin
+  If DrawCount >= MaxVisible Then Break;
+  If I < W.ScrollPos Then Continue;
+  YPos := W.Y + 2 + DrawCount * 14;
+  { Indentation }
+  SetColor(CLR_BORDER);
+  If TreeNodes[I].Expanded Then
+   OutTextXY(W.X + 4 + TreeNodes[I].Level * 16, YPos, '-')
+  Else
+   OutTextXY(W.X + 4 + TreeNodes[I].Level * 16, YPos, '+');
+  { Texte du noeud }
+  If I = W.SelIndex Then Begin
+   SetColor(CLR_SELECTION);
+   Bar(W.X + 16 + TreeNodes[I].Level * 16, YPos,
+       W.X + W.Width - 2, YPos + 13);
+   SetColor(CLR_EDITOR_BG);
+  End Else
+   SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(W.X + 18 + TreeNodes[I].Level * 16, YPos + 3,
+            TreeNodes[I].Caption);
+  Inc(DrawCount);
+ End;
+End;
+
+Procedure DrawTabControl(Var W: TWidget);
+Var
+ I, TX: Integer;
+Begin
+ If Not W.Visible Then Exit;
+ { Fond }
+ SetColor(W.BgColor);
+ Bar(W.X, W.Y, W.X + W.Width - 1, W.Y + W.Height - 1);
+ { Onglets }
+ TX := W.X;
+ For I := 0 To W.TabCount - 1 Do Begin
+  If I >= MAX_TAB_ITEMS Then Break;
+  If I = W.ActiveTab Then Begin
+   SetColor(CLR_EDITOR_BG);
+   Bar(TX, W.Y, TX + Length(TabLabels[I]) * 8 + 12, W.Y + 20);
+   SetColor(CLR_BORDER);
+   Rectangle(TX, W.Y, TX + Length(TabLabels[I]) * 8 + 12, W.Y + 20);
+   SetColor(CLR_EDITOR_TEXT);
+  End Else Begin
+   SetColor(CLR_BACKGROUND);
+   Bar(TX, W.Y + 2, TX + Length(TabLabels[I]) * 8 + 12, W.Y + 20);
+   SetColor(CLR_BORDER);
+   Rectangle(TX, W.Y + 2, TX + Length(TabLabels[I]) * 8 + 12, W.Y + 20);
+   SetColor(CLR_MENU_TEXT);
+  End;
+  OutTextXY(TX + 6, W.Y + 6, TabLabels[I]);
+  TX := TX + Length(TabLabels[I]) * 8 + 14;
+ End;
+ { Ligne sous les onglets }
+ SetColor(CLR_BORDER);
+ Line(W.X, W.Y + 21, W.X + W.Width - 1, W.Y + 21);
+End;
+
+{ --- Dessin d un widget quelconque --- }
+
+Procedure DrawWidget(Idx: Integer);
+Begin
+ If (Idx < 0) Or (Idx >= WidgetCount) Then Exit;
+ Case WidgetList[Idx].Kind Of
+  WK_PANEL      : DrawPanel(WidgetList[Idx]);
+  WK_LABEL      : DrawLabel(WidgetList[Idx]);
+  WK_BUTTON     : DrawButton(WidgetList[Idx]);
+  WK_CHECKBOX   : DrawCheckBox(WidgetList[Idx]);
+  WK_RADIOBUTTON: DrawRadioButton(WidgetList[Idx]);
+  WK_EDITFIELD  : DrawEditField(WidgetList[Idx]);
+  WK_LISTBOX    : DrawListBox(WidgetList[Idx]);
+  WK_COMBOBOX   : DrawComboBox(WidgetList[Idx]);
+  WK_SCROLLBAR  : DrawScrollBar(WidgetList[Idx]);
+  WK_PROGRESSBAR: DrawProgressBar(WidgetList[Idx]);
+  WK_SPLITTER   : DrawSplitter(WidgetList[Idx]);
+  WK_TREEVIEW   : DrawTreeView(WidgetList[Idx]);
+  WK_TABCONTROL : DrawTabControl(WidgetList[Idx]);
+ End;
+ WidgetList[Idx].NeedRepaint := False;
+End;
+
+Procedure RepaintWidget(Idx: Integer);
+Begin
+ If (Idx >= 0) And (Idx < WidgetCount) Then
+  DrawWidget(Idx);
+End;
+
+{ --- Dessin de tous les widgets --- }
+
+Procedure DrawAllWidgets;
+Var
+ I: Integer;
+Begin
+ For I := 0 To WidgetCount - 1 Do
+  If WidgetList[I].Visible Then
+   DrawWidget(I);
+End;
+
+{ --- Gestion des evenements de widgets --- }
+
+Procedure HandleEditFieldEvent(Var W: TWidget; Var Ev: TEvent);
+Begin
+ If Not W.Enabled Then Exit;
+ If Ev.Kind = EV_KEY_CHAR Then Begin
+  If Ev.KeyChar = #8 Then Begin
+   { Backspace }
+   If (W.CursorPos > 0) And (Length(W.TextBuf) > 0) Then Begin
+    Delete(W.TextBuf, W.CursorPos, 1);
+    Dec(W.CursorPos);
+    W.NeedRepaint := True;
+   End;
+  End Else If Ev.KeyChar >= ' ' Then Begin
+   If Length(W.TextBuf) < MAX_EDIT_LEN Then Begin
+    Inc(W.CursorPos);
+    Insert(Ev.KeyChar, W.TextBuf, W.CursorPos);
+    W.NeedRepaint := True;
+   End;
+  End;
+ End Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  Case Ev.KeyCode Of
+   75: { Fleche gauche }
+    If W.CursorPos > 0 Then Begin
+     Dec(W.CursorPos);
+     W.NeedRepaint := True;
+    End;
+   77: { Fleche droite }
+    If W.CursorPos < Length(W.TextBuf) Then Begin
+     Inc(W.CursorPos);
+     W.NeedRepaint := True;
+    End;
+   71: { Home }
+    Begin W.CursorPos := 0; W.NeedRepaint := True; End;
+   79: { End }
+    Begin W.CursorPos := Length(W.TextBuf); W.NeedRepaint := True; End;
+   83: { Delete }
+    If W.CursorPos < Length(W.TextBuf) Then Begin
+     Delete(W.TextBuf, W.CursorPos + 1, 1);
+     W.NeedRepaint := True;
+    End;
+  End;
+ End;
+End;
+
+Procedure HandleCheckBoxClick(Var W: TWidget);
+Begin
+ If Not W.Enabled Then Exit;
+ W.Checked := Not W.Checked;
+ W.NeedRepaint := True;
+End;
+
+Procedure HandleRadioButtonClick(Var W: TWidget);
+Var
+ I: Integer;
+Begin
+ If Not W.Enabled Then Exit;
+ { Decocher les autres du meme groupe }
+ For I := 0 To WidgetCount - 1 Do
+  If (WidgetList[I].Kind = WK_RADIOBUTTON) And
+     (WidgetList[I].GroupID = W.GroupID) Then Begin
+   WidgetList[I].Checked := False;
+   WidgetList[I].NeedRepaint := True;
+  End;
+ W.Checked := True;
+ W.NeedRepaint := True;
+End;
+
+Procedure HandleListBoxClick(Var W: TWidget; MY: Integer);
+Var
+ ClickedIdx: Integer;
+Begin
+ If Not W.Enabled Then Exit;
+ ClickedIdx := W.ScrollPos + (MY - W.Y - 2) Div 12;
+ If (ClickedIdx >= 0) And (ClickedIdx < W.ItemCount) Then Begin
+  W.SelIndex := ClickedIdx;
+  W.NeedRepaint := True;
+ End;
+End;
+
+Procedure HandleTabControlClick(Var W: TWidget; MX: Integer);
+Var
+ I, TX: Integer;
+Begin
+ If Not W.Enabled Then Exit;
+ TX := W.X;
+ For I := 0 To W.TabCount - 1 Do Begin
+  If I >= MAX_TAB_ITEMS Then Break;
+  If (MX >= TX) And (MX < TX + Length(TabLabels[I]) * 8 + 14) Then Begin
+   W.ActiveTab := I;
+   W.NeedRepaint := True;
+   Exit;
+  End;
+  TX := TX + Length(TabLabels[I]) * 8 + 14;
+ End;
+End;
+
+{ --- Distribution des evenements --- }
+
+Procedure DispatchEvent(Var Ev: TEvent);
+Var
+ I: Integer;
+Begin
+ { Evenements clavier : envoyer au widget avec le focus }
+ If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
+  If (FocusedIdx >= 0) And (FocusedIdx < WidgetCount) Then Begin
+   If WidgetList[FocusedIdx].Kind = WK_EDITFIELD Then
+    HandleEditFieldEvent(WidgetList[FocusedIdx], Ev);
+  End;
+  Exit;
+ End;
+ { Evenements souris : trouver le widget sous le curseur }
+ If (Ev.Kind = EV_MOUSE_DOWN) Or (Ev.Kind = EV_MOUSE_UP) Or
+    (Ev.Kind = EV_MOUSE_MOVE) Or (Ev.Kind = EV_MOUSE_DBLCLICK) Then Begin
+  { Mise a jour de l etat hover/pressed }
+  For I := WidgetCount - 1 DownTo 0 Do Begin
+   If Not WidgetList[I].Visible Then Continue;
+   If Not WidgetList[I].Enabled Then Continue;
+   If WidgetContains(WidgetList[I], Ev.MouseX, Ev.MouseY) Then Begin
+    { Souris dans ce widget }
+    If Ev.Kind = EV_MOUSE_MOVE Then Begin
+     If WidgetList[I].State <> WS_PRESSED Then Begin
+      WidgetList[I].State := WS_HOVER;
+      WidgetList[I].NeedRepaint := True;
+     End;
+    End Else If Ev.Kind = EV_MOUSE_DOWN Then Begin
+     WidgetList[I].State := WS_PRESSED;
+     WidgetList[I].NeedRepaint := True;
+     SetFocus(I);
+     { Actions specifiques au clic }
+     Case WidgetList[I].Kind Of
+      WK_CHECKBOX   : HandleCheckBoxClick(WidgetList[I]);
+      WK_RADIOBUTTON: HandleRadioButtonClick(WidgetList[I]);
+      WK_LISTBOX    : HandleListBoxClick(WidgetList[I], Ev.MouseY);
+      WK_TABCONTROL : HandleTabControlClick(WidgetList[I], Ev.MouseX);
+     End;
+    End Else If Ev.Kind = EV_MOUSE_UP Then Begin
+     WidgetList[I].State := WS_HOVER;
+     WidgetList[I].NeedRepaint := True;
+    End;
+    Exit;
+   End Else Begin
+    { Souris hors de ce widget }
+    If (WidgetList[I].State = WS_HOVER) Or
+       (WidgetList[I].State = WS_PRESSED) Then Begin
+     WidgetList[I].State := WS_NORMAL;
+     WidgetList[I].NeedRepaint := True;
+    End;
+   End;
+  End;
+ End;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -1797,6 +2540,7 @@ BEGIN
  ClearScreen(CLR_BACKGROUND);
  InitEventQueue;
  InitMouse;
- { Boucle principale a venir (TODO 04+) }
+ InitWidgetSystem;
+ { Boucle principale a venir (TODO 05+) }
  ShutdownGraphics;
 END.

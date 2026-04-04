@@ -67,7 +67,7 @@
             Touches speciales : F1-F12, fleches, Home, End,
             PgUp, PgDn, Insert, Delete, Ctrl+A..Z, Alt+A..Z.
 
-  TODO 04 - SYSTEME DE WIDGETS GUI (BASE) [A FAIRE]
+  TODO 04 - SYSTEME DE WIDGETS GUI (BASE) [IMPLEMENTE]
             TWidget : X, Y, Width, Height, Visible, Enabled,
               Focused, Parent, Tag, Name.
               Draw, HandleEvent, SetBounds, Contains, Show, Hide,
