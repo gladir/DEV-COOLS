@@ -205,7 +205,7 @@
             GenLabelStmt - etiquette pour goto.
             GenNullStmt - statement vide (;).
 
-  TODO 19 - [A FAIRE] GENERATION DE BLOCS ET PORTEES
+  TODO 19 - [IMPLEMENTE] GENERATION DE BLOCS ET PORTEES
             Generateur de blocs et portees C :
             GenBlock - generer un bloc { statements }.
             GenScope - gerer la portee des variables locales.
@@ -372,6 +372,14 @@ Const
   STMT_GOTO_PROB = 5;               { 5% de chance de generer un goto }
   STMT_NULL_PROB = 5;               { 5% de chance de generer un statement vide }
   STMT_LABEL_PREFIX = 'lbl_';       { Prefixe pour les labels goto }
+  
+  { TODO 19 : Constantes pour les blocs et portees }
+  BLOCK_MIN_STMTS = 1;              { Minimum de statements par bloc }
+  BLOCK_MAX_STMTS = 8;              { Maximum de statements par bloc }
+  BLOCK_NESTED_PROB = 30;           { 30% de chance de generer un bloc imbrique }
+  BLOCK_SHADOW_PROB = 20;           { 20% de chance de shadowing variable }
+  BLOCK_LOCAL_DECL_PROB = 40;       { 40% de chance de declarer une variable locale }
+  SCOPE_VAR_PREFIX = 'l_';          { Prefixe pour les variables locales }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -612,6 +620,11 @@ Var
   InSwitch: Boolean;     { Vrai si on est dans un switch (pour break) }
   InFunction: Boolean;   { Vrai si on est dans une fonction (pour return) }
   CurrentRetType: TTypeKind;  { Type de retour de la fonction courante }
+  
+  { TODO 19 : compteurs et contexte pour les blocs et portees }
+  BlockCounter: Integer;  { Compteur de blocs generes }
+  BlockDepth: Integer;    { Profondeur courante d'imbrication des blocs }
+  LocalVarCounter: Integer;  { Compteur de variables locales }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -5953,6 +5966,318 @@ Begin
   CurrentRetType := TK_VOID;
 End;
 
+{ ============================================================
+  TODO 19 : GENERATION DE BLOCS ET PORTEES [IMPLEMENTE]
+  ============================================================ }
+
+Function GenLocalVarName: TString;
+{ Genere un nom unique pour une variable locale. }
+Begin
+  Inc(LocalVarCounter);
+  GenLocalVarName := SCOPE_VAR_PREFIX + IntToStr(LocalVarCounter);
+End;
+
+Function GetScopeLevel: Integer;
+{ Retourne le niveau de portee courant (0 = global). }
+Begin
+  GetScopeLevel := CurrScope;
+End;
+
+Function GetBlockDepth: Integer;
+{ Retourne la profondeur d'imbrication courante des blocs. }
+Begin
+  GetBlockDepth := BlockDepth;
+End;
+
+Function CanNestBlock: Boolean;
+{ Retourne True si on peut imbriquer un nouveau bloc. }
+Begin
+  CanNestBlock := BlockDepth < Opts.MaxBlockDepth;
+End;
+
+Procedure PushScope;
+{ Empile une nouvelle portee sur la pile des portees. }
+Begin
+  If CurrScope < MAX_SCOPES Then
+  Begin
+    Inc(CurrScope);
+    ScopeStack[CurrScope].StartVarIdx := NumVars + 1;
+    ScopeStack[CurrScope].NumVars := 0;
+    ScopeStack[CurrScope].Level := CurrScope;
+    Inc(BlockDepth);
+    { Mettre a jour la profondeur max pour les statistiques }
+    If BlockDepth > StatMaxDepth Then
+      StatMaxDepth := BlockDepth;
+  End;
+End;
+
+Procedure PopScope;
+{ Depile la portee courante et "supprime" les variables locales. }
+Var
+  VarsToRemove: Integer;
+Begin
+  If CurrScope > 0 Then
+  Begin
+    VarsToRemove := ScopeStack[CurrScope].NumVars;
+    NumVars := NumVars - VarsToRemove;
+    Dec(CurrScope);
+    Dec(BlockDepth);
+  End;
+End;
+
+Function FindVarInScope(Const VarName: TString): Integer;
+{ Cherche une variable dans la portee courante et les portees parentes.
+  Retourne l'index de la variable ou 0 si non trouvee. }
+Var
+  I: Integer;
+Begin
+  FindVarInScope := 0;
+  For I := NumVars DownTo 1 Do
+  Begin
+    If Vars[I].Name = VarName Then
+    Begin
+      FindVarInScope := I;
+      Exit;
+    End;
+  End;
+End;
+
+Function CanShadowVar(Const VarName: TString): Boolean;
+{ Retourne True si une variable peut etre shadow dans la portee courante.
+  Une variable peut etre shadow si elle existe dans une portee parente. }
+Var
+  I, ScopeStart: Integer;
+Begin
+  CanShadowVar := False;
+  If CurrScope > 0 Then
+  Begin
+    ScopeStart := ScopeStack[CurrScope].StartVarIdx;
+    { Chercher la variable dans les portees parentes }
+    For I := ScopeStart - 1 DownTo 1 Do
+    Begin
+      If Vars[I].Name = VarName Then
+      Begin
+        CanShadowVar := True;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+Function AddLocalVar(Const VarName: TString; VType: TCType): Boolean;
+{ Ajoute une variable locale dans la portee courante.
+  Retourne True si l'ajout a reussi. }
+Begin
+  AddLocalVar := False;
+  If (NumVars < MAX_VARS) And (CurrScope > 0) Then
+  Begin
+    Inc(NumVars);
+    Vars[NumVars].Name := VarName;
+    Vars[NumVars].VType := VType;
+    Vars[NumVars].Storage := SC_AUTO;
+    Vars[NumVars].Initialized := False;
+    Vars[NumVars].ScopeLevel := CurrScope;
+    Inc(ScopeStack[CurrScope].NumVars);
+    AddLocalVar := True;
+  End;
+End;
+
+Function GetScopeVarCount: Integer;
+{ Retourne le nombre de variables dans la portee courante. }
+Begin
+  If CurrScope > 0 Then
+    GetScopeVarCount := ScopeStack[CurrScope].NumVars
+  Else
+    GetScopeVarCount := 0;
+End;
+
+Function GetVisibleVarCount: Integer;
+{ Retourne le nombre total de variables visibles (toutes portees). }
+Begin
+  GetVisibleVarCount := NumVars;
+End;
+
+Function GetRandomVisibleVar: Integer;
+{ Retourne l'index d'une variable visible aleatoire, ou 0 si aucune. }
+Begin
+  If NumVars > 0 Then
+    GetRandomVisibleVar := RandomRange(1, NumVars)
+  Else
+    GetRandomVisibleVar := 0;
+End;
+
+Procedure GenLocalVarDecl;
+{ Genere une declaration de variable locale dans le bloc courant. }
+Var
+  VarName: TString;
+  VType: TCType;
+Begin
+  VarName := GenLocalVarName;
+  { Type aleatoire parmi les types simples }
+  VType.Kind := TTypeKind(RandomRange(Ord(TK_INT), Ord(TK_LONG)));
+  VType.Quals := Q_NONE;
+  VType.PointeeIdx := 0;
+  VType.ArraySize := 0;
+  VType.ElemIdx := 0;
+  VType.StructIdx := 0;
+  
+  If AddLocalVar(VarName, VType) Then
+  Begin
+    EmitLine(TypeToStr(VType) + ' ' + VarName + ';');
+    Inc(StatVars);
+  End;
+End;
+
+Procedure GenShadowVarDecl;
+{ Genere une declaration de variable qui shadow une variable existante. }
+Var
+  ParentVarIdx: Integer;
+  VarName: TString;
+  VType: TCType;
+Begin
+  If NumVars = 0 Then Exit;
+  If CurrScope = 0 Then Exit;
+  
+  { Prendre une variable dans une portee parente }
+  ParentVarIdx := RandomRange(1, ScopeStack[CurrScope].StartVarIdx - 1);
+  If ParentVarIdx > 0 Then
+  Begin
+    VarName := Vars[ParentVarIdx].Name;
+    { Meme type ou type different }
+    If RandomChoice(50) Then
+      VType := Vars[ParentVarIdx].VType
+    Else
+    Begin
+      VType.Kind := TTypeKind(RandomRange(Ord(TK_INT), Ord(TK_LONG)));
+      VType.Quals := Q_NONE;
+      VType.PointeeIdx := 0;
+      VType.ArraySize := 0;
+      VType.ElemIdx := 0;
+      VType.StructIdx := 0;
+    End;
+    
+    If AddLocalVar(VarName, VType) Then
+    Begin
+      EmitLine('/* shadow */ ' + TypeToStr(VType) + ' ' + VarName + ';');
+      Inc(StatVars);
+    End;
+  End;
+End;
+
+Procedure GenBlockStmt; Forward;
+
+Procedure GenBlockContent(NumStmts: Integer);
+{ Genere le contenu d'un bloc (declarations et statements). }
+Var
+  I: Integer;
+Begin
+  { D'abord generer quelques declarations locales optionnelles }
+  If RandomChoice(BLOCK_LOCAL_DECL_PROB) Then
+  Begin
+    If RandomChoice(BLOCK_SHADOW_PROB) And (CurrScope > 1) And 
+       (ScopeStack[CurrScope].StartVarIdx > 1) Then
+      GenShadowVarDecl
+    Else
+      GenLocalVarDecl;
+  End;
+  
+  { Puis generer les statements }
+  For I := 1 To NumStmts Do
+  Begin
+    { Possibilite de generer un bloc imbrique }
+    If CanNestBlock And RandomChoice(BLOCK_NESTED_PROB) Then
+      GenBlockStmt
+    Else
+      GenRandomStmt;
+  End;
+End;
+
+Procedure GenBlockStmt;
+{ Genere un bloc avec gestion de portee. }
+Var
+  NumStmts: Integer;
+Begin
+  If Not CanNestBlock Then
+  Begin
+    { Profondeur max atteinte, generer un statement simple }
+    GenRandomStmt;
+    Exit;
+  End;
+  
+  Inc(BlockCounter);
+  
+  EmitLine('{');
+  EmitIndent;
+  PushScope;
+  
+  { Determiner le nombre de statements dans le bloc }
+  NumStmts := RandomRange(BLOCK_MIN_STMTS, BLOCK_MAX_STMTS);
+  GenBlockContent(NumStmts);
+  
+  PopScope;
+  EmitUnindent;
+  EmitLine('}');
+End;
+
+Procedure GenBlock;
+{ Genere un bloc complet avec statements.
+  C'est la fonction principale appelee depuis l'exterieur. }
+Begin
+  GenBlockStmt;
+End;
+
+Function GenScope: Integer;
+{ Cree une nouvelle portee et retourne son niveau.
+  Utile pour les constructions comme les boucles for en C99. }
+Begin
+  PushScope;
+  GenScope := CurrScope;
+End;
+
+Procedure EndScope;
+{ Termine la portee courante. }
+Begin
+  PopScope;
+End;
+
+Procedure EmitBlockComment;
+{ Emet un commentaire pour la section de blocs et portees. }
+Begin
+  EmitLineComment('Blocs et portees (scope management)');
+End;
+
+Function CountBlocks: Integer;
+{ Retourne le nombre de blocs generes. }
+Begin
+  CountBlocks := BlockCounter;
+End;
+
+Function CountLocalVars: Integer;
+{ Retourne le nombre de variables locales generees. }
+Begin
+  CountLocalVars := LocalVarCounter;
+End;
+
+Function IsAtGlobalScope: Boolean;
+{ Retourne True si on est a la portee globale (scope 0). }
+Begin
+  IsAtGlobalScope := CurrScope = 0;
+End;
+
+Function IsAtLocalScope: Boolean;
+{ Retourne True si on est dans une portee locale (scope > 0). }
+Begin
+  IsAtLocalScope := CurrScope > 0;
+End;
+
+Procedure InitBlockContext;
+{ Initialise le contexte pour la generation de blocs. }
+Begin
+  BlockCounter := 0;
+  BlockDepth := 0;
+  LocalVarCounter := 0;
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -5985,6 +6310,8 @@ Begin
   StatMaxDepth := 0;
   { Initialiser le contexte des statements - TODO 18 }
   InitStmtContext;
+  { Initialiser le contexte des blocs - TODO 19 }
+  InitBlockContext;
   { Initialiser l'emetteur }
   InitEmitter;
 End;

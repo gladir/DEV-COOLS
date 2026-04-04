@@ -190,7 +190,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       GenLabelStmt - etiquette pour goto.
       GenNullStmt - statement vide (;).
 
-  19. [A FAIRE] Generation de blocs et portees.
+  19. [IMPLEMENTE] Generation de blocs et portees.
       Generateur de blocs et portees C :
       GenBlock - generer un bloc { statements }.
       GenScope - gerer la portee des variables locales.
