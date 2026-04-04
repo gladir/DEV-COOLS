@@ -811,7 +811,7 @@
             Message d erreur informatif si le compilateur
               n est pas trouve.
 
-  TODO 27 - INTEGRATION COMPILATEUR PASCAL (TPCW32/VAXPAS86) [A FAIRE]
+  TODO 27 - INTEGRATION COMPILATEUR PASCAL (TPCW32/VAXPAS86) [IMPLEMENTE]
             Integration des compilateurs Pascal du projet DEV-COOLS.
             Procedure CompilePascal(Var Proj: TProject;
               Config: TBuildConfig; Var Output: TOutputPanel)
@@ -1197,6 +1197,20 @@ Const
  VBC_EXT_SOURCE       = '.vb';      { extension source VB.NET        }
  VBC_EXT_EXE          = '.exe';     { extension executable           }
  VBC_EXT_DLL          = '.dll';     { extension bibliotheque         }
+
+ { Integration compilateur Pascal }
+ TPC_COMPILER_WIN32   = 'TPCW32';   { compilateur Pascal Win32 PE    }
+ TPC_COMPILER_DOS     = 'VAXPAS86'; { compilateur Pascal DOS 8086    }
+ TPC_COMPILER_WIN32B  = 'VAXPCW32'; { compilateur Pascal Win32 alter }
+ TPC_TEMP_OUTPUT      = '_tpcout.tmp'; { fichier temp sortie compil  }
+ TPC_MAX_SOURCE_FILES = 128;        { nombre max fichiers source     }
+ TPC_FLAG_VERBOSE     = '-v';       { option verbeux                 }
+ TPC_FLAG_DEBUG       = '-d';       { option symboles debogage       }
+ TPC_FLAG_WARNINGS    = '-w';       { option afficher avertissements }
+ TPC_FLAG_OUTPUT      = '-o';       { option fichier sortie          }
+ TPC_EXT_SOURCE       = '.pas';     { extension source Pascal        }
+ TPC_EXT_EXE          = '.exe';     { extension executable           }
+ TPC_EXT_DLL          = '.dll';     { extension bibliotheque         }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -2218,6 +2232,24 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ { Contexte du compilateur Pascal }
+ TTPCCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur              }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -2276,6 +2308,8 @@ Var
  CSCContext     : TCSCCompilerContext;
  { Contexte compilateur VB.NET }
  VBCContext     : TVBCCompilerContext;
+ { Contexte compilateur Pascal }
+ TPCContext     : TTPCCompilerContext;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -18971,6 +19005,476 @@ Begin
   (Ctx.WarningCount = 0) And
   (Not Ctx.IsCompiling);
 End;
+
+{  TODO 27 - INTEGRATION COMPILATEUR PASCAL (TPCW32/VAXPAS86) [IMPLEMENTE]
+   ============================================================ }
+
+{ --- Initialiser le contexte du compilateur Pascal --- }
+
+Procedure InitTPCContext(Var Ctx: TTPCCompilerContext);
+Begin
+ Ctx.CompilerPath := '';
+ Ctx.CompilerName := '';
+ Ctx.CompilerFound := False;
+ Ctx.LastResult := CR_NOT_FOUND;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ Ctx.TotalFiles := 0;
+ Ctx.OutputFile := '';
+ Ctx.TempFile := TPC_TEMP_OUTPUT;
+ Ctx.IsCompiling := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose := False;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Detecter le compilateur Pascal disponible --- }
+
+Procedure DetectTPCCompiler(Var Ctx: TTPCCompilerContext);
+Var
+ Path: String;
+Begin
+ { Essayer d abord TPCW32 (Win32 PE) }
+ Path := FindCompiler(TPC_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := TPC_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer VAXPCW32 (Win32 alternatif) }
+ Path := FindCompiler(TPC_COMPILER_WIN32B);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := TPC_COMPILER_WIN32B;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer VAXPAS86 (DOS 8086) }
+ Path := FindCompiler(TPC_COMPILER_DOS);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := TPC_COMPILER_DOS;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
+{ --- Construire le chemin de sortie du fichier compile --- }
+
+Function BuildTPCOutputPath(Var Proj: TProject;
+ Var Cfg: TBuildConfig): String;
+Var
+ OutPath, Ext: String;
+Begin
+ If Cfg.OutputPath <> '' Then
+  OutPath := Cfg.OutputPath
+ Else If Proj.Info.OutputPath <> '' Then
+  OutPath := Proj.Info.OutputPath
+ Else
+  OutPath := '.';
+ Case Proj.Info.OutputType Of
+  OT_EXE, OT_WINEXE:
+   Ext := TPC_EXT_EXE;
+  OT_LIBRARY:
+   Ext := TPC_EXT_DLL;
+ End;
+ If Proj.Info.AssemblyName <> '' Then
+  BuildTPCOutputPath := OutPath + '/' + Proj.Info.AssemblyName + Ext
+ Else If Proj.Info.ProjectName <> '' Then
+  BuildTPCOutputPath := OutPath + '/' + Proj.Info.ProjectName + Ext
+ Else
+  BuildTPCOutputPath := OutPath + '/output' + Ext;
+End;
+
+{ --- Construire la ligne de commande pour un fichier source --- }
+
+Function BuildTPCCommandLine(Var Ctx: TTPCCompilerContext;
+ SourceFile, OutputFile: String): String;
+Var
+ Cmd: String;
+Begin
+ Cmd := Ctx.CompilerPath + ' ' + SourceFile;
+ If OutputFile <> '' Then
+  Cmd := Cmd + ' ' + TPC_FLAG_OUTPUT + ' ' + OutputFile;
+ If Ctx.UseVerbose Then
+  Cmd := Cmd + ' ' + TPC_FLAG_VERBOSE;
+ If Ctx.UseDebugSymbols Then
+  Cmd := Cmd + ' ' + TPC_FLAG_DEBUG;
+ If Ctx.UseWarnings Then
+  Cmd := Cmd + ' ' + TPC_FLAG_WARNINGS;
+ BuildTPCCommandLine := Cmd;
+End;
+
+{ --- Compter les fichiers source Pascal dans le projet --- }
+
+Function CountPascalSourceFiles(Var Proj: TProject): Integer;
+Var
+ I, Count: Integer;
+ Ext: String;
+Begin
+ Count := 0;
+ For I := 0 To Proj.FileCount - 1 Do Begin
+  Ext := '';
+  If Length(Proj.Files[I].FileName) >= 4 Then
+   Ext := Copy(Proj.Files[I].FileName,
+    Length(Proj.Files[I].FileName) - 3, 4);
+  If (Ext = TPC_EXT_SOURCE) And
+     (Proj.Files[I].BuildAction = BA_COMPILE) Then
+   Inc(Count);
+ End;
+ CountPascalSourceFiles := Count;
+End;
+
+{ --- Collecter les fichiers source Pascal du projet --- }
+
+Procedure CollectPascalSourceFiles(Var Proj: TProject;
+ Var FileList: Array Of String; Var Count: Integer);
+Var
+ I: Integer;
+ Ext: String;
+Begin
+ Count := 0;
+ For I := 0 To Proj.FileCount - 1 Do Begin
+  If Count >= TPC_MAX_SOURCE_FILES Then Exit;
+  Ext := '';
+  If Length(Proj.Files[I].FileName) >= 4 Then
+   Ext := Copy(Proj.Files[I].FileName,
+    Length(Proj.Files[I].FileName) - 3, 4);
+  If (Ext = TPC_EXT_SOURCE) And
+     (Proj.Files[I].BuildAction = BA_COMPILE) Then Begin
+   FileList[Count] := Proj.Files[I].FileName;
+   Inc(Count);
+  End;
+ End;
+End;
+
+{ --- Parser le fichier de sortie du compilateur Pascal --- }
+{ Format : "filename(line,col) Error: message"              }
+
+Procedure ParseTPCCompilerOutput(TempFile, ProjName: String;
+ Var EL: TErrorListPanel; Var ErrCount, WarnCount: Integer);
+Var
+ F: Text;
+ Line: String;
+ E: TErrorEntry;
+Begin
+ ErrCount := 0;
+ WarnCount := 0;
+ {$I-}
+ Assign(F, TempFile);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  If ParseTPCError(Line, E) Then Begin
+   E.Project := ProjName;
+   AddError(EL, E);
+   If E.Severity = ES_ERROR Then
+    Inc(ErrCount)
+   Else If E.Severity = ES_WARNING Then
+    Inc(WarnCount);
+  End;
+ End;
+ Close(F);
+End;
+
+{ --- Compiler un seul fichier Pascal --- }
+
+Function CompileSinglePascalFile(Var Ctx: TTPCCompilerContext;
+ SourceFile, OutputFile: String;
+ Var OP: TOutputPanel;
+ Var EL: TErrorListPanel;
+ ProjName: String): TCompilerResult;
+Var
+ CmdLine: String;
+ ExitCode: Integer;
+ EC, WC: Integer;
+Begin
+ CompileSinglePascalFile := CR_EXEC_FAILED;
+ CmdLine := BuildTPCCommandLine(Ctx, SourceFile, OutputFile);
+ AppendOutput(OP, '> ' + CmdLine, Ord(OTK_BUILD));
+ ExitCode := ExecuteCompiler(CmdLine, Ctx.TempFile);
+ ReadOutputFile(Ctx.TempFile, OP, Ord(OTK_BUILD));
+ ParseTPCCompilerOutput(Ctx.TempFile, ProjName, EL, EC, WC);
+ CleanupTempFile(Ctx.TempFile);
+ Ctx.ErrorCount := Ctx.ErrorCount + EC;
+ Ctx.WarningCount := Ctx.WarningCount + WC;
+ If EC > 0 Then
+  CompileSinglePascalFile := CR_ERRORS
+ Else If WC > 0 Then
+  CompileSinglePascalFile := CR_WARNINGS
+ Else If ExitCode = 0 Then
+  CompileSinglePascalFile := CR_SUCCESS
+ Else
+  CompileSinglePascalFile := CR_EXEC_FAILED;
+End;
+
+{ --- Appliquer la configuration de build au contexte Pascal --- }
+
+Procedure ApplyTPCBuildConfig(Var Ctx: TTPCCompilerContext;
+ Var Cfg: TBuildConfig);
+Begin
+ Ctx.UseDebugSymbols := Cfg.DebugSymbols;
+ If Cfg.Optimize Then
+  Ctx.UseVerbose := False
+ Else
+  Ctx.UseVerbose := Ctx.UseVerbose;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Compiler un projet Pascal complet --- }
+
+Procedure CompilePascal(Var Proj: TProject;
+ Var Cfg: TBuildConfig;
+ Var OP: TOutputPanel;
+ Var EL: TErrorListPanel;
+ Var Ctx: TTPCCompilerContext);
+Var
+ SourceFiles: Array[0..TPC_MAX_SOURCE_FILES - 1] Of String;
+ FileCount: Integer;
+ I: Integer;
+ OutputPath: String;
+ ProjName: String;
+ Res: TCompilerResult;
+Begin
+ Ctx.IsCompiling := True;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ ProjName := Proj.Info.ProjectName;
+ { Effacer les sorties precedentes }
+ ClearOutput(OP, Ord(OTK_BUILD));
+ ClearErrors(EL);
+ AppendOutput(OP, '------ Build started: Project: ' +
+  ProjName + ', Configuration: ' +
+  Cfg.ConfigName + ' ------', Ord(OTK_BUILD));
+ { Detecter le compilateur }
+ DetectTPCCompiler(Ctx);
+ If Not Ctx.CompilerFound Then Begin
+  AppendOutputEx(OP,
+   'Error: Pascal compiler not found (TPCW32, VAXPCW32 or VAXPAS86). ' +
+   'Please ensure the compiler is installed and available in PATH.',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Ctx.LastResult := CR_NOT_FOUND;
+  Ctx.IsCompiling := False;
+  Exit;
+ End;
+ AppendOutput(OP, 'Using compiler: ' + Ctx.CompilerName +
+  ' (' + Ctx.CompilerPath + ')', Ord(OTK_BUILD));
+ { Appliquer la configuration }
+ ApplyTPCBuildConfig(Ctx, Cfg);
+ { Collecter les fichiers source }
+ CollectPascalSourceFiles(Proj, SourceFiles, FileCount);
+ Ctx.TotalFiles := FileCount;
+ If FileCount = 0 Then Begin
+  AppendOutputEx(OP,
+   'Error: No Pascal source files found in project',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Ctx.LastResult := CR_NO_SOURCE;
+  Ctx.IsCompiling := False;
+  Exit;
+ End;
+ AppendOutput(OP, 'Compiling ' + IntToStr(FileCount) +
+  ' file(s)...', Ord(OTK_BUILD));
+ { Determiner le fichier de sortie }
+ OutputPath := BuildTPCOutputPath(Proj, Cfg);
+ Ctx.OutputFile := OutputPath;
+ { Compiler chaque fichier source }
+ For I := 0 To FileCount - 1 Do Begin
+  AppendOutput(OP, '  ' + SourceFiles[I],
+   Ord(OTK_BUILD));
+  Res := CompileSinglePascalFile(Ctx,
+   SourceFiles[I], OutputPath,
+   OP, EL, ProjName);
+  Inc(Ctx.FilesCompiled);
+  If Res = CR_ERRORS Then Begin
+   Ctx.LastResult := CR_ERRORS;
+   AppendOutputEx(OP,
+    'Build FAILED for ' + SourceFiles[I],
+    Ord(OTK_BUILD), OLK_ERROR, SourceFiles[I], 0, 0);
+  End;
+ End;
+ { Resume de la compilation }
+ If Ctx.ErrorCount > 0 Then Begin
+  Ctx.LastResult := CR_ERRORS;
+  AppendOutputEx(OP,
+   '========== Build: 0 succeeded, 1 failed, ' +
+   IntToStr(Ctx.ErrorCount) + ' error(s), ' +
+   IntToStr(Ctx.WarningCount) + ' warning(s) ==========',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+ End Else If Ctx.WarningCount > 0 Then Begin
+  Ctx.LastResult := CR_WARNINGS;
+  AppendOutputEx(OP,
+   '========== Build: 1 succeeded, 0 failed, ' +
+   IntToStr(Ctx.WarningCount) + ' warning(s) ==========',
+   Ord(OTK_BUILD), OLK_WARNING, '', 0, 0);
+ End Else Begin
+  Ctx.LastResult := CR_SUCCESS;
+  AppendOutputEx(OP,
+   '========== Build: 1 succeeded, 0 failed ==========',
+   Ord(OTK_BUILD), OLK_SUCCESS, '', 0, 0);
+ End;
+ Ctx.IsCompiling := False;
+End;
+
+{ --- Obtenir le chemin du compilateur Pascal --- }
+
+Function GetTPCCompilerPath(
+ Var Ctx: TTPCCompilerContext): String;
+Begin
+ GetTPCCompilerPath := Ctx.CompilerPath;
+End;
+
+{ --- Obtenir le nom du compilateur Pascal --- }
+
+Function GetTPCCompilerName(
+ Var Ctx: TTPCCompilerContext): String;
+Begin
+ GetTPCCompilerName := Ctx.CompilerName;
+End;
+
+{ --- Le compilateur Pascal est-il disponible --- }
+
+Function IsTPCCompilerFound(
+ Var Ctx: TTPCCompilerContext): Boolean;
+Begin
+ IsTPCCompilerFound := Ctx.CompilerFound;
+End;
+
+{ --- Obtenir le dernier resultat de compilation Pascal --- }
+
+Function GetTPCLastResult(
+ Var Ctx: TTPCCompilerContext): TCompilerResult;
+Begin
+ GetTPCLastResult := Ctx.LastResult;
+End;
+
+{ --- Obtenir le nombre d erreurs de la derniere compilation Pascal --- }
+
+Function GetTPCErrorCount(
+ Var Ctx: TTPCCompilerContext): Integer;
+Begin
+ GetTPCErrorCount := Ctx.ErrorCount;
+End;
+
+{ --- Obtenir le nombre d avertissements Pascal --- }
+
+Function GetTPCWarningCount(
+ Var Ctx: TTPCCompilerContext): Integer;
+Begin
+ GetTPCWarningCount := Ctx.WarningCount;
+End;
+
+{ --- Obtenir le nombre de fichiers Pascal compiles --- }
+
+Function GetTPCFilesCompiled(
+ Var Ctx: TTPCCompilerContext): Integer;
+Begin
+ GetTPCFilesCompiled := Ctx.FilesCompiled;
+End;
+
+{ --- Obtenir le nombre total de fichiers source Pascal --- }
+
+Function GetTPCTotalFiles(
+ Var Ctx: TTPCCompilerContext): Integer;
+Begin
+ GetTPCTotalFiles := Ctx.TotalFiles;
+End;
+
+{ --- Obtenir le fichier de sortie genere Pascal --- }
+
+Function GetTPCOutputFile(
+ Var Ctx: TTPCCompilerContext): String;
+Begin
+ GetTPCOutputFile := Ctx.OutputFile;
+End;
+
+{ --- La compilation Pascal est-elle en cours --- }
+
+Function IsTPCCompiling(
+ Var Ctx: TTPCCompilerContext): Boolean;
+Begin
+ IsTPCCompiling := Ctx.IsCompiling;
+End;
+
+{ --- Activer/desactiver les symboles de debogage Pascal --- }
+
+Procedure SetTPCDebugSymbols(
+ Var Ctx: TTPCCompilerContext; Enable: Boolean);
+Begin
+ Ctx.UseDebugSymbols := Enable;
+End;
+
+{ --- Activer/desactiver le mode verbeux Pascal --- }
+
+Procedure SetTPCVerbose(
+ Var Ctx: TTPCCompilerContext; Enable: Boolean);
+Begin
+ Ctx.UseVerbose := Enable;
+End;
+
+{ --- Activer/desactiver les avertissements Pascal --- }
+
+Procedure SetTPCWarnings(
+ Var Ctx: TTPCCompilerContext; Enable: Boolean);
+Begin
+ Ctx.UseWarnings := Enable;
+End;
+
+{ --- Les symboles de debogage Pascal sont-ils actives --- }
+
+Function AreTPCDebugSymbolsEnabled(
+ Var Ctx: TTPCCompilerContext): Boolean;
+Begin
+ AreTPCDebugSymbolsEnabled := Ctx.UseDebugSymbols;
+End;
+
+{ --- Le mode verbeux Pascal est-il active --- }
+
+Function IsTPCVerboseEnabled(
+ Var Ctx: TTPCCompilerContext): Boolean;
+Begin
+ IsTPCVerboseEnabled := Ctx.UseVerbose;
+End;
+
+{ --- Les avertissements Pascal sont-ils actives --- }
+
+Function AreTPCWarningsEnabled(
+ Var Ctx: TTPCCompilerContext): Boolean;
+Begin
+ AreTPCWarningsEnabled := Ctx.UseWarnings;
+End;
+
+{ --- Obtenir le fichier temporaire de sortie Pascal --- }
+
+Function GetTPCTempFile(
+ Var Ctx: TTPCCompilerContext): String;
+Begin
+ GetTPCTempFile := Ctx.TempFile;
+End;
+
+{ --- Definir le fichier temporaire de sortie Pascal --- }
+
+Procedure SetTPCTempFile(
+ Var Ctx: TTPCCompilerContext; AFile: String);
+Begin
+ Ctx.TempFile := AFile;
+End;
+
+{ --- Le contexte Pascal est-il vide (pas de compilation effectuee) --- }
+
+Function IsTPCContextEmpty(
+ Var Ctx: TTPCCompilerContext): Boolean;
+Begin
+ IsTPCContextEmpty := (Ctx.FilesCompiled = 0) And
+  (Ctx.ErrorCount = 0) And
+  (Ctx.WarningCount = 0) And
+  (Not Ctx.IsCompiling);
+End;
  InitOptions(Opts);
  ParseCommandLine(Opts);
  If Opts.Verbose Then
@@ -19001,6 +19505,7 @@ End;
  InitGoToLineDialog(GoToLineDlg);
  InitCSCContext(CSCContext);
  InitVBCContext(VBCContext);
- { Boucle principale a venir (TODO 27+) }
+ InitTPCContext(TPCContext);
+ { Boucle principale a venir (TODO 28+) }
  ShutdownGraphics;
 END.

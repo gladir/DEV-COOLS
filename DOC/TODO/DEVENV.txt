@@ -289,7 +289,7 @@
             ParseVBCOutput : "filename(line): error BCnnnn: msg"
             Gestion de l absence du compilateur.
 
-  TODO 27 - INTEGRATION COMPILATEUR PASCAL (TPCW32/VAXPAS86) [A FAIRE]
+  TODO 27 - INTEGRATION COMPILATEUR PASCAL (TPCW32/VAXPAS86) [IMPLEMENTE]
             CompilePascal.
             Ligne de commande : TPCW32 source.pas [-o sortie.exe]
               ou VAXPAS86 source.pas ou VAXPCW32 source.pas.
