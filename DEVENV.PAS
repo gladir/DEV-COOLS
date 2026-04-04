@@ -412,7 +412,7 @@
             Types predecoupes : int, string, bool, etc. colores
               differemment quand utilises comme types.
 
-  TODO 13 - COLORATION SYNTAXIQUE VB.NET [A FAIRE]
+  TODO 13 - COLORATION SYNTAXIQUE VB.NET [IMPLEMENTE]
             TVBNetHighlighter : specialisation pour VB.NET.
             Mots-cles VB.NET (insensible a la casse) :
               AddHandler, AddressOf, Alias, And, AndAlso, As,
@@ -1012,6 +1012,9 @@ Const
  MAX_CSHARP_KEYWORDS   = 79;      { nombre de mots-cles C#         }
  MAX_CSHARP_CTXKW      = 28;      { nombre de mots-cles contextuels}
 
+ { Coloration syntaxique VB.NET }
+ MAX_VBNET_KEYWORDS    = 152;     { nombre de mots-cles VB.NET     }
+
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
  TAB_MAX_WIDTH         = 160;     { largeur max d un onglet        }
@@ -1404,6 +1407,13 @@ Type
   CtxKWCount   : Integer;             { nombre de mots-cles ctx     }
  End;
 
+ { Coloration syntaxique specialisee VB.NET }
+ TVBNetHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_VBNET_KEYWORDS - 1] Of String[20];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1442,6 +1452,8 @@ Var
  WinMgr       : TWindowManager;
  { Coloration syntaxique C# }
  CSharpHL     : TCSharpHighlighter;
+ { Coloration syntaxique VB.NET }
+ VBNetHL      : TVBNetHighlighter;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -6927,6 +6939,497 @@ Begin
  HL.Base.StateTop := SaveTop;
 End;
 
+{ ============================================================
+  TODO 13 - COLORATION SYNTAXIQUE VB.NET
+  ============================================================ }
+
+{ --- Initialiser les mots-cles VB.NET --- }
+
+Procedure InitVBNetKeywords(Var HL: TVBNetHighlighter);
+Begin
+ HL.KeywordCount := MAX_VBNET_KEYWORDS;
+ HL.Keywords[0]   := 'addhandler';
+ HL.Keywords[1]   := 'addressof';
+ HL.Keywords[2]   := 'alias';
+ HL.Keywords[3]   := 'and';
+ HL.Keywords[4]   := 'andalso';
+ HL.Keywords[5]   := 'as';
+ HL.Keywords[6]   := 'boolean';
+ HL.Keywords[7]   := 'byref';
+ HL.Keywords[8]   := 'byte';
+ HL.Keywords[9]   := 'byval';
+ HL.Keywords[10]  := 'call';
+ HL.Keywords[11]  := 'case';
+ HL.Keywords[12]  := 'catch';
+ HL.Keywords[13]  := 'cbool';
+ HL.Keywords[14]  := 'cbyte';
+ HL.Keywords[15]  := 'cchar';
+ HL.Keywords[16]  := 'cdate';
+ HL.Keywords[17]  := 'cdbl';
+ HL.Keywords[18]  := 'cdec';
+ HL.Keywords[19]  := 'char';
+ HL.Keywords[20]  := 'cint';
+ HL.Keywords[21]  := 'class';
+ HL.Keywords[22]  := 'clng';
+ HL.Keywords[23]  := 'cobj';
+ HL.Keywords[24]  := 'const';
+ HL.Keywords[25]  := 'continue';
+ HL.Keywords[26]  := 'csbyte';
+ HL.Keywords[27]  := 'cshort';
+ HL.Keywords[28]  := 'csng';
+ HL.Keywords[29]  := 'cstr';
+ HL.Keywords[30]  := 'ctype';
+ HL.Keywords[31]  := 'cuint';
+ HL.Keywords[32]  := 'culng';
+ HL.Keywords[33]  := 'cushort';
+ HL.Keywords[34]  := 'date';
+ HL.Keywords[35]  := 'decimal';
+ HL.Keywords[36]  := 'declare';
+ HL.Keywords[37]  := 'default';
+ HL.Keywords[38]  := 'delegate';
+ HL.Keywords[39]  := 'dim';
+ HL.Keywords[40]  := 'directcast';
+ HL.Keywords[41]  := 'do';
+ HL.Keywords[42]  := 'double';
+ HL.Keywords[43]  := 'each';
+ HL.Keywords[44]  := 'else';
+ HL.Keywords[45]  := 'elseif';
+ HL.Keywords[46]  := 'end';
+ HL.Keywords[47]  := 'endif';
+ HL.Keywords[48]  := 'enum';
+ HL.Keywords[49]  := 'erase';
+ HL.Keywords[50]  := 'error';
+ HL.Keywords[51]  := 'event';
+ HL.Keywords[52]  := 'exit';
+ HL.Keywords[53]  := 'false';
+ HL.Keywords[54]  := 'finally';
+ HL.Keywords[55]  := 'for';
+ HL.Keywords[56]  := 'friend';
+ HL.Keywords[57]  := 'function';
+ HL.Keywords[58]  := 'get';
+ HL.Keywords[59]  := 'gettype';
+ HL.Keywords[60]  := 'getxmlnamespace';
+ HL.Keywords[61]  := 'global';
+ HL.Keywords[62]  := 'gosub';
+ HL.Keywords[63]  := 'goto';
+ HL.Keywords[64]  := 'handles';
+ HL.Keywords[65]  := 'if';
+ HL.Keywords[66]  := 'implements';
+ HL.Keywords[67]  := 'imports';
+ HL.Keywords[68]  := 'in';
+ HL.Keywords[69]  := 'inherits';
+ HL.Keywords[70]  := 'integer';
+ HL.Keywords[71]  := 'interface';
+ HL.Keywords[72]  := 'is';
+ HL.Keywords[73]  := 'isnot';
+ HL.Keywords[74]  := 'let';
+ HL.Keywords[75]  := 'lib';
+ HL.Keywords[76]  := 'like';
+ HL.Keywords[77]  := 'long';
+ HL.Keywords[78]  := 'loop';
+ HL.Keywords[79]  := 'me';
+ HL.Keywords[80]  := 'mod';
+ HL.Keywords[81]  := 'module';
+ HL.Keywords[82]  := 'mustinherit';
+ HL.Keywords[83]  := 'mustoverride';
+ HL.Keywords[84]  := 'mybase';
+ HL.Keywords[85]  := 'myclass';
+ HL.Keywords[86]  := 'namespace';
+ HL.Keywords[87]  := 'narrowing';
+ HL.Keywords[88]  := 'new';
+ HL.Keywords[89]  := 'next';
+ HL.Keywords[90]  := 'not';
+ HL.Keywords[91]  := 'nothing';
+ HL.Keywords[92]  := 'notinheritable';
+ HL.Keywords[93]  := 'notoverridable';
+ HL.Keywords[94]  := 'object';
+ HL.Keywords[95]  := 'of';
+ HL.Keywords[96]  := 'on';
+ HL.Keywords[97]  := 'operator';
+ HL.Keywords[98]  := 'option';
+ HL.Keywords[99]  := 'optional';
+ HL.Keywords[100] := 'or';
+ HL.Keywords[101] := 'orelse';
+ HL.Keywords[102] := 'overloads';
+ HL.Keywords[103] := 'overridable';
+ HL.Keywords[104] := 'overrides';
+ HL.Keywords[105] := 'paramarray';
+ HL.Keywords[106] := 'partial';
+ HL.Keywords[107] := 'private';
+ HL.Keywords[108] := 'property';
+ HL.Keywords[109] := 'protected';
+ HL.Keywords[110] := 'public';
+ HL.Keywords[111] := 'raiseevent';
+ HL.Keywords[112] := 'readonly';
+ HL.Keywords[113] := 'redim';
+ HL.Keywords[114] := 'rem';
+ HL.Keywords[115] := 'removehandler';
+ HL.Keywords[116] := 'resume';
+ HL.Keywords[117] := 'return';
+ HL.Keywords[118] := 'sbyte';
+ HL.Keywords[119] := 'select';
+ HL.Keywords[120] := 'set';
+ HL.Keywords[121] := 'shadows';
+ HL.Keywords[122] := 'shared';
+ HL.Keywords[123] := 'short';
+ HL.Keywords[124] := 'single';
+ HL.Keywords[125] := 'static';
+ HL.Keywords[126] := 'step';
+ HL.Keywords[127] := 'stop';
+ HL.Keywords[128] := 'string';
+ HL.Keywords[129] := 'structure';
+ HL.Keywords[130] := 'sub';
+ HL.Keywords[131] := 'synclock';
+ HL.Keywords[132] := 'then';
+ HL.Keywords[133] := 'throw';
+ HL.Keywords[134] := 'to';
+ HL.Keywords[135] := 'true';
+ HL.Keywords[136] := 'try';
+ HL.Keywords[137] := 'trycast';
+ HL.Keywords[138] := 'typeof';
+ HL.Keywords[139] := 'uinteger';
+ HL.Keywords[140] := 'ulong';
+ HL.Keywords[141] := 'ushort';
+ HL.Keywords[142] := 'using';
+ HL.Keywords[143] := 'variant';
+ HL.Keywords[144] := 'wend';
+ HL.Keywords[145] := 'when';
+ HL.Keywords[146] := 'while';
+ HL.Keywords[147] := 'widening';
+ HL.Keywords[148] := 'with';
+ HL.Keywords[149] := 'withevents';
+ HL.Keywords[150] := 'writeonly';
+ HL.Keywords[151] := 'xor';
+End;
+
+{ --- Initialiser le moteur de coloration VB.NET --- }
+
+Procedure InitVBNetHighlighter(Var HL: TVBNetHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'VB.NET');
+ InitVBNetKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle VB.NET (insensible casse) --- }
+
+Function IsVBNetKeyword(Var HL: TVBNetHighlighter;
+                        Word: String): Boolean;
+Var
+ I: Integer;
+ LW: String;
+Begin
+ IsVBNetKeyword := False;
+ LW := LowerCaseStr(Word);
+ For I := 0 To HL.KeywordCount - 1 Do
+ Begin
+  If LW = HL.Keywords[I] Then
+  Begin
+   IsVBNetKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est un type predefini VB.NET --- }
+
+Function IsVBNetType(Word: String): Boolean;
+Var
+ LW: String;
+Begin
+ LW := LowerCaseStr(Word);
+ IsVBNetType :=
+  (LW = 'boolean') Or (LW = 'byte') Or (LW = 'char') Or
+  (LW = 'date') Or (LW = 'decimal') Or (LW = 'double') Or
+  (LW = 'integer') Or (LW = 'long') Or (LW = 'object') Or
+  (LW = 'sbyte') Or (LW = 'short') Or (LW = 'single') Or
+  (LW = 'string') Or (LW = 'uinteger') Or (LW = 'ulong') Or
+  (LW = 'ushort');
+End;
+
+{ --- Classifier un jeton VB.NET (identifier -> keyword/type) --- }
+
+Function ClassifyVBNetToken(Var HL: TVBNetHighlighter;
+                            Line: String;
+                            StartPos, EndPos: Integer): TTokenClass;
+Var
+ Word: String;
+Begin
+ Word := Copy(Line, StartPos, EndPos - StartPos);
+ If IsVBNetType(Word) Then
+  ClassifyVBNetToken := TC_TYPE
+ Else If IsVBNetKeyword(HL, Word) Then
+  ClassifyVBNetToken := TC_KEYWORD
+ Else
+  ClassifyVBNetToken := TC_IDENTIFIER;
+End;
+
+{ --- Obtenir la classe de jeton VB.NET a une position --- }
+
+Function GetVBNetTokenClass(Var HL: TVBNetHighlighter;
+                            Line: String;
+                            Var Pos: Integer): TTokenClass;
+Var
+ StartPos: Integer;
+ TC: TTokenClass;
+Begin
+ StartPos := Pos;
+ TC := GetTokenClass(HL.Base, Line, Pos);
+ If TC = TC_IDENTIFIER Then
+  GetVBNetTokenClass := ClassifyVBNetToken(HL, Line, StartPos, Pos)
+ Else
+  GetVBNetTokenClass := TC;
+End;
+
+{ --- Colorier une ligne VB.NET entiere --- }
+
+Procedure HighlightVBNetLine(Var HL: TVBNetHighlighter;
+                             Line: String;
+                             Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetVBNetTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ --- Obtenir le nom d un type de jeton VB.NET --- }
+
+Function VBNetTokenClassName(TC: TTokenClass): String;
+Begin
+ VBNetTokenClassName := TokenClassName(TC);
+End;
+
+{ --- Compter les mots-cles VB.NET --- }
+
+Function CountVBNetKeywords(Var HL: TVBNetHighlighter): Integer;
+Begin
+ CountVBNetKeywords := HL.KeywordCount;
+End;
+
+{ --- Verifier si un mot est une directive preprocesseur VB.NET --- }
+
+Function IsVBNetPreprocessorDirective(Word: String): Boolean;
+Var
+ LW: String;
+Begin
+ LW := LowerCaseStr(Word);
+ IsVBNetPreprocessorDirective :=
+  (LW = 'if') Or (LW = 'else') Or (LW = 'elseif') Or
+  (LW = 'end') Or (LW = 'const') Or (LW = 'region') Or
+  (LW = 'externalchecksum') Or (LW = 'externalsource');
+End;
+
+{ --- Verifier si un caractere est un operateur VB.NET --- }
+
+Function IsVBNetOperator(Ch: Char): Boolean;
+Begin
+ IsVBNetOperator :=
+  (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+  (Ch = '\') Or (Ch = '^') Or (Ch = '=') Or (Ch = '<') Or
+  (Ch = '>') Or (Ch = '&') Or (Ch = '.') Or (Ch = '!');
+End;
+
+{ --- Verifier si une position est un debut de commentaire VB.NET --- }
+
+Function IsVBNetCommentStart(Line: String; Pos: Integer): Boolean;
+Var
+ LW: String;
+Begin
+ IsVBNetCommentStart := False;
+ If Pos > Length(Line) Then Exit;
+ If Line[Pos] = '''' Then
+ Begin
+  IsVBNetCommentStart := True;
+  Exit;
+ End;
+ If Pos + 2 <= Length(Line) Then
+ Begin
+  LW := LowerCaseStr(Copy(Line, Pos, 3));
+  If LW = 'rem' Then
+  Begin
+   If (Pos + 3 > Length(Line)) Or
+      Not(IsAlphaNumUS(Line[Pos + 3])) Then
+    IsVBNetCommentStart := True;
+  End;
+ End;
+End;
+
+{ --- Verifier si une ligne contient un nombre hexadecimal VB.NET --- }
+
+Function HasVBNetHexLiteral(Line: String): Boolean;
+Var
+ I: Integer;
+ LW: String;
+Begin
+ HasVBNetHexLiteral := False;
+ LW := LowerCaseStr(Line);
+ For I := 1 To Length(LW) - 1 Do
+ Begin
+  If (LW[I] = '&') And (LW[I + 1] = 'h') Then
+  Begin
+   HasVBNetHexLiteral := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si une ligne contient un nombre octal VB.NET --- }
+
+Function HasVBNetOctalLiteral(Line: String): Boolean;
+Var
+ I: Integer;
+ LW: String;
+Begin
+ HasVBNetOctalLiteral := False;
+ LW := LowerCaseStr(Line);
+ For I := 1 To Length(LW) - 1 Do
+ Begin
+  If (LW[I] = '&') And (LW[I + 1] = 'o') Then
+  Begin
+   HasVBNetOctalLiteral := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si une ligne contient un nombre binaire VB.NET --- }
+
+Function HasVBNetBinaryLiteral(Line: String): Boolean;
+Var
+ I: Integer;
+ LW: String;
+Begin
+ HasVBNetBinaryLiteral := False;
+ LW := LowerCaseStr(Line);
+ For I := 1 To Length(LW) - 1 Do
+ Begin
+  If (LW[I] = '&') And (LW[I + 1] = 'b') Then
+  Begin
+   HasVBNetBinaryLiteral := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Compter les classes de jetons VB.NET dans une ligne --- }
+
+Function CountVBNetTokensInLine(Var HL: TVBNetHighlighter;
+                                Line: String): Integer;
+Var
+ Pos, Count: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ Count := 0;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetVBNetTokenClass(HL, Line, Pos);
+  Inc(Count);
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+ CountVBNetTokensInLine := Count;
+End;
+
+{ --- Verifier si une ligne VB.NET contient un commentaire --- }
+
+Function VBNetLineHasComment(Var HL: TVBNetHighlighter;
+                              Line: String): Boolean;
+Var
+ Pos: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ VBNetLineHasComment := False;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetVBNetTokenClass(HL, Line, Pos);
+  If TC = TC_COMMENT Then
+  Begin
+   VBNetLineHasComment := True;
+   Break;
+  End;
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+End;
+
+{ --- Verifier si une ligne VB.NET contient une chaine --- }
+
+Function VBNetLineHasString(Var HL: TVBNetHighlighter;
+                             Line: String): Boolean;
+Var
+ Pos: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ VBNetLineHasString := False;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetVBNetTokenClass(HL, Line, Pos);
+  If TC = TC_STRING Then
+  Begin
+   VBNetLineHasString := True;
+   Break;
+  End;
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+End;
+
+{ --- Verifier si une position contient un guillemet echappe VB.NET --- }
+
+Function IsVBNetEscapedQuote(Line: String; Pos: Integer): Boolean;
+Begin
+ IsVBNetEscapedQuote := False;
+ If (Pos >= 1) And (Pos + 1 <= Length(Line)) Then
+ Begin
+  If (Line[Pos] = '"') And (Line[Pos + 1] = '"') Then
+   IsVBNetEscapedQuote := True;
+ End;
+End;
+
+{ --- Convertir un mot VB.NET en minuscules pour comparaison --- }
+
+Function VBNetLowerCase(Word: String): String;
+Begin
+ VBNetLowerCase := LowerCaseStr(Word);
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -6944,6 +7447,7 @@ BEGIN
  InitWindowManager;
  DrawWindowTabs;
  InitCSharpHighlighter(CSharpHL);
- { Boucle principale a venir (TODO 13+) }
+ InitVBNetHighlighter(VBNetHL);
+ { Boucle principale a venir (TODO 14+) }
  ShutdownGraphics;
 END.

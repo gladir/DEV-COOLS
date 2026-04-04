@@ -162,7 +162,7 @@
             Nombres, attributs [Attribute].
             Directives : #if, #else, #endif, #region, etc.
 
-  TODO 13 - COLORATION SYNTAXIQUE VB.NET [A FAIRE]
+  TODO 13 - COLORATION SYNTAXIQUE VB.NET [IMPLEMENTE]
             TVBNetHighlighter.
             Mots-cles VB.NET (insensible a la casse).
             Commentaires : ' et REM.
