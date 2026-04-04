@@ -532,7 +532,7 @@
             Procedure GenerateLatexDocumentation
               orchestrateur : generer toute la documentation LaTeX
 
-  TODO 14 - GENERATION DE LA DOCUMENTATION RTF [A FAIRE]
+  TODO 14 - GENERATION DE LA DOCUMENTATION RTF [IMPLEMENTE]
             Variables globales :
               RtfOutputDir   : String  (repertoire de sortie RTF)
               RtfStylesheet  : String  (fichier de styles RTF)
@@ -936,6 +936,16 @@ Const
   LATEX_DEFAULT_CMD    = 'pdflatex';
   LATEX_DEFAULT_PAPER  = 'a4';
 
+  { Constantes pour la generation RTF (TODO 14) }
+  RTF_MAIN_FILE       = 'refman.rtf';
+  RTF_CHARSET_ANSI    = 'ansi';
+  RTF_FONT_ARIAL      = 'Arial';
+  RTF_FONT_COURIER    = 'Courier New';
+  RTF_FONT_TIMES      = 'Times New Roman';
+  RTF_DEFAULT_FONTSIZE = 20;  { En demi-points (10pt = 20) }
+  RTF_TITLE_FONTSIZE  = 48;   { 24pt }
+  RTF_HEADING_FONTSIZE = 28;  { 14pt }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1177,6 +1187,14 @@ Var
   LatexProjectName : String;
   LatexProjectBrief: String;
   LatexInitialized : Boolean;
+
+  { Variables pour la generation RTF (TODO 14) }
+  RtfOutputDir    : String;
+  RtfStylesheet   : String;
+  RtfExtensions   : String;
+  RtfProjectName  : String;
+  RtfProjectBrief : String;
+  RtfInitialized  : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -7562,8 +7580,8 @@ Begin
   
   { Informations sur l entite }
   WriteLn(OutFile, '\subsection{Description}');
-  If Entity.Brief <> '' Then
-    WriteLn(OutFile, EscapeLatex(Entity.Brief))
+  If Entity.BriefDesc <> '' Then
+    WriteLn(OutFile, EscapeLatex(Entity.BriefDesc))
   Else
     WriteLn(OutFile, 'Aucune description.');
   WriteLn(OutFile);
@@ -7573,46 +7591,42 @@ Begin
   WriteLn(OutFile, '\item \textbf{Type:} ', EntityKindToStr(Entity.Kind));
   If Entity.FileName <> '' Then
     WriteLn(OutFile, '\item \textbf{Fichier:} \texttt{', EscapeLatex(Entity.FileName), '}');
-  If Entity.LineNumber > 0 Then
-    WriteLn(OutFile, '\item \textbf{Ligne:} ', Entity.LineNumber);
+  If Entity.Line > 0 Then
+    WriteLn(OutFile, '\item \textbf{Ligne:} ', Entity.Line);
   WriteLn(OutFile, '\end{itemize}');
   WriteLn(OutFile);
   
   { Description detaillee }
-  If Entity.Description <> '' Then
+  If Entity.DetailedDesc <> '' Then
   Begin
     WriteLn(OutFile, '\subsection{Details}');
-    WriteLn(OutFile, EscapeLatex(Entity.Description));
+    WriteLn(OutFile, EscapeLatex(Entity.DetailedDesc));
     WriteLn(OutFile);
   End;
   
-  { Code source si disponible }
-  If Entity.Prototype <> '' Then
+  { Signature si disponible }
+  If Entity.Signature <> '' Then
   Begin
     WriteLn(OutFile, '\subsection{Prototype}');
     WriteLn(OutFile, '\begin{lstlisting}');
-    WriteLn(OutFile, Entity.Prototype);
+    WriteLn(OutFile, Entity.Signature);
     WriteLn(OutFile, '\end{lstlisting}');
     WriteLn(OutFile);
   End;
   
   { Parametres }
-  If Entity.ParamCount > 0 Then
+  If Entity.Parameters <> '' Then
   Begin
     WriteLn(OutFile, '\subsection{Parametres}');
-    WriteLn(OutFile, '\begin{description}');
-    For I := 1 To Entity.ParamCount Do
-      WriteLn(OutFile, '\item[\texttt{', EscapeLatex(Entity.Params[I].Name), 
-              '}] ', EscapeLatex(Entity.Params[I].Description));
-    WriteLn(OutFile, '\end{description}');
+    WriteLn(OutFile, EscapeLatex(Entity.Parameters));
     WriteLn(OutFile);
   End;
   
-  { Valeur de retour }
-  If Entity.ReturnValue <> '' Then
+  { Type de retour }
+  If Entity.ReturnType <> '' Then
   Begin
-    WriteLn(OutFile, '\subsection{Valeur de retour}');
-    WriteLn(OutFile, EscapeLatex(Entity.ReturnValue));
+    WriteLn(OutFile, '\subsection{Type de retour}');
+    WriteLn(OutFile, '\texttt{', EscapeLatex(Entity.ReturnType), '}');
     WriteLn(OutFile);
   End;
 End;
@@ -7672,7 +7686,7 @@ Begin
   Count := 0;
   For I := 1 To EntityCount Do
   Begin
-    If Entities[I].Kind In [EK_CLASS, EK_STRUCT, EK_UNION, EK_INTERFACE] Then
+    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_UNION, ENT_INTERFACE] Then
     Begin
       GenerateLatexFile(Entities[I], OutFile);
       Inc(Count);
@@ -7696,7 +7710,7 @@ Begin
   Count := 0;
   For I := 1 To EntityCount Do
   Begin
-    If Entities[I].Kind = EK_FILE Then
+    If Entities[I].Kind = ENT_FILE Then
     Begin
       GenerateLatexFile(Entities[I], OutFile);
       Inc(Count);
@@ -7714,7 +7728,7 @@ Begin
   Count := 0;
   For I := 1 To EntityCount Do
   Begin
-    If Entities[I].Kind = EK_FUNCTION Then
+    If Entities[I].Kind = ENT_FUNCTION Then
     Begin
       GenerateLatexFile(Entities[I], OutFile);
       Inc(Count);
@@ -7937,6 +7951,331 @@ Function IsLatexEmpty: Boolean;
 { Verifie si le generateur LaTeX est vide }
 Begin
   IsLatexEmpty := (EntityCount = 0);
+End;
+
+{ ============================================================
+  TODO 14 - GENERATION DE LA DOCUMENTATION RTF
+  ============================================================ }
+
+Procedure InitRtfGenerator;
+{ Initialise le generateur RTF }
+Begin
+  If GetConfigValue('RTF_OUTPUT') <> '' Then
+    RtfOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + GetConfigValue('RTF_OUTPUT') + '/'
+  Else
+    RtfOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + 'rtf/';
+  
+  RtfStylesheet := GetConfigValue('RTF_STYLESHEET_FILE');
+  RtfExtensions := GetConfigValue('RTF_EXTENSIONS');
+  RtfProjectName := GetConfigValue('PROJECT_NAME');
+  If RtfProjectName = '' Then
+    RtfProjectName := 'Documentation';
+  RtfProjectBrief := GetConfigValue('PROJECT_BRIEF');
+  
+  { Creer le repertoire de sortie }
+  {$I-}
+  MkDir(RtfOutputDir);
+  {$I+}
+  If IOResult <> 0 Then; { Ignorer si existe deja }
+  
+  RtfInitialized := True;
+End;
+
+Function EscapeRtf(Const S: String): String;
+{ Echappe les caracteres speciaux RTF }
+Var
+  I: Integer;
+  R: String;
+  C: Char;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    C := S[I];
+    Case C Of
+      '\': R := R + '\\';
+      '{': R := R + '\{';
+      '}': R := R + '\}';
+      #10: R := R + '\line ';
+      #13: ; { Ignorer CR }
+    Else
+      If Ord(C) > 127 Then
+        R := R + '\''' + IntToStr(Ord(C))
+      Else
+        R := R + C;
+    End;
+  End;
+  EscapeRtf := R;
+End;
+
+Procedure WriteRtfHeader(Var OutFile: Text);
+{ Ecrit l entete RTF avec les polices et styles }
+Begin
+  WriteLn(OutFile, '{\rtf1\ansi\ansicpg1252\deff0\deflang1033');
+  WriteLn(OutFile, '{\fonttbl');
+  WriteLn(OutFile, '{\f0\fswiss\fcharset0 ', RTF_FONT_ARIAL, ';}');
+  WriteLn(OutFile, '{\f1\fmodern\fcharset0 ', RTF_FONT_COURIER, ';}');
+  WriteLn(OutFile, '{\f2\froman\fcharset0 ', RTF_FONT_TIMES, ';}');
+  WriteLn(OutFile, '}');
+  WriteLn(OutFile, '{\colortbl;');
+  WriteLn(OutFile, '\red0\green0\blue0;');       { Noir }
+  WriteLn(OutFile, '\red0\green0\blue128;');     { Bleu fonce }
+  WriteLn(OutFile, '\red0\green128\blue0;');     { Vert }
+  WriteLn(OutFile, '\red128\green0\blue0;');     { Rouge fonce }
+  WriteLn(OutFile, '\red128\green128\blue128;'); { Gris }
+  WriteLn(OutFile, '}');
+  WriteLn(OutFile, '{\stylesheet');
+  WriteLn(OutFile, '{\s0 \fs', RTF_DEFAULT_FONTSIZE, ' Normal;}');
+  WriteLn(OutFile, '{\s1 \fs', RTF_TITLE_FONTSIZE, '\b Title;}');
+  WriteLn(OutFile, '{\s2 \fs', RTF_HEADING_FONTSIZE, '\b Heading 1;}');
+  WriteLn(OutFile, '{\s3 \fs24\b Heading 2;}');
+  WriteLn(OutFile, '{\s4 \f1\fs18 Code;}');
+  WriteLn(OutFile, '}');
+  WriteLn(OutFile);
+End;
+
+Procedure WriteRtfFooter(Var OutFile: Text);
+{ Ecrit la fin du document RTF }
+Begin
+  WriteLn(OutFile);
+  WriteLn(OutFile, '\par');
+  WriteLn(OutFile, '\pard\fs', RTF_DEFAULT_FONTSIZE);
+  WriteLn(OutFile, '\par\par');
+  WriteLn(OutFile, '{\i Documentation generee par DOXYGEN (DEV-COOLS)}');
+  WriteLn(OutFile, '}');
+End;
+
+Procedure GenerateRtfEntity(Const Entity: TEntity; Var OutFile: Text);
+{ Genere le contenu RTF pour une entite }
+Begin
+  { Titre de l entite }
+  WriteLn(OutFile, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b ', 
+          EscapeRtf(Entity.Name), '\b0\par');
+  WriteLn(OutFile);
+  
+  { Description breve }
+  If Entity.BriefDesc <> '' Then
+  Begin
+    WriteLn(OutFile, '\pard\fs', RTF_DEFAULT_FONTSIZE);
+    WriteLn(OutFile, EscapeRtf(Entity.BriefDesc));
+    WriteLn(OutFile, '\par\par');
+  End;
+  
+  { Type d entite }
+  WriteLn(OutFile, '\pard\fs', RTF_DEFAULT_FONTSIZE);
+  WriteLn(OutFile, '\b Type:\b0  ', EntityKindToStr(Entity.Kind), '\par');
+  If Entity.FileName <> '' Then
+    WriteLn(OutFile, '\b Fichier:\b0  {\f1 ', EscapeRtf(Entity.FileName), '}\par');
+  If Entity.Line > 0 Then
+    WriteLn(OutFile, '\b Ligne:\b0  ', Entity.Line, '\par');
+  WriteLn(OutFile, '\par');
+  
+  { Description detaillee }
+  If Entity.DetailedDesc <> '' Then
+  Begin
+    WriteLn(OutFile, '\pard\s3\fs24\b Details\b0\par');
+    WriteLn(OutFile, '\pard\fs', RTF_DEFAULT_FONTSIZE);
+    WriteLn(OutFile, EscapeRtf(Entity.DetailedDesc));
+    WriteLn(OutFile, '\par\par');
+  End;
+  
+  { Signature }
+  If Entity.Signature <> '' Then
+  Begin
+    WriteLn(OutFile, '\pard\s3\fs24\b Prototype\b0\par');
+    WriteLn(OutFile, '\pard\s4\f1\fs18');
+    WriteLn(OutFile, EscapeRtf(Entity.Signature));
+    WriteLn(OutFile, '\f0\par\par');
+  End;
+  
+  { Parametres }
+  If Entity.Parameters <> '' Then
+  Begin
+    WriteLn(OutFile, '\pard\s3\fs24\b Parametres\b0\par');
+    WriteLn(OutFile, '\pard\fs', RTF_DEFAULT_FONTSIZE);
+    WriteLn(OutFile, EscapeRtf(Entity.Parameters));
+    WriteLn(OutFile, '\par\par');
+  End;
+  
+  { Type de retour }
+  If Entity.ReturnType <> '' Then
+  Begin
+    WriteLn(OutFile, '\pard\s3\fs24\b Type de retour\b0\par');
+    WriteLn(OutFile, '\pard\fs', RTF_DEFAULT_FONTSIZE);
+    WriteLn(OutFile, '{\f1 ', EscapeRtf(Entity.ReturnType), '}\par\par');
+  End;
+  
+  { Separateur }
+  WriteLn(OutFile, '\pard\brdrb\brdrs\brdrw10\brsp20\par');
+  WriteLn(OutFile);
+End;
+
+Procedure GenerateRtfDocumentation;
+{ Orchestrateur : genere la documentation RTF complete }
+Var
+  F: Text;
+  I: Integer;
+  ClassCount, FileCount, FuncCount: Integer;
+Begin
+  If Not RtfInitialized Then
+    InitRtfGenerator;
+  
+  { Ouvrir le fichier principal }
+  Assign(F, RtfOutputDir + RTF_MAIN_FILE);
+  Rewrite(F);
+  
+  { Entete }
+  WriteRtfHeader(F);
+  
+  { Page de titre }
+  WriteLn(F, '\pard\qc\s1\fs', RTF_TITLE_FONTSIZE, '\b');
+  WriteLn(F, EscapeRtf(RtfProjectName));
+  WriteLn(F, '\b0\par\par');
+  If RtfProjectBrief <> '' Then
+  Begin
+    WriteLn(F, '\fs', RTF_DEFAULT_FONTSIZE);
+    WriteLn(F, EscapeRtf(RtfProjectBrief));
+    WriteLn(F, '\par');
+  End;
+  WriteLn(F, '\pard\ql\par');
+  WriteLn(F, '\page');
+  
+  { Table des matieres }
+  WriteLn(F, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b Table des matieres\b0\par\par');
+  WriteLn(F, '\pard\fs', RTF_DEFAULT_FONTSIZE);
+  WriteLn(F, '1. Classes et structures\par');
+  WriteLn(F, '2. Fichiers\par');
+  WriteLn(F, '3. Fonctions\par');
+  WriteLn(F, '\page');
+  
+  { Section Classes et structures }
+  WriteLn(F, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b 1. Classes et structures\b0\par\par');
+  ClassCount := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_UNION, ENT_INTERFACE] Then
+    Begin
+      GenerateRtfEntity(Entities[I], F);
+      Inc(ClassCount);
+    End;
+  End;
+  If ClassCount = 0 Then
+  Begin
+    WriteLn(F, '\pard\fs', RTF_DEFAULT_FONTSIZE);
+    WriteLn(F, 'Aucune classe ou structure documentee.\par');
+  End;
+  WriteLn(F, '\page');
+  
+  { Section Fichiers }
+  WriteLn(F, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b 2. Fichiers\b0\par\par');
+  FileCount := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = ENT_FILE Then
+    Begin
+      GenerateRtfEntity(Entities[I], F);
+      Inc(FileCount);
+    End;
+  End;
+  If FileCount = 0 Then
+  Begin
+    WriteLn(F, '\pard\fs', RTF_DEFAULT_FONTSIZE);
+    WriteLn(F, 'Aucun fichier documente.\par');
+  End;
+  WriteLn(F, '\page');
+  
+  { Section Fonctions }
+  WriteLn(F, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b 3. Fonctions\b0\par\par');
+  FuncCount := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = ENT_FUNCTION Then
+    Begin
+      GenerateRtfEntity(Entities[I], F);
+      Inc(FuncCount);
+    End;
+  End;
+  If FuncCount = 0 Then
+  Begin
+    WriteLn(F, '\pard\fs', RTF_DEFAULT_FONTSIZE);
+    WriteLn(F, 'Aucune fonction documentee.\par');
+  End;
+  
+  { Pied de page }
+  WriteRtfFooter(F);
+  
+  Close(F);
+  
+  WriteLn('Documentation RTF generee dans: ', RtfOutputDir + RTF_MAIN_FILE);
+End;
+
+{ Fonctions accesseurs pour RTF }
+
+Function GetRtfOutputDir: String;
+Begin
+  GetRtfOutputDir := RtfOutputDir;
+End;
+
+Procedure SetRtfOutputDir(Const Dir: String);
+Begin
+  RtfOutputDir := Dir;
+End;
+
+Function GetRtfProjectName: String;
+Begin
+  GetRtfProjectName := RtfProjectName;
+End;
+
+Procedure SetRtfProjectName(Const Name: String);
+Begin
+  RtfProjectName := Name;
+End;
+
+Function GetRtfProjectBrief: String;
+Begin
+  GetRtfProjectBrief := RtfProjectBrief;
+End;
+
+Procedure SetRtfProjectBrief(Const Brief: String);
+Begin
+  RtfProjectBrief := Brief;
+End;
+
+Function IsRtfInitialized: Boolean;
+Begin
+  IsRtfInitialized := RtfInitialized;
+End;
+
+Function GetRtfStylesheet: String;
+Begin
+  GetRtfStylesheet := RtfStylesheet;
+End;
+
+Procedure SetRtfStylesheet(Const Stylesheet: String);
+Begin
+  RtfStylesheet := Stylesheet;
+End;
+
+Function GetRtfExtensions: String;
+Begin
+  GetRtfExtensions := RtfExtensions;
+End;
+
+Procedure SetRtfExtensions(Const Extensions: String);
+Begin
+  RtfExtensions := Extensions;
+End;
+
+Function CountRtfFiles: Integer;
+{ Compte le nombre de fichiers RTF a generer }
+Begin
+  CountRtfFiles := 1; { Un seul fichier: refman.rtf }
+End;
+
+Function IsRtfEmpty: Boolean;
+{ Verifie si le generateur RTF est vide }
+Begin
+  IsRtfEmpty := (EntityCount = 0);
 End;
 
 { ============================================================
