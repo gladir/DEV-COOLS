@@ -78,11 +78,13 @@ Type
   Key:String[64];
   Value:String[255];
  End;
- { Type pour les tableaux associatifs }
+ { Type pour les tableaux associatifs - liste chainee }
+ PAssocArray=^TAssocArray;
  TAssocArray=Record
   Name:String[32];
   Elements:Array[1..MaxArrayElements]of TArrayElement;
   Count:Integer;
+  Next:PAssocArray;         { Noeud suivant dans la liste chainee }
  End;
  { Type pour les regles pattern-action }
  TRuleKind=(RK_BEGIN,RK_END,RK_REGEX,RK_EXPR,RK_ALL);
@@ -123,9 +125,9 @@ Var
  BreakFlag:Boolean;
  ContinueFlag:Boolean;
  LoopDepth:Integer;
- { Variables pour les tableaux associatifs }
- AssocArrays:Array[1..MaxArrays]of TAssocArray;
- AssocArrayCount:Integer;
+ { Variables pour les tableaux associatifs - liste chainee sans limite }
+ AssocArrayList:PAssocArray;  { Tete de la liste }
+ AssocArrayLast:PAssocArray;  { Queue de la liste (insertion rapide) }
  { Variables pour les regles pattern-action }
  Rules:Array[1..MaxRules]of TRule;
  RuleCount:Integer;
@@ -997,42 +999,51 @@ End;
 
 { === Fonctions pour les tableaux associatifs === }
 
-Function FindArray(ArrayName:String):Integer;
+Function FindArray(ArrayName:String):PAssocArray;
 Var
- J:Integer;
+ P:PAssocArray;
  UpperName:String;
 Begin
- FindArray:=0;
+ FindArray:=nil;
  UpperName:=StrToUpper(ArrayName);
- For J:=1 to AssocArrayCount do Begin
-  If StrToUpper(AssocArrays[J].Name)=UpperName Then Begin
-   FindArray:=J;
+ P:=AssocArrayList;
+ While P<>nil do Begin
+  If StrToUpper(P^.Name)=UpperName Then Begin
+   FindArray:=P;
    Exit;
   End;
+  P:=P^.Next;
  End;
 End;
 
-Function CreateArray(ArrayName:String):Integer;
+Function CreateArray(ArrayName:String):PAssocArray;
+Var
+ P:PAssocArray;
 Begin
- If AssocArrayCount>=MaxArrays Then Begin
-  WriteLn('Trop de tableaux');
-  CreateArray:=0;
-  Exit;
+ New(P);
+ P^.Name:=ArrayName;
+ P^.Count:=0;
+ P^.Next:=nil;
+ If AssocArrayLast=nil Then Begin
+  AssocArrayList:=P;
+  AssocArrayLast:=P;
+ End
+  Else
+ Begin
+  AssocArrayLast^.Next:=P;
+  AssocArrayLast:=P;
  End;
- Inc(AssocArrayCount);
- AssocArrays[AssocArrayCount].Name:=ArrayName;
- AssocArrays[AssocArrayCount].Count:=0;
- CreateArray:=AssocArrayCount;
+ CreateArray:=P;
 End;
 
-Function FindArrayElement(ArrayIdx:Integer;Key:String):Integer;
+Function FindArrayElement(ArrayPtr:PAssocArray;Key:String):Integer;
 Var
  J:Integer;
 Begin
  FindArrayElement:=0;
- If(ArrayIdx<1)or(ArrayIdx>AssocArrayCount)Then Exit;
- For J:=1 to AssocArrays[ArrayIdx].Count do Begin
-  If AssocArrays[ArrayIdx].Elements[J].Key=Key Then Begin
+ If ArrayPtr=nil Then Exit;
+ For J:=1 to ArrayPtr^.Count do Begin
+  If ArrayPtr^.Elements[J].Key=Key Then Begin
    FindArrayElement:=J;
    Exit;
   End;
@@ -1041,68 +1052,72 @@ End;
 
 Procedure SetArrayElement(ArrayName,Key,Value:String);
 Var
- ArrayIdx,ElemIdx:Integer;
+ ArrayPtr:PAssocArray;
+ ElemIdx:Integer;
 Begin
- ArrayIdx:=FindArray(ArrayName);
- If ArrayIdx=0 Then ArrayIdx:=CreateArray(ArrayName);
- If ArrayIdx=0 Then Exit;
+ ArrayPtr:=FindArray(ArrayName);
+ If ArrayPtr=nil Then ArrayPtr:=CreateArray(ArrayName);
+ If ArrayPtr=nil Then Exit;
  
- ElemIdx:=FindArrayElement(ArrayIdx,Key);
+ ElemIdx:=FindArrayElement(ArrayPtr,Key);
  If ElemIdx>0 Then Begin
-  AssocArrays[ArrayIdx].Elements[ElemIdx].Value:=Value;
+  ArrayPtr^.Elements[ElemIdx].Value:=Value;
  End
   Else
  Begin
-  If AssocArrays[ArrayIdx].Count>=MaxArrayElements Then Begin
+  If ArrayPtr^.Count>=MaxArrayElements Then Begin
    WriteLn('Trop d''elements dans le tableau');
    Exit;
   End;
-  Inc(AssocArrays[ArrayIdx].Count);
-  ElemIdx:=AssocArrays[ArrayIdx].Count;
-  AssocArrays[ArrayIdx].Elements[ElemIdx].Key:=Key;
-  AssocArrays[ArrayIdx].Elements[ElemIdx].Value:=Value;
+  Inc(ArrayPtr^.Count);
+  ElemIdx:=ArrayPtr^.Count;
+  ArrayPtr^.Elements[ElemIdx].Key:=Key;
+  ArrayPtr^.Elements[ElemIdx].Value:=Value;
  End;
 End;
 
 Function GetArrayElement(ArrayName,Key:String):String;
 Var
- ArrayIdx,ElemIdx:Integer;
+ ArrayPtr:PAssocArray;
+ ElemIdx:Integer;
 Begin
  GetArrayElement:='';
- ArrayIdx:=FindArray(ArrayName);
- If ArrayIdx=0 Then Exit;
+ ArrayPtr:=FindArray(ArrayName);
+ If ArrayPtr=nil Then Exit;
  
- ElemIdx:=FindArrayElement(ArrayIdx,Key);
+ ElemIdx:=FindArrayElement(ArrayPtr,Key);
  If ElemIdx>0 Then
-  GetArrayElement:=AssocArrays[ArrayIdx].Elements[ElemIdx].Value;
+  GetArrayElement:=ArrayPtr^.Elements[ElemIdx].Value;
 End;
 
 Function KeyInArray(ArrayName,Key:String):Boolean;
 Var
- ArrayIdx,ElemIdx:Integer;
+ ArrayPtr:PAssocArray;
+ ElemIdx:Integer;
 Begin
  KeyInArray:=False;
- ArrayIdx:=FindArray(ArrayName);
- If ArrayIdx=0 Then Exit;
+ ArrayPtr:=FindArray(ArrayName);
+ If ArrayPtr=nil Then Exit;
  
- ElemIdx:=FindArrayElement(ArrayIdx,Key);
+ ElemIdx:=FindArrayElement(ArrayPtr,Key);
  KeyInArray:=(ElemIdx>0);
 End;
 
 Procedure DeleteArrayElement(ArrayName,Key:String);
 Var
- ArrayIdx,ElemIdx,J:Integer;
+ ArrayPtr:PAssocArray;
+ ElemIdx,J:Integer;
 Begin
- ArrayIdx:=FindArray(ArrayName);
- If ArrayIdx=0 Then Exit;
+ ArrayPtr:=FindArray(ArrayName);
+ If ArrayPtr=nil Then Exit;
  
- ElemIdx:=FindArrayElement(ArrayIdx,Key);
+ ElemIdx:=FindArrayElement(ArrayPtr,Key);
  If ElemIdx>0 Then Begin
   { Decaler les elements }
-  For J:=ElemIdx to AssocArrays[ArrayIdx].Count-1 do Begin
-   AssocArrays[ArrayIdx].Elements[J]:=AssocArrays[ArrayIdx].Elements[J+1];
+  For J:=ElemIdx to ArrayPtr^.Count-1 do Begin
+   ArrayPtr^.Elements[J]:=ArrayPtr^.Elements[J+1];
   End;
-  Dec(AssocArrays[ArrayIdx].Count);
+  Dec(ArrayPtr^.Count);
  End;
 End;
 
@@ -3522,7 +3537,8 @@ End;
 { Implementation de la boucle for-in }
 Procedure ForInCommand(IterVar,ArrayName:String);
 Var
- ArrayIdx,ElemIdx:Integer;
+ ArrayPtr:PAssocArray;
+ ElemIdx:Integer;
  BlockStartPos:Integer;
  SaveLinePtr:Integer;
  SaveCurrLine:String;
@@ -3537,8 +3553,8 @@ Begin
  SaveCurrLine:=CurrLine;
  
  { Trouver le tableau }
- ArrayIdx:=FindArray(ArrayName);
- If ArrayIdx=0 Then Begin
+ ArrayPtr:=FindArray(ArrayName);
+ If ArrayPtr=nil Then Begin
   { Tableau vide ou inexistant - sauter le bloc }
   SkipBlock;
   Dec(LoopDepth);
@@ -3546,16 +3562,16 @@ Begin
  End;
  
  { Iterer sur chaque element }
- For ElemIdx:=1 to AssocArrays[ArrayIdx].Count do Begin
+ For ElemIdx:=1 to ArrayPtr^.Count do Begin
   { Reinitialiser les flags }
   ContinueFlag:=False;
   
   { Assigner la cle a la variable d'iteration }
   If VariableExist(IterVar)Then Begin
-   SetVariableString(IterVar,AssocArrays[ArrayIdx].Elements[ElemIdx].Key);
+   SetVariableString(IterVar,ArrayPtr^.Elements[ElemIdx].Key);
   End
    Else
-  AddVariableString(IterVar,AssocArrays[ArrayIdx].Elements[ElemIdx].Key);
+  AddVariableString(IterVar,ArrayPtr^.Elements[ElemIdx].Key);
   
   { Executer le bloc }
   CurrLinePtr:=SaveLinePtr;
