@@ -503,7 +503,7 @@
             Procedure GenerateHtmlDocumentation
               orchestrateur : generer toute la documentation HTML
 
-  TODO 13 - GENERATION DE LA DOCUMENTATION LATEX [A FAIRE]
+  TODO 13 - GENERATION DE LA DOCUMENTATION LATEX [IMPLEMENTE]
             Variables globales :
               LatexOutputDir  : String  (repertoire de sortie LaTeX)
               LatexHeader     : String  (preambule LaTeX)
@@ -926,6 +926,16 @@ Const
   HTML_HIERARCHY_FILE = 'hierarchy.html';
   HTML_SEARCH_DIR    = 'search';
 
+  { Constantes pour la generation LaTeX (TODO 13) }
+  LATEX_MAIN_FILE      = 'refman.tex';
+  LATEX_CLASSES_FILE   = 'classes.tex';
+  LATEX_FILES_FILE     = 'files.tex';
+  LATEX_INDEX_FILE     = 'index.tex';
+  LATEX_HIERARCHY_FILE = 'hierarchy.tex';
+  LATEX_MAKEFILE       = 'Makefile';
+  LATEX_DEFAULT_CMD    = 'pdflatex';
+  LATEX_DEFAULT_PAPER  = 'a4';
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1156,6 +1166,17 @@ Var
   HtmlProjectBrief : String;
   HtmlTimestamp    : String;
   HtmlInitialized  : Boolean;
+
+  { Variables pour la generation LaTeX (TODO 13) }
+  LatexOutputDir   : String;
+  LatexHeader      : String;
+  LatexFooter      : String;
+  LatexCmdName     : String;
+  LatexCompactMode : Boolean;
+  LatexPaperType   : String;
+  LatexProjectName : String;
+  LatexProjectBrief: String;
+  LatexInitialized : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -7447,6 +7468,475 @@ End;
 Procedure SetHtmlFooterTemplate(Const Footer: String);
 Begin
   HtmlFooter := Footer;
+End;
+
+{ ============================================================
+  TODO 13 - GENERATION DE LA DOCUMENTATION LATEX
+  ============================================================ }
+
+Function EscapeLatex(Const S: String): String;
+{ Echappe les caracteres speciaux LaTeX }
+Var
+  I: Integer;
+  R: String;
+  C: Char;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    C := S[I];
+    Case C Of
+      '\': R := R + '\textbackslash{}';
+      '{': R := R + '\{';
+      '}': R := R + '\}';
+      '$': R := R + '\$';
+      '&': R := R + '\&';
+      '%': R := R + '\%';
+      '#': R := R + '\#';
+      '_': R := R + '\_';
+      '^': R := R + '\textasciicircum{}';
+      '~': R := R + '\textasciitilde{}';
+      '<': R := R + '\textless{}';
+      '>': R := R + '\textgreater{}';
+      '|': R := R + '\textbar{}';
+    Else
+      R := R + C;
+    End;
+  End;
+  EscapeLatex := R;
+End;
+
+Procedure InitLatexGenerator;
+{ Initialise le generateur LaTeX }
+Begin
+  LatexOutputDir := GetConfigValue('OUTPUT_DIRECTORY');
+  If LatexOutputDir = '' Then
+    LatexOutputDir := 'latex';
+  If LatexOutputDir[Length(LatexOutputDir)] <> '/' Then
+    LatexOutputDir := LatexOutputDir + '/';
+  LatexOutputDir := LatexOutputDir + 'latex/';
+  
+  LatexProjectName := GetConfigValue('PROJECT_NAME');
+  If LatexProjectName = '' Then
+    LatexProjectName := 'Documentation';
+  
+  LatexProjectBrief := GetConfigValue('PROJECT_BRIEF');
+  
+  LatexCmdName := GetConfigValue('LATEX_CMD_NAME');
+  If LatexCmdName = '' Then
+    LatexCmdName := LATEX_DEFAULT_CMD;
+  
+  LatexPaperType := GetConfigValue('PAPER_TYPE');
+  If LatexPaperType = '' Then
+    LatexPaperType := LATEX_DEFAULT_PAPER;
+  
+  LatexCompactMode := (UpStr(GetConfigValue('COMPACT_LATEX')) = 'YES');
+  
+  { Preambule LaTeX par defaut }
+  LatexHeader := '\documentclass[' + LatexPaperType + 'paper]{article}' + Chr(10);
+  LatexHeader := LatexHeader + '\usepackage[utf8]{inputenc}' + Chr(10);
+  LatexHeader := LatexHeader + '\usepackage[T1]{fontenc}' + Chr(10);
+  LatexHeader := LatexHeader + '\usepackage{graphicx}' + Chr(10);
+  LatexHeader := LatexHeader + '\usepackage{hyperref}' + Chr(10);
+  LatexHeader := LatexHeader + '\usepackage{listings}' + Chr(10);
+  LatexHeader := LatexHeader + '\usepackage{color}' + Chr(10);
+  LatexHeader := LatexHeader + '\usepackage{fancyhdr}' + Chr(10);
+  LatexHeader := LatexHeader + '\pagestyle{fancy}' + Chr(10);
+  LatexHeader := LatexHeader + '\lstset{basicstyle=\ttfamily\small,breaklines=true}' + Chr(10);
+  
+  { Fin du document }
+  LatexFooter := '\end{document}' + Chr(10);
+  
+  LatexInitialized := True;
+  InfoMsg('Generateur LaTeX initialise');
+End;
+
+Procedure GenerateLatexFile(Const Entity: TEntity; Var OutFile: Text);
+{ Genere la section LaTeX pour une entite }
+Var
+  I: Integer;
+Begin
+  WriteLn(OutFile, '\section{', EscapeLatex(Entity.Name), '}');
+  WriteLn(OutFile, '\label{', Entity.Name, '}');
+  WriteLn(OutFile);
+  
+  { Informations sur l entite }
+  WriteLn(OutFile, '\subsection{Description}');
+  If Entity.Brief <> '' Then
+    WriteLn(OutFile, EscapeLatex(Entity.Brief))
+  Else
+    WriteLn(OutFile, 'Aucune description.');
+  WriteLn(OutFile);
+  
+  { Type d entite }
+  WriteLn(OutFile, '\begin{itemize}');
+  WriteLn(OutFile, '\item \textbf{Type:} ', EntityKindToStr(Entity.Kind));
+  If Entity.FileName <> '' Then
+    WriteLn(OutFile, '\item \textbf{Fichier:} \texttt{', EscapeLatex(Entity.FileName), '}');
+  If Entity.LineNumber > 0 Then
+    WriteLn(OutFile, '\item \textbf{Ligne:} ', Entity.LineNumber);
+  WriteLn(OutFile, '\end{itemize}');
+  WriteLn(OutFile);
+  
+  { Description detaillee }
+  If Entity.Description <> '' Then
+  Begin
+    WriteLn(OutFile, '\subsection{Details}');
+    WriteLn(OutFile, EscapeLatex(Entity.Description));
+    WriteLn(OutFile);
+  End;
+  
+  { Code source si disponible }
+  If Entity.Prototype <> '' Then
+  Begin
+    WriteLn(OutFile, '\subsection{Prototype}');
+    WriteLn(OutFile, '\begin{lstlisting}');
+    WriteLn(OutFile, Entity.Prototype);
+    WriteLn(OutFile, '\end{lstlisting}');
+    WriteLn(OutFile);
+  End;
+  
+  { Parametres }
+  If Entity.ParamCount > 0 Then
+  Begin
+    WriteLn(OutFile, '\subsection{Parametres}');
+    WriteLn(OutFile, '\begin{description}');
+    For I := 1 To Entity.ParamCount Do
+      WriteLn(OutFile, '\item[\texttt{', EscapeLatex(Entity.Params[I].Name), 
+              '}] ', EscapeLatex(Entity.Params[I].Description));
+    WriteLn(OutFile, '\end{description}');
+    WriteLn(OutFile);
+  End;
+  
+  { Valeur de retour }
+  If Entity.ReturnValue <> '' Then
+  Begin
+    WriteLn(OutFile, '\subsection{Valeur de retour}');
+    WriteLn(OutFile, EscapeLatex(Entity.ReturnValue));
+    WriteLn(OutFile);
+  End;
+End;
+
+Procedure GenerateLatexMain(Var OutFile: Text);
+{ Genere le fichier principal refman.tex }
+Var
+  I: Integer;
+Begin
+  { Header LaTeX }
+  Write(OutFile, LatexHeader);
+  
+  { Page de titre }
+  WriteLn(OutFile);
+  WriteLn(OutFile, '\title{', EscapeLatex(LatexProjectName), '}');
+  If LatexProjectBrief <> '' Then
+    WriteLn(OutFile, '\author{', EscapeLatex(LatexProjectBrief), '}')
+  Else
+    WriteLn(OutFile, '\author{Documentation generee par DOXYGEN}');
+  WriteLn(OutFile, '\date{\today}');
+  WriteLn(OutFile);
+  WriteLn(OutFile, '\begin{document}');
+  WriteLn(OutFile);
+  WriteLn(OutFile, '\maketitle');
+  WriteLn(OutFile, '\tableofcontents');
+  WriteLn(OutFile, '\newpage');
+  WriteLn(OutFile);
+  
+  { Introduction }
+  WriteLn(OutFile, '\chapter{Introduction}');
+  WriteLn(OutFile, 'Cette documentation a ete generee automatiquement a partir');
+  WriteLn(OutFile, 'des sources du projet ', EscapeLatex(LatexProjectName), '.');
+  WriteLn(OutFile);
+  
+  { Inclure les fichiers generes }
+  WriteLn(OutFile, '\input{', LATEX_CLASSES_FILE, '}');
+  WriteLn(OutFile, '\input{', LATEX_FILES_FILE, '}');
+  WriteLn(OutFile);
+  
+  { Index }
+  WriteLn(OutFile, '\printindex');
+  WriteLn(OutFile);
+  
+  { Footer }
+  Write(OutFile, LatexFooter);
+End;
+
+Procedure GenerateLatexClasses(Var OutFile: Text);
+{ Genere le chapitre des classes }
+Var
+  I: Integer;
+  Count: Integer;
+Begin
+  WriteLn(OutFile, '\chapter{Classes et structures}');
+  WriteLn(OutFile);
+  
+  Count := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [EK_CLASS, EK_STRUCT, EK_UNION, EK_INTERFACE] Then
+    Begin
+      GenerateLatexFile(Entities[I], OutFile);
+      Inc(Count);
+    End;
+  End;
+  
+  If Count = 0 Then
+    WriteLn(OutFile, 'Aucune classe ou structure documentee.');
+  WriteLn(OutFile);
+End;
+
+Procedure GenerateLatexFiles(Var OutFile: Text);
+{ Genere le chapitre des fichiers }
+Var
+  I: Integer;
+  Count: Integer;
+Begin
+  WriteLn(OutFile, '\chapter{Fichiers}');
+  WriteLn(OutFile);
+  
+  Count := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = EK_FILE Then
+    Begin
+      GenerateLatexFile(Entities[I], OutFile);
+      Inc(Count);
+    End;
+  End;
+  
+  If Count = 0 Then
+    WriteLn(OutFile, 'Aucun fichier documente.');
+  WriteLn(OutFile);
+  
+  { Ajouter les fonctions }
+  WriteLn(OutFile, '\chapter{Fonctions}');
+  WriteLn(OutFile);
+  
+  Count := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = EK_FUNCTION Then
+    Begin
+      GenerateLatexFile(Entities[I], OutFile);
+      Inc(Count);
+    End;
+  End;
+  
+  If Count = 0 Then
+    WriteLn(OutFile, 'Aucune fonction documentee.');
+  WriteLn(OutFile);
+End;
+
+Procedure GenerateLatexMakefile;
+{ Genere le Makefile pour compiler le LaTeX }
+Var
+  F: Text;
+Begin
+  Assign(F, LatexOutputDir + LATEX_MAKEFILE);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Impossible de creer le Makefile LaTeX');
+    Exit;
+  End;
+  
+  WriteLn(F, '# Makefile genere par DOXYGEN');
+  WriteLn(F, '# Compilation de la documentation LaTeX');
+  WriteLn(F);
+  WriteLn(F, 'LATEX_CMD = ', LatexCmdName);
+  WriteLn(F, 'MAIN_DOC = ', LATEX_MAIN_FILE);
+  WriteLn(F, 'PDF_FILE = refman.pdf');
+  WriteLn(F);
+  WriteLn(F, 'all: pdf');
+  WriteLn(F);
+  WriteLn(F, 'pdf: $(MAIN_DOC)');
+  WriteLn(F, #9, '$(LATEX_CMD) $(MAIN_DOC)');
+  WriteLn(F, #9, '$(LATEX_CMD) $(MAIN_DOC)');
+  WriteLn(F, #9, '@echo "PDF genere: $(PDF_FILE)"');
+  WriteLn(F);
+  WriteLn(F, 'clean:');
+  WriteLn(F, #9, 'rm -f *.aux *.log *.toc *.out *.idx *.ind *.ilg');
+  WriteLn(F);
+  WriteLn(F, 'distclean: clean');
+  WriteLn(F, #9, 'rm -f *.pdf *.dvi');
+  WriteLn(F);
+  WriteLn(F, '.PHONY: all pdf clean distclean');
+  
+  Close(F);
+  InfoMsg('Makefile LaTeX genere');
+End;
+
+Procedure GenerateLatexDocumentation;
+{ Orchestrateur: genere toute la documentation LaTeX }
+Var
+  F: Text;
+Begin
+  WriteLn;
+  WriteLn('Generation de la documentation LaTeX...');
+  WriteLn;
+  
+  If Not LatexInitialized Then
+    InitLatexGenerator;
+  
+  { Creer le repertoire de sortie (simule avec mkdir) }
+  InfoMsg('Repertoire de sortie: ' + LatexOutputDir);
+  
+  { Generer le fichier principal }
+  Assign(F, LatexOutputDir + LATEX_MAIN_FILE);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateLatexMain(F);
+    Close(F);
+    InfoMsg('Document principal genere: ' + LATEX_MAIN_FILE);
+  End
+  Else
+    WarnMsg('Impossible de creer ' + LATEX_MAIN_FILE);
+  
+  { Generer le chapitre des classes }
+  Assign(F, LatexOutputDir + LATEX_CLASSES_FILE);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateLatexClasses(F);
+    Close(F);
+    InfoMsg('Chapitre classes genere: ' + LATEX_CLASSES_FILE);
+  End
+  Else
+    WarnMsg('Impossible de creer ' + LATEX_CLASSES_FILE);
+  
+  { Generer le chapitre des fichiers }
+  Assign(F, LatexOutputDir + LATEX_FILES_FILE);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateLatexFiles(F);
+    Close(F);
+    InfoMsg('Chapitre fichiers genere: ' + LATEX_FILES_FILE);
+  End
+  Else
+    WarnMsg('Impossible de creer ' + LATEX_FILES_FILE);
+  
+  { Generer le Makefile }
+  GenerateLatexMakefile;
+  
+  WriteLn;
+  WriteLn('Generation LaTeX terminee.');
+  WriteLn('  Repertoire: ', LatexOutputDir);
+  WriteLn('  Pour compiler: cd ', LatexOutputDir, ' && make');
+End;
+
+{ Fonctions accesseurs pour le generateur LaTeX }
+
+Function GetLatexOutputDir: String;
+Begin
+  GetLatexOutputDir := LatexOutputDir;
+End;
+
+Procedure SetLatexOutputDir(Const Dir: String);
+Begin
+  LatexOutputDir := Dir;
+  If (Length(LatexOutputDir) > 0) And 
+     (LatexOutputDir[Length(LatexOutputDir)] <> '/') Then
+    LatexOutputDir := LatexOutputDir + '/';
+End;
+
+Function GetLatexProjectName: String;
+Begin
+  GetLatexProjectName := LatexProjectName;
+End;
+
+Procedure SetLatexProjectName(Const Name: String);
+Begin
+  LatexProjectName := Name;
+End;
+
+Function GetLatexProjectBrief: String;
+Begin
+  GetLatexProjectBrief := LatexProjectBrief;
+End;
+
+Procedure SetLatexProjectBrief(Const Brief: String);
+Begin
+  LatexProjectBrief := Brief;
+End;
+
+Function IsLatexInitialized: Boolean;
+Begin
+  IsLatexInitialized := LatexInitialized;
+End;
+
+Function GetLatexCmdName: String;
+Begin
+  GetLatexCmdName := LatexCmdName;
+End;
+
+Procedure SetLatexCmdName(Const Cmd: String);
+Begin
+  LatexCmdName := Cmd;
+End;
+
+Function GetLatexPaperType: String;
+Begin
+  GetLatexPaperType := LatexPaperType;
+End;
+
+Procedure SetLatexPaperType(Const Paper: String);
+Begin
+  LatexPaperType := Paper;
+End;
+
+Function IsLatexCompactMode: Boolean;
+Begin
+  IsLatexCompactMode := LatexCompactMode;
+End;
+
+Procedure SetLatexCompactMode(Compact: Boolean);
+Begin
+  LatexCompactMode := Compact;
+End;
+
+Function GetLatexHeader: String;
+Begin
+  GetLatexHeader := LatexHeader;
+End;
+
+Procedure SetLatexHeader(Const Header: String);
+Begin
+  LatexHeader := Header;
+End;
+
+Function GetLatexFooter: String;
+Begin
+  GetLatexFooter := LatexFooter;
+End;
+
+Procedure SetLatexFooter(Const Footer: String);
+Begin
+  LatexFooter := Footer;
+End;
+
+Function CountLatexFiles: Integer;
+{ Compte le nombre de fichiers LaTeX a generer }
+Var
+  Count: Integer;
+Begin
+  Count := 3; { refman.tex, classes.tex, files.tex }
+  Count := Count + 1; { Makefile }
+  CountLatexFiles := Count;
+End;
+
+Function IsLatexEmpty: Boolean;
+{ Verifie si le generateur LaTeX est vide }
+Begin
+  IsLatexEmpty := (EntityCount = 0);
 End;
 
 { ============================================================
