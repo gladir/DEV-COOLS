@@ -227,7 +227,7 @@
             Separateurs visuels entre groupes de boutons.
             Etat des boutons : normal, survol, appuye, desactive.
 
-  TODO 07 - GESTIONNAIRE DE FENETRES MULTIPLES (MDI) [A FAIRE]
+  TODO 07 - GESTIONNAIRE DE FENETRES MULTIPLES (MDI) [IMPLEMENTE]
             Systeme de fenetres multiples dans la zone d edition.
             TEditorWindow : X, Y, Width, Height, Title, FileName,
               Modified, Buffer, ScrollX, ScrollY, CursorX, CursorY,
@@ -1008,6 +1008,12 @@ Const
  TOOLBTN_HEIGHT        = 24;      { hauteur d un bouton            }
  TOOLSEP_WIDTH         = 8;       { largeur d un separateur        }
 
+ { Onglets de fenetres d edition }
+ TAB_HEIGHT            = 22;      { hauteur d un onglet            }
+ TAB_MAX_WIDTH         = 160;     { largeur max d un onglet        }
+ TAB_CLOSE_SIZE        = 12;      { taille bouton fermeture (X)    }
+ TAB_PADDING           = 8;       { marge interne d un onglet      }
+
  { Dimensions de l interface en pixels }
  TOOLBAR_HEIGHT        = 28;
  MENUBAR_HEIGHT        = 20;
@@ -1235,6 +1241,40 @@ Type
   Height     : Integer;       { hauteur de la barre             }
  End;
 
+ { Fenetre d editeur }
+ PEditorWindow = ^TEditorWindow;
+ TEditorWindow = Record
+  Title      : String[127];   { titre affiche dans l onglet     }
+  FileName   : String[255];   { chemin complet du fichier       }
+  Modified   : Boolean;       { fichier modifie                 }
+  X          : Integer;       { position X dans la zone MDI     }
+  Y          : Integer;       { position Y dans la zone MDI     }
+  Width      : Integer;       { largeur en pixels               }
+  Height     : Integer;       { hauteur en pixels               }
+  ScrollX    : LongInt;       { defilement horizontal           }
+  ScrollY    : LongInt;       { defilement vertical             }
+  CursorX    : LongInt;       { colonne du curseur              }
+  CursorY    : LongInt;       { ligne du curseur                }
+  SelStartX  : LongInt;       { debut de selection (colonne)    }
+  SelStartY  : LongInt;       { debut de selection (ligne)      }
+  SelEndX    : LongInt;       { fin de selection (colonne)      }
+  SelEndY    : LongInt;       { fin de selection (ligne)        }
+  TabIndex   : Integer;       { index dans la barre d onglets   }
+  Visible    : Boolean;       { fenetre visible                 }
+  Minimized  : Boolean;       { fenetre minimisee               }
+  Maximized  : Boolean;       { fenetre maximisee               }
+ End;
+
+ { Gestionnaire de fenetres }
+ TWindowManager = Record
+  Windows    : Array[0..MAX_WINDOWS - 1] Of TEditorWindow;
+  WinCount   : Integer;       { nombre de fenetres ouvertes     }
+  ActiveIdx  : Integer;       { index de la fenetre active      }
+  TabScrollX : Integer;       { defilement des onglets          }
+  SplitMode  : Boolean;       { vue fractionnee active          }
+  SplitPos   : Integer;       { position du separateur (pixels) }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1269,6 +1309,8 @@ Var
  TooltipTimer : LongInt;      { timestamp du debut de survol    }
  TooltipBtnIdx: Integer;      { index du bouton survole         }
  TooltipVisible: Boolean;     { infobulle affichee              }
+ { Gestionnaire de fenetres }
+ WinMgr       : TWindowManager;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -3830,6 +3872,425 @@ Begin
  CountToolSeparators := Total;
 End;
 
+{ ============================================================
+  TODO 07 - GESTIONNAIRE DE FENETRES MULTIPLES (MDI) [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Extraction du nom de fichier pour onglet --- }
+
+Function GetTabLabel(Path: String): String;
+Begin
+ GetTabLabel := ExtractFileName(Path);
+End;
+
+{ --- Initialiser une fenetre d editeur --- }
+
+Procedure InitEditorWindow(Var W: TEditorWindow);
+Begin
+ W.Title := '';
+ W.FileName := '';
+ W.Modified := False;
+ W.X := 0;
+ W.Y := 0;
+ W.Width := 0;
+ W.Height := 0;
+ W.ScrollX := 0;
+ W.ScrollY := 0;
+ W.CursorX := 1;
+ W.CursorY := 1;
+ W.SelStartX := 0;
+ W.SelStartY := 0;
+ W.SelEndX := 0;
+ W.SelEndY := 0;
+ W.TabIndex := -1;
+ W.Visible := True;
+ W.Minimized := False;
+ W.Maximized := True;
+End;
+
+{ --- Initialiser le gestionnaire de fenetres --- }
+
+Procedure InitWindowManager;
+Var
+ I: Integer;
+Begin
+ WinMgr.WinCount := 0;
+ WinMgr.ActiveIdx := -1;
+ WinMgr.TabScrollX := 0;
+ WinMgr.SplitMode := False;
+ WinMgr.SplitPos := 0;
+ For I := 0 To MAX_WINDOWS - 1 Do
+  InitEditorWindow(WinMgr.Windows[I]);
+End;
+
+{ --- Creer une nouvelle fenetre d editeur --- }
+
+Procedure CreateEditorWindow(AFileName: String);
+Var
+ Idx: Integer;
+Begin
+ If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ Idx := WinMgr.WinCount;
+ InitEditorWindow(WinMgr.Windows[Idx]);
+ WinMgr.Windows[Idx].FileName := AFileName;
+ If Length(AFileName) > 0 Then
+  WinMgr.Windows[Idx].Title := GetTabLabel(AFileName)
+ Else
+  WinMgr.Windows[Idx].Title := 'Sans titre';
+ WinMgr.Windows[Idx].TabIndex := Idx;
+ WinMgr.Windows[Idx].Visible := True;
+ WinMgr.Windows[Idx].Maximized := True;
+ { Zone d edition : sous onglets, a droite de l explorateur }
+ WinMgr.Windows[Idx].X := EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+End;
+
+{ --- Fermer une fenetre d editeur --- }
+
+Procedure CloseEditorWindow(Index: Integer);
+Var
+ I: Integer;
+Begin
+ If (Index < 0) Or (Index >= WinMgr.WinCount) Then Exit;
+ { Decaler les fenetres suivantes }
+ For I := Index To WinMgr.WinCount - 2 Do Begin
+  WinMgr.Windows[I] := WinMgr.Windows[I + 1];
+  WinMgr.Windows[I].TabIndex := I;
+ End;
+ Dec(WinMgr.WinCount);
+ { Ajuster l index actif }
+ If WinMgr.WinCount = 0 Then
+  WinMgr.ActiveIdx := -1
+ Else If WinMgr.ActiveIdx >= WinMgr.WinCount Then
+  WinMgr.ActiveIdx := WinMgr.WinCount - 1;
+End;
+
+{ --- Activer une fenetre --- }
+
+Procedure ActivateWindow(Index: Integer);
+Begin
+ If (Index >= 0) And (Index < WinMgr.WinCount) Then
+  WinMgr.ActiveIdx := Index;
+End;
+
+{ --- Obtenir la fenetre active --- }
+
+Function GetActiveWindow: Integer;
+Begin
+ GetActiveWindow := WinMgr.ActiveIdx;
+End;
+
+{ --- Fenetre suivante --- }
+
+Procedure NextWindow;
+Begin
+ If WinMgr.WinCount <= 1 Then Exit;
+ WinMgr.ActiveIdx := (WinMgr.ActiveIdx + 1) Mod WinMgr.WinCount;
+End;
+
+{ --- Fenetre precedente --- }
+
+Procedure PreviousWindow;
+Begin
+ If WinMgr.WinCount <= 1 Then Exit;
+ If WinMgr.ActiveIdx > 0 Then
+  Dec(WinMgr.ActiveIdx)
+ Else
+  WinMgr.ActiveIdx := WinMgr.WinCount - 1;
+End;
+
+{ --- Calculer la largeur d un onglet --- }
+
+Function TabWidth(Index: Integer): Integer;
+Var
+ W: Integer;
+ T: String;
+Begin
+ T := WinMgr.Windows[Index].Title;
+ If WinMgr.Windows[Index].Modified Then
+  T := '*' + T;
+ W := Length(T) * 8 + TAB_PADDING * 2 + TAB_CLOSE_SIZE + 4;
+ If W > TAB_MAX_WIDTH Then
+  W := TAB_MAX_WIDTH;
+ TabWidth := W;
+End;
+
+{ --- Dessiner les onglets --- }
+
+Procedure DrawWindowTabs;
+Var
+ I, TX, TW, TY: Integer;
+ Lbl: String;
+Begin
+ TY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT;
+ { Fond de la barre d onglets }
+ SetColor(CLR_BACKGROUND);
+ Bar(EXPLORER_WIDTH, TY, GetScreenWidth - 1, TY + TAB_HEIGHT - 1);
+ TX := EXPLORER_WIDTH - WinMgr.TabScrollX;
+ For I := 0 To WinMgr.WinCount - 1 Do Begin
+  TW := TabWidth(I);
+  If (TX + TW > EXPLORER_WIDTH) And (TX < GetScreenWidth) Then Begin
+   { Fond de l onglet }
+   If I = WinMgr.ActiveIdx Then Begin
+    SetColor(CLR_EDITOR_BG);
+    Bar(TX, TY, TX + TW - 1, TY + TAB_HEIGHT - 1);
+   End Else Begin
+    SetColor(CLR_BACKGROUND);
+    Bar(TX, TY, TX + TW - 1, TY + TAB_HEIGHT - 1);
+    SetColor(CLR_BORDER);
+    Rectangle(TX, TY, TX + TW - 1, TY + TAB_HEIGHT - 1);
+   End;
+   { Texte de l onglet }
+   Lbl := WinMgr.Windows[I].Title;
+   If WinMgr.Windows[I].Modified Then
+    Lbl := '*' + Lbl;
+   If Length(Lbl) > 18 Then
+    Lbl := Copy(Lbl, 1, 15) + '...';
+   SetColor(CLR_MENU_TEXT);
+   OutTextXY(TX + TAB_PADDING, TY + 4, Lbl);
+   { Bouton de fermeture (X) }
+   SetColor(CLR_BORDER);
+   OutTextXY(TX + TW - TAB_CLOSE_SIZE - 2, TY + 4, 'x');
+  End;
+  TX := TX + TW;
+ End;
+ { Ligne de separation sous les onglets }
+ SetColor(CLR_BORDER);
+ Line(EXPLORER_WIDTH, TY + TAB_HEIGHT - 1,
+      GetScreenWidth - 1, TY + TAB_HEIGHT - 1);
+End;
+
+{ --- Test de clic sur les onglets --- }
+
+Function TabHitTest(MX, MY: Integer): Integer;
+Var
+ I, TX, TW, TY: Integer;
+Begin
+ TabHitTest := -1;
+ TY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT;
+ If (MY < TY) Or (MY >= TY + TAB_HEIGHT) Then Exit;
+ If MX < EXPLORER_WIDTH Then Exit;
+ TX := EXPLORER_WIDTH - WinMgr.TabScrollX;
+ For I := 0 To WinMgr.WinCount - 1 Do Begin
+  TW := TabWidth(I);
+  If (MX >= TX) And (MX < TX + TW) Then Begin
+   TabHitTest := I;
+   Exit;
+  End;
+  TX := TX + TW;
+ End;
+End;
+
+{ --- Test de clic sur le bouton de fermeture d un onglet --- }
+
+Function TabCloseHitTest(MX, MY: Integer; TabIdx: Integer): Boolean;
+Var
+ TX, TW, TY, CX: Integer;
+ I: Integer;
+Begin
+ TabCloseHitTest := False;
+ If (TabIdx < 0) Or (TabIdx >= WinMgr.WinCount) Then Exit;
+ TY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT;
+ TX := EXPLORER_WIDTH - WinMgr.TabScrollX;
+ For I := 0 To TabIdx - 1 Do
+  TX := TX + TabWidth(I);
+ TW := TabWidth(TabIdx);
+ CX := TX + TW - TAB_CLOSE_SIZE - 2;
+ If (MX >= CX) And (MX < CX + TAB_CLOSE_SIZE) And
+    (MY >= TY + 2) And (MY < TY + TAB_HEIGHT - 2) Then
+  TabCloseHitTest := True;
+End;
+
+{ --- Gestion des evenements des onglets --- }
+
+Procedure HandleTabEvent(Var Ev: TEvent);
+Var
+ Hit: Integer;
+Begin
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  Hit := TabHitTest(Ev.MouseX, Ev.MouseY);
+  If Hit >= 0 Then Begin
+   If TabCloseHitTest(Ev.MouseX, Ev.MouseY, Hit) Then Begin
+    CloseEditorWindow(Hit);
+    DrawWindowTabs;
+   End Else Begin
+    ActivateWindow(Hit);
+    DrawWindowTabs;
+   End;
+  End;
+ End;
+End;
+
+{ --- Sauvegarder toutes les fenetres --- }
+
+Procedure SaveAllWindows;
+Var
+ I: Integer;
+Begin
+ For I := 0 To WinMgr.WinCount - 1 Do Begin
+  If WinMgr.Windows[I].Modified Then Begin
+   { SaveFile sera implemente dans un TODO futur (TODO 08+) }
+   WinMgr.Windows[I].Modified := False;
+  End;
+ End;
+End;
+
+{ --- Fermer toutes les fenetres --- }
+
+Procedure CloseAllWindows;
+Begin
+ WinMgr.WinCount := 0;
+ WinMgr.ActiveIdx := -1;
+End;
+
+{ --- Disposition en mosaique --- }
+
+Procedure ArrangeTile;
+Var
+ I, Cols, Rows, C, R, W, H, ZX, ZY, ZW, ZH: Integer;
+Begin
+ If WinMgr.WinCount <= 0 Then Exit;
+ { Zone d edition }
+ ZX := EXPLORER_WIDTH;
+ ZY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ ZW := GetScreenWidth - EXPLORER_WIDTH;
+ ZH := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT
+       - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ { Calcul grille }
+ Cols := 1;
+ While Cols * Cols < WinMgr.WinCount Do Inc(Cols);
+ Rows := (WinMgr.WinCount + Cols - 1) Div Cols;
+ W := ZW Div Cols;
+ H := ZH Div Rows;
+ For I := 0 To WinMgr.WinCount - 1 Do Begin
+  C := I Mod Cols;
+  R := I Div Cols;
+  WinMgr.Windows[I].X := ZX + C * W;
+  WinMgr.Windows[I].Y := ZY + R * H;
+  WinMgr.Windows[I].Width := W;
+  WinMgr.Windows[I].Height := H;
+  WinMgr.Windows[I].Maximized := False;
+  WinMgr.Windows[I].Minimized := False;
+ End;
+End;
+
+{ --- Disposition en cascade --- }
+
+Procedure ArrangeCascade;
+Var
+ I, ZX, ZY, ZW, ZH, Offset: Integer;
+Begin
+ If WinMgr.WinCount <= 0 Then Exit;
+ ZX := EXPLORER_WIDTH;
+ ZY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ ZW := GetScreenWidth - EXPLORER_WIDTH;
+ ZH := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT
+       - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ Offset := 20;
+ For I := 0 To WinMgr.WinCount - 1 Do Begin
+  WinMgr.Windows[I].X := ZX + I * Offset;
+  WinMgr.Windows[I].Y := ZY + I * Offset;
+  WinMgr.Windows[I].Width := ZW - (WinMgr.WinCount - 1) * Offset;
+  WinMgr.Windows[I].Height := ZH - (WinMgr.WinCount - 1) * Offset;
+  WinMgr.Windows[I].Maximized := False;
+  WinMgr.Windows[I].Minimized := False;
+ End;
+End;
+
+{ --- Fractionner la vue --- }
+
+Procedure SplitView;
+Begin
+ If WinMgr.SplitMode Then Begin
+  WinMgr.SplitMode := False;
+  WinMgr.SplitPos := 0;
+ End Else Begin
+  WinMgr.SplitMode := True;
+  WinMgr.SplitPos := (GetScreenWidth - EXPLORER_WIDTH) Div 2
+                      + EXPLORER_WIDTH;
+ End;
+End;
+
+{ --- Compter les fenetres ouvertes --- }
+
+Function CountEditorWindows: Integer;
+Begin
+ CountEditorWindows := WinMgr.WinCount;
+End;
+
+{ --- Compter les fenetres modifiees --- }
+
+Function CountModifiedWindows: Integer;
+Var
+ I, Total: Integer;
+Begin
+ Total := 0;
+ For I := 0 To WinMgr.WinCount - 1 Do
+  If WinMgr.Windows[I].Modified Then
+   Inc(Total);
+ CountModifiedWindows := Total;
+End;
+
+{ --- Trouver une fenetre par nom de fichier --- }
+
+Function FindWindowByFileName(AFileName: String): Integer;
+Var
+ I: Integer;
+Begin
+ FindWindowByFileName := -1;
+ For I := 0 To WinMgr.WinCount - 1 Do
+  If WinMgr.Windows[I].FileName = AFileName Then Begin
+   FindWindowByFileName := I;
+   Exit;
+  End;
+End;
+
+{ --- Determiner si un index de fenetre est valide --- }
+
+Function IsValidWindowIndex(Index: Integer): Boolean;
+Begin
+ IsValidWindowIndex := (Index >= 0) And (Index < WinMgr.WinCount);
+End;
+
+{ --- Obtenir le titre d une fenetre --- }
+
+Function GetWindowTitle(Index: Integer): String;
+Begin
+ If IsValidWindowIndex(Index) Then
+  GetWindowTitle := WinMgr.Windows[Index].Title
+ Else
+  GetWindowTitle := '';
+End;
+
+{ --- Definir le titre d une fenetre --- }
+
+Procedure SetWindowTitle(Index: Integer; ATitle: String);
+Begin
+ If IsValidWindowIndex(Index) Then
+  WinMgr.Windows[Index].Title := ATitle;
+End;
+
+{ --- Marquer une fenetre comme modifiee --- }
+
+Procedure MarkWindowModified(Index: Integer);
+Begin
+ If IsValidWindowIndex(Index) Then
+  WinMgr.Windows[Index].Modified := True;
+End;
+
+{ --- Marquer une fenetre comme sauvegardee --- }
+
+Procedure MarkWindowSaved(Index: Integer);
+Begin
+ If IsValidWindowIndex(Index) Then
+  WinMgr.Windows[Index].Modified := False;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -3844,6 +4305,8 @@ BEGIN
  DrawMenuBar;
  InitToolBar;
  DrawToolBar;
- { Boucle principale a venir (TODO 07+) }
+ InitWindowManager;
+ DrawWindowTabs;
+ { Boucle principale a venir (TODO 08+) }
  ShutdownGraphics;
 END.

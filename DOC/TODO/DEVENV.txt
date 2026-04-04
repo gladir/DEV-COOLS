@@ -99,7 +99,7 @@
             TIcon16 : matrice 16x16 de pixels.
             InitToolBarIcons. Infobulles (500 ms).
 
-  TODO 07 - GESTIONNAIRE DE FENETRES MULTIPLES (MDI) [A FAIRE]
+  TODO 07 - GESTIONNAIRE DE FENETRES MULTIPLES (MDI) [IMPLEMENTE]
             TEditorWindow, TWindowManager.
             CreateEditorWindow, CloseEditorWindow, ActivateWindow,
             DrawWindowTabs, HandleTabEvent, SplitView,
