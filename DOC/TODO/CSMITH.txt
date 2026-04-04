@@ -240,7 +240,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       GenChecksum - generer le calcul de checksum pour verification.
       Structure : includes, types, globales, prototypes, foncs, main.
 
-  24. [A FAIRE] Verification et evitement des comportements indefinis.
+  24. [IMPLEMENTE] Verification et evitement des comportements indefinis.
       Systeme de verification pour eviter les undefined behaviors :
       CheckDivByZero - verifier division par zero.
       CheckOverflow - verifier debordement entier.

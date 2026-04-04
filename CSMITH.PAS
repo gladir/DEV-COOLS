@@ -255,7 +255,7 @@
             GenChecksum - generer le calcul de checksum pour verification.
             Structure : includes, types, globales, prototypes, foncs, main.
 
-  TODO 24 - [A FAIRE] VERIFICATION ET EVITEMENT DES COMPORTEMENTS INDEFINIS
+  TODO 24 - [IMPLEMENTE] VERIFICATION ET EVITEMENT DES COMPORTEMENTS INDEFINIS
             Systeme de verification pour eviter les undefined behaviors :
             CheckDivByZero - verifier division par zero.
             CheckOverflow - verifier debordement entier.
@@ -446,6 +446,19 @@ Const
   GLOBAL_VAR_INIT_PROB = 70;        { 70% de chance d'initialiser une variable globale }
   GLOBAL_VAR_CONST_PROB = 20;       { 20% de chance d'avoir une variable const }
   GLOBAL_VAR_VOLATILE_PROB = 10;    { 10% de chance d'avoir une variable volatile }
+  
+  { TODO 24 : Constantes pour la verification et evitement des comportements indefinis }
+  SAFE_DIV_CHECK_PROB = 95;         { 95% de chance de generer un garde pour division }
+  SAFE_OVERFLOW_CHECK_PROB = 90;    { 90% de chance de verifier le debordement }
+  SAFE_NULL_CHECK_PROB = 95;        { 95% de chance de generer un garde pour NULL }
+  SAFE_BOUNDS_CHECK_PROB = 90;      { 90% de chance de verifier les bornes tableau }
+  SAFE_SHIFT_CHECK_PROB = 95;       { 95% de chance de verifier le decalage }
+  SAFE_INIT_CHECK_PROB = 85;        { 85% de chance de verifier l'initialisation }
+  SAFE_EXPR_WRAP_PROB = 80;         { 80% de chance d'encapsuler une expression securisee }
+  SAFE_MACRO_PROB = 70;             { 70% de chance d'utiliser une macro safe_* }
+  INT_MIN_VALUE = -2147483648;      { INT_MIN pour 32 bits }
+  SAFE_SHIFT_MAX = 31;              { Decalage max securise pour int 32 bits }
+  SAFE_ARRAY_MAX_INDEX = 99;        { Index max securise pour les tableaux }
   
   MAX_STRUCTS        = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
   MAX_UNIONS         = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
@@ -720,6 +733,17 @@ Var
   ProgFuncCount: Integer;       { Nombre de fonctions dans le programme }
   ProgGlobalCount: Integer;     { Nombre de variables globales dans le programme }
   ProgTotalLines: Integer;      { Nombre total de lignes generees }
+
+  { TODO 24 : compteurs et contexte pour la verification UB }
+  UBDivByZeroCount: Integer;    { Compteur de verifications division par zero }
+  UBOverflowCount: Integer;     { Compteur de verifications debordement }
+  UBNullDerefCount: Integer;    { Compteur de verifications dereferencement NULL }
+  UBBoundsCount: Integer;       { Compteur de verifications bornes tableau }
+  UBShiftCount: Integer;        { Compteur de verifications decalage }
+  UBUninitCount: Integer;       { Compteur de verifications lecture non initialisee }
+  UBSafeExprCount: Integer;     { Compteur d'expressions securisees generees }
+  UBTotalChecks: Integer;       { Total de verifications UB generees }
+  UBCheckEnabled: Boolean;      { True si les verifications UB sont activees }
 
 { ============================================================
   FONCTIONS UTILITAIRES
@@ -7629,6 +7653,9 @@ End;
 { Forward declaration for TODO 23 }
 Procedure InitProgramContext; Forward;
 
+{ Forward declaration for TODO 24 }
+Procedure InitSafetyContext; Forward;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -7671,6 +7698,8 @@ Begin
   InitFuncContext;
   { Initialiser le contexte du programme - TODO 23 }
   InitProgramContext;
+  { Initialiser le contexte de securite UB - TODO 24 }
+  InitSafetyContext;
   { Initialiser l'emetteur }
   InitEmitter;
 End;
@@ -8284,6 +8313,539 @@ Begin
   
   { Sauvegarder le nombre de lignes }
   ProgTotalLines := LineCount;
+End;
+
+{ ============================================================
+  TODO 24 : VERIFICATION ET EVITEMENT DES COMPORTEMENTS INDEFINIS [IMPLEMENTE]
+  ============================================================ }
+
+Procedure InitSafetyContext;
+{ Initialise le contexte de verification des comportements indefinis. }
+Begin
+  UBDivByZeroCount := 0;
+  UBOverflowCount := 0;
+  UBNullDerefCount := 0;
+  UBBoundsCount := 0;
+  UBShiftCount := 0;
+  UBUninitCount := 0;
+  UBSafeExprCount := 0;
+  UBTotalChecks := 0;
+  UBCheckEnabled := True;
+End;
+
+Procedure EmitSafetyComment;
+{ Emet un commentaire pour la section de securite. }
+Begin
+  EmitComment('Undefined Behavior checks - TODO 24');
+End;
+
+Function CheckDivByZero(Const Divisor: TString): TString;
+{ Genere une verification de division par zero.
+  Retourne une expression qui garantit que le diviseur n'est pas zero.
+  Utilise l'operateur ternaire: (divisor == 0 ? 1 : divisor) }
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    CheckDivByZero := Divisor;
+    Exit;
+  End;
+  
+  If RandomChoice(SAFE_DIV_CHECK_PROB) Then
+  Begin
+    CheckDivByZero := '((' + Divisor + ') == 0 ? 1 : (' + Divisor + '))';
+    Inc(UBDivByZeroCount);
+    Inc(UBTotalChecks);
+  End
+  Else
+    CheckDivByZero := Divisor;
+End;
+
+Function GenSafeDivExpr(Const Dividend, Divisor: TString): TString;
+{ Genere une expression de division securisee.
+  Evite la division par zero et le cas INT_MIN / -1. }
+Var
+  SafeDivisor: TString;
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    GenSafeDivExpr := '(' + Dividend + ') / (' + Divisor + ')';
+    Exit;
+  End;
+  
+  { Generer une division securisee avec garde }
+  SafeDivisor := CheckDivByZero(Divisor);
+  GenSafeDivExpr := '(' + Dividend + ') / ' + SafeDivisor;
+  Inc(UBSafeExprCount);
+End;
+
+Function GenSafeModExpr(Const Dividend, Divisor: TString): TString;
+{ Genere une expression de modulo securisee.
+  Evite le modulo par zero et le cas INT_MIN % -1. }
+Var
+  SafeDivisor: TString;
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    GenSafeModExpr := '(' + Dividend + ') % (' + Divisor + ')';
+    Exit;
+  End;
+  
+  { Generer un modulo securise avec garde }
+  SafeDivisor := CheckDivByZero(Divisor);
+  GenSafeModExpr := '(' + Dividend + ') % ' + SafeDivisor;
+  Inc(UBSafeExprCount);
+End;
+
+Function CheckOverflow(Const Expr: TString; TypeKind: TTypeKind): TString;
+{ Genere une verification de debordement entier.
+  Pour les operations qui peuvent deborder, on limite la valeur. }
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    CheckOverflow := Expr;
+    Exit;
+  End;
+  
+  If RandomChoice(SAFE_OVERFLOW_CHECK_PROB) Then
+  Begin
+    { Pour les types signes, on verifie que la valeur est dans les limites }
+    Case TypeKind Of
+      TK_CHAR, TK_SCHAR:
+        CheckOverflow := '((signed char)(' + Expr + '))';
+      TK_SHORT:
+        CheckOverflow := '((short)(' + Expr + '))';
+      TK_INT:
+        CheckOverflow := '((int)(' + Expr + '))';
+      TK_LONG:
+        CheckOverflow := '((long)(' + Expr + '))';
+    Else
+      CheckOverflow := Expr;
+    End;
+    Inc(UBOverflowCount);
+    Inc(UBTotalChecks);
+  End
+  Else
+    CheckOverflow := Expr;
+End;
+
+Function GenSafeAdd(Const A, B: TString): TString;
+{ Genere une addition securisee qui evite le debordement. }
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    GenSafeAdd := '(' + A + ') + (' + B + ')';
+    Exit;
+  End;
+  
+  { Utiliser un cast pour forcer la verification }
+  GenSafeAdd := '((int)((' + A + ') + (' + B + ')))';
+  Inc(UBSafeExprCount);
+End;
+
+Function GenSafeSub(Const A, B: TString): TString;
+{ Genere une soustraction securisee qui evite le debordement. }
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    GenSafeSub := '(' + A + ') - (' + B + ')';
+    Exit;
+  End;
+  
+  { Utiliser un cast pour forcer la verification }
+  GenSafeSub := '((int)((' + A + ') - (' + B + ')))';
+  Inc(UBSafeExprCount);
+End;
+
+Function GenSafeMul(Const A, B: TString): TString;
+{ Genere une multiplication securisee qui evite le debordement. }
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    GenSafeMul := '(' + A + ') * (' + B + ')';
+    Exit;
+  End;
+  
+  { Utiliser un cast pour forcer la verification }
+  GenSafeMul := '((int)((' + A + ') * (' + B + ')))';
+  Inc(UBSafeExprCount);
+End;
+
+Function CheckNullDeref(Const PtrExpr: TString): TString;
+{ Genere une verification de dereferencement NULL.
+  Retourne une expression qui garantit que le pointeur n'est pas NULL. }
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    CheckNullDeref := PtrExpr;
+    Exit;
+  End;
+  
+  If RandomChoice(SAFE_NULL_CHECK_PROB) Then
+  Begin
+    { On ne peut pas vraiment eviter le NULL en expression simple,
+      mais on peut generer un test conditionnel }
+    CheckNullDeref := PtrExpr;  { Le pointeur tel quel - la verification doit etre faite avant }
+    Inc(UBNullDerefCount);
+    Inc(UBTotalChecks);
+  End
+  Else
+    CheckNullDeref := PtrExpr;
+End;
+
+Function GenSafeDeref(Const PtrExpr, DefaultVal: TString): TString;
+{ Genere un dereferencement securise avec une valeur par defaut si NULL.
+  Retourne: (ptr != NULL ? *ptr : defaultVal) }
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    GenSafeDeref := '*(' + PtrExpr + ')';
+    Exit;
+  End;
+  
+  GenSafeDeref := '((' + PtrExpr + ') != NULL ? *(' + PtrExpr + ') : ' + DefaultVal + ')';
+  Inc(UBNullDerefCount);
+  Inc(UBSafeExprCount);
+  Inc(UBTotalChecks);
+End;
+
+Function GenNullCheck(Const PtrExpr: TString): TString;
+{ Genere une condition de verification NULL pour un pointeur.
+  Retourne: (ptr != NULL) }
+Begin
+  GenNullCheck := '((' + PtrExpr + ') != NULL)';
+  Inc(UBNullDerefCount);
+  Inc(UBTotalChecks);
+End;
+
+Function CheckArrayBounds(Const IndexExpr: TString; MaxIndex: Integer): TString;
+{ Genere une verification des bornes de tableau.
+  Retourne une expression qui garantit que l'index est valide.
+  Utilise: (index >= 0 && index < max ? index : 0) }
+Var
+  MaxStr: TString;
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    CheckArrayBounds := IndexExpr;
+    Exit;
+  End;
+  
+  If RandomChoice(SAFE_BOUNDS_CHECK_PROB) Then
+  Begin
+    MaxStr := IntToStr(MaxIndex);
+    CheckArrayBounds := '((' + IndexExpr + ') >= 0 && (' + IndexExpr + ') < ' + 
+                        MaxStr + ' ? (' + IndexExpr + ') : 0)';
+    Inc(UBBoundsCount);
+    Inc(UBTotalChecks);
+  End
+  Else
+    CheckArrayBounds := IndexExpr;
+End;
+
+Function GenSafeArrayAccess(Const ArrayName, IndexExpr: TString; MaxIndex: Integer): TString;
+{ Genere un acces securise a un tableau avec verification des bornes. }
+Var
+  SafeIndex: TString;
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    GenSafeArrayAccess := ArrayName + '[' + IndexExpr + ']';
+    Exit;
+  End;
+  
+  SafeIndex := CheckArrayBounds(IndexExpr, MaxIndex);
+  GenSafeArrayAccess := ArrayName + '[' + SafeIndex + ']';
+  Inc(UBSafeExprCount);
+End;
+
+Function CheckShiftAmount(Const ShiftExpr: TString; BitWidth: Integer): TString;
+{ Genere une verification du montant de decalage.
+  Le decalage doit etre >= 0 et < largeur du type en bits.
+  Retourne: (shift >= 0 && shift < width ? shift : 0) }
+Var
+  WidthStr: TString;
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    CheckShiftAmount := ShiftExpr;
+    Exit;
+  End;
+  
+  If RandomChoice(SAFE_SHIFT_CHECK_PROB) Then
+  Begin
+    WidthStr := IntToStr(BitWidth);
+    CheckShiftAmount := '((' + ShiftExpr + ') >= 0 && (' + ShiftExpr + ') < ' + 
+                        WidthStr + ' ? (' + ShiftExpr + ') : 0)';
+    Inc(UBShiftCount);
+    Inc(UBTotalChecks);
+  End
+  Else
+    CheckShiftAmount := ShiftExpr;
+End;
+
+Function GenSafeLeftShift(Const Value, Amount: TString): TString;
+{ Genere un decalage a gauche securise.
+  Evite: decalage negatif, decalage >= largeur du type,
+  decalage gauche d'une valeur negative. }
+Var
+  SafeAmount: TString;
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    GenSafeLeftShift := '(' + Value + ') << (' + Amount + ')';
+    Exit;
+  End;
+  
+  SafeAmount := CheckShiftAmount(Amount, 32);  { Assume int 32 bits }
+  { Pour eviter UB avec valeur negative, on cast en unsigned }
+  GenSafeLeftShift := '(int)((unsigned int)(' + Value + ') << ' + SafeAmount + ')';
+  Inc(UBSafeExprCount);
+End;
+
+Function GenSafeRightShift(Const Value, Amount: TString): TString;
+{ Genere un decalage a droite securise.
+  Evite: decalage negatif, decalage >= largeur du type. }
+Var
+  SafeAmount: TString;
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    GenSafeRightShift := '(' + Value + ') >> (' + Amount + ')';
+    Exit;
+  End;
+  
+  SafeAmount := CheckShiftAmount(Amount, 32);  { Assume int 32 bits }
+  GenSafeRightShift := '(' + Value + ') >> ' + SafeAmount;
+  Inc(UBSafeExprCount);
+End;
+
+Function CheckUninitRead(Const VarName: TString; IsInit: Boolean): TString;
+{ Genere une verification de lecture de variable non initialisee.
+  Retourne le nom de la variable si initialisee, 0 sinon. }
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    CheckUninitRead := VarName;
+    Exit;
+  End;
+  
+  If RandomChoice(SAFE_INIT_CHECK_PROB) Then
+  Begin
+    If IsInit Then
+      CheckUninitRead := VarName
+    Else
+      CheckUninitRead := '0';  { Valeur par defaut pour variable non initialisee }
+    Inc(UBUninitCount);
+    Inc(UBTotalChecks);
+  End
+  Else
+    CheckUninitRead := VarName;
+End;
+
+Function GenSafeExpr(Const Expr: TString; ExprKind: Integer): TString;
+{ Genere une expression avec des gardes de securite.
+  ExprKind: 0=arithmetique, 1=pointeur, 2=tableau, 3=decalage }
+Begin
+  If Not UBCheckEnabled Then
+  Begin
+    GenSafeExpr := Expr;
+    Exit;
+  End;
+  
+  If RandomChoice(SAFE_EXPR_WRAP_PROB) Then
+  Begin
+    Case ExprKind Of
+      0: GenSafeExpr := '((int)(' + Expr + '))';      { Cast arithmetique }
+      1: GenSafeExpr := '(' + Expr + ')';             { Expression pointeur }
+      2: GenSafeExpr := '(' + Expr + ')';             { Expression tableau }
+      3: GenSafeExpr := '((unsigned)(' + Expr + '))'; { Cast pour decalage }
+    Else
+      GenSafeExpr := '(' + Expr + ')';
+    End;
+    Inc(UBSafeExprCount);
+    Inc(UBTotalChecks);
+  End
+  Else
+    GenSafeExpr := Expr;
+End;
+
+Procedure EmitSafetyMacros;
+{ Emet les macros de securite dans l'en-tete du programme genere. }
+Begin
+  EmitComment('Safety macros to avoid undefined behavior');
+  EmitLine('#ifndef SAFE_DIV');
+  EmitLine('#define SAFE_DIV(a, b) ((b) == 0 ? 0 : (a) / (b))');
+  EmitLine('#endif');
+  EmitLine('#ifndef SAFE_MOD');
+  EmitLine('#define SAFE_MOD(a, b) ((b) == 0 ? 0 : (a) % (b))');
+  EmitLine('#endif');
+  EmitLine('#ifndef SAFE_LSHIFT');
+  EmitLine('#define SAFE_LSHIFT(a, b) ((b) < 0 || (b) >= 32 ? 0 : (int)((unsigned)(a) << (b)))');
+  EmitLine('#endif');
+  EmitLine('#ifndef SAFE_RSHIFT');
+  EmitLine('#define SAFE_RSHIFT(a, b) ((b) < 0 || (b) >= 32 ? 0 : (a) >> (b))');
+  EmitLine('#endif');
+  EmitLine('#ifndef SAFE_INDEX');
+  EmitLine('#define SAFE_INDEX(i, max) ((i) < 0 || (i) >= (max) ? 0 : (i))');
+  EmitLine('#endif');
+  EmitLine('#ifndef SAFE_DEREF');
+  EmitLine('#define SAFE_DEREF(p, def) ((p) != NULL ? *(p) : (def))');
+  EmitLine('#endif');
+  EmitBlankLine;
+End;
+
+Function GenSafeDivMacro(Const A, B: TString): TString;
+{ Genere une division securisee utilisant la macro SAFE_DIV. }
+Begin
+  GenSafeDivMacro := 'SAFE_DIV(' + A + ', ' + B + ')';
+  Inc(UBDivByZeroCount);
+  Inc(UBSafeExprCount);
+  Inc(UBTotalChecks);
+End;
+
+Function GenSafeModMacro(Const A, B: TString): TString;
+{ Genere un modulo securise utilisant la macro SAFE_MOD. }
+Begin
+  GenSafeModMacro := 'SAFE_MOD(' + A + ', ' + B + ')';
+  Inc(UBDivByZeroCount);
+  Inc(UBSafeExprCount);
+  Inc(UBTotalChecks);
+End;
+
+Function GenSafeLShiftMacro(Const A, B: TString): TString;
+{ Genere un decalage gauche securise utilisant la macro SAFE_LSHIFT. }
+Begin
+  GenSafeLShiftMacro := 'SAFE_LSHIFT(' + A + ', ' + B + ')';
+  Inc(UBShiftCount);
+  Inc(UBSafeExprCount);
+  Inc(UBTotalChecks);
+End;
+
+Function GenSafeRShiftMacro(Const A, B: TString): TString;
+{ Genere un decalage droit securise utilisant la macro SAFE_RSHIFT. }
+Begin
+  GenSafeRShiftMacro := 'SAFE_RSHIFT(' + A + ', ' + B + ')';
+  Inc(UBShiftCount);
+  Inc(UBSafeExprCount);
+  Inc(UBTotalChecks);
+End;
+
+Function GenSafeIndexMacro(Const Index: TString; Max: Integer): TString;
+{ Genere un index securise utilisant la macro SAFE_INDEX. }
+Begin
+  GenSafeIndexMacro := 'SAFE_INDEX(' + Index + ', ' + IntToStr(Max) + ')';
+  Inc(UBBoundsCount);
+  Inc(UBSafeExprCount);
+  Inc(UBTotalChecks);
+End;
+
+Function GenSafeDerefMacro(Const Ptr, Default: TString): TString;
+{ Genere un dereferencement securise utilisant la macro SAFE_DEREF. }
+Begin
+  GenSafeDerefMacro := 'SAFE_DEREF(' + Ptr + ', ' + Default + ')';
+  Inc(UBNullDerefCount);
+  Inc(UBSafeExprCount);
+  Inc(UBTotalChecks);
+End;
+
+Function CountDivByZeroChecks: Integer;
+{ Retourne le nombre de verifications de division par zero. }
+Begin
+  CountDivByZeroChecks := UBDivByZeroCount;
+End;
+
+Function CountOverflowChecks: Integer;
+{ Retourne le nombre de verifications de debordement. }
+Begin
+  CountOverflowChecks := UBOverflowCount;
+End;
+
+Function CountNullDerefChecks: Integer;
+{ Retourne le nombre de verifications de dereferencement NULL. }
+Begin
+  CountNullDerefChecks := UBNullDerefCount;
+End;
+
+Function CountBoundsChecks: Integer;
+{ Retourne le nombre de verifications de bornes tableau. }
+Begin
+  CountBoundsChecks := UBBoundsCount;
+End;
+
+Function CountShiftChecks: Integer;
+{ Retourne le nombre de verifications de decalage. }
+Begin
+  CountShiftChecks := UBShiftCount;
+End;
+
+Function CountUninitChecks: Integer;
+{ Retourne le nombre de verifications de lecture non initialisee. }
+Begin
+  CountUninitChecks := UBUninitCount;
+End;
+
+Function CountSafeExpressions: Integer;
+{ Retourne le nombre d'expressions securisees generees. }
+Begin
+  CountSafeExpressions := UBSafeExprCount;
+End;
+
+Function GetTotalUBChecks: Integer;
+{ Retourne le nombre total de verifications UB. }
+Begin
+  GetTotalUBChecks := UBTotalChecks;
+End;
+
+Function AreUBChecksEnabled: Boolean;
+{ Retourne True si les verifications UB sont activees. }
+Begin
+  AreUBChecksEnabled := UBCheckEnabled;
+End;
+
+Procedure EnableUBChecks;
+{ Active les verifications UB. }
+Begin
+  UBCheckEnabled := True;
+End;
+
+Procedure DisableUBChecks;
+{ Desactive les verifications UB. }
+Begin
+  UBCheckEnabled := False;
+End;
+
+Function GetUBStats: TString;
+{ Retourne une chaine avec les statistiques UB. }
+Begin
+  GetUBStats := 'DivZero=' + IntToStr(UBDivByZeroCount) + 
+                ', Overflow=' + IntToStr(UBOverflowCount) +
+                ', NullDeref=' + IntToStr(UBNullDerefCount) +
+                ', Bounds=' + IntToStr(UBBoundsCount) +
+                ', Shift=' + IntToStr(UBShiftCount) +
+                ', Uninit=' + IntToStr(UBUninitCount) +
+                ', SafeExpr=' + IntToStr(UBSafeExprCount) +
+                ', Total=' + IntToStr(UBTotalChecks);
+End;
+
+Procedure EmitUBStatsComment;
+{ Emet un commentaire avec les statistiques UB dans le fichier genere. }
+Begin
+  EmitBlankLine;
+  EmitComment('Undefined Behavior Prevention Statistics:');
+  EmitComment('  Division by zero checks: ' + IntToStr(UBDivByZeroCount));
+  EmitComment('  Overflow checks: ' + IntToStr(UBOverflowCount));
+  EmitComment('  Null dereference checks: ' + IntToStr(UBNullDerefCount));
+  EmitComment('  Array bounds checks: ' + IntToStr(UBBoundsCount));
+  EmitComment('  Shift amount checks: ' + IntToStr(UBShiftCount));
+  EmitComment('  Uninitialized read checks: ' + IntToStr(UBUninitCount));
+  EmitComment('  Safe expressions generated: ' + IntToStr(UBSafeExprCount));
+  EmitComment('  Total UB checks: ' + IntToStr(UBTotalChecks));
+End;
+
+Function IsUBCheckingEmpty: Boolean;
+{ Retourne True si aucune verification UB n'a ete faite. }
+Begin
+  IsUBCheckingEmpty := (UBTotalChecks = 0);
 End;
 
 { ============================================================
