@@ -1228,6 +1228,10 @@ Var
  SaveStack:Array[0..100]of Char;
  SaveResultStack:Array[0..100]of Real;
  StackIdx:Integer;
+ { Sauvegarde etat expression pour second appel fonction dans meme expression }
+ SaveI:Byte;
+ SaveInfix:String;
+ SavePostFix:String;
 Begin
  StopChar:=[',',':',';','"','<','=','>','!'];
  { Sauvegarder l'etat complet des piles pour les appels recursifs }
@@ -1475,8 +1479,16 @@ Begin
        While(I<=Length(Infix))and(Infix[I]in[' ',','])do Inc(I);
       End;
       If(I<=Length(Infix))and(Infix[I]=')')Then Inc(I);
+      { Sauvegarder l'etat de l'expression avant appel fonction }
+      SaveI:=I;
+      SaveInfix:=Infix;
+      SavePostFix:=PostFix;
       { Appeler la fonction }
       _Result:=CallUserFunction(FuncIdx);
+      { Restaurer l'etat de l'expression apres appel fonction }
+      I:=SaveI;
+      Infix:=SaveInfix;
+      PostFix:=SavePostFix;
       Str(_Result,Value);
       { Restaurer les anciennes valeurs des parametres }
       For ParamIdx:=1 to SavedParamCount do Begin
