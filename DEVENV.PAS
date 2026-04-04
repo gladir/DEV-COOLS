@@ -1152,17 +1152,16 @@ End;
 Function FileExists(FileName: String): Boolean;
 Var
  F: File;
- R: Integer;
+ OldIO: Integer;
 Begin
  Assign(F, FileName);
- R := IOResult;
  {$I-}
  Reset(F, 1);
  {$I+}
- R := IOResult;
- If R = 0 Then Begin
+ OldIO := IOResult;
+ If OldIO = 0 Then Begin
   Close(F);
-  R := IOResult;
+  OldIO := IOResult;
   FileExists := True;
  End Else
   FileExists := False;
@@ -1334,7 +1333,7 @@ Begin
    Opts.Verbose := True
   Else If (Arg = '-d') Or (Arg = '-D') Then
    Opts.DebugMode := True
-  Else If Arg[1] = '-' Then
+  Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
    FatalError('Option inconnue: ' + Arg)
   Else Begin
    { Argument sans tiret : fichier solution }
@@ -1440,5 +1439,4 @@ BEGIN
  If Opts.Verbose Then
   ShowVersion;
  InitializeGraphics;
-END.
 END.
