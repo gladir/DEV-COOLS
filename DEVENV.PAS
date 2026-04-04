@@ -642,7 +642,7 @@
               les erreurs (format specifique a chaque compilateur
               DEV-COOLS : CSC, VBC, TPC).
 
-  TODO 21 - BOITES DE DIALOGUE : FICHIERS [A FAIRE]
+  TODO 21 - BOITES DE DIALOGUE : FICHIERS [IMPLEMENTE]
             Boites de dialogue entierement dessinees en mode
             graphique (pas de boites systeme).
             TDialog : fenetre modale centree avec titre, bordure,
@@ -1078,6 +1078,49 @@ Const
  ERRLIST_LINE_WIDTH    = 50;       { largeur colonne ligne          }
  ERRLIST_FILE_WIDTH    = 160;      { largeur colonne fichier        }
  ERRLIST_PROJECT_WIDTH = 120;      { largeur colonne projet         }
+
+ { Boites de dialogue }
+ DLG_MIN_WIDTH         = 300;     { largeur minimale dialogue       }
+ DLG_MIN_HEIGHT        = 150;     { hauteur minimale dialogue       }
+ DLG_BORDER            = 2;       { epaisseur bordure dialogue      }
+ DLG_TITLE_HEIGHT      = 22;      { hauteur barre de titre          }
+ DLG_BUTTON_WIDTH      = 80;      { largeur bouton OK/Annuler       }
+ DLG_BUTTON_HEIGHT     = 24;      { hauteur bouton OK/Annuler       }
+ DLG_BUTTON_SPACING    = 10;      { espacement entre boutons        }
+ DLG_PADDING           = 10;      { marge interne du dialogue       }
+ DLG_INPUT_HEIGHT      = 20;      { hauteur champ de saisie         }
+ DLG_LIST_ROW_HEIGHT   = 18;      { hauteur ligne dans liste        }
+ DLG_FILTER_HEIGHT     = 20;      { hauteur du sélecteur de filtre  }
+ DLG_ICON_SIZE         = 32;      { taille icone message box        }
+ MAX_DLG_FILES         = 512;     { nombre max fichiers liste       }
+ MAX_DLG_FILTERS       = 10;      { nombre max filtres              }
+ DLG_FILE_WIDTH        = 480;     { largeur boite fichier           }
+ DLG_FILE_HEIGHT       = 360;     { hauteur boite fichier           }
+ DLG_MSG_WIDTH         = 360;     { largeur message box             }
+ DLG_MSG_HEIGHT        = 160;     { hauteur message box             }
+ DLG_INPUT_WIDTH       = 340;     { largeur input box               }
+ DLG_INPUT_HEIGHT      = 140;     { hauteur input box               }
+ DLG_FOLDER_WIDTH      = 400;     { largeur boite dossier           }
+ DLG_FOLDER_HEIGHT     = 320;     { hauteur boite dossier           }
+
+ { Boutons de message box }
+ MB_OK                 = 0;       { bouton OK seulement             }
+ MB_OKCANCEL           = 1;       { boutons OK et Annuler           }
+ MB_YESNO              = 2;       { boutons Oui et Non              }
+ MB_YESNOCANCEL        = 3;       { boutons Oui, Non et Annuler     }
+
+ { Icones de message box }
+ MI_INFO               = 0;       { icone information               }
+ MI_WARNING            = 1;       { icone avertissement             }
+ MI_ERROR              = 2;       { icone erreur                    }
+ MI_QUESTION           = 3;       { icone question                  }
+
+ { Resultats de dialogue }
+ DR_OK                 = 1;       { bouton OK appuye                }
+ DR_CANCEL             = 2;       { bouton Annuler appuye           }
+ DR_YES                = 3;       { bouton Oui appuye               }
+ DR_NO                 = 4;       { bouton Non appuye               }
+ DR_NONE               = 0;       { aucun resultat                  }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -1746,6 +1789,83 @@ Type
   Dragging : Boolean;              { splitter en cours de drag      }
   Visible  : Boolean;              { panneau visible                }
   NeedRepaint: Boolean;            { doit etre redessine            }
+ End;
+
+ { Boutons de message box }
+ TMessageButtons = Integer;       { MB_OK, MB_OKCANCEL, etc.       }
+
+ { Icone de message box }
+ TMessageIcon = Integer;          { MI_INFO, MI_WARNING, etc.      }
+
+ { Dialogue de base }
+ TDialog = Record
+  Title    : String[127];            { titre du dialogue              }
+  X        : Integer;                { position X (centree)           }
+  Y        : Integer;                { position Y (centree)           }
+  Width    : Integer;                { largeur du dialogue            }
+  Height   : Integer;                { hauteur du dialogue            }
+  Result   : Integer;                { resultat (DR_OK, DR_CANCEL..) }
+  Visible  : Boolean;                { dialogue affiche               }
+  HasCancel: Boolean;                { bouton Annuler present         }
+ End;
+
+ { Entree de fichier dans la liste }
+ TFileListEntry = Record
+  Name     : String[63];            { nom du fichier ou dossier      }
+  IsDir    : Boolean;               { True si c est un repertoire    }
+  Size     : LongInt;               { taille en octets               }
+ End;
+
+ { Filtre de fichier }
+ TFileFilter = Record
+  Description: String[63];          { ex. 'Fichiers C# (*.cs)'      }
+  Pattern  : String[31];            { ex. '*.cs'                     }
+ End;
+
+ { Boite de dialogue fichier (ouvrir/enregistrer) }
+ TFileDialog = Record
+  Base     : TDialog;               { dialogue de base               }
+  CurrentPath: String[255];         { repertoire courant             }
+  SelectedFile: String[255];        { fichier selectionne            }
+  FileList : Array[0..MAX_DLG_FILES - 1] Of TFileListEntry;
+  FileCount: Integer;               { nombre d entrees               }
+  Filters  : Array[0..MAX_DLG_FILTERS - 1] Of TFileFilter;
+  FilterCount: Integer;             { nombre de filtres              }
+  FilterIndex: Integer;             { filtre actif                   }
+  ScrollTop: Integer;               { premiere ligne visible         }
+  SelIndex : Integer;               { index selectionne dans liste   }
+  InputText: String[127];           { champ de saisie nom fichier    }
+  InputCursor: Integer;             { position curseur saisie        }
+  IsSaveMode: Boolean;              { True = enregistrer, False = ouvrir }
+ End;
+
+ { Boite de dialogue dossier }
+ TFolderDialog = Record
+  Base     : TDialog;               { dialogue de base               }
+  CurrentPath: String[255];         { repertoire courant             }
+  SelectedFolder: String[255];      { dossier selectionne            }
+  FileList : Array[0..MAX_DLG_FILES - 1] Of TFileListEntry;
+  FileCount: Integer;               { nombre d entrees               }
+  ScrollTop: Integer;               { premiere ligne visible         }
+  SelIndex : Integer;               { index selectionne dans liste   }
+ End;
+
+ { Boite de message }
+ TMessageBoxDlg = Record
+  Base     : TDialog;               { dialogue de base               }
+  Text     : String[255];           { texte du message               }
+  Buttons  : TMessageButtons;       { type de boutons                }
+  Icon     : TMessageIcon;          { type d icone                   }
+  FocusBtn : Integer;               { bouton avec le focus           }
+ End;
+
+ { Boite de saisie }
+ TInputBox = Record
+  Base     : TDialog;               { dialogue de base               }
+  Prompt   : String[127];           { texte d invite                 }
+  InputText: String[255];           { texte saisi                    }
+  InputCursor: Integer;             { position curseur               }
+  Cancelled: Boolean;               { True si annule                 }
  End;
 
 { ============================================================
@@ -12318,6 +12438,1287 @@ Begin
   GetSelectedErrorProject := '';
 End;
 
+{ ============================================================
+  TODO 21 - BOITES DE DIALOGUE : FICHIERS [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser un dialogue de base --- }
+
+Procedure InitDialog(Var Dlg: TDialog; T: String; W, H: Integer);
+Var
+ ScrW, ScrH: Integer;
+Begin
+ Dlg.Title := T;
+ If W < DLG_MIN_WIDTH Then
+  W := DLG_MIN_WIDTH;
+ If H < DLG_MIN_HEIGHT Then
+  H := DLG_MIN_HEIGHT;
+ Dlg.Width := W;
+ Dlg.Height := H;
+ ScrW := GetScreenWidth;
+ ScrH := GetScreenHeight;
+ Dlg.X := (ScrW - W) Div 2;
+ Dlg.Y := (ScrH - H) Div 2;
+ Dlg.Result := DR_NONE;
+ Dlg.Visible := True;
+ Dlg.HasCancel := True;
+End;
+
+{ --- Dessiner le cadre du dialogue (bordure, titre, fond) --- }
+
+Procedure DrawDialogFrame(Var Dlg: TDialog);
+Var
+ X1, Y1, X2, Y2: Integer;
+Begin
+ X1 := Dlg.X;
+ Y1 := Dlg.Y;
+ X2 := X1 + Dlg.Width - 1;
+ Y2 := Y1 + Dlg.Height - 1;
+ { Bordure }
+ SetColor(CLR_BORDER);
+ Rectangle(X1, Y1, X2, Y2);
+ { Fond }
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(X1 + 1, Y1 + 1, X2 - 1, Y2 - 1);
+ { Barre de titre }
+ SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+ Bar(X1 + 1, Y1 + 1, X2 - 1, Y1 + DLG_TITLE_HEIGHT);
+ { Texte du titre }
+ SetColor(15);
+ OutTextXY(X1 + DLG_PADDING, Y1 + 4, Dlg.Title);
+End;
+
+{ --- Dessiner un bouton de dialogue --- }
+
+Procedure DrawDialogButton(X, Y: Integer; Caption: String;
+ Focused: Boolean);
+Var
+ BG: Integer;
+Begin
+ If Focused Then
+  BG := CLR_TITLEBAR_ACTIVE
+ Else
+  BG := CLR_BACKGROUND;
+ SetFillStyle(SolidFill, BG);
+ Bar(X, Y, X + DLG_BUTTON_WIDTH - 1, Y + DLG_BUTTON_HEIGHT - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(X, Y, X + DLG_BUTTON_WIDTH - 1, Y + DLG_BUTTON_HEIGHT - 1);
+ If Focused Then
+  SetColor(15)
+ Else
+  SetColor(CLR_MENU_TEXT);
+ OutTextXY(X + (DLG_BUTTON_WIDTH - TextWidth(Caption)) Div 2,
+  Y + (DLG_BUTTON_HEIGHT - TextHeight(Caption)) Div 2, Caption);
+End;
+
+{ --- Dessiner les boutons OK / Annuler en bas du dialogue --- }
+
+Procedure DrawDialogButtons(Var Dlg: TDialog);
+Var
+ BX, BY, Cnt, TotalW: Integer;
+Begin
+ BY := Dlg.Y + Dlg.Height - DLG_PADDING - DLG_BUTTON_HEIGHT;
+ Cnt := 1;
+ If Dlg.HasCancel Then
+  Cnt := 2;
+ TotalW := Cnt * DLG_BUTTON_WIDTH + (Cnt - 1) * DLG_BUTTON_SPACING;
+ BX := Dlg.X + (Dlg.Width - TotalW) Div 2;
+ DrawDialogButton(BX, BY, 'OK', True);
+ If Dlg.HasCancel Then
+  DrawDialogButton(BX + DLG_BUTTON_WIDTH + DLG_BUTTON_SPACING,
+   BY, 'Annuler', False);
+End;
+
+{ --- Fermer un dialogue --- }
+
+Procedure CloseDialog(Var Dlg: TDialog);
+Begin
+ Dlg.Visible := False;
+End;
+
+{ --- Nombre de boutons du dialogue --- }
+
+Function DialogButtonCount(Var Dlg: TDialog): Integer;
+Begin
+ If Dlg.HasCancel Then
+  DialogButtonCount := 2
+ Else
+  DialogButtonCount := 1;
+End;
+
+{ --- Test de clic sur un bouton du dialogue --- }
+
+Function DialogButtonHitTest(Var Dlg: TDialog; MX, MY: Integer): Integer;
+Var
+ BX, BY, Cnt, TotalW, I, X1, X2, Y1, Y2: Integer;
+Begin
+ DialogButtonHitTest := -1;
+ BY := Dlg.Y + Dlg.Height - DLG_PADDING - DLG_BUTTON_HEIGHT;
+ Cnt := DialogButtonCount(Dlg);
+ TotalW := Cnt * DLG_BUTTON_WIDTH + (Cnt - 1) * DLG_BUTTON_SPACING;
+ BX := Dlg.X + (Dlg.Width - TotalW) Div 2;
+ For I := 0 To Cnt - 1 Do Begin
+  X1 := BX + I * (DLG_BUTTON_WIDTH + DLG_BUTTON_SPACING);
+  X2 := X1 + DLG_BUTTON_WIDTH - 1;
+  Y1 := BY;
+  Y2 := BY + DLG_BUTTON_HEIGHT - 1;
+  If (MX >= X1) And (MX <= X2) And (MY >= Y1) And (MY <= Y2) Then Begin
+   DialogButtonHitTest := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un point est a l interieur du dialogue --- }
+
+Function IsInsideDialog(Var Dlg: TDialog; MX, MY: Integer): Boolean;
+Begin
+ IsInsideDialog := (MX >= Dlg.X) And (MX < Dlg.X + Dlg.Width) And
+  (MY >= Dlg.Y) And (MY < Dlg.Y + Dlg.Height);
+End;
+
+{ --- Initialiser une entree de liste de fichiers --- }
+
+Procedure InitFileListEntry(Var E: TFileListEntry);
+Begin
+ E.Name := '';
+ E.IsDir := False;
+ E.Size := 0;
+End;
+
+{ --- Vider la liste de fichiers d un dialogue fichier --- }
+
+Procedure ClearFileList(Var FD: TFileDialog);
+Var
+ I: Integer;
+Begin
+ For I := 0 To FD.FileCount - 1 Do
+  InitFileListEntry(FD.FileList[I]);
+ FD.FileCount := 0;
+ FD.SelIndex := -1;
+ FD.ScrollTop := 0;
+End;
+
+{ --- Vider la liste de fichiers d un dialogue dossier --- }
+
+Procedure ClearFolderList(Var FD: TFolderDialog);
+Var
+ I: Integer;
+Begin
+ For I := 0 To FD.FileCount - 1 Do
+  InitFileListEntry(FD.FileList[I]);
+ FD.FileCount := 0;
+ FD.SelIndex := -1;
+ FD.ScrollTop := 0;
+End;
+
+{ --- Verifier si un nom correspond a un filtre (*.ext) --- }
+
+Function MatchesFilter(Name, Pattern: String): Boolean;
+Var
+ Ext, PatExt: String;
+ I, DotPos: Integer;
+Begin
+ If (Pattern = '*.*') Or (Pattern = '*') Then Begin
+  MatchesFilter := True;
+  Exit;
+ End;
+ { Extraire l extension du pattern apres le point }
+ DotPos := 0;
+ For I := Length(Pattern) DownTo 1 Do
+  If Pattern[I] = '.' Then Begin
+   DotPos := I;
+   Break;
+  End;
+ If DotPos = 0 Then Begin
+  MatchesFilter := True;
+  Exit;
+ End;
+ PatExt := LowerCaseStr(Copy(Pattern, DotPos, Length(Pattern) - DotPos + 1));
+ { Extraire l extension du fichier }
+ DotPos := 0;
+ For I := Length(Name) DownTo 1 Do
+  If Name[I] = '.' Then Begin
+   DotPos := I;
+   Break;
+  End;
+ If DotPos = 0 Then Begin
+  MatchesFilter := False;
+  Exit;
+ End;
+ Ext := LowerCaseStr(Copy(Name, DotPos, Length(Name) - DotPos + 1));
+ MatchesFilter := (Ext = PatExt);
+End;
+
+{ --- Charger les fichiers du repertoire courant (dialogue fichier) --- }
+
+Procedure LoadDirectoryFiles(Var FD: TFileDialog);
+Var
+ SR: SearchRec;
+ Pat: String;
+Begin
+ ClearFileList(FD);
+ { Ajouter l entree parent }
+ If FD.FileCount < MAX_DLG_FILES Then Begin
+  FD.FileList[FD.FileCount].Name := '..';
+  FD.FileList[FD.FileCount].IsDir := True;
+  FD.FileList[FD.FileCount].Size := 0;
+  Inc(FD.FileCount);
+ End;
+ { Repertoires }
+ FindFirst(FD.CurrentPath + '*.*', Directory, SR);
+ While (DosError = 0) And (FD.FileCount < MAX_DLG_FILES) Do Begin
+  If ((SR.Attr And Directory) <> 0) And (SR.Name <> '.') And
+   (SR.Name <> '..') Then Begin
+   FD.FileList[FD.FileCount].Name := SR.Name;
+   FD.FileList[FD.FileCount].IsDir := True;
+   FD.FileList[FD.FileCount].Size := 0;
+   Inc(FD.FileCount);
+  End;
+  FindNext(SR);
+ End;
+ FindClose(SR);
+ { Fichiers correspondant au filtre actif }
+ If (FD.FilterIndex >= 0) And (FD.FilterIndex < FD.FilterCount) Then
+  Pat := FD.Filters[FD.FilterIndex].Pattern
+ Else
+  Pat := '*.*';
+ FindFirst(FD.CurrentPath + '*.*', AnyFile, SR);
+ While (DosError = 0) And (FD.FileCount < MAX_DLG_FILES) Do Begin
+  If (SR.Attr And Directory) = 0 Then Begin
+   If MatchesFilter(SR.Name, Pat) Then Begin
+    FD.FileList[FD.FileCount].Name := SR.Name;
+    FD.FileList[FD.FileCount].IsDir := False;
+    FD.FileList[FD.FileCount].Size := SR.Size;
+    Inc(FD.FileCount);
+   End;
+  End;
+  FindNext(SR);
+ End;
+ FindClose(SR);
+End;
+
+{ --- Charger les dossiers du repertoire courant (dialogue dossier) --- }
+
+Procedure LoadDirectoryFolders(Var FD: TFolderDialog);
+Var
+ SR: SearchRec;
+Begin
+ ClearFolderList(FD);
+ { Entree parent }
+ If FD.FileCount < MAX_DLG_FILES Then Begin
+  FD.FileList[FD.FileCount].Name := '..';
+  FD.FileList[FD.FileCount].IsDir := True;
+  FD.FileList[FD.FileCount].Size := 0;
+  Inc(FD.FileCount);
+ End;
+ FindFirst(FD.CurrentPath + '*.*', Directory, SR);
+ While (DosError = 0) And (FD.FileCount < MAX_DLG_FILES) Do Begin
+  If ((SR.Attr And Directory) <> 0) And (SR.Name <> '.') And
+   (SR.Name <> '..') Then Begin
+   FD.FileList[FD.FileCount].Name := SR.Name;
+   FD.FileList[FD.FileCount].IsDir := True;
+   FD.FileList[FD.FileCount].Size := 0;
+   Inc(FD.FileCount);
+  End;
+  FindNext(SR);
+ End;
+ FindClose(SR);
+End;
+
+{ --- Initialiser un dialogue fichier (ouvrir ou enregistrer) --- }
+
+Procedure InitFileDialog(Var FD: TFileDialog; SaveMode: Boolean);
+Var
+ I: Integer;
+Begin
+ If SaveMode Then
+  InitDialog(FD.Base, 'Enregistrer sous', DLG_FILE_WIDTH, DLG_FILE_HEIGHT)
+ Else
+  InitDialog(FD.Base, 'Ouvrir', DLG_FILE_WIDTH, DLG_FILE_HEIGHT);
+ FD.Base.HasCancel := True;
+ FD.IsSaveMode := SaveMode;
+ GetDir(0, FD.CurrentPath);
+ If (Length(FD.CurrentPath) > 0) And
+  (FD.CurrentPath[Length(FD.CurrentPath)] <> '\') And
+  (FD.CurrentPath[Length(FD.CurrentPath)] <> '/') Then
+  FD.CurrentPath := FD.CurrentPath + '/';
+ FD.SelectedFile := '';
+ FD.FileCount := 0;
+ FD.FilterCount := 0;
+ FD.FilterIndex := 0;
+ FD.ScrollTop := 0;
+ FD.SelIndex := -1;
+ FD.InputText := '';
+ FD.InputCursor := 0;
+ For I := 0 To MAX_DLG_FILES - 1 Do
+  InitFileListEntry(FD.FileList[I]);
+End;
+
+{ --- Ajouter un filtre au dialogue fichier --- }
+
+Procedure AddFileFilter(Var FD: TFileDialog; Desc, Pat: String);
+Begin
+ If FD.FilterCount < MAX_DLG_FILTERS Then Begin
+  FD.Filters[FD.FilterCount].Description := Desc;
+  FD.Filters[FD.FilterCount].Pattern := Pat;
+  Inc(FD.FilterCount);
+ End;
+End;
+
+{ --- Dessiner la liste de fichiers --- }
+
+Procedure DrawFileList(Var FD: TFileDialog);
+Var
+ LX, LY, LW, LH, I, Row, TY: Integer;
+ Disp: String;
+Begin
+ LX := FD.Base.X + DLG_PADDING;
+ LY := FD.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := FD.Base.Width - 2 * DLG_PADDING;
+ LH := FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
+  - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT;
+ { Fond de la liste }
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(LX, LY, LX + LW - 1, LY + LH - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(LX, LY, LX + LW - 1, LY + LH - 1);
+ { Lignes }
+ Row := 0;
+ For I := FD.ScrollTop To FD.FileCount - 1 Do Begin
+  TY := LY + Row * DLG_LIST_ROW_HEIGHT;
+  If TY + DLG_LIST_ROW_HEIGHT > LY + LH Then
+   Break;
+  If I = FD.SelIndex Then Begin
+   SetFillStyle(SolidFill, CLR_SELECTION);
+   Bar(LX + 1, TY, LX + LW - 2, TY + DLG_LIST_ROW_HEIGHT - 1);
+   SetColor(15);
+  End Else
+   SetColor(CLR_EDITOR_TEXT);
+  If FD.FileList[I].IsDir Then
+   Disp := '[' + FD.FileList[I].Name + ']'
+  Else
+   Disp := FD.FileList[I].Name;
+  OutTextXY(LX + 4, TY + 2, Disp);
+  Inc(Row);
+ End;
+End;
+
+{ --- Dessiner le champ de saisie du nom de fichier --- }
+
+Procedure DrawFileInput(Var FD: TFileDialog);
+Var
+ IX, IY, IW: Integer;
+Begin
+ IX := FD.Base.X + DLG_PADDING;
+ IY := FD.Base.Y + FD.Base.Height - DLG_PADDING - DLG_BUTTON_HEIGHT
+  - DLG_PADDING - DLG_FILTER_HEIGHT - DLG_PADDING - DLG_INPUT_HEIGHT;
+ IW := FD.Base.Width - 2 * DLG_PADDING;
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(IX, IY, IX + IW - 1, IY + DLG_INPUT_HEIGHT - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(IX, IY, IX + IW - 1, IY + DLG_INPUT_HEIGHT - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ OutTextXY(IX + 4, IY + 3, FD.InputText);
+ { Curseur }
+ SetColor(CLR_CURSOR);
+ Line(IX + 4 + TextWidth(Copy(FD.InputText, 1, FD.InputCursor)),
+  IY + 2,
+  IX + 4 + TextWidth(Copy(FD.InputText, 1, FD.InputCursor)),
+  IY + DLG_INPUT_HEIGHT - 3);
+End;
+
+{ --- Dessiner le selecteur de filtre --- }
+
+Procedure DrawFileFilter(Var FD: TFileDialog);
+Var
+ FX, FY, FW: Integer;
+ Txt: String;
+Begin
+ FX := FD.Base.X + DLG_PADDING;
+ FY := FD.Base.Y + FD.Base.Height - DLG_PADDING - DLG_BUTTON_HEIGHT
+  - DLG_PADDING - DLG_FILTER_HEIGHT;
+ FW := FD.Base.Width - 2 * DLG_PADDING;
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(FX, FY, FX + FW - 1, FY + DLG_FILTER_HEIGHT - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(FX, FY, FX + FW - 1, FY + DLG_FILTER_HEIGHT - 1);
+ If (FD.FilterIndex >= 0) And (FD.FilterIndex < FD.FilterCount) Then
+  Txt := FD.Filters[FD.FilterIndex].Description
+ Else
+  Txt := 'Tous les fichiers (*.*)';
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(FX + 4, FY + 3, Txt);
+End;
+
+{ --- Dessiner le dialogue fichier complet --- }
+
+Procedure DrawFileDialog(Var FD: TFileDialog);
+Begin
+ If Not FD.Base.Visible Then Exit;
+ DrawDialogFrame(FD.Base);
+ { Afficher le chemin courant }
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(FD.Base.X + DLG_PADDING,
+  FD.Base.Y + DLG_TITLE_HEIGHT + 2, FD.CurrentPath);
+ DrawFileList(FD);
+ DrawFileInput(FD);
+ DrawFileFilter(FD);
+ DrawDialogButtons(FD.Base);
+End;
+
+{ --- Test de clic dans la liste de fichiers --- }
+
+Function FileListHitTest(Var FD: TFileDialog; MX, MY: Integer): Integer;
+Var
+ LX, LY, LW, LH, Row: Integer;
+Begin
+ FileListHitTest := -1;
+ LX := FD.Base.X + DLG_PADDING;
+ LY := FD.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := FD.Base.Width - 2 * DLG_PADDING;
+ LH := FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
+  - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT;
+ If (MX >= LX) And (MX < LX + LW) And (MY >= LY) And (MY < LY + LH) Then
+ Begin
+  Row := (MY - LY) Div DLG_LIST_ROW_HEIGHT;
+  If (FD.ScrollTop + Row >= 0) And
+   (FD.ScrollTop + Row < FD.FileCount) Then
+   FileListHitTest := FD.ScrollTop + Row;
+ End;
+End;
+
+{ --- Naviguer vers un repertoire (dialogue fichier) --- }
+
+Procedure NavigateToDir(Var FD: TFileDialog; Dir: String);
+Var
+ NewPath: String;
+Begin
+ If Dir = '..' Then Begin
+  { Remonter d un niveau }
+  NewPath := FD.CurrentPath;
+  If (Length(NewPath) > 1) And
+   ((NewPath[Length(NewPath)] = '/') Or
+    (NewPath[Length(NewPath)] = '\')) Then
+   Dec(NewPath[0]);
+  While (Length(NewPath) > 0) And (NewPath[Length(NewPath)] <> '/') And
+   (NewPath[Length(NewPath)] <> '\') Do
+   Dec(NewPath[0]);
+  If Length(NewPath) = 0 Then
+   NewPath := '/';
+ End Else Begin
+  NewPath := FD.CurrentPath + Dir + '/';
+ End;
+ FD.CurrentPath := NewPath;
+ LoadDirectoryFiles(FD);
+End;
+
+{ --- Gerer une touche clavier dans le dialogue fichier --- }
+
+Procedure HandleFileDialogKey(Var FD: TFileDialog; Key: Char);
+Begin
+ If Key = #13 Then Begin
+  { Entree : valider la saisie }
+  If (FD.SelIndex >= 0) And (FD.SelIndex < FD.FileCount) Then Begin
+   If FD.FileList[FD.SelIndex].IsDir Then
+    NavigateToDir(FD, FD.FileList[FD.SelIndex].Name)
+   Else Begin
+    FD.SelectedFile := FD.CurrentPath + FD.FileList[FD.SelIndex].Name;
+    FD.Base.Result := DR_OK;
+    CloseDialog(FD.Base);
+   End;
+  End Else If Length(FD.InputText) > 0 Then Begin
+   FD.SelectedFile := FD.CurrentPath + FD.InputText;
+   FD.Base.Result := DR_OK;
+   CloseDialog(FD.Base);
+  End;
+ End Else If Key = #27 Then Begin
+  { Echap : annuler }
+  FD.Base.Result := DR_CANCEL;
+  CloseDialog(FD.Base);
+ End Else If Key = #8 Then Begin
+  { Retour arriere }
+  If (FD.InputCursor > 0) And (Length(FD.InputText) > 0) Then Begin
+   Delete(FD.InputText, FD.InputCursor, 1);
+   Dec(FD.InputCursor);
+  End;
+ End Else If (Key >= ' ') And (Key <= '~') Then Begin
+  { Caractere imprimable }
+  If Length(FD.InputText) < 127 Then Begin
+   Inc(FD.InputCursor);
+   Insert(Key, FD.InputText, FD.InputCursor);
+  End;
+ End;
+End;
+
+{ --- Gerer un evenement dans le dialogue fichier --- }
+
+Procedure HandleFileDialogEvent(Var FD: TFileDialog; Var Ev: TEvent);
+Var
+ Idx: Integer;
+Begin
+ If Not FD.Base.Visible Then Exit;
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If Not IsInsideDialog(FD.Base, Ev.MouseX, Ev.MouseY) Then Exit;
+  { Test de clic sur la liste }
+  Idx := FileListHitTest(FD, Ev.MouseX, Ev.MouseY);
+  If Idx >= 0 Then Begin
+   FD.SelIndex := Idx;
+   If FD.FileList[Idx].IsDir Then
+    FD.InputText := ''
+   Else
+    FD.InputText := FD.FileList[Idx].Name;
+   FD.InputCursor := Length(FD.InputText);
+  End;
+  { Test de clic sur les boutons }
+  Idx := DialogButtonHitTest(FD.Base, Ev.MouseX, Ev.MouseY);
+  If Idx = 0 Then Begin
+   { Bouton OK }
+   If Length(FD.InputText) > 0 Then Begin
+    FD.SelectedFile := FD.CurrentPath + FD.InputText;
+    FD.Base.Result := DR_OK;
+    CloseDialog(FD.Base);
+   End;
+  End Else If Idx = 1 Then Begin
+   FD.Base.Result := DR_CANCEL;
+   CloseDialog(FD.Base);
+  End;
+ End Else If Ev.Kind = EV_KEY_CHAR Then
+  HandleFileDialogKey(FD, Ev.KeyChar)
+ Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  { Touches speciales : haut/bas pour la liste }
+  If Ev.KeyCode = $4800 Then Begin { Fleche haut }
+   If FD.SelIndex > 0 Then Begin
+    Dec(FD.SelIndex);
+    If FD.SelIndex < FD.ScrollTop Then
+     FD.ScrollTop := FD.SelIndex;
+    If Not FD.FileList[FD.SelIndex].IsDir Then Begin
+     FD.InputText := FD.FileList[FD.SelIndex].Name;
+     FD.InputCursor := Length(FD.InputText);
+    End;
+   End;
+  End Else If Ev.KeyCode = $5000 Then Begin { Fleche bas }
+   If FD.SelIndex < FD.FileCount - 1 Then Begin
+    Inc(FD.SelIndex);
+    If Not FD.FileList[FD.SelIndex].IsDir Then Begin
+     FD.InputText := FD.FileList[FD.SelIndex].Name;
+     FD.InputCursor := Length(FD.InputText);
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ --- Afficher le dialogue d ouverture de fichier (modale) --- }
+{ Note : boucle modale simplifiee, a completer dans un TODO futur }
+
+Function ShowOpenDialog(Filter: String): String;
+Var
+ FD: TFileDialog;
+Begin
+ InitFileDialog(FD, False);
+ If Length(Filter) > 0 Then
+  AddFileFilter(FD, Filter, Filter);
+ LoadDirectoryFiles(FD);
+ DrawFileDialog(FD);
+ { Boucle modale a implementer dans un TODO futur }
+ ShowOpenDialog := '';
+End;
+
+{ --- Afficher le dialogue d enregistrement de fichier (modale) --- }
+{ Note : boucle modale simplifiee, a completer dans un TODO futur }
+
+Function ShowSaveDialog(Filter, Default: String): String;
+Var
+ FD: TFileDialog;
+Begin
+ InitFileDialog(FD, True);
+ FD.InputText := Default;
+ FD.InputCursor := Length(Default);
+ If Length(Filter) > 0 Then
+  AddFileFilter(FD, Filter, Filter);
+ LoadDirectoryFiles(FD);
+ DrawFileDialog(FD);
+ { Boucle modale a implementer dans un TODO futur }
+ ShowSaveDialog := '';
+End;
+
+{ --- Initialiser un dialogue de dossier --- }
+
+Procedure InitFolderDialog(Var FD: TFolderDialog; StartPath: String);
+Var
+ I: Integer;
+Begin
+ InitDialog(FD.Base, 'Selectionner un dossier',
+  DLG_FOLDER_WIDTH, DLG_FOLDER_HEIGHT);
+ FD.Base.HasCancel := True;
+ If Length(StartPath) > 0 Then
+  FD.CurrentPath := StartPath
+ Else
+  GetDir(0, FD.CurrentPath);
+ If (Length(FD.CurrentPath) > 0) And
+  (FD.CurrentPath[Length(FD.CurrentPath)] <> '/') And
+  (FD.CurrentPath[Length(FD.CurrentPath)] <> '\') Then
+  FD.CurrentPath := FD.CurrentPath + '/';
+ FD.SelectedFolder := '';
+ FD.FileCount := 0;
+ FD.ScrollTop := 0;
+ FD.SelIndex := -1;
+ For I := 0 To MAX_DLG_FILES - 1 Do
+  InitFileListEntry(FD.FileList[I]);
+End;
+
+{ --- Dessiner la liste de dossiers --- }
+
+Procedure DrawFolderList(Var FD: TFolderDialog);
+Var
+ LX, LY, LW, LH, I, Row, TY: Integer;
+Begin
+ LX := FD.Base.X + DLG_PADDING;
+ LY := FD.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := FD.Base.Width - 2 * DLG_PADDING;
+ LH := FD.Base.Height - DLG_TITLE_HEIGHT - 2 * DLG_PADDING
+  - DLG_BUTTON_HEIGHT;
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(LX, LY, LX + LW - 1, LY + LH - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(LX, LY, LX + LW - 1, LY + LH - 1);
+ Row := 0;
+ For I := FD.ScrollTop To FD.FileCount - 1 Do Begin
+  TY := LY + Row * DLG_LIST_ROW_HEIGHT;
+  If TY + DLG_LIST_ROW_HEIGHT > LY + LH Then
+   Break;
+  If I = FD.SelIndex Then Begin
+   SetFillStyle(SolidFill, CLR_SELECTION);
+   Bar(LX + 1, TY, LX + LW - 2, TY + DLG_LIST_ROW_HEIGHT - 1);
+   SetColor(15);
+  End Else
+   SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(LX + 4, TY + 2, '[' + FD.FileList[I].Name + ']');
+  Inc(Row);
+ End;
+End;
+
+{ --- Dessiner le dialogue de dossier complet --- }
+
+Procedure DrawFolderDialog(Var FD: TFolderDialog);
+Begin
+ If Not FD.Base.Visible Then Exit;
+ DrawDialogFrame(FD.Base);
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(FD.Base.X + DLG_PADDING,
+  FD.Base.Y + DLG_TITLE_HEIGHT + 2, FD.CurrentPath);
+ DrawFolderList(FD);
+ DrawDialogButtons(FD.Base);
+End;
+
+{ --- Test de clic dans la liste de dossiers --- }
+
+Function FolderListHitTest(Var FD: TFolderDialog;
+ MX, MY: Integer): Integer;
+Var
+ LX, LY, LW, LH, Row: Integer;
+Begin
+ FolderListHitTest := -1;
+ LX := FD.Base.X + DLG_PADDING;
+ LY := FD.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ LW := FD.Base.Width - 2 * DLG_PADDING;
+ LH := FD.Base.Height - DLG_TITLE_HEIGHT - 2 * DLG_PADDING
+  - DLG_BUTTON_HEIGHT;
+ If (MX >= LX) And (MX < LX + LW) And (MY >= LY) And (MY < LY + LH) Then
+ Begin
+  Row := (MY - LY) Div DLG_LIST_ROW_HEIGHT;
+  If (FD.ScrollTop + Row >= 0) And
+   (FD.ScrollTop + Row < FD.FileCount) Then
+   FolderListHitTest := FD.ScrollTop + Row;
+ End;
+End;
+
+{ --- Charger les entrees de dossier (alias de LoadDirectoryFolders) --- }
+
+Procedure LoadFolderEntries(Var FD: TFolderDialog);
+Begin
+ LoadDirectoryFolders(FD);
+End;
+
+{ --- Naviguer vers un dossier (dialogue dossier) --- }
+
+Procedure NavigateToFolder(Var FD: TFolderDialog; Dir: String);
+Var
+ NewPath: String;
+Begin
+ If Dir = '..' Then Begin
+  NewPath := FD.CurrentPath;
+  If (Length(NewPath) > 1) And
+   ((NewPath[Length(NewPath)] = '/') Or
+    (NewPath[Length(NewPath)] = '\')) Then
+   Dec(NewPath[0]);
+  While (Length(NewPath) > 0) And (NewPath[Length(NewPath)] <> '/') And
+   (NewPath[Length(NewPath)] <> '\') Do
+   Dec(NewPath[0]);
+  If Length(NewPath) = 0 Then
+   NewPath := '/';
+ End Else Begin
+  NewPath := FD.CurrentPath + Dir + '/';
+ End;
+ FD.CurrentPath := NewPath;
+ LoadFolderEntries(FD);
+End;
+
+{ --- Gerer un evenement dans le dialogue de dossier --- }
+
+Procedure HandleFolderDialogEvent(Var FD: TFolderDialog;
+ Var Ev: TEvent);
+Var
+ Idx: Integer;
+Begin
+ If Not FD.Base.Visible Then Exit;
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If Not IsInsideDialog(FD.Base, Ev.MouseX, Ev.MouseY) Then Exit;
+  Idx := FolderListHitTest(FD, Ev.MouseX, Ev.MouseY);
+  If Idx >= 0 Then Begin
+   FD.SelIndex := Idx;
+   FD.SelectedFolder := FD.CurrentPath + FD.FileList[Idx].Name;
+  End;
+  Idx := DialogButtonHitTest(FD.Base, Ev.MouseX, Ev.MouseY);
+  If Idx = 0 Then Begin
+   If Length(FD.SelectedFolder) > 0 Then Begin
+    FD.Base.Result := DR_OK;
+    CloseDialog(FD.Base);
+   End;
+  End Else If Idx = 1 Then Begin
+   FD.Base.Result := DR_CANCEL;
+   CloseDialog(FD.Base);
+  End;
+ End Else If Ev.Kind = EV_KEY_CHAR Then Begin
+  If Ev.KeyChar = #13 Then Begin
+   If (FD.SelIndex >= 0) And (FD.SelIndex < FD.FileCount) Then
+    NavigateToFolder(FD, FD.FileList[FD.SelIndex].Name);
+  End Else If Ev.KeyChar = #27 Then Begin
+   FD.Base.Result := DR_CANCEL;
+   CloseDialog(FD.Base);
+  End;
+ End Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  If Ev.KeyCode = $4800 Then Begin
+   If FD.SelIndex > 0 Then Begin
+    Dec(FD.SelIndex);
+    If FD.SelIndex < FD.ScrollTop Then
+     FD.ScrollTop := FD.SelIndex;
+    FD.SelectedFolder := FD.CurrentPath + FD.FileList[FD.SelIndex].Name;
+   End;
+  End Else If Ev.KeyCode = $5000 Then Begin
+   If FD.SelIndex < FD.FileCount - 1 Then Begin
+    Inc(FD.SelIndex);
+    FD.SelectedFolder := FD.CurrentPath + FD.FileList[FD.SelIndex].Name;
+   End;
+  End;
+ End;
+End;
+
+{ --- Afficher le dialogue de selection de dossier (modale) --- }
+{ Note : boucle modale simplifiee, a completer dans un TODO futur }
+
+Function ShowFolderDialog(StartPath: String): String;
+Var
+ FD: TFolderDialog;
+Begin
+ InitFolderDialog(FD, StartPath);
+ LoadFolderEntries(FD);
+ DrawFolderDialog(FD);
+ { Boucle modale a implementer dans un TODO futur }
+ ShowFolderDialog := '';
+End;
+
+{ --- Nombre de boutons d une boite de message --- }
+
+Function MessageBoxButtonCount(Btns: TMessageButtons): Integer;
+Begin
+ Case Btns Of
+  MB_OK:          MessageBoxButtonCount := 1;
+  MB_OKCANCEL:    MessageBoxButtonCount := 2;
+  MB_YESNO:       MessageBoxButtonCount := 2;
+  MB_YESNOCANCEL: MessageBoxButtonCount := 3;
+ Else
+  MessageBoxButtonCount := 1;
+ End;
+End;
+
+{ --- Libelle d un bouton de boite de message --- }
+
+Function MessageBoxButtonLabel(Btns: TMessageButtons;
+ Idx: Integer): String;
+Begin
+ MessageBoxButtonLabel := '';
+ Case Btns Of
+  MB_OK:
+   If Idx = 0 Then MessageBoxButtonLabel := 'OK';
+  MB_OKCANCEL:
+   Case Idx Of
+    0: MessageBoxButtonLabel := 'OK';
+    1: MessageBoxButtonLabel := 'Annuler';
+   End;
+  MB_YESNO:
+   Case Idx Of
+    0: MessageBoxButtonLabel := 'Oui';
+    1: MessageBoxButtonLabel := 'Non';
+   End;
+  MB_YESNOCANCEL:
+   Case Idx Of
+    0: MessageBoxButtonLabel := 'Oui';
+    1: MessageBoxButtonLabel := 'Non';
+    2: MessageBoxButtonLabel := 'Annuler';
+   End;
+ End;
+End;
+
+{ --- Resultat associe a un bouton de boite de message --- }
+
+Function MessageBoxButtonResult(Btns: TMessageButtons;
+ Idx: Integer): Integer;
+Begin
+ MessageBoxButtonResult := DR_NONE;
+ Case Btns Of
+  MB_OK:
+   If Idx = 0 Then MessageBoxButtonResult := DR_OK;
+  MB_OKCANCEL:
+   Case Idx Of
+    0: MessageBoxButtonResult := DR_OK;
+    1: MessageBoxButtonResult := DR_CANCEL;
+   End;
+  MB_YESNO:
+   Case Idx Of
+    0: MessageBoxButtonResult := DR_YES;
+    1: MessageBoxButtonResult := DR_NO;
+   End;
+  MB_YESNOCANCEL:
+   Case Idx Of
+    0: MessageBoxButtonResult := DR_YES;
+    1: MessageBoxButtonResult := DR_NO;
+    2: MessageBoxButtonResult := DR_CANCEL;
+   End;
+ End;
+End;
+
+{ --- Initialiser une boite de message --- }
+
+Procedure InitMessageBox(Var MB: TMessageBoxDlg; T, Txt: String;
+ Btns: TMessageButtons; Ico: TMessageIcon);
+Begin
+ InitDialog(MB.Base, T, DLG_MSG_WIDTH, DLG_MSG_HEIGHT);
+ MB.Text := Txt;
+ MB.Buttons := Btns;
+ MB.Icon := Ico;
+ MB.FocusBtn := 0;
+ If Btns = MB_OK Then
+  MB.Base.HasCancel := False
+ Else
+  MB.Base.HasCancel := True;
+End;
+
+{ --- Dessiner l icone de la boite de message --- }
+
+Procedure DrawMessageIcon(Var MB: TMessageBoxDlg);
+Var
+ IX, IY, CX, CY, R: Integer;
+Begin
+ IX := MB.Base.X + DLG_PADDING;
+ IY := MB.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ CX := IX + DLG_ICON_SIZE Div 2;
+ CY := IY + DLG_ICON_SIZE Div 2;
+ R := DLG_ICON_SIZE Div 2;
+ Case MB.Icon Of
+  MI_INFO: Begin
+   SetColor(CLR_TITLEBAR_ACTIVE);
+   Circle(CX, CY, R);
+   OutTextXY(CX - 2, CY - 4, 'i');
+  End;
+  MI_WARNING: Begin
+   SetColor(14);
+   Line(CX, IY, IX, IY + DLG_ICON_SIZE);
+   Line(CX, IY, IX + DLG_ICON_SIZE, IY + DLG_ICON_SIZE);
+   Line(IX, IY + DLG_ICON_SIZE, IX + DLG_ICON_SIZE, IY + DLG_ICON_SIZE);
+   SetColor(0);
+   OutTextXY(CX - 2, CY - 2, '!');
+  End;
+  MI_ERROR: Begin
+   SetColor(4);
+   Circle(CX, CY, R);
+   OutTextXY(CX - 2, CY - 4, 'X');
+  End;
+  MI_QUESTION: Begin
+   SetColor(CLR_TITLEBAR_ACTIVE);
+   Circle(CX, CY, R);
+   OutTextXY(CX - 2, CY - 4, '?');
+  End;
+ End;
+End;
+
+{ --- Dessiner le texte de la boite de message --- }
+
+Procedure DrawMessageText(Var MB: TMessageBoxDlg);
+Var
+ TX, TY: Integer;
+Begin
+ TX := MB.Base.X + DLG_PADDING + DLG_ICON_SIZE + DLG_PADDING;
+ TY := MB.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(TX, TY, MB.Text);
+End;
+
+{ --- Dessiner la boite de message complete --- }
+
+Procedure DrawMessageBox(Var MB: TMessageBoxDlg);
+Var
+ I, Cnt, TotalW, BX, BY: Integer;
+Begin
+ If Not MB.Base.Visible Then Exit;
+ DrawDialogFrame(MB.Base);
+ DrawMessageIcon(MB);
+ DrawMessageText(MB);
+ { Dessiner les boutons specifiques }
+ Cnt := MessageBoxButtonCount(MB.Buttons);
+ TotalW := Cnt * DLG_BUTTON_WIDTH + (Cnt - 1) * DLG_BUTTON_SPACING;
+ BX := MB.Base.X + (MB.Base.Width - TotalW) Div 2;
+ BY := MB.Base.Y + MB.Base.Height - DLG_PADDING - DLG_BUTTON_HEIGHT;
+ For I := 0 To Cnt - 1 Do
+  DrawDialogButton(
+   BX + I * (DLG_BUTTON_WIDTH + DLG_BUTTON_SPACING), BY,
+   MessageBoxButtonLabel(MB.Buttons, I),
+   I = MB.FocusBtn);
+End;
+
+{ --- Gerer un evenement dans la boite de message --- }
+
+Procedure HandleMessageBoxEvent(Var MB: TMessageBoxDlg;
+ Var Ev: TEvent);
+Var
+ Cnt, I, BX, BY, TotalW, X1, X2, Y1, Y2: Integer;
+Begin
+ If Not MB.Base.Visible Then Exit;
+ Cnt := MessageBoxButtonCount(MB.Buttons);
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If Not IsInsideDialog(MB.Base, Ev.MouseX, Ev.MouseY) Then Exit;
+  TotalW := Cnt * DLG_BUTTON_WIDTH + (Cnt - 1) * DLG_BUTTON_SPACING;
+  BX := MB.Base.X + (MB.Base.Width - TotalW) Div 2;
+  BY := MB.Base.Y + MB.Base.Height - DLG_PADDING - DLG_BUTTON_HEIGHT;
+  For I := 0 To Cnt - 1 Do Begin
+   X1 := BX + I * (DLG_BUTTON_WIDTH + DLG_BUTTON_SPACING);
+   X2 := X1 + DLG_BUTTON_WIDTH - 1;
+   Y1 := BY;
+   Y2 := BY + DLG_BUTTON_HEIGHT - 1;
+   If (Ev.MouseX >= X1) And (Ev.MouseX <= X2) And
+    (Ev.MouseY >= Y1) And (Ev.MouseY <= Y2) Then Begin
+    MB.Base.Result := MessageBoxButtonResult(MB.Buttons, I);
+    CloseDialog(MB.Base);
+    Exit;
+   End;
+  End;
+ End Else If Ev.Kind = EV_KEY_CHAR Then Begin
+  If Ev.KeyChar = #13 Then Begin
+   MB.Base.Result := MessageBoxButtonResult(MB.Buttons, MB.FocusBtn);
+   CloseDialog(MB.Base);
+  End Else If Ev.KeyChar = #27 Then Begin
+   MB.Base.Result := DR_CANCEL;
+   CloseDialog(MB.Base);
+  End Else If Ev.KeyChar = #9 Then Begin
+   MB.FocusBtn := (MB.FocusBtn + 1) Mod Cnt;
+  End;
+ End Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  If Ev.KeyCode = $4B00 Then Begin { Fleche gauche }
+   If MB.FocusBtn > 0 Then
+    Dec(MB.FocusBtn);
+  End Else If Ev.KeyCode = $4D00 Then Begin { Fleche droite }
+   If MB.FocusBtn < Cnt - 1 Then
+    Inc(MB.FocusBtn);
+  End;
+ End;
+End;
+
+{ --- Afficher une boite de message (modale) --- }
+{ Note : boucle modale simplifiee, a completer dans un TODO futur }
+
+Function ShowMessageBox(Title, Text: String; Buttons: TMessageButtons;
+ Icon: TMessageIcon): Integer;
+Var
+ MB: TMessageBoxDlg;
+Begin
+ InitMessageBox(MB, Title, Text, Buttons, Icon);
+ DrawMessageBox(MB);
+ { Boucle modale a implementer dans un TODO futur }
+ ShowMessageBox := DR_OK;
+End;
+
+{ --- Initialiser une boite de saisie --- }
+
+Procedure InitInputBox(Var IB: TInputBox; T, Prompt, Default: String);
+Begin
+ InitDialog(IB.Base, T, DLG_INPUT_WIDTH, DLG_INPUT_HEIGHT);
+ IB.Base.HasCancel := True;
+ IB.Prompt := Prompt;
+ IB.InputText := Default;
+ IB.InputCursor := Length(Default);
+ IB.Cancelled := False;
+End;
+
+{ --- Dessiner le champ de saisie de la boite de saisie --- }
+
+Procedure DrawInputField(Var IB: TInputBox);
+Var
+ IX, IY, IW: Integer;
+Begin
+ IX := IB.Base.X + DLG_PADDING;
+ IY := IB.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING + 20;
+ IW := IB.Base.Width - 2 * DLG_PADDING;
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(IX, IY, IX + IW - 1, IY + DLG_INPUT_HEIGHT - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(IX, IY, IX + IW - 1, IY + DLG_INPUT_HEIGHT - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ OutTextXY(IX + 4, IY + 3, IB.InputText);
+ { Curseur }
+ SetColor(CLR_CURSOR);
+ Line(IX + 4 + TextWidth(Copy(IB.InputText, 1, IB.InputCursor)),
+  IY + 2,
+  IX + 4 + TextWidth(Copy(IB.InputText, 1, IB.InputCursor)),
+  IY + DLG_INPUT_HEIGHT - 3);
+End;
+
+{ --- Dessiner la boite de saisie complete --- }
+
+Procedure DrawInputBox(Var IB: TInputBox);
+Begin
+ If Not IB.Base.Visible Then Exit;
+ DrawDialogFrame(IB.Base);
+ { Invite }
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(IB.Base.X + DLG_PADDING,
+  IB.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING, IB.Prompt);
+ DrawInputField(IB);
+ DrawDialogButtons(IB.Base);
+End;
+
+{ --- Gerer une touche clavier dans la boite de saisie --- }
+
+Procedure HandleInputBoxKey(Var IB: TInputBox; Key: Char);
+Begin
+ If Key = #13 Then Begin
+  IB.Cancelled := False;
+  IB.Base.Result := DR_OK;
+  CloseDialog(IB.Base);
+ End Else If Key = #27 Then Begin
+  IB.Cancelled := True;
+  IB.Base.Result := DR_CANCEL;
+  CloseDialog(IB.Base);
+ End Else If Key = #8 Then Begin
+  If (IB.InputCursor > 0) And (Length(IB.InputText) > 0) Then Begin
+   Delete(IB.InputText, IB.InputCursor, 1);
+   Dec(IB.InputCursor);
+  End;
+ End Else If (Key >= ' ') And (Key <= '~') Then Begin
+  If Length(IB.InputText) < 255 Then Begin
+   Inc(IB.InputCursor);
+   Insert(Key, IB.InputText, IB.InputCursor);
+  End;
+ End;
+End;
+
+{ --- Gerer un evenement dans la boite de saisie --- }
+
+Procedure HandleInputBoxEvent(Var IB: TInputBox; Var Ev: TEvent);
+Var
+ Idx: Integer;
+Begin
+ If Not IB.Base.Visible Then Exit;
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If Not IsInsideDialog(IB.Base, Ev.MouseX, Ev.MouseY) Then Exit;
+  Idx := DialogButtonHitTest(IB.Base, Ev.MouseX, Ev.MouseY);
+  If Idx = 0 Then Begin
+   IB.Cancelled := False;
+   IB.Base.Result := DR_OK;
+   CloseDialog(IB.Base);
+  End Else If Idx = 1 Then Begin
+   IB.Cancelled := True;
+   IB.Base.Result := DR_CANCEL;
+   CloseDialog(IB.Base);
+  End;
+ End Else If Ev.Kind = EV_KEY_CHAR Then
+  HandleInputBoxKey(IB, Ev.KeyChar);
+End;
+
+{ --- Afficher une boite de saisie (modale) --- }
+{ Note : boucle modale simplifiee, a completer dans un TODO futur }
+
+Function ShowInputBox(Title, Prompt, Default: String): String;
+Var
+ IB: TInputBox;
+Begin
+ InitInputBox(IB, Title, Prompt, Default);
+ DrawInputBox(IB);
+ { Boucle modale a implementer dans un TODO futur }
+ ShowInputBox := '';
+End;
+
+{ --- Obtenir le resultat d un dialogue --- }
+
+Function GetDialogResult(Var Dlg: TDialog): Integer;
+Begin
+ GetDialogResult := Dlg.Result;
+End;
+
+{ --- Verifier si un dialogue est visible --- }
+
+Function IsDialogVisible(Var Dlg: TDialog): Boolean;
+Begin
+ IsDialogVisible := Dlg.Visible;
+End;
+
+{ --- Obtenir le titre d un dialogue --- }
+
+Function GetDialogTitle(Var Dlg: TDialog): String;
+Begin
+ GetDialogTitle := Dlg.Title;
+End;
+
+{ --- Obtenir la largeur d un dialogue --- }
+
+Function GetDialogWidth(Var Dlg: TDialog): Integer;
+Begin
+ GetDialogWidth := Dlg.Width;
+End;
+
+{ --- Obtenir la hauteur d un dialogue --- }
+
+Function GetDialogHeight(Var Dlg: TDialog): Integer;
+Begin
+ GetDialogHeight := Dlg.Height;
+End;
+
+{ --- Obtenir le chemin courant du dialogue fichier --- }
+
+Function GetFileDialogPath(Var FD: TFileDialog): String;
+Begin
+ GetFileDialogPath := FD.CurrentPath;
+End;
+
+{ --- Obtenir le fichier selectionne --- }
+
+Function GetFileDialogSelection(Var FD: TFileDialog): String;
+Begin
+ GetFileDialogSelection := FD.SelectedFile;
+End;
+
+{ --- Obtenir le nombre de filtres du dialogue fichier --- }
+
+Function GetFileDialogFilterCount(Var FD: TFileDialog): Integer;
+Begin
+ GetFileDialogFilterCount := FD.FilterCount;
+End;
+
+{ --- Obtenir l index du filtre actif --- }
+
+Function GetFileDialogFilterIndex(Var FD: TFileDialog): Integer;
+Begin
+ GetFileDialogFilterIndex := FD.FilterIndex;
+End;
+
+{ --- Definir l index du filtre actif --- }
+
+Procedure SetFileDialogFilterIndex(Var FD: TFileDialog; Idx: Integer);
+Begin
+ If (Idx >= 0) And (Idx < FD.FilterCount) Then
+  FD.FilterIndex := Idx;
+End;
+
+{ --- Obtenir le chemin courant du dialogue dossier --- }
+
+Function GetFolderDialogPath(Var FD: TFolderDialog): String;
+Begin
+ GetFolderDialogPath := FD.CurrentPath;
+End;
+
+{ --- Obtenir le dossier selectionne --- }
+
+Function GetFolderDialogSelection(Var FD: TFolderDialog): String;
+Begin
+ GetFolderDialogSelection := FD.SelectedFolder;
+End;
+
+{ --- Obtenir le texte saisi dans la boite de saisie --- }
+
+Function GetInputBoxText(Var IB: TInputBox): String;
+Begin
+ GetInputBoxText := IB.InputText;
+End;
+
+{ --- Verifier si la boite de saisie a ete annulee --- }
+
+Function IsInputBoxCancelled(Var IB: TInputBox): Boolean;
+Begin
+ IsInputBoxCancelled := IB.Cancelled;
+End;
+
+{ --- Obtenir le bouton avec le focus dans la boite de message --- }
+
+Function GetMessageBoxFocusButton(Var MB: TMessageBoxDlg): Integer;
+Begin
+ GetMessageBoxFocusButton := MB.FocusBtn;
+End;
+
+{ --- Definir le bouton avec le focus dans la boite de message --- }
+
+Procedure SetMessageBoxFocusButton(Var MB: TMessageBoxDlg;
+ Idx: Integer);
+Var
+ Cnt: Integer;
+Begin
+ Cnt := MessageBoxButtonCount(MB.Buttons);
+ If (Idx >= 0) And (Idx < Cnt) Then
+  MB.FocusBtn := Idx;
+End;
+
+{ --- Nom de l icone de message --- }
+
+Function IconName(Ico: TMessageIcon): String;
+Begin
+ Case Ico Of
+  MI_INFO:     IconName := 'Information';
+  MI_WARNING:  IconName := 'Avertissement';
+  MI_ERROR:    IconName := 'Erreur';
+  MI_QUESTION: IconName := 'Question';
+ Else
+  IconName := 'Inconnu';
+ End;
+End;
+
+{ --- Nom du type de boutons --- }
+
+Function ButtonsName(Btns: TMessageButtons): String;
+Begin
+ Case Btns Of
+  MB_OK:          ButtonsName := 'OK';
+  MB_OKCANCEL:    ButtonsName := 'OK/Annuler';
+  MB_YESNO:       ButtonsName := 'Oui/Non';
+  MB_YESNOCANCEL: ButtonsName := 'Oui/Non/Annuler';
+ Else
+  ButtonsName := 'Inconnu';
+ End;
+End;
+
+{ --- Nom d un resultat de dialogue --- }
+
+Function DialogResultName(R: Integer): String;
+Begin
+ Case R Of
+  DR_OK:     DialogResultName := 'OK';
+  DR_CANCEL: DialogResultName := 'Annuler';
+  DR_YES:    DialogResultName := 'Oui';
+  DR_NO:     DialogResultName := 'Non';
+  DR_NONE:   DialogResultName := 'Aucun';
+ Else
+  DialogResultName := 'Inconnu';
+ End;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -12345,6 +13746,6 @@ BEGIN
  DrawOutputPanel(OutputPanel);
  InitErrorList(ErrorList);
  DrawErrorList(ErrorList);
- { Boucle principale a venir (TODO 21+) }
+ { Boucle principale a venir (TODO 22+) }
  ShutdownGraphics;
 END.
