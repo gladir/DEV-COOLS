@@ -215,7 +215,7 @@
             Proprietes du projet et du fichier.
             Tri alphabetique ou par categorie.
 
-  TODO 19 - PANNEAU DE SORTIE (OUTPUT) [A FAIRE]
+  TODO 19 - PANNEAU DE SORTIE (OUTPUT) [IMPLEMENTE]
             TOutputPanel : onglets Sortie de build, Sortie de
               debogage, Recherche de resultats.
             InitOutputPanel, DrawOutputPanel, HandleOutputEvent,

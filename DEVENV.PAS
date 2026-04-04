@@ -592,7 +592,7 @@
             Edition des valeurs de proprietes en cliquant dessus.
             Tri alphabetique ou par categorie.
 
-  TODO 19 - PANNEAU DE SORTIE (OUTPUT) [A FAIRE]
+  TODO 19 - PANNEAU DE SORTIE (OUTPUT) [IMPLEMENTE]
             Panneau en bas de la zone d edition (hauteur
             OUTPUT_HEIGHT = 150 pixels) avec onglets :
               - Sortie de build
@@ -1053,6 +1053,16 @@ Const
  MAX_PROPERTIES        = 32;       { nombre max de proprietes       }
  PROPS_HEADER_HEIGHT   = 22;       { hauteur de l en-tete           }
  PROPS_SPLITTER_HEIGHT = 4;        { hauteur du splitter horizontal }
+
+ { Panneau de sortie (output) }
+ OUTPUT_MIN_HEIGHT     = 60;       { hauteur minimale en pixels     }
+ OUTPUT_MAX_HEIGHT     = 400;      { hauteur maximale en pixels     }
+ OUTPUT_TAB_HEIGHT     = 22;       { hauteur des onglets            }
+ OUTPUT_LINE_HEIGHT    = 16;       { hauteur d une ligne de texte   }
+ OUTPUT_SCROLL_STEP    = 3;        { pas de defilement              }
+ MAX_OUTPUT_LINES      = 1024;     { nombre max de lignes           }
+ OUTPUT_SPLITTER_HEIGHT= 4;        { hauteur du splitter horizontal }
+ OUTPUT_TAB_COUNT      = 3;        { nombre d onglets               }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -1633,6 +1643,47 @@ Type
   EditActive : Boolean;              { edition en cours               }
  End;
 
+ { Onglets du panneau de sortie }
+ TOutputTabKind = (
+  OTK_BUILD,            { sortie de build                     }
+  OTK_DEBUG,            { sortie de debogage                  }
+  OTK_SEARCH            { resultats de recherche              }
+ );
+
+ { Type de ligne de sortie }
+ TOutputLineKind = (
+  OLK_INFO,             { information (blanc)                 }
+  OLK_ERROR,            { erreur (rouge)                      }
+  OLK_WARNING,          { avertissement (jaune/orange)        }
+  OLK_SUCCESS           { succes (vert)                       }
+ );
+
+ { Ligne du panneau de sortie }
+ TOutputLine = Record
+  Text     : String[255];          { texte de la ligne              }
+  Kind     : TOutputLineKind;      { type du message                }
+  FileName : String[127];          { fichier source associe         }
+  Line     : Integer;              { numero de ligne source         }
+  Col      : Integer;              { numero de colonne source       }
+ End;
+
+ { Panneau de sortie }
+ TOutputPanel = Record
+  Lines    : Array[0..MAX_OUTPUT_LINES - 1] Of TOutputLine;
+  LineCounts: Array[0..OUTPUT_TAB_COUNT - 1] Of Integer;
+  ActiveTab: TOutputTabKind;       { onglet actif                   }
+  ScrollTop: Integer;              { premiere ligne visible         }
+  SelectedIdx: Integer;            { index de la ligne selectionnee }
+  X        : Integer;              { position X du panneau          }
+  Y        : Integer;              { position Y du panneau          }
+  Width    : Integer;              { largeur du panneau             }
+  Height   : Integer;              { hauteur du panneau             }
+  SplitterY: Integer;              { position Y du splitter         }
+  Dragging : Boolean;              { splitter en cours de drag      }
+  Visible  : Boolean;              { panneau visible                }
+  NeedRepaint: Boolean;            { doit etre redessine            }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1679,6 +1730,8 @@ Var
  SolExplorer  : TSolutionExplorer;
  { Panneau de proprietes }
  PropsPanel   : TPropertiesPanel;
+ { Panneau de sortie }
+ OutputPanel  : TOutputPanel;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -10502,6 +10555,677 @@ Begin
  IsPropertyEditing := PP.EditActive;
 End;
 
+{ ============================================================
+  TODO 19 - PANNEAU DE SORTIE (OUTPUT) [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser une ligne de sortie --- }
+
+Procedure InitOutputLine(Var OL: TOutputLine);
+Begin
+ OL.Text := '';
+ OL.Kind := OLK_INFO;
+ OL.FileName := '';
+ OL.Line := 0;
+ OL.Col := 0;
+End;
+
+{ --- Initialiser le panneau de sortie --- }
+
+Procedure InitOutputPanel(Var OP: TOutputPanel);
+Var
+ I: Integer;
+Begin
+ For I := 0 To MAX_OUTPUT_LINES - 1 Do
+  InitOutputLine(OP.Lines[I]);
+ For I := 0 To OUTPUT_TAB_COUNT - 1 Do
+  OP.LineCounts[I] := 0;
+ OP.ActiveTab := OTK_BUILD;
+ OP.ScrollTop := 0;
+ OP.SelectedIdx := -1;
+ OP.X := EXPLORER_WIDTH + SPLITTER_WIDTH;
+ OP.Y := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ OP.Width := GetScreenWidth - EXPLORER_WIDTH - SPLITTER_WIDTH;
+ OP.Height := OUTPUT_HEIGHT;
+ OP.SplitterY := OP.Y - OUTPUT_SPLITTER_HEIGHT;
+ OP.Dragging := False;
+ OP.Visible := True;
+ OP.NeedRepaint := True;
+End;
+
+{ --- Vider le panneau de sortie pour un onglet --- }
+
+Procedure ClearOutput(Var OP: TOutputPanel; Tab: Integer);
+Var
+ I, Base: Integer;
+Begin
+ If (Tab < 0) Or (Tab >= OUTPUT_TAB_COUNT) Then Exit;
+ Base := Tab * (MAX_OUTPUT_LINES Div OUTPUT_TAB_COUNT);
+ For I := 0 To OP.LineCounts[Tab] - 1 Do
+  InitOutputLine(OP.Lines[Base + I]);
+ OP.LineCounts[Tab] := 0;
+ If Ord(OP.ActiveTab) = Tab Then Begin
+  OP.ScrollTop := 0;
+  OP.SelectedIdx := -1;
+  OP.NeedRepaint := True;
+ End;
+End;
+
+{ --- Vider tous les onglets --- }
+
+Procedure ClearAllOutput(Var OP: TOutputPanel);
+Var
+ T: Integer;
+Begin
+ For T := 0 To OUTPUT_TAB_COUNT - 1 Do
+  ClearOutput(OP, T);
+End;
+
+{ --- Ajouter une ligne de sortie --- }
+
+Procedure AppendOutput(Var OP: TOutputPanel; AText: String;
+ Tab: Integer);
+Var
+ Base, MaxPerTab, Idx: Integer;
+Begin
+ If (Tab < 0) Or (Tab >= OUTPUT_TAB_COUNT) Then Exit;
+ MaxPerTab := MAX_OUTPUT_LINES Div OUTPUT_TAB_COUNT;
+ If OP.LineCounts[Tab] >= MaxPerTab Then Exit;
+ Base := Tab * MaxPerTab;
+ Idx := Base + OP.LineCounts[Tab];
+ OP.Lines[Idx].Text := AText;
+ OP.Lines[Idx].Kind := OLK_INFO;
+ OP.Lines[Idx].FileName := '';
+ OP.Lines[Idx].Line := 0;
+ OP.Lines[Idx].Col := 0;
+ Inc(OP.LineCounts[Tab]);
+ If Ord(OP.ActiveTab) = Tab Then
+  OP.NeedRepaint := True;
+End;
+
+{ --- Ajouter une ligne avec type de message --- }
+
+Procedure AppendOutputEx(Var OP: TOutputPanel; AText: String;
+ Tab: Integer; Kind: TOutputLineKind;
+ AFile: String; ALine, ACol: Integer);
+Var
+ Base, MaxPerTab, Idx: Integer;
+Begin
+ If (Tab < 0) Or (Tab >= OUTPUT_TAB_COUNT) Then Exit;
+ MaxPerTab := MAX_OUTPUT_LINES Div OUTPUT_TAB_COUNT;
+ If OP.LineCounts[Tab] >= MaxPerTab Then Exit;
+ Base := Tab * MaxPerTab;
+ Idx := Base + OP.LineCounts[Tab];
+ OP.Lines[Idx].Text := AText;
+ OP.Lines[Idx].Kind := Kind;
+ OP.Lines[Idx].FileName := AFile;
+ OP.Lines[Idx].Line := ALine;
+ OP.Lines[Idx].Col := ACol;
+ Inc(OP.LineCounts[Tab]);
+ If Ord(OP.ActiveTab) = Tab Then
+  OP.NeedRepaint := True;
+End;
+
+{ --- Obtenir le nombre de lignes de l onglet actif --- }
+
+Function GetActiveLineCount(Var OP: TOutputPanel): Integer;
+Begin
+ GetActiveLineCount := OP.LineCounts[Ord(OP.ActiveTab)];
+End;
+
+{ --- Obtenir la base de l onglet actif --- }
+
+Function GetActiveBase(Var OP: TOutputPanel): Integer;
+Begin
+ GetActiveBase := Ord(OP.ActiveTab) *
+  (MAX_OUTPUT_LINES Div OUTPUT_TAB_COUNT);
+End;
+
+{ --- Obtenir le nombre de lignes visibles --- }
+
+Function GetVisibleOutputLines(Var OP: TOutputPanel): Integer;
+Begin
+ GetVisibleOutputLines :=
+  (OP.Height - OUTPUT_TAB_HEIGHT) Div OUTPUT_LINE_HEIGHT;
+End;
+
+{ --- Couleur d une ligne selon son type --- }
+
+Function OutputLineColor(Kind: TOutputLineKind): Integer;
+Begin
+ Case Kind Of
+  OLK_ERROR:   OutputLineColor := 4;   { rouge                  }
+  OLK_WARNING: OutputLineColor := 6;   { jaune/marron           }
+  OLK_SUCCESS: OutputLineColor := 2;   { vert                   }
+ Else
+  OutputLineColor := CLR_EDITOR_TEXT;   { noir (info)            }
+ End;
+End;
+
+{ --- Nom d un onglet --- }
+
+Function OutputTabName(Tab: TOutputTabKind): String;
+Begin
+ Case Tab Of
+  OTK_BUILD:  OutputTabName := 'Sortie de build';
+  OTK_DEBUG:  OutputTabName := 'Sortie de debogage';
+  OTK_SEARCH: OutputTabName := 'Resultats de recherche';
+ Else
+  OutputTabName := '';
+ End;
+End;
+
+{ --- Dessiner les onglets du panneau --- }
+
+Procedure DrawOutputTabs(Var OP: TOutputPanel);
+Var
+ TX, TW, I: Integer;
+ Tab: TOutputTabKind;
+ TabName: String;
+Begin
+ TX := OP.X;
+ For I := 0 To OUTPUT_TAB_COUNT - 1 Do Begin
+  Tab := TOutputTabKind(I);
+  TabName := OutputTabName(Tab);
+  TW := Length(TabName) * 8 + 16;
+  { Fond de l onglet }
+  If Tab = OP.ActiveTab Then Begin
+   SetFillStyle(SolidFill, CLR_EDITOR_BG);
+   Bar(TX, OP.Y, TX + TW - 1, OP.Y + OUTPUT_TAB_HEIGHT - 1);
+   SetColor(CLR_MENU_TEXT);
+  End Else Begin
+   SetFillStyle(SolidFill, CLR_TOOLBAR);
+   Bar(TX, OP.Y, TX + TW - 1, OP.Y + OUTPUT_TAB_HEIGHT - 1);
+   SetColor(8);
+  End;
+  { Bordure de l onglet }
+  SetColor(CLR_BORDER);
+  Rectangle(TX, OP.Y, TX + TW - 1,
+   OP.Y + OUTPUT_TAB_HEIGHT - 1);
+  { Texte de l onglet }
+  If Tab = OP.ActiveTab Then
+   SetColor(CLR_MENU_TEXT)
+  Else
+   SetColor(8);
+  OutTextXY(TX + 8, OP.Y + 4, TabName);
+  Inc(TX, TW);
+ End;
+ { Remplir l espace apres les onglets }
+ If TX < OP.X + OP.Width Then Begin
+  SetFillStyle(SolidFill, CLR_TOOLBAR);
+  Bar(TX, OP.Y, OP.X + OP.Width - 1,
+   OP.Y + OUTPUT_TAB_HEIGHT - 1);
+  SetColor(CLR_BORDER);
+  Line(TX, OP.Y + OUTPUT_TAB_HEIGHT - 1,
+   OP.X + OP.Width - 1, OP.Y + OUTPUT_TAB_HEIGHT - 1);
+ End;
+End;
+
+{ --- Dessiner une ligne du panneau de sortie --- }
+
+Procedure DrawOutputLine(Var OP: TOutputPanel;
+ Idx, RowY: Integer);
+Var
+ Base, AbsIdx: Integer;
+Begin
+ Base := GetActiveBase(OP);
+ AbsIdx := Base + Idx;
+ { Fond de la ligne }
+ If Idx = OP.SelectedIdx Then Begin
+  SetFillStyle(SolidFill, CLR_SELECTION);
+  Bar(OP.X + 1, RowY, OP.X + OP.Width - 2,
+   RowY + OUTPUT_LINE_HEIGHT - 1);
+  SetColor(15);
+ End Else Begin
+  SetFillStyle(SolidFill, CLR_OUTPUT_BG);
+  Bar(OP.X + 1, RowY, OP.X + OP.Width - 2,
+   RowY + OUTPUT_LINE_HEIGHT - 1);
+  SetColor(OutputLineColor(OP.Lines[AbsIdx].Kind));
+ End;
+ { Texte }
+ OutTextXY(OP.X + 4, RowY + 2, OP.Lines[AbsIdx].Text);
+End;
+
+{ --- Dessiner le panneau de sortie --- }
+
+Procedure DrawOutputPanel(Var OP: TOutputPanel);
+Var
+ I, RowY, Visible, LineCount: Integer;
+Begin
+ If Not OP.Visible Then Exit;
+ { Bordure du panneau }
+ SetColor(CLR_BORDER);
+ Rectangle(OP.X, OP.Y, OP.X + OP.Width - 1,
+  OP.Y + OP.Height - 1);
+ { Fond }
+ SetFillStyle(SolidFill, CLR_OUTPUT_BG);
+ Bar(OP.X + 1, OP.Y + 1, OP.X + OP.Width - 2,
+  OP.Y + OP.Height - 2);
+ { Onglets }
+ DrawOutputTabs(OP);
+ { Lignes de sortie }
+ Visible := GetVisibleOutputLines(OP);
+ LineCount := GetActiveLineCount(OP);
+ RowY := OP.Y + OUTPUT_TAB_HEIGHT;
+ For I := OP.ScrollTop To LineCount - 1 Do Begin
+  If I - OP.ScrollTop >= Visible Then
+   Break;
+  DrawOutputLine(OP, I, RowY);
+  Inc(RowY, OUTPUT_LINE_HEIGHT);
+ End;
+ { Vider l espace restant }
+ If RowY < OP.Y + OP.Height - 1 Then Begin
+  SetFillStyle(SolidFill, CLR_OUTPUT_BG);
+  Bar(OP.X + 1, RowY, OP.X + OP.Width - 2,
+   OP.Y + OP.Height - 2);
+ End;
+ OP.NeedRepaint := False;
+End;
+
+{ --- Tester si un clic est dans le panneau --- }
+
+Function OutputPanelHitTest(Var OP: TOutputPanel;
+ MX, MY: Integer): Boolean;
+Begin
+ OutputPanelHitTest := OP.Visible And
+  (MX >= OP.X) And (MX < OP.X + OP.Width) And
+  (MY >= OP.Y) And (MY < OP.Y + OP.Height);
+End;
+
+{ --- Tester si un clic est sur le splitter --- }
+
+Function OutputSplitterHitTest(Var OP: TOutputPanel;
+ MX, MY: Integer): Boolean;
+Begin
+ OutputSplitterHitTest := OP.Visible And
+  (MX >= OP.X) And (MX < OP.X + OP.Width) And
+  (MY >= OP.SplitterY) And
+  (MY < OP.SplitterY + OUTPUT_SPLITTER_HEIGHT);
+End;
+
+{ --- Tester quel onglet a ete clique --- }
+
+Function OutputTabHitTest(Var OP: TOutputPanel;
+ MX, MY: Integer): Integer;
+Var
+ TX, TW, I: Integer;
+ Tab: TOutputTabKind;
+Begin
+ OutputTabHitTest := -1;
+ If (MY < OP.Y) Or (MY >= OP.Y + OUTPUT_TAB_HEIGHT) Then Exit;
+ TX := OP.X;
+ For I := 0 To OUTPUT_TAB_COUNT - 1 Do Begin
+  Tab := TOutputTabKind(I);
+  TW := Length(OutputTabName(Tab)) * 8 + 16;
+  If (MX >= TX) And (MX < TX + TW) Then Begin
+   OutputTabHitTest := I;
+   Exit;
+  End;
+  Inc(TX, TW);
+ End;
+End;
+
+{ --- Tester quelle ligne a ete cliquee --- }
+
+Function OutputLineHitTest(Var OP: TOutputPanel;
+ MY: Integer): Integer;
+Var
+ ContentY, Row, LineCount: Integer;
+Begin
+ OutputLineHitTest := -1;
+ ContentY := OP.Y + OUTPUT_TAB_HEIGHT;
+ If MY < ContentY Then Exit;
+ Row := (MY - ContentY) Div OUTPUT_LINE_HEIGHT + OP.ScrollTop;
+ LineCount := GetActiveLineCount(OP);
+ If (Row >= 0) And (Row < LineCount) Then
+  OutputLineHitTest := Row;
+End;
+
+{ --- Changer l onglet actif --- }
+
+Procedure SetActiveOutputTab(Var OP: TOutputPanel;
+ Tab: TOutputTabKind);
+Begin
+ If Tab <> OP.ActiveTab Then Begin
+  OP.ActiveTab := Tab;
+  OP.ScrollTop := 0;
+  OP.SelectedIdx := -1;
+  OP.NeedRepaint := True;
+ End;
+End;
+
+{ --- Masquer ou afficher le panneau --- }
+
+Procedure ToggleOutputPanel(Var OP: TOutputPanel);
+Begin
+ OP.Visible := Not OP.Visible;
+ OP.NeedRepaint := True;
+End;
+
+{ --- Gerer les evenements du panneau de sortie --- }
+
+Procedure HandleOutputEvent(Var OP: TOutputPanel;
+ Ev: TEvent);
+Var
+ TabIdx, Row, NewY, Visible, LineCount: Integer;
+Begin
+ If Not OP.Visible Then Exit;
+ Case Ev.Kind Of
+  EV_MOUSE_DOWN: Begin
+   { Splitter horizontal }
+   If OutputSplitterHitTest(OP, Ev.MouseX, Ev.MouseY) Then Begin
+    OP.Dragging := True;
+    Exit;
+   End;
+   { Clic sur un onglet }
+   TabIdx := OutputTabHitTest(OP, Ev.MouseX, Ev.MouseY);
+   If TabIdx >= 0 Then Begin
+    SetActiveOutputTab(OP, TOutputTabKind(TabIdx));
+    Exit;
+   End;
+   { Clic sur une ligne }
+   If OutputPanelHitTest(OP, Ev.MouseX, Ev.MouseY) Then Begin
+    Row := OutputLineHitTest(OP, Ev.MouseY);
+    If Row >= 0 Then Begin
+     OP.SelectedIdx := Row;
+     OP.NeedRepaint := True;
+    End;
+   End;
+  End;
+  EV_MOUSE_DBLCLICK: Begin
+   If OutputPanelHitTest(OP, Ev.MouseX, Ev.MouseY) Then Begin
+    { Double-clic sur barre d onglets : masquer }
+    If Ev.MouseY < OP.Y + OUTPUT_TAB_HEIGHT Then Begin
+     ToggleOutputPanel(OP);
+     Exit;
+    End;
+    { Double-clic sur une ligne : naviguer vers le source }
+    Row := OutputLineHitTest(OP, Ev.MouseY);
+    If Row >= 0 Then Begin
+     OP.SelectedIdx := Row;
+     OP.NeedRepaint := True;
+     { La navigation vers le source serait traitee par
+       l appelant en lisant OP.Lines[Base+Row].FileName/Line/Col }
+    End;
+   End;
+  End;
+  EV_MOUSE_UP: Begin
+   OP.Dragging := False;
+  End;
+  EV_MOUSE_MOVE: Begin
+   If OP.Dragging Then Begin
+    NewY := Ev.MouseY;
+    OP.Height := OP.Y + OP.Height - NewY;
+    If OP.Height < OUTPUT_MIN_HEIGHT Then
+     OP.Height := OUTPUT_MIN_HEIGHT;
+    If OP.Height > OUTPUT_MAX_HEIGHT Then
+     OP.Height := OUTPUT_MAX_HEIGHT;
+    OP.Y := NewY;
+    OP.SplitterY := OP.Y - OUTPUT_SPLITTER_HEIGHT;
+    OP.NeedRepaint := True;
+   End;
+  End;
+  EV_KEY_DOWN: Begin
+   Visible := GetVisibleOutputLines(OP);
+   LineCount := GetActiveLineCount(OP);
+   Case Ev.KeyCode Of
+    $5000: Begin { Fleche bas }
+     If OP.SelectedIdx < LineCount - 1 Then Begin
+      Inc(OP.SelectedIdx);
+      If OP.SelectedIdx >= OP.ScrollTop + Visible Then
+       Inc(OP.ScrollTop);
+      OP.NeedRepaint := True;
+     End;
+    End;
+    $4800: Begin { Fleche haut }
+     If OP.SelectedIdx > 0 Then Begin
+      Dec(OP.SelectedIdx);
+      If OP.SelectedIdx < OP.ScrollTop Then
+       OP.ScrollTop := OP.SelectedIdx;
+      OP.NeedRepaint := True;
+     End;
+    End;
+    $4700: Begin { Home }
+     OP.SelectedIdx := 0;
+     OP.ScrollTop := 0;
+     OP.NeedRepaint := True;
+    End;
+    $4F00: Begin { End }
+     OP.SelectedIdx := LineCount - 1;
+     If OP.SelectedIdx >= Visible Then
+      OP.ScrollTop := OP.SelectedIdx - Visible + 1
+     Else
+      OP.ScrollTop := 0;
+     OP.NeedRepaint := True;
+    End;
+    $4900: Begin { Page haut }
+     Dec(OP.ScrollTop, Visible);
+     If OP.ScrollTop < 0 Then
+      OP.ScrollTop := 0;
+     Dec(OP.SelectedIdx, Visible);
+     If OP.SelectedIdx < 0 Then
+      OP.SelectedIdx := 0;
+     OP.NeedRepaint := True;
+    End;
+    $5100: Begin { Page bas }
+     Inc(OP.ScrollTop, Visible);
+     If OP.ScrollTop > LineCount - Visible Then Begin
+      OP.ScrollTop := LineCount - Visible;
+      If OP.ScrollTop < 0 Then
+       OP.ScrollTop := 0;
+     End;
+     Inc(OP.SelectedIdx, Visible);
+     If OP.SelectedIdx >= LineCount Then
+      OP.SelectedIdx := LineCount - 1;
+     OP.NeedRepaint := True;
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ --- Obtenir le nombre de lignes d un onglet --- }
+
+Function GetOutputLineCount(Var OP: TOutputPanel;
+ Tab: Integer): Integer;
+Begin
+ If (Tab >= 0) And (Tab < OUTPUT_TAB_COUNT) Then
+  GetOutputLineCount := OP.LineCounts[Tab]
+ Else
+  GetOutputLineCount := 0;
+End;
+
+{ --- Obtenir une ligne de sortie par index --- }
+
+Function GetOutputLine(Var OP: TOutputPanel;
+ Tab, Idx: Integer; Var OL: TOutputLine): Boolean;
+Var
+ Base, MaxPerTab: Integer;
+Begin
+ MaxPerTab := MAX_OUTPUT_LINES Div OUTPUT_TAB_COUNT;
+ If (Tab < 0) Or (Tab >= OUTPUT_TAB_COUNT) Or
+    (Idx < 0) Or (Idx >= OP.LineCounts[Tab]) Then Begin
+  GetOutputLine := False;
+  Exit;
+ End;
+ Base := Tab * MaxPerTab;
+ OL := OP.Lines[Base + Idx];
+ GetOutputLine := True;
+End;
+
+{ --- Obtenir l onglet actif --- }
+
+Function GetActiveOutputTab(Var OP: TOutputPanel): TOutputTabKind;
+Begin
+ GetActiveOutputTab := OP.ActiveTab;
+End;
+
+{ --- Obtenir l index selectionne --- }
+
+Function GetOutputSelectedIndex(Var OP: TOutputPanel): Integer;
+Begin
+ GetOutputSelectedIndex := OP.SelectedIdx;
+End;
+
+{ --- Definir l index selectionne --- }
+
+Procedure SetOutputSelectedIndex(Var OP: TOutputPanel;
+ Idx: Integer);
+Var
+ LineCount: Integer;
+Begin
+ LineCount := GetActiveLineCount(OP);
+ If (Idx >= 0) And (Idx < LineCount) Then
+  OP.SelectedIdx := Idx
+ Else
+  OP.SelectedIdx := -1;
+ OP.NeedRepaint := True;
+End;
+
+{ --- Verifier si le panneau est visible --- }
+
+Function IsOutputPanelVisible(Var OP: TOutputPanel): Boolean;
+Begin
+ IsOutputPanelVisible := OP.Visible;
+End;
+
+{ --- Afficher le panneau --- }
+
+Procedure ShowOutputPanel(Var OP: TOutputPanel);
+Begin
+ OP.Visible := True;
+ OP.NeedRepaint := True;
+End;
+
+{ --- Masquer le panneau --- }
+
+Procedure HideOutputPanel(Var OP: TOutputPanel);
+Begin
+ OP.Visible := False;
+ OP.NeedRepaint := True;
+End;
+
+{ --- Verifier si un onglet est vide --- }
+
+Function IsOutputTabEmpty(Var OP: TOutputPanel;
+ Tab: Integer): Boolean;
+Begin
+ If (Tab >= 0) And (Tab < OUTPUT_TAB_COUNT) Then
+  IsOutputTabEmpty := OP.LineCounts[Tab] = 0
+ Else
+  IsOutputTabEmpty := True;
+End;
+
+{ --- Verifier si tout est vide --- }
+
+Function IsOutputPanelEmpty(Var OP: TOutputPanel): Boolean;
+Var
+ I: Integer;
+Begin
+ IsOutputPanelEmpty := True;
+ For I := 0 To OUTPUT_TAB_COUNT - 1 Do
+  If OP.LineCounts[I] > 0 Then Begin
+   IsOutputPanelEmpty := False;
+   Exit;
+  End;
+End;
+
+{ --- Obtenir le fichier source de la ligne selectionnee --- }
+
+Function GetSelectedOutputFile(Var OP: TOutputPanel): String;
+Var
+ Base: Integer;
+Begin
+ If (OP.SelectedIdx >= 0) And
+    (OP.SelectedIdx < GetActiveLineCount(OP)) Then Begin
+  Base := GetActiveBase(OP);
+  GetSelectedOutputFile := OP.Lines[Base + OP.SelectedIdx].FileName;
+ End Else
+  GetSelectedOutputFile := '';
+End;
+
+{ --- Obtenir la ligne source de la ligne selectionnee --- }
+
+Function GetSelectedOutputLine(Var OP: TOutputPanel): Integer;
+Var
+ Base: Integer;
+Begin
+ If (OP.SelectedIdx >= 0) And
+    (OP.SelectedIdx < GetActiveLineCount(OP)) Then Begin
+  Base := GetActiveBase(OP);
+  GetSelectedOutputLine := OP.Lines[Base + OP.SelectedIdx].Line;
+ End Else
+  GetSelectedOutputLine := 0;
+End;
+
+{ --- Obtenir la colonne source de la ligne selectionnee --- }
+
+Function GetSelectedOutputCol(Var OP: TOutputPanel): Integer;
+Var
+ Base: Integer;
+Begin
+ If (OP.SelectedIdx >= 0) And
+    (OP.SelectedIdx < GetActiveLineCount(OP)) Then Begin
+  Base := GetActiveBase(OP);
+  GetSelectedOutputCol := OP.Lines[Base + OP.SelectedIdx].Col;
+ End Else
+  GetSelectedOutputCol := 0;
+End;
+
+{ --- Nom du type de ligne --- }
+
+Function OutputLineKindName(Kind: TOutputLineKind): String;
+Begin
+ Case Kind Of
+  OLK_INFO:    OutputLineKindName := 'Information';
+  OLK_ERROR:   OutputLineKindName := 'Erreur';
+  OLK_WARNING: OutputLineKindName := 'Avertissement';
+  OLK_SUCCESS: OutputLineKindName := 'Succes';
+ Else
+  OutputLineKindName := '';
+ End;
+End;
+
+{ --- Compter les erreurs dans un onglet --- }
+
+Function CountOutputErrors(Var OP: TOutputPanel;
+ Tab: Integer): Integer;
+Var
+ I, Base, MaxPerTab, Count: Integer;
+Begin
+ Count := 0;
+ If (Tab < 0) Or (Tab >= OUTPUT_TAB_COUNT) Then Begin
+  CountOutputErrors := 0;
+  Exit;
+ End;
+ MaxPerTab := MAX_OUTPUT_LINES Div OUTPUT_TAB_COUNT;
+ Base := Tab * MaxPerTab;
+ For I := 0 To OP.LineCounts[Tab] - 1 Do
+  If OP.Lines[Base + I].Kind = OLK_ERROR Then
+   Inc(Count);
+ CountOutputErrors := Count;
+End;
+
+{ --- Compter les avertissements dans un onglet --- }
+
+Function CountOutputWarnings(Var OP: TOutputPanel;
+ Tab: Integer): Integer;
+Var
+ I, Base, MaxPerTab, Count: Integer;
+Begin
+ Count := 0;
+ If (Tab < 0) Or (Tab >= OUTPUT_TAB_COUNT) Then Begin
+  CountOutputWarnings := 0;
+  Exit;
+ End;
+ MaxPerTab := MAX_OUTPUT_LINES Div OUTPUT_TAB_COUNT;
+ Base := Tab * MaxPerTab;
+ For I := 0 To OP.LineCounts[Tab] - 1 Do
+  If OP.Lines[Base + I].Kind = OLK_WARNING Then
+   Inc(Count);
+ CountOutputWarnings := Count;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -10525,6 +11249,8 @@ BEGIN
  DrawExplorer(SolExplorer);
  InitPropertiesPanel(PropsPanel);
  DrawPropertiesPanel(PropsPanel);
- { Boucle principale a venir (TODO 19+) }
+ InitOutputPanel(OutputPanel);
+ DrawOutputPanel(OutputPanel);
+ { Boucle principale a venir (TODO 20+) }
  ShutdownGraphics;
 END.
