@@ -142,7 +142,7 @@
             PushUndo, Undo, Redo, ClearUndoStack.
             Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+Z, Ctrl+Y.
 
-  TODO 11 - MOTEUR DE COLORATION SYNTAXIQUE [A FAIRE]
+  TODO 11 - MOTEUR DE COLORATION SYNTAXIQUE [IMPLEMENTE]
             TTokenClass : TC_NORMAL, TC_KEYWORD, TC_STRING,
               TC_CHAR, TC_NUMBER, TC_COMMENT, TC_DIRECTIVE,
               TC_OPERATOR, TC_IDENTIFIER, TC_TYPE,

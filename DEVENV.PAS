@@ -350,7 +350,7 @@
             Raccourcis : Ctrl+C copier, Ctrl+X couper, Ctrl+V coller,
               Ctrl+Z annuler, Ctrl+Y retablir.
 
-  TODO 11 - MOTEUR DE COLORATION SYNTAXIQUE [A FAIRE]
+  TODO 11 - MOTEUR DE COLORATION SYNTAXIQUE [IMPLEMENTE]
             TTokenClass : TC_NORMAL, TC_KEYWORD, TC_STRING,
               TC_CHAR, TC_NUMBER, TC_COMMENT, TC_DIRECTIVE,
               TC_OPERATOR, TC_IDENTIFIER, TC_TYPE,
@@ -1363,6 +1363,32 @@ Type
   Items      : Array[0..MAX_UNDO - 1] Of TUndoRecord;
   Count      : Integer;         { nombre d elements              }
   Top        : Integer;         { indice sommet (circulaire)     }
+ End;
+
+ { Classe de jeton pour la coloration syntaxique }
+ TTokenClass = (
+  TC_NORMAL,            { texte normal                            }
+  TC_KEYWORD,           { mot-cle du langage                      }
+  TC_STRING,            { chaine de caracteres                    }
+  TC_CHAR,              { caractere litteral                      }
+  TC_NUMBER,            { nombre (entier, flottant, hex, etc.)    }
+  TC_COMMENT,           { commentaire (ligne ou bloc)             }
+  TC_DIRECTIVE,         { directive preprocesseur                 }
+  TC_OPERATOR,          { operateur (+, -, =, etc.)               }
+  TC_IDENTIFIER,        { identificateur (variable, fonction)     }
+  TC_TYPE,              { type predefini (int, string, etc.)      }
+  TC_PREPROCESSOR,      { instruction preprocesseur (#if, etc.)   }
+  TC_ATTRIBUTE,         { attribut ([Attribute])                  }
+  TC_XMLDOC             { commentaire de documentation XML        }
+ );
+
+ { Moteur de coloration syntaxique }
+ TSyntaxHighlighter = Record
+  Language       : String[31];  { nom du langage (C#, VB, Pascal) }
+  InBlockComment : Boolean;     { dans un commentaire multi-ligne  }
+  InString       : Boolean;     { dans une chaine multi-ligne      }
+  StateStack     : Array[0..63] Of Byte; { pile d etats           }
+  StateTop       : Integer;     { sommet de la pile d etats        }
  End;
 
 { ============================================================
@@ -5901,6 +5927,575 @@ Begin
  IsInSelection := True;
 End;
 
+{ ============================================================
+  TODO 11 - MOTEUR DE COLORATION SYNTAXIQUE
+  ============================================================ }
+
+{ --- Initialiser le moteur de coloration syntaxique --- }
+
+Procedure InitHighlighter(Var H: TSyntaxHighlighter; Language: String);
+Var
+ I: Integer;
+Begin
+ H.Language := Language;
+ H.InBlockComment := False;
+ H.InString := False;
+ H.StateTop := 0;
+ For I := 0 To 63 Do
+  H.StateStack[I] := 0;
+End;
+
+{ --- Remettre a zero l etat du moteur --- }
+
+Procedure ResetState(Var H: TSyntaxHighlighter);
+Var
+ I: Integer;
+Begin
+ H.InBlockComment := False;
+ H.InString := False;
+ H.StateTop := 0;
+ For I := 0 To 63 Do
+  H.StateStack[I] := 0;
+End;
+
+{ --- Empiler un etat --- }
+
+Procedure PushState(Var H: TSyntaxHighlighter; State: Byte);
+Begin
+ If H.StateTop < 63 Then
+ Begin
+  H.StateStack[H.StateTop] := State;
+  Inc(H.StateTop);
+ End;
+End;
+
+{ --- Depiler un etat --- }
+
+Function PopState(Var H: TSyntaxHighlighter): Byte;
+Begin
+ If H.StateTop > 0 Then
+ Begin
+  Dec(H.StateTop);
+  PopState := H.StateStack[H.StateTop];
+ End
+ Else
+  PopState := 0;
+End;
+
+{ --- Convertir une classe de jeton en couleur VS --- }
+
+Function TokenClassToColor(TC: TTokenClass): Integer;
+Begin
+ Case TC Of
+  TC_KEYWORD:      TokenClassToColor := 1;    { bleu           }
+  TC_STRING:       TokenClassToColor := 4;    { rouge          }
+  TC_CHAR:         TokenClassToColor := 4;    { rouge          }
+  TC_NUMBER:       TokenClassToColor := 0;    { noir           }
+  TC_COMMENT:      TokenClassToColor := 2;    { vert           }
+  TC_DIRECTIVE:    TokenClassToColor := 8;    { gris fonce     }
+  TC_OPERATOR:     TokenClassToColor := 0;    { noir           }
+  TC_IDENTIFIER:   TokenClassToColor := 0;    { noir           }
+  TC_TYPE:         TokenClassToColor := 3;    { turquoise/cyan }
+  TC_PREPROCESSOR: TokenClassToColor := 8;    { gris fonce     }
+  TC_ATTRIBUTE:    TokenClassToColor := 9;    { bleu clair     }
+  TC_XMLDOC:       TokenClassToColor := 6;    { vert olive     }
+ Else
+  TokenClassToColor := 0;                     { noir (normal)  }
+ End;
+End;
+
+{ --- Verifier si un caractere est alphanum ou _ --- }
+
+Function IsAlphaNumUS(Ch: Char): Boolean;
+Begin
+ IsAlphaNumUS := (Ch >= 'A') And (Ch <= 'Z') Or
+                 (Ch >= 'a') And (Ch <= 'z') Or
+                 (Ch >= '0') And (Ch <= '9') Or
+                 (Ch = '_');
+End;
+
+{ --- Verifier si un caractere est alphabetique ou _ --- }
+
+Function IsAlphaUS(Ch: Char): Boolean;
+Begin
+ IsAlphaUS := (Ch >= 'A') And (Ch <= 'Z') Or
+              (Ch >= 'a') And (Ch <= 'z') Or
+              (Ch = '_');
+End;
+
+{ --- Verifier si un caractere est un chiffre --- }
+
+Function IsDigitChar(Ch: Char): Boolean;
+Begin
+ IsDigitChar := (Ch >= '0') And (Ch <= '9');
+End;
+
+{ --- Verifier si un caractere est un operateur --- }
+
+Function IsOperatorChar(Ch: Char): Boolean;
+Begin
+ IsOperatorChar := (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or
+                   (Ch = '/') Or (Ch = '=') Or (Ch = '<') Or
+                   (Ch = '>') Or (Ch = '!') Or (Ch = '&') Or
+                   (Ch = '|') Or (Ch = '^') Or (Ch = '~') Or
+                   (Ch = '%') Or (Ch = '?') Or (Ch = ':');
+End;
+
+{ --- Verifier si un caractere est un chiffre hexadecimal --- }
+
+Function IsHexDigit(Ch: Char): Boolean;
+Begin
+ IsHexDigit := (Ch >= '0') And (Ch <= '9') Or
+               (Ch >= 'A') And (Ch <= 'F') Or
+               (Ch >= 'a') And (Ch <= 'f');
+End;
+
+{ --- Extraire un mot a une position donnee --- }
+
+Function ExtractWord(Line: String; Pos: Integer): String;
+Var
+ S, E: Integer;
+Begin
+ S := Pos;
+ E := Pos;
+ While (S > 1) And IsAlphaNumUS(Line[S - 1]) Do
+  Dec(S);
+ While (E < Length(Line)) And IsAlphaNumUS(Line[E + 1]) Do
+  Inc(E);
+ ExtractWord := Copy(Line, S, E - S + 1);
+End;
+
+{ --- Obtenir la classe de jeton a une position --- }
+
+Function GetTokenClass(Var H: TSyntaxHighlighter;
+                       Line: String; Var Pos: Integer): TTokenClass;
+Var
+ Ch: Char;
+ StartPos: Integer;
+ Len: Integer;
+Begin
+ Len := Length(Line);
+ GetTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ { Etat persistant : dans un commentaire bloc }
+ If H.InBlockComment Then
+ Begin
+  StartPos := Pos;
+  While Pos <= Len Do
+  Begin
+   If (Pos < Len) And (Line[Pos] = '*') And (Line[Pos + 1] = '/') Then
+   Begin
+    Inc(Pos, 2);
+    H.InBlockComment := False;
+    GetTokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Etat persistant : dans une chaine verbatim }
+ If H.InString Then
+ Begin
+  While Pos <= Len Do
+  Begin
+   If Line[Pos] = '"' Then
+   Begin
+    If (Pos < Len) And (Line[Pos + 1] = '"') Then
+     Inc(Pos, 2)
+    Else
+    Begin
+     Inc(Pos);
+     H.InString := False;
+     GetTokenClass := TC_STRING;
+     Exit;
+    End;
+   End
+   Else
+    Inc(Pos);
+  End;
+  GetTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then
+ Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire XML doc /// }
+ If (Ch = '/') And (Pos + 2 <= Len) And
+    (Line[Pos + 1] = '/') And (Line[Pos + 2] = '/') Then
+ Begin
+  Pos := Len + 1;
+  GetTokenClass := TC_XMLDOC;
+  Exit;
+ End;
+
+ { Commentaire ligne // }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos + 1] = '/') Then
+ Begin
+  Pos := Len + 1;
+  GetTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Commentaire bloc /* }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos + 1] = '*') Then
+ Begin
+  Inc(Pos, 2);
+  H.InBlockComment := True;
+  While Pos <= Len Do
+  Begin
+   If (Pos < Len) And (Line[Pos] = '*') And (Line[Pos + 1] = '/') Then
+   Begin
+    Inc(Pos, 2);
+    H.InBlockComment := False;
+    GetTokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Directive preprocesseur # }
+ If (Ch = '#') Then
+ Begin
+  Pos := Len + 1;
+  GetTokenClass := TC_PREPROCESSOR;
+  Exit;
+ End;
+
+ { Attribut [xxx] }
+ If (Ch = '[') Then
+ Begin
+  StartPos := Pos;
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> ']') Do
+   Inc(Pos);
+  If Pos <= Len Then
+   Inc(Pos);
+  GetTokenClass := TC_ATTRIBUTE;
+  Exit;
+ End;
+
+ { Chaine verbatim @"..." }
+ If (Ch = '@') And (Pos < Len) And (Line[Pos + 1] = '"') Then
+ Begin
+  Inc(Pos, 2);
+  H.InString := True;
+  While Pos <= Len Do
+  Begin
+   If Line[Pos] = '"' Then
+   Begin
+    If (Pos < Len) And (Line[Pos + 1] = '"') Then
+     Inc(Pos, 2)
+    Else
+    Begin
+     Inc(Pos);
+     H.InString := False;
+     GetTokenClass := TC_STRING;
+     Exit;
+    End;
+   End
+   Else
+    Inc(Pos);
+  End;
+  GetTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine interpolee $"..." }
+ If (Ch = '$') And (Pos < Len) And (Line[Pos + 1] = '"') Then
+ Begin
+  Inc(Pos, 2);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do
+  Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then
+    Inc(Pos, 2)
+   Else
+    Inc(Pos);
+  End;
+  If Pos <= Len Then
+   Inc(Pos);
+  GetTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine reguliere "..." }
+ If Ch = '"' Then
+ Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do
+  Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then
+    Inc(Pos, 2)
+   Else
+    Inc(Pos);
+  End;
+  If Pos <= Len Then
+   Inc(Pos);
+  GetTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Caractere litteral '...' }
+ If Ch = '''' Then
+ Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '''') Do
+  Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then
+    Inc(Pos, 2)
+   Else
+    Inc(Pos);
+  End;
+  If Pos <= Len Then
+   Inc(Pos);
+  GetTokenClass := TC_CHAR;
+  Exit;
+ End;
+
+ { Nombre hexadecimal 0x... ou binaire 0b... }
+ If (Ch = '0') And (Pos < Len) And
+    ((Line[Pos + 1] = 'x') Or (Line[Pos + 1] = 'X') Or
+     (Line[Pos + 1] = 'b') Or (Line[Pos + 1] = 'B')) Then
+ Begin
+  Inc(Pos, 2);
+  While (Pos <= Len) And (IsHexDigit(Line[Pos]) Or
+         (Line[Pos] = '_')) Do
+   Inc(Pos);
+  { Suffixe eventuel }
+  While (Pos <= Len) And IsAlphaUS(Line[Pos]) Do
+   Inc(Pos);
+  GetTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Nombre decimal }
+ If IsDigitChar(Ch) Then
+ Begin
+  While (Pos <= Len) And (IsDigitChar(Line[Pos]) Or
+         (Line[Pos] = '_')) Do
+   Inc(Pos);
+  { Partie decimale }
+  If (Pos <= Len) And (Line[Pos] = '.') Then
+  Begin
+   Inc(Pos);
+   While (Pos <= Len) And (IsDigitChar(Line[Pos]) Or
+          (Line[Pos] = '_')) Do
+    Inc(Pos);
+  End;
+  { Exposant }
+  If (Pos <= Len) And ((Line[Pos] = 'e') Or (Line[Pos] = 'E')) Then
+  Begin
+   Inc(Pos);
+   If (Pos <= Len) And ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then
+    Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do
+    Inc(Pos);
+  End;
+  { Suffixe (f, d, m, u, l, etc.) }
+  While (Pos <= Len) And IsAlphaUS(Line[Pos]) Do
+   Inc(Pos);
+  GetTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identificateur ou mot-cle }
+ If IsAlphaUS(Ch) Then
+ Begin
+  StartPos := Pos;
+  While (Pos <= Len) And IsAlphaNumUS(Line[Pos]) Do
+   Inc(Pos);
+  { La classification sera faite par le highlighter specifique }
+  GetTokenClass := TC_IDENTIFIER;
+  Exit;
+ End;
+
+ { Operateur }
+ If IsOperatorChar(Ch) Then
+ Begin
+  Inc(Pos);
+  { Operateurs multi-caracteres }
+  If (Pos <= Len) And IsOperatorChar(Line[Pos]) Then
+   Inc(Pos);
+  GetTokenClass := TC_OPERATOR;
+  Exit;
+ End;
+
+ { Autre caractere (ponctuation, etc.) }
+ Inc(Pos);
+ GetTokenClass := TC_NORMAL;
+End;
+
+{ --- Colorier une ligne entiere --- }
+
+Procedure HighlightLine(Var H: TSyntaxHighlighter;
+                        Line: String; Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ { Initialiser toutes les couleurs a normal }
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetTokenClass(H, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ --- Obtenir le nom d une classe de jeton --- }
+
+Function TokenClassName(TC: TTokenClass): String;
+Begin
+ Case TC Of
+  TC_NORMAL:       TokenClassName := 'NORMAL';
+  TC_KEYWORD:      TokenClassName := 'KEYWORD';
+  TC_STRING:       TokenClassName := 'STRING';
+  TC_CHAR:         TokenClassName := 'CHAR';
+  TC_NUMBER:       TokenClassName := 'NUMBER';
+  TC_COMMENT:      TokenClassName := 'COMMENT';
+  TC_DIRECTIVE:    TokenClassName := 'DIRECTIVE';
+  TC_OPERATOR:     TokenClassName := 'OPERATOR';
+  TC_IDENTIFIER:   TokenClassName := 'IDENTIFIER';
+  TC_TYPE:         TokenClassName := 'TYPE';
+  TC_PREPROCESSOR: TokenClassName := 'PREPROCESSOR';
+  TC_ATTRIBUTE:    TokenClassName := 'ATTRIBUTE';
+  TC_XMLDOC:       TokenClassName := 'XMLDOC';
+ Else
+  TokenClassName := 'UNKNOWN';
+ End;
+End;
+
+{ --- Verifier si le moteur est dans un commentaire bloc --- }
+
+Function IsInBlockComment(Var H: TSyntaxHighlighter): Boolean;
+Begin
+ IsInBlockComment := H.InBlockComment;
+End;
+
+{ --- Verifier si le moteur est dans une chaine multi-ligne --- }
+
+Function IsInMultiLineString(Var H: TSyntaxHighlighter): Boolean;
+Begin
+ IsInMultiLineString := H.InString;
+End;
+
+{ --- Obtenir le langage du moteur --- }
+
+Function GetHighlighterLanguage(Var H: TSyntaxHighlighter): String;
+Begin
+ GetHighlighterLanguage := H.Language;
+End;
+
+{ --- Compter les classes de jetons dans une ligne --- }
+
+Function CountTokensInLine(Var H: TSyntaxHighlighter;
+                           Line: String): Integer;
+Var
+ Pos, Count: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := H.InBlockComment;
+ SaveStr := H.InString;
+ SaveTop := H.StateTop;
+ Count := 0;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetTokenClass(H, Line, Pos);
+  Inc(Count);
+ End;
+ H.InBlockComment := SaveBC;
+ H.InString := SaveStr;
+ H.StateTop := SaveTop;
+ CountTokensInLine := Count;
+End;
+
+{ --- Verifier si une ligne contient un commentaire --- }
+
+Function LineHasComment(Var H: TSyntaxHighlighter;
+                        Line: String): Boolean;
+Var
+ Pos: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := H.InBlockComment;
+ SaveStr := H.InString;
+ SaveTop := H.StateTop;
+ LineHasComment := False;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetTokenClass(H, Line, Pos);
+  If (TC = TC_COMMENT) Or (TC = TC_XMLDOC) Then
+  Begin
+   LineHasComment := True;
+   Break;
+  End;
+ End;
+ H.InBlockComment := SaveBC;
+ H.InString := SaveStr;
+ H.StateTop := SaveTop;
+End;
+
+{ --- Verifier si une ligne contient une chaine --- }
+
+Function LineHasString(Var H: TSyntaxHighlighter;
+                       Line: String): Boolean;
+Var
+ Pos: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := H.InBlockComment;
+ SaveStr := H.InString;
+ SaveTop := H.StateTop;
+ LineHasString := False;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetTokenClass(H, Line, Pos);
+  If (TC = TC_STRING) Or (TC = TC_CHAR) Then
+  Begin
+   LineHasString := True;
+   Break;
+  End;
+ End;
+ H.InBlockComment := SaveBC;
+ H.InString := SaveStr;
+ H.StateTop := SaveTop;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -5917,6 +6512,6 @@ BEGIN
  DrawToolBar;
  InitWindowManager;
  DrawWindowTabs;
- { Boucle principale a venir (TODO 11+) }
+ { Boucle principale a venir (TODO 12+) }
  ShutdownGraphics;
 END.
