@@ -6703,6 +6703,366 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 21 : GENERATION DE BOUCLES [IMPLEMENTE]
+  ============================================================ }
+
+Procedure InitLoopContext;
+{ Initialise les compteurs pour les boucles. }
+Begin
+  WhileStmtCounter := 0;
+  DoWhileStmtCounter := 0;
+  ForStmtCounter := 0;
+  LoopVarCounter := 0;
+  LoopDepth := 0;
+End;
+
+Procedure EmitLoopComment;
+{ Emet un commentaire pour la section des boucles. }
+Begin
+  EmitLineComment('Boucles (while, do-while, for)');
+End;
+
+Function CountWhileStmts: Integer;
+{ Retourne le nombre de statements while generes. }
+Begin
+  CountWhileStmts := WhileStmtCounter;
+End;
+
+Function CountDoWhileStmts: Integer;
+{ Retourne le nombre de statements do-while generes. }
+Begin
+  CountDoWhileStmts := DoWhileStmtCounter;
+End;
+
+Function CountForStmts: Integer;
+{ Retourne le nombre de statements for generes. }
+Begin
+  CountForStmts := ForStmtCounter;
+End;
+
+Function GetLoopDepth: Integer;
+{ Retourne la profondeur courante d'imbrication des boucles. }
+Begin
+  GetLoopDepth := LoopDepth;
+End;
+
+Function CanNestLoop: Boolean;
+{ Retourne True si on peut imbriquer une nouvelle boucle. }
+Begin
+  CanNestLoop := LoopDepth < Opts.MaxBlockDepth;
+End;
+
+Function GenLoopVarName: TString;
+{ Genere un nom unique pour une variable de boucle. }
+Begin
+  Inc(LoopVarCounter);
+  GenLoopVarName := LOOP_VAR_PREFIX + IntToStr(LoopVarCounter);
+End;
+
+Function GenLoopInit(VarName: TString): TString;
+{ Genere l'initialisation d'une variable de boucle. }
+Var
+  InitVal: Integer;
+Begin
+  InitVal := RandomRange(0, 10);
+  GenLoopInit := VarName + ' = ' + IntToStr(InitVal);
+End;
+
+Function GenLoopCond(VarName: TString): TString;
+{ Genere une condition de boucle bornee. }
+Var
+  LimitVal: Integer;
+  Op: Integer;
+Begin
+  LimitVal := RandomRange(5, LOOP_MAX_ITERATIONS);
+  Op := RandomInt(4);
+  Case Op Of
+    0: GenLoopCond := VarName + ' < ' + IntToStr(LimitVal);
+    1: GenLoopCond := VarName + ' <= ' + IntToStr(LimitVal);
+    2: GenLoopCond := VarName + ' > 0';
+    3: GenLoopCond := VarName + ' != ' + IntToStr(LimitVal);
+  Else
+    GenLoopCond := VarName + ' < ' + IntToStr(LimitVal);
+  End;
+End;
+
+Function GenLoopUpdate(VarName: TString): TString;
+{ Genere la mise a jour d'une variable de boucle. }
+Var
+  Op: Integer;
+  StepVal: Integer;
+Begin
+  Op := RandomInt(6);
+  StepVal := RandomRange(1, 3);
+  Case Op Of
+    0: GenLoopUpdate := VarName + '++';
+    1: GenLoopUpdate := '++' + VarName;
+    2: GenLoopUpdate := VarName + '--';
+    3: GenLoopUpdate := '--' + VarName;
+    4: GenLoopUpdate := VarName + ' += ' + IntToStr(StepVal);
+    5: GenLoopUpdate := VarName + ' -= ' + IntToStr(StepVal);
+  Else
+    GenLoopUpdate := VarName + '++';
+  End;
+End;
+
+Function GenLoopGuard: TString;
+{ Genere un compteur de garde pour eviter les boucles infinies.
+  Utilise un compteur local qui decremente a chaque iteration. }
+Var
+  GuardVar: TString;
+Begin
+  Inc(LoopVarCounter);
+  GuardVar := 'guard_' + IntToStr(LoopVarCounter);
+  GenLoopGuard := GuardVar;
+End;
+
+Procedure GenWhileStmt(Depth: Integer); Forward;
+Procedure GenDoWhileStmt(Depth: Integer); Forward;
+Procedure GenForStmt(Depth: Integer); Forward;
+
+Procedure GenLoopBody(Depth: Integer);
+{ Genere le corps d'une boucle (bloc ou statement simple). }
+Var
+  NumStmts: Integer;
+  I: Integer;
+Begin
+  If RandomChoice(LOOP_BLOCK_PROB) Or (Depth > 1) Then
+  Begin
+    { Generer un bloc }
+    EmitLine('{');
+    EmitIndent;
+    PushScope;
+    
+    { Generer 1 a 4 statements }
+    NumStmts := RandomRange(1, 4);
+    For I := 1 To NumStmts Do
+    Begin
+      If (NumVars > 0) And RandomChoice(60) Then
+        EmitLine(Vars[RandomRange(1, NumVars)].Name + ' = ' + IntToStr(RandomRange(0, 100)) + ';')
+      Else If RandomChoice(30) Then
+        EmitLine('/* loop body */;')
+      Else
+        EmitLine(';');
+      Inc(StatStmts);
+    End;
+    
+    { Possibilite de break ou continue }
+    If InLoop Then
+    Begin
+      If RandomChoice(LOOP_BREAK_PROB) Then
+        EmitLine('break;')
+      Else If RandomChoice(LOOP_CONTINUE_PROB) Then
+        EmitLine('continue;');
+    End;
+    
+    { Possibilite de boucle imbriquee si pas trop profond }
+    If (Depth < Opts.MaxBlockDepth - 1) And RandomChoice(LOOP_NESTED_PROB) Then
+    Begin
+      Case RandomInt(3) Of
+        0: GenWhileStmt(Depth + 1);
+        1: GenDoWhileStmt(Depth + 1);
+        2: GenForStmt(Depth + 1);
+      End;
+    End;
+    
+    PopScope;
+    EmitUnindent;
+    EmitLine('}');
+  End
+  Else
+  Begin
+    { Statement simple }
+    EmitIndent;
+    If (NumVars > 0) And RandomChoice(70) Then
+      EmitLine(Vars[RandomRange(1, NumVars)].Name + '++;')
+    Else
+      EmitLine(';');
+    EmitUnindent;
+    Inc(StatStmts);
+  End;
+End;
+
+Procedure GenWhileStmt(Depth: Integer);
+{ Genere un statement while complet:
+  while (condition) bloc }
+Var
+  Cond: TString;
+  GuardVar: TString;
+  OldInLoop: Boolean;
+Begin
+  If Depth >= Opts.MaxBlockDepth Then Exit;
+  If Not CanNestLoop Then Exit;
+  
+  Inc(WhileStmtCounter);
+  Inc(LoopDepth);
+  
+  { Sauvegarder le contexte }
+  OldInLoop := InLoop;
+  InLoop := True;
+  
+  { Generer un garde pour eviter les boucles infinies }
+  GuardVar := GenLoopGuard;
+  
+  { Declarer le compteur de garde }
+  EmitLine('int ' + GuardVar + ' = ' + IntToStr(LOOP_GUARD_COUNTER) + ';');
+  
+  { Generer la condition }
+  If RandomChoice(50) Then
+    Cond := GenCondition
+  Else
+  Begin
+    { Utiliser le garde comme condition }
+    Cond := GuardVar + ' > 0';
+  End;
+  
+  { Emettre le while avec garde supplementaire }
+  EmitLine('while ((' + Cond + ') && (' + GuardVar + '-- > 0))');
+  GenLoopBody(Depth);
+  
+  { Restaurer le contexte }
+  InLoop := OldInLoop;
+  Dec(LoopDepth);
+End;
+
+Procedure GenDoWhileStmt(Depth: Integer);
+{ Genere un statement do-while complet:
+  do bloc while (condition); }
+Var
+  Cond: TString;
+  GuardVar: TString;
+  OldInLoop: Boolean;
+Begin
+  If Depth >= Opts.MaxBlockDepth Then Exit;
+  If Not CanNestLoop Then Exit;
+  
+  Inc(DoWhileStmtCounter);
+  Inc(LoopDepth);
+  
+  { Sauvegarder le contexte }
+  OldInLoop := InLoop;
+  InLoop := True;
+  
+  { Generer un garde pour eviter les boucles infinies }
+  GuardVar := GenLoopGuard;
+  
+  { Declarer le compteur de garde }
+  EmitLine('int ' + GuardVar + ' = ' + IntToStr(LOOP_GUARD_COUNTER) + ';');
+  
+  { Emettre le do }
+  EmitLine('do');
+  GenLoopBody(Depth);
+  
+  { Generer la condition }
+  If RandomChoice(50) Then
+    Cond := GenCondition
+  Else
+    Cond := GuardVar + ' > 0';
+  
+  { Emettre le while avec garde }
+  EmitLine('while ((' + Cond + ') && (--' + GuardVar + ' > 0));');
+  
+  { Restaurer le contexte }
+  InLoop := OldInLoop;
+  Dec(LoopDepth);
+End;
+
+Procedure GenForStmt(Depth: Integer);
+{ Genere un statement for complet:
+  for (init; cond; update) bloc }
+Var
+  LoopVar: TString;
+  InitPart: TString;
+  CondPart: TString;
+  UpdatePart: TString;
+  OldInLoop: Boolean;
+  UseC99Decl: Boolean;
+  InitVal: Integer;
+  LimitVal: Integer;
+Begin
+  If Depth >= Opts.MaxBlockDepth Then Exit;
+  If Not CanNestLoop Then Exit;
+  
+  Inc(ForStmtCounter);
+  Inc(LoopDepth);
+  
+  { Sauvegarder le contexte }
+  OldInLoop := InLoop;
+  InLoop := True;
+  
+  { Generer le nom de la variable de boucle }
+  LoopVar := GenLoopVarName;
+  
+  { Decider si on utilise la declaration C99 dans l'init }
+  UseC99Decl := RandomChoice(FOR_DECL_PROB);
+  
+  { Valeurs pour la boucle bornee }
+  InitVal := RandomRange(0, 5);
+  LimitVal := RandomRange(InitVal + 1, InitVal + LOOP_MAX_ITERATIONS);
+  
+  { Generer les parties du for }
+  If RandomChoice(FOR_INIT_PROB) Then
+  Begin
+    If UseC99Decl Then
+      InitPart := 'int ' + LoopVar + ' = ' + IntToStr(InitVal)
+    Else
+    Begin
+      { Declarer la variable avant le for }
+      EmitLine('int ' + LoopVar + ';');
+      InitPart := LoopVar + ' = ' + IntToStr(InitVal);
+    End;
+  End
+  Else
+  Begin
+    If Not UseC99Decl Then
+      EmitLine('int ' + LoopVar + ' = 0;');
+    InitPart := '';
+  End;
+  
+  If RandomChoice(FOR_COND_PROB) Then
+    CondPart := LoopVar + ' < ' + IntToStr(LimitVal)
+  Else
+    CondPart := '';
+  
+  If RandomChoice(FOR_UPDATE_PROB) Then
+    UpdatePart := GenLoopUpdate(LoopVar)
+  Else
+    UpdatePart := '';
+  
+  { Emettre le for }
+  EmitLine('for (' + InitPart + '; ' + CondPart + '; ' + UpdatePart + ')');
+  GenLoopBody(Depth);
+  
+  { Restaurer le contexte }
+  InLoop := OldInLoop;
+  Dec(LoopDepth);
+End;
+
+Procedure GenRandomLoopStmt(Depth: Integer);
+{ Genere un statement de boucle aleatoire (while, do-while ou for). }
+Var
+  R: Integer;
+Begin
+  If Depth >= Opts.MaxBlockDepth Then Exit;
+  If Not CanNestLoop Then Exit;
+  
+  R := RandomInt(100);
+  
+  If R < WHILE_PROB Then
+    GenWhileStmt(Depth)
+  Else If R < WHILE_PROB + DO_WHILE_PROB Then
+    GenDoWhileStmt(Depth)
+  Else
+    GenForStmt(Depth);
+End;
+
+Function CountAllLoopStmts: Integer;
+{ Retourne le nombre total de statements de boucle generes. }
+Begin
+  CountAllLoopStmts := WhileStmtCounter + DoWhileStmtCounter + ForStmtCounter;
+End;
+
 Procedure InitTables;
 Begin
   NumVars := 0;
@@ -6739,6 +7099,8 @@ Begin
   InitBlockContext;
   { Initialiser le contexte des conditionnelles - TODO 20 }
   InitCondContext;
+  { Initialiser le contexte des boucles - TODO 21 }
+  InitLoopContext;
   { Initialiser l'emetteur }
   InitEmitter;
 End;

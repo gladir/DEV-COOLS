@@ -208,7 +208,7 @@ TODO - Liste des 25 points a implementer pour le generateur de code C CSMITH :
       Regles switch : constantes entieres uniques, break optionnel,
       fall-through possible. Gerer la couverture des cas.
 
-  21. [A FAIRE] Generation de boucles.
+  21. [IMPLEMENTE] Generation de boucles.
       Generateur de boucles C :
       GenWhileStmt - generer while (cond) stmt.
       GenDoWhileStmt - generer do stmt while (cond);
