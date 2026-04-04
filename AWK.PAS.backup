@@ -143,20 +143,6 @@ Function CallUserFunction(FuncIdx:Integer):Real; forward;
 Procedure SplitIntoFields(Line:String); forward;
 
 { ========================================================= }
-{ SECTION: Acces securise au tableau PA                     }
-{ ========================================================= }
-
-{ Retourne la ligne a l'index donne de maniere securisee }
-{ Evite les runtime error 216 (GPF) si le pointeur est nil }
-Function GetPALine(LineNum:Integer):String;
-Begin
- GetPALine:='';
- If(LineNum<1)or(LineNum>NumberLine)Then Exit;
- If PA[LineNum]=nil Then Exit;
- GetPALine:=PA[LineNum]^;
-End;
-
-{ ========================================================= }
 { SECTION: Expressions Regex                                }
 { ========================================================= }
 
@@ -522,8 +508,6 @@ Var
 Begin
  ExecuteLine:=True;
  If(LineNum<1)or(LineNum>NumberLine)Then Exit;
- { Protection contre pointeur nil - evite runtime error 216 }
- If PA[LineNum]=nil Then Exit;
  
  SaveLine:=CurrLine;
  SavePos:=CurrPos;
@@ -715,55 +699,6 @@ Begin
  LTrim:=S;
 End;
 
-{ Convertit une chaine hexadecimale en valeur entiere }
-{ Supporte les formats: 0xFF, 0XFF, $FF }
-Function HexToInt(S:String):LongInt;
-Var
- I:Integer;
- Val:LongInt;
- C:Char;
-Begin
- HexToInt:=0;
- Val:=0;
- S:=LTrim(S);
- If Length(S)=0 Then Exit;
- { Gerer le prefixe 0x ou 0X }
- If(Length(S)>=2)and(S[1]='0')and(S[2]in['x','X'])Then
-  Delete(S,1,2)
- { Gerer le prefixe $ (style Pascal) }
- Else If S[1]='$' Then
-  Delete(S,1,1);
- If Length(S)=0 Then Exit;
- For I:=1 to Length(S)do Begin
-  C:=S[I];
-  Val:=Val*16;
-  Case C of
-   '0'..'9':Val:=Val+(Ord(C)-Ord('0'));
-   'A'..'F':Val:=Val+(Ord(C)-Ord('A')+10);
-   'a'..'f':Val:=Val+(Ord(C)-Ord('a')+10);
-   Else Begin { Caractere invalide }
-    HexToInt:=0;
-    Exit;
-   End;
-  End;
- End;
- HexToInt:=Val;
-End;
-
-{ Verifie si une chaine est une constante hexadecimale }
-Function IsHexConstant(S:String):Boolean;
-Begin
- IsHexConstant:=False;
- S:=LTrim(S);
- If Length(S)<2 Then Exit;
- { Format 0x ou 0X }
- If(S[1]='0')and(S[2]in['x','X'])Then
-  IsHexConstant:=True
- { Format $ (style Pascal) }
- Else If S[1]='$' Then
-  IsHexConstant:=True;
-End;
-
 Function PadRight(S:String;Space:Byte):String;
 Var
  I:Byte;
@@ -837,7 +772,7 @@ Procedure SetVariableInt(S:String;Value:Integer);
 Var
  I:Integer;
 Begin
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
+ For I:=1 to NumberVariable do If(S=VarList[I]^.VarName)Then Begin
   VarList[I]^.Variant.I:=Value;
   Exit;
  End;
@@ -875,7 +810,7 @@ Procedure SetVariableLongInt(S:String;Value:LongInt);
 Var
  I:Integer;
 Begin
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
+ For I:=1 to NumberVariable do If(S=VarList[I]^.VarName)Then Begin
   VarList[I]^.Variant.L:=Value;
   Exit;
  End;
@@ -913,7 +848,7 @@ Procedure SetVariableReal(S:String;Value:Real);
 Var
  I:Integer;
 Begin
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
+ For I:=1 to NumberVariable do If(S=VarList[I]^.VarName)Then Begin
   VarList[I]^.Variant.R:=Value;
   Exit;
  End;
@@ -942,24 +877,10 @@ End;
 Function GetVariableString(S:String):String;
 Var
  I:Integer;
- TempStr:String;
 Begin
  GetVariableString:='';
- TempStr:='';
  For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  If VarList[I]^.VarType=_String Then Begin
-   If VarList[I]^.Variant.S<>Nil Then
-    GetVariableString:=VarList[I]^.Variant.S^;
-  End
-   Else
-  Begin
-   { Convertir les autres types en chaine }
-   Case VarList[I]^.VarType of
-    _Integer:Begin Str(VarList[I]^.Variant.I,TempStr); GetVariableString:=TempStr; End;
-    _LongInt:Begin Str(VarList[I]^.Variant.L,TempStr); GetVariableString:=TempStr; End;
-    _Real:Begin Str(VarList[I]^.Variant.R:0:6,TempStr); GetVariableString:=TempStr; End;
-   End;
-  End;
+  GetVariableString:=VarList[I]^.Variant.S^;
   Exit;
  End;
 End;
@@ -968,11 +889,8 @@ Procedure SetVariableString(S:String;Value:String);
 Var
  I:Integer;
 Begin
- For I:=1 to NumberVariable do If(StrToUpper(S)=VarList[I]^.VarName)Then Begin
-  If VarList[I]^.VarType=_String Then Begin
-   If VarList[I]^.Variant.S<>Nil Then
-    VarList[I]^.Variant.S^:=Value;
-  End;
+ For I:=1 to NumberVariable do If(S=VarList[I]^.VarName)Then Begin
+  VarList[I]^.Variant.S^:=Value;
   Exit;
  End;
 End;
@@ -1222,23 +1140,8 @@ Var
  ArgValue:Real;
  SavedParams:Array[1..MaxFunctionParams]of Real;
  SavedParamCount:Integer;
- SaveTopOfStack:Byte;
- SaveTopOfStackInt:Byte;
- { Sauvegarde des contenus de piles pour recursion }
- SaveStack:Array[0..100]of Char;
- SaveResultStack:Array[0..100]of Real;
- StackIdx:Integer;
- { Sauvegarde etat expression pour second appel fonction dans meme expression }
- SaveI:Byte;
- SaveInfix:String;
- SavePostFix:String;
 Begin
  StopChar:=[',',':',';','"','<','=','>','!'];
- { Sauvegarder l'etat complet des piles pour les appels recursifs }
- SaveTopOfStack:=TopOfStack;
- SaveTopOfStackInt:=TopOfStackInt;
- For StackIdx:=0 to TopOfStack-1 do SaveStack[StackIdx]:=Stack[StackIdx];
- For StackIdx:=0 to TopOfStackInt-1 do SaveResultStack[StackIdx]:=ResultStack[StackIdx];
  TopOfStack:=1;
  TopOfStackInt:=1;
  PostFix:='';
@@ -1262,9 +1165,8 @@ Begin
      _Integer:Str(GetVariableInt(VarName),Value);
      _LongInt:Str(GetVariableLongInt(VarName),Value);
      _Real:Str(GetVariableReal(VarName):0:6,Value);
-     _String:Value:=GetVariableString(VarName);
      Else Begin
-      WriteLn('Type incompatible');
+      WriteLn('Type incompatiable');
       Exit;
      End;
     End;
@@ -1339,24 +1241,6 @@ Begin
          Exit;
         End;
         Inc(I);
-       End;
-       9:Begin{RAND}
-        If Infix[I]<>'('Then Begin
-         WriteLn('"(" attendu');
-         Exit;
-        End;
-        Inc(I);
-        { RAND() n'a pas d'argument }
-        While(I<=Length(Infix))and(Infix[I]=' ')do Inc(I);
-        If(I<=Length(Infix))and(Infix[I]=')')Then Begin
-         Str(Random:0:10,Value);
-         Inc(I);
-        End
-         Else
-        Begin
-         WriteLn('")" attendu pour rand()');
-         Exit;
-        End;
        End;
        10:Begin{SIN}
         If Infix[I]<>'('Then Begin
@@ -1479,16 +1363,8 @@ Begin
        While(I<=Length(Infix))and(Infix[I]in[' ',','])do Inc(I);
       End;
       If(I<=Length(Infix))and(Infix[I]=')')Then Inc(I);
-      { Sauvegarder l'etat de l'expression avant appel fonction }
-      SaveI:=I;
-      SaveInfix:=Infix;
-      SavePostFix:=PostFix;
       { Appeler la fonction }
       _Result:=CallUserFunction(FuncIdx);
-      { Restaurer l'etat de l'expression apres appel fonction }
-      I:=SaveI;
-      Infix:=SaveInfix;
-      PostFix:=SavePostFix;
       Str(_Result,Value);
       { Restaurer les anciennes valeurs des parametres }
       For ParamIdx:=1 to SavedParamCount do Begin
@@ -1508,45 +1384,26 @@ Begin
   If Infix[I]in['0'..'9']Then Begin
    Value:='';
    Exposant:=False;
-   { Verifier si c'est une constante hexadecimale (0x...) }
-   If(Infix[I]='0')and(I<Length(Infix))and(Infix[I+1]in['x','X'])Then Begin
-    { C'est une constante hexadecimale }
-    Value:='0';
-    Inc(I);
-    Value:=Value+Infix[I]; { Ajoute 'x' ou 'X' }
-    Inc(I);
-    While(I<=Length(Infix))and(Infix[I]in['0'..'9','A'..'F','a'..'f'])do Begin
+   Repeat
+    If Infix[I]in['E','e']Then Begin
+     Exposant:=True;
      Value:=Value+Infix[I];
      Inc(I);
-    End;
-    { Convertir la valeur hex en decimal pour le postfix }
-    Str(HexToInt(Value),Value);
-    PostFix:=PostFix+'('+Value+')';
-   End
-    Else
-   Begin
-    { Nombre decimal normal }
-    Repeat
-     If Infix[I]in['E','e']Then Begin
-      Exposant:=True;
-      Value:=Value+Infix[I];
-      Inc(I);
-     End
-      Else
-     If(Exposant)and(Infix[I]in['-','+'])Then Begin
-      Value:=Value+Infix[I];
-      Inc(I);
-     End
-      Else
-     If Infix[I]in['0'..'9','.']Then Begin
-      Value:=Value+Infix[I];
-      Inc(I);
-     End
-      Else
-     Break;
-    Until I>Length(Infix);
-    PostFix:=PostFix+'('+Value+')';
-   End;
+    End
+     Else
+    If(Exposant)and(Infix[I]in['-','+'])Then Begin
+     Value:=Value+Infix[I];
+     Inc(I);
+    End
+     Else
+    If Infix[I]in['0'..'9','.']Then Begin
+     Value:=Value+Infix[I];
+     Inc(I);
+    End
+     Else
+    Break;
+   Until I>Length(Infix);
+   PostFix:=PostFix+'('+Value+')';
   End
   Else If Infix[I]='('Then Begin
    StackPushChar(Infix[I]);
@@ -1557,14 +1414,11 @@ Begin
     Top:=StackPeek;
     P_2:=Infix[I];
     AppendOk:=True;
-    { Priorite: ^ > * / % > + - }
-    { ^ est associatif a droite }
-    If(Top='^')and(P_2='^')Then AppendOk:=False { ^ associatif a droite }
-    Else If(Top='^')Then AppendOk:=True { ^ sur pile, autre operateur: pop ^ }
-    Else If(P_2='^')Then AppendOk:=False { ^ arrive, ne pas pop operateurs moins prioritaires }
-    Else If(Top in['*','/','%'])and(P_2 in['+','-'])Then AppendOk:=True { * / % plus prioritaires que + - }
-    Else If(Top in['+','-'])and(P_2 in['*','/','%'])Then AppendOk:=False { + - moins prioritaires que * / % }
-    Else AppendOk:=True; { Meme priorite, associatif a gauche: pop }
+    If(Top='+')and(P_2='*')Then AppendOk:=False
+    Else If(Top='*')and(P_2='-')Then AppendOk:=True
+    Else If(Top='+')and(P_2='-')Then AppendOk:=True
+    Else If(Top in['+','-'])and(P_2='^')Then AppendOk:=False
+    Else If(Top in['*','/','%'])and(P_2='^')Then AppendOk:=False;
     If(AppendOk)Then PostFix:=PostFix+StackPop
                 Else Break;
    End;
@@ -1599,20 +1453,7 @@ Begin
     '*':_Result:=P2*P;
     '/':If P<>0 Then _Result:=P2/P Else _Result:=0;
     '%':If P<>0 Then _Result:=Trunc(P2) mod Trunc(P) Else _Result:=0;
-    '^':Begin { Puissance: P2^P }
-          If P2>0 Then _Result:=Exp(P*Ln(P2))
-          Else If P2=0 Then Begin
-           If P>0 Then _Result:=0 Else _Result:=1; { 0^0 = 1 par convention }
-          End
-          Else Begin { P2 < 0 }
-           If(Frac(P)=0)Then Begin { Exposant entier }
-            If(Trunc(P) mod 2 = 0)Then _Result:=Exp(P*Ln(-P2)) { Exposant pair: resultat positif }
-                                  Else _Result:=-Exp(P*Ln(-P2)); { Exposant impair: resultat negatif }
-           End
-            Else
-           _Result:=0; { Base negative avec exposant non-entier: indefini, retourne 0 }
-          End;
-         End;
+    '^':If P2>0 Then _Result:=Exp(P*Ln(P2)) Else If P2=0 Then _Result:=0 Else _Result:=-Exp(P*Ln(-P2));
     Else _Result:=-1;
    End;
    ResultStackPush(_Result);
@@ -1648,11 +1489,6 @@ Begin
   Inc(I);
  Until I>Length(Postfix);
  GetNumberValue:=ResultStackPop;
- { Restaurer l'etat complet des piles pour les appels recursifs }
- For StackIdx:=0 to SaveTopOfStack-1 do Stack[StackIdx]:=SaveStack[StackIdx];
- For StackIdx:=0 to SaveTopOfStackInt-1 do ResultStack[StackIdx]:=SaveResultStack[StackIdx];
- TopOfStack:=SaveTopOfStack;
- TopOfStackInt:=SaveTopOfStackInt;
 End;
 
 Procedure SkipSpace;Begin
@@ -1741,15 +1577,12 @@ Begin
    { getline - stocker dans $0 et mettre a jour les champs }
    Fields[0]:=InputLine;
    SplitIntoFields(InputLine);
-   { Mettre a jour NF avec le nombre de champs }
-   SetVariableInt('NF',NumFields);
   End;
   
   { Mettre a jour NR }
   NRVal:=GetVariableLongInt('NR');
   Inc(NRVal);
   SetVariableLongInt('NR',NRVal);
-  Inc(NRValue);
   
   { Retourner 1 (succes) via variable speciale GETLINE_STATUS }
   SetVariableInt('_GETLINE_STATUS',1);
@@ -1832,34 +1665,13 @@ Begin
  { Sauter les espaces et chercher '{' }
  SkipSpace;
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
-  { Avancer apres l'accolade ouvrante }
-  Inc(CurrPos);
-  
-  { Verifier si le reste de la ligne est vide ou juste des espaces }
-  { Si oui, le corps commence a la ligne suivante }
-  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
-  
-  If CurrPos>Length(CurrLine) Then Begin
-   { Le reste de la ligne est vide, le corps commence a la ligne suivante }
-   Inc(CurrLinePtr);
-   If CurrLinePtr<=NumberLine Then Begin
-    CurrLine:=PA[CurrLinePtr]^;
-    CurrPos:=1;
-    { Sauter les espaces en debut de ligne }
-    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
-   End;
-   UserFuncs[FuncIdx].BodyStartLine:=CurrLinePtr;
-   UserFuncs[FuncIdx].BodyStartPos:=CurrPos;
-  End
-   Else
-  Begin
-   { Le corps commence sur la meme ligne, juste apres { }
-   UserFuncs[FuncIdx].BodyStartLine:=CurrLinePtr;
-   UserFuncs[FuncIdx].BodyStartPos:=CurrPos;
-  End;
+  { Enregistrer le debut du corps de la fonction }
+  UserFuncs[FuncIdx].BodyStartLine:=CurrLinePtr;
+  UserFuncs[FuncIdx].BodyStartPos:=CurrPos+1;
   
   { Sauter le bloc de la fonction }
   BlockLevel:=1;
+  Inc(CurrPos);
   While BlockLevel>0 do Begin
    While CurrPos<=Length(CurrLine)do Begin
     If CurrLine[CurrPos]='{' Then Inc(BlockLevel)
@@ -1922,12 +1734,6 @@ Var
  OldReturnValue:Real;
  OldReturnStr:String;
  OldHasReturn:Boolean;
- { Sauvegarde des piles pour les appels recursifs }
- SaveStack:Array[0..100]of Char;
- SaveResultStack:Array[0..100]of Real;
- SaveTopOfStack:Byte;
- SaveTopOfStackInt:Byte;
- StackIdx:Integer;
 Begin
  CallUserFunction:=0;
  If(FuncIdx<1)or(FuncIdx>UserFuncCount)Then Exit;
@@ -1939,16 +1745,6 @@ Begin
  OldReturnValue:=FunctionReturnValue;
  OldReturnStr:=FunctionReturnStr;
  OldHasReturn:=HasFunctionReturn;
- 
- { Sauvegarder les piles d'evaluation d'expressions pour les appels recursifs }
- SaveTopOfStack:=TopOfStack;
- SaveTopOfStackInt:=TopOfStackInt;
- For StackIdx:=0 to TopOfStack-1 do SaveStack[StackIdx]:=Stack[StackIdx];
- For StackIdx:=0 to TopOfStackInt-1 do SaveResultStack[StackIdx]:=ResultStack[StackIdx];
- 
- { Reinitialiser les piles pour l'appel recursif }
- TopOfStack:=1;
- TopOfStackInt:=1;
  
  { Initialiser pour l'appel }
  HasFunctionReturn:=False;
@@ -1972,12 +1768,6 @@ Begin
  
  { Recuperer la valeur de retour }
  CallUserFunction:=FunctionReturnValue;
- 
- { Restaurer les piles d'evaluation d'expressions }
- For StackIdx:=0 to SaveTopOfStack-1 do Stack[StackIdx]:=SaveStack[StackIdx];
- For StackIdx:=0 to SaveTopOfStackInt-1 do ResultStack[StackIdx]:=SaveResultStack[StackIdx];
- TopOfStack:=SaveTopOfStack;
- TopOfStackInt:=SaveTopOfStackInt;
  
  { Restaurer l'etat }
  CurrLinePtr:=SaveLinePtr;
@@ -2092,40 +1882,22 @@ Begin
   End
    Else
   If CurrLine[CurrPos]='$'Then Begin
-   { Acces a un champ $0, $1, $2, ..., $NF }
+   { Acces a un champ $0, $1, $2, ... }
    Inc(CurrPos);
    TempStr:='';
-   { Verifier si c'est un numero ou une variable }
-   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9'])Then Begin
-    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9'])do Begin
-     TempStr:=TempStr+CurrLine[CurrPos];
-     Inc(CurrPos);
-    End;
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9'])do Begin
+    TempStr:=TempStr+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   If TempStr<>''Then Begin
     I:=0;
     Val(TempStr,I,SavePos);
-   End
+    If(I>=0)and(I<=NumFields)Then
+     OutputStr:=OutputStr+Fields[I]
     Else
-   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_'])Then Begin
-    { Variable comme $NF }
-    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
-     TempStr:=TempStr+CurrLine[CurrPos];
-     Inc(CurrPos);
-    End;
-    If VariableExist(StrToUpper(TempStr))Then Begin
-     Case VariableType(StrToUpper(TempStr))of
-      _Integer:I:=GetVariableInt(StrToUpper(TempStr));
-      _LongInt:I:=GetVariableLongInt(StrToUpper(TempStr));
-      Else I:=-1;
-     End;
-    End
-     Else I:=-1;
-   End
-    Else I:=-1;
-   If(I>=0)and(I<=NumFields)Then
-    OutputStr:=OutputStr+Fields[I]
-   Else
-    OutputStr:=OutputStr+'';
-   HasOutput:=True;
+     OutputStr:=OutputStr+'';
+    HasOutput:=True;
+   End;
   End
    Else
   If CurrLine[CurrPos]in['0'..'9','-','+','(']Then Begin
@@ -2156,63 +1928,14 @@ Begin
 End;
 
 Procedure CosCommand;
-Var
- R:Real;
 Begin
- SkipSpace;
- If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
- R:=GetNumberValue(1);
- SkipSpace;
- If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
- R:=Cos(R);
- If Frac(R)=0.0 Then WriteLn(R:0:0)
-                Else WriteLn(R);
-End;
-
-{ Fonction sin - sinus }
-Procedure SinCommand;
-Var
- R:Real;
-Begin
- SkipSpace;
- If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
- R:=GetNumberValue(1);
- SkipSpace;
- If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
- R:=Sin(R);
- If Frac(R)=0.0 Then WriteLn(R:0:0)
-                Else WriteLn(R);
-End;
-
-{ Fonction rand - nombre aleatoire entre 0 et 1 }
-Procedure RandCommand;
-Begin
- SkipSpace;
- If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
- SkipSpace;
- If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
- WriteLn(Random);
-End;
-
-{ Fonction srand - initialise le generateur aleatoire }
-Procedure SRandCommand;
-Var
- Seed:LongInt;
-Begin
- SkipSpace;
- If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
- SkipSpace;
- If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Begin
-  { srand() sans argument - utilise l'heure }
-  Randomize;
-  Inc(CurrPos);
+ If GetSeparator<>'"'Then Begin
+  WriteLn(Cos(GetNumberValue(1)));
  End
   Else
  Begin
-  Seed:=Round(GetNumberValue(1));
-  RandSeed:=Seed;
-  SkipSpace;
-  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+  WriteLn('Erreur de syntaxe : cos attend une valeur numerique');
+  Halt;
  End;
 End;
 
@@ -2235,20 +1958,16 @@ Begin
  WriteLn('Erreur: sqrt d''un nombre negatif');
 End;
 
-{ Fonction interne pour le formatage sprintf/printf }
-Function DoSprintf:String;
+{ Commande printf - affichage formate }
+Procedure PrintfCommand;
 Var
  FormatStr,OutputStr,TempStr:String;
  I:Integer;
  R:Real;
+ InFormat:Boolean;
  Width,Precision:Integer;
  WidthStr,PrecStr:String;
- LeftAlign:Boolean;
- IntVal:LongInt;
- Err:Integer;
 Begin
- DoSprintf:='';
- OutputStr:='';
  SkipSpace;
  OutputStr:='';
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
@@ -2264,31 +1983,20 @@ Begin
     End
      Else
     Begin
-     { Lire les flags optionnels }
-     LeftAlign:=False;
-     If(I<=Length(FormatStr))and(FormatStr[I]='-')Then Begin
-      LeftAlign:=True;
-      Inc(I);
-     End;
      { Lire la largeur optionnelle }
      WidthStr:='';
-     While(I<=Length(FormatStr))and(FormatStr[I]in['0'..'9'])do Begin
+     While(I<=Length(FormatStr))and(FormatStr[I]in['0'..'9','-'])do Begin
       WidthStr:=WidthStr+FormatStr[I];
       Inc(I);
      End;
-     Width:=0;
-     If WidthStr<>''Then Val(WidthStr,Width,Err);
      { Lire la precision optionnelle }
      PrecStr:='';
-     Precision:=6;
      If(I<=Length(FormatStr))and(FormatStr[I]='.')Then Begin
       Inc(I);
       While(I<=Length(FormatStr))and(FormatStr[I]in['0'..'9'])do Begin
        PrecStr:=PrecStr+FormatStr[I];
        Inc(I);
       End;
-      If PrecStr<>''Then Val(PrecStr,Precision,Err)
-                    Else Precision:=0;
      End;
      { Traiter le specifier de format }
      If I<=Length(FormatStr)Then Begin
@@ -2296,51 +2004,9 @@ Begin
       If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=',')Then Inc(CurrPos);
       SkipSpace;
       Case FormatStr[I] of
-       'd','i':Begin { Entier decimal }
+       'd','i':Begin { Entier }
         R:=GetNumberValue(1);
         Str(Round(R),TempStr);
-        If Width>0 Then Begin
-         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
-                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
-        End;
-        OutputStr:=OutputStr+TempStr;
-       End;
-       'x','X':Begin { Hexadecimal }
-        R:=GetNumberValue(1);
-        IntVal:=Round(R);
-        TempStr:='';
-        If IntVal=0 Then TempStr:='0'
-         Else
-        Begin
-         While IntVal>0 do Begin
-          If(IntVal mod 16)<10 Then TempStr:=Chr(Ord('0')+(IntVal mod 16))+TempStr
-                               Else If FormatStr[I]='X'Then TempStr:=Chr(Ord('A')+(IntVal mod 16)-10)+TempStr
-                                                       Else TempStr:=Chr(Ord('a')+(IntVal mod 16)-10)+TempStr;
-          IntVal:=IntVal div 16;
-         End;
-        End;
-        If Width>0 Then Begin
-         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
-                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
-        End;
-        OutputStr:=OutputStr+TempStr;
-       End;
-       'o':Begin { Octal }
-        R:=GetNumberValue(1);
-        IntVal:=Round(R);
-        TempStr:='';
-        If IntVal=0 Then TempStr:='0'
-         Else
-        Begin
-         While IntVal>0 do Begin
-          TempStr:=Chr(Ord('0')+(IntVal mod 8))+TempStr;
-          IntVal:=IntVal div 8;
-         End;
-        End;
-        If Width>0 Then Begin
-         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
-                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
-        End;
         OutputStr:=OutputStr+TempStr;
        End;
        's':Begin { Chaine }
@@ -2348,35 +2014,22 @@ Begin
          TempStr:=GetStringValue
         Else Begin
          TempStr:='';
-         While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9','$'])do Begin
+         While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
           TempStr:=TempStr+CurrLine[CurrPos];
           Inc(CurrPos);
          End;
          If VariableExist(StrToUpper(TempStr))Then
           TempStr:=GetVariableString(StrToUpper(TempStr));
         End;
-        If Width>0 Then Begin
-         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
-                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
-        End;
         OutputStr:=OutputStr+TempStr;
        End;
-       'f':Begin { Reel format fixe }
+       'f','g','e':Begin { Reel }
         R:=GetNumberValue(1);
-        Str(R:0:Precision,TempStr);
-        If Width>0 Then Begin
-         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
-                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
-        End;
-        OutputStr:=OutputStr+TempStr;
-       End;
-       'g','e':Begin { Reel format exponentiel/general }
-        R:=GetNumberValue(1);
+        If PrecStr<>''Then Begin
+         Str(R:0:2,TempStr);
+        End
+         Else
         Str(R,TempStr);
-        If Width>0 Then Begin
-         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
-                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
-        End;
         OutputStr:=OutputStr+TempStr;
        End;
        'c':Begin { Caractere }
@@ -2392,8 +2045,7 @@ Begin
    If(FormatStr[I]='\')and(I<Length(FormatStr))Then Begin
     Inc(I);
     Case FormatStr[I] of
-     'n':OutputStr:=OutputStr+#10;
-     'r':OutputStr:=OutputStr+#13;
+     'n':OutputStr:=OutputStr+#13#10;
      't':OutputStr:=OutputStr+#9;
      '\':OutputStr:=OutputStr+'\';
      '"':OutputStr:=OutputStr+'"';
@@ -2406,26 +2058,8 @@ Begin
     Inc(I);
    End;
   End;
-  DoSprintf:=OutputStr;
+  Write(OutputStr);
  End;
-End;
-
-{ Commande printf - affichage formate }
-Procedure PrintfCommand;
-Begin
- Write(DoSprintf);
-End;
-
-{ Commande sprintf - retourne une chaine formatee }
-Procedure SprintfCommand;
-Var
- ResultStr:String;
-Begin
- ResultStr:=DoSprintf;
- { Stocker le resultat dans la variable de retour de fonction }
- FunctionReturnStr:=ResultStr;
- FunctionReturnValue:=0;
- HasFunctionReturn:=True;
 End;
 
 { Evaluation des conditions pour if et switch }
@@ -2659,8 +2293,7 @@ Begin
  BraceCount:=0;
 
  For I:=StartLine to NumberLine do Begin
-  Line:=GetPALine(I);
-  If Line='' Then Continue; { Protection nil }
+  Line:=PA[I]^;
   For J:=1 to Length(Line)do Begin
    If Line[J]='{'Then Inc(BraceCount)
    Else If Line[J]='}'Then Begin
@@ -3070,9 +2703,8 @@ Begin
  While I<=Length(Line)do Begin
   If(Line[I]in[' ',#9])Then Begin
    If Not InSpace Then Begin
+    Fields[NumFields]:=Copy(Line,Start,I-Start);
     Inc(NumFields);
-    If NumFields<=MaxFields Then
-     Fields[NumFields]:=Copy(Line,Start,I-Start);
     InSpace:=True;
    End;
   End
@@ -3086,9 +2718,8 @@ Begin
   Inc(I);
  End;
  If Not InSpace Then Begin
+  Fields[NumFields]:=Copy(Line,Start,I-Start);
   Inc(NumFields);
-  If NumFields<=MaxFields Then
-   Fields[NumFields]:=Copy(Line,Start,I-Start);
  End;
 End;
 
@@ -3883,14 +3514,14 @@ Begin
    47: NoImplementation:=True; { patsplit }
    48: PrintCommand; { print }
    49: PrintfCommand; { printf }
-   50: RandCommand; { rand }
+   50: NoImplementation:=True; { rand }
    51: ReturnCommand; { return }
    52: NoImplementation:=True; { rshift }
-   53: SinCommand; { sin }
+   53: NoImplementation:=True; { sin }
    54: NoImplementation:=True; { split }
-   55: SprintfCommand; { sprintf }
+   55: NoImplementation:=True; { sprintf }
    56: SqrtCommand; { sqrt }
-   57: SRandCommand; { srand }
+   57: NoImplementation:=True; { srand }
    58: NoImplementation:=True; { strftime }
    59: NoImplementation:=True; { strtonum }
    60: NoImplementation:=True; { sub }
@@ -4121,22 +3752,6 @@ Begin
    RuleKind:=RK_END;
    Inc(CurrPos,3);
   End
-  { Verifier definition de fonction }
-  Else If(CurrPos+7<=Length(CurrLine))and
-        (UpCase(CurrLine[CurrPos])='F')and
-        (UpCase(CurrLine[CurrPos+1])='U')and
-        (UpCase(CurrLine[CurrPos+2])='N')and
-        (UpCase(CurrLine[CurrPos+3])='C')and
-        (UpCase(CurrLine[CurrPos+4])='T')and
-        (UpCase(CurrLine[CurrPos+5])='I')and
-        (UpCase(CurrLine[CurrPos+6])='O')and
-        (UpCase(CurrLine[CurrPos+7])='N')Then Begin
-   { Parser la definition de fonction }
-   Inc(CurrPos,8);
-   ParseFunctionDef;
-   Inc(CurrLinePtr);
-   Continue;
-  End
   { Verifier pattern regex /.../ }
   Else If CurrLine[CurrPos]='/'Then Begin
    RuleKind:=RK_REGEX;
@@ -4194,12 +3809,6 @@ Procedure ProcessInputWithRules;
 Var
  InputLine:String;
 Begin
- { Initialiser les variables integrees AWK }
- NRValue:=0;
- NumFields:=0;
- AddVariableLongInt('NR',0);
- AddVariableInt('NF',0);
- 
  { Executer les regles BEGIN d'abord }
  ExecuteBeginRules;
  
