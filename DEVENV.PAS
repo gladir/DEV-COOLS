@@ -96,7 +96,7 @@
               CLR_STATUSBAR, CLR_SCROLLBAR, CLR_SELECTION,
               CLR_CURSOR, CLR_LINE_HIGHLIGHT, CLR_BORDER
 
-  TODO 03 - GESTION DE LA SOURIS ET SYSTEME D EVENEMENTS [A FAIRE]
+  TODO 03 - GESTION DE LA SOURIS ET SYSTEME D EVENEMENTS [IMPLEMENTE]
             Abstraction souris multiplateforme :
               Turbo Pascal : INT $33 (AX=0 init, AX=1 show,
                 AX=2 hide, AX=3 position/boutons).
@@ -1046,11 +1046,60 @@ Type
   ShowWhitespace  : Boolean;   { afficher les espaces et tabs       }
  End;
 
+ { Types d evenements }
+ TEventKind = (
+  EV_NONE,             { aucun evenement                     }
+  EV_MOUSE_MOVE,       { deplacement de la souris            }
+  EV_MOUSE_DOWN,       { bouton souris enfonce               }
+  EV_MOUSE_UP,         { bouton souris relache               }
+  EV_MOUSE_DBLCLICK,   { double-clic                         }
+  EV_KEY_DOWN,         { touche speciale (code etendu)       }
+  EV_KEY_CHAR,         { caractere clavier                   }
+  EV_TIMER,            { evenement temporel                  }
+  EV_RESIZE,           { redimensionnement                   }
+  EV_CLOSE             { fermeture demandee                  }
+ );
+
+ TMouseButton = (
+  MB_NONE,             { aucun bouton                        }
+  MB_LEFT,             { bouton gauche                       }
+  MB_RIGHT,            { bouton droit                        }
+  MB_MIDDLE            { bouton central                      }
+ );
+
+ { Enregistrement d evenement }
+ TEvent = Record
+  Kind       : TEventKind;   { type de l evenement            }
+  MouseX     : Integer;      { position X de la souris        }
+  MouseY     : Integer;      { position Y de la souris        }
+  MouseBtn   : TMouseButton; { bouton souris concerne         }
+  KeyCode    : Word;         { code etendu de la touche       }
+  KeyChar    : Char;         { caractere ASCII                }
+  ShiftState : Word;         { etat des modificateurs         }
+  Timestamp  : LongInt;      { horodatage en millisecondes    }
+ End;
+
+ { File circulaire d evenements }
+ TEventQueue = Record
+  Items : Array[0..255] Of TEvent;  { 256 entrees           }
+  Head  : Byte;                     { indice de lecture      }
+  Tail  : Byte;                     { indice d ecriture     }
+  Count : Integer;                  { nombre d elements     }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
 Var
- Opts : TDevEnvOptions;
+ Opts       : TDevEnvOptions;
+ EvQueue    : TEventQueue;
+ LastClickX : Integer;
+ LastClickY : Integer;
+ LastClickTime : LongInt;
+ LastClickBtn  : TMouseButton;
+ PrevMouseX : Integer;
+ PrevMouseY : Integer;
+ PrevMouseBtn : LongInt;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -1477,7 +1526,11 @@ Begin
  ClearDevice;
 End;
 
-{ === TODO 03 : Gestion de la souris multiplateforme === }
+{ ============================================================
+  TODO 03 - GESTION DE LA SOURIS ET SYSTEME D EVENEMENTS [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Abstraction souris multiplateforme --- }
 
 {$IFNDEF FPC}
  Function MouseDriverFound: Boolean;
@@ -1532,6 +1585,209 @@ End;
  End;
 {$ENDIF}
 
+{ --- Initialisation de la souris --- }
+
+Procedure InitMouse;
+Begin
+ If MouseDriverFound Then
+  ShowMouse;
+ PrevMouseX := 0;
+ PrevMouseY := 0;
+ PrevMouseBtn := 0;
+ LastClickX := -1;
+ LastClickY := -1;
+ LastClickTime := 0;
+ LastClickBtn := MB_NONE;
+End;
+
+{ --- Horodatage en millisecondes --- }
+
+Function GetTimestamp: LongInt;
+Var
+ H, M, S, S100: Word;
+Begin
+ GetTime(H, M, S, S100);
+ GetTimestamp := (LongInt(H) * 3600000) +
+                 (LongInt(M) * 60000) +
+                 (LongInt(S) * 1000) +
+                 (LongInt(S100) * 10);
+End;
+
+{ --- File circulaire d evenements --- }
+
+Procedure InitEventQueue;
+Begin
+ EvQueue.Head := 0;
+ EvQueue.Tail := 0;
+ EvQueue.Count := 0;
+End;
+
+Procedure PushEvent(Ev: TEvent);
+Begin
+ If EvQueue.Count < 256 Then Begin
+  EvQueue.Items[EvQueue.Tail] := Ev;
+  EvQueue.Tail := (EvQueue.Tail + 1) And $FF;
+  Inc(EvQueue.Count);
+ End;
+End;
+
+Function PopEvent(Var Ev: TEvent): Boolean;
+Begin
+ If EvQueue.Count > 0 Then Begin
+  Ev := EvQueue.Items[EvQueue.Head];
+  EvQueue.Head := (EvQueue.Head + 1) And $FF;
+  Dec(EvQueue.Count);
+  PopEvent := True;
+ End Else
+  PopEvent := False;
+End;
+
+Function PeekEvent(Var Ev: TEvent): Boolean;
+Begin
+ If EvQueue.Count > 0 Then Begin
+  Ev := EvQueue.Items[EvQueue.Head];
+  PeekEvent := True;
+ End Else
+  PeekEvent := False;
+End;
+
+Procedure FlushEvents;
+Begin
+ EvQueue.Head := 0;
+ EvQueue.Tail := 0;
+ EvQueue.Count := 0;
+End;
+
+{ --- Creation d un evenement vide --- }
+
+Procedure ClearEvent(Var Ev: TEvent);
+Begin
+ Ev.Kind := EV_NONE;
+ Ev.MouseX := 0;
+ Ev.MouseY := 0;
+ Ev.MouseBtn := MB_NONE;
+ Ev.KeyCode := 0;
+ Ev.KeyChar := #0;
+ Ev.ShiftState := 0;
+ Ev.Timestamp := 0;
+End;
+
+{ --- Conversion bouton souris (bit mask vers TMouseButton) --- }
+
+Function BtnFromMask(Mask: LongInt): TMouseButton;
+Begin
+ If (Mask And 1) <> 0 Then
+  BtnFromMask := MB_LEFT
+ Else If (Mask And 2) <> 0 Then
+  BtnFromMask := MB_RIGHT
+ Else If (Mask And 4) <> 0 Then
+  BtnFromMask := MB_MIDDLE
+ Else
+  BtnFromMask := MB_NONE;
+End;
+
+{ --- Detection de double-clic (delai 300 ms, 5 pixels) --- }
+
+Function IsDoubleClick(X, Y: Integer; Btn: TMouseButton;
+                       Now: LongInt): Boolean;
+Var
+ DX, DY: Integer;
+Begin
+ IsDoubleClick := False;
+ If (Btn = LastClickBtn) And (LastClickBtn <> MB_NONE) Then Begin
+  DX := X - LastClickX;
+  DY := Y - LastClickY;
+  If DX < 0 Then DX := -DX;
+  If DY < 0 Then DY := -DY;
+  If (DX <= 5) And (DY <= 5) And
+     ((Now - LastClickTime) <= 300) Then
+   IsDoubleClick := True;
+ End;
+End;
+
+{ --- Interrogation souris et clavier --- }
+
+Procedure PollEvents(Var Ev: TEvent);
+Var
+ MX, MY, MBtn: LongInt;
+ Now: LongInt;
+ Ch: Char;
+ Btn: TMouseButton;
+Begin
+ ClearEvent(Ev);
+ Now := GetTimestamp;
+ Ev.Timestamp := Now;
+
+ { Verifier le clavier d abord }
+ If KeyPressed Then Begin
+  Ch := ReadKey;
+  If Ch = #0 Then Begin
+   { Touche speciale : code etendu }
+   Ev.Kind := EV_KEY_DOWN;
+   If KeyPressed Then Begin
+    Ch := ReadKey;
+    Ev.KeyCode := Ord(Ch);
+   End;
+   Ev.KeyChar := #0;
+  End Else Begin
+   { Caractere ASCII normal }
+   Ev.Kind := EV_KEY_CHAR;
+   Ev.KeyChar := Ch;
+   Ev.KeyCode := Ord(Ch);
+  End;
+  Exit;
+ End;
+
+ { Interroger la souris }
+ MX := 0;
+ MY := 0;
+ MBtn := 0;
+ {$IFDEF FPC}
+  PtcMouse.GetMouseState(MX, MY, MBtn);
+ {$ELSE}
+  GetMouseState(MX, MY, MBtn);
+ {$ENDIF}
+
+ Btn := BtnFromMask(MBtn);
+
+ { Bouton enfonce }
+ If (MBtn <> 0) And (PrevMouseBtn = 0) Then Begin
+  { Detection du double-clic }
+  If IsDoubleClick(Integer(MX), Integer(MY), Btn, Now) Then Begin
+   Ev.Kind := EV_MOUSE_DBLCLICK;
+   LastClickBtn := MB_NONE;
+  End Else Begin
+   Ev.Kind := EV_MOUSE_DOWN;
+   LastClickX := Integer(MX);
+   LastClickY := Integer(MY);
+   LastClickTime := Now;
+   LastClickBtn := Btn;
+  End;
+  Ev.MouseX := Integer(MX);
+  Ev.MouseY := Integer(MY);
+  Ev.MouseBtn := Btn;
+ End
+ { Bouton relache }
+ Else If (MBtn = 0) And (PrevMouseBtn <> 0) Then Begin
+  Ev.Kind := EV_MOUSE_UP;
+  Ev.MouseX := Integer(MX);
+  Ev.MouseY := Integer(MY);
+  Ev.MouseBtn := BtnFromMask(PrevMouseBtn);
+ End
+ { Deplacement }
+ Else If (Integer(MX) <> PrevMouseX) Or
+         (Integer(MY) <> PrevMouseY) Then Begin
+  Ev.Kind := EV_MOUSE_MOVE;
+  Ev.MouseX := Integer(MX);
+  Ev.MouseY := Integer(MY);
+  Ev.MouseBtn := Btn;
+ End;
+
+ PrevMouseX := Integer(MX);
+ PrevMouseY := Integer(MY);
+ PrevMouseBtn := MBtn;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -1539,6 +1795,8 @@ BEGIN
   ShowVersion;
  InitializeGraphics;
  ClearScreen(CLR_BACKGROUND);
- { Boucle principale a venir (TODO 03+) }
+ InitEventQueue;
+ InitMouse;
+ { Boucle principale a venir (TODO 04+) }
  ShutdownGraphics;
 END.

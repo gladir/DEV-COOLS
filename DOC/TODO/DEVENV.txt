@@ -49,7 +49,7 @@
               CLR_STATUSBAR, CLR_SCROLLBAR, CLR_SELECTION,
               CLR_CURSOR, CLR_LINE_HIGHLIGHT, CLR_BORDER.
 
-  TODO 03 - GESTION DE LA SOURIS ET SYSTEME D EVENEMENTS [A FAIRE]
+  TODO 03 - GESTION DE LA SOURIS ET SYSTEME D EVENEMENTS [IMPLEMENTE]
             Abstraction souris multiplateforme :
               Turbo Pascal : INT $33 (init, show, hide, position).
               Free Pascal : PtcMouse (InitMouse, GetMouseState).
