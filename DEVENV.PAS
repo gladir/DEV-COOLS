@@ -570,7 +570,7 @@
               la hauteur du panneau.
             Redimensionnement du panneau par un splitter vertical.
 
-  TODO 18 - PANNEAU DE PROPRIETES [A FAIRE]
+  TODO 18 - PANNEAU DE PROPRIETES [IMPLEMENTE]
             Panneau affichant les proprietes de l element
             selectionne dans l explorateur de solution.
             TPropertiesPanel : grille de proprietes avec nom
@@ -1042,6 +1042,17 @@ Const
  EXPLORER_SCROLL_STEP  = 3;        { pas de defilement              }
  SPLITTER_WIDTH        = 4;        { largeur du splitter vertical   }
  MAX_EXPLORER_NODES    = 512;      { nombre max de noeuds           }
+
+ { Panneau de proprietes }
+ PROPS_PANEL_HEIGHT    = 200;      { hauteur du panneau en pixels   }
+ PROPS_MIN_HEIGHT      = 80;       { hauteur minimale en pixels     }
+ PROPS_MAX_HEIGHT      = 400;      { hauteur maximale en pixels     }
+ PROPS_ROW_HEIGHT      = 20;       { hauteur d une ligne            }
+ PROPS_NAME_WIDTH      = 120;      { largeur de la colonne nom      }
+ PROPS_SCROLL_STEP     = 3;        { pas de defilement              }
+ MAX_PROPERTIES        = 32;       { nombre max de proprietes       }
+ PROPS_HEADER_HEIGHT   = 22;       { hauteur de l en-tete           }
+ PROPS_SPLITTER_HEIGHT = 4;        { hauteur du splitter horizontal }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -1577,6 +1588,51 @@ Type
   NeedRepaint: Boolean;             { doit etre redessine            }
  End;
 
+ { Type de source pour le panneau de proprietes }
+ TPropertyKind = (
+  PK_NONE,             { aucune source                           }
+  PK_PROJECT,          { proprietes du projet                    }
+  PK_FILE,             { proprietes du fichier                   }
+  PK_SOLUTION,         { proprietes de la solution               }
+  PK_REFERENCE         { proprietes d une reference              }
+ );
+
+ { Mode de tri des proprietes }
+ TPropertySort = (
+  PS_ALPHABETICAL,     { tri alphabetique                        }
+  PS_CATEGORIZED       { tri par categorie                       }
+ );
+
+ { Propriete individuelle (nom/valeur) }
+ TPropertyItem = Record
+  Name       : String[63];           { nom de la propriete            }
+  Value      : String[255];          { valeur de la propriete         }
+  Category   : String[31];           { categorie (pour tri)           }
+  ReadOnly   : Boolean;              { propriete en lecture seule     }
+  Editing    : Boolean;              { en cours d edition             }
+ End;
+
+ { Panneau de proprietes }
+ TPropertiesPanel = Record
+  Items      : Array[0..MAX_PROPERTIES - 1] Of TPropertyItem;
+  ItemCount  : Integer;              { nombre de proprietes           }
+  SelectedIdx: Integer;              { index de la propriete active   }
+  ScrollTop  : Integer;              { premiere ligne visible         }
+  X          : Integer;              { position X du panneau          }
+  Y          : Integer;              { position Y du panneau          }
+  Width      : Integer;              { largeur du panneau             }
+  Height     : Integer;              { hauteur du panneau             }
+  NameColWidth: Integer;             { largeur colonne nom            }
+  SplitterY  : Integer;              { position Y du splitter         }
+  Dragging   : Boolean;              { splitter en cours de drag      }
+  NeedRepaint: Boolean;              { doit etre redessine            }
+  SourceKind : TPropertyKind;        { type de source active          }
+  SourceTitle: String[63];           { titre de la source             }
+  SortMode   : TPropertySort;        { mode de tri                    }
+  EditBuffer : String[255];          { tampon d edition temporaire    }
+  EditActive : Boolean;              { edition en cours               }
+ End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1621,6 +1677,8 @@ Var
  PascalHL     : TPascalHighlighter;
  { Explorateur de solution }
  SolExplorer  : TSolutionExplorer;
+ { Panneau de proprietes }
+ PropsPanel   : TPropertiesPanel;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -9749,6 +9807,701 @@ Begin
  IsExplorerEmpty := Exp.NodeCount = 0;
 End;
 
+
+{ ============================================================
+  TODO 18 - PANNEAU DE PROPRIETES [IMPLEMENTE]
+  ============================================================ }
+
+{ --- Initialiser une propriete --- }
+
+Procedure InitPropertyItem(Var Item: TPropertyItem);
+Begin
+ Item.Name := '';
+ Item.Value := '';
+ Item.Category := '';
+ Item.ReadOnly := False;
+ Item.Editing := False;
+End;
+
+{ --- Initialiser le panneau de proprietes --- }
+
+Procedure InitPropertiesPanel(Var PP: TPropertiesPanel);
+Var
+ I: Integer;
+Begin
+ PP.ItemCount := 0;
+ PP.SelectedIdx := -1;
+ PP.ScrollTop := 0;
+ PP.X := GetScreenWidth - EXPLORER_WIDTH;
+ PP.Y := GetScreenHeight - PROPS_PANEL_HEIGHT - STATUSBAR_HEIGHT;
+ PP.Width := EXPLORER_WIDTH;
+ PP.Height := PROPS_PANEL_HEIGHT;
+ PP.NameColWidth := PROPS_NAME_WIDTH;
+ PP.SplitterY := PP.Y - PROPS_SPLITTER_HEIGHT;
+ PP.Dragging := False;
+ PP.NeedRepaint := True;
+ PP.SourceKind := PK_NONE;
+ PP.SourceTitle := '';
+ PP.SortMode := PS_ALPHABETICAL;
+ PP.EditBuffer := '';
+ PP.EditActive := False;
+ For I := 0 To MAX_PROPERTIES - 1 Do
+  InitPropertyItem(PP.Items[I]);
+End;
+
+{ --- Vider le panneau de proprietes --- }
+
+Procedure ClearPropertiesPanel(Var PP: TPropertiesPanel);
+Var
+ I: Integer;
+Begin
+ For I := 0 To PP.ItemCount - 1 Do
+  InitPropertyItem(PP.Items[I]);
+ PP.ItemCount := 0;
+ PP.SelectedIdx := -1;
+ PP.ScrollTop := 0;
+ PP.SourceKind := PK_NONE;
+ PP.SourceTitle := '';
+ PP.EditActive := False;
+ PP.EditBuffer := '';
+ PP.NeedRepaint := True;
+End;
+
+{ --- Ajouter une propriete au panneau --- }
+
+Function AddProperty(Var PP: TPropertiesPanel;
+ AName, AValue, ACategory: String; AReadOnly: Boolean): Boolean;
+Begin
+ If PP.ItemCount >= MAX_PROPERTIES Then Begin
+  AddProperty := False;
+  Exit;
+ End;
+ PP.Items[PP.ItemCount].Name := AName;
+ PP.Items[PP.ItemCount].Value := AValue;
+ PP.Items[PP.ItemCount].Category := ACategory;
+ PP.Items[PP.ItemCount].ReadOnly := AReadOnly;
+ PP.Items[PP.ItemCount].Editing := False;
+ Inc(PP.ItemCount);
+ PP.NeedRepaint := True;
+ AddProperty := True;
+End;
+
+{ --- Supprimer une propriete du panneau --- }
+
+Function RemoveProperty(Var PP: TPropertiesPanel;
+ Idx: Integer): Boolean;
+Var
+ I: Integer;
+Begin
+ If (Idx < 0) Or (Idx >= PP.ItemCount) Then Begin
+  RemoveProperty := False;
+  Exit;
+ End;
+ For I := Idx To PP.ItemCount - 2 Do
+  PP.Items[I] := PP.Items[I + 1];
+ Dec(PP.ItemCount);
+ InitPropertyItem(PP.Items[PP.ItemCount]);
+ If PP.SelectedIdx >= PP.ItemCount Then
+  PP.SelectedIdx := PP.ItemCount - 1;
+ PP.NeedRepaint := True;
+ RemoveProperty := True;
+End;
+
+{ --- Definir la source des proprietes (projet) --- }
+
+Procedure SetPropertySourceProject(Var PP: TPropertiesPanel;
+ Var Proj: TProject);
+Begin
+ ClearPropertiesPanel(PP);
+ PP.SourceKind := PK_PROJECT;
+ PP.SourceTitle := Proj.Info.ProjectName;
+ AddProperty(PP, 'Nom de l assembly', Proj.Info.AssemblyName,
+  'General', False);
+ AddProperty(PP, 'Espace de noms racine', Proj.Info.RootNamespace,
+  'General', False);
+ Case Proj.Info.OutputType Of
+  OT_EXE:     AddProperty(PP, 'Type de sortie', 'Exe',
+                'General', False);
+  OT_LIBRARY: AddProperty(PP, 'Type de sortie', 'Library',
+                'General', False);
+  OT_WINEXE:  AddProperty(PP, 'Type de sortie', 'WinExe',
+                'General', False);
+ End;
+ AddProperty(PP, 'Chemin de sortie', Proj.Info.OutputPath,
+  'Build', False);
+ AddProperty(PP, 'Framework cible', Proj.Info.TargetFramework,
+  'General', True);
+ AddProperty(PP, 'Constantes', Proj.Info.DefineConstants,
+  'Build', False);
+ AddProperty(PP, 'GUID du projet', Proj.Info.ProjectGUID,
+  'Avance', True);
+ PP.NeedRepaint := True;
+End;
+
+{ --- Definir la source des proprietes (fichier) --- }
+
+Procedure SetPropertySourceFile(Var PP: TPropertiesPanel;
+ Var PF: TProjectFile);
+Begin
+ ClearPropertiesPanel(PP);
+ PP.SourceKind := PK_FILE;
+ PP.SourceTitle := PF.FileName;
+ AddProperty(PP, 'Nom de fichier', PF.FileName,
+  'General', True);
+ Case PF.BuildAction Of
+  BA_COMPILE:           AddProperty(PP, 'Action de build',
+                          'Compile', 'Build', False);
+  BA_CONTENT:           AddProperty(PP, 'Action de build',
+                          'Content', 'Build', False);
+  BA_NONE:              AddProperty(PP, 'Action de build',
+                          'None', 'Build', False);
+  BA_EMBEDDED_RESOURCE: AddProperty(PP, 'Action de build',
+                          'EmbeddedResource', 'Build', False);
+ End;
+ If PF.DependentUpon <> '' Then
+  AddProperty(PP, 'Depend de', PF.DependentUpon,
+   'Avance', True);
+ If PF.SubType <> '' Then
+  AddProperty(PP, 'Sous-type', PF.SubType,
+   'Avance', True);
+ AddProperty(PP, 'Copier dans sortie', 'Ne pas copier',
+  'Build', False);
+ PP.NeedRepaint := True;
+End;
+
+{ --- Definir la source des proprietes (solution) --- }
+
+Procedure SetPropertySourceSolution(Var PP: TPropertiesPanel;
+ Var Sol: TSolution);
+Begin
+ ClearPropertiesPanel(PP);
+ PP.SourceKind := PK_SOLUTION;
+ PP.SourceTitle := Sol.Info.SolutionName;
+ AddProperty(PP, 'Nom', Sol.Info.SolutionName,
+  'General', True);
+ AddProperty(PP, 'Chemin', Sol.Info.SolutionPath,
+  'General', True);
+ AddProperty(PP, 'Nombre de projets', IntToStr(Sol.ProjectCount),
+  'General', True);
+ AddProperty(PP, 'Configurations', IntToStr(Sol.ConfigCount),
+  'General', True);
+ PP.NeedRepaint := True;
+End;
+
+{ --- Definir la source des proprietes (reference) --- }
+
+Procedure SetPropertySourceReference(Var PP: TPropertiesPanel;
+ Var PR: TProjectRef);
+Begin
+ ClearPropertiesPanel(PP);
+ PP.SourceKind := PK_REFERENCE;
+ PP.SourceTitle := PR.ReferenceName;
+ AddProperty(PP, 'Nom', PR.ReferenceName,
+  'General', True);
+ If PR.HintPath <> '' Then
+  AddProperty(PP, 'Chemin', PR.HintPath,
+   'General', True);
+ If PR.ProjectGUID <> '' Then
+  AddProperty(PP, 'GUID du projet', PR.ProjectGUID,
+   'Avance', True);
+ PP.NeedRepaint := True;
+End;
+
+{ --- Definir la source generique --- }
+
+Procedure SetPropertySource(Var PP: TPropertiesPanel;
+ Kind: TPropertyKind; Title: String);
+Begin
+ ClearPropertiesPanel(PP);
+ PP.SourceKind := Kind;
+ PP.SourceTitle := Title;
+ PP.NeedRepaint := True;
+End;
+
+{ --- Trier les proprietes par ordre alphabetique --- }
+
+Procedure SortPropertiesAlpha(Var PP: TPropertiesPanel);
+Var
+ I, J: Integer;
+ Temp: TPropertyItem;
+Begin
+ For I := 0 To PP.ItemCount - 2 Do
+  For J := I + 1 To PP.ItemCount - 1 Do
+   If PP.Items[I].Name > PP.Items[J].Name Then Begin
+    Temp := PP.Items[I];
+    PP.Items[I] := PP.Items[J];
+    PP.Items[J] := Temp;
+   End;
+ PP.NeedRepaint := True;
+End;
+
+{ --- Trier les proprietes par categorie --- }
+
+Procedure SortPropertiesByCategory(Var PP: TPropertiesPanel);
+Var
+ I, J: Integer;
+ Temp: TPropertyItem;
+Begin
+ For I := 0 To PP.ItemCount - 2 Do
+  For J := I + 1 To PP.ItemCount - 1 Do
+   If (PP.Items[I].Category > PP.Items[J].Category) Or
+      ((PP.Items[I].Category = PP.Items[J].Category) And
+       (PP.Items[I].Name > PP.Items[J].Name)) Then Begin
+    Temp := PP.Items[I];
+    PP.Items[I] := PP.Items[J];
+    PP.Items[J] := Temp;
+   End;
+ PP.NeedRepaint := True;
+End;
+
+{ --- Changer le mode de tri --- }
+
+Procedure TogglePropertySort(Var PP: TPropertiesPanel);
+Begin
+ If PP.SortMode = PS_ALPHABETICAL Then Begin
+  PP.SortMode := PS_CATEGORIZED;
+  SortPropertiesByCategory(PP);
+ End Else Begin
+  PP.SortMode := PS_ALPHABETICAL;
+  SortPropertiesAlpha(PP);
+ End;
+End;
+
+{ --- Calculer le nombre de lignes visibles --- }
+
+Function GetVisiblePropertyCount(Var PP: TPropertiesPanel): Integer;
+Var
+ Available: Integer;
+Begin
+ Available := PP.Height - PROPS_HEADER_HEIGHT;
+ If Available < 0 Then
+  Available := 0;
+ GetVisiblePropertyCount := Available Div PROPS_ROW_HEIGHT;
+End;
+
+{ --- Dessiner l en-tete du panneau --- }
+
+Procedure DrawPropertiesHeader(Var PP: TPropertiesPanel);
+Begin
+ SetColor(CLR_BORDER);
+ Rectangle(PP.X, PP.Y, PP.X + PP.Width - 1,
+  PP.Y + PROPS_HEADER_HEIGHT - 1);
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(PP.X + 1, PP.Y + 1, PP.X + PP.Width - 2,
+  PP.Y + PROPS_HEADER_HEIGHT - 2);
+ SetColor(CLR_MENU_TEXT);
+ If PP.SourceTitle <> '' Then
+  OutTextXY(PP.X + 4, PP.Y + 4, PP.SourceTitle)
+ Else
+  OutTextXY(PP.X + 4, PP.Y + 4, 'Proprietes');
+End;
+
+{ --- Dessiner une ligne de propriete --- }
+
+Procedure DrawPropertyRow(Var PP: TPropertiesPanel;
+ Idx, RowY: Integer);
+Var
+ NameX, ValX: Integer;
+Begin
+ NameX := PP.X + 2;
+ ValX := PP.X + PP.NameColWidth;
+ { Fond de la ligne }
+ If Idx = PP.SelectedIdx Then Begin
+  SetFillStyle(SolidFill, CLR_SELECTION);
+  Bar(PP.X + 1, RowY, PP.X + PP.Width - 2,
+   RowY + PROPS_ROW_HEIGHT - 1);
+  SetColor(15);
+ End Else Begin
+  SetFillStyle(SolidFill, CLR_EDITOR_BG);
+  Bar(PP.X + 1, RowY, PP.X + PP.Width - 2,
+   RowY + PROPS_ROW_HEIGHT - 1);
+  SetColor(CLR_MENU_TEXT);
+ End;
+ { Nom }
+ OutTextXY(NameX, RowY + 3, PP.Items[Idx].Name);
+ { Separateur vertical }
+ SetColor(CLR_BORDER);
+ Line(ValX, RowY, ValX, RowY + PROPS_ROW_HEIGHT - 1);
+ { Valeur }
+ If Idx = PP.SelectedIdx Then
+  SetColor(15)
+ Else If PP.Items[Idx].ReadOnly Then
+  SetColor(8)
+ Else
+  SetColor(CLR_EDITOR_TEXT);
+ If PP.Items[Idx].Editing Then
+  OutTextXY(ValX + 3, RowY + 3, PP.EditBuffer)
+ Else
+  OutTextXY(ValX + 3, RowY + 3, PP.Items[Idx].Value);
+ { Ligne horizontale }
+ SetColor(CLR_BORDER);
+ Line(PP.X, RowY + PROPS_ROW_HEIGHT - 1,
+  PP.X + PP.Width - 1, RowY + PROPS_ROW_HEIGHT - 1);
+End;
+
+{ --- Dessiner le panneau de proprietes --- }
+
+Procedure DrawPropertiesPanel(Var PP: TPropertiesPanel);
+Var
+ I, RowY, Visible: Integer;
+Begin
+ { Bordure du panneau }
+ SetColor(CLR_BORDER);
+ Rectangle(PP.X, PP.Y, PP.X + PP.Width - 1,
+  PP.Y + PP.Height - 1);
+ { Fond }
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(PP.X + 1, PP.Y + 1, PP.X + PP.Width - 2,
+  PP.Y + PP.Height - 2);
+ { En-tete }
+ DrawPropertiesHeader(PP);
+ { Lignes de proprietes }
+ Visible := GetVisiblePropertyCount(PP);
+ RowY := PP.Y + PROPS_HEADER_HEIGHT;
+ For I := PP.ScrollTop To PP.ItemCount - 1 Do Begin
+  If I - PP.ScrollTop >= Visible Then
+   Break;
+  DrawPropertyRow(PP, I, RowY);
+  Inc(RowY, PROPS_ROW_HEIGHT);
+ End;
+ { Vider l espace restant }
+ If RowY < PP.Y + PP.Height - 1 Then Begin
+  SetFillStyle(SolidFill, CLR_EDITOR_BG);
+  Bar(PP.X + 1, RowY, PP.X + PP.Width - 2,
+   PP.Y + PP.Height - 2);
+ End;
+ PP.NeedRepaint := False;
+End;
+
+{ --- Tester si un clic est dans le panneau --- }
+
+Function PropertiesPanelHitTest(Var PP: TPropertiesPanel;
+ MX, MY: Integer): Boolean;
+Begin
+ PropertiesPanelHitTest :=
+  (MX >= PP.X) And (MX < PP.X + PP.Width) And
+  (MY >= PP.Y) And (MY < PP.Y + PP.Height);
+End;
+
+{ --- Tester si un clic est sur le splitter horizontal --- }
+
+Function PropertiesSplitterHitTest(Var PP: TPropertiesPanel;
+ MX, MY: Integer): Boolean;
+Begin
+ PropertiesSplitterHitTest :=
+  (MX >= PP.X) And (MX < PP.X + PP.Width) And
+  (MY >= PP.SplitterY) And
+  (MY < PP.SplitterY + PROPS_SPLITTER_HEIGHT);
+End;
+
+{ --- Determiner quelle propriete a ete cliquee --- }
+
+Function PropertyRowHitTest(Var PP: TPropertiesPanel;
+ MY: Integer): Integer;
+Var
+ RelY, Row: Integer;
+Begin
+ RelY := MY - PP.Y - PROPS_HEADER_HEIGHT;
+ If RelY < 0 Then Begin
+  PropertyRowHitTest := -1;
+  Exit;
+ End;
+ Row := RelY Div PROPS_ROW_HEIGHT + PP.ScrollTop;
+ If Row >= PP.ItemCount Then
+  PropertyRowHitTest := -1
+ Else
+  PropertyRowHitTest := Row;
+End;
+
+{ --- Commencer l edition d une propriete --- }
+
+Procedure BeginPropertyEdit(Var PP: TPropertiesPanel;
+ Idx: Integer);
+Begin
+ If (Idx < 0) Or (Idx >= PP.ItemCount) Then Exit;
+ If PP.Items[Idx].ReadOnly Then Exit;
+ If PP.EditActive And (PP.SelectedIdx >= 0) And
+    (PP.SelectedIdx < PP.ItemCount) Then
+  PP.Items[PP.SelectedIdx].Editing := False;
+ PP.SelectedIdx := Idx;
+ PP.Items[Idx].Editing := True;
+ PP.EditBuffer := PP.Items[Idx].Value;
+ PP.EditActive := True;
+ PP.NeedRepaint := True;
+End;
+
+{ --- Annuler l edition en cours --- }
+
+Procedure CancelPropertyEdit(Var PP: TPropertiesPanel);
+Begin
+ If PP.EditActive And (PP.SelectedIdx >= 0) And
+    (PP.SelectedIdx < PP.ItemCount) Then
+  PP.Items[PP.SelectedIdx].Editing := False;
+ PP.EditActive := False;
+ PP.EditBuffer := '';
+ PP.NeedRepaint := True;
+End;
+
+{ --- Confirmer l edition en cours --- }
+
+Procedure CommitPropertyEdit(Var PP: TPropertiesPanel);
+Begin
+ If PP.EditActive And (PP.SelectedIdx >= 0) And
+    (PP.SelectedIdx < PP.ItemCount) Then Begin
+  PP.Items[PP.SelectedIdx].Value := PP.EditBuffer;
+  PP.Items[PP.SelectedIdx].Editing := False;
+ End;
+ PP.EditActive := False;
+ PP.EditBuffer := '';
+ PP.NeedRepaint := True;
+End;
+
+{ --- Gerer les evenements du panneau de proprietes --- }
+
+Procedure HandlePropertiesEvent(Var PP: TPropertiesPanel;
+ Ev: TEvent);
+Var
+ Row, NewY, Visible: Integer;
+Begin
+ Case Ev.Kind Of
+  EV_MOUSE_DOWN: Begin
+   { Splitter horizontal }
+   If PropertiesSplitterHitTest(PP, Ev.MouseX, Ev.MouseY) Then Begin
+    PP.Dragging := True;
+    Exit;
+   End;
+   { Clic dans le panneau }
+   If PropertiesPanelHitTest(PP, Ev.MouseX, Ev.MouseY) Then Begin
+    Row := PropertyRowHitTest(PP, Ev.MouseY);
+    If Row >= 0 Then Begin
+     If PP.EditActive Then
+      CommitPropertyEdit(PP);
+     PP.SelectedIdx := Row;
+     PP.NeedRepaint := True;
+    End;
+   End;
+  End;
+  EV_MOUSE_DBLCLICK: Begin
+   If PropertiesPanelHitTest(PP, Ev.MouseX, Ev.MouseY) Then Begin
+    Row := PropertyRowHitTest(PP, Ev.MouseY);
+    If Row >= 0 Then
+     BeginPropertyEdit(PP, Row);
+   End;
+  End;
+  EV_MOUSE_UP: Begin
+   PP.Dragging := False;
+  End;
+  EV_MOUSE_MOVE: Begin
+   If PP.Dragging Then Begin
+    NewY := Ev.MouseY;
+    PP.Height := PP.Y + PP.Height - NewY;
+    If PP.Height < PROPS_MIN_HEIGHT Then
+     PP.Height := PROPS_MIN_HEIGHT;
+    If PP.Height > PROPS_MAX_HEIGHT Then
+     PP.Height := PROPS_MAX_HEIGHT;
+    PP.Y := NewY;
+    PP.SplitterY := PP.Y - PROPS_SPLITTER_HEIGHT;
+    PP.NeedRepaint := True;
+   End;
+  End;
+  EV_KEY_CHAR: Begin
+   If PP.EditActive Then Begin
+    Case Ev.KeyChar Of
+     #13: CommitPropertyEdit(PP);
+     #27: CancelPropertyEdit(PP);
+     #8:  Begin
+           If Length(PP.EditBuffer) > 0 Then
+            Delete(PP.EditBuffer, Length(PP.EditBuffer), 1);
+           PP.NeedRepaint := True;
+          End;
+    Else
+     If (Ev.KeyChar >= ' ') And
+        (Length(PP.EditBuffer) < 255) Then Begin
+      PP.EditBuffer := PP.EditBuffer + Ev.KeyChar;
+      PP.NeedRepaint := True;
+     End;
+    End;
+   End;
+  End;
+  EV_KEY_DOWN: Begin
+   If Not PP.EditActive Then Begin
+    Visible := GetVisiblePropertyCount(PP);
+    Case Ev.KeyCode Of
+     $5000: Begin { Fleche bas }
+      If PP.SelectedIdx < PP.ItemCount - 1 Then Begin
+       Inc(PP.SelectedIdx);
+       If PP.SelectedIdx >= PP.ScrollTop + Visible Then
+        Inc(PP.ScrollTop);
+       PP.NeedRepaint := True;
+      End;
+     End;
+     $4800: Begin { Fleche haut }
+      If PP.SelectedIdx > 0 Then Begin
+       Dec(PP.SelectedIdx);
+       If PP.SelectedIdx < PP.ScrollTop Then
+        PP.ScrollTop := PP.SelectedIdx;
+       PP.NeedRepaint := True;
+      End;
+     End;
+     $4700: Begin { Home }
+      PP.SelectedIdx := 0;
+      PP.ScrollTop := 0;
+      PP.NeedRepaint := True;
+     End;
+     $4F00: Begin { End }
+      PP.SelectedIdx := PP.ItemCount - 1;
+      If PP.SelectedIdx >= Visible Then
+       PP.ScrollTop := PP.SelectedIdx - Visible + 1
+      Else
+       PP.ScrollTop := 0;
+      PP.NeedRepaint := True;
+     End;
+     $1C0D: Begin { Enter }
+      If (PP.SelectedIdx >= 0) And
+         (PP.SelectedIdx < PP.ItemCount) Then
+       BeginPropertyEdit(PP, PP.SelectedIdx);
+     End;
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ --- Trouver une propriete par nom --- }
+
+Function FindProperty(Var PP: TPropertiesPanel;
+ AName: String): Integer;
+Var
+ I: Integer;
+Begin
+ FindProperty := -1;
+ For I := 0 To PP.ItemCount - 1 Do
+  If PP.Items[I].Name = AName Then Begin
+   FindProperty := I;
+   Exit;
+  End;
+End;
+
+{ --- Modifier la valeur d une propriete --- }
+
+Function SetPropertyValue(Var PP: TPropertiesPanel;
+ AName, AValue: String): Boolean;
+Var
+ Idx: Integer;
+Begin
+ Idx := FindProperty(PP, AName);
+ If Idx < 0 Then Begin
+  SetPropertyValue := False;
+  Exit;
+ End;
+ PP.Items[Idx].Value := AValue;
+ PP.NeedRepaint := True;
+ SetPropertyValue := True;
+End;
+
+{ --- Obtenir la valeur d une propriete --- }
+
+Function GetPropertyValue(Var PP: TPropertiesPanel;
+ AName: String): String;
+Var
+ Idx: Integer;
+Begin
+ Idx := FindProperty(PP, AName);
+ If Idx >= 0 Then
+  GetPropertyValue := PP.Items[Idx].Value
+ Else
+  GetPropertyValue := '';
+End;
+
+{ --- Obtenir le nombre de proprietes --- }
+
+Function GetPropertyCount(Var PP: TPropertiesPanel): Integer;
+Begin
+ GetPropertyCount := PP.ItemCount;
+End;
+
+{ --- Obtenir une propriete par index --- }
+
+Function GetPropertyByIndex(Var PP: TPropertiesPanel;
+ Idx: Integer; Var Item: TPropertyItem): Boolean;
+Begin
+ If (Idx >= 0) And (Idx < PP.ItemCount) Then Begin
+  Item := PP.Items[Idx];
+  GetPropertyByIndex := True;
+ End Else
+  GetPropertyByIndex := False;
+End;
+
+{ --- Verifier si un index est valide --- }
+
+Function IsValidPropertyIndex(Var PP: TPropertiesPanel;
+ Idx: Integer): Boolean;
+Begin
+ IsValidPropertyIndex := (Idx >= 0) And (Idx < PP.ItemCount);
+End;
+
+{ --- Obtenir l index selectionne --- }
+
+Function GetSelectedPropertyIndex(
+ Var PP: TPropertiesPanel): Integer;
+Begin
+ GetSelectedPropertyIndex := PP.SelectedIdx;
+End;
+
+{ --- Definir l index selectionne --- }
+
+Procedure SetSelectedPropertyIndex(Var PP: TPropertiesPanel;
+ Idx: Integer);
+Begin
+ If PP.EditActive Then
+  CommitPropertyEdit(PP);
+ If (Idx >= 0) And (Idx < PP.ItemCount) Then
+  PP.SelectedIdx := Idx
+ Else
+  PP.SelectedIdx := -1;
+ PP.NeedRepaint := True;
+End;
+
+{ --- Obtenir le type de source active --- }
+
+Function GetPropertySourceKind(
+ Var PP: TPropertiesPanel): TPropertyKind;
+Begin
+ GetPropertySourceKind := PP.SourceKind;
+End;
+
+{ --- Obtenir le titre de la source --- }
+
+Function GetPropertySourceTitle(
+ Var PP: TPropertiesPanel): String;
+Begin
+ GetPropertySourceTitle := PP.SourceTitle;
+End;
+
+{ --- Obtenir le mode de tri --- }
+
+Function GetPropertySortMode(
+ Var PP: TPropertiesPanel): TPropertySort;
+Begin
+ GetPropertySortMode := PP.SortMode;
+End;
+
+{ --- Verifier si le panneau est vide --- }
+
+Function IsPropertiesPanelEmpty(
+ Var PP: TPropertiesPanel): Boolean;
+Begin
+ IsPropertiesPanelEmpty := PP.ItemCount = 0;
+End;
+
+{ --- Verifier si une edition est en cours --- }
+
+Function IsPropertyEditing(
+ Var PP: TPropertiesPanel): Boolean;
+Begin
+ IsPropertyEditing := PP.EditActive;
+End;
+
 BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
@@ -9770,6 +10523,8 @@ BEGIN
  InitPascalHighlighter(PascalHL);
  InitExplorer(SolExplorer);
  DrawExplorer(SolExplorer);
- { Boucle principale a venir (TODO 18+) }
+ InitPropertiesPanel(PropsPanel);
+ DrawPropertiesPanel(PropsPanel);
+ { Boucle principale a venir (TODO 19+) }
  ShutdownGraphics;
 END.

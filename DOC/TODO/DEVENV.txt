@@ -208,7 +208,7 @@
             Barre de defilement verticale.
             Splitter vertical redimensionnable.
 
-  TODO 18 - PANNEAU DE PROPRIETES [A FAIRE]
+  TODO 18 - PANNEAU DE PROPRIETES [IMPLEMENTE]
             TPropertiesPanel : grille nom/valeur.
             InitPropertiesPanel, DrawPropertiesPanel,
             HandlePropertiesEvent, SetPropertySource.
