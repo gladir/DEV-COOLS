@@ -43,7 +43,7 @@
               _VBC_ (classe), _VBE_ (Enum), _VBP_ (Property)
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
 
-  TODO 02 - TOKENISEUR VISUAL BASIC 6 (LEXER) [A FAIRE]
+  TODO 02 - TOKENISEUR VISUAL BASIC 6 (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source

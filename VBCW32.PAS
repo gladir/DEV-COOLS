@@ -51,7 +51,7 @@
               _VBC_ (classe), _VBE_ (Enum), _VBP_ (Property)
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
 
-  TODO 02 - TOKENISEUR VISUAL BASIC 6 (LEXER) [A FAIRE]
+  TODO 02 - TOKENISEUR VISUAL BASIC 6 (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source
@@ -1074,6 +1074,923 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 02 - TOKENISEUR VISUAL BASIC 6 (LEXER)     [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  { Types de tokens }
+  TOK_EOF       = 0;    { fin de fichier                          }
+  TOK_IDENT     = 1;    { identificateur                          }
+  TOK_INTEGER   = 2;    { litteral entier (123)                   }
+  TOK_LONG      = 3;    { litteral long (&, 123&)                 }
+  TOK_SINGLE    = 4;    { litteral single (1.5!, 1E3)             }
+  TOK_DOUBLE    = 5;    { litteral double (1.5#, 1.5D3)           }
+  TOK_STRING    = 6;    { litteral chaine ("texte")               }
+  TOK_DATE      = 7;    { litteral date (#1/1/2000#)              }
+  TOK_PLUS      = 10;   { +                                       }
+  TOK_MINUS     = 11;   { -                                       }
+  TOK_STAR      = 12;   { *                                       }
+  TOK_SLASH     = 13;   { /                                       }
+  TOK_BACKSLASH = 14;   { \  (division entiere)                   }
+  TOK_CARET     = 15;   { ^  (puissance)                          }
+  TOK_AMP       = 16;   { &  (concatenation)                      }
+  TOK_LPAREN    = 20;   { (                                       }
+  TOK_RPAREN    = 21;   { )                                       }
+  TOK_COMMA     = 22;   { ,                                       }
+  TOK_DOT       = 23;   { .                                       }
+  TOK_COLON     = 24;   { :                                       }
+  TOK_SEMI      = 25;   { ;                                       }
+  TOK_EQ        = 30;   { =                                       }
+  TOK_NE        = 31;   { <>                                      }
+  TOK_LT        = 32;   { <                                       }
+  TOK_GT        = 33;   { >                                       }
+  TOK_LE        = 34;   { <=                                      }
+  TOK_GE        = 35;   { >=                                      }
+  TOK_HASH      = 36;   { #  (numero de fichier)                  }
+  TOK_EXCL      = 37;   { !  (suffixe Single ou acces membre)     }
+  TOK_NEWLINE   = 40;   { fin de ligne logique                    }
+
+Var
+  { Fichier source }
+  LexSrcF    : Text;          { handle du fichier source              }
+  LexOpened  : Boolean;        { fichier ouvert ?                      }
+  LexLine    : TString;        { ligne courante                        }
+  LexLineNo  : Integer;        { numero de ligne courante              }
+  LexColNo   : Integer;        { colonne courante dans LexLine         }
+  LexEOF     : Boolean;        { fin de fichier atteinte ?             }
+
+  { Token courant }
+  CurTokType : Integer;        { type de token (TOK_*)                 }
+  CurTokStr  : TString;        { valeur textuelle du token             }
+  CurTokNum  : LongInt;        { valeur numerique (entier)             }
+  CurTokReal : Real;           { valeur numerique (reel)               }
+  CurTokLine : Integer;        { ligne du token                        }
+  CurTokCol  : Integer;        { colonne du token                      }
+
+{ ------------------------------------------------------------ }
+{ Fonctions de classification de caracteres                    }
+{ ------------------------------------------------------------ }
+
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  IsIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                  ((Ch >= 'a') And (Ch <= 'z')) Or
+                  (Ch = '_');
+End;
+
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  IsIdentCont := IsIdentStart(Ch) Or
+                 ((Ch >= '0') And (Ch <= '9'));
+End;
+
+Function IsDigit(Ch : Char) : Boolean;
+Begin
+  IsDigit := (Ch >= '0') And (Ch <= '9');
+End;
+
+Function IsHexDigit(Ch : Char) : Boolean;
+Begin
+  IsHexDigit := ((Ch >= '0') And (Ch <= '9')) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function IsOctDigit(Ch : Char) : Boolean;
+Begin
+  IsOctDigit := (Ch >= '0') And (Ch <= '7');
+End;
+
+Function HexVal(Ch : Char) : Integer;
+Begin
+  If (Ch >= '0') And (Ch <= '9') Then
+    HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then
+    HexVal := Ord(Ch) - Ord('A') + 10
+  Else
+    HexVal := Ord(Ch) - Ord('a') + 10;
+End;
+
+Function IsWhitespace(Ch : Char) : Boolean;
+Begin
+  IsWhitespace := (Ch = ' ') Or (Ch = #9);
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextLine, LexInit, LexClose                               }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+  LexOpened  := True;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexEOF     := False;
+  LexLine    := '';
+  CurTokType := TOK_EOF;
+  CurTokStr  := '';
+  CurTokNum  := 0;
+  CurTokReal := 0.0;
+  CurTokLine := 0;
+  CurTokCol  := 0;
+  LexNextLine;
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexSkipWhitespace                                            }
+{ ------------------------------------------------------------ }
+
+Procedure LexSkipWhitespace;
+Begin
+  While (LexColNo <= Length(LexLine)) And
+        IsWhitespace(LexLine[LexColNo]) Do
+    Inc(LexColNo);
+End;
+
+{ ------------------------------------------------------------ }
+{ LexSkipComment : commentaire ' ou REM                        }
+{ Saute le reste de la ligne (commentaire VB6)                 }
+{ ------------------------------------------------------------ }
+
+Procedure LexSkipComment;
+Begin
+  LexColNo := Length(LexLine) + 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanIdent : identificateur avec suffixe de type optionnel }
+{ Suffixes VB6 : % (Integer), & (Long), ! (Single),           }
+{                # (Double), @ (Currency), $ (String)          }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanIdent;
+Var
+  S   : TString;
+  Ch  : Char;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) And
+        IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  { Verifier suffixe de type sur l identificateur }
+  If LexColNo <= Length(LexLine) Then
+  Begin
+    Ch := LexLine[LexColNo];
+    If (Ch = '%') Or (Ch = '&') Or (Ch = '!') Or
+       (Ch = '#') Or (Ch = '@') Or (Ch = '$') Then
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurTokStr  := S;
+  CurTokNum  := 0;
+  CurTokReal := 0.0;
+  CurTokType := TOK_IDENT;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanNumber : entier, reel, ou avec suffixes VB6           }
+{ Gere : 123, 1.5, 1E3, 1.5E-2, 1.5D3, suffixes %, &, !, #   }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanNumber;
+Var
+  N       : LongInt;
+  IsReal  : Boolean;
+  NegExp  : Boolean;
+  FracDiv : Real;
+  FracVal : Real;
+  ExpVal  : Integer;
+  FltVal  : Real;
+  S       : TString;
+  TokKind : Integer;
+Begin
+  N       := 0;
+  IsReal  := False;
+  NegExp  := False;
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  ExpVal  := 0;
+  TokKind := TOK_INTEGER;
+  S       := '';
+
+  { Partie entiere }
+  While (LexColNo <= Length(LexLine)) And
+        IsDigit(LexLine[LexColNo]) Do
+  Begin
+    N := N * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+    S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+
+  { Partie fractionnaire (mais pas ".." qui serait un operateur) }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '.') And
+     (LexColNo < Length(LexLine)) And
+     IsDigit(LexLine[LexColNo + 1]) Then
+  Begin
+    IsReal  := True;
+    TokKind := TOK_SINGLE;
+    S := S + '.';
+    Inc(LexColNo);
+    FracDiv := 10.0;
+    FracVal := 0.0;
+    While (LexColNo <= Length(LexLine)) And
+          IsDigit(LexLine[LexColNo]) Do
+    Begin
+      FracVal := FracVal + (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
+      FracDiv := FracDiv * 10.0;
+      S := S + LexLine[LexColNo];
+      Inc(LexColNo);
+    End;
+  End;
+
+  { Exposant E ou D }
+  If (LexColNo <= Length(LexLine)) And
+     ((LexLine[LexColNo] = 'E') Or (LexLine[LexColNo] = 'e')) Then
+  Begin
+    IsReal  := True;
+    TokKind := TOK_SINGLE;
+    S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+    NegExp := False;
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '-') Then
+    Begin
+      NegExp := True;
+      S := S + '-';
+      Inc(LexColNo);
+    End
+    Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '+') Then
+    Begin
+      S := S + '+';
+      Inc(LexColNo);
+    End;
+    ExpVal := 0;
+    While (LexColNo <= Length(LexLine)) And
+          IsDigit(LexLine[LexColNo]) Do
+    Begin
+      ExpVal := ExpVal * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+      S := S + LexLine[LexColNo];
+      Inc(LexColNo);
+    End;
+  End
+  Else If (LexColNo <= Length(LexLine)) And
+          ((LexLine[LexColNo] = 'D') Or (LexLine[LexColNo] = 'd')) Then
+  Begin
+    IsReal  := True;
+    TokKind := TOK_DOUBLE;
+    S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+    NegExp := False;
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '-') Then
+    Begin
+      NegExp := True;
+      S := S + '-';
+      Inc(LexColNo);
+    End
+    Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '+') Then
+    Begin
+      S := S + '+';
+      Inc(LexColNo);
+    End;
+    ExpVal := 0;
+    While (LexColNo <= Length(LexLine)) And
+          IsDigit(LexLine[LexColNo]) Do
+    Begin
+      ExpVal := ExpVal * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+      S := S + LexLine[LexColNo];
+      Inc(LexColNo);
+    End;
+  End;
+
+  { Suffixes de type sur nombres : % (Integer), & (Long), ! (Single), # (Double) }
+  If (LexColNo <= Length(LexLine)) Then
+  Begin
+    If LexLine[LexColNo] = '%' Then
+    Begin
+      TokKind := TOK_INTEGER;
+      Inc(LexColNo);
+    End
+    Else If LexLine[LexColNo] = '&' Then
+    Begin
+      TokKind := TOK_LONG;
+      Inc(LexColNo);
+    End
+    Else If LexLine[LexColNo] = '!' Then
+    Begin
+      TokKind := TOK_SINGLE;
+      IsReal := True;
+      Inc(LexColNo);
+    End
+    Else If LexLine[LexColNo] = '#' Then
+    Begin
+      TokKind := TOK_DOUBLE;
+      IsReal := True;
+      Inc(LexColNo);
+    End;
+  End;
+
+  If IsReal Then
+  Begin
+    FltVal := N + FracVal;
+    While ExpVal > 0 Do
+    Begin
+      If NegExp Then FltVal := FltVal / 10.0
+      Else           FltVal := FltVal * 10.0;
+      Dec(ExpVal);
+    End;
+    CurTokType := TokKind;
+    CurTokReal := FltVal;
+    If FltVal > 2147483647.0 Then CurTokNum := 2147483647
+    Else If FltVal < -2147483647.0 Then CurTokNum := -2147483647
+    Else CurTokNum := Trunc(FltVal);
+    CurTokStr := S;
+  End
+  Else
+  Begin
+    CurTokType := TokKind;
+    CurTokNum  := N;
+    CurTokReal := 0.0;
+    CurTokStr  := S;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanHex : &HFF, &HFFFF&                                  }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanHex;
+Var
+  N : LongInt;
+  S : TString;
+Begin
+  { LexColNo pointe sur 'H' ou 'h' apres le '&' }
+  Inc(LexColNo); { sauter 'H' ou 'h' }
+  N := 0;
+  S := '&H';
+  While (LexColNo <= Length(LexLine)) And
+        IsHexDigit(LexLine[LexColNo]) Do
+  Begin
+    N := N * 16 + HexVal(LexLine[LexColNo]);
+    S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  CurTokType := TOK_INTEGER;
+  { Suffixe & pour Long }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '&') Then
+  Begin
+    CurTokType := TOK_LONG;
+    Inc(LexColNo);
+  End;
+  CurTokNum  := N;
+  CurTokReal := 0.0;
+  CurTokStr  := S;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanOct : &O77                                            }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanOct;
+Var
+  N : LongInt;
+  S : TString;
+Begin
+  { LexColNo pointe sur 'O' ou 'o' apres le '&' }
+  Inc(LexColNo); { sauter 'O' ou 'o' }
+  N := 0;
+  S := '&O';
+  While (LexColNo <= Length(LexLine)) And
+        IsOctDigit(LexLine[LexColNo]) Do
+  Begin
+    N := N * 8 + (Ord(LexLine[LexColNo]) - Ord('0'));
+    S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  CurTokType := TOK_INTEGER;
+  { Suffixe & pour Long }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '&') Then
+  Begin
+    CurTokType := TOK_LONG;
+    Inc(LexColNo);
+  End;
+  CurTokNum  := N;
+  CurTokReal := 0.0;
+  CurTokStr  := S;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanString : chaine VB6 entre guillemets doubles          }
+{ Gere le doublement de guillemet : "l""echo" -> l"echo        }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanString;
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  Inc(LexColNo); { sauter guillemet ouvrant }
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = '"' Then
+    Begin
+      Inc(LexColNo);
+      { Guillemet double "" -> un seul caractere " }
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '"') Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + '"';
+        Inc(LexColNo);
+      End
+      Else
+        Break; { fin de chaine }
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurTokType := TOK_STRING;
+  CurTokStr  := S;
+  CurTokNum  := 0;
+  CurTokReal := 0.0;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanDate : litteral date #1/1/2000#                       }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanDate;
+Var
+  S : TString;
+Begin
+  S := '';
+  Inc(LexColNo); { sauter # ouvrant }
+  While (LexColNo <= Length(LexLine)) And
+        (LexLine[LexColNo] <> '#') Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '#') Then
+    Inc(LexColNo); { sauter # fermant }
+  CurTokType := TOK_DATE;
+  CurTokStr  := S;
+  CurTokNum  := 0;
+  CurTokReal := 0.0;
+End;
+
+{ ------------------------------------------------------------ }
+{ PrintToken : affichage debug de chaque token                 }
+{ ------------------------------------------------------------ }
+
+Procedure PrintToken;
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', CurTokLine, ',', CurTokCol, '] ');
+  Case CurTokType Of
+    TOK_EOF       : Write('EOF');
+    TOK_IDENT     : Write('IDENT(', CurTokStr, ')');
+    TOK_INTEGER   : Write('INT(', CurTokNum, ')');
+    TOK_LONG      : Write('LONG(', CurTokNum, ')');
+    TOK_SINGLE    : Write('SINGLE(', CurTokStr, ')');
+    TOK_DOUBLE    : Write('DOUBLE(', CurTokStr, ')');
+    TOK_STRING    : Write('STR("', CurTokStr, '")');
+    TOK_DATE      : Write('DATE(#', CurTokStr, '#)');
+    TOK_PLUS      : Write('PLUS');
+    TOK_MINUS     : Write('MINUS');
+    TOK_STAR      : Write('STAR');
+    TOK_SLASH     : Write('SLASH');
+    TOK_BACKSLASH : Write('BACKSLASH');
+    TOK_CARET     : Write('CARET');
+    TOK_AMP       : Write('AMP');
+    TOK_LPAREN    : Write('LPAREN');
+    TOK_RPAREN    : Write('RPAREN');
+    TOK_COMMA     : Write('COMMA');
+    TOK_DOT       : Write('DOT');
+    TOK_COLON     : Write('COLON');
+    TOK_SEMI      : Write('SEMI');
+    TOK_EQ        : Write('EQ');
+    TOK_NE        : Write('NE');
+    TOK_LT        : Write('LT');
+    TOK_GT        : Write('GT');
+    TOK_LE        : Write('LE');
+    TOK_GE        : Write('GE');
+    TOK_HASH      : Write('HASH');
+    TOK_EXCL      : Write('EXCL');
+    TOK_NEWLINE   : Write('NEWLINE');
+  Else
+    Write('TOK(', CurTokType, ')');
+  End;
+  WriteLn;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextToken : reconnaitre le prochain token VB6             }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextToken;
+Var
+  Ch        : Char;
+  Done      : Boolean;
+  J         : Integer;
+  AllBlanks : Boolean;
+  K         : Integer;
+  HasClose  : Boolean;
+Begin
+  Done := False;
+  While Not Done Do
+  Begin
+    { Passer les lignes vides / fin de ligne }
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+    Begin
+      { Emettre un token NEWLINE a chaque fin de ligne logique }
+      CurTokLine := LexLineNo;
+      CurTokCol  := LexColNo;
+      CurTokType := TOK_NEWLINE;
+      CurTokStr  := '';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      LexNextLine;
+      PrintToken;
+      { Continuer a lire jusqu a trouver du contenu }
+    End;
+
+    If LexEOF Then
+    Begin
+      CurTokLine := LexLineNo;
+      CurTokCol  := LexColNo;
+      CurTokType := TOK_EOF;
+      CurTokStr  := '';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Done := True;
+      PrintToken;
+      Exit;
+    End;
+
+    { Sauter les espaces }
+    LexSkipWhitespace;
+    If LexColNo > Length(LexLine) Then
+      Continue; { fin de ligne, reboucler }
+
+    CurTokLine := LexLineNo;
+    CurTokCol  := LexColNo;
+    Ch := LexLine[LexColNo];
+
+    { Commentaire ' (apostrophe) }
+    If Ch = '''' Then
+    Begin
+      LexSkipComment;
+      Continue; { le NEWLINE sera emis au prochain tour }
+    End
+
+    { Continuation de ligne : _ en fin de ligne (pas dans un ident) }
+    Else If (Ch = '_') And (LexColNo = Length(LexLine)) Then
+    Begin
+      LexNextLine;
+      Continue;
+    End
+    Else If (Ch = '_') And (LexColNo < Length(LexLine)) Then
+    Begin
+      { Verifier si tout le reste est des espaces }
+      { Si oui, c est une continuation de ligne }
+      { Sinon, c est un debut d identificateur }
+      AllBlanks := True;
+      For J := LexColNo + 1 To Length(LexLine) Do
+        If Not IsWhitespace(LexLine[J]) Then
+          AllBlanks := False;
+      If AllBlanks Then
+      Begin
+        LexNextLine;
+        Continue;
+      End
+      Else
+      Begin
+        { C est un identificateur commencant par _ }
+        LexScanIdent;
+        Done := True;
+      End;
+    End
+
+    { Identificateurs (lettres ou _) }
+    Else If IsIdentStart(Ch) Then
+    Begin
+      LexScanIdent;
+      { Verifier si c est le mot-cle REM (commentaire) }
+      If UpCaseStr(CurTokStr) = 'REM' Then
+      Begin
+        LexSkipComment;
+        Continue; { NEWLINE sera emis au prochain tour }
+      End;
+      Done := True;
+    End
+
+    { Litteraux numeriques }
+    Else If IsDigit(Ch) Then
+    Begin
+      LexScanNumber;
+      Done := True;
+    End
+
+    { Guillemet double : chaine }
+    Else If Ch = '"' Then
+    Begin
+      LexScanString;
+      Done := True;
+    End
+
+    { & : concatenation, hex (&H), octal (&O) }
+    Else If Ch = '&' Then
+    Begin
+      If (LexColNo < Length(LexLine)) And
+         ((LexLine[LexColNo + 1] = 'H') Or (LexLine[LexColNo + 1] = 'h')) Then
+      Begin
+        Inc(LexColNo); { sauter '&' }
+        LexScanHex;
+        Done := True;
+      End
+      Else If (LexColNo < Length(LexLine)) And
+              ((LexLine[LexColNo + 1] = 'O') Or (LexLine[LexColNo + 1] = 'o')) Then
+      Begin
+        Inc(LexColNo); { sauter '&' }
+        LexScanOct;
+        Done := True;
+      End
+      Else
+      Begin
+        CurTokType := TOK_AMP;
+        CurTokStr  := '&';
+        CurTokNum  := 0;
+        CurTokReal := 0.0;
+        Inc(LexColNo);
+        Done := True;
+      End;
+    End
+
+    { # : litteral date ou numero de fichier }
+    Else If Ch = '#' Then
+    Begin
+      { Essayer de detecter un litteral date : #...# }
+      { Heuristique: si suivi d un chiffre ou lettre, c est une date }
+      If (LexColNo < Length(LexLine)) And
+         (IsDigit(LexLine[LexColNo + 1]) Or
+          IsIdentStart(LexLine[LexColNo + 1])) Then
+      Begin
+        { Regarder s il y a un # fermant sur la meme ligne }
+        HasClose := False;
+        For K := LexColNo + 1 To Length(LexLine) Do
+          If LexLine[K] = '#' Then HasClose := True;
+        If HasClose Then
+        Begin
+          LexScanDate;
+          Done := True;
+        End
+        Else
+        Begin
+          CurTokType := TOK_HASH;
+          CurTokStr  := '#';
+          CurTokNum  := 0;
+          CurTokReal := 0.0;
+          Inc(LexColNo);
+          Done := True;
+        End;
+      End
+      Else
+      Begin
+        CurTokType := TOK_HASH;
+        CurTokStr  := '#';
+        CurTokNum  := 0;
+        CurTokReal := 0.0;
+        Inc(LexColNo);
+        Done := True;
+      End;
+    End
+
+    { Operateurs et separateurs }
+    Else If Ch = '+' Then
+    Begin
+      CurTokType := TOK_PLUS;
+      CurTokStr  := '+';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = '-' Then
+    Begin
+      CurTokType := TOK_MINUS;
+      CurTokStr  := '-';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = '*' Then
+    Begin
+      CurTokType := TOK_STAR;
+      CurTokStr  := '*';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = '/' Then
+    Begin
+      CurTokType := TOK_SLASH;
+      CurTokStr  := '/';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = '\' Then
+    Begin
+      CurTokType := TOK_BACKSLASH;
+      CurTokStr  := '\';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = '^' Then
+    Begin
+      CurTokType := TOK_CARET;
+      CurTokStr  := '^';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = '(' Then
+    Begin
+      CurTokType := TOK_LPAREN;
+      CurTokStr  := '(';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = ')' Then
+    Begin
+      CurTokType := TOK_RPAREN;
+      CurTokStr  := ')';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = ',' Then
+    Begin
+      CurTokType := TOK_COMMA;
+      CurTokStr  := ',';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = '.' Then
+    Begin
+      CurTokType := TOK_DOT;
+      CurTokStr  := '.';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = ':' Then
+    Begin
+      CurTokType := TOK_COLON;
+      CurTokStr  := ':';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = ';' Then
+    Begin
+      CurTokType := TOK_SEMI;
+      CurTokStr  := ';';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = '!' Then
+    Begin
+      CurTokType := TOK_EXCL;
+      CurTokStr  := '!';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = '=' Then
+    Begin
+      CurTokType := TOK_EQ;
+      CurTokStr  := '=';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+    Else If Ch = '<' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '>') Then
+      Begin
+        CurTokType := TOK_NE;
+        CurTokStr  := '<>';
+        Inc(LexColNo);
+      End
+      Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        CurTokType := TOK_LE;
+        CurTokStr  := '<=';
+        Inc(LexColNo);
+      End
+      Else
+      Begin
+        CurTokType := TOK_LT;
+        CurTokStr  := '<';
+      End;
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Done := True;
+    End
+    Else If Ch = '>' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        CurTokType := TOK_GE;
+        CurTokStr  := '>=';
+        Inc(LexColNo);
+      End
+      Else
+      Begin
+        CurTokType := TOK_GT;
+        CurTokStr  := '>';
+      End;
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Done := True;
+    End
+
+    { Caractere non reconnu }
+    Else
+    Begin
+      WarnMsg('caractere inattendu: ' + Ch + ' (ligne ' +
+              ItoS(LexLineNo) + ')');
+      Inc(LexColNo);
+      { Continuer a scanner }
+    End;
+  End; { While Not Done }
+  PrintToken;
+End;
+
 { ------------------------------------------------------------ }
 { Run (stub pour les futures TODOs)                            }
 { ------------------------------------------------------------ }
@@ -1081,9 +1998,11 @@ End;
 Procedure Run;
 Begin
   ShowBanner;
-  { Les TODOs 02-25 ajouteront ici : }
-  {   LexInit, Parse, Emit, WritePE/WriteCOFF/WriteASM, LexClose }
-  WriteLn('VBCW32: compilation non encore implementee (TODOs 02-25)');
+  LexInit;
+  { Les TODOs 03-25 ajouteront ici : }
+  {   ParseModule, Emit, WritePE/WriteCOFF/WriteASM }
+  WriteLn('VBCW32: compilation non encore implementee (TODOs 03-25)');
+  LexClose;
   ShowStats;
 End;
 
