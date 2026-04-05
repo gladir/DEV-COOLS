@@ -1027,7 +1027,7 @@ Const
  { Coloration syntaxique ABAP/4 }
  MAX_ABAP_KEYWORDS     = 80;      { nombre de mots-cles ABAP/4     }
 
- { Coloration syntaxique XML }
+ { Coloration syntaxique XML/PSP }
  MAX_XML_TAGS          = 32;      { nombre de tags XML predefinies  }
 
  { Parseur de fichiers solution }
@@ -1244,6 +1244,13 @@ Const
  ABAP_TEMP_OUTPUT     = '_abapout.tmp'; { fichier temp sortie compil }
  ABAP_EXT_SOURCE      = '.abap';    { extension source ABAP          }
  ABAP_EXT_EXE         = '.exe';     { extension executable           }
+
+ { Integration compilateur PSP (Pascal Server Pages) }
+ PSP_COMPILER_WIN32   = 'PSPCW32';  { compilateur PSP Win32 PE        }
+ PSP_COMPILER_DOS     = 'PSP86';    { compilateur PSP DOS 8086        }
+ PSP_TEMP_OUTPUT      = '_pspout.tmp'; { fichier temp sortie compil   }
+ PSP_EXT_SOURCE       = '.psp';     { extension source PSP            }
+ PSP_EXT_EXE          = '.exe';     { extension executable            }
 
  { Systeme de build et configuration }
  BUILD_MAX_ORDER       = 64;       { nombre max projets dans l ordre }
@@ -1716,6 +1723,12 @@ Type
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Tags         : Array[0..MAX_XML_TAGS - 1] Of String[20];
   TagCount     : Integer;             { nombre de tags predefinies   }
+ End;
+
+ { Coloration syntaxique specialisee PSP (Pascal Server Pages) }
+ TPSPHighlighter = Record
+  XMLHL  : TXMLHighlighter;    { sous-highlighter HTML/XML      }
+  PasHL  : TPascalHighlighter;  { sous-highlighter Pascal        }
  End;
 
  { Pointeur vers un editeur }
@@ -2408,6 +2421,24 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ { Contexte du compilateur PSP }
+ TPSPCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur (PSPCW32/PSP86) }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
  { Etat de build d un projet }
  TBuildStatus = (
   BS_PENDING,          { en attente de compilation               }
@@ -2602,6 +2633,8 @@ Var
  AbapHL       : TAbapHighlighter;
  { Coloration syntaxique XML }
  XMLHL        : TXMLHighlighter;
+ { Coloration syntaxique PSP }
+ PSPHL        : TPSPHighlighter;
  { Explorateur de solution }
  SolExplorer  : TSolutionExplorer;
  { Panneau de proprietes }
@@ -2626,6 +2659,8 @@ Var
  ADACContext    : TADACCompilerContext;
  { Contexte compilateur ABAP/4 }
  ABAPContext    : TABAPCompilerContext;
+ { Contexte compilateur PSP }
+ PSPContext     : TPSPCompilerContext;
  { Gestionnaire de build }
  BuildMgr       : TBuildManager;
  { Gestionnaire de configurations }
@@ -2968,7 +3003,8 @@ Begin
                 (Ext = '.HTML')Or (Ext = '.CSS')  Or (Ext = '.SQL')  Or
                 (Ext = '.ASM') Or (Ext = '.INC')  Or (Ext = '.TXT')  Or
                 (Ext = '.ADB') Or (Ext = '.ADS')  Or (Ext = '.ADA')  Or
-                (Ext = '.ABAP')Or (Ext = '.ABP')  Then Begin
+                (Ext = '.ABAP')Or (Ext = '.ABP')  Or
+                (Ext = '.PSP')                    Then Begin
      If Not FileExists(Arg) Then
       FatalError('Fichier introuvable: ' + Arg);
      Opts.SourceFile := Arg;
@@ -6326,6 +6362,12 @@ Procedure HighlightAbapLine(Var HL: TAbapHighlighter;
                             Line: String;
                             Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightPSPLine --- }
+
+Procedure HighlightPSPLine(Var HL: TPSPHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Dessiner l editeur complet --- }
 
 Procedure DrawEditor(Var Ed: TEditor);
@@ -6343,6 +6385,7 @@ Var
  IsCSharp: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
+ IsPSP: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
@@ -6353,6 +6396,7 @@ Begin
  IsCSharp := (Ext = '.CS');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
+ IsPSP := (Ext = '.PSP');
  { Mettre a jour la gouttiere }
  Ed.GutterWidth := CalcGutterWidth(Ed.Buffer.LineCount, Ed.CharWidth);
  Ed.VisibleCols := (Ed.Width - Ed.GutterWidth) Div Ed.CharWidth;
@@ -6386,7 +6430,10 @@ Begin
     HighlightAdaLine(AdaHL, FullLine, Colors)
    Else If IsAbap And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightAbapLine(AbapHL, FullLine, Colors);
+    HighlightAbapLine(AbapHL, FullLine, Colors)
+   Else If IsPSP And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightPSPLine(PSPHL, FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
@@ -10388,6 +10435,77 @@ Begin
  Begin
   Start := Pos;
   TC := GetXMLTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE PSP (PASCAL SERVER PAGES)
+  ============================================================ }
+
+{ --- Initialiser le moteur de coloration PSP --- }
+
+Procedure InitPSPHighlighter(Var HL: TPSPHighlighter);
+Begin
+ InitXMLHighlighter(HL.XMLHL);
+ InitPascalHighlighter(HL.PasHL);
+End;
+
+{ --- Colorier une ligne PSP (hybride HTML + Pascal) --- }
+
+Procedure HighlightPSPLine(Var HL: TPSPHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+ InCode: Boolean;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ InCode := False;
+ While Pos <= Len Do
+ Begin
+  { Detecter debut de bloc Pascal <% }
+  If Not InCode And (Pos < Len) And
+     (Line[Pos] = '<') And (Line[Pos + 1] = '%') Then
+  Begin
+   { Colorier <% en gris fonce (directive) }
+   Clr := Byte(TokenClassToColor(TC_PREPROCESSOR));
+   Colors[Pos - 1] := Clr;
+   Colors[Pos] := Clr;
+   Inc(Pos, 2);
+   InCode := True;
+   Continue;
+  End;
+  { Detecter fin de bloc Pascal %> }
+  If InCode And (Pos < Len) And
+     (Line[Pos] = '%') And (Line[Pos + 1] = '>') Then
+  Begin
+   { Colorier %> en gris fonce (directive) }
+   Clr := Byte(TokenClassToColor(TC_PREPROCESSOR));
+   Colors[Pos - 1] := Clr;
+   Colors[Pos] := Clr;
+   Inc(Pos, 2);
+   InCode := False;
+   Continue;
+  End;
+  { Selon le mode, utiliser le tokenizer Pascal ou XML }
+  Start := Pos;
+  If InCode Then
+   TC := GetPascalTokenClass(HL.PasHL, Line, Pos)
+  Else
+   TC := GetXMLTokenClass(HL.XMLHL, Line, Pos);
+  { Ne pas depasser un delimiteur <% ou %> }
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
   Begin
@@ -21529,6 +21647,55 @@ Begin
 End;
 
 { ============================================================
+  INTEGRATION COMPILATEUR PSP (PASCAL SERVER PAGES)
+  ============================================================ }
+
+{ --- Initialiser le contexte du compilateur PSP --- }
+
+Procedure InitPSPContext(Var Ctx: TPSPCompilerContext);
+Begin
+ Ctx.CompilerPath := '';
+ Ctx.CompilerName := '';
+ Ctx.CompilerFound := False;
+ Ctx.LastResult := CR_NOT_FOUND;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ Ctx.TotalFiles := 0;
+ Ctx.OutputFile := '';
+ Ctx.TempFile := PSP_TEMP_OUTPUT;
+ Ctx.IsCompiling := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose := False;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Detecter le compilateur PSP disponible --- }
+
+Procedure DetectPSPCompiler(Var Ctx: TPSPCompilerContext);
+Var
+ Path: String;
+Begin
+ { Essayer d abord PSPCW32 (Win32 PE) }
+ Path := FindCompiler(PSP_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := PSP_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer PSP86 (DOS 8086) }
+ Path := FindCompiler(PSP_COMPILER_DOS);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := PSP_COMPILER_DOS;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
+{ ============================================================
   TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [IMPLEMENTE]
   ============================================================ }
 
@@ -23192,6 +23359,26 @@ Begin
    Exit;
   End;
  End
+ Else If (Ext = '.psp') Then Begin
+  { Compilation PSP (Pascal Server Pages) }
+  DetectPSPCompiler(PSPContext);
+  If PSPContext.CompilerFound Then Begin
+   CmdLine := PSPContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur PSP non trouve (PSPCW32/PSP86).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+ End
  Else Begin
   AppendOutput(OutputPanel,
    'Erreur : type de fichier non supporte (' + Ext + ').',
@@ -23752,6 +23939,7 @@ BEGIN
  InitAdaHighlighter(AdaHL);
  InitAbapHighlighter(AbapHL);
  InitXMLHighlighter(XMLHL);
+ InitPSPHighlighter(PSPHL);
  InitExplorer(SolExplorer);
  DrawExplorer(SolExplorer);
  InitPropertiesPanel(PropsPanel);
@@ -23772,6 +23960,7 @@ BEGIN
  InitCCContext(CCContext);
  InitADACContext(ADACContext);
  InitABAPContext(ABAPContext);
+ InitPSPContext(PSPContext);
  InitBuildManager(BuildMgr);
  InitConfigurationManager(CfgMgr);
  InitBreakpointManager(BPMgr);
