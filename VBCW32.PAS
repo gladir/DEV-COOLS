@@ -82,7 +82,7 @@
               TOK_NEWLINE, TOK_EOF)
             Stocker dans CurTokType / CurTokStr / CurTokNum
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES VISUAL BASIC 6 [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES VISUAL BASIC 6 [IMPLEMENTE]
             Function IsKeyword(Const s: String): Integer
             Mots-cles complets a reconnaitre :
               And As Boolean ByRef ByVal Call Case CBool CByte
@@ -1128,6 +1128,547 @@ Var
   CurTokLine : Integer;        { ligne du token                        }
   CurTokCol  : Integer;        { colonne du token                      }
 
+{ ============================================================ }
+{ TODO 03 - RECONNAISSANCE DES MOTS-CLES VB6       [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  { Constantes KW_* pour les mots-cles Visual Basic 6 }
+  { Mots-cles du langage }
+  KW_NONE       = 0;
+  KW_AND        = 1;
+  KW_AS         = 2;
+  KW_BOOLEAN    = 3;
+  KW_BYREF      = 4;
+  KW_BYVAL      = 5;
+  KW_CALL       = 6;
+  KW_CASE       = 7;
+  KW_CBOOL      = 8;
+  KW_CBYTE      = 9;
+  KW_CCUR       = 10;
+  KW_CDATE      = 11;
+  KW_CDBL       = 12;
+  KW_CINT       = 13;
+  KW_CLNG       = 14;
+  KW_CLOSE      = 15;
+  KW_CONST      = 16;
+  KW_CSNG       = 17;
+  KW_CSTR       = 18;
+  KW_CURRENCY   = 19;
+  KW_DATE       = 20;
+  KW_DECLARE    = 21;
+  KW_DEFBOOL    = 22;
+  KW_DEFBYTE    = 23;
+  KW_DEFCUR     = 24;
+  KW_DEFDATE    = 25;
+  KW_DEFDBL     = 26;
+  KW_DEFINT     = 27;
+  KW_DEFLNG     = 28;
+  KW_DEFOBJ     = 29;
+  KW_DEFSNG     = 30;
+  KW_DEFSTR     = 31;
+  KW_DEFVAR     = 32;
+  KW_DIM        = 33;
+  KW_DO         = 34;
+  KW_DOUBLE     = 35;
+  KW_EACH       = 36;
+  KW_ELSE       = 37;
+  KW_ELSEIF     = 38;
+  KW_EMPTY      = 39;
+  KW_END        = 40;
+  KW_ENUM       = 41;
+  KW_EQV        = 42;
+  KW_ERASE      = 43;
+  KW_ERROR      = 44;
+  KW_EVENT      = 45;
+  KW_EXIT       = 46;
+  KW_EXPLICIT   = 47;
+  KW_FALSE      = 48;
+  KW_FOR        = 49;
+  KW_FRIEND     = 50;
+  KW_FUNCTION   = 51;
+  KW_GET        = 52;
+  KW_GLOBAL     = 53;
+  KW_GOSUB      = 54;
+  KW_GOTO       = 55;
+  KW_IF         = 56;
+  KW_IMP        = 57;
+  KW_IMPLEMENTS = 58;
+  KW_IN         = 59;
+  KW_INPUT      = 60;
+  KW_INTEGER    = 61;
+  KW_IS         = 62;
+  KW_LBOUND     = 63;
+  KW_LEN        = 64;
+  KW_LET        = 65;
+  KW_LIKE       = 66;
+  KW_LONG       = 67;
+  KW_LOOP       = 68;
+  KW_LSET       = 69;
+  KW_ME         = 70;
+  KW_MOD        = 71;
+  KW_NEW        = 72;
+  KW_NEXT       = 73;
+  KW_NOT        = 74;
+  KW_NOTHING    = 75;
+  KW_NULL       = 76;
+  KW_OBJECT     = 77;
+  KW_ON         = 78;
+  KW_OPEN       = 79;
+  KW_OPTION     = 80;
+  KW_OPTIONAL   = 81;
+  KW_OR         = 82;
+  KW_PARAMARRAY = 83;
+  KW_PRESERVE   = 84;
+  KW_PRINT      = 85;
+  KW_PRIVATE    = 86;
+  KW_PROPERTY   = 87;
+  KW_PUBLIC     = 88;
+  KW_RAISEEVENT = 89;
+  KW_REDIM      = 90;
+  KW_REM        = 91;
+  KW_RESUME     = 92;
+  KW_RETURN     = 93;
+  KW_RSET       = 94;
+  KW_SEEK       = 95;
+  KW_SELECT     = 96;
+  KW_SET        = 97;
+  KW_SINGLE     = 98;
+  KW_STATIC     = 99;
+  KW_STEP       = 100;
+  KW_STOP       = 101;
+  KW_STRING     = 102;
+  KW_SUB        = 103;
+  KW_THEN       = 104;
+  KW_TO         = 105;
+  KW_TRUE       = 106;
+  KW_TYPE       = 107;
+  KW_TYPEOF     = 108;
+  KW_UBOUND     = 109;
+  KW_UNTIL      = 110;
+  KW_VARIANT    = 111;
+  KW_WEND       = 112;
+  KW_WHILE      = 113;
+  KW_WITH       = 114;
+  KW_WITHEVENTS = 115;
+  KW_WRITE      = 116;
+  KW_XOR        = 117;
+
+  { Fonctions VB6 internes }
+  KW_ABS        = 120;
+  KW_ASC        = 121;
+  KW_ATN        = 122;
+  KW_CHR        = 123;
+  KW_COS        = 124;
+  KW_EXP        = 125;
+  KW_FIX        = 126;
+  KW_HEX        = 127;
+  KW_INSTR      = 128;
+  KW_INSTRREV   = 129;
+  KW_INT        = 130;
+  KW_LCASE      = 131;
+  KW_LEFT       = 132;
+  KW_LEN2       = 133;    { Len function (vs KW_LEN keyword) }
+  KW_LOG        = 134;
+  KW_LTRIM      = 135;
+  KW_MID        = 136;
+  KW_OCT        = 137;
+  KW_RIGHT      = 138;
+  KW_RTRIM      = 139;
+  KW_SGN        = 140;
+  KW_SIN        = 141;
+  KW_SPACE      = 142;
+  KW_SQR        = 143;
+  KW_STR        = 144;
+  KW_STRINGFN   = 145;    { String$ function }
+  KW_TAB        = 146;
+  KW_TAN        = 147;
+  KW_TRIM       = 148;
+  KW_UCASE      = 149;
+  KW_VAL        = 150;
+  KW_FORMAT     = 151;
+  KW_REPLACE    = 152;
+  KW_SPLIT      = 153;
+  KW_JOIN       = 154;
+  KW_MSGBOX     = 155;
+  KW_INPUTBOX   = 156;
+  KW_DEBUG      = 157;
+  KW_DOEVENTS   = 158;
+  KW_ARRAY      = 159;
+  KW_ISARRAY    = 160;
+  KW_ISDATE     = 161;
+  KW_ISEMPTY    = 162;
+  KW_ISNULL     = 163;
+  KW_ISNUMERIC  = 164;
+  KW_ISOBJECT   = 165;
+  KW_ISMISSING  = 166;
+  KW_BYTE       = 167;
+  KW_DATE2      = 168;    { Date function (vs KW_DATE type) }
+  KW_ERR        = 169;
+
+  { Token special pour mot-cle reconnu }
+  TOK_KEYWORD   = 50;     { mot-cle VB6 reconnu                     }
+
+{ ------------------------------------------------------------ }
+{ IsKeyword : tester si un identificateur est un mot-cle VB6   }
+{ Retourne la constante KW_* ou KW_NONE si non reconnu         }
+{ VB6 est insensible a la casse                                }
+{ ------------------------------------------------------------ }
+
+Function IsKeyword(Const S : TString) : Integer;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  { Mots-cles du langage }
+  If      U = 'AND'        Then IsKeyword := KW_AND
+  Else If U = 'AS'         Then IsKeyword := KW_AS
+  Else If U = 'BOOLEAN'    Then IsKeyword := KW_BOOLEAN
+  Else If U = 'BYREF'      Then IsKeyword := KW_BYREF
+  Else If U = 'BYVAL'      Then IsKeyword := KW_BYVAL
+  Else If U = 'CALL'       Then IsKeyword := KW_CALL
+  Else If U = 'CASE'       Then IsKeyword := KW_CASE
+  Else If U = 'CBOOL'      Then IsKeyword := KW_CBOOL
+  Else If U = 'CBYTE'      Then IsKeyword := KW_CBYTE
+  Else If U = 'CCUR'       Then IsKeyword := KW_CCUR
+  Else If U = 'CDATE'      Then IsKeyword := KW_CDATE
+  Else If U = 'CDBL'       Then IsKeyword := KW_CDBL
+  Else If U = 'CINT'       Then IsKeyword := KW_CINT
+  Else If U = 'CLNG'       Then IsKeyword := KW_CLNG
+  Else If U = 'CLOSE'      Then IsKeyword := KW_CLOSE
+  Else If U = 'CONST'      Then IsKeyword := KW_CONST
+  Else If U = 'CSNG'       Then IsKeyword := KW_CSNG
+  Else If U = 'CSTR'       Then IsKeyword := KW_CSTR
+  Else If U = 'CURRENCY'   Then IsKeyword := KW_CURRENCY
+  Else If U = 'DATE'       Then IsKeyword := KW_DATE
+  Else If U = 'DECLARE'    Then IsKeyword := KW_DECLARE
+  Else If U = 'DEFBOOL'    Then IsKeyword := KW_DEFBOOL
+  Else If U = 'DEFBYTE'    Then IsKeyword := KW_DEFBYTE
+  Else If U = 'DEFCUR'     Then IsKeyword := KW_DEFCUR
+  Else If U = 'DEFDATE'    Then IsKeyword := KW_DEFDATE
+  Else If U = 'DEFDBL'     Then IsKeyword := KW_DEFDBL
+  Else If U = 'DEFINT'     Then IsKeyword := KW_DEFINT
+  Else If U = 'DEFLNG'     Then IsKeyword := KW_DEFLNG
+  Else If U = 'DEFOBJ'     Then IsKeyword := KW_DEFOBJ
+  Else If U = 'DEFSNG'     Then IsKeyword := KW_DEFSNG
+  Else If U = 'DEFSTR'     Then IsKeyword := KW_DEFSTR
+  Else If U = 'DEFVAR'     Then IsKeyword := KW_DEFVAR
+  Else If U = 'DIM'        Then IsKeyword := KW_DIM
+  Else If U = 'DO'         Then IsKeyword := KW_DO
+  Else If U = 'DOUBLE'     Then IsKeyword := KW_DOUBLE
+  Else If U = 'EACH'       Then IsKeyword := KW_EACH
+  Else If U = 'ELSE'       Then IsKeyword := KW_ELSE
+  Else If U = 'ELSEIF'     Then IsKeyword := KW_ELSEIF
+  Else If U = 'EMPTY'      Then IsKeyword := KW_EMPTY
+  Else If U = 'END'        Then IsKeyword := KW_END
+  Else If U = 'ENUM'       Then IsKeyword := KW_ENUM
+  Else If U = 'EQV'        Then IsKeyword := KW_EQV
+  Else If U = 'ERASE'      Then IsKeyword := KW_ERASE
+  Else If U = 'ERROR'      Then IsKeyword := KW_ERROR
+  Else If U = 'EVENT'      Then IsKeyword := KW_EVENT
+  Else If U = 'EXIT'       Then IsKeyword := KW_EXIT
+  Else If U = 'EXPLICIT'   Then IsKeyword := KW_EXPLICIT
+  Else If U = 'FALSE'      Then IsKeyword := KW_FALSE
+  Else If U = 'FOR'        Then IsKeyword := KW_FOR
+  Else If U = 'FRIEND'     Then IsKeyword := KW_FRIEND
+  Else If U = 'FUNCTION'   Then IsKeyword := KW_FUNCTION
+  Else If U = 'GET'        Then IsKeyword := KW_GET
+  Else If U = 'GLOBAL'     Then IsKeyword := KW_GLOBAL
+  Else If U = 'GOSUB'      Then IsKeyword := KW_GOSUB
+  Else If U = 'GOTO'       Then IsKeyword := KW_GOTO
+  Else If U = 'IF'         Then IsKeyword := KW_IF
+  Else If U = 'IMP'        Then IsKeyword := KW_IMP
+  Else If U = 'IMPLEMENTS' Then IsKeyword := KW_IMPLEMENTS
+  Else If U = 'IN'         Then IsKeyword := KW_IN
+  Else If U = 'INPUT'      Then IsKeyword := KW_INPUT
+  Else If U = 'INTEGER'    Then IsKeyword := KW_INTEGER
+  Else If U = 'IS'         Then IsKeyword := KW_IS
+  Else If U = 'LBOUND'     Then IsKeyword := KW_LBOUND
+  Else If U = 'LEN'        Then IsKeyword := KW_LEN
+  Else If U = 'LET'        Then IsKeyword := KW_LET
+  Else If U = 'LIKE'       Then IsKeyword := KW_LIKE
+  Else If U = 'LONG'       Then IsKeyword := KW_LONG
+  Else If U = 'LOOP'       Then IsKeyword := KW_LOOP
+  Else If U = 'LSET'       Then IsKeyword := KW_LSET
+  Else If U = 'ME'         Then IsKeyword := KW_ME
+  Else If U = 'MOD'        Then IsKeyword := KW_MOD
+  Else If U = 'NEW'        Then IsKeyword := KW_NEW
+  Else If U = 'NEXT'       Then IsKeyword := KW_NEXT
+  Else If U = 'NOT'        Then IsKeyword := KW_NOT
+  Else If U = 'NOTHING'    Then IsKeyword := KW_NOTHING
+  Else If U = 'NULL'       Then IsKeyword := KW_NULL
+  Else If U = 'OBJECT'     Then IsKeyword := KW_OBJECT
+  Else If U = 'ON'         Then IsKeyword := KW_ON
+  Else If U = 'OPEN'       Then IsKeyword := KW_OPEN
+  Else If U = 'OPTION'     Then IsKeyword := KW_OPTION
+  Else If U = 'OPTIONAL'   Then IsKeyword := KW_OPTIONAL
+  Else If U = 'OR'         Then IsKeyword := KW_OR
+  Else If U = 'PARAMARRAY' Then IsKeyword := KW_PARAMARRAY
+  Else If U = 'PRESERVE'   Then IsKeyword := KW_PRESERVE
+  Else If U = 'PRINT'      Then IsKeyword := KW_PRINT
+  Else If U = 'PRIVATE'    Then IsKeyword := KW_PRIVATE
+  Else If U = 'PROPERTY'   Then IsKeyword := KW_PROPERTY
+  Else If U = 'PUBLIC'     Then IsKeyword := KW_PUBLIC
+  Else If U = 'RAISEEVENT' Then IsKeyword := KW_RAISEEVENT
+  Else If U = 'REDIM'      Then IsKeyword := KW_REDIM
+  Else If U = 'REM'        Then IsKeyword := KW_REM
+  Else If U = 'RESUME'     Then IsKeyword := KW_RESUME
+  Else If U = 'RETURN'     Then IsKeyword := KW_RETURN
+  Else If U = 'RSET'       Then IsKeyword := KW_RSET
+  Else If U = 'SEEK'       Then IsKeyword := KW_SEEK
+  Else If U = 'SELECT'     Then IsKeyword := KW_SELECT
+  Else If U = 'SET'        Then IsKeyword := KW_SET
+  Else If U = 'SINGLE'     Then IsKeyword := KW_SINGLE
+  Else If U = 'STATIC'     Then IsKeyword := KW_STATIC
+  Else If U = 'STEP'       Then IsKeyword := KW_STEP
+  Else If U = 'STOP'       Then IsKeyword := KW_STOP
+  Else If U = 'STRING'     Then IsKeyword := KW_STRING
+  Else If U = 'SUB'        Then IsKeyword := KW_SUB
+  Else If U = 'THEN'       Then IsKeyword := KW_THEN
+  Else If U = 'TO'         Then IsKeyword := KW_TO
+  Else If U = 'TRUE'       Then IsKeyword := KW_TRUE
+  Else If U = 'TYPE'       Then IsKeyword := KW_TYPE
+  Else If U = 'TYPEOF'     Then IsKeyword := KW_TYPEOF
+  Else If U = 'UBOUND'     Then IsKeyword := KW_UBOUND
+  Else If U = 'UNTIL'      Then IsKeyword := KW_UNTIL
+  Else If U = 'VARIANT'    Then IsKeyword := KW_VARIANT
+  Else If U = 'WEND'       Then IsKeyword := KW_WEND
+  Else If U = 'WHILE'      Then IsKeyword := KW_WHILE
+  Else If U = 'WITH'       Then IsKeyword := KW_WITH
+  Else If U = 'WITHEVENTS' Then IsKeyword := KW_WITHEVENTS
+  Else If U = 'WRITE'      Then IsKeyword := KW_WRITE
+  Else If U = 'XOR'        Then IsKeyword := KW_XOR
+  { Fonctions VB6 internes }
+  Else If U = 'ABS'        Then IsKeyword := KW_ABS
+  Else If U = 'ASC'        Then IsKeyword := KW_ASC
+  Else If U = 'ATN'        Then IsKeyword := KW_ATN
+  Else If U = 'CHR'        Then IsKeyword := KW_CHR
+  Else If U = 'COS'        Then IsKeyword := KW_COS
+  Else If U = 'EXP'        Then IsKeyword := KW_EXP
+  Else If U = 'FIX'        Then IsKeyword := KW_FIX
+  Else If U = 'HEX'        Then IsKeyword := KW_HEX
+  Else If U = 'INSTR'      Then IsKeyword := KW_INSTR
+  Else If U = 'INSTRREV'   Then IsKeyword := KW_INSTRREV
+  Else If U = 'INT'        Then IsKeyword := KW_INT
+  Else If U = 'LCASE'      Then IsKeyword := KW_LCASE
+  Else If U = 'LEFT'       Then IsKeyword := KW_LEFT
+  Else If U = 'LOG'        Then IsKeyword := KW_LOG
+  Else If U = 'LTRIM'      Then IsKeyword := KW_LTRIM
+  Else If U = 'MID'        Then IsKeyword := KW_MID
+  Else If U = 'OCT'        Then IsKeyword := KW_OCT
+  Else If U = 'RIGHT'      Then IsKeyword := KW_RIGHT
+  Else If U = 'RTRIM'      Then IsKeyword := KW_RTRIM
+  Else If U = 'SGN'        Then IsKeyword := KW_SGN
+  Else If U = 'SIN'        Then IsKeyword := KW_SIN
+  Else If U = 'SPACE'      Then IsKeyword := KW_SPACE
+  Else If U = 'SQR'        Then IsKeyword := KW_SQR
+  Else If U = 'STR'        Then IsKeyword := KW_STR
+  Else If U = 'TAB'        Then IsKeyword := KW_TAB
+  Else If U = 'TAN'        Then IsKeyword := KW_TAN
+  Else If U = 'TRIM'       Then IsKeyword := KW_TRIM
+  Else If U = 'UCASE'      Then IsKeyword := KW_UCASE
+  Else If U = 'VAL'        Then IsKeyword := KW_VAL
+  Else If U = 'FORMAT'     Then IsKeyword := KW_FORMAT
+  Else If U = 'REPLACE'    Then IsKeyword := KW_REPLACE
+  Else If U = 'SPLIT'      Then IsKeyword := KW_SPLIT
+  Else If U = 'JOIN'       Then IsKeyword := KW_JOIN
+  Else If U = 'MSGBOX'     Then IsKeyword := KW_MSGBOX
+  Else If U = 'INPUTBOX'   Then IsKeyword := KW_INPUTBOX
+  Else If U = 'DEBUG'      Then IsKeyword := KW_DEBUG
+  Else If U = 'DOEVENTS'   Then IsKeyword := KW_DOEVENTS
+  Else If U = 'ARRAY'      Then IsKeyword := KW_ARRAY
+  Else If U = 'ISARRAY'    Then IsKeyword := KW_ISARRAY
+  Else If U = 'ISDATE'     Then IsKeyword := KW_ISDATE
+  Else If U = 'ISEMPTY'    Then IsKeyword := KW_ISEMPTY
+  Else If U = 'ISNULL'     Then IsKeyword := KW_ISNULL
+  Else If U = 'ISNUMERIC'  Then IsKeyword := KW_ISNUMERIC
+  Else If U = 'ISOBJECT'   Then IsKeyword := KW_ISOBJECT
+  Else If U = 'ISMISSING'  Then IsKeyword := KW_ISMISSING
+  Else If U = 'BYTE'       Then IsKeyword := KW_BYTE
+  Else If U = 'ERR'        Then IsKeyword := KW_ERR
+  Else IsKeyword := KW_NONE;
+End;
+
+{ ------------------------------------------------------------ }
+{ KeywordName : retourne le nom d un mot-cle a partir de       }
+{               sa constante KW_*                               }
+{ ------------------------------------------------------------ }
+
+Function KeywordName(KW : Integer) : TString;
+Begin
+  Case KW Of
+    KW_AND        : KeywordName := 'And';
+    KW_AS         : KeywordName := 'As';
+    KW_BOOLEAN    : KeywordName := 'Boolean';
+    KW_BYREF      : KeywordName := 'ByRef';
+    KW_BYVAL      : KeywordName := 'ByVal';
+    KW_CALL       : KeywordName := 'Call';
+    KW_CASE       : KeywordName := 'Case';
+    KW_CBOOL      : KeywordName := 'CBool';
+    KW_CBYTE      : KeywordName := 'CByte';
+    KW_CCUR       : KeywordName := 'CCur';
+    KW_CDATE      : KeywordName := 'CDate';
+    KW_CDBL       : KeywordName := 'CDbl';
+    KW_CINT       : KeywordName := 'CInt';
+    KW_CLNG       : KeywordName := 'CLng';
+    KW_CLOSE      : KeywordName := 'Close';
+    KW_CONST      : KeywordName := 'Const';
+    KW_CSNG       : KeywordName := 'CSng';
+    KW_CSTR       : KeywordName := 'CStr';
+    KW_CURRENCY   : KeywordName := 'Currency';
+    KW_DATE       : KeywordName := 'Date';
+    KW_DECLARE    : KeywordName := 'Declare';
+    KW_DEFBOOL    : KeywordName := 'DefBool';
+    KW_DEFBYTE    : KeywordName := 'DefByte';
+    KW_DEFCUR     : KeywordName := 'DefCur';
+    KW_DEFDATE    : KeywordName := 'DefDate';
+    KW_DEFDBL     : KeywordName := 'DefDbl';
+    KW_DEFINT     : KeywordName := 'DefInt';
+    KW_DEFLNG     : KeywordName := 'DefLng';
+    KW_DEFOBJ     : KeywordName := 'DefObj';
+    KW_DEFSNG     : KeywordName := 'DefSng';
+    KW_DEFSTR     : KeywordName := 'DefStr';
+    KW_DEFVAR     : KeywordName := 'DefVar';
+    KW_DIM        : KeywordName := 'Dim';
+    KW_DO         : KeywordName := 'Do';
+    KW_DOUBLE     : KeywordName := 'Double';
+    KW_EACH       : KeywordName := 'Each';
+    KW_ELSE       : KeywordName := 'Else';
+    KW_ELSEIF     : KeywordName := 'ElseIf';
+    KW_EMPTY      : KeywordName := 'Empty';
+    KW_END        : KeywordName := 'End';
+    KW_ENUM       : KeywordName := 'Enum';
+    KW_EQV        : KeywordName := 'Eqv';
+    KW_ERASE      : KeywordName := 'Erase';
+    KW_ERROR      : KeywordName := 'Error';
+    KW_EVENT      : KeywordName := 'Event';
+    KW_EXIT       : KeywordName := 'Exit';
+    KW_EXPLICIT   : KeywordName := 'Explicit';
+    KW_FALSE      : KeywordName := 'False';
+    KW_FOR        : KeywordName := 'For';
+    KW_FRIEND     : KeywordName := 'Friend';
+    KW_FUNCTION   : KeywordName := 'Function';
+    KW_GET        : KeywordName := 'Get';
+    KW_GLOBAL     : KeywordName := 'Global';
+    KW_GOSUB      : KeywordName := 'GoSub';
+    KW_GOTO       : KeywordName := 'GoTo';
+    KW_IF         : KeywordName := 'If';
+    KW_IMP        : KeywordName := 'Imp';
+    KW_IMPLEMENTS : KeywordName := 'Implements';
+    KW_IN         : KeywordName := 'In';
+    KW_INPUT      : KeywordName := 'Input';
+    KW_INTEGER    : KeywordName := 'Integer';
+    KW_IS         : KeywordName := 'Is';
+    KW_LBOUND     : KeywordName := 'LBound';
+    KW_LEN        : KeywordName := 'Len';
+    KW_LET        : KeywordName := 'Let';
+    KW_LIKE       : KeywordName := 'Like';
+    KW_LONG       : KeywordName := 'Long';
+    KW_LOOP       : KeywordName := 'Loop';
+    KW_LSET       : KeywordName := 'LSet';
+    KW_ME         : KeywordName := 'Me';
+    KW_MOD        : KeywordName := 'Mod';
+    KW_NEW        : KeywordName := 'New';
+    KW_NEXT       : KeywordName := 'Next';
+    KW_NOT        : KeywordName := 'Not';
+    KW_NOTHING    : KeywordName := 'Nothing';
+    KW_NULL       : KeywordName := 'Null';
+    KW_OBJECT     : KeywordName := 'Object';
+    KW_ON         : KeywordName := 'On';
+    KW_OPEN       : KeywordName := 'Open';
+    KW_OPTION     : KeywordName := 'Option';
+    KW_OPTIONAL   : KeywordName := 'Optional';
+    KW_OR         : KeywordName := 'Or';
+    KW_PARAMARRAY : KeywordName := 'ParamArray';
+    KW_PRESERVE   : KeywordName := 'Preserve';
+    KW_PRINT      : KeywordName := 'Print';
+    KW_PRIVATE    : KeywordName := 'Private';
+    KW_PROPERTY   : KeywordName := 'Property';
+    KW_PUBLIC     : KeywordName := 'Public';
+    KW_RAISEEVENT : KeywordName := 'RaiseEvent';
+    KW_REDIM      : KeywordName := 'ReDim';
+    KW_REM        : KeywordName := 'Rem';
+    KW_RESUME     : KeywordName := 'Resume';
+    KW_RETURN     : KeywordName := 'Return';
+    KW_RSET       : KeywordName := 'RSet';
+    KW_SEEK       : KeywordName := 'Seek';
+    KW_SELECT     : KeywordName := 'Select';
+    KW_SET        : KeywordName := 'Set';
+    KW_SINGLE     : KeywordName := 'Single';
+    KW_STATIC     : KeywordName := 'Static';
+    KW_STEP       : KeywordName := 'Step';
+    KW_STOP       : KeywordName := 'Stop';
+    KW_STRING     : KeywordName := 'String';
+    KW_SUB        : KeywordName := 'Sub';
+    KW_THEN       : KeywordName := 'Then';
+    KW_TO         : KeywordName := 'To';
+    KW_TRUE       : KeywordName := 'True';
+    KW_TYPE       : KeywordName := 'Type';
+    KW_TYPEOF     : KeywordName := 'TypeOf';
+    KW_UBOUND     : KeywordName := 'UBound';
+    KW_UNTIL      : KeywordName := 'Until';
+    KW_VARIANT    : KeywordName := 'Variant';
+    KW_WEND       : KeywordName := 'Wend';
+    KW_WHILE      : KeywordName := 'While';
+    KW_WITH       : KeywordName := 'With';
+    KW_WITHEVENTS : KeywordName := 'WithEvents';
+    KW_WRITE      : KeywordName := 'Write';
+    KW_XOR        : KeywordName := 'Xor';
+    KW_ABS        : KeywordName := 'Abs';
+    KW_ASC        : KeywordName := 'Asc';
+    KW_ATN        : KeywordName := 'Atn';
+    KW_CHR        : KeywordName := 'Chr';
+    KW_COS        : KeywordName := 'Cos';
+    KW_EXP        : KeywordName := 'Exp';
+    KW_FIX        : KeywordName := 'Fix';
+    KW_HEX        : KeywordName := 'Hex';
+    KW_INSTR      : KeywordName := 'InStr';
+    KW_INSTRREV   : KeywordName := 'InStrRev';
+    KW_INT        : KeywordName := 'Int';
+    KW_LCASE      : KeywordName := 'LCase';
+    KW_LEFT       : KeywordName := 'Left';
+    KW_LEN2       : KeywordName := 'Len';
+    KW_LOG        : KeywordName := 'Log';
+    KW_LTRIM      : KeywordName := 'LTrim';
+    KW_MID        : KeywordName := 'Mid';
+    KW_OCT        : KeywordName := 'Oct';
+    KW_RIGHT      : KeywordName := 'Right';
+    KW_RTRIM      : KeywordName := 'RTrim';
+    KW_SGN        : KeywordName := 'Sgn';
+    KW_SIN        : KeywordName := 'Sin';
+    KW_SPACE      : KeywordName := 'Space';
+    KW_SQR        : KeywordName := 'Sqr';
+    KW_STR        : KeywordName := 'Str';
+    KW_STRINGFN   : KeywordName := 'String$';
+    KW_TAB        : KeywordName := 'Tab';
+    KW_TAN        : KeywordName := 'Tan';
+    KW_TRIM       : KeywordName := 'Trim';
+    KW_UCASE      : KeywordName := 'UCase';
+    KW_VAL        : KeywordName := 'Val';
+    KW_FORMAT     : KeywordName := 'Format';
+    KW_REPLACE    : KeywordName := 'Replace';
+    KW_SPLIT      : KeywordName := 'Split';
+    KW_JOIN       : KeywordName := 'Join';
+    KW_MSGBOX     : KeywordName := 'MsgBox';
+    KW_INPUTBOX   : KeywordName := 'InputBox';
+    KW_DEBUG      : KeywordName := 'Debug';
+    KW_DOEVENTS   : KeywordName := 'DoEvents';
+    KW_ARRAY      : KeywordName := 'Array';
+    KW_ISARRAY    : KeywordName := 'IsArray';
+    KW_ISDATE     : KeywordName := 'IsDate';
+    KW_ISEMPTY    : KeywordName := 'IsEmpty';
+    KW_ISNULL     : KeywordName := 'IsNull';
+    KW_ISNUMERIC  : KeywordName := 'IsNumeric';
+    KW_ISOBJECT   : KeywordName := 'IsObject';
+    KW_ISMISSING  : KeywordName := 'IsMissing';
+    KW_BYTE       : KeywordName := 'Byte';
+    KW_DATE2      : KeywordName := 'Date';
+    KW_ERR        : KeywordName := 'Err';
+  Else
+    KeywordName := '?KW' + ItoSI(KW);
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { Fonctions de classification de caracteres                    }
 { ------------------------------------------------------------ }
@@ -1259,6 +1800,7 @@ Procedure LexScanIdent;
 Var
   S   : TString;
   Ch  : Char;
+  KW  : Integer;
 Begin
   S := '';
   While (LexColNo <= Length(LexLine)) And
@@ -1281,9 +1823,19 @@ Begin
     End;
   End;
   CurTokStr  := S;
-  CurTokNum  := 0;
   CurTokReal := 0.0;
-  CurTokType := TOK_IDENT;
+  { Tester si c est un mot-cle VB6 }
+  KW := IsKeyword(S);
+  If KW <> KW_NONE Then
+  Begin
+    CurTokType := TOK_KEYWORD;
+    CurTokNum  := KW;
+  End
+  Else
+  Begin
+    CurTokType := TOK_IDENT;
+    CurTokNum  := 0;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -1593,6 +2145,7 @@ Begin
   Case CurTokType Of
     TOK_EOF       : Write('EOF');
     TOK_IDENT     : Write('IDENT(', CurTokStr, ')');
+    TOK_KEYWORD   : Write('KW(', KeywordName(CurTokNum), ')');
     TOK_INTEGER   : Write('INT(', CurTokNum, ')');
     TOK_LONG      : Write('LONG(', CurTokNum, ')');
     TOK_SINGLE    : Write('SINGLE(', CurTokStr, ')');

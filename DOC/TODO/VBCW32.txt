@@ -74,7 +74,7 @@
               TOK_NEWLINE, TOK_EOF)
             Stocker dans CurTokType / CurTokStr / CurTokNum
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES VISUAL BASIC 6 [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES VISUAL BASIC 6 [IMPLEMENTE]
             Function IsKeyword(Const s: String): Integer
             Mots-cles complets a reconnaitre :
               And As Boolean ByRef ByVal Call Case CBool CByte
