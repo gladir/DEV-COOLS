@@ -855,7 +855,7 @@
             Procedure WriteSearchIndexJs(Var OutFile: Text)
               ecrire l index de recherche au format JavaScript
 
-  TODO 23 - SUPPORT MULTI-FICHIERS ET RECURSIVITE [A FAIRE]
+  TODO 23 - SUPPORT MULTI-FICHIERS ET RECURSIVITE [IMPLEMENTE]
             Variables globales :
               SourceFiles    : Array[1..MAX_FILES] Of String
               SourceCount    : Integer
@@ -1539,6 +1539,13 @@ Var
   SearchIndex       : Array[1..MAX_SEARCH_ENTRIES] Of TSearchIndex;
   SearchCount       : Integer;
   SearchInitialized : Boolean;
+
+  { Variables pour le support multi-fichiers (TODO 23) }
+  SourceFiles        : Array[1..MAX_FILES] Of String;
+  SourceCount        : Integer;
+  ProcessedFiles     : Array[1..MAX_FILES] Of String;
+  ProcessedCount     : Integer;
+  MultiFileInitialized : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -13443,6 +13450,680 @@ Begin
   
   If SearchCount > 50 Then
     WriteLn('  ... et ', SearchCount - 50, ' autres entrees');
+End;
+
+{ ============================================================
+  SUPPORT MULTI-FICHIERS ET RECURSIVITE (TODO 23)
+  ============================================================ }
+
+{ Initialise le systeme de gestion multi-fichiers }
+Procedure InitMultiFile;
+Var
+  I: Integer;
+Begin
+  SourceCount := 0;
+  ProcessedCount := 0;
+  
+  For I := 1 To MAX_FILES Do
+  Begin
+    SourceFiles[I] := '';
+    ProcessedFiles[I] := '';
+  End;
+  
+  MultiFileInitialized := True;
+End;
+
+{ Verifie si un caractere correspond a un caractere de pattern }
+Function MatchChar(C, P: Char): Boolean;
+Begin
+  If P = '?' Then
+    MatchChar := True
+  Else
+    MatchChar := (UpCase(C) = UpCase(P));
+End;
+
+{ Verifie si un nom de fichier correspond a un pattern glob }
+Function MatchesPattern(Const FileName, Pattern: String): Boolean;
+Var
+  FI, PI: Integer;
+  FLen, PLen: Integer;
+  C, P: Char;
+Begin
+  MatchesPattern := False;
+  FLen := Length(FileName);
+  PLen := Length(Pattern);
+  
+  If PLen = 0 Then
+  Begin
+    MatchesPattern := (FLen = 0);
+    Exit;
+  End;
+  
+  { Pattern simple *.ext }
+  If (Pattern[1] = '*') And (Pos('*', Copy(Pattern, 2, PLen - 1)) = 0) Then
+  Begin
+    { Verifier si le fichier se termine par le suffix apres * }
+    If PLen = 1 Then
+    Begin
+      MatchesPattern := True;
+      Exit;
+    End;
+    
+    { Extraire le suffix apres * }
+    If FLen >= (PLen - 1) Then
+    Begin
+      { Comparer les suffix }
+      FI := FLen - (PLen - 2);
+      PI := 2;
+      While (PI <= PLen) And (FI <= FLen) Do
+      Begin
+        If Not MatchChar(FileName[FI], Pattern[PI]) Then
+          Exit;
+        Inc(FI);
+        Inc(PI);
+      End;
+      MatchesPattern := (PI > PLen);
+    End;
+    Exit;
+  End;
+  
+  { Pattern prefix prefix* }
+  If (Pattern[PLen] = '*') And (Pos('*', Copy(Pattern, 1, PLen - 1)) = 0) Then
+  Begin
+    { Verifier si le fichier commence par le prefix }
+    If FLen >= (PLen - 1) Then
+    Begin
+      For FI := 1 To PLen - 1 Do
+      Begin
+        If Not MatchChar(FileName[FI], Pattern[FI]) Then
+          Exit;
+      End;
+      MatchesPattern := True;
+    End;
+    Exit;
+  End;
+  
+  { Pattern exact sans wildcard }
+  If Pos('*', Pattern) = 0 Then
+  Begin
+    If FLen <> PLen Then
+      Exit;
+    For FI := 1 To FLen Do
+    Begin
+      If Not MatchChar(FileName[FI], Pattern[FI]) Then
+        Exit;
+    End;
+    MatchesPattern := True;
+    Exit;
+  End;
+  
+  { Pattern complexe avec * au milieu - comparaison simplifiee }
+  FI := 1;
+  PI := 1;
+  While (FI <= FLen) And (PI <= PLen) Do
+  Begin
+    P := Pattern[PI];
+    If P = '*' Then
+    Begin
+      { Avancer dans le fichier jusqu'a trouver le prochain caractere du pattern }
+      Inc(PI);
+      If PI > PLen Then
+      Begin
+        MatchesPattern := True;
+        Exit;
+      End;
+      While (FI <= FLen) And Not MatchChar(FileName[FI], Pattern[PI]) Do
+        Inc(FI);
+    End
+    Else
+    Begin
+      If Not MatchChar(FileName[FI], P) Then
+        Exit;
+      Inc(FI);
+      Inc(PI);
+    End;
+  End;
+  
+  { Verifier si on a consomme tout le pattern }
+  While (PI <= PLen) And (Pattern[PI] = '*') Do
+    Inc(PI);
+    
+  MatchesPattern := (PI > PLen);
+End;
+
+{ Verifie si une extension correspond a un fichier source connu }
+Function IsSourceExtension(Const Ext: String): Boolean;
+Var
+  E: String;
+Begin
+  E := UpStr(Ext);
+  IsSourceExtension := (E = '.PAS') Or (E = '.PP') Or (E = '.P') Or
+                       (E = '.C') Or (E = '.H') Or
+                       (E = '.CPP') Or (E = '.CXX') Or (E = '.CC') Or
+                       (E = '.HPP') Or (E = '.HXX') Or
+                       (E = '.ADA') Or (E = '.ADB') Or (E = '.ADS') Or
+                       (E = '.F') Or (E = '.F90') Or (E = '.F95') Or (E = '.FOR') Or
+                       (E = '.JAVA') Or
+                       (E = '.PY') Or
+                       (E = '.CS') Or
+                       (E = '.PHP');
+End;
+
+{ Extrait l'extension d'un nom de fichier }
+Function ExtractFileExt(Const FileName: String): String;
+Var
+  I: Integer;
+  Dot: Integer;
+Begin
+  Dot := 0;
+  For I := Length(FileName) DownTo 1 Do
+  Begin
+    If FileName[I] = '.' Then
+    Begin
+      Dot := I;
+      Break;
+    End;
+    If (FileName[I] = '/') Or (FileName[I] = '\') Then
+      Break;
+  End;
+  
+  If Dot > 0 Then
+    ExtractFileExt := Copy(FileName, Dot, Length(FileName) - Dot + 1)
+  Else
+    ExtractFileExt := '';
+End;
+
+{ Calcule le chemin relatif d'un fichier par rapport a un chemin de base }
+Function GetRelativePath(Const FullPath, BasePath: String): String;
+Var
+  FP, BP: String;
+  I, CommonLen: Integer;
+  Result: String;
+Begin
+  { Normaliser les chemins }
+  FP := FullPath;
+  BP := BasePath;
+  
+  { Si le chemin de base est vide, retourner le chemin complet }
+  If BP = '' Then
+  Begin
+    GetRelativePath := FP;
+    Exit;
+  End;
+  
+  { Trouver la partie commune }
+  CommonLen := 0;
+  For I := 1 To Min(Length(FP), Length(BP)) Do
+  Begin
+    If UpCase(FP[I]) = UpCase(BP[I]) Then
+      CommonLen := I
+    Else
+      Break;
+  End;
+  
+  { Si pas de partie commune, retourner le chemin complet }
+  If CommonLen = 0 Then
+  Begin
+    GetRelativePath := FP;
+    Exit;
+  End;
+  
+  { Retourner la partie apres le chemin de base }
+  If CommonLen >= Length(BP) Then
+    Result := Copy(FP, CommonLen + 1, Length(FP) - CommonLen)
+  Else
+    Result := FP;
+    
+  { Enlever le separateur initial si present }
+  If Length(Result) > 0 Then
+  Begin
+    If (Result[1] = '/') Or (Result[1] = '\') Then
+      Result := Copy(Result, 2, Length(Result) - 1);
+  End;
+  
+  GetRelativePath := Result;
+End;
+
+{ Verifie si un fichier est dans la liste d'exclusion }
+Function IsExcluded(Const FileName: String): Boolean;
+Var
+  ExcludePatterns: String;
+  ExcludeList: String;
+  Pattern: String;
+  I, Start: Integer;
+Begin
+  IsExcluded := False;
+  
+  { Recuperer les patterns d'exclusion de la configuration }
+  ExcludePatterns := GetConfigValue('EXCLUDE_PATTERNS');
+  If ExcludePatterns = '' Then
+    Exit;
+    
+  { Parser les patterns separes par des espaces }
+  ExcludeList := ExcludePatterns + ' ';
+  Start := 1;
+  
+  For I := 1 To Length(ExcludeList) Do
+  Begin
+    If ExcludeList[I] = ' ' Then
+    Begin
+      If I > Start Then
+      Begin
+        Pattern := Copy(ExcludeList, Start, I - Start);
+        If MatchesPattern(FileName, Pattern) Then
+        Begin
+          IsExcluded := True;
+          Exit;
+        End;
+        If MatchesPattern(ExtractFileName(FileName), Pattern) Then
+        Begin
+          IsExcluded := True;
+          Exit;
+        End;
+      End;
+      Start := I + 1;
+    End;
+  End;
+End;
+
+{ Verifie si un fichier a deja ete ajoute a la liste des sources }
+Function IsFileInSourceList(Const FileName: String): Boolean;
+Var
+  I: Integer;
+  FN: String;
+Begin
+  IsFileInSourceList := False;
+  FN := UpStr(FileName);
+  
+  For I := 1 To SourceCount Do
+  Begin
+    If UpStr(SourceFiles[I]) = FN Then
+    Begin
+      IsFileInSourceList := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ Ajoute un fichier a la liste des sources }
+Function AddSourceFile(Const FileName: String): Boolean;
+Begin
+  AddSourceFile := False;
+  
+  { Verifier la capacite }
+  If SourceCount >= MAX_FILES Then
+  Begin
+    WarnMsg('Nombre maximum de fichiers atteint: ' + IntToStr(MAX_FILES));
+    Exit;
+  End;
+  
+  { Verifier si le fichier existe }
+  If Not FileExists(FileName) Then
+  Begin
+    WarnMsg('Fichier non trouve: ' + FileName);
+    Exit;
+  End;
+  
+  { Verifier si le fichier est deja dans la liste }
+  If IsFileInSourceList(FileName) Then
+    Exit;
+    
+  { Verifier si le fichier est exclu }
+  If IsExcluded(FileName) Then
+    Exit;
+    
+  { Ajouter le fichier }
+  Inc(SourceCount);
+  SourceFiles[SourceCount] := FileName;
+  AddSourceFile := True;
+End;
+
+{ Ajoute un fichier a la liste des fichiers traites }
+Function AddProcessedFile(Const FileName: String): Boolean;
+Begin
+  AddProcessedFile := False;
+  
+  If ProcessedCount >= MAX_FILES Then
+    Exit;
+    
+  Inc(ProcessedCount);
+  ProcessedFiles[ProcessedCount] := FileName;
+  AddProcessedFile := True;
+End;
+
+{ Verifie si un fichier a deja ete traite }
+Function IsFileProcessed(Const FileName: String): Boolean;
+Var
+  I: Integer;
+  FN: String;
+Begin
+  IsFileProcessed := False;
+  FN := UpStr(FileName);
+  
+  For I := 1 To ProcessedCount Do
+  Begin
+    If UpStr(ProcessedFiles[I]) = FN Then
+    Begin
+      IsFileProcessed := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ Collecte les fichiers sources correspondant aux patterns }
+Procedure CollectSourceFiles(Const Path: String; Recursive: Boolean);
+Var
+  SR: SearchRec;
+  FilePatterns: String;
+  Pattern: String;
+  FullPath: String;
+  I, Start: Integer;
+  Ext: String;
+  PatternsCopy: String;
+Begin
+  { Recuperer les patterns de fichiers }
+  FilePatterns := GetConfigValue('FILE_PATTERNS');
+  If FilePatterns = '' Then
+    FilePatterns := '*.c *.cc *.cxx *.cpp *.h *.hh *.hxx *.hpp *.pas *.pp *.java *.py *.cs *.ada *.adb *.ads *.f *.f90';
+  
+  { Chercher tous les fichiers dans le repertoire }
+  FindFirst(Path + '*.*', AnyFile, SR);
+  While DosError = 0 Do
+  Begin
+    If (SR.Name <> '.') And (SR.Name <> '..') Then
+    Begin
+      { Verifier que c'est un fichier (pas un repertoire) }
+      If (SR.Attr And Directory) = 0 Then
+      Begin
+        FullPath := Path + SR.Name;
+        
+        { Verifier si c'est un fichier source }
+        Ext := ExtractFileExt(SR.Name);
+        If IsSourceExtension(Ext) Then
+        Begin
+          { Verifier contre les patterns }
+          PatternsCopy := FilePatterns + ' ';
+          Start := 1;
+          For I := 1 To Length(PatternsCopy) Do
+          Begin
+            If PatternsCopy[I] = ' ' Then
+            Begin
+              If I > Start Then
+              Begin
+                Pattern := Copy(PatternsCopy, Start, I - Start);
+                If MatchesPattern(SR.Name, Pattern) Then
+                Begin
+                  AddSourceFile(FullPath);
+                  Break;
+                End;
+              End;
+              Start := I + 1;
+            End;
+          End;
+        End;
+      End;
+    End;
+    FindNext(SR);
+  End;
+  
+  { Recherche recursive dans les sous-repertoires }
+  If Recursive Then
+  Begin
+    FindFirst(Path + '*.*', Directory, SR);
+    While DosError = 0 Do
+    Begin
+      If (SR.Attr And Directory) <> 0 Then
+      Begin
+        If (SR.Name <> '.') And (SR.Name <> '..') Then
+        Begin
+          FullPath := Path + SR.Name + '/';
+          
+          { Verifier si le repertoire est exclu }
+          If Not IsExcluded(SR.Name) Then
+            CollectSourceFiles(FullPath, True);
+        End;
+      End;
+      FindNext(SR);
+    End;
+  End;
+End;
+
+{ Traite un repertoire et ses sous-repertoires }
+Procedure ProcessDirectory(Const DirPath: String);
+Var
+  Recursive: Boolean;
+  RecurseOpt: String;
+Begin
+  { Verifier si la recherche recursive est activee }
+  RecurseOpt := GetConfigValue('RECURSIVE');
+  Recursive := (UpStr(RecurseOpt) = 'YES') Or (UpStr(RecurseOpt) = 'TRUE') Or (RecurseOpt = '1');
+  
+  { Collecter les fichiers sources }
+  CollectSourceFiles(DirPath, Recursive);
+End;
+
+{ Traite tous les fichiers sources collectes }
+Procedure ProcessAllFiles;
+Var
+  I: Integer;
+Begin
+  InfoMsg('Traitement de ' + IntToStr(SourceCount) + ' fichier(s) source(s)...');
+  
+  For I := 1 To SourceCount Do
+  Begin
+    If Not IsFileProcessed(SourceFiles[I]) Then
+    Begin
+      InfoMsg('  Traitement: ' + SourceFiles[I]);
+      
+      { Traiter le fichier }
+      ProcessInputFile(SourceFiles[I]);
+      
+      { Marquer comme traite }
+      AddProcessedFile(SourceFiles[I]);
+    End;
+  End;
+  
+  InfoMsg('Traitement termine: ' + IntToStr(ProcessedCount) + ' fichier(s) traite(s)');
+End;
+
+{ Verifie si un repertoire existe }
+Function DirectoryExists(Const DirPath: String): Boolean;
+Var
+  SR: SearchRec;
+  Path: String;
+Begin
+  DirectoryExists := False;
+  
+  Path := DirPath;
+  { Enlever le separateur final si present }
+  If Length(Path) > 0 Then
+  Begin
+    If (Path[Length(Path)] = '/') Or (Path[Length(Path)] = '\') Then
+      Path := Copy(Path, 1, Length(Path) - 1);
+  End;
+  
+  FindFirst(Path, Directory, SR);
+  If DosError = 0 Then
+  Begin
+    DirectoryExists := (SR.Attr And Directory) <> 0;
+  End;
+End;
+
+{ Collecte et traite les fichiers depuis la configuration INPUT }
+Procedure ProcessInputFromConfig;
+Var
+  InputValue: String;
+  InputList: String;
+  Item: String;
+  I, Start: Integer;
+Begin
+  InputValue := GetConfigValue('INPUT');
+  If InputValue = '' Then
+  Begin
+    WarnMsg('Aucun fichier ou repertoire d''entree specifie (INPUT)');
+    Exit;
+  End;
+  
+  { Initialiser le systeme multi-fichiers }
+  InitMultiFile;
+  
+  { Parser les entrees separees par des espaces }
+  InputList := InputValue + ' ';
+  Start := 1;
+  
+  For I := 1 To Length(InputList) Do
+  Begin
+    If InputList[I] = ' ' Then
+    Begin
+      If I > Start Then
+      Begin
+        Item := Copy(InputList, Start, I - Start);
+        
+        { Verifier si c'est un fichier ou un repertoire }
+        If FileExists(Item) Then
+          AddSourceFile(Item)
+        Else If DirectoryExists(Item) Then
+        Begin
+          { Ajouter un separateur si necessaire }
+          If (Item[Length(Item)] <> '/') And (Item[Length(Item)] <> '\') Then
+            Item := Item + '/';
+          ProcessDirectory(Item);
+        End
+        Else
+          WarnMsg('Entree non trouvee: ' + Item);
+      End;
+      Start := I + 1;
+    End;
+  End;
+  
+  { Traiter tous les fichiers collectes }
+  If SourceCount > 0 Then
+    ProcessAllFiles;
+End;
+
+{ ============================================================
+  FONCTIONS ACCESSEUR POUR LE SUPPORT MULTI-FICHIERS (TODO 23)
+  ============================================================ }
+
+{ Retourne le nombre de fichiers sources collectes }
+Function GetSourceCount: Integer;
+Begin
+  GetSourceCount := SourceCount;
+End;
+
+{ Retourne le nombre de fichiers traites }
+Function GetProcessedCount: Integer;
+Begin
+  GetProcessedCount := ProcessedCount;
+End;
+
+{ Retourne un fichier source par son index }
+Function GetSourceFile(Index: Integer): String;
+Begin
+  If (Index >= 1) And (Index <= SourceCount) Then
+    GetSourceFile := SourceFiles[Index]
+  Else
+    GetSourceFile := '';
+End;
+
+{ Retourne un fichier traite par son index }
+Function GetProcessedFile(Index: Integer): String;
+Begin
+  If (Index >= 1) And (Index <= ProcessedCount) Then
+    GetProcessedFile := ProcessedFiles[Index]
+  Else
+    GetProcessedFile := '';
+End;
+
+{ Verifie si le systeme multi-fichiers est initialise }
+Function IsMultiFileInitialized: Boolean;
+Begin
+  IsMultiFileInitialized := MultiFileInitialized;
+End;
+
+{ Verifie si la liste des sources est vide }
+Function IsSourceListEmpty: Boolean;
+Begin
+  IsSourceListEmpty := (SourceCount = 0);
+End;
+
+{ Verifie si la liste des fichiers traites est vide }
+Function IsProcessedListEmpty: Boolean;
+Begin
+  IsProcessedListEmpty := (ProcessedCount = 0);
+End;
+
+{ Retourne le pourcentage de fichiers traites }
+Function GetProcessingProgress: Integer;
+Begin
+  If SourceCount = 0 Then
+    GetProcessingProgress := 100
+  Else
+    GetProcessingProgress := (ProcessedCount * 100) Div SourceCount;
+End;
+
+{ Retourne le nombre de fichiers restant a traiter }
+Function GetRemainingFileCount: Integer;
+Begin
+  GetRemainingFileCount := SourceCount - ProcessedCount;
+End;
+
+{ Vide la liste des fichiers sources }
+Procedure ClearSourceList;
+Var
+  I: Integer;
+Begin
+  For I := 1 To SourceCount Do
+    SourceFiles[I] := '';
+  SourceCount := 0;
+End;
+
+{ Vide la liste des fichiers traites }
+Procedure ClearProcessedList;
+Var
+  I: Integer;
+Begin
+  For I := 1 To ProcessedCount Do
+    ProcessedFiles[I] := '';
+  ProcessedCount := 0;
+End;
+
+{ Affiche les fichiers sources collectes (debug) }
+Procedure ShowSourceFiles;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== FICHIERS SOURCES COLLECTES ===');
+  WriteLn('Nombre: ', SourceCount);
+  WriteLn('Initialise: ', MultiFileInitialized);
+  WriteLn;
+  
+  For I := 1 To Min(SourceCount, 50) Do
+  Begin
+    WriteLn('  [', I, '] ', SourceFiles[I]);
+  End;
+  
+  If SourceCount > 50 Then
+    WriteLn('  ... et ', SourceCount - 50, ' autres fichiers');
+End;
+
+{ Affiche les fichiers traites (debug) }
+Procedure ShowProcessedFiles;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== FICHIERS TRAITES ===');
+  WriteLn('Nombre: ', ProcessedCount);
+  WriteLn('Progression: ', GetProcessingProgress, '%');
+  WriteLn;
+  
+  For I := 1 To Min(ProcessedCount, 50) Do
+  Begin
+    WriteLn('  [', I, '] ', ProcessedFiles[I]);
+  End;
+  
+  If ProcessedCount > 50 Then
+    WriteLn('  ... et ', ProcessedCount - 50, ' autres fichiers');
 End;
 
 { ============================================================
