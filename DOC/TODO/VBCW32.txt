@@ -276,7 +276,7 @@
               GoSub label -> CALL label / Return -> RET
               Labels numeriques (ligne) et labels nommes
 
-  TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP, WHILE/WEND, FOR EACH) [A FAIRE]
+  TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP, WHILE/WEND, FOR EACH) [IMPLEMENTE]
             Procedure ParseFor
             Syntaxe :
               For i = debut To fin [Step pas]

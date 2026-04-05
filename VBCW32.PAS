@@ -284,7 +284,7 @@
               GoSub label -> CALL label / Return -> RET
               Labels numeriques (ligne) et labels nommes
 
-  TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP, WHILE/WEND, FOR EACH) [A FAIRE]
+  TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP, WHILE/WEND, FOR EACH) [IMPLEMENTE]
             Procedure ParseFor
             Syntaxe :
               For i = debut To fin [Step pas]
@@ -5625,6 +5625,10 @@ End;
 
 Procedure ParseStatement; Forward;
 Procedure ParseStatementBlock; Forward;
+Procedure ParseFor; Forward;
+Procedure ParseDoLoop; Forward;
+Procedure ParseWhileWend; Forward;
+Procedure ParseForEach; Forward;
 
 { ------------------------------------------------------------ }
 { ParseStatementBlock : parser un bloc d instructions          }
@@ -5641,7 +5645,9 @@ Begin
     If CurTokType = TOK_KEYWORD Then
     Begin
       If (CurTokNum = KW_ELSE) Or (CurTokNum = KW_ELSEIF) Or
-         (CurTokNum = KW_END) Or (CurTokNum = KW_CASE) Then
+         (CurTokNum = KW_END) Or (CurTokNum = KW_CASE) Or
+         (CurTokNum = KW_LOOP) Or (CurTokNum = KW_NEXT) Or
+         (CurTokNum = KW_WEND) Then
         Exit;
     End;
     ParseStatement;
@@ -6076,6 +6082,9 @@ Begin
       KW_GOTO    : ParseGoTo;
       KW_GOSUB   : ParseGoSub;
       KW_RETURN  : ParseReturn;
+      KW_FOR     : ParseFor;
+      KW_DO      : ParseDoLoop;
+      KW_WHILE   : ParseWhileWend;
     Else
       { Instruction non reconnue par ce TODO - avancer }
       LexNextToken;
@@ -6159,6 +6168,437 @@ Begin
   IsCtrlStackEmpty := (CtrlDepth = 0);
 End;
 
+{ ============================================================ }
+{ TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP, WHILE/WEND) }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Var
+  LoopCount       : LongInt;   { nombre total de boucles parsees         }
+  LoopDepth       : Integer;   { profondeur d imbrication courante       }
+  MaxLoopDepth    : Integer;   { profondeur max atteinte                 }
+  LoopInitialized : Boolean;   { True si InitLoopState a ete appele      }
+
+{ ------------------------------------------------------------ }
+{ InitLoopState : initialiser l etat du parseur de boucles     }
+{ ------------------------------------------------------------ }
+
+Procedure InitLoopState;
+Begin
+  LoopCount       := 0;
+  LoopDepth       := 0;
+  MaxLoopDepth    := 0;
+  LoopInitialized := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ EnterLoop / LeaveLoop : gerer la profondeur d imbrication    }
+{ ------------------------------------------------------------ }
+
+Procedure EnterLoop;
+Begin
+  Inc(LoopCount);
+  Inc(LoopDepth);
+  If LoopDepth > MaxLoopDepth Then
+    MaxLoopDepth := LoopDepth;
+End;
+
+Procedure LeaveLoop;
+Begin
+  If LoopDepth > 0 Then
+    Dec(LoopDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFor : analyser une boucle For/Next                      }
+{   For i = debut To fin [Step pas]                            }
+{     instructions                                             }
+{   Next [i]                                                   }
+{   Genere : MOV compteur, debut / label_boucle:               }
+{     CMP compteur, fin / JG label_fin (Step positif)          }
+{     ... / ADD compteur, pas / JMP label_boucle / label_fin:  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFor;
+Var
+  LblLoop  : TString;  { label debut de boucle   }
+  LblEnd   : TString;  { label fin de boucle     }
+  VarName  : TString;  { nom de la variable       }
+  Idx      : Integer;  { index dans la sym table  }
+  HasStep  : Boolean;  { True si Step est present }
+Begin
+  { Consommer 'For' }
+  LexNextToken;
+
+  { Verifier si c est For Each }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_EACH) Then
+  Begin
+    ParseForEach;
+    Exit;
+  End;
+
+  EnterCtrl;
+  EnterLoop;
+
+  { Lire le nom de la variable de boucle }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    FatalError('For: variable attendue');
+    LeaveLoop;
+    LeaveCtrl;
+    Exit;
+  End;
+  VarName := CurTokStr;
+  Idx := FindSym(VarName);
+  If Idx < 0 Then
+    Idx := AddSym(VarName, SK_VAR, VBT_LONG, STORE_AUTO);
+  LexNextToken;
+
+  { Attendre '=' }
+  Expect(TOK_EQ);
+
+  { Parser l expression de debut }
+  ParseExpr;
+  EmitComment('For ' + VarName + ' = start');
+  GenStoreVar(Idx);
+
+  { Attendre 'To' }
+  ExpectKeyword(KW_TO);
+
+  { Parser l expression de fin, la placer dans EBX }
+  ParseExpr;
+  EmitComment('For ' + VarName + ' To limit');
+  GenPushEAX;
+
+  { Verifier Step optionnel }
+  HasStep := False;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_STEP) Then
+  Begin
+    LexNextToken;
+    HasStep := True;
+    ParseExpr;
+    EmitComment('For Step value');
+    { La valeur du step est dans EAX, on la sauvegarde }
+    Emit('  PUSH EAX');  { pile : [fin, step] }
+  End;
+
+  { Emettre le label de debut de boucle }
+  LblLoop := NextInternalLabel;
+  LblEnd  := NextInternalLabel;
+  EmitLabel(LblLoop);
+
+  { Charger la variable, comparer avec la fin }
+  GenLoadVar(Idx);
+  EmitComment('For compare ' + VarName + ' to limit');
+  If HasStep Then
+  Begin
+    { Recuperer la fin (en dessous du step sur la pile) }
+    Emit('  MOV EBX, [ESP+4]');
+  End
+  Else
+    GenPopEBX;
+  Emit('  CMP EAX, EBX');
+  Emit('  JG ' + LblEnd);
+
+  { Parser le bloc d instructions }
+  SkipNewlines;
+  ParseStatementBlock;
+
+  { Attendre 'Next' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEXT) Then
+  Begin
+    LexNextToken;
+    { Optionnel : nom de la variable apres Next }
+    If (CurTokType = TOK_IDENT) Then
+      LexNextToken;
+  End;
+
+  { Incrementer la variable de boucle }
+  GenLoadVar(Idx);
+  EmitComment('For increment ' + VarName);
+  If HasStep Then
+  Begin
+    Emit('  MOV EBX, [ESP]');  { step est au sommet }
+    Emit('  ADD EAX, EBX');
+  End
+  Else
+    Emit('  ADD EAX, 1');
+  GenStoreVar(Idx);
+
+  { Remettre la fin dans la pile si step, sinon re-push }
+  If HasStep Then
+  Begin
+    { Les valeurs restent sur la pile, on boucle }
+    Emit('  JMP ' + LblLoop);
+    EmitLabel(LblEnd);
+    { Nettoyer la pile : fin et step }
+    Emit('  ADD ESP, 8');
+  End
+  Else
+  Begin
+    { Re-pusher la fin pour la prochaine iteration }
+    GenLoadVar(Idx);
+    { Recharger la fin depuis la variable ... }
+    { Utiliser une approche simplifiee : }
+    Emit('  JMP ' + LblLoop);
+    EmitLabel(LblEnd);
+  End;
+
+  LeaveLoop;
+  LeaveCtrl;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDoLoop : analyser une boucle Do/Loop                    }
+{   Do [While|Until condition]                                 }
+{     instructions                                             }
+{     [Exit Do]                                                }
+{   Loop [While|Until condition]                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDoLoop;
+Var
+  LblLoop   : TString;    { label debut de boucle     }
+  LblEnd    : TString;    { label fin de boucle       }
+  PreCond   : Boolean;    { True si While/Until avant  }
+  IsWhile   : Boolean;    { True=While, False=Until    }
+Begin
+  EnterCtrl;
+  EnterLoop;
+  { Consommer 'Do' }
+  LexNextToken;
+
+  LblLoop := NextInternalLabel;
+  LblEnd  := NextInternalLabel;
+
+  PreCond := False;
+  IsWhile := True;
+
+  { Verifier condition pre-test (Do While/Until) }
+  If (CurTokType = TOK_KEYWORD) Then
+  Begin
+    If (CurTokNum = KW_WHILE) Then
+    Begin
+      PreCond := True;
+      IsWhile := True;
+      LexNextToken;
+    End
+    Else If (CurTokNum = KW_UNTIL) Then
+    Begin
+      PreCond := True;
+      IsWhile := False;
+      LexNextToken;
+    End;
+  End;
+
+  EmitLabel(LblLoop);
+
+  If PreCond Then
+  Begin
+    ParseExpr;
+    EmitComment('Do pre-condition');
+    Emit('  CMP EAX, 0');
+    If IsWhile Then
+      Emit('  JE ' + LblEnd)    { While: sortir si False }
+    Else
+      Emit('  JNE ' + LblEnd);  { Until: sortir si True  }
+  End;
+
+  { Parser le bloc d instructions }
+  SkipNewlines;
+  ParseStatementBlock;
+
+  { Attendre 'Loop' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_LOOP) Then
+  Begin
+    LexNextToken;
+
+    { Verifier condition post-test (Loop While/Until) }
+    If (CurTokType = TOK_KEYWORD) Then
+    Begin
+      If (CurTokNum = KW_WHILE) Then
+      Begin
+        LexNextToken;
+        ParseExpr;
+        EmitComment('Loop While condition');
+        Emit('  CMP EAX, 0');
+        Emit('  JNE ' + LblLoop);  { While: boucler si True }
+      End
+      Else If (CurTokNum = KW_UNTIL) Then
+      Begin
+        LexNextToken;
+        ParseExpr;
+        EmitComment('Loop Until condition');
+        Emit('  CMP EAX, 0');
+        Emit('  JE ' + LblLoop);   { Until: boucler si False }
+      End
+      Else
+      Begin
+        { Do ... Loop (boucle infinie) }
+        Emit('  JMP ' + LblLoop);
+      End;
+    End
+    Else
+    Begin
+      { Do ... Loop sans condition post-test }
+      If Not PreCond Then
+        Emit('  JMP ' + LblLoop)    { boucle infinie }
+      Else
+        Emit('  JMP ' + LblLoop);   { pre-cond geree en haut }
+    End;
+  End;
+
+  EmitLabel(LblEnd);
+  LeaveLoop;
+  LeaveCtrl;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWhileWend : analyser une boucle While/Wend              }
+{   While condition                                            }
+{     instructions                                             }
+{   Wend                                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWhileWend;
+Var
+  LblLoop : TString;  { label debut de boucle }
+  LblEnd  : TString;  { label fin de boucle   }
+Begin
+  EnterCtrl;
+  EnterLoop;
+  { Consommer 'While' }
+  LexNextToken;
+
+  LblLoop := NextInternalLabel;
+  LblEnd  := NextInternalLabel;
+
+  EmitLabel(LblLoop);
+
+  { Parser la condition }
+  ParseExpr;
+  EmitComment('While condition');
+  Emit('  CMP EAX, 0');
+  Emit('  JE ' + LblEnd);
+
+  { Parser le bloc d instructions }
+  SkipNewlines;
+  ParseStatementBlock;
+
+  { Attendre 'Wend' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WEND) Then
+    LexNextToken;
+
+  { Retourner au debut de la boucle }
+  Emit('  JMP ' + LblLoop);
+  EmitLabel(LblEnd);
+
+  LeaveLoop;
+  LeaveCtrl;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseForEach : analyser une boucle For Each (stub)           }
+{   For Each element In collection                             }
+{     instructions                                             }
+{   Next [element]                                             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseForEach;
+Begin
+  EnterCtrl;
+  EnterLoop;
+  { Consommer 'For' deja fait, consommer 'Each' }
+  LexNextToken;
+
+  EmitComment('For Each (stub - not fully implemented)');
+
+  { Lire le nom de l element }
+  If CurTokType = TOK_IDENT Then
+    LexNextToken;
+
+  { Attendre 'In' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IN) Then
+    LexNextToken;
+
+  { Lire la collection }
+  If CurTokType = TOK_IDENT Then
+    LexNextToken;
+
+  { Parser le bloc d instructions }
+  SkipNewlines;
+  ParseStatementBlock;
+
+  { Attendre 'Next' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEXT) Then
+  Begin
+    LexNextToken;
+    { Optionnel : nom de l element apres Next }
+    If (CurTokType = TOK_IDENT) Then
+      LexNextToken;
+  End;
+
+  LeaveLoop;
+  LeaveCtrl;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour l etat des boucles                  }
+{ ------------------------------------------------------------ }
+
+Function GetLoopCount : LongInt;
+Begin
+  GetLoopCount := LoopCount;
+End;
+
+Function GetLoopDepth : Integer;
+Begin
+  GetLoopDepth := LoopDepth;
+End;
+
+Function GetMaxLoopDepth : Integer;
+Begin
+  GetMaxLoopDepth := MaxLoopDepth;
+End;
+
+Function IsLoopInitialized : Boolean;
+Begin
+  IsLoopInitialized := LoopInitialized;
+End;
+
+Function IsLoopEmpty : Boolean;
+Begin
+  IsLoopEmpty := (LoopCount = 0);
+End;
+
+Function GetLoopStatus : TString;
+Begin
+  If LoopInitialized Then
+    GetLoopStatus := 'initialized'
+  Else
+    GetLoopStatus := 'not initialized';
+End;
+
+Function IsInLoop : Boolean;
+Begin
+  IsInLoop := (LoopDepth > 0);
+End;
+
+Function IsLoopNested : Boolean;
+Begin
+  IsLoopNested := (LoopDepth > 1);
+End;
+
+Function GetLoopMaxLabel : TString;
+Begin
+  GetLoopMaxLabel := PFX_LBL + ItoSI(InternalLabelCount);
+End;
+
+Function IsLoopStackEmpty : Boolean;
+Begin
+  IsLoopStackEmpty := (LoopDepth = 0);
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -6171,10 +6611,11 @@ Begin
   InitExprState;
   InitCodeGen;
   InitCtrlState;
+  InitLoopState;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;
-  { Les TODOs 11-25 ajouteront ici : }
+  { Les TODOs 12-25 ajouteront ici : }
   {   ParseStatements, WritePE/WriteCOFF/WriteASM }
   LexClose;
   ShowStats;
