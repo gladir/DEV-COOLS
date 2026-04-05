@@ -1021,6 +1021,9 @@ Const
  { Coloration syntaxique Ada }
  MAX_ADA_KEYWORDS      = 73;      { nombre de mots-cles Ada        }
 
+ { Coloration syntaxique ABAP/4 }
+ MAX_ABAP_KEYWORDS     = 80;      { nombre de mots-cles ABAP/4     }
+
  { Coloration syntaxique XML }
  MAX_XML_TAGS          = 32;      { nombre de tags XML predefinies  }
 
@@ -1673,6 +1676,13 @@ Type
  TAdaHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_ADA_KEYWORDS - 1] Of String[20];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee ABAP/4 }
+ TAbapHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_ABAP_KEYWORDS - 1] Of String[20];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -2525,6 +2535,8 @@ Var
  PascalHL     : TPascalHighlighter;
  { Coloration syntaxique Ada }
  AdaHL        : TAdaHighlighter;
+ { Coloration syntaxique ABAP/4 }
+ AbapHL       : TAbapHighlighter;
  { Coloration syntaxique XML }
  XMLHL        : TXMLHighlighter;
  { Explorateur de solution }
@@ -2887,7 +2899,9 @@ Begin
                 (Ext = '.TS')  Or (Ext = '.PY')   Or (Ext = '.RB')   Or
                 (Ext = '.PHP') Or (Ext = '.XML')  Or (Ext = '.HTM')  Or
                 (Ext = '.HTML')Or (Ext = '.CSS')  Or (Ext = '.SQL')  Or
-                (Ext = '.ASM') Or (Ext = '.INC')  Or (Ext = '.TXT')  Then Begin
+                (Ext = '.ASM') Or (Ext = '.INC')  Or (Ext = '.TXT')  Or
+                (Ext = '.ADB') Or (Ext = '.ADS')  Or (Ext = '.ADA')  Or
+                (Ext = '.ABAP')Or (Ext = '.ABP')  Then Begin
      If Not FileExists(Arg) Then
       FatalError('Fichier introuvable: ' + Arg);
      Opts.SourceFile := Arg;
@@ -6233,6 +6247,12 @@ Procedure HighlightAdaLine(Var HL: TAdaHighlighter;
                            Line: String;
                            Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightAbapLine --- }
+
+Procedure HighlightAbapLine(Var HL: TAbapHighlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte); Forward;
+
 { --- Dessiner l editeur complet --- }
 
 Procedure DrawEditor(Var Ed: TEditor);
@@ -6248,6 +6268,7 @@ Var
  IsPascal: Boolean;
  IsCSharp: Boolean;
  IsAda: Boolean;
+ IsAbap: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
@@ -6256,6 +6277,7 @@ Begin
              (Ext = '.DPR') Or (Ext = '.LPR');
  IsCSharp := (Ext = '.CS');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
+ IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
  { Mettre a jour la gouttiere }
  Ed.GutterWidth := CalcGutterWidth(Ed.Buffer.LineCount, Ed.CharWidth);
  Ed.VisibleCols := (Ed.Width - Ed.GutterWidth) Div Ed.CharWidth;
@@ -6283,7 +6305,10 @@ Begin
     HighlightCSharpLine(CSharpHL, FullLine, Colors)
    Else If IsAda And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightAdaLine(AdaHL, FullLine, Colors);
+    HighlightAdaLine(AdaHL, FullLine, Colors)
+   Else If IsAbap And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightAbapLine(AbapHL, FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
@@ -9560,6 +9585,267 @@ Begin
  Begin
   Start := Pos;
   TC := GetAdaTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE ABAP/4
+  ============================================================ }
+
+{ --- Initialiser les mots-cles ABAP/4 --- }
+
+Procedure InitAbapKeywords(Var HL: TAbapHighlighter);
+Begin
+ HL.KeywordCount := MAX_ABAP_KEYWORDS;
+ HL.Keywords[0]  := 'report';
+ HL.Keywords[1]  := 'data';
+ HL.Keywords[2]  := 'type';
+ HL.Keywords[3]  := 'types';
+ HL.Keywords[4]  := 'begin';
+ HL.Keywords[5]  := 'end';
+ HL.Keywords[6]  := 'of';
+ HL.Keywords[7]  := 'write';
+ HL.Keywords[8]  := 'skip';
+ HL.Keywords[9]  := 'uline';
+ HL.Keywords[10] := 'if';
+ HL.Keywords[11] := 'else';
+ HL.Keywords[12] := 'elseif';
+ HL.Keywords[13] := 'endif';
+ HL.Keywords[14] := 'do';
+ HL.Keywords[15] := 'enddo';
+ HL.Keywords[16] := 'while';
+ HL.Keywords[17] := 'endwhile';
+ HL.Keywords[18] := 'loop';
+ HL.Keywords[19] := 'endloop';
+ HL.Keywords[20] := 'at';
+ HL.Keywords[21] := 'case';
+ HL.Keywords[22] := 'when';
+ HL.Keywords[23] := 'endcase';
+ HL.Keywords[24] := 'form';
+ HL.Keywords[25] := 'endform';
+ HL.Keywords[26] := 'perform';
+ HL.Keywords[27] := 'call';
+ HL.Keywords[28] := 'function';
+ HL.Keywords[29] := 'endfunction';
+ HL.Keywords[30] := 'method';
+ HL.Keywords[31] := 'endmethod';
+ HL.Keywords[32] := 'class';
+ HL.Keywords[33] := 'endclass';
+ HL.Keywords[34] := 'interface';
+ HL.Keywords[35] := 'endinterface';
+ HL.Keywords[36] := 'module';
+ HL.Keywords[37] := 'endmodule';
+ HL.Keywords[38] := 'select';
+ HL.Keywords[39] := 'endselect';
+ HL.Keywords[40] := 'from';
+ HL.Keywords[41] := 'where';
+ HL.Keywords[42] := 'into';
+ HL.Keywords[43] := 'table';
+ HL.Keywords[44] := 'append';
+ HL.Keywords[45] := 'insert';
+ HL.Keywords[46] := 'modify';
+ HL.Keywords[47] := 'delete';
+ HL.Keywords[48] := 'update';
+ HL.Keywords[49] := 'clear';
+ HL.Keywords[50] := 'refresh';
+ HL.Keywords[51] := 'free';
+ HL.Keywords[52] := 'move';
+ HL.Keywords[53] := 'compute';
+ HL.Keywords[54] := 'add';
+ HL.Keywords[55] := 'subtract';
+ HL.Keywords[56] := 'multiply';
+ HL.Keywords[57] := 'divide';
+ HL.Keywords[58] := 'concatenate';
+ HL.Keywords[59] := 'split';
+ HL.Keywords[60] := 'condense';
+ HL.Keywords[61] := 'translate';
+ HL.Keywords[62] := 'replace';
+ HL.Keywords[63] := 'search';
+ HL.Keywords[64] := 'sort';
+ HL.Keywords[65] := 'read';
+ HL.Keywords[66] := 'value';
+ HL.Keywords[67] := 'using';
+ HL.Keywords[68] := 'changing';
+ HL.Keywords[69] := 'tables';
+ HL.Keywords[70] := 'raising';
+ HL.Keywords[71] := 'try';
+ HL.Keywords[72] := 'catch';
+ HL.Keywords[73] := 'endtry';
+ HL.Keywords[74] := 'and';
+ HL.Keywords[75] := 'or';
+ HL.Keywords[76] := 'not';
+ HL.Keywords[77] := 'like';
+ HL.Keywords[78] := 'times';
+ HL.Keywords[79] := 'to';
+End;
+
+{ --- Initialiser le moteur de coloration ABAP/4 --- }
+
+Procedure InitAbapHighlighter(Var HL: TAbapHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'ABAP');
+ InitAbapKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle ABAP (insensible casse) --- }
+
+Function IsAbapKeyword(Var HL: TAbapHighlighter;
+                       Word: String): Boolean;
+Var
+ I: Integer;
+ LW: String;
+Begin
+ IsAbapKeyword := False;
+ LW := LowerCaseStr(Word);
+ For I := 0 To HL.KeywordCount - 1 Do
+ Begin
+  If LW = HL.Keywords[I] Then
+  Begin
+   IsAbapKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est un type predefini ABAP --- }
+
+Function IsAbapType(Word: String): Boolean;
+Var
+ LW: String;
+Begin
+ LW := LowerCaseStr(Word);
+ IsAbapType :=
+  (LW = 'i') Or (LW = 'f') Or (LW = 'p') Or (LW = 'c') Or
+  (LW = 'n') Or (LW = 'd') Or (LW = 't') Or (LW = 'x') Or
+  (LW = 'string') Or (LW = 'xstring') Or (LW = 'decfloat16') Or
+  (LW = 'decfloat34') Or (LW = 'int8');
+End;
+
+{ --- Classifier un jeton ABAP (identifier -> keyword/type) --- }
+
+Function ClassifyAbapToken(Var HL: TAbapHighlighter;
+                           Line: String;
+                           StartPos, EndPos: Integer): TTokenClass;
+Var
+ Word: String;
+Begin
+ Word := Copy(Line, StartPos, EndPos - StartPos);
+ If IsAbapType(Word) Then
+  ClassifyAbapToken := TC_TYPE
+ Else If IsAbapKeyword(HL, Word) Then
+  ClassifyAbapToken := TC_KEYWORD
+ Else
+  ClassifyAbapToken := TC_IDENTIFIER;
+End;
+
+{ --- Obtenir la classe de jeton ABAP a une position --- }
+
+Function GetAbapTokenClass(Var HL: TAbapHighlighter;
+                           Line: String;
+                           Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len: Integer;
+ Ch: Char;
+Begin
+ Len := Length(Line);
+ GetAbapTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetAbapTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire ABAP * en debut de ligne }
+ If (Ch = '*') And (Pos = 1) Then Begin
+  Pos := Len + 1;
+  GetAbapTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Commentaire ABAP " en ligne }
+ If Ch = '"' Then Begin
+  Pos := Len + 1;
+  GetAbapTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine ABAP '...' }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '''') Do
+   Inc(Pos);
+  If Pos <= Len Then Inc(Pos);
+  GetAbapTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Chaine ABAP `...` (template) }
+ If Ch = '`' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '`') Do
+   Inc(Pos);
+  If Pos <= Len Then Inc(Pos);
+  GetAbapTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Nombre decimal }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '.') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  GetAbapTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant ou mot-cle (ABAP accepte _ et - dans les noms) }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And (IsAlphaUS(Line[Pos]) Or
+        IsDigitChar(Line[Pos]) Or (Line[Pos] = '-')) Do
+   Inc(Pos);
+  GetAbapTokenClass := ClassifyAbapToken(HL, Line, StartPos, Pos);
+  Exit;
+ End;
+
+ { Operateur ou autre caractere }
+ Inc(Pos);
+ GetAbapTokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne ABAP entiere --- }
+
+Procedure HighlightAbapLine(Var HL: TAbapHighlighter;
+                            Line: String;
+                            Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetAbapTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
   Begin
@@ -23101,6 +23387,7 @@ BEGIN
  InitVBNetHighlighter(VBNetHL);
  InitPascalHighlighter(PascalHL);
  InitAdaHighlighter(AdaHL);
+ InitAbapHighlighter(AbapHL);
  InitXMLHighlighter(XMLHL);
  InitExplorer(SolExplorer);
  DrawExplorer(SolExplorer);
