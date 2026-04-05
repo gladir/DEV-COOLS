@@ -767,15 +767,17 @@
               IsPreprocessorActive, CountTotalMacros, GetMacroFileName,
               GetMacroLine, ShowMacros
 
-  TODO 21 - SUPPORT DES ESPACES DE NOMS ET MODULES [A FAIRE]
+  TODO 21 - SUPPORT DES ESPACES DE NOMS ET MODULES [IMPLEMENTE]
             TNamespace : record
               Name       : String   (nom du namespace)
               FullName   : String   (nom qualifie complet)
               ParentId   : Integer  (ID du namespace parent)
               FileName   : String   (fichier de definition)
               Line       : Integer  (ligne de debut)
+              EndLine    : Integer  (ligne de fin)
               IsAnonymous: Boolean  (namespace anonyme)
               IsInline   : Boolean  (inline namespace C++11)
+              Language   : String   (langage source)
             End
             TModule : record
               Name       : String   (nom du module)
@@ -783,19 +785,49 @@
               Exports    : String   (liste des exports)
               Imports    : String   (liste des imports)
               IsPartition: Boolean  (partition de module)
+              IsInterface: Boolean  (module interface)
+              Line       : Integer  (ligne de declaration)
             End
             Variables globales :
               Namespaces     : Array[1..MAX_NAMESPACES] Of TNamespace
               NamespaceCount : Integer
               Modules        : Array[1..MAX_MODULES] Of TModule
               ModuleCount    : Integer
+              NamespaceStack, NamespaceStackDepth, NamespacesInitialized
+            Constantes : MAX_NAMESPACES, MAX_MODULES, MAX_NS_DEPTH,
+              NS_KEYWORD_CPP, NS_KEYWORD_CSHARP, NS_KEYWORD_JAVA,
+              NS_KEYWORD_ADA, NS_KEYWORD_PASCAL, MOD_KEYWORD_CPP20,
+              MOD_KEYWORD_EXPORT, MOD_KEYWORD_IMPORT
+            Procedure InitNamespaces : initialiser le systeme
+            Function FindNamespace : chercher un namespace par nom complet
+            Function FindNamespaceByName : chercher par nom simple
+            Function AddNamespace : ajouter un namespace
+            Function FindModule : chercher un module par nom
+            Function AddModule : ajouter un module
+            Procedure AddModuleExport/AddModuleImport : gerer exports/imports
+            Procedure Push/PopNamespace, GetCurrentNamespace : pile de contexte
+            Function BuildFullNamespaceName : construire le nom complet
+            Function ExtractCppNamespaceName : extraire namespace C++
+            Function ExtractJavaPackageName : extraire package Java
+            Function ExtractCSharpNamespaceName : extraire namespace C#
+            Function ExtractAdaPackageName : extraire package Ada
+            Function ExtractCpp20ModuleName : extraire module C++20
+            Function ExtractCpp20Import : extraire import C++20
             Procedure ExtractNamespaces(Const FileName: String;
-              Lang: TSourceLanguage)
-              extraire les declarations de namespace/package/module
-            Procedure BuildNamespaceHierarchy
-              construire la hierarchie des namespaces
+              Lang: TSourceLanguage) : extraire les declarations
+            Procedure BuildNamespaceHierarchy : construire la hierarchie
             Function GetNamespaceEntities(NamespaceId: Integer): String
               retourner les entites declarees dans un namespace
+            Fonctions accesseurs : GetNamespaceCount, GetModuleCount,
+              IsNamespacesInitialized, IsNamespacesEmpty, IsModulesEmpty,
+              GetNamespaceByIndex, GetModuleByIndex, IsValidNamespaceIndex,
+              IsValidModuleIndex, GetNamespaceName, GetNamespaceFullName,
+              GetNamespaceFileName, GetNamespaceLine, GetNamespaceParent,
+              IsNamespaceAnonymous, IsNamespaceInline, GetModuleName,
+              GetModuleFileName, GetModuleExports, GetModuleImports,
+              IsModulePartition, IsModuleInterface, CountChildNamespaces,
+              CountRootNamespaces, CountNamespacesByLanguage
+            Procedure ShowNamespaces, ShowModules : affichage debug
 
   TODO 22 - RECHERCHE ET INDEXATION FULL-TEXT [A FAIRE]
             TSearchIndex : record
@@ -1105,6 +1137,17 @@ Const
   MACRO_PREFIX_WARNING  = '#warning';
   MACRO_PREFIX_LINE     = '#line';
 
+  { Constantes pour les espaces de noms et modules (TODO 21) }
+  MAX_NS_DEPTH          = 32;
+  NS_KEYWORD_CPP        = 'namespace';
+  NS_KEYWORD_CSHARP     = 'namespace';
+  NS_KEYWORD_JAVA       = 'package';
+  NS_KEYWORD_ADA        = 'package';
+  NS_KEYWORD_PASCAL     = 'unit';
+  MOD_KEYWORD_CPP20     = 'module';
+  MOD_KEYWORD_EXPORT    = 'export';
+  MOD_KEYWORD_IMPORT    = 'import';
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1332,6 +1375,29 @@ Type
     Line       : Integer;           { Ligne du #if/#ifdef }
   End;
 
+  { Types pour les espaces de noms et modules (TODO 21) }
+  TNamespace = Record
+    Name       : String;            { Nom du namespace }
+    FullName   : String;            { Nom qualifie complet }
+    ParentId   : Integer;           { ID du namespace parent, -1 si racine }
+    FileName   : String;            { Fichier de definition }
+    Line       : Integer;           { Ligne de debut }
+    EndLine    : Integer;           { Ligne de fin }
+    IsAnonymous: Boolean;           { Namespace anonyme }
+    IsInline   : Boolean;           { Inline namespace C++11 }
+    Language   : String;            { Langage source }
+  End;
+
+  TModule = Record
+    Name       : String;            { Nom du module }
+    FileName   : String;            { Fichier source }
+    ExportList : String;            { Liste des exports separes par ; }
+    ImportList : String;            { Liste des imports separes par ; }
+    IsPartition: Boolean;           { Partition de module }
+    IsInterface: Boolean;           { Module interface }
+    Line       : Integer;           { Ligne de declaration }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1437,6 +1503,15 @@ Var
   IfDefStack        : Array[1..MAX_INCLUDE_STACK] Of TIfDefStack;
   IfDefStackDepth   : Integer;
   MacrosInitialized : Boolean;
+
+  { Variables pour les espaces de noms et modules (TODO 21) }
+  Namespaces         : Array[1..MAX_NAMESPACES] Of TNamespace;
+  NamespaceCount     : Integer;
+  Modules            : Array[1..MAX_MODULES] Of TModule;
+  ModuleCount        : Integer;
+  NamespaceStack     : Array[1..MAX_NS_DEPTH] Of Integer;
+  NamespaceStackDepth: Integer;
+  NamespacesInitialized : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -11851,6 +11926,860 @@ Begin
   Begin
     Write('  ', PredefinedMacros[I].Name);
     WriteLn(' = ', PredefinedMacros[I].Value);
+  End;
+End;
+
+{ ============================================================
+  SUPPORT DES ESPACES DE NOMS ET MODULES (TODO 21)
+  ============================================================ }
+
+{ Initialise le systeme de namespaces et modules }
+Procedure InitNamespaces;
+Var
+  I: Integer;
+Begin
+  NamespaceCount := 0;
+  ModuleCount := 0;
+  NamespaceStackDepth := 0;
+  
+  For I := 1 To MAX_NAMESPACES Do
+  Begin
+    Namespaces[I].Name := '';
+    Namespaces[I].FullName := '';
+    Namespaces[I].ParentId := -1;
+    Namespaces[I].FileName := '';
+    Namespaces[I].Line := 0;
+    Namespaces[I].EndLine := 0;
+    Namespaces[I].IsAnonymous := False;
+    Namespaces[I].IsInline := False;
+    Namespaces[I].Language := '';
+  End;
+  
+  For I := 1 To MAX_MODULES Do
+  Begin
+    Modules[I].Name := '';
+    Modules[I].FileName := '';
+    Modules[I].ExportList := '';
+    Modules[I].ImportList := '';
+    Modules[I].IsPartition := False;
+    Modules[I].IsInterface := False;
+    Modules[I].Line := 0;
+  End;
+  
+  For I := 1 To MAX_NS_DEPTH Do
+    NamespaceStack[I] := -1;
+  
+  NamespacesInitialized := True;
+End;
+
+{ Cherche un namespace par nom complet }
+Function FindNamespace(Const FullName: String): Integer;
+Var
+  I: Integer;
+  UpperName: String;
+Begin
+  UpperName := UpStr(FullName);
+  FindNamespace := -1;
+  For I := 1 To NamespaceCount Do
+    If UpStr(Namespaces[I].FullName) = UpperName Then
+    Begin
+      FindNamespace := I;
+      Exit;
+    End;
+End;
+
+{ Cherche un namespace par nom simple }
+Function FindNamespaceByName(Const Name: String): Integer;
+Var
+  I: Integer;
+  UpperName: String;
+Begin
+  UpperName := UpStr(Name);
+  FindNamespaceByName := -1;
+  For I := 1 To NamespaceCount Do
+    If UpStr(Namespaces[I].Name) = UpperName Then
+    Begin
+      FindNamespaceByName := I;
+      Exit;
+    End;
+End;
+
+{ Ajoute un namespace }
+Function AddNamespace(Const Name, FullName, FileName, Lang: String;
+                      Line: Integer; ParentId: Integer;
+                      IsAnon, IsInln: Boolean): Integer;
+Begin
+  If NamespaceCount >= MAX_NAMESPACES Then
+  Begin
+    WarnMsg('Nombre maximum de namespaces atteint');
+    AddNamespace := -1;
+    Exit;
+  End;
+  
+  Inc(NamespaceCount);
+  Namespaces[NamespaceCount].Name := Name;
+  Namespaces[NamespaceCount].FullName := FullName;
+  Namespaces[NamespaceCount].ParentId := ParentId;
+  Namespaces[NamespaceCount].FileName := FileName;
+  Namespaces[NamespaceCount].Line := Line;
+  Namespaces[NamespaceCount].EndLine := 0;
+  Namespaces[NamespaceCount].IsAnonymous := IsAnon;
+  Namespaces[NamespaceCount].IsInline := IsInln;
+  Namespaces[NamespaceCount].Language := Lang;
+  
+  AddNamespace := NamespaceCount;
+End;
+
+{ Cherche un module par nom }
+Function FindModule(Const Name: String): Integer;
+Var
+  I: Integer;
+  UpperName: String;
+Begin
+  UpperName := UpStr(Name);
+  FindModule := -1;
+  For I := 1 To ModuleCount Do
+    If UpStr(Modules[I].Name) = UpperName Then
+    Begin
+      FindModule := I;
+      Exit;
+    End;
+End;
+
+{ Ajoute un module }
+Function AddModule(Const Name, FileName: String; Line: Integer;
+                   IsPart, IsIntf: Boolean): Integer;
+Begin
+  If ModuleCount >= MAX_MODULES Then
+  Begin
+    WarnMsg('Nombre maximum de modules atteint');
+    AddModule := -1;
+    Exit;
+  End;
+  
+  Inc(ModuleCount);
+  Modules[ModuleCount].Name := Name;
+  Modules[ModuleCount].FileName := FileName;
+  Modules[ModuleCount].ExportList := '';
+  Modules[ModuleCount].ImportList := '';
+  Modules[ModuleCount].IsPartition := IsPart;
+  Modules[ModuleCount].IsInterface := IsIntf;
+  Modules[ModuleCount].Line := Line;
+  
+  AddModule := ModuleCount;
+End;
+
+{ Ajoute un export a un module }
+Procedure AddModuleExport(ModuleId: Integer; Const ExportName: String);
+Begin
+  If (ModuleId < 1) Or (ModuleId > ModuleCount) Then Exit;
+  If Modules[ModuleId].ExportList = '' Then
+    Modules[ModuleId].ExportList := ExportName
+  Else
+    Modules[ModuleId].ExportList := Modules[ModuleId].ExportList + ';' + ExportName;
+End;
+
+{ Ajoute un import a un module }
+Procedure AddModuleImport(ModuleId: Integer; Const ImportName: String);
+Begin
+  If (ModuleId < 1) Or (ModuleId > ModuleCount) Then Exit;
+  If Modules[ModuleId].ImportList = '' Then
+    Modules[ModuleId].ImportList := ImportName
+  Else
+    Modules[ModuleId].ImportList := Modules[ModuleId].ImportList + ';' + ImportName;
+End;
+
+{ Empile un namespace courant }
+Procedure PushNamespace(NsId: Integer);
+Begin
+  If NamespaceStackDepth >= MAX_NS_DEPTH Then
+  Begin
+    WarnMsg('Profondeur maximale de namespaces atteinte');
+    Exit;
+  End;
+  Inc(NamespaceStackDepth);
+  NamespaceStack[NamespaceStackDepth] := NsId;
+End;
+
+{ Depile le namespace courant }
+Function PopNamespace: Integer;
+Begin
+  If NamespaceStackDepth <= 0 Then
+  Begin
+    PopNamespace := -1;
+    Exit;
+  End;
+  PopNamespace := NamespaceStack[NamespaceStackDepth];
+  NamespaceStack[NamespaceStackDepth] := -1;
+  Dec(NamespaceStackDepth);
+End;
+
+{ Retourne le namespace courant }
+Function GetCurrentNamespace: Integer;
+Begin
+  If NamespaceStackDepth > 0 Then
+    GetCurrentNamespace := NamespaceStack[NamespaceStackDepth]
+  Else
+    GetCurrentNamespace := -1;
+End;
+
+{ Construit le nom complet d'un namespace }
+Function BuildFullNamespaceName(Const Name: String; ParentId: Integer): String;
+Begin
+  If ParentId <= 0 Then
+    BuildFullNamespaceName := Name
+  Else If (ParentId <= NamespaceCount) And (Namespaces[ParentId].FullName <> '') Then
+    BuildFullNamespaceName := Namespaces[ParentId].FullName + '::' + Name
+  Else
+    BuildFullNamespaceName := Name;
+End;
+
+{ Extrait un nom de namespace d'une ligne C++ }
+Function ExtractCppNamespaceName(Const Line: String; Var IsAnon, IsInln: Boolean): String;
+Var
+  Pos1, Pos2: Integer;
+  TmpLine: String;
+Begin
+  ExtractCppNamespaceName := '';
+  IsAnon := False;
+  IsInln := False;
+  TmpLine := TrimStr(Line);
+  
+  { Detecter inline namespace }
+  If Copy(TmpLine, 1, 6) = 'inline' Then
+  Begin
+    IsInln := True;
+    TmpLine := TrimStr(Copy(TmpLine, 7, Length(TmpLine)));
+  End;
+  
+  { Verifier si c'est un namespace }
+  If Copy(TmpLine, 1, 9) <> 'namespace' Then Exit;
+  TmpLine := TrimStr(Copy(TmpLine, 10, Length(TmpLine)));
+  
+  { Namespace anonyme }
+  If (TmpLine = '') Or (TmpLine[1] = '{') Then
+  Begin
+    IsAnon := True;
+    ExtractCppNamespaceName := '<anonymous>';
+    Exit;
+  End;
+  
+  { Extraire le nom }
+  Pos1 := 1;
+  While (Pos1 <= Length(TmpLine)) And
+        (((TmpLine[Pos1] >= 'A') And (TmpLine[Pos1] <= 'Z')) Or
+         ((TmpLine[Pos1] >= 'a') And (TmpLine[Pos1] <= 'z')) Or
+         ((TmpLine[Pos1] >= '0') And (TmpLine[Pos1] <= '9')) Or
+         (TmpLine[Pos1] = '_') Or (TmpLine[Pos1] = ':')) Do
+    Inc(Pos1);
+  
+  ExtractCppNamespaceName := Copy(TmpLine, 1, Pos1 - 1);
+End;
+
+{ Extrait un nom de package Java }
+Function ExtractJavaPackageName(Const Line: String): String;
+Var
+  Pos1, Pos2: Integer;
+  TmpLine: String;
+Begin
+  ExtractJavaPackageName := '';
+  TmpLine := TrimStr(Line);
+  
+  If Copy(TmpLine, 1, 7) <> 'package' Then Exit;
+  TmpLine := TrimStr(Copy(TmpLine, 8, Length(TmpLine)));
+  
+  { Trouver la fin du nom (jusqu'au ; ou espace) }
+  Pos1 := 1;
+  While (Pos1 <= Length(TmpLine)) And
+        (TmpLine[Pos1] <> ';') And (TmpLine[Pos1] <> ' ') Do
+    Inc(Pos1);
+  
+  ExtractJavaPackageName := Copy(TmpLine, 1, Pos1 - 1);
+End;
+
+{ Extrait un nom de namespace C# }
+Function ExtractCSharpNamespaceName(Const Line: String): String;
+Var
+  Pos1: Integer;
+  TmpLine: String;
+Begin
+  ExtractCSharpNamespaceName := '';
+  TmpLine := TrimStr(Line);
+  
+  If Copy(TmpLine, 1, 9) <> 'namespace' Then Exit;
+  TmpLine := TrimStr(Copy(TmpLine, 10, Length(TmpLine)));
+  
+  { Trouver la fin du nom }
+  Pos1 := 1;
+  While (Pos1 <= Length(TmpLine)) And
+        (TmpLine[Pos1] <> '{') And (TmpLine[Pos1] <> ';') And 
+        (TmpLine[Pos1] <> ' ') Do
+    Inc(Pos1);
+  
+  ExtractCSharpNamespaceName := TrimStr(Copy(TmpLine, 1, Pos1 - 1));
+End;
+
+{ Extrait un nom de package Ada }
+Function ExtractAdaPackageName(Const Line: String): String;
+Var
+  Pos1, Pos2: Integer;
+  TmpLine, UpperLine: String;
+Begin
+  ExtractAdaPackageName := '';
+  TmpLine := TrimStr(Line);
+  UpperLine := UpStr(TmpLine);
+  
+  { package [body] Name is }
+  If Copy(UpperLine, 1, 7) <> 'PACKAGE' Then Exit;
+  TmpLine := TrimStr(Copy(TmpLine, 8, Length(TmpLine)));
+  UpperLine := UpStr(TmpLine);
+  
+  { Ignorer 'body' si present }
+  If Copy(UpperLine, 1, 4) = 'BODY' Then
+    TmpLine := TrimStr(Copy(TmpLine, 5, Length(TmpLine)));
+  
+  { Extraire le nom }
+  Pos1 := 1;
+  While (Pos1 <= Length(TmpLine)) And
+        (TmpLine[Pos1] <> ' ') And (TmpLine[Pos1] <> ';') Do
+    Inc(Pos1);
+  
+  ExtractAdaPackageName := Copy(TmpLine, 1, Pos1 - 1);
+End;
+
+{ Extrait un nom de module C++20 }
+Function ExtractCpp20ModuleName(Const Line: String; Var IsExport: Boolean): String;
+Var
+  Pos1: Integer;
+  TmpLine: String;
+Begin
+  ExtractCpp20ModuleName := '';
+  IsExport := False;
+  TmpLine := TrimStr(Line);
+  
+  { Verifier export module }
+  If Copy(TmpLine, 1, 6) = 'export' Then
+  Begin
+    IsExport := True;
+    TmpLine := TrimStr(Copy(TmpLine, 7, Length(TmpLine)));
+  End;
+  
+  If Copy(TmpLine, 1, 6) <> 'module' Then Exit;
+  TmpLine := TrimStr(Copy(TmpLine, 7, Length(TmpLine)));
+  
+  { Extraire le nom jusqu'au ; }
+  Pos1 := 1;
+  While (Pos1 <= Length(TmpLine)) And
+        (TmpLine[Pos1] <> ';') And (TmpLine[Pos1] <> ' ') Do
+    Inc(Pos1);
+  
+  ExtractCpp20ModuleName := Copy(TmpLine, 1, Pos1 - 1);
+End;
+
+{ Extrait un import C++20 }
+Function ExtractCpp20Import(Const Line: String): String;
+Var
+  Pos1: Integer;
+  TmpLine: String;
+Begin
+  ExtractCpp20Import := '';
+  TmpLine := TrimStr(Line);
+  
+  If Copy(TmpLine, 1, 6) <> 'import' Then Exit;
+  TmpLine := TrimStr(Copy(TmpLine, 7, Length(TmpLine)));
+  
+  { Extraire le nom }
+  Pos1 := 1;
+  While (Pos1 <= Length(TmpLine)) And
+        (TmpLine[Pos1] <> ';') And (TmpLine[Pos1] <> ' ') Do
+    Inc(Pos1);
+  
+  ExtractCpp20Import := Copy(TmpLine, 1, Pos1 - 1);
+End;
+
+{ Extrait les namespaces d'un fichier }
+Procedure ExtractNamespaces(Const FileName: String; Lang: TSourceLanguage);
+Var
+  F: Text;
+  Line, NsName, PkgName, ModName: String;
+  LineNo, ParentId, NsId, ModId: Integer;
+  IsAnon, IsInln, IsExport: Boolean;
+  UpperLang: String;
+Begin
+  If Not NamespacesInitialized Then InitNamespaces;
+  
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNo := 0;
+  UpperLang := UpStr(LanguageToStr(Lang));
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNo);
+    Line := TrimStr(Line);
+    If Line = '' Then Continue;
+    
+    { C++ namespace }
+    If (Lang = LANG_CPP) Or (Lang = LANG_C) Then
+    Begin
+      If (Pos('namespace', Line) > 0) Then
+      Begin
+        NsName := ExtractCppNamespaceName(Line, IsAnon, IsInln);
+        If NsName <> '' Then
+        Begin
+          ParentId := GetCurrentNamespace;
+          NsId := AddNamespace(NsName, 
+                               BuildFullNamespaceName(NsName, ParentId),
+                               FileName, 'C++', LineNo, ParentId,
+                               IsAnon, IsInln);
+          If (NsId > 0) And (Pos('{', Line) > 0) Then
+            PushNamespace(NsId);
+        End;
+      End
+      Else If (Pos('module', Line) > 0) And (Pos(';', Line) > 0) Then
+      Begin
+        ModName := ExtractCpp20ModuleName(Line, IsExport);
+        If ModName <> '' Then
+        Begin
+          ModId := FindModule(ModName);
+          If ModId < 0 Then
+            ModId := AddModule(ModName, FileName, LineNo, False, IsExport);
+        End;
+      End
+      Else If (Pos('import', Line) > 0) And (Pos(';', Line) > 0) Then
+      Begin
+        ModName := ExtractCpp20Import(Line);
+        If ModName <> '' Then
+        Begin
+          { Ajouter l'import au module courant si existant }
+          If ModuleCount > 0 Then
+            AddModuleImport(ModuleCount, ModName);
+        End;
+      End;
+      
+      { Detecter la fin d'un namespace }
+      If (Pos('}', Line) > 0) And (NamespaceStackDepth > 0) Then
+      Begin
+        NsId := PopNamespace;
+        If (NsId > 0) And (NsId <= NamespaceCount) Then
+          Namespaces[NsId].EndLine := LineNo;
+      End;
+    End
+    
+    { Java package }
+    Else If Lang = LANG_JAVA Then
+    Begin
+      If Pos('package', Line) = 1 Then
+      Begin
+        PkgName := ExtractJavaPackageName(Line);
+        If PkgName <> '' Then
+          AddNamespace(PkgName, PkgName, FileName, 'Java', LineNo, -1,
+                       False, False);
+      End;
+    End
+    
+    { C# namespace }
+    Else If Lang = LANG_CSHARP Then
+    Begin
+      If Pos('namespace', Line) > 0 Then
+      Begin
+        NsName := ExtractCSharpNamespaceName(Line);
+        If NsName <> '' Then
+        Begin
+          ParentId := GetCurrentNamespace;
+          NsId := AddNamespace(NsName,
+                               BuildFullNamespaceName(NsName, ParentId),
+                               FileName, 'C#', LineNo, ParentId,
+                               False, False);
+          If (NsId > 0) And (Pos('{', Line) > 0) Then
+            PushNamespace(NsId);
+        End;
+      End
+      Else If (Pos('}', Line) > 0) And (NamespaceStackDepth > 0) Then
+      Begin
+        NsId := PopNamespace;
+        If (NsId > 0) And (NsId <= NamespaceCount) Then
+          Namespaces[NsId].EndLine := LineNo;
+      End;
+    End
+    
+    { Ada package }
+    Else If Lang = LANG_ADA Then
+    Begin
+      If (UpStr(Copy(Line, 1, 7)) = 'PACKAGE') Then
+      Begin
+        PkgName := ExtractAdaPackageName(Line);
+        If PkgName <> '' Then
+          AddNamespace(PkgName, PkgName, FileName, 'Ada', LineNo, -1,
+                       False, False);
+      End;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+{ Construit la hierarchie des namespaces }
+Procedure BuildNamespaceHierarchy;
+Var
+  I, J: Integer;
+  ParentName: String;
+  DotPos: Integer;
+Begin
+  For I := 1 To NamespaceCount Do
+  Begin
+    If Namespaces[I].ParentId < 0 Then
+    Begin
+      { Chercher le parent par le nom complet }
+      ParentName := Namespaces[I].FullName;
+      
+      { Trouver le dernier separateur }
+      DotPos := 0;
+      For J := Length(ParentName) DownTo 1 Do
+      Begin
+        If (ParentName[J] = ':') Or (ParentName[J] = '.') Then
+        Begin
+          DotPos := J;
+          Break;
+        End;
+      End;
+      
+      If DotPos > 1 Then
+      Begin
+        { Enlever :: ou . du debut }
+        If (DotPos > 1) And (ParentName[DotPos-1] = ':') Then
+          Dec(DotPos);
+        ParentName := Copy(ParentName, 1, DotPos - 1);
+        
+        { Chercher le parent }
+        For J := 1 To NamespaceCount Do
+        Begin
+          If (J <> I) And (Namespaces[J].FullName = ParentName) Then
+          Begin
+            Namespaces[I].ParentId := J;
+            Break;
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ Retourne les entites declarees dans un namespace }
+Function GetNamespaceEntities(NamespaceId: Integer): String;
+Var
+  I: Integer;
+  Result: String;
+  NsFullName: String;
+Begin
+  GetNamespaceEntities := '';
+  If (NamespaceId < 1) Or (NamespaceId > NamespaceCount) Then Exit;
+  
+  Result := '';
+  NsFullName := Namespaces[NamespaceId].FullName;
+  
+  { Parcourir les entites pour trouver celles du namespace }
+  For I := 1 To EntityCount Do
+  Begin
+    { Verifier si l'entite est dans le meme fichier et dans les lignes du namespace }
+    If (Entities[I].FileName = Namespaces[NamespaceId].FileName) And
+       (Entities[I].Line >= Namespaces[NamespaceId].Line) And
+       ((Namespaces[NamespaceId].EndLine = 0) Or
+        (Entities[I].Line <= Namespaces[NamespaceId].EndLine)) Then
+    Begin
+      If Result <> '' Then
+        Result := Result + ';';
+      Result := Result + Entities[I].Name;
+    End;
+  End;
+  
+  GetNamespaceEntities := Result;
+End;
+
+{ Retourne le nombre de namespaces }
+Function GetNamespaceCount: Integer;
+Begin
+  GetNamespaceCount := NamespaceCount;
+End;
+
+{ Retourne le nombre de modules }
+Function GetModuleCount: Integer;
+Begin
+  GetModuleCount := ModuleCount;
+End;
+
+{ Verifie si le systeme de namespaces est initialise }
+Function IsNamespacesInitialized: Boolean;
+Begin
+  IsNamespacesInitialized := NamespacesInitialized;
+End;
+
+{ Verifie si la liste de namespaces est vide }
+Function IsNamespacesEmpty: Boolean;
+Begin
+  IsNamespacesEmpty := (NamespaceCount = 0);
+End;
+
+{ Verifie si la liste de modules est vide }
+Function IsModulesEmpty: Boolean;
+Begin
+  IsModulesEmpty := (ModuleCount = 0);
+End;
+
+{ Retourne un namespace par index }
+Function GetNamespaceByIndex(Index: Integer): TNamespace;
+Var
+  Empty: TNamespace;
+Begin
+  If (Index >= 1) And (Index <= NamespaceCount) Then
+    GetNamespaceByIndex := Namespaces[Index]
+  Else
+  Begin
+    Empty.Name := '';
+    Empty.FullName := '';
+    Empty.ParentId := -1;
+    Empty.FileName := '';
+    Empty.Line := 0;
+    Empty.EndLine := 0;
+    Empty.IsAnonymous := False;
+    Empty.IsInline := False;
+    Empty.Language := '';
+    GetNamespaceByIndex := Empty;
+  End;
+End;
+
+{ Retourne un module par index }
+Function GetModuleByIndex(Index: Integer): TModule;
+Var
+  Empty: TModule;
+Begin
+  If (Index >= 1) And (Index <= ModuleCount) Then
+    GetModuleByIndex := Modules[Index]
+  Else
+  Begin
+    Empty.Name := '';
+    Empty.FileName := '';
+    Empty.ExportList := '';
+    Empty.ImportList := '';
+    Empty.IsPartition := False;
+    Empty.IsInterface := False;
+    Empty.Line := 0;
+    GetModuleByIndex := Empty;
+  End;
+End;
+
+{ Verifie si un index de namespace est valide }
+Function IsValidNamespaceIndex(Index: Integer): Boolean;
+Begin
+  IsValidNamespaceIndex := (Index >= 1) And (Index <= NamespaceCount);
+End;
+
+{ Verifie si un index de module est valide }
+Function IsValidModuleIndex(Index: Integer): Boolean;
+Begin
+  IsValidModuleIndex := (Index >= 1) And (Index <= ModuleCount);
+End;
+
+{ Retourne le nom d'un namespace }
+Function GetNamespaceName(Index: Integer): String;
+Begin
+  If (Index >= 1) And (Index <= NamespaceCount) Then
+    GetNamespaceName := Namespaces[Index].Name
+  Else
+    GetNamespaceName := '';
+End;
+
+{ Retourne le nom complet d'un namespace }
+Function GetNamespaceFullName(Index: Integer): String;
+Begin
+  If (Index >= 1) And (Index <= NamespaceCount) Then
+    GetNamespaceFullName := Namespaces[Index].FullName
+  Else
+    GetNamespaceFullName := '';
+End;
+
+{ Retourne le fichier d'un namespace }
+Function GetNamespaceFileName(Index: Integer): String;
+Begin
+  If (Index >= 1) And (Index <= NamespaceCount) Then
+    GetNamespaceFileName := Namespaces[Index].FileName
+  Else
+    GetNamespaceFileName := '';
+End;
+
+{ Retourne la ligne d'un namespace }
+Function GetNamespaceLine(Index: Integer): Integer;
+Begin
+  If (Index >= 1) And (Index <= NamespaceCount) Then
+    GetNamespaceLine := Namespaces[Index].Line
+  Else
+    GetNamespaceLine := 0;
+End;
+
+{ Retourne le parent d'un namespace }
+Function GetNamespaceParent(Index: Integer): Integer;
+Begin
+  If (Index >= 1) And (Index <= NamespaceCount) Then
+    GetNamespaceParent := Namespaces[Index].ParentId
+  Else
+    GetNamespaceParent := -1;
+End;
+
+{ Verifie si un namespace est anonyme }
+Function IsNamespaceAnonymous(Index: Integer): Boolean;
+Begin
+  If (Index >= 1) And (Index <= NamespaceCount) Then
+    IsNamespaceAnonymous := Namespaces[Index].IsAnonymous
+  Else
+    IsNamespaceAnonymous := False;
+End;
+
+{ Verifie si un namespace est inline }
+Function IsNamespaceInline(Index: Integer): Boolean;
+Begin
+  If (Index >= 1) And (Index <= NamespaceCount) Then
+    IsNamespaceInline := Namespaces[Index].IsInline
+  Else
+    IsNamespaceInline := False;
+End;
+
+{ Retourne le nom d'un module }
+Function GetModuleName(Index: Integer): String;
+Begin
+  If (Index >= 1) And (Index <= ModuleCount) Then
+    GetModuleName := Modules[Index].Name
+  Else
+    GetModuleName := '';
+End;
+
+{ Retourne le fichier d'un module }
+Function GetModuleFileName(Index: Integer): String;
+Begin
+  If (Index >= 1) And (Index <= ModuleCount) Then
+    GetModuleFileName := Modules[Index].FileName
+  Else
+    GetModuleFileName := '';
+End;
+
+{ Retourne les exports d'un module }
+Function GetModuleExports(Index: Integer): String;
+Begin
+  If (Index >= 1) And (Index <= ModuleCount) Then
+    GetModuleExports := Modules[Index].ExportList
+  Else
+    GetModuleExports := '';
+End;
+
+{ Retourne les imports d'un module }
+Function GetModuleImports(Index: Integer): String;
+Begin
+  If (Index >= 1) And (Index <= ModuleCount) Then
+    GetModuleImports := Modules[Index].ImportList
+  Else
+    GetModuleImports := '';
+End;
+
+{ Verifie si un module est une partition }
+Function IsModulePartition(Index: Integer): Boolean;
+Begin
+  If (Index >= 1) And (Index <= ModuleCount) Then
+    IsModulePartition := Modules[Index].IsPartition
+  Else
+    IsModulePartition := False;
+End;
+
+{ Verifie si un module est une interface }
+Function IsModuleInterface(Index: Integer): Boolean;
+Begin
+  If (Index >= 1) And (Index <= ModuleCount) Then
+    IsModuleInterface := Modules[Index].IsInterface
+  Else
+    IsModuleInterface := False;
+End;
+
+{ Compte les namespaces enfants d'un namespace }
+Function CountChildNamespaces(ParentId: Integer): Integer;
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To NamespaceCount Do
+    If Namespaces[I].ParentId = ParentId Then
+      Inc(Count);
+  CountChildNamespaces := Count;
+End;
+
+{ Compte les namespaces racines (sans parent) }
+Function CountRootNamespaces: Integer;
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To NamespaceCount Do
+    If Namespaces[I].ParentId <= 0 Then
+      Inc(Count);
+  CountRootNamespaces := Count;
+End;
+
+{ Compte les namespaces par langage }
+Function CountNamespacesByLanguage(Const Lang: String): Integer;
+Var
+  I, Count: Integer;
+  UpperLang: String;
+Begin
+  Count := 0;
+  UpperLang := UpStr(Lang);
+  For I := 1 To NamespaceCount Do
+    If UpStr(Namespaces[I].Language) = UpperLang Then
+      Inc(Count);
+  CountNamespacesByLanguage := Count;
+End;
+
+{ Affiche les namespaces pour debogage }
+Procedure ShowNamespaces;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Namespaces (', NamespaceCount, ') ===');
+  For I := 1 To NamespaceCount Do
+  Begin
+    Write('  [', I, '] ');
+    If Namespaces[I].IsAnonymous Then
+      Write('<anonymous>')
+    Else
+      Write(Namespaces[I].FullName);
+    Write(' (', Namespaces[I].Language, ')');
+    If Namespaces[I].IsInline Then
+      Write(' [inline]');
+    WriteLn(' @ ', Namespaces[I].FileName, ':', Namespaces[I].Line);
+    If Namespaces[I].ParentId > 0 Then
+      WriteLn('      Parent: ', Namespaces[Namespaces[I].ParentId].FullName);
+  End;
+End;
+
+{ Affiche les modules pour debogage }
+Procedure ShowModules;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Modules (', ModuleCount, ') ===');
+  For I := 1 To ModuleCount Do
+  Begin
+    Write('  [', I, '] ', Modules[I].Name);
+    If Modules[I].IsInterface Then
+      Write(' [interface]');
+    If Modules[I].IsPartition Then
+      Write(' [partition]');
+    WriteLn(' @ ', Modules[I].FileName, ':', Modules[I].Line);
+    If Modules[I].ExportList <> '' Then
+      WriteLn('      Exports: ', Modules[I].ExportList);
+    If Modules[I].ImportList <> '' Then
+      WriteLn('      Imports: ', Modules[I].ImportList);
   End;
 End;
 
