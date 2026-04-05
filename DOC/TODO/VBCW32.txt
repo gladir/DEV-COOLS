@@ -135,7 +135,7 @@
               STORE_STATIC (segment .DATA), STORE_PARAM (EBP+n),
               STORE_GLOBAL (.DATA), STORE_CONSTANT (immediate)
 
-  TODO 05 - GESTION DES PORTEES (MODULE, SUB, FUNCTION, CLASS) [A FAIRE]
+  TODO 05 - GESTION DES PORTEES (MODULE, SUB, FUNCTION, CLASS) [IMPLEMENTE]
             Pile de portees : chaque portee maintient ses propres
               variables locales, un offset EBP courant, un label sortie
             Procedure EnterScope(kind: Integer; proc_idx: Integer)

@@ -143,15 +143,16 @@
               STORE_STATIC (segment .DATA), STORE_PARAM (EBP+n),
               STORE_GLOBAL (.DATA), STORE_CONSTANT (immediate)
 
-  TODO 05 - GESTION DES PORTEES (MODULE, SUB, FUNCTION, CLASS) [A FAIRE]
+  TODO 05 - GESTION DES PORTEES (MODULE, SUB, FUNCTION, CLASS) [IMPLEMENTE]
             Pile de portees : chaque portee maintient ses propres
               variables locales, un offset EBP courant, un label sortie
             Procedure EnterScope(kind: Integer; proc_idx: Integer)
             Procedure LeaveScope
             Function AllocLocalEbp(bytes: Integer): Integer
             Function CurrentEbpTop: Integer
-            Portees supportees : SK_GLOBAL, SK_MODULE, SK_SUB,
-              SK_FUNCTION, SK_PROPERTY, SK_CLASS, SK_WITH, SK_BLOCK
+            Portees supportees : SCOPE_GLOBAL, SCOPE_MODULE, SCOPE_SUB,
+              SCOPE_FUNCTION, SCOPE_PROPERTY, SCOPE_CLASS,
+              SCOPE_WITH, SCOPE_BLOCK
             Compteur d offset EBP pour allocation variables locales
             Offset EBP negatif pour locales [EBP-n]
             Offset EBP positif pour parametres [EBP+8], [EBP+12]...
@@ -3097,6 +3098,350 @@ Begin
   IsProcTableEmpty := (ProcCount = 0);
 End;
 
+{ ============================================================ }
+{ TODO 05 - GESTION DES PORTEES                 [IMPLEMENTE] }
+{           (MODULE, SUB, FUNCTION, CLASS)                    }
+{ ============================================================ }
+
+Const
+  { Genres de portees }
+  SCOPE_GLOBAL   = 0;   { portee globale (module-level)            }
+  SCOPE_MODULE   = 1;   { portee d un module VB6                   }
+  SCOPE_SUB      = 2;   { portee d une procedure Sub               }
+  SCOPE_FUNCTION = 3;   { portee d une fonction Function            }
+  SCOPE_PROPERTY = 4;   { portee d une propriete Property          }
+  SCOPE_CLASS    = 5;   { portee d une classe                      }
+  SCOPE_WITH     = 6;   { portee With ... End With                 }
+  SCOPE_BLOCK    = 7;   { portee de bloc (For, If, Do, Select)     }
+
+  { Base d offset EBP pour parametres STDCALL Win32 }
+  { [EBP+0] = ancien EBP, [EBP+4] = adresse retour }
+  { [EBP+8] = premier parametre                      }
+  SCOPE_EBP_PARAM_BASE = 8;
+
+Type
+  { Entree dans la pile de portees }
+  TScopeEntry = Record
+    Kind       : Integer;     { SCOPE_GLOBAL, SCOPE_SUB, etc.      }
+    ProcIdx    : Integer;     { index dans ProcTab (-1 si global)  }
+    SymStart   : Integer;     { index du premier symbole local      }
+    EbpTop     : Integer;     { prochain offset EBP negatif libre  }
+    ExitLabel  : String[64];  { label de sortie (pour Exit Sub/Fn) }
+    IsStatic   : Boolean;     { portee Static ? (locales en .DATA) }
+  End;
+
+Var
+  { Pile de portees }
+  ScopeStack : Array[0..MAX_DEPTH - 1] Of TScopeEntry;
+  ScopeDepth : Integer;
+
+  { Compteur de labels internes (pour generer des labels uniques) }
+  InternalLabelCount : LongInt;
+
+{ ------------------------------------------------------------ }
+{ ScopeKindName : nom textuel d un genre de portee             }
+{ ------------------------------------------------------------ }
+
+Function ScopeKindName(K : Integer) : TString;
+Begin
+  Case K Of
+    SCOPE_GLOBAL   : ScopeKindName := 'Global';
+    SCOPE_MODULE   : ScopeKindName := 'Module';
+    SCOPE_SUB      : ScopeKindName := 'Sub';
+    SCOPE_FUNCTION : ScopeKindName := 'Function';
+    SCOPE_PROPERTY : ScopeKindName := 'Property';
+    SCOPE_CLASS    : ScopeKindName := 'Class';
+    SCOPE_WITH     : ScopeKindName := 'With';
+    SCOPE_BLOCK    : ScopeKindName := 'Block';
+  Else
+    ScopeKindName := '?SCOPE' + ItoSI(K);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InitScopes : initialiser la pile de portees                  }
+{   Cree automatiquement la portee globale (SCOPE_GLOBAL)      }
+{ ------------------------------------------------------------ }
+
+Procedure InitScopes;
+Var I : Integer;
+Begin
+  ScopeDepth := 0;
+  InternalLabelCount := 0;
+  For I := 0 To MAX_DEPTH - 1 Do
+  Begin
+    ScopeStack[I].Kind      := SCOPE_GLOBAL;
+    ScopeStack[I].ProcIdx   := -1;
+    ScopeStack[I].SymStart  := 0;
+    ScopeStack[I].EbpTop    := 0;
+    ScopeStack[I].ExitLabel := '';
+    ScopeStack[I].IsStatic  := False;
+  End;
+  { Portee globale initiale }
+  ScopeStack[0].Kind     := SCOPE_GLOBAL;
+  ScopeStack[0].ProcIdx  := -1;
+  ScopeStack[0].SymStart := 0;
+  ScopeStack[0].EbpTop   := 0;
+  ScopeStack[0].IsStatic := False;
+  ScopeDepth := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ NextInternalLabel : generer un label interne unique           }
+{ ------------------------------------------------------------ }
+
+Function NextInternalLabel : TString;
+Begin
+  Inc(InternalLabelCount);
+  NextInternalLabel := PFX_LBL + ItoSI(InternalLabelCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EnterScope : empiler une nouvelle portee                     }
+{   kind     : SCOPE_SUB, SCOPE_FUNCTION, etc.                }
+{   proc_idx : index dans ProcTab (-1 pour Global/Module/etc.) }
+{ ------------------------------------------------------------ }
+
+Procedure EnterScope(Kind : Integer; ProcIdx : Integer);
+Begin
+  If ScopeDepth >= MAX_DEPTH Then
+  Begin
+    FatalError('Pile de portees pleine (max ' + ItoSI(MAX_DEPTH) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeDepth].Kind      := Kind;
+  ScopeStack[ScopeDepth].ProcIdx   := ProcIdx;
+  ScopeStack[ScopeDepth].SymStart  := SymCount;
+  ScopeStack[ScopeDepth].EbpTop    := 0;
+  ScopeStack[ScopeDepth].IsStatic  := False;
+  { Generer un label de sortie pour Sub/Function/Property }
+  If (Kind = SCOPE_SUB) Or (Kind = SCOPE_FUNCTION) Or
+     (Kind = SCOPE_PROPERTY) Then
+  Begin
+    If (ProcIdx >= 0) And (ProcIdx < ProcCount) Then
+      ScopeStack[ScopeDepth].ExitLabel := ProcTab[ProcIdx].ExitLabel
+    Else
+      ScopeStack[ScopeDepth].ExitLabel := NextInternalLabel + '_exit';
+  End
+  Else
+    ScopeStack[ScopeDepth].ExitLabel := '';
+  Inc(ScopeDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ LeaveScope : depiler la portee courante                      }
+{   Met a jour LocalSize dans ProcTab si applicable            }
+{ ------------------------------------------------------------ }
+
+Procedure LeaveScope;
+Var
+  Idx : Integer;
+Begin
+  If ScopeDepth <= 1 Then
+  Begin
+    WarnMsg('LeaveScope : tentative de depiler la portee globale');
+    Exit;
+  End;
+  Dec(ScopeDepth);
+  { Si la portee etait un Sub/Function/Property, enregistrer la }
+  { taille totale des variables locales dans ProcTab             }
+  Idx := ScopeStack[ScopeDepth].ProcIdx;
+  If (Idx >= 0) And (Idx < ProcCount) Then
+  Begin
+    If (ScopeStack[ScopeDepth].Kind = SCOPE_SUB) Or
+       (ScopeStack[ScopeDepth].Kind = SCOPE_FUNCTION) Or
+       (ScopeStack[ScopeDepth].Kind = SCOPE_PROPERTY) Then
+    Begin
+      ProcTab[Idx].LocalSize := ScopeStack[ScopeDepth].EbpTop;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AllocLocalEbp : allouer de l espace sur la pile EBP          }
+{   bytes : taille en octets a allouer                          }
+{   Retourne l offset EBP negatif attribue                      }
+{   Aligne sur 4 octets (32 bits) pour performance             }
+{ ------------------------------------------------------------ }
+
+Function AllocLocalEbp(Bytes : Integer) : Integer;
+Var
+  Aligned : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+  Begin
+    FatalError('AllocLocalEbp : pas de portee active');
+    AllocLocalEbp := 0;
+    Exit;
+  End;
+  { Aligner sur 4 octets (arrondi vers le haut) }
+  Aligned := ((Bytes + 3) Div 4) * 4;
+  { Incrementer l offset (negatif par rapport a EBP) }
+  ScopeStack[ScopeDepth - 1].EbpTop :=
+    ScopeStack[ScopeDepth - 1].EbpTop + Aligned;
+  { Retourner l offset negatif : [EBP - EbpTop] }
+  AllocLocalEbp := ScopeStack[ScopeDepth - 1].EbpTop;
+End;
+
+{ ------------------------------------------------------------ }
+{ CurrentEbpTop : retourner l offset EBP courant de la portee  }
+{   actuelle (taille des locales allouees jusqu ici)            }
+{ ------------------------------------------------------------ }
+
+Function CurrentEbpTop : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    CurrentEbpTop := 0
+  Else
+    CurrentEbpTop := ScopeStack[ScopeDepth - 1].EbpTop;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour la pile de portees                  }
+{ ------------------------------------------------------------ }
+
+Function GetScopeDepth : Integer;
+Begin
+  GetScopeDepth := ScopeDepth;
+End;
+
+Function GetCurrentScopeKind : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    GetCurrentScopeKind := SCOPE_GLOBAL
+  Else
+    GetCurrentScopeKind := ScopeStack[ScopeDepth - 1].Kind;
+End;
+
+Function GetCurrentScopeProcIdx : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    GetCurrentScopeProcIdx := -1
+  Else
+    GetCurrentScopeProcIdx := ScopeStack[ScopeDepth - 1].ProcIdx;
+End;
+
+Function GetCurrentScopeSymStart : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    GetCurrentScopeSymStart := 0
+  Else
+    GetCurrentScopeSymStart := ScopeStack[ScopeDepth - 1].SymStart;
+End;
+
+Function GetCurrentScopeExitLabel : TString;
+Begin
+  If ScopeDepth <= 0 Then
+    GetCurrentScopeExitLabel := ''
+  Else
+    GetCurrentScopeExitLabel := ScopeStack[ScopeDepth - 1].ExitLabel;
+End;
+
+Function IsCurrentScopeStatic : Boolean;
+Begin
+  If ScopeDepth <= 0 Then
+    IsCurrentScopeStatic := False
+  Else
+    IsCurrentScopeStatic := ScopeStack[ScopeDepth - 1].IsStatic;
+End;
+
+Function IsInGlobalScope : Boolean;
+Begin
+  IsInGlobalScope := (ScopeDepth <= 1);
+End;
+
+Function IsInProcScope : Boolean;
+Var K : Integer;
+Begin
+  K := GetCurrentScopeKind;
+  IsInProcScope := (K = SCOPE_SUB) Or (K = SCOPE_FUNCTION) Or
+                   (K = SCOPE_PROPERTY);
+End;
+
+Function IsInClassScope : Boolean;
+Var I : Integer;
+Begin
+  IsInClassScope := False;
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If ScopeStack[I].Kind = SCOPE_CLASS Then
+    Begin
+      IsInClassScope := True;
+      Exit;
+    End;
+  End;
+End;
+
+Function FindEnclosingProcIdx : Integer;
+Var I : Integer;
+Begin
+  FindEnclosingProcIdx := -1;
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If (ScopeStack[I].Kind = SCOPE_SUB) Or
+       (ScopeStack[I].Kind = SCOPE_FUNCTION) Or
+       (ScopeStack[I].Kind = SCOPE_PROPERTY) Then
+    Begin
+      FindEnclosingProcIdx := ScopeStack[I].ProcIdx;
+      Exit;
+    End;
+  End;
+End;
+
+Function FindEnclosingExitLabel : TString;
+Var I : Integer;
+Begin
+  FindEnclosingExitLabel := '';
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If ScopeStack[I].ExitLabel <> '' Then
+    Begin
+      FindEnclosingExitLabel := ScopeStack[I].ExitLabel;
+      Exit;
+    End;
+  End;
+End;
+
+Function GetScopeKindAt(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < ScopeDepth) Then
+    GetScopeKindAt := ScopeStack[Idx].Kind
+  Else
+    GetScopeKindAt := -1;
+End;
+
+Function GetScopeProcIdxAt(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < ScopeDepth) Then
+    GetScopeProcIdxAt := ScopeStack[Idx].ProcIdx
+  Else
+    GetScopeProcIdxAt := -1;
+End;
+
+Function GetScopeEbpTopAt(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < ScopeDepth) Then
+    GetScopeEbpTopAt := ScopeStack[Idx].EbpTop
+  Else
+    GetScopeEbpTopAt := 0;
+End;
+
+Function IsScopeStackEmpty : Boolean;
+Begin
+  IsScopeStackEmpty := (ScopeDepth <= 1);
+End;
+
+Function GetInternalLabelCount : LongInt;
+Begin
+  GetInternalLabelCount := InternalLabelCount;
+End;
+
+Procedure SetCurrentScopeStatic(V : Boolean);
+Begin
+  If ScopeDepth > 0 Then
+    ScopeStack[ScopeDepth - 1].IsStatic := V;
+End;
+
 { ------------------------------------------------------------ }
 { Run (stub pour les futures TODOs)                            }
 { ------------------------------------------------------------ }
@@ -3105,10 +3450,11 @@ Procedure Run;
 Begin
   ShowBanner;
   InitSymTable;
+  InitScopes;
   LexInit;
-  { Les TODOs 05-25 ajouteront ici : }
+  { Les TODOs 06-25 ajouteront ici : }
   {   ParseModule, Emit, WritePE/WriteCOFF/WriteASM }
-  WriteLn('VBCW32: compilation non encore implementee (TODOs 05-25)');
+  WriteLn('VBCW32: compilation non encore implementee (TODOs 06-25)');
   LexClose;
   ShowStats;
 End;
