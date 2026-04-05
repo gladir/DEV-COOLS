@@ -2518,6 +2518,8 @@ Var
  MRUList        : TMRUList;
  { Page de demarrage }
  StartPage      : TStartPage;
+ { Dialogue nouveau projet / nouvelle solution }
+ NewProjDlg     : TNewProjectDialog;
  { Indicateur de sortie }
  QuitRequested  : Boolean;
  { Drapeau nettoyage ecran transition page de demarrage -> IDE }
@@ -4097,6 +4099,15 @@ Procedure DrawAllWidgets; Forward;
 { Declaration anticipee : HandleStartDebugging est defini plus loin }
 Procedure HandleStartDebugging; Forward;
 
+{ Declarations anticipees pour dialogues }
+Procedure InitNewProjectDialog(Var Dlg: TNewProjectDialog);
+ Forward;
+Procedure ShowNewProjectDialog(Var Dlg: TNewProjectDialog); Forward;
+Procedure HandleNewProjectDialogEvent(Var Dlg: TNewProjectDialog;
+ Var Ev: TEvent); Forward;
+Procedure DrawNewProjectDialog(Var Dlg: TNewProjectDialog); Forward;
+Procedure HandleNewSolutionConfirmed; Forward;
+
 { --- Calcul du rectangle occupe par un menu deroulant --- }
 
 Procedure GetMenuRect(Idx: Integer; Var X1,Y1,X2,Y2: Integer);
@@ -4271,6 +4282,15 @@ Procedure ExecuteMenuItem(Var Item: TMenuItem);
 Begin
  CloseMenu;
  Case Item.Tag Of
+  100: Begin { Nouveau projet }
+        ShowNewProjectDialog(NewProjDlg);
+       End;
+  102: Begin { Nouvelle solution }
+        InitNewProjectDialog(NewProjDlg);
+        NewProjDlg.Base.Title := 'Nouvelle solution';
+        NewProjDlg.Base.Visible := True;
+        DrawNewProjectDialog(NewProjDlg);
+       End;
   199: Begin { Quitter }
         ShutdownGraphics;
         Halt(EXIT_OK);
@@ -15374,13 +15394,15 @@ Begin
     Exit;
    End;
    BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY);
-   If BtnR <> DR_NONE Then
+   If BtnR >= 0 Then
    Begin
-    If BtnR = DR_OK Then
-     Dlg.Confirmed := True
-    Else
+    If BtnR = 0 Then Begin
+     Dlg.Confirmed := True;
+     Dlg.Base.Result := DR_OK;
+    End Else Begin
      Dlg.Confirmed := False;
-    Dlg.Base.Result := BtnR;
+     Dlg.Base.Result := DR_CANCEL;
+    End;
     CloseDialog(Dlg.Base);
    End;
   End;
@@ -15548,13 +15570,15 @@ Begin
     Exit;
    End;
    BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY);
-   If BtnR <> DR_NONE Then
+   If BtnR >= 0 Then
    Begin
-    If BtnR = DR_OK Then
-     Dlg.Confirmed := True
-    Else
+    If BtnR = 0 Then Begin
+     Dlg.Confirmed := True;
+     Dlg.Base.Result := DR_OK;
+    End Else Begin
      Dlg.Confirmed := False;
-    Dlg.Base.Result := BtnR;
+     Dlg.Base.Result := DR_CANCEL;
+    End;
     CloseDialog(Dlg.Base);
    End;
   End;
@@ -15858,13 +15882,15 @@ Begin
     Exit;
    End;
    BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY);
-   If BtnR <> DR_NONE Then
+   If BtnR >= 0 Then
    Begin
-    If BtnR = DR_OK Then
-     Dlg.Confirmed := True
-    Else
+    If BtnR = 0 Then Begin
+     Dlg.Confirmed := True;
+     Dlg.Base.Result := DR_OK;
+    End Else Begin
      Dlg.Confirmed := False;
-    Dlg.Base.Result := BtnR;
+     Dlg.Base.Result := DR_CANCEL;
+    End;
     CloseDialog(Dlg.Base);
    End;
   End;
@@ -16430,13 +16456,15 @@ Begin
     Exit;
    End;
    BtnR := DialogButtonHitTest(Dlg.Base, Ev.MouseX, Ev.MouseY);
-   If BtnR <> DR_NONE Then
+   If BtnR >= 0 Then
    Begin
-    If BtnR = DR_OK Then
-     Dlg.Confirmed := True
-    Else
+    If BtnR = 0 Then Begin
+     Dlg.Confirmed := True;
+     Dlg.Base.Result := DR_OK;
+    End Else Begin
      Dlg.Confirmed := False;
-    Dlg.Base.Result := BtnR;
+     Dlg.Base.Result := DR_CANCEL;
+    End;
     CloseDialog(Dlg.Base);
    End;
   End;
@@ -22002,6 +22030,50 @@ Begin
  End;
 End;
 
+{ --- Traitement de la confirmation du dialogue nouvelle solution --- }
+
+Procedure HandleNewSolutionConfirmed;
+Var
+ SolName: String;
+ ProjName: String;
+ SolIdx, ProjIdx: Integer;
+Begin
+ SolName := NewProjDlg.SolutionName;
+ ProjName := NewProjDlg.ProjectName;
+ If SolName = '' Then SolName := 'MaSolution';
+ If ProjName = '' Then ProjName := 'MonProjet';
+ { Peupler l explorateur avec la nouvelle solution }
+ ClearExplorer(SolExplorer);
+ SolIdx := AddExplorerNode(SolExplorer, SolName,
+  ENK_SOLUTION, -1);
+ If SolIdx >= 0 Then Begin
+  SolExplorer.Nodes[SolIdx].Expanded := True;
+  ProjIdx := AddExplorerNode(SolExplorer, ProjName,
+   ENK_PROJECT, SolIdx);
+  If ProjIdx >= 0 Then Begin
+   SolExplorer.Nodes[ProjIdx].Expanded := True;
+   AddExplorerNode(SolExplorer, 'Properties',
+    ENK_PROPERTIES, ProjIdx);
+   AddExplorerNode(SolExplorer, 'References',
+    ENK_REFERENCES, ProjIdx);
+  End;
+ End;
+ If SolExplorer.NodeCount > 0 Then Begin
+  SolExplorer.SelectedIdx := 0;
+  SolExplorer.Nodes[0].Selected := True;
+ End;
+ SolExplorer.NeedRepaint := True;
+ { Masquer la page de demarrage si visible }
+ StartPage.Visible := False;
+ FullRepaintNeeded := True;
+ { Afficher un message dans le panneau de sortie }
+ ClearOutput(OutputPanel, Ord(OTK_BUILD));
+ AppendOutput(OutputPanel,
+  'Solution ''' + SolName + ''' creee avec le projet ''' +
+  ProjName + '''.',
+  Ord(OTK_BUILD));
+End;
+
 { --- Dessiner tous les widgets de l IDE --- }
 
 Procedure DrawAllWidgets;
@@ -22028,6 +22100,9 @@ Begin
  DrawOutputPanel(OutputPanel);
  DrawErrorList(ErrorList);
  DrawStatusBar(StatusBar);
+ { Dessiner le dialogue par-dessus si visible }
+ If NewProjDlg.Base.Visible Then
+  DrawNewProjectDialog(NewProjDlg);
 End;
 
 { --- Traiter un evenement global --- }
@@ -22065,6 +22140,16 @@ Begin
  If FindReplaceDlg.Base.Visible Then Begin
   HandleFindDialogEvent(FindReplaceDlg,
    Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
+  Exit;
+ End;
+ If NewProjDlg.Base.Visible Then Begin
+  HandleNewProjectDialogEvent(NewProjDlg, Ev);
+  If Not NewProjDlg.Base.Visible Then Begin
+   If NewProjDlg.Confirmed Then
+    HandleNewSolutionConfirmed;
+   FullRepaintNeeded := True;
+  End;
+  DrawNewProjectDialog(NewProjDlg);
   Exit;
  End;
  If GoToLineDlg.Base.Visible Then Begin
@@ -22359,6 +22444,8 @@ BEGIN
  DrawErrorList(ErrorList);
  InitFindReplaceDialog(FindReplaceDlg);
  InitGoToLineDialog(GoToLineDlg);
+ InitNewProjectDialog(NewProjDlg);
+ NewProjDlg.Base.Visible := False;
  InitCSCContext(CSCContext);
  InitVBCContext(VBCContext);
  InitTPCContext(TPCContext);
