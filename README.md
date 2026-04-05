@@ -277,6 +277,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur C# (C Sharp) pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>CSMITH.PAS</b></td>
+			<td>Cette commande permet de lancer un générateur de code C aleatoire.</td>
+		</tr>
+		<tr>
 			<td><b>CSCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur C# (C Sharp) pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
@@ -335,6 +339,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>DISOBJ.PAS</b></td>
 			<td>Cette commande permet d'analyser et de désassembler un fichier d'extension «.OBJ».</td>
+		</tr>
+		<tr>
+			<td><b>DISPRG.PAS</b></td>
+			<td>Cette commande permet de lancer le désassembler de fichiers .PRG du Atari ST.</td>
 		</tr>
 		<tr>
 			<td><b>DISRES.PAS</b></td>

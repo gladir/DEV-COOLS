@@ -1,13 +1,6 @@
-# Object files and compiled outputs
+# Fichiers objet et sortie compilers
 *.S68
 *.class
 *.o
 *.obj
 *.ppu
-*.prg
-
-# Compiled executables
-SQLCMD
-/RC
-/DISPRG
-/DEVENV
