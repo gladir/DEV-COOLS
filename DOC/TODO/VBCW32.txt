@@ -142,8 +142,9 @@
             Procedure LeaveScope
             Function AllocLocalEbp(bytes: Integer): Integer
             Function CurrentEbpTop: Integer
-            Portees supportees : SK_GLOBAL, SK_MODULE, SK_SUB,
-              SK_FUNCTION, SK_PROPERTY, SK_CLASS, SK_WITH, SK_BLOCK
+            Portees supportees : SCOPE_GLOBAL, SCOPE_MODULE, SCOPE_SUB,
+              SCOPE_FUNCTION, SCOPE_PROPERTY, SCOPE_CLASS,
+              SCOPE_WITH, SCOPE_BLOCK
             Compteur d offset EBP pour allocation variables locales
             Offset EBP negatif pour locales [EBP-n]
             Offset EBP positif pour parametres [EBP+8], [EBP+12]...
