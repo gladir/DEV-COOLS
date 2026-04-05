@@ -1027,6 +1027,9 @@ Const
  { Coloration syntaxique ABAP/4 }
  MAX_ABAP_KEYWORDS     = 80;      { nombre de mots-cles ABAP/4     }
 
+ { Coloration syntaxique AWK }
+ MAX_AWK_KEYWORDS      = 36;      { nombre de mots-cles AWK        }
+
  { Coloration syntaxique XML/PSP }
  MAX_XML_TAGS          = 32;      { nombre de tags XML predefinies  }
 
@@ -1251,6 +1254,13 @@ Const
  PSP_TEMP_OUTPUT      = '_pspout.tmp'; { fichier temp sortie compil   }
  PSP_EXT_SOURCE       = '.psp';     { extension source PSP            }
  PSP_EXT_EXE          = '.exe';     { extension executable            }
+
+ { Integration compilateur AWK }
+ AWK_COMPILER_WIN32   = 'AWKCW32';  { compilateur AWK Win32 PE        }
+ AWK_COMPILER_DOS     = 'AWK86';    { compilateur AWK DOS 8086        }
+ AWK_TEMP_OUTPUT      = '_awkout.tmp'; { fichier temp sortie compil   }
+ AWK_EXT_SOURCE       = '.awk';     { extension source AWK            }
+ AWK_EXT_EXE          = '.exe';     { extension executable            }
 
  { Systeme de build et configuration }
  BUILD_MAX_ORDER       = 64;       { nombre max projets dans l ordre }
@@ -1715,6 +1725,13 @@ Type
  TAbapHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_ABAP_KEYWORDS - 1] Of String[20];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee AWK }
+ TAWKHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_AWK_KEYWORDS - 1] Of String[15];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -2439,6 +2456,23 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ TAWKCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur (AWKCW32/AWK86) }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
  { Etat de build d un projet }
  TBuildStatus = (
   BS_PENDING,          { en attente de compilation               }
@@ -2631,6 +2665,8 @@ Var
  AdaHL        : TAdaHighlighter;
  { Coloration syntaxique ABAP/4 }
  AbapHL       : TAbapHighlighter;
+ { Coloration syntaxique AWK }
+ AWKHL        : TAWKHighlighter;
  { Coloration syntaxique XML }
  XMLHL        : TXMLHighlighter;
  { Coloration syntaxique PSP }
@@ -2661,6 +2697,8 @@ Var
  ABAPContext    : TABAPCompilerContext;
  { Contexte compilateur PSP }
  PSPContext     : TPSPCompilerContext;
+ { Contexte compilateur AWK }
+ AWKContext     : TAWKCompilerContext;
  { Gestionnaire de build }
  BuildMgr       : TBuildManager;
  { Gestionnaire de configurations }
@@ -3004,7 +3042,7 @@ Begin
                 (Ext = '.ASM') Or (Ext = '.INC')  Or (Ext = '.TXT')  Or
                 (Ext = '.ADB') Or (Ext = '.ADS')  Or (Ext = '.ADA')  Or
                 (Ext = '.ABAP')Or (Ext = '.ABP')  Or
-                (Ext = '.PSP')                    Then Begin
+                (Ext = '.PSP') Or (Ext = '.AWK')  Then Begin
      If Not FileExists(Arg) Then
       FatalError('Fichier introuvable: ' + Arg);
      Opts.SourceFile := Arg;
@@ -6362,6 +6400,12 @@ Procedure HighlightAbapLine(Var HL: TAbapHighlighter;
                             Line: String;
                             Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightAWKLine --- }
+
+Procedure HighlightAWKLine(Var HL: TAWKHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightPSPLine --- }
 
 Procedure HighlightPSPLine(Var HL: TPSPHighlighter;
@@ -6385,6 +6429,7 @@ Var
  IsCSharp: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
+ IsAWK: Boolean;
  IsPSP: Boolean;
  Ext: String;
 Begin
@@ -6396,6 +6441,7 @@ Begin
  IsCSharp := (Ext = '.CS');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
+ IsAWK := (Ext = '.AWK');
  IsPSP := (Ext = '.PSP');
  { Mettre a jour la gouttiere }
  Ed.GutterWidth := CalcGutterWidth(Ed.Buffer.LineCount, Ed.CharWidth);
@@ -6431,6 +6477,9 @@ Begin
    Else If IsAbap And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightAbapLine(AbapHL, FullLine, Colors)
+   Else If IsAWK And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightAWKLine(AWKHL, FullLine, Colors)
    Else If IsPSP And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightPSPLine(PSPHL, FullLine, Colors);
@@ -10117,6 +10166,257 @@ Begin
  Begin
   Start := Pos;
   TC := GetAbapTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE AWK
+  ============================================================ }
+
+{ --- Initialiser les mots-cles AWK --- }
+
+Procedure InitAWKKeywords(Var HL: TAWKHighlighter);
+Begin
+ HL.KeywordCount := MAX_AWK_KEYWORDS;
+ HL.Keywords[0]  := 'BEGIN';
+ HL.Keywords[1]  := 'END';
+ HL.Keywords[2]  := 'if';
+ HL.Keywords[3]  := 'else';
+ HL.Keywords[4]  := 'while';
+ HL.Keywords[5]  := 'for';
+ HL.Keywords[6]  := 'do';
+ HL.Keywords[7]  := 'break';
+ HL.Keywords[8]  := 'continue';
+ HL.Keywords[9]  := 'function';
+ HL.Keywords[10] := 'return';
+ HL.Keywords[11] := 'delete';
+ HL.Keywords[12] := 'exit';
+ HL.Keywords[13] := 'getline';
+ HL.Keywords[14] := 'next';
+ HL.Keywords[15] := 'nextfile';
+ HL.Keywords[16] := 'print';
+ HL.Keywords[17] := 'printf';
+ HL.Keywords[18] := 'sprintf';
+ HL.Keywords[19] := 'split';
+ HL.Keywords[20] := 'sub';
+ HL.Keywords[21] := 'gsub';
+ HL.Keywords[22] := 'match';
+ HL.Keywords[23] := 'length';
+ HL.Keywords[24] := 'substr';
+ HL.Keywords[25] := 'index';
+ HL.Keywords[26] := 'tolower';
+ HL.Keywords[27] := 'toupper';
+ HL.Keywords[28] := 'system';
+ HL.Keywords[29] := 'close';
+ HL.Keywords[30] := 'in';
+ HL.Keywords[31] := 'sin';
+ HL.Keywords[32] := 'cos';
+ HL.Keywords[33] := 'exp';
+ HL.Keywords[34] := 'log';
+ HL.Keywords[35] := 'sqrt';
+End;
+
+{ --- Initialiser le moteur de coloration AWK --- }
+
+Procedure InitAWKHighlighter(Var HL: TAWKHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'AWK');
+ InitAWKKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle AWK --- }
+
+Function IsAWKKeyword(Var HL: TAWKHighlighter;
+                      Word: String): Boolean;
+Var
+ I: Integer;
+Begin
+ IsAWKKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+ Begin
+  If Word = HL.Keywords[I] Then
+  Begin
+   IsAWKKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est une variable predefinie AWK --- }
+
+Function IsAWKBuiltin(Word: String): Boolean;
+Begin
+ IsAWKBuiltin :=
+  (Word = 'NR') Or (Word = 'NF') Or (Word = 'FS') Or
+  (Word = 'RS') Or (Word = 'OFS') Or (Word = 'ORS') Or
+  (Word = 'FILENAME') Or (Word = 'FNR') Or
+  (Word = 'ARGC') Or (Word = 'ARGV') Or
+  (Word = 'ENVIRON') Or (Word = 'RSTART') Or
+  (Word = 'RLENGTH') Or (Word = 'SUBSEP') Or
+  (Word = 'OFMT') Or (Word = 'CONVFMT');
+End;
+
+{ --- Classifier un jeton AWK (identifier -> keyword/builtin) --- }
+
+Function ClassifyAWKToken(Var HL: TAWKHighlighter;
+                          Line: String;
+                          StartPos, EndPos: Integer): TTokenClass;
+Var
+ Word: String;
+Begin
+ Word := Copy(Line, StartPos, EndPos - StartPos);
+ If IsAWKBuiltin(Word) Then
+  ClassifyAWKToken := TC_TYPE
+ Else If IsAWKKeyword(HL, Word) Then
+  ClassifyAWKToken := TC_KEYWORD
+ Else
+  ClassifyAWKToken := TC_IDENTIFIER;
+End;
+
+{ --- Obtenir la classe de jeton AWK a une position --- }
+
+Function GetAWKTokenClass(Var HL: TAWKHighlighter;
+                          Line: String;
+                          Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len: Integer;
+ Ch: Char;
+Begin
+ Len := Length(Line);
+ GetAWKTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetAWKTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire AWK # jusqu a fin de ligne }
+ If Ch = '#' Then Begin
+  Pos := Len + 1;
+  GetAWKTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine AWK "..." avec echappement \ }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do Begin
+   If (Line[Pos] = '\') And (Pos < Len) Then
+    Inc(Pos, 2)
+   Else
+    Inc(Pos);
+  End;
+  If Pos <= Len Then Inc(Pos);
+  GetAWKTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Regex AWK /.../ }
+ If Ch = '/' Then Begin
+  { Verifier que ce n est pas une division }
+  If (Pos = 1) Or Not (IsAlphaNumUS(Line[Pos - 1]) Or
+     (Line[Pos - 1] = ')') Or (Line[Pos - 1] = ']')) Then
+  Begin
+   Inc(Pos);
+   While (Pos <= Len) And (Line[Pos] <> '/') Do Begin
+    If (Line[Pos] = '\') And (Pos < Len) Then
+     Inc(Pos, 2)
+    Else
+     Inc(Pos);
+   End;
+   If Pos <= Len Then Inc(Pos);
+   GetAWKTokenClass := TC_STRING;
+   Exit;
+  End;
+  { Sinon c est un operateur }
+  Inc(Pos);
+  GetAWKTokenClass := TC_OPERATOR;
+  Exit;
+ End;
+
+ { Variable speciale $0, $1, ... $NF }
+ If Ch = '$' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (IsDigitChar(Line[Pos]) Or
+        IsAlphaUS(Line[Pos])) Do
+   Inc(Pos);
+  GetAWKTokenClass := TC_TYPE;
+  Exit;
+ End;
+
+ { Nombre hexadecimal 0x... }
+ If (Ch = '0') And (Pos < Len) And
+    ((Line[Pos + 1] = 'x') Or (Line[Pos + 1] = 'X')) Then
+ Begin
+  Inc(Pos, 2);
+  While (Pos <= Len) And IsHexDigit(Line[Pos]) Do
+   Inc(Pos);
+  GetAWKTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Nombre decimal }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '.') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  If (Pos <= Len) And ((Line[Pos] = 'e') Or (Line[Pos] = 'E')) Then Begin
+   Inc(Pos);
+   If (Pos <= Len) And ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then
+    Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  GetAWKTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant ou mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And IsAlphaNumUS(Line[Pos]) Do
+   Inc(Pos);
+  GetAWKTokenClass := ClassifyAWKToken(HL, Line, StartPos, Pos);
+  Exit;
+ End;
+
+ { Operateur ou autre caractere }
+ Inc(Pos);
+ GetAWKTokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne AWK entiere --- }
+
+Procedure HighlightAWKLine(Var HL: TAWKHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetAWKTokenClass(HL, Line, Pos);
   Clr := Byte(TokenClassToColor(TC));
   For I := Start To Pos - 1 Do
   Begin
@@ -21695,6 +21995,51 @@ Begin
  Ctx.CompilerFound := False;
 End;
 
+{ --- Initialiser le contexte compilateur AWK --- }
+
+Procedure InitAWKContext(Var Ctx: TAWKCompilerContext);
+Begin
+ Ctx.CompilerPath := '';
+ Ctx.CompilerName := '';
+ Ctx.CompilerFound := False;
+ Ctx.LastResult := CR_NOT_FOUND;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ Ctx.TotalFiles := 0;
+ Ctx.OutputFile := '';
+ Ctx.TempFile := AWK_TEMP_OUTPUT;
+ Ctx.IsCompiling := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose := False;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Detecter le compilateur AWK disponible --- }
+
+Procedure DetectAWKCompiler(Var Ctx: TAWKCompilerContext);
+Var
+ Path: String;
+Begin
+ { Essayer d abord AWKCW32 (Win32 PE) }
+ Path := FindCompiler(AWK_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := AWK_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer AWK86 (DOS 8086) }
+ Path := FindCompiler(AWK_COMPILER_DOS);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := AWK_COMPILER_DOS;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
 { ============================================================
   TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [IMPLEMENTE]
   ============================================================ }
@@ -23379,6 +23724,26 @@ Begin
    Exit;
   End;
  End
+ Else If (Ext = '.awk') Then Begin
+  { Compilation AWK }
+  DetectAWKCompiler(AWKContext);
+  If AWKContext.CompilerFound Then Begin
+   CmdLine := AWKContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur AWK non trouve (AWKCW32/AWK86).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+ End
  Else Begin
   AppendOutput(OutputPanel,
    'Erreur : type de fichier non supporte (' + Ext + ').',
@@ -23938,6 +24303,7 @@ BEGIN
  InitPascalHighlighter(PascalHL);
  InitAdaHighlighter(AdaHL);
  InitAbapHighlighter(AbapHL);
+ InitAWKHighlighter(AWKHL);
  InitXMLHighlighter(XMLHL);
  InitPSPHighlighter(PSPHL);
  InitExplorer(SolExplorer);
@@ -23961,6 +24327,7 @@ BEGIN
  InitADACContext(ADACContext);
  InitABAPContext(ABAPContext);
  InitPSPContext(PSPContext);
+ InitAWKContext(AWKContext);
  InitBuildManager(BuildMgr);
  InitConfigurationManager(CfgMgr);
  InitBreakpointManager(BPMgr);
