@@ -1,4 +1,4 @@
-' CALC.BAS - Calculatrice simple en Visual Basic 6
+' CALC.VB - Calculatrice simple en Visual Basic 6
 ' Exemple d'operations arithmetiques pour VBCW32
 
 Sub Main()

@@ -1,4 +1,4 @@
-' LOOPS.BAS - Boucles en Visual Basic 6
+' LOOPS.VB - Boucles en Visual Basic 6
 ' Exemple de For, Do/Loop, While/Wend pour VBCW32
 
 Sub Main()

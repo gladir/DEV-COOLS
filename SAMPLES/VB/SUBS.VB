@@ -1,4 +1,4 @@
-' SUBS.BAS - Sub et Function en Visual Basic 6
+' SUBS.VB - Sub et Function en Visual Basic 6
 ' Exemple de procedures et fonctions pour VBCW32
 
 ' Function avec retour par nom

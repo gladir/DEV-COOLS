@@ -1,4 +1,4 @@
-' STRING.BAS - Operations sur chaines en Visual Basic 6
+' STRING.VB - Operations sur chaines en Visual Basic 6
 ' Exemple de fonctions de chaines pour VBCW32
 
 Sub Main()

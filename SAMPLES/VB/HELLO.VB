@@ -1,4 +1,4 @@
-' HELLO.BAS - Hello World en Visual Basic 6
+' HELLO.VB - Hello World en Visual Basic 6
 ' Exemple de base pour VBCW32
 
 Sub Main()

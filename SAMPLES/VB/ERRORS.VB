@@ -1,4 +1,4 @@
-' ERRORS.BAS - Gestion des erreurs en Visual Basic 6
+' ERRORS.VB - Gestion des erreurs en Visual Basic 6
 ' Exemple de On Error, Resume, Err pour VBCW32
 
 Sub DiviserParZero()
@@ -57,7 +57,7 @@ End Sub
 Sub TestErrRaise()
     On Error GoTo ErrCustom
 
-    Err.Raise 9999, "ERRORS.BAS", "Erreur personnalisee de test"
+    Err.Raise 9999, "ERRORS.VB", "Erreur personnalisee de test"
     Exit Sub
 
 ErrCustom:
