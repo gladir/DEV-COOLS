@@ -2455,6 +2455,13 @@ Var
  OpenMenuIdx  : Integer;      { index du menu ouvert (-1=aucun) }
  SelItemIdx   : Integer;      { index de l item selectionne     }
  MenuActive   : Boolean;      { barre de menus active           }
+ { Sauvegarde du fond sous le menu deroulant (GetImage/PutImage) }
+ MenuBgBuf    : Pointer;      { buffer du fond sauvegarde       }
+ MenuBgX1     : Integer;      { rectangle sauvegarde            }
+ MenuBgY1     : Integer;
+ MenuBgX2     : Integer;
+ MenuBgY2     : Integer;
+ MenuBgSaved  : Boolean;      { True si un fond est sauvegarde  }
  { Barre d outils }
  MainToolBar  : TToolBar;
  TooltipTimer : LongInt;      { timestamp du debut de survol    }
@@ -3909,6 +3916,8 @@ Begin
  OpenMenuIdx := -1;
  SelItemIdx := -1;
  MenuActive := False;
+ MenuBgBuf := nil;
+ MenuBgSaved := False;
 
  { Menu Fichier }
  InitMenu(MainMenuBar.Menus[0], 'Fichier');
@@ -4060,6 +4069,58 @@ End;
 
 { --- Dessin de la barre de menus --- }
 
+{ Declaration anticipee : DrawAllWidgets est defini plus loin }
+Procedure DrawAllWidgets; Forward;
+
+{ --- Calcul du rectangle occupe par un menu deroulant --- }
+
+Procedure GetMenuRect(Idx: Integer; Var X1,Y1,X2,Y2: Integer);
+Var
+ M: TMenu;
+ MW, MH, I: Integer;
+Begin
+ M := MainMenuBar.Menus[Idx];
+ X1 := M.X;
+ Y1 := MainMenuBar.Height;
+ MW := M.Width;
+ If MW < 160 Then MW := 160;
+ MH := 4;
+ For I := 0 To M.ItemCount - 1 Do Begin
+  If M.Items[I].Separator Then MH := MH + 8
+  Else MH := MH + 16;
+ End;
+ { +2 pour l ombre }
+ X2 := X1 + MW + 2;
+ Y2 := Y1 + MH + 2;
+End;
+
+{ --- Sauvegarder le fond avant d afficher un menu deroulant --- }
+
+Procedure SaveMenuBackground(Idx: Integer);
+Var
+ BufSize: LongInt;
+Begin
+ GetMenuRect(Idx, MenuBgX1, MenuBgY1, MenuBgX2, MenuBgY2);
+ BufSize := ImageSize(MenuBgX1, MenuBgY1, MenuBgX2, MenuBgY2);
+ GetMem(MenuBgBuf, BufSize);
+ GetImage(MenuBgX1, MenuBgY1, MenuBgX2, MenuBgY2, MenuBgBuf^);
+ MenuBgSaved := True;
+End;
+
+{ --- Restaurer le fond sauvegarde (efface le menu deroulant) --- }
+
+Procedure RestoreMenuBackground;
+Var
+ BufSize: LongInt;
+Begin
+ If Not MenuBgSaved Then Exit;
+ PutImage(MenuBgX1, MenuBgY1, MenuBgBuf^, NormalPut);
+ BufSize := ImageSize(MenuBgX1, MenuBgY1, MenuBgX2, MenuBgY2);
+ FreeMem(MenuBgBuf, BufSize);
+ MenuBgBuf := nil;
+ MenuBgSaved := False;
+End;
+
 Procedure DrawMenuBar;
 Var
  I, TX: Integer;
@@ -4157,19 +4218,26 @@ End;
 Procedure OpenMenu(Index: Integer);
 Begin
  If (Index >= 0) And (Index < MainMenuBar.MenuCount) Then Begin
+  { Si un menu est deja ouvert, restaurer le fond avant d afficher le nouveau }
+  If MenuActive Then
+   RestoreMenuBackground;
   OpenMenuIdx := Index;
   SelItemIdx := -1;
   MenuActive := True;
   DrawMenuBar;
+  SaveMenuBackground(Index);  { sauvegarder le fond AVANT de dessiner }
   DrawOpenMenu;
  End;
 End;
 
 Procedure CloseMenu;
 Begin
+ { Restaurer le fond sauvegarde pour effacer le menu deroulant }
+ RestoreMenuBackground;
  OpenMenuIdx := -1;
  SelItemIdx := -1;
  MenuActive := False;
+ DrawMenuBar; { redessiner la barre sans surbrillance }
 End;
 
 { --- Execution d un element de menu --- }
@@ -21634,6 +21702,8 @@ Begin
  End;
  { Evenements pour la barre de menus }
  HandleMenuEvent(Ev);
+ { Si un menu vient d etre ouvert, ne pas redessiner la toolbar par dessus }
+ If MenuActive Then Exit;
  { Evenements pour la barre d outils }
  HandleToolBarEvent(Ev);
  { Evenements pour l explorateur }
@@ -21658,7 +21728,10 @@ Begin
   If Ev.Kind <> EV_NONE Then Begin
    DispatchEvent(Ev);
    UpdateStatusBar(StatusBar, WinMgr);
-   DrawAllWidgets;
+   { Ne pas redessiner tous les widgets si un menu est ouvert :
+     DrawAllWidgets appelle DrawToolBar qui ecrase le menu deroulant }
+   If Not MenuActive Then
+    DrawAllWidgets;
   End;
  End;
 End;
