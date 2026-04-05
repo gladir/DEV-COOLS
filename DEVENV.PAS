@@ -6090,16 +6090,31 @@ Begin
  End;
 End;
 
+{ --- Declaration anticipee de HighlightPascalLine --- }
+
+Procedure HighlightPascalLine(Var HL: TPascalHighlighter;
+                              Line: String;
+                              Var Colors: Array Of Byte); Forward;
+
 { --- Dessiner l editeur complet --- }
 
 Procedure DrawEditor(Var Ed: TEditor);
 Var
- I: Integer;
+ I, J: Integer;
  LineNo: LongInt;
  S: String;
  XPos, YPos: Integer;
  Len: Integer;
+ FullLine: String;
+ Colors: Array[0..255] Of Byte;
+ Ch: String[1];
+ IsPascal: Boolean;
+ Ext: String;
 Begin
+ { Detecter si le fichier est du Pascal }
+ Ext := UpCaseStr(ExtractFileExt(Ed.Buffer.FileName));
+ IsPascal := (Ext = '.PAS') Or (Ext = '.PP') Or (Ext = '.INC') Or
+             (Ext = '.DPR') Or (Ext = '.LPR');
  { Mettre a jour la gouttiere }
  Ed.GutterWidth := CalcGutterWidth(Ed.Buffer.LineCount, Ed.CharWidth);
  Ed.VisibleCols := (Ed.Width - Ed.GutterWidth) Div Ed.CharWidth;
@@ -6111,25 +6126,28 @@ Begin
  { Dessiner la surbrillance de la ligne courante }
  DrawLineHighlight(Ed);
  { Dessiner le texte }
- SetColor(CLR_EDITOR_TEXT);
  For I := 0 To Ed.VisibleLines - 1 Do Begin
   LineNo := Ed.ScrollLine + I;
   If LineNo < Ed.Buffer.LineCount Then Begin
-   S := Ed.Buffer.Lines[LineNo];
+   FullLine := Ed.Buffer.Lines[LineNo];
    YPos := Ed.Y + I * Ed.CharHeight;
    XPos := Ed.X + Ed.GutterWidth;
+   { Coloration syntaxique }
+   FillChar(Colors, SizeOf(Colors), 0); { noir par defaut }
+   If IsPascal And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightPascalLine(PascalHL, FullLine, Colors);
    { Extraire la partie visible }
-   If Ed.ScrollCol <= Length(S) Then Begin
-    Len := Length(S) - Ed.ScrollCol + 1;
+   If Ed.ScrollCol <= Length(FullLine) Then Begin
+    Len := Length(FullLine) - Ed.ScrollCol + 1;
     If Len > Ed.VisibleCols Then Len := Ed.VisibleCols;
-    S := Copy(S, Ed.ScrollCol, Len);
-   End Else
-    S := '';
-   If LineNo = Ed.CursorLine Then
-    SetColor(CLR_EDITOR_TEXT)
-   Else
-    SetColor(CLR_EDITOR_TEXT);
-   OutTextXY(XPos, YPos + 1, S);
+    { Dessiner caractere par caractere avec la bonne couleur }
+    For J := 0 To Len - 1 Do Begin
+     SetColor(Colors[Ed.ScrollCol - 1 + J]);
+     Ch := FullLine[Ed.ScrollCol + J];
+     OutTextXY(XPos + J * Ed.CharWidth, YPos + 1, Ch);
+    End;
+   End;
   End;
  End;
  { Dessiner la gouttiere }
@@ -7159,12 +7177,12 @@ Begin
   TC_KEYWORD:      TokenClassToColor := 1;    { bleu           }
   TC_STRING:       TokenClassToColor := 4;    { rouge          }
   TC_CHAR:         TokenClassToColor := 4;    { rouge          }
-  TC_NUMBER:       TokenClassToColor := 0;    { noir           }
+  TC_NUMBER:       TokenClassToColor := 5;    { magenta        }
   TC_COMMENT:      TokenClassToColor := 2;    { vert           }
   TC_DIRECTIVE:    TokenClassToColor := 8;    { gris fonce     }
   TC_OPERATOR:     TokenClassToColor := 0;    { noir           }
   TC_IDENTIFIER:   TokenClassToColor := 0;    { noir           }
-  TC_TYPE:         TokenClassToColor := 3;    { turquoise/cyan }
+  TC_TYPE:         TokenClassToColor := 3;    { cyan/turquoise }
   TC_PREPROCESSOR: TokenClassToColor := 8;    { gris fonce     }
   TC_ATTRIBUTE:    TokenClassToColor := 9;    { bleu clair     }
   TC_XMLDOC:       TokenClassToColor := 6;    { vert olive     }
@@ -8719,15 +8737,164 @@ Function GetPascalTokenClass(Var HL: TPascalHighlighter;
                              Line: String;
                              Var Pos: Integer): TTokenClass;
 Var
- StartPos: Integer;
- TC: TTokenClass;
+ StartPos, Len: Integer;
+ Ch: Char;
+ Word: String;
 Begin
- StartPos := Pos;
- TC := GetTokenClass(HL.Base, Line, Pos);
- If TC = TC_IDENTIFIER Then
-  GetPascalTokenClass := ClassifyPascalToken(HL, Line, StartPos, Pos)
- Else
-  GetPascalTokenClass := TC;
+ Len := Length(Line);
+ GetPascalTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ (* Etat persistant : dans un commentaire bloc accolades *)
+ If HL.Base.InBlockComment Then Begin
+  While Pos <= Len Do Begin
+   If Line[Pos] = '}' Then Begin
+    Inc(Pos);
+    HL.Base.InBlockComment := False;
+    GetPascalTokenClass := TC_COMMENT;
+    Exit;
+   End;
+   If (Line[Pos] = '*') And (Pos < Len) And (Line[Pos+1] = ')') Then Begin
+    Inc(Pos, 2);
+    HL.Base.InBlockComment := False;
+    GetPascalTokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetPascalTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetPascalTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire // jusqu a fin de ligne }
+ If (Ch = '/') And (Pos < Len) And (Line[Pos+1] = '/') Then Begin
+  Pos := Len + 1;
+  GetPascalTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ (* Directive ou commentaire accolades *)
+ If Ch = '{' Then Begin
+  Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '$') Then Begin
+   (* Directive de compilation *)
+   While (Pos <= Len) And (Line[Pos] <> '}') Do Inc(Pos);
+   If Pos <= Len Then Inc(Pos);
+   GetPascalTokenClass := TC_DIRECTIVE;
+   Exit;
+  End;
+  (* Commentaire bloc accolades *)
+  HL.Base.InBlockComment := True;
+  While Pos <= Len Do Begin
+   If Line[Pos] = '}' Then Begin
+    Inc(Pos);
+    HL.Base.InBlockComment := False;
+    GetPascalTokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetPascalTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Commentaire (* *) }
+ If (Ch = '(') And (Pos < Len) And (Line[Pos+1] = '*') Then Begin
+  Inc(Pos, 2);
+  HL.Base.InBlockComment := True;
+  While Pos <= Len Do Begin
+   If (Line[Pos] = '*') And (Pos < Len) And (Line[Pos+1] = ')') Then Begin
+    Inc(Pos, 2);
+    HL.Base.InBlockComment := False;
+    GetPascalTokenClass := TC_COMMENT;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  GetPascalTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine Pascal '...' }
+ If Ch = '''' Then Begin
+  Inc(Pos);
+  While Pos <= Len Do Begin
+   If Line[Pos] = '''' Then Begin
+    If (Pos < Len) And (Line[Pos+1] = '''') Then
+     Inc(Pos, 2)
+    Else Begin
+     Inc(Pos);
+     GetPascalTokenClass := TC_STRING;
+     Exit;
+    End;
+   End Else
+    Inc(Pos);
+  End;
+  GetPascalTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Caractere # suivi de nombre : #13, #10, etc. }
+ If Ch = '#' Then Begin
+  Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '$') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsHexDigit(Line[Pos]) Do Inc(Pos);
+  End Else
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  GetPascalTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Nombre hexadecimal $... }
+ If Ch = '$' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And IsHexDigit(Line[Pos]) Do Inc(Pos);
+  GetPascalTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Nombre decimal }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '.') And
+     ((Pos >= Len) Or (Line[Pos+1] <> '.')) Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  If (Pos <= Len) And ((Line[Pos] = 'e') Or (Line[Pos] = 'E')) Then Begin
+   Inc(Pos);
+   If (Pos <= Len) And ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then
+    Inc(Pos);
+   While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  End;
+  GetPascalTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant ou mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And (IsAlphaUS(Line[Pos]) Or
+        IsDigitChar(Line[Pos])) Do
+   Inc(Pos);
+  GetPascalTokenClass := ClassifyPascalToken(HL, Line, StartPos, Pos);
+  Exit;
+ End;
+
+ { Operateur ou autre caractere }
+ Inc(Pos);
+ GetPascalTokenClass := TC_OPERATOR;
 End;
 
 { --- Colorier une ligne Pascal entiere --- }
