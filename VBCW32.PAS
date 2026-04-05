@@ -5671,7 +5671,6 @@ Begin
 
   { Attendre 'Then' }
   ExpectKeyword(KW_THEN);
-  LexNextToken;
 
   { Generer : tester la condition, sauter si False }
   LblElse := NextInternalLabel;
@@ -5704,7 +5703,6 @@ Begin
 
       { Attendre 'Then' }
       ExpectKeyword(KW_THEN);
-      LexNextToken;
       SkipNewlines;
 
       { Generer le test }
@@ -5753,7 +5751,6 @@ Begin
   Begin
     { Forme mono-ligne : If condition Then instruction }
     ParseStatement;
-    EmitLabel(LblElse);
 
     { Traiter Else optionnel sur la meme ligne }
     If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then
@@ -5763,7 +5760,9 @@ Begin
       LexNextToken;
       ParseStatement;
       EmitLabel(LblEnd);
-    End;
+    End
+    Else
+      EmitLabel(LblElse);
   End;
 
   LeaveCtrl;
