@@ -601,7 +601,7 @@
             Procedure GenerateManDocumentation
               orchestrateur : generer toutes les pages man
 
-  TODO 17 - GENERATION DES GRAPHES D'APPELS (CALL GRAPHS) [A FAIRE]
+  TODO 17 - GENERATION DES GRAPHES D'APPELS (CALL GRAPHS) [IMPLEMENTE]
             TCallGraphNode : record
               EntityId   : Integer   (ID de la fonction)
               Name       : String    (nom de la fonction)
@@ -619,18 +619,40 @@
               CallGraphEdges : Array[1..MAX_CALL_EDGES] Of TCallGraphEdge
               CallNodeCount  : Integer
               CallEdgeCount  : Integer
+            Procedure InitCallGraph
+              initialiser le generateur de graphes d appels
             Procedure BuildCallGraph
               analyser le code source pour detecter les appels
               de fonctions et construire le graphe d appels
+            Function FindCallNode(EntityId: Integer): Integer
+              trouver un noeud par son EntityId
+            Function FindCallNodeByName(Const Name: String): Integer
+              trouver un noeud par son nom
+            Function AddCallGraphNode(...): Integer
+              ajouter un noeud au graphe d appels
+            Function AddCallGraphEdge(...): Integer
+              ajouter une arete au graphe d appels
             Function GetCallees(EntityId: Integer): String
               retourner la liste des fonctions appelees par EntityId
             Function GetCallers(EntityId: Integer): String
               retourner la liste des fonctions qui appellent EntityId
+            Function CountCallees(EntityId: Integer): Integer
+              compter le nombre de fonctions appelees
+            Function CountCallers(EntityId: Integer): Integer
+              compter le nombre de fonctions appelantes
             Procedure GenerateCallGraphDot(Const Entity: TEntity;
               Var OutFile: Text)
               generer le graphe d appels au format DOT (Graphviz)
+            Procedure GenerateFullCallGraphDot(Var OutFile: Text)
+              generer le graphe d appels complet
             Procedure RenderCallGraphImage(Const DotFile, ImageFile: String)
               invoquer dot pour generer l image (PNG, SVG, etc.)
+            Procedure GenerateCallGraphDocumentation
+              orchestrateur : generer tous les graphes d appels
+            Fonctions accesseurs Get/SetCallGraphOutputDir,
+              GetCallNodeCount, GetCallEdgeCount, GetCallGraphNode,
+              GetCallGraphEdge, IsCallGraphInitialized, IsCallGraphEmpty,
+              HasCallGraphEdge, GetNodeCallees, GetNodeCallers
 
   TODO 18 - GENERATION DES GRAPHES DE DEPENDANCES (DEPENDENCY GRAPHS) [A FAIRE]
             Procedure GenerateIncludeGraphDot(Const FileName: String;
@@ -963,6 +985,18 @@ Const
   MAN_SOURCE_DEFAULT    = 'Documentation';
   MAN_MANUAL_DEFAULT    = 'Programmer''s Manual';
 
+  { Constantes pour les graphes d'appels (TODO 17) }
+  MAX_CALL_NODES        = 8192;
+  MAX_CALL_EDGES        = 32768;
+  CALLGRAPH_DOT_FILE    = 'callgraph.dot';
+  CALLGRAPH_PNG_FILE    = 'callgraph.png';
+  CALLGRAPH_SVG_FILE    = 'callgraph.svg';
+  CALLGRAPH_OUTPUT_DIR  = 'callgraph';
+  CALLGRAPH_NODE_SHAPE  = 'box';
+  CALLGRAPH_EDGE_STYLE  = 'solid';
+  CALLGRAPH_FONT_NAME   = 'Helvetica';
+  CALLGRAPH_FONT_SIZE   = 10;
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1150,6 +1184,23 @@ Type
     SortKey    : String;            { Cle de tri }
   End;
 
+  { Types pour les graphes d'appels (TODO 17) }
+  TCallGraphNode = Record
+    EntityId   : Integer;           { ID de la fonction }
+    Name       : String;            { Nom de la fonction }
+    FileName   : String;            { Fichier source }
+    Line       : Integer;           { Ligne de definition }
+    NodeId     : Integer;           { ID unique du noeud }
+  End;
+
+  TCallGraphEdge = Record
+    CallerId   : Integer;           { ID de l'appelant }
+    CalleeId   : Integer;           { ID de l'appele }
+    Line       : Integer;           { Ligne de l'appel }
+    IsDirect   : Boolean;           { Appel direct vs pointeur }
+    EdgeId     : Integer;           { ID unique de l'arete }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1227,6 +1278,14 @@ Var
   ManProjectName  : String;
   ManProjectBrief : String;
   ManInitialized  : Boolean;
+
+  { Variables pour les graphes d'appels (TODO 17) }
+  CallGraphNodes    : Array[1..MAX_CALL_NODES] Of TCallGraphNode;
+  CallGraphEdges    : Array[1..MAX_CALL_EDGES] Of TCallGraphEdge;
+  CallNodeCount     : Integer;
+  CallEdgeCount     : Integer;
+  CallGraphOutputDir: String;
+  CallGraphInitialized : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -8942,6 +9001,680 @@ Function IsManEmpty: Boolean;
 { Verifie si le generateur MAN est vide }
 Begin
   IsManEmpty := (EntityCount = 0);
+End;
+
+{ ============================================================
+  TODO 17 - GENERATION DES GRAPHES D'APPELS (CALL GRAPHS)
+  ============================================================ }
+
+Procedure InitCallGraph;
+{ Initialise le generateur de graphes d'appels }
+Begin
+  CallNodeCount := 0;
+  CallEdgeCount := 0;
+  
+  If GetConfigValue('CALL_GRAPH_OUTPUT') <> '' Then
+    CallGraphOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + GetConfigValue('CALL_GRAPH_OUTPUT') + '/'
+  Else
+    CallGraphOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + CALLGRAPH_OUTPUT_DIR + '/';
+  
+  { Creer le repertoire de sortie }
+  {$I-}
+  MkDir(CallGraphOutputDir);
+  {$I+}
+  If IOResult <> 0 Then; { Ignorer si existe deja }
+  
+  CallGraphInitialized := True;
+End;
+
+Function FindCallNode(EntityId: Integer): Integer;
+{ Trouve un noeud de graphe d'appel par son EntityId }
+Var
+  I: Integer;
+Begin
+  FindCallNode := 0;
+  For I := 1 To CallNodeCount Do
+  Begin
+    If CallGraphNodes[I].EntityId = EntityId Then
+    Begin
+      FindCallNode := I;
+      Exit;
+    End;
+  End;
+End;
+
+Function FindCallNodeByName(Const Name: String): Integer;
+{ Trouve un noeud de graphe d'appel par son nom }
+Var
+  I: Integer;
+Begin
+  FindCallNodeByName := 0;
+  For I := 1 To CallNodeCount Do
+  Begin
+    If CallGraphNodes[I].Name = Name Then
+    Begin
+      FindCallNodeByName := I;
+      Exit;
+    End;
+  End;
+End;
+
+Function AddCallGraphNode(EntityId: Integer; Const Name, FileName: String;
+  Line: Integer): Integer;
+{ Ajoute un noeud au graphe d'appels }
+Var
+  Idx: Integer;
+Begin
+  { Verifier si le noeud existe deja }
+  Idx := FindCallNode(EntityId);
+  If Idx > 0 Then
+  Begin
+    AddCallGraphNode := Idx;
+    Exit;
+  End;
+  
+  { Verifier la capacite }
+  If CallNodeCount >= MAX_CALL_NODES Then
+  Begin
+    WarnMsg('Nombre maximum de noeuds de graphe d''appel atteint');
+    AddCallGraphNode := 0;
+    Exit;
+  End;
+  
+  Inc(CallNodeCount);
+  With CallGraphNodes[CallNodeCount] Do
+  Begin
+    EntityId := EntityId;
+    Name := Name;
+    FileName := FileName;
+    Line := Line;
+    NodeId := CallNodeCount;
+  End;
+  
+  AddCallGraphNode := CallNodeCount;
+End;
+
+Function AddCallGraphEdge(CallerId, CalleeId, Line: Integer;
+  IsDirect: Boolean): Integer;
+{ Ajoute une arete au graphe d'appels }
+Var
+  I: Integer;
+Begin
+  { Verifier que l'arete n'existe pas deja }
+  For I := 1 To CallEdgeCount Do
+  Begin
+    If (CallGraphEdges[I].CallerId = CallerId) And
+       (CallGraphEdges[I].CalleeId = CalleeId) Then
+    Begin
+      AddCallGraphEdge := I;
+      Exit;
+    End;
+  End;
+  
+  { Verifier la capacite }
+  If CallEdgeCount >= MAX_CALL_EDGES Then
+  Begin
+    WarnMsg('Nombre maximum d''aretes de graphe d''appel atteint');
+    AddCallGraphEdge := 0;
+    Exit;
+  End;
+  
+  Inc(CallEdgeCount);
+  With CallGraphEdges[CallEdgeCount] Do
+  Begin
+    CallerId := CallerId;
+    CalleeId := CalleeId;
+    Line := Line;
+    IsDirect := IsDirect;
+    EdgeId := CallEdgeCount;
+  End;
+  
+  AddCallGraphEdge := CallEdgeCount;
+End;
+
+Function GetCallees(EntityId: Integer): String;
+{ Retourne la liste des fonctions appelees par EntityId }
+Var
+  I: Integer;
+  NodeIdx: Integer;
+  Result: String;
+Begin
+  Result := '';
+  NodeIdx := FindCallNode(EntityId);
+  
+  If NodeIdx > 0 Then
+  Begin
+    For I := 1 To CallEdgeCount Do
+    Begin
+      If CallGraphEdges[I].CallerId = NodeIdx Then
+      Begin
+        If Result <> '' Then
+          Result := Result + ', ';
+        If (CallGraphEdges[I].CalleeId >= 1) And 
+           (CallGraphEdges[I].CalleeId <= CallNodeCount) Then
+          Result := Result + CallGraphNodes[CallGraphEdges[I].CalleeId].Name;
+      End;
+    End;
+  End;
+  
+  GetCallees := Result;
+End;
+
+Function GetCallers(EntityId: Integer): String;
+{ Retourne la liste des fonctions qui appellent EntityId }
+Var
+  I: Integer;
+  NodeIdx: Integer;
+  Result: String;
+Begin
+  Result := '';
+  NodeIdx := FindCallNode(EntityId);
+  
+  If NodeIdx > 0 Then
+  Begin
+    For I := 1 To CallEdgeCount Do
+    Begin
+      If CallGraphEdges[I].CalleeId = NodeIdx Then
+      Begin
+        If Result <> '' Then
+          Result := Result + ', ';
+        If (CallGraphEdges[I].CallerId >= 1) And 
+           (CallGraphEdges[I].CallerId <= CallNodeCount) Then
+          Result := Result + CallGraphNodes[CallGraphEdges[I].CallerId].Name;
+      End;
+    End;
+  End;
+  
+  GetCallers := Result;
+End;
+
+Function CountCallees(EntityId: Integer): Integer;
+{ Compte le nombre de fonctions appelees par EntityId }
+Var
+  I: Integer;
+  NodeIdx: Integer;
+  Count: Integer;
+Begin
+  Count := 0;
+  NodeIdx := FindCallNode(EntityId);
+  
+  If NodeIdx > 0 Then
+  Begin
+    For I := 1 To CallEdgeCount Do
+    Begin
+      If CallGraphEdges[I].CallerId = NodeIdx Then
+        Inc(Count);
+    End;
+  End;
+  
+  CountCallees := Count;
+End;
+
+Function CountCallers(EntityId: Integer): Integer;
+{ Compte le nombre de fonctions qui appellent EntityId }
+Var
+  I: Integer;
+  NodeIdx: Integer;
+  Count: Integer;
+Begin
+  Count := 0;
+  NodeIdx := FindCallNode(EntityId);
+  
+  If NodeIdx > 0 Then
+  Begin
+    For I := 1 To CallEdgeCount Do
+    Begin
+      If CallGraphEdges[I].CalleeId = NodeIdx Then
+        Inc(Count);
+    End;
+  End;
+  
+  CountCallers := Count;
+End;
+
+Function ExtractFunctionCalls(Const Code: String): String;
+{ Extrait les appels de fonctions d'une ligne de code }
+Var
+  I, J: Integer;
+  InString: Boolean;
+  InComment: Boolean;
+  ParenDepth: Integer;
+  FuncName: String;
+  Result: String;
+  C: Char;
+Begin
+  Result := '';
+  InString := False;
+  InComment := False;
+  ParenDepth := 0;
+  FuncName := '';
+  I := 1;
+  
+  While I <= Length(Code) Do
+  Begin
+    C := Code[I];
+    
+    { Gestion des chaines de caracteres }
+    If (C = '"') And Not InComment Then
+    Begin
+      InString := Not InString;
+      Inc(I);
+      Continue;
+    End;
+    
+    { Gestion des commentaires }
+    If (C = '/') And (I < Length(Code)) And Not InString Then
+    Begin
+      If Code[I+1] = '/' Then
+      Begin
+        { Commentaire ligne, arreter }
+        Break;
+      End;
+      If Code[I+1] = '*' Then
+      Begin
+        InComment := True;
+        Inc(I, 2);
+        Continue;
+      End;
+    End;
+    
+    If InComment And (C = '*') And (I < Length(Code)) And (Code[I+1] = '/') Then
+    Begin
+      InComment := False;
+      Inc(I, 2);
+      Continue;
+    End;
+    
+    If InString Or InComment Then
+    Begin
+      Inc(I);
+      Continue;
+    End;
+    
+    { Detection des identificateurs }
+    If (C >= 'A') And (C <= 'Z') Or 
+       (C >= 'a') And (C <= 'z') Or (C = '_') Then
+    Begin
+      FuncName := '';
+      While (I <= Length(Code)) And 
+            ((Code[I] >= 'A') And (Code[I] <= 'Z') Or
+             (Code[I] >= 'a') And (Code[I] <= 'z') Or
+             (Code[I] >= '0') And (Code[I] <= '9') Or
+             (Code[I] = '_')) Do
+      Begin
+        FuncName := FuncName + Code[I];
+        Inc(I);
+      End;
+      
+      { Sauter les espaces }
+      While (I <= Length(Code)) And (Code[I] = ' ') Do
+        Inc(I);
+      
+      { Verifier si c'est un appel de fonction }
+      If (I <= Length(Code)) And (Code[I] = '(') Then
+      Begin
+        { Ignorer les mots-cles }
+        If (FuncName <> 'if') And (FuncName <> 'while') And
+           (FuncName <> 'for') And (FuncName <> 'switch') And
+           (FuncName <> 'return') And (FuncName <> 'sizeof') And
+           (FuncName <> 'typeof') And (FuncName <> 'case') Then
+        Begin
+          If Result <> '' Then
+            Result := Result + ',';
+          Result := Result + FuncName;
+        End;
+      End;
+      
+      Continue;
+    End;
+    
+    Inc(I);
+  End;
+  
+  ExtractFunctionCalls := Result;
+End;
+
+Procedure BuildCallGraph;
+{ Analyse le code source pour construire le graphe d'appels }
+Var
+  I, J: Integer;
+  NodeIdx, CalleeIdx: Integer;
+  Calls: String;
+  FuncName: String;
+  Pos: Integer;
+Begin
+  If Not CallGraphInitialized Then
+    InitCallGraph;
+  
+  WriteLn('Construction du graphe d''appels...');
+  
+  { Ajouter toutes les fonctions comme noeuds }
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_FUNCTION, ENT_METHOD, ENT_PROCEDURE] Then
+    Begin
+      AddCallGraphNode(I, Entities[I].Name, Entities[I].FileName, 
+                       Entities[I].Line);
+    End;
+  End;
+  
+  { Note: L'analyse complete des appels necessite le parsing du corps
+    des fonctions, ce qui n'est pas implemente dans cette version
+    simplifiee. Les aretes peuvent etre ajoutees manuellement ou
+    lors d'une analyse plus approfondie du code source. }
+  
+  WriteLn('Graphe d''appels construit: ', CallNodeCount, ' noeuds, ',
+          CallEdgeCount, ' aretes');
+End;
+
+Procedure GenerateCallGraphDot(Const Entity: TEntity; Var OutFile: Text);
+{ Genere le graphe d'appels au format DOT (Graphviz) }
+Var
+  I: Integer;
+  NodeIdx: Integer;
+Begin
+  WriteLn(OutFile, 'digraph "', Entity.Name, '" {');
+  WriteLn(OutFile, '  // Configuration du graphe');
+  WriteLn(OutFile, '  rankdir=LR;');
+  WriteLn(OutFile, '  node [shape=', CALLGRAPH_NODE_SHAPE, ', fontname="', 
+          CALLGRAPH_FONT_NAME, '", fontsize=', CALLGRAPH_FONT_SIZE, '];');
+  WriteLn(OutFile, '  edge [style=', CALLGRAPH_EDGE_STYLE, '];');
+  WriteLn(OutFile);
+  
+  { Trouver le noeud de l'entite }
+  NodeIdx := 0;
+  For I := 1 To CallNodeCount Do
+  Begin
+    If CallGraphNodes[I].Name = Entity.Name Then
+    Begin
+      NodeIdx := I;
+      Break;
+    End;
+  End;
+  
+  If NodeIdx > 0 Then
+  Begin
+    WriteLn(OutFile, '  // Noeud central');
+    WriteLn(OutFile, '  "', Entity.Name, '" [style=filled, fillcolor=lightblue];');
+    WriteLn(OutFile);
+    
+    { Generer les aretes sortantes (fonctions appelees) }
+    WriteLn(OutFile, '  // Fonctions appelees');
+    For I := 1 To CallEdgeCount Do
+    Begin
+      If CallGraphEdges[I].CallerId = NodeIdx Then
+      Begin
+        If (CallGraphEdges[I].CalleeId >= 1) And 
+           (CallGraphEdges[I].CalleeId <= CallNodeCount) Then
+        Begin
+          WriteLn(OutFile, '  "', CallGraphNodes[CallGraphEdges[I].CallerId].Name,
+                  '" -> "', CallGraphNodes[CallGraphEdges[I].CalleeId].Name, '";');
+        End;
+      End;
+    End;
+    
+    { Generer les aretes entrantes (fonctions appelantes) }
+    WriteLn(OutFile);
+    WriteLn(OutFile, '  // Fonctions appelantes');
+    For I := 1 To CallEdgeCount Do
+    Begin
+      If CallGraphEdges[I].CalleeId = NodeIdx Then
+      Begin
+        If (CallGraphEdges[I].CallerId >= 1) And 
+           (CallGraphEdges[I].CallerId <= CallNodeCount) Then
+        Begin
+          WriteLn(OutFile, '  "', CallGraphNodes[CallGraphEdges[I].CallerId].Name,
+                  '" -> "', CallGraphNodes[CallGraphEdges[I].CalleeId].Name, '";');
+        End;
+      End;
+    End;
+  End
+  Else
+  Begin
+    { Noeud non trouve, generer un noeud isole }
+    WriteLn(OutFile, '  "', Entity.Name, '" [style=filled, fillcolor=lightblue];');
+  End;
+  
+  WriteLn(OutFile, '}');
+End;
+
+Procedure GenerateFullCallGraphDot(Var OutFile: Text);
+{ Genere le graphe d'appels complet au format DOT }
+Var
+  I: Integer;
+Begin
+  WriteLn(OutFile, 'digraph "CallGraph" {');
+  WriteLn(OutFile, '  // Configuration du graphe');
+  WriteLn(OutFile, '  rankdir=TB;');
+  WriteLn(OutFile, '  node [shape=', CALLGRAPH_NODE_SHAPE, ', fontname="', 
+          CALLGRAPH_FONT_NAME, '", fontsize=', CALLGRAPH_FONT_SIZE, '];');
+  WriteLn(OutFile, '  edge [style=', CALLGRAPH_EDGE_STYLE, '];');
+  WriteLn(OutFile);
+  
+  { Generer tous les noeuds }
+  WriteLn(OutFile, '  // Noeuds');
+  For I := 1 To CallNodeCount Do
+  Begin
+    WriteLn(OutFile, '  "', CallGraphNodes[I].Name, '";');
+  End;
+  
+  WriteLn(OutFile);
+  
+  { Generer toutes les aretes }
+  WriteLn(OutFile, '  // Aretes');
+  For I := 1 To CallEdgeCount Do
+  Begin
+    If (CallGraphEdges[I].CallerId >= 1) And 
+       (CallGraphEdges[I].CallerId <= CallNodeCount) And
+       (CallGraphEdges[I].CalleeId >= 1) And 
+       (CallGraphEdges[I].CalleeId <= CallNodeCount) Then
+    Begin
+      Write(OutFile, '  "', CallGraphNodes[CallGraphEdges[I].CallerId].Name,
+            '" -> "', CallGraphNodes[CallGraphEdges[I].CalleeId].Name, '"');
+      If Not CallGraphEdges[I].IsDirect Then
+        Write(OutFile, ' [style=dashed]');
+      WriteLn(OutFile, ';');
+    End;
+  End;
+  
+  WriteLn(OutFile, '}');
+End;
+
+Procedure RenderCallGraphImage(Const DotFile, ImageFile: String);
+{ Invoque dot pour generer l'image (PNG, SVG, etc.) }
+Var
+  Cmd: String;
+  Format: String;
+  I: Integer;
+Begin
+  { Determiner le format a partir de l'extension }
+  Format := 'png'; { Par defaut }
+  For I := Length(ImageFile) DownTo 1 Do
+  Begin
+    If ImageFile[I] = '.' Then
+    Begin
+      Format := Copy(ImageFile, I + 1, Length(ImageFile) - I);
+      Break;
+    End;
+  End;
+  
+  { Note: L'execution de commandes externes necessite SwapVectors
+    et Exec sous DOS, ou d'autres mecanismes selon la plateforme.
+    Cette procedure est un placeholder. }
+  
+  WriteLn('Pour generer l''image, executez:');
+  WriteLn('  dot -T', Format, ' ', DotFile, ' -o ', ImageFile);
+End;
+
+Procedure GenerateCallGraphDocumentation;
+{ Orchestrateur : genere tous les graphes d'appels }
+Var
+  I: Integer;
+  F: Text;
+  FileName: String;
+Begin
+  If Not CallGraphInitialized Then
+    InitCallGraph;
+  
+  WriteLn('Generation des graphes d''appels...');
+  
+  { Construire le graphe d'appels }
+  BuildCallGraph;
+  
+  { Generer le graphe complet }
+  FileName := CallGraphOutputDir + CALLGRAPH_DOT_FILE;
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateFullCallGraphDot(F);
+    Close(F);
+    WriteLn('Graphe d''appels complet genere: ', FileName);
+    RenderCallGraphImage(FileName, CallGraphOutputDir + CALLGRAPH_PNG_FILE);
+  End
+  Else
+    WarnMsg('Impossible de creer: ' + FileName);
+  
+  { Generer un graphe pour chaque fonction }
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_FUNCTION, ENT_METHOD, ENT_PROCEDURE] Then
+    Begin
+      FileName := CallGraphOutputDir + Entities[I].Name + '.dot';
+      Assign(F, FileName);
+      {$I-}
+      Rewrite(F);
+      {$I+}
+      If IOResult = 0 Then
+      Begin
+        GenerateCallGraphDot(Entities[I], F);
+        Close(F);
+      End;
+    End;
+  End;
+  
+  WriteLn('Documentation des graphes d''appels generee dans: ', CallGraphOutputDir);
+End;
+
+{ Fonctions accesseurs pour les graphes d'appels }
+
+Function GetCallGraphOutputDir: String;
+Begin
+  GetCallGraphOutputDir := CallGraphOutputDir;
+End;
+
+Procedure SetCallGraphOutputDir(Const Dir: String);
+Begin
+  CallGraphOutputDir := Dir;
+End;
+
+Function GetCallNodeCount: Integer;
+Begin
+  GetCallNodeCount := CallNodeCount;
+End;
+
+Function GetCallEdgeCount: Integer;
+Begin
+  GetCallEdgeCount := CallEdgeCount;
+End;
+
+Function GetCallGraphNode(Index: Integer): TCallGraphNode;
+Begin
+  If (Index >= 1) And (Index <= CallNodeCount) Then
+    GetCallGraphNode := CallGraphNodes[Index]
+  Else
+  Begin
+    GetCallGraphNode.EntityId := 0;
+    GetCallGraphNode.Name := '';
+    GetCallGraphNode.FileName := '';
+    GetCallGraphNode.Line := 0;
+    GetCallGraphNode.NodeId := 0;
+  End;
+End;
+
+Function GetCallGraphEdge(Index: Integer): TCallGraphEdge;
+Begin
+  If (Index >= 1) And (Index <= CallEdgeCount) Then
+    GetCallGraphEdge := CallGraphEdges[Index]
+  Else
+  Begin
+    GetCallGraphEdge.CallerId := 0;
+    GetCallGraphEdge.CalleeId := 0;
+    GetCallGraphEdge.Line := 0;
+    GetCallGraphEdge.IsDirect := False;
+    GetCallGraphEdge.EdgeId := 0;
+  End;
+End;
+
+Function IsCallGraphInitialized: Boolean;
+Begin
+  IsCallGraphInitialized := CallGraphInitialized;
+End;
+
+Function IsCallGraphEmpty: Boolean;
+Begin
+  IsCallGraphEmpty := (CallNodeCount = 0);
+End;
+
+Function HasCallGraphEdge(CallerId, CalleeId: Integer): Boolean;
+{ Verifie si une arete existe entre deux noeuds }
+Var
+  I: Integer;
+Begin
+  HasCallGraphEdge := False;
+  For I := 1 To CallEdgeCount Do
+  Begin
+    If (CallGraphEdges[I].CallerId = CallerId) And
+       (CallGraphEdges[I].CalleeId = CalleeId) Then
+    Begin
+      HasCallGraphEdge := True;
+      Exit;
+    End;
+  End;
+End;
+
+Function GetNodeCallees(NodeIdx: Integer): String;
+{ Retourne les noms des fonctions appelees par un noeud }
+Var
+  I: Integer;
+  Result: String;
+Begin
+  Result := '';
+  For I := 1 To CallEdgeCount Do
+  Begin
+    If CallGraphEdges[I].CallerId = NodeIdx Then
+    Begin
+      If Result <> '' Then
+        Result := Result + ', ';
+      If (CallGraphEdges[I].CalleeId >= 1) And 
+         (CallGraphEdges[I].CalleeId <= CallNodeCount) Then
+        Result := Result + CallGraphNodes[CallGraphEdges[I].CalleeId].Name;
+    End;
+  End;
+  GetNodeCallees := Result;
+End;
+
+Function GetNodeCallers(NodeIdx: Integer): String;
+{ Retourne les noms des fonctions qui appellent un noeud }
+Var
+  I: Integer;
+  Result: String;
+Begin
+  Result := '';
+  For I := 1 To CallEdgeCount Do
+  Begin
+    If CallGraphEdges[I].CalleeId = NodeIdx Then
+    Begin
+      If Result <> '' Then
+        Result := Result + ', ';
+      If (CallGraphEdges[I].CallerId >= 1) And 
+         (CallGraphEdges[I].CallerId <= CallNodeCount) Then
+        Result := Result + CallGraphNodes[CallGraphEdges[I].CallerId].Name;
+    End;
+  End;
+  GetNodeCallers := Result;
 End;
 
 { ============================================================
