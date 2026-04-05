@@ -174,7 +174,7 @@
             Generer le prologue PE : appel a Main apres init runtime
             Ignorer les lignes Attribute VB_*
 
-  TODO 07 - PARSEUR : DECLARATIONS (DIM, PUBLIC, PRIVATE, CONST, STATIC) [A FAIRE]
+  TODO 07 - PARSEUR : DECLARATIONS (DIM, PUBLIC, PRIVATE, CONST, STATIC) [IMPLEMENTE]
             Procedure ParseDim / ParsePublic / ParsePrivate / ParseConst
             Syntaxe :
               Dim x As Integer
@@ -3889,6 +3889,517 @@ Begin
   IsOptionCompareText := (OptionCompare = OPT_COMPARE_TEXT);
 End;
 
+{ ============================================================ }
+{ TODO 07 - PARSEUR : DECLARATIONS              [IMPLEMENTE]  }
+{           DIM, PUBLIC, PRIVATE, CONST, STATIC               }
+{ ============================================================ }
+
+Var
+  DeclCount       : Integer;  { compteur de declarations traitees     }
+  LastDeclIdx     : Integer;  { index du dernier symbole declare      }
+  DeclParsingDone : Boolean;  { fin de l analyse des declarations     }
+
+{ ------------------------------------------------------------ }
+{ InitDeclState : initialiser l etat des declarations          }
+{ ------------------------------------------------------------ }
+
+Procedure InitDeclState;
+Begin
+  DeclCount       := 0;
+  LastDeclIdx     := -1;
+  DeclParsingDone := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTypeSuffix : detecter un suffixe de type sur un ident   }
+{   x% -> Integer, s$ -> String, l& -> Long                   }
+{   f! -> Single, d# -> Double, c@ -> Currency                }
+{   Retourne le type VBT_* ou VBT_NONE si pas de suffixe      }
+{ ------------------------------------------------------------ }
+
+Function ParseTypeSuffix(Const Name : TString) : Integer;
+Var Last : Char;
+Begin
+  ParseTypeSuffix := VBT_NONE;
+  If Length(Name) < 2 Then Exit;
+  Last := Name[Length(Name)];
+  Case Last Of
+    '%' : ParseTypeSuffix := VBT_INTEGER;
+    '&' : ParseTypeSuffix := VBT_LONG;
+    '!' : ParseTypeSuffix := VBT_SINGLE;
+    '#' : ParseTypeSuffix := VBT_DOUBLE;
+    '@' : ParseTypeSuffix := VBT_CURRENCY;
+    '$' : ParseTypeSuffix := VBT_STRING;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ StripTypeSuffix : retirer le suffixe de type d un ident      }
+{ ------------------------------------------------------------ }
+
+Function StripTypeSuffix(Const Name : TString) : TString;
+Var Last : Char;
+Begin
+  StripTypeSuffix := Name;
+  If Length(Name) < 2 Then Exit;
+  Last := Name[Length(Name)];
+  If (Last = '%') Or (Last = '&') Or (Last = '!') Or
+     (Last = '#') Or (Last = '@') Or (Last = '$') Then
+    StripTypeSuffix := Copy(Name, 1, Length(Name) - 1);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTypeSpec : analyser un type apres "As"                  }
+{   Retourne le code VBT_* correspondant                       }
+{   Token courant doit etre le nom du type                     }
+{ ------------------------------------------------------------ }
+
+Function ParseTypeSpec : Integer;
+Var T : Integer;
+Begin
+  T := VBT_VARIANT; { par defaut si type non reconnu }
+  If CurTokType = TOK_KEYWORD Then
+  Begin
+    Case CurTokNum Of
+      KW_BOOLEAN  : T := VBT_BOOLEAN;
+      KW_BYTE     : T := VBT_BYTE;
+      KW_INTEGER  : T := VBT_INTEGER;
+      KW_LONG     : T := VBT_LONG;
+      KW_SINGLE   : T := VBT_SINGLE;
+      KW_DOUBLE   : T := VBT_DOUBLE;
+      KW_CURRENCY : T := VBT_CURRENCY;
+      KW_STRING   : T := VBT_STRING;
+      KW_DATE     : T := VBT_DATE;
+      KW_VARIANT  : T := VBT_VARIANT;
+      KW_OBJECT   : T := VBT_OBJECT;
+    Else
+      WarnMsg('Type non reconnu: "' + CurTokStr + '", Variant suppose');
+    End;
+    LexNextToken;
+    { Gerer String * n (chaine de taille fixe) }
+    If (T = VBT_STRING) And (CurTokType = TOK_STAR) Then
+    Begin
+      LexNextToken; { consommer * }
+      If CurTokType = TOK_INTEGER Then
+        LexNextToken  { consommer la taille (on reste String pour l instant) }
+      Else
+        WarnMsg('Taille de chaine attendue apres String *');
+    End;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    { Type utilisateur }
+    T := VBT_USER;
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom de type attendu, trouve "' + CurTokStr + '"');
+  End;
+  ParseTypeSpec := T;
+End;
+
+{ ------------------------------------------------------------ }
+{ DetermineStoreClass : determiner la classe d entreposage     }
+{   selon le contexte (global ou local) et les options         }
+{ ------------------------------------------------------------ }
+
+Function DetermineStoreClass(IsStaticDecl : Boolean;
+                             IsPub : Boolean) : Integer;
+Begin
+  If IsStaticDecl Then
+    DetermineStoreClass := STORE_STATIC
+  Else If IsInGlobalScope Then
+    DetermineStoreClass := STORE_GLOBAL
+  Else If IsPub Then
+    DetermineStoreClass := STORE_GLOBAL
+  Else
+    DetermineStoreClass := STORE_AUTO;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseVarDecl : analyser une seule declaration de variable    }
+{   Token courant : le nom de la variable                      }
+{   IsStaticDecl : Static Dim                                  }
+{   IsPub : Public                                             }
+{   Retourne l index du symbole cree ou -1                     }
+{ ------------------------------------------------------------ }
+
+Function ParseVarDecl(IsStaticDecl : Boolean;
+                      IsPub : Boolean) : Integer;
+Var
+  VarName   : TString;
+  VarType   : Integer;
+  SuffType  : Integer;
+  Store     : Integer;
+  Idx       : Integer;
+  ArrDims   : Integer;
+  HasParens : Boolean;
+Begin
+  ParseVarDecl := -1;
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    FatalError('Nom de variable attendu, trouve "' + CurTokStr + '"');
+    Exit;
+  End;
+  VarName  := CurTokStr;
+  SuffType := ParseTypeSuffix(VarName);
+  If SuffType <> VBT_NONE Then
+    VarName := StripTypeSuffix(VarName);
+  LexNextToken;
+
+  { Verifier les parentheses pour tableau }
+  ArrDims   := 0;
+  HasParens := False;
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    HasParens := True;
+    LexNextToken; { consommer ( }
+    If CurTokType = TOK_RPAREN Then
+    Begin
+      { Tableau dynamique : arr() }
+      ArrDims := 1;
+    End
+    Else
+    Begin
+      { Tableau avec dimension(s) }
+      ArrDims := 1;
+      { Parcourir les dimensions }
+      While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+      Begin
+        { Sauter les tokens de la dimension (nombre, To, nombre) }
+        If CurTokType = TOK_COMMA Then
+        Begin
+          Inc(ArrDims);
+          LexNextToken;
+        End
+        Else
+          LexNextToken;
+      End;
+    End;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken; { consommer ) }
+  End;
+
+  { Verifier "As Type" }
+  VarType := VBT_VARIANT; { par defaut }
+  If IsKeywordToken(KW_AS) Then
+  Begin
+    LexNextToken; { consommer As }
+    VarType := ParseTypeSpec;
+  End
+  Else If SuffType <> VBT_NONE Then
+    VarType := SuffType;
+
+  { Determiner la classe d entreposage }
+  Store := DetermineStoreClass(IsStaticDecl, IsPub);
+
+  { Ajouter le symbole }
+  Idx := AddSym(VarName, SK_VAR, VarType, Store);
+  If Idx < 0 Then
+  Begin
+    ParseVarDecl := -1;
+    Exit;
+  End;
+
+  { Configurer les champs supplementaires }
+  SymTab[Idx].IsPublic  := IsPub;
+  SymTab[Idx].IsStatic  := IsStaticDecl;
+  SymTab[Idx].ArrayDims := ArrDims;
+  SymTab[Idx].ArrayBase := OptionBase;
+
+  { Allouer l espace memoire }
+  If Store = STORE_AUTO Then
+  Begin
+    { Variable locale : allouer sur la pile EBP }
+    SymTab[Idx].BpOffset := AllocLocalEbp(VBTypeSize(VarType));
+  End;
+
+  If Opts.Verbose Then
+  Begin
+    Write('  Decl: ', VarName, ' As ', VBTypeName(VarType));
+    Write(' [', StoreClassName(Store), ']');
+    If ArrDims > 0 Then
+      Write(' (', ItoSI(ArrDims), ' dim)');
+    If Store = STORE_AUTO Then
+      Write(' [EBP-', ItoSI(SymTab[Idx].BpOffset), ']');
+    WriteLn;
+  End;
+
+  Inc(DeclCount);
+  LastDeclIdx := Idx;
+  ParseVarDecl := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDimStatement : analyser Dim x As Type [, y As Type...]  }
+{   Token courant : KW_DIM                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDimStatement;
+Begin
+  LexNextToken; { consommer Dim }
+  { Analyser la premiere variable }
+  ParseVarDecl(False, False);
+  { Verifier les declarations multiples separees par virgule }
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken; { consommer , }
+    ParseVarDecl(False, False);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePublicDecl : analyser Public gVar As Type               }
+{   Token courant : KW_PUBLIC                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePublicDecl;
+Begin
+  LexNextToken; { consommer Public }
+  { Verifier si c est Public Sub/Function (sera traite par TODO 09) }
+  If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Then
+  Begin
+    { Remettre le token pour les TODOs futurs }
+    SkipToEndOfLine;
+    Exit;
+  End;
+  { Sinon c est une declaration de variable publique }
+  ParseVarDecl(False, True);
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken;
+    ParseVarDecl(False, True);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrivateDecl : analyser Private mVar As Type             }
+{   Token courant : KW_PRIVATE                                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrivateDecl;
+Begin
+  LexNextToken; { consommer Private }
+  { Verifier si c est Private Sub/Function }
+  If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Then
+  Begin
+    SkipToEndOfLine;
+    Exit;
+  End;
+  { Sinon c est une declaration de variable privee }
+  ParseVarDecl(False, False);
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken;
+    ParseVarDecl(False, False);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStaticDecl : analyser Static sVar As Type               }
+{   Token courant : KW_STATIC                                  }
+{   Static alloue toujours en .DATA (meme dans Sub/Function)   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStaticDecl;
+Begin
+  LexNextToken; { consommer Static }
+  { Verifier si c est Static Sub/Function }
+  If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Then
+  Begin
+    SkipToEndOfLine;
+    Exit;
+  End;
+  ParseVarDecl(True, False);
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken;
+    ParseVarDecl(True, False);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseConstStatement : analyser Const PI = 3.14159            }
+{   ou Const MAX_SIZE As Long = 100                            }
+{   Token courant : KW_CONST                                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConstStatement;
+Var
+  ConstName : TString;
+  ConstType : Integer;
+  SuffType  : Integer;
+  Store     : Integer;
+  Idx       : Integer;
+Begin
+  LexNextToken; { consommer Const }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    FatalError('Nom de constante attendu, trouve "' + CurTokStr + '"');
+    Exit;
+  End;
+  ConstName := CurTokStr;
+  SuffType  := ParseTypeSuffix(ConstName);
+  If SuffType <> VBT_NONE Then
+    ConstName := StripTypeSuffix(ConstName);
+  LexNextToken;
+
+  { Type optionnel : As Type }
+  ConstType := VBT_VARIANT;
+  If IsKeywordToken(KW_AS) Then
+  Begin
+    LexNextToken;
+    ConstType := ParseTypeSpec;
+  End
+  Else If SuffType <> VBT_NONE Then
+    ConstType := SuffType;
+
+  { Attendre le signe = }
+  If CurTokType <> TOK_EQ Then
+  Begin
+    FatalError('Signe "=" attendu pour Const, trouve "' + CurTokStr + '"');
+    Exit;
+  End;
+  LexNextToken; { consommer = }
+
+  { Determiner la classe d entreposage pour la constante }
+  Store := STORE_CONSTANT;
+
+  { Ajouter le symbole comme constante }
+  Idx := AddSym(ConstName, SK_CONST, ConstType, Store);
+  If Idx < 0 Then Exit;
+
+  SymTab[Idx].IsConst := True;
+  SymTab[Idx].HasInit := True;
+
+  { Lire la valeur initiale }
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    SymTab[Idx].InitNum := CurTokNum;
+    If ConstType = VBT_VARIANT Then
+      SymTab[Idx].DataType := VBT_LONG;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_STRING Then
+  Begin
+    SymTab[Idx].InitStr := CurTokStr;
+    If ConstType = VBT_VARIANT Then
+      SymTab[Idx].DataType := VBT_STRING;
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOTHING) Then
+  Begin
+    SymTab[Idx].InitNum := 0;
+    If ConstType = VBT_VARIANT Then
+      SymTab[Idx].DataType := VBT_OBJECT;
+    LexNextToken;
+  End
+  Else
+  Begin
+    { Expression complexe : lire jusqu a fin de ligne }
+    { (sera ameliore par TODO 08 - expressions) }
+    SymTab[Idx].InitNum := CurTokNum;
+    SkipToEndOfLine;
+  End;
+
+  If Opts.Verbose Then
+  Begin
+    Write('  Const: ', ConstName, ' As ', VBTypeName(SymTab[Idx].DataType));
+    If SymTab[Idx].DataType = VBT_STRING Then
+      Write(' = "', SymTab[Idx].InitStr, '"')
+    Else
+      Write(' = ', ItoS(SymTab[Idx].InitNum));
+    WriteLn;
+  End;
+
+  Inc(DeclCount);
+  LastDeclIdx := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseModuleLevelDecl : analyser les declarations au niveau   }
+{   du module (Dim, Public, Private, Static, Const)            }
+{   Boucle jusqu a rencontrer Sub/Function/End ou EOF          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseModuleLevelDecl;
+Begin
+  InitDeclState;
+  SkipNewlines;
+  While CurTokType <> TOK_EOF Do
+  Begin
+    { Dim }
+    If IsKeywordToken(KW_DIM) Then
+    Begin
+      ParseDimStatement;
+      SkipNewlines;
+    End
+    { Public (variable ou Sub/Function) }
+    Else If IsKeywordToken(KW_PUBLIC) Then
+    Begin
+      ParsePublicDecl;
+      SkipNewlines;
+    End
+    { Private (variable ou Sub/Function) }
+    Else If IsKeywordToken(KW_PRIVATE) Then
+    Begin
+      ParsePrivateDecl;
+      SkipNewlines;
+    End
+    { Static }
+    Else If IsKeywordToken(KW_STATIC) Then
+    Begin
+      ParseStaticDecl;
+      SkipNewlines;
+    End
+    { Const }
+    Else If IsKeywordToken(KW_CONST) Then
+    Begin
+      ParseConstStatement;
+      SkipNewlines;
+    End
+    { Sub / Function / End : fin des declarations de module }
+    Else If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Or
+            IsKeywordToken(KW_END) Then
+    Begin
+      { Arreter : le code sera traite par les TODOs 08-25 }
+      Break;
+    End
+    { Option / Attribute deja traites dans ParseModuleHeader }
+    Else If IsKeywordToken(KW_OPTION) Or IsIdentToken('Attribute') Then
+    Begin
+      SkipToEndOfLine;
+      SkipNewlines;
+    End
+    { Token non reconnu a ce niveau : arreter les declarations }
+    Else
+      Break;
+  End;
+  DeclParsingDone := True;
+  If Opts.Verbose Then
+    WriteLn('  ', ItoSI(DeclCount), ' declaration(s) au niveau module');
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour les declarations                    }
+{ ------------------------------------------------------------ }
+
+Function GetDeclCount : Integer;
+Begin
+  GetDeclCount := DeclCount;
+End;
+
+Function GetLastDeclIdx : Integer;
+Begin
+  GetLastDeclIdx := LastDeclIdx;
+End;
+
+Function IsDeclParsingDone : Boolean;
+Begin
+  IsDeclParsingDone := DeclParsingDone;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -3900,8 +4411,9 @@ Begin
   InitScopes;
   LexInit;
   ParseModule;
-  { Les TODOs 07-25 ajouteront ici : }
-  {   ParseDeclarations, ParseStatements, Emit, WritePE/WriteCOFF/WriteASM }
+  ParseModuleLevelDecl;
+  { Les TODOs 08-25 ajouteront ici : }
+  {   ParseStatements, Emit, WritePE/WriteCOFF/WriteASM }
   LexClose;
   ShowStats;
 End;

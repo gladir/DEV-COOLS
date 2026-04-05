@@ -166,7 +166,7 @@
             Generer le prologue PE : appel a Main apres init runtime
             Ignorer les lignes Attribute VB_*
 
-  TODO 07 - PARSEUR : DECLARATIONS (DIM, PUBLIC, PRIVATE, CONST, STATIC) [A FAIRE]
+  TODO 07 - PARSEUR : DECLARATIONS (DIM, PUBLIC, PRIVATE, CONST, STATIC) [IMPLEMENTE]
             Procedure ParseDim / ParsePublic / ParsePrivate / ParseConst
             Syntaxe :
               Dim x As Integer
