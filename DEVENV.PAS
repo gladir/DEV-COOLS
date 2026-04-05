@@ -1008,6 +1008,9 @@ Const
  TOOLBTN_HEIGHT        = 24;      { hauteur d un bouton            }
  TOOLSEP_WIDTH         = 8;       { largeur d un separateur        }
 
+ { Coloration syntaxique C }
+ MAX_C_KEYWORDS        = 32;      { nombre de mots-cles C          }
+
  { Coloration syntaxique C# }
  MAX_CSHARP_KEYWORDS   = 79;      { nombre de mots-cles C#         }
  MAX_CSHARP_CTXKW      = 28;      { nombre de mots-cles contextuels}
@@ -1654,6 +1657,14 @@ Type
   InString       : Boolean;     { dans une chaine multi-ligne      }
   StateStack     : Array[0..63] Of Byte; { pile d etats           }
   StateTop       : Integer;     { sommet de la pile d etats        }
+ End;
+
+ { Coloration syntaxique specialisee C# }
+ { Coloration syntaxique specialisee C }
+ TCHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_C_KEYWORDS - 1] Of String[15];
+  KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
  { Coloration syntaxique specialisee C# }
@@ -2552,6 +2563,8 @@ Var
  EditorUndo   : TUndoStack;
  EditorRedo   : TUndoStack;
  EditorReady  : Boolean;  { True si ActiveEditor est initialise }
+ { Coloration syntaxique C }
+ CHL          : TCHighlighter;
  { Coloration syntaxique C# }
  CSharpHL     : TCSharpHighlighter;
  { Coloration syntaxique VB.NET }
@@ -6262,6 +6275,12 @@ Procedure HighlightPascalLine(Var HL: TPascalHighlighter;
                               Line: String;
                               Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightCLine --- }
+
+Procedure HighlightCLine(Var HL: TCHighlighter;
+                         Line: String;
+                         Var Colors: Array Of Byte); Forward;
+
 { --- Declaration anticipee de HighlightCSharpLine --- }
 
 Procedure HighlightCSharpLine(Var HL: TCSharpHighlighter;
@@ -6293,6 +6312,7 @@ Var
  Colors: Array[0..255] Of Byte;
  Ch: String[1];
  IsPascal: Boolean;
+ IsC: Boolean;
  IsCSharp: Boolean;
  IsAda: Boolean;
  IsAbap: Boolean;
@@ -6302,6 +6322,7 @@ Begin
  Ext := UpCaseStr(ExtractFileExt(Ed.Buffer.FileName));
  IsPascal := (Ext = '.PAS') Or (Ext = '.PP') Or (Ext = '.INC') Or
              (Ext = '.DPR') Or (Ext = '.LPR');
+ IsC := (Ext = '.C') Or (Ext = '.H');
  IsCSharp := (Ext = '.CS');
  IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  IsAbap := (Ext = '.ABAP') Or (Ext = '.ABP');
@@ -6327,6 +6348,9 @@ Begin
    If IsPascal And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightPascalLine(PascalHL, FullLine, Colors)
+   Else If IsC And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightCLine(CHL, FullLine, Colors)
    Else If IsCSharp And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
     HighlightCSharpLine(CSharpHL, FullLine, Colors)
@@ -7880,6 +7904,152 @@ Begin
  H.InBlockComment := SaveBC;
  H.InString := SaveStr;
  H.StateTop := SaveTop;
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE C
+  ============================================================ }
+
+{ --- Initialiser les mots-cles C --- }
+
+Procedure InitCKeywords(Var HL: TCHighlighter);
+Begin
+ HL.KeywordCount := MAX_C_KEYWORDS;
+ HL.Keywords[0]  := 'auto';
+ HL.Keywords[1]  := 'break';
+ HL.Keywords[2]  := 'case';
+ HL.Keywords[3]  := 'const';
+ HL.Keywords[4]  := 'continue';
+ HL.Keywords[5]  := 'default';
+ HL.Keywords[6]  := 'do';
+ HL.Keywords[7]  := 'else';
+ HL.Keywords[8]  := 'enum';
+ HL.Keywords[9]  := 'extern';
+ HL.Keywords[10] := 'for';
+ HL.Keywords[11] := 'goto';
+ HL.Keywords[12] := 'if';
+ HL.Keywords[13] := 'inline';
+ HL.Keywords[14] := 'register';
+ HL.Keywords[15] := 'restrict';
+ HL.Keywords[16] := 'return';
+ HL.Keywords[17] := 'sizeof';
+ HL.Keywords[18] := 'static';
+ HL.Keywords[19] := 'struct';
+ HL.Keywords[20] := 'switch';
+ HL.Keywords[21] := 'typedef';
+ HL.Keywords[22] := 'union';
+ HL.Keywords[23] := 'volatile';
+ HL.Keywords[24] := 'while';
+ HL.Keywords[25] := '_Alignas';
+ HL.Keywords[26] := '_Alignof';
+ HL.Keywords[27] := '_Atomic';
+ HL.Keywords[28] := '_Bool';
+ HL.Keywords[29] := '_Complex';
+ HL.Keywords[30] := '_Generic';
+ HL.Keywords[31] := '_Noreturn';
+End;
+
+{ --- Initialiser le moteur de coloration C --- }
+
+Procedure InitCHighlighter(Var HL: TCHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'C');
+ InitCKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle C --- }
+
+Function IsCKeyword(Var HL: TCHighlighter;
+                    Word: String): Boolean;
+Var
+ I: Integer;
+Begin
+ IsCKeyword := False;
+ For I := 0 To HL.KeywordCount - 1 Do
+ Begin
+  If Word = HL.Keywords[I] Then
+  Begin
+   IsCKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est un type predefini C --- }
+
+Function IsCType(Word: String): Boolean;
+Begin
+ IsCType :=
+  (Word = 'char') Or (Word = 'double') Or (Word = 'float') Or
+  (Word = 'int') Or (Word = 'long') Or (Word = 'short') Or
+  (Word = 'signed') Or (Word = 'unsigned') Or (Word = 'void') Or
+  (Word = 'size_t') Or (Word = 'ptrdiff_t') Or (Word = 'wchar_t') Or
+  (Word = 'int8_t') Or (Word = 'int16_t') Or (Word = 'int32_t') Or
+  (Word = 'int64_t') Or (Word = 'uint8_t') Or (Word = 'uint16_t') Or
+  (Word = 'uint32_t') Or (Word = 'uint64_t') Or (Word = 'bool') Or
+  (Word = 'FILE') Or (Word = 'NULL');
+End;
+
+{ --- Classifier un jeton C (identifier -> keyword/type) --- }
+
+Function ClassifyCToken(Var HL: TCHighlighter;
+                        Line: String;
+                        StartPos, EndPos: Integer): TTokenClass;
+Var
+ Word: String;
+Begin
+ Word := Copy(Line, StartPos, EndPos - StartPos);
+ If IsCType(Word) Then
+  ClassifyCToken := TC_TYPE
+ Else If IsCKeyword(HL, Word) Then
+  ClassifyCToken := TC_KEYWORD
+ Else
+  ClassifyCToken := TC_IDENTIFIER;
+End;
+
+{ --- Obtenir la classe de jeton C a une position --- }
+
+Function GetCTokenClass(Var HL: TCHighlighter;
+                        Line: String;
+                        Var Pos: Integer): TTokenClass;
+Var
+ StartPos: Integer;
+ TC: TTokenClass;
+Begin
+ StartPos := Pos;
+ TC := GetTokenClass(HL.Base, Line, Pos);
+ If TC = TC_IDENTIFIER Then
+  GetCTokenClass := ClassifyCToken(HL, Line, StartPos, Pos)
+ Else
+  GetCTokenClass := TC;
+End;
+
+{ --- Colorier une ligne C entiere --- }
+
+Procedure HighlightCLine(Var HL: TCHighlighter;
+                         Line: String;
+                         Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetCTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
 End;
 
 { ============================================================
@@ -23479,6 +23649,7 @@ BEGIN
  DrawToolBar;
  InitWindowManager;
  DrawWindowTabs;
+ InitCHighlighter(CHL);
  InitCSharpHighlighter(CSharpHL);
  InitVBNetHighlighter(VBNetHL);
  InitPascalHighlighter(PascalHL);
