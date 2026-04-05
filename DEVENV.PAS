@@ -11880,7 +11880,7 @@ Begin
    If Not PP.EditActive Then Begin
     Visible := GetVisiblePropertyCount(PP);
     Case Ev.KeyCode Of
-     $5000: Begin { Fleche bas }
+     $50: Begin { Fleche bas }
       If PP.SelectedIdx < PP.ItemCount - 1 Then Begin
        Inc(PP.SelectedIdx);
        If PP.SelectedIdx >= PP.ScrollTop + Visible Then
@@ -11888,7 +11888,7 @@ Begin
        PP.NeedRepaint := True;
       End;
      End;
-     $4800: Begin { Fleche haut }
+     $48: Begin { Fleche haut }
       If PP.SelectedIdx > 0 Then Begin
        Dec(PP.SelectedIdx);
        If PP.SelectedIdx < PP.ScrollTop Then
@@ -11896,12 +11896,12 @@ Begin
        PP.NeedRepaint := True;
       End;
      End;
-     $4700: Begin { Home }
+     $47: Begin { Home }
       PP.SelectedIdx := 0;
       PP.ScrollTop := 0;
       PP.NeedRepaint := True;
      End;
-     $4F00: Begin { End }
+     $4F: Begin { End }
       PP.SelectedIdx := PP.ItemCount - 1;
       If PP.SelectedIdx >= Visible Then
        PP.ScrollTop := PP.SelectedIdx - Visible + 1
@@ -11909,7 +11909,7 @@ Begin
        PP.ScrollTop := 0;
       PP.NeedRepaint := True;
      End;
-     $1C0D: Begin { Enter }
+     $1C: Begin { Enter }
       If (PP.SelectedIdx >= 0) And
          (PP.SelectedIdx < PP.ItemCount) Then
        BeginPropertyEdit(PP, PP.SelectedIdx);
@@ -12469,7 +12469,7 @@ Begin
    Visible := GetVisibleOutputLines(OP);
    LineCount := GetActiveLineCount(OP);
    Case Ev.KeyCode Of
-    $5000: Begin { Fleche bas }
+    $50: Begin { Fleche bas }
      If OP.SelectedIdx < LineCount - 1 Then Begin
       Inc(OP.SelectedIdx);
       If OP.SelectedIdx >= OP.ScrollTop + Visible Then
@@ -12477,7 +12477,7 @@ Begin
       OP.NeedRepaint := True;
      End;
     End;
-    $4800: Begin { Fleche haut }
+    $48: Begin { Fleche haut }
      If OP.SelectedIdx > 0 Then Begin
       Dec(OP.SelectedIdx);
       If OP.SelectedIdx < OP.ScrollTop Then
@@ -12485,12 +12485,12 @@ Begin
       OP.NeedRepaint := True;
      End;
     End;
-    $4700: Begin { Home }
+    $47: Begin { Home }
      OP.SelectedIdx := 0;
      OP.ScrollTop := 0;
      OP.NeedRepaint := True;
     End;
-    $4F00: Begin { End }
+    $4F: Begin { End }
      OP.SelectedIdx := LineCount - 1;
      If OP.SelectedIdx >= Visible Then
       OP.ScrollTop := OP.SelectedIdx - Visible + 1
@@ -12498,7 +12498,7 @@ Begin
       OP.ScrollTop := 0;
      OP.NeedRepaint := True;
     End;
-    $4900: Begin { Page haut }
+    $49: Begin { Page haut }
      Dec(OP.ScrollTop, Visible);
      If OP.ScrollTop < 0 Then
       OP.ScrollTop := 0;
@@ -12507,7 +12507,7 @@ Begin
       OP.SelectedIdx := 0;
      OP.NeedRepaint := True;
     End;
-    $5100: Begin { Page bas }
+    $51: Begin { Page bas }
      Inc(OP.ScrollTop, Visible);
      If OP.ScrollTop > LineCount - Visible Then Begin
       OP.ScrollTop := LineCount - Visible;
@@ -13311,7 +13311,7 @@ Begin
   End;
   EV_KEY_DOWN: Begin
    Case Ev.KeyCode Of
-    $5000: Begin { Fleche bas }
+    $50: Begin { Fleche bas }
      If EL.SelectedIdx < 0 Then
       EL.SelectedIdx := 0
      Else If EL.SelectedIdx < EL.Count - 1 Then
@@ -13320,7 +13320,7 @@ Begin
       EL.ScrollTop := EL.SelectedIdx - Visible + 1;
      EL.NeedRepaint := True;
     End;
-    $4800: Begin { Fleche haut }
+    $48: Begin { Fleche haut }
      If EL.SelectedIdx > 0 Then Begin
       Dec(EL.SelectedIdx);
       If EL.SelectedIdx < EL.ScrollTop Then
@@ -13328,12 +13328,12 @@ Begin
       EL.NeedRepaint := True;
      End;
     End;
-    $4700: Begin { Home }
+    $47: Begin { Home }
      EL.SelectedIdx := 0;
      EL.ScrollTop := 0;
      EL.NeedRepaint := True;
     End;
-    $4F00: Begin { End }
+    $4F: Begin { End }
      If VisCount > 0 Then Begin
       EL.SelectedIdx := VisibleToRealIndex(EL, VisCount - 1);
       If VisCount > Visible Then
@@ -13343,14 +13343,14 @@ Begin
      End;
      EL.NeedRepaint := True;
     End;
-    $4900: Begin { Page haut }
+    $49: Begin { Page haut }
      Dec(EL.ScrollTop, Visible);
      If EL.ScrollTop < 0 Then EL.ScrollTop := 0;
      Dec(EL.SelectedIdx, Visible);
      If EL.SelectedIdx < 0 Then EL.SelectedIdx := 0;
      EL.NeedRepaint := True;
     End;
-    $5100: Begin { Page bas }
+    $51: Begin { Page bas }
      Inc(EL.ScrollTop, Visible);
      If EL.ScrollTop > VisCount - Visible Then Begin
       EL.ScrollTop := VisCount - Visible;
@@ -14320,7 +14320,7 @@ Begin
   HandleFileDialogKey(FD, Ev.KeyChar)
  Else If Ev.Kind = EV_KEY_DOWN Then Begin
   { Touches speciales : haut/bas/PgUp/PgDn pour la liste }
-  If Ev.KeyCode = $4800 Then Begin { Fleche haut }
+  If Ev.KeyCode = $48 Then Begin { Fleche haut }
    If FD.SelIndex > 0 Then Begin
     Dec(FD.SelIndex);
     If FD.SelIndex < FD.ScrollTop Then
@@ -14331,7 +14331,7 @@ Begin
     End Else
      FD.InputText := '';
    End;
-  End Else If Ev.KeyCode = $5000 Then Begin { Fleche bas }
+  End Else If Ev.KeyCode = $50 Then Begin { Fleche bas }
    If FD.SelIndex < FD.FileCount - 1 Then Begin
     Inc(FD.SelIndex);
     { Calculer le nombre de lignes visibles }
@@ -14346,7 +14346,7 @@ Begin
     End Else
      FD.InputText := '';
    End;
-  End Else If Ev.KeyCode = $4900 Then Begin { PgUp }
+  End Else If Ev.KeyCode = $49 Then Begin { PgUp }
    Idx := (FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
     - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT)
     Div DLG_LIST_ROW_HEIGHT;
@@ -14359,7 +14359,7 @@ Begin
     FD.InputCursor := Length(FD.InputText);
    End Else
     FD.InputText := '';
-  End Else If Ev.KeyCode = $5100 Then Begin { PgDn }
+  End Else If Ev.KeyCode = $51 Then Begin { PgDn }
    Idx := (FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
     - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT)
     Div DLG_LIST_ROW_HEIGHT;
@@ -14377,7 +14377,7 @@ Begin
     FD.InputCursor := Length(FD.InputText);
    End Else
     FD.InputText := '';
-  End Else If Ev.KeyCode = $4700 Then Begin { Home }
+  End Else If Ev.KeyCode = $47 Then Begin { Home }
    FD.SelIndex := 0;
    FD.ScrollTop := 0;
    If Not FD.FileList[0].IsDir Then Begin
@@ -14385,7 +14385,7 @@ Begin
     FD.InputCursor := Length(FD.InputText);
    End Else
     FD.InputText := '';
-  End Else If Ev.KeyCode = $4F00 Then Begin { End }
+  End Else If Ev.KeyCode = $4F Then Begin { End }
    FD.SelIndex := FD.FileCount - 1;
    Idx := (FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
     - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT)
@@ -14592,14 +14592,14 @@ Begin
    CloseDialog(FD.Base);
   End;
  End Else If Ev.Kind = EV_KEY_DOWN Then Begin
-  If Ev.KeyCode = $4800 Then Begin
+  If Ev.KeyCode = $48 Then Begin
    If FD.SelIndex > 0 Then Begin
     Dec(FD.SelIndex);
     If FD.SelIndex < FD.ScrollTop Then
      FD.ScrollTop := FD.SelIndex;
     FD.SelectedFolder := FD.CurrentPath + FD.FileList[FD.SelIndex].Name;
    End;
-  End Else If Ev.KeyCode = $5000 Then Begin
+  End Else If Ev.KeyCode = $50 Then Begin
    If FD.SelIndex < FD.FileCount - 1 Then Begin
     Inc(FD.SelIndex);
     FD.SelectedFolder := FD.CurrentPath + FD.FileList[FD.SelIndex].Name;
@@ -15932,13 +15932,13 @@ Begin
     CloseDialog(Dlg.Base);
     Exit;
    End;
-   If Ev.KeyCode = $4800 Then { Fleche haut }
+   If Ev.KeyCode = $48 Then { Fleche haut }
    Begin
     If Dlg.SelIndex > 0 Then
      Dec(Dlg.SelIndex);
     DrawAddReferenceDialog(Dlg);
    End;
-   If Ev.KeyCode = $5000 Then { Fleche bas }
+   If Ev.KeyCode = $50 Then { Fleche bas }
    Begin
     If Dlg.SelIndex < Dlg.ItemCount - 1 Then
      Inc(Dlg.SelIndex);
@@ -17592,7 +17592,7 @@ Begin
   CloseDialog(Dlg.Base);
   Exit;
  End;
- If Key = $4800 Then { Fleche haut }
+ If Key = $48 Then { Fleche haut }
  Begin
   If Dlg.SelectedCategory > 0 Then
   Begin
@@ -17605,7 +17605,7 @@ Begin
    Dlg.Categories[Dlg.SelectedCategory].Selected := True;
   End;
  End;
- If Key = $5000 Then { Fleche bas }
+ If Key = $50 Then { Fleche bas }
  Begin
   If Dlg.SelectedCategory < Dlg.CategoryCount - 1 Then
   Begin
@@ -20860,12 +20860,12 @@ Procedure HandleConfigManagerKey(
 Begin
  If Not CM.Visible Then Exit;
  Case Key Of
-  $4800: { Fleche haut }
+  $48: { Fleche haut }
    If CM.SelectedRow > 0 Then Begin
     Dec(CM.SelectedRow);
     CM.NeedRepaint := True;
    End;
-  $5000: { Fleche bas }
+  $50: { Fleche bas }
    Begin
     Inc(CM.SelectedRow);
     CM.NeedRepaint := True;
@@ -21364,12 +21364,12 @@ Procedure HandleDebugPanelKey(Var DP: TDebugPanel;
 Begin
  If Not DP.Visible Then Exit;
  Case Key Of
-  $4800: { Fleche haut }
+  $48: { Fleche haut }
    If DP.SelectedRow > 0 Then Begin
     Dec(DP.SelectedRow);
     DP.NeedRepaint := True;
    End;
-  $5000: { Fleche bas }
+  $50: { Fleche bas }
    Begin
     If (DP.ActiveTab = DPT_BREAKPOINTS) And
        (DP.SelectedRow < BPM.Count - 1) Then Begin
@@ -21385,7 +21385,7 @@ Begin
      Not BPM.Breakpoints[DP.SelectedRow].Enabled;
     DP.NeedRepaint := True;
    End;
-  $5300: { Suppr : supprimer le point d arret selectionne }
+  $53: { Suppr : supprimer le point d arret selectionne }
    If (DP.ActiveTab = DPT_BREAKPOINTS) And
       (DP.SelectedRow >= 0) And
       (DP.SelectedRow < BPM.Count) Then Begin
