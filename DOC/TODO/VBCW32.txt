@@ -305,7 +305,7 @@
               Next [element]
             Exit For / Exit Do : JMP vers label_fin de la boucle
 
-  TODO 12 - PARSEUR : SUB ET FUNCTION (PROCEDURES ET FONCTIONS) [A FAIRE]
+  TODO 12 - PARSEUR : SUB ET FUNCTION (PROCEDURES ET FONCTIONS) [IMPLEMENTE]
             Procedure ParseSub
             Syntaxe :
               [Public|Private] Sub nom([params])
