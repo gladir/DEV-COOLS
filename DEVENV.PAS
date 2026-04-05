@@ -3145,12 +3145,7 @@ Begin
  MX := 0;
  MY := 0;
  MBtn := 0;
- {$IFDEF FPC}
-  PtcMouse.GetMouseState(MX, MY, MBtn);
- {$ELSE}
-  GetMouseState(MX, MY, MBtn);
- {$ENDIF}
-
+ GetMouseState(MX, MY, MBtn);
  Btn := BtnFromMask(MBtn);
 
  { Bouton enfonce }
@@ -4352,8 +4347,18 @@ Begin
   End;
  End
  Else If Ev.Kind = EV_KEY_CHAR Then Begin
+  { Touches de controle du menu si actif }
+  If MenuActive Then Begin
+   Case Ev.KeyChar Of
+    #13: Begin { Entree : valider l element pointe par la souris }
+          If (SelItemIdx >= 0) And (OpenMenuIdx >= 0) Then
+           ExecuteMenuItem(MainMenuBar.Menus[OpenMenuIdx].Items[SelItemIdx]);
+         End;
+    #27: CloseMenu; { Echap : fermer le menu }
+   End;
+   Exit;
+  End;
   { Raccourcis clavier globaux }
-  If MenuActive Then Exit;
   { Pas de raccourcis ici pour l instant, les TODOs futurs
     connecteront les raccourcis aux commandes reelles. }
  End;
