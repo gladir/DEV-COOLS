@@ -376,7 +376,7 @@
               Operateur Like avec motifs (*, ?, #, [charlist])
             Format(expression, format_string) -> CALL _VBRT_FORMAT
 
-  TODO 15 - PARSEUR : TABLEAUX (DIM, REDIM, ERASE, LBOUND, UBOUND) [A FAIRE]
+  TODO 15 - PARSEUR : TABLEAUX (DIM, REDIM, ERASE, LBOUND, UBOUND) [IMPLEMENTE]
             Tableaux statiques :
               Dim arr(10) As Integer -> 11 elements (0 a 10)
               Dim arr(1 To 10) As Integer -> 10 elements
