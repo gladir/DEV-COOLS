@@ -197,7 +197,7 @@
             Allouer en .DATA (niveau module) ou pile EBP (locales)
             Static : toujours en .DATA meme dans Sub/Function
 
-  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS) [A FAIRE]
+  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS) [IMPLEMENTE]
             Function ParseExpr: Integer
             Function ParseOrExpr: Integer     (Or / Xor / Eqv / Imp)
             Function ParseAndExpr: Integer    (And)
@@ -4400,6 +4400,762 @@ Begin
   IsDeclParsingDone := DeclParsingDone;
 End;
 
+{ ============================================================ }
+{ TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES [IMPLEMENTE]  }
+{           ET LOGIQUES (32 BITS)                              }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ Operateur : constantes pour le type d operateur interne      }
+{ ------------------------------------------------------------ }
+
+Const
+  OP_NONE     = 0;    { pas d operateur                          }
+  OP_ADD      = 1;    { +                                        }
+  OP_SUB      = 2;    { -                                        }
+  OP_MUL      = 3;    { *                                        }
+  OP_DIV      = 4;    { /                                        }
+  OP_INTDIV   = 5;    { \ (division entiere)                     }
+  OP_MOD      = 6;    { Mod                                      }
+  OP_POW      = 7;    { ^                                        }
+  OP_CONCAT   = 8;    { & (concatenation)                        }
+  OP_EQ       = 10;   { =                                        }
+  OP_NE       = 11;   { <>                                       }
+  OP_LT       = 12;   { <                                        }
+  OP_GT       = 13;   { >                                        }
+  OP_LE       = 14;   { <=                                       }
+  OP_GE       = 15;   { >=                                       }
+  OP_LIKE     = 16;   { Like                                     }
+  OP_IS       = 17;   { Is                                       }
+  OP_AND      = 20;   { And                                      }
+  OP_OR       = 21;   { Or                                       }
+  OP_XOR      = 22;   { Xor                                      }
+  OP_NOT      = 23;   { Not                                      }
+  OP_EQV      = 24;   { Eqv                                      }
+  OP_IMP      = 25;   { Imp                                      }
+  OP_NEGATE   = 26;   { - (unaire)                               }
+
+Var
+  ExprCount      : Integer;  { nombre d expressions analysees         }
+  ExprDepth      : Integer;  { profondeur actuelle d imbrication      }
+  MaxExprDepth   : Integer;  { profondeur maximale atteinte           }
+  ExprResultType : Integer;  { type VBT_* du resultat de l expr       }
+
+{ ------------------------------------------------------------ }
+{ InitExprState : initialiser l etat de l analyseur d exprs    }
+{ ------------------------------------------------------------ }
+
+Procedure InitExprState;
+Begin
+  ExprCount      := 0;
+  ExprDepth      := 0;
+  MaxExprDepth   := 0;
+  ExprResultType := VBT_NONE;
+End;
+
+{ ------------------------------------------------------------ }
+{ EnterExpr / LeaveExpr : gerer la profondeur d imbrication    }
+{ ------------------------------------------------------------ }
+
+Procedure EnterExpr;
+Begin
+  Inc(ExprDepth);
+  If ExprDepth > MaxExprDepth Then
+    MaxExprDepth := ExprDepth;
+End;
+
+Procedure LeaveExpr;
+Begin
+  If ExprDepth > 0 Then
+    Dec(ExprDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ OpName : retourner le nom textuel d un operateur             }
+{ ------------------------------------------------------------ }
+
+Function OpName(Op : Integer) : TString;
+Begin
+  Case Op Of
+    OP_ADD    : OpName := '+';
+    OP_SUB    : OpName := '-';
+    OP_MUL    : OpName := '*';
+    OP_DIV    : OpName := '/';
+    OP_INTDIV : OpName := '\';
+    OP_MOD    : OpName := 'Mod';
+    OP_POW    : OpName := '^';
+    OP_CONCAT : OpName := '&';
+    OP_EQ     : OpName := '=';
+    OP_NE     : OpName := '<>';
+    OP_LT     : OpName := '<';
+    OP_GT     : OpName := '>';
+    OP_LE     : OpName := '<=';
+    OP_GE     : OpName := '>=';
+    OP_LIKE   : OpName := 'Like';
+    OP_IS     : OpName := 'Is';
+    OP_AND    : OpName := 'And';
+    OP_OR     : OpName := 'Or';
+    OP_XOR    : OpName := 'Xor';
+    OP_NOT    : OpName := 'Not';
+    OP_EQV    : OpName := 'Eqv';
+    OP_IMP    : OpName := 'Imp';
+    OP_NEGATE : OpName := '- (neg)';
+  Else
+    OpName := '?OP' + ItoSI(Op);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Declarations forward pour la descente recursive              }
+{ ------------------------------------------------------------ }
+
+Function ParseExpr : Integer; Forward;
+Function ParseOrExpr : Integer; Forward;
+Function ParseAndExpr : Integer; Forward;
+Function ParseNotExpr : Integer; Forward;
+Function ParseCompExpr : Integer; Forward;
+Function ParseConcatExpr : Integer; Forward;
+Function ParseAddExpr : Integer; Forward;
+Function ParseModExpr : Integer; Forward;
+Function ParseIntDivExpr : Integer; Forward;
+Function ParseMulExpr : Integer; Forward;
+Function ParsePowExpr : Integer; Forward;
+Function ParseUnaryExpr : Integer; Forward;
+Function ParsePrimaryExpr : Integer; Forward;
+
+{ ------------------------------------------------------------ }
+{ DetermineResultType : determiner le type VBT_* d un binop    }
+{   Regle simplifiee VB6 :                                     }
+{     String op String -> String si &, sinon erreur/Variant    }
+{     Double / Single / flottant -> Double                     }
+{     Long / Integer / Byte -> Long (32 bits)                  }
+{     Boolean -> Long pour arithm., Boolean pour logique       }
+{     Comparaisons -> Boolean                                  }
+{ ------------------------------------------------------------ }
+
+Function DetermineResultType(Op : Integer; L, R : Integer) : Integer;
+Begin
+  { Comparaisons : toujours Boolean }
+  If (Op >= OP_EQ) And (Op <= OP_IS) Then
+  Begin
+    DetermineResultType := VBT_BOOLEAN;
+    Exit;
+  End;
+  { Operateurs logiques : Boolean si les deux Boolean, sinon Long }
+  If (Op >= OP_AND) And (Op <= OP_IMP) Then
+  Begin
+    If (L = VBT_BOOLEAN) And (R = VBT_BOOLEAN) Then
+      DetermineResultType := VBT_BOOLEAN
+    Else
+      DetermineResultType := VBT_LONG;
+    Exit;
+  End;
+  { Concatenation : String }
+  If Op = OP_CONCAT Then
+  Begin
+    DetermineResultType := VBT_STRING;
+    Exit;
+  End;
+  { Si un operande est Double ou Single -> Double }
+  If (L = VBT_DOUBLE) Or (R = VBT_DOUBLE) Or
+     (L = VBT_SINGLE) Or (R = VBT_SINGLE) Then
+  Begin
+    DetermineResultType := VBT_DOUBLE;
+    Exit;
+  End;
+  { Division reelle : toujours Double }
+  If Op = OP_DIV Then
+  Begin
+    DetermineResultType := VBT_DOUBLE;
+    Exit;
+  End;
+  { Sinon : Long (32 bits entier) }
+  DetermineResultType := VBT_LONG;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimaryExpr : facteur primaire                          }
+{   Constante numerique, chaine, True/False/Nothing/Empty/Null }
+{   Variable scalaire, appel de fonction, (expr), Me           }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParsePrimaryExpr : Integer;
+Var
+  SIdx : Integer;
+  T    : Integer;
+Begin
+  ParsePrimaryExpr := VBT_LONG;
+  EnterExpr;
+  { Litteral entier }
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: integer ', CurTokNum);
+    ParsePrimaryExpr := VBT_LONG;
+    LexNextToken;
+  End
+  { Litteral long }
+  Else If CurTokType = TOK_LONG Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: long ', CurTokNum);
+    ParsePrimaryExpr := VBT_LONG;
+    LexNextToken;
+  End
+  { Litteral single }
+  Else If CurTokType = TOK_SINGLE Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: single ', CurTokReal:0:6);
+    ParsePrimaryExpr := VBT_SINGLE;
+    LexNextToken;
+  End
+  { Litteral double }
+  Else If CurTokType = TOK_DOUBLE Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: double ', CurTokReal:0:6);
+    ParsePrimaryExpr := VBT_DOUBLE;
+    LexNextToken;
+  End
+  { Litteral chaine }
+  Else If CurTokType = TOK_STRING Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: string "', CurTokStr, '"');
+    ParsePrimaryExpr := VBT_STRING;
+    LexNextToken;
+  End
+  { Litteral date }
+  Else If CurTokType = TOK_DATE Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: date ', CurTokStr);
+    ParsePrimaryExpr := VBT_DATE;
+    LexNextToken;
+  End
+  { True -> -1 (Boolean) }
+  Else If IsKeywordToken(KW_TRUE) Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: True (-1)');
+    ParsePrimaryExpr := VBT_BOOLEAN;
+    LexNextToken;
+  End
+  { False -> 0 (Boolean) }
+  Else If IsKeywordToken(KW_FALSE) Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: False (0)');
+    ParsePrimaryExpr := VBT_BOOLEAN;
+    LexNextToken;
+  End
+  { Nothing -> 0 (Object) }
+  Else If IsKeywordToken(KW_NOTHING) Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: Nothing');
+    ParsePrimaryExpr := VBT_OBJECT;
+    LexNextToken;
+  End
+  { Empty -> Variant vide }
+  Else If IsKeywordToken(KW_EMPTY) Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: Empty');
+    ParsePrimaryExpr := VBT_VARIANT;
+    LexNextToken;
+  End
+  { Null -> Variant Null }
+  Else If IsKeywordToken(KW_NULL) Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: Null');
+    ParsePrimaryExpr := VBT_VARIANT;
+    LexNextToken;
+  End
+  { Me -> reference a l objet courant }
+  Else If IsKeywordToken(KW_ME) Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('    Expr: Me');
+    ParsePrimaryExpr := VBT_OBJECT;
+    LexNextToken;
+  End
+  { Parentheses }
+  Else If CurTokType = TOK_LPAREN Then
+  Begin
+    LexNextToken; { consommer ( }
+    T := ParseExpr;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken  { consommer ) }
+    Else
+      WarnMsg('Parenthese fermante attendue');
+    ParsePrimaryExpr := T;
+  End
+  { Identificateur : variable, fonction, ou acces membre }
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    SIdx := FindSym(CurTokStr);
+    If SIdx >= 0 Then
+    Begin
+      T := SymTab[SIdx].DataType;
+      If Opts.Verbose Then
+        WriteLn('    Expr: var "', CurTokStr, '" type=', VBTypeName(T));
+    End
+    Else
+    Begin
+      T := VBT_VARIANT; { symbole inconnu -> Variant par defaut }
+      If Opts.Verbose Then
+        WriteLn('    Expr: ident "', CurTokStr, '" (non declare)');
+    End;
+    LexNextToken;
+    { Verifier parentheses pour appel de fonction : ident(...) }
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      LexNextToken; { consommer ( }
+      If CurTokType <> TOK_RPAREN Then
+      Begin
+        ParseExpr; { premier argument }
+        While CurTokType = TOK_COMMA Do
+        Begin
+          LexNextToken; { consommer , }
+          ParseExpr;    { argument suivant }
+        End;
+      End;
+      If CurTokType = TOK_RPAREN Then
+        LexNextToken
+      Else
+        WarnMsg('Parenthese fermante attendue apres arguments');
+    End;
+    { Verifier acces membre : ident.membre[.membre...] }
+    While CurTokType = TOK_DOT Do
+    Begin
+      LexNextToken; { consommer . }
+      If CurTokType = TOK_IDENT Then
+      Begin
+        If Opts.Verbose Then
+          WriteLn('    Expr: .', CurTokStr);
+        LexNextToken;
+        { Appel de methode : objet.methode(...) }
+        If CurTokType = TOK_LPAREN Then
+        Begin
+          LexNextToken;
+          If CurTokType <> TOK_RPAREN Then
+          Begin
+            ParseExpr;
+            While CurTokType = TOK_COMMA Do
+            Begin
+              LexNextToken;
+              ParseExpr;
+            End;
+          End;
+          If CurTokType = TOK_RPAREN Then
+            LexNextToken
+          Else
+            WarnMsg('Parenthese fermante attendue apres arguments de methode');
+        End;
+      End
+      Else
+        WarnMsg('Nom de membre attendu apres "."');
+      T := VBT_VARIANT; { acces membre : type inconnu a ce stade }
+    End;
+    { Verifier acces membre via ! : ident!membre }
+    If CurTokType = TOK_EXCL Then
+    Begin
+      LexNextToken; { consommer ! }
+      If CurTokType = TOK_IDENT Then
+      Begin
+        If Opts.Verbose Then
+          WriteLn('    Expr: !', CurTokStr);
+        LexNextToken;
+      End
+      Else
+        WarnMsg('Nom de membre attendu apres "!"');
+      T := VBT_VARIANT;
+    End;
+    ParsePrimaryExpr := T;
+  End
+  { Mot-cle utilise comme fonction : New, TypeOf }
+  Else If IsKeywordToken(KW_NEW) Then
+  Begin
+    LexNextToken; { consommer New }
+    If CurTokType = TOK_IDENT Then
+    Begin
+      If Opts.Verbose Then
+        WriteLn('    Expr: New ', CurTokStr);
+      LexNextToken;
+    End
+    Else
+      WarnMsg('Nom de classe attendu apres New');
+    ParsePrimaryExpr := VBT_OBJECT;
+  End
+  Else If IsKeywordToken(KW_TYPEOF) Then
+  Begin
+    LexNextToken; { consommer TypeOf }
+    T := ParsePrimaryExpr;
+    If IsKeywordToken(KW_IS) Then
+    Begin
+      LexNextToken; { consommer Is }
+      If CurTokType = TOK_IDENT Then
+        LexNextToken
+      Else
+        WarnMsg('Nom de type attendu apres TypeOf...Is');
+    End;
+    ParsePrimaryExpr := VBT_BOOLEAN;
+  End
+  { Token inattendu }
+  Else
+  Begin
+    WarnMsg('Expression attendue, trouve "' + CurTokStr + '"');
+    ParsePrimaryExpr := VBT_VARIANT;
+  End;
+  LeaveExpr;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUnaryExpr : operateur unaire (- ou Not)                 }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParseUnaryExpr : Integer;
+Var T : Integer;
+Begin
+  If CurTokType = TOK_MINUS Then
+  Begin
+    LexNextToken; { consommer - }
+    T := ParsePrimaryExpr;
+    If Opts.Verbose Then
+      WriteLn('    Expr: negate');
+    { Negation : garde le type sauf Boolean -> Long }
+    If T = VBT_BOOLEAN Then
+      ParseUnaryExpr := VBT_LONG
+    Else
+      ParseUnaryExpr := T;
+  End
+  Else If IsKeywordToken(KW_NOT) Then
+  Begin
+    LexNextToken; { consommer Not }
+    T := ParseUnaryExpr; { recursif pour Not Not x }
+    If Opts.Verbose Then
+      WriteLn('    Expr: Not');
+    If T = VBT_BOOLEAN Then
+      ParseUnaryExpr := VBT_BOOLEAN
+    Else
+      ParseUnaryExpr := VBT_LONG;
+  End
+  { + unaire : juste passer }
+  Else If CurTokType = TOK_PLUS Then
+  Begin
+    LexNextToken;
+    ParseUnaryExpr := ParsePrimaryExpr;
+  End
+  Else
+    ParseUnaryExpr := ParsePrimaryExpr;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePowExpr : puissance (^)                                 }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParsePowExpr : Integer;
+Var L, R : Integer;
+Begin
+  L := ParseUnaryExpr;
+  While CurTokType = TOK_CARET Do
+  Begin
+    LexNextToken; { consommer ^ }
+    R := ParseUnaryExpr;
+    If Opts.Verbose Then
+      WriteLn('    Expr: ^');
+    L := DetermineResultType(OP_POW, L, R);
+  End;
+  ParsePowExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMulExpr : multiplication / division (* /)               }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParseMulExpr : Integer;
+Var L, R, Op : Integer;
+Begin
+  L := ParsePowExpr;
+  While (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH) Do
+  Begin
+    If CurTokType = TOK_STAR Then
+      Op := OP_MUL
+    Else
+      Op := OP_DIV;
+    LexNextToken; { consommer * ou / }
+    R := ParsePowExpr;
+    If Opts.Verbose Then
+      WriteLn('    Expr: ', OpName(Op));
+    L := DetermineResultType(Op, L, R);
+  End;
+  ParseMulExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIntDivExpr : division entiere (\)                       }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParseIntDivExpr : Integer;
+Var L, R : Integer;
+Begin
+  L := ParseMulExpr;
+  While CurTokType = TOK_BACKSLASH Do
+  Begin
+    LexNextToken; { consommer \ }
+    R := ParseMulExpr;
+    If Opts.Verbose Then
+      WriteLn('    Expr: \');
+    L := DetermineResultType(OP_INTDIV, L, R);
+  End;
+  ParseIntDivExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseModExpr : modulo (Mod)                                  }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParseModExpr : Integer;
+Var L, R : Integer;
+Begin
+  L := ParseIntDivExpr;
+  While IsKeywordToken(KW_MOD) Do
+  Begin
+    LexNextToken; { consommer Mod }
+    R := ParseIntDivExpr;
+    If Opts.Verbose Then
+      WriteLn('    Expr: Mod');
+    L := DetermineResultType(OP_MOD, L, R);
+  End;
+  ParseModExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAddExpr : addition / soustraction (+ -)                 }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParseAddExpr : Integer;
+Var L, R, Op : Integer;
+Begin
+  L := ParseModExpr;
+  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS) Do
+  Begin
+    If CurTokType = TOK_PLUS Then
+      Op := OP_ADD
+    Else
+      Op := OP_SUB;
+    LexNextToken; { consommer + ou - }
+    R := ParseModExpr;
+    If Opts.Verbose Then
+      WriteLn('    Expr: ', OpName(Op));
+    L := DetermineResultType(Op, L, R);
+  End;
+  ParseAddExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseConcatExpr : concatenation (&)                          }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParseConcatExpr : Integer;
+Var L, R : Integer;
+Begin
+  L := ParseAddExpr;
+  While CurTokType = TOK_AMP Do
+  Begin
+    LexNextToken; { consommer & }
+    R := ParseAddExpr;
+    If Opts.Verbose Then
+      WriteLn('    Expr: &');
+    L := DetermineResultType(OP_CONCAT, L, R);
+  End;
+  ParseConcatExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCompExpr : comparaison (= <> < > <= >= Like Is)         }
+{   Retourne le type VBT_* du resultat (toujours Boolean)      }
+{ ------------------------------------------------------------ }
+
+Function ParseCompExpr : Integer;
+Var L, R, Op : Integer;
+Begin
+  L := ParseConcatExpr;
+  While (CurTokType = TOK_EQ) Or (CurTokType = TOK_NE) Or
+        (CurTokType = TOK_LT) Or (CurTokType = TOK_GT) Or
+        (CurTokType = TOK_LE) Or (CurTokType = TOK_GE) Or
+        IsKeywordToken(KW_LIKE) Or IsKeywordToken(KW_IS) Do
+  Begin
+    If CurTokType = TOK_EQ Then Op := OP_EQ
+    Else If CurTokType = TOK_NE Then Op := OP_NE
+    Else If CurTokType = TOK_LT Then Op := OP_LT
+    Else If CurTokType = TOK_GT Then Op := OP_GT
+    Else If CurTokType = TOK_LE Then Op := OP_LE
+    Else If CurTokType = TOK_GE Then Op := OP_GE
+    Else If IsKeywordToken(KW_LIKE) Then Op := OP_LIKE
+    Else Op := OP_IS;
+    LexNextToken; { consommer l operateur }
+    R := ParseConcatExpr;
+    If Opts.Verbose Then
+      WriteLn('    Expr: ', OpName(Op));
+    L := DetermineResultType(Op, L, R);
+  End;
+  ParseCompExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseNotExpr : operateur logique Not                         }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParseNotExpr : Integer;
+Var T : Integer;
+Begin
+  If IsKeywordToken(KW_NOT) Then
+  Begin
+    LexNextToken; { consommer Not }
+    T := ParseNotExpr; { recursif : Not Not x }
+    If Opts.Verbose Then
+      WriteLn('    Expr: Not (logical)');
+    If T = VBT_BOOLEAN Then
+      ParseNotExpr := VBT_BOOLEAN
+    Else
+      ParseNotExpr := VBT_LONG;
+  End
+  Else
+    ParseNotExpr := ParseCompExpr;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAndExpr : operateur logique And                         }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParseAndExpr : Integer;
+Var L, R : Integer;
+Begin
+  L := ParseNotExpr;
+  While IsKeywordToken(KW_AND) Do
+  Begin
+    LexNextToken; { consommer And }
+    R := ParseNotExpr;
+    If Opts.Verbose Then
+      WriteLn('    Expr: And');
+    L := DetermineResultType(OP_AND, L, R);
+  End;
+  ParseAndExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOrExpr : operateurs logiques Or / Xor / Eqv / Imp      }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParseOrExpr : Integer;
+Var L, R, Op : Integer;
+Begin
+  L := ParseAndExpr;
+  While IsKeywordToken(KW_OR) Or IsKeywordToken(KW_XOR) Or
+        IsKeywordToken(KW_EQV) Or IsKeywordToken(KW_IMP) Do
+  Begin
+    If IsKeywordToken(KW_OR)  Then Op := OP_OR
+    Else If IsKeywordToken(KW_XOR) Then Op := OP_XOR
+    Else If IsKeywordToken(KW_EQV) Then Op := OP_EQV
+    Else Op := OP_IMP;
+    LexNextToken; { consommer l operateur }
+    R := ParseAndExpr;
+    If Opts.Verbose Then
+      WriteLn('    Expr: ', OpName(Op));
+    L := DetermineResultType(Op, L, R);
+  End;
+  ParseOrExpr := L;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExpr : point d entree pour analyser une expression      }
+{   Retourne le type VBT_* du resultat                         }
+{ ------------------------------------------------------------ }
+
+Function ParseExpr : Integer;
+Var T : Integer;
+Begin
+  Inc(ExprCount);
+  T := ParseOrExpr;
+  ExprResultType := T;
+  ParseExpr := T;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour l etat des expressions              }
+{ ------------------------------------------------------------ }
+
+Function GetExprCount : Integer;
+Begin
+  GetExprCount := ExprCount;
+End;
+
+Function GetExprDepth : Integer;
+Begin
+  GetExprDepth := ExprDepth;
+End;
+
+Function GetMaxExprDepth : Integer;
+Begin
+  GetMaxExprDepth := MaxExprDepth;
+End;
+
+Function GetExprResultType : Integer;
+Begin
+  GetExprResultType := ExprResultType;
+End;
+
+Function IsExprResultBoolean : Boolean;
+Begin
+  IsExprResultBoolean := (ExprResultType = VBT_BOOLEAN);
+End;
+
+Function IsExprResultString : Boolean;
+Begin
+  IsExprResultString := (ExprResultType = VBT_STRING);
+End;
+
+Function IsExprResultNumeric : Boolean;
+Begin
+  IsExprResultNumeric :=
+    (ExprResultType = VBT_LONG) Or
+    (ExprResultType = VBT_INTEGER) Or
+    (ExprResultType = VBT_BYTE) Or
+    (ExprResultType = VBT_SINGLE) Or
+    (ExprResultType = VBT_DOUBLE) Or
+    (ExprResultType = VBT_CURRENCY);
+End;
+
+Function IsExprResultVariant : Boolean;
+Begin
+  IsExprResultVariant := (ExprResultType = VBT_VARIANT);
+End;
+
+Function IsExprResultObject : Boolean;
+Begin
+  IsExprResultObject := (ExprResultType = VBT_OBJECT);
+End;
+
+Function IsExprStateEmpty : Boolean;
+Begin
+  IsExprStateEmpty := (ExprCount = 0);
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -4409,11 +5165,12 @@ Begin
   ShowBanner;
   InitSymTable;
   InitScopes;
+  InitExprState;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;
-  { Les TODOs 08-25 ajouteront ici : }
-  {   ParseStatements, Emit, WritePE/WriteCOFF/WriteASM }
+  { Les TODOs 09-25 ajouteront ici : }
+  {   GenCode, ParseStatements, Emit, WritePE/WriteCOFF/WriteASM }
   LexClose;
   ShowStats;
 End;

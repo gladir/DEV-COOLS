@@ -189,7 +189,7 @@
             Allouer en .DATA (niveau module) ou pile EBP (locales)
             Static : toujours en .DATA meme dans Sub/Function
 
-  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS) [A FAIRE]
+  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES (32 BITS) [IMPLEMENTE]
             Function ParseExpr: Integer
             Function ParseOrExpr: Integer     (Or / Xor / Eqv / Imp)
             Function ParseAndExpr: Integer    (And)
