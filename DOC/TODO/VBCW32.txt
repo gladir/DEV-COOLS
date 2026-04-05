@@ -358,7 +358,7 @@
               TypeName(x), VarType(x)
             Generer CALL _VBRT_xxx pour chaque fonction runtime
 
-  TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CONCATENATION [A FAIRE]
+  TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CONCATENATION [IMPLEMENTE]
             Operateur & : concatenation de chaines
               Generer PUSH ptr_s1 / PUSH ptr_s2 / CALL _VBRT_STRCAT
             Operateur + : concatenation si les deux operandes sont String

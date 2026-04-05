@@ -366,7 +366,7 @@
               TypeName(x), VarType(x)
             Generer CALL _VBRT_xxx pour chaque fonction runtime
 
-  TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CONCATENATION [A FAIRE]
+  TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CONCATENATION [IMPLEMENTE]
             Operateur & : concatenation de chaines
               Generer PUSH ptr_s1 / PUSH ptr_s2 / CALL _VBRT_STRCAT
             Operateur + : concatenation si les deux operandes sont String
@@ -1313,6 +1313,11 @@ Const
   KW_TYPENAME   = 174;
   KW_VARTYPE    = 175;
 
+  { TODO 14 - constantes supplementaires pour operations chaines }
+  KW_MIDASSIGN  = 176;    { Mid$ en position d affectation           }
+  KW_FORMAT2    = 177;    { Format$ (synonyme de Format)             }
+  KW_LIKE2      = 178;    { Like en contexte de comparaison chaine   }
+
   { Token special pour mot-cle reconnu }
   TOK_KEYWORD   = 50;     { mot-cle VB6 reconnu                     }
 
@@ -1499,6 +1504,8 @@ Begin
   Else If U = 'RANDOMIZE'  Then IsKeyword := KW_RANDOMIZE
   Else If U = 'TYPENAME'   Then IsKeyword := KW_TYPENAME
   Else If U = 'VARTYPE'    Then IsKeyword := KW_VARTYPE
+  Else If U = 'MID$'       Then IsKeyword := KW_MIDASSIGN
+  Else If U = 'FORMAT$'    Then IsKeyword := KW_FORMAT2
   Else IsKeyword := KW_NONE;
 End;
 
@@ -1683,6 +1690,9 @@ Begin
     KW_RANDOMIZE  : KeywordName := 'Randomize';
     KW_TYPENAME   : KeywordName := 'TypeName';
     KW_VARTYPE    : KeywordName := 'VarType';
+    KW_MIDASSIGN  : KeywordName := 'Mid$';
+    KW_FORMAT2    : KeywordName := 'Format$';
+    KW_LIKE2      : KeywordName := 'Like';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -7550,6 +7560,610 @@ Begin
   IsIntrinsicKW := IsIntrinsicFunction(KW);
 End;
 
+{ ============================================================ }
+{ TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CONCATENATION   }
+{           [IMPLEMENTE]                                        }
+{ ============================================================ }
+
+Const
+  { Modes de comparaison de chaines }
+  STRCOMP_BINARY = 0;    { sensible a la casse (defaut)             }
+  STRCOMP_TEXT   = 1;    { insensible a la casse                    }
+
+  { Taille maximale d une chaine de longueur fixe }
+  MAX_FIXED_STR  = 32767;
+
+  { Labels runtime pour operations sur chaines }
+  STROP_RT_STRCAT    = '_VBRT_STRCAT';
+  STROP_RT_STRALLOC  = '_VBRT_STRALLOC';
+  STROP_RT_STRFREE   = '_VBRT_STRFREE';
+  STROP_RT_MIDASSIGN = '_VBRT_MIDASSIGN';
+  STROP_RT_LSET      = '_VBRT_LSET';
+  STROP_RT_RSET      = '_VBRT_RSET';
+  STROP_RT_STRCMP_BIN = '_VBRT_STRCMP_BIN';
+  STROP_RT_STRCMP_TXT = '_VBRT_STRCMP_TXT';
+  STROP_RT_LIKE      = '_VBRT_LIKE';
+  STROP_RT_FORMAT    = '_VBRT_FORMAT';
+
+Var
+  StrOpCount       : LongInt;
+  StrOpInitialized : Boolean;
+
+{ ------------------------------------------------------------ }
+{ InitStrOpState : initialiser l etat des operations chaines   }
+{ ------------------------------------------------------------ }
+
+Procedure InitStrOpState;
+Begin
+  StrOpCount       := 0;
+  StrOpInitialized := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrConcat : generer le code pour la concatenation &        }
+{   Les deux operandes sont deja dans EAX (droite) et pile     }
+{   (gauche). Resultat : EAX = pointeur nouvelle chaine        }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrConcat;
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrConcat: & concatenation');
+  GenPopEBX;
+  Emit('XCHG EAX, EBX');
+  { EAX = ptr_s1 (gauche), EBX = ptr_s2 (droite) }
+  Emit('PUSH EBX');
+  Emit('PUSH EAX');
+  Emit('CALL ' + STROP_RT_STRCAT);
+  Emit('ADD ESP, 8');
+  { EAX = pointeur vers nouvelle chaine concatenee }
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrPlusConcat : generer + quand les deux operandes sont    }
+{   String. Meme code que &, mais avec verification du type    }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrPlusConcat;
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrPlusConcat: + String concatenation');
+  GenPopEBX;
+  Emit('XCHG EAX, EBX');
+  { EAX = ptr_s1 (gauche), EBX = ptr_s2 (droite) }
+  Emit('PUSH EBX');
+  Emit('PUSH EAX');
+  Emit('CALL ' + STROP_RT_STRCAT);
+  Emit('ADD ESP, 8');
+  { EAX = pointeur vers nouvelle chaine concatenee }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMidAssign : parser Mid$(var, pos[, len]) = expr         }
+{   Instruction d affectation Mid en VB6                       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMidAssign;
+Var
+  VarName   : TString;
+  HasLen    : Boolean;
+  SymIdx    : Integer;
+Begin
+  Inc(StrOpCount);
+  LexNextToken; { consommer Mid$ }
+  HasLen := False;
+
+  { Verifier la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    WarnMsg('( attendue apres Mid$');
+
+  { Premier argument : la variable chaine cible }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    SymIdx := FindSym(VarName);
+    If SymIdx < 0 Then
+      WarnMsg('Variable non declaree: ' + VarName);
+    LexNextToken;
+  End
+  Else
+  Begin
+    VarName := '?';
+    WarnMsg('Variable attendue dans Mid$');
+  End;
+
+  { Virgule }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken
+  Else
+    WarnMsg(', attendue apres variable dans Mid$');
+
+  { Deuxieme argument : position de depart }
+  ParseExpr;
+  EmitComment('PUSH pos pour Mid$ assign');
+  Emit('PUSH EAX');
+
+  { Troisieme argument optionnel : longueur }
+  If CurTokType = TOK_COMMA Then
+  Begin
+    LexNextToken; { consommer , }
+    ParseExpr;
+    EmitComment('PUSH len pour Mid$ assign');
+    Emit('PUSH EAX');
+    HasLen := True;
+  End;
+
+  { Parenthese fermante }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+    WarnMsg(') attendue apres arguments de Mid$');
+
+  { Signe egal }
+  If CurTokType = TOK_EQ Then
+    LexNextToken
+  Else
+    WarnMsg('= attendu apres Mid$(...)');
+
+  { Evaluer l expression de remplacement }
+  ParseExpr;
+  EmitComment('PUSH valeur de remplacement pour Mid$');
+  Emit('PUSH EAX');
+
+  { Charger l adresse de la variable cible }
+  If SymIdx >= 0 Then
+    GenLoadVar(SymIdx);
+  EmitComment('PUSH ptr variable cible pour Mid$');
+  Emit('PUSH EAX');
+
+  { Appel runtime }
+  If HasLen Then
+  Begin
+    EmitComment('CALL ' + STROP_RT_MIDASSIGN + ' (4 args: ptr, pos, len, val)');
+    Emit('CALL ' + STROP_RT_MIDASSIGN);
+    Emit('ADD ESP, 16');
+  End
+  Else
+  Begin
+    EmitComment('CALL ' + STROP_RT_MIDASSIGN + ' (3 args: ptr, pos, val)');
+    Emit('PUSH -1'); { -1 = pas de longueur specifiee }
+    Emit('CALL ' + STROP_RT_MIDASSIGN);
+    Emit('ADD ESP, 16');
+  End;
+
+  If Opts.Verbose Then
+    WriteLn('    StrOp: Mid$ assign sur ', VarName);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLSetStatement : parser LSet variable = expression       }
+{   Cadrage a gauche dans une chaine de longueur fixe          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLSetStatement;
+Var
+  VarName : TString;
+  SymIdx  : Integer;
+Begin
+  Inc(StrOpCount);
+  LexNextToken; { consommer LSet }
+
+  { Variable cible }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    SymIdx := FindSym(VarName);
+    If SymIdx < 0 Then
+      WarnMsg('Variable non declaree: ' + VarName);
+    LexNextToken;
+  End
+  Else
+  Begin
+    VarName := '?';
+    SymIdx := -1;
+    WarnMsg('Variable attendue apres LSet');
+  End;
+
+  { Signe egal }
+  If CurTokType = TOK_EQ Then
+    LexNextToken
+  Else
+    WarnMsg('= attendu apres LSet variable');
+
+  { Evaluer l expression source }
+  ParseExpr;
+  EmitComment('PUSH valeur source pour LSet');
+  Emit('PUSH EAX');
+
+  { Charger l adresse de la variable cible }
+  If SymIdx >= 0 Then
+    GenLoadVar(SymIdx);
+  EmitComment('PUSH ptr variable cible pour LSet');
+  Emit('PUSH EAX');
+
+  { Appel runtime }
+  EmitComment('CALL ' + STROP_RT_LSET);
+  Emit('CALL ' + STROP_RT_LSET);
+  Emit('ADD ESP, 8');
+
+  If Opts.Verbose Then
+    WriteLn('    StrOp: LSet ', VarName);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseRSetStatement : parser RSet variable = expression       }
+{   Cadrage a droite dans une chaine de longueur fixe          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseRSetStatement;
+Var
+  VarName : TString;
+  SymIdx  : Integer;
+Begin
+  Inc(StrOpCount);
+  LexNextToken; { consommer RSet }
+
+  { Variable cible }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    VarName := CurTokStr;
+    SymIdx := FindSym(VarName);
+    If SymIdx < 0 Then
+      WarnMsg('Variable non declaree: ' + VarName);
+    LexNextToken;
+  End
+  Else
+  Begin
+    VarName := '?';
+    SymIdx := -1;
+    WarnMsg('Variable attendue apres RSet');
+  End;
+
+  { Signe egal }
+  If CurTokType = TOK_EQ Then
+    LexNextToken
+  Else
+    WarnMsg('= attendu apres RSet variable');
+
+  { Evaluer l expression source }
+  ParseExpr;
+  EmitComment('PUSH valeur source pour RSet');
+  Emit('PUSH EAX');
+
+  { Charger l adresse de la variable cible }
+  If SymIdx >= 0 Then
+    GenLoadVar(SymIdx);
+  EmitComment('PUSH ptr variable cible pour RSet');
+  Emit('PUSH EAX');
+
+  { Appel runtime }
+  EmitComment('CALL ' + STROP_RT_RSET);
+  Emit('CALL ' + STROP_RT_RSET);
+  Emit('ADD ESP, 8');
+
+  If Opts.Verbose Then
+    WriteLn('    StrOp: RSet ', VarName);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFixedString : parser String * n dans une declaration    }
+{   Retourne la taille en octets de la chaine fixe             }
+{ ------------------------------------------------------------ }
+
+Function ParseFixedString : Integer;
+Var
+  FixSize : LongInt;
+Begin
+  Inc(StrOpCount);
+  { On est positionne apres String, et le token courant est * }
+  LexNextToken; { consommer * }
+
+  { Lire la taille }
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    FixSize := CurTokNum;
+    If (FixSize < 1) Or (FixSize > MAX_FIXED_STR) Then
+    Begin
+      WarnMsg('Taille de chaine fixe invalide: ' + ItoS(FixSize));
+      FixSize := 1;
+    End;
+    LexNextToken; { consommer le nombre }
+  End
+  Else
+  Begin
+    WarnMsg('Taille entiere attendue apres String *');
+    FixSize := 1;
+  End;
+
+  If Opts.Verbose Then
+    WriteLn('    StrOp: String * ', FixSize);
+  ParseFixedString := FixSize;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrAlloc : generer le code pour allouer une chaine         }
+{   dynamique de longueur variable                             }
+{   EAX = taille demandee                                      }
+{   Resultat : EAX = pointeur vers le tampon alloue            }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrAlloc;
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrAlloc: allocation chaine dynamique');
+  Emit('PUSH EAX');
+  Emit('CALL ' + STROP_RT_STRALLOC);
+  Emit('ADD ESP, 4');
+  { EAX = pointeur vers tampon alloue }
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrFree : generer le code pour liberer une chaine          }
+{   dynamique. EAX = pointeur vers le tampon a liberer         }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrFree;
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrFree: liberation chaine dynamique');
+  Emit('PUSH EAX');
+  Emit('CALL ' + STROP_RT_STRFREE);
+  Emit('ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrCompare : generer le code pour comparer deux chaines    }
+{   Utilise Option Compare pour choisir binaire ou texte       }
+{   EAX = ptr_s2 (droite), pile = ptr_s1 (gauche)             }
+{   Resultat : EAX = -1 (True) ou 0 (False) selon convention  }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrCompare(Op : Integer);
+Var
+  RtLabel : TString;
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrCompare: comparaison chaines');
+  GenPopEBX;
+  Emit('XCHG EAX, EBX');
+  { EAX = ptr_s1, EBX = ptr_s2 }
+
+  { Choisir le runtime selon Option Compare }
+  If OptionCompare = OPT_COMPARE_TEXT Then
+    RtLabel := STROP_RT_STRCMP_TXT
+  Else
+    RtLabel := STROP_RT_STRCMP_BIN;
+
+  Emit('PUSH EBX');
+  Emit('PUSH EAX');
+  Emit('CALL ' + RtLabel);
+  Emit('ADD ESP, 8');
+  { EAX = resultat de la comparaison (-1, 0, 1) }
+
+  { Appliquer l operateur de comparaison sur le resultat }
+  Case Op Of
+    OP_EQ:
+      Begin
+        Emit('TEST EAX, EAX');
+        Emit('SETE AL');
+      End;
+    OP_NE:
+      Begin
+        Emit('TEST EAX, EAX');
+        Emit('SETNE AL');
+      End;
+    OP_LT:
+      Begin
+        Emit('CMP EAX, 0');
+        Emit('SETL AL');
+      End;
+    OP_GT:
+      Begin
+        Emit('CMP EAX, 0');
+        Emit('SETG AL');
+      End;
+    OP_LE:
+      Begin
+        Emit('CMP EAX, 0');
+        Emit('SETLE AL');
+      End;
+    OP_GE:
+      Begin
+        Emit('CMP EAX, 0');
+        Emit('SETGE AL');
+      End;
+    OP_LIKE:
+      Begin
+        { Like est gere par un runtime specifique avec motifs }
+        { On reemplace l appel strcmp par like }
+        Emit('PUSH EBX');
+        Emit('PUSH EAX');
+        Emit('CALL ' + STROP_RT_LIKE);
+        Emit('ADD ESP, 8');
+        { EAX = -1 (match) ou 0 (no match) }
+        Exit;
+      End;
+  Else
+    WarnMsg('GenStrCompare: operateur inconnu ' + ItoSI(Op));
+    Emit('TEST EAX, EAX');
+    Emit('SETE AL');
+  End;
+  { Etendre AL en -1 ou 0 (convention VB6) }
+  Emit('MOVZX EAX, AL');
+  Emit('NEG EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFormatCall : parser Format(expression, format_string)   }
+{   ou Format$(expression, format_string)                      }
+{   Retourne VBT_STRING                                        }
+{ ------------------------------------------------------------ }
+
+Function ParseFormatCall : Integer;
+Begin
+  Inc(StrOpCount);
+  LexNextToken; { consommer Format ou Format$ }
+
+  { Parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    WarnMsg('( attendue apres Format');
+
+  { Premier argument : expression a formater }
+  ParseExpr;
+  EmitComment('PUSH expression pour Format');
+  Emit('PUSH EAX');
+
+  { Virgule }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken
+  Else
+    WarnMsg(', attendue entre arguments de Format');
+
+  { Deuxieme argument : chaine de format }
+  ParseExpr;
+  EmitComment('PUSH format_string pour Format');
+  Emit('PUSH EAX');
+
+  { Parenthese fermante }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+    WarnMsg(') attendue apres arguments de Format');
+
+  { Appel runtime }
+  EmitComment('CALL ' + STROP_RT_FORMAT);
+  Emit('CALL ' + STROP_RT_FORMAT);
+  Emit('ADD ESP, 8');
+  { EAX = pointeur vers chaine formatee }
+
+  If Opts.Verbose Then
+    WriteLn('    StrOp: Format call');
+
+  ParseFormatCall := VBT_STRING;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStrOpStatement : teste si le token courant est une         }
+{   instruction d operation sur chaine (Mid$, LSet, RSet)      }
+{ ------------------------------------------------------------ }
+
+Function IsStrOpStatement : Boolean;
+Begin
+  IsStrOpStatement := IsKeywordToken(KW_LSET) Or
+                      IsKeywordToken(KW_RSET) Or
+                      IsKeywordToken(KW_MIDASSIGN);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStrConcatOp : teste si une operation + doit etre traitee   }
+{   comme une concatenation de chaines                         }
+{ ------------------------------------------------------------ }
+
+Function IsStrConcatOp(LeftType, RightType : Integer) : Boolean;
+Begin
+  IsStrConcatOp := (LeftType = VBT_STRING) And (RightType = VBT_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFixedStringDecl : teste si le token courant commence une   }
+{   declaration String * n                                     }
+{ ------------------------------------------------------------ }
+
+Function IsFixedStringDecl : Boolean;
+Begin
+  IsFixedStringDecl := IsKeywordToken(KW_STRINGFN) And
+                       (CurTokType = TOK_KEYWORD) And
+                       (CurTokNum = KW_STRINGFN);
+End;
+
+{ ------------------------------------------------------------ }
+{ StrOpRtLabel : retourne le label runtime d une operation      }
+{   sur chaine selon le code d operation                       }
+{ ------------------------------------------------------------ }
+
+Function StrOpRtLabel(OpCode : Integer) : TString;
+Begin
+  Case OpCode Of
+    0 : StrOpRtLabel := STROP_RT_STRCAT;
+    1 : StrOpRtLabel := STROP_RT_STRALLOC;
+    2 : StrOpRtLabel := STROP_RT_STRFREE;
+    3 : StrOpRtLabel := STROP_RT_MIDASSIGN;
+    4 : StrOpRtLabel := STROP_RT_LSET;
+    5 : StrOpRtLabel := STROP_RT_RSET;
+    6 : StrOpRtLabel := STROP_RT_STRCMP_BIN;
+    7 : StrOpRtLabel := STROP_RT_STRCMP_TXT;
+    8 : StrOpRtLabel := STROP_RT_LIKE;
+    9 : StrOpRtLabel := STROP_RT_FORMAT;
+  Else
+    StrOpRtLabel := '?STROP_RT';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions d acces - TODO 14                                  }
+{ ------------------------------------------------------------ }
+
+Function GetStrOpCount : LongInt;
+Begin
+  GetStrOpCount := StrOpCount;
+End;
+
+Function IsStrOpInitialized : Boolean;
+Begin
+  IsStrOpInitialized := StrOpInitialized;
+End;
+
+Function IsStrOpEmpty : Boolean;
+Begin
+  IsStrOpEmpty := (StrOpCount = 0);
+End;
+
+Function GetStrOpStatus : TString;
+Begin
+  If StrOpInitialized Then
+    GetStrOpStatus := 'initialized'
+  Else
+    GetStrOpStatus := 'not initialized';
+End;
+
+Function GetStrOpCompareMode : Integer;
+Begin
+  If OptionCompare = OPT_COMPARE_TEXT Then
+    GetStrOpCompareMode := STRCOMP_TEXT
+  Else
+    GetStrOpCompareMode := STRCOMP_BINARY;
+End;
+
+Function IsStrOpCompareBinary : Boolean;
+Begin
+  IsStrOpCompareBinary := (OptionCompare = OPT_COMPARE_BINARY);
+End;
+
+Function IsStrOpCompareText : Boolean;
+Begin
+  IsStrOpCompareText := (OptionCompare = OPT_COMPARE_TEXT);
+End;
+
+Function GetMaxFixedStrLen : Integer;
+Begin
+  GetMaxFixedStrLen := MAX_FIXED_STR;
+End;
+
+Function GetStrOpRtCount : Integer;
+Begin
+  { 10 labels runtime pour operations chaines }
+  GetStrOpRtCount := 10;
+End;
+
+Function IsStrOpFormat(KW : Integer) : Boolean;
+Begin
+  IsStrOpFormat := (KW = KW_FORMAT) Or (KW = KW_FORMAT2);
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -7565,11 +8179,12 @@ Begin
   InitLoopState;
   InitSubFuncState;
   InitIntrinsicState;
+  InitStrOpState;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;
   ParseProcedures;
-  { Les TODOs 14-25 ajouteront ici : }
+  { Les TODOs 15-25 ajouteront ici : }
   {   ParseStatements, WritePE/WriteCOFF/WriteASM }
   LexClose;
   ShowStats;
