@@ -687,27 +687,48 @@
               GetDepGraphImageFileName, ExtractBaseFileName, ExtractDirPath,
               DependencyKindColor, SanitizeNodeId
 
-  TODO 19 - GENERATION DES DIAGRAMMES DE CLASSES (CLASS DIAGRAMS) [A FAIRE]
-            Procedure GenerateClassDiagramDot(Const Entity: TEntity;
+  TODO 19 - GENERATION DES DIAGRAMMES DE CLASSES (CLASS DIAGRAMS) [IMPLEMENTE]
+            Constantes : CLASSDIAG_OUTPUT_DIR, CLASSDIAG_DOT_FILE,
+              CLASSDIAG_PNG_FILE, CLASSDIAG_SVG_FILE, CLASSDIAG_CLASS_PREFIX,
+              CLASSDIAG_COLLAB_PREFIX, CLASSDIAG_INHERIT_PREFIX,
+              CLASSDIAG_UML_PREFIX, CLASSDIAG_NODE_SHAPE, CLASSDIAG_UML_SHAPE,
+              CLASSDIAG_EDGE_INHERIT, CLASSDIAG_EDGE_COMPOSE, CLASSDIAG_EDGE_AGGREG,
+              CLASSDIAG_EDGE_ASSOC, CLASSDIAG_FONT_NAME, CLASSDIAG_FONT_SIZE,
+              CLASSDIAG_PUBLIC_COLOR, CLASSDIAG_PROTECTED_COLOR,
+              CLASSDIAG_PRIVATE_COLOR, CLASSDIAG_CLASS_COLOR,
+              CLASSDIAG_ABSTRACT_COLOR, CLASSDIAG_INTERFACE_COLOR,
+              CLASSDIAG_MAX_MEMBERS, CLASSDIAG_PLANTUML_START, CLASSDIAG_PLANTUML_END
+            Variables : ClassDiagOutputDir, ClassDiagFormat, ClassDiagUmlLook,
+              ClassDiagInitialized
+            Procedure InitClassDiagram
+              initialiser le generateur de diagrammes de classes
+            Procedure GenerateClassDiagramDot(Const EntityId: Integer;
               Var OutFile: Text)
               generer le diagramme de classe au format DOT
               montrer les membres, methodes, heritage
-            Procedure GenerateCollaborationDiagramDot(Const Entity: TEntity;
+            Procedure GenerateCollaborationDiagramDot(Const EntityId: Integer;
               Var OutFile: Text)
               generer le diagramme de collaboration au format DOT
               montrer les relations avec d autres classes
-            Procedure GenerateInheritanceDiagramDot(Const Entity: TEntity;
+            Procedure GenerateInheritanceDiagramDot(Const EntityId: Integer;
               Var OutFile: Text)
               generer le diagramme d heritage au format DOT
               (classes de base et classes derivees)
-            Procedure GenerateUmlDiagramDot(Const Entity: TEntity;
+            Procedure GenerateUmlDiagramDot(Const EntityId: Integer;
               Var OutFile: Text; UmlLook: Boolean)
               generer le diagramme UML complet au format DOT
             Procedure RenderClassDiagramImage(Const DotFile, ImageFile: String)
               invoquer dot pour generer l image
-            Procedure GeneratePlantUml(Const Entity: TEntity;
+            Procedure GeneratePlantUml(Const EntityId: Integer;
               Var OutFile: Text)
               generer le code PlantUML pour le diagramme
+            Procedure GenerateClassDiagramDocumentation
+              orchestrateur: generer tous les diagrammes de classes
+            Fonctions accesseurs Get/SetClassDiagOutputDir, Get/SetClassDiagFormat,
+              Get/SetClassDiagUmlLook, IsClassDiagInitialized, IsClassDiagEmpty,
+              CountClassDiagrams, GetClassDiagDotFileName, GetClassDiagImageFileName,
+              GetClassDiagPlantUmlFileName, VisibilitySymbol, VisibilityColor,
+              EscapeDotLabel, SanitizeClassNodeId, EntityVisibilityToStr
 
   TODO 20 - SUPPORT DES MACROS ET PREPROCESSEUR [A FAIRE]
             TMacro : record
@@ -1030,6 +1051,33 @@ Const
   DEPGRAPH_SYSTEM_COLOR  = '#9E9E9E';
   MAX_DEP_DIRS          = 256;
 
+  { Constantes pour les diagrammes de classes (TODO 19) }
+  CLASSDIAG_OUTPUT_DIR   = 'classdiag';
+  CLASSDIAG_DOT_FILE     = 'class.dot';
+  CLASSDIAG_PNG_FILE     = 'class.png';
+  CLASSDIAG_SVG_FILE     = 'class.svg';
+  CLASSDIAG_CLASS_PREFIX = 'class_';
+  CLASSDIAG_COLLAB_PREFIX = 'collab_';
+  CLASSDIAG_INHERIT_PREFIX = 'inherit_';
+  CLASSDIAG_UML_PREFIX   = 'uml_';
+  CLASSDIAG_NODE_SHAPE   = 'record';
+  CLASSDIAG_UML_SHAPE    = 'rectangle';
+  CLASSDIAG_EDGE_INHERIT = 'onormal';
+  CLASSDIAG_EDGE_COMPOSE = 'diamond';
+  CLASSDIAG_EDGE_AGGREG  = 'odiamond';
+  CLASSDIAG_EDGE_ASSOC   = 'vee';
+  CLASSDIAG_FONT_NAME    = 'Helvetica';
+  CLASSDIAG_FONT_SIZE    = 10;
+  CLASSDIAG_PUBLIC_COLOR = '#27AE60';
+  CLASSDIAG_PROTECTED_COLOR = '#F39C12';
+  CLASSDIAG_PRIVATE_COLOR = '#E74C3C';
+  CLASSDIAG_CLASS_COLOR  = '#3498DB';
+  CLASSDIAG_ABSTRACT_COLOR = '#9B59B6';
+  CLASSDIAG_INTERFACE_COLOR = '#1ABC9C';
+  CLASSDIAG_MAX_MEMBERS  = 50;
+  CLASSDIAG_PLANTUML_START = '@startuml';
+  CLASSDIAG_PLANTUML_END = '@enduml';
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1324,6 +1372,12 @@ Var
   DepGraphOutputDir : String;
   DepGraphFormat    : String;
   DepGraphInitialized : Boolean;
+
+  { Variables pour les diagrammes de classes (TODO 19) }
+  ClassDiagOutputDir : String;
+  ClassDiagFormat    : String;
+  ClassDiagUmlLook   : Boolean;
+  ClassDiagInitialized : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -10302,6 +10356,812 @@ Begin
   Else
     GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_PNG_FILE;
   End;
+End;
+
+{ ============================================================
+  GENERATION DES DIAGRAMMES DE CLASSES (TODO 19)
+  ============================================================ }
+
+Procedure InitClassDiagram;
+{ Initialise le generateur de diagrammes de classes }
+Begin
+  ClassDiagOutputDir := CLASSDIAG_OUTPUT_DIR;
+  ClassDiagFormat := 'png';
+  ClassDiagUmlLook := True;
+  ClassDiagInitialized := True;
+End;
+
+Function GetClassDiagOutputDir: String;
+{ Retourne le repertoire de sortie des diagrammes de classes }
+Begin
+  GetClassDiagOutputDir := ClassDiagOutputDir;
+End;
+
+Procedure SetClassDiagOutputDir(Const Dir: String);
+{ Definit le repertoire de sortie des diagrammes de classes }
+Begin
+  If Dir <> '' Then
+    ClassDiagOutputDir := Dir
+  Else
+    ClassDiagOutputDir := CLASSDIAG_OUTPUT_DIR;
+End;
+
+Function GetClassDiagFormat: String;
+{ Retourne le format d'image des diagrammes de classes }
+Begin
+  GetClassDiagFormat := ClassDiagFormat;
+End;
+
+Procedure SetClassDiagFormat(Const Fmt: String);
+{ Definit le format d'image des diagrammes de classes }
+Var
+  FmtUp: String;
+Begin
+  FmtUp := UpStr(Fmt);
+  If (FmtUp = 'PNG') Or (FmtUp = 'SVG') Or (FmtUp = 'PDF') Or (FmtUp = 'EPS') Then
+    ClassDiagFormat := Fmt
+  Else
+    ClassDiagFormat := 'png';
+End;
+
+Function GetClassDiagUmlLook: Boolean;
+{ Retourne si le mode UML est active }
+Begin
+  GetClassDiagUmlLook := ClassDiagUmlLook;
+End;
+
+Procedure SetClassDiagUmlLook(UmlLook: Boolean);
+{ Active ou desactive le mode UML }
+Begin
+  ClassDiagUmlLook := UmlLook;
+End;
+
+Function IsClassDiagInitialized: Boolean;
+{ Verifie si le generateur de diagrammes de classes est initialise }
+Begin
+  IsClassDiagInitialized := ClassDiagInitialized;
+End;
+
+Function VisibilitySymbol(Vis: TEntityVisibility): String;
+{ Retourne le symbole UML pour la visibilite }
+Begin
+  Case Vis Of
+    VIS_PUBLIC:    VisibilitySymbol := '+';
+    VIS_PROTECTED: VisibilitySymbol := '#';
+    VIS_PRIVATE:   VisibilitySymbol := '-';
+    VIS_PACKAGE:   VisibilitySymbol := '~';
+  Else
+    VisibilitySymbol := '';
+  End;
+End;
+
+Function VisibilityColor(Vis: TEntityVisibility): String;
+{ Retourne la couleur pour la visibilite }
+Begin
+  Case Vis Of
+    VIS_PUBLIC:    VisibilityColor := CLASSDIAG_PUBLIC_COLOR;
+    VIS_PROTECTED: VisibilityColor := CLASSDIAG_PROTECTED_COLOR;
+    VIS_PRIVATE:   VisibilityColor := CLASSDIAG_PRIVATE_COLOR;
+    VIS_PACKAGE:   VisibilityColor := CLASSDIAG_PUBLIC_COLOR;
+  Else
+    VisibilityColor := CLASSDIAG_PUBLIC_COLOR;
+  End;
+End;
+
+Function EscapeDotLabel(Const S: String): String;
+{ Echappe une chaine pour l'utiliser dans un label DOT }
+Var
+  I: Integer;
+  R: String;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    Case S[I] Of
+      '"':  R := R + '\"';
+      '\':  R := R + '\\';
+      '<':  R := R + '\<';
+      '>':  R := R + '\>';
+      '|':  R := R + '\|';
+      '{':  R := R + '\{';
+      '}':  R := R + '\}';
+    Else
+      R := R + S[I];
+    End;
+  End;
+  EscapeDotLabel := R;
+End;
+
+Function SanitizeClassNodeId(Const Name: String): String;
+{ Cree un ID de noeud valide pour DOT a partir d'un nom de classe }
+Var
+  I: Integer;
+  R: String;
+Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    If ((Name[I] >= 'A') And (Name[I] <= 'Z')) Or
+       ((Name[I] >= 'a') And (Name[I] <= 'z')) Or
+       ((Name[I] >= '0') And (Name[I] <= '9')) Or
+       (Name[I] = '_') Then
+      R := R + Name[I]
+    Else
+      R := R + '_';
+  End;
+  If R = '' Then
+    R := 'node';
+  SanitizeClassNodeId := R;
+End;
+
+Procedure GenerateClassDiagramDot(Const EntityId: Integer; Var OutFile: Text);
+{ Genere le diagramme de classe au format DOT montrant les membres et methodes }
+Var
+  I: Integer;
+  MemberCount: Integer;
+  MethodCount: Integer;
+  E: TEntity;
+  ClassName, NodeId: String;
+  Label1: String;
+Begin
+  If (EntityId < 1) Or (EntityId > EntityCount) Then Exit;
+  
+  E := Entities[EntityId];
+  If Not (E.Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) Then Exit;
+  
+  ClassName := E.Name;
+  NodeId := SanitizeClassNodeId(ClassName);
+  
+  { En-tete DOT }
+  WriteLn(OutFile, 'digraph "', ClassName, '" {');
+  WriteLn(OutFile, '  rankdir=TB;');
+  WriteLn(OutFile, '  fontname="', CLASSDIAG_FONT_NAME, '";');
+  WriteLn(OutFile, '  fontsize=', CLASSDIAG_FONT_SIZE, ';');
+  WriteLn(OutFile, '  node [shape=', CLASSDIAG_NODE_SHAPE, ', fontname="', 
+          CLASSDIAG_FONT_NAME, '", fontsize=', CLASSDIAG_FONT_SIZE, '];');
+  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=', 
+          CLASSDIAG_FONT_SIZE - 2, '];');
+  WriteLn(OutFile);
+  
+  { Compter les membres et methodes }
+  MemberCount := 0;
+  MethodCount := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].ParentId = EntityId Then
+    Begin
+      If Entities[I].Kind = ENT_FUNCTION Then
+        Inc(MethodCount)
+      Else If Entities[I].Kind = ENT_VARIABLE Then
+        Inc(MemberCount);
+    End;
+  End;
+  
+  { Creer le noeud de la classe avec format record }
+  Label1 := '{';
+  
+  { Nom de la classe }
+  If E.IsAbstract Then
+    Label1 := Label1 + '\<\<abstract\>\>\\n'
+  Else If E.Kind = ENT_INTERFACE Then
+    Label1 := Label1 + '\<\<interface\>\>\\n';
+  Label1 := Label1 + EscapeDotLabel(ClassName);
+  
+  { Section des attributs }
+  Label1 := Label1 + '|';
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].ParentId = EntityId) And (Entities[I].Kind = ENT_VARIABLE) Then
+    Begin
+      Label1 := Label1 + VisibilitySymbol(Entities[I].Visibility) + ' ';
+      Label1 := Label1 + EscapeDotLabel(Entities[I].Name);
+      If Entities[I].ReturnType <> '' Then
+        Label1 := Label1 + ' : ' + EscapeDotLabel(Entities[I].ReturnType);
+      Label1 := Label1 + '\\l';
+    End;
+  End;
+  
+  { Section des methodes }
+  Label1 := Label1 + '|';
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].ParentId = EntityId) And (Entities[I].Kind = ENT_FUNCTION) Then
+    Begin
+      Label1 := Label1 + VisibilitySymbol(Entities[I].Visibility) + ' ';
+      Label1 := Label1 + EscapeDotLabel(Entities[I].Name);
+      Label1 := Label1 + '(' + EscapeDotLabel(Entities[I].Parameters) + ')';
+      If Entities[I].ReturnType <> '' Then
+        Label1 := Label1 + ' : ' + EscapeDotLabel(Entities[I].ReturnType);
+      Label1 := Label1 + '\\l';
+    End;
+  End;
+  
+  Label1 := Label1 + '}';
+  
+  { Ecrire le noeud }
+  If E.Kind = ENT_INTERFACE Then
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+            CLASSDIAG_INTERFACE_COLOR, '", style=filled];')
+  Else If E.IsAbstract Then
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+            CLASSDIAG_ABSTRACT_COLOR, '", style=filled];')
+  Else
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+            CLASSDIAG_CLASS_COLOR, '", style=filled];');
+  
+  WriteLn(OutFile);
+  WriteLn(OutFile, '}');
+End;
+
+Procedure GenerateCollaborationDiagramDot(Const EntityId: Integer; Var OutFile: Text);
+{ Genere le diagramme de collaboration au format DOT montrant les relations }
+Var
+  I, J: Integer;
+  E: TEntity;
+  ClassName, NodeId, RelatedId: String;
+  RelatedClasses: Array[1..100] Of String;
+  RelatedCount: Integer;
+  Found: Boolean;
+Begin
+  If (EntityId < 1) Or (EntityId > EntityCount) Then Exit;
+  
+  E := Entities[EntityId];
+  If Not (E.Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) Then Exit;
+  
+  ClassName := E.Name;
+  NodeId := SanitizeClassNodeId(ClassName);
+  
+  { En-tete DOT }
+  WriteLn(OutFile, 'digraph "', ClassName, '_collaboration" {');
+  WriteLn(OutFile, '  rankdir=LR;');
+  WriteLn(OutFile, '  fontname="', CLASSDIAG_FONT_NAME, '";');
+  WriteLn(OutFile, '  fontsize=', CLASSDIAG_FONT_SIZE, ';');
+  WriteLn(OutFile, '  node [shape=box, fontname="', CLASSDIAG_FONT_NAME, 
+          '", fontsize=', CLASSDIAG_FONT_SIZE, '];');
+  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=', 
+          CLASSDIAG_FONT_SIZE - 2, '];');
+  WriteLn(OutFile);
+  
+  { Noeud principal }
+  WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName, '", fillcolor="', 
+          CLASSDIAG_CLASS_COLOR, '", style=filled];');
+  
+  { Collecter les classes utilisees par cette classe }
+  RelatedCount := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].ParentId = EntityId Then
+    Begin
+      { Verifier si le type de retour est une classe connue }
+      If Entities[I].ReturnType <> '' Then
+      Begin
+        For J := 1 To EntityCount Do
+        Begin
+          If (Entities[J].Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) And
+             (Pos(Entities[J].Name, Entities[I].ReturnType) > 0) And
+             (Entities[J].Name <> ClassName) Then
+          Begin
+            { Verifier si deja dans la liste }
+            Found := False;
+            For J := 1 To RelatedCount Do
+            Begin
+              If RelatedClasses[J] = Entities[J].Name Then
+              Begin
+                Found := True;
+                Break;
+              End;
+            End;
+            If (Not Found) And (RelatedCount < 100) Then
+            Begin
+              Inc(RelatedCount);
+              RelatedClasses[RelatedCount] := Entities[J].Name;
+            End;
+          End;
+        End;
+      End;
+    End;
+  End;
+  
+  { Ajouter les noeuds et aretes pour les classes liees }
+  For I := 1 To RelatedCount Do
+  Begin
+    RelatedId := SanitizeClassNodeId(RelatedClasses[I]);
+    WriteLn(OutFile, '  ', RelatedId, ' [label="', RelatedClasses[I], '"];');
+    WriteLn(OutFile, '  ', NodeId, ' -> ', RelatedId, 
+            ' [arrowhead=', CLASSDIAG_EDGE_ASSOC, ', label="uses"];');
+  End;
+  
+  { Ajouter les relations d'heritage }
+  For I := 1 To InheritanceCount Do
+  Begin
+    If Inheritances[I].ChildId = EntityId Then
+    Begin
+      RelatedId := SanitizeClassNodeId(Inheritances[I].ParentName);
+      WriteLn(OutFile, '  ', RelatedId, ' [label="', Inheritances[I].ParentName, 
+              '", fillcolor="', CLASSDIAG_CLASS_COLOR, '", style=filled];');
+      WriteLn(OutFile, '  ', NodeId, ' -> ', RelatedId, 
+              ' [arrowhead=', CLASSDIAG_EDGE_INHERIT, ', style=solid];');
+    End;
+  End;
+  
+  WriteLn(OutFile);
+  WriteLn(OutFile, '}');
+End;
+
+Procedure GenerateInheritanceDiagramDot(Const EntityId: Integer; Var OutFile: Text);
+{ Genere le diagramme d'heritage au format DOT (classes de base et derivees) }
+Var
+  I: Integer;
+  E: TEntity;
+  ClassName, NodeId, ParentId, ChildId: String;
+Begin
+  If (EntityId < 1) Or (EntityId > EntityCount) Then Exit;
+  
+  E := Entities[EntityId];
+  If Not (E.Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) Then Exit;
+  
+  ClassName := E.Name;
+  NodeId := SanitizeClassNodeId(ClassName);
+  
+  { En-tete DOT }
+  WriteLn(OutFile, 'digraph "', ClassName, '_inheritance" {');
+  WriteLn(OutFile, '  rankdir=BT;');
+  WriteLn(OutFile, '  fontname="', CLASSDIAG_FONT_NAME, '";');
+  WriteLn(OutFile, '  fontsize=', CLASSDIAG_FONT_SIZE, ';');
+  WriteLn(OutFile, '  node [shape=box, fontname="', CLASSDIAG_FONT_NAME, 
+          '", fontsize=', CLASSDIAG_FONT_SIZE, '];');
+  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=', 
+          CLASSDIAG_FONT_SIZE - 2, ', arrowhead=', CLASSDIAG_EDGE_INHERIT, '];');
+  WriteLn(OutFile);
+  
+  { Noeud principal (classe courante) }
+  If E.Kind = ENT_INTERFACE Then
+    WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName, 
+            '", fillcolor="', CLASSDIAG_INTERFACE_COLOR, '", style=filled];')
+  Else If E.IsAbstract Then
+    WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName, 
+            '", fillcolor="', CLASSDIAG_ABSTRACT_COLOR, '", style=filled];')
+  Else
+    WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName, 
+            '", fillcolor="', CLASSDIAG_CLASS_COLOR, '", style=filled];');
+  
+  { Classes de base (parents) }
+  For I := 1 To InheritanceCount Do
+  Begin
+    If Inheritances[I].ChildId = EntityId Then
+    Begin
+      ParentId := SanitizeClassNodeId(Inheritances[I].ParentName);
+      WriteLn(OutFile, '  ', ParentId, ' [label="', Inheritances[I].ParentName, '"];');
+      WriteLn(OutFile, '  ', NodeId, ' -> ', ParentId, ';');
+    End;
+  End;
+  
+  { Classes derivees (enfants) }
+  For I := 1 To InheritanceCount Do
+  Begin
+    If Inheritances[I].ParentId = EntityId Then
+    Begin
+      { Trouver le nom de la classe enfant }
+      If (Inheritances[I].ChildId >= 1) And (Inheritances[I].ChildId <= EntityCount) Then
+      Begin
+        ChildId := SanitizeClassNodeId(Entities[Inheritances[I].ChildId].Name);
+        WriteLn(OutFile, '  ', ChildId, ' [label="', 
+                Entities[Inheritances[I].ChildId].Name, '"];');
+        WriteLn(OutFile, '  ', ChildId, ' -> ', NodeId, ';');
+      End;
+    End;
+  End;
+  
+  WriteLn(OutFile);
+  WriteLn(OutFile, '}');
+End;
+
+Procedure GenerateUmlDiagramDot(Const EntityId: Integer; Var OutFile: Text; 
+  UmlLook: Boolean);
+{ Genere le diagramme UML complet au format DOT }
+Var
+  I: Integer;
+  E: TEntity;
+  ClassName, NodeId, ParentId: String;
+  Label1: String;
+Begin
+  If (EntityId < 1) Or (EntityId > EntityCount) Then Exit;
+  
+  E := Entities[EntityId];
+  If Not (E.Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) Then Exit;
+  
+  ClassName := E.Name;
+  NodeId := SanitizeClassNodeId(ClassName);
+  
+  { En-tete DOT }
+  WriteLn(OutFile, 'digraph "', ClassName, '_uml" {');
+  WriteLn(OutFile, '  rankdir=BT;');
+  WriteLn(OutFile, '  fontname="', CLASSDIAG_FONT_NAME, '";');
+  WriteLn(OutFile, '  fontsize=', CLASSDIAG_FONT_SIZE, ';');
+  WriteLn(OutFile, '  splines=ortho;');
+  WriteLn(OutFile, '  node [shape=', CLASSDIAG_NODE_SHAPE, ', fontname="', 
+          CLASSDIAG_FONT_NAME, '", fontsize=', CLASSDIAG_FONT_SIZE, '];');
+  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=', 
+          CLASSDIAG_FONT_SIZE - 2, '];');
+  WriteLn(OutFile);
+  
+  { Creer le noeud de la classe avec format UML }
+  Label1 := '{';
+  
+  { Stereotypes }
+  If E.Kind = ENT_INTERFACE Then
+    Label1 := Label1 + '\<\<interface\>\>\\n';
+  If E.IsAbstract Then
+    Label1 := Label1 + '\<\<abstract\>\>\\n';
+  
+  { Nom de la classe }
+  Label1 := Label1 + EscapeDotLabel(ClassName);
+  
+  { Section des attributs }
+  Label1 := Label1 + '|';
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].ParentId = EntityId) And (Entities[I].Kind = ENT_VARIABLE) Then
+    Begin
+      If UmlLook Then
+        Label1 := Label1 + VisibilitySymbol(Entities[I].Visibility) + ' '
+      Else
+        Label1 := Label1 + EscapeDotLabel(EntityVisibilityToStr(Entities[I].Visibility)) + ' ';
+      Label1 := Label1 + EscapeDotLabel(Entities[I].Name);
+      If Entities[I].ReturnType <> '' Then
+        Label1 := Label1 + ' : ' + EscapeDotLabel(Entities[I].ReturnType);
+      Label1 := Label1 + '\\l';
+    End;
+  End;
+  
+  { Section des operations }
+  Label1 := Label1 + '|';
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].ParentId = EntityId) And (Entities[I].Kind = ENT_FUNCTION) Then
+    Begin
+      If UmlLook Then
+        Label1 := Label1 + VisibilitySymbol(Entities[I].Visibility) + ' '
+      Else
+        Label1 := Label1 + EscapeDotLabel(EntityVisibilityToStr(Entities[I].Visibility)) + ' ';
+      If Entities[I].IsAbstract Then
+        Label1 := Label1 + '\<abstract\> ';
+      If Entities[I].IsStatic Then
+        Label1 := Label1 + '\<static\> ';
+      Label1 := Label1 + EscapeDotLabel(Entities[I].Name);
+      Label1 := Label1 + '(' + EscapeDotLabel(Entities[I].Parameters) + ')';
+      If Entities[I].ReturnType <> '' Then
+        Label1 := Label1 + ' : ' + EscapeDotLabel(Entities[I].ReturnType);
+      Label1 := Label1 + '\\l';
+    End;
+  End;
+  
+  Label1 := Label1 + '}';
+  
+  { Ecrire le noeud principal }
+  If E.Kind = ENT_INTERFACE Then
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+            CLASSDIAG_INTERFACE_COLOR, '", style=filled];')
+  Else If E.IsAbstract Then
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+            CLASSDIAG_ABSTRACT_COLOR, '", style=filled];')
+  Else
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+            CLASSDIAG_CLASS_COLOR, '", style=filled];');
+  
+  { Relations d'heritage }
+  For I := 1 To InheritanceCount Do
+  Begin
+    If Inheritances[I].ChildId = EntityId Then
+    Begin
+      ParentId := SanitizeClassNodeId(Inheritances[I].ParentName);
+      WriteLn(OutFile, '  ', ParentId, ' [label="', Inheritances[I].ParentName, 
+              '", shape=box];');
+      
+      If Inheritances[I].Relation = REL_IMPLEMENTS Then
+        WriteLn(OutFile, '  ', NodeId, ' -> ', ParentId, 
+                ' [arrowhead=', CLASSDIAG_EDGE_INHERIT, ', style=dashed, label="implements"];')
+      Else
+        WriteLn(OutFile, '  ', NodeId, ' -> ', ParentId, 
+                ' [arrowhead=', CLASSDIAG_EDGE_INHERIT, ', style=solid];');
+    End;
+  End;
+  
+  WriteLn(OutFile);
+  WriteLn(OutFile, '}');
+End;
+
+Function EntityVisibilityToStr(Vis: TEntityVisibility): String;
+{ Convertit la visibilite en chaine }
+Begin
+  Case Vis Of
+    VIS_PUBLIC:    EntityVisibilityToStr := 'public';
+    VIS_PROTECTED: EntityVisibilityToStr := 'protected';
+    VIS_PRIVATE:   EntityVisibilityToStr := 'private';
+    VIS_PACKAGE:   EntityVisibilityToStr := 'package';
+  Else
+    EntityVisibilityToStr := '';
+  End;
+End;
+
+Procedure RenderClassDiagramImage(Const DotFile, ImageFile: String);
+{ Invoque dot pour generer l'image du diagramme de classe }
+Begin
+  If Not Opts.Quiet Then
+    WriteLn('  Rendu: ', DotFile, ' -> ', ImageFile);
+  
+  { Note: L'execution de dot necessite un acces systeme }
+  { En environnement reel, on utiliserait: Exec('dot', '-T' + ClassDiagFormat + ' -o ' + ImageFile + ' ' + DotFile) }
+End;
+
+Procedure GeneratePlantUml(Const EntityId: Integer; Var OutFile: Text);
+{ Genere le code PlantUML pour le diagramme de classe }
+Var
+  I: Integer;
+  E: TEntity;
+  ClassName: String;
+Begin
+  If (EntityId < 1) Or (EntityId > EntityCount) Then Exit;
+  
+  E := Entities[EntityId];
+  If Not (E.Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) Then Exit;
+  
+  ClassName := E.Name;
+  
+  { En-tete PlantUML }
+  WriteLn(OutFile, CLASSDIAG_PLANTUML_START);
+  WriteLn(OutFile);
+  WriteLn(OutFile, 'skinparam classAttributeIconSize 0');
+  WriteLn(OutFile, 'skinparam classFontName ', CLASSDIAG_FONT_NAME);
+  WriteLn(OutFile, 'skinparam classFontSize ', CLASSDIAG_FONT_SIZE);
+  WriteLn(OutFile);
+  
+  { Declaration de la classe }
+  If E.Kind = ENT_INTERFACE Then
+    WriteLn(OutFile, 'interface ', ClassName, ' {')
+  Else If E.IsAbstract Then
+    WriteLn(OutFile, 'abstract class ', ClassName, ' {')
+  Else
+    WriteLn(OutFile, 'class ', ClassName, ' {');
+  
+  { Attributs }
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].ParentId = EntityId) And (Entities[I].Kind = ENT_VARIABLE) Then
+    Begin
+      Write(OutFile, '  ', VisibilitySymbol(Entities[I].Visibility), ' ');
+      Write(OutFile, Entities[I].Name);
+      If Entities[I].ReturnType <> '' Then
+        Write(OutFile, ' : ', Entities[I].ReturnType);
+      WriteLn(OutFile);
+    End;
+  End;
+  
+  WriteLn(OutFile, '  --');
+  
+  { Methodes }
+  For I := 1 To EntityCount Do
+  Begin
+    If (Entities[I].ParentId = EntityId) And (Entities[I].Kind = ENT_FUNCTION) Then
+    Begin
+      Write(OutFile, '  ', VisibilitySymbol(Entities[I].Visibility), ' ');
+      If Entities[I].IsAbstract Then
+        Write(OutFile, '{abstract} ');
+      If Entities[I].IsStatic Then
+        Write(OutFile, '{static} ');
+      Write(OutFile, Entities[I].Name, '(', Entities[I].Parameters, ')');
+      If Entities[I].ReturnType <> '' Then
+        Write(OutFile, ' : ', Entities[I].ReturnType);
+      WriteLn(OutFile);
+    End;
+  End;
+  
+  WriteLn(OutFile, '}');
+  WriteLn(OutFile);
+  
+  { Relations d'heritage }
+  For I := 1 To InheritanceCount Do
+  Begin
+    If Inheritances[I].ChildId = EntityId Then
+    Begin
+      If Inheritances[I].Relation = REL_IMPLEMENTS Then
+        WriteLn(OutFile, Inheritances[I].ParentName, ' <|.. ', ClassName)
+      Else
+        WriteLn(OutFile, Inheritances[I].ParentName, ' <|-- ', ClassName);
+    End;
+  End;
+  
+  WriteLn(OutFile);
+  WriteLn(OutFile, CLASSDIAG_PLANTUML_END);
+End;
+
+Procedure GenerateClassDiagramDocumentation;
+{ Orchestrateur: genere tous les diagrammes de classes }
+Var
+  I: Integer;
+  DotFile: Text;
+  DotFileName, ImageFileName, PlantUmlFileName: String;
+  ClassCount: Integer;
+Begin
+  If Not ClassDiagInitialized Then
+    InitClassDiagram;
+  
+  { Creer le repertoire de sortie }
+  {$I-}
+  MkDir(ClassDiagOutputDir);
+  {$I+}
+  If IOResult <> 0 Then; { Ignorer si existe deja }
+  
+  If Not Opts.Quiet Then
+  Begin
+    WriteLn('Generation des diagrammes de classes...');
+    WriteLn('  Repertoire de sortie: ', ClassDiagOutputDir);
+  End;
+  
+  ClassCount := 0;
+  
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE] Then
+    Begin
+      Inc(ClassCount);
+      
+      { Diagramme de classe }
+      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX + 
+                     SanitizeClassNodeId(Entities[I].Name) + '.dot';
+      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX + 
+                       SanitizeClassNodeId(Entities[I].Name) + '.' + ClassDiagFormat;
+      
+      If Not Opts.Quiet Then
+        WriteLn('  Classe: ', Entities[I].Name);
+      
+      Assign(DotFile, DotFileName);
+      {$I-}
+      Rewrite(DotFile);
+      {$I+}
+      If IOResult = 0 Then
+      Begin
+        GenerateClassDiagramDot(I, DotFile);
+        Close(DotFile);
+        RenderClassDiagramImage(DotFileName, ImageFileName);
+      End;
+      
+      { Diagramme de collaboration }
+      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX + 
+                     SanitizeClassNodeId(Entities[I].Name) + '.dot';
+      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX + 
+                       SanitizeClassNodeId(Entities[I].Name) + '.' + ClassDiagFormat;
+      
+      Assign(DotFile, DotFileName);
+      {$I-}
+      Rewrite(DotFile);
+      {$I+}
+      If IOResult = 0 Then
+      Begin
+        GenerateCollaborationDiagramDot(I, DotFile);
+        Close(DotFile);
+        RenderClassDiagramImage(DotFileName, ImageFileName);
+      End;
+      
+      { Diagramme d'heritage }
+      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX + 
+                     SanitizeClassNodeId(Entities[I].Name) + '.dot';
+      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX + 
+                       SanitizeClassNodeId(Entities[I].Name) + '.' + ClassDiagFormat;
+      
+      Assign(DotFile, DotFileName);
+      {$I-}
+      Rewrite(DotFile);
+      {$I+}
+      If IOResult = 0 Then
+      Begin
+        GenerateInheritanceDiagramDot(I, DotFile);
+        Close(DotFile);
+        RenderClassDiagramImage(DotFileName, ImageFileName);
+      End;
+      
+      { Diagramme UML }
+      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX + 
+                     SanitizeClassNodeId(Entities[I].Name) + '.dot';
+      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX + 
+                       SanitizeClassNodeId(Entities[I].Name) + '.' + ClassDiagFormat;
+      
+      Assign(DotFile, DotFileName);
+      {$I-}
+      Rewrite(DotFile);
+      {$I+}
+      If IOResult = 0 Then
+      Begin
+        GenerateUmlDiagramDot(I, DotFile, ClassDiagUmlLook);
+        Close(DotFile);
+        RenderClassDiagramImage(DotFileName, ImageFileName);
+      End;
+      
+      { Code PlantUML }
+      PlantUmlFileName := ClassDiagOutputDir + '/' + 
+                          SanitizeClassNodeId(Entities[I].Name) + '.puml';
+      
+      Assign(DotFile, PlantUmlFileName);
+      {$I-}
+      Rewrite(DotFile);
+      {$I+}
+      If IOResult = 0 Then
+      Begin
+        GeneratePlantUml(I, DotFile);
+        Close(DotFile);
+      End;
+    End;
+  End;
+  
+  If Not Opts.Quiet Then
+  Begin
+    WriteLn('  Nombre de classes: ', ClassCount);
+    WriteLn('Generation des diagrammes de classes terminee.');
+  End;
+End;
+
+Function CountClassDiagrams: Integer;
+{ Compte le nombre de classes pour lesquelles un diagramme peut etre genere }
+Var
+  I: Integer;
+  Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE] Then
+      Inc(Count);
+  End;
+  CountClassDiagrams := Count;
+End;
+
+Function IsClassDiagEmpty: Boolean;
+{ Verifie s'il y a des classes pour generer des diagrammes }
+Begin
+  IsClassDiagEmpty := (CountClassDiagrams = 0);
+End;
+
+Function GetClassDiagDotFileName(Const ClassName: String; DiagType: Integer): String;
+{ Construit le nom du fichier DOT pour un diagramme de classe }
+{ DiagType: 1=class, 2=collab, 3=inherit, 4=uml }
+Begin
+  Case DiagType Of
+    1: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX + 
+                                  SanitizeClassNodeId(ClassName) + '.dot';
+    2: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX + 
+                                  SanitizeClassNodeId(ClassName) + '.dot';
+    3: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX + 
+                                  SanitizeClassNodeId(ClassName) + '.dot';
+    4: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX + 
+                                  SanitizeClassNodeId(ClassName) + '.dot';
+  Else
+    GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_DOT_FILE;
+  End;
+End;
+
+Function GetClassDiagImageFileName(Const ClassName: String; DiagType: Integer): String;
+{ Construit le nom du fichier image pour un diagramme de classe }
+{ DiagType: 1=class, 2=collab, 3=inherit, 4=uml }
+Begin
+  Case DiagType Of
+    1: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX + 
+                                    SanitizeClassNodeId(ClassName) + '.' + ClassDiagFormat;
+    2: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX + 
+                                    SanitizeClassNodeId(ClassName) + '.' + ClassDiagFormat;
+    3: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX + 
+                                    SanitizeClassNodeId(ClassName) + '.' + ClassDiagFormat;
+    4: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX + 
+                                    SanitizeClassNodeId(ClassName) + '.' + ClassDiagFormat;
+  Else
+    GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_PNG_FILE;
+  End;
+End;
+
+Function GetClassDiagPlantUmlFileName(Const ClassName: String): String;
+{ Construit le nom du fichier PlantUML pour une classe }
+Begin
+  GetClassDiagPlantUmlFileName := ClassDiagOutputDir + '/' + 
+                                  SanitizeClassNodeId(ClassName) + '.puml';
 End;
 
 { ============================================================
