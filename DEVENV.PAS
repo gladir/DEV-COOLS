@@ -1231,6 +1231,13 @@ Const
  ADAC_EXT_SOURCE      = '.adb';     { extension source Ada           }
  ADAC_EXT_EXE         = '.exe';     { extension executable           }
 
+ { Integration compilateur C }
+ CC_COMPILER_WIN32    = 'CCW32';    { compilateur C Win32 PE          }
+ CC_COMPILER_DOS      = 'CC8086';   { compilateur C DOS 8086          }
+ CC_TEMP_OUTPUT       = '_ccout.tmp'; { fichier temp sortie compil    }
+ CC_EXT_SOURCE        = '.c';       { extension source C              }
+ CC_EXT_EXE           = '.exe';     { extension executable            }
+
  { Integration compilateur ABAP/4 }
  ABAP_COMPILER_WIN32  = 'ABAPCW32'; { compilateur ABAP Win32 PE      }
  ABAP_COMPILER_DOS    = 'ABAP86';   { compilateur ABAP DOS 8086      }
@@ -2347,6 +2354,24 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ { Contexte du compilateur C }
+ TCCCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur (CCW32/CC8086) }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
  { Contexte du compilateur Ada }
  TADACCompilerContext = Record
   CompilerPath   : String[255];    { chemin complet du compilateur   }
@@ -2595,6 +2620,8 @@ Var
  VBCContext     : TVBCCompilerContext;
  { Contexte compilateur Pascal }
  TPCContext     : TTPCCompilerContext;
+ { Contexte compilateur C }
+ CCContext      : TCCCompilerContext;
  { Contexte compilateur Ada }
  ADACContext    : TADACCompilerContext;
  { Contexte compilateur ABAP/4 }
@@ -21404,6 +21431,55 @@ Begin
 End;
 
 { ============================================================
+  INTEGRATION COMPILATEUR C
+  ============================================================ }
+
+{ --- Initialiser le contexte du compilateur C --- }
+
+Procedure InitCCContext(Var Ctx: TCCCompilerContext);
+Begin
+ Ctx.CompilerPath := '';
+ Ctx.CompilerName := '';
+ Ctx.CompilerFound := False;
+ Ctx.LastResult := CR_NOT_FOUND;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ Ctx.TotalFiles := 0;
+ Ctx.OutputFile := '';
+ Ctx.TempFile := CC_TEMP_OUTPUT;
+ Ctx.IsCompiling := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose := False;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Detecter le compilateur C disponible --- }
+
+Procedure DetectCCCompiler(Var Ctx: TCCCompilerContext);
+Var
+ Path: String;
+Begin
+ { Essayer d abord CCW32 (Win32 PE) }
+ Path := FindCompiler(CC_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := CC_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer CC8086 (DOS 8086) }
+ Path := FindCompiler(CC_COMPILER_DOS);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := CC_COMPILER_DOS;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
+{ ============================================================
   INTEGRATION COMPILATEUR ABAP/4
   ============================================================ }
 
@@ -23096,6 +23172,26 @@ Begin
    Exit;
   End;
  End
+ Else If (Ext = '.c') Or (Ext = '.h') Then Begin
+  { Compilation C }
+  DetectCCCompiler(CCContext);
+  If CCContext.CompilerFound Then Begin
+   CmdLine := CCContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur C non trouve (CCW32/CC8086).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+ End
  Else Begin
   AppendOutput(OutputPanel,
    'Erreur : type de fichier non supporte (' + Ext + ').',
@@ -23673,6 +23769,7 @@ BEGIN
  InitCSCContext(CSCContext);
  InitVBCContext(VBCContext);
  InitTPCContext(TPCContext);
+ InitCCContext(CCContext);
  InitADACContext(ADACContext);
  InitABAPContext(ABAPContext);
  InitBuildManager(BuildMgr);
