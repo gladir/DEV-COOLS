@@ -398,7 +398,7 @@
             Tableaux multi-dimensionnels :
               Calcul offset = ((i1 * dim2 + i2) * dim3 + i3) * taille
 
-  TODO 16 - PARSEUR : TYPES UTILISATEUR (TYPE...END TYPE) ET ENUM [A FAIRE]
+  TODO 16 - PARSEUR : TYPES UTILISATEUR (TYPE...END TYPE) ET ENUM [IMPLEMENTE]
             Procedure ParseType
             Syntaxe :
               [Public|Private] Type NomType

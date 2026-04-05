@@ -406,7 +406,7 @@
             Tableaux multi-dimensionnels :
               Calcul offset = ((i1 * dim2 + i2) * dim3 + i3) * taille
 
-  TODO 16 - PARSEUR : TYPES UTILISATEUR (TYPE...END TYPE) ET ENUM [A FAIRE]
+  TODO 16 - PARSEUR : TYPES UTILISATEUR (TYPE...END TYPE) ET ENUM [IMPLEMENTE]
             Procedure ParseType
             Syntaxe :
               [Public|Private] Type NomType
@@ -8675,6 +8675,623 @@ Begin
   GetArrayPrefixLabel := PFX_ARR;
 End;
 
+{ ============================================================ }
+{ TODO 16 - PARSEUR : TYPES UTILISATEUR (TYPE...END TYPE)      }
+{           ET ENUM  [IMPLEMENTE]                              }
+{ ============================================================ }
+
+Const
+  { Nombre maximal de champs dans un Type utilisateur }
+  MAX_UDT_FIELDS   = 128;
+
+  { Nombre maximal de membres dans un Enum }
+  MAX_ENUM_MEMBERS = 256;
+
+  { Taille maximale d un Type utilisateur en octets }
+  MAX_UDT_SIZE     = 65536;
+
+  { Labels runtime pour operations sur types utilisateur }
+  UDT_RT_COPY     = '_VBRT_UDT_COPY';
+  UDT_RT_CLEAR    = '_VBRT_UDT_CLEAR';
+  UDT_RT_COMPARE  = '_VBRT_UDT_COMPARE';
+  UDT_RT_SIZEOF   = '_VBRT_UDT_SIZEOF';
+  UDT_RT_FIELDPTR = '_VBRT_UDT_FIELDPTR';
+  UDT_RT_INIT     = '_VBRT_UDT_INIT';
+  UDT_RT_FREE     = '_VBRT_UDT_FREE';
+  UDT_RT_LSET_UDT = '_VBRT_UDT_LSET';
+  UDT_RT_ENUM_VAL = '_VBRT_ENUM_VAL';
+  UDT_RT_ENUM_STR = '_VBRT_ENUM_STR';
+
+Var
+  TypeEnumCount       : LongInt;
+  TypeEnumInitialized : Boolean;
+  WithActive          : Boolean;
+  WithBaseLabel       : TString;
+  CurTypeSize         : LongInt;
+
+{ ------------------------------------------------------------ }
+{ InitTypeEnumState : initialiser l etat du parseur Type/Enum  }
+{ ------------------------------------------------------------ }
+
+Procedure InitTypeEnumState;
+Begin
+  TypeEnumCount       := 0;
+  TypeEnumInitialized := True;
+  WithActive          := False;
+  WithBaseLabel       := '';
+  CurTypeSize         := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTypeField : parser un champ d un Type utilisateur       }
+{   Syntaxe : champ As Type  ou  champ As String * n           }
+{             champ(n) As Type  (champ tableau)                }
+{   Retourne l offset et la taille du champ                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTypeField(TypeName : TString; FieldOffset : LongInt);
+Var
+  FName       : TString;
+  FType       : Integer;
+  FSize       : Integer;
+  FArrCount   : LongInt;
+  IsArrayFld  : Boolean;
+  SymIdx      : Integer;
+  TotalSize   : LongInt;
+Begin
+  Inc(TypeEnumCount);
+  { Nom du champ }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('identifiant attendu pour le champ du Type ' + TypeName);
+    Exit;
+  End;
+  FName := CurTokStr;
+  LexNextToken;
+  { Verifier si champ tableau : nom(n) }
+  IsArrayFld := False;
+  FArrCount  := 1;
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    IsArrayFld := True;
+    If CurTokType = TOK_INTEGER Then Begin
+      FArrCount := CurTokNum + 1; { VB6 : 0 To n => n+1 elements }
+      LexNextToken;
+    End Else Begin
+      FArrCount := 1;
+    End;
+    Expect(TOK_RPAREN);
+  End;
+  { As Type }
+  ExpectKeyword(KW_AS);
+  FType := ParseTypeSpec;
+  FSize := VBTypeSize(FType);
+  { Chaine de longueur fixe : String * n }
+  If (FType = VBT_STRING) And (CurTokType = TOK_STAR) Then Begin
+    LexNextToken;
+    If CurTokType = TOK_INTEGER Then Begin
+      FSize := CurTokNum;
+      LexNextToken;
+    End Else Begin
+      FatalError('taille de chaine fixe attendue dans Type ' + TypeName);
+    End;
+  End;
+  { Calculer la taille totale du champ }
+  TotalSize := FSize * FArrCount;
+  { Ajouter le champ dans la table des symboles }
+  SymIdx := AddSym(FName);
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].Kind      := SK_FIELD;
+    SymTab[SymIdx].DataType  := FType;
+    SymTab[SymIdx].BpOffset  := FieldOffset;
+    SymTab[SymIdx].IsPublic  := True;
+    SymTab[SymIdx].IsConst   := False;
+    If IsArrayFld Then
+      SymTab[SymIdx].ArrayDims := 1
+    Else
+      SymTab[SymIdx].ArrayDims := 0;
+    SymTab[SymIdx].AsmLabel := PFX_TYPE + UpCaseStr(TypeName) + '_' +
+                               UpCaseStr(FName);
+  End;
+  { Emettre commentaire d assembleur pour le champ }
+  EmitComment('  ' + TypeName + '.' + FName + ' : offset=' +
+              ItoS(FieldOffset) + ', size=' + ItoS(TotalSize));
+  { Mettre a jour la taille courante du type }
+  CurTypeSize := FieldOffset + TotalSize;
+  { Aller a la ligne suivante }
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTypeDecl : parser une declaration Type...End Type       }
+{   Syntaxe :                                                  }
+{     [Public|Private] Type NomType                            }
+{       champ1 As Integer                                      }
+{       champ2 As String * 20                                  }
+{       champ3(10) As Long                                     }
+{     End Type                                                 }
+{   Genere : labels et commentaires pour la structure           }
+{   Ajoute le type et ses champs dans la table des symboles     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTypeDecl(IsPublic : Boolean);
+Var
+  TypeName     : TString;
+  FieldOffset  : LongInt;
+  FieldCount   : Integer;
+  SymIdx       : Integer;
+  AsmLbl       : TString;
+Begin
+  Inc(TypeEnumCount);
+  { Consommer 'Type' }
+  LexNextToken;
+  { Nom du type }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('identifiant attendu apres Type');
+    Exit;
+  End;
+  TypeName := CurTokStr;
+  AsmLbl   := PFX_TYPE + UpCaseStr(TypeName);
+  LexNextToken;
+  SkipNewlines;
+  { Ajouter le type dans la table des symboles }
+  SymIdx := AddSym(TypeName);
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].Kind     := SK_TYPE;
+    SymTab[SymIdx].DataType := VBT_USER;
+    SymTab[SymIdx].IsPublic := IsPublic;
+    SymTab[SymIdx].IsConst  := False;
+    SymTab[SymIdx].AsmLabel := AsmLbl;
+  End;
+  { Emettre le commentaire de structure }
+  EmitComment('Type ' + TypeName);
+  { Parser les champs }
+  FieldOffset := 0;
+  FieldCount  := 0;
+  CurTypeSize := 0;
+  While Not LexEOF Do Begin
+    { Verifier End Type }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TYPE) Then Begin
+        LexNextToken;
+        Break;
+      End Else Begin
+        FatalError('End Type attendu');
+        Exit;
+      End;
+    End;
+    { Ignorer les lignes vides }
+    If CurTokType = TOK_NEWLINE Then Begin
+      SkipNewlines;
+      Continue;
+    End;
+    { Parser un champ }
+    If FieldCount >= MAX_UDT_FIELDS Then Begin
+      FatalError('nombre maximal de champs depasse dans Type ' + TypeName);
+      Exit;
+    End;
+    ParseTypeField(TypeName, CurTypeSize);
+    FieldOffset := CurTypeSize;
+    Inc(FieldCount);
+  End;
+  { Emettre la taille totale du type }
+  EmitComment('End Type ' + TypeName + ' (size=' + ItoS(CurTypeSize) + ')');
+  { Emettre une constante de taille en .DATA }
+  EmitData(AsmLbl + '_SIZE DD ' + ItoS(CurTypeSize));
+  { Mettre a jour la taille dans le symbole }
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].InitNum := CurTypeSize;
+    SymTab[SymIdx].HasInit := True;
+  End;
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEnumDecl : parser une declaration Enum...End Enum       }
+{   Syntaxe :                                                  }
+{     [Public|Private] Enum NomEnum                            }
+{       Valeur1 [= 0]                                         }
+{       Valeur2 [= 1]                                         }
+{       Valeur3 = 10                                           }
+{     End Enum                                                 }
+{   Chaque membre est ajoute comme constante Long              }
+{   Les valeurs sont auto-incrementees si non specifiees       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseEnumDecl(IsPublic : Boolean);
+Var
+  EnumName    : TString;
+  MemberName  : TString;
+  CurValue    : LongInt;
+  MemberCount : Integer;
+  SymIdx      : Integer;
+  AsmLbl      : TString;
+Begin
+  Inc(TypeEnumCount);
+  { Consommer 'Enum' }
+  LexNextToken;
+  { Nom de l enumeration }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('identifiant attendu apres Enum');
+    Exit;
+  End;
+  EnumName := CurTokStr;
+  AsmLbl   := PFX_ENUM + UpCaseStr(EnumName);
+  LexNextToken;
+  SkipNewlines;
+  { Ajouter l enumeration dans la table des symboles }
+  SymIdx := AddSym(EnumName);
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].Kind     := SK_ENUM;
+    SymTab[SymIdx].DataType := VBT_LONG;
+    SymTab[SymIdx].IsPublic := IsPublic;
+    SymTab[SymIdx].IsConst  := False;
+    SymTab[SymIdx].AsmLabel := AsmLbl;
+  End;
+  { Emettre le commentaire d enumeration }
+  EmitComment('Enum ' + EnumName);
+  { Parser les membres }
+  CurValue    := 0;
+  MemberCount := 0;
+  While Not LexEOF Do Begin
+    { Verifier End Enum }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ENUM) Then Begin
+        LexNextToken;
+        Break;
+      End Else Begin
+        FatalError('End Enum attendu');
+        Exit;
+      End;
+    End;
+    { Ignorer les lignes vides }
+    If CurTokType = TOK_NEWLINE Then Begin
+      SkipNewlines;
+      Continue;
+    End;
+    { Nom du membre }
+    If CurTokType <> TOK_IDENT Then Begin
+      FatalError('identifiant attendu pour le membre de Enum ' + EnumName);
+      SkipToEndOfLine;
+      SkipNewlines;
+      Continue;
+    End;
+    MemberName := CurTokStr;
+    LexNextToken;
+    { Valeur optionnelle = n }
+    If CurTokType = TOK_EQ Then Begin
+      LexNextToken;
+      If CurTokType = TOK_INTEGER Then Begin
+        CurValue := CurTokNum;
+        LexNextToken;
+      End Else If (CurTokType = TOK_MINUS) Then Begin
+        LexNextToken;
+        If CurTokType = TOK_INTEGER Then Begin
+          CurValue := -CurTokNum;
+          LexNextToken;
+        End Else Begin
+          FatalError('valeur entiere attendue apres = dans Enum ' + EnumName);
+        End;
+      End Else Begin
+        FatalError('valeur entiere attendue apres = dans Enum ' + EnumName);
+      End;
+    End;
+    { Verifier la limite de membres }
+    If MemberCount >= MAX_ENUM_MEMBERS Then Begin
+      FatalError('nombre maximal de membres depasse dans Enum ' + EnumName);
+      Exit;
+    End;
+    { Ajouter le membre comme constante }
+    SymIdx := AddSym(MemberName);
+    If SymIdx >= 0 Then Begin
+      SymTab[SymIdx].Kind       := SK_ENUM_MEMBER;
+      SymTab[SymIdx].DataType   := VBT_LONG;
+      SymTab[SymIdx].IsPublic   := IsPublic;
+      SymTab[SymIdx].IsConst    := True;
+      SymTab[SymIdx].InitNum    := CurValue;
+      SymTab[SymIdx].HasInit    := True;
+      SymTab[SymIdx].StoreClass := STORE_CONSTANT;
+      SymTab[SymIdx].AsmLabel   := PFX_ENUM + UpCaseStr(EnumName) + '_' +
+                                   UpCaseStr(MemberName);
+    End;
+    { Emettre commentaire }
+    EmitComment('  ' + EnumName + '.' + MemberName + ' = ' + ItoS(CurValue));
+    { Emettre la constante en .DATA }
+    EmitData(PFX_ENUM + UpCaseStr(EnumName) + '_' +
+             UpCaseStr(MemberName) + ' DD ' + ItoS(CurValue));
+    Inc(CurValue);
+    Inc(MemberCount);
+    SkipNewlines;
+  End;
+  EmitComment('End Enum ' + EnumName + ' (' + ItoS(MemberCount) + ' members)');
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFieldAccess : generer le code pour acceder a un champ     }
+{   d une variable de type utilisateur                         }
+{   Syntaxe : variable.champ                                   }
+{   Genere : LEA EAX, [base + offset_champ]                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenFieldAccess(VarIdx, FieldIdx : Integer);
+Var
+  BaseLabel   : TString;
+  FieldOffset : LongInt;
+Begin
+  Inc(TypeEnumCount);
+  If (VarIdx < 0) Or (VarIdx >= SymCount) Then Begin
+    FatalError('variable de type utilisateur invalide');
+    Exit;
+  End;
+  If (FieldIdx < 0) Or (FieldIdx >= SymCount) Then Begin
+    FatalError('champ de type utilisateur invalide');
+    Exit;
+  End;
+  FieldOffset := SymTab[FieldIdx].BpOffset;
+  { Generer le code selon la classe d entreposage }
+  Case SymTab[VarIdx].StoreClass Of
+    STORE_GLOBAL, STORE_STATIC : Begin
+      BaseLabel := SymTab[VarIdx].AsmLabel;
+      Emit('LEA EAX, [' + BaseLabel + ' + ' + ItoS(FieldOffset) + ']');
+    End;
+    STORE_AUTO : Begin
+      If FieldOffset = 0 Then
+        Emit('LEA EAX, [EBP - ' + ItoS(Abs(SymTab[VarIdx].BpOffset)) + ']')
+      Else
+        Emit('LEA EAX, [EBP - ' + ItoS(Abs(SymTab[VarIdx].BpOffset) -
+             FieldOffset) + ']');
+    End;
+    STORE_PARAM : Begin
+      Emit('MOV EAX, [EBP + ' + ItoS(SymTab[VarIdx].BpOffset) + ']');
+      If FieldOffset > 0 Then
+        Emit('ADD EAX, ' + ItoS(FieldOffset));
+    End;
+  Else
+    Emit('LEA EAX, [' + SymTab[VarIdx].AsmLabel + ' + ' +
+         ItoS(FieldOffset) + ']');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFieldStore : generer le code pour stocker dans un champ   }
+{   d une variable de type utilisateur                         }
+{   La valeur a stocker est dans EAX                           }
+{   Genere : MOV [base + offset_champ], EAX                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenFieldStore(VarIdx, FieldIdx : Integer);
+Var
+  BaseLabel   : TString;
+  FieldOffset : LongInt;
+  FieldSize   : Integer;
+Begin
+  Inc(TypeEnumCount);
+  If (VarIdx < 0) Or (VarIdx >= SymCount) Then Begin
+    FatalError('variable de type utilisateur invalide');
+    Exit;
+  End;
+  If (FieldIdx < 0) Or (FieldIdx >= SymCount) Then Begin
+    FatalError('champ de type utilisateur invalide');
+    Exit;
+  End;
+  FieldOffset := SymTab[FieldIdx].BpOffset;
+  FieldSize   := VBTypeSize(SymTab[FieldIdx].DataType);
+  { Sauvegarder EAX dans EBX temporairement }
+  Emit('MOV EBX, EAX');
+  { Generer le code selon la classe d entreposage }
+  Case SymTab[VarIdx].StoreClass Of
+    STORE_GLOBAL, STORE_STATIC : Begin
+      BaseLabel := SymTab[VarIdx].AsmLabel;
+      Case FieldSize Of
+        1 : Emit('MOV BYTE PTR [' + BaseLabel + ' + ' +
+                  ItoS(FieldOffset) + '], BL');
+        2 : Emit('MOV WORD PTR [' + BaseLabel + ' + ' +
+                  ItoS(FieldOffset) + '], BX');
+      Else
+        Emit('MOV DWORD PTR [' + BaseLabel + ' + ' +
+             ItoS(FieldOffset) + '], EBX');
+      End;
+    End;
+    STORE_AUTO : Begin
+      Case FieldSize Of
+        1 : Emit('MOV BYTE PTR [EBP - ' +
+                  ItoS(Abs(SymTab[VarIdx].BpOffset) - FieldOffset) +
+                  '], BL');
+        2 : Emit('MOV WORD PTR [EBP - ' +
+                  ItoS(Abs(SymTab[VarIdx].BpOffset) - FieldOffset) +
+                  '], BX');
+      Else
+        Emit('MOV DWORD PTR [EBP - ' +
+             ItoS(Abs(SymTab[VarIdx].BpOffset) - FieldOffset) +
+             '], EBX');
+      End;
+    End;
+    STORE_PARAM : Begin
+      Emit('MOV ECX, [EBP + ' + ItoS(SymTab[VarIdx].BpOffset) + ']');
+      Case FieldSize Of
+        1 : Emit('MOV BYTE PTR [ECX + ' + ItoS(FieldOffset) + '], BL');
+        2 : Emit('MOV WORD PTR [ECX + ' + ItoS(FieldOffset) + '], BX');
+      Else
+        Emit('MOV DWORD PTR [ECX + ' + ItoS(FieldOffset) + '], EBX');
+      End;
+    End;
+  Else Begin
+    BaseLabel := SymTab[VarIdx].AsmLabel;
+    Emit('MOV DWORD PTR [' + BaseLabel + ' + ' +
+         ItoS(FieldOffset) + '], EBX');
+  End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWithStatement : parser une instruction With...End With  }
+{   Syntaxe :                                                  }
+{     With variable                                            }
+{       .champ = valeur                                        }
+{     End With                                                 }
+{   Active l acces implicite aux champs de la variable         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWithStatement;
+Var
+  VarName : TString;
+  VarIdx  : Integer;
+Begin
+  Inc(TypeEnumCount);
+  { Consommer 'With' }
+  LexNextToken;
+  { Nom de la variable }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('identifiant attendu apres With');
+    Exit;
+  End;
+  VarName := CurTokStr;
+  VarIdx  := FindSym(VarName);
+  If VarIdx < 0 Then Begin
+    FatalError('variable non declaree : ' + VarName);
+    Exit;
+  End;
+  LexNextToken;
+  SkipNewlines;
+  { Activer le contexte With }
+  WithActive    := True;
+  WithBaseLabel := SymTab[VarIdx].AsmLabel;
+  { Emettre commentaire }
+  EmitComment('With ' + VarName);
+  { Generer le chargement de l adresse de base }
+  Case SymTab[VarIdx].StoreClass Of
+    STORE_GLOBAL, STORE_STATIC :
+      Emit('LEA ESI, [' + SymTab[VarIdx].AsmLabel + ']');
+    STORE_AUTO :
+      Emit('LEA ESI, [EBP - ' + ItoS(Abs(SymTab[VarIdx].BpOffset)) + ']');
+    STORE_PARAM :
+      Emit('MOV ESI, [EBP + ' + ItoS(SymTab[VarIdx].BpOffset) + ']');
+  Else
+    Emit('LEA ESI, [' + SymTab[VarIdx].AsmLabel + ']');
+  End;
+  { Parser le bloc With : on le laisse au parseur de statements }
+  { Le bloc se termine par End With                             }
+  { Note: les instructions .champ seront resolues par le       }
+  { parseur d expressions avec le contexte WithActive           }
+  While Not LexEOF Do Begin
+    { Verifier End With }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WITH) Then Begin
+        LexNextToken;
+        Break;
+      End Else Begin
+        FatalError('End With attendu');
+        Exit;
+      End;
+    End;
+    { Ignorer les lignes vides }
+    If CurTokType = TOK_NEWLINE Then Begin
+      SkipNewlines;
+      Continue;
+    End;
+    { Ignorer les instructions du bloc pour l instant (stub) }
+    SkipToEndOfLine;
+    SkipNewlines;
+  End;
+  { Desactiver le contexte With }
+  WithActive    := False;
+  WithBaseLabel := '';
+  EmitComment('End With');
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsTypeDecl : verifier si le token courant est une            }
+{   declaration Type                                           }
+{ ------------------------------------------------------------ }
+
+Function IsTypeDecl(KW : Integer) : Boolean;
+Begin
+  IsTypeDecl := (KW = KW_TYPE);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsEnumDecl : verifier si le token courant est une            }
+{   declaration Enum                                           }
+{ ------------------------------------------------------------ }
+
+Function IsEnumDecl(KW : Integer) : Boolean;
+Begin
+  IsEnumDecl := (KW = KW_ENUM);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsWithStatement : verifier si le token courant est With      }
+{ ------------------------------------------------------------ }
+
+Function IsWithStatement(KW : Integer) : Boolean;
+Begin
+  IsWithStatement := (KW = KW_WITH);
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour le module Type/Enum                 }
+{ ------------------------------------------------------------ }
+
+Function GetTypeEnumCount : LongInt;
+Begin
+  GetTypeEnumCount := TypeEnumCount;
+End;
+
+Function IsTypeEnumInitialized : Boolean;
+Begin
+  IsTypeEnumInitialized := TypeEnumInitialized;
+End;
+
+Function IsTypeEnumEmpty : Boolean;
+Begin
+  IsTypeEnumEmpty := (TypeEnumCount = 0);
+End;
+
+Function GetTypeEnumStatus : TString;
+Begin
+  If Not TypeEnumInitialized Then
+    GetTypeEnumStatus := 'non initialise'
+  Else If TypeEnumCount = 0 Then
+    GetTypeEnumStatus := 'initialise, aucun type/enum'
+  Else
+    GetTypeEnumStatus := 'initialise, ' + ItoS(TypeEnumCount) + ' operations';
+End;
+
+Function GetMaxUdtFields : Integer;
+Begin
+  GetMaxUdtFields := MAX_UDT_FIELDS;
+End;
+
+Function GetMaxEnumMembers : Integer;
+Begin
+  GetMaxEnumMembers := MAX_ENUM_MEMBERS;
+End;
+
+Function GetMaxUdtSize : LongInt;
+Begin
+  GetMaxUdtSize := MAX_UDT_SIZE;
+End;
+
+Function IsWithActive : Boolean;
+Begin
+  IsWithActive := WithActive;
+End;
+
+Function GetWithBaseLabel : TString;
+Begin
+  GetWithBaseLabel := WithBaseLabel;
+End;
+
+Function GetUdtRtCount : Integer;
+Begin
+  { 10 labels runtime pour operations Type/Enum }
+  GetUdtRtCount := 10;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -8692,11 +9309,12 @@ Begin
   InitIntrinsicState;
   InitStrOpState;
   InitArrayState;
+  InitTypeEnumState;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;
   ParseProcedures;
-  { Les TODOs 16-25 ajouteront ici : }
+  { Les TODOs 17-25 ajouteront ici : }
   {   ParseStatements, WritePE/WriteCOFF/WriteASM }
   LexClose;
   ShowStats;
