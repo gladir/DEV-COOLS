@@ -5226,8 +5226,8 @@ Begin
  WinMgr.Windows[Idx].TabIndex := Idx;
  WinMgr.Windows[Idx].Visible := True;
  WinMgr.Windows[Idx].Maximized := True;
- { Zone d edition : sous onglets, a droite de l explorateur }
- WinMgr.Windows[Idx].X := EXPLORER_WIDTH;
+ { Zone d edition : sous onglets, a gauche de l explorateur }
+ WinMgr.Windows[Idx].X := 0;
  WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
  WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
  WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
@@ -5316,11 +5316,11 @@ Begin
  TY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT;
  { Fond de la barre d onglets }
  SetColor(CLR_BACKGROUND);
- Bar(EXPLORER_WIDTH, TY, GetScreenWidth - 1, TY + TAB_HEIGHT - 1);
- TX := EXPLORER_WIDTH - WinMgr.TabScrollX;
+ Bar(0, TY, GetScreenWidth - EXPLORER_WIDTH - 1, TY + TAB_HEIGHT - 1);
+ TX := 0 - WinMgr.TabScrollX;
  For I := 0 To WinMgr.WinCount - 1 Do Begin
   TW := TabWidth(I);
-  If (TX + TW > EXPLORER_WIDTH) And (TX < GetScreenWidth) Then Begin
+  If (TX + TW > 0) And (TX < GetScreenWidth - EXPLORER_WIDTH) Then Begin
    { Fond de l onglet }
    If I = WinMgr.ActiveIdx Then Begin
     SetColor(CLR_EDITOR_BG);
@@ -5347,8 +5347,8 @@ Begin
  End;
  { Ligne de separation sous les onglets }
  SetColor(CLR_BORDER);
- Line(EXPLORER_WIDTH, TY + TAB_HEIGHT - 1,
-      GetScreenWidth - 1, TY + TAB_HEIGHT - 1);
+ Line(0, TY + TAB_HEIGHT - 1,
+      GetScreenWidth - EXPLORER_WIDTH - 1, TY + TAB_HEIGHT - 1);
 End;
 
 { --- Test de clic sur les onglets --- }
@@ -5360,8 +5360,8 @@ Begin
  TabHitTest := -1;
  TY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT;
  If (MY < TY) Or (MY >= TY + TAB_HEIGHT) Then Exit;
- If MX < EXPLORER_WIDTH Then Exit;
- TX := EXPLORER_WIDTH - WinMgr.TabScrollX;
+ If MX < 0 Then Exit;
+ TX := 0 - WinMgr.TabScrollX;
  For I := 0 To WinMgr.WinCount - 1 Do Begin
   TW := TabWidth(I);
   If (MX >= TX) And (MX < TX + TW) Then Begin
@@ -5382,7 +5382,7 @@ Begin
  TabCloseHitTest := False;
  If (TabIdx < 0) Or (TabIdx >= WinMgr.WinCount) Then Exit;
  TY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT;
- TX := EXPLORER_WIDTH - WinMgr.TabScrollX;
+ TX := 0 - WinMgr.TabScrollX;
  For I := 0 To TabIdx - 1 Do
   TX := TX + TabWidth(I);
  TW := TabWidth(TabIdx);
@@ -5442,7 +5442,7 @@ Var
 Begin
  If WinMgr.WinCount <= 0 Then Exit;
  { Zone d edition }
- ZX := EXPLORER_WIDTH;
+ ZX := 0;
  ZY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
  ZW := GetScreenWidth - EXPLORER_WIDTH;
  ZH := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT
@@ -5472,7 +5472,7 @@ Var
  I, ZX, ZY, ZW, ZH, Offset: Integer;
 Begin
  If WinMgr.WinCount <= 0 Then Exit;
- ZX := EXPLORER_WIDTH;
+ ZX := 0;
  ZY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
  ZW := GetScreenWidth - EXPLORER_WIDTH;
  ZH := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT
@@ -5497,8 +5497,7 @@ Begin
   WinMgr.SplitPos := 0;
  End Else Begin
   WinMgr.SplitMode := True;
-  WinMgr.SplitPos := (GetScreenWidth - EXPLORER_WIDTH) Div 2
-                      + EXPLORER_WIDTH;
+  WinMgr.SplitPos := (GetScreenWidth - EXPLORER_WIDTH) Div 2;
  End;
 End;
 
@@ -5990,7 +5989,7 @@ Begin
  Ed.GutterWidth := 50;
  Ed.CharWidth := 8;
  Ed.CharHeight := 14;
- Ed.X := EXPLORER_WIDTH;
+ Ed.X := 0;
  Ed.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
  Ed.Width := GetScreenWidth - EXPLORER_WIDTH;
  Ed.Height := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT
