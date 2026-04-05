@@ -2428,6 +2428,7 @@ Type
   SelectedItem : Integer;          { element selectionne            }
   ScrollTop    : Integer;          { defilement vertical            }
   NeedRepaint  : Boolean;          { doit etre redessine            }
+  FocusedBtn   : Integer;          { bouton clavier actif: 0=Nouveau, 1=Ouvrir }
  End;
 Var
  Opts       : TDevEnvOptions;
@@ -21505,6 +21506,7 @@ Begin
  SP.SelectedItem := -1;
  SP.ScrollTop := 0;
  SP.NeedRepaint := True;
+ SP.FocusedBtn := 0;  { Nouveau projet par defaut }
 End;
 
 { --- Dessiner la page de demarrage --- }
@@ -21526,18 +21528,35 @@ Begin
  Title := 'DEV-COOLS v' + IDE_VERSION;
  DrawText(CenterX - (Length(Title) * 8 Div 2),
   START_PAGE_TITLE_Y + 20, Title, 8);
- { Boutons }
- DrawFilledRect(CenterX - START_PAGE_BTN_WIDTH - 10,
-  START_PAGE_BTN_Y + 50,
-  CenterX - 10,
-  START_PAGE_BTN_Y + 50 + START_PAGE_BTN_HEIGHT, CLR_STATUSBAR);
+ { Bouton Nouveau projet (0) }
+ If SP.FocusedBtn = 0 Then
+  DrawFilledRect(CenterX - START_PAGE_BTN_WIDTH - 10,
+   START_PAGE_BTN_Y + 50, CenterX - 10,
+   START_PAGE_BTN_Y + 50 + START_PAGE_BTN_HEIGHT, CLR_MENU_HIGHLIGHT)
+ Else
+  DrawFilledRect(CenterX - START_PAGE_BTN_WIDTH - 10,
+   START_PAGE_BTN_Y + 50, CenterX - 10,
+   START_PAGE_BTN_Y + 50 + START_PAGE_BTN_HEIGHT, CLR_STATUSBAR);
  DrawText(CenterX - START_PAGE_BTN_WIDTH - 10 + 12,
   START_PAGE_BTN_Y + 50 + 6, 'Nouveau projet', 15);
- DrawFilledRect(CenterX + 10, START_PAGE_BTN_Y + 50,
-  CenterX + 10 + START_PAGE_BTN_WIDTH,
-  START_PAGE_BTN_Y + 50 + START_PAGE_BTN_HEIGHT, CLR_STATUSBAR);
+ If SP.FocusedBtn = 0 Then
+  DrawRect(CenterX - START_PAGE_BTN_WIDTH - 10, START_PAGE_BTN_Y + 50,
+   CenterX - 10, START_PAGE_BTN_Y + 50 + START_PAGE_BTN_HEIGHT, 15);
+ { Bouton Ouvrir projet (1) }
+ If SP.FocusedBtn = 1 Then
+  DrawFilledRect(CenterX + 10, START_PAGE_BTN_Y + 50,
+   CenterX + 10 + START_PAGE_BTN_WIDTH,
+   START_PAGE_BTN_Y + 50 + START_PAGE_BTN_HEIGHT, CLR_MENU_HIGHLIGHT)
+ Else
+  DrawFilledRect(CenterX + 10, START_PAGE_BTN_Y + 50,
+   CenterX + 10 + START_PAGE_BTN_WIDTH,
+   START_PAGE_BTN_Y + 50 + START_PAGE_BTN_HEIGHT, CLR_STATUSBAR);
  DrawText(CenterX + 10 + 16,
   START_PAGE_BTN_Y + 50 + 6, 'Ouvrir projet', 15);
+ If SP.FocusedBtn = 1 Then
+  DrawRect(CenterX + 10, START_PAGE_BTN_Y + 50,
+   CenterX + 10 + START_PAGE_BTN_WIDTH,
+   START_PAGE_BTN_Y + 50 + START_PAGE_BTN_HEIGHT, 15);
  { Liste des fichiers recents }
  If MRU.Count > 0 Then Begin
   DrawText(CenterX - 100, START_PAGE_LIST_Y + 20,
@@ -21601,16 +21620,31 @@ Begin
     End;
    End;
  End;
- If (Ev.Kind = EV_KEY_DOWN) Or (Ev.Kind = EV_KEY_CHAR) Then Begin
+ If Ev.Kind = EV_KEY_CHAR Then Begin
+  Case Ev.KeyChar Of
+   #9:  Begin { Tab : basculer le bouton actif }
+         SP.FocusedBtn := 1 - SP.FocusedBtn;
+         SP.NeedRepaint := True;
+        End;
+   #13: Begin { Entree : activer le bouton courant }
+         SP.Visible := False;
+         SP.NeedRepaint := True;
+        End;
+   #27: Begin { Echap : fermer la page de demarrage }
+         SP.Visible := False;
+         SP.NeedRepaint := True;
+        End;
+  End;
+ End Else If Ev.Kind = EV_KEY_DOWN Then Begin
   Case Ev.KeyCode Of
-   $1C0D: Begin { Entree }
-    SP.Visible := False;
-    SP.NeedRepaint := True;
-   End;
-   $011B: Begin { Echap }
-    SP.Visible := False;
-    SP.NeedRepaint := True;
-   End;
+   75: Begin { Fleche gauche : bouton Nouveau }
+        SP.FocusedBtn := 0;
+        SP.NeedRepaint := True;
+       End;
+   77: Begin { Fleche droite : bouton Ouvrir }
+        SP.FocusedBtn := 1;
+        SP.NeedRepaint := True;
+       End;
   End;
  End;
 End;
