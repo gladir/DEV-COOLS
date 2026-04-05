@@ -1228,6 +1228,13 @@ Const
  ADAC_EXT_SOURCE      = '.adb';     { extension source Ada           }
  ADAC_EXT_EXE         = '.exe';     { extension executable           }
 
+ { Integration compilateur ABAP/4 }
+ ABAP_COMPILER_WIN32  = 'ABAPCW32'; { compilateur ABAP Win32 PE      }
+ ABAP_COMPILER_DOS    = 'ABAP86';   { compilateur ABAP DOS 8086      }
+ ABAP_TEMP_OUTPUT     = '_abapout.tmp'; { fichier temp sortie compil }
+ ABAP_EXT_SOURCE      = '.abap';    { extension source ABAP          }
+ ABAP_EXT_EXE         = '.exe';     { extension executable           }
+
  { Systeme de build et configuration }
  BUILD_MAX_ORDER       = 64;       { nombre max projets dans l ordre }
  BUILD_CFG_DLG_WIDTH   = 400;      { largeur dialogue configuration  }
@@ -2347,6 +2354,24 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ { Contexte du compilateur ABAP/4 }
+ TABAPCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur (ABAPCW32/ABAP86) }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
  { Etat de build d un projet }
  TBuildStatus = (
   BS_PENDING,          { en attente de compilation               }
@@ -2559,6 +2584,8 @@ Var
  TPCContext     : TTPCCompilerContext;
  { Contexte compilateur Ada }
  ADACContext    : TADACCompilerContext;
+ { Contexte compilateur ABAP/4 }
+ ABAPContext    : TABAPCompilerContext;
  { Gestionnaire de build }
  BuildMgr       : TBuildManager;
  { Gestionnaire de configurations }
@@ -21207,6 +21234,55 @@ Begin
 End;
 
 { ============================================================
+  INTEGRATION COMPILATEUR ABAP/4
+  ============================================================ }
+
+{ --- Initialiser le contexte du compilateur ABAP --- }
+
+Procedure InitABAPContext(Var Ctx: TABAPCompilerContext);
+Begin
+ Ctx.CompilerPath := '';
+ Ctx.CompilerName := '';
+ Ctx.CompilerFound := False;
+ Ctx.LastResult := CR_NOT_FOUND;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ Ctx.TotalFiles := 0;
+ Ctx.OutputFile := '';
+ Ctx.TempFile := ABAP_TEMP_OUTPUT;
+ Ctx.IsCompiling := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose := False;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Detecter le compilateur ABAP disponible --- }
+
+Procedure DetectABAPCompiler(Var Ctx: TABAPCompilerContext);
+Var
+ Path: String;
+Begin
+ { Essayer d abord ABAPCW32 (Win32 PE) }
+ Path := FindCompiler(ABAP_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := ABAP_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer ABAP86 (DOS 8086) }
+ Path := FindCompiler(ABAP_COMPILER_DOS);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := ABAP_COMPILER_DOS;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
+{ ============================================================
   TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [IMPLEMENTE]
   ============================================================ }
 
@@ -22830,6 +22906,26 @@ Begin
    Exit;
   End;
  End
+ Else If (Ext = '.abap') Or (Ext = '.abp') Then Begin
+  { Compilation ABAP/4 }
+  DetectABAPCompiler(ABAPContext);
+  If ABAPContext.CompilerFound Then Begin
+   CmdLine := ABAPContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur ABAP non trouve (ABAPCW32/ABAP86).',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+ End
  Else Begin
   AppendOutput(OutputPanel,
    'Erreur : type de fichier non supporte (' + Ext + ').',
@@ -23406,6 +23502,8 @@ BEGIN
  InitCSCContext(CSCContext);
  InitVBCContext(VBCContext);
  InitTPCContext(TPCContext);
+ InitADACContext(ADACContext);
+ InitABAPContext(ABAPContext);
  InitBuildManager(BuildMgr);
  InitConfigurationManager(CfgMgr);
  InitBreakpointManager(BPMgr);
