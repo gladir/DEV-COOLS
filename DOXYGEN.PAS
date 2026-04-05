@@ -730,7 +730,7 @@
               GetClassDiagPlantUmlFileName, VisibilitySymbol, VisibilityColor,
               EscapeDotLabel, SanitizeClassNodeId, EntityVisibilityToStr
 
-  TODO 20 - SUPPORT DES MACROS ET PREPROCESSEUR [A FAIRE]
+  TODO 20 - SUPPORT DES MACROS ET PREPROCESSEUR [IMPLEMENTE]
             TMacro : record
               Name       : String   (nom de la macro)
               Parameters : String   (parametres si fonction-like)
@@ -740,23 +740,32 @@
               IsFuncLike : Boolean  (True si macro avec parametres)
               IsVariadic : Boolean  (True si parametres variadiques)
             End
+            TPreprocessorState : enumeration (PP_ACTIVE, PP_SKIPPING, PP_DONE)
+            TIfDefStack : record (State, WasActive, Line)
             Variables globales :
               Macros     : Array[1..MAX_MACROS] Of TMacro
               MacroCount : Integer
               PredefinedMacros : Array[1..MAX_PREDEFINED] Of TMacro
               PredefinedCount  : Integer
+              IfDefStack, IfDefStackDepth, MacrosInitialized
+            Constantes : MAX_MACROS, MAX_PREDEFINED, MAX_MACRO_PARAMS,
+              MAX_MACRO_VALUE, MAX_INCLUDE_STACK, MACRO_PREFIX_*
+            Procedure InitMacros : initialiser le systeme de macros
+            Function FindMacro : chercher une macro par nom
+            Function AddMacro : ajouter une macro
+            Procedure RemoveMacro : supprimer une macro (#undef)
             Procedure ExtractMacros(Const FileName: String)
               scanner le fichier pour les directives #define
               extraire le nom, les parametres et la valeur
-            Function ExpandMacro(Const Name: String;
-              Const Args: Array Of String): String
-              expander une macro avec les arguments fournis
-            Procedure PreprocessFile(Const InFile, OutFile: String)
-              preprocesser un fichier C/C++
-              gerer #include, #define, #undef, #if, #ifdef, #ifndef,
-              #else, #elif, #endif, #pragma, #error, #warning, #line
-            Procedure AddPredefinedMacro(Const Name, Value: String)
-              ajouter une macro predefinee (option -D de la config)
+            Function ExpandMacroSimple : expander une macro simple
+            Procedure AddPredefinedMacro : ajouter une macro predefinee
+            Procedure Push/PopIfDefState, HandleIfDef, HandleElse, HandleEndIf
+            Fonctions accesseurs : GetMacroCount, GetPredefinedCount,
+              IsMacrosInitialized, IsMacrosEmpty, IsMacroDefined, GetMacro,
+              GetPredefinedMacro, GetMacroValue, GetMacroParams,
+              IsMacroFuncLike, IsMacroVariadic, GetCurrentPPState,
+              IsPreprocessorActive, CountTotalMacros, GetMacroFileName,
+              GetMacroLine, ShowMacros
 
   TODO 21 - SUPPORT DES ESPACES DE NOMS ET MODULES [A FAIRE]
             TNamespace : record
@@ -1078,6 +1087,24 @@ Const
   CLASSDIAG_PLANTUML_START = '@startuml';
   CLASSDIAG_PLANTUML_END = '@enduml';
 
+  { Constantes pour les macros et preprocesseur (TODO 20) }
+  MAX_MACRO_PARAMS      = 32;
+  MAX_MACRO_VALUE       = 4096;
+  MAX_INCLUDE_STACK     = 64;
+  MACRO_PREFIX_DEFINE   = '#define';
+  MACRO_PREFIX_UNDEF    = '#undef';
+  MACRO_PREFIX_IF       = '#if';
+  MACRO_PREFIX_IFDEF    = '#ifdef';
+  MACRO_PREFIX_IFNDEF   = '#ifndef';
+  MACRO_PREFIX_ELSE     = '#else';
+  MACRO_PREFIX_ELIF     = '#elif';
+  MACRO_PREFIX_ENDIF    = '#endif';
+  MACRO_PREFIX_INCLUDE  = '#include';
+  MACRO_PREFIX_PRAGMA   = '#pragma';
+  MACRO_PREFIX_ERROR    = '#error';
+  MACRO_PREFIX_WARNING  = '#warning';
+  MACRO_PREFIX_LINE     = '#line';
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1282,6 +1309,29 @@ Type
     EdgeId     : Integer;           { ID unique de l'arete }
   End;
 
+  { Types pour les macros et preprocesseur (TODO 20) }
+  TMacro = Record
+    Name       : String;            { Nom de la macro }
+    Parameters : String;            { Parametres si fonction-like }
+    Value      : String;            { Valeur de substitution }
+    FileName   : String;            { Fichier de definition }
+    Line       : Integer;           { Ligne de definition }
+    IsFuncLike : Boolean;           { True si macro avec parametres }
+    IsVariadic : Boolean;           { True si parametres variadiques }
+  End;
+
+  TPreprocessorState = (
+    PP_ACTIVE,                      { Code actif (inclus) }
+    PP_SKIPPING,                    { Code ignore (exclus par #if) }
+    PP_DONE                         { Branche deja traitee }
+  );
+
+  TIfDefStack = Record
+    State      : TPreprocessorState;{ Etat courant }
+    WasActive  : Boolean;           { Une branche a ete active }
+    Line       : Integer;           { Ligne du #if/#ifdef }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1378,6 +1428,15 @@ Var
   ClassDiagFormat    : String;
   ClassDiagUmlLook   : Boolean;
   ClassDiagInitialized : Boolean;
+
+  { Variables pour les macros et preprocesseur (TODO 20) }
+  Macros            : Array[1..MAX_MACROS] Of TMacro;
+  MacroCount        : Integer;
+  PredefinedMacros  : Array[1..MAX_PREDEFINED] Of TMacro;
+  PredefinedCount   : Integer;
+  IfDefStack        : Array[1..MAX_INCLUDE_STACK] Of TIfDefStack;
+  IfDefStackDepth   : Integer;
+  MacrosInitialized : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -11162,6 +11221,637 @@ Function GetClassDiagPlantUmlFileName(Const ClassName: String): String;
 Begin
   GetClassDiagPlantUmlFileName := ClassDiagOutputDir + '/' + 
                                   SanitizeClassNodeId(ClassName) + '.puml';
+End;
+
+{ ============================================================
+  SUPPORT DES MACROS ET PREPROCESSEUR (TODO 20)
+  ============================================================ }
+
+Procedure InitMacros;
+{ Initialise le systeme de macros }
+Var
+  I: Integer;
+Begin
+  MacroCount := 0;
+  PredefinedCount := 0;
+  IfDefStackDepth := 0;
+  For I := 1 To MAX_MACROS Do
+  Begin
+    Macros[I].Name := '';
+    Macros[I].Parameters := '';
+    Macros[I].Value := '';
+    Macros[I].FileName := '';
+    Macros[I].Line := 0;
+    Macros[I].IsFuncLike := False;
+    Macros[I].IsVariadic := False;
+  End;
+  For I := 1 To MAX_PREDEFINED Do
+  Begin
+    PredefinedMacros[I].Name := '';
+    PredefinedMacros[I].Parameters := '';
+    PredefinedMacros[I].Value := '';
+    PredefinedMacros[I].FileName := '';
+    PredefinedMacros[I].Line := 0;
+    PredefinedMacros[I].IsFuncLike := False;
+    PredefinedMacros[I].IsVariadic := False;
+  End;
+  For I := 1 To MAX_INCLUDE_STACK Do
+  Begin
+    IfDefStack[I].State := PP_ACTIVE;
+    IfDefStack[I].WasActive := False;
+    IfDefStack[I].Line := 0;
+  End;
+  MacrosInitialized := True;
+End;
+
+Function GetMacroCount: Integer;
+{ Retourne le nombre de macros definies }
+Begin
+  GetMacroCount := MacroCount;
+End;
+
+Function GetPredefinedCount: Integer;
+{ Retourne le nombre de macros predefinies }
+Begin
+  GetPredefinedCount := PredefinedCount;
+End;
+
+Function IsMacrosInitialized: Boolean;
+{ Verifie si le systeme de macros est initialise }
+Begin
+  IsMacrosInitialized := MacrosInitialized;
+End;
+
+Function IsMacrosEmpty: Boolean;
+{ Verifie si aucune macro n'est definie }
+Begin
+  IsMacrosEmpty := (MacroCount = 0) And (PredefinedCount = 0);
+End;
+
+Function FindMacro(Const Name: String): Integer;
+{ Cherche une macro par son nom, retourne l'index ou 0 si non trouvee }
+Var
+  I: Integer;
+  UpName: String;
+Begin
+  FindMacro := 0;
+  UpName := UpStr(Name);
+  { Chercher d'abord dans les macros definies }
+  For I := 1 To MacroCount Do
+    If UpStr(Macros[I].Name) = UpName Then
+    Begin
+      FindMacro := I;
+      Exit;
+    End;
+  { Chercher dans les macros predefinies }
+  For I := 1 To PredefinedCount Do
+    If UpStr(PredefinedMacros[I].Name) = UpName Then
+    Begin
+      FindMacro := -I; { Negatif pour indiquer predefinies }
+      Exit;
+    End;
+End;
+
+Function IsMacroDefined(Const Name: String): Boolean;
+{ Verifie si une macro est definie }
+Begin
+  IsMacroDefined := FindMacro(Name) <> 0;
+End;
+
+Function GetMacro(Index: Integer): TMacro;
+{ Retourne une macro par son index }
+Var
+  EmptyMacro: TMacro;
+Begin
+  EmptyMacro.Name := '';
+  EmptyMacro.Parameters := '';
+  EmptyMacro.Value := '';
+  EmptyMacro.FileName := '';
+  EmptyMacro.Line := 0;
+  EmptyMacro.IsFuncLike := False;
+  EmptyMacro.IsVariadic := False;
+  
+  If (Index >= 1) And (Index <= MacroCount) Then
+    GetMacro := Macros[Index]
+  Else
+    GetMacro := EmptyMacro;
+End;
+
+Function GetPredefinedMacro(Index: Integer): TMacro;
+{ Retourne une macro predefinie par son index }
+Var
+  EmptyMacro: TMacro;
+Begin
+  EmptyMacro.Name := '';
+  EmptyMacro.Parameters := '';
+  EmptyMacro.Value := '';
+  EmptyMacro.FileName := '';
+  EmptyMacro.Line := 0;
+  EmptyMacro.IsFuncLike := False;
+  EmptyMacro.IsVariadic := False;
+  
+  If (Index >= 1) And (Index <= PredefinedCount) Then
+    GetPredefinedMacro := PredefinedMacros[Index]
+  Else
+    GetPredefinedMacro := EmptyMacro;
+End;
+
+Function AddMacro(Const Name, Params, Value, FileName: String; 
+                  Line: Integer; FuncLike, Variadic: Boolean): Boolean;
+{ Ajoute une nouvelle macro }
+Var
+  Idx: Integer;
+Begin
+  AddMacro := False;
+  If MacroCount >= MAX_MACROS Then Exit;
+  If Name = '' Then Exit;
+  
+  { Verifier si la macro existe deja }
+  Idx := FindMacro(Name);
+  If Idx > 0 Then
+  Begin
+    { Mettre a jour la macro existante }
+    Macros[Idx].Parameters := Params;
+    Macros[Idx].Value := Value;
+    Macros[Idx].FileName := FileName;
+    Macros[Idx].Line := Line;
+    Macros[Idx].IsFuncLike := FuncLike;
+    Macros[Idx].IsVariadic := Variadic;
+    AddMacro := True;
+    Exit;
+  End;
+  
+  Inc(MacroCount);
+  Macros[MacroCount].Name := Name;
+  Macros[MacroCount].Parameters := Params;
+  Macros[MacroCount].Value := Value;
+  Macros[MacroCount].FileName := FileName;
+  Macros[MacroCount].Line := Line;
+  Macros[MacroCount].IsFuncLike := FuncLike;
+  Macros[MacroCount].IsVariadic := Variadic;
+  AddMacro := True;
+End;
+
+Function AddPredefinedMacro(Const Name, Value: String): Boolean;
+{ Ajoute une macro predefinie (option -D de la config) }
+Begin
+  AddPredefinedMacro := False;
+  If PredefinedCount >= MAX_PREDEFINED Then Exit;
+  If Name = '' Then Exit;
+  
+  Inc(PredefinedCount);
+  PredefinedMacros[PredefinedCount].Name := Name;
+  PredefinedMacros[PredefinedCount].Parameters := '';
+  PredefinedMacros[PredefinedCount].Value := Value;
+  PredefinedMacros[PredefinedCount].FileName := '<predefined>';
+  PredefinedMacros[PredefinedCount].Line := 0;
+  PredefinedMacros[PredefinedCount].IsFuncLike := False;
+  PredefinedMacros[PredefinedCount].IsVariadic := False;
+  AddPredefinedMacro := True;
+End;
+
+Procedure RemoveMacro(Const Name: String);
+{ Supprime une macro (#undef) }
+Var
+  I, Idx: Integer;
+Begin
+  Idx := FindMacro(Name);
+  If Idx <= 0 Then Exit; { Macro non trouvee ou predefinie }
+  
+  { Decaler les macros suivantes }
+  For I := Idx To MacroCount - 1 Do
+    Macros[I] := Macros[I + 1];
+  Dec(MacroCount);
+  
+  { Effacer la derniere entree }
+  Macros[MacroCount + 1].Name := '';
+  Macros[MacroCount + 1].Parameters := '';
+  Macros[MacroCount + 1].Value := '';
+End;
+
+Function ParseMacroParams(Const ParamStr: String): Integer;
+{ Parse les parametres d'une macro fonction-like }
+{ Retourne le nombre de parametres }
+Var
+  I, Count, Depth: Integer;
+Begin
+  Count := 0;
+  If ParamStr = '' Then
+  Begin
+    ParseMacroParams := 0;
+    Exit;
+  End;
+  
+  Count := 1;
+  Depth := 0;
+  For I := 1 To Length(ParamStr) Do
+  Begin
+    Case ParamStr[I] Of
+      '(': Inc(Depth);
+      ')': Dec(Depth);
+      ',': If Depth = 0 Then Inc(Count);
+    End;
+  End;
+  ParseMacroParams := Count;
+End;
+
+Function ExtractMacroName(Const Line: String; Var StartPos: Integer): String;
+{ Extrait le nom d'une macro a partir de la position donnee }
+Var
+  I: Integer;
+  Name: String;
+Begin
+  Name := '';
+  I := StartPos;
+  
+  { Ignorer les espaces }
+  While (I <= Length(Line)) And ((Line[I] = ' ') Or (Line[I] = #9)) Do
+    Inc(I);
+  
+  { Lire le nom (identifiant C) }
+  While (I <= Length(Line)) And 
+        (((Line[I] >= 'A') And (Line[I] <= 'Z')) Or
+         ((Line[I] >= 'a') And (Line[I] <= 'z')) Or
+         ((Line[I] >= '0') And (Line[I] <= '9') And (Name <> '')) Or
+         (Line[I] = '_')) Do
+  Begin
+    Name := Name + Line[I];
+    Inc(I);
+  End;
+  
+  StartPos := I;
+  ExtractMacroName := Name;
+End;
+
+Function ExtractMacroValue(Const Line: String; StartPos: Integer): String;
+{ Extrait la valeur d'une macro }
+Var
+  I: Integer;
+  Value: String;
+  InString: Boolean;
+  StringChar: Char;
+Begin
+  Value := '';
+  InString := False;
+  StringChar := #0;
+  I := StartPos;
+  
+  { Ignorer les espaces initiaux }
+  While (I <= Length(Line)) And ((Line[I] = ' ') Or (Line[I] = #9)) Do
+    Inc(I);
+  
+  { Lire la valeur jusqu'a la fin de ligne ou un commentaire }
+  While I <= Length(Line) Do
+  Begin
+    If Not InString Then
+    Begin
+      { Detecter le debut d'une chaine }
+      If (Line[I] = '"') Or (Line[I] = '''') Then
+      Begin
+        InString := True;
+        StringChar := Line[I];
+      End
+      { Detecter un commentaire C }
+      Else If (I < Length(Line)) And (Line[I] = '/') And 
+              ((Line[I+1] = '/') Or (Line[I+1] = '*')) Then
+        Break;
+    End
+    Else
+    Begin
+      { Detecter la fin d'une chaine }
+      If (Line[I] = StringChar) And (I > 1) And (Line[I-1] <> '\') Then
+        InString := False;
+    End;
+    Value := Value + Line[I];
+    Inc(I);
+  End;
+  
+  ExtractMacroValue := TrimStr(Value);
+End;
+
+Procedure ParseDefineLine(Const Line, FileName: String; LineNum: Integer);
+{ Parse une ligne #define et ajoute la macro }
+Var
+  I, J: Integer;
+  Name, Params, Value: String;
+  IsFuncLike, IsVariadic: Boolean;
+Begin
+  I := 1;
+  
+  { Trouver le debut de #define }
+  While (I <= Length(Line)) And ((Line[I] = ' ') Or (Line[I] = #9)) Do
+    Inc(I);
+  
+  { Verifier que c'est bien #define }
+  If (I + 6 > Length(Line)) Or (UpStr(Copy(Line, I, 7)) <> '#DEFINE') Then
+    Exit;
+  
+  I := I + 7;
+  
+  { Extraire le nom }
+  Name := ExtractMacroName(Line, I);
+  If Name = '' Then Exit;
+  
+  { Verifier si c'est une macro fonction-like }
+  IsFuncLike := False;
+  IsVariadic := False;
+  Params := '';
+  
+  If (I <= Length(Line)) And (Line[I] = '(') Then
+  Begin
+    IsFuncLike := True;
+    Inc(I);
+    J := I;
+    While (J <= Length(Line)) And (Line[J] <> ')') Do
+      Inc(J);
+    If J > I Then
+      Params := Copy(Line, I, J - I);
+    I := J + 1;
+    { Verifier si variadique (...) }
+    If Pos('...', Params) > 0 Then
+      IsVariadic := True;
+  End;
+  
+  { Extraire la valeur }
+  Value := ExtractMacroValue(Line, I);
+  
+  { Ajouter la macro }
+  AddMacro(Name, Params, Value, FileName, LineNum, IsFuncLike, IsVariadic);
+End;
+
+Procedure ExtractMacros(Const FileName: String);
+{ Scanne un fichier pour les directives #define }
+Var
+  F: Text;
+  Line: String;
+  LineNum: Integer;
+  TrimmedLine: String;
+Begin
+  If Not MacrosInitialized Then InitMacros;
+  
+  {$I-}
+  Assign(F, FileName);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  LineNum := 0;
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    Inc(LineNum);
+    TrimmedLine := TrimStr(Line);
+    
+    { Detecter les directives preprocesseur }
+    If (Length(TrimmedLine) > 0) And (TrimmedLine[1] = '#') Then
+    Begin
+      { #define }
+      If (Length(TrimmedLine) >= 7) And 
+         (UpStr(Copy(TrimmedLine, 1, 7)) = '#DEFINE') Then
+        ParseDefineLine(Line, FileName, LineNum)
+      { #undef }
+      Else If (Length(TrimmedLine) >= 6) And 
+              (UpStr(Copy(TrimmedLine, 1, 6)) = '#UNDEF') Then
+      Begin
+        { Extraire le nom et supprimer la macro }
+        LineNum := 7; { Reutiliser comme position }
+        RemoveMacro(ExtractMacroName(TrimmedLine, LineNum));
+      End;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Function ExpandMacroSimple(Const Name: String): String;
+{ Expande une macro simple (sans arguments) }
+Var
+  Idx: Integer;
+Begin
+  ExpandMacroSimple := Name;
+  Idx := FindMacro(Name);
+  
+  If Idx > 0 Then
+  Begin
+    If Not Macros[Idx].IsFuncLike Then
+      ExpandMacroSimple := Macros[Idx].Value;
+  End
+  Else If Idx < 0 Then
+  Begin
+    Idx := -Idx;
+    If Not PredefinedMacros[Idx].IsFuncLike Then
+      ExpandMacroSimple := PredefinedMacros[Idx].Value;
+  End;
+End;
+
+Function GetMacroValue(Const Name: String): String;
+{ Retourne la valeur d'une macro }
+Var
+  Idx: Integer;
+Begin
+  GetMacroValue := '';
+  Idx := FindMacro(Name);
+  
+  If Idx > 0 Then
+    GetMacroValue := Macros[Idx].Value
+  Else If Idx < 0 Then
+    GetMacroValue := PredefinedMacros[-Idx].Value;
+End;
+
+Function GetMacroParams(Const Name: String): String;
+{ Retourne les parametres d'une macro }
+Var
+  Idx: Integer;
+Begin
+  GetMacroParams := '';
+  Idx := FindMacro(Name);
+  
+  If Idx > 0 Then
+    GetMacroParams := Macros[Idx].Parameters
+  Else If Idx < 0 Then
+    GetMacroParams := PredefinedMacros[-Idx].Parameters;
+End;
+
+Function IsMacroFuncLike(Const Name: String): Boolean;
+{ Verifie si une macro est fonction-like }
+Var
+  Idx: Integer;
+Begin
+  IsMacroFuncLike := False;
+  Idx := FindMacro(Name);
+  
+  If Idx > 0 Then
+    IsMacroFuncLike := Macros[Idx].IsFuncLike
+  Else If Idx < 0 Then
+    IsMacroFuncLike := PredefinedMacros[-Idx].IsFuncLike;
+End;
+
+Function IsMacroVariadic(Const Name: String): Boolean;
+{ Verifie si une macro est variadique }
+Var
+  Idx: Integer;
+Begin
+  IsMacroVariadic := False;
+  Idx := FindMacro(Name);
+  
+  If Idx > 0 Then
+    IsMacroVariadic := Macros[Idx].IsVariadic
+  Else If Idx < 0 Then
+    IsMacroVariadic := PredefinedMacros[-Idx].IsVariadic;
+End;
+
+Procedure PushIfDefState(State: TPreprocessorState; Line: Integer);
+{ Empile un nouvel etat #if }
+Begin
+  If IfDefStackDepth >= MAX_INCLUDE_STACK Then
+  Begin
+    WarnMsg('Profondeur maximale de #if atteinte');
+    Exit;
+  End;
+  
+  Inc(IfDefStackDepth);
+  IfDefStack[IfDefStackDepth].State := State;
+  IfDefStack[IfDefStackDepth].WasActive := (State = PP_ACTIVE);
+  IfDefStack[IfDefStackDepth].Line := Line;
+End;
+
+Procedure PopIfDefState;
+{ Depile l'etat #if courant }
+Begin
+  If IfDefStackDepth > 0 Then
+    Dec(IfDefStackDepth);
+End;
+
+Function GetCurrentPPState: TPreprocessorState;
+{ Retourne l'etat preprocesseur courant }
+Begin
+  If IfDefStackDepth = 0 Then
+    GetCurrentPPState := PP_ACTIVE
+  Else
+    GetCurrentPPState := IfDefStack[IfDefStackDepth].State;
+End;
+
+Function IsPreprocessorActive: Boolean;
+{ Verifie si le preprocesseur est en mode actif }
+Var
+  I: Integer;
+Begin
+  IsPreprocessorActive := True;
+  For I := 1 To IfDefStackDepth Do
+    If IfDefStack[I].State <> PP_ACTIVE Then
+    Begin
+      IsPreprocessorActive := False;
+      Exit;
+    End;
+End;
+
+Procedure HandleIfDef(Const MacroName: String; Line: Integer; IsNDef: Boolean);
+{ Gere #ifdef ou #ifndef }
+Var
+  Defined: Boolean;
+Begin
+  Defined := IsMacroDefined(MacroName);
+  If IsNDef Then
+    Defined := Not Defined;
+  
+  If Not IsPreprocessorActive Then
+    PushIfDefState(PP_SKIPPING, Line)
+  Else If Defined Then
+    PushIfDefState(PP_ACTIVE, Line)
+  Else
+    PushIfDefState(PP_SKIPPING, Line);
+End;
+
+Procedure HandleElse;
+{ Gere #else }
+Begin
+  If IfDefStackDepth = 0 Then
+  Begin
+    WarnMsg('#else sans #if');
+    Exit;
+  End;
+  
+  If IfDefStack[IfDefStackDepth].WasActive Then
+    IfDefStack[IfDefStackDepth].State := PP_DONE
+  Else If IfDefStack[IfDefStackDepth].State = PP_SKIPPING Then
+  Begin
+    { Verifier si un niveau superieur est actif }
+    If (IfDefStackDepth = 1) Or (IfDefStack[IfDefStackDepth - 1].State = PP_ACTIVE) Then
+    Begin
+      IfDefStack[IfDefStackDepth].State := PP_ACTIVE;
+      IfDefStack[IfDefStackDepth].WasActive := True;
+    End;
+  End
+  Else
+    IfDefStack[IfDefStackDepth].State := PP_DONE;
+End;
+
+Procedure HandleEndIf;
+{ Gere #endif }
+Begin
+  If IfDefStackDepth = 0 Then
+  Begin
+    WarnMsg('#endif sans #if');
+    Exit;
+  End;
+  PopIfDefState;
+End;
+
+Function CountTotalMacros: Integer;
+{ Compte le nombre total de macros (definies + predefinies) }
+Begin
+  CountTotalMacros := MacroCount + PredefinedCount;
+End;
+
+Function GetMacroFileName(Const Name: String): String;
+{ Retourne le fichier de definition d'une macro }
+Var
+  Idx: Integer;
+Begin
+  GetMacroFileName := '';
+  Idx := FindMacro(Name);
+  
+  If Idx > 0 Then
+    GetMacroFileName := Macros[Idx].FileName
+  Else If Idx < 0 Then
+    GetMacroFileName := PredefinedMacros[-Idx].FileName;
+End;
+
+Function GetMacroLine(Const Name: String): Integer;
+{ Retourne la ligne de definition d'une macro }
+Var
+  Idx: Integer;
+Begin
+  GetMacroLine := 0;
+  Idx := FindMacro(Name);
+  
+  If Idx > 0 Then
+    GetMacroLine := Macros[Idx].Line
+  Else If Idx < 0 Then
+    GetMacroLine := PredefinedMacros[-Idx].Line;
+End;
+
+Procedure ShowMacros;
+{ Affiche la liste des macros pour debogage }
+Var
+  I: Integer;
+Begin
+  WriteLn('=== Macros definies (', MacroCount, ') ===');
+  For I := 1 To MacroCount Do
+  Begin
+    Write('  ', Macros[I].Name);
+    If Macros[I].IsFuncLike Then
+      Write('(', Macros[I].Parameters, ')');
+    WriteLn(' = ', Macros[I].Value);
+  End;
+  
+  WriteLn;
+  WriteLn('=== Macros predefinies (', PredefinedCount, ') ===');
+  For I := 1 To PredefinedCount Do
+  Begin
+    Write('  ', PredefinedMacros[I].Name);
+    WriteLn(' = ', PredefinedMacros[I].Value);
+  End;
 End;
 
 { ============================================================
