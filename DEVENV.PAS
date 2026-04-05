@@ -953,7 +953,7 @@ Program DEVENV;
 
 Uses DOS,
      {$IFDEF FPC}
-      cthreads,Crt,PtcGraph,PtcCrt,PtcMouse
+      PtcGraph,PtcCrt,PtcMouse
      {$ELSE}
       Crt,Graph
      {$ENDIF};
@@ -2744,9 +2744,8 @@ End;
 
 Procedure ShowVersion;
 Begin
- WriteLn('DEVENV - Clone de Visual Studio en mode graphique');
+ WriteLn('DEVENV - Cette commande permet de lancer le clone de Visual Studio.');
  WriteLn('Version ', DEVENV_VERSION, ' (', DEVENV_DATE, ')');
- WriteLn('Projet DEV-COOLS - https://www.gladir.com/dev-cools');
  WriteLn('Compilateurs integres : C# (CSC), VB.NET (VBC), Pascal (TPC)');
 End;
 
