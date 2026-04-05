@@ -4108,6 +4108,10 @@ Procedure HandleNewProjectDialogEvent(Var Dlg: TNewProjectDialog;
 Procedure DrawNewProjectDialog(Var Dlg: TNewProjectDialog); Forward;
 Procedure HandleNewSolutionConfirmed; Forward;
 
+{ Declarations anticipees pour sauvegarde }
+Procedure HandleSaveCurrentFile; Forward;
+Procedure HandleSaveAll; Forward;
+
 { --- Calcul du rectangle occupe par un menu deroulant --- }
 
 Procedure GetMenuRect(Idx: Integer; Var X1,Y1,X2,Y2: Integer);
@@ -4291,6 +4295,8 @@ Begin
         NewProjDlg.Base.Visible := True;
         DrawNewProjectDialog(NewProjDlg);
        End;
+  130: HandleSaveCurrentFile;  { Enregistrer (Ctrl+S) }
+  132: HandleSaveAll;          { Enregistrer tout (Ctrl+Maj+S) }
   199: Begin { Quitter }
         ShutdownGraphics;
         Halt(EXIT_OK);
@@ -22032,6 +22038,53 @@ End;
 
 { --- Traitement de la confirmation du dialogue nouvelle solution --- }
 
+{ --- Sauvegarder le fichier source courant --- }
+
+Procedure HandleSaveCurrentFile;
+Var
+ FN: String;
+Begin
+ If Not EditorReady Then Begin
+  AppendOutput(OutputPanel, 'Aucun fichier ouvert a enregistrer.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ FN := '';
+ If Opts.SourceFile <> '' Then
+  FN := Opts.SourceFile
+ Else If WinMgr.ActiveIdx >= 0 Then
+  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+ If FN = '' Then Begin
+  AppendOutput(OutputPanel, 'Aucun nom de fichier.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ SaveFile(ActiveEditor.Buffer, FN);
+ AppendOutput(OutputPanel, 'Fichier enregistre : ' + FN,
+  Ord(OTK_BUILD));
+End;
+
+{ --- Sauvegarder tous les fichiers ouverts --- }
+
+Procedure HandleSaveAll;
+Var
+ FN: String;
+Begin
+ { Sauvegarder le fichier source courant }
+ If EditorReady Then Begin
+  FN := '';
+  If Opts.SourceFile <> '' Then
+   FN := Opts.SourceFile
+  Else If WinMgr.ActiveIdx >= 0 Then
+   FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+  If FN <> '' Then Begin
+   SaveFile(ActiveEditor.Buffer, FN);
+   AppendOutput(OutputPanel, 'Fichier enregistre : ' + FN,
+    Ord(OTK_BUILD));
+  End;
+ End;
+End;
+
 Procedure HandleNewSolutionConfirmed;
 Var
  SolName: String;
@@ -22128,6 +22181,13 @@ Begin
    End;
    $3B: Begin { F1 : aide (stub) }
     { A implementer }
+    Exit;
+   End;
+  End;
+  { Raccourcis Ctrl+lettre via KeyChar }
+  If Ev.Kind = EV_KEY_CHAR Then Begin
+   If Ev.KeyChar = #19 Then Begin { Ctrl+S : enregistrer }
+    HandleSaveCurrentFile;
     Exit;
    End;
   End;
