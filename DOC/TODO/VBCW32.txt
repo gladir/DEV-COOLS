@@ -151,7 +151,7 @@
             Convention STDCALL Win32 : parametres droite a gauche
             Variables Static : allouees en .DATA, pas en pile
 
-  TODO 06 - PARSEUR : MODULE ET EN-TETE DU PROGRAMME [A FAIRE]
+  TODO 06 - PARSEUR : MODULE ET EN-TETE DU PROGRAMME [IMPLEMENTE]
             Procedure ParseModule
             Syntaxe :
               Option Explicit

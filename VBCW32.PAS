@@ -159,7 +159,7 @@
             Convention STDCALL Win32 : parametres droite a gauche
             Variables Static : allouees en .DATA, pas en pile
 
-  TODO 06 - PARSEUR : MODULE ET EN-TETE DU PROGRAMME [A FAIRE]
+  TODO 06 - PARSEUR : MODULE ET EN-TETE DU PROGRAMME [IMPLEMENTE]
             Procedure ParseModule
             Syntaxe :
               Option Explicit
@@ -3442,8 +3442,455 @@ Begin
     ScopeStack[ScopeDepth - 1].IsStatic := V;
 End;
 
+{ ============================================================ }
+{ TODO 06 - PARSEUR : MODULE ET EN-TETE         [IMPLEMENTE] }
+{           DU PROGRAMME                                      }
+{ ============================================================ }
+
+Const
+  { Types de module VB6 }
+  MODULE_STANDARD = 0;   { module standard .VB (Sub Main)          }
+  MODULE_FORM     = 1;   { module formulaire .FRM (stub -> .VB)    }
+  MODULE_CLASS    = 2;   { module de classe .CLS                   }
+
+  { Option Compare }
+  OPT_COMPARE_BINARY = 0;  { comparaison binaire (par defaut)      }
+  OPT_COMPARE_TEXT   = 1;  { comparaison textuelle                 }
+
+Var
+  { Etat du module en cours d analyse }
+  ModuleKind     : Integer;     { MODULE_STANDARD, MODULE_FORM, etc. }
+  OptionExplicit : Boolean;     { Option Explicit ?                    }
+  OptionBase     : Integer;     { Option Base (0 ou 1)                 }
+  OptionCompare  : Integer;     { OPT_COMPARE_BINARY ou _TEXT          }
+  ModuleName     : TString;     { nom du module (Attribute VB_Name)    }
+  HasEntryPoint  : Boolean;     { module a un point d entree ?         }
+  ModuleHeaderParsed : Boolean; { en-tete deja analyse ?               }
+
 { ------------------------------------------------------------ }
-{ Run (stub pour les futures TODOs)                            }
+{ ModuleKindName : nom textuel du genre de module              }
+{ ------------------------------------------------------------ }
+
+Function ModuleKindName(K : Integer) : TString;
+Begin
+  Case K Of
+    MODULE_STANDARD : ModuleKindName := 'Standard';
+    MODULE_FORM     : ModuleKindName := 'Form';
+    MODULE_CLASS    : ModuleKindName := 'Class';
+  Else
+    ModuleKindName := '?MOD' + ItoSI(K);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InitModuleState : initialiser l etat du module               }
+{ ------------------------------------------------------------ }
+
+Procedure InitModuleState;
+Begin
+  ModuleKind         := MODULE_STANDARD;
+  OptionExplicit     := False;
+  OptionBase         := 0;
+  OptionCompare      := OPT_COMPARE_BINARY;
+  ModuleName         := '';
+  HasEntryPoint      := False;
+  ModuleHeaderParsed := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipNewlines : sauter les tokens TOK_NEWLINE                 }
+{ ------------------------------------------------------------ }
+
+Procedure SkipNewlines;
+Begin
+  While CurTokType = TOK_NEWLINE Do
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ Expect : verifier le type de token courant et avancer        }
+{   Si le token courant n est pas du type attendu, erreur      }
+{ ------------------------------------------------------------ }
+
+Procedure Expect(TokType : Integer);
+Begin
+  If CurTokType <> TokType Then
+  Begin
+    FatalError('Token attendu type ' + ItoSI(TokType) +
+               ', trouve type ' + ItoSI(CurTokType) +
+               ' ("' + CurTokStr + '")');
+    Exit;
+  End;
+  LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExpectKeyword : verifier un mot-cle precis et avancer        }
+{ ------------------------------------------------------------ }
+
+Procedure ExpectKeyword(KW : Integer);
+Begin
+  If (CurTokType <> TOK_KEYWORD) Or (CurTokNum <> KW) Then
+  Begin
+    FatalError('Mot-cle attendu "' + KeywordName(KW) +
+               '", trouve "' + CurTokStr + '"');
+    Exit;
+  End;
+  LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsKeywordToken : le token courant est-il le mot-cle donne ?  }
+{ ------------------------------------------------------------ }
+
+Function IsKeywordToken(KW : Integer) : Boolean;
+Begin
+  IsKeywordToken := (CurTokType = TOK_KEYWORD) And (CurTokNum = KW);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsIdentToken : le token courant est-il un ident avec ce nom? }
+{ ------------------------------------------------------------ }
+
+Function IsIdentToken(Const Name : TString) : Boolean;
+Begin
+  IsIdentToken := (CurTokType = TOK_IDENT) And
+                  (UpCaseStr(CurTokStr) = UpCaseStr(Name));
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipToEndOfLine : avancer jusqu a TOK_NEWLINE ou TOK_EOF     }
+{ ------------------------------------------------------------ }
+
+Procedure SkipToEndOfLine;
+Begin
+  While (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) Do
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ DetectModuleKind : detecter le type de module d apres         }
+{   l extension du fichier source                              }
+{ ------------------------------------------------------------ }
+
+Procedure DetectModuleKind;
+Var Ext : TString;
+Begin
+  Ext := ExtractExt(Opts.SrcFile);
+  If (Ext = '.cls') Then
+    ModuleKind := MODULE_CLASS
+  Else If (Ext = '.frm') Then
+    ModuleKind := MODULE_FORM
+  Else
+    ModuleKind := MODULE_STANDARD;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOptionStatement : analyser Option Explicit / Base / Cmp }
+{   Token courant : KW_OPTION                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOptionStatement;
+Begin
+  { Consommer "Option" }
+  LexNextToken;
+  { Determiner quel type d option }
+  If IsKeywordToken(KW_EXPLICIT) Then
+  Begin
+    OptionExplicit := True;
+    LexNextToken;
+    If Opts.Verbose Then
+      WriteLn('  Option Explicit');
+  End
+  Else If IsIdentToken('Base') Then
+  Begin
+    LexNextToken;
+    If CurTokType = TOK_INTEGER Then
+    Begin
+      If (CurTokNum = 0) Or (CurTokNum = 1) Then
+        OptionBase := CurTokNum
+      Else
+        WarnMsg('Option Base doit etre 0 ou 1, ignore: ' + CurTokStr);
+      LexNextToken;
+    End
+    Else
+      FatalError('Option Base attend 0 ou 1, trouve "' + CurTokStr + '"');
+    If Opts.Verbose Then
+      WriteLn('  Option Base ', OptionBase);
+  End
+  Else If IsIdentToken('Compare') Then
+  Begin
+    LexNextToken;
+    If IsIdentToken('Binary') Then
+    Begin
+      OptionCompare := OPT_COMPARE_BINARY;
+      LexNextToken;
+    End
+    Else If IsIdentToken('Text') Then
+    Begin
+      OptionCompare := OPT_COMPARE_TEXT;
+      LexNextToken;
+    End
+    Else
+      FatalError('Option Compare attend Binary ou Text, trouve "' +
+                 CurTokStr + '"');
+    If Opts.Verbose Then
+    Begin
+      If OptionCompare = OPT_COMPARE_BINARY Then
+        WriteLn('  Option Compare Binary')
+      Else
+        WriteLn('  Option Compare Text');
+    End;
+  End
+  Else
+  Begin
+    WarnMsg('Option non reconnue : "' + CurTokStr + '", ligne ignoree');
+    SkipToEndOfLine;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAttributeLine : analyser Attribute VB_Name = "..."      }
+{   Token courant : ident "Attribute"                          }
+{   Extrait le nom du module si VB_Name                        }
+{   Ignore les autres attributs VB_*                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAttributeLine;
+Var AttrName : TString;
+Begin
+  { Consommer "Attribute" }
+  LexNextToken;
+  { Lire le nom de l attribut (ex: VB_Name) }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    AttrName := UpCaseStr(CurTokStr);
+    LexNextToken;
+    { Consommer "=" }
+    If CurTokType = TOK_EQ Then
+    Begin
+      LexNextToken;
+      { Si VB_NAME, extraire le nom du module }
+      If AttrName = 'VB_NAME' Then
+      Begin
+        If CurTokType = TOK_STRING Then
+        Begin
+          ModuleName := CurTokStr;
+          If Opts.Verbose Then
+            WriteLn('  Attribute VB_Name = "', ModuleName, '"');
+          LexNextToken;
+        End
+        Else
+        Begin
+          WarnMsg('Attribute VB_Name attend une chaine');
+          SkipToEndOfLine;
+        End;
+      End
+      Else
+      Begin
+        { Ignorer les autres attributs VB_* }
+        If Opts.Verbose Then
+          WriteLn('  Attribute ', AttrName, ' = ... (ignore)');
+        SkipToEndOfLine;
+      End;
+    End
+    Else
+    Begin
+      { Pas de '=', ignorer la ligne }
+      SkipToEndOfLine;
+    End;
+  End
+  Else
+  Begin
+    { Pas d ident apres Attribute, ignorer }
+    SkipToEndOfLine;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseModuleHeader : analyser l en-tete du module             }
+{   Consomme Option/Attribute jusqu au premier statement       }
+{   reel (Dim, Sub, Function, Public, Private, etc.)           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseModuleHeader;
+Begin
+  SkipNewlines;
+  While CurTokType <> TOK_EOF Do
+  Begin
+    { Option Explicit / Option Base / Option Compare }
+    If IsKeywordToken(KW_OPTION) Then
+    Begin
+      ParseOptionStatement;
+      SkipNewlines;
+    End
+    { Attribute VB_Name = "..." }
+    Else If IsIdentToken('Attribute') Then
+    Begin
+      ParseAttributeLine;
+      SkipNewlines;
+    End
+    Else
+      { Fin de l en-tete : un vrai statement commence }
+      Break;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SetupEntryPoint : configurer le point d entree du module     }
+{   Module standard/form : HasEntryPoint=True, label _VBF_MAIN}
+{   Module classe : pas de point d entree direct               }
+{ ------------------------------------------------------------ }
+
+Procedure SetupEntryPoint;
+Begin
+  If ModuleKind = MODULE_CLASS Then
+    HasEntryPoint := False
+  Else
+  Begin
+    HasEntryPoint := True;
+    If Opts.Verbose Then
+      WriteLn('  Point d''entree : ', PFX_FUNC, 'MAIN');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseModule : point d entree principal du parseur            }
+{   1. Detecter le type de module (.VB, .FRM, .CLS)           }
+{   2. Analyser l en-tete (Option, Attribute)                  }
+{   3. Configurer le point d entree                            }
+{   Le reste du module sera parse par les TODOs suivants       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseModule;
+Begin
+  InitModuleState;
+  DetectModuleKind;
+
+  If Opts.Verbose Then
+    WriteLn('Module: ', Opts.SrcFile, ' (', ModuleKindName(ModuleKind), ')');
+
+  { Si aucun nom de module, utiliser le nom du fichier sans ext }
+  If ModuleName = '' Then
+  Begin
+    ModuleName := Opts.SrcFile;
+    { Retirer l extension }
+    If Pos('.', ModuleName) > 0 Then
+      ModuleName := Copy(ModuleName, 1, Pos('.', ModuleName) - 1);
+    { Retirer le chemin }
+    While Pos('/', ModuleName) > 0 Do
+      ModuleName := Copy(ModuleName, Pos('/', ModuleName) + 1, 255);
+    While Pos('\', ModuleName) > 0 Do
+      ModuleName := Copy(ModuleName, Pos('\', ModuleName) + 1, 255);
+  End;
+
+  { Lire le premier token }
+  LexNextToken;
+
+  { Analyser l en-tete }
+  ParseModuleHeader;
+
+  { Configurer le point d entree }
+  SetupEntryPoint;
+
+  { Entrer dans la portee MODULE }
+  EnterScope(SCOPE_MODULE, -1);
+
+  ModuleHeaderParsed := True;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('  Nom du module : ', ModuleName);
+    WriteLn('  OptionExplicit : ', OptionExplicit);
+    WriteLn('  OptionBase     : ', OptionBase);
+    If OptionCompare = OPT_COMPARE_BINARY Then
+      WriteLn('  OptionCompare  : Binary')
+    Else
+      WriteLn('  OptionCompare  : Text');
+    If HasEntryPoint Then
+      WriteLn('  HasEntryPoint  : True')
+    Else
+      WriteLn('  HasEntryPoint  : False');
+  End;
+
+  { Les TODOs 07-25 ajouteront ici le parsing du corps }
+  { du module (Dim, Sub, Function, etc.)                }
+  If CurTokType <> TOK_EOF Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('  (corps du module non encore parse - TODOs 07-25)');
+  End;
+
+  { Quitter la portee MODULE }
+  LeaveScope;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour l etat du module                    }
+{ ------------------------------------------------------------ }
+
+Function GetModuleKind : Integer;
+Begin
+  GetModuleKind := ModuleKind;
+End;
+
+Function GetModuleName : TString;
+Begin
+  GetModuleName := ModuleName;
+End;
+
+Function IsOptionExplicit : Boolean;
+Begin
+  IsOptionExplicit := OptionExplicit;
+End;
+
+Function GetOptionBase : Integer;
+Begin
+  GetOptionBase := OptionBase;
+End;
+
+Function GetOptionCompare : Integer;
+Begin
+  GetOptionCompare := OptionCompare;
+End;
+
+Function HasMainEntry : Boolean;
+Begin
+  HasMainEntry := HasEntryPoint;
+End;
+
+Function IsModuleHeaderParsed : Boolean;
+Begin
+  IsModuleHeaderParsed := ModuleHeaderParsed;
+End;
+
+Function IsModuleStandard : Boolean;
+Begin
+  IsModuleStandard := (ModuleKind = MODULE_STANDARD);
+End;
+
+Function IsModuleForm : Boolean;
+Begin
+  IsModuleForm := (ModuleKind = MODULE_FORM);
+End;
+
+Function IsModuleClass : Boolean;
+Begin
+  IsModuleClass := (ModuleKind = MODULE_CLASS);
+End;
+
+Function IsOptionCompareBinary : Boolean;
+Begin
+  IsOptionCompareBinary := (OptionCompare = OPT_COMPARE_BINARY);
+End;
+
+Function IsOptionCompareText : Boolean;
+Begin
+  IsOptionCompareText := (OptionCompare = OPT_COMPARE_TEXT);
+End;
+
+{ ------------------------------------------------------------ }
+{ Run                                                          }
 { ------------------------------------------------------------ }
 
 Procedure Run;
@@ -3452,9 +3899,9 @@ Begin
   InitSymTable;
   InitScopes;
   LexInit;
-  { Les TODOs 06-25 ajouteront ici : }
-  {   ParseModule, Emit, WritePE/WriteCOFF/WriteASM }
-  WriteLn('VBCW32: compilation non encore implementee (TODOs 06-25)');
+  ParseModule;
+  { Les TODOs 07-25 ajouteront ici : }
+  {   ParseDeclarations, ParseStatements, Emit, WritePE/WriteCOFF/WriteASM }
   LexClose;
   ShowStats;
 End;
