@@ -178,6 +178,18 @@
             Nombres : $FF, %1010, &77.
             Directives : {$IFDEF}, {$MODE}, etc.
 
+  TODO 14b - COLORATION SYNTAXIQUE XML [IMPLEMENTE]
+            TXMLHighlighter.
+            Tags HTML/XML/XSL/XSD predefinies.
+            Commentaires : <!-- -->.
+            Chaines : "..." et '...'.
+            Tags : <tag>, </tag>, <tag />.
+            CDATA : <![CDATA[...]]>.
+            Entites : &amp;, &lt;, &gt;, etc.
+            Declarations : <?xml ...?>.
+            DOCTYPE : <!DOCTYPE ...>.
+            Attributs : nom="valeur".
+
   TODO 15 - PARSEUR DE FICHIERS SOLUTION (.SLN) [IMPLEMENTE]
             TSolutionInfo, TProjectEntry, TSolution.
             ParseSolutionFile, SaveSolutionFile, FreeSolution,

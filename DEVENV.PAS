@@ -1018,6 +1018,9 @@ Const
  { Coloration syntaxique Pascal }
  MAX_PASCAL_KEYWORDS   = 65;      { nombre de mots-cles Pascal     }
 
+ { Coloration syntaxique XML }
+ MAX_XML_TAGS          = 32;      { nombre de tags XML predefinies  }
+
  { Parseur de fichiers solution }
  MAX_SOLUTION_CONFIGS  = 10;      { nombre max de configurations   }
  MAX_DEPENDENCIES      = 20;      { nombre max de dependances      }
@@ -1653,6 +1656,13 @@ Type
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_PASCAL_KEYWORDS - 1] Of String[20];
   KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee XML }
+ TXMLHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Tags         : Array[0..MAX_XML_TAGS - 1] Of String[20];
+  TagCount     : Integer;             { nombre de tags predefinies   }
  End;
 
  { Types de projet reconnus }
@@ -2458,6 +2468,8 @@ Var
  VBNetHL      : TVBNetHighlighter;
  { Coloration syntaxique Pascal }
  PascalHL     : TPascalHighlighter;
+ { Coloration syntaxique XML }
+ XMLHL        : TXMLHighlighter;
  { Explorateur de solution }
  SolExplorer  : TSolutionExplorer;
  { Panneau de proprietes }
@@ -8884,6 +8896,429 @@ End;
 Function PascalLowerCase(Word: String): String;
 Begin
  PascalLowerCase := LowerCaseStr(Word);
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE XML
+  ============================================================ }
+
+{ --- Initialiser les tags XML predefinies --- }
+
+Procedure InitXMLTags(Var HL: TXMLHighlighter);
+Begin
+ HL.Tags[0]  := 'xml';
+ HL.Tags[1]  := 'xs:schema';
+ HL.Tags[2]  := 'xs:element';
+ HL.Tags[3]  := 'xs:attribute';
+ HL.Tags[4]  := 'xs:complextype';
+ HL.Tags[5]  := 'xs:simpletype';
+ HL.Tags[6]  := 'xs:sequence';
+ HL.Tags[7]  := 'xs:choice';
+ HL.Tags[8]  := 'xsl:stylesheet';
+ HL.Tags[9]  := 'xsl:template';
+ HL.Tags[10] := 'xsl:value-of';
+ HL.Tags[11] := 'xsl:for-each';
+ HL.Tags[12] := 'xsl:if';
+ HL.Tags[13] := 'xsl:choose';
+ HL.Tags[14] := 'xsl:when';
+ HL.Tags[15] := 'xsl:otherwise';
+ HL.Tags[16] := 'xsl:apply-templates';
+ HL.Tags[17] := 'xsl:output';
+ HL.Tags[18] := 'html';
+ HL.Tags[19] := 'head';
+ HL.Tags[20] := 'body';
+ HL.Tags[21] := 'div';
+ HL.Tags[22] := 'span';
+ HL.Tags[23] := 'table';
+ HL.Tags[24] := 'tr';
+ HL.Tags[25] := 'td';
+ HL.Tags[26] := 'a';
+ HL.Tags[27] := 'p';
+ HL.Tags[28] := 'br';
+ HL.Tags[29] := 'img';
+ HL.Tags[30] := 'input';
+ HL.Tags[31] := 'form';
+ HL.TagCount := MAX_XML_TAGS;
+End;
+
+{ --- Initialiser le surligneur XML --- }
+
+Procedure InitXMLHighlighter(Var HL: TXMLHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'XML');
+ InitXMLTags(HL);
+End;
+
+{ --- Verifier si un mot est un tag XML connu --- }
+
+Function IsXMLKnownTag(Var HL: TXMLHighlighter;
+                        Word: String): Boolean;
+Var
+ I: Integer;
+ LW: String;
+Begin
+ IsXMLKnownTag := False;
+ LW := LowerCaseStr(Word);
+ For I := 0 To HL.TagCount - 1 Do
+ Begin
+  If LW = HL.Tags[I] Then
+  Begin
+   IsXMLKnownTag := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un caractere est un delimiteur XML --- }
+
+Function IsXMLDelimiter(Ch: Char): Boolean;
+Begin
+ IsXMLDelimiter :=
+  (Ch = '<') Or (Ch = '>') Or (Ch = '/') Or
+  (Ch = '=') Or (Ch = ' ') Or (Ch = #9) Or
+  (Ch = '"') Or (Ch = '''');
+End;
+
+{ --- Obtenir la classe de jeton XML a une position --- }
+
+Function GetXMLTokenClass(Var HL: TXMLHighlighter;
+                          Line: String;
+                          Var Pos: Integer): TTokenClass;
+Var
+ Len: Integer;
+ StartPos: Integer;
+ TagName: String;
+Begin
+ Len := Length(Line);
+ GetXMLTokenClass := TC_NORMAL;
+ If Pos > Len Then
+ Begin
+  Inc(Pos);
+  Exit;
+ End;
+
+ { Commentaire XML <!-- ... --> }
+ If HL.Base.InBlockComment Then
+ Begin
+  GetXMLTokenClass := TC_COMMENT;
+  While Pos <= Len Do
+  Begin
+   If (Pos + 2 <= Len) And (Line[Pos] = '-') And
+      (Line[Pos + 1] = '-') And (Line[Pos + 2] = '>') Then
+   Begin
+    Inc(Pos, 3);
+    HL.Base.InBlockComment := False;
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  Exit;
+ End;
+
+ { Debut de commentaire <!-- }
+ If (Pos + 3 <= Len) And (Line[Pos] = '<') And
+    (Line[Pos + 1] = '!') And (Line[Pos + 2] = '-') And
+    (Line[Pos + 3] = '-') Then
+ Begin
+  GetXMLTokenClass := TC_COMMENT;
+  Inc(Pos, 4);
+  While Pos <= Len Do
+  Begin
+   If (Pos + 2 <= Len) And (Line[Pos] = '-') And
+      (Line[Pos + 1] = '-') And (Line[Pos + 2] = '>') Then
+   Begin
+    Inc(Pos, 3);
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  HL.Base.InBlockComment := True;
+  Exit;
+ End;
+
+ { Declaration XML <?...?> }
+ If (Pos + 1 <= Len) And (Line[Pos] = '<') And
+    (Line[Pos + 1] = '?') Then
+ Begin
+  GetXMLTokenClass := TC_PREPROCESSOR;
+  Inc(Pos, 2);
+  While Pos <= Len Do
+  Begin
+   If (Pos + 1 <= Len) And (Line[Pos] = '?') And
+      (Line[Pos + 1] = '>') Then
+   Begin
+    Inc(Pos, 2);
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  Exit;
+ End;
+
+ { CDATA <![CDATA[...]]> }
+ If (Pos + 8 <= Len) And (Line[Pos] = '<') And
+    (Line[Pos + 1] = '!') And (Line[Pos + 2] = '[') And
+    (Line[Pos + 3] = 'C') And (Line[Pos + 4] = 'D') And
+    (Line[Pos + 5] = 'A') And (Line[Pos + 6] = 'T') And
+    (Line[Pos + 7] = 'A') And (Line[Pos + 8] = '[') Then
+ Begin
+  GetXMLTokenClass := TC_STRING;
+  Inc(Pos, 9);
+  While Pos <= Len Do
+  Begin
+   If (Pos + 2 <= Len) And (Line[Pos] = ']') And
+      (Line[Pos + 1] = ']') And (Line[Pos + 2] = '>') Then
+   Begin
+    Inc(Pos, 3);
+    Exit;
+   End;
+   Inc(Pos);
+  End;
+  Exit;
+ End;
+
+ { Tag de fermeture </tag> ou tag d ouverture <tag...> }
+ If Line[Pos] = '<' Then
+ Begin
+  StartPos := Pos;
+  Inc(Pos);
+  { Tag de fermeture </ }
+  If (Pos <= Len) And (Line[Pos] = '/') Then
+   Inc(Pos);
+  { DOCTYPE <!DOCTYPE...> }
+  If (Pos <= Len) And (Line[Pos] = '!') Then
+  Begin
+   GetXMLTokenClass := TC_PREPROCESSOR;
+   While (Pos <= Len) And (Line[Pos] <> '>') Do
+    Inc(Pos);
+   If Pos <= Len Then
+    Inc(Pos);
+   Exit;
+  End;
+  { Lire le nom du tag }
+  TagName := '';
+  While (Pos <= Len) And Not IsXMLDelimiter(Line[Pos]) Do
+  Begin
+   TagName := TagName + Line[Pos];
+   Inc(Pos);
+  End;
+  If IsXMLKnownTag(HL, TagName) Then
+   GetXMLTokenClass := TC_KEYWORD
+  Else
+   GetXMLTokenClass := TC_TYPE;
+  Exit;
+ End;
+
+ { Fermeture de tag > ou /> }
+ If (Line[Pos] = '>') Or
+    ((Line[Pos] = '/') And (Pos + 1 <= Len) And
+     (Line[Pos + 1] = '>')) Then
+ Begin
+  GetXMLTokenClass := TC_OPERATOR;
+  If Line[Pos] = '/' Then
+   Inc(Pos, 2)
+  Else
+   Inc(Pos);
+  Exit;
+ End;
+
+ { Chaine double-quote "..." }
+ If Line[Pos] = '"' Then
+ Begin
+  GetXMLTokenClass := TC_STRING;
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do
+   Inc(Pos);
+  If Pos <= Len Then
+   Inc(Pos);
+  Exit;
+ End;
+
+ { Chaine single-quote '...' }
+ If Line[Pos] = '''' Then
+ Begin
+  GetXMLTokenClass := TC_STRING;
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '''') Do
+   Inc(Pos);
+  If Pos <= Len Then
+   Inc(Pos);
+  Exit;
+ End;
+
+ { Entite &amp; &lt; &gt; etc. }
+ If Line[Pos] = '&' Then
+ Begin
+  GetXMLTokenClass := TC_DIRECTIVE;
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> ';') And
+        (Line[Pos] <> ' ') And (Line[Pos] <> '<') Do
+   Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = ';') Then
+   Inc(Pos);
+  Exit;
+ End;
+
+ { Operateur = }
+ If Line[Pos] = '=' Then
+ Begin
+  GetXMLTokenClass := TC_OPERATOR;
+  Inc(Pos);
+  Exit;
+ End;
+
+ { Nom d attribut (identifiant avant =) }
+ If ((Line[Pos] >= 'A') And (Line[Pos] <= 'Z')) Or
+    ((Line[Pos] >= 'a') And (Line[Pos] <= 'z')) Or
+    (Line[Pos] = '_') Then
+ Begin
+  GetXMLTokenClass := TC_ATTRIBUTE;
+  While (Pos <= Len) And
+        (((Line[Pos] >= 'A') And (Line[Pos] <= 'Z')) Or
+         ((Line[Pos] >= 'a') And (Line[Pos] <= 'z')) Or
+         ((Line[Pos] >= '0') And (Line[Pos] <= '9')) Or
+         (Line[Pos] = '_') Or (Line[Pos] = '-') Or
+         (Line[Pos] = ':') Or (Line[Pos] = '.')) Do
+   Inc(Pos);
+  Exit;
+ End;
+
+ { Texte normal }
+ GetXMLTokenClass := TC_NORMAL;
+ Inc(Pos);
+End;
+
+{ --- Colorier une ligne XML entiere --- }
+
+Procedure HighlightXMLLine(Var HL: TXMLHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetXMLTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
+End;
+
+{ --- Obtenir le nom d un type de jeton XML --- }
+
+Function XMLTokenClassName(TC: TTokenClass): String;
+Begin
+ XMLTokenClassName := TokenClassName(TC);
+End;
+
+{ --- Compter les tags XML connus --- }
+
+Function CountXMLTags(Var HL: TXMLHighlighter): Integer;
+Begin
+ CountXMLTags := HL.TagCount;
+End;
+
+{ --- Verifier si une ligne XML contient un commentaire --- }
+
+Function XMLLineHasComment(Var HL: TXMLHighlighter;
+                            Line: String): Boolean;
+Var
+ Pos: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ XMLLineHasComment := False;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetXMLTokenClass(HL, Line, Pos);
+  If TC = TC_COMMENT Then
+  Begin
+   XMLLineHasComment := True;
+   Break;
+  End;
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+End;
+
+{ --- Verifier si une ligne XML contient une chaine --- }
+
+Function XMLLineHasString(Var HL: TXMLHighlighter;
+                           Line: String): Boolean;
+Var
+ Pos: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ XMLLineHasString := False;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetXMLTokenClass(HL, Line, Pos);
+  If TC = TC_STRING Then
+  Begin
+   XMLLineHasString := True;
+   Break;
+  End;
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+End;
+
+{ --- Compter les jetons XML dans une ligne --- }
+
+Function CountXMLTokensInLine(Var HL: TXMLHighlighter;
+                               Line: String): Integer;
+Var
+ Pos, Count: Integer;
+ TC: TTokenClass;
+ SaveBC, SaveStr: Boolean;
+ SaveTop: Integer;
+Begin
+ SaveBC := HL.Base.InBlockComment;
+ SaveStr := HL.Base.InString;
+ SaveTop := HL.Base.StateTop;
+ Count := 0;
+ Pos := 1;
+ While Pos <= Length(Line) Do
+ Begin
+  TC := GetXMLTokenClass(HL, Line, Pos);
+  Inc(Count);
+ End;
+ HL.Base.InBlockComment := SaveBC;
+ HL.Base.InString := SaveStr;
+ HL.Base.StateTop := SaveTop;
+ CountXMLTokensInLine := Count;
+End;
+
+{ --- Verifier si le surligneur XML est vide --- }
+
+Function IsXMLHighlighterEmpty(Var HL: TXMLHighlighter): Boolean;
+Begin
+ IsXMLHighlighterEmpty := (HL.TagCount = 0);
 End;
 
 { ============================================================
@@ -21433,6 +21868,7 @@ BEGIN
  InitCSharpHighlighter(CSharpHL);
  InitVBNetHighlighter(VBNetHL);
  InitPascalHighlighter(PascalHL);
+ InitXMLHighlighter(XMLHL);
  InitExplorer(SolExplorer);
  DrawExplorer(SolExplorer);
  InitPropertiesPanel(PropsPanel);
