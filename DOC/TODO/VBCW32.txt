@@ -331,7 +331,7 @@
             Valeur de retour Function : dans EAX (entier/pointeur)
             Appel : PUSH params / CALL _VBF_nom
 
-  TODO 13 - PARSEUR : FONCTIONS INTRINSEQUES (CHAINES, CONVERSION, MATH) [A FAIRE]
+  TODO 13 - PARSEUR : FONCTIONS INTRINSEQUES (CHAINES, CONVERSION, MATH) [IMPLEMENTE]
             Fonctions de chaines :
               Len(s) -> CALL _VBRT_LEN
               Left(s, n), Right(s, n), Mid(s, start[, len])
