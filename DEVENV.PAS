@@ -1275,7 +1275,7 @@ Const
  CLR_EDITOR_BG         = 15;   { blanc : fond de l editeur           }
  CLR_EDITOR_TEXT       = 0;    { noir : texte de l editeur           }
  CLR_EDITOR_GUTTER     = 7;    { gris clair : gouttiere (numeros)    }
- CLR_EXPLORER_BG       = 7;    { gris clair : explorateur de solution}
+ CLR_EXPLORER_BG       = 15;   { blanc : explorateur de solution     }
  CLR_OUTPUT_BG         = 15;   { blanc : panneau de sortie           }
  CLR_STATUSBAR         = 1;    { bleu : barre d etat                 }
  CLR_SCROLLBAR         = 7;    { gris clair : barre de defilement    }
@@ -10978,8 +10978,8 @@ Begin
  Case Kind Of
   ENK_SOLUTION:    NodeKindColor := CLR_TITLEBAR_ACTIVE;
   ENK_PROJECT:     NodeKindColor := CLR_TITLEBAR_ACTIVE;
-  ENK_PROPERTIES:  NodeKindColor := CLR_EDITOR_GUTTER;
-  ENK_REFERENCES:  NodeKindColor := CLR_EDITOR_GUTTER;
+  ENK_PROPERTIES:  NodeKindColor := 8;
+  ENK_REFERENCES:  NodeKindColor := 8;
   ENK_REFERENCE:   NodeKindColor := CLR_LINE_HIGHLIGHT;
   ENK_FOLDER:      NodeKindColor := CLR_LINE_HIGHLIGHT;
   ENK_FILE_CS:     NodeKindColor := CLR_TITLEBAR_ACTIVE;
