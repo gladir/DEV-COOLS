@@ -4094,6 +4094,9 @@ End;
 { Declaration anticipee : DrawAllWidgets est defini plus loin }
 Procedure DrawAllWidgets; Forward;
 
+{ Declaration anticipee : HandleStartDebugging est defini plus loin }
+Procedure HandleStartDebugging; Forward;
+
 { --- Calcul du rectangle occupe par un menu deroulant --- }
 
 Procedure GetMenuRect(Idx: Integer; Var X1,Y1,X2,Y2: Integer);
@@ -4267,13 +4270,13 @@ End;
 Procedure ExecuteMenuItem(Var Item: TMenuItem);
 Begin
  CloseMenu;
- { Actions de base - les commandes seront connectees
-   aux futurs TODOs (editeur, projet, debogueur, etc.) }
  Case Item.Tag Of
   199: Begin { Quitter }
         ShutdownGraphics;
         Halt(EXIT_OK);
        End;
+  500: HandleStartDebugging; { Generer la solution (F6) }
+  600: HandleStartDebugging; { Demarrer le debogage (F5) }
  End;
 End;
 
@@ -21861,6 +21864,142 @@ Function GetStartPageSelectedItem(
  Var SP: TStartPage): Integer;
 Begin
  GetStartPageSelectedItem := SP.SelectedItem;
+End;
+
+{ --- Demarrer la compilation et l execution --- }
+
+Procedure HandleStartDebugging;
+Var
+ SourceFile: String;
+ Ext: String;
+ CmdLine: String;
+ TempFile: String;
+ ExitCode: Integer;
+ ExeName: String;
+ BaseName: String;
+ I: Integer;
+Begin
+ { Determiner le fichier source a compiler }
+ SourceFile := '';
+ If Opts.SourceFile <> '' Then
+  SourceFile := Opts.SourceFile
+ Else If EditorReady And (WinMgr.ActiveIdx >= 0) Then
+  SourceFile := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+ If SourceFile = '' Then Begin
+  AppendOutput(OutputPanel,
+   'Erreur : aucun fichier source ouvert.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ { Determiner l extension }
+ Ext := LowerCaseStr(ExtractFileExt(SourceFile));
+ { Preparer le panneau de sortie }
+ ClearOutput(OutputPanel, Ord(OTK_BUILD));
+ ClearErrors(ErrorList);
+ TempFile := '_buildout.tmp';
+ { Calculer le nom de base sans extension }
+ BaseName := ExtractFileName(SourceFile);
+ For I := Length(BaseName) DownTo 1 Do
+  If BaseName[I] = '.' Then Begin
+   BaseName := Copy(BaseName, 1, I - 1);
+   Break;
+  End;
+ {$IFDEF WINDOWS}
+ ExeName := BaseName + '.exe';
+ {$ELSE}
+ ExeName := BaseName;
+ {$ENDIF}
+ If (Ext = '.pas') Or (Ext = '.pp') Or (Ext = '.lpr')
+    Or (Ext = '.dpr') Then Begin
+  { Compilation Pascal avec Free Pascal }
+  DetectTPCCompiler(TPCContext);
+  If TPCContext.CompilerFound Then Begin
+   CmdLine := TPCContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
+   { Aucun compilateur interne trouve, essayer fpc }
+   CmdLine := 'fpc -Mtp ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End;
+ End
+ Else If (Ext = '.cs') Then Begin
+  { Compilation C# }
+  DetectCSCCompiler(CSCContext);
+  If CSCContext.CompilerFound Then Begin
+   CmdLine := CSCContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur C# non trouve.',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+ End
+ Else If (Ext = '.vb') Then Begin
+  { Compilation VB.NET }
+  DetectVBCCompiler(VBCContext);
+  If VBCContext.CompilerFound Then Begin
+   CmdLine := VBCContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur VB.NET non trouve.',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+ End
+ Else Begin
+  AppendOutput(OutputPanel,
+   'Erreur : type de fichier non supporte (' + Ext + ').',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ { Afficher le resultat }
+ If ExitCode = 0 Then Begin
+  AppendOutput(OutputPanel,
+   '========== Build: 1 succeeded, 0 failed ==========',
+   Ord(OTK_BUILD));
+  { Lancer l executable }
+  AppendOutput(OutputPanel, 'Execution de ' + ExeName + '...',
+   Ord(OTK_BUILD));
+  {$IFDEF WINDOWS}
+  Exec(GetEnv('COMSPEC'), '/C ' + ExeName);
+  {$ELSE}
+  Exec('/bin/sh', '-c ./' + ExeName);
+  {$ENDIF}
+ End Else Begin
+  AppendOutput(OutputPanel,
+   '========== Build: 0 succeeded, 1 failed ==========',
+   Ord(OTK_BUILD));
+ End;
 End;
 
 { --- Dessiner tous les widgets de l IDE --- }
