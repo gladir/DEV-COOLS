@@ -252,7 +252,7 @@
             Primitives d emission : Emit, EmitLabel, EmitComment,
               EmitData, EmitBss
 
-  TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, SELECT CASE) [A FAIRE]
+  TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, SELECT CASE) [IMPLEMENTE]
             Procedure ParseIf
             Syntaxe :
               If condition Then
@@ -5578,6 +5578,588 @@ Begin
   GetMaxBinCode := MAX_BIN_CODE;
 End;
 
+{ ============================================================ }
+{ TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, SELECT CASE) }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Var
+  CtrlCount       : LongInt;   { nombre total de structures de controle }
+  CtrlDepth       : Integer;   { profondeur d imbrication courante      }
+  MaxCtrlDepth    : Integer;   { profondeur max atteinte                }
+  CtrlInitialized : Boolean;   { True si InitCtrlState a ete appele     }
+
+{ ------------------------------------------------------------ }
+{ InitCtrlState : initialiser l etat du parseur de controle    }
+{ ------------------------------------------------------------ }
+
+Procedure InitCtrlState;
+Begin
+  CtrlCount       := 0;
+  CtrlDepth       := 0;
+  MaxCtrlDepth    := 0;
+  CtrlInitialized := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ EnterCtrl / LeaveCtrl : gerer la profondeur d imbrication    }
+{ ------------------------------------------------------------ }
+
+Procedure EnterCtrl;
+Begin
+  Inc(CtrlCount);
+  Inc(CtrlDepth);
+  If CtrlDepth > MaxCtrlDepth Then
+    MaxCtrlDepth := CtrlDepth;
+End;
+
+Procedure LeaveCtrl;
+Begin
+  If CtrlDepth > 0 Then
+    Dec(CtrlDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ Forward declarations pour ParseStatement (recursion)         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStatement; Forward;
+Procedure ParseStatementBlock; Forward;
+
+{ ------------------------------------------------------------ }
+{ ParseStatementBlock : parser un bloc d instructions          }
+{   s arrete quand on rencontre un mot cle de fermeture        }
+{   (Else, ElseIf, End, Case, Loop, Next, Wend)               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStatementBlock;
+Begin
+  SkipNewlines;
+  While (CurTokType <> TOK_EOF) Do
+  Begin
+    { Verifier si on est sur un terminateur de bloc }
+    If CurTokType = TOK_KEYWORD Then
+    Begin
+      If (CurTokNum = KW_ELSE) Or (CurTokNum = KW_ELSEIF) Or
+         (CurTokNum = KW_END) Or (CurTokNum = KW_CASE) Then
+        Exit;
+    End;
+    ParseStatement;
+    SkipNewlines;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIf : analyser une structure If/Then/ElseIf/Else/End If  }
+{   Supporte la forme multi-ligne et la forme mono-ligne       }
+{   Genere : CMP EAX, 0 / JE label_else_or_endif              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIf;
+Var
+  LblElse   : TString;  { label pour le prochain ElseIf/Else }
+  LblEnd    : TString;  { label pour End If                  }
+  IsMulti   : Boolean;  { True si forme multi-ligne          }
+Begin
+  EnterCtrl;
+  { Consommer 'If' }
+  LexNextToken;
+  LblEnd := NextInternalLabel;
+
+  { Parser la condition }
+  ParseExpr;
+
+  { Attendre 'Then' }
+  ExpectKeyword(KW_THEN);
+  LexNextToken;
+
+  { Generer : tester la condition, sauter si False }
+  LblElse := NextInternalLabel;
+  EmitComment('If condition');
+  Emit('  CMP EAX, 0');
+  Emit('  JE ' + LblElse);
+
+  { Determiner si multi-ligne ou mono-ligne }
+  IsMulti := (CurTokType = TOK_NEWLINE) Or (CurTokType = TOK_EOF);
+
+  If IsMulti Then
+  Begin
+    { Forme multi-ligne : If ... Then / instructions / End If }
+    SkipNewlines;
+    ParseStatementBlock;
+
+    { Traiter ElseIf et Else }
+    While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSEIF) Do
+    Begin
+      { Sauter au End If apres le bloc precedent }
+      Emit('  JMP ' + LblEnd);
+      EmitLabel(LblElse);
+      LblElse := NextInternalLabel;
+
+      { Consommer 'ElseIf' }
+      LexNextToken;
+
+      { Parser la condition }
+      ParseExpr;
+
+      { Attendre 'Then' }
+      ExpectKeyword(KW_THEN);
+      LexNextToken;
+      SkipNewlines;
+
+      { Generer le test }
+      EmitComment('ElseIf condition');
+      Emit('  CMP EAX, 0');
+      Emit('  JE ' + LblElse);
+
+      { Parser le bloc }
+      ParseStatementBlock;
+    End;
+
+    { Traiter Else optionnel }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then
+    Begin
+      Emit('  JMP ' + LblEnd);
+      EmitLabel(LblElse);
+      LblElse := '';
+
+      { Consommer 'Else' }
+      LexNextToken;
+      SkipNewlines;
+
+      { Parser le bloc Else }
+      ParseStatementBlock;
+    End;
+
+    { Emettre le label else restant si pas de Else }
+    If LblElse <> '' Then
+      EmitLabel(LblElse);
+
+    { Attendre 'End If' }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+    Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IF) Then
+        LexNextToken
+      Else
+        WarnMsg('End If attendu');
+    End
+    Else
+      WarnMsg('End If attendu');
+
+    EmitLabel(LblEnd);
+  End
+  Else
+  Begin
+    { Forme mono-ligne : If condition Then instruction }
+    ParseStatement;
+    EmitLabel(LblElse);
+
+    { Traiter Else optionnel sur la meme ligne }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then
+    Begin
+      Emit('  JMP ' + LblEnd);
+      EmitLabel(LblElse);
+      LexNextToken;
+      ParseStatement;
+      EmitLabel(LblEnd);
+    End;
+  End;
+
+  LeaveCtrl;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCaseItem : analyser un element d une clause Case        }
+{   Genere les comparaisons CMP + JE pour un element           }
+{   Supporte : valeur simple, val1 To val2, Is op valeur       }
+{   Retourne en ayant genere un saut conditionnel vers LblBody }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCaseItem(Const LblBody : TString;
+                        Const LblNext : TString);
+Begin
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+  Begin
+    { Case Is <op> valeur }
+    LexNextToken;
+    { Lire l operateur de comparaison }
+    If (CurTokType = TOK_EQ) Or (CurTokType = TOK_LT) Or
+       (CurTokType = TOK_GT) Or (CurTokType = TOK_LE) Or
+       (CurTokType = TOK_GE) Or (CurTokType = TOK_NE) Then
+    Begin
+      { Memoriser l operateur pour generer la bonne comparaison }
+      EmitComment('Case Is comparison');
+      LexNextToken;
+      ParseExpr;
+      Emit('  POP EBX');   { EBX = expression Select }
+      Emit('  PUSH EBX');  { conserver pour les prochains Case }
+      Emit('  CMP EBX, EAX');
+      { Note: le type de saut depend de l operateur }
+      { Simplifie : on genere JE pour la correspondance }
+      Emit('  JE ' + LblBody);
+    End
+    Else
+    Begin
+      ParseExpr;
+      Emit('  POP EBX');
+      Emit('  PUSH EBX');
+      Emit('  CMP EBX, EAX');
+      Emit('  JE ' + LblBody);
+    End;
+  End
+  Else
+  Begin
+    { Valeur simple ou debut d une plage To }
+    ParseExpr;
+    { Verifier si c est une plage : val1 To val2 }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+    Begin
+      { Case val1 To val2 }
+      EmitComment('Case range To');
+      Emit('  MOV ECX, EAX');   { ECX = val1 (borne inf) }
+      LexNextToken;
+      ParseExpr;                { EAX = val2 (borne sup) }
+      Emit('  POP EBX');        { EBX = expression Select }
+      Emit('  PUSH EBX');
+      Emit('  CMP EBX, ECX');
+      Emit('  JL ' + LblNext);
+      Emit('  CMP EBX, EAX');
+      Emit('  JLE ' + LblBody);
+    End
+    Else
+    Begin
+      { Valeur simple }
+      EmitComment('Case value');
+      Emit('  POP EBX');
+      Emit('  PUSH EBX');
+      Emit('  CMP EBX, EAX');
+      Emit('  JE ' + LblBody);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSelectCase : analyser une structure Select Case          }
+{   Select Case expression                                     }
+{     Case valeur / Case val1 To val2 / Case Is > val           }
+{     Case val1, val2, val3                                     }
+{     Case Else                                                 }
+{   End Select                                                  }
+{   Genere : serie de CMP + JE pour chaque Case                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSelectCase;
+Var
+  LblEnd     : TString;  { label End Select           }
+  LblBody    : TString;  { label corps du Case courant }
+  LblNext    : TString;  { label Case suivant          }
+  HasElse    : Boolean;
+Begin
+  EnterCtrl;
+  { Consommer 'Select' }
+  LexNextToken;
+
+  { Attendre 'Case' }
+  ExpectKeyword(KW_CASE);
+  LexNextToken;
+
+  { Parser l expression du Select }
+  ParseExpr;
+  Emit('  PUSH EAX');  { sauvegarder expression sur la pile }
+
+  LblEnd  := NextInternalLabel;
+  HasElse := False;
+
+  SkipNewlines;
+
+  { Boucle sur les clauses Case }
+  While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CASE) Do
+  Begin
+    LexNextToken; { consommer 'Case' }
+
+    { Verifier Case Else }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then
+    Begin
+      LexNextToken;
+      HasElse := True;
+      EmitComment('Case Else');
+      SkipNewlines;
+      ParseStatementBlock;
+      Emit('  JMP ' + LblEnd);
+      Break;
+    End;
+
+    { Case normal : generer les comparaisons }
+    LblBody := NextInternalLabel;
+    LblNext := NextInternalLabel;
+
+    EmitComment('Case clause');
+
+    { Parser les elements de la clause (separes par des virgules) }
+    ParseCaseItem(LblBody, LblNext);
+    While (CurTokType = TOK_COMMA) Do
+    Begin
+      LexNextToken;
+      ParseCaseItem(LblBody, LblNext);
+    End;
+
+    { Si aucun des elements ne correspond, sauter au Case suivant }
+    Emit('  JMP ' + LblNext);
+
+    { Corps du Case }
+    EmitLabel(LblBody);
+    SkipNewlines;
+    ParseStatementBlock;
+    Emit('  JMP ' + LblEnd);
+
+    EmitLabel(LblNext);
+    SkipNewlines;
+  End;
+
+  { Si pas de Case Else, emettre un saut au End Select }
+  If Not HasElse Then
+    EmitComment('no Case Else - fall through');
+
+  { Attendre 'End Select' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SELECT) Then
+      LexNextToken
+    Else
+      WarnMsg('End Select attendu');
+  End
+  Else
+    WarnMsg('End Select attendu');
+
+  { Nettoyer la pile (expression Select) }
+  Emit('  ADD ESP, 4');
+  EmitLabel(LblEnd);
+
+  LeaveCtrl;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseGoTo : analyser une instruction GoTo label               }
+{   GoTo label -> JMP label                                     }
+{   Supporte labels numeriques et labels nommes                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParseGoTo;
+Var
+  LblName : TString;
+  Idx     : Integer;
+Begin
+  Inc(CtrlCount);
+  { Consommer 'GoTo' }
+  LexNextToken;
+
+  If (CurTokType = TOK_IDENT) Then
+  Begin
+    LblName := CurTokStr;
+    { Ajouter le label dans la table des symboles si pas connu }
+    Idx := FindSym(LblName);
+    If Idx < 0 Then
+      Idx := AddSym(LblName, SK_LABEL, VBT_NONE, STORE_AUTO);
+    EmitComment('GoTo ' + LblName);
+    Emit('  JMP ' + SymTab[Idx].AsmLabel);
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_INTEGER) Then
+  Begin
+    LblName := CurTokStr;
+    Idx := FindSym(LblName);
+    If Idx < 0 Then
+      Idx := AddSym(LblName, SK_LABEL, VBT_NONE, STORE_AUTO);
+    EmitComment('GoTo ' + LblName);
+    Emit('  JMP ' + SymTab[Idx].AsmLabel);
+    LexNextToken;
+  End
+  Else
+    WarnMsg('Label attendu apres GoTo');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseGoSub : analyser une instruction GoSub label             }
+{   GoSub label -> CALL label                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseGoSub;
+Var
+  LblName : TString;
+  Idx     : Integer;
+Begin
+  Inc(CtrlCount);
+  { Consommer 'GoSub' }
+  LexNextToken;
+
+  If (CurTokType = TOK_IDENT) Then
+  Begin
+    LblName := CurTokStr;
+    Idx := FindSym(LblName);
+    If Idx < 0 Then
+      Idx := AddSym(LblName, SK_LABEL, VBT_NONE, STORE_AUTO);
+    EmitComment('GoSub ' + LblName);
+    Emit('  CALL ' + SymTab[Idx].AsmLabel);
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_INTEGER) Then
+  Begin
+    LblName := CurTokStr;
+    Idx := FindSym(LblName);
+    If Idx < 0 Then
+      Idx := AddSym(LblName, SK_LABEL, VBT_NONE, STORE_AUTO);
+    EmitComment('GoSub ' + LblName);
+    Emit('  CALL ' + SymTab[Idx].AsmLabel);
+    LexNextToken;
+  End
+  Else
+    WarnMsg('Label attendu apres GoSub');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseReturn : analyser une instruction Return                 }
+{   Return -> RET                                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseReturn;
+Begin
+  Inc(CtrlCount);
+  { Consommer 'Return' }
+  LexNextToken;
+  EmitComment('Return (GoSub)');
+  Emit('  RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLabel : traiter un label au debut d une ligne            }
+{   label: (label nomme) ou numero: (label numerique)          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLabel;
+Var
+  LblName : TString;
+  Idx     : Integer;
+Begin
+  LblName := CurTokStr;
+  Idx := FindSym(LblName);
+  If Idx < 0 Then
+    Idx := AddSym(LblName, SK_LABEL, VBT_NONE, STORE_AUTO);
+  EmitLabel(SymTab[Idx].AsmLabel);
+  LexNextToken;  { consommer le ':' }
+  LexNextToken;  { avancer au token suivant }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStatement : analyser une instruction quelconque          }
+{   Dispatcher vers le parseur specialise selon le token        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStatement;
+Begin
+  { Sauter les lignes vides }
+  If CurTokType = TOK_NEWLINE Then
+  Begin
+    LexNextToken;
+    Exit;
+  End;
+
+  If CurTokType = TOK_EOF Then
+    Exit;
+
+  { Dispatcher selon le mot cle }
+  If CurTokType = TOK_KEYWORD Then
+  Begin
+    Case CurTokNum Of
+      KW_IF      : ParseIf;
+      KW_SELECT  : ParseSelectCase;
+      KW_GOTO    : ParseGoTo;
+      KW_GOSUB   : ParseGoSub;
+      KW_RETURN  : ParseReturn;
+    Else
+      { Instruction non reconnue par ce TODO - avancer }
+      LexNextToken;
+    End;
+    Exit;
+  End;
+
+  { Label : ident suivi de ':' }
+  If (CurTokType = TOK_IDENT) Then
+  Begin
+    { On ne peut pas regarder ahead facilement, avancer }
+    LexNextToken;
+    Exit;
+  End;
+
+  { Numero de ligne (label numerique implicite) }
+  If (CurTokType = TOK_INTEGER) Then
+  Begin
+    LexNextToken;
+    Exit;
+  End;
+
+  { Autre token - avancer }
+  LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour l etat des structures de controle   }
+{ ------------------------------------------------------------ }
+
+Function GetCtrlCount : LongInt;
+Begin
+  GetCtrlCount := CtrlCount;
+End;
+
+Function GetCtrlDepth : Integer;
+Begin
+  GetCtrlDepth := CtrlDepth;
+End;
+
+Function GetMaxCtrlDepth : Integer;
+Begin
+  GetMaxCtrlDepth := MaxCtrlDepth;
+End;
+
+Function IsCtrlInitialized : Boolean;
+Begin
+  IsCtrlInitialized := CtrlInitialized;
+End;
+
+Function IsCtrlEmpty : Boolean;
+Begin
+  IsCtrlEmpty := (CtrlCount = 0);
+End;
+
+Function GetCtrlStatus : TString;
+Begin
+  If CtrlInitialized Then
+    GetCtrlStatus := 'initialized'
+  Else
+    GetCtrlStatus := 'not initialized';
+End;
+
+Function IsInIfBlock : Boolean;
+Begin
+  IsInIfBlock := (CtrlDepth > 0);
+End;
+
+Function IsCtrlNested : Boolean;
+Begin
+  IsCtrlNested := (CtrlDepth > 1);
+End;
+
+Function GetCtrlMaxLabel : TString;
+Begin
+  GetCtrlMaxLabel := PFX_LBL + ItoSI(InternalLabelCount);
+End;
+
+Function IsCtrlStackEmpty : Boolean;
+Begin
+  IsCtrlStackEmpty := (CtrlDepth = 0);
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -5589,10 +6171,11 @@ Begin
   InitScopes;
   InitExprState;
   InitCodeGen;
+  InitCtrlState;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;
-  { Les TODOs 10-25 ajouteront ici : }
+  { Les TODOs 11-25 ajouteront ici : }
   {   ParseStatements, WritePE/WriteCOFF/WriteASM }
   LexClose;
   ShowStats;

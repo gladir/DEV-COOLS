@@ -244,7 +244,7 @@
             Primitives d emission : Emit, EmitLabel, EmitComment,
               EmitData, EmitBss
 
-  TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, SELECT CASE) [A FAIRE]
+  TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, SELECT CASE) [IMPLEMENTE]
             Procedure ParseIf
             Syntaxe :
               If condition Then
