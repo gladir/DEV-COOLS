@@ -1299,6 +1299,7 @@ Type
  { Options de l IDE }
  TDevEnvOptions = Record
   SolutionFile    : TString;   { fichier .sln a ouvrir              }
+  SourceFile      : TString;   { fichier source a ouvrir directement}
   Verbose         : Boolean;   { -v : mode verbeux                  }
   DebugMode       : Boolean;   { -d : mode debogage interne         }
   ThemeName       : TString;   { nom du theme de couleurs           }
@@ -2787,6 +2788,7 @@ End;
 Procedure InitOptions(Var Opts: TDevEnvOptions);
 Begin
  Opts.SolutionFile    := '';
+ Opts.SourceFile      := '';
  Opts.Verbose         := False;
  Opts.DebugMode       := False;
  Opts.ThemeName       := 'Default';
@@ -2818,17 +2820,27 @@ Begin
   Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
    FatalError('Option inconnue: ' + Arg)
   Else Begin
-   { Argument sans tiret : fichier solution }
-   If Opts.SolutionFile = '' Then Begin
+   { Argument sans tiret : fichier solution ou fichier source }
+   If (Opts.SolutionFile = '') And (Opts.SourceFile = '') Then Begin
     Ext := UpCaseStr(ExtractFileExt(Arg));
-    If Ext <> '.SLN' Then
-     FatalError('Format de fichier non reconnu: ' + Arg +
-                ' (attendu: .sln)');
-    If Not FileExists(Arg) Then
-     FatalError('Fichier introuvable: ' + Arg);
-    Opts.SolutionFile := Arg;
+    If Ext = '.SLN' Then Begin
+     If Not FileExists(Arg) Then
+      FatalError('Fichier introuvable: ' + Arg);
+     Opts.SolutionFile := Arg;
+    End Else If (Ext = '.PAS') Or (Ext = '.CS')   Or (Ext = '.VB')   Or
+                (Ext = '.C')   Or (Ext = '.CPP')  Or (Ext = '.H')    Or
+                (Ext = '.HPP') Or (Ext = '.JAVA') Or (Ext = '.JS')   Or
+                (Ext = '.TS')  Or (Ext = '.PY')   Or (Ext = '.RB')   Or
+                (Ext = '.PHP') Or (Ext = '.XML')  Or (Ext = '.HTM')  Or
+                (Ext = '.HTML')Or (Ext = '.CSS')  Or (Ext = '.SQL')  Or
+                (Ext = '.ASM') Or (Ext = '.INC')  Or (Ext = '.TXT')  Then Begin
+     If Not FileExists(Arg) Then
+      FatalError('Fichier introuvable: ' + Arg);
+     Opts.SourceFile := Arg;
+    End Else
+     FatalError('Format de fichier non reconnu: ' + Arg);
    End Else
-    FatalError('Fichier solution deja specifie: ' + Arg);
+    FatalError('Fichier deja specifie: ' + Arg);
   End;
  End;
 End;
@@ -21795,6 +21807,11 @@ Begin
  InitStartPage(StartPage);
  QuitRequested := False;
  FullRepaintNeeded := False;
+ { Si un fichier source a ete passe en argument, ouvrir directement l editeur }
+ If Opts.SourceFile <> '' Then Begin
+  StartPage.Visible := False;
+  CreateEditorWindow(Opts.SourceFile);
+ End;
  DrawAllWidgets;
  MainLoop;
  SaveMRUList(MRUList);
