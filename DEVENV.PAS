@@ -1218,6 +1218,13 @@ Const
  TPC_EXT_EXE          = '.exe';     { extension executable           }
  TPC_EXT_DLL          = '.dll';     { extension bibliotheque         }
 
+ { Integration compilateur Ada }
+ ADAC_COMPILER_WIN32  = 'ADACW32';  { compilateur Ada Win32 PE       }
+ ADAC_COMPILER_DOS    = 'ADA86';    { compilateur Ada DOS 8086       }
+ ADAC_TEMP_OUTPUT     = '_adaout.tmp'; { fichier temp sortie compil  }
+ ADAC_EXT_SOURCE      = '.adb';     { extension source Ada           }
+ ADAC_EXT_EXE         = '.exe';     { extension executable           }
+
  { Systeme de build et configuration }
  BUILD_MAX_ORDER       = 64;       { nombre max projets dans l ordre }
  BUILD_CFG_DLG_WIDTH   = 400;      { largeur dialogue configuration  }
@@ -2312,6 +2319,24 @@ Type
   UseWarnings    : Boolean;        { afficher avertissements         }
  End;
 
+ { Contexte du compilateur Ada }
+ TADACCompilerContext = Record
+  CompilerPath   : String[255];    { chemin complet du compilateur   }
+  CompilerName   : String[40];     { nom du compilateur (ADACW32/ADA86) }
+  CompilerFound  : Boolean;        { compilateur disponible          }
+  LastResult     : TCompilerResult;{ dernier resultat de compilation }
+  ErrorCount     : Integer;        { nombre d erreurs derniere compil}
+  WarningCount   : Integer;        { nombre d avertissements         }
+  FilesCompiled  : Integer;        { nombre de fichiers compiles     }
+  TotalFiles     : Integer;        { nombre total de fichiers source }
+  OutputFile     : String[255];    { fichier de sortie genere        }
+  TempFile       : String[255];    { fichier temporaire de sortie    }
+  IsCompiling    : Boolean;        { compilation en cours            }
+  UseDebugSymbols: Boolean;        { inclure symboles de debogage    }
+  UseVerbose     : Boolean;        { mode verbeux                    }
+  UseWarnings    : Boolean;        { afficher avertissements         }
+ End;
+
  { Etat de build d un projet }
  TBuildStatus = (
   BS_PENDING,          { en attente de compilation               }
@@ -2520,6 +2545,8 @@ Var
  VBCContext     : TVBCCompilerContext;
  { Contexte compilateur Pascal }
  TPCContext     : TTPCCompilerContext;
+ { Contexte compilateur Ada }
+ ADACContext    : TADACCompilerContext;
  { Gestionnaire de build }
  BuildMgr       : TBuildManager;
  { Gestionnaire de configurations }
@@ -20845,6 +20872,55 @@ Begin
 End;
 
 { ============================================================
+  INTEGRATION COMPILATEUR ADA
+  ============================================================ }
+
+{ --- Initialiser le contexte du compilateur Ada --- }
+
+Procedure InitADACContext(Var Ctx: TADACCompilerContext);
+Begin
+ Ctx.CompilerPath := '';
+ Ctx.CompilerName := '';
+ Ctx.CompilerFound := False;
+ Ctx.LastResult := CR_NOT_FOUND;
+ Ctx.ErrorCount := 0;
+ Ctx.WarningCount := 0;
+ Ctx.FilesCompiled := 0;
+ Ctx.TotalFiles := 0;
+ Ctx.OutputFile := '';
+ Ctx.TempFile := ADAC_TEMP_OUTPUT;
+ Ctx.IsCompiling := False;
+ Ctx.UseDebugSymbols := False;
+ Ctx.UseVerbose := False;
+ Ctx.UseWarnings := True;
+End;
+
+{ --- Detecter le compilateur Ada disponible --- }
+
+Procedure DetectADACCompiler(Var Ctx: TADACCompilerContext);
+Var
+ Path: String;
+Begin
+ { Essayer d abord ADACW32 (Win32 PE) }
+ Path := FindCompiler(ADAC_COMPILER_WIN32);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := ADAC_COMPILER_WIN32;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ { Sinon essayer ADA86 (DOS 8086) }
+ Path := FindCompiler(ADAC_COMPILER_DOS);
+ If Path <> '' Then Begin
+  Ctx.CompilerPath := Path;
+  Ctx.CompilerName := ADAC_COMPILER_DOS;
+  Ctx.CompilerFound := True;
+  Exit;
+ End;
+ Ctx.CompilerFound := False;
+End;
+
+{ ============================================================
   TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [IMPLEMENTE]
   ============================================================ }
 
@@ -22444,6 +22520,26 @@ Begin
   End Else Begin
    AppendOutput(OutputPanel,
     'Erreur : compilateur VB.NET non trouve.',
+    Ord(OTK_BUILD));
+   Exit;
+  End;
+ End
+ Else If (Ext = '.adb') Or (Ext = '.ads') Or (Ext = '.ada') Then Begin
+  { Compilation Ada }
+  DetectADACCompiler(ADACContext);
+  If ADACContext.CompilerFound Then Begin
+   CmdLine := ADACContext.CompilerPath + ' ' + SourceFile;
+   AppendOutput(OutputPanel,
+    '------ Build started: ' + SourceFile + ' ------',
+    Ord(OTK_BUILD));
+   AppendOutput(OutputPanel, '> ' + CmdLine,
+    Ord(OTK_BUILD));
+   ExitCode := ExecuteCompiler(CmdLine, TempFile);
+   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+   CleanupTempFile(TempFile);
+  End Else Begin
+   AppendOutput(OutputPanel,
+    'Erreur : compilateur Ada non trouve (ADACW32/ADA86).',
     Ord(OTK_BUILD));
    Exit;
   End;
