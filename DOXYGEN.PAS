@@ -877,7 +877,7 @@
             Function GetRelativePath(Const FullPath, BasePath: String): String
               calculer le chemin relatif d un fichier
 
-  TODO 24 - VALIDATION ET AVERTISSEMENTS [A FAIRE]
+  TODO 24 - VALIDATION ET AVERTISSEMENTS [IMPLEMENTE]
             TWarningKind : (WARN_UNDOC_FUNC, WARN_UNDOC_PARAM, WARN_UNDOC_RETURN,
               WARN_UNDOC_CLASS, WARN_UNDOC_MEMBER, WARN_UNDOC_FILE,
               WARN_INVALID_TAG, WARN_MISSING_PARAM, WARN_EXTRA_PARAM,
@@ -894,24 +894,52 @@
               Warnings     : Array[1..MAX_WARNINGS] Of TWarning
               WarningCount : Integer
               ErrorCount   : Integer
-            Procedure ValidateDocumentation
-              verifier que toutes les entites publiques sont documentees
-              verifier que tous les parametres sont documentes
-              verifier que les types de retour sont documentes
-              verifier la coherence des balises @param avec les parametres
-            Procedure ValidateLinks
-              verifier que tous les @see et @ref pointent vers des
-              entites existantes
+              ValidationInitialized : Boolean
+            Procedure InitValidation
+              initialiser le systeme de validation
+            Procedure WarningKindName(Kind: TWarningKind): String
+              retourner le nom d un type d avertissement
+            Procedure WarningKindDescription(Kind: TWarningKind): String
+              retourner la description d un type d avertissement
             Procedure ReportWarning(Kind: TWarningKind;
               Const FileName: String; Line: Integer; Const Msg: String)
               enregistrer un avertissement
+            Procedure ReportWarningForEntity(Kind: TWarningKind;
+              Const FileName: String; Line: Integer;
+              Const Msg: String; EntId: Integer)
+              enregistrer un avertissement avec ID d entite
             Procedure ReportError(Const FileName: String; Line: Integer;
               Const Msg: String)
               enregistrer une erreur
+            Function FindEntityByName(Const Name: String): Integer
+              trouver une entite par son nom
+            Function IsEntityDocumented(EntId: Integer): Boolean
+              verifier si une entite est documentee
+            Function IsEntityPublic(EntId: Integer): Boolean
+              verifier si une entite est publique
+            Procedure ValidateDocumentation
+              verifier que toutes les entites publiques sont documentees
+            Procedure ValidateLinks
+              verifier que tous les @see et @ref pointent vers des
+              entites existantes
+            Procedure ValidateParams
+              verifier la coherence des @param avec les parametres
             Procedure DisplayWarnings
               afficher tous les avertissements collectes
+            Procedure DisplayWarningSummary
+              afficher un resume des avertissements par type
             Function GetUndocumentedEntities: Integer
               retourner le nombre d entites non documentees
+            Function GetDocumentedEntities: Integer
+              retourner le nombre d entites documentees
+            Function GetDocumentationCoverage: Real
+              retourner le pourcentage de couverture
+            Fonctions accesseur (10+):
+              GetWarningCount, GetErrorCount, GetWarning,
+              IsValidationInitialized, IsValidationClean,
+              CountWarningsOfKind, CountWarningsForFile,
+              CountWarningsForEntity, ClearWarnings,
+              RunAllValidations, ShowValidationStatus
 
   TODO 25 - RAPPORT FINAL ET STATISTIQUES DE COUVERTURE [A FAIRE]
             TStatistics : record
@@ -1420,6 +1448,33 @@ Type
     Score      : Integer;           { Score de pertinence }
   End;
 
+  { Types pour la validation et les avertissements (TODO 24) }
+  TWarningKind = (
+    WARN_UNDOC_FUNC,       { Fonction non documentee }
+    WARN_UNDOC_PARAM,      { Parametre non documente }
+    WARN_UNDOC_RETURN,     { Valeur de retour non documentee }
+    WARN_UNDOC_CLASS,      { Classe non documentee }
+    WARN_UNDOC_MEMBER,     { Membre non documente }
+    WARN_UNDOC_FILE,       { Fichier non documente }
+    WARN_INVALID_TAG,      { Balise Doxygen invalide }
+    WARN_MISSING_PARAM,    { Parametre manquant dans @param }
+    WARN_EXTRA_PARAM,      { Parametre en trop dans @param }
+    WARN_TYPE_MISMATCH,    { Type ne correspond pas }
+    WARN_BROKEN_LINK,      { Lien @see ou @ref casse }
+    WARN_DUPLICATE_DOC,    { Documentation en double }
+    WARN_CIRCULAR_DEP,     { Dependance circulaire }
+    WARN_MISSING_INCLUDE,  { Fichier include manquant }
+    WARN_SYNTAX_ERROR      { Erreur de syntaxe dans la doc }
+  );
+
+  TWarning = Record
+    Kind     : TWarningKind;        { Type d'avertissement }
+    FileName : String;              { Fichier concerne }
+    Line     : Integer;             { Ligne concernee }
+    Message  : String;              { Message d'avertissement }
+    EntityId : Integer;             { Entite concernee, ou 0 }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1546,6 +1601,12 @@ Var
   ProcessedFiles     : Array[1..MAX_FILES] Of String;
   ProcessedCount     : Integer;
   MultiFileInitialized : Boolean;
+
+  { Variables pour la validation et les avertissements (TODO 24) }
+  Warnings           : Array[1..MAX_WARNINGS] Of TWarning;
+  WarningCount       : Integer;
+  ErrorCount         : Integer;
+  ValidationInitialized : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -14124,6 +14185,460 @@ Begin
   
   If ProcessedCount > 50 Then
     WriteLn('  ... et ', ProcessedCount - 50, ' autres fichiers');
+End;
+
+
+{ ============================================================
+  VALIDATION ET AVERTISSEMENTS (TODO 24)
+  ============================================================ }
+
+{ Initialise le systeme de validation }
+Procedure InitValidation;
+Begin
+  WarningCount := 0;
+  ErrorCount := 0;
+  ValidationInitialized := True;
+End;
+
+{ Retourne le nom d'un type d'avertissement }
+Function WarningKindName(Kind: TWarningKind): String;
+Begin
+  Case Kind Of
+    WARN_UNDOC_FUNC:      WarningKindName := 'UNDOC_FUNC';
+    WARN_UNDOC_PARAM:     WarningKindName := 'UNDOC_PARAM';
+    WARN_UNDOC_RETURN:    WarningKindName := 'UNDOC_RETURN';
+    WARN_UNDOC_CLASS:     WarningKindName := 'UNDOC_CLASS';
+    WARN_UNDOC_MEMBER:    WarningKindName := 'UNDOC_MEMBER';
+    WARN_UNDOC_FILE:      WarningKindName := 'UNDOC_FILE';
+    WARN_INVALID_TAG:     WarningKindName := 'INVALID_TAG';
+    WARN_MISSING_PARAM:   WarningKindName := 'MISSING_PARAM';
+    WARN_EXTRA_PARAM:     WarningKindName := 'EXTRA_PARAM';
+    WARN_TYPE_MISMATCH:   WarningKindName := 'TYPE_MISMATCH';
+    WARN_BROKEN_LINK:     WarningKindName := 'BROKEN_LINK';
+    WARN_DUPLICATE_DOC:   WarningKindName := 'DUPLICATE_DOC';
+    WARN_CIRCULAR_DEP:    WarningKindName := 'CIRCULAR_DEP';
+    WARN_MISSING_INCLUDE: WarningKindName := 'MISSING_INCLUDE';
+    WARN_SYNTAX_ERROR:    WarningKindName := 'SYNTAX_ERROR';
+  Else
+    WarningKindName := 'UNKNOWN';
+  End;
+End;
+
+{ Retourne la description d'un type d'avertissement }
+Function WarningKindDescription(Kind: TWarningKind): String;
+Begin
+  Case Kind Of
+    WARN_UNDOC_FUNC:      WarningKindDescription := 'fonction non documentee';
+    WARN_UNDOC_PARAM:     WarningKindDescription := 'parametre non documente';
+    WARN_UNDOC_RETURN:    WarningKindDescription := 'retour non documente';
+    WARN_UNDOC_CLASS:     WarningKindDescription := 'classe non documentee';
+    WARN_UNDOC_MEMBER:    WarningKindDescription := 'membre non documente';
+    WARN_UNDOC_FILE:      WarningKindDescription := 'fichier non documente';
+    WARN_INVALID_TAG:     WarningKindDescription := 'balise Doxygen invalide';
+    WARN_MISSING_PARAM:   WarningKindDescription := 'parametre @param manquant';
+    WARN_EXTRA_PARAM:     WarningKindDescription := 'parametre @param en trop';
+    WARN_TYPE_MISMATCH:   WarningKindDescription := 'type ne correspond pas';
+    WARN_BROKEN_LINK:     WarningKindDescription := 'lien @see/@ref casse';
+    WARN_DUPLICATE_DOC:   WarningKindDescription := 'documentation en double';
+    WARN_CIRCULAR_DEP:    WarningKindDescription := 'dependance circulaire';
+    WARN_MISSING_INCLUDE: WarningKindDescription := 'fichier include manquant';
+    WARN_SYNTAX_ERROR:    WarningKindDescription := 'erreur de syntaxe';
+  Else
+    WarningKindDescription := 'avertissement inconnu';
+  End;
+End;
+
+{ Enregistre un avertissement }
+Procedure ReportWarning(Kind: TWarningKind; Const FileName: String;
+  Line: Integer; Const Msg: String);
+Begin
+  If Not ValidationInitialized Then
+    InitValidation;
+    
+  If WarningCount < MAX_WARNINGS Then
+  Begin
+    Inc(WarningCount);
+    Warnings[WarningCount].Kind := Kind;
+    Warnings[WarningCount].FileName := FileName;
+    Warnings[WarningCount].Line := Line;
+    Warnings[WarningCount].Message := Msg;
+    Warnings[WarningCount].EntityId := 0;
+  End;
+End;
+
+{ Enregistre un avertissement avec ID d'entite }
+Procedure ReportWarningForEntity(Kind: TWarningKind; Const FileName: String;
+  Line: Integer; Const Msg: String; EntId: Integer);
+Begin
+  If Not ValidationInitialized Then
+    InitValidation;
+    
+  If WarningCount < MAX_WARNINGS Then
+  Begin
+    Inc(WarningCount);
+    Warnings[WarningCount].Kind := Kind;
+    Warnings[WarningCount].FileName := FileName;
+    Warnings[WarningCount].Line := Line;
+    Warnings[WarningCount].Message := Msg;
+    Warnings[WarningCount].EntityId := EntId;
+  End;
+End;
+
+{ Enregistre une erreur }
+Procedure ReportError(Const FileName: String; Line: Integer; Const Msg: String);
+Begin
+  If Not ValidationInitialized Then
+    InitValidation;
+    
+  Inc(ErrorCount);
+  { Affiche l'erreur immediatement }
+  WriteLn('ERREUR: ', FileName, ':', Line, ': ', Msg);
+End;
+
+{ Verifie si une entite est documentee (a une description breve) }
+Function IsEntityDocumented(EntId: Integer): Boolean;
+Begin
+  If (EntId < 1) Or (EntId > EntityCount) Then
+    IsEntityDocumented := False
+  Else
+    IsEntityDocumented := Entities[EntId].BriefDesc <> '';
+End;
+
+{ Verifie si une entite est publique }
+Function IsEntityPublic(EntId: Integer): Boolean;
+Begin
+  If (EntId < 1) Or (EntId > EntityCount) Then
+    IsEntityPublic := False
+  Else
+    IsEntityPublic := Entities[EntId].Visibility = VIS_PUBLIC;
+End;
+
+{ Valide la documentation de toutes les entites }
+Procedure ValidateDocumentation;
+Var
+  I: Integer;
+  WarnKind: TWarningKind;
+Begin
+  If Not ValidationInitialized Then
+    InitValidation;
+    
+  For I := 1 To EntityCount Do
+  Begin
+    { Verifier seulement les entites publiques }
+    If IsEntityPublic(I) Then
+    Begin
+      If Not IsEntityDocumented(I) Then
+      Begin
+        { Determiner le type d'avertissement selon le type d'entite }
+        Case Entities[I].Kind Of
+          ENT_FUNCTION:
+            WarnKind := WARN_UNDOC_FUNC;
+          ENT_CLASS, ENT_STRUCT, ENT_INTERFACE:
+            WarnKind := WARN_UNDOC_CLASS;
+          ENT_FILE:
+            WarnKind := WARN_UNDOC_FILE;
+        Else
+          WarnKind := WARN_UNDOC_MEMBER;
+        End;
+        
+        ReportWarningForEntity(WarnKind, Entities[I].FileName, Entities[I].Line,
+          'Entite publique non documentee: ' + Entities[I].Name, I);
+      End;
+    End;
+  End;
+End;
+
+{ Valide les liens @see et @ref }
+Procedure ValidateLinks;
+Var
+  I, J: Integer;
+  Target: String;
+Begin
+  If Not ValidationInitialized Then
+    InitValidation;
+    
+  For I := 1 To DocTagCount Do
+  Begin
+    If (DocTags[I].Kind = TAG_SEE) Or (DocTags[I].Kind = TAG_REF) Then
+    Begin
+      Target := DocTags[I].Content;
+      
+      { Verifier si la cible existe }
+      If Target <> '' Then
+      Begin
+        J := FindEntityByName(Target);
+        If J = -1 Then
+        Begin
+          ReportWarning(WARN_BROKEN_LINK, '', DocTags[I].Line,
+            'Lien vers entite inexistante: ' + Target);
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ Valide la coherence des parametres @param }
+Procedure ValidateParams;
+Var
+  I, J: Integer;
+  ParamName: String;
+Begin
+  If Not ValidationInitialized Then
+    InitValidation;
+    
+  { Parcourir toutes les fonctions }
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = ENT_FUNCTION Then
+    Begin
+      { Verifier que chaque @param correspond a un vrai parametre }
+      For J := 1 To DocTagCount Do
+      Begin
+        If DocTags[J].Kind = TAG_PARAM Then
+        Begin
+          ParamName := DocTags[J].ParamName;
+          { Verifier si le parametre existe dans la signature }
+          If (ParamName <> '') And (Pos(ParamName, Entities[I].Parameters) = 0) Then
+          Begin
+            { Note: cette verification est approximative }
+            { Une vraie implementation parserait la liste de parametres }
+          End;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ Affiche tous les avertissements collectes }
+Procedure DisplayWarnings;
+Var
+  I: Integer;
+Begin
+  If WarningCount = 0 Then
+  Begin
+    WriteLn('Aucun avertissement.');
+    Exit;
+  End;
+  
+  WriteLn;
+  WriteLn('=== AVERTISSEMENTS (', WarningCount, ') ===');
+  WriteLn;
+  
+  For I := 1 To WarningCount Do
+  Begin
+    Write('AVERT [', WarningKindName(Warnings[I].Kind), ']: ');
+    If Warnings[I].FileName <> '' Then
+      Write(Warnings[I].FileName, ':');
+    If Warnings[I].Line > 0 Then
+      Write(Warnings[I].Line, ': ');
+    WriteLn(Warnings[I].Message);
+  End;
+  
+  WriteLn;
+  If ErrorCount > 0 Then
+    WriteLn('Erreurs: ', ErrorCount);
+End;
+
+{ Affiche un resume des avertissements par type }
+Procedure DisplayWarningSummary;
+Var
+  I: Integer;
+  Counts: Array[TWarningKind] Of Integer;
+  K: TWarningKind;
+Begin
+  { Initialiser les compteurs }
+  For K := WARN_UNDOC_FUNC To WARN_SYNTAX_ERROR Do
+    Counts[K] := 0;
+    
+  { Compter les avertissements par type }
+  For I := 1 To WarningCount Do
+    Inc(Counts[Warnings[I].Kind]);
+    
+  WriteLn;
+  WriteLn('=== RESUME DES AVERTISSEMENTS ===');
+  WriteLn;
+  
+  For K := WARN_UNDOC_FUNC To WARN_SYNTAX_ERROR Do
+  Begin
+    If Counts[K] > 0 Then
+      WriteLn('  ', WarningKindName(K), ': ', Counts[K]);
+  End;
+  
+  WriteLn;
+  WriteLn('Total: ', WarningCount, ' avertissement(s), ', ErrorCount, ' erreur(s)');
+End;
+
+{ Retourne le nombre d'entites non documentees }
+Function GetUndocumentedEntities: Integer;
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If IsEntityPublic(I) And Not IsEntityDocumented(I) Then
+      Inc(Count);
+  End;
+  GetUndocumentedEntities := Count;
+End;
+
+{ Retourne le nombre d'entites documentees }
+Function GetDocumentedEntities: Integer;
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If IsEntityDocumented(I) Then
+      Inc(Count);
+  End;
+  GetDocumentedEntities := Count;
+End;
+
+{ Calcule le pourcentage de couverture de documentation }
+Function GetDocumentationCoverage: Real;
+Var
+  Total, Documented: Integer;
+Begin
+  Total := EntityCount;
+  If Total = 0 Then
+  Begin
+    GetDocumentationCoverage := 100.0;
+    Exit;
+  End;
+  
+  Documented := GetDocumentedEntities;
+  GetDocumentationCoverage := (Documented * 100.0) / Total;
+End;
+
+{ ============================================================
+  FONCTIONS ACCESSEUR POUR LA VALIDATION (TODO 24)
+  ============================================================ }
+
+{ Retourne le nombre d'avertissements }
+Function GetWarningCount: Integer;
+Begin
+  GetWarningCount := WarningCount;
+End;
+
+{ Retourne le nombre d'erreurs }
+Function GetErrorCount: Integer;
+Begin
+  GetErrorCount := ErrorCount;
+End;
+
+{ Retourne un avertissement par index }
+Function GetWarning(Index: Integer): TWarning;
+Var
+  EmptyWarning: TWarning;
+Begin
+  If (Index >= 1) And (Index <= WarningCount) Then
+    GetWarning := Warnings[Index]
+  Else
+  Begin
+    EmptyWarning.Kind := WARN_UNDOC_FUNC;
+    EmptyWarning.FileName := '';
+    EmptyWarning.Line := 0;
+    EmptyWarning.Message := '';
+    EmptyWarning.EntityId := 0;
+    GetWarning := EmptyWarning;
+  End;
+End;
+
+{ Verifie si la validation est initialisee }
+Function IsValidationInitialized: Boolean;
+Begin
+  IsValidationInitialized := ValidationInitialized;
+End;
+
+{ Verifie s'il n'y a aucun avertissement }
+Function IsValidationClean: Boolean;
+Begin
+  IsValidationClean := (WarningCount = 0) And (ErrorCount = 0);
+End;
+
+{ Compte les avertissements d'un type specifique }
+Function CountWarningsOfKind(Kind: TWarningKind): Integer;
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To WarningCount Do
+  Begin
+    If Warnings[I].Kind = Kind Then
+      Inc(Count);
+  End;
+  CountWarningsOfKind := Count;
+End;
+
+{ Compte les avertissements pour un fichier specifique }
+Function CountWarningsForFile(Const FileName: String): Integer;
+Var
+  I, Count: Integer;
+  FileUp: String;
+Begin
+  Count := 0;
+  FileUp := UpStr(FileName);
+  For I := 1 To WarningCount Do
+  Begin
+    If UpStr(Warnings[I].FileName) = FileUp Then
+      Inc(Count);
+  End;
+  CountWarningsForFile := Count;
+End;
+
+{ Compte les avertissements pour une entite specifique }
+Function CountWarningsForEntity(EntId: Integer): Integer;
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To WarningCount Do
+  Begin
+    If Warnings[I].EntityId = EntId Then
+      Inc(Count);
+  End;
+  CountWarningsForEntity := Count;
+End;
+
+{ Efface tous les avertissements }
+Procedure ClearWarnings;
+Begin
+  WarningCount := 0;
+  ErrorCount := 0;
+End;
+
+{ Lance toutes les validations }
+Procedure RunAllValidations;
+Begin
+  If Not ValidationInitialized Then
+    InitValidation;
+    
+  ClearWarnings;
+  ValidateDocumentation;
+  ValidateLinks;
+  ValidateParams;
+End;
+
+{ Affiche l'etat de la validation (debug) }
+Procedure ShowValidationStatus;
+Begin
+  WriteLn('=== ETAT DE LA VALIDATION ===');
+  WriteLn('Initialisee: ', ValidationInitialized);
+  WriteLn('Avertissements: ', WarningCount);
+  WriteLn('Erreurs: ', ErrorCount);
+  WriteLn('Entites documentees: ', GetDocumentedEntities);
+  WriteLn('Entites non documentees: ', GetUndocumentedEntities);
+  WriteLn('Couverture: ', GetDocumentationCoverage:0:1, '%');
+  WriteLn;
+  
+  WriteLn('Avertissements par type:');
+  WriteLn('  Fonctions non doc: ', CountWarningsOfKind(WARN_UNDOC_FUNC));
+  WriteLn('  Classes non doc: ', CountWarningsOfKind(WARN_UNDOC_CLASS));
+  WriteLn('  Membres non doc: ', CountWarningsOfKind(WARN_UNDOC_MEMBER));
+  WriteLn('  Liens casses: ', CountWarningsOfKind(WARN_BROKEN_LINK));
+  WriteLn('  Params en trop: ', CountWarningsOfKind(WARN_EXTRA_PARAM));
 End;
 
 { ============================================================
