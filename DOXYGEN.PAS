@@ -829,7 +829,7 @@
               CountRootNamespaces, CountNamespacesByLanguage
             Procedure ShowNamespaces, ShowModules : affichage debug
 
-  TODO 22 - RECHERCHE ET INDEXATION FULL-TEXT [A FAIRE]
+  TODO 22 - RECHERCHE ET INDEXATION FULL-TEXT [IMPLEMENTE]
             TSearchIndex : record
               Word       : String   (mot indexe)
               EntityId   : Integer  (ID de l entite)
@@ -1010,7 +1010,7 @@ Const
   MAX_PREDEFINED     = 256;
   MAX_NAMESPACES     = 1024;
   MAX_MODULES        = 512;
-  MAX_SEARCH_ENTRIES = 65536;
+  MAX_SEARCH_ENTRIES = 32767;
   MAX_WARNINGS       = 4096;
 
   { Constantes pour la generation HTML (TODO 12) }
@@ -1147,6 +1147,19 @@ Const
   MOD_KEYWORD_CPP20     = 'module';
   MOD_KEYWORD_EXPORT    = 'export';
   MOD_KEYWORD_IMPORT    = 'import';
+
+  { Constantes pour la recherche et indexation (TODO 22) }
+  SEARCH_MIN_WORD_LEN   = 2;    { Longueur minimale d'un mot a indexer }
+  SEARCH_MAX_WORD_LEN   = 50;   { Longueur maximale d'un mot a indexer }
+  SEARCH_MAX_RESULTS    = 100;  { Nombre max de resultats de recherche }
+  SEARCH_INDEX_FILE     = 'search.js';
+  SEARCH_DATA_FILE      = 'searchdata.js';
+  SEARCH_HTML_FILE      = 'search.html';
+  SEARCH_SCORE_TITLE    = 100;  { Score pour match dans le titre }
+  SEARCH_SCORE_NAME     = 80;   { Score pour match dans le nom }
+  SEARCH_SCORE_BRIEF    = 60;   { Score pour match dans le brief }
+  SEARCH_SCORE_DETAIL   = 40;   { Score pour match dans les details }
+  SEARCH_SCORE_PARAM    = 20;   { Score pour match dans les parametres }
 
 { ============================================================
   TYPES
@@ -1398,6 +1411,15 @@ Type
     Line       : Integer;           { Ligne de declaration }
   End;
 
+  { Type pour l'index de recherche full-text (TODO 22) }
+  TSearchIndex = Record
+    Word       : String;            { Mot indexe }
+    EntityId   : Integer;           { ID de l'entite }
+    FileName   : String;            { Fichier de documentation }
+    Anchor     : String;            { Ancre dans le fichier }
+    Score      : Integer;           { Score de pertinence }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1513,6 +1535,11 @@ Var
   NamespaceStackDepth: Integer;
   NamespacesInitialized : Boolean;
 
+  { Variables pour la recherche et indexation (TODO 22) }
+  SearchIndex       : Array[1..MAX_SEARCH_ENTRIES] Of TSearchIndex;
+  SearchCount       : Integer;
+  SearchInitialized : Boolean;
+
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
   ============================================================ }
@@ -1535,6 +1562,16 @@ Var
 Begin
   Str(N, S);
   IntToStr := S;
+End;
+
+Function Min(A, B: Integer): Integer;
+Begin
+  If A < B Then Min := A Else Min := B;
+End;
+
+Function Max(A, B: Integer): Integer;
+Begin
+  If A > B Then Max := A Else Max := B;
 End;
 
 Function FileExists(Const FName: String): Boolean;
@@ -12781,6 +12818,631 @@ Begin
     If Modules[I].ImportList <> '' Then
       WriteLn('      Imports: ', Modules[I].ImportList);
   End;
+End;
+
+{ ============================================================
+  RECHERCHE ET INDEXATION FULL-TEXT (TODO 22)
+  ============================================================ }
+
+{ Initialise le systeme d'index de recherche }
+Procedure InitSearchIndex;
+Var
+  I: Integer;
+Begin
+  SearchCount := 0;
+  
+  For I := 1 To MAX_SEARCH_ENTRIES Do
+  Begin
+    SearchIndex[I].Word := '';
+    SearchIndex[I].EntityId := -1;
+    SearchIndex[I].FileName := '';
+    SearchIndex[I].Anchor := '';
+    SearchIndex[I].Score := 0;
+  End;
+  
+  SearchInitialized := True;
+End;
+
+{ Verifie si un mot est un stop word (mot commun a ignorer) }
+Function IsStopWord(Const W: String): Boolean;
+Var
+  U: String;
+Begin
+  U := UpStr(W);
+  IsStopWord := (U = 'THE') Or (U = 'A') Or (U = 'AN') Or
+                (U = 'AND') Or (U = 'OR') Or (U = 'NOT') Or
+                (U = 'IN') Or (U = 'ON') Or (U = 'AT') Or
+                (U = 'TO') Or (U = 'FOR') Or (U = 'OF') Or
+                (U = 'IS') Or (U = 'IT') Or (U = 'AS') Or
+                (U = 'BY') Or (U = 'WITH') Or (U = 'FROM') Or
+                (U = 'THIS') Or (U = 'THAT') Or (U = 'WHICH') Or
+                (U = 'BE') Or (U = 'ARE') Or (U = 'WAS') Or
+                (U = 'WERE') Or (U = 'BEEN') Or (U = 'BEING') Or
+                (U = 'HAVE') Or (U = 'HAS') Or (U = 'HAD') Or
+                (U = 'DO') Or (U = 'DOES') Or (U = 'DID') Or
+                (U = 'WILL') Or (U = 'WOULD') Or (U = 'COULD') Or
+                (U = 'SHOULD') Or (U = 'MAY') Or (U = 'MIGHT') Or
+                (U = 'MUST') Or (U = 'SHALL') Or (U = 'CAN') Or
+                (U = 'LE') Or (U = 'LA') Or (U = 'LES') Or
+                (U = 'UN') Or (U = 'UNE') Or (U = 'DES') Or
+                (U = 'DE') Or (U = 'DU') Or (U = 'ET') Or
+                (U = 'OU') Or (U = 'POUR') Or (U = 'DANS') Or
+                (U = 'SUR') Or (U = 'AVEC') Or (U = 'EST') Or
+                (U = 'SONT') Or (U = 'QUI') Or (U = 'QUE') Or
+                (U = 'VOID') Or (U = 'INT') Or (U = 'CHAR') Or
+                (U = 'RETURN') Or (U = 'IF') Or (U = 'ELSE') Or
+                (U = 'WHILE') Or (U = 'FOR') Or (U = 'VAR') Or
+                (U = 'CONST') Or (U = 'TYPE') Or (U = 'BEGIN') Or
+                (U = 'END') Or (U = 'PROCEDURE') Or (U = 'FUNCTION');
+End;
+
+{ Verifie si un caractere est alphanumerique }
+Function IsAlphaNum(C: Char): Boolean;
+Begin
+  IsAlphaNum := ((C >= 'a') And (C <= 'z')) Or
+                ((C >= 'A') And (C <= 'Z')) Or
+                ((C >= '0') And (C <= '9')) Or
+                (C = '_');
+End;
+
+{ Extrait les mots significatifs d'un texte }
+Function ExtractWords(Const Text: String; Var Words: Array Of String;
+  MaxWords: Integer): Integer;
+Var
+  I, J, Start, Count: Integer;
+  InWord: Boolean;
+  Word: String;
+Begin
+  Count := 0;
+  InWord := False;
+  Start := 1;
+  
+  For I := 1 To Length(Text) Do
+  Begin
+    If IsAlphaNum(Text[I]) Then
+    Begin
+      If Not InWord Then
+      Begin
+        InWord := True;
+        Start := I;
+      End;
+    End
+    Else
+    Begin
+      If InWord Then
+      Begin
+        InWord := False;
+        Word := '';
+        For J := Start To I - 1 Do
+          Word := Word + Text[J];
+        
+        If (Length(Word) >= SEARCH_MIN_WORD_LEN) And
+           (Length(Word) <= SEARCH_MAX_WORD_LEN) And
+           (Not IsStopWord(Word)) Then
+        Begin
+          If Count < MaxWords Then
+          Begin
+            Inc(Count);
+            Words[Count] := UpStr(Word);
+          End;
+        End;
+      End;
+    End;
+  End;
+  
+  { Dernier mot si le texte ne finit pas par un separateur }
+  If InWord Then
+  Begin
+    Word := '';
+    For J := Start To Length(Text) Do
+      Word := Word + Text[J];
+    
+    If (Length(Word) >= SEARCH_MIN_WORD_LEN) And
+       (Length(Word) <= SEARCH_MAX_WORD_LEN) And
+       (Not IsStopWord(Word)) Then
+    Begin
+      If Count < MaxWords Then
+      Begin
+        Inc(Count);
+        Words[Count] := UpStr(Word);
+      End;
+    End;
+  End;
+  
+  ExtractWords := Count;
+End;
+
+{ Ajoute une entree dans l'index de recherche }
+Procedure AddSearchEntry(Const Word: String; EntityId: Integer;
+  Const FileName, Anchor: String; Score: Integer);
+Var
+  I: Integer;
+  Found: Boolean;
+Begin
+  If SearchCount >= MAX_SEARCH_ENTRIES Then Exit;
+  If Word = '' Then Exit;
+  
+  { Verifier si l'entree existe deja }
+  Found := False;
+  For I := 1 To SearchCount Do
+  Begin
+    If (SearchIndex[I].Word = Word) And
+       (SearchIndex[I].EntityId = EntityId) Then
+    Begin
+      { Mettre a jour le score si meilleur }
+      If Score > SearchIndex[I].Score Then
+        SearchIndex[I].Score := Score;
+      Found := True;
+      Break;
+    End;
+  End;
+  
+  If Not Found Then
+  Begin
+    Inc(SearchCount);
+    SearchIndex[SearchCount].Word := Word;
+    SearchIndex[SearchCount].EntityId := EntityId;
+    SearchIndex[SearchCount].FileName := FileName;
+    SearchIndex[SearchCount].Anchor := Anchor;
+    SearchIndex[SearchCount].Score := Score;
+  End;
+End;
+
+{ Construit l'index de recherche a partir des entites }
+Procedure BuildSearchIndex;
+Var
+  I, J, WordCount: Integer;
+  Words: Array[1..100] Of String;
+  FileName, Anchor: String;
+Begin
+  If Not SearchInitialized Then
+    InitSearchIndex;
+  
+  SearchCount := 0;
+  
+  For I := 1 To EntityCount Do
+  Begin
+    { Generer le nom de fichier et l'ancre }
+    Case Entities[I].Kind Of
+      ENT_FILE:
+        FileName := LowerStr(Entities[I].Name) + '_8' +
+                    Copy(Entities[I].Name, Pos('.', Entities[I].Name) + 1, 10) +
+                    '.html';
+      ENT_CLASS, ENT_STRUCT:
+        FileName := 'class' + LowerStr(Entities[I].Name) + '.html';
+      ENT_FUNCTION:
+        FileName := Entities[I].FileName + '.html';
+      Else
+        FileName := 'index.html';
+    End;
+    Anchor := 'a' + IntToStr(I);
+    
+    { Indexer le nom de l'entite }
+    WordCount := ExtractWords(Entities[I].Name, Words, 100);
+    For J := 1 To WordCount Do
+      AddSearchEntry(Words[J], I, FileName, Anchor, SEARCH_SCORE_NAME);
+    
+    { Indexer la description breve }
+    If Entities[I].BriefDesc <> '' Then
+    Begin
+      WordCount := ExtractWords(Entities[I].BriefDesc, Words, 100);
+      For J := 1 To WordCount Do
+        AddSearchEntry(Words[J], I, FileName, Anchor, SEARCH_SCORE_BRIEF);
+    End;
+    
+    { Indexer la description detaillee }
+    If Entities[I].DetailedDesc <> '' Then
+    Begin
+      WordCount := ExtractWords(Entities[I].DetailedDesc, Words, 100);
+      For J := 1 To WordCount Do
+        AddSearchEntry(Words[J], I, FileName, Anchor, SEARCH_SCORE_DETAIL);
+    End;
+  End;
+End;
+
+{ Recherche dans l'index et retourne les resultats tries par pertinence }
+Function SearchEntities(Const Query: String): String;
+Var
+  I, J, K, WordCount, ResultCount: Integer;
+  Words: Array[1..20] Of String;
+  ResultIds: Array[1..SEARCH_MAX_RESULTS] Of Integer;
+  ResultScores: Array[1..SEARCH_MAX_RESULTS] Of Integer;
+  TempId, TempScore: Integer;
+  Result: String;
+Begin
+  Result := '';
+  ResultCount := 0;
+  
+  { Extraire les mots de la requete }
+  WordCount := ExtractWords(Query, Words, 20);
+  If WordCount = 0 Then
+  Begin
+    SearchEntities := '';
+    Exit;
+  End;
+  
+  { Rechercher chaque mot dans l'index }
+  For I := 1 To SearchCount Do
+  Begin
+    For J := 1 To WordCount Do
+    Begin
+      If Pos(Words[J], SearchIndex[I].Word) > 0 Then
+      Begin
+        { Verifier si l'entite est deja dans les resultats }
+        K := 1;
+        While (K <= ResultCount) And
+              (ResultIds[K] <> SearchIndex[I].EntityId) Do
+          Inc(K);
+        
+        If K > ResultCount Then
+        Begin
+          { Nouvelle entite }
+          If ResultCount < SEARCH_MAX_RESULTS Then
+          Begin
+            Inc(ResultCount);
+            ResultIds[ResultCount] := SearchIndex[I].EntityId;
+            ResultScores[ResultCount] := SearchIndex[I].Score;
+          End;
+        End
+        Else
+        Begin
+          { Ajouter au score existant }
+          ResultScores[K] := ResultScores[K] + SearchIndex[I].Score;
+        End;
+      End;
+    End;
+  End;
+  
+  { Trier les resultats par score decroissant (tri a bulles) }
+  For I := 1 To ResultCount - 1 Do
+    For J := I + 1 To ResultCount Do
+      If ResultScores[J] > ResultScores[I] Then
+      Begin
+        TempId := ResultIds[I];
+        TempScore := ResultScores[I];
+        ResultIds[I] := ResultIds[J];
+        ResultScores[I] := ResultScores[J];
+        ResultIds[J] := TempId;
+        ResultScores[J] := TempScore;
+      End;
+  
+  { Construire la chaine de resultats }
+  For I := 1 To ResultCount Do
+  Begin
+    If Result <> '' Then Result := Result + ';';
+    Result := Result + IntToStr(ResultIds[I]) + ':' +
+              IntToStr(ResultScores[I]);
+  End;
+  
+  SearchEntities := Result;
+End;
+
+{ Genere les fichiers de donnees de recherche }
+Procedure GenerateSearchData(Const OutputDir: String);
+Var
+  F: Text;
+  FileName: String;
+  I: Integer;
+Begin
+  If Not SearchInitialized Then
+    InitSearchIndex;
+  
+  If SearchCount = 0 Then
+    BuildSearchIndex;
+  
+  { Generer le fichier searchdata.js }
+  FileName := OutputDir + '/' + SEARCH_DATA_FILE;
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Impossible de creer ' + FileName);
+    Exit;
+  End;
+  
+  WriteLn(F, '// Donnees d''index de recherche generees par DOXYGEN');
+  WriteLn(F, '// Date: ', DOXYGEN_DATE);
+  WriteLn(F, 'var searchData = [');
+  
+  For I := 1 To SearchCount Do
+  Begin
+    Write(F, '  ["', SearchIndex[I].Word, '",');
+    Write(F, SearchIndex[I].EntityId, ',');
+    Write(F, '"', SearchIndex[I].FileName, '",');
+    Write(F, '"', SearchIndex[I].Anchor, '",');
+    Write(F, SearchIndex[I].Score, ']');
+    If I < SearchCount Then
+      WriteLn(F, ',')
+    Else
+      WriteLn(F);
+  End;
+  
+  WriteLn(F, '];');
+  Close(F);
+End;
+
+{ Genere la page HTML de recherche }
+Procedure GenerateSearchHtml(Const OutputDir: String);
+Var
+  F: Text;
+  FileName: String;
+Begin
+  FileName := OutputDir + '/' + SEARCH_HTML_FILE;
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Impossible de creer ' + FileName);
+    Exit;
+  End;
+  
+  WriteLn(F, HTML_DOCTYPE);
+  WriteLn(F, '<html lang="fr">');
+  WriteLn(F, '<head>');
+  WriteLn(F, '  <meta charset="', HTML_CHARSET, '">');
+  WriteLn(F, '  <meta name="viewport" content="width=device-width, initial-scale=1.0">');
+  WriteLn(F, '  <title>Recherche - Documentation</title>');
+  WriteLn(F, '  <link rel="stylesheet" href="', HTML_CSS_FILE, '">');
+  WriteLn(F, '  <script src="', SEARCH_DATA_FILE, '"></script>');
+  WriteLn(F, '  <script src="', SEARCH_INDEX_FILE, '"></script>');
+  WriteLn(F, '</head>');
+  WriteLn(F, '<body>');
+  WriteLn(F, '  <div class="header">');
+  WriteLn(F, '    <h1>Recherche dans la documentation</h1>');
+  WriteLn(F, '  </div>');
+  WriteLn(F, '  <div class="content">');
+  WriteLn(F, '    <div class="search-box">');
+  WriteLn(F, '      <input type="text" id="search-input" placeholder="Entrez votre recherche..." autofocus>');
+  WriteLn(F, '      <button onclick="performSearch()">Rechercher</button>');
+  WriteLn(F, '    </div>');
+  WriteLn(F, '    <div id="search-results"></div>');
+  WriteLn(F, '  </div>');
+  WriteLn(F, '  <div class="footer">');
+  WriteLn(F, '    <p>Genere par DOXYGEN ', DOXYGEN_VERSION, '</p>');
+  WriteLn(F, '  </div>');
+  WriteLn(F, '</body>');
+  WriteLn(F, '</html>');
+  
+  Close(F);
+End;
+
+{ Ecrit le fichier JavaScript de recherche }
+Procedure WriteSearchIndexJs(Const OutputDir: String);
+Var
+  F: Text;
+  FileName: String;
+Begin
+  FileName := OutputDir + '/' + SEARCH_INDEX_FILE;
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Impossible de creer ' + FileName);
+    Exit;
+  End;
+  
+  WriteLn(F, '// Script de recherche genere par DOXYGEN');
+  WriteLn(F, '// Version: ', DOXYGEN_VERSION);
+  WriteLn(F, '');
+  WriteLn(F, 'function performSearch() {');
+  WriteLn(F, '  var query = document.getElementById("search-input").value.toUpperCase();');
+  WriteLn(F, '  var results = [];');
+  WriteLn(F, '  var seen = {};');
+  WriteLn(F, '  ');
+  WriteLn(F, '  if (query.length < 2) {');
+  WriteLn(F, '    document.getElementById("search-results").innerHTML = ');
+  WriteLn(F, '      "<p>Veuillez entrer au moins 2 caracteres.</p>";');
+  WriteLn(F, '    return;');
+  WriteLn(F, '  }');
+  WriteLn(F, '  ');
+  WriteLn(F, '  for (var i = 0; i < searchData.length; i++) {');
+  WriteLn(F, '    var entry = searchData[i];');
+  WriteLn(F, '    if (entry[0].indexOf(query) >= 0) {');
+  WriteLn(F, '      var key = entry[1] + "-" + entry[2];');
+  WriteLn(F, '      if (!seen[key]) {');
+  WriteLn(F, '        seen[key] = true;');
+  WriteLn(F, '        results.push({');
+  WriteLn(F, '          word: entry[0],');
+  WriteLn(F, '          id: entry[1],');
+  WriteLn(F, '          file: entry[2],');
+  WriteLn(F, '          anchor: entry[3],');
+  WriteLn(F, '          score: entry[4]');
+  WriteLn(F, '        });');
+  WriteLn(F, '      }');
+  WriteLn(F, '    }');
+  WriteLn(F, '  }');
+  WriteLn(F, '  ');
+  WriteLn(F, '  results.sort(function(a, b) { return b.score - a.score; });');
+  WriteLn(F, '  ');
+  WriteLn(F, '  var html = "";');
+  WriteLn(F, '  if (results.length === 0) {');
+  WriteLn(F, '    html = "<p>Aucun resultat trouve pour: " + query + "</p>";');
+  WriteLn(F, '  } else {');
+  WriteLn(F, '    html = "<p>" + results.length + " resultat(s) trouve(s):</p>";');
+  WriteLn(F, '    html += "<ul class=\"search-results-list\">";');
+  WriteLn(F, '    for (var j = 0; j < Math.min(results.length, ', SEARCH_MAX_RESULTS, '); j++) {');
+  WriteLn(F, '      var r = results[j];');
+  WriteLn(F, '      html += "<li><a href=\"" + r.file + "#" + r.anchor + "\">";');
+  WriteLn(F, '      html += r.word + "</a> (score: " + r.score + ")</li>";');
+  WriteLn(F, '    }');
+  WriteLn(F, '    html += "</ul>";');
+  WriteLn(F, '  }');
+  WriteLn(F, '  ');
+  WriteLn(F, '  document.getElementById("search-results").innerHTML = html;');
+  WriteLn(F, '}');
+  WriteLn(F, '');
+  WriteLn(F, '// Recherche a la pression de Entree');
+  WriteLn(F, 'document.addEventListener("DOMContentLoaded", function() {');
+  WriteLn(F, '  var input = document.getElementById("search-input");');
+  WriteLn(F, '  if (input) {');
+  WriteLn(F, '    input.addEventListener("keypress", function(e) {');
+  WriteLn(F, '      if (e.key === "Enter") performSearch();');
+  WriteLn(F, '    });');
+  WriteLn(F, '  }');
+  WriteLn(F, '});');
+  
+  Close(F);
+End;
+
+{ Trouve une entree dans l'index de recherche }
+Function FindSearchEntry(Const Word: String; EntityId: Integer): Integer;
+Var
+  I: Integer;
+Begin
+  FindSearchEntry := -1;
+  For I := 1 To SearchCount Do
+    If (SearchIndex[I].Word = Word) And
+       (SearchIndex[I].EntityId = EntityId) Then
+    Begin
+      FindSearchEntry := I;
+      Exit;
+    End;
+End;
+
+{ Retourne le nombre d'entrees dans l'index de recherche }
+Function GetSearchCount: Integer;
+Begin
+  GetSearchCount := SearchCount;
+End;
+
+{ Retourne une entree de l'index de recherche }
+Function GetSearchEntry(Index: Integer): TSearchIndex;
+Var
+  Empty: TSearchIndex;
+Begin
+  If (Index >= 1) And (Index <= SearchCount) Then
+    GetSearchEntry := SearchIndex[Index]
+  Else
+  Begin
+    Empty.Word := '';
+    Empty.EntityId := -1;
+    Empty.FileName := '';
+    Empty.Anchor := '';
+    Empty.Score := 0;
+    GetSearchEntry := Empty;
+  End;
+End;
+
+{ Verifie si l'index de recherche est initialise }
+Function IsSearchInitialized: Boolean;
+Begin
+  IsSearchInitialized := SearchInitialized;
+End;
+
+{ Verifie si l'index de recherche est vide }
+Function IsSearchEmpty: Boolean;
+Begin
+  IsSearchEmpty := (SearchCount = 0);
+End;
+
+{ Compte le nombre d'entrees pour un mot donne }
+Function CountSearchEntriesForWord(Const Word: String): Integer;
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To SearchCount Do
+    If SearchIndex[I].Word = Word Then
+      Inc(Count);
+  CountSearchEntriesForWord := Count;
+End;
+
+{ Compte le nombre d'entrees pour une entite donnee }
+Function CountSearchEntriesForEntity(EntityId: Integer): Integer;
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To SearchCount Do
+    If SearchIndex[I].EntityId = EntityId Then
+      Inc(Count);
+  CountSearchEntriesForEntity := Count;
+End;
+
+{ Retourne le score moyen de l'index }
+Function GetAverageSearchScore: Integer;
+Var
+  I: Integer;
+  Total: LongInt;
+Begin
+  If SearchCount = 0 Then
+  Begin
+    GetAverageSearchScore := 0;
+    Exit;
+  End;
+  
+  Total := 0;
+  For I := 1 To SearchCount Do
+    Total := Total + SearchIndex[I].Score;
+  
+  GetAverageSearchScore := Total Div SearchCount;
+End;
+
+{ Retourne le mot le plus indexe }
+Function GetMostIndexedWord: String;
+Var
+  I, MaxCount, CurCount: Integer;
+  MaxWord, CurWord: String;
+Begin
+  If SearchCount = 0 Then
+  Begin
+    GetMostIndexedWord := '';
+    Exit;
+  End;
+  
+  MaxWord := SearchIndex[1].Word;
+  MaxCount := 1;
+  
+  For I := 1 To SearchCount Do
+  Begin
+    CurWord := SearchIndex[I].Word;
+    CurCount := CountSearchEntriesForWord(CurWord);
+    If CurCount > MaxCount Then
+    Begin
+      MaxCount := CurCount;
+      MaxWord := CurWord;
+    End;
+  End;
+  
+  GetMostIndexedWord := MaxWord;
+End;
+
+{ Affiche l'index de recherche (debug) }
+Procedure ShowSearchIndex;
+Var
+  I: Integer;
+Begin
+  WriteLn('=== INDEX DE RECHERCHE ===');
+  WriteLn('Nombre d''entrees: ', SearchCount);
+  WriteLn('Initialise: ', SearchInitialized);
+  WriteLn;
+  
+  If SearchCount > 0 Then
+  Begin
+    WriteLn('Statistiques:');
+    WriteLn('  Score moyen: ', GetAverageSearchScore);
+    WriteLn('  Mot le plus indexe: ', GetMostIndexedWord);
+    WriteLn;
+  End;
+  
+  WriteLn('Entrees (max 50):');
+  For I := 1 To Min(SearchCount, 50) Do
+  Begin
+    WriteLn('  [', I, '] ', SearchIndex[I].Word,
+            ' -> Entite #', SearchIndex[I].EntityId,
+            ' (score: ', SearchIndex[I].Score, ')');
+    WriteLn('       Fichier: ', SearchIndex[I].FileName,
+            '#', SearchIndex[I].Anchor);
+  End;
+  
+  If SearchCount > 50 Then
+    WriteLn('  ... et ', SearchCount - 50, ' autres entrees');
 End;
 
 { ============================================================
