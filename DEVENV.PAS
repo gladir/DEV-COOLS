@@ -1666,6 +1666,9 @@ Type
   TagCount     : Integer;             { nombre de tags predefinies   }
  End;
 
+ { Pointeur vers un editeur }
+ PEditor = ^TEditor;
+
  { Types de projet reconnus }
  TProjectType = (PT_CSHARP, PT_VBNET, PT_PASCAL, PT_UNKNOWN);
 
@@ -2471,7 +2474,8 @@ Var
  TooltipVisible: Boolean;     { infobulle affichee              }
  { Gestionnaire de fenetres }
  WinMgr       : TWindowManager;
- { Editeur de texte actif }
+ { Editeurs de texte (un par fenetre) }
+ Editors      : Array[0..MAX_WINDOWS - 1] Of PEditor;
  ActiveEditor : TEditor;
  EditorSel    : TSelection;
  EditorClip   : TClipboard;
@@ -5251,9 +5255,15 @@ Begin
  WinMgr.TabScrollX := 0;
  WinMgr.SplitMode := False;
  WinMgr.SplitPos := 0;
- For I := 0 To MAX_WINDOWS - 1 Do
+ For I := 0 To MAX_WINDOWS - 1 Do Begin
   InitEditorWindow(WinMgr.Windows[I]);
+  Editors[I] := Nil;
+ End;
 End;
+
+{ --- Declaration anticipee de InitEditor --- }
+
+Procedure InitEditor(Var Ed: TEditor); Forward;
 
 { --- Creer une nouvelle fenetre d editeur --- }
 
@@ -5278,8 +5288,14 @@ Begin
  WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
  WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ { Allouer un editeur pour cette fenetre }
+ If Editors[Idx] = Nil Then
+  New(Editors[Idx]);
+ InitEditor(Editors[Idx]^);
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
+ { Synchroniser ActiveEditor }
+ ActiveEditor := Editors[Idx]^;
 End;
 
 { --- Fermer une fenetre d editeur --- }
@@ -5289,25 +5305,49 @@ Var
  I: Integer;
 Begin
  If (Index < 0) Or (Index >= WinMgr.WinCount) Then Exit;
- { Decaler les fenetres suivantes }
+ { Liberer l editeur }
+ If Editors[Index] <> Nil Then Begin
+  Dispose(Editors[Index]);
+  Editors[Index] := Nil;
+ End;
+ { Decaler les fenetres et editeurs suivants }
  For I := Index To WinMgr.WinCount - 2 Do Begin
   WinMgr.Windows[I] := WinMgr.Windows[I + 1];
   WinMgr.Windows[I].TabIndex := I;
+  Editors[I] := Editors[I + 1];
  End;
+ Editors[WinMgr.WinCount - 1] := Nil;
  Dec(WinMgr.WinCount);
  { Ajuster l index actif }
- If WinMgr.WinCount = 0 Then
-  WinMgr.ActiveIdx := -1
- Else If WinMgr.ActiveIdx >= WinMgr.WinCount Then
-  WinMgr.ActiveIdx := WinMgr.WinCount - 1;
+ If WinMgr.WinCount = 0 Then Begin
+  WinMgr.ActiveIdx := -1;
+  EditorReady := False;
+ End Else Begin
+  If WinMgr.ActiveIdx >= WinMgr.WinCount Then
+   WinMgr.ActiveIdx := WinMgr.WinCount - 1;
+  { Restaurer l editeur actif }
+  If (WinMgr.ActiveIdx >= 0) And
+     (Editors[WinMgr.ActiveIdx] <> Nil) Then
+   ActiveEditor := Editors[WinMgr.ActiveIdx]^;
+ End;
 End;
 
 { --- Activer une fenetre --- }
 
 Procedure ActivateWindow(Index: Integer);
 Begin
- If (Index >= 0) And (Index < WinMgr.WinCount) Then
+ If (Index >= 0) And (Index < WinMgr.WinCount) Then Begin
+  { Sauvegarder l editeur actuel }
+  If (WinMgr.ActiveIdx >= 0) And
+     (WinMgr.ActiveIdx < WinMgr.WinCount) And
+     (Editors[WinMgr.ActiveIdx] <> Nil) Then
+   Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+  { Activer la nouvelle fenetre }
   WinMgr.ActiveIdx := Index;
+  { Restaurer l editeur selectionne }
+  If Editors[Index] <> Nil Then
+   ActiveEditor := Editors[Index]^;
+ End;
 End;
 
 { --- Obtenir la fenetre active --- }
@@ -6142,6 +6182,12 @@ Procedure HighlightPascalLine(Var HL: TPascalHighlighter;
                               Line: String;
                               Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightCSharpLine --- }
+
+Procedure HighlightCSharpLine(Var HL: TCSharpHighlighter;
+                              Line: String;
+                              Var Colors: Array Of Byte); Forward;
+
 { --- Dessiner l editeur complet --- }
 
 Procedure DrawEditor(Var Ed: TEditor);
@@ -6155,12 +6201,14 @@ Var
  Colors: Array[0..255] Of Byte;
  Ch: String[1];
  IsPascal: Boolean;
+ IsCSharp: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
  Ext := UpCaseStr(ExtractFileExt(Ed.Buffer.FileName));
  IsPascal := (Ext = '.PAS') Or (Ext = '.PP') Or (Ext = '.INC') Or
              (Ext = '.DPR') Or (Ext = '.LPR');
+ IsCSharp := (Ext = '.CS');
  { Mettre a jour la gouttiere }
  Ed.GutterWidth := CalcGutterWidth(Ed.Buffer.LineCount, Ed.CharWidth);
  Ed.VisibleCols := (Ed.Width - Ed.GutterWidth) Div Ed.CharWidth;
@@ -6182,7 +6230,10 @@ Begin
    FillChar(Colors, SizeOf(Colors), 0); { noir par defaut }
    If IsPascal And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightPascalLine(PascalHL, FullLine, Colors);
+    HighlightPascalLine(PascalHL, FullLine, Colors)
+   Else If IsCSharp And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightCSharpLine(CSharpHL, FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
@@ -22007,6 +22058,7 @@ Var
  ExitCode: Integer;
  ExeName: String;
  BaseName: String;
+ SrcDir: String;
  I: Integer;
 Begin
  { Determiner le fichier source a compiler }
@@ -22023,6 +22075,8 @@ Begin
  End;
  { Determiner l extension }
  Ext := LowerCaseStr(ExtractFileExt(SourceFile));
+ { Extraire le repertoire du fichier source }
+ SrcDir := ExtractFilePath(SourceFile);
  { Preparer le panneau de sortie }
  ClearOutput(OutputPanel, Ord(OTK_BUILD));
  ClearErrors(ErrorList);
@@ -22035,9 +22089,9 @@ Begin
    Break;
   End;
  {$IFDEF WINDOWS}
- ExeName := BaseName + '.exe';
+ ExeName := SrcDir + BaseName + '.exe';
  {$ELSE}
- ExeName := BaseName;
+ ExeName := SrcDir + BaseName;
  {$ENDIF}
  If (Ext = '.pas') Or (Ext = '.pp') Or (Ext = '.lpr')
     Or (Ext = '.dpr') Then Begin
@@ -22186,18 +22240,26 @@ End;
 Procedure HandleOpenFileConfirmed;
 Var
  FN: String;
+ Idx: Integer;
 Begin
  FN := FileDlg.SelectedFile;
  If FN = '' Then Exit;
+ { Sauvegarder l editeur actuel avant d en ouvrir un autre }
+ If EditorReady And (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.ActiveIdx < WinMgr.WinCount) And
+    (Editors[WinMgr.ActiveIdx] <> Nil) Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
  { Masquer la page de demarrage }
  If StartPage.Visible Then Begin
   StartPage.Visible := False;
   FullRepaintNeeded := True;
  End;
- { Creer la fenetre editeur }
+ { Creer la fenetre editeur (alloue aussi l editeur) }
  CreateEditorWindow(FN);
- InitEditor(ActiveEditor);
- LoadFile(ActiveEditor.Buffer, FN);
+ Idx := WinMgr.ActiveIdx;
+ { Charger le fichier dans l editeur alloue }
+ LoadFile(Editors[Idx]^.Buffer, FN);
+ ActiveEditor := Editors[Idx]^;
  Opts.SourceFile := FN;
  EditorReady := True;
  { Ajouter le fichier a l explorateur }
@@ -22312,6 +22374,14 @@ Begin
     { A implementer }
     Exit;
    End;
+   $3F: Begin { F5 : demarrer le debogage }
+    HandleStartDebugging;
+    Exit;
+   End;
+   $40: Begin { F6 : generer la solution }
+    HandleStartDebugging;
+    Exit;
+   End;
   End;
   { Raccourcis Ctrl+lettre via KeyChar }
   If Ev.Kind = EV_KEY_CHAR Then Begin
@@ -22373,13 +22443,19 @@ Begin
  If MenuActive Then Exit;
  { Evenements pour la barre d outils }
  HandleToolBarEvent(Ev);
+ { Evenements pour les onglets d editeurs }
+ HandleTabEvent(Ev);
  { Evenements pour l editeur de texte actif }
  If EditorReady And (WinMgr.ActiveIdx >= 0) Then Begin
   If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
    HandleEditorKey(ActiveEditor, Ev);
+   { Sauvegarder l etat de l editeur dans le tableau }
+   If Editors[WinMgr.ActiveIdx] <> Nil Then
+    Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
    { Synchroniser curseur vers TEditorWindow pour la barre d etat }
    WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+   Exit;
   End;
  End;
  { Evenements pour l explorateur }
@@ -22427,8 +22503,9 @@ Begin
  If Opts.SourceFile <> '' Then Begin
   StartPage.Visible := False;
   CreateEditorWindow(Opts.SourceFile);
-  InitEditor(ActiveEditor);
-  LoadFile(ActiveEditor.Buffer, Opts.SourceFile);
+  { Charger le fichier dans l editeur alloue }
+  LoadFile(Editors[WinMgr.ActiveIdx]^.Buffer, Opts.SourceFile);
+  ActiveEditor := Editors[WinMgr.ActiveIdx]^;
   EditorReady := True;
   { Peupler l explorateur de solutions avec le fichier ouvert }
   ClearExplorer(SolExplorer);
