@@ -2520,6 +2520,8 @@ Var
  StartPage      : TStartPage;
  { Dialogue nouveau projet / nouvelle solution }
  NewProjDlg     : TNewProjectDialog;
+ { Dialogue ouvrir fichier }
+ FileDlg        : TFileDialog;
  { Indicateur de sortie }
  QuitRequested  : Boolean;
  { Drapeau nettoyage ecran transition page de demarrage -> IDE }
@@ -4112,6 +4114,15 @@ Procedure HandleNewSolutionConfirmed; Forward;
 Procedure HandleSaveCurrentFile; Forward;
 Procedure HandleSaveAll; Forward;
 
+{ Declarations anticipees pour dialogue fichier }
+Procedure InitFileDialog(Var FD: TFileDialog;
+ SaveMode: Boolean); Forward;
+Procedure LoadDirectoryFiles(Var FD: TFileDialog); Forward;
+Procedure DrawFileDialog(Var FD: TFileDialog); Forward;
+Procedure HandleFileDialogEvent(Var FD: TFileDialog;
+ Var Ev: TEvent); Forward;
+Procedure HandleOpenFileConfirmed; Forward;
+
 { --- Calcul du rectangle occupe par un menu deroulant --- }
 
 Procedure GetMenuRect(Idx: Integer; Var X1,Y1,X2,Y2: Integer);
@@ -4294,6 +4305,12 @@ Begin
         NewProjDlg.Base.Title := 'Nouvelle solution';
         NewProjDlg.Base.Visible := True;
         DrawNewProjectDialog(NewProjDlg);
+       End;
+  111: Begin { Ouvrir fichier (Ctrl+O) }
+        InitFileDialog(FileDlg, False);
+        LoadDirectoryFiles(FileDlg);
+        FileDlg.Base.Visible := True;
+        DrawFileDialog(FileDlg);
        End;
   130: HandleSaveCurrentFile;  { Enregistrer (Ctrl+S) }
   132: HandleSaveAll;          { Enregistrer tout (Ctrl+Maj+S) }
@@ -14099,6 +14116,18 @@ Begin
   OutTextXY(LX + 4, TY + 2, Disp);
   Inc(Row);
  End;
+ { Barre de defilement si necessaire }
+ If FD.FileCount > (LH Div DLG_LIST_ROW_HEIGHT) Then Begin
+  SetFillStyle(SolidFill, CLR_SCROLLBAR);
+  Bar(LX + LW - 13, LY + 1, LX + LW - 2, LY + LH - 2);
+  { Curseur de la scrollbar }
+  SetFillStyle(SolidFill, CLR_BORDER);
+  If FD.FileCount > 0 Then
+   Bar(LX + LW - 12,
+    LY + 2 + (FD.ScrollTop * (LH - 24) Div FD.FileCount),
+    LX + LW - 3,
+    LY + 2 + (FD.ScrollTop * (LH - 24) Div FD.FileCount) + 20);
+ End;
 End;
 
 { --- Dessiner le champ de saisie du nom de fichier --- }
@@ -14260,12 +14289,19 @@ Begin
   { Test de clic sur la liste }
   Idx := FileListHitTest(FD, Ev.MouseX, Ev.MouseY);
   If Idx >= 0 Then Begin
-   FD.SelIndex := Idx;
-   If FD.FileList[Idx].IsDir Then
-    FD.InputText := ''
-   Else
+   If FD.FileList[Idx].IsDir Then Begin
+    { Clic sur un repertoire : naviguer dedans }
+    NavigateToDir(FD, FD.FileList[Idx].Name);
+    FD.SelIndex := -1;
+    FD.InputText := '';
+    FD.InputCursor := 0;
+    DrawFileDialog(FD);
+    Exit;
+   End Else Begin
+    FD.SelIndex := Idx;
     FD.InputText := FD.FileList[Idx].Name;
-   FD.InputCursor := Length(FD.InputText);
+    FD.InputCursor := Length(FD.InputText);
+   End;
   End;
   { Test de clic sur les boutons }
   Idx := DialogButtonHitTest(FD.Base, Ev.MouseX, Ev.MouseY);
@@ -14283,7 +14319,7 @@ Begin
  End Else If Ev.Kind = EV_KEY_CHAR Then
   HandleFileDialogKey(FD, Ev.KeyChar)
  Else If Ev.Kind = EV_KEY_DOWN Then Begin
-  { Touches speciales : haut/bas pour la liste }
+  { Touches speciales : haut/bas/PgUp/PgDn pour la liste }
   If Ev.KeyCode = $4800 Then Begin { Fleche haut }
    If FD.SelIndex > 0 Then Begin
     Dec(FD.SelIndex);
@@ -14292,17 +14328,77 @@ Begin
     If Not FD.FileList[FD.SelIndex].IsDir Then Begin
      FD.InputText := FD.FileList[FD.SelIndex].Name;
      FD.InputCursor := Length(FD.InputText);
-    End;
+    End Else
+     FD.InputText := '';
    End;
   End Else If Ev.KeyCode = $5000 Then Begin { Fleche bas }
    If FD.SelIndex < FD.FileCount - 1 Then Begin
     Inc(FD.SelIndex);
+    { Calculer le nombre de lignes visibles }
+    Idx := (FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
+     - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT)
+     Div DLG_LIST_ROW_HEIGHT;
+    If FD.SelIndex >= FD.ScrollTop + Idx Then
+     FD.ScrollTop := FD.SelIndex - Idx + 1;
     If Not FD.FileList[FD.SelIndex].IsDir Then Begin
      FD.InputText := FD.FileList[FD.SelIndex].Name;
      FD.InputCursor := Length(FD.InputText);
-    End;
+    End Else
+     FD.InputText := '';
    End;
+  End Else If Ev.KeyCode = $4900 Then Begin { PgUp }
+   Idx := (FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
+    - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT)
+    Div DLG_LIST_ROW_HEIGHT;
+   FD.SelIndex := FD.SelIndex - Idx;
+   If FD.SelIndex < 0 Then FD.SelIndex := 0;
+   FD.ScrollTop := FD.ScrollTop - Idx;
+   If FD.ScrollTop < 0 Then FD.ScrollTop := 0;
+   If Not FD.FileList[FD.SelIndex].IsDir Then Begin
+    FD.InputText := FD.FileList[FD.SelIndex].Name;
+    FD.InputCursor := Length(FD.InputText);
+   End Else
+    FD.InputText := '';
+  End Else If Ev.KeyCode = $5100 Then Begin { PgDn }
+   Idx := (FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
+    - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT)
+    Div DLG_LIST_ROW_HEIGHT;
+   FD.SelIndex := FD.SelIndex + Idx;
+   If FD.SelIndex >= FD.FileCount Then
+    FD.SelIndex := FD.FileCount - 1;
+   If FD.SelIndex >= FD.ScrollTop + Idx Then
+    FD.ScrollTop := FD.SelIndex - Idx + 1;
+   If FD.ScrollTop + Idx > FD.FileCount Then
+    FD.ScrollTop := FD.FileCount - Idx;
+   If FD.ScrollTop < 0 Then FD.ScrollTop := 0;
+   If (FD.SelIndex >= 0) And
+      Not FD.FileList[FD.SelIndex].IsDir Then Begin
+    FD.InputText := FD.FileList[FD.SelIndex].Name;
+    FD.InputCursor := Length(FD.InputText);
+   End Else
+    FD.InputText := '';
+  End Else If Ev.KeyCode = $4700 Then Begin { Home }
+   FD.SelIndex := 0;
+   FD.ScrollTop := 0;
+   If Not FD.FileList[0].IsDir Then Begin
+    FD.InputText := FD.FileList[0].Name;
+    FD.InputCursor := Length(FD.InputText);
+   End Else
+    FD.InputText := '';
+  End Else If Ev.KeyCode = $4F00 Then Begin { End }
+   FD.SelIndex := FD.FileCount - 1;
+   Idx := (FD.Base.Height - DLG_TITLE_HEIGHT - 3 * DLG_PADDING
+    - DLG_BUTTON_HEIGHT - DLG_INPUT_HEIGHT - DLG_FILTER_HEIGHT)
+    Div DLG_LIST_ROW_HEIGHT;
+   FD.ScrollTop := FD.FileCount - Idx;
+   If FD.ScrollTop < 0 Then FD.ScrollTop := 0;
+   If Not FD.FileList[FD.SelIndex].IsDir Then Begin
+    FD.InputText := FD.FileList[FD.SelIndex].Name;
+    FD.InputCursor := Length(FD.InputText);
+   End Else
+    FD.InputText := '';
   End;
+  DrawFileDialog(FD);
  End;
 End;
 
@@ -22085,6 +22181,37 @@ Begin
  End;
 End;
 
+{ --- Traitement de l ouverture d un fichier --- }
+
+Procedure HandleOpenFileConfirmed;
+Var
+ FN: String;
+Begin
+ FN := FileDlg.SelectedFile;
+ If FN = '' Then Exit;
+ { Masquer la page de demarrage }
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ { Creer la fenetre editeur }
+ CreateEditorWindow(FN);
+ InitEditor(ActiveEditor);
+ LoadFile(ActiveEditor.Buffer, FN);
+ Opts.SourceFile := FN;
+ EditorReady := True;
+ { Ajouter le fichier a l explorateur }
+ ClearExplorer(SolExplorer);
+ AddExplorerNode(SolExplorer,
+  ExtractFileName(FN),
+  NodeKindFromExtension(FN), -1);
+ SolExplorer.SelectedIdx := 0;
+ SolExplorer.Nodes[0].Selected := True;
+ SolExplorer.NeedRepaint := True;
+ AppendOutput(OutputPanel, 'Fichier ouvert : ' + FN,
+  Ord(OTK_BUILD));
+End;
+
 Procedure HandleNewSolutionConfirmed;
 Var
  SolName: String;
@@ -22156,6 +22283,8 @@ Begin
  { Dessiner le dialogue par-dessus si visible }
  If NewProjDlg.Base.Visible Then
   DrawNewProjectDialog(NewProjDlg);
+ If FileDlg.Base.Visible Then
+  DrawFileDialog(FileDlg);
 End;
 
 { --- Traiter un evenement global --- }
@@ -22190,6 +22319,13 @@ Begin
     HandleSaveCurrentFile;
     Exit;
    End;
+   If Ev.KeyChar = #15 Then Begin { Ctrl+O : ouvrir fichier }
+    InitFileDialog(FileDlg, False);
+    LoadDirectoryFiles(FileDlg);
+    FileDlg.Base.Visible := True;
+    DrawFileDialog(FileDlg);
+    Exit;
+   End;
   End;
  End;
  { Distribuer aux panneaux dans l ordre de priorite }
@@ -22200,6 +22336,16 @@ Begin
  If FindReplaceDlg.Base.Visible Then Begin
   HandleFindDialogEvent(FindReplaceDlg,
    Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
+  Exit;
+ End;
+ If FileDlg.Base.Visible Then Begin
+  HandleFileDialogEvent(FileDlg, Ev);
+  If Not FileDlg.Base.Visible Then Begin
+   If FileDlg.Base.Result = DR_OK Then
+    HandleOpenFileConfirmed;
+   FullRepaintNeeded := True;
+  End;
+  DrawFileDialog(FileDlg);
   Exit;
  End;
  If NewProjDlg.Base.Visible Then Begin
@@ -22506,6 +22652,8 @@ BEGIN
  InitGoToLineDialog(GoToLineDlg);
  InitNewProjectDialog(NewProjDlg);
  NewProjDlg.Base.Visible := False;
+ InitFileDialog(FileDlg, False);
+ FileDlg.Base.Visible := False;
  InitCSCContext(CSCContext);
  InitVBCContext(VBCContext);
  InitTPCContext(TPCContext);
