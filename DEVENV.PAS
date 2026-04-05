@@ -2471,6 +2471,13 @@ Var
  TooltipVisible: Boolean;     { infobulle affichee              }
  { Gestionnaire de fenetres }
  WinMgr       : TWindowManager;
+ { Editeur de texte actif }
+ ActiveEditor : TEditor;
+ EditorSel    : TSelection;
+ EditorClip   : TClipboard;
+ EditorUndo   : TUndoStack;
+ EditorRedo   : TUndoStack;
+ EditorReady  : Boolean;  { True si ActiveEditor est initialise }
  { Coloration syntaxique C# }
  CSharpHL     : TCSharpHighlighter;
  { Coloration syntaxique VB.NET }
@@ -21708,6 +21715,9 @@ Begin
  DrawMenuBar;
  DrawToolBar;
  DrawWindowTabs;
+ { Dessiner l editeur actif si une fenetre est ouverte }
+ If EditorReady And (WinMgr.ActiveIdx >= 0) Then
+  DrawEditor(ActiveEditor);
  DrawExplorer(SolExplorer);
  DrawPropertiesPanel(PropsPanel);
  DrawOutputPanel(OutputPanel);
@@ -21767,6 +21777,15 @@ Begin
  If MenuActive Then Exit;
  { Evenements pour la barre d outils }
  HandleToolBarEvent(Ev);
+ { Evenements pour l editeur de texte actif }
+ If EditorReady And (WinMgr.ActiveIdx >= 0) Then Begin
+  If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
+   HandleEditorKey(ActiveEditor, Ev);
+   { Synchroniser curseur vers TEditorWindow pour la barre d etat }
+   WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
+   WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+  End;
+ End;
  { Evenements pour l explorateur }
  HandleExplorerEvent(SolExplorer, Ev);
  { Evenements pour le panneau de proprietes }
@@ -21807,10 +21826,14 @@ Begin
  InitStartPage(StartPage);
  QuitRequested := False;
  FullRepaintNeeded := False;
+ EditorReady := False;
  { Si un fichier source a ete passe en argument, ouvrir directement l editeur }
  If Opts.SourceFile <> '' Then Begin
   StartPage.Visible := False;
   CreateEditorWindow(Opts.SourceFile);
+  InitEditor(ActiveEditor);
+  LoadFile(ActiveEditor.Buffer, Opts.SourceFile);
+  EditorReady := True;
  End;
  DrawAllWidgets;
  MainLoop;
