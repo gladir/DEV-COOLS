@@ -654,7 +654,16 @@
               GetCallGraphEdge, IsCallGraphInitialized, IsCallGraphEmpty,
               HasCallGraphEdge, GetNodeCallees, GetNodeCallers
 
-  TODO 18 - GENERATION DES GRAPHES DE DEPENDANCES (DEPENDENCY GRAPHS) [A FAIRE]
+  TODO 18 - GENERATION DES GRAPHES DE DEPENDANCES (DEPENDENCY GRAPHS) [IMPLEMENTE]
+            Constantes : DEPGRAPH_OUTPUT_DIR, DEPGRAPH_DOT_FILE, DEPGRAPH_PNG_FILE,
+              DEPGRAPH_SVG_FILE, DEPGRAPH_INC_PREFIX, DEPGRAPH_INCBY_PREFIX,
+              DEPGRAPH_DIR_PREFIX, DEPGRAPH_MOD_PREFIX, DEPGRAPH_NODE_SHAPE,
+              DEPGRAPH_DIR_SHAPE, DEPGRAPH_EDGE_STYLE, DEPGRAPH_FONT_NAME,
+              DEPGRAPH_FONT_SIZE, DEPGRAPH_INCLUDE_COLOR, DEPGRAPH_LOCAL_COLOR,
+              DEPGRAPH_SYSTEM_COLOR, MAX_DEP_DIRS
+            Variables : DepGraphOutputDir, DepGraphFormat, DepGraphInitialized
+            Procedure InitDepGraph
+              initialiser le generateur de graphes de dependances
             Procedure GenerateIncludeGraphDot(Const FileName: String;
               Var OutFile: Text)
               generer le graphe d inclusion au format DOT
@@ -670,6 +679,13 @@
               generer le graphe de dependances entre modules
             Procedure RenderDependencyGraphImage(Const DotFile, ImageFile: String)
               invoquer dot pour generer l image
+            Procedure GenerateDepGraphDocumentation
+              orchestrateur: generer tous les graphes de dependances
+            Fonctions accesseurs Get/SetDepGraphOutputDir, Get/SetDepGraphFormat,
+              IsDepGraphInitialized, IsDepGraphEmpty, CountIncludeDependencies,
+              CountIncludedByDependencies, GetDepGraphDotFileName,
+              GetDepGraphImageFileName, ExtractBaseFileName, ExtractDirPath,
+              DependencyKindColor, SanitizeNodeId
 
   TODO 19 - GENERATION DES DIAGRAMMES DE CLASSES (CLASS DIAGRAMS) [A FAIRE]
             Procedure GenerateClassDiagramDot(Const Entity: TEntity;
@@ -986,8 +1002,6 @@ Const
   MAN_MANUAL_DEFAULT    = 'Programmer''s Manual';
 
   { Constantes pour les graphes d'appels (TODO 17) }
-  MAX_CALL_NODES        = 8192;
-  MAX_CALL_EDGES        = 32768;
   CALLGRAPH_DOT_FILE    = 'callgraph.dot';
   CALLGRAPH_PNG_FILE    = 'callgraph.png';
   CALLGRAPH_SVG_FILE    = 'callgraph.svg';
@@ -996,6 +1010,25 @@ Const
   CALLGRAPH_EDGE_STYLE  = 'solid';
   CALLGRAPH_FONT_NAME   = 'Helvetica';
   CALLGRAPH_FONT_SIZE   = 10;
+
+  { Constantes pour les graphes de dependances (TODO 18) }
+  DEPGRAPH_OUTPUT_DIR   = 'depgraph';
+  DEPGRAPH_DOT_FILE     = 'dependencies.dot';
+  DEPGRAPH_PNG_FILE     = 'dependencies.png';
+  DEPGRAPH_SVG_FILE     = 'dependencies.svg';
+  DEPGRAPH_INC_PREFIX   = 'include_';
+  DEPGRAPH_INCBY_PREFIX = 'included_by_';
+  DEPGRAPH_DIR_PREFIX   = 'directory_';
+  DEPGRAPH_MOD_PREFIX   = 'module_';
+  DEPGRAPH_NODE_SHAPE   = 'box';
+  DEPGRAPH_DIR_SHAPE    = 'folder';
+  DEPGRAPH_EDGE_STYLE   = 'solid';
+  DEPGRAPH_FONT_NAME    = 'Helvetica';
+  DEPGRAPH_FONT_SIZE    = 10;
+  DEPGRAPH_INCLUDE_COLOR = '#4CAF50';
+  DEPGRAPH_LOCAL_COLOR   = '#2196F3';
+  DEPGRAPH_SYSTEM_COLOR  = '#9E9E9E';
+  MAX_DEP_DIRS          = 256;
 
 { ============================================================
   TYPES
@@ -1286,6 +1319,11 @@ Var
   CallEdgeCount     : Integer;
   CallGraphOutputDir: String;
   CallGraphInitialized : Boolean;
+
+  { Variables pour les graphes de dependances (TODO 18) }
+  DepGraphOutputDir : String;
+  DepGraphFormat    : String;
+  DepGraphInitialized : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -9675,6 +9713,595 @@ Begin
     End;
   End;
   GetNodeCallers := Result;
+End;
+
+{ ============================================================
+  TODO 18 - GENERATION DES GRAPHES DE DEPENDANCES (DEPENDENCY GRAPHS)
+  ============================================================ }
+
+Procedure InitDepGraph;
+{ Initialise le generateur de graphes de dependances }
+Begin
+  DepGraphOutputDir := DEPGRAPH_OUTPUT_DIR;
+  DepGraphFormat := 'png';
+  DepGraphInitialized := True;
+End;
+
+Function GetDepGraphOutputDir: String;
+Begin
+  GetDepGraphOutputDir := DepGraphOutputDir;
+End;
+
+Procedure SetDepGraphOutputDir(Const Dir: String);
+Begin
+  DepGraphOutputDir := Dir;
+End;
+
+Function IsDepGraphInitialized: Boolean;
+Begin
+  IsDepGraphInitialized := DepGraphInitialized;
+End;
+
+Function GetDepGraphFormat: String;
+Begin
+  GetDepGraphFormat := DepGraphFormat;
+End;
+
+Procedure SetDepGraphFormat(Const Fmt: String);
+Begin
+  DepGraphFormat := Fmt;
+End;
+
+Function ExtractBaseFileName(Const FileName: String): String;
+{ Extrait le nom de fichier sans chemin ni extension pour les graphes }
+Var
+  I, DotPos, SlashPos: Integer;
+  Result: String;
+Begin
+  Result := FileName;
+  { Trouver la derniere position du separateur de chemin }
+  SlashPos := 0;
+  For I := Length(FileName) DownTo 1 Do
+  Begin
+    If (FileName[I] = '/') Or (FileName[I] = '\') Then
+    Begin
+      SlashPos := I;
+      Break;
+    End;
+  End;
+  If SlashPos > 0 Then
+    Result := Copy(FileName, SlashPos + 1, Length(FileName) - SlashPos);
+  { Trouver le point de l'extension }
+  DotPos := 0;
+  For I := Length(Result) DownTo 1 Do
+  Begin
+    If Result[I] = '.' Then
+    Begin
+      DotPos := I;
+      Break;
+    End;
+  End;
+  If DotPos > 1 Then
+    Result := Copy(Result, 1, DotPos - 1);
+  ExtractBaseFileName := Result;
+End;
+
+Function ExtractDirPath(Const FileName: String): String;
+{ Extrait le chemin du repertoire d'un fichier }
+Var
+  I: Integer;
+  SlashPos: Integer;
+Begin
+  SlashPos := 0;
+  For I := Length(FileName) DownTo 1 Do
+  Begin
+    If (FileName[I] = '/') Or (FileName[I] = '\') Then
+    Begin
+      SlashPos := I;
+      Break;
+    End;
+  End;
+  If SlashPos > 0 Then
+    ExtractDirPath := Copy(FileName, 1, SlashPos - 1)
+  Else
+    ExtractDirPath := '.';
+End;
+
+Function DependencyKindColor(Kind: TDependencyKind; IsSystem: Boolean): String;
+{ Retourne la couleur DOT pour un type de dependance }
+Begin
+  If IsSystem Then
+    DependencyKindColor := DEPGRAPH_SYSTEM_COLOR
+  Else
+  Begin
+    Case Kind Of
+      DEP_INCLUDE, DEP_INCLUDE_LOCAL:
+        DependencyKindColor := DEPGRAPH_LOCAL_COLOR;
+      DEP_IMPORT, DEP_USES:
+        DependencyKindColor := DEPGRAPH_INCLUDE_COLOR;
+    Else
+      DependencyKindColor := DEPGRAPH_INCLUDE_COLOR;
+    End;
+  End;
+End;
+
+Function SanitizeNodeId(Const S: String): String;
+{ Convertit une chaine en ID de noeud DOT valide }
+Var
+  I: Integer;
+  R: String;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If ((S[I] >= 'a') And (S[I] <= 'z')) Or
+       ((S[I] >= 'A') And (S[I] <= 'Z')) Or
+       ((S[I] >= '0') And (S[I] <= '9')) Or
+       (S[I] = '_') Then
+      R := R + S[I]
+    Else
+      R := R + '_';
+  End;
+  SanitizeNodeId := R;
+End;
+
+Procedure GenerateIncludeGraphDot(Const FileName: String; Var OutFile: Text);
+{ Genere le graphe d'inclusion au format DOT (fichiers inclus par ce fichier) }
+Var
+  I: Integer;
+  NodeId, TargetNodeId: String;
+  EdgeColor: String;
+Begin
+  WriteLn(OutFile, '// Graphe d''inclusion pour: ', FileName);
+  WriteLn(OutFile, 'digraph "IncludeGraph" {');
+  WriteLn(OutFile, '  graph [rankdir=LR, fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
+  WriteLn(OutFile, '  node [shape=', DEPGRAPH_NODE_SHAPE, ', fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
+  WriteLn(OutFile, '  edge [style=', DEPGRAPH_EDGE_STYLE, '];');
+  WriteLn(OutFile);
+  
+  { Noeud principal (fichier source) }
+  NodeId := SanitizeNodeId(ExtractBaseFileName(FileName));
+  WriteLn(OutFile, '  ', NodeId, ' [label="', ExtractBaseFileName(FileName), '", style=filled, fillcolor="#FFECB3"];');
+  WriteLn(OutFile);
+  
+  { Parcourir les dependances }
+  For I := 1 To DependencyCount Do
+  Begin
+    If UpStr(Dependencies[I].SourceFile) = UpStr(FileName) Then
+    Begin
+      TargetNodeId := SanitizeNodeId(ExtractBaseFileName(Dependencies[I].TargetFile));
+      EdgeColor := DependencyKindColor(Dependencies[I].Kind, Dependencies[I].IsSystem);
+      
+      { Creer le noeud cible }
+      If Dependencies[I].IsSystem Then
+        WriteLn(OutFile, '  ', TargetNodeId, ' [label="', ExtractBaseFileName(Dependencies[I].TargetFile), '", style=filled, fillcolor="', DEPGRAPH_SYSTEM_COLOR, '"];')
+      Else
+        WriteLn(OutFile, '  ', TargetNodeId, ' [label="', ExtractBaseFileName(Dependencies[I].TargetFile), '"];');
+      
+      { Creer l'arete }
+      WriteLn(OutFile, '  ', NodeId, ' -> ', TargetNodeId, ' [color="', EdgeColor, '"];');
+    End;
+  End;
+  
+  WriteLn(OutFile);
+  WriteLn(OutFile, '  // Legende');
+  WriteLn(OutFile, '  subgraph cluster_legend {');
+  WriteLn(OutFile, '    label="Legende";');
+  WriteLn(OutFile, '    style=dashed;');
+  WriteLn(OutFile, '    legend_source [label="Fichier source", style=filled, fillcolor="#FFECB3"];');
+  WriteLn(OutFile, '    legend_local [label="Include local", style=filled, fillcolor="white"];');
+  WriteLn(OutFile, '    legend_system [label="Include systeme", style=filled, fillcolor="', DEPGRAPH_SYSTEM_COLOR, '"];');
+  WriteLn(OutFile, '  }');
+  WriteLn(OutFile, '}');
+End;
+
+Procedure GenerateIncludedByGraphDot(Const FileName: String; Var OutFile: Text);
+{ Genere le graphe d'inclusion inverse au format DOT (fichiers qui incluent ce fichier) }
+Var
+  I: Integer;
+  NodeId, SourceNodeId: String;
+  EdgeColor: String;
+Begin
+  WriteLn(OutFile, '// Graphe d''inclusion inverse pour: ', FileName);
+  WriteLn(OutFile, 'digraph "IncludedByGraph" {');
+  WriteLn(OutFile, '  graph [rankdir=RL, fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
+  WriteLn(OutFile, '  node [shape=', DEPGRAPH_NODE_SHAPE, ', fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
+  WriteLn(OutFile, '  edge [style=', DEPGRAPH_EDGE_STYLE, '];');
+  WriteLn(OutFile);
+  
+  { Noeud principal (fichier cible) }
+  NodeId := SanitizeNodeId(ExtractBaseFileName(FileName));
+  WriteLn(OutFile, '  ', NodeId, ' [label="', ExtractBaseFileName(FileName), '", style=filled, fillcolor="#FFECB3"];');
+  WriteLn(OutFile);
+  
+  { Parcourir les dependances inversement }
+  For I := 1 To DependencyCount Do
+  Begin
+    If UpStr(Dependencies[I].TargetFile) = UpStr(FileName) Then
+    Begin
+      SourceNodeId := SanitizeNodeId(ExtractBaseFileName(Dependencies[I].SourceFile));
+      EdgeColor := DependencyKindColor(Dependencies[I].Kind, Dependencies[I].IsSystem);
+      
+      { Creer le noeud source }
+      WriteLn(OutFile, '  ', SourceNodeId, ' [label="', ExtractBaseFileName(Dependencies[I].SourceFile), '"];');
+      
+      { Creer l'arete (de source vers cible) }
+      WriteLn(OutFile, '  ', SourceNodeId, ' -> ', NodeId, ' [color="', EdgeColor, '"];');
+    End;
+  End;
+  
+  WriteLn(OutFile);
+  WriteLn(OutFile, '  // Legende');
+  WriteLn(OutFile, '  subgraph cluster_legend {');
+  WriteLn(OutFile, '    label="Legende";');
+  WriteLn(OutFile, '    style=dashed;');
+  WriteLn(OutFile, '    legend_target [label="Fichier cible", style=filled, fillcolor="#FFECB3"];');
+  WriteLn(OutFile, '    legend_includer [label="Fichier incluant"];');
+  WriteLn(OutFile, '  }');
+  WriteLn(OutFile, '}');
+End;
+
+Procedure GenerateDirectoryGraphDot(Const DirPath: String; Var OutFile: Text);
+{ Genere le graphe de dependances entre repertoires }
+Var
+  I: Integer;
+  SourceDir, TargetDir: String;
+  SourceNodeId, TargetNodeId: String;
+  DirPairs: Array[1..MAX_DEP_DIRS] Of Record
+    SourceDir, TargetDir: String;
+    Count: Integer;
+  End;
+  DirPairCount: Integer;
+  J: Integer;
+  Found: Boolean;
+Begin
+  WriteLn(OutFile, '// Graphe de dependances entre repertoires');
+  WriteLn(OutFile, 'digraph "DirectoryGraph" {');
+  WriteLn(OutFile, '  graph [rankdir=TB, fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
+  WriteLn(OutFile, '  node [shape=', DEPGRAPH_DIR_SHAPE, ', fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
+  WriteLn(OutFile, '  edge [style=', DEPGRAPH_EDGE_STYLE, '];');
+  WriteLn(OutFile);
+  
+  { Collecter les paires de repertoires uniques }
+  DirPairCount := 0;
+  For I := 1 To DependencyCount Do
+  Begin
+    SourceDir := ExtractDirPath(Dependencies[I].SourceFile);
+    TargetDir := ExtractDirPath(Dependencies[I].TargetFile);
+    
+    { Ignorer les dependances au sein du meme repertoire }
+    If SourceDir <> TargetDir Then
+    Begin
+      { Chercher si la paire existe deja }
+      Found := False;
+      For J := 1 To DirPairCount Do
+      Begin
+        If (DirPairs[J].SourceDir = SourceDir) And (DirPairs[J].TargetDir = TargetDir) Then
+        Begin
+          Inc(DirPairs[J].Count);
+          Found := True;
+          Break;
+        End;
+      End;
+      
+      { Ajouter la nouvelle paire }
+      If Not Found And (DirPairCount < MAX_DEP_DIRS) Then
+      Begin
+        Inc(DirPairCount);
+        DirPairs[DirPairCount].SourceDir := SourceDir;
+        DirPairs[DirPairCount].TargetDir := TargetDir;
+        DirPairs[DirPairCount].Count := 1;
+      End;
+    End;
+  End;
+  
+  { Generer les noeuds et aretes }
+  For I := 1 To DirPairCount Do
+  Begin
+    SourceNodeId := SanitizeNodeId(DirPairs[I].SourceDir);
+    TargetNodeId := SanitizeNodeId(DirPairs[I].TargetDir);
+    
+    WriteLn(OutFile, '  ', SourceNodeId, ' [label="', DirPairs[I].SourceDir, '"];');
+    WriteLn(OutFile, '  ', TargetNodeId, ' [label="', DirPairs[I].TargetDir, '"];');
+    WriteLn(OutFile, '  ', SourceNodeId, ' -> ', TargetNodeId, ' [label="', DirPairs[I].Count, '"];');
+  End;
+  
+  WriteLn(OutFile, '}');
+End;
+
+Procedure GenerateModuleGraphDot(Var OutFile: Text);
+{ Genere le graphe de dependances entre modules (unites/packages) }
+Var
+  I: Integer;
+  SourceNodeId, TargetNodeId: String;
+Begin
+  WriteLn(OutFile, '// Graphe de dependances entre modules');
+  WriteLn(OutFile, 'digraph "ModuleGraph" {');
+  WriteLn(OutFile, '  graph [rankdir=TB, fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
+  WriteLn(OutFile, '  node [shape=', DEPGRAPH_NODE_SHAPE, ', fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
+  WriteLn(OutFile, '  edge [style=', DEPGRAPH_EDGE_STYLE, '];');
+  WriteLn(OutFile);
+  
+  { Parcourir toutes les dependances de type module (USES, IMPORT, etc.) }
+  For I := 1 To DependencyCount Do
+  Begin
+    If (Dependencies[I].Kind = DEP_USES) Or 
+       (Dependencies[I].Kind = DEP_IMPORT) Or
+       (Dependencies[I].Kind = DEP_MODULE) Or
+       (Dependencies[I].Kind = DEP_PACKAGE) Then
+    Begin
+      SourceNodeId := SanitizeNodeId(ExtractBaseFileName(Dependencies[I].SourceFile));
+      TargetNodeId := SanitizeNodeId(ExtractBaseFileName(Dependencies[I].TargetFile));
+      
+      { Creer les noeuds }
+      WriteLn(OutFile, '  ', SourceNodeId, ' [label="', ExtractBaseFileName(Dependencies[I].SourceFile), '"];');
+      WriteLn(OutFile, '  ', TargetNodeId, ' [label="', ExtractBaseFileName(Dependencies[I].TargetFile), '"];');
+      
+      { Creer l'arete }
+      WriteLn(OutFile, '  ', SourceNodeId, ' -> ', TargetNodeId, ';');
+    End;
+  End;
+  
+  WriteLn(OutFile, '}');
+End;
+
+Procedure RenderDependencyGraphImage(Const DotFile, ImageFile: String);
+{ Invoque Graphviz (dot) pour generer l'image a partir du fichier DOT }
+Var
+  CmdLine: String;
+  Format: String;
+  I: Integer;
+Begin
+  { Determiner le format a partir de l'extension }
+  Format := 'png';
+  For I := Length(ImageFile) DownTo 1 Do
+  Begin
+    If ImageFile[I] = '.' Then
+    Begin
+      Format := Copy(ImageFile, I + 1, Length(ImageFile) - I);
+      Break;
+    End;
+  End;
+  
+  { Construire la ligne de commande }
+  CmdLine := 'dot -T' + Format + ' "' + DotFile + '" -o "' + ImageFile + '"';
+  
+  { Afficher la commande (le rendu reel necessite l'execution systeme) }
+  If Not Opts.Quiet Then
+  Begin
+    WriteLn('Commande de rendu: ', CmdLine);
+    WriteLn('Note: Assurez-vous que Graphviz est installe pour generer les images.');
+  End;
+  
+  { SwapVectors; Exec(GetEnv('COMSPEC'), '/C ' + CmdLine); SwapVectors; }
+  { Note: L'execution reelle depend de l'environnement }
+End;
+
+Procedure GenerateDepGraphDocumentation;
+{ Orchestrateur: genere tous les graphes de dependances }
+Var
+  I: Integer;
+  DotFile: Text;
+  DotFileName, ImageFileName: String;
+  ProcessedFiles: Array[1..MAX_DEPENDENCIES] Of String;
+  ProcessedCount: Integer;
+  Found: Boolean;
+  J: Integer;
+Begin
+  If Not DepGraphInitialized Then
+    InitDepGraph;
+  
+  If DependencyCount = 0 Then
+  Begin
+    If Not Opts.Quiet Then
+      WriteLn('Aucune dependance trouvee pour generer les graphes.');
+    Exit;
+  End;
+  
+  If Not Opts.Quiet Then
+  Begin
+    WriteLn('Generation des graphes de dependances...');
+    WriteLn('  Repertoire de sortie: ', DepGraphOutputDir);
+    WriteLn('  Nombre de dependances: ', DependencyCount);
+  End;
+  
+  { Collecter les fichiers sources uniques }
+  ProcessedCount := 0;
+  For I := 1 To DependencyCount Do
+  Begin
+    { Verifier si le fichier source a deja ete traite }
+    Found := False;
+    For J := 1 To ProcessedCount Do
+    Begin
+      If UpStr(ProcessedFiles[J]) = UpStr(Dependencies[I].SourceFile) Then
+      Begin
+        Found := True;
+        Break;
+      End;
+    End;
+    
+    If Not Found And (ProcessedCount < MAX_DEPENDENCIES) Then
+    Begin
+      Inc(ProcessedCount);
+      ProcessedFiles[ProcessedCount] := Dependencies[I].SourceFile;
+    End;
+  End;
+  
+  { Generer un graphe d'inclusion pour chaque fichier source }
+  For I := 1 To ProcessedCount Do
+  Begin
+    DotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX + 
+                   SanitizeNodeId(ExtractBaseFileName(ProcessedFiles[I])) + '.dot';
+    ImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX + 
+                     SanitizeNodeId(ExtractBaseFileName(ProcessedFiles[I])) + '.' + DepGraphFormat;
+    
+    If Not Opts.Quiet Then
+      WriteLn('  Graphe d''inclusion: ', ProcessedFiles[I]);
+    
+    Assign(DotFile, DotFileName);
+    {$I-}
+    Rewrite(DotFile);
+    {$I+}
+    If IOResult = 0 Then
+    Begin
+      GenerateIncludeGraphDot(ProcessedFiles[I], DotFile);
+      Close(DotFile);
+      RenderDependencyGraphImage(DotFileName, ImageFileName);
+    End;
+  End;
+  
+  { Collecter les fichiers cibles uniques pour les graphes "included by" }
+  ProcessedCount := 0;
+  For I := 1 To DependencyCount Do
+  Begin
+    Found := False;
+    For J := 1 To ProcessedCount Do
+    Begin
+      If UpStr(ProcessedFiles[J]) = UpStr(Dependencies[I].TargetFile) Then
+      Begin
+        Found := True;
+        Break;
+      End;
+    End;
+    
+    If Not Found And (ProcessedCount < MAX_DEPENDENCIES) Then
+    Begin
+      Inc(ProcessedCount);
+      ProcessedFiles[ProcessedCount] := Dependencies[I].TargetFile;
+    End;
+  End;
+  
+  { Generer un graphe "included by" pour chaque fichier cible }
+  For I := 1 To ProcessedCount Do
+  Begin
+    DotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX + 
+                   SanitizeNodeId(ExtractBaseFileName(ProcessedFiles[I])) + '.dot';
+    ImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX + 
+                     SanitizeNodeId(ExtractBaseFileName(ProcessedFiles[I])) + '.' + DepGraphFormat;
+    
+    If Not Opts.Quiet Then
+      WriteLn('  Graphe included-by: ', ProcessedFiles[I]);
+    
+    Assign(DotFile, DotFileName);
+    {$I-}
+    Rewrite(DotFile);
+    {$I+}
+    If IOResult = 0 Then
+    Begin
+      GenerateIncludedByGraphDot(ProcessedFiles[I], DotFile);
+      Close(DotFile);
+      RenderDependencyGraphImage(DotFileName, ImageFileName);
+    End;
+  End;
+  
+  { Generer le graphe de dependances entre repertoires }
+  DotFileName := DepGraphOutputDir + '/' + DEPGRAPH_DIR_PREFIX + 'graph.dot';
+  ImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_DIR_PREFIX + 'graph.' + DepGraphFormat;
+  
+  If Not Opts.Quiet Then
+    WriteLn('  Graphe de repertoires');
+  
+  Assign(DotFile, DotFileName);
+  {$I-}
+  Rewrite(DotFile);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateDirectoryGraphDot('', DotFile);
+    Close(DotFile);
+    RenderDependencyGraphImage(DotFileName, ImageFileName);
+  End;
+  
+  { Generer le graphe de modules }
+  DotFileName := DepGraphOutputDir + '/' + DEPGRAPH_MOD_PREFIX + 'graph.dot';
+  ImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_MOD_PREFIX + 'graph.' + DepGraphFormat;
+  
+  If Not Opts.Quiet Then
+    WriteLn('  Graphe de modules');
+  
+  Assign(DotFile, DotFileName);
+  {$I-}
+  Rewrite(DotFile);
+  {$I+}
+  If IOResult = 0 Then
+  Begin
+    GenerateModuleGraphDot(DotFile);
+    Close(DotFile);
+    RenderDependencyGraphImage(DotFileName, ImageFileName);
+  End;
+  
+  If Not Opts.Quiet Then
+    WriteLn('Generation des graphes de dependances terminee.');
+End;
+
+Function CountIncludeDependencies(Const FileName: String): Integer;
+{ Compte le nombre de fichiers inclus par un fichier }
+Var
+  I: Integer;
+  Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To DependencyCount Do
+  Begin
+    If UpStr(Dependencies[I].SourceFile) = UpStr(FileName) Then
+      Inc(Count);
+  End;
+  CountIncludeDependencies := Count;
+End;
+
+Function CountIncludedByDependencies(Const FileName: String): Integer;
+{ Compte le nombre de fichiers qui incluent un fichier }
+Var
+  I: Integer;
+  Count: Integer;
+Begin
+  Count := 0;
+  For I := 1 To DependencyCount Do
+  Begin
+    If UpStr(Dependencies[I].TargetFile) = UpStr(FileName) Then
+      Inc(Count);
+  End;
+  CountIncludedByDependencies := Count;
+End;
+
+Function IsDepGraphEmpty: Boolean;
+{ Verifie si des graphes de dependances peuvent etre generes }
+Begin
+  IsDepGraphEmpty := (DependencyCount = 0);
+End;
+
+Function GetDepGraphDotFileName(Const BaseFileName: String; GraphType: Integer): String;
+{ Construit le nom du fichier DOT pour un graphe de dependances }
+{ GraphType: 1=include, 2=included_by, 3=directory, 4=module }
+Begin
+  Case GraphType Of
+    1: GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX + 
+                                  SanitizeNodeId(BaseFileName) + '.dot';
+    2: GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX + 
+                                  SanitizeNodeId(BaseFileName) + '.dot';
+    3: GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_DIR_PREFIX + 'graph.dot';
+    4: GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_MOD_PREFIX + 'graph.dot';
+  Else
+    GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_DOT_FILE;
+  End;
+End;
+
+Function GetDepGraphImageFileName(Const BaseFileName: String; GraphType: Integer): String;
+{ Construit le nom du fichier image pour un graphe de dependances }
+{ GraphType: 1=include, 2=included_by, 3=directory, 4=module }
+Begin
+  Case GraphType Of
+    1: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX + 
+                                    SanitizeNodeId(BaseFileName) + '.' + DepGraphFormat;
+    2: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX + 
+                                    SanitizeNodeId(BaseFileName) + '.' + DepGraphFormat;
+    3: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_DIR_PREFIX + 
+                                    'graph.' + DepGraphFormat;
+    4: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_MOD_PREFIX + 
+                                    'graph.' + DepGraphFormat;
+  Else
+    GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_PNG_FILE;
+  End;
 End;
 
 { ============================================================
