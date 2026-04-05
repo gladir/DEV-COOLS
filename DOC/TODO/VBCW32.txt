@@ -214,7 +214,7 @@
               Imp, Eqv, Xor, Or, And, Not, comparaisons,
               &, + -, Mod, \, * /, ^, - unaire
 
-  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [A FAIRE]
+  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Procedure GenLoadVar(sym_idx: Integer)
               Long/Integer : MOV EAX, DWORD PTR [_VB_x] ou [EBP-n]
               String : LEA EAX, [_VB_x] ou [EBP-n]
