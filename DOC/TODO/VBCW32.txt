@@ -105,7 +105,7 @@
               Byte Date Err
             Constantes KW_AND..KW_ERR (environ 200 mots-cles)
 
-  TODO 04 - TABLE DES SYMBOLES (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
             Type TSymKind : SK_CONST, SK_VAR, SK_PARAM,
               SK_SUB, SK_FUNCTION, SK_PROPERTY, SK_TYPE,
               SK_ENUM, SK_ENUM_MEMBER, SK_CLASS, SK_MODULE,

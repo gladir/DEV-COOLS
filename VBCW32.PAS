@@ -113,7 +113,7 @@
               Byte Date Err
             Constantes KW_AND..KW_ERR (environ 200 mots-cles)
 
-  TODO 04 - TABLE DES SYMBOLES (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
             Type TSymKind : SK_CONST, SK_VAR, SK_PARAM,
               SK_SUB, SK_FUNCTION, SK_PROPERTY, SK_TYPE,
               SK_ENUM, SK_ENUM_MEMBER, SK_CLASS, SK_MODULE,
@@ -2544,6 +2544,559 @@ Begin
   PrintToken;
 End;
 
+{ ============================================================ }
+{ TODO 04 - TABLE DES SYMBOLES (32 BITS)        [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  { Genres de symboles (TSymKind) }
+  SK_CONST       = 0;   { constante (Const)                       }
+  SK_VAR         = 1;   { variable (Dim, Public, Private)          }
+  SK_PARAM       = 2;   { parametre de Sub/Function               }
+  SK_SUB         = 3;   { procedure Sub                            }
+  SK_FUNCTION    = 4;   { procedure Function                       }
+  SK_PROPERTY    = 5;   { propriete Property Get/Let/Set           }
+  SK_TYPE        = 6;   { type utilisateur (Type...End Type)       }
+  SK_ENUM        = 7;   { enumeration (Enum...End Enum)            }
+  SK_ENUM_MEMBER = 8;   { membre d enumeration                     }
+  SK_CLASS       = 9;   { classe                                   }
+  SK_MODULE      = 10;  { module VB6                               }
+  SK_FIELD       = 11;  { champ d un Type ou d une classe         }
+  SK_EVENT       = 12;  { evenement (Event)                        }
+  SK_LABEL       = 13;  { label (etiquette de ligne)               }
+
+  { Classes d entreposage }
+  STORE_AUTO     = 0;   { pile EBP (variables locales)             }
+  STORE_STATIC   = 1;   { segment .DATA (Static)                   }
+  STORE_PARAM    = 2;   { EBP+n (parametre)                        }
+  STORE_GLOBAL   = 3;   { segment .DATA (Public/Global)            }
+  STORE_CONSTANT = 4;   { immediate (Const)                        }
+
+  { Types VB6 internes (codes DataType) }
+  VBT_NONE       = 0;   { non type / inconnu                       }
+  VBT_BOOLEAN    = 1;   { Boolean   (DD, 4 octets en interne)      }
+  VBT_BYTE       = 2;   { Byte      (DB, 1 octet)                  }
+  VBT_INTEGER    = 3;   { Integer   (DW, 16 bits VB)               }
+  VBT_LONG       = 4;   { Long      (DD, 32 bits)                  }
+  VBT_SINGLE     = 5;   { Single    (DD, flottant 32 bits)         }
+  VBT_DOUBLE     = 6;   { Double    (DQ, 64 bits)                  }
+  VBT_CURRENCY   = 7;   { Currency  (DQ, 64 bits fixe)             }
+  VBT_STRING     = 8;   { String    (pointeur DD)                  }
+  VBT_VARIANT    = 9;   { Variant   (16 octets stub)               }
+  VBT_DATE       = 10;  { Date      (DQ, 64 bits)                  }
+  VBT_OBJECT     = 11;  { Object    (pointeur DD)                  }
+  VBT_USER       = 12;  { Type utilisateur (taille variable)       }
+
+  { Tailles en octets des types VB6 (32 bits) }
+  VBT_SIZE_BOOLEAN  = 4;  { DD en interne (2 en VB mais 4 aligne)  }
+  VBT_SIZE_BYTE     = 1;  { DB                                     }
+  VBT_SIZE_INTEGER  = 2;  { DW (16 bits VB6)                       }
+  VBT_SIZE_LONG     = 4;  { DD (32 bits)                           }
+  VBT_SIZE_SINGLE   = 4;  { DD (flottant 32 bits)                  }
+  VBT_SIZE_DOUBLE   = 8;  { DQ (64 bits)                           }
+  VBT_SIZE_CURRENCY = 8;  { DQ (64 bits fixe)                      }
+  VBT_SIZE_STRING   = 4;  { pointeur DD                            }
+  VBT_SIZE_VARIANT  = 16; { 16 octets stub                         }
+  VBT_SIZE_DATE     = 8;  { DQ (64 bits)                           }
+  VBT_SIZE_OBJECT   = 4;  { pointeur DD                            }
+
+Type
+  { Entree dans la table des symboles }
+  TSymEntry = Record
+    Name       : String[255]; { nom du symbole                     }
+    AsmLabel   : String[64];  { label assembleur genere             }
+    Kind       : Integer;     { SK_CONST, SK_VAR, etc.             }
+    DataType   : Integer;     { VBT_LONG, VBT_STRING, etc.         }
+    StoreClass : Integer;     { STORE_AUTO, STORE_GLOBAL, etc.     }
+    BpOffset   : Integer;     { offset EBP pour locales/params     }
+    ArrayDims  : Integer;     { nombre de dimensions (0 = scalaire) }
+    ArrayBase  : Integer;     { Option Base (0 ou 1)               }
+    IsStatic   : Boolean;     { variable Static ?                   }
+    IsPublic   : Boolean;     { Public ?                            }
+    IsOptional : Boolean;     { parametre Optional ?                }
+    DefaultVal : String[64];  { valeur par defaut (si HasDefault)   }
+    HasDefault : Boolean;     { a une valeur par defaut ?           }
+    ByRef      : Boolean;     { passe par reference ?               }
+    ParamIdx   : Integer;     { index du premier parametre (proc)  }
+    ClassIdx   : Integer;     { index de la classe parente          }
+    InitStr    : String[64];  { valeur initiale chaine              }
+    InitNum    : LongInt;     { valeur initiale numerique           }
+    HasInit    : Boolean;     { a une valeur initiale ?             }
+    IsConst    : Boolean;     { constante ?                         }
+  End;
+
+  { Entree dans la table des procedures }
+  TProcEntry = Record
+    Name       : String[255]; { nom de la procedure/fonction        }
+    AsmLabel   : String[64];  { label assembleur (_VBF_...)         }
+    Kind       : Integer;     { SK_SUB, SK_FUNCTION, SK_PROPERTY   }
+    ReturnType : Integer;     { type de retour (0 pour Sub)         }
+    ParamStart : Integer;     { index du premier param dans SymTab  }
+    ParamCount : Integer;     { nombre de parametres                }
+    LocalStart : Integer;     { index de la premiere locale         }
+    LocalCount : Integer;     { nombre de variables locales         }
+    LocalSize  : Integer;     { taille totale des locales (octets) }
+    IsPublic   : Boolean;     { Public ?                            }
+    IsStatic   : Boolean;     { Static (tous les locaux en .DATA)  }
+    ClassIdx   : Integer;     { index de la classe (-1 si aucune)  }
+    ExitLabel  : String[64];  { label de sortie (_VBL_xxx_exit)    }
+  End;
+
+Var
+  { Table des symboles }
+  SymTab    : Array[0..MAX_SYM - 1] Of TSymEntry;
+  SymCount  : Integer;
+
+  { Table des procedures }
+  ProcTab   : Array[0..MAX_PROC - 1] Of TProcEntry;
+  ProcCount : Integer;
+
+{ ------------------------------------------------------------ }
+{ SymKindName : nom textuel d un genre de symbole              }
+{ ------------------------------------------------------------ }
+
+Function SymKindName(K : Integer) : TString;
+Begin
+  Case K Of
+    SK_CONST       : SymKindName := 'Const';
+    SK_VAR         : SymKindName := 'Var';
+    SK_PARAM       : SymKindName := 'Param';
+    SK_SUB         : SymKindName := 'Sub';
+    SK_FUNCTION    : SymKindName := 'Function';
+    SK_PROPERTY    : SymKindName := 'Property';
+    SK_TYPE        : SymKindName := 'Type';
+    SK_ENUM        : SymKindName := 'Enum';
+    SK_ENUM_MEMBER : SymKindName := 'EnumMember';
+    SK_CLASS       : SymKindName := 'Class';
+    SK_MODULE      : SymKindName := 'Module';
+    SK_FIELD       : SymKindName := 'Field';
+    SK_EVENT       : SymKindName := 'Event';
+    SK_LABEL       : SymKindName := 'Label';
+  Else
+    SymKindName := '?SK' + ItoSI(K);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ VBTypeName : nom textuel d un type VB6                       }
+{ ------------------------------------------------------------ }
+
+Function VBTypeName(T : Integer) : TString;
+Begin
+  Case T Of
+    VBT_NONE     : VBTypeName := '(none)';
+    VBT_BOOLEAN  : VBTypeName := 'Boolean';
+    VBT_BYTE     : VBTypeName := 'Byte';
+    VBT_INTEGER  : VBTypeName := 'Integer';
+    VBT_LONG     : VBTypeName := 'Long';
+    VBT_SINGLE   : VBTypeName := 'Single';
+    VBT_DOUBLE   : VBTypeName := 'Double';
+    VBT_CURRENCY : VBTypeName := 'Currency';
+    VBT_STRING   : VBTypeName := 'String';
+    VBT_VARIANT  : VBTypeName := 'Variant';
+    VBT_DATE     : VBTypeName := 'Date';
+    VBT_OBJECT   : VBTypeName := 'Object';
+    VBT_USER     : VBTypeName := 'UserType';
+  Else
+    VBTypeName := '?VBT' + ItoSI(T);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ VBTypeSize : taille en octets d un type VB6 (32 bits)        }
+{ ------------------------------------------------------------ }
+
+Function VBTypeSize(T : Integer) : Integer;
+Begin
+  Case T Of
+    VBT_BOOLEAN  : VBTypeSize := VBT_SIZE_BOOLEAN;
+    VBT_BYTE     : VBTypeSize := VBT_SIZE_BYTE;
+    VBT_INTEGER  : VBTypeSize := VBT_SIZE_INTEGER;
+    VBT_LONG     : VBTypeSize := VBT_SIZE_LONG;
+    VBT_SINGLE   : VBTypeSize := VBT_SIZE_SINGLE;
+    VBT_DOUBLE   : VBTypeSize := VBT_SIZE_DOUBLE;
+    VBT_CURRENCY : VBTypeSize := VBT_SIZE_CURRENCY;
+    VBT_STRING   : VBTypeSize := VBT_SIZE_STRING;
+    VBT_VARIANT  : VBTypeSize := VBT_SIZE_VARIANT;
+    VBT_DATE     : VBTypeSize := VBT_SIZE_DATE;
+    VBT_OBJECT   : VBTypeSize := VBT_SIZE_OBJECT;
+  Else
+    VBTypeSize := 4; { par defaut : DD (32 bits) }
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ StoreClassName : nom textuel d une classe d entreposage      }
+{ ------------------------------------------------------------ }
+
+Function StoreClassName(SC : Integer) : TString;
+Begin
+  Case SC Of
+    STORE_AUTO     : StoreClassName := 'Auto';
+    STORE_STATIC   : StoreClassName := 'Static';
+    STORE_PARAM    : StoreClassName := 'Param';
+    STORE_GLOBAL   : StoreClassName := 'Global';
+    STORE_CONSTANT : StoreClassName := 'Constant';
+  Else
+    StoreClassName := '?SC' + ItoSI(SC);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InitSymTable : initialiser les tables de symboles            }
+{ ------------------------------------------------------------ }
+
+Procedure InitSymTable;
+Var I : Integer;
+Begin
+  SymCount  := 0;
+  ProcCount := 0;
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name       := '';
+    SymTab[I].AsmLabel   := '';
+    SymTab[I].Kind       := SK_VAR;
+    SymTab[I].DataType   := VBT_NONE;
+    SymTab[I].StoreClass := STORE_AUTO;
+    SymTab[I].BpOffset   := 0;
+    SymTab[I].ArrayDims  := 0;
+    SymTab[I].ArrayBase  := 0;
+    SymTab[I].IsStatic   := False;
+    SymTab[I].IsPublic   := False;
+    SymTab[I].IsOptional := False;
+    SymTab[I].DefaultVal := '';
+    SymTab[I].HasDefault := False;
+    SymTab[I].ByRef      := False;
+    SymTab[I].ParamIdx   := -1;
+    SymTab[I].ClassIdx   := -1;
+    SymTab[I].InitStr    := '';
+    SymTab[I].InitNum    := 0;
+    SymTab[I].HasInit    := False;
+    SymTab[I].IsConst    := False;
+  End;
+  For I := 0 To MAX_PROC - 1 Do
+  Begin
+    ProcTab[I].Name       := '';
+    ProcTab[I].AsmLabel   := '';
+    ProcTab[I].Kind       := SK_SUB;
+    ProcTab[I].ReturnType := VBT_NONE;
+    ProcTab[I].ParamStart := 0;
+    ProcTab[I].ParamCount := 0;
+    ProcTab[I].LocalStart := 0;
+    ProcTab[I].LocalCount := 0;
+    ProcTab[I].LocalSize  := 0;
+    ProcTab[I].IsPublic   := False;
+    ProcTab[I].IsStatic   := False;
+    ProcTab[I].ClassIdx   := -1;
+    ProcTab[I].ExitLabel  := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindSym : chercher un symbole par nom (insensible a la casse) }
+{ Retourne l index ou -1 si non trouve                          }
+{ ------------------------------------------------------------ }
+
+Function FindSym(Const S : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  FindSym := -1;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If UpCaseStr(SymTab[I].Name) = U Then
+    Begin
+      FindSym := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddSym : ajouter un symbole dans la table                    }
+{ Retourne l index du nouveau symbole ou -1 si plein           }
+{ ------------------------------------------------------------ }
+
+Function AddSym(Const AName : TString; AKind : Integer;
+                ADataType : Integer; AStore : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    FatalError('Table des symboles pleine (max ' + ItoSI(MAX_SYM) + ')');
+    AddSym := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SymTab[Idx].Name       := AName;
+  SymTab[Idx].Kind       := AKind;
+  SymTab[Idx].DataType   := ADataType;
+  SymTab[Idx].StoreClass := AStore;
+  SymTab[Idx].BpOffset   := 0;
+  SymTab[Idx].ArrayDims  := 0;
+  SymTab[Idx].ArrayBase  := 0;
+  SymTab[Idx].IsStatic   := False;
+  SymTab[Idx].IsPublic   := False;
+  SymTab[Idx].IsOptional := False;
+  SymTab[Idx].DefaultVal := '';
+  SymTab[Idx].HasDefault := False;
+  SymTab[Idx].ByRef      := False;
+  SymTab[Idx].ParamIdx   := -1;
+  SymTab[Idx].ClassIdx   := -1;
+  SymTab[Idx].InitStr    := '';
+  SymTab[Idx].InitNum    := 0;
+  SymTab[Idx].HasInit    := False;
+  SymTab[Idx].IsConst    := False;
+  { Generer le label assembleur }
+  Case AKind Of
+    SK_VAR, SK_FIELD  : SymTab[Idx].AsmLabel := PFX_VAR + AsmIdent(AName);
+    SK_CONST          : SymTab[Idx].AsmLabel := PFX_CONST + AsmIdent(AName);
+    SK_SUB, SK_FUNCTION,
+    SK_PROPERTY       : SymTab[Idx].AsmLabel := PFX_FUNC + AsmIdent(AName);
+    SK_TYPE           : SymTab[Idx].AsmLabel := PFX_TYPE + AsmIdent(AName);
+    SK_CLASS          : SymTab[Idx].AsmLabel := PFX_CLS + AsmIdent(AName);
+    SK_ENUM           : SymTab[Idx].AsmLabel := PFX_ENUM + AsmIdent(AName);
+    SK_LABEL          : SymTab[Idx].AsmLabel := PFX_LBL + AsmIdent(AName);
+  Else
+    SymTab[Idx].AsmLabel := PFX_VAR + AsmIdent(AName);
+  End;
+  Inc(SymCount);
+  AddSym := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindProc : chercher une procedure par nom                    }
+{ Retourne l index ou -1 si non trouvee                        }
+{ ------------------------------------------------------------ }
+
+Function FindProc(Const S : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  FindProc := -1;
+  For I := 0 To ProcCount - 1 Do
+  Begin
+    If UpCaseStr(ProcTab[I].Name) = U Then
+    Begin
+      FindProc := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddProc : ajouter une procedure dans la table                }
+{ Retourne l index de la nouvelle procedure ou -1 si plein     }
+{ ------------------------------------------------------------ }
+
+Function AddProc(Const AName : TString; AKind : Integer;
+                 ARetType : Integer; APublic : Boolean) : Integer;
+Var Idx : Integer;
+Begin
+  If ProcCount >= MAX_PROC Then
+  Begin
+    FatalError('Table des procedures pleine (max ' + ItoSI(MAX_PROC) + ')');
+    AddProc := -1;
+    Exit;
+  End;
+  Idx := ProcCount;
+  ProcTab[Idx].Name       := AName;
+  ProcTab[Idx].AsmLabel   := PFX_FUNC + AsmIdent(AName);
+  ProcTab[Idx].Kind       := AKind;
+  ProcTab[Idx].ReturnType := ARetType;
+  ProcTab[Idx].ParamStart := SymCount;
+  ProcTab[Idx].ParamCount := 0;
+  ProcTab[Idx].LocalStart := 0;
+  ProcTab[Idx].LocalCount := 0;
+  ProcTab[Idx].LocalSize  := 0;
+  ProcTab[Idx].IsPublic   := APublic;
+  ProcTab[Idx].IsStatic   := False;
+  ProcTab[Idx].ClassIdx   := -1;
+  ProcTab[Idx].ExitLabel  := PFX_LBL + AsmIdent(AName) + '_exit';
+  Inc(ProcCount);
+  AddProc := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetSymCount : nombre de symboles dans la table               }
+{ ------------------------------------------------------------ }
+
+Function GetSymCount : Integer;
+Begin
+  GetSymCount := SymCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetProcCount : nombre de procedures dans la table            }
+{ ------------------------------------------------------------ }
+
+Function GetProcCount : Integer;
+Begin
+  GetProcCount := ProcCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetSymEntry : acces a un symbole par index                   }
+{ ------------------------------------------------------------ }
+
+Function GetSymName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetSymName := SymTab[Idx].Name
+  Else
+    GetSymName := '';
+End;
+
+Function GetSymKind(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetSymKind := SymTab[Idx].Kind
+  Else
+    GetSymKind := -1;
+End;
+
+Function GetSymDataType(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetSymDataType := SymTab[Idx].DataType
+  Else
+    GetSymDataType := VBT_NONE;
+End;
+
+Function GetSymAsmLabel(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetSymAsmLabel := SymTab[Idx].AsmLabel
+  Else
+    GetSymAsmLabel := '';
+End;
+
+Function GetSymStoreClass(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetSymStoreClass := SymTab[Idx].StoreClass
+  Else
+    GetSymStoreClass := STORE_AUTO;
+End;
+
+Function GetSymBpOffset(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetSymBpOffset := SymTab[Idx].BpOffset
+  Else
+    GetSymBpOffset := 0;
+End;
+
+Function IsSymPublic(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    IsSymPublic := SymTab[Idx].IsPublic
+  Else
+    IsSymPublic := False;
+End;
+
+Function IsSymStatic(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    IsSymStatic := SymTab[Idx].IsStatic
+  Else
+    IsSymStatic := False;
+End;
+
+Function IsSymConst(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    IsSymConst := SymTab[Idx].IsConst
+  Else
+    IsSymConst := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetProcEntry : acces a une procedure par index               }
+{ ------------------------------------------------------------ }
+
+Function GetProcName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < ProcCount) Then
+    GetProcName := ProcTab[Idx].Name
+  Else
+    GetProcName := '';
+End;
+
+Function GetProcKind(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < ProcCount) Then
+    GetProcKind := ProcTab[Idx].Kind
+  Else
+    GetProcKind := -1;
+End;
+
+Function GetProcReturnType(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < ProcCount) Then
+    GetProcReturnType := ProcTab[Idx].ReturnType
+  Else
+    GetProcReturnType := VBT_NONE;
+End;
+
+Function GetProcAsmLabel(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < ProcCount) Then
+    GetProcAsmLabel := ProcTab[Idx].AsmLabel
+  Else
+    GetProcAsmLabel := '';
+End;
+
+Function GetProcParamCount(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < ProcCount) Then
+    GetProcParamCount := ProcTab[Idx].ParamCount
+  Else
+    GetProcParamCount := 0;
+End;
+
+Function GetProcLocalSize(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < ProcCount) Then
+    GetProcLocalSize := ProcTab[Idx].LocalSize
+  Else
+    GetProcLocalSize := 0;
+End;
+
+Function GetProcExitLabel(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < ProcCount) Then
+    GetProcExitLabel := ProcTab[Idx].ExitLabel
+  Else
+    GetProcExitLabel := '';
+End;
+
+Function IsProcPublic(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < ProcCount) Then
+    IsProcPublic := ProcTab[Idx].IsPublic
+  Else
+    IsProcPublic := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsSymTableEmpty / IsProcTableEmpty                           }
+{ ------------------------------------------------------------ }
+
+Function IsSymTableEmpty : Boolean;
+Begin
+  IsSymTableEmpty := (SymCount = 0);
+End;
+
+Function IsProcTableEmpty : Boolean;
+Begin
+  IsProcTableEmpty := (ProcCount = 0);
+End;
+
 { ------------------------------------------------------------ }
 { Run (stub pour les futures TODOs)                            }
 { ------------------------------------------------------------ }
@@ -2551,10 +3104,11 @@ End;
 Procedure Run;
 Begin
   ShowBanner;
+  InitSymTable;
   LexInit;
-  { Les TODOs 03-25 ajouteront ici : }
+  { Les TODOs 05-25 ajouteront ici : }
   {   ParseModule, Emit, WritePE/WriteCOFF/WriteASM }
-  WriteLn('VBCW32: compilation non encore implementee (TODOs 03-25)');
+  WriteLn('VBCW32: compilation non encore implementee (TODOs 05-25)');
   LexClose;
   ShowStats;
 End;
