@@ -2512,6 +2512,8 @@ Var
  StartPage      : TStartPage;
  { Indicateur de sortie }
  QuitRequested  : Boolean;
+ { Drapeau nettoyage ecran transition page de demarrage -> IDE }
+ FullRepaintNeeded : Boolean;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
@@ -4400,18 +4402,17 @@ Begin
    End;
   End Else Begin
    { Alt+lettre pour ouvrir un menu depuis l etat inactif }
-   If (Ev.ShiftState And $08) <> 0 Then Begin { Alt }
-    Case Ev.KeyChar Of
-     'f','F': OpenMenu(0); { Fichier }
-     'e','E': OpenMenu(1); { Edition }
-     'a','A': OpenMenu(2); { Affichage }
-     'p','P': OpenMenu(3); { Projet }
-     'g','G': OpenMenu(4); { Generer }
-     'd','D': OpenMenu(5); { Deboguer }
-     'o','O': OpenMenu(6); { Outils }
-     'n','N': OpenMenu(7); { Fenetre }
-     'i','I': OpenMenu(8); { Aide }
-    End;
+   { En DOS, Alt+lettre genere EV_KEY_DOWN avec le scan code BIOS }
+   Case Ev.KeyCode Of
+    $21: OpenMenu(0); { Alt+F : Fichier  (scan code 0x21=33) }
+    $12: OpenMenu(1); { Alt+E : Edition  (scan code 0x12=18) }
+    $1E: OpenMenu(2); { Alt+A : Affichage(scan code 0x1E=30) }
+    $19: OpenMenu(3); { Alt+P : Projet   (scan code 0x19=25) }
+    $22: OpenMenu(4); { Alt+G : Generer  (scan code 0x22=34) }
+    $20: OpenMenu(5); { Alt+D : Deboguer (scan code 0x20=32) }
+    $18: OpenMenu(6); { Alt+O : Outils   (scan code 0x18=24) }
+    $31: OpenMenu(7); { Alt+N : feNetre  (scan code 0x31=49) }
+    $17: OpenMenu(8); { Alt+I : aIde     (scan code 0x17=23) }
    End;
   End;
  End
@@ -21597,6 +21598,7 @@ Begin
       (Ev.MouseY < BtnY + START_PAGE_BTN_HEIGHT) Then Begin
     SP.Visible := False;
     SP.NeedRepaint := True;
+    FullRepaintNeeded := True;
     Exit;
    End;
    { Verifier clic sur bouton Ouvrir }
@@ -21606,6 +21608,7 @@ Begin
       (Ev.MouseY < BtnY + START_PAGE_BTN_HEIGHT) Then Begin
     SP.Visible := False;
     SP.NeedRepaint := True;
+    FullRepaintNeeded := True;
     Exit;
    End;
    { Verifier clic sur un element de la liste MRU }
@@ -21617,6 +21620,7 @@ Begin
      SP.SelectedItem := ItemIdx;
      SP.Visible := False;
      SP.NeedRepaint := True;
+     FullRepaintNeeded := True;
     End;
    End;
  End;
@@ -21629,10 +21633,12 @@ Begin
    #13: Begin { Entree : activer le bouton courant }
          SP.Visible := False;
          SP.NeedRepaint := True;
+         FullRepaintNeeded := True;
         End;
    #27: Begin { Echap : fermer la page de demarrage }
          SP.Visible := False;
          SP.NeedRepaint := True;
+         FullRepaintNeeded := True;
         End;
   End;
  End Else If Ev.Kind = EV_KEY_DOWN Then Begin
@@ -21682,6 +21688,11 @@ Begin
   DrawStatusBar(StatusBar);
   Exit;
  End;
+ { Nettoyage unique lors de la transition page de demarrage -> IDE }
+ If FullRepaintNeeded Then Begin
+  ClearScreen(CLR_BACKGROUND);
+  FullRepaintNeeded := False;
+ End;
  DrawMenuBar;
  DrawToolBar;
  DrawWindowTabs;
@@ -21705,11 +21716,15 @@ Begin
  { Raccourcis clavier globaux }
  If (Ev.Kind = EV_KEY_DOWN) Or (Ev.Kind = EV_KEY_CHAR) Then Begin
   Case Ev.KeyCode Of
-   $2D00: Begin { Alt+X : quitter }
+   $6B: Begin { Alt+F4 : quitter }
     QuitRequested := True;
     Exit;
    End;
-   $3B00: Begin { F1 : aide (stub) }
+   $2D: Begin { Alt+X : quitter }
+    QuitRequested := True;
+    Exit;
+   End;
+   $3B: Begin { F1 : aide (stub) }
     { A implementer }
     Exit;
    End;
@@ -21779,6 +21794,7 @@ Begin
  LoadMRUList(MRUList);
  InitStartPage(StartPage);
  QuitRequested := False;
+ FullRepaintNeeded := False;
  DrawAllWidgets;
  MainLoop;
  SaveMRUList(MRUList);
