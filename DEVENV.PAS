@@ -1018,6 +1018,9 @@ Const
  { Coloration syntaxique Pascal }
  MAX_PASCAL_KEYWORDS   = 65;      { nombre de mots-cles Pascal     }
 
+ { Coloration syntaxique Ada }
+ MAX_ADA_KEYWORDS      = 73;      { nombre de mots-cles Ada        }
+
  { Coloration syntaxique XML }
  MAX_XML_TAGS          = 32;      { nombre de tags XML predefinies  }
 
@@ -1656,6 +1659,13 @@ Type
  TPascalHighlighter = Record
   Base         : TSyntaxHighlighter;  { moteur de base              }
   Keywords     : Array[0..MAX_PASCAL_KEYWORDS - 1] Of String[20];
+  KeywordCount : Integer;             { nombre de mots-cles         }
+ End;
+
+ { Coloration syntaxique specialisee Ada }
+ TAdaHighlighter = Record
+  Base         : TSyntaxHighlighter;  { moteur de base              }
+  Keywords     : Array[0..MAX_ADA_KEYWORDS - 1] Of String[20];
   KeywordCount : Integer;             { nombre de mots-cles         }
  End;
 
@@ -2488,6 +2498,8 @@ Var
  VBNetHL      : TVBNetHighlighter;
  { Coloration syntaxique Pascal }
  PascalHL     : TPascalHighlighter;
+ { Coloration syntaxique Ada }
+ AdaHL        : TAdaHighlighter;
  { Coloration syntaxique XML }
  XMLHL        : TXMLHighlighter;
  { Explorateur de solution }
@@ -6188,6 +6200,12 @@ Procedure HighlightCSharpLine(Var HL: TCSharpHighlighter;
                               Line: String;
                               Var Colors: Array Of Byte); Forward;
 
+{ --- Declaration anticipee de HighlightAdaLine --- }
+
+Procedure HighlightAdaLine(Var HL: TAdaHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte); Forward;
+
 { --- Dessiner l editeur complet --- }
 
 Procedure DrawEditor(Var Ed: TEditor);
@@ -6202,6 +6220,7 @@ Var
  Ch: String[1];
  IsPascal: Boolean;
  IsCSharp: Boolean;
+ IsAda: Boolean;
  Ext: String;
 Begin
  { Detecter si le fichier est du Pascal }
@@ -6209,6 +6228,7 @@ Begin
  IsPascal := (Ext = '.PAS') Or (Ext = '.PP') Or (Ext = '.INC') Or
              (Ext = '.DPR') Or (Ext = '.LPR');
  IsCSharp := (Ext = '.CS');
+ IsAda := (Ext = '.ADB') Or (Ext = '.ADS') Or (Ext = '.ADA');
  { Mettre a jour la gouttiere }
  Ed.GutterWidth := CalcGutterWidth(Ed.Buffer.LineCount, Ed.CharWidth);
  Ed.VisibleCols := (Ed.Width - Ed.GutterWidth) Div Ed.CharWidth;
@@ -6233,7 +6253,10 @@ Begin
     HighlightPascalLine(PascalHL, FullLine, Colors)
    Else If IsCSharp And (Length(FullLine) > 0) And
       (Length(FullLine) <= 255) Then
-    HighlightCSharpLine(CSharpHL, FullLine, Colors);
+    HighlightCSharpLine(CSharpHL, FullLine, Colors)
+   Else If IsAda And (Length(FullLine) > 0) And
+      (Length(FullLine) <= 255) Then
+    HighlightAdaLine(AdaHL, FullLine, Colors);
    { Extraire la partie visible }
    If Ed.ScrollCol <= Length(FullLine) Then Begin
     Len := Length(FullLine) - Ed.ScrollCol + 1;
@@ -9252,6 +9275,271 @@ End;
 Function PascalLowerCase(Word: String): String;
 Begin
  PascalLowerCase := LowerCaseStr(Word);
+End;
+
+{ ============================================================
+  COLORATION SYNTAXIQUE ADA
+  ============================================================ }
+
+{ --- Initialiser les mots-cles Ada --- }
+
+Procedure InitAdaKeywords(Var HL: TAdaHighlighter);
+Begin
+ HL.KeywordCount := MAX_ADA_KEYWORDS;
+ HL.Keywords[0]  := 'abort';
+ HL.Keywords[1]  := 'abs';
+ HL.Keywords[2]  := 'abstract';
+ HL.Keywords[3]  := 'accept';
+ HL.Keywords[4]  := 'access';
+ HL.Keywords[5]  := 'aliased';
+ HL.Keywords[6]  := 'all';
+ HL.Keywords[7]  := 'and';
+ HL.Keywords[8]  := 'array';
+ HL.Keywords[9]  := 'at';
+ HL.Keywords[10] := 'begin';
+ HL.Keywords[11] := 'body';
+ HL.Keywords[12] := 'case';
+ HL.Keywords[13] := 'constant';
+ HL.Keywords[14] := 'declare';
+ HL.Keywords[15] := 'delay';
+ HL.Keywords[16] := 'delta';
+ HL.Keywords[17] := 'digits';
+ HL.Keywords[18] := 'do';
+ HL.Keywords[19] := 'else';
+ HL.Keywords[20] := 'elsif';
+ HL.Keywords[21] := 'end';
+ HL.Keywords[22] := 'entry';
+ HL.Keywords[23] := 'exception';
+ HL.Keywords[24] := 'exit';
+ HL.Keywords[25] := 'for';
+ HL.Keywords[26] := 'function';
+ HL.Keywords[27] := 'generic';
+ HL.Keywords[28] := 'goto';
+ HL.Keywords[29] := 'if';
+ HL.Keywords[30] := 'in';
+ HL.Keywords[31] := 'interface';
+ HL.Keywords[32] := 'is';
+ HL.Keywords[33] := 'limited';
+ HL.Keywords[34] := 'loop';
+ HL.Keywords[35] := 'mod';
+ HL.Keywords[36] := 'new';
+ HL.Keywords[37] := 'not';
+ HL.Keywords[38] := 'null';
+ HL.Keywords[39] := 'of';
+ HL.Keywords[40] := 'or';
+ HL.Keywords[41] := 'others';
+ HL.Keywords[42] := 'out';
+ HL.Keywords[43] := 'overriding';
+ HL.Keywords[44] := 'package';
+ HL.Keywords[45] := 'pragma';
+ HL.Keywords[46] := 'private';
+ HL.Keywords[47] := 'procedure';
+ HL.Keywords[48] := 'protected';
+ HL.Keywords[49] := 'raise';
+ HL.Keywords[50] := 'range';
+ HL.Keywords[51] := 'record';
+ HL.Keywords[52] := 'rem';
+ HL.Keywords[53] := 'renames';
+ HL.Keywords[54] := 'requeue';
+ HL.Keywords[55] := 'return';
+ HL.Keywords[56] := 'reverse';
+ HL.Keywords[57] := 'select';
+ HL.Keywords[58] := 'separate';
+ HL.Keywords[59] := 'some';
+ HL.Keywords[60] := 'subtype';
+ HL.Keywords[61] := 'synchronized';
+ HL.Keywords[62] := 'tagged';
+ HL.Keywords[63] := 'task';
+ HL.Keywords[64] := 'terminate';
+ HL.Keywords[65] := 'then';
+ HL.Keywords[66] := 'type';
+ HL.Keywords[67] := 'until';
+ HL.Keywords[68] := 'use';
+ HL.Keywords[69] := 'when';
+ HL.Keywords[70] := 'while';
+ HL.Keywords[71] := 'with';
+ HL.Keywords[72] := 'xor';
+End;
+
+{ --- Initialiser le moteur de coloration Ada --- }
+
+Procedure InitAdaHighlighter(Var HL: TAdaHighlighter);
+Begin
+ InitHighlighter(HL.Base, 'Ada');
+ InitAdaKeywords(HL);
+End;
+
+{ --- Verifier si un mot est un mot-cle Ada (insensible casse) --- }
+
+Function IsAdaKeyword(Var HL: TAdaHighlighter;
+                      Word: String): Boolean;
+Var
+ I: Integer;
+ LW: String;
+Begin
+ IsAdaKeyword := False;
+ LW := LowerCaseStr(Word);
+ For I := 0 To HL.KeywordCount - 1 Do
+ Begin
+  If LW = HL.Keywords[I] Then
+  Begin
+   IsAdaKeyword := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Verifier si un mot est un type predefini Ada --- }
+
+Function IsAdaType(Word: String): Boolean;
+Var
+ LW: String;
+Begin
+ LW := LowerCaseStr(Word);
+ IsAdaType :=
+  (LW = 'integer') Or (LW = 'natural') Or (LW = 'positive') Or
+  (LW = 'float') Or (LW = 'character') Or (LW = 'string') Or
+  (LW = 'boolean') Or (LW = 'duration') Or (LW = 'wide_character') Or
+  (LW = 'wide_string') Or (LW = 'wide_wide_character') Or
+  (LW = 'wide_wide_string') Or (LW = 'long_float') Or
+  (LW = 'long_integer') Or (LW = 'short_float') Or
+  (LW = 'short_integer') Or (LW = 'long_long_integer') Or
+  (LW = 'long_long_float');
+End;
+
+{ --- Classifier un jeton Ada (identifier -> keyword/type) --- }
+
+Function ClassifyAdaToken(Var HL: TAdaHighlighter;
+                          Line: String;
+                          StartPos, EndPos: Integer): TTokenClass;
+Var
+ Word: String;
+Begin
+ Word := Copy(Line, StartPos, EndPos - StartPos);
+ If IsAdaType(Word) Then
+  ClassifyAdaToken := TC_TYPE
+ Else If IsAdaKeyword(HL, Word) Then
+  ClassifyAdaToken := TC_KEYWORD
+ Else
+  ClassifyAdaToken := TC_IDENTIFIER;
+End;
+
+{ --- Obtenir la classe de jeton Ada a une position --- }
+
+Function GetAdaTokenClass(Var HL: TAdaHighlighter;
+                          Line: String;
+                          Var Pos: Integer): TTokenClass;
+Var
+ StartPos, Len: Integer;
+ Ch: Char;
+Begin
+ Len := Length(Line);
+ GetAdaTokenClass := TC_NORMAL;
+ If Pos > Len Then Exit;
+
+ Ch := Line[Pos];
+
+ { Espaces }
+ If (Ch = ' ') Or (Ch = #9) Then Begin
+  While (Pos <= Len) And ((Line[Pos] = ' ') Or (Line[Pos] = #9)) Do
+   Inc(Pos);
+  GetAdaTokenClass := TC_NORMAL;
+  Exit;
+ End;
+
+ { Commentaire Ada -- jusqu a fin de ligne }
+ If (Ch = '-') And (Pos < Len) And (Line[Pos+1] = '-') Then Begin
+  Pos := Len + 1;
+  GetAdaTokenClass := TC_COMMENT;
+  Exit;
+ End;
+
+ { Chaine Ada "..." }
+ If Ch = '"' Then Begin
+  Inc(Pos);
+  While (Pos <= Len) And (Line[Pos] <> '"') Do
+   Inc(Pos);
+  If Pos <= Len Then Inc(Pos);
+  GetAdaTokenClass := TC_STRING;
+  Exit;
+ End;
+
+ { Caractere litteral Ada '.' }
+ If (Ch = '''') And (Pos + 2 <= Len) And (Line[Pos+2] = '''') Then Begin
+  Inc(Pos, 3);
+  GetAdaTokenClass := TC_CHAR;
+  Exit;
+ End;
+
+ { Nombre base# (ex: 16#FF#, 2#1010#) }
+ If IsDigitChar(Ch) Then Begin
+  While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+  If (Pos <= Len) And (Line[Pos] = '#') Then Begin
+   Inc(Pos);
+   While (Pos <= Len) And (IsHexDigit(Line[Pos]) Or
+          (Line[Pos] = '_')) Do
+    Inc(Pos);
+   If (Pos <= Len) And (Line[Pos] = '#') Then Inc(Pos);
+  End Else Begin
+   { Partie decimale et exposant }
+   If (Pos <= Len) And (Line[Pos] = '.') And
+      ((Pos >= Len) Or (Line[Pos+1] <> '.')) Then Begin
+    Inc(Pos);
+    While (Pos <= Len) And (IsDigitChar(Line[Pos]) Or
+           (Line[Pos] = '_')) Do Inc(Pos);
+   End;
+   If (Pos <= Len) And ((Line[Pos] = 'e') Or (Line[Pos] = 'E')) Then Begin
+    Inc(Pos);
+    If (Pos <= Len) And ((Line[Pos] = '+') Or (Line[Pos] = '-')) Then
+     Inc(Pos);
+    While (Pos <= Len) And IsDigitChar(Line[Pos]) Do Inc(Pos);
+   End;
+  End;
+  GetAdaTokenClass := TC_NUMBER;
+  Exit;
+ End;
+
+ { Identifiant ou mot-cle }
+ If IsAlphaUS(Ch) Then Begin
+  StartPos := Pos;
+  While (Pos <= Len) And (IsAlphaUS(Line[Pos]) Or
+        IsDigitChar(Line[Pos])) Do
+   Inc(Pos);
+  GetAdaTokenClass := ClassifyAdaToken(HL, Line, StartPos, Pos);
+  Exit;
+ End;
+
+ { Operateur ou autre caractere }
+ Inc(Pos);
+ GetAdaTokenClass := TC_OPERATOR;
+End;
+
+{ --- Colorier une ligne Ada entiere --- }
+
+Procedure HighlightAdaLine(Var HL: TAdaHighlighter;
+                           Line: String;
+                           Var Colors: Array Of Byte);
+Var
+ Pos, Start, I, Len: Integer;
+ TC: TTokenClass;
+ Clr: Byte;
+Begin
+ Len := Length(Line);
+ For I := 0 To Len - 1 Do
+  Colors[I] := Byte(TokenClassToColor(TC_NORMAL));
+
+ Pos := 1;
+ While Pos <= Len Do
+ Begin
+  Start := Pos;
+  TC := GetAdaTokenClass(HL, Line, Pos);
+  Clr := Byte(TokenClassToColor(TC));
+  For I := Start To Pos - 1 Do
+  Begin
+   If (I >= 1) And (I <= Len) Then
+    Colors[I - 1] := Clr;
+  End;
+ End;
 End;
 
 { ============================================================
@@ -22716,6 +23004,7 @@ BEGIN
  InitCSharpHighlighter(CSharpHL);
  InitVBNetHighlighter(VBNetHL);
  InitPascalHighlighter(PascalHL);
+ InitAdaHighlighter(AdaHL);
  InitXMLHighlighter(XMLHL);
  InitExplorer(SolExplorer);
  DrawExplorer(SolExplorer);
