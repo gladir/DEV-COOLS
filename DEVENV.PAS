@@ -22000,6 +22000,14 @@ Begin
   InitEditor(ActiveEditor);
   LoadFile(ActiveEditor.Buffer, Opts.SourceFile);
   EditorReady := True;
+  { Peupler l explorateur de solutions avec le fichier ouvert }
+  ClearExplorer(SolExplorer);
+  AddExplorerNode(SolExplorer,
+   ExtractFileName(Opts.SourceFile),
+   NodeKindFromExtension(Opts.SourceFile), -1);
+  SolExplorer.SelectedIdx := 0;
+  SolExplorer.Nodes[0].Selected := True;
+  SolExplorer.NeedRepaint := True;
  End;
  DrawAllWidgets;
  MainLoop;
