@@ -450,7 +450,7 @@
             Me : reference a l instance courante (pointeur This)
             Generer table de pointeurs de methodes en .DATA
 
-  TODO 18 - PARSEUR : GESTION DES ERREURS (ON ERROR, RESUME, ERR) [A FAIRE]
+  TODO 18 - PARSEUR : GESTION DES ERREURS (ON ERROR, RESUME, ERR) [IMPLEMENTE]
             Procedure ParseOnError
             Syntaxe :
               On Error GoTo label
