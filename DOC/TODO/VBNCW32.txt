@@ -137,7 +137,7 @@
               Optional ByRef ByVal ParamArray
             Constantes KW_ADDHANDLER..KW_XOR (environ 220 mots-cles)
 
-  TODO 04 - TABLE DES SYMBOLES (32 BITS) [A FAIRE]
+  TODO 04 - TABLE DES SYMBOLES (32 BITS) [IMPLEMENTE]
             Type TSymKind : SK_CONST, SK_VAR, SK_PARAM,
               SK_SUB, SK_FUNCTION, SK_PROPERTY, SK_STRUCTURE,
               SK_ENUM, SK_ENUM_MEMBER, SK_CLASS, SK_MODULE,
