@@ -2232,32 +2232,29 @@ Procedure AddEntity(Kind: TEntityKind; Const Name, FullName, FileName: String;
 Begin
   If EntityCount >= MAX_SYMBOLS Then Exit;
   Inc(EntityCount);
-  With Entities[EntityCount] Do
-  Begin
-    Entities[EntityCount].Kind := Kind;
-    Entities[EntityCount].Name := Name;
-    Entities[EntityCount].FullName := FullName;
-    Entities[EntityCount].FileName := FileName;
-    Entities[EntityCount].Line := Line;
-    Entities[EntityCount].EndLine := Line;
-    Entities[EntityCount].Visibility := Vis;
-    Entities[EntityCount].IsStatic := False;
-    Entities[EntityCount].IsConst := False;
-    Entities[EntityCount].IsVirtual := False;
-    Entities[EntityCount].IsAbstract := False;
-    Entities[EntityCount].IsFinal := False;
-    Entities[EntityCount].IsOverride := False;
-    Entities[EntityCount].IsInline := False;
-    Entities[EntityCount].IsExplicit := False;
-    Entities[EntityCount].IsTemplate := False;
-    Entities[EntityCount].ReturnType := '';
-    Entities[EntityCount].Parameters := '';
-    Entities[EntityCount].Signature := '';
-    Entities[EntityCount].ParentId := 0;
-    Entities[EntityCount].DocComment := '';
-    Entities[EntityCount].BriefDesc := '';
-    Entities[EntityCount].DetailedDesc := '';
-  End;
+  Entities[EntityCount].Kind := Kind;
+  Entities[EntityCount].Name := Name;
+  Entities[EntityCount].FullName := FullName;
+  Entities[EntityCount].FileName := FileName;
+  Entities[EntityCount].Line := Line;
+  Entities[EntityCount].EndLine := Line;
+  Entities[EntityCount].Visibility := Vis;
+  Entities[EntityCount].IsStatic := False;
+  Entities[EntityCount].IsConst := False;
+  Entities[EntityCount].IsVirtual := False;
+  Entities[EntityCount].IsAbstract := False;
+  Entities[EntityCount].IsFinal := False;
+  Entities[EntityCount].IsOverride := False;
+  Entities[EntityCount].IsInline := False;
+  Entities[EntityCount].IsExplicit := False;
+  Entities[EntityCount].IsTemplate := False;
+  Entities[EntityCount].ReturnType := '';
+  Entities[EntityCount].Parameters := '';
+  Entities[EntityCount].Signature := '';
+  Entities[EntityCount].ParentId := 0;
+  Entities[EntityCount].DocComment := '';
+  Entities[EntityCount].BriefDesc := '';
+  Entities[EntityCount].DetailedDesc := '';
 End;
 
 Function IsIdentChar(Ch: Char): Boolean;
@@ -7205,6 +7202,9 @@ End;
   TRAITEMENT DU FICHIER SOURCE DIRECT (-INPUT)
   ============================================================ }
 
+{ Declaration forward pour GenerateHtmlDocumentation (definie dans TODO 12) }
+Procedure GenerateHtmlDocumentation; Forward;
+
 Procedure ValidateInputFile(Const FileName: String);
 Var
   Lang: TSourceLanguage;
@@ -7301,9 +7301,27 @@ Begin
   Else
     WriteLn('Aucun commentaire de documentation trouve.');
 
+  { Extraire les entites du code source (TODO 08) }
   WriteLn;
-  WriteLn('Note: La generation de documentation HTML est en cours d''implementation.');
-  WriteLn('      Voir les TODOs 05 a 25 pour la feuille de route complete.');
+  WriteLn('Extraction des entites du code source...');
+  ExtractEntities(FileName, Lang);
+  
+  If EntityCount > 0 Then
+  Begin
+    ShowExtractedEntities;
+    
+    { Generer la documentation HTML (TODO 12) }
+    WriteLn('Generation de la documentation HTML...');
+    WriteLn;
+    GenerateHtmlDocumentation;
+  End
+  Else
+  Begin
+    WriteLn('Aucune entite documentee trouvee.');
+    WriteLn;
+    WriteLn('Note: Pour generer de la documentation, ajoutez des commentaires');
+    WriteLn('      Doxygen dans votre code source.');
+  End;
 End;
 
 { ============================================================
@@ -7422,9 +7440,20 @@ Begin
 End;
 
 Procedure WriteHtmlHeader(Var F: Text; Const Title: String);
-{ Ecrit le header HTML dans un fichier }
+{ Ecrit le header HTML dans un fichier en plusieurs parties }
 Begin
-  Write(F, GetHtmlHeader(Title));
+  Write(F, '<!DOCTYPE html><html><head>');
+  Write(F, '<meta charset="UTF-8">');
+  Write(F, '<title>', EscapeHtml(Title), ' - ', EscapeHtml(HtmlProjectName), '</title>');
+  WriteLn(F, '<link rel="stylesheet" href="doxygen.css">');
+  Write(F, '</head><body>');
+  Write(F, '<div class="header"><h1>', EscapeHtml(HtmlProjectName), '</h1>');
+  WriteLn(F, '<p>', EscapeHtml(HtmlProjectBrief), '</p></div>');
+  Write(F, '<div class="nav">');
+  Write(F, '<a href="index.html">Index</a>');
+  Write(F, '<a href="classes.html">Classes</a>');
+  WriteLn(F, '<a href="files.html">Fichiers</a>');
+  Write(F, '</div><div class="content">');
 End;
 
 Procedure WriteHtmlFooter(Var F: Text);
@@ -7777,15 +7806,55 @@ Begin
   End;
   
   WriteLn(F, '/* Feuille de style generee par DOXYGEN Clone */');
-  WriteLn(F, HtmlStylesheet);
+  WriteLn(F, 'body{font-family:Arial,sans-serif;margin:0;padding:0}');
+  WriteLn(F, '.header{background:#3f51b5;color:white;padding:20px}');
+  WriteLn(F, '.header h1{margin:0}');
+  WriteLn(F, '.nav{background:#f5f5f5;padding:10px}');
+  WriteLn(F, '.nav a{margin-right:15px;color:#3f51b5;text-decoration:none}');
+  WriteLn(F, '.content{padding:20px;max-width:1200px;margin:0 auto}');
+  WriteLn(F, '.entity{margin-bottom:30px;padding:15px;background:#fafafa;border-radius:4px}');
+  WriteLn(F, '.signature{background:#263238;color:#aed581;padding:10px;font-family:monospace}');
+  WriteLn(F, '.footer{background:#f5f5f5;padding:15px;text-align:center;margin-top:40px}');
+  WriteLn(F, 'table{border-collapse:collapse;width:100%}');
+  WriteLn(F, 'th,td{border:1px solid #ddd;padding:10px;text-align:left}');
+  WriteLn(F, 'th{background:#f5f5f5}');
+  WriteLn(F, 'a{color:#3f51b5}');
+  WriteLn(F, 'code{background:#f5f5f5;padding:2px 6px;border-radius:3px}');
+  WriteLn(F, 'h1,h2{color:#333}');
+  WriteLn(F, '.location{font-size:0.9em;color:#666}');
+  WriteLn(F, 'ul{list-style-type:none;padding:0}');
+  WriteLn(F, 'ul li{padding:5px 0}');
   
   Close(F);
   InfoMsg('Fichier CSS genere: doxygen.css');
 End;
 
 Procedure CreateHtmlDirectory;
-{ Cree le repertoire de sortie HTML }
+{ Cree le repertoire de sortie HTML avec les repertoires parents }
+Var
+  ParentDir: String;
+  P: Integer;
 Begin
+  { Creer d'abord le repertoire parent si necessaire }
+  ParentDir := HtmlOutputDir;
+  { Retirer le dernier / s'il y en a }
+  If (Length(ParentDir) > 0) And (ParentDir[Length(ParentDir)] = '/') Then
+    Delete(ParentDir, Length(ParentDir), 1);
+  { Trouver le repertoire parent }
+  P := Length(ParentDir);
+  While (P > 0) And (ParentDir[P] <> '/') Do
+    Dec(P);
+  If P > 0 Then
+  Begin
+    ParentDir := Copy(ParentDir, 1, P - 1);
+    { Creer le repertoire parent }
+    {$I-}
+    MkDir(ParentDir);
+    {$I+}
+    If IOResult <> 0 Then
+      { Le repertoire existe peut-etre deja };
+  End;
+  { Creer le repertoire de sortie }
   {$I-}
   MkDir(HtmlOutputDir);
   {$I+}
