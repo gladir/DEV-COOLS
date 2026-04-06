@@ -498,7 +498,7 @@
               s.ToUpper() -> CALL _VBNRT_UCASE
               s.Substring(n, m) -> CALL _VBNRT_MID
 
-  TODO 15 - PARSEUR : TABLEAUX (DIM, REDIM, ERASE) [A FAIRE]
+  TODO 15 - PARSEUR : TABLEAUX (DIM, REDIM, ERASE) [IMPLEMENTE]
             Tableaux statiques :
               Dim arr(10) As Integer -> 11 elements (0 a 10)
               Dim mat(3, 3) As Integer -> matrice 4x4
@@ -9707,6 +9707,525 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 15 - PARSEUR : TABLEAUX (DIM, REDIM, ERASE)            }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Nombre maximal de dimensions pour un tableau }
+  MAX_ARRAY_DIMS  = 8;
+
+  { Nombre maximal d elements par dimension (statique) }
+  MAX_ARRAY_ELEMS = 65536;
+
+  { Labels runtime pour operations sur tableaux VB.NET }
+  ARR_RT_REDIM    = '_VBNRT_REDIM';
+  ARR_RT_PRESERVE = '_VBNRT_REDIM_PRESERVE';
+  ARR_RT_ERASE    = '_VBNRT_ERASE';
+  ARR_RT_LBOUND   = '_VBNRT_LBOUND';
+  ARR_RT_UBOUND   = '_VBNRT_UBOUND';
+  ARR_RT_ISARRAY  = '_VBNRT_ISARRAY';
+  ARR_RT_ALLOC    = '_VBNRT_ARR_ALLOC';
+  ARR_RT_FREE     = '_VBNRT_ARR_FREE';
+  ARR_RT_BOUNDSCK = '_VBNRT_BOUNDSCHECK';
+  ARR_RT_LENGTH   = '_VBNRT_ARR_LENGTH';
+
+Var
+  ArrayCount       : LongInt;
+  ArrayInitialized : Boolean;
+
+{ ------------------------------------------------------------ }
+{ InitArrayState : initialiser l etat du parseur de tableaux   }
+{ ------------------------------------------------------------ }
+
+Procedure InitArrayState;
+Begin
+  ArrayCount       := 0;
+  ArrayInitialized := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArrayBounds : parser les bornes d un tableau statique   }
+{   Syntaxe VB.NET : (n) ou (n, m) - base toujours 0          }
+{   Pas de syntaxe (lo To hi) en VB.NET                        }
+{   Retourne le nombre de dimensions detectees                 }
+{   DimHi : borne superieure par dimension                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArrayBounds(Var NDims    : Integer;
+                           Var DimHi    : Array Of LongInt;
+                           Var IsDynamic: Boolean);
+Var
+  D : Integer;
+Begin
+  NDims    := 0;
+  IsDynamic := False;
+  { On s attend a etre juste apres le '(' }
+  { Cas special : '()' = tableau dynamique }
+  If (CurTokType = TOK_RPAREN) Then Begin
+    IsDynamic := True;
+    LexNextToken; { consommer ')' }
+    Exit;
+  End;
+  D := 0;
+  Repeat
+    If D >= MAX_ARRAY_DIMS Then Begin
+      FatalError('Trop de dimensions (max ' + ItoS(MAX_ARRAY_DIMS) + ')');
+      Exit;
+    End;
+    { Parser la borne superieure : toujours base 0 en VB.NET }
+    ParseExpr;
+    Inc(ArrayCount);
+    DimHi[D] := CurTokNum;
+    Inc(D);
+    If CurTokType = TOK_COMMA Then
+      LexNextToken { consommer ',' et continuer }
+    Else
+      Break;
+  Until False;
+  NDims := D;
+  Expect(TOK_RPAREN); { ')' fermeture }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStaticArray : parser une declaration de tableau statique }
+{   Dim arr(10) As Integer -> 11 elements (0 a 10)             }
+{   Dim mat(3, 3) As Integer -> matrice 4x4                    }
+{   Base toujours 0 en VB.NET (pas de Option Base)             }
+{   Genere allocation en .BSS (global) ou pile (local)         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStaticArray(ArrName : TString; NDims : Integer;
+                           DimHi : Array Of LongInt;
+                           ElemType : Integer);
+Var
+  TotalElems : LongInt;
+  ElemSize   : LongInt;
+  TotalBytes : LongInt;
+  AsmLbl     : TString;
+  I          : Integer;
+Begin
+  Inc(ArrayCount);
+  TotalElems := 1;
+  For I := 0 To NDims - 1 Do Begin
+    TotalElems := TotalElems * (DimHi[I] + 1); { base 0 : 0..n = n+1 }
+  End;
+  ElemSize  := VBTypeSize(ElemType);
+  TotalBytes := TotalElems * ElemSize;
+  AsmLbl := PFX_ARR + AsmIdent(ArrName);
+  If IsInGlobalScope Then Begin
+    { Allocation en .BSS pour variable globale }
+    EmitBss(AsmLbl + ' RESB ' + ItoS(TotalBytes));
+  End Else Begin
+    { Allocation sur la pile pour variable locale }
+    { SUB ESP, TotalBytes }
+    Emit('SUB ESP, ' + ItoS(TotalBytes));
+    EmitComment('tableau local ' + ArrName + ' : '
+                + ItoS(TotalElems) + ' elems * '
+                + ItoS(ElemSize) + ' octets');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDynamicArray : parser une declaration de tableau dynam.  }
+{   Dim arr() As Integer -> pointeur DD, pas de taille         }
+{   Genere un pointeur DD initialise a 0 (Nothing)             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDynamicArray(ArrName : TString; ElemType : Integer);
+Var
+  AsmLbl : TString;
+Begin
+  Inc(ArrayCount);
+  AsmLbl := PFX_ARR + AsmIdent(ArrName);
+  If IsInGlobalScope Then Begin
+    { Pointeur global initialise a Nothing }
+    EmitData(AsmLbl + ' DD 0');
+  End Else Begin
+    { Pointeur local sur la pile }
+    Emit('PUSH 0');
+    EmitComment('tableau dynamique ' + ArrName + ' (Nothing)');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseRedim : parser ReDim [Preserve] arr(n)                  }
+{   Genere CALL _VBNRT_REDIM ou _VBNRT_REDIM_PRESERVE          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseRedim;
+Var
+  PreserveFlag : Boolean;
+  ArrName      : TString;
+  AsmLbl       : TString;
+Begin
+  Inc(ArrayCount);
+  { On s attend a KW_REDIM deja consomme }
+  PreserveFlag := False;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PRESERVE) Then Begin
+    PreserveFlag := True;
+    LexNextToken; { consommer 'Preserve' }
+  End;
+  { Nom du tableau }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('Identificateur de tableau attendu apres ReDim');
+    Exit;
+  End;
+  ArrName := CurTokStr;
+  AsmLbl := PFX_ARR + AsmIdent(ArrName);
+  LexNextToken;
+  { Parser la parenthese ouvrante }
+  Expect(TOK_LPAREN);
+  { Parser la nouvelle taille }
+  ParseExpr;
+  Expect(TOK_RPAREN);
+  { Generer le code }
+  Emit('PUSH EAX');
+  EmitComment('nouvelle taille pour ' + ArrName);
+  Emit('PUSH ' + AsmLbl);
+  If PreserveFlag Then Begin
+    Emit('CALL ' + ARR_RT_PRESERVE);
+    EmitComment('ReDim Preserve ' + ArrName);
+  End Else Begin
+    Emit('CALL ' + ARR_RT_REDIM);
+    EmitComment('ReDim ' + ArrName);
+  End;
+  { Mise a jour du pointeur }
+  Emit('MOV [' + AsmLbl + '], EAX');
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEraseStatement : parser Erase arr                       }
+{   Genere PUSH ptr_arr / CALL _VBNRT_ERASE                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseEraseStatement;
+Var
+  ArrName : TString;
+  AsmLbl  : TString;
+Begin
+  Inc(ArrayCount);
+  { On s attend a KW_ERASE deja consomme }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('Identificateur de tableau attendu apres Erase');
+    Exit;
+  End;
+  ArrName := CurTokStr;
+  AsmLbl := PFX_ARR + AsmIdent(ArrName);
+  LexNextToken;
+  { Generer le code }
+  Emit('PUSH ' + AsmLbl);
+  Emit('CALL ' + ARR_RT_ERASE);
+  EmitComment('Erase ' + ArrName);
+  { Mettre le pointeur a Nothing }
+  Emit('MOV DWORD [' + AsmLbl + '], 0');
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenArrayAccess : generer le code d acces a un element         }
+{   arr(index) -> MOV EAX, [base + index * elem_size]          }
+{   L index est deja evalue dans EAX                           }
+{   Base toujours 0 en VB.NET                                  }
+{ ------------------------------------------------------------ }
+
+Procedure GenArrayAccess(ArrName : TString; ElemType : Integer);
+Var
+  AsmLbl   : TString;
+  ElemSize : LongInt;
+Begin
+  Inc(ArrayCount);
+  AsmLbl := PFX_ARR + AsmIdent(ArrName);
+  ElemSize := VBTypeSize(ElemType);
+  { Calculer l offset : EAX = index * taille_element }
+  If ElemSize > 1 Then Begin
+    If ElemSize = 2 Then
+      Emit('SHL EAX, 1')
+    Else If ElemSize = 4 Then
+      Emit('SHL EAX, 2')
+    Else If ElemSize = 8 Then
+      Emit('SHL EAX, 3')
+    Else
+      Emit('IMUL EAX, ' + ItoS(ElemSize));
+  End;
+  { Charger l element }
+  Emit('MOV EAX, [' + AsmLbl + ' + EAX]');
+  EmitComment('acces ' + ArrName + '(index)');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMultiDimOffset : calculer l offset pour tableau multi-dim  }
+{   Calcul : ((i1 * dim2 + i2) * dim3 + i3) * elem_size       }
+{   Les indices sont empiles dans l ordre i1, i2, i3, ...      }
+{   NDims dimensions, DimSizes contient la taille de chaque    }
+{ ------------------------------------------------------------ }
+
+Procedure GenMultiDimOffset(ArrName : TString;
+                            NDims   : Integer;
+                            DimSizes: Array Of LongInt;
+                            ElemType: Integer);
+Var
+  AsmLbl   : TString;
+  ElemSize : LongInt;
+  I        : Integer;
+Begin
+  Inc(ArrayCount);
+  AsmLbl := PFX_ARR + AsmIdent(ArrName);
+  ElemSize := VBTypeSize(ElemType);
+  { Premier indice dans EAX (deja depile) }
+  EmitComment('calcul offset multi-dim pour ' + ArrName);
+  { Pour chaque dimension supplementaire : }
+  {   EAX = EAX * DimSizes[I] + indice_suivant }
+  For I := 1 To NDims - 1 Do Begin
+    Emit('IMUL EAX, ' + ItoS(DimSizes[I]));
+    Emit('POP EBX');
+    Emit('ADD EAX, EBX');
+    EmitComment('dimension ' + ItoS(I + 1));
+  End;
+  { Multiplier par la taille de l element }
+  If ElemSize > 1 Then Begin
+    If ElemSize = 2 Then
+      Emit('SHL EAX, 1')
+    Else If ElemSize = 4 Then
+      Emit('SHL EAX, 2')
+    Else If ElemSize = 8 Then
+      Emit('SHL EAX, 3')
+    Else
+      Emit('IMUL EAX, ' + ItoS(ElemSize));
+  End;
+  { Charger l element }
+  Emit('MOV EAX, [' + AsmLbl + ' + EAX]');
+  EmitComment('acces multi-dim ' + ArrName);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArrayMethod : parser les methodes de tableau VB.NET      }
+{   arr.Length -> CALL _VBNRT_ARR_LENGTH                        }
+{   arr.GetLength(dim) -> CALL _VBNRT_ARR_LENGTH avec dim       }
+{   arr.GetUpperBound(dim) -> CALL _VBNRT_UBOUND avec dim       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArrayMethod(ArrName : TString);
+Var
+  AsmLbl   : TString;
+  MethodStr: TString;
+Begin
+  Inc(ArrayCount);
+  AsmLbl := PFX_ARR + AsmIdent(ArrName);
+  { On s attend a etre apres le '.' }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('Nom de methode attendu apres "."');
+    Exit;
+  End;
+  MethodStr := UpCaseStr(CurTokStr);
+  LexNextToken;
+
+  If MethodStr = 'LENGTH' Then Begin
+    { arr.Length -> nombre total d elements }
+    Emit('PUSH ' + AsmLbl);
+    Emit('CALL ' + ARR_RT_LENGTH);
+    EmitComment(ArrName + '.Length');
+  End
+  Else If MethodStr = 'GETLENGTH' Then Begin
+    { arr.GetLength(dim) }
+    Expect(TOK_LPAREN);
+    ParseExpr;
+    Expect(TOK_RPAREN);
+    Emit('PUSH EAX');
+    EmitComment('dim pour GetLength');
+    Emit('PUSH ' + AsmLbl);
+    Emit('CALL ' + ARR_RT_LENGTH);
+    EmitComment(ArrName + '.GetLength(dim)');
+  End
+  Else If MethodStr = 'GETUPPERBOUND' Then Begin
+    { arr.GetUpperBound(dim) }
+    Expect(TOK_LPAREN);
+    ParseExpr;
+    Expect(TOK_RPAREN);
+    Emit('PUSH EAX');
+    EmitComment('dim pour GetUpperBound');
+    Emit('PUSH ' + AsmLbl);
+    Emit('CALL ' + ARR_RT_UBOUND);
+    EmitComment(ArrName + '.GetUpperBound(dim)');
+  End
+  Else Begin
+    FatalError('Methode de tableau inconnue : ' + CurTokStr);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLBound : parser LBound(arr[, dim])                      }
+{   En VB.NET retourne toujours 0                              }
+{   Genere PUSH dim / PUSH arr / CALL _VBNRT_LBOUND            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLBound;
+Var
+  ArrName : TString;
+  AsmLbl  : TString;
+Begin
+  Inc(ArrayCount);
+  { On s attend a KW_LBOUND deja consomme + '(' }
+  Expect(TOK_LPAREN);
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('Identificateur de tableau attendu dans LBound');
+    Exit;
+  End;
+  ArrName := CurTokStr;
+  AsmLbl := PFX_ARR + AsmIdent(ArrName);
+  LexNextToken;
+  { Dimension optionnelle }
+  If CurTokType = TOK_COMMA Then Begin
+    LexNextToken;
+    ParseExpr;
+    Emit('PUSH EAX');
+    EmitComment('dim pour LBound');
+  End Else Begin
+    Emit('PUSH 0');
+    EmitComment('dim=0 par defaut');
+  End;
+  Expect(TOK_RPAREN);
+  Emit('PUSH ' + AsmLbl);
+  Emit('CALL ' + ARR_RT_LBOUND);
+  EmitComment('LBound(' + ArrName + ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUBound : parser UBound(arr[, dim])                      }
+{   Genere PUSH dim / PUSH arr / CALL _VBNRT_UBOUND            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseUBound;
+Var
+  ArrName : TString;
+  AsmLbl  : TString;
+Begin
+  Inc(ArrayCount);
+  { On s attend a KW_UBOUND deja consomme + '(' }
+  Expect(TOK_LPAREN);
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('Identificateur de tableau attendu dans UBound');
+    Exit;
+  End;
+  ArrName := CurTokStr;
+  AsmLbl := PFX_ARR + AsmIdent(ArrName);
+  LexNextToken;
+  { Dimension optionnelle }
+  If CurTokType = TOK_COMMA Then Begin
+    LexNextToken;
+    ParseExpr;
+    Emit('PUSH EAX');
+    EmitComment('dim pour UBound');
+  End Else Begin
+    Emit('PUSH 0');
+    EmitComment('dim=0 par defaut');
+  End;
+  Expect(TOK_RPAREN);
+  Emit('PUSH ' + AsmLbl);
+  Emit('CALL ' + ARR_RT_UBOUND);
+  EmitComment('UBound(' + ArrName + ')');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsArrayDecl : verifier si le token courant est une decl arr  }
+{   True si on a un ident suivi de '(' dans un contexte Dim    }
+{ ------------------------------------------------------------ }
+
+Function IsArrayDecl : Boolean;
+Begin
+  { Heuristique : si le prochain token apres l ident est '(' }
+  IsArrayDecl := (CurTokType = TOK_IDENT);
+  { Le contexte complet est verifie par le parseur appelant }
+End;
+
+{ ------------------------------------------------------------ }
+{ IsArrayAccess : verifier si c est un acces a un tableau      }
+{   True si l ident est connu comme tableau dans la SymTab     }
+{ ------------------------------------------------------------ }
+
+Function IsArrayAccess(Name : TString) : Boolean;
+Var
+  Idx : Integer;
+Begin
+  Idx := FindSym(Name);
+  If Idx >= 0 Then
+    IsArrayAccess := (SymTab[Idx].ArrayDims > 0)
+  Else
+    IsArrayAccess := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsArrayFunction : verifier si KW est une fonction de tableau }
+{ ------------------------------------------------------------ }
+
+Function IsArrayFunction(KW : Integer) : Boolean;
+Begin
+  IsArrayFunction := (KW = KW_LBOUND) Or (KW = KW_UBOUND) Or
+                     (KW = KW_ISARRAY);
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour le module tableau                   }
+{ ------------------------------------------------------------ }
+
+Function GetArrayCount : LongInt;
+Begin
+  GetArrayCount := ArrayCount;
+End;
+
+Function IsArrayInitialized : Boolean;
+Begin
+  IsArrayInitialized := ArrayInitialized;
+End;
+
+Function IsArrayEmpty : Boolean;
+Begin
+  IsArrayEmpty := (ArrayCount = 0);
+End;
+
+Function GetArrayStatus : TString;
+Begin
+  If Not ArrayInitialized Then
+    GetArrayStatus := 'non initialise'
+  Else If ArrayCount = 0 Then
+    GetArrayStatus := 'initialise, aucun tableau'
+  Else
+    GetArrayStatus := 'initialise, ' + ItoS(ArrayCount) + ' operations';
+End;
+
+Function GetMaxArrayDims : Integer;
+Begin
+  GetMaxArrayDims := MAX_ARRAY_DIMS;
+End;
+
+Function GetMaxArrayElems : LongInt;
+Begin
+  GetMaxArrayElems := MAX_ARRAY_ELEMS;
+End;
+
+Function GetArrayRtCount : Integer;
+Begin
+  { 10 labels runtime pour operations tableaux VB.NET }
+  GetArrayRtCount := 10;
+End;
+
+Function IsRedimStatement(KW : Integer) : Boolean;
+Begin
+  IsRedimStatement := (KW = KW_REDIM);
+End;
+
+Function IsEraseStatement(KW : Integer) : Boolean;
+Begin
+  IsEraseStatement := (KW = KW_ERASE);
+End;
+
+Function GetArrayPrefixLabel : TString;
+Begin
+  GetArrayPrefixLabel := PFX_ARR;
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -9735,13 +10254,14 @@ Begin
   InitSubFuncState;
   InitIntrinsicState;
   InitStrOpState;
+  InitArrayState;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 15..25 : Generation de code, etc. }
+  { TODO 16..25 : Generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;

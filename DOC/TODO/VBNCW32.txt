@@ -490,7 +490,7 @@
               s.ToUpper() -> CALL _VBNRT_UCASE
               s.Substring(n, m) -> CALL _VBNRT_MID
 
-  TODO 15 - PARSEUR : TABLEAUX (DIM, REDIM, ERASE) [A FAIRE]
+  TODO 15 - PARSEUR : TABLEAUX (DIM, REDIM, ERASE) [IMPLEMENTE]
             Tableaux statiques :
               Dim arr(10) As Integer -> 11 elements (0 a 10)
               Dim mat(3, 3) As Integer -> matrice 4x4
