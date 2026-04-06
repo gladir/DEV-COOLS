@@ -20,7 +20,7 @@
 
   Voir DOC/TODO/VBNCW32.txt pour la feuille de route complete.
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm, OptionStrict, OptionExplicit,
               OptionInfer)
@@ -841,10 +841,454 @@
 
    ============================================================ *)
 
-Program VBNCW32;
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES    [IMPLEMENTE] }
+{           PE/COFF                                              }
+{ ============================================================ }
+
+Const
+  VBNCW32_VERSION = '0.1';
+  VBNCW32_DATE    = '2026';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Constantes PE/COFF }
+  PE_DOS_MAGIC    = $5A4D;    { 'MZ' }
+  PE_PE_SIG       = $00004550; { 'PE\0\0' }
+  PE_MACHINE_I386 = $014C;
+  PE_OPT_SIZE     = $E0;
+  PE_MAGIC_32     = $010B;
+  PE_IMG_BASE     = $00400000;
+  PE_SEC_ALIGN    = 4096;
+  PE_FILE_ALIGN   = 512;
+  PE_SUBSYS_CUI   = 3;  { Console }
+  PE_SUBSYS_GUI   = 2;  { Windows }
+
+  { Tailles des tampons binaires }
+  MAX_BIN_CODE = 65536;
+  MAX_BIN_DATA = 65536;
+  MAX_BIN_LBL  = 4096;
+  MAX_BIN_FIX  = 8192;
+
+  { Limites internes (32 bits) }
+  MAX_SYM       = 4096;
+  MAX_PROC      = 512;
+  MAX_LOCAL     = 256;
+  MAX_PARAM     = 64;
+  MAX_DEPTH     = 32;
+  MAX_LABEL     = 4096;
+  MAX_STR       = 255;
+  MAX_FIELD     = 128;
+  MAX_CLASS     = 256;
+  MAX_ENUM      = 128;
+  MAX_TYPE      = 256;
+  MAX_NAMESPACE = 64;
+  MAX_IMPORTS   = 128;
+  MAX_INTERFACE = 128;
+
+  { Prefixes de nommage ASM }
+  PFX_VAR   = '_VBN_';    { variable globale       }
+  PFX_FUNC  = '_VBNF_';   { SUB / FUNCTION         }
+  PFX_CONST = '_VBNK_';   { constante chaine        }
+  PFX_RT    = '_VBNRT_';  { routine runtime         }
+  PFX_LBL   = '_VBNL_';   { label interne           }
+  PFX_ARR   = '_VBNA_';   { tableau                 }
+  PFX_STRUC = '_VBNS_';   { Structure               }
+  PFX_CLS   = '_VBNC_';   { Class                   }
+  PFX_ENUM  = '_VBNE_';   { Enum                    }
+  PFX_PROP  = '_VBNP_';   { Property                }
+  PFX_IFACE = '_VBNI_';   { Interface               }
+  PFX_NS    = '_VBNNS_';  { Namespace               }
+
+Type
+  TString = String;
+
+  TOptions = Record
+    SrcFile       : TString;   { fichier source (.vb)                 }
+    OutFile       : TString;   { fichier sortie (.exe, .obj)          }
+    Verbose       : Boolean;   { -v : banniere et statistiques        }
+    DebugMode     : Boolean;   { -d : affichage de chaque token       }
+    Warnings      : Boolean;   { -w : afficher les avertissements     }
+    EmitExe       : Boolean;   { par defaut : produire un .EXE (PE)   }
+    EmitObj       : Boolean;   { -obj : produire seulement un .OBJ    }
+    EmitAsm       : Boolean;   { -asm : produire aussi un .ASM        }
+    OptionStrict  : Boolean;   { -strict : Option Strict On           }
+    OptionExplicit: Boolean;   { Option Explicit On (defaut VB.NET)   }
+    OptionInfer   : Boolean;   { Option Infer On|Off                  }
+  End;
+
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  { Fichier de sortie interne (pour future emission) }
+  OutF       : Text;
+  OutFOpen   : Boolean;
+
+  { Drapeau pour la generation binaire PE (mini-assembleur) }
+  BcActive   : Boolean;
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires                                        }
+{ ------------------------------------------------------------ }
+
+Function ItoS(V : LongInt) : TString;
+Var S : TString;
+Begin
+  Str(V, S);
+  ItoS := S;
+End;
+
+Function ItoSI(V : Integer) : TString;
+Var S : TString;
+Begin
+  Str(V, S);
+  ItoSI := S;
+End;
+
+Function UpCaseStr(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'a') And (Tmp[I] <= 'z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) - 32);
+  UpCaseStr := Tmp;
+End;
+
+Function LoCaseStr(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'A') And (Tmp[I] <= 'Z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) + 32);
+  LoCaseStr := Tmp;
+End;
+
+{ Transforme un nom VB.NET en identifiant valide pour l assembleur }
+Function AsmIdent(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If ((S[I] >= 'A') And (S[I] <= 'Z')) Or
+       ((S[I] >= 'a') And (S[I] <= 'z')) Or
+       ((S[I] >= '0') And (S[I] <= '9')) Or
+       (S[I] = '_') Then
+      Tmp := Tmp + S[I]
+    Else
+      Tmp := Tmp + '_';
+  End;
+  AsmIdent := Tmp;
+End;
+
+{ Retourne l extension d un chemin (avec le point, en minuscules) }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := LoCaseStr(Copy(Path, LastDot,
+                     Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Retourne le repertoire d un chemin (avec le separateur final) }
+Function ExtractDir(Const Path : TString) : TString;
+Var
+  I, LastSep : Integer;
+Begin
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+  If LastSep > 0 Then
+    ExtractDir := Copy(Path, 1, LastSep)
+  Else
+    ExtractDir := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ FatalError / WarnMsg                                         }
+{ ------------------------------------------------------------ }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('VBNCW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('VBNCW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ InitOptions                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile       := '';
+  Opts.OutFile       := '';
+  Opts.Verbose       := False;
+  Opts.DebugMode     := False;
+  Opts.Warnings      := False;
+  Opts.EmitExe       := True;
+  Opts.EmitObj       := False;
+  Opts.EmitAsm       := False;
+  Opts.OptionStrict  := False;
+  Opts.OptionExplicit:= True;   { VB.NET : Option Explicit On par defaut }
+  Opts.OptionInfer   := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowHelp                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ShowHelp;
+Begin
+  WriteLn('VBNCW32 v', VBNCW32_VERSION, ' (', VBNCW32_DATE,
+          ') - Compilateur Visual Basic .NET vers 80386 (Windows PE 32 bits)');
+  WriteLn('VBNCW32 - Cette commande permet de lancer le compilateur Visual ',
+          'Basic .NET pour l''assembleur du microprocesseur 80386 (en executable ',
+          'Windows 32 bits).');
+  WriteLn;
+  WriteLn('Syntaxe : VBNCW32 [options] <source.vb> [options]');
+  WriteLn;
+  WriteLn('Sortie :');
+  WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
+  WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+  WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
+  WriteLn('  -o <fichier>   Specifier le nom du fichier de sortie');
+  WriteLn;
+  WriteLn('VB.NET :');
+  WriteLn('  -strict        Activer Option Strict On');
+  WriteLn;
+  WriteLn('General :');
+  WriteLn('  -v             Mode verbeux (banniere + statistiques)');
+  WriteLn('  -d             Debug tokens (affiche chaque token)');
+  WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -h, --help, /? Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  VBNCW32 hello.vb');
+  WriteLn('  VBNCW32 hello.vb -o hello.exe -v');
+  WriteLn('  VBNCW32 main.vb -asm');
+  WriteLn('  VBNCW32 module.vb -obj -w');
+  WriteLn('  VBNCW32 program.vb -strict');
+  Halt(EXIT_OK);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgs                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArgs;
+Var
+  I    : Integer;
+  Arg  : TString;
+  Ext  : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowHelp;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-asm' Then
+      Opts.EmitAsm := True
+    Else If Arg = '-obj' Then
+    Begin
+      Opts.EmitObj := True;
+      Opts.EmitExe := False;
+    End
+    Else If Arg = '-strict' Then
+      Opts.OptionStrict := True
+    Else If Arg = '-o' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('-o necessite un nom de fichier');
+      Opts.OutFile := ParamStr(I);
+    End
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+      FatalError('Option inconnue: ' + Arg)
+    Else
+    Begin
+      { Argument positionnel : fichier source }
+      If Opts.SrcFile = '' Then
+        Opts.SrcFile := Arg
+      Else
+        FatalError('Argument inattendu: ' + Arg);
+    End;
+
+    Inc(I);
+  End;
+
+  { Validation : fichier source requis }
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('VBNCW32: fichier source manquant');
+    ShowHelp;
+  End;
+
+  { Verifier l extension .vb }
+  Ext := ExtractExt(Opts.SrcFile);
+  If (Ext <> '.vb') Then
+    WarnMsg('extension attendue .vb, trouvee: ' + Ext);
+
+  { Fichier de sortie par defaut }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.EmitObj Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowBanner / ShowStats                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('VBNCW32 v', VBNCW32_VERSION, ' (', VBNCW32_DATE,
+          ') - Compilateur Visual Basic .NET -> 80386 PE Win32');
+  WriteLn('Source   : ', Opts.SrcFile);
+  WriteLn('Sortie   : ', Opts.OutFile);
+  If Opts.EmitAsm Then
+    WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
+  If Opts.EmitObj Then
+    WriteLn('Mode     : OBJ (COFF 32 bits)')
+  Else
+    WriteLn('Mode     : EXE (PE Win32)');
+  If Opts.OptionStrict Then
+    WriteLn('Strict   : On');
+  WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Erreurs          : ', ErrorCount);
+  WriteLn('Avertissements   : ', WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Cleanup                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ============================================================ }
+{ Procedure principale : Run                                   }
+{ ============================================================ }
+
+Procedure Run;
+Begin
+  { Initialisation des compteurs }
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+  BcActive   := False;
+
+  { Analyse des arguments de la ligne de commande }
+  ParseArgs;
+
+  { Affichage de la banniere en mode verbeux }
+  ShowBanner;
+
+  { TODO 02..25 : Compilation, generation de code, etc. }
+
+  { Statistiques finales }
+  ShowStats;
+
+  { Nettoyage }
+  Cleanup;
+End;
+
+{ ============================================================ }
+{ Programme principal                                          }
+{ ============================================================ }
 
 Begin
- WriteLn('VBNCW32 - Compilateur Visual Basic .NET');
- WriteLn('Cible : Assembleur 80386, Windows 32 bits');
- WriteLn('Version 0.1');
+  Run;
 End.
