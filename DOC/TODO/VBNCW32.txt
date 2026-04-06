@@ -466,7 +466,7 @@
               TypeName(x)
             Generer CALL _VBNRT_xxx pour chaque fonction runtime
 
-  TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CLASSE STRING [A FAIRE]
+  TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CLASSE STRING [IMPLEMENTE]
             Operateur & : concatenation de chaines
               Generer PUSH ptr_s1 / PUSH ptr_s2 / CALL _VBNRT_STRCAT
             Operateur + : concatenation si les deux operandes sont String

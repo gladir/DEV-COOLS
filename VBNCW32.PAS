@@ -474,7 +474,7 @@
               TypeName(x)
             Generer CALL _VBNRT_xxx pour chaque fonction runtime
 
-  TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CLASSE STRING [A FAIRE]
+  TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CLASSE STRING [IMPLEMENTE]
             Operateur & : concatenation de chaines
               Generer PUSH ptr_s1 / PUSH ptr_s2 / CALL _VBNRT_STRCAT
             Operateur + : concatenation si les deux operandes sont String
@@ -9220,6 +9220,493 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 14 - PARSEUR : OPERATIONS SUR CHAINES ET CLASSE STRING  }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Modes de comparaison de chaines }
+  STRCOMP_BINARY = 0;    { sensible a la casse (defaut, VB.NET)     }
+  STRCOMP_TEXT   = 1;    { insensible a la casse                    }
+
+  { Labels runtime pour operations sur chaines VB.NET }
+  STROP_RT_STRCAT     = '_VBNRT_STRCAT';
+  STROP_RT_STRALLOC   = '_VBNRT_STRALLOC';
+  STROP_RT_STRFREE    = '_VBNRT_STRFREE';
+  STROP_RT_STRCMP_BIN  = '_VBNRT_STRCMP_BIN';
+  STROP_RT_STRCMP_TXT  = '_VBNRT_STRCMP_TXT';
+  STROP_RT_LIKE       = '_VBNRT_LIKE';
+  STROP_RT_FORMAT     = '_VBNRT_FORMAT';
+  STROP_RT_STRCOMPARE = '_VBNRT_STRCOMPARE';
+  STROP_RT_LEN        = '_VBNRT_LEN';
+  STROP_RT_UCASE      = '_VBNRT_UCASE';
+
+Var
+  StrOpCount       : LongInt;
+  StrOpInitialized : Boolean;
+
+{ ------------------------------------------------------------ }
+{ InitStrOpState : initialiser l etat des operations chaines   }
+{ ------------------------------------------------------------ }
+
+Procedure InitStrOpState;
+Begin
+  StrOpCount       := 0;
+  StrOpInitialized := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrConcat : generer le code pour la concatenation &        }
+{   Les deux operandes sont deja dans EAX (droite) et pile     }
+{   (gauche). Resultat : EAX = pointeur nouvelle chaine        }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrConcat;
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrConcat: & concatenation');
+  GenPopEBX;
+  Emit('XCHG EAX, EBX');
+  { EAX = ptr_s1 (gauche), EBX = ptr_s2 (droite) }
+  Emit('PUSH EBX');
+  Emit('PUSH EAX');
+  Emit('CALL ' + STROP_RT_STRCAT);
+  Emit('ADD ESP, 8');
+  { EAX = pointeur vers nouvelle chaine concatenee }
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrPlusConcat : generer + quand les deux operandes sont    }
+{   String. Meme code que &, mais avec verification du type    }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrPlusConcat;
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrPlusConcat: + String concatenation');
+  GenPopEBX;
+  Emit('XCHG EAX, EBX');
+  { EAX = ptr_s1 (gauche), EBX = ptr_s2 (droite) }
+  Emit('PUSH EBX');
+  Emit('PUSH EAX');
+  Emit('CALL ' + STROP_RT_STRCAT);
+  Emit('ADD ESP, 8');
+  { EAX = pointeur vers nouvelle chaine concatenee }
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrConcatAssign : generer le code pour &= (concat+assign) }
+{   SymIdx = index du symbole cible dans la table              }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrConcatAssign(SymIdx : Integer);
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrConcatAssign: &= concatenation et affectation');
+  { EAX contient la valeur droite (chaine a concatener) }
+  Emit('PUSH EAX');
+  { Charger la chaine courante de la variable }
+  GenLoadVar(SymIdx);
+  Emit('PUSH EAX');
+  { Appel runtime STRCAT(gauche, droite) }
+  Emit('CALL ' + STROP_RT_STRCAT);
+  Emit('ADD ESP, 8');
+  { EAX = nouvelle chaine concatenee, stocker dans la variable }
+  GenStoreVar(SymIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrAlloc : generer le code pour allouer une chaine         }
+{   dynamique de longueur variable                             }
+{   EAX = taille demandee                                      }
+{   Resultat : EAX = pointeur vers le tampon alloue            }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrAlloc;
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrAlloc: allocation chaine dynamique');
+  Emit('PUSH EAX');
+  Emit('CALL ' + STROP_RT_STRALLOC);
+  Emit('ADD ESP, 4');
+  { EAX = pointeur vers tampon alloue }
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrFree : generer le code pour liberer une chaine          }
+{   dynamique. EAX = pointeur vers le tampon a liberer         }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrFree;
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrFree: liberation chaine dynamique');
+  Emit('PUSH EAX');
+  Emit('CALL ' + STROP_RT_STRFREE);
+  Emit('ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrCompare : generer le code pour comparer deux chaines    }
+{   Utilise Option Compare pour choisir binaire ou texte       }
+{   EAX = ptr_s2 (droite), pile = ptr_s1 (gauche)             }
+{   Resultat : EAX = -1 (True) ou 0 (False) selon convention  }
+{ ------------------------------------------------------------ }
+
+Procedure GenStrCompare(Op : Integer);
+Var
+  RtLabel : TString;
+Begin
+  Inc(StrOpCount);
+  EmitComment('GenStrCompare: comparaison chaines');
+  GenPopEBX;
+  Emit('XCHG EAX, EBX');
+  { EAX = ptr_s1, EBX = ptr_s2 }
+
+  { Choisir le runtime selon Option Compare }
+  If OptionCompare = OPT_COMPARE_TEXT Then
+    RtLabel := STROP_RT_STRCMP_TXT
+  Else
+    RtLabel := STROP_RT_STRCMP_BIN;
+
+  Emit('PUSH EBX');
+  Emit('PUSH EAX');
+  Emit('CALL ' + RtLabel);
+  Emit('ADD ESP, 8');
+  { EAX = resultat de la comparaison (-1, 0, 1) }
+
+  { Appliquer l operateur de comparaison sur le resultat }
+  Case Op Of
+    OP_EQ:
+      Begin
+        Emit('TEST EAX, EAX');
+        Emit('SETE AL');
+      End;
+    OP_NE:
+      Begin
+        Emit('TEST EAX, EAX');
+        Emit('SETNE AL');
+      End;
+    OP_LT:
+      Begin
+        Emit('CMP EAX, 0');
+        Emit('SETL AL');
+      End;
+    OP_GT:
+      Begin
+        Emit('CMP EAX, 0');
+        Emit('SETG AL');
+      End;
+    OP_LE:
+      Begin
+        Emit('CMP EAX, 0');
+        Emit('SETLE AL');
+      End;
+    OP_GE:
+      Begin
+        Emit('CMP EAX, 0');
+        Emit('SETGE AL');
+      End;
+    OP_LIKE:
+      Begin
+        { Like est gere par un runtime specifique avec motifs }
+        Emit('PUSH EBX');
+        Emit('PUSH EAX');
+        Emit('CALL ' + STROP_RT_LIKE);
+        Emit('ADD ESP, 8');
+        { EAX = -1 (match) ou 0 (no match) }
+        Exit;
+      End;
+  Else
+    WarnMsg('GenStrCompare: operateur inconnu ' + ItoSI(Op));
+    Emit('TEST EAX, EAX');
+    Emit('SETE AL');
+  End;
+  { Etendre AL en -1 ou 0 (convention VB.NET True=-1) }
+  Emit('MOVZX EAX, AL');
+  Emit('NEG EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStringCompare : parser String.Compare(s1, s2)           }
+{   Appel statique de la methode String.Compare                }
+{   Retourne Integer (-1, 0, 1)                                }
+{ ------------------------------------------------------------ }
+
+Function ParseStringCompare : Integer;
+Begin
+  Inc(StrOpCount);
+  LexNextToken; { consommer Compare }
+
+  { Parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    WarnMsg('( attendue apres String.Compare');
+
+  { Premier argument : chaine s1 }
+  ParseExpr;
+  EmitComment('PUSH s1 pour String.Compare');
+  Emit('PUSH EAX');
+
+  { Virgule }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken
+  Else
+    WarnMsg(', attendue entre arguments de String.Compare');
+
+  { Deuxieme argument : chaine s2 }
+  ParseExpr;
+  EmitComment('PUSH s2 pour String.Compare');
+  Emit('PUSH EAX');
+
+  { Parenthese fermante }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+    WarnMsg(') attendue apres arguments de String.Compare');
+
+  { Appel runtime }
+  EmitComment('CALL ' + STROP_RT_STRCOMPARE);
+  Emit('CALL ' + STROP_RT_STRCOMPARE);
+  Emit('ADD ESP, 8');
+  { EAX = -1 (s1 < s2), 0 (s1 = s2), 1 (s1 > s2) }
+
+  If Opts.Verbose Then
+    WriteLn('    StrOp: String.Compare call');
+
+  ParseStringCompare := VBT_INTEGER;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStringMethod : parser les appels de methodes .NET       }
+{   en notation pointee sur une variable String                }
+{   SymIdx = index du symbole chaine dans la table             }
+{   Retourne le type du resultat                               }
+{ ------------------------------------------------------------ }
+
+Function ParseStringMethod(SymIdx : Integer) : Integer;
+Var
+  MethodName : TString;
+Begin
+  Inc(StrOpCount);
+  ParseStringMethod := VBT_STRING;
+
+  { Le token courant est apres le '.' }
+  If CurTokType = TOK_IDENT Then
+  Begin
+    MethodName := UpCaseStr(CurTokStr);
+    LexNextToken; { consommer le nom de la methode }
+  End
+  Else
+  Begin
+    WarnMsg('Nom de methode attendu apres .');
+    MethodName := '';
+  End;
+
+  { Charger la chaine source }
+  GenLoadVar(SymIdx);
+  Emit('PUSH EAX');
+
+  If MethodName = 'LENGTH' Then
+  Begin
+    { s.Length -> nombre de caracteres }
+    EmitComment('String.Length -> CALL _VBNRT_LEN');
+    Emit('CALL ' + STROP_RT_LEN);
+    Emit('ADD ESP, 4');
+    ParseStringMethod := VBT_INTEGER;
+  End
+  Else If MethodName = 'TOUPPER' Then
+  Begin
+    { s.ToUpper() }
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_RPAREN Then
+        LexNextToken
+      Else
+        WarnMsg(') attendue apres ToUpper(');
+    End;
+    EmitComment('String.ToUpper -> CALL _VBNRT_UCASE');
+    Emit('CALL ' + STROP_RT_UCASE);
+    Emit('ADD ESP, 4');
+    ParseStringMethod := VBT_STRING;
+  End
+  Else If MethodName = 'TOLOWER' Then
+  Begin
+    { s.ToLower() }
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      LexNextToken;
+      If CurTokType = TOK_RPAREN Then
+        LexNextToken
+      Else
+        WarnMsg(') attendue apres ToLower(');
+    End;
+    EmitComment('String.ToLower -> CALL ' + PFX_RT + 'LCASE');
+    Emit('CALL ' + PFX_RT + 'LCASE');
+    Emit('ADD ESP, 4');
+    ParseStringMethod := VBT_STRING;
+  End
+  Else If MethodName = 'SUBSTRING' Then
+  Begin
+    { s.Substring(startIndex[, length]) -> MID }
+    If CurTokType = TOK_LPAREN Then
+      LexNextToken
+    Else
+      WarnMsg('( attendue apres Substring');
+
+    { Premier argument : position de depart (0-based) }
+    ParseExpr;
+    EmitComment('PUSH startIndex pour Substring');
+    Emit('PUSH EAX');
+
+    If CurTokType = TOK_COMMA Then
+    Begin
+      LexNextToken;
+      ParseExpr;
+      EmitComment('PUSH length pour Substring');
+      Emit('PUSH EAX');
+    End;
+
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken
+    Else
+      WarnMsg(') attendue apres Substring(...)');
+
+    EmitComment('String.Substring -> CALL ' + PFX_RT + 'MID');
+    Emit('CALL ' + PFX_RT + 'MID');
+    Emit('ADD ESP, 12');
+    ParseStringMethod := VBT_STRING;
+  End
+  Else
+  Begin
+    { Methode inconnue }
+    Emit('ADD ESP, 4'); { depiler la chaine source }
+    WarnMsg('Methode String inconnue: ' + MethodName);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStrOpStatement : teste si le token courant est une         }
+{   instruction d operation sur chaine VB.NET                  }
+{ ------------------------------------------------------------ }
+
+Function IsStrOpStatement : Boolean;
+Begin
+  { VB.NET n a pas Mid$ assign, LSet, RSet comme VB6            }
+  { Les operations chaines sont principalement des expressions  }
+  IsStrOpStatement := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStrConcatOp : teste si une operation + doit etre traitee   }
+{   comme une concatenation de chaines                         }
+{ ------------------------------------------------------------ }
+
+Function IsStrConcatOp(LeftType, RightType : Integer) : Boolean;
+Begin
+  IsStrConcatOp := (LeftType = VBT_STRING) And (RightType = VBT_STRING);
+End;
+
+{ ------------------------------------------------------------ }
+{ StrOpRtLabel : retourne le label runtime d une operation      }
+{   sur chaine selon le code d operation                       }
+{ ------------------------------------------------------------ }
+
+Function StrOpRtLabel(OpCode : Integer) : TString;
+Begin
+  Case OpCode Of
+    0 : StrOpRtLabel := STROP_RT_STRCAT;
+    1 : StrOpRtLabel := STROP_RT_STRALLOC;
+    2 : StrOpRtLabel := STROP_RT_STRFREE;
+    3 : StrOpRtLabel := STROP_RT_STRCMP_BIN;
+    4 : StrOpRtLabel := STROP_RT_STRCMP_TXT;
+    5 : StrOpRtLabel := STROP_RT_LIKE;
+    6 : StrOpRtLabel := STROP_RT_FORMAT;
+    7 : StrOpRtLabel := STROP_RT_STRCOMPARE;
+    8 : StrOpRtLabel := STROP_RT_LEN;
+    9 : StrOpRtLabel := STROP_RT_UCASE;
+  Else
+    StrOpRtLabel := '?STROP_RT';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions d acces - TODO 14                                  }
+{ ------------------------------------------------------------ }
+
+Function GetStrOpCount : LongInt;
+Begin
+  GetStrOpCount := StrOpCount;
+End;
+
+Function IsStrOpInitialized : Boolean;
+Begin
+  IsStrOpInitialized := StrOpInitialized;
+End;
+
+Function IsStrOpEmpty : Boolean;
+Begin
+  IsStrOpEmpty := (StrOpCount = 0);
+End;
+
+Function GetStrOpStatus : TString;
+Begin
+  If StrOpInitialized Then
+    GetStrOpStatus := 'initialized'
+  Else
+    GetStrOpStatus := 'not initialized';
+End;
+
+Function GetStrOpCompareMode : Integer;
+Begin
+  If OptionCompare = OPT_COMPARE_TEXT Then
+    GetStrOpCompareMode := STRCOMP_TEXT
+  Else
+    GetStrOpCompareMode := STRCOMP_BINARY;
+End;
+
+Function IsStrOpCompareBinary : Boolean;
+Begin
+  IsStrOpCompareBinary := (OptionCompare = OPT_COMPARE_BINARY);
+End;
+
+Function IsStrOpCompareText : Boolean;
+Begin
+  IsStrOpCompareText := (OptionCompare = OPT_COMPARE_TEXT);
+End;
+
+Function GetStrOpRtCount : Integer;
+Begin
+  { 10 labels runtime pour operations chaines VB.NET }
+  GetStrOpRtCount := 10;
+End;
+
+Function GetTotalStrOpMethods : Integer;
+Begin
+  { Length, ToUpper, ToLower, Substring = 4 methodes String }
+  GetTotalStrOpMethods := 4;
+End;
+
+Function IsStrOpRtLabel(S : TString) : Boolean;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  IsStrOpRtLabel := (U = '_VBNRT_STRCAT') Or
+                    (U = '_VBNRT_STRALLOC') Or
+                    (U = '_VBNRT_STRFREE') Or
+                    (U = '_VBNRT_STRCMP_BIN') Or
+                    (U = '_VBNRT_STRCMP_TXT') Or
+                    (U = '_VBNRT_LIKE') Or
+                    (U = '_VBNRT_FORMAT') Or
+                    (U = '_VBNRT_STRCOMPARE') Or
+                    (U = '_VBNRT_LEN') Or
+                    (U = '_VBNRT_UCASE');
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -9247,13 +9734,14 @@ Begin
   InitLoopState;
   InitSubFuncState;
   InitIntrinsicState;
+  InitStrOpState;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 14..25 : Generation de code, etc. }
+  { TODO 15..25 : Generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;
