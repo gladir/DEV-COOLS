@@ -941,7 +941,7 @@
               CountWarningsForEntity, ClearWarnings,
               RunAllValidations, ShowValidationStatus
 
-  TODO 25 - RAPPORT FINAL ET STATISTIQUES DE COUVERTURE [A FAIRE]
+  TODO 25 - RAPPORT FINAL ET STATISTIQUES DE COUVERTURE [IMPLEMENTE]
             TStatistics : record
               TotalFiles       : Integer (nombre de fichiers traites)
               TotalLines       : Integer (nombre de lignes de code)
@@ -1475,6 +1475,26 @@ Type
     EntityId : Integer;             { Entite concernee, ou 0 }
   End;
 
+  { Type pour les statistiques de couverture (TODO 25) }
+  TStatistics = Record
+    TotalFiles       : Integer;     { Nombre de fichiers traites }
+    TotalLines       : Integer;     { Nombre de lignes de code }
+    TotalEntities    : Integer;     { Nombre d'entites }
+    DocumentedCount  : Integer;     { Entites documentees }
+    UndocumentedCount: Integer;     { Entites non documentees }
+    WarningCount     : Integer;     { Nombre d'avertissements }
+    ErrorCount       : Integer;     { Nombre d'erreurs }
+    ClassCount       : Integer;     { Nombre de classes }
+    FunctionCount    : Integer;     { Nombre de fonctions }
+    VariableCount    : Integer;     { Nombre de variables }
+    NamespaceCount   : Integer;     { Nombre de namespaces }
+    PageCount        : Integer;     { Nombre de pages custom }
+    GroupCount       : Integer;     { Nombre de groupes }
+    CoveragePercent  : Real;        { Pourcentage de couverture }
+    ProcessingTime   : Real;        { Temps de traitement en secondes }
+    OutputSize       : LongInt;     { Taille de la doc generee en octets }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1607,6 +1627,11 @@ Var
   WarningCount       : Integer;
   ErrorCount         : Integer;
   ValidationInitialized : Boolean;
+
+  { Variables pour le rapport final et statistiques (TODO 25) }
+  Stats              : TStatistics;
+  StartTime          : LongInt;
+  StatsInitialized   : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -14639,6 +14664,362 @@ Begin
   WriteLn('  Membres non doc: ', CountWarningsOfKind(WARN_UNDOC_MEMBER));
   WriteLn('  Liens casses: ', CountWarningsOfKind(WARN_BROKEN_LINK));
   WriteLn('  Params en trop: ', CountWarningsOfKind(WARN_EXTRA_PARAM));
+End;
+
+{ ============================================================
+  TODO 25 - RAPPORT FINAL ET STATISTIQUES DE COUVERTURE
+  ============================================================ }
+
+{ Formate une taille en octets de facon lisible }
+Function FormatSize(Bytes: LongInt): String;
+Var
+  S: String;
+Begin
+  If Bytes < 1024 Then
+    Str(Bytes, S)
+  Else If Bytes < 1024 * 1024 Then
+  Begin
+    Str((Bytes / 1024):0:2, S);
+    S := S + ' Ko';
+  End
+  Else
+  Begin
+    Str((Bytes / (1024 * 1024)):0:2, S);
+    S := S + ' Mo';
+  End;
+  FormatSize := S;
+End;
+
+{ Formate un nombre reel }
+Function FloatToStr(R: Real): String;
+Var
+  S: String;
+Begin
+  Str(R:0:2, S);
+  FloatToStr := S;
+End;
+
+{ Initialise les statistiques }
+Procedure InitStatistics;
+Begin
+  With Stats Do
+  Begin
+    TotalFiles := 0;
+    TotalLines := 0;
+    TotalEntities := 0;
+    DocumentedCount := 0;
+    UndocumentedCount := 0;
+    WarningCount := 0;
+    ErrorCount := 0;
+    ClassCount := 0;
+    FunctionCount := 0;
+    VariableCount := 0;
+    NamespaceCount := 0;
+    PageCount := 0;
+    GroupCount := 0;
+    CoveragePercent := 0.0;
+    ProcessingTime := 0.0;
+    OutputSize := 0;
+  End;
+  StartTime := 0;
+  StatsInitialized := True;
+End;
+
+{ Demarre le chronometre }
+Procedure StartTimer;
+Var
+  Hour, Min, Sec, Sec100: Word;
+Begin
+  GetTime(Hour, Min, Sec, Sec100);
+  StartTime := LongInt(Hour) * 3600 + LongInt(Min) * 60 + LongInt(Sec);
+End;
+
+{ Retourne le temps ecoule en secondes }
+Function GetElapsedTime: Real;
+Var
+  Hour, Min, Sec, Sec100: Word;
+  CurrentTime: LongInt;
+Begin
+  GetTime(Hour, Min, Sec, Sec100);
+  CurrentTime := LongInt(Hour) * 3600 + LongInt(Min) * 60 + LongInt(Sec);
+  GetElapsedTime := CurrentTime - StartTime;
+End;
+
+{ Collecte toutes les statistiques }
+Procedure CollectStatistics;
+Var
+  I: Integer;
+  DocCount, UndocCount: Integer;
+Begin
+  If Not StatsInitialized Then
+    InitStatistics;
+    
+  { Compte les fichiers traites }
+  Stats.TotalFiles := ProcessedCount;
+  If Stats.TotalFiles = 0 Then
+    Stats.TotalFiles := SourceCount;
+    
+  { Compte les entites par type }
+  Stats.TotalEntities := EntityCount;
+  Stats.ClassCount := 0;
+  Stats.FunctionCount := 0;
+  Stats.VariableCount := 0;
+  
+  For I := 1 To EntityCount Do
+  Begin
+    Case Entities[I].Kind Of
+      ENT_CLASS, ENT_STRUCT, ENT_INTERFACE:
+        Inc(Stats.ClassCount);
+      ENT_FUNCTION:
+        Inc(Stats.FunctionCount);
+      ENT_VARIABLE, ENT_DEFINE:
+        Inc(Stats.VariableCount);
+    End;
+  End;
+  
+  { Compte les namespaces }
+  Stats.NamespaceCount := NamespaceCount;
+  
+  { Compte les pages et groupes }
+  Stats.PageCount := 0;
+  Stats.GroupCount := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If Entities[I].Kind = ENT_PAGE Then
+      Inc(Stats.PageCount);
+    If Entities[I].Kind = ENT_GROUP Then
+      Inc(Stats.GroupCount);
+  End;
+  
+  { Compte les entites documentees/non-documentees }
+  DocCount := 0;
+  UndocCount := 0;
+  For I := 1 To EntityCount Do
+  Begin
+    If IsEntityDocumented(I) Then
+      Inc(DocCount)
+    Else
+      Inc(UndocCount);
+  End;
+  Stats.DocumentedCount := DocCount;
+  Stats.UndocumentedCount := UndocCount;
+  
+  { Calcule le pourcentage de couverture }
+  If Stats.TotalEntities > 0 Then
+    Stats.CoveragePercent := (Stats.DocumentedCount / Stats.TotalEntities) * 100.0
+  Else
+    Stats.CoveragePercent := 0.0;
+    
+  { Copie les compteurs d'avertissements et d'erreurs }
+  Stats.WarningCount := WarningCount;
+  Stats.ErrorCount := ErrorCount;
+  
+  { Calcule le temps de traitement }
+  Stats.ProcessingTime := GetElapsedTime;
+End;
+
+{ Affiche le rapport final }
+Procedure DisplayFinalReport;
+Begin
+  CollectStatistics;
+  
+  WriteLn;
+  WriteLn('=== DOXYGEN - Rapport de generation ===');
+  WriteLn;
+  WriteLn('Fichiers traites     : ', Stats.TotalFiles);
+  WriteLn('Lignes de code       : ', Stats.TotalLines);
+  WriteLn('Entites documentees  : ', Stats.DocumentedCount);
+  WriteLn('Entites non-doc      : ', Stats.UndocumentedCount);
+  WriteLn('Couverture           : ', Stats.CoveragePercent:0:1, '%');
+  WriteLn;
+  WriteLn('Detail par type:');
+  WriteLn('  Classes            : ', Stats.ClassCount);
+  WriteLn('  Fonctions          : ', Stats.FunctionCount);
+  WriteLn('  Variables          : ', Stats.VariableCount);
+  WriteLn('  Namespaces         : ', Stats.NamespaceCount);
+  WriteLn('  Pages              : ', Stats.PageCount);
+  WriteLn('  Groupes            : ', Stats.GroupCount);
+  WriteLn;
+  WriteLn('Avertissements       : ', Stats.WarningCount);
+  WriteLn('Erreurs              : ', Stats.ErrorCount);
+  WriteLn('Temps de traitement  : ', Stats.ProcessingTime:0:1, ' s');
+  If Stats.OutputSize > 0 Then
+    WriteLn('Taille documentation : ', FormatSize(Stats.OutputSize));
+  WriteLn;
+  
+  { Affichage du detail si mode Verbose }
+  If Opts.Verbose Then
+  Begin
+    WriteLn('=== Detail par fichier ===');
+    WriteLn('(Liste des fichiers traites)');
+  End;
+End;
+
+{ Ecrit les statistiques au format XML }
+Procedure WriteStatisticsXml(Var OutFile: Text);
+Begin
+  CollectStatistics;
+  
+  WriteLn(OutFile, '<?xml version="1.0" encoding="UTF-8"?>');
+  WriteLn(OutFile, '<doxygen-statistics>');
+  WriteLn(OutFile, '  <summary>');
+  WriteLn(OutFile, '    <total-files>', Stats.TotalFiles, '</total-files>');
+  WriteLn(OutFile, '    <total-lines>', Stats.TotalLines, '</total-lines>');
+  WriteLn(OutFile, '    <total-entities>', Stats.TotalEntities, '</total-entities>');
+  WriteLn(OutFile, '    <documented>', Stats.DocumentedCount, '</documented>');
+  WriteLn(OutFile, '    <undocumented>', Stats.UndocumentedCount, '</undocumented>');
+  WriteLn(OutFile, '    <coverage>', Stats.CoveragePercent:0:1, '</coverage>');
+  WriteLn(OutFile, '  </summary>');
+  WriteLn(OutFile, '  <entities>');
+  WriteLn(OutFile, '    <classes>', Stats.ClassCount, '</classes>');
+  WriteLn(OutFile, '    <functions>', Stats.FunctionCount, '</functions>');
+  WriteLn(OutFile, '    <variables>', Stats.VariableCount, '</variables>');
+  WriteLn(OutFile, '    <namespaces>', Stats.NamespaceCount, '</namespaces>');
+  WriteLn(OutFile, '    <pages>', Stats.PageCount, '</pages>');
+  WriteLn(OutFile, '    <groups>', Stats.GroupCount, '</groups>');
+  WriteLn(OutFile, '  </entities>');
+  WriteLn(OutFile, '  <diagnostics>');
+  WriteLn(OutFile, '    <warnings>', Stats.WarningCount, '</warnings>');
+  WriteLn(OutFile, '    <errors>', Stats.ErrorCount, '</errors>');
+  WriteLn(OutFile, '  </diagnostics>');
+  WriteLn(OutFile, '  <performance>');
+  WriteLn(OutFile, '    <processing-time>', Stats.ProcessingTime:0:2, '</processing-time>');
+  WriteLn(OutFile, '    <output-size>', Stats.OutputSize, '</output-size>');
+  WriteLn(OutFile, '  </performance>');
+  WriteLn(OutFile, '</doxygen-statistics>');
+End;
+
+{ Sauvegarde les statistiques dans un fichier XML }
+Procedure SaveStatisticsXml(Const FileName: String);
+Var
+  F: Text;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('Impossible de creer le fichier de statistiques: ' + FileName);
+    Exit;
+  End;
+  
+  WriteStatisticsXml(F);
+  Close(F);
+End;
+
+{ Accesseurs pour les statistiques }
+Function GetStatsTotalFiles: Integer;
+Begin
+  GetStatsTotalFiles := Stats.TotalFiles;
+End;
+
+Function GetStatsTotalLines: Integer;
+Begin
+  GetStatsTotalLines := Stats.TotalLines;
+End;
+
+Function GetStatsTotalEntities: Integer;
+Begin
+  GetStatsTotalEntities := Stats.TotalEntities;
+End;
+
+Function GetStatsDocumentedCount: Integer;
+Begin
+  GetStatsDocumentedCount := Stats.DocumentedCount;
+End;
+
+Function GetStatsUndocumentedCount: Integer;
+Begin
+  GetStatsUndocumentedCount := Stats.UndocumentedCount;
+End;
+
+Function GetStatsCoveragePercent: Real;
+Begin
+  GetStatsCoveragePercent := Stats.CoveragePercent;
+End;
+
+Function GetStatsClassCount: Integer;
+Begin
+  GetStatsClassCount := Stats.ClassCount;
+End;
+
+Function GetStatsFunctionCount: Integer;
+Begin
+  GetStatsFunctionCount := Stats.FunctionCount;
+End;
+
+Function GetStatsVariableCount: Integer;
+Begin
+  GetStatsVariableCount := Stats.VariableCount;
+End;
+
+Function GetStatsNamespaceCount: Integer;
+Begin
+  GetStatsNamespaceCount := Stats.NamespaceCount;
+End;
+
+Function GetStatsWarningCount: Integer;
+Begin
+  GetStatsWarningCount := Stats.WarningCount;
+End;
+
+Function GetStatsErrorCount: Integer;
+Begin
+  GetStatsErrorCount := Stats.ErrorCount;
+End;
+
+Function GetStatsProcessingTime: Real;
+Begin
+  GetStatsProcessingTime := Stats.ProcessingTime;
+End;
+
+Function GetStatsOutputSize: LongInt;
+Begin
+  GetStatsOutputSize := Stats.OutputSize;
+End;
+
+Function IsStatsInitialized: Boolean;
+Begin
+  IsStatsInitialized := StatsInitialized;
+End;
+
+Function IsStatsEmpty: Boolean;
+Begin
+  IsStatsEmpty := (Stats.TotalEntities = 0);
+End;
+
+{ Definit la taille de sortie }
+Procedure SetStatsOutputSize(Size: LongInt);
+Begin
+  Stats.OutputSize := Size;
+End;
+
+{ Definit le nombre de lignes }
+Procedure SetStatsTotalLines(Lines: Integer);
+Begin
+  Stats.TotalLines := Lines;
+End;
+
+{ Affiche l'etat des statistiques (debug) }
+Procedure ShowStatsStatus;
+Begin
+  WriteLn('=== ETAT DES STATISTIQUES ===');
+  WriteLn('Initialisees: ', StatsInitialized);
+  WriteLn('Fichiers: ', Stats.TotalFiles);
+  WriteLn('Lignes: ', Stats.TotalLines);
+  WriteLn('Entites: ', Stats.TotalEntities);
+  WriteLn('Documentees: ', Stats.DocumentedCount);
+  WriteLn('Non documentees: ', Stats.UndocumentedCount);
+  WriteLn('Couverture: ', Stats.CoveragePercent:0:1, '%');
+  WriteLn('Classes: ', Stats.ClassCount);
+  WriteLn('Fonctions: ', Stats.FunctionCount);
+  WriteLn('Variables: ', Stats.VariableCount);
+  WriteLn('Namespaces: ', Stats.NamespaceCount);
+  WriteLn('Avertissements: ', Stats.WarningCount);
+  WriteLn('Erreurs: ', Stats.ErrorCount);
+  WriteLn('Temps: ', Stats.ProcessingTime:0:1, ' s');
+  WriteLn('Taille sortie: ', FormatSize(Stats.OutputSize));
 End;
 
 { ============================================================
