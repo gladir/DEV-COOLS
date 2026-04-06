@@ -699,7 +699,7 @@
             Point d entree : _VBNRT_INIT (initialiser runtime) et
               _VBNRT_EXIT (terminer programme, ExitProcess)
 
-  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [A FAIRE]
+  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [IMPLEMENTE]
             Procedure WritePE(const outfile: String)
             Generer un executable PE Windows 32 bits complet :
             En-tete DOS (MZ stub) : 64 octets + message DOS

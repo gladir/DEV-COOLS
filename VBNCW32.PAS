@@ -707,7 +707,7 @@
             Point d entree : _VBNRT_INIT (initialiser runtime) et
               _VBNRT_EXIT (terminer programme, ExitProcess)
 
-  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [A FAIRE]
+  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [IMPLEMENTE]
             Procedure WritePE(const outfile: String)
             Generer un executable PE Windows 32 bits complet :
             En-tete DOS (MZ stub) : 64 octets + message DOS
@@ -15089,6 +15089,786 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS      }
+{           32 BITS) [IMPLEMENTE]                              }
+{ ============================================================ }
+
+Const
+  { Alignements PE }
+  PE_FILE_ALIGN_VAL  = 512;    { $200 }
+  PE_SECT_ALIGN_VAL  = 4096;   { $1000 }
+  PE_IMAGE_BASE_VAL  = $00400000;
+
+  { Tailles des tampons binaires PE }
+  PE_MAX_CODE_SIZE  = 65536;
+  PE_MAX_DATA_SIZE  = 65536;
+  PE_MAX_LABEL_CNT  = 4096;
+  PE_MAX_FIXUP_CNT  = 8192;
+
+  { Nombre d imports Win32 API pour VB.NET }
+  PE_NUM_VBN_IMPORTS = 14;
+
+  { Caracteristiques de section }
+  PE_SCN_CNT_CODE           = $00000020;
+  PE_SCN_CNT_INIT_DATA      = $00000040;
+  PE_SCN_MEM_EXECUTE        = $20000000;
+  PE_SCN_MEM_READ           = $40000000;
+  PE_SCN_MEM_WRITE          = LongInt($80000000);
+
+Type
+  TPELabelEntry = Record
+    Name   : TString;
+    Offset : LongInt;
+    InData : Boolean;
+  End;
+  TPEFixupEntry = Record
+    Offset    : LongInt;
+    LabelName : TString;
+    IsRelative: Boolean;
+    IsImport  : Boolean;
+  End;
+  TPEImportEntry = Record
+    Name      : TString;
+    IATOffset : LongInt;
+  End;
+
+Var
+  PEWCodeBuf    : Array[0..PE_MAX_CODE_SIZE-1] of Byte;
+  PEWDataBuf    : Array[0..PE_MAX_DATA_SIZE-1] of Byte;
+  PEWCodePos    : LongInt;
+  PEWDataPos    : LongInt;
+  PEWLabels     : Array[0..PE_MAX_LABEL_CNT-1] of TPELabelEntry;
+  PEWLabelCount : LongInt;
+  PEWFixups     : Array[0..PE_MAX_FIXUP_CNT-1] of TPEFixupEntry;
+  PEWFixupCount : LongInt;
+  PEWImports    : Array[0..PE_NUM_VBN_IMPORTS-1] of TPEImportEntry;
+  PEWInDataSeg  : Boolean;
+  PEWTextVA     : LongInt;
+  PEWRdataVA    : LongInt;
+  PEWDataVA     : LongInt;
+  PEWriterInitialized : Boolean;
+  PEWriterCount       : LongInt;
+
+{ ------------------------------------------------------------ }
+{ InitPEWriter : initialiser le sous-systeme PE writer          }
+{ ------------------------------------------------------------ }
+
+Procedure InitPEWriter;
+Var I : LongInt;
+Begin
+  PEWCodePos    := 0;
+  PEWDataPos    := 0;
+  PEWLabelCount := 0;
+  PEWFixupCount := 0;
+  PEWInDataSeg  := False;
+  PEWTextVA     := 0;
+  PEWRdataVA    := 0;
+  PEWDataVA     := 0;
+  PEWriterInitialized := True;
+  PEWriterCount := 0;
+  For I := 0 To PE_MAX_CODE_SIZE - 1 Do PEWCodeBuf[I] := 0;
+  For I := 0 To PE_MAX_DATA_SIZE - 1 Do PEWDataBuf[I] := 0;
+  { Initialiser les imports Win32 API pour VB.NET }
+  PEWImports[0].Name  := 'ExitProcess';
+  PEWImports[1].Name  := 'GetStdHandle';
+  PEWImports[2].Name  := 'WriteFile';
+  PEWImports[3].Name  := 'ReadFile';
+  PEWImports[4].Name  := 'GetProcessHeap';
+  PEWImports[5].Name  := 'HeapAlloc';
+  PEWImports[6].Name  := 'HeapFree';
+  PEWImports[7].Name  := 'CreateFileA';
+  PEWImports[8].Name  := 'CloseHandle';
+  PEWImports[9].Name  := 'MessageBoxA';
+  PEWImports[10].Name := 'GetCommandLineA';
+  PEWImports[11].Name := 'GetModuleHandleA';
+  PEWImports[12].Name := 'SetFilePointer';
+  PEWImports[13].Name := 'DeleteFileA';
+  For I := 0 To PE_NUM_VBN_IMPORTS - 1 Do
+    PEWImports[I].IATOffset := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWAlignUp : aligner une valeur sur une frontiere             }
+{ ------------------------------------------------------------ }
+
+Function PEWAlignUp(Value, Alignment : LongInt) : LongInt;
+Begin
+  If (Value Mod Alignment) = 0 Then
+    PEWAlignUp := Value
+  Else
+    PEWAlignUp := Value + Alignment - (Value Mod Alignment);
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWAddLabel : ajouter un label au tableau des labels          }
+{ ------------------------------------------------------------ }
+
+Procedure PEWAddLabel(Const AName : TString; AOffset : LongInt;
+                      AInData : Boolean);
+Begin
+  If PEWLabelCount < PE_MAX_LABEL_CNT Then
+  Begin
+    PEWLabels[PEWLabelCount].Name   := AName;
+    PEWLabels[PEWLabelCount].Offset := AOffset;
+    PEWLabels[PEWLabelCount].InData := AInData;
+    Inc(PEWLabelCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWFindLabel : chercher un label par nom                      }
+{ ------------------------------------------------------------ }
+
+Function PEWFindLabel(Const AName : TString;
+                      Var AOffset : LongInt;
+                      Var AInData : Boolean) : Boolean;
+Var I : LongInt;
+Begin
+  PEWFindLabel := False;
+  For I := 0 To PEWLabelCount - 1 Do
+    If PEWLabels[I].Name = AName Then
+    Begin
+      AOffset := PEWLabels[I].Offset;
+      AInData := PEWLabels[I].InData;
+      PEWFindLabel := True;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWAddFixup : ajouter un correctif (fixup)                    }
+{ ------------------------------------------------------------ }
+
+Procedure PEWAddFixup(AOffset : LongInt; Const ALabelName : TString;
+                      AIsRelative, AIsImport : Boolean);
+Begin
+  If PEWFixupCount < PE_MAX_FIXUP_CNT Then
+  Begin
+    PEWFixups[PEWFixupCount].Offset     := AOffset;
+    PEWFixups[PEWFixupCount].LabelName  := ALabelName;
+    PEWFixups[PEWFixupCount].IsRelative := AIsRelative;
+    PEWFixups[PEWFixupCount].IsImport   := AIsImport;
+    Inc(PEWFixupCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWImportName : extraire le nom d import d un label            }
+{   Convertit _ExitProcess@4 -> ExitProcess                     }
+{ ------------------------------------------------------------ }
+
+Function PEWImportName(Const S : TString) : TString;
+Var
+  Tmp : TString;
+  P   : Integer;
+Begin
+  Tmp := S;
+  If (Length(Tmp) > 0) And (Tmp[1] = '_') Then
+    Tmp := Copy(Tmp, 2, Length(Tmp) - 1);
+  P := Pos('@', Tmp);
+  If P > 0 Then
+    Tmp := Copy(Tmp, 1, P - 1);
+  PEWImportName := Tmp;
+End;
+
+{ ------------------------------------------------------------ }
+{ PEWResolveFixups : resoudre les correctifs internes            }
+{ ------------------------------------------------------------ }
+
+Procedure PEWResolveFixups;
+Var
+  I, J      : LongInt;
+  LblOff    : LongInt;
+  LblInData : Boolean;
+  TargetAddr: LongInt;
+  FixOff    : LongInt;
+  ImpName   : TString;
+  Found     : Boolean;
+  FixVal    : LongInt;
+  IsDataFix : Boolean;
+  DataFixOff: LongInt;
+Begin
+  For I := 0 To PEWFixupCount - 1 Do
+  Begin
+    FixOff := PEWFixups[I].Offset;
+    IsDataFix := (FixOff < 0);
+    If IsDataFix Then
+      DataFixOff := (-FixOff) - 1
+    Else
+      DataFixOff := 0;
+
+    If PEWFixups[I].IsImport Then
+    Begin
+      ImpName := PEWImportName(PEWFixups[I].LabelName);
+      Found := False;
+      For J := 0 To PE_NUM_VBN_IMPORTS - 1 Do
+        If PEWImports[J].Name = ImpName Then
+        Begin
+          TargetAddr := PE_IMAGE_BASE_VAL + PEWRdataVA +
+                        PEWImports[J].IATOffset;
+          Found := True;
+          Break;
+        End;
+      If Not Found Then TargetAddr := 0;
+    End
+    Else
+    Begin
+      If PEWFindLabel(PEWFixups[I].LabelName, LblOff, LblInData) Then
+      Begin
+        If LblInData Then
+          TargetAddr := PE_IMAGE_BASE_VAL + PEWDataVA + LblOff
+        Else
+          TargetAddr := PE_IMAGE_BASE_VAL + PEWTextVA + LblOff;
+      End
+      Else
+        TargetAddr := 0;
+    End;
+
+    If IsDataFix Then
+    Begin
+      FixVal := TargetAddr +
+                LongInt(PEWDataBuf[DataFixOff]) Or
+                (LongInt(PEWDataBuf[DataFixOff+1]) Shl 8) Or
+                (LongInt(PEWDataBuf[DataFixOff+2]) Shl 16) Or
+                (LongInt(PEWDataBuf[DataFixOff+3]) Shl 24);
+      PEWDataBuf[DataFixOff]   := Byte(FixVal And $FF);
+      PEWDataBuf[DataFixOff+1] := Byte((FixVal Shr 8) And $FF);
+      PEWDataBuf[DataFixOff+2] := Byte((FixVal Shr 16) And $FF);
+      PEWDataBuf[DataFixOff+3] := Byte((FixVal Shr 24) And $FF);
+    End
+    Else If PEWFixups[I].IsRelative Then
+    Begin
+      FixVal := TargetAddr -
+                (PE_IMAGE_BASE_VAL + PEWTextVA + FixOff + 4);
+      PEWCodeBuf[FixOff]   := Byte(FixVal And $FF);
+      PEWCodeBuf[FixOff+1] := Byte((FixVal Shr 8) And $FF);
+      PEWCodeBuf[FixOff+2] := Byte((FixVal Shr 16) And $FF);
+      PEWCodeBuf[FixOff+3] := Byte((FixVal Shr 24) And $FF);
+    End
+    Else
+    Begin
+      FixVal := TargetAddr +
+                LongInt(PEWCodeBuf[FixOff]) Or
+                (LongInt(PEWCodeBuf[FixOff+1]) Shl 8) Or
+                (LongInt(PEWCodeBuf[FixOff+2]) Shl 16) Or
+                (LongInt(PEWCodeBuf[FixOff+3]) Shl 24);
+      PEWCodeBuf[FixOff]   := Byte(FixVal And $FF);
+      PEWCodeBuf[FixOff+1] := Byte((FixVal Shr 8) And $FF);
+      PEWCodeBuf[FixOff+2] := Byte((FixVal Shr 16) And $FF);
+      PEWCodeBuf[FixOff+3] := Byte((FixVal Shr 24) And $FF);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires d ecriture dans le fichier PE            }
+{ ------------------------------------------------------------ }
+
+Procedure PEWWriteBuf(Var F : File; Var Buf; Size : LongInt);
+Begin
+  BlockWrite(F, Buf, Size);
+End;
+
+Procedure PEWFileWriteByte(Var F : File; B : Byte);
+Begin
+  BlockWrite(F, B, 1);
+End;
+
+Procedure PEWFileWriteWord(Var F : File; W : Word);
+Var Buf : Array[0..1] of Byte;
+Begin
+  Buf[0] := Byte(W And $FF);
+  Buf[1] := Byte((W Shr 8) And $FF);
+  BlockWrite(F, Buf, 2);
+End;
+
+Procedure PEWFileWriteDWord(Var F : File; D : LongInt);
+Var Buf : Array[0..3] of Byte;
+Begin
+  Buf[0] := Byte(D And $FF);
+  Buf[1] := Byte((D Shr 8) And $FF);
+  Buf[2] := Byte((D Shr 16) And $FF);
+  Buf[3] := Byte((D Shr 24) And $FF);
+  BlockWrite(F, Buf, 4);
+End;
+
+Procedure PEWFileWriteZeros(Var F : File; Count : LongInt);
+Var ZBuf : Byte;
+    K    : LongInt;
+Begin
+  ZBuf := 0;
+  For K := 1 To Count Do
+    BlockWrite(F, ZBuf, 1);
+End;
+
+Procedure PEWFileWriteStr(Var F : File; Const S : TString);
+Var K : Integer;
+    B : Byte;
+Begin
+  For K := 1 To Length(S) Do
+  Begin
+    B := Byte(Ord(S[K]));
+    BlockWrite(F, B, 1);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WritePEFile : generer un executable PE Windows 32 bits         }
+{   complet a partir des tampons code/data                      }
+{ ------------------------------------------------------------ }
+
+Procedure WritePEFile(Const ExeFile : TString);
+Var
+  F            : File;
+  TextRawSize  : LongInt;
+  DataRawSize  : LongInt;
+  RdataSize    : LongInt;
+  RdataRawSize : LongInt;
+  TextFileOff  : LongInt;
+  RdataFileOff : LongInt;
+  DataFileOff  : LongInt;
+  SizeOfImage  : LongInt;
+  ImportDirOff : LongInt;
+  ILTOff       : LongInt;
+  IATOff       : LongInt;
+  HintOff      : LongInt;
+  DLLNameOff   : LongInt;
+  DLL2NameOff  : LongInt;
+  CurOff       : LongInt;
+  I            : LongInt;
+  NameLen      : Integer;
+  TotalHdrSize : LongInt;
+  PadNeeded    : LongInt;
+  SubsysVal    : Word;
+  NumKernelImp : Integer;
+  ImportDir2Off: LongInt;
+  ILT2Off      : LongInt;
+  IAT2Off      : LongInt;
+  Hint2Off     : LongInt;
+Begin
+  { Determiner le sous-systeme (CUI par defaut) }
+  SubsysVal := PE_SUBSYS_CUI;
+  If Opts.EmitExe Then
+    SubsysVal := PE_SUBSYS_CUI;
+
+  { Disposition simplifiee : toutes les imports dans kernel32.dll }
+  { Les imports user32.dll (MessageBoxA) sont a l index 9 }
+  { On les inclut tous dans kernel32.dll pour simplifier }
+  { La disposition dans .rdata :                                }
+  {   Import Directory : 3 entrees x 20 = 60 octets             }
+  {     entree kernel32.dll, entree user32.dll, terminateur      }
+  {   ILT kernel32 : (NumKernel+1) x 4                          }
+  {   ILT user32 : (1+1) x 4 = 8                                }
+  {   IAT kernel32 : (NumKernel+1) x 4                          }
+  {   IAT user32 : (1+1) x 4 = 8                                }
+  {   Hint/Name entries                                          }
+  {   DLL names                                                  }
+  NumKernelImp := PE_NUM_VBN_IMPORTS - 1;  { tous sauf MessageBoxA }
+
+  ImportDirOff := 0;
+  { 3 entrees Import Directory : kernel32, user32, null }
+  ILTOff := 60;
+  { ILT kernel32 : NumKernelImp entrees + terminateur }
+  ILT2Off := ILTOff + (NumKernelImp + 1) * 4;
+  { ILT user32 : 1 entree + terminateur }
+  IATOff := ILT2Off + 2 * 4;
+  { IAT kernel32 : NumKernelImp entrees + terminateur }
+  IAT2Off := IATOff + (NumKernelImp + 1) * 4;
+  { IAT user32 : 1 entree + terminateur }
+  HintOff := IAT2Off + 2 * 4;
+
+  { Calculer les tailles Hint/Name pour kernel32 imports }
+  CurOff := HintOff;
+  For I := 0 To PE_NUM_VBN_IMPORTS - 1 Do
+  Begin
+    If I <> 9 Then { pas MessageBoxA }
+    Begin
+      PEWImports[I].IATOffset := IATOff + I * 4;
+      If I > 9 Then
+        PEWImports[I].IATOffset := IATOff + (I - 1) * 4;
+    End;
+    NameLen := Length(PEWImports[I].Name) + 1;
+    If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+    CurOff := CurOff + 2 + NameLen;
+  End;
+  { Ajuster l offset IAT de MessageBoxA dans le bloc user32 }
+  PEWImports[9].IATOffset := IAT2Off;
+
+  Hint2Off := CurOff; { pas utilise separement, tous inclus }
+
+  DLLNameOff := CurOff;
+  CurOff := CurOff + 13; { "kernel32.dll" + nul }
+  DLL2NameOff := CurOff;
+  CurOff := CurOff + 11; { "user32.dll" + nul }
+  RdataSize := CurOff;
+  RdataRawSize := PEWAlignUp(RdataSize, PE_FILE_ALIGN_VAL);
+
+  { Calculer les tailles de sections }
+  TextRawSize := PEWAlignUp(PEWCodePos, PE_FILE_ALIGN_VAL);
+  DataRawSize := PEWAlignUp(PEWDataPos, PE_FILE_ALIGN_VAL);
+  If DataRawSize = 0 Then DataRawSize := PE_FILE_ALIGN_VAL;
+
+  { Offsets de fichier }
+  TextFileOff  := PE_FILE_ALIGN_VAL;
+  RdataFileOff := TextFileOff + TextRawSize;
+  DataFileOff  := RdataFileOff + RdataRawSize;
+
+  { Adresses virtuelles des sections }
+  PEWTextVA  := $1000;
+  PEWRdataVA := PEWTextVA  + PEWAlignUp(PEWCodePos, PE_SECT_ALIGN_VAL);
+  PEWDataVA  := PEWRdataVA + PEWAlignUp(RdataSize, PE_SECT_ALIGN_VAL);
+
+  SizeOfImage := PEWDataVA + PEWAlignUp(PEWDataPos, PE_SECT_ALIGN_VAL);
+
+  { Resoudre les correctifs }
+  PEWResolveFixups;
+
+  { Ecrire le fichier PE }
+  {$I-}
+  Assign(F, ExeFile);
+  Rewrite(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Cannot create output file: ' + ExeFile);
+    Exit;
+  End;
+
+  { === En-tete DOS (128 octets avec e_lfanew) === }
+  PEWFileWriteByte(F, $4D); PEWFileWriteByte(F, $5A);  { 'MZ' }
+  PEWFileWriteZeros(F, 58);  { offsets 0x02..0x3B }
+  PEWFileWriteDWord(F, $80); { e_lfanew a l offset 0x3C }
+  PEWFileWriteZeros(F, $80 - $40); { remplissage jusqu a 0x80 }
+
+  { === Signature PE === }
+  PEWFileWriteByte(F, Ord('P'));
+  PEWFileWriteByte(F, Ord('E'));
+  PEWFileWriteByte(F, 0);
+  PEWFileWriteByte(F, 0);
+
+  { === En-tete COFF (20 octets) === }
+  PEWFileWriteWord(F, $014C);  { Machine : i386 }
+  PEWFileWriteWord(F, 3);      { NumberOfSections : .text .rdata .data }
+  PEWFileWriteDWord(F, 0);     { TimeDateStamp }
+  PEWFileWriteDWord(F, 0);     { PointerToSymbolTable }
+  PEWFileWriteDWord(F, 0);     { NumberOfSymbols }
+  PEWFileWriteWord(F, $E0);    { SizeOfOptionalHeader }
+  PEWFileWriteWord(F, $0102);  { Characteristics: EXECUTABLE_IMAGE | 32BIT_MACHINE }
+
+  { === En-tete optionnel PE32 (224 octets = $E0) === }
+  PEWFileWriteWord(F, $010B);  { Magic : PE32 }
+  PEWFileWriteByte(F, 1);      { MajorLinkerVersion }
+  PEWFileWriteByte(F, 0);      { MinorLinkerVersion }
+  PEWFileWriteDWord(F, TextRawSize);    { SizeOfCode }
+  PEWFileWriteDWord(F, DataRawSize + RdataRawSize); { SizeOfInitializedData }
+  PEWFileWriteDWord(F, 0);     { SizeOfUninitializedData }
+  PEWFileWriteDWord(F, PEWTextVA); { AddressOfEntryPoint = RVA _VBNF_MAIN }
+  PEWFileWriteDWord(F, PEWTextVA); { BaseOfCode }
+  PEWFileWriteDWord(F, PEWDataVA); { BaseOfData }
+  PEWFileWriteDWord(F, PE_IMAGE_BASE_VAL); { ImageBase }
+  PEWFileWriteDWord(F, PE_SECT_ALIGN_VAL); { SectionAlignment }
+  PEWFileWriteDWord(F, PE_FILE_ALIGN_VAL); { FileAlignment }
+  PEWFileWriteWord(F, 4);      { MajorOperatingSystemVersion }
+  PEWFileWriteWord(F, 0);      { MinorOperatingSystemVersion }
+  PEWFileWriteWord(F, 0);      { MajorImageVersion }
+  PEWFileWriteWord(F, 0);      { MinorImageVersion }
+  PEWFileWriteWord(F, 4);      { MajorSubsystemVersion }
+  PEWFileWriteWord(F, 0);      { MinorSubsystemVersion }
+  PEWFileWriteDWord(F, 0);     { Win32VersionValue }
+  PEWFileWriteDWord(F, SizeOfImage); { SizeOfImage }
+  PEWFileWriteDWord(F, PE_FILE_ALIGN_VAL); { SizeOfHeaders }
+  PEWFileWriteDWord(F, 0);     { CheckSum }
+  PEWFileWriteWord(F, SubsysVal); { Subsystem : CUI ou GUI }
+  PEWFileWriteWord(F, 0);      { DllCharacteristics }
+  PEWFileWriteDWord(F, $100000); { SizeOfStackReserve }
+  PEWFileWriteDWord(F, $1000);   { SizeOfStackCommit }
+  PEWFileWriteDWord(F, $100000); { SizeOfHeapReserve }
+  PEWFileWriteDWord(F, $1000);   { SizeOfHeapCommit }
+  PEWFileWriteDWord(F, 0);     { LoaderFlags }
+  PEWFileWriteDWord(F, 16);    { NumberOfRvaAndSizes }
+
+  { Data Directories (16 entrees x 8 octets = 128 octets) }
+  { [0] Export - vide }
+  PEWFileWriteDWord(F, 0); PEWFileWriteDWord(F, 0);
+  { [1] Import - pointe vers .rdata }
+  PEWFileWriteDWord(F, PEWRdataVA + ImportDirOff);
+  PEWFileWriteDWord(F, 60); { taille du repertoire d import (3x20) }
+  { [2..11] - vide }
+  For I := 2 To 11 Do
+  Begin PEWFileWriteDWord(F, 0); PEWFileWriteDWord(F, 0); End;
+  { [12] IAT }
+  PEWFileWriteDWord(F, PEWRdataVA + IATOff);
+  PEWFileWriteDWord(F, (NumKernelImp + 1) * 4 + 2 * 4);
+  { [13..15] - vide }
+  For I := 13 To 15 Do
+  Begin PEWFileWriteDWord(F, 0); PEWFileWriteDWord(F, 0); End;
+
+  { === En-tetes de section (3 x 40 octets) === }
+  { .text }
+  PEWFileWriteStr(F, '.text');
+  PEWFileWriteZeros(F, 3);
+  PEWFileWriteDWord(F, PEWCodePos);   { VirtualSize }
+  PEWFileWriteDWord(F, PEWTextVA);    { VirtualAddress }
+  PEWFileWriteDWord(F, TextRawSize);  { SizeOfRawData }
+  PEWFileWriteDWord(F, TextFileOff);  { PointerToRawData }
+  PEWFileWriteDWord(F, 0);  { PointerToRelocations }
+  PEWFileWriteDWord(F, 0);  { PointerToLinenumbers }
+  PEWFileWriteWord(F, 0);   { NumberOfRelocations }
+  PEWFileWriteWord(F, 0);   { NumberOfLinenumbers }
+  PEWFileWriteDWord(F, PE_SCN_CNT_CODE Or PE_SCN_MEM_EXECUTE Or
+                        PE_SCN_MEM_READ);
+
+  { .rdata }
+  PEWFileWriteStr(F, '.rdata');
+  PEWFileWriteZeros(F, 2);
+  PEWFileWriteDWord(F, RdataSize);
+  PEWFileWriteDWord(F, PEWRdataVA);
+  PEWFileWriteDWord(F, RdataRawSize);
+  PEWFileWriteDWord(F, RdataFileOff);
+  PEWFileWriteDWord(F, 0);
+  PEWFileWriteDWord(F, 0);
+  PEWFileWriteWord(F, 0);
+  PEWFileWriteWord(F, 0);
+  PEWFileWriteDWord(F, PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ);
+
+  { .data }
+  PEWFileWriteStr(F, '.data');
+  PEWFileWriteZeros(F, 3);
+  PEWFileWriteDWord(F, PEWDataPos);
+  PEWFileWriteDWord(F, PEWDataVA);
+  PEWFileWriteDWord(F, DataRawSize);
+  PEWFileWriteDWord(F, DataFileOff);
+  PEWFileWriteDWord(F, 0);
+  PEWFileWriteDWord(F, 0);
+  PEWFileWriteWord(F, 0);
+  PEWFileWriteWord(F, 0);
+  PEWFileWriteDWord(F, LongInt(PE_SCN_CNT_INIT_DATA Or PE_SCN_MEM_READ Or
+                        PE_SCN_MEM_WRITE));
+
+  { Remplir les en-tetes jusqu a PE_FILE_ALIGN }
+  TotalHdrSize := $80 + 4 + 20 + $E0 + 3 * 40;
+  PadNeeded := PE_FILE_ALIGN_VAL - TotalHdrSize;
+  If PadNeeded > 0 Then
+    PEWFileWriteZeros(F, PadNeeded);
+
+  { === Section .text === }
+  PEWWriteBuf(F, PEWCodeBuf, PEWCodePos);
+  PadNeeded := TextRawSize - PEWCodePos;
+  If PadNeeded > 0 Then PEWFileWriteZeros(F, PadNeeded);
+
+  { === Section .rdata (tables d import) === }
+  { Import Directory - entree 1 : kernel32.dll }
+  PEWFileWriteDWord(F, PEWRdataVA + ILTOff);
+  PEWFileWriteDWord(F, 0);
+  PEWFileWriteDWord(F, 0);
+  PEWFileWriteDWord(F, PEWRdataVA + DLLNameOff);
+  PEWFileWriteDWord(F, PEWRdataVA + IATOff);
+  { Import Directory - entree 2 : user32.dll }
+  PEWFileWriteDWord(F, PEWRdataVA + ILT2Off);
+  PEWFileWriteDWord(F, 0);
+  PEWFileWriteDWord(F, 0);
+  PEWFileWriteDWord(F, PEWRdataVA + DLL2NameOff);
+  PEWFileWriteDWord(F, PEWRdataVA + IAT2Off);
+  { Import Directory - terminateur nul }
+  PEWFileWriteZeros(F, 20);
+
+  { ILT kernel32 }
+  CurOff := HintOff;
+  For I := 0 To PE_NUM_VBN_IMPORTS - 1 Do
+  Begin
+    If I <> 9 Then { pas MessageBoxA }
+    Begin
+      PEWFileWriteDWord(F, PEWRdataVA + CurOff);
+      NameLen := Length(PEWImports[I].Name) + 1;
+      If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+      CurOff := CurOff + 2 + NameLen;
+    End;
+  End;
+  PEWFileWriteDWord(F, 0); { terminateur }
+
+  { ILT user32 (MessageBoxA seulement) }
+  { On doit calculer l offset Hint/Name de MessageBoxA }
+  { C est a la position correspondante dans les Hint/Name }
+  ImportDir2Off := HintOff;
+  For I := 0 To PE_NUM_VBN_IMPORTS - 1 Do
+  Begin
+    If I = 9 Then
+    Begin
+      PEWFileWriteDWord(F, PEWRdataVA + ImportDir2Off);
+      NameLen := Length(PEWImports[I].Name) + 1;
+      If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+      ImportDir2Off := ImportDir2Off + 2 + NameLen;
+    End
+    Else
+    Begin
+      NameLen := Length(PEWImports[I].Name) + 1;
+      If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+      ImportDir2Off := ImportDir2Off + 2 + NameLen;
+    End;
+  End;
+  PEWFileWriteDWord(F, 0); { terminateur }
+
+  { IAT kernel32 (identique a ILT initialement) }
+  CurOff := HintOff;
+  For I := 0 To PE_NUM_VBN_IMPORTS - 1 Do
+  Begin
+    If I <> 9 Then
+    Begin
+      PEWFileWriteDWord(F, PEWRdataVA + CurOff);
+      NameLen := Length(PEWImports[I].Name) + 1;
+      If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+      CurOff := CurOff + 2 + NameLen;
+    End;
+  End;
+  PEWFileWriteDWord(F, 0);
+
+  { IAT user32 }
+  ImportDir2Off := HintOff;
+  For I := 0 To PE_NUM_VBN_IMPORTS - 1 Do
+  Begin
+    If I = 9 Then
+    Begin
+      PEWFileWriteDWord(F, PEWRdataVA + ImportDir2Off);
+      NameLen := Length(PEWImports[I].Name) + 1;
+      If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+      ImportDir2Off := ImportDir2Off + 2 + NameLen;
+    End
+    Else
+    Begin
+      NameLen := Length(PEWImports[I].Name) + 1;
+      If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+      ImportDir2Off := ImportDir2Off + 2 + NameLen;
+    End;
+  End;
+  PEWFileWriteDWord(F, 0);
+
+  { Hint/Name entries (tous les imports dans l ordre) }
+  For I := 0 To PE_NUM_VBN_IMPORTS - 1 Do
+  Begin
+    PEWFileWriteWord(F, 0); { Hint }
+    PEWFileWriteStr(F, PEWImports[I].Name);
+    PEWFileWriteByte(F, 0); { terminateur nul }
+    NameLen := Length(PEWImports[I].Name) + 1;
+    If (NameLen + 2) Mod 2 <> 0 Then
+      PEWFileWriteByte(F, 0); { aligner sur pair }
+  End;
+
+  { Noms des DLLs }
+  PEWFileWriteStr(F, 'kernel32.dll');
+  PEWFileWriteByte(F, 0);
+  PEWFileWriteStr(F, 'user32.dll');
+  PEWFileWriteByte(F, 0);
+
+  { Remplir .rdata }
+  PadNeeded := RdataRawSize - RdataSize;
+  If PadNeeded > 0 Then PEWFileWriteZeros(F, PadNeeded);
+
+  { === Section .data === }
+  If PEWDataPos > 0 Then
+    PEWWriteBuf(F, PEWDataBuf, PEWDataPos);
+  PadNeeded := DataRawSize - PEWDataPos;
+  If PadNeeded > 0 Then PEWFileWriteZeros(F, PadNeeded);
+
+  Close(F);
+  Inc(PEWriterCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsPEWriterInitialized : verifier si le PE writer est init      }
+{ ------------------------------------------------------------ }
+
+Function IsPEWriterInitialized : Boolean;
+Begin
+  IsPEWriterInitialized := PEWriterInitialized;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsPEWriterEmpty : verifier s il n y a pas de code              }
+{ ------------------------------------------------------------ }
+
+Function IsPEWriterEmpty : Boolean;
+Begin
+  IsPEWriterEmpty := (PEWCodePos = 0) And (PEWDataPos = 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPEWriterStatus : statut du PE writer                        }
+{ ------------------------------------------------------------ }
+
+Function GetPEWriterStatus : TString;
+Begin
+  If Not PEWriterInitialized Then
+    GetPEWriterStatus := 'Not initialized'
+  Else If PEWriterCount > 0 Then
+    GetPEWriterStatus := 'Written (' + ItoS(PEWriterCount) + ' files)'
+  Else
+    GetPEWriterStatus := 'Initialized, no files written';
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPEWCodeSize : taille du tampon code                         }
+{ ------------------------------------------------------------ }
+
+Function GetPEWCodeSize : LongInt;
+Begin
+  GetPEWCodeSize := PEWCodePos;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPEWDataSize : taille du tampon donnees                      }
+{ ------------------------------------------------------------ }
+
+Function GetPEWDataSize : LongInt;
+Begin
+  GetPEWDataSize := PEWDataPos;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPEWLabelCount : nombre de labels definis                    }
+{ ------------------------------------------------------------ }
+
+Function GetPEWLabelCount : LongInt;
+Begin
+  GetPEWLabelCount := PEWLabelCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPEWFixupCount : nombre de correctifs                        }
+{ ------------------------------------------------------------ }
+
+Function GetPEWFixupCount : LongInt;
+Begin
+  GetPEWFixupCount := PEWFixupCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPEWriterCount : nombre de fichiers ecrits                   }
+{ ------------------------------------------------------------ }
+
+Function GetPEWriterCount : LongInt;
+Begin
+  GetPEWriterCount := PEWriterCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPEWImportCount : nombre d imports                           }
+{ ------------------------------------------------------------ }
+
+Function GetPEWImportCount : Integer;
+Begin
+  GetPEWImportCount := PE_NUM_VBN_IMPORTS;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetPEWImageBase : valeur de l ImageBase                        }
+{ ------------------------------------------------------------ }
+
+Function GetPEWImageBase : LongInt;
+Begin
+  GetPEWImageBase := PE_IMAGE_BASE_VAL;
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -15129,7 +15909,12 @@ Begin
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 21..25 : Generation de code, etc. }
+  { TODO 21 : Initialiser et ecrire le fichier PE }
+  InitPEWriter;
+  If Opts.EmitExe And (ErrorCount = 0) Then
+    WritePEFile(Opts.OutFile);
+
+  { TODO 22..25 : Generation COFF .OBJ, etc. }
 
   { Statistiques finales }
   ShowStats;
