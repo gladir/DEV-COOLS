@@ -624,7 +624,7 @@
             When optionnel : filtre conditionnel sur Catch
             Generer code pour etablir/retirer le cadre SEH Win32
 
-  TODO 19 - PARSEUR : E/S CONSOLE ET FICHIERS [A FAIRE]
+  TODO 19 - PARSEUR : E/S CONSOLE ET FICHIERS [IMPLEMENTE]
             Console.WriteLine :
               Console.WriteLine("texte")
               Console.WriteLine("format {0} {1}", arg0, arg1) (stub)

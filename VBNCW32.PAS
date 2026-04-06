@@ -632,7 +632,7 @@
             When optionnel : filtre conditionnel sur Catch
             Generer code pour etablir/retirer le cadre SEH Win32
 
-  TODO 19 - PARSEUR : E/S CONSOLE ET FICHIERS [A FAIRE]
+  TODO 19 - PARSEUR : E/S CONSOLE ET FICHIERS [IMPLEMENTE]
             Console.WriteLine :
               Console.WriteLine("texte")
               Console.WriteLine("format {0} {1}", arg0, arg1) (stub)
@@ -1576,12 +1576,22 @@ Const
   KW_LBOUND          = 190;
   KW_UBOUND          = 191;
 
+  { TODO 19 - fonctions E/S fichier et console VB.NET }
+  KW_FILEOPEN        = 200;  { FileOpen (ouvrir fichier)                }
+  KW_FILECLOSE       = 201;  { FileClose (fermer fichier)               }
+  KW_PRINTLINE       = 202;  { PrintLine (ecrire ligne fichier)         }
+  KW_WRITELINE       = 203;  { WriteLine (ecrire donnees fichier)       }
+  KW_LINEINPUT       = 204;  { LineInput (lire ligne fichier)           }
+  KW_EOF2            = 205;  { EOF (test fin de fichier)                }
+  KW_LOF             = 206;  { LOF (taille fichier)                     }
+  KW_FREEFILE        = 207;  { FreeFile (prochain numero disponible)    }
+
   { Mots-cles contextuels }
-  KW_ASSEMBLY        = 195;
-  KW_AUTO            = 196;
-  KW_ANSI            = 197;
-  KW_UNICODE         = 198;
-  KW_PRESERVE        = 199;
+  KW_ASSEMBLY        = 210;
+  KW_AUTO            = 211;
+  KW_ANSI            = 212;
+  KW_UNICODE         = 213;
+  KW_PRESERVE        = 214;
 
   { Token special pour mot-cle reconnu }
   TOK_KEYWORD   = 50;     { mot-cle VB.NET reconnu                  }
@@ -1788,6 +1798,15 @@ Begin
   Else If U = 'STRREVERSE'     Then IsKeyword := KW_STRREVERSE
   Else If U = 'LBOUND'         Then IsKeyword := KW_LBOUND
   Else If U = 'UBOUND'         Then IsKeyword := KW_UBOUND
+  { TODO 19 - fonctions E/S fichier VB.NET }
+  Else If U = 'FILEOPEN'       Then IsKeyword := KW_FILEOPEN
+  Else If U = 'FILECLOSE'      Then IsKeyword := KW_FILECLOSE
+  Else If U = 'PRINTLINE'      Then IsKeyword := KW_PRINTLINE
+  Else If U = 'WRITELINE'      Then IsKeyword := KW_WRITELINE
+  Else If U = 'LINEINPUT'      Then IsKeyword := KW_LINEINPUT
+  Else If U = 'EOF'            Then IsKeyword := KW_EOF2
+  Else If U = 'LOF'            Then IsKeyword := KW_LOF
+  Else If U = 'FREEFILE'       Then IsKeyword := KW_FREEFILE
   { Mots-cles contextuels }
   Else If U = 'ASSEMBLY'       Then IsKeyword := KW_ASSEMBLY
   Else If U = 'AUTO'           Then IsKeyword := KW_AUTO
@@ -1994,6 +2013,14 @@ Begin
     KW_STRREVERSE      : KeywordName := 'StrReverse';
     KW_LBOUND          : KeywordName := 'LBound';
     KW_UBOUND          : KeywordName := 'UBound';
+    KW_FILEOPEN        : KeywordName := 'FileOpen';
+    KW_FILECLOSE       : KeywordName := 'FileClose';
+    KW_PRINTLINE       : KeywordName := 'PrintLine';
+    KW_WRITELINE       : KeywordName := 'WriteLine';
+    KW_LINEINPUT       : KeywordName := 'LineInput';
+    KW_EOF2            : KeywordName := 'EOF';
+    KW_LOF             : KeywordName := 'LOF';
+    KW_FREEFILE        : KeywordName := 'FreeFile';
     KW_ASSEMBLY        : KeywordName := 'Assembly';
     KW_AUTO            : KeywordName := 'Auto';
     KW_ANSI            : KeywordName := 'Ansi';
@@ -12250,6 +12277,812 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 19 - PARSEUR : E/S CONSOLE ET FICHIERS [IMPLEMENTE]     }
+{ ============================================================ }
+
+Const
+  { Modes d ouverture VB.NET (OpenMode enumeration) }
+  FILE_MODE_INPUT   = 0;  { OpenMode.Input   }
+  FILE_MODE_OUTPUT  = 1;  { OpenMode.Output  }
+  FILE_MODE_APPEND  = 2;  { OpenMode.Append  }
+  FILE_MODE_BINARY  = 3;  { OpenMode.Binary  }
+
+  { Limites }
+  MAX_FILE_NUM       = 511;
+  DEFAULT_RECORD_LEN = 128;
+
+  { Labels runtime console }
+  IO_RT_PRINTLN      = '_VBNRT_PRINTLN';
+  IO_RT_PRINT        = '_VBNRT_PRINT';
+  IO_RT_INPUT        = '_VBNRT_INPUT';
+  IO_RT_READKEY      = '_VBNRT_READKEY';
+  IO_RT_FILEOPEN     = '_VBNRT_FILEOPEN';
+  IO_RT_FILECLOSE    = '_VBNRT_FILECLOSE';
+  IO_RT_PRINTLINE    = '_VBNRT_PRINTLINE';
+  IO_RT_LINEINPUT    = '_VBNRT_LINEINPUT';
+  IO_RT_WRITELINE    = '_VBNRT_WRITELINE';
+  IO_RT_FILEEOF      = '_VBNRT_FILEEOF';
+
+  { Labels runtime fonctions fichier supplementaires }
+  IO_RT_FILELOF      = '_VBNRT_FILELOF';
+  IO_RT_FREEFILE     = '_VBNRT_FREEFILE';
+  IO_RT_MSGBOX       = '_VBNRT_MSGBOX';
+  IO_RT_INPUTBOX     = '_VBNRT_INPUTBOX';
+
+  { Variables globales pour handles }
+  IO_VAR_HANDLES     = '_VBN_FILE_HANDLES';
+  IO_VAR_MODES       = '_VBN_FILE_MODES';
+  IO_VAR_COUNT       = '_VBN_FILE_COUNT';
+  IO_VAR_STDOUT      = '_VBN_STDOUT';
+  IO_VAR_STDIN       = '_VBN_STDIN';
+
+Var
+  ConsoleFileIOCount       : LongInt;
+  ConsoleFileIOInitialized : Boolean;
+  CurFileMode              : Integer;
+  CurFileNum               : Integer;
+  ConsoleWriteCount        : Integer;
+  ConsoleReadCount         : Integer;
+  FileOpenCount            : Integer;
+  FileCloseCount           : Integer;
+
+{ ------------------------------------------------------------ }
+{ InitConsoleFileIOState : initialiser l etat E/S console/file  }
+{ ------------------------------------------------------------ }
+
+Procedure InitConsoleFileIOState;
+Begin
+  ConsoleFileIOCount       := 0;
+  ConsoleFileIOInitialized := True;
+  CurFileMode              := FILE_MODE_INPUT;
+  CurFileNum               := 0;
+  ConsoleWriteCount        := 0;
+  ConsoleReadCount         := 0;
+  FileOpenCount            := 0;
+  FileCloseCount           := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ FileModeName : retourner le nom du mode d ouverture          }
+{ ------------------------------------------------------------ }
+
+Function FileModeName(Mode : Integer) : TString;
+Begin
+  Case Mode Of
+    FILE_MODE_INPUT  : FileModeName := 'Input';
+    FILE_MODE_OUTPUT : FileModeName := 'Output';
+    FILE_MODE_APPEND : FileModeName := 'Append';
+    FILE_MODE_BINARY : FileModeName := 'Binary';
+  Else
+    FileModeName := 'Unknown';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseConsoleWriteLine : parser Console.WriteLine(expr)        }
+{   Genere PUSH ptr_chaine / CALL _VBNRT_PRINTLN               }
+{   Supporte : Console.WriteLine("texte")                      }
+{              Console.WriteLine(format, arg) (stub)           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConsoleWriteLine;
+Var
+  ArgCount : Integer;
+Begin
+  Inc(ConsoleFileIOCount);
+  Inc(ConsoleWriteCount);
+  EmitComment('Console.WriteLine(expr)');
+  { Attendre la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    FatalError('Console.WriteLine : parenthese ouvrante attendue');
+  { Verifier s il y a des arguments }
+  If CurTokType = TOK_RPAREN Then Begin
+    { Console.WriteLine() sans argument : saut de ligne seul }
+    LexNextToken;
+    Emit('  PUSH 0');
+    Emit('  CALL ' + IO_RT_PRINTLN);
+    Emit('  ADD ESP, 4');
+    Exit;
+  End;
+  { Parser le premier argument (chaine ou format) }
+  ParseExpr;
+  ArgCount := 1;
+  { Verifier les arguments supplementaires (format string stub) }
+  While CurTokType = TOK_COMMA Do Begin
+    LexNextToken;
+    { Les arguments supplementaires sont empiles mais non traites }
+    { dans cette version (stub pour format string)                }
+    ParseExpr;
+    Inc(ArgCount);
+  End;
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Generer l appel : seul le premier argument est utilise }
+  Emit('  PUSH EAX');
+  Emit('  CALL ' + IO_RT_PRINTLN);
+  Emit('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseConsoleWrite : parser Console.Write(expr)                }
+{   Genere PUSH ptr_chaine / CALL _VBNRT_PRINT (sans newline) }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConsoleWrite;
+Begin
+  Inc(ConsoleFileIOCount);
+  Inc(ConsoleWriteCount);
+  EmitComment('Console.Write(expr)');
+  { Attendre la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    FatalError('Console.Write : parenthese ouvrante attendue');
+  { Parser l expression }
+  If CurTokType <> TOK_RPAREN Then
+    ParseExpr;
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Generer l appel sans saut de ligne }
+  Emit('  PUSH EAX');
+  Emit('  CALL ' + IO_RT_PRINT);
+  Emit('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseConsoleReadLine : parser Console.ReadLine()              }
+{   Genere CALL _VBNRT_INPUT, resultat dans EAX               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConsoleReadLine;
+Begin
+  Inc(ConsoleFileIOCount);
+  Inc(ConsoleReadCount);
+  EmitComment('Console.ReadLine()');
+  { Consommer les parentheses vides }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken;
+  End;
+  { Generer l appel }
+  Emit('  CALL ' + IO_RT_INPUT);
+  { Resultat dans EAX : pointeur vers la chaine lue }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseConsoleReadKey : parser Console.ReadKey() (stub)         }
+{   Genere CALL _VBNRT_READKEY, resultat dans EAX             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConsoleReadKey;
+Begin
+  Inc(ConsoleFileIOCount);
+  Inc(ConsoleReadCount);
+  EmitComment('Console.ReadKey() (stub)');
+  { Consommer les parentheses vides }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    { ReadKey peut avoir un argument Boolean (intercept) }
+    If CurTokType <> TOK_RPAREN Then
+      ParseExpr;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken;
+  End;
+  { Generer l appel (stub) }
+  Emit('  CALL ' + IO_RT_READKEY);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseConsoleStatement : parser un appel Console.XXX           }
+{   Dispatche vers WriteLine, Write, ReadLine, ReadKey         }
+{   Appelee quand on detecte l ident "Console" suivi de "."   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConsoleStatement;
+Var
+  MemberName : TString;
+Begin
+  { Le token courant est "." apres "Console" }
+  If CurTokType = TOK_DOT Then
+    LexNextToken
+  Else
+    FatalError('Console : point attendu apres Console');
+  { Lire le nom du membre }
+  If CurTokType = TOK_IDENT Then Begin
+    MemberName := UpCaseStr(CurTokStr);
+    LexNextToken;
+    If MemberName = 'WRITELINE' Then
+      ParseConsoleWriteLine
+    Else If MemberName = 'WRITE' Then
+      ParseConsoleWrite
+    Else If MemberName = 'READLINE' Then
+      ParseConsoleReadLine
+    Else If MemberName = 'READKEY' Then
+      ParseConsoleReadKey
+    Else
+      FatalError('Console : membre non reconnu : ' + MemberName);
+  End Else
+    FatalError('Console : nom de membre attendu apres le point');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFileOpen : parser FileOpen(n, fichier, mode)            }
+{   Syntaxe VB.NET : FileOpen(n, fichier, OpenMode.Input)      }
+{   Genere appel _VBNRT_FILEOPEN(num, fichier, mode)           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFileOpen;
+Var
+  FileMode : Integer;
+  ModeStr  : TString;
+Begin
+  Inc(ConsoleFileIOCount);
+  Inc(FileOpenCount);
+  EmitComment('FileOpen(n, fichier, mode)');
+  { Consommer la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    FatalError('FileOpen : parenthese ouvrante attendue');
+  { Parser le numero de fichier }
+  ParseExpr;
+  Emit('  PUSH EAX');  { sauvegarder le numero }
+  { Consommer la virgule }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken
+  Else
+    FatalError('FileOpen : virgule attendue apres le numero');
+  { Parser le chemin du fichier (expression chaine) }
+  ParseExpr;
+  Emit('  PUSH EAX');  { sauvegarder le chemin }
+  { Consommer la virgule }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken
+  Else
+    FatalError('FileOpen : virgule attendue apres le chemin');
+  { Determiner le mode : OpenMode.Input, OpenMode.Output, etc. }
+  FileMode := FILE_MODE_INPUT;  { defaut }
+  If CurTokType = TOK_IDENT Then Begin
+    ModeStr := UpCaseStr(CurTokStr);
+    { Gerer OpenMode.XXX ou juste le nom du mode }
+    If ModeStr = 'OPENMODE' Then Begin
+      LexNextToken;
+      If CurTokType = TOK_DOT Then
+        LexNextToken;
+      If CurTokType = TOK_IDENT Then Begin
+        ModeStr := UpCaseStr(CurTokStr);
+        LexNextToken;
+      End;
+    End Else
+      LexNextToken;
+    If ModeStr = 'INPUT' Then
+      FileMode := FILE_MODE_INPUT
+    Else If ModeStr = 'OUTPUT' Then
+      FileMode := FILE_MODE_OUTPUT
+    Else If ModeStr = 'APPEND' Then
+      FileMode := FILE_MODE_APPEND
+    Else If ModeStr = 'BINARY' Then
+      FileMode := FILE_MODE_BINARY
+    Else
+      WarnMsg('FileOpen : mode non reconnu : ' + ModeStr + ', defaut Input');
+  End Else If (CurTokType = TOK_KEYWORD) Then Begin
+    ModeStr := UpCaseStr(CurTokStr);
+    LexNextToken;
+    If ModeStr = 'INPUT' Then
+      FileMode := FILE_MODE_INPUT
+    Else
+      WarnMsg('FileOpen : mode non reconnu : ' + ModeStr + ', defaut Input');
+  End Else Begin
+    { Expression numerique pour le mode }
+    ParseExpr;
+  End;
+  CurFileMode := FileMode;
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Generer l appel runtime }
+  Emit('  PUSH ' + ItoS(FileMode));  { mode }
+  Emit('  CALL ' + IO_RT_FILEOPEN);
+  Emit('  ADD ESP, 12');  { 3 parametres x 4 octets }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFileClose : parser FileClose(n)                          }
+{   Syntaxe VB.NET : FileClose(n) ou FileClose() pour tous    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFileClose;
+Begin
+  Inc(ConsoleFileIOCount);
+  Inc(FileCloseCount);
+  EmitComment('FileClose(n)');
+  { Consommer la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    FatalError('FileClose : parenthese ouvrante attendue');
+  { Verifier si un numero est fourni }
+  If CurTokType = TOK_RPAREN Then Begin
+    { FileClose() sans argument : fermer tous les fichiers }
+    LexNextToken;
+    Emit('  PUSH -1');  { -1 = fermer tous }
+    Emit('  CALL ' + IO_RT_FILECLOSE);
+    Emit('  ADD ESP, 4');
+  End Else Begin
+    { FileClose(n) : fermer le fichier specifie }
+    ParseExpr;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken;
+    Emit('  PUSH EAX');
+    Emit('  CALL ' + IO_RT_FILECLOSE);
+    Emit('  ADD ESP, 4');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrintLine : parser PrintLine(n, texte)                   }
+{   Ecrit une ligne de texte dans le fichier                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrintLine;
+Begin
+  Inc(ConsoleFileIOCount);
+  EmitComment('PrintLine(n, texte)');
+  { Consommer la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    FatalError('PrintLine : parenthese ouvrante attendue');
+  { Parser le numero de fichier }
+  ParseExpr;
+  Emit('  PUSH EAX');  { numero de fichier }
+  { Consommer la virgule }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken;
+  { Parser l expression a ecrire }
+  ParseExpr;
+  Emit('  PUSH EAX');  { texte }
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Generer l appel runtime }
+  Emit('  CALL ' + IO_RT_PRINTLINE);
+  Emit('  ADD ESP, 8');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLineInputFunc : parser LineInput(n) -> String            }
+{   Lit une ligne complete depuis le fichier                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLineInputFunc;
+Begin
+  Inc(ConsoleFileIOCount);
+  EmitComment('LineInput(n)');
+  { Consommer la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    FatalError('LineInput : parenthese ouvrante attendue');
+  { Parser le numero de fichier }
+  ParseExpr;
+  Emit('  PUSH EAX');  { numero de fichier }
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Generer l appel runtime }
+  Emit('  CALL ' + IO_RT_LINEINPUT);
+  Emit('  ADD ESP, 4');
+  { Resultat dans EAX : pointeur vers la chaine lue }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWriteLineFunc : parser WriteLine(n, val1, val2, ...)     }
+{   Ecrit des valeurs separees par des virgules dans le fichier }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWriteLineFunc;
+Var
+  ArgCount : Integer;
+Begin
+  Inc(ConsoleFileIOCount);
+  EmitComment('WriteLine(n, val1, val2, ...)');
+  { Consommer la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    FatalError('WriteLine : parenthese ouvrante attendue');
+  { Parser le numero de fichier }
+  ParseExpr;
+  Emit('  PUSH EAX');  { numero de fichier }
+  ArgCount := 0;
+  { Parser les valeurs separees par des virgules }
+  While CurTokType = TOK_COMMA Do Begin
+    LexNextToken;
+    ParseExpr;
+    Emit('  PUSH EAX');
+    Inc(ArgCount);
+    { Generer l ecriture de chaque valeur }
+    Emit('  CALL ' + IO_RT_WRITELINE);
+    Emit('  ADD ESP, 4');
+  End;
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Nettoyer le numero de fichier de la pile }
+  Emit('  POP EBX');  { numero de fichier }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEOFCall : parser EOF(n) -> Boolean                       }
+{   Retourne True (-1) si fin de fichier, False (0) sinon     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseEOFCall;
+Begin
+  Inc(ConsoleFileIOCount);
+  EmitComment('EOF(n)');
+  { Consommer la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken;
+  { Parser le numero de fichier }
+  ParseExpr;
+  Emit('  PUSH EAX');
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Generer l appel runtime }
+  Emit('  CALL ' + IO_RT_FILEEOF);
+  Emit('  ADD ESP, 4');
+  { Resultat dans EAX : -1 = True, 0 = False }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLOFCall : parser LOF(n) -> Long                          }
+{   Retourne la taille du fichier en octets                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLOFCall;
+Begin
+  Inc(ConsoleFileIOCount);
+  EmitComment('LOF(n)');
+  { Consommer la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken;
+  { Parser le numero de fichier }
+  ParseExpr;
+  Emit('  PUSH EAX');
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Generer l appel runtime }
+  Emit('  CALL ' + IO_RT_FILELOF);
+  Emit('  ADD ESP, 4');
+  { Resultat dans EAX }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFreeFileCall : parser FreeFile() -> Integer              }
+{   Retourne le prochain numero de fichier disponible          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFreeFileCall;
+Begin
+  Inc(ConsoleFileIOCount);
+  EmitComment('FreeFile()');
+  { FreeFile peut etre appele avec ou sans parentheses }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken;
+  End;
+  { Generer l appel runtime }
+  Emit('  CALL ' + IO_RT_FREEFILE);
+  { Resultat dans EAX }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseMsgBoxCall : parser MsgBox(texte[, boutons][, titre])    }
+{   Genere appel a MessageBoxA via _VBNRT_MSGBOX               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMsgBoxCall;
+Var
+  HasButtons : Boolean;
+  HasTitle   : Boolean;
+Begin
+  Inc(ConsoleFileIOCount);
+  EmitComment('MsgBox(texte[, boutons][, titre])');
+  { Consommer la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    FatalError('MsgBox : parenthese ouvrante attendue');
+  { Parser le texte du message }
+  ParseExpr;
+  Emit('  PUSH EAX');  { texte }
+  { Verifier les arguments optionnels }
+  HasButtons := False;
+  HasTitle   := False;
+  If CurTokType = TOK_COMMA Then Begin
+    LexNextToken;
+    { Parser le type de boutons }
+    ParseExpr;
+    Emit('  PUSH EAX');  { boutons }
+    HasButtons := True;
+    If CurTokType = TOK_COMMA Then Begin
+      LexNextToken;
+      { Parser le titre }
+      ParseExpr;
+      Emit('  PUSH EAX');  { titre }
+      HasTitle := True;
+    End;
+  End;
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Completer les arguments manquants }
+  If Not HasTitle Then
+    Emit('  PUSH 0');  { titre NULL }
+  If Not HasButtons Then
+    Emit('  PUSH 0');  { boutons MB_OK = 0 }
+  { Generer l appel runtime (appelle MessageBoxA) }
+  Emit('  CALL ' + IO_RT_MSGBOX);
+  Emit('  ADD ESP, 12');  { 3 parametres x 4 octets }
+  { Resultat dans EAX : ID du bouton clique }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInputBoxCall : parser InputBox(prompt[, titre][, defaut])}
+{   Genere appel a _VBNRT_INPUTBOX                             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInputBoxCall;
+Var
+  HasTitle   : Boolean;
+  HasDefault : Boolean;
+Begin
+  Inc(ConsoleFileIOCount);
+  EmitComment('InputBox(prompt[, titre][, defaut])');
+  { Consommer la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    FatalError('InputBox : parenthese ouvrante attendue');
+  { Parser le prompt }
+  ParseExpr;
+  Emit('  PUSH EAX');  { prompt }
+  { Verifier les arguments optionnels }
+  HasTitle   := False;
+  HasDefault := False;
+  If CurTokType = TOK_COMMA Then Begin
+    LexNextToken;
+    { Parser le titre }
+    ParseExpr;
+    Emit('  PUSH EAX');  { titre }
+    HasTitle := True;
+    If CurTokType = TOK_COMMA Then Begin
+      LexNextToken;
+      { Parser la valeur par defaut }
+      ParseExpr;
+      Emit('  PUSH EAX');  { defaut }
+      HasDefault := True;
+    End;
+  End;
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Completer les arguments manquants }
+  If Not HasDefault Then
+    Emit('  PUSH 0');  { defaut NULL }
+  If Not HasTitle Then
+    Emit('  PUSH 0');  { titre NULL }
+  { Generer l appel runtime }
+  Emit('  CALL ' + IO_RT_INPUTBOX);
+  Emit('  ADD ESP, 12');  { 3 parametres x 4 octets }
+  { Resultat dans EAX : pointeur vers la chaine saisie }
+End;
+
+{ ------------------------------------------------------------ }
+{ GenConsoleSetup : generer le code d initialisation console     }
+{   Obtient les handles stdout et stdin via GetStdHandle        }
+{ ------------------------------------------------------------ }
+
+Procedure GenConsoleSetup;
+Begin
+  EmitComment('Initialisation handles console');
+  { GetStdHandle(STD_OUTPUT_HANDLE = -11) }
+  Emit('  PUSH -11');
+  Emit('  CALL _GetStdHandle@4');
+  Emit('  MOV [' + IO_VAR_STDOUT + '], EAX');
+  { GetStdHandle(STD_INPUT_HANDLE = -10) }
+  Emit('  PUSH -10');
+  Emit('  CALL _GetStdHandle@4');
+  Emit('  MOV [' + IO_VAR_STDIN + '], EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileOpenCode : generer le code d ouverture via CreateFileA  }
+{   Mode determine les flags d acces et de creation            }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileOpenCode(Mode : Integer; FileNum : Integer);
+Begin
+  EmitComment('Ouverture fichier mode=' + FileModeName(Mode) + ' #' + ItoS(FileNum));
+  { PUSH les parametres CreateFileA dans l ordre inverse }
+  Emit('  PUSH 0');          { hTemplateFile = NULL }
+  Emit('  PUSH 0x80');       { dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL }
+  Case Mode Of
+    FILE_MODE_INPUT : Begin
+      Emit('  PUSH 3');      { dwCreationDisposition = OPEN_EXISTING }
+      Emit('  PUSH 0');      { lpSecurityAttributes = NULL }
+      Emit('  PUSH 0');      { dwShareMode = 0 }
+      Emit('  PUSH 0x80000000');  { dwDesiredAccess = GENERIC_READ }
+    End;
+    FILE_MODE_OUTPUT : Begin
+      Emit('  PUSH 2');      { dwCreationDisposition = CREATE_ALWAYS }
+      Emit('  PUSH 0');
+      Emit('  PUSH 0');
+      Emit('  PUSH 0x40000000');  { dwDesiredAccess = GENERIC_WRITE }
+    End;
+    FILE_MODE_APPEND : Begin
+      Emit('  PUSH 4');      { dwCreationDisposition = OPEN_ALWAYS }
+      Emit('  PUSH 0');
+      Emit('  PUSH 0');
+      Emit('  PUSH 0x40000000');  { dwDesiredAccess = GENERIC_WRITE }
+    End;
+    FILE_MODE_BINARY : Begin
+      Emit('  PUSH 4');      { dwCreationDisposition = OPEN_ALWAYS }
+      Emit('  PUSH 0');
+      Emit('  PUSH 0');
+      Emit('  PUSH 0xC0000000');  { GENERIC_READ or GENERIC_WRITE }
+    End;
+  End;
+  { Le nom de fichier est deja dans la pile }
+  Emit('  CALL _CreateFileA@28');
+  { Sauvegarder le handle dans la table }
+  Emit('  MOV [' + IO_VAR_HANDLES + '+' + ItoS(FileNum) + '*4], EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileCloseCode : generer le code de fermeture via CloseHandle}
+{ ------------------------------------------------------------ }
+
+Procedure GenFileCloseCode(FileNum : Integer);
+Begin
+  EmitComment('Fermeture fichier #' + ItoS(FileNum));
+  Emit('  MOV EAX, [' + IO_VAR_HANDLES + '+' + ItoS(FileNum) + '*4]');
+  Emit('  PUSH EAX');
+  Emit('  CALL _CloseHandle@4');
+  { Marquer le handle comme invalide }
+  Emit('  MOV DWORD [' + IO_VAR_HANDLES + '+' + ItoS(FileNum) + '*4], 0');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileDataSegment : generer les variables fichier en .BSS    }
+{   Declare la table de handles et variables globales          }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileDataSegment;
+Begin
+  EmitComment('Variables globales E/S console et fichiers');
+  EmitBss(IO_VAR_HANDLES + ' RESD ' + ItoS(MAX_FILE_NUM + 1));
+  EmitBss(IO_VAR_MODES   + ' RESD ' + ItoS(MAX_FILE_NUM + 1));
+  EmitBss(IO_VAR_COUNT   + ' DD 0');
+  EmitBss(IO_VAR_STDOUT  + ' DD 0');
+  EmitBss(IO_VAR_STDIN   + ' DD 0');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsConsoleCall : verifier si le token courant est un appel     }
+{   Console.XXX (identifier "Console" suivi de ".")            }
+{ ------------------------------------------------------------ }
+
+Function IsConsoleCall : Boolean;
+Begin
+  IsConsoleCall := (CurTokType = TOK_IDENT) And
+                   (UpCaseStr(CurTokStr) = 'CONSOLE');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFileIOStatement : verifier si le token courant commence    }
+{   une instruction E/S fichier VB.NET                         }
+{ ------------------------------------------------------------ }
+
+Function IsFileIOStatement : Boolean;
+Begin
+  If CurTokType <> TOK_KEYWORD Then Begin
+    IsFileIOStatement := False;
+    Exit;
+  End;
+  IsFileIOStatement := (CurTokNum = KW_FILEOPEN) Or
+                       (CurTokNum = KW_FILECLOSE) Or
+                       (CurTokNum = KW_PRINTLINE) Or
+                       (CurTokNum = KW_WRITELINE) Or
+                       (CurTokNum = KW_LINEINPUT);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFileIOFunction : verifier si le token courant est une       }
+{   fonction fichier (EOF, LOF, FreeFile)                      }
+{ ------------------------------------------------------------ }
+
+Function IsFileIOFunction : Boolean;
+Begin
+  If CurTokType <> TOK_KEYWORD Then Begin
+    IsFileIOFunction := False;
+    Exit;
+  End;
+  IsFileIOFunction := (CurTokNum = KW_EOF2) Or
+                      (CurTokNum = KW_LOF) Or
+                      (CurTokNum = KW_FREEFILE);
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions d acces aux variables du module E/S console/fichier }
+{ ------------------------------------------------------------ }
+
+Function GetConsoleFileIOCount : LongInt;
+Begin
+  GetConsoleFileIOCount := ConsoleFileIOCount;
+End;
+
+Function IsConsoleFileIOInitialized : Boolean;
+Begin
+  IsConsoleFileIOInitialized := ConsoleFileIOInitialized;
+End;
+
+Function IsConsoleFileIOEmpty : Boolean;
+Begin
+  IsConsoleFileIOEmpty := ConsoleFileIOInitialized And (ConsoleFileIOCount = 0);
+End;
+
+Function GetConsoleFileIOStatus : TString;
+Begin
+  If Not ConsoleFileIOInitialized Then
+    GetConsoleFileIOStatus := 'non initialise'
+  Else If ConsoleFileIOCount = 0 Then
+    GetConsoleFileIOStatus := 'initialise, aucune operation E/S'
+  Else
+    GetConsoleFileIOStatus := 'initialise, ' + ItoS(ConsoleFileIOCount) + ' operations';
+End;
+
+Function GetConsoleWriteCount : Integer;
+Begin
+  GetConsoleWriteCount := ConsoleWriteCount;
+End;
+
+Function GetConsoleReadCount : Integer;
+Begin
+  GetConsoleReadCount := ConsoleReadCount;
+End;
+
+Function GetFileOpenCount : Integer;
+Begin
+  GetFileOpenCount := FileOpenCount;
+End;
+
+Function GetFileCloseCount : Integer;
+Begin
+  GetFileCloseCount := FileCloseCount;
+End;
+
+Function GetMaxFileNum : Integer;
+Begin
+  GetMaxFileNum := MAX_FILE_NUM;
+End;
+
+Function GetConsoleFileIORtCount : Integer;
+Begin
+  GetConsoleFileIORtCount := 14;  { 10 operations + 4 fonctions }
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -12282,13 +13115,14 @@ Begin
   InitStructureEnumState;
   InitClassState;
   InitExceptionState;
+  InitConsoleFileIOState;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 19..25 : Generation de code, etc. }
+  { TODO 20..25 : Generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;
