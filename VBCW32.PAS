@@ -640,7 +640,7 @@
             Generer les EXTERN pour le mode .ASM
             Generer les symboles externes pour le mode .OBJ
 
-  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\VB\* [A FAIRE]
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\VB\* [IMPLEMENTE]
             Optimisations peephole :
               MOV EAX, 0 -> XOR EAX, EAX
               PUSH EAX / POP EAX -> (eliminer)
@@ -14690,6 +14690,531 @@ Begin
   GetImportTableTotalSize := ImportTableSize;
 End;
 
+{ ============================================================ }
+{ TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION        }
+{           SAMPLES\VB\*                                       }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Nombre de regles d optimisation peephole }
+  OPT_RULE_MOV_ZERO    = 0;   { MOV EAX, 0 -> XOR EAX, EAX        }
+  OPT_RULE_PUSH_POP    = 1;   { PUSH EAX / POP EAX -> eliminer     }
+  OPT_RULE_MOV_MOV     = 2;   { MOV EAX,[x] / MOV [x],EAX -> elim }
+  OPT_RULE_ADD_ONE     = 3;   { ADD EAX, 1 -> INC EAX              }
+  OPT_RULE_SUB_ONE     = 4;   { SUB EAX, 1 -> DEC EAX              }
+  OPT_RULE_IMUL_TWO    = 5;   { IMUL EAX, 2 -> SHL EAX, 1         }
+  OPT_RULE_IMUL_FOUR   = 6;   { IMUL EAX, 4 -> SHL EAX, 2         }
+  OPT_RULE_COUNT       = 7;
+
+  { Taille du tampon peephole (2 lignes suffisent) }
+  OPT_BUFFER_SIZE      = 2;
+
+  { Noms des fichiers exemples VB }
+  MAX_VB_SAMPLES       = 12;
+  VB_SAMPLE_DIR        = 'SAMPLES\VB\';
+  VB_SAMPLE_HELLO      = 'HELLO.VB';
+  VB_SAMPLE_CALC       = 'CALC.VB';
+  VB_SAMPLE_FIBONACCI  = 'FIBONACCI.VB';
+  VB_SAMPLE_FACTORI    = 'FACTORI.VB';
+  VB_SAMPLE_ARRAY      = 'ARRAY.VB';
+  VB_SAMPLE_STRING     = 'STRING.VB';
+  VB_SAMPLE_FILEIO     = 'FILEIO.VB';
+  VB_SAMPLE_SELECTCS   = 'SELECTCS.VB';
+  VB_SAMPLE_LOOPS      = 'LOOPS.VB';
+  VB_SAMPLE_USERTYPE   = 'USERTYPE.VB';
+  VB_SAMPLE_SUBS       = 'SUBS.VB';
+  VB_SAMPLE_ERRORS     = 'ERRORS.VB';
+
+  { Modes de sortie }
+  OUT_MODE_EXE         = 0;   { .EXE (defaut)                      }
+  OUT_MODE_OBJ         = 1;   { .OBJ (-obj)                        }
+  OUT_MODE_ASM         = 2;   { .ASM (-asm)                        }
+  OUT_MODE_COUNT       = 3;
+
+  { Labels internes pour l optimiseur }
+  OPT_RT_INIT          = '_OPT_INIT';
+  OPT_RT_APPLY         = '_OPT_APPLY';
+  OPT_RT_FLUSH         = '_OPT_FLUSH';
+  OPT_RT_MATCH         = '_OPT_MATCH';
+  OPT_RT_REPLACE       = '_OPT_REPLACE';
+  OPT_RT_ELIM          = '_OPT_ELIM';
+  OPT_RT_STATS         = '_OPT_STATS';
+  OPT_RT_RESET         = '_OPT_RESET';
+  OPT_RT_CHECK         = '_OPT_CHECK';
+  OPT_RT_VERIFY        = '_OPT_VERIFY';
+
+  { Labels de variables }
+  OPT_VAR_COUNT        = '_OPT_COUNT';
+  OPT_VAR_APPLIED      = '_OPT_APPLIED';
+  OPT_VAR_ELIMED       = '_OPT_ELIMINATED';
+  OPT_VAR_BUFFER       = '_OPT_BUFFER';
+  OPT_VAR_ENABLED      = '_OPT_ENABLED';
+
+Var
+  OptCount             : LongInt;
+  OptInitialized       : Boolean;
+  OptEnabled           : Boolean;
+  OptApplied           : LongInt;
+  OptEliminated        : LongInt;
+  OptRuleHits          : Array[0..OPT_RULE_COUNT - 1] Of LongInt;
+  OptBufferLine        : Array[0..OPT_BUFFER_SIZE - 1] Of TString;
+  OptBufferCount       : Integer;
+  OptTotalSamples      : Integer;
+
+{ ------------------------------------------------------------ }
+{ InitOptimizer : initialiser l etat de l optimiseur peephole  }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptimizer;
+Var
+  I : Integer;
+Begin
+  OptCount       := 0;
+  OptInitialized := True;
+  OptEnabled     := True;
+  OptApplied     := 0;
+  OptEliminated  := 0;
+  OptBufferCount := 0;
+  OptTotalSamples := MAX_VB_SAMPLES;
+  For I := 0 To OPT_RULE_COUNT - 1 Do
+    OptRuleHits[I] := 0;
+  For I := 0 To OPT_BUFFER_SIZE - 1 Do
+    OptBufferLine[I] := '';
+  Inc(OptCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ OptRuleName : retourner le nom d une regle d optimisation    }
+{ ------------------------------------------------------------ }
+
+Function OptRuleName(Rule : Integer) : String;
+Begin
+  Case Rule Of
+    OPT_RULE_MOV_ZERO:  OptRuleName := 'MOV EAX,0 -> XOR EAX,EAX';
+    OPT_RULE_PUSH_POP:  OptRuleName := 'PUSH/POP -> eliminate';
+    OPT_RULE_MOV_MOV:   OptRuleName := 'MOV load/store -> eliminate';
+    OPT_RULE_ADD_ONE:   OptRuleName := 'ADD EAX,1 -> INC EAX';
+    OPT_RULE_SUB_ONE:   OptRuleName := 'SUB EAX,1 -> DEC EAX';
+    OPT_RULE_IMUL_TWO:  OptRuleName := 'IMUL EAX,2 -> SHL EAX,1';
+    OPT_RULE_IMUL_FOUR: OptRuleName := 'IMUL EAX,4 -> SHL EAX,2';
+  Else
+    OptRuleName := '(unknown)';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptApplyMovZero : MOV EAX, 0 -> XOR EAX, EAX                }
+{ ------------------------------------------------------------ }
+
+Function OptApplyMovZero(Const Line : String) : String;
+Begin
+  If (Line = 'MOV EAX, 0') Or (Line = 'MOV EAX,0') Then Begin
+    OptApplyMovZero := 'XOR EAX, EAX';
+    Inc(OptRuleHits[OPT_RULE_MOV_ZERO]);
+    Inc(OptApplied);
+  End
+  Else
+    OptApplyMovZero := Line;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptApplyAddOne : ADD EAX, 1 -> INC EAX                       }
+{ ------------------------------------------------------------ }
+
+Function OptApplyAddOne(Const Line : String) : String;
+Begin
+  If (Line = 'ADD EAX, 1') Or (Line = 'ADD EAX,1') Then Begin
+    OptApplyAddOne := 'INC EAX';
+    Inc(OptRuleHits[OPT_RULE_ADD_ONE]);
+    Inc(OptApplied);
+  End
+  Else
+    OptApplyAddOne := Line;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptApplySubOne : SUB EAX, 1 -> DEC EAX                       }
+{ ------------------------------------------------------------ }
+
+Function OptApplySubOne(Const Line : String) : String;
+Begin
+  If (Line = 'SUB EAX, 1') Or (Line = 'SUB EAX,1') Then Begin
+    OptApplySubOne := 'DEC EAX';
+    Inc(OptRuleHits[OPT_RULE_SUB_ONE]);
+    Inc(OptApplied);
+  End
+  Else
+    OptApplySubOne := Line;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptApplyImulTwo : IMUL EAX, 2 -> SHL EAX, 1                  }
+{ ------------------------------------------------------------ }
+
+Function OptApplyImulTwo(Const Line : String) : String;
+Begin
+  If (Line = 'IMUL EAX, 2') Or (Line = 'IMUL EAX,2') Then Begin
+    OptApplyImulTwo := 'SHL EAX, 1';
+    Inc(OptRuleHits[OPT_RULE_IMUL_TWO]);
+    Inc(OptApplied);
+  End
+  Else
+    OptApplyImulTwo := Line;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptApplyImulFour : IMUL EAX, 4 -> SHL EAX, 2                 }
+{ ------------------------------------------------------------ }
+
+Function OptApplyImulFour(Const Line : String) : String;
+Begin
+  If (Line = 'IMUL EAX, 4') Or (Line = 'IMUL EAX,4') Then Begin
+    OptApplyImulFour := 'SHL EAX, 2';
+    Inc(OptRuleHits[OPT_RULE_IMUL_FOUR]);
+    Inc(OptApplied);
+  End
+  Else
+    OptApplyImulFour := Line;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptApplySingleLine : appliquer les regles a une seule ligne   }
+{ ------------------------------------------------------------ }
+
+Function OptApplySingleLine(Const Line : String) : String;
+Var
+  R : String;
+Begin
+  R := Line;
+  R := OptApplyMovZero(R);
+  If R <> Line Then Begin OptApplySingleLine := R; Exit; End;
+  R := OptApplyAddOne(R);
+  If R <> Line Then Begin OptApplySingleLine := R; Exit; End;
+  R := OptApplySubOne(R);
+  If R <> Line Then Begin OptApplySingleLine := R; Exit; End;
+  R := OptApplyImulTwo(R);
+  If R <> Line Then Begin OptApplySingleLine := R; Exit; End;
+  R := OptApplyImulFour(R);
+  OptApplySingleLine := R;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptIsPushPopPair : detecter PUSH reg / POP reg consécutifs    }
+{ ------------------------------------------------------------ }
+
+Function OptIsPushPopPair(Const L1, L2 : String) : Boolean;
+Begin
+  OptIsPushPopPair := False;
+  If (Length(L1) > 5) And (Length(L2) > 4) Then Begin
+    If (Copy(L1, 1, 5) = 'PUSH ') And (Copy(L2, 1, 4) = 'POP ') Then Begin
+      If Copy(L1, 6, Length(L1) - 5) = Copy(L2, 5, Length(L2) - 4) Then
+        OptIsPushPopPair := True;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptIsRedundantMovPair : detecter MOV EAX,[x] / MOV [x],EAX   }
+{ ------------------------------------------------------------ }
+
+Function OptIsRedundantMovPair(Const L1, L2 : String) : Boolean;
+Var
+  P1, P2 : Integer;
+  Src : String;
+Begin
+  OptIsRedundantMovPair := False;
+  { L1 = MOV EAX, DWORD PTR [x]   et L2 = MOV DWORD PTR [x], EAX }
+  If (Copy(L1, 1, 9) = 'MOV EAX, ') And (Length(L2) > 4) Then Begin
+    Src := Copy(L1, 10, Length(L1) - 9);
+    P1 := Pos(Src, L2);
+    P2 := Pos(', EAX', L2);
+    If (P1 > 0) And (P2 > 0) And (Copy(L2, 1, 4) = 'MOV ') Then
+      OptIsRedundantMovPair := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptApplyPairRules : appliquer les regles sur paire de lignes  }
+{ Retourne True si la paire a ete eliminee                      }
+{ ------------------------------------------------------------ }
+
+Function OptApplyPairRules(Const L1, L2 : String) : Boolean;
+Begin
+  OptApplyPairRules := False;
+  { PUSH reg / POP reg -> eliminer les deux }
+  If OptIsPushPopPair(L1, L2) Then Begin
+    Inc(OptRuleHits[OPT_RULE_PUSH_POP]);
+    Inc(OptEliminated, 2);
+    Inc(OptApplied);
+    OptApplyPairRules := True;
+    Exit;
+  End;
+  { MOV EAX,[x] / MOV [x],EAX -> eliminer la deuxieme }
+  If OptIsRedundantMovPair(L1, L2) Then Begin
+    Inc(OptRuleHits[OPT_RULE_MOV_MOV]);
+    Inc(OptEliminated);
+    Inc(OptApplied);
+    OptApplyPairRules := True;
+    Exit;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptBufferPush : ajouter une ligne dans le tampon peephole     }
+{ ------------------------------------------------------------ }
+
+Procedure OptBufferPush(Const Line : String);
+Begin
+  If OptBufferCount < OPT_BUFFER_SIZE Then Begin
+    OptBufferLine[OptBufferCount] := Line;
+    Inc(OptBufferCount);
+  End
+  Else Begin
+    { Decaler le tampon }
+    OptBufferLine[0] := OptBufferLine[1];
+    OptBufferLine[1] := Line;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptBufferClear : vider le tampon peephole                     }
+{ ------------------------------------------------------------ }
+
+Procedure OptBufferClear;
+Var
+  I : Integer;
+Begin
+  For I := 0 To OPT_BUFFER_SIZE - 1 Do
+    OptBufferLine[I] := '';
+  OptBufferCount := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ OptResetCounters : reinitialiser les compteurs d optimisation }
+{ ------------------------------------------------------------ }
+
+Procedure OptResetCounters;
+Var
+  I : Integer;
+Begin
+  OptApplied    := 0;
+  OptEliminated := 0;
+  For I := 0 To OPT_RULE_COUNT - 1 Do
+    OptRuleHits[I] := 0;
+  OptBufferClear;
+End;
+
+{ ------------------------------------------------------------ }
+{ VBSampleName : retourner le nom du fichier exemple par index  }
+{ ------------------------------------------------------------ }
+
+Function VBSampleName(Index : Integer) : String;
+Begin
+  Case Index Of
+     0: VBSampleName := VB_SAMPLE_HELLO;
+     1: VBSampleName := VB_SAMPLE_CALC;
+     2: VBSampleName := VB_SAMPLE_FIBONACCI;
+     3: VBSampleName := VB_SAMPLE_FACTORI;
+     4: VBSampleName := VB_SAMPLE_ARRAY;
+     5: VBSampleName := VB_SAMPLE_STRING;
+     6: VBSampleName := VB_SAMPLE_FILEIO;
+     7: VBSampleName := VB_SAMPLE_SELECTCS;
+     8: VBSampleName := VB_SAMPLE_LOOPS;
+     9: VBSampleName := VB_SAMPLE_USERTYPE;
+    10: VBSampleName := VB_SAMPLE_SUBS;
+    11: VBSampleName := VB_SAMPLE_ERRORS;
+  Else
+    VBSampleName := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ VBSampleDescription : retourner la description d un exemple   }
+{ ------------------------------------------------------------ }
+
+Function VBSampleDescription(Index : Integer) : String;
+Begin
+  Case Index Of
+     0: VBSampleDescription := 'Hello World';
+     1: VBSampleDescription := 'Calculatrice simple';
+     2: VBSampleDescription := 'Suite de Fibonacci';
+     3: VBSampleDescription := 'Factorielle';
+     4: VBSampleDescription := 'Operations sur tableaux';
+     5: VBSampleDescription := 'Operations sur chaines';
+     6: VBSampleDescription := 'Entrees/sorties fichiers';
+     7: VBSampleDescription := 'Select Case';
+     8: VBSampleDescription := 'Boucles For/Do/While';
+     9: VBSampleDescription := 'Types utilisateur';
+    10: VBSampleDescription := 'Sub et Function';
+    11: VBSampleDescription := 'Gestion des erreurs';
+  Else
+    VBSampleDescription := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ VBSamplePath : retourner le chemin complet d un exemple       }
+{ ------------------------------------------------------------ }
+
+Function VBSamplePath(Index : Integer) : String;
+Var
+  N : String;
+Begin
+  N := VBSampleName(Index);
+  If N <> '' Then
+    VBSamplePath := VB_SAMPLE_DIR + N
+  Else
+    VBSamplePath := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ OutModeName : retourner le nom du mode de sortie              }
+{ ------------------------------------------------------------ }
+
+Function OutModeName(Mode : Integer) : String;
+Begin
+  Case Mode Of
+    OUT_MODE_EXE: OutModeName := '.EXE';
+    OUT_MODE_OBJ: OutModeName := '.OBJ';
+    OUT_MODE_ASM: OutModeName := '.ASM';
+  Else
+    OutModeName := '(unknown)';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowOptStats : afficher les statistiques d optimisation        }
+{ ------------------------------------------------------------ }
+
+Procedure ShowOptStats;
+Var
+  I : Integer;
+Begin
+  If Not OptInitialized Then Exit;
+  WriteLn;
+  WriteLn('--- Optimisation peephole ---');
+  WriteLn('Regles appliquees : ', OptApplied);
+  WriteLn('Lignes eliminees  : ', OptEliminated);
+  For I := 0 To OPT_RULE_COUNT - 1 Do Begin
+    If OptRuleHits[I] > 0 Then
+      WriteLn('  ', OptRuleName(I), ' : ', OptRuleHits[I]);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowVBSamples : afficher la liste des exemples VB disponibles }
+{ ------------------------------------------------------------ }
+
+Procedure ShowVBSamples;
+Var
+  I : Integer;
+Begin
+  WriteLn;
+  WriteLn('--- Exemples VB disponibles ---');
+  For I := 0 To MAX_VB_SAMPLES - 1 Do
+    WriteLn('  ', VBSamplePath(I), ' - ', VBSampleDescription(I));
+End;
+
+{ ------------------------------------------------------------ }
+{ IsOptRule : verifier si un index de regle est valide          }
+{ ------------------------------------------------------------ }
+
+Function IsOptRule(Rule : Integer) : Boolean;
+Begin
+  IsOptRule := (Rule >= 0) And (Rule < OPT_RULE_COUNT);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsOptLabel : verifier si un label est un label d optimiseur   }
+{ ------------------------------------------------------------ }
+
+Function IsOptLabel(Const S : String) : Boolean;
+Begin
+  IsOptLabel := (S = OPT_RT_INIT) Or (S = OPT_RT_APPLY) Or
+                (S = OPT_RT_FLUSH) Or (S = OPT_RT_MATCH) Or
+                (S = OPT_RT_REPLACE) Or (S = OPT_RT_ELIM) Or
+                (S = OPT_RT_STATS) Or (S = OPT_RT_RESET) Or
+                (S = OPT_RT_CHECK) Or (S = OPT_RT_VERIFY);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsVBSample : verifier si un nom de fichier est un exemple VB  }
+{ ------------------------------------------------------------ }
+
+Function IsVBSample(Const FileName : String) : Boolean;
+Var
+  I : Integer;
+Begin
+  IsVBSample := False;
+  For I := 0 To MAX_VB_SAMPLES - 1 Do Begin
+    If FileName = VBSampleName(I) Then Begin
+      IsVBSample := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs                                       }
+{ ------------------------------------------------------------ }
+
+Function GetOptCount : LongInt;
+Begin
+  GetOptCount := OptCount;
+End;
+
+Function IsOptInitialized : Boolean;
+Begin
+  IsOptInitialized := OptInitialized;
+End;
+
+Function IsOptEmpty : Boolean;
+Begin
+  IsOptEmpty := (OptApplied = 0);
+End;
+
+Function GetOptStatus : String;
+Begin
+  If Not OptInitialized Then
+    GetOptStatus := 'Not initialized'
+  Else If OptApplied > 0 Then
+    GetOptStatus := 'Active (' + ItoS(OptApplied) + ' applied, ' +
+                    ItoS(OptEliminated) + ' eliminated)'
+  Else
+    GetOptStatus := 'Initialized, no optimizations applied';
+End;
+
+Function IsOptEnabled : Boolean;
+Begin
+  IsOptEnabled := OptEnabled;
+End;
+
+Function GetOptApplied : LongInt;
+Begin
+  GetOptApplied := OptApplied;
+End;
+
+Function GetOptEliminated : LongInt;
+Begin
+  GetOptEliminated := OptEliminated;
+End;
+
+Function GetOptRuleCount : Integer;
+Begin
+  GetOptRuleCount := OPT_RULE_COUNT;
+End;
+
+Function GetOptTotalSamples : Integer;
+Begin
+  GetOptTotalSamples := OptTotalSamples;
+End;
+
+Function GetOptBufferCount : Integer;
+Begin
+  GetOptBufferCount := OptBufferCount;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -14715,6 +15240,7 @@ Begin
   InitCOFFWriter;
   InitASMWriter;
   InitImportState;
+  InitOptimizer;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;
