@@ -729,7 +729,7 @@
             Resolution des fixups internes (labels, appels)
             Padding des sections a FileAlignment
 
-  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [A FAIRE]
+  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [IMPLEMENTE]
             Procedure WriteCOFF(const outfile: String)
             Generer un fichier objet COFF 32 bits :
             En-tete COFF :

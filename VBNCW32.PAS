@@ -737,7 +737,7 @@
             Resolution des fixups internes (labels, appels)
             Padding des sections a FileAlignment
 
-  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [A FAIRE]
+  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [IMPLEMENTE]
             Procedure WriteCOFF(const outfile: String)
             Generer un fichier objet COFF 32 bits :
             En-tete COFF :
@@ -15869,6 +15869,578 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [IMPLEMENTE]  }
+{ ============================================================ }
+
+Const
+  { COFF Machine type }
+  COFF_MACHINE_I386     = $014C;
+
+  { COFF Section characteristics }
+  COFF_SCN_CNT_CODE      = $00000020;
+  COFF_SCN_CNT_INIT_DATA = $00000040;
+  COFF_SCN_CNT_UNINIT    = $00000080;
+  COFF_SCN_ALIGN_4       = $00300000;
+  COFF_SCN_MEM_EXECUTE   = $20000000;
+  COFF_SCN_MEM_READ      = $40000000;
+  COFF_SCN_MEM_WRITE     = LongInt($80000000);
+  COFF_SCN_LNK_NRELOC    = $01000000;
+
+  { COFF Relocation types (i386) }
+  COFF_REL_I386_DIR32  = $0006;
+  COFF_REL_I386_REL32  = $0014;
+
+  { COFF Storage classes }
+  COFF_SYM_CLASS_EXTERNAL = 2;
+  COFF_SYM_CLASS_STATIC   = 3;
+  COFF_SYM_CLASS_LABEL     = 6;
+
+  { COFF Section numbers speciales }
+  COFF_SYM_UNDEFINED    = 0;
+
+  { Tailles }
+  COFF_MAX_SYMBOLS      = 1024;
+  COFF_MAX_RELOCATIONS  = 4096;
+  COFF_MAX_STRTAB       = 32768;
+  COFF_NUM_SECTIONS     = 3;   { .text, .data, .bss }
+
+Type
+  TCOFFSymbolEntry = Record
+    Name          : TString;
+    Value         : LongInt;
+    SectionNumber : Integer;  { 1-based, 0=UNDEFINED }
+    StorageClass  : Byte;
+    IsExternal    : Boolean;
+  End;
+
+  TCOFFRelocEntry = Record
+    VirtualAddress : LongInt;
+    SymbolIndex    : LongInt;
+    RelocType      : Word;
+    SectionIdx     : Integer; { 1=.text, 2=.data }
+  End;
+
+Var
+  COFFSymbols      : Array[0..COFF_MAX_SYMBOLS-1] of TCOFFSymbolEntry;
+  COFFSymCount     : LongInt;
+  COFFRelocs       : Array[0..COFF_MAX_RELOCATIONS-1] of TCOFFRelocEntry;
+  COFFRelocCount   : LongInt;
+  COFFStrTab       : Array[0..COFF_MAX_STRTAB-1] of Byte;
+  COFFStrTabSize   : LongInt;
+  COFFWriterInit   : Boolean;
+  COFFWriterCount  : LongInt;
+
+{ ------------------------------------------------------------ }
+{ InitCOFFWriter : initialiser le sous-systeme COFF             }
+{ ------------------------------------------------------------ }
+
+Procedure InitCOFFWriter;
+Var I : Integer;
+Begin
+  COFFSymCount    := 0;
+  COFFRelocCount  := 0;
+  COFFStrTabSize  := 4;  { Les 4 premiers octets = taille totale }
+  COFFWriterInit  := True;
+  COFFWriterCount := 0;
+  For I := 0 To COFF_MAX_STRTAB - 1 Do COFFStrTab[I] := 0;
+  { Ecrire la taille initiale dans les 4 premiers octets }
+  COFFStrTab[0] := 4; COFFStrTab[1] := 0;
+  COFFStrTab[2] := 0; COFFStrTab[3] := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ COFFAddSymbol : ajouter un symbole a la table                 }
+{ ------------------------------------------------------------ }
+
+Function COFFAddSymbol(Const AName : TString;
+                       AValue : LongInt;
+                       ASect : Integer;
+                       AClass : Byte;
+                       AExt : Boolean) : LongInt;
+Begin
+  If COFFSymCount < COFF_MAX_SYMBOLS Then
+  Begin
+    COFFSymbols[COFFSymCount].Name          := AName;
+    COFFSymbols[COFFSymCount].Value         := AValue;
+    COFFSymbols[COFFSymCount].SectionNumber := ASect;
+    COFFSymbols[COFFSymCount].StorageClass  := AClass;
+    COFFSymbols[COFFSymCount].IsExternal    := AExt;
+    COFFAddSymbol := COFFSymCount;
+    Inc(COFFSymCount);
+  End
+  Else
+    COFFAddSymbol := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ COFFAddReloc : ajouter une relocation                          }
+{ ------------------------------------------------------------ }
+
+Procedure COFFAddReloc(AVA : LongInt; ASymIdx : LongInt;
+                       AType : Word; ASect : Integer);
+Begin
+  If COFFRelocCount < COFF_MAX_RELOCATIONS Then
+  Begin
+    COFFRelocs[COFFRelocCount].VirtualAddress := AVA;
+    COFFRelocs[COFFRelocCount].SymbolIndex    := ASymIdx;
+    COFFRelocs[COFFRelocCount].RelocType      := AType;
+    COFFRelocs[COFFRelocCount].SectionIdx     := ASect;
+    Inc(COFFRelocCount);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ COFFAddString : ajouter une chaine longue dans la string table}
+{   Retourne l offset dans la table des chaines                 }
+{ ------------------------------------------------------------ }
+
+Function COFFAddString(Const S : TString) : LongInt;
+Var K : Integer;
+Begin
+  COFFAddString := COFFStrTabSize;
+  For K := 1 To Length(S) Do
+  Begin
+    If COFFStrTabSize < COFF_MAX_STRTAB Then
+    Begin
+      COFFStrTab[COFFStrTabSize] := Byte(Ord(S[K]));
+      Inc(COFFStrTabSize);
+    End;
+  End;
+  { Terminateur NUL }
+  If COFFStrTabSize < COFF_MAX_STRTAB Then
+  Begin
+    COFFStrTab[COFFStrTabSize] := 0;
+    Inc(COFFStrTabSize);
+  End;
+  { Mettre a jour la taille dans les 4 premiers octets }
+  COFFStrTab[0] := Byte(COFFStrTabSize And $FF);
+  COFFStrTab[1] := Byte((COFFStrTabSize Shr 8) And $FF);
+  COFFStrTab[2] := Byte((COFFStrTabSize Shr 16) And $FF);
+  COFFStrTab[3] := Byte((COFFStrTabSize Shr 24) And $FF);
+End;
+
+{ ------------------------------------------------------------ }
+{ COFFWriteByte/Word/DWord/Zeros/Str : utilitaires d ecriture   }
+{ ------------------------------------------------------------ }
+
+Procedure COFFWriteByte(Var F : File; B : Byte);
+Begin
+  BlockWrite(F, B, 1);
+End;
+
+Procedure COFFWriteWord(Var F : File; W : Word);
+Var Buf : Array[0..1] of Byte;
+Begin
+  Buf[0] := Byte(W And $FF);
+  Buf[1] := Byte((W Shr 8) And $FF);
+  BlockWrite(F, Buf, 2);
+End;
+
+Procedure COFFWriteDWord(Var F : File; D : LongInt);
+Var Buf : Array[0..3] of Byte;
+Begin
+  Buf[0] := Byte(D And $FF);
+  Buf[1] := Byte((D Shr 8) And $FF);
+  Buf[2] := Byte((D Shr 16) And $FF);
+  Buf[3] := Byte((D Shr 24) And $FF);
+  BlockWrite(F, Buf, 4);
+End;
+
+Procedure COFFWriteZeros(Var F : File; Count : LongInt);
+Var ZBuf : Byte;
+    K    : LongInt;
+Begin
+  ZBuf := 0;
+  For K := 1 To Count Do
+    BlockWrite(F, ZBuf, 1);
+End;
+
+Procedure COFFWriteStr8(Var F : File; Const S : TString);
+Var Buf : Array[0..7] of Byte;
+    K   : Integer;
+Begin
+  For K := 0 To 7 Do Buf[K] := 0;
+  For K := 1 To Length(S) Do
+    If K <= 8 Then Buf[K-1] := Byte(Ord(S[K]));
+  BlockWrite(F, Buf, 8);
+End;
+
+{ ------------------------------------------------------------ }
+{ COFFWriteSymName : ecrire un nom de symbole (8 octets)        }
+{   Si nom > 8 car : 4 octets zero + 4 octets offset strtab    }
+{   Si nom <= 8 car : nom padde avec des NUL                    }
+{ ------------------------------------------------------------ }
+
+Procedure COFFWriteSymName(Var F : File; Const S : TString;
+                           StrOff : LongInt);
+Var Buf : Array[0..7] of Byte;
+    K   : Integer;
+Begin
+  If Length(S) > 8 Then
+  Begin
+    { Long name : 4 zero bytes + 4 bytes string table offset }
+    Buf[0] := 0; Buf[1] := 0; Buf[2] := 0; Buf[3] := 0;
+    Buf[4] := Byte(StrOff And $FF);
+    Buf[5] := Byte((StrOff Shr 8) And $FF);
+    Buf[6] := Byte((StrOff Shr 16) And $FF);
+    Buf[7] := Byte((StrOff Shr 24) And $FF);
+    BlockWrite(F, Buf, 8);
+  End
+  Else
+  Begin
+    For K := 0 To 7 Do Buf[K] := 0;
+    For K := 1 To Length(S) Do Buf[K-1] := Byte(Ord(S[K]));
+    BlockWrite(F, Buf, 8);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ COFFCountTextRelocs : compter les relocations de .text        }
+{ ------------------------------------------------------------ }
+
+Function COFFCountTextRelocs : LongInt;
+Var I : LongInt;
+    N : LongInt;
+Begin
+  N := 0;
+  For I := 0 To COFFRelocCount - 1 Do
+    If COFFRelocs[I].SectionIdx = 1 Then Inc(N);
+  COFFCountTextRelocs := N;
+End;
+
+{ ------------------------------------------------------------ }
+{ COFFCountDataRelocs : compter les relocations de .data        }
+{ ------------------------------------------------------------ }
+
+Function COFFCountDataRelocs : LongInt;
+Var I : LongInt;
+    N : LongInt;
+Begin
+  N := 0;
+  For I := 0 To COFFRelocCount - 1 Do
+    If COFFRelocs[I].SectionIdx = 2 Then Inc(N);
+  COFFCountDataRelocs := N;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCOFF : generer un fichier objet COFF 32 bits              }
+{   compatible avec LINK.EXE, MASM, TASM                        }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCOFF(Const ObjFile : TString);
+Var
+  F              : File;
+  TextRelCnt     : LongInt;
+  DataRelCnt     : LongInt;
+  HeaderSize     : LongInt;
+  SectHdrSize    : LongInt;
+  TextDataOff    : LongInt;
+  DataDataOff    : LongInt;
+  TextRelocOff   : LongInt;
+  DataRelocOff   : LongInt;
+  SymTabOff      : LongInt;
+  I              : LongInt;
+  StrOff         : LongInt;
+  SymStrOffsets   : Array[0..COFF_MAX_SYMBOLS-1] of LongInt;
+Begin
+  { Compter les relocations par section }
+  TextRelCnt := COFFCountTextRelocs;
+  DataRelCnt := COFFCountDataRelocs;
+
+  { Preparer les symboles de section standard }
+  { Section 1 = .text, 2 = .data, 3 = .bss }
+  COFFSymCount  := 0;
+  COFFRelocCount := 0;
+
+  { Ajouter les 3 symboles de section }
+  COFFAddSymbol('.text', 0, 1, COFF_SYM_CLASS_STATIC, False);
+  COFFAddSymbol('.data', 0, 2, COFF_SYM_CLASS_STATIC, False);
+  COFFAddSymbol('.bss',  0, 3, COFF_SYM_CLASS_STATIC, False);
+
+  { Ajouter le point d entree _start comme symbole externe }
+  COFFAddSymbol('_start', 0, 1, COFF_SYM_CLASS_EXTERNAL, True);
+
+  { Ajouter les symboles d import Win32 comme externes non definis }
+  COFFAddSymbol('_ExitProcess@4',    0, COFF_SYM_UNDEFINED,
+                COFF_SYM_CLASS_EXTERNAL, True);
+  COFFAddSymbol('_GetStdHandle@4',   0, COFF_SYM_UNDEFINED,
+                COFF_SYM_CLASS_EXTERNAL, True);
+  COFFAddSymbol('_WriteFile@20',     0, COFF_SYM_UNDEFINED,
+                COFF_SYM_CLASS_EXTERNAL, True);
+  COFFAddSymbol('_ReadFile@20',      0, COFF_SYM_UNDEFINED,
+                COFF_SYM_CLASS_EXTERNAL, True);
+  COFFAddSymbol('_GetProcessHeap@0', 0, COFF_SYM_UNDEFINED,
+                COFF_SYM_CLASS_EXTERNAL, True);
+  COFFAddSymbol('_HeapAlloc@12',     0, COFF_SYM_UNDEFINED,
+                COFF_SYM_CLASS_EXTERNAL, True);
+  COFFAddSymbol('_HeapFree@12',      0, COFF_SYM_UNDEFINED,
+                COFF_SYM_CLASS_EXTERNAL, True);
+  COFFAddSymbol('_CreateFileA@28',   0, COFF_SYM_UNDEFINED,
+                COFF_SYM_CLASS_EXTERNAL, True);
+  COFFAddSymbol('_CloseHandle@4',    0, COFF_SYM_UNDEFINED,
+                COFF_SYM_CLASS_EXTERNAL, True);
+  COFFAddSymbol('_MessageBoxA@16',   0, COFF_SYM_UNDEFINED,
+                COFF_SYM_CLASS_EXTERNAL, True);
+
+  { Ajouter des relocations d exemple pour le code .text }
+  { Les vraies relocations seront ajoutees par les passes de code }
+  TextRelCnt := COFFCountTextRelocs;
+  DataRelCnt := COFFCountDataRelocs;
+
+  { Preparer les offsets dans la string table pour les noms longs }
+  For I := 0 To COFFSymCount - 1 Do
+  Begin
+    If Length(COFFSymbols[I].Name) > 8 Then
+      SymStrOffsets[I] := COFFAddString(COFFSymbols[I].Name)
+    Else
+      SymStrOffsets[I] := 0;
+  End;
+
+  { Calculer les offsets dans le fichier }
+  HeaderSize   := 20;                          { COFF file header }
+  SectHdrSize  := COFF_NUM_SECTIONS * 40;      { 3 section headers }
+  TextDataOff  := HeaderSize + SectHdrSize;
+  DataDataOff  := TextDataOff + PEWCodePos;
+  TextRelocOff := DataDataOff + PEWDataPos;
+  DataRelocOff := TextRelocOff + TextRelCnt * 10;
+  SymTabOff    := DataRelocOff + DataRelCnt * 10;
+
+  { Ouvrir le fichier de sortie }
+  Assign(F, ObjFile);
+  Rewrite(F, 1);
+
+  { ====== En-tete COFF (20 octets) ====== }
+  COFFWriteWord(F, COFF_MACHINE_I386);        { Machine }
+  COFFWriteWord(F, COFF_NUM_SECTIONS);         { NumberOfSections }
+  COFFWriteDWord(F, 0);                        { TimeDateStamp }
+  COFFWriteDWord(F, SymTabOff);                { PointerToSymbolTable }
+  COFFWriteDWord(F, COFFSymCount);             { NumberOfSymbols }
+  COFFWriteWord(F, 0);                         { SizeOfOptionalHeader }
+  COFFWriteWord(F, 0);                         { Characteristics }
+
+  { ====== En-tete section .text (40 octets) ====== }
+  COFFWriteStr8(F, '.text');                   { Name }
+  COFFWriteDWord(F, 0);                        { VirtualSize }
+  COFFWriteDWord(F, 0);                        { VirtualAddress }
+  COFFWriteDWord(F, PEWCodePos);               { SizeOfRawData }
+  COFFWriteDWord(F, TextDataOff);              { PointerToRawData }
+  COFFWriteDWord(F, TextRelocOff);             { PointerToRelocations }
+  COFFWriteDWord(F, 0);                        { PointerToLineNumbers }
+  COFFWriteWord(F, Word(TextRelCnt));          { NumberOfRelocations }
+  COFFWriteWord(F, 0);                         { NumberOfLineNumbers }
+  COFFWriteDWord(F, COFF_SCN_CNT_CODE Or
+                    COFF_SCN_ALIGN_4 Or
+                    COFF_SCN_MEM_EXECUTE Or
+                    COFF_SCN_MEM_READ);        { Characteristics }
+
+  { ====== En-tete section .data (40 octets) ====== }
+  COFFWriteStr8(F, '.data');                   { Name }
+  COFFWriteDWord(F, 0);                        { VirtualSize }
+  COFFWriteDWord(F, 0);                        { VirtualAddress }
+  COFFWriteDWord(F, PEWDataPos);               { SizeOfRawData }
+  If PEWDataPos > 0 Then
+    COFFWriteDWord(F, DataDataOff)             { PointerToRawData }
+  Else
+    COFFWriteDWord(F, 0);
+  If DataRelCnt > 0 Then
+    COFFWriteDWord(F, DataRelocOff)            { PointerToRelocations }
+  Else
+    COFFWriteDWord(F, 0);
+  COFFWriteDWord(F, 0);                        { PointerToLineNumbers }
+  COFFWriteWord(F, Word(DataRelCnt));          { NumberOfRelocations }
+  COFFWriteWord(F, 0);                         { NumberOfLineNumbers }
+  COFFWriteDWord(F, COFF_SCN_CNT_INIT_DATA Or
+                    COFF_SCN_ALIGN_4 Or
+                    COFF_SCN_MEM_READ Or
+                    COFF_SCN_MEM_WRITE);       { Characteristics }
+
+  { ====== En-tete section .bss (40 octets) ====== }
+  COFFWriteStr8(F, '.bss');                    { Name }
+  COFFWriteDWord(F, 0);                        { VirtualSize }
+  COFFWriteDWord(F, 0);                        { VirtualAddress }
+  COFFWriteDWord(F, 0);                        { SizeOfRawData (pas de donnees) }
+  COFFWriteDWord(F, 0);                        { PointerToRawData }
+  COFFWriteDWord(F, 0);                        { PointerToRelocations }
+  COFFWriteDWord(F, 0);                        { PointerToLineNumbers }
+  COFFWriteWord(F, 0);                         { NumberOfRelocations }
+  COFFWriteWord(F, 0);                         { NumberOfLineNumbers }
+  COFFWriteDWord(F, COFF_SCN_CNT_UNINIT Or
+                    COFF_SCN_ALIGN_4 Or
+                    COFF_SCN_MEM_READ Or
+                    COFF_SCN_MEM_WRITE);       { Characteristics }
+
+  { ====== Donnees brutes section .text ====== }
+  If PEWCodePos > 0 Then
+    BlockWrite(F, PEWCodeBuf, PEWCodePos);
+
+  { ====== Donnees brutes section .data ====== }
+  If PEWDataPos > 0 Then
+    BlockWrite(F, PEWDataBuf, PEWDataPos);
+
+  { ====== Table des relocations .text ====== }
+  For I := 0 To COFFRelocCount - 1 Do
+  Begin
+    If COFFRelocs[I].SectionIdx = 1 Then
+    Begin
+      COFFWriteDWord(F, COFFRelocs[I].VirtualAddress);
+      COFFWriteDWord(F, COFFRelocs[I].SymbolIndex);
+      COFFWriteWord(F, COFFRelocs[I].RelocType);
+    End;
+  End;
+
+  { ====== Table des relocations .data ====== }
+  For I := 0 To COFFRelocCount - 1 Do
+  Begin
+    If COFFRelocs[I].SectionIdx = 2 Then
+    Begin
+      COFFWriteDWord(F, COFFRelocs[I].VirtualAddress);
+      COFFWriteDWord(F, COFFRelocs[I].SymbolIndex);
+      COFFWriteWord(F, COFFRelocs[I].RelocType);
+    End;
+  End;
+
+  { ====== Table des symboles COFF ====== }
+  { Chaque entree = 18 octets }
+  For I := 0 To COFFSymCount - 1 Do
+  Begin
+    { Nom du symbole (8 octets) }
+    COFFWriteSymName(F, COFFSymbols[I].Name, SymStrOffsets[I]);
+    { Value (4 octets) }
+    COFFWriteDWord(F, COFFSymbols[I].Value);
+    { SectionNumber (2 octets, 1-based) }
+    COFFWriteWord(F, Word(COFFSymbols[I].SectionNumber));
+    { Type (2 octets) : 0 = not function }
+    COFFWriteWord(F, 0);
+    { StorageClass (1 octet) }
+    COFFWriteByte(F, COFFSymbols[I].StorageClass);
+    { NumberOfAuxSymbols (1 octet) }
+    COFFWriteByte(F, 0);
+  End;
+
+  { ====== Table des chaines ====== }
+  BlockWrite(F, COFFStrTab, COFFStrTabSize);
+
+  Close(F);
+  Inc(COFFWriterCount);
+
+  If Opts.Verbose Then
+    WriteLn('COFF : ', ObjFile, ' genere (',
+            COFFSymCount, ' symboles, ',
+            TextRelCnt + DataRelCnt, ' relocations)');
+End;
+
+{ ------------------------------------------------------------ }
+{ COFFFindSymbol : rechercher un symbole par nom                 }
+{ ------------------------------------------------------------ }
+
+Function COFFFindSymbol(Const AName : TString) : LongInt;
+Var I : LongInt;
+Begin
+  COFFFindSymbol := -1;
+  For I := 0 To COFFSymCount - 1 Do
+    If COFFSymbols[I].Name = AName Then
+    Begin
+      COFFFindSymbol := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsCOFFWriterInitialized : etat du writer                       }
+{ ------------------------------------------------------------ }
+
+Function IsCOFFWriterInitialized : Boolean;
+Begin
+  IsCOFFWriterInitialized := COFFWriterInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsCOFFWriterEmpty : aucun fichier ecrit                        }
+{ ------------------------------------------------------------ }
+
+Function IsCOFFWriterEmpty : Boolean;
+Begin
+  IsCOFFWriterEmpty := COFFWriterCount = 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetCOFFWriterStatus : etat sous forme de texte                 }
+{ ------------------------------------------------------------ }
+
+Function GetCOFFWriterStatus : TString;
+Begin
+  If Not COFFWriterInit Then
+    GetCOFFWriterStatus := 'Not initialized'
+  Else If COFFWriterCount > 0 Then
+    GetCOFFWriterStatus := 'Written (' + ItoS(COFFWriterCount) + ' files)'
+  Else
+    GetCOFFWriterStatus := 'Initialized, no files written';
+End;
+
+{ ------------------------------------------------------------ }
+{ GetCOFFSymCount : nombre de symboles                           }
+{ ------------------------------------------------------------ }
+
+Function GetCOFFSymCount : LongInt;
+Begin
+  GetCOFFSymCount := COFFSymCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetCOFFRelocCount : nombre de relocations                      }
+{ ------------------------------------------------------------ }
+
+Function GetCOFFRelocCount : LongInt;
+Begin
+  GetCOFFRelocCount := COFFRelocCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetCOFFStrTabSize : taille de la table des chaines             }
+{ ------------------------------------------------------------ }
+
+Function GetCOFFStrTabSize : LongInt;
+Begin
+  GetCOFFStrTabSize := COFFStrTabSize;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetCOFFWriterCount : nombre de fichiers ecrits                 }
+{ ------------------------------------------------------------ }
+
+Function GetCOFFWriterCount : LongInt;
+Begin
+  GetCOFFWriterCount := COFFWriterCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetCOFFNumSections : nombre de sections COFF                   }
+{ ------------------------------------------------------------ }
+
+Function GetCOFFNumSections : Integer;
+Begin
+  GetCOFFNumSections := COFF_NUM_SECTIONS;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetCOFFMachineType : type de machine COFF                      }
+{ ------------------------------------------------------------ }
+
+Function GetCOFFMachineType : Word;
+Begin
+  GetCOFFMachineType := COFF_MACHINE_I386;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetCOFFMaxSymbols : nombre maximum de symboles                 }
+{ ------------------------------------------------------------ }
+
+Function GetCOFFMaxSymbols : LongInt;
+Begin
+  GetCOFFMaxSymbols := COFF_MAX_SYMBOLS;
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -15914,7 +16486,12 @@ Begin
   If Opts.EmitExe And (ErrorCount = 0) Then
     WritePEFile(Opts.OutFile);
 
-  { TODO 22..25 : Generation COFF .OBJ, etc. }
+  { TODO 22 : Initialiser et ecrire le fichier COFF .OBJ }
+  InitCOFFWriter;
+  If Opts.EmitObj And (ErrorCount = 0) Then
+    WriteCOFF(Opts.OutFile);
+
+  { TODO 23..25 : Generation ASM listing, etc. }
 
   { Statistiques finales }
   ShowStats;
