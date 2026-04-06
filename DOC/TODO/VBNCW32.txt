@@ -650,7 +650,7 @@
             MsgBox(texte[, boutons][, titre]) -> MessageBoxA
             InputBox(prompt[, titre][, defaut]) -> boite de saisie
 
-  TODO 20 - BIBLIOTHEQUE RUNTIME (CHAINES, CONVERSION, E/S VIA WIN32 API) [A FAIRE]
+  TODO 20 - BIBLIOTHEQUE RUNTIME (CHAINES, CONVERSION, E/S VIA WIN32 API) [IMPLEMENTE]
             Generer les routines runtime en assembleur 80386 :
             Routines chaines :
               _VBNRT_LEN : longueur de chaine (null-terminated)
