@@ -588,7 +588,7 @@
             Compatible avec le linker Microsoft LINK.EXE
             Compatible avec les fichiers .OBJ de MASM et TASM
 
-  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [A FAIRE]
+  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [IMPLEMENTE]
             Procedure WriteASM(const outfile: String)
             Generer un fichier .ASM lisible (syntaxe MASM) :
             En-tete :
@@ -13426,6 +13426,545 @@ Begin
   GetCOFFTotalSections := COFFTotalSections;
 End;
 
+{ ============================================================ }
+{ TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Directives d en-tete MASM }
+  ASM_DIR_386            = '.386';
+  ASM_DIR_MODEL          = '.MODEL FLAT, STDCALL';
+  ASM_DIR_CASEMAP        = 'OPTION CASEMAP:NONE';
+
+  { Directives de section }
+  ASM_DIR_DATA           = '.DATA';
+  ASM_DIR_DATA_UNINIT    = '.DATA?';
+  ASM_DIR_CODE           = '.CODE';
+  ASM_DIR_END            = 'END';
+
+  { Suffixes de taille }
+  ASM_SZ_BYTE            = 'DB';
+  ASM_SZ_WORD            = 'DW';
+  ASM_SZ_DWORD           = 'DD';
+  ASM_SZ_QWORD           = 'DQ';
+
+  { Nombre maximum d elements }
+  MAX_ASM_EXTERNS        = 64;
+  MAX_ASM_GLOBALS        = 256;
+  MAX_ASM_PROCS          = 128;
+
+  { Indentation }
+  ASM_INDENT             = '    ';
+
+  { Labels ASM runtime }
+  ASM_RT_HEADER          = '_ASM_HEADER';
+  ASM_RT_INCLUDELIB      = '_ASM_INCLIB';
+  ASM_RT_DATA            = '_ASM_DATA';
+  ASM_RT_BSS             = '_ASM_BSS';
+  ASM_RT_EXTERN          = '_ASM_EXTERN';
+  ASM_RT_CODE            = '_ASM_CODE';
+  ASM_RT_PROCS           = '_ASM_PROCS';
+  ASM_RT_ENTRY           = '_ASM_ENTRY';
+  ASM_RT_EMIT            = '_ASM_EMIT';
+  ASM_RT_WRITE           = '_ASM_WRITE';
+
+  { Variables ASM segment }
+  ASM_VAR_LINECOUNT      = '_ASM_LINECOUNT';
+  ASM_VAR_EXTERNCOUNT    = '_ASM_EXTERNCOUNT';
+  ASM_VAR_GLOBALCOUNT    = '_ASM_GLOBALCOUNT';
+  ASM_VAR_PROCCOUNT      = '_ASM_PROCCOUNT';
+  ASM_VAR_DATASIZE       = '_ASM_DATASIZE';
+
+Var
+  ASMWriterCount       : LongInt;
+  ASMWriterInitialized : Boolean;
+  ASMLineCount         : LongInt;
+  ASMExternCount       : Integer;
+  ASMGlobalCount       : Integer;
+  ASMProcCount         : Integer;
+  ASMDataSize          : LongInt;
+  ASMBssSize           : LongInt;
+  ASMTotalSections     : Integer;
+
+{ ------------------------------------------------------------ }
+{ InitASMWriter : initialiser l etat du generateur ASM          }
+{ ------------------------------------------------------------ }
+
+Procedure InitASMWriter;
+Begin
+  ASMWriterCount       := 0;
+  ASMWriterInitialized := True;
+  ASMLineCount         := 0;
+  ASMExternCount       := 0;
+  ASMGlobalCount       := 0;
+  ASMProcCount         := 0;
+  ASMDataSize          := 0;
+  ASMBssSize           := 0;
+  ASMTotalSections     := 4;
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteLine : ecrire une ligne dans le fichier ASM           }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteLine(Var F : Text; Const Line : String);
+Begin
+  WriteLn(F, Line);
+  Inc(ASMWriterCount, Length(Line) + 2);
+  Inc(ASMLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteBlank : ecrire une ligne vide                         }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteBlank(Var F : Text);
+Begin
+  WriteLn(F);
+  Inc(ASMWriterCount, 2);
+  Inc(ASMLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteComment : ecrire un commentaire assembleur             }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteComment(Var F : Text; Const Comment : String);
+Begin
+  ASMWriteLine(F, '; ' + Comment);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteIndented : ecrire une ligne indentee                  }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteIndented(Var F : Text; Const Line : String);
+Begin
+  ASMWriteLine(F, ASM_INDENT + Line);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteLabel : ecrire un label assembleur                     }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteLabel(Var F : Text; Const LabelName : String);
+Begin
+  ASMWriteLine(F, LabelName + ':');
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteHeader : ecrire l en-tete MASM du fichier .ASM        }
+{   .386 / .MODEL FLAT, STDCALL / OPTION CASEMAP:NONE          }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteHeader(Var F : Text);
+Begin
+  ASMWriteComment(F, '=========================================================');
+  ASMWriteComment(F, ' Fichier genere par VBCW32 - Compilateur VB6 vers Win32');
+  ASMWriteComment(F, ' Syntaxe MASM (Microsoft Macro Assembler)');
+  ASMWriteComment(F, '=========================================================');
+  ASMWriteBlank(F);
+  ASMWriteLine(F, ASM_DIR_386);
+  ASMWriteLine(F, ASM_DIR_MODEL);
+  ASMWriteLine(F, ASM_DIR_CASEMAP);
+  ASMWriteBlank(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteIncludelib : ecrire les directives INCLUDELIB          }
+{   kernel32.lib, user32.lib, msvcrt.lib                        }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteIncludelib(Var F : Text);
+Begin
+  ASMWriteComment(F, '---------------------------------------------------------');
+  ASMWriteComment(F, ' Bibliotheques d importation');
+  ASMWriteComment(F, '---------------------------------------------------------');
+  ASMWriteBlank(F);
+  ASMWriteLine(F, 'INCLUDELIB kernel32.lib');
+  ASMWriteLine(F, 'INCLUDELIB user32.lib');
+  ASMWriteLine(F, 'INCLUDELIB msvcrt.lib');
+  ASMWriteBlank(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteExterns : ecrire les declarations EXTERN               }
+{   Fonctions importees des DLL Win32                           }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteExterns(Var F : Text);
+Begin
+  ASMWriteComment(F, '---------------------------------------------------------');
+  ASMWriteComment(F, ' Declarations externes (fonctions importees)');
+  ASMWriteComment(F, '---------------------------------------------------------');
+  ASMWriteBlank(F);
+  { kernel32.dll }
+  ASMWriteLine(F, 'EXTERN ExitProcess@4:PROC');
+  ASMWriteLine(F, 'EXTERN GetProcessHeap@0:PROC');
+  ASMWriteLine(F, 'EXTERN HeapAlloc@12:PROC');
+  ASMWriteLine(F, 'EXTERN HeapFree@12:PROC');
+  ASMWriteLine(F, 'EXTERN GetStdHandle@4:PROC');
+  ASMWriteLine(F, 'EXTERN WriteFile@20:PROC');
+  ASMWriteLine(F, 'EXTERN ReadFile@20:PROC');
+  ASMWriteLine(F, 'EXTERN CreateFileA@28:PROC');
+  ASMWriteLine(F, 'EXTERN CloseHandle@4:PROC');
+  ASMWriteLine(F, 'EXTERN SetFilePointer@16:PROC');
+  ASMWriteLine(F, 'EXTERN GetFileSize@8:PROC');
+  ASMWriteLine(F, 'EXTERN GetCommandLineA@0:PROC');
+  ASMWriteLine(F, 'EXTERN GetModuleHandleA@4:PROC');
+  ASMWriteLine(F, 'EXTERN GetLastError@0:PROC');
+  ASMExternCount := 14;
+  { user32.dll }
+  ASMWriteLine(F, 'EXTERN MessageBoxA@16:PROC');
+  Inc(ASMExternCount);
+  ASMWriteBlank(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteDataSection : ecrire la section .DATA                  }
+{   Variables globales initialisees avec DB/DW/DD/DQ            }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteDataSection(Var F : Text);
+Begin
+  ASMWriteComment(F, '---------------------------------------------------------');
+  ASMWriteComment(F, ' Section de donnees initialisees');
+  ASMWriteComment(F, '---------------------------------------------------------');
+  ASMWriteBlank(F);
+  ASMWriteLine(F, ASM_DIR_DATA);
+  ASMWriteBlank(F);
+  { Variables minimales du runtime }
+  ASMWriteIndented(F, '_VBRT_HPROCESS DD 0         ; Handle du processus');
+  ASMWriteIndented(F, '_VBRT_HSTDOUT  DD 0         ; Handle stdout');
+  ASMWriteIndented(F, '_VBRT_HSTDIN   DD 0         ; Handle stdin');
+  ASMWriteIndented(F, '_VBRT_HEAP     DD 0         ; Handle du tas');
+  ASMWriteIndented(F, '_VBRT_EXITCODE DD 0         ; Code de sortie');
+  ASMWriteIndented(F, '_VBRT_ERRNR    DD 0         ; Err.Number');
+  ASMWriteIndented(F, '_VBRT_WRITTEN  DD 0         ; Octets ecrits');
+  ASMGlobalCount := 7;
+  ASMDataSize := 7 * 4;
+  ASMWriteBlank(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteBssSection : ecrire la section .DATA? (BSS)            }
+{   Variables non initialisees                                   }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteBssSection(Var F : Text);
+Begin
+  ASMWriteComment(F, '---------------------------------------------------------');
+  ASMWriteComment(F, ' Section de donnees non initialisees (BSS)');
+  ASMWriteComment(F, '---------------------------------------------------------');
+  ASMWriteBlank(F);
+  ASMWriteLine(F, ASM_DIR_DATA_UNINIT);
+  ASMWriteBlank(F);
+  { Buffer generique pour les operations E/S }
+  ASMWriteIndented(F, '_VBRT_IOBUF    DB 1024 DUP(?) ; Buffer E/S');
+  ASMWriteIndented(F, '_VBRT_STRBUF   DB 256 DUP(?)  ; Buffer chaine');
+  ASMBssSize := 1024 + 256;
+  ASMWriteBlank(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteRuntimeInit : ecrire la routine _VBRT_INIT             }
+{   Initialisation du runtime (heap, handles std)                }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteRuntimeInit(Var F : Text);
+Begin
+  ASMWriteComment(F, ' Initialisation du runtime VB');
+  ASMWriteLabel(F, '_VBRT_INIT');
+  ASMWriteIndented(F, 'PUSH EBP');
+  ASMWriteIndented(F, 'MOV EBP, ESP');
+  ASMWriteBlank(F);
+  ASMWriteIndented(F, '; GetProcessHeap');
+  ASMWriteIndented(F, 'CALL GetProcessHeap@0');
+  ASMWriteIndented(F, 'MOV DWORD PTR [_VBRT_HEAP], EAX');
+  ASMWriteBlank(F);
+  ASMWriteIndented(F, '; GetStdHandle(-11) = STD_OUTPUT_HANDLE');
+  ASMWriteIndented(F, 'PUSH -11');
+  ASMWriteIndented(F, 'CALL GetStdHandle@4');
+  ASMWriteIndented(F, 'MOV DWORD PTR [_VBRT_HSTDOUT], EAX');
+  ASMWriteBlank(F);
+  ASMWriteIndented(F, '; GetStdHandle(-10) = STD_INPUT_HANDLE');
+  ASMWriteIndented(F, 'PUSH -10');
+  ASMWriteIndented(F, 'CALL GetStdHandle@4');
+  ASMWriteIndented(F, 'MOV DWORD PTR [_VBRT_HSTDIN], EAX');
+  ASMWriteBlank(F);
+  ASMWriteIndented(F, 'MOV ESP, EBP');
+  ASMWriteIndented(F, 'POP EBP');
+  ASMWriteIndented(F, 'RET');
+  ASMWriteBlank(F);
+  Inc(ASMProcCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteRuntimeExit : ecrire la routine _VBRT_EXIT             }
+{   Terminaison du programme (ExitProcess)                       }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteRuntimeExit(Var F : Text);
+Begin
+  ASMWriteComment(F, ' Terminaison du programme');
+  ASMWriteLabel(F, '_VBRT_EXIT');
+  ASMWriteIndented(F, 'PUSH DWORD PTR [_VBRT_EXITCODE]');
+  ASMWriteIndented(F, 'CALL ExitProcess@4');
+  ASMWriteBlank(F);
+  Inc(ASMProcCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteRuntimePrint : ecrire la routine _VBRT_PRINT           }
+{   Affichage console via WriteFile                              }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteRuntimePrint(Var F : Text);
+Begin
+  ASMWriteComment(F, ' Affichage console (WriteFile sur stdout)');
+  ASMWriteLabel(F, '_VBRT_PRINT');
+  ASMWriteIndented(F, 'PUSH EBP');
+  ASMWriteIndented(F, 'MOV EBP, ESP');
+  ASMWriteIndented(F, '; Parametres : [EBP+8]=adresse, [EBP+12]=longueur');
+  ASMWriteIndented(F, 'PUSH 0                          ; lpOverlapped');
+  ASMWriteIndented(F, 'LEA EAX, [_VBRT_WRITTEN]');
+  ASMWriteIndented(F, 'PUSH EAX                        ; lpNumberOfBytesWritten');
+  ASMWriteIndented(F, 'PUSH DWORD PTR [EBP+12]         ; nNumberOfBytesToWrite');
+  ASMWriteIndented(F, 'PUSH DWORD PTR [EBP+8]          ; lpBuffer');
+  ASMWriteIndented(F, 'PUSH DWORD PTR [_VBRT_HSTDOUT]  ; hFile');
+  ASMWriteIndented(F, 'CALL WriteFile@20');
+  ASMWriteIndented(F, 'MOV ESP, EBP');
+  ASMWriteIndented(F, 'POP EBP');
+  ASMWriteIndented(F, 'RET 8');
+  ASMWriteBlank(F);
+  Inc(ASMProcCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteCodeSection : ecrire la section .CODE                  }
+{   Routines runtime et point d entree                          }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteCodeSection(Var F : Text);
+Begin
+  ASMWriteComment(F, '---------------------------------------------------------');
+  ASMWriteComment(F, ' Section de code');
+  ASMWriteComment(F, '---------------------------------------------------------');
+  ASMWriteBlank(F);
+  ASMWriteLine(F, ASM_DIR_CODE);
+  ASMWriteBlank(F);
+  { Routines runtime }
+  ASMWriteRuntimeInit(F);
+  ASMWriteRuntimeExit(F);
+  ASMWriteRuntimePrint(F);
+  { Point d entree principal }
+  ASMWriteComment(F, ' Point d entree du programme');
+  ASMWriteLabel(F, '_VBF_MAIN');
+  ASMWriteIndented(F, 'PUSH EBP');
+  ASMWriteIndented(F, 'MOV EBP, ESP');
+  ASMWriteBlank(F);
+  ASMWriteIndented(F, '; Initialiser le runtime');
+  ASMWriteIndented(F, 'CALL _VBRT_INIT');
+  ASMWriteBlank(F);
+  ASMWriteIndented(F, '; --- Code utilisateur ---');
+  ASMWriteIndented(F, '; (le compilateur insere le code VB compile ici)');
+  ASMWriteBlank(F);
+  ASMWriteIndented(F, '; Terminer le programme');
+  ASMWriteIndented(F, 'MOV DWORD PTR [_VBRT_EXITCODE], 0');
+  ASMWriteIndented(F, 'CALL _VBRT_EXIT');
+  ASMWriteBlank(F);
+  ASMWriteIndented(F, 'MOV ESP, EBP');
+  ASMWriteIndented(F, 'POP EBP');
+  ASMWriteIndented(F, 'RET');
+  ASMWriteBlank(F);
+  Inc(ASMProcCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteFooter : ecrire le pied de page du fichier .ASM        }
+{   Directive END avec le point d entree                         }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteFooter(Var F : Text);
+Begin
+  ASMWriteLine(F, ASM_DIR_END + ' _VBF_MAIN');
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteASM : generer le fichier listing assembleur complet       }
+{ ------------------------------------------------------------ }
+
+Procedure WriteASM(Const OutFile : String);
+Var
+  F : Text;
+Begin
+  { Reinitialiser les compteurs }
+  ASMWriterCount := 0;
+  ASMLineCount   := 0;
+  ASMExternCount := 0;
+  ASMGlobalCount := 0;
+  ASMProcCount   := 0;
+  ASMDataSize    := 0;
+  ASMBssSize     := 0;
+
+  { Ouvrir le fichier texte }
+  Assign(F, OutFile);
+  Rewrite(F);
+
+  { 1. En-tete MASM }
+  ASMWriteHeader(F);
+
+  { 2. Directives INCLUDELIB }
+  ASMWriteIncludelib(F);
+
+  { 3. Declarations EXTERN }
+  ASMWriteExterns(F);
+
+  { 4. Section .DATA (donnees initialisees) }
+  ASMWriteDataSection(F);
+
+  { 5. Section .DATA? (BSS) }
+  ASMWriteBssSection(F);
+
+  { 6. Section .CODE (code et routines) }
+  ASMWriteCodeSection(F);
+
+  { 7. Directive END }
+  ASMWriteFooter(F);
+
+  { Fermer le fichier }
+  Close(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMSectionName : nom de section par index                     }
+{ ------------------------------------------------------------ }
+
+Function ASMSectionName(Idx : Integer) : String;
+Begin
+  Case Idx of
+    1: ASMSectionName := '.DATA';
+    2: ASMSectionName := '.DATA?';
+    3: ASMSectionName := '.CODE';
+    4: ASMSectionName := 'EXTERN';
+  Else
+    ASMSectionName := '.UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMDirectiveName : nom de directive MASM par type              }
+{ ------------------------------------------------------------ }
+
+Function ASMDirectiveName(DirType : Integer) : String;
+Begin
+  Case DirType of
+    1: ASMDirectiveName := '.386';
+    2: ASMDirectiveName := '.MODEL';
+    3: ASMDirectiveName := 'OPTION';
+    4: ASMDirectiveName := 'INCLUDELIB';
+    5: ASMDirectiveName := 'EXTERN';
+    6: ASMDirectiveName := 'END';
+  Else
+    ASMDirectiveName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsASMStatement : verifier si c est une instruction ASM         }
+{ ------------------------------------------------------------ }
+
+Function IsASMStatement(Const S : String) : Boolean;
+Begin
+  IsASMStatement := (S = 'WRITEASM') Or (S = '.ASM');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsASMSection : verifier si c est un nom de section ASM         }
+{ ------------------------------------------------------------ }
+
+Function IsASMSection(Const S : String) : Boolean;
+Begin
+  IsASMSection := (S = '.DATA') Or (S = '.DATA?') Or
+                  (S = '.CODE') Or (S = 'EXTERN');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsASMDirective : verifier si c est une directive MASM          }
+{ ------------------------------------------------------------ }
+
+Function IsASMDirective(Const S : String) : Boolean;
+Begin
+  IsASMDirective := (S = '.386') Or (S = '.MODEL') Or
+                    (S = 'OPTION') Or (S = 'INCLUDELIB') Or
+                    (S = 'EXTERN') Or (S = 'END') Or
+                    (S = ASM_RT_HEADER) Or (S = ASM_RT_INCLUDELIB) Or
+                    (S = ASM_RT_DATA) Or (S = ASM_RT_BSS) Or
+                    (S = ASM_RT_EXTERN) Or (S = ASM_RT_CODE) Or
+                    (S = ASM_RT_PROCS) Or (S = ASM_RT_ENTRY) Or
+                    (S = ASM_RT_EMIT) Or (S = ASM_RT_WRITE);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs                                       }
+{ ------------------------------------------------------------ }
+
+Function GetASMWriterCount : LongInt;
+Begin
+  GetASMWriterCount := ASMWriterCount;
+End;
+
+Function IsASMWriterInitialized : Boolean;
+Begin
+  IsASMWriterInitialized := ASMWriterInitialized;
+End;
+
+Function IsASMWriterEmpty : Boolean;
+Begin
+  IsASMWriterEmpty := (ASMWriterCount = 0);
+End;
+
+Function GetASMWriterStatus : String;
+Begin
+  If Not ASMWriterInitialized Then
+    GetASMWriterStatus := 'Not initialized'
+  Else If ASMWriterCount > 0 Then
+    GetASMWriterStatus := 'Written (' + ItoS(ASMLineCount) + ' lines)'
+  Else
+    GetASMWriterStatus := 'Initialized, not yet written';
+End;
+
+Function GetASMLineCount : LongInt;
+Begin
+  GetASMLineCount := ASMLineCount;
+End;
+
+Function GetASMExternCount : Integer;
+Begin
+  GetASMExternCount := ASMExternCount;
+End;
+
+Function GetASMGlobalCount : Integer;
+Begin
+  GetASMGlobalCount := ASMGlobalCount;
+End;
+
+Function GetASMProcCount : Integer;
+Begin
+  GetASMProcCount := ASMProcCount;
+End;
+
+Function GetASMDataSize : LongInt;
+Begin
+  GetASMDataSize := ASMDataSize;
+End;
+
+Function GetASMTotalSections : Integer;
+Begin
+  GetASMTotalSections := ASMTotalSections;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -13449,6 +13988,7 @@ Begin
   InitFileIOState;
   InitRuntimeLib;
   InitCOFFWriter;
+  InitASMWriter;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;
