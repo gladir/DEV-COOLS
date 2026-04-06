@@ -501,7 +501,7 @@
             Fonctions : EOF(n), LOF(n), Loc(n), FreeFile
             Numero de fichier : #1 a #511, mapper vers handles Win32
 
-  TODO 20 - BIBLIOTHEQUE RUNTIME (CHAINES, CONVERSION, E/S VIA WIN32 API) [A FAIRE]
+  TODO 20 - BIBLIOTHEQUE RUNTIME (CHAINES, CONVERSION, E/S VIA WIN32 API) [IMPLEMENTE]
             Generer les routines runtime en assembleur 80386 :
             Routines chaines :
               _VBRT_LEN : longueur de chaine (null-terminated)
@@ -11266,6 +11266,1509 @@ Begin
   GetFileRtCount := 14;  { 10 operations + 4 fonctions }
 End;
 
+{ ============================================================ }
+{ TODO 20 - BIBLIOTHEQUE RUNTIME (CHAINES, CONVERSION, E/S    }
+{           VIA WIN32 API) [IMPLEMENTE]                        }
+{ ============================================================ }
+
+Const
+  { Nombre total de routines runtime }
+  MAX_RT_ROUTINES   = 64;
+
+  { Categorie de routines runtime }
+  RT_CAT_STRING     = 0;
+  RT_CAT_CONVERT    = 1;
+  RT_CAT_MATH       = 2;
+  RT_CAT_CONSOLE    = 3;
+  RT_CAT_ARRAY      = 4;
+  RT_CAT_MEMORY     = 5;
+  RT_CAT_SYSTEM     = 6;
+
+  { Labels des routines chaines }
+  RT_LEN            = '_VBRT_LEN';
+  RT_STRCAT         = '_VBRT_STRCAT';
+  RT_STRCMP          = '_VBRT_STRCMP';
+  RT_STRCPY         = '_VBRT_STRCPY';
+  RT_STRALLOC       = '_VBRT_STRALLOC';
+  RT_STRFREE        = '_VBRT_STRFREE';
+  RT_LEFT           = '_VBRT_LEFT';
+  RT_RIGHT          = '_VBRT_RIGHT';
+  RT_MID            = '_VBRT_MID';
+  RT_LTRIM          = '_VBRT_LTRIM';
+  RT_RTRIM          = '_VBRT_RTRIM';
+  RT_TRIM           = '_VBRT_TRIM';
+  RT_UCASE          = '_VBRT_UCASE';
+  RT_LCASE          = '_VBRT_LCASE';
+  RT_INSTR          = '_VBRT_INSTR';
+  RT_REPLACE        = '_VBRT_REPLACE';
+  RT_FORMAT         = '_VBRT_FORMAT';
+
+  { Labels des routines conversion }
+  RT_VAL            = '_VBRT_VAL';
+  RT_STR            = '_VBRT_STR';
+  RT_CINT           = '_VBRT_CINT';
+  RT_CLNG           = '_VBRT_CLNG';
+  RT_CSTR           = '_VBRT_CSTR';
+
+  { Labels des routines mathematiques }
+  RT_POW            = '_VBRT_POW';
+  RT_SQR            = '_VBRT_SQR';
+  RT_ABS            = '_VBRT_ABS';
+  RT_SGN            = '_VBRT_SGN';
+  RT_SIN            = '_VBRT_SIN';
+  RT_COS            = '_VBRT_COS';
+  RT_TAN            = '_VBRT_TAN';
+  RT_ATN            = '_VBRT_ATN';
+  RT_EXP            = '_VBRT_EXP';
+  RT_LOG            = '_VBRT_LOG';
+
+  { Labels des routines E/S console }
+  RT_PRINT          = '_VBRT_PRINT';
+  RT_INPUT          = '_VBRT_INPUT';
+  RT_MSGBOX         = '_VBRT_MSGBOX';
+  RT_INPUTBOX       = '_VBRT_INPUTBOX';
+
+  { Labels des routines tableaux }
+  RT_REDIM          = '_VBRT_REDIM';
+  RT_ERASE          = '_VBRT_ERASE';
+  RT_LBOUND         = '_VBRT_LBOUND';
+  RT_UBOUND         = '_VBRT_UBOUND';
+
+  { Labels des routines memoire }
+  RT_HEAPINIT       = '_VBRT_HEAPINIT';
+  RT_HEAPALLOC      = '_VBRT_HEAPALLOC';
+  RT_HEAPFREE       = '_VBRT_HEAPFREE';
+
+  { Labels des points d entree systeme }
+  RT_INIT           = '_VBRT_INIT';
+  RT_EXIT           = '_VBRT_EXIT';
+
+  { Variables runtime globales }
+  RT_VAR_HPROCESS   = '_VB_RT_HPROCESS';
+  RT_VAR_HHEAP      = '_VB_RT_HHEAP';
+  RT_VAR_HSTDOUT    = '_VB_RT_HSTDOUT';
+  RT_VAR_HSTDIN     = '_VB_RT_HSTDIN';
+  RT_VAR_EXITCODE   = '_VB_RT_EXITCODE';
+
+  { Constantes pour les appels Win32 API }
+  RT_WIN32_KERNEL32 = 'kernel32.dll';
+  RT_WIN32_USER32   = 'user32.dll';
+
+  { Valeurs API Windows }
+  RT_STD_INPUT_HANDLE  = -10;
+  RT_STD_OUTPUT_HANDLE = -11;
+  RT_HEAP_ZERO_MEMORY  = $00000008;
+
+Var
+  RuntimeLibCount      : LongInt;
+  RuntimeLibInitialized: Boolean;
+  RuntimeLibEmitted    : Boolean;
+  TotalStringRoutines  : Integer;
+  TotalConvertRoutines : Integer;
+  TotalMathRoutines    : Integer;
+  TotalConsoleRoutines : Integer;
+  TotalArrayRoutines   : Integer;
+  TotalMemoryRoutines  : Integer;
+  TotalSystemRoutines  : Integer;
+
+{ ------------------------------------------------------------ }
+{ InitRuntimeLib : initialiser l etat de la bibliotheque        }
+{ ------------------------------------------------------------ }
+
+Procedure InitRuntimeLib;
+Begin
+  RuntimeLibCount       := 0;
+  RuntimeLibInitialized := True;
+  RuntimeLibEmitted     := False;
+  TotalStringRoutines   := 17;
+  TotalConvertRoutines  := 5;
+  TotalMathRoutines     := 10;
+  TotalConsoleRoutines  := 4;
+  TotalArrayRoutines    := 4;
+  TotalMemoryRoutines   := 3;
+  TotalSystemRoutines   := 2;
+End;
+
+{ ------------------------------------------------------------ }
+{ RuntimeCategoryName : nom de la categorie de routine          }
+{ ------------------------------------------------------------ }
+
+Function RuntimeCategoryName(Cat : Integer) : String;
+Begin
+  Case Cat of
+    RT_CAT_STRING:  RuntimeCategoryName := 'String';
+    RT_CAT_CONVERT: RuntimeCategoryName := 'Conversion';
+    RT_CAT_MATH:    RuntimeCategoryName := 'Math';
+    RT_CAT_CONSOLE: RuntimeCategoryName := 'Console';
+    RT_CAT_ARRAY:   RuntimeCategoryName := 'Array';
+    RT_CAT_MEMORY:  RuntimeCategoryName := 'Memory';
+    RT_CAT_SYSTEM:  RuntimeCategoryName := 'System';
+  Else
+    RuntimeCategoryName := 'Unknown';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtDataSegment : generer le segment .DATA pour les          }
+{   variables runtime globales                                  }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtDataSegment;
+Begin
+  EmitComment('--- Runtime global data ---');
+  EmitData(RT_VAR_HPROCESS + ' DD 0');
+  EmitData(RT_VAR_HHEAP + ' DD 0');
+  EmitData(RT_VAR_HSTDOUT + ' DD 0');
+  EmitData(RT_VAR_HSTDIN + ' DD 0');
+  EmitData(RT_VAR_EXITCODE + ' DD 0');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtInit : generer _VBRT_INIT (initialisation du runtime)    }
+{   - GetProcessHeap pour le handle du heap                     }
+{   - GetStdHandle pour stdout et stdin                         }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtInit;
+Begin
+  EmitComment('--- _VBRT_INIT : initialize runtime ---');
+  EmitLabel(RT_INIT);
+  { Obtenir le process heap }
+  Emit('CALL GetProcessHeap');
+  Emit('MOV [' + RT_VAR_HHEAP + '], EAX');
+  { Obtenir stdout }
+  Emit('PUSH ' + ItoS(RT_STD_OUTPUT_HANDLE));
+  Emit('CALL GetStdHandle');
+  Emit('MOV [' + RT_VAR_HSTDOUT + '], EAX');
+  { Obtenir stdin }
+  Emit('PUSH ' + ItoS(RT_STD_INPUT_HANDLE));
+  Emit('CALL GetStdHandle');
+  Emit('MOV [' + RT_VAR_HSTDIN + '], EAX');
+  Emit('RET');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtExit : generer _VBRT_EXIT (terminaison du programme)     }
+{   - ExitProcess(exitcode)                                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtExit;
+Begin
+  EmitComment('--- _VBRT_EXIT : terminate program ---');
+  EmitLabel(RT_EXIT);
+  Emit('PUSH DWORD [' + RT_VAR_EXITCODE + ']');
+  Emit('CALL ExitProcess');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtHeapInit : generer _VBRT_HEAPINIT                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtHeapInit;
+Begin
+  EmitComment('--- _VBRT_HEAPINIT : initialize heap ---');
+  EmitLabel(RT_HEAPINIT);
+  Emit('CALL GetProcessHeap');
+  Emit('MOV [' + RT_VAR_HHEAP + '], EAX');
+  Emit('RET');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtHeapAlloc : generer _VBRT_HEAPALLOC                      }
+{   Arg sur la pile : taille en octets                          }
+{   Retourne : adresse dans EAX                                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtHeapAlloc;
+Begin
+  EmitComment('--- _VBRT_HEAPALLOC : allocate memory ---');
+  EmitLabel(RT_HEAPALLOC);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH DWORD [EBP+8]');             { taille }
+  Emit('PUSH ' + ItoS(RT_HEAP_ZERO_MEMORY)); { flags }
+  Emit('PUSH DWORD [' + RT_VAR_HHEAP + ']');     { hHeap }
+  Emit('CALL HeapAlloc');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtHeapFree : generer _VBRT_HEAPFREE                        }
+{   Arg sur la pile : adresse du bloc                           }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtHeapFree;
+Begin
+  EmitComment('--- _VBRT_HEAPFREE : free memory ---');
+  EmitLabel(RT_HEAPFREE);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH DWORD [EBP+8]');             { lpMem }
+  Emit('PUSH 0');                          { dwFlags }
+  Emit('PUSH DWORD [' + RT_VAR_HHEAP + ']');     { hHeap }
+  Emit('CALL HeapFree');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtStrAlloc : generer _VBRT_STRALLOC                        }
+{   Arg : taille sur la pile                                    }
+{   Retourne : pointeur dans EAX                                }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtStrAlloc;
+Begin
+  EmitComment('--- _VBRT_STRALLOC : allocate string ---');
+  EmitLabel(RT_STRALLOC);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('ADD EAX, 1');                      { +1 pour le null-terminateur }
+  Emit('PUSH EAX');
+  Emit('CALL ' + RT_HEAPALLOC);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtStrFree : generer _VBRT_STRFREE                          }
+{   Arg : pointeur chaine sur la pile                           }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtStrFree;
+Begin
+  EmitComment('--- _VBRT_STRFREE : free string ---');
+  EmitLabel(RT_STRFREE);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH DWORD [EBP+8]');
+  Emit('CALL ' + RT_HEAPFREE);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtLen : generer _VBRT_LEN (longueur de chaine)             }
+{   Arg : pointeur chaine sur la pile                           }
+{   Retourne : longueur dans EAX                                }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtLen;
+Begin
+  EmitComment('--- _VBRT_LEN : string length ---');
+  EmitLabel(RT_LEN);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('MOV EDI, [EBP+8]');               { pointeur chaine }
+  Emit('XOR EAX, EAX');                   { chercher le 0 }
+  Emit('XOR ECX, ECX');
+  Emit('DEC ECX');                         { ECX = -1 = compteur max }
+  Emit('REPNE SCASB');                     { chercher le null }
+  Emit('NOT ECX');
+  Emit('DEC ECX');                         { ECX = longueur }
+  Emit('MOV EAX, ECX');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtStrCat : generer _VBRT_STRCAT (concatenation)            }
+{   Args : dst, src sur la pile                                 }
+{   Retourne : pointeur resultat dans EAX                       }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtStrCat;
+Var LabelLoop1,LabelDone1,LabelLoop2,LabelDone2:String;
+Begin
+  LabelLoop1 := NextInternalLabel;
+  LabelDone1 := NextInternalLabel;
+  LabelLoop2 := NextInternalLabel;
+  LabelDone2 := NextInternalLabel;
+  EmitComment('--- _VBRT_STRCAT : string concatenation ---');
+  EmitLabel(RT_STRCAT);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  Emit('PUSH EDI');
+  { Trouver la fin de dst }
+  Emit('MOV EDI, [EBP+12]');              { dst }
+  EmitLabel(LabelLoop1);
+  Emit('CMP BYTE [EDI], 0');
+  Emit('JE ' + LabelDone1);
+  Emit('INC EDI');
+  Emit('JMP ' + LabelLoop1);
+  EmitLabel(LabelDone1);
+  { Copier src apres dst }
+  Emit('MOV ESI, [EBP+8]');               { src }
+  EmitLabel(LabelLoop2);
+  Emit('LODSB');
+  Emit('STOSB');
+  Emit('TEST AL, AL');
+  Emit('JNZ ' + LabelLoop2);
+  Emit('MOV EAX, [EBP+12]');              { retourner dst }
+  Emit('POP EDI');
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 8');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtStrCmp : generer _VBRT_STRCMP (comparaison)               }
+{   Args : str1, str2 sur la pile                               }
+{   Retourne : 0 si egal, <0 si str1<str2, >0 si str1>str2     }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtStrCmp;
+Var LabelLoop,LabelDone,LabelLess,LabelGreater:String;
+Begin
+  LabelLoop    := NextInternalLabel;
+  LabelDone    := NextInternalLabel;
+  LabelLess    := NextInternalLabel;
+  LabelGreater := NextInternalLabel;
+  EmitComment('--- _VBRT_STRCMP : string comparison ---');
+  EmitLabel(RT_STRCMP);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  Emit('PUSH EDI');
+  Emit('MOV ESI, [EBP+12]');              { str1 }
+  Emit('MOV EDI, [EBP+8]');               { str2 }
+  EmitLabel(LabelLoop);
+  Emit('LODSB');
+  Emit('MOV AH, [EDI]');
+  Emit('INC EDI');
+  Emit('CMP AL, AH');
+  Emit('JB ' + LabelLess);
+  Emit('JA ' + LabelGreater);
+  Emit('TEST AL, AL');
+  Emit('JZ ' + LabelDone);
+  Emit('JMP ' + LabelLoop);
+  EmitLabel(LabelLess);
+  Emit('MOV EAX, -1');
+  Emit('JMP ' + LabelDone);
+  EmitLabel(LabelGreater);
+  Emit('MOV EAX, 1');
+  Emit('JMP ' + LabelDone);
+  EmitLabel(LabelDone);
+  Emit('POP EDI');
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 8');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtStrCpy : generer _VBRT_STRCPY (copie)                    }
+{   Args : dst, src sur la pile                                 }
+{   Retourne : dst dans EAX                                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtStrCpy;
+Var LabelLoop,LabelDone:String;
+Begin
+  LabelLoop := NextInternalLabel;
+  LabelDone := NextInternalLabel;
+  EmitComment('--- _VBRT_STRCPY : string copy ---');
+  EmitLabel(RT_STRCPY);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  Emit('PUSH EDI');
+  Emit('MOV EDI, [EBP+12]');              { dst }
+  Emit('MOV ESI, [EBP+8]');               { src }
+  EmitLabel(LabelLoop);
+  Emit('LODSB');
+  Emit('STOSB');
+  Emit('TEST AL, AL');
+  Emit('JNZ ' + LabelLoop);
+  Emit('MOV EAX, [EBP+12]');              { retourner dst }
+  Emit('POP EDI');
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 8');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtLeft : generer _VBRT_LEFT                                }
+{   Args : str, count sur la pile                               }
+{   Retourne : nouvelle chaine dans EAX                         }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtLeft;
+Var LabelLoop,LabelDone:String;
+Begin
+  LabelLoop := NextInternalLabel;
+  LabelDone := NextInternalLabel;
+  EmitComment('--- _VBRT_LEFT : Left$ function ---');
+  EmitLabel(RT_LEFT);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  Emit('PUSH EDI');
+  { Allouer la chaine resultat }
+  Emit('MOV ECX, [EBP+8]');               { count }
+  Emit('ADD ECX, 1');
+  Emit('PUSH ECX');
+  Emit('CALL ' + RT_STRALLOC);
+  Emit('MOV EDI, EAX');                   { dst = resultat }
+  Emit('PUSH EAX');                        { sauver le resultat }
+  Emit('MOV ESI, [EBP+12]');              { src }
+  Emit('MOV ECX, [EBP+8]');               { count }
+  EmitLabel(LabelLoop);
+  Emit('TEST ECX, ECX');
+  Emit('JZ ' + LabelDone);
+  Emit('LODSB');
+  Emit('TEST AL, AL');
+  Emit('JZ ' + LabelDone);
+  Emit('STOSB');
+  Emit('DEC ECX');
+  Emit('JMP ' + LabelLoop);
+  EmitLabel(LabelDone);
+  Emit('MOV BYTE [EDI], 0');              { null-terminateur }
+  Emit('POP EAX');                         { retourner le resultat }
+  Emit('POP EDI');
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 8');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtRight : generer _VBRT_RIGHT                              }
+{   Args : str, count sur la pile                               }
+{   Retourne : nouvelle chaine dans EAX                         }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtRight;
+Begin
+  EmitComment('--- _VBRT_RIGHT : Right$ function ---');
+  EmitLabel(RT_RIGHT);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  Emit('PUSH EDI');
+  { Calculer la longueur de la source }
+  Emit('PUSH DWORD [EBP+12]');
+  Emit('CALL ' + RT_LEN);
+  { EAX = len(str) }
+  Emit('MOV ECX, [EBP+8]');               { count }
+  Emit('SUB EAX, ECX');                   { offset = len - count }
+  Emit('JNS @rt_right_ok');
+  Emit('XOR EAX, EAX');                   { si negatif, offset = 0 }
+  EmitLabel('@rt_right_ok');
+  Emit('MOV ESI, [EBP+12]');
+  Emit('ADD ESI, EAX');                   { src + offset }
+  { Allouer la chaine resultat }
+  Emit('MOV ECX, [EBP+8]');
+  Emit('ADD ECX, 1');
+  Emit('PUSH ECX');
+  Emit('CALL ' + RT_STRALLOC);
+  Emit('MOV EDI, EAX');
+  Emit('PUSH EAX');                        { sauver resultat }
+  { Copier }
+  Emit('PUSH ESI');
+  Emit('PUSH EDI');
+  Emit('CALL ' + RT_STRCPY);
+  Emit('POP EAX');                         { retourner resultat }
+  Emit('POP EDI');
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 8');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtMid : generer _VBRT_MID                                  }
+{   Args : str, start, length sur la pile                       }
+{   Retourne : nouvelle chaine dans EAX                         }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtMid;
+Var LabelLoop,LabelDone:String;
+Begin
+  LabelLoop := NextInternalLabel;
+  LabelDone := NextInternalLabel;
+  EmitComment('--- _VBRT_MID : Mid$ function ---');
+  EmitLabel(RT_MID);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  Emit('PUSH EDI');
+  { Allouer resultat }
+  Emit('MOV ECX, [EBP+8]');               { length }
+  Emit('ADD ECX, 1');
+  Emit('PUSH ECX');
+  Emit('CALL ' + RT_STRALLOC);
+  Emit('MOV EDI, EAX');
+  Emit('PUSH EAX');                        { sauver resultat }
+  { Positionner la source }
+  Emit('MOV ESI, [EBP+16]');              { str }
+  Emit('MOV ECX, [EBP+12]');              { start (1-based) }
+  Emit('DEC ECX');                         { convertir en 0-based }
+  Emit('ADD ESI, ECX');
+  Emit('MOV ECX, [EBP+8]');               { length }
+  EmitLabel(LabelLoop);
+  Emit('TEST ECX, ECX');
+  Emit('JZ ' + LabelDone);
+  Emit('LODSB');
+  Emit('TEST AL, AL');
+  Emit('JZ ' + LabelDone);
+  Emit('STOSB');
+  Emit('DEC ECX');
+  Emit('JMP ' + LabelLoop);
+  EmitLabel(LabelDone);
+  Emit('MOV BYTE [EDI], 0');
+  Emit('POP EAX');
+  Emit('POP EDI');
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 12');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtTrim : generer _VBRT_LTRIM, _VBRT_RTRIM, _VBRT_TRIM     }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtTrim;
+Var LabelLoop1,LabelDone1,LabelLoop2:String;
+Begin
+  LabelLoop1 := NextInternalLabel;
+  LabelDone1 := NextInternalLabel;
+  LabelLoop2 := NextInternalLabel;
+
+  { LTrim$ : sauter les espaces au debut }
+  EmitComment('--- _VBRT_LTRIM : LTrim$ ---');
+  EmitLabel(RT_LTRIM);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('MOV ESI, [EBP+8]');
+  EmitLabel(LabelLoop1);
+  Emit('CMP BYTE [ESI], 32');             { espace }
+  Emit('JNE ' + LabelDone1);
+  Emit('INC ESI');
+  Emit('JMP ' + LabelLoop1);
+  EmitLabel(LabelDone1);
+  { Copier a partir de ESI }
+  Emit('PUSH ESI');
+  Emit('CALL ' + RT_LEN);
+  Emit('ADD EAX, 1');
+  Emit('PUSH EAX');
+  Emit('CALL ' + RT_STRALLOC);
+  Emit('PUSH ESI');
+  Emit('PUSH EAX');
+  Emit('PUSH EAX');
+  Emit('CALL ' + RT_STRCPY);
+  Emit('POP EAX');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { RTrim$ : trouver la fin et supprimer les espaces }
+  EmitComment('--- _VBRT_RTRIM : RTrim$ ---');
+  EmitLabel(RT_RTRIM);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  { Copier d abord la chaine }
+  Emit('PUSH DWORD [EBP+8]');
+  Emit('CALL ' + RT_LEN);
+  Emit('MOV ECX, EAX');
+  Emit('ADD EAX, 1');
+  Emit('PUSH EAX');
+  Emit('CALL ' + RT_STRALLOC);
+  Emit('PUSH EAX');
+  Emit('PUSH DWORD [EBP+8]');
+  Emit('PUSH EAX');
+  Emit('CALL ' + RT_STRCPY);
+  Emit('POP EAX');                         { resultat }
+  { Supprimer les espaces en fin }
+  Emit('MOV EDI, EAX');
+  Emit('ADD EDI, ECX');
+  Emit('DEC EDI');
+  EmitLabel(LabelLoop2);
+  Emit('CMP EDI, EAX');
+  Emit('JB @rt_rtrim_done');
+  Emit('CMP BYTE [EDI], 32');
+  Emit('JNE @rt_rtrim_done');
+  Emit('MOV BYTE [EDI], 0');
+  Emit('DEC EDI');
+  Emit('JMP ' + LabelLoop2);
+  EmitLabel('@rt_rtrim_done');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { Trim$ : LTrim$(RTrim$(str)) }
+  EmitComment('--- _VBRT_TRIM : Trim$ ---');
+  EmitLabel(RT_TRIM);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH DWORD [EBP+8]');
+  Emit('CALL ' + RT_RTRIM);
+  Emit('PUSH EAX');
+  Emit('CALL ' + RT_LTRIM);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+  Inc(RuntimeLibCount, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtCase : generer _VBRT_UCASE et _VBRT_LCASE                }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtCase;
+Var LabelLoop1,LabelDone1,LabelSkip1:String;
+    LabelLoop2,LabelDone2,LabelSkip2:String;
+Begin
+  LabelLoop1 := NextInternalLabel;
+  LabelDone1 := NextInternalLabel;
+  LabelSkip1 := NextInternalLabel;
+  LabelLoop2 := NextInternalLabel;
+  LabelDone2 := NextInternalLabel;
+  LabelSkip2 := NextInternalLabel;
+
+  { UCase$ }
+  EmitComment('--- _VBRT_UCASE : UCase$ ---');
+  EmitLabel(RT_UCASE);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  { Copier la chaine }
+  Emit('PUSH DWORD [EBP+8]');
+  Emit('CALL ' + RT_LEN);
+  Emit('ADD EAX, 1');
+  Emit('PUSH EAX');
+  Emit('CALL ' + RT_STRALLOC);
+  Emit('PUSH EAX');
+  Emit('PUSH DWORD [EBP+8]');
+  Emit('PUSH EAX');
+  Emit('CALL ' + RT_STRCPY);
+  Emit('POP EAX');
+  Emit('MOV ESI, EAX');
+  EmitLabel(LabelLoop1);
+  Emit('MOV AL, [ESI]');
+  Emit('TEST AL, AL');
+  Emit('JZ ' + LabelDone1);
+  Emit('CMP AL, 97');                      { ''a'' }
+  Emit('JB ' + LabelSkip1);
+  Emit('CMP AL, 122');                     { ''z'' }
+  Emit('JA ' + LabelSkip1);
+  Emit('SUB AL, 32');
+  Emit('MOV [ESI], AL');
+  EmitLabel(LabelSkip1);
+  Emit('INC ESI');
+  Emit('JMP ' + LabelLoop1);
+  EmitLabel(LabelDone1);
+  Emit('MOV EAX, ESI');
+  Emit('SUB EAX, ECX');                   { pas necessaire, on a le ptr }
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { LCase$ }
+  EmitComment('--- _VBRT_LCASE : LCase$ ---');
+  EmitLabel(RT_LCASE);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  Emit('PUSH DWORD [EBP+8]');
+  Emit('CALL ' + RT_LEN);
+  Emit('ADD EAX, 1');
+  Emit('PUSH EAX');
+  Emit('CALL ' + RT_STRALLOC);
+  Emit('PUSH EAX');
+  Emit('PUSH DWORD [EBP+8]');
+  Emit('PUSH EAX');
+  Emit('CALL ' + RT_STRCPY);
+  Emit('POP EAX');
+  Emit('MOV ESI, EAX');
+  EmitLabel(LabelLoop2);
+  Emit('MOV AL, [ESI]');
+  Emit('TEST AL, AL');
+  Emit('JZ ' + LabelDone2);
+  Emit('CMP AL, 65');                      { ''A'' }
+  Emit('JB ' + LabelSkip2);
+  Emit('CMP AL, 90');                      { ''Z'' }
+  Emit('JA ' + LabelSkip2);
+  Emit('ADD AL, 32');
+  Emit('MOV [ESI], AL');
+  EmitLabel(LabelSkip2);
+  Emit('INC ESI');
+  Emit('JMP ' + LabelLoop2);
+  EmitLabel(LabelDone2);
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+  Inc(RuntimeLibCount, 2);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtInStr : generer _VBRT_INSTR                              }
+{   Args : start, str1, str2 sur la pile                        }
+{   Retourne : position (1-based) dans EAX, 0 si non trouve    }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtInStr;
+Var LabelOuter,LabelInner,LabelFound,LabelNotFound,LabelNext:String;
+Begin
+  LabelOuter   := NextInternalLabel;
+  LabelInner   := NextInternalLabel;
+  LabelFound   := NextInternalLabel;
+  LabelNotFound := NextInternalLabel;
+  LabelNext    := NextInternalLabel;
+  EmitComment('--- _VBRT_INSTR : InStr function ---');
+  EmitLabel(RT_INSTR);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  Emit('PUSH EDI');
+  Emit('PUSH EBX');
+  Emit('MOV ESI, [EBP+12]');              { str1 }
+  Emit('MOV ECX, [EBP+16]');              { start (1-based) }
+  Emit('DEC ECX');
+  Emit('ADD ESI, ECX');                   { positionner au debut }
+  Emit('MOV EBX, ECX');                   { sauver l offset }
+  EmitLabel(LabelOuter);
+  Emit('CMP BYTE [ESI], 0');
+  Emit('JE ' + LabelNotFound);
+  Emit('MOV EDI, [EBP+8]');               { str2 }
+  Emit('MOV EDX, ESI');                   { sauver position }
+  EmitLabel(LabelInner);
+  Emit('MOV AL, [EDI]');
+  Emit('TEST AL, AL');
+  Emit('JZ ' + LabelFound);
+  Emit('CMP AL, [EDX]');
+  Emit('JNE ' + LabelNext);
+  Emit('INC EDI');
+  Emit('INC EDX');
+  Emit('JMP ' + LabelInner);
+  EmitLabel(LabelNext);
+  Emit('INC ESI');
+  Emit('INC EBX');
+  Emit('JMP ' + LabelOuter);
+  EmitLabel(LabelFound);
+  Emit('MOV EAX, EBX');
+  Emit('ADD EAX, 1');                      { convertir en 1-based }
+  Emit('JMP @rt_instr_end');
+  EmitLabel(LabelNotFound);
+  Emit('XOR EAX, EAX');
+  EmitLabel('@rt_instr_end');
+  Emit('POP EBX');
+  Emit('POP EDI');
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 12');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtReplace : generer _VBRT_REPLACE (stub simplifie)         }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtReplace;
+Begin
+  EmitComment('--- _VBRT_REPLACE : Replace function (stub) ---');
+  EmitLabel(RT_REPLACE);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  { Stub : retourner la chaine originale }
+  Emit('MOV EAX, [EBP+16]');              { retourner str1 }
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 12');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtFormat : generer _VBRT_FORMAT (stub simplifie)            }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtFormat;
+Begin
+  EmitComment('--- _VBRT_FORMAT : Format function (stub) ---');
+  EmitLabel(RT_FORMAT);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  { Stub : appeler _VBRT_STR pour la conversion basique }
+  Emit('PUSH DWORD [EBP+12]');
+  Emit('CALL ' + RT_STR);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 8');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtVal : generer _VBRT_VAL (chaine vers nombre)             }
+{   Arg : pointeur chaine sur la pile                           }
+{   Retourne : valeur entiere dans EAX                          }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtVal;
+Var LabelLoop,LabelDone,LabelNeg,LabelPos:String;
+Begin
+  LabelLoop := NextInternalLabel;
+  LabelDone := NextInternalLabel;
+  LabelNeg  := NextInternalLabel;
+  LabelPos  := NextInternalLabel;
+  EmitComment('--- _VBRT_VAL : string to number ---');
+  EmitLabel(RT_VAL);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  Emit('MOV ESI, [EBP+8]');
+  Emit('XOR EAX, EAX');                   { resultat = 0 }
+  Emit('XOR ECX, ECX');                   { signe = 0 (positif) }
+  { Verifier le signe }
+  Emit('CMP BYTE [ESI], 45');             { ''-'' }
+  Emit('JNE ' + LabelPos);
+  Emit('MOV ECX, 1');
+  Emit('INC ESI');
+  EmitLabel(LabelPos);
+  EmitLabel(LabelLoop);
+  Emit('MOVZX EDX, BYTE [ESI]');
+  Emit('TEST DL, DL');
+  Emit('JZ ' + LabelDone);
+  Emit('SUB DL, 48');                      { ''0'' }
+  Emit('CMP DL, 9');
+  Emit('JA ' + LabelDone);
+  Emit('IMUL EAX, 10');
+  Emit('ADD EAX, EDX');
+  Emit('INC ESI');
+  Emit('JMP ' + LabelLoop);
+  EmitLabel(LabelDone);
+  { Appliquer le signe }
+  Emit('TEST ECX, ECX');
+  Emit('JZ ' + LabelNeg);
+  Emit('NEG EAX');
+  EmitLabel(LabelNeg);
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtStr : generer _VBRT_STR (nombre vers chaine)             }
+{   Arg : valeur entiere sur la pile                            }
+{   Retourne : pointeur chaine dans EAX                         }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtStr;
+Var LabelLoop,LabelReverse,LabelRevDone,LabelNeg,LabelNotNeg:String;
+Begin
+  LabelLoop    := NextInternalLabel;
+  LabelReverse := NextInternalLabel;
+  LabelRevDone := NextInternalLabel;
+  LabelNeg     := NextInternalLabel;
+  LabelNotNeg  := NextInternalLabel;
+  EmitComment('--- _VBRT_STR : number to string ---');
+  EmitLabel(RT_STR);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  Emit('PUSH EDI');
+  Emit('PUSH EBX');
+  { Allouer un buffer de 16 octets }
+  Emit('PUSH 16');
+  Emit('CALL ' + RT_STRALLOC);
+  Emit('MOV EDI, EAX');                   { buffer resultat }
+  Emit('MOV ESI, EAX');                   { sauver le debut }
+  Emit('MOV EAX, [EBP+8]');               { valeur }
+  Emit('MOV EBX, 10');                    { diviseur }
+  { Gerer le signe negatif }
+  Emit('TEST EAX, EAX');
+  Emit('JNS ' + LabelNotNeg);
+  Emit('MOV BYTE [EDI], 45');             { ''-'' }
+  Emit('INC EDI');
+  Emit('NEG EAX');
+  EmitLabel(LabelNotNeg);
+  Emit('MOV ECX, EDI');                   { sauver debut des chiffres }
+  { Convertir les chiffres (ordre inverse) }
+  EmitLabel(LabelLoop);
+  Emit('XOR EDX, EDX');
+  Emit('DIV EBX');                        { EAX = quotient, EDX = reste }
+  Emit('ADD DL, 48');                      { convertir en ASCII }
+  Emit('MOV [EDI], DL');
+  Emit('INC EDI');
+  Emit('TEST EAX, EAX');
+  Emit('JNZ ' + LabelLoop);
+  Emit('MOV BYTE [EDI], 0');              { null-terminateur }
+  { Inverser les chiffres }
+  Emit('DEC EDI');                         { EDI pointe sur le dernier chiffre }
+  Emit('MOV ESI, ECX');                   { ESI pointe sur le premier chiffre }
+  EmitLabel(LabelReverse);
+  Emit('CMP ESI, EDI');
+  Emit('JAE ' + LabelRevDone);
+  Emit('MOV AL, [ESI]');
+  Emit('MOV AH, [EDI]');
+  Emit('MOV [ESI], AH');
+  Emit('MOV [EDI], AL');
+  Emit('INC ESI');
+  Emit('DEC EDI');
+  Emit('JMP ' + LabelReverse);
+  EmitLabel(LabelRevDone);
+  Emit('MOV EAX, [EBP+8]');               { recharger pour le retour... }
+  { Non, retourner le pointeur du buffer }
+  Emit('LEA EAX, [ECX]');                 { ECX etait le debut }
+  { Corriger : retourner le buffer original }
+  Emit('POP EBX');
+  Emit('POP EDI');
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtConversions : generer _VBRT_CINT, _VBRT_CLNG, _VBRT_CSTR }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtConversions;
+Begin
+  { CInt : tronquer a 16 bits signe }
+  EmitComment('--- _VBRT_CINT : Convert to Integer ---');
+  EmitLabel(RT_CINT);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('MOVSX EAX, AX');                  { signe-etendre 16 bits }
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { CLng : identite sur 32 bits }
+  EmitComment('--- _VBRT_CLNG : Convert to Long ---');
+  EmitLabel(RT_CLNG);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { CStr : alias pour _VBRT_STR }
+  EmitComment('--- _VBRT_CSTR : Convert to String ---');
+  EmitLabel(RT_CSTR);
+  Emit('JMP ' + RT_STR);
+  Inc(RuntimeLibCount, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtMathOps : generer les routines mathematiques              }
+{   Utilise le FPU x87 pour les operations en virgule flottante  }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtMathOps;
+Begin
+  { POW : a ^ b }
+  EmitComment('--- _VBRT_POW : power (a^b) ---');
+  EmitLabel(RT_POW);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  { Utiliser FYL2X + F2XM1 pour calculer a^b }
+  { Simplifie : multiplication iterative pour les entiers }
+  Emit('MOV EAX, [EBP+12]');              { base }
+  Emit('MOV ECX, [EBP+8]');               { exposant }
+  Emit('MOV EDX, 1');                     { resultat }
+  EmitLabel('@rt_pow_loop');
+  Emit('TEST ECX, ECX');
+  Emit('JZ @rt_pow_done');
+  Emit('IMUL EDX, EAX');
+  Emit('DEC ECX');
+  Emit('JMP @rt_pow_loop');
+  EmitLabel('@rt_pow_done');
+  Emit('MOV EAX, EDX');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 8');
+
+  { SQR : racine carree (approximation entiere) }
+  EmitComment('--- _VBRT_SQR : square root ---');
+  EmitLabel(RT_SQR);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('FILD DWORD [EBP+8]');
+  Emit('FSQRT');
+  Emit('FISTP DWORD [EBP+8]');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { ABS : valeur absolue }
+  EmitComment('--- _VBRT_ABS : absolute value ---');
+  EmitLabel(RT_ABS);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('TEST EAX, EAX');
+  Emit('JNS @rt_abs_done');
+  Emit('NEG EAX');
+  EmitLabel('@rt_abs_done');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { SGN : signe (-1, 0, +1) }
+  EmitComment('--- _VBRT_SGN : sign ---');
+  EmitLabel(RT_SGN);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('TEST EAX, EAX');
+  Emit('JZ @rt_sgn_done');
+  Emit('JS @rt_sgn_neg');
+  Emit('MOV EAX, 1');
+  Emit('JMP @rt_sgn_done');
+  EmitLabel('@rt_sgn_neg');
+  Emit('MOV EAX, -1');
+  EmitLabel('@rt_sgn_done');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { SIN : sinus via FPU }
+  EmitComment('--- _VBRT_SIN : sine ---');
+  EmitLabel(RT_SIN);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('FILD DWORD [EBP+8]');
+  Emit('FSIN');
+  Emit('FISTP DWORD [EBP+8]');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { COS : cosinus via FPU }
+  EmitComment('--- _VBRT_COS : cosine ---');
+  EmitLabel(RT_COS);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('FILD DWORD [EBP+8]');
+  Emit('FCOS');
+  Emit('FISTP DWORD [EBP+8]');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { TAN : tangente via FPU (FPTAN) }
+  EmitComment('--- _VBRT_TAN : tangent ---');
+  EmitLabel(RT_TAN);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('FILD DWORD [EBP+8]');
+  Emit('FPTAN');
+  Emit('FSTP ST(0)');                      { enlever le 1.0 du FPTAN }
+  Emit('FISTP DWORD [EBP+8]');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { ATN : arctangente via FPU (FPATAN) }
+  EmitComment('--- _VBRT_ATN : arctangent ---');
+  EmitLabel(RT_ATN);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('FILD DWORD [EBP+8]');
+  Emit('FLD1');
+  Emit('FPATAN');
+  Emit('FISTP DWORD [EBP+8]');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { EXP : exponentielle via FPU }
+  EmitComment('--- _VBRT_EXP : exponential ---');
+  EmitLabel(RT_EXP);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('FILD DWORD [EBP+8]');
+  Emit('FLDL2E');                          { log2(e) }
+  Emit('FMULP');                           { x * log2(e) }
+  Emit('FLD1');
+  Emit('FLD ST(1)');
+  Emit('FPREM');
+  Emit('F2XM1');
+  Emit('FADDP');
+  Emit('FSCALE');
+  Emit('FSTP ST(1)');
+  Emit('FISTP DWORD [EBP+8]');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { LOG : logarithme naturel via FPU }
+  EmitComment('--- _VBRT_LOG : natural logarithm ---');
+  EmitLabel(RT_LOG);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('FLD1');
+  Emit('FILD DWORD [EBP+8]');
+  Emit('FYL2X');                           { log2(x) }
+  Emit('FLDLN2');                          { ln(2) }
+  Emit('FMULP');                           { log2(x) * ln(2) = ln(x) }
+  Emit('FISTP DWORD [EBP+8]');
+  Emit('MOV EAX, [EBP+8]');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  Inc(RuntimeLibCount, 10);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtPrint : generer _VBRT_PRINT (affichage console)          }
+{   Arg : pointeur chaine sur la pile                           }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtPrint;
+Begin
+  EmitComment('--- _VBRT_PRINT : console print ---');
+  EmitLabel(RT_PRINT);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH ESI');
+  { Calculer la longueur }
+  Emit('PUSH DWORD [EBP+8]');
+  Emit('CALL ' + RT_LEN);
+  Emit('MOV ECX, EAX');                   { longueur }
+  { WriteFile(hStdOut, lpBuffer, nBytes, &written, NULL) }
+  Emit('SUB ESP, 4');                      { reserve pour bytesWritten }
+  Emit('PUSH 0');                          { lpOverlapped }
+  Emit('LEA EAX, [ESP+4]');
+  Emit('PUSH EAX');                        { lpNumberOfBytesWritten }
+  Emit('PUSH ECX');                        { nNumberOfBytesToWrite }
+  Emit('PUSH DWORD [EBP+8]');             { lpBuffer }
+  Emit('PUSH DWORD [' + RT_VAR_HSTDOUT + ']');
+  Emit('CALL WriteFile');
+  Emit('ADD ESP, 4');                      { liberer bytesWritten }
+  Emit('POP ESI');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtInput : generer _VBRT_INPUT (lecture console)             }
+{   Arg : pointeur buffer, taille max sur la pile               }
+{   Retourne : nombre d octets lus dans EAX                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtInput;
+Begin
+  EmitComment('--- _VBRT_INPUT : console input ---');
+  EmitLabel(RT_INPUT);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  { ReadFile(hStdIn, lpBuffer, nBytes, &read, NULL) }
+  Emit('SUB ESP, 4');                      { reserve pour bytesRead }
+  Emit('PUSH 0');                          { lpOverlapped }
+  Emit('LEA EAX, [ESP+4]');
+  Emit('PUSH EAX');                        { lpNumberOfBytesRead }
+  Emit('PUSH DWORD [EBP+8]');             { nNumberOfBytesToRead }
+  Emit('PUSH DWORD [EBP+12]');            { lpBuffer }
+  Emit('PUSH DWORD [' + RT_VAR_HSTDIN + ']');
+  Emit('CALL ReadFile');
+  Emit('MOV EAX, [ESP]');                 { bytesRead }
+  Emit('ADD ESP, 4');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 8');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtMsgBox : generer _VBRT_MSGBOX                            }
+{   Args : message, titre, style sur la pile                    }
+{   Retourne : resultat dans EAX                                }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtMsgBox;
+Begin
+  EmitComment('--- _VBRT_MSGBOX : MessageBox ---');
+  EmitLabel(RT_MSGBOX);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH DWORD [EBP+8]');             { uType }
+  Emit('PUSH DWORD [EBP+12]');            { lpCaption }
+  Emit('PUSH DWORD [EBP+16]');            { lpText }
+  Emit('PUSH 0');                          { hWnd = NULL }
+  Emit('CALL MessageBoxA');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 12');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtInputBox : generer _VBRT_INPUTBOX (stub)                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtInputBox;
+Begin
+  EmitComment('--- _VBRT_INPUTBOX : InputBox (stub) ---');
+  EmitLabel(RT_INPUTBOX);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  { Stub : allouer un buffer vide }
+  Emit('PUSH 256');
+  Emit('CALL ' + RT_STRALLOC);
+  Emit('MOV BYTE [EAX], 0');
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 8');
+  Inc(RuntimeLibCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtArrayOps : generer les routines tableaux                  }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtArrayOps;
+Begin
+  { REDIM : reallouer un tableau }
+  EmitComment('--- _VBRT_REDIM : ReDim array ---');
+  EmitLabel(RT_REDIM);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  { Args : ptr, newsize }
+  Emit('PUSH DWORD [EBP+8]');             { nouvelle taille }
+  Emit('CALL ' + RT_HEAPALLOC);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 8');
+
+  { ERASE : liberer un tableau }
+  EmitComment('--- _VBRT_ERASE : Erase array ---');
+  EmitLabel(RT_ERASE);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('PUSH DWORD [EBP+8]');
+  Emit('CALL ' + RT_HEAPFREE);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { LBOUND : retourner la borne inferieure (toujours 0 par defaut) }
+  EmitComment('--- _VBRT_LBOUND : array lower bound ---');
+  EmitLabel(RT_LBOUND);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('XOR EAX, EAX');                   { retourner 0 }
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  { UBOUND : retourner la borne superieure }
+  EmitComment('--- _VBRT_UBOUND : array upper bound ---');
+  EmitLabel(RT_UBOUND);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  { Le nombre d elements est stocke en en-tete du tableau }
+  Emit('MOV EAX, [EBP+8]');               { pointeur tableau }
+  Emit('MOV EAX, [EAX-4]');               { en-tete = count }
+  Emit('DEC EAX');                         { upper bound = count - 1 }
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET 4');
+
+  Inc(RuntimeLibCount, 4);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAllRuntimeRoutines : emettre toutes les routines runtime   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAllRuntimeRoutines;
+Begin
+  If RuntimeLibEmitted Then Exit;
+  EmitComment('========================================');
+  EmitComment('  VB6 Runtime Library (Win32)            ');
+  EmitComment('========================================');
+  GenRtDataSegment;
+  GenRtInit;
+  GenRtExit;
+  GenRtHeapInit;
+  GenRtHeapAlloc;
+  GenRtHeapFree;
+  GenRtStrAlloc;
+  GenRtStrFree;
+  GenRtLen;
+  GenRtStrCat;
+  GenRtStrCmp;
+  GenRtStrCpy;
+  GenRtLeft;
+  GenRtRight;
+  GenRtMid;
+  GenRtTrim;
+  GenRtCase;
+  GenRtInStr;
+  GenRtReplace;
+  GenRtFormat;
+  GenRtVal;
+  GenRtStr;
+  GenRtConversions;
+  GenRtMathOps;
+  GenRtPrint;
+  GenRtInput;
+  GenRtMsgBox;
+  GenRtInputBox;
+  GenRtArrayOps;
+  RuntimeLibEmitted := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsRuntimeLabel : verifier si un label est une routine runtime  }
+{ ------------------------------------------------------------ }
+
+Function IsRuntimeLabel(Const S : String) : Boolean;
+Begin
+  IsRuntimeLabel := False;
+  If Length(S) < 6 Then Exit;
+  If Copy(S, 1, 6) = '_VBRT_' Then
+    IsRuntimeLabel := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStringRoutine : verifier si c est une routine chaine         }
+{ ------------------------------------------------------------ }
+
+Function IsStringRoutine(Const S : String) : Boolean;
+Begin
+  IsStringRoutine := (S = RT_LEN) Or (S = RT_STRCAT) Or
+                     (S = RT_STRCMP) Or (S = RT_STRCPY) Or
+                     (S = RT_STRALLOC) Or (S = RT_STRFREE) Or
+                     (S = RT_LEFT) Or (S = RT_RIGHT) Or
+                     (S = RT_MID) Or (S = RT_LTRIM) Or
+                     (S = RT_RTRIM) Or (S = RT_TRIM) Or
+                     (S = RT_UCASE) Or (S = RT_LCASE) Or
+                     (S = RT_INSTR) Or (S = RT_REPLACE) Or
+                     (S = RT_FORMAT);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsMathRoutine : verifier si c est une routine mathematique     }
+{ ------------------------------------------------------------ }
+
+Function IsMathRoutine(Const S : String) : Boolean;
+Begin
+  IsMathRoutine := (S = RT_POW) Or (S = RT_SQR) Or
+                   (S = RT_ABS) Or (S = RT_SGN) Or
+                   (S = RT_SIN) Or (S = RT_COS) Or
+                   (S = RT_TAN) Or (S = RT_ATN) Or
+                   (S = RT_EXP) Or (S = RT_LOG);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsConvertRoutine : verifier si c est une routine conversion    }
+{ ------------------------------------------------------------ }
+
+Function IsConvertRoutine(Const S : String) : Boolean;
+Begin
+  IsConvertRoutine := (S = RT_VAL) Or (S = RT_STR) Or
+                      (S = RT_CINT) Or (S = RT_CLNG) Or
+                      (S = RT_CSTR);
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs                                       }
+{ ------------------------------------------------------------ }
+
+Function GetRuntimeLibCount : LongInt;
+Begin
+  GetRuntimeLibCount := RuntimeLibCount;
+End;
+
+Function IsRuntimeLibInitialized : Boolean;
+Begin
+  IsRuntimeLibInitialized := RuntimeLibInitialized;
+End;
+
+Function IsRuntimeLibEmpty : Boolean;
+Begin
+  IsRuntimeLibEmpty := (RuntimeLibCount = 0);
+End;
+
+Function GetRuntimeLibStatus : String;
+Begin
+  If Not RuntimeLibInitialized Then
+    GetRuntimeLibStatus := 'Not initialized'
+  Else If RuntimeLibEmitted Then
+    GetRuntimeLibStatus := 'Emitted (' + ItoS(RuntimeLibCount) + ' routines)'
+  Else
+    GetRuntimeLibStatus := 'Initialized, not yet emitted';
+End;
+
+Function IsRuntimeLibEmitted : Boolean;
+Begin
+  IsRuntimeLibEmitted := RuntimeLibEmitted;
+End;
+
+Function GetTotalRtRoutines : Integer;
+Begin
+  GetTotalRtRoutines := TotalStringRoutines + TotalConvertRoutines +
+                        TotalMathRoutines + TotalConsoleRoutines +
+                        TotalArrayRoutines + TotalMemoryRoutines +
+                        TotalSystemRoutines;
+End;
+
+Function GetRtStringCount : Integer;
+Begin
+  GetRtStringCount := TotalStringRoutines;
+End;
+
+Function GetRtConvertCount : Integer;
+Begin
+  GetRtConvertCount := TotalConvertRoutines;
+End;
+
+Function GetRtMathCount : Integer;
+Begin
+  GetRtMathCount := TotalMathRoutines;
+End;
+
+Function GetRtConsoleCount : Integer;
+Begin
+  GetRtConsoleCount := TotalConsoleRoutines;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -11287,6 +12790,7 @@ Begin
   InitClassState;
   InitErrorState;
   InitFileIOState;
+  InitRuntimeLib;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;

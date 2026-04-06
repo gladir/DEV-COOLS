@@ -493,7 +493,7 @@
             Fonctions : EOF(n), LOF(n), Loc(n), FreeFile
             Numero de fichier : #1 a #511, mapper vers handles Win32
 
-  TODO 20 - BIBLIOTHEQUE RUNTIME (CHAINES, CONVERSION, E/S VIA WIN32 API) [A FAIRE]
+  TODO 20 - BIBLIOTHEQUE RUNTIME (CHAINES, CONVERSION, E/S VIA WIN32 API) [IMPLEMENTE]
             Generer les routines runtime en assembleur 80386 :
             Routines chaines :
               _VBRT_LEN : longueur de chaine (null-terminated)
