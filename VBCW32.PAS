@@ -8778,10 +8778,8 @@ Begin
   { Calculer la taille totale du champ }
   TotalSize := FSize * FArrCount;
   { Ajouter le champ dans la table des symboles }
-  SymIdx := AddSym(FName);
+  SymIdx := AddSym(FName, SK_FIELD, FType, STORE_GLOBAL);
   If SymIdx >= 0 Then Begin
-    SymTab[SymIdx].Kind      := SK_FIELD;
-    SymTab[SymIdx].DataType  := FType;
     SymTab[SymIdx].BpOffset  := FieldOffset;
     SymTab[SymIdx].IsPublic  := True;
     SymTab[SymIdx].IsConst   := False;
@@ -8816,7 +8814,6 @@ End;
 Procedure ParseTypeDecl(IsPublic : Boolean);
 Var
   TypeName     : TString;
-  FieldOffset  : LongInt;
   FieldCount   : Integer;
   SymIdx       : Integer;
   AsmLbl       : TString;
@@ -8834,10 +8831,8 @@ Begin
   LexNextToken;
   SkipNewlines;
   { Ajouter le type dans la table des symboles }
-  SymIdx := AddSym(TypeName);
+  SymIdx := AddSym(TypeName, SK_TYPE, VBT_USER, STORE_GLOBAL);
   If SymIdx >= 0 Then Begin
-    SymTab[SymIdx].Kind     := SK_TYPE;
-    SymTab[SymIdx].DataType := VBT_USER;
     SymTab[SymIdx].IsPublic := IsPublic;
     SymTab[SymIdx].IsConst  := False;
     SymTab[SymIdx].AsmLabel := AsmLbl;
@@ -8845,7 +8840,6 @@ Begin
   { Emettre le commentaire de structure }
   EmitComment('Type ' + TypeName);
   { Parser les champs }
-  FieldOffset := 0;
   FieldCount  := 0;
   CurTypeSize := 0;
   While Not LexEOF Do Begin
@@ -8871,7 +8865,6 @@ Begin
       Exit;
     End;
     ParseTypeField(TypeName, CurTypeSize);
-    FieldOffset := CurTypeSize;
     Inc(FieldCount);
   End;
   { Emettre la taille totale du type }
@@ -8920,10 +8913,8 @@ Begin
   LexNextToken;
   SkipNewlines;
   { Ajouter l enumeration dans la table des symboles }
-  SymIdx := AddSym(EnumName);
+  SymIdx := AddSym(EnumName, SK_ENUM, VBT_LONG, STORE_GLOBAL);
   If SymIdx >= 0 Then Begin
-    SymTab[SymIdx].Kind     := SK_ENUM;
-    SymTab[SymIdx].DataType := VBT_LONG;
     SymTab[SymIdx].IsPublic := IsPublic;
     SymTab[SymIdx].IsConst  := False;
     SymTab[SymIdx].AsmLabel := AsmLbl;
@@ -8983,15 +8974,12 @@ Begin
       Exit;
     End;
     { Ajouter le membre comme constante }
-    SymIdx := AddSym(MemberName);
+    SymIdx := AddSym(MemberName, SK_ENUM_MEMBER, VBT_LONG, STORE_CONSTANT);
     If SymIdx >= 0 Then Begin
-      SymTab[SymIdx].Kind       := SK_ENUM_MEMBER;
-      SymTab[SymIdx].DataType   := VBT_LONG;
       SymTab[SymIdx].IsPublic   := IsPublic;
       SymTab[SymIdx].IsConst    := True;
       SymTab[SymIdx].InitNum    := CurValue;
       SymTab[SymIdx].HasInit    := True;
-      SymTab[SymIdx].StoreClass := STORE_CONSTANT;
       SymTab[SymIdx].AsmLabel   := PFX_ENUM + UpCaseStr(EnumName) + '_' +
                                    UpCaseStr(MemberName);
     End;
