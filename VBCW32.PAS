@@ -615,7 +615,7 @@
             Commentaires preserves dans le listing
             Indentation et formatage lisible
 
-  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, USER32, MSVCRT) [A FAIRE]
+  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, USER32, MSVCRT) [IMPLEMENTE]
             Imports kernel32.dll :
               ExitProcess, GetStdHandle, WriteFile, ReadFile,
               GetProcessHeap, HeapAlloc, HeapFree, HeapReAlloc,
@@ -13965,6 +13965,731 @@ Begin
   GetASMTotalSections := ASMTotalSections;
 End;
 
+{ ============================================================ }
+{ TODO 24 - IMPORTS API WIN32 ET LIAISON                       }
+{           (KERNEL32, USER32, MSVCRT)                         }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Noms des DLL importees }
+  IMP_DLL_KERNEL32       = 'kernel32.dll';
+  IMP_DLL_USER32         = 'user32.dll';
+  IMP_DLL_MSVCRT         = 'msvcrt.dll';
+
+  { Nombre de DLL }
+  IMP_DLL_COUNT          = 3;
+
+  { Index des DLL }
+  IMP_IDX_KERNEL32       = 0;
+  IMP_IDX_USER32         = 1;
+  IMP_IDX_MSVCRT         = 2;
+
+  { Nombre de fonctions par DLL }
+  IMP_KERNEL32_COUNT     = 27;
+  IMP_USER32_COUNT       = 2;
+  IMP_MSVCRT_COUNT       = 20;
+  IMP_TOTAL_FUNCS        = 49;    { 27 + 2 + 20 }
+
+  { Tailles des structures PE import }
+  IMP_DESC_SIZE          = 20;    { IMAGE_IMPORT_DESCRIPTOR : 5 x DWORD }
+  IMP_THUNK_SIZE         = 4;     { IMAGE_THUNK_DATA : 1 x DWORD }
+  IMP_HINT_OVERHEAD      = 2;     { Hint (WORD) avant le nom }
+  IMP_NULL_TERM          = 1;     { Octet nul terminateur }
+
+  { Limites }
+  MAX_IMPORT_DLLS        = 8;
+  MAX_IMPORT_FUNCS       = 128;
+  MAX_IMPORT_NAME_LEN    = 64;
+
+  { Labels import runtime }
+  IMP_RT_INIT            = '_IMP_INIT';
+  IMP_RT_BUILD           = '_IMP_BUILD';
+  IMP_RT_DESC            = '_IMP_DESC';
+  IMP_RT_IAT             = '_IMP_IAT';
+  IMP_RT_HINT            = '_IMP_HINT';
+  IMP_RT_LOOKUP          = '_IMP_LOOKUP';
+  IMP_RT_NAMES           = '_IMP_NAMES';
+  IMP_RT_DLLNAME         = '_IMP_DLLNAME';
+  IMP_RT_EXTERN          = '_IMP_EXTERN';
+  IMP_RT_SYMBOL          = '_IMP_SYMBOL';
+
+  { Variables import segment }
+  IMP_VAR_DLLCOUNT       = '_IMP_DLLCOUNT';
+  IMP_VAR_FUNCCOUNT      = '_IMP_FUNCCOUNT';
+  IMP_VAR_TABLESIZE      = '_IMP_TABLESIZE';
+  IMP_VAR_IATSIZE        = '_IMP_IATSIZE';
+  IMP_VAR_HINTSIZE       = '_IMP_HINTSIZE';
+
+  { Noms des fonctions kernel32.dll }
+  K32_EXITPROCESS        = 'ExitProcess';
+  K32_GETSTDHANDLE       = 'GetStdHandle';
+  K32_WRITEFILE          = 'WriteFile';
+  K32_READFILE           = 'ReadFile';
+  K32_GETPROCESSHEAP     = 'GetProcessHeap';
+  K32_HEAPALLOC          = 'HeapAlloc';
+  K32_HEAPFREE           = 'HeapFree';
+  K32_HEAPREALLOC        = 'HeapReAlloc';
+  K32_CREATEFILEA        = 'CreateFileA';
+  K32_CLOSEHANDLE        = 'CloseHandle';
+  K32_SETFILEPOINTER     = 'SetFilePointer';
+  K32_GETFILESIZE        = 'GetFileSize';
+  K32_DELETEFILEA        = 'DeleteFileA';
+  K32_GETCOMMANDLINEA    = 'GetCommandLineA';
+  K32_GETMODULEHANDLEA   = 'GetModuleHandleA';
+  K32_GETLASTERROR       = 'GetLastError';
+  K32_SETLASTERROR       = 'SetLastError';
+  K32_MOVEFILEA          = 'MoveFileA';
+  K32_COPYFILEA          = 'CopyFileA';
+  K32_GETCURRENTDIRA     = 'GetCurrentDirectoryA';
+  K32_SETCURRENTDIRA     = 'SetCurrentDirectoryA';
+  K32_CREATEDIRECTORYA   = 'CreateDirectoryA';
+  K32_FINDFIRSTFILEA     = 'FindFirstFileA';
+  K32_FINDNEXTFILEA      = 'FindNextFileA';
+  K32_FINDCLOSE          = 'FindClose';
+  K32_GETTICKCOUNT       = 'GetTickCount';
+  K32_SLEEP              = 'Sleep';
+
+  { Noms des fonctions user32.dll }
+  U32_MESSAGEBOXA        = 'MessageBoxA';
+  U32_GETDESKTOPWINDOW   = 'GetDesktopWindow';
+
+  { Noms des fonctions msvcrt.dll }
+  CRT_ITOA               = '_itoa';
+  CRT_LTOA               = '_ltoa';
+  CRT_ATOI               = 'atoi';
+  CRT_ATOL               = 'atol';
+  CRT_SPRINTF            = 'sprintf';
+  CRT_SSCANF             = 'sscanf';
+  CRT_GCVT               = '_gcvt';
+  CRT_STRTOD             = 'strtod';
+  CRT_SIN                = 'sin';
+  CRT_COS                = 'cos';
+  CRT_TAN                = 'tan';
+  CRT_ATAN               = 'atan';
+  CRT_SQRT               = 'sqrt';
+  CRT_EXP2               = 'exp';
+  CRT_LOG2               = 'log';
+  CRT_POW2               = 'pow';
+  CRT_FABS               = 'fabs';
+  CRT_FMOD               = 'fmod';
+  CRT_SRAND              = 'srand';
+  CRT_RAND               = 'rand';
+
+Var
+  ImportCount            : LongInt;
+  ImportInitialized      : Boolean;
+  ImportDLLCount         : Integer;
+  ImportFuncCount        : Integer;
+  ImportTableSize        : LongInt;
+  ImportIATSize          : LongInt;
+  ImportHintSize         : LongInt;
+  ImportK32Count         : Integer;
+  ImportU32Count         : Integer;
+  ImportCRTCount         : Integer;
+
+{ ------------------------------------------------------------ }
+{ InitImportState : initialiser l etat du module d imports      }
+{ ------------------------------------------------------------ }
+
+Procedure InitImportState;
+Begin
+  ImportCount       := 0;
+  ImportInitialized := True;
+  ImportDLLCount    := IMP_DLL_COUNT;
+  ImportFuncCount   := IMP_TOTAL_FUNCS;
+  ImportTableSize   := 0;
+  ImportIATSize     := 0;
+  ImportHintSize    := 0;
+  ImportK32Count    := IMP_KERNEL32_COUNT;
+  ImportU32Count    := IMP_USER32_COUNT;
+  ImportCRTCount    := IMP_MSVCRT_COUNT;
+End;
+
+{ ------------------------------------------------------------ }
+{ ImportDLLName : retourner le nom de la DLL par index           }
+{ ------------------------------------------------------------ }
+
+Function ImportDLLName(Idx : Integer) : String;
+Begin
+  Case Idx of
+    IMP_IDX_KERNEL32: ImportDLLName := IMP_DLL_KERNEL32;
+    IMP_IDX_USER32:   ImportDLLName := IMP_DLL_USER32;
+    IMP_IDX_MSVCRT:   ImportDLLName := IMP_DLL_MSVCRT;
+  Else
+    ImportDLLName := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ImportFuncCountForDLL : nombre de fonctions pour une DLL       }
+{ ------------------------------------------------------------ }
+
+Function ImportFuncCountForDLL(Idx : Integer) : Integer;
+Begin
+  Case Idx of
+    IMP_IDX_KERNEL32: ImportFuncCountForDLL := IMP_KERNEL32_COUNT;
+    IMP_IDX_USER32:   ImportFuncCountForDLL := IMP_USER32_COUNT;
+    IMP_IDX_MSVCRT:   ImportFuncCountForDLL := IMP_MSVCRT_COUNT;
+  Else
+    ImportFuncCountForDLL := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetKernel32FuncName : nom d une fonction kernel32 par index    }
+{ ------------------------------------------------------------ }
+
+Function GetKernel32FuncName(Idx : Integer) : String;
+Begin
+  Case Idx of
+     0: GetKernel32FuncName := K32_EXITPROCESS;
+     1: GetKernel32FuncName := K32_GETSTDHANDLE;
+     2: GetKernel32FuncName := K32_WRITEFILE;
+     3: GetKernel32FuncName := K32_READFILE;
+     4: GetKernel32FuncName := K32_GETPROCESSHEAP;
+     5: GetKernel32FuncName := K32_HEAPALLOC;
+     6: GetKernel32FuncName := K32_HEAPFREE;
+     7: GetKernel32FuncName := K32_HEAPREALLOC;
+     8: GetKernel32FuncName := K32_CREATEFILEA;
+     9: GetKernel32FuncName := K32_CLOSEHANDLE;
+    10: GetKernel32FuncName := K32_SETFILEPOINTER;
+    11: GetKernel32FuncName := K32_GETFILESIZE;
+    12: GetKernel32FuncName := K32_DELETEFILEA;
+    13: GetKernel32FuncName := K32_GETCOMMANDLINEA;
+    14: GetKernel32FuncName := K32_GETMODULEHANDLEA;
+    15: GetKernel32FuncName := K32_GETLASTERROR;
+    16: GetKernel32FuncName := K32_SETLASTERROR;
+    17: GetKernel32FuncName := K32_MOVEFILEA;
+    18: GetKernel32FuncName := K32_COPYFILEA;
+    19: GetKernel32FuncName := K32_GETCURRENTDIRA;
+    20: GetKernel32FuncName := K32_SETCURRENTDIRA;
+    21: GetKernel32FuncName := K32_CREATEDIRECTORYA;
+    22: GetKernel32FuncName := K32_FINDFIRSTFILEA;
+    23: GetKernel32FuncName := K32_FINDNEXTFILEA;
+    24: GetKernel32FuncName := K32_FINDCLOSE;
+    25: GetKernel32FuncName := K32_GETTICKCOUNT;
+    26: GetKernel32FuncName := K32_SLEEP;
+  Else
+    GetKernel32FuncName := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetUser32FuncName : nom d une fonction user32 par index        }
+{ ------------------------------------------------------------ }
+
+Function GetUser32FuncName(Idx : Integer) : String;
+Begin
+  Case Idx of
+    0: GetUser32FuncName := U32_MESSAGEBOXA;
+    1: GetUser32FuncName := U32_GETDESKTOPWINDOW;
+  Else
+    GetUser32FuncName := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetMsvcrtFuncName : nom d une fonction msvcrt par index        }
+{ ------------------------------------------------------------ }
+
+Function GetMsvcrtFuncName(Idx : Integer) : String;
+Begin
+  Case Idx of
+     0: GetMsvcrtFuncName := CRT_ITOA;
+     1: GetMsvcrtFuncName := CRT_LTOA;
+     2: GetMsvcrtFuncName := CRT_ATOI;
+     3: GetMsvcrtFuncName := CRT_ATOL;
+     4: GetMsvcrtFuncName := CRT_SPRINTF;
+     5: GetMsvcrtFuncName := CRT_SSCANF;
+     6: GetMsvcrtFuncName := CRT_GCVT;
+     7: GetMsvcrtFuncName := CRT_STRTOD;
+     8: GetMsvcrtFuncName := CRT_SIN;
+     9: GetMsvcrtFuncName := CRT_COS;
+    10: GetMsvcrtFuncName := CRT_TAN;
+    11: GetMsvcrtFuncName := CRT_ATAN;
+    12: GetMsvcrtFuncName := CRT_SQRT;
+    13: GetMsvcrtFuncName := CRT_EXP2;
+    14: GetMsvcrtFuncName := CRT_LOG2;
+    15: GetMsvcrtFuncName := CRT_POW2;
+    16: GetMsvcrtFuncName := CRT_FABS;
+    17: GetMsvcrtFuncName := CRT_FMOD;
+    18: GetMsvcrtFuncName := CRT_SRAND;
+    19: GetMsvcrtFuncName := CRT_RAND;
+  Else
+    GetMsvcrtFuncName := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportFuncName : nom d une fonction par DLL et index        }
+{ ------------------------------------------------------------ }
+
+Function GetImportFuncName(DllIdx, FuncIdx : Integer) : String;
+Begin
+  Case DllIdx of
+    IMP_IDX_KERNEL32: GetImportFuncName := GetKernel32FuncName(FuncIdx);
+    IMP_IDX_USER32:   GetImportFuncName := GetUser32FuncName(FuncIdx);
+    IMP_IDX_MSVCRT:   GetImportFuncName := GetMsvcrtFuncName(FuncIdx);
+  Else
+    GetImportFuncName := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CalcHintNameEntrySize : taille d une entree Hint/Name          }
+{   2 octets hint + longueur nom + 1 nul + padding pair          }
+{ ------------------------------------------------------------ }
+
+Function CalcHintNameEntrySize(Const FuncName : String) : LongInt;
+Var
+  Sz : LongInt;
+Begin
+  Sz := IMP_HINT_OVERHEAD + Length(FuncName) + IMP_NULL_TERM;
+  If (Sz Mod 2) <> 0 Then
+    Inc(Sz);
+  CalcHintNameEntrySize := Sz;
+End;
+
+{ ------------------------------------------------------------ }
+{ CalcImportTableSize : calculer la taille totale de la table    }
+{   d importation PE                                              }
+{ ------------------------------------------------------------ }
+
+Procedure CalcImportTableSize;
+Var
+  D, F          : Integer;
+  DllNameLen    : LongInt;
+  HintTotal     : LongInt;
+  IATTotal      : LongInt;
+  DescTotal     : LongInt;
+  FuncName      : String;
+Begin
+  { Descripteurs : 3 DLL + 1 terminateur nul }
+  DescTotal := (IMP_DLL_COUNT + 1) * IMP_DESC_SIZE;
+
+  { IAT et ILT : pour chaque DLL, N thunks + 1 terminateur nul }
+  { On a 2 copies : ILT (OriginalFirstThunk) et IAT (FirstThunk) }
+  IATTotal := 0;
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    IATTotal := IATTotal +
+      (ImportFuncCountForDLL(D) + 1) * IMP_THUNK_SIZE;
+  End;
+  IATTotal := IATTotal * 2; { ILT + IAT }
+
+  { Hint/Name table }
+  HintTotal := 0;
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    For F := 0 To ImportFuncCountForDLL(D) - 1 Do Begin
+      FuncName := GetImportFuncName(D, F);
+      HintTotal := HintTotal + CalcHintNameEntrySize(FuncName);
+    End;
+  End;
+
+  { Noms des DLL + terminateurs }
+  DllNameLen := 0;
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    DllNameLen := DllNameLen + Length(ImportDLLName(D)) + IMP_NULL_TERM;
+  End;
+
+  ImportTableSize := DescTotal + IATTotal + HintTotal + DllNameLen;
+  ImportIATSize   := IATTotal Div 2;
+  ImportHintSize  := HintTotal;
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImportDescriptor : generer un IMAGE_IMPORT_DESCRIPTOR       }
+{   pour une DLL (OriginalFirstThunk, TimeDateStamp,             }
+{   ForwarderChain, Name RVA, FirstThunk)                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenImportDescriptor(DllIdx : Integer;
+                               ILTRVA, NameRVA, IATRVA : LongInt);
+Begin
+  Emit('; IMAGE_IMPORT_DESCRIPTOR for ' + ImportDLLName(DllIdx));
+  Emit('  DD ' + ItoS(ILTRVA));          { OriginalFirstThunk -> ILT }
+  Emit('  DD 0');                         { TimeDateStamp }
+  Emit('  DD 0');                         { ForwarderChain }
+  Emit('  DD ' + ItoS(NameRVA));          { Name RVA }
+  Emit('  DD ' + ItoS(IATRVA));           { FirstThunk -> IAT }
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImportNullDescriptor : descripteur nul terminateur           }
+{ ------------------------------------------------------------ }
+
+Procedure GenImportNullDescriptor;
+Begin
+  Emit('; NULL terminator descriptor');
+  Emit('  DD 0');    { OriginalFirstThunk }
+  Emit('  DD 0');    { TimeDateStamp }
+  Emit('  DD 0');    { ForwarderChain }
+  Emit('  DD 0');    { Name }
+  Emit('  DD 0');    { FirstThunk }
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImportThunkTable : generer une table de thunks (ILT ou IAT) }
+{   pour une DLL donnee                                           }
+{ ------------------------------------------------------------ }
+
+Procedure GenImportThunkTable(DllIdx : Integer;
+                               Const TableName : String;
+                               HintBaseRVA : LongInt);
+Var
+  F          : Integer;
+  FuncName   : String;
+  Offset     : LongInt;
+Begin
+  Emit('; ' + TableName + ' for ' + ImportDLLName(DllIdx));
+  Offset := 0;
+  For F := 0 To ImportFuncCountForDLL(DllIdx) - 1 Do Begin
+    FuncName := GetImportFuncName(DllIdx, F);
+    Emit('  DD ' + ItoS(HintBaseRVA + Offset) +
+         '  ; -> ' + FuncName);
+    Offset := Offset + CalcHintNameEntrySize(FuncName);
+  End;
+  Emit('  DD 0  ; NULL terminator');
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImportHintNameTable : generer les entrees Hint/Name         }
+{   pour une DLL donnee                                           }
+{ ------------------------------------------------------------ }
+
+Procedure GenImportHintNameTable(DllIdx : Integer);
+Var
+  F          : Integer;
+  FuncName   : String;
+Begin
+  Emit('; Hint/Name entries for ' + ImportDLLName(DllIdx));
+  For F := 0 To ImportFuncCountForDLL(DllIdx) - 1 Do Begin
+    FuncName := GetImportFuncName(DllIdx, F);
+    Emit('  DW 0  ; Hint for ' + FuncName);
+    Emit('  DB ''' + FuncName + ''', 0');
+    If ((IMP_HINT_OVERHEAD + Length(FuncName) + IMP_NULL_TERM) Mod 2) <> 0 Then
+      Emit('  DB 0  ; padding');
+  End;
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImportDLLNames : generer les noms des DLL                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenImportDLLNames;
+Var
+  D : Integer;
+Begin
+  Emit('; DLL name strings');
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    Emit('  DB ''' + ImportDLLName(D) + ''', 0');
+  End;
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPEImportTable : generer la table d importation PE complete   }
+{   avec descripteurs, ILT, IAT, Hint/Name et noms DLL          }
+{ ------------------------------------------------------------ }
+
+Procedure GenPEImportTable;
+Var
+  D : Integer;
+  BaseRVA : LongInt;
+Begin
+  CalcImportTableSize;
+
+  Emit('');
+  Emit('; ====================================');
+  Emit('; PE Import Table');
+  Emit('; ====================================');
+
+  { Section 1 : Import Descriptors }
+  Emit('');
+  Emit('; --- Import Directory Table ---');
+  BaseRVA := 0; { Les RVA seront resolus par le linker }
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    GenImportDescriptor(D, 0, 0, 0);
+  End;
+  GenImportNullDescriptor;
+
+  { Section 2 : ILT (Import Lookup Table) pour chaque DLL }
+  Emit('');
+  Emit('; --- Import Lookup Tables (ILT) ---');
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    GenImportThunkTable(D, 'ILT', 0);
+  End;
+
+  { Section 3 : IAT (Import Address Table) pour chaque DLL }
+  Emit('');
+  Emit('; --- Import Address Tables (IAT) ---');
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    GenImportThunkTable(D, 'IAT', 0);
+  End;
+
+  { Section 4 : Hint/Name Table }
+  Emit('');
+  Emit('; --- Hint/Name Table ---');
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    GenImportHintNameTable(D);
+  End;
+
+  { Section 5 : DLL Names }
+  Emit('');
+  GenImportDLLNames;
+
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenASMExternForDLL : generer les EXTERN pour une DLL (mode ASM)}
+{ ------------------------------------------------------------ }
+
+Procedure GenASMExternForDLL(DllIdx : Integer);
+Var
+  F          : Integer;
+  FuncName   : String;
+Begin
+  For F := 0 To ImportFuncCountForDLL(DllIdx) - 1 Do Begin
+    FuncName := GetImportFuncName(DllIdx, F);
+    Emit('EXTERN ' + FuncName + ':PROC');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenASMExterns : generer tous les EXTERN pour le mode .ASM       }
+{ ------------------------------------------------------------ }
+
+Procedure GenASMExterns;
+Var
+  D : Integer;
+Begin
+  Emit('');
+  Emit('; ====================================');
+  Emit('; External API imports (MASM syntax)');
+  Emit('; ====================================');
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    Emit('');
+    Emit('; Imports from ' + ImportDLLName(D));
+    GenASMExternForDLL(D);
+  End;
+  Emit('');
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCOFFExternForDLL : generer symboles externes COFF pour DLL  }
+{ ------------------------------------------------------------ }
+
+Procedure GenCOFFExternForDLL(DllIdx : Integer);
+Var
+  F          : Integer;
+  FuncName   : String;
+Begin
+  For F := 0 To ImportFuncCountForDLL(DllIdx) - 1 Do Begin
+    FuncName := GetImportFuncName(DllIdx, F);
+    Emit('; COFF external: ' + FuncName +
+         ' (DLL: ' + ImportDLLName(DllIdx) + ')');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCOFFExternalSymbols : generer symboles externes pour .OBJ    }
+{ ------------------------------------------------------------ }
+
+Procedure GenCOFFExternalSymbols;
+Var
+  D : Integer;
+Begin
+  Emit('');
+  Emit('; ====================================');
+  Emit('; External symbols for COFF .OBJ');
+  Emit('; ====================================');
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    Emit('');
+    Emit('; External symbols from ' + ImportDLLName(D));
+    GenCOFFExternForDLL(D);
+  End;
+  Emit('');
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenASMIncludelibs : generer les directives INCLUDELIB           }
+{ ------------------------------------------------------------ }
+
+Procedure GenASMIncludelibs;
+Begin
+  Emit('');
+  Emit('; Library includes');
+  Emit('INCLUDELIB kernel32.lib');
+  Emit('INCLUDELIB user32.lib');
+  Emit('INCLUDELIB msvcrt.lib');
+  Emit('');
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenImportDataSegment : generer les donnees d import dans .DATA  }
+{ ------------------------------------------------------------ }
+
+Procedure GenImportDataSegment;
+Begin
+  EmitData(IMP_VAR_DLLCOUNT + ' DD ' + ItoS(ImportDLLCount));
+  EmitData(IMP_VAR_FUNCCOUNT + ' DD ' + ItoS(ImportFuncCount));
+  EmitData(IMP_VAR_TABLESIZE + ' DD ' + ItoS(ImportTableSize));
+  EmitData(IMP_VAR_IATSIZE + ' DD ' + ItoS(ImportIATSize));
+  EmitData(IMP_VAR_HINTSIZE + ' DD ' + ItoS(ImportHintSize));
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsImportFunction : verifier si un nom est une fonction importee }
+{ ------------------------------------------------------------ }
+
+Function IsImportFunction(Const S : String) : Boolean;
+Var
+  D, F       : Integer;
+  FuncName   : String;
+Begin
+  IsImportFunction := False;
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    For F := 0 To ImportFuncCountForDLL(D) - 1 Do Begin
+      FuncName := GetImportFuncName(D, F);
+      If S = FuncName Then Begin
+        IsImportFunction := True;
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsImportDll : verifier si un nom est une DLL importee          }
+{ ------------------------------------------------------------ }
+
+Function IsImportDll(Const S : String) : Boolean;
+Begin
+  IsImportDll := (S = IMP_DLL_KERNEL32) Or
+                 (S = IMP_DLL_USER32) Or
+                 (S = IMP_DLL_MSVCRT);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsImportLabel : verifier si un nom est un label d import       }
+{ ------------------------------------------------------------ }
+
+Function IsImportLabel(Const S : String) : Boolean;
+Begin
+  IsImportLabel := (S = IMP_RT_INIT) Or (S = IMP_RT_BUILD) Or
+                   (S = IMP_RT_DESC) Or (S = IMP_RT_IAT) Or
+                   (S = IMP_RT_HINT) Or (S = IMP_RT_LOOKUP) Or
+                   (S = IMP_RT_NAMES) Or (S = IMP_RT_DLLNAME) Or
+                   (S = IMP_RT_EXTERN) Or (S = IMP_RT_SYMBOL);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportDllIndex : retourner l index d une DLL par nom        }
+{ ------------------------------------------------------------ }
+
+Function GetImportDllIndex(Const DllName : String) : Integer;
+Begin
+  If DllName = IMP_DLL_KERNEL32 Then
+    GetImportDllIndex := IMP_IDX_KERNEL32
+  Else If DllName = IMP_DLL_USER32 Then
+    GetImportDllIndex := IMP_IDX_USER32
+  Else If DllName = IMP_DLL_MSVCRT Then
+    GetImportDllIndex := IMP_IDX_MSVCRT
+  Else
+    GetImportDllIndex := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetImportFuncDll : retourner la DLL d une fonction importee    }
+{ ------------------------------------------------------------ }
+
+Function GetImportFuncDll(Const FuncName : String) : String;
+Var
+  D, F   : Integer;
+  Name   : String;
+Begin
+  GetImportFuncDll := '';
+  For D := 0 To IMP_DLL_COUNT - 1 Do Begin
+    For F := 0 To ImportFuncCountForDLL(D) - 1 Do Begin
+      Name := GetImportFuncName(D, F);
+      If FuncName = Name Then Begin
+        GetImportFuncDll := ImportDLLName(D);
+        Exit;
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs                                       }
+{ ------------------------------------------------------------ }
+
+Function GetImportCount : LongInt;
+Begin
+  GetImportCount := ImportCount;
+End;
+
+Function IsImportInitialized : Boolean;
+Begin
+  IsImportInitialized := ImportInitialized;
+End;
+
+Function IsImportEmpty : Boolean;
+Begin
+  IsImportEmpty := (ImportCount = 0);
+End;
+
+Function GetImportStatus : String;
+Begin
+  If Not ImportInitialized Then
+    GetImportStatus := 'Not initialized'
+  Else If ImportCount > 0 Then
+    GetImportStatus := 'Active (' + ItoS(ImportFuncCount) + ' funcs, ' +
+                       ItoS(ImportDLLCount) + ' DLLs)'
+  Else
+    GetImportStatus := 'Initialized, not yet generated';
+End;
+
+Function GetImportDLLTotal : Integer;
+Begin
+  GetImportDLLTotal := ImportDLLCount;
+End;
+
+Function GetImportFuncTotal : Integer;
+Begin
+  GetImportFuncTotal := ImportFuncCount;
+End;
+
+Function GetImportKernel32Count : Integer;
+Begin
+  GetImportKernel32Count := ImportK32Count;
+End;
+
+Function GetImportUser32Count : Integer;
+Begin
+  GetImportUser32Count := ImportU32Count;
+End;
+
+Function GetImportMsvcrtCount : Integer;
+Begin
+  GetImportMsvcrtCount := ImportCRTCount;
+End;
+
+Function GetImportTableTotalSize : LongInt;
+Begin
+  GetImportTableTotalSize := ImportTableSize;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -13989,6 +14714,7 @@ Begin
   InitRuntimeLib;
   InitCOFFWriter;
   InitASMWriter;
+  InitImportState;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;
