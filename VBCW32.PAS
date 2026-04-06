@@ -167,8 +167,8 @@
               Option Compare Binary|Text
               Attribute VB_Name = "Module1"
             Reconnaitre le type de module :
-              .VB  : module standard (Sub Main comme point d entree)
-              .FRM : module de formulaire (stub, traite comme .VB)
+              .BAS : module standard (Sub Main comme point d entree)
+              .FRM : module de formulaire (stub, traite comme .BAS)
               .CLS : module de classe
             Generer le label du point d entree _VBF_MAIN
             Generer le prologue PE : appel a Main apres init runtime
@@ -650,18 +650,18 @@
               IMUL EAX, 2 -> SHL EAX, 1
               IMUL EAX, 4 -> SHL EAX, 2
             Verification : compiler et executer les exemples
-              SAMPLES\VB\HELLO.VB    - Hello World
-              SAMPLES\VB\CALC.VB     - Calculatrice simple
-              SAMPLES\VB\FIBONACCI.VB - Suite de Fibonacci
-              SAMPLES\VB\FACTORI.VB  - Factorielle
-              SAMPLES\VB\ARRAY.VB    - Operations sur tableaux
-              SAMPLES\VB\STRING.VB   - Operations sur chaines
-              SAMPLES\VB\FILEIO.VB   - Entrees/sorties fichiers
-              SAMPLES\VB\SELECTCS.VB - Select Case
-              SAMPLES\VB\LOOPS.VB    - Boucles For/Do/While
-              SAMPLES\VB\USERTYPE.VB - Types utilisateur
-              SAMPLES\VB\SUBS.VB     - Sub et Function
-              SAMPLES\VB\ERRORS.VB   - Gestion des erreurs
+              SAMPLES\VB\HELLO.BAS    - Hello World
+              SAMPLES\VB\CALC.BAS     - Calculatrice simple
+              SAMPLES\VB\FIBONACCI.BAS - Suite de Fibonacci
+              SAMPLES\VB\FACTORI.BAS  - Factorielle
+              SAMPLES\VB\ARRAY.BAS    - Operations sur tableaux
+              SAMPLES\VB\STRING.BAS   - Operations sur chaines
+              SAMPLES\VB\FILEIO.BAS   - Entrees/sorties fichiers
+              SAMPLES\VB\SELECTCS.BAS - Select Case
+              SAMPLES\VB\LOOPS.BAS    - Boucles For/Do/While
+              SAMPLES\VB\USERTYPE.BAS - Types utilisateur
+              SAMPLES\VB\SUBS.BAS     - Sub et Function
+              SAMPLES\VB\ERRORS.BAS   - Gestion des erreurs
             Tests de regression pour chaque TODO
             Verification des 3 modes de sortie :
               .EXE (defaut), .OBJ (-obj), .ASM (-asm)
@@ -3486,8 +3486,8 @@ End;
 
 Const
   { Types de module VB6 }
-  MODULE_STANDARD = 0;   { module standard .VB (Sub Main)          }
-  MODULE_FORM     = 1;   { module formulaire .FRM (stub -> .VB)    }
+  MODULE_STANDARD = 0;   { module standard .BAS (Sub Main)         }
+  MODULE_FORM     = 1;   { module formulaire .FRM (stub -> .BAS)   }
   MODULE_CLASS    = 2;   { module de classe .CLS                   }
 
   { Option Compare }
@@ -3793,7 +3793,7 @@ End;
 
 { ------------------------------------------------------------ }
 { ParseModule : point d entree principal du parseur            }
-{   1. Detecter le type de module (.VB, .FRM, .CLS)           }
+{   1. Detecter le type de module (.BAS, .FRM, .CLS)          }
 {   2. Analyser l en-tete (Option, Attribute)                  }
 {   3. Configurer le point d entree                            }
 {   Le reste du module sera parse par les TODOs suivants       }
