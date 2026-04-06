@@ -47,7 +47,7 @@
               _VBNI_ (Interface), _VBNNS_ (Namespace)
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
 
-  TODO 02 - TOKENISEUR VISUAL BASIC .NET (LEXER) [A FAIRE]
+  TODO 02 - TOKENISEUR VISUAL BASIC .NET (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source
