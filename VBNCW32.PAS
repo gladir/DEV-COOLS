@@ -402,7 +402,7 @@
             Exit For / Exit Do / Exit While :
               JMP vers label_fin de la boucle
 
-  TODO 12 - PARSEUR : SUB ET FUNCTION (PROCEDURES ET FONCTIONS) [A FAIRE]
+  TODO 12 - PARSEUR : SUB ET FUNCTION (PROCEDURES ET FONCTIONS) [IMPLEMENTE]
             Procedure ParseSub
             Syntaxe :
               [Public|Private|Protected|Friend] [Shared] [Overloads]
@@ -7706,14 +7706,26 @@ Begin
       KW_RETURN   : Begin
                        Inc(CtrlCount);
                        LexNextToken;
-                       EmitComment('Return');
-                       Emit('RET');
+                       { Return peut etre suivi d une expression (Function) }
+                       If (CurTokType <> TOK_NEWLINE) And
+                          (CurTokType <> TOK_EOF) Then
+                       Begin
+                         EmitComment('Return <expr>');
+                         ParseExpr;
+                         Emit('MOV EAX, ; valeur de retour');
+                       End
+                       Else
+                         EmitComment('Return');
+                       { Sauter a l epilogue }
+                       Emit('JMP ' + FindEnclosingExitLabel);
                      End;
       KW_FOR      : ParseFor;
       KW_DO       : ParseDoLoop;
       KW_WHILE    : ParseWhile;
       KW_EXIT     : ParseExitStatement;
       KW_CONTINUE : ParseContinueStatement;
+      KW_SUB      : ParseSub;
+      KW_FUNCTION : ParseFunction;
     Else
       { Instruction non reconnue par ce TODO - avancer }
       LexNextToken;
@@ -8285,21 +8297,479 @@ Begin
   IsLoopStackEmpty := (LoopDepth = 0);
 End;
 
+{ ============================================================ }
+{ TODO 12 - PARSEUR : SUB ET FUNCTION (PROCEDURES ET          }
+{           FONCTIONS) [IMPLEMENTE]                            }
+{ ============================================================ }
+
+Var
+  SubFuncCount       : LongInt;   { nombre total de Sub/Function parsees  }
+  SubFuncInitialized : Boolean;   { True si InitSubFuncState a ete appele }
+  CurProcIsPublic    : Boolean;   { visibilite pour la proc en cours      }
+  CurProcIsShared    : Boolean;   { Shared pour la proc en cours          }
+
 { ------------------------------------------------------------ }
-{ Stubs pour les procedures forward (TODO 12)                  }
-{ Seront remplacees par les implementations completes          }
+{ InitSubFuncState : initialiser l etat du parseur Sub/Func    }
+{ ------------------------------------------------------------ }
+
+Procedure InitSubFuncState;
+Begin
+  SubFuncCount       := 0;
+  SubFuncInitialized := True;
+  CurProcIsPublic    := True;
+  CurProcIsShared    := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseParamList : analyser la liste de parametres              }
+{   ProcIdx : index dans ProcTab de la procedure courante      }
+{   Token courant : '(' ou premier token apres nom             }
+{   Parametres supportes :                                     }
+{     ByVal x As Integer (passage par valeur, defaut VB.NET)   }
+{     ByRef x As Integer (passage par reference)               }
+{     Optional x As Integer = 0 (parametre optionnel)          }
+{     ParamArray args() As Integer (stub)                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseParamList(ProcIdx : Integer);
+Var
+  PName     : TString;
+  PType     : Integer;
+  PByRef    : Boolean;
+  POptional : Boolean;
+  PDefault  : TString;
+  ParamOfs  : Integer;
+  Idx       : Integer;
+Begin
+  ParamOfs := SCOPE_EBP_PARAM_BASE; { [EBP+8] = premier param }
+
+  { Pas de parenthese -> pas de parametres }
+  If CurTokType <> TOK_LPAREN Then
+    Exit;
+  LexNextToken; { consommer '(' }
+
+  { Parenthese vide () }
+  If CurTokType = TOK_RPAREN Then
+  Begin
+    LexNextToken; { consommer ')' }
+    Exit;
+  End;
+
+  { Boucle sur les parametres separes par ',' }
+  While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+  Begin
+    PByRef    := False; { ByVal par defaut en VB.NET }
+    POptional := False;
+    PDefault  := '';
+
+    { Modificateurs optionnels : ByVal, ByRef, Optional, ParamArray }
+    While (CurTokType = TOK_KEYWORD) And
+          ((CurTokNum = KW_BYVAL) Or (CurTokNum = KW_BYREF) Or
+           (CurTokNum = KW_OPTIONAL) Or (CurTokNum = KW_PARAMARRAY)) Do
+    Begin
+      If CurTokNum = KW_BYVAL Then
+        PByRef := False
+      Else If CurTokNum = KW_BYREF Then
+        PByRef := True
+      Else If CurTokNum = KW_OPTIONAL Then
+        POptional := True;
+      { ParamArray : juste consommer le mot-cle (stub) }
+      LexNextToken;
+    End;
+
+    { Nom du parametre }
+    If CurTokType <> TOK_IDENT Then
+    Begin
+      WarnMsg('Nom de parametre attendu, trouve "' + CurTokStr + '"');
+      While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) And
+            (CurTokType <> TOK_NEWLINE) Do
+        LexNextToken;
+      If CurTokType = TOK_RPAREN Then
+        LexNextToken;
+      Exit;
+    End;
+    PName := CurTokStr;
+    LexNextToken;
+
+    { Gerer les parentheses vides pour ParamArray : args() }
+    If CurTokType = TOK_LPAREN Then
+    Begin
+      LexNextToken; { consommer '(' }
+      If CurTokType = TOK_RPAREN Then
+        LexNextToken; { consommer ')' }
+    End;
+
+    { As Type optionnel }
+    PType := VBT_OBJECT;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AS) Then
+    Begin
+      LexNextToken; { consommer 'As' }
+      PType := ParseTypeSpec;
+    End;
+
+    { Valeur par defaut : = valeur (pour Optional) }
+    If CurTokType = TOK_EQ Then
+    Begin
+      LexNextToken; { consommer '=' }
+      PDefault := CurTokStr;
+      LexNextToken; { consommer la valeur par defaut }
+    End;
+
+    { Ajouter le parametre dans SymTab }
+    Idx := AddSym(PName, SK_PARAM, PType, STORE_PARAM);
+    If Idx >= 0 Then
+    Begin
+      SymTab[Idx].ByRef      := PByRef;
+      SymTab[Idx].IsOptional := POptional;
+      SymTab[Idx].BpOffset   := ParamOfs;
+      If POptional And (PDefault <> '') Then
+      Begin
+        SymTab[Idx].HasDefault := True;
+        SymTab[Idx].DefaultVal := PDefault;
+      End;
+      Inc(ParamOfs, 4); { chaque param = 4 octets (PUSH DWORD) }
+      If (ProcIdx >= 0) And (ProcIdx < ProcCount) Then
+        Inc(ProcTab[ProcIdx].ParamCount);
+    End;
+
+    { Separateur ',' -> parametre suivant }
+    If CurTokType = TOK_COMMA Then
+      LexNextToken;
+  End;
+
+  { Consommer ')' }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSub : analyser une procedure Sub                        }
+{   [Public|Private|Protected|Friend] [Shared] [Overloads]     }
+{     [Overrides|Overridable|NotOverridable|MustOverride]      }
+{     Sub nom([params])                                        }
+{     instructions                                             }
+{     [Exit Sub]                                               }
+{     [Return]                                                 }
+{   End Sub                                                    }
+{   Genere prologue/epilogue STDCALL Win32 :                   }
+{     PUSH EBP / MOV EBP, ESP / SUB ESP, taille_locales        }
+{     ... corps ...                                            }
+{     MOV ESP, EBP / POP EBP / RET n                           }
 { ------------------------------------------------------------ }
 
 Procedure ParseSub;
+Var
+  SubName    : TString;
+  ProcIdx    : Integer;
+  ParamBytes : Integer;
 Begin
-  { Stub : sera implemente dans TODO 12 }
+  Inc(SubFuncCount);
+
+  { Le token courant est 'Sub' }
+  LexNextToken; { consommer 'Sub' }
+
+  { Nom du Sub }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    FatalError('Nom de Sub attendu, trouve "' + CurTokStr + '"');
+    Exit;
+  End;
+  SubName := CurTokStr;
   LexNextToken;
+
+  { Ajouter dans ProcTab }
+  ProcIdx := AddProc(SubName, SK_SUB, VBT_NONE, CurProcIsPublic);
+  If ProcIdx < 0 Then Exit;
+  ProcTab[ProcIdx].IsShared := CurProcIsShared;
+
+  { Entrer dans la portee Sub }
+  EnterScope(SCOPE_SUB, ProcIdx);
+
+  { Analyser la liste de parametres }
+  ParseParamList(ProcIdx);
+  ProcTab[ProcIdx].LocalStart := SymCount;
+
+  SkipNewlines;
+
+  { Emettre le prologue STDCALL }
+  EmitComment('Sub ' + SubName);
+  EmitLabel(ProcTab[ProcIdx].AsmLabel);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('SUB ESP, ' + ItoSI(ProcTab[ProcIdx].LocalSize));
+
+  { Parser le corps du Sub }
+  ParseStatementBlock;
+
+  { Verifier End Sub }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+  Begin
+    LexNextToken; { consommer 'End' }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SUB) Then
+      LexNextToken  { consommer 'Sub' }
+    Else
+      WarnMsg('"Sub" attendu apres "End"');
+  End
+  Else
+    WarnMsg('"End Sub" attendu');
+
+  { Emettre l epilogue }
+  EmitLabel(ProcTab[ProcIdx].ExitLabel);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  ParamBytes := ProcTab[ProcIdx].ParamCount * 4;
+  Emit('RET ' + ItoSI(ParamBytes));
+  EmitComment('End Sub ' + SubName);
+
+  { Quitter la portee }
+  LeaveScope;
+
+  SkipNewlines;
 End;
 
+{ ------------------------------------------------------------ }
+{ ParseFunction : analyser une procedure Function              }
+{   [Public|Private|Protected|Friend] [Shared] [Overloads]     }
+{     [Overrides|Overridable|NotOverridable|MustOverride]      }
+{     Function nom([params]) As type                           }
+{     instructions                                             }
+{     Return valeur                                            }
+{     [Exit Function]                                          }
+{   End Function                                               }
+{   Genere prologue/epilogue STDCALL Win32                     }
+{   Valeur de retour dans EAX (entier/pointeur)                }
+{   Note : ByVal est le defaut en VB.NET (ByRef en VB6)        }
+{ ------------------------------------------------------------ }
+
 Procedure ParseFunction;
+Var
+  FuncName   : TString;
+  RetType    : Integer;
+  ProcIdx    : Integer;
+  ParamBytes : Integer;
 Begin
-  { Stub : sera implemente dans TODO 12 }
+  Inc(SubFuncCount);
+
+  { Le token courant est 'Function' }
+  LexNextToken; { consommer 'Function' }
+
+  { Nom du Function }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    FatalError('Nom de Function attendu, trouve "' + CurTokStr + '"');
+    Exit;
+  End;
+  FuncName := CurTokStr;
   LexNextToken;
+
+  { Ajouter dans ProcTab (retour par defaut Object en VB.NET) }
+  ProcIdx := AddProc(FuncName, SK_FUNCTION, VBT_OBJECT, CurProcIsPublic);
+  If ProcIdx < 0 Then Exit;
+  ProcTab[ProcIdx].IsShared := CurProcIsShared;
+
+  { Entrer dans la portee Function }
+  EnterScope(SCOPE_FUNCTION, ProcIdx);
+
+  { Analyser la liste de parametres }
+  ParseParamList(ProcIdx);
+
+  { Analyser le type de retour : As Type }
+  RetType := VBT_OBJECT;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AS) Then
+  Begin
+    LexNextToken; { consommer 'As' }
+    RetType := ParseTypeSpec;
+  End;
+  ProcTab[ProcIdx].ReturnType := RetType;
+  ProcTab[ProcIdx].LocalStart := SymCount;
+
+  SkipNewlines;
+
+  { Emettre le prologue STDCALL }
+  EmitComment('Function ' + FuncName + ' As ' + VBTypeName(RetType));
+  EmitLabel(ProcTab[ProcIdx].AsmLabel);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  Emit('SUB ESP, ' + ItoSI(ProcTab[ProcIdx].LocalSize));
+  Emit('XOR EAX, EAX'); { valeur de retour par defaut = 0 }
+
+  { Parser le corps du Function }
+  ParseStatementBlock;
+
+  { Verifier End Function }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+  Begin
+    LexNextToken; { consommer 'End' }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FUNCTION) Then
+      LexNextToken  { consommer 'Function' }
+    Else
+      WarnMsg('"Function" attendu apres "End"');
+  End
+  Else
+    WarnMsg('"End Function" attendu');
+
+  { Emettre l epilogue }
+  { Valeur de retour dans EAX }
+  EmitLabel(ProcTab[ProcIdx].ExitLabel);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  ParamBytes := ProcTab[ProcIdx].ParamCount * 4;
+  Emit('RET ' + ItoSI(ParamBytes));
+  EmitComment('End Function ' + FuncName);
+
+  { Quitter la portee }
+  LeaveScope;
+
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseProcedures : analyser les definitions de Sub/Function   }
+{   au niveau du module (top-level)                            }
+{   Boucle jusqu a la fin du fichier                           }
+{   Gere les modificateurs VB.NET :                            }
+{     Public/Private/Protected/Friend                          }
+{     Shared                                                   }
+{     Overloads/Overrides/Overridable/NotOverridable/          }
+{       MustOverride                                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseProcedures;
+Begin
+  SkipNewlines;
+  While CurTokType <> TOK_EOF Do
+  Begin
+    { Reinitialiser les modificateurs }
+    CurProcIsPublic := True;  { Public par defaut en VB.NET }
+    CurProcIsShared := False;
+
+    If CurTokType = TOK_KEYWORD Then
+    Begin
+      { Modificateurs de visibilite }
+      If CurTokNum = KW_PUBLIC Then
+      Begin
+        CurProcIsPublic := True;
+        LexNextToken;
+      End
+      Else If CurTokNum = KW_PRIVATE Then
+      Begin
+        CurProcIsPublic := False;
+        LexNextToken;
+      End
+      Else If CurTokNum = KW_PROTECTED Then
+      Begin
+        CurProcIsPublic := False;
+        LexNextToken;
+      End
+      Else If CurTokNum = KW_FRIEND Then
+      Begin
+        CurProcIsPublic := True; { Friend = visible dans l assembly }
+        LexNextToken;
+      End;
+
+      { Modificateur Shared }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SHARED) Then
+      Begin
+        CurProcIsShared := True;
+        LexNextToken;
+      End;
+
+      { Modificateurs Overloads/Overrides/Overridable/NotOverridable/ }
+      { MustOverride : consommer sans traitement special               }
+      While (CurTokType = TOK_KEYWORD) And
+            ((CurTokNum = KW_OVERLOADS) Or (CurTokNum = KW_OVERRIDES) Or
+             (CurTokNum = KW_OVERRIDABLE) Or (CurTokNum = KW_NOTOVERRIDABLE) Or
+             (CurTokNum = KW_MUSTOVERRIDE)) Do
+        LexNextToken;
+
+      { Dispatcher selon Sub ou Function }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SUB) Then
+        ParseSub
+      Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FUNCTION) Then
+        ParseFunction
+      Else
+        LexNextToken; { token non reconnu a ce niveau, avancer }
+    End
+    Else
+      LexNextToken; { non mot-cle, avancer }
+
+    SkipNewlines;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions d acces - TODO 12                                  }
+{ ------------------------------------------------------------ }
+
+Function GetSubFuncCount : LongInt;
+Begin
+  GetSubFuncCount := SubFuncCount;
+End;
+
+Function IsSubFuncInitialized : Boolean;
+Begin
+  IsSubFuncInitialized := SubFuncInitialized;
+End;
+
+Function IsSubFuncEmpty : Boolean;
+Begin
+  IsSubFuncEmpty := (SubFuncCount = 0);
+End;
+
+Function GetSubFuncStatus : TString;
+Begin
+  If SubFuncInitialized Then
+    GetSubFuncStatus := 'initialized'
+  Else
+    GetSubFuncStatus := 'not initialized';
+End;
+
+Function GetLastProcName : TString;
+Begin
+  If ProcCount > 0 Then
+    GetLastProcName := ProcTab[ProcCount - 1].Name
+  Else
+    GetLastProcName := '';
+End;
+
+Function GetLastProcKind : Integer;
+Begin
+  If ProcCount > 0 Then
+    GetLastProcKind := ProcTab[ProcCount - 1].Kind
+  Else
+    GetLastProcKind := -1;
+End;
+
+Function GetLastProcReturnType : Integer;
+Begin
+  If ProcCount > 0 Then
+    GetLastProcReturnType := ProcTab[ProcCount - 1].ReturnType
+  Else
+    GetLastProcReturnType := VBT_NONE;
+End;
+
+Function GetLastProcParamCount : Integer;
+Begin
+  If ProcCount > 0 Then
+    GetLastProcParamCount := ProcTab[ProcCount - 1].ParamCount
+  Else
+    GetLastProcParamCount := 0;
+End;
+
+Function GetLastProcIsPublic : Boolean;
+Begin
+  If ProcCount > 0 Then
+    GetLastProcIsPublic := ProcTab[ProcCount - 1].IsPublic
+  Else
+    GetLastProcIsPublic := False;
+End;
+
+Function GetLastProcAsmLabel : TString;
+Begin
+  If ProcCount > 0 Then
+    GetLastProcAsmLabel := ProcTab[ProcCount - 1].AsmLabel
+  Else
+    GetLastProcAsmLabel := '';
 End;
 
 { ------------------------------------------------------------ }
@@ -8385,13 +8855,14 @@ Begin
   InitCodeGen;
   InitCtrlState;
   InitLoopState;
+  InitSubFuncState;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 12..25 : Generation de code, etc. }
+  { TODO 13..25 : Generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;
