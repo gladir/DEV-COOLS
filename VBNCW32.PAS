@@ -435,7 +435,7 @@
             Note : ByVal est le defaut en VB.NET (ByRef en VB6)
             Appel : PUSH params / CALL _VBNF_nom
 
-  TODO 13 - PARSEUR : FONCTIONS INTRINSEQUES ET METHODES SYSTEME [A FAIRE]
+  TODO 13 - PARSEUR : FONCTIONS INTRINSEQUES ET METHODES SYSTEME [IMPLEMENTE]
             Fonctions de chaines compatibles VB6 :
               Len(s) -> CALL _VBNRT_LEN
               Left(s, n), Right(s, n), Mid(s, start[, len])
@@ -8830,6 +8830,396 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 13 - PARSEUR : FONCTIONS INTRINSEQUES ET METHODES       }
+{           SYSTEME  [IMPLEMENTE]                              }
+{ ============================================================ }
+
+Var
+  IntrinsicCount       : LongInt;
+  IntrinsicInitialized : Boolean;
+
+{ ------------------------------------------------------------ }
+{ InitIntrinsicState : initialiser l etat des intrinseques     }
+{ ------------------------------------------------------------ }
+
+Procedure InitIntrinsicState;
+Begin
+  IntrinsicCount       := 0;
+  IntrinsicInitialized := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsIntrinsicFunction : teste si un code KW_* est une          }
+{   fonction intrinseque VB.NET reconnue                       }
+{ ------------------------------------------------------------ }
+
+Function IsIntrinsicFunction(KW : Integer) : Boolean;
+Begin
+  Case KW Of
+    { Fonctions de chaines (compatibles VB6) }
+    KW_LEN, KW_LEFT, KW_RIGHT, KW_MID,
+    KW_LTRIM, KW_RTRIM, KW_TRIM,
+    KW_UCASE, KW_LCASE,
+    KW_INSTR, KW_INSTRREV,
+    KW_REPLACE,
+    KW_SPACE, KW_STRREVERSE,
+    KW_SPLIT, KW_JOIN,
+    KW_ASC, KW_CHR,
+    KW_FORMAT,
+    { Fonctions de conversion VB.NET }
+    KW_CINT, KW_CLNG, KW_CSNG, KW_CDBL, KW_CSTR,
+    KW_CBOOL, KW_CBYTE, KW_CCHAR, KW_CDATE, KW_CDEC,
+    KW_CSHORT, KW_CUSHORT, KW_CUINT, KW_CULNG, KW_CSBYTE, KW_COBJ,
+    KW_VAL, KW_STR, KW_HEX, KW_OCT,
+    KW_INT, KW_FIX,
+    { Fonctions mathematiques }
+    KW_ABS, KW_SGN, KW_SQR, KW_EXP, KW_LOG,
+    KW_SIN, KW_COS, KW_TAN, KW_ATN,
+    { Fonctions d information }
+    KW_ISNUMERIC, KW_ISDATE, KW_ISARRAY, KW_ISNOTHING,
+    { Fonctions d entree/sortie }
+    KW_MSGBOX, KW_INPUTBOX:
+      IsIntrinsicFunction := True;
+  Else
+    IsIntrinsicFunction := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IntrinsicRtLabel : retourne le label runtime _VBNRT_XXX      }
+{   pour une fonction intrinseque donnee (code KW_*)           }
+{ ------------------------------------------------------------ }
+
+Function IntrinsicRtLabel(KW : Integer) : TString;
+Begin
+  Case KW Of
+    KW_LEN        : IntrinsicRtLabel := PFX_RT + 'LEN';
+    KW_LEFT       : IntrinsicRtLabel := PFX_RT + 'LEFT';
+    KW_RIGHT      : IntrinsicRtLabel := PFX_RT + 'RIGHT';
+    KW_MID        : IntrinsicRtLabel := PFX_RT + 'MID';
+    KW_LTRIM      : IntrinsicRtLabel := PFX_RT + 'LTRIM';
+    KW_RTRIM      : IntrinsicRtLabel := PFX_RT + 'RTRIM';
+    KW_TRIM       : IntrinsicRtLabel := PFX_RT + 'TRIM';
+    KW_UCASE      : IntrinsicRtLabel := PFX_RT + 'UCASE';
+    KW_LCASE      : IntrinsicRtLabel := PFX_RT + 'LCASE';
+    KW_INSTR      : IntrinsicRtLabel := PFX_RT + 'INSTR';
+    KW_INSTRREV   : IntrinsicRtLabel := PFX_RT + 'INSTRREV';
+    KW_REPLACE    : IntrinsicRtLabel := PFX_RT + 'REPLACE';
+    KW_SPACE      : IntrinsicRtLabel := PFX_RT + 'SPACE';
+    KW_STRREVERSE : IntrinsicRtLabel := PFX_RT + 'STRREVERSE';
+    KW_SPLIT      : IntrinsicRtLabel := PFX_RT + 'SPLIT';
+    KW_JOIN       : IntrinsicRtLabel := PFX_RT + 'JOIN';
+    KW_ASC        : IntrinsicRtLabel := PFX_RT + 'ASC';
+    KW_CHR        : IntrinsicRtLabel := PFX_RT + 'CHR';
+    KW_FORMAT     : IntrinsicRtLabel := PFX_RT + 'FORMAT';
+    KW_CINT       : IntrinsicRtLabel := PFX_RT + 'CINT';
+    KW_CLNG       : IntrinsicRtLabel := PFX_RT + 'CLNG';
+    KW_CSNG       : IntrinsicRtLabel := PFX_RT + 'CSNG';
+    KW_CDBL       : IntrinsicRtLabel := PFX_RT + 'CDBL';
+    KW_CSTR       : IntrinsicRtLabel := PFX_RT + 'CSTR';
+    KW_CBOOL      : IntrinsicRtLabel := PFX_RT + 'CBOOL';
+    KW_CBYTE      : IntrinsicRtLabel := PFX_RT + 'CBYTE';
+    KW_CCHAR      : IntrinsicRtLabel := PFX_RT + 'CCHAR';
+    KW_CDATE      : IntrinsicRtLabel := PFX_RT + 'CDATE';
+    KW_CDEC       : IntrinsicRtLabel := PFX_RT + 'CDEC';
+    KW_CSHORT     : IntrinsicRtLabel := PFX_RT + 'CSHORT';
+    KW_CUSHORT    : IntrinsicRtLabel := PFX_RT + 'CUSHORT';
+    KW_CUINT      : IntrinsicRtLabel := PFX_RT + 'CUINT';
+    KW_CULNG      : IntrinsicRtLabel := PFX_RT + 'CULNG';
+    KW_CSBYTE     : IntrinsicRtLabel := PFX_RT + 'CSBYTE';
+    KW_COBJ       : IntrinsicRtLabel := PFX_RT + 'COBJ';
+    KW_VAL        : IntrinsicRtLabel := PFX_RT + 'VAL';
+    KW_STR        : IntrinsicRtLabel := PFX_RT + 'STR';
+    KW_HEX        : IntrinsicRtLabel := PFX_RT + 'HEX';
+    KW_OCT        : IntrinsicRtLabel := PFX_RT + 'OCT';
+    KW_INT        : IntrinsicRtLabel := PFX_RT + 'INT';
+    KW_FIX        : IntrinsicRtLabel := PFX_RT + 'FIX';
+    KW_ABS        : IntrinsicRtLabel := PFX_RT + 'ABS';
+    KW_SGN        : IntrinsicRtLabel := PFX_RT + 'SGN';
+    KW_SQR        : IntrinsicRtLabel := PFX_RT + 'SQR';
+    KW_EXP        : IntrinsicRtLabel := PFX_RT + 'EXP';
+    KW_LOG        : IntrinsicRtLabel := PFX_RT + 'LOG';
+    KW_SIN        : IntrinsicRtLabel := PFX_RT + 'SIN';
+    KW_COS        : IntrinsicRtLabel := PFX_RT + 'COS';
+    KW_TAN        : IntrinsicRtLabel := PFX_RT + 'TAN';
+    KW_ATN        : IntrinsicRtLabel := PFX_RT + 'ATN';
+    KW_ISNUMERIC  : IntrinsicRtLabel := PFX_RT + 'ISNUMERIC';
+    KW_ISDATE     : IntrinsicRtLabel := PFX_RT + 'ISDATE';
+    KW_ISARRAY    : IntrinsicRtLabel := PFX_RT + 'ISARRAY';
+    KW_ISNOTHING  : IntrinsicRtLabel := PFX_RT + 'ISNOTHING';
+    KW_MSGBOX     : IntrinsicRtLabel := PFX_RT + 'MSGBOX';
+    KW_INPUTBOX   : IntrinsicRtLabel := PFX_RT + 'INPUTBOX';
+  Else
+    IntrinsicRtLabel := PFX_RT + 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IntrinsicArgCount : nombre d arguments attendus              }
+{   -1 = variadic (1 a N), 0 = aucun argument                 }
+{ ------------------------------------------------------------ }
+
+Function IntrinsicArgCount(KW : Integer) : Integer;
+Begin
+  Case KW Of
+    { 1 argument }
+    KW_LEN, KW_LTRIM, KW_RTRIM, KW_TRIM,
+    KW_UCASE, KW_LCASE, KW_STRREVERSE,
+    KW_ASC, KW_CHR,
+    KW_CINT, KW_CLNG, KW_CSNG, KW_CDBL, KW_CSTR,
+    KW_CBOOL, KW_CBYTE, KW_CCHAR, KW_CDATE, KW_CDEC,
+    KW_CSHORT, KW_CUSHORT, KW_CUINT, KW_CULNG, KW_CSBYTE, KW_COBJ,
+    KW_VAL, KW_STR, KW_HEX, KW_OCT,
+    KW_INT, KW_FIX,
+    KW_ABS, KW_SGN, KW_SQR, KW_EXP, KW_LOG,
+    KW_SIN, KW_COS, KW_TAN, KW_ATN,
+    KW_ISNUMERIC, KW_ISDATE, KW_ISARRAY, KW_ISNOTHING,
+    KW_SPACE:
+      IntrinsicArgCount := 1;
+    { 2 arguments }
+    KW_LEFT, KW_RIGHT,
+    KW_SPLIT, KW_JOIN:
+      IntrinsicArgCount := 2;
+    { variadic (1-4 arguments) }
+    KW_MID, KW_INSTR, KW_INSTRREV, KW_REPLACE,
+    KW_FORMAT, KW_MSGBOX, KW_INPUTBOX:
+      IntrinsicArgCount := -1;
+  Else
+    IntrinsicArgCount := -1;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IntrinsicResultType : type de retour VBT_* de la fonction    }
+{ ------------------------------------------------------------ }
+
+Function IntrinsicResultType(KW : Integer) : Integer;
+Begin
+  Case KW Of
+    { Retourne Integer (32 bits en VB.NET) }
+    KW_LEN, KW_ASC, KW_INSTR, KW_INSTRREV,
+    KW_CINT:
+      IntrinsicResultType := VBT_INTEGER;
+    { Retourne Long (64 bits en VB.NET) }
+    KW_CLNG, KW_INT, KW_FIX, KW_SGN:
+      IntrinsicResultType := VBT_LONG;
+    { Retourne String }
+    KW_LEFT, KW_RIGHT, KW_MID,
+    KW_LTRIM, KW_RTRIM, KW_TRIM,
+    KW_UCASE, KW_LCASE,
+    KW_REPLACE, KW_SPACE,
+    KW_STRREVERSE, KW_JOIN, KW_CHR, KW_CSTR,
+    KW_STR, KW_HEX, KW_OCT, KW_FORMAT:
+      IntrinsicResultType := VBT_STRING;
+    { Retourne Short }
+    KW_CSHORT:
+      IntrinsicResultType := VBT_SHORT;
+    { Retourne UShort }
+    KW_CUSHORT:
+      IntrinsicResultType := VBT_USHORT;
+    { Retourne UInteger }
+    KW_CUINT:
+      IntrinsicResultType := VBT_UINTEGER;
+    { Retourne ULong }
+    KW_CULNG:
+      IntrinsicResultType := VBT_ULONG;
+    { Retourne SByte }
+    KW_CSBYTE:
+      IntrinsicResultType := VBT_SBYTE;
+    { Retourne Single }
+    KW_CSNG:
+      IntrinsicResultType := VBT_SINGLE;
+    { Retourne Double }
+    KW_CDBL, KW_ABS, KW_SQR, KW_EXP, KW_LOG,
+    KW_SIN, KW_COS, KW_TAN, KW_ATN, KW_VAL:
+      IntrinsicResultType := VBT_DOUBLE;
+    { Retourne Boolean }
+    KW_CBOOL, KW_ISNUMERIC, KW_ISDATE, KW_ISARRAY,
+    KW_ISNOTHING:
+      IntrinsicResultType := VBT_BOOLEAN;
+    { Retourne Byte }
+    KW_CBYTE:
+      IntrinsicResultType := VBT_BYTE;
+    { Retourne Char }
+    KW_CCHAR:
+      IntrinsicResultType := VBT_CHAR;
+    { Retourne Date }
+    KW_CDATE:
+      IntrinsicResultType := VBT_DATE;
+    { Retourne Decimal }
+    KW_CDEC:
+      IntrinsicResultType := VBT_DECIMAL;
+    { Retourne Object }
+    KW_COBJ, KW_SPLIT, KW_MSGBOX, KW_INPUTBOX:
+      IntrinsicResultType := VBT_OBJECT;
+  Else
+    IntrinsicResultType := VBT_OBJECT;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIntrinsicCall : parser un appel de fonction intrinseque }
+{   KW est le code KW_* de la fonction                        }
+{   Genere PUSH args / CALL _VBNRT_XXX                        }
+{   Retourne le type VBT_* du resultat                        }
+{ ------------------------------------------------------------ }
+
+Function ParseIntrinsicCall(KW : Integer) : Integer;
+Var
+  FnName   : TString;
+  RtLabel  : TString;
+  ArgCount : Integer;
+Begin
+  FnName  := KeywordName(KW);
+  RtLabel := IntrinsicRtLabel(KW);
+  Inc(IntrinsicCount);
+
+  If Opts.Verbose Then
+    WriteLn('    Intrinsic: ', FnName, ' -> ', RtLabel);
+
+  LexNextToken; { consommer le mot-cle de la fonction }
+
+  { Toutes les fonctions intrinseques VB.NET : nom(args) }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken
+  Else
+    WarnMsg('( attendue apres ' + FnName);
+
+  ArgCount := 0;
+
+  If CurTokType <> TOK_RPAREN Then
+  Begin
+    ParseExpr;
+    Inc(ArgCount);
+    EmitComment('PUSH arg' + ItoS(ArgCount) + ' pour ' + FnName);
+    Emit('PUSH EAX');
+    While CurTokType = TOK_COMMA Do
+    Begin
+      LexNextToken; { consommer , }
+      ParseExpr;
+      Inc(ArgCount);
+      EmitComment('PUSH arg' + ItoS(ArgCount) + ' pour ' + FnName);
+      Emit('PUSH EAX');
+    End;
+  End;
+
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken
+  Else
+    WarnMsg(') attendue apres arguments de ' + FnName);
+
+  EmitComment('CALL ' + RtLabel + ' (' + ItoS(ArgCount) + ' args)');
+  Emit('CALL ' + RtLabel);
+
+  { Nettoyer la pile si convention cdecl (runtime VB.NET utilise stdcall, }
+  { mais on genere le nettoyage par securite)                             }
+  If ArgCount > 0 Then
+    Emit('ADD ESP, ' + ItoS(ArgCount * 4));
+
+  ParseIntrinsicCall := IntrinsicResultType(KW);
+End;
+
+{ ------------------------------------------------------------ }
+{ IntrinsicCategoryName : nom de la categorie d une fonction   }
+{ ------------------------------------------------------------ }
+
+Function IntrinsicCategoryName(KW : Integer) : TString;
+Begin
+  Case KW Of
+    KW_LEN, KW_LEFT, KW_RIGHT, KW_MID,
+    KW_LTRIM, KW_RTRIM, KW_TRIM,
+    KW_UCASE, KW_LCASE,
+    KW_INSTR, KW_INSTRREV,
+    KW_REPLACE, KW_SPACE,
+    KW_STRREVERSE, KW_SPLIT, KW_JOIN,
+    KW_ASC, KW_CHR, KW_FORMAT:
+      IntrinsicCategoryName := 'String';
+    KW_CINT, KW_CLNG, KW_CSNG, KW_CDBL, KW_CSTR,
+    KW_CBOOL, KW_CBYTE, KW_CCHAR, KW_CDATE, KW_CDEC,
+    KW_CSHORT, KW_CUSHORT, KW_CUINT, KW_CULNG, KW_CSBYTE, KW_COBJ,
+    KW_VAL, KW_STR, KW_HEX, KW_OCT,
+    KW_INT, KW_FIX:
+      IntrinsicCategoryName := 'Conversion';
+    KW_ABS, KW_SGN, KW_SQR, KW_EXP, KW_LOG,
+    KW_SIN, KW_COS, KW_TAN, KW_ATN:
+      IntrinsicCategoryName := 'Math';
+    KW_ISNUMERIC, KW_ISDATE, KW_ISARRAY, KW_ISNOTHING:
+      IntrinsicCategoryName := 'Information';
+    KW_MSGBOX, KW_INPUTBOX:
+      IntrinsicCategoryName := 'Interaction';
+  Else
+    IntrinsicCategoryName := 'Unknown';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions d acces - TODO 13                                  }
+{ ------------------------------------------------------------ }
+
+Function GetIntrinsicCount : LongInt;
+Begin
+  GetIntrinsicCount := IntrinsicCount;
+End;
+
+Function IsIntrinsicInitialized : Boolean;
+Begin
+  IsIntrinsicInitialized := IntrinsicInitialized;
+End;
+
+Function IsIntrinsicEmpty : Boolean;
+Begin
+  IsIntrinsicEmpty := (IntrinsicCount = 0);
+End;
+
+Function GetIntrinsicStatus : TString;
+Begin
+  If IntrinsicInitialized Then
+    GetIntrinsicStatus := 'initialized'
+  Else
+    GetIntrinsicStatus := 'not initialized';
+End;
+
+Function GetIntrinsicStringCount : Integer;
+Begin
+  { Len, Left, Right, Mid, LTrim, RTrim, Trim, UCase, LCase }
+  { InStr, InStrRev, Replace, Space, StrReverse              }
+  { Split, Join, Asc, Chr, Format = 19 fonctions de chaines  }
+  GetIntrinsicStringCount := 19;
+End;
+
+Function GetIntrinsicConvCount : Integer;
+Begin
+  { CInt, CLng, CSng, CDbl, CStr, CBool, CByte, CChar, CDate, CDec }
+  { CShort, CUShort, CUInt, CULng, CSByte, CObj                     }
+  { Val, Str, Hex, Oct, Int, Fix = 22 fonctions de conversion       }
+  GetIntrinsicConvCount := 22;
+End;
+
+Function GetIntrinsicMathCount : Integer;
+Begin
+  { Abs, Sgn, Sqr, Exp, Log, Sin, Cos, Tan, Atn }
+  { = 9 fonctions mathematiques                   }
+  GetIntrinsicMathCount := 9;
+End;
+
+Function GetIntrinsicInfoCount : Integer;
+Begin
+  { IsNumeric, IsDate, IsArray, IsNothing }
+  { = 4 fonctions d information            }
+  GetIntrinsicInfoCount := 4;
+End;
+
+Function GetTotalIntrinsicFunctions : Integer;
+Begin
+  GetTotalIntrinsicFunctions := 19 + 22 + 9 + 4 + 2;
+End;
+
+Function IsIntrinsicKW(KW : Integer) : Boolean;
+Begin
+  IsIntrinsicKW := IsIntrinsicFunction(KW);
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -8856,13 +9246,14 @@ Begin
   InitCtrlState;
   InitLoopState;
   InitSubFuncState;
+  InitIntrinsicState;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 13..25 : Generation de code, etc. }
+  { TODO 14..25 : Generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;

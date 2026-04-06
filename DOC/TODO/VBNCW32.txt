@@ -427,7 +427,7 @@
             Note : ByVal est le defaut en VB.NET (ByRef en VB6)
             Appel : PUSH params / CALL _VBNF_nom
 
-  TODO 13 - PARSEUR : FONCTIONS INTRINSEQUES ET METHODES SYSTEME [A FAIRE]
+  TODO 13 - PARSEUR : FONCTIONS INTRINSEQUES ET METHODES SYSTEME [IMPLEMENTE]
             Fonctions de chaines compatibles VB6 :
               Len(s) -> CALL _VBNRT_LEN
               Left(s, n), Right(s, n), Mid(s, start[, len])
