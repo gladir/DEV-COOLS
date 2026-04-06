@@ -230,7 +230,7 @@
             Generer le label du point d entree _VBNF_MAIN
             Generer le prologue PE : appel a Main apres init runtime
 
-  TODO 07 - PARSEUR : DECLARATIONS (DIM, PUBLIC, PRIVATE, CONST) [A FAIRE]
+  TODO 07 - PARSEUR : DECLARATIONS (DIM, PUBLIC, PRIVATE, CONST) [IMPLEMENTE]
             Procedure ParseDim / ParsePublic / ParsePrivate / ParseConst
             Syntaxe :
               Dim x As Integer

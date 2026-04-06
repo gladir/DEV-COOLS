@@ -238,7 +238,7 @@
             Generer le label du point d entree _VBNF_MAIN
             Generer le prologue PE : appel a Main apres init runtime
 
-  TODO 07 - PARSEUR : DECLARATIONS (DIM, PUBLIC, PRIVATE, CONST) [A FAIRE]
+  TODO 07 - PARSEUR : DECLARATIONS (DIM, PUBLIC, PRIVATE, CONST) [IMPLEMENTE]
             Procedure ParseDim / ParsePublic / ParsePrivate / ParseConst
             Syntaxe :
               Dim x As Integer
@@ -4640,6 +4640,13 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ ParseModuleLevelDecl : declaration anticipee (forward)       }
+{   Implemente dans TODO 07, appele depuis ParseCompilationUnit }
+{ ------------------------------------------------------------ }
+
+Procedure ParseModuleLevelDecl; Forward;
+
+{ ------------------------------------------------------------ }
 { ParseCompilationUnit : point d entree principal du parseur   }
 {   VB.NET                                                     }
 {   1. Analyser les Option statements                          }
@@ -4776,15 +4783,19 @@ Begin
     WriteLn('  Imports        : ', ImportCount);
   End;
 
-  { Les TODOs 07-25 ajouteront ici le parsing du corps }
-  { du module (Dim, Sub, Function, etc.)                }
+  { Phase 5 : Declarations au niveau module (TODO 07) }
+  SkipNewlines;
+  ParseModuleLevelDecl;
+
+  { Les TODOs 08-25 ajouteront ici le parsing des expressions, }
+  { Sub/Function, etc.                                          }
   If CurTokType <> TOK_EOF Then
   Begin
     If Opts.Verbose Then
-      WriteLn('  (corps du module non encore parse - TODOs 07-25)');
+      WriteLn('  (corps du module non encore parse - TODOs 08-25)');
   End;
 
-  { Avancer jusqu a la fin du fichier (TODOs 07+ parseront le corps) }
+  { Avancer jusqu a la fin du fichier (TODOs 08+ parseront le reste) }
   While CurTokType <> TOK_EOF Do
     LexNextToken;
 
@@ -4932,8 +4943,840 @@ Begin
 End;
 
 { ============================================================ }
-{ Procedure principale : Run                                   }
+{ TODO 07 - PARSEUR : DECLARATIONS (DIM, PUBLIC,  [IMPLEMENTE] }
+{           PRIVATE, CONST, SHARED, PROTECTED, FRIEND)         }
 { ============================================================ }
+
+Var
+  DeclCount       : Integer;  { compteur de declarations traitees      }
+  LastDeclIdx     : Integer;  { index du dernier symbole declare       }
+  DeclParsingDone : Boolean;  { fin de l analyse des declarations      }
+
+{ ------------------------------------------------------------ }
+{ InitDeclState : initialiser l etat des declarations          }
+{ ------------------------------------------------------------ }
+
+Procedure InitDeclState;
+Begin
+  DeclCount       := 0;
+  LastDeclIdx     := -1;
+  DeclParsingDone := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTypeSpec : analyser une specification de type VB.NET     }
+{   Token courant : le nom du type (Boolean, Integer, etc.)    }
+{   Reconnait tous les types VB.NET y compris SByte, Short,    }
+{   UShort, UInteger, Long, ULong, Decimal, Char, Object       }
+{   Retourne le code VBT_* du type                             }
+{ ------------------------------------------------------------ }
+
+Function ParseTypeSpec : Integer;
+Var T : Integer;
+Begin
+  T := VBT_OBJECT; { par defaut si type non reconnu }
+  If CurTokType = TOK_KEYWORD Then
+  Begin
+    Case CurTokNum Of
+      KW_BOOLEAN  : T := VBT_BOOLEAN;
+      KW_BYTE     : T := VBT_BYTE;
+      KW_SBYTE    : T := VBT_SBYTE;
+      KW_SHORT    : T := VBT_SHORT;
+      KW_USHORT   : T := VBT_USHORT;
+      KW_INTEGER  : T := VBT_INTEGER;
+      KW_UINTEGER : T := VBT_UINTEGER;
+      KW_LONG     : T := VBT_LONG;
+      KW_ULONG    : T := VBT_ULONG;
+      KW_SINGLE   : T := VBT_SINGLE;
+      KW_DOUBLE   : T := VBT_DOUBLE;
+      KW_DECIMAL  : T := VBT_DECIMAL;
+      KW_CHAR     : T := VBT_CHAR;
+      KW_STRING   : T := VBT_STRING;
+      KW_DATE     : T := VBT_DATE;
+      KW_OBJECT   : T := VBT_OBJECT;
+    Else
+      WarnMsg('Type non reconnu: "' + CurTokStr + '", Object suppose');
+    End;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    { Type utilisateur (Structure, Class, Enum) }
+    T := VBT_USER;
+    LexNextToken;
+  End
+  Else
+  Begin
+    WarnMsg('Nom de type attendu, trouve "' + CurTokStr + '"');
+  End;
+  ParseTypeSpec := T;
+End;
+
+{ ------------------------------------------------------------ }
+{ DetermineStoreClass : determiner la classe d entreposage     }
+{   IsStaticDecl : variable Static ?                           }
+{   IsSharedDecl : variable Shared ?                           }
+{   IsPub        : variable Public ?                           }
+{   Retourne STORE_AUTO, STORE_STATIC, STORE_GLOBAL,           }
+{   STORE_SHARED selon le contexte                             }
+{ ------------------------------------------------------------ }
+
+Function DetermineStoreClass(IsStaticDecl : Boolean;
+                             IsSharedDecl : Boolean;
+                             IsPub : Boolean) : Integer;
+Begin
+  If IsStaticDecl Then
+    DetermineStoreClass := STORE_STATIC
+  Else If IsSharedDecl Then
+    DetermineStoreClass := STORE_SHARED
+  Else If IsInGlobalScope Then
+    DetermineStoreClass := STORE_GLOBAL
+  Else If IsPub Then
+    DetermineStoreClass := STORE_GLOBAL
+  Else
+    DetermineStoreClass := STORE_AUTO;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseVarDecl : analyser une declaration de variable unique    }
+{   Token courant : l identifiant de la variable               }
+{   Gere :                                                     }
+{     - As Type                                                }
+{     - Initialisation = valeur                                }
+{     - Tableaux : arr(10), arr(), arr(1, 2)                   }
+{   Retourne l index dans SymTab ou -1 en cas d erreur         }
+{ ------------------------------------------------------------ }
+
+Function ParseVarDecl(IsStaticDecl : Boolean;
+                      IsSharedDecl : Boolean;
+                      IsPub : Boolean;
+                      IsReadOnlyDecl : Boolean) : Integer;
+Var
+  VarName   : TString;
+  VarType   : Integer;
+  Store     : Integer;
+  Idx       : Integer;
+  ArrDims   : Integer;
+  HasParens : Boolean;
+Begin
+  ParseVarDecl := -1;
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    FatalError('Nom de variable attendu, trouve "' + CurTokStr + '"');
+    Exit;
+  End;
+  VarName := CurTokStr;
+  LexNextToken;
+
+  { Verifier les parentheses pour tableau }
+  ArrDims   := 0;
+  HasParens := False;
+  If CurTokType = TOK_LPAREN Then
+  Begin
+    HasParens := True;
+    LexNextToken; { consommer ( }
+    If CurTokType = TOK_RPAREN Then
+    Begin
+      { Tableau dynamique : arr() }
+      ArrDims := 1;
+    End
+    Else
+    Begin
+      { Tableau avec dimension(s) }
+      ArrDims := 1;
+      { Parcourir les dimensions }
+      While (CurTokType <> TOK_RPAREN) And (CurTokType <> TOK_EOF) Do
+      Begin
+        If CurTokType = TOK_COMMA Then
+        Begin
+          Inc(ArrDims);
+          LexNextToken;
+        End
+        Else
+          LexNextToken;
+      End;
+    End;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken; { consommer ) }
+  End;
+
+  { Verifier "As Type" }
+  VarType := VBT_OBJECT; { par defaut en VB.NET : Object }
+  If IsKeywordToken(KW_AS) Then
+  Begin
+    LexNextToken; { consommer As }
+    VarType := ParseTypeSpec;
+  End;
+
+  { Verifier initialisation = valeur }
+  If CurTokType = TOK_EQ Then
+  Begin
+    LexNextToken; { consommer = }
+    { Lire la valeur initiale (sera ameliore par TODO 08) }
+    { Pour l instant, on avance jusqu a la virgule, newline ou EOF }
+    While (CurTokType <> TOK_COMMA) And
+          (CurTokType <> TOK_NEWLINE) And
+          (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+  End;
+
+  { Determiner la classe d entreposage }
+  Store := DetermineStoreClass(IsStaticDecl, IsSharedDecl, IsPub);
+
+  { Ajouter le symbole }
+  Idx := AddSym(VarName, SK_VAR, VarType, Store);
+  If Idx < 0 Then
+  Begin
+    ParseVarDecl := -1;
+    Exit;
+  End;
+
+  { Configurer les champs supplementaires }
+  SymTab[Idx].IsPublic   := IsPub;
+  SymTab[Idx].IsStatic   := IsStaticDecl;
+  SymTab[Idx].IsShared   := IsSharedDecl;
+  SymTab[Idx].IsReadOnly := IsReadOnlyDecl;
+  SymTab[Idx].ArrayDims  := ArrDims;
+  SymTab[Idx].ArrayBase  := 0; { VB.NET : base toujours 0 }
+
+  { Allouer l espace memoire }
+  If Store = STORE_AUTO Then
+  Begin
+    { Variable locale : allouer sur la pile EBP }
+    SymTab[Idx].BpOffset := AllocLocalEbp(VBTypeSize(VarType));
+  End;
+
+  If Opts.Verbose Then
+  Begin
+    Write('  Decl: ', VarName, ' As ', VBTypeName(VarType));
+    Write(' [', StoreClassName(Store), ']');
+    If ArrDims > 0 Then
+      Write(' (', ItoSI(ArrDims), ' dim)');
+    If Store = STORE_AUTO Then
+      Write(' [EBP-', ItoSI(SymTab[Idx].BpOffset), ']');
+    If IsReadOnlyDecl Then
+      Write(' ReadOnly');
+    WriteLn;
+  End;
+
+  Inc(DeclCount);
+  LastDeclIdx := Idx;
+  ParseVarDecl := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDimStatement : analyser une instruction Dim              }
+{   Token courant : KW_DIM                                     }
+{   Syntaxe :                                                  }
+{     Dim x As Integer                                         }
+{     Dim x As Integer = 42                                    }
+{     Dim x As Integer, y As String                            }
+{     Dim arr(10) As Integer                                   }
+{     Dim arr() As Integer                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDimStatement;
+Begin
+  LexNextToken; { consommer Dim }
+  { Analyser la premiere variable }
+  ParseVarDecl(False, False, False, False);
+  { Verifier les declarations multiples separees par virgule }
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken; { consommer , }
+    ParseVarDecl(False, False, False, False);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePublicDecl : analyser une declaration Public             }
+{   Token courant : KW_PUBLIC                                  }
+{   Si suivi de Sub/Function, on skip (TODO 12)                }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePublicDecl;
+Begin
+  LexNextToken; { consommer Public }
+  { Verifier si c est Public Sub/Function (traite par TODO 12) }
+  If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Then
+  Begin
+    SkipToEndOfLine;
+    Exit;
+  End;
+  { Verifier si c est Public Shared }
+  If IsKeywordToken(KW_SHARED) Then
+  Begin
+    LexNextToken; { consommer Shared }
+    ParseVarDecl(False, True, True, False);
+    While CurTokType = TOK_COMMA Do
+    Begin
+      LexNextToken;
+      ParseVarDecl(False, True, True, False);
+    End;
+    Exit;
+  End;
+  { Sinon c est une declaration de variable publique }
+  ParseVarDecl(False, False, True, False);
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken;
+    ParseVarDecl(False, False, True, False);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrivateDecl : analyser une declaration Private           }
+{   Token courant : KW_PRIVATE                                 }
+{   Si suivi de Sub/Function, on skip (TODO 12)                }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrivateDecl;
+Begin
+  LexNextToken; { consommer Private }
+  { Verifier si c est Private Sub/Function }
+  If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Then
+  Begin
+    SkipToEndOfLine;
+    Exit;
+  End;
+  { Verifier si c est Private Shared }
+  If IsKeywordToken(KW_SHARED) Then
+  Begin
+    LexNextToken; { consommer Shared }
+    ParseVarDecl(False, True, False, False);
+    While CurTokType = TOK_COMMA Do
+    Begin
+      LexNextToken;
+      ParseVarDecl(False, True, False, False);
+    End;
+    Exit;
+  End;
+  { Sinon c est une declaration de variable privee }
+  ParseVarDecl(False, False, False, False);
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken;
+    ParseVarDecl(False, False, False, False);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseProtectedDecl : analyser une declaration Protected       }
+{   Token courant : KW_PROTECTED                               }
+{   Utilisable uniquement dans Class                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseProtectedDecl;
+Begin
+  LexNextToken; { consommer Protected }
+  { Verifier si c est Protected Sub/Function }
+  If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Then
+  Begin
+    SkipToEndOfLine;
+    Exit;
+  End;
+  { Variable Protected (classe uniquement) }
+  ParseVarDecl(False, False, False, False);
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken;
+    ParseVarDecl(False, False, False, False);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFriendDecl : analyser une declaration Friend             }
+{   Token courant : KW_FRIEND                                  }
+{   Acces au niveau de l assemblage                            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFriendDecl;
+Begin
+  LexNextToken; { consommer Friend }
+  { Verifier si c est Friend Sub/Function }
+  If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Then
+  Begin
+    SkipToEndOfLine;
+    Exit;
+  End;
+  { Variable Friend (acces assembly) }
+  ParseVarDecl(False, False, True, False);
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken;
+    ParseVarDecl(False, False, True, False);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStaticDecl : analyser une declaration Static             }
+{   Token courant : KW_STATIC                                  }
+{   Static alloue toujours en .DATA, meme dans Sub/Function    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStaticDecl;
+Begin
+  LexNextToken; { consommer Static }
+  { Verifier si c est Static Sub/Function }
+  If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Then
+  Begin
+    SkipToEndOfLine;
+    Exit;
+  End;
+  ParseVarDecl(True, False, False, False);
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken;
+    ParseVarDecl(True, False, False, False);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSharedDecl : analyser une declaration Shared             }
+{   Token courant : KW_SHARED                                  }
+{   Shared : en .DATA, accessible via NomClasse.membre         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSharedDecl;
+Begin
+  LexNextToken; { consommer Shared }
+  { Verifier si c est Shared Sub/Function }
+  If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Then
+  Begin
+    SkipToEndOfLine;
+    Exit;
+  End;
+  ParseVarDecl(False, True, False, False);
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken;
+    ParseVarDecl(False, True, False, False);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseReadOnlyDecl : analyser une declaration ReadOnly         }
+{   Token courant : KW_READONLY                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseReadOnlyDecl;
+Begin
+  LexNextToken; { consommer ReadOnly }
+  ParseVarDecl(False, False, False, True);
+  While CurTokType = TOK_COMMA Do
+  Begin
+    LexNextToken;
+    ParseVarDecl(False, False, False, True);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseConstStatement : analyser une declaration Const          }
+{   Token courant : KW_CONST                                   }
+{   Syntaxe :                                                  }
+{     Const PI As Double = 3.14159                             }
+{     Const MAX_SIZE As Integer = 100                          }
+{     Const MSG As String = "Bonjour"                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConstStatement;
+Var
+  ConstName : TString;
+  ConstType : Integer;
+  Store     : Integer;
+  Idx       : Integer;
+Begin
+  LexNextToken; { consommer Const }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    FatalError('Nom de constante attendu, trouve "' + CurTokStr + '"');
+    Exit;
+  End;
+  ConstName := CurTokStr;
+  LexNextToken;
+
+  { Type optionnel : As Type }
+  ConstType := VBT_OBJECT;
+  If IsKeywordToken(KW_AS) Then
+  Begin
+    LexNextToken;
+    ConstType := ParseTypeSpec;
+  End;
+
+  { Attendre le signe = }
+  If CurTokType <> TOK_EQ Then
+  Begin
+    FatalError('Signe "=" attendu pour Const, trouve "' + CurTokStr + '"');
+    Exit;
+  End;
+  LexNextToken; { consommer = }
+
+  { Determiner la classe d entreposage pour la constante }
+  Store := STORE_CONSTANT;
+
+  { Ajouter le symbole comme constante }
+  Idx := AddSym(ConstName, SK_CONST, ConstType, Store);
+  If Idx < 0 Then Exit;
+
+  SymTab[Idx].IsConst := True;
+  SymTab[Idx].HasInit := True;
+
+  { Lire la valeur initiale }
+  If CurTokType = TOK_INTEGER Then
+  Begin
+    SymTab[Idx].InitNum := CurTokNum;
+    If ConstType = VBT_OBJECT Then
+      SymTab[Idx].DataType := VBT_INTEGER;
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_SINGLE) Or (CurTokType = TOK_DOUBLE) Or
+          (CurTokType = TOK_DECIMAL) Then
+  Begin
+    { Nombre reel : stocker comme entier tronque (stub) }
+    SymTab[Idx].InitNum := CurTokNum;
+    If ConstType = VBT_OBJECT Then
+      SymTab[Idx].DataType := VBT_DOUBLE;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_STRING Then
+  Begin
+    SymTab[Idx].InitStr := CurTokStr;
+    If ConstType = VBT_OBJECT Then
+      SymTab[Idx].DataType := VBT_STRING;
+    LexNextToken;
+  End
+  Else If IsKeywordToken(KW_NOTHING) Then
+  Begin
+    SymTab[Idx].InitNum := 0;
+    If ConstType = VBT_OBJECT Then
+      SymTab[Idx].DataType := VBT_OBJECT;
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TRUE) Then
+  Begin
+    SymTab[Idx].InitNum := -1; { True = -1 en VB.NET }
+    If ConstType = VBT_OBJECT Then
+      SymTab[Idx].DataType := VBT_BOOLEAN;
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FALSE) Then
+  Begin
+    SymTab[Idx].InitNum := 0;
+    If ConstType = VBT_OBJECT Then
+      SymTab[Idx].DataType := VBT_BOOLEAN;
+    LexNextToken;
+  End
+  Else
+  Begin
+    { Expression complexe : lire jusqu a fin de ligne }
+    { (sera ameliore par TODO 08 - expressions) }
+    SymTab[Idx].InitNum := CurTokNum;
+    SkipToEndOfLine;
+  End;
+
+  If Opts.Verbose Then
+  Begin
+    Write('  Const: ', ConstName, ' As ', VBTypeName(SymTab[Idx].DataType));
+    If SymTab[Idx].DataType = VBT_STRING Then
+      Write(' = "', SymTab[Idx].InitStr, '"')
+    Else
+      Write(' = ', ItoS(SymTab[Idx].InitNum));
+    WriteLn;
+  End;
+
+  Inc(DeclCount);
+  LastDeclIdx := Idx;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseModuleLevelDecl : analyser toutes les declarations      }
+{   au niveau module (entre Module/Class et End Module/Class)  }
+{   Reconnait : Dim, Public, Private, Protected, Friend,       }
+{     Static, Shared, Const, ReadOnly                          }
+{   S arrete sur Sub, Function, End, Structure, Enum, Class    }
+{   ou tout token non reconnu a ce niveau                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseModuleLevelDecl;
+Begin
+  InitDeclState;
+  SkipNewlines;
+  While CurTokType <> TOK_EOF Do
+  Begin
+    { Dim }
+    If IsKeywordToken(KW_DIM) Then
+    Begin
+      ParseDimStatement;
+      SkipNewlines;
+    End
+    { Public (variable ou Sub/Function) }
+    Else If IsKeywordToken(KW_PUBLIC) Then
+    Begin
+      ParsePublicDecl;
+      SkipNewlines;
+    End
+    { Private (variable ou Sub/Function) }
+    Else If IsKeywordToken(KW_PRIVATE) Then
+    Begin
+      ParsePrivateDecl;
+      SkipNewlines;
+    End
+    { Protected (classe) }
+    Else If IsKeywordToken(KW_PROTECTED) Then
+    Begin
+      ParseProtectedDecl;
+      SkipNewlines;
+    End
+    { Friend (acces assembly) }
+    Else If IsKeywordToken(KW_FRIEND) Then
+    Begin
+      ParseFriendDecl;
+      SkipNewlines;
+    End
+    { Static }
+    Else If IsKeywordToken(KW_STATIC) Then
+    Begin
+      ParseStaticDecl;
+      SkipNewlines;
+    End
+    { Shared }
+    Else If IsKeywordToken(KW_SHARED) Then
+    Begin
+      ParseSharedDecl;
+      SkipNewlines;
+    End
+    { Const }
+    Else If IsKeywordToken(KW_CONST) Then
+    Begin
+      ParseConstStatement;
+      SkipNewlines;
+    End
+    { ReadOnly }
+    Else If IsKeywordToken(KW_READONLY) Then
+    Begin
+      ParseReadOnlyDecl;
+      SkipNewlines;
+    End
+    { Sub / Function / End / Structure / Enum / Class : }
+    { fin des declarations de module                    }
+    Else If IsKeywordToken(KW_SUB) Or IsKeywordToken(KW_FUNCTION) Or
+            IsKeywordToken(KW_END) Or IsKeywordToken(KW_STRUCTURE) Or
+            IsKeywordToken(KW_ENUM) Or IsKeywordToken(KW_CLASS) Then
+    Begin
+      { Arreter : le code sera traite par les TODOs 08-25 }
+      Break;
+    End
+    { Option deja traite dans ParseCompilationUnit }
+    Else If IsKeywordToken(KW_OPTION) Then
+    Begin
+      SkipToEndOfLine;
+      SkipNewlines;
+    End
+    { Token non reconnu a ce niveau : arreter les declarations }
+    Else
+      Break;
+  End;
+  DeclParsingDone := True;
+  If Opts.Verbose Then
+    WriteLn('  ', ItoSI(DeclCount), ' declaration(s) au niveau module');
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour l etat des declarations             }
+{ ------------------------------------------------------------ }
+
+Function GetDeclCount : Integer;
+Begin
+  GetDeclCount := DeclCount;
+End;
+
+Function GetLastDeclIdx : Integer;
+Begin
+  GetLastDeclIdx := LastDeclIdx;
+End;
+
+Function IsDeclParsingDone : Boolean;
+Begin
+  IsDeclParsingDone := DeclParsingDone;
+End;
+
+Function IsDeclCountZero : Boolean;
+Begin
+  IsDeclCountZero := (DeclCount = 0);
+End;
+
+Function GetDeclName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetDeclName := SymTab[Idx].Name
+  Else
+    GetDeclName := '';
+End;
+
+Function GetDeclType(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetDeclType := SymTab[Idx].DataType
+  Else
+    GetDeclType := VBT_NONE;
+End;
+
+Function GetDeclStore(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetDeclStore := SymTab[Idx].StoreClass
+  Else
+    GetDeclStore := STORE_AUTO;
+End;
+
+Function GetDeclTypeName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetDeclTypeName := VBTypeName(SymTab[Idx].DataType)
+  Else
+    GetDeclTypeName := '(none)';
+End;
+
+Function GetDeclStoreName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetDeclStoreName := StoreClassName(SymTab[Idx].StoreClass)
+  Else
+    GetDeclStoreName := '(none)';
+End;
+
+Function IsDeclPublic(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    IsDeclPublic := SymTab[Idx].IsPublic
+  Else
+    IsDeclPublic := False;
+End;
+
+Function IsDeclStatic(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    IsDeclStatic := SymTab[Idx].IsStatic
+  Else
+    IsDeclStatic := False;
+End;
+
+Function IsDeclShared(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    IsDeclShared := SymTab[Idx].IsShared
+  Else
+    IsDeclShared := False;
+End;
+
+Function IsDeclReadOnly(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    IsDeclReadOnly := SymTab[Idx].IsReadOnly
+  Else
+    IsDeclReadOnly := False;
+End;
+
+Function IsDeclConst(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    IsDeclConst := SymTab[Idx].IsConst
+  Else
+    IsDeclConst := False;
+End;
+
+Function IsDeclArray(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    IsDeclArray := (SymTab[Idx].ArrayDims > 0)
+  Else
+    IsDeclArray := False;
+End;
+
+Function GetDeclArrayDims(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetDeclArrayDims := SymTab[Idx].ArrayDims
+  Else
+    GetDeclArrayDims := 0;
+End;
+
+Function GetDeclBpOffset(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetDeclBpOffset := SymTab[Idx].BpOffset
+  Else
+    GetDeclBpOffset := 0;
+End;
+
+Function GetDeclAsmLabel(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetDeclAsmLabel := SymTab[Idx].AsmLabel
+  Else
+    GetDeclAsmLabel := '';
+End;
+
+Function HasDeclInit(Idx : Integer) : Boolean;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    HasDeclInit := SymTab[Idx].HasInit
+  Else
+    HasDeclInit := False;
+End;
+
+Function GetDeclInitNum(Idx : Integer) : LongInt;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetDeclInitNum := SymTab[Idx].InitNum
+  Else
+    GetDeclInitNum := 0;
+End;
+
+Function GetDeclInitStr(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < SymCount) Then
+    GetDeclInitStr := SymTab[Idx].InitStr
+  Else
+    GetDeclInitStr := '';
+End;
+
+Function IsDeclStatement(KW : Integer) : Boolean;
+Begin
+  IsDeclStatement := (KW = KW_DIM) Or (KW = KW_PUBLIC) Or
+                     (KW = KW_PRIVATE) Or (KW = KW_PROTECTED) Or
+                     (KW = KW_FRIEND) Or (KW = KW_STATIC) Or
+                     (KW = KW_SHARED) Or (KW = KW_CONST) Or
+                     (KW = KW_READONLY);
+End;
+
+Function IsAccessModifier(KW : Integer) : Boolean;
+Begin
+  IsAccessModifier := (KW = KW_PUBLIC) Or (KW = KW_PRIVATE) Or
+                      (KW = KW_PROTECTED) Or (KW = KW_FRIEND);
+End;
+
+Function IsStorageModifier(KW : Integer) : Boolean;
+Begin
+  IsStorageModifier := (KW = KW_STATIC) Or (KW = KW_SHARED) Or
+                       (KW = KW_READONLY) Or (KW = KW_CONST);
+End;
+
+Function GetDeclStatus : TString;
+Begin
+  If DeclParsingDone Then
+    GetDeclStatus := 'done (' + ItoSI(DeclCount) + ' decl)'
+  Else
+    GetDeclStatus := 'pending';
+End;
+
+Function GetLastDeclName : TString;
+Begin
+  If (LastDeclIdx >= 0) And (LastDeclIdx < SymCount) Then
+    GetLastDeclName := SymTab[LastDeclIdx].Name
+  Else
+    GetLastDeclName := '';
+End;
 
 Procedure Run;
 Begin
@@ -4961,7 +5804,7 @@ Begin
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 07..25 : Declarations, expressions, generation de code, etc. }
+  { TODO 08..25 : Expressions, generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;
