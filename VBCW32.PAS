@@ -473,7 +473,7 @@
               Err.Raise number[, source][, description]
             Generer code pour etablir/retirer le gestionnaire SEH
 
-  TODO 19 - PARSEUR : ENTREES/SORTIES FICHIERS (OPEN, CLOSE, PRINT#, INPUT#) [A FAIRE]
+  TODO 19 - PARSEUR : ENTREES/SORTIES FICHIERS (OPEN, CLOSE, PRINT#, INPUT#) [IMPLEMENTE]
             Procedure ParseOpen
             Syntaxe :
               Open fichier For Input As #n
@@ -1317,6 +1317,14 @@ Const
   KW_MIDASSIGN  = 176;    { Mid$ en position d affectation           }
   KW_FORMAT2    = 177;    { Format$ (synonyme de Format)             }
   KW_LIKE2      = 178;    { Like en contexte de comparaison chaine   }
+
+  { TODO 19 - constantes supplementaires pour E/S fichiers }
+  KW_LINE       = 179;    { Line (pour Line Input)                   }
+  KW_PUT        = 180;    { Put (acces aleatoire ecriture)           }
+  KW_EOF2       = 181;    { EOF (fonction test fin de fichier)       }
+  KW_LOF        = 182;    { LOF (taille de fichier)                  }
+  KW_LOC        = 183;    { Loc (position courante)                  }
+  KW_FREEFILE   = 184;    { FreeFile (prochain numero disponible)    }
 
   { Token special pour mot-cle reconnu }
   TOK_KEYWORD   = 50;     { mot-cle VB6 reconnu                     }
@@ -10487,6 +10495,777 @@ Begin
   GetMaxErrHandlers := MAX_ERR_HANDLERS;
 End;
 
+{ ============================================================ }
+{ TODO 19 - PARSEUR : ENTREES/SORTIES FICHIERS (OPEN, CLOSE,  }
+{           PRINT#, INPUT#) [IMPLEMENTE]                        }
+{ ============================================================ }
+
+Const
+  { Modes d ouverture de fichier VB6 }
+  FILE_MODE_INPUT   = 0;  { Open For Input }
+  FILE_MODE_OUTPUT  = 1;  { Open For Output }
+  FILE_MODE_APPEND  = 2;  { Open For Append }
+  FILE_MODE_BINARY  = 3;  { Open For Binary }
+  FILE_MODE_RANDOM  = 4;  { Open For Random }
+
+  { Nombre maximal de fichiers ouverts simultanement }
+  MAX_FILE_NUM      = 511;
+
+  { Taille par defaut d un enregistrement Random }
+  DEFAULT_RECORD_LEN = 128;
+
+  { Labels runtime pour les operations E/S fichiers }
+  FIO_RT_OPEN        = '_VBRT_FILE_OPEN';
+  FIO_RT_CLOSE       = '_VBRT_FILE_CLOSE';
+  FIO_RT_CLOSEALL    = '_VBRT_FILE_CLOSEALL';
+  FIO_RT_PRINT       = '_VBRT_FILE_PRINT';
+  FIO_RT_WRITE       = '_VBRT_FILE_WRITE';
+  FIO_RT_INPUT       = '_VBRT_FILE_INPUT';
+  FIO_RT_LINEINPUT   = '_VBRT_FILE_LINEINPUT';
+  FIO_RT_GET         = '_VBRT_FILE_GET';
+  FIO_RT_PUT         = '_VBRT_FILE_PUT';
+  FIO_RT_SEEK        = '_VBRT_FILE_SEEK';
+
+  { Labels runtime pour les fonctions fichiers }
+  FIO_RT_EOF         = '_VBRT_FILE_EOF';
+  FIO_RT_LOF         = '_VBRT_FILE_LOF';
+  FIO_RT_LOC         = '_VBRT_FILE_LOC';
+  FIO_RT_FREEFILE    = '_VBRT_FILE_FREEFILE';
+
+  { Variables globales pour la table de handles }
+  FIO_VAR_HANDLES    = '_VB_FILE_HANDLES';
+  FIO_VAR_MODES      = '_VB_FILE_MODES';
+  FIO_VAR_COUNT      = '_VB_FILE_COUNT';
+  FIO_VAR_RECLEN     = '_VB_FILE_RECLEN';
+
+Var
+  FileIOCount      : LongInt;
+  FileIOInitialized: Boolean;
+  CurFileMode      : Integer;
+  CurFileNum       : Integer;
+  CurRecordLen     : Integer;
+
+{ ------------------------------------------------------------ }
+{ InitFileIOState : initialiser l etat des E/S fichiers        }
+{ ------------------------------------------------------------ }
+
+Procedure InitFileIOState;
+Begin
+  FileIOCount       := 0;
+  FileIOInitialized := True;
+  CurFileMode       := FILE_MODE_INPUT;
+  CurFileNum        := 0;
+  CurRecordLen      := DEFAULT_RECORD_LEN;
+End;
+
+{ ------------------------------------------------------------ }
+{ FileModeName : retourner le nom du mode d ouverture          }
+{ ------------------------------------------------------------ }
+
+Function FileModeName(Mode : Integer) : TString;
+Begin
+  Case Mode Of
+    FILE_MODE_INPUT  : FileModeName := 'Input';
+    FILE_MODE_OUTPUT : FileModeName := 'Output';
+    FILE_MODE_APPEND : FileModeName := 'Append';
+    FILE_MODE_BINARY : FileModeName := 'Binary';
+    FILE_MODE_RANDOM : FileModeName := 'Random';
+  Else
+    FileModeName := 'Unknown';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFileNumber : parser un numero de fichier #n             }
+{   Attend '#' suivi d un nombre entier ou expression          }
+{   Retourne le numero dans CurFileNum                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFileNumber;
+Begin
+  { Consommer le '#' si present }
+  If CurTokType = TOK_HASH Then
+    LexNextToken;
+  { Evaluer l expression qui donne le numero }
+  ParseExpr;
+  { Le resultat est dans EAX }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOpen : parser une instruction Open                       }
+{   Syntaxe : Open fichier For Mode As #n [Len = taille]       }
+{   Modes : Input, Output, Append, Binary, Random              }
+{   Genere un appel a _VBRT_FILE_OPEN(fichier, mode, num, len) }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOpen;
+Var
+  FileMode  : Integer;
+  HasLen    : Boolean;
+  ModeStr   : TString;
+Begin
+  Inc(FileIOCount);
+  EmitComment('Open fichier For mode As #n');
+  { Parser le nom de fichier (expression chaine) }
+  ParseExpr;
+  Emit('  PUSH EAX');  { sauvegarder le pointeur chaine fichier }
+  { Attendre 'For' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FOR) Then
+    LexNextToken
+  Else
+    FatalError('Open : mot-cle For attendu');
+  { Determiner le mode }
+  FileMode := FILE_MODE_INPUT;  { defaut }
+  If CurTokType = TOK_KEYWORD Then Begin
+    ModeStr := CurTokStr;
+    If CurTokNum = KW_INPUT Then Begin
+      FileMode := FILE_MODE_INPUT;
+      LexNextToken;
+    End Else If ModeStr = 'OUTPUT' Then Begin
+      FileMode := FILE_MODE_OUTPUT;
+      LexNextToken;
+    End Else If ModeStr = 'APPEND' Then Begin
+      FileMode := FILE_MODE_APPEND;
+      LexNextToken;
+    End Else If ModeStr = 'BINARY' Then Begin
+      FileMode := FILE_MODE_BINARY;
+      LexNextToken;
+    End Else If ModeStr = 'RANDOM' Then Begin
+      FileMode := FILE_MODE_RANDOM;
+      LexNextToken;
+    End Else
+      FatalError('Open : mode Input/Output/Append/Binary/Random attendu');
+  End Else If CurTokType = TOK_IDENT Then Begin
+    ModeStr := CurTokStr;
+    If ModeStr = 'OUTPUT' Then Begin
+      FileMode := FILE_MODE_OUTPUT;
+      LexNextToken;
+    End Else If ModeStr = 'APPEND' Then Begin
+      FileMode := FILE_MODE_APPEND;
+      LexNextToken;
+    End Else If ModeStr = 'BINARY' Then Begin
+      FileMode := FILE_MODE_BINARY;
+      LexNextToken;
+    End Else If ModeStr = 'RANDOM' Then Begin
+      FileMode := FILE_MODE_RANDOM;
+      LexNextToken;
+    End Else
+      FatalError('Open : mode d ouverture invalide : ' + ModeStr);
+  End Else
+    FatalError('Open : mode d ouverture attendu');
+  CurFileMode := FileMode;
+  { Attendre 'As' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AS) Then
+    LexNextToken
+  Else
+    FatalError('Open : mot-cle As attendu');
+  { Parser le numero de fichier }
+  ParseFileNumber;
+  Emit('  PUSH EAX');  { sauvegarder le numero de fichier }
+  { Verifier s il y a Len = taille (pour Random) }
+  HasLen := False;
+  If (CurTokType = TOK_KEYWORD) And (CurTokStr = 'LEN') Then Begin
+    LexNextToken;
+    { Consommer '=' }
+    If CurTokType = TOK_EQ Then
+      LexNextToken
+    Else
+      FatalError('Open : symbole = attendu apres Len');
+    ParseExpr;  { taille dans EAX }
+    HasLen := True;
+  End;
+  { Generer l appel runtime }
+  If HasLen Then Begin
+    Emit('  PUSH EAX');  { taille enregistrement }
+  End Else Begin
+    Emit('  PUSH ' + ItoS(DEFAULT_RECORD_LEN));
+  End;
+  Emit('  PUSH ' + ItoS(FileMode));   { mode d ouverture }
+  { Les parametres sont : fichier, num, len, mode }
+  Emit('  CALL ' + FIO_RT_OPEN);
+  Emit('  ADD ESP, 16');  { nettoyer 4 parametres x 4 octets }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseClose : parser une instruction Close                     }
+{   Syntaxe : Close [#n [, #n2 ...]]                           }
+{   Sans argument : ferme tous les fichiers ouverts            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseClose;
+Var
+  HasFileNum : Boolean;
+Begin
+  Inc(FileIOCount);
+  EmitComment('Close [#n]');
+  { Verifier s il y a un numero de fichier }
+  HasFileNum := False;
+  If CurTokType = TOK_HASH Then
+    HasFileNum := True
+  Else If CurTokType = TOK_INTEGER Then
+    HasFileNum := True;
+  If HasFileNum Then Begin
+    { Boucle pour fermer plusieurs fichiers : Close #1, #2 }
+    Repeat
+      ParseFileNumber;
+      Emit('  PUSH EAX');
+      Emit('  CALL ' + FIO_RT_CLOSE);
+      Emit('  ADD ESP, 4');
+      { Verifier s il y a une virgule pour un autre fichier }
+      If CurTokType = TOK_COMMA Then
+        LexNextToken
+      Else
+        Break;
+    Until False;
+  End Else Begin
+    { Fermer tous les fichiers }
+    Emit('  CALL ' + FIO_RT_CLOSEALL);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrint : parser Print #n ou Write #n                     }
+{   Syntaxe : Print #n, expr1[; expr2][, expr3]                }
+{             Write #n, expr1, expr2, expr3                    }
+{   Le separateur ; concatene, la virgule ajoute un TAB        }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrintFile;
+Var
+  IsWrite    : Boolean;
+  FExprCount : Integer;
+  SepIsComma : Boolean;
+Begin
+  Inc(FileIOCount);
+  { Determiner si c est Print ou Write }
+  IsWrite := (CurTokNum = KW_WRITE);
+  If IsWrite Then
+    EmitComment('Write #n, expressions')
+  Else
+    EmitComment('Print #n, expressions');
+  { Parser le numero de fichier }
+  ParseFileNumber;
+  Emit('  PUSH EAX');  { sauvegarder le numero }
+  { Consommer la virgule apres #n }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken;
+  { Parser les expressions a ecrire }
+  FExprCount := 0;
+  While (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) Do Begin
+    ParseExpr;
+    Inc(FExprCount);
+    { Generer l appel d ecriture pour chaque expression }
+    Emit('  PUSH EAX');
+    If IsWrite Then
+      Emit('  CALL ' + FIO_RT_WRITE)
+    Else
+      Emit('  CALL ' + FIO_RT_PRINT);
+    Emit('  ADD ESP, 4');
+    { Verifier le separateur }
+    SepIsComma := False;
+    If CurTokType = TOK_SEMI Then Begin
+      LexNextToken;  { concatenation directe }
+    End Else If CurTokType = TOK_COMMA Then Begin
+      SepIsComma := True;
+      LexNextToken;  { separateur tabulation }
+    End Else
+      Break;  { fin des expressions }
+    If SepIsComma And (Not IsWrite) Then Begin
+      { Emettre un TAB pour Print avec virgule }
+      Emit('  PUSH 9');  { TAB = chr(9) }
+      Emit('  CALL ' + FIO_RT_PRINT);
+      Emit('  ADD ESP, 4');
+    End;
+  End;
+  { Restaurer le numero de fichier }
+  Emit('  POP EBX');  { numero de fichier }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInputFile : parser une instruction Input #n ou Line Input}
+{   Syntaxe : Input #n, var1[, var2 ...]                       }
+{             Line Input #n, var$                               }
+{   Lit des donnees depuis le fichier dans les variables       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInputFile;
+Var
+  IsLineInput : Boolean;
+  VarIdx      : Integer;
+Begin
+  Inc(FileIOCount);
+  { Verifier si c est 'Line Input' }
+  IsLineInput := False;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_LINE) Then Begin
+    IsLineInput := True;
+    LexNextToken;  { consommer 'Line' }
+    EmitComment('Line Input #n, variable');
+    { Attendre 'Input' }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INPUT) Then
+      LexNextToken
+    Else
+      FatalError('Line Input : mot-cle Input attendu apres Line');
+  End Else Begin
+    EmitComment('Input #n, variables');
+  End;
+  { Parser le numero de fichier }
+  ParseFileNumber;
+  Emit('  PUSH EAX');  { sauvegarder le numero }
+  { Consommer la virgule apres #n }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken;
+  If IsLineInput Then Begin
+    { Line Input : une seule variable chaine }
+    If CurTokType = TOK_IDENT Then Begin
+      VarIdx := FindSym(CurTokStr);
+      If VarIdx < 0 Then
+        FatalError('Line Input : variable non declaree : ' + CurTokStr);
+      LexNextToken;
+      { Generer l appel }
+      Emit('  POP EBX');  { numero de fichier }
+      Emit('  PUSH EBX');
+      Emit('  CALL ' + FIO_RT_LINEINPUT);
+      Emit('  ADD ESP, 4');
+      { Stocker le resultat }
+      If VarIdx >= 0 Then
+        GenStoreVar(VarIdx);
+    End Else
+      FatalError('Line Input : variable attendue');
+  End Else Begin
+    { Input : plusieurs variables separees par virgules }
+    Repeat
+      If CurTokType = TOK_IDENT Then Begin
+        VarIdx := FindSym(CurTokStr);
+        If VarIdx < 0 Then
+          FatalError('Input : variable non declaree : ' + CurTokStr);
+        LexNextToken;
+        { Generer l appel de lecture }
+        Emit('  CALL ' + FIO_RT_INPUT);
+        { Stocker le resultat }
+        If VarIdx >= 0 Then
+          GenStoreVar(VarIdx);
+      End Else
+        FatalError('Input : variable attendue');
+      { Verifier la virgule pour continuer }
+      If CurTokType = TOK_COMMA Then
+        LexNextToken
+      Else
+        Break;
+    Until False;
+    { Nettoyer le numero de fichier de la pile }
+    Emit('  POP EBX');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseGet : parser une instruction Get (acces aleatoire)      }
+{   Syntaxe : Get #n, [position], variable                     }
+{   Lit un enregistrement a la position donnee                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParseGet;
+Var
+  VarIdx : Integer;
+Begin
+  Inc(FileIOCount);
+  EmitComment('Get #n, [position], variable');
+  { Parser le numero de fichier }
+  ParseFileNumber;
+  Emit('  PUSH EAX');  { sauvegarder le numero }
+  { Consommer la virgule }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken;
+  { Verifier s il y a une position (optionnelle) }
+  If CurTokType <> TOK_COMMA Then Begin
+    { Il y a une expression de position }
+    ParseExpr;
+    Emit('  PUSH EAX');  { position }
+  End Else Begin
+    { Position omise, utiliser la position courante }
+    Emit('  PUSH -1');  { -1 = position courante }
+  End;
+  { Consommer la virgule avant la variable }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken;
+  { Parser la variable de destination }
+  If CurTokType = TOK_IDENT Then Begin
+    VarIdx := FindSym(CurTokStr);
+    If VarIdx < 0 Then
+      FatalError('Get : variable non declaree : ' + CurTokStr);
+    LexNextToken;
+    { Generer l appel runtime }
+    Emit('  CALL ' + FIO_RT_GET);
+    Emit('  ADD ESP, 8');
+    { Stocker le resultat }
+    If VarIdx >= 0 Then
+      GenStoreVar(VarIdx);
+  End Else
+    FatalError('Get : variable attendue');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePut : parser une instruction Put (acces aleatoire)      }
+{   Syntaxe : Put #n, [position], variable                     }
+{   Ecrit un enregistrement a la position donnee               }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePut;
+Begin
+  Inc(FileIOCount);
+  EmitComment('Put #n, [position], expression');
+  { Parser le numero de fichier }
+  ParseFileNumber;
+  Emit('  PUSH EAX');  { sauvegarder le numero }
+  { Consommer la virgule }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken;
+  { Verifier s il y a une position (optionnelle) }
+  If CurTokType <> TOK_COMMA Then Begin
+    ParseExpr;
+    Emit('  PUSH EAX');  { position }
+  End Else Begin
+    Emit('  PUSH -1');  { -1 = position courante }
+  End;
+  { Consommer la virgule avant la donnee }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken;
+  { Parser l expression a ecrire }
+  ParseExpr;
+  Emit('  PUSH EAX');  { donnee a ecrire }
+  { Generer l appel runtime }
+  Emit('  CALL ' + FIO_RT_PUT);
+  Emit('  ADD ESP, 12');  { 3 parametres x 4 octets }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSeek : parser une instruction Seek                      }
+{   Syntaxe : Seek #n, position                                }
+{   Deplace le curseur de lecture/ecriture                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSeek;
+Begin
+  Inc(FileIOCount);
+  EmitComment('Seek #n, position');
+  { Parser le numero de fichier }
+  ParseFileNumber;
+  Emit('  PUSH EAX');  { numero de fichier }
+  { Consommer la virgule }
+  If CurTokType = TOK_COMMA Then
+    LexNextToken;
+  { Parser la position }
+  ParseExpr;
+  Emit('  PUSH EAX');  { position }
+  { Generer l appel runtime }
+  Emit('  CALL ' + FIO_RT_SEEK);
+  Emit('  ADD ESP, 8');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileOpen : generer le code d ouverture Win32 API           }
+{   Utilise CreateFileA avec les flags selon le mode            }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileOpen(Mode : Integer; FileNum : Integer);
+Begin
+  EmitComment('Ouverture fichier mode=' + FileModeName(Mode) + ' #' + ItoS(FileNum));
+  { PUSH les parametres CreateFileA dans l ordre inverse }
+  Emit('  PUSH 0');          { hTemplateFile = NULL }
+  Emit('  PUSH 0x80');       { dwFlagsAndAttributes = FILE_ATTRIBUTE_NORMAL }
+  Case Mode Of
+    FILE_MODE_INPUT : Begin
+      Emit('  PUSH 3');      { dwCreationDisposition = OPEN_EXISTING }
+      Emit('  PUSH 0');      { lpSecurityAttributes = NULL }
+      Emit('  PUSH 0');      { dwShareMode = 0 }
+      Emit('  PUSH 0x80000000');  { dwDesiredAccess = GENERIC_READ }
+    End;
+    FILE_MODE_OUTPUT : Begin
+      Emit('  PUSH 2');      { dwCreationDisposition = CREATE_ALWAYS }
+      Emit('  PUSH 0');
+      Emit('  PUSH 0');
+      Emit('  PUSH 0x40000000');  { dwDesiredAccess = GENERIC_WRITE }
+    End;
+    FILE_MODE_APPEND : Begin
+      Emit('  PUSH 4');      { dwCreationDisposition = OPEN_ALWAYS }
+      Emit('  PUSH 0');
+      Emit('  PUSH 0');
+      Emit('  PUSH 0x40000000');  { dwDesiredAccess = GENERIC_WRITE }
+    End;
+    FILE_MODE_BINARY, FILE_MODE_RANDOM : Begin
+      Emit('  PUSH 4');      { dwCreationDisposition = OPEN_ALWAYS }
+      Emit('  PUSH 0');
+      Emit('  PUSH 0');
+      Emit('  PUSH 0xC0000000');  { GENERIC_READ or GENERIC_WRITE }
+    End;
+  End;
+  { Le nom de fichier est deja dans la pile }
+  Emit('  CALL _CreateFileA@28');
+  { Sauvegarder le handle dans la table }
+  Emit('  MOV [' + FIO_VAR_HANDLES + '+' + ItoS(FileNum) + '*4], EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileClose : generer le code de fermeture Win32 API         }
+{   Utilise CloseHandle                                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileClose(FileNum : Integer);
+Begin
+  EmitComment('Fermeture fichier #' + ItoS(FileNum));
+  Emit('  MOV EAX, [' + FIO_VAR_HANDLES + '+' + ItoS(FileNum) + '*4]');
+  Emit('  PUSH EAX');
+  Emit('  CALL _CloseHandle@4');
+  { Marquer le handle comme invalide }
+  Emit('  MOV DWORD [' + FIO_VAR_HANDLES + '+' + ItoS(FileNum) + '*4], 0');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileRead : generer le code de lecture via ReadFile          }
+{   Lit des donnees depuis le handle Win32                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileRead(FileNum : Integer; BufLabel : TString; Size : Integer);
+Var
+  DoneLabel : TString;
+Begin
+  DoneLabel := NextInternalLabel;
+  EmitComment('Lecture fichier #' + ItoS(FileNum));
+  Emit('  PUSH 0');          { lpOverlapped = NULL }
+  Emit('  LEA EBX, [EBP-4]');
+  Emit('  PUSH EBX');        { lpNumberOfBytesRead }
+  Emit('  PUSH ' + ItoS(Size));  { nNumberOfBytesToRead }
+  Emit('  PUSH ' + BufLabel);    { lpBuffer }
+  Emit('  MOV EAX, [' + FIO_VAR_HANDLES + '+' + ItoS(FileNum) + '*4]');
+  Emit('  PUSH EAX');        { hFile }
+  Emit('  CALL _ReadFile@20');
+  EmitLabel(DoneLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileWrite : generer le code d ecriture via WriteFile       }
+{   Ecrit des donnees dans le handle Win32                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileWrite(FileNum : Integer; BufLabel : TString; Size : Integer);
+Var
+  DoneLabel : TString;
+Begin
+  DoneLabel := NextInternalLabel;
+  EmitComment('Ecriture fichier #' + ItoS(FileNum));
+  Emit('  PUSH 0');          { lpOverlapped = NULL }
+  Emit('  LEA EBX, [EBP-4]');
+  Emit('  PUSH EBX');        { lpNumberOfBytesWritten }
+  Emit('  PUSH ' + ItoS(Size));  { nNumberOfBytesToWrite }
+  Emit('  PUSH ' + BufLabel);    { lpBuffer }
+  Emit('  MOV EAX, [' + FIO_VAR_HANDLES + '+' + ItoS(FileNum) + '*4]');
+  Emit('  PUSH EAX');        { hFile }
+  Emit('  CALL _WriteFile@20');
+  EmitLabel(DoneLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileDataSegment : generer les variables fichier en .BSS    }
+{   Declare la table de handles et variables globales          }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileDataSegment;
+Begin
+  EmitComment('Variables globales E/S fichiers');
+  EmitBss(FIO_VAR_HANDLES + ' RESD ' + ItoS(MAX_FILE_NUM + 1));
+  EmitBss(FIO_VAR_MODES   + ' RESD ' + ItoS(MAX_FILE_NUM + 1));
+  EmitBss(FIO_VAR_COUNT   + ' DD 0');
+  EmitBss(FIO_VAR_RECLEN  + ' RESD ' + ItoS(MAX_FILE_NUM + 1));
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEOFCall : parser un appel a la fonction EOF(n)           }
+{   Retourne True (-1) si fin de fichier, False (0) sinon     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseEOFCall;
+Begin
+  Inc(FileIOCount);
+  EmitComment('EOF(n)');
+  { Attendre la parenthese ouvrante }
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken;
+  { Parser le numero de fichier }
+  ParseExpr;
+  Emit('  PUSH EAX');
+  { Fermer la parenthese }
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  { Appeler la routine runtime }
+  Emit('  CALL ' + FIO_RT_EOF);
+  Emit('  ADD ESP, 4');
+  { Resultat dans EAX : -1 = True, 0 = False }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLOFCall : parser un appel a la fonction LOF(n)           }
+{   Retourne la taille du fichier en octets                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLOFCall;
+Begin
+  Inc(FileIOCount);
+  EmitComment('LOF(n)');
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken;
+  ParseExpr;
+  Emit('  PUSH EAX');
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  Emit('  CALL ' + FIO_RT_LOF);
+  Emit('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLocCall : parser un appel a la fonction Loc(n)           }
+{   Retourne la position courante dans le fichier              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLocCall;
+Begin
+  Inc(FileIOCount);
+  EmitComment('Loc(n)');
+  If CurTokType = TOK_LPAREN Then
+    LexNextToken;
+  ParseExpr;
+  Emit('  PUSH EAX');
+  If CurTokType = TOK_RPAREN Then
+    LexNextToken;
+  Emit('  CALL ' + FIO_RT_LOC);
+  Emit('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFreeFileCall : parser un appel a la fonction FreeFile    }
+{   Retourne le prochain numero de fichier disponible          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFreeFileCall;
+Begin
+  Inc(FileIOCount);
+  EmitComment('FreeFile');
+  { FreeFile peut etre appele sans parentheses ou avec () }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken;
+  End;
+  Emit('  CALL ' + FIO_RT_FREEFILE);
+  { Resultat dans EAX }
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFileIOStatement : verifier si le token courant commence    }
+{   une instruction E/S fichier                                }
+{ ------------------------------------------------------------ }
+
+Function IsFileIOStatement : Boolean;
+Begin
+  If CurTokType <> TOK_KEYWORD Then Begin
+    IsFileIOStatement := False;
+    Exit;
+  End;
+  IsFileIOStatement := (CurTokNum = KW_OPEN) Or
+                       (CurTokNum = KW_CLOSE) Or
+                       (CurTokNum = KW_PRINT) Or
+                       (CurTokNum = KW_WRITE) Or
+                       (CurTokNum = KW_INPUT) Or
+                       (CurTokNum = KW_GET) Or
+                       (CurTokNum = KW_PUT) Or
+                       (CurTokNum = KW_SEEK) Or
+                       (CurTokNum = KW_LINE);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFileFunction : verifier si le token courant est une        }
+{   fonction fichier (EOF, LOF, Loc, FreeFile)                 }
+{ ------------------------------------------------------------ }
+
+Function IsFileFunction : Boolean;
+Begin
+  If CurTokType <> TOK_KEYWORD Then Begin
+    IsFileFunction := False;
+    Exit;
+  End;
+  IsFileFunction := (CurTokNum = KW_EOF2) Or
+                    (CurTokNum = KW_LOF) Or
+                    (CurTokNum = KW_LOC) Or
+                    (CurTokNum = KW_FREEFILE);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFileChannel : verifier si le token courant est un '#'      }
+{   suivi d un numero (canal fichier)                          }
+{ ------------------------------------------------------------ }
+
+Function IsFileChannel : Boolean;
+Begin
+  IsFileChannel := (CurTokType = TOK_HASH);
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions d acces aux variables du module E/S fichiers        }
+{ ------------------------------------------------------------ }
+
+Function GetFileIOCount : LongInt;
+Begin
+  GetFileIOCount := FileIOCount;
+End;
+
+Function IsFileIOInitialized : Boolean;
+Begin
+  IsFileIOInitialized := FileIOInitialized;
+End;
+
+Function IsFileIOEmpty : Boolean;
+Begin
+  IsFileIOEmpty := FileIOInitialized And (FileIOCount = 0);
+End;
+
+Function GetFileIOStatus : TString;
+Begin
+  If Not FileIOInitialized Then
+    GetFileIOStatus := 'non initialise'
+  Else If FileIOCount = 0 Then
+    GetFileIOStatus := 'initialise, aucune operation E/S'
+  Else
+    GetFileIOStatus := 'initialise, ' + ItoS(FileIOCount) + ' operations';
+End;
+
+Function GetCurFileMode : Integer;
+Begin
+  GetCurFileMode := CurFileMode;
+End;
+
+Function GetCurFileModeName : TString;
+Begin
+  GetCurFileModeName := FileModeName(CurFileMode);
+End;
+
+Function GetCurFileNum : Integer;
+Begin
+  GetCurFileNum := CurFileNum;
+End;
+
+Function GetMaxFileNum : Integer;
+Begin
+  GetMaxFileNum := MAX_FILE_NUM;
+End;
+
+Function GetDefaultRecordLen : Integer;
+Begin
+  GetDefaultRecordLen := DEFAULT_RECORD_LEN;
+End;
+
+Function GetFileRtCount : Integer;
+Begin
+  GetFileRtCount := 14;  { 10 operations + 4 fonctions }
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -10507,6 +11286,7 @@ Begin
   InitTypeEnumState;
   InitClassState;
   InitErrorState;
+  InitFileIOState;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;

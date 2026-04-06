@@ -465,7 +465,7 @@
               Err.Raise number[, source][, description]
             Generer code pour etablir/retirer le gestionnaire SEH
 
-  TODO 19 - PARSEUR : ENTREES/SORTIES FICHIERS (OPEN, CLOSE, PRINT#, INPUT#) [A FAIRE]
+  TODO 19 - PARSEUR : ENTREES/SORTIES FICHIERS (OPEN, CLOSE, PRINT#, INPUT#) [IMPLEMENTE]
             Procedure ParseOpen
             Syntaxe :
               Open fichier For Input As #n
