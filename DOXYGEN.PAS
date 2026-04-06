@@ -1189,6 +1189,35 @@ Const
   SEARCH_SCORE_DETAIL   = 40;   { Score pour match dans les details }
   SEARCH_SCORE_PARAM    = 20;   { Score pour match dans les parametres }
 
+  { Constantes pour le generateur PNG integre (sans outil externe) }
+  PNG_SIGNATURE_1       = $89;       { Signature PNG byte 1 }
+  PNG_SIGNATURE_2       = $50;       { Signature PNG byte 2 (P) }
+  PNG_SIGNATURE_3       = $4E;       { Signature PNG byte 3 (N) }
+  PNG_SIGNATURE_4       = $47;       { Signature PNG byte 4 (G) }
+  PNG_SIGNATURE_5       = $0D;       { Signature PNG byte 5 (CR) }
+  PNG_SIGNATURE_6       = $0A;       { Signature PNG byte 6 (LF) }
+  PNG_SIGNATURE_7       = $1A;       { Signature PNG byte 7 (SUB) }
+  PNG_SIGNATURE_8       = $0A;       { Signature PNG byte 8 (LF) }
+  PNG_COLOR_RGB         = 2;         { Mode couleur RGB }
+  PNG_COLOR_RGBA        = 6;         { Mode couleur RGBA }
+  PNG_COLOR_INDEXED     = 3;         { Mode couleur indexe }
+  PNG_FILTER_NONE       = 0;         { Filtre: aucun }
+  PNG_FILTER_SUB        = 1;         { Filtre: sub }
+  PNG_FILTER_UP         = 2;         { Filtre: up }
+  PNG_COMPRESSION       = 0;         { Compression zlib }
+  PNG_INTERLACE_NONE    = 0;         { Pas d'entrelacement }
+  PNG_MAX_WIDTH         = 4096;      { Largeur maximale }
+  PNG_MAX_HEIGHT        = 4096;      { Hauteur maximale }
+  PNG_DEFAULT_WIDTH     = 800;       { Largeur par defaut }
+  PNG_DEFAULT_HEIGHT    = 600;       { Hauteur par defaut }
+  PNG_NODE_WIDTH        = 120;       { Largeur d'un noeud }
+  PNG_NODE_HEIGHT       = 40;        { Hauteur d'un noeud }
+  PNG_NODE_MARGIN       = 30;        { Marge entre les noeuds }
+  PNG_FONT_WIDTH        = 7;         { Largeur approximative d'un caractere }
+  PNG_FONT_HEIGHT       = 12;        { Hauteur approximative d'un caractere }
+  MAX_PNG_NODES         = 256;       { Nombre max de noeuds dans un graphe }
+  MAX_PNG_EDGES         = 512;       { Nombre max d'aretes dans un graphe }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1498,6 +1527,43 @@ Type
     OutputSize       : LongInt;     { Taille de la doc generee en octets }
   End;
 
+  { Types pour le generateur PNG integre (sans outil externe) }
+  TPngColor = Record
+    R, G, B : Byte;                  { Composantes rouge, vert, bleu }
+  End;
+
+  TPngNode = Record
+    Id     : String;                 { Identifiant du noeud }
+    Name   : String;                 { Nom affiche }
+    X, Y   : Integer;                { Position X, Y }
+    W, H   : Integer;                { Largeur, Hauteur }
+    Color  : TPngColor;              { Couleur du noeud }
+    Shape  : String;                 { Forme: box, ellipse, record }
+  End;
+
+  TPngEdge = Record
+    FromId : String;                 { Noeud source }
+    ToId   : String;                 { Noeud destination }
+    FromX, FromY : Integer;          { Position depart }
+    ToX, ToY     : Integer;          { Position arrivee }
+    Color  : TPngColor;              { Couleur de l'arete }
+    Style  : String;                 { Style: solid, dashed }
+    LabelText : String;              { Etiquette de l'arete }
+  End;
+
+  TPngGraph = Record
+    Title   : String;                { Titre du graphe }
+    Width   : Integer;               { Largeur de l'image }
+    Height  : Integer;               { Hauteur de l'image }
+    BgColor : TPngColor;             { Couleur de fond }
+    Nodes   : Array[1..MAX_PNG_NODES] Of TPngNode;
+    NodeCount : Integer;
+    Edges   : Array[1..MAX_PNG_EDGES] Of TPngEdge;
+    EdgeCount : Integer;
+  End;
+
+  TPngPixelRow = Array[0..PNG_MAX_WIDTH-1] Of TPngColor;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1635,6 +1701,12 @@ Var
   Stats              : TStatistics;
   StartTime          : LongInt;
   StatsInitialized   : Boolean;
+
+  { Variables pour le generateur PNG integre }
+  PngGraph           : TPngGraph;
+  PngInitialized     : Boolean;
+  PngCrcTable        : Array[0..255] Of LongInt;
+  PngCrcTableBuilt   : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -9948,10 +10020,906 @@ Begin
   WriteLn(OutFile, '}');
 End;
 
-Procedure RenderCallGraphImage(Const DotFile, ImageFile: String);
-{ Invoque dot pour generer l'image (PNG, SVG, etc.) }
+{ ============================================================
+  GENERATEUR PNG INTEGRE (SANS OUTIL EXTERNE)
+  
+  Ce module permet de generer des fichiers PNG directement
+  sans avoir besoin de Graphviz ou d'autres outils externes.
+  Il inclut:
+  - Table CRC32 pour les chunks PNG
+  - Compression simple (non-compresse avec DEFLATE stored)
+  - Dessin de lignes, rectangles, et texte simple
+  - Parser DOT basique pour lire les fichiers .dot
+  - Generation de l'image PNG
+  ============================================================ }
+
+Procedure BuildCrcTable;
+{ Construit la table CRC32 utilisee par PNG }
 Var
-  Cmd: String;
+  I, J: Integer;
+  C: LongInt;
+Begin
+  If PngCrcTableBuilt Then Exit;
+  
+  For I := 0 To 255 Do
+  Begin
+    C := I;
+    For J := 0 To 7 Do
+    Begin
+      If (C And 1) <> 0 Then
+        C := LongInt($EDB88320) Xor (C Shr 1)
+      Else
+        C := C Shr 1;
+    End;
+    PngCrcTable[I] := C;
+  End;
+  
+  PngCrcTableBuilt := True;
+End;
+
+Function UpdateCrc(Crc: LongInt; Const Data: Array Of Byte; Len: Integer): LongInt;
+{ Met a jour le CRC32 avec les donnees fournies }
+Var
+  I: Integer;
+Begin
+  If Not PngCrcTableBuilt Then BuildCrcTable;
+  
+  For I := 0 To Len - 1 Do
+    Crc := PngCrcTable[(Crc Xor Data[I]) And $FF] Xor (Crc Shr 8);
+  
+  UpdateCrc := Crc;
+End;
+
+Function CalcCrc(Const Data: Array Of Byte; Len: Integer): LongInt;
+{ Calcule le CRC32 des donnees }
+Begin
+  CalcCrc := UpdateCrc(LongInt($FFFFFFFF), Data, Len) Xor LongInt($FFFFFFFF);
+End;
+
+Procedure InitPngGraph;
+{ Initialise le graphe PNG }
+Var
+  I: Integer;
+Begin
+  PngGraph.Title := '';
+  PngGraph.Width := PNG_DEFAULT_WIDTH;
+  PngGraph.Height := PNG_DEFAULT_HEIGHT;
+  PngGraph.BgColor.R := 255;
+  PngGraph.BgColor.G := 255;
+  PngGraph.BgColor.B := 255;
+  PngGraph.NodeCount := 0;
+  PngGraph.EdgeCount := 0;
+  
+  For I := 1 To MAX_PNG_NODES Do
+  Begin
+    PngGraph.Nodes[I].Id := '';
+    PngGraph.Nodes[I].Name := '';
+    PngGraph.Nodes[I].X := 0;
+    PngGraph.Nodes[I].Y := 0;
+    PngGraph.Nodes[I].W := PNG_NODE_WIDTH;
+    PngGraph.Nodes[I].H := PNG_NODE_HEIGHT;
+    PngGraph.Nodes[I].Color.R := 200;
+    PngGraph.Nodes[I].Color.G := 200;
+    PngGraph.Nodes[I].Color.B := 255;
+    PngGraph.Nodes[I].Shape := 'box';
+  End;
+  
+  For I := 1 To MAX_PNG_EDGES Do
+  Begin
+    PngGraph.Edges[I].FromId := '';
+    PngGraph.Edges[I].ToId := '';
+    PngGraph.Edges[I].FromX := 0;
+    PngGraph.Edges[I].FromY := 0;
+    PngGraph.Edges[I].ToX := 0;
+    PngGraph.Edges[I].ToY := 0;
+    PngGraph.Edges[I].Color.R := 0;
+    PngGraph.Edges[I].Color.G := 0;
+    PngGraph.Edges[I].Color.B := 0;
+    PngGraph.Edges[I].Style := 'solid';
+    PngGraph.Edges[I].LabelText := '';
+  End;
+  
+  PngInitialized := True;
+End;
+
+Function AddPngNode(Const Id, Name: String): Integer;
+{ Ajoute un noeud au graphe PNG }
+Var
+  Idx: Integer;
+Begin
+  If Not PngInitialized Then InitPngGraph;
+  
+  If PngGraph.NodeCount >= MAX_PNG_NODES Then
+  Begin
+    AddPngNode := 0;
+    Exit;
+  End;
+  
+  Inc(PngGraph.NodeCount);
+  Idx := PngGraph.NodeCount;
+  
+  PngGraph.Nodes[Idx].Id := Id;
+  PngGraph.Nodes[Idx].Name := Name;
+  PngGraph.Nodes[Idx].W := Length(Name) * PNG_FONT_WIDTH + 20;
+  If PngGraph.Nodes[Idx].W < PNG_NODE_WIDTH Then
+    PngGraph.Nodes[Idx].W := PNG_NODE_WIDTH;
+  PngGraph.Nodes[Idx].H := PNG_NODE_HEIGHT;
+  
+  AddPngNode := Idx;
+End;
+
+Function FindPngNode(Const Id: String): Integer;
+{ Trouve un noeud par son ID }
+Var
+  I: Integer;
+Begin
+  FindPngNode := 0;
+  For I := 1 To PngGraph.NodeCount Do
+  Begin
+    If PngGraph.Nodes[I].Id = Id Then
+    Begin
+      FindPngNode := I;
+      Exit;
+    End;
+  End;
+End;
+
+Function AddPngEdge(Const FromId, ToId: String): Integer;
+{ Ajoute une arete au graphe PNG }
+Var
+  Idx: Integer;
+Begin
+  If Not PngInitialized Then InitPngGraph;
+  
+  If PngGraph.EdgeCount >= MAX_PNG_EDGES Then
+  Begin
+    AddPngEdge := 0;
+    Exit;
+  End;
+  
+  Inc(PngGraph.EdgeCount);
+  Idx := PngGraph.EdgeCount;
+  
+  PngGraph.Edges[Idx].FromId := FromId;
+  PngGraph.Edges[Idx].ToId := ToId;
+  
+  AddPngEdge := Idx;
+End;
+
+Procedure LayoutPngGraph;
+{ Calcule la disposition des noeuds dans le graphe }
+Var
+  I, Row, Col: Integer;
+  MaxCols, MaxRows: Integer;
+  StartX, StartY: Integer;
+Begin
+  If PngGraph.NodeCount = 0 Then Exit;
+  
+  { Disposition simple en grille }
+  MaxCols := 4;
+  If PngGraph.NodeCount <= 4 Then MaxCols := PngGraph.NodeCount;
+  MaxRows := (PngGraph.NodeCount + MaxCols - 1) Div MaxCols;
+  
+  { Calculer la taille de l'image }
+  PngGraph.Width := MaxCols * (PNG_NODE_WIDTH + PNG_NODE_MARGIN * 2) + PNG_NODE_MARGIN * 2;
+  PngGraph.Height := MaxRows * (PNG_NODE_HEIGHT + PNG_NODE_MARGIN * 2) + PNG_NODE_MARGIN * 2;
+  
+  If PngGraph.Width < PNG_DEFAULT_WIDTH Then PngGraph.Width := PNG_DEFAULT_WIDTH;
+  If PngGraph.Height < 200 Then PngGraph.Height := 200;
+  
+  { Limiter la taille }
+  If PngGraph.Width > PNG_MAX_WIDTH Then PngGraph.Width := PNG_MAX_WIDTH;
+  If PngGraph.Height > PNG_MAX_HEIGHT Then PngGraph.Height := PNG_MAX_HEIGHT;
+  
+  { Positionner les noeuds }
+  StartX := PNG_NODE_MARGIN * 2;
+  StartY := PNG_NODE_MARGIN * 2;
+  
+  For I := 1 To PngGraph.NodeCount Do
+  Begin
+    Row := (I - 1) Div MaxCols;
+    Col := (I - 1) Mod MaxCols;
+    
+    PngGraph.Nodes[I].X := StartX + Col * (PNG_NODE_WIDTH + PNG_NODE_MARGIN * 2);
+    PngGraph.Nodes[I].Y := StartY + Row * (PNG_NODE_HEIGHT + PNG_NODE_MARGIN * 2);
+  End;
+  
+  { Calculer les positions des aretes }
+  For I := 1 To PngGraph.EdgeCount Do
+  Begin
+    { Trouver les noeuds source et destination }
+    Row := FindPngNode(PngGraph.Edges[I].FromId);
+    Col := FindPngNode(PngGraph.Edges[I].ToId);
+    
+    If (Row > 0) And (Col > 0) Then
+    Begin
+      { Position de depart: bas du noeud source }
+      PngGraph.Edges[I].FromX := PngGraph.Nodes[Row].X + PngGraph.Nodes[Row].W Div 2;
+      PngGraph.Edges[I].FromY := PngGraph.Nodes[Row].Y + PngGraph.Nodes[Row].H;
+      
+      { Position d'arrivee: haut du noeud destination }
+      PngGraph.Edges[I].ToX := PngGraph.Nodes[Col].X + PngGraph.Nodes[Col].W Div 2;
+      PngGraph.Edges[I].ToY := PngGraph.Nodes[Col].Y;
+    End;
+  End;
+End;
+
+Procedure WritePngByte(Var F: File; B: Byte);
+{ Ecrit un octet dans le fichier PNG }
+Begin
+  BlockWrite(F, B, 1);
+End;
+
+Procedure WritePngWord(Var F: File; W: Word);
+{ Ecrit un mot de 16 bits en big-endian }
+Begin
+  WritePngByte(F, Hi(W));
+  WritePngByte(F, Lo(W));
+End;
+
+Procedure WritePngDWord(Var F: File; DW: LongInt);
+{ Ecrit un mot de 32 bits en big-endian }
+Begin
+  WritePngByte(F, (DW Shr 24) And $FF);
+  WritePngByte(F, (DW Shr 16) And $FF);
+  WritePngByte(F, (DW Shr 8) And $FF);
+  WritePngByte(F, DW And $FF);
+End;
+
+Procedure WritePngSignature(Var F: File);
+{ Ecrit la signature PNG de 8 octets }
+Begin
+  WritePngByte(F, PNG_SIGNATURE_1);
+  WritePngByte(F, PNG_SIGNATURE_2);
+  WritePngByte(F, PNG_SIGNATURE_3);
+  WritePngByte(F, PNG_SIGNATURE_4);
+  WritePngByte(F, PNG_SIGNATURE_5);
+  WritePngByte(F, PNG_SIGNATURE_6);
+  WritePngByte(F, PNG_SIGNATURE_7);
+  WritePngByte(F, PNG_SIGNATURE_8);
+End;
+
+Procedure WritePngChunk(Var F: File; ChunkType: String; Const Data: Array Of Byte; DataLen: Integer);
+{ Ecrit un chunk PNG complet avec CRC }
+Var
+  TypeAndData: Array[0..65535] Of Byte;
+  I: Integer;
+  Crc: LongInt;
+Begin
+  { Longueur des donnees }
+  WritePngDWord(F, DataLen);
+  
+  { Type du chunk (4 caracteres) }
+  For I := 1 To 4 Do
+    TypeAndData[I - 1] := Ord(ChunkType[I]);
+  
+  { Copier les donnees }
+  For I := 0 To DataLen - 1 Do
+    TypeAndData[I + 4] := Data[I];
+  
+  { Ecrire le type }
+  For I := 0 To 3 Do
+    WritePngByte(F, TypeAndData[I]);
+  
+  { Ecrire les donnees }
+  For I := 0 To DataLen - 1 Do
+    WritePngByte(F, Data[I]);
+  
+  { Calculer et ecrire le CRC }
+  Crc := CalcCrc(TypeAndData, DataLen + 4);
+  WritePngDWord(F, Crc);
+End;
+
+Procedure WritePngIHDR(Var F: File; Width, Height: Integer);
+{ Ecrit le chunk IHDR }
+Var
+  Data: Array[0..12] Of Byte;
+Begin
+  { Largeur (4 bytes big-endian) }
+  Data[0] := (Width Shr 24) And $FF;
+  Data[1] := (Width Shr 16) And $FF;
+  Data[2] := (Width Shr 8) And $FF;
+  Data[3] := Width And $FF;
+  
+  { Hauteur (4 bytes big-endian) }
+  Data[4] := (Height Shr 24) And $FF;
+  Data[5] := (Height Shr 16) And $FF;
+  Data[6] := (Height Shr 8) And $FF;
+  Data[7] := Height And $FF;
+  
+  { Bit depth: 8 bits par canal }
+  Data[8] := 8;
+  
+  { Color type: RGB (2) }
+  Data[9] := PNG_COLOR_RGB;
+  
+  { Compression method: 0 (deflate) }
+  Data[10] := PNG_COMPRESSION;
+  
+  { Filter method: 0 }
+  Data[11] := 0;
+  
+  { Interlace method: 0 (pas d'entrelacement) }
+  Data[12] := PNG_INTERLACE_NONE;
+  
+  WritePngChunk(F, 'IHDR', Data, 13);
+End;
+
+Procedure WritePngIDAT(Var F: File; Const Pixels: Array Of TPngPixelRow; Width, Height: Integer);
+{ Ecrit le chunk IDAT avec les donnees d'image non-compressees }
+Var
+  RawData: Array Of Byte;
+  CompData: Array Of Byte;
+  RawLen, CompLen: LongInt;
+  X, Y, Idx: Integer;
+  BlockLen: Word;
+  Adler32: LongInt;
+  S1, S2: LongInt;
+Begin
+  { Taille des donnees brutes: (1 + Width * 3) * Height }
+  RawLen := (1 + Width * 3) * Height;
+  SetLength(RawData, RawLen);
+  
+  { Construire les donnees brutes (filtre 0 = aucun pour chaque ligne) }
+  Idx := 0;
+  For Y := 0 To Height - 1 Do
+  Begin
+    { Octet de filtre (0 = aucun) }
+    RawData[Idx] := PNG_FILTER_NONE;
+    Inc(Idx);
+    
+    { Pixels RGB }
+    For X := 0 To Width - 1 Do
+    Begin
+      RawData[Idx] := Pixels[Y][X].R;
+      Inc(Idx);
+      RawData[Idx] := Pixels[Y][X].G;
+      Inc(Idx);
+      RawData[Idx] := Pixels[Y][X].B;
+      Inc(Idx);
+    End;
+  End;
+  
+  { Calculer Adler-32 des donnees brutes }
+  S1 := 1;
+  S2 := 0;
+  For Idx := 0 To RawLen - 1 Do
+  Begin
+    S1 := (S1 + RawData[Idx]) Mod 65521;
+    S2 := (S2 + S1) Mod 65521;
+  End;
+  Adler32 := (S2 Shl 16) Or S1;
+  
+  { Creer le flux zlib non-compresse (stored blocks) }
+  { Format: zlib header (2 bytes) + stored blocks + Adler-32 (4 bytes) }
+  CompLen := 2 + 5 + RawLen + 4; { Header + block header + data + adler }
+  SetLength(CompData, CompLen);
+  
+  { En-tete zlib }
+  CompData[0] := $78; { CMF: deflate, 32K window }
+  CompData[1] := $01; { FLG: no dict, check bits }
+  
+  { Bloc stored (non-compresse) }
+  CompData[2] := $01; { BFINAL=1 (dernier bloc), BTYPE=00 (stored) }
+  
+  { Longueur du bloc (little-endian) }
+  BlockLen := RawLen;
+  CompData[3] := Lo(BlockLen);
+  CompData[4] := Hi(BlockLen);
+  
+  { Complement de la longueur }
+  CompData[5] := Lo(Not BlockLen);
+  CompData[6] := Hi(Not BlockLen);
+  
+  { Copier les donnees brutes }
+  For Idx := 0 To RawLen - 1 Do
+    CompData[7 + Idx] := RawData[Idx];
+  
+  { Adler-32 (big-endian) }
+  Idx := 7 + RawLen;
+  CompData[Idx] := (Adler32 Shr 24) And $FF;
+  CompData[Idx + 1] := (Adler32 Shr 16) And $FF;
+  CompData[Idx + 2] := (Adler32 Shr 8) And $FF;
+  CompData[Idx + 3] := Adler32 And $FF;
+  
+  WritePngChunk(F, 'IDAT', CompData, CompLen);
+  
+  SetLength(RawData, 0);
+  SetLength(CompData, 0);
+End;
+
+Procedure WritePngIEND(Var F: File);
+{ Ecrit le chunk IEND (fin du fichier PNG) }
+Var
+  EmptyData: Array[0..0] Of Byte;
+Begin
+  WritePngChunk(F, 'IEND', EmptyData, 0);
+End;
+
+Procedure DrawPngLine(Var Pixels: Array Of TPngPixelRow; X1, Y1, X2, Y2: Integer; 
+                       Width, Height: Integer; Color: TPngColor);
+{ Dessine une ligne dans le buffer de pixels (algorithme de Bresenham) }
+Var
+  DX, DY, SX, SY, Err, E2: Integer;
+Begin
+  DX := Abs(X2 - X1);
+  If X1 < X2 Then SX := 1 Else SX := -1;
+  DY := -Abs(Y2 - Y1);
+  If Y1 < Y2 Then SY := 1 Else SY := -1;
+  Err := DX + DY;
+  
+  While True Do
+  Begin
+    If (X1 >= 0) And (X1 < Width) And (Y1 >= 0) And (Y1 < Height) Then
+      Pixels[Y1][X1] := Color;
+    
+    If (X1 = X2) And (Y1 = Y2) Then Break;
+    
+    E2 := 2 * Err;
+    If E2 >= DY Then
+    Begin
+      If X1 = X2 Then Break;
+      Err := Err + DY;
+      X1 := X1 + SX;
+    End;
+    If E2 <= DX Then
+    Begin
+      If Y1 = Y2 Then Break;
+      Err := Err + DX;
+      Y1 := Y1 + SY;
+    End;
+  End;
+End;
+
+Procedure DrawPngRect(Var Pixels: Array Of TPngPixelRow; X, Y, W, H: Integer;
+                       Width, Height: Integer; FillColor, BorderColor: TPngColor;
+                       Filled: Boolean);
+{ Dessine un rectangle dans le buffer de pixels }
+Var
+  I, J: Integer;
+Begin
+  { Remplissage }
+  If Filled Then
+  Begin
+    For J := Y To Y + H - 1 Do
+    Begin
+      If (J >= 0) And (J < Height) Then
+      Begin
+        For I := X To X + W - 1 Do
+        Begin
+          If (I >= 0) And (I < Width) Then
+            Pixels[J][I] := FillColor;
+        End;
+      End;
+    End;
+  End;
+  
+  { Bordure }
+  DrawPngLine(Pixels, X, Y, X + W - 1, Y, Width, Height, BorderColor);
+  DrawPngLine(Pixels, X + W - 1, Y, X + W - 1, Y + H - 1, Width, Height, BorderColor);
+  DrawPngLine(Pixels, X + W - 1, Y + H - 1, X, Y + H - 1, Width, Height, BorderColor);
+  DrawPngLine(Pixels, X, Y + H - 1, X, Y, Width, Height, BorderColor);
+End;
+
+Procedure DrawPngArrow(Var Pixels: Array Of TPngPixelRow; X1, Y1, X2, Y2: Integer;
+                        Width, Height: Integer; Color: TPngColor);
+{ Dessine une fleche de X1,Y1 vers X2,Y2 }
+Var
+  DX, DY: Integer;
+  Len: Real;
+  UX, UY: Real;
+  AX, AY: Integer;
+  ArrowLen: Integer;
+Begin
+  { Dessiner la ligne principale }
+  DrawPngLine(Pixels, X1, Y1, X2, Y2, Width, Height, Color);
+  
+  { Dessiner la pointe de fleche }
+  ArrowLen := 8;
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  Len := Sqrt(DX * DX + DY * DY);
+  
+  If Len > 0 Then
+  Begin
+    UX := DX / Len;
+    UY := DY / Len;
+    
+    { Points de la pointe }
+    AX := X2 - Round(ArrowLen * UX + ArrowLen * 0.5 * UY);
+    AY := Y2 - Round(ArrowLen * UY - ArrowLen * 0.5 * UX);
+    DrawPngLine(Pixels, X2, Y2, AX, AY, Width, Height, Color);
+    
+    AX := X2 - Round(ArrowLen * UX - ArrowLen * 0.5 * UY);
+    AY := Y2 - Round(ArrowLen * UY + ArrowLen * 0.5 * UX);
+    DrawPngLine(Pixels, X2, Y2, AX, AY, Width, Height, Color);
+  End;
+End;
+
+Procedure DrawPngText(Var Pixels: Array Of TPngPixelRow; X, Y: Integer;
+                       Const Text: String; Width, Height: Integer; Color: TPngColor);
+{ Dessine du texte simple (police bitmap 5x7 basique) }
+Const
+  { Police bitmap 5x7 pour les caracteres A-Z, a-z, 0-9 et quelques symboles }
+  Font5x7: Array['0'..'z'] Of Array[0..6] Of Byte = (
+    { 0 } ($3E, $51, $49, $45, $3E, $00, $00),
+    { 1 } ($00, $42, $7F, $40, $00, $00, $00),
+    { 2 } ($42, $61, $51, $49, $46, $00, $00),
+    { 3 } ($21, $41, $45, $4B, $31, $00, $00),
+    { 4 } ($18, $14, $12, $7F, $10, $00, $00),
+    { 5 } ($27, $45, $45, $45, $39, $00, $00),
+    { 6 } ($3C, $4A, $49, $49, $30, $00, $00),
+    { 7 } ($01, $71, $09, $05, $03, $00, $00),
+    { 8 } ($36, $49, $49, $49, $36, $00, $00),
+    { 9 } ($06, $49, $49, $29, $1E, $00, $00),
+    { : } ($00, $36, $36, $00, $00, $00, $00),
+    { ; } ($00, $56, $36, $00, $00, $00, $00),
+    { < } ($08, $14, $22, $41, $00, $00, $00),
+    { = } ($14, $14, $14, $14, $14, $00, $00),
+    { > } ($41, $22, $14, $08, $00, $00, $00),
+    { ? } ($02, $01, $51, $09, $06, $00, $00),
+    { @ } ($32, $49, $79, $41, $3E, $00, $00),
+    { A } ($7E, $11, $11, $11, $7E, $00, $00),
+    { B } ($7F, $49, $49, $49, $36, $00, $00),
+    { C } ($3E, $41, $41, $41, $22, $00, $00),
+    { D } ($7F, $41, $41, $22, $1C, $00, $00),
+    { E } ($7F, $49, $49, $49, $41, $00, $00),
+    { F } ($7F, $09, $09, $09, $01, $00, $00),
+    { G } ($3E, $41, $49, $49, $7A, $00, $00),
+    { H } ($7F, $08, $08, $08, $7F, $00, $00),
+    { I } ($00, $41, $7F, $41, $00, $00, $00),
+    { J } ($20, $40, $41, $3F, $01, $00, $00),
+    { K } ($7F, $08, $14, $22, $41, $00, $00),
+    { L } ($7F, $40, $40, $40, $40, $00, $00),
+    { M } ($7F, $02, $0C, $02, $7F, $00, $00),
+    { N } ($7F, $04, $08, $10, $7F, $00, $00),
+    { O } ($3E, $41, $41, $41, $3E, $00, $00),
+    { P } ($7F, $09, $09, $09, $06, $00, $00),
+    { Q } ($3E, $41, $51, $21, $5E, $00, $00),
+    { R } ($7F, $09, $19, $29, $46, $00, $00),
+    { S } ($46, $49, $49, $49, $31, $00, $00),
+    { T } ($01, $01, $7F, $01, $01, $00, $00),
+    { U } ($3F, $40, $40, $40, $3F, $00, $00),
+    { V } ($1F, $20, $40, $20, $1F, $00, $00),
+    { W } ($3F, $40, $38, $40, $3F, $00, $00),
+    { X } ($63, $14, $08, $14, $63, $00, $00),
+    { Y } ($07, $08, $70, $08, $07, $00, $00),
+    { Z } ($61, $51, $49, $45, $43, $00, $00),
+    { [ } ($00, $7F, $41, $41, $00, $00, $00),
+    { \ } ($02, $04, $08, $10, $20, $00, $00),
+    { ] } ($00, $41, $41, $7F, $00, $00, $00),
+    { ^ } ($04, $02, $01, $02, $04, $00, $00),
+    { _ } ($40, $40, $40, $40, $40, $00, $00),
+    { ` } ($00, $01, $02, $04, $00, $00, $00),
+    { a } ($20, $54, $54, $54, $78, $00, $00),
+    { b } ($7F, $48, $44, $44, $38, $00, $00),
+    { c } ($38, $44, $44, $44, $20, $00, $00),
+    { d } ($38, $44, $44, $48, $7F, $00, $00),
+    { e } ($38, $54, $54, $54, $18, $00, $00),
+    { f } ($08, $7E, $09, $01, $02, $00, $00),
+    { g } ($0C, $52, $52, $52, $3E, $00, $00),
+    { h } ($7F, $08, $04, $04, $78, $00, $00),
+    { i } ($00, $44, $7D, $40, $00, $00, $00),
+    { j } ($20, $40, $44, $3D, $00, $00, $00),
+    { k } ($7F, $10, $28, $44, $00, $00, $00),
+    { l } ($00, $41, $7F, $40, $00, $00, $00),
+    { m } ($7C, $04, $18, $04, $78, $00, $00),
+    { n } ($7C, $08, $04, $04, $78, $00, $00),
+    { o } ($38, $44, $44, $44, $38, $00, $00),
+    { p } ($7C, $14, $14, $14, $08, $00, $00),
+    { q } ($08, $14, $14, $18, $7C, $00, $00),
+    { r } ($7C, $08, $04, $04, $08, $00, $00),
+    { s } ($48, $54, $54, $54, $20, $00, $00),
+    { t } ($04, $3F, $44, $40, $20, $00, $00),
+    { u } ($3C, $40, $40, $20, $7C, $00, $00),
+    { v } ($1C, $20, $40, $20, $1C, $00, $00),
+    { w } ($3C, $40, $30, $40, $3C, $00, $00),
+    { x } ($44, $28, $10, $28, $44, $00, $00),
+    { y } ($0C, $50, $50, $50, $3C, $00, $00),
+    { z } ($44, $64, $54, $4C, $44, $00, $00)
+  );
+Var
+  I, J, K, CharX: Integer;
+  Ch: Char;
+  Bits: Byte;
+Begin
+  CharX := X;
+  For I := 1 To Length(Text) Do
+  Begin
+    Ch := Text[I];
+    If (Ch >= '0') And (Ch <= 'z') Then
+    Begin
+      For J := 0 To 6 Do
+      Begin
+        Bits := Font5x7[Ch][J];
+        For K := 0 To 4 Do
+        Begin
+          If (Bits And (1 Shl K)) <> 0 Then
+          Begin
+            If (CharX + K >= 0) And (CharX + K < Width) And 
+               (Y + J >= 0) And (Y + J < Height) Then
+              Pixels[Y + J][CharX + K] := Color;
+          End;
+        End;
+      End;
+    End;
+    CharX := CharX + 6; { 5 pixels + 1 espace }
+  End;
+End;
+
+Procedure ParseDotFile(Const DotFileName: String);
+{ Parse un fichier DOT simple et remplit PngGraph }
+Var
+  F: Text;
+  Line, TrimmedLine: String;
+  I, P1, P2: Integer;
+  NodeId, NodeName, FromNode, ToNode: String;
+  InGraph: Boolean;
+Begin
+  If Not PngInitialized Then InitPngGraph;
+  
+  Assign(F, DotFileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  InGraph := False;
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    
+    { Supprimer les espaces en debut et fin }
+    TrimmedLine := '';
+    For I := 1 To Length(Line) Do
+      If Line[I] > ' ' Then
+      Begin
+        TrimmedLine := Copy(Line, I, Length(Line));
+        Break;
+      End;
+    
+    For I := Length(TrimmedLine) DownTo 1 Do
+      If TrimmedLine[I] > ' ' Then
+      Begin
+        TrimmedLine := Copy(TrimmedLine, 1, I);
+        Break;
+      End;
+    
+    If TrimmedLine = '' Then Continue;
+    
+    { Detecter le debut du graphe }
+    If (Pos('digraph', TrimmedLine) = 1) Or (Pos('graph', TrimmedLine) = 1) Then
+    Begin
+      InGraph := True;
+      { Extraire le titre du graphe }
+      P1 := Pos('"', TrimmedLine);
+      If P1 > 0 Then
+      Begin
+        P2 := Pos('"', Copy(TrimmedLine, P1 + 1, Length(TrimmedLine)));
+        If P2 > 0 Then
+          PngGraph.Title := Copy(TrimmedLine, P1 + 1, P2 - 1);
+      End;
+      Continue;
+    End;
+    
+    If Not InGraph Then Continue;
+    If TrimmedLine = '}' Then Break;
+    
+    { Ignorer les commentaires et directives }
+    If (TrimmedLine[1] = '/') Or (Pos('rankdir', TrimmedLine) = 1) Or
+       (Pos('node', TrimmedLine) = 1) Or (Pos('edge', TrimmedLine) = 1) Then
+      Continue;
+    
+    { Detecter une arete: "A" -> "B" }
+    P1 := Pos('->', TrimmedLine);
+    If P1 > 0 Then
+    Begin
+      { Extraire les noeuds source et destination }
+      FromNode := Copy(TrimmedLine, 1, P1 - 1);
+      ToNode := Copy(TrimmedLine, P1 + 2, Length(TrimmedLine));
+      
+      { Nettoyer les guillemets et espaces }
+      While (Length(FromNode) > 0) And (FromNode[Length(FromNode)] <= ' ') Do
+        FromNode := Copy(FromNode, 1, Length(FromNode) - 1);
+      While (Length(FromNode) > 0) And (FromNode[1] <= ' ') Do
+        FromNode := Copy(FromNode, 2, Length(FromNode));
+      While (Length(FromNode) > 0) And (FromNode[1] = '"') Do
+        FromNode := Copy(FromNode, 2, Length(FromNode));
+      While (Length(FromNode) > 0) And (FromNode[Length(FromNode)] = '"') Do
+        FromNode := Copy(FromNode, 1, Length(FromNode) - 1);
+      
+      While (Length(ToNode) > 0) And (ToNode[Length(ToNode)] <= ' ') Do
+        ToNode := Copy(ToNode, 1, Length(ToNode) - 1);
+      While (Length(ToNode) > 0) And (ToNode[1] <= ' ') Do
+        ToNode := Copy(ToNode, 2, Length(ToNode));
+      While (Length(ToNode) > 0) And (ToNode[1] = '"') Do
+        ToNode := Copy(ToNode, 2, Length(ToNode));
+      
+      { Enlever le point-virgule et les attributs }
+      P2 := Pos(';', ToNode);
+      If P2 > 0 Then ToNode := Copy(ToNode, 1, P2 - 1);
+      P2 := Pos('[', ToNode);
+      If P2 > 0 Then ToNode := Copy(ToNode, 1, P2 - 1);
+      P2 := Pos('"', ToNode);
+      If P2 > 0 Then ToNode := Copy(ToNode, 1, P2 - 1);
+      
+      { Ajouter les noeuds s'ils n'existent pas }
+      If FindPngNode(FromNode) = 0 Then
+        AddPngNode(FromNode, FromNode);
+      If FindPngNode(ToNode) = 0 Then
+        AddPngNode(ToNode, ToNode);
+      
+      { Ajouter l'arete }
+      AddPngEdge(FromNode, ToNode);
+      Continue;
+    End;
+    
+    { Detecter une definition de noeud: "NodeName" [...] }
+    P1 := Pos('"', TrimmedLine);
+    If P1 > 0 Then
+    Begin
+      P2 := Pos('"', Copy(TrimmedLine, P1 + 1, Length(TrimmedLine)));
+      If P2 > 0 Then
+      Begin
+        NodeId := Copy(TrimmedLine, P1 + 1, P2 - 1);
+        NodeName := NodeId;
+        
+        { Verifier si ce n'est pas une arete }
+        If Pos('->', TrimmedLine) = 0 Then
+        Begin
+          { Extraire le label si present }
+          P1 := Pos('label=', TrimmedLine);
+          If P1 > 0 Then
+          Begin
+            P1 := Pos('"', Copy(TrimmedLine, P1 + 6, Length(TrimmedLine)));
+            If P1 > 0 Then
+            Begin
+              P2 := Pos('"', Copy(TrimmedLine, P1 + 1, Length(TrimmedLine)));
+              { Le label serait ici, mais pour simplifier on garde l'ID }
+            End;
+          End;
+          
+          { Ajouter le noeud s'il n'existe pas }
+          If FindPngNode(NodeId) = 0 Then
+            AddPngNode(NodeId, NodeName);
+        End;
+      End;
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure RenderPngGraph(Const OutputFileName: String);
+{ Genere le fichier PNG a partir du graphe }
+Var
+  F: File;
+  Pixels: Array Of TPngPixelRow;
+  I, X, Y: Integer;
+  BorderColor, FillColor, TextColor, ArrowColor: TPngColor;
+Begin
+  If Not PngInitialized Then Exit;
+  If PngGraph.NodeCount = 0 Then Exit;
+  
+  { Calculer la disposition }
+  LayoutPngGraph;
+  
+  { Allouer le buffer de pixels }
+  SetLength(Pixels, PngGraph.Height);
+  
+  { Initialiser avec la couleur de fond }
+  For Y := 0 To PngGraph.Height - 1 Do
+  Begin
+    For X := 0 To PngGraph.Width - 1 Do
+      Pixels[Y][X] := PngGraph.BgColor;
+  End;
+  
+  { Dessiner les aretes }
+  ArrowColor.R := 64;
+  ArrowColor.G := 64;
+  ArrowColor.B := 64;
+  
+  For I := 1 To PngGraph.EdgeCount Do
+  Begin
+    If (PngGraph.Edges[I].FromX > 0) Or (PngGraph.Edges[I].ToX > 0) Then
+    Begin
+      DrawPngArrow(Pixels, 
+                   PngGraph.Edges[I].FromX, PngGraph.Edges[I].FromY,
+                   PngGraph.Edges[I].ToX, PngGraph.Edges[I].ToY,
+                   PngGraph.Width, PngGraph.Height, ArrowColor);
+    End;
+  End;
+  
+  { Dessiner les noeuds }
+  BorderColor.R := 0;
+  BorderColor.G := 0;
+  BorderColor.B := 128;
+  
+  TextColor.R := 0;
+  TextColor.G := 0;
+  TextColor.B := 0;
+  
+  For I := 1 To PngGraph.NodeCount Do
+  Begin
+    FillColor := PngGraph.Nodes[I].Color;
+    
+    { Dessiner le rectangle du noeud }
+    DrawPngRect(Pixels, 
+                PngGraph.Nodes[I].X, PngGraph.Nodes[I].Y,
+                PngGraph.Nodes[I].W, PngGraph.Nodes[I].H,
+                PngGraph.Width, PngGraph.Height,
+                FillColor, BorderColor, True);
+    
+    { Dessiner le texte du noeud }
+    DrawPngText(Pixels,
+                PngGraph.Nodes[I].X + 5,
+                PngGraph.Nodes[I].Y + (PngGraph.Nodes[I].H - 7) Div 2,
+                PngGraph.Nodes[I].Name,
+                PngGraph.Width, PngGraph.Height, TextColor);
+  End;
+  
+  { Dessiner le titre si present }
+  If PngGraph.Title <> '' Then
+  Begin
+    TextColor.R := 0;
+    TextColor.G := 0;
+    TextColor.B := 0;
+    DrawPngText(Pixels, 10, 10, PngGraph.Title, PngGraph.Width, PngGraph.Height, TextColor);
+  End;
+  
+  { Ecrire le fichier PNG }
+  Assign(F, OutputFileName);
+  {$I-}
+  Rewrite(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    SetLength(Pixels, 0);
+    Exit;
+  End;
+  
+  { Signature PNG }
+  WritePngSignature(F);
+  
+  { Chunk IHDR }
+  WritePngIHDR(F, PngGraph.Width, PngGraph.Height);
+  
+  { Chunk IDAT }
+  WritePngIDAT(F, Pixels, PngGraph.Width, PngGraph.Height);
+  
+  { Chunk IEND }
+  WritePngIEND(F);
+  
+  Close(F);
+  
+  SetLength(Pixels, 0);
+End;
+
+Procedure RenderDotToPng(Const DotFile, PngFile: String);
+{ Fonction principale: lit un fichier DOT et genere un PNG }
+Begin
+  { Reinitialiser le graphe }
+  PngInitialized := False;
+  InitPngGraph;
+  
+  { Parser le fichier DOT }
+  ParseDotFile(DotFile);
+  
+  { Generer le PNG }
+  RenderPngGraph(PngFile);
+  
+  If Not Opts.Quiet Then
+    WriteLn('PNG genere (built-in): ', PngFile);
+End;
+
+{ ============================================================
+  FIN DU GENERATEUR PNG INTEGRE
+  ============================================================ }
+
+Procedure RenderCallGraphImage(Const DotFile, ImageFile: String);
+{ Genere l'image PNG a partir du fichier DOT en utilisant le generateur integre }
+Var
   Format: String;
   I: Integer;
 Begin
@@ -9966,12 +10934,20 @@ Begin
     End;
   End;
   
-  { Note: L'execution de commandes externes necessite SwapVectors
-    et Exec sous DOS, ou d'autres mecanismes selon la plateforme.
-    Cette procedure est un placeholder. }
-  
-  WriteLn('Pour generer l''image, executez:');
-  WriteLn('  dot -T', Format, ' ', DotFile, ' -o ', ImageFile);
+  { Utiliser le generateur PNG integre pour le format PNG }
+  If (Format = 'png') Or (Format = 'PNG') Then
+  Begin
+    RenderDotToPng(DotFile, ImageFile);
+  End
+  Else
+  Begin
+    { Pour les autres formats (SVG, etc.), afficher un message }
+    If Not Opts.Quiet Then
+    Begin
+      WriteLn('Note: Le format ', Format, ' n''est pas supporte par le generateur integre.');
+      WriteLn('Seul le format PNG est genere nativement sans outil externe.');
+    End;
+  End;
 End;
 
 Procedure GenerateCallGraphDocumentation;
@@ -10476,9 +11452,8 @@ Begin
 End;
 
 Procedure RenderDependencyGraphImage(Const DotFile, ImageFile: String);
-{ Invoque Graphviz (dot) pour generer l'image a partir du fichier DOT }
+{ Genere l'image PNG a partir du fichier DOT en utilisant le generateur integre }
 Var
-  CmdLine: String;
   Format: String;
   I: Integer;
 Begin
@@ -10493,18 +11468,20 @@ Begin
     End;
   End;
   
-  { Construire la ligne de commande }
-  CmdLine := 'dot -T' + Format + ' "' + DotFile + '" -o "' + ImageFile + '"';
-  
-  { Afficher la commande (le rendu reel necessite l'execution systeme) }
-  If Not Opts.Quiet Then
+  { Utiliser le generateur PNG integre pour le format PNG }
+  If (Format = 'png') Or (Format = 'PNG') Then
   Begin
-    WriteLn('Commande de rendu: ', CmdLine);
-    WriteLn('Note: Assurez-vous que Graphviz est installe pour generer les images.');
+    RenderDotToPng(DotFile, ImageFile);
+  End
+  Else
+  Begin
+    { Pour les autres formats (SVG, etc.), afficher un message }
+    If Not Opts.Quiet Then
+    Begin
+      WriteLn('Note: Le format ', Format, ' n''est pas supporte par le generateur integre.');
+      WriteLn('Seul le format PNG est genere nativement sans outil externe.');
+    End;
   End;
-  
-  { SwapVectors; Exec(GetEnv('COMSPEC'), '/C ' + CmdLine); SwapVectors; }
-  { Note: L'execution reelle depend de l'environnement }
 End;
 
 Procedure GenerateDepGraphDocumentation;
@@ -11261,13 +12238,36 @@ Begin
 End;
 
 Procedure RenderClassDiagramImage(Const DotFile, ImageFile: String);
-{ Invoque dot pour generer l'image du diagramme de classe }
+{ Genere l'image PNG a partir du fichier DOT en utilisant le generateur integre }
+Var
+  Format: String;
+  I: Integer;
 Begin
-  If Not Opts.Quiet Then
-    WriteLn('  Rendu: ', DotFile, ' -> ', ImageFile);
+  { Determiner le format a partir de l'extension }
+  Format := 'png';
+  For I := Length(ImageFile) DownTo 1 Do
+  Begin
+    If ImageFile[I] = '.' Then
+    Begin
+      Format := Copy(ImageFile, I + 1, Length(ImageFile) - I);
+      Break;
+    End;
+  End;
   
-  { Note: L'execution de dot necessite un acces systeme }
-  { En environnement reel, on utiliserait: Exec('dot', '-T' + ClassDiagFormat + ' -o ' + ImageFile + ' ' + DotFile) }
+  { Utiliser le generateur PNG integre pour le format PNG }
+  If (Format = 'png') Or (Format = 'PNG') Then
+  Begin
+    RenderDotToPng(DotFile, ImageFile);
+  End
+  Else
+  Begin
+    { Pour les autres formats (SVG, etc.), afficher un message }
+    If Not Opts.Quiet Then
+    Begin
+      WriteLn('Note: Le format ', Format, ' n''est pas supporte par le generateur integre.');
+      WriteLn('Seul le format PNG est genere nativement sans outil externe.');
+    End;
+  End;
 End;
 
 Procedure GeneratePlantUml(Const EntityId: Integer; Var OutFile: Text);
