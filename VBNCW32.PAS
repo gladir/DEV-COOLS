@@ -3836,6 +3836,39 @@ End;
 {   Retourne l index dans SymTab ou -1 si non trouve           }
 { ------------------------------------------------------------ }
 
+{ ------------------------------------------------------------ }
+{ FindSymInContainer : chercher un symbole dont NamespaceIdx   }
+{   correspond au conteneur donne                               }
+{   ContainerIdx : index du NS/Class/Module/Structure parent   }
+{   Retourne l index dans SymTab ou -1 si non trouve           }
+{ ------------------------------------------------------------ }
+
+Function FindSymInContainer(Const S : TString;
+                            ContainerIdx : Integer) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  FindSymInContainer := -1;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If (SymTab[I].NamespaceIdx = ContainerIdx) And
+       (UpCaseStr(SymTab[I].Name) = U) Then
+    Begin
+      FindSymInContainer := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveQualifiedName : resoudre un nom qualifie              }
+{   Ex : "Namespace.Class.Member" -> recherche dans les        }
+{   portees imbriquees depuis le plus profond                  }
+{   Retourne l index dans SymTab ou -1 si non trouve           }
+{ ------------------------------------------------------------ }
+
 Function ResolveQualifiedName(Const QName : TString) : Integer;
 Var
   I    : Integer;
@@ -3843,6 +3876,7 @@ Var
   Left : TString;
   Rest : TString;
   NsI  : Integer;
+  SubI : Integer;
 Begin
   ResolveQualifiedName := -1;
   { Chercher le premier point }
@@ -3872,8 +3906,48 @@ Begin
      (SymTab[NsI].Kind <> SK_MODULE) And
      (SymTab[NsI].Kind <> SK_STRUCTURE) Then
     Exit;
-  { Recherche recursive du reste }
-  ResolveQualifiedName := ResolveQualifiedName(Rest);
+  { Chercher le reste dans le conteneur NsI }
+  { Si Rest contient un point, extraire la partie avant le point }
+  DotP := 0;
+  For I := 1 To Length(Rest) Do
+  Begin
+    If Rest[I] = '.' Then
+    Begin
+      DotP := I;
+      Break;
+    End;
+  End;
+  If DotP = 0 Then
+  Begin
+    { Dernier segment : chercher dans le conteneur }
+    SubI := FindSymInContainer(Rest, NsI);
+    If SubI >= 0 Then
+      ResolveQualifiedName := SubI
+    Else
+      { Fallback : chercher globalement si non trouve dans le conteneur }
+      ResolveQualifiedName := FindSym(Rest);
+  End
+  Else
+  Begin
+    { Segments intermediaires : chercher le sous-conteneur dans NsI }
+    Left := Copy(Rest, 1, DotP - 1);
+    SubI := FindSymInContainer(Left, NsI);
+    If SubI < 0 Then
+      SubI := FindSym(Left);
+    If SubI < 0 Then Exit;
+    If (SymTab[SubI].Kind <> SK_NAMESPACE) And
+       (SymTab[SubI].Kind <> SK_CLASS) And
+       (SymTab[SubI].Kind <> SK_MODULE) And
+       (SymTab[SubI].Kind <> SK_STRUCTURE) Then
+      Exit;
+    { Recurser avec le sous-conteneur et le reste }
+    Rest := Copy(Rest, DotP + 1, Length(Rest) - DotP);
+    SubI := FindSymInContainer(Rest, SubI);
+    If SubI >= 0 Then
+      ResolveQualifiedName := SubI
+    Else
+      ResolveQualifiedName := FindSym(Rest);
+  End;
 End;
 
 { ------------------------------------------------------------ }
