@@ -15165,7 +15165,15 @@ Begin
       SetConfigOption('HAVE_DOT', 'YES', 0, False);
       SetConfigOption('DOT_IMAGE_FORMAT', 'svg', 0, False);
       If Not Opts.Quiet Then
-        InfoMsg('Format de sortie SVG active');
+        WriteLn('Format de sortie SVG active');
+    End
+    { Appliquer l'option PNG si specifiee pour le mode InputFile }
+    Else If Opts.PngOutput Then
+    Begin
+      SetConfigOption('HAVE_DOT', 'YES', 0, False);
+      SetConfigOption('DOT_IMAGE_FORMAT', 'png', 0, False);
+      If Not Opts.Quiet Then
+        WriteLn('Format de sortie PNG active');
     End;
     ProcessInputFile(Opts.InputFile);
     Halt(EXIT_OK);
@@ -15252,7 +15260,15 @@ Begin
     SetConfigOption('HAVE_DOT', 'YES', 0, False);
     SetConfigOption('DOT_IMAGE_FORMAT', 'svg', 0, False);
     If Not Opts.Quiet Then
-      InfoMsg('Format de sortie SVG active');
+      WriteLn('Format de sortie SVG active');
+  End
+  { Appliquer l'option PNG si specifiee en ligne de commande }
+  Else If Opts.PngOutput Then
+  Begin
+    SetConfigOption('HAVE_DOT', 'YES', 0, False);
+    SetConfigOption('DOT_IMAGE_FORMAT', 'png', 0, False);
+    If Not Opts.Quiet Then
+      WriteLn('Format de sortie PNG active');
   End;
   
   { Mode expansion de configuration (TODO 06) }
