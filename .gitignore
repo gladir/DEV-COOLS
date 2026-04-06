@@ -1,9 +1,10 @@
 *.S68
 *.class
+*.deb
 *.o
 *.obj
 *.ppu
 *.prg
-*.deb
 DISRES
 DOXYGEN
+html/
