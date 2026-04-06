@@ -15,14 +15,14 @@
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm)
-            ParseArgs : analyser argv (source.vb [-o sortie] [-v]
+            ParseArgs : analyser argv (source.bas [-o sortie] [-v]
               [-d] [-w] [-obj] [-asm] [-h])
             Par defaut : produire un .EXE Windows 32 bits (PE)
             -obj : produire uniquement un .OBJ (format COFF 32 bits)
             -asm : produire egalement un listing assembleur .ASM lisible
             -o nom : specifier le nom du fichier de sortie
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
-            Detecter l extension .vb du fichier source
+            Detecter l extension .bas du fichier source
             Version, Date, aide en ligne (option -h)
             Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_PE_SIG,
               PE_MACHINE_I386, PE_OPT_SIZE, PE_MAGIC_32,

@@ -1,4 +1,4 @@
-' USERTYPE.VB - Types utilisateur en Visual Basic 6
+' USERTYPE.BAS - Types utilisateur en Visual Basic 6
 ' Exemple de Type et Enum pour VBCW32
 
 Type TPersonne

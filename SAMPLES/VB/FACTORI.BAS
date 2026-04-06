@@ -1,4 +1,4 @@
-' FACTORI.VB - Factorielle en Visual Basic 6
+' FACTORI.BAS - Factorielle en Visual Basic 6
 ' Exemple de Function recursive pour VBCW32
 
 Function Factorielle(n As Long) As Long

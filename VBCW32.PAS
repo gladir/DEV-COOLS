@@ -23,14 +23,14 @@
   TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm)
-            ParseArgs : analyser argv (source.vb [-o sortie] [-v]
+            ParseArgs : analyser argv (source.bas [-o sortie] [-v]
               [-d] [-w] [-obj] [-asm] [-h])
             Par defaut : produire un .EXE Windows 32 bits (PE)
             -obj : produire uniquement un .OBJ (format COFF 32 bits)
             -asm : produire egalement un listing assembleur .ASM lisible
             -o nom : specifier le nom du fichier de sortie
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
-            Detecter l extension .vb du fichier source
+            Detecter l extension .bas du fichier source
             Version, Date, aide en ligne (option -h)
             Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_PE_SIG,
               PE_MACHINE_I386, PE_OPT_SIZE, PE_MAGIC_32,
@@ -737,7 +737,7 @@ Type
   TString = String;
 
   TOptions = Record
-    SrcFile   : TString;   { fichier source (.vb)                 }
+    SrcFile   : TString;   { fichier source (.bas)                }
     OutFile   : TString;   { fichier sortie (.exe, .obj)          }
     Verbose   : Boolean;   { -v : banniere et statistiques        }
     DebugMode : Boolean;   { -d : affichage de chaque token       }
@@ -931,7 +931,7 @@ Begin
           'Basic 6 pour l''assembleur du microprocesseur 80386 (en executable ',
           'Windows 32 bits).');
   WriteLn;
-  WriteLn('Syntaxe : VBCW32 [options] <source.vb> [options]');
+  WriteLn('Syntaxe : VBCW32 [options] <source.bas> [options]');
   WriteLn;
   WriteLn('Sortie :');
   WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
@@ -946,10 +946,10 @@ Begin
   WriteLn('  -h, --help, /? Afficher cette aide');
   WriteLn;
   WriteLn('Exemples :');
-  WriteLn('  VBCW32 hello.vb');
-  WriteLn('  VBCW32 hello.vb -o hello.exe -v');
-  WriteLn('  VBCW32 main.vb -asm');
-  WriteLn('  VBCW32 module.vb -obj -w');
+  WriteLn('  VBCW32 hello.bas');
+  WriteLn('  VBCW32 hello.bas -o hello.exe -v');
+  WriteLn('  VBCW32 main.bas -asm');
+  WriteLn('  VBCW32 module.bas -obj -w');
   Halt(EXIT_OK);
 End;
 
@@ -1016,11 +1016,11 @@ Begin
     ShowHelp;
   End;
 
-  { Verifier l extension .vb }
+  { Verifier l extension .bas }
   Ext := ExtractExt(Opts.SrcFile);
   If (Ext <> '.vb') And (Ext <> '.bas') And (Ext <> '.frm') And
      (Ext <> '.cls') Then
-    WarnMsg('extension attendue .vb, trouvee: ' + Ext);
+    WarnMsg('extension attendue .bas, trouvee: ' + Ext);
 
   { Fichier de sortie par defaut }
   If Opts.OutFile = '' Then

@@ -1,4 +1,4 @@
-' FIBONACCI.VB - Suite de Fibonacci en Visual Basic 6
+' FIBONACCI.BAS - Suite de Fibonacci en Visual Basic 6
 ' Exemple de boucle For et variables pour VBCW32
 
 Sub Main()

@@ -1,4 +1,4 @@
-' SELECTCS.VB - Select Case en Visual Basic 6
+' SELECTCS.BAS - Select Case en Visual Basic 6
 ' Exemple de structures Select Case pour VBCW32
 
 Sub Main()

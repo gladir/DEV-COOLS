@@ -1,4 +1,4 @@
-' ERRORS.VB - Gestion des erreurs en Visual Basic 6
+' ERRORS.BAS - Gestion des erreurs en Visual Basic 6
 ' Exemple de On Error, Resume, Err pour VBCW32
 
 Sub DiviserParZero()

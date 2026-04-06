@@ -1,4 +1,4 @@
-' FILEIO.VB - Entrees/Sorties fichiers en Visual Basic 6
+' FILEIO.BAS - Entrees/Sorties fichiers en Visual Basic 6
 ' Exemple de lecture et ecriture de fichiers pour VBCW32
 
 Sub Main()

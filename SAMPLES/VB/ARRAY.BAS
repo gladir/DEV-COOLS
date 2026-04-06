@@ -1,4 +1,4 @@
-' ARRAY.VB - Operations sur tableaux en Visual Basic 6
+' ARRAY.BAS - Operations sur tableaux en Visual Basic 6
 ' Exemple de tableaux statiques et dynamiques pour VBCW32
 
 Sub Main()
