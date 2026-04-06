@@ -421,7 +421,7 @@
             Chaque membre Enum est une constante Long
             Valeurs auto-incrementees si non specifiees
 
-  TODO 17 - PARSEUR : MODULES DE CLASSE (CLASS, PROPERTY, METHOD) [A FAIRE]
+  TODO 17 - PARSEUR : MODULES DE CLASSE (CLASS, PROPERTY, METHOD) [IMPLEMENTE]
             Gestion des fichiers .CLS (modules de classe)
             Attributs de classe :
               Attribute VB_Name = "NomClasse"

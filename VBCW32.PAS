@@ -429,7 +429,7 @@
             Chaque membre Enum est une constante Long
             Valeurs auto-incrementees si non specifiees
 
-  TODO 17 - PARSEUR : MODULES DE CLASSE (CLASS, PROPERTY, METHOD) [A FAIRE]
+  TODO 17 - PARSEUR : MODULES DE CLASSE (CLASS, PROPERTY, METHOD) [IMPLEMENTE]
             Gestion des fichiers .CLS (modules de classe)
             Attributs de classe :
               Attribute VB_Name = "NomClasse"
@@ -9280,6 +9280,755 @@ Begin
   GetUdtRtCount := 10;
 End;
 
+{ ============================================================ }
+{ TODO 17 - PARSEUR : MODULES DE CLASSE (CLASS, PROPERTY,     }
+{           METHOD) [IMPLEMENTE]                               }
+{ ============================================================ }
+
+Const
+  { Nombre maximal de methodes dans une classe }
+  MAX_CLASS_METHODS = 128;
+
+  { Nombre maximal de proprietes dans une classe }
+  MAX_CLASS_PROPS   = 128;
+
+  { Nombre maximal de champs d instance dans une classe }
+  MAX_CLASS_FIELDS  = 128;
+
+  { Taille d un pointeur objet (32 bits) }
+  OBJ_PTR_SIZE      = 4;
+
+  { Offset de la vtable dans un objet (premier DD) }
+  OBJ_VTABLE_OFFSET = 0;
+
+  { Labels runtime pour operations sur classes }
+  CLS_RT_ALLOC     = '_VBRT_CLS_ALLOC';
+  CLS_RT_FREE      = '_VBRT_CLS_FREE';
+  CLS_RT_ADDREF    = '_VBRT_CLS_ADDREF';
+  CLS_RT_RELEASE   = '_VBRT_CLS_RELEASE';
+  CLS_RT_QUERYIF   = '_VBRT_CLS_QUERYIF';
+  CLS_RT_INIT      = '_VBRT_CLS_INIT';
+  CLS_RT_TERM      = '_VBRT_CLS_TERM';
+  CLS_RT_SET       = '_VBRT_CLS_SET';
+  CLS_RT_ISNOTH    = '_VBRT_CLS_ISNOTHING';
+  CLS_RT_TYPEOF    = '_VBRT_CLS_TYPEOF';
+
+  { Types de propriete }
+  PROP_GET = 0;
+  PROP_LET = 1;
+  PROP_SET = 2;
+
+Var
+  ClassCount       : LongInt;
+  ClassInitialized : Boolean;
+  CurClassName     : TString;
+  CurClassIsPublic : Boolean;
+  CurClassCreatable: Boolean;
+  CurClassExposed  : Boolean;
+  CurClassHasInit  : Boolean;
+  CurClassHasTerm  : Boolean;
+  ClassMethodCount : Integer;
+  ClassPropCount   : Integer;
+
+{ ------------------------------------------------------------ }
+{ InitClassState : initialiser l etat du parseur de classes    }
+{ ------------------------------------------------------------ }
+
+Procedure InitClassState;
+Begin
+  ClassCount       := 0;
+  ClassInitialized := True;
+  CurClassName     := '';
+  CurClassIsPublic := True;
+  CurClassCreatable:= True;
+  CurClassExposed  := False;
+  CurClassHasInit  := False;
+  CurClassHasTerm  := False;
+  ClassMethodCount := 0;
+  ClassPropCount   := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseClassAttribute : parser un attribut de module de classe }
+{   Syntaxe : Attribute VB_Name = "NomClasse"                  }
+{             Attribute VB_Creatable = True|False               }
+{             Attribute VB_Exposed = True|False                 }
+{   Extrait les proprietes du module .CLS                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseClassAttribute;
+Var
+  AttrName : TString;
+  AttrVal  : TString;
+Begin
+  Inc(ClassCount);
+  { On est positionne apres le mot-cle Attribute }
+  If CurTokType = TOK_IDENT Then Begin
+    AttrName := UpCaseStr(CurTokStr);
+    LexNextToken; { consommer le nom d attribut }
+    { Attendre le signe = }
+    If CurTokType = TOK_EQ Then Begin
+      LexNextToken; { consommer = }
+      { Lire la valeur (chaine ou identifiant) }
+      If CurTokType = TOK_STRING Then Begin
+        AttrVal := CurTokStr;
+        LexNextToken;
+      End Else If CurTokType = TOK_IDENT Then Begin
+        AttrVal := UpCaseStr(CurTokStr);
+        LexNextToken;
+      End Else If CurTokType = TOK_KEYWORD Then Begin
+        AttrVal := UpCaseStr(KeywordName(CurTokNum));
+        LexNextToken;
+      End Else Begin
+        AttrVal := CurTokStr;
+        LexNextToken;
+      End;
+      { Traiter l attribut selon son nom }
+      If AttrName = 'VB_NAME' Then Begin
+        CurClassName := AttrVal;
+        If Opts.Verbose Then
+          WriteLn('  Classe: ', CurClassName);
+      End
+      Else If AttrName = 'VB_CREATABLE' Then Begin
+        CurClassCreatable := (AttrVal = 'TRUE');
+      End
+      Else If AttrName = 'VB_EXPOSED' Then Begin
+        CurClassExposed := (AttrVal = 'TRUE');
+      End;
+    End;
+  End;
+  SkipToEndOfLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePropertyGet : parser une propriete Property Get          }
+{   Syntaxe : [Public|Private] Property Get NomProp            }
+{             ([param As Type]) As TypeRetour                   }
+{               instructions                                    }
+{             End Property                                      }
+{   Genere code similaire a Function avec convention Get        }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePropertyGet;
+Var
+  PropName   : TString;
+  PropLabel  : TString;
+  RetType    : Integer;
+  ParamCnt   : Integer;
+  LocalSize  : Integer;
+  ExLabel    : TString;
+Begin
+  Inc(ClassPropCount);
+  Inc(ClassCount);
+  { Consommer 'Get' (on est apres Property) }
+  LexNextToken;
+  { Lire le nom de la propriete }
+  If CurTokType = TOK_IDENT Then Begin
+    PropName := CurTokStr;
+    LexNextToken;
+  End Else Begin
+    FatalError('Nom de propriete attendu apres Property Get');
+    PropName := '?';
+  End;
+  PropLabel := PFX_PROP + AsmIdent(PropName) + '_GET';
+  ParamCnt  := 0;
+  LocalSize := 0;
+  RetType   := VBT_VARIANT;
+  { Parser les parametres optionnels }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken; { consommer ( }
+    { Parser parametres simples }
+    While Not (CurTokType = TOK_RPAREN) Do Begin
+      If CurTokType = TOK_EOF Then Break;
+      Inc(ParamCnt);
+      LexNextToken;
+    End;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken; { consommer ) }
+  End;
+  { Parser le type de retour optionnel }
+  If IsKeywordToken(KW_AS) Then Begin
+    LexNextToken; { consommer As }
+    RetType := ParseTypeSpec;
+  End;
+  SkipNewlines;
+  { Ajouter dans la table des symboles }
+  AddSym(PropName, SK_PROPERTY, RetType, STORE_GLOBAL);
+  AddProc(PropName, SK_PROPERTY, RetType, True);
+  ExLabel := NextInternalLabel;
+  { Generer le prologue }
+  EmitLabel(PropLabel);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  If LocalSize > 0 Then
+    Emit('SUB ESP, ' + ItoS(LocalSize));
+  EmitComment('Property Get ' + PropName);
+  { Valeur de retour par defaut }
+  Emit('XOR EAX, EAX');
+  { Parser le corps de la propriete jusqu a End Property }
+  While Not (CurTokType = TOK_EOF) Do Begin
+    If IsKeywordToken(KW_END) Then Begin
+      LexNextToken;
+      If IsKeywordToken(KW_PROPERTY) Then Begin
+        LexNextToken;
+        Break;
+      End;
+    End;
+    LexNextToken;
+  End;
+  SkipNewlines;
+  { Generer l epilogue }
+  EmitLabel(ExLabel);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  If ParamCnt > 0 Then
+    Emit('RET ' + ItoS(ParamCnt * 4))
+  Else
+    Emit('RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePropertyLet : parser une propriete Property Let          }
+{   Syntaxe : [Public|Private] Property Let NomProp            }
+{             (valeur As Type)                                  }
+{               instructions                                    }
+{             End Property                                      }
+{   Genere code similaire a Sub avec convention Let (valeur)    }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePropertyLet;
+Var
+  PropName   : TString;
+  PropLabel  : TString;
+  ParamCnt   : Integer;
+  LocalSize  : Integer;
+  ExLabel    : TString;
+Begin
+  Inc(ClassPropCount);
+  Inc(ClassCount);
+  { Consommer 'Let' }
+  LexNextToken;
+  { Lire le nom de la propriete }
+  If CurTokType = TOK_IDENT Then Begin
+    PropName := CurTokStr;
+    LexNextToken;
+  End Else Begin
+    FatalError('Nom de propriete attendu apres Property Let');
+    PropName := '?';
+  End;
+  PropLabel := PFX_PROP + AsmIdent(PropName) + '_LET';
+  ParamCnt  := 0;
+  LocalSize := 0;
+  { Parser les parametres (au moins un : la valeur) }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken; { consommer ( }
+    While Not (CurTokType = TOK_RPAREN) Do Begin
+      If CurTokType = TOK_EOF Then Break;
+      Inc(ParamCnt);
+      LexNextToken;
+    End;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken; { consommer ) }
+  End;
+  SkipNewlines;
+  { Ajouter dans la table des procedures }
+  AddProc(PropName, SK_PROPERTY, VBT_NONE, True);
+  ExLabel := NextInternalLabel;
+  { Generer le prologue }
+  EmitLabel(PropLabel);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  If LocalSize > 0 Then
+    Emit('SUB ESP, ' + ItoS(LocalSize));
+  EmitComment('Property Let ' + PropName);
+  { Parser le corps de la propriete jusqu a End Property }
+  While Not (CurTokType = TOK_EOF) Do Begin
+    If IsKeywordToken(KW_END) Then Begin
+      LexNextToken;
+      If IsKeywordToken(KW_PROPERTY) Then Begin
+        LexNextToken;
+        Break;
+      End;
+    End;
+    LexNextToken;
+  End;
+  SkipNewlines;
+  { Generer l epilogue }
+  EmitLabel(ExLabel);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  If ParamCnt > 0 Then
+    Emit('RET ' + ItoS(ParamCnt * 4))
+  Else
+    Emit('RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePropertySet : parser une propriete Property Set          }
+{   Syntaxe : [Public|Private] Property Set NomProp            }
+{             (obj As Object)                                   }
+{               instructions                                    }
+{             End Property                                      }
+{   Genere code similaire a Sub avec convention Set (objet)     }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePropertySet;
+Var
+  PropName   : TString;
+  PropLabel  : TString;
+  ParamCnt   : Integer;
+  LocalSize  : Integer;
+  ExLabel    : TString;
+Begin
+  Inc(ClassPropCount);
+  Inc(ClassCount);
+  { Consommer 'Set' }
+  LexNextToken;
+  { Lire le nom de la propriete }
+  If CurTokType = TOK_IDENT Then Begin
+    PropName := CurTokStr;
+    LexNextToken;
+  End Else Begin
+    FatalError('Nom de propriete attendu apres Property Set');
+    PropName := '?';
+  End;
+  PropLabel := PFX_PROP + AsmIdent(PropName) + '_SET';
+  ParamCnt  := 0;
+  LocalSize := 0;
+  { Parser les parametres (au moins un : l objet) }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken; { consommer ( }
+    While Not (CurTokType = TOK_RPAREN) Do Begin
+      If CurTokType = TOK_EOF Then Break;
+      Inc(ParamCnt);
+      LexNextToken;
+    End;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken; { consommer ) }
+  End;
+  SkipNewlines;
+  { Ajouter dans la table des procedures }
+  AddProc(PropName, SK_PROPERTY, VBT_OBJECT, True);
+  ExLabel := NextInternalLabel;
+  { Generer le prologue }
+  EmitLabel(PropLabel);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  If LocalSize > 0 Then
+    Emit('SUB ESP, ' + ItoS(LocalSize));
+  EmitComment('Property Set ' + PropName);
+  { Parser le corps de la propriete jusqu a End Property }
+  While Not (CurTokType = TOK_EOF) Do Begin
+    If IsKeywordToken(KW_END) Then Begin
+      LexNextToken;
+      If IsKeywordToken(KW_PROPERTY) Then Begin
+        LexNextToken;
+        Break;
+      End;
+    End;
+    LexNextToken;
+  End;
+  SkipNewlines;
+  { Generer l epilogue }
+  EmitLabel(ExLabel);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  If ParamCnt > 0 Then
+    Emit('RET ' + ItoS(ParamCnt * 4))
+  Else
+    Emit('RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseClassEvent : parser un evenement de cycle de vie classe  }
+{   Class_Initialize : appele a la creation de l instance       }
+{   Class_Terminate : appele a la destruction de l instance     }
+{   Genere comme un Sub normal avec label special               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseClassEvent(IsInit : Boolean);
+Var
+  EvtLabel : TString;
+  ExLabel  : TString;
+Begin
+  Inc(ClassCount);
+  Inc(ClassMethodCount);
+  If IsInit Then Begin
+    EvtLabel := PFX_CLS + AsmIdent(CurClassName) + '_INIT';
+    CurClassHasInit := True;
+    EmitComment('Class_Initialize pour ' + CurClassName);
+  End Else Begin
+    EvtLabel := PFX_CLS + AsmIdent(CurClassName) + '_TERM';
+    CurClassHasTerm := True;
+    EmitComment('Class_Terminate pour ' + CurClassName);
+  End;
+  ExLabel := NextInternalLabel;
+  { Generer le prologue du Sub evenement }
+  EmitLabel(EvtLabel);
+  Emit('PUSH EBP');
+  Emit('MOV EBP, ESP');
+  { Parser le corps jusqu a End Sub }
+  While Not (CurTokType = TOK_EOF) Do Begin
+    If IsKeywordToken(KW_END) Then Begin
+      LexNextToken;
+      If IsKeywordToken(KW_SUB) Then Begin
+        LexNextToken;
+        Break;
+      End;
+    End;
+    LexNextToken;
+  End;
+  SkipNewlines;
+  { Generer l epilogue }
+  EmitLabel(ExLabel);
+  Emit('MOV ESP, EBP');
+  Emit('POP EBP');
+  Emit('RET');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenNewObject : generer code pour creation d une instance      }
+{   Dim obj As New NomClasse  ou  Set obj = New NomClasse       }
+{   Alloue memoire (CALL _VBRT_CLS_ALLOC), init vtable,        }
+{   appelle Class_Initialize si present                         }
+{   Resultat dans EAX = pointeur vers l instance                }
+{ ------------------------------------------------------------ }
+
+Procedure GenNewObject(ClassName : TString);
+Var
+  VTLabel   : TString;
+Begin
+  Inc(ClassCount);
+  VTLabel   := PFX_CLS + AsmIdent(ClassName) + '_VTABLE';
+  EmitComment('New ' + ClassName);
+  { Allouer memoire pour l objet }
+  { La taille est determinee par le nombre de champs + vtable ptr }
+  Emit('PUSH ' + ItoS(OBJ_PTR_SIZE + MAX_CLASS_FIELDS * 4));
+  Emit('CALL ' + CLS_RT_ALLOC);
+  Emit('ADD ESP, 4');
+  { Stocker le pointeur vtable dans le premier DD de l objet }
+  Emit('MOV DWORD PTR [EAX + ' + ItoS(OBJ_VTABLE_OFFSET) + '], OFFSET ' + VTLabel);
+  { Appeler Class_Initialize si present }
+  Emit('PUSH EAX');   { sauvegarder this }
+  Emit('PUSH EAX');   { passer this comme param }
+  Emit('CALL ' + CLS_RT_INIT);
+  Emit('ADD ESP, 4');
+  Emit('POP EAX');    { restaurer this }
+  { EAX = pointeur vers la nouvelle instance }
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSetNothing : generer code pour Set obj = Nothing            }
+{   Libere l instance : appelle Class_Terminate puis            }
+{   _VBRT_CLS_FREE, et met le pointeur a NULL                  }
+{ ------------------------------------------------------------ }
+
+Procedure GenSetNothing(VarLabel : TString);
+Var
+  SkipLbl : TString;
+Begin
+  Inc(ClassCount);
+  SkipLbl := NextInternalLabel;
+  EmitComment('Set ' + VarLabel + ' = Nothing');
+  { Charger le pointeur objet }
+  Emit('MOV EAX, DWORD PTR [' + VarLabel + ']');
+  { Verifier si deja Nothing (NULL) }
+  Emit('TEST EAX, EAX');
+  Emit('JZ ' + SkipLbl);
+  { Appeler Class_Terminate via runtime }
+  Emit('PUSH EAX');
+  Emit('CALL ' + CLS_RT_TERM);
+  Emit('ADD ESP, 4');
+  { Liberer la memoire }
+  Emit('MOV EAX, DWORD PTR [' + VarLabel + ']');
+  Emit('PUSH EAX');
+  Emit('CALL ' + CLS_RT_FREE);
+  Emit('ADD ESP, 4');
+  { Mettre le pointeur a NULL }
+  EmitLabel(SkipLbl);
+  Emit('MOV DWORD PTR [' + VarLabel + '], 0');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMethodCall : generer un appel de methode via vtable         }
+{   obj.Method(args)                                            }
+{   PUSH this, charger vtable[offset], CALL [vtable+offset]    }
+{ ------------------------------------------------------------ }
+
+Procedure GenMethodCall(ObjLabel : TString; MethodIdx : Integer);
+Begin
+  Inc(ClassCount);
+  Inc(ClassMethodCount);
+  EmitComment('Appel methode #' + ItoS(MethodIdx) + ' sur ' + ObjLabel);
+  { Charger le pointeur objet dans ECX (convention this) }
+  Emit('MOV ECX, DWORD PTR [' + ObjLabel + ']');
+  { Charger l adresse de la vtable }
+  Emit('MOV EDX, DWORD PTR [ECX + ' + ItoS(OBJ_VTABLE_OFFSET) + ']');
+  { Pousser this comme premier argument implicite }
+  Emit('PUSH ECX');
+  { Appeler via vtable[offset] }
+  Emit('CALL DWORD PTR [EDX + ' + ItoS(MethodIdx * 4) + ']');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenVTableEntry : emettre une entree dans la vtable de classe  }
+{   Genere un DD (pointeur de fonction) en section .DATA        }
+{   pour chaque methode de la classe                            }
+{ ------------------------------------------------------------ }
+
+Procedure GenVTableEntry(ClassName : TString; MethodName : TString; MethodIdx : Integer);
+Var
+  VTLabel : TString;
+  MLabel  : TString;
+Begin
+  Inc(ClassCount);
+  VTLabel := PFX_CLS + AsmIdent(ClassName) + '_VTABLE';
+  MLabel  := PFX_FUNC + AsmIdent(MethodName);
+  { Premiere entree : emettre le label de la vtable }
+  If MethodIdx = 0 Then Begin
+    EmitComment('VTable pour classe ' + ClassName);
+    EmitData(VTLabel + ' DD OFFSET ' + MLabel);
+  End Else Begin
+    EmitData('  DD OFFSET ' + MLabel);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseClassModule : parser un module de classe complet (.CLS)  }
+{   Structure :                                                 }
+{     VERSION 1.0 CLASS                                         }
+{     BEGIN ... END                                             }
+{     Attribute VB_Name = "..."                                 }
+{     [Option Explicit]                                         }
+{     [Declarations (Dim, Private, Public)]                     }
+{     [Property Get/Let/Set]                                    }
+{     [Sub/Function]                                            }
+{     [Private Sub Class_Initialize/Terminate]                  }
+{   Analyse le module et genere le code assembleur              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseClassModule;
+Var
+  ProcName : TString;
+Begin
+  Inc(ClassCount);
+  { Detecter si c est un module de classe }
+  If ModuleKind <> MODULE_CLASS Then Exit;
+  EmitComment('=== Module de classe : ' + CurClassName + ' ===');
+  { Parser les declarations et membres de la classe }
+  { jusqu a la fin du fichier }
+  While CurTokType <> TOK_EOF Do Begin
+    SkipNewlines;
+    If CurTokType = TOK_EOF Then Break;
+    { Proprietes : Property Get/Let/Set }
+    If IsKeywordToken(KW_PROPERTY) Then Begin
+      LexNextToken; { consommer Property }
+      If IsKeywordToken(KW_GET) Then
+        ParsePropertyGet
+      Else If IsKeywordToken(KW_LET) Then
+        ParsePropertyLet
+      Else If IsKeywordToken(KW_SET) Then
+        ParsePropertySet
+      Else Begin
+        WarnMsg('Type de Property inconnu');
+        SkipToEndOfLine;
+      End;
+    End
+    { Sub : verifier si c est un evenement de classe }
+    Else If IsKeywordToken(KW_SUB) Then Begin
+      LexNextToken; { consommer Sub }
+      If CurTokType = TOK_IDENT Then Begin
+        ProcName := UpCaseStr(CurTokStr);
+        If ProcName = 'CLASS_INITIALIZE' Then Begin
+          LexNextToken; { consommer le nom }
+          { Consommer les parentheses vides optionnelles }
+          If CurTokType = TOK_LPAREN Then Begin
+            LexNextToken;
+            If CurTokType = TOK_RPAREN Then
+              LexNextToken;
+          End;
+          SkipNewlines;
+          ParseClassEvent(True);
+        End
+        Else If ProcName = 'CLASS_TERMINATE' Then Begin
+          LexNextToken; { consommer le nom }
+          If CurTokType = TOK_LPAREN Then Begin
+            LexNextToken;
+            If CurTokType = TOK_RPAREN Then
+              LexNextToken;
+          End;
+          SkipNewlines;
+          ParseClassEvent(False);
+        End
+        Else Begin
+          { Sub normal dans la classe }
+          SkipToEndOfLine;
+        End;
+      End Else
+        SkipToEndOfLine;
+    End
+    { Private Sub -> verifier Class_Initialize / Class_Terminate }
+    Else If IsKeywordToken(KW_PRIVATE) Then Begin
+      LexNextToken; { consommer Private }
+      If IsKeywordToken(KW_SUB) Then Begin
+        LexNextToken; { consommer Sub }
+        If CurTokType = TOK_IDENT Then Begin
+          ProcName := UpCaseStr(CurTokStr);
+          If ProcName = 'CLASS_INITIALIZE' Then Begin
+            LexNextToken;
+            If CurTokType = TOK_LPAREN Then Begin
+              LexNextToken;
+              If CurTokType = TOK_RPAREN Then
+                LexNextToken;
+            End;
+            SkipNewlines;
+            ParseClassEvent(True);
+          End
+          Else If ProcName = 'CLASS_TERMINATE' Then Begin
+            LexNextToken;
+            If CurTokType = TOK_LPAREN Then Begin
+              LexNextToken;
+              If CurTokType = TOK_RPAREN Then
+                LexNextToken;
+            End;
+            SkipNewlines;
+            ParseClassEvent(False);
+          End
+          Else
+            SkipToEndOfLine;
+        End Else
+          SkipToEndOfLine;
+      End
+      Else If IsKeywordToken(KW_PROPERTY) Then Begin
+        LexNextToken; { consommer Property }
+        If IsKeywordToken(KW_GET) Then
+          ParsePropertyGet
+        Else If IsKeywordToken(KW_LET) Then
+          ParsePropertyLet
+        Else If IsKeywordToken(KW_SET) Then
+          ParsePropertySet
+        Else
+          SkipToEndOfLine;
+      End
+      Else
+        SkipToEndOfLine;
+    End
+    { Public Property/Sub/Function }
+    Else If IsKeywordToken(KW_PUBLIC) Then Begin
+      LexNextToken; { consommer Public }
+      If IsKeywordToken(KW_PROPERTY) Then Begin
+        LexNextToken; { consommer Property }
+        If IsKeywordToken(KW_GET) Then
+          ParsePropertyGet
+        Else If IsKeywordToken(KW_LET) Then
+          ParsePropertyLet
+        Else If IsKeywordToken(KW_SET) Then
+          ParsePropertySet
+        Else
+          SkipToEndOfLine;
+      End
+      Else
+        SkipToEndOfLine;
+    End
+    Else Begin
+      { Autre token : avancer }
+      LexNextToken;
+    End;
+  End;
+  { Generer la vtable par defaut si des methodes existent }
+  If ClassMethodCount > 0 Then
+    EmitComment('Fin vtable pour ' + CurClassName);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsClassDecl : verifier si le token courant est une classe     }
+{ ------------------------------------------------------------ }
+
+Function IsClassDecl : Boolean;
+Begin
+  IsClassDecl := (ModuleKind = MODULE_CLASS);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsPropertyDecl : verifier si le token est Property Get/Let/Set}
+{ ------------------------------------------------------------ }
+
+Function IsPropertyDecl : Boolean;
+Begin
+  IsPropertyDecl := IsKeywordToken(KW_PROPERTY);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsClassEvent : verifier si le nom est Class_Initialize/Term   }
+{ ------------------------------------------------------------ }
+
+Function IsClassEvent(Name : TString) : Boolean;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(Name);
+  IsClassEvent := (U = 'CLASS_INITIALIZE') Or (U = 'CLASS_TERMINATE');
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions d acces aux variables du module classe             }
+{ ------------------------------------------------------------ }
+
+Function GetClassCount : LongInt;
+Begin
+  GetClassCount := ClassCount;
+End;
+
+Function IsClassInitialized : Boolean;
+Begin
+  IsClassInitialized := ClassInitialized;
+End;
+
+Function IsClassEmpty : Boolean;
+Begin
+  IsClassEmpty := ClassInitialized And (ClassCount = 0);
+End;
+
+Function GetClassStatus : TString;
+Begin
+  If Not ClassInitialized Then
+    GetClassStatus := 'non initialise'
+  Else If ClassCount = 0 Then
+    GetClassStatus := 'initialise, aucune classe'
+  Else
+    GetClassStatus := 'initialise, ' + ItoS(ClassCount) + ' operations';
+End;
+
+Function GetCurClassName : TString;
+Begin
+  GetCurClassName := CurClassName;
+End;
+
+Function IsCurClassPublic : Boolean;
+Begin
+  IsCurClassPublic := CurClassIsPublic;
+End;
+
+Function IsCurClassCreatable : Boolean;
+Begin
+  IsCurClassCreatable := CurClassCreatable;
+End;
+
+Function IsCurClassExposed : Boolean;
+Begin
+  IsCurClassExposed := CurClassExposed;
+End;
+
+Function GetClassMethodCount : Integer;
+Begin
+  GetClassMethodCount := ClassMethodCount;
+End;
+
+Function GetClassPropCount : Integer;
+Begin
+  GetClassPropCount := ClassPropCount;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -9298,11 +10047,12 @@ Begin
   InitStrOpState;
   InitArrayState;
   InitTypeEnumState;
+  InitClassState;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;
   ParseProcedures;
-  { Les TODOs 17-25 ajouteront ici : }
+  { Les TODOs 18-25 ajouteront ici : }
   {   ParseStatements, WritePE/WriteCOFF/WriteASM }
   LexClose;
   ShowStats;
