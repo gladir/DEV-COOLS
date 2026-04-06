@@ -1357,10 +1357,123 @@ Const
   MAX_JPEG_NODES        = 256;       { Nombre max de noeuds dans un graphe }
   MAX_JPEG_EDGES        = 512;       { Nombre max d'aretes dans un graphe }
 
+  { ============================================================
+    CONSTANTES JPEG - GENERATEUR INTEGRE (SANS OUTIL EXTERNE)
+    Partie 2: Tables de quantification 8x8
+    ============================================================ }
+  
+  { Table de quantification standard pour la LUMINANCE (Y)
+    Issue de la norme JPEG (ITU-T T.81 / ISO/IEC 10918-1)
+    Organisee en ordre ligne par ligne (row-major order)
+    Ces valeurs correspondent a une qualite de 50% }
+    
+  { Luminance - Ligne 0 }
+  JPEG_QL_00 = 16;   JPEG_QL_01 = 11;   JPEG_QL_02 = 10;   JPEG_QL_03 = 16;
+  JPEG_QL_04 = 24;   JPEG_QL_05 = 40;   JPEG_QL_06 = 51;   JPEG_QL_07 = 61;
+  { Luminance - Ligne 1 }
+  JPEG_QL_08 = 12;   JPEG_QL_09 = 12;   JPEG_QL_10 = 14;   JPEG_QL_11 = 19;
+  JPEG_QL_12 = 26;   JPEG_QL_13 = 58;   JPEG_QL_14 = 60;   JPEG_QL_15 = 55;
+  { Luminance - Ligne 2 }
+  JPEG_QL_16 = 14;   JPEG_QL_17 = 13;   JPEG_QL_18 = 16;   JPEG_QL_19 = 24;
+  JPEG_QL_20 = 40;   JPEG_QL_21 = 57;   JPEG_QL_22 = 69;   JPEG_QL_23 = 56;
+  { Luminance - Ligne 3 }
+  JPEG_QL_24 = 14;   JPEG_QL_25 = 17;   JPEG_QL_26 = 22;   JPEG_QL_27 = 29;
+  JPEG_QL_28 = 51;   JPEG_QL_29 = 87;   JPEG_QL_30 = 80;   JPEG_QL_31 = 62;
+  { Luminance - Ligne 4 }
+  JPEG_QL_32 = 18;   JPEG_QL_33 = 22;   JPEG_QL_34 = 37;   JPEG_QL_35 = 56;
+  JPEG_QL_36 = 68;   JPEG_QL_37 = 109;  JPEG_QL_38 = 103;  JPEG_QL_39 = 77;
+  { Luminance - Ligne 5 }
+  JPEG_QL_40 = 24;   JPEG_QL_41 = 35;   JPEG_QL_42 = 55;   JPEG_QL_43 = 64;
+  JPEG_QL_44 = 81;   JPEG_QL_45 = 104;  JPEG_QL_46 = 113;  JPEG_QL_47 = 92;
+  { Luminance - Ligne 6 }
+  JPEG_QL_48 = 49;   JPEG_QL_49 = 64;   JPEG_QL_50 = 78;   JPEG_QL_51 = 87;
+  JPEG_QL_52 = 103;  JPEG_QL_53 = 121;  JPEG_QL_54 = 120;  JPEG_QL_55 = 101;
+  { Luminance - Ligne 7 }
+  JPEG_QL_56 = 72;   JPEG_QL_57 = 92;   JPEG_QL_58 = 95;   JPEG_QL_59 = 98;
+  JPEG_QL_60 = 112;  JPEG_QL_61 = 100;  JPEG_QL_62 = 103;  JPEG_QL_63 = 99;
+  
+  { Table de quantification standard pour la CHROMINANCE (Cb, Cr)
+    Issue de la norme JPEG (ITU-T T.81 / ISO/IEC 10918-1)
+    La chrominance peut etre plus compressée car l'oeil est
+    moins sensible aux variations de couleur
+    Ces valeurs correspondent a une qualite de 50% }
+  
+  { Chrominance - Ligne 0 }
+  JPEG_QC_00 = 17;   JPEG_QC_01 = 18;   JPEG_QC_02 = 24;   JPEG_QC_03 = 47;
+  JPEG_QC_04 = 99;   JPEG_QC_05 = 99;   JPEG_QC_06 = 99;   JPEG_QC_07 = 99;
+  { Chrominance - Ligne 1 }
+  JPEG_QC_08 = 18;   JPEG_QC_09 = 21;   JPEG_QC_10 = 26;   JPEG_QC_11 = 66;
+  JPEG_QC_12 = 99;   JPEG_QC_13 = 99;   JPEG_QC_14 = 99;   JPEG_QC_15 = 99;
+  { Chrominance - Ligne 2 }
+  JPEG_QC_16 = 24;   JPEG_QC_17 = 26;   JPEG_QC_18 = 56;   JPEG_QC_19 = 99;
+  JPEG_QC_20 = 99;   JPEG_QC_21 = 99;   JPEG_QC_22 = 99;   JPEG_QC_23 = 99;
+  { Chrominance - Ligne 3 }
+  JPEG_QC_24 = 47;   JPEG_QC_25 = 66;   JPEG_QC_26 = 99;   JPEG_QC_27 = 99;
+  JPEG_QC_28 = 99;   JPEG_QC_29 = 99;   JPEG_QC_30 = 99;   JPEG_QC_31 = 99;
+  { Chrominance - Ligne 4 }
+  JPEG_QC_32 = 99;   JPEG_QC_33 = 99;   JPEG_QC_34 = 99;   JPEG_QC_35 = 99;
+  JPEG_QC_36 = 99;   JPEG_QC_37 = 99;   JPEG_QC_38 = 99;   JPEG_QC_39 = 99;
+  { Chrominance - Ligne 5 }
+  JPEG_QC_40 = 99;   JPEG_QC_41 = 99;   JPEG_QC_42 = 99;   JPEG_QC_43 = 99;
+  JPEG_QC_44 = 99;   JPEG_QC_45 = 99;   JPEG_QC_46 = 99;   JPEG_QC_47 = 99;
+  { Chrominance - Ligne 6 }
+  JPEG_QC_48 = 99;   JPEG_QC_49 = 99;   JPEG_QC_50 = 99;   JPEG_QC_51 = 99;
+  JPEG_QC_52 = 99;   JPEG_QC_53 = 99;   JPEG_QC_54 = 99;   JPEG_QC_55 = 99;
+  { Chrominance - Ligne 7 }
+  JPEG_QC_56 = 99;   JPEG_QC_57 = 99;   JPEG_QC_58 = 99;   JPEG_QC_59 = 99;
+  JPEG_QC_60 = 99;   JPEG_QC_61 = 99;   JPEG_QC_62 = 99;   JPEG_QC_63 = 99;
+  
+  { Ordre de parcours zigzag pour les coefficients DCT 8x8
+    Utilise pour convertir de l'ordre matriciel vers l'ordre
+    lineaire lors de l'encodage/decodage JPEG }
+  
+  { Zigzag - Indices 0-7 }
+  JPEG_ZZ_00 = 0;   JPEG_ZZ_01 = 1;   JPEG_ZZ_02 = 8;   JPEG_ZZ_03 = 16;
+  JPEG_ZZ_04 = 9;   JPEG_ZZ_05 = 2;   JPEG_ZZ_06 = 3;   JPEG_ZZ_07 = 10;
+  { Zigzag - Indices 8-15 }
+  JPEG_ZZ_08 = 17;  JPEG_ZZ_09 = 24;  JPEG_ZZ_10 = 32;  JPEG_ZZ_11 = 25;
+  JPEG_ZZ_12 = 18;  JPEG_ZZ_13 = 11;  JPEG_ZZ_14 = 4;   JPEG_ZZ_15 = 5;
+  { Zigzag - Indices 16-23 }
+  JPEG_ZZ_16 = 12;  JPEG_ZZ_17 = 19;  JPEG_ZZ_18 = 26;  JPEG_ZZ_19 = 33;
+  JPEG_ZZ_20 = 40;  JPEG_ZZ_21 = 48;  JPEG_ZZ_22 = 41;  JPEG_ZZ_23 = 34;
+  { Zigzag - Indices 24-31 }
+  JPEG_ZZ_24 = 27;  JPEG_ZZ_25 = 20;  JPEG_ZZ_26 = 13;  JPEG_ZZ_27 = 6;
+  JPEG_ZZ_28 = 7;   JPEG_ZZ_29 = 14;  JPEG_ZZ_30 = 21;  JPEG_ZZ_31 = 28;
+  { Zigzag - Indices 32-39 }
+  JPEG_ZZ_32 = 35;  JPEG_ZZ_33 = 42;  JPEG_ZZ_34 = 49;  JPEG_ZZ_35 = 56;
+  JPEG_ZZ_36 = 57;  JPEG_ZZ_37 = 50;  JPEG_ZZ_38 = 43;  JPEG_ZZ_39 = 36;
+  { Zigzag - Indices 40-47 }
+  JPEG_ZZ_40 = 29;  JPEG_ZZ_41 = 22;  JPEG_ZZ_42 = 15;  JPEG_ZZ_43 = 23;
+  JPEG_ZZ_44 = 30;  JPEG_ZZ_45 = 37;  JPEG_ZZ_46 = 44;  JPEG_ZZ_47 = 51;
+  { Zigzag - Indices 48-55 }
+  JPEG_ZZ_48 = 58;  JPEG_ZZ_49 = 59;  JPEG_ZZ_50 = 52;  JPEG_ZZ_51 = 45;
+  JPEG_ZZ_52 = 38;  JPEG_ZZ_53 = 31;  JPEG_ZZ_54 = 39;  JPEG_ZZ_55 = 46;
+  { Zigzag - Indices 56-63 }
+  JPEG_ZZ_56 = 53;  JPEG_ZZ_57 = 60;  JPEG_ZZ_58 = 61;  JPEG_ZZ_59 = 54;
+  JPEG_ZZ_60 = 47;  JPEG_ZZ_61 = 55;  JPEG_ZZ_62 = 62;  JPEG_ZZ_63 = 63;
+  
+  { Facteurs d'echelle pour ajuster la qualite JPEG
+    La qualite Q (1-100) est convertie en facteur d'echelle S:
+    - Si Q < 50: S = 5000 / Q
+    - Si Q >= 50: S = 200 - 2 * Q
+    Puis chaque valeur de quantification est: (BaseValue * S + 50) / 100 }
+  
+  JPEG_QUALITY_SCALE_LOW  = 50;      { Seuil pour calcul du facteur d'echelle }
+  JPEG_QUALITY_FACTOR_50  = 100;     { Facteur d'echelle a qualite 50% }
+  JPEG_QUANT_MIN_VALUE    = 1;       { Valeur minimale de quantification }
+  JPEG_QUANT_MAX_VALUE    = 255;     { Valeur maximale de quantification (8 bits) }
+  
+  { Indices des tables de quantification dans le fichier JPEG }
+  JPEG_QUANT_TABLE_Y      = 0;       { Table 0 pour luminance }
+  JPEG_QUANT_TABLE_C      = 1;       { Table 1 pour chrominance }
+
 { ============================================================
   TYPES
   ============================================================ }
 Type
+  { Type pour les tables de quantification JPEG 8x8 = 64 elements }
+  TJPEGQuantTable = Array[0..63] Of Byte;
+  
   TOptions = Record
     ConfigFile   : String;
     InputFile    : String;
