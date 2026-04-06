@@ -15270,15 +15270,28 @@ Begin
   Begin
     WriteLn('Avertissement: Aucun fichier d''entree specifie (INPUT).');
     WriteLn('Utilisez doxygen -INPUT fichier.c pour analyser un fichier directement.');
+    WriteLn;
   End
   Else
   Begin
     WriteLn('Fichiers d''entree: ', GetConfigValue('INPUT'));
+    WriteLn;
+    
+    { Traiter les fichiers d'entree et generer la documentation }
+    If (GetConfigValue('GENERATE_HTML') = 'YES') Or
+       (GetConfigValue('GENERATE_HTML') = 'yes') Or
+       (GetConfigValue('GENERATE_HTML') = 'Yes') Or
+       (GetConfigValue('GENERATE_HTML') = '') Then
+    Begin
+      { Traiter le fichier d'entree principal }
+      ProcessInputFile(GetConfigValue('INPUT'));
+    End
+    Else
+    Begin
+      WriteLn('Generation HTML desactivee dans la configuration.');
+      WriteLn('Activez GENERATE_HTML = YES pour generer la documentation.');
+    End;
   End;
-  
-  WriteLn;
-  WriteLn('Note: La generation de documentation est en cours d''implementation.');
-  WriteLn('      Voir les TODOs 08 a 25 pour la feuille de route.');
 End;
 
 { ============================================================
