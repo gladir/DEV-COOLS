@@ -10029,6 +10029,464 @@ Begin
   GetClassPropCount := ClassPropCount;
 End;
 
+{ ============================================================ }
+{ TODO 18 - PARSEUR : GESTION DES ERREURS (ON ERROR, RESUME,  }
+{           ERR) [IMPLEMENTE]                                   }
+{ ============================================================ }
+
+Const
+  { Modes de gestion d erreurs }
+  ERR_HANDLER_GOTO  = 0;  { On Error GoTo label }
+  ERR_HANDLER_NEXT  = 1;  { On Error Resume Next }
+  ERR_HANDLER_NONE  = 2;  { On Error GoTo 0 (desactive) }
+
+  { Nombre maximal de gestionnaires d erreurs imbriques }
+  MAX_ERR_HANDLERS  = 32;
+
+  { Labels runtime pour gestion d erreurs }
+  ERR_RT_SETHANDLER  = '_VBRT_ERR_SETHANDLER';
+  ERR_RT_CLEARHANDLER= '_VBRT_ERR_CLEARHANDLER';
+  ERR_RT_RAISE       = '_VBRT_ERR_RAISE';
+  ERR_RT_RESUME      = '_VBRT_ERR_RESUME';
+  ERR_RT_RESUMENEXT  = '_VBRT_ERR_RESUMENEXT';
+  ERR_RT_CLEAR       = '_VBRT_ERR_CLEAR';
+  ERR_RT_SETNUMBER   = '_VBRT_ERR_SETNUMBER';
+  ERR_RT_GETNUMBER   = '_VBRT_ERR_GETNUMBER';
+  ERR_RT_GETDESC     = '_VBRT_ERR_GETDESC';
+  ERR_RT_GETSOURCE   = '_VBRT_ERR_GETSOURCE';
+
+  { Variables globales Err dans le segment de donnees }
+  ERR_VAR_NUMBER     = '_VB_ERR_NUMBER';
+  ERR_VAR_DESC       = '_VB_ERR_DESC';
+  ERR_VAR_SOURCE     = '_VB_ERR_SOURCE';
+  ERR_VAR_HANDLER    = '_VB_ERR_HANDLER';
+  ERR_VAR_RESUME     = '_VB_ERR_RESUME';
+  ERR_VAR_RESNEXT    = '_VB_ERR_RESNEXT';
+
+Var
+  ErrorHandlerCount      : LongInt;
+  ErrorHandlerInitialized: Boolean;
+  CurErrorMode           : Integer;
+  CurErrorLabel          : TString;
+  ErrResumeNextActive    : Boolean;
+
+{ ------------------------------------------------------------ }
+{ InitErrorState : initialiser l etat du gestionnaire d erreurs }
+{ ------------------------------------------------------------ }
+
+Procedure InitErrorState;
+Begin
+  ErrorHandlerCount       := 0;
+  ErrorHandlerInitialized := True;
+  CurErrorMode            := ERR_HANDLER_NONE;
+  CurErrorLabel           := '';
+  ErrResumeNextActive     := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOnError : parser une instruction On Error                }
+{   Syntaxe : On Error GoTo label                               }
+{             On Error GoTo 0                                    }
+{             On Error Resume Next                               }
+{   Genere le code pour etablir/retirer le gestionnaire SEH     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOnError;
+Var
+  TargetLabel : TString;
+Begin
+  Inc(ErrorHandlerCount);
+  { On est positionne apres 'On', consommer 'Error' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ERROR) Then Begin
+    LexNextToken; { consommer Error }
+    { Trois formes possibles }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_GOTO) Then Begin
+      LexNextToken; { consommer GoTo }
+      { On Error GoTo 0 : desactiver le gestionnaire }
+      If (CurTokType = TOK_INTEGER) And (CurTokStr = '0') Then Begin
+        LexNextToken; { consommer 0 }
+        CurErrorMode  := ERR_HANDLER_NONE;
+        CurErrorLabel := '';
+        ErrResumeNextActive := False;
+        { Generer : MOV DWORD [_VB_ERR_HANDLER], 0 }
+        EmitComment('On Error GoTo 0 : desactiver gestionnaire');
+        Emit('  MOV DWORD [' + ERR_VAR_HANDLER + '], 0');
+        Emit('  MOV BYTE [' + ERR_VAR_RESNEXT + '], 0');
+        If Opts.Verbose Then
+          WriteLn('  On Error GoTo 0');
+      End
+      { On Error GoTo label : etablir le gestionnaire }
+      Else If CurTokType = TOK_IDENT Then Begin
+        TargetLabel := CurTokStr;
+        LexNextToken; { consommer label }
+        CurErrorMode  := ERR_HANDLER_GOTO;
+        CurErrorLabel := TargetLabel;
+        ErrResumeNextActive := False;
+        { Generer : PUSH OFFSET _VBL_label / CALL _VBRT_ERR_SETHANDLER }
+        EmitComment('On Error GoTo ' + TargetLabel);
+        Emit('  MOV DWORD [' + ERR_VAR_HANDLER + '], OFFSET _VBL_' + TargetLabel);
+        Emit('  MOV BYTE [' + ERR_VAR_RESNEXT + '], 0');
+        If Opts.Verbose Then
+          WriteLn('  On Error GoTo ', TargetLabel);
+      End
+      Else Begin
+        FatalError('On Error GoTo : label ou 0 attendu');
+      End;
+    End
+    { On Error Resume Next }
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_RESUME) Then Begin
+      LexNextToken; { consommer Resume }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEXT) Then Begin
+        LexNextToken; { consommer Next }
+        CurErrorMode := ERR_HANDLER_NEXT;
+        CurErrorLabel := '';
+        ErrResumeNextActive := True;
+        { Generer : MOV BYTE [_VB_ERR_RESNEXT], 1 }
+        EmitComment('On Error Resume Next');
+        Emit('  MOV DWORD [' + ERR_VAR_HANDLER + '], 0');
+        Emit('  MOV BYTE [' + ERR_VAR_RESNEXT + '], 1');
+        If Opts.Verbose Then
+          WriteLn('  On Error Resume Next');
+      End Else Begin
+        FatalError('On Error Resume : Next attendu');
+      End;
+    End
+    Else Begin
+      FatalError('On Error : GoTo ou Resume attendu');
+    End;
+  End Else Begin
+    FatalError('On : Error attendu apres On');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseResume : parser une instruction Resume                   }
+{   Syntaxe : Resume                                             }
+{             Resume Next                                        }
+{             Resume label                                       }
+{   Genere un saut vers l instruction fautive, la suivante,    }
+{   ou un label specifique                                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseResume;
+Var
+  TargetLabel : TString;
+Begin
+  Inc(ErrorHandlerCount);
+  { On est positionne apres 'Resume' }
+  { Resume Next : reprendre a l instruction suivante }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEXT) Then Begin
+    LexNextToken; { consommer Next }
+    EmitComment('Resume Next');
+    Emit('  PUSH DWORD [' + ERR_VAR_RESUME + ']');
+    Emit('  CALL ' + ERR_RT_RESUMENEXT);
+    { Nettoyer l etat d erreur }
+    Emit('  MOV DWORD [' + ERR_VAR_NUMBER + '], 0');
+    If Opts.Verbose Then
+      WriteLn('  Resume Next');
+  End
+  { Resume label : sauter au label specifique }
+  Else If CurTokType = TOK_IDENT Then Begin
+    TargetLabel := CurTokStr;
+    LexNextToken; { consommer label }
+    EmitComment('Resume ' + TargetLabel);
+    { Nettoyer l etat d erreur }
+    Emit('  MOV DWORD [' + ERR_VAR_NUMBER + '], 0');
+    Emit('  JMP _VBL_' + TargetLabel);
+    If Opts.Verbose Then
+      WriteLn('  Resume ', TargetLabel);
+  End
+  { Resume seul : reprendre a l instruction fautive }
+  Else Begin
+    EmitComment('Resume');
+    Emit('  PUSH DWORD [' + ERR_VAR_RESUME + ']');
+    Emit('  CALL ' + ERR_RT_RESUME);
+    { Nettoyer l etat d erreur }
+    Emit('  MOV DWORD [' + ERR_VAR_NUMBER + '], 0');
+    If Opts.Verbose Then
+      WriteLn('  Resume');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseErrMember : parser un acces a l objet Err                }
+{   Syntaxe : Err.Number                                        }
+{             Err.Description                                    }
+{             Err.Source                                          }
+{             Err.Clear                                          }
+{             Err.Raise number[, source][, description]          }
+{   Genere le code pour lire/ecrire les proprietes Err          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseErrMember;
+Var
+  MemberName : TString;
+Begin
+  Inc(ErrorHandlerCount);
+  { On est positionne apres 'Err' et le point }
+  { On attend le nom du membre }
+  If CurTokType = TOK_IDENT Then Begin
+    MemberName := UpCaseStr(CurTokStr);
+    LexNextToken; { consommer le nom du membre }
+
+    { Err.Number : lire le numero d erreur dans EAX }
+    If MemberName = 'NUMBER' Then Begin
+      EmitComment('Err.Number');
+      Emit('  MOV EAX, DWORD [' + ERR_VAR_NUMBER + ']');
+      If Opts.Verbose Then
+        WriteLn('  Err.Number');
+    End
+
+    { Err.Description : lire la description dans EAX (pointeur) }
+    Else If MemberName = 'DESCRIPTION' Then Begin
+      EmitComment('Err.Description');
+      Emit('  MOV EAX, DWORD [' + ERR_VAR_DESC + ']');
+      If Opts.Verbose Then
+        WriteLn('  Err.Description');
+    End
+
+    { Err.Source : lire la source dans EAX (pointeur) }
+    Else If MemberName = 'SOURCE' Then Begin
+      EmitComment('Err.Source');
+      Emit('  MOV EAX, DWORD [' + ERR_VAR_SOURCE + ']');
+      If Opts.Verbose Then
+        WriteLn('  Err.Source');
+    End
+
+    { Err.Clear : reinitialiser toutes les variables Err }
+    Else If MemberName = 'CLEAR' Then Begin
+      EmitComment('Err.Clear');
+      Emit('  MOV DWORD [' + ERR_VAR_NUMBER + '], 0');
+      Emit('  MOV DWORD [' + ERR_VAR_DESC + '], 0');
+      Emit('  MOV DWORD [' + ERR_VAR_SOURCE + '], 0');
+      If Opts.Verbose Then
+        WriteLn('  Err.Clear');
+    End
+
+    { Err.Raise number[, source][, description] }
+    Else If MemberName = 'RAISE' Then Begin
+      EmitComment('Err.Raise');
+      { Parser le numero d erreur (expression) }
+      ParseExpr;
+      Emit('  MOV DWORD [' + ERR_VAR_NUMBER + '], EAX');
+      { Verifier s il y a des arguments optionnels }
+      If CurTokType = TOK_COMMA Then Begin
+        LexNextToken; { consommer , }
+        { Parser la source (expression chaine) }
+        ParseExpr;
+        Emit('  MOV DWORD [' + ERR_VAR_SOURCE + '], EAX');
+        If CurTokType = TOK_COMMA Then Begin
+          LexNextToken; { consommer , }
+          { Parser la description (expression chaine) }
+          ParseExpr;
+          Emit('  MOV DWORD [' + ERR_VAR_DESC + '], EAX');
+        End;
+      End;
+      { Sauter au gestionnaire d erreur si actif }
+      Emit('  CMP DWORD [' + ERR_VAR_HANDLER + '], 0');
+      Emit('  JE @@err_raise_nohandler');
+      Emit('  JMP DWORD [' + ERR_VAR_HANDLER + ']');
+      Emit('@@err_raise_nohandler:');
+      { Si pas de gestionnaire, verifier Resume Next }
+      Emit('  CMP BYTE [' + ERR_VAR_RESNEXT + '], 1');
+      Emit('  JE @@err_raise_done');
+      { Si pas de gestionnaire et pas Resume Next, erreur fatale }
+      Emit('  PUSH DWORD [' + ERR_VAR_NUMBER + ']');
+      Emit('  CALL ' + ERR_RT_RAISE);
+      Emit('@@err_raise_done:');
+      If Opts.Verbose Then
+        WriteLn('  Err.Raise');
+    End
+
+    Else Begin
+      FatalError('Membre Err inconnu : ' + MemberName);
+    End;
+  End Else Begin
+    FatalError('Err. : nom de membre attendu');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSetErrorHandler : generer le code pour etablir un          }
+{   gestionnaire d erreurs SEH                                  }
+{   Empile l adresse du gestionnaire sur la pile SEH Win32     }
+{ ------------------------------------------------------------ }
+
+Procedure GenSetErrorHandler(HandlerLabel : TString);
+Begin
+  Inc(ErrorHandlerCount);
+  EmitComment('Etablir gestionnaire SEH : ' + HandlerLabel);
+  { Structure SEH Win32 : PUSH handler / PUSH DWORD [FS:0] / MOV [FS:0], ESP }
+  Emit('  PUSH OFFSET _VBL_' + HandlerLabel);
+  Emit('  PUSH DWORD [FS:0]');
+  Emit('  MOV [FS:0], ESP');
+  If Opts.Verbose Then
+    WriteLn('  SEH: etablir ', HandlerLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenClearErrorHandler : generer le code pour retirer le        }
+{   gestionnaire SEH courant                                    }
+{   Depile la structure SEH de la pile                          }
+{ ------------------------------------------------------------ }
+
+Procedure GenClearErrorHandler;
+Begin
+  Inc(ErrorHandlerCount);
+  EmitComment('Retirer gestionnaire SEH');
+  { Depiler la structure SEH : POP DWORD [FS:0] / ADD ESP, 4 }
+  Emit('  POP DWORD [FS:0]');
+  Emit('  ADD ESP, 4');
+  If Opts.Verbose Then
+    WriteLn('  SEH: retirer');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenResumeNextFlag : generer le code pour activer/desactiver  }
+{   le flag Resume Next                                         }
+{   Active=True : erreurs ignorees silencieusement              }
+{ ------------------------------------------------------------ }
+
+Procedure GenResumeNextFlag(Active : Boolean);
+Begin
+  Inc(ErrorHandlerCount);
+  If Active Then Begin
+    EmitComment('Activer Resume Next');
+    Emit('  MOV BYTE [' + ERR_VAR_RESNEXT + '], 1');
+  End Else Begin
+    EmitComment('Desactiver Resume Next');
+    Emit('  MOV BYTE [' + ERR_VAR_RESNEXT + '], 0');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenErrRaise : generer le code pour declencher une erreur     }
+{   ErrNum : numero d erreur a declencher                       }
+{   Appelle le runtime si pas de gestionnaire actif             }
+{ ------------------------------------------------------------ }
+
+Procedure GenErrRaise(ErrNum : LongInt);
+Begin
+  Inc(ErrorHandlerCount);
+  EmitComment('Declencher erreur ' + ItoS(ErrNum));
+  Emit('  MOV DWORD [' + ERR_VAR_NUMBER + '], ' + ItoS(ErrNum));
+  { Verifier si un gestionnaire est actif }
+  Emit('  CMP DWORD [' + ERR_VAR_HANDLER + '], 0');
+  Emit('  JE @@genraise_nohandler');
+  Emit('  JMP DWORD [' + ERR_VAR_HANDLER + ']');
+  Emit('@@genraise_nohandler:');
+  { Verifier Resume Next }
+  Emit('  CMP BYTE [' + ERR_VAR_RESNEXT + '], 1');
+  Emit('  JE @@genraise_done');
+  { Erreur fatale runtime }
+  Emit('  PUSH ' + ItoS(ErrNum));
+  Emit('  CALL ' + ERR_RT_RAISE);
+  Emit('@@genraise_done:');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenErrDataSegment : generer les variables Err dans .DATA/.BSS }
+{   Declare les variables globales pour l objet Err             }
+{ ------------------------------------------------------------ }
+
+Procedure GenErrDataSegment;
+Begin
+  EmitComment('Variables globales Err');
+  EmitBss(ERR_VAR_NUMBER  + ' DD 0');
+  EmitBss(ERR_VAR_DESC    + ' DD 0');
+  EmitBss(ERR_VAR_SOURCE  + ' DD 0');
+  EmitBss(ERR_VAR_HANDLER + ' DD 0');
+  EmitBss(ERR_VAR_RESUME  + ' DD 0');
+  EmitBss(ERR_VAR_RESNEXT + ' DB 0');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsOnErrorStatement : verifier si le token courant commence   }
+{   une instruction On Error                                    }
+{ ------------------------------------------------------------ }
+
+Function IsOnErrorStatement : Boolean;
+Begin
+  IsOnErrorStatement := (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsResumeStatement : verifier si le token courant est Resume  }
+{ ------------------------------------------------------------ }
+
+Function IsResumeStatement : Boolean;
+Begin
+  IsResumeStatement := (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_RESUME);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsErrAccess : verifier si le token courant est l objet Err   }
+{ ------------------------------------------------------------ }
+
+Function IsErrAccess : Boolean;
+Begin
+  IsErrAccess := (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ERR);
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions d acces aux variables du module erreur              }
+{ ------------------------------------------------------------ }
+
+Function GetErrorHandlerCount : LongInt;
+Begin
+  GetErrorHandlerCount := ErrorHandlerCount;
+End;
+
+Function IsErrorHandlerInitialized : Boolean;
+Begin
+  IsErrorHandlerInitialized := ErrorHandlerInitialized;
+End;
+
+Function IsErrorHandlerEmpty : Boolean;
+Begin
+  IsErrorHandlerEmpty := ErrorHandlerInitialized And (ErrorHandlerCount = 0);
+End;
+
+Function GetErrorHandlerStatus : TString;
+Begin
+  If Not ErrorHandlerInitialized Then
+    GetErrorHandlerStatus := 'non initialise'
+  Else If ErrorHandlerCount = 0 Then
+    GetErrorHandlerStatus := 'initialise, aucun gestionnaire'
+  Else
+    GetErrorHandlerStatus := 'initialise, ' + ItoS(ErrorHandlerCount) + ' operations';
+End;
+
+Function GetCurErrorMode : Integer;
+Begin
+  GetCurErrorMode := CurErrorMode;
+End;
+
+Function GetCurErrorLabel : TString;
+Begin
+  GetCurErrorLabel := CurErrorLabel;
+End;
+
+Function IsErrResumeNextActive : Boolean;
+Begin
+  IsErrResumeNextActive := ErrResumeNextActive;
+End;
+
+Function IsErrHandlerGoto : Boolean;
+Begin
+  IsErrHandlerGoto := (CurErrorMode = ERR_HANDLER_GOTO);
+End;
+
+Function IsErrHandlerNone : Boolean;
+Begin
+  IsErrHandlerNone := (CurErrorMode = ERR_HANDLER_NONE);
+End;
+
+Function GetMaxErrHandlers : Integer;
+Begin
+  GetMaxErrHandlers := MAX_ERR_HANDLERS;
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -10048,11 +10506,12 @@ Begin
   InitArrayState;
   InitTypeEnumState;
   InitClassState;
+  InitErrorState;
   LexInit;
   ParseModule;
   ParseModuleLevelDecl;
   ParseProcedures;
-  { Les TODOs 18-25 ajouteront ici : }
+  { Les TODOs 19-25 ajouteront ici : }
   {   ParseStatements, WritePE/WriteCOFF/WriteASM }
   LexClose;
   ShowStats;
