@@ -524,7 +524,7 @@
             Tableaux multi-dimensionnels :
               Calcul offset = ((i1 * dim2 + i2) * dim3 + i3) * taille
 
-  TODO 16 - PARSEUR : STRUCTURES (STRUCTURE...END STRUCTURE) ET ENUM [A FAIRE]
+  TODO 16 - PARSEUR : STRUCTURES (STRUCTURE...END STRUCTURE) ET ENUM [IMPLEMENTE]
             Procedure ParseStructure
             Syntaxe (VB.NET utilise Structure et non Type) :
               [Public|Private|Friend] Structure NomStructure
@@ -10226,6 +10226,600 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 16 - PARSEUR : STRUCTURES (STRUCTURE...END STRUCTURE)   }
+{           ET ENUM  [IMPLEMENTE]                              }
+{ ============================================================ }
+
+Const
+  { Nombre maximal de champs dans une Structure }
+  MAX_STRUCT_FIELDS   = 128;
+
+  { Nombre maximal de membres dans un Enum }
+  MAX_ENUM_MEMBERS = 256;
+
+  { Taille maximale d une Structure en octets }
+  MAX_STRUCT_SIZE     = 65536;
+
+  { Labels runtime pour operations sur structures VB.NET }
+  STRUCT_RT_COPY     = '_VBNRT_STRUCT_COPY';
+  STRUCT_RT_CLEAR    = '_VBNRT_STRUCT_CLEAR';
+  STRUCT_RT_COMPARE  = '_VBNRT_STRUCT_COMPARE';
+  STRUCT_RT_SIZEOF   = '_VBNRT_STRUCT_SIZEOF';
+  STRUCT_RT_FIELDPTR = '_VBNRT_STRUCT_FIELDPTR';
+  STRUCT_RT_INIT     = '_VBNRT_STRUCT_INIT';
+  STRUCT_RT_FREE     = '_VBNRT_STRUCT_FREE';
+  STRUCT_RT_ASSIGN   = '_VBNRT_STRUCT_ASSIGN';
+  STRUCT_RT_ENUM_VAL = '_VBNRT_ENUM_VAL';
+  STRUCT_RT_ENUM_STR = '_VBNRT_ENUM_STR';
+
+Var
+  StructEnumCount       : LongInt;
+  StructEnumInitialized : Boolean;
+  CurStructSize         : LongInt;
+
+{ ------------------------------------------------------------ }
+{ InitStructureEnumState : initialiser l etat du parseur       }
+{   Structure/Enum VB.NET                                      }
+{ ------------------------------------------------------------ }
+
+Procedure InitStructureEnumState;
+Begin
+  StructEnumCount       := 0;
+  StructEnumInitialized := True;
+  CurStructSize         := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStructureField : parser un champ d une Structure VB.NET }
+{   Syntaxe : [Public|Private] champ As Type                   }
+{   Les champs de Structure VB.NET ont des modificateurs        }
+{   d acces obligatoires (Public ou Private)                    }
+{   Pas de String * n en VB.NET (pas de longueur fixe)         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStructureField(StructName : TString;
+                               FieldOffset : LongInt);
+Var
+  FName       : TString;
+  FType       : Integer;
+  FSize       : Integer;
+  FArrCount   : LongInt;
+  IsArrayFld  : Boolean;
+  SymIdx      : Integer;
+  TotalSize   : LongInt;
+  IsFieldPub  : Boolean;
+Begin
+  Inc(StructEnumCount);
+  { Modificateur d acces optionnel (Public par defaut) }
+  IsFieldPub := True;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PUBLIC) Then Begin
+    IsFieldPub := True;
+    LexNextToken;
+  End Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PRIVATE) Then Begin
+    IsFieldPub := False;
+    LexNextToken;
+  End Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DIM) Then Begin
+    { Dim est accepte dans les structures VB.NET }
+    IsFieldPub := True;
+    LexNextToken;
+  End;
+  { Nom du champ }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('identifiant attendu pour le champ de Structure ' + StructName);
+    Exit;
+  End;
+  FName := CurTokStr;
+  LexNextToken;
+  { Verifier si champ tableau : nom(n) }
+  IsArrayFld := False;
+  FArrCount  := 1;
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    IsArrayFld := True;
+    If CurTokType = TOK_INTEGER Then Begin
+      FArrCount := CurTokNum + 1; { VB.NET : 0 a n => n+1 elements }
+      LexNextToken;
+    End Else Begin
+      FArrCount := 1;
+    End;
+    Expect(TOK_RPAREN);
+  End;
+  { As Type }
+  ExpectKeyword(KW_AS);
+  FType := ParseTypeSpec;
+  FSize := VBTypeSize(FType);
+  { Calculer la taille totale du champ }
+  TotalSize := FSize * FArrCount;
+  { Ajouter le champ dans la table des symboles }
+  SymIdx := AddSym(FName, SK_FIELD, FType, STORE_GLOBAL);
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].BpOffset  := FieldOffset;
+    SymTab[SymIdx].IsPublic  := IsFieldPub;
+    SymTab[SymIdx].IsConst   := False;
+    If IsArrayFld Then
+      SymTab[SymIdx].ArrayDims := 1
+    Else
+      SymTab[SymIdx].ArrayDims := 0;
+    SymTab[SymIdx].AsmLabel := PFX_STRUC + UpCaseStr(StructName) + '_' +
+                               UpCaseStr(FName);
+  End;
+  { Emettre commentaire d assembleur pour le champ }
+  EmitComment('  ' + StructName + '.' + FName + ' : offset=' +
+              ItoS(FieldOffset) + ', size=' + ItoS(TotalSize));
+  { Mettre a jour la taille courante de la structure }
+  CurStructSize := FieldOffset + TotalSize;
+  { Aller a la ligne suivante }
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStructure : parser une declaration                      }
+{   Structure...End Structure (VB.NET)                         }
+{   Syntaxe :                                                  }
+{     [Public|Private|Friend] Structure NomStructure           }
+{       Public champ1 As Integer                               }
+{       Private champ2 As String                               }
+{       Public Sub Methode()                                   }
+{         ...                                                  }
+{       End Sub                                                }
+{     End Structure                                            }
+{   Genere : labels et commentaires pour la structure           }
+{   Ajoute la structure et ses champs dans la table des         }
+{   symboles. Les methodes sont ignorees (stub pour TODO 17)   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStructure(IsPublic : Boolean);
+Var
+  StructName   : TString;
+  FieldCount   : Integer;
+  SymIdx       : Integer;
+  AsmLbl       : TString;
+Begin
+  Inc(StructEnumCount);
+  { Consommer 'Structure' }
+  LexNextToken;
+  { Nom de la structure }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('identifiant attendu apres Structure');
+    Exit;
+  End;
+  StructName := CurTokStr;
+  AsmLbl     := PFX_STRUC + UpCaseStr(StructName);
+  LexNextToken;
+  SkipNewlines;
+  { Ajouter la structure dans la table des symboles }
+  SymIdx := AddSym(StructName, SK_STRUCTURE, VBT_USER, STORE_GLOBAL);
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].IsPublic := IsPublic;
+    SymTab[SymIdx].IsConst  := False;
+    SymTab[SymIdx].AsmLabel := AsmLbl;
+  End;
+  { Emettre le commentaire de structure }
+  EmitComment('Structure ' + StructName);
+  { Parser les champs et methodes }
+  FieldCount    := 0;
+  CurStructSize := 0;
+  While Not LexEOF Do Begin
+    { Verifier End Structure }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And
+         (CurTokNum = KW_STRUCTURE) Then Begin
+        LexNextToken;
+        Break;
+      End Else Begin
+        FatalError('End Structure attendu');
+        Exit;
+      End;
+    End;
+    { Ignorer les lignes vides }
+    If CurTokType = TOK_NEWLINE Then Begin
+      SkipNewlines;
+      Continue;
+    End;
+    { Ignorer les methodes (Sub/Function) dans la structure }
+    { Les methodes de structure seront traitees dans TODO 17 }
+    If (CurTokType = TOK_KEYWORD) And
+       ((CurTokNum = KW_SUB) Or (CurTokNum = KW_FUNCTION)) Then Begin
+      { Sauter jusqu a End Sub / End Function }
+      SkipToEndOfLine;
+      SkipNewlines;
+      While Not LexEOF Do Begin
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+          LexNextToken;
+          If (CurTokType = TOK_KEYWORD) And
+             ((CurTokNum = KW_SUB) Or (CurTokNum = KW_FUNCTION)) Then Begin
+            LexNextToken;
+            SkipNewlines;
+            Break;
+          End;
+        End Else Begin
+          SkipToEndOfLine;
+          SkipNewlines;
+        End;
+      End;
+      Continue;
+    End;
+    { Ignorer les modificateurs Shared devant les methodes }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SHARED) Then Begin
+      LexNextToken;
+      { Si c est une methode, sauter le bloc }
+      If (CurTokType = TOK_KEYWORD) And
+         ((CurTokNum = KW_SUB) Or (CurTokNum = KW_FUNCTION)) Then Begin
+        SkipToEndOfLine;
+        SkipNewlines;
+        While Not LexEOF Do Begin
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+            LexNextToken;
+            If (CurTokType = TOK_KEYWORD) And
+               ((CurTokNum = KW_SUB) Or (CurTokNum = KW_FUNCTION)) Then Begin
+              LexNextToken;
+              SkipNewlines;
+              Break;
+            End;
+          End Else Begin
+            SkipToEndOfLine;
+            SkipNewlines;
+          End;
+        End;
+        Continue;
+      End;
+      { Sinon c est un champ Shared - continuer comme un champ }
+    End;
+    { Parser un champ }
+    If FieldCount >= MAX_STRUCT_FIELDS Then Begin
+      FatalError('nombre maximal de champs depasse dans Structure ' +
+                 StructName);
+      Exit;
+    End;
+    ParseStructureField(StructName, CurStructSize);
+    Inc(FieldCount);
+  End;
+  { Emettre la taille totale de la structure }
+  EmitComment('End Structure ' + StructName + ' (size=' +
+              ItoS(CurStructSize) + ')');
+  { Emettre une constante de taille en .DATA }
+  EmitData(AsmLbl + '_SIZE DD ' + ItoS(CurStructSize));
+  { Mettre a jour la taille dans le symbole }
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].InitNum := CurStructSize;
+    SymTab[SymIdx].HasInit := True;
+  End;
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEnumDecl : parser une declaration Enum...End Enum       }
+{   Syntaxe VB.NET :                                           }
+{     [Public|Private|Friend] Enum NomEnum                     }
+{       Valeur1 [= 0]                                         }
+{       Valeur2 [= 1]                                         }
+{       Valeur3 = 10                                           }
+{     End Enum                                                 }
+{   Chaque membre est ajoute comme constante Integer (VB.NET)  }
+{   Les valeurs sont auto-incrementees si non specifiees       }
+{   Acces qualifie : NomEnum.Valeur1                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseEnumDecl(IsPublic : Boolean);
+Var
+  EnumName    : TString;
+  MemberName  : TString;
+  CurValue    : LongInt;
+  MemberCount : Integer;
+  SymIdx      : Integer;
+  AsmLbl      : TString;
+Begin
+  Inc(StructEnumCount);
+  { Consommer 'Enum' }
+  LexNextToken;
+  { Nom de l enumeration }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('identifiant attendu apres Enum');
+    Exit;
+  End;
+  EnumName := CurTokStr;
+  AsmLbl   := PFX_ENUM + UpCaseStr(EnumName);
+  LexNextToken;
+  SkipNewlines;
+  { Ajouter l enumeration dans la table des symboles }
+  { VB.NET : Enum est de type Integer (pas Long comme VB6) }
+  SymIdx := AddSym(EnumName, SK_ENUM, VBT_INTEGER, STORE_GLOBAL);
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].IsPublic := IsPublic;
+    SymTab[SymIdx].IsConst  := False;
+    SymTab[SymIdx].AsmLabel := AsmLbl;
+  End;
+  { Emettre le commentaire d enumeration }
+  EmitComment('Enum ' + EnumName);
+  { Parser les membres }
+  CurValue    := 0;
+  MemberCount := 0;
+  While Not LexEOF Do Begin
+    { Verifier End Enum }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ENUM) Then Begin
+        LexNextToken;
+        Break;
+      End Else Begin
+        FatalError('End Enum attendu');
+        Exit;
+      End;
+    End;
+    { Ignorer les lignes vides }
+    If CurTokType = TOK_NEWLINE Then Begin
+      SkipNewlines;
+      Continue;
+    End;
+    { Nom du membre }
+    If CurTokType <> TOK_IDENT Then Begin
+      FatalError('identifiant attendu pour le membre de Enum ' + EnumName);
+      SkipToEndOfLine;
+      SkipNewlines;
+      Continue;
+    End;
+    MemberName := CurTokStr;
+    LexNextToken;
+    { Valeur optionnelle = n }
+    If CurTokType = TOK_EQ Then Begin
+      LexNextToken;
+      If CurTokType = TOK_INTEGER Then Begin
+        CurValue := CurTokNum;
+        LexNextToken;
+      End Else If (CurTokType = TOK_MINUS) Then Begin
+        LexNextToken;
+        If CurTokType = TOK_INTEGER Then Begin
+          CurValue := -CurTokNum;
+          LexNextToken;
+        End Else Begin
+          FatalError('valeur entiere attendue apres = dans Enum ' + EnumName);
+        End;
+      End Else Begin
+        FatalError('valeur entiere attendue apres = dans Enum ' + EnumName);
+      End;
+    End;
+    { Verifier la limite de membres }
+    If MemberCount >= MAX_ENUM_MEMBERS Then Begin
+      FatalError('nombre maximal de membres depasse dans Enum ' + EnumName);
+      Exit;
+    End;
+    { Ajouter le membre comme constante Integer (VB.NET) }
+    SymIdx := AddSym(MemberName, SK_ENUM_MEMBER, VBT_INTEGER,
+                     STORE_CONSTANT);
+    If SymIdx >= 0 Then Begin
+      SymTab[SymIdx].IsPublic   := IsPublic;
+      SymTab[SymIdx].IsConst    := True;
+      SymTab[SymIdx].InitNum    := CurValue;
+      SymTab[SymIdx].HasInit    := True;
+      SymTab[SymIdx].AsmLabel   := PFX_ENUM + UpCaseStr(EnumName) + '_' +
+                                   UpCaseStr(MemberName);
+    End;
+    { Emettre commentaire }
+    EmitComment('  ' + EnumName + '.' + MemberName + ' = ' +
+                ItoS(CurValue));
+    { Emettre la constante en .DATA }
+    EmitData(PFX_ENUM + UpCaseStr(EnumName) + '_' +
+             UpCaseStr(MemberName) + ' DD ' + ItoS(CurValue));
+    Inc(CurValue);
+    Inc(MemberCount);
+    SkipNewlines;
+  End;
+  EmitComment('End Enum ' + EnumName + ' (' + ItoS(MemberCount) +
+              ' members)');
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFieldAccess : generer le code pour acceder a un champ     }
+{   d une variable de type Structure VB.NET                    }
+{   Syntaxe : variable.champ                                   }
+{   Genere : LEA EAX, [base + offset_champ]                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenFieldAccess(VarIdx, FieldIdx : Integer);
+Var
+  BaseLabel   : TString;
+  FieldOffset : LongInt;
+Begin
+  Inc(StructEnumCount);
+  If (VarIdx < 0) Or (VarIdx >= SymCount) Then Begin
+    FatalError('variable de type Structure invalide');
+    Exit;
+  End;
+  If (FieldIdx < 0) Or (FieldIdx >= SymCount) Then Begin
+    FatalError('champ de Structure invalide');
+    Exit;
+  End;
+  FieldOffset := SymTab[FieldIdx].BpOffset;
+  { Generer le code selon la classe d entreposage }
+  Case SymTab[VarIdx].StoreClass Of
+    STORE_GLOBAL, STORE_STATIC : Begin
+      BaseLabel := SymTab[VarIdx].AsmLabel;
+      Emit('LEA EAX, [' + BaseLabel + ' + ' + ItoS(FieldOffset) + ']');
+    End;
+    STORE_AUTO : Begin
+      If FieldOffset = 0 Then
+        Emit('LEA EAX, [EBP - ' +
+             ItoS(Abs(SymTab[VarIdx].BpOffset)) + ']')
+      Else
+        Emit('LEA EAX, [EBP - ' +
+             ItoS(Abs(SymTab[VarIdx].BpOffset) - FieldOffset) + ']');
+    End;
+    STORE_PARAM : Begin
+      Emit('MOV EAX, [EBP + ' + ItoS(SymTab[VarIdx].BpOffset) + ']');
+      If FieldOffset > 0 Then
+        Emit('ADD EAX, ' + ItoS(FieldOffset));
+    End;
+  Else
+    Emit('LEA EAX, [' + SymTab[VarIdx].AsmLabel + ' + ' +
+         ItoS(FieldOffset) + ']');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFieldStore : generer le code pour stocker dans un champ   }
+{   d une variable de type Structure VB.NET                    }
+{   La valeur a stocker est dans EAX                           }
+{   Genere : MOV [base + offset_champ], EAX                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenFieldStore(VarIdx, FieldIdx : Integer);
+Var
+  BaseLabel   : TString;
+  FieldOffset : LongInt;
+  FieldSize   : Integer;
+Begin
+  Inc(StructEnumCount);
+  If (VarIdx < 0) Or (VarIdx >= SymCount) Then Begin
+    FatalError('variable de type Structure invalide');
+    Exit;
+  End;
+  If (FieldIdx < 0) Or (FieldIdx >= SymCount) Then Begin
+    FatalError('champ de Structure invalide');
+    Exit;
+  End;
+  FieldOffset := SymTab[FieldIdx].BpOffset;
+  FieldSize   := VBTypeSize(SymTab[FieldIdx].DataType);
+  { Sauvegarder EAX dans EBX temporairement }
+  Emit('MOV EBX, EAX');
+  { Generer le code selon la classe d entreposage }
+  Case SymTab[VarIdx].StoreClass Of
+    STORE_GLOBAL, STORE_STATIC : Begin
+      BaseLabel := SymTab[VarIdx].AsmLabel;
+      Case FieldSize Of
+        1 : Emit('MOV BYTE PTR [' + BaseLabel + ' + ' +
+                  ItoS(FieldOffset) + '], BL');
+        2 : Emit('MOV WORD PTR [' + BaseLabel + ' + ' +
+                  ItoS(FieldOffset) + '], BX');
+      Else
+        Emit('MOV DWORD PTR [' + BaseLabel + ' + ' +
+             ItoS(FieldOffset) + '], EBX');
+      End;
+    End;
+    STORE_AUTO : Begin
+      Case FieldSize Of
+        1 : Emit('MOV BYTE PTR [EBP - ' +
+                  ItoS(Abs(SymTab[VarIdx].BpOffset) - FieldOffset) +
+                  '], BL');
+        2 : Emit('MOV WORD PTR [EBP - ' +
+                  ItoS(Abs(SymTab[VarIdx].BpOffset) - FieldOffset) +
+                  '], BX');
+      Else
+        Emit('MOV DWORD PTR [EBP - ' +
+             ItoS(Abs(SymTab[VarIdx].BpOffset) - FieldOffset) +
+             '], EBX');
+      End;
+    End;
+    STORE_PARAM : Begin
+      Emit('MOV ECX, [EBP + ' + ItoS(SymTab[VarIdx].BpOffset) + ']');
+      Case FieldSize Of
+        1 : Emit('MOV BYTE PTR [ECX + ' + ItoS(FieldOffset) + '], BL');
+        2 : Emit('MOV WORD PTR [ECX + ' + ItoS(FieldOffset) + '], BX');
+      Else
+        Emit('MOV DWORD PTR [ECX + ' + ItoS(FieldOffset) + '], EBX');
+      End;
+    End;
+  Else Begin
+    BaseLabel := SymTab[VarIdx].AsmLabel;
+    Emit('MOV DWORD PTR [' + BaseLabel + ' + ' +
+         ItoS(FieldOffset) + '], EBX');
+  End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStructureDecl : verifier si le token courant est une       }
+{   declaration Structure (VB.NET)                             }
+{ ------------------------------------------------------------ }
+
+Function IsStructureDecl(KW : Integer) : Boolean;
+Begin
+  IsStructureDecl := (KW = KW_STRUCTURE);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsEnumDecl : verifier si le token courant est une            }
+{   declaration Enum                                           }
+{ ------------------------------------------------------------ }
+
+Function IsEnumDecl(KW : Integer) : Boolean;
+Begin
+  IsEnumDecl := (KW = KW_ENUM);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStructOrEnumKW : verifier si un mot-cle est Structure ou   }
+{   Enum                                                       }
+{ ------------------------------------------------------------ }
+
+Function IsStructOrEnumKW(KW : Integer) : Boolean;
+Begin
+  IsStructOrEnumKW := (KW = KW_STRUCTURE) Or (KW = KW_ENUM);
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour le module Structure/Enum            }
+{ ------------------------------------------------------------ }
+
+Function GetStructEnumCount : LongInt;
+Begin
+  GetStructEnumCount := StructEnumCount;
+End;
+
+Function IsStructEnumInitialized : Boolean;
+Begin
+  IsStructEnumInitialized := StructEnumInitialized;
+End;
+
+Function IsStructEnumEmpty : Boolean;
+Begin
+  IsStructEnumEmpty := (StructEnumCount = 0);
+End;
+
+Function GetStructEnumStatus : TString;
+Begin
+  If Not StructEnumInitialized Then
+    GetStructEnumStatus := 'non initialise'
+  Else If StructEnumCount = 0 Then
+    GetStructEnumStatus := 'initialise, aucune structure/enum'
+  Else
+    GetStructEnumStatus := 'initialise, ' + ItoS(StructEnumCount) +
+                           ' operations';
+End;
+
+Function GetMaxStructFields : Integer;
+Begin
+  GetMaxStructFields := MAX_STRUCT_FIELDS;
+End;
+
+Function GetMaxEnumMembers : Integer;
+Begin
+  GetMaxEnumMembers := MAX_ENUM_MEMBERS;
+End;
+
+Function GetMaxStructSize : LongInt;
+Begin
+  GetMaxStructSize := MAX_STRUCT_SIZE;
+End;
+
+Function GetStructRtCount : Integer;
+Begin
+  { 10 labels runtime pour operations Structure/Enum VB.NET }
+  GetStructRtCount := 10;
+End;
+
+Function IsStructureKW(KW : Integer) : Boolean;
+Begin
+  IsStructureKW := (KW = KW_STRUCTURE);
+End;
+
+Function GetStructPrefixLabel : TString;
+Begin
+  GetStructPrefixLabel := PFX_STRUC;
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -10255,13 +10849,14 @@ Begin
   InitIntrinsicState;
   InitStrOpState;
   InitArrayState;
+  InitStructureEnumState;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 16..25 : Generation de code, etc. }
+  { TODO 17..25 : Generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;

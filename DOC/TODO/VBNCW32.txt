@@ -516,7 +516,7 @@
             Tableaux multi-dimensionnels :
               Calcul offset = ((i1 * dim2 + i2) * dim3 + i3) * taille
 
-  TODO 16 - PARSEUR : STRUCTURES (STRUCTURE...END STRUCTURE) ET ENUM [A FAIRE]
+  TODO 16 - PARSEUR : STRUCTURES (STRUCTURE...END STRUCTURE) ET ENUM [IMPLEMENTE]
             Procedure ParseStructure
             Syntaxe (VB.NET utilise Structure et non Type) :
               [Public|Private|Friend] Structure NomStructure
