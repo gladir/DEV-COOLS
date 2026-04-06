@@ -601,7 +601,7 @@
             MyClass : reference non virtuelle a la classe courante
             Generer table de pointeurs de methodes virtuelles en .DATA
 
-  TODO 18 - PARSEUR : GESTION DES EXCEPTIONS (TRY/CATCH/FINALLY/THROW) [A FAIRE]
+  TODO 18 - PARSEUR : GESTION DES EXCEPTIONS (TRY/CATCH/FINALLY/THROW) [IMPLEMENTE]
             Procedure ParseTry
             Syntaxe (VB.NET utilise le modele structure) :
               Try
@@ -11676,6 +11676,580 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 18 - PARSEUR : GESTION DES EXCEPTIONS (TRY/CATCH/       }
+{           FINALLY/THROW) [IMPLEMENTE]                         }
+{ ============================================================ }
+
+Const
+  { Nombre maximal de blocs Try imbriques }
+  MAX_TRY_DEPTH    = 32;
+
+  { Nombre maximal de clauses Catch dans un seul Try }
+  MAX_CATCH_CLAUSES = 16;
+
+  { Labels runtime pour gestion des exceptions VB.NET }
+  EXC_RT_THROW       = '_VBNRT_EXC_THROW';
+  EXC_RT_RETHROW     = '_VBNRT_EXC_RETHROW';
+  EXC_RT_BEGINSEH    = '_VBNRT_EXC_BEGINSEH';
+  EXC_RT_ENDSEH      = '_VBNRT_EXC_ENDSEH';
+  EXC_RT_FILTER      = '_VBNRT_EXC_FILTER';
+  EXC_RT_GETEXC      = '_VBNRT_EXC_GETEXC';
+  EXC_RT_GETMSG      = '_VBNRT_EXC_GETMSG';
+  EXC_RT_GETTRACE    = '_VBNRT_EXC_GETTRACE';
+  EXC_RT_GETINNER    = '_VBNRT_EXC_GETINNER';
+  EXC_RT_NEWEXC      = '_VBNRT_EXC_NEWEXC';
+
+Var
+  ExceptionCount       : LongInt;
+  ExceptionInitialized : Boolean;
+  TryDepth             : Integer;
+  MaxTryDepth          : Integer;
+  CatchClauseCount     : Integer;
+  TotalCatchClauses    : Integer;
+  FinallyBlockCount    : Integer;
+  ThrowCount           : Integer;
+
+{ ------------------------------------------------------------ }
+{ InitExceptionState : initialiser l etat du module exceptions  }
+{   VB.NET (Try/Catch/Finally/Throw)                            }
+{ ------------------------------------------------------------ }
+
+Procedure InitExceptionState;
+Begin
+  ExceptionCount       := 0;
+  ExceptionInitialized := True;
+  TryDepth             := 0;
+  MaxTryDepth          := 0;
+  CatchClauseCount     := 0;
+  TotalCatchClauses    := 0;
+  FinallyBlockCount    := 0;
+  ThrowCount           := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCatchClause : parser une clause Catch dans un bloc Try   }
+{   Syntaxe : Catch ex As ExceptionType [When condition]        }
+{             Catch ex As Exception                             }
+{             Catch (attrape-tout sans variable)                }
+{   En VB.NET, chaque Catch filtre par type d exception         }
+{   La clause When permet un filtre conditionnel                }
+{   Le code genere teste le type d exception via le runtime     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCatchClause(TryLabelBase : TString;
+                            CatchIdx : Integer);
+Var
+  ExVarName  : TString;
+  ExTypeName : TString;
+  HasWhen    : Boolean;
+  CatchLabel : TString;
+  NextLabel  : TString;
+Begin
+  Inc(ExceptionCount);
+  Inc(CatchClauseCount);
+  Inc(TotalCatchClauses);
+  CatchLabel := TryLabelBase + '_CATCH_' + ItoS(CatchIdx);
+  NextLabel  := TryLabelBase + '_CATCH_' + ItoS(CatchIdx + 1);
+  ExVarName  := '';
+  ExTypeName := '';
+  HasWhen    := False;
+
+  EmitLabel(CatchLabel + ':');
+  EmitComment('Catch clause #' + ItoS(CatchIdx));
+
+  { Consommer Catch (deja verifie par l appelant) }
+  LexNextToken;
+
+  { Verifier si on a une variable et un type }
+  If CurTokType = TOK_IDENT Then Begin
+    ExVarName := CurTokStr;
+    LexNextToken; { consommer nom variable }
+
+    { Attendre 'As' pour le type d exception }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AS) Then Begin
+      LexNextToken; { consommer As }
+      If CurTokType = TOK_IDENT Then Begin
+        ExTypeName := CurTokStr;
+        LexNextToken; { consommer nom type }
+      End
+      Else If (CurTokType = TOK_KEYWORD) Then Begin
+        ExTypeName := KeywordName(CurTokNum);
+        LexNextToken; { consommer mot-cle type }
+      End
+      Else Begin
+        FatalError('Catch : type d''exception attendu apres As');
+      End;
+    End;
+  End;
+
+  { Generer le code de filtre par type d exception }
+  If ExTypeName <> '' Then Begin
+    EmitComment('Filtrer exception : ' + ExTypeName);
+    { PUSH ptr_type_name / CALL _VBNRT_EXC_FILTER }
+    Emit('  PUSH OFFSET _exc_type_' + ExTypeName);
+    Emit('  CALL ' + EXC_RT_FILTER);
+    Emit('  TEST EAX, EAX');
+    Emit('  JZ ' + NextLabel);
+  End;
+
+  { Affecter la variable locale d exception si definie }
+  If ExVarName <> '' Then Begin
+    EmitComment('Stocker exception dans ' + ExVarName);
+    Emit('  CALL ' + EXC_RT_GETEXC);
+    Emit('  MOV DWORD [EBP-' + ItoS((CatchIdx + 1) * 4) + '], EAX');
+  End;
+
+  { Verifier la clause When optionnelle }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WHEN) Then Begin
+    LexNextToken; { consommer When }
+    HasWhen := True;
+    EmitComment('When : filtre conditionnel');
+    { Parser l expression conditionnelle }
+    ParseExpr;
+    Emit('  TEST EAX, EAX');
+    Emit('  JZ ' + NextLabel);
+  End;
+
+  If Opts.Verbose Then Begin
+    Write('  Catch');
+    If ExVarName <> '' Then
+      Write(' ', ExVarName);
+    If ExTypeName <> '' Then
+      Write(' As ', ExTypeName);
+    If HasWhen Then
+      Write(' When ...');
+    WriteLn;
+  End;
+
+  { Parser le corps du bloc Catch }
+  SkipNewlines;
+  While Not LexEOF Do Begin
+    { Fin du bloc : Catch suivant, Finally, ou End Try }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CATCH) Then
+      Break;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FINALLY) Then
+      Break;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+      Break;
+    ParseStatement;
+    SkipNewlines;
+  End;
+
+  { Sauter apres le bloc Try (fin normale du Catch) }
+  Emit('  JMP ' + TryLabelBase + '_ENDTRY');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTry : parser un bloc Try/Catch/Finally...End Try VB.NET  }
+{   Syntaxe :                                                   }
+{     Try                                                       }
+{       instructions                                            }
+{     Catch ex As ExceptionType [When condition]                }
+{       instructions                                            }
+{     Catch ex As Exception                                     }
+{       instructions                                            }
+{     Finally                                                   }
+{       instructions                                            }
+{     End Try                                                   }
+{   Mecanisme :                                                 }
+{     Etablir un cadre SEH Win32 (FS:[0] + handler)             }
+{     Le bloc Try genere du code protege                        }
+{     Chaque Catch filtre par type d exception                  }
+{     Finally est toujours execute (cleanup)                    }
+{     End Try retire le cadre SEH                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseTry;
+Var
+  TryLabelBase : TString;
+  CatchIdx     : Integer;
+  HasFinally   : Boolean;
+  HasCatch     : Boolean;
+Begin
+  Inc(ExceptionCount);
+  Inc(TryDepth);
+  If TryDepth > MaxTryDepth Then
+    MaxTryDepth := TryDepth;
+  If TryDepth > MAX_TRY_DEPTH Then
+    FatalError('Try : imbrication maximale depassee (' +
+               ItoS(MAX_TRY_DEPTH) + ')');
+
+  TryLabelBase := NextInternalLabel;
+  CatchIdx     := 0;
+  HasFinally   := False;
+  HasCatch     := False;
+  CatchClauseCount := 0;
+
+  EmitComment('--- Try bloc ---');
+  EmitLabel(TryLabelBase + '_TRY:');
+
+  { Etablir le cadre SEH Win32 }
+  Emit('  PUSH OFFSET ' + TryLabelBase + '_CATCH_0');
+  Emit('  PUSH DWORD [FS:0]');
+  Emit('  MOV [FS:0], ESP');
+  EmitComment('Cadre SEH etabli');
+
+  { Consommer Try (deja verifie par l appelant) }
+  LexNextToken;
+  SkipNewlines;
+
+  If Opts.Verbose Then
+    WriteLn('  Try');
+
+  { Entrer dans la portee Try }
+  EnterScope(SCOPE_TRY, -1);
+
+  { Parser le corps du bloc Try }
+  While Not LexEOF Do Begin
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CATCH) Then
+      Break;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FINALLY) Then
+      Break;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+      Break;
+    ParseStatement;
+    SkipNewlines;
+  End;
+
+  { Sortie normale du Try : sauter la partie Catch }
+  Emit('  JMP ' + TryLabelBase + '_FINALLY');
+
+  { Quitter la portee Try }
+  LeaveScope;
+
+  { Parser les clauses Catch }
+  While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CATCH) Do Begin
+    HasCatch := True;
+    EnterScope(SCOPE_CATCH, -1);
+    ParseCatchClause(TryLabelBase, CatchIdx);
+    LeaveScope;
+    Inc(CatchIdx);
+    SkipNewlines;
+  End;
+
+  { Label pour les Catch non matches : sauter au Finally ou propager }
+  EmitLabel(TryLabelBase + '_CATCH_' + ItoS(CatchIdx) + ':');
+  If HasCatch Then Begin
+    EmitComment('Aucun Catch ne correspond : re-lancer');
+    Emit('  CALL ' + EXC_RT_RETHROW);
+  End;
+
+  { Parser le bloc Finally si present }
+  EmitLabel(TryLabelBase + '_FINALLY:');
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FINALLY) Then Begin
+    HasFinally := True;
+    Inc(FinallyBlockCount);
+    LexNextToken; { consommer Finally }
+    SkipNewlines;
+
+    EmitComment('--- Finally bloc ---');
+
+    If Opts.Verbose Then
+      WriteLn('  Finally');
+
+    EnterScope(SCOPE_FINALLY, -1);
+
+    { Parser le corps du bloc Finally }
+    While Not LexEOF Do Begin
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+        Break;
+      ParseStatement;
+      SkipNewlines;
+    End;
+
+    LeaveScope;
+  End;
+
+  { Retirer le cadre SEH Win32 }
+  EmitComment('Retirer cadre SEH');
+  Emit('  POP DWORD [FS:0]');
+  Emit('  ADD ESP, 4');
+
+  { Attendre End Try }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+    LexNextToken; { consommer End }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TRY) Then Begin
+      LexNextToken; { consommer Try }
+    End Else Begin
+      FatalError('End Try attendu');
+    End;
+  End Else Begin
+    FatalError('End Try attendu');
+  End;
+
+  EmitLabel(TryLabelBase + '_ENDTRY:');
+  EmitComment('--- End Try ---');
+
+  If Opts.Verbose Then
+    WriteLn('  End Try');
+
+  Dec(TryDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseThrow : parser une instruction Throw VB.NET              }
+{   Syntaxe : Throw New Exception("message")                    }
+{             Throw exVariable                                  }
+{             Throw (re-lancer l exception courante)            }
+{   Genere le code pour declencher une exception                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseThrow;
+Begin
+  Inc(ExceptionCount);
+  Inc(ThrowCount);
+
+  { Consommer Throw (deja verifie par l appelant) }
+  LexNextToken;
+
+  EmitComment('Throw');
+
+  { Throw sans argument : re-lancer l exception courante }
+  If (CurTokType = TOK_NEWLINE) Or (CurTokType = TOK_EOF) Or
+     (CurTokType = TOK_COLON) Then Begin
+    Emit('  CALL ' + EXC_RT_RETHROW);
+    If Opts.Verbose Then
+      WriteLn('  Throw (re-lancer)');
+  End
+  { Throw New ExceptionType("message") }
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEW) Then Begin
+    LexNextToken; { consommer New }
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+      { Nom du type d exception }
+      EmitComment('Throw New ' + CurTokStr);
+      Emit('  PUSH OFFSET _exc_type_' + CurTokStr);
+      LexNextToken; { consommer nom type }
+      { Verifier s il y a des arguments (message) }
+      If CurTokType = TOK_LPAREN Then Begin
+        LexNextToken; { consommer ( }
+        If CurTokType <> TOK_RPAREN Then Begin
+          ParseExpr; { parser le message }
+          Emit('  PUSH EAX');
+        End Else Begin
+          Emit('  PUSH 0');
+        End;
+        If CurTokType = TOK_RPAREN Then
+          LexNextToken; { consommer ) }
+      End Else Begin
+        Emit('  PUSH 0');
+      End;
+      Emit('  CALL ' + EXC_RT_NEWEXC);
+      Emit('  PUSH EAX');
+      Emit('  CALL ' + EXC_RT_THROW);
+      If Opts.Verbose Then
+        WriteLn('  Throw New ...');
+    End Else Begin
+      FatalError('Throw New : nom de type attendu');
+    End;
+  End
+  { Throw expression : lancer un objet exception existant }
+  Else Begin
+    ParseExpr;
+    Emit('  PUSH EAX');
+    Emit('  CALL ' + EXC_RT_THROW);
+    If Opts.Verbose Then
+      WriteLn('  Throw expr');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExceptionMember : parser un acces aux proprietes d une   }
+{   exception VB.NET (ex.Message, ex.StackTrace,                }
+{   ex.InnerException)                                          }
+{   Genere le code pour lire les proprietes de l exception      }
+{   courante via le runtime                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseExceptionMember(VarName : TString);
+Var
+  MemberName : TString;
+Begin
+  Inc(ExceptionCount);
+  { On est positionne apres le point }
+  If CurTokType = TOK_IDENT Then Begin
+    MemberName := UpCaseStr(CurTokStr);
+    LexNextToken; { consommer le nom du membre }
+
+    { ex.Message : chaine du message d erreur }
+    If MemberName = 'MESSAGE' Then Begin
+      EmitComment(VarName + '.Message');
+      Emit('  CALL ' + EXC_RT_GETMSG);
+      If Opts.Verbose Then
+        WriteLn('  ', VarName, '.Message');
+    End
+
+    { ex.StackTrace : trace de pile (stub) }
+    Else If MemberName = 'STACKTRACE' Then Begin
+      EmitComment(VarName + '.StackTrace (stub)');
+      Emit('  CALL ' + EXC_RT_GETTRACE);
+      If Opts.Verbose Then
+        WriteLn('  ', VarName, '.StackTrace');
+    End
+
+    { ex.InnerException : exception imbriquee (stub) }
+    Else If MemberName = 'INNEREXCEPTION' Then Begin
+      EmitComment(VarName + '.InnerException (stub)');
+      Emit('  CALL ' + EXC_RT_GETINNER);
+      If Opts.Verbose Then
+        WriteLn('  ', VarName, '.InnerException');
+    End
+
+    Else Begin
+      FatalError('Membre d''exception inconnu : ' + MemberName);
+    End;
+  End Else Begin
+    FatalError('Nom de membre attendu apres ' + VarName + '.');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSEHSetup : generer le code pour etablir un cadre SEH       }
+{   Win32 pour le bloc Try                                      }
+{   Structure SEH : PUSH handler / PUSH FS:[0] / MOV FS:[0],ESP}
+{ ------------------------------------------------------------ }
+
+Procedure GenSEHSetup(HandlerLabel : TString);
+Begin
+  Inc(ExceptionCount);
+  EmitComment('Etablir cadre SEH : ' + HandlerLabel);
+  Emit('  PUSH OFFSET ' + HandlerLabel);
+  Emit('  PUSH DWORD [FS:0]');
+  Emit('  MOV [FS:0], ESP');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSEHTeardown : generer le code pour retirer le cadre SEH    }
+{   courant                                                     }
+{   Depile la structure SEH : POP FS:[0] / ADD ESP, 4           }
+{ ------------------------------------------------------------ }
+
+Procedure GenSEHTeardown;
+Begin
+  Inc(ExceptionCount);
+  EmitComment('Retirer cadre SEH');
+  Emit('  POP DWORD [FS:0]');
+  Emit('  ADD ESP, 4');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenThrowNew : generer le code pour creer et lancer une        }
+{   exception                                                   }
+{   TypeName : nom du type d exception (ex: Exception)          }
+{   MsgLabel : label de la chaine de message (ou '' si aucun)   }
+{ ------------------------------------------------------------ }
+
+Procedure GenThrowNew(TypeName : TString; MsgLabel : TString);
+Begin
+  Inc(ExceptionCount);
+  Inc(ThrowCount);
+  EmitComment('Throw New ' + TypeName);
+  Emit('  PUSH OFFSET _exc_type_' + TypeName);
+  If MsgLabel <> '' Then
+    Emit('  PUSH OFFSET ' + MsgLabel)
+  Else
+    Emit('  PUSH 0');
+  Emit('  CALL ' + EXC_RT_NEWEXC);
+  Emit('  PUSH EAX');
+  Emit('  CALL ' + EXC_RT_THROW);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsTryStatement : verifier si le token courant commence un     }
+{   bloc Try                                                    }
+{ ------------------------------------------------------------ }
+
+Function IsTryStatement : Boolean;
+Begin
+  IsTryStatement := (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TRY);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsThrowStatement : verifier si le token courant est Throw     }
+{ ------------------------------------------------------------ }
+
+Function IsThrowStatement : Boolean;
+Begin
+  IsThrowStatement := (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_THROW);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsCatchKeyword : verifier si le token courant est Catch       }
+{ ------------------------------------------------------------ }
+
+Function IsCatchKeyword : Boolean;
+Begin
+  IsCatchKeyword := (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CATCH);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFinallyKeyword : verifier si le token courant est Finally   }
+{ ------------------------------------------------------------ }
+
+Function IsFinallyKeyword : Boolean;
+Begin
+  IsFinallyKeyword := (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FINALLY);
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions d acces aux variables du module exceptions          }
+{ ------------------------------------------------------------ }
+
+Function GetExceptionCount : LongInt;
+Begin
+  GetExceptionCount := ExceptionCount;
+End;
+
+Function IsExceptionInitialized : Boolean;
+Begin
+  IsExceptionInitialized := ExceptionInitialized;
+End;
+
+Function IsExceptionEmpty : Boolean;
+Begin
+  IsExceptionEmpty := ExceptionInitialized And (ExceptionCount = 0);
+End;
+
+Function GetExceptionStatus : TString;
+Begin
+  If Not ExceptionInitialized Then
+    GetExceptionStatus := 'non initialise'
+  Else If ExceptionCount = 0 Then
+    GetExceptionStatus := 'initialise, aucune exception'
+  Else
+    GetExceptionStatus := 'initialise, ' + ItoS(ExceptionCount) + ' operations';
+End;
+
+Function GetTryDepth : Integer;
+Begin
+  GetTryDepth := TryDepth;
+End;
+
+Function GetMaxTryDepth : Integer;
+Begin
+  GetMaxTryDepth := MaxTryDepth;
+End;
+
+Function GetTotalCatchClauses : Integer;
+Begin
+  GetTotalCatchClauses := TotalCatchClauses;
+End;
+
+Function GetFinallyBlockCount : Integer;
+Begin
+  GetFinallyBlockCount := FinallyBlockCount;
+End;
+
+Function GetThrowCount : Integer;
+Begin
+  GetThrowCount := ThrowCount;
+End;
+
+Function GetExcRtCount : Integer;
+Begin
+  GetExcRtCount := 10;
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -11707,13 +12281,14 @@ Begin
   InitArrayState;
   InitStructureEnumState;
   InitClassState;
+  InitExceptionState;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 18..25 : Generation de code, etc. }
+  { TODO 19..25 : Generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;

@@ -593,7 +593,7 @@
             MyClass : reference non virtuelle a la classe courante
             Generer table de pointeurs de methodes virtuelles en .DATA
 
-  TODO 18 - PARSEUR : GESTION DES EXCEPTIONS (TRY/CATCH/FINALLY/THROW) [A FAIRE]
+  TODO 18 - PARSEUR : GESTION DES EXCEPTIONS (TRY/CATCH/FINALLY/THROW) [IMPLEMENTE]
             Procedure ParseTry
             Syntaxe (VB.NET utilise le modele structure) :
               Try
