@@ -208,7 +208,7 @@
             Variables Shared : allouees en .DATA, acces via nom classe
             Resolution de noms qualifies (Namespace.Class.Member)
 
-  TODO 06 - PARSEUR : IMPORTS, NAMESPACE ET MODULE [A FAIRE]
+  TODO 06 - PARSEUR : IMPORTS, NAMESPACE ET MODULE [IMPLEMENTE]
             Procedure ParseImports
             Syntaxe :
               Imports System
@@ -4189,6 +4189,749 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 06 - PARSEUR : IMPORTS, NAMESPACE ET       [IMPLEMENTE] }
+{           MODULE                                              }
+{ ============================================================ }
+
+Const
+  { Nombre maximal d entrees dans la table des imports }
+  MAX_IMPORT_ENTRIES = 128;
+
+  { Types de conteneur VB.NET }
+  MODULE_VB_MODULE  = 0;   { Module VB.NET (conteneur statique)      }
+  MODULE_VB_CLASS   = 1;   { Class VB.NET                            }
+
+  { Option Compare }
+  OPT_COMPARE_BINARY = 0;  { comparaison binaire (par defaut)        }
+  OPT_COMPARE_TEXT   = 1;  { comparaison textuelle                   }
+
+Type
+  { Entree dans la table des imports }
+  TImportEntry = Record
+    Namespace : TString;    { nom complet de l espace de noms         }
+    Alias     : TString;    { alias eventuel (vide si pas d alias)    }
+  End;
+
+Var
+  { Table des imports }
+  ImportTab     : Array[0..MAX_IMPORT_ENTRIES - 1] Of TImportEntry;
+  ImportCount   : Integer;
+
+  { Etat du module en cours d analyse }
+  ModuleKind         : Integer;     { MODULE_VB_MODULE / MODULE_VB_CLASS }
+  ModuleName         : TString;     { nom du module/classe courant       }
+  NamespaceName      : TString;     { nom du namespace courant           }
+  HasEntryPoint      : Boolean;     { module a un point d entree ?       }
+  ModuleHeaderParsed : Boolean;     { en-tete deja analyse ?             }
+  OptionCompare      : Integer;     { OPT_COMPARE_BINARY ou _TEXT        }
+
+{ ------------------------------------------------------------ }
+{ ModuleKindName : nom textuel du genre de conteneur           }
+{ ------------------------------------------------------------ }
+
+Function ModuleKindName(K : Integer) : TString;
+Begin
+  Case K Of
+    MODULE_VB_MODULE : ModuleKindName := 'Module';
+    MODULE_VB_CLASS  : ModuleKindName := 'Class';
+  Else
+    ModuleKindName := '?MOD' + ItoSI(K);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InitModuleState : initialiser l etat du module               }
+{ ------------------------------------------------------------ }
+
+Procedure InitModuleState;
+Var I : Integer;
+Begin
+  { Table des imports }
+  ImportCount := 0;
+  For I := 0 To MAX_IMPORT_ENTRIES - 1 Do
+  Begin
+    ImportTab[I].Namespace := '';
+    ImportTab[I].Alias     := '';
+  End;
+
+  { Etat du module }
+  ModuleKind         := MODULE_VB_MODULE;
+  ModuleName         := '';
+  NamespaceName      := '';
+  HasEntryPoint      := False;
+  ModuleHeaderParsed := False;
+  OptionCompare      := OPT_COMPARE_BINARY;
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipNewlines : sauter les tokens TOK_NEWLINE                 }
+{ ------------------------------------------------------------ }
+
+Procedure SkipNewlines;
+Begin
+  While CurTokType = TOK_NEWLINE Do
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ Expect : verifier le type de token courant et avancer        }
+{   Si le token courant n est pas du type attendu, erreur      }
+{ ------------------------------------------------------------ }
+
+Procedure Expect(TokType : Integer);
+Begin
+  If CurTokType <> TokType Then
+  Begin
+    FatalError('Token attendu type ' + ItoSI(TokType) +
+               ', trouve type ' + ItoSI(CurTokType) +
+               ' ("' + CurTokStr + '")');
+    Exit;
+  End;
+  LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExpectKeyword : verifier un mot-cle precis et avancer        }
+{ ------------------------------------------------------------ }
+
+Procedure ExpectKeyword(KW : Integer);
+Begin
+  If (CurTokType <> TOK_KEYWORD) Or (CurTokNum <> KW) Then
+  Begin
+    FatalError('Mot-cle attendu "' + KeywordName(KW) +
+               '", trouve "' + CurTokStr + '"');
+    Exit;
+  End;
+  LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsKeywordToken : le token courant est-il le mot-cle donne ?  }
+{ ------------------------------------------------------------ }
+
+Function IsKeywordToken(KW : Integer) : Boolean;
+Begin
+  IsKeywordToken := (CurTokType = TOK_KEYWORD) And (CurTokNum = KW);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsIdentToken : le token courant est-il un ident avec ce nom? }
+{ ------------------------------------------------------------ }
+
+Function IsIdentToken(Const Name : TString) : Boolean;
+Begin
+  IsIdentToken := (CurTokType = TOK_IDENT) And
+                  (UpCaseStr(CurTokStr) = UpCaseStr(Name));
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipToEndOfLine : avancer jusqu a TOK_NEWLINE ou TOK_EOF     }
+{ ------------------------------------------------------------ }
+
+Procedure SkipToEndOfLine;
+Begin
+  While (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) Do
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindImport : chercher un import par nom d espace de noms     }
+{   Retourne l index si trouve, -1 sinon                       }
+{ ------------------------------------------------------------ }
+
+Function FindImport(Const NS : TString) : Integer;
+Var I : Integer;
+    U : TString;
+Begin
+  FindImport := -1;
+  U := UpCaseStr(NS);
+  For I := 0 To ImportCount - 1 Do
+  Begin
+    If UpCaseStr(ImportTab[I].Namespace) = U Then
+    Begin
+      FindImport := I;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddImport : ajouter un import dans la table                  }
+{   Retourne l index de l entree, ou -1 si table pleine        }
+{ ------------------------------------------------------------ }
+
+Function AddImport(Const NS, Alias : TString) : Integer;
+Begin
+  AddImport := -1;
+  { Verifier si deja importe }
+  If FindImport(NS) >= 0 Then
+  Begin
+    WarnMsg('Imports "' + NS + '" deja present, ignore');
+    Exit;
+  End;
+  { Verifier la capacite }
+  If ImportCount >= MAX_IMPORT_ENTRIES Then
+  Begin
+    FatalError('Table des imports pleine (max ' +
+               ItoSI(MAX_IMPORT_ENTRIES) + ')');
+    Exit;
+  End;
+  ImportTab[ImportCount].Namespace := NS;
+  ImportTab[ImportCount].Alias     := Alias;
+  AddImport := ImportCount;
+  Inc(ImportCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseImportStatement : analyser une instruction Imports       }
+{   Token courant : KW_IMPORTS                                 }
+{   Syntaxe :                                                  }
+{     Imports System                                           }
+{     Imports System.IO                                        }
+{     Imports alias = Namespace.Complet                        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseImportStatement;
+Var NS, Alias : TString;
+Begin
+  { Consommer "Imports" }
+  LexNextToken;
+
+  { Lire le premier identifiant }
+  If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+  Begin
+    FatalError('Imports attend un nom d''espace de noms, trouve "' +
+               CurTokStr + '"');
+    SkipToEndOfLine;
+    Exit;
+  End;
+
+  NS := CurTokStr;
+  LexNextToken;
+
+  { Verifier si c est un alias : ident = Namespace }
+  If CurTokType = TOK_EQ Then
+  Begin
+    { NS contient l alias, lire le namespace reel }
+    Alias := NS;
+    LexNextToken;
+    If (CurTokType <> TOK_IDENT) And (CurTokType <> TOK_KEYWORD) Then
+    Begin
+      FatalError('Imports alias attend un espace de noms apres "="');
+      SkipToEndOfLine;
+      Exit;
+    End;
+    NS := CurTokStr;
+    LexNextToken;
+    { Lire les composants separes par des points }
+    While CurTokType = TOK_DOT Do
+    Begin
+      LexNextToken;
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+      Begin
+        NS := NS + '.' + CurTokStr;
+        LexNextToken;
+      End
+      Else
+      Begin
+        FatalError('Imports attend un identifiant apres "."');
+        SkipToEndOfLine;
+        Exit;
+      End;
+    End;
+  End
+  Else
+  Begin
+    { Pas d alias : lire les composants separes par des points }
+    Alias := '';
+    While CurTokType = TOK_DOT Do
+    Begin
+      LexNextToken;
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+      Begin
+        NS := NS + '.' + CurTokStr;
+        LexNextToken;
+      End
+      Else
+      Begin
+        FatalError('Imports attend un identifiant apres "."');
+        SkipToEndOfLine;
+        Exit;
+      End;
+    End;
+  End;
+
+  { Ajouter dans la table des imports }
+  AddImport(NS, Alias);
+
+  If Opts.Verbose Then
+  Begin
+    If Alias <> '' Then
+      WriteLn('  Imports ', Alias, ' = ', NS)
+    Else
+      WriteLn('  Imports ', NS);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOptionStatement : analyser Option Explicit/Strict/       }
+{   Compare/Infer avec syntaxe VB.NET (On|Off)                 }
+{   Token courant : KW_OPTION                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOptionStatement;
+Begin
+  { Consommer "Option" }
+  LexNextToken;
+
+  { Option Explicit On|Off }
+  If IsIdentToken('Explicit') Then
+  Begin
+    LexNextToken;
+    If IsKeywordToken(KW_ON) Then
+    Begin
+      Opts.OptionExplicit := True;
+      LexNextToken;
+    End
+    Else If IsIdentToken('Off') Then
+    Begin
+      Opts.OptionExplicit := False;
+      LexNextToken;
+    End
+    Else
+      Opts.OptionExplicit := True;
+    If Opts.Verbose Then
+    Begin
+      If Opts.OptionExplicit Then
+        WriteLn('  Option Explicit On')
+      Else
+        WriteLn('  Option Explicit Off');
+    End;
+  End
+
+  { Option Strict On|Off }
+  Else If IsIdentToken('Strict') Then
+  Begin
+    LexNextToken;
+    If IsKeywordToken(KW_ON) Then
+    Begin
+      Opts.OptionStrict := True;
+      LexNextToken;
+    End
+    Else If IsIdentToken('Off') Then
+    Begin
+      Opts.OptionStrict := False;
+      LexNextToken;
+    End
+    Else
+      Opts.OptionStrict := True;
+    If Opts.Verbose Then
+    Begin
+      If Opts.OptionStrict Then
+        WriteLn('  Option Strict On')
+      Else
+        WriteLn('  Option Strict Off');
+    End;
+  End
+
+  { Option Compare Binary|Text }
+  Else If IsIdentToken('Compare') Then
+  Begin
+    LexNextToken;
+    If IsIdentToken('Binary') Then
+    Begin
+      OptionCompare := OPT_COMPARE_BINARY;
+      LexNextToken;
+    End
+    Else If IsIdentToken('Text') Then
+    Begin
+      OptionCompare := OPT_COMPARE_TEXT;
+      LexNextToken;
+    End
+    Else
+      FatalError('Option Compare attend Binary ou Text, trouve "' +
+                 CurTokStr + '"');
+    If Opts.Verbose Then
+    Begin
+      If OptionCompare = OPT_COMPARE_BINARY Then
+        WriteLn('  Option Compare Binary')
+      Else
+        WriteLn('  Option Compare Text');
+    End;
+  End
+
+  { Option Infer On|Off }
+  Else If IsIdentToken('Infer') Then
+  Begin
+    LexNextToken;
+    If IsKeywordToken(KW_ON) Then
+    Begin
+      Opts.OptionInfer := True;
+      LexNextToken;
+    End
+    Else If IsIdentToken('Off') Then
+    Begin
+      Opts.OptionInfer := False;
+      LexNextToken;
+    End
+    Else
+      Opts.OptionInfer := True;
+    If Opts.Verbose Then
+    Begin
+      If Opts.OptionInfer Then
+        WriteLn('  Option Infer On')
+      Else
+        WriteLn('  Option Infer Off');
+    End;
+  End
+
+  { Option non reconnue }
+  Else
+  Begin
+    WarnMsg('Option non reconnue : "' + CurTokStr + '", ligne ignoree');
+    SkipToEndOfLine;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDottedName : lire un nom qualifie (A.B.C)               }
+{   Le premier identifiant doit etre dans CurTokStr            }
+{   Retourne le nom complet, avance apres le dernier composant }
+{ ------------------------------------------------------------ }
+
+Function ParseDottedName : TString;
+Var Name : TString;
+Begin
+  Name := CurTokStr;
+  LexNextToken;
+  While CurTokType = TOK_DOT Do
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+    Begin
+      Name := Name + '.' + CurTokStr;
+      LexNextToken;
+    End
+    Else
+    Begin
+      FatalError('Nom qualifie attend un identifiant apres "."');
+      Break;
+    End;
+  End;
+  ParseDottedName := Name;
+End;
+
+{ ------------------------------------------------------------ }
+{ SetupEntryPoint : configurer le point d entree du module     }
+{   Module VB.NET : HasEntryPoint=True, label _VBNF_MAIN      }
+{   Class VB.NET : pas de point d entree direct                }
+{ ------------------------------------------------------------ }
+
+Procedure SetupEntryPoint;
+Begin
+  If ModuleKind = MODULE_VB_CLASS Then
+    HasEntryPoint := False
+  Else
+  Begin
+    HasEntryPoint := True;
+    If Opts.Verbose Then
+      WriteLn('  Point d''entree : ', PFX_FUNC, 'MAIN');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCompilationUnit : point d entree principal du parseur   }
+{   VB.NET                                                     }
+{   1. Analyser les Option statements                          }
+{   2. Analyser les Imports statements                         }
+{   3. Analyser le Namespace / Module / Class                  }
+{   4. Configurer le point d entree                            }
+{   Le corps du module sera parse par les TODOs suivants       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCompilationUnit;
+Var NamespaceEntered : Boolean;
+    ModuleEntered    : Boolean;
+Begin
+  InitModuleState;
+  NamespaceEntered := False;
+  ModuleEntered    := False;
+
+  { Nom par defaut depuis le nom du fichier source }
+  ModuleName := Opts.SrcFile;
+  { Retirer l extension }
+  If Pos('.', ModuleName) > 0 Then
+    ModuleName := Copy(ModuleName, 1, Pos('.', ModuleName) - 1);
+  { Retirer le chemin (separateur /) }
+  While Pos('/', ModuleName) > 0 Do
+    ModuleName := Copy(ModuleName, Pos('/', ModuleName) + 1, 255);
+  { Retirer le chemin (separateur \) }
+  While Pos('\', ModuleName) > 0 Do
+    ModuleName := Copy(ModuleName, Pos('\', ModuleName) + 1, 255);
+
+  If Opts.Verbose Then
+    WriteLn('Compilation : ', Opts.SrcFile);
+
+  { Lire le premier token }
+  LexNextToken;
+  SkipNewlines;
+
+  { --- Phase 1 : Option statements en debut de fichier --- }
+  While IsKeywordToken(KW_OPTION) Do
+  Begin
+    ParseOptionStatement;
+    SkipNewlines;
+  End;
+
+  { --- Phase 2 : Imports statements --- }
+  While IsKeywordToken(KW_IMPORTS) Do
+  Begin
+    ParseImportStatement;
+    SkipNewlines;
+  End;
+
+  { --- Phase 3 : Namespace block (optionnel) --- }
+  If IsKeywordToken(KW_NAMESPACE) Then
+  Begin
+    LexNextToken;
+    { Lire le nom du namespace (peut etre qualifie : A.B.C) }
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then
+    Begin
+      NamespaceName := ParseDottedName;
+      EnterScope(SCOPE_NAMESPACE, -1);
+      NamespaceEntered := True;
+      If Opts.Verbose Then
+        WriteLn('  Namespace ', NamespaceName);
+    End
+    Else
+      FatalError('Namespace attend un nom, trouve "' + CurTokStr + '"');
+    SkipNewlines;
+  End;
+
+  { --- Phase 4 : Module ou Class declaration --- }
+  If IsKeywordToken(KW_MODULE) Then
+  Begin
+    ModuleKind := MODULE_VB_MODULE;
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      ModuleName := CurTokStr;
+      LexNextToken;
+    End
+    Else
+      FatalError('Module attend un nom, trouve "' + CurTokStr + '"');
+    EnterScope(SCOPE_MODULE, -1);
+    ModuleEntered := True;
+    If Opts.Verbose Then
+      WriteLn('  Module ', ModuleName);
+  End
+  Else If IsKeywordToken(KW_CLASS) Then
+  Begin
+    ModuleKind := MODULE_VB_CLASS;
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then
+    Begin
+      ModuleName := CurTokStr;
+      LexNextToken;
+    End
+    Else
+      FatalError('Class attend un nom, trouve "' + CurTokStr + '"');
+    EnterScope(SCOPE_CLASS, -1);
+    ModuleEntered := True;
+    If Opts.Verbose Then
+      WriteLn('  Class ', ModuleName);
+  End;
+
+  { Configurer le point d entree }
+  SetupEntryPoint;
+  ModuleHeaderParsed := True;
+
+  { Affichage du resume en mode verbeux }
+  If Opts.Verbose Then
+  Begin
+    WriteLn('  Nom du module  : ', ModuleName);
+    If NamespaceName <> '' Then
+      WriteLn('  Namespace      : ', NamespaceName);
+    WriteLn('  Type           : ', ModuleKindName(ModuleKind));
+    If Opts.OptionExplicit Then
+      WriteLn('  OptionExplicit : On')
+    Else
+      WriteLn('  OptionExplicit : Off');
+    If Opts.OptionStrict Then
+      WriteLn('  OptionStrict   : On')
+    Else
+      WriteLn('  OptionStrict   : Off');
+    If OptionCompare = OPT_COMPARE_BINARY Then
+      WriteLn('  OptionCompare  : Binary')
+    Else
+      WriteLn('  OptionCompare  : Text');
+    If Opts.OptionInfer Then
+      WriteLn('  OptionInfer    : On')
+    Else
+      WriteLn('  OptionInfer    : Off');
+    If HasEntryPoint Then
+      WriteLn('  HasEntryPoint  : True')
+    Else
+      WriteLn('  HasEntryPoint  : False');
+    WriteLn('  Imports        : ', ImportCount);
+  End;
+
+  { Les TODOs 07-25 ajouteront ici le parsing du corps }
+  { du module (Dim, Sub, Function, etc.)                }
+  If CurTokType <> TOK_EOF Then
+  Begin
+    If Opts.Verbose Then
+      WriteLn('  (corps du module non encore parse - TODOs 07-25)');
+  End;
+
+  { Avancer jusqu a la fin du fichier (TODOs 07+ parseront le corps) }
+  While CurTokType <> TOK_EOF Do
+    LexNextToken;
+
+  { Quitter les portees ouvertes }
+  If ModuleEntered Then
+    LeaveScope;
+  If NamespaceEntered Then
+    LeaveScope;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour l etat du module et des imports     }
+{ ------------------------------------------------------------ }
+
+Function GetModuleKind : Integer;
+Begin
+  GetModuleKind := ModuleKind;
+End;
+
+Function GetModuleName : TString;
+Begin
+  GetModuleName := ModuleName;
+End;
+
+Function GetNamespaceName : TString;
+Begin
+  GetNamespaceName := NamespaceName;
+End;
+
+Function GetOptionCompare : Integer;
+Begin
+  GetOptionCompare := OptionCompare;
+End;
+
+Function IsOptionExplicitOn : Boolean;
+Begin
+  IsOptionExplicitOn := Opts.OptionExplicit;
+End;
+
+Function IsOptionStrictOn : Boolean;
+Begin
+  IsOptionStrictOn := Opts.OptionStrict;
+End;
+
+Function IsOptionInferOn : Boolean;
+Begin
+  IsOptionInferOn := Opts.OptionInfer;
+End;
+
+Function IsOptionCompareBinary : Boolean;
+Begin
+  IsOptionCompareBinary := (OptionCompare = OPT_COMPARE_BINARY);
+End;
+
+Function IsOptionCompareText : Boolean;
+Begin
+  IsOptionCompareText := (OptionCompare = OPT_COMPARE_TEXT);
+End;
+
+Function HasMainEntry : Boolean;
+Begin
+  HasMainEntry := HasEntryPoint;
+End;
+
+Function IsModuleHeaderParsed : Boolean;
+Begin
+  IsModuleHeaderParsed := ModuleHeaderParsed;
+End;
+
+Function IsVBModule : Boolean;
+Begin
+  IsVBModule := (ModuleKind = MODULE_VB_MODULE);
+End;
+
+Function IsVBClass : Boolean;
+Begin
+  IsVBClass := (ModuleKind = MODULE_VB_CLASS);
+End;
+
+Function GetImportCount : Integer;
+Begin
+  GetImportCount := ImportCount;
+End;
+
+Function GetImportNamespace(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < ImportCount) Then
+    GetImportNamespace := ImportTab[Idx].Namespace
+  Else
+    GetImportNamespace := '';
+End;
+
+Function GetImportAlias(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < ImportCount) Then
+    GetImportAlias := ImportTab[Idx].Alias
+  Else
+    GetImportAlias := '';
+End;
+
+Function FindImportByAlias(Const A : TString) : Integer;
+Var I : Integer;
+    U : TString;
+Begin
+  FindImportByAlias := -1;
+  U := UpCaseStr(A);
+  For I := 0 To ImportCount - 1 Do
+  Begin
+    If UpCaseStr(ImportTab[I].Alias) = U Then
+    Begin
+      FindImportByAlias := I;
+      Exit;
+    End;
+  End;
+End;
+
+Function IsNamespaceImported(Const NS : TString) : Boolean;
+Begin
+  IsNamespaceImported := (FindImport(NS) >= 0);
+End;
+
+Function IsImportTableEmpty : Boolean;
+Begin
+  IsImportTableEmpty := (ImportCount = 0);
+End;
+
+Function IsImportTableFull : Boolean;
+Begin
+  IsImportTableFull := (ImportCount >= MAX_IMPORT_ENTRIES);
+End;
+
+Function GetMaxImportEntries : Integer;
+Begin
+  GetMaxImportEntries := MAX_IMPORT_ENTRIES;
+End;
+
+Function HasNamespace : Boolean;
+Begin
+  HasNamespace := (NamespaceName <> '');
+End;
+
+Function GetModuleKindName : TString;
+Begin
+  GetModuleKindName := ModuleKindName(ModuleKind);
+End;
+
+{ ============================================================ }
 { Procedure principale : Run                                   }
 { ============================================================ }
 
@@ -4208,16 +4951,17 @@ Begin
   { Affichage de la banniere en mode verbeux }
   ShowBanner;
 
-  { Ouvrir et tokeniser le fichier source }
+  { Initialiser les tables et ouvrir le fichier source }
   InitSymTable;
   InitScopes;
+  InitModuleState;
   LexInit;
-  LexNextToken;
-  While CurTokType <> TOK_EOF Do
-    LexNextToken;
+
+  { Analyser l unite de compilation VB.NET }
+  ParseCompilationUnit;
   LexClose;
 
-  { TODO 06..25 : Compilation, generation de code, etc. }
+  { TODO 07..25 : Declarations, expressions, generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;

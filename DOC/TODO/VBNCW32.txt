@@ -200,7 +200,7 @@
             Variables Shared : allouees en .DATA, acces via nom classe
             Resolution de noms qualifies (Namespace.Class.Member)
 
-  TODO 06 - PARSEUR : IMPORTS, NAMESPACE ET MODULE [A FAIRE]
+  TODO 06 - PARSEUR : IMPORTS, NAMESPACE ET MODULE [IMPLEMENTE]
             Procedure ParseImports
             Syntaxe :
               Imports System
