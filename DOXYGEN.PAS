@@ -1213,6 +1213,7 @@ Type
     ShowVersion  : Boolean;
     ShowHelp     : Boolean;
     SvgOutput    : Boolean;    { --svg ou -D DOT_IMAGE_FORMAT=svg }
+    PngOutput    : Boolean;    { --png ou -D DOT_IMAGE_FORMAT=png }
   End;
 
   TSourceLanguage = (LANG_UNKNOWN, LANG_C, LANG_CPP, LANG_JAVA,
@@ -7011,8 +7012,11 @@ Begin
   WriteLn('                    sans fichier de configuration');
   WriteLn('  --svg             Generer la sortie au format SVG');
   WriteLn('                    (equivalent a -D DOT_IMAGE_FORMAT=svg)');
+  WriteLn('  --png             Generer la sortie au format PNG');
+  WriteLn('                    (equivalent a -D DOT_IMAGE_FORMAT=png)');
   WriteLn('  -D NOM=VALEUR     Definir une option de configuration');
   WriteLn('                    Ex: -D DOT_IMAGE_FORMAT=svg');
+  WriteLn('                    Ex: -D DOT_IMAGE_FORMAT=png');
   WriteLn;
   WriteLn('Exemples:');
   WriteLn('  doxygen                     Utiliser le Doxyfile du repertoire courant');
@@ -7022,7 +7026,9 @@ Begin
   WriteLn('  doxygen -INPUT hello.c      Analyser hello.c directement');
   WriteLn('  doxygen -INPUT program.pas  Analyser program.pas directement');
   WriteLn('  doxygen --svg -INPUT test.c Generer la doc en SVG pour test.c');
+  WriteLn('  doxygen --png -INPUT test.c Generer la doc en PNG pour test.c');
   WriteLn('  doxygen -D DOT_IMAGE_FORMAT=svg  Utiliser le format SVG');
+  WriteLn('  doxygen -D DOT_IMAGE_FORMAT=png  Utiliser le format PNG');
   WriteLn;
   WriteLn('Langages supportes pour -INPUT:');
   WriteLn('  C (.c, .h), C++ (.cpp, .hpp), Pascal (.pas, .pp)');
@@ -7068,6 +7074,7 @@ Begin
   O.ShowVersion  := False;
   O.ShowHelp     := False;
   O.SvgOutput    := False;
+  O.PngOutput    := False;
 End;
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -7164,6 +7171,11 @@ Begin
       { Extension DEV-COOLS : format de sortie SVG }
       O.SvgOutput := True;
     End
+    Else If (Arg = '--png') Then
+    Begin
+      { Extension DEV-COOLS : format de sortie PNG }
+      O.PngOutput := True;
+    End
     Else If (UpperArg = '-D') Then
     Begin
       { Option de definition : -D NOM=VALEUR }
@@ -7171,11 +7183,13 @@ Begin
       Begin
         Inc(I);
         Arg := ParamStr(I);
-        { Verifier si c'est DOT_IMAGE_FORMAT=svg }
+        { Verifier si c'est DOT_IMAGE_FORMAT=svg ou DOT_IMAGE_FORMAT=png }
         If Pos('DOT_IMAGE_FORMAT=', UpStr(Arg)) = 1 Then
         Begin
           If UpStr(Copy(Arg, 18, Length(Arg))) = 'SVG' Then
-            O.SvgOutput := True;
+            O.SvgOutput := True
+          Else If UpStr(Copy(Arg, 18, Length(Arg))) = 'PNG' Then
+            O.PngOutput := True;
         End;
         { On pourrait ajouter d'autres definitions ici }
       End
