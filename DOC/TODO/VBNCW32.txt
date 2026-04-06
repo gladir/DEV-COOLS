@@ -182,7 +182,7 @@
               STORE_GLOBAL (.DATA), STORE_CONSTANT (immediate),
               STORE_SHARED (segment .DATA, acces via classe)
 
-  TODO 05 - GESTION DES PORTEES (NAMESPACE, MODULE, CLASS, STRUCTURE) [A FAIRE]
+  TODO 05 - GESTION DES PORTEES (NAMESPACE, MODULE, CLASS, STRUCTURE) [IMPLEMENTE]
             Pile de portees : chaque portee maintient ses propres
               variables locales, un offset EBP courant, un label sortie
             Procedure EnterScope(kind: Integer; proc_idx: Integer)

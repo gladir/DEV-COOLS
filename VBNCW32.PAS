@@ -190,7 +190,7 @@
               STORE_GLOBAL (.DATA), STORE_CONSTANT (immediate),
               STORE_SHARED (segment .DATA, acces via classe)
 
-  TODO 05 - GESTION DES PORTEES (NAMESPACE, MODULE, CLASS, STRUCTURE) [A FAIRE]
+  TODO 05 - GESTION DES PORTEES (NAMESPACE, MODULE, CLASS, STRUCTURE) [IMPLEMENTE]
             Pile de portees : chaque portee maintient ses propres
               variables locales, un offset EBP courant, un label sortie
             Procedure EnterScope(kind: Integer; proc_idx: Integer)
@@ -3611,6 +3611,510 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 05 - GESTION DES PORTEES                 [IMPLEMENTE] }
+{           (NAMESPACE, MODULE, CLASS, STRUCTURE)             }
+{ ============================================================ }
+
+Const
+  { Genres de portees }
+  SCOPE_GLOBAL    = 0;   { portee globale (module-level)             }
+  SCOPE_NAMESPACE = 1;   { portee d un Namespace VB.NET              }
+  SCOPE_MODULE    = 2;   { portee d un Module VB.NET                 }
+  SCOPE_CLASS     = 3;   { portee d une Class                        }
+  SCOPE_STRUCTURE = 4;   { portee d une Structure (value type)       }
+  SCOPE_SUB       = 5;   { portee d une procedure Sub                }
+  SCOPE_FUNCTION  = 6;   { portee d une fonction Function            }
+  SCOPE_PROPERTY  = 7;   { portee d une propriete Property           }
+  SCOPE_BLOCK     = 8;   { portee de bloc (For, If, Do, Select, Using)}
+  SCOPE_TRY       = 9;   { portee d un bloc Try                      }
+  SCOPE_CATCH     = 10;  { portee d un bloc Catch                    }
+  SCOPE_FINALLY   = 11;  { portee d un bloc Finally                  }
+
+  { Base d offset EBP pour parametres STDCALL Win32 }
+  { [EBP+0] = ancien EBP, [EBP+4] = adresse retour }
+  { [EBP+8] = premier parametre                      }
+  SCOPE_EBP_PARAM_BASE = 8;
+
+Type
+  { Entree dans la pile de portees }
+  TScopeEntry = Record
+    Kind       : Integer;     { SCOPE_GLOBAL, SCOPE_SUB, etc.      }
+    ProcIdx    : Integer;     { index dans ProcTab (-1 si global)  }
+    SymStart   : Integer;     { index du premier symbole local      }
+    EbpTop     : Integer;     { prochain offset EBP negatif libre  }
+    ExitLabel  : String[64];  { label de sortie (pour Exit Sub/Fn) }
+    IsStatic   : Boolean;     { portee Static ? (locales en .DATA) }
+    IsShared   : Boolean;     { portee Shared ? (membre de classe) }
+    NsIdx      : Integer;     { index du Namespace englobant (-1)  }
+  End;
+
+Var
+  { Pile de portees }
+  ScopeStack : Array[0..MAX_DEPTH - 1] Of TScopeEntry;
+  ScopeDepth : Integer;
+
+  { Compteur de labels internes (pour generer des labels uniques) }
+  InternalLabelCount : LongInt;
+
+{ ------------------------------------------------------------ }
+{ ScopeKindName : nom textuel d un genre de portee             }
+{ ------------------------------------------------------------ }
+
+Function ScopeKindName(K : Integer) : TString;
+Begin
+  Case K Of
+    SCOPE_GLOBAL    : ScopeKindName := 'Global';
+    SCOPE_NAMESPACE : ScopeKindName := 'Namespace';
+    SCOPE_MODULE    : ScopeKindName := 'Module';
+    SCOPE_CLASS     : ScopeKindName := 'Class';
+    SCOPE_STRUCTURE : ScopeKindName := 'Structure';
+    SCOPE_SUB       : ScopeKindName := 'Sub';
+    SCOPE_FUNCTION  : ScopeKindName := 'Function';
+    SCOPE_PROPERTY  : ScopeKindName := 'Property';
+    SCOPE_BLOCK     : ScopeKindName := 'Block';
+    SCOPE_TRY       : ScopeKindName := 'Try';
+    SCOPE_CATCH     : ScopeKindName := 'Catch';
+    SCOPE_FINALLY   : ScopeKindName := 'Finally';
+  Else
+    ScopeKindName := '?SCOPE' + ItoSI(K);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ InitScopes : initialiser la pile de portees                  }
+{   Cree automatiquement la portee globale (SCOPE_GLOBAL)      }
+{ ------------------------------------------------------------ }
+
+Procedure InitScopes;
+Var I : Integer;
+Begin
+  ScopeDepth := 0;
+  InternalLabelCount := 0;
+  For I := 0 To MAX_DEPTH - 1 Do
+  Begin
+    ScopeStack[I].Kind      := SCOPE_GLOBAL;
+    ScopeStack[I].ProcIdx   := -1;
+    ScopeStack[I].SymStart  := 0;
+    ScopeStack[I].EbpTop    := 0;
+    ScopeStack[I].ExitLabel := '';
+    ScopeStack[I].IsStatic  := False;
+    ScopeStack[I].IsShared  := False;
+    ScopeStack[I].NsIdx     := -1;
+  End;
+  { Portee globale initiale }
+  ScopeStack[0].Kind     := SCOPE_GLOBAL;
+  ScopeStack[0].ProcIdx  := -1;
+  ScopeStack[0].SymStart := 0;
+  ScopeStack[0].EbpTop   := 0;
+  ScopeStack[0].IsStatic := False;
+  ScopeStack[0].IsShared := False;
+  ScopeStack[0].NsIdx    := -1;
+  ScopeDepth := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ NextInternalLabel : generer un label interne unique           }
+{ ------------------------------------------------------------ }
+
+Function NextInternalLabel : TString;
+Begin
+  Inc(InternalLabelCount);
+  NextInternalLabel := PFX_LBL + ItoSI(InternalLabelCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EnterScope : empiler une nouvelle portee                     }
+{   kind     : SCOPE_SUB, SCOPE_FUNCTION, etc.                }
+{   proc_idx : index dans ProcTab (-1 pour Global/Module/etc.) }
+{ ------------------------------------------------------------ }
+
+Procedure EnterScope(Kind : Integer; ProcIdx : Integer);
+Begin
+  If ScopeDepth >= MAX_DEPTH Then
+  Begin
+    FatalError('Pile de portees pleine (max ' + ItoSI(MAX_DEPTH) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeDepth].Kind      := Kind;
+  ScopeStack[ScopeDepth].ProcIdx   := ProcIdx;
+  ScopeStack[ScopeDepth].SymStart  := SymCount;
+  ScopeStack[ScopeDepth].EbpTop    := 0;
+  ScopeStack[ScopeDepth].IsStatic  := False;
+  ScopeStack[ScopeDepth].IsShared  := False;
+  ScopeStack[ScopeDepth].NsIdx     := -1;
+  { Generer un label de sortie pour Sub/Function/Property }
+  If (Kind = SCOPE_SUB) Or (Kind = SCOPE_FUNCTION) Or
+     (Kind = SCOPE_PROPERTY) Then
+  Begin
+    If (ProcIdx >= 0) And (ProcIdx < ProcCount) Then
+      ScopeStack[ScopeDepth].ExitLabel := ProcTab[ProcIdx].ExitLabel
+    Else
+      ScopeStack[ScopeDepth].ExitLabel := NextInternalLabel + '_exit';
+  End
+  Else
+    ScopeStack[ScopeDepth].ExitLabel := '';
+  { Heriter du NsIdx du Namespace englobant si on entre dans un NS }
+  If Kind = SCOPE_NAMESPACE Then
+    ScopeStack[ScopeDepth].NsIdx := SymCount - 1
+  Else If ScopeDepth > 0 Then
+    ScopeStack[ScopeDepth].NsIdx := ScopeStack[ScopeDepth - 1].NsIdx;
+  Inc(ScopeDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ LeaveScope : depiler la portee courante                      }
+{   Met a jour LocalSize dans ProcTab si applicable            }
+{ ------------------------------------------------------------ }
+
+Procedure LeaveScope;
+Var
+  Idx : Integer;
+Begin
+  If ScopeDepth <= 1 Then
+  Begin
+    WarnMsg('LeaveScope : tentative de depiler la portee globale');
+    Exit;
+  End;
+  Dec(ScopeDepth);
+  { Si la portee etait un Sub/Function/Property, enregistrer la }
+  { taille totale des variables locales dans ProcTab             }
+  Idx := ScopeStack[ScopeDepth].ProcIdx;
+  If (Idx >= 0) And (Idx < ProcCount) Then
+  Begin
+    If (ScopeStack[ScopeDepth].Kind = SCOPE_SUB) Or
+       (ScopeStack[ScopeDepth].Kind = SCOPE_FUNCTION) Or
+       (ScopeStack[ScopeDepth].Kind = SCOPE_PROPERTY) Then
+    Begin
+      ProcTab[Idx].LocalSize := ScopeStack[ScopeDepth].EbpTop;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AllocLocalEbp : allouer de l espace sur la pile EBP          }
+{   bytes : taille en octets a allouer                          }
+{   Retourne l offset EBP negatif attribue                      }
+{   Aligne sur 4 octets (32 bits) pour performance             }
+{ ------------------------------------------------------------ }
+
+Function AllocLocalEbp(Bytes : Integer) : Integer;
+Var
+  Aligned : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+  Begin
+    FatalError('AllocLocalEbp : pas de portee active');
+    AllocLocalEbp := 0;
+    Exit;
+  End;
+  { Aligner sur 4 octets (arrondi vers le haut) }
+  Aligned := ((Bytes + 3) Div 4) * 4;
+  { Incrementer l offset (negatif par rapport a EBP) }
+  ScopeStack[ScopeDepth - 1].EbpTop :=
+    ScopeStack[ScopeDepth - 1].EbpTop + Aligned;
+  { Retourner l offset negatif : [EBP - EbpTop] }
+  AllocLocalEbp := ScopeStack[ScopeDepth - 1].EbpTop;
+End;
+
+{ ------------------------------------------------------------ }
+{ CurrentEbpTop : retourner l offset EBP courant de la portee  }
+{   actuelle (taille des locales allouees jusqu ici)            }
+{ ------------------------------------------------------------ }
+
+Function CurrentEbpTop : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    CurrentEbpTop := 0
+  Else
+    CurrentEbpTop := ScopeStack[ScopeDepth - 1].EbpTop;
+End;
+
+{ ------------------------------------------------------------ }
+{ ResolveQualifiedName : resoudre un nom qualifie              }
+{   Ex : "Namespace.Class.Member" -> recherche dans les        }
+{   portees imbriquees depuis le plus profond                  }
+{   Retourne l index dans SymTab ou -1 si non trouve           }
+{ ------------------------------------------------------------ }
+
+Function ResolveQualifiedName(Const QName : TString) : Integer;
+Var
+  I    : Integer;
+  DotP : Integer;
+  Left : TString;
+  Rest : TString;
+  NsI  : Integer;
+Begin
+  ResolveQualifiedName := -1;
+  { Chercher le premier point }
+  DotP := 0;
+  For I := 1 To Length(QName) Do
+  Begin
+    If QName[I] = '.' Then
+    Begin
+      DotP := I;
+      Break;
+    End;
+  End;
+  If DotP = 0 Then
+  Begin
+    { Pas de point : recherche simple dans la table des symboles }
+    ResolveQualifiedName := FindSym(QName);
+    Exit;
+  End;
+  { Separer la partie gauche du point }
+  Left := Copy(QName, 1, DotP - 1);
+  Rest := Copy(QName, DotP + 1, Length(QName) - DotP);
+  { Chercher la partie gauche comme Namespace/Class/Module/Structure }
+  NsI := FindSym(Left);
+  If NsI < 0 Then Exit;
+  If (SymTab[NsI].Kind <> SK_NAMESPACE) And
+     (SymTab[NsI].Kind <> SK_CLASS) And
+     (SymTab[NsI].Kind <> SK_MODULE) And
+     (SymTab[NsI].Kind <> SK_STRUCTURE) Then
+    Exit;
+  { Recherche recursive du reste }
+  ResolveQualifiedName := ResolveQualifiedName(Rest);
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour la pile de portees                  }
+{ ------------------------------------------------------------ }
+
+Function GetScopeDepth : Integer;
+Begin
+  GetScopeDepth := ScopeDepth;
+End;
+
+Function GetCurrentScopeKind : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    GetCurrentScopeKind := SCOPE_GLOBAL
+  Else
+    GetCurrentScopeKind := ScopeStack[ScopeDepth - 1].Kind;
+End;
+
+Function GetCurrentScopeProcIdx : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    GetCurrentScopeProcIdx := -1
+  Else
+    GetCurrentScopeProcIdx := ScopeStack[ScopeDepth - 1].ProcIdx;
+End;
+
+Function GetCurrentScopeSymStart : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    GetCurrentScopeSymStart := 0
+  Else
+    GetCurrentScopeSymStart := ScopeStack[ScopeDepth - 1].SymStart;
+End;
+
+Function GetCurrentScopeExitLabel : TString;
+Begin
+  If ScopeDepth <= 0 Then
+    GetCurrentScopeExitLabel := ''
+  Else
+    GetCurrentScopeExitLabel := ScopeStack[ScopeDepth - 1].ExitLabel;
+End;
+
+Function IsCurrentScopeStatic : Boolean;
+Begin
+  If ScopeDepth <= 0 Then
+    IsCurrentScopeStatic := False
+  Else
+    IsCurrentScopeStatic := ScopeStack[ScopeDepth - 1].IsStatic;
+End;
+
+Function IsCurrentScopeShared : Boolean;
+Begin
+  If ScopeDepth <= 0 Then
+    IsCurrentScopeShared := False
+  Else
+    IsCurrentScopeShared := ScopeStack[ScopeDepth - 1].IsShared;
+End;
+
+Function GetCurrentScopeNsIdx : Integer;
+Begin
+  If ScopeDepth <= 0 Then
+    GetCurrentScopeNsIdx := -1
+  Else
+    GetCurrentScopeNsIdx := ScopeStack[ScopeDepth - 1].NsIdx;
+End;
+
+Function IsInGlobalScope : Boolean;
+Begin
+  IsInGlobalScope := (ScopeDepth <= 1);
+End;
+
+Function IsInProcScope : Boolean;
+Var K : Integer;
+Begin
+  K := GetCurrentScopeKind;
+  IsInProcScope := (K = SCOPE_SUB) Or (K = SCOPE_FUNCTION) Or
+                   (K = SCOPE_PROPERTY);
+End;
+
+Function IsInClassScope : Boolean;
+Var I : Integer;
+Begin
+  IsInClassScope := False;
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If ScopeStack[I].Kind = SCOPE_CLASS Then
+    Begin
+      IsInClassScope := True;
+      Exit;
+    End;
+  End;
+End;
+
+Function IsInStructureScope : Boolean;
+Var I : Integer;
+Begin
+  IsInStructureScope := False;
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If ScopeStack[I].Kind = SCOPE_STRUCTURE Then
+    Begin
+      IsInStructureScope := True;
+      Exit;
+    End;
+  End;
+End;
+
+Function IsInNamespaceScope : Boolean;
+Var I : Integer;
+Begin
+  IsInNamespaceScope := False;
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If ScopeStack[I].Kind = SCOPE_NAMESPACE Then
+    Begin
+      IsInNamespaceScope := True;
+      Exit;
+    End;
+  End;
+End;
+
+Function IsInModuleScope : Boolean;
+Var I : Integer;
+Begin
+  IsInModuleScope := False;
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If ScopeStack[I].Kind = SCOPE_MODULE Then
+    Begin
+      IsInModuleScope := True;
+      Exit;
+    End;
+  End;
+End;
+
+Function IsInTryScope : Boolean;
+Var I : Integer;
+Begin
+  IsInTryScope := False;
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If ScopeStack[I].Kind = SCOPE_TRY Then
+    Begin
+      IsInTryScope := True;
+      Exit;
+    End;
+  End;
+End;
+
+Function FindEnclosingProcIdx : Integer;
+Var I : Integer;
+Begin
+  FindEnclosingProcIdx := -1;
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If (ScopeStack[I].Kind = SCOPE_SUB) Or
+       (ScopeStack[I].Kind = SCOPE_FUNCTION) Or
+       (ScopeStack[I].Kind = SCOPE_PROPERTY) Then
+    Begin
+      FindEnclosingProcIdx := ScopeStack[I].ProcIdx;
+      Exit;
+    End;
+  End;
+End;
+
+Function FindEnclosingExitLabel : TString;
+Var I : Integer;
+Begin
+  FindEnclosingExitLabel := '';
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If ScopeStack[I].ExitLabel <> '' Then
+    Begin
+      FindEnclosingExitLabel := ScopeStack[I].ExitLabel;
+      Exit;
+    End;
+  End;
+End;
+
+Function FindEnclosingNsIdx : Integer;
+Var I : Integer;
+Begin
+  FindEnclosingNsIdx := -1;
+  For I := ScopeDepth - 1 DownTo 0 Do
+  Begin
+    If ScopeStack[I].Kind = SCOPE_NAMESPACE Then
+    Begin
+      FindEnclosingNsIdx := ScopeStack[I].NsIdx;
+      Exit;
+    End;
+  End;
+End;
+
+Function GetScopeKindAt(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < ScopeDepth) Then
+    GetScopeKindAt := ScopeStack[Idx].Kind
+  Else
+    GetScopeKindAt := -1;
+End;
+
+Function GetScopeProcIdxAt(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < ScopeDepth) Then
+    GetScopeProcIdxAt := ScopeStack[Idx].ProcIdx
+  Else
+    GetScopeProcIdxAt := -1;
+End;
+
+Function GetScopeEbpTopAt(Idx : Integer) : Integer;
+Begin
+  If (Idx >= 0) And (Idx < ScopeDepth) Then
+    GetScopeEbpTopAt := ScopeStack[Idx].EbpTop
+  Else
+    GetScopeEbpTopAt := 0;
+End;
+
+Function IsScopeStackEmpty : Boolean;
+Begin
+  IsScopeStackEmpty := (ScopeDepth <= 1);
+End;
+
+Function GetInternalLabelCount : LongInt;
+Begin
+  GetInternalLabelCount := InternalLabelCount;
+End;
+
+Procedure SetCurrentScopeStatic(V : Boolean);
+Begin
+  If ScopeDepth > 0 Then
+    ScopeStack[ScopeDepth - 1].IsStatic := V;
+End;
+
+Procedure SetCurrentScopeShared(V : Boolean);
+Begin
+  If ScopeDepth > 0 Then
+    ScopeStack[ScopeDepth - 1].IsShared := V;
+End;
+
+{ ============================================================ }
 { Procedure principale : Run                                   }
 { ============================================================ }
 
@@ -3632,13 +4136,14 @@ Begin
 
   { Ouvrir et tokeniser le fichier source }
   InitSymTable;
+  InitScopes;
   LexInit;
   LexNextToken;
   While CurTokType <> TOK_EOF Do
     LexNextToken;
   LexClose;
 
-  { TODO 05..25 : Compilation, generation de code, etc. }
+  { TODO 06..25 : Compilation, generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;
