@@ -98,7 +98,7 @@
               TOK_NEWLINE, TOK_EOF)
             Stocker dans CurTokType / CurTokStr / CurTokNum
 
-  TODO 03 - RECONNAISSANCE DES MOTS-CLES VISUAL BASIC .NET [A FAIRE]
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES VISUAL BASIC .NET [IMPLEMENTE]
             Function IsKeyword(Const s: String): Integer
             Mots-cles complets a reconnaitre :
               AddHandler AddressOf And AndAlso As
@@ -1376,6 +1376,631 @@ Begin
   IsWhitespace := (Ch = ' ') Or (Ch = #9);
 End;
 
+{ ============================================================ }
+{ TODO 03 - RECONNAISSANCE DES MOTS-CLES VB.NET  [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  { Constantes KW_* pour les mots-cles Visual Basic .NET }
+  { Mots-cles du langage }
+  KW_NONE            = 0;
+  KW_ADDHANDLER      = 1;
+  KW_ADDRESSOF       = 2;
+  KW_AND             = 3;
+  KW_ANDALSO         = 4;
+  KW_AS              = 5;
+  KW_BOOLEAN         = 6;
+  KW_BYREF           = 7;
+  KW_BYTE            = 8;
+  KW_BYVAL           = 9;
+  KW_CALL            = 10;
+  KW_CASE            = 11;
+  KW_CATCH           = 12;
+  KW_CBOOL           = 13;
+  KW_CBYTE           = 14;
+  KW_CCHAR           = 15;
+  KW_CDATE           = 16;
+  KW_CDBL            = 17;
+  KW_CDEC            = 18;
+  KW_CHAR            = 19;
+  KW_CINT            = 20;
+  KW_CLASS           = 21;
+  KW_CLNG            = 22;
+  KW_COBJ            = 23;
+  KW_CONST           = 24;
+  KW_CONTINUE        = 25;
+  KW_CSBYTE          = 26;
+  KW_CSHORT          = 27;
+  KW_CSNG            = 28;
+  KW_CSTR            = 29;
+  KW_CTYPE           = 30;
+  KW_CUINT           = 31;
+  KW_CULNG           = 32;
+  KW_CUSHORT         = 33;
+  KW_DATE            = 34;
+  KW_DECIMAL         = 35;
+  KW_DECLARE         = 36;
+  KW_DEFAULT         = 37;
+  KW_DELEGATE        = 38;
+  KW_DIM             = 39;
+  KW_DIRECTCAST      = 40;
+  KW_DO              = 41;
+  KW_DOUBLE          = 42;
+  KW_EACH            = 43;
+  KW_ELSE            = 44;
+  KW_ELSEIF          = 45;
+  KW_END             = 46;
+  KW_ENUM            = 47;
+  KW_ERASE           = 48;
+  KW_ERROR           = 49;
+  KW_EVENT           = 50;
+  KW_EXIT            = 51;
+  KW_FALSE           = 52;
+  KW_FINALLY         = 53;
+  KW_FOR             = 54;
+  KW_FRIEND          = 55;
+  KW_FUNCTION        = 56;
+  KW_GET             = 57;
+  KW_GETTYPE         = 58;
+  KW_GLOBAL          = 59;
+  KW_GOTO            = 60;
+  KW_HANDLES         = 61;
+  KW_IF              = 62;
+  KW_IMPLEMENTS      = 63;
+  KW_IMPORTS         = 64;
+  KW_IN              = 65;
+  KW_INHERITS        = 66;
+  KW_INTEGER         = 67;
+  KW_INTERFACE       = 68;
+  KW_IS              = 69;
+  KW_ISNOT           = 70;
+  KW_LET             = 71;
+  KW_LIB             = 72;
+  KW_LIKE            = 73;
+  KW_LONG            = 74;
+  KW_LOOP            = 75;
+  KW_ME              = 76;
+  KW_MOD             = 77;
+  KW_MODULE          = 78;
+  KW_MUSTINHERIT     = 79;
+  KW_MUSTOVERRIDE    = 80;
+  KW_MYBASE          = 81;
+  KW_MYCLASS         = 82;
+  KW_NAMESPACE       = 83;
+  KW_NARROWING       = 84;
+  KW_NEW             = 85;
+  KW_NEXT            = 86;
+  KW_NOT             = 87;
+  KW_NOTHING         = 88;
+  KW_NOTINHERITABLE  = 89;
+  KW_NOTOVERRIDABLE  = 90;
+  KW_OBJECT          = 91;
+  KW_OF              = 92;
+  KW_ON              = 93;
+  KW_OPERATOR        = 94;
+  KW_OPTION          = 95;
+  KW_OPTIONAL        = 96;
+  KW_OR              = 97;
+  KW_ORELSE          = 98;
+  KW_OVERLOADS       = 99;
+  KW_OVERRIDABLE     = 100;
+  KW_OVERRIDES       = 101;
+  KW_PARAMARRAY      = 102;
+  KW_PARTIAL         = 103;
+  KW_PRIVATE         = 104;
+  KW_PROPERTY        = 105;
+  KW_PROTECTED       = 106;
+  KW_PUBLIC          = 107;
+  KW_RAISEEVENT      = 108;
+  KW_READONLY        = 109;
+  KW_REDIM           = 110;
+  KW_REM             = 111;
+  KW_REMOVEHANDLER   = 112;
+  KW_RESUME          = 113;
+  KW_RETURN          = 114;
+  KW_SBYTE           = 115;
+  KW_SELECT          = 116;
+  KW_SET             = 117;
+  KW_SHADOWS         = 118;
+  KW_SHARED          = 119;
+  KW_SHORT           = 120;
+  KW_SINGLE          = 121;
+  KW_STATIC          = 122;
+  KW_STEP            = 123;
+  KW_STOP            = 124;
+  KW_STRING          = 125;
+  KW_STRUCTURE       = 126;
+  KW_SUB             = 127;
+  KW_SYNCLOCK        = 128;
+  KW_THEN            = 129;
+  KW_THROW           = 130;
+  KW_TO              = 131;
+  KW_TRUE            = 132;
+  KW_TRY             = 133;
+  KW_TRYCAST         = 134;
+  KW_TYPEOF          = 135;
+  KW_UINTEGER        = 136;
+  KW_ULONG           = 137;
+  KW_USHORT          = 138;
+  KW_USING           = 139;
+  KW_WHEN            = 140;
+  KW_WHILE           = 141;
+  KW_WIDENING        = 142;
+  KW_WITH            = 143;
+  KW_WITHEVENTS      = 144;
+  KW_WRITEONLY       = 145;
+  KW_XOR             = 146;
+
+  { Fonctions VB.NET intrinseques }
+  KW_ABS             = 150;
+  KW_ASC             = 151;
+  KW_ATN             = 152;
+  KW_CHR             = 153;
+  KW_COS             = 154;
+  KW_EXP             = 155;
+  KW_FIX             = 156;
+  KW_HEX             = 157;
+  KW_INSTR           = 158;
+  KW_INT             = 159;
+  KW_LCASE           = 160;
+  KW_LEFT            = 161;
+  KW_LEN             = 162;
+  KW_LOG             = 163;
+  KW_LTRIM           = 164;
+  KW_MID             = 165;
+  KW_OCT             = 166;
+  KW_RIGHT           = 167;
+  KW_RTRIM           = 168;
+  KW_SGN             = 169;
+  KW_SIN             = 170;
+  KW_SPACE           = 171;
+  KW_SQR             = 172;
+  KW_STR             = 173;
+  KW_TAN             = 174;
+  KW_TRIM            = 175;
+  KW_UCASE           = 176;
+  KW_VAL             = 177;
+  KW_ISNUMERIC       = 178;
+  KW_ISDATE          = 179;
+  KW_ISARRAY         = 180;
+  KW_ISNOTHING       = 181;
+  KW_MSGBOX          = 182;
+  KW_INPUTBOX        = 183;
+  KW_FORMAT          = 184;
+  KW_REPLACE         = 185;
+  KW_SPLIT           = 186;
+  KW_JOIN            = 187;
+  KW_INSTRREV        = 188;
+  KW_STRREVERSE      = 189;
+  KW_LBOUND          = 190;
+  KW_UBOUND          = 191;
+
+  { Mots-cles contextuels }
+  KW_ASSEMBLY        = 195;
+  KW_AUTO            = 196;
+  KW_ANSI            = 197;
+  KW_UNICODE         = 198;
+  KW_PRESERVE        = 199;
+
+  { Token special pour mot-cle reconnu }
+  TOK_KEYWORD   = 50;     { mot-cle VB.NET reconnu                  }
+
+{ ------------------------------------------------------------ }
+{ IsKeyword : tester si un identificateur est un mot-cle VB.NET }
+{ Retourne la constante KW_* ou KW_NONE si non reconnu         }
+{ VB.NET est insensible a la casse                              }
+{ ------------------------------------------------------------ }
+
+Function IsKeyword(Const S : TString) : Integer;
+Var
+  U : TString;
+Begin
+  U := UpCaseStr(S);
+  { Mots-cles du langage VB.NET }
+  If      U = 'ADDHANDLER'     Then IsKeyword := KW_ADDHANDLER
+  Else If U = 'ADDRESSOF'      Then IsKeyword := KW_ADDRESSOF
+  Else If U = 'AND'            Then IsKeyword := KW_AND
+  Else If U = 'ANDALSO'        Then IsKeyword := KW_ANDALSO
+  Else If U = 'AS'             Then IsKeyword := KW_AS
+  Else If U = 'BOOLEAN'        Then IsKeyword := KW_BOOLEAN
+  Else If U = 'BYREF'          Then IsKeyword := KW_BYREF
+  Else If U = 'BYTE'           Then IsKeyword := KW_BYTE
+  Else If U = 'BYVAL'          Then IsKeyword := KW_BYVAL
+  Else If U = 'CALL'           Then IsKeyword := KW_CALL
+  Else If U = 'CASE'           Then IsKeyword := KW_CASE
+  Else If U = 'CATCH'          Then IsKeyword := KW_CATCH
+  Else If U = 'CBOOL'          Then IsKeyword := KW_CBOOL
+  Else If U = 'CBYTE'          Then IsKeyword := KW_CBYTE
+  Else If U = 'CCHAR'          Then IsKeyword := KW_CCHAR
+  Else If U = 'CDATE'          Then IsKeyword := KW_CDATE
+  Else If U = 'CDBL'           Then IsKeyword := KW_CDBL
+  Else If U = 'CDEC'           Then IsKeyword := KW_CDEC
+  Else If U = 'CHAR'           Then IsKeyword := KW_CHAR
+  Else If U = 'CINT'           Then IsKeyword := KW_CINT
+  Else If U = 'CLASS'          Then IsKeyword := KW_CLASS
+  Else If U = 'CLNG'           Then IsKeyword := KW_CLNG
+  Else If U = 'COBJ'           Then IsKeyword := KW_COBJ
+  Else If U = 'CONST'          Then IsKeyword := KW_CONST
+  Else If U = 'CONTINUE'       Then IsKeyword := KW_CONTINUE
+  Else If U = 'CSBYTE'         Then IsKeyword := KW_CSBYTE
+  Else If U = 'CSHORT'         Then IsKeyword := KW_CSHORT
+  Else If U = 'CSNG'           Then IsKeyword := KW_CSNG
+  Else If U = 'CSTR'           Then IsKeyword := KW_CSTR
+  Else If U = 'CTYPE'          Then IsKeyword := KW_CTYPE
+  Else If U = 'CUINT'          Then IsKeyword := KW_CUINT
+  Else If U = 'CULNG'          Then IsKeyword := KW_CULNG
+  Else If U = 'CUSHORT'        Then IsKeyword := KW_CUSHORT
+  Else If U = 'DATE'           Then IsKeyword := KW_DATE
+  Else If U = 'DECIMAL'        Then IsKeyword := KW_DECIMAL
+  Else If U = 'DECLARE'        Then IsKeyword := KW_DECLARE
+  Else If U = 'DEFAULT'        Then IsKeyword := KW_DEFAULT
+  Else If U = 'DELEGATE'       Then IsKeyword := KW_DELEGATE
+  Else If U = 'DIM'            Then IsKeyword := KW_DIM
+  Else If U = 'DIRECTCAST'     Then IsKeyword := KW_DIRECTCAST
+  Else If U = 'DO'             Then IsKeyword := KW_DO
+  Else If U = 'DOUBLE'         Then IsKeyword := KW_DOUBLE
+  Else If U = 'EACH'           Then IsKeyword := KW_EACH
+  Else If U = 'ELSE'           Then IsKeyword := KW_ELSE
+  Else If U = 'ELSEIF'         Then IsKeyword := KW_ELSEIF
+  Else If U = 'END'            Then IsKeyword := KW_END
+  Else If U = 'ENUM'           Then IsKeyword := KW_ENUM
+  Else If U = 'ERASE'          Then IsKeyword := KW_ERASE
+  Else If U = 'ERROR'          Then IsKeyword := KW_ERROR
+  Else If U = 'EVENT'          Then IsKeyword := KW_EVENT
+  Else If U = 'EXIT'           Then IsKeyword := KW_EXIT
+  Else If U = 'FALSE'          Then IsKeyword := KW_FALSE
+  Else If U = 'FINALLY'        Then IsKeyword := KW_FINALLY
+  Else If U = 'FOR'            Then IsKeyword := KW_FOR
+  Else If U = 'FRIEND'         Then IsKeyword := KW_FRIEND
+  Else If U = 'FUNCTION'       Then IsKeyword := KW_FUNCTION
+  Else If U = 'GET'            Then IsKeyword := KW_GET
+  Else If U = 'GETTYPE'        Then IsKeyword := KW_GETTYPE
+  Else If U = 'GLOBAL'         Then IsKeyword := KW_GLOBAL
+  Else If U = 'GOTO'           Then IsKeyword := KW_GOTO
+  Else If U = 'HANDLES'        Then IsKeyword := KW_HANDLES
+  Else If U = 'IF'             Then IsKeyword := KW_IF
+  Else If U = 'IMPLEMENTS'     Then IsKeyword := KW_IMPLEMENTS
+  Else If U = 'IMPORTS'        Then IsKeyword := KW_IMPORTS
+  Else If U = 'IN'             Then IsKeyword := KW_IN
+  Else If U = 'INHERITS'       Then IsKeyword := KW_INHERITS
+  Else If U = 'INTEGER'        Then IsKeyword := KW_INTEGER
+  Else If U = 'INTERFACE'      Then IsKeyword := KW_INTERFACE
+  Else If U = 'IS'             Then IsKeyword := KW_IS
+  Else If U = 'ISNOT'          Then IsKeyword := KW_ISNOT
+  Else If U = 'LET'            Then IsKeyword := KW_LET
+  Else If U = 'LIB'            Then IsKeyword := KW_LIB
+  Else If U = 'LIKE'           Then IsKeyword := KW_LIKE
+  Else If U = 'LONG'           Then IsKeyword := KW_LONG
+  Else If U = 'LOOP'           Then IsKeyword := KW_LOOP
+  Else If U = 'ME'             Then IsKeyword := KW_ME
+  Else If U = 'MOD'            Then IsKeyword := KW_MOD
+  Else If U = 'MODULE'         Then IsKeyword := KW_MODULE
+  Else If U = 'MUSTINHERIT'    Then IsKeyword := KW_MUSTINHERIT
+  Else If U = 'MUSTOVERRIDE'   Then IsKeyword := KW_MUSTOVERRIDE
+  Else If U = 'MYBASE'         Then IsKeyword := KW_MYBASE
+  Else If U = 'MYCLASS'        Then IsKeyword := KW_MYCLASS
+  Else If U = 'NAMESPACE'      Then IsKeyword := KW_NAMESPACE
+  Else If U = 'NARROWING'      Then IsKeyword := KW_NARROWING
+  Else If U = 'NEW'            Then IsKeyword := KW_NEW
+  Else If U = 'NEXT'           Then IsKeyword := KW_NEXT
+  Else If U = 'NOT'            Then IsKeyword := KW_NOT
+  Else If U = 'NOTHING'        Then IsKeyword := KW_NOTHING
+  Else If U = 'NOTINHERITABLE' Then IsKeyword := KW_NOTINHERITABLE
+  Else If U = 'NOTOVERRIDABLE' Then IsKeyword := KW_NOTOVERRIDABLE
+  Else If U = 'OBJECT'         Then IsKeyword := KW_OBJECT
+  Else If U = 'OF'             Then IsKeyword := KW_OF
+  Else If U = 'ON'             Then IsKeyword := KW_ON
+  Else If U = 'OPERATOR'       Then IsKeyword := KW_OPERATOR
+  Else If U = 'OPTION'         Then IsKeyword := KW_OPTION
+  Else If U = 'OPTIONAL'       Then IsKeyword := KW_OPTIONAL
+  Else If U = 'OR'             Then IsKeyword := KW_OR
+  Else If U = 'ORELSE'         Then IsKeyword := KW_ORELSE
+  Else If U = 'OVERLOADS'      Then IsKeyword := KW_OVERLOADS
+  Else If U = 'OVERRIDABLE'    Then IsKeyword := KW_OVERRIDABLE
+  Else If U = 'OVERRIDES'      Then IsKeyword := KW_OVERRIDES
+  Else If U = 'PARAMARRAY'     Then IsKeyword := KW_PARAMARRAY
+  Else If U = 'PARTIAL'        Then IsKeyword := KW_PARTIAL
+  Else If U = 'PRIVATE'        Then IsKeyword := KW_PRIVATE
+  Else If U = 'PROPERTY'       Then IsKeyword := KW_PROPERTY
+  Else If U = 'PROTECTED'      Then IsKeyword := KW_PROTECTED
+  Else If U = 'PUBLIC'         Then IsKeyword := KW_PUBLIC
+  Else If U = 'RAISEEVENT'     Then IsKeyword := KW_RAISEEVENT
+  Else If U = 'READONLY'       Then IsKeyword := KW_READONLY
+  Else If U = 'REDIM'          Then IsKeyword := KW_REDIM
+  Else If U = 'REM'            Then IsKeyword := KW_REM
+  Else If U = 'REMOVEHANDLER'  Then IsKeyword := KW_REMOVEHANDLER
+  Else If U = 'RESUME'         Then IsKeyword := KW_RESUME
+  Else If U = 'RETURN'         Then IsKeyword := KW_RETURN
+  Else If U = 'SBYTE'          Then IsKeyword := KW_SBYTE
+  Else If U = 'SELECT'         Then IsKeyword := KW_SELECT
+  Else If U = 'SET'            Then IsKeyword := KW_SET
+  Else If U = 'SHADOWS'        Then IsKeyword := KW_SHADOWS
+  Else If U = 'SHARED'         Then IsKeyword := KW_SHARED
+  Else If U = 'SHORT'          Then IsKeyword := KW_SHORT
+  Else If U = 'SINGLE'         Then IsKeyword := KW_SINGLE
+  Else If U = 'STATIC'         Then IsKeyword := KW_STATIC
+  Else If U = 'STEP'           Then IsKeyword := KW_STEP
+  Else If U = 'STOP'           Then IsKeyword := KW_STOP
+  Else If U = 'STRING'         Then IsKeyword := KW_STRING
+  Else If U = 'STRUCTURE'      Then IsKeyword := KW_STRUCTURE
+  Else If U = 'SUB'            Then IsKeyword := KW_SUB
+  Else If U = 'SYNCLOCK'       Then IsKeyword := KW_SYNCLOCK
+  Else If U = 'THEN'           Then IsKeyword := KW_THEN
+  Else If U = 'THROW'          Then IsKeyword := KW_THROW
+  Else If U = 'TO'             Then IsKeyword := KW_TO
+  Else If U = 'TRUE'           Then IsKeyword := KW_TRUE
+  Else If U = 'TRY'            Then IsKeyword := KW_TRY
+  Else If U = 'TRYCAST'        Then IsKeyword := KW_TRYCAST
+  Else If U = 'TYPEOF'         Then IsKeyword := KW_TYPEOF
+  Else If U = 'UINTEGER'       Then IsKeyword := KW_UINTEGER
+  Else If U = 'ULONG'          Then IsKeyword := KW_ULONG
+  Else If U = 'USHORT'         Then IsKeyword := KW_USHORT
+  Else If U = 'USING'          Then IsKeyword := KW_USING
+  Else If U = 'WHEN'           Then IsKeyword := KW_WHEN
+  Else If U = 'WHILE'          Then IsKeyword := KW_WHILE
+  Else If U = 'WIDENING'       Then IsKeyword := KW_WIDENING
+  Else If U = 'WITH'           Then IsKeyword := KW_WITH
+  Else If U = 'WITHEVENTS'     Then IsKeyword := KW_WITHEVENTS
+  Else If U = 'WRITEONLY'      Then IsKeyword := KW_WRITEONLY
+  Else If U = 'XOR'            Then IsKeyword := KW_XOR
+  { Fonctions VB.NET intrinseques }
+  Else If U = 'ABS'            Then IsKeyword := KW_ABS
+  Else If U = 'ASC'            Then IsKeyword := KW_ASC
+  Else If U = 'ATN'            Then IsKeyword := KW_ATN
+  Else If U = 'CHR'            Then IsKeyword := KW_CHR
+  Else If U = 'COS'            Then IsKeyword := KW_COS
+  Else If U = 'EXP'            Then IsKeyword := KW_EXP
+  Else If U = 'FIX'            Then IsKeyword := KW_FIX
+  Else If U = 'HEX'            Then IsKeyword := KW_HEX
+  Else If U = 'INSTR'          Then IsKeyword := KW_INSTR
+  Else If U = 'INT'            Then IsKeyword := KW_INT
+  Else If U = 'LCASE'          Then IsKeyword := KW_LCASE
+  Else If U = 'LEFT'           Then IsKeyword := KW_LEFT
+  Else If U = 'LEN'            Then IsKeyword := KW_LEN
+  Else If U = 'LOG'            Then IsKeyword := KW_LOG
+  Else If U = 'LTRIM'          Then IsKeyword := KW_LTRIM
+  Else If U = 'MID'            Then IsKeyword := KW_MID
+  Else If U = 'OCT'            Then IsKeyword := KW_OCT
+  Else If U = 'RIGHT'          Then IsKeyword := KW_RIGHT
+  Else If U = 'RTRIM'          Then IsKeyword := KW_RTRIM
+  Else If U = 'SGN'            Then IsKeyword := KW_SGN
+  Else If U = 'SIN'            Then IsKeyword := KW_SIN
+  Else If U = 'SPACE'          Then IsKeyword := KW_SPACE
+  Else If U = 'SQR'            Then IsKeyword := KW_SQR
+  Else If U = 'STR'            Then IsKeyword := KW_STR
+  Else If U = 'TAN'            Then IsKeyword := KW_TAN
+  Else If U = 'TRIM'           Then IsKeyword := KW_TRIM
+  Else If U = 'UCASE'          Then IsKeyword := KW_UCASE
+  Else If U = 'VAL'            Then IsKeyword := KW_VAL
+  Else If U = 'ISNUMERIC'      Then IsKeyword := KW_ISNUMERIC
+  Else If U = 'ISDATE'         Then IsKeyword := KW_ISDATE
+  Else If U = 'ISARRAY'        Then IsKeyword := KW_ISARRAY
+  Else If U = 'ISNOTHING'      Then IsKeyword := KW_ISNOTHING
+  Else If U = 'MSGBOX'         Then IsKeyword := KW_MSGBOX
+  Else If U = 'INPUTBOX'       Then IsKeyword := KW_INPUTBOX
+  Else If U = 'FORMAT'         Then IsKeyword := KW_FORMAT
+  Else If U = 'REPLACE'        Then IsKeyword := KW_REPLACE
+  Else If U = 'SPLIT'          Then IsKeyword := KW_SPLIT
+  Else If U = 'JOIN'           Then IsKeyword := KW_JOIN
+  Else If U = 'INSTRREV'       Then IsKeyword := KW_INSTRREV
+  Else If U = 'STRREVERSE'     Then IsKeyword := KW_STRREVERSE
+  Else If U = 'LBOUND'         Then IsKeyword := KW_LBOUND
+  Else If U = 'UBOUND'         Then IsKeyword := KW_UBOUND
+  { Mots-cles contextuels }
+  Else If U = 'ASSEMBLY'       Then IsKeyword := KW_ASSEMBLY
+  Else If U = 'AUTO'           Then IsKeyword := KW_AUTO
+  Else If U = 'ANSI'           Then IsKeyword := KW_ANSI
+  Else If U = 'UNICODE'        Then IsKeyword := KW_UNICODE
+  Else If U = 'PRESERVE'       Then IsKeyword := KW_PRESERVE
+  Else IsKeyword := KW_NONE;
+End;
+
+{ ------------------------------------------------------------ }
+{ KeywordName : retourne le nom d un mot-cle a partir de       }
+{               sa constante KW_*                               }
+{ ------------------------------------------------------------ }
+
+Function KeywordName(KW : Integer) : TString;
+Begin
+  Case KW Of
+    KW_ADDHANDLER      : KeywordName := 'AddHandler';
+    KW_ADDRESSOF       : KeywordName := 'AddressOf';
+    KW_AND             : KeywordName := 'And';
+    KW_ANDALSO         : KeywordName := 'AndAlso';
+    KW_AS              : KeywordName := 'As';
+    KW_BOOLEAN         : KeywordName := 'Boolean';
+    KW_BYREF           : KeywordName := 'ByRef';
+    KW_BYTE            : KeywordName := 'Byte';
+    KW_BYVAL           : KeywordName := 'ByVal';
+    KW_CALL            : KeywordName := 'Call';
+    KW_CASE            : KeywordName := 'Case';
+    KW_CATCH           : KeywordName := 'Catch';
+    KW_CBOOL           : KeywordName := 'CBool';
+    KW_CBYTE           : KeywordName := 'CByte';
+    KW_CCHAR           : KeywordName := 'CChar';
+    KW_CDATE           : KeywordName := 'CDate';
+    KW_CDBL            : KeywordName := 'CDbl';
+    KW_CDEC            : KeywordName := 'CDec';
+    KW_CHAR            : KeywordName := 'Char';
+    KW_CINT            : KeywordName := 'CInt';
+    KW_CLASS           : KeywordName := 'Class';
+    KW_CLNG            : KeywordName := 'CLng';
+    KW_COBJ            : KeywordName := 'CObj';
+    KW_CONST           : KeywordName := 'Const';
+    KW_CONTINUE        : KeywordName := 'Continue';
+    KW_CSBYTE          : KeywordName := 'CSByte';
+    KW_CSHORT          : KeywordName := 'CShort';
+    KW_CSNG            : KeywordName := 'CSng';
+    KW_CSTR            : KeywordName := 'CStr';
+    KW_CTYPE           : KeywordName := 'CType';
+    KW_CUINT           : KeywordName := 'CUInt';
+    KW_CULNG           : KeywordName := 'CULng';
+    KW_CUSHORT         : KeywordName := 'CUShort';
+    KW_DATE            : KeywordName := 'Date';
+    KW_DECIMAL         : KeywordName := 'Decimal';
+    KW_DECLARE         : KeywordName := 'Declare';
+    KW_DEFAULT         : KeywordName := 'Default';
+    KW_DELEGATE        : KeywordName := 'Delegate';
+    KW_DIM             : KeywordName := 'Dim';
+    KW_DIRECTCAST      : KeywordName := 'DirectCast';
+    KW_DO              : KeywordName := 'Do';
+    KW_DOUBLE          : KeywordName := 'Double';
+    KW_EACH            : KeywordName := 'Each';
+    KW_ELSE            : KeywordName := 'Else';
+    KW_ELSEIF          : KeywordName := 'ElseIf';
+    KW_END             : KeywordName := 'End';
+    KW_ENUM            : KeywordName := 'Enum';
+    KW_ERASE           : KeywordName := 'Erase';
+    KW_ERROR           : KeywordName := 'Error';
+    KW_EVENT           : KeywordName := 'Event';
+    KW_EXIT            : KeywordName := 'Exit';
+    KW_FALSE           : KeywordName := 'False';
+    KW_FINALLY         : KeywordName := 'Finally';
+    KW_FOR             : KeywordName := 'For';
+    KW_FRIEND          : KeywordName := 'Friend';
+    KW_FUNCTION        : KeywordName := 'Function';
+    KW_GET             : KeywordName := 'Get';
+    KW_GETTYPE         : KeywordName := 'GetType';
+    KW_GLOBAL          : KeywordName := 'Global';
+    KW_GOTO            : KeywordName := 'GoTo';
+    KW_HANDLES         : KeywordName := 'Handles';
+    KW_IF              : KeywordName := 'If';
+    KW_IMPLEMENTS      : KeywordName := 'Implements';
+    KW_IMPORTS         : KeywordName := 'Imports';
+    KW_IN              : KeywordName := 'In';
+    KW_INHERITS        : KeywordName := 'Inherits';
+    KW_INTEGER         : KeywordName := 'Integer';
+    KW_INTERFACE       : KeywordName := 'Interface';
+    KW_IS              : KeywordName := 'Is';
+    KW_ISNOT           : KeywordName := 'IsNot';
+    KW_LET             : KeywordName := 'Let';
+    KW_LIB             : KeywordName := 'Lib';
+    KW_LIKE            : KeywordName := 'Like';
+    KW_LONG            : KeywordName := 'Long';
+    KW_LOOP            : KeywordName := 'Loop';
+    KW_ME              : KeywordName := 'Me';
+    KW_MOD             : KeywordName := 'Mod';
+    KW_MODULE          : KeywordName := 'Module';
+    KW_MUSTINHERIT     : KeywordName := 'MustInherit';
+    KW_MUSTOVERRIDE    : KeywordName := 'MustOverride';
+    KW_MYBASE          : KeywordName := 'MyBase';
+    KW_MYCLASS         : KeywordName := 'MyClass';
+    KW_NAMESPACE       : KeywordName := 'Namespace';
+    KW_NARROWING       : KeywordName := 'Narrowing';
+    KW_NEW             : KeywordName := 'New';
+    KW_NEXT            : KeywordName := 'Next';
+    KW_NOT             : KeywordName := 'Not';
+    KW_NOTHING         : KeywordName := 'Nothing';
+    KW_NOTINHERITABLE  : KeywordName := 'NotInheritable';
+    KW_NOTOVERRIDABLE  : KeywordName := 'NotOverridable';
+    KW_OBJECT          : KeywordName := 'Object';
+    KW_OF              : KeywordName := 'Of';
+    KW_ON              : KeywordName := 'On';
+    KW_OPERATOR        : KeywordName := 'Operator';
+    KW_OPTION          : KeywordName := 'Option';
+    KW_OPTIONAL        : KeywordName := 'Optional';
+    KW_OR              : KeywordName := 'Or';
+    KW_ORELSE          : KeywordName := 'OrElse';
+    KW_OVERLOADS       : KeywordName := 'Overloads';
+    KW_OVERRIDABLE     : KeywordName := 'Overridable';
+    KW_OVERRIDES       : KeywordName := 'Overrides';
+    KW_PARAMARRAY      : KeywordName := 'ParamArray';
+    KW_PARTIAL         : KeywordName := 'Partial';
+    KW_PRIVATE         : KeywordName := 'Private';
+    KW_PROPERTY        : KeywordName := 'Property';
+    KW_PROTECTED       : KeywordName := 'Protected';
+    KW_PUBLIC          : KeywordName := 'Public';
+    KW_RAISEEVENT      : KeywordName := 'RaiseEvent';
+    KW_READONLY        : KeywordName := 'ReadOnly';
+    KW_REDIM           : KeywordName := 'ReDim';
+    KW_REM             : KeywordName := 'Rem';
+    KW_REMOVEHANDLER   : KeywordName := 'RemoveHandler';
+    KW_RESUME          : KeywordName := 'Resume';
+    KW_RETURN          : KeywordName := 'Return';
+    KW_SBYTE           : KeywordName := 'SByte';
+    KW_SELECT          : KeywordName := 'Select';
+    KW_SET             : KeywordName := 'Set';
+    KW_SHADOWS         : KeywordName := 'Shadows';
+    KW_SHARED          : KeywordName := 'Shared';
+    KW_SHORT           : KeywordName := 'Short';
+    KW_SINGLE          : KeywordName := 'Single';
+    KW_STATIC          : KeywordName := 'Static';
+    KW_STEP            : KeywordName := 'Step';
+    KW_STOP            : KeywordName := 'Stop';
+    KW_STRING          : KeywordName := 'String';
+    KW_STRUCTURE       : KeywordName := 'Structure';
+    KW_SUB             : KeywordName := 'Sub';
+    KW_SYNCLOCK        : KeywordName := 'SyncLock';
+    KW_THEN            : KeywordName := 'Then';
+    KW_THROW           : KeywordName := 'Throw';
+    KW_TO              : KeywordName := 'To';
+    KW_TRUE            : KeywordName := 'True';
+    KW_TRY             : KeywordName := 'Try';
+    KW_TRYCAST         : KeywordName := 'TryCast';
+    KW_TYPEOF          : KeywordName := 'TypeOf';
+    KW_UINTEGER        : KeywordName := 'UInteger';
+    KW_ULONG           : KeywordName := 'ULong';
+    KW_USHORT          : KeywordName := 'UShort';
+    KW_USING           : KeywordName := 'Using';
+    KW_WHEN            : KeywordName := 'When';
+    KW_WHILE           : KeywordName := 'While';
+    KW_WIDENING        : KeywordName := 'Widening';
+    KW_WITH            : KeywordName := 'With';
+    KW_WITHEVENTS      : KeywordName := 'WithEvents';
+    KW_WRITEONLY       : KeywordName := 'WriteOnly';
+    KW_XOR             : KeywordName := 'Xor';
+    KW_ABS             : KeywordName := 'Abs';
+    KW_ASC             : KeywordName := 'Asc';
+    KW_ATN             : KeywordName := 'Atn';
+    KW_CHR             : KeywordName := 'Chr';
+    KW_COS             : KeywordName := 'Cos';
+    KW_EXP             : KeywordName := 'Exp';
+    KW_FIX             : KeywordName := 'Fix';
+    KW_HEX             : KeywordName := 'Hex';
+    KW_INSTR           : KeywordName := 'InStr';
+    KW_INT             : KeywordName := 'Int';
+    KW_LCASE           : KeywordName := 'LCase';
+    KW_LEFT            : KeywordName := 'Left';
+    KW_LEN             : KeywordName := 'Len';
+    KW_LOG             : KeywordName := 'Log';
+    KW_LTRIM           : KeywordName := 'LTrim';
+    KW_MID             : KeywordName := 'Mid';
+    KW_OCT             : KeywordName := 'Oct';
+    KW_RIGHT           : KeywordName := 'Right';
+    KW_RTRIM           : KeywordName := 'RTrim';
+    KW_SGN             : KeywordName := 'Sgn';
+    KW_SIN             : KeywordName := 'Sin';
+    KW_SPACE           : KeywordName := 'Space';
+    KW_SQR             : KeywordName := 'Sqr';
+    KW_STR             : KeywordName := 'Str';
+    KW_TAN             : KeywordName := 'Tan';
+    KW_TRIM            : KeywordName := 'Trim';
+    KW_UCASE           : KeywordName := 'UCase';
+    KW_VAL             : KeywordName := 'Val';
+    KW_ISNUMERIC       : KeywordName := 'IsNumeric';
+    KW_ISDATE          : KeywordName := 'IsDate';
+    KW_ISARRAY         : KeywordName := 'IsArray';
+    KW_ISNOTHING       : KeywordName := 'IsNothing';
+    KW_MSGBOX          : KeywordName := 'MsgBox';
+    KW_INPUTBOX        : KeywordName := 'InputBox';
+    KW_FORMAT          : KeywordName := 'Format';
+    KW_REPLACE         : KeywordName := 'Replace';
+    KW_SPLIT           : KeywordName := 'Split';
+    KW_JOIN            : KeywordName := 'Join';
+    KW_INSTRREV        : KeywordName := 'InStrRev';
+    KW_STRREVERSE      : KeywordName := 'StrReverse';
+    KW_LBOUND          : KeywordName := 'LBound';
+    KW_UBOUND          : KeywordName := 'UBound';
+    KW_ASSEMBLY        : KeywordName := 'Assembly';
+    KW_AUTO            : KeywordName := 'Auto';
+    KW_ANSI            : KeywordName := 'Ansi';
+    KW_UNICODE         : KeywordName := 'Unicode';
+    KW_PRESERVE        : KeywordName := 'Preserve';
+  Else
+    KeywordName := '?KW' + ItoSI(KW);
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { LexNextLine, LexInit, LexClose                               }
 { ------------------------------------------------------------ }
@@ -1461,6 +2086,7 @@ Procedure LexScanIdent;
 Var
   S   : TString;
   Ch  : Char;
+  KW  : Integer;
 Begin
   S := '';
   While (LexColNo <= Length(LexLine)) And
@@ -1484,8 +2110,18 @@ Begin
   End;
   CurTokStr  := S;
   CurTokReal := 0.0;
-  CurTokType := TOK_IDENT;
-  CurTokNum  := 0;
+  { Tester si c est un mot-cle VB.NET }
+  KW := IsKeyword(S);
+  If KW <> KW_NONE Then
+  Begin
+    CurTokType := TOK_KEYWORD;
+    CurTokNum  := KW;
+  End
+  Else
+  Begin
+    CurTokType := TOK_IDENT;
+    CurTokNum  := 0;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -1860,6 +2496,7 @@ Begin
   Case CurTokType Of
     TOK_EOF       : Write('EOF');
     TOK_IDENT     : Write('IDENT(', CurTokStr, ')');
+    TOK_KEYWORD   : Write('KW(', KeywordName(CurTokNum), ')');
     TOK_INTEGER   : Write('INT(', CurTokNum, ')');
     TOK_LONG      : Write('LONG(', CurTokNum, ')');
     TOK_SINGLE    : Write('SINGLE(', CurTokStr, ')');
@@ -2387,7 +3024,7 @@ Begin
     LexNextToken;
   LexClose;
 
-  { TODO 03..25 : Compilation, generation de code, etc. }
+  { TODO 04..25 : Compilation, generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;
