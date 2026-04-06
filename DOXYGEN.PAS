@@ -1230,6 +1230,21 @@ Const
   MAX_SVG_NODES         = 256;       { Nombre max de noeuds dans un graphe }
   MAX_SVG_EDGES         = 512;       { Nombre max d'aretes dans un graphe }
 
+  { Constantes pour le generateur Visio VDX integre (sans outil externe) }
+  VDX_DEFAULT_WIDTH     = 8.5;       { Largeur page en pouces (Letter) }
+  VDX_DEFAULT_HEIGHT    = 11.0;      { Hauteur page en pouces (Letter) }
+  VDX_NODE_WIDTH        = 1.5;       { Largeur d'un noeud en pouces }
+  VDX_NODE_HEIGHT       = 0.5;       { Hauteur d'un noeud en pouces }
+  VDX_NODE_MARGIN       = 0.4;       { Marge entre les noeuds en pouces }
+  VDX_FONT_SIZE         = 10;        { Taille de police en points }
+  VDX_ARROW_SIZE        = 0.1;       { Taille de la pointe de fleche en pouces }
+  MAX_VDX_NODES         = 256;       { Nombre max de noeuds dans un graphe }
+  MAX_VDX_EDGES         = 512;       { Nombre max d'aretes dans un graphe }
+  VDX_MASTER_RECT       = 1;         { ID Master pour rectangle }
+  VDX_MASTER_CONNECTOR  = 2;         { ID Master pour connecteur }
+  VDX_VERSION           = '11.0';    { Version Visio (2003+) }
+  VDX_XMLNS             = 'http://schemas.microsoft.com/visio/2003/core';
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1255,6 +1270,7 @@ Type
     ShowHelp     : Boolean;
     SvgOutput    : Boolean;    { --svg ou -D DOT_IMAGE_FORMAT=svg }
     PngOutput    : Boolean;    { --png ou -D DOT_IMAGE_FORMAT=png }
+    VdxOutput    : Boolean;    { --visio ou -D DOT_IMAGE_FORMAT=vdx }
   End;
 
   TSourceLanguage = (LANG_UNKNOWN, LANG_C, LANG_CPP, LANG_JAVA,
@@ -1608,6 +1624,44 @@ Type
     EdgeCount : Integer;
   End;
 
+  { Types pour le generateur Visio VDX integre (sans outil externe) }
+  TVdxNode = Record
+    Id        : Integer;             { Identifiant unique du noeud (ShapeID) }
+    Name      : String;              { Nom affiche }
+    PinX      : Real;                { Position X du centre en pouces }
+    PinY      : Real;                { Position Y du centre en pouces }
+    Width     : Real;                { Largeur en pouces }
+    Height    : Real;                { Hauteur en pouces }
+    FillColor : String;              { Couleur de remplissage (ex: #C8C8FF) }
+    LineColor : String;              { Couleur de bordure }
+    TextId    : String;              { Identifiant texte pour recherche }
+  End;
+
+  TVdxEdge = Record
+    Id        : Integer;             { Identifiant unique de l'arete (ShapeID) }
+    FromId    : Integer;             { ShapeID du noeud source }
+    ToId      : Integer;             { ShapeID du noeud destination }
+    BeginX    : Real;                { Position X depart en pouces }
+    BeginY    : Real;                { Position Y depart en pouces }
+    EndX      : Real;                { Position X arrivee en pouces }
+    EndY      : Real;                { Position Y arrivee en pouces }
+    LineColor : String;              { Couleur de l'arete }
+    LinePattern : Integer;           { Motif: 0=solide, 2=tirets }
+    LabelText : String;              { Etiquette de l'arete }
+  End;
+
+  TVdxGraph = Record
+    Title      : String;             { Titre du document }
+    PageWidth  : Real;               { Largeur de page en pouces }
+    PageHeight : Real;               { Hauteur de page en pouces }
+    BgColor    : String;             { Couleur de fond }
+    Nodes      : Array[1..MAX_VDX_NODES] Of TVdxNode;
+    NodeCount  : Integer;
+    Edges      : Array[1..MAX_VDX_EDGES] Of TVdxEdge;
+    EdgeCount  : Integer;
+    NextShapeId: Integer;            { Prochain ID de forme disponible }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1755,6 +1809,10 @@ Var
   { Variables pour le generateur SVG integre }
   SvgGraph           : TSvgGraph;
   SvgInitialized     : Boolean;
+
+  { Variables pour le generateur Visio VDX integre }
+  VdxGraph           : TVdxGraph;
+  VdxInitialized     : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -11475,6 +11533,593 @@ End;
   FIN DU GENERATEUR SVG INTEGRE
   ============================================================ }
 
+{ ============================================================
+  GENERATEUR VISIO VDX INTEGRE (SANS OUTIL EXTERNE)
+  
+  Ce module permet de generer des fichiers Microsoft Visio au
+  format VDX (Visio XML Drawing) directement sans avoir besoin
+  de Microsoft Visio ou d'autres outils externes.
+  Il inclut:
+  - Ecriture du format XML Visio VDX
+  - Definition des Masters (formes de base)
+  - Creation de formes (rectangles pour les noeuds)
+  - Creation de connecteurs (fleches pour les aretes)
+  - Parser DOT pour lire les fichiers .dot
+  - Generation du fichier VDX complet
+  ============================================================ }
+
+Procedure InitVdxGraph;
+{ Initialise le graphe Visio VDX }
+Var
+  I: Integer;
+Begin
+  VdxGraph.Title := 'Doxygen Graph';
+  VdxGraph.PageWidth := VDX_DEFAULT_WIDTH;
+  VdxGraph.PageHeight := VDX_DEFAULT_HEIGHT;
+  VdxGraph.BgColor := '#FFFFFF';
+  VdxGraph.NodeCount := 0;
+  VdxGraph.EdgeCount := 0;
+  VdxGraph.NextShapeId := 1;
+  
+  For I := 1 To MAX_VDX_NODES Do
+  Begin
+    VdxGraph.Nodes[I].Id := 0;
+    VdxGraph.Nodes[I].Name := '';
+    VdxGraph.Nodes[I].PinX := 0.0;
+    VdxGraph.Nodes[I].PinY := 0.0;
+    VdxGraph.Nodes[I].Width := VDX_NODE_WIDTH;
+    VdxGraph.Nodes[I].Height := VDX_NODE_HEIGHT;
+    VdxGraph.Nodes[I].FillColor := '#C8C8FF';
+    VdxGraph.Nodes[I].LineColor := '#000080';
+    VdxGraph.Nodes[I].TextId := '';
+  End;
+  
+  For I := 1 To MAX_VDX_EDGES Do
+  Begin
+    VdxGraph.Edges[I].Id := 0;
+    VdxGraph.Edges[I].FromId := 0;
+    VdxGraph.Edges[I].ToId := 0;
+    VdxGraph.Edges[I].BeginX := 0.0;
+    VdxGraph.Edges[I].BeginY := 0.0;
+    VdxGraph.Edges[I].EndX := 0.0;
+    VdxGraph.Edges[I].EndY := 0.0;
+    VdxGraph.Edges[I].LineColor := '#404040';
+    VdxGraph.Edges[I].LinePattern := 0;
+    VdxGraph.Edges[I].LabelText := '';
+  End;
+  
+  VdxInitialized := True;
+End;
+
+Function AddVdxNode(Const TextId, Name: String): Integer;
+{ Ajoute un noeud au graphe Visio VDX }
+Var
+  Idx: Integer;
+Begin
+  If Not VdxInitialized Then InitVdxGraph;
+  
+  If VdxGraph.NodeCount >= MAX_VDX_NODES Then
+  Begin
+    AddVdxNode := 0;
+    Exit;
+  End;
+  
+  Inc(VdxGraph.NodeCount);
+  Idx := VdxGraph.NodeCount;
+  
+  VdxGraph.Nodes[Idx].Id := VdxGraph.NextShapeId;
+  Inc(VdxGraph.NextShapeId);
+  VdxGraph.Nodes[Idx].Name := Name;
+  VdxGraph.Nodes[Idx].TextId := TextId;
+  VdxGraph.Nodes[Idx].Width := Length(Name) * 0.1 + 0.5;
+  If VdxGraph.Nodes[Idx].Width < VDX_NODE_WIDTH Then
+    VdxGraph.Nodes[Idx].Width := VDX_NODE_WIDTH;
+  VdxGraph.Nodes[Idx].Height := VDX_NODE_HEIGHT;
+  
+  AddVdxNode := Idx;
+End;
+
+Function FindVdxNode(Const TextId: String): Integer;
+{ Trouve un noeud par son TextId }
+Var
+  I: Integer;
+Begin
+  FindVdxNode := 0;
+  For I := 1 To VdxGraph.NodeCount Do
+  Begin
+    If VdxGraph.Nodes[I].TextId = TextId Then
+    Begin
+      FindVdxNode := I;
+      Exit;
+    End;
+  End;
+End;
+
+Function AddVdxEdge(Const FromTextId, ToTextId: String): Integer;
+{ Ajoute une arete au graphe Visio VDX }
+Var
+  Idx, FromIdx, ToIdx: Integer;
+Begin
+  If Not VdxInitialized Then InitVdxGraph;
+  
+  If VdxGraph.EdgeCount >= MAX_VDX_EDGES Then
+  Begin
+    AddVdxEdge := 0;
+    Exit;
+  End;
+  
+  FromIdx := FindVdxNode(FromTextId);
+  ToIdx := FindVdxNode(ToTextId);
+  
+  If (FromIdx = 0) Or (ToIdx = 0) Then
+  Begin
+    AddVdxEdge := 0;
+    Exit;
+  End;
+  
+  Inc(VdxGraph.EdgeCount);
+  Idx := VdxGraph.EdgeCount;
+  
+  VdxGraph.Edges[Idx].Id := VdxGraph.NextShapeId;
+  Inc(VdxGraph.NextShapeId);
+  VdxGraph.Edges[Idx].FromId := VdxGraph.Nodes[FromIdx].Id;
+  VdxGraph.Edges[Idx].ToId := VdxGraph.Nodes[ToIdx].Id;
+  
+  AddVdxEdge := Idx;
+End;
+
+Procedure LayoutVdxGraph;
+{ Calcule la disposition des noeuds dans le graphe Visio }
+Var
+  I, Row, Col: Integer;
+  MaxCols, MaxRows: Integer;
+  StartX, StartY: Integer;
+  CellWidth, CellHeight: Real;
+Begin
+  If VdxGraph.NodeCount = 0 Then Exit;
+  
+  { Disposition simple en grille }
+  MaxCols := 4;
+  If VdxGraph.NodeCount <= 4 Then MaxCols := VdxGraph.NodeCount;
+  MaxRows := (VdxGraph.NodeCount + MaxCols - 1) Div MaxCols;
+  
+  CellWidth := VDX_NODE_WIDTH + VDX_NODE_MARGIN;
+  CellHeight := VDX_NODE_HEIGHT + VDX_NODE_MARGIN;
+  
+  StartX := 1;
+  StartY := VdxGraph.PageHeight - 1;
+  
+  For I := 1 To VdxGraph.NodeCount Do
+  Begin
+    Row := (I - 1) Div MaxCols;
+    Col := (I - 1) Mod MaxCols;
+    
+    VdxGraph.Nodes[I].PinX := StartX + Col * CellWidth + VDX_NODE_WIDTH / 2;
+    VdxGraph.Nodes[I].PinY := StartY - Row * CellHeight - VDX_NODE_HEIGHT / 2;
+  End;
+  
+  { Calculer les positions des aretes }
+  For I := 1 To VdxGraph.EdgeCount Do
+  Begin
+    { Trouver les noeuds source et destination }
+    For Row := 1 To VdxGraph.NodeCount Do
+    Begin
+      If VdxGraph.Nodes[Row].Id = VdxGraph.Edges[I].FromId Then
+      Begin
+        VdxGraph.Edges[I].BeginX := VdxGraph.Nodes[Row].PinX;
+        VdxGraph.Edges[I].BeginY := VdxGraph.Nodes[Row].PinY - VDX_NODE_HEIGHT / 2;
+      End;
+      If VdxGraph.Nodes[Row].Id = VdxGraph.Edges[I].ToId Then
+      Begin
+        VdxGraph.Edges[I].EndX := VdxGraph.Nodes[Row].PinX;
+        VdxGraph.Edges[I].EndY := VdxGraph.Nodes[Row].PinY + VDX_NODE_HEIGHT / 2;
+      End;
+    End;
+  End;
+End;
+
+Function RealToStr(R: Real): String;
+{ Convertit un nombre reel en chaine avec 4 decimales }
+Var
+  S: String;
+Begin
+  Str(R:0:4, S);
+  RealToStr := S;
+End;
+
+Function VdxEscapeXml(Const S: String): String;
+{ Echappe les caracteres speciaux XML }
+Var
+  I: Integer;
+  R: String;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    Case S[I] Of
+      '<': R := R + '&lt;';
+      '>': R := R + '&gt;';
+      '&': R := R + '&amp;';
+      '"': R := R + '&quot;';
+      '''': R := R + '&apos;';
+    Else
+      R := R + S[I];
+    End;
+  End;
+  VdxEscapeXml := R;
+End;
+
+Procedure WriteVdxHeader(Var F: Text);
+{ Ecrit l'en-tete du fichier VDX }
+Begin
+  WriteLn(F, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>');
+  WriteLn(F, '<VisioDocument xmlns="', VDX_XMLNS, '" ');
+  WriteLn(F, '  xmlns:vx="http://schemas.microsoft.com/visio/2006/extension"');
+  WriteLn(F, '  xml:space="preserve">');
+  WriteLn(F, '  <DocumentProperties>');
+  WriteLn(F, '    <Title>', VdxEscapeXml(VdxGraph.Title), '</Title>');
+  WriteLn(F, '    <Creator>DOXYGEN.PAS - DEV-COOLS</Creator>');
+  WriteLn(F, '    <Company>Generated by Doxygen Clone</Company>');
+  WriteLn(F, '  </DocumentProperties>');
+  WriteLn(F, '  <DocumentSettings>');
+  WriteLn(F, '    <GlueSettings>9</GlueSettings>');
+  WriteLn(F, '    <SnapSettings>65847</SnapSettings>');
+  WriteLn(F, '  </DocumentSettings>');
+End;
+
+Procedure WriteVdxColors(Var F: Text);
+{ Ecrit la table des couleurs }
+Begin
+  WriteLn(F, '  <Colors>');
+  WriteLn(F, '    <ColorEntry IX="0" RGB="#000000"/>');
+  WriteLn(F, '    <ColorEntry IX="1" RGB="#FFFFFF"/>');
+  WriteLn(F, '    <ColorEntry IX="2" RGB="#FF0000"/>');
+  WriteLn(F, '    <ColorEntry IX="3" RGB="#00FF00"/>');
+  WriteLn(F, '    <ColorEntry IX="4" RGB="#0000FF"/>');
+  WriteLn(F, '    <ColorEntry IX="5" RGB="#FFFF00"/>');
+  WriteLn(F, '    <ColorEntry IX="6" RGB="#FF00FF"/>');
+  WriteLn(F, '    <ColorEntry IX="7" RGB="#00FFFF"/>');
+  WriteLn(F, '    <ColorEntry IX="8" RGB="#C8C8FF"/>');
+  WriteLn(F, '    <ColorEntry IX="9" RGB="#000080"/>');
+  WriteLn(F, '    <ColorEntry IX="10" RGB="#404040"/>');
+  WriteLn(F, '  </Colors>');
+End;
+
+Procedure WriteVdxFonts(Var F: Text);
+{ Ecrit la table des polices }
+Begin
+  WriteLn(F, '  <FaceNames>');
+  WriteLn(F, '    <FaceName ID="1" Name="Arial" CharSets="0"/>');
+  WriteLn(F, '    <FaceName ID="2" Name="Calibri" CharSets="0"/>');
+  WriteLn(F, '  </FaceNames>');
+End;
+
+Procedure WriteVdxStyleSheets(Var F: Text);
+{ Ecrit les feuilles de style }
+Begin
+  WriteLn(F, '  <StyleSheets>');
+  WriteLn(F, '    <StyleSheet ID="0" Name="No Style">');
+  WriteLn(F, '      <Line>');
+  WriteLn(F, '        <LineWeight>0.01041666666666667</LineWeight>');
+  WriteLn(F, '        <LineColor>0</LineColor>');
+  WriteLn(F, '        <LinePattern>1</LinePattern>');
+  WriteLn(F, '      </Line>');
+  WriteLn(F, '      <Fill>');
+  WriteLn(F, '        <FillForegnd>1</FillForegnd>');
+  WriteLn(F, '        <FillBkgnd>0</FillBkgnd>');
+  WriteLn(F, '        <FillPattern>1</FillPattern>');
+  WriteLn(F, '      </Fill>');
+  WriteLn(F, '      <Char>');
+  WriteLn(F, '        <Font>1</Font>');
+  WriteLn(F, '        <Size>0.1388888888888889</Size>');
+  WriteLn(F, '      </Char>');
+  WriteLn(F, '    </StyleSheet>');
+  WriteLn(F, '  </StyleSheets>');
+End;
+
+Procedure WriteVdxMasters(Var F: Text);
+{ Ecrit les formes de base (Masters) }
+Begin
+  WriteLn(F, '  <Masters>');
+  { Master pour le rectangle (noeud) }
+  WriteLn(F, '    <Master ID="', VDX_MASTER_RECT, '" Name="Rectangle">');
+  WriteLn(F, '      <PageSheet>');
+  WriteLn(F, '        <PageProps>');
+  WriteLn(F, '          <PageWidth>1</PageWidth>');
+  WriteLn(F, '          <PageHeight>1</PageHeight>');
+  WriteLn(F, '        </PageProps>');
+  WriteLn(F, '      </PageSheet>');
+  WriteLn(F, '      <Shapes>');
+  WriteLn(F, '        <Shape ID="1" Type="Shape" Master="0">');
+  WriteLn(F, '          <XForm>');
+  WriteLn(F, '            <PinX>0.5</PinX>');
+  WriteLn(F, '            <PinY>0.5</PinY>');
+  WriteLn(F, '            <Width>1</Width>');
+  WriteLn(F, '            <Height>0.5</Height>');
+  WriteLn(F, '          </XForm>');
+  WriteLn(F, '          <Geom IX="0">');
+  WriteLn(F, '            <MoveTo IX="1"><X>0</X><Y>0</Y></MoveTo>');
+  WriteLn(F, '            <LineTo IX="2"><X>1</X><Y>0</Y></LineTo>');
+  WriteLn(F, '            <LineTo IX="3"><X>1</X><Y>0.5</Y></LineTo>');
+  WriteLn(F, '            <LineTo IX="4"><X>0</X><Y>0.5</Y></LineTo>');
+  WriteLn(F, '            <LineTo IX="5"><X>0</X><Y>0</Y></LineTo>');
+  WriteLn(F, '          </Geom>');
+  WriteLn(F, '        </Shape>');
+  WriteLn(F, '      </Shapes>');
+  WriteLn(F, '    </Master>');
+  { Master pour le connecteur (arete) }
+  WriteLn(F, '    <Master ID="', VDX_MASTER_CONNECTOR, '" Name="Dynamic connector">');
+  WriteLn(F, '      <PageSheet>');
+  WriteLn(F, '        <PageProps>');
+  WriteLn(F, '          <PageWidth>1</PageWidth>');
+  WriteLn(F, '          <PageHeight>1</PageHeight>');
+  WriteLn(F, '        </PageProps>');
+  WriteLn(F, '      </PageSheet>');
+  WriteLn(F, '      <Shapes>');
+  WriteLn(F, '        <Shape ID="1" Type="Shape" Master="0">');
+  WriteLn(F, '          <XForm1D>');
+  WriteLn(F, '            <BeginX>0</BeginX>');
+  WriteLn(F, '            <BeginY>0</BeginY>');
+  WriteLn(F, '            <EndX>1</EndX>');
+  WriteLn(F, '            <EndY>1</EndY>');
+  WriteLn(F, '          </XForm1D>');
+  WriteLn(F, '          <Line>');
+  WriteLn(F, '            <EndArrow>13</EndArrow>');
+  WriteLn(F, '          </Line>');
+  WriteLn(F, '          <Geom IX="0">');
+  WriteLn(F, '            <MoveTo IX="1"><X>0</X><Y>0</Y></MoveTo>');
+  WriteLn(F, '            <LineTo IX="2"><X>1</X><Y>1</Y></LineTo>');
+  WriteLn(F, '          </Geom>');
+  WriteLn(F, '        </Shape>');
+  WriteLn(F, '      </Shapes>');
+  WriteLn(F, '    </Master>');
+  WriteLn(F, '  </Masters>');
+End;
+
+Procedure WriteVdxPage(Var F: Text);
+{ Ecrit la page avec toutes les formes }
+Var
+  I: Integer;
+Begin
+  WriteLn(F, '  <Pages>');
+  WriteLn(F, '    <Page ID="0" Name="Page-1">');
+  WriteLn(F, '      <PageSheet>');
+  WriteLn(F, '        <PageProps>');
+  WriteLn(F, '          <PageWidth>', RealToStr(VdxGraph.PageWidth), '</PageWidth>');
+  WriteLn(F, '          <PageHeight>', RealToStr(VdxGraph.PageHeight), '</PageHeight>');
+  WriteLn(F, '        </PageProps>');
+  WriteLn(F, '      </PageSheet>');
+  WriteLn(F, '      <Shapes>');
+  
+  { Ecrire les noeuds }
+  For I := 1 To VdxGraph.NodeCount Do
+  Begin
+    WriteLn(F, '        <Shape ID="', VdxGraph.Nodes[I].Id, '" Type="Shape" Master="', VDX_MASTER_RECT, '">');
+    WriteLn(F, '          <XForm>');
+    WriteLn(F, '            <PinX>', RealToStr(VdxGraph.Nodes[I].PinX), '</PinX>');
+    WriteLn(F, '            <PinY>', RealToStr(VdxGraph.Nodes[I].PinY), '</PinY>');
+    WriteLn(F, '            <Width>', RealToStr(VdxGraph.Nodes[I].Width), '</Width>');
+    WriteLn(F, '            <Height>', RealToStr(VdxGraph.Nodes[I].Height), '</Height>');
+    WriteLn(F, '            <LocPinX F="Width*0.5">', RealToStr(VdxGraph.Nodes[I].Width / 2), '</LocPinX>');
+    WriteLn(F, '            <LocPinY F="Height*0.5">', RealToStr(VdxGraph.Nodes[I].Height / 2), '</LocPinY>');
+    WriteLn(F, '          </XForm>');
+    WriteLn(F, '          <Fill>');
+    WriteLn(F, '            <FillForegnd>8</FillForegnd>');
+    WriteLn(F, '            <FillPattern>1</FillPattern>');
+    WriteLn(F, '          </Fill>');
+    WriteLn(F, '          <Line>');
+    WriteLn(F, '            <LineColor>9</LineColor>');
+    WriteLn(F, '            <LineWeight>0.02</LineWeight>');
+    WriteLn(F, '          </Line>');
+    WriteLn(F, '          <Text>', VdxEscapeXml(VdxGraph.Nodes[I].Name), '</Text>');
+    WriteLn(F, '        </Shape>');
+  End;
+  
+  { Ecrire les aretes }
+  For I := 1 To VdxGraph.EdgeCount Do
+  Begin
+    WriteLn(F, '        <Shape ID="', VdxGraph.Edges[I].Id, '" Type="Shape" Master="', VDX_MASTER_CONNECTOR, '">');
+    WriteLn(F, '          <XForm1D>');
+    WriteLn(F, '            <BeginX>', RealToStr(VdxGraph.Edges[I].BeginX), '</BeginX>');
+    WriteLn(F, '            <BeginY>', RealToStr(VdxGraph.Edges[I].BeginY), '</BeginY>');
+    WriteLn(F, '            <EndX>', RealToStr(VdxGraph.Edges[I].EndX), '</EndX>');
+    WriteLn(F, '            <EndY>', RealToStr(VdxGraph.Edges[I].EndY), '</EndY>');
+    WriteLn(F, '          </XForm1D>');
+    WriteLn(F, '          <Line>');
+    WriteLn(F, '            <LineColor>10</LineColor>');
+    WriteLn(F, '            <EndArrow>13</EndArrow>');
+    WriteLn(F, '          </Line>');
+    WriteLn(F, '          <Geom IX="0">');
+    WriteLn(F, '            <MoveTo IX="1"><X>0</X><Y>0</Y></MoveTo>');
+    WriteLn(F, '            <LineTo IX="2"><X F="Width">1</X><Y F="Height">1</Y></LineTo>');
+    WriteLn(F, '          </Geom>');
+    WriteLn(F, '        </Shape>');
+  End;
+  
+  WriteLn(F, '      </Shapes>');
+  
+  { Ecrire les connexions }
+  If VdxGraph.EdgeCount > 0 Then
+  Begin
+    WriteLn(F, '      <Connects>');
+    For I := 1 To VdxGraph.EdgeCount Do
+    Begin
+      WriteLn(F, '        <Connect FromSheet="', VdxGraph.Edges[I].Id, '" FromCell="BeginX" ToSheet="', VdxGraph.Edges[I].FromId, '"/>');
+      WriteLn(F, '        <Connect FromSheet="', VdxGraph.Edges[I].Id, '" FromCell="EndX" ToSheet="', VdxGraph.Edges[I].ToId, '"/>');
+    End;
+    WriteLn(F, '      </Connects>');
+  End;
+  
+  WriteLn(F, '    </Page>');
+  WriteLn(F, '  </Pages>');
+End;
+
+Procedure WriteVdxFooter(Var F: Text);
+{ Ecrit la fin du fichier VDX }
+Begin
+  WriteLn(F, '</VisioDocument>');
+End;
+
+Procedure RenderVdxGraph(Const OutputFileName: String);
+{ Genere le fichier VDX a partir du graphe }
+Var
+  F: Text;
+Begin
+  If Not VdxInitialized Then Exit;
+  If VdxGraph.NodeCount = 0 Then Exit;
+  
+  { Calculer la disposition }
+  LayoutVdxGraph;
+  
+  { Ouvrir le fichier en ecriture }
+  Assign(F, OutputFileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  { Ecrire le document VDX }
+  WriteVdxHeader(F);
+  WriteVdxColors(F);
+  WriteVdxFonts(F);
+  WriteVdxStyleSheets(F);
+  WriteVdxMasters(F);
+  WriteVdxPage(F);
+  WriteVdxFooter(F);
+  
+  Close(F);
+End;
+
+Procedure ParseDotFileForVdx(Const DotFile: String);
+{ Parse un fichier DOT et cree le graphe Visio VDX correspondant }
+Var
+  F: Text;
+  Line, TrimLine: String;
+  I, P1, P2: Integer;
+  NodeId, NodeLabel, FromId, ToId: String;
+  InGraph: Boolean;
+Begin
+  Assign(F, DotFile);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  InGraph := False;
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    
+    { Trim de la ligne }
+    TrimLine := '';
+    For I := 1 To Length(Line) Do
+      If (Line[I] <> ' ') And (Line[I] <> #9) Then
+        TrimLine := TrimLine + Line[I];
+    
+    If TrimLine = '' Then Continue;
+    
+    { Detection du debut du graphe }
+    If (Pos('digraph', Line) > 0) Or (Pos('graph', Line) > 0) Then
+    Begin
+      InGraph := True;
+      Continue;
+    End;
+    
+    If Not InGraph Then Continue;
+    
+    { Detection de la fin du graphe }
+    If TrimLine = '}' Then
+    Begin
+      InGraph := False;
+      Continue;
+    End;
+    
+    { Detection d'une arete: node1 -> node2 }
+    P1 := Pos('->', Line);
+    If P1 > 0 Then
+    Begin
+      { Extraire FromId }
+      FromId := '';
+      For I := 1 To P1 - 1 Do
+        If (Line[I] <> ' ') And (Line[I] <> #9) And (Line[I] <> '"') Then
+          FromId := FromId + Line[I];
+      
+      { Extraire ToId }
+      ToId := '';
+      For I := P1 + 2 To Length(Line) Do
+      Begin
+        If (Line[I] = '[') Or (Line[I] = ';') Then Break;
+        If (Line[I] <> ' ') And (Line[I] <> #9) And (Line[I] <> '"') Then
+          ToId := ToId + Line[I];
+      End;
+      
+      { Ajouter les noeuds s'ils n'existent pas }
+      If FindVdxNode(FromId) = 0 Then
+        AddVdxNode(FromId, FromId);
+      If FindVdxNode(ToId) = 0 Then
+        AddVdxNode(ToId, ToId);
+      
+      { Ajouter l'arete }
+      AddVdxEdge(FromId, ToId);
+      Continue;
+    End;
+    
+    { Detection d'un noeud: node [label="..."] }
+    P1 := Pos('[', Line);
+    If P1 > 0 Then
+    Begin
+      { Extraire NodeId }
+      NodeId := '';
+      For I := 1 To P1 - 1 Do
+        If (Line[I] <> ' ') And (Line[I] <> #9) And (Line[I] <> '"') Then
+          NodeId := NodeId + Line[I];
+      
+      { Extraire le label si present }
+      NodeLabel := NodeId;
+      P2 := Pos('label=', Line);
+      If P2 > 0 Then
+      Begin
+        NodeLabel := '';
+        I := P2 + 6;
+        If (I <= Length(Line)) And (Line[I] = '"') Then Inc(I);
+        While (I <= Length(Line)) And (Line[I] <> '"') And (Line[I] <> ']') Do
+        Begin
+          NodeLabel := NodeLabel + Line[I];
+          Inc(I);
+        End;
+      End;
+      
+      { Ajouter le noeud s'il n'existe pas }
+      If FindVdxNode(NodeId) = 0 Then
+        AddVdxNode(NodeId, NodeLabel);
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure RenderDotToVdx(Const DotFile, VdxFile: String);
+{ Fonction principale: lit un fichier DOT et genere un VDX }
+Begin
+  { Reinitialiser le graphe }
+  VdxInitialized := False;
+  InitVdxGraph;
+  
+  { Parser le fichier DOT }
+  ParseDotFileForVdx(DotFile);
+  
+  { Generer le VDX }
+  RenderVdxGraph(VdxFile);
+  
+  If Not Opts.Quiet Then
+    WriteLn('Visio VDX genere (built-in): ', VdxFile);
+End;
+
+{ ============================================================
+  FIN DU GENERATEUR VISIO VDX INTEGRE
+  ============================================================ }
+
 Procedure RenderCallGraphImage(Const DotFile, ImageFile: String);
 { Genere l'image a partir du fichier DOT en utilisant les generateurs integres }
 Var
@@ -11502,13 +12147,18 @@ Begin
   Begin
     RenderDotToSvg(DotFile, ImageFile);
   End
+  { Utiliser le generateur Visio VDX integre pour le format VDX }
+  Else If (Format = 'vdx') Or (Format = 'VDX') Then
+  Begin
+    RenderDotToVdx(DotFile, ImageFile);
+  End
   Else
   Begin
     { Pour les autres formats, afficher un message }
     If Not Opts.Quiet Then
     Begin
       WriteLn('Note: Le format ', Format, ' n''est pas directement supporte.');
-      WriteLn('Les formats PNG et SVG sont generes nativement sans outil externe.');
+      WriteLn('Les formats PNG, SVG et VDX (Visio) sont generes nativement sans outil externe.');
     End;
   End;
 End;
@@ -12041,13 +12691,18 @@ Begin
   Begin
     RenderDotToSvg(DotFile, ImageFile);
   End
+  { Utiliser le generateur Visio VDX integre pour le format VDX }
+  Else If (Format = 'vdx') Or (Format = 'VDX') Then
+  Begin
+    RenderDotToVdx(DotFile, ImageFile);
+  End
   Else
   Begin
     { Pour les autres formats, afficher un message }
     If Not Opts.Quiet Then
     Begin
       WriteLn('Note: Le format ', Format, ' n''est pas directement supporte.');
-      WriteLn('Les formats PNG et SVG sont generes nativement sans outil externe.');
+      WriteLn('Les formats PNG, SVG et VDX (Visio) sont generes nativement sans outil externe.');
     End;
   End;
 End;
@@ -12832,13 +13487,18 @@ Begin
   Begin
     RenderDotToSvg(DotFile, ImageFile);
   End
+  { Utiliser le generateur Visio VDX integre pour le format VDX }
+  Else If (Format = 'vdx') Or (Format = 'VDX') Then
+  Begin
+    RenderDotToVdx(DotFile, ImageFile);
+  End
   Else
   Begin
     { Pour les autres formats, afficher un message }
     If Not Opts.Quiet Then
     Begin
       WriteLn('Note: Le format ', Format, ' n''est pas directement supporte.');
-      WriteLn('Les formats PNG et SVG sont generes nativement sans outil externe.');
+      WriteLn('Les formats PNG, SVG et VDX (Visio) sont generes nativement sans outil externe.');
     End;
   End;
 End;
