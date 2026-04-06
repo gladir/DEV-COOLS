@@ -298,7 +298,7 @@
             Operateurs d affectation composes :
               += -= *= /= \= &= ^=
 
-  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [A FAIRE]
+  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Procedure GenLoadVar(sym_idx: Integer)
               Integer/Short : MOV EAX, DWORD PTR [_VBN_x] ou [EBP-n]
               String : LEA EAX, [_VBN_x] ou [EBP-n]
@@ -6758,6 +6758,511 @@ Begin
   IsExprResultInteger := (ExprResultType = VBT_INTEGER);
 End;
 
+{ ============================================================ }
+{ TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES      }
+{           80386 [IMPLEMENTE]                                 }
+{ ============================================================ }
+
+Var
+  CodeLineCount     : LongInt;   { nombre de lignes ASM emises          }
+  CodeGenInitialized: Boolean;   { True si InitCodeGen a ete appele     }
+
+{ ------------------------------------------------------------ }
+{ InitCodeGen : initialiser l etat du generateur de code       }
+{ ------------------------------------------------------------ }
+
+Procedure InitCodeGen;
+Begin
+  CodeLineCount      := 0;
+  CodeGenInitialized := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ Emit : emettre une ligne d assembleur (instruction)          }
+{ ------------------------------------------------------------ }
+
+Procedure Emit(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '  ', S);
+  Inc(CodeLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitLabel : emettre un label assembleur                      }
+{ ------------------------------------------------------------ }
+
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, Lbl, ':');
+  Inc(CodeLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitComment : emettre un commentaire assembleur              }
+{ ------------------------------------------------------------ }
+
+Procedure EmitComment(Const Cmt : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '; ', Cmt);
+  Inc(CodeLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitData : emettre une ligne dans la section .DATA           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitData(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '  ', S);
+  Inc(CodeLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBss : emettre une ligne dans la section .BSS             }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBss(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '  ', S);
+  Inc(CodeLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLoadVar : charger une variable dans EAX                   }
+{ sym_idx : index dans SymTab                                  }
+{ Integer/Short -> MOV EAX, DWORD PTR [label] ou [EBP-n]      }
+{ String -> LEA EAX, [label] ou [EBP-n]                       }
+{ Boolean/Byte/SByte -> MOVZX EAX, BYTE PTR [label]           }
+{ Char/UShort/Short -> MOVZX EAX, WORD PTR [label]            }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadVar(SymIdx : Integer);
+Var
+  Lbl : TString;
+  DT  : Integer;
+  SC  : Integer;
+  Ofs : Integer;
+Begin
+  If (SymIdx < 0) Or (SymIdx >= SymCount) Then
+  Begin
+    WarnMsg('GenLoadVar: index symbole invalide ' + ItoSI(SymIdx));
+    Exit;
+  End;
+  DT  := SymTab[SymIdx].DataType;
+  SC  := SymTab[SymIdx].StoreClass;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  Ofs := SymTab[SymIdx].BpOffset;
+  EmitComment('GenLoadVar: ' + SymTab[SymIdx].Name +
+              ' (' + VBTypeName(DT) + ')');
+  If (SC = STORE_AUTO) Or (SC = STORE_PARAM) Then
+  Begin
+    { Variable locale ou parametre via EBP }
+    Case DT Of
+      VBT_BOOLEAN, VBT_BYTE, VBT_SBYTE:
+        Emit('MOVZX EAX, BYTE PTR [EBP' + ItoSI(-Ofs) + ']');
+      VBT_CHAR, VBT_SHORT, VBT_USHORT:
+        Emit('MOVZX EAX, WORD PTR [EBP' + ItoSI(-Ofs) + ']');
+      VBT_STRING:
+        Emit('LEA EAX, [EBP' + ItoSI(-Ofs) + ']');
+    Else
+      Emit('MOV EAX, DWORD PTR [EBP' + ItoSI(-Ofs) + ']');
+    End;
+  End
+  Else
+  Begin
+    { Variable globale, statique ou partagee via label }
+    Case DT Of
+      VBT_BOOLEAN, VBT_BYTE, VBT_SBYTE:
+        Emit('MOVZX EAX, BYTE PTR [' + Lbl + ']');
+      VBT_CHAR, VBT_SHORT, VBT_USHORT:
+        Emit('MOVZX EAX, WORD PTR [' + Lbl + ']');
+      VBT_STRING:
+        Emit('LEA EAX, [' + Lbl + ']');
+    Else
+      Emit('MOV EAX, DWORD PTR [' + Lbl + ']');
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStoreVar : stocker EAX dans une variable                  }
+{ sym_idx : index dans SymTab                                  }
+{ ------------------------------------------------------------ }
+
+Procedure GenStoreVar(SymIdx : Integer);
+Var
+  Lbl : TString;
+  DT  : Integer;
+  SC  : Integer;
+  Ofs : Integer;
+Begin
+  If (SymIdx < 0) Or (SymIdx >= SymCount) Then
+  Begin
+    WarnMsg('GenStoreVar: index symbole invalide ' + ItoSI(SymIdx));
+    Exit;
+  End;
+  DT  := SymTab[SymIdx].DataType;
+  SC  := SymTab[SymIdx].StoreClass;
+  Lbl := SymTab[SymIdx].AsmLabel;
+  Ofs := SymTab[SymIdx].BpOffset;
+  EmitComment('GenStoreVar: ' + SymTab[SymIdx].Name +
+              ' (' + VBTypeName(DT) + ')');
+  If (SC = STORE_AUTO) Or (SC = STORE_PARAM) Then
+  Begin
+    Case DT Of
+      VBT_BOOLEAN, VBT_BYTE, VBT_SBYTE:
+        Emit('MOV BYTE PTR [EBP' + ItoSI(-Ofs) + '], AL');
+      VBT_CHAR, VBT_SHORT, VBT_USHORT:
+        Emit('MOV WORD PTR [EBP' + ItoSI(-Ofs) + '], AX');
+    Else
+      Emit('MOV DWORD PTR [EBP' + ItoSI(-Ofs) + '], EAX');
+    End;
+  End
+  Else
+  Begin
+    Case DT Of
+      VBT_BOOLEAN, VBT_BYTE, VBT_SBYTE:
+        Emit('MOV BYTE PTR [' + Lbl + '], AL');
+      VBT_CHAR, VBT_SHORT, VBT_USHORT:
+        Emit('MOV WORD PTR [' + Lbl + '], AX');
+    Else
+      Emit('MOV DWORD PTR [' + Lbl + '], EAX');
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPushEAX : sauvegarder EAX sur la pile                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenPushEAX;
+Begin
+  Emit('PUSH EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenPopEBX : restaurer EBX depuis la pile                     }
+{ ------------------------------------------------------------ }
+
+Procedure GenPopEBX;
+Begin
+  Emit('POP EBX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenBinOp : generer le code d une operation binaire           }
+{ EAX = operande gauche (deja empile), EBX = operande droite   }
+{ Resultat dans EAX                                            }
+{ ------------------------------------------------------------ }
+
+Procedure GenBinOp(Op : Integer);
+Begin
+  EmitComment('GenBinOp: ' + OpName(Op));
+  GenPopEBX;
+  { EBX = gauche, EAX = droite => echanger pour gauche op droite }
+  Emit('XCHG EAX, EBX');
+  { Maintenant EAX = gauche, EBX = droite }
+  Case Op Of
+    OP_ADD:
+      Emit('ADD EAX, EBX');
+    OP_SUB:
+      Emit('SUB EAX, EBX');
+    OP_MUL:
+      Emit('IMUL EAX, EBX');
+    OP_DIV:
+      { Division flottante via routine runtime }
+      Begin
+        Emit('PUSH EBX');
+        Emit('PUSH EAX');
+        Emit('CALL ' + PFX_RT + 'DIV');
+        Emit('ADD ESP, 8');
+      End;
+    OP_INTDIV:
+      { Division entiere : CDQ + IDIV EBX }
+      Begin
+        Emit('CDQ');
+        Emit('IDIV EBX');
+      End;
+    OP_MOD:
+      { Modulo : CDQ + IDIV EBX, resultat dans EDX }
+      Begin
+        Emit('CDQ');
+        Emit('IDIV EBX');
+        Emit('MOV EAX, EDX');
+      End;
+    OP_POW:
+      { Puissance via routine runtime }
+      Begin
+        Emit('PUSH EBX');
+        Emit('PUSH EAX');
+        Emit('CALL ' + PFX_RT + 'POW');
+        Emit('ADD ESP, 8');
+      End;
+    OP_CONCAT:
+      { Concatenation de chaines via routine runtime }
+      Begin
+        Emit('PUSH EBX');
+        Emit('PUSH EAX');
+        Emit('CALL ' + PFX_RT + 'STRCAT');
+        Emit('ADD ESP, 8');
+      End;
+  Else
+    WarnMsg('GenBinOp: operateur inconnu ' + ItoSI(Op));
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCompare : generer le code d une comparaison               }
+{ EAX = gauche (pile), EBX = droite                            }
+{ Resultat VB.NET : True = -1 ($FFFFFFFF), False = 0           }
+{ ------------------------------------------------------------ }
+
+Procedure GenCompare(Op : Integer);
+Begin
+  EmitComment('GenCompare: ' + OpName(Op));
+  GenPopEBX;
+  Emit('XCHG EAX, EBX');
+  { EAX = gauche, EBX = droite }
+  Emit('CMP EAX, EBX');
+  Case Op Of
+    OP_EQ:
+      Emit('SETE AL');
+    OP_NE:
+      Emit('SETNE AL');
+    OP_LT:
+      Emit('SETL AL');
+    OP_GT:
+      Emit('SETG AL');
+    OP_LE:
+      Emit('SETLE AL');
+    OP_GE:
+      Emit('SETGE AL');
+    OP_LIKE:
+      Begin
+        { Like est gere par le runtime }
+        Emit('PUSH EBX');
+        Emit('PUSH EAX');
+        Emit('CALL ' + PFX_RT + 'LIKE');
+        Emit('ADD ESP, 8');
+        { EAX contient deja le resultat -1 ou 0 }
+        Exit;
+      End;
+    OP_IS:
+      { Comparaison de references objet (meme reference) }
+      Emit('SETE AL');
+    OP_ISNOT:
+      { Comparaison de references objet (references differentes) }
+      Emit('SETNE AL');
+  Else
+    WarnMsg('GenCompare: operateur inconnu ' + ItoSI(Op));
+    Emit('SETE AL');
+  End;
+  { Etendre AL en -1 ou 0 (convention VB.NET: True = -1) }
+  Emit('MOVZX EAX, AL');
+  Emit('NEG EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLogicalOp : generer le code d une operation logique        }
+{ And, Or, Xor : binaire (EAX op EBX)                          }
+{ Not : unaire (NOT EAX)                                       }
+{ ------------------------------------------------------------ }
+
+Procedure GenLogicalOp(Op : Integer);
+Begin
+  EmitComment('GenLogicalOp: ' + OpName(Op));
+  If Op = OP_NOT Then
+  Begin
+    { Operation unaire }
+    Emit('NOT EAX');
+  End
+  Else
+  Begin
+    { Operations binaires : depiler la gauche dans EBX }
+    GenPopEBX;
+    Emit('XCHG EAX, EBX');
+    { EAX = gauche, EBX = droite }
+    Case Op Of
+      OP_AND:
+        Emit('AND EAX, EBX');
+      OP_OR:
+        Emit('OR EAX, EBX');
+      OP_XOR:
+        Emit('XOR EAX, EBX');
+    Else
+      WarnMsg('GenLogicalOp: operateur inconnu ' + ItoSI(Op));
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenShortCircuit : generer le code d evaluation court-circuit  }
+{ AndAlso : si EAX = 0, sauter a label_false                   }
+{ OrElse  : si EAX <> 0, sauter a label_true                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenShortCircuit(Op : Integer; Const Lbl : TString);
+Begin
+  EmitComment('GenShortCircuit: ' + OpName(Op));
+  Emit('CMP EAX, 0');
+  Case Op Of
+    OP_ANDALSO:
+      { AndAlso : court-circuit si False }
+      Emit('JE ' + Lbl);
+    OP_ORELSE:
+      { OrElse : court-circuit si True }
+      Emit('JNE ' + Lbl);
+  Else
+    WarnMsg('GenShortCircuit: operateur inconnu ' + ItoSI(Op));
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCompoundAssign : generer le code d une affectation composee }
+{ += -= *= /= \= &= ^=                                         }
+{ SymIdx : index du symbole cible, Op : operateur de base       }
+{ ------------------------------------------------------------ }
+
+Procedure GenCompoundAssign(SymIdx : Integer; Op : Integer);
+Begin
+  EmitComment('GenCompoundAssign: ' + OpName(Op) + '=');
+  { Empiler la valeur actuelle de la variable }
+  GenPushEAX;
+  GenLoadVar(SymIdx);
+  GenPushEAX;
+  { Recuperer la nouvelle valeur (a droite) }
+  GenPopEBX;
+  Emit('XCHG EAX, EBX');
+  { Depiler l ancienne valeur de la variable }
+  GenPopEBX;
+  Emit('XCHG EAX, EBX');
+  { EAX = ancienne valeur, EBX = expression a droite }
+  Case Op Of
+    OP_ADD:
+      Emit('ADD EAX, EBX');
+    OP_SUB:
+      Emit('SUB EAX, EBX');
+    OP_MUL:
+      Emit('IMUL EAX, EBX');
+    OP_DIV:
+      Begin
+        Emit('PUSH EBX');
+        Emit('PUSH EAX');
+        Emit('CALL ' + PFX_RT + 'DIV');
+        Emit('ADD ESP, 8');
+      End;
+    OP_INTDIV:
+      Begin
+        Emit('CDQ');
+        Emit('IDIV EBX');
+      End;
+    OP_CONCAT:
+      Begin
+        Emit('PUSH EBX');
+        Emit('PUSH EAX');
+        Emit('CALL ' + PFX_RT + 'STRCAT');
+        Emit('ADD ESP, 8');
+      End;
+    OP_POW:
+      Begin
+        Emit('PUSH EBX');
+        Emit('PUSH EAX');
+        Emit('CALL ' + PFX_RT + 'POW');
+        Emit('ADD ESP, 8');
+      End;
+  Else
+    WarnMsg('GenCompoundAssign: operateur inconnu ' + ItoSI(Op));
+  End;
+  { Stocker le resultat }
+  GenStoreVar(SymIdx);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLoadImm : charger une valeur immediate dans EAX           }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadImm(Value : LongInt);
+Begin
+  If Value = 0 Then
+    Emit('XOR EAX, EAX')
+  Else
+    Emit('MOV EAX, ' + ItoSI(Value));
+End;
+
+{ ------------------------------------------------------------ }
+{ GenNegate : nier EAX (negation arithmetique unaire)          }
+{ ------------------------------------------------------------ }
+
+Procedure GenNegate;
+Begin
+  EmitComment('GenNegate: - unaire');
+  Emit('NEG EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseurs pour le module de generation de code     }
+{ ------------------------------------------------------------ }
+
+Function GetCodeLineCount : LongInt;
+Begin
+  GetCodeLineCount := CodeLineCount;
+End;
+
+Function IsCodeGenInitialized : Boolean;
+Begin
+  IsCodeGenInitialized := CodeGenInitialized;
+End;
+
+Function IsCodeGenEmpty : Boolean;
+Begin
+  IsCodeGenEmpty := (CodeLineCount = 0);
+End;
+
+Function GetCodeGenStatus : TString;
+Begin
+  If CodeGenInitialized Then
+    GetCodeGenStatus := 'initialized'
+  Else
+    GetCodeGenStatus := 'not initialized';
+End;
+
+Function GetEmitPrefixVar : TString;
+Begin
+  GetEmitPrefixVar := PFX_VAR;
+End;
+
+Function GetEmitPrefixFunc : TString;
+Begin
+  GetEmitPrefixFunc := PFX_FUNC;
+End;
+
+Function GetEmitPrefixConst : TString;
+Begin
+  GetEmitPrefixConst := PFX_CONST;
+End;
+
+Function GetEmitPrefixRT : TString;
+Begin
+  GetEmitPrefixRT := PFX_RT;
+End;
+
+Function GetEmitPrefixLabel : TString;
+Begin
+  GetEmitPrefixLabel := PFX_LBL;
+End;
+
+Function GetMaxBinCode : Integer;
+Begin
+  GetMaxBinCode := MAX_BIN_CODE;
+End;
+
+{ ============================================================ }
+
 Procedure Run;
 Begin
   { Initialisation des compteurs }
@@ -6779,13 +7284,14 @@ Begin
   InitScopes;
   InitModuleState;
   InitExprState;
+  InitCodeGen;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 09..25 : Generation de code, etc. }
+  { TODO 10..25 : Generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;

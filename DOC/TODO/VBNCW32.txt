@@ -290,7 +290,7 @@
             Operateurs d affectation composes :
               += -= *= /= \= &= ^=
 
-  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [A FAIRE]
+  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [IMPLEMENTE]
             Procedure GenLoadVar(sym_idx: Integer)
               Integer/Short : MOV EAX, DWORD PTR [_VBN_x] ou [EBP-n]
               String : LEA EAX, [_VBN_x] ou [EBP-n]
