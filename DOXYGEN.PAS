@@ -1218,6 +1218,18 @@ Const
   MAX_PNG_NODES         = 256;       { Nombre max de noeuds dans un graphe }
   MAX_PNG_EDGES         = 512;       { Nombre max d'aretes dans un graphe }
 
+  { Constantes pour le generateur SVG integre (sans outil externe) }
+  SVG_DEFAULT_WIDTH     = 800;       { Largeur par defaut }
+  SVG_DEFAULT_HEIGHT    = 600;       { Hauteur par defaut }
+  SVG_NODE_WIDTH        = 120;       { Largeur d'un noeud }
+  SVG_NODE_HEIGHT       = 40;        { Hauteur d'un noeud }
+  SVG_NODE_MARGIN       = 30;        { Marge entre les noeuds }
+  SVG_FONT_SIZE         = 12;        { Taille de police }
+  SVG_FONT_FAMILY       = 'Arial, sans-serif';  { Police }
+  SVG_ARROW_SIZE        = 8;         { Taille de la pointe de fleche }
+  MAX_SVG_NODES         = 256;       { Nombre max de noeuds dans un graphe }
+  MAX_SVG_EDGES         = 512;       { Nombre max d'aretes dans un graphe }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -1564,6 +1576,38 @@ Type
 
   TPngPixelRow = Array[0..PNG_MAX_WIDTH-1] Of TPngColor;
 
+  { Types pour le generateur SVG integre (sans outil externe) }
+  TSvgNode = Record
+    Id       : String;               { Identifiant du noeud }
+    Name     : String;               { Nom affiche }
+    X, Y     : Integer;              { Position X, Y }
+    W, H     : Integer;              { Largeur, Hauteur }
+    FillColor: String;               { Couleur de remplissage (ex: #C8C8FF) }
+    StrokeColor: String;             { Couleur de bordure }
+    Shape    : String;               { Forme: rect, ellipse, record }
+  End;
+
+  TSvgEdge = Record
+    FromId   : String;               { Noeud source }
+    ToId     : String;               { Noeud destination }
+    FromX, FromY : Integer;          { Position depart }
+    ToX, ToY     : Integer;          { Position arrivee }
+    StrokeColor  : String;           { Couleur de l'arete }
+    Style        : String;           { Style: solid, dashed }
+    LabelText    : String;           { Etiquette de l'arete }
+  End;
+
+  TSvgGraph = Record
+    Title     : String;              { Titre du graphe }
+    Width     : Integer;             { Largeur de l'image }
+    Height    : Integer;             { Hauteur de l'image }
+    BgColor   : String;              { Couleur de fond (ex: #FFFFFF) }
+    Nodes     : Array[1..MAX_SVG_NODES] Of TSvgNode;
+    NodeCount : Integer;
+    Edges     : Array[1..MAX_SVG_EDGES] Of TSvgEdge;
+    EdgeCount : Integer;
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -1707,6 +1751,10 @@ Var
   PngInitialized     : Boolean;
   PngCrcTable        : Array[0..255] Of LongInt;
   PngCrcTableBuilt   : Boolean;
+
+  { Variables pour le generateur SVG integre }
+  SvgGraph           : TSvgGraph;
+  SvgInitialized     : Boolean;
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -10917,8 +10965,518 @@ End;
   FIN DU GENERATEUR PNG INTEGRE
   ============================================================ }
 
+{ ============================================================
+  GENERATEUR SVG INTEGRE (SANS OUTIL EXTERNE)
+  
+  Ce module permet de generer des fichiers SVG directement
+  sans avoir besoin de Graphviz ou d'autres outils externes.
+  Il inclut:
+  - Ecriture des balises XML/SVG
+  - Dessin de lignes, rectangles, fleches et texte
+  - Parser DOT pour lire les fichiers .dot
+  - Generation de l'image SVG vectorielle
+  ============================================================ }
+
+Procedure InitSvgGraph;
+{ Initialise le graphe SVG }
+Var
+  I: Integer;
+Begin
+  SvgGraph.Title := '';
+  SvgGraph.Width := SVG_DEFAULT_WIDTH;
+  SvgGraph.Height := SVG_DEFAULT_HEIGHT;
+  SvgGraph.BgColor := '#FFFFFF';
+  SvgGraph.NodeCount := 0;
+  SvgGraph.EdgeCount := 0;
+  
+  For I := 1 To MAX_SVG_NODES Do
+  Begin
+    SvgGraph.Nodes[I].Id := '';
+    SvgGraph.Nodes[I].Name := '';
+    SvgGraph.Nodes[I].X := 0;
+    SvgGraph.Nodes[I].Y := 0;
+    SvgGraph.Nodes[I].W := SVG_NODE_WIDTH;
+    SvgGraph.Nodes[I].H := SVG_NODE_HEIGHT;
+    SvgGraph.Nodes[I].FillColor := '#C8C8FF';
+    SvgGraph.Nodes[I].StrokeColor := '#000080';
+    SvgGraph.Nodes[I].Shape := 'rect';
+  End;
+  
+  For I := 1 To MAX_SVG_EDGES Do
+  Begin
+    SvgGraph.Edges[I].FromId := '';
+    SvgGraph.Edges[I].ToId := '';
+    SvgGraph.Edges[I].FromX := 0;
+    SvgGraph.Edges[I].FromY := 0;
+    SvgGraph.Edges[I].ToX := 0;
+    SvgGraph.Edges[I].ToY := 0;
+    SvgGraph.Edges[I].StrokeColor := '#404040';
+    SvgGraph.Edges[I].Style := 'solid';
+    SvgGraph.Edges[I].LabelText := '';
+  End;
+  
+  SvgInitialized := True;
+End;
+
+Function AddSvgNode(Const Id, Name: String): Integer;
+{ Ajoute un noeud au graphe SVG }
+Var
+  Idx: Integer;
+Begin
+  If Not SvgInitialized Then InitSvgGraph;
+  
+  If SvgGraph.NodeCount >= MAX_SVG_NODES Then
+  Begin
+    AddSvgNode := 0;
+    Exit;
+  End;
+  
+  Inc(SvgGraph.NodeCount);
+  Idx := SvgGraph.NodeCount;
+  
+  SvgGraph.Nodes[Idx].Id := Id;
+  SvgGraph.Nodes[Idx].Name := Name;
+  { Calculer la largeur en fonction du texte }
+  SvgGraph.Nodes[Idx].W := Length(Name) * 8 + 20;
+  If SvgGraph.Nodes[Idx].W < SVG_NODE_WIDTH Then
+    SvgGraph.Nodes[Idx].W := SVG_NODE_WIDTH;
+  SvgGraph.Nodes[Idx].H := SVG_NODE_HEIGHT;
+  
+  AddSvgNode := Idx;
+End;
+
+Function AddSvgEdge(Const FromId, ToId: String): Integer;
+{ Ajoute une arete au graphe SVG }
+Var
+  Idx: Integer;
+Begin
+  If Not SvgInitialized Then InitSvgGraph;
+  
+  If SvgGraph.EdgeCount >= MAX_SVG_EDGES Then
+  Begin
+    AddSvgEdge := 0;
+    Exit;
+  End;
+  
+  Inc(SvgGraph.EdgeCount);
+  Idx := SvgGraph.EdgeCount;
+  
+  SvgGraph.Edges[Idx].FromId := FromId;
+  SvgGraph.Edges[Idx].ToId := ToId;
+  SvgGraph.Edges[Idx].StrokeColor := '#404040';
+  SvgGraph.Edges[Idx].Style := 'solid';
+  
+  AddSvgEdge := Idx;
+End;
+
+Function FindSvgNode(Const Id: String): Integer;
+{ Trouve un noeud par son ID }
+Var
+  I: Integer;
+Begin
+  FindSvgNode := 0;
+  For I := 1 To SvgGraph.NodeCount Do
+  Begin
+    If SvgGraph.Nodes[I].Id = Id Then
+    Begin
+      FindSvgNode := I;
+      Exit;
+    End;
+  End;
+End;
+
+Procedure LayoutSvgGraph;
+{ Calcule la disposition automatique des noeuds }
+Var
+  I, Row, Col, MaxCols: Integer;
+  StartX, StartY: Integer;
+Begin
+  If SvgGraph.NodeCount = 0 Then Exit;
+  
+  { Calculer le nombre de colonnes }
+  MaxCols := 3;
+  If SvgGraph.NodeCount < 3 Then MaxCols := SvgGraph.NodeCount;
+  
+  { Calculer les dimensions de l'image }
+  SvgGraph.Width := MaxCols * (SVG_NODE_WIDTH + SVG_NODE_MARGIN * 2) + SVG_NODE_MARGIN * 2;
+  SvgGraph.Height := ((SvgGraph.NodeCount + MaxCols - 1) Div MaxCols) * (SVG_NODE_HEIGHT + SVG_NODE_MARGIN * 2) + SVG_NODE_MARGIN * 4;
+  
+  If SvgGraph.Width < SVG_DEFAULT_WIDTH Then SvgGraph.Width := SVG_DEFAULT_WIDTH;
+  If SvgGraph.Height < SVG_DEFAULT_HEIGHT Then SvgGraph.Height := SVG_DEFAULT_HEIGHT;
+  
+  { Positionner les noeuds }
+  StartX := SVG_NODE_MARGIN;
+  StartY := SVG_NODE_MARGIN + 30; { Espace pour le titre }
+  
+  For I := 1 To SvgGraph.NodeCount Do
+  Begin
+    Row := (I - 1) Div MaxCols;
+    Col := (I - 1) Mod MaxCols;
+    
+    SvgGraph.Nodes[I].X := StartX + Col * (SVG_NODE_WIDTH + SVG_NODE_MARGIN * 2);
+    SvgGraph.Nodes[I].Y := StartY + Row * (SVG_NODE_HEIGHT + SVG_NODE_MARGIN * 2);
+  End;
+  
+  { Calculer les positions des aretes }
+  For I := 1 To SvgGraph.EdgeCount Do
+  Begin
+    Row := FindSvgNode(SvgGraph.Edges[I].FromId);
+    Col := FindSvgNode(SvgGraph.Edges[I].ToId);
+    
+    If (Row > 0) And (Col > 0) Then
+    Begin
+      { Point de depart: centre bas du noeud source }
+      SvgGraph.Edges[I].FromX := SvgGraph.Nodes[Row].X + SvgGraph.Nodes[Row].W Div 2;
+      SvgGraph.Edges[I].FromY := SvgGraph.Nodes[Row].Y + SvgGraph.Nodes[Row].H;
+      
+      { Point d'arrivee: centre haut du noeud destination }
+      SvgGraph.Edges[I].ToX := SvgGraph.Nodes[Col].X + SvgGraph.Nodes[Col].W Div 2;
+      SvgGraph.Edges[I].ToY := SvgGraph.Nodes[Col].Y;
+    End;
+  End;
+End;
+
+Function SvgEscapeText(Const S: String): String;
+{ Echappe les caracteres speciaux pour SVG/XML }
+Var
+  I: Integer;
+  R: String;
+Begin
+  R := '';
+  For I := 1 To Length(S) Do
+  Begin
+    Case S[I] Of
+      '<': R := R + '&lt;';
+      '>': R := R + '&gt;';
+      '&': R := R + '&amp;';
+      '"': R := R + '&quot;';
+      '''': R := R + '&apos;';
+    Else
+      R := R + S[I];
+    End;
+  End;
+  SvgEscapeText := R;
+End;
+
+Procedure WriteSvgHeader(Var F: Text; Width, Height: Integer; Const BgColor: String);
+{ Ecrit l'en-tete XML et SVG }
+Begin
+  WriteLn(F, '<?xml version="1.0" encoding="UTF-8"?>');
+  WriteLn(F, '<svg xmlns="http://www.w3.org/2000/svg" ');
+  WriteLn(F, '     width="', Width, '" height="', Height, '"');
+  WriteLn(F, '     viewBox="0 0 ', Width, ' ', Height, '">');
+  WriteLn(F);
+  WriteLn(F, '  <!-- Genere par DOXYGEN.PAS - Generateur SVG integre -->');
+  WriteLn(F, '  <!-- Sans outil externe - Copyright DEV-COOLS -->');
+  WriteLn(F);
+  WriteLn(F, '  <!-- Definitions (marqueur fleche) -->');
+  WriteLn(F, '  <defs>');
+  WriteLn(F, '    <marker id="arrowhead" markerWidth="', SVG_ARROW_SIZE, '" markerHeight="', SVG_ARROW_SIZE, '"');
+  WriteLn(F, '            refX="', SVG_ARROW_SIZE, '" refY="', SVG_ARROW_SIZE Div 2, '"');
+  WriteLn(F, '            orient="auto" markerUnits="strokeWidth">');
+  WriteLn(F, '      <polygon points="0 0, ', SVG_ARROW_SIZE, ' ', SVG_ARROW_SIZE Div 2, ', 0 ', SVG_ARROW_SIZE, '"');
+  WriteLn(F, '               fill="#404040" />');
+  WriteLn(F, '    </marker>');
+  WriteLn(F, '  </defs>');
+  WriteLn(F);
+  WriteLn(F, '  <!-- Fond -->');
+  WriteLn(F, '  <rect width="100%" height="100%" fill="', BgColor, '" />');
+  WriteLn(F);
+End;
+
+Procedure WriteSvgFooter(Var F: Text);
+{ Ecrit le pied du fichier SVG }
+Begin
+  WriteLn(F, '</svg>');
+End;
+
+Procedure WriteSvgRect(Var F: Text; X, Y, W, H: Integer; 
+                       Const FillColor, StrokeColor: String;
+                       RoundedCorners: Boolean);
+{ Dessine un rectangle }
+Var
+  Rx: Integer;
+Begin
+  If RoundedCorners Then Rx := 5 Else Rx := 0;
+  
+  Write(F, '  <rect x="', X, '" y="', Y, '"');
+  Write(F, ' width="', W, '" height="', H, '"');
+  If RoundedCorners Then
+    Write(F, ' rx="', Rx, '" ry="', Rx, '"');
+  Write(F, ' fill="', FillColor, '"');
+  Write(F, ' stroke="', StrokeColor, '"');
+  WriteLn(F, ' stroke-width="2" />');
+End;
+
+Procedure WriteSvgLine(Var F: Text; X1, Y1, X2, Y2: Integer;
+                       Const StrokeColor, Style: String;
+                       WithArrow: Boolean);
+{ Dessine une ligne ou une fleche }
+Var
+  DashArray: String;
+Begin
+  If Style = 'dashed' Then
+    DashArray := ' stroke-dasharray="5,5"'
+  Else
+    DashArray := '';
+  
+  Write(F, '  <line x1="', X1, '" y1="', Y1, '"');
+  Write(F, ' x2="', X2, '" y2="', Y2, '"');
+  Write(F, ' stroke="', StrokeColor, '"');
+  Write(F, ' stroke-width="2"', DashArray);
+  If WithArrow Then
+    Write(F, ' marker-end="url(#arrowhead)"');
+  WriteLn(F, ' />');
+End;
+
+Procedure WriteSvgText(Var F: Text; X, Y: Integer; Const Text: String;
+                       FontSize: Integer; Const FillColor: String;
+                       CenterHorizontal: Boolean);
+{ Ecrit du texte }
+Var
+  Anchor: String;
+Begin
+  If CenterHorizontal Then
+    Anchor := 'middle'
+  Else
+    Anchor := 'start';
+  
+  Write(F, '  <text x="', X, '" y="', Y, '"');
+  Write(F, ' font-family="', SVG_FONT_FAMILY, '"');
+  Write(F, ' font-size="', FontSize, '"');
+  Write(F, ' fill="', FillColor, '"');
+  Write(F, ' text-anchor="', Anchor, '"');
+  WriteLn(F, '>', SvgEscapeText(Text), '</text>');
+End;
+
+Procedure RenderSvgGraph(Const OutputFileName: String);
+{ Genere le fichier SVG a partir du graphe }
+Var
+  F: Text;
+  I: Integer;
+  CenterX, CenterY: Integer;
+Begin
+  If Not SvgInitialized Then Exit;
+  If SvgGraph.NodeCount = 0 Then Exit;
+  
+  { Calculer la disposition }
+  LayoutSvgGraph;
+  
+  { Ouvrir le fichier SVG }
+  Assign(F, OutputFileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  { Ecrire l'en-tete SVG }
+  WriteSvgHeader(F, SvgGraph.Width, SvgGraph.Height, SvgGraph.BgColor);
+  
+  { Ecrire le titre si present }
+  If SvgGraph.Title <> '' Then
+  Begin
+    WriteLn(F, '  <!-- Titre -->');
+    WriteSvgText(F, SvgGraph.Width Div 2, 20, SvgGraph.Title, 16, '#000000', True);
+    WriteLn(F);
+  End;
+  
+  { Dessiner les aretes d'abord (pour qu'elles soient derriere les noeuds) }
+  WriteLn(F, '  <!-- Aretes -->');
+  WriteLn(F, '  <g id="edges">');
+  For I := 1 To SvgGraph.EdgeCount Do
+  Begin
+    If (SvgGraph.Edges[I].FromX > 0) Or (SvgGraph.Edges[I].ToX > 0) Then
+    Begin
+      WriteSvgLine(F, 
+                   SvgGraph.Edges[I].FromX, SvgGraph.Edges[I].FromY,
+                   SvgGraph.Edges[I].ToX, SvgGraph.Edges[I].ToY,
+                   SvgGraph.Edges[I].StrokeColor,
+                   SvgGraph.Edges[I].Style,
+                   True); { Avec fleche }
+    End;
+  End;
+  WriteLn(F, '  </g>');
+  WriteLn(F);
+  
+  { Dessiner les noeuds }
+  WriteLn(F, '  <!-- Noeuds -->');
+  WriteLn(F, '  <g id="nodes">');
+  For I := 1 To SvgGraph.NodeCount Do
+  Begin
+    { Rectangle du noeud }
+    WriteSvgRect(F, 
+                 SvgGraph.Nodes[I].X, SvgGraph.Nodes[I].Y,
+                 SvgGraph.Nodes[I].W, SvgGraph.Nodes[I].H,
+                 SvgGraph.Nodes[I].FillColor, SvgGraph.Nodes[I].StrokeColor,
+                 True); { Coins arrondis }
+    
+    { Texte du noeud (centre dans le rectangle) }
+    CenterX := SvgGraph.Nodes[I].X + SvgGraph.Nodes[I].W Div 2;
+    CenterY := SvgGraph.Nodes[I].Y + SvgGraph.Nodes[I].H Div 2 + SVG_FONT_SIZE Div 3;
+    WriteSvgText(F, CenterX, CenterY, SvgGraph.Nodes[I].Name, 
+                 SVG_FONT_SIZE, '#000000', True);
+  End;
+  WriteLn(F, '  </g>');
+  WriteLn(F);
+  
+  { Fermer le fichier SVG }
+  WriteSvgFooter(F);
+  Close(F);
+End;
+
+Procedure ParseDotFileForSvg(Const DotFile: String);
+{ Parse un fichier DOT et construit le graphe SVG }
+Var
+  F: Text;
+  Line, Token, NodeId, NodeLabel, FromId, ToId: String;
+  P, P2: Integer;
+  InQuotes: Boolean;
+Begin
+  Assign(F, DotFile);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    
+    { Supprimer les espaces en debut et fin }
+    While (Length(Line) > 0) And (Line[1] In [' ', #9]) Do
+      Delete(Line, 1, 1);
+    While (Length(Line) > 0) And (Line[Length(Line)] In [' ', #9]) Do
+      Delete(Line, Length(Line), 1);
+    
+    { Ignorer les lignes vides et les commentaires }
+    If (Line = '') Or (Copy(Line, 1, 2) = '//') Or (Copy(Line, 1, 1) = '#') Then
+      Continue;
+    
+    { Detecter le titre du graphe }
+    If (Copy(Line, 1, 6) = 'label=') Or (Copy(Line, 1, 6) = 'label ') Then
+    Begin
+      P := Pos('"', Line);
+      If P > 0 Then
+      Begin
+        P2 := P + 1;
+        While (P2 <= Length(Line)) And (Line[P2] <> '"') Do
+          Inc(P2);
+        SvgGraph.Title := Copy(Line, P + 1, P2 - P - 1);
+      End;
+      Continue;
+    End;
+    
+    { Detecter les aretes (contiennent '->' ou '--') }
+    P := Pos('->', Line);
+    If P = 0 Then P := Pos('--', Line);
+    
+    If P > 0 Then
+    Begin
+      { Extraire le noeud source }
+      FromId := Copy(Line, 1, P - 1);
+      While (Length(FromId) > 0) And (FromId[Length(FromId)] In [' ', #9]) Do
+        Delete(FromId, Length(FromId), 1);
+      While (Length(FromId) > 0) And (FromId[1] In [' ', #9]) Do
+        Delete(FromId, 1, 1);
+      
+      { Extraire le noeud destination }
+      If Line[P+1] = '>' Then
+        ToId := Copy(Line, P + 2, Length(Line))
+      Else
+        ToId := Copy(Line, P + 2, Length(Line));
+      
+      { Supprimer les attributs et le point-virgule }
+      P2 := Pos('[', ToId);
+      If P2 > 0 Then ToId := Copy(ToId, 1, P2 - 1);
+      P2 := Pos(';', ToId);
+      If P2 > 0 Then ToId := Copy(ToId, 1, P2 - 1);
+      
+      While (Length(ToId) > 0) And (ToId[Length(ToId)] In [' ', #9]) Do
+        Delete(ToId, Length(ToId), 1);
+      While (Length(ToId) > 0) And (ToId[1] In [' ', #9]) Do
+        Delete(ToId, 1, 1);
+      
+      { S'assurer que les noeuds existent }
+      If FindSvgNode(FromId) = 0 Then
+        AddSvgNode(FromId, FromId);
+      If FindSvgNode(ToId) = 0 Then
+        AddSvgNode(ToId, ToId);
+      
+      { Ajouter l'arete }
+      AddSvgEdge(FromId, ToId);
+    End
+    Else If (Pos('[', Line) > 0) And (Pos('label=', Line) > 0) Then
+    Begin
+      { C'est un noeud avec attributs }
+      P := Pos('[', Line);
+      NodeId := Copy(Line, 1, P - 1);
+      While (Length(NodeId) > 0) And (NodeId[Length(NodeId)] In [' ', #9]) Do
+        Delete(NodeId, Length(NodeId), 1);
+      While (Length(NodeId) > 0) And (NodeId[1] In [' ', #9]) Do
+        Delete(NodeId, 1, 1);
+      
+      { Extraire le label }
+      P := Pos('label=', Line);
+      If P > 0 Then
+      Begin
+        P := P + 6;
+        If (P <= Length(Line)) And (Line[P] = '"') Then
+        Begin
+          Inc(P);
+          P2 := P;
+          InQuotes := True;
+          While (P2 <= Length(Line)) And InQuotes Do
+          Begin
+            If Line[P2] = '"' Then
+              InQuotes := False
+            Else
+              Inc(P2);
+          End;
+          NodeLabel := Copy(Line, P, P2 - P);
+        End
+        Else
+        Begin
+          P2 := P;
+          While (P2 <= Length(Line)) And Not (Line[P2] In [',', ']', ' ', ';']) Do
+            Inc(P2);
+          NodeLabel := Copy(Line, P, P2 - P);
+        End;
+      End
+      Else
+        NodeLabel := NodeId;
+      
+      { Ajouter le noeud s'il n'existe pas deja }
+      If FindSvgNode(NodeId) = 0 Then
+        AddSvgNode(NodeId, NodeLabel);
+    End;
+  End;
+  
+  Close(F);
+End;
+
+Procedure RenderDotToSvg(Const DotFile, SvgFile: String);
+{ Fonction principale: lit un fichier DOT et genere un SVG }
+Begin
+  { Reinitialiser le graphe }
+  SvgInitialized := False;
+  InitSvgGraph;
+  
+  { Parser le fichier DOT }
+  ParseDotFileForSvg(DotFile);
+  
+  { Generer le SVG }
+  RenderSvgGraph(SvgFile);
+  
+  If Not Opts.Quiet Then
+    WriteLn('SVG genere (built-in): ', SvgFile);
+End;
+
+{ ============================================================
+  FIN DU GENERATEUR SVG INTEGRE
+  ============================================================ }
+
 Procedure RenderCallGraphImage(Const DotFile, ImageFile: String);
-{ Genere l'image PNG a partir du fichier DOT en utilisant le generateur integre }
+{ Genere l'image a partir du fichier DOT en utilisant les generateurs integres }
 Var
   Format: String;
   I: Integer;
@@ -10939,13 +11497,18 @@ Begin
   Begin
     RenderDotToPng(DotFile, ImageFile);
   End
+  { Utiliser le generateur SVG integre pour le format SVG }
+  Else If (Format = 'svg') Or (Format = 'SVG') Then
+  Begin
+    RenderDotToSvg(DotFile, ImageFile);
+  End
   Else
   Begin
-    { Pour les autres formats (SVG, etc.), afficher un message }
+    { Pour les autres formats, afficher un message }
     If Not Opts.Quiet Then
     Begin
-      WriteLn('Note: Le format ', Format, ' n''est pas supporte par le generateur integre.');
-      WriteLn('Seul le format PNG est genere nativement sans outil externe.');
+      WriteLn('Note: Le format ', Format, ' n''est pas directement supporte.');
+      WriteLn('Les formats PNG et SVG sont generes nativement sans outil externe.');
     End;
   End;
 End;
@@ -11452,7 +12015,7 @@ Begin
 End;
 
 Procedure RenderDependencyGraphImage(Const DotFile, ImageFile: String);
-{ Genere l'image PNG a partir du fichier DOT en utilisant le generateur integre }
+{ Genere l'image a partir du fichier DOT en utilisant les generateurs integres }
 Var
   Format: String;
   I: Integer;
@@ -11473,13 +12036,18 @@ Begin
   Begin
     RenderDotToPng(DotFile, ImageFile);
   End
+  { Utiliser le generateur SVG integre pour le format SVG }
+  Else If (Format = 'svg') Or (Format = 'SVG') Then
+  Begin
+    RenderDotToSvg(DotFile, ImageFile);
+  End
   Else
   Begin
-    { Pour les autres formats (SVG, etc.), afficher un message }
+    { Pour les autres formats, afficher un message }
     If Not Opts.Quiet Then
     Begin
-      WriteLn('Note: Le format ', Format, ' n''est pas supporte par le generateur integre.');
-      WriteLn('Seul le format PNG est genere nativement sans outil externe.');
+      WriteLn('Note: Le format ', Format, ' n''est pas directement supporte.');
+      WriteLn('Les formats PNG et SVG sont generes nativement sans outil externe.');
     End;
   End;
 End;
@@ -12238,7 +12806,7 @@ Begin
 End;
 
 Procedure RenderClassDiagramImage(Const DotFile, ImageFile: String);
-{ Genere l'image PNG a partir du fichier DOT en utilisant le generateur integre }
+{ Genere l'image a partir du fichier DOT en utilisant les generateurs integres }
 Var
   Format: String;
   I: Integer;
@@ -12259,13 +12827,18 @@ Begin
   Begin
     RenderDotToPng(DotFile, ImageFile);
   End
+  { Utiliser le generateur SVG integre pour le format SVG }
+  Else If (Format = 'svg') Or (Format = 'SVG') Then
+  Begin
+    RenderDotToSvg(DotFile, ImageFile);
+  End
   Else
   Begin
-    { Pour les autres formats (SVG, etc.), afficher un message }
+    { Pour les autres formats, afficher un message }
     If Not Opts.Quiet Then
     Begin
-      WriteLn('Note: Le format ', Format, ' n''est pas supporte par le generateur integre.');
-      WriteLn('Seul le format PNG est genere nativement sans outil externe.');
+      WriteLn('Note: Le format ', Format, ' n''est pas directement supporte.');
+      WriteLn('Les formats PNG et SVG sont generes nativement sans outil externe.');
     End;
   End;
 End;
