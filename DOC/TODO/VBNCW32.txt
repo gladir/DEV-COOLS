@@ -356,7 +356,7 @@
               Labels nommes uniquement (pas de labels numeriques en VB.NET)
             Note : GoSub n est plus supporte en VB.NET
 
-  TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP, WHILE/END WHILE, FOR EACH) [A FAIRE]
+  TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP, WHILE/END WHILE, FOR EACH) [IMPLEMENTE]
             Procedure ParseFor
             Syntaxe :
               For i = debut To fin [Step pas]

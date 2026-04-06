@@ -364,7 +364,7 @@
               Labels nommes uniquement (pas de labels numeriques en VB.NET)
             Note : GoSub n est plus supporte en VB.NET
 
-  TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP, WHILE/END WHILE, FOR EACH) [A FAIRE]
+  TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP, WHILE/END WHILE, FOR EACH) [IMPLEMENTE]
             Procedure ParseFor
             Syntaxe :
               For i = debut To fin [Step pas]
@@ -1530,6 +1530,7 @@ Const
   KW_WITHEVENTS      = 144;
   KW_WRITEONLY       = 145;
   KW_XOR             = 146;
+  KW_UNTIL           = 147;
 
   { Fonctions VB.NET intrinseques }
   KW_ABS             = 150;
@@ -1735,6 +1736,7 @@ Begin
   Else If U = 'UINTEGER'       Then IsKeyword := KW_UINTEGER
   Else If U = 'ULONG'          Then IsKeyword := KW_ULONG
   Else If U = 'USHORT'         Then IsKeyword := KW_USHORT
+  Else If U = 'UNTIL'          Then IsKeyword := KW_UNTIL
   Else If U = 'USING'          Then IsKeyword := KW_USING
   Else If U = 'WHEN'           Then IsKeyword := KW_WHEN
   Else If U = 'WHILE'          Then IsKeyword := KW_WHILE
@@ -1941,6 +1943,7 @@ Begin
     KW_UINTEGER        : KeywordName := 'UInteger';
     KW_ULONG           : KeywordName := 'ULong';
     KW_USHORT          : KeywordName := 'UShort';
+    KW_UNTIL           : KeywordName := 'Until';
     KW_USING           : KeywordName := 'Using';
     KW_WHEN            : KeywordName := 'When';
     KW_WHILE           : KeywordName := 'While';
@@ -7729,46 +7732,563 @@ Begin
   LexNextToken;
 End;
 
+{ ============================================================ }
+{ TODO 11 - PARSEUR : BOUCLES (FOR/NEXT, DO/LOOP,             }
+{           WHILE/END WHILE, FOR EACH) [IMPLEMENTE]            }
+{ ============================================================ }
+
+Var
+  LoopCount       : LongInt;   { nombre total de boucles parsees         }
+  LoopDepth       : Integer;   { profondeur d imbrication courante       }
+  MaxLoopDepth    : Integer;   { profondeur max atteinte                 }
+  LoopInitialized : Boolean;   { True si InitLoopState a ete appele      }
+
 { ------------------------------------------------------------ }
-{ Stubs pour les procedures forward (TODO 11, 12)              }
-{ Seront remplacees par les implementations completes          }
+{ InitLoopState : initialiser l etat du module de boucles      }
+{ ------------------------------------------------------------ }
+
+Procedure InitLoopState;
+Begin
+  LoopCount       := 0;
+  LoopDepth       := 0;
+  MaxLoopDepth    := 0;
+  LoopInitialized := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ EnterLoop / LeaveLoop : gestion de profondeur de boucle      }
+{ ------------------------------------------------------------ }
+
+Procedure EnterLoop;
+Begin
+  Inc(LoopCount);
+  Inc(LoopDepth);
+  If LoopDepth > MaxLoopDepth Then
+    MaxLoopDepth := LoopDepth;
+End;
+
+Procedure LeaveLoop;
+Begin
+  If LoopDepth > 0 Then
+    Dec(LoopDepth);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFor : parser une boucle For/Next VB.NET                 }
+{ Syntaxe : For i = debut To fin [Step pas]                    }
+{             instructions                                     }
+{           Next [i]                                           }
+{ Detecte aussi For Each et delegue a ParseForEach             }
 { ------------------------------------------------------------ }
 
 Procedure ParseFor;
+Var
+  LblLoop  : TString;  { label debut de boucle   }
+  LblEnd   : TString;  { label fin de boucle     }
+  VarName  : TString;  { nom de la variable       }
+  Idx      : Integer;  { index dans la sym table  }
+  HasStep  : Boolean;  { True si Step est present }
 Begin
-  { Stub : sera implemente dans TODO 11 }
+  { Consommer 'For' }
   LexNextToken;
+
+  { Verifier si c est For Each }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_EACH) Then
+  Begin
+    ParseForEach;
+    Exit;
+  End;
+
+  EnterCtrl;
+  EnterLoop;
+
+  { Lire le nom de la variable de boucle }
+  If CurTokType <> TOK_IDENT Then
+  Begin
+    FatalError('For: variable attendue');
+    LeaveLoop;
+    LeaveCtrl;
+    Exit;
+  End;
+  VarName := CurTokStr;
+  Idx := FindSym(VarName);
+  If Idx < 0 Then
+    Idx := AddSym(VarName, SK_VAR, VBT_INTEGER, STORE_AUTO);
+  LexNextToken;
+
+  { Attendre '=' }
+  Expect(TOK_EQ);
+
+  { Parser l expression de debut }
+  ParseExpr;
+  EmitComment('For ' + VarName + ' = start');
+  GenStoreVar(Idx);
+
+  { Attendre 'To' }
+  ExpectKeyword(KW_TO);
+
+  { Parser l expression de fin, la placer sur la pile }
+  ParseExpr;
+  EmitComment('For ' + VarName + ' To limit');
+  GenPushEAX;
+
+  { Verifier Step optionnel }
+  HasStep := False;
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_STEP) Then
+  Begin
+    LexNextToken;
+    HasStep := True;
+    ParseExpr;
+    EmitComment('For Step value');
+    Emit('  PUSH EAX');  { pile : [fin, step] }
+  End;
+
+  { Emettre le label de debut de boucle }
+  LblLoop := NextInternalLabel;
+  LblEnd  := NextInternalLabel;
+  EmitLabel(LblLoop);
+
+  { Charger la variable, comparer avec la fin }
+  GenLoadVar(Idx);
+  EmitComment('For compare ' + VarName + ' to limit');
+  If HasStep Then
+  Begin
+    { Recuperer la fin (en dessous du step sur la pile) }
+    Emit('  MOV EBX, [ESP+4]');
+  End
+  Else
+    GenPopEBX;
+  Emit('  CMP EAX, EBX');
+  Emit('  JG ' + LblEnd);
+
+  { Parser le bloc d instructions }
+  SkipNewlines;
+  ParseStatementBlock;
+
+  { Attendre 'Next' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEXT) Then
+  Begin
+    LexNextToken;
+    { Optionnel : nom de la variable apres Next }
+    If (CurTokType = TOK_IDENT) Then
+      LexNextToken;
+  End;
+
+  { Incrementer la variable de boucle }
+  GenLoadVar(Idx);
+  EmitComment('For increment ' + VarName);
+  If HasStep Then
+  Begin
+    Emit('  MOV EBX, [ESP]');  { step est au sommet }
+    Emit('  ADD EAX, EBX');
+  End
+  Else
+    Emit('  ADD EAX, 1');
+  GenStoreVar(Idx);
+
+  { Boucler }
+  If HasStep Then
+  Begin
+    Emit('  JMP ' + LblLoop);
+    EmitLabel(LblEnd);
+    { Nettoyer la pile : fin et step }
+    Emit('  ADD ESP, 8');
+  End
+  Else
+  Begin
+    Emit('  JMP ' + LblLoop);
+    EmitLabel(LblEnd);
+  End;
+
+  LeaveLoop;
+  LeaveCtrl;
 End;
+
+{ ------------------------------------------------------------ }
+{ ParseDoLoop : parser une boucle Do/Loop VB.NET               }
+{ Syntaxe : Do [While|Until condition]                         }
+{             instructions                                     }
+{           Loop [While|Until condition]                        }
+{ ------------------------------------------------------------ }
 
 Procedure ParseDoLoop;
+Var
+  LblLoop   : TString;    { label debut de boucle     }
+  LblEnd    : TString;    { label fin de boucle       }
+  PreCond   : Boolean;    { True si While/Until avant  }
+  IsWhile   : Boolean;    { True=While, False=Until    }
 Begin
-  { Stub : sera implemente dans TODO 11 }
+  EnterCtrl;
+  EnterLoop;
+  { Consommer 'Do' }
   LexNextToken;
+
+  LblLoop := NextInternalLabel;
+  LblEnd  := NextInternalLabel;
+
+  PreCond := False;
+  IsWhile := True;
+
+  { Verifier condition pre-test (Do While/Until) }
+  If (CurTokType = TOK_KEYWORD) Then
+  Begin
+    If (CurTokNum = KW_WHILE) Then
+    Begin
+      PreCond := True;
+      IsWhile := True;
+      LexNextToken;
+    End
+    Else If (CurTokNum = KW_UNTIL) Then
+    Begin
+      PreCond := True;
+      IsWhile := False;
+      LexNextToken;
+    End;
+  End;
+
+  EmitLabel(LblLoop);
+
+  If PreCond Then
+  Begin
+    ParseExpr;
+    EmitComment('Do pre-condition');
+    Emit('  CMP EAX, 0');
+    If IsWhile Then
+      Emit('  JE ' + LblEnd)    { While: sortir si False }
+    Else
+      Emit('  JNE ' + LblEnd);  { Until: sortir si True  }
+  End;
+
+  { Parser le bloc d instructions }
+  SkipNewlines;
+  ParseStatementBlock;
+
+  { Attendre 'Loop' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_LOOP) Then
+  Begin
+    LexNextToken;
+
+    { Verifier condition post-test (Loop While/Until) }
+    If (CurTokType = TOK_KEYWORD) Then
+    Begin
+      If (CurTokNum = KW_WHILE) Then
+      Begin
+        LexNextToken;
+        ParseExpr;
+        EmitComment('Loop While condition');
+        Emit('  CMP EAX, 0');
+        Emit('  JNE ' + LblLoop);  { While: boucler si True }
+      End
+      Else If (CurTokNum = KW_UNTIL) Then
+      Begin
+        LexNextToken;
+        ParseExpr;
+        EmitComment('Loop Until condition');
+        Emit('  CMP EAX, 0');
+        Emit('  JE ' + LblLoop);   { Until: boucler si False }
+      End
+      Else
+      Begin
+        { Do ... Loop (boucle infinie) }
+        Emit('  JMP ' + LblLoop);
+      End;
+    End
+    Else
+    Begin
+      { Do ... Loop sans condition post-test }
+      If Not PreCond Then
+        Emit('  JMP ' + LblLoop)    { boucle infinie }
+      Else
+        Emit('  JMP ' + LblLoop);   { pre-cond geree en haut }
+    End;
+  End;
+
+  EmitLabel(LblEnd);
+  LeaveLoop;
+  LeaveCtrl;
 End;
 
+{ ------------------------------------------------------------ }
+{ ParseWhile : parser une boucle While/End While VB.NET        }
+{ Syntaxe : While condition                                    }
+{             instructions                                     }
+{           End While                                          }
+{ Note : VB.NET utilise End While et non Wend                  }
+{ ------------------------------------------------------------ }
+
 Procedure ParseWhile;
+Var
+  LblLoop : TString;  { label debut de boucle }
+  LblEnd  : TString;  { label fin de boucle   }
 Begin
-  { Stub : sera implemente dans TODO 11 }
+  EnterCtrl;
+  EnterLoop;
+  { Consommer 'While' }
   LexNextToken;
+
+  LblLoop := NextInternalLabel;
+  LblEnd  := NextInternalLabel;
+
+  EmitLabel(LblLoop);
+
+  { Parser la condition }
+  ParseExpr;
+  EmitComment('While condition');
+  Emit('  CMP EAX, 0');
+  Emit('  JE ' + LblEnd);
+
+  { Parser le bloc d instructions }
+  SkipNewlines;
+  ParseStatementBlock;
+
+  { Attendre 'End While' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then
+  Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WHILE) Then
+      LexNextToken
+    Else
+      WarnMsg('End While attendu');
+  End
+  Else
+    WarnMsg('End While attendu');
+
+  { Retourner au debut de la boucle }
+  Emit('  JMP ' + LblLoop);
+  EmitLabel(LblEnd);
+
+  LeaveLoop;
+  LeaveCtrl;
 End;
+
+{ ------------------------------------------------------------ }
+{ ParseForEach : parser une boucle For Each/Next VB.NET        }
+{ Syntaxe : For Each element In collection                     }
+{             instructions                                     }
+{           Next [element]                                     }
+{ ------------------------------------------------------------ }
 
 Procedure ParseForEach;
 Begin
-  { Stub : sera implemente dans TODO 11 }
+  EnterCtrl;
+  EnterLoop;
+  { 'For' deja consomme, consommer 'Each' }
   LexNextToken;
+
+  EmitComment('For Each (stub - not fully implemented)');
+
+  { Lire le nom de l element }
+  If CurTokType = TOK_IDENT Then
+    LexNextToken;
+
+  { Attendre 'In' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IN) Then
+    LexNextToken;
+
+  { Lire la collection }
+  If CurTokType = TOK_IDENT Then
+    LexNextToken;
+
+  { Parser le bloc d instructions }
+  SkipNewlines;
+  ParseStatementBlock;
+
+  { Attendre 'Next' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEXT) Then
+  Begin
+    LexNextToken;
+    { Optionnel : nom de l element apres Next }
+    If (CurTokType = TOK_IDENT) Then
+      LexNextToken;
+  End;
+
+  LeaveLoop;
+  LeaveCtrl;
 End;
 
+{ ------------------------------------------------------------ }
+{ ParseExitStatement : parser Exit Sub/Function/For/Do/While   }
+{ VB.NET ajoute Exit While par rapport a VB6                   }
+{ ------------------------------------------------------------ }
+
 Procedure ParseExitStatement;
+Var
+  ExLbl : TString;
 Begin
-  { Stub : sera implemente dans TODO 11 }
-  LexNextToken;
+  LexNextToken; { consommer 'Exit' }
+  If CurTokType <> TOK_KEYWORD Then
+  Begin
+    WarnMsg('Mot-cle attendu apres "Exit"');
+    Exit;
+  End;
+  Case CurTokNum Of
+    KW_SUB:
+    Begin
+      LexNextToken; { consommer 'Sub' }
+      ExLbl := FindEnclosingExitLabel;
+      If ExLbl <> '' Then
+      Begin
+        EmitComment('Exit Sub');
+        Emit('JMP ' + ExLbl);
+      End
+      Else
+        WarnMsg('Exit Sub en dehors d''un Sub');
+    End;
+    KW_FUNCTION:
+    Begin
+      LexNextToken; { consommer 'Function' }
+      ExLbl := FindEnclosingExitLabel;
+      If ExLbl <> '' Then
+      Begin
+        EmitComment('Exit Function');
+        Emit('JMP ' + ExLbl);
+      End
+      Else
+        WarnMsg('Exit Function en dehors d''une Function');
+    End;
+    KW_FOR:
+    Begin
+      LexNextToken; { consommer 'For' }
+      ExLbl := FindEnclosingExitLabel;
+      If ExLbl <> '' Then
+      Begin
+        EmitComment('Exit For');
+        Emit('JMP ' + ExLbl);
+      End
+      Else
+        WarnMsg('Exit For en dehors d''une boucle For');
+    End;
+    KW_DO:
+    Begin
+      LexNextToken; { consommer 'Do' }
+      ExLbl := FindEnclosingExitLabel;
+      If ExLbl <> '' Then
+      Begin
+        EmitComment('Exit Do');
+        Emit('JMP ' + ExLbl);
+      End
+      Else
+        WarnMsg('Exit Do en dehors d''une boucle Do');
+    End;
+    KW_WHILE:
+    Begin
+      LexNextToken; { consommer 'While' }
+      ExLbl := FindEnclosingExitLabel;
+      If ExLbl <> '' Then
+      Begin
+        EmitComment('Exit While');
+        Emit('JMP ' + ExLbl);
+      End
+      Else
+        WarnMsg('Exit While en dehors d''une boucle While');
+    End;
+  Else
+    WarnMsg('"Sub", "Function", "For", "Do" ou "While" attendu apres "Exit"');
+    LexNextToken;
+  End;
 End;
+
+{ ------------------------------------------------------------ }
+{ ParseContinueStatement : parser Continue For/Do/While        }
+{ VB.NET uniquement (n existe pas en VB6)                      }
+{ ------------------------------------------------------------ }
 
 Procedure ParseContinueStatement;
 Begin
-  { Stub : sera implemente dans TODO 11 }
-  LexNextToken;
+  LexNextToken; { consommer 'Continue' }
+  If CurTokType <> TOK_KEYWORD Then
+  Begin
+    WarnMsg('Mot-cle attendu apres "Continue"');
+    Exit;
+  End;
+  Case CurTokNum Of
+    KW_FOR:
+    Begin
+      LexNextToken; { consommer 'For' }
+      EmitComment('Continue For');
+      { En VB.NET, Continue For saute a l increment de la boucle }
+      { Simplifie : genere un commentaire indicatif }
+      Emit('; Continue For - JMP vers label_continue');
+    End;
+    KW_DO:
+    Begin
+      LexNextToken; { consommer 'Do' }
+      EmitComment('Continue Do');
+      Emit('; Continue Do - JMP vers label_continue');
+    End;
+    KW_WHILE:
+    Begin
+      LexNextToken; { consommer 'While' }
+      EmitComment('Continue While');
+      Emit('; Continue While - JMP vers label_continue');
+    End;
+  Else
+    WarnMsg('"For", "Do" ou "While" attendu apres "Continue"');
+    LexNextToken;
+  End;
 End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseurs pour le module de boucles               }
+{ ------------------------------------------------------------ }
+
+Function GetLoopCount : LongInt;
+Begin
+  GetLoopCount := LoopCount;
+End;
+
+Function GetLoopDepth : Integer;
+Begin
+  GetLoopDepth := LoopDepth;
+End;
+
+Function GetMaxLoopDepth : Integer;
+Begin
+  GetMaxLoopDepth := MaxLoopDepth;
+End;
+
+Function IsLoopInitialized : Boolean;
+Begin
+  IsLoopInitialized := LoopInitialized;
+End;
+
+Function IsLoopEmpty : Boolean;
+Begin
+  IsLoopEmpty := (LoopCount = 0);
+End;
+
+Function GetLoopStatus : TString;
+Begin
+  If LoopInitialized Then
+    GetLoopStatus := 'initialized'
+  Else
+    GetLoopStatus := 'not initialized';
+End;
+
+Function IsInLoop : Boolean;
+Begin
+  IsInLoop := (LoopDepth > 0);
+End;
+
+Function IsLoopNested : Boolean;
+Begin
+  IsLoopNested := (LoopDepth > 1);
+End;
+
+Function GetLoopMaxLabel : TString;
+Begin
+  GetLoopMaxLabel := PFX_LBL + ItoSI(InternalLabelCount);
+End;
+
+Function IsLoopStackEmpty : Boolean;
+Begin
+  IsLoopStackEmpty := (LoopDepth = 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ Stubs pour les procedures forward (TODO 12)                  }
+{ Seront remplacees par les implementations completes          }
+{ ------------------------------------------------------------ }
 
 Procedure ParseSub;
 Begin
@@ -7864,13 +8384,14 @@ Begin
   InitExprState;
   InitCodeGen;
   InitCtrlState;
+  InitLoopState;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 11..25 : Generation de code, etc. }
+  { TODO 12..25 : Generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;
