@@ -1245,6 +1245,118 @@ Const
   VDX_VERSION           = '11.0';    { Version Visio (2003+) }
   VDX_XMLNS             = 'http://schemas.microsoft.com/visio/2003/core';
 
+  { ============================================================
+    CONSTANTES JPEG - GENERATEUR INTEGRE (SANS OUTIL EXTERNE)
+    Partie 1: Marqueurs JPEG
+    ============================================================ }
+  
+  { Marqueurs JPEG standard (tous commencent par $FF) }
+  JPEG_MARKER_PREFIX    = $FF;       { Prefixe de tous les marqueurs JPEG }
+  
+  { Marqueurs de debut et fin d'image }
+  JPEG_SOI              = $D8;       { Start Of Image - debut de l'image }
+  JPEG_EOI              = $D9;       { End Of Image - fin de l'image }
+  
+  { Marqueurs de segment d'application (APP0-APP15: $E0-$EF) }
+  JPEG_APP0             = $E0;       { Application segment 0 (JFIF) }
+  JPEG_APP1             = $E1;       { Application segment 1 (EXIF) }
+  JPEG_APP2             = $E2;       { Application segment 2 (ICC Profile) }
+  JPEG_APP13            = $ED;       { Application segment 13 (Photoshop) }
+  JPEG_APP14            = $EE;       { Application segment 14 (Adobe) }
+  
+  { Marqueurs de definition des tables }
+  JPEG_DQT              = $DB;       { Define Quantization Table(s) }
+  JPEG_DHT              = $C4;       { Define Huffman Table(s) }
+  JPEG_DAC              = $CC;       { Define Arithmetic Coding }
+  
+  { Marqueurs de cadre (Start Of Frame) }
+  JPEG_SOF0             = $C0;       { Baseline DCT }
+  JPEG_SOF1             = $C1;       { Extended sequential DCT }
+  JPEG_SOF2             = $C2;       { Progressive DCT }
+  JPEG_SOF3             = $C3;       { Lossless (sequential) }
+  JPEG_SOF5             = $C5;       { Differential sequential DCT }
+  JPEG_SOF6             = $C6;       { Differential progressive DCT }
+  JPEG_SOF7             = $C7;       { Differential lossless (sequential) }
+  JPEG_SOF9             = $C9;       { Extended sequential DCT, arithmetic }
+  JPEG_SOF10            = $CA;       { Progressive DCT, arithmetic }
+  JPEG_SOF11            = $CB;       { Lossless (sequential), arithmetic }
+  JPEG_SOF13            = $CD;       { Differential sequential DCT, arithmetic }
+  JPEG_SOF14            = $CE;       { Differential progressive DCT, arithmetic }
+  JPEG_SOF15            = $CF;       { Differential lossless, arithmetic }
+  
+  { Marqueurs de scan et restart }
+  JPEG_SOS              = $DA;       { Start Of Scan - debut des donnees image }
+  JPEG_RST0             = $D0;       { Restart marker 0 }
+  JPEG_RST1             = $D1;       { Restart marker 1 }
+  JPEG_RST2             = $D2;       { Restart marker 2 }
+  JPEG_RST3             = $D3;       { Restart marker 3 }
+  JPEG_RST4             = $D4;       { Restart marker 4 }
+  JPEG_RST5             = $D5;       { Restart marker 5 }
+  JPEG_RST6             = $D6;       { Restart marker 6 }
+  JPEG_RST7             = $D7;       { Restart marker 7 }
+  JPEG_DRI              = $DD;       { Define Restart Interval }
+  
+  { Marqueurs divers }
+  JPEG_DNL              = $DC;       { Define Number of Lines }
+  JPEG_DHP              = $DE;       { Define Hierarchical Progression }
+  JPEG_EXP              = $DF;       { Expand Reference Component(s) }
+  JPEG_COM              = $FE;       { Comment - commentaire }
+  JPEG_TEM              = $01;       { For temporary private use }
+  
+  { Constantes JFIF (APP0) }
+  JFIF_IDENTIFIER       = 'JFIF';    { Identificateur JFIF }
+  JFIF_VERSION_MAJOR    = 1;         { Version majeure JFIF }
+  JFIF_VERSION_MINOR    = 1;         { Version mineure JFIF (1.01 ou 1.02) }
+  JFIF_UNITS_NONE       = 0;         { Pas d'unite (rapport d'aspect) }
+  JFIF_UNITS_DPI        = 1;         { Dots per inch }
+  JFIF_UNITS_DPCM       = 2;         { Dots per centimeter }
+  JFIF_DEFAULT_XDENSITY = 72;        { Densite X par defaut (72 DPI) }
+  JFIF_DEFAULT_YDENSITY = 72;        { Densite Y par defaut (72 DPI) }
+  
+  { Limites et constantes de dimensions JPEG }
+  JPEG_MAX_WIDTH        = 65535;     { Largeur maximale (16 bits) }
+  JPEG_MAX_HEIGHT       = 65535;     { Hauteur maximale (16 bits) }
+  JPEG_BLOCK_SIZE       = 8;         { Taille d'un bloc DCT (8x8) }
+  JPEG_BLOCK_SIZE_SQ    = 64;        { 8 * 8 = 64 coefficients par bloc }
+  JPEG_MAX_COMPONENTS   = 4;         { Nombre max de composantes (Y,Cb,Cr,K) }
+  JPEG_MAX_QUANT_TABLES = 4;         { Nombre max de tables de quantification }
+  JPEG_MAX_HUFF_TABLES  = 4;         { Nombre max de tables Huffman (2 DC + 2 AC) }
+  
+  { Types de tables Huffman }
+  JPEG_HUFF_DC          = 0;         { Table Huffman DC }
+  JPEG_HUFF_AC          = 1;         { Table Huffman AC }
+  
+  { Identificateurs de composantes couleur }
+  JPEG_COMP_Y           = 1;         { Composante luminance Y }
+  JPEG_COMP_CB          = 2;         { Composante chrominance Cb (bleu) }
+  JPEG_COMP_CR          = 3;         { Composante chrominance Cr (rouge) }
+  JPEG_COMP_K           = 4;         { Composante noire K (CMYK) }
+  
+  { Facteurs d'echantillonnage courants }
+  JPEG_SAMPLE_444       = 1;         { Pas de sous-echantillonnage (4:4:4) }
+  JPEG_SAMPLE_422_H     = 2;         { Sous-echantillonnage horizontal 4:2:2 }
+  JPEG_SAMPLE_420       = 2;         { Sous-echantillonnage 4:2:0 (H et V) }
+  
+  { Qualites JPEG predefinies }
+  JPEG_QUALITY_LOW      = 25;        { Qualite basse (forte compression) }
+  JPEG_QUALITY_MEDIUM   = 50;        { Qualite moyenne }
+  JPEG_QUALITY_HIGH     = 75;        { Qualite haute }
+  JPEG_QUALITY_BEST     = 95;        { Meilleure qualite (faible compression) }
+  JPEG_QUALITY_DEFAULT  = 75;        { Qualite par defaut }
+  JPEG_QUALITY_MIN      = 1;         { Qualite minimale }
+  JPEG_QUALITY_MAX      = 100;       { Qualite maximale }
+  
+  { Constantes pour la generation de graphes en JPEG }
+  JPEG_DEFAULT_WIDTH    = 800;       { Largeur par defaut pour les graphes }
+  JPEG_DEFAULT_HEIGHT   = 600;       { Hauteur par defaut pour les graphes }
+  JPEG_NODE_WIDTH       = 120;       { Largeur d'un noeud }
+  JPEG_NODE_HEIGHT      = 40;        { Hauteur d'un noeud }
+  JPEG_NODE_MARGIN      = 30;        { Marge entre les noeuds }
+  JPEG_FONT_WIDTH       = 7;         { Largeur approximative d'un caractere }
+  JPEG_FONT_HEIGHT      = 12;        { Hauteur approximative d'un caractere }
+  MAX_JPEG_NODES        = 256;       { Nombre max de noeuds dans un graphe }
+  MAX_JPEG_EDGES        = 512;       { Nombre max d'aretes dans un graphe }
+
 { ============================================================
   TYPES
   ============================================================ }
