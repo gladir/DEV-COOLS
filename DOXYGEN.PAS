@@ -1468,11 +1468,585 @@ Const
   JPEG_QUANT_TABLE_C      = 1;       { Table 1 pour chrominance }
 
 { ============================================================
+  CONSTANTES JPEG - GENERATEUR INTEGRE (SANS OUTIL EXTERNE)
+  Partie 3: Tables de Huffman DC et AC pour Y et CbCr
+  ============================================================ }
+
+{ Les tables de Huffman sont utilisees pour l'encodage entropique
+  dans JPEG. Il y a 4 tables au total:
+  - 2 tables DC (coefficients continus): 1 pour Y, 1 pour CbCr
+  - 2 tables AC (coefficients alternatifs): 1 pour Y, 1 pour CbCr
+  
+  Chaque table est definie par:
+  - BITS[16]: nombre de codes de chaque longueur (1-16 bits)
+  - HUFFVAL[n]: valeurs associees aux codes Huffman
+  
+  Ces tables sont issues de la norme JPEG (ITU-T T.81 / Annex K) }
+
+{ ============================================================
+  TABLE HUFFMAN DC LUMINANCE (Y) - Table 0
+  BITS: nombre de codes Huffman de longueur 1 a 16 bits
+  ============================================================ }
+
+{ DC Luminance BITS - 16 valeurs indiquant le nombre de codes par longueur }
+  JPEG_DC_LUM_BITS_01 = 0;      { Codes de 1 bit: 0 }
+  JPEG_DC_LUM_BITS_02 = 1;      { Codes de 2 bits: 1 }
+  JPEG_DC_LUM_BITS_03 = 5;      { Codes de 3 bits: 5 }
+  JPEG_DC_LUM_BITS_04 = 1;      { Codes de 4 bits: 1 }
+  JPEG_DC_LUM_BITS_05 = 1;      { Codes de 5 bits: 1 }
+  JPEG_DC_LUM_BITS_06 = 1;      { Codes de 6 bits: 1 }
+  JPEG_DC_LUM_BITS_07 = 1;      { Codes de 7 bits: 1 }
+  JPEG_DC_LUM_BITS_08 = 1;      { Codes de 8 bits: 1 }
+  JPEG_DC_LUM_BITS_09 = 1;      { Codes de 9 bits: 1 }
+  JPEG_DC_LUM_BITS_10 = 0;      { Codes de 10 bits: 0 }
+  JPEG_DC_LUM_BITS_11 = 0;      { Codes de 11 bits: 0 }
+  JPEG_DC_LUM_BITS_12 = 0;      { Codes de 12 bits: 0 }
+  JPEG_DC_LUM_BITS_13 = 0;      { Codes de 13 bits: 0 }
+  JPEG_DC_LUM_BITS_14 = 0;      { Codes de 14 bits: 0 }
+  JPEG_DC_LUM_BITS_15 = 0;      { Codes de 15 bits: 0 }
+  JPEG_DC_LUM_BITS_16 = 0;      { Codes de 16 bits: 0 }
+  
+{ DC Luminance HUFFVAL - Valeurs pour les 12 categories (0-11) }
+{ Total: 0+1+5+1+1+1+1+1+1 = 12 valeurs }
+  JPEG_DC_LUM_VAL_00 = 0;       { Categorie 0: difference DC = 0 }
+  JPEG_DC_LUM_VAL_01 = 1;       { Categorie 1: diff DC -1,1 }
+  JPEG_DC_LUM_VAL_02 = 2;       { Categorie 2: diff DC -3..-2,2..3 }
+  JPEG_DC_LUM_VAL_03 = 3;       { Categorie 3: diff DC -7..-4,4..7 }
+  JPEG_DC_LUM_VAL_04 = 4;       { Categorie 4: diff DC -15..-8,8..15 }
+  JPEG_DC_LUM_VAL_05 = 5;       { Categorie 5: diff DC -31..-16,16..31 }
+  JPEG_DC_LUM_VAL_06 = 6;       { Categorie 6: diff DC -63..-32,32..63 }
+  JPEG_DC_LUM_VAL_07 = 7;       { Categorie 7: diff DC -127..-64,64..127 }
+  JPEG_DC_LUM_VAL_08 = 8;       { Categorie 8: diff DC -255..-128,128..255 }
+  JPEG_DC_LUM_VAL_09 = 9;       { Categorie 9: diff DC -511..-256,256..511 }
+  JPEG_DC_LUM_VAL_10 = 10;      { Categorie 10: diff DC -1023..-512,512..1023 }
+  JPEG_DC_LUM_VAL_11 = 11;      { Categorie 11: diff DC -2047..-1024,1024..2047 }
+  
+  JPEG_DC_LUM_VAL_COUNT = 12;   { Nombre total de valeurs DC luminance }
+
+{ ============================================================
+  TABLE HUFFMAN DC CHROMINANCE (CbCr) - Table 1
+  BITS: nombre de codes Huffman de longueur 1 a 16 bits
+  ============================================================ }
+
+{ DC Chrominance BITS - 16 valeurs indiquant le nombre de codes par longueur }
+  JPEG_DC_CHR_BITS_01 = 0;      { Codes de 1 bit: 0 }
+  JPEG_DC_CHR_BITS_02 = 3;      { Codes de 2 bits: 3 }
+  JPEG_DC_CHR_BITS_03 = 1;      { Codes de 3 bits: 1 }
+  JPEG_DC_CHR_BITS_04 = 1;      { Codes de 4 bits: 1 }
+  JPEG_DC_CHR_BITS_05 = 1;      { Codes de 5 bits: 1 }
+  JPEG_DC_CHR_BITS_06 = 1;      { Codes de 6 bits: 1 }
+  JPEG_DC_CHR_BITS_07 = 1;      { Codes de 7 bits: 1 }
+  JPEG_DC_CHR_BITS_08 = 1;      { Codes de 8 bits: 1 }
+  JPEG_DC_CHR_BITS_09 = 1;      { Codes de 9 bits: 1 }
+  JPEG_DC_CHR_BITS_10 = 1;      { Codes de 10 bits: 1 }
+  JPEG_DC_CHR_BITS_11 = 0;      { Codes de 11 bits: 0 }
+  JPEG_DC_CHR_BITS_12 = 0;      { Codes de 12 bits: 0 }
+  JPEG_DC_CHR_BITS_13 = 0;      { Codes de 13 bits: 0 }
+  JPEG_DC_CHR_BITS_14 = 0;      { Codes de 14 bits: 0 }
+  JPEG_DC_CHR_BITS_15 = 0;      { Codes de 15 bits: 0 }
+  JPEG_DC_CHR_BITS_16 = 0;      { Codes de 16 bits: 0 }
+  
+{ DC Chrominance HUFFVAL - Valeurs pour les 12 categories (0-11) }
+{ Total: 0+3+1+1+1+1+1+1+1+1 = 12 valeurs }
+  JPEG_DC_CHR_VAL_00 = 0;       { Categorie 0 }
+  JPEG_DC_CHR_VAL_01 = 1;       { Categorie 1 }
+  JPEG_DC_CHR_VAL_02 = 2;       { Categorie 2 }
+  JPEG_DC_CHR_VAL_03 = 3;       { Categorie 3 }
+  JPEG_DC_CHR_VAL_04 = 4;       { Categorie 4 }
+  JPEG_DC_CHR_VAL_05 = 5;       { Categorie 5 }
+  JPEG_DC_CHR_VAL_06 = 6;       { Categorie 6 }
+  JPEG_DC_CHR_VAL_07 = 7;       { Categorie 7 }
+  JPEG_DC_CHR_VAL_08 = 8;       { Categorie 8 }
+  JPEG_DC_CHR_VAL_09 = 9;       { Categorie 9 }
+  JPEG_DC_CHR_VAL_10 = 10;      { Categorie 10 }
+  JPEG_DC_CHR_VAL_11 = 11;      { Categorie 11 }
+  
+  JPEG_DC_CHR_VAL_COUNT = 12;   { Nombre total de valeurs DC chrominance }
+
+{ ============================================================
+  TABLE HUFFMAN AC LUMINANCE (Y) - Table 0
+  BITS: nombre de codes Huffman de longueur 1 a 16 bits
+  ============================================================ }
+
+{ AC Luminance BITS - 16 valeurs indiquant le nombre de codes par longueur }
+  JPEG_AC_LUM_BITS_01 = 0;      { Codes de 1 bit: 0 }
+  JPEG_AC_LUM_BITS_02 = 2;      { Codes de 2 bits: 2 }
+  JPEG_AC_LUM_BITS_03 = 1;      { Codes de 3 bits: 1 }
+  JPEG_AC_LUM_BITS_04 = 3;      { Codes de 4 bits: 3 }
+  JPEG_AC_LUM_BITS_05 = 3;      { Codes de 5 bits: 3 }
+  JPEG_AC_LUM_BITS_06 = 2;      { Codes de 6 bits: 2 }
+  JPEG_AC_LUM_BITS_07 = 4;      { Codes de 7 bits: 4 }
+  JPEG_AC_LUM_BITS_08 = 3;      { Codes de 8 bits: 3 }
+  JPEG_AC_LUM_BITS_09 = 5;      { Codes de 9 bits: 5 }
+  JPEG_AC_LUM_BITS_10 = 5;      { Codes de 10 bits: 5 }
+  JPEG_AC_LUM_BITS_11 = 4;      { Codes de 11 bits: 4 }
+  JPEG_AC_LUM_BITS_12 = 4;      { Codes de 12 bits: 4 }
+  JPEG_AC_LUM_BITS_13 = 0;      { Codes de 13 bits: 0 }
+  JPEG_AC_LUM_BITS_14 = 0;      { Codes de 14 bits: 0 }
+  JPEG_AC_LUM_BITS_15 = 1;      { Codes de 15 bits: 1 }
+  JPEG_AC_LUM_BITS_16 = 125;    { Codes de 16 bits: 125 }
+  
+{ AC Luminance HUFFVAL - 162 valeurs au total
+  Format: RRRRSSSS ou RRRR=run de zeros (0-15), SSSS=taille (0-10)
+  Valeurs speciales: $00=EOB (fin de bloc), $F0=ZRL (16 zeros) }
+
+{ AC Luminance valeurs - Groupe 1 (indices 0-15) }
+  JPEG_AC_LUM_VAL_000 = $01;    { Run=0, Size=1 }
+  JPEG_AC_LUM_VAL_001 = $02;    { Run=0, Size=2 }
+  JPEG_AC_LUM_VAL_002 = $03;    { Run=0, Size=3 }
+  JPEG_AC_LUM_VAL_003 = $00;    { EOB - End Of Block }
+  JPEG_AC_LUM_VAL_004 = $04;    { Run=0, Size=4 }
+  JPEG_AC_LUM_VAL_005 = $11;    { Run=1, Size=1 }
+  JPEG_AC_LUM_VAL_006 = $05;    { Run=0, Size=5 }
+  JPEG_AC_LUM_VAL_007 = $12;    { Run=1, Size=2 }
+  JPEG_AC_LUM_VAL_008 = $21;    { Run=2, Size=1 }
+  JPEG_AC_LUM_VAL_009 = $31;    { Run=3, Size=1 }
+  JPEG_AC_LUM_VAL_010 = $41;    { Run=4, Size=1 }
+  JPEG_AC_LUM_VAL_011 = $06;    { Run=0, Size=6 }
+  JPEG_AC_LUM_VAL_012 = $13;    { Run=1, Size=3 }
+  JPEG_AC_LUM_VAL_013 = $51;    { Run=5, Size=1 }
+  JPEG_AC_LUM_VAL_014 = $61;    { Run=6, Size=1 }
+  JPEG_AC_LUM_VAL_015 = $07;    { Run=0, Size=7 }
+  
+{ AC Luminance valeurs - Groupe 2 (indices 16-31) }
+  JPEG_AC_LUM_VAL_016 = $22;    { Run=2, Size=2 }
+  JPEG_AC_LUM_VAL_017 = $71;    { Run=7, Size=1 }
+  JPEG_AC_LUM_VAL_018 = $14;    { Run=1, Size=4 }
+  JPEG_AC_LUM_VAL_019 = $32;    { Run=3, Size=2 }
+  JPEG_AC_LUM_VAL_020 = $81;    { Run=8, Size=1 }
+  JPEG_AC_LUM_VAL_021 = $91;    { Run=9, Size=1 }
+  JPEG_AC_LUM_VAL_022 = $A1;    { Run=10, Size=1 }
+  JPEG_AC_LUM_VAL_023 = $08;    { Run=0, Size=8 }
+  JPEG_AC_LUM_VAL_024 = $23;    { Run=2, Size=3 }
+  JPEG_AC_LUM_VAL_025 = $42;    { Run=4, Size=2 }
+  JPEG_AC_LUM_VAL_026 = $B1;    { Run=11, Size=1 }
+  JPEG_AC_LUM_VAL_027 = $C1;    { Run=12, Size=1 }
+  JPEG_AC_LUM_VAL_028 = $15;    { Run=1, Size=5 }
+  JPEG_AC_LUM_VAL_029 = $52;    { Run=5, Size=2 }
+  JPEG_AC_LUM_VAL_030 = $D1;    { Run=13, Size=1 }
+  JPEG_AC_LUM_VAL_031 = $F0;    { ZRL - Zero Run Length (16 zeros) }
+  
+{ AC Luminance valeurs - Groupe 3 (indices 32-47) }
+  JPEG_AC_LUM_VAL_032 = $24;    { Run=2, Size=4 }
+  JPEG_AC_LUM_VAL_033 = $33;    { Run=3, Size=3 }
+  JPEG_AC_LUM_VAL_034 = $62;    { Run=6, Size=2 }
+  JPEG_AC_LUM_VAL_035 = $72;    { Run=7, Size=2 }
+  JPEG_AC_LUM_VAL_036 = $82;    { Run=8, Size=2 }
+  JPEG_AC_LUM_VAL_037 = $09;    { Run=0, Size=9 }
+  JPEG_AC_LUM_VAL_038 = $0A;    { Run=0, Size=10 }
+  JPEG_AC_LUM_VAL_039 = $16;    { Run=1, Size=6 }
+  JPEG_AC_LUM_VAL_040 = $17;    { Run=1, Size=7 }
+  JPEG_AC_LUM_VAL_041 = $18;    { Run=1, Size=8 }
+  JPEG_AC_LUM_VAL_042 = $19;    { Run=1, Size=9 }
+  JPEG_AC_LUM_VAL_043 = $1A;    { Run=1, Size=10 }
+  JPEG_AC_LUM_VAL_044 = $25;    { Run=2, Size=5 }
+  JPEG_AC_LUM_VAL_045 = $26;    { Run=2, Size=6 }
+  JPEG_AC_LUM_VAL_046 = $27;    { Run=2, Size=7 }
+  JPEG_AC_LUM_VAL_047 = $28;    { Run=2, Size=8 }
+  
+{ AC Luminance valeurs - Groupe 4 (indices 48-63) }
+  JPEG_AC_LUM_VAL_048 = $29;    { Run=2, Size=9 }
+  JPEG_AC_LUM_VAL_049 = $2A;    { Run=2, Size=10 }
+  JPEG_AC_LUM_VAL_050 = $34;    { Run=3, Size=4 }
+  JPEG_AC_LUM_VAL_051 = $35;    { Run=3, Size=5 }
+  JPEG_AC_LUM_VAL_052 = $36;    { Run=3, Size=6 }
+  JPEG_AC_LUM_VAL_053 = $37;    { Run=3, Size=7 }
+  JPEG_AC_LUM_VAL_054 = $38;    { Run=3, Size=8 }
+  JPEG_AC_LUM_VAL_055 = $39;    { Run=3, Size=9 }
+  JPEG_AC_LUM_VAL_056 = $3A;    { Run=3, Size=10 }
+  JPEG_AC_LUM_VAL_057 = $43;    { Run=4, Size=3 }
+  JPEG_AC_LUM_VAL_058 = $44;    { Run=4, Size=4 }
+  JPEG_AC_LUM_VAL_059 = $45;    { Run=4, Size=5 }
+  JPEG_AC_LUM_VAL_060 = $46;    { Run=4, Size=6 }
+  JPEG_AC_LUM_VAL_061 = $47;    { Run=4, Size=7 }
+  JPEG_AC_LUM_VAL_062 = $48;    { Run=4, Size=8 }
+  JPEG_AC_LUM_VAL_063 = $49;    { Run=4, Size=9 }
+  
+{ AC Luminance valeurs - Groupe 5 (indices 64-79) }
+  JPEG_AC_LUM_VAL_064 = $4A;    { Run=4, Size=10 }
+  JPEG_AC_LUM_VAL_065 = $53;    { Run=5, Size=3 }
+  JPEG_AC_LUM_VAL_066 = $54;    { Run=5, Size=4 }
+  JPEG_AC_LUM_VAL_067 = $55;    { Run=5, Size=5 }
+  JPEG_AC_LUM_VAL_068 = $56;    { Run=5, Size=6 }
+  JPEG_AC_LUM_VAL_069 = $57;    { Run=5, Size=7 }
+  JPEG_AC_LUM_VAL_070 = $58;    { Run=5, Size=8 }
+  JPEG_AC_LUM_VAL_071 = $59;    { Run=5, Size=9 }
+  JPEG_AC_LUM_VAL_072 = $5A;    { Run=5, Size=10 }
+  JPEG_AC_LUM_VAL_073 = $63;    { Run=6, Size=3 }
+  JPEG_AC_LUM_VAL_074 = $64;    { Run=6, Size=4 }
+  JPEG_AC_LUM_VAL_075 = $65;    { Run=6, Size=5 }
+  JPEG_AC_LUM_VAL_076 = $66;    { Run=6, Size=6 }
+  JPEG_AC_LUM_VAL_077 = $67;    { Run=6, Size=7 }
+  JPEG_AC_LUM_VAL_078 = $68;    { Run=6, Size=8 }
+  JPEG_AC_LUM_VAL_079 = $69;    { Run=6, Size=9 }
+  
+{ AC Luminance valeurs - Groupe 6 (indices 80-95) }
+  JPEG_AC_LUM_VAL_080 = $6A;    { Run=6, Size=10 }
+  JPEG_AC_LUM_VAL_081 = $73;    { Run=7, Size=3 }
+  JPEG_AC_LUM_VAL_082 = $74;    { Run=7, Size=4 }
+  JPEG_AC_LUM_VAL_083 = $75;    { Run=7, Size=5 }
+  JPEG_AC_LUM_VAL_084 = $76;    { Run=7, Size=6 }
+  JPEG_AC_LUM_VAL_085 = $77;    { Run=7, Size=7 }
+  JPEG_AC_LUM_VAL_086 = $78;    { Run=7, Size=8 }
+  JPEG_AC_LUM_VAL_087 = $79;    { Run=7, Size=9 }
+  JPEG_AC_LUM_VAL_088 = $7A;    { Run=7, Size=10 }
+  JPEG_AC_LUM_VAL_089 = $83;    { Run=8, Size=3 }
+  JPEG_AC_LUM_VAL_090 = $84;    { Run=8, Size=4 }
+  JPEG_AC_LUM_VAL_091 = $85;    { Run=8, Size=5 }
+  JPEG_AC_LUM_VAL_092 = $86;    { Run=8, Size=6 }
+  JPEG_AC_LUM_VAL_093 = $87;    { Run=8, Size=7 }
+  JPEG_AC_LUM_VAL_094 = $88;    { Run=8, Size=8 }
+  JPEG_AC_LUM_VAL_095 = $89;    { Run=8, Size=9 }
+  
+{ AC Luminance valeurs - Groupe 7 (indices 96-111) }
+  JPEG_AC_LUM_VAL_096 = $8A;    { Run=8, Size=10 }
+  JPEG_AC_LUM_VAL_097 = $92;    { Run=9, Size=2 }
+  JPEG_AC_LUM_VAL_098 = $93;    { Run=9, Size=3 }
+  JPEG_AC_LUM_VAL_099 = $94;    { Run=9, Size=4 }
+  JPEG_AC_LUM_VAL_100 = $95;    { Run=9, Size=5 }
+  JPEG_AC_LUM_VAL_101 = $96;    { Run=9, Size=6 }
+  JPEG_AC_LUM_VAL_102 = $97;    { Run=9, Size=7 }
+  JPEG_AC_LUM_VAL_103 = $98;    { Run=9, Size=8 }
+  JPEG_AC_LUM_VAL_104 = $99;    { Run=9, Size=9 }
+  JPEG_AC_LUM_VAL_105 = $9A;    { Run=9, Size=10 }
+  JPEG_AC_LUM_VAL_106 = $A2;    { Run=10, Size=2 }
+  JPEG_AC_LUM_VAL_107 = $A3;    { Run=10, Size=3 }
+  JPEG_AC_LUM_VAL_108 = $A4;    { Run=10, Size=4 }
+  JPEG_AC_LUM_VAL_109 = $A5;    { Run=10, Size=5 }
+  JPEG_AC_LUM_VAL_110 = $A6;    { Run=10, Size=6 }
+  JPEG_AC_LUM_VAL_111 = $A7;    { Run=10, Size=7 }
+  
+{ AC Luminance valeurs - Groupe 8 (indices 112-127) }
+  JPEG_AC_LUM_VAL_112 = $A8;    { Run=10, Size=8 }
+  JPEG_AC_LUM_VAL_113 = $A9;    { Run=10, Size=9 }
+  JPEG_AC_LUM_VAL_114 = $AA;    { Run=10, Size=10 }
+  JPEG_AC_LUM_VAL_115 = $B2;    { Run=11, Size=2 }
+  JPEG_AC_LUM_VAL_116 = $B3;    { Run=11, Size=3 }
+  JPEG_AC_LUM_VAL_117 = $B4;    { Run=11, Size=4 }
+  JPEG_AC_LUM_VAL_118 = $B5;    { Run=11, Size=5 }
+  JPEG_AC_LUM_VAL_119 = $B6;    { Run=11, Size=6 }
+  JPEG_AC_LUM_VAL_120 = $B7;    { Run=11, Size=7 }
+  JPEG_AC_LUM_VAL_121 = $B8;    { Run=11, Size=8 }
+  JPEG_AC_LUM_VAL_122 = $B9;    { Run=11, Size=9 }
+  JPEG_AC_LUM_VAL_123 = $BA;    { Run=11, Size=10 }
+  JPEG_AC_LUM_VAL_124 = $C2;    { Run=12, Size=2 }
+  JPEG_AC_LUM_VAL_125 = $C3;    { Run=12, Size=3 }
+  JPEG_AC_LUM_VAL_126 = $C4;    { Run=12, Size=4 }
+  JPEG_AC_LUM_VAL_127 = $C5;    { Run=12, Size=5 }
+  
+{ AC Luminance valeurs - Groupe 9 (indices 128-143) }
+  JPEG_AC_LUM_VAL_128 = $C6;    { Run=12, Size=6 }
+  JPEG_AC_LUM_VAL_129 = $C7;    { Run=12, Size=7 }
+  JPEG_AC_LUM_VAL_130 = $C8;    { Run=12, Size=8 }
+  JPEG_AC_LUM_VAL_131 = $C9;    { Run=12, Size=9 }
+  JPEG_AC_LUM_VAL_132 = $CA;    { Run=12, Size=10 }
+  JPEG_AC_LUM_VAL_133 = $D2;    { Run=13, Size=2 }
+  JPEG_AC_LUM_VAL_134 = $D3;    { Run=13, Size=3 }
+  JPEG_AC_LUM_VAL_135 = $D4;    { Run=13, Size=4 }
+  JPEG_AC_LUM_VAL_136 = $D5;    { Run=13, Size=5 }
+  JPEG_AC_LUM_VAL_137 = $D6;    { Run=13, Size=6 }
+  JPEG_AC_LUM_VAL_138 = $D7;    { Run=13, Size=7 }
+  JPEG_AC_LUM_VAL_139 = $D8;    { Run=13, Size=8 }
+  JPEG_AC_LUM_VAL_140 = $D9;    { Run=13, Size=9 }
+  JPEG_AC_LUM_VAL_141 = $DA;    { Run=13, Size=10 }
+  JPEG_AC_LUM_VAL_142 = $E1;    { Run=14, Size=1 }
+  JPEG_AC_LUM_VAL_143 = $E2;    { Run=14, Size=2 }
+  
+{ AC Luminance valeurs - Groupe 10 (indices 144-159) }
+  JPEG_AC_LUM_VAL_144 = $E3;    { Run=14, Size=3 }
+  JPEG_AC_LUM_VAL_145 = $E4;    { Run=14, Size=4 }
+  JPEG_AC_LUM_VAL_146 = $E5;    { Run=14, Size=5 }
+  JPEG_AC_LUM_VAL_147 = $E6;    { Run=14, Size=6 }
+  JPEG_AC_LUM_VAL_148 = $E7;    { Run=14, Size=7 }
+  JPEG_AC_LUM_VAL_149 = $E8;    { Run=14, Size=8 }
+  JPEG_AC_LUM_VAL_150 = $E9;    { Run=14, Size=9 }
+  JPEG_AC_LUM_VAL_151 = $EA;    { Run=14, Size=10 }
+  JPEG_AC_LUM_VAL_152 = $F1;    { Run=15, Size=1 }
+  JPEG_AC_LUM_VAL_153 = $F2;    { Run=15, Size=2 }
+  JPEG_AC_LUM_VAL_154 = $F3;    { Run=15, Size=3 }
+  JPEG_AC_LUM_VAL_155 = $F4;    { Run=15, Size=4 }
+  JPEG_AC_LUM_VAL_156 = $F5;    { Run=15, Size=5 }
+  JPEG_AC_LUM_VAL_157 = $F6;    { Run=15, Size=6 }
+  JPEG_AC_LUM_VAL_158 = $F7;    { Run=15, Size=7 }
+  JPEG_AC_LUM_VAL_159 = $F8;    { Run=15, Size=8 }
+  
+{ AC Luminance valeurs - Groupe 11 (indices 160-161) }
+  JPEG_AC_LUM_VAL_160 = $F9;    { Run=15, Size=9 }
+  JPEG_AC_LUM_VAL_161 = $FA;    { Run=15, Size=10 }
+  
+  JPEG_AC_LUM_VAL_COUNT = 162;  { Nombre total de valeurs AC luminance }
+
+{ ============================================================
+  TABLE HUFFMAN AC CHROMINANCE (CbCr) - Table 1
+  BITS: nombre de codes Huffman de longueur 1 a 16 bits
+  ============================================================ }
+
+{ AC Chrominance BITS - 16 valeurs indiquant le nombre de codes par longueur }
+  JPEG_AC_CHR_BITS_01 = 0;      { Codes de 1 bit: 0 }
+  JPEG_AC_CHR_BITS_02 = 2;      { Codes de 2 bits: 2 }
+  JPEG_AC_CHR_BITS_03 = 1;      { Codes de 3 bits: 1 }
+  JPEG_AC_CHR_BITS_04 = 2;      { Codes de 4 bits: 2 }
+  JPEG_AC_CHR_BITS_05 = 4;      { Codes de 5 bits: 4 }
+  JPEG_AC_CHR_BITS_06 = 4;      { Codes de 6 bits: 4 }
+  JPEG_AC_CHR_BITS_07 = 3;      { Codes de 7 bits: 3 }
+  JPEG_AC_CHR_BITS_08 = 4;      { Codes de 8 bits: 4 }
+  JPEG_AC_CHR_BITS_09 = 7;      { Codes de 9 bits: 7 }
+  JPEG_AC_CHR_BITS_10 = 5;      { Codes de 10 bits: 5 }
+  JPEG_AC_CHR_BITS_11 = 4;      { Codes de 11 bits: 4 }
+  JPEG_AC_CHR_BITS_12 = 4;      { Codes de 12 bits: 4 }
+  JPEG_AC_CHR_BITS_13 = 0;      { Codes de 13 bits: 0 }
+  JPEG_AC_CHR_BITS_14 = 1;      { Codes de 14 bits: 1 }
+  JPEG_AC_CHR_BITS_15 = 2;      { Codes de 15 bits: 2 }
+  JPEG_AC_CHR_BITS_16 = 119;    { Codes de 16 bits: 119 }
+  
+{ AC Chrominance HUFFVAL - 162 valeurs au total
+  Format: RRRRSSSS ou RRRR=run de zeros (0-15), SSSS=taille (0-10) }
+
+{ AC Chrominance valeurs - Groupe 1 (indices 0-15) }
+  JPEG_AC_CHR_VAL_000 = $00;    { EOB - End Of Block }
+  JPEG_AC_CHR_VAL_001 = $01;    { Run=0, Size=1 }
+  JPEG_AC_CHR_VAL_002 = $02;    { Run=0, Size=2 }
+  JPEG_AC_CHR_VAL_003 = $03;    { Run=0, Size=3 }
+  JPEG_AC_CHR_VAL_004 = $11;    { Run=1, Size=1 }
+  JPEG_AC_CHR_VAL_005 = $04;    { Run=0, Size=4 }
+  JPEG_AC_CHR_VAL_006 = $05;    { Run=0, Size=5 }
+  JPEG_AC_CHR_VAL_007 = $21;    { Run=2, Size=1 }
+  JPEG_AC_CHR_VAL_008 = $31;    { Run=3, Size=1 }
+  JPEG_AC_CHR_VAL_009 = $06;    { Run=0, Size=6 }
+  JPEG_AC_CHR_VAL_010 = $12;    { Run=1, Size=2 }
+  JPEG_AC_CHR_VAL_011 = $41;    { Run=4, Size=1 }
+  JPEG_AC_CHR_VAL_012 = $51;    { Run=5, Size=1 }
+  JPEG_AC_CHR_VAL_013 = $07;    { Run=0, Size=7 }
+  JPEG_AC_CHR_VAL_014 = $61;    { Run=6, Size=1 }
+  JPEG_AC_CHR_VAL_015 = $71;    { Run=7, Size=1 }
+  
+{ AC Chrominance valeurs - Groupe 2 (indices 16-31) }
+  JPEG_AC_CHR_VAL_016 = $13;    { Run=1, Size=3 }
+  JPEG_AC_CHR_VAL_017 = $22;    { Run=2, Size=2 }
+  JPEG_AC_CHR_VAL_018 = $32;    { Run=3, Size=2 }
+  JPEG_AC_CHR_VAL_019 = $81;    { Run=8, Size=1 }
+  JPEG_AC_CHR_VAL_020 = $08;    { Run=0, Size=8 }
+  JPEG_AC_CHR_VAL_021 = $14;    { Run=1, Size=4 }
+  JPEG_AC_CHR_VAL_022 = $42;    { Run=4, Size=2 }
+  JPEG_AC_CHR_VAL_023 = $91;    { Run=9, Size=1 }
+  JPEG_AC_CHR_VAL_024 = $A1;    { Run=10, Size=1 }
+  JPEG_AC_CHR_VAL_025 = $B1;    { Run=11, Size=1 }
+  JPEG_AC_CHR_VAL_026 = $C1;    { Run=12, Size=1 }
+  JPEG_AC_CHR_VAL_027 = $09;    { Run=0, Size=9 }
+  JPEG_AC_CHR_VAL_028 = $23;    { Run=2, Size=3 }
+  JPEG_AC_CHR_VAL_029 = $33;    { Run=3, Size=3 }
+  JPEG_AC_CHR_VAL_030 = $52;    { Run=5, Size=2 }
+  JPEG_AC_CHR_VAL_031 = $F0;    { ZRL - Zero Run Length (16 zeros) }
+  
+{ AC Chrominance valeurs - Groupe 3 (indices 32-47) }
+  JPEG_AC_CHR_VAL_032 = $15;    { Run=1, Size=5 }
+  JPEG_AC_CHR_VAL_033 = $62;    { Run=6, Size=2 }
+  JPEG_AC_CHR_VAL_034 = $72;    { Run=7, Size=2 }
+  JPEG_AC_CHR_VAL_035 = $D1;    { Run=13, Size=1 }
+  JPEG_AC_CHR_VAL_036 = $0A;    { Run=0, Size=10 }
+  JPEG_AC_CHR_VAL_037 = $16;    { Run=1, Size=6 }
+  JPEG_AC_CHR_VAL_038 = $24;    { Run=2, Size=4 }
+  JPEG_AC_CHR_VAL_039 = $34;    { Run=3, Size=4 }
+  JPEG_AC_CHR_VAL_040 = $E1;    { Run=14, Size=1 }
+  JPEG_AC_CHR_VAL_041 = $25;    { Run=2, Size=5 }
+  JPEG_AC_CHR_VAL_042 = $F1;    { Run=15, Size=1 }
+  JPEG_AC_CHR_VAL_043 = $17;    { Run=1, Size=7 }
+  JPEG_AC_CHR_VAL_044 = $18;    { Run=1, Size=8 }
+  JPEG_AC_CHR_VAL_045 = $19;    { Run=1, Size=9 }
+  JPEG_AC_CHR_VAL_046 = $1A;    { Run=1, Size=10 }
+  JPEG_AC_CHR_VAL_047 = $26;    { Run=2, Size=6 }
+  
+{ AC Chrominance valeurs - Groupe 4 (indices 48-63) }
+  JPEG_AC_CHR_VAL_048 = $27;    { Run=2, Size=7 }
+  JPEG_AC_CHR_VAL_049 = $28;    { Run=2, Size=8 }
+  JPEG_AC_CHR_VAL_050 = $29;    { Run=2, Size=9 }
+  JPEG_AC_CHR_VAL_051 = $2A;    { Run=2, Size=10 }
+  JPEG_AC_CHR_VAL_052 = $35;    { Run=3, Size=5 }
+  JPEG_AC_CHR_VAL_053 = $36;    { Run=3, Size=6 }
+  JPEG_AC_CHR_VAL_054 = $37;    { Run=3, Size=7 }
+  JPEG_AC_CHR_VAL_055 = $38;    { Run=3, Size=8 }
+  JPEG_AC_CHR_VAL_056 = $39;    { Run=3, Size=9 }
+  JPEG_AC_CHR_VAL_057 = $3A;    { Run=3, Size=10 }
+  JPEG_AC_CHR_VAL_058 = $43;    { Run=4, Size=3 }
+  JPEG_AC_CHR_VAL_059 = $44;    { Run=4, Size=4 }
+  JPEG_AC_CHR_VAL_060 = $45;    { Run=4, Size=5 }
+  JPEG_AC_CHR_VAL_061 = $46;    { Run=4, Size=6 }
+  JPEG_AC_CHR_VAL_062 = $47;    { Run=4, Size=7 }
+  JPEG_AC_CHR_VAL_063 = $48;    { Run=4, Size=8 }
+  
+{ AC Chrominance valeurs - Groupe 5 (indices 64-79) }
+  JPEG_AC_CHR_VAL_064 = $49;    { Run=4, Size=9 }
+  JPEG_AC_CHR_VAL_065 = $4A;    { Run=4, Size=10 }
+  JPEG_AC_CHR_VAL_066 = $53;    { Run=5, Size=3 }
+  JPEG_AC_CHR_VAL_067 = $54;    { Run=5, Size=4 }
+  JPEG_AC_CHR_VAL_068 = $55;    { Run=5, Size=5 }
+  JPEG_AC_CHR_VAL_069 = $56;    { Run=5, Size=6 }
+  JPEG_AC_CHR_VAL_070 = $57;    { Run=5, Size=7 }
+  JPEG_AC_CHR_VAL_071 = $58;    { Run=5, Size=8 }
+  JPEG_AC_CHR_VAL_072 = $59;    { Run=5, Size=9 }
+  JPEG_AC_CHR_VAL_073 = $5A;    { Run=5, Size=10 }
+  JPEG_AC_CHR_VAL_074 = $63;    { Run=6, Size=3 }
+  JPEG_AC_CHR_VAL_075 = $64;    { Run=6, Size=4 }
+  JPEG_AC_CHR_VAL_076 = $65;    { Run=6, Size=5 }
+  JPEG_AC_CHR_VAL_077 = $66;    { Run=6, Size=6 }
+  JPEG_AC_CHR_VAL_078 = $67;    { Run=6, Size=7 }
+  JPEG_AC_CHR_VAL_079 = $68;    { Run=6, Size=8 }
+  
+{ AC Chrominance valeurs - Groupe 6 (indices 80-95) }
+  JPEG_AC_CHR_VAL_080 = $69;    { Run=6, Size=9 }
+  JPEG_AC_CHR_VAL_081 = $6A;    { Run=6, Size=10 }
+  JPEG_AC_CHR_VAL_082 = $73;    { Run=7, Size=3 }
+  JPEG_AC_CHR_VAL_083 = $74;    { Run=7, Size=4 }
+  JPEG_AC_CHR_VAL_084 = $75;    { Run=7, Size=5 }
+  JPEG_AC_CHR_VAL_085 = $76;    { Run=7, Size=6 }
+  JPEG_AC_CHR_VAL_086 = $77;    { Run=7, Size=7 }
+  JPEG_AC_CHR_VAL_087 = $78;    { Run=7, Size=8 }
+  JPEG_AC_CHR_VAL_088 = $79;    { Run=7, Size=9 }
+  JPEG_AC_CHR_VAL_089 = $7A;    { Run=7, Size=10 }
+  JPEG_AC_CHR_VAL_090 = $82;    { Run=8, Size=2 }
+  JPEG_AC_CHR_VAL_091 = $83;    { Run=8, Size=3 }
+  JPEG_AC_CHR_VAL_092 = $84;    { Run=8, Size=4 }
+  JPEG_AC_CHR_VAL_093 = $85;    { Run=8, Size=5 }
+  JPEG_AC_CHR_VAL_094 = $86;    { Run=8, Size=6 }
+  JPEG_AC_CHR_VAL_095 = $87;    { Run=8, Size=7 }
+  
+{ AC Chrominance valeurs - Groupe 7 (indices 96-111) }
+  JPEG_AC_CHR_VAL_096 = $88;    { Run=8, Size=8 }
+  JPEG_AC_CHR_VAL_097 = $89;    { Run=8, Size=9 }
+  JPEG_AC_CHR_VAL_098 = $8A;    { Run=8, Size=10 }
+  JPEG_AC_CHR_VAL_099 = $92;    { Run=9, Size=2 }
+  JPEG_AC_CHR_VAL_100 = $93;    { Run=9, Size=3 }
+  JPEG_AC_CHR_VAL_101 = $94;    { Run=9, Size=4 }
+  JPEG_AC_CHR_VAL_102 = $95;    { Run=9, Size=5 }
+  JPEG_AC_CHR_VAL_103 = $96;    { Run=9, Size=6 }
+  JPEG_AC_CHR_VAL_104 = $97;    { Run=9, Size=7 }
+  JPEG_AC_CHR_VAL_105 = $98;    { Run=9, Size=8 }
+  JPEG_AC_CHR_VAL_106 = $99;    { Run=9, Size=9 }
+  JPEG_AC_CHR_VAL_107 = $9A;    { Run=9, Size=10 }
+  JPEG_AC_CHR_VAL_108 = $A2;    { Run=10, Size=2 }
+  JPEG_AC_CHR_VAL_109 = $A3;    { Run=10, Size=3 }
+  JPEG_AC_CHR_VAL_110 = $A4;    { Run=10, Size=4 }
+  JPEG_AC_CHR_VAL_111 = $A5;    { Run=10, Size=5 }
+  
+{ AC Chrominance valeurs - Groupe 8 (indices 112-127) }
+  JPEG_AC_CHR_VAL_112 = $A6;    { Run=10, Size=6 }
+  JPEG_AC_CHR_VAL_113 = $A7;    { Run=10, Size=7 }
+  JPEG_AC_CHR_VAL_114 = $A8;    { Run=10, Size=8 }
+  JPEG_AC_CHR_VAL_115 = $A9;    { Run=10, Size=9 }
+  JPEG_AC_CHR_VAL_116 = $AA;    { Run=10, Size=10 }
+  JPEG_AC_CHR_VAL_117 = $B2;    { Run=11, Size=2 }
+  JPEG_AC_CHR_VAL_118 = $B3;    { Run=11, Size=3 }
+  JPEG_AC_CHR_VAL_119 = $B4;    { Run=11, Size=4 }
+  JPEG_AC_CHR_VAL_120 = $B5;    { Run=11, Size=5 }
+  JPEG_AC_CHR_VAL_121 = $B6;    { Run=11, Size=6 }
+  JPEG_AC_CHR_VAL_122 = $B7;    { Run=11, Size=7 }
+  JPEG_AC_CHR_VAL_123 = $B8;    { Run=11, Size=8 }
+  JPEG_AC_CHR_VAL_124 = $B9;    { Run=11, Size=9 }
+  JPEG_AC_CHR_VAL_125 = $BA;    { Run=11, Size=10 }
+  JPEG_AC_CHR_VAL_126 = $C2;    { Run=12, Size=2 }
+  JPEG_AC_CHR_VAL_127 = $C3;    { Run=12, Size=3 }
+  
+{ AC Chrominance valeurs - Groupe 9 (indices 128-143) }
+  JPEG_AC_CHR_VAL_128 = $C4;    { Run=12, Size=4 }
+  JPEG_AC_CHR_VAL_129 = $C5;    { Run=12, Size=5 }
+  JPEG_AC_CHR_VAL_130 = $C6;    { Run=12, Size=6 }
+  JPEG_AC_CHR_VAL_131 = $C7;    { Run=12, Size=7 }
+  JPEG_AC_CHR_VAL_132 = $C8;    { Run=12, Size=8 }
+  JPEG_AC_CHR_VAL_133 = $C9;    { Run=12, Size=9 }
+  JPEG_AC_CHR_VAL_134 = $CA;    { Run=12, Size=10 }
+  JPEG_AC_CHR_VAL_135 = $D2;    { Run=13, Size=2 }
+  JPEG_AC_CHR_VAL_136 = $D3;    { Run=13, Size=3 }
+  JPEG_AC_CHR_VAL_137 = $D4;    { Run=13, Size=4 }
+  JPEG_AC_CHR_VAL_138 = $D5;    { Run=13, Size=5 }
+  JPEG_AC_CHR_VAL_139 = $D6;    { Run=13, Size=6 }
+  JPEG_AC_CHR_VAL_140 = $D7;    { Run=13, Size=7 }
+  JPEG_AC_CHR_VAL_141 = $D8;    { Run=13, Size=8 }
+  JPEG_AC_CHR_VAL_142 = $D9;    { Run=13, Size=9 }
+  JPEG_AC_CHR_VAL_143 = $DA;    { Run=13, Size=10 }
+  
+{ AC Chrominance valeurs - Groupe 10 (indices 144-159) }
+  JPEG_AC_CHR_VAL_144 = $E2;    { Run=14, Size=2 }
+  JPEG_AC_CHR_VAL_145 = $E3;    { Run=14, Size=3 }
+  JPEG_AC_CHR_VAL_146 = $E4;    { Run=14, Size=4 }
+  JPEG_AC_CHR_VAL_147 = $E5;    { Run=14, Size=5 }
+  JPEG_AC_CHR_VAL_148 = $E6;    { Run=14, Size=6 }
+  JPEG_AC_CHR_VAL_149 = $E7;    { Run=14, Size=7 }
+  JPEG_AC_CHR_VAL_150 = $E8;    { Run=14, Size=8 }
+  JPEG_AC_CHR_VAL_151 = $E9;    { Run=14, Size=9 }
+  JPEG_AC_CHR_VAL_152 = $EA;    { Run=14, Size=10 }
+  JPEG_AC_CHR_VAL_153 = $F2;    { Run=15, Size=2 }
+  JPEG_AC_CHR_VAL_154 = $F3;    { Run=15, Size=3 }
+  JPEG_AC_CHR_VAL_155 = $F4;    { Run=15, Size=4 }
+  JPEG_AC_CHR_VAL_156 = $F5;    { Run=15, Size=5 }
+  JPEG_AC_CHR_VAL_157 = $F6;    { Run=15, Size=6 }
+  JPEG_AC_CHR_VAL_158 = $F7;    { Run=15, Size=7 }
+  JPEG_AC_CHR_VAL_159 = $F8;    { Run=15, Size=8 }
+  
+{ AC Chrominance valeurs - Groupe 11 (indices 160-161) }
+  JPEG_AC_CHR_VAL_160 = $F9;    { Run=15, Size=9 }
+  JPEG_AC_CHR_VAL_161 = $FA;    { Run=15, Size=10 }
+  
+  JPEG_AC_CHR_VAL_COUNT = 162;  { Nombre total de valeurs AC chrominance }
+
+{ Indices des tables de Huffman dans le fichier JPEG }
+  JPEG_HUFF_DC_LUM_ID = 0;      { Table DC luminance: classe=0, id=0 }
+  JPEG_HUFF_DC_CHR_ID = 1;      { Table DC chrominance: classe=0, id=1 }
+  JPEG_HUFF_AC_LUM_ID = 0;      { Table AC luminance: classe=1, id=0 }
+  JPEG_HUFF_AC_CHR_ID = 1;      { Table AC chrominance: classe=1, id=1 }
+  
+{ Classe de table Huffman }
+  JPEG_HUFF_CLASS_DC = 0;       { Table pour coefficients DC }
+  JPEG_HUFF_CLASS_AC = 1;       { Table pour coefficients AC }
+  
+{ Constantes pour l'encodage Huffman }
+  JPEG_HUFF_BITS_COUNT = 16;    { Nombre d'entrees dans le tableau BITS }
+  JPEG_HUFF_MAX_CODE_LEN = 16;  { Longueur maximale d'un code Huffman }
+  JPEG_DC_CATEGORY_COUNT = 12;  { Nombre de categories DC (0-11) }
+  JPEG_AC_SYMBOL_COUNT = 256;   { Nombre de symboles AC possibles (RRRRSSSS) }
+  
+{ Valeurs speciales pour les coefficients AC }
+  JPEG_AC_EOB = $00;            { End Of Block - fin du bloc DCT }
+  JPEG_AC_ZRL = $F0;            { Zero Run Length - 16 zeros consecutifs }
+
+{ ============================================================
   TYPES
   ============================================================ }
 Type
   { Type pour les tables de quantification JPEG 8x8 = 64 elements }
   TJPEGQuantTable = Array[0..63] Of Byte;
+  
+  { Types pour les tables de Huffman JPEG (Partie 3) }
+  
+  { Tableau BITS: nombre de codes de chaque longueur (1-16 bits) }
+  TJPEGHuffBits = Array[0..15] Of Byte;
+  
+  { Tableau HUFFVAL pour les coefficients DC (12 categories max) }
+  TJPEGHuffDCVal = Array[0..11] Of Byte;
+  
+  { Tableau HUFFVAL pour les coefficients AC (162 valeurs max) }
+  TJPEGHuffACVal = Array[0..161] Of Byte;
+  
+  { Structure complete pour une table de Huffman DC }
+  TJPEGHuffDCTable = Record
+    Bits: TJPEGHuffBits;       { Nombre de codes par longueur }
+    Values: TJPEGHuffDCVal;    { Valeurs associees aux codes }
+    Count: Integer;            { Nombre total de valeurs }
+  End;
+  
+  { Structure complete pour une table de Huffman AC }
+  TJPEGHuffACTable = Record
+    Bits: TJPEGHuffBits;       { Nombre de codes par longueur }
+    Values: TJPEGHuffACVal;    { Valeurs associees aux codes }
+    Count: Integer;            { Nombre total de valeurs }
+  End;
+  
+  { Ensemble des 4 tables de Huffman pour JPEG baseline }
+  TJPEGHuffTables = Record
+    DC_Lum: TJPEGHuffDCTable;  { Table DC luminance (Y) }
+    DC_Chr: TJPEGHuffDCTable;  { Table DC chrominance (Cb, Cr) }
+    AC_Lum: TJPEGHuffACTable;  { Table AC luminance (Y) }
+    AC_Chr: TJPEGHuffACTable;  { Table AC chrominance (Cb, Cr) }
+  End;
   
   TOptions = Record
     ConfigFile   : String;
