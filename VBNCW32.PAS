@@ -3090,7 +3090,7 @@ Type
     InitNum       : LongInt;     { valeur initiale numerique        }
     HasInit       : Boolean;     { a une valeur initiale ?          }
     IsConst       : Boolean;     { constante ?                      }
-    IsShared      : Boolean;     { Shared (equivalent a Static VB6) }
+    IsShared      : Boolean;     { Shared (membre de classe)        }
     IsReadOnly    : Boolean;     { ReadOnly ?                       }
     IsOverridable : Boolean;     { Overridable ?                    }
     IsOverrides   : Boolean;     { Overrides ?                      }
