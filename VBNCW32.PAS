@@ -551,7 +551,7 @@
             Valeurs auto-incrementees si non specifiees
             Acces qualifie : NomEnum.Valeur1
 
-  TODO 17 - PARSEUR : CLASSES ET HERITAGE (CLASS, INHERITS, IMPLEMENTS) [A FAIRE]
+  TODO 17 - PARSEUR : CLASSES ET HERITAGE (CLASS, INHERITS, IMPLEMENTS) [IMPLEMENTE]
             Procedure ParseClass
             Syntaxe :
               [Public|Private|Friend] [MustInherit|NotInheritable]
@@ -10820,6 +10820,862 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 17 - PARSEUR : CLASSES ET HERITAGE (CLASS, INHERITS,    }
+{           IMPLEMENTS) [IMPLEMENTE]                           }
+{ ============================================================ }
+
+Const
+  { Nombre maximal de methodes dans une classe }
+  MAX_CLASS_METHODS  = 128;
+
+  { Nombre maximal de proprietes dans une classe }
+  MAX_CLASS_PROPS    = 128;
+
+  { Nombre maximal de champs d instance dans une classe }
+  MAX_CLASS_FIELDS   = 128;
+
+  { Taille d un pointeur objet (32 bits) }
+  OBJ_PTR_SIZE       = 4;
+
+  { Offset de la vtable dans un objet (premier DD) }
+  OBJ_VTABLE_OFFSET  = 0;
+
+  { Labels runtime pour operations sur classes VB.NET }
+  CLS_RT_ALLOC    = '_VBNRT_CLS_ALLOC';
+  CLS_RT_FREE     = '_VBNRT_CLS_FREE';
+  CLS_RT_ADDREF   = '_VBNRT_CLS_ADDREF';
+  CLS_RT_RELEASE  = '_VBNRT_CLS_RELEASE';
+  CLS_RT_QUERYIF  = '_VBNRT_CLS_QUERYIF';
+  CLS_RT_INIT     = '_VBNRT_CLS_INIT';
+  CLS_RT_TERM     = '_VBNRT_CLS_TERM';
+  CLS_RT_SET      = '_VBNRT_CLS_SET';
+  CLS_RT_ISNOTH   = '_VBNRT_CLS_ISNOTHING';
+  CLS_RT_TYPEOF   = '_VBNRT_CLS_TYPEOF';
+
+  { Types de propriete VB.NET (Get/Set, pas Let) }
+  PROP_GET = 0;
+  PROP_SET = 1;
+
+Var
+  ClassCount            : LongInt;
+  ClassInitialized      : Boolean;
+  CurClassName          : TString;
+  CurClassIsPublic      : Boolean;
+  CurClassMustInherit   : Boolean;
+  CurClassNotInheritable: Boolean;
+  CurClassHasCtor       : Boolean;
+  CurClassHasDtor       : Boolean;
+  ClassMethodCount      : Integer;
+  ClassPropCount        : Integer;
+
+{ ------------------------------------------------------------ }
+{ InitClassState : initialiser l etat du parseur de classes    }
+{   VB.NET (Class, Interface, Inherits, Implements)            }
+{ ------------------------------------------------------------ }
+
+Procedure InitClassState;
+Begin
+  ClassCount            := 0;
+  ClassInitialized      := True;
+  CurClassName          := '';
+  CurClassIsPublic      := True;
+  CurClassMustInherit   := False;
+  CurClassNotInheritable:= False;
+  CurClassHasCtor       := False;
+  CurClassHasDtor       := False;
+  ClassMethodCount      := 0;
+  ClassPropCount        := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseClassField : parser un champ d une Class VB.NET         }
+{   Syntaxe : [Public|Private|Protected|Friend] [Shared]       }
+{             champ As Type [= valeur]                         }
+{   Les champs de classe VB.NET supportent Protected et Friend }
+{   Shared : champ statique accessible via NomClasse.champ     }
+{ ------------------------------------------------------------ }
+
+Procedure ParseClassField(ClassName : TString;
+                           FieldOffset : LongInt;
+                           IsFieldPublic : Boolean;
+                           IsFieldShared : Boolean);
+Var
+  FName     : TString;
+  FType     : Integer;
+  FSize     : Integer;
+  SymIdx    : Integer;
+Begin
+  Inc(ClassCount);
+  { Nom du champ }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('identifiant attendu pour le champ de Class ' + ClassName);
+    Exit;
+  End;
+  FName := CurTokStr;
+  LexNextToken;
+  { As Type }
+  FType := VBT_OBJECT; { type par defaut VB.NET }
+  If IsKeywordToken(KW_AS) Then Begin
+    LexNextToken; { consommer As }
+    FType := ParseTypeSpec;
+  End;
+  FSize := VBTypeSize(FType);
+  { Initialisation optionnelle = valeur }
+  If CurTokType = TOK_EQ Then Begin
+    LexNextToken; { consommer = }
+    { Sauter la valeur d initialisation }
+    While (CurTokType <> TOK_NEWLINE) And (CurTokType <> TOK_EOF) Do
+      LexNextToken;
+  End;
+  { Ajouter le champ dans la table des symboles }
+  SymIdx := AddSym(FName, SK_FIELD, FType, STORE_GLOBAL);
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].BpOffset   := FieldOffset;
+    SymTab[SymIdx].IsPublic   := IsFieldPublic;
+    SymTab[SymIdx].IsShared   := IsFieldShared;
+    SymTab[SymIdx].IsConst    := False;
+    SymTab[SymIdx].ArrayDims  := 0;
+    SymTab[SymIdx].AsmLabel   := PFX_CLS + UpCaseStr(ClassName) + '_' +
+                                 UpCaseStr(FName);
+  End;
+  { Emettre commentaire d assembleur }
+  EmitComment('  ' + ClassName + '.' + FName + ' : offset=' +
+              ItoS(FieldOffset) + ', size=' + ItoS(FSize));
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePropertyDecl : parser une declaration Property VB.NET    }
+{   Syntaxe :                                                   }
+{     [Public|Private|Protected] Property NomProp() As Type     }
+{       Get                                                     }
+{         Return _donnee                                        }
+{       End Get                                                 }
+{       Set(ByVal value As Type)                                }
+{         _donnee = value                                       }
+{       End Set                                                 }
+{     End Property                                              }
+{   VB.NET : Get/Set sont des blocs internes a Property         }
+{   Pas de Property Let (uniquement en VB6)                     }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePropertyDecl(ClassName : TString;
+                              IsPropPublic : Boolean);
+Var
+  PropName  : TString;
+  PropLabel : TString;
+  RetType   : Integer;
+  ParamCnt  : Integer;
+  ExLabel   : TString;
+Begin
+  Inc(ClassPropCount);
+  Inc(ClassCount);
+  { Consommer 'Property' }
+  LexNextToken;
+  { Lire le nom de la propriete }
+  If CurTokType = TOK_IDENT Then Begin
+    PropName := CurTokStr;
+    LexNextToken;
+  End Else Begin
+    FatalError('Nom de propriete attendu apres Property');
+    PropName := '?';
+  End;
+  PropLabel := PFX_PROP + AsmIdent(PropName);
+  ParamCnt  := 0;
+  RetType   := VBT_OBJECT; { VB.NET : Object par defaut }
+  { Parser les parametres optionnels (index de propriete) }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken; { consommer ( }
+    While Not (CurTokType = TOK_RPAREN) Do Begin
+      If CurTokType = TOK_EOF Then Break;
+      Inc(ParamCnt);
+      LexNextToken;
+    End;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken; { consommer ) }
+  End;
+  { Parser le type de retour : As Type }
+  If IsKeywordToken(KW_AS) Then Begin
+    LexNextToken; { consommer As }
+    RetType := ParseTypeSpec;
+  End;
+  SkipNewlines;
+  { Ajouter dans la table des symboles et des procedures }
+  AddSym(PropName, SK_PROPERTY, RetType, STORE_GLOBAL);
+  AddProc(PropName, SK_PROPERTY, RetType, IsPropPublic);
+  EmitComment('Property ' + PropName + ' As ' + VBTypeName(RetType));
+  { Parser le corps : Get / Set blocks jusqu a End Property }
+  While Not (CurTokType = TOK_EOF) Do Begin
+    If IsKeywordToken(KW_GET) Then Begin
+      { Bloc Get }
+      LexNextToken; { consommer Get }
+      SkipNewlines;
+      ExLabel := NextInternalLabel;
+      EmitLabel(PropLabel + '_GET');
+      Emit('PUSH EBP');
+      Emit('MOV EBP, ESP');
+      EmitComment('Property Get ' + PropName);
+      Emit('XOR EAX, EAX');
+      { Parser jusqu a End Get }
+      While Not (CurTokType = TOK_EOF) Do Begin
+        If IsKeywordToken(KW_END) Then Begin
+          LexNextToken;
+          If IsKeywordToken(KW_GET) Then Begin
+            LexNextToken;
+            Break;
+          End;
+        End;
+        LexNextToken;
+      End;
+      SkipNewlines;
+      EmitLabel(ExLabel);
+      Emit('MOV ESP, EBP');
+      Emit('POP EBP');
+      Emit('RET');
+    End
+    Else If IsKeywordToken(KW_SET) Then Begin
+      { Bloc Set (VB.NET n a pas Let) }
+      LexNextToken; { consommer Set }
+      { Parametres optionnels du Set }
+      If CurTokType = TOK_LPAREN Then Begin
+        While Not (CurTokType = TOK_RPAREN) And
+              Not (CurTokType = TOK_EOF) Do
+          LexNextToken;
+        If CurTokType = TOK_RPAREN Then
+          LexNextToken;
+      End;
+      SkipNewlines;
+      ExLabel := NextInternalLabel;
+      EmitLabel(PropLabel + '_SET');
+      Emit('PUSH EBP');
+      Emit('MOV EBP, ESP');
+      EmitComment('Property Set ' + PropName);
+      { Parser jusqu a End Set }
+      While Not (CurTokType = TOK_EOF) Do Begin
+        If IsKeywordToken(KW_END) Then Begin
+          LexNextToken;
+          If IsKeywordToken(KW_SET) Then Begin
+            LexNextToken;
+            Break;
+          End;
+        End;
+        LexNextToken;
+      End;
+      SkipNewlines;
+      EmitLabel(ExLabel);
+      Emit('MOV ESP, EBP');
+      Emit('POP EBP');
+      Emit('RET');
+    End
+    Else If IsKeywordToken(KW_END) Then Begin
+      LexNextToken;
+      If IsKeywordToken(KW_PROPERTY) Then Begin
+        LexNextToken;
+        Break;
+      End;
+    End
+    Else Begin
+      LexNextToken;
+    End;
+  End;
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseClass : parser une declaration Class...End Class VB.NET }
+{   Syntaxe :                                                   }
+{     [Public|Private|Friend] [MustInherit|NotInheritable]     }
+{       Class NomClasse                                         }
+{       [Inherits ClasseParente]                                }
+{       [Implements Interface1[, Interface2]]                   }
+{       membres (champs, methodes, proprietes)                  }
+{     End Class                                                 }
+{   MustInherit : classe abstraite (pas instanciable)          }
+{   NotInheritable : classe scellee (pas héritable)            }
+{   Genere la vtable et les labels de classe                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseClass(IsPublic : Boolean;
+                      IsMustInherit : Boolean;
+                      IsNotInheritable : Boolean);
+Var
+  ClassName    : TString;
+  ParentClass  : TString;
+  FieldCount   : Integer;
+  FieldOffset  : LongInt;
+  SymIdx       : Integer;
+  AsmLbl       : TString;
+  MemberPublic : Boolean;
+  MemberShared : Boolean;
+Begin
+  Inc(ClassCount);
+  { Consommer 'Class' }
+  LexNextToken;
+  { Nom de la classe }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('identifiant attendu apres Class');
+    Exit;
+  End;
+  ClassName := CurTokStr;
+  AsmLbl    := PFX_CLS + UpCaseStr(ClassName);
+  LexNextToken;
+  SkipNewlines;
+  { Sauvegarder l etat courant de la classe }
+  CurClassName          := ClassName;
+  CurClassIsPublic      := IsPublic;
+  CurClassMustInherit   := IsMustInherit;
+  CurClassNotInheritable:= IsNotInheritable;
+  CurClassHasCtor       := False;
+  CurClassHasDtor       := False;
+  ClassMethodCount      := 0;
+  ClassPropCount        := 0;
+  { Ajouter la classe dans la table des symboles }
+  SymIdx := AddSym(ClassName, SK_CLASS, VBT_OBJECT, STORE_GLOBAL);
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].IsPublic := IsPublic;
+    SymTab[SymIdx].IsConst  := False;
+    SymTab[SymIdx].AsmLabel := AsmLbl;
+  End;
+  { Emettre le commentaire de classe }
+  If IsMustInherit Then
+    EmitComment('MustInherit Class ' + ClassName)
+  Else If IsNotInheritable Then
+    EmitComment('NotInheritable Class ' + ClassName)
+  Else
+    EmitComment('Class ' + ClassName);
+  { Parser Inherits optionnel }
+  ParentClass := '';
+  If IsKeywordToken(KW_INHERITS) Then Begin
+    LexNextToken; { consommer Inherits }
+    If CurTokType = TOK_IDENT Then Begin
+      ParentClass := CurTokStr;
+      LexNextToken;
+      EmitComment('  Inherits ' + ParentClass);
+      If Opts.Verbose Then
+        WriteLn('  Class ', ClassName, ' Inherits ', ParentClass);
+    End Else Begin
+      FatalError('nom de classe parente attendu apres Inherits');
+    End;
+    SkipNewlines;
+  End;
+  { Parser Implements optionnel (liste separee par des virgules) }
+  If IsKeywordToken(KW_IMPLEMENTS) Then Begin
+    LexNextToken; { consommer Implements }
+    While CurTokType = TOK_IDENT Do Begin
+      EmitComment('  Implements ' + CurTokStr);
+      If Opts.Verbose Then
+        WriteLn('  Class ', ClassName, ' Implements ', CurTokStr);
+      LexNextToken;
+      If CurTokType = TOK_COMMA Then
+        LexNextToken { consommer la virgule }
+      Else
+        Break;
+    End;
+    SkipNewlines;
+  End;
+  { Parser les membres de la classe }
+  FieldCount  := 0;
+  FieldOffset := OBJ_PTR_SIZE; { apres le pointeur vtable }
+  While Not LexEOF Do Begin
+    { Verifier End Class }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CLASS) Then Begin
+        LexNextToken;
+        Break;
+      End Else Begin
+        FatalError('End Class attendu');
+        Exit;
+      End;
+    End;
+    { Ignorer les lignes vides }
+    If CurTokType = TOK_NEWLINE Then Begin
+      SkipNewlines;
+      Continue;
+    End;
+    { Determiner le modificateur d acces }
+    MemberPublic := True;
+    MemberShared := False;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PUBLIC) Then Begin
+      MemberPublic := True;
+      LexNextToken;
+    End Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PRIVATE) Then Begin
+      MemberPublic := False;
+      LexNextToken;
+    End Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PROTECTED) Then Begin
+      MemberPublic := False;
+      LexNextToken;
+    End Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FRIEND) Then Begin
+      MemberPublic := True;
+      LexNextToken;
+    End;
+    { Verifier Shared }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SHARED) Then Begin
+      MemberShared := True;
+      LexNextToken;
+    End;
+    { Sauter les modificateurs de methode VB.NET }
+    While (CurTokType = TOK_KEYWORD) And
+          ((CurTokNum = KW_OVERRIDABLE) Or (CurTokNum = KW_OVERRIDES) Or
+           (CurTokNum = KW_MUSTOVERRIDE) Or (CurTokNum = KW_NOTOVERRIDABLE) Or
+           (CurTokNum = KW_OVERLOADS)) Do
+      LexNextToken;
+    { Sub : methode ou constructeur/destructeur }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SUB) Then Begin
+      LexNextToken; { consommer Sub }
+      Inc(ClassMethodCount);
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NEW) Then Begin
+        { Constructeur Sub New() }
+        CurClassHasCtor := True;
+        LexNextToken; { consommer New }
+        EmitComment('  Sub New() - constructeur de ' + ClassName);
+        EmitLabel(AsmLbl + '_NEW');
+        Emit('PUSH EBP');
+        Emit('MOV EBP, ESP');
+      End Else If CurTokType = TOK_IDENT Then Begin
+        { Verifier si c est Finalize (destructeur) }
+        If UpCaseStr(CurTokStr) = 'FINALIZE' Then Begin
+          CurClassHasDtor := True;
+          LexNextToken;
+          EmitComment('  Sub Finalize() - destructeur de ' + ClassName);
+          EmitLabel(AsmLbl + '_FINALIZE');
+          Emit('PUSH EBP');
+          Emit('MOV EBP, ESP');
+        End Else Begin
+          { Methode normale }
+          EmitComment('  Sub ' + CurTokStr + ' de ' + ClassName);
+          EmitLabel(AsmLbl + '_' + UpCaseStr(CurTokStr));
+          Emit('PUSH EBP');
+          Emit('MOV EBP, ESP');
+          LexNextToken;
+        End;
+      End Else Begin
+        SkipToEndOfLine;
+        SkipNewlines;
+        Continue;
+      End;
+      { Consommer les parametres }
+      If CurTokType = TOK_LPAREN Then Begin
+        While Not (CurTokType = TOK_RPAREN) And
+              Not (CurTokType = TOK_EOF) Do
+          LexNextToken;
+        If CurTokType = TOK_RPAREN Then
+          LexNextToken;
+      End;
+      SkipNewlines;
+      { Parser le corps jusqu a End Sub }
+      While Not (CurTokType = TOK_EOF) Do Begin
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+          LexNextToken;
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SUB) Then Begin
+            LexNextToken;
+            Break;
+          End;
+        End;
+        LexNextToken;
+      End;
+      SkipNewlines;
+      { Epilogue }
+      Emit('MOV ESP, EBP');
+      Emit('POP EBP');
+      Emit('RET');
+    End
+    { Function : methode avec retour }
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FUNCTION) Then Begin
+      LexNextToken; { consommer Function }
+      Inc(ClassMethodCount);
+      If CurTokType = TOK_IDENT Then Begin
+        EmitComment('  Function ' + CurTokStr + ' de ' + ClassName);
+        EmitLabel(AsmLbl + '_' + UpCaseStr(CurTokStr));
+        Emit('PUSH EBP');
+        Emit('MOV EBP, ESP');
+        LexNextToken;
+      End;
+      { Consommer les parametres }
+      If CurTokType = TOK_LPAREN Then Begin
+        While Not (CurTokType = TOK_RPAREN) And
+              Not (CurTokType = TOK_EOF) Do
+          LexNextToken;
+        If CurTokType = TOK_RPAREN Then
+          LexNextToken;
+      End;
+      { Consommer As ReturnType }
+      If IsKeywordToken(KW_AS) Then Begin
+        LexNextToken;
+        ParseTypeSpec;
+      End;
+      SkipNewlines;
+      { Valeur par defaut }
+      Emit('XOR EAX, EAX');
+      { Parser le corps jusqu a End Function }
+      While Not (CurTokType = TOK_EOF) Do Begin
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+          LexNextToken;
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FUNCTION) Then Begin
+            LexNextToken;
+            Break;
+          End;
+        End;
+        LexNextToken;
+      End;
+      SkipNewlines;
+      { Epilogue }
+      Emit('MOV ESP, EBP');
+      Emit('POP EBP');
+      Emit('RET');
+    End
+    { Property : propriete VB.NET }
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PROPERTY) Then Begin
+      ParsePropertyDecl(ClassName, MemberPublic);
+    End
+    { Dim : champ avec Dim }
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DIM) Then Begin
+      LexNextToken;
+      If FieldCount < MAX_CLASS_FIELDS Then Begin
+        ParseClassField(ClassName, FieldOffset, MemberPublic, MemberShared);
+        FieldOffset := FieldOffset + 4; { aligner a 4 octets }
+        Inc(FieldCount);
+      End Else Begin
+        FatalError('nombre maximal de champs depasse dans Class ' + ClassName);
+        SkipToEndOfLine;
+        SkipNewlines;
+      End;
+    End
+    { Identifiant : champ si suivi de As }
+    Else If CurTokType = TOK_IDENT Then Begin
+      If FieldCount < MAX_CLASS_FIELDS Then Begin
+        ParseClassField(ClassName, FieldOffset, MemberPublic, MemberShared);
+        FieldOffset := FieldOffset + 4;
+        Inc(FieldCount);
+      End Else Begin
+        FatalError('nombre maximal de champs depasse dans Class ' + ClassName);
+        SkipToEndOfLine;
+        SkipNewlines;
+      End;
+    End
+    Else Begin
+      { Autre token : avancer }
+      LexNextToken;
+    End;
+  End;
+  { Emettre la vtable par defaut si des methodes existent }
+  If ClassMethodCount > 0 Then
+    EmitComment('Fin vtable pour ' + ClassName);
+  EmitComment('End Class ' + ClassName + ' (' +
+              ItoS(FieldCount) + ' champs, ' +
+              ItoS(ClassMethodCount) + ' methodes, ' +
+              ItoS(ClassPropCount) + ' proprietes)');
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInterface : parser une declaration Interface VB.NET     }
+{   Syntaxe :                                                   }
+{     [Public|Private|Friend] Interface INomInterface           }
+{       Sub Methode(params)                                     }
+{       Function Calcul(params) As Type                         }
+{       Property Prop() As Type                                 }
+{     End Interface                                             }
+{   Les interfaces VB.NET ne contiennent que des signatures     }
+{   (pas de corps de methode)                                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInterface(IsPublic : Boolean);
+Var
+  IfaceName   : TString;
+  MemberCount : Integer;
+  SymIdx      : Integer;
+  AsmLbl      : TString;
+Begin
+  Inc(ClassCount);
+  { Consommer 'Interface' }
+  LexNextToken;
+  { Nom de l interface }
+  If CurTokType <> TOK_IDENT Then Begin
+    FatalError('identifiant attendu apres Interface');
+    Exit;
+  End;
+  IfaceName := CurTokStr;
+  AsmLbl    := PFX_IFACE + UpCaseStr(IfaceName);
+  LexNextToken;
+  SkipNewlines;
+  { Ajouter l interface dans la table des symboles }
+  SymIdx := AddSym(IfaceName, SK_INTERFACE, VBT_OBJECT, STORE_GLOBAL);
+  If SymIdx >= 0 Then Begin
+    SymTab[SymIdx].IsPublic := IsPublic;
+    SymTab[SymIdx].IsConst  := False;
+    SymTab[SymIdx].AsmLabel := AsmLbl;
+  End;
+  EmitComment('Interface ' + IfaceName);
+  { Parser Inherits optionnel pour interface }
+  If IsKeywordToken(KW_INHERITS) Then Begin
+    LexNextToken;
+    If CurTokType = TOK_IDENT Then Begin
+      EmitComment('  Inherits ' + CurTokStr);
+      LexNextToken;
+    End;
+    SkipNewlines;
+  End;
+  { Parser les signatures jusqu a End Interface }
+  MemberCount := 0;
+  While Not LexEOF Do Begin
+    { Verifier End Interface }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INTERFACE) Then Begin
+        LexNextToken;
+        Break;
+      End Else Begin
+        FatalError('End Interface attendu');
+        Exit;
+      End;
+    End;
+    { Ignorer les lignes vides }
+    If CurTokType = TOK_NEWLINE Then Begin
+      SkipNewlines;
+      Continue;
+    End;
+    { Sub signature }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SUB) Then Begin
+      LexNextToken;
+      Inc(MemberCount);
+      If CurTokType = TOK_IDENT Then Begin
+        EmitComment('  Sub ' + CurTokStr + ' (signature)');
+        LexNextToken;
+      End;
+      { Sauter les parametres }
+      SkipToEndOfLine;
+      SkipNewlines;
+    End
+    { Function signature }
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FUNCTION) Then Begin
+      LexNextToken;
+      Inc(MemberCount);
+      If CurTokType = TOK_IDENT Then Begin
+        EmitComment('  Function ' + CurTokStr + ' (signature)');
+        LexNextToken;
+      End;
+      SkipToEndOfLine;
+      SkipNewlines;
+    End
+    { Property signature }
+    Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PROPERTY) Then Begin
+      LexNextToken;
+      Inc(MemberCount);
+      If CurTokType = TOK_IDENT Then Begin
+        EmitComment('  Property ' + CurTokStr + ' (signature)');
+        LexNextToken;
+      End;
+      SkipToEndOfLine;
+      SkipNewlines;
+    End
+    Else Begin
+      LexNextToken;
+    End;
+  End;
+  EmitComment('End Interface ' + IfaceName + ' (' +
+              ItoS(MemberCount) + ' membres)');
+  SkipNewlines;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenNewObject : generer code pour creation d une instance      }
+{   VB.NET : Dim obj As New NomClasse()                        }
+{            Dim obj As NomClasse = New NomClasse()             }
+{   Alloue memoire (CALL _VBNRT_CLS_ALLOC), init vtable,      }
+{   appelle Sub New() si present                               }
+{   Resultat dans EAX = pointeur vers l instance               }
+{ ------------------------------------------------------------ }
+
+Procedure GenNewObject(ClassName : TString);
+Var
+  VTLabel : TString;
+Begin
+  Inc(ClassCount);
+  VTLabel := PFX_CLS + AsmIdent(ClassName) + '_VTABLE';
+  EmitComment('New ' + ClassName + '()');
+  { Allouer memoire pour l objet }
+  Emit('PUSH ' + ItoS(OBJ_PTR_SIZE + MAX_CLASS_FIELDS * 4));
+  Emit('CALL ' + CLS_RT_ALLOC);
+  Emit('ADD ESP, 4');
+  { Stocker le pointeur vtable dans le premier DD de l objet }
+  Emit('MOV DWORD PTR [EAX + ' + ItoS(OBJ_VTABLE_OFFSET) +
+       '], OFFSET ' + VTLabel);
+  { Appeler Sub New() via runtime init }
+  Emit('PUSH EAX');   { sauvegarder this }
+  Emit('PUSH EAX');   { passer this comme param }
+  Emit('CALL ' + CLS_RT_INIT);
+  Emit('ADD ESP, 4');
+  Emit('POP EAX');    { restaurer this }
+  { EAX = pointeur vers la nouvelle instance }
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSetNothing : generer code pour obj = Nothing               }
+{   VB.NET : obj = Nothing (pas de Set en VB.NET)              }
+{   Libere l instance : appelle Finalize() puis                }
+{   _VBNRT_CLS_FREE, et met le pointeur a Nothing (NULL)      }
+{ ------------------------------------------------------------ }
+
+Procedure GenSetNothing(VarLabel : TString);
+Var
+  SkipLbl : TString;
+Begin
+  Inc(ClassCount);
+  SkipLbl := NextInternalLabel;
+  EmitComment(VarLabel + ' = Nothing');
+  { Charger le pointeur objet }
+  Emit('MOV EAX, DWORD PTR [' + VarLabel + ']');
+  { Verifier si deja Nothing (NULL) }
+  Emit('TEST EAX, EAX');
+  Emit('JZ ' + SkipLbl);
+  { Appeler Finalize via runtime }
+  Emit('PUSH EAX');
+  Emit('CALL ' + CLS_RT_TERM);
+  Emit('ADD ESP, 4');
+  { Liberer la memoire }
+  Emit('MOV EAX, DWORD PTR [' + VarLabel + ']');
+  Emit('PUSH EAX');
+  Emit('CALL ' + CLS_RT_FREE);
+  Emit('ADD ESP, 4');
+  { Mettre le pointeur a Nothing (NULL) }
+  EmitLabel(SkipLbl);
+  Emit('MOV DWORD PTR [' + VarLabel + '], 0');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenMethodCall : generer un appel de methode via vtable        }
+{   obj.Method(args)                                           }
+{   PUSH this, charger vtable[offset], CALL [vtable+offset]   }
+{ ------------------------------------------------------------ }
+
+Procedure GenMethodCall(ObjLabel : TString; MethodIdx : Integer);
+Begin
+  Inc(ClassCount);
+  Inc(ClassMethodCount);
+  EmitComment('Appel methode #' + ItoS(MethodIdx) + ' sur ' + ObjLabel);
+  { Charger le pointeur objet dans ECX (convention this) }
+  Emit('MOV ECX, DWORD PTR [' + ObjLabel + ']');
+  { Charger l adresse de la vtable }
+  Emit('MOV EDX, DWORD PTR [ECX + ' + ItoS(OBJ_VTABLE_OFFSET) + ']');
+  { Pousser this comme premier argument implicite (Me) }
+  Emit('PUSH ECX');
+  { Appeler via vtable[offset] }
+  Emit('CALL DWORD PTR [EDX + ' + ItoS(MethodIdx * 4) + ']');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenVTableEntry : emettre une entree dans la vtable de classe }
+{   Genere un DD (pointeur de fonction) en section .DATA       }
+{   pour chaque methode de la classe VB.NET                    }
+{ ------------------------------------------------------------ }
+
+Procedure GenVTableEntry(ClassName : TString;
+                          MethodName : TString;
+                          MethodIdx : Integer);
+Var
+  VTLabel : TString;
+  MLabel  : TString;
+Begin
+  Inc(ClassCount);
+  VTLabel := PFX_CLS + AsmIdent(ClassName) + '_VTABLE';
+  MLabel  := PFX_CLS + AsmIdent(ClassName) + '_' + AsmIdent(MethodName);
+  { Premiere entree : emettre le label de la vtable }
+  If MethodIdx = 0 Then Begin
+    EmitComment('VTable pour classe ' + ClassName);
+    EmitData(VTLabel + ' DD OFFSET ' + MLabel);
+  End Else Begin
+    EmitData('  DD OFFSET ' + MLabel);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsClassDecl : verifier si un mot-cle est Class               }
+{ ------------------------------------------------------------ }
+
+Function IsClassDecl(KW : Integer) : Boolean;
+Begin
+  IsClassDecl := (KW = KW_CLASS);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsInterfaceDecl : verifier si un mot-cle est Interface       }
+{ ------------------------------------------------------------ }
+
+Function IsInterfaceDecl(KW : Integer) : Boolean;
+Begin
+  IsInterfaceDecl := (KW = KW_INTERFACE);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsPropertyKW : verifier si un mot-cle est Property           }
+{ ------------------------------------------------------------ }
+
+Function IsPropertyKW(KW : Integer) : Boolean;
+Begin
+  IsPropertyKW := (KW = KW_PROPERTY);
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions accesseur pour le module classes VB.NET            }
+{ ------------------------------------------------------------ }
+
+Function GetClassCount : LongInt;
+Begin
+  GetClassCount := ClassCount;
+End;
+
+Function IsClassInitialized : Boolean;
+Begin
+  IsClassInitialized := ClassInitialized;
+End;
+
+Function IsClassEmpty : Boolean;
+Begin
+  IsClassEmpty := ClassInitialized And (ClassCount = 0);
+End;
+
+Function GetClassStatus : TString;
+Begin
+  If Not ClassInitialized Then
+    GetClassStatus := 'non initialise'
+  Else If ClassCount = 0 Then
+    GetClassStatus := 'initialise, aucune classe'
+  Else
+    GetClassStatus := 'initialise, ' + ItoS(ClassCount) + ' operations';
+End;
+
+Function GetCurClassName : TString;
+Begin
+  GetCurClassName := CurClassName;
+End;
+
+Function IsCurClassPublic : Boolean;
+Begin
+  IsCurClassPublic := CurClassIsPublic;
+End;
+
+Function IsCurClassMustInherit : Boolean;
+Begin
+  IsCurClassMustInherit := CurClassMustInherit;
+End;
+
+Function IsCurClassNotInheritable : Boolean;
+Begin
+  IsCurClassNotInheritable := CurClassNotInheritable;
+End;
+
+Function GetClassMethodCount : Integer;
+Begin
+  GetClassMethodCount := ClassMethodCount;
+End;
+
+Function GetClassPropCount : Integer;
+Begin
+  GetClassPropCount := ClassPropCount;
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -10850,13 +11706,14 @@ Begin
   InitStrOpState;
   InitArrayState;
   InitStructureEnumState;
+  InitClassState;
   LexInit;
 
   { Analyser l unite de compilation VB.NET }
   ParseCompilationUnit;
   LexClose;
 
-  { TODO 17..25 : Generation de code, etc. }
+  { TODO 18..25 : Generation de code, etc. }
 
   { Statistiques finales }
   ShowStats;

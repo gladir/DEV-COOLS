@@ -543,7 +543,7 @@
             Valeurs auto-incrementees si non specifiees
             Acces qualifie : NomEnum.Valeur1
 
-  TODO 17 - PARSEUR : CLASSES ET HERITAGE (CLASS, INHERITS, IMPLEMENTS) [A FAIRE]
+  TODO 17 - PARSEUR : CLASSES ET HERITAGE (CLASS, INHERITS, IMPLEMENTS) [IMPLEMENTE]
             Procedure ParseClass
             Syntaxe :
               [Public|Private|Friend] [MustInherit|NotInheritable]
