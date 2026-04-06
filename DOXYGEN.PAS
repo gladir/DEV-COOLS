@@ -1212,6 +1212,7 @@ Type
     BatchMode    : Boolean;
     ShowVersion  : Boolean;
     ShowHelp     : Boolean;
+    SvgOutput    : Boolean;    { --svg ou -D DOT_IMAGE_FORMAT=svg }
   End;
 
   TSourceLanguage = (LANG_UNKNOWN, LANG_C, LANG_CPP, LANG_JAVA,
@@ -7011,6 +7012,10 @@ Begin
   WriteLn('Options DEV-COOLS (extension):');
   WriteLn('  -INPUT fichier    Analyser directement un fichier source');
   WriteLn('                    sans fichier de configuration');
+  WriteLn('  --svg             Generer la sortie au format SVG');
+  WriteLn('                    (equivalent a -D DOT_IMAGE_FORMAT=svg)');
+  WriteLn('  -D NOM=VALEUR     Definir une option de configuration');
+  WriteLn('                    Ex: -D DOT_IMAGE_FORMAT=svg');
   WriteLn;
   WriteLn('Exemples:');
   WriteLn('  doxygen                     Utiliser le Doxyfile du repertoire courant');
@@ -7019,6 +7024,8 @@ Begin
   WriteLn('  doxygen -g myDoxyfile       Generer myDoxyfile');
   WriteLn('  doxygen -INPUT hello.c      Analyser hello.c directement');
   WriteLn('  doxygen -INPUT program.pas  Analyser program.pas directement');
+  WriteLn('  doxygen --svg -INPUT test.c Generer la doc en SVG pour test.c');
+  WriteLn('  doxygen -D DOT_IMAGE_FORMAT=svg  Utiliser le format SVG');
   WriteLn;
   WriteLn('Langages supportes pour -INPUT:');
   WriteLn('  C (.c, .h), C++ (.cpp, .hpp), Pascal (.pas, .pp)');
@@ -7063,6 +7070,7 @@ Begin
   O.BatchMode    := False;
   O.ShowVersion  := False;
   O.ShowHelp     := False;
+  O.SvgOutput    := False;
 End;
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -7153,6 +7161,29 @@ Begin
       End
       Else
         FatalError('Option -INPUT requiert un nom de fichier');
+    End
+    Else If (Arg = '--svg') Then
+    Begin
+      { Extension DEV-COOLS : format de sortie SVG }
+      O.SvgOutput := True;
+    End
+    Else If (UpperArg = '-D') Then
+    Begin
+      { Option de definition : -D NOM=VALEUR }
+      If I < ParamCount Then
+      Begin
+        Inc(I);
+        Arg := ParamStr(I);
+        { Verifier si c'est DOT_IMAGE_FORMAT=svg }
+        If Pos('DOT_IMAGE_FORMAT=', UpStr(Arg)) = 1 Then
+        Begin
+          If UpStr(Copy(Arg, 18, Length(Arg))) = 'SVG' Then
+            O.SvgOutput := True;
+        End;
+        { On pourrait ajouter d'autres definitions ici }
+      End
+      Else
+        FatalError('Option -D requiert une definition NOM=VALEUR');
     End
     Else If Arg = '-V' Then
       O.Verbose := True
@@ -15045,6 +15076,14 @@ Begin
   { Extension DEV-COOLS : traitement direct d'un fichier source }
   If Opts.InputFile <> '' Then
   Begin
+    { Appliquer l'option SVG si specifiee pour le mode InputFile }
+    If Opts.SvgOutput Then
+    Begin
+      SetConfigOption('HAVE_DOT', 'YES', 0, False);
+      SetConfigOption('DOT_IMAGE_FORMAT', 'svg', 0, False);
+      If Not Opts.Quiet Then
+        InfoMsg('Format de sortie SVG active');
+    End;
     ProcessInputFile(Opts.InputFile);
     Halt(EXIT_OK);
   End;
@@ -15123,6 +15162,15 @@ Begin
 
   { Lecture du fichier de configuration (TODO 05) }
   ReadConfigFile(Opts.ConfigFile);
+  
+  { Appliquer l'option SVG si specifiee en ligne de commande }
+  If Opts.SvgOutput Then
+  Begin
+    SetConfigOption('HAVE_DOT', 'YES', 0, False);
+    SetConfigOption('DOT_IMAGE_FORMAT', 'svg', 0, False);
+    If Not Opts.Quiet Then
+      InfoMsg('Format de sortie SVG active');
+  End;
   
   { Mode expansion de configuration (TODO 06) }
   If Opts.ExpandOnly Then
