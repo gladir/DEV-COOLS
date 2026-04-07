@@ -13724,6 +13724,9 @@ Begin
   
   If Not Opts.Quiet Then
     WriteLn('Visio VDX genere (built-in): ', VdxFile);
+  
+  { Liberer la memoire du graphe apres generation }
+  FreeVdxGraph;
 End;
 
 { ============================================================
