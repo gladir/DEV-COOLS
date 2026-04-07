@@ -4329,8 +4329,14 @@ End;
 
 Procedure ExtractEntities(Const FileName: String; Lang: TSourceLanguage);
 { Dispatcher vers l extracteur specifique au langage }
+Var
+  BaseName: String;
 Begin
   InitEntities;
+  
+  { Creer une entite ENT_FILE pour le fichier lui-meme }
+  BaseName := ExtractFileName(FileName);
+  AddEntity(ENT_FILE, BaseName, FileName, FileName, 1, VIS_PUBLIC);
   
   Case Lang Of
     LANG_C, LANG_CPP, LANG_CSHARP, LANG_D, LANG_OBJC:
