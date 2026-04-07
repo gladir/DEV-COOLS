@@ -1,9 +1,7 @@
 # Fichiers objet et sortie compilers
 *.S68
 *.class
+*.deb
 *.o
 *.obj
 *.ppu
-VBCW32
-VBNCW32
-BINLINUX/VBNCW32
