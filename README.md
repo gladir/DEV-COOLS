@@ -359,6 +359,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de désassembler un code binaire de microprocesseur Z80 en langage de programmation assembleur Z80.</td>
 		</tr>
 		<tr>
+			<td><b>DOXYGEN.PAS</b></tr>
+			<td>Cette commande permet de lancer le générateur de documentation.</td>
+		</tr>
+		<tr>
 			<td><b>DRAW2LGO.PAS</b></td>
 			<td>Cette commande permet de convertir les chaines de caractères DRAW du langage de programmation BASIC en instruction du langage de programmation LOGO.</td>
 		</tr>
