@@ -51,7 +51,7 @@
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
             10 fonctions accesseurs
 
-  TODO 02 - TOKENISEUR JOVIAL 73 (LEXER) [A FAIRE]
+  TODO 02 - TOKENISEUR JOVIAL 73 (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source
@@ -1149,6 +1149,676 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 02 - TOKENISEUR JOVIAL 73 (LEXER)        [IMPLEMENTE] }
+{ ============================================================ }
+
+Const
+  { Types de tokens }
+  TOK_EOF      = 0;    { fin de fichier                          }
+  TOK_IDENT    = 1;    { identificateur Jovial (X, SCORE, etc.)  }
+  TOK_INTEGER  = 2;    { litteral entier (123, 0)                }
+  TOK_REAL     = 3;    { litteral reel (1.5, 3.14)               }
+  TOK_STRING   = 4;    { litteral chaine ('texte')               }
+  TOK_PLUS     = 10;   { +                                       }
+  TOK_MINUS    = 11;   { -                                       }
+  TOK_STAR     = 12;   { *                                       }
+  TOK_SLASH    = 13;   { /                                       }
+  TOK_POWER    = 14;   { ** (exponentiation)                     }
+  TOK_LPAREN   = 20;   { (                                       }
+  TOK_RPAREN   = 21;   { )                                       }
+  TOK_COMMA    = 22;   { ,                                       }
+  TOK_SEMICOL  = 23;   { ; (terminateur d instruction Jovial)    }
+  TOK_DOT      = 24;   { .                                       }
+  TOK_EQ       = 30;   { =                                       }
+  TOK_NE       = 31;   { /= (pas egal)                           }
+  TOK_LT       = 32;   { <                                       }
+  TOK_GT       = 33;   { >                                       }
+  TOK_LE       = 34;   { <=                                      }
+  TOK_GE       = 35;   { >=                                      }
+  TOK_DOLLAR   = 40;   { $ (prefixe format dans OUTPUT)          }
+  TOK_KEYWORD  = 50;   { mot-cle Jovial reconnu                  }
+
+Var
+  { Fichier source }
+  LexSrcF    : Text;          { handle du fichier source              }
+  LexOpened  : Boolean;        { fichier ouvert ?                      }
+  LexLine    : TString;        { ligne courante                        }
+  LexLineNo  : Integer;        { numero de ligne courante              }
+  LexColNo   : Integer;        { colonne courante dans LexLine         }
+  LexEOF     : Boolean;        { fin de fichier atteinte ?             }
+
+  { Token courant }
+  CurTokType : Integer;        { type de token (TOK_*)                 }
+  CurTokStr  : TString;        { valeur textuelle du token             }
+  CurTokNum  : LongInt;        { valeur numerique (entier)             }
+  CurTokReal : Real;           { valeur numerique (reel)               }
+  CurTokLine : Integer;        { ligne du token                        }
+  CurTokCol  : Integer;        { colonne du token                      }
+
+  { Compteur de tokens }
+  LexTokCount : LongInt;       { nombre total de tokens emis           }
+
+{ ------------------------------------------------------------ }
+{ Fonctions de classification de caracteres                    }
+{ ------------------------------------------------------------ }
+
+Function IsDigit(Ch : Char) : Boolean;
+Begin
+  IsDigit := (Ch >= '0') And (Ch <= '9');
+End;
+
+Function IsAlpha(Ch : Char) : Boolean;
+Begin
+  IsAlpha := ((Ch >= 'A') And (Ch <= 'Z')) Or
+             ((Ch >= 'a') And (Ch <= 'z'));
+End;
+
+Function IsAlphaNum(Ch : Char) : Boolean;
+Begin
+  IsAlphaNum := IsAlpha(Ch) Or IsDigit(Ch);
+End;
+
+Function IsWhitespace(Ch : Char) : Boolean;
+Begin
+  IsWhitespace := (Ch = ' ') Or (Ch = #9);
+End;
+
+{ Jovial identifiers start with a letter                        }
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  IsIdentStart := IsAlpha(Ch) Or (Ch = '_');
+End;
+
+{ Jovial identifiers can contain letters, digits and underscore }
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  IsIdentCont := IsAlpha(Ch) Or IsDigit(Ch) Or (Ch = '_');
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextLine : lire la prochaine ligne du fichier source      }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexInit : ouvrir le fichier source et initialiser le lexeur  }
+{ ------------------------------------------------------------ }
+
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  {$I-}
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+  LexOpened   := True;
+  LexLineNo   := 0;
+  LexColNo    := 1;
+  LexEOF      := False;
+  LexLine     := '';
+  CurTokType  := TOK_EOF;
+  CurTokStr   := '';
+  CurTokNum   := 0;
+  CurTokReal  := 0.0;
+  CurTokLine  := 0;
+  CurTokCol   := 0;
+  LexTokCount := 0;
+  LexNextLine;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexClose : fermer le fichier source                          }
+{ ------------------------------------------------------------ }
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexSkipWhitespace                                            }
+{ ------------------------------------------------------------ }
+
+Procedure LexSkipWhitespace;
+Begin
+  While (LexColNo <= Length(LexLine)) And
+        IsWhitespace(LexLine[LexColNo]) Do
+    Inc(LexColNo);
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanIdent : identificateur Jovial (lettres, chiffres, _)  }
+{ Jovial est insensible a la casse                              }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanIdent;
+Var
+  S : TString;
+Begin
+  S := '';
+
+  { Lire lettres, chiffres et souligne }
+  While (LexColNo <= Length(LexLine)) And
+        IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+
+  { Jovial est insensible a la casse }
+  CurTokStr  := UpCaseStr(S);
+  CurTokReal := 0.0;
+  CurTokType := TOK_IDENT;
+  CurTokNum  := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanNumber : litteral numerique Jovial                    }
+{ Entier : 123, 0                                              }
+{ Reel : 1.5, 3.14                                             }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanNumber;
+Var
+  N       : LongInt;
+  IsR     : Boolean;
+  FracDiv : Real;
+  FracVal : Real;
+  FltVal  : Real;
+  S       : TString;
+Begin
+  N       := 0;
+  IsR     := False;
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  S       := '';
+
+  { Partie entiere }
+  While (LexColNo <= Length(LexLine)) And
+        IsDigit(LexLine[LexColNo]) Do
+  Begin
+    N := N * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+    S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+
+  { Partie decimale }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '.') Then
+  Begin
+    { Le point est decimal si suivi d un chiffre }
+    If (LexColNo < Length(LexLine)) And
+       IsDigit(LexLine[LexColNo + 1]) Then
+    Begin
+      IsR := True;
+      S := S + '.';
+      Inc(LexColNo);
+      While (LexColNo <= Length(LexLine)) And
+            IsDigit(LexLine[LexColNo]) Do
+      Begin
+        FracVal := FracVal + (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
+        FracDiv := FracDiv * 10.0;
+        S := S + LexLine[LexColNo];
+        Inc(LexColNo);
+      End;
+    End;
+  End;
+
+  If IsR Then
+  Begin
+    FltVal := N + FracVal;
+    CurTokType := TOK_REAL;
+    CurTokReal := FltVal;
+    If FltVal > 2147483647.0 Then CurTokNum := 2147483647
+    Else If FltVal < -2147483647.0 Then CurTokNum := -2147483647
+    Else CurTokNum := Trunc(FltVal);
+    CurTokStr := S;
+  End
+  Else
+  Begin
+    CurTokType := TOK_INTEGER;
+    CurTokNum  := N;
+    CurTokReal := 0.0;
+    CurTokStr  := S;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexScanString : chaine Jovial entre apostrophes               }
+{ 'texte'                                                       }
+{ Doublement de l apostrophe pour inserer le caractere lui-meme }
+{ ------------------------------------------------------------ }
+
+Procedure LexScanString;
+Var
+  S : TString;
+Begin
+  S := '';
+  Inc(LexColNo); { sauter l apostrophe ouvrante }
+
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    If LexLine[LexColNo] = '''' Then
+    Begin
+      Inc(LexColNo);
+      { Apostrophe doublee : '' -> un seul caractere }
+      If (LexColNo <= Length(LexLine)) And
+         (LexLine[LexColNo] = '''') Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + '''';
+        Inc(LexColNo);
+      End
+      Else
+        Break; { fin de chaine }
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + LexLine[LexColNo];
+      Inc(LexColNo);
+    End;
+  End;
+
+  CurTokType := TOK_STRING;
+  CurTokStr  := S;
+  CurTokNum  := 0;
+  CurTokReal := 0.0;
+End;
+
+{ ------------------------------------------------------------ }
+{ PrintToken : affichage debug de chaque token                 }
+{ ------------------------------------------------------------ }
+
+Procedure PrintToken;
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', CurTokLine, ',', CurTokCol, '] ');
+  Case CurTokType Of
+    TOK_EOF     : Write('EOF');
+    TOK_IDENT   : Write('IDENT(', CurTokStr, ')');
+    TOK_INTEGER : Write('INT(', CurTokNum, ')');
+    TOK_REAL    : Write('REAL(', CurTokStr, ')');
+    TOK_STRING  : Write('STR(''', CurTokStr, ''')');
+    TOK_PLUS    : Write('PLUS');
+    TOK_MINUS   : Write('MINUS');
+    TOK_STAR    : Write('STAR');
+    TOK_SLASH   : Write('SLASH');
+    TOK_POWER   : Write('POWER');
+    TOK_LPAREN  : Write('LPAREN');
+    TOK_RPAREN  : Write('RPAREN');
+    TOK_COMMA   : Write('COMMA');
+    TOK_SEMICOL : Write('SEMICOL');
+    TOK_DOT     : Write('DOT');
+    TOK_EQ      : Write('EQ');
+    TOK_NE      : Write('NE');
+    TOK_LT      : Write('LT');
+    TOK_GT      : Write('GT');
+    TOK_LE      : Write('LE');
+    TOK_GE      : Write('GE');
+    TOK_DOLLAR  : Write('DOLLAR');
+    TOK_KEYWORD : Write('KW(', CurTokStr, ')');
+  Else
+    Write('TOK(', CurTokType, ')');
+  End;
+  WriteLn;
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextToken : reconnaitre le prochain token Jovial           }
+{ Format libre, commentaires % et separateurs Jovial            }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextToken;
+Var
+  Ch   : Char;
+  Done : Boolean;
+Begin
+  Done := False;
+  While Not Done Do
+  Begin
+    { Avancer si on est en fin de ligne }
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+
+    If LexEOF Then
+    Begin
+      CurTokLine := LexLineNo;
+      CurTokCol  := LexColNo;
+      CurTokType := TOK_EOF;
+      CurTokStr  := '';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Done := True;
+      Inc(LexTokCount);
+      PrintToken;
+      Exit;
+    End;
+
+    { Sauter les espaces }
+    LexSkipWhitespace;
+    If LexColNo > Length(LexLine) Then
+      Continue;
+
+    CurTokLine := LexLineNo;
+    CurTokCol  := LexColNo;
+    Ch := LexLine[LexColNo];
+
+    { Commentaire Jovial : % jusqu a la fin de la ligne }
+    If Ch = '%' Then
+    Begin
+      LexColNo := Length(LexLine) + 1;
+      Continue;
+    End
+
+    { Identificateur Jovial (commence par une lettre ou _) }
+    Else If IsIdentStart(Ch) Then
+    Begin
+      LexScanIdent;
+      Done := True;
+    End
+
+    { Litteral numerique }
+    Else If IsDigit(Ch) Then
+    Begin
+      LexScanNumber;
+      Done := True;
+    End
+
+    { Chaine entre apostrophes }
+    Else If Ch = '''' Then
+    Begin
+      LexScanString;
+      Done := True;
+    End
+
+    { Operateur ** (puissance) }
+    Else If (Ch = '*') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      CurTokType := TOK_POWER;
+      CurTokStr  := '**';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo, 2);
+      Done := True;
+    End
+
+    { Operateur * }
+    Else If Ch = '*' Then
+    Begin
+      CurTokType := TOK_STAR;
+      CurTokStr  := '*';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Operateur /= (pas egal) ou / (division) }
+    Else If Ch = '/' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And
+         (LexLine[LexColNo] = '=') Then
+      Begin
+        CurTokType := TOK_NE;
+        CurTokStr  := '/=';
+        Inc(LexColNo);
+      End
+      Else
+      Begin
+        CurTokType := TOK_SLASH;
+        CurTokStr  := '/';
+      End;
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Done := True;
+    End
+
+    { Operateur + }
+    Else If Ch = '+' Then
+    Begin
+      CurTokType := TOK_PLUS;
+      CurTokStr  := '+';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Operateur - }
+    Else If Ch = '-' Then
+    Begin
+      CurTokType := TOK_MINUS;
+      CurTokStr  := '-';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { = (egal) }
+    Else If Ch = '=' Then
+    Begin
+      CurTokType := TOK_EQ;
+      CurTokStr  := '=';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { < : LT, <= }
+    Else If Ch = '<' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And
+         (LexLine[LexColNo] = '=') Then
+      Begin
+        CurTokType := TOK_LE;
+        CurTokStr  := '<=';
+        Inc(LexColNo);
+      End
+      Else
+      Begin
+        CurTokType := TOK_LT;
+        CurTokStr  := '<';
+      End;
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Done := True;
+    End
+
+    { > : GT, >= }
+    Else If Ch = '>' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And
+         (LexLine[LexColNo] = '=') Then
+      Begin
+        CurTokType := TOK_GE;
+        CurTokStr  := '>=';
+        Inc(LexColNo);
+      End
+      Else
+      Begin
+        CurTokType := TOK_GT;
+        CurTokStr  := '>';
+      End;
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Done := True;
+    End
+
+    { Parenthese ouvrante }
+    Else If Ch = '(' Then
+    Begin
+      CurTokType := TOK_LPAREN;
+      CurTokStr  := '(';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Parenthese fermante }
+    Else If Ch = ')' Then
+    Begin
+      CurTokType := TOK_RPAREN;
+      CurTokStr  := ')';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Virgule }
+    Else If Ch = ',' Then
+    Begin
+      CurTokType := TOK_COMMA;
+      CurTokStr  := ',';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Point-virgule : terminateur d instruction Jovial }
+    Else If Ch = ';' Then
+    Begin
+      CurTokType := TOK_SEMICOL;
+      CurTokStr  := ';';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Point }
+    Else If Ch = '.' Then
+    Begin
+      CurTokType := TOK_DOT;
+      CurTokStr  := '.';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Dollar (prefixe format dans OUTPUT) }
+    Else If Ch = '$' Then
+    Begin
+      CurTokType := TOK_DOLLAR;
+      CurTokStr  := '$';
+      CurTokNum  := 0;
+      CurTokReal := 0.0;
+      Inc(LexColNo);
+      Done := True;
+    End
+
+    { Caractere inconnu : avertissement et avancer }
+    Else
+    Begin
+      WarnMsg('caractere inattendu: ''' + Ch + ''' (ASCII ' +
+              ItoSI(Ord(Ch)) + ') ligne ' + ItoS(LexLineNo) +
+              ' colonne ' + ItoSI(LexColNo));
+      Inc(LexColNo);
+    End;
+  End;
+
+  If Done Then
+  Begin
+    Inc(LexTokCount);
+    PrintToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs (TODO 02)                             }
+{ ------------------------------------------------------------ }
+
+Function IsLexOpened : Boolean;
+Begin
+  IsLexOpened := LexOpened;
+End;
+
+Function IsLexEOF : Boolean;
+Begin
+  IsLexEOF := LexEOF;
+End;
+
+Function GetLexLineNo : Integer;
+Begin
+  GetLexLineNo := LexLineNo;
+End;
+
+Function GetLexColNo : Integer;
+Begin
+  GetLexColNo := LexColNo;
+End;
+
+Function GetLexTokCount : LongInt;
+Begin
+  GetLexTokCount := LexTokCount;
+End;
+
+Function GetCurTokType : Integer;
+Begin
+  GetCurTokType := CurTokType;
+End;
+
+Function GetCurTokStr : TString;
+Begin
+  GetCurTokStr := CurTokStr;
+End;
+
+Function GetCurTokNum : LongInt;
+Begin
+  GetCurTokNum := CurTokNum;
+End;
+
+Function GetCurTokLine : Integer;
+Begin
+  GetCurTokLine := CurTokLine;
+End;
+
+Function GetLexStatus : TString;
+Begin
+  If Not LexOpened Then
+    GetLexStatus := 'Not opened'
+  Else If LexEOF Then
+    GetLexStatus := 'EOF at line ' + ItoS(LexLineNo) +
+                    ' (' + ItoS(LexTokCount) + ' tokens)'
+  Else
+    GetLexStatus := 'Line ' + ItoS(LexLineNo) +
+                    ' col ' + ItoSI(LexColNo) +
+                    ' (' + ItoS(LexTokCount) + ' tokens)';
+End;
+
+{ ============================================================ }
 { Run : point d entree principal                                }
 { ============================================================ }
 
@@ -1160,14 +1830,30 @@ Begin
   TotalLines := 0;
   OutFOpen   := False;
   BcActive   := False;
+  LexOpened  := False;
 
   ParseArgs;
 
   { Affichage de la banniere en mode verbeux }
   ShowBanner;
 
+  { Ouvrir le fichier source et initialiser le lexeur }
+  LexInit;
+
+  { Lire le premier token }
+  LexNextToken;
+
+  { Boucle principale : lire tous les tokens }
+  While CurTokType <> TOK_EOF Do
+    LexNextToken;
+
+  { Fermer le fichier source }
+  LexClose;
+
   { Statistiques finales }
   ShowStats;
+  If Opts.Verbose Then
+    WriteLn('Tokens analyses  : ', GetLexTokCount);
 
   { Nettoyage }
   Cleanup;

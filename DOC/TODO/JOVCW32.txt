@@ -43,7 +43,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
             10 fonctions accesseurs
 
-  TODO 02 - TOKENISEUR JOVIAL 73 (LEXER) [A FAIRE]
+  TODO 02 - TOKENISEUR JOVIAL 73 (LEXER) [IMPLEMENTE]
             Procedure LexInit : ouvrir le fichier source, initialiser
               l etat du lexeur (ligne, colonne, caractere courant)
             Procedure LexClose : fermer le fichier source
