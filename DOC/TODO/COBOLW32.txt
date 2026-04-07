@@ -421,7 +421,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Routines runtime pour manipulations de chaines
             10 fonctions accesseurs
 
-  TODO 14 - PARSEUR : E/S FICHIERS (OPEN, READ, WRITE, CLOSE) [A FAIRE]
+  TODO 14 - PARSEUR : E/S FICHIERS (OPEN, READ, WRITE, CLOSE) [IMPLEMENTE]
             OPEN :
               OPEN INPUT nom-fichier-1 [nom-fichier-2 ...]
               OPEN OUTPUT nom-fichier-1 [nom-fichier-2 ...]

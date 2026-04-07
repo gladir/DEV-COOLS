@@ -429,7 +429,7 @@
             Routines runtime pour manipulations de chaines
             10 fonctions accesseurs
 
-  TODO 14 - PARSEUR : E/S FICHIERS (OPEN, READ, WRITE, CLOSE) [A FAIRE]
+  TODO 14 - PARSEUR : E/S FICHIERS (OPEN, READ, WRITE, CLOSE) [IMPLEMENTE]
             OPEN :
               OPEN INPUT nom-fichier-1 [nom-fichier-2 ...]
               OPEN OUTPUT nom-fichier-1 [nom-fichier-2 ...]
@@ -1751,8 +1751,13 @@ Const
   KW_CHARACTERS        = 223;
   KW_FOR               = 224;
 
+  { Mots-cles supplementaires pour E/S fichiers }
+  KW_INVALID           = 225;
+  KW_AT                = 226;
+  KW_PAGE              = 227;
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 155;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 158;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -1986,6 +1991,9 @@ Begin
   Else If S = 'PARAGRAPH'         Then LookupKeyword := KW_PARAGRAPH
   Else If S = 'CHARACTERS'        Then LookupKeyword := KW_CHARACTERS
   Else If S = 'FOR'               Then LookupKeyword := KW_FOR
+  Else If S = 'INVALID'           Then LookupKeyword := KW_INVALID
+  Else If S = 'AT'                Then LookupKeyword := KW_AT
+  Else If S = 'PAGE'              Then LookupKeyword := KW_PAGE
   Else LookupKeyword := KW_NONE;
 End;
 
@@ -2190,6 +2198,9 @@ Begin
     KW_PARAGRAPH         : KeywordName := 'PARAGRAPH';
     KW_CHARACTERS        : KeywordName := 'CHARACTERS';
     KW_FOR               : KeywordName := 'FOR';
+    KW_INVALID           : KeywordName := 'INVALID';
+    KW_AT                : KeywordName := 'AT';
+    KW_PAGE              : KeywordName := 'PAGE';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -11469,6 +11480,1165 @@ Function GetStrStateCount : Integer;
 Begin
   GetStrStateCount := StrStateCount;
 End;
+
+{ ============================================================ }
+{ TODO 14 - PARSEUR : E/S FICHIERS                             }
+{           OPEN, READ, WRITE, REWRITE, CLOSE, DELETE, START   }
+{ ============================================================ }
+
+Const
+  { Modes d ouverture de fichiers }
+  FIO_OPEN_NONE        = 0;   { pas de mode d ouverture                   }
+  FIO_OPEN_INPUT       = 1;   { OPEN INPUT (lecture seule)                 }
+  FIO_OPEN_OUTPUT      = 2;   { OPEN OUTPUT (ecriture, creation)           }
+  FIO_OPEN_IO          = 3;   { OPEN I-O (lecture/ecriture)                }
+  FIO_OPEN_EXTEND      = 4;   { OPEN EXTEND (ajout en fin)                 }
+
+  { Types d operations fichier }
+  FIO_OP_NONE          = 0;   { pas d operation en cours                   }
+  FIO_OP_OPEN          = 1;   { ouverture de fichier                       }
+  FIO_OP_READ          = 2;   { lecture d enregistrement                   }
+  FIO_OP_WRITE         = 3;   { ecriture d enregistrement                  }
+  FIO_OP_REWRITE       = 4;   { reecriture d enregistrement                }
+  FIO_OP_CLOSE         = 5;   { fermeture de fichier                       }
+  FIO_OP_DELETE         = 6;   { suppression d enregistrement               }
+  FIO_OP_START         = 7;   { positionnement dans un fichier indexe      }
+
+  { Types d avancement pour WRITE ADVANCING }
+  FIO_ADV_NONE         = 0;   { pas d avancement                           }
+  FIO_ADV_LINES        = 1;   { ADVANCING n LINES                          }
+  FIO_ADV_PAGE         = 2;   { ADVANCING PAGE                             }
+
+  { Codes de statut fichier COBOL (2 caracteres) }
+  FIO_STAT_OK          = 0;   { 00 = succes                                }
+  FIO_STAT_AT_END      = 1;   { 10 = fin de fichier                        }
+  FIO_STAT_KEY_INVALID = 2;   { 23 = cle non trouvee                       }
+  FIO_STAT_KEY_EXISTS  = 3;   { 22 = cle deja existante                    }
+  FIO_STAT_PERM_ERROR  = 4;   { 37 = erreur de permission                  }
+  FIO_STAT_LOGIC_ERROR = 5;   { 41/42/43 = erreur de logique               }
+
+  { Limites }
+  FIO_MAX_FILES_OPEN   = 16;  { max de fichiers ouverts simultanement      }
+  FIO_MAX_KEYS         = 8;   { max de cles alternatives pour INDEXED      }
+  FIO_MAX_ADV_LINES    = 999; { max de lignes d avancement                 }
+
+Var
+  FioInitialized       : Boolean;   { True si InitFileIOState appele         }
+  FioStateCount        : Integer;   { compteur d etat general                }
+  FioLabelNum          : Integer;   { compteur de labels internes            }
+  FioOpenCount         : Integer;   { nombre de OPEN                         }
+  FioOpenInputCount    : Integer;   { nombre de OPEN INPUT                   }
+  FioOpenOutputCount   : Integer;   { nombre de OPEN OUTPUT                  }
+  FioOpenIOCount       : Integer;   { nombre de OPEN I-O                     }
+  FioOpenExtendCount   : Integer;   { nombre de OPEN EXTEND                  }
+  FioReadCount         : Integer;   { nombre de READ                         }
+  FioReadIntoCount     : Integer;   { nombre de READ ... INTO                }
+  FioReadKeyCount      : Integer;   { nombre de READ ... KEY IS              }
+  FioWriteCount        : Integer;   { nombre de WRITE                        }
+  FioWriteFromCount    : Integer;   { nombre de WRITE ... FROM               }
+  FioWriteAdvCount     : Integer;   { nombre de WRITE ... ADVANCING          }
+  FioRewriteCount      : Integer;   { nombre de REWRITE                      }
+  FioCloseCount        : Integer;   { nombre de CLOSE                        }
+  FioDeleteCount       : Integer;   { nombre de DELETE                       }
+  FioStartCount        : Integer;   { nombre de START                        }
+  FioAtEndCount        : Integer;   { nombre de clauses AT END               }
+  FioNotAtEndCount     : Integer;   { nombre de clauses NOT AT END           }
+  FioInvalidKeyCount   : Integer;   { nombre de clauses INVALID KEY          }
+  FioNotInvalidCount   : Integer;   { nombre de clauses NOT INVALID KEY      }
+  FioFileStatusCount   : Integer;   { nombre de FILE STATUS utilises         }
+  FioTotalGenerated    : Integer;   { total d instructions generees          }
+
+{ ------------------------------------------------------------ }
+{ InitFileIOState : initialiser l etat du module E/S fichiers  }
+{ ------------------------------------------------------------ }
+
+Procedure InitFileIOState;
+Begin
+  FioInitialized       := True;
+  FioStateCount        := 0;
+  FioLabelNum          := 0;
+  FioOpenCount         := 0;
+  FioOpenInputCount    := 0;
+  FioOpenOutputCount   := 0;
+  FioOpenIOCount       := 0;
+  FioOpenExtendCount   := 0;
+  FioReadCount         := 0;
+  FioReadIntoCount     := 0;
+  FioReadKeyCount      := 0;
+  FioWriteCount        := 0;
+  FioWriteFromCount    := 0;
+  FioWriteAdvCount     := 0;
+  FioRewriteCount      := 0;
+  FioCloseCount        := 0;
+  FioDeleteCount       := 0;
+  FioStartCount        := 0;
+  FioAtEndCount        := 0;
+  FioNotAtEndCount     := 0;
+  FioInvalidKeyCount   := 0;
+  FioNotInvalidCount   := 0;
+  FioFileStatusCount   := 0;
+  FioTotalGenerated    := 0;
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFioLabel : genere un label unique pour les E/S fichiers   }
+{ ------------------------------------------------------------ }
+
+Function GenFioLabel : TString;
+Begin
+  Inc(FioLabelNum);
+  GenFioLabel := '_COBFIO_' + ItoSI(FioLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ FioOpenModeName : retourne le nom d un mode d ouverture      }
+{ ------------------------------------------------------------ }
+
+Function FioOpenModeName(Mode : Integer) : TString;
+Begin
+  Case Mode Of
+    FIO_OPEN_NONE   : FioOpenModeName := 'NONE';
+    FIO_OPEN_INPUT  : FioOpenModeName := 'INPUT';
+    FIO_OPEN_OUTPUT : FioOpenModeName := 'OUTPUT';
+    FIO_OPEN_IO     : FioOpenModeName := 'I-O';
+    FIO_OPEN_EXTEND : FioOpenModeName := 'EXTEND';
+  Else
+    FioOpenModeName := '?MODE' + ItoSI(Mode);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FioOpTypeName : retourne le nom d un type d operation        }
+{ ------------------------------------------------------------ }
+
+Function FioOpTypeName(Op : Integer) : TString;
+Begin
+  Case Op Of
+    FIO_OP_NONE    : FioOpTypeName := 'NONE';
+    FIO_OP_OPEN    : FioOpTypeName := 'OPEN';
+    FIO_OP_READ    : FioOpTypeName := 'READ';
+    FIO_OP_WRITE   : FioOpTypeName := 'WRITE';
+    FIO_OP_REWRITE : FioOpTypeName := 'REWRITE';
+    FIO_OP_CLOSE   : FioOpTypeName := 'CLOSE';
+    FIO_OP_DELETE   : FioOpTypeName := 'DELETE';
+    FIO_OP_START   : FioOpTypeName := 'START';
+  Else
+    FioOpTypeName := '?OP' + ItoSI(Op);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FioAdvTypeName : retourne le nom d un type d avancement      }
+{ ------------------------------------------------------------ }
+
+Function FioAdvTypeName(Adv : Integer) : TString;
+Begin
+  Case Adv Of
+    FIO_ADV_NONE  : FioAdvTypeName := 'NONE';
+    FIO_ADV_LINES : FioAdvTypeName := 'LINES';
+    FIO_ADV_PAGE  : FioAdvTypeName := 'PAGE';
+  Else
+    FioAdvTypeName := '?ADV' + ItoSI(Adv);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FioStatusName : retourne le nom d un code de statut fichier  }
+{ ------------------------------------------------------------ }
+
+Function FioStatusName(Stat : Integer) : TString;
+Begin
+  Case Stat Of
+    FIO_STAT_OK          : FioStatusName := '00-OK';
+    FIO_STAT_AT_END      : FioStatusName := '10-AT-END';
+    FIO_STAT_KEY_INVALID : FioStatusName := '23-KEY-INVALID';
+    FIO_STAT_KEY_EXISTS  : FioStatusName := '22-KEY-EXISTS';
+    FIO_STAT_PERM_ERROR  : FioStatusName := '37-PERM-ERROR';
+    FIO_STAT_LOGIC_ERROR : FioStatusName := '41-LOGIC-ERROR';
+  Else
+    FioStatusName := '?STAT' + ItoSI(Stat);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileOpen : genere le code 80386 pour OPEN                 }
+{ Appelle CreateFileA (Win32 API)                              }
+{ Mode INPUT : GENERIC_READ, OPEN_EXISTING                     }
+{ Mode OUTPUT : GENERIC_WRITE, CREATE_ALWAYS                   }
+{ Mode I-O : GENERIC_READ+WRITE, OPEN_EXISTING                }
+{ Mode EXTEND : GENERIC_WRITE, OPEN_ALWAYS + SetFilePointer    }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileOpen(FileName : TString; Mode : Integer);
+Var
+  LblOk, LblErr : TString;
+Begin
+  LblOk  := GenFioLabel;
+  LblErr := GenFioLabel;
+
+  { Commentaire ASM }
+  WriteLn('; OPEN ', FioOpenModeName(Mode), ' ', FileName);
+
+  { Push parametres CreateFileA }
+  Case Mode Of
+    FIO_OPEN_INPUT : Begin
+      WriteLn('  push 0                 ; hTemplateFile');
+      WriteLn('  push 80h               ; FILE_ATTRIBUTE_NORMAL');
+      WriteLn('  push 3                 ; OPEN_EXISTING');
+      WriteLn('  push 0                 ; lpSecurityAttributes');
+      WriteLn('  push 1                 ; FILE_SHARE_READ');
+      WriteLn('  push 80000000h         ; GENERIC_READ');
+    End;
+    FIO_OPEN_OUTPUT : Begin
+      WriteLn('  push 0                 ; hTemplateFile');
+      WriteLn('  push 80h               ; FILE_ATTRIBUTE_NORMAL');
+      WriteLn('  push 2                 ; CREATE_ALWAYS');
+      WriteLn('  push 0                 ; lpSecurityAttributes');
+      WriteLn('  push 0                 ; dwShareMode');
+      WriteLn('  push 40000000h         ; GENERIC_WRITE');
+    End;
+    FIO_OPEN_IO : Begin
+      WriteLn('  push 0                 ; hTemplateFile');
+      WriteLn('  push 80h               ; FILE_ATTRIBUTE_NORMAL');
+      WriteLn('  push 3                 ; OPEN_EXISTING');
+      WriteLn('  push 0                 ; lpSecurityAttributes');
+      WriteLn('  push 0                 ; dwShareMode');
+      WriteLn('  push 0C0000000h        ; GENERIC_READ + GENERIC_WRITE');
+    End;
+    FIO_OPEN_EXTEND : Begin
+      WriteLn('  push 0                 ; hTemplateFile');
+      WriteLn('  push 80h               ; FILE_ATTRIBUTE_NORMAL');
+      WriteLn('  push 4                 ; OPEN_ALWAYS');
+      WriteLn('  push 0                 ; lpSecurityAttributes');
+      WriteLn('  push 0                 ; dwShareMode');
+      WriteLn('  push 40000000h         ; GENERIC_WRITE');
+    End;
+  End;
+
+  WriteLn('  push offset ', AsmIdent(FileName));
+  WriteLn('  call _CreateFileA@28');
+  WriteLn('  cmp eax, -1             ; INVALID_HANDLE_VALUE');
+  WriteLn('  jne ', LblOk);
+  WriteLn(LblErr, ':');
+  WriteLn('  ; Erreur ouverture - FILE STATUS = 35');
+  WriteLn(LblOk, ':');
+  WriteLn('  mov [', AsmIdent(FileName), '_handle], eax');
+
+  { Pour EXTEND, positionner a la fin }
+  If Mode = FIO_OPEN_EXTEND Then Begin
+    WriteLn('  push 2                 ; FILE_END');
+    WriteLn('  push 0                 ; lpDistanceToMoveHigh');
+    WriteLn('  push 0                 ; lDistanceToMove');
+    WriteLn('  push eax               ; hFile');
+    WriteLn('  call _SetFilePointer@16');
+  End;
+
+  Inc(FioOpenCount);
+  Case Mode Of
+    FIO_OPEN_INPUT  : Inc(FioOpenInputCount);
+    FIO_OPEN_OUTPUT : Inc(FioOpenOutputCount);
+    FIO_OPEN_IO     : Inc(FioOpenIOCount);
+    FIO_OPEN_EXTEND : Inc(FioOpenExtendCount);
+  End;
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileRead : genere le code 80386 pour READ                 }
+{ Appelle ReadFile (Win32 API)                                 }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileRead(FileName, RecordName : TString; HasInto : Boolean;
+                      IntoIdent : TString);
+Var
+  LblOk, LblEnd : TString;
+Begin
+  LblOk  := GenFioLabel;
+  LblEnd := GenFioLabel;
+
+  WriteLn('; READ ', FileName);
+  WriteLn('  push 0                 ; lpOverlapped');
+  WriteLn('  lea eax, [', AsmIdent(FileName), '_bytes]');
+  WriteLn('  push eax               ; lpNumberOfBytesRead');
+  WriteLn('  push ', AsmIdent(RecordName), '_size');
+  WriteLn('  push offset ', AsmIdent(RecordName));
+  WriteLn('  push [', AsmIdent(FileName), '_handle]');
+  WriteLn('  call _ReadFile@20');
+  WriteLn('  test eax, eax');
+  WriteLn('  jnz ', LblOk);
+  WriteLn('  ; AT END - FILE STATUS = 10');
+  WriteLn(LblOk, ':');
+
+  { Si INTO est present, copier le record dans la variable }
+  If HasInto Then Begin
+    WriteLn('  ; INTO ', IntoIdent);
+    WriteLn('  lea esi, [', AsmIdent(RecordName), ']');
+    WriteLn('  lea edi, [', AsmIdent(IntoIdent), ']');
+    WriteLn('  mov ecx, ', AsmIdent(RecordName), '_size');
+    WriteLn('  rep movsb');
+    Inc(FioReadIntoCount);
+  End;
+
+  WriteLn(LblEnd, ':');
+  Inc(FioReadCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileReadKey : genere le code pour READ ... KEY IS          }
+{ Pour fichiers indexes, positionnement par cle                }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileReadKey(FileName, RecordName, KeyName : TString);
+Begin
+  WriteLn('; READ ', FileName, ' KEY IS ', KeyName);
+  WriteLn('  ; Appel runtime ', PFX_RT, 'READ_KEY');
+  WriteLn('  push offset ', AsmIdent(KeyName));
+  WriteLn('  push offset ', AsmIdent(RecordName));
+  WriteLn('  push [', AsmIdent(FileName), '_handle]');
+  WriteLn('  call ', PFX_RT, 'READ_KEY');
+  WriteLn('  add esp, 12');
+  Inc(FioReadKeyCount);
+  Inc(FioReadCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileWrite : genere le code 80386 pour WRITE               }
+{ Appelle WriteFile (Win32 API)                                }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileWrite(FileName, RecordName : TString; HasFrom : Boolean;
+                       FromIdent : TString);
+Var
+  LblOk : TString;
+Begin
+  LblOk := GenFioLabel;
+
+  WriteLn('; WRITE ', RecordName);
+
+  { Si FROM est present, copier d abord la source dans le record }
+  If HasFrom Then Begin
+    WriteLn('  ; FROM ', FromIdent);
+    WriteLn('  lea esi, [', AsmIdent(FromIdent), ']');
+    WriteLn('  lea edi, [', AsmIdent(RecordName), ']');
+    WriteLn('  mov ecx, ', AsmIdent(RecordName), '_size');
+    WriteLn('  rep movsb');
+    Inc(FioWriteFromCount);
+  End;
+
+  WriteLn('  push 0                 ; lpOverlapped');
+  WriteLn('  lea eax, [', AsmIdent(FileName), '_bytes]');
+  WriteLn('  push eax               ; lpNumberOfBytesWritten');
+  WriteLn('  push ', AsmIdent(RecordName), '_size');
+  WriteLn('  push offset ', AsmIdent(RecordName));
+  WriteLn('  push [', AsmIdent(FileName), '_handle]');
+  WriteLn('  call _WriteFile@20');
+  WriteLn('  test eax, eax');
+  WriteLn('  jnz ', LblOk);
+  WriteLn('  ; Erreur ecriture - FILE STATUS = 48');
+  WriteLn(LblOk, ':');
+
+  Inc(FioWriteCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileWriteAdvancing : genere WRITE avec ADVANCING           }
+{ BEFORE/AFTER ADVANCING n LINES ou PAGE                       }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileWriteAdvancing(RecordName : TString; IsBefore : Boolean;
+                                AdvType : Integer; AdvLines : Integer);
+Begin
+  WriteLn('; WRITE ', RecordName, ' ADVANCING');
+  If Not IsBefore Then Begin
+    { AFTER ADVANCING = ecrire les sauts avant le record }
+    If AdvType = FIO_ADV_PAGE Then Begin
+      WriteLn('  ; AFTER ADVANCING PAGE');
+      WriteLn('  push 0Ch               ; form feed');
+      WriteLn('  call ', PFX_RT, 'WRITE_CHAR');
+      WriteLn('  add esp, 4');
+    End Else Begin
+      WriteLn('  ; AFTER ADVANCING ', ItoSI(AdvLines), ' LINES');
+      WriteLn('  mov ecx, ', ItoSI(AdvLines));
+      WriteLn('@@:');
+      WriteLn('  push ecx');
+      WriteLn('  push 0Ah               ; line feed');
+      WriteLn('  call ', PFX_RT, 'WRITE_CHAR');
+      WriteLn('  add esp, 4');
+      WriteLn('  pop ecx');
+      WriteLn('  loop @b');
+    End;
+  End;
+
+  { Ecrire le record }
+  WriteLn('  push ', AsmIdent(RecordName), '_size');
+  WriteLn('  push offset ', AsmIdent(RecordName));
+  WriteLn('  call ', PFX_RT, 'WRITE_RECORD');
+  WriteLn('  add esp, 8');
+
+  If IsBefore Then Begin
+    { BEFORE ADVANCING = ecrire les sauts apres le record }
+    If AdvType = FIO_ADV_PAGE Then Begin
+      WriteLn('  ; BEFORE ADVANCING PAGE');
+      WriteLn('  push 0Ch               ; form feed');
+      WriteLn('  call ', PFX_RT, 'WRITE_CHAR');
+      WriteLn('  add esp, 4');
+    End Else Begin
+      WriteLn('  ; BEFORE ADVANCING ', ItoSI(AdvLines), ' LINES');
+      WriteLn('  mov ecx, ', ItoSI(AdvLines));
+      WriteLn('@@:');
+      WriteLn('  push ecx');
+      WriteLn('  push 0Ah               ; line feed');
+      WriteLn('  call ', PFX_RT, 'WRITE_CHAR');
+      WriteLn('  add esp, 4');
+      WriteLn('  pop ecx');
+      WriteLn('  loop @b');
+    End;
+  End;
+
+  Inc(FioWriteAdvCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileRewrite : genere le code 80386 pour REWRITE           }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileRewrite(FileName, RecordName : TString;
+                         HasFrom : Boolean; FromIdent : TString);
+Var
+  LblOk : TString;
+Begin
+  LblOk := GenFioLabel;
+
+  WriteLn('; REWRITE ', RecordName);
+
+  If HasFrom Then Begin
+    WriteLn('  ; FROM ', FromIdent);
+    WriteLn('  lea esi, [', AsmIdent(FromIdent), ']');
+    WriteLn('  lea edi, [', AsmIdent(RecordName), ']');
+    WriteLn('  mov ecx, ', AsmIdent(RecordName), '_size');
+    WriteLn('  rep movsb');
+  End;
+
+  { Repositionner au debut du record courant }
+  WriteLn('  push 1                 ; FILE_CURRENT');
+  WriteLn('  push 0');
+  WriteLn('  push -', AsmIdent(RecordName), '_size');
+  WriteLn('  push [', AsmIdent(FileName), '_handle]');
+  WriteLn('  call _SetFilePointer@16');
+
+  { Reecrire le record }
+  WriteLn('  push 0                 ; lpOverlapped');
+  WriteLn('  lea eax, [', AsmIdent(FileName), '_bytes]');
+  WriteLn('  push eax               ; lpNumberOfBytesWritten');
+  WriteLn('  push ', AsmIdent(RecordName), '_size');
+  WriteLn('  push offset ', AsmIdent(RecordName));
+  WriteLn('  push [', AsmIdent(FileName), '_handle]');
+  WriteLn('  call _WriteFile@20');
+  WriteLn('  test eax, eax');
+  WriteLn('  jnz ', LblOk);
+  WriteLn('  ; Erreur reecriture - FILE STATUS = 49');
+  WriteLn(LblOk, ':');
+
+  Inc(FioRewriteCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileClose : genere le code 80386 pour CLOSE               }
+{ Appelle CloseHandle (Win32 API)                              }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileClose(FileName : TString);
+Var
+  LblOk : TString;
+Begin
+  LblOk := GenFioLabel;
+
+  WriteLn('; CLOSE ', FileName);
+  WriteLn('  push [', AsmIdent(FileName), '_handle]');
+  WriteLn('  call _CloseHandle@4');
+  WriteLn('  test eax, eax');
+  WriteLn('  jnz ', LblOk);
+  WriteLn('  ; Erreur fermeture');
+  WriteLn(LblOk, ':');
+  WriteLn('  mov dword ptr [', AsmIdent(FileName), '_handle], 0');
+
+  Inc(FioCloseCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileDelete : genere le code pour DELETE                    }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileDelete(FileName : TString);
+Begin
+  WriteLn('; DELETE ', FileName);
+  WriteLn('  ; Appel runtime ', PFX_RT, 'DELETE_RECORD');
+  WriteLn('  push [', AsmIdent(FileName), '_handle]');
+  WriteLn('  call ', PFX_RT, 'DELETE_RECORD');
+  WriteLn('  add esp, 4');
+
+  Inc(FioDeleteCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileStart : genere le code pour START                     }
+{ Positionnement dans un fichier indexe                        }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileStart(FileName, KeyName : TString; RelOp : Integer);
+Begin
+  WriteLn('; START ', FileName, ' KEY ', RelOpName(RelOp), ' ', KeyName);
+  WriteLn('  ; Appel runtime ', PFX_RT, 'START_FILE');
+  WriteLn('  push ', ItoSI(RelOp));
+  WriteLn('  push offset ', AsmIdent(KeyName));
+  WriteLn('  push [', AsmIdent(FileName), '_handle]');
+  WriteLn('  call ', PFX_RT, 'START_FILE');
+  WriteLn('  add esp, 12');
+
+  Inc(FioStartCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAtEndCheck : genere le code pour AT END / NOT AT END       }
+{ ------------------------------------------------------------ }
+
+Procedure GenAtEndCheck(LblAtEnd, LblNotAtEnd : TString);
+Begin
+  WriteLn('  ; Tester FILE STATUS = 10 (fin de fichier)');
+  WriteLn('  cmp byte ptr [_COB_FILE_STATUS], 31h  ; ''1''');
+  WriteLn('  jne ', LblNotAtEnd);
+  WriteLn('  cmp byte ptr [_COB_FILE_STATUS+1], 30h  ; ''0''');
+  WriteLn('  jne ', LblNotAtEnd);
+  WriteLn(LblAtEnd, ':');
+  Inc(FioAtEndCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenInvalidKeyCheck : genere le code pour INVALID KEY          }
+{ ------------------------------------------------------------ }
+
+Procedure GenInvalidKeyCheck(LblInvalid, LblNotInvalid : TString);
+Begin
+  WriteLn('  ; Tester FILE STATUS = 23 (cle invalide)');
+  WriteLn('  cmp byte ptr [_COB_FILE_STATUS], 32h  ; ''2''');
+  WriteLn('  jne ', LblNotInvalid);
+  WriteLn('  cmp byte ptr [_COB_FILE_STATUS+1], 33h  ; ''3''');
+  WriteLn('  jne ', LblNotInvalid);
+  WriteLn(LblInvalid, ':');
+  Inc(FioInvalidKeyCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenFileStatusStore : genere le code pour stocker FILE STATUS  }
+{ ------------------------------------------------------------ }
+
+Procedure GenFileStatusStore(StatusVar : TString; StatusCode : Integer);
+Begin
+  WriteLn('; Stocker FILE STATUS dans ', StatusVar);
+  Case StatusCode Of
+    FIO_STAT_OK : Begin
+      WriteLn('  mov byte ptr [', AsmIdent(StatusVar), '], 30h  ; ''0''');
+      WriteLn('  mov byte ptr [', AsmIdent(StatusVar), '+1], 30h  ; ''0''');
+    End;
+    FIO_STAT_AT_END : Begin
+      WriteLn('  mov byte ptr [', AsmIdent(StatusVar), '], 31h  ; ''1''');
+      WriteLn('  mov byte ptr [', AsmIdent(StatusVar), '+1], 30h  ; ''0''');
+    End;
+    FIO_STAT_KEY_INVALID : Begin
+      WriteLn('  mov byte ptr [', AsmIdent(StatusVar), '], 32h  ; ''2''');
+      WriteLn('  mov byte ptr [', AsmIdent(StatusVar), '+1], 33h  ; ''3''');
+    End;
+    FIO_STAT_KEY_EXISTS : Begin
+      WriteLn('  mov byte ptr [', AsmIdent(StatusVar), '], 32h  ; ''2''');
+      WriteLn('  mov byte ptr [', AsmIdent(StatusVar), '+1], 32h  ; ''2''');
+    End;
+  End;
+  Inc(FioFileStatusCount);
+  Inc(FioTotalGenerated);
+  Inc(FioStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseOpenStatement : analyser OPEN INPUT/OUTPUT/I-O/EXTEND   }
+{ OPEN mode nom-fichier-1 [nom-fichier-2 ...]                 }
+{ ------------------------------------------------------------ }
+
+Procedure ParseOpenStatement;
+Var
+  Mode : Integer;
+Begin
+  { Le mot-cle OPEN a deja ete consomme }
+  Inc(FioStateCount);
+
+  { Determiner le mode d ouverture }
+  If (CurTokType <> TOK_KEYWORD) Then Begin
+    WarnMsg('OPEN : mode attendu (INPUT, OUTPUT, I-O, EXTEND)');
+    Exit;
+  End;
+
+  Case CurTokNum Of
+    KW_INPUT  : Mode := FIO_OPEN_INPUT;
+    KW_OUTPUT : Mode := FIO_OPEN_OUTPUT;
+    KW_I_O    : Mode := FIO_OPEN_IO;
+    KW_EXTEND : Mode := FIO_OPEN_EXTEND;
+  Else Begin
+    WarnMsg('OPEN : mode inconnu ' + CurTokStr);
+    Exit;
+  End;
+  End;
+
+  LexNextToken;
+
+  { Lire un ou plusieurs noms de fichiers }
+  While (CurTokType = TOK_IDENT) Do Begin
+    GenFileOpen(CurTokStr, Mode);
+    LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseReadStatement : analyser READ nom-fichier               }
+{ [INTO id] [AT END instr] [NOT AT END instr] END-READ         }
+{ READ nom-fichier KEY IS nom-cle [INVALID KEY instr]          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseReadStatement;
+Var
+  FileName     : TString;
+  HasInto      : Boolean;
+  IntoIdent    : TString;
+  HasKey       : Boolean;
+  KeyName      : TString;
+  LblAtEnd     : TString;
+  LblNotAtEnd  : TString;
+  LblEndRead   : TString;
+Begin
+  Inc(FioStateCount);
+
+  { Nom du fichier }
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('READ : nom de fichier attendu');
+    Exit;
+  End;
+  FileName := CurTokStr;
+  LexNextToken;
+
+  HasInto := False;
+  IntoIdent := '';
+  HasKey := False;
+  KeyName := '';
+
+  { Clauses optionnelles }
+  While (CurTokType = TOK_KEYWORD) And
+        (CurTokNum <> KW_END_READ) And
+        (CurTokType <> TOK_DOT) Do
+  Begin
+    If CurTokNum = KW_INTO Then Begin
+      LexNextToken;
+      If CurTokType = TOK_IDENT Then Begin
+        HasInto := True;
+        IntoIdent := CurTokStr;
+        LexNextToken;
+      End;
+    End
+    Else If CurTokNum = KW_KEY Then Begin
+      LexNextToken;
+      { Consommer IS optionnel }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+        LexNextToken;
+      If CurTokType = TOK_IDENT Then Begin
+        HasKey := True;
+        KeyName := CurTokStr;
+        LexNextToken;
+      End;
+    End
+    Else If (CurTokNum = KW_AT) Then Begin
+      LexNextToken;
+      { AT END }
+      If (CurTokType = TOK_IDENT) And (CurTokStr = 'END') Then Begin
+        LblAtEnd := GenFioLabel;
+        LblNotAtEnd := GenFioLabel;
+        LblEndRead := GenFioLabel;
+        LexNextToken;
+        Inc(FioAtEndCount);
+        { Sauter les instructions du bloc AT END }
+        While (CurTokType <> TOK_DOT) And
+              Not ((CurTokType = TOK_KEYWORD) And
+                   ((CurTokNum = KW_NOT) Or (CurTokNum = KW_END_READ))) Do
+          LexNextToken;
+      End;
+    End
+    Else If (CurTokNum = KW_NOT) Then Begin
+      LexNextToken;
+      { NOT AT END }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_AT) Then Begin
+        LexNextToken;
+        If (CurTokType = TOK_IDENT) And (CurTokStr = 'END') Then Begin
+          Inc(FioNotAtEndCount);
+          LexNextToken;
+          While (CurTokType <> TOK_DOT) And
+                Not ((CurTokType = TOK_KEYWORD) And
+                     (CurTokNum = KW_END_READ)) Do
+            LexNextToken;
+        End;
+      End;
+    End
+    Else If (CurTokNum = KW_INVALID) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_KEY) Then Begin
+        Inc(FioInvalidKeyCount);
+        LexNextToken;
+        While (CurTokType <> TOK_DOT) And
+              Not ((CurTokType = TOK_KEYWORD) And
+                   ((CurTokNum = KW_NOT) Or (CurTokNum = KW_END_READ))) Do
+          LexNextToken;
+      End;
+    End
+    Else
+      LexNextToken;
+  End;
+
+  { Generer le code }
+  If HasKey Then
+    GenFileReadKey(FileName, FileName, KeyName)
+  Else
+    GenFileRead(FileName, FileName, HasInto, IntoIdent);
+
+  { Consommer END-READ si present }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_READ) Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWriteStatement : analyser WRITE nom-record              }
+{ [FROM id] [BEFORE/AFTER ADVANCING n LINES/PAGE]             }
+{ [INVALID KEY instr] END-WRITE                                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseWriteStatement;
+Var
+  RecordName   : TString;
+  HasFrom      : Boolean;
+  FromIdent    : TString;
+  HasAdvancing : Boolean;
+  IsBefore     : Boolean;
+  AdvType      : Integer;
+  AdvLines     : Integer;
+Begin
+  Inc(FioStateCount);
+
+  { Nom du record }
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('WRITE : nom de record attendu');
+    Exit;
+  End;
+  RecordName := CurTokStr;
+  LexNextToken;
+
+  HasFrom := False;
+  FromIdent := '';
+  HasAdvancing := False;
+  IsBefore := True;
+  AdvType := FIO_ADV_NONE;
+  AdvLines := 1;
+
+  { Clauses optionnelles }
+  While (CurTokType = TOK_KEYWORD) And
+        (CurTokNum <> KW_END_WRITE) And
+        (CurTokType <> TOK_DOT) Do
+  Begin
+    If CurTokNum = KW_FROM Then Begin
+      LexNextToken;
+      If CurTokType = TOK_IDENT Then Begin
+        HasFrom := True;
+        FromIdent := CurTokStr;
+        LexNextToken;
+      End;
+    End
+    Else If (CurTokNum = KW_BEFORE) Or (CurTokNum = KW_AFTER) Then Begin
+      IsBefore := (CurTokNum = KW_BEFORE);
+      LexNextToken;
+      { Consommer ADVANCING }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ADVANCING) Then
+        LexNextToken;
+      { PAGE ou n LINES }
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_PAGE) Then Begin
+        HasAdvancing := True;
+        AdvType := FIO_ADV_PAGE;
+        LexNextToken;
+      End
+      Else If CurTokType = TOK_INTEGER Then Begin
+        HasAdvancing := True;
+        AdvType := FIO_ADV_LINES;
+        AdvLines := CurTokNum;
+        LexNextToken;
+        { Consommer LINES optionnel }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_LINE) Then
+          LexNextToken;
+      End;
+    End
+    Else If (CurTokNum = KW_INVALID) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_KEY) Then Begin
+        Inc(FioInvalidKeyCount);
+        LexNextToken;
+        While (CurTokType <> TOK_DOT) And
+              Not ((CurTokType = TOK_KEYWORD) And
+                   ((CurTokNum = KW_NOT) Or (CurTokNum = KW_END_WRITE))) Do
+          LexNextToken;
+      End;
+    End
+    Else
+      LexNextToken;
+  End;
+
+  { Generer le code }
+  If HasAdvancing Then
+    GenFileWriteAdvancing(RecordName, IsBefore, AdvType, AdvLines)
+  Else
+    GenFileWrite(RecordName, RecordName, HasFrom, FromIdent);
+
+  { Consommer END-WRITE si present }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_WRITE) Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseRewriteStatement : analyser REWRITE nom-record          }
+{ [FROM id] [INVALID KEY instr] END-REWRITE                   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseRewriteStatement;
+Var
+  RecordName : TString;
+  HasFrom    : Boolean;
+  FromIdent  : TString;
+Begin
+  Inc(FioStateCount);
+
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('REWRITE : nom de record attendu');
+    Exit;
+  End;
+  RecordName := CurTokStr;
+  LexNextToken;
+
+  HasFrom := False;
+  FromIdent := '';
+
+  While (CurTokType = TOK_KEYWORD) And
+        (CurTokNum <> KW_END_REWRITE) And
+        (CurTokType <> TOK_DOT) Do
+  Begin
+    If CurTokNum = KW_FROM Then Begin
+      LexNextToken;
+      If CurTokType = TOK_IDENT Then Begin
+        HasFrom := True;
+        FromIdent := CurTokStr;
+        LexNextToken;
+      End;
+    End
+    Else If (CurTokNum = KW_INVALID) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_KEY) Then Begin
+        Inc(FioInvalidKeyCount);
+        LexNextToken;
+        While (CurTokType <> TOK_DOT) And
+              Not ((CurTokType = TOK_KEYWORD) And
+                   ((CurTokNum = KW_NOT) Or (CurTokNum = KW_END_REWRITE))) Do
+          LexNextToken;
+      End;
+    End
+    Else
+      LexNextToken;
+  End;
+
+  GenFileRewrite(RecordName, RecordName, HasFrom, FromIdent);
+
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_REWRITE) Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCloseStatement : analyser CLOSE nom-fichier [...]       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCloseStatement;
+Begin
+  Inc(FioStateCount);
+
+  { Lire un ou plusieurs noms de fichiers }
+  While (CurTokType = TOK_IDENT) Do Begin
+    GenFileClose(CurTokStr);
+    LexNextToken;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDeleteStatement : analyser DELETE nom-fichier            }
+{ [INVALID KEY instr] END-DELETE                               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDeleteStatement;
+Var
+  FileName : TString;
+Begin
+  Inc(FioStateCount);
+
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('DELETE : nom de fichier attendu');
+    Exit;
+  End;
+  FileName := CurTokStr;
+  LexNextToken;
+
+  { Clauses optionnelles }
+  While (CurTokType = TOK_KEYWORD) And
+        (CurTokNum <> KW_END_DELETE) And
+        (CurTokType <> TOK_DOT) Do
+  Begin
+    If (CurTokNum = KW_INVALID) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_KEY) Then Begin
+        Inc(FioInvalidKeyCount);
+        LexNextToken;
+        While (CurTokType <> TOK_DOT) And
+              Not ((CurTokType = TOK_KEYWORD) And
+                   ((CurTokNum = KW_NOT) Or (CurTokNum = KW_END_DELETE))) Do
+          LexNextToken;
+      End;
+    End
+    Else
+      LexNextToken;
+  End;
+
+  GenFileDelete(FileName);
+
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_DELETE) Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseStartStatement : analyser START nom-fichier             }
+{ KEY IS =/>/>=/</<= nom-cle [INVALID KEY instr] END-START    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseStartStatement;
+Var
+  FileName : TString;
+  KeyName  : TString;
+  RelOp    : Integer;
+Begin
+  Inc(FioStateCount);
+
+  If CurTokType <> TOK_IDENT Then Begin
+    WarnMsg('START : nom de fichier attendu');
+    Exit;
+  End;
+  FileName := CurTokStr;
+  LexNextToken;
+
+  KeyName := '';
+  RelOp := REL_EQ;
+
+  { KEY IS clause }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_KEY) Then Begin
+    LexNextToken;
+    { Consommer IS optionnel }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+      LexNextToken;
+    { Operateur de comparaison }
+    Case CurTokType Of
+      TOK_EQ : Begin RelOp := REL_EQ; LexNextToken; End;
+      TOK_GT : Begin RelOp := REL_GT; LexNextToken; End;
+      TOK_GE : Begin RelOp := REL_GE; LexNextToken; End;
+      TOK_LT : Begin RelOp := REL_LT; LexNextToken; End;
+      TOK_LE : Begin RelOp := REL_LE; LexNextToken; End;
+    End;
+    { Nom de la cle }
+    If CurTokType = TOK_IDENT Then Begin
+      KeyName := CurTokStr;
+      LexNextToken;
+    End;
+  End;
+
+  { Clauses optionnelles INVALID KEY }
+  While (CurTokType = TOK_KEYWORD) And
+        (CurTokNum <> KW_END_START) And
+        (CurTokType <> TOK_DOT) Do
+  Begin
+    If (CurTokNum = KW_INVALID) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_KEY) Then Begin
+        Inc(FioInvalidKeyCount);
+        LexNextToken;
+        While (CurTokType <> TOK_DOT) And
+              Not ((CurTokType = TOK_KEYWORD) And
+                   ((CurTokNum = KW_NOT) Or (CurTokNum = KW_END_START))) Do
+          LexNextToken;
+      End;
+    End
+    Else
+      LexNextToken;
+  End;
+
+  GenFileStart(FileName, KeyName, RelOp);
+
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_START) Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFileIOStatement : dispatch les instructions E/S fichier }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFileIOStatement;
+Begin
+  If CurTokType <> TOK_KEYWORD Then Exit;
+
+  Case CurTokNum Of
+    KW_OPEN    : Begin LexNextToken; ParseOpenStatement; End;
+    KW_READ    : Begin LexNextToken; ParseReadStatement; End;
+    KW_WRITE   : Begin LexNextToken; ParseWriteStatement; End;
+    KW_REWRITE : Begin LexNextToken; ParseRewriteStatement; End;
+    KW_CLOSE   : Begin LexNextToken; ParseCloseStatement; End;
+    KW_DELETE  : Begin LexNextToken; ParseDeleteStatement; End;
+    KW_START   : Begin LexNextToken; ParseStartStatement; End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFileIOKeyword : teste si un mot-cle est un mot-cle E/S    }
+{ ------------------------------------------------------------ }
+
+Function IsFileIOKeyword(KW : Integer) : Boolean;
+Begin
+  IsFileIOKeyword := (KW = KW_OPEN) Or (KW = KW_READ) Or
+                     (KW = KW_WRITE) Or (KW = KW_REWRITE) Or
+                     (KW = KW_CLOSE) Or (KW = KW_DELETE) Or
+                     (KW = KW_START) Or (KW = KW_INPUT) Or
+                     (KW = KW_OUTPUT) Or (KW = KW_I_O) Or
+                     (KW = KW_EXTEND) Or (KW = KW_INVALID) Or
+                     (KW = KW_AT) Or (KW = KW_PAGE) Or
+                     (KW = KW_ADVANCING) Or (KW = KW_INTO) Or
+                     (KW = KW_FROM) Or (KW = KW_KEY) Or
+                     (KW = KW_END_READ) Or (KW = KW_END_WRITE) Or
+                     (KW = KW_END_REWRITE) Or (KW = KW_END_START) Or
+                     (KW = KW_END_DELETE);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpFileIOState : affiche l etat du module E/S fichiers      }
+{ ------------------------------------------------------------ }
+
+Procedure DumpFileIOState;
+Begin
+  WriteLn('--- File I/O State ---');
+  WriteLn('  Initialized       : ', FioInitialized);
+  WriteLn('  OPEN count        : ', FioOpenCount);
+  WriteLn('    INPUT            : ', FioOpenInputCount);
+  WriteLn('    OUTPUT           : ', FioOpenOutputCount);
+  WriteLn('    I-O              : ', FioOpenIOCount);
+  WriteLn('    EXTEND           : ', FioOpenExtendCount);
+  WriteLn('  READ count        : ', FioReadCount);
+  WriteLn('    INTO             : ', FioReadIntoCount);
+  WriteLn('    KEY IS           : ', FioReadKeyCount);
+  WriteLn('  WRITE count       : ', FioWriteCount);
+  WriteLn('    FROM             : ', FioWriteFromCount);
+  WriteLn('    ADVANCING        : ', FioWriteAdvCount);
+  WriteLn('  REWRITE count     : ', FioRewriteCount);
+  WriteLn('  CLOSE count       : ', FioCloseCount);
+  WriteLn('  DELETE count      : ', FioDeleteCount);
+  WriteLn('  START count       : ', FioStartCount);
+  WriteLn('  AT END clauses    : ', FioAtEndCount);
+  WriteLn('  NOT AT END        : ', FioNotAtEndCount);
+  WriteLn('  INVALID KEY       : ', FioInvalidKeyCount);
+  WriteLn('  NOT INVALID KEY   : ', FioNotInvalidCount);
+  WriteLn('  FILE STATUS stores: ', FioFileStatusCount);
+  WriteLn('  Total generated   : ', FioTotalGenerated);
+  WriteLn('  State count       : ', FioStateCount);
+End;
+
+{ 10 fonctions accesseurs pour TODO 14                         }
+
+Function IsFioInitialized : Boolean;
+Begin
+  IsFioInitialized := FioInitialized;
+End;
+
+Function IsFioEmpty : Boolean;
+Begin
+  IsFioEmpty := (FioTotalGenerated = 0);
+End;
+
+Function GetFioTotalGenerated : Integer;
+Begin
+  GetFioTotalGenerated := FioTotalGenerated;
+End;
+
+Function GetFioStatus : TString;
+Begin
+  If Not FioInitialized Then
+    GetFioStatus := 'NON INITIALISE'
+  Else
+    GetFioStatus := 'OPEN=' + ItoSI(FioOpenCount) +
+                    ' READ=' + ItoSI(FioReadCount) +
+                    ' WRITE=' + ItoSI(FioWriteCount) +
+                    ' REWRITE=' + ItoSI(FioRewriteCount) +
+                    ' CLOSE=' + ItoSI(FioCloseCount);
+End;
+
+Function GetFioOpenCount : Integer;
+Begin
+  GetFioOpenCount := FioOpenCount;
+End;
+
+Function GetFioReadCount : Integer;
+Begin
+  GetFioReadCount := FioReadCount;
+End;
+
+Function GetFioWriteCount : Integer;
+Begin
+  GetFioWriteCount := FioWriteCount;
+End;
+
+Function GetFioCloseCount : Integer;
+Begin
+  GetFioCloseCount := FioCloseCount;
+End;
+
+Function GetFioDeleteCount : Integer;
+Begin
+  GetFioDeleteCount := FioDeleteCount;
+End;
+
+Function GetFioStateCount : Integer;
+Begin
+  GetFioStateCount := FioStateCount;
+End;
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
 { COBOL est insensible a la casse : tout est converti en       }
 { majuscules dans CurTokStr                                     }
@@ -12128,6 +13298,7 @@ Begin
   AgnInitialized := False;
   CtlInitialized := False;
   StrInitialized := False;
+  FioInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -12167,6 +13338,9 @@ Begin
 
   { Initialiser le module STRING/UNSTRING/INSPECT }
   InitStringState;
+
+  { Initialiser le module E/S fichiers }
+  InitFileIOState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
