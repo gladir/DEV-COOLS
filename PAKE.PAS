@@ -130,7 +130,7 @@
             Function EscapeShell(Const S: String): String
               echapper les caracteres speciaux pour shell
 
-  TODO 03 - VALIDATION DE L'URL [A FAIRE]
+  TODO 03 - VALIDATION DE L'URL [IMPLEMENTE]
             Function IsValidUrl(Const Url: String): Boolean
               verifier que l URL commence par http:// ou https://
               verifier qu il y a un domaine valide apres le protocole
@@ -1110,7 +1110,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 : VALIDATION DE L'URL [A FAIRE]
+  TODO 03 : VALIDATION DE L'URL [IMPLEMENTE]
   ============================================================ }
 
 Function IsValidUrl(Const Url: String): Boolean;
@@ -1158,6 +1158,130 @@ Begin
     NormalizeDomain := Copy(D, 5, Length(D) - 4)
   Else
     NormalizeDomain := D;
+End;
+
+Function ExtractPath(Const Url: String): String;
+Var
+  U: String;
+  P, E: Integer;
+Begin
+  P := Pos('://', Url);
+  If P > 0 Then
+    U := Copy(Url, P + 3, Length(Url) - P - 2)
+  Else
+    U := Url;
+  E := Pos('/', U);
+  If E > 0 Then
+    ExtractPath := Copy(U, E, Length(U) - E + 1)
+  Else
+    ExtractPath := '/';
+End;
+
+Function DomainToAppName(Const Domain: String): String;
+Var
+  D, R: String;
+  I, P: Integer;
+  C: Char;
+  CapNext: Boolean;
+Begin
+  D := NormalizeDomain(Domain);
+  { Retirer l extension .com, .org, .net, etc. }
+  P := Pos('.', D);
+  If P > 0 Then
+  Begin
+    { Verifier si c est un sous-domaine comme web.whatsapp }
+    I := P + 1;
+    While (I <= Length(D)) And (D[I] <> '.') Do Inc(I);
+    If I <= Length(D) Then
+    Begin
+      { Sous-domaine: prendre la partie principale }
+      D := Copy(D, P + 1, I - P - 1);
+    End
+    Else
+    Begin
+      { Domaine simple: prendre avant le point }
+      D := Copy(D, 1, P - 1);
+    End;
+  End;
+  { Convertir en nom lisible avec majuscule initiale }
+  R := '';
+  CapNext := True;
+  For I := 1 To Length(D) Do
+  Begin
+    C := D[I];
+    If C In ['a'..'z'] Then
+    Begin
+      If CapNext Then
+        R := R + UpCase(C)
+      Else
+        R := R + C;
+      CapNext := False;
+    End
+    Else If C In ['A'..'Z'] Then
+    Begin
+      R := R + C;
+      CapNext := False;
+    End
+    Else If C In ['0'..'9'] Then
+    Begin
+      R := R + C;
+      CapNext := False;
+    End
+    Else If C In ['-', '_', '.'] Then
+    Begin
+      CapNext := True;
+    End
+    Else
+    Begin
+      R := R + C;
+      CapNext := False;
+    End;
+  End;
+  If Length(R) = 0 Then
+    R := 'WebApp';
+  DomainToAppName := R;
+End;
+
+Function IsLocalUrl(Const Url: String): Boolean;
+Var
+  U, D: String;
+Begin
+  U := LowerStr(Url);
+  IsLocalUrl := False;
+  { Verifier file:// }
+  If Copy(U, 1, 7) = 'file://' Then
+  Begin
+    IsLocalUrl := True;
+    Exit;
+  End;
+  { Verifier localhost et 127.0.0.1 }
+  D := LowerStr(ExtractDomain(Url));
+  If (D = 'localhost') Or (Copy(D, 1, 10) = 'localhost:') Then
+    IsLocalUrl := True
+  Else If (D = '127.0.0.1') Or (Copy(D, 1, 10) = '127.0.0.1:') Then
+    IsLocalUrl := True
+  Else If (D = '0.0.0.0') Or (Copy(D, 1, 8) = '0.0.0.0:') Then
+    IsLocalUrl := True
+  Else If (Copy(D, 1, 4) = '192.') Or (Copy(D, 1, 3) = '10.') Or
+          (Copy(D, 1, 8) = '172.16.') Or (Copy(D, 1, 8) = '172.31.') Then
+    IsLocalUrl := True;
+End;
+
+Procedure ValidateUrl(Const Url: String);
+Var
+  D: String;
+Begin
+  If Length(Url) = 0 Then
+    FatalError('URL requise. Utilisez --help pour l''aide.');
+  If Length(Url) > MAX_URL_LEN Then
+    FatalError('URL trop longue (max ' + IntToStr(MAX_URL_LEN) + ' caracteres)');
+  If Not IsValidUrl(Url) Then
+    FatalError('URL invalide: doit commencer par http:// ou https://');
+  D := ExtractDomain(Url);
+  If Length(D) = 0 Then
+    FatalError('URL invalide: domaine manquant');
+  If Pos(' ', D) > 0 Then
+    FatalError('URL invalide: espace dans le domaine');
 End;
 
 { ============================================================
@@ -1331,7 +1455,7 @@ Begin
   WriteLn;
 
   { TODO: Implementer les TODOs 05-25 }
-  WriteLn('*** NOTE: TODOs 01-02 [IMPLEMENTE], TODOs 03-04 partiellement implementes ***');
+  WriteLn('*** NOTE: TODOs 01-03 [IMPLEMENTE], TODO 04 partiellement implemente ***');
   WriteLn('*** Les TODOs 05-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
