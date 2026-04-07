@@ -192,7 +192,7 @@
             Calcul de la taille totale de chaque record 01
             10 fonctions accesseurs
 
-  TODO 06 - PARSEUR : IDENTIFICATION DIVISION ET ENVIRONMENT DIVISION [A FAIRE]
+  TODO 06 - PARSEUR : IDENTIFICATION DIVISION ET ENVIRONMENT DIVISION [IMPLEMENTE]
             IDENTIFICATION DIVISION (obligatoire) :
               PROGRAM-ID. nom [IS INITIAL PROGRAM].
               AUTHOR. texte (optionnel, commentaire)
@@ -3296,6 +3296,819 @@ Begin
 End;
 
 
+{ ============================================================ }
+{ TODO 06 - PARSEUR : IDENTIFICATION DIVISION                  }
+{           ET ENVIRONMENT DIVISION                            }
+{ ============================================================ }
+
+{ Declaration anticipee pour le parseur }
+Procedure LexNextToken; Forward;
+
+Const
+  { Organisation de fichier COBOL }
+  ORG_SEQUENTIAL = 0;
+  ORG_INDEXED    = 1;
+  ORG_RELATIVE   = 2;
+
+  { Mode d acces }
+  ACC_SEQUENTIAL = 0;
+  ACC_RANDOM     = 1;
+  ACC_DYNAMIC    = 2;
+
+  { Limites du parseur ID/ENV }
+  PAR_MAX_FILES  = 16;    { nombre max de fichiers SELECT }
+  PAR_MAX_TEXT   = 255;   { taille max texte paragraphe   }
+
+Type
+  TFileEntry = Record
+    SelectName   : TString;   { nom fichier logique (SELECT)       }
+    AssignName   : TString;   { nom fichier externe (ASSIGN TO)    }
+    Organization : Integer;   { ORG_SEQUENTIAL/INDEXED/RELATIVE    }
+    AccessMode   : Integer;   { ACC_SEQUENTIAL/RANDOM/DYNAMIC      }
+    RecordKey    : TString;   { nom cle (pour INDEXED)             }
+    FileStatus   : TString;   { variable FILE STATUS               }
+  End;
+
+Var
+  { Informations IDENTIFICATION DIVISION }
+  ParProgramId     : TString;
+  ParAuthor        : TString;
+  ParInstallation  : TString;
+  ParDateWritten   : TString;
+  ParDateCompiled  : TString;
+  ParSecurityText  : TString;
+
+  { Informations ENVIRONMENT DIVISION }
+  ParSourceComputer : TString;
+  ParObjectComputer : TString;
+  ParDecimalIsComma : Boolean;
+
+  { Table des fichiers (SELECT/ASSIGN) }
+  ParFileEntries    : Array[1..PAR_MAX_FILES] Of TFileEntry;
+  ParFileEntryCount : Integer;
+
+  { Etat du parseur }
+  ParInitialized    : Boolean;
+  ParStateCount     : Integer;
+  ParCurrentDiv     : Integer;   { division courante en cours de parse }
+  ParIdDivSeen      : Boolean;   { IDENTIFICATION DIVISION vue        }
+  ParEnvDivSeen     : Boolean;   { ENVIRONMENT DIVISION vue           }
+
+{ ------------------------------------------------------------ }
+{ InitParserIdEnv : initialisation de l etat du parseur        }
+{ ------------------------------------------------------------ }
+
+Procedure InitParserIdEnv;
+Var
+  I : Integer;
+Begin
+  ParProgramId      := '';
+  ParAuthor         := '';
+  ParInstallation   := '';
+  ParDateWritten    := '';
+  ParDateCompiled   := '';
+  ParSecurityText   := '';
+  ParSourceComputer := '';
+  ParObjectComputer := '';
+  ParDecimalIsComma := False;
+  ParFileEntryCount := 0;
+  For I := 1 To PAR_MAX_FILES Do Begin
+    ParFileEntries[I].SelectName   := '';
+    ParFileEntries[I].AssignName   := '';
+    ParFileEntries[I].Organization := ORG_SEQUENTIAL;
+    ParFileEntries[I].AccessMode   := ACC_SEQUENTIAL;
+    ParFileEntries[I].RecordKey    := '';
+    ParFileEntries[I].FileStatus   := '';
+  End;
+  ParCurrentDiv  := 0;
+  ParIdDivSeen   := False;
+  ParEnvDivSeen  := False;
+  ParInitialized := True;
+  ParStateCount  := 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipToNextSentence : avancer jusqu au prochain point '.'     }
+{ En COBOL, chaque phrase se termine par un point.             }
+{ ------------------------------------------------------------ }
+
+Procedure SkipToNextSentence;
+Begin
+  While (Not LexEOF) And (CurTokType <> TOK_DOT) Do
+    LexNextToken;
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ CollectTextToNextDot : collecter le texte jusqu au point '.' }
+{ Utilise pour AUTHOR, INSTALLATION, etc.                      }
+{ ------------------------------------------------------------ }
+
+Function CollectTextToNextDot : TString;
+Var
+  S : TString;
+Begin
+  S := '';
+  While (Not LexEOF) And (CurTokType <> TOK_DOT) Do Begin
+    If S <> '' Then
+      S := S + ' ';
+    S := S + CurTokStr;
+    LexNextToken;
+  End;
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+  CollectTextToNextDot := S;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseProgramId : parser PROGRAM-ID. nom [IS INITIAL PROGRAM] }
+{ La clause PROGRAM-ID est obligatoire en IDENTIFICATION DIV.  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseProgramId;
+Begin
+  Inc(ParStateCount);
+  { On attend le nom du programme }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+    ParProgramId := CurTokStr;
+    LexNextToken;
+    { Optionnel : IS INITIAL PROGRAM }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_INITIAL) Then Begin
+        LexNextToken;
+        { Optionnel : PROGRAM apres INITIAL }
+        If (CurTokType = TOK_KEYWORD) Or (CurTokType = TOK_IDENT) Then Begin
+          If CurTokStr = 'PROGRAM' Then
+            LexNextToken;
+        End;
+      End;
+    End;
+    { Avancer apres le point }
+    If CurTokType = TOK_DOT Then
+      LexNextToken;
+  End Else Begin
+    WarnMsg('PROGRAM-ID : nom de programme attendu');
+    SkipToNextSentence;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIdParagraph : parser un paragraphe optionnel de l ID DIV }
+{ AUTHOR, INSTALLATION, DATE-WRITTEN, DATE-COMPILED, SECURITY  }
+{ Ces paragraphes contiennent du texte libre jusqu au point.   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIdParagraph(KW : Integer);
+Var
+  Txt : TString;
+Begin
+  Inc(ParStateCount);
+  { Lire le texte jusqu au point }
+  Txt := CollectTextToNextDot;
+  Case KW Of
+    KW_AUTHOR        : ParAuthor       := Txt;
+    KW_INSTALLATION  : ParInstallation := Txt;
+    KW_DATE_WRITTEN  : ParDateWritten  := Txt;
+    KW_DATE_COMPILED : ParDateCompiled := Txt;
+    KW_SECURITY      : ParSecurityText := Txt;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIdentificationDiv : parser IDENTIFICATION DIVISION.     }
+{ Attend les paragraphes obligatoires et optionnels.           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIdentificationDiv;
+Var
+  Done : Boolean;
+Begin
+  Inc(ParStateCount);
+  ParIdDivSeen := True;
+  ParCurrentDiv := KW_IDENTIFICATION;
+
+  { Consommer 'DIVISION' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DIVISION) Then
+    LexNextToken;
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  { Boucle sur les paragraphes de l IDENTIFICATION DIVISION }
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do Begin
+    If CurTokType = TOK_KEYWORD Then Begin
+      Case CurTokNum Of
+        KW_PROGRAM_ID : Begin
+          LexNextToken;
+          { Consommer le point apres PROGRAM-ID }
+          If CurTokType = TOK_DOT Then
+            LexNextToken;
+          ParseProgramId;
+        End;
+        KW_AUTHOR : Begin
+          LexNextToken;
+          If CurTokType = TOK_DOT Then
+            LexNextToken;
+          ParseIdParagraph(KW_AUTHOR);
+        End;
+        KW_INSTALLATION : Begin
+          LexNextToken;
+          If CurTokType = TOK_DOT Then
+            LexNextToken;
+          ParseIdParagraph(KW_INSTALLATION);
+        End;
+        KW_DATE_WRITTEN : Begin
+          LexNextToken;
+          If CurTokType = TOK_DOT Then
+            LexNextToken;
+          ParseIdParagraph(KW_DATE_WRITTEN);
+        End;
+        KW_DATE_COMPILED : Begin
+          LexNextToken;
+          If CurTokType = TOK_DOT Then
+            LexNextToken;
+          ParseIdParagraph(KW_DATE_COMPILED);
+        End;
+        KW_SECURITY : Begin
+          LexNextToken;
+          If CurTokType = TOK_DOT Then
+            LexNextToken;
+          ParseIdParagraph(KW_SECURITY);
+        End;
+        { Autre DIVISION = fin de l IDENTIFICATION DIVISION }
+        KW_ENVIRONMENT, KW_DATA, KW_PROCEDURE : Begin
+          Done := True;
+        End;
+        Else Begin
+          { Paragraphe inconnu : ignorer }
+          SkipToNextSentence;
+        End;
+      End;
+    End Else Begin
+      { Pas un mot-cle : ignorer }
+      SkipToNextSentence;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSourceComputer : parser SOURCE-COMPUTER. nom.           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSourceComputer;
+Begin
+  Inc(ParStateCount);
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+  ParSourceComputer := CollectTextToNextDot;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseObjectComputer : parser OBJECT-COMPUTER. nom.           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseObjectComputer;
+Begin
+  Inc(ParStateCount);
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+  ParObjectComputer := CollectTextToNextDot;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSpecialNames : parser SPECIAL-NAMES.                    }
+{   DECIMAL-POINT IS COMMA.                                    }
+{   (autres associations symboliques - ignorees pour l instant)}
+{ ------------------------------------------------------------ }
+
+Procedure ParseSpecialNames;
+Var
+  Done : Boolean;
+Begin
+  Inc(ParStateCount);
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do Begin
+    { Detecter DECIMAL-POINT IS COMMA }
+    If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+      If CurTokStr = 'DECIMAL-POINT' Then Begin
+        LexNextToken;
+        { Optionnel : IS }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+          LexNextToken;
+        { COMMA }
+        If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+          If CurTokStr = 'COMMA' Then Begin
+            ParDecimalIsComma := True;
+            LexNextToken;
+          End;
+        End;
+        If CurTokType = TOK_DOT Then
+          LexNextToken;
+      End Else Begin
+        { Verifier si c est un paragraphe/section/division suivant }
+        If (CurTokNum = KW_INPUT_OUTPUT) Or
+           (CurTokNum = KW_DATA) Or (CurTokNum = KW_PROCEDURE) Or
+           (CurTokNum = KW_ENVIRONMENT) Or
+           (CurTokNum = KW_SOURCE_COMPUTER) Or
+           (CurTokNum = KW_OBJECT_COMPUTER) Then Begin
+          Done := True;
+        End Else Begin
+          { Ignorer les autres clauses }
+          SkipToNextSentence;
+        End;
+      End;
+    End Else If CurTokType = TOK_DOT Then Begin
+      LexNextToken;
+      { Un point seul peut indiquer la fin du paragraphe }
+      { Verifier si le prochain token est un paragraphe/section }
+      If CurTokType = TOK_KEYWORD Then Begin
+        If (CurTokNum = KW_INPUT_OUTPUT) Or
+           (CurTokNum = KW_SOURCE_COMPUTER) Or
+           (CurTokNum = KW_OBJECT_COMPUTER) Or
+           (CurTokNum = KW_DATA) Or
+           (CurTokNum = KW_PROCEDURE) Then
+          Done := True;
+      End;
+    End Else Begin
+      SkipToNextSentence;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseConfigurationSection : parser CONFIGURATION SECTION     }
+{   SOURCE-COMPUTER, OBJECT-COMPUTER, SPECIAL-NAMES            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseConfigurationSection;
+Var
+  Done : Boolean;
+Begin
+  Inc(ParStateCount);
+  { Consommer 'SECTION' s il suit }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+    If CurTokStr = 'SECTION' Then
+      LexNextToken;
+  End;
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do Begin
+    If CurTokType = TOK_KEYWORD Then Begin
+      Case CurTokNum Of
+        KW_SOURCE_COMPUTER : Begin
+          LexNextToken;
+          ParseSourceComputer;
+        End;
+        KW_OBJECT_COMPUTER : Begin
+          LexNextToken;
+          ParseObjectComputer;
+        End;
+        KW_SPECIAL_NAMES : Begin
+          LexNextToken;
+          ParseSpecialNames;
+        End;
+        { Fin de la section CONFIGURATION }
+        KW_INPUT_OUTPUT, KW_DATA, KW_PROCEDURE : Begin
+          Done := True;
+        End;
+        Else Begin
+          SkipToNextSentence;
+        End;
+      End;
+    End Else Begin
+      SkipToNextSentence;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSelectEntry : parser une entree SELECT...ASSIGN TO...   }
+{   ORGANIZATION IS..., ACCESS MODE IS..., RECORD KEY IS...,   }
+{   FILE STATUS IS...                                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseSelectEntry;
+Var
+  Idx  : Integer;
+  Done : Boolean;
+Begin
+  Inc(ParStateCount);
+  If ParFileEntryCount >= PAR_MAX_FILES Then Begin
+    WarnMsg('Nombre maximum de fichiers SELECT atteint');
+    SkipToNextSentence;
+    Exit;
+  End;
+
+  Inc(ParFileEntryCount);
+  Idx := ParFileEntryCount;
+  ParFileEntries[Idx].SelectName   := '';
+  ParFileEntries[Idx].AssignName   := '';
+  ParFileEntries[Idx].Organization := ORG_SEQUENTIAL;
+  ParFileEntries[Idx].AccessMode   := ACC_SEQUENTIAL;
+  ParFileEntries[Idx].RecordKey    := '';
+  ParFileEntries[Idx].FileStatus   := '';
+
+  { Nom du fichier logique }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+    ParFileEntries[Idx].SelectName := CurTokStr;
+    LexNextToken;
+  End;
+
+  { Boucle sur les clauses du SELECT }
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do Begin
+    If CurTokType = TOK_DOT Then Begin
+      LexNextToken;
+      Done := True;
+    End Else If CurTokType = TOK_KEYWORD Then Begin
+      Case CurTokNum Of
+        KW_ASSIGN : Begin
+          LexNextToken;
+          { Optionnel : TO }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+            LexNextToken;
+          { Nom externe }
+          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Or
+             (CurTokType = TOK_STRING) Then Begin
+            ParFileEntries[Idx].AssignName := CurTokStr;
+            LexNextToken;
+          End;
+        End;
+        KW_ORGANIZATION : Begin
+          LexNextToken;
+          { Optionnel : IS }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+            LexNextToken;
+          { SEQUENTIAL | INDEXED | RELATIVE | LINE SEQUENTIAL }
+          If CurTokType = TOK_KEYWORD Then Begin
+            Case CurTokNum Of
+              KW_SEQUENTIAL : Begin
+                ParFileEntries[Idx].Organization := ORG_SEQUENTIAL;
+                LexNextToken;
+              End;
+              KW_INDEXED : Begin
+                ParFileEntries[Idx].Organization := ORG_INDEXED;
+                LexNextToken;
+              End;
+              KW_RELATIVE : Begin
+                ParFileEntries[Idx].Organization := ORG_RELATIVE;
+                LexNextToken;
+              End;
+              KW_LINE : Begin
+                { LINE SEQUENTIAL }
+                LexNextToken;
+                If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_SEQUENTIAL) Then
+                  LexNextToken;
+                ParFileEntries[Idx].Organization := ORG_SEQUENTIAL;
+              End;
+              Else
+                LexNextToken;
+            End;
+          End Else
+            LexNextToken;
+        End;
+        KW_ACCESS : Begin
+          LexNextToken;
+          { Optionnel : MODE }
+          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+            If CurTokStr = 'MODE' Then
+              LexNextToken;
+          End;
+          { Optionnel : IS }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+            LexNextToken;
+          { SEQUENTIAL | RANDOM | DYNAMIC }
+          If CurTokType = TOK_KEYWORD Then Begin
+            Case CurTokNum Of
+              KW_SEQUENTIAL : Begin
+                ParFileEntries[Idx].AccessMode := ACC_SEQUENTIAL;
+                LexNextToken;
+              End;
+              KW_RANDOM : Begin
+                ParFileEntries[Idx].AccessMode := ACC_RANDOM;
+                LexNextToken;
+              End;
+              KW_DYNAMIC : Begin
+                ParFileEntries[Idx].AccessMode := ACC_DYNAMIC;
+                LexNextToken;
+              End;
+              Else
+                LexNextToken;
+            End;
+          End Else
+            LexNextToken;
+        End;
+        KW_RECORD : Begin
+          LexNextToken;
+          { RECORD KEY IS nom-cle }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_KEY) Then Begin
+            LexNextToken;
+            { Optionnel : IS }
+            If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+              LexNextToken;
+            { Nom de la cle }
+            If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+              ParFileEntries[Idx].RecordKey := CurTokStr;
+              LexNextToken;
+            End;
+          End;
+          { Sinon c est un autre usage de RECORD, ignorer }
+        End;
+        KW_FILE_STATUS : Begin
+          LexNextToken;
+          { FILE STATUS IS nom-variable }
+          { Optionnel : IS }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+            LexNextToken;
+          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+            ParFileEntries[Idx].FileStatus := CurTokStr;
+            LexNextToken;
+          End;
+        End;
+        KW_STATUS : Begin
+          LexNextToken;
+          { STATUS IS nom-variable (variante sans FILE devant) }
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+            LexNextToken;
+          If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+            ParFileEntries[Idx].FileStatus := CurTokStr;
+            LexNextToken;
+          End;
+        End;
+        { Un autre SELECT = fin de cette entree }
+        KW_SELECT : Begin
+          Done := True;
+        End;
+        Else Begin
+          { Clause inconnue : avancer }
+          LexNextToken;
+        End;
+      End;
+    End Else Begin
+      { Token non mot-cle : avancer }
+      LexNextToken;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFileControl : parser FILE-CONTROL. avec boucle SELECT   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFileControl;
+Var
+  Done : Boolean;
+Begin
+  Inc(ParStateCount);
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do Begin
+    If CurTokType = TOK_KEYWORD Then Begin
+      Case CurTokNum Of
+        KW_SELECT : Begin
+          LexNextToken;
+          ParseSelectEntry;
+        End;
+        { Fin du FILE-CONTROL }
+        KW_DATA, KW_PROCEDURE, KW_INPUT_OUTPUT,
+        KW_CONFIGURATION : Begin
+          Done := True;
+        End;
+        Else Begin
+          SkipToNextSentence;
+        End;
+      End;
+    End Else Begin
+      SkipToNextSentence;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseInputOutputSection : parser INPUT-OUTPUT SECTION         }
+{   FILE-CONTROL.                                              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseInputOutputSection;
+Var
+  Done : Boolean;
+Begin
+  Inc(ParStateCount);
+  { Consommer 'SECTION' s il suit }
+  If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+    If CurTokStr = 'SECTION' Then
+      LexNextToken;
+  End;
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do Begin
+    If CurTokType = TOK_KEYWORD Then Begin
+      Case CurTokNum Of
+        KW_FILE_CONTROL : Begin
+          LexNextToken;
+          ParseFileControl;
+        End;
+        { Fin de la section INPUT-OUTPUT }
+        KW_DATA, KW_PROCEDURE : Begin
+          Done := True;
+        End;
+        Else Begin
+          SkipToNextSentence;
+        End;
+      End;
+    End Else Begin
+      SkipToNextSentence;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEnvironmentDiv : parser ENVIRONMENT DIVISION.           }
+{   CONFIGURATION SECTION, INPUT-OUTPUT SECTION                }
+{ ------------------------------------------------------------ }
+
+Procedure ParseEnvironmentDiv;
+Var
+  Done : Boolean;
+Begin
+  Inc(ParStateCount);
+  ParEnvDivSeen := True;
+  ParCurrentDiv := KW_ENVIRONMENT;
+
+  { Consommer 'DIVISION' }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_DIVISION) Then
+    LexNextToken;
+  { Consommer le point }
+  If CurTokType = TOK_DOT Then
+    LexNextToken;
+
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do Begin
+    If CurTokType = TOK_KEYWORD Then Begin
+      Case CurTokNum Of
+        KW_CONFIGURATION : Begin
+          LexNextToken;
+          ParseConfigurationSection;
+        End;
+        KW_INPUT_OUTPUT : Begin
+          LexNextToken;
+          ParseInputOutputSection;
+        End;
+        { Fin de la ENVIRONMENT DIVISION }
+        KW_DATA, KW_PROCEDURE : Begin
+          Done := True;
+        End;
+        Else Begin
+          SkipToNextSentence;
+        End;
+      End;
+    End Else Begin
+      SkipToNextSentence;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ OrganizationName : nom textuel de l organisation             }
+{ ------------------------------------------------------------ }
+
+Function OrganizationName(Org : Integer) : TString;
+Begin
+  Case Org Of
+    ORG_SEQUENTIAL : OrganizationName := 'SEQUENTIAL';
+    ORG_INDEXED    : OrganizationName := 'INDEXED';
+    ORG_RELATIVE   : OrganizationName := 'RELATIVE';
+    Else             OrganizationName := '?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AccessModeName : nom textuel du mode d acces                 }
+{ ------------------------------------------------------------ }
+
+Function AccessModeName(Acc : Integer) : TString;
+Begin
+  Case Acc Of
+    ACC_SEQUENTIAL : AccessModeName := 'SEQUENTIAL';
+    ACC_RANDOM     : AccessModeName := 'RANDOM';
+    ACC_DYNAMIC    : AccessModeName := 'DYNAMIC';
+    Else             AccessModeName := '?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpFileEntries : affichage de la table des fichiers SELECT  }
+{ ------------------------------------------------------------ }
+
+Procedure DumpFileEntries;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- IDENTIFICATION DIVISION ---');
+  WriteLn('  PROGRAM-ID    : ', ParProgramId);
+  If ParAuthor <> '' Then
+    WriteLn('  AUTHOR        : ', ParAuthor);
+  If ParInstallation <> '' Then
+    WriteLn('  INSTALLATION  : ', ParInstallation);
+  If ParDateWritten <> '' Then
+    WriteLn('  DATE-WRITTEN  : ', ParDateWritten);
+  If ParDateCompiled <> '' Then
+    WriteLn('  DATE-COMPILED : ', ParDateCompiled);
+  If ParSecurityText <> '' Then
+    WriteLn('  SECURITY      : ', ParSecurityText);
+
+  WriteLn('--- ENVIRONMENT DIVISION ---');
+  If ParSourceComputer <> '' Then
+    WriteLn('  SOURCE-COMPUTER : ', ParSourceComputer);
+  If ParObjectComputer <> '' Then
+    WriteLn('  OBJECT-COMPUTER : ', ParObjectComputer);
+  If ParDecimalIsComma Then
+    WriteLn('  DECIMAL-POINT IS COMMA');
+
+  WriteLn('--- FILE ENTRIES (', ParFileEntryCount, ') ---');
+  For I := 1 To ParFileEntryCount Do Begin
+    WriteLn('  [', I, '] SELECT ', ParFileEntries[I].SelectName);
+    WriteLn('       ASSIGN TO     ', ParFileEntries[I].AssignName);
+    WriteLn('       ORGANIZATION  ', OrganizationName(ParFileEntries[I].Organization));
+    WriteLn('       ACCESS MODE   ', AccessModeName(ParFileEntries[I].AccessMode));
+    If ParFileEntries[I].RecordKey <> '' Then
+      WriteLn('       RECORD KEY    ', ParFileEntries[I].RecordKey);
+    If ParFileEntries[I].FileStatus <> '' Then
+      WriteLn('       FILE STATUS   ', ParFileEntries[I].FileStatus);
+  End;
+End;
+
+{ 10 fonctions accesseurs pour TODO 06                         }
+
+Function IsParInitialized : Boolean;
+Begin
+  IsParInitialized := ParInitialized;
+End;
+
+Function IsParEmpty : Boolean;
+Begin
+  IsParEmpty := (ParProgramId = '') And (ParFileEntryCount = 0);
+End;
+
+Function GetParProgramId : TString;
+Begin
+  GetParProgramId := ParProgramId;
+End;
+
+Function GetParStatus : TString;
+Begin
+  If Not ParInitialized Then
+    GetParStatus := 'NON INITIALISE'
+  Else If ParProgramId = '' Then
+    GetParStatus := 'VIDE'
+  Else
+    GetParStatus := 'PROGRAM-ID=' + ParProgramId +
+                    ' FILES=' + ItoS(ParFileEntryCount);
+End;
+
+Function GetParFileEntryCount : Integer;
+Begin
+  GetParFileEntryCount := ParFileEntryCount;
+End;
+
+Function IsParDecimalComma : Boolean;
+Begin
+  IsParDecimalComma := ParDecimalIsComma;
+End;
+
+Function IsParIdDivSeen : Boolean;
+Begin
+  IsParIdDivSeen := ParIdDivSeen;
+End;
+
+Function IsParEnvDivSeen : Boolean;
+Begin
+  IsParEnvDivSeen := ParEnvDivSeen;
+End;
+
+Function GetParMaxFiles : Integer;
+Begin
+  GetParMaxFiles := PAR_MAX_FILES;
+End;
+
+Function GetParStateCount : Integer;
+Begin
+  GetParStateCount := ParStateCount;
+End;
+
+
 { ------------------------------------------------------------ }
 { LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
@@ -3952,6 +4765,7 @@ Begin
   KwInitialized := False;
   SymInitialized := False;
   HlvInitialized := False;
+  ParInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -3967,6 +4781,9 @@ Begin
 
   { Initialiser la gestion des niveaux }
   InitLevelState;
+
+  { Initialiser le parseur ID/ENV DIVISION }
+  InitParserIdEnv;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;

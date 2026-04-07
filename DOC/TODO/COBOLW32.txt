@@ -184,7 +184,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Calcul de la taille totale de chaque record 01
             10 fonctions accesseurs
 
-  TODO 06 - PARSEUR : IDENTIFICATION DIVISION ET ENVIRONMENT DIVISION [A FAIRE]
+  TODO 06 - PARSEUR : IDENTIFICATION DIVISION ET ENVIRONMENT DIVISION [IMPLEMENTE]
             IDENTIFICATION DIVISION (obligatoire) :
               PROGRAM-ID. nom [IS INITIAL PROGRAM].
               AUTHOR. texte (optionnel, commentaire)
