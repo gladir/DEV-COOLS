@@ -308,7 +308,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Clause ON SIZE ERROR : debordement arithmetique
             10 fonctions accesseurs
 
-  TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, EVALUATE) [A FAIRE]
+  TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, EVALUATE) [IMPLEMENTE]
             IF condition THEN
               instructions...
             ELSE

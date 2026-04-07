@@ -316,7 +316,7 @@
             Clause ON SIZE ERROR : debordement arithmetique
             10 fonctions accesseurs
 
-  TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, EVALUATE) [A FAIRE]
+  TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, EVALUATE) [IMPLEMENTE]
             IF condition THEN
               instructions...
             ELSE
@@ -7584,6 +7584,889 @@ Begin
 End;
 
 
+{ ============================================================ }
+{ TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, EVALUATE)    }
+{           Generation de code conditionnel 80386               }
+{ ============================================================ }
+
+Const
+  { Profondeurs maximales d imbrication }
+  CTL_MAX_IF_DEPTH   = 64;   { imbrication max de IF                    }
+  CTL_MAX_EVAL_DEPTH = 32;   { imbrication max de EVALUATE              }
+  CTL_MAX_WHEN       = 64;   { max de clauses WHEN par EVALUATE         }
+  CTL_MAX_ALSO       = 8;    { max de sujets ALSO dans EVALUATE         }
+
+  { Types de structures de controle }
+  CTL_NONE           = 0;    { pas de structure active                  }
+  CTL_IF             = 1;    { bloc IF                                  }
+  CTL_EVALUATE       = 2;    { bloc EVALUATE                            }
+  CTL_CONTINUE       = 3;    { instruction CONTINUE (no-op)             }
+
+  { Types de sujets EVALUATE }
+  EVS_IDENT          = 0;    { EVALUATE identifiant                     }
+  EVS_EXPR           = 1;    { EVALUATE expression                      }
+  EVS_TRUE           = 2;    { EVALUATE TRUE                            }
+  EVS_FALSE          = 3;    { EVALUATE FALSE                           }
+
+  { Types de clauses WHEN }
+  EWH_VALUE          = 0;    { WHEN valeur (litterale ou ident)         }
+  EWH_CONDITION      = 1;    { WHEN condition (pour EVALUATE TRUE)      }
+  EWH_OTHER          = 2;    { WHEN OTHER                               }
+  EWH_RANGE          = 3;    { WHEN val-1 THRU val-2                    }
+  EWH_ANY            = 4;    { WHEN ANY                                 }
+
+  { Nombre de types }
+  CTL_NUM_STRUCT_TYPES  = 4;
+  CTL_NUM_SUBJECT_TYPES = 4;
+  CTL_NUM_WHEN_TYPES    = 5;
+
+Var
+  { Etat du module }
+  CtlInitialized   : Boolean;
+  CtlStateCount    : Integer;
+
+  { Compteur de labels internes }
+  CtlLabelNum      : Integer;
+
+  { Compteurs de structures }
+  CtlIfCount       : Integer;
+  CtlElseCount     : Integer;
+  CtlEndIfCount    : Integer;
+  CtlEvalCount     : Integer;
+  CtlWhenCount     : Integer;
+  CtlWhenOtherCount: Integer;
+  CtlEndEvalCount  : Integer;
+  CtlContinueCount : Integer;
+
+  { Profondeur courante }
+  CtlIfDepth       : Integer;
+  CtlEvalDepth     : Integer;
+  CtlMaxIfDepth    : Integer;
+  CtlMaxEvalDepth  : Integer;
+
+  { Statistiques }
+  CtlNestedIfCount : Integer;
+  CtlCombinedConds : Integer;
+  CtlOldFormCount  : Integer;
+  CtlAlsoCount     : Integer;
+  CtlTotalGenerated: Integer;
+
+{ ------------------------------------------------------------ }
+{ InitControlState : initialisation du module de structures    }
+{   de controle (IF, EVALUATE, CONTINUE)                       }
+{ ------------------------------------------------------------ }
+
+Procedure InitControlState;
+Begin
+  CtlInitialized   := True;
+  CtlStateCount    := CtlStateCount + 1;
+  CtlLabelNum      := 0;
+  CtlIfCount       := 0;
+  CtlElseCount     := 0;
+  CtlEndIfCount    := 0;
+  CtlEvalCount     := 0;
+  CtlWhenCount     := 0;
+  CtlWhenOtherCount:= 0;
+  CtlEndEvalCount  := 0;
+  CtlContinueCount := 0;
+  CtlIfDepth       := 0;
+  CtlEvalDepth     := 0;
+  CtlMaxIfDepth    := 0;
+  CtlMaxEvalDepth  := 0;
+  CtlNestedIfCount := 0;
+  CtlCombinedConds := 0;
+  CtlOldFormCount  := 0;
+  CtlAlsoCount     := 0;
+  CtlTotalGenerated:= 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCtlLabel : generer un label unique pour les structures     }
+{   de controle (IF, EVALUATE)                                 }
+{ ------------------------------------------------------------ }
+
+Function GenCtlLabel : TString;
+Begin
+  CtlLabelNum := CtlLabelNum + 1;
+  GenCtlLabel := PFX_LBL + 'CTL_' + ItoSI(CtlLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ CtlStructTypeName : nom textuel d un type de structure       }
+{ ------------------------------------------------------------ }
+
+Function CtlStructTypeName(T : Integer) : TString;
+Begin
+  Case T Of
+    CTL_NONE     : CtlStructTypeName := 'NONE';
+    CTL_IF       : CtlStructTypeName := 'IF';
+    CTL_EVALUATE : CtlStructTypeName := 'EVALUATE';
+    CTL_CONTINUE : CtlStructTypeName := 'CONTINUE';
+  Else
+    CtlStructTypeName := 'UNKNOWN(' + ItoSI(T) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalSubjectName : nom textuel d un type de sujet EVALUATE    }
+{ ------------------------------------------------------------ }
+
+Function EvalSubjectName(S : Integer) : TString;
+Begin
+  Case S Of
+    EVS_IDENT : EvalSubjectName := 'IDENT';
+    EVS_EXPR  : EvalSubjectName := 'EXPR';
+    EVS_TRUE  : EvalSubjectName := 'TRUE';
+    EVS_FALSE : EvalSubjectName := 'FALSE';
+  Else
+    EvalSubjectName := 'UNKNOWN(' + ItoSI(S) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WhenTypeName : nom textuel d un type de clause WHEN          }
+{ ------------------------------------------------------------ }
+
+Function WhenTypeName(W : Integer) : TString;
+Begin
+  Case W Of
+    EWH_VALUE     : WhenTypeName := 'VALUE';
+    EWH_CONDITION : WhenTypeName := 'CONDITION';
+    EWH_OTHER     : WhenTypeName := 'OTHER';
+    EWH_RANGE     : WhenTypeName := 'RANGE';
+    EWH_ANY       : WhenTypeName := 'ANY';
+  Else
+    WhenTypeName := 'UNKNOWN(' + ItoSI(W) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCondJump : generer un saut conditionnel 80386              }
+{   basee sur l operateur relationnel, vers un label cible     }
+{   RelOp : REL_EQ..REL_GE, Negate inverse la condition       }
+{   Genere : CMP + Jcc conditionnel                            }
+{ ------------------------------------------------------------ }
+
+Procedure GenCondJump(RelOp : Integer; Negate : Boolean;
+                      TargetLabel : TString);
+Var
+  JmpInstr : TString;
+Begin
+  { Choisir l instruction de saut selon l operateur }
+  Case RelOp Of
+    REL_EQ : If Negate Then JmpInstr := 'JNE' Else JmpInstr := 'JE';
+    REL_NE : If Negate Then JmpInstr := 'JE'  Else JmpInstr := 'JNE';
+    REL_LT : If Negate Then JmpInstr := 'JGE' Else JmpInstr := 'JL';
+    REL_GT : If Negate Then JmpInstr := 'JLE' Else JmpInstr := 'JG';
+    REL_LE : If Negate Then JmpInstr := 'JG'  Else JmpInstr := 'JLE';
+    REL_GE : If Negate Then JmpInstr := 'JL'  Else JmpInstr := 'JGE';
+  Else
+    JmpInstr := 'JMP';
+  End;
+  WriteLn('    ', JmpInstr, ' ', TargetLabel);
+  CtlTotalGenerated := CtlTotalGenerated + 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenUnconditionalJump : generer un saut inconditionnel JMP    }
+{ ------------------------------------------------------------ }
+
+Procedure GenUnconditionalJump(TargetLabel : TString);
+Begin
+  WriteLn('    JMP ', TargetLabel);
+  CtlTotalGenerated := CtlTotalGenerated + 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLabel : emettre un label dans le flux de sortie           }
+{ ------------------------------------------------------------ }
+
+Procedure GenCtlLabelEmit(LblName : TString);
+Begin
+  WriteLn(LblName, ':');
+  CtlTotalGenerated := CtlTotalGenerated + 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCondEvalFromRelOp : generer le code CMP + Jcc pour un     }
+{   operateur relationnel donne (condition simple)             }
+{ ------------------------------------------------------------ }
+
+Procedure GenCondEvalFromRelOp(RelOp : Integer; Negate : Boolean;
+                                FalseLabel : TString);
+Begin
+  { La comparaison CMP a ete effectuee avant l appel }
+  GenCondJump(RelOp, Not Negate, FalseLabel);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenClassCondCheck : generer le code pour une condition de     }
+{   classe (NUMERIC, ALPHABETIC, etc.)                         }
+{ ------------------------------------------------------------ }
+
+Procedure GenClassCondCheck(ClassType : Integer; Negate : Boolean;
+                             FalseLabel : TString);
+Begin
+  { Generer un appel a la routine runtime de verification }
+  Case ClassType Of
+    CLS_NUMERIC :
+      WriteLn('    CALL ', PFX_RT, 'IS_NUMERIC');
+    CLS_ALPHABETIC :
+      WriteLn('    CALL ', PFX_RT, 'IS_ALPHABETIC');
+    CLS_ALPHA_LOWER :
+      WriteLn('    CALL ', PFX_RT, 'IS_ALPHA_LOWER');
+    CLS_ALPHA_UPPER :
+      WriteLn('    CALL ', PFX_RT, 'IS_ALPHA_UPPER');
+  End;
+  WriteLn('    TEST EAX, EAX');
+  If Negate Then
+    WriteLn('    JNE ', FalseLabel)
+  Else
+    WriteLn('    JE ', FalseLabel);
+  CtlTotalGenerated := CtlTotalGenerated + 3;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenSignCondCheck : generer le code pour une condition de      }
+{   signe (POSITIVE, NEGATIVE, ZERO)                           }
+{ ------------------------------------------------------------ }
+
+Procedure GenSignCondCheck(SignType : Integer; Negate : Boolean;
+                            FalseLabel : TString);
+Begin
+  { La valeur est dans EAX }
+  WriteLn('    CMP EAX, 0');
+  Case SignType Of
+    SGN_POSITIVE :
+      If Negate Then
+        WriteLn('    JG ', FalseLabel)
+      Else
+        WriteLn('    JLE ', FalseLabel);
+    SGN_NEGATIVE :
+      If Negate Then
+        WriteLn('    JL ', FalseLabel)
+      Else
+        WriteLn('    JGE ', FalseLabel);
+    SGN_ZERO :
+      If Negate Then
+        WriteLn('    JE ', FalseLabel)
+      Else
+        WriteLn('    JNE ', FalseLabel);
+  End;
+  CtlTotalGenerated := CtlTotalGenerated + 2;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenConditionCode : generer le code 80386 pour une condition  }
+{   COBOL complete (simple, combinee, ou negation)             }
+{   FalseLabel : label ou sauter si la condition est fausse    }
+{ ------------------------------------------------------------ }
+
+Procedure GenConditionCode(CondIdx : Integer; FalseLabel : TString);
+Var
+  LblRight, LblEnd : TString;
+Begin
+  If (CondIdx < 0) Or (CondIdx >= CondNodeCount) Then Exit;
+
+  Case CondNodes[CondIdx].CondType Of
+    CND_RELATION :
+    Begin
+      { Charger operande gauche dans EAX }
+      WriteLn('    ; condition relationnelle');
+      WriteLn('    ; charger operande gauche');
+      WriteLn('    ; charger operande droite dans EBX');
+      WriteLn('    CMP EAX, EBX');
+      GenCondEvalFromRelOp(CondNodes[CondIdx].RelOp,
+        CondNodes[CondIdx].IsNegated, FalseLabel);
+      CtlTotalGenerated := CtlTotalGenerated + 4;
+    End;
+
+    CND_CLASS :
+    Begin
+      WriteLn('    ; condition de classe');
+      GenClassCondCheck(CondNodes[CondIdx].ClassType,
+        CondNodes[CondIdx].IsNegated, FalseLabel);
+    End;
+
+    CND_SIGN :
+    Begin
+      WriteLn('    ; condition de signe');
+      GenSignCondCheck(CondNodes[CondIdx].SignType,
+        CondNodes[CondIdx].IsNegated, FalseLabel);
+    End;
+
+    CND_CONDITION_NAME :
+    Begin
+      WriteLn('    ; condition-name (niveau 88)');
+      WriteLn('    ; charger valeur et comparer aux valeurs 88');
+      If CondNodes[CondIdx].IsNegated Then
+        WriteLn('    JE ', FalseLabel)
+      Else
+        WriteLn('    JNE ', FalseLabel);
+      CtlTotalGenerated := CtlTotalGenerated + 3;
+    End;
+
+    CND_AND :
+    Begin
+      { AND : si gauche faux -> faux, sinon tester droite }
+      WriteLn('    ; condition combinee AND');
+      GenConditionCode(CondNodes[CondIdx].LeftCond, FalseLabel);
+      GenConditionCode(CondNodes[CondIdx].RightCond, FalseLabel);
+      CtlCombinedConds := CtlCombinedConds + 1;
+    End;
+
+    CND_OR :
+    Begin
+      { OR : si gauche vrai -> vrai, sinon tester droite }
+      WriteLn('    ; condition combinee OR');
+      LblRight := GenCtlLabel;
+      LblEnd   := GenCtlLabel;
+      { Inverser : si gauche vrai, sauter au code }
+      GenConditionCode(CondNodes[CondIdx].LeftCond, LblRight);
+      GenUnconditionalJump(LblEnd);
+      GenCtlLabelEmit(LblRight);
+      GenConditionCode(CondNodes[CondIdx].RightCond, FalseLabel);
+      GenCtlLabelEmit(LblEnd);
+      CtlCombinedConds := CtlCombinedConds + 1;
+    End;
+
+    CND_NOT :
+    Begin
+      WriteLn('    ; condition negation NOT');
+      { Inverser : si la sous-condition est vraie, sauter au faux }
+      LblEnd := GenCtlLabel;
+      GenConditionCode(CondNodes[CondIdx].LeftCond, LblEnd);
+      GenUnconditionalJump(FalseLabel);
+      GenCtlLabelEmit(LblEnd);
+    End;
+
+    CND_TRUE :
+    Begin
+      { TRUE est toujours vrai, rien a generer }
+      WriteLn('    ; condition TRUE (toujours vrai)');
+      CtlTotalGenerated := CtlTotalGenerated + 1;
+    End;
+
+    CND_FALSE :
+    Begin
+      { FALSE est toujours faux, sauter directement }
+      WriteLn('    ; condition FALSE (toujours faux)');
+      GenUnconditionalJump(FalseLabel);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIfStatement : parser et generer le code pour IF         }
+{   IF condition [THEN]                                        }
+{     instructions...                                          }
+{   [ELSE                                                      }
+{     instructions...]                                         }
+{   END-IF | .                                                  }
+{   Supporte les IF imbriques et les conditions combinees      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIfStatement;
+Var
+  LblElse, LblEndIf : TString;
+  HasElse           : Boolean;
+  OldForm           : Boolean;
+Begin
+  CtlIfCount := CtlIfCount + 1;
+  CtlIfDepth := CtlIfDepth + 1;
+  If CtlIfDepth > CtlMaxIfDepth Then
+    CtlMaxIfDepth := CtlIfDepth;
+  If CtlIfDepth > 1 Then
+    CtlNestedIfCount := CtlNestedIfCount + 1;
+
+  If CtlIfDepth > CTL_MAX_IF_DEPTH Then
+  Begin
+    WarnMsg('IF imbrique trop profondement (max ' +
+            ItoSI(CTL_MAX_IF_DEPTH) + ')');
+    CtlIfDepth := CtlIfDepth - 1;
+    Exit;
+  End;
+
+  { Generer les labels }
+  LblElse  := GenCtlLabel;
+  LblEndIf := GenCtlLabel;
+  HasElse  := False;
+  OldForm  := False;
+
+  WriteLn('    ; IF debut (profondeur=', CtlIfDepth, ')');
+
+  { Le token IF a deja ete consomme, on attend la condition }
+  { Parser la condition (appel au parseur de conditions TODO 08) }
+  { puis generer le code conditionnel }
+  { Si la condition est fausse, sauter au ELSE ou au END-IF }
+
+  { Accepter le THEN optionnel }
+  If (CurTokType = TOK_KEYWORD) And
+     (UpCaseStr(CurTokStr) = 'THEN') Then
+    LexNextToken
+  Else If (CurTokType = TOK_IDENT) And
+          (UpCaseStr(CurTokStr) = 'THEN') Then
+    LexNextToken;
+
+  { A ce stade, la condition a ete evaluee dans le flag x86 }
+  { Saut conditionnel vers le label ELSE/END-IF }
+  WriteLn('    ; saut si condition fausse');
+  WriteLn('    JE ', LblElse);
+  CtlTotalGenerated := CtlTotalGenerated + 2;
+
+  { Instructions du bloc THEN }
+  WriteLn('    ; bloc THEN');
+
+  { Verifier si on a un ELSE }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ELSE) Then
+  Begin
+    HasElse := True;
+    CtlElseCount := CtlElseCount + 1;
+    { Saut inconditionnel vers END-IF }
+    GenUnconditionalJump(LblEndIf);
+    GenCtlLabelEmit(LblElse);
+    WriteLn('    ; bloc ELSE');
+    LexNextToken;
+    { Instructions du bloc ELSE }
+  End;
+
+  { Terminaison : END-IF ou point }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_IF) Then
+  Begin
+    CtlEndIfCount := CtlEndIfCount + 1;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_DOT Then
+  Begin
+    { Forme ancienne avec point comme terminateur }
+    OldForm := True;
+    CtlOldFormCount := CtlOldFormCount + 1;
+  End;
+
+  { Emettre les labels de fin }
+  If Not HasElse Then
+    GenCtlLabelEmit(LblElse);
+  GenCtlLabelEmit(LblEndIf);
+
+  WriteLn('    ; IF fin (profondeur=', CtlIfDepth, ')');
+
+  If OldForm Then
+    WriteLn('    ; (forme ancienne avec point)');
+
+  CtlIfDepth := CtlIfDepth - 1;
+  CtlTotalGenerated := CtlTotalGenerated + 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEvaluateSubject : parser le sujet d un EVALUATE         }
+{   Retourne le type de sujet (EVS_IDENT/EXPR/TRUE/FALSE)      }
+{ ------------------------------------------------------------ }
+
+Function ParseEvaluateSubject : Integer;
+Begin
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TRUE) Then
+  Begin
+    ParseEvaluateSubject := EVS_TRUE;
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FALSE) Then
+  Begin
+    ParseEvaluateSubject := EVS_FALSE;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_IDENT Then
+  Begin
+    ParseEvaluateSubject := EVS_IDENT;
+    { L identifiant sera utilise pour les comparaisons WHEN }
+    LexNextToken;
+  End
+  Else
+  Begin
+    { Expression arithmetique }
+    ParseEvaluateSubject := EVS_EXPR;
+    { L expression sera evaluee et le resultat en EAX }
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseWhenClause : parser une clause WHEN d un EVALUATE       }
+{   Retourne le type de clause WHEN                            }
+{ ------------------------------------------------------------ }
+
+Function ParseWhenClause(SubjectType : Integer) : Integer;
+Begin
+  { Le token WHEN a deja ete consomme }
+  If (CurTokType = TOK_KEYWORD) And
+     (UpCaseStr(CurTokStr) = 'OTHER') Then
+  Begin
+    ParseWhenClause := EWH_OTHER;
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_IDENT) And
+          (UpCaseStr(CurTokStr) = 'OTHER') Then
+  Begin
+    ParseWhenClause := EWH_OTHER;
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And
+          (UpCaseStr(CurTokStr) = 'ANY') Then
+  Begin
+    ParseWhenClause := EWH_ANY;
+    LexNextToken;
+  End
+  Else If SubjectType = EVS_TRUE Then
+  Begin
+    { EVALUATE TRUE : les WHEN contiennent des conditions }
+    ParseWhenClause := EWH_CONDITION;
+  End
+  Else If SubjectType = EVS_FALSE Then
+  Begin
+    ParseWhenClause := EWH_CONDITION;
+  End
+  Else
+  Begin
+    { WHEN valeur ou WHEN val-1 THRU val-2 }
+    ParseWhenClause := EWH_VALUE;
+    { Lire la valeur }
+    If CurTokType = TOK_IDENT Then
+      LexNextToken
+    Else If (CurTokType = TOK_INTEGER) Or
+            (CurTokType = TOK_DECIMAL) Then
+      LexNextToken
+    Else If CurTokType = TOK_STRING Then
+      LexNextToken;
+
+    { Verifier si c est un THRU/THROUGH (plage de valeurs) }
+    If (CurTokType = TOK_KEYWORD) And
+       ((CurTokNum = KW_THROUGH) Or (CurTokNum = KW_THRU)) Then
+    Begin
+      ParseWhenClause := EWH_RANGE;
+      LexNextToken;
+      { Lire la valeur finale de la plage }
+      If CurTokType = TOK_IDENT Then
+        LexNextToken
+      Else If (CurTokType = TOK_INTEGER) Or
+              (CurTokType = TOK_DECIMAL) Then
+        LexNextToken
+      Else If CurTokType = TOK_STRING Then
+        LexNextToken;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseEvaluateStatement : parser et generer le code pour      }
+{   EVALUATE sujet [ALSO sujet-2 ...]                          }
+{     WHEN valeur/condition [ALSO valeur-2 ...]                }
+{       instructions...                                        }
+{     WHEN OTHER                                               }
+{       instructions...                                        }
+{   END-EVALUATE | .                                            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseEvaluateStatement;
+Var
+  LblWhenNext, LblEndEval : TString;
+  SubjectType : Integer;
+  WhenType    : Integer;
+  AlsoCount   : Integer;
+  WhenNum     : Integer;
+  HasOther    : Boolean;
+  OldForm     : Boolean;
+Begin
+  CtlEvalCount := CtlEvalCount + 1;
+  CtlEvalDepth := CtlEvalDepth + 1;
+  If CtlEvalDepth > CtlMaxEvalDepth Then
+    CtlMaxEvalDepth := CtlEvalDepth;
+
+  If CtlEvalDepth > CTL_MAX_EVAL_DEPTH Then
+  Begin
+    WarnMsg('EVALUATE imbrique trop profondement (max ' +
+            ItoSI(CTL_MAX_EVAL_DEPTH) + ')');
+    CtlEvalDepth := CtlEvalDepth - 1;
+    Exit;
+  End;
+
+  LblEndEval := GenCtlLabel;
+  HasOther   := False;
+  OldForm    := False;
+  WhenNum    := 0;
+  AlsoCount  := 0;
+
+  WriteLn('    ; EVALUATE debut (profondeur=', CtlEvalDepth, ')');
+
+  { Parser le sujet principal }
+  SubjectType := ParseEvaluateSubject;
+  WriteLn('    ; sujet EVALUATE : ', EvalSubjectName(SubjectType));
+
+  { Parser les sujets ALSO supplementaires }
+  While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ALSO) Do
+  Begin
+    LexNextToken;
+    AlsoCount  := AlsoCount + 1;
+    CtlAlsoCount := CtlAlsoCount + 1;
+    If AlsoCount > CTL_MAX_ALSO Then
+    Begin
+      WarnMsg('Trop de sujets ALSO (max ' +
+              ItoSI(CTL_MAX_ALSO) + ')');
+    End;
+    WriteLn('    ; sujet ALSO #', AlsoCount, ' : ',
+            EvalSubjectName(ParseEvaluateSubject));
+  End;
+
+  { Parser les clauses WHEN }
+  While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_WHEN) Do
+  Begin
+    WhenNum := WhenNum + 1;
+    CtlWhenCount := CtlWhenCount + 1;
+
+    If WhenNum > CTL_MAX_WHEN Then
+    Begin
+      WarnMsg('Trop de clauses WHEN (max ' +
+              ItoSI(CTL_MAX_WHEN) + ')');
+    End;
+
+    LexNextToken;  { consommer WHEN }
+    LblWhenNext := GenCtlLabel;
+
+    WhenType := ParseWhenClause(SubjectType);
+
+    If WhenType = EWH_OTHER Then
+    Begin
+      HasOther := True;
+      CtlWhenOtherCount := CtlWhenOtherCount + 1;
+      WriteLn('    ; WHEN OTHER');
+    End
+    Else
+    Begin
+      WriteLn('    ; WHEN #', WhenNum, ' type=',
+              WhenTypeName(WhenType));
+
+      { Generer la comparaison selon le type de sujet }
+      Case SubjectType Of
+        EVS_IDENT, EVS_EXPR :
+        Begin
+          If WhenType = EWH_VALUE Then
+          Begin
+            WriteLn('    CMP EAX, EBX');
+            WriteLn('    JNE ', LblWhenNext);
+            CtlTotalGenerated := CtlTotalGenerated + 2;
+          End
+          Else If WhenType = EWH_RANGE Then
+          Begin
+            WriteLn('    CMP EAX, ECX  ; borne inf');
+            WriteLn('    JL ', LblWhenNext);
+            WriteLn('    CMP EAX, EDX  ; borne sup');
+            WriteLn('    JG ', LblWhenNext);
+            CtlTotalGenerated := CtlTotalGenerated + 4;
+          End
+          Else If WhenType = EWH_ANY Then
+          Begin
+            { ANY correspond toujours }
+            WriteLn('    ; WHEN ANY (toujours vrai)');
+            CtlTotalGenerated := CtlTotalGenerated + 1;
+          End;
+        End;
+        EVS_TRUE :
+        Begin
+          { La condition est evaluee : si fausse, sauter }
+          WriteLn('    ; evaluer condition pour EVALUATE TRUE');
+          WriteLn('    TEST EAX, EAX');
+          WriteLn('    JE ', LblWhenNext);
+          CtlTotalGenerated := CtlTotalGenerated + 3;
+        End;
+        EVS_FALSE :
+        Begin
+          WriteLn('    ; evaluer condition pour EVALUATE FALSE');
+          WriteLn('    TEST EAX, EAX');
+          WriteLn('    JNE ', LblWhenNext);
+          CtlTotalGenerated := CtlTotalGenerated + 3;
+        End;
+      End;
+
+      { Parser les ALSO dans la clause WHEN }
+      { (doivent correspondre aux ALSO du sujet) }
+    End;
+
+    { Instructions du WHEN }
+    WriteLn('    ; instructions WHEN #', WhenNum);
+
+    { Saut inconditionnel vers la fin de l EVALUATE }
+    GenUnconditionalJump(LblEndEval);
+
+    { Label pour le prochain WHEN }
+    GenCtlLabelEmit(LblWhenNext);
+  End;
+
+  { Terminaison : END-EVALUATE ou point }
+  If (CurTokType = TOK_KEYWORD) And
+     (CurTokNum = KW_END_EVALUATE) Then
+  Begin
+    CtlEndEvalCount := CtlEndEvalCount + 1;
+    LexNextToken;
+  End
+  Else If CurTokType = TOK_DOT Then
+  Begin
+    OldForm := True;
+    CtlOldFormCount := CtlOldFormCount + 1;
+  End;
+
+  { Label de fin }
+  GenCtlLabelEmit(LblEndEval);
+
+  WriteLn('    ; EVALUATE fin (profondeur=', CtlEvalDepth,
+          ', WHEN=', WhenNum, ')');
+
+  If OldForm Then
+    WriteLn('    ; (forme ancienne avec point)');
+
+  CtlEvalDepth := CtlEvalDepth - 1;
+  CtlTotalGenerated := CtlTotalGenerated + 1;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseContinueStatement : parser l instruction CONTINUE       }
+{   CONTINUE est un no-op (ne genere aucun code)               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseContinueStatement;
+Begin
+  CtlContinueCount := CtlContinueCount + 1;
+  WriteLn('    ; CONTINUE (no-op)');
+  WriteLn('    NOP');
+  CtlTotalGenerated := CtlTotalGenerated + 2;
+  { Le token CONTINUE a deja ete consomme }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseControlStatement : dispatcheur pour les structures de   }
+{   controle : IF, EVALUATE, CONTINUE                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseControlStatement;
+Begin
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IF) Then
+  Begin
+    LexNextToken;
+    ParseIfStatement;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And
+          (CurTokNum = KW_EVALUATE) Then
+  Begin
+    LexNextToken;
+    ParseEvaluateStatement;
+  End
+  Else If (CurTokType = TOK_KEYWORD) And
+          (CurTokNum = KW_CONTINUE) Then
+  Begin
+    LexNextToken;
+    ParseContinueStatement;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsControlKeyword : verifier si le token courant est un       }
+{   mot-cle de structure de controle (IF, EVALUATE, CONTINUE)  }
+{ ------------------------------------------------------------ }
+
+Function IsControlKeyword : Boolean;
+Begin
+  IsControlKeyword := False;
+  If CurTokType = TOK_KEYWORD Then
+  Begin
+    If (CurTokNum = KW_IF) Or
+       (CurTokNum = KW_EVALUATE) Or
+       (CurTokNum = KW_CONTINUE) Then
+      IsControlKeyword := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpControlState : afficher l etat du module de structures   }
+{   de controle (compteurs et statistiques)                    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpControlState;
+Begin
+  WriteLn('=== Structures de controle (IF/EVALUATE) ===');
+  WriteLn('  Initialise          : ', CtlInitialized);
+  WriteLn('  Labels generes      : ', CtlLabelNum);
+  WriteLn('  Instructions IF     : ', CtlIfCount);
+  WriteLn('  Clauses ELSE        : ', CtlElseCount);
+  WriteLn('  END-IF              : ', CtlEndIfCount);
+  WriteLn('  IF imbriques        : ', CtlNestedIfCount);
+  WriteLn('  Prof. max IF        : ', CtlMaxIfDepth);
+  WriteLn('  Instructions EVAL   : ', CtlEvalCount);
+  WriteLn('  Clauses WHEN        : ', CtlWhenCount);
+  WriteLn('  WHEN OTHER          : ', CtlWhenOtherCount);
+  WriteLn('  END-EVALUATE        : ', CtlEndEvalCount);
+  WriteLn('  Prof. max EVAL      : ', CtlMaxEvalDepth);
+  WriteLn('  Conditions combinees: ', CtlCombinedConds);
+  WriteLn('  Sujets ALSO         : ', CtlAlsoCount);
+  WriteLn('  Instructions CONTINUE:', CtlContinueCount);
+  WriteLn('  Forme ancienne (.)  : ', CtlOldFormCount);
+  WriteLn('  Total genere        : ', CtlTotalGenerated);
+End;
+
+{ 10 fonctions accesseurs pour TODO 10                         }
+
+Function IsCtlInitialized : Boolean;
+Begin
+  IsCtlInitialized := CtlInitialized;
+End;
+
+Function IsCtlEmpty : Boolean;
+Begin
+  IsCtlEmpty := (CtlTotalGenerated = 0);
+End;
+
+Function GetCtlTotalGenerated : Integer;
+Begin
+  GetCtlTotalGenerated := CtlTotalGenerated;
+End;
+
+Function GetCtlStatus : TString;
+Begin
+  If Not CtlInitialized Then
+    GetCtlStatus := 'NON INITIALISE'
+  Else
+    GetCtlStatus := 'IF=' + ItoSI(CtlIfCount) +
+                    ' EVAL=' + ItoSI(CtlEvalCount) +
+                    ' CONT=' + ItoSI(CtlContinueCount) +
+                    ' WHEN=' + ItoSI(CtlWhenCount);
+End;
+
+Function GetCtlIfCount : Integer;
+Begin
+  GetCtlIfCount := CtlIfCount;
+End;
+
+Function GetCtlEvalCount : Integer;
+Begin
+  GetCtlEvalCount := CtlEvalCount;
+End;
+
+Function GetCtlWhenCount : Integer;
+Begin
+  GetCtlWhenCount := CtlWhenCount;
+End;
+
+Function GetCtlContinueCount : Integer;
+Begin
+  GetCtlContinueCount := CtlContinueCount;
+End;
+
+Function GetCtlMaxIfDepth : Integer;
+Begin
+  GetCtlMaxIfDepth := CtlMaxIfDepth;
+End;
+
+Function GetCtlStateCount : Integer;
+Begin
+  GetCtlStateCount := CtlStateCount;
+End;
+
+
 { ------------------------------------------------------------ }
 { LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
@@ -8243,6 +9126,7 @@ Begin
   ParInitialized := False;
   EcInitialized  := False;
   AgnInitialized := False;
+  CtlInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -8270,6 +9154,9 @@ Begin
 
   { Initialiser le generateur d arithmetique 80386 }
   InitArithGenState;
+
+  { Initialiser les structures de controle (IF/EVALUATE) }
+  InitControlState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
