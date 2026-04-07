@@ -1,0 +1,775 @@
+COBOLW32.PAS - Compilateur COBOL vers assembleur
+  80386 pour Windows 32 bits
+  Free Pascal (-Mtp)
+  Cible : MASM .386 / .MODEL FLAT, PE Win32
+
+  Par defaut produit un fichier .EXE (PE Windows 32 bits).
+  Avec le parametre -obj, produit uniquement un fichier .OBJ (COFF).
+  Avec le parametre -asm, produit egalement un fichier .ASM lisible.
+  Supporte toutes les exemples SAMPLES\COBOL\*
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [A FAIRE]
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
+              EmitExe, EmitObj, EmitAsm, FreeFormat)
+            ParseArgs : analyser argv (source.cbl [-o sortie] [-v]
+              [-d] [-w] [-obj] [-asm] [-free] [-h])
+            Par defaut : produire un .EXE Windows 32 bits (PE)
+            -obj : produire uniquement un .OBJ (format COFF 32 bits)
+            -asm : produire egalement un listing assembleur .ASM lisible
+            -o nom : specifier le nom du fichier de sortie
+            -free : activer le format libre (colonnes non fixes)
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .cbl ou .cob du fichier source
+            Version, Date, aide en ligne (option -h)
+            Constantes PE/COFF : PE_DOS_MAGIC ($5A4D), PE_PE_SIG,
+              PE_MACHINE_I386, PE_OPT_SIZE, PE_MAGIC_32,
+              PE_IMG_BASE ($00400000), PE_SEC_ALIGN (4096),
+              PE_FILE_ALIGN (512), PE_SUBSYS_CUI (console)
+            Constantes binaires : MAX_BIN_CODE (65536),
+              MAX_BIN_DATA (65536), MAX_BIN_LBL (4096),
+              MAX_BIN_FIX (8192)
+            Limites internes (32 bits) : MAX_SYM=4096, MAX_SEC=64,
+              MAX_LOCAL=256, MAX_PARAM=64, MAX_DEPTH=32,
+              MAX_LABEL=4096, MAX_STR=255, MAX_FIELD=128,
+              MAX_FILE=16, MAX_TABLE=128, MAX_LEVEL=49,
+              MAX_PIC=64, MAX_PERFORM=256
+            Prefixes de nommage ASM : _COB_ (variable globale),
+              _COBP_ (paragraphe/section PROCEDURE),
+              _COBK_ (constante chaine),
+              _COBRT_ (routine runtime), _COBL_ (label interne),
+              _COBT_ (table/tableau), _COBF_ (champ de fichier),
+              _COBS_ (section), _COBE_ (entree fichier)
+            Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent
+
+  TODO 02 - TOKENISEUR COBOL (LEXER) [A FAIRE]
+            Procedure LexInit : ouvrir le fichier source, initialiser
+              l etat du lexeur (ligne, colonne, caractere courant)
+            Procedure LexClose : fermer le fichier source
+            Procedure LexNextChar / LexPeekChar
+            Format fixe (standard COBOL) :
+              Colonnes 1-6 : numero de sequence (ignore)
+              Colonne 7 : indicateur (* commentaire, - continuation,
+                D debug, / saut de page)
+              Colonnes 8-11 : zone A (DIVISION, SECTION, niveaux 01/77,
+                noms de paragraphes)
+              Colonnes 12-72 : zone B (instructions, clauses)
+              Colonnes 73-80 : zone de commentaire (ignore)
+            Support du format libre (-free) :
+              Pas de colonnes fixes, commentaires avec *>
+            Procedure LexNextToken : reconnaitre les tokens COBOL :
+              - Identificateurs : lettres, chiffres, tiret (-)
+                COBOL est insensible a la casse
+                Tiret permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)
+              - Litteraux numeriques : 123, 1.5, +5, -3
+              - Litteraux chaines : 'texte' ou "texte"
+              - Litteraux hexadecimaux : X'FF' ou X"FF"
+              - Symboles : . (terminateur d instruction)
+              - Operateurs : + - * / ** = > < >= <= <>
+              - Separateurs : ( ) ,
+              - Commentaires : * en colonne 7, *> en format libre
+              - Continuation : - en colonne 7
+            Types de tokens (TOK_IDENT, TOK_INTEGER, TOK_DECIMAL,
+              TOK_STRING, TOK_HEX_STRING,
+              TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_POWER,
+              TOK_LPAREN, TOK_RPAREN, TOK_COMMA, TOK_DOT,
+              TOK_EQ, TOK_NE, TOK_LT, TOK_GT, TOK_LE, TOK_GE,
+              TOK_NEWLINE, TOK_EOF)
+            Stocker dans CurTokType / CurTokStr / CurTokNum
+            Reconnaitre le point (.) comme terminateur d instruction
+            Gestion des continuations de ligne (- en colonne 7)
+            10 fonctions accesseurs
+
+  TODO 03 - RECONNAISSANCE DES MOTS-CLES COBOL [A FAIRE]
+            Tous les mots reserves COBOL-85 :
+              DIVISIONS : IDENTIFICATION, ENVIRONMENT, DATA, PROCEDURE
+              SECTIONS : CONFIGURATION, INPUT-OUTPUT, FILE-CONTROL,
+                FILE, WORKING-STORAGE, LINKAGE, SCREEN, REPORT
+              Paragraphes ID : PROGRAM-ID, AUTHOR, INSTALLATION,
+                DATE-WRITTEN, DATE-COMPILED, SECURITY
+              Paragraphes ENV : SOURCE-COMPUTER, OBJECT-COMPUTER,
+                SPECIAL-NAMES, REPOSITORY
+              Instructions : ACCEPT, ADD, CALL, CLOSE, COMPUTE,
+                CONTINUE, DELETE, DISPLAY, DIVIDE, EVALUATE,
+                EXIT, GO, GOBACK, IF, INITIALIZE, INSPECT,
+                MERGE, MOVE, MULTIPLY, OPEN, PERFORM, READ,
+                RELEASE, RETURN, REWRITE, SEARCH, SET, SORT,
+                START, STOP, STRING, SUBTRACT, UNSTRING, WRITE
+              Clauses DATA : PIC, PICTURE, VALUE, USAGE, OCCURS,
+                REDEFINES, RENAMES, FILLER, BLANK, JUSTIFIED,
+                SIGN, SYNCHRONIZED, COMP, COMP-1, COMP-2, COMP-3,
+                BINARY, PACKED-DECIMAL, DISPLAY, INDEX
+              Clauses FILE : SELECT, ASSIGN, ORGANIZATION,
+                ACCESS, FILE STATUS, RECORD, LABEL, FD, SD
+              Structures : IF/ELSE/END-IF, EVALUATE/WHEN/END-EVALUATE,
+                PERFORM/END-PERFORM, READ/END-READ, SEARCH/END-SEARCH,
+                STRING/END-STRING, UNSTRING/END-UNSTRING,
+                COMPUTE/END-COMPUTE, ADD/END-ADD, SUBTRACT/END-SUBTRACT,
+                MULTIPLY/END-MULTIPLY, DIVIDE/END-DIVIDE
+              Conditions : AND, OR, NOT, EQUAL, GREATER, LESS,
+                NUMERIC, ALPHABETIC, POSITIVE, NEGATIVE, ZERO,
+                SPACES, HIGH-VALUES, LOW-VALUES
+              Divers : THRU, THROUGH, TIMES, UNTIL, VARYING,
+                GIVING, REMAINDER, ROUNDED, SIZE, ON, INTO, FROM,
+                TO, BY, IS, ARE, OF, IN, THAN, WHEN, ALSO,
+                WITH, ADVANCING, BEFORE, AFTER, ALL, LEADING,
+                TRAILING, FIRST, INITIAL, CORRESPONDING
+              Niveaux speciaux : 01, 66, 77, 88
+            Fonction LookupKeyword : retourner KW_xxx ou TOK_IDENT
+            Les mots-cles composes avec tiret (END-IF, WORKING-STORAGE)
+              sont traites comme un seul token
+            10 fonctions accesseurs
+
+  TODO 04 - TABLE DES SYMBOLES COBOL (32 BITS) [A FAIRE]
+            Enregistrement TSymbol :
+              Name      : nom COBOL (WS-NOM, EMP-RECORD)
+              AsmName   : label ASM correspondant (_COB_WS_NOM)
+              Level     : niveau hierarchique (01-49, 66, 77, 88)
+              SymType   : type de donnee (CBT_ALPHA, CBT_NUMERIC,
+                CBT_ALPHANUMERIC, CBT_PACKED, CBT_BINARY, CBT_INDEX,
+                CBT_POINTER, CBT_GROUP, CBT_FILE, CBT_CONDITION)
+              PicStr    : chaine PICTURE originale (X(20), 9(3)V99)
+              PicSize   : taille en octets apres analyse du PICTURE
+              PicDecimals : nombre de decimales (V dans PIC)
+              IsSigned  : PIC S9(...) - signe present
+              IsGroup   : True si niveau de groupe (pas de PIC)
+              ParentIdx : index du symbole parent (groupe contenant)
+              Offset    : offset dans le groupe/record parent
+              Value     : valeur initiale (clause VALUE)
+              IsGlobal  : portee globale ou locale
+              Section   : WORKING-STORAGE, FILE, LINKAGE, etc.
+              Occurs    : nombre de repetitions (clause OCCURS)
+              OccursMin : OCCURS min (DEPENDING ON)
+              OccursDep : nom de la variable DEPENDING ON
+              RedefinedIdx : index du symbole redefini (REDEFINES)
+              CondValues : valeurs pour niveau 88 (VALUE clause)
+              Usage     : DISPLAY, COMP, COMP-3, BINARY, INDEX
+              IsExternal : clause EXTERNAL
+              IsFiller  : True si FILLER
+            Procedures sur la table :
+              SymInit, SymAdd, SymFind, SymFindQualified,
+              SymCount, SymDump
+            Qualification : OF/IN pour lever ambiguite
+              (EMP-NOM OF EMP-RECORD)
+            10 fonctions accesseurs
+
+  TODO 05 - GESTION DES NIVEAUX ET HIERARCHIE COBOL [A FAIRE]
+            Niveaux COBOL : 01-49 (hierarchie), 66 (RENAMES),
+              77 (independant), 88 (condition)
+            Construction de l arbre hierarchique :
+              Niveau 01 : debut d un nouveau record/groupe
+              Niveaux 02-49 : sous-champs du dernier groupe superieur
+              Resolution automatique de la structure :
+                01 EMP-RECORD.
+                  05 EMP-NOM PIC X(30).
+                  05 EMP-ADRESSE.
+                    10 EMP-RUE PIC X(40).
+                    10 EMP-VILLE PIC X(20).
+              Calcul automatique des offsets et tailles
+            Clause REDEFINES : partage de memoire
+              01 WS-DATE PIC 9(8).
+              01 WS-DATE-R REDEFINES WS-DATE.
+                05 WS-ANNEE PIC 9(4).
+                05 WS-MOIS  PIC 99.
+                05 WS-JOUR  PIC 99.
+            Clause RENAMES (niveau 66) : regroupement
+            Niveaux 88 : conditions nommees
+              88 STATUT-ACTIF VALUE 'A'.
+              88 FINI VALUE 10.
+              SET FINI TO TRUE -> MOVE 10 TO parent
+            Verification des niveaux valides et coherents
+            Calcul de la taille totale de chaque record 01
+            10 fonctions accesseurs
+
+  TODO 06 - PARSEUR : IDENTIFICATION DIVISION ET ENVIRONMENT DIVISION [A FAIRE]
+            IDENTIFICATION DIVISION (obligatoire) :
+              PROGRAM-ID. nom [IS INITIAL PROGRAM].
+              AUTHOR. texte (optionnel, commentaire)
+              INSTALLATION. texte (optionnel)
+              DATE-WRITTEN. texte (optionnel)
+              DATE-COMPILED. texte (optionnel)
+              SECURITY. texte (optionnel)
+            ENVIRONMENT DIVISION (optionnelle) :
+              CONFIGURATION SECTION :
+                SOURCE-COMPUTER. nom.
+                OBJECT-COMPUTER. nom.
+                SPECIAL-NAMES.
+                  DECIMAL-POINT IS COMMA.
+                  (autres associations symboliques)
+              INPUT-OUTPUT SECTION :
+                FILE-CONTROL.
+                  SELECT nom-fichier
+                    ASSIGN TO nom-externe
+                    ORGANIZATION IS SEQUENTIAL/INDEXED/RELATIVE
+                    ACCESS MODE IS SEQUENTIAL/RANDOM/DYNAMIC
+                    RECORD KEY IS nom-cle (pour INDEXED)
+                    FILE STATUS IS nom-variable.
+            Stocker les informations de configuration
+            Stocker les descriptions de fichiers (SELECT/ASSIGN)
+            Detecter DECIMAL-POINT IS COMMA pour les litteraux
+            10 fonctions accesseurs
+
+  TODO 07 - PARSEUR : DATA DIVISION (FILE SECTION, WORKING-STORAGE) [A FAIRE]
+            DATA DIVISION (optionnelle) :
+              FILE SECTION :
+                FD nom-fichier
+                  LABEL RECORD IS STANDARD/OMITTED
+                  RECORD CONTAINS n CHARACTERS
+                  BLOCK CONTAINS n RECORDS
+                  DATA RECORD IS nom-record.
+                01 nom-record.
+                  05 champs... (voir TODO 04)
+                SD pour les fichiers de tri (SORT)
+              WORKING-STORAGE SECTION :
+                77 nom PIC ... VALUE ... (variables independantes)
+                01 nom. (debut de groupe)
+                  05 champs avec PIC, VALUE, USAGE, OCCURS
+              LINKAGE SECTION :
+                Parametres passes par CALL (meme format que WS)
+            Analyse de la clause PICTURE :
+              A : alphabetique (1 caractere)
+              X : alphanumerique (1 caractere)
+              9 : chiffre (1 caractere)
+              V : point decimal implicite
+              S : signe (premier caractere)
+              P : mise a l echelle
+              Z : zero supprime (edition)
+              * : asterisque de protection (edition)
+              , . / B 0 : insertion (edition)
+              CR DB + - : signe (edition)
+              Repetition : 9(5) = 99999, X(20), etc.
+              Calcul de la taille en octets resultante
+            Clause USAGE : DISPLAY (defaut), COMP/BINARY (entier binaire),
+              COMP-1 (flottant simple), COMP-2 (flottant double),
+              COMP-3/PACKED-DECIMAL (decimal condense), INDEX
+            Clause VALUE : valeur initiale (litteraux, SPACES, ZEROS,
+              HIGH-VALUES, LOW-VALUES)
+            Clause OCCURS : tableaux (OCCURS n TIMES,
+              OCCURS n TO m DEPENDING ON var)
+            10 fonctions accesseurs
+
+  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET CONDITIONS [A FAIRE]
+            Expressions arithmetiques COBOL :
+              Operateurs : + - * / ** (puissance)
+              Parentheses pour regroupement
+              Operandes : identificateurs, litteraux numeriques
+              Qualification : nom OF groupe
+              Reference de sous-chaine : nom(debut:longueur)
+              Indexation de table : nom(indice) ou nom(idx1, idx2)
+            Conditions :
+              Comparaisons : = > < >= <= <> (ou NOT =, NOT >, etc.)
+              Noms-condition (niveau 88) : IF STATUT-ACTIF
+              Conditions de classe : NUMERIC, ALPHABETIC,
+                ALPHABETIC-LOWER, ALPHABETIC-UPPER
+              Conditions de signe : POSITIVE, NEGATIVE, ZERO
+              Operateurs logiques : AND, OR, NOT
+              Conditions combinees : IF A > B AND C < D
+              Conditions abregees : IF A = 1 OR 2 OR 3
+              Condition figurative : IF WS-NOM = SPACES
+            Constantes figuratives COBOL :
+              SPACE/SPACES, ZERO/ZEROS/ZEROES,
+              HIGH-VALUE/HIGH-VALUES, LOW-VALUE/LOW-VALUES,
+              QUOTE/QUOTES, ALL 'x'
+            Evaluation des expressions avec priorite des operateurs
+            Generation d un arbre d expression intermediaire
+            10 fonctions accesseurs
+
+  TODO 09 - GENERATION DE CODE : OPERATIONS ARITHMETIQUES 80386 [A FAIRE]
+            Arithmetique sur donnees DISPLAY (PIC 9) :
+              Conversion DISPLAY -> registre 32 bits (entier)
+              Operation en registre (ADD, SUB, IMUL, IDIV)
+              Reconversion registre -> DISPLAY
+            Arithmetique sur donnees COMP/BINARY :
+              Operations directes en 32 bits (DD)
+              Gestion du signe (registre signe EAX)
+            Arithmetique sur donnees COMP-3 (packed decimal) :
+              Decompactage BCD -> binaire 32 bits
+              Operation en registre
+              Recompactage binaire -> BCD
+            Instruction ADD :
+              ADD id-1 TO id-2 [GIVING id-3] [ROUNDED]
+              [ON SIZE ERROR inst] [NOT ON SIZE ERROR inst]
+              [END-ADD]
+            Instruction SUBTRACT :
+              SUBTRACT id-1 FROM id-2 [GIVING id-3]
+            Instruction MULTIPLY :
+              MULTIPLY id-1 BY id-2 [GIVING id-3]
+            Instruction DIVIDE :
+              DIVIDE id-1 INTO/BY id-2 [GIVING id-3]
+              [REMAINDER id-4]
+            Instruction COMPUTE :
+              COMPUTE id-1 [ROUNDED] = expression arithmetique
+              Parsing complet de l expression avec priorite
+              Evaluation sur la pile 80386
+            Clause ROUNDED : arrondi au lieu de troncature
+            Clause ON SIZE ERROR : debordement arithmetique
+            10 fonctions accesseurs
+
+  TODO 10 - PARSEUR : STRUCTURES DE CONTROLE (IF, EVALUATE) [A FAIRE]
+            IF condition THEN
+              instructions...
+            ELSE
+              instructions...
+            END-IF
+              (ou point comme terminateur, forme ancienne)
+            Conditions imbriquees : IF dans IF
+            Conditions combinees : AND, OR, NOT
+            EVALUATE (equivalent de switch/case) :
+              EVALUATE identifiant/expression/TRUE/FALSE
+                WHEN valeur/condition
+                  instructions...
+                WHEN valeur/condition
+                  instructions...
+                WHEN OTHER
+                  instructions...
+              END-EVALUATE
+            EVALUATE avec sujets multiples :
+              EVALUATE var-1 ALSO var-2
+                WHEN val-1 ALSO val-2
+            EVALUATE TRUE :
+              WHEN condition-1 instructions...
+              WHEN condition-2 instructions...
+            Forme ancienne avec point (sans END-IF/END-EVALUATE)
+              supportee pour compatibilite
+            CONTINUE : instruction vide (no-op)
+            Generation de JMP/Jcc conditionnel 80386
+            Labels internes (_COBL_IF_xxx, _COBL_EVAL_xxx)
+            10 fonctions accesseurs
+
+  TODO 11 - PARSEUR : PERFORM ET BOUCLES [A FAIRE]
+            PERFORM simple :
+              PERFORM nom-paragraphe
+              PERFORM nom-paragraphe THRU nom-paragraphe-fin
+            PERFORM inline :
+              PERFORM instructions... END-PERFORM
+            PERFORM TIMES :
+              PERFORM nom-paragraphe n TIMES
+              PERFORM n TIMES instructions... END-PERFORM
+            PERFORM UNTIL :
+              PERFORM nom-paragraphe UNTIL condition
+              PERFORM UNTIL condition instructions... END-PERFORM
+              WITH TEST BEFORE (defaut) ou WITH TEST AFTER
+            PERFORM VARYING :
+              PERFORM nom-paragraphe
+                VARYING id-1 FROM val-1 BY val-2 UNTIL condition
+                [AFTER id-2 FROM val-3 BY val-4 UNTIL condition-2]
+            GO TO nom-paragraphe (branchement inconditionnel)
+            GO TO nom-1 nom-2 ... DEPENDING ON id
+              (branchement calcule)
+            EXIT PARAGRAPH / EXIT SECTION
+            GOBACK (retour au programme appelant)
+            Generation de boucles 80386 avec CMP/JMP/LOOP
+            Labels pour debut/fin de boucle et paragraphes
+            10 fonctions accesseurs
+
+  TODO 12 - PARSEUR : MOVE, INITIALIZE ET TRANSFERT DE DONNEES [A FAIRE]
+            MOVE :
+              MOVE source TO dest-1 [dest-2 ...]
+              MOVE CORRESPONDING groupe-1 TO groupe-2
+              Regles de conversion COBOL :
+                Alphanumerique -> Alphanumerique : cadrage a gauche,
+                  troncature ou remplissage avec espaces
+                Numerique -> Numerique : alignement sur le point
+                  decimal, troncature ou zero-fill
+                Numerique -> Alphanumerique : conversion en chaine
+                Alphanumerique -> Numerique : conversion numerique
+                Groupe -> Groupe : transfert alphanumerique
+              Constantes figuratives : SPACES, ZEROS, HIGH-VALUES,
+                LOW-VALUES, ALL 'x'
+            INITIALIZE :
+              INITIALIZE id-1 [id-2 ...]
+                [REPLACING category BY literal/id]
+              Mettre les champs alphanumeriques a SPACES
+              Mettre les champs numeriques a ZEROS
+            SET pour niveaux 88 :
+              SET condition-88 TO TRUE
+              -> MOVE valeur TO variable-parent
+            Generation 80386 : MOV, REP MOVSB, STOSB pour les
+              transferts memoire, routines runtime pour conversions
+            10 fonctions accesseurs
+
+  TODO 13 - PARSEUR : OPERATIONS SUR CHAINES (STRING, UNSTRING, INSPECT) [A FAIRE]
+            STRING :
+              STRING source-1 [DELIMITED BY delim-1]
+                     source-2 [DELIMITED BY delim-2]
+                INTO destination
+                [WITH POINTER ptr]
+                [ON OVERFLOW instructions]
+              END-STRING
+            UNSTRING :
+              UNSTRING source
+                DELIMITED BY delim-1 [OR delim-2]
+                INTO dest-1 [DELIMITER IN d-1] [COUNT IN c-1]
+                     dest-2 [DELIMITER IN d-2] [COUNT IN c-2]
+                [WITH POINTER ptr]
+                [TALLYING IN compteur]
+                [ON OVERFLOW instructions]
+              END-UNSTRING
+            INSPECT :
+              INSPECT id TALLYING id-cnt
+                FOR ALL/LEADING/CHARACTERS 'x'
+                [BEFORE/AFTER INITIAL 'y']
+              INSPECT id REPLACING
+                ALL/LEADING/FIRST 'x' BY 'y'
+                [BEFORE/AFTER INITIAL 'z']
+              INSPECT id CONVERTING 'abc' TO 'xyz'
+            Reference de sous-chaine :
+              id(position:longueur) pour extraire/modifier
+            Routines runtime pour manipulations de chaines
+            10 fonctions accesseurs
+
+  TODO 14 - PARSEUR : E/S FICHIERS (OPEN, READ, WRITE, CLOSE) [A FAIRE]
+            OPEN :
+              OPEN INPUT nom-fichier-1 [nom-fichier-2 ...]
+              OPEN OUTPUT nom-fichier-1 [nom-fichier-2 ...]
+              OPEN I-O nom-fichier (lecture/ecriture)
+              OPEN EXTEND nom-fichier (ajout en fin)
+            READ :
+              READ nom-fichier [INTO id]
+                [AT END instructions]
+                [NOT AT END instructions]
+              END-READ
+              READ nom-fichier KEY IS nom-cle (pour INDEXED)
+                [INVALID KEY instructions]
+            WRITE :
+              WRITE nom-record [FROM id]
+                [BEFORE/AFTER ADVANCING n LINES/PAGE]
+                [INVALID KEY instructions]
+              END-WRITE
+            REWRITE :
+              REWRITE nom-record [FROM id]
+                [INVALID KEY instructions]
+              END-REWRITE
+            CLOSE :
+              CLOSE nom-fichier-1 [nom-fichier-2 ...]
+            DELETE :
+              DELETE nom-fichier [INVALID KEY instructions]
+            START :
+              START nom-fichier KEY IS =/>/>=/</<= nom-cle
+                [INVALID KEY instructions]
+            FILE STATUS : code retour 2 caracteres (00, 10, ...)
+            Appels Win32 API : CreateFileA, ReadFile, WriteFile,
+              CloseHandle, SetFilePointer pour implementation
+            10 fonctions accesseurs
+
+  TODO 15 - PARSEUR : ACCEPT ET DISPLAY (E/S CONSOLE) [A FAIRE]
+            DISPLAY :
+              DISPLAY lit-1 [lit-2 ...] [UPON CONSOLE/PRINTER]
+              DISPLAY identifiant [WITH NO ADVANCING]
+              Concatenation de multiples operandes
+              Conversion numerique -> chaine pour affichage
+              Win32 : GetStdHandle(STD_OUTPUT_HANDLE) + WriteFile
+            ACCEPT :
+              ACCEPT identifiant [FROM CONSOLE/DATE/DAY/TIME]
+              ACCEPT id FROM DATE : date systeme YYMMDD
+              ACCEPT id FROM DAY  : jour julien YYDDD
+              ACCEPT id FROM TIME : heure HHMMSSCC
+              Win32 : GetStdHandle(STD_INPUT_HANDLE) + ReadFile
+            STOP RUN :
+              Terminer le programme (ExitProcess)
+              Optionnel : STOP literal (afficher puis terminer)
+            Generation 80386 :
+              PUSH/CALL pour les API Win32
+              Conversion des types COBOL pour l affichage
+              Gestion du retour a la ligne (CR/LF)
+              WITH NO ADVANCING : pas de retour a la ligne
+            10 fonctions accesseurs
+
+  TODO 16 - PARSEUR : SECTIONS ET PARAGRAPHES (PROCEDURE DIVISION) [A FAIRE]
+            Structure de la PROCEDURE DIVISION :
+              PROCEDURE DIVISION [USING param-1 param-2 ...].
+              Sections :
+                nom-section SECTION.
+                  contient un ou plusieurs paragraphes
+              Paragraphes :
+                nom-paragraphe.
+                  contient des instructions jusqu au prochain
+                  paragraphe ou section
+            Resolution des noms de paragraphes et sections :
+              PERFORM nom-paragraphe
+              PERFORM section-1 THRU section-2
+              GO TO nom-paragraphe
+            PERFORM THRU : execution de paragraphe-debut
+              jusqu a paragraphe-fin inclus
+            Paragraphes inline vs externes
+            Chaque paragraphe/section genere un label ASM :
+              _COBP_NOM_PARAGRAPHE
+            Appel de paragraphe : CALL/RET en 80386
+              ou inline expansion pour les petits paragraphes
+            Table des paragraphes : nom -> label ASM
+            Verification des references non resolues
+            DECLARATIVES : section speciale pour gestion
+              des erreurs (USE AFTER STANDARD ERROR)
+            10 fonctions accesseurs
+
+  TODO 17 - PARSEUR : CALL ET LIAISON INTER-PROGRAMMES [A FAIRE]
+            CALL :
+              CALL 'nom-programme' [USING param-1 param-2 ...]
+              CALL identifiant USING ... (appel dynamique)
+              BY REFERENCE : passage par adresse (defaut COBOL)
+              BY CONTENT : copie puis passage par adresse
+              BY VALUE : passage par valeur (pour API C/Win32)
+              ON EXCEPTION / NOT ON EXCEPTION
+              ON OVERFLOW (synonyme ancien)
+            END-CALL
+            CANCEL :
+              CANCEL 'nom-programme' (liberer le sous-programme)
+            Conventions d appel :
+              CALL COBOL : parametres par reference via pile 80386
+              CALL Win32 API : convention STDCALL (BY VALUE)
+              CALL C library : convention CDECL
+            Passage de parametres 80386 :
+              PUSH adresse (BY REFERENCE)
+              PUSH valeur (BY VALUE)
+              CALL label / CALL [adresse]
+              Nettoyage de pile selon convention
+            LINKAGE SECTION : description des parametres recus
+            PROCEDURE DIVISION USING : parametres formels
+            Appel dynamique avec LoadLibraryA/GetProcAddress
+            10 fonctions accesseurs
+
+  TODO 18 - PARSEUR : TABLES ET INDEXATION (OCCURS, SEARCH) [A FAIRE]
+            Clause OCCURS :
+              OCCURS n TIMES
+              OCCURS n TO m TIMES DEPENDING ON id
+              OCCURS avec KEY IS (pour SEARCH ALL)
+              OCCURS avec INDEXED BY idx
+            Indexation :
+              Indice numerique : TABLE(3) -> base + (3-1)*taille
+              Variable indice : TABLE(WS-IDX)
+              Index : TABLE(IDX-1) - optimise avec offset direct
+              Indices multiples : TABLE(I, J) pour tables 2D
+            SET pour indices et index :
+              SET idx TO valeur
+              SET idx UP BY n / SET idx DOWN BY n
+            SEARCH (recherche lineaire) :
+              SEARCH nom-table
+                [AT END instructions]
+                WHEN condition instructions
+              END-SEARCH
+              Incremente automatiquement l index associe
+            SEARCH ALL (recherche binaire) :
+              SEARCH ALL nom-table
+                [AT END instructions]
+                WHEN cle = valeur instructions
+              END-SEARCH
+              Necessite que la table soit ordonnee (KEY IS)
+            Generation 80386 :
+              Calcul d offset : base + (indice-1) * taille-element
+              Boucle de recherche avec CMP/JE/JNE/JMP
+            10 fonctions accesseurs
+
+  TODO 19 - PARSEUR : SORT ET MERGE [A FAIRE]
+            SORT :
+              SORT nom-fichier-tri
+                ON ASCENDING/DESCENDING KEY nom-cle-1 [nom-cle-2]
+                [WITH DUPLICATES IN ORDER]
+                USING nom-fichier-entree
+                  ou INPUT PROCEDURE IS section-1 [THRU section-2]
+                GIVING nom-fichier-sortie
+                  ou OUTPUT PROCEDURE IS section-1 [THRU section-2]
+            SD (Sort Description) dans FILE SECTION :
+              SD nom-fichier-tri.
+              01 nom-record-tri.
+                05 champs...
+            RELEASE :
+              RELEASE nom-record-tri [FROM id]
+              (dans INPUT PROCEDURE pour fournir des enregistrements)
+            RETURN :
+              RETURN nom-fichier-tri [INTO id]
+                AT END instructions
+              END-RETURN
+              (dans OUTPUT PROCEDURE pour recuperer les resultats)
+            MERGE :
+              MERGE nom-fichier-tri
+                ON ASCENDING/DESCENDING KEY nom-cle
+                USING fichier-1 fichier-2 [fichier-3 ...]
+                GIVING nom-fichier-sortie
+            Implementation interne : tri par insertion ou quicksort
+              en memoire pour les petites tables
+            Pour les fichiers volumineux : tri externe avec
+              fichiers temporaires Win32 (GetTempPathA/CreateFileA)
+            10 fonctions accesseurs
+
+  TODO 20 - BIBLIOTHEQUE RUNTIME COBOL (CHAINES, BCD, E/S VIA WIN32) [A FAIRE]
+            Routines de conversion numerique :
+              _COBRT_DISPLAY_TO_INT : PIC 9 DISPLAY -> registre 32 bits
+              _COBRT_INT_TO_DISPLAY : registre 32 bits -> PIC 9 DISPLAY
+              _COBRT_PACK_TO_INT : COMP-3 BCD -> registre 32 bits
+              _COBRT_INT_TO_PACK : registre 32 bits -> COMP-3 BCD
+              _COBRT_DISPLAY_TO_EDITED : DISPLAY -> format edite (Z, *, etc.)
+              _COBRT_NUMERIC_VALIDATE : verifier si NUMERIC
+            Routines de transfert :
+              _COBRT_MOVE_ALPHA : deplacement alphanumerique
+                (cadrage gauche, espaces de remplissage)
+              _COBRT_MOVE_NUMERIC : deplacement numerique
+                (alignement decimal, zero-fill)
+              _COBRT_MOVE_CORRESPONDING : MOVE CORRESPONDING
+              _COBRT_INITIALIZE : INITIALIZE record
+            Routines de chaines :
+              _COBRT_STRING_OP : operation STRING
+              _COBRT_UNSTRING_OP : operation UNSTRING
+              _COBRT_INSPECT_TALLY : INSPECT TALLYING
+              _COBRT_INSPECT_REPLACE : INSPECT REPLACING
+              _COBRT_INSPECT_CONVERT : INSPECT CONVERTING
+            Routines d E/S :
+              _COBRT_DISPLAY : afficher sur console (WriteFile)
+              _COBRT_ACCEPT : lire depuis console (ReadFile)
+              _COBRT_ACCEPT_DATE : date systeme (GetLocalTime)
+              _COBRT_FILE_OPEN : ouvrir fichier (CreateFileA)
+              _COBRT_FILE_CLOSE : fermer fichier (CloseHandle)
+              _COBRT_FILE_READ : lire enregistrement (ReadFile)
+              _COBRT_FILE_WRITE : ecrire enregistrement (WriteFile)
+            Routines arithmetiques :
+              _COBRT_ADD_ROUNDED : addition avec arrondi
+              _COBRT_CHECK_SIZE_ERROR : detection de debordement
+              _COBRT_POWER : exponentiation (**)
+            Variables runtime :
+              _COB_STDOUT, _COB_STDIN, _COB_FILE_HANDLES,
+              _COB_FILE_STATUS, _COB_RETURN_CODE
+            10 fonctions accesseurs
+
+  TODO 21 - ECRIVAIN BINAIRE PE (GENERATION .EXE WINDOWS 32 BITS) [A FAIRE]
+            Structure PE32 complete :
+              DOS Header (64 octets) avec DOS stub
+              Signature PE "PE\0\0"
+              COFF File Header (20 octets)
+                Machine : $014C (i386)
+                NumberOfSections : 3 (.text, .rdata, .data)
+              Optional Header (224 octets)
+                Magic : $010B (PE32)
+                ImageBase : $00400000
+                SectionAlignment : $1000 (4096)
+                FileAlignment : $0200 (512)
+                Subsystem : 3 (CUI Console)
+                DataDirectory[1] : Import Table RVA/Size
+              Section Headers : .text, .rdata, .data
+            Section .text :
+              Code machine 80386 genere
+              Point d entree (_start -> ExitProcess)
+              Routines runtime COBOL
+              Paragraphes et sections PROCEDURE DIVISION
+            Section .rdata :
+              Import Directory (IMAGE_IMPORT_DESCRIPTOR)
+              Hint/Name Table pour chaque DLL importee
+              Import Address Table (IAT) avec thunks
+            Section .data :
+              Variables WORKING-STORAGE initialisees
+              Constantes chaines COBOL
+              Tables de fichiers et buffers
+            Resolution des fixups (adresses relatives/absolues)
+            Alignement des sections sur FileAlignment/SectionAlignment
+            10 fonctions accesseurs
+
+  TODO 22 - ECRIVAIN COFF .OBJ (PARAMETRE -obj) [A FAIRE]
+            Format COFF 32 bits compatible LINK.EXE :
+              COFF File Header (20 octets)
+                Machine : $014C (i386)
+                NumberOfSections : 3
+              Section .text : code machine 80386
+              Section .data : donnees initialisees
+              Section .bss  : donnees non initialisees
+              Table des relocations :
+                IMAGE_RELOCATION pour chaque reference
+                Type $0006 : IMAGE_REL_I386_DIR32 (adresse absolue)
+                Type $0014 : IMAGE_REL_I386_REL32 (adresse relative)
+              Table des symboles :
+                IMAGE_SYMBOL pour chaque symbole
+                StorageClass : EXTERNAL (2), STATIC (3), LABEL (6)
+                Symboles externes pour imports Win32
+                Symboles definis pour paragraphes/variables COBOL
+              Table des chaines :
+                Noms de symboles > 8 caracteres
+            Ecriture binaire : octet par octet dans le fichier
+            Compatible avec Microsoft LINK.EXE et MASM
+            10 fonctions accesseurs
+
+  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [A FAIRE]
+            Format MASM (.ASM) lisible et assemblable :
+              .386
+              .MODEL FLAT, STDCALL
+              OPTION CASEMAP:NONE
+            Section INCLUDELIB :
+              INCLUDELIB kernel32.lib
+              INCLUDELIB user32.lib
+              INCLUDELIB msvcrt.lib (si necessaire)
+            Section EXTERN :
+              EXTERN _ExitProcess@4:PROC
+              EXTERN _GetStdHandle@4:PROC
+              EXTERN _WriteFile@20:PROC
+              EXTERN _ReadFile@20:PROC
+              EXTERN _CreateFileA@28:PROC
+              EXTERN _CloseHandle@4:PROC
+              (autres imports Win32 utilises)
+            Section .DATA :
+              Variables WORKING-STORAGE avec DB/DW/DD
+              Constantes chaines avec DB 'texte', 0
+              Tables de fichiers
+            Section .DATA? :
+              Variables non initialisees (BSS)
+              Buffers d E/S
+            Section .CODE :
+              Point d entree _start
+              Routines runtime (_COBRT_*)
+              Paragraphes COBOL avec labels (_COBP_*)
+              Commentaires avec le code COBOL source
+            Indentation et formatage lisible
+            Commentaires preserves dans le listing
+            10 fonctions accesseurs
+
+  TODO 24 - IMPORTS API WIN32 ET LIAISON (KERNEL32, USER32, MSVCRT) [A FAIRE]
+            Imports kernel32.dll :
+              ExitProcess, GetStdHandle, WriteFile, ReadFile,
+              GetProcessHeap, HeapAlloc, HeapFree,
+              CreateFileA, CloseHandle, SetFilePointer,
+              GetFileSize, DeleteFileA, MoveFileA,
+              GetCommandLineA, GetModuleHandleA,
+              GetLocalTime (pour ACCEPT FROM DATE/TIME),
+              GetTempPathA (pour fichiers temporaires SORT),
+              GetLastError, SetLastError,
+              FindFirstFileA, FindNextFileA, FindClose,
+              LoadLibraryA, GetProcAddress, FreeLibrary
+                (pour CALL dynamique)
+            Imports user32.dll :
+              MessageBoxA (optionnel pour messages d erreur)
+            Imports msvcrt.dll (si necessaire) :
+              sprintf, sscanf (pour formatage numerique),
+              _itoa, atoi, atol (conversions),
+              memcpy, memset, memcmp (operations memoire),
+              qsort (pour SORT interne)
+            Generer la table d importation PE :
+              IMAGE_IMPORT_DESCRIPTOR par DLL
+              Hint/Name Table avec noms de fonctions
+              Import Address Table (IAT) avec thunks
+            Generer les EXTERN pour le mode .ASM
+            Generer les symboles externes pour le mode .OBJ
+            Marquer les imports reellement utilises pour
+              n inclure que le necessaire
+            10 fonctions accesseurs
+
+  TODO 25 - OPTIMISATIONS, TESTS FINAUX ET INTEGRATION SAMPLES\COBOL\* [A FAIRE]
+            Optimisations peephole :
+              MOV EAX, 0 -> XOR EAX, EAX
+              PUSH EAX / POP EAX -> (eliminer)
+              MOV EAX, [x] / MOV [x], EAX -> (eliminer deuxieme)
+              ADD EAX, 1 -> INC EAX
+              SUB EAX, 1 -> DEC EAX
+              IMUL EAX, 2 -> SHL EAX, 1
+              IMUL EAX, 4 -> SHL EAX, 2
+            Verification : compiler et executer les exemples
+              SAMPLES\COBOL\HELLO.CBL      - Hello World avec DISPLAY
+              SAMPLES\COBOL\DATA_TEST.CBL  - DATA DIVISION et types
+              SAMPLES\COBOL\IDENT_TEST.CBL - IDENTIFICATION DIVISION
+              SAMPLES\COBOL\ENV_TEST.CBL   - ENVIRONMENT DIVISION
+            Tests de regression pour chaque TODO
+            Verification des 3 modes de sortie :
+              .EXE (defaut), .OBJ (-obj), .ASM (-asm)
+            Mesure de la taille des executables generes
+            Verification de la compatibilite COBOL-85
+            Test des constantes figuratives (SPACES, ZEROS, etc.)
+            Test des operations MOVE avec differents types PIC
+            Test de l arithmetique decimale (COMP-3, ROUNDED)
+            10 fonctions accesseurs
