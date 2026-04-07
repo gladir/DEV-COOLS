@@ -513,7 +513,7 @@
               des erreurs (USE AFTER STANDARD ERROR)
             10 fonctions accesseurs
 
-  TODO 17 - PARSEUR : CALL ET LIAISON INTER-PROGRAMMES [A FAIRE]
+  TODO 17 - PARSEUR : CALL ET LIAISON INTER-PROGRAMMES [IMPLEMENTE]
             CALL :
               CALL 'nom-programme' [USING param-1 param-2 ...]
               CALL identifiant USING ... (appel dynamique)
@@ -1772,8 +1772,12 @@ Const
   KW_DECLARATIVES      = 238;  { DECLARATIVES }
   KW_USE               = 239;  { USE }
 
+  { Mots-cles pour TODO 17 : CALL/LIAISON INTER-PROGRAMMES }
+  KW_CANCEL            = 240;  { CANCEL }
+  KW_EXCEPTION         = 241;  { EXCEPTION }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 170;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 172;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -2022,6 +2026,8 @@ Begin
   Else If S = 'END-ACCEPT'        Then LookupKeyword := KW_END_ACCEPT
   Else If S = 'DECLARATIVES'      Then LookupKeyword := KW_DECLARATIVES
   Else If S = 'USE'               Then LookupKeyword := KW_USE
+  Else If S = 'CANCEL'            Then LookupKeyword := KW_CANCEL
+  Else If S = 'EXCEPTION'         Then LookupKeyword := KW_EXCEPTION
   Else LookupKeyword := KW_NONE;
 End;
 
@@ -2241,6 +2247,8 @@ Begin
     KW_END_ACCEPT        : KeywordName := 'END-ACCEPT';
     KW_DECLARATIVES      : KeywordName := 'DECLARATIVES';
     KW_USE               : KeywordName := 'USE';
+    KW_CANCEL            : KeywordName := 'CANCEL';
+    KW_EXCEPTION         : KeywordName := 'EXCEPTION';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -14156,6 +14164,760 @@ Begin
   GetPdvStateCount := PdvStateCount;
 End;
 
+{ ============================================================ }
+{ TODO 17 - PARSEUR : CALL ET LIAISON INTER-PROGRAMMES         }
+{           CALL, CANCEL, conventions d appel Win32/C/COBOL    }
+{ ============================================================ }
+
+Const
+  { Conventions d appel }
+  CAL_CONV_NONE        = 0;   { pas de convention specifique               }
+  CAL_CONV_COBOL       = 1;   { convention COBOL (BY REFERENCE par defaut) }
+  CAL_CONV_STDCALL     = 2;   { convention STDCALL (Win32 API)             }
+  CAL_CONV_CDECL       = 3;   { convention CDECL (C library)               }
+
+  { Modes de passage de parametres }
+  CAL_PASS_NONE        = 0;   { pas de passage                             }
+  CAL_PASS_REFERENCE   = 1;   { BY REFERENCE (adresse, defaut COBOL)       }
+  CAL_PASS_CONTENT     = 2;   { BY CONTENT (copie puis adresse)            }
+  CAL_PASS_VALUE       = 3;   { BY VALUE (valeur directe, pour C/Win32)    }
+
+  { Types d appel }
+  CAL_TYPE_NONE        = 0;   { pas d appel                                }
+  CAL_TYPE_STATIC      = 1;   { CALL 'literal' (appel statique)            }
+  CAL_TYPE_DYNAMIC     = 2;   { CALL identifiant (appel dynamique)         }
+
+  { Limites }
+  CAL_MAX_PARAMS       = 16;  { nombre max de parametres USING             }
+  CAL_MAX_PROGRAMS     = 64;  { nombre max de programmes appeles           }
+  CAL_MAX_CANCELLED    = 32;  { nombre max de programmes annules           }
+
+Type
+  TCallParam = Record
+    Name       : TString;     { nom du parametre (identifiant)             }
+    PassMode   : Integer;     { CAL_PASS_REFERENCE/CONTENT/VALUE           }
+    Size       : Integer;     { taille en octets (0 si inconnue)           }
+    IsLiteral  : Boolean;     { True si c est un litteral                  }
+  End;
+
+  TCalledProgram = Record
+    Name       : TString;     { nom du programme appele                    }
+    AsmLabel   : TString;     { label ASM (_COBP_NOM ou _COBRT_DYN_CALL)  }
+    Convention : Integer;     { CAL_CONV_COBOL/STDCALL/CDECL              }
+    CallType   : Integer;     { CAL_TYPE_STATIC/CAL_TYPE_DYNAMIC          }
+    ParamCount : Integer;     { nombre de parametres                       }
+    CallCount  : Integer;     { nombre de fois appele                      }
+    IsCancelled: Boolean;     { True si CANCEL a ete appele                }
+  End;
+
+Var
+  CalInitialized       : Boolean;   { True si InitCallState appele        }
+  CalStateCount        : Integer;   { compteur d etat general             }
+  CalLabelNum          : Integer;   { compteur de labels internes         }
+  CalCallCount         : Integer;   { nombre total de CALL                }
+  CalCallStaticCount   : Integer;   { nombre de CALL statiques            }
+  CalCallDynamicCount  : Integer;   { nombre de CALL dynamiques           }
+  CalCancelCount       : Integer;   { nombre de CANCEL                    }
+  CalByRefCount        : Integer;   { nombre de params BY REFERENCE       }
+  CalByContentCount    : Integer;   { nombre de params BY CONTENT         }
+  CalByValueCount      : Integer;   { nombre de params BY VALUE           }
+  CalOnExceptionCount  : Integer;   { nombre de ON EXCEPTION              }
+  CalNotExceptionCount : Integer;   { nombre de NOT ON EXCEPTION          }
+  CalOnOverflowCount   : Integer;   { nombre de ON OVERFLOW (ancien)      }
+  CalEndCallCount      : Integer;   { nombre de END-CALL                  }
+  CalUsingParamTotal   : Integer;   { total de parametres passes          }
+  CalConvCobolCount    : Integer;   { nombre de conventions COBOL         }
+  CalConvStdcallCount  : Integer;   { nombre de conventions STDCALL       }
+  CalConvCdeclCount    : Integer;   { nombre de conventions CDECL         }
+  CalPrograms          : Array[0..CAL_MAX_PROGRAMS-1] Of TCalledProgram;
+  CalProgramCount      : Integer;   { nombre de programmes enregistres    }
+  CalTotalGenerated    : Integer;   { total d instructions generees       }
+
+{ ------------------------------------------------------------ }
+{ InitCallState : initialiser l etat du module CALL/CANCEL      }
+{ ------------------------------------------------------------ }
+
+Procedure InitCallState;
+Var I : Integer;
+Begin
+  CalInitialized       := True;
+  CalStateCount        := 0;
+  CalLabelNum          := 0;
+  CalCallCount         := 0;
+  CalCallStaticCount   := 0;
+  CalCallDynamicCount  := 0;
+  CalCancelCount       := 0;
+  CalByRefCount        := 0;
+  CalByContentCount    := 0;
+  CalByValueCount      := 0;
+  CalOnExceptionCount  := 0;
+  CalNotExceptionCount := 0;
+  CalOnOverflowCount   := 0;
+  CalEndCallCount      := 0;
+  CalUsingParamTotal   := 0;
+  CalConvCobolCount    := 0;
+  CalConvStdcallCount  := 0;
+  CalConvCdeclCount    := 0;
+  CalProgramCount      := 0;
+  CalTotalGenerated    := 0;
+  For I := 0 To CAL_MAX_PROGRAMS - 1 Do Begin
+    CalPrograms[I].Name       := '';
+    CalPrograms[I].AsmLabel   := '';
+    CalPrograms[I].Convention := CAL_CONV_NONE;
+    CalPrograms[I].CallType   := CAL_TYPE_NONE;
+    CalPrograms[I].ParamCount := 0;
+    CalPrograms[I].CallCount  := 0;
+    CalPrograms[I].IsCancelled:= False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCalLabel : genere un label unique pour le module CALL       }
+{ ------------------------------------------------------------ }
+
+Function GenCalLabel : TString;
+Begin
+  Inc(CalLabelNum);
+  GenCalLabel := '_COBCAL_L' + ItoSI(CalLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ CalConventionName : nom de la convention d appel               }
+{ ------------------------------------------------------------ }
+
+Function CalConventionName(Conv : Integer) : TString;
+Begin
+  Case Conv Of
+    CAL_CONV_NONE    : CalConventionName := 'NONE';
+    CAL_CONV_COBOL   : CalConventionName := 'COBOL';
+    CAL_CONV_STDCALL : CalConventionName := 'STDCALL';
+    CAL_CONV_CDECL   : CalConventionName := 'CDECL';
+  Else
+    CalConventionName := 'UNKNOWN(' + ItoSI(Conv) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CalPassingName : nom du mode de passage de parametre           }
+{ ------------------------------------------------------------ }
+
+Function CalPassingName(PM : Integer) : TString;
+Begin
+  Case PM Of
+    CAL_PASS_NONE      : CalPassingName := 'NONE';
+    CAL_PASS_REFERENCE : CalPassingName := 'BY REFERENCE';
+    CAL_PASS_CONTENT   : CalPassingName := 'BY CONTENT';
+    CAL_PASS_VALUE     : CalPassingName := 'BY VALUE';
+  Else
+    CalPassingName := 'UNKNOWN(' + ItoSI(PM) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CalCallTypeName : nom du type d appel                          }
+{ ------------------------------------------------------------ }
+
+Function CalCallTypeName(CT : Integer) : TString;
+Begin
+  Case CT Of
+    CAL_TYPE_NONE    : CalCallTypeName := 'NONE';
+    CAL_TYPE_STATIC  : CalCallTypeName := 'STATIC';
+    CAL_TYPE_DYNAMIC : CalCallTypeName := 'DYNAMIC';
+  Else
+    CalCallTypeName := 'UNKNOWN(' + ItoSI(CT) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindCalledProgram : cherche un programme appele par nom        }
+{ Retourne l index ou -1 si non trouve                           }
+{ ------------------------------------------------------------ }
+
+Function FindCalledProgram(Const PName : TString) : Integer;
+Var I : Integer;
+Begin
+  FindCalledProgram := -1;
+  For I := 0 To CalProgramCount - 1 Do
+    If CalPrograms[I].Name = PName Then Begin
+      FindCalledProgram := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddCalledProgram : ajouter un programme a la table             }
+{ Retourne l index ou -1 si table pleine                        }
+{ ------------------------------------------------------------ }
+
+Function AddCalledProgram(Const PName : TString;
+                          CType : Integer; Conv : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  { Verifier si deja enregistre }
+  Idx := FindCalledProgram(PName);
+  If Idx >= 0 Then Begin
+    Inc(CalPrograms[Idx].CallCount);
+    AddCalledProgram := Idx;
+    Exit;
+  End;
+  { Ajouter une nouvelle entree }
+  If CalProgramCount >= CAL_MAX_PROGRAMS Then Begin
+    WarnMsg('Table des programmes appeles pleine, max=' +
+            ItoSI(CAL_MAX_PROGRAMS));
+    AddCalledProgram := -1;
+    Exit;
+  End;
+  CalPrograms[CalProgramCount].Name       := PName;
+  If CType = CAL_TYPE_STATIC Then
+    CalPrograms[CalProgramCount].AsmLabel := '_COBP_' + AsmIdent(PName)
+  Else
+    CalPrograms[CalProgramCount].AsmLabel := '_COBRT_DYN_' + AsmIdent(PName);
+  CalPrograms[CalProgramCount].Convention := Conv;
+  CalPrograms[CalProgramCount].CallType   := CType;
+  CalPrograms[CalProgramCount].ParamCount := 0;
+  CalPrograms[CalProgramCount].CallCount  := 1;
+  CalPrograms[CalProgramCount].IsCancelled:= False;
+  AddCalledProgram := CalProgramCount;
+  Inc(CalProgramCount);
+  Inc(CalStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCallPushRef : genere PUSH adresse pour BY REFERENCE         }
+{ LEA EAX, [adresse]                                            }
+{ PUSH EAX                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenCallPushRef(Const ParamName : TString);
+Begin
+  WriteLn('  ; BY REFERENCE ', ParamName);
+  WriteLn('  LEA EAX, [', AsmIdent(ParamName), ']');
+  WriteLn('  PUSH EAX');
+  Inc(CalTotalGenerated, 2);
+  Inc(CalByRefCount);
+  Inc(CalUsingParamTotal);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCallPushContent : genere copie + PUSH adresse pour          }
+{ BY CONTENT (copie dans zone temporaire puis adresse)          }
+{ ------------------------------------------------------------ }
+
+Procedure GenCallPushContent(Const ParamName : TString; ParamSize : Integer);
+Var TmpLabel : TString;
+Begin
+  TmpLabel := GenCalLabel;
+  WriteLn('  ; BY CONTENT ', ParamName, ' (size=', ParamSize, ')');
+  WriteLn('  SUB ESP, ', ParamSize, '  ; reserver espace temporaire');
+  WriteLn('  MOV EDI, ESP');
+  WriteLn('  LEA ESI, [', AsmIdent(ParamName), ']');
+  WriteLn('  MOV ECX, ', ParamSize);
+  WriteLn('  REP MOVSB');
+  WriteLn('  PUSH ESP  ; adresse de la copie');
+  Inc(CalTotalGenerated, 6);
+  Inc(CalByContentCount);
+  Inc(CalUsingParamTotal);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCallPushValue : genere PUSH valeur pour BY VALUE            }
+{ MOV EAX, [adresse] ou valeur immediate                        }
+{ PUSH EAX                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenCallPushValue(Const ParamName : TString; ParamSize : Integer);
+Begin
+  WriteLn('  ; BY VALUE ', ParamName);
+  If ParamSize <= 4 Then Begin
+    WriteLn('  MOV EAX, DWORD [', AsmIdent(ParamName), ']');
+    WriteLn('  PUSH EAX');
+    Inc(CalTotalGenerated, 2);
+  End Else Begin
+    { Pour les parametres > 4 octets, pousser par blocs de 4 }
+    WriteLn('  ; push ', ParamSize, ' bytes by value');
+    WriteLn('  SUB ESP, ', ParamSize);
+    WriteLn('  MOV EDI, ESP');
+    WriteLn('  LEA ESI, [', AsmIdent(ParamName), ']');
+    WriteLn('  MOV ECX, ', ParamSize);
+    WriteLn('  REP MOVSB');
+    Inc(CalTotalGenerated, 5);
+  End;
+  Inc(CalByValueCount);
+  Inc(CalUsingParamTotal);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCallStatic : genere un appel statique                       }
+{ CALL _COBP_NOM_PROGRAMME                                      }
+{ ------------------------------------------------------------ }
+
+Procedure GenCallStatic(Const ProgName : TString; ParamCount : Integer;
+                        Conv : Integer);
+Begin
+  WriteLn('  ; CALL ''', ProgName, ''' (', ParamCount, ' params, ',
+          CalConventionName(Conv), ')');
+  WriteLn('  CALL _COBP_', AsmIdent(ProgName));
+  Inc(CalTotalGenerated);
+  { Nettoyage de pile selon convention }
+  If Conv = CAL_CONV_CDECL Then Begin
+    If ParamCount > 0 Then Begin
+      WriteLn('  ADD ESP, ', ParamCount * 4,
+              '  ; nettoyage pile CDECL');
+      Inc(CalTotalGenerated);
+    End;
+  End;
+  { STDCALL : le sous-programme nettoie la pile }
+  { COBOL : le sous-programme nettoie la pile (convention similaire) }
+  Inc(CalCallStaticCount);
+  Inc(CalCallCount);
+  Inc(CalStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCallDynamic : genere un appel dynamique                     }
+{ Utilise LoadLibraryA/GetProcAddress pour resoudre              }
+{ ------------------------------------------------------------ }
+
+Procedure GenCallDynamic(Const IdentName : TString; ParamCount : Integer);
+Var LblOk, LblErr : TString;
+Begin
+  LblOk  := GenCalLabel;
+  LblErr := GenCalLabel;
+  WriteLn('  ; CALL dynamique via ', IdentName);
+  WriteLn('  ; Charger le nom du programme depuis la variable');
+  WriteLn('  LEA EAX, [', AsmIdent(IdentName), ']');
+  WriteLn('  PUSH EAX');
+  WriteLn('  CALL _LoadLibraryA');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JZ ', LblErr);
+  WriteLn('  MOV EBX, EAX  ; handle du module');
+  WriteLn('  LEA EAX, [', AsmIdent(IdentName), ']');
+  WriteLn('  PUSH EAX');
+  WriteLn('  PUSH EBX');
+  WriteLn('  CALL _GetProcAddress');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JZ ', LblErr);
+  WriteLn('  CALL EAX  ; appel dynamique');
+  WriteLn('  JMP ', LblOk);
+  WriteLn(LblErr, ':');
+  WriteLn('  ; Erreur : programme non trouve - ON EXCEPTION');
+  WriteLn(LblOk, ':');
+  Inc(CalTotalGenerated, 16);
+  Inc(CalCallDynamicCount);
+  Inc(CalCallCount);
+  Inc(CalStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCallCleanup : genere le nettoyage apres un appel            }
+{ Restauration de pile pour BY CONTENT                           }
+{ ------------------------------------------------------------ }
+
+Procedure GenCallCleanup(ContentBytes : Integer);
+Begin
+  If ContentBytes > 0 Then Begin
+    WriteLn('  ADD ESP, ', ContentBytes,
+            '  ; nettoyage copies BY CONTENT');
+    Inc(CalTotalGenerated);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenCancelProgram : genere le code pour CANCEL                  }
+{ Libere le module charge dynamiquement                         }
+{ ------------------------------------------------------------ }
+
+Procedure GenCancelProgram(Const ProgName : TString);
+Var Idx : Integer;
+Begin
+  WriteLn('  ; CANCEL ''', ProgName, '''');
+  WriteLn('  ; Liberer le sous-programme charge');
+  WriteLn('  LEA EAX, [', AsmIdent(ProgName), ']');
+  WriteLn('  PUSH EAX');
+  WriteLn('  CALL _COBRT_CANCEL_PROGRAM');
+  Inc(CalTotalGenerated, 4);
+  Inc(CalCancelCount);
+  Inc(CalStateCount);
+  { Marquer le programme comme annule }
+  Idx := FindCalledProgram(ProgName);
+  If Idx >= 0 Then
+    CalPrograms[Idx].IsCancelled := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenOnException : genere la gestion ON EXCEPTION                }
+{ Branchement si le CALL a echoue (EAX = 0)                    }
+{ ------------------------------------------------------------ }
+
+Procedure GenOnException(Const LblExcept : TString);
+Begin
+  WriteLn('  ; ON EXCEPTION');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JZ ', LblExcept);
+  Inc(CalTotalGenerated, 2);
+  Inc(CalOnExceptionCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenNotOnException : genere la gestion NOT ON EXCEPTION         }
+{ Branchement si le CALL a reussi (EAX <> 0)                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenNotOnException(Const LblNotExcept : TString);
+Begin
+  WriteLn('  ; NOT ON EXCEPTION');
+  WriteLn('  TEST EAX, EAX');
+  WriteLn('  JNZ ', LblNotExcept);
+  Inc(CalTotalGenerated, 2);
+  Inc(CalNotExceptionCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCallUsingClause : parser la clause USING d un CALL        }
+{   USING [BY REFERENCE|CONTENT|VALUE] param-1 param-2 ...     }
+{ Retourne le nombre de parametres lus                           }
+{ ------------------------------------------------------------ }
+
+Function ParseCallUsingClause : Integer;
+Var
+  ParamCount  : Integer;
+  CurrentMode : Integer;
+Begin
+  ParamCount := 0;
+  CurrentMode := CAL_PASS_REFERENCE; { defaut COBOL }
+
+  { Consommer USING }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_USING) Then
+    LexNextToken
+  Else Begin
+    ParseCallUsingClause := 0;
+    Exit;
+  End;
+
+  { Lire les parametres }
+  While (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Do Begin
+    { Verifier BY REFERENCE / BY CONTENT / BY VALUE }
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_BY) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_REFERENCE) Then Begin
+        CurrentMode := CAL_PASS_REFERENCE;
+        LexNextToken;
+        Continue;
+      End
+      Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_CONTENT) Then Begin
+        CurrentMode := CAL_PASS_CONTENT;
+        LexNextToken;
+        Continue;
+      End
+      Else If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_VALUE) Then Begin
+        CurrentMode := CAL_PASS_VALUE;
+        LexNextToken;
+        Continue;
+      End;
+    End;
+
+    { Verifier si c est un mot-cle de fin }
+    If (CurTokType = TOK_KEYWORD) Then Begin
+      If (CurTokNum = KW_ON) Or (CurTokNum = KW_NOT) Or
+         (CurTokNum = KW_EXCEPTION) Or (CurTokNum = KW_OVERFLOW) Or
+         (CurTokNum = KW_END_CALL) Then
+        Break;
+    End;
+
+    { Lire un parametre }
+    If (CurTokType = TOK_IDENT) Then Begin
+      Case CurrentMode Of
+        CAL_PASS_REFERENCE : GenCallPushRef(CurTokStr);
+        CAL_PASS_CONTENT   : GenCallPushContent(CurTokStr, 4);
+        CAL_PASS_VALUE     : GenCallPushValue(CurTokStr, 4);
+      End;
+      Inc(ParamCount);
+      LexNextToken;
+    End Else
+      Break;
+  End;
+
+  ParseCallUsingClause := ParamCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCallStatement : parser l instruction CALL                 }
+{   CALL 'nom' [USING ...] [ON EXCEPTION ...] [END-CALL]       }
+{   CALL ident [USING ...] [ON EXCEPTION ...] [END-CALL]       }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCallStatement;
+Var
+  ProgName    : TString;
+  CallType    : Integer;
+  ParamCount  : Integer;
+  Convention  : Integer;
+  ProgIdx     : Integer;
+  LblExcept   : TString;
+  LblEnd      : TString;
+  HasException: Boolean;
+  HasNotExcep : Boolean;
+Begin
+  { CALL deja consomme }
+  HasException := False;
+  HasNotExcep  := False;
+  Convention   := CAL_CONV_COBOL;
+  ParamCount   := 0;
+
+  { Lire le nom du programme }
+  If (CurTokType = TOK_STRING) Then Begin
+    { CALL 'nom-programme' - appel statique }
+    ProgName := CurTokStr;
+    CallType := CAL_TYPE_STATIC;
+    LexNextToken;
+  End
+  Else If (CurTokType = TOK_IDENT) Then Begin
+    { CALL identifiant - appel dynamique }
+    ProgName := CurTokStr;
+    CallType := CAL_TYPE_DYNAMIC;
+    LexNextToken;
+  End
+  Else Begin
+    WarnMsg('Nom de programme attendu apres CALL');
+    Exit;
+  End;
+
+  { Parser la clause USING si presente }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_USING) Then Begin
+    ParamCount := ParseCallUsingClause;
+  End;
+
+  { Generer l appel }
+  ProgIdx := AddCalledProgram(ProgName, CallType, Convention);
+  If ProgIdx >= 0 Then
+    CalPrograms[ProgIdx].ParamCount := ParamCount;
+
+  If CallType = CAL_TYPE_STATIC Then
+    GenCallStatic(ProgName, ParamCount, Convention)
+  Else
+    GenCallDynamic(ProgName, ParamCount);
+
+  { Parser ON EXCEPTION / NOT ON EXCEPTION }
+  LblExcept := GenCalLabel;
+  LblEnd    := GenCalLabel;
+
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And
+       ((CurTokNum = KW_EXCEPTION) Or (CurTokNum = KW_OVERFLOW)) Then Begin
+      If CurTokNum = KW_OVERFLOW Then
+        Inc(CalOnOverflowCount);
+      LexNextToken;
+      HasException := True;
+      GenOnException(LblExcept);
+      { Sauter les instructions de gestion d exception }
+      { (dans un compilateur complet, on parserait les instructions ici) }
+      While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) Do Begin
+        If (CurTokType = TOK_KEYWORD) Then Begin
+          If (CurTokNum = KW_NOT) Or (CurTokNum = KW_END_CALL) Then
+            Break;
+        End;
+        LexNextToken;
+      End;
+      WriteLn(LblExcept, ':');
+      Inc(CalTotalGenerated);
+    End;
+  End;
+
+  { NOT ON EXCEPTION }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOT) Then Begin
+    LexNextToken;
+    If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_ON) Then Begin
+      LexNextToken;
+      If (CurTokType = TOK_KEYWORD) And
+         ((CurTokNum = KW_EXCEPTION) Or (CurTokNum = KW_OVERFLOW)) Then Begin
+        LexNextToken;
+        HasNotExcep := True;
+        GenNotOnException(LblEnd);
+        { Sauter les instructions }
+        While (CurTokType <> TOK_EOF) And (CurTokType <> TOK_DOT) Do Begin
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_CALL) Then
+            Break;
+          LexNextToken;
+        End;
+        WriteLn(LblEnd, ':');
+        Inc(CalTotalGenerated);
+      End;
+    End;
+  End;
+
+  { END-CALL }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_END_CALL) Then Begin
+    LexNextToken;
+    Inc(CalEndCallCount);
+  End;
+
+  { Consommer le point terminal }
+  If (CurTokType = TOK_DOT) Then
+    LexNextToken;
+
+  Inc(CalStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCancelStatement : parser l instruction CANCEL             }
+{   CANCEL 'nom-programme'                                      }
+{   CANCEL identifiant                                          }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCancelStatement;
+Var ProgName : TString;
+Begin
+  { CANCEL deja consomme }
+  If (CurTokType = TOK_STRING) Then Begin
+    ProgName := CurTokStr;
+    LexNextToken;
+    GenCancelProgram(ProgName);
+  End
+  Else If (CurTokType = TOK_IDENT) Then Begin
+    ProgName := CurTokStr;
+    LexNextToken;
+    GenCancelProgram(ProgName);
+  End
+  Else Begin
+    WarnMsg('Nom de programme attendu apres CANCEL');
+  End;
+
+  { Consommer le point terminal }
+  If (CurTokType = TOK_DOT) Then
+    LexNextToken;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCallLinkageStatement : dispatche CALL ou CANCEL           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseCallLinkageStatement;
+Begin
+  If (CurTokType = TOK_KEYWORD) Then Begin
+    If CurTokNum = KW_CALL Then Begin
+      LexNextToken;
+      ParseCallStatement;
+    End
+    Else If CurTokNum = KW_CANCEL Then Begin
+      LexNextToken;
+      ParseCancelStatement;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsCallKeyword : verifie si un mot-cle est lie a CALL/CANCEL   }
+{ ------------------------------------------------------------ }
+
+Function IsCallKeyword(KW : Integer) : Boolean;
+Begin
+  IsCallKeyword := (KW = KW_CALL) Or (KW = KW_CANCEL) Or
+                   (KW = KW_END_CALL) Or (KW = KW_EXCEPTION) Or
+                   (KW = KW_USING) Or (KW = KW_BY) Or
+                   (KW = KW_REFERENCE) Or (KW = KW_CONTENT) Or
+                   (KW = KW_VALUE) Or (KW = KW_OVERFLOW);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpCallState : afficher l etat du module CALL/CANCEL          }
+{ ------------------------------------------------------------ }
+
+Procedure DumpCallState;
+Var I : Integer;
+Begin
+  WriteLn('=== CALL/CANCEL State ===');
+  WriteLn('  Initialise           : ', CalInitialized);
+  WriteLn('  Total CALL           : ', CalCallCount);
+  WriteLn('  CALL statiques       : ', CalCallStaticCount);
+  WriteLn('  CALL dynamiques      : ', CalCallDynamicCount);
+  WriteLn('  CANCEL               : ', CalCancelCount);
+  WriteLn('  BY REFERENCE         : ', CalByRefCount);
+  WriteLn('  BY CONTENT           : ', CalByContentCount);
+  WriteLn('  BY VALUE             : ', CalByValueCount);
+  WriteLn('  ON EXCEPTION         : ', CalOnExceptionCount);
+  WriteLn('  NOT ON EXCEPTION     : ', CalNotExceptionCount);
+  WriteLn('  ON OVERFLOW (ancien) : ', CalOnOverflowCount);
+  WriteLn('  END-CALL             : ', CalEndCallCount);
+  WriteLn('  Total params USING   : ', CalUsingParamTotal);
+  WriteLn('  Conv COBOL           : ', CalConvCobolCount);
+  WriteLn('  Conv STDCALL         : ', CalConvStdcallCount);
+  WriteLn('  Conv CDECL           : ', CalConvCdeclCount);
+  WriteLn('  Programmes appeles   : ', CalProgramCount);
+  WriteLn('  Total genere         : ', CalTotalGenerated);
+  WriteLn('  State count          : ', CalStateCount);
+  If CalProgramCount > 0 Then Begin
+    WriteLn('  --- Programmes appeles ---');
+    For I := 0 To CalProgramCount - 1 Do
+      WriteLn('    [', I, '] ', CalPrograms[I].Name,
+              ' -> ', CalPrograms[I].AsmLabel,
+              ' conv=', CalConventionName(CalPrograms[I].Convention),
+              ' type=', CalCallTypeName(CalPrograms[I].CallType),
+              ' params=', CalPrograms[I].ParamCount,
+              ' calls=', CalPrograms[I].CallCount,
+              ' cancelled=', CalPrograms[I].IsCancelled);
+  End;
+End;
+
+{ 10 fonctions accesseurs pour TODO 17                         }
+
+Function IsCalInitialized : Boolean;
+Begin
+  IsCalInitialized := CalInitialized;
+End;
+
+Function IsCalEmpty : Boolean;
+Begin
+  IsCalEmpty := (CalTotalGenerated = 0);
+End;
+
+Function GetCalTotalGenerated : Integer;
+Begin
+  GetCalTotalGenerated := CalTotalGenerated;
+End;
+
+Function GetCalStatus : TString;
+Begin
+  If Not CalInitialized Then
+    GetCalStatus := 'NON INITIALISE'
+  Else
+    GetCalStatus := 'CALL=' + ItoSI(CalCallCount) +
+                    ' STATIC=' + ItoSI(CalCallStaticCount) +
+                    ' DYNAMIC=' + ItoSI(CalCallDynamicCount) +
+                    ' CANCEL=' + ItoSI(CalCancelCount) +
+                    ' PROGS=' + ItoSI(CalProgramCount);
+End;
+
+Function GetCalCallCount : Integer;
+Begin
+  GetCalCallCount := CalCallCount;
+End;
+
+Function GetCalCancelCount : Integer;
+Begin
+  GetCalCancelCount := CalCancelCount;
+End;
+
+Function GetCalProgramCount : Integer;
+Begin
+  GetCalProgramCount := CalProgramCount;
+End;
+
+Function GetCalByRefCount : Integer;
+Begin
+  GetCalByRefCount := CalByRefCount;
+End;
+
+Function GetCalUsingParamTotal : Integer;
+Begin
+  GetCalUsingParamTotal := CalUsingParamTotal;
+End;
+
+Function GetCalStateCount : Integer;
+Begin
+  GetCalStateCount := CalStateCount;
+End;
+
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
 { COBOL est insensible a la casse : tout est converti en       }
 { majuscules dans CurTokStr                                     }
@@ -14818,6 +15580,7 @@ Begin
   FioInitialized := False;
   AdsInitialized := False;
   PdvInitialized := False;
+  CalInitialized := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -14866,6 +15629,9 @@ Begin
 
   { Initialiser le module PROCEDURE DIVISION / Sections / Paragraphes }
   InitProcDivState;
+
+  { Initialiser le module CALL/CANCEL/Liaison inter-programmes }
+  InitCallState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;

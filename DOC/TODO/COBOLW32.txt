@@ -505,7 +505,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
               des erreurs (USE AFTER STANDARD ERROR)
             10 fonctions accesseurs
 
-  TODO 17 - PARSEUR : CALL ET LIAISON INTER-PROGRAMMES [A FAIRE]
+  TODO 17 - PARSEUR : CALL ET LIAISON INTER-PROGRAMMES [IMPLEMENTE]
             CALL :
               CALL 'nom-programme' [USING param-1 param-2 ...]
               CALL identifiant USING ... (appel dynamique)
