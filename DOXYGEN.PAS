@@ -7862,6 +7862,8 @@ Begin
         ClassDiagFormat := 'svg'
       Else If Opts.PngOutput Then
         ClassDiagFormat := 'png'
+      Else If Opts.JpegOutput Then
+        ClassDiagFormat := 'jpg'
       Else If Opts.VdxOutput Then
         ClassDiagFormat := 'vdx'
       Else
@@ -12801,6 +12803,8 @@ End;
   FIN DU GENERATEUR VISIO VDX INTEGRE
   ============================================================ }
 
+Procedure RenderDotToJpeg(Const DotFile, JpegFile: String); Forward;
+
 Procedure RenderCallGraphImage(Const DotFile, ImageFile: String);
 { Genere l'image a partir du fichier DOT en utilisant les generateurs integres }
 Var
@@ -12832,6 +12836,12 @@ Begin
   Else If (Format = 'vdx') Or (Format = 'VDX') Then
   Begin
     RenderDotToVdx(DotFile, ImageFile);
+  End
+  { Utiliser le generateur JPEG integre pour le format JPEG }
+  Else If (Format = 'jpg') Or (Format = 'JPG') Or
+          (Format = 'jpeg') Or (Format = 'JPEG') Then
+  Begin
+    RenderDotToJpeg(DotFile, ImageFile);
   End
   Else
   Begin
@@ -13376,6 +13386,12 @@ Begin
   Else If (Format = 'vdx') Or (Format = 'VDX') Then
   Begin
     RenderDotToVdx(DotFile, ImageFile);
+  End
+  { Utiliser le generateur JPEG integre pour le format JPEG }
+  Else If (Format = 'jpg') Or (Format = 'JPG') Or
+          (Format = 'jpeg') Or (Format = 'JPEG') Then
+  Begin
+    RenderDotToJpeg(DotFile, ImageFile);
   End
   Else
   Begin
@@ -14173,6 +14189,12 @@ Begin
   Begin
     RenderDotToVdx(DotFile, ImageFile);
   End
+  { Utiliser le generateur JPEG integre pour le format JPEG }
+  Else If (Format = 'jpg') Or (Format = 'JPG') Or
+          (Format = 'jpeg') Or (Format = 'JPEG') Then
+  Begin
+    RenderDotToJpeg(DotFile, ImageFile);
+  End
   Else
   Begin
     { Pour les autres formats, afficher un message }
@@ -14272,9 +14294,14 @@ Var
   DotFile: Text;
   DotFileName, ImageFileName, PlantUmlFileName: String;
   ClassCount: Integer;
+  SavedFormat: String;
 Begin
+  SavedFormat := ClassDiagFormat;
   If Not ClassDiagInitialized Then
     InitClassDiagram;
+  { Restaurer le format s'il avait ete defini avant l'init }
+  If SavedFormat <> '' Then
+    ClassDiagFormat := SavedFormat;
 
   { Creer le repertoire de sortie }
   {$I-}
@@ -19273,7 +19300,7 @@ Procedure JPEG_BuildHuffCodeTable(Var Bits: TJPEGHuffBits;
 { Algorithme: generer les codes canoniques de Huffman }
 Var
   I, J, K, Idx: Integer;
-  Code: Word;
+  Code: LongInt;
   Symbol: Byte;
 Begin
   { Initialiser la table avec des codes invalides }
@@ -19353,28 +19380,197 @@ Begin
   DCChrVals[8] := JPEG_DC_CHR_VAL_08; DCChrVals[9] := JPEG_DC_CHR_VAL_09;
   DCChrVals[10] := JPEG_DC_CHR_VAL_10; DCChrVals[11] := JPEG_DC_CHR_VAL_11;
 
-  { Construire les tables de codes }
+  { Construire les tables de codes DC }
   JPEG_BuildHuffCodeTable(DCLumBits, DCLumVals, 12, JPEG_DC_Lum_Codes);
   JPEG_BuildHuffCodeTable(DCChrBits, DCChrVals, 12, JPEG_DC_Chr_Codes);
 
-  { Pour AC, utiliser des valeurs par defaut (simplifiees) }
-  For I := 0 To 15 Do
-  Begin
-    ACLumBits[I] := 0;
-    ACChrBits[I] := 0;
-  End;
-  { Configuration AC simplifiee - en pratique, copier les constantes AC }
-  ACLumBits[0] := 0; ACLumBits[1] := 2; ACLumBits[2] := 1; ACLumBits[3] := 3;
-  ACLumBits[4] := 3; ACLumBits[5] := 2; ACLumBits[6] := 4; ACLumBits[7] := 3;
+  { Copier les tables de bits AC luminance }
+  ACLumBits[0] := JPEG_AC_LUM_BITS_01; ACLumBits[1] := JPEG_AC_LUM_BITS_02;
+  ACLumBits[2] := JPEG_AC_LUM_BITS_03; ACLumBits[3] := JPEG_AC_LUM_BITS_04;
+  ACLumBits[4] := JPEG_AC_LUM_BITS_05; ACLumBits[5] := JPEG_AC_LUM_BITS_06;
+  ACLumBits[6] := JPEG_AC_LUM_BITS_07; ACLumBits[7] := JPEG_AC_LUM_BITS_08;
+  ACLumBits[8] := JPEG_AC_LUM_BITS_09; ACLumBits[9] := JPEG_AC_LUM_BITS_10;
+  ACLumBits[10] := JPEG_AC_LUM_BITS_11; ACLumBits[11] := JPEG_AC_LUM_BITS_12;
+  ACLumBits[12] := JPEG_AC_LUM_BITS_13; ACLumBits[13] := JPEG_AC_LUM_BITS_14;
+  ACLumBits[14] := JPEG_AC_LUM_BITS_15; ACLumBits[15] := JPEG_AC_LUM_BITS_16;
 
-  { Initialiser les codes AC (simplifie) }
-  For I := 0 To 161 Do
-  Begin
-    ACLumVals[I] := I Mod 256;
-    ACChrVals[I] := I Mod 256;
-  End;
+  { Valeurs AC luminance (162 valeurs) }
+  ACLumVals[0] := JPEG_AC_LUM_VAL_000; ACLumVals[1] := JPEG_AC_LUM_VAL_001;
+  ACLumVals[2] := JPEG_AC_LUM_VAL_002; ACLumVals[3] := JPEG_AC_LUM_VAL_003;
+  ACLumVals[4] := JPEG_AC_LUM_VAL_004; ACLumVals[5] := JPEG_AC_LUM_VAL_005;
+  ACLumVals[6] := JPEG_AC_LUM_VAL_006; ACLumVals[7] := JPEG_AC_LUM_VAL_007;
+  ACLumVals[8] := JPEG_AC_LUM_VAL_008; ACLumVals[9] := JPEG_AC_LUM_VAL_009;
+  ACLumVals[10] := JPEG_AC_LUM_VAL_010; ACLumVals[11] := JPEG_AC_LUM_VAL_011;
+  ACLumVals[12] := JPEG_AC_LUM_VAL_012; ACLumVals[13] := JPEG_AC_LUM_VAL_013;
+  ACLumVals[14] := JPEG_AC_LUM_VAL_014; ACLumVals[15] := JPEG_AC_LUM_VAL_015;
+  ACLumVals[16] := JPEG_AC_LUM_VAL_016; ACLumVals[17] := JPEG_AC_LUM_VAL_017;
+  ACLumVals[18] := JPEG_AC_LUM_VAL_018; ACLumVals[19] := JPEG_AC_LUM_VAL_019;
+  ACLumVals[20] := JPEG_AC_LUM_VAL_020; ACLumVals[21] := JPEG_AC_LUM_VAL_021;
+  ACLumVals[22] := JPEG_AC_LUM_VAL_022; ACLumVals[23] := JPEG_AC_LUM_VAL_023;
+  ACLumVals[24] := JPEG_AC_LUM_VAL_024; ACLumVals[25] := JPEG_AC_LUM_VAL_025;
+  ACLumVals[26] := JPEG_AC_LUM_VAL_026; ACLumVals[27] := JPEG_AC_LUM_VAL_027;
+  ACLumVals[28] := JPEG_AC_LUM_VAL_028; ACLumVals[29] := JPEG_AC_LUM_VAL_029;
+  ACLumVals[30] := JPEG_AC_LUM_VAL_030; ACLumVals[31] := JPEG_AC_LUM_VAL_031;
+  ACLumVals[32] := JPEG_AC_LUM_VAL_032; ACLumVals[33] := JPEG_AC_LUM_VAL_033;
+  ACLumVals[34] := JPEG_AC_LUM_VAL_034; ACLumVals[35] := JPEG_AC_LUM_VAL_035;
+  ACLumVals[36] := JPEG_AC_LUM_VAL_036; ACLumVals[37] := JPEG_AC_LUM_VAL_037;
+  ACLumVals[38] := JPEG_AC_LUM_VAL_038; ACLumVals[39] := JPEG_AC_LUM_VAL_039;
+  ACLumVals[40] := JPEG_AC_LUM_VAL_040; ACLumVals[41] := JPEG_AC_LUM_VAL_041;
+  ACLumVals[42] := JPEG_AC_LUM_VAL_042; ACLumVals[43] := JPEG_AC_LUM_VAL_043;
+  ACLumVals[44] := JPEG_AC_LUM_VAL_044; ACLumVals[45] := JPEG_AC_LUM_VAL_045;
+  ACLumVals[46] := JPEG_AC_LUM_VAL_046; ACLumVals[47] := JPEG_AC_LUM_VAL_047;
+  ACLumVals[48] := JPEG_AC_LUM_VAL_048; ACLumVals[49] := JPEG_AC_LUM_VAL_049;
+  ACLumVals[50] := JPEG_AC_LUM_VAL_050; ACLumVals[51] := JPEG_AC_LUM_VAL_051;
+  ACLumVals[52] := JPEG_AC_LUM_VAL_052; ACLumVals[53] := JPEG_AC_LUM_VAL_053;
+  ACLumVals[54] := JPEG_AC_LUM_VAL_054; ACLumVals[55] := JPEG_AC_LUM_VAL_055;
+  ACLumVals[56] := JPEG_AC_LUM_VAL_056; ACLumVals[57] := JPEG_AC_LUM_VAL_057;
+  ACLumVals[58] := JPEG_AC_LUM_VAL_058; ACLumVals[59] := JPEG_AC_LUM_VAL_059;
+  ACLumVals[60] := JPEG_AC_LUM_VAL_060; ACLumVals[61] := JPEG_AC_LUM_VAL_061;
+  ACLumVals[62] := JPEG_AC_LUM_VAL_062; ACLumVals[63] := JPEG_AC_LUM_VAL_063;
+  ACLumVals[64] := JPEG_AC_LUM_VAL_064; ACLumVals[65] := JPEG_AC_LUM_VAL_065;
+  ACLumVals[66] := JPEG_AC_LUM_VAL_066; ACLumVals[67] := JPEG_AC_LUM_VAL_067;
+  ACLumVals[68] := JPEG_AC_LUM_VAL_068; ACLumVals[69] := JPEG_AC_LUM_VAL_069;
+  ACLumVals[70] := JPEG_AC_LUM_VAL_070; ACLumVals[71] := JPEG_AC_LUM_VAL_071;
+  ACLumVals[72] := JPEG_AC_LUM_VAL_072; ACLumVals[73] := JPEG_AC_LUM_VAL_073;
+  ACLumVals[74] := JPEG_AC_LUM_VAL_074; ACLumVals[75] := JPEG_AC_LUM_VAL_075;
+  ACLumVals[76] := JPEG_AC_LUM_VAL_076; ACLumVals[77] := JPEG_AC_LUM_VAL_077;
+  ACLumVals[78] := JPEG_AC_LUM_VAL_078; ACLumVals[79] := JPEG_AC_LUM_VAL_079;
+  ACLumVals[80] := JPEG_AC_LUM_VAL_080; ACLumVals[81] := JPEG_AC_LUM_VAL_081;
+  ACLumVals[82] := JPEG_AC_LUM_VAL_082; ACLumVals[83] := JPEG_AC_LUM_VAL_083;
+  ACLumVals[84] := JPEG_AC_LUM_VAL_084; ACLumVals[85] := JPEG_AC_LUM_VAL_085;
+  ACLumVals[86] := JPEG_AC_LUM_VAL_086; ACLumVals[87] := JPEG_AC_LUM_VAL_087;
+  ACLumVals[88] := JPEG_AC_LUM_VAL_088; ACLumVals[89] := JPEG_AC_LUM_VAL_089;
+  ACLumVals[90] := JPEG_AC_LUM_VAL_090; ACLumVals[91] := JPEG_AC_LUM_VAL_091;
+  ACLumVals[92] := JPEG_AC_LUM_VAL_092; ACLumVals[93] := JPEG_AC_LUM_VAL_093;
+  ACLumVals[94] := JPEG_AC_LUM_VAL_094; ACLumVals[95] := JPEG_AC_LUM_VAL_095;
+  ACLumVals[96] := JPEG_AC_LUM_VAL_096; ACLumVals[97] := JPEG_AC_LUM_VAL_097;
+  ACLumVals[98] := JPEG_AC_LUM_VAL_098; ACLumVals[99] := JPEG_AC_LUM_VAL_099;
+  ACLumVals[100] := JPEG_AC_LUM_VAL_100; ACLumVals[101] := JPEG_AC_LUM_VAL_101;
+  ACLumVals[102] := JPEG_AC_LUM_VAL_102; ACLumVals[103] := JPEG_AC_LUM_VAL_103;
+  ACLumVals[104] := JPEG_AC_LUM_VAL_104; ACLumVals[105] := JPEG_AC_LUM_VAL_105;
+  ACLumVals[106] := JPEG_AC_LUM_VAL_106; ACLumVals[107] := JPEG_AC_LUM_VAL_107;
+  ACLumVals[108] := JPEG_AC_LUM_VAL_108; ACLumVals[109] := JPEG_AC_LUM_VAL_109;
+  ACLumVals[110] := JPEG_AC_LUM_VAL_110; ACLumVals[111] := JPEG_AC_LUM_VAL_111;
+  ACLumVals[112] := JPEG_AC_LUM_VAL_112; ACLumVals[113] := JPEG_AC_LUM_VAL_113;
+  ACLumVals[114] := JPEG_AC_LUM_VAL_114; ACLumVals[115] := JPEG_AC_LUM_VAL_115;
+  ACLumVals[116] := JPEG_AC_LUM_VAL_116; ACLumVals[117] := JPEG_AC_LUM_VAL_117;
+  ACLumVals[118] := JPEG_AC_LUM_VAL_118; ACLumVals[119] := JPEG_AC_LUM_VAL_119;
+  ACLumVals[120] := JPEG_AC_LUM_VAL_120; ACLumVals[121] := JPEG_AC_LUM_VAL_121;
+  ACLumVals[122] := JPEG_AC_LUM_VAL_122; ACLumVals[123] := JPEG_AC_LUM_VAL_123;
+  ACLumVals[124] := JPEG_AC_LUM_VAL_124; ACLumVals[125] := JPEG_AC_LUM_VAL_125;
+  ACLumVals[126] := JPEG_AC_LUM_VAL_126; ACLumVals[127] := JPEG_AC_LUM_VAL_127;
+  ACLumVals[128] := JPEG_AC_LUM_VAL_128; ACLumVals[129] := JPEG_AC_LUM_VAL_129;
+  ACLumVals[130] := JPEG_AC_LUM_VAL_130; ACLumVals[131] := JPEG_AC_LUM_VAL_131;
+  ACLumVals[132] := JPEG_AC_LUM_VAL_132; ACLumVals[133] := JPEG_AC_LUM_VAL_133;
+  ACLumVals[134] := JPEG_AC_LUM_VAL_134; ACLumVals[135] := JPEG_AC_LUM_VAL_135;
+  ACLumVals[136] := JPEG_AC_LUM_VAL_136; ACLumVals[137] := JPEG_AC_LUM_VAL_137;
+  ACLumVals[138] := JPEG_AC_LUM_VAL_138; ACLumVals[139] := JPEG_AC_LUM_VAL_139;
+  ACLumVals[140] := JPEG_AC_LUM_VAL_140; ACLumVals[141] := JPEG_AC_LUM_VAL_141;
+  ACLumVals[142] := JPEG_AC_LUM_VAL_142; ACLumVals[143] := JPEG_AC_LUM_VAL_143;
+  ACLumVals[144] := JPEG_AC_LUM_VAL_144; ACLumVals[145] := JPEG_AC_LUM_VAL_145;
+  ACLumVals[146] := JPEG_AC_LUM_VAL_146; ACLumVals[147] := JPEG_AC_LUM_VAL_147;
+  ACLumVals[148] := JPEG_AC_LUM_VAL_148; ACLumVals[149] := JPEG_AC_LUM_VAL_149;
+  ACLumVals[150] := JPEG_AC_LUM_VAL_150; ACLumVals[151] := JPEG_AC_LUM_VAL_151;
+  ACLumVals[152] := JPEG_AC_LUM_VAL_152; ACLumVals[153] := JPEG_AC_LUM_VAL_153;
+  ACLumVals[154] := JPEG_AC_LUM_VAL_154; ACLumVals[155] := JPEG_AC_LUM_VAL_155;
+  ACLumVals[156] := JPEG_AC_LUM_VAL_156; ACLumVals[157] := JPEG_AC_LUM_VAL_157;
+  ACLumVals[158] := JPEG_AC_LUM_VAL_158; ACLumVals[159] := JPEG_AC_LUM_VAL_159;
+  ACLumVals[160] := JPEG_AC_LUM_VAL_160; ACLumVals[161] := JPEG_AC_LUM_VAL_161;
 
-  { Note: Pour une implementation complete, copier toutes les valeurs AC }
+  { Copier les tables de bits AC chrominance }
+  ACChrBits[0] := JPEG_AC_CHR_BITS_01; ACChrBits[1] := JPEG_AC_CHR_BITS_02;
+  ACChrBits[2] := JPEG_AC_CHR_BITS_03; ACChrBits[3] := JPEG_AC_CHR_BITS_04;
+  ACChrBits[4] := JPEG_AC_CHR_BITS_05; ACChrBits[5] := JPEG_AC_CHR_BITS_06;
+  ACChrBits[6] := JPEG_AC_CHR_BITS_07; ACChrBits[7] := JPEG_AC_CHR_BITS_08;
+  ACChrBits[8] := JPEG_AC_CHR_BITS_09; ACChrBits[9] := JPEG_AC_CHR_BITS_10;
+  ACChrBits[10] := JPEG_AC_CHR_BITS_11; ACChrBits[11] := JPEG_AC_CHR_BITS_12;
+  ACChrBits[12] := JPEG_AC_CHR_BITS_13; ACChrBits[13] := JPEG_AC_CHR_BITS_14;
+  ACChrBits[14] := JPEG_AC_CHR_BITS_15; ACChrBits[15] := JPEG_AC_CHR_BITS_16;
+
+  { Valeurs AC chrominance (162 valeurs) }
+  ACChrVals[0] := JPEG_AC_CHR_VAL_000; ACChrVals[1] := JPEG_AC_CHR_VAL_001;
+  ACChrVals[2] := JPEG_AC_CHR_VAL_002; ACChrVals[3] := JPEG_AC_CHR_VAL_003;
+  ACChrVals[4] := JPEG_AC_CHR_VAL_004; ACChrVals[5] := JPEG_AC_CHR_VAL_005;
+  ACChrVals[6] := JPEG_AC_CHR_VAL_006; ACChrVals[7] := JPEG_AC_CHR_VAL_007;
+  ACChrVals[8] := JPEG_AC_CHR_VAL_008; ACChrVals[9] := JPEG_AC_CHR_VAL_009;
+  ACChrVals[10] := JPEG_AC_CHR_VAL_010; ACChrVals[11] := JPEG_AC_CHR_VAL_011;
+  ACChrVals[12] := JPEG_AC_CHR_VAL_012; ACChrVals[13] := JPEG_AC_CHR_VAL_013;
+  ACChrVals[14] := JPEG_AC_CHR_VAL_014; ACChrVals[15] := JPEG_AC_CHR_VAL_015;
+  ACChrVals[16] := JPEG_AC_CHR_VAL_016; ACChrVals[17] := JPEG_AC_CHR_VAL_017;
+  ACChrVals[18] := JPEG_AC_CHR_VAL_018; ACChrVals[19] := JPEG_AC_CHR_VAL_019;
+  ACChrVals[20] := JPEG_AC_CHR_VAL_020; ACChrVals[21] := JPEG_AC_CHR_VAL_021;
+  ACChrVals[22] := JPEG_AC_CHR_VAL_022; ACChrVals[23] := JPEG_AC_CHR_VAL_023;
+  ACChrVals[24] := JPEG_AC_CHR_VAL_024; ACChrVals[25] := JPEG_AC_CHR_VAL_025;
+  ACChrVals[26] := JPEG_AC_CHR_VAL_026; ACChrVals[27] := JPEG_AC_CHR_VAL_027;
+  ACChrVals[28] := JPEG_AC_CHR_VAL_028; ACChrVals[29] := JPEG_AC_CHR_VAL_029;
+  ACChrVals[30] := JPEG_AC_CHR_VAL_030; ACChrVals[31] := JPEG_AC_CHR_VAL_031;
+  ACChrVals[32] := JPEG_AC_CHR_VAL_032; ACChrVals[33] := JPEG_AC_CHR_VAL_033;
+  ACChrVals[34] := JPEG_AC_CHR_VAL_034; ACChrVals[35] := JPEG_AC_CHR_VAL_035;
+  ACChrVals[36] := JPEG_AC_CHR_VAL_036; ACChrVals[37] := JPEG_AC_CHR_VAL_037;
+  ACChrVals[38] := JPEG_AC_CHR_VAL_038; ACChrVals[39] := JPEG_AC_CHR_VAL_039;
+  ACChrVals[40] := JPEG_AC_CHR_VAL_040; ACChrVals[41] := JPEG_AC_CHR_VAL_041;
+  ACChrVals[42] := JPEG_AC_CHR_VAL_042; ACChrVals[43] := JPEG_AC_CHR_VAL_043;
+  ACChrVals[44] := JPEG_AC_CHR_VAL_044; ACChrVals[45] := JPEG_AC_CHR_VAL_045;
+  ACChrVals[46] := JPEG_AC_CHR_VAL_046; ACChrVals[47] := JPEG_AC_CHR_VAL_047;
+  ACChrVals[48] := JPEG_AC_CHR_VAL_048; ACChrVals[49] := JPEG_AC_CHR_VAL_049;
+  ACChrVals[50] := JPEG_AC_CHR_VAL_050; ACChrVals[51] := JPEG_AC_CHR_VAL_051;
+  ACChrVals[52] := JPEG_AC_CHR_VAL_052; ACChrVals[53] := JPEG_AC_CHR_VAL_053;
+  ACChrVals[54] := JPEG_AC_CHR_VAL_054; ACChrVals[55] := JPEG_AC_CHR_VAL_055;
+  ACChrVals[56] := JPEG_AC_CHR_VAL_056; ACChrVals[57] := JPEG_AC_CHR_VAL_057;
+  ACChrVals[58] := JPEG_AC_CHR_VAL_058; ACChrVals[59] := JPEG_AC_CHR_VAL_059;
+  ACChrVals[60] := JPEG_AC_CHR_VAL_060; ACChrVals[61] := JPEG_AC_CHR_VAL_061;
+  ACChrVals[62] := JPEG_AC_CHR_VAL_062; ACChrVals[63] := JPEG_AC_CHR_VAL_063;
+  ACChrVals[64] := JPEG_AC_CHR_VAL_064; ACChrVals[65] := JPEG_AC_CHR_VAL_065;
+  ACChrVals[66] := JPEG_AC_CHR_VAL_066; ACChrVals[67] := JPEG_AC_CHR_VAL_067;
+  ACChrVals[68] := JPEG_AC_CHR_VAL_068; ACChrVals[69] := JPEG_AC_CHR_VAL_069;
+  ACChrVals[70] := JPEG_AC_CHR_VAL_070; ACChrVals[71] := JPEG_AC_CHR_VAL_071;
+  ACChrVals[72] := JPEG_AC_CHR_VAL_072; ACChrVals[73] := JPEG_AC_CHR_VAL_073;
+  ACChrVals[74] := JPEG_AC_CHR_VAL_074; ACChrVals[75] := JPEG_AC_CHR_VAL_075;
+  ACChrVals[76] := JPEG_AC_CHR_VAL_076; ACChrVals[77] := JPEG_AC_CHR_VAL_077;
+  ACChrVals[78] := JPEG_AC_CHR_VAL_078; ACChrVals[79] := JPEG_AC_CHR_VAL_079;
+  ACChrVals[80] := JPEG_AC_CHR_VAL_080; ACChrVals[81] := JPEG_AC_CHR_VAL_081;
+  ACChrVals[82] := JPEG_AC_CHR_VAL_082; ACChrVals[83] := JPEG_AC_CHR_VAL_083;
+  ACChrVals[84] := JPEG_AC_CHR_VAL_084; ACChrVals[85] := JPEG_AC_CHR_VAL_085;
+  ACChrVals[86] := JPEG_AC_CHR_VAL_086; ACChrVals[87] := JPEG_AC_CHR_VAL_087;
+  ACChrVals[88] := JPEG_AC_CHR_VAL_088; ACChrVals[89] := JPEG_AC_CHR_VAL_089;
+  ACChrVals[90] := JPEG_AC_CHR_VAL_090; ACChrVals[91] := JPEG_AC_CHR_VAL_091;
+  ACChrVals[92] := JPEG_AC_CHR_VAL_092; ACChrVals[93] := JPEG_AC_CHR_VAL_093;
+  ACChrVals[94] := JPEG_AC_CHR_VAL_094; ACChrVals[95] := JPEG_AC_CHR_VAL_095;
+  ACChrVals[96] := JPEG_AC_CHR_VAL_096; ACChrVals[97] := JPEG_AC_CHR_VAL_097;
+  ACChrVals[98] := JPEG_AC_CHR_VAL_098; ACChrVals[99] := JPEG_AC_CHR_VAL_099;
+  ACChrVals[100] := JPEG_AC_CHR_VAL_100; ACChrVals[101] := JPEG_AC_CHR_VAL_101;
+  ACChrVals[102] := JPEG_AC_CHR_VAL_102; ACChrVals[103] := JPEG_AC_CHR_VAL_103;
+  ACChrVals[104] := JPEG_AC_CHR_VAL_104; ACChrVals[105] := JPEG_AC_CHR_VAL_105;
+  ACChrVals[106] := JPEG_AC_CHR_VAL_106; ACChrVals[107] := JPEG_AC_CHR_VAL_107;
+  ACChrVals[108] := JPEG_AC_CHR_VAL_108; ACChrVals[109] := JPEG_AC_CHR_VAL_109;
+  ACChrVals[110] := JPEG_AC_CHR_VAL_110; ACChrVals[111] := JPEG_AC_CHR_VAL_111;
+  ACChrVals[112] := JPEG_AC_CHR_VAL_112; ACChrVals[113] := JPEG_AC_CHR_VAL_113;
+  ACChrVals[114] := JPEG_AC_CHR_VAL_114; ACChrVals[115] := JPEG_AC_CHR_VAL_115;
+  ACChrVals[116] := JPEG_AC_CHR_VAL_116; ACChrVals[117] := JPEG_AC_CHR_VAL_117;
+  ACChrVals[118] := JPEG_AC_CHR_VAL_118; ACChrVals[119] := JPEG_AC_CHR_VAL_119;
+  ACChrVals[120] := JPEG_AC_CHR_VAL_120; ACChrVals[121] := JPEG_AC_CHR_VAL_121;
+  ACChrVals[122] := JPEG_AC_CHR_VAL_122; ACChrVals[123] := JPEG_AC_CHR_VAL_123;
+  ACChrVals[124] := JPEG_AC_CHR_VAL_124; ACChrVals[125] := JPEG_AC_CHR_VAL_125;
+  ACChrVals[126] := JPEG_AC_CHR_VAL_126; ACChrVals[127] := JPEG_AC_CHR_VAL_127;
+  ACChrVals[128] := JPEG_AC_CHR_VAL_128; ACChrVals[129] := JPEG_AC_CHR_VAL_129;
+  ACChrVals[130] := JPEG_AC_CHR_VAL_130; ACChrVals[131] := JPEG_AC_CHR_VAL_131;
+  ACChrVals[132] := JPEG_AC_CHR_VAL_132; ACChrVals[133] := JPEG_AC_CHR_VAL_133;
+  ACChrVals[134] := JPEG_AC_CHR_VAL_134; ACChrVals[135] := JPEG_AC_CHR_VAL_135;
+  ACChrVals[136] := JPEG_AC_CHR_VAL_136; ACChrVals[137] := JPEG_AC_CHR_VAL_137;
+  ACChrVals[138] := JPEG_AC_CHR_VAL_138; ACChrVals[139] := JPEG_AC_CHR_VAL_139;
+  ACChrVals[140] := JPEG_AC_CHR_VAL_140; ACChrVals[141] := JPEG_AC_CHR_VAL_141;
+  ACChrVals[142] := JPEG_AC_CHR_VAL_142; ACChrVals[143] := JPEG_AC_CHR_VAL_143;
+  ACChrVals[144] := JPEG_AC_CHR_VAL_144; ACChrVals[145] := JPEG_AC_CHR_VAL_145;
+  ACChrVals[146] := JPEG_AC_CHR_VAL_146; ACChrVals[147] := JPEG_AC_CHR_VAL_147;
+  ACChrVals[148] := JPEG_AC_CHR_VAL_148; ACChrVals[149] := JPEG_AC_CHR_VAL_149;
+  ACChrVals[150] := JPEG_AC_CHR_VAL_150; ACChrVals[151] := JPEG_AC_CHR_VAL_151;
+  ACChrVals[152] := JPEG_AC_CHR_VAL_152; ACChrVals[153] := JPEG_AC_CHR_VAL_153;
+  ACChrVals[154] := JPEG_AC_CHR_VAL_154; ACChrVals[155] := JPEG_AC_CHR_VAL_155;
+  ACChrVals[156] := JPEG_AC_CHR_VAL_156; ACChrVals[157] := JPEG_AC_CHR_VAL_157;
+  ACChrVals[158] := JPEG_AC_CHR_VAL_158; ACChrVals[159] := JPEG_AC_CHR_VAL_159;
+  ACChrVals[160] := JPEG_AC_CHR_VAL_160; ACChrVals[161] := JPEG_AC_CHR_VAL_161;
+
+  { Construire les tables de codes AC }
   JPEG_BuildHuffCodeTable(ACLumBits, ACLumVals, 162, JPEG_AC_Lum_Codes);
   JPEG_BuildHuffCodeTable(ACChrBits, ACChrVals, 162, JPEG_AC_Chr_Codes);
 End;
@@ -20759,6 +20955,255 @@ End;
 Function JPEG_GetStatsCompressionRatio: Real;
 Begin
   JPEG_GetStatsCompressionRatio := JPEG_EncodeStats.CompressionRatio;
+End;
+
+{ ============================================================
+  GENERATEUR JPEG INTEGRE - RENDU DOT VERS JPEG
+  Utilise le pipeline PNG pour le rendu des pixels puis
+  l'encodeur JPEG pour la compression et l'ecriture du fichier
+  ============================================================ }
+
+Procedure RenderDotToJpeg(Const DotFile, JpegFile: String);
+{ Lit un fichier DOT et genere un JPEG en utilisant le pipeline PNG
+  pour le rendu des pixels puis l'encodeur JPEG integre }
+Const
+  JPEG_QUALITY = 85;
+  JPEG_SUBSAMP = 0; { 4:4:4 }
+Var
+  Pixels: Array Of TPngPixelRow;
+  I, X, Y: Integer;
+  BorderColor, FillColor, TextColor, ArrowColor: TPngColor;
+  MCUx, MCUy, BX, BY, PX, PY: Integer;
+  MCUsH, MCUsV: Integer;
+  RGBBlock: TJPEGRGBBlock;
+  YBlock, CbBlock, CrBlock: TJPEGComponentBlock;
+  YPixBlock: TJPEGPixelBlock;
+  CbPixBlock: TJPEGPixelBlock;
+  CrPixBlock: TJPEGPixelBlock;
+  YDct, CbDct, CrDct: TJPEGDCTBlock;
+  YQuant, CbQuant, CrQuant: TJPEGQuantBlock;
+  YZig, CbZig, CrZig: TJPEGZigzagBlock;
+  YRLE, CbRLE, CrRLE: TJPEGRLEBlock;
+  BaseLumTable, BaseChrTable: TJPEGQuantTable;
+  QLumTable, QChrTable: TJPEGQuantTable;
+Begin
+  { Utiliser le pipeline PNG pour parser le DOT et creer les pixels }
+  If PngInitialized Then
+    FreePngGraph;
+  InitPngGraph;
+  ParseDotFile(DotFile);
+
+  If PngGraph.NodeCount = 0 Then
+  Begin
+    FreePngGraph;
+    Exit;
+  End;
+
+  { Calculer la disposition }
+  LayoutPngGraph;
+
+  { Allouer le buffer de pixels }
+  SetLength(Pixels, PngGraph.Height);
+  For Y := 0 To PngGraph.Height - 1 Do
+    For X := 0 To PngGraph.Width - 1 Do
+      Pixels[Y][X] := PngGraph.BgColor;
+
+  { Dessiner les aretes }
+  ArrowColor.R := 64; ArrowColor.G := 64; ArrowColor.B := 64;
+  For I := 1 To PngGraph.EdgeCount Do
+  Begin
+    If (PngGraph.Edges[I].FromX > 0) Or (PngGraph.Edges[I].ToX > 0) Then
+      DrawPngArrow(Pixels,
+                   PngGraph.Edges[I].FromX, PngGraph.Edges[I].FromY,
+                   PngGraph.Edges[I].ToX, PngGraph.Edges[I].ToY,
+                   PngGraph.Width, PngGraph.Height, ArrowColor);
+  End;
+
+  { Dessiner les noeuds }
+  BorderColor.R := 0; BorderColor.G := 0; BorderColor.B := 128;
+  TextColor.R := 0; TextColor.G := 0; TextColor.B := 0;
+  For I := 1 To PngGraph.NodeCount Do
+  Begin
+    FillColor := PngGraph.Nodes[I].Color;
+    DrawPngRect(Pixels,
+                PngGraph.Nodes[I].X, PngGraph.Nodes[I].Y,
+                PngGraph.Nodes[I].W, PngGraph.Nodes[I].H,
+                PngGraph.Width, PngGraph.Height,
+                FillColor, BorderColor, True);
+    DrawPngText(Pixels,
+                PngGraph.Nodes[I].X + 10,
+                PngGraph.Nodes[I].Y + (PngGraph.Nodes[I].H - 7 * PNG_FONT_SCALE) Div 2,
+                PngGraph.Nodes[I].Name,
+                PngGraph.Width, PngGraph.Height, TextColor);
+  End;
+
+  { Dessiner le titre si present }
+  If PngGraph.Title <> '' Then
+  Begin
+    TextColor.R := 0; TextColor.G := 0; TextColor.B := 0;
+    DrawPngText(Pixels, 10, 10, PngGraph.Title,
+                PngGraph.Width, PngGraph.Height, TextColor);
+  End;
+
+  { Initialiser l'encodeur JPEG et ouvrir le fichier }
+  If Not JPEG_BeginEncode(JpegFile, PngGraph.Width, PngGraph.Height,
+                           JPEG_QUALITY, JPEG_SUBSAMP) Then
+  Begin
+    SetLength(Pixels, 0);
+    FreePngGraph;
+    Exit;
+  End;
+
+  { Construire les tables de quantification pour l'encodage des blocs }
+  BaseLumTable[0] := JPEG_QL_00; BaseLumTable[1] := JPEG_QL_01;
+  BaseLumTable[2] := JPEG_QL_02; BaseLumTable[3] := JPEG_QL_03;
+  BaseLumTable[4] := JPEG_QL_04; BaseLumTable[5] := JPEG_QL_05;
+  BaseLumTable[6] := JPEG_QL_06; BaseLumTable[7] := JPEG_QL_07;
+  BaseLumTable[8] := JPEG_QL_08; BaseLumTable[9] := JPEG_QL_09;
+  BaseLumTable[10] := JPEG_QL_10; BaseLumTable[11] := JPEG_QL_11;
+  BaseLumTable[12] := JPEG_QL_12; BaseLumTable[13] := JPEG_QL_13;
+  BaseLumTable[14] := JPEG_QL_14; BaseLumTable[15] := JPEG_QL_15;
+  BaseLumTable[16] := JPEG_QL_16; BaseLumTable[17] := JPEG_QL_17;
+  BaseLumTable[18] := JPEG_QL_18; BaseLumTable[19] := JPEG_QL_19;
+  BaseLumTable[20] := JPEG_QL_20; BaseLumTable[21] := JPEG_QL_21;
+  BaseLumTable[22] := JPEG_QL_22; BaseLumTable[23] := JPEG_QL_23;
+  BaseLumTable[24] := JPEG_QL_24; BaseLumTable[25] := JPEG_QL_25;
+  BaseLumTable[26] := JPEG_QL_26; BaseLumTable[27] := JPEG_QL_27;
+  BaseLumTable[28] := JPEG_QL_28; BaseLumTable[29] := JPEG_QL_29;
+  BaseLumTable[30] := JPEG_QL_30; BaseLumTable[31] := JPEG_QL_31;
+  BaseLumTable[32] := JPEG_QL_32; BaseLumTable[33] := JPEG_QL_33;
+  BaseLumTable[34] := JPEG_QL_34; BaseLumTable[35] := JPEG_QL_35;
+  BaseLumTable[36] := JPEG_QL_36; BaseLumTable[37] := JPEG_QL_37;
+  BaseLumTable[38] := JPEG_QL_38; BaseLumTable[39] := JPEG_QL_39;
+  BaseLumTable[40] := JPEG_QL_40; BaseLumTable[41] := JPEG_QL_41;
+  BaseLumTable[42] := JPEG_QL_42; BaseLumTable[43] := JPEG_QL_43;
+  BaseLumTable[44] := JPEG_QL_44; BaseLumTable[45] := JPEG_QL_45;
+  BaseLumTable[46] := JPEG_QL_46; BaseLumTable[47] := JPEG_QL_47;
+  BaseLumTable[48] := JPEG_QL_48; BaseLumTable[49] := JPEG_QL_49;
+  BaseLumTable[50] := JPEG_QL_50; BaseLumTable[51] := JPEG_QL_51;
+  BaseLumTable[52] := JPEG_QL_52; BaseLumTable[53] := JPEG_QL_53;
+  BaseLumTable[54] := JPEG_QL_54; BaseLumTable[55] := JPEG_QL_55;
+  BaseLumTable[56] := JPEG_QL_56; BaseLumTable[57] := JPEG_QL_57;
+  BaseLumTable[58] := JPEG_QL_58; BaseLumTable[59] := JPEG_QL_59;
+  BaseLumTable[60] := JPEG_QL_60; BaseLumTable[61] := JPEG_QL_61;
+  BaseLumTable[62] := JPEG_QL_62; BaseLumTable[63] := JPEG_QL_63;
+
+  BaseChrTable[0] := JPEG_QC_00; BaseChrTable[1] := JPEG_QC_01;
+  BaseChrTable[2] := JPEG_QC_02; BaseChrTable[3] := JPEG_QC_03;
+  BaseChrTable[4] := JPEG_QC_04; BaseChrTable[5] := JPEG_QC_05;
+  BaseChrTable[6] := JPEG_QC_06; BaseChrTable[7] := JPEG_QC_07;
+  BaseChrTable[8] := JPEG_QC_08; BaseChrTable[9] := JPEG_QC_09;
+  BaseChrTable[10] := JPEG_QC_10; BaseChrTable[11] := JPEG_QC_11;
+  BaseChrTable[12] := JPEG_QC_12; BaseChrTable[13] := JPEG_QC_13;
+  BaseChrTable[14] := JPEG_QC_14; BaseChrTable[15] := JPEG_QC_15;
+  BaseChrTable[16] := JPEG_QC_16; BaseChrTable[17] := JPEG_QC_17;
+  BaseChrTable[18] := JPEG_QC_18; BaseChrTable[19] := JPEG_QC_19;
+  BaseChrTable[20] := JPEG_QC_20; BaseChrTable[21] := JPEG_QC_21;
+  BaseChrTable[22] := JPEG_QC_22; BaseChrTable[23] := JPEG_QC_23;
+  BaseChrTable[24] := JPEG_QC_24; BaseChrTable[25] := JPEG_QC_25;
+  BaseChrTable[26] := JPEG_QC_26; BaseChrTable[27] := JPEG_QC_27;
+  BaseChrTable[28] := JPEG_QC_28; BaseChrTable[29] := JPEG_QC_29;
+  BaseChrTable[30] := JPEG_QC_30; BaseChrTable[31] := JPEG_QC_31;
+  BaseChrTable[32] := JPEG_QC_32; BaseChrTable[33] := JPEG_QC_33;
+  BaseChrTable[34] := JPEG_QC_34; BaseChrTable[35] := JPEG_QC_35;
+  BaseChrTable[36] := JPEG_QC_36; BaseChrTable[37] := JPEG_QC_37;
+  BaseChrTable[38] := JPEG_QC_38; BaseChrTable[39] := JPEG_QC_39;
+  BaseChrTable[40] := JPEG_QC_40; BaseChrTable[41] := JPEG_QC_41;
+  BaseChrTable[42] := JPEG_QC_42; BaseChrTable[43] := JPEG_QC_43;
+  BaseChrTable[44] := JPEG_QC_44; BaseChrTable[45] := JPEG_QC_45;
+  BaseChrTable[46] := JPEG_QC_46; BaseChrTable[47] := JPEG_QC_47;
+  BaseChrTable[48] := JPEG_QC_48; BaseChrTable[49] := JPEG_QC_49;
+  BaseChrTable[50] := JPEG_QC_50; BaseChrTable[51] := JPEG_QC_51;
+  BaseChrTable[52] := JPEG_QC_52; BaseChrTable[53] := JPEG_QC_53;
+  BaseChrTable[54] := JPEG_QC_54; BaseChrTable[55] := JPEG_QC_55;
+  BaseChrTable[56] := JPEG_QC_56; BaseChrTable[57] := JPEG_QC_57;
+  BaseChrTable[58] := JPEG_QC_58; BaseChrTable[59] := JPEG_QC_59;
+  BaseChrTable[60] := JPEG_QC_60; BaseChrTable[61] := JPEG_QC_61;
+  BaseChrTable[62] := JPEG_QC_62; BaseChrTable[63] := JPEG_QC_63;
+
+  JPEG_ScaleQuantTable(BaseLumTable, QLumTable, JPEG_QUALITY);
+  JPEG_ScaleQuantTable(BaseChrTable, QChrTable, JPEG_QUALITY);
+
+  { Encoder les MCUs (blocs 8x8) de gauche a droite, haut en bas }
+  MCUsH := (PngGraph.Width + 7) Div 8;
+  MCUsV := (PngGraph.Height + 7) Div 8;
+
+  For MCUy := 0 To MCUsV - 1 Do
+  Begin
+    For MCUx := 0 To MCUsH - 1 Do
+    Begin
+      { Remplir le bloc RGB 8x8 a partir des pixels }
+      For BY := 0 To 7 Do
+      Begin
+        For BX := 0 To 7 Do
+        Begin
+          PX := MCUx * 8 + BX;
+          PY := MCUy * 8 + BY;
+          If (PX < PngGraph.Width) And (PY < PngGraph.Height) Then
+          Begin
+            RGBBlock[BY, BX].R := Pixels[PY][PX].R;
+            RGBBlock[BY, BX].G := Pixels[PY][PX].G;
+            RGBBlock[BY, BX].B := Pixels[PY][PX].B;
+          End
+          Else
+          Begin
+            { Padding avec du blanc pour les bords }
+            RGBBlock[BY, BX].R := 255;
+            RGBBlock[BY, BX].G := 255;
+            RGBBlock[BY, BX].B := 255;
+          End;
+        End;
+      End;
+
+      { Convertir RGB -> YCbCr }
+      JPEG_RGB_to_YCbCr_Block(RGBBlock, YBlock, CbBlock, CrBlock);
+
+      { Centrer les valeurs (soustraire 128) et convertir en blocs pixels }
+      JPEG_ComponentBlockToPixelBlock(YBlock, YPixBlock, True);
+      JPEG_ComponentBlockToPixelBlock(CbBlock, CbPixBlock, True);
+      JPEG_ComponentBlockToPixelBlock(CrBlock, CrPixBlock, True);
+
+      { DCT avant }
+      JPEG_DCT_Forward(YPixBlock, YDct);
+      JPEG_DCT_Forward(CbPixBlock, CbDct);
+      JPEG_DCT_Forward(CrPixBlock, CrDct);
+
+      { Quantification }
+      JPEG_Quantize(YDct, QLumTable, YQuant);
+      JPEG_Quantize(CbDct, QChrTable, CbQuant);
+      JPEG_Quantize(CrDct, QChrTable, CrQuant);
+
+      { Reordonnancement zigzag }
+      JPEG_QuantBlockToZigzag(YQuant, YZig);
+      JPEG_QuantBlockToZigzag(CbQuant, CbZig);
+      JPEG_QuantBlockToZigzag(CrQuant, CrZig);
+
+      { Encodage RLE }
+      JPEG_EncodeACBlock(YZig, YRLE);
+      JPEG_EncodeACBlock(CbZig, CbRLE);
+      JPEG_EncodeACBlock(CrZig, CrRLE);
+
+      { Encodage Huffman et ecriture dans le fichier }
+      JPEG_EncodeRLEBlockHuffman(YRLE, True,
+                                  JPEG_EncoderState.LastDC_Y);
+      JPEG_EncodeRLEBlockHuffman(CbRLE, False,
+                                  JPEG_EncoderState.LastDC_Cb);
+      JPEG_EncodeRLEBlockHuffman(CrRLE, False,
+                                  JPEG_EncoderState.LastDC_Cr);
+
+      Inc(JPEG_EncoderState.MCUsEncoded);
+    End;
+  End;
+
+  { Terminer l'encodage JPEG }
+  JPEG_EndEncode;
+
+  { Liberer la memoire }
+  SetLength(Pixels, 0);
+  FreePngGraph;
+
+  If Not Opts.Quiet Then
+    WriteLn('JPEG genere (built-in): ', JpegFile);
 End;
 
 { ============================================================
