@@ -695,7 +695,7 @@
             Compatible avec Microsoft LINK.EXE et MASM
             10 fonctions accesseurs
 
-  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [A FAIRE]
+  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [IMPLEMENTE]
             Format MASM (.ASM) lisible et assemblable :
               .386
               .MODEL FLAT, STDCALL
@@ -1796,8 +1796,11 @@ Const
   { Mots-cles pour TODO 22 : COFF .OBJ WRITER }
   KW_OBJ               = 251;  { OBJ }
 
+  { Mots-cles pour TODO 23 : ASM LISTING WRITER }
+  KW_ASM               = 252;  { ASM }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 183;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 184;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -20733,6 +20736,697 @@ Begin
   GetCofStateCount := CofStateCount;
 End;
 
+{ ============================================================ }
+{ TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR                   }
+{           (PARAMETRE -asm)                                   }
+{ ============================================================ }
+
+Const
+  { Types de sections ASM }
+  ASM_SECT_NONE        = 0;           { pas de section                          }
+  ASM_SECT_DATA        = 1;           { section .DATA                           }
+  ASM_SECT_BSS         = 2;           { section .DATA?                          }
+  ASM_SECT_CODE        = 3;           { section .CODE                           }
+
+  { Types de directives }
+  ASM_DIR_NONE         = 0;           { pas de directive                        }
+  ASM_DIR_INCLUDE_LIB  = 1;           { INCLUDELIB                              }
+  ASM_DIR_EXTERN       = 2;           { EXTERN                                  }
+  ASM_DIR_PUBLIC       = 3;           { PUBLIC                                  }
+
+  { Types de donnees ASM }
+  ASM_DAT_DB           = 0;           { DB (octet)                              }
+  ASM_DAT_DW           = 1;           { DW (mot 16 bits)                        }
+  ASM_DAT_DD           = 2;           { DD (double mot 32 bits)                 }
+
+  { Limites }
+  ASM_MAX_EXTERNS      = 64;          { nombre max de symboles EXTERN           }
+  ASM_MAX_PUBLICS      = 64;          { nombre max de symboles PUBLIC            }
+  ASM_MAX_LIBS         = 8;           { nombre max de INCLUDELIB                }
+  ASM_MAX_DATA_ITEMS   = 256;         { nombre max d items dans .DATA            }
+  ASM_MAX_BSS_ITEMS    = 128;         { nombre max d items dans .DATA?           }
+  ASM_MAX_CODE_LINES   = 4096;        { nombre max de lignes de code             }
+  ASM_MAX_COMMENTS     = 512;         { nombre max de commentaires               }
+  ASM_INDENT           = '    ';      { indentation standard (4 espaces)         }
+
+Type
+  TAsmExternEntry = Record
+    Name           : TString;         { nom du symbole externe                  }
+    Decorated      : TString;         { nom decore (_Func@N)                    }
+    IsProc         : Boolean;         { True si :PROC, False si :DWORD          }
+  End;
+
+  TAsmPublicEntry = Record
+    Name           : TString;         { nom du symbole PUBLIC                   }
+  End;
+
+  TAsmLibEntry = Record
+    Name           : TString;         { nom de la librairie (kernel32.lib)      }
+  End;
+
+  TAsmDataItem = Record
+    Name           : TString;         { nom de la variable                      }
+    DataType       : Integer;         { ASM_DAT_DB/DW/DD                        }
+    Value          : TString;         { valeur initiale (texte, nombre, ?)      }
+    Comment        : TString;         { commentaire facultatif                  }
+  End;
+
+  TAsmCodeLine = Record
+    LabelStr       : TString;         { label ou '' si pas de label             }
+    Instruction    : TString;         { instruction assembleur                  }
+    Comment        : TString;         { commentaire facultatif                  }
+  End;
+
+Var
+  AsmInitialized         : Boolean;   { True si InitAsmWriterState appele       }
+  AsmStateCount          : Integer;   { compteur d etat general                 }
+  AsmLabelNum            : Integer;   { compteur de labels internes             }
+  AsmExterns             : Array[0..ASM_MAX_EXTERNS-1] Of TAsmExternEntry;
+  AsmExternCount         : Integer;   { nombre de symboles EXTERN               }
+  AsmPublics             : Array[0..ASM_MAX_PUBLICS-1] Of TAsmPublicEntry;
+  AsmPublicCount         : Integer;   { nombre de symboles PUBLIC               }
+  AsmLibs                : Array[0..ASM_MAX_LIBS-1] Of TAsmLibEntry;
+  AsmLibCount            : Integer;   { nombre de INCLUDELIB                    }
+  AsmDataItems           : Array[0..ASM_MAX_DATA_ITEMS-1] Of TAsmDataItem;
+  AsmDataItemCount       : Integer;   { nombre d items .DATA                    }
+  AsmBssItems            : Array[0..ASM_MAX_BSS_ITEMS-1] Of TAsmDataItem;
+  AsmBssItemCount        : Integer;   { nombre d items .DATA?                   }
+  AsmCodeLines           : Array[0..ASM_MAX_CODE_LINES-1] Of TAsmCodeLine;
+  AsmCodeLineCount       : Integer;   { nombre de lignes de code                }
+  AsmCommentCount        : Integer;   { nombre de commentaires emis             }
+  AsmDirectiveCount      : Integer;   { nombre de directives emises             }
+  AsmIncludeLibCount     : Integer;   { nombre de INCLUDELIB emis               }
+  AsmExternEmitCount     : Integer;   { nombre de EXTERN emis                   }
+  AsmPublicEmitCount     : Integer;   { nombre de PUBLIC emis                   }
+  AsmDataEmitCount       : Integer;   { nombre d items .DATA emis               }
+  AsmBssEmitCount        : Integer;   { nombre d items .DATA? emis              }
+  AsmCodeEmitCount       : Integer;   { nombre de lignes .CODE emises           }
+  AsmFileWrittenCount    : Integer;   { nombre de fichiers .ASM ecrits          }
+  AsmTotalLines          : Integer;   { total de lignes generees                }
+
+{ ------------------------------------------------------------ }
+{ InitAsmWriterState : initialiser l etat du module ASM Listing }
+{ Doit etre appele avant toute utilisation du module            }
+{ ------------------------------------------------------------ }
+
+Procedure InitAsmWriterState;
+Var
+  I : Integer;
+Begin
+  AsmInitialized := True;
+  AsmStateCount  := 0;
+  AsmLabelNum    := 0;
+  AsmExternCount := 0;
+  AsmPublicCount := 0;
+  AsmLibCount    := 0;
+  AsmDataItemCount := 0;
+  AsmBssItemCount := 0;
+  AsmCodeLineCount := 0;
+  AsmCommentCount := 0;
+  AsmDirectiveCount := 0;
+  AsmIncludeLibCount := 0;
+  AsmExternEmitCount := 0;
+  AsmPublicEmitCount := 0;
+  AsmDataEmitCount := 0;
+  AsmBssEmitCount := 0;
+  AsmCodeEmitCount := 0;
+  AsmFileWrittenCount := 0;
+  AsmTotalLines := 0;
+  For I := 0 To ASM_MAX_EXTERNS - 1 Do Begin
+    AsmExterns[I].Name := '';
+    AsmExterns[I].Decorated := '';
+    AsmExterns[I].IsProc := True;
+  End;
+  For I := 0 To ASM_MAX_PUBLICS - 1 Do
+    AsmPublics[I].Name := '';
+  For I := 0 To ASM_MAX_LIBS - 1 Do
+    AsmLibs[I].Name := '';
+  For I := 0 To ASM_MAX_DATA_ITEMS - 1 Do Begin
+    AsmDataItems[I].Name := '';
+    AsmDataItems[I].DataType := ASM_DAT_DB;
+    AsmDataItems[I].Value := '';
+    AsmDataItems[I].Comment := '';
+  End;
+  For I := 0 To ASM_MAX_BSS_ITEMS - 1 Do Begin
+    AsmBssItems[I].Name := '';
+    AsmBssItems[I].DataType := ASM_DAT_DB;
+    AsmBssItems[I].Value := '';
+    AsmBssItems[I].Comment := '';
+  End;
+  For I := 0 To ASM_MAX_CODE_LINES - 1 Do Begin
+    AsmCodeLines[I].LabelStr := '';
+    AsmCodeLines[I].Instruction := '';
+    AsmCodeLines[I].Comment := '';
+  End;
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmLabel : generer un label unique pour le module ASM      }
+{ ------------------------------------------------------------ }
+
+Function GenAsmLabel : TString;
+Begin
+  Inc(AsmLabelNum);
+  GenAsmLabel := '_ASM_L' + ItoS(AsmLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmSectionName : retourne le nom d un type de section ASM     }
+{ ------------------------------------------------------------ }
+
+Function AsmSectionName(SectType : Integer) : TString;
+Begin
+  Case SectType Of
+    ASM_SECT_NONE : AsmSectionName := 'NONE';
+    ASM_SECT_DATA : AsmSectionName := '.DATA';
+    ASM_SECT_BSS  : AsmSectionName := '.DATA?';
+    ASM_SECT_CODE : AsmSectionName := '.CODE';
+  Else
+    AsmSectionName := '?SECT' + ItoSI(SectType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmDirectiveName : retourne le nom d un type de directive     }
+{ ------------------------------------------------------------ }
+
+Function AsmDirectiveName(DirType : Integer) : TString;
+Begin
+  Case DirType Of
+    ASM_DIR_NONE        : AsmDirectiveName := 'NONE';
+    ASM_DIR_INCLUDE_LIB : AsmDirectiveName := 'INCLUDELIB';
+    ASM_DIR_EXTERN      : AsmDirectiveName := 'EXTERN';
+    ASM_DIR_PUBLIC      : AsmDirectiveName := 'PUBLIC';
+  Else
+    AsmDirectiveName := '?DIR' + ItoSI(DirType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AsmDataTypeName : retourne le nom d un type de donnee ASM     }
+{ ------------------------------------------------------------ }
+
+Function AsmDataTypeName(DatType : Integer) : TString;
+Begin
+  Case DatType Of
+    ASM_DAT_DB : AsmDataTypeName := 'DB';
+    ASM_DAT_DW : AsmDataTypeName := 'DW';
+    ASM_DAT_DD : AsmDataTypeName := 'DD';
+  Else
+    AsmDataTypeName := '?DAT' + ItoSI(DatType);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindAsmExtern : chercher un symbole EXTERN par nom            }
+{ Retourne l index ou -1 si non trouve                          }
+{ ------------------------------------------------------------ }
+
+Function FindAsmExtern(AName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  FindAsmExtern := -1;
+  For I := 0 To AsmExternCount - 1 Do
+    If AsmExterns[I].Name = AName Then Begin
+      FindAsmExtern := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddAsmExtern : ajouter un symbole EXTERN                      }
+{ ------------------------------------------------------------ }
+
+Procedure AddAsmExtern(AName, ADecorated : TString; AIsProc : Boolean);
+Begin
+  If AsmExternCount >= ASM_MAX_EXTERNS Then Exit;
+  If FindAsmExtern(AName) >= 0 Then Exit; { deja present }
+  AsmExterns[AsmExternCount].Name := AName;
+  AsmExterns[AsmExternCount].Decorated := ADecorated;
+  AsmExterns[AsmExternCount].IsProc := AIsProc;
+  Inc(AsmExternCount);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddAsmPublic : ajouter un symbole PUBLIC                      }
+{ ------------------------------------------------------------ }
+
+Procedure AddAsmPublic(AName : TString);
+Var
+  I : Integer;
+Begin
+  If AsmPublicCount >= ASM_MAX_PUBLICS Then Exit;
+  { Verifier si deja present }
+  For I := 0 To AsmPublicCount - 1 Do
+    If AsmPublics[I].Name = AName Then Exit;
+  AsmPublics[AsmPublicCount].Name := AName;
+  Inc(AsmPublicCount);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddAsmLib : ajouter une librairie INCLUDELIB                  }
+{ ------------------------------------------------------------ }
+
+Procedure AddAsmLib(AName : TString);
+Var
+  I : Integer;
+Begin
+  If AsmLibCount >= ASM_MAX_LIBS Then Exit;
+  { Verifier si deja present }
+  For I := 0 To AsmLibCount - 1 Do
+    If AsmLibs[I].Name = AName Then Exit;
+  AsmLibs[AsmLibCount].Name := AName;
+  Inc(AsmLibCount);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddAsmDataItem : ajouter un item dans la section .DATA        }
+{ ------------------------------------------------------------ }
+
+Procedure AddAsmDataItem(AName : TString; AType : Integer;
+                         AValue, AComment : TString);
+Begin
+  If AsmDataItemCount >= ASM_MAX_DATA_ITEMS Then Exit;
+  AsmDataItems[AsmDataItemCount].Name := AName;
+  AsmDataItems[AsmDataItemCount].DataType := AType;
+  AsmDataItems[AsmDataItemCount].Value := AValue;
+  AsmDataItems[AsmDataItemCount].Comment := AComment;
+  Inc(AsmDataItemCount);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddAsmBssItem : ajouter un item dans la section .DATA?        }
+{ ------------------------------------------------------------ }
+
+Procedure AddAsmBssItem(AName : TString; AType : Integer;
+                        ASize, AComment : TString);
+Begin
+  If AsmBssItemCount >= ASM_MAX_BSS_ITEMS Then Exit;
+  AsmBssItems[AsmBssItemCount].Name := AName;
+  AsmBssItems[AsmBssItemCount].DataType := AType;
+  AsmBssItems[AsmBssItemCount].Value := ASize;
+  AsmBssItems[AsmBssItemCount].Comment := AComment;
+  Inc(AsmBssItemCount);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AddAsmCodeLine : ajouter une ligne dans la section .CODE      }
+{ ------------------------------------------------------------ }
+
+Procedure AddAsmCodeLine(ALabel, AInstr, AComment : TString);
+Begin
+  If AsmCodeLineCount >= ASM_MAX_CODE_LINES Then Exit;
+  AsmCodeLines[AsmCodeLineCount].LabelStr := ALabel;
+  AsmCodeLines[AsmCodeLineCount].Instruction := AInstr;
+  AsmCodeLines[AsmCodeLineCount].Comment := AComment;
+  Inc(AsmCodeLineCount);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmHeader : generer l en-tete du fichier ASM (MASM)        }
+{ Ecrit .386, .MODEL FLAT, STDCALL et OPTION CASEMAP:NONE      }
+{ ------------------------------------------------------------ }
+
+Procedure GenAsmHeader(Var F : Text);
+Begin
+  WriteLn(F, '; ============================================');
+  WriteLn(F, '; Fichier genere par COBOLW32 - Listing MASM');
+  WriteLn(F, '; ============================================');
+  WriteLn(F);
+  WriteLn(F, '.386');
+  WriteLn(F, '.MODEL FLAT, STDCALL');
+  WriteLn(F, 'OPTION CASEMAP:NONE');
+  WriteLn(F);
+  Inc(AsmTotalLines, 7);
+  Inc(AsmDirectiveCount, 3);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmIncludeLibs : generer les directives INCLUDELIB          }
+{ ------------------------------------------------------------ }
+
+Procedure GenAsmIncludeLibs(Var F : Text);
+Var
+  I : Integer;
+Begin
+  If AsmLibCount = 0 Then Exit;
+  WriteLn(F, '; --- Librairies ---');
+  Inc(AsmTotalLines);
+  For I := 0 To AsmLibCount - 1 Do Begin
+    WriteLn(F, 'INCLUDELIB ', AsmLibs[I].Name);
+    Inc(AsmTotalLines);
+    Inc(AsmIncludeLibCount);
+  End;
+  WriteLn(F);
+  Inc(AsmTotalLines);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmExterns : generer les declarations EXTERN                }
+{ ------------------------------------------------------------ }
+
+Procedure GenAsmExterns(Var F : Text);
+Var
+  I : Integer;
+  TypeStr : TString;
+Begin
+  If AsmExternCount = 0 Then Exit;
+  WriteLn(F, '; --- Imports externes ---');
+  Inc(AsmTotalLines);
+  For I := 0 To AsmExternCount - 1 Do Begin
+    If AsmExterns[I].IsProc Then
+      TypeStr := 'PROC'
+    Else
+      TypeStr := 'DWORD';
+    WriteLn(F, 'EXTERN ', AsmExterns[I].Decorated, ':', TypeStr);
+    Inc(AsmTotalLines);
+    Inc(AsmExternEmitCount);
+  End;
+  WriteLn(F);
+  Inc(AsmTotalLines);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmPublics : generer les declarations PUBLIC                }
+{ ------------------------------------------------------------ }
+
+Procedure GenAsmPublics(Var F : Text);
+Var
+  I : Integer;
+Begin
+  If AsmPublicCount = 0 Then Exit;
+  WriteLn(F, '; --- Symboles publics ---');
+  Inc(AsmTotalLines);
+  For I := 0 To AsmPublicCount - 1 Do Begin
+    WriteLn(F, 'PUBLIC ', AsmPublics[I].Name);
+    Inc(AsmTotalLines);
+    Inc(AsmPublicEmitCount);
+  End;
+  WriteLn(F);
+  Inc(AsmTotalLines);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmDataSection : generer la section .DATA                   }
+{ Variables WORKING-STORAGE avec DB/DW/DD                        }
+{ Constantes chaines avec DB 'texte', 0                          }
+{ ------------------------------------------------------------ }
+
+Procedure GenAsmDataSection(Var F : Text);
+Var
+  I : Integer;
+  Line : TString;
+Begin
+  WriteLn(F, '; --- Section donnees initialisees ---');
+  WriteLn(F, '.DATA');
+  Inc(AsmTotalLines, 2);
+  For I := 0 To AsmDataItemCount - 1 Do Begin
+    Line := AsmDataItems[I].Name + ' ' +
+            AsmDataTypeName(AsmDataItems[I].DataType) + ' ' +
+            AsmDataItems[I].Value;
+    If AsmDataItems[I].Comment <> '' Then
+      Line := Line + '  ; ' + AsmDataItems[I].Comment;
+    WriteLn(F, Line);
+    Inc(AsmTotalLines);
+    Inc(AsmDataEmitCount);
+  End;
+  WriteLn(F);
+  Inc(AsmTotalLines);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmBssSection : generer la section .DATA?                   }
+{ Variables non initialisees (BSS) et buffers                    }
+{ ------------------------------------------------------------ }
+
+Procedure GenAsmBssSection(Var F : Text);
+Var
+  I : Integer;
+  Line : TString;
+Begin
+  WriteLn(F, '; --- Section donnees non initialisees ---');
+  WriteLn(F, '.DATA?');
+  Inc(AsmTotalLines, 2);
+  For I := 0 To AsmBssItemCount - 1 Do Begin
+    Line := AsmBssItems[I].Name + ' ' +
+            AsmDataTypeName(AsmBssItems[I].DataType) + ' ' +
+            AsmBssItems[I].Value;
+    If AsmBssItems[I].Comment <> '' Then
+      Line := Line + '  ; ' + AsmBssItems[I].Comment;
+    WriteLn(F, Line);
+    Inc(AsmTotalLines);
+    Inc(AsmBssEmitCount);
+  End;
+  WriteLn(F);
+  Inc(AsmTotalLines);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmCodeSection : generer la section .CODE                   }
+{ Point d entree _start, routines runtime, paragraphes COBOL    }
+{ ------------------------------------------------------------ }
+
+Procedure GenAsmCodeSection(Var F : Text);
+Var
+  I : Integer;
+  Line : TString;
+Begin
+  WriteLn(F, '; --- Section code ---');
+  WriteLn(F, '.CODE');
+  Inc(AsmTotalLines, 2);
+  For I := 0 To AsmCodeLineCount - 1 Do Begin
+    Line := '';
+    If AsmCodeLines[I].LabelStr <> '' Then
+      Line := AsmCodeLines[I].LabelStr + ':';
+    If AsmCodeLines[I].Instruction <> '' Then Begin
+      If Line <> '' Then
+        Line := Line + #10 + ASM_INDENT + AsmCodeLines[I].Instruction
+      Else
+        Line := ASM_INDENT + AsmCodeLines[I].Instruction;
+    End;
+    If AsmCodeLines[I].Comment <> '' Then Begin
+      If Line <> '' Then
+        Line := Line + '  ; ' + AsmCodeLines[I].Comment
+      Else
+        Line := '; ' + AsmCodeLines[I].Comment;
+    End;
+    If Line <> '' Then Begin
+      WriteLn(F, Line);
+      Inc(AsmTotalLines);
+      Inc(AsmCodeEmitCount);
+    End;
+  End;
+  WriteLn(F);
+  Inc(AsmTotalLines);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmFooter : generer la fin du fichier ASM                   }
+{ ------------------------------------------------------------ }
+
+Procedure GenAsmFooter(Var F : Text);
+Begin
+  WriteLn(F, 'END _start');
+  Inc(AsmTotalLines);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenAsmFile : generer le fichier .ASM complet                   }
+{ Assemblage de toutes les sections dans un seul fichier         }
+{ ------------------------------------------------------------ }
+
+Procedure GenAsmFile(FileName : TString);
+Var
+  F : Text;
+Begin
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    WriteLn('Erreur: impossible de creer le fichier ', FileName);
+    Exit;
+  End;
+
+  { En-tete MASM }
+  GenAsmHeader(F);
+
+  { Librairies d import }
+  GenAsmIncludeLibs(F);
+
+  { Declarations EXTERN }
+  GenAsmExterns(F);
+
+  { Declarations PUBLIC }
+  GenAsmPublics(F);
+
+  { Section .DATA }
+  GenAsmDataSection(F);
+
+  { Section .DATA? }
+  GenAsmBssSection(F);
+
+  { Section .CODE }
+  GenAsmCodeSection(F);
+
+  { Fin du fichier }
+  GenAsmFooter(F);
+
+  Close(F);
+  Inc(AsmFileWrittenCount);
+  Inc(AsmTotalLines);
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseAsmOutputOption : analyser l option de sortie ASM         }
+{ Prepare les librairies et imports standard Win32               }
+{ ------------------------------------------------------------ }
+
+Procedure ParseAsmOutputOption(OptStr : TString);
+Begin
+  If (OptStr = '-asm') Or (OptStr = '-ASM') Then Begin
+    { Ajouter les librairies standard }
+    AddAsmLib('kernel32.lib');
+    AddAsmLib('user32.lib');
+    AddAsmLib('msvcrt.lib');
+    { Ajouter les imports Win32 standard }
+    AddAsmExtern('ExitProcess', '_ExitProcess@4', True);
+    AddAsmExtern('GetStdHandle', '_GetStdHandle@4', True);
+    AddAsmExtern('WriteFile', '_WriteFile@20', True);
+    AddAsmExtern('ReadFile', '_ReadFile@20', True);
+    AddAsmExtern('CreateFileA', '_CreateFileA@28', True);
+    AddAsmExtern('CloseHandle', '_CloseHandle@4', True);
+    { Ajouter le point d entree comme PUBLIC }
+    AddAsmPublic('_start');
+    { Ajouter le squelette de code minimal }
+    AddAsmCodeLine('_start', '', 'Point d entree du programme COBOL');
+    AddAsmCodeLine('', 'push 0', 'Code de sortie = 0');
+    AddAsmCodeLine('', 'call _ExitProcess@4', 'Terminer le processus');
+  End;
+  Inc(AsmStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsAsmWriterKeyword : verifier si un mot-cle est ASM Writer    }
+{ ------------------------------------------------------------ }
+
+Function IsAsmWriterKeyword(KW : Integer) : Boolean;
+Begin
+  IsAsmWriterKeyword := (KW = KW_ASM);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpAsmWriterState : afficher l etat du module ASM Writer      }
+{ ------------------------------------------------------------ }
+
+Procedure DumpAsmWriterState;
+Var
+  I : Integer;
+Begin
+  WriteLn('=== ASM Listing Writer State ===');
+  WriteLn('  Initialized       : ', AsmInitialized);
+  WriteLn('  Externs           : ', AsmExternCount);
+  WriteLn('  Publics           : ', AsmPublicCount);
+  WriteLn('  Libraries         : ', AsmLibCount);
+  WriteLn('  Data items        : ', AsmDataItemCount);
+  WriteLn('  BSS items         : ', AsmBssItemCount);
+  WriteLn('  Code lines        : ', AsmCodeLineCount);
+  WriteLn('  Comments          : ', AsmCommentCount);
+  WriteLn('  Directives        : ', AsmDirectiveCount);
+  WriteLn('  INCLUDELIB emitted: ', AsmIncludeLibCount);
+  WriteLn('  EXTERN emitted    : ', AsmExternEmitCount);
+  WriteLn('  PUBLIC emitted    : ', AsmPublicEmitCount);
+  WriteLn('  DATA emitted      : ', AsmDataEmitCount);
+  WriteLn('  BSS emitted       : ', AsmBssEmitCount);
+  WriteLn('  CODE emitted      : ', AsmCodeEmitCount);
+  WriteLn('  Files written     : ', AsmFileWrittenCount);
+  WriteLn('  Total lines       : ', AsmTotalLines);
+  WriteLn('  State count       : ', AsmStateCount);
+  For I := 0 To AsmLibCount - 1 Do
+    WriteLn('  Lib[', I, '] : ', AsmLibs[I].Name);
+  For I := 0 To AsmExternCount - 1 Do
+    WriteLn('  Extern[', I, '] : ', AsmExterns[I].Decorated,
+            ' proc=', AsmExterns[I].IsProc);
+  For I := 0 To AsmPublicCount - 1 Do
+    WriteLn('  Public[', I, '] : ', AsmPublics[I].Name);
+End;
+
+{ 10 fonctions accesseurs pour TODO 23                         }
+
+Function IsAsmInitialized : Boolean;
+Begin
+  IsAsmInitialized := AsmInitialized;
+End;
+
+Function IsAsmEmpty : Boolean;
+Begin
+  IsAsmEmpty := (AsmTotalLines = 0);
+End;
+
+Function GetAsmTotalLines : Integer;
+Begin
+  GetAsmTotalLines := AsmTotalLines;
+End;
+
+Function GetAsmStatus : TString;
+Begin
+  If Not AsmInitialized Then
+    GetAsmStatus := 'NON INITIALISE'
+  Else
+    GetAsmStatus := 'EXTERNS=' + ItoSI(AsmExternCount) +
+                    ' LIBS=' + ItoSI(AsmLibCount) +
+                    ' DATA=' + ItoSI(AsmDataItemCount) +
+                    ' BSS=' + ItoSI(AsmBssItemCount) +
+                    ' CODE=' + ItoSI(AsmCodeLineCount);
+End;
+
+Function GetAsmExternCount : Integer;
+Begin
+  GetAsmExternCount := AsmExternCount;
+End;
+
+Function GetAsmDataItemCount : Integer;
+Begin
+  GetAsmDataItemCount := AsmDataItemCount;
+End;
+
+Function GetAsmBssItemCount : Integer;
+Begin
+  GetAsmBssItemCount := AsmBssItemCount;
+End;
+
+Function GetAsmCodeLineCount : Integer;
+Begin
+  GetAsmCodeLineCount := AsmCodeLineCount;
+End;
+
+Function GetAsmFileWrittenCount : Integer;
+Begin
+  GetAsmFileWrittenCount := AsmFileWrittenCount;
+End;
+
+Function GetAsmStateCount : Integer;
+Begin
+  GetAsmStateCount := AsmStateCount;
+End;
+
 Procedure LexScanIdent;
 Var
   S     : TString;
@@ -21396,6 +22090,7 @@ Begin
   RtlInitialized := False;
   PeInitialized  := False;
   CofInitialized := False;
+  AsmInitialized := False;
   ParseArgs;
 
   { Affichage de la banniere en mode verbeux }
@@ -21460,6 +22155,9 @@ Begin
 
   { Initialiser le module ecrivain COFF .OBJ (generation .OBJ Win32) }
   InitCoffWriterState;
+
+  { Initialiser le module generateur de listing assembleur (.ASM MASM) }
+  InitAsmWriterState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;

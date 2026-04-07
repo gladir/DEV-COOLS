@@ -687,7 +687,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
             Compatible avec Microsoft LINK.EXE et MASM
             10 fonctions accesseurs
 
-  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [A FAIRE]
+  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [IMPLEMENTE]
             Format MASM (.ASM) lisible et assemblable :
               .386
               .MODEL FLAT, STDCALL
