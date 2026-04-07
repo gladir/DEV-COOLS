@@ -2040,6 +2040,31 @@ Const
   JPEG_LEVEL_SHIFT = 128;              { Pour convertir 0..255 en -128..127 }
 
 { ============================================================
+   GENERATEUR JPEG INTEGRE - PARTIE 6
+   Constantes pour l'encodage RLE (Run-Length Encoding) des coefficients AC
+  ============================================================ }
+
+{ Taille maximale du bloc RLE (63 coefficients AC maximum) }
+  JPEG_RLE_MAX_PAIRS = 63;             { Maximum de paires (run, value) }
+
+{ Valeur speciale pour marquer la fin de bloc (EOB = End Of Block) }
+  JPEG_RLE_EOB = 0;                    { RunLength=0, Value=0 signifie EOB }
+
+{ Valeur speciale pour les zeros etendus (ZRL = Zero Run Length) }
+{ Quand plus de 15 zeros consecutifs, on utilise ZRL (F/0) }
+  JPEG_RLE_ZRL_RUNLENGTH = 15;         { RunLength max avant ZRL }
+  JPEG_RLE_ZRL_SYMBOL = $F0;           { Symbole ZRL = (15, 0) en hex }
+
+{ Categories de magnitude pour les coefficients AC (0-10) }
+{ Category N: valeur absolue dans [2^(N-1), 2^N - 1] pour N >= 1 }
+  JPEG_AC_CAT_MIN = 0;                 { Categorie minimum (valeur 0) }
+  JPEG_AC_CAT_MAX = 10;                { Categorie maximum (|val| <= 1023) }
+
+{ Valeurs limites par categorie AC }
+  JPEG_AC_MAX_VALUE = 1023;            { Valeur maximale AC encodable }
+  JPEG_AC_MIN_VALUE = -1023;           { Valeur minimale AC encodable }
+
+{ ============================================================
   TYPES
   ============================================================ }
 Type
@@ -2101,6 +2126,38 @@ Type
   { Table de correspondance pour conversion zigzag/matriciel }
   TJPEGZigzagTable = Array[0..63] Of Byte;
   
+  { Types pour l'encodage RLE JPEG (Partie 6) }
+  
+  { Paire RLE: (RunLength, Value) pour un coefficient AC }
+  { RunLength = nombre de zeros avant ce coefficient (0-15) }
+  { Value = valeur du coefficient non-nul }
+  TJPEGRLEPair = Record
+    RunLength: Byte;           { Nombre de zeros precedents (0-15) }
+    Value: Integer;            { Valeur du coefficient (-1023..1023) }
+    Category: Byte;            { Categorie de magnitude (0-10) }
+    IsEOB: Boolean;            { True si End-Of-Block }
+    IsZRL: Boolean;            { True si Zero-Run-Length (16 zeros) }
+  End;
+  
+  { Bloc RLE complet: tableau de paires pour les 63 coefficients AC }
+  { Le coefficient DC (indice 0 du zigzag) est traite separement }
+  TJPEGRLEBlock = Record
+    Pairs: Array[0..62] Of TJPEGRLEPair;  { Paires RLE }
+    Count: Integer;                        { Nombre de paires utilisees }
+    DCValue: Integer;                      { Coefficient DC (zigzag[0]) }
+    HasEOB: Boolean;                       { Bloc termine par EOB? }
+  End;
+  
+  { Statistiques d'encodage RLE pour un bloc }
+  TJPEGRLEStats = Record
+    TotalPairs: Integer;       { Nombre total de paires RLE }
+    ZRLCount: Integer;         { Nombre de symboles ZRL }
+    EOBCount: Integer;         { Nombre de EOB (0 ou 1) }
+    MaxRunLength: Integer;     { Plus long run de zeros }
+    MaxCategory: Integer;      { Plus grande categorie utilisee }
+    NonZeroCount: Integer;     { Nombre de coefficients non-nuls }
+  End;
+
   TOptions = Record
     ConfigFile   : String;
     InputFile    : String;
@@ -2674,6 +2731,12 @@ Var
   JPEG_ZigzagTable   : TJPEGZigzagTable;  { Ordre matriciel -> zigzag }
   JPEG_InvZigzagTable: TJPEGZigzagTable;  { Ordre zigzag -> matriciel }
   JPEG_ZigzagInitialized: Boolean;        { Tables initialisees? }
+
+  { Variables pour l'encodage RLE JPEG (Partie 6) }
+  JPEG_RLEInitialized: Boolean;           { Module RLE initialise? }
+  JPEG_RLEBlockCount : Integer;           { Compteur de blocs encodes }
+  JPEG_RLETotalPairs : Integer;           { Total de paires RLE generees }
+  JPEG_RLECategoryTable: Array[0..1023] Of Byte; { Table categorie pre-calculee }
 
 { ============================================================
   PROCEDURES ET FONCTIONS UTILITAIRES
@@ -18899,6 +18962,529 @@ Begin
     JPEG_GetInvZigzagTableValue := JPEG_InvZigzagTable[Index]
   Else
     JPEG_GetInvZigzagTableValue := -1;
+End;
+
+{ ============================================================
+  GENERATEUR JPEG INTEGRE - PARTIE 6
+  Encodage RLE (Run-Length Encoding) pour les coefficients AC
+  ============================================================ }
+
+{ Dans JPEG, les coefficients AC (indices 1-63 du bloc zigzag) sont
+  encodes avec un schema RLE qui exploite les longues sequences de zeros.
+  
+  L'encodage RLE pour JPEG fonctionne ainsi:
+  1. On parcourt les coefficients AC en ordre zigzag
+  2. Pour chaque coefficient non-nul, on encode:
+     - RunLength: nombre de zeros precedant ce coefficient (0-15)
+     - Value: la valeur du coefficient
+  3. Si plus de 15 zeros consecutifs: symbole ZRL (Zero Run Length)
+  4. Apres le dernier coefficient non-nul: symbole EOB (End Of Block)
+  
+  Format du symbole AC: (RRRRSSSS, Amplitude)
+  - RRRR = RunLength (4 bits, 0-15)
+  - SSSS = Category/Size (4 bits, 0-10)
+  - Amplitude = valeur encodee sur Category bits
+  
+  Categories de magnitude:
+  Cat 0: valeur 0 (pas d'amplitude)
+  Cat 1: |val| = 1            (1 bit)
+  Cat 2: |val| = 2-3          (2 bits)
+  Cat 3: |val| = 4-7          (3 bits)
+  Cat 4: |val| = 8-15         (4 bits)
+  Cat 5: |val| = 16-31        (5 bits)
+  Cat 6: |val| = 32-63        (6 bits)
+  Cat 7: |val| = 64-127       (7 bits)
+  Cat 8: |val| = 128-255      (8 bits)
+  Cat 9: |val| = 256-511      (9 bits)
+  Cat 10: |val| = 512-1023    (10 bits)
+  
+  Symboles speciaux:
+  - EOB (End Of Block): (0, 0) = $00 - fin du bloc
+  - ZRL (Zero Run Length): (15, 0) = $F0 - 16 zeros consecutifs }
+
+Procedure JPEG_InitRLECategoryTable;
+{ Initialise la table de categories pre-calculee
+  Pour chaque valeur absolue 0-1023, determine sa categorie (0-10) }
+Var
+  I, Cat, Threshold: Integer;
+Begin
+  { Categorie 0: valeur 0 uniquement }
+  JPEG_RLECategoryTable[0] := 0;
+  
+  { Categories 1-10 }
+  Threshold := 1;
+  For Cat := 1 To 10 Do
+  Begin
+    { Cat N: valeurs de Threshold a 2*Threshold-1 }
+    For I := Threshold To (Threshold * 2) - 1 Do
+    Begin
+      If I <= 1023 Then
+        JPEG_RLECategoryTable[I] := Cat;
+    End;
+    Threshold := Threshold * 2;
+  End;
+End;
+
+Procedure JPEG_InitRLE;
+{ Initialise le module RLE (table de categories, compteurs) }
+Begin
+  If Not JPEG_RLEInitialized Then
+  Begin
+    JPEG_InitRLECategoryTable;
+    JPEG_RLEBlockCount := 0;
+    JPEG_RLETotalPairs := 0;
+    JPEG_RLEInitialized := True;
+  End;
+End;
+
+Function JPEG_GetACCategory(Value: Integer): Integer;
+{ Retourne la categorie de magnitude d'un coefficient AC
+  
+  Entree:
+    Value - Coefficient AC (-1023 a 1023)
+  
+  Retourne:
+    0 si Value = 0
+    1-10 selon la magnitude (log2(|Value|) + 1) }
+Var
+  AbsVal: Integer;
+Begin
+  If Not JPEG_RLEInitialized Then
+    JPEG_InitRLE;
+  
+  If Value = 0 Then
+    JPEG_GetACCategory := 0
+  Else
+  Begin
+    AbsVal := Abs(Value);
+    If AbsVal > JPEG_AC_MAX_VALUE Then
+      AbsVal := JPEG_AC_MAX_VALUE;  { Saturation }
+    JPEG_GetACCategory := JPEG_RLECategoryTable[AbsVal];
+  End;
+End;
+
+Function JPEG_GetACAmplitude(Value: Integer; Category: Integer): Integer;
+{ Calcule l'amplitude encodee pour un coefficient AC
+  
+  Dans JPEG, les valeurs negatives utilisent le complement a 1:
+  - Positif: amplitude = value
+  - Negatif: amplitude = value + 2^category - 1
+  
+  Exemple categorie 3 (valeurs 4-7 ou -7 a -4):
+    +4 -> 100, +5 -> 101, +6 -> 110, +7 -> 111
+    -4 -> 011, -5 -> 010, -6 -> 001, -7 -> 000 }
+Var
+  MaxVal: Integer;
+Begin
+  If Category = 0 Then
+    JPEG_GetACAmplitude := 0
+  Else If Value >= 0 Then
+    JPEG_GetACAmplitude := Value
+  Else
+  Begin
+    { Complement a 1 pour les negatifs }
+    MaxVal := 1 Shl Category;  { 2^category }
+    JPEG_GetACAmplitude := Value + MaxVal - 1;
+  End;
+End;
+
+Function JPEG_DecodeACAmplitude(Amplitude, Category: Integer): Integer;
+{ Decode une amplitude en valeur de coefficient AC
+  (operation inverse de JPEG_GetACAmplitude)
+  
+  Entree:
+    Amplitude - Valeur encodee sur Category bits
+    Category - Categorie de magnitude (1-10)
+  
+  Retourne:
+    Valeur du coefficient (-1023 a 1023) }
+Var
+  HalfRange: Integer;
+Begin
+  If Category = 0 Then
+    JPEG_DecodeACAmplitude := 0
+  Else
+  Begin
+    HalfRange := 1 Shl (Category - 1);  { 2^(category-1) }
+    If Amplitude >= HalfRange Then
+      JPEG_DecodeACAmplitude := Amplitude
+    Else
+      JPEG_DecodeACAmplitude := Amplitude - (HalfRange * 2) + 1;
+  End;
+End;
+
+Procedure JPEG_InitRLEPair(Var Pair: TJPEGRLEPair);
+{ Initialise une paire RLE a zero }
+Begin
+  Pair.RunLength := 0;
+  Pair.Value := 0;
+  Pair.Category := 0;
+  Pair.IsEOB := False;
+  Pair.IsZRL := False;
+End;
+
+Procedure JPEG_SetRLEPair(Var Pair: TJPEGRLEPair; 
+                          Run: Integer; Val: Integer);
+{ Initialise une paire RLE avec run-length et valeur
+  Calcule automatiquement la categorie }
+Begin
+  If Run < 0 Then Run := 0;
+  If Run > 15 Then Run := 15;
+  
+  Pair.RunLength := Run;
+  Pair.Value := Val;
+  Pair.Category := JPEG_GetACCategory(Val);
+  Pair.IsEOB := (Run = 0) And (Val = 0);
+  Pair.IsZRL := (Run = 15) And (Val = 0);
+End;
+
+Procedure JPEG_SetRLEPairEOB(Var Pair: TJPEGRLEPair);
+{ Cree une paire EOB (End Of Block) }
+Begin
+  Pair.RunLength := 0;
+  Pair.Value := 0;
+  Pair.Category := 0;
+  Pair.IsEOB := True;
+  Pair.IsZRL := False;
+End;
+
+Procedure JPEG_SetRLEPairZRL(Var Pair: TJPEGRLEPair);
+{ Cree une paire ZRL (Zero Run Length = 16 zeros) }
+Begin
+  Pair.RunLength := 15;
+  Pair.Value := 0;
+  Pair.Category := 0;
+  Pair.IsEOB := False;
+  Pair.IsZRL := True;
+End;
+
+Function JPEG_GetRLESymbol(Var Pair: TJPEGRLEPair): Byte;
+{ Retourne le symbole JPEG (RRRRSSSS) pour une paire RLE
+  
+  RRRR = RunLength (4 bits haut)
+  SSSS = Category (4 bits bas) }
+Begin
+  JPEG_GetRLESymbol := (Pair.RunLength Shl 4) Or Pair.Category;
+End;
+
+Procedure JPEG_InitRLEBlock(Var Block: TJPEGRLEBlock);
+{ Initialise un bloc RLE vide }
+Var
+  I: Integer;
+Begin
+  Block.Count := 0;
+  Block.DCValue := 0;
+  Block.HasEOB := False;
+  
+  For I := 0 To 62 Do
+    JPEG_InitRLEPair(Block.Pairs[I]);
+End;
+
+Procedure JPEG_EncodeACBlock(Var Zigzag: TJPEGZigzagBlock;
+                              Var RLEBlock: TJPEGRLEBlock);
+{ Encode les coefficients AC d'un bloc zigzag en paires RLE
+  
+  Entree:
+    Zigzag - Bloc de 64 coefficients en ordre zigzag
+             (indice 0 = DC, indices 1-63 = AC)
+  
+  Sortie:
+    RLEBlock - Bloc RLE contenant les paires encodees
+               et le coefficient DC }
+Var
+  I, ZeroRun, LastNonZero: Integer;
+Begin
+  If Not JPEG_RLEInitialized Then
+    JPEG_InitRLE;
+  
+  JPEG_InitRLEBlock(RLEBlock);
+  
+  { Coefficient DC separe }
+  RLEBlock.DCValue := Zigzag[0];
+  
+  { Trouver le dernier coefficient AC non-nul }
+  LastNonZero := 0;
+  For I := 63 DownTo 1 Do
+  Begin
+    If Zigzag[I] <> 0 Then
+    Begin
+      LastNonZero := I;
+      Break;
+    End;
+  End;
+  
+  { Si tous les AC sont nuls, juste EOB }
+  If LastNonZero = 0 Then
+  Begin
+    JPEG_SetRLEPairEOB(RLEBlock.Pairs[0]);
+    RLEBlock.Count := 1;
+    RLEBlock.HasEOB := True;
+    Inc(JPEG_RLEBlockCount);
+    Inc(JPEG_RLETotalPairs);
+    Exit;
+  End;
+  
+  { Encoder les coefficients AC jusqu'au dernier non-nul }
+  ZeroRun := 0;
+  I := 1;  { Commencer apres le DC }
+  
+  While I <= LastNonZero Do
+  Begin
+    If Zigzag[I] = 0 Then
+    Begin
+      Inc(ZeroRun);
+      { Si plus de 15 zeros, emettre ZRL }
+      If ZeroRun > 15 Then
+      Begin
+        JPEG_SetRLEPairZRL(RLEBlock.Pairs[RLEBlock.Count]);
+        Inc(RLEBlock.Count);
+        Inc(JPEG_RLETotalPairs);
+        ZeroRun := ZeroRun - 16;
+      End;
+    End
+    Else
+    Begin
+      { Coefficient non-nul: encoder avec le run de zeros }
+      JPEG_SetRLEPair(RLEBlock.Pairs[RLEBlock.Count], ZeroRun, Zigzag[I]);
+      Inc(RLEBlock.Count);
+      Inc(JPEG_RLETotalPairs);
+      ZeroRun := 0;
+    End;
+    Inc(I);
+  End;
+  
+  { Ajouter EOB apres le dernier coefficient non-nul }
+  If LastNonZero < 63 Then
+  Begin
+    JPEG_SetRLEPairEOB(RLEBlock.Pairs[RLEBlock.Count]);
+    Inc(RLEBlock.Count);
+    Inc(JPEG_RLETotalPairs);
+    RLEBlock.HasEOB := True;
+  End;
+  
+  Inc(JPEG_RLEBlockCount);
+End;
+
+Procedure JPEG_DecodeRLEBlock(Var RLEBlock: TJPEGRLEBlock;
+                               Var Zigzag: TJPEGZigzagBlock);
+{ Decode un bloc RLE en coefficients zigzag
+  (operation inverse de JPEG_EncodeACBlock)
+  
+  Entree:
+    RLEBlock - Bloc RLE avec paires et coefficient DC
+  
+  Sortie:
+    Zigzag - Bloc de 64 coefficients en ordre zigzag }
+Var
+  I, ZigzagPos, J: Integer;
+Begin
+  { Initialiser le bloc zigzag a zero }
+  For I := 0 To 63 Do
+    Zigzag[I] := 0;
+  
+  { Coefficient DC }
+  Zigzag[0] := RLEBlock.DCValue;
+  
+  { Decoder les paires RLE }
+  ZigzagPos := 1;  { Position courante dans le bloc zigzag }
+  
+  For I := 0 To RLEBlock.Count - 1 Do
+  Begin
+    If RLEBlock.Pairs[I].IsEOB Then
+    Begin
+      { EOB: le reste du bloc est deja a zero }
+      Break;
+    End
+    Else If RLEBlock.Pairs[I].IsZRL Then
+    Begin
+      { ZRL: 16 zeros }
+      ZigzagPos := ZigzagPos + 16;
+    End
+    Else
+    Begin
+      { Paire normale: RunLength zeros puis Value }
+      ZigzagPos := ZigzagPos + RLEBlock.Pairs[I].RunLength;
+      If ZigzagPos <= 63 Then
+        Zigzag[ZigzagPos] := RLEBlock.Pairs[I].Value;
+      Inc(ZigzagPos);
+    End;
+    
+    { Securite: ne pas depasser le bloc }
+    If ZigzagPos > 63 Then
+      Break;
+  End;
+End;
+
+Function JPEG_CountRLEPairs(Var RLEBlock: TJPEGRLEBlock): Integer;
+{ Retourne le nombre de paires RLE dans un bloc }
+Begin
+  JPEG_CountRLEPairs := RLEBlock.Count;
+End;
+
+Function JPEG_CountRLEZeroPairs(Var RLEBlock: TJPEGRLEBlock): Integer;
+{ Compte le nombre de paires ZRL dans un bloc }
+Var
+  I, Count: Integer;
+Begin
+  Count := 0;
+  For I := 0 To RLEBlock.Count - 1 Do
+    If RLEBlock.Pairs[I].IsZRL Then
+      Inc(Count);
+  JPEG_CountRLEZeroPairs := Count;
+End;
+
+Function JPEG_GetRLEBlockDC(Var RLEBlock: TJPEGRLEBlock): Integer;
+{ Retourne le coefficient DC du bloc RLE }
+Begin
+  JPEG_GetRLEBlockDC := RLEBlock.DCValue;
+End;
+
+Procedure JPEG_SetRLEBlockDC(Var RLEBlock: TJPEGRLEBlock; Value: Integer);
+{ Modifie le coefficient DC du bloc RLE }
+Begin
+  RLEBlock.DCValue := Value;
+End;
+
+Procedure JPEG_GetRLEStats(Var RLEBlock: TJPEGRLEBlock;
+                           Var Stats: TJPEGRLEStats);
+{ Calcule les statistiques d'un bloc RLE }
+Var
+  I, Run, Cat: Integer;
+Begin
+  Stats.TotalPairs := RLEBlock.Count;
+  Stats.ZRLCount := 0;
+  Stats.EOBCount := 0;
+  Stats.MaxRunLength := 0;
+  Stats.MaxCategory := 0;
+  Stats.NonZeroCount := 0;
+  
+  For I := 0 To RLEBlock.Count - 1 Do
+  Begin
+    If RLEBlock.Pairs[I].IsZRL Then
+      Inc(Stats.ZRLCount)
+    Else If RLEBlock.Pairs[I].IsEOB Then
+      Inc(Stats.EOBCount)
+    Else
+    Begin
+      Inc(Stats.NonZeroCount);
+      
+      Run := RLEBlock.Pairs[I].RunLength;
+      If Run > Stats.MaxRunLength Then
+        Stats.MaxRunLength := Run;
+      
+      Cat := RLEBlock.Pairs[I].Category;
+      If Cat > Stats.MaxCategory Then
+        Stats.MaxCategory := Cat;
+    End;
+  End;
+End;
+
+Function JPEG_EstimateRLEBits(Var RLEBlock: TJPEGRLEBlock): Integer;
+{ Estime le nombre de bits necessaires pour encoder un bloc RLE
+  (sans compter le coefficient DC)
+  
+  Note: Ceci est une estimation simplifiee qui ne tient pas compte
+  de l'encodage Huffman reel. Elle suppose que chaque symbole
+  prend environ 8 bits + les bits d'amplitude. }
+Var
+  I, TotalBits: Integer;
+Begin
+  TotalBits := 0;
+  
+  For I := 0 To RLEBlock.Count - 1 Do
+  Begin
+    If RLEBlock.Pairs[I].IsEOB Then
+      TotalBits := TotalBits + 4    { EOB: code court }
+    Else If RLEBlock.Pairs[I].IsZRL Then
+      TotalBits := TotalBits + 8    { ZRL: symbole seul }
+    Else
+      { Symbole (8 bits environ) + amplitude (category bits) }
+      TotalBits := TotalBits + 8 + RLEBlock.Pairs[I].Category;
+  End;
+  
+  JPEG_EstimateRLEBits := TotalBits;
+End;
+
+Procedure JPEG_CopyRLEBlock(Var Src, Dest: TJPEGRLEBlock);
+{ Copie un bloc RLE source vers un bloc destination }
+Var
+  I: Integer;
+Begin
+  Dest.Count := Src.Count;
+  Dest.DCValue := Src.DCValue;
+  Dest.HasEOB := Src.HasEOB;
+  
+  For I := 0 To Src.Count - 1 Do
+    Dest.Pairs[I] := Src.Pairs[I];
+End;
+
+Procedure JPEG_ClearRLEStats;
+{ Remet a zero les compteurs globaux RLE }
+Begin
+  JPEG_RLEBlockCount := 0;
+  JPEG_RLETotalPairs := 0;
+End;
+
+{ === Fonctions d'acces pour le module RLE === }
+
+Function JPEG_IsRLEInitialized: Boolean;
+{ Indique si le module RLE est initialise }
+Begin
+  JPEG_IsRLEInitialized := JPEG_RLEInitialized;
+End;
+
+Function JPEG_GetRLEBlockCount: Integer;
+{ Retourne le nombre total de blocs encodes }
+Begin
+  JPEG_GetRLEBlockCount := JPEG_RLEBlockCount;
+End;
+
+Function JPEG_GetRLETotalPairs: Integer;
+{ Retourne le nombre total de paires RLE generees }
+Begin
+  JPEG_GetRLETotalPairs := JPEG_RLETotalPairs;
+End;
+
+Function JPEG_GetRLEMaxPairs: Integer;
+{ Retourne le nombre maximum de paires par bloc }
+Begin
+  JPEG_GetRLEMaxPairs := JPEG_RLE_MAX_PAIRS;
+End;
+
+Function JPEG_GetRLEMaxRunLength: Integer;
+{ Retourne le run-length maximum (15) }
+Begin
+  JPEG_GetRLEMaxRunLength := JPEG_RLE_ZRL_RUNLENGTH;
+End;
+
+Function JPEG_GetRLEMaxCategory: Integer;
+{ Retourne la categorie maximum (10) }
+Begin
+  JPEG_GetRLEMaxCategory := JPEG_AC_CAT_MAX;
+End;
+
+Function JPEG_GetRLEMaxACValue: Integer;
+{ Retourne la valeur AC maximale encodable (1023) }
+Begin
+  JPEG_GetRLEMaxACValue := JPEG_AC_MAX_VALUE;
+End;
+
+Function JPEG_GetRLECategoryForValue(Value: Integer): Integer;
+{ Retourne la categorie pour une valeur donnee }
+Begin
+  JPEG_GetRLECategoryForValue := JPEG_GetACCategory(Value);
+End;
+
+Function JPEG_IsRLEPairEOB(Var Pair: TJPEGRLEPair): Boolean;
+{ Indique si une paire est un symbole EOB }
+Begin
+  JPEG_IsRLEPairEOB := Pair.IsEOB;
+End;
+
+Function JPEG_IsRLEPairZRL(Var Pair: TJPEGRLEPair): Boolean;
+{ Indique si une paire est un symbole ZRL }
+Begin
+  JPEG_IsRLEPairZRL := Pair.IsZRL;
 End;
 
 { ============================================================
