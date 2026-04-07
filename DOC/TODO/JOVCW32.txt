@@ -12,7 +12,7 @@ JOVCW32.PAS - Compilateur Jovial 73 vers assembleur
   ============================================================
 
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm)
             ParseArgs : analyser argv (source.jov [-o sortie] [-v]

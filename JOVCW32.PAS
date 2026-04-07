@@ -20,7 +20,7 @@
 
   Voir DOC/TODO/JOVCW32.txt pour la feuille de route complete.
 
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [A FAIRE]
+  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES PE/COFF [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm)
             ParseArgs : analyser argv (source.jov [-o sortie] [-v]
@@ -60,7 +60,7 @@
               (contrairement a COBOL ou Fortran)
             Commentaires Jovial :
               % commentaire jusqu a la fin de la ligne
-              (* commentaire sur un bloc *) (si supporte)
+              { commentaire sur un bloc } (si supporte)
             Procedure LexNextToken : reconnaitre les tokens Jovial :
               - Identificateurs : lettres, chiffres, souligne (_)
                 Jovial est insensible a la casse
@@ -236,8 +236,8 @@
   TODO 10 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET LOGIQUES [A FAIRE]
             Expressions arithmetiques :
               Addition (+), Soustraction (-)
-              Multiplication (*), Division (/)
-              Puissance (**) : exposant entier positif
+              Multiplication {*}, Division {/}
+              Puissance {**} : exposant entier positif
               Moins unaire : -expression
             Expressions logiques :
               AND (et bit a bit ou logique selon contexte)
@@ -256,7 +256,7 @@
               4. =, /=, <, <=, >, >=
               5. +, - (additifs)
               6. *, / (multiplicatifs)
-              7. ** (puissance)
+              7. ** {puissance}
               8. - (moins unaire)
               9. ( ) (parentheses)
             Evaluation sur la pile 80386 : PUSH/POP pour operandes
@@ -460,7 +460,7 @@
               Multiplication : MOV EAX, [a] / IMUL EAX, [b]
               Division : MOV EAX, [a] / CDQ / IDIV DWORD [b]
                 Resultat dans EAX, reste dans EDX
-              Puissance (**) : boucle de multiplication
+              Puissance {**} : boucle de multiplication
             Arithmetique sur items 8 et 16 bits :
               Charger avec MOVSX (signe) ou MOVZX (non signe)
               Operer en 32 bits (EAX)
@@ -700,5 +700,479 @@
 
 Program JOVCW32;
 
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES    [IMPLEMENTE] }
+{           PE/COFF                                              }
+{ ============================================================ }
+
+Const
+  JOVCW32_VERSION = '0.1';
+  JOVCW32_DATE    = '2026';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Constantes PE/COFF }
+  PE_DOS_MAGIC    = $5A4D;    { 'MZ' }
+  PE_PE_SIG       = $00004550; { 'PE\0\0' }
+  PE_MACHINE_I386 = $014C;
+  PE_OPT_SIZE     = $E0;
+  PE_MAGIC_32     = $010B;
+  PE_IMG_BASE     = $00400000;
+  PE_SEC_ALIGN    = 4096;
+  PE_FILE_ALIGN   = 512;
+  PE_SUBSYS_CUI   = 3;  { Console }
+
+  { Tailles des tampons binaires }
+  MAX_BIN_CODE = 65536;
+  MAX_BIN_DATA = 65536;
+  MAX_BIN_LBL  = 4096;
+  MAX_BIN_FIX  = 8192;
+
+  { Limites internes (32 bits) }
+  MAX_SYM     = 4096;
+  MAX_PROC    = 512;
+  MAX_LOCAL   = 256;
+  MAX_PARAM   = 64;
+  MAX_DEPTH   = 32;
+  MAX_LABEL   = 4096;
+  MAX_STR     = 255;
+  MAX_TABLE   = 256;
+  MAX_CONST   = 1024;
+  MAX_STATUS  = 64;
+  MAX_DEFINE  = 256;
+
+  { Prefixes de nommage ASM }
+  PFX_VAR   = '_JV_';    { variable globale (ITEM)              }
+  PFX_PROC  = '_JP_';    { procedure/fonction                   }
+  PFX_CONST = '_JK_';    { constante chaine                     }
+  PFX_RT    = '_JVRT_';  { routine runtime                      }
+  PFX_LBL   = '_JL_';    { label interne                        }
+  PFX_TAB   = '_JT_';    { table/tableau (TABLE)                }
+  PFX_MOD   = '_JM_';    { module                               }
+  PFX_STAT  = '_JS_';    { valeur status (enumeration)          }
+
+Type
+  TString = String;
+
+  TOptions = Record
+    SrcFile    : TString;   { fichier source (.jov)                }
+    OutFile    : TString;   { fichier sortie (.exe, .obj)          }
+    Verbose    : Boolean;   { -v : banniere et statistiques        }
+    DebugMode  : Boolean;   { -d : affichage de chaque token       }
+    Warnings   : Boolean;   { -w : afficher les avertissements     }
+    EmitExe    : Boolean;   { par defaut : produire un .EXE (PE)   }
+    EmitObj    : Boolean;   { -obj : produire seulement un .OBJ    }
+    EmitAsm    : Boolean;   { -asm : produire aussi un .ASM        }
+  End;
+
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  { Fichier de sortie interne (pour future emission) }
+  OutF       : Text;
+  OutFOpen   : Boolean;
+
+  { Drapeau pour la generation binaire PE (mini-assembleur) }
+  BcActive   : Boolean;
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires                                        }
+{ ------------------------------------------------------------ }
+
+Function ItoS(V : LongInt) : TString;
+Var S : TString;
 Begin
+  Str(V, S);
+  ItoS := S;
+End;
+
+Function ItoSI(V : Integer) : TString;
+Var S : TString;
+Begin
+  Str(V, S);
+  ItoSI := S;
+End;
+
+Function UpCaseStr(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'a') And (Tmp[I] <= 'z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) - 32);
+  UpCaseStr := Tmp;
+End;
+
+Function LoCaseStr(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'A') And (Tmp[I] <= 'Z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) + 32);
+  LoCaseStr := Tmp;
+End;
+
+{ Transforme un nom Jovial en identifiant valide pour l assembleur }
+Function AsmIdent(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := '';
+  For I := 1 To Length(S) Do
+  Begin
+    If ((S[I] >= 'A') And (S[I] <= 'Z')) Or
+       ((S[I] >= 'a') And (S[I] <= 'z')) Or
+       ((S[I] >= '0') And (S[I] <= '9')) Or
+       (S[I] = '_') Then
+      Tmp := Tmp + S[I]
+    Else
+      Tmp := Tmp + '_';
+  End;
+  AsmIdent := Tmp;
+End;
+
+{ Retourne l extension d un chemin (avec le point, en minuscules) }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := LoCaseStr(Copy(Path, LastDot,
+                     Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Retourne le repertoire d un chemin (avec le separateur final) }
+Function ExtractDir(Const Path : TString) : TString;
+Var
+  I, LastSep : Integer;
+Begin
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+  If LastSep > 0 Then
+    ExtractDir := Copy(Path, 1, LastSep)
+  Else
+    ExtractDir := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ FatalError / WarnMsg                                         }
+{ ------------------------------------------------------------ }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('JOVCW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('JOVCW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ InitOptions                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile    := '';
+  Opts.OutFile    := '';
+  Opts.Verbose    := False;
+  Opts.DebugMode  := False;
+  Opts.Warnings   := False;
+  Opts.EmitExe    := True;
+  Opts.EmitObj    := False;
+  Opts.EmitAsm    := False;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowHelp                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ShowHelp;
+Begin
+  WriteLn('JOVCW32 v', JOVCW32_VERSION, ' (', JOVCW32_DATE,
+          ') - Compilateur Jovial 73 vers 80386 (Windows PE 32 bits)');
+  WriteLn('JOVCW32 - Cette commande permet de lancer le compilateur Jovial 73 ',
+          'pour l''assembleur du microprocesseur 80386 (en executable ',
+          'Windows 32 bits).');
+  WriteLn;
+  WriteLn('Syntaxe : JOVCW32 [options] <source.jov> [options]');
+  WriteLn;
+  WriteLn('Sortie :');
+  WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
+  WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+  WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
+  WriteLn('  -o <fichier>   Specifier le nom du fichier de sortie');
+  WriteLn;
+  WriteLn('General :');
+  WriteLn('  -v             Mode verbeux (banniere + statistiques)');
+  WriteLn('  -d             Debug tokens (affiche chaque token)');
+  WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -h, --help, /? Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  JOVCW32 hello.jov');
+  WriteLn('  JOVCW32 hello.jov -o hello.exe -v');
+  WriteLn('  JOVCW32 main.jov -asm');
+  WriteLn('  JOVCW32 module.jov -obj -w');
+  Halt(EXIT_OK);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgs                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArgs;
+Var
+  I    : Integer;
+  Arg  : TString;
+  Ext  : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowHelp;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-asm' Then
+      Opts.EmitAsm := True
+    Else If Arg = '-obj' Then
+    Begin
+      Opts.EmitObj := True;
+      Opts.EmitExe := False;
+    End
+    Else If Arg = '-o' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('-o necessite un nom de fichier');
+      Opts.OutFile := ParamStr(I);
+    End
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+      FatalError('Option inconnue: ' + Arg)
+    Else
+    Begin
+      { Argument positionnel : fichier source }
+      If Opts.SrcFile = '' Then
+        Opts.SrcFile := Arg
+      Else
+        FatalError('Argument inattendu: ' + Arg);
+    End;
+
+    Inc(I);
+  End;
+
+  { Validation : fichier source requis }
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('JOVCW32: fichier source manquant');
+    ShowHelp;
+  End;
+
+  { Verifier l extension .jov }
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext <> '.jov' Then
+    WarnMsg('extension attendue .jov, trouvee: ' + Ext);
+
+  { Fichier de sortie par defaut }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.EmitObj Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowBanner / ShowStats                                        }
+{ ------------------------------------------------------------ }
+
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('JOVCW32 v', JOVCW32_VERSION, ' (', JOVCW32_DATE,
+          ') - Compilateur Jovial 73 -> 80386 PE Win32');
+  WriteLn('Source   : ', Opts.SrcFile);
+  WriteLn('Sortie   : ', Opts.OutFile);
+  If Opts.EmitAsm Then
+    WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
+  If Opts.EmitObj Then
+    WriteLn('Mode     : OBJ (COFF 32 bits)')
+  Else
+    WriteLn('Mode     : EXE (PE Win32)');
+  WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Erreurs          : ', ErrorCount);
+  WriteLn('Avertissements   : ', WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Cleanup                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ 10 fonctions accesseurs                                       }
+{ ------------------------------------------------------------ }
+
+Function GetCompilerVersion : TString;
+Begin
+  GetCompilerVersion := JOVCW32_VERSION;
+End;
+
+Function GetCompilerDate : TString;
+Begin
+  GetCompilerDate := JOVCW32_DATE;
+End;
+
+Function IsEmitExe : Boolean;
+Begin
+  IsEmitExe := Opts.EmitExe;
+End;
+
+Function IsEmitObj : Boolean;
+Begin
+  IsEmitObj := Opts.EmitObj;
+End;
+
+Function IsEmitAsm : Boolean;
+Begin
+  IsEmitAsm := Opts.EmitAsm;
+End;
+
+Function IsVerbose : Boolean;
+Begin
+  IsVerbose := Opts.Verbose;
+End;
+
+Function IsDebugMode : Boolean;
+Begin
+  IsDebugMode := Opts.DebugMode;
+End;
+
+Function IsWarnings : Boolean;
+Begin
+  IsWarnings := Opts.Warnings;
+End;
+
+Function GetSrcFile : TString;
+Begin
+  GetSrcFile := Opts.SrcFile;
+End;
+
+Function GetOutFile : TString;
+Begin
+  GetOutFile := Opts.OutFile;
+End;
+
+{ ============================================================ }
+{ Run : point d entree principal                                }
+{ ============================================================ }
+
+Procedure Run;
+Begin
+  { Initialisation des compteurs }
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+  BcActive   := False;
+
+  ParseArgs;
+
+  { Affichage de la banniere en mode verbeux }
+  ShowBanner;
+
+  { Statistiques finales }
+  ShowStats;
+
+  { Nettoyage }
+  Cleanup;
+End;
+
+Begin
+  Run;
 End.
