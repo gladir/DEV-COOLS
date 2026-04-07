@@ -7478,7 +7478,7 @@ Begin
 End;
 
 Procedure ShowHelp;Begin
-  WriteLn('DOXYGEN - Cette commande permet de lancer le g‚n‚rateur ',
+  WriteLn('DOXYGEN - Cette commande permet de lancer le gï¿½nï¿½rateur ',
           'de documentation.');
   WriteLn;
   WriteLn('Syntaxe: DOXYGEN [options] [config-file]');
@@ -10620,10 +10620,10 @@ Begin
   PngCrcTableBuilt := True;
 End;
 
-Function UpdateCrc(Crc: LongInt; Const Data: Array Of Byte; Len: Integer): LongInt;
+Function UpdateCrc(Crc: LongInt; Const Data: Array Of Byte; Len: LongInt): LongInt;
 { Met a jour le CRC32 avec les donnees fournies }
 Var
-  I: Integer;
+  I: LongInt;
 Begin
   If Not PngCrcTableBuilt Then BuildCrcTable;
 
@@ -10633,7 +10633,7 @@ Begin
   UpdateCrc := Crc;
 End;
 
-Function CalcCrc(Const Data: Array Of Byte; Len: Integer): LongInt;
+Function CalcCrc(Const Data: Array Of Byte; Len: LongInt): LongInt;
 { Calcule le CRC32 des donnees }
 Begin
   CalcCrc := UpdateCrc(LongInt($FFFFFFFF), Data, Len) Xor LongInt($FFFFFFFF);
@@ -10890,6 +10890,7 @@ Var
   TypeAndData: Array Of Byte;
   I: LongInt;
   Crc: LongInt;
+  Written: LongInt;
 Begin
   { Longueur des donnees }
   WritePngDWord(F, DataLen);
@@ -10905,13 +10906,8 @@ Begin
   For I := 0 To DataLen - 1 Do
     TypeAndData[I + 4] := Data[I];
 
-  { Ecrire le type }
-  For I := 0 To 3 Do
-    WritePngByte(F, TypeAndData[I]);
-
-  { Ecrire les donnees }
-  For I := 0 To DataLen - 1 Do
-    WritePngByte(F, Data[I]);
+  { Ecrire type + donnees en un seul bloc }
+  BlockWrite(F, TypeAndData[0], DataLen + 4, Written);
 
   { Calculer et ecrire le CRC }
   Crc := CalcCrc(TypeAndData, DataLen + 4);
@@ -10962,15 +10958,16 @@ Var
   RawData: Array Of Byte;
   CompData: Array Of Byte;
   RawLen, CompLen: LongInt;
-  X, Y, Idx: Integer;
+  X, Y: Integer;
+  Idx: LongInt;
   Adler32: LongInt;
   S1, S2: LongInt;
-  NumBlocks, BlockNum: Integer;
+  NumBlocks, BlockNum: LongInt;
   CompIdx, SrcIdx: LongInt;
   ActualBlockLen, Remaining: LongInt;
 Begin
   { Taille des donnees brutes: (1 + Width * 3) * Height }
-  RawLen := (1 + Width * 3) * Height;
+  RawLen := (LongInt(1) + LongInt(Width) * 3) * LongInt(Height);
   SetLength(RawData, RawLen);
 
   { Construire les donnees brutes (filtre 0 = aucun pour chaque ligne) }
