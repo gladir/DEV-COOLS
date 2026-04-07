@@ -8,996 +8,6 @@
   @license: MIT
 }
 
-(* ============================================================
-  DOXYGEN.PAS - Clone de la commande Doxygen
-  Turbo Pascal / Free Pascal (-Mtp)
-
-  Generateur de documentation a partir de code source annote.
-  Extrait les commentaires de documentation des fichiers sources
-  et genere une documentation structuree en HTML, LaTeX, RTF, XML, MAN.
-
-  Usage :
-    doxygen [options] [config-file]
-    doxygen -g [config-file]
-    doxygen -INPUT fichier.c
-    doxygen -INPUT fichier.pas
-
-  Options principales :
-    -h, --help           : afficher l aide
-    -v, --version        : afficher la version
-    -g [fichier]         : generer un fichier de configuration (Doxyfile)
-    -s                   : mode silencieux (moins de sortie)
-    -u                   : mettre a jour un fichier de configuration existant
-    -w [format]          : generer un fichier de style (html, latex, rtf)
-    -l                   : generer un fichier layout.xml par defaut
-    -d [option]          : activer les options de debogage
-    -x                   : afficher la configuration expandee
-    -e [format]          : generer un fichier d entete pour le format
-    -b                   : activer le mode batch (pas d interaction)
-
-  Options personnalisees (DEV-COOLS) :
-    -INPUT fichier       : specifier directement un fichier source a analyser
-                           (Pascal, C, C++, Ada, Java, Python, Fortran, ...)
-                           sans avoir besoin d un fichier de configuration
-
-  FEUILLE DE ROUTE - 25 TODOS
-  ============================================================
-
-  TODO 01 - INFRASTRUCTURE, OPTIONS ET CONSTANTES [IMPLEMENTE]
-            DOXYGEN_VERSION ('1.0') et DOXYGEN_DATE ('2026-03-29')
-            {$IFDEF FPC} {$MODE TP} {$ENDIF} pour compatibilite
-            TOptions : record
-              ConfigFile   : String   (fichier Doxyfile)
-              InputFile    : String   (fichier source direct via -INPUT)
-              OutputDir    : String   (repertoire de sortie)
-              GenConfig    : Boolean  (generer un Doxyfile avec -g)
-              UpdateConfig : Boolean  (mettre a jour un Doxyfile avec -u)
-              GenStyle     : Boolean  (generer fichier de style avec -w)
-              StyleFormat  : String   (format du style: html/latex/rtf)
-              GenLayout    : Boolean  (generer layout.xml avec -l)
-              GenHeader    : Boolean  (generer header avec -e)
-              HeaderFormat : String   (format du header)
-              Verbose      : Boolean  (mode verbeux)
-              Quiet        : Boolean  (mode silencieux avec -s)
-              DebugMode    : Boolean  (options de debogage avec -d)
-              DebugOpts    : String   (options de debogage actives)
-              ExpandOnly   : Boolean  (afficher config expandee avec -x)
-              BatchMode    : Boolean  (mode batch avec -b)
-              ShowVersion  : Boolean  (afficher version avec -v)
-              ShowHelp     : Boolean  (afficher aide avec -h)
-            End
-            Constantes de codes de retour : EXIT_OK = 0, EXIT_ERROR = 1,
-              EXIT_USAGE = 2
-            Constantes de tailles : MAX_FILES = 4096, MAX_SYMBOLS = 16384,
-              MAX_CONFIG_LINES = 2048, MAX_INCLUDE_DEPTH = 64
-            Procedure FatalError(Msg: String) : afficher l erreur et
-              appeler Halt(EXIT_ERROR)
-            Procedure WarnMsg(Msg: String) : afficher un avertissement
-            Procedure InfoMsg(Msg: String) : afficher un message si Verbose
-            Procedure ParseCommandLine(Var Opts: TOptions) :
-              analyser ParamStr(1..ParamCount), detecter les options
-              -g / -u / -w / -l / -d / -x / -e / -b / -s / -v / -h / -INPUT
-              et le fichier de configuration (dernier argument sans tiret)
-            Procedure ShowHelp : afficher la syntaxe complete et les options
-            Procedure ShowVersion : afficher la version et la date
-            Procedure ShowBanner : afficher la banniere de demarrage
-            Programme principal : validation des arguments et appel Run
-
-  TODO 02 - OPTION PERSONNALISEE -INPUT (FICHIER SOURCE DIRECT) [IMPLEMENTE]
-            Extension DEV-COOLS : permettre l analyse directe d un fichier
-            source sans fichier de configuration Doxyfile.
-            Syntaxe : doxygen -INPUT fichier.ext
-            Function DetectLanguageFromExt(Const FileName: String): String
-              detecter le langage a partir de l extension :
-              .pas .pp .p    -> 'Pascal'
-              .c .h          -> 'C'
-              .cpp .cxx .cc .hpp .hxx -> 'C++'
-              .ada .adb .ads -> 'Ada'
-              .f .f90 .f95 .for -> 'Fortran'
-              .java          -> 'Java'
-              .py            -> 'Python'
-              .cs            -> 'C#'
-              .php           -> 'PHP'
-              .js            -> 'JavaScript'
-              .rb            -> 'Ruby'
-              .pl .pm        -> 'Perl'
-              .vb .bas       -> 'Basic'
-              .tcl           -> 'Tcl'
-              .sql           -> 'SQL'
-              .d             -> 'D'
-              .rs            -> 'Rust'
-              .go            -> 'Go'
-              .swift         -> 'Swift'
-              .kt .kts       -> 'Kotlin'
-              .m .mm         -> 'Objective-C'
-              .idl .odl      -> 'IDL'
-              autres         -> 'Unknown'
-            Procedure ProcessInputFile(Const FileName: String)
-              valider que le fichier existe
-              detecter le langage avec DetectLanguageFromExt
-              creer une configuration minimale en memoire
-              lancer l analyse du fichier unique
-              generer la documentation dans le repertoire courant
-            Procedure ValidateInputFile(Const FileName: String)
-              verifier que le fichier existe ({$I-}/{$I+})
-              verifier que l extension est reconnue
-              afficher un avertissement si langage non supporte
-
-  TODO 03 - LEXEUR DE COMMENTAIRES DE DOCUMENTATION [IMPLEMENTE]
-            TDocCommentKind : (DCK_NONE, DCK_JAVADOC, DCK_QT,
-              DCK_TRIPLE_SLASH, DCK_EXCLAMATION, DCK_DOXYGEN)
-            TDocToken : record
-              Kind  : TDocCommentKind (type de commentaire)
-              Text  : String          (texte du commentaire)
-              Line  : Integer         (numero de ligne)
-              Col   : Integer         (colonne de debut)
-            End
-            Variables globales :
-              DocTokens     : Array[1..MAX_DOC_TOKENS] Of TDocToken
-              DocTokenCount : Integer
-            Function IsDocCommentStart(Const Line: String; Pos: Integer): TDocCommentKind
-              detecter le debut d un commentaire de documentation :
-              '/**'  -> DCK_JAVADOC    (style Javadoc classique)
-              '/*!'  -> DCK_DOXYGEN    (style Doxygen)
-              '///'  -> DCK_TRIPLE_SLASH (triple slash C++)
-              '//!'  -> DCK_EXCLAMATION  (style Qt)
-              '{**'  -> DCK_JAVADOC    (style Pascal/Delphi)
-              '(*!'  -> DCK_DOXYGEN    (style Pascal alternatif)
-            Procedure ScanDocComment(Var Line: String; Var Pos: Integer;
-              Kind: TDocCommentKind; Var Token: TDocToken)
-              extraire le contenu du commentaire de documentation
-              supprimer les prefixes de ligne (* ou //)
-              normaliser les espaces et retours a la ligne
-            Procedure ExtractDocComments(Const SourceFile: String)
-              ouvrir le fichier source en lecture
-              scanner chaque ligne a la recherche de commentaires doc
-              accumuler les tokens dans DocTokens[]
-              associer chaque commentaire a l entite qui suit
-
-  TODO 04 - PARSER DES BALISES DOXYGEN [IMPLEMENTE]
-            TDoxyTagKind : (TAG_UNKNOWN, TAG_PARAM, TAG_RETURN, TAG_RETURNS,
-              TAG_BRIEF, TAG_DETAILS, TAG_NOTE, TAG_WARNING, TAG_TODO,
-              TAG_BUG, TAG_DEPRECATED, TAG_AUTHOR, TAG_VERSION, TAG_DATE,
-              TAG_SINCE, TAG_SEE, TAG_SA, TAG_REF, TAG_LINK, TAG_CODE,
-              TAG_ENDCODE, TAG_VERBATIM, TAG_ENDVERBATIM, TAG_EXAMPLE,
-              TAG_FILE, TAG_CLASS, TAG_STRUCT, TAG_UNION, TAG_ENUM,
-              TAG_VAR, TAG_DEF, TAG_TYPEDEF, TAG_FN, TAG_NAMESPACE,
-              TAG_PACKAGE, TAG_INTERFACE, TAG_PROPERTY, TAG_EVENT,
-              TAG_RELATES, TAG_RELATED, TAG_MEMBEROF, TAG_INGROUP,
-              TAG_DEFGROUP, TAG_ADDTOGROUP, TAG_WEAKGROUP, TAG_NAME,
-              TAG_MAINPAGE, TAG_PAGE, TAG_SUBPAGE, TAG_SECTION,
-              TAG_SUBSECTION, TAG_PARAGRAPH, TAG_ANCHOR, TAG_IMAGE,
-              TAG_DOT, TAG_ENDDOT, TAG_MSC, TAG_ENDMSC, TAG_STARTUML,
-              TAG_ENDUML, TAG_HTMLONLY, TAG_ENDHTMLONLY, TAG_LATEXONLY,
-              TAG_ENDLATEXONLY, TAG_XMLONLY, TAG_ENDXMLONLY,
-              TAG_RTFONLY, TAG_ENDRTFONLY, TAG_MANONLY, TAG_ENDMANONLY,
-              TAG_DOCBOOKONLY, TAG_ENDDOCBOOKONLY, TAG_IF, TAG_IFNOT,
-              TAG_ELSE, TAG_ELSEIF, TAG_ENDIF, TAG_COND, TAG_ENDCOND,
-              TAG_COPYDOC, TAG_COPYBRIEF, TAG_COPYDETAILS, TAG_INCLUDE,
-              TAG_INCLUDELINENO, TAG_INCLUDEDOC, TAG_SNIPPET,
-              TAG_INTERNAL, TAG_ENDINTERNAL, TAG_PAR, TAG_PARBLOCK,
-              TAG_ENDPARBLOCK, TAG_EXCEPTION, TAG_THROW, TAG_THROWS,
-              TAG_RETVAL, TAG_TPARAM, TAG_PURE, TAG_STATIC, TAG_PRIVATE,
-              TAG_PROTECTED, TAG_PUBLIC, TAG_NOSUBGROUPING,
-              TAG_SHOWINITIALIZER, TAG_HIDEINITIALIZER, TAG_CALLGRAPH,
-              TAG_HIDECALLGRAPH, TAG_CALLERGRAPH, TAG_HIDECALLERGRAPH,
-              TAG_DIR, TAG_DONTINCLUDE, TAG_LINE, TAG_SKIP, TAG_SKIPLINE,
-              TAG_UNTIL, TAG_TEST, TAG_XREFITEM, TAG_INVARIANT, TAG_PRE,
-              TAG_POST, TAG_ATTENTION, TAG_REMARK, TAG_REMARKS)
-            TDoxyTag : record
-              Kind      : TDoxyTagKind (type de balise)
-              Name      : String       (nom de la balise sans @)
-              ParamName : String       (nom du parametre pour @param)
-              Content   : String       (contenu textuel de la balise)
-              Line      : Integer      (ligne dans le fichier)
-            End
-            Function ParseTagKind(Const TagName: String): TDoxyTagKind
-              convertir le nom de balise en enumeration
-              supporter les variantes avec @ et \ (ex: @param et \param)
-            Procedure ParseDocComment(Const Comment: String;
-              Var Tags: Array Of TDoxyTag; Var TagCount: Integer)
-              parser le commentaire de documentation
-              extraire chaque balise et son contenu
-              gerer les balises multi-lignes
-              gerer les balises imbriquees (@code/@endcode, etc.)
-            Function GetBriefDescription(Const Tags: Array Of TDoxyTag;
-              TagCount: Integer): String
-              extraire la description breve (@brief ou premiere phrase)
-            Function GetDetailedDescription(Const Tags: Array Of TDoxyTag;
-              TagCount: Integer): String
-              extraire la description detaillee (@details ou texte apres @brief)
-
-  TODO 05 - LECTURE ET PARSING DU FICHIER DE CONFIGURATION (DOXYFILE) [IMPLEMENTE]
-            TConfigOption : record
-              Name     : String   (nom de l option, ex: PROJECT_NAME)
-              Value    : String   (valeur de l option)
-              IsSet    : Boolean  (True si explicitement definie)
-              Line     : Integer  (ligne dans le fichier)
-            End
-            Variables globales :
-              Config        : Array[1..MAX_CONFIG_OPTIONS] Of TConfigOption
-              ConfigCount   : Integer
-              ConfigFile    : String  (chemin du Doxyfile)
-            Constantes des options Doxygen (plus de 300 options) :
-              OPT_PROJECT_NAME, OPT_PROJECT_NUMBER, OPT_PROJECT_BRIEF,
-              OPT_PROJECT_LOGO, OPT_OUTPUT_DIRECTORY, OPT_CREATE_SUBDIRS,
-              OPT_ALLOW_UNICODE_NAMES, OPT_OUTPUT_LANGUAGE, OPT_BRIEF_MEMBER_DESC,
-              OPT_REPEAT_BRIEF, OPT_ABBREVIATE_BRIEF, OPT_ALWAYS_DETAILED_SEC,
-              OPT_INLINE_INHERITED_MEMB, OPT_FULL_PATH_NAMES, OPT_STRIP_FROM_PATH,
-              OPT_STRIP_FROM_INC_PATH, OPT_SHORT_NAMES, OPT_JAVADOC_AUTOBRIEF,
-              OPT_JAVADOC_BANNER, OPT_QT_AUTOBRIEF, OPT_MULTILINE_CPP_IS_BRIEF,
-              OPT_PYTHON_DOCSTRING, OPT_INHERIT_DOCS, OPT_SEPARATE_MEMBER_PAGES,
-              OPT_TAB_SIZE, OPT_ALIASES, OPT_OPTIMIZE_OUTPUT_FOR_C,
-              OPT_OPTIMIZE_OUTPUT_JAVA, OPT_OPTIMIZE_FOR_FORTRAN,
-              OPT_OPTIMIZE_OUTPUT_VHDL, OPT_OPTIMIZE_OUTPUT_SLICE,
-              OPT_INPUT, OPT_INPUT_ENCODING, OPT_INPUT_FILE_ENCODING,
-              OPT_FILE_PATTERNS, OPT_RECURSIVE, OPT_EXCLUDE, OPT_EXCLUDE_SYMLINKS,
-              OPT_EXCLUDE_PATTERNS, OPT_EXCLUDE_SYMBOLS, OPT_EXAMPLE_PATH,
-              OPT_EXAMPLE_PATTERNS, OPT_EXAMPLE_RECURSIVE, OPT_IMAGE_PATH,
-              OPT_GENERATE_HTML, OPT_HTML_OUTPUT, OPT_HTML_FILE_EXTENSION,
-              OPT_HTML_HEADER, OPT_HTML_FOOTER, OPT_HTML_STYLESHEET,
-              OPT_HTML_EXTRA_STYLESHEET, OPT_HTML_EXTRA_FILES, OPT_HTML_COLORSTYLE,
-              OPT_GENERATE_LATEX, OPT_LATEX_OUTPUT, OPT_LATEX_CMD_NAME,
-              OPT_GENERATE_RTF, OPT_RTF_OUTPUT, OPT_GENERATE_XML, OPT_XML_OUTPUT,
-              OPT_GENERATE_MAN, OPT_MAN_OUTPUT, OPT_MAN_EXTENSION,
-              OPT_HAVE_DOT, OPT_DOT_NUM_THREADS, OPT_DOT_FONTNAME,
-              OPT_CLASS_GRAPH, OPT_COLLABORATION_GRAPH, OPT_GROUP_GRAPHS,
-              OPT_UML_LOOK, OPT_CALL_GRAPH, OPT_CALLER_GRAPH,
-              OPT_DIRECTORY_GRAPH, OPT_INCLUDE_GRAPH, OPT_INCLUDED_BY_GRAPH
-            Procedure ReadConfigFile(Const FileName: String)
-              ouvrir le fichier de configuration en lecture
-              parser chaque ligne (format NOM = VALEUR ou NOM += VALEUR)
-              gerer les continuations de ligne (\)
-              gerer les listes entre parentheses
-              gerer les commentaires (#)
-              gerer les directives @INCLUDE
-              stocker les options dans Config[]
-            Function GetConfigValue(Const Name: String): String
-              rechercher une option par son nom et retourner sa valeur
-            Function GetConfigBool(Const Name: String): Boolean
-              retourner True si la valeur est YES/TRUE/1/ON
-            Function GetConfigInt(Const Name: String): Integer
-              retourner la valeur numerique de l option
-            Procedure GenerateDefaultConfig(Const FileName: String)
-              generer un fichier Doxyfile avec toutes les options
-              par defaut, commente avec des explications
-
-  TODO 06 - TOUTES LES OPTIONS DE LIGNE DE COMMANDE [IMPLEMENTE]
-            Implementation complete des options doxygen :
-            -g [fichier]    : generer un fichier Doxyfile par defaut
-                              si fichier non specifie, utiliser 'Doxyfile'
-            -s              : mode silencieux, supprimer les messages d info
-            -u [fichier]    : mettre a jour un Doxyfile existant avec les
-                              nouvelles options (preserve les valeurs existantes)
-            -w html|latex|rtf header|footer|stylesheet [fichier] :
-                              generer les fichiers de style par defaut
-                              pour le format specifie
-            -l [fichier]    : generer DoxygenLayout.xml par defaut
-            -d option       : activer les options de debogage :
-                              time, extcmd, markdown, filteroutput,
-                              validate, plantuml, rtf, qhp, tag, lex, ...
-            -x              : afficher la configuration expandee (toutes les
-                              valeurs avec les variables et includes resolus)
-            -e html|latex [fichier] :
-                              generer un fichier d entete pour le format
-            -b              : mode batch, pas d interaction utilisateur
-            --help, -h, -?  : afficher l aide complete
-            --version, -v   : afficher la version
-            Procedure ProcessOption_g(Var Opts: TOptions; Const Arg: String)
-            Procedure ProcessOption_s(Var Opts: TOptions)
-            Procedure ProcessOption_u(Var Opts: TOptions; Const Arg: String)
-            Procedure ProcessOption_w(Var Opts: TOptions; Const Args: Array Of String)
-            Procedure ProcessOption_l(Var Opts: TOptions; Const Arg: String)
-            Procedure ProcessOption_d(Var Opts: TOptions; Const Arg: String)
-            Procedure ProcessOption_x(Var Opts: TOptions)
-            Procedure ProcessOption_e(Var Opts: TOptions; Const Args: Array Of String)
-            Procedure ProcessOption_b(Var Opts: TOptions)
-
-  TODO 07 - DETECTION AUTOMATIQUE DU LANGAGE SOURCE [IMPLEMENTE]
-            TSourceLanguage : (LANG_UNKNOWN, LANG_C, LANG_CPP, LANG_JAVA,
-              LANG_CSHARP, LANG_PYTHON, LANG_FORTRAN, LANG_VHDL,
-              LANG_PASCAL, LANG_ADA, LANG_PHP, LANG_JAVASCRIPT,
-              LANG_PERL, LANG_RUBY, LANG_TCL, LANG_SQL, LANG_D,
-              LANG_IDL, LANG_OBJC, LANG_SLICE, LANG_LEX, LANG_RUST,
-              LANG_GO, LANG_SWIFT, LANG_KOTLIN, LANG_BASIC, LANG_COBOL)
-            Function DetectLanguage(Const FileName: String): TSourceLanguage
-              analyser l extension du fichier
-              analyser les premieres lignes pour des indices
-              (shebang, mots-cles specifiques, etc.)
-            Function LanguageToStr(Lang: TSourceLanguage): String
-              convertir l enumeration en chaine lisible
-            Function LanguageSupportsDocComments(Lang: TSourceLanguage): Boolean
-              retourner True si le langage supporte les commentaires
-              de documentation Doxygen
-            Function GetCommentStyles(Lang: TSourceLanguage): String
-              retourner les styles de commentaires supportes par le langage
-              ex: C -> '//, /*, /**'
-              ex: Pascal -> '{, (*, {**, (*!'
-
-  TODO 08 - EXTRACTION DES ENTITES DOCUMENTEES [IMPLEMENTE]
-            TEntityKind : (ENT_UNKNOWN, ENT_FILE, ENT_NAMESPACE, ENT_CLASS,
-              ENT_STRUCT, ENT_UNION, ENT_INTERFACE, ENT_ENUM, ENT_TYPEDEF,
-              ENT_FUNCTION, ENT_VARIABLE, ENT_DEFINE, ENT_PROPERTY,
-              ENT_SIGNAL, ENT_SLOT, ENT_FRIEND, ENT_MODULE, ENT_GROUP,
-              ENT_PAGE, ENT_EXAMPLE, ENT_DIR, ENT_CONCEPT, ENT_SEQUENCE,
-              ENT_DICTIONARY, ENT_SERVICE, ENT_SINGLETON, ENT_EXCEPTION)
-            TEntityVisibility : (VIS_PUBLIC, VIS_PROTECTED, VIS_PRIVATE,
-              VIS_PACKAGE)
-            TEntity : record
-              Kind        : TEntityKind    (type d entite)
-              Name        : String         (nom de l entite)
-              FullName    : String         (nom qualifie complet)
-              FileName    : String         (fichier source)
-              Line        : Integer        (ligne de debut)
-              EndLine     : Integer        (ligne de fin)
-              Visibility  : TEntityVisibility (visibilite)
-              IsStatic    : Boolean        (membre statique)
-              IsConst     : Boolean        (constante)
-              IsVirtual   : Boolean        (virtuelle)
-              IsAbstract  : Boolean        (abstraite)
-              IsFinal     : Boolean        (finale)
-              IsOverride  : Boolean        (override)
-              IsInline    : Boolean        (inline)
-              IsExplicit  : Boolean        (explicit)
-              IsTemplate  : Boolean        (template/generic)
-              ReturnType  : String         (type de retour)
-              Parameters  : String         (liste des parametres)
-              Signature   : String         (signature complete)
-              ParentId    : Integer        (ID de l entite parente)
-              DocComment  : String         (commentaire de documentation)
-              BriefDesc   : String         (description breve)
-              DetailedDesc: String         (description detaillee)
-            End
-            Variables globales :
-              Entities    : Array[1..MAX_SYMBOLS] Of TEntity
-              EntityCount : Integer
-            Procedure ExtractEntities(Const FileName: String;
-              Lang: TSourceLanguage)
-              scanner le fichier source et extraire toutes les entites
-              associer les commentaires de documentation aux entites
-            Procedure ExtractEntitiesC(Const FileName: String)
-              extraction specifique pour C/C++
-            Procedure ExtractEntitiesPascal(Const FileName: String)
-              extraction specifique pour Pascal
-            Procedure ExtractEntitiesJava(Const FileName: String)
-              extraction specifique pour Java
-            Procedure ExtractEntitiesPython(Const FileName: String)
-              extraction specifique pour Python
-
-  TODO 09 - ANALYSE DES HIERARCHIES DE CLASSES [IMPLEMENTE]
-            TClassRelation : (REL_INHERITS, REL_IMPLEMENTS, REL_USES,
-              REL_CONTAINS, REL_AGGREGATES, REL_ASSOCIATES, REL_DEPENDS,
-              REL_FRIEND)
-            TInheritance : record
-              ChildId    : Integer       (ID de la classe enfant)
-              ParentId   : Integer       (ID de la classe parente)
-              ParentName : String        (nom de la classe parente)
-              Relation   : TClassRelation(type de relation)
-              Visibility : TEntityVisibility (visibilite de l heritage)
-              IsVirtual  : Boolean       (heritage virtuel)
-            End
-            Variables globales :
-              Inheritances     : Array[1..MAX_INHERITANCES] Of TInheritance
-              InheritanceCount : Integer
-            Procedure InitInheritances
-              initialise le tableau des heritages
-            Procedure AddInheritance(ChildId: Integer; ParentName: String;
-              Rel: TClassRelation; Vis: TEntityVisibility; IsVirt: Boolean)
-              ajoute une relation d heritage au tableau
-            Function ClassRelationToStr(Rel: TClassRelation): String
-              convertit un type de relation en chaine
-            Function FindEntityByName(Name: String): Integer
-              recherche une entite par son nom
-            Function IsClassEntity(Kind: TEntityKind): Boolean
-              verifie si le type d entite est une classe/struct/interface
-            Procedure ParseCppInheritance(Line: String; EntityId: Integer)
-              parse les heritages C++ (class Derived : public Base)
-            Procedure ParseJavaInheritance(Line: String; EntityId: Integer)
-              parse les heritages Java (extends/implements)
-            Procedure ParsePascalInheritance(Line: String; EntityId: Integer)
-              parse les heritages Pascal (= class(TBase))
-            Procedure BuildClassHierarchy
-              parcourir toutes les entites de type classe/interface
-              extraire les relations d heritage et d implementation
-              construire l arbre de hierarchie
-            Function GetBaseClasses(EntityId: Integer): String
-              retourner la liste des classes de base
-            Function GetDerivedClasses(EntityId: Integer): String
-              retourner la liste des classes derivees
-            Function GetImplementedInterfaces(EntityId: Integer): String
-              retourner la liste des interfaces implementees
-            Procedure DetectDiamondInheritance
-              detecter et signaler les heritages en diamant
-            Procedure ShowClassHierarchy
-              affiche la hierarchie des classes extraite
-
-  TODO 10 - ANALYSE DES DEPENDANCES (INCLUDE, USES, IMPORT) [IMPLEMENTE]
-            TDependencyKind : (DEP_INCLUDE, DEP_INCLUDE_LOCAL, DEP_IMPORT,
-              DEP_USES, DEP_REQUIRE, DEP_MODULE, DEP_PACKAGE, DEP_FROM)
-            TDependency : record
-              SourceFile : String        (fichier qui depend)
-              TargetFile : String        (fichier dont on depend)
-              Kind       : TDependencyKind (type de dependance)
-              Line       : Integer       (ligne de la directive)
-              IsSystem   : Boolean       (include systeme <> ou local "")
-            End
-            Variables globales :
-              Dependencies    : Array[1..MAX_DEPENDENCIES] Of TDependency
-              DependencyCount : Integer
-            Procedure ExtractDependencies(Const FileName: String;
-              Lang: TSourceLanguage)
-              scanner le fichier et extraire les directives de dependance
-              #include, import, uses, require, from...import
-            Function ResolveDependencyPath(Const FileName: String;
-              Const IncludePath: String): String
-              resoudre le chemin complet d un fichier inclus
-              en parcourant les repertoires d include
-            Procedure BuildDependencyGraph
-              construire le graphe de dependances complet
-              detecter les dependances circulaires
-            Function GetFileDependencies(Const FileName: String): String
-              retourner la liste des dependances d un fichier
-            Function GetFileDependents(Const FileName: String): String
-              retourner la liste des fichiers qui dependent de ce fichier
-
-  TODO 11 - GENERATION DE LA TABLE DES MATIERES ET INDEX [IMPLEMENTE]
-            TIndexEntry : record
-              Name       : String   (nom pour l index)
-              EntityId   : Integer  (ID de l entite)
-              FileName   : String   (fichier de documentation)
-              Anchor     : String   (ancre HTML)
-              Kind       : TEntityKind (type d entite)
-              SortKey    : String   (cle de tri)
-            End
-            Variables globales :
-              IndexEntries : Array[1..MAX_INDEX_ENTRIES] Of TIndexEntry
-              IndexCount   : Integer
-            Procedure BuildIndex
-              parcourir toutes les entites documentees
-              creer une entree d index pour chaque
-              trier par nom alphabetique
-            Procedure BuildClassIndex
-              construire l index des classes/structures/interfaces
-            Procedure BuildFileIndex
-              construire l index des fichiers documentes
-            Procedure BuildNamespaceIndex
-              construire l index des namespaces/packages/modules
-            Procedure BuildFunctionIndex
-              construire l index des fonctions/methodes/procedures
-            Procedure BuildVariableIndex
-              construire l index des variables/constantes/defines
-            Procedure BuildPageIndex
-              construire l index des pages personnalisees (@page)
-            Procedure BuildGroupIndex
-              construire l index des groupes (@defgroup)
-            Procedure GenerateTOC(Var OutFile: Text)
-              generer la table des matieres hierarchique
-
-  TODO 12 - GENERATION DE LA DOCUMENTATION HTML [IMPLEMENTE]
-            Variables globales :
-              HtmlOutputDir : String  (repertoire de sortie HTML)
-              HtmlHeader    : String  (contenu du header HTML)
-              HtmlFooter    : String  (contenu du footer HTML)
-              HtmlStylesheet: String  (feuille de style CSS)
-            Procedure InitHtmlGenerator
-              initialiser les templates HTML (header, footer, CSS)
-              creer le repertoire de sortie si necessaire
-            Procedure GenerateHtmlFile(Const Entity: TEntity;
-              Var OutFile: Text)
-              generer la page HTML pour une entite
-              inclure le header, la documentation, le footer
-            Procedure GenerateHtmlIndex(Var OutFile: Text)
-              generer la page d index principale (index.html)
-            Procedure GenerateHtmlClasses(Var OutFile: Text)
-              generer la page de liste des classes (classes.html)
-            Procedure GenerateHtmlFiles(Var OutFile: Text)
-              generer la page de liste des fichiers (files.html)
-            Procedure GenerateHtmlNamespaces(Var OutFile: Text)
-              generer la page de liste des namespaces (namespaces.html)
-            Procedure GenerateHtmlHierarchy(Var OutFile: Text)
-              generer la page de hierarchie de classes (hierarchy.html)
-            Procedure GenerateHtmlSearch
-              generer les fichiers de recherche JavaScript
-            Procedure CopyHtmlResources
-              copier les fichiers CSS, JS, images necessaires
-            Procedure GenerateHtmlDocumentation
-              orchestrateur : generer toute la documentation HTML
-
-  TODO 13 - GENERATION DE LA DOCUMENTATION LATEX [IMPLEMENTE]
-            Variables globales :
-              LatexOutputDir  : String  (repertoire de sortie LaTeX)
-              LatexHeader     : String  (preambule LaTeX)
-              LatexFooter     : String  (fin du document LaTeX)
-              LatexCmdName    : String  (commande LaTeX a utiliser)
-              LatexCompactMode: Boolean (mode compact)
-              LatexPaperType  : String  (a4, letter, etc.)
-            Procedure InitLatexGenerator
-              initialiser les templates LaTeX
-              creer le repertoire de sortie
-            Function EscapeLatex(Const S: String): String
-              echapper les caracteres speciaux LaTeX
-              (\ -> \textbackslash, & -> \&, % -> \%, etc.)
-            Procedure GenerateLatexFile(Const Entity: TEntity;
-              Var OutFile: Text)
-              generer la section LaTeX pour une entite
-            Procedure GenerateLatexMain(Var OutFile: Text)
-              generer le fichier principal refman.tex
-              avec les \input pour chaque fichier
-            Procedure GenerateLatexClasses(Var OutFile: Text)
-              generer le chapitre des classes
-            Procedure GenerateLatexFiles(Var OutFile: Text)
-              generer le chapitre des fichiers
-            Procedure GenerateLatexMakefile
-              generer le Makefile pour compiler le LaTeX
-            Procedure GenerateLatexDocumentation
-              orchestrateur : generer toute la documentation LaTeX
-
-  TODO 14 - GENERATION DE LA DOCUMENTATION RTF [IMPLEMENTE]
-            Variables globales :
-              RtfOutputDir   : String  (repertoire de sortie RTF)
-              RtfStylesheet  : String  (fichier de styles RTF)
-              RtfExtensions  : String  (extensions RTF a utiliser)
-            Procedure InitRtfGenerator
-              initialiser les parametres RTF
-              creer le repertoire de sortie
-            Function EscapeRtf(Const S: String): String
-              echapper les caracteres speciaux RTF
-              (\ -> \\, { -> \{, } -> \}, etc.)
-            Procedure WriteRtfHeader(Var OutFile: Text)
-              ecrire l entete RTF avec les polices et styles
-            Procedure WriteRtfFooter(Var OutFile: Text)
-              ecrire la fin du document RTF
-            Procedure GenerateRtfFile(Const Entity: TEntity;
-              Var OutFile: Text)
-              generer le contenu RTF pour une entite
-            Procedure GenerateRtfDocumentation
-              orchestrateur : generer la documentation RTF complete
-              (fichier unique refman.rtf)
-
-  TODO 15 - GENERATION DE LA DOCUMENTATION XML [IMPLEMENTE]
-            Variables globales :
-              XmlOutputDir : String  (repertoire de sortie XML)
-              XmlSchemaLoc : String  (emplacement du schema XSD)
-            Procedure InitXmlGenerator
-              initialiser les parametres XML
-              creer le repertoire de sortie
-            Function EscapeXml(Const S: String): String
-              echapper les caracteres speciaux XML
-              (< -> &lt;, > -> &gt;, & -> &amp;, " -> &quot;)
-            Procedure GenerateXmlIndex(Var OutFile: Text)
-              generer le fichier index.xml avec la liste des
-              fichiers XML generes
-            Procedure GenerateXmlCompound(Const Entity: TEntity;
-              Var OutFile: Text)
-              generer le fichier XML pour un compound (classe, fichier, etc.)
-            Procedure GenerateXmlMember(Const Entity: TEntity;
-              Var OutFile: Text)
-              generer la section XML pour un membre
-            Procedure GenerateXmlDocumentation
-              orchestrateur : generer toute la documentation XML
-              compatible avec le format Doxygen XML natif
-
-  TODO 16 - GENERATION DE LA DOCUMENTATION MAN PAGES [IMPLEMENTE]
-            Variables globales :
-              ManOutputDir : String  (repertoire de sortie man)
-              ManExtension : String  (extension des pages man, ex: .3)
-              ManSubdir    : String  (sous-repertoire man3, man7, etc.)
-            Procedure InitManGenerator
-              initialiser les parametres man pages
-              creer le repertoire de sortie
-            Function EscapeMan(Const S: String): String
-              echapper les caracteres speciaux man
-              (- -> \-, etc.)
-            Procedure GenerateManPage(Const Entity: TEntity;
-              Var OutFile: Text)
-              generer la page man pour une entite (fonction, structure)
-              format groff/nroff standard
-            Procedure GenerateManHeader(Var OutFile: Text;
-              Const Name, Section, Date, Source, Manual: String)
-              ecrire l entete .TH de la page man
-            Procedure GenerateManSection(Var OutFile: Text;
-              Const Title: String)
-              ecrire une section .SH
-            Procedure GenerateManDocumentation
-              orchestrateur : generer toutes les pages man
-
-  TODO 17 - GENERATION DES GRAPHES D'APPELS (CALL GRAPHS) [IMPLEMENTE]
-            TCallGraphNode : record
-              EntityId   : Integer   (ID de la fonction)
-              Name       : String    (nom de la fonction)
-              FileName   : String    (fichier source)
-              Line       : Integer   (ligne de definition)
-            End
-            TCallGraphEdge : record
-              CallerId   : Integer   (ID de l appelant)
-              CalleeId   : Integer   (ID de l appele)
-              Line       : Integer   (ligne de l appel)
-              IsDirect   : Boolean   (appel direct vs pointeur)
-            End
-            Variables globales :
-              CallGraphNodes : Array[1..MAX_CALL_NODES] Of TCallGraphNode
-              CallGraphEdges : Array[1..MAX_CALL_EDGES] Of TCallGraphEdge
-              CallNodeCount  : Integer
-              CallEdgeCount  : Integer
-            Procedure InitCallGraph
-              initialiser le generateur de graphes d appels
-            Procedure BuildCallGraph
-              analyser le code source pour detecter les appels
-              de fonctions et construire le graphe d appels
-            Function FindCallNode(EntityId: Integer): Integer
-              trouver un noeud par son EntityId
-            Function FindCallNodeByName(Const Name: String): Integer
-              trouver un noeud par son nom
-            Function AddCallGraphNode(...): Integer
-              ajouter un noeud au graphe d appels
-            Function AddCallGraphEdge(...): Integer
-              ajouter une arete au graphe d appels
-            Function GetCallees(EntityId: Integer): String
-              retourner la liste des fonctions appelees par EntityId
-            Function GetCallers(EntityId: Integer): String
-              retourner la liste des fonctions qui appellent EntityId
-            Function CountCallees(EntityId: Integer): Integer
-              compter le nombre de fonctions appelees
-            Function CountCallers(EntityId: Integer): Integer
-              compter le nombre de fonctions appelantes
-            Procedure GenerateCallGraphDot(Const Entity: TEntity;
-              Var OutFile: Text)
-              generer le graphe d appels au format DOT (Graphviz)
-            Procedure GenerateFullCallGraphDot(Var OutFile: Text)
-              generer le graphe d appels complet
-            Procedure RenderCallGraphImage(Const DotFile, ImageFile: String)
-              invoquer dot pour generer l image (PNG, SVG, etc.)
-            Procedure GenerateCallGraphDocumentation
-              orchestrateur : generer tous les graphes d appels
-            Fonctions accesseurs Get/SetCallGraphOutputDir,
-              GetCallNodeCount, GetCallEdgeCount, GetCallGraphNode,
-              GetCallGraphEdge, IsCallGraphInitialized, IsCallGraphEmpty,
-              HasCallGraphEdge, GetNodeCallees, GetNodeCallers
-
-  TODO 18 - GENERATION DES GRAPHES DE DEPENDANCES (DEPENDENCY GRAPHS) [IMPLEMENTE]
-            Constantes : DEPGRAPH_OUTPUT_DIR, DEPGRAPH_DOT_FILE, DEPGRAPH_PNG_FILE,
-              DEPGRAPH_SVG_FILE, DEPGRAPH_INC_PREFIX, DEPGRAPH_INCBY_PREFIX,
-              DEPGRAPH_DIR_PREFIX, DEPGRAPH_MOD_PREFIX, DEPGRAPH_NODE_SHAPE,
-              DEPGRAPH_DIR_SHAPE, DEPGRAPH_EDGE_STYLE, DEPGRAPH_FONT_NAME,
-              DEPGRAPH_FONT_SIZE, DEPGRAPH_INCLUDE_COLOR, DEPGRAPH_LOCAL_COLOR,
-              DEPGRAPH_SYSTEM_COLOR, MAX_DEP_DIRS
-            Variables : DepGraphOutputDir, DepGraphFormat, DepGraphInitialized
-            Procedure InitDepGraph
-              initialiser le generateur de graphes de dependances
-            Procedure GenerateIncludeGraphDot(Const FileName: String;
-              Var OutFile: Text)
-              generer le graphe d inclusion au format DOT
-              (fichiers inclus par ce fichier)
-            Procedure GenerateIncludedByGraphDot(Const FileName: String;
-              Var OutFile: Text)
-              generer le graphe d inclusion inverse au format DOT
-              (fichiers qui incluent ce fichier)
-            Procedure GenerateDirectoryGraphDot(Const DirPath: String;
-              Var OutFile: Text)
-              generer le graphe de dependances entre repertoires
-            Procedure GenerateModuleGraphDot(Var OutFile: Text)
-              generer le graphe de dependances entre modules
-            Procedure RenderDependencyGraphImage(Const DotFile, ImageFile: String)
-              invoquer dot pour generer l image
-            Procedure GenerateDepGraphDocumentation
-              orchestrateur: generer tous les graphes de dependances
-            Fonctions accesseurs Get/SetDepGraphOutputDir, Get/SetDepGraphFormat,
-              IsDepGraphInitialized, IsDepGraphEmpty, CountIncludeDependencies,
-              CountIncludedByDependencies, GetDepGraphDotFileName,
-              GetDepGraphImageFileName, ExtractBaseFileName, ExtractDirPath,
-              DependencyKindColor, SanitizeNodeId
-
-  TODO 19 - GENERATION DES DIAGRAMMES DE CLASSES (CLASS DIAGRAMS) [IMPLEMENTE]
-            Constantes : CLASSDIAG_OUTPUT_DIR, CLASSDIAG_DOT_FILE,
-              CLASSDIAG_PNG_FILE, CLASSDIAG_SVG_FILE, CLASSDIAG_CLASS_PREFIX,
-              CLASSDIAG_COLLAB_PREFIX, CLASSDIAG_INHERIT_PREFIX,
-              CLASSDIAG_UML_PREFIX, CLASSDIAG_NODE_SHAPE, CLASSDIAG_UML_SHAPE,
-              CLASSDIAG_EDGE_INHERIT, CLASSDIAG_EDGE_COMPOSE, CLASSDIAG_EDGE_AGGREG,
-              CLASSDIAG_EDGE_ASSOC, CLASSDIAG_FONT_NAME, CLASSDIAG_FONT_SIZE,
-              CLASSDIAG_PUBLIC_COLOR, CLASSDIAG_PROTECTED_COLOR,
-              CLASSDIAG_PRIVATE_COLOR, CLASSDIAG_CLASS_COLOR,
-              CLASSDIAG_ABSTRACT_COLOR, CLASSDIAG_INTERFACE_COLOR,
-              CLASSDIAG_MAX_MEMBERS, CLASSDIAG_PLANTUML_START, CLASSDIAG_PLANTUML_END
-            Variables : ClassDiagOutputDir, ClassDiagFormat, ClassDiagUmlLook,
-              ClassDiagInitialized
-            Procedure InitClassDiagram
-              initialiser le generateur de diagrammes de classes
-            Procedure GenerateClassDiagramDot(Const EntityId: Integer;
-              Var OutFile: Text)
-              generer le diagramme de classe au format DOT
-              montrer les membres, methodes, heritage
-            Procedure GenerateCollaborationDiagramDot(Const EntityId: Integer;
-              Var OutFile: Text)
-              generer le diagramme de collaboration au format DOT
-              montrer les relations avec d autres classes
-            Procedure GenerateInheritanceDiagramDot(Const EntityId: Integer;
-              Var OutFile: Text)
-              generer le diagramme d heritage au format DOT
-              (classes de base et classes derivees)
-            Procedure GenerateUmlDiagramDot(Const EntityId: Integer;
-              Var OutFile: Text; UmlLook: Boolean)
-              generer le diagramme UML complet au format DOT
-            Procedure RenderClassDiagramImage(Const DotFile, ImageFile: String)
-              invoquer dot pour generer l image
-            Procedure GeneratePlantUml(Const EntityId: Integer;
-              Var OutFile: Text)
-              generer le code PlantUML pour le diagramme
-            Procedure GenerateClassDiagramDocumentation
-              orchestrateur: generer tous les diagrammes de classes
-            Fonctions accesseurs Get/SetClassDiagOutputDir, Get/SetClassDiagFormat,
-              Get/SetClassDiagUmlLook, IsClassDiagInitialized, IsClassDiagEmpty,
-              CountClassDiagrams, GetClassDiagDotFileName, GetClassDiagImageFileName,
-              GetClassDiagPlantUmlFileName, VisibilitySymbol, VisibilityColor,
-              EscapeDotLabel, SanitizeClassNodeId, EntityVisibilityToStr
-
-  TODO 20 - SUPPORT DES MACROS ET PREPROCESSEUR [IMPLEMENTE]
-            TMacro : record
-              Name       : String   (nom de la macro)
-              Parameters : String   (parametres si fonction-like)
-              Value      : String   (valeur de substitution)
-              FileName   : String   (fichier de definition)
-              Line       : Integer  (ligne de definition)
-              IsFuncLike : Boolean  (True si macro avec parametres)
-              IsVariadic : Boolean  (True si parametres variadiques)
-            End
-            TPreprocessorState : enumeration (PP_ACTIVE, PP_SKIPPING, PP_DONE)
-            TIfDefStack : record (State, WasActive, Line)
-            Variables globales :
-              Macros     : Array[1..MAX_MACROS] Of TMacro
-              MacroCount : Integer
-              PredefinedMacros : Array[1..MAX_PREDEFINED] Of TMacro
-              PredefinedCount  : Integer
-              IfDefStack, IfDefStackDepth, MacrosInitialized
-            Constantes : MAX_MACROS, MAX_PREDEFINED, MAX_MACRO_PARAMS,
-              MAX_MACRO_VALUE, MAX_INCLUDE_STACK, MACRO_PREFIX_*
-            Procedure InitMacros : initialiser le systeme de macros
-            Function FindMacro : chercher une macro par nom
-            Function AddMacro : ajouter une macro
-            Procedure RemoveMacro : supprimer une macro (#undef)
-            Procedure ExtractMacros(Const FileName: String)
-              scanner le fichier pour les directives #define
-              extraire le nom, les parametres et la valeur
-            Function ExpandMacroSimple : expander une macro simple
-            Procedure AddPredefinedMacro : ajouter une macro predefinee
-            Procedure Push/PopIfDefState, HandleIfDef, HandleElse, HandleEndIf
-            Fonctions accesseurs : GetMacroCount, GetPredefinedCount,
-              IsMacrosInitialized, IsMacrosEmpty, IsMacroDefined, GetMacro,
-              GetPredefinedMacro, GetMacroValue, GetMacroParams,
-              IsMacroFuncLike, IsMacroVariadic, GetCurrentPPState,
-              IsPreprocessorActive, CountTotalMacros, GetMacroFileName,
-              GetMacroLine, ShowMacros
-
-  TODO 21 - SUPPORT DES ESPACES DE NOMS ET MODULES [IMPLEMENTE]
-            TNamespace : record
-              Name       : String   (nom du namespace)
-              FullName   : String   (nom qualifie complet)
-              ParentId   : Integer  (ID du namespace parent)
-              FileName   : String   (fichier de definition)
-              Line       : Integer  (ligne de debut)
-              EndLine    : Integer  (ligne de fin)
-              IsAnonymous: Boolean  (namespace anonyme)
-              IsInline   : Boolean  (inline namespace C++11)
-              Language   : String   (langage source)
-            End
-            TModule : record
-              Name       : String   (nom du module)
-              FileName   : String   (fichier source)
-              Exports    : String   (liste des exports)
-              Imports    : String   (liste des imports)
-              IsPartition: Boolean  (partition de module)
-              IsInterface: Boolean  (module interface)
-              Line       : Integer  (ligne de declaration)
-            End
-            Variables globales :
-              Namespaces     : Array[1..MAX_NAMESPACES] Of TNamespace
-              NamespaceCount : Integer
-              Modules        : Array[1..MAX_MODULES] Of TModule
-              ModuleCount    : Integer
-              NamespaceStack, NamespaceStackDepth, NamespacesInitialized
-            Constantes : MAX_NAMESPACES, MAX_MODULES, MAX_NS_DEPTH,
-              NS_KEYWORD_CPP, NS_KEYWORD_CSHARP, NS_KEYWORD_JAVA,
-              NS_KEYWORD_ADA, NS_KEYWORD_PASCAL, MOD_KEYWORD_CPP20,
-              MOD_KEYWORD_EXPORT, MOD_KEYWORD_IMPORT
-            Procedure InitNamespaces : initialiser le systeme
-            Function FindNamespace : chercher un namespace par nom complet
-            Function FindNamespaceByName : chercher par nom simple
-            Function AddNamespace : ajouter un namespace
-            Function FindModule : chercher un module par nom
-            Function AddModule : ajouter un module
-            Procedure AddModuleExport/AddModuleImport : gerer exports/imports
-            Procedure Push/PopNamespace, GetCurrentNamespace : pile de contexte
-            Function BuildFullNamespaceName : construire le nom complet
-            Function ExtractCppNamespaceName : extraire namespace C++
-            Function ExtractJavaPackageName : extraire package Java
-            Function ExtractCSharpNamespaceName : extraire namespace C#
-            Function ExtractAdaPackageName : extraire package Ada
-            Function ExtractCpp20ModuleName : extraire module C++20
-            Function ExtractCpp20Import : extraire import C++20
-            Procedure ExtractNamespaces(Const FileName: String;
-              Lang: TSourceLanguage) : extraire les declarations
-            Procedure BuildNamespaceHierarchy : construire la hierarchie
-            Function GetNamespaceEntities(NamespaceId: Integer): String
-              retourner les entites declarees dans un namespace
-            Fonctions accesseurs : GetNamespaceCount, GetModuleCount,
-              IsNamespacesInitialized, IsNamespacesEmpty, IsModulesEmpty,
-              GetNamespaceByIndex, GetModuleByIndex, IsValidNamespaceIndex,
-              IsValidModuleIndex, GetNamespaceName, GetNamespaceFullName,
-              GetNamespaceFileName, GetNamespaceLine, GetNamespaceParent,
-              IsNamespaceAnonymous, IsNamespaceInline, GetModuleName,
-              GetModuleFileName, GetModuleExports, GetModuleImports,
-              IsModulePartition, IsModuleInterface, CountChildNamespaces,
-              CountRootNamespaces, CountNamespacesByLanguage
-            Procedure ShowNamespaces, ShowModules : affichage debug
-
-  TODO 22 - RECHERCHE ET INDEXATION FULL-TEXT [IMPLEMENTE]
-            TSearchIndex : record
-              Word       : String   (mot indexe)
-              EntityId   : Integer  (ID de l entite)
-              FileName   : String   (fichier de documentation)
-              Anchor     : String   (ancre dans le fichier)
-              Score      : Integer  (score de pertinence)
-            End
-            Variables globales :
-              SearchIndex : Array[1..MAX_SEARCH_ENTRIES] Of TSearchIndex
-              SearchCount : Integer
-            Procedure BuildSearchIndex
-              parcourir toutes les entites et leurs descriptions
-              extraire les mots significatifs (pas stop words)
-              creer les entrees d index de recherche
-            Procedure GenerateSearchData
-              generer les fichiers de donnees de recherche
-              (JavaScript pour recherche cote client)
-            Function SearchEntities(Const Query: String): String
-              rechercher dans l index et retourner les resultats
-              tries par pertinence
-            Procedure GenerateSearchHtml
-              generer la page HTML de recherche avec le formulaire
-            Procedure WriteSearchIndexJs(Var OutFile: Text)
-              ecrire l index de recherche au format JavaScript
-
-  TODO 23 - SUPPORT MULTI-FICHIERS ET RECURSIVITE [IMPLEMENTE]
-            Variables globales :
-              SourceFiles    : Array[1..MAX_FILES] Of String
-              SourceCount    : Integer
-              ProcessedFiles : Array[1..MAX_FILES] Of String
-              ProcessedCount : Integer
-            Procedure CollectSourceFiles(Const Path: String;
-              Recursive: Boolean)
-              parcourir le chemin et collecter tous les fichiers sources
-              qui correspondent aux patterns definis (FILE_PATTERNS)
-            Function MatchesPattern(Const FileName, Pattern: String): Boolean
-              verifier si un nom de fichier correspond a un pattern glob
-            Function IsExcluded(Const FileName: String): Boolean
-              verifier si un fichier est dans la liste d exclusion
-            Procedure ProcessAllFiles
-              traiter tous les fichiers sources collectes
-              extraire les entites et la documentation de chacun
-            Procedure ProcessDirectory(Const DirPath: String)
-              traiter un repertoire et ses sous-repertoires
-            Function GetRelativePath(Const FullPath, BasePath: String): String
-              calculer le chemin relatif d un fichier
-
-  TODO 24 - VALIDATION ET AVERTISSEMENTS [IMPLEMENTE]
-            TWarningKind : (WARN_UNDOC_FUNC, WARN_UNDOC_PARAM, WARN_UNDOC_RETURN,
-              WARN_UNDOC_CLASS, WARN_UNDOC_MEMBER, WARN_UNDOC_FILE,
-              WARN_INVALID_TAG, WARN_MISSING_PARAM, WARN_EXTRA_PARAM,
-              WARN_TYPE_MISMATCH, WARN_BROKEN_LINK, WARN_DUPLICATE_DOC,
-              WARN_CIRCULAR_DEP, WARN_MISSING_INCLUDE, WARN_SYNTAX_ERROR)
-            TWarning : record
-              Kind     : TWarningKind (type d avertissement)
-              FileName : String       (fichier concerne)
-              Line     : Integer      (ligne concernee)
-              Message  : String       (message d avertissement)
-              EntityId : Integer      (entite concernee, ou 0)
-            End
-            Variables globales :
-              Warnings     : Array[1..MAX_WARNINGS] Of TWarning
-              WarningCount : Integer
-              ErrorCount   : Integer
-              ValidationInitialized : Boolean
-            Procedure InitValidation
-              initialiser le systeme de validation
-            Procedure WarningKindName(Kind: TWarningKind): String
-              retourner le nom d un type d avertissement
-            Procedure WarningKindDescription(Kind: TWarningKind): String
-              retourner la description d un type d avertissement
-            Procedure ReportWarning(Kind: TWarningKind;
-              Const FileName: String; Line: Integer; Const Msg: String)
-              enregistrer un avertissement
-            Procedure ReportWarningForEntity(Kind: TWarningKind;
-              Const FileName: String; Line: Integer;
-              Const Msg: String; EntId: Integer)
-              enregistrer un avertissement avec ID d entite
-            Procedure ReportError(Const FileName: String; Line: Integer;
-              Const Msg: String)
-              enregistrer une erreur
-            Function FindEntityByName(Const Name: String): Integer
-              trouver une entite par son nom
-            Function IsEntityDocumented(EntId: Integer): Boolean
-              verifier si une entite est documentee
-            Function IsEntityPublic(EntId: Integer): Boolean
-              verifier si une entite est publique
-            Procedure ValidateDocumentation
-              verifier que toutes les entites publiques sont documentees
-            Procedure ValidateLinks
-              verifier que tous les @see et @ref pointent vers des
-              entites existantes
-            Procedure ValidateParams
-              verifier la coherence des @param avec les parametres
-            Procedure DisplayWarnings
-              afficher tous les avertissements collectes
-            Procedure DisplayWarningSummary
-              afficher un resume des avertissements par type
-            Function GetUndocumentedEntities: Integer
-              retourner le nombre d entites non documentees
-            Function GetDocumentedEntities: Integer
-              retourner le nombre d entites documentees
-            Function GetDocumentationCoverage: Real
-              retourner le pourcentage de couverture
-            Fonctions accesseur (10+):
-              GetWarningCount, GetErrorCount, GetWarning,
-              IsValidationInitialized, IsValidationClean,
-              CountWarningsOfKind, CountWarningsForFile,
-              CountWarningsForEntity, ClearWarnings,
-              RunAllValidations, ShowValidationStatus
-
-  TODO 25 - RAPPORT FINAL ET STATISTIQUES DE COUVERTURE [IMPLEMENTE]
-            TStatistics : record
-              TotalFiles       : Integer (nombre de fichiers traites)
-              TotalLines       : Integer (nombre de lignes de code)
-              TotalEntities    : Integer (nombre d entites)
-              DocumentedCount  : Integer (entites documentees)
-              UndocumentedCount: Integer (entites non documentees)
-              WarningCount     : Integer (nombre d avertissements)
-              ErrorCount       : Integer (nombre d erreurs)
-              ClassCount       : Integer (nombre de classes)
-              FunctionCount    : Integer (nombre de fonctions)
-              VariableCount    : Integer (nombre de variables)
-              NamespaceCount   : Integer (nombre de namespaces)
-              PageCount        : Integer (nombre de pages custom)
-              GroupCount       : Integer (nombre de groupes)
-              CoveragePercent  : Real    (pourcentage de couverture)
-              ProcessingTime   : Real    (temps de traitement en secondes)
-              OutputSize       : LongInt (taille de la doc generee en octets)
-            End
-            Variables globales :
-              Stats : TStatistics
-              StartTime : LongInt
-            Procedure CollectStatistics
-              parcourir les entites et calculer toutes les statistiques
-            Procedure DisplayFinalReport
-              afficher le rapport complet :
-              '=== DOXYGEN - Rapport de generation ==='
-              'Fichiers traites     : ' + IntToStr(Stats.TotalFiles)
-              'Lignes de code       : ' + IntToStr(Stats.TotalLines)
-              'Entites documentees  : ' + IntToStr(Stats.DocumentedCount)
-              'Entites non-doc      : ' + IntToStr(Stats.UndocumentedCount)
-              'Couverture           : ' + FloatToStr(Stats.CoveragePercent) + '%'
-              '  Classes            : ' + IntToStr(Stats.ClassCount)
-              '  Fonctions          : ' + IntToStr(Stats.FunctionCount)
-              '  Variables          : ' + IntToStr(Stats.VariableCount)
-              '  Namespaces         : ' + IntToStr(Stats.NamespaceCount)
-              'Avertissements       : ' + IntToStr(Stats.WarningCount)
-              'Erreurs              : ' + IntToStr(Stats.ErrorCount)
-              'Temps de traitement  : ' + FloatToStr(Stats.ProcessingTime) + ' s'
-              'Taille documentation : ' + FormatSize(Stats.OutputSize)
-              Si Verbose : afficher le detail par fichier
-            Procedure WriteStatisticsXml(Var OutFile: Text)
-              ecrire les statistiques au format XML pour integration CI
-            Procedure Run
-              orchestrateur principal :
-              1. Parser les arguments de la ligne de commande
-              2. Si -INPUT : traiter le fichier direct (extension DEV-COOLS)
-              3. Sinon : lire le fichier de configuration Doxyfile
-              4. Collecter les fichiers sources
-              5. Extraire les entites et la documentation
-              6. Construire les hierarchies et graphes
-              7. Generer la documentation selon les formats actives
-              8. Valider et afficher les avertissements
-              9. Afficher le rapport final
-
-============================================================ *)
-
 Program DOXYGEN;
 
 {$IFDEF FPC}
@@ -1250,26 +260,26 @@ Const
     CONSTANTES JPEG - GENERATEUR INTEGRE (SANS OUTIL EXTERNE)
     Partie 1: Marqueurs JPEG
     ============================================================ }
-  
+
   { Marqueurs JPEG standard (tous commencent par $FF) }
   JPEG_MARKER_PREFIX    = $FF;       { Prefixe de tous les marqueurs JPEG }
-  
+
   { Marqueurs de debut et fin d'image }
   JPEG_SOI              = $D8;       { Start Of Image - debut de l'image }
   JPEG_EOI              = $D9;       { End Of Image - fin de l'image }
-  
+
   { Marqueurs de segment d'application (APP0-APP15: $E0-$EF) }
   JPEG_APP0             = $E0;       { Application segment 0 (JFIF) }
   JPEG_APP1             = $E1;       { Application segment 1 (EXIF) }
   JPEG_APP2             = $E2;       { Application segment 2 (ICC Profile) }
   JPEG_APP13            = $ED;       { Application segment 13 (Photoshop) }
   JPEG_APP14            = $EE;       { Application segment 14 (Adobe) }
-  
+
   { Marqueurs de definition des tables }
   JPEG_DQT              = $DB;       { Define Quantization Table(s) }
   JPEG_DHT              = $C4;       { Define Huffman Table(s) }
   JPEG_DAC              = $CC;       { Define Arithmetic Coding }
-  
+
   { Marqueurs de cadre (Start Of Frame) }
   JPEG_SOF0             = $C0;       { Baseline DCT }
   JPEG_SOF1             = $C1;       { Extended sequential DCT }
@@ -1284,7 +294,7 @@ Const
   JPEG_SOF13            = $CD;       { Differential sequential DCT, arithmetic }
   JPEG_SOF14            = $CE;       { Differential progressive DCT, arithmetic }
   JPEG_SOF15            = $CF;       { Differential lossless, arithmetic }
-  
+
   { Marqueurs de scan et restart }
   JPEG_SOS              = $DA;       { Start Of Scan - debut des donnees image }
   JPEG_RST0             = $D0;       { Restart marker 0 }
@@ -1296,14 +306,14 @@ Const
   JPEG_RST6             = $D6;       { Restart marker 6 }
   JPEG_RST7             = $D7;       { Restart marker 7 }
   JPEG_DRI              = $DD;       { Define Restart Interval }
-  
+
   { Marqueurs divers }
   JPEG_DNL              = $DC;       { Define Number of Lines }
   JPEG_DHP              = $DE;       { Define Hierarchical Progression }
   JPEG_EXP              = $DF;       { Expand Reference Component(s) }
   JPEG_COM              = $FE;       { Comment - commentaire }
   JPEG_TEM              = $01;       { For temporary private use }
-  
+
   { Constantes JFIF (APP0) }
   JFIF_IDENTIFIER       = 'JFIF';    { Identificateur JFIF }
   JFIF_VERSION_MAJOR    = 1;         { Version majeure JFIF }
@@ -1313,7 +323,7 @@ Const
   JFIF_UNITS_DPCM       = 2;         { Dots per centimeter }
   JFIF_DEFAULT_XDENSITY = 72;        { Densite X par defaut (72 DPI) }
   JFIF_DEFAULT_YDENSITY = 72;        { Densite Y par defaut (72 DPI) }
-  
+
   { Limites et constantes de dimensions JPEG }
   JPEG_MAX_WIDTH        = 65535;     { Largeur maximale (16 bits) }
   JPEG_MAX_HEIGHT       = 65535;     { Hauteur maximale (16 bits) }
@@ -1322,22 +332,22 @@ Const
   JPEG_MAX_COMPONENTS   = 4;         { Nombre max de composantes (Y,Cb,Cr,K) }
   JPEG_MAX_QUANT_TABLES = 4;         { Nombre max de tables de quantification }
   JPEG_MAX_HUFF_TABLES  = 4;         { Nombre max de tables Huffman (2 DC + 2 AC) }
-  
+
   { Types de tables Huffman }
   JPEG_HUFF_DC          = 0;         { Table Huffman DC }
   JPEG_HUFF_AC          = 1;         { Table Huffman AC }
-  
+
   { Identificateurs de composantes couleur }
   JPEG_COMP_Y           = 1;         { Composante luminance Y }
   JPEG_COMP_CB          = 2;         { Composante chrominance Cb (bleu) }
   JPEG_COMP_CR          = 3;         { Composante chrominance Cr (rouge) }
   JPEG_COMP_K           = 4;         { Composante noire K (CMYK) }
-  
+
   { Facteurs d'echantillonnage courants }
   JPEG_SAMPLE_444       = 1;         { Pas de sous-echantillonnage (4:4:4) }
   JPEG_SAMPLE_422_H     = 2;         { Sous-echantillonnage horizontal 4:2:2 }
   JPEG_SAMPLE_420       = 2;         { Sous-echantillonnage 4:2:0 (H et V) }
-  
+
   { Qualites JPEG predefinies }
   JPEG_QUALITY_LOW      = 25;        { Qualite basse (forte compression) }
   JPEG_QUALITY_MEDIUM   = 50;        { Qualite moyenne }
@@ -1346,7 +356,7 @@ Const
   JPEG_QUALITY_DEFAULT  = 75;        { Qualite par defaut }
   JPEG_QUALITY_MIN      = 1;         { Qualite minimale }
   JPEG_QUALITY_MAX      = 100;       { Qualite maximale }
-  
+
   { Constantes pour la generation de graphes en JPEG }
   JPEG_DEFAULT_WIDTH    = 800;       { Largeur par defaut pour les graphes }
   JPEG_DEFAULT_HEIGHT   = 600;       { Hauteur par defaut pour les graphes }
@@ -1362,12 +372,12 @@ Const
     CONSTANTES JPEG - GENERATEUR INTEGRE (SANS OUTIL EXTERNE)
     Partie 2: Tables de quantification 8x8
     ============================================================ }
-  
+
   { Table de quantification standard pour la LUMINANCE (Y)
     Issue de la norme JPEG (ITU-T T.81 / ISO/IEC 10918-1)
     Organisee en ordre ligne par ligne (row-major order)
     Ces valeurs correspondent a une qualite de 50% }
-    
+
   { Luminance - Ligne 0 }
   JPEG_QL_00 = 16;   JPEG_QL_01 = 11;   JPEG_QL_02 = 10;   JPEG_QL_03 = 16;
   JPEG_QL_04 = 24;   JPEG_QL_05 = 40;   JPEG_QL_06 = 51;   JPEG_QL_07 = 61;
@@ -1392,13 +402,13 @@ Const
   { Luminance - Ligne 7 }
   JPEG_QL_56 = 72;   JPEG_QL_57 = 92;   JPEG_QL_58 = 95;   JPEG_QL_59 = 98;
   JPEG_QL_60 = 112;  JPEG_QL_61 = 100;  JPEG_QL_62 = 103;  JPEG_QL_63 = 99;
-  
+
   { Table de quantification standard pour la CHROMINANCE (Cb, Cr)
     Issue de la norme JPEG (ITU-T T.81 / ISO/IEC 10918-1)
     La chrominance peut etre plus compressée car l'oeil est
     moins sensible aux variations de couleur
     Ces valeurs correspondent a une qualite de 50% }
-  
+
   { Chrominance - Ligne 0 }
   JPEG_QC_00 = 17;   JPEG_QC_01 = 18;   JPEG_QC_02 = 24;   JPEG_QC_03 = 47;
   JPEG_QC_04 = 99;   JPEG_QC_05 = 99;   JPEG_QC_06 = 99;   JPEG_QC_07 = 99;
@@ -1423,11 +433,11 @@ Const
   { Chrominance - Ligne 7 }
   JPEG_QC_56 = 99;   JPEG_QC_57 = 99;   JPEG_QC_58 = 99;   JPEG_QC_59 = 99;
   JPEG_QC_60 = 99;   JPEG_QC_61 = 99;   JPEG_QC_62 = 99;   JPEG_QC_63 = 99;
-  
+
   { Ordre de parcours zigzag pour les coefficients DCT 8x8
     Utilise pour convertir de l'ordre matriciel vers l'ordre
     lineaire lors de l'encodage/decodage JPEG }
-  
+
   { Zigzag - Indices 0-7 }
   JPEG_ZZ_00 = 0;   JPEG_ZZ_01 = 1;   JPEG_ZZ_02 = 8;   JPEG_ZZ_03 = 16;
   JPEG_ZZ_04 = 9;   JPEG_ZZ_05 = 2;   JPEG_ZZ_06 = 3;   JPEG_ZZ_07 = 10;
@@ -1452,18 +462,18 @@ Const
   { Zigzag - Indices 56-63 }
   JPEG_ZZ_56 = 53;  JPEG_ZZ_57 = 60;  JPEG_ZZ_58 = 61;  JPEG_ZZ_59 = 54;
   JPEG_ZZ_60 = 47;  JPEG_ZZ_61 = 55;  JPEG_ZZ_62 = 62;  JPEG_ZZ_63 = 63;
-  
+
   { Facteurs d'echelle pour ajuster la qualite JPEG
     La qualite Q (1-100) est convertie en facteur d'echelle S:
     - Si Q < 50: S = 5000 / Q
     - Si Q >= 50: S = 200 - 2 * Q
     Puis chaque valeur de quantification est: (BaseValue * S + 50) / 100 }
-  
+
   JPEG_QUALITY_SCALE_LOW  = 50;      { Seuil pour calcul du facteur d'echelle }
   JPEG_QUALITY_FACTOR_50  = 100;     { Facteur d'echelle a qualite 50% }
   JPEG_QUANT_MIN_VALUE    = 1;       { Valeur minimale de quantification }
   JPEG_QUANT_MAX_VALUE    = 255;     { Valeur maximale de quantification (8 bits) }
-  
+
   { Indices des tables de quantification dans le fichier JPEG }
   JPEG_QUANT_TABLE_Y      = 0;       { Table 0 pour luminance }
   JPEG_QUANT_TABLE_C      = 1;       { Table 1 pour chrominance }
@@ -1477,11 +487,11 @@ Const
   dans JPEG. Il y a 4 tables au total:
   - 2 tables DC (coefficients continus): 1 pour Y, 1 pour CbCr
   - 2 tables AC (coefficients alternatifs): 1 pour Y, 1 pour CbCr
-  
+
   Chaque table est definie par:
   - BITS[16]: nombre de codes de chaque longueur (1-16 bits)
   - HUFFVAL[n]: valeurs associees aux codes Huffman
-  
+
   Ces tables sont issues de la norme JPEG (ITU-T T.81 / Annex K) }
 
 { ============================================================
@@ -1507,7 +517,7 @@ Const
   JPEG_DC_LUM_BITS_14 = 0;      { Codes de 14 bits: 0 }
   JPEG_DC_LUM_BITS_15 = 0;      { Codes de 15 bits: 0 }
   JPEG_DC_LUM_BITS_16 = 0;      { Codes de 16 bits: 0 }
-  
+
 { DC Luminance HUFFVAL - Valeurs pour les 12 categories (0-11) }
 { Total: 0+1+5+1+1+1+1+1+1 = 12 valeurs }
   JPEG_DC_LUM_VAL_00 = 0;       { Categorie 0: difference DC = 0 }
@@ -1522,7 +532,7 @@ Const
   JPEG_DC_LUM_VAL_09 = 9;       { Categorie 9: diff DC -511..-256,256..511 }
   JPEG_DC_LUM_VAL_10 = 10;      { Categorie 10: diff DC -1023..-512,512..1023 }
   JPEG_DC_LUM_VAL_11 = 11;      { Categorie 11: diff DC -2047..-1024,1024..2047 }
-  
+
   JPEG_DC_LUM_VAL_COUNT = 12;   { Nombre total de valeurs DC luminance }
 
 { ============================================================
@@ -1548,7 +558,7 @@ Const
   JPEG_DC_CHR_BITS_14 = 0;      { Codes de 14 bits: 0 }
   JPEG_DC_CHR_BITS_15 = 0;      { Codes de 15 bits: 0 }
   JPEG_DC_CHR_BITS_16 = 0;      { Codes de 16 bits: 0 }
-  
+
 { DC Chrominance HUFFVAL - Valeurs pour les 12 categories (0-11) }
 { Total: 0+3+1+1+1+1+1+1+1+1 = 12 valeurs }
   JPEG_DC_CHR_VAL_00 = 0;       { Categorie 0 }
@@ -1563,7 +573,7 @@ Const
   JPEG_DC_CHR_VAL_09 = 9;       { Categorie 9 }
   JPEG_DC_CHR_VAL_10 = 10;      { Categorie 10 }
   JPEG_DC_CHR_VAL_11 = 11;      { Categorie 11 }
-  
+
   JPEG_DC_CHR_VAL_COUNT = 12;   { Nombre total de valeurs DC chrominance }
 
 { ============================================================
@@ -1588,7 +598,7 @@ Const
   JPEG_AC_LUM_BITS_14 = 0;      { Codes de 14 bits: 0 }
   JPEG_AC_LUM_BITS_15 = 1;      { Codes de 15 bits: 1 }
   JPEG_AC_LUM_BITS_16 = 125;    { Codes de 16 bits: 125 }
-  
+
 { AC Luminance HUFFVAL - 162 valeurs au total
   Format: RRRRSSSS ou RRRR=run de zeros (0-15), SSSS=taille (0-10)
   Valeurs speciales: $00=EOB (fin de bloc), $F0=ZRL (16 zeros) }
@@ -1610,7 +620,7 @@ Const
   JPEG_AC_LUM_VAL_013 = $51;    { Run=5, Size=1 }
   JPEG_AC_LUM_VAL_014 = $61;    { Run=6, Size=1 }
   JPEG_AC_LUM_VAL_015 = $07;    { Run=0, Size=7 }
-  
+
 { AC Luminance valeurs - Groupe 2 (indices 16-31) }
   JPEG_AC_LUM_VAL_016 = $22;    { Run=2, Size=2 }
   JPEG_AC_LUM_VAL_017 = $71;    { Run=7, Size=1 }
@@ -1628,7 +638,7 @@ Const
   JPEG_AC_LUM_VAL_029 = $52;    { Run=5, Size=2 }
   JPEG_AC_LUM_VAL_030 = $D1;    { Run=13, Size=1 }
   JPEG_AC_LUM_VAL_031 = $F0;    { ZRL - Zero Run Length (16 zeros) }
-  
+
 { AC Luminance valeurs - Groupe 3 (indices 32-47) }
   JPEG_AC_LUM_VAL_032 = $24;    { Run=2, Size=4 }
   JPEG_AC_LUM_VAL_033 = $33;    { Run=3, Size=3 }
@@ -1646,7 +656,7 @@ Const
   JPEG_AC_LUM_VAL_045 = $26;    { Run=2, Size=6 }
   JPEG_AC_LUM_VAL_046 = $27;    { Run=2, Size=7 }
   JPEG_AC_LUM_VAL_047 = $28;    { Run=2, Size=8 }
-  
+
 { AC Luminance valeurs - Groupe 4 (indices 48-63) }
   JPEG_AC_LUM_VAL_048 = $29;    { Run=2, Size=9 }
   JPEG_AC_LUM_VAL_049 = $2A;    { Run=2, Size=10 }
@@ -1664,7 +674,7 @@ Const
   JPEG_AC_LUM_VAL_061 = $47;    { Run=4, Size=7 }
   JPEG_AC_LUM_VAL_062 = $48;    { Run=4, Size=8 }
   JPEG_AC_LUM_VAL_063 = $49;    { Run=4, Size=9 }
-  
+
 { AC Luminance valeurs - Groupe 5 (indices 64-79) }
   JPEG_AC_LUM_VAL_064 = $4A;    { Run=4, Size=10 }
   JPEG_AC_LUM_VAL_065 = $53;    { Run=5, Size=3 }
@@ -1682,7 +692,7 @@ Const
   JPEG_AC_LUM_VAL_077 = $67;    { Run=6, Size=7 }
   JPEG_AC_LUM_VAL_078 = $68;    { Run=6, Size=8 }
   JPEG_AC_LUM_VAL_079 = $69;    { Run=6, Size=9 }
-  
+
 { AC Luminance valeurs - Groupe 6 (indices 80-95) }
   JPEG_AC_LUM_VAL_080 = $6A;    { Run=6, Size=10 }
   JPEG_AC_LUM_VAL_081 = $73;    { Run=7, Size=3 }
@@ -1700,7 +710,7 @@ Const
   JPEG_AC_LUM_VAL_093 = $87;    { Run=8, Size=7 }
   JPEG_AC_LUM_VAL_094 = $88;    { Run=8, Size=8 }
   JPEG_AC_LUM_VAL_095 = $89;    { Run=8, Size=9 }
-  
+
 { AC Luminance valeurs - Groupe 7 (indices 96-111) }
   JPEG_AC_LUM_VAL_096 = $8A;    { Run=8, Size=10 }
   JPEG_AC_LUM_VAL_097 = $92;    { Run=9, Size=2 }
@@ -1718,7 +728,7 @@ Const
   JPEG_AC_LUM_VAL_109 = $A5;    { Run=10, Size=5 }
   JPEG_AC_LUM_VAL_110 = $A6;    { Run=10, Size=6 }
   JPEG_AC_LUM_VAL_111 = $A7;    { Run=10, Size=7 }
-  
+
 { AC Luminance valeurs - Groupe 8 (indices 112-127) }
   JPEG_AC_LUM_VAL_112 = $A8;    { Run=10, Size=8 }
   JPEG_AC_LUM_VAL_113 = $A9;    { Run=10, Size=9 }
@@ -1736,7 +746,7 @@ Const
   JPEG_AC_LUM_VAL_125 = $C3;    { Run=12, Size=3 }
   JPEG_AC_LUM_VAL_126 = $C4;    { Run=12, Size=4 }
   JPEG_AC_LUM_VAL_127 = $C5;    { Run=12, Size=5 }
-  
+
 { AC Luminance valeurs - Groupe 9 (indices 128-143) }
   JPEG_AC_LUM_VAL_128 = $C6;    { Run=12, Size=6 }
   JPEG_AC_LUM_VAL_129 = $C7;    { Run=12, Size=7 }
@@ -1754,7 +764,7 @@ Const
   JPEG_AC_LUM_VAL_141 = $DA;    { Run=13, Size=10 }
   JPEG_AC_LUM_VAL_142 = $E1;    { Run=14, Size=1 }
   JPEG_AC_LUM_VAL_143 = $E2;    { Run=14, Size=2 }
-  
+
 { AC Luminance valeurs - Groupe 10 (indices 144-159) }
   JPEG_AC_LUM_VAL_144 = $E3;    { Run=14, Size=3 }
   JPEG_AC_LUM_VAL_145 = $E4;    { Run=14, Size=4 }
@@ -1772,11 +782,11 @@ Const
   JPEG_AC_LUM_VAL_157 = $F6;    { Run=15, Size=6 }
   JPEG_AC_LUM_VAL_158 = $F7;    { Run=15, Size=7 }
   JPEG_AC_LUM_VAL_159 = $F8;    { Run=15, Size=8 }
-  
+
 { AC Luminance valeurs - Groupe 11 (indices 160-161) }
   JPEG_AC_LUM_VAL_160 = $F9;    { Run=15, Size=9 }
   JPEG_AC_LUM_VAL_161 = $FA;    { Run=15, Size=10 }
-  
+
   JPEG_AC_LUM_VAL_COUNT = 162;  { Nombre total de valeurs AC luminance }
 
 { ============================================================
@@ -1801,7 +811,7 @@ Const
   JPEG_AC_CHR_BITS_14 = 1;      { Codes de 14 bits: 1 }
   JPEG_AC_CHR_BITS_15 = 2;      { Codes de 15 bits: 2 }
   JPEG_AC_CHR_BITS_16 = 119;    { Codes de 16 bits: 119 }
-  
+
 { AC Chrominance HUFFVAL - 162 valeurs au total
   Format: RRRRSSSS ou RRRR=run de zeros (0-15), SSSS=taille (0-10) }
 
@@ -1822,7 +832,7 @@ Const
   JPEG_AC_CHR_VAL_013 = $07;    { Run=0, Size=7 }
   JPEG_AC_CHR_VAL_014 = $61;    { Run=6, Size=1 }
   JPEG_AC_CHR_VAL_015 = $71;    { Run=7, Size=1 }
-  
+
 { AC Chrominance valeurs - Groupe 2 (indices 16-31) }
   JPEG_AC_CHR_VAL_016 = $13;    { Run=1, Size=3 }
   JPEG_AC_CHR_VAL_017 = $22;    { Run=2, Size=2 }
@@ -1840,7 +850,7 @@ Const
   JPEG_AC_CHR_VAL_029 = $33;    { Run=3, Size=3 }
   JPEG_AC_CHR_VAL_030 = $52;    { Run=5, Size=2 }
   JPEG_AC_CHR_VAL_031 = $F0;    { ZRL - Zero Run Length (16 zeros) }
-  
+
 { AC Chrominance valeurs - Groupe 3 (indices 32-47) }
   JPEG_AC_CHR_VAL_032 = $15;    { Run=1, Size=5 }
   JPEG_AC_CHR_VAL_033 = $62;    { Run=6, Size=2 }
@@ -1858,7 +868,7 @@ Const
   JPEG_AC_CHR_VAL_045 = $19;    { Run=1, Size=9 }
   JPEG_AC_CHR_VAL_046 = $1A;    { Run=1, Size=10 }
   JPEG_AC_CHR_VAL_047 = $26;    { Run=2, Size=6 }
-  
+
 { AC Chrominance valeurs - Groupe 4 (indices 48-63) }
   JPEG_AC_CHR_VAL_048 = $27;    { Run=2, Size=7 }
   JPEG_AC_CHR_VAL_049 = $28;    { Run=2, Size=8 }
@@ -1876,7 +886,7 @@ Const
   JPEG_AC_CHR_VAL_061 = $46;    { Run=4, Size=6 }
   JPEG_AC_CHR_VAL_062 = $47;    { Run=4, Size=7 }
   JPEG_AC_CHR_VAL_063 = $48;    { Run=4, Size=8 }
-  
+
 { AC Chrominance valeurs - Groupe 5 (indices 64-79) }
   JPEG_AC_CHR_VAL_064 = $49;    { Run=4, Size=9 }
   JPEG_AC_CHR_VAL_065 = $4A;    { Run=4, Size=10 }
@@ -1894,7 +904,7 @@ Const
   JPEG_AC_CHR_VAL_077 = $66;    { Run=6, Size=6 }
   JPEG_AC_CHR_VAL_078 = $67;    { Run=6, Size=7 }
   JPEG_AC_CHR_VAL_079 = $68;    { Run=6, Size=8 }
-  
+
 { AC Chrominance valeurs - Groupe 6 (indices 80-95) }
   JPEG_AC_CHR_VAL_080 = $69;    { Run=6, Size=9 }
   JPEG_AC_CHR_VAL_081 = $6A;    { Run=6, Size=10 }
@@ -1912,7 +922,7 @@ Const
   JPEG_AC_CHR_VAL_093 = $85;    { Run=8, Size=5 }
   JPEG_AC_CHR_VAL_094 = $86;    { Run=8, Size=6 }
   JPEG_AC_CHR_VAL_095 = $87;    { Run=8, Size=7 }
-  
+
 { AC Chrominance valeurs - Groupe 7 (indices 96-111) }
   JPEG_AC_CHR_VAL_096 = $88;    { Run=8, Size=8 }
   JPEG_AC_CHR_VAL_097 = $89;    { Run=8, Size=9 }
@@ -1930,7 +940,7 @@ Const
   JPEG_AC_CHR_VAL_109 = $A3;    { Run=10, Size=3 }
   JPEG_AC_CHR_VAL_110 = $A4;    { Run=10, Size=4 }
   JPEG_AC_CHR_VAL_111 = $A5;    { Run=10, Size=5 }
-  
+
 { AC Chrominance valeurs - Groupe 8 (indices 112-127) }
   JPEG_AC_CHR_VAL_112 = $A6;    { Run=10, Size=6 }
   JPEG_AC_CHR_VAL_113 = $A7;    { Run=10, Size=7 }
@@ -1948,7 +958,7 @@ Const
   JPEG_AC_CHR_VAL_125 = $BA;    { Run=11, Size=10 }
   JPEG_AC_CHR_VAL_126 = $C2;    { Run=12, Size=2 }
   JPEG_AC_CHR_VAL_127 = $C3;    { Run=12, Size=3 }
-  
+
 { AC Chrominance valeurs - Groupe 9 (indices 128-143) }
   JPEG_AC_CHR_VAL_128 = $C4;    { Run=12, Size=4 }
   JPEG_AC_CHR_VAL_129 = $C5;    { Run=12, Size=5 }
@@ -1966,7 +976,7 @@ Const
   JPEG_AC_CHR_VAL_141 = $D8;    { Run=13, Size=8 }
   JPEG_AC_CHR_VAL_142 = $D9;    { Run=13, Size=9 }
   JPEG_AC_CHR_VAL_143 = $DA;    { Run=13, Size=10 }
-  
+
 { AC Chrominance valeurs - Groupe 10 (indices 144-159) }
   JPEG_AC_CHR_VAL_144 = $E2;    { Run=14, Size=2 }
   JPEG_AC_CHR_VAL_145 = $E3;    { Run=14, Size=3 }
@@ -1984,11 +994,11 @@ Const
   JPEG_AC_CHR_VAL_157 = $F6;    { Run=15, Size=6 }
   JPEG_AC_CHR_VAL_158 = $F7;    { Run=15, Size=7 }
   JPEG_AC_CHR_VAL_159 = $F8;    { Run=15, Size=8 }
-  
+
 { AC Chrominance valeurs - Groupe 11 (indices 160-161) }
   JPEG_AC_CHR_VAL_160 = $F9;    { Run=15, Size=9 }
   JPEG_AC_CHR_VAL_161 = $FA;    { Run=15, Size=10 }
-  
+
   JPEG_AC_CHR_VAL_COUNT = 162;  { Nombre total de valeurs AC chrominance }
 
 { Indices des tables de Huffman dans le fichier JPEG }
@@ -1996,17 +1006,17 @@ Const
   JPEG_HUFF_DC_CHR_ID = 1;      { Table DC chrominance: classe=0, id=1 }
   JPEG_HUFF_AC_LUM_ID = 0;      { Table AC luminance: classe=1, id=0 }
   JPEG_HUFF_AC_CHR_ID = 1;      { Table AC chrominance: classe=1, id=1 }
-  
+
 { Classe de table Huffman }
   JPEG_HUFF_CLASS_DC = 0;       { Table pour coefficients DC }
   JPEG_HUFF_CLASS_AC = 1;       { Table pour coefficients AC }
-  
+
 { Constantes pour l'encodage Huffman }
   JPEG_HUFF_BITS_COUNT = 16;    { Nombre d'entrees dans le tableau BITS }
   JPEG_HUFF_MAX_CODE_LEN = 16;  { Longueur maximale d'un code Huffman }
   JPEG_DC_CATEGORY_COUNT = 12;  { Nombre de categories DC (0-11) }
   JPEG_AC_SYMBOL_COUNT = 256;   { Nombre de symboles AC possibles (RRRRSSSS) }
-  
+
 { Valeurs speciales pour les coefficients AC }
   JPEG_AC_EOB = $00;            { End Of Block - fin du bloc DCT }
   JPEG_AC_ZRL = $F0;            { Zero Run Length - 16 zeros consecutifs }
@@ -2019,13 +1029,13 @@ Const
 { La DCT (Discrete Cosine Transform) est une transformation mathematique
   qui convertit un bloc 8x8 de pixels en un bloc 8x8 de coefficients
   frequentiels. C'est le coeur de la compression JPEG.
-  
+
   Formule de la DCT-II 2D:
   F(u,v) = (1/4) * C(u) * C(v) * SUM[x=0..7, y=0..7] f(x,y) *
            cos((2x+1)*u*pi/16) * cos((2y+1)*v*pi/16)
-  
+
   ou C(k) = 1/sqrt(2) si k=0, sinon C(k) = 1
-  
+
   Le coefficient DC (u=0,v=0) represente la moyenne du bloc.
   Les coefficients AC representent les variations de frequence. }
 
@@ -2033,12 +1043,12 @@ Const
   JPEG_PI = 3.14159265358979323846;   { PI pour les calculs trigonometriques }
   JPEG_DCT_SIZE = 8;                   { Taille du bloc DCT (8x8) }
   JPEG_DCT_SIZE2 = 64;                 { Nombre total de coefficients (8*8) }
-  
+
 { Facteur de normalisation pour la DCT }
   JPEG_DCT_NORM = 0.25;                { 1/4 pour la normalisation 2D }
   JPEG_DCT_SQRT2_INV = 0.70710678118654752440; { 1/sqrt(2) pour C(0) }
   JPEG_DCT_SQRT8_INV = 0.35355339059327376220; { 1/sqrt(8) = 1/(2*sqrt(2)) }
-  
+
 { Decalage pour centrer les pixels autour de zero avant DCT }
   JPEG_LEVEL_SHIFT = 128;              { Pour convertir 0..255 en -128..127 }
 
@@ -2165,32 +1175,32 @@ Const
 Type
   { Type pour les tables de quantification JPEG 8x8 = 64 elements }
   TJPEGQuantTable = Array[0..63] Of Byte;
-  
+
   { Types pour les tables de Huffman JPEG (Partie 3) }
-  
+
   { Tableau BITS: nombre de codes de chaque longueur (1-16 bits) }
   TJPEGHuffBits = Array[0..15] Of Byte;
-  
+
   { Tableau HUFFVAL pour les coefficients DC (12 categories max) }
   TJPEGHuffDCVal = Array[0..11] Of Byte;
-  
+
   { Tableau HUFFVAL pour les coefficients AC (162 valeurs max) }
   TJPEGHuffACVal = Array[0..161] Of Byte;
-  
+
   { Structure complete pour une table de Huffman DC }
   TJPEGHuffDCTable = Record
     Bits: TJPEGHuffBits;       { Nombre de codes par longueur }
     Values: TJPEGHuffDCVal;    { Valeurs associees aux codes }
     Count: Integer;            { Nombre total de valeurs }
   End;
-  
+
   { Structure complete pour une table de Huffman AC }
   TJPEGHuffACTable = Record
     Bits: TJPEGHuffBits;       { Nombre de codes par longueur }
     Values: TJPEGHuffACVal;    { Valeurs associees aux codes }
     Count: Integer;            { Nombre total de valeurs }
   End;
-  
+
   { Ensemble des 4 tables de Huffman pour JPEG baseline }
   TJPEGHuffTables = Record
     DC_Lum: TJPEGHuffDCTable;  { Table DC luminance (Y) }
@@ -2198,31 +1208,31 @@ Type
     AC_Lum: TJPEGHuffACTable;  { Table AC luminance (Y) }
     AC_Chr: TJPEGHuffACTable;  { Table AC chrominance (Cb, Cr) }
   End;
-  
+
   { Types pour la transformation DCT JPEG (Partie 4) }
-  
+
   { Bloc 8x8 de pixels (valeurs entieres 0-255 ou -128..127 apres centrage) }
   TJPEGPixelBlock = Array[0..7, 0..7] Of Integer;
-  
+
   { Bloc 8x8 de coefficients DCT (valeurs flottantes) }
   TJPEGDCTBlock = Array[0..7, 0..7] Of Real;
-  
+
   { Bloc 8x8 de coefficients DCT quantifies (valeurs entieres) }
   TJPEGQuantBlock = Array[0..7, 0..7] Of Integer;
-  
+
   { Table de cosinus pre-calcules pour DCT 8x8 }
   TJPEGCosTable = Array[0..7, 0..7] Of Real;
-  
+
   { Types pour le Zigzag reordering JPEG (Partie 5) }
-  
+
   { Tableau lineaire de 64 coefficients en ordre zigzag }
   TJPEGZigzagBlock = Array[0..63] Of Integer;
-  
+
   { Table de correspondance pour conversion zigzag/matriciel }
   TJPEGZigzagTable = Array[0..63] Of Byte;
-  
+
   { Types pour l'encodage RLE JPEG (Partie 6) }
-  
+
   { Paire RLE: (RunLength, Value) pour un coefficient AC }
   { RunLength = nombre de zeros avant ce coefficient (0-15) }
   { Value = valeur du coefficient non-nul }
@@ -2233,7 +1243,7 @@ Type
     IsEOB: Boolean;            { True si End-Of-Block }
     IsZRL: Boolean;            { True si Zero-Run-Length (16 zeros) }
   End;
-  
+
   { Bloc RLE complet: tableau de paires pour les 63 coefficients AC }
   { Le coefficient DC (indice 0 du zigzag) est traite separement }
   TJPEGRLEBlock = Record
@@ -2242,7 +1252,7 @@ Type
     DCValue: Integer;                      { Coefficient DC (zigzag[0]) }
     HasEOB: Boolean;                       { Bloc termine par EOB? }
   End;
-  
+
   { Statistiques d'encodage RLE pour un bloc }
   TJPEGRLEStats = Record
     TotalPairs: Integer;       { Nombre total de paires RLE }
@@ -2254,16 +1264,16 @@ Type
   End;
 
   { Types pour l'encodeur Huffman bit par bit JPEG (Partie 7) }
-  
+
   { Code Huffman avec sa longueur }
   TJPEGHuffCode = Record
     Code: Word;                { Valeur du code (max 16 bits) }
     Length: Byte;              { Longueur en bits (1-16) }
   End;
-  
+
   { Table de codes Huffman complete (256 entrees) }
   TJPEGHuffCodeTable = Array[0..255] Of TJPEGHuffCode;
-  
+
   { Buffer de bits pour l'ecriture }
   TJPEGBitBuffer = Record
     Buffer: LongInt;           { Accumulateur de bits }
@@ -2273,7 +1283,7 @@ Type
     TotalBits: LongInt;        { Total de bits ecrits }
     TotalBytes: LongInt;       { Total d'octets generes }
   End;
-  
+
   { Statistiques de l'encodeur Huffman }
   TJPEGHuffStats = Record
     DCCodesWritten: LongInt;   { Codes DC ecrits }
@@ -2282,32 +1292,32 @@ Type
     TotalBitsWritten: LongInt; { Total de bits ecrits }
     TotalBytesOutput: LongInt; { Octets de sortie }
   End;
-  
+
   { Types pour la conversion couleur RGB/YCbCr JPEG (Partie 8) }
-  
+
   { Pixel RGB }
   TJPEGRGBPixel = Record
     R: Byte;                   { Rouge (0-255) }
     G: Byte;                   { Vert (0-255) }
     B: Byte;                   { Bleu (0-255) }
   End;
-  
+
   { Pixel YCbCr }
   TJPEGYCbCrPixel = Record
     Y: Byte;                   { Luminance (0-255) }
     Cb: Byte;                  { Chrominance bleue (0-255) }
     Cr: Byte;                  { Chrominance rouge (0-255) }
   End;
-  
+
   { Bloc 8x8 de pixels RGB }
   TJPEGRGBBlock = Array[0..7, 0..7] Of TJPEGRGBPixel;
-  
+
   { Bloc 8x8 de pixels YCbCr }
   TJPEGYCbCrBlock = Array[0..7, 0..7] Of TJPEGYCbCrPixel;
-  
+
   { Composante 8x8 (Y, Cb ou Cr) }
   TJPEGComponentBlock = Array[0..7, 0..7] Of Byte;
-  
+
   { Statistiques de conversion couleur }
   TJPEGColorStats = Record
     PixelsConverted: LongInt;  { Nombre de pixels convertis }
@@ -2316,9 +1326,9 @@ Type
     ClippedCb: LongInt;        { Valeurs Cb ecretees }
     ClippedCr: LongInt;        { Valeurs Cr ecretees }
   End;
-  
+
   { Types pour le sous-echantillonnage chromatique JPEG (Partie 9) }
-  
+
   { MCU (Minimum Coded Unit) en 4:2:0 }
   { Contient 4 blocs Y (2x2), 1 bloc Cb, 1 bloc Cr }
   TJPEGMCU420 = Record
@@ -2326,14 +1336,14 @@ Type
     Cb: TJPEGComponentBlock;                 { 1 bloc Cb (sous-echantillonne) }
     Cr: TJPEGComponentBlock;                 { 1 bloc Cr (sous-echantillonne) }
   End;
-  
+
   { MCU en 4:4:4 (pas de sous-echantillonnage) }
   TJPEGMCU444 = Record
     Y: TJPEGComponentBlock;    { 1 bloc Y }
     Cb: TJPEGComponentBlock;   { 1 bloc Cb }
     Cr: TJPEGComponentBlock;   { 1 bloc Cr }
   End;
-  
+
   { Configuration du sous-echantillonnage }
   TJPEGSubsampConfig = Record
     Mode: Integer;             { Mode (444, 420, etc.) }
@@ -2343,7 +1353,7 @@ Type
     MCUHeight: Integer;        { Hauteur MCU en pixels }
     YBlocksPerMCU: Integer;    { Blocs Y par MCU }
   End;
-  
+
   { Statistiques de sous-echantillonnage }
   TJPEGSubsampStats = Record
     MCUsProcessed: LongInt;    { MCUs traites }
@@ -2351,9 +1361,9 @@ Type
     CbBlocksOutput: LongInt;   { Blocs Cb produits }
     CrBlocksOutput: LongInt;   { Blocs Cr produits }
   End;
-  
+
   { Types pour l'ecriture du fichier JPEG (Partie 10) }
-  
+
   { Information d'une composante dans SOF }
   TJPEGComponentInfo = Record
     ID: Byte;                  { Identifiant (1=Y, 2=Cb, 3=Cr) }
@@ -2361,7 +1371,7 @@ Type
     VSamp: Byte;               { Facteur echantillonnage vertical }
     QTableID: Byte;            { ID table de quantification }
   End;
-  
+
   { En-tete JPEG complet }
   TJPEGHeader = Record
     Width: Word;               { Largeur image }
@@ -2370,7 +1380,7 @@ Type
     Precision: Byte;           { Bits par echantillon (8) }
     Components: Array[0..2] Of TJPEGComponentInfo;
   End;
-  
+
   { Etat de l'encodeur JPEG }
   TJPEGEncoderState = Record
     Initialized: Boolean;      { Encodeur initialise? }
@@ -2382,7 +1392,7 @@ Type
     MCUsEncoded: LongInt;      { MCUs encodes }
     BytesWritten: LongInt;     { Octets ecrits }
   End;
-  
+
   { Statistiques globales de l'encodeur }
   TJPEGEncodeStats = Record
     TotalMCUs: LongInt;        { Total MCUs }
@@ -3294,12 +2304,12 @@ Var
   UpperLine: String;
 Begin
   DetectLanguageFromShebang := LANG_UNKNOWN;
-  
+
   If (Length(Line) < 2) Or (Line[1] <> '#') Or (Line[2] <> '!') Then
     Exit;
-  
+
   UpperLine := UpStr(Line);
-  
+
   { Python }
   If (Pos('PYTHON', UpperLine) > 0) Then
     DetectLanguageFromShebang := LANG_PYTHON
@@ -3332,19 +2342,19 @@ Var
   ShebangLang: TSourceLanguage;
 Begin
   DetectLanguageFromContent := LANG_UNKNOWN;
-  
+
   {$I-}
   Assign(F, FileName);
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineCount := 0;
   While (Not Eof(F)) And (LineCount < 50) Do
   Begin
     ReadLn(F, Line);
     Inc(LineCount);
-    
+
     { Verifier le shebang sur la premiere ligne }
     If LineCount = 1 Then
     Begin
@@ -3356,9 +2366,9 @@ Begin
         Exit;
       End;
     End;
-    
+
     UpperLine := UpStr(Line);
-    
+
     { Detecter Pascal par mots-cles }
     If (Pos('PROGRAM ', UpperLine) = 1) Or (Pos('UNIT ', UpperLine) = 1) Or
        (Pos('LIBRARY ', UpperLine) = 1) Or (Pos('USES ', UpperLine) > 0) Then
@@ -3367,7 +2377,7 @@ Begin
       Close(F);
       Exit;
     End;
-    
+
     { Detecter Fortran par mots-cles }
     If (Pos('PROGRAM ', UpperLine) = 1) Or (Pos('SUBROUTINE ', UpperLine) > 0) Or
        (Pos('FUNCTION ', UpperLine) > 0) Or (Pos('MODULE ', UpperLine) = 1) Then
@@ -3381,7 +2391,7 @@ Begin
         Exit;
       End;
     End;
-    
+
     { Detecter C/C++ par #include }
     If (Pos('#INCLUDE', UpperLine) > 0) Then
     Begin
@@ -3394,7 +2404,7 @@ Begin
       Close(F);
       Exit;
     End;
-    
+
     { Detecter Java par package/import }
     If (Pos('PACKAGE ', UpperLine) = 1) Or (Pos('IMPORT JAVA.', UpperLine) > 0) Then
     Begin
@@ -3402,7 +2412,7 @@ Begin
       Close(F);
       Exit;
     End;
-    
+
     { Detecter Python par def/class/import }
     If (Pos('DEF ', UpperLine) = 1) Or (Pos('CLASS ', UpperLine) = 1) Or
        (Pos('IMPORT ', UpperLine) = 1) Or (Pos('FROM ', UpperLine) = 1) Then
@@ -3415,7 +2425,7 @@ Begin
         Exit;
       End;
     End;
-    
+
     { Detecter C# par using System }
     If (Pos('USING SYSTEM', UpperLine) > 0) Or (Pos('NAMESPACE ', UpperLine) > 0) Then
     Begin
@@ -3427,7 +2437,7 @@ Begin
         Exit;
       End;
     End;
-    
+
     { Detecter Rust par fn main() ou use std:: }
     If (Pos('FN MAIN', UpperLine) > 0) Or (Pos('USE STD::', UpperLine) > 0) Or
        (Pos('MOD ', UpperLine) = 1) Then
@@ -3436,7 +2446,7 @@ Begin
       Close(F);
       Exit;
     End;
-    
+
     { Detecter Go par package main/func }
     If (Pos('PACKAGE MAIN', UpperLine) > 0) Or (Pos('FUNC ', UpperLine) > 0) Then
     Begin
@@ -3448,7 +2458,7 @@ Begin
         Exit;
       End;
     End;
-    
+
     { Detecter Swift par import Foundation/UIKit }
     If (Pos('IMPORT FOUNDATION', UpperLine) > 0) Or (Pos('IMPORT UIKIT', UpperLine) > 0) Or
        (Pos('IMPORT SWIFTUI', UpperLine) > 0) Then
@@ -3457,7 +2467,7 @@ Begin
       Close(F);
       Exit;
     End;
-    
+
     { Detecter Kotlin par fun main ou package }
     If (Pos('FUN MAIN', UpperLine) > 0) Or (Pos('PACKAGE ', UpperLine) = 1) Then
     Begin
@@ -3470,7 +2480,7 @@ Begin
         Exit;
       End;
     End;
-    
+
     { Detecter VHDL par library/entity/architecture }
     If (Pos('LIBRARY ', UpperLine) = 1) Or (Pos('ENTITY ', UpperLine) = 1) Or
        (Pos('ARCHITECTURE ', UpperLine) = 1) Then
@@ -3479,7 +2489,7 @@ Begin
       Close(F);
       Exit;
     End;
-    
+
     { Detecter Ada par with/procedure }
     If (Pos('WITH ', UpperLine) = 1) Or (Pos('PROCEDURE ', UpperLine) = 1) Then
     Begin
@@ -3491,7 +2501,7 @@ Begin
         Exit;
       End;
     End;
-    
+
     { Detecter COBOL par IDENTIFICATION DIVISION }
     If (Pos('IDENTIFICATION DIVISION', UpperLine) > 0) Or
        (Pos('PROCEDURE DIVISION', UpperLine) > 0) Then
@@ -3501,7 +2511,7 @@ Begin
       Exit;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -3512,11 +2522,11 @@ Var
 Begin
   { D'abord essayer par l'extension }
   Lang := DetectLanguageFromExt(FileName);
-  
+
   { Si inconnu ou ambigu, analyser le contenu }
   If Lang = LANG_UNKNOWN Then
     Lang := DetectLanguageFromContent(FileName);
-  
+
   { Pour certaines extensions ambigues, analyser le contenu }
   { .h peut etre C ou C++ }
   If (Lang = LANG_C) And (Pos('.H', UpStr(ExtractExt(FileName))) > 0) Then
@@ -3526,7 +2536,7 @@ Begin
     If DetectLanguageFromContent(FileName) = LANG_CPP Then
       Lang := LANG_CPP;
   End;
-  
+
   DetectLanguage := Lang;
 End;
 
@@ -3696,7 +2706,7 @@ Begin
   ExtractPascalReturnType := '';
   { Trouver le : apres la parenthese fermante }
   PEnd := Pos(')', Line);
-  If PEnd = 0 Then 
+  If PEnd = 0 Then
     SearchStart := 1
   Else
     SearchStart := PEnd;
@@ -3712,7 +2722,7 @@ Begin
   If PColon = 0 Then Exit;
   { Trouver la position du ; }
   PSemi := Pos(';', Line);
-  If (PSemi = 0) Or (PSemi < PColon) Then 
+  If (PSemi = 0) Or (PSemi < PColon) Then
     PSemi := Length(Line) + 1;
   { Extraire le type }
   ExtractPascalReturnType := TrimLine(Copy(Line, PColon + 1, PSemi - PColon - 1));
@@ -3747,20 +2757,20 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNum := 0;
   InComment := False;
   InClass := False;
   CurrentClass := '';
   BraceDepth := 0;
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
     TrimmedLine := TrimLine(Line);
     UpperLine := UpStr(TrimmedLine);
-    
+
     { Gerer les commentaires multiligne }
     If InComment Then
     Begin
@@ -3769,7 +2779,7 @@ Begin
         InComment := False;
       Continue;
     End;
-    
+
     { Detecter debut de commentaire multiligne }
     P := Pos('/*', TrimmedLine);
     If (P > 0) And (Pos('*/', TrimmedLine) = 0) Then
@@ -3777,11 +2787,11 @@ Begin
       InComment := True;
       Continue;
     End;
-    
+
     { Ignorer les lignes de commentaire simple }
     If (Length(TrimmedLine) >= 2) And (Copy(TrimmedLine, 1, 2) = '//') Then
       Continue;
-    
+
     { Compter les accolades }
     For P := 1 To Length(TrimmedLine) Do
     Begin
@@ -3796,7 +2806,7 @@ Begin
         End;
       End;
     End;
-    
+
     { Detecter #define }
     If Copy(TrimmedLine, 1, 7) = '#define' Then
     Begin
@@ -3805,7 +2815,7 @@ Begin
         AddEntity(ENT_DEFINE, Name, Name, FileName, LineNum, VIS_PUBLIC);
       Continue;
     End;
-    
+
     { Detecter les classes }
     P := Pos('CLASS ', UpperLine);
     If P > 0 Then
@@ -3819,7 +2829,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter les structures }
     P := Pos('STRUCT ', UpperLine);
     If P > 0 Then
@@ -3829,7 +2839,7 @@ Begin
         AddEntity(ENT_STRUCT, Name, Name, FileName, LineNum, VIS_PUBLIC);
       Continue;
     End;
-    
+
     { Detecter les unions }
     P := Pos('UNION ', UpperLine);
     If P > 0 Then
@@ -3839,7 +2849,7 @@ Begin
         AddEntity(ENT_UNION, Name, Name, FileName, LineNum, VIS_PUBLIC);
       Continue;
     End;
-    
+
     { Detecter les enumerations }
     P := Pos('ENUM ', UpperLine);
     If P > 0 Then
@@ -3849,7 +2859,7 @@ Begin
         AddEntity(ENT_ENUM, Name, Name, FileName, LineNum, VIS_PUBLIC);
       Continue;
     End;
-    
+
     { Detecter typedef }
     If Copy(UpperLine, 1, 8) = 'TYPEDEF ' Then
     Begin
@@ -3874,7 +2884,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter les fonctions (pattern simplifie: type nom(...) ) }
     P := Pos('(', TrimmedLine);
     If P > 1 Then
@@ -3899,13 +2909,13 @@ Begin
             Dec(P);
           End;
           { Verifier que ce n est pas un mot-cle }
-          If (Name <> '') And (UpStr(Name) <> 'IF') And 
+          If (Name <> '') And (UpStr(Name) <> 'IF') And
              (UpStr(Name) <> 'WHILE') And (UpStr(Name) <> 'FOR') And
              (UpStr(Name) <> 'SWITCH') And (UpStr(Name) <> 'RETURN') And
              (UpStr(Name) <> 'SIZEOF') And (UpStr(Name) <> 'TYPEOF') Then
           Begin
             If InClass Then
-              AddEntity(ENT_FUNCTION, Name, CurrentClass + '::' + Name, 
+              AddEntity(ENT_FUNCTION, Name, CurrentClass + '::' + Name,
                 FileName, LineNum, VIS_PUBLIC)
             Else
               AddEntity(ENT_FUNCTION, Name, Name, FileName, LineNum, VIS_PUBLIC);
@@ -3914,7 +2924,7 @@ Begin
       End;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -3938,7 +2948,7 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNum := 0;
   InComment := False;
   InBraceComment := False;
@@ -3948,14 +2958,14 @@ Begin
   CurrentClass := '';
   CurrentRecordIdx := 0;
   RecordFields := '';
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
     TrimmedLine := TrimLine(Line);
     UpperLine := UpStr(TrimmedLine);
-    
+
     { Gerer les commentaires }
     If InComment Then
     Begin
@@ -3969,7 +2979,7 @@ Begin
       If P > 0 Then InBraceComment := False;
       Continue;
     End;
-    
+
     { Detecter debut de commentaire }
     P := Pos('(*', TrimmedLine);
     If (P > 0) And (Pos('*)', TrimmedLine) = 0) Then
@@ -3978,13 +2988,13 @@ Begin
       Continue;
     End;
     P := Pos('{', TrimmedLine);
-    If (P > 0) And (Pos('}', TrimmedLine) = 0) And 
+    If (P > 0) And (Pos('}', TrimmedLine) = 0) And
        (Copy(TrimmedLine, P, 2) <> '{$') Then
     Begin
       InBraceComment := True;
       Continue;
     End;
-    
+
     { Detecter unit }
     If Copy(UpperLine, 1, 5) = 'UNIT ' Then
     Begin
@@ -3993,7 +3003,7 @@ Begin
         AddEntity(ENT_MODULE, Name, Name, FileName, LineNum, VIS_PUBLIC);
       Continue;
     End;
-    
+
     { Detecter program }
     If Copy(UpperLine, 1, 8) = 'PROGRAM ' Then
     Begin
@@ -4002,7 +3012,7 @@ Begin
         AddEntity(ENT_MODULE, Name, Name, FileName, LineNum, VIS_PUBLIC);
       Continue;
     End;
-    
+
     { Detecter les classes (Delphi) }
     P := Pos('= CLASS', UpperLine);
     If P > 0 Then
@@ -4024,7 +3034,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter les records }
     P := Pos('= RECORD', UpperLine);
     If P > 0 Then
@@ -4046,7 +3056,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Collecter les champs si dans un record }
     If InRecord Then
     Begin
@@ -4073,7 +3083,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter les interfaces }
     P := Pos('= INTERFACE', UpperLine);
     If P > 0 Then
@@ -4093,7 +3103,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter fin de classe/interface }
     If (UpperLine = 'END;') Or (Copy(UpperLine, 1, 4) = 'END;') Then
     Begin
@@ -4104,7 +3114,7 @@ Begin
       End;
       If InInterface Then InInterface := False;
     End;
-    
+
     { Detecter les procedures }
     If Copy(UpperLine, 1, 10) = 'PROCEDURE ' Then
     Begin
@@ -4123,7 +3133,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter les fonctions }
     If Copy(UpperLine, 1, 9) = 'FUNCTION ' Then
     Begin
@@ -4142,7 +3152,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter les types enumeres }
     P := Pos('= (', UpperLine);
     If (P > 0) And (Pos('TYPE', UpperLine) > 0) Then
@@ -4159,7 +3169,7 @@ Begin
         AddEntity(ENT_ENUM, Name, Name, FileName, LineNum, VIS_PUBLIC);
       Continue;
     End;
-    
+
     { Detecter les constantes }
     If Copy(UpperLine, 1, 6) = 'CONST ' Then
     Begin
@@ -4167,7 +3177,7 @@ Begin
       Continue;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -4189,20 +3199,20 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNum := 0;
   InComment := False;
   PackageName := '';
   CurrentClass := '';
   BraceDepth := 0;
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
     TrimmedLine := TrimLine(Line);
     UpperLine := UpStr(TrimmedLine);
-    
+
     { Gerer les commentaires multiligne }
     If InComment Then
     Begin
@@ -4210,17 +3220,17 @@ Begin
       If P > 0 Then InComment := False;
       Continue;
     End;
-    
+
     P := Pos('/*', TrimmedLine);
     If (P > 0) And (Pos('*/', TrimmedLine) = 0) Then
     Begin
       InComment := True;
       Continue;
     End;
-    
+
     If (Length(TrimmedLine) >= 2) And (Copy(TrimmedLine, 1, 2) = '//') Then
       Continue;
-    
+
     { Compter les accolades }
     For P := 1 To Length(TrimmedLine) Do
     Begin
@@ -4231,7 +3241,7 @@ Begin
         If BraceDepth = 0 Then CurrentClass := '';
       End;
     End;
-    
+
     { Detecter package }
     If Copy(UpperLine, 1, 8) = 'PACKAGE ' Then
     Begin
@@ -4240,7 +3250,7 @@ Begin
         PackageName := TrimLine(Copy(TrimmedLine, 9, P - 9));
       Continue;
     End;
-    
+
     { Detecter class }
     P := Pos(' CLASS ', UpperLine);
     If P > 0 Then
@@ -4257,7 +3267,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter interface }
     P := Pos(' INTERFACE ', UpperLine);
     If P > 0 Then
@@ -4273,7 +3283,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter enum }
     P := Pos(' ENUM ', UpperLine);
     If P > 0 Then
@@ -4283,7 +3293,7 @@ Begin
         AddEntity(ENT_ENUM, Name, Name, FileName, LineNum, VIS_PUBLIC);
       Continue;
     End;
-    
+
     { Detecter les methodes }
     P := Pos('(', TrimmedLine);
     If (P > 1) And (CurrentClass <> '') And
@@ -4310,7 +3320,7 @@ Begin
       End;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -4332,18 +3342,18 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNum := 0;
   InDocString := False;
   CurrentClass := '';
   ClassIndent := 0;
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
     TrimmedLine := TrimLine(Line);
-    
+
     { Calculer l indentation }
     IndentLevel := 0;
     P := 1;
@@ -4355,7 +3365,7 @@ Begin
         Inc(IndentLevel);
       Inc(P);
     End;
-    
+
     { Gerer les docstrings triple quotes }
     If InDocString Then
     Begin
@@ -4363,7 +3373,7 @@ Begin
         InDocString := False;
       Continue;
     End;
-    
+
     If (Pos('"""', TrimmedLine) > 0) Or (Pos('''''''', TrimmedLine) > 0) Then
     Begin
       { Verifier si la docstring se termine sur la meme ligne }
@@ -4375,18 +3385,18 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Ignorer les commentaires }
     If (Length(TrimmedLine) > 0) And (TrimmedLine[1] = '#') Then
       Continue;
-    
+
     { Sortir de la classe si l indentation diminue }
     If (CurrentClass <> '') And (IndentLevel <= ClassIndent) And
        (TrimmedLine <> '') Then
     Begin
       CurrentClass := '';
     End;
-    
+
     { Detecter class }
     If Copy(TrimmedLine, 1, 6) = 'class ' Then
     Begin
@@ -4404,7 +3414,7 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter def (fonctions/methodes) }
     If Copy(TrimmedLine, 1, 4) = 'def ' Then
     Begin
@@ -4424,7 +3434,7 @@ Begin
       Continue;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -4437,11 +3447,11 @@ Var
   BaseName: String;
 Begin
   InitEntities;
-  
+
   { Creer une entite ENT_FILE pour le fichier lui-meme }
   BaseName := ExtractFileName(FileName);
   AddEntity(ENT_FILE, BaseName, FileName, FileName, 1, VIS_PUBLIC);
-  
+
   Case Lang Of
     LANG_C, LANG_CPP, LANG_CSHARP, LANG_D, LANG_OBJC:
       ExtractEntitiesC(FileName);
@@ -4467,10 +3477,10 @@ Begin
     WriteLn('Aucune entite extraite.');
     Exit;
   End;
-  
+
   WriteLn('Entites documentees extraites: ', EntityCount);
   WriteLn;
-  
+
   For I := 1 To EntityCount Do
   Begin
     Write('  [', I, '] ');
@@ -4480,7 +3490,7 @@ Begin
       Write(' (', Entities[I].FullName, ')');
     WriteLn(' - ligne ', Entities[I].Line);
   End;
-  
+
   WriteLn;
 End;
 
@@ -4522,7 +3532,7 @@ Begin
     WarnMsg('Trop de relations d''heritage (max=' + IntToStr(MAX_INHERITANCES) + ')');
     Exit;
   End;
-  
+
   { Rechercher l ID de la classe parente }
   ParentId := -1;
   For I := 1 To EntityCount Do
@@ -4537,7 +3547,7 @@ Begin
       End;
     End;
   End;
-  
+
   Inc(InheritanceCount);
   Inheritances[InheritanceCount].ChildId := ChildId;
   Inheritances[InheritanceCount].ParentId := ParentId;
@@ -4592,9 +3602,9 @@ Begin
       Break;
     End;
   End;
-  
+
   If ColonPos = 0 Then Exit;
-  
+
   { Parser les classes parentes apres le : }
   Pos := ColonPos + 1;
   While Pos <= Length(Line) Do
@@ -4602,16 +3612,16 @@ Begin
     { Sauter les espaces }
     While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
     If Pos > Length(Line) Then Break;
-    
+
     { Detecter les modificateurs }
     Vis := VIS_PRIVATE;  { Par defaut pour class }
     IsVirtual := False;
-    
+
     { Boucle pour parser virtual et visibilite }
     While Pos <= Length(Line) Do
     Begin
       { virtual }
-      If (Pos + 6 <= Length(Line)) And 
+      If (Pos + 6 <= Length(Line)) And
          (Copy(Line, Pos, 7) = 'virtual') And
          ((Pos + 7 > Length(Line)) Or (Line[Pos+7] = ' ')) Then
       Begin
@@ -4620,9 +3630,9 @@ Begin
         While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
         Continue;
       End;
-      
+
       { public }
-      If (Pos + 5 <= Length(Line)) And 
+      If (Pos + 5 <= Length(Line)) And
          (Copy(Line, Pos, 6) = 'public') And
          ((Pos + 6 > Length(Line)) Or (Line[Pos+6] = ' ')) Then
       Begin
@@ -4631,9 +3641,9 @@ Begin
         While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
         Continue;
       End;
-      
+
       { protected }
-      If (Pos + 8 <= Length(Line)) And 
+      If (Pos + 8 <= Length(Line)) And
          (Copy(Line, Pos, 9) = 'protected') And
          ((Pos + 9 > Length(Line)) Or (Line[Pos+9] = ' ')) Then
       Begin
@@ -4642,9 +3652,9 @@ Begin
         While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
         Continue;
       End;
-      
+
       { private }
-      If (Pos + 6 <= Length(Line)) And 
+      If (Pos + 6 <= Length(Line)) And
          (Copy(Line, Pos, 7) = 'private') And
          ((Pos + 7 > Length(Line)) Or (Line[Pos+7] = ' ')) Then
       Begin
@@ -4653,14 +3663,14 @@ Begin
         While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
         Continue;
       End;
-      
+
       Break;
     End;
-    
+
     { Extraire le nom de la classe parente }
     StartPos := Pos;
-    While (Pos <= Length(Line)) And 
-          (Line[Pos] <> ',') And (Line[Pos] <> '{') And 
+    While (Pos <= Length(Line)) And
+          (Line[Pos] <> ',') And (Line[Pos] <> '{') And
           (Line[Pos] <> ' ') And (Line[Pos] <> '<') Do
     Begin
       { Gerer les noms qualifies avec :: }
@@ -4669,9 +3679,9 @@ Begin
       Else
         Inc(Pos);
     End;
-    
+
     ParentName := Copy(Line, StartPos, Pos - StartPos);
-    
+
     { Sauter les templates <...> }
     If (Pos <= Length(Line)) And (Line[Pos] = '<') Then
     Begin
@@ -4684,15 +3694,15 @@ Begin
         Inc(Pos);
       End;
     End;
-    
+
     { Ajouter l heritage si le nom est valide }
     If Length(ParentName) > 0 Then
       AddInheritance(EntityId, ParentName, REL_INHERITS, Vis, IsVirtual);
-    
+
     { Chercher la prochaine classe parente (apres la virgule) }
     While (Pos <= Length(Line)) And (Line[Pos] <> ',') And (Line[Pos] <> '{') Do
       Inc(Pos);
-    
+
     If (Pos <= Length(Line)) And (Line[Pos] = ',') Then
       Inc(Pos)
     Else
@@ -4711,7 +3721,7 @@ Begin
   InExtends := False;
   InImplements := False;
   Pos := 1;
-  
+
   While Pos <= Length(Line) Do
   Begin
     { Chercher extends }
@@ -4723,7 +3733,7 @@ Begin
       While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
       Continue;
     End;
-    
+
     { Chercher implements }
     If (Pos + 9 <= Length(Line)) And (Copy(Line, Pos, 10) = 'implements') Then
     Begin
@@ -4733,18 +3743,18 @@ Begin
       While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
       Continue;
     End;
-    
+
     { Si on est dans extends ou implements, extraire le nom }
     If InExtends Or InImplements Then
     Begin
       StartPos := Pos;
-      While (Pos <= Length(Line)) And 
-            (Line[Pos] <> ',') And (Line[Pos] <> '{') And 
+      While (Pos <= Length(Line)) And
+            (Line[Pos] <> ',') And (Line[Pos] <> '{') And
             (Line[Pos] <> ' ') And (Line[Pos] <> '<') Do
         Inc(Pos);
-      
+
       ParentName := Copy(Line, StartPos, Pos - StartPos);
-      
+
       { Sauter les generics <...> }
       If (Pos <= Length(Line)) And (Line[Pos] = '<') Then
       Begin
@@ -4757,7 +3767,7 @@ Begin
           Inc(Pos);
         End;
       End;
-      
+
       If Length(ParentName) > 0 Then
       Begin
         If InExtends Then
@@ -4765,7 +3775,7 @@ Begin
         Else
           AddInheritance(EntityId, ParentName, REL_IMPLEMENTS, VIS_PUBLIC, False);
       End;
-      
+
       { Passer a la prochaine classe/interface }
       While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
       If (Pos <= Length(Line)) And (Line[Pos] = ',') Then
@@ -4774,7 +3784,7 @@ Begin
         While (Pos <= Length(Line)) And (Line[Pos] = ' ') Do Inc(Pos);
         Continue;
       End;
-      
+
       { Fin de extends/implements }
       If (Pos <= Length(Line)) And (Line[Pos] = '{') Then Break;
       InExtends := False;
@@ -4803,9 +3813,9 @@ Begin
       Break;
     End;
   End;
-  
+
   If ParenPos = 0 Then Exit;
-  
+
   { Chercher la parenthese fermante }
   EndPos := 0;
   For Pos := ParenPos + 1 To Length(Line) Do
@@ -4816,26 +3826,26 @@ Begin
       Break;
     End;
   End;
-  
+
   If EndPos = 0 Then EndPos := Length(Line) + 1;
-  
+
   { Parser les classes parentes entre parentheses }
   Pos := ParenPos + 1;
   IsFirst := True;
-  
+
   While Pos < EndPos Do
   Begin
     { Sauter les espaces }
     While (Pos < EndPos) And (Line[Pos] = ' ') Do Inc(Pos);
     If Pos >= EndPos Then Break;
-    
+
     { Extraire le nom }
     StartPos := Pos;
     While (Pos < EndPos) And (Line[Pos] <> ',') And (Line[Pos] <> ' ') Do
       Inc(Pos);
-    
+
     ParentName := Copy(Line, StartPos, Pos - StartPos);
-    
+
     If Length(ParentName) > 0 Then
     Begin
       { En Pascal, la premiere classe est la classe de base,
@@ -4846,7 +3856,7 @@ Begin
         AddInheritance(EntityId, ParentName, REL_IMPLEMENTS, VIS_PUBLIC, False);
       IsFirst := False;
     End;
-    
+
     { Passer a la prochaine classe/interface }
     While (Pos < EndPos) And ((Line[Pos] = ' ') Or (Line[Pos] = ',')) Do Inc(Pos);
   End;
@@ -4859,7 +3869,7 @@ Var
   I: Integer;
 Begin
   InitInheritances;
-  
+
   For I := 1 To EntityCount Do
   Begin
     If IsClassEntity(Entities[I].Kind) Then
@@ -4899,7 +3909,7 @@ Begin
   Result := '';
   For I := 1 To InheritanceCount Do
   Begin
-    If (Inheritances[I].ChildId = EntityId) And 
+    If (Inheritances[I].ChildId = EntityId) And
        (Inheritances[I].Relation = REL_INHERITS) Then
     Begin
       If Length(Result) > 0 Then Result := Result + ', ';
@@ -4918,7 +3928,7 @@ Begin
   Result := '';
   For I := 1 To InheritanceCount Do
   Begin
-    If (Inheritances[I].ParentId = EntityId) And 
+    If (Inheritances[I].ParentId = EntityId) And
        (Inheritances[I].Relation = REL_INHERITS) Then
     Begin
       If Length(Result) > 0 Then Result := Result + ', ';
@@ -4938,7 +3948,7 @@ Begin
   Result := '';
   For I := 1 To InheritanceCount Do
   Begin
-    If (Inheritances[I].ChildId = EntityId) And 
+    If (Inheritances[I].ChildId = EntityId) And
        (Inheritances[I].Relation = REL_IMPLEMENTS) Then
     Begin
       If Length(Result) > 0 Then Result := Result + ', ';
@@ -4958,7 +3968,7 @@ Var
   Ancestors1, Ancestors2: Array[1..100] Of Integer;
   Count1, Count2: Integer;
   Found: Boolean;
-  
+
   Procedure CollectAncestors(EntityId: Integer; Var Ancestors: Array Of Integer;
     Var Count: Integer; Depth: Integer);
   { Collecte recursivement tous les ancetres d une classe }
@@ -4966,10 +3976,10 @@ Var
     M: Integer;
   Begin
     If Depth > 50 Then Exit;  { Protection contre les boucles infinies }
-    
+
     For M := 1 To InheritanceCount Do
     Begin
-      If (Inheritances[M].ChildId = EntityId) And 
+      If (Inheritances[M].ChildId = EntityId) And
          (Inheritances[M].Relation = REL_INHERITS) And
          (Inheritances[M].ParentId > 0) Then
       Begin
@@ -4982,19 +3992,19 @@ Var
       End;
     End;
   End;
-  
+
 Begin
   { Parcourir toutes les classes }
   For I := 1 To EntityCount Do
   Begin
     If Not IsClassEntity(Entities[I].Kind) Then Continue;
-    
+
     { Trouver toutes les classes parentes directes }
     Class1 := 0;
     Class2 := 0;
     For J := 1 To InheritanceCount Do
     Begin
-      If (Inheritances[J].ChildId = I) And 
+      If (Inheritances[J].ChildId = I) And
          (Inheritances[J].Relation = REL_INHERITS) And
          (Inheritances[J].ParentId > 0) Then
       Begin
@@ -5006,7 +4016,7 @@ Begin
           Break;  { Plus de 2 parents - verifier chaque paire }
       End;
     End;
-    
+
     { Si la classe a au moins 2 parents, verifier le diamant }
     If (Class1 > 0) And (Class2 > 0) Then
     Begin
@@ -5015,7 +4025,7 @@ Begin
       Count2 := 0;
       CollectAncestors(Class1, Ancestors1, Count1, 0);
       CollectAncestors(Class2, Ancestors2, Count2, 0);
-      
+
       { Chercher un ancetre commun }
       Found := False;
       For J := 1 To Count1 Do
@@ -5049,19 +4059,19 @@ Begin
     WriteLn('Aucune relation d''heritage trouvee.');
     Exit;
   End;
-  
+
   WriteLn('Hierarchie des classes:');
   WriteLn;
-  
+
   For I := 1 To EntityCount Do
   Begin
     If Not IsClassEntity(Entities[I].Kind) Then Continue;
-    
+
     BaseClasses := GetBaseClasses(I);
     DerivedClasses := GetDerivedClasses(I);
     Interfaces := GetImplementedInterfaces(I);
-    
-    If (Length(BaseClasses) > 0) Or (Length(DerivedClasses) > 0) Or 
+
+    If (Length(BaseClasses) > 0) Or (Length(DerivedClasses) > 0) Or
        (Length(Interfaces) > 0) Then
     Begin
       WriteLn('  ', EntityKindToStr(Entities[I].Kind), ' ', Entities[I].Name);
@@ -5130,25 +4140,25 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNum := 0;
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
-    
+
     { Enlever les espaces au debut }
     TrimLine := Line;
     While (Length(TrimLine) > 0) And (TrimLine[1] = ' ') Do
       Delete(TrimLine, 1, 1);
-    
+
     { Chercher #include }
     If (Length(TrimLine) >= 8) And (Copy(TrimLine, 1, 8) = '#include') Then
     Begin
       { Trouver le delimiteur < ou " }
       I := 9;
       While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
-      
+
       If I <= Length(TrimLine) Then
       Begin
         If TrimLine[I] = '<' Then
@@ -5175,13 +4185,13 @@ Begin
         End
         Else
           Continue;
-        
+
         If Length(Target) > 0 Then
           AddDependency(FileName, Target, Kind, LineNum, IsSystem);
       End;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -5198,22 +4208,22 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNum := 0;
   InUsesClause := False;
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
-    
+
     { Enlever les espaces au debut }
     TrimLine := Line;
     While (Length(TrimLine) > 0) And (TrimLine[1] = ' ') Do
       Delete(TrimLine, 1, 1);
-    
+
     UpLine := UpStr(TrimLine);
-    
+
     { Chercher le mot-cle uses }
     If (Length(UpLine) >= 4) And (Copy(UpLine, 1, 4) = 'USES') And
        ((Length(UpLine) = 4) Or (UpLine[5] = ' ') Or (UpLine[5] = #9)) Then
@@ -5222,7 +4232,7 @@ Begin
       { Commencer apres 'uses' }
       Delete(TrimLine, 1, 4);
     End;
-    
+
     If InUsesClause Then
     Begin
       { Parser les noms d'unites }
@@ -5230,26 +4240,26 @@ Begin
       While I <= Length(TrimLine) Do
       Begin
         { Passer les espaces et virgules }
-        While (I <= Length(TrimLine)) And 
+        While (I <= Length(TrimLine)) And
               ((TrimLine[I] = ' ') Or (TrimLine[I] = ',') Or
                (TrimLine[I] = #9)) Do
           Inc(I);
-        
+
         { Verifier si fin de clause }
         If (I <= Length(TrimLine)) And (TrimLine[I] = ';') Then
         Begin
           InUsesClause := False;
           Break;
         End;
-        
+
         { Extraire le nom d'unite }
         StartPos := I;
-        While (I <= Length(TrimLine)) And 
+        While (I <= Length(TrimLine)) And
               (TrimLine[I] <> ' ') And (TrimLine[I] <> ',') And
               (TrimLine[I] <> ';') And (TrimLine[I] <> #9) And
               (TrimLine[I] <> '{') Do
           Inc(I);
-        
+
         If I > StartPos Then
         Begin
           UnitName := Copy(TrimLine, StartPos, I - StartPos);
@@ -5260,7 +4270,7 @@ Begin
       End;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -5276,25 +4286,25 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNum := 0;
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
-    
+
     { Enlever les espaces au debut }
     TrimLine := Line;
     While (Length(TrimLine) > 0) And (TrimLine[1] = ' ') Do
       Delete(TrimLine, 1, 1);
-    
+
     { Chercher import }
     If (Length(TrimLine) >= 6) And (Copy(TrimLine, 1, 6) = 'import') And
        ((Length(TrimLine) = 6) Or (TrimLine[7] = ' ')) Then
     Begin
       I := 7;
       While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
-      
+
       { Passer 'static' si present }
       If (I + 5 <= Length(TrimLine)) And
          (Copy(TrimLine, I, 6) = 'static') Then
@@ -5302,33 +4312,33 @@ Begin
         I := I + 6;
         While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
       End;
-      
+
       StartPos := I;
       While (I <= Length(TrimLine)) And (TrimLine[I] <> ';') And
             (TrimLine[I] <> ' ') Do Inc(I);
-      
+
       Target := Copy(TrimLine, StartPos, I - StartPos);
       If Length(Target) > 0 Then
         AddDependency(FileName, Target, DEP_IMPORT, LineNum, False);
     End;
-    
+
     { Chercher package (pour reference) }
     If (Length(TrimLine) >= 7) And (Copy(TrimLine, 1, 7) = 'package') And
        ((Length(TrimLine) = 7) Or (TrimLine[8] = ' ')) Then
     Begin
       I := 8;
       While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
-      
+
       StartPos := I;
       While (I <= Length(TrimLine)) And (TrimLine[I] <> ';') And
             (TrimLine[I] <> ' ') Do Inc(I);
-      
+
       Target := Copy(TrimLine, StartPos, I - StartPos);
       If Length(Target) > 0 Then
         AddDependency(FileName, Target, DEP_PACKAGE, LineNum, False);
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -5344,30 +4354,30 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNum := 0;
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
-    
+
     { Enlever les espaces au debut }
     TrimLine := Line;
     While (Length(TrimLine) > 0) And (TrimLine[1] = ' ') Do
       Delete(TrimLine, 1, 1);
     While (Length(TrimLine) > 0) And (TrimLine[1] = #9) Do
       Delete(TrimLine, 1, 1);
-    
+
     { Chercher from ... import }
     If (Length(TrimLine) >= 4) And (Copy(TrimLine, 1, 4) = 'from') And
        ((Length(TrimLine) = 4) Or (TrimLine[5] = ' ')) Then
     Begin
       I := 5;
       While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
-      
+
       StartPos := I;
       While (I <= Length(TrimLine)) And (TrimLine[I] <> ' ') Do Inc(I);
-      
+
       Module := Copy(TrimLine, StartPos, I - StartPos);
       If Length(Module) > 0 Then
         AddDependency(FileName, Module, DEP_FROM, LineNum, False);
@@ -5378,30 +4388,30 @@ Begin
     Begin
       I := 7;
       While (I <= Length(TrimLine)) And (TrimLine[I] = ' ') Do Inc(I);
-      
+
       { Parser les modules separes par des virgules }
       While I <= Length(TrimLine) Do
       Begin
         StartPos := I;
         While (I <= Length(TrimLine)) And (TrimLine[I] <> ',') And
               (TrimLine[I] <> ' ') And (TrimLine[I] <> #9) Do Inc(I);
-        
+
         Target := Copy(TrimLine, StartPos, I - StartPos);
-        
+
         { Ignorer 'as' et le reste }
         If UpStr(Target) = 'AS' Then Break;
-        
+
         If Length(Target) > 0 Then
           AddDependency(FileName, Target, DEP_IMPORT, LineNum, False);
-        
+
         { Passer la virgule et les espaces }
-        While (I <= Length(TrimLine)) And 
+        While (I <= Length(TrimLine)) And
               ((TrimLine[I] = ',') Or (TrimLine[I] = ' ') Or
                (TrimLine[I] = #9)) Do Inc(I);
       End;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -5417,20 +4427,20 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNum := 0;
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
-    
+
     { Enlever les espaces au debut }
     TrimLine := Line;
     While (Length(TrimLine) > 0) And (TrimLine[1] = ' ') Do
       Delete(TrimLine, 1, 1);
-    
+
     UpLine := UpStr(TrimLine);
-    
+
     { Chercher with }
     If (Length(UpLine) >= 4) And (Copy(UpLine, 1, 4) = 'WITH') And
        ((Length(UpLine) = 4) Or (UpLine[5] = ' ')) Then
@@ -5440,20 +4450,20 @@ Begin
       While I <= Length(TrimLine) Do
       Begin
         { Passer les espaces et virgules }
-        While (I <= Length(TrimLine)) And 
+        While (I <= Length(TrimLine)) And
               ((TrimLine[I] = ' ') Or (TrimLine[I] = ',')) Do
           Inc(I);
-        
+
         { Verifier si fin de clause }
         If (I <= Length(TrimLine)) And (TrimLine[I] = ';') Then Break;
-        
+
         { Extraire le nom d'unite }
         StartPos := I;
-        While (I <= Length(TrimLine)) And 
+        While (I <= Length(TrimLine)) And
               (TrimLine[I] <> ' ') And (TrimLine[I] <> ',') And
               (TrimLine[I] <> ';') Do
           Inc(I);
-        
+
         If I > StartPos Then
         Begin
           UnitName := Copy(TrimLine, StartPos, I - StartPos);
@@ -5462,7 +4472,7 @@ Begin
       End;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -5524,7 +4534,7 @@ Var
   I, Start: Integer;
 Begin
   ResolveDependencyPath := FileName;
-  
+
   { D abord essayer dans le meme repertoire que le fichier source }
   BasePath := ExtractFilePath(BaseFile);
   If Length(BasePath) > 0 Then
@@ -5536,14 +4546,14 @@ Begin
       Exit;
     End;
   End;
-  
+
   { Essayer le fichier tel quel }
   If FileExists(FileName) Then
   Begin
     ResolveDependencyPath := FileName;
     Exit;
   End;
-  
+
   { Parcourir les chemins d include }
   If Length(IncludePaths) > 0 Then
   Begin
@@ -5579,7 +4589,7 @@ Var
   I, J: Integer;
   Visited: Array[1..MAX_DEPENDENCIES] Of Boolean;
   InStack: Array[1..MAX_DEPENDENCIES] Of Boolean;
-  
+
   Function FindDepsForFile(Const FileName: String): Integer;
   { Retourne l index de la premiere dependance pour un fichier, ou 0 }
   Var
@@ -5595,14 +4605,14 @@ Var
       End;
     End;
   End;
-  
+
   Procedure DetectCycleDFS(Const CurrentFile: String; Depth: Integer);
   { Parcours en profondeur pour detecter les cycles }
   Var
     M: Integer;
   Begin
     If Depth > 100 Then Exit;  { Protection contre les recursions trop profondes }
-    
+
     For M := 1 To DependencyCount Do
     Begin
       If Dependencies[M].SourceFile = CurrentFile Then
@@ -5623,17 +4633,17 @@ Var
       End;
     End;
   End;
-  
+
 Begin
   If DependencyCount = 0 Then Exit;
-  
+
   { Initialiser les tableaux }
   For I := 1 To DependencyCount Do
   Begin
     Visited[I] := False;
     InStack[I] := False;
   End;
-  
+
   { Lancer la detection de cycles depuis chaque fichier source }
   For I := 1 To DependencyCount Do
   Begin
@@ -5656,7 +4666,7 @@ Var
 Begin
   Result := '';
   BaseName := ExtractFileName(FileName);
-  
+
   For I := 1 To DependencyCount Do
   Begin
     If (Dependencies[I].SourceFile = FileName) Or
@@ -5666,7 +4676,7 @@ Begin
       Result := Result + Dependencies[I].TargetFile;
     End;
   End;
-  
+
   GetFileDependencies := Result;
 End;
 
@@ -5679,7 +4689,7 @@ Var
 Begin
   Result := '';
   BaseName := ExtractFileName(FileName);
-  
+
   For I := 1 To DependencyCount Do
   Begin
     If (Dependencies[I].TargetFile = FileName) Or
@@ -5690,7 +4700,7 @@ Begin
       Result := Result + Dependencies[I].SourceFile;
     End;
   End;
-  
+
   GetFileDependents := Result;
 End;
 
@@ -5702,14 +4712,14 @@ Var
 Begin
   Count := 0;
   BaseName := ExtractFileName(FileName);
-  
+
   For I := 1 To DependencyCount Do
   Begin
     If (Dependencies[I].SourceFile = FileName) Or
        (ExtractFileName(Dependencies[I].SourceFile) = BaseName) Then
       Inc(Count);
   End;
-  
+
   CountDependencies := Count;
 End;
 
@@ -5721,7 +4731,7 @@ Var
 Begin
   Count := 0;
   BaseName := ExtractFileName(FileName);
-  
+
   For I := 1 To DependencyCount Do
   Begin
     If (Dependencies[I].TargetFile = FileName) Or
@@ -5729,7 +4739,7 @@ Begin
        (ExtractFileName(Dependencies[I].TargetFile) = BaseName) Then
       Inc(Count);
   End;
-  
+
   CountDependents := Count;
 End;
 
@@ -5744,10 +4754,10 @@ Begin
     WriteLn('Aucune dependance trouvee.');
     Exit;
   End;
-  
+
   WriteLn('Dependances extraites (', DependencyCount, ' total):');
   WriteLn;
-  
+
   LastSource := '';
   For I := 1 To DependencyCount Do
   Begin
@@ -5757,7 +4767,7 @@ Begin
       WriteLn('Fichier: ', Dependencies[I].SourceFile);
       LastSource := Dependencies[I].SourceFile;
     End;
-    
+
     Write('  L', Dependencies[I].Line, ': ');
     Write(DependencyKindToStr(Dependencies[I].Kind), ' ');
     Write(Dependencies[I].TargetFile);
@@ -5766,11 +4776,11 @@ Begin
     WriteLn;
   End;
   WriteLn;
-  
+
   { Afficher le resume }
   WriteLn('Resume:');
   WriteLn('  Total dependances: ', DependencyCount);
-  
+
   { Detecter les cycles }
   BuildDependencyGraph;
 End;
@@ -5852,7 +4862,7 @@ Var
   Swapped: Boolean;
 Begin
   If IndexCount < 2 Then Exit;
-  
+
   For I := 1 To IndexCount - 1 Do
   Begin
     Swapped := False;
@@ -5988,10 +4998,10 @@ Begin
   WriteLn(OutFile, '<div class="toc">');
   WriteLn(OutFile, '<h2>Table des matieres</h2>');
   WriteLn(OutFile, '<ul>');
-  
+
   LastLevel := 0;
   LastKind := ENT_UNKNOWN;
-  
+
   { Grouper par type d'entite }
   For I := 1 To IndexCount Do
   Begin
@@ -6000,20 +5010,20 @@ Begin
     Begin
       If LastKind <> ENT_UNKNOWN Then
         WriteLn(OutFile, '</ul></li>');
-      
-      WriteLn(OutFile, '<li><strong>', 
+
+      WriteLn(OutFile, '<li><strong>',
         UpStr(EntityKindToStr(IndexEntries[I].Kind)), 'S</strong>');
       WriteLn(OutFile, '<ul>');
       LastKind := IndexEntries[I].Kind;
     End;
-    
-    WriteLn(OutFile, '<li><a href="', IndexEntries[I].FileName, 
+
+    WriteLn(OutFile, '<li><a href="', IndexEntries[I].FileName,
       '#', IndexEntries[I].Anchor, '">', IndexEntries[I].Name, '</a></li>');
   End;
-  
+
   If IndexCount > 0 Then
     WriteLn(OutFile, '</ul></li>');
-  
+
   WriteLn(OutFile, '</ul>');
   WriteLn(OutFile, '</div>');
 End;
@@ -6091,7 +5101,7 @@ Begin
     WriteLn('Index vide.');
     Exit;
   End;
-  
+
   WriteLn('Index (', IndexCount, ' entrees):');
   WriteLn;
   For I := 1 To IndexCount Do
@@ -6103,7 +5113,7 @@ Begin
   End;
   WriteLn;
   WriteLn('Resume par type:');
-  WriteLn('  Classes/Structures: ', CountIndexEntriesByKind(ENT_CLASS) + 
+  WriteLn('  Classes/Structures: ', CountIndexEntriesByKind(ENT_CLASS) +
     CountIndexEntriesByKind(ENT_STRUCT) + CountIndexEntriesByKind(ENT_INTERFACE));
   WriteLn('  Fichiers: ', CountIndexEntriesByKind(ENT_FILE));
   WriteLn('  Namespaces/Modules: ', CountIndexEntriesByKind(ENT_NAMESPACE) +
@@ -7106,7 +6116,7 @@ Var
   Val: String;
 Begin
   Val := UpStr(GetConfigValue(Name));
-  GetConfigBool := (Val = 'YES') Or (Val = 'TRUE') Or 
+  GetConfigBool := (Val = 'YES') Or (Val = 'TRUE') Or
                    (Val = '1') Or (Val = 'ON');
 End;
 
@@ -7161,7 +6171,7 @@ Var
   ContinuedValue: String;
 Begin
   InitConfig;
-  
+
   Assign(F, FileName);
   {$I-}
   Reset(F);
@@ -7176,21 +6186,21 @@ Begin
   InContinuation := False;
   ContinuedValue := '';
   Name := '';
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
-    
+
     { Supprimer les espaces en debut et fin }
     Line := TrimStr(Line);
-    
+
     { Ignorer les lignes vides }
     If Length(Line) = 0 Then Continue;
-    
+
     { Ignorer les commentaires (lignes commencant par #) }
     If Line[1] = '#' Then Continue;
-    
+
     { Gerer les continuations de ligne }
     If InContinuation Then
     Begin
@@ -7207,12 +6217,12 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Chercher l'operateur = ou += }
     EqPos := 0;
     PlusEqPos := 0;
     Append := False;
-    
+
     For I := 1 To Length(Line) Do
     Begin
       If (I < Length(Line)) And (Line[I] = '+') And (Line[I + 1] = '=') Then
@@ -7226,7 +6236,7 @@ Begin
         Break;
       End;
     End;
-    
+
     If PlusEqPos > 0 Then
     Begin
       Name := TrimStr(Copy(Line, 1, PlusEqPos - 1));
@@ -7241,10 +6251,10 @@ Begin
     End
     Else
       Continue; { Ligne invalide }
-    
+
     { Supprimer les guillemets }
     Value := StripQuotes(Value);
-    
+
     { Verifier si la ligne continue }
     If (Length(Value) > 0) And (Value[Length(Value)] = '\') Then
     Begin
@@ -7256,9 +6266,9 @@ Begin
       SetConfigOption(Name, Value, LineNum, Append);
     End;
   End;
-  
+
   Close(F);
-  
+
   InfoMsg('Configuration chargee: ' + IntToStr(ConfigCount) + ' options');
 End;
 
@@ -7272,7 +6282,7 @@ Begin
   SetConfigOption('PROJECT_LOGO', '', 0, False);
   SetConfigOption('OUTPUT_DIRECTORY', '', 0, False);
   SetConfigOption('OUTPUT_LANGUAGE', 'English', 0, False);
-  
+
   { Build }
   SetConfigOption('EXTRACT_ALL', 'NO', 0, False);
   SetConfigOption('EXTRACT_PRIVATE', 'NO', 0, False);
@@ -7295,7 +6305,7 @@ Begin
   SetConfigOption('OPTIMIZE_OUTPUT_JAVA', 'NO', 0, False);
   SetConfigOption('OPTIMIZE_FOR_FORTRAN', 'NO', 0, False);
   SetConfigOption('OPTIMIZE_OUTPUT_VHDL', 'NO', 0, False);
-  
+
   { Messages }
   SetConfigOption('QUIET', 'NO', 0, False);
   SetConfigOption('WARNINGS', 'YES', 0, False);
@@ -7303,7 +6313,7 @@ Begin
   SetConfigOption('WARN_IF_DOC_ERROR', 'YES', 0, False);
   SetConfigOption('WARN_NO_PARAMDOC', 'NO', 0, False);
   SetConfigOption('WARN_FORMAT', '$file:$line: $text', 0, False);
-  
+
   { Input }
   SetConfigOption('INPUT', '', 0, False);
   SetConfigOption('INPUT_ENCODING', 'UTF-8', 0, False);
@@ -7320,7 +6330,7 @@ Begin
   SetConfigOption('EXAMPLE_PATTERNS', '*', 0, False);
   SetConfigOption('EXAMPLE_RECURSIVE', 'NO', 0, False);
   SetConfigOption('IMAGE_PATH', '', 0, False);
-  
+
   { Source browsing }
   SetConfigOption('SOURCE_BROWSER', 'NO', 0, False);
   SetConfigOption('INLINE_SOURCES', 'NO', 0, False);
@@ -7328,10 +6338,10 @@ Begin
   SetConfigOption('REFERENCED_BY_RELATION', 'NO', 0, False);
   SetConfigOption('REFERENCES_RELATION', 'NO', 0, False);
   SetConfigOption('VERBATIM_HEADERS', 'YES', 0, False);
-  
+
   { Alphabetical index }
   SetConfigOption('ALPHABETICAL_INDEX', 'YES', 0, False);
-  
+
   { HTML }
   SetConfigOption('GENERATE_HTML', 'YES', 0, False);
   SetConfigOption('HTML_OUTPUT', 'html', 0, False);
@@ -7346,7 +6356,7 @@ Begin
   SetConfigOption('HTML_COLORSTYLE_GAMMA', '80', 0, False);
   SetConfigOption('GENERATE_TREEVIEW', 'NO', 0, False);
   SetConfigOption('TREEVIEW_WIDTH', '250', 0, False);
-  
+
   { LaTeX }
   SetConfigOption('GENERATE_LATEX', 'YES', 0, False);
   SetConfigOption('LATEX_OUTPUT', 'latex', 0, False);
@@ -7356,22 +6366,22 @@ Begin
   SetConfigOption('PDF_HYPERLINKS', 'YES', 0, False);
   SetConfigOption('USE_PDFLATEX', 'YES', 0, False);
   SetConfigOption('LATEX_BATCHMODE', 'NO', 0, False);
-  
+
   { RTF }
   SetConfigOption('GENERATE_RTF', 'NO', 0, False);
   SetConfigOption('RTF_OUTPUT', 'rtf', 0, False);
   SetConfigOption('COMPACT_RTF', 'NO', 0, False);
-  
+
   { MAN }
   SetConfigOption('GENERATE_MAN', 'NO', 0, False);
   SetConfigOption('MAN_OUTPUT', 'man', 0, False);
   SetConfigOption('MAN_EXTENSION', '.3', 0, False);
-  
+
   { XML }
   SetConfigOption('GENERATE_XML', 'NO', 0, False);
   SetConfigOption('XML_OUTPUT', 'xml', 0, False);
   SetConfigOption('XML_PROGRAMLISTING', 'YES', 0, False);
-  
+
   { DOT }
   SetConfigOption('HAVE_DOT', 'NO', 0, False);
   SetConfigOption('DOT_NUM_THREADS', '0', 0, False);
@@ -7629,7 +6639,7 @@ Begin
   WriteLn(F, '');
 
   Close(F);
-  
+
   If Not Opts.Quiet Then
     WriteLn('Fichier de configuration genere: ', FileName);
 End;
@@ -7833,9 +6843,9 @@ Begin
   WriteLn(F, '    <detaileddescription title=""/>');
   WriteLn(F, '  </directory>');
   WriteLn(F, '</doxygenlayout>');
-  
+
   Close(F);
-  
+
   If Not Opts.Quiet Then
     WriteLn('Fichier layout genere: ', FileName);
 End;
@@ -7973,9 +6983,9 @@ Begin
   WriteLn(F, '  color: #666;');
   WriteLn(F, '  border-top: 1px solid #C4CFE5;');
   WriteLn(F, '}');
-  
+
   Close(F);
-  
+
   If Not Opts.Quiet Then
     WriteLn('Feuille de style CSS generee: ', FileName);
 End;
@@ -8031,9 +7041,9 @@ Begin
   WriteLn(F, '</div>');
   WriteLn(F, '<!--END PROJECT_NAME-->');
   WriteLn(F, '');
-  
+
   Close(F);
-  
+
   If Not Opts.Quiet Then
     WriteLn('Header HTML genere: ', FileName);
 End;
@@ -8069,9 +7079,9 @@ Begin
   WriteLn(F, '');
   WriteLn(F, '</body>');
   WriteLn(F, '</html>');
-  
+
   Close(F);
-  
+
   If Not Opts.Quiet Then
     WriteLn('Footer HTML genere: ', FileName);
 End;
@@ -8146,9 +7156,9 @@ Begin
   WriteLn(F, '% Debut du document');
   WriteLn(F, '\begin{document}');
   WriteLn(F, '');
-  
+
   Close(F);
-  
+
   If Not Opts.Quiet Then
     WriteLn('Header LaTeX genere: ', FileName);
 End;
@@ -8197,9 +7207,9 @@ Begin
   WriteLn(F, '# Table des couleurs (index -> R,G,B)');
   WriteLn(F, '# 0 = noir, 1 = bleu, 2 = vert, 3 = rouge');
   WriteLn(F, '');
-  
+
   Close(F);
-  
+
   If Not Opts.Quiet Then
     WriteLn('Feuille de style RTF generee: ', FileName);
 End;
@@ -8238,20 +7248,20 @@ Begin
   Assign(F, FileName);
   Reset(F);
   LineNum := 0;
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
     WriteLn(FOut, Line);
   End;
-  
+
   Close(F);
-  
+
   { Ajouter une note de mise a jour }
   WriteLn(FOut, '');
   WriteLn(FOut, '# Mis a jour par DOXYGEN ', DOXYGEN_VERSION, ' (DEV-COOLS)');
-  
+
   Close(FOut);
 
   { Remplacer l'ancien fichier par le nouveau }
@@ -8259,7 +7269,7 @@ Begin
   Erase(F);
   Assign(FOut, TmpName);
   Rename(FOut, FileName);
-  
+
   If Not Opts.Quiet Then
     WriteLn('Fichier de configuration mis a jour: ', FileName);
 End;
@@ -8275,7 +7285,7 @@ Begin
   WriteLn('# Nombre d''options: ', ConfigCount);
   WriteLn('#');
   WriteLn;
-  
+
   For I := 1 To ConfigCount Do
   Begin
     If Config[I].IsSet Then
@@ -8342,7 +7352,7 @@ Var
 Begin
   UpperFormat := UpStr(Format);
   UpperType := UpStr(StyleType);
-  
+
   If FileName = '' Then
   Begin
     { Determiner le nom par defaut }
@@ -8367,7 +7377,7 @@ Begin
   End
   Else
     ActualFileName := FileName;
-  
+
   If UpperFormat = 'HTML' Then
   Begin
     If UpperType = 'HEADER' Then
@@ -8405,13 +7415,13 @@ Begin
     WriteLn('                 cite, srclex, commentcnv, preprocessor');
     Exit;
   End;
-  
+
   Opts.DebugMode := True;
   If Opts.DebugOpts = '' Then
     Opts.DebugOpts := DebugOpt
   Else
     Opts.DebugOpts := Opts.DebugOpts + ',' + DebugOpt;
-  
+
   If Not Opts.Quiet Then
     WriteLn('Mode debogage active: ', DebugOpt);
 End;
@@ -8429,7 +7439,7 @@ Var
   ActualFileName: String;
 Begin
   UpperFormat := UpStr(Format);
-  
+
   If FileName = '' Then
   Begin
     If UpperFormat = 'HTML' Then
@@ -8444,7 +7454,7 @@ Begin
   End
   Else
     ActualFileName := FileName;
-  
+
   If UpperFormat = 'HTML' Then
     GenerateHtmlHeader(ActualFileName)
   Else If UpperFormat = 'LATEX' Then
@@ -8831,16 +7841,16 @@ Begin
   WriteLn;
   WriteLn('Extraction des entites du code source...');
   ExtractEntities(FileName, Lang);
-  
+
   If EntityCount > 0 Then
   Begin
     ShowExtractedEntities;
-    
+
     { Generer la documentation HTML (TODO 12) }
     WriteLn('Generation de la documentation HTML...');
     WriteLn;
     GenerateHtmlDocumentation;
-    
+
     { Generer les diagrammes de classes si demande (TODO 19) }
     If (GetConfigValue('HAVE_DOT') = 'YES') Or
        (GetConfigValue('HAVE_DOT') = 'yes') Or
@@ -8855,15 +7865,15 @@ Begin
         ClassDiagFormat := 'vdx'
       Else
         ClassDiagFormat := 'png'; { Par defaut PNG }
-      
+
       WriteLn;
       WriteLn('Generation des diagrammes de classes...');
       GenerateClassDiagramDocumentation;
-      
+
       WriteLn;
       WriteLn('Generation des graphes d''appels...');
       GenerateCallGraphDocumentation;
-      
+
       WriteLn;
       WriteLn('Generation des graphes de dependances...');
       GenerateDepGraphDocumentation;
@@ -8915,17 +7925,17 @@ Begin
   If HtmlOutputDir[Length(HtmlOutputDir)] <> '/' Then
     HtmlOutputDir := HtmlOutputDir + '/';
   HtmlOutputDir := HtmlOutputDir + 'html/';
-  
+
   HtmlProjectName := GetConfigValue('PROJECT_NAME');
   If HtmlProjectName = '' Then
     HtmlProjectName := 'Documentation';
-  
+
   HtmlProjectBrief := GetConfigValue('PROJECT_BRIEF');
-  
+
   HtmlTimestamp := GetConfigValue('HTML_TIMESTAMP');
   If HtmlTimestamp = '' Then
     HtmlTimestamp := 'YES';
-  
+
   { CSS par defaut }
   HtmlStylesheet := 'body{font-family:Arial,sans-serif;margin:0;padding:0}';
   HtmlStylesheet := HtmlStylesheet + '.header{background:#3f51b5;color:white;padding:20px}';
@@ -8937,7 +7947,7 @@ Begin
   HtmlStylesheet := HtmlStylesheet + '.footer{background:#f5f5f5;padding:15px;text-align:center}';
   HtmlStylesheet := HtmlStylesheet + 'table{border-collapse:collapse;width:100%}';
   HtmlStylesheet := HtmlStylesheet + 'th,td{border:1px solid #ddd;padding:10px}';
-  
+
   { Header HTML par defaut }
   HtmlHeader := '<!DOCTYPE html><html><head>';
   HtmlHeader := HtmlHeader + '<meta charset="UTF-8">';
@@ -8952,12 +7962,12 @@ Begin
   HtmlHeader := HtmlHeader + '<a href="functions.html">Fonctions</a>';
   HtmlHeader := HtmlHeader + '<a href="files.html">Fichiers</a>';
   HtmlHeader := HtmlHeader + '</div><div class="content">';
-  
+
   { Footer HTML par defaut }
   HtmlFooter := '</div><div class="footer">';
   HtmlFooter := HtmlFooter + '<p>Documentation generee par DOXYGEN Clone</p>';
   HtmlFooter := HtmlFooter + '</div></body></html>';
-  
+
   HtmlInitialized := True;
   InfoMsg('Generateur HTML initialise');
   InfoMsg('Repertoire de sortie: ' + HtmlOutputDir);
@@ -9024,13 +8034,13 @@ Var
   IsStruct: Boolean;
 Begin
   WriteHtmlHeader(OutFile, Entity.Name);
-  
+
   WriteLn(OutFile, '<div class="entity">');
   WriteLn(OutFile, '<h2>', EscapeHtml(EntityKindToStr(Entity.Kind)), ': ',
     EscapeHtml(Entity.Name), '</h2>');
-  
+
   IsStruct := Entity.Kind In [ENT_STRUCT, ENT_CLASS, ENT_UNION];
-  
+
   { Signature ou Champs selon le type d'entite }
   If Entity.Signature <> '' Then
   Begin
@@ -9042,7 +8052,7 @@ Begin
     WriteLn(OutFile, '<pre><code>', EscapeHtml(Entity.Signature), '</code></pre>');
     WriteLn(OutFile, '</div>');
   End;
-  
+
   { Brief description }
   If Entity.BriefDesc <> '' Then
   Begin
@@ -9051,7 +8061,7 @@ Begin
     WriteLn(OutFile, '<p><strong>', EscapeHtml(Entity.BriefDesc), '</strong></p>');
     WriteLn(OutFile, '</div>');
   End;
-  
+
   { Detailed description }
   If Entity.DetailedDesc <> '' Then
   Begin
@@ -9060,7 +8070,7 @@ Begin
     WriteLn(OutFile, '<p>', EscapeHtml(Entity.DetailedDesc), '</p>');
     WriteLn(OutFile, '</div>');
   End;
-  
+
   { Parameters }
   If Entity.Parameters <> '' Then
   Begin
@@ -9069,7 +8079,7 @@ Begin
     WriteLn(OutFile, '<p><code>', EscapeHtml(Entity.Parameters), '</code></p>');
     WriteLn(OutFile, '</div>');
   End;
-  
+
   { Return type }
   If Entity.ReturnType <> '' Then
   Begin
@@ -9078,7 +8088,7 @@ Begin
     WriteLn(OutFile, '<p><code>', EscapeHtml(Entity.ReturnType), '</code></p>');
     WriteLn(OutFile, '</div>');
   End;
-  
+
   { File location }
   WriteLn(OutFile, '<div class="location">');
   WriteLn(OutFile, '<h3>Emplacement</h3>');
@@ -9087,9 +8097,9 @@ Begin
     Write(OutFile, ' a la ligne ', Entity.Line);
   WriteLn(OutFile, '</p>');
   WriteLn(OutFile, '</div>');
-  
+
   WriteLn(OutFile, '</div>');
-  
+
   WriteHtmlFooter(OutFile);
 End;
 
@@ -9099,12 +8109,12 @@ Var
   I, ClassCount, FuncCount, FileCount: Integer;
 Begin
   WriteHtmlHeader(OutFile, 'Index');
-  
+
   WriteLn(OutFile, '<h1>Documentation</h1>');
-  
+
   If HtmlProjectBrief <> '' Then
     WriteLn(OutFile, '<p>', EscapeHtml(HtmlProjectBrief), '</p>');
-  
+
   { Statistiques }
   ClassCount := 0;
   FuncCount := 0;
@@ -9117,17 +8127,17 @@ Begin
       ENT_FILE: Inc(FileCount);
     End;
   End;
-  
+
   WriteLn(OutFile, '<h2>Resume</h2>');
   WriteLn(OutFile, '<table>');
   WriteLn(OutFile, '<tr><th>Type</th><th>Nombre</th></tr>');
   WriteLn(OutFile, '<tr><td>Classes/Structures</td><td>', ClassCount, '</td></tr>');
   WriteLn(OutFile, '<tr><td>Fonctions</td><td>', FuncCount, '</td></tr>');
   WriteLn(OutFile, '<tr><td>Fichiers</td><td>', FileCount, '</td></tr>');
-  WriteLn(OutFile, '<tr><td><strong>Total</strong></td><td><strong>', 
+  WriteLn(OutFile, '<tr><td><strong>Total</strong></td><td><strong>',
     EntityCount, '</strong></td></tr>');
   WriteLn(OutFile, '</table>');
-  
+
   { Liens de navigation }
   WriteLn(OutFile, '<h2>Navigation</h2>');
   WriteLn(OutFile, '<ul>');
@@ -9137,7 +8147,7 @@ Begin
   WriteLn(OutFile, '<li><a href="namespaces.html">Liste des namespaces</a></li>');
   WriteLn(OutFile, '<li><a href="hierarchy.html">Hierarchie des classes</a></li>');
   WriteLn(OutFile, '</ul>');
-  
+
   WriteHtmlFooter(OutFile);
 End;
 
@@ -9148,9 +8158,9 @@ Var
   HasClasses: Boolean;
 Begin
   WriteHtmlHeader(OutFile, 'Classes');
-  
+
   WriteLn(OutFile, '<h1>Liste des classes</h1>');
-  
+
   HasClasses := False;
   For I := 1 To EntityCount Do
   Begin
@@ -9170,12 +8180,12 @@ Begin
       WriteLn(OutFile, '</li>');
     End;
   End;
-  
+
   If HasClasses Then
     WriteLn(OutFile, '</ul>')
   Else
     WriteLn(OutFile, '<p>Aucune classe documentee.</p>');
-  
+
   WriteHtmlFooter(OutFile);
 End;
 
@@ -9186,9 +8196,9 @@ Var
   HasFunctions: Boolean;
 Begin
   WriteHtmlHeader(OutFile, 'Fonctions');
-  
+
   WriteLn(OutFile, '<h1>Liste des fonctions</h1>');
-  
+
   HasFunctions := False;
   For I := 1 To EntityCount Do
   Begin
@@ -9208,12 +8218,12 @@ Begin
       WriteLn(OutFile, '</li>');
     End;
   End;
-  
+
   If HasFunctions Then
     WriteLn(OutFile, '</ul>')
   Else
     WriteLn(OutFile, '<p>Aucune fonction documentee.</p>');
-  
+
   WriteHtmlFooter(OutFile);
 End;
 
@@ -9224,9 +8234,9 @@ Var
   HasFiles: Boolean;
 Begin
   WriteHtmlHeader(OutFile, 'Fichiers');
-  
+
   WriteLn(OutFile, '<h1>Liste des fichiers</h1>');
-  
+
   HasFiles := False;
   For I := 1 To EntityCount Do
   Begin
@@ -9245,12 +8255,12 @@ Begin
       WriteLn(OutFile, '</li>');
     End;
   End;
-  
+
   If HasFiles Then
     WriteLn(OutFile, '</ul>')
   Else
     WriteLn(OutFile, '<p>Aucun fichier documente.</p>');
-  
+
   WriteHtmlFooter(OutFile);
 End;
 
@@ -9261,9 +8271,9 @@ Var
   HasNS: Boolean;
 Begin
   WriteHtmlHeader(OutFile, 'Namespaces');
-  
+
   WriteLn(OutFile, '<h1>Liste des namespaces</h1>');
-  
+
   HasNS := False;
   For I := 1 To EntityCount Do
   Begin
@@ -9283,12 +8293,12 @@ Begin
       WriteLn(OutFile, '</li>');
     End;
   End;
-  
+
   If HasNS Then
     WriteLn(OutFile, '</ul>')
   Else
     WriteLn(OutFile, '<p>Aucun namespace documente.</p>');
-  
+
   WriteHtmlFooter(OutFile);
 End;
 
@@ -9299,7 +8309,7 @@ Var
   HasChildren: Boolean;
 Begin
   If Depth > 20 Then Exit; { Protection contre recursion infinie }
-  
+
   HasChildren := False;
   For I := 1 To InheritanceCount Do
   Begin
@@ -9317,7 +8327,7 @@ Begin
       WriteLn(OutFile, '</li>');
     End;
   End;
-  
+
   If HasChildren Then
     WriteLn(OutFile, '</ul>');
 End;
@@ -9329,18 +8339,18 @@ Var
   IsRoot, HasRoots: Boolean;
 Begin
   WriteHtmlHeader(OutFile, 'Hierarchie');
-  
+
   WriteLn(OutFile, '<h1>Hierarchie des classes</h1>');
-  
+
   If InheritanceCount = 0 Then
   Begin
     WriteLn(OutFile, '<p>Aucune hierarchie de classes documentee.</p>');
     WriteHtmlFooter(OutFile);
     Exit;
   End;
-  
+
   WriteLn(OutFile, '<div class="hierarchy">');
-  
+
   { Trouver les classes racines (sans parent) }
   HasRoots := False;
   For I := 1 To EntityCount Do
@@ -9356,7 +8366,7 @@ Begin
           Break;
         End;
       End;
-      
+
       If IsRoot Then
       Begin
         If Not HasRoots Then
@@ -9372,12 +8382,12 @@ Begin
       End;
     End;
   End;
-  
+
   If HasRoots Then
     WriteLn(OutFile, '</ul>');
-  
+
   WriteLn(OutFile, '</div>');
-  
+
   WriteHtmlFooter(OutFile);
 End;
 
@@ -9396,10 +8406,10 @@ Begin
     WarnMsg('Impossible de creer le fichier de recherche');
     Exit;
   End;
-  
+
   WriteLn(F, '// Donnees de recherche generees par DOXYGEN Clone');
   WriteLn(F, 'var searchData = [');
-  
+
   For I := 1 To EntityCount Do
   Begin
     Write(F, '  { name: "', EscapeHtml(Entities[I].Name), '", ');
@@ -9408,9 +8418,9 @@ Begin
     If I < EntityCount Then WriteLn(F, ',')
     Else WriteLn(F);
   End;
-  
+
   WriteLn(F, '];');
-  
+
   Close(F);
   InfoMsg('Fichier de recherche genere: search.js');
 End;
@@ -9429,7 +8439,7 @@ Begin
     WarnMsg('Impossible de creer le fichier CSS');
     Exit;
   End;
-  
+
   WriteLn(F, '/* Feuille de style generee par DOXYGEN Clone */');
   WriteLn(F, 'body{font-family:Arial,sans-serif;margin:0;padding:0}');
   WriteLn(F, '.header{background:#3f51b5;color:white;padding:20px}');
@@ -9449,7 +8459,7 @@ Begin
   WriteLn(F, '.location{font-size:0.9em;color:#666}');
   WriteLn(F, 'ul{list-style-type:none;padding:0}');
   WriteLn(F, 'ul li{padding:5px 0}');
-  
+
   Close(F);
   InfoMsg('Fichier CSS genere: doxygen.css');
 End;
@@ -9494,13 +8504,13 @@ Var
   I: Integer;
 Begin
   InfoMsg('Debut de la generation HTML...');
-  
+
   If Not HtmlInitialized Then
     InitHtmlGenerator;
-  
+
   CreateHtmlDirectory;
   CopyHtmlResources;
-  
+
   { Generer la page d'index }
   Assign(F, HtmlOutputDir + 'index.html');
   {$I-}
@@ -9514,7 +8524,7 @@ Begin
   End
   Else
     WarnMsg('Impossible de creer index.html');
-  
+
   { Generer la page des classes }
   Assign(F, HtmlOutputDir + 'classes.html');
   {$I-}
@@ -9528,7 +8538,7 @@ Begin
   End
   Else
     WarnMsg('Impossible de creer classes.html');
-  
+
   { Generer la page des fonctions }
   Assign(F, HtmlOutputDir + 'functions.html');
   {$I-}
@@ -9542,7 +8552,7 @@ Begin
   End
   Else
     WarnMsg('Impossible de creer functions.html');
-  
+
   { Generer la page des fichiers }
   Assign(F, HtmlOutputDir + 'files.html');
   {$I-}
@@ -9556,7 +8566,7 @@ Begin
   End
   Else
     WarnMsg('Impossible de creer files.html');
-  
+
   { Generer la page des namespaces }
   Assign(F, HtmlOutputDir + 'namespaces.html');
   {$I-}
@@ -9570,7 +8580,7 @@ Begin
   End
   Else
     WarnMsg('Impossible de creer namespaces.html');
-  
+
   { Generer la page de hierarchie }
   Assign(F, HtmlOutputDir + 'hierarchy.html');
   {$I-}
@@ -9584,7 +8594,7 @@ Begin
   End
   Else
     WarnMsg('Impossible de creer hierarchy.html');
-  
+
   { Generer une page pour chaque entite }
   For I := 1 To EntityCount Do
   Begin
@@ -9598,9 +8608,9 @@ Begin
       Close(F);
     End;
   End;
-  
+
   GenerateHtmlSearch;
-  
+
   WriteLn;
   WriteLn('Generation HTML terminee.');
   WriteLn('  Repertoire: ', HtmlOutputDir);
@@ -9617,7 +8627,7 @@ End;
 Procedure SetHtmlOutputDir(Const Dir: String);
 Begin
   HtmlOutputDir := Dir;
-  If (Length(HtmlOutputDir) > 0) And 
+  If (Length(HtmlOutputDir) > 0) And
      (HtmlOutputDir[Length(HtmlOutputDir)] <> '/') Then
     HtmlOutputDir := HtmlOutputDir + '/';
 End;
@@ -9722,23 +8732,23 @@ Begin
   If LatexOutputDir[Length(LatexOutputDir)] <> '/' Then
     LatexOutputDir := LatexOutputDir + '/';
   LatexOutputDir := LatexOutputDir + 'latex/';
-  
+
   LatexProjectName := GetConfigValue('PROJECT_NAME');
   If LatexProjectName = '' Then
     LatexProjectName := 'Documentation';
-  
+
   LatexProjectBrief := GetConfigValue('PROJECT_BRIEF');
-  
+
   LatexCmdName := GetConfigValue('LATEX_CMD_NAME');
   If LatexCmdName = '' Then
     LatexCmdName := LATEX_DEFAULT_CMD;
-  
+
   LatexPaperType := GetConfigValue('PAPER_TYPE');
   If LatexPaperType = '' Then
     LatexPaperType := LATEX_DEFAULT_PAPER;
-  
+
   LatexCompactMode := (UpStr(GetConfigValue('COMPACT_LATEX')) = 'YES');
-  
+
   { Preambule LaTeX par defaut }
   LatexHeader := '\documentclass[' + LatexPaperType + 'paper]{article}' + Chr(10);
   LatexHeader := LatexHeader + '\usepackage[utf8]{inputenc}' + Chr(10);
@@ -9750,10 +8760,10 @@ Begin
   LatexHeader := LatexHeader + '\usepackage{fancyhdr}' + Chr(10);
   LatexHeader := LatexHeader + '\pagestyle{fancy}' + Chr(10);
   LatexHeader := LatexHeader + '\lstset{basicstyle=\ttfamily\small,breaklines=true}' + Chr(10);
-  
+
   { Fin du document }
   LatexFooter := '\end{document}' + Chr(10);
-  
+
   LatexInitialized := True;
   InfoMsg('Generateur LaTeX initialise');
 End;
@@ -9766,7 +8776,7 @@ Begin
   WriteLn(OutFile, '\section{', EscapeLatex(Entity.Name), '}');
   WriteLn(OutFile, '\label{', Entity.Name, '}');
   WriteLn(OutFile);
-  
+
   { Informations sur l entite }
   WriteLn(OutFile, '\subsection{Description}');
   If Entity.BriefDesc <> '' Then
@@ -9774,7 +8784,7 @@ Begin
   Else
     WriteLn(OutFile, 'Aucune description.');
   WriteLn(OutFile);
-  
+
   { Type d entite }
   WriteLn(OutFile, '\begin{itemize}');
   WriteLn(OutFile, '\item \textbf{Type:} ', EntityKindToStr(Entity.Kind));
@@ -9784,7 +8794,7 @@ Begin
     WriteLn(OutFile, '\item \textbf{Ligne:} ', Entity.Line);
   WriteLn(OutFile, '\end{itemize}');
   WriteLn(OutFile);
-  
+
   { Description detaillee }
   If Entity.DetailedDesc <> '' Then
   Begin
@@ -9792,7 +8802,7 @@ Begin
     WriteLn(OutFile, EscapeLatex(Entity.DetailedDesc));
     WriteLn(OutFile);
   End;
-  
+
   { Signature si disponible }
   If Entity.Signature <> '' Then
   Begin
@@ -9802,7 +8812,7 @@ Begin
     WriteLn(OutFile, '\end{lstlisting}');
     WriteLn(OutFile);
   End;
-  
+
   { Parametres }
   If Entity.Parameters <> '' Then
   Begin
@@ -9810,7 +8820,7 @@ Begin
     WriteLn(OutFile, EscapeLatex(Entity.Parameters));
     WriteLn(OutFile);
   End;
-  
+
   { Type de retour }
   If Entity.ReturnType <> '' Then
   Begin
@@ -9827,7 +8837,7 @@ Var
 Begin
   { Header LaTeX }
   Write(OutFile, LatexHeader);
-  
+
   { Page de titre }
   WriteLn(OutFile);
   WriteLn(OutFile, '\title{', EscapeLatex(LatexProjectName), '}');
@@ -9843,22 +8853,22 @@ Begin
   WriteLn(OutFile, '\tableofcontents');
   WriteLn(OutFile, '\newpage');
   WriteLn(OutFile);
-  
+
   { Introduction }
   WriteLn(OutFile, '\chapter{Introduction}');
   WriteLn(OutFile, 'Cette documentation a ete generee automatiquement a partir');
   WriteLn(OutFile, 'des sources du projet ', EscapeLatex(LatexProjectName), '.');
   WriteLn(OutFile);
-  
+
   { Inclure les fichiers generes }
   WriteLn(OutFile, '\input{', LATEX_CLASSES_FILE, '}');
   WriteLn(OutFile, '\input{', LATEX_FILES_FILE, '}');
   WriteLn(OutFile);
-  
+
   { Index }
   WriteLn(OutFile, '\printindex');
   WriteLn(OutFile);
-  
+
   { Footer }
   Write(OutFile, LatexFooter);
 End;
@@ -9871,7 +8881,7 @@ Var
 Begin
   WriteLn(OutFile, '\chapter{Classes et structures}');
   WriteLn(OutFile);
-  
+
   Count := 0;
   For I := 1 To EntityCount Do
   Begin
@@ -9881,7 +8891,7 @@ Begin
       Inc(Count);
     End;
   End;
-  
+
   If Count = 0 Then
     WriteLn(OutFile, 'Aucune classe ou structure documentee.');
   WriteLn(OutFile);
@@ -9895,7 +8905,7 @@ Var
 Begin
   WriteLn(OutFile, '\chapter{Fichiers}');
   WriteLn(OutFile);
-  
+
   Count := 0;
   For I := 1 To EntityCount Do
   Begin
@@ -9905,15 +8915,15 @@ Begin
       Inc(Count);
     End;
   End;
-  
+
   If Count = 0 Then
     WriteLn(OutFile, 'Aucun fichier documente.');
   WriteLn(OutFile);
-  
+
   { Ajouter les fonctions }
   WriteLn(OutFile, '\chapter{Fonctions}');
   WriteLn(OutFile);
-  
+
   Count := 0;
   For I := 1 To EntityCount Do
   Begin
@@ -9923,7 +8933,7 @@ Begin
       Inc(Count);
     End;
   End;
-  
+
   If Count = 0 Then
     WriteLn(OutFile, 'Aucune fonction documentee.');
   WriteLn(OutFile);
@@ -9943,7 +8953,7 @@ Begin
     WarnMsg('Impossible de creer le Makefile LaTeX');
     Exit;
   End;
-  
+
   WriteLn(F, '# Makefile genere par DOXYGEN');
   WriteLn(F, '# Compilation de la documentation LaTeX');
   WriteLn(F);
@@ -9965,7 +8975,7 @@ Begin
   WriteLn(F, #9, 'rm -f *.pdf *.dvi');
   WriteLn(F);
   WriteLn(F, '.PHONY: all pdf clean distclean');
-  
+
   Close(F);
   InfoMsg('Makefile LaTeX genere');
 End;
@@ -9978,13 +8988,13 @@ Begin
   WriteLn;
   WriteLn('Generation de la documentation LaTeX...');
   WriteLn;
-  
+
   If Not LatexInitialized Then
     InitLatexGenerator;
-  
+
   { Creer le repertoire de sortie (simule avec mkdir) }
   InfoMsg('Repertoire de sortie: ' + LatexOutputDir);
-  
+
   { Generer le fichier principal }
   Assign(F, LatexOutputDir + LATEX_MAIN_FILE);
   {$I-}
@@ -9998,7 +9008,7 @@ Begin
   End
   Else
     WarnMsg('Impossible de creer ' + LATEX_MAIN_FILE);
-  
+
   { Generer le chapitre des classes }
   Assign(F, LatexOutputDir + LATEX_CLASSES_FILE);
   {$I-}
@@ -10012,7 +9022,7 @@ Begin
   End
   Else
     WarnMsg('Impossible de creer ' + LATEX_CLASSES_FILE);
-  
+
   { Generer le chapitre des fichiers }
   Assign(F, LatexOutputDir + LATEX_FILES_FILE);
   {$I-}
@@ -10026,10 +9036,10 @@ Begin
   End
   Else
     WarnMsg('Impossible de creer ' + LATEX_FILES_FILE);
-  
+
   { Generer le Makefile }
   GenerateLatexMakefile;
-  
+
   WriteLn;
   WriteLn('Generation LaTeX terminee.');
   WriteLn('  Repertoire: ', LatexOutputDir);
@@ -10046,7 +9056,7 @@ End;
 Procedure SetLatexOutputDir(Const Dir: String);
 Begin
   LatexOutputDir := Dir;
-  If (Length(LatexOutputDir) > 0) And 
+  If (Length(LatexOutputDir) > 0) And
      (LatexOutputDir[Length(LatexOutputDir)] <> '/') Then
     LatexOutputDir := LatexOutputDir + '/';
 End;
@@ -10153,20 +9163,20 @@ Begin
     RtfOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + GetConfigValue('RTF_OUTPUT') + '/'
   Else
     RtfOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + 'rtf/';
-  
+
   RtfStylesheet := GetConfigValue('RTF_STYLESHEET_FILE');
   RtfExtensions := GetConfigValue('RTF_EXTENSIONS');
   RtfProjectName := GetConfigValue('PROJECT_NAME');
   If RtfProjectName = '' Then
     RtfProjectName := 'Documentation';
   RtfProjectBrief := GetConfigValue('PROJECT_BRIEF');
-  
+
   { Creer le repertoire de sortie }
   {$I-}
   MkDir(RtfOutputDir);
   {$I+}
   If IOResult <> 0 Then; { Ignorer si existe deja }
-  
+
   RtfInitialized := True;
 End;
 
@@ -10238,10 +9248,10 @@ Procedure GenerateRtfEntity(Const Entity: TEntity; Var OutFile: Text);
 { Genere le contenu RTF pour une entite }
 Begin
   { Titre de l entite }
-  WriteLn(OutFile, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b ', 
+  WriteLn(OutFile, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b ',
           EscapeRtf(Entity.Name), '\b0\par');
   WriteLn(OutFile);
-  
+
   { Description breve }
   If Entity.BriefDesc <> '' Then
   Begin
@@ -10249,7 +9259,7 @@ Begin
     WriteLn(OutFile, EscapeRtf(Entity.BriefDesc));
     WriteLn(OutFile, '\par\par');
   End;
-  
+
   { Type d entite }
   WriteLn(OutFile, '\pard\fs', RTF_DEFAULT_FONTSIZE);
   WriteLn(OutFile, '\b Type:\b0  ', EntityKindToStr(Entity.Kind), '\par');
@@ -10258,7 +9268,7 @@ Begin
   If Entity.Line > 0 Then
     WriteLn(OutFile, '\b Ligne:\b0  ', Entity.Line, '\par');
   WriteLn(OutFile, '\par');
-  
+
   { Description detaillee }
   If Entity.DetailedDesc <> '' Then
   Begin
@@ -10267,7 +9277,7 @@ Begin
     WriteLn(OutFile, EscapeRtf(Entity.DetailedDesc));
     WriteLn(OutFile, '\par\par');
   End;
-  
+
   { Signature }
   If Entity.Signature <> '' Then
   Begin
@@ -10276,7 +9286,7 @@ Begin
     WriteLn(OutFile, EscapeRtf(Entity.Signature));
     WriteLn(OutFile, '\f0\par\par');
   End;
-  
+
   { Parametres }
   If Entity.Parameters <> '' Then
   Begin
@@ -10285,7 +9295,7 @@ Begin
     WriteLn(OutFile, EscapeRtf(Entity.Parameters));
     WriteLn(OutFile, '\par\par');
   End;
-  
+
   { Type de retour }
   If Entity.ReturnType <> '' Then
   Begin
@@ -10293,7 +9303,7 @@ Begin
     WriteLn(OutFile, '\pard\fs', RTF_DEFAULT_FONTSIZE);
     WriteLn(OutFile, '{\f1 ', EscapeRtf(Entity.ReturnType), '}\par\par');
   End;
-  
+
   { Separateur }
   WriteLn(OutFile, '\pard\brdrb\brdrs\brdrw10\brsp20\par');
   WriteLn(OutFile);
@@ -10308,14 +9318,14 @@ Var
 Begin
   If Not RtfInitialized Then
     InitRtfGenerator;
-  
+
   { Ouvrir le fichier principal }
   Assign(F, RtfOutputDir + RTF_MAIN_FILE);
   Rewrite(F);
-  
+
   { Entete }
   WriteRtfHeader(F);
-  
+
   { Page de titre }
   WriteLn(F, '\pard\qc\s1\fs', RTF_TITLE_FONTSIZE, '\b');
   WriteLn(F, EscapeRtf(RtfProjectName));
@@ -10328,7 +9338,7 @@ Begin
   End;
   WriteLn(F, '\pard\ql\par');
   WriteLn(F, '\page');
-  
+
   { Table des matieres }
   WriteLn(F, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b Table des matieres\b0\par\par');
   WriteLn(F, '\pard\fs', RTF_DEFAULT_FONTSIZE);
@@ -10336,7 +9346,7 @@ Begin
   WriteLn(F, '2. Fichiers\par');
   WriteLn(F, '3. Fonctions\par');
   WriteLn(F, '\page');
-  
+
   { Section Classes et structures }
   WriteLn(F, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b 1. Classes et structures\b0\par\par');
   ClassCount := 0;
@@ -10354,7 +9364,7 @@ Begin
     WriteLn(F, 'Aucune classe ou structure documentee.\par');
   End;
   WriteLn(F, '\page');
-  
+
   { Section Fichiers }
   WriteLn(F, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b 2. Fichiers\b0\par\par');
   FileCount := 0;
@@ -10372,7 +9382,7 @@ Begin
     WriteLn(F, 'Aucun fichier documente.\par');
   End;
   WriteLn(F, '\page');
-  
+
   { Section Fonctions }
   WriteLn(F, '\pard\s2\fs', RTF_HEADING_FONTSIZE, '\b 3. Fonctions\b0\par\par');
   FuncCount := 0;
@@ -10389,12 +9399,12 @@ Begin
     WriteLn(F, '\pard\fs', RTF_DEFAULT_FONTSIZE);
     WriteLn(F, 'Aucune fonction documentee.\par');
   End;
-  
+
   { Pied de page }
   WriteRtfFooter(F);
-  
+
   Close(F);
-  
+
   WriteLn('Documentation RTF generee dans: ', RtfOutputDir + RTF_MAIN_FILE);
 End;
 
@@ -10478,19 +9488,19 @@ Begin
     XmlOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + GetConfigValue('XML_OUTPUT') + '/'
   Else
     XmlOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + 'xml/';
-  
+
   XmlSchemaLoc := XML_SCHEMA_LOC;
   XmlProjectName := GetConfigValue('PROJECT_NAME');
   If XmlProjectName = '' Then
     XmlProjectName := 'Documentation';
   XmlProjectBrief := GetConfigValue('PROJECT_BRIEF');
-  
+
   { Creer le repertoire de sortie }
   {$I-}
   MkDir(XmlOutputDir);
   {$I+}
   If IOResult <> 0 Then; { Ignorer si existe deja }
-  
+
   XmlInitialized := True;
 End;
 
@@ -10527,10 +9537,10 @@ End;
 Procedure GenerateXmlMember(Const Entity: TEntity; EntityIdx: Integer; Var OutFile: Text);
 { Genere la section XML pour un membre }
 Begin
-  WriteLn(OutFile, '      <memberdef kind="', EntityKindToStr(Entity.Kind), 
+  WriteLn(OutFile, '      <memberdef kind="', EntityKindToStr(Entity.Kind),
           '" id="member_', EntityIdx, '">');
   WriteLn(OutFile, '        <name>', EscapeXml(Entity.Name), '</name>');
-  
+
   If Entity.BriefDesc <> '' Then
   Begin
     WriteLn(OutFile, '        <briefdescription>');
@@ -10539,7 +9549,7 @@ Begin
   End
   Else
     WriteLn(OutFile, '        <briefdescription/>');
-  
+
   If Entity.DetailedDesc <> '' Then
   Begin
     WriteLn(OutFile, '        <detaileddescription>');
@@ -10548,17 +9558,17 @@ Begin
   End
   Else
     WriteLn(OutFile, '        <detaileddescription/>');
-  
+
   If Entity.Signature <> '' Then
     WriteLn(OutFile, '        <definition>', EscapeXml(Entity.Signature), '</definition>');
-  
+
   If Entity.ReturnType <> '' Then
     WriteLn(OutFile, '        <type>', EscapeXml(Entity.ReturnType), '</type>');
-  
+
   If Entity.Parameters <> '' Then
     WriteLn(OutFile, '        <argsstring>', EscapeXml(Entity.Parameters), '</argsstring>');
-  
-  WriteLn(OutFile, '        <location file="', EscapeXml(Entity.FileName), 
+
+  WriteLn(OutFile, '        <location file="', EscapeXml(Entity.FileName),
           '" line="', Entity.Line, '"/>');
   WriteLn(OutFile, '      </memberdef>');
 End;
@@ -10579,14 +9589,14 @@ Begin
   Else
     CompoundKind := 'unknown';
   End;
-  
+
   WriteXmlHeader(OutFile);
   WriteLn(OutFile, '<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"');
   WriteLn(OutFile, '         xsi:noNamespaceSchemaLocation="', XmlSchemaLoc, '"');
   WriteLn(OutFile, '         version="', XML_DOXYFILE_VERSION, '">');
   WriteLn(OutFile, '  <compounddef id="compound_', EntityIdx, '" kind="', CompoundKind, '">');
   WriteLn(OutFile, '    <compoundname>', EscapeXml(Entity.Name), '</compoundname>');
-  
+
   If Entity.BriefDesc <> '' Then
   Begin
     WriteLn(OutFile, '    <briefdescription>');
@@ -10595,7 +9605,7 @@ Begin
   End
   Else
     WriteLn(OutFile, '    <briefdescription/>');
-  
+
   If Entity.DetailedDesc <> '' Then
   Begin
     WriteLn(OutFile, '    <detaileddescription>');
@@ -10604,8 +9614,8 @@ Begin
   End
   Else
     WriteLn(OutFile, '    <detaileddescription/>');
-  
-  WriteLn(OutFile, '    <location file="', EscapeXml(Entity.FileName), 
+
+  WriteLn(OutFile, '    <location file="', EscapeXml(Entity.FileName),
           '" line="', Entity.Line, '"/>');
   WriteLn(OutFile, '  </compounddef>');
   WriteLn(OutFile, '</doxygen>');
@@ -10621,7 +9631,7 @@ Begin
   WriteLn(OutFile, '<doxygenindex xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"');
   WriteLn(OutFile, '              xsi:noNamespaceSchemaLocation="index.xsd"');
   WriteLn(OutFile, '              version="', XML_DOXYFILE_VERSION, '">');
-  
+
   For I := 1 To EntityCount Do
   Begin
     Case Entities[I].Kind Of
@@ -10639,12 +9649,12 @@ Begin
     Else
       RefKind := 'unknown';
     End;
-    
+
     WriteLn(OutFile, '  <compound refid="compound_', I, '" kind="', RefKind, '">');
     WriteLn(OutFile, '    <name>', EscapeXml(Entities[I].Name), '</name>');
     WriteLn(OutFile, '  </compound>');
   End;
-  
+
   WriteLn(OutFile, '</doxygenindex>');
 End;
 
@@ -10657,11 +9667,11 @@ Var
 Begin
   If Not XmlInitialized Then
     InitXmlGenerator;
-  
+
   { Generer les fichiers compound pour chaque entite majeure }
   For I := 1 To EntityCount Do
   Begin
-    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_UNION, ENT_FILE, 
+    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_UNION, ENT_FILE,
                             ENT_NAMESPACE, ENT_INTERFACE, ENT_ENUM] Then
     Begin
       FileName := XmlOutputDir + XML_COMPOUND_PREFIX + IntToStr(I) + '.xml';
@@ -10671,13 +9681,13 @@ Begin
       Close(F);
     End;
   End;
-  
+
   { Generer le fichier index.xml }
   Assign(F, XmlOutputDir + XML_INDEX_FILE);
   Rewrite(F);
   GenerateXmlIndex(F);
   Close(F);
-  
+
   WriteLn('Documentation XML generee dans: ', XmlOutputDir);
 End;
 
@@ -10736,7 +9746,7 @@ Begin
   Count := 1; { Pour index.xml }
   For I := 1 To EntityCount Do
   Begin
-    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_UNION, ENT_FILE, 
+    If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_UNION, ENT_FILE,
                             ENT_NAMESPACE, ENT_INTERFACE, ENT_ENUM] Then
       Inc(Count);
   End;
@@ -10760,34 +9770,34 @@ Begin
     ManOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + GetConfigValue('MAN_OUTPUT') + '/'
   Else
     ManOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + MAN_OUTPUT_DIR + '/';
-  
+
   If GetConfigValue('MAN_EXTENSION') <> '' Then
     ManExtension := GetConfigValue('MAN_EXTENSION')
   Else
     ManExtension := MAN_DEFAULT_EXTENSION;
-  
+
   If GetConfigValue('MAN_SUBDIR') <> '' Then
     ManSubdir := GetConfigValue('MAN_SUBDIR')
   Else
     ManSubdir := MAN_DEFAULT_SUBDIR;
-  
+
   ManProjectName := GetConfigValue('PROJECT_NAME');
   If ManProjectName = '' Then
     ManProjectName := MAN_SOURCE_DEFAULT;
   ManProjectBrief := GetConfigValue('PROJECT_BRIEF');
-  
+
   { Creer le repertoire de sortie }
   {$I-}
   MkDir(ManOutputDir);
   {$I+}
   If IOResult <> 0 Then; { Ignorer si existe deja }
-  
+
   { Creer le sous-repertoire man3 ou autre }
   {$I-}
   MkDir(ManOutputDir + ManSubdir);
   {$I+}
   If IOResult <> 0 Then; { Ignorer si existe deja }
-  
+
   ManInitialized := True;
 End;
 
@@ -10805,7 +9815,7 @@ Begin
     Case C Of
       '-': R := R + '\-';
       '\': R := R + '\\';
-      '.': 
+      '.':
         Begin
           { Echapper le point seulement en debut de ligne }
           If (I = 1) Or (S[I-1] = #10) Then
@@ -10825,7 +9835,7 @@ Procedure GenerateManHeader(Var OutFile: Text;
   Const Name, Section, TheDate, Source, Manual: String);
 { Ecrit l entete .TH de la page MAN }
 Begin
-  WriteLn(OutFile, '.TH "', EscapeMan(Name), '" ', Section, ' "', 
+  WriteLn(OutFile, '.TH "', EscapeMan(Name), '" ', Section, ' "',
           TheDate, '" "', EscapeMan(Source), '" "', EscapeMan(Manual), '"');
 End;
 
@@ -10865,11 +9875,11 @@ Begin
   EntityId := EntityIdx;
   { Date courante }
   CurrentDate := 'April 2026';
-  
+
   { Entete de la page MAN }
-  GenerateManHeader(OutFile, Entity.Name, '3', CurrentDate, 
+  GenerateManHeader(OutFile, Entity.Name, '3', CurrentDate,
                     ManProjectName, MAN_MANUAL_DEFAULT);
-  
+
   { Section NAME }
   GenerateManSection(OutFile, 'NAME');
   Write(OutFile, Entity.Name);
@@ -10877,7 +9887,7 @@ Begin
     WriteLn(OutFile, ' \- ', EscapeMan(Entity.BriefDesc))
   Else
     WriteLn(OutFile, ' \- ', EscapeMan(EntityKindToStr(Entity.Kind)));
-  
+
   { Section SYNOPSIS }
   GenerateManSection(OutFile, 'SYNOPSIS');
   GenerateManParagraph(OutFile);
@@ -10926,7 +9936,7 @@ Begin
       WriteLn(OutFile);
     End;
   End;
-  
+
   { Section DESCRIPTION }
   GenerateManSection(OutFile, 'DESCRIPTION');
   GenerateManParagraph(OutFile);
@@ -10936,7 +9946,7 @@ Begin
     WriteLn(OutFile, EscapeMan(Entity.BriefDesc))
   Else
     WriteLn(OutFile, 'No description available.');
-  
+
   { Section MEMBERS pour les classes/structures }
   { Note: Les membres sont lies via ParentId, parcourir les entites }
   If Entity.Kind In [ENT_CLASS, ENT_STRUCT, ENT_UNION, ENT_ENUM] Then
@@ -10960,7 +9970,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Section RETURN VALUE pour les fonctions }
   If Entity.Kind In [ENT_FUNCTION, ENT_METHOD] Then
   Begin
@@ -10968,11 +9978,11 @@ Begin
     Begin
       GenerateManSection(OutFile, 'RETURN VALUE');
       GenerateManParagraph(OutFile);
-      WriteLn(OutFile, 'Returns a value of type ', 
+      WriteLn(OutFile, 'Returns a value of type ',
               EscapeMan(Entity.ReturnType), '.');
     End;
   End;
-  
+
   { Section SEE ALSO }
   GenerateManSection(OutFile, 'SEE ALSO');
   GenerateManParagraph(OutFile);
@@ -10988,17 +9998,17 @@ Var
 Begin
   If Not ManInitialized Then
     InitManGenerator;
-  
+
   WriteLn('Generation des pages MAN...');
-  
+
   { Generer une page pour chaque entite documentable }
   For I := 1 To EntityCount Do
   Begin
-    If Entities[I].Kind In [ENT_FUNCTION, ENT_CLASS, ENT_STRUCT, 
+    If Entities[I].Kind In [ENT_FUNCTION, ENT_CLASS, ENT_STRUCT,
                             ENT_UNION, ENT_TYPEDEF, ENT_ENUM,
                             ENT_METHOD, ENT_INTERFACE] Then
     Begin
-      FileName := ManOutputDir + ManSubdir + '/' + 
+      FileName := ManOutputDir + ManSubdir + '/' +
                   Entities[I].Name + ManExtension;
       Assign(F, FileName);
       {$I-}
@@ -11013,7 +10023,7 @@ Begin
         WarnMsg('Impossible de creer: ' + FileName);
     End;
   End;
-  
+
   WriteLn('Documentation MAN generee dans: ', ManOutputDir + ManSubdir);
 End;
 
@@ -11082,7 +10092,7 @@ Begin
   Count := 0;
   For I := 1 To EntityCount Do
   Begin
-    If Entities[I].Kind In [ENT_FUNCTION, ENT_CLASS, ENT_STRUCT, 
+    If Entities[I].Kind In [ENT_FUNCTION, ENT_CLASS, ENT_STRUCT,
                             ENT_UNION, ENT_TYPEDEF, ENT_ENUM,
                             ENT_METHOD, ENT_INTERFACE] Then
       Inc(Count);
@@ -11105,18 +10115,18 @@ Procedure InitCallGraph;
 Begin
   CallNodeCount := 0;
   CallEdgeCount := 0;
-  
+
   If GetConfigValue('CALL_GRAPH_OUTPUT') <> '' Then
     CallGraphOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + GetConfigValue('CALL_GRAPH_OUTPUT') + '/'
   Else
     CallGraphOutputDir := GetConfigValue('OUTPUT_DIRECTORY') + CALLGRAPH_OUTPUT_DIR + '/';
-  
+
   { Creer le repertoire de sortie }
   {$I-}
   MkDir(CallGraphOutputDir);
   {$I+}
   If IOResult <> 0 Then; { Ignorer si existe deja }
-  
+
   CallGraphInitialized := True;
 End;
 
@@ -11165,7 +10175,7 @@ Begin
     AddCallGraphNode := Idx;
     Exit;
   End;
-  
+
   { Verifier la capacite }
   If CallNodeCount >= MAX_CALL_NODES Then
   Begin
@@ -11173,7 +10183,7 @@ Begin
     AddCallGraphNode := 0;
     Exit;
   End;
-  
+
   Inc(CallNodeCount);
   With CallGraphNodes[CallNodeCount] Do
   Begin
@@ -11183,7 +10193,7 @@ Begin
     Line := Line;
     NodeId := CallNodeCount;
   End;
-  
+
   AddCallGraphNode := CallNodeCount;
 End;
 
@@ -11203,7 +10213,7 @@ Begin
       Exit;
     End;
   End;
-  
+
   { Verifier la capacite }
   If CallEdgeCount >= MAX_CALL_EDGES Then
   Begin
@@ -11211,7 +10221,7 @@ Begin
     AddCallGraphEdge := 0;
     Exit;
   End;
-  
+
   Inc(CallEdgeCount);
   With CallGraphEdges[CallEdgeCount] Do
   Begin
@@ -11221,7 +10231,7 @@ Begin
     IsDirect := IsDirect;
     EdgeId := CallEdgeCount;
   End;
-  
+
   AddCallGraphEdge := CallEdgeCount;
 End;
 
@@ -11234,7 +10244,7 @@ Var
 Begin
   Result := '';
   NodeIdx := FindCallNode(EntityId);
-  
+
   If NodeIdx > 0 Then
   Begin
     For I := 1 To CallEdgeCount Do
@@ -11243,13 +10253,13 @@ Begin
       Begin
         If Result <> '' Then
           Result := Result + ', ';
-        If (CallGraphEdges[I].CalleeId >= 1) And 
+        If (CallGraphEdges[I].CalleeId >= 1) And
            (CallGraphEdges[I].CalleeId <= CallNodeCount) Then
           Result := Result + CallGraphNodes[CallGraphEdges[I].CalleeId].Name;
       End;
     End;
   End;
-  
+
   GetCallees := Result;
 End;
 
@@ -11262,7 +10272,7 @@ Var
 Begin
   Result := '';
   NodeIdx := FindCallNode(EntityId);
-  
+
   If NodeIdx > 0 Then
   Begin
     For I := 1 To CallEdgeCount Do
@@ -11271,13 +10281,13 @@ Begin
       Begin
         If Result <> '' Then
           Result := Result + ', ';
-        If (CallGraphEdges[I].CallerId >= 1) And 
+        If (CallGraphEdges[I].CallerId >= 1) And
            (CallGraphEdges[I].CallerId <= CallNodeCount) Then
           Result := Result + CallGraphNodes[CallGraphEdges[I].CallerId].Name;
       End;
     End;
   End;
-  
+
   GetCallers := Result;
 End;
 
@@ -11290,7 +10300,7 @@ Var
 Begin
   Count := 0;
   NodeIdx := FindCallNode(EntityId);
-  
+
   If NodeIdx > 0 Then
   Begin
     For I := 1 To CallEdgeCount Do
@@ -11299,7 +10309,7 @@ Begin
         Inc(Count);
     End;
   End;
-  
+
   CountCallees := Count;
 End;
 
@@ -11312,7 +10322,7 @@ Var
 Begin
   Count := 0;
   NodeIdx := FindCallNode(EntityId);
-  
+
   If NodeIdx > 0 Then
   Begin
     For I := 1 To CallEdgeCount Do
@@ -11321,7 +10331,7 @@ Begin
         Inc(Count);
     End;
   End;
-  
+
   CountCallers := Count;
 End;
 
@@ -11342,11 +10352,11 @@ Begin
   ParenDepth := 0;
   FuncName := '';
   I := 1;
-  
+
   While I <= Length(Code) Do
   Begin
     C := Code[I];
-    
+
     { Gestion des chaines de caracteres }
     If (C = '"') And Not InComment Then
     Begin
@@ -11354,7 +10364,7 @@ Begin
       Inc(I);
       Continue;
     End;
-    
+
     { Gestion des commentaires }
     If (C = '/') And (I < Length(Code)) And Not InString Then
     Begin
@@ -11370,26 +10380,26 @@ Begin
         Continue;
       End;
     End;
-    
+
     If InComment And (C = '*') And (I < Length(Code)) And (Code[I+1] = '/') Then
     Begin
       InComment := False;
       Inc(I, 2);
       Continue;
     End;
-    
+
     If InString Or InComment Then
     Begin
       Inc(I);
       Continue;
     End;
-    
+
     { Detection des identificateurs }
-    If (C >= 'A') And (C <= 'Z') Or 
+    If (C >= 'A') And (C <= 'Z') Or
        (C >= 'a') And (C <= 'z') Or (C = '_') Then
     Begin
       FuncName := '';
-      While (I <= Length(Code)) And 
+      While (I <= Length(Code)) And
             ((Code[I] >= 'A') And (Code[I] <= 'Z') Or
              (Code[I] >= 'a') And (Code[I] <= 'z') Or
              (Code[I] >= '0') And (Code[I] <= '9') Or
@@ -11398,11 +10408,11 @@ Begin
         FuncName := FuncName + Code[I];
         Inc(I);
       End;
-      
+
       { Sauter les espaces }
       While (I <= Length(Code)) And (Code[I] = ' ') Do
         Inc(I);
-      
+
       { Verifier si c'est un appel de fonction }
       If (I <= Length(Code)) And (Code[I] = '(') Then
       Begin
@@ -11417,13 +10427,13 @@ Begin
           Result := Result + FuncName;
         End;
       End;
-      
+
       Continue;
     End;
-    
+
     Inc(I);
   End;
-  
+
   ExtractFunctionCalls := Result;
 End;
 
@@ -11438,24 +10448,24 @@ Var
 Begin
   If Not CallGraphInitialized Then
     InitCallGraph;
-  
+
   WriteLn('Construction du graphe d''appels...');
-  
+
   { Ajouter toutes les fonctions comme noeuds }
   For I := 1 To EntityCount Do
   Begin
     If Entities[I].Kind In [ENT_FUNCTION, ENT_METHOD, ENT_PROCEDURE] Then
     Begin
-      AddCallGraphNode(I, Entities[I].Name, Entities[I].FileName, 
+      AddCallGraphNode(I, Entities[I].Name, Entities[I].FileName,
                        Entities[I].Line);
     End;
   End;
-  
+
   { Note: L'analyse complete des appels necessite le parsing du corps
     des fonctions, ce qui n'est pas implemente dans cette version
     simplifiee. Les aretes peuvent etre ajoutees manuellement ou
     lors d'une analyse plus approfondie du code source. }
-  
+
   WriteLn('Graphe d''appels construit: ', CallNodeCount, ' noeuds, ',
           CallEdgeCount, ' aretes');
 End;
@@ -11469,11 +10479,11 @@ Begin
   WriteLn(OutFile, 'digraph "', Entity.Name, '" {');
   WriteLn(OutFile, '  // Configuration du graphe');
   WriteLn(OutFile, '  rankdir=LR;');
-  WriteLn(OutFile, '  node [shape=', CALLGRAPH_NODE_SHAPE, ', fontname="', 
+  WriteLn(OutFile, '  node [shape=', CALLGRAPH_NODE_SHAPE, ', fontname="',
           CALLGRAPH_FONT_NAME, '", fontsize=', CALLGRAPH_FONT_SIZE, '];');
   WriteLn(OutFile, '  edge [style=', CALLGRAPH_EDGE_STYLE, '];');
   WriteLn(OutFile);
-  
+
   { Trouver le noeud de l'entite }
   NodeIdx := 0;
   For I := 1 To CallNodeCount Do
@@ -11484,20 +10494,20 @@ Begin
       Break;
     End;
   End;
-  
+
   If NodeIdx > 0 Then
   Begin
     WriteLn(OutFile, '  // Noeud central');
     WriteLn(OutFile, '  "', Entity.Name, '" [style=filled, fillcolor=lightblue];');
     WriteLn(OutFile);
-    
+
     { Generer les aretes sortantes (fonctions appelees) }
     WriteLn(OutFile, '  // Fonctions appelees');
     For I := 1 To CallEdgeCount Do
     Begin
       If CallGraphEdges[I].CallerId = NodeIdx Then
       Begin
-        If (CallGraphEdges[I].CalleeId >= 1) And 
+        If (CallGraphEdges[I].CalleeId >= 1) And
            (CallGraphEdges[I].CalleeId <= CallNodeCount) Then
         Begin
           WriteLn(OutFile, '  "', CallGraphNodes[CallGraphEdges[I].CallerId].Name,
@@ -11505,7 +10515,7 @@ Begin
         End;
       End;
     End;
-    
+
     { Generer les aretes entrantes (fonctions appelantes) }
     WriteLn(OutFile);
     WriteLn(OutFile, '  // Fonctions appelantes');
@@ -11513,7 +10523,7 @@ Begin
     Begin
       If CallGraphEdges[I].CalleeId = NodeIdx Then
       Begin
-        If (CallGraphEdges[I].CallerId >= 1) And 
+        If (CallGraphEdges[I].CallerId >= 1) And
            (CallGraphEdges[I].CallerId <= CallNodeCount) Then
         Begin
           WriteLn(OutFile, '  "', CallGraphNodes[CallGraphEdges[I].CallerId].Name,
@@ -11527,7 +10537,7 @@ Begin
     { Noeud non trouve, generer un noeud isole }
     WriteLn(OutFile, '  "', Entity.Name, '" [style=filled, fillcolor=lightblue];');
   End;
-  
+
   WriteLn(OutFile, '}');
 End;
 
@@ -11539,27 +10549,27 @@ Begin
   WriteLn(OutFile, 'digraph "CallGraph" {');
   WriteLn(OutFile, '  // Configuration du graphe');
   WriteLn(OutFile, '  rankdir=TB;');
-  WriteLn(OutFile, '  node [shape=', CALLGRAPH_NODE_SHAPE, ', fontname="', 
+  WriteLn(OutFile, '  node [shape=', CALLGRAPH_NODE_SHAPE, ', fontname="',
           CALLGRAPH_FONT_NAME, '", fontsize=', CALLGRAPH_FONT_SIZE, '];');
   WriteLn(OutFile, '  edge [style=', CALLGRAPH_EDGE_STYLE, '];');
   WriteLn(OutFile);
-  
+
   { Generer tous les noeuds }
   WriteLn(OutFile, '  // Noeuds');
   For I := 1 To CallNodeCount Do
   Begin
     WriteLn(OutFile, '  "', CallGraphNodes[I].Name, '";');
   End;
-  
+
   WriteLn(OutFile);
-  
+
   { Generer toutes les aretes }
   WriteLn(OutFile, '  // Aretes');
   For I := 1 To CallEdgeCount Do
   Begin
-    If (CallGraphEdges[I].CallerId >= 1) And 
+    If (CallGraphEdges[I].CallerId >= 1) And
        (CallGraphEdges[I].CallerId <= CallNodeCount) And
-       (CallGraphEdges[I].CalleeId >= 1) And 
+       (CallGraphEdges[I].CalleeId >= 1) And
        (CallGraphEdges[I].CalleeId <= CallNodeCount) Then
     Begin
       Write(OutFile, '  "', CallGraphNodes[CallGraphEdges[I].CallerId].Name,
@@ -11569,13 +10579,13 @@ Begin
       WriteLn(OutFile, ';');
     End;
   End;
-  
+
   WriteLn(OutFile, '}');
 End;
 
 { ============================================================
   GENERATEUR PNG INTEGRE (SANS OUTIL EXTERNE)
-  
+
   Ce module permet de generer des fichiers PNG directement
   sans avoir besoin de Graphviz ou d'autres outils externes.
   Il inclut:
@@ -11593,7 +10603,7 @@ Var
   C: LongInt;
 Begin
   If PngCrcTableBuilt Then Exit;
-  
+
   For I := 0 To 255 Do
   Begin
     C := I;
@@ -11606,7 +10616,7 @@ Begin
     End;
     PngCrcTable[I] := C;
   End;
-  
+
   PngCrcTableBuilt := True;
 End;
 
@@ -11616,10 +10626,10 @@ Var
   I: Integer;
 Begin
   If Not PngCrcTableBuilt Then BuildCrcTable;
-  
+
   For I := 0 To Len - 1 Do
     Crc := PngCrcTable[(Crc Xor Data[I]) And $FF] Xor (Crc Shr 8);
-  
+
   UpdateCrc := Crc;
 End;
 
@@ -11638,7 +10648,7 @@ Begin
   { Sauvegarder les compteurs avant reset }
   OldNodeCount := PngGraph.NodeCount;
   OldEdgeCount := PngGraph.EdgeCount;
-  
+
   { Liberer les strings seulement pour les noeuds/aretes utilises }
   { Cela evite de parcourir tous les MAX_PNG_NODES/EDGES inutilement }
   For I := 1 To OldNodeCount Do
@@ -11647,7 +10657,7 @@ Begin
     PngGraph.Nodes[I].Name := '';
     PngGraph.Nodes[I].Shape := '';
   End;
-  
+
   For I := 1 To OldEdgeCount Do
   Begin
     PngGraph.Edges[I].FromId := '';
@@ -11655,10 +10665,10 @@ Begin
     PngGraph.Edges[I].Style := '';
     PngGraph.Edges[I].LabelText := '';
   End;
-  
+
   { Liberer le titre }
   PngGraph.Title := '';
-  
+
   { Reset des compteurs }
   PngGraph.NodeCount := 0;
   PngGraph.EdgeCount := 0;
@@ -11673,7 +10683,7 @@ Begin
   { Si deja initialise, d'abord liberer l'ancien contenu }
   If PngInitialized Then
     FreePngGraph;
-  
+
   PngGraph.Title := '';
   PngGraph.Width := PNG_DEFAULT_WIDTH;
   PngGraph.Height := PNG_DEFAULT_HEIGHT;
@@ -11682,7 +10692,7 @@ Begin
   PngGraph.BgColor.B := 255;
   PngGraph.NodeCount := 0;
   PngGraph.EdgeCount := 0;
-  
+
   { Initialiser seulement les premiers noeuds/aretes necessaires }
   { Les autres seront initialises a la demande dans AddPngNode/AddPngEdge }
   For I := 1 To MAX_PNG_NODES Do
@@ -11698,7 +10708,7 @@ Begin
     PngGraph.Nodes[I].Color.B := 255;
     PngGraph.Nodes[I].Shape := 'box';
   End;
-  
+
   For I := 1 To MAX_PNG_EDGES Do
   Begin
     PngGraph.Edges[I].FromId := '';
@@ -11713,7 +10723,7 @@ Begin
     PngGraph.Edges[I].Style := 'solid';
     PngGraph.Edges[I].LabelText := '';
   End;
-  
+
   PngInitialized := True;
 End;
 
@@ -11723,23 +10733,23 @@ Var
   Idx: Integer;
 Begin
   If Not PngInitialized Then InitPngGraph;
-  
+
   If PngGraph.NodeCount >= MAX_PNG_NODES Then
   Begin
     AddPngNode := 0;
     Exit;
   End;
-  
+
   Inc(PngGraph.NodeCount);
   Idx := PngGraph.NodeCount;
-  
+
   PngGraph.Nodes[Idx].Id := Id;
   PngGraph.Nodes[Idx].Name := Name;
   PngGraph.Nodes[Idx].W := Length(Name) * PNG_FONT_WIDTH + 20;
   If PngGraph.Nodes[Idx].W < PNG_NODE_WIDTH Then
     PngGraph.Nodes[Idx].W := PNG_NODE_WIDTH;
   PngGraph.Nodes[Idx].H := PNG_NODE_HEIGHT;
-  
+
   AddPngNode := Idx;
 End;
 
@@ -11765,19 +10775,19 @@ Var
   Idx: Integer;
 Begin
   If Not PngInitialized Then InitPngGraph;
-  
+
   If PngGraph.EdgeCount >= MAX_PNG_EDGES Then
   Begin
     AddPngEdge := 0;
     Exit;
   End;
-  
+
   Inc(PngGraph.EdgeCount);
   Idx := PngGraph.EdgeCount;
-  
+
   PngGraph.Edges[Idx].FromId := FromId;
   PngGraph.Edges[Idx].ToId := ToId;
-  
+
   AddPngEdge := Idx;
 End;
 
@@ -11789,49 +10799,49 @@ Var
   StartX, StartY: Integer;
 Begin
   If PngGraph.NodeCount = 0 Then Exit;
-  
+
   { Disposition simple en grille }
   MaxCols := 4;
   If PngGraph.NodeCount <= 4 Then MaxCols := PngGraph.NodeCount;
   MaxRows := (PngGraph.NodeCount + MaxCols - 1) Div MaxCols;
-  
+
   { Calculer la taille de l'image }
   PngGraph.Width := MaxCols * (PNG_NODE_WIDTH + PNG_NODE_MARGIN * 2) + PNG_NODE_MARGIN * 2;
   PngGraph.Height := MaxRows * (PNG_NODE_HEIGHT + PNG_NODE_MARGIN * 2) + PNG_NODE_MARGIN * 2;
-  
+
   If PngGraph.Width < PNG_DEFAULT_WIDTH Then PngGraph.Width := PNG_DEFAULT_WIDTH;
   If PngGraph.Height < 200 Then PngGraph.Height := 200;
-  
+
   { Limiter la taille }
   If PngGraph.Width > PNG_MAX_WIDTH Then PngGraph.Width := PNG_MAX_WIDTH;
   If PngGraph.Height > PNG_MAX_HEIGHT Then PngGraph.Height := PNG_MAX_HEIGHT;
-  
+
   { Positionner les noeuds }
   StartX := PNG_NODE_MARGIN * 2;
   StartY := PNG_NODE_MARGIN * 2;
-  
+
   For I := 1 To PngGraph.NodeCount Do
   Begin
     Row := (I - 1) Div MaxCols;
     Col := (I - 1) Mod MaxCols;
-    
+
     PngGraph.Nodes[I].X := StartX + Col * (PNG_NODE_WIDTH + PNG_NODE_MARGIN * 2);
     PngGraph.Nodes[I].Y := StartY + Row * (PNG_NODE_HEIGHT + PNG_NODE_MARGIN * 2);
   End;
-  
+
   { Calculer les positions des aretes }
   For I := 1 To PngGraph.EdgeCount Do
   Begin
     { Trouver les noeuds source et destination }
     Row := FindPngNode(PngGraph.Edges[I].FromId);
     Col := FindPngNode(PngGraph.Edges[I].ToId);
-    
+
     If (Row > 0) And (Col > 0) Then
     Begin
       { Position de depart: bas du noeud source }
       PngGraph.Edges[I].FromX := PngGraph.Nodes[Row].X + PngGraph.Nodes[Row].W Div 2;
       PngGraph.Edges[I].FromY := PngGraph.Nodes[Row].Y + PngGraph.Nodes[Row].H;
-      
+
       { Position d'arrivee: haut du noeud destination }
       PngGraph.Edges[I].ToX := PngGraph.Nodes[Col].X + PngGraph.Nodes[Col].W Div 2;
       PngGraph.Edges[I].ToY := PngGraph.Nodes[Col].Y;
@@ -11883,30 +10893,30 @@ Var
 Begin
   { Longueur des donnees }
   WritePngDWord(F, DataLen);
-  
+
   { Allouer le buffer pour type + donnees }
   SetLength(TypeAndData, DataLen + 4);
-  
+
   { Type du chunk (4 caracteres) }
   For I := 1 To 4 Do
     TypeAndData[I - 1] := Ord(ChunkType[I]);
-  
+
   { Copier les donnees }
   For I := 0 To DataLen - 1 Do
     TypeAndData[I + 4] := Data[I];
-  
+
   { Ecrire le type }
   For I := 0 To 3 Do
     WritePngByte(F, TypeAndData[I]);
-  
+
   { Ecrire les donnees }
   For I := 0 To DataLen - 1 Do
     WritePngByte(F, Data[I]);
-  
+
   { Calculer et ecrire le CRC }
   Crc := CalcCrc(TypeAndData, DataLen + 4);
   WritePngDWord(F, Crc);
-  
+
   { Liberer la memoire }
   SetLength(TypeAndData, 0);
 End;
@@ -11921,28 +10931,28 @@ Begin
   Data[1] := (Width Shr 16) And $FF;
   Data[2] := (Width Shr 8) And $FF;
   Data[3] := Width And $FF;
-  
+
   { Hauteur (4 bytes big-endian) }
   Data[4] := (Height Shr 24) And $FF;
   Data[5] := (Height Shr 16) And $FF;
   Data[6] := (Height Shr 8) And $FF;
   Data[7] := Height And $FF;
-  
+
   { Bit depth: 8 bits par canal }
   Data[8] := 8;
-  
+
   { Color type: RGB (2) }
   Data[9] := PNG_COLOR_RGB;
-  
+
   { Compression method: 0 (deflate) }
   Data[10] := PNG_COMPRESSION;
-  
+
   { Filter method: 0 }
   Data[11] := 0;
-  
+
   { Interlace method: 0 (pas d'entrelacement) }
   Data[12] := PNG_INTERLACE_NONE;
-  
+
   WritePngChunk(F, 'IHDR', Data, 13);
 End;
 
@@ -11962,7 +10972,7 @@ Begin
   { Taille des donnees brutes: (1 + Width * 3) * Height }
   RawLen := (1 + Width * 3) * Height;
   SetLength(RawData, RawLen);
-  
+
   { Construire les donnees brutes (filtre 0 = aucun pour chaque ligne) }
   Idx := 0;
   For Y := 0 To Height - 1 Do
@@ -11970,7 +10980,7 @@ Begin
     { Octet de filtre (0 = aucun) }
     RawData[Idx] := PNG_FILTER_NONE;
     Inc(Idx);
-    
+
     { Pixels RGB }
     For X := 0 To Width - 1 Do
     Begin
@@ -11982,7 +10992,7 @@ Begin
       Inc(Idx);
     End;
   End;
-  
+
   { Calculer Adler-32 des donnees brutes }
   S1 := 1;
   S2 := 0;
@@ -11992,26 +11002,26 @@ Begin
     S2 := (S2 + S1) Mod 65521;
   End;
   Adler32 := (S2 Shl 16) Or S1;
-  
+
   { Creer le flux zlib non-compresse (stored blocks) }
   { Les donnees sont divisees en blocs de 65535 bytes max }
   { Format: zlib header (2 bytes) + stored blocks + Adler-32 (4 bytes) }
-  
+
   { Calculer le nombre de blocs necessaires }
   NumBlocks := (RawLen + 65534) Div 65535;
   If NumBlocks < 1 Then NumBlocks := 1;
-  
+
   { Calculer la taille totale: header + (5 bytes header * nb blocs) + data + adler }
   CompLen := 2 + (5 * NumBlocks) + RawLen + 4;
   SetLength(CompData, CompLen);
-  
+
   { En-tete zlib }
   CompData[0] := $78; { CMF: deflate, 32K window }
   CompData[1] := $01; { FLG: no dict, check bits }
-  
+
   CompIdx := 2;
   SrcIdx := 0;
-  
+
   { Ecrire les blocs stored }
   For BlockNum := 1 To NumBlocks Do
   Begin
@@ -12021,26 +11031,26 @@ Begin
       ActualBlockLen := 65535
     Else
       ActualBlockLen := Remaining;
-    
+
     { BFINAL=1 si dernier bloc, BTYPE=00 (stored) }
     If BlockNum = NumBlocks Then
       CompData[CompIdx] := $01  { BFINAL=1 }
     Else
       CompData[CompIdx] := $00; { BFINAL=0 }
     Inc(CompIdx);
-    
+
     { Longueur du bloc (little-endian) }
     CompData[CompIdx] := ActualBlockLen And $FF;
     Inc(CompIdx);
     CompData[CompIdx] := (ActualBlockLen Shr 8) And $FF;
     Inc(CompIdx);
-    
+
     { Complement de la longueur }
     CompData[CompIdx] := (Not ActualBlockLen) And $FF;
     Inc(CompIdx);
     CompData[CompIdx] := ((Not ActualBlockLen) Shr 8) And $FF;
     Inc(CompIdx);
-    
+
     { Copier les donnees de ce bloc }
     For Idx := 0 To ActualBlockLen - 1 Do
     Begin
@@ -12049,15 +11059,15 @@ Begin
       Inc(SrcIdx);
     End;
   End;
-  
+
   { Adler-32 (big-endian) }
   CompData[CompIdx] := (Adler32 Shr 24) And $FF;
   CompData[CompIdx + 1] := (Adler32 Shr 16) And $FF;
   CompData[CompIdx + 2] := (Adler32 Shr 8) And $FF;
   CompData[CompIdx + 3] := Adler32 And $FF;
-  
+
   WritePngChunk(F, 'IDAT', CompData, CompLen);
-  
+
   SetLength(RawData, 0);
   SetLength(CompData, 0);
 End;
@@ -12070,7 +11080,7 @@ Begin
   WritePngChunk(F, 'IEND', EmptyData, 0);
 End;
 
-Procedure DrawPngLine(Var Pixels: Array Of TPngPixelRow; X1, Y1, X2, Y2: Integer; 
+Procedure DrawPngLine(Var Pixels: Array Of TPngPixelRow; X1, Y1, X2, Y2: Integer;
                        Width, Height: Integer; Color: TPngColor);
 { Dessine une ligne dans le buffer de pixels (algorithme de Bresenham) }
 Var
@@ -12081,14 +11091,14 @@ Begin
   DY := -Abs(Y2 - Y1);
   If Y1 < Y2 Then SY := 1 Else SY := -1;
   Err := DX + DY;
-  
+
   While True Do
   Begin
     If (X1 >= 0) And (X1 < Width) And (Y1 >= 0) And (Y1 < Height) Then
       Pixels[Y1][X1] := Color;
-    
+
     If (X1 = X2) And (Y1 = Y2) Then Break;
-    
+
     E2 := 2 * Err;
     If E2 >= DY Then
     Begin
@@ -12127,7 +11137,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Bordure }
   DrawPngLine(Pixels, X, Y, X + W - 1, Y, Width, Height, BorderColor);
   DrawPngLine(Pixels, X + W - 1, Y, X + W - 1, Y + H - 1, Width, Height, BorderColor);
@@ -12147,23 +11157,23 @@ Var
 Begin
   { Dessiner la ligne principale }
   DrawPngLine(Pixels, X1, Y1, X2, Y2, Width, Height, Color);
-  
+
   { Dessiner la pointe de fleche }
   ArrowLen := 8;
   DX := X2 - X1;
   DY := Y2 - Y1;
   Len := Sqrt(DX * DX + DY * DY);
-  
+
   If Len > 0 Then
   Begin
     UX := DX / Len;
     UY := DY / Len;
-    
+
     { Points de la pointe }
     AX := X2 - Round(ArrowLen * UX + ArrowLen * 0.5 * UY);
     AY := Y2 - Round(ArrowLen * UY - ArrowLen * 0.5 * UX);
     DrawPngLine(Pixels, X2, Y2, AX, AY, Width, Height, Color);
-    
+
     AX := X2 - Round(ArrowLen * UX - ArrowLen * 0.5 * UY);
     AY := Y2 - Round(ArrowLen * UY + ArrowLen * 0.5 * UX);
     DrawPngLine(Pixels, X2, Y2, AX, AY, Width, Height, Color);
@@ -12270,7 +11280,7 @@ Begin
         Begin
           If (Bits And (1 Shl K)) <> 0 Then
           Begin
-            If (CharX + K >= 0) And (CharX + K < Width) And 
+            If (CharX + K >= 0) And (CharX + K < Width) And
                (Y + J >= 0) And (Y + J < Height) Then
               Pixels[Y + J][CharX + K] := Color;
           End;
@@ -12291,19 +11301,19 @@ Var
   InGraph: Boolean;
 Begin
   If Not PngInitialized Then InitPngGraph;
-  
+
   Assign(F, DotFileName);
   {$I-}
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   InGraph := False;
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
-    
+
     { Supprimer les espaces en debut et fin }
     TrimmedLine := '';
     For I := 1 To Length(Line) Do
@@ -12312,16 +11322,16 @@ Begin
         TrimmedLine := Copy(Line, I, Length(Line));
         Break;
       End;
-    
+
     For I := Length(TrimmedLine) DownTo 1 Do
       If TrimmedLine[I] > ' ' Then
       Begin
         TrimmedLine := Copy(TrimmedLine, 1, I);
         Break;
       End;
-    
+
     If TrimmedLine = '' Then Continue;
-    
+
     { Detecter le debut du graphe }
     If (Pos('digraph', TrimmedLine) = 1) Or (Pos('graph', TrimmedLine) = 1) Then
     Begin
@@ -12336,15 +11346,15 @@ Begin
       End;
       Continue;
     End;
-    
+
     If Not InGraph Then Continue;
     If TrimmedLine = '}' Then Break;
-    
+
     { Ignorer les commentaires et directives }
     If (TrimmedLine[1] = '/') Or (Pos('rankdir', TrimmedLine) = 1) Or
        (Pos('node', TrimmedLine) = 1) Or (Pos('edge', TrimmedLine) = 1) Then
       Continue;
-    
+
     { Detecter une arete: "A" -> "B" }
     P1 := Pos('->', TrimmedLine);
     If P1 > 0 Then
@@ -12352,7 +11362,7 @@ Begin
       { Extraire les noeuds source et destination }
       FromNode := Copy(TrimmedLine, 1, P1 - 1);
       ToNode := Copy(TrimmedLine, P1 + 2, Length(TrimmedLine));
-      
+
       { Nettoyer les guillemets et espaces }
       While (Length(FromNode) > 0) And (FromNode[Length(FromNode)] <= ' ') Do
         FromNode := Copy(FromNode, 1, Length(FromNode) - 1);
@@ -12362,14 +11372,14 @@ Begin
         FromNode := Copy(FromNode, 2, Length(FromNode));
       While (Length(FromNode) > 0) And (FromNode[Length(FromNode)] = '"') Do
         FromNode := Copy(FromNode, 1, Length(FromNode) - 1);
-      
+
       While (Length(ToNode) > 0) And (ToNode[Length(ToNode)] <= ' ') Do
         ToNode := Copy(ToNode, 1, Length(ToNode) - 1);
       While (Length(ToNode) > 0) And (ToNode[1] <= ' ') Do
         ToNode := Copy(ToNode, 2, Length(ToNode));
       While (Length(ToNode) > 0) And (ToNode[1] = '"') Do
         ToNode := Copy(ToNode, 2, Length(ToNode));
-      
+
       { Enlever le point-virgule et les attributs }
       P2 := Pos(';', ToNode);
       If P2 > 0 Then ToNode := Copy(ToNode, 1, P2 - 1);
@@ -12377,18 +11387,18 @@ Begin
       If P2 > 0 Then ToNode := Copy(ToNode, 1, P2 - 1);
       P2 := Pos('"', ToNode);
       If P2 > 0 Then ToNode := Copy(ToNode, 1, P2 - 1);
-      
+
       { Ajouter les noeuds s'ils n'existent pas }
       If FindPngNode(FromNode) = 0 Then
         AddPngNode(FromNode, FromNode);
       If FindPngNode(ToNode) = 0 Then
         AddPngNode(ToNode, ToNode);
-      
+
       { Ajouter l'arete }
       AddPngEdge(FromNode, ToNode);
       Continue;
     End;
-    
+
     { Detecter une definition de noeud: "NodeName" [...] }
     P1 := Pos('"', TrimmedLine);
     If P1 > 0 Then
@@ -12398,7 +11408,7 @@ Begin
       Begin
         NodeId := Copy(TrimmedLine, P1 + 1, P2 - 1);
         NodeName := NodeId;
-        
+
         { Verifier si ce n'est pas une arete }
         If Pos('->', TrimmedLine) = 0 Then
         Begin
@@ -12413,7 +11423,7 @@ Begin
               { Le label serait ici, mais pour simplifier on garde l'ID }
             End;
           End;
-          
+
           { Ajouter le noeud s'il n'existe pas }
           If FindPngNode(NodeId) = 0 Then
             AddPngNode(NodeId, NodeName);
@@ -12421,7 +11431,7 @@ Begin
       End;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -12435,56 +11445,56 @@ Var
 Begin
   If Not PngInitialized Then Exit;
   If PngGraph.NodeCount = 0 Then Exit;
-  
+
   { Calculer la disposition }
   LayoutPngGraph;
-  
+
   { Allouer le buffer de pixels }
   SetLength(Pixels, PngGraph.Height);
-  
+
   { Initialiser avec la couleur de fond }
   For Y := 0 To PngGraph.Height - 1 Do
   Begin
     For X := 0 To PngGraph.Width - 1 Do
       Pixels[Y][X] := PngGraph.BgColor;
   End;
-  
+
   { Dessiner les aretes }
   ArrowColor.R := 64;
   ArrowColor.G := 64;
   ArrowColor.B := 64;
-  
+
   For I := 1 To PngGraph.EdgeCount Do
   Begin
     If (PngGraph.Edges[I].FromX > 0) Or (PngGraph.Edges[I].ToX > 0) Then
     Begin
-      DrawPngArrow(Pixels, 
+      DrawPngArrow(Pixels,
                    PngGraph.Edges[I].FromX, PngGraph.Edges[I].FromY,
                    PngGraph.Edges[I].ToX, PngGraph.Edges[I].ToY,
                    PngGraph.Width, PngGraph.Height, ArrowColor);
     End;
   End;
-  
+
   { Dessiner les noeuds }
   BorderColor.R := 0;
   BorderColor.G := 0;
   BorderColor.B := 128;
-  
+
   TextColor.R := 0;
   TextColor.G := 0;
   TextColor.B := 0;
-  
+
   For I := 1 To PngGraph.NodeCount Do
   Begin
     FillColor := PngGraph.Nodes[I].Color;
-    
+
     { Dessiner le rectangle du noeud }
-    DrawPngRect(Pixels, 
+    DrawPngRect(Pixels,
                 PngGraph.Nodes[I].X, PngGraph.Nodes[I].Y,
                 PngGraph.Nodes[I].W, PngGraph.Nodes[I].H,
                 PngGraph.Width, PngGraph.Height,
                 FillColor, BorderColor, True);
-    
+
     { Dessiner le texte du noeud }
     DrawPngText(Pixels,
                 PngGraph.Nodes[I].X + 5,
@@ -12492,7 +11502,7 @@ Begin
                 PngGraph.Nodes[I].Name,
                 PngGraph.Width, PngGraph.Height, TextColor);
   End;
-  
+
   { Dessiner le titre si present }
   If PngGraph.Title <> '' Then
   Begin
@@ -12501,7 +11511,7 @@ Begin
     TextColor.B := 0;
     DrawPngText(Pixels, 10, 10, PngGraph.Title, PngGraph.Width, PngGraph.Height, TextColor);
   End;
-  
+
   { Ecrire le fichier PNG }
   Assign(F, OutputFileName);
   {$I-}
@@ -12512,21 +11522,21 @@ Begin
     SetLength(Pixels, 0);
     Exit;
   End;
-  
+
   { Signature PNG }
   WritePngSignature(F);
-  
+
   { Chunk IHDR }
   WritePngIHDR(F, PngGraph.Width, PngGraph.Height);
-  
+
   { Chunk IDAT }
   WritePngIDAT(F, Pixels, PngGraph.Width, PngGraph.Height);
-  
+
   { Chunk IEND }
   WritePngIEND(F);
-  
+
   Close(F);
-  
+
   SetLength(Pixels, 0);
 End;
 
@@ -12536,19 +11546,19 @@ Begin
   { Liberer l'ancien graphe s'il existe }
   If PngInitialized Then
     FreePngGraph;
-  
+
   { Reinitialiser le graphe }
   InitPngGraph;
-  
+
   { Parser le fichier DOT }
   ParseDotFile(DotFile);
-  
+
   { Generer le PNG }
   RenderPngGraph(PngFile);
-  
+
   { Liberer la memoire apres generation }
   FreePngGraph;
-  
+
   If Not Opts.Quiet Then
     WriteLn('PNG genere (built-in): ', PngFile);
 End;
@@ -12559,7 +11569,7 @@ End;
 
 { ============================================================
   GENERATEUR SVG INTEGRE (SANS OUTIL EXTERNE)
-  
+
   Ce module permet de generer des fichiers SVG directement
   sans avoir besoin de Graphviz ou d'autres outils externes.
   Il inclut:
@@ -12577,7 +11587,7 @@ Var
 Begin
   OldNodeCount := SvgGraph.NodeCount;
   OldEdgeCount := SvgGraph.EdgeCount;
-  
+
   For I := 1 To OldNodeCount Do
   Begin
     SvgGraph.Nodes[I].Id := '';
@@ -12586,7 +11596,7 @@ Begin
     SvgGraph.Nodes[I].StrokeColor := '';
     SvgGraph.Nodes[I].Shape := '';
   End;
-  
+
   For I := 1 To OldEdgeCount Do
   Begin
     SvgGraph.Edges[I].FromId := '';
@@ -12595,7 +11605,7 @@ Begin
     SvgGraph.Edges[I].Style := '';
     SvgGraph.Edges[I].LabelText := '';
   End;
-  
+
   SvgGraph.Title := '';
   SvgGraph.BgColor := '';
   SvgGraph.NodeCount := 0;
@@ -12610,14 +11620,14 @@ Var
 Begin
   If SvgInitialized Then
     FreeSvgGraph;
-  
+
   SvgGraph.Title := '';
   SvgGraph.Width := SVG_DEFAULT_WIDTH;
   SvgGraph.Height := SVG_DEFAULT_HEIGHT;
   SvgGraph.BgColor := '#FFFFFF';
   SvgGraph.NodeCount := 0;
   SvgGraph.EdgeCount := 0;
-  
+
   For I := 1 To MAX_SVG_NODES Do
   Begin
     SvgGraph.Nodes[I].Id := '';
@@ -12630,7 +11640,7 @@ Begin
     SvgGraph.Nodes[I].StrokeColor := '#000080';
     SvgGraph.Nodes[I].Shape := 'rect';
   End;
-  
+
   For I := 1 To MAX_SVG_EDGES Do
   Begin
     SvgGraph.Edges[I].FromId := '';
@@ -12643,7 +11653,7 @@ Begin
     SvgGraph.Edges[I].Style := 'solid';
     SvgGraph.Edges[I].LabelText := '';
   End;
-  
+
   SvgInitialized := True;
 End;
 
@@ -12653,16 +11663,16 @@ Var
   Idx: Integer;
 Begin
   If Not SvgInitialized Then InitSvgGraph;
-  
+
   If SvgGraph.NodeCount >= MAX_SVG_NODES Then
   Begin
     AddSvgNode := 0;
     Exit;
   End;
-  
+
   Inc(SvgGraph.NodeCount);
   Idx := SvgGraph.NodeCount;
-  
+
   SvgGraph.Nodes[Idx].Id := Id;
   SvgGraph.Nodes[Idx].Name := Name;
   { Calculer la largeur en fonction du texte }
@@ -12670,7 +11680,7 @@ Begin
   If SvgGraph.Nodes[Idx].W < SVG_NODE_WIDTH Then
     SvgGraph.Nodes[Idx].W := SVG_NODE_WIDTH;
   SvgGraph.Nodes[Idx].H := SVG_NODE_HEIGHT;
-  
+
   AddSvgNode := Idx;
 End;
 
@@ -12680,21 +11690,21 @@ Var
   Idx: Integer;
 Begin
   If Not SvgInitialized Then InitSvgGraph;
-  
+
   If SvgGraph.EdgeCount >= MAX_SVG_EDGES Then
   Begin
     AddSvgEdge := 0;
     Exit;
   End;
-  
+
   Inc(SvgGraph.EdgeCount);
   Idx := SvgGraph.EdgeCount;
-  
+
   SvgGraph.Edges[Idx].FromId := FromId;
   SvgGraph.Edges[Idx].ToId := ToId;
   SvgGraph.Edges[Idx].StrokeColor := '#404040';
   SvgGraph.Edges[Idx].Style := 'solid';
-  
+
   AddSvgEdge := Idx;
 End;
 
@@ -12721,43 +11731,43 @@ Var
   StartX, StartY: Integer;
 Begin
   If SvgGraph.NodeCount = 0 Then Exit;
-  
+
   { Calculer le nombre de colonnes }
   MaxCols := 3;
   If SvgGraph.NodeCount < 3 Then MaxCols := SvgGraph.NodeCount;
-  
+
   { Calculer les dimensions de l'image }
   SvgGraph.Width := MaxCols * (SVG_NODE_WIDTH + SVG_NODE_MARGIN * 2) + SVG_NODE_MARGIN * 2;
   SvgGraph.Height := ((SvgGraph.NodeCount + MaxCols - 1) Div MaxCols) * (SVG_NODE_HEIGHT + SVG_NODE_MARGIN * 2) + SVG_NODE_MARGIN * 4;
-  
+
   If SvgGraph.Width < SVG_DEFAULT_WIDTH Then SvgGraph.Width := SVG_DEFAULT_WIDTH;
   If SvgGraph.Height < SVG_DEFAULT_HEIGHT Then SvgGraph.Height := SVG_DEFAULT_HEIGHT;
-  
+
   { Positionner les noeuds }
   StartX := SVG_NODE_MARGIN;
   StartY := SVG_NODE_MARGIN + 30; { Espace pour le titre }
-  
+
   For I := 1 To SvgGraph.NodeCount Do
   Begin
     Row := (I - 1) Div MaxCols;
     Col := (I - 1) Mod MaxCols;
-    
+
     SvgGraph.Nodes[I].X := StartX + Col * (SVG_NODE_WIDTH + SVG_NODE_MARGIN * 2);
     SvgGraph.Nodes[I].Y := StartY + Row * (SVG_NODE_HEIGHT + SVG_NODE_MARGIN * 2);
   End;
-  
+
   { Calculer les positions des aretes }
   For I := 1 To SvgGraph.EdgeCount Do
   Begin
     Row := FindSvgNode(SvgGraph.Edges[I].FromId);
     Col := FindSvgNode(SvgGraph.Edges[I].ToId);
-    
+
     If (Row > 0) And (Col > 0) Then
     Begin
       { Point de depart: centre bas du noeud source }
       SvgGraph.Edges[I].FromX := SvgGraph.Nodes[Row].X + SvgGraph.Nodes[Row].W Div 2;
       SvgGraph.Edges[I].FromY := SvgGraph.Nodes[Row].Y + SvgGraph.Nodes[Row].H;
-      
+
       { Point d'arrivee: centre haut du noeud destination }
       SvgGraph.Edges[I].ToX := SvgGraph.Nodes[Col].X + SvgGraph.Nodes[Col].W Div 2;
       SvgGraph.Edges[I].ToY := SvgGraph.Nodes[Col].Y;
@@ -12819,7 +11829,7 @@ Begin
   WriteLn(F, '</svg>');
 End;
 
-Procedure WriteSvgRect(Var F: Text; X, Y, W, H: Integer; 
+Procedure WriteSvgRect(Var F: Text; X, Y, W, H: Integer;
                        Const FillColor, StrokeColor: String;
                        RoundedCorners: Boolean);
 { Dessine un rectangle }
@@ -12827,7 +11837,7 @@ Var
   Rx: Integer;
 Begin
   If RoundedCorners Then Rx := 5 Else Rx := 0;
-  
+
   Write(F, '  <rect x="', X, '" y="', Y, '"');
   Write(F, ' width="', W, '" height="', H, '"');
   If RoundedCorners Then
@@ -12848,7 +11858,7 @@ Begin
     DashArray := ' stroke-dasharray="5,5"'
   Else
     DashArray := '';
-  
+
   Write(F, '  <line x1="', X1, '" y1="', Y1, '"');
   Write(F, ' x2="', X2, '" y2="', Y2, '"');
   Write(F, ' stroke="', StrokeColor, '"');
@@ -12869,7 +11879,7 @@ Begin
     Anchor := 'middle'
   Else
     Anchor := 'start';
-  
+
   Write(F, '  <text x="', X, '" y="', Y, '"');
   Write(F, ' font-family="', SVG_FONT_FAMILY, '"');
   Write(F, ' font-size="', FontSize, '"');
@@ -12887,20 +11897,20 @@ Var
 Begin
   If Not SvgInitialized Then Exit;
   If SvgGraph.NodeCount = 0 Then Exit;
-  
+
   { Calculer la disposition }
   LayoutSvgGraph;
-  
+
   { Ouvrir le fichier SVG }
   Assign(F, OutputFileName);
   {$I-}
   Rewrite(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   { Ecrire l'en-tete SVG }
   WriteSvgHeader(F, SvgGraph.Width, SvgGraph.Height, SvgGraph.BgColor);
-  
+
   { Ecrire le titre si present }
   If SvgGraph.Title <> '' Then
   Begin
@@ -12908,7 +11918,7 @@ Begin
     WriteSvgText(F, SvgGraph.Width Div 2, 20, SvgGraph.Title, 16, '#000000', True);
     WriteLn(F);
   End;
-  
+
   { Dessiner les aretes d'abord (pour qu'elles soient derriere les noeuds) }
   WriteLn(F, '  <!-- Aretes -->');
   WriteLn(F, '  <g id="edges">');
@@ -12916,7 +11926,7 @@ Begin
   Begin
     If (SvgGraph.Edges[I].FromX > 0) Or (SvgGraph.Edges[I].ToX > 0) Then
     Begin
-      WriteSvgLine(F, 
+      WriteSvgLine(F,
                    SvgGraph.Edges[I].FromX, SvgGraph.Edges[I].FromY,
                    SvgGraph.Edges[I].ToX, SvgGraph.Edges[I].ToY,
                    SvgGraph.Edges[I].StrokeColor,
@@ -12926,28 +11936,28 @@ Begin
   End;
   WriteLn(F, '  </g>');
   WriteLn(F);
-  
+
   { Dessiner les noeuds }
   WriteLn(F, '  <!-- Noeuds -->');
   WriteLn(F, '  <g id="nodes">');
   For I := 1 To SvgGraph.NodeCount Do
   Begin
     { Rectangle du noeud }
-    WriteSvgRect(F, 
+    WriteSvgRect(F,
                  SvgGraph.Nodes[I].X, SvgGraph.Nodes[I].Y,
                  SvgGraph.Nodes[I].W, SvgGraph.Nodes[I].H,
                  SvgGraph.Nodes[I].FillColor, SvgGraph.Nodes[I].StrokeColor,
                  True); { Coins arrondis }
-    
+
     { Texte du noeud (centre dans le rectangle) }
     CenterX := SvgGraph.Nodes[I].X + SvgGraph.Nodes[I].W Div 2;
     CenterY := SvgGraph.Nodes[I].Y + SvgGraph.Nodes[I].H Div 2 + SVG_FONT_SIZE Div 3;
-    WriteSvgText(F, CenterX, CenterY, SvgGraph.Nodes[I].Name, 
+    WriteSvgText(F, CenterX, CenterY, SvgGraph.Nodes[I].Name,
                  SVG_FONT_SIZE, '#000000', True);
   End;
   WriteLn(F, '  </g>');
   WriteLn(F);
-  
+
   { Fermer le fichier SVG }
   WriteSvgFooter(F);
   Close(F);
@@ -12966,21 +11976,21 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
-    
+
     { Supprimer les espaces en debut et fin }
     While (Length(Line) > 0) And (Line[1] In [' ', #9]) Do
       Delete(Line, 1, 1);
     While (Length(Line) > 0) And (Line[Length(Line)] In [' ', #9]) Do
       Delete(Line, Length(Line), 1);
-    
+
     { Ignorer les lignes vides et les commentaires }
     If (Line = '') Or (Copy(Line, 1, 2) = '//') Or (Copy(Line, 1, 1) = '#') Then
       Continue;
-    
+
     { Detecter le titre du graphe }
     If (Copy(Line, 1, 6) = 'label=') Or (Copy(Line, 1, 6) = 'label ') Then
     Begin
@@ -12994,11 +12004,11 @@ Begin
       End;
       Continue;
     End;
-    
+
     { Detecter les aretes (contiennent '->' ou '--') }
     P := Pos('->', Line);
     If P = 0 Then P := Pos('--', Line);
-    
+
     If P > 0 Then
     Begin
       { Extraire le noeud source }
@@ -13007,30 +12017,30 @@ Begin
         Delete(FromId, Length(FromId), 1);
       While (Length(FromId) > 0) And (FromId[1] In [' ', #9]) Do
         Delete(FromId, 1, 1);
-      
+
       { Extraire le noeud destination }
       If Line[P+1] = '>' Then
         ToId := Copy(Line, P + 2, Length(Line))
       Else
         ToId := Copy(Line, P + 2, Length(Line));
-      
+
       { Supprimer les attributs et le point-virgule }
       P2 := Pos('[', ToId);
       If P2 > 0 Then ToId := Copy(ToId, 1, P2 - 1);
       P2 := Pos(';', ToId);
       If P2 > 0 Then ToId := Copy(ToId, 1, P2 - 1);
-      
+
       While (Length(ToId) > 0) And (ToId[Length(ToId)] In [' ', #9]) Do
         Delete(ToId, Length(ToId), 1);
       While (Length(ToId) > 0) And (ToId[1] In [' ', #9]) Do
         Delete(ToId, 1, 1);
-      
+
       { S'assurer que les noeuds existent }
       If FindSvgNode(FromId) = 0 Then
         AddSvgNode(FromId, FromId);
       If FindSvgNode(ToId) = 0 Then
         AddSvgNode(ToId, ToId);
-      
+
       { Ajouter l'arete }
       AddSvgEdge(FromId, ToId);
     End
@@ -13043,7 +12053,7 @@ Begin
         Delete(NodeId, Length(NodeId), 1);
       While (Length(NodeId) > 0) And (NodeId[1] In [' ', #9]) Do
         Delete(NodeId, 1, 1);
-      
+
       { Extraire le label }
       P := Pos('label=', Line);
       If P > 0 Then
@@ -13073,13 +12083,13 @@ Begin
       End
       Else
         NodeLabel := NodeId;
-      
+
       { Ajouter le noeud s'il n'existe pas deja }
       If FindSvgNode(NodeId) = 0 Then
         AddSvgNode(NodeId, NodeLabel);
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -13089,19 +12099,19 @@ Begin
   { Liberer l'ancien graphe s'il existe }
   If SvgInitialized Then
     FreeSvgGraph;
-  
+
   { Reinitialiser le graphe }
   InitSvgGraph;
-  
+
   { Parser le fichier DOT }
   ParseDotFileForSvg(DotFile);
-  
+
   { Generer le SVG }
   RenderSvgGraph(SvgFile);
-  
+
   { Liberer la memoire apres generation }
   FreeSvgGraph;
-  
+
   If Not Opts.Quiet Then
     WriteLn('SVG genere (built-in): ', SvgFile);
 End;
@@ -13112,7 +12122,7 @@ End;
 
 { ============================================================
   GENERATEUR VISIO VDX INTEGRE (SANS OUTIL EXTERNE)
-  
+
   Ce module permet de generer des fichiers Microsoft Visio au
   format VDX (Visio XML Drawing) directement sans avoir besoin
   de Microsoft Visio ou d'autres outils externes.
@@ -13133,7 +12143,7 @@ Var
 Begin
   OldNodeCount := VdxGraph.NodeCount;
   OldEdgeCount := VdxGraph.EdgeCount;
-  
+
   For I := 1 To OldNodeCount Do
   Begin
     VdxGraph.Nodes[I].Name := '';
@@ -13141,13 +12151,13 @@ Begin
     VdxGraph.Nodes[I].LineColor := '';
     VdxGraph.Nodes[I].TextId := '';
   End;
-  
+
   For I := 1 To OldEdgeCount Do
   Begin
     VdxGraph.Edges[I].LineColor := '';
     VdxGraph.Edges[I].LabelText := '';
   End;
-  
+
   VdxGraph.Title := '';
   VdxGraph.BgColor := '';
   VdxGraph.NodeCount := 0;
@@ -13162,7 +12172,7 @@ Var
 Begin
   If VdxInitialized Then
     FreeVdxGraph;
-  
+
   VdxGraph.Title := 'Doxygen Graph';
   VdxGraph.PageWidth := VDX_DEFAULT_WIDTH;
   VdxGraph.PageHeight := VDX_DEFAULT_HEIGHT;
@@ -13170,7 +12180,7 @@ Begin
   VdxGraph.NodeCount := 0;
   VdxGraph.EdgeCount := 0;
   VdxGraph.NextShapeId := 1;
-  
+
   For I := 1 To MAX_VDX_NODES Do
   Begin
     VdxGraph.Nodes[I].Id := 0;
@@ -13183,7 +12193,7 @@ Begin
     VdxGraph.Nodes[I].LineColor := '#000080';
     VdxGraph.Nodes[I].TextId := '';
   End;
-  
+
   For I := 1 To MAX_VDX_EDGES Do
   Begin
     VdxGraph.Edges[I].Id := 0;
@@ -13197,7 +12207,7 @@ Begin
     VdxGraph.Edges[I].LinePattern := 0;
     VdxGraph.Edges[I].LabelText := '';
   End;
-  
+
   VdxInitialized := True;
 End;
 
@@ -13207,16 +12217,16 @@ Var
   Idx: Integer;
 Begin
   If Not VdxInitialized Then InitVdxGraph;
-  
+
   If VdxGraph.NodeCount >= MAX_VDX_NODES Then
   Begin
     AddVdxNode := 0;
     Exit;
   End;
-  
+
   Inc(VdxGraph.NodeCount);
   Idx := VdxGraph.NodeCount;
-  
+
   VdxGraph.Nodes[Idx].Id := VdxGraph.NextShapeId;
   Inc(VdxGraph.NextShapeId);
   VdxGraph.Nodes[Idx].Name := Name;
@@ -13225,7 +12235,7 @@ Begin
   If VdxGraph.Nodes[Idx].Width < VDX_NODE_WIDTH Then
     VdxGraph.Nodes[Idx].Width := VDX_NODE_WIDTH;
   VdxGraph.Nodes[Idx].Height := VDX_NODE_HEIGHT;
-  
+
   AddVdxNode := Idx;
 End;
 
@@ -13251,30 +12261,30 @@ Var
   Idx, FromIdx, ToIdx: Integer;
 Begin
   If Not VdxInitialized Then InitVdxGraph;
-  
+
   If VdxGraph.EdgeCount >= MAX_VDX_EDGES Then
   Begin
     AddVdxEdge := 0;
     Exit;
   End;
-  
+
   FromIdx := FindVdxNode(FromTextId);
   ToIdx := FindVdxNode(ToTextId);
-  
+
   If (FromIdx = 0) Or (ToIdx = 0) Then
   Begin
     AddVdxEdge := 0;
     Exit;
   End;
-  
+
   Inc(VdxGraph.EdgeCount);
   Idx := VdxGraph.EdgeCount;
-  
+
   VdxGraph.Edges[Idx].Id := VdxGraph.NextShapeId;
   Inc(VdxGraph.NextShapeId);
   VdxGraph.Edges[Idx].FromId := VdxGraph.Nodes[FromIdx].Id;
   VdxGraph.Edges[Idx].ToId := VdxGraph.Nodes[ToIdx].Id;
-  
+
   AddVdxEdge := Idx;
 End;
 
@@ -13287,27 +12297,27 @@ Var
   CellWidth, CellHeight: Real;
 Begin
   If VdxGraph.NodeCount = 0 Then Exit;
-  
+
   { Disposition simple en grille }
   MaxCols := 4;
   If VdxGraph.NodeCount <= 4 Then MaxCols := VdxGraph.NodeCount;
   MaxRows := (VdxGraph.NodeCount + MaxCols - 1) Div MaxCols;
-  
+
   CellWidth := VDX_NODE_WIDTH + VDX_NODE_MARGIN;
   CellHeight := VDX_NODE_HEIGHT + VDX_NODE_MARGIN;
-  
+
   StartX := 1;
   StartY := VdxGraph.PageHeight - 1;
-  
+
   For I := 1 To VdxGraph.NodeCount Do
   Begin
     Row := (I - 1) Div MaxCols;
     Col := (I - 1) Mod MaxCols;
-    
+
     VdxGraph.Nodes[I].PinX := StartX + Col * CellWidth + VDX_NODE_WIDTH / 2;
     VdxGraph.Nodes[I].PinY := StartY - Row * CellHeight - VDX_NODE_HEIGHT / 2;
   End;
-  
+
   { Calculer les positions des aretes }
   For I := 1 To VdxGraph.EdgeCount Do
   Begin
@@ -13500,7 +12510,7 @@ Begin
   WriteLn(F, '        </PageProps>');
   WriteLn(F, '      </PageSheet>');
   WriteLn(F, '      <Shapes>');
-  
+
   { Ecrire les noeuds }
   For I := 1 To VdxGraph.NodeCount Do
   Begin
@@ -13524,7 +12534,7 @@ Begin
     WriteLn(F, '          <Text>', VdxEscapeXml(VdxGraph.Nodes[I].Name), '</Text>');
     WriteLn(F, '        </Shape>');
   End;
-  
+
   { Ecrire les aretes }
   For I := 1 To VdxGraph.EdgeCount Do
   Begin
@@ -13545,9 +12555,9 @@ Begin
     WriteLn(F, '          </Geom>');
     WriteLn(F, '        </Shape>');
   End;
-  
+
   WriteLn(F, '      </Shapes>');
-  
+
   { Ecrire les connexions }
   If VdxGraph.EdgeCount > 0 Then
   Begin
@@ -13559,7 +12569,7 @@ Begin
     End;
     WriteLn(F, '      </Connects>');
   End;
-  
+
   WriteLn(F, '    </Page>');
   WriteLn(F, '  </Pages>');
 End;
@@ -13577,17 +12587,17 @@ Var
 Begin
   If Not VdxInitialized Then Exit;
   If VdxGraph.NodeCount = 0 Then Exit;
-  
+
   { Calculer la disposition }
   LayoutVdxGraph;
-  
+
   { Ouvrir le fichier en ecriture }
   Assign(F, OutputFileName);
   {$I-}
   Rewrite(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   { Ecrire le document VDX }
   WriteVdxHeader(F);
   WriteVdxColors(F);
@@ -13596,7 +12606,7 @@ Begin
   WriteVdxMasters(F);
   WriteVdxPage(F);
   WriteVdxFooter(F);
-  
+
   Close(F);
 End;
 
@@ -13614,37 +12624,37 @@ Begin
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   InGraph := False;
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
-    
+
     { Trim de la ligne }
     TrimLine := '';
     For I := 1 To Length(Line) Do
       If (Line[I] <> ' ') And (Line[I] <> #9) Then
         TrimLine := TrimLine + Line[I];
-    
+
     If TrimLine = '' Then Continue;
-    
+
     { Detection du debut du graphe }
     If (Pos('digraph', Line) > 0) Or (Pos('graph', Line) > 0) Then
     Begin
       InGraph := True;
       Continue;
     End;
-    
+
     If Not InGraph Then Continue;
-    
+
     { Detection de la fin du graphe }
     If TrimLine = '}' Then
     Begin
       InGraph := False;
       Continue;
     End;
-    
+
     { Detection d'une arete: node1 -> node2 }
     P1 := Pos('->', Line);
     If P1 > 0 Then
@@ -13654,7 +12664,7 @@ Begin
       For I := 1 To P1 - 1 Do
         If (Line[I] <> ' ') And (Line[I] <> #9) And (Line[I] <> '"') Then
           FromId := FromId + Line[I];
-      
+
       { Extraire ToId }
       ToId := '';
       For I := P1 + 2 To Length(Line) Do
@@ -13663,18 +12673,18 @@ Begin
         If (Line[I] <> ' ') And (Line[I] <> #9) And (Line[I] <> '"') Then
           ToId := ToId + Line[I];
       End;
-      
+
       { Ajouter les noeuds s'ils n'existent pas }
       If FindVdxNode(FromId) = 0 Then
         AddVdxNode(FromId, FromId);
       If FindVdxNode(ToId) = 0 Then
         AddVdxNode(ToId, ToId);
-      
+
       { Ajouter l'arete }
       AddVdxEdge(FromId, ToId);
       Continue;
     End;
-    
+
     { Detection d'un noeud: node [label="..."] }
     P1 := Pos('[', Line);
     If P1 > 0 Then
@@ -13684,7 +12694,7 @@ Begin
       For I := 1 To P1 - 1 Do
         If (Line[I] <> ' ') And (Line[I] <> #9) And (Line[I] <> '"') Then
           NodeId := NodeId + Line[I];
-      
+
       { Extraire le label si present }
       NodeLabel := NodeId;
       P2 := Pos('label=', Line);
@@ -13699,13 +12709,13 @@ Begin
           Inc(I);
         End;
       End;
-      
+
       { Ajouter le noeud s'il n'existe pas }
       If FindVdxNode(NodeId) = 0 Then
         AddVdxNode(NodeId, NodeLabel);
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -13715,16 +12725,16 @@ Begin
   { Reinitialiser le graphe }
   VdxInitialized := False;
   InitVdxGraph;
-  
+
   { Parser le fichier DOT }
   ParseDotFileForVdx(DotFile);
-  
+
   { Generer le VDX }
   RenderVdxGraph(VdxFile);
-  
+
   If Not Opts.Quiet Then
     WriteLn('Visio VDX genere (built-in): ', VdxFile);
-  
+
   { Liberer la memoire du graphe apres generation }
   FreeVdxGraph;
 End;
@@ -13749,7 +12759,7 @@ Begin
       Break;
     End;
   End;
-  
+
   { Utiliser le generateur PNG integre pour le format PNG }
   If (Format = 'png') Or (Format = 'PNG') Then
   Begin
@@ -13785,12 +12795,12 @@ Var
 Begin
   If Not CallGraphInitialized Then
     InitCallGraph;
-  
+
   WriteLn('Generation des graphes d''appels...');
-  
+
   { Construire le graphe d'appels }
   BuildCallGraph;
-  
+
   { Generer le graphe complet }
   FileName := CallGraphOutputDir + CALLGRAPH_DOT_FILE;
   Assign(F, FileName);
@@ -13806,7 +12816,7 @@ Begin
   End
   Else
     WarnMsg('Impossible de creer: ' + FileName);
-  
+
   { Generer un graphe pour chaque fonction }
   For I := 1 To EntityCount Do
   Begin
@@ -13824,7 +12834,7 @@ Begin
       End;
     End;
   End;
-  
+
   WriteLn('Documentation des graphes d''appels generee dans: ', CallGraphOutputDir);
 End;
 
@@ -13918,7 +12928,7 @@ Begin
     Begin
       If Result <> '' Then
         Result := Result + ', ';
-      If (CallGraphEdges[I].CalleeId >= 1) And 
+      If (CallGraphEdges[I].CalleeId >= 1) And
          (CallGraphEdges[I].CalleeId <= CallNodeCount) Then
         Result := Result + CallGraphNodes[CallGraphEdges[I].CalleeId].Name;
     End;
@@ -13939,7 +12949,7 @@ Begin
     Begin
       If Result <> '' Then
         Result := Result + ', ';
-      If (CallGraphEdges[I].CallerId >= 1) And 
+      If (CallGraphEdges[I].CallerId >= 1) And
          (CallGraphEdges[I].CallerId <= CallNodeCount) Then
         Result := Result + CallGraphNodes[CallGraphEdges[I].CallerId].Name;
     End;
@@ -14090,12 +13100,12 @@ Begin
   WriteLn(OutFile, '  node [shape=', DEPGRAPH_NODE_SHAPE, ', fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
   WriteLn(OutFile, '  edge [style=', DEPGRAPH_EDGE_STYLE, '];');
   WriteLn(OutFile);
-  
+
   { Noeud principal (fichier source) }
   NodeId := SanitizeNodeId(ExtractBaseFileName(FileName));
   WriteLn(OutFile, '  ', NodeId, ' [label="', ExtractBaseFileName(FileName), '", style=filled, fillcolor="#FFECB3"];');
   WriteLn(OutFile);
-  
+
   { Parcourir les dependances }
   For I := 1 To DependencyCount Do
   Begin
@@ -14103,18 +13113,18 @@ Begin
     Begin
       TargetNodeId := SanitizeNodeId(ExtractBaseFileName(Dependencies[I].TargetFile));
       EdgeColor := DependencyKindColor(Dependencies[I].Kind, Dependencies[I].IsSystem);
-      
+
       { Creer le noeud cible }
       If Dependencies[I].IsSystem Then
         WriteLn(OutFile, '  ', TargetNodeId, ' [label="', ExtractBaseFileName(Dependencies[I].TargetFile), '", style=filled, fillcolor="', DEPGRAPH_SYSTEM_COLOR, '"];')
       Else
         WriteLn(OutFile, '  ', TargetNodeId, ' [label="', ExtractBaseFileName(Dependencies[I].TargetFile), '"];');
-      
+
       { Creer l'arete }
       WriteLn(OutFile, '  ', NodeId, ' -> ', TargetNodeId, ' [color="', EdgeColor, '"];');
     End;
   End;
-  
+
   WriteLn(OutFile);
   WriteLn(OutFile, '  // Legende');
   WriteLn(OutFile, '  subgraph cluster_legend {');
@@ -14140,12 +13150,12 @@ Begin
   WriteLn(OutFile, '  node [shape=', DEPGRAPH_NODE_SHAPE, ', fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
   WriteLn(OutFile, '  edge [style=', DEPGRAPH_EDGE_STYLE, '];');
   WriteLn(OutFile);
-  
+
   { Noeud principal (fichier cible) }
   NodeId := SanitizeNodeId(ExtractBaseFileName(FileName));
   WriteLn(OutFile, '  ', NodeId, ' [label="', ExtractBaseFileName(FileName), '", style=filled, fillcolor="#FFECB3"];');
   WriteLn(OutFile);
-  
+
   { Parcourir les dependances inversement }
   For I := 1 To DependencyCount Do
   Begin
@@ -14153,15 +13163,15 @@ Begin
     Begin
       SourceNodeId := SanitizeNodeId(ExtractBaseFileName(Dependencies[I].SourceFile));
       EdgeColor := DependencyKindColor(Dependencies[I].Kind, Dependencies[I].IsSystem);
-      
+
       { Creer le noeud source }
       WriteLn(OutFile, '  ', SourceNodeId, ' [label="', ExtractBaseFileName(Dependencies[I].SourceFile), '"];');
-      
+
       { Creer l'arete (de source vers cible) }
       WriteLn(OutFile, '  ', SourceNodeId, ' -> ', NodeId, ' [color="', EdgeColor, '"];');
     End;
   End;
-  
+
   WriteLn(OutFile);
   WriteLn(OutFile, '  // Legende');
   WriteLn(OutFile, '  subgraph cluster_legend {');
@@ -14193,14 +13203,14 @@ Begin
   WriteLn(OutFile, '  node [shape=', DEPGRAPH_DIR_SHAPE, ', fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
   WriteLn(OutFile, '  edge [style=', DEPGRAPH_EDGE_STYLE, '];');
   WriteLn(OutFile);
-  
+
   { Collecter les paires de repertoires uniques }
   DirPairCount := 0;
   For I := 1 To DependencyCount Do
   Begin
     SourceDir := ExtractDirPath(Dependencies[I].SourceFile);
     TargetDir := ExtractDirPath(Dependencies[I].TargetFile);
-    
+
     { Ignorer les dependances au sein du meme repertoire }
     If SourceDir <> TargetDir Then
     Begin
@@ -14215,7 +13225,7 @@ Begin
           Break;
         End;
       End;
-      
+
       { Ajouter la nouvelle paire }
       If Not Found And (DirPairCount < MAX_DEP_DIRS) Then
       Begin
@@ -14226,18 +13236,18 @@ Begin
       End;
     End;
   End;
-  
+
   { Generer les noeuds et aretes }
   For I := 1 To DirPairCount Do
   Begin
     SourceNodeId := SanitizeNodeId(DirPairs[I].SourceDir);
     TargetNodeId := SanitizeNodeId(DirPairs[I].TargetDir);
-    
+
     WriteLn(OutFile, '  ', SourceNodeId, ' [label="', DirPairs[I].SourceDir, '"];');
     WriteLn(OutFile, '  ', TargetNodeId, ' [label="', DirPairs[I].TargetDir, '"];');
     WriteLn(OutFile, '  ', SourceNodeId, ' -> ', TargetNodeId, ' [label="', DirPairs[I].Count, '"];');
   End;
-  
+
   WriteLn(OutFile, '}');
 End;
 
@@ -14253,27 +13263,27 @@ Begin
   WriteLn(OutFile, '  node [shape=', DEPGRAPH_NODE_SHAPE, ', fontname="', DEPGRAPH_FONT_NAME, '", fontsize=', DEPGRAPH_FONT_SIZE, '];');
   WriteLn(OutFile, '  edge [style=', DEPGRAPH_EDGE_STYLE, '];');
   WriteLn(OutFile);
-  
+
   { Parcourir toutes les dependances de type module (USES, IMPORT, etc.) }
   For I := 1 To DependencyCount Do
   Begin
-    If (Dependencies[I].Kind = DEP_USES) Or 
+    If (Dependencies[I].Kind = DEP_USES) Or
        (Dependencies[I].Kind = DEP_IMPORT) Or
        (Dependencies[I].Kind = DEP_MODULE) Or
        (Dependencies[I].Kind = DEP_PACKAGE) Then
     Begin
       SourceNodeId := SanitizeNodeId(ExtractBaseFileName(Dependencies[I].SourceFile));
       TargetNodeId := SanitizeNodeId(ExtractBaseFileName(Dependencies[I].TargetFile));
-      
+
       { Creer les noeuds }
       WriteLn(OutFile, '  ', SourceNodeId, ' [label="', ExtractBaseFileName(Dependencies[I].SourceFile), '"];');
       WriteLn(OutFile, '  ', TargetNodeId, ' [label="', ExtractBaseFileName(Dependencies[I].TargetFile), '"];');
-      
+
       { Creer l'arete }
       WriteLn(OutFile, '  ', SourceNodeId, ' -> ', TargetNodeId, ';');
     End;
   End;
-  
+
   WriteLn(OutFile, '}');
 End;
 
@@ -14293,7 +13303,7 @@ Begin
       Break;
     End;
   End;
-  
+
   { Utiliser le generateur PNG integre pour le format PNG }
   If (Format = 'png') Or (Format = 'PNG') Then
   Begin
@@ -14333,21 +13343,21 @@ Var
 Begin
   If Not DepGraphInitialized Then
     InitDepGraph;
-  
+
   If DependencyCount = 0 Then
   Begin
     If Not Opts.Quiet Then
       WriteLn('Aucune dependance trouvee pour generer les graphes.');
     Exit;
   End;
-  
+
   If Not Opts.Quiet Then
   Begin
     WriteLn('Generation des graphes de dependances...');
     WriteLn('  Repertoire de sortie: ', DepGraphOutputDir);
     WriteLn('  Nombre de dependances: ', DependencyCount);
   End;
-  
+
   { Collecter les fichiers sources uniques }
   ProcessedCount := 0;
   For I := 1 To DependencyCount Do
@@ -14362,25 +13372,25 @@ Begin
         Break;
       End;
     End;
-    
+
     If Not Found And (ProcessedCount < MAX_DEPENDENCIES) Then
     Begin
       Inc(ProcessedCount);
       ProcessedFiles[ProcessedCount] := Dependencies[I].SourceFile;
     End;
   End;
-  
+
   { Generer un graphe d'inclusion pour chaque fichier source }
   For I := 1 To ProcessedCount Do
   Begin
-    DotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX + 
+    DotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX +
                    SanitizeNodeId(ExtractBaseFileName(ProcessedFiles[I])) + '.dot';
-    ImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX + 
+    ImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX +
                      SanitizeNodeId(ExtractBaseFileName(ProcessedFiles[I])) + '.' + DepGraphFormat;
-    
+
     If Not Opts.Quiet Then
       WriteLn('  Graphe d''inclusion: ', ProcessedFiles[I]);
-    
+
     Assign(DotFile, DotFileName);
     {$I-}
     Rewrite(DotFile);
@@ -14392,7 +13402,7 @@ Begin
       RenderDependencyGraphImage(DotFileName, ImageFileName);
     End;
   End;
-  
+
   { Collecter les fichiers cibles uniques pour les graphes "included by" }
   ProcessedCount := 0;
   For I := 1 To DependencyCount Do
@@ -14406,25 +13416,25 @@ Begin
         Break;
       End;
     End;
-    
+
     If Not Found And (ProcessedCount < MAX_DEPENDENCIES) Then
     Begin
       Inc(ProcessedCount);
       ProcessedFiles[ProcessedCount] := Dependencies[I].TargetFile;
     End;
   End;
-  
+
   { Generer un graphe "included by" pour chaque fichier cible }
   For I := 1 To ProcessedCount Do
   Begin
-    DotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX + 
+    DotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX +
                    SanitizeNodeId(ExtractBaseFileName(ProcessedFiles[I])) + '.dot';
-    ImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX + 
+    ImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX +
                      SanitizeNodeId(ExtractBaseFileName(ProcessedFiles[I])) + '.' + DepGraphFormat;
-    
+
     If Not Opts.Quiet Then
       WriteLn('  Graphe included-by: ', ProcessedFiles[I]);
-    
+
     Assign(DotFile, DotFileName);
     {$I-}
     Rewrite(DotFile);
@@ -14436,14 +13446,14 @@ Begin
       RenderDependencyGraphImage(DotFileName, ImageFileName);
     End;
   End;
-  
+
   { Generer le graphe de dependances entre repertoires }
   DotFileName := DepGraphOutputDir + '/' + DEPGRAPH_DIR_PREFIX + 'graph.dot';
   ImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_DIR_PREFIX + 'graph.' + DepGraphFormat;
-  
+
   If Not Opts.Quiet Then
     WriteLn('  Graphe de repertoires');
-  
+
   Assign(DotFile, DotFileName);
   {$I-}
   Rewrite(DotFile);
@@ -14454,14 +13464,14 @@ Begin
     Close(DotFile);
     RenderDependencyGraphImage(DotFileName, ImageFileName);
   End;
-  
+
   { Generer le graphe de modules }
   DotFileName := DepGraphOutputDir + '/' + DEPGRAPH_MOD_PREFIX + 'graph.dot';
   ImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_MOD_PREFIX + 'graph.' + DepGraphFormat;
-  
+
   If Not Opts.Quiet Then
     WriteLn('  Graphe de modules');
-  
+
   Assign(DotFile, DotFileName);
   {$I-}
   Rewrite(DotFile);
@@ -14472,7 +13482,7 @@ Begin
     Close(DotFile);
     RenderDependencyGraphImage(DotFileName, ImageFileName);
   End;
-  
+
   If Not Opts.Quiet Then
     WriteLn('Generation des graphes de dependances terminee.');
 End;
@@ -14518,9 +13528,9 @@ Function GetDepGraphDotFileName(Const BaseFileName: String; GraphType: Integer):
 { GraphType: 1=include, 2=included_by, 3=directory, 4=module }
 Begin
   Case GraphType Of
-    1: GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX + 
+    1: GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX +
                                   SanitizeNodeId(BaseFileName) + '.dot';
-    2: GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX + 
+    2: GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX +
                                   SanitizeNodeId(BaseFileName) + '.dot';
     3: GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_DIR_PREFIX + 'graph.dot';
     4: GetDepGraphDotFileName := DepGraphOutputDir + '/' + DEPGRAPH_MOD_PREFIX + 'graph.dot';
@@ -14534,13 +13544,13 @@ Function GetDepGraphImageFileName(Const BaseFileName: String; GraphType: Integer
 { GraphType: 1=include, 2=included_by, 3=directory, 4=module }
 Begin
   Case GraphType Of
-    1: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX + 
+    1: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INC_PREFIX +
                                     SanitizeNodeId(BaseFileName) + '.' + DepGraphFormat;
-    2: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX + 
+    2: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_INCBY_PREFIX +
                                     SanitizeNodeId(BaseFileName) + '.' + DepGraphFormat;
-    3: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_DIR_PREFIX + 
+    3: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_DIR_PREFIX +
                                     'graph.' + DepGraphFormat;
-    4: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_MOD_PREFIX + 
+    4: GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_MOD_PREFIX +
                                     'graph.' + DepGraphFormat;
   Else
     GetDepGraphImageFileName := DepGraphOutputDir + '/' + DEPGRAPH_PNG_FILE;
@@ -14694,24 +13704,24 @@ Var
   Label1: String;
 Begin
   If (EntityId < 1) Or (EntityId > EntityCount) Then Exit;
-  
+
   E := Entities[EntityId];
   If Not (E.Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) Then Exit;
-  
+
   ClassName := E.Name;
   NodeId := SanitizeClassNodeId(ClassName);
-  
+
   { En-tete DOT }
   WriteLn(OutFile, 'digraph "', ClassName, '" {');
   WriteLn(OutFile, '  rankdir=TB;');
   WriteLn(OutFile, '  fontname="', CLASSDIAG_FONT_NAME, '";');
   WriteLn(OutFile, '  fontsize=', CLASSDIAG_FONT_SIZE, ';');
-  WriteLn(OutFile, '  node [shape=', CLASSDIAG_NODE_SHAPE, ', fontname="', 
+  WriteLn(OutFile, '  node [shape=', CLASSDIAG_NODE_SHAPE, ', fontname="',
           CLASSDIAG_FONT_NAME, '", fontsize=', CLASSDIAG_FONT_SIZE, '];');
-  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=', 
+  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=',
           CLASSDIAG_FONT_SIZE - 2, '];');
   WriteLn(OutFile);
-  
+
   { Compter les membres et methodes }
   MemberCount := 0;
   MethodCount := 0;
@@ -14725,17 +13735,17 @@ Begin
         Inc(MemberCount);
     End;
   End;
-  
+
   { Creer le noeud de la classe avec format record }
   Label1 := '{';
-  
+
   { Nom de la classe }
   If E.IsAbstract Then
     Label1 := Label1 + '\<\<abstract\>\>\\n'
   Else If E.Kind = ENT_INTERFACE Then
     Label1 := Label1 + '\<\<interface\>\>\\n';
   Label1 := Label1 + EscapeDotLabel(ClassName);
-  
+
   { Section des attributs }
   Label1 := Label1 + '|';
   For I := 1 To EntityCount Do
@@ -14749,7 +13759,7 @@ Begin
       Label1 := Label1 + '\\l';
     End;
   End;
-  
+
   { Section des methodes }
   Label1 := Label1 + '|';
   For I := 1 To EntityCount Do
@@ -14764,20 +13774,20 @@ Begin
       Label1 := Label1 + '\\l';
     End;
   End;
-  
+
   Label1 := Label1 + '}';
-  
+
   { Ecrire le noeud }
   If E.Kind = ENT_INTERFACE Then
-    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="',
             CLASSDIAG_INTERFACE_COLOR, '", style=filled];')
   Else If E.IsAbstract Then
-    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="',
             CLASSDIAG_ABSTRACT_COLOR, '", style=filled];')
   Else
-    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="',
             CLASSDIAG_CLASS_COLOR, '", style=filled];');
-  
+
   WriteLn(OutFile);
   WriteLn(OutFile, '}');
 End;
@@ -14793,28 +13803,28 @@ Var
   Found: Boolean;
 Begin
   If (EntityId < 1) Or (EntityId > EntityCount) Then Exit;
-  
+
   E := Entities[EntityId];
   If Not (E.Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) Then Exit;
-  
+
   ClassName := E.Name;
   NodeId := SanitizeClassNodeId(ClassName);
-  
+
   { En-tete DOT }
   WriteLn(OutFile, 'digraph "', ClassName, '_collaboration" {');
   WriteLn(OutFile, '  rankdir=LR;');
   WriteLn(OutFile, '  fontname="', CLASSDIAG_FONT_NAME, '";');
   WriteLn(OutFile, '  fontsize=', CLASSDIAG_FONT_SIZE, ';');
-  WriteLn(OutFile, '  node [shape=box, fontname="', CLASSDIAG_FONT_NAME, 
+  WriteLn(OutFile, '  node [shape=box, fontname="', CLASSDIAG_FONT_NAME,
           '", fontsize=', CLASSDIAG_FONT_SIZE, '];');
-  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=', 
+  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=',
           CLASSDIAG_FONT_SIZE - 2, '];');
   WriteLn(OutFile);
-  
+
   { Noeud principal }
-  WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName, '", fillcolor="', 
+  WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName, '", fillcolor="',
           CLASSDIAG_CLASS_COLOR, '", style=filled];');
-  
+
   { Collecter les classes utilisees par cette classe }
   RelatedCount := 0;
   For I := 1 To EntityCount Do
@@ -14850,29 +13860,29 @@ Begin
       End;
     End;
   End;
-  
+
   { Ajouter les noeuds et aretes pour les classes liees }
   For I := 1 To RelatedCount Do
   Begin
     RelatedId := SanitizeClassNodeId(RelatedClasses[I]);
     WriteLn(OutFile, '  ', RelatedId, ' [label="', RelatedClasses[I], '"];');
-    WriteLn(OutFile, '  ', NodeId, ' -> ', RelatedId, 
+    WriteLn(OutFile, '  ', NodeId, ' -> ', RelatedId,
             ' [arrowhead=', CLASSDIAG_EDGE_ASSOC, ', label="uses"];');
   End;
-  
+
   { Ajouter les relations d'heritage }
   For I := 1 To InheritanceCount Do
   Begin
     If Inheritances[I].ChildId = EntityId Then
     Begin
       RelatedId := SanitizeClassNodeId(Inheritances[I].ParentName);
-      WriteLn(OutFile, '  ', RelatedId, ' [label="', Inheritances[I].ParentName, 
+      WriteLn(OutFile, '  ', RelatedId, ' [label="', Inheritances[I].ParentName,
               '", fillcolor="', CLASSDIAG_CLASS_COLOR, '", style=filled];');
-      WriteLn(OutFile, '  ', NodeId, ' -> ', RelatedId, 
+      WriteLn(OutFile, '  ', NodeId, ' -> ', RelatedId,
               ' [arrowhead=', CLASSDIAG_EDGE_INHERIT, ', style=solid];');
     End;
   End;
-  
+
   WriteLn(OutFile);
   WriteLn(OutFile, '}');
 End;
@@ -14885,35 +13895,35 @@ Var
   ClassName, NodeId, ParentId, ChildId: String;
 Begin
   If (EntityId < 1) Or (EntityId > EntityCount) Then Exit;
-  
+
   E := Entities[EntityId];
   If Not (E.Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) Then Exit;
-  
+
   ClassName := E.Name;
   NodeId := SanitizeClassNodeId(ClassName);
-  
+
   { En-tete DOT }
   WriteLn(OutFile, 'digraph "', ClassName, '_inheritance" {');
   WriteLn(OutFile, '  rankdir=BT;');
   WriteLn(OutFile, '  fontname="', CLASSDIAG_FONT_NAME, '";');
   WriteLn(OutFile, '  fontsize=', CLASSDIAG_FONT_SIZE, ';');
-  WriteLn(OutFile, '  node [shape=box, fontname="', CLASSDIAG_FONT_NAME, 
+  WriteLn(OutFile, '  node [shape=box, fontname="', CLASSDIAG_FONT_NAME,
           '", fontsize=', CLASSDIAG_FONT_SIZE, '];');
-  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=', 
+  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=',
           CLASSDIAG_FONT_SIZE - 2, ', arrowhead=', CLASSDIAG_EDGE_INHERIT, '];');
   WriteLn(OutFile);
-  
+
   { Noeud principal (classe courante) }
   If E.Kind = ENT_INTERFACE Then
-    WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName, 
+    WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName,
             '", fillcolor="', CLASSDIAG_INTERFACE_COLOR, '", style=filled];')
   Else If E.IsAbstract Then
-    WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName, 
+    WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName,
             '", fillcolor="', CLASSDIAG_ABSTRACT_COLOR, '", style=filled];')
   Else
-    WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName, 
+    WriteLn(OutFile, '  ', NodeId, ' [label="', ClassName,
             '", fillcolor="', CLASSDIAG_CLASS_COLOR, '", style=filled];');
-  
+
   { Classes de base (parents) }
   For I := 1 To InheritanceCount Do
   Begin
@@ -14924,7 +13934,7 @@ Begin
       WriteLn(OutFile, '  ', NodeId, ' -> ', ParentId, ';');
     End;
   End;
-  
+
   { Classes derivees (enfants) }
   For I := 1 To InheritanceCount Do
   Begin
@@ -14934,13 +13944,13 @@ Begin
       If (Inheritances[I].ChildId >= 1) And (Inheritances[I].ChildId <= EntityCount) Then
       Begin
         ChildId := SanitizeClassNodeId(Entities[Inheritances[I].ChildId].Name);
-        WriteLn(OutFile, '  ', ChildId, ' [label="', 
+        WriteLn(OutFile, '  ', ChildId, ' [label="',
                 Entities[Inheritances[I].ChildId].Name, '"];');
         WriteLn(OutFile, '  ', ChildId, ' -> ', NodeId, ';');
       End;
     End;
   End;
-  
+
   WriteLn(OutFile);
   WriteLn(OutFile, '}');
 End;
@@ -14958,7 +13968,7 @@ Begin
   End;
 End;
 
-Procedure GenerateUmlDiagramDot(Const EntityId: Integer; Var OutFile: Text; 
+Procedure GenerateUmlDiagramDot(Const EntityId: Integer; Var OutFile: Text;
   UmlLook: Boolean);
 { Genere le diagramme UML complet au format DOT }
 Var
@@ -14968,37 +13978,37 @@ Var
   Label1: String;
 Begin
   If (EntityId < 1) Or (EntityId > EntityCount) Then Exit;
-  
+
   E := Entities[EntityId];
   If Not (E.Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) Then Exit;
-  
+
   ClassName := E.Name;
   NodeId := SanitizeClassNodeId(ClassName);
-  
+
   { En-tete DOT }
   WriteLn(OutFile, 'digraph "', ClassName, '_uml" {');
   WriteLn(OutFile, '  rankdir=BT;');
   WriteLn(OutFile, '  fontname="', CLASSDIAG_FONT_NAME, '";');
   WriteLn(OutFile, '  fontsize=', CLASSDIAG_FONT_SIZE, ';');
   WriteLn(OutFile, '  splines=ortho;');
-  WriteLn(OutFile, '  node [shape=', CLASSDIAG_NODE_SHAPE, ', fontname="', 
+  WriteLn(OutFile, '  node [shape=', CLASSDIAG_NODE_SHAPE, ', fontname="',
           CLASSDIAG_FONT_NAME, '", fontsize=', CLASSDIAG_FONT_SIZE, '];');
-  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=', 
+  WriteLn(OutFile, '  edge [fontname="', CLASSDIAG_FONT_NAME, '", fontsize=',
           CLASSDIAG_FONT_SIZE - 2, '];');
   WriteLn(OutFile);
-  
+
   { Creer le noeud de la classe avec format UML }
   Label1 := '{';
-  
+
   { Stereotypes }
   If E.Kind = ENT_INTERFACE Then
     Label1 := Label1 + '\<\<interface\>\>\\n';
   If E.IsAbstract Then
     Label1 := Label1 + '\<\<abstract\>\>\\n';
-  
+
   { Nom de la classe }
   Label1 := Label1 + EscapeDotLabel(ClassName);
-  
+
   { Section des attributs }
   Label1 := Label1 + '|';
   For I := 1 To EntityCount Do
@@ -15015,7 +14025,7 @@ Begin
       Label1 := Label1 + '\\l';
     End;
   End;
-  
+
   { Section des operations }
   Label1 := Label1 + '|';
   For I := 1 To EntityCount Do
@@ -15037,38 +14047,38 @@ Begin
       Label1 := Label1 + '\\l';
     End;
   End;
-  
+
   Label1 := Label1 + '}';
-  
+
   { Ecrire le noeud principal }
   If E.Kind = ENT_INTERFACE Then
-    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="',
             CLASSDIAG_INTERFACE_COLOR, '", style=filled];')
   Else If E.IsAbstract Then
-    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="',
             CLASSDIAG_ABSTRACT_COLOR, '", style=filled];')
   Else
-    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="', 
+    WriteLn(OutFile, '  ', NodeId, ' [label="', Label1, '", fillcolor="',
             CLASSDIAG_CLASS_COLOR, '", style=filled];');
-  
+
   { Relations d'heritage }
   For I := 1 To InheritanceCount Do
   Begin
     If Inheritances[I].ChildId = EntityId Then
     Begin
       ParentId := SanitizeClassNodeId(Inheritances[I].ParentName);
-      WriteLn(OutFile, '  ', ParentId, ' [label="', Inheritances[I].ParentName, 
+      WriteLn(OutFile, '  ', ParentId, ' [label="', Inheritances[I].ParentName,
               '", shape=box];');
-      
+
       If Inheritances[I].Relation = REL_IMPLEMENTS Then
-        WriteLn(OutFile, '  ', NodeId, ' -> ', ParentId, 
+        WriteLn(OutFile, '  ', NodeId, ' -> ', ParentId,
                 ' [arrowhead=', CLASSDIAG_EDGE_INHERIT, ', style=dashed, label="implements"];')
       Else
-        WriteLn(OutFile, '  ', NodeId, ' -> ', ParentId, 
+        WriteLn(OutFile, '  ', NodeId, ' -> ', ParentId,
                 ' [arrowhead=', CLASSDIAG_EDGE_INHERIT, ', style=solid];');
     End;
   End;
-  
+
   WriteLn(OutFile);
   WriteLn(OutFile, '}');
 End;
@@ -15089,7 +14099,7 @@ Begin
       Break;
     End;
   End;
-  
+
   { Utiliser le generateur PNG integre pour le format PNG }
   If (Format = 'png') Or (Format = 'PNG') Then
   Begin
@@ -15124,12 +14134,12 @@ Var
   ClassName: String;
 Begin
   If (EntityId < 1) Or (EntityId > EntityCount) Then Exit;
-  
+
   E := Entities[EntityId];
   If Not (E.Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE]) Then Exit;
-  
+
   ClassName := E.Name;
-  
+
   { En-tete PlantUML }
   WriteLn(OutFile, CLASSDIAG_PLANTUML_START);
   WriteLn(OutFile);
@@ -15137,7 +14147,7 @@ Begin
   WriteLn(OutFile, 'skinparam classFontName ', CLASSDIAG_FONT_NAME);
   WriteLn(OutFile, 'skinparam classFontSize ', CLASSDIAG_FONT_SIZE);
   WriteLn(OutFile);
-  
+
   { Declaration de la classe }
   If E.Kind = ENT_INTERFACE Then
     WriteLn(OutFile, 'interface ', ClassName, ' {')
@@ -15145,7 +14155,7 @@ Begin
     WriteLn(OutFile, 'abstract class ', ClassName, ' {')
   Else
     WriteLn(OutFile, 'class ', ClassName, ' {');
-  
+
   { Attributs }
   For I := 1 To EntityCount Do
   Begin
@@ -15158,9 +14168,9 @@ Begin
       WriteLn(OutFile);
     End;
   End;
-  
+
   WriteLn(OutFile, '  --');
-  
+
   { Methodes }
   For I := 1 To EntityCount Do
   Begin
@@ -15177,10 +14187,10 @@ Begin
       WriteLn(OutFile);
     End;
   End;
-  
+
   WriteLn(OutFile, '}');
   WriteLn(OutFile);
-  
+
   { Relations d'heritage }
   For I := 1 To InheritanceCount Do
   Begin
@@ -15192,7 +14202,7 @@ Begin
         WriteLn(OutFile, Inheritances[I].ParentName, ' <|-- ', ClassName);
     End;
   End;
-  
+
   WriteLn(OutFile);
   WriteLn(OutFile, CLASSDIAG_PLANTUML_END);
 End;
@@ -15207,36 +14217,36 @@ Var
 Begin
   If Not ClassDiagInitialized Then
     InitClassDiagram;
-  
+
   { Creer le repertoire de sortie }
   {$I-}
   MkDir(ClassDiagOutputDir);
   {$I+}
   If IOResult <> 0 Then; { Ignorer si existe deja }
-  
+
   If Not Opts.Quiet Then
   Begin
     WriteLn('Generation des diagrammes de classes...');
     WriteLn('  Repertoire de sortie: ', ClassDiagOutputDir);
   End;
-  
+
   ClassCount := 0;
-  
+
   For I := 1 To EntityCount Do
   Begin
     If Entities[I].Kind In [ENT_CLASS, ENT_STRUCT, ENT_INTERFACE] Then
     Begin
       Inc(ClassCount);
-      
+
       { Diagramme de classe }
-      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX + 
+      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX +
                      SanitizeClassNodeId(Entities[I].Name) + '.dot';
-      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX + 
+      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX +
                        SanitizeClassNodeId(Entities[I].Name) + '.' + ClassDiagFormat;
-      
+
       If Not Opts.Quiet Then
         WriteLn('  Classe: ', Entities[I].Name);
-      
+
       Assign(DotFile, DotFileName);
       {$I-}
       Rewrite(DotFile);
@@ -15247,13 +14257,13 @@ Begin
         Close(DotFile);
         RenderClassDiagramImage(DotFileName, ImageFileName);
       End;
-      
+
       { Diagramme de collaboration }
-      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX + 
+      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX +
                      SanitizeClassNodeId(Entities[I].Name) + '.dot';
-      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX + 
+      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX +
                        SanitizeClassNodeId(Entities[I].Name) + '.' + ClassDiagFormat;
-      
+
       Assign(DotFile, DotFileName);
       {$I-}
       Rewrite(DotFile);
@@ -15264,13 +14274,13 @@ Begin
         Close(DotFile);
         RenderClassDiagramImage(DotFileName, ImageFileName);
       End;
-      
+
       { Diagramme d'heritage }
-      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX + 
+      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX +
                      SanitizeClassNodeId(Entities[I].Name) + '.dot';
-      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX + 
+      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX +
                        SanitizeClassNodeId(Entities[I].Name) + '.' + ClassDiagFormat;
-      
+
       Assign(DotFile, DotFileName);
       {$I-}
       Rewrite(DotFile);
@@ -15281,13 +14291,13 @@ Begin
         Close(DotFile);
         RenderClassDiagramImage(DotFileName, ImageFileName);
       End;
-      
+
       { Diagramme UML }
-      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX + 
+      DotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX +
                      SanitizeClassNodeId(Entities[I].Name) + '.dot';
-      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX + 
+      ImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX +
                        SanitizeClassNodeId(Entities[I].Name) + '.' + ClassDiagFormat;
-      
+
       Assign(DotFile, DotFileName);
       {$I-}
       Rewrite(DotFile);
@@ -15298,11 +14308,11 @@ Begin
         Close(DotFile);
         RenderClassDiagramImage(DotFileName, ImageFileName);
       End;
-      
+
       { Code PlantUML }
-      PlantUmlFileName := ClassDiagOutputDir + '/' + 
+      PlantUmlFileName := ClassDiagOutputDir + '/' +
                           SanitizeClassNodeId(Entities[I].Name) + '.puml';
-      
+
       Assign(DotFile, PlantUmlFileName);
       {$I-}
       Rewrite(DotFile);
@@ -15314,7 +14324,7 @@ Begin
       End;
     End;
   End;
-  
+
   If Not Opts.Quiet Then
   Begin
     WriteLn('  Nombre de classes: ', ClassCount);
@@ -15348,13 +14358,13 @@ Function GetClassDiagDotFileName(Const ClassName: String; DiagType: Integer): St
 { DiagType: 1=class, 2=collab, 3=inherit, 4=uml }
 Begin
   Case DiagType Of
-    1: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX + 
+    1: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX +
                                   SanitizeClassNodeId(ClassName) + '.dot';
-    2: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX + 
+    2: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX +
                                   SanitizeClassNodeId(ClassName) + '.dot';
-    3: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX + 
+    3: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX +
                                   SanitizeClassNodeId(ClassName) + '.dot';
-    4: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX + 
+    4: GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX +
                                   SanitizeClassNodeId(ClassName) + '.dot';
   Else
     GetClassDiagDotFileName := ClassDiagOutputDir + '/' + CLASSDIAG_DOT_FILE;
@@ -15366,13 +14376,13 @@ Function GetClassDiagImageFileName(Const ClassName: String; DiagType: Integer): 
 { DiagType: 1=class, 2=collab, 3=inherit, 4=uml }
 Begin
   Case DiagType Of
-    1: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX + 
+    1: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_CLASS_PREFIX +
                                     SanitizeClassNodeId(ClassName) + '.' + ClassDiagFormat;
-    2: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX + 
+    2: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_COLLAB_PREFIX +
                                     SanitizeClassNodeId(ClassName) + '.' + ClassDiagFormat;
-    3: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX + 
+    3: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_INHERIT_PREFIX +
                                     SanitizeClassNodeId(ClassName) + '.' + ClassDiagFormat;
-    4: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX + 
+    4: GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_UML_PREFIX +
                                     SanitizeClassNodeId(ClassName) + '.' + ClassDiagFormat;
   Else
     GetClassDiagImageFileName := ClassDiagOutputDir + '/' + CLASSDIAG_PNG_FILE;
@@ -15382,7 +14392,7 @@ End;
 Function GetClassDiagPlantUmlFileName(Const ClassName: String): String;
 { Construit le nom du fichier PlantUML pour une classe }
 Begin
-  GetClassDiagPlantUmlFileName := ClassDiagOutputDir + '/' + 
+  GetClassDiagPlantUmlFileName := ClassDiagOutputDir + '/' +
                                   SanitizeClassNodeId(ClassName) + '.puml';
 End;
 
@@ -15493,7 +14503,7 @@ Begin
   EmptyMacro.Line := 0;
   EmptyMacro.IsFuncLike := False;
   EmptyMacro.IsVariadic := False;
-  
+
   If (Index >= 1) And (Index <= MacroCount) Then
     GetMacro := Macros[Index]
   Else
@@ -15512,14 +14522,14 @@ Begin
   EmptyMacro.Line := 0;
   EmptyMacro.IsFuncLike := False;
   EmptyMacro.IsVariadic := False;
-  
+
   If (Index >= 1) And (Index <= PredefinedCount) Then
     GetPredefinedMacro := PredefinedMacros[Index]
   Else
     GetPredefinedMacro := EmptyMacro;
 End;
 
-Function AddMacro(Const Name, Params, Value, FileName: String; 
+Function AddMacro(Const Name, Params, Value, FileName: String;
                   Line: Integer; FuncLike, Variadic: Boolean): Boolean;
 { Ajoute une nouvelle macro }
 Var
@@ -15528,7 +14538,7 @@ Begin
   AddMacro := False;
   If MacroCount >= MAX_MACROS Then Exit;
   If Name = '' Then Exit;
-  
+
   { Verifier si la macro existe deja }
   Idx := FindMacro(Name);
   If Idx > 0 Then
@@ -15543,7 +14553,7 @@ Begin
     AddMacro := True;
     Exit;
   End;
-  
+
   Inc(MacroCount);
   Macros[MacroCount].Name := Name;
   Macros[MacroCount].Parameters := Params;
@@ -15561,7 +14571,7 @@ Begin
   AddPredefinedMacro := False;
   If PredefinedCount >= MAX_PREDEFINED Then Exit;
   If Name = '' Then Exit;
-  
+
   Inc(PredefinedCount);
   PredefinedMacros[PredefinedCount].Name := Name;
   PredefinedMacros[PredefinedCount].Parameters := '';
@@ -15580,12 +14590,12 @@ Var
 Begin
   Idx := FindMacro(Name);
   If Idx <= 0 Then Exit; { Macro non trouvee ou predefinie }
-  
+
   { Decaler les macros suivantes }
   For I := Idx To MacroCount - 1 Do
     Macros[I] := Macros[I + 1];
   Dec(MacroCount);
-  
+
   { Effacer la derniere entree }
   Macros[MacroCount + 1].Name := '';
   Macros[MacroCount + 1].Parameters := '';
@@ -15604,7 +14614,7 @@ Begin
     ParseMacroParams := 0;
     Exit;
   End;
-  
+
   Count := 1;
   Depth := 0;
   For I := 1 To Length(ParamStr) Do
@@ -15626,13 +14636,13 @@ Var
 Begin
   Name := '';
   I := StartPos;
-  
+
   { Ignorer les espaces }
   While (I <= Length(Line)) And ((Line[I] = ' ') Or (Line[I] = #9)) Do
     Inc(I);
-  
+
   { Lire le nom (identifiant C) }
-  While (I <= Length(Line)) And 
+  While (I <= Length(Line)) And
         (((Line[I] >= 'A') And (Line[I] <= 'Z')) Or
          ((Line[I] >= 'a') And (Line[I] <= 'z')) Or
          ((Line[I] >= '0') And (Line[I] <= '9') And (Name <> '')) Or
@@ -15641,7 +14651,7 @@ Begin
     Name := Name + Line[I];
     Inc(I);
   End;
-  
+
   StartPos := I;
   ExtractMacroName := Name;
 End;
@@ -15658,11 +14668,11 @@ Begin
   InString := False;
   StringChar := #0;
   I := StartPos;
-  
+
   { Ignorer les espaces initiaux }
   While (I <= Length(Line)) And ((Line[I] = ' ') Or (Line[I] = #9)) Do
     Inc(I);
-  
+
   { Lire la valeur jusqu'a la fin de ligne ou un commentaire }
   While I <= Length(Line) Do
   Begin
@@ -15675,7 +14685,7 @@ Begin
         StringChar := Line[I];
       End
       { Detecter un commentaire C }
-      Else If (I < Length(Line)) And (Line[I] = '/') And 
+      Else If (I < Length(Line)) And (Line[I] = '/') And
               ((Line[I+1] = '/') Or (Line[I+1] = '*')) Then
         Break;
     End
@@ -15688,7 +14698,7 @@ Begin
     Value := Value + Line[I];
     Inc(I);
   End;
-  
+
   ExtractMacroValue := TrimStr(Value);
 End;
 
@@ -15700,26 +14710,26 @@ Var
   IsFuncLike, IsVariadic: Boolean;
 Begin
   I := 1;
-  
+
   { Trouver le debut de #define }
   While (I <= Length(Line)) And ((Line[I] = ' ') Or (Line[I] = #9)) Do
     Inc(I);
-  
+
   { Verifier que c'est bien #define }
   If (I + 6 > Length(Line)) Or (UpStr(Copy(Line, I, 7)) <> '#DEFINE') Then
     Exit;
-  
+
   I := I + 7;
-  
+
   { Extraire le nom }
   Name := ExtractMacroName(Line, I);
   If Name = '' Then Exit;
-  
+
   { Verifier si c'est une macro fonction-like }
   IsFuncLike := False;
   IsVariadic := False;
   Params := '';
-  
+
   If (I <= Length(Line)) And (Line[I] = '(') Then
   Begin
     IsFuncLike := True;
@@ -15734,10 +14744,10 @@ Begin
     If Pos('...', Params) > 0 Then
       IsVariadic := True;
   End;
-  
+
   { Extraire la valeur }
   Value := ExtractMacroValue(Line, I);
-  
+
   { Ajouter la macro }
   AddMacro(Name, Params, Value, FileName, LineNum, IsFuncLike, IsVariadic);
 End;
@@ -15751,29 +14761,29 @@ Var
   TrimmedLine: String;
 Begin
   If Not MacrosInitialized Then InitMacros;
-  
+
   {$I-}
   Assign(F, FileName);
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNum := 0;
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNum);
     TrimmedLine := TrimStr(Line);
-    
+
     { Detecter les directives preprocesseur }
     If (Length(TrimmedLine) > 0) And (TrimmedLine[1] = '#') Then
     Begin
       { #define }
-      If (Length(TrimmedLine) >= 7) And 
+      If (Length(TrimmedLine) >= 7) And
          (UpStr(Copy(TrimmedLine, 1, 7)) = '#DEFINE') Then
         ParseDefineLine(Line, FileName, LineNum)
       { #undef }
-      Else If (Length(TrimmedLine) >= 6) And 
+      Else If (Length(TrimmedLine) >= 6) And
               (UpStr(Copy(TrimmedLine, 1, 6)) = '#UNDEF') Then
       Begin
         { Extraire le nom et supprimer la macro }
@@ -15782,7 +14792,7 @@ Begin
       End;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -15793,7 +14803,7 @@ Var
 Begin
   ExpandMacroSimple := Name;
   Idx := FindMacro(Name);
-  
+
   If Idx > 0 Then
   Begin
     If Not Macros[Idx].IsFuncLike Then
@@ -15814,7 +14824,7 @@ Var
 Begin
   GetMacroValue := '';
   Idx := FindMacro(Name);
-  
+
   If Idx > 0 Then
     GetMacroValue := Macros[Idx].Value
   Else If Idx < 0 Then
@@ -15828,7 +14838,7 @@ Var
 Begin
   GetMacroParams := '';
   Idx := FindMacro(Name);
-  
+
   If Idx > 0 Then
     GetMacroParams := Macros[Idx].Parameters
   Else If Idx < 0 Then
@@ -15842,7 +14852,7 @@ Var
 Begin
   IsMacroFuncLike := False;
   Idx := FindMacro(Name);
-  
+
   If Idx > 0 Then
     IsMacroFuncLike := Macros[Idx].IsFuncLike
   Else If Idx < 0 Then
@@ -15856,7 +14866,7 @@ Var
 Begin
   IsMacroVariadic := False;
   Idx := FindMacro(Name);
-  
+
   If Idx > 0 Then
     IsMacroVariadic := Macros[Idx].IsVariadic
   Else If Idx < 0 Then
@@ -15871,7 +14881,7 @@ Begin
     WarnMsg('Profondeur maximale de #if atteinte');
     Exit;
   End;
-  
+
   Inc(IfDefStackDepth);
   IfDefStack[IfDefStackDepth].State := State;
   IfDefStack[IfDefStackDepth].WasActive := (State = PP_ACTIVE);
@@ -15916,7 +14926,7 @@ Begin
   Defined := IsMacroDefined(MacroName);
   If IsNDef Then
     Defined := Not Defined;
-  
+
   If Not IsPreprocessorActive Then
     PushIfDefState(PP_SKIPPING, Line)
   Else If Defined Then
@@ -15933,7 +14943,7 @@ Begin
     WarnMsg('#else sans #if');
     Exit;
   End;
-  
+
   If IfDefStack[IfDefStackDepth].WasActive Then
     IfDefStack[IfDefStackDepth].State := PP_DONE
   Else If IfDefStack[IfDefStackDepth].State = PP_SKIPPING Then
@@ -15973,7 +14983,7 @@ Var
 Begin
   GetMacroFileName := '';
   Idx := FindMacro(Name);
-  
+
   If Idx > 0 Then
     GetMacroFileName := Macros[Idx].FileName
   Else If Idx < 0 Then
@@ -15987,7 +14997,7 @@ Var
 Begin
   GetMacroLine := 0;
   Idx := FindMacro(Name);
-  
+
   If Idx > 0 Then
     GetMacroLine := Macros[Idx].Line
   Else If Idx < 0 Then
@@ -16007,7 +15017,7 @@ Begin
       Write('(', Macros[I].Parameters, ')');
     WriteLn(' = ', Macros[I].Value);
   End;
-  
+
   WriteLn;
   WriteLn('=== Macros predefinies (', PredefinedCount, ') ===');
   For I := 1 To PredefinedCount Do
@@ -16029,7 +15039,7 @@ Begin
   NamespaceCount := 0;
   ModuleCount := 0;
   NamespaceStackDepth := 0;
-  
+
   For I := 1 To MAX_NAMESPACES Do
   Begin
     Namespaces[I].Name := '';
@@ -16042,7 +15052,7 @@ Begin
     Namespaces[I].IsInline := False;
     Namespaces[I].Language := '';
   End;
-  
+
   For I := 1 To MAX_MODULES Do
   Begin
     Modules[I].Name := '';
@@ -16053,10 +15063,10 @@ Begin
     Modules[I].IsInterface := False;
     Modules[I].Line := 0;
   End;
-  
+
   For I := 1 To MAX_NS_DEPTH Do
     NamespaceStack[I] := -1;
-  
+
   NamespacesInitialized := True;
 End;
 
@@ -16103,7 +15113,7 @@ Begin
     AddNamespace := -1;
     Exit;
   End;
-  
+
   Inc(NamespaceCount);
   Namespaces[NamespaceCount].Name := Name;
   Namespaces[NamespaceCount].FullName := FullName;
@@ -16114,7 +15124,7 @@ Begin
   Namespaces[NamespaceCount].IsAnonymous := IsAnon;
   Namespaces[NamespaceCount].IsInline := IsInln;
   Namespaces[NamespaceCount].Language := Lang;
-  
+
   AddNamespace := NamespaceCount;
 End;
 
@@ -16144,7 +15154,7 @@ Begin
     AddModule := -1;
     Exit;
   End;
-  
+
   Inc(ModuleCount);
   Modules[ModuleCount].Name := Name;
   Modules[ModuleCount].FileName := FileName;
@@ -16153,7 +15163,7 @@ Begin
   Modules[ModuleCount].IsPartition := IsPart;
   Modules[ModuleCount].IsInterface := IsIntf;
   Modules[ModuleCount].Line := Line;
-  
+
   AddModule := ModuleCount;
 End;
 
@@ -16232,18 +15242,18 @@ Begin
   IsAnon := False;
   IsInln := False;
   TmpLine := TrimStr(Line);
-  
+
   { Detecter inline namespace }
   If Copy(TmpLine, 1, 6) = 'inline' Then
   Begin
     IsInln := True;
     TmpLine := TrimStr(Copy(TmpLine, 7, Length(TmpLine)));
   End;
-  
+
   { Verifier si c'est un namespace }
   If Copy(TmpLine, 1, 9) <> 'namespace' Then Exit;
   TmpLine := TrimStr(Copy(TmpLine, 10, Length(TmpLine)));
-  
+
   { Namespace anonyme }
   If (TmpLine = '') Or (TmpLine[1] = '{') Then
   Begin
@@ -16251,7 +15261,7 @@ Begin
     ExtractCppNamespaceName := '<anonymous>';
     Exit;
   End;
-  
+
   { Extraire le nom }
   Pos1 := 1;
   While (Pos1 <= Length(TmpLine)) And
@@ -16260,7 +15270,7 @@ Begin
          ((TmpLine[Pos1] >= '0') And (TmpLine[Pos1] <= '9')) Or
          (TmpLine[Pos1] = '_') Or (TmpLine[Pos1] = ':')) Do
     Inc(Pos1);
-  
+
   ExtractCppNamespaceName := Copy(TmpLine, 1, Pos1 - 1);
 End;
 
@@ -16272,16 +15282,16 @@ Var
 Begin
   ExtractJavaPackageName := '';
   TmpLine := TrimStr(Line);
-  
+
   If Copy(TmpLine, 1, 7) <> 'package' Then Exit;
   TmpLine := TrimStr(Copy(TmpLine, 8, Length(TmpLine)));
-  
+
   { Trouver la fin du nom (jusqu'au ; ou espace) }
   Pos1 := 1;
   While (Pos1 <= Length(TmpLine)) And
         (TmpLine[Pos1] <> ';') And (TmpLine[Pos1] <> ' ') Do
     Inc(Pos1);
-  
+
   ExtractJavaPackageName := Copy(TmpLine, 1, Pos1 - 1);
 End;
 
@@ -16293,17 +15303,17 @@ Var
 Begin
   ExtractCSharpNamespaceName := '';
   TmpLine := TrimStr(Line);
-  
+
   If Copy(TmpLine, 1, 9) <> 'namespace' Then Exit;
   TmpLine := TrimStr(Copy(TmpLine, 10, Length(TmpLine)));
-  
+
   { Trouver la fin du nom }
   Pos1 := 1;
   While (Pos1 <= Length(TmpLine)) And
-        (TmpLine[Pos1] <> '{') And (TmpLine[Pos1] <> ';') And 
+        (TmpLine[Pos1] <> '{') And (TmpLine[Pos1] <> ';') And
         (TmpLine[Pos1] <> ' ') Do
     Inc(Pos1);
-  
+
   ExtractCSharpNamespaceName := TrimStr(Copy(TmpLine, 1, Pos1 - 1));
 End;
 
@@ -16316,22 +15326,22 @@ Begin
   ExtractAdaPackageName := '';
   TmpLine := TrimStr(Line);
   UpperLine := UpStr(TmpLine);
-  
+
   { package [body] Name is }
   If Copy(UpperLine, 1, 7) <> 'PACKAGE' Then Exit;
   TmpLine := TrimStr(Copy(TmpLine, 8, Length(TmpLine)));
   UpperLine := UpStr(TmpLine);
-  
+
   { Ignorer 'body' si present }
   If Copy(UpperLine, 1, 4) = 'BODY' Then
     TmpLine := TrimStr(Copy(TmpLine, 5, Length(TmpLine)));
-  
+
   { Extraire le nom }
   Pos1 := 1;
   While (Pos1 <= Length(TmpLine)) And
         (TmpLine[Pos1] <> ' ') And (TmpLine[Pos1] <> ';') Do
     Inc(Pos1);
-  
+
   ExtractAdaPackageName := Copy(TmpLine, 1, Pos1 - 1);
 End;
 
@@ -16344,23 +15354,23 @@ Begin
   ExtractCpp20ModuleName := '';
   IsExport := False;
   TmpLine := TrimStr(Line);
-  
+
   { Verifier export module }
   If Copy(TmpLine, 1, 6) = 'export' Then
   Begin
     IsExport := True;
     TmpLine := TrimStr(Copy(TmpLine, 7, Length(TmpLine)));
   End;
-  
+
   If Copy(TmpLine, 1, 6) <> 'module' Then Exit;
   TmpLine := TrimStr(Copy(TmpLine, 7, Length(TmpLine)));
-  
+
   { Extraire le nom jusqu'au ; }
   Pos1 := 1;
   While (Pos1 <= Length(TmpLine)) And
         (TmpLine[Pos1] <> ';') And (TmpLine[Pos1] <> ' ') Do
     Inc(Pos1);
-  
+
   ExtractCpp20ModuleName := Copy(TmpLine, 1, Pos1 - 1);
 End;
 
@@ -16372,16 +15382,16 @@ Var
 Begin
   ExtractCpp20Import := '';
   TmpLine := TrimStr(Line);
-  
+
   If Copy(TmpLine, 1, 6) <> 'import' Then Exit;
   TmpLine := TrimStr(Copy(TmpLine, 7, Length(TmpLine)));
-  
+
   { Extraire le nom }
   Pos1 := 1;
   While (Pos1 <= Length(TmpLine)) And
         (TmpLine[Pos1] <> ';') And (TmpLine[Pos1] <> ' ') Do
     Inc(Pos1);
-  
+
   ExtractCpp20Import := Copy(TmpLine, 1, Pos1 - 1);
 End;
 
@@ -16395,23 +15405,23 @@ Var
   UpperLang: String;
 Begin
   If Not NamespacesInitialized Then InitNamespaces;
-  
+
   Assign(F, FileName);
   {$I-}
   Reset(F);
   {$I+}
   If IOResult <> 0 Then Exit;
-  
+
   LineNo := 0;
   UpperLang := UpStr(LanguageToStr(Lang));
-  
+
   While Not Eof(F) Do
   Begin
     ReadLn(F, Line);
     Inc(LineNo);
     Line := TrimStr(Line);
     If Line = '' Then Continue;
-    
+
     { C++ namespace }
     If (Lang = LANG_CPP) Or (Lang = LANG_C) Then
     Begin
@@ -16421,7 +15431,7 @@ Begin
         If NsName <> '' Then
         Begin
           ParentId := GetCurrentNamespace;
-          NsId := AddNamespace(NsName, 
+          NsId := AddNamespace(NsName,
                                BuildFullNamespaceName(NsName, ParentId),
                                FileName, 'C++', LineNo, ParentId,
                                IsAnon, IsInln);
@@ -16449,7 +15459,7 @@ Begin
             AddModuleImport(ModuleCount, ModName);
         End;
       End;
-      
+
       { Detecter la fin d'un namespace }
       If (Pos('}', Line) > 0) And (NamespaceStackDepth > 0) Then
       Begin
@@ -16458,7 +15468,7 @@ Begin
           Namespaces[NsId].EndLine := LineNo;
       End;
     End
-    
+
     { Java package }
     Else If Lang = LANG_JAVA Then
     Begin
@@ -16470,7 +15480,7 @@ Begin
                        False, False);
       End;
     End
-    
+
     { C# namespace }
     Else If Lang = LANG_CSHARP Then
     Begin
@@ -16495,7 +15505,7 @@ Begin
           Namespaces[NsId].EndLine := LineNo;
       End;
     End
-    
+
     { Ada package }
     Else If Lang = LANG_ADA Then
     Begin
@@ -16508,7 +15518,7 @@ Begin
       End;
     End;
   End;
-  
+
   Close(F);
 End;
 
@@ -16525,7 +15535,7 @@ Begin
     Begin
       { Chercher le parent par le nom complet }
       ParentName := Namespaces[I].FullName;
-      
+
       { Trouver le dernier separateur }
       DotPos := 0;
       For J := Length(ParentName) DownTo 1 Do
@@ -16536,14 +15546,14 @@ Begin
           Break;
         End;
       End;
-      
+
       If DotPos > 1 Then
       Begin
         { Enlever :: ou . du debut }
         If (DotPos > 1) And (ParentName[DotPos-1] = ':') Then
           Dec(DotPos);
         ParentName := Copy(ParentName, 1, DotPos - 1);
-        
+
         { Chercher le parent }
         For J := 1 To NamespaceCount Do
         Begin
@@ -16567,10 +15577,10 @@ Var
 Begin
   GetNamespaceEntities := '';
   If (NamespaceId < 1) Or (NamespaceId > NamespaceCount) Then Exit;
-  
+
   Result := '';
   NsFullName := Namespaces[NamespaceId].FullName;
-  
+
   { Parcourir les entites pour trouver celles du namespace }
   For I := 1 To EntityCount Do
   Begin
@@ -16585,7 +15595,7 @@ Begin
       Result := Result + Entities[I].Name;
     End;
   End;
-  
+
   GetNamespaceEntities := Result;
 End;
 
@@ -16881,7 +15891,7 @@ Var
   I: Integer;
 Begin
   SearchCount := 0;
-  
+
   For I := 1 To MAX_SEARCH_ENTRIES Do
   Begin
     SearchIndex[I].Word := '';
@@ -16890,7 +15900,7 @@ Begin
     SearchIndex[I].Anchor := '';
     SearchIndex[I].Score := 0;
   End;
-  
+
   SearchInitialized := True;
 End;
 
@@ -16947,7 +15957,7 @@ Begin
   Count := 0;
   InWord := False;
   Start := 1;
-  
+
   For I := 1 To Length(Text) Do
   Begin
     If IsAlphaNum(Text[I]) Then
@@ -16966,7 +15976,7 @@ Begin
         Word := '';
         For J := Start To I - 1 Do
           Word := Word + Text[J];
-        
+
         If (Length(Word) >= SEARCH_MIN_WORD_LEN) And
            (Length(Word) <= SEARCH_MAX_WORD_LEN) And
            (Not IsStopWord(Word)) Then
@@ -16980,14 +15990,14 @@ Begin
       End;
     End;
   End;
-  
+
   { Dernier mot si le texte ne finit pas par un separateur }
   If InWord Then
   Begin
     Word := '';
     For J := Start To Length(Text) Do
       Word := Word + Text[J];
-    
+
     If (Length(Word) >= SEARCH_MIN_WORD_LEN) And
        (Length(Word) <= SEARCH_MAX_WORD_LEN) And
        (Not IsStopWord(Word)) Then
@@ -16999,7 +16009,7 @@ Begin
       End;
     End;
   End;
-  
+
   ExtractWords := Count;
 End;
 
@@ -17012,7 +16022,7 @@ Var
 Begin
   If SearchCount >= MAX_SEARCH_ENTRIES Then Exit;
   If Word = '' Then Exit;
-  
+
   { Verifier si l'entree existe deja }
   Found := False;
   For I := 1 To SearchCount Do
@@ -17027,7 +16037,7 @@ Begin
       Break;
     End;
   End;
-  
+
   If Not Found Then
   Begin
     Inc(SearchCount);
@@ -17048,9 +16058,9 @@ Var
 Begin
   If Not SearchInitialized Then
     InitSearchIndex;
-  
+
   SearchCount := 0;
-  
+
   For I := 1 To EntityCount Do
   Begin
     { Generer le nom de fichier et l'ancre }
@@ -17067,12 +16077,12 @@ Begin
         FileName := 'index.html';
     End;
     Anchor := 'a' + IntToStr(I);
-    
+
     { Indexer le nom de l'entite }
     WordCount := ExtractWords(Entities[I].Name, Words, 100);
     For J := 1 To WordCount Do
       AddSearchEntry(Words[J], I, FileName, Anchor, SEARCH_SCORE_NAME);
-    
+
     { Indexer la description breve }
     If Entities[I].BriefDesc <> '' Then
     Begin
@@ -17080,7 +16090,7 @@ Begin
       For J := 1 To WordCount Do
         AddSearchEntry(Words[J], I, FileName, Anchor, SEARCH_SCORE_BRIEF);
     End;
-    
+
     { Indexer la description detaillee }
     If Entities[I].DetailedDesc <> '' Then
     Begin
@@ -17103,7 +16113,7 @@ Var
 Begin
   Result := '';
   ResultCount := 0;
-  
+
   { Extraire les mots de la requete }
   WordCount := ExtractWords(Query, Words, 20);
   If WordCount = 0 Then
@@ -17111,7 +16121,7 @@ Begin
     SearchEntities := '';
     Exit;
   End;
-  
+
   { Rechercher chaque mot dans l'index }
   For I := 1 To SearchCount Do
   Begin
@@ -17124,7 +16134,7 @@ Begin
         While (K <= ResultCount) And
               (ResultIds[K] <> SearchIndex[I].EntityId) Do
           Inc(K);
-        
+
         If K > ResultCount Then
         Begin
           { Nouvelle entite }
@@ -17143,7 +16153,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Trier les resultats par score decroissant (tri a bulles) }
   For I := 1 To ResultCount - 1 Do
     For J := I + 1 To ResultCount Do
@@ -17156,7 +16166,7 @@ Begin
         ResultIds[J] := TempId;
         ResultScores[J] := TempScore;
       End;
-  
+
   { Construire la chaine de resultats }
   For I := 1 To ResultCount Do
   Begin
@@ -17164,7 +16174,7 @@ Begin
     Result := Result + IntToStr(ResultIds[I]) + ':' +
               IntToStr(ResultScores[I]);
   End;
-  
+
   SearchEntities := Result;
 End;
 
@@ -17177,10 +16187,10 @@ Var
 Begin
   If Not SearchInitialized Then
     InitSearchIndex;
-  
+
   If SearchCount = 0 Then
     BuildSearchIndex;
-  
+
   { Generer le fichier searchdata.js }
   FileName := OutputDir + '/' + SEARCH_DATA_FILE;
   Assign(F, FileName);
@@ -17192,11 +16202,11 @@ Begin
     WarnMsg('Impossible de creer ' + FileName);
     Exit;
   End;
-  
+
   WriteLn(F, '// Donnees d''index de recherche generees par DOXYGEN');
   WriteLn(F, '// Date: ', DOXYGEN_DATE);
   WriteLn(F, 'var searchData = [');
-  
+
   For I := 1 To SearchCount Do
   Begin
     Write(F, '  ["', SearchIndex[I].Word, '",');
@@ -17209,7 +16219,7 @@ Begin
     Else
       WriteLn(F);
   End;
-  
+
   WriteLn(F, '];');
   Close(F);
 End;
@@ -17230,7 +16240,7 @@ Begin
     WarnMsg('Impossible de creer ' + FileName);
     Exit;
   End;
-  
+
   WriteLn(F, HTML_DOCTYPE);
   WriteLn(F, '<html lang="fr">');
   WriteLn(F, '<head>');
@@ -17257,7 +16267,7 @@ Begin
   WriteLn(F, '  </div>');
   WriteLn(F, '</body>');
   WriteLn(F, '</html>');
-  
+
   Close(F);
 End;
 
@@ -17277,7 +16287,7 @@ Begin
     WarnMsg('Impossible de creer ' + FileName);
     Exit;
   End;
-  
+
   WriteLn(F, '// Script de recherche genere par DOXYGEN');
   WriteLn(F, '// Version: ', DOXYGEN_VERSION);
   WriteLn(F, '');
@@ -17337,7 +16347,7 @@ Begin
   WriteLn(F, '    });');
   WriteLn(F, '  }');
   WriteLn(F, '});');
-  
+
   Close(F);
 End;
 
@@ -17427,11 +16437,11 @@ Begin
     GetAverageSearchScore := 0;
     Exit;
   End;
-  
+
   Total := 0;
   For I := 1 To SearchCount Do
     Total := Total + SearchIndex[I].Score;
-  
+
   GetAverageSearchScore := Total Div SearchCount;
 End;
 
@@ -17446,10 +16456,10 @@ Begin
     GetMostIndexedWord := '';
     Exit;
   End;
-  
+
   MaxWord := SearchIndex[1].Word;
   MaxCount := 1;
-  
+
   For I := 1 To SearchCount Do
   Begin
     CurWord := SearchIndex[I].Word;
@@ -17460,7 +16470,7 @@ Begin
       MaxWord := CurWord;
     End;
   End;
-  
+
   GetMostIndexedWord := MaxWord;
 End;
 
@@ -17473,7 +16483,7 @@ Begin
   WriteLn('Nombre d''entrees: ', SearchCount);
   WriteLn('Initialise: ', SearchInitialized);
   WriteLn;
-  
+
   If SearchCount > 0 Then
   Begin
     WriteLn('Statistiques:');
@@ -17481,7 +16491,7 @@ Begin
     WriteLn('  Mot le plus indexe: ', GetMostIndexedWord);
     WriteLn;
   End;
-  
+
   WriteLn('Entrees (max 50):');
   For I := 1 To Min(SearchCount, 50) Do
   Begin
@@ -17491,7 +16501,7 @@ Begin
     WriteLn('       Fichier: ', SearchIndex[I].FileName,
             '#', SearchIndex[I].Anchor);
   End;
-  
+
   If SearchCount > 50 Then
     WriteLn('  ... et ', SearchCount - 50, ' autres entrees');
 End;
@@ -17507,13 +16517,13 @@ Var
 Begin
   SourceCount := 0;
   ProcessedCount := 0;
-  
+
   For I := 1 To MAX_FILES Do
   Begin
     SourceFiles[I] := '';
     ProcessedFiles[I] := '';
   End;
-  
+
   MultiFileInitialized := True;
 End;
 
@@ -17536,13 +16546,13 @@ Begin
   MatchesPattern := False;
   FLen := Length(FileName);
   PLen := Length(Pattern);
-  
+
   If PLen = 0 Then
   Begin
     MatchesPattern := (FLen = 0);
     Exit;
   End;
-  
+
   { Pattern simple *.ext }
   If (Pattern[1] = '*') And (Pos('*', Copy(Pattern, 2, PLen - 1)) = 0) Then
   Begin
@@ -17552,7 +16562,7 @@ Begin
       MatchesPattern := True;
       Exit;
     End;
-    
+
     { Extraire le suffix apres * }
     If FLen >= (PLen - 1) Then
     Begin
@@ -17570,7 +16580,7 @@ Begin
     End;
     Exit;
   End;
-  
+
   { Pattern prefix prefix* }
   If (Pattern[PLen] = '*') And (Pos('*', Copy(Pattern, 1, PLen - 1)) = 0) Then
   Begin
@@ -17586,7 +16596,7 @@ Begin
     End;
     Exit;
   End;
-  
+
   { Pattern exact sans wildcard }
   If Pos('*', Pattern) = 0 Then
   Begin
@@ -17600,7 +16610,7 @@ Begin
     MatchesPattern := True;
     Exit;
   End;
-  
+
   { Pattern complexe avec * au milieu - comparaison simplifiee }
   FI := 1;
   PI := 1;
@@ -17627,11 +16637,11 @@ Begin
       Inc(PI);
     End;
   End;
-  
+
   { Verifier si on a consomme tout le pattern }
   While (PI <= PLen) And (Pattern[PI] = '*') Do
     Inc(PI);
-    
+
   MatchesPattern := (PI > PLen);
 End;
 
@@ -17670,7 +16680,7 @@ Begin
     If (FileName[I] = '/') Or (FileName[I] = '\') Then
       Break;
   End;
-  
+
   If Dot > 0 Then
     ExtractFileExt := Copy(FileName, Dot, Length(FileName) - Dot + 1)
   Else
@@ -17687,14 +16697,14 @@ Begin
   { Normaliser les chemins }
   FP := FullPath;
   BP := BasePath;
-  
+
   { Si le chemin de base est vide, retourner le chemin complet }
   If BP = '' Then
   Begin
     GetRelativePath := FP;
     Exit;
   End;
-  
+
   { Trouver la partie commune }
   CommonLen := 0;
   For I := 1 To Min(Length(FP), Length(BP)) Do
@@ -17704,27 +16714,27 @@ Begin
     Else
       Break;
   End;
-  
+
   { Si pas de partie commune, retourner le chemin complet }
   If CommonLen = 0 Then
   Begin
     GetRelativePath := FP;
     Exit;
   End;
-  
+
   { Retourner la partie apres le chemin de base }
   If CommonLen >= Length(BP) Then
     Result := Copy(FP, CommonLen + 1, Length(FP) - CommonLen)
   Else
     Result := FP;
-    
+
   { Enlever le separateur initial si present }
   If Length(Result) > 0 Then
   Begin
     If (Result[1] = '/') Or (Result[1] = '\') Then
       Result := Copy(Result, 2, Length(Result) - 1);
   End;
-  
+
   GetRelativePath := Result;
 End;
 
@@ -17737,16 +16747,16 @@ Var
   I, Start: Integer;
 Begin
   IsExcluded := False;
-  
+
   { Recuperer les patterns d'exclusion de la configuration }
   ExcludePatterns := GetConfigValue('EXCLUDE_PATTERNS');
   If ExcludePatterns = '' Then
     Exit;
-    
+
   { Parser les patterns separes par des espaces }
   ExcludeList := ExcludePatterns + ' ';
   Start := 1;
-  
+
   For I := 1 To Length(ExcludeList) Do
   Begin
     If ExcludeList[I] = ' ' Then
@@ -17778,7 +16788,7 @@ Var
 Begin
   IsFileInSourceList := False;
   FN := UpStr(FileName);
-  
+
   For I := 1 To SourceCount Do
   Begin
     If UpStr(SourceFiles[I]) = FN Then
@@ -17793,29 +16803,29 @@ End;
 Function AddSourceFile(Const FileName: String): Boolean;
 Begin
   AddSourceFile := False;
-  
+
   { Verifier la capacite }
   If SourceCount >= MAX_FILES Then
   Begin
     WarnMsg('Nombre maximum de fichiers atteint: ' + IntToStr(MAX_FILES));
     Exit;
   End;
-  
+
   { Verifier si le fichier existe }
   If Not FileExists(FileName) Then
   Begin
     WarnMsg('Fichier non trouve: ' + FileName);
     Exit;
   End;
-  
+
   { Verifier si le fichier est deja dans la liste }
   If IsFileInSourceList(FileName) Then
     Exit;
-    
+
   { Verifier si le fichier est exclu }
   If IsExcluded(FileName) Then
     Exit;
-    
+
   { Ajouter le fichier }
   Inc(SourceCount);
   SourceFiles[SourceCount] := FileName;
@@ -17826,10 +16836,10 @@ End;
 Function AddProcessedFile(Const FileName: String): Boolean;
 Begin
   AddProcessedFile := False;
-  
+
   If ProcessedCount >= MAX_FILES Then
     Exit;
-    
+
   Inc(ProcessedCount);
   ProcessedFiles[ProcessedCount] := FileName;
   AddProcessedFile := True;
@@ -17843,7 +16853,7 @@ Var
 Begin
   IsFileProcessed := False;
   FN := UpStr(FileName);
-  
+
   For I := 1 To ProcessedCount Do
   Begin
     If UpStr(ProcessedFiles[I]) = FN Then
@@ -17869,7 +16879,7 @@ Begin
   FilePatterns := GetConfigValue('FILE_PATTERNS');
   If FilePatterns = '' Then
     FilePatterns := '*.c *.cc *.cxx *.cpp *.h *.hh *.hxx *.hpp *.pas *.pp *.java *.py *.cs *.ada *.adb *.ads *.f *.f90';
-  
+
   { Chercher tous les fichiers dans le repertoire }
   FindFirst(Path + '*.*', AnyFile, SR);
   While DosError = 0 Do
@@ -17880,7 +16890,7 @@ Begin
       If (SR.Attr And Directory) = 0 Then
       Begin
         FullPath := Path + SR.Name;
-        
+
         { Verifier si c'est un fichier source }
         Ext := ExtractFileExt(SR.Name);
         If IsSourceExtension(Ext) Then
@@ -17909,7 +16919,7 @@ Begin
     End;
     FindNext(SR);
   End;
-  
+
   { Recherche recursive dans les sous-repertoires }
   If Recursive Then
   Begin
@@ -17921,7 +16931,7 @@ Begin
         If (SR.Name <> '.') And (SR.Name <> '..') Then
         Begin
           FullPath := Path + SR.Name + '/';
-          
+
           { Verifier si le repertoire est exclu }
           If Not IsExcluded(SR.Name) Then
             CollectSourceFiles(FullPath, True);
@@ -17941,7 +16951,7 @@ Begin
   { Verifier si la recherche recursive est activee }
   RecurseOpt := GetConfigValue('RECURSIVE');
   Recursive := (UpStr(RecurseOpt) = 'YES') Or (UpStr(RecurseOpt) = 'TRUE') Or (RecurseOpt = '1');
-  
+
   { Collecter les fichiers sources }
   CollectSourceFiles(DirPath, Recursive);
 End;
@@ -17952,21 +16962,21 @@ Var
   I: Integer;
 Begin
   InfoMsg('Traitement de ' + IntToStr(SourceCount) + ' fichier(s) source(s)...');
-  
+
   For I := 1 To SourceCount Do
   Begin
     If Not IsFileProcessed(SourceFiles[I]) Then
     Begin
       InfoMsg('  Traitement: ' + SourceFiles[I]);
-      
+
       { Traiter le fichier }
       ProcessInputFile(SourceFiles[I]);
-      
+
       { Marquer comme traite }
       AddProcessedFile(SourceFiles[I]);
     End;
   End;
-  
+
   InfoMsg('Traitement termine: ' + IntToStr(ProcessedCount) + ' fichier(s) traite(s)');
 End;
 
@@ -17977,7 +16987,7 @@ Var
   Path: String;
 Begin
   DirectoryExists := False;
-  
+
   Path := DirPath;
   { Enlever le separateur final si present }
   If Length(Path) > 0 Then
@@ -17985,7 +16995,7 @@ Begin
     If (Path[Length(Path)] = '/') Or (Path[Length(Path)] = '\') Then
       Path := Copy(Path, 1, Length(Path) - 1);
   End;
-  
+
   FindFirst(Path, Directory, SR);
   If DosError = 0 Then
   Begin
@@ -18007,14 +17017,14 @@ Begin
     WarnMsg('Aucun fichier ou repertoire d''entree specifie (INPUT)');
     Exit;
   End;
-  
+
   { Initialiser le systeme multi-fichiers }
   InitMultiFile;
-  
+
   { Parser les entrees separees par des espaces }
   InputList := InputValue + ' ';
   Start := 1;
-  
+
   For I := 1 To Length(InputList) Do
   Begin
     If InputList[I] = ' ' Then
@@ -18022,7 +17032,7 @@ Begin
       If I > Start Then
       Begin
         Item := Copy(InputList, Start, I - Start);
-        
+
         { Verifier si c'est un fichier ou un repertoire }
         If FileExists(Item) Then
           AddSourceFile(Item)
@@ -18039,7 +17049,7 @@ Begin
       Start := I + 1;
     End;
   End;
-  
+
   { Traiter tous les fichiers collectes }
   If SourceCount > 0 Then
     ProcessAllFiles;
@@ -18141,12 +17151,12 @@ Begin
   WriteLn('Nombre: ', SourceCount);
   WriteLn('Initialise: ', MultiFileInitialized);
   WriteLn;
-  
+
   For I := 1 To Min(SourceCount, 50) Do
   Begin
     WriteLn('  [', I, '] ', SourceFiles[I]);
   End;
-  
+
   If SourceCount > 50 Then
     WriteLn('  ... et ', SourceCount - 50, ' autres fichiers');
 End;
@@ -18160,12 +17170,12 @@ Begin
   WriteLn('Nombre: ', ProcessedCount);
   WriteLn('Progression: ', GetProcessingProgress, '%');
   WriteLn;
-  
+
   For I := 1 To Min(ProcessedCount, 50) Do
   Begin
     WriteLn('  [', I, '] ', ProcessedFiles[I]);
   End;
-  
+
   If ProcessedCount > 50 Then
     WriteLn('  ... et ', ProcessedCount - 50, ' autres fichiers');
 End;
@@ -18237,7 +17247,7 @@ Procedure ReportWarning(Kind: TWarningKind; Const FileName: String;
 Begin
   If Not ValidationInitialized Then
     InitValidation;
-    
+
   If WarningCount < MAX_WARNINGS Then
   Begin
     Inc(WarningCount);
@@ -18255,7 +17265,7 @@ Procedure ReportWarningForEntity(Kind: TWarningKind; Const FileName: String;
 Begin
   If Not ValidationInitialized Then
     InitValidation;
-    
+
   If WarningCount < MAX_WARNINGS Then
   Begin
     Inc(WarningCount);
@@ -18272,7 +17282,7 @@ Procedure ReportError(Const FileName: String; Line: Integer; Const Msg: String);
 Begin
   If Not ValidationInitialized Then
     InitValidation;
-    
+
   Inc(ErrorCount);
   { Affiche l'erreur immediatement }
   WriteLn('ERREUR: ', FileName, ':', Line, ': ', Msg);
@@ -18304,7 +17314,7 @@ Var
 Begin
   If Not ValidationInitialized Then
     InitValidation;
-    
+
   For I := 1 To EntityCount Do
   Begin
     { Verifier seulement les entites publiques }
@@ -18323,7 +17333,7 @@ Begin
         Else
           WarnKind := WARN_UNDOC_MEMBER;
         End;
-        
+
         ReportWarningForEntity(WarnKind, Entities[I].FileName, Entities[I].Line,
           'Entite publique non documentee: ' + Entities[I].Name, I);
       End;
@@ -18339,13 +17349,13 @@ Var
 Begin
   If Not ValidationInitialized Then
     InitValidation;
-    
+
   For I := 1 To DocTagCount Do
   Begin
     If (DocTags[I].Kind = TAG_SEE) Or (DocTags[I].Kind = TAG_REF) Then
     Begin
       Target := DocTags[I].Content;
-      
+
       { Verifier si la cible existe }
       If Target <> '' Then
       Begin
@@ -18368,7 +17378,7 @@ Var
 Begin
   If Not ValidationInitialized Then
     InitValidation;
-    
+
   { Parcourir toutes les fonctions }
   For I := 1 To EntityCount Do
   Begin
@@ -18402,11 +17412,11 @@ Begin
     WriteLn('Aucun avertissement.');
     Exit;
   End;
-  
+
   WriteLn;
   WriteLn('=== AVERTISSEMENTS (', WarningCount, ') ===');
   WriteLn;
-  
+
   For I := 1 To WarningCount Do
   Begin
     Write('AVERT [', WarningKindName(Warnings[I].Kind), ']: ');
@@ -18416,7 +17426,7 @@ Begin
       Write(Warnings[I].Line, ': ');
     WriteLn(Warnings[I].Message);
   End;
-  
+
   WriteLn;
   If ErrorCount > 0 Then
     WriteLn('Erreurs: ', ErrorCount);
@@ -18432,21 +17442,21 @@ Begin
   { Initialiser les compteurs }
   For K := WARN_UNDOC_FUNC To WARN_SYNTAX_ERROR Do
     Counts[K] := 0;
-    
+
   { Compter les avertissements par type }
   For I := 1 To WarningCount Do
     Inc(Counts[Warnings[I].Kind]);
-    
+
   WriteLn;
   WriteLn('=== RESUME DES AVERTISSEMENTS ===');
   WriteLn;
-  
+
   For K := WARN_UNDOC_FUNC To WARN_SYNTAX_ERROR Do
   Begin
     If Counts[K] > 0 Then
       WriteLn('  ', WarningKindName(K), ': ', Counts[K]);
   End;
-  
+
   WriteLn;
   WriteLn('Total: ', WarningCount, ' avertissement(s), ', ErrorCount, ' erreur(s)');
 End;
@@ -18490,7 +17500,7 @@ Begin
     GetDocumentationCoverage := 100.0;
     Exit;
   End;
-  
+
   Documented := GetDocumentedEntities;
   GetDocumentationCoverage := (Documented * 100.0) / Total;
 End;
@@ -18597,7 +17607,7 @@ Procedure RunAllValidations;
 Begin
   If Not ValidationInitialized Then
     InitValidation;
-    
+
   ClearWarnings;
   ValidateDocumentation;
   ValidateLinks;
@@ -18615,7 +17625,7 @@ Begin
   WriteLn('Entites non documentees: ', GetUndocumentedEntities);
   WriteLn('Couverture: ', GetDocumentationCoverage:0:1, '%');
   WriteLn;
-  
+
   WriteLn('Avertissements par type:');
   WriteLn('  Fonctions non doc: ', CountWarningsOfKind(WARN_UNDOC_FUNC));
   WriteLn('  Classes non doc: ', CountWarningsOfKind(WARN_UNDOC_CLASS));
@@ -18711,18 +17721,18 @@ Var
 Begin
   If Not StatsInitialized Then
     InitStatistics;
-    
+
   { Compte les fichiers traites }
   Stats.TotalFiles := ProcessedCount;
   If Stats.TotalFiles = 0 Then
     Stats.TotalFiles := SourceCount;
-    
+
   { Compte les entites par type }
   Stats.TotalEntities := EntityCount;
   Stats.ClassCount := 0;
   Stats.FunctionCount := 0;
   Stats.VariableCount := 0;
-  
+
   For I := 1 To EntityCount Do
   Begin
     Case Entities[I].Kind Of
@@ -18734,10 +17744,10 @@ Begin
         Inc(Stats.VariableCount);
     End;
   End;
-  
+
   { Compte les namespaces }
   Stats.NamespaceCount := NamespaceCount;
-  
+
   { Compte les pages et groupes }
   Stats.PageCount := 0;
   Stats.GroupCount := 0;
@@ -18748,7 +17758,7 @@ Begin
     If Entities[I].Kind = ENT_GROUP Then
       Inc(Stats.GroupCount);
   End;
-  
+
   { Compte les entites documentees/non-documentees }
   DocCount := 0;
   UndocCount := 0;
@@ -18761,17 +17771,17 @@ Begin
   End;
   Stats.DocumentedCount := DocCount;
   Stats.UndocumentedCount := UndocCount;
-  
+
   { Calcule le pourcentage de couverture }
   If Stats.TotalEntities > 0 Then
     Stats.CoveragePercent := (Stats.DocumentedCount / Stats.TotalEntities) * 100.0
   Else
     Stats.CoveragePercent := 0.0;
-    
+
   { Copie les compteurs d'avertissements et d'erreurs }
   Stats.WarningCount := WarningCount;
   Stats.ErrorCount := ErrorCount;
-  
+
   { Calcule le temps de traitement }
   Stats.ProcessingTime := GetElapsedTime;
 End;
@@ -18780,7 +17790,7 @@ End;
 Procedure DisplayFinalReport;
 Begin
   CollectStatistics;
-  
+
   WriteLn;
   WriteLn('=== DOXYGEN - Rapport de generation ===');
   WriteLn;
@@ -18804,7 +17814,7 @@ Begin
   If Stats.OutputSize > 0 Then
     WriteLn('Taille documentation : ', FormatSize(Stats.OutputSize));
   WriteLn;
-  
+
   { Affichage du detail si mode Verbose }
   If Opts.Verbose Then
   Begin
@@ -18817,7 +17827,7 @@ End;
 Procedure WriteStatisticsXml(Var OutFile: Text);
 Begin
   CollectStatistics;
-  
+
   WriteLn(OutFile, '<?xml version="1.0" encoding="UTF-8"?>');
   WriteLn(OutFile, '<doxygen-statistics>');
   WriteLn(OutFile, '  <summary>');
@@ -18861,7 +17871,7 @@ Begin
     WarnMsg('Impossible de creer le fichier de statistiques: ' + FileName);
     Exit;
   End;
-  
+
   WriteStatisticsXml(F);
   Close(F);
 End;
@@ -18988,7 +17998,7 @@ End;
 { La DCT est implementee en deux passes (separable):
   1. DCT horizontale sur chaque ligne
   2. DCT verticale sur chaque colonne
-  
+
   Cela reduit la complexite de O(N^4) a O(N^3) pour un bloc NxN. }
 
 Procedure JPEG_InitCosTable;
@@ -19023,17 +18033,17 @@ End;
 Procedure JPEG_DCT_Forward(Var Pixels: TJPEGPixelBlock;
                            Var Coeffs: TJPEGDCTBlock);
 { Applique la DCT-II 2D sur un bloc 8x8 de pixels
-  
+
   Entree:
     Pixels - Bloc 8x8 de pixels (valeurs 0-255 seront centrees)
-  
+
   Sortie:
     Coeffs - Bloc 8x8 de coefficients DCT (valeurs flottantes)
-  
+
   La transformation est effectuee en deux passes (separable):
   1. DCT 1D sur les lignes (horizontale)
   2. DCT 1D sur les colonnes (verticale)
-  
+
   Formule DCT-II 2D:
   F(u,v) = (1/4) * C(u) * C(v) * SUM[x,y] (f(x,y) - 128) *
            cos((2x+1)*u*pi/16) * cos((2y+1)*v*pi/16)
@@ -19047,7 +18057,7 @@ Begin
   { S'assurer que les tables sont initialisees }
   If Not JPEG_DCTInitialized Then
     JPEG_InitCosTable;
-  
+
   { Passe 1: DCT horizontale (sur les lignes) }
   For Y := 0 To 7 Do
   Begin
@@ -19064,7 +18074,7 @@ Begin
       Temp[Y, U] := Sum * JPEG_Alpha(U) * 0.5;
     End;
   End;
-  
+
   { Passe 2: DCT verticale (sur les colonnes) }
   For U := 0 To 7 Do
   Begin
@@ -19082,13 +18092,13 @@ End;
 Procedure JPEG_DCT_Inverse(Var Coeffs: TJPEGDCTBlock;
                            Var Pixels: TJPEGPixelBlock);
 { Applique la DCT-II inverse (IDCT) sur un bloc 8x8 de coefficients
-  
+
   Entree:
     Coeffs - Bloc 8x8 de coefficients DCT (valeurs flottantes)
-  
+
   Sortie:
     Pixels - Bloc 8x8 de pixels reconstruits (valeurs 0-255)
-  
+
   Formule IDCT:
   f(x,y) = (1/4) * SUM[u,v] C(u)*C(v) * F(u,v) *
            cos((2x+1)*u*pi/16) * cos((2y+1)*v*pi/16) + 128
@@ -19102,7 +18112,7 @@ Begin
   { S'assurer que les tables sont initialisees }
   If Not JPEG_DCTInitialized Then
     JPEG_InitCosTable;
-  
+
   { Passe 1: IDCT verticale (sur les colonnes) }
   For U := 0 To 7 Do
   Begin
@@ -19114,7 +18124,7 @@ Begin
       Temp[Y, U] := Sum * 0.5;
     End;
   End;
-  
+
   { Passe 2: IDCT horizontale (sur les lignes) }
   For Y := 0 To 7 Do
   Begin
@@ -19124,7 +18134,7 @@ Begin
       For U := 0 To 7 Do
         Sum := Sum + JPEG_Alpha(U) * Temp[Y, U] * JPEG_CosTable[X, U];
       PixelVal := Sum * 0.5 + JPEG_LEVEL_SHIFT;
-      
+
       { Clipping: limiter a l'intervalle [0, 255] }
       If PixelVal < 0 Then
         Pixels[Y, X] := 0
@@ -19140,14 +18150,14 @@ Procedure JPEG_Quantize(Var Coeffs: TJPEGDCTBlock;
                         Var QuantTable: TJPEGQuantTable;
                         Var Quantized: TJPEGQuantBlock);
 { Quantifie les coefficients DCT avec la table de quantification
-  
+
   Entree:
     Coeffs - Bloc 8x8 de coefficients DCT (flottants)
     QuantTable - Table de quantification 64 elements (ordre zigzag)
-  
+
   Sortie:
     Quantized - Bloc 8x8 de coefficients quantifies (entiers)
-  
+
   Formule: Fq(u,v) = Round(F(u,v) / Q(u,v))
 }
 Var
@@ -19171,7 +18181,7 @@ Procedure JPEG_Dequantize(Var Quantized: TJPEGQuantBlock;
                           Var QuantTable: TJPEGQuantTable;
                           Var Coeffs: TJPEGDCTBlock);
 { Dequantifie les coefficients DCT (operation inverse)
-  
+
   Formule: F(u,v) = Fq(u,v) * Q(u,v)
 }
 Var
@@ -19251,14 +18261,14 @@ End;
 
 { Dans JPEG, les 64 coefficients DCT d'un bloc 8x8 sont reorganises
   selon un parcours en zigzag avant l'encodage entropique.
-  
+
   Ce parcours zigzag permet de grouper les coefficients de basse
   frequence (coin superieur gauche) au debut de la sequence lineaire
   et les hautes frequences (coin inferieur droit) a la fin.
-  
+
   Comme les hautes frequences sont souvent nulles apres quantification,
   le parcours zigzag facilite l'encodage RLE (Run-Length Encoding).
-  
+
   Parcours zigzag 8x8:
    0  1  5  6 14 15 27 28
    2  4  7 13 16 26 29 42
@@ -19273,7 +18283,7 @@ Procedure JPEG_InitZigzagTable;
 { Initialise les tables de correspondance zigzag
   - JPEG_ZigzagTable[i] = position matricielle pour position zigzag i
   - JPEG_InvZigzagTable[j] = position zigzag pour position matricielle j
-  
+
   La position matricielle est: row * 8 + col
   La table utilise les constantes JPEG_ZZ_xx definies dans la Partie 2 }
 Begin
@@ -19342,7 +18352,7 @@ Begin
   JPEG_ZigzagTable[61] := JPEG_ZZ_61;   { 61 -> 55 }
   JPEG_ZigzagTable[62] := JPEG_ZZ_62;   { 62 -> 62 }
   JPEG_ZigzagTable[63] := JPEG_ZZ_63;   { 63 -> 63 }
-  
+
   { Table inverse: position matricielle -> indice zigzag }
   JPEG_InvZigzagTable[0]  := 0;   JPEG_InvZigzagTable[1]  := 1;
   JPEG_InvZigzagTable[2]  := 5;   JPEG_InvZigzagTable[3]  := 6;
@@ -19376,7 +18386,7 @@ Begin
   JPEG_InvZigzagTable[58] := 48;  JPEG_InvZigzagTable[59] := 49;
   JPEG_InvZigzagTable[60] := 57;  JPEG_InvZigzagTable[61] := 58;
   JPEG_InvZigzagTable[62] := 62;  JPEG_InvZigzagTable[63] := 63;
-  
+
   JPEG_ZigzagInitialized := True;
 End;
 
@@ -19390,13 +18400,13 @@ End;
 Procedure JPEG_QuantBlockToZigzag(Var Block: TJPEGQuantBlock;
                                    Var Zigzag: TJPEGZigzagBlock);
 { Convertit un bloc 8x8 quantifie en tableau lineaire ordre zigzag
-  
+
   Entree:
     Block - Bloc 8x8 de coefficients quantifies (entiers)
-  
+
   Sortie:
     Zigzag - Tableau lineaire de 64 coefficients en ordre zigzag
-  
+
   Le coefficient DC (Block[0,0]) est toujours en Zigzag[0].
   Les coefficients AC suivent le parcours en zigzag. }
 Var
@@ -19404,7 +18414,7 @@ Var
 Begin
   If Not JPEG_ZigzagInitialized Then
     JPEG_InitZigzagTable;
-  
+
   For I := 0 To 63 Do
   Begin
     { Obtenir la position matricielle pour l'indice zigzag I }
@@ -19419,10 +18429,10 @@ Procedure JPEG_ZigzagToQuantBlock(Var Zigzag: TJPEGZigzagBlock;
                                    Var Block: TJPEGQuantBlock);
 { Convertit un tableau lineaire ordre zigzag en bloc 8x8 quantifie
   (operation inverse de JPEG_QuantBlockToZigzag)
-  
+
   Entree:
     Zigzag - Tableau lineaire de 64 coefficients en ordre zigzag
-  
+
   Sortie:
     Block - Bloc 8x8 de coefficients quantifies (entiers) }
 Var
@@ -19430,7 +18440,7 @@ Var
 Begin
   If Not JPEG_ZigzagInitialized Then
     JPEG_InitZigzagTable;
-  
+
   For I := 0 To 63 Do
   Begin
     { Obtenir la position matricielle pour l'indice zigzag I }
@@ -19445,7 +18455,7 @@ Procedure JPEG_DCTBlockToZigzag(Var Block: TJPEGDCTBlock;
                                  Var Zigzag: TJPEGZigzagBlock);
 { Convertit un bloc 8x8 DCT (flottant) en tableau lineaire zigzag (entier)
   Les valeurs sont arrondies a l'entier le plus proche.
-  
+
   Note: Generalement, on utilise JPEG_QuantBlockToZigzag apres
   quantification. Cette fonction est utile pour debug/tests. }
 Var
@@ -19453,7 +18463,7 @@ Var
 Begin
   If Not JPEG_ZigzagInitialized Then
     JPEG_InitZigzagTable;
-  
+
   For I := 0 To 63 Do
   Begin
     MatPos := JPEG_ZigzagTable[I];
@@ -19472,7 +18482,7 @@ Var
 Begin
   If Not JPEG_ZigzagInitialized Then
     JPEG_InitZigzagTable;
-  
+
   For I := 0 To 63 Do
   Begin
     MatPos := JPEG_ZigzagTable[I];
@@ -19490,7 +18500,7 @@ Var
 Begin
   If Not JPEG_ZigzagInitialized Then
     JPEG_InitZigzagTable;
-  
+
   MatPos := Row * 8 + Col;
   If (MatPos >= 0) And (MatPos <= 63) Then
     JPEG_GetZigzagIndex := JPEG_InvZigzagTable[MatPos]
@@ -19506,7 +18516,7 @@ Var
 Begin
   If Not JPEG_ZigzagInitialized Then
     JPEG_InitZigzagTable;
-  
+
   If (ZigzagIdx >= 0) And (ZigzagIdx <= 63) Then
   Begin
     MatPos := JPEG_ZigzagTable[ZigzagIdx];
@@ -19522,11 +18532,11 @@ End;
 
 Function JPEG_FindLastNonZero(Var Zigzag: TJPEGZigzagBlock): Integer;
 { Trouve l'indice du dernier coefficient non-nul dans un bloc zigzag
-  
+
   Retourne:
     -1 si tous les coefficients sont nuls (bloc vide)
     0..63 l'indice du dernier coefficient non-nul
-  
+
   Cette fonction est utile pour l'encodage RLE car elle permet
   de savoir ou s'arrete la sequence de coefficients AC. }
 Var
@@ -19546,7 +18556,7 @@ End;
 Function JPEG_CountZerosBeforeIndex(Var Zigzag: TJPEGZigzagBlock;
                                      StartIdx, EndIdx: Integer): Integer;
 { Compte le nombre de zeros consecutifs entre StartIdx et EndIdx (inclus)
-  
+
   Cette fonction est utile pour l'encodage RLE des coefficients AC.
   Dans JPEG, les zeros consecutifs sont encodes avec le coefficient
   non-nul suivant sous forme (RunLength, Value). }
@@ -19633,7 +18643,7 @@ Function JPEG_GetZigzagTableValue(Index: Integer): Integer;
 Begin
   If Not JPEG_ZigzagInitialized Then
     JPEG_InitZigzagTable;
-  
+
   If (Index >= 0) And (Index <= 63) Then
     JPEG_GetZigzagTableValue := JPEG_ZigzagTable[Index]
   Else
@@ -19646,7 +18656,7 @@ Function JPEG_GetInvZigzagTableValue(Index: Integer): Integer;
 Begin
   If Not JPEG_ZigzagInitialized Then
     JPEG_InitZigzagTable;
-  
+
   If (Index >= 0) And (Index <= 63) Then
     JPEG_GetInvZigzagTableValue := JPEG_InvZigzagTable[Index]
   Else
@@ -19660,7 +18670,7 @@ End;
 
 { Dans JPEG, les coefficients AC (indices 1-63 du bloc zigzag) sont
   encodes avec un schema RLE qui exploite les longues sequences de zeros.
-  
+
   L'encodage RLE pour JPEG fonctionne ainsi:
   1. On parcourt les coefficients AC en ordre zigzag
   2. Pour chaque coefficient non-nul, on encode:
@@ -19668,12 +18678,12 @@ End;
      - Value: la valeur du coefficient
   3. Si plus de 15 zeros consecutifs: symbole ZRL (Zero Run Length)
   4. Apres le dernier coefficient non-nul: symbole EOB (End Of Block)
-  
+
   Format du symbole AC: (RRRRSSSS, Amplitude)
   - RRRR = RunLength (4 bits, 0-15)
   - SSSS = Category/Size (4 bits, 0-10)
   - Amplitude = valeur encodee sur Category bits
-  
+
   Categories de magnitude:
   Cat 0: valeur 0 (pas d'amplitude)
   Cat 1: |val| = 1            (1 bit)
@@ -19686,7 +18696,7 @@ End;
   Cat 8: |val| = 128-255      (8 bits)
   Cat 9: |val| = 256-511      (9 bits)
   Cat 10: |val| = 512-1023    (10 bits)
-  
+
   Symboles speciaux:
   - EOB (End Of Block): (0, 0) = $00 - fin du bloc
   - ZRL (Zero Run Length): (15, 0) = $F0 - 16 zeros consecutifs }
@@ -19699,7 +18709,7 @@ Var
 Begin
   { Categorie 0: valeur 0 uniquement }
   JPEG_RLECategoryTable[0] := 0;
-  
+
   { Categories 1-10 }
   Threshold := 1;
   For Cat := 1 To 10 Do
@@ -19728,10 +18738,10 @@ End;
 
 Function JPEG_GetACCategory(Value: Integer): Integer;
 { Retourne la categorie de magnitude d'un coefficient AC
-  
+
   Entree:
     Value - Coefficient AC (-1023 a 1023)
-  
+
   Retourne:
     0 si Value = 0
     1-10 selon la magnitude (log2(|Value|) + 1) }
@@ -19740,7 +18750,7 @@ Var
 Begin
   If Not JPEG_RLEInitialized Then
     JPEG_InitRLE;
-  
+
   If Value = 0 Then
     JPEG_GetACCategory := 0
   Else
@@ -19754,11 +18764,11 @@ End;
 
 Function JPEG_GetACAmplitude(Value: Integer; Category: Integer): Integer;
 { Calcule l'amplitude encodee pour un coefficient AC
-  
+
   Dans JPEG, les valeurs negatives utilisent le complement a 1:
   - Positif: amplitude = value
   - Negatif: amplitude = value + 2^category - 1
-  
+
   Exemple categorie 3 (valeurs 4-7 ou -7 a -4):
     +4 -> 100, +5 -> 101, +6 -> 110, +7 -> 111
     -4 -> 011, -5 -> 010, -6 -> 001, -7 -> 000 }
@@ -19780,11 +18790,11 @@ End;
 Function JPEG_DecodeACAmplitude(Amplitude, Category: Integer): Integer;
 { Decode une amplitude en valeur de coefficient AC
   (operation inverse de JPEG_GetACAmplitude)
-  
+
   Entree:
     Amplitude - Valeur encodee sur Category bits
     Category - Categorie de magnitude (1-10)
-  
+
   Retourne:
     Valeur du coefficient (-1023 a 1023) }
 Var
@@ -19812,14 +18822,14 @@ Begin
   Pair.IsZRL := False;
 End;
 
-Procedure JPEG_SetRLEPair(Var Pair: TJPEGRLEPair; 
+Procedure JPEG_SetRLEPair(Var Pair: TJPEGRLEPair;
                           Run: Integer; Val: Integer);
 { Initialise une paire RLE avec run-length et valeur
   Calcule automatiquement la categorie }
 Begin
   If Run < 0 Then Run := 0;
   If Run > 15 Then Run := 15;
-  
+
   Pair.RunLength := Run;
   Pair.Value := Val;
   Pair.Category := JPEG_GetACCategory(Val);
@@ -19849,7 +18859,7 @@ End;
 
 Function JPEG_GetRLESymbol(Var Pair: TJPEGRLEPair): Byte;
 { Retourne le symbole JPEG (RRRRSSSS) pour une paire RLE
-  
+
   RRRR = RunLength (4 bits haut)
   SSSS = Category (4 bits bas) }
 Begin
@@ -19864,7 +18874,7 @@ Begin
   Block.Count := 0;
   Block.DCValue := 0;
   Block.HasEOB := False;
-  
+
   For I := 0 To 62 Do
     JPEG_InitRLEPair(Block.Pairs[I]);
 End;
@@ -19872,11 +18882,11 @@ End;
 Procedure JPEG_EncodeACBlock(Var Zigzag: TJPEGZigzagBlock;
                               Var RLEBlock: TJPEGRLEBlock);
 { Encode les coefficients AC d'un bloc zigzag en paires RLE
-  
+
   Entree:
     Zigzag - Bloc de 64 coefficients en ordre zigzag
              (indice 0 = DC, indices 1-63 = AC)
-  
+
   Sortie:
     RLEBlock - Bloc RLE contenant les paires encodees
                et le coefficient DC }
@@ -19885,12 +18895,12 @@ Var
 Begin
   If Not JPEG_RLEInitialized Then
     JPEG_InitRLE;
-  
+
   JPEG_InitRLEBlock(RLEBlock);
-  
+
   { Coefficient DC separe }
   RLEBlock.DCValue := Zigzag[0];
-  
+
   { Trouver le dernier coefficient AC non-nul }
   LastNonZero := 0;
   For I := 63 DownTo 1 Do
@@ -19901,7 +18911,7 @@ Begin
       Break;
     End;
   End;
-  
+
   { Si tous les AC sont nuls, juste EOB }
   If LastNonZero = 0 Then
   Begin
@@ -19912,11 +18922,11 @@ Begin
     Inc(JPEG_RLETotalPairs);
     Exit;
   End;
-  
+
   { Encoder les coefficients AC jusqu'au dernier non-nul }
   ZeroRun := 0;
   I := 1;  { Commencer apres le DC }
-  
+
   While I <= LastNonZero Do
   Begin
     If Zigzag[I] = 0 Then
@@ -19941,7 +18951,7 @@ Begin
     End;
     Inc(I);
   End;
-  
+
   { Ajouter EOB apres le dernier coefficient non-nul }
   If LastNonZero < 63 Then
   Begin
@@ -19950,7 +18960,7 @@ Begin
     Inc(JPEG_RLETotalPairs);
     RLEBlock.HasEOB := True;
   End;
-  
+
   Inc(JPEG_RLEBlockCount);
 End;
 
@@ -19958,10 +18968,10 @@ Procedure JPEG_DecodeRLEBlock(Var RLEBlock: TJPEGRLEBlock;
                                Var Zigzag: TJPEGZigzagBlock);
 { Decode un bloc RLE en coefficients zigzag
   (operation inverse de JPEG_EncodeACBlock)
-  
+
   Entree:
     RLEBlock - Bloc RLE avec paires et coefficient DC
-  
+
   Sortie:
     Zigzag - Bloc de 64 coefficients en ordre zigzag }
 Var
@@ -19970,13 +18980,13 @@ Begin
   { Initialiser le bloc zigzag a zero }
   For I := 0 To 63 Do
     Zigzag[I] := 0;
-  
+
   { Coefficient DC }
   Zigzag[0] := RLEBlock.DCValue;
-  
+
   { Decoder les paires RLE }
   ZigzagPos := 1;  { Position courante dans le bloc zigzag }
-  
+
   For I := 0 To RLEBlock.Count - 1 Do
   Begin
     If RLEBlock.Pairs[I].IsEOB Then
@@ -19997,7 +19007,7 @@ Begin
         Zigzag[ZigzagPos] := RLEBlock.Pairs[I].Value;
       Inc(ZigzagPos);
     End;
-    
+
     { Securite: ne pas depasser le bloc }
     If ZigzagPos > 63 Then
       Break;
@@ -20046,7 +19056,7 @@ Begin
   Stats.MaxRunLength := 0;
   Stats.MaxCategory := 0;
   Stats.NonZeroCount := 0;
-  
+
   For I := 0 To RLEBlock.Count - 1 Do
   Begin
     If RLEBlock.Pairs[I].IsZRL Then
@@ -20056,11 +19066,11 @@ Begin
     Else
     Begin
       Inc(Stats.NonZeroCount);
-      
+
       Run := RLEBlock.Pairs[I].RunLength;
       If Run > Stats.MaxRunLength Then
         Stats.MaxRunLength := Run;
-      
+
       Cat := RLEBlock.Pairs[I].Category;
       If Cat > Stats.MaxCategory Then
         Stats.MaxCategory := Cat;
@@ -20071,7 +19081,7 @@ End;
 Function JPEG_EstimateRLEBits(Var RLEBlock: TJPEGRLEBlock): Integer;
 { Estime le nombre de bits necessaires pour encoder un bloc RLE
   (sans compter le coefficient DC)
-  
+
   Note: Ceci est une estimation simplifiee qui ne tient pas compte
   de l'encodage Huffman reel. Elle suppose que chaque symbole
   prend environ 8 bits + les bits d'amplitude. }
@@ -20079,7 +19089,7 @@ Var
   I, TotalBits: Integer;
 Begin
   TotalBits := 0;
-  
+
   For I := 0 To RLEBlock.Count - 1 Do
   Begin
     If RLEBlock.Pairs[I].IsEOB Then
@@ -20090,7 +19100,7 @@ Begin
       { Symbole (8 bits environ) + amplitude (category bits) }
       TotalBits := TotalBits + 8 + RLEBlock.Pairs[I].Category;
   End;
-  
+
   JPEG_EstimateRLEBits := TotalBits;
 End;
 
@@ -20102,7 +19112,7 @@ Begin
   Dest.Count := Src.Count;
   Dest.DCValue := Src.DCValue;
   Dest.HasEOB := Src.HasEOB;
-  
+
   For I := 0 To Src.Count - 1 Do
     Dest.Pairs[I] := Src.Pairs[I];
 End;
@@ -20189,7 +19199,7 @@ Begin
   JPEG_BitBuffer.ByteCount := 0;
   JPEG_BitBuffer.TotalBits := 0;
   JPEG_BitBuffer.TotalBytes := 0;
-  
+
   JPEG_HuffStats.DCCodesWritten := 0;
   JPEG_HuffStats.ACCodesWritten := 0;
   JPEG_HuffStats.StuffBytesAdded := 0;
@@ -20197,7 +19207,7 @@ Begin
   JPEG_HuffStats.TotalBytesOutput := 0;
 End;
 
-Procedure JPEG_BuildHuffCodeTable(Var Bits: TJPEGHuffBits; 
+Procedure JPEG_BuildHuffCodeTable(Var Bits: TJPEGHuffBits;
                                    Var Values: Array Of Byte;
                                    ValueCount: Integer;
                                    Var CodeTable: TJPEGHuffCodeTable);
@@ -20214,11 +19224,11 @@ Begin
     CodeTable[I].Code := 0;
     CodeTable[I].Length := 0;
   End;
-  
+
   { Generer les codes canoniques }
   Code := 0;
   Idx := 0;
-  
+
   For I := 0 To 15 Do  { Pour chaque longueur de 1 a 16 bits }
   Begin
     For J := 0 To Bits[I] - 1 Do  { Pour chaque code de cette longueur }
@@ -20258,7 +19268,7 @@ Begin
   DCLumBits[10] := JPEG_DC_LUM_BITS_10; DCLumBits[11] := JPEG_DC_LUM_BITS_11;
   DCLumBits[12] := JPEG_DC_LUM_BITS_12; DCLumBits[13] := JPEG_DC_LUM_BITS_13;
   DCLumBits[14] := JPEG_DC_LUM_BITS_14; DCLumBits[15] := JPEG_DC_LUM_BITS_15;
-  
+
   { Valeurs DC luminance }
   DCLumVals[0] := JPEG_DC_LUM_VAL_00; DCLumVals[1] := JPEG_DC_LUM_VAL_01;
   DCLumVals[2] := JPEG_DC_LUM_VAL_02; DCLumVals[3] := JPEG_DC_LUM_VAL_03;
@@ -20266,7 +19276,7 @@ Begin
   DCLumVals[6] := JPEG_DC_LUM_VAL_06; DCLumVals[7] := JPEG_DC_LUM_VAL_07;
   DCLumVals[8] := JPEG_DC_LUM_VAL_08; DCLumVals[9] := JPEG_DC_LUM_VAL_09;
   DCLumVals[10] := JPEG_DC_LUM_VAL_10; DCLumVals[11] := JPEG_DC_LUM_VAL_11;
-  
+
   { Copier les tables de bits DC chrominance }
   DCChrBits[0] := JPEG_DC_CHR_BITS_00; DCChrBits[1] := JPEG_DC_CHR_BITS_01;
   DCChrBits[2] := JPEG_DC_CHR_BITS_02; DCChrBits[3] := JPEG_DC_CHR_BITS_03;
@@ -20276,7 +19286,7 @@ Begin
   DCChrBits[10] := JPEG_DC_CHR_BITS_10; DCChrBits[11] := JPEG_DC_CHR_BITS_11;
   DCChrBits[12] := JPEG_DC_CHR_BITS_12; DCChrBits[13] := JPEG_DC_CHR_BITS_13;
   DCChrBits[14] := JPEG_DC_CHR_BITS_14; DCChrBits[15] := JPEG_DC_CHR_BITS_15;
-  
+
   { Valeurs DC chrominance }
   DCChrVals[0] := JPEG_DC_CHR_VAL_00; DCChrVals[1] := JPEG_DC_CHR_VAL_01;
   DCChrVals[2] := JPEG_DC_CHR_VAL_02; DCChrVals[3] := JPEG_DC_CHR_VAL_03;
@@ -20284,11 +19294,11 @@ Begin
   DCChrVals[6] := JPEG_DC_CHR_VAL_06; DCChrVals[7] := JPEG_DC_CHR_VAL_07;
   DCChrVals[8] := JPEG_DC_CHR_VAL_08; DCChrVals[9] := JPEG_DC_CHR_VAL_09;
   DCChrVals[10] := JPEG_DC_CHR_VAL_10; DCChrVals[11] := JPEG_DC_CHR_VAL_11;
-  
+
   { Construire les tables de codes }
   JPEG_BuildHuffCodeTable(DCLumBits, DCLumVals, 12, JPEG_DC_Lum_Codes);
   JPEG_BuildHuffCodeTable(DCChrBits, DCChrVals, 12, JPEG_DC_Chr_Codes);
-  
+
   { Pour AC, utiliser des valeurs par defaut (simplifiees) }
   For I := 0 To 15 Do
   Begin
@@ -20298,14 +19308,14 @@ Begin
   { Configuration AC simplifiee - en pratique, copier les constantes AC }
   ACLumBits[0] := 0; ACLumBits[1] := 2; ACLumBits[2] := 1; ACLumBits[3] := 3;
   ACLumBits[4] := 3; ACLumBits[5] := 2; ACLumBits[6] := 4; ACLumBits[7] := 3;
-  
+
   { Initialiser les codes AC (simplifie) }
   For I := 0 To 161 Do
   Begin
     ACLumVals[I] := I Mod 256;
     ACChrVals[I] := I Mod 256;
   End;
-  
+
   { Note: Pour une implementation complete, copier toutes les valeurs AC }
   JPEG_BuildHuffCodeTable(ACLumBits, ACLumVals, 162, JPEG_AC_Lum_Codes);
   JPEG_BuildHuffCodeTable(ACChrBits, ACChrVals, 162, JPEG_AC_Chr_Codes);
@@ -20325,17 +19335,17 @@ Begin
   JPEG_BitBuffer.Buffer := (JPEG_BitBuffer.Buffer Shl 1) Or (Bit And 1);
   Inc(JPEG_BitBuffer.BitCount);
   Inc(JPEG_BitBuffer.TotalBits);
-  
+
   { Si on a 8 bits, ecrire l'octet }
   If JPEG_BitBuffer.BitCount >= 8 Then
   Begin
     If JPEG_BitBuffer.ByteCount < JPEG_BIT_BUFFER_SIZE Then
     Begin
-      JPEG_BitBuffer.ByteBuffer[JPEG_BitBuffer.ByteCount] := 
+      JPEG_BitBuffer.ByteBuffer[JPEG_BitBuffer.ByteCount] :=
         JPEG_BitBuffer.Buffer And $FF;
       Inc(JPEG_BitBuffer.ByteCount);
       Inc(JPEG_BitBuffer.TotalBytes);
-      
+
       { Byte stuffing: si $FF, ajouter $00 }
       If (JPEG_BitBuffer.Buffer And $FF) = $FF Then
       Begin
@@ -20361,7 +19371,7 @@ Var
 Begin
   If NumBits <= 0 Then Exit;
   If NumBits > 16 Then NumBits := 16;
-  
+
   { Ecrire du bit le plus significatif au moins significatif }
   Mask := 1 Shl (NumBits - 1);
   For I := 0 To NumBits - 1 Do
@@ -20372,7 +19382,7 @@ Begin
       JPEG_WriteBitToBuffer(0);
     Mask := Mask Shr 1;
   End;
-  
+
   Inc(JPEG_HuffStats.TotalBitsWritten, NumBits);
 End;
 
@@ -20390,14 +19400,14 @@ Var
   Cat: Integer;
 Begin
   If Value < 0 Then AbsVal := -Value Else AbsVal := Value;
-  
+
   Cat := 0;
   While AbsVal > 0 Do
   Begin
     AbsVal := AbsVal Shr 1;
     Inc(Cat);
   End;
-  
+
   If Cat > 11 Then Cat := 11;
   JPEG_GetDCCategory := Cat;
 End;
@@ -20422,26 +19432,26 @@ Begin
   { Calculer la difference DPCM }
   Diff := Value - PrevDC;
   PrevDC := Value;
-  
+
   { Obtenir la categorie }
   Category := JPEG_GetDCCategory(Diff);
-  
+
   { Ecrire le code Huffman pour la categorie }
   If IsLuminance Then
     HuffCode := JPEG_DC_Lum_Codes[Category]
   Else
     HuffCode := JPEG_DC_Chr_Codes[Category];
-    
+
   If HuffCode.Length > 0 Then
     JPEG_WriteBits(HuffCode.Code, HuffCode.Length);
-  
+
   { Ecrire l'amplitude si categorie > 0 }
   If Category > 0 Then
   Begin
     Amplitude := JPEG_GetDCAmplitude(Diff, Category);
     JPEG_WriteBits(Amplitude, Category);
   End;
-  
+
   Inc(JPEG_HuffStats.DCCodesWritten);
 End;
 
@@ -20456,26 +19466,26 @@ Var
 Begin
   { Obtenir la categorie de la valeur }
   Category := JPEG_GetACCategory(Value);
-  
+
   { Le symbole combine RunLength (4 bits haut) et Category (4 bits bas) }
   Symbol := (RunLength Shl 4) Or Category;
-  
+
   { Ecrire le code Huffman pour le symbole }
   If IsLuminance Then
     HuffCode := JPEG_AC_Lum_Codes[Symbol]
   Else
     HuffCode := JPEG_AC_Chr_Codes[Symbol];
-    
+
   If HuffCode.Length > 0 Then
     JPEG_WriteBits(HuffCode.Code, HuffCode.Length);
-  
+
   { Ecrire l'amplitude si categorie > 0 }
   If Category > 0 Then
   Begin
     Amplitude := JPEG_GetACAmplitude(Value, Category);
     JPEG_WriteBits(Amplitude, Category);
   End;
-  
+
   Inc(JPEG_HuffStats.ACCodesWritten);
 End;
 
@@ -20489,10 +19499,10 @@ Begin
     HuffCode := JPEG_AC_Lum_Codes[0]
   Else
     HuffCode := JPEG_AC_Chr_Codes[0];
-    
+
   If HuffCode.Length > 0 Then
     JPEG_WriteBits(HuffCode.Code, HuffCode.Length);
-    
+
   Inc(JPEG_HuffStats.ACCodesWritten);
 End;
 
@@ -20506,10 +19516,10 @@ Begin
     HuffCode := JPEG_AC_Lum_Codes[$F0]
   Else
     HuffCode := JPEG_AC_Chr_Codes[$F0];
-    
+
   If HuffCode.Length > 0 Then
     JPEG_WriteBits(HuffCode.Code, HuffCode.Length);
-    
+
   Inc(JPEG_HuffStats.ACCodesWritten);
 End;
 
@@ -20522,7 +19532,7 @@ Var
 Begin
   { Encoder le coefficient DC }
   JPEG_EncodeDCCoeff(RLEBlock.DCValue, IsLuminance, PrevDC);
-  
+
   { Encoder les paires AC }
   For I := 0 To RLEBlock.Count - 1 Do
   Begin
@@ -20639,29 +19649,29 @@ Var
 Begin
   { Calculer Y (luminance) }
   YVal := JPEG_RGB_Y_R * R + JPEG_RGB_Y_G * G + JPEG_RGB_Y_B * B;
-  
+
   { Calculer Cb (chrominance bleue) }
-  CbVal := JPEG_CHROMA_OFFSET + JPEG_RGB_CB_R * R + 
+  CbVal := JPEG_CHROMA_OFFSET + JPEG_RGB_CB_R * R +
            JPEG_RGB_CB_G * G + JPEG_RGB_CB_B * B;
-  
+
   { Calculer Cr (chrominance rouge) }
-  CrVal := JPEG_CHROMA_OFFSET + JPEG_RGB_CR_R * R + 
+  CrVal := JPEG_CHROMA_OFFSET + JPEG_RGB_CR_R * R +
            JPEG_RGB_CR_G * G + JPEG_RGB_CR_B * B;
-  
+
   { Arrondir et limiter }
   YInt := Round(YVal);
   CbInt := Round(CbVal);
   CrInt := Round(CrVal);
-  
+
   { Compter les valeurs ecretees }
   If (YInt < 0) Or (YInt > 255) Then Inc(JPEG_ColorStats.ClippedY);
   If (CbInt < 0) Or (CbInt > 255) Then Inc(JPEG_ColorStats.ClippedCb);
   If (CrInt < 0) Or (CrInt > 255) Then Inc(JPEG_ColorStats.ClippedCr);
-  
+
   Y := JPEG_ClampByte(YInt);
   Cb := JPEG_ClampByte(CbInt);
   Cr := JPEG_ClampByte(CrInt);
-  
+
   Inc(JPEG_ColorStats.PixelsConverted);
 End;
 
@@ -20673,16 +19683,16 @@ Var
 Begin
   CbShift := Cb - JPEG_CHROMA_OFFSET;
   CrShift := Cr - JPEG_CHROMA_OFFSET;
-  
+
   { R = Y + 1.402 * Cr }
   RVal := Y + 1.402 * CrShift;
-  
+
   { G = Y - 0.344 * Cb - 0.714 * Cr }
   GVal := Y - 0.344 * CbShift - 0.714 * CrShift;
-  
+
   { B = Y + 1.772 * Cb }
   BVal := Y + 1.772 * CbShift;
-  
+
   R := JPEG_ClampByte(Round(RVal));
   G := JPEG_ClampByte(Round(GVal));
   B := JPEG_ClampByte(Round(BVal));
@@ -20706,7 +19716,7 @@ Begin
       CbBlock[I, J] := Cb;
       CrBlock[I, J] := Cr;
     End;
-  
+
   Inc(JPEG_ColorStats.BlocksConverted);
 End;
 
@@ -20829,7 +19839,7 @@ Procedure JPEG_InitSubsampling(Mode: Integer);
 { Initialise le module de sous-echantillonnage }
 Begin
   JPEG_SubsampConfig.Mode := Mode;
-  
+
   Case Mode Of
     JPEG_SUBSAMP_444:
     Begin
@@ -20855,12 +19865,12 @@ Begin
     JPEG_SubsampConfig.MCUHeight := 8;
     JPEG_SubsampConfig.YBlocksPerMCU := 1;
   End;
-  
+
   JPEG_SubsampStats.MCUsProcessed := 0;
   JPEG_SubsampStats.YBlocksOutput := 0;
   JPEG_SubsampStats.CbBlocksOutput := 0;
   JPEG_SubsampStats.CrBlocksOutput := 0;
-  
+
   JPEG_SubsampInitialized := True;
 End;
 
@@ -20879,14 +19889,14 @@ Begin
       BlkIdx := ((I Div 4) * 2) + (J Div 4);
       SrcI := (I Mod 4) * 2;
       SrcJ := (J Mod 4) * 2;
-      
+
       { Moyenne des 4 pixels correspondants pour Cb }
       Sum := SrcCb[BlkIdx, SrcI, SrcJ] +
              SrcCb[BlkIdx, SrcI, SrcJ + 1] +
              SrcCb[BlkIdx, SrcI + 1, SrcJ] +
              SrcCb[BlkIdx, SrcI + 1, SrcJ + 1];
       DstCb[I, J] := (Sum + 2) Div 4;  { +2 pour arrondi }
-      
+
       { Moyenne pour Cr }
       Sum := SrcCr[BlkIdx, SrcI, SrcJ] +
              SrcCr[BlkIdx, SrcI, SrcJ + 1] +
@@ -20894,7 +19904,7 @@ Begin
              SrcCr[BlkIdx, SrcI + 1, SrcJ + 1];
       DstCr[I, J] := (Sum + 2) Div 4;
     End;
-  
+
   Inc(JPEG_SubsampStats.CbBlocksOutput);
   Inc(JPEG_SubsampStats.CrBlocksOutput);
 End;
@@ -20913,7 +19923,7 @@ Begin
       Begin
         DstI := (I Mod 4) * 2 + ((BlkIdx Div 2) * 4);
         DstJ := (J Mod 4) * 2 + ((BlkIdx Mod 2) * 4);
-        
+
         If (DstI < 8) And (DstJ < 8) Then
         Begin
           DstCb[BlkIdx, DstI, DstJ] := SrcCb[I, J];
@@ -20936,7 +19946,7 @@ Begin
       MCU.Cb[I, J] := CbBlock[I, J];
       MCU.Cr[I, J] := CrBlock[I, J];
     End;
-  
+
   Inc(JPEG_SubsampStats.MCUsProcessed);
   Inc(JPEG_SubsampStats.YBlocksOutput);
   Inc(JPEG_SubsampStats.CbBlocksOutput);
@@ -21044,12 +20054,12 @@ Begin
   If Not JPEG_HuffInitialized Then JPEG_InitHuffman;
   If Not JPEG_ColorInitialized Then JPEG_InitColorConversion;
   If Not JPEG_SubsampInitialized Then JPEG_InitSubsampling(SubsampMode);
-  
+
   { Configurer l'etat de l'encodeur }
   JPEG_EncoderState.Quality := Quality;
   If (JPEG_EncoderState.Quality < 1) Then JPEG_EncoderState.Quality := 1;
   If (JPEG_EncoderState.Quality > 100) Then JPEG_EncoderState.Quality := 100;
-  
+
   JPEG_EncoderState.SubsampMode := SubsampMode;
   JPEG_EncoderState.LastDC_Y := 0;
   JPEG_EncoderState.LastDC_Cb := 0;
@@ -21057,7 +20067,7 @@ Begin
   JPEG_EncoderState.MCUsEncoded := 0;
   JPEG_EncoderState.BytesWritten := 0;
   JPEG_EncoderState.Initialized := True;
-  
+
   { Initialiser les statistiques }
   JPEG_EncodeStats.TotalMCUs := 0;
   JPEG_EncodeStats.TotalBlocks := 0;
@@ -21065,7 +20075,7 @@ Begin
   JPEG_EncodeStats.HeaderBytes := 0;
   JPEG_EncodeStats.DataBytes := 0;
   JPEG_EncodeStats.CompressionRatio := 0.0;
-  
+
   JPEG_FileOpen := False;
 End;
 
@@ -21157,7 +20167,7 @@ Begin
   JPEG_WriteWordToFile(Width);
   { Nombre de composantes }
   JPEG_WriteByteToFile(NumComponents);
-  
+
   If JPEG_EncoderState.SubsampMode = JPEG_SUBSAMP_420 Then
   Begin
     { Y: ID=1, sampling 2x2, QTable 0 }
@@ -21190,8 +20200,8 @@ Begin
   End;
 End;
 
-Procedure JPEG_WriteDHT(TableClass, TableID: Byte; 
-                         Var Bits: TJPEGHuffBits; 
+Procedure JPEG_WriteDHT(TableClass, TableID: Byte;
+                         Var Bits: TJPEGHuffBits;
                          Values: Array Of Byte; ValueCount: Integer);
 { Ecrit un segment Define Huffman Table }
 Var
@@ -21299,9 +20309,9 @@ Begin
     Scale := 5000 / Quality
   Else
     Scale := 200 - Quality * 2;
-    
+
   Scale := Scale / 100.0;
-  
+
   For I := 0 To 63 Do
   Begin
     Val := Round(SrcTable[I] * Scale);
@@ -21309,7 +20319,7 @@ Begin
     If Val > 255 Then Val := 255;
     DstTable[I] := Val;
   End;
-  
+
   JPEG_ScaleQuantTable := True;
 End;
 
@@ -21343,7 +20353,7 @@ Begin
   DCLumBits[10] := JPEG_DC_LUM_BITS_10; DCLumBits[11] := JPEG_DC_LUM_BITS_11;
   DCLumBits[12] := JPEG_DC_LUM_BITS_12; DCLumBits[13] := JPEG_DC_LUM_BITS_13;
   DCLumBits[14] := JPEG_DC_LUM_BITS_14; DCLumBits[15] := JPEG_DC_LUM_BITS_15;
-  
+
   { Initialiser les valeurs DC Luminance }
   DCLumVals[0] := JPEG_DC_LUM_VAL_00; DCLumVals[1] := JPEG_DC_LUM_VAL_01;
   DCLumVals[2] := JPEG_DC_LUM_VAL_02; DCLumVals[3] := JPEG_DC_LUM_VAL_03;
@@ -21351,7 +20361,7 @@ Begin
   DCLumVals[6] := JPEG_DC_LUM_VAL_06; DCLumVals[7] := JPEG_DC_LUM_VAL_07;
   DCLumVals[8] := JPEG_DC_LUM_VAL_08; DCLumVals[9] := JPEG_DC_LUM_VAL_09;
   DCLumVals[10] := JPEG_DC_LUM_VAL_10; DCLumVals[11] := JPEG_DC_LUM_VAL_11;
-  
+
   { Initialiser les tableaux BITS DC Chrominance }
   DCChrBits[0] := JPEG_DC_CHR_BITS_00; DCChrBits[1] := JPEG_DC_CHR_BITS_01;
   DCChrBits[2] := JPEG_DC_CHR_BITS_02; DCChrBits[3] := JPEG_DC_CHR_BITS_03;
@@ -21361,7 +20371,7 @@ Begin
   DCChrBits[10] := JPEG_DC_CHR_BITS_10; DCChrBits[11] := JPEG_DC_CHR_BITS_11;
   DCChrBits[12] := JPEG_DC_CHR_BITS_12; DCChrBits[13] := JPEG_DC_CHR_BITS_13;
   DCChrBits[14] := JPEG_DC_CHR_BITS_14; DCChrBits[15] := JPEG_DC_CHR_BITS_15;
-  
+
   { Initialiser les valeurs DC Chrominance }
   DCChrVals[0] := JPEG_DC_CHR_VAL_00; DCChrVals[1] := JPEG_DC_CHR_VAL_01;
   DCChrVals[2] := JPEG_DC_CHR_VAL_02; DCChrVals[3] := JPEG_DC_CHR_VAL_03;
@@ -21369,7 +20379,7 @@ Begin
   DCChrVals[6] := JPEG_DC_CHR_VAL_06; DCChrVals[7] := JPEG_DC_CHR_VAL_07;
   DCChrVals[8] := JPEG_DC_CHR_VAL_08; DCChrVals[9] := JPEG_DC_CHR_VAL_09;
   DCChrVals[10] := JPEG_DC_CHR_VAL_10; DCChrVals[11] := JPEG_DC_CHR_VAL_11;
-  
+
   { Initialiser les tableaux BITS AC Luminance }
   ACLumBits[0] := JPEG_AC_LUM_BITS_01; ACLumBits[1] := JPEG_AC_LUM_BITS_02;
   ACLumBits[2] := JPEG_AC_LUM_BITS_03; ACLumBits[3] := JPEG_AC_LUM_BITS_04;
@@ -21379,7 +20389,7 @@ Begin
   ACLumBits[10] := JPEG_AC_LUM_BITS_11; ACLumBits[11] := JPEG_AC_LUM_BITS_12;
   ACLumBits[12] := JPEG_AC_LUM_BITS_13; ACLumBits[13] := JPEG_AC_LUM_BITS_14;
   ACLumBits[14] := JPEG_AC_LUM_BITS_15; ACLumBits[15] := JPEG_AC_LUM_BITS_16;
-  
+
   { Initialiser les valeurs AC Luminance (162 valeurs) }
   For I := 0 To 161 Do
     ACLumVals[I] := 0;
@@ -21395,7 +20405,7 @@ Begin
   ACLumVals[23] := $08; ACLumVals[24] := $23; ACLumVals[25] := $42; ACLumVals[26] := $B1; ACLumVals[27] := $C1;
   ACLumVals[28] := $15; ACLumVals[29] := $52; ACLumVals[30] := $D1; ACLumVals[31] := $F0;
   ACLumVals[32] := $24; ACLumVals[33] := $33; ACLumVals[34] := $62; ACLumVals[35] := $72;
-  
+
   { Initialiser les tableaux BITS AC Chrominance }
   ACChrBits[0] := JPEG_AC_CHR_BITS_01; ACChrBits[1] := JPEG_AC_CHR_BITS_02;
   ACChrBits[2] := JPEG_AC_CHR_BITS_03; ACChrBits[3] := JPEG_AC_CHR_BITS_04;
@@ -21405,7 +20415,7 @@ Begin
   ACChrBits[10] := JPEG_AC_CHR_BITS_11; ACChrBits[11] := JPEG_AC_CHR_BITS_12;
   ACChrBits[12] := JPEG_AC_CHR_BITS_13; ACChrBits[13] := JPEG_AC_CHR_BITS_14;
   ACChrBits[14] := JPEG_AC_CHR_BITS_15; ACChrBits[15] := JPEG_AC_CHR_BITS_16;
-  
+
   { Initialiser les valeurs AC Chrominance (162 valeurs) }
   For I := 0 To 161 Do
     ACChrVals[I] := 0;
@@ -21417,7 +20427,7 @@ Begin
   ACChrVals[9] := $06; ACChrVals[10] := $12; ACChrVals[11] := $41; ACChrVals[12] := $51;
   ACChrVals[13] := $07; ACChrVals[14] := $61; ACChrVals[15] := $71;
   ACChrVals[16] := $13; ACChrVals[17] := $22; ACChrVals[18] := $32; ACChrVals[19] := $81;
-  
+
   { Ecrire les 4 tables DHT }
   JPEG_WriteDHT(0, 0, DCLumBits, DCLumVals, 12);   { DC Luminance (class 0, ID 0) }
   JPEG_WriteDHT(1, 0, ACLumBits, ACLumVals, 162);  { AC Luminance (class 1, ID 0) }
@@ -21473,7 +20483,7 @@ Begin
   BaseLumTable[58] := JPEG_QL_58; BaseLumTable[59] := JPEG_QL_59;
   BaseLumTable[60] := JPEG_QL_60; BaseLumTable[61] := JPEG_QL_61;
   BaseLumTable[62] := JPEG_QL_62; BaseLumTable[63] := JPEG_QL_63;
-  
+
   BaseChrTable[0] := JPEG_QC_00; BaseChrTable[1] := JPEG_QC_01;
   BaseChrTable[2] := JPEG_QC_02; BaseChrTable[3] := JPEG_QC_03;
   BaseChrTable[4] := JPEG_QC_04; BaseChrTable[5] := JPEG_QC_05;
@@ -21506,11 +20516,11 @@ Begin
   BaseChrTable[58] := JPEG_QC_58; BaseChrTable[59] := JPEG_QC_59;
   BaseChrTable[60] := JPEG_QC_60; BaseChrTable[61] := JPEG_QC_61;
   BaseChrTable[62] := JPEG_QC_62; BaseChrTable[63] := JPEG_QC_63;
-  
+
   { Ajuster les tables selon la qualite }
   JPEG_ScaleQuantTable(BaseLumTable, QLumTable, Quality);
   JPEG_ScaleQuantTable(BaseChrTable, QChrTable, Quality);
-  
+
   { Ecrire les segments de l'en-tete }
   JPEG_WriteSOI;                         { Start Of Image }
   JPEG_WriteAPP0;                        { JFIF header }
@@ -21520,7 +20530,7 @@ Begin
   JPEG_WriteSOF0(Width, Height, 3);      { Frame header (3 composantes YCbCr) }
   JPEG_WriteAllDHTTables;                { Tables Huffman (DC/AC Lum/Chr) }
   JPEG_WriteSOS(3);                      { Start Of Scan }
-  
+
   { Enregistrer la taille de l'en-tete }
   JPEG_EncodeStats.HeaderBytes := JPEG_EncoderState.BytesWritten;
 End;
@@ -21531,7 +20541,7 @@ Function JPEG_BeginEncode(Filename: String; Width, Height: Word;
 Begin
   { Initialiser l'encodeur }
   JPEG_InitEncoder(Quality, SubsampMode);
-  
+
   { Ouvrir le fichier de sortie }
   JPEG_OpenOutputFile(Filename);
   If Not JPEG_FileOpen Then
@@ -21539,10 +20549,10 @@ Begin
     JPEG_BeginEncode := False;
     Exit;
   End;
-  
+
   { Ecrire l'en-tete JPEG }
   JPEG_WriteJPEGHeader(Width, Height, Quality);
-  
+
   JPEG_BeginEncode := True;
 End;
 
@@ -21556,7 +20566,7 @@ Begin
     JPEG_EndEncode := False;
     Exit;
   End;
-  
+
   { Vider le buffer de bits avec padding }
   If JPEG_BitBuffer.BitCount > 0 Then
   Begin
@@ -21572,29 +20582,29 @@ Begin
     JPEG_BitBuffer.BitCount := 0;
     JPEG_BitBuffer.Buffer := 0;
   End;
-  
+
   { Ecrire le buffer de bits avec byte stuffing }
   For I := 0 To JPEG_BitBuffer.ByteCount - 1 Do
     JPEG_WriteDataByteStuffed(JPEG_BitBuffer.ByteBuffer[I]);
   JPEG_BitBuffer.ByteCount := 0;
-  
+
   { Ecrire le marqueur de fin }
   JPEG_WriteEOI;
-  
+
   { Calculer les statistiques finales }
   JPEG_EncodeStats.TotalBytes := JPEG_EncoderState.BytesWritten;
   JPEG_EncodeStats.DataBytes := JPEG_EncodeStats.TotalBytes - JPEG_EncodeStats.HeaderBytes;
-  
+
   { Fermer le fichier }
   JPEG_CloseOutputFile;
-  
+
   JPEG_EndEncode := True;
 End;
 
 Function JPEG_GetFileStructureDescription: String;
 { Retourne une description de la structure du fichier JPEG }
 Begin
-  JPEG_GetFileStructureDescription := 
+  JPEG_GetFileStructureDescription :=
     'SOI -> APP0(JFIF) -> COM -> DQT(Y) -> DQT(CbCr) -> SOF0 -> DHT(DC/AC) -> SOS -> [Data] -> EOI';
 End;
 
@@ -21828,7 +20838,7 @@ Begin
 
   { Lecture du fichier de configuration (TODO 05) }
   ReadConfigFile(Opts.ConfigFile);
-  
+
   { Appliquer l'option SVG si specifiee en ligne de commande }
   If Opts.SvgOutput Then
   Begin
@@ -21861,14 +20871,14 @@ Begin
     If Not Opts.Quiet Then
       WriteLn('Format de sortie Microsoft Visio (VDX) active');
   End;
-  
+
   { Mode expansion de configuration (TODO 06) }
   If Opts.ExpandOnly Then
   Begin
     ExpandConfig;
     Halt(EXIT_OK);
   End;
-  
+
   { Afficher les informations du projet }
   WriteLn('Lecture de ', Opts.ConfigFile, '... OK');
   WriteLn;
@@ -21885,7 +20895,7 @@ Begin
   WriteLn('  XML: ', GetConfigValue('GENERATE_XML'));
   WriteLn('  MAN: ', GetConfigValue('GENERATE_MAN'));
   WriteLn;
-  
+
   { Verifier les fichiers d'entree }
   If GetConfigValue('INPUT') = '' Then
   Begin
@@ -21897,7 +20907,7 @@ Begin
   Begin
     WriteLn('Fichiers d''entree: ', GetConfigValue('INPUT'));
     WriteLn;
-    
+
     { Traiter les fichiers d'entree et generer la documentation }
     If (GetConfigValue('GENERATE_HTML') = 'YES') Or
        (GetConfigValue('GENERATE_HTML') = 'yes') Or
@@ -21918,6 +20928,11 @@ End;
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
-  Run;
-End.
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowHelp;
+  Halt(0);
+ End;
+ Run;
+END.
