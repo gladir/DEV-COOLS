@@ -1207,10 +1207,10 @@ Const
   PNG_FILTER_UP         = 2;         { Filtre: up }
   PNG_COMPRESSION       = 0;         { Compression zlib }
   PNG_INTERLACE_NONE    = 0;         { Pas d'entrelacement }
-  PNG_MAX_WIDTH         = 4096;      { Largeur maximale }
-  PNG_MAX_HEIGHT        = 4096;      { Hauteur maximale }
-  PNG_DEFAULT_WIDTH     = 800;       { Largeur par defaut }
-  PNG_DEFAULT_HEIGHT    = 600;       { Hauteur par defaut }
+  PNG_MAX_WIDTH         = 1024;      { Largeur maximale }
+  PNG_MAX_HEIGHT        = 1024;      { Hauteur maximale }
+  PNG_DEFAULT_WIDTH     = 400;       { Largeur par defaut }
+  PNG_DEFAULT_HEIGHT    = 300;       { Hauteur par defaut }
   PNG_NODE_WIDTH        = 120;       { Largeur d'un noeud }
   PNG_NODE_HEIGHT       = 40;        { Hauteur d'un noeud }
   PNG_NODE_MARGIN       = 30;        { Marge entre les noeuds }
@@ -4427,6 +4427,9 @@ Begin
   
   Close(F);
 End;
+
+{ Declaration forward pour ExtractFileName }
+Function ExtractFileName(Const Path: String): String; Forward;
 
 Procedure ExtractEntities(Const FileName: String; Lang: TSourceLanguage);
 { Dispatcher vers l extracteur specifique au langage }
@@ -8723,6 +8726,11 @@ End;
 { Declaration forward pour GenerateHtmlDocumentation (definie dans TODO 12) }
 Procedure GenerateHtmlDocumentation; Forward;
 
+{ Declarations forward pour les generateurs de diagrammes (TODO 17-19) }
+Procedure GenerateCallGraphDocumentation; Forward;
+Procedure GenerateDepGraphDocumentation; Forward;
+Procedure GenerateClassDiagramDocumentation; Forward;
+
 Procedure ValidateInputFile(Const FileName: String);
 Var
   Lang: TSourceLanguage;
@@ -8832,6 +8840,34 @@ Begin
     WriteLn('Generation de la documentation HTML...');
     WriteLn;
     GenerateHtmlDocumentation;
+    
+    { Generer les diagrammes de classes si demande (TODO 19) }
+    If (GetConfigValue('HAVE_DOT') = 'YES') Or
+       (GetConfigValue('HAVE_DOT') = 'yes') Or
+       Opts.SvgOutput Or Opts.PngOutput Or Opts.JpegOutput Or Opts.VdxOutput Then
+    Begin
+      { Definir le format de sortie }
+      If Opts.SvgOutput Then
+        ClassDiagFormat := 'svg'
+      Else If Opts.PngOutput Then
+        ClassDiagFormat := 'png'
+      Else If Opts.VdxOutput Then
+        ClassDiagFormat := 'vdx'
+      Else
+        ClassDiagFormat := 'png'; { Par defaut PNG }
+      
+      WriteLn;
+      WriteLn('Generation des diagrammes de classes...');
+      GenerateClassDiagramDocumentation;
+      
+      WriteLn;
+      WriteLn('Generation des graphes d''appels...');
+      GenerateCallGraphDocumentation;
+      
+      WriteLn;
+      WriteLn('Generation des graphes de dependances...');
+      GenerateDepGraphDocumentation;
+    End;
   End
   Else
   Begin
@@ -11796,15 +11832,18 @@ Begin
   WritePngByte(F, PNG_SIGNATURE_8);
 End;
 
-Procedure WritePngChunk(Var F: File; ChunkType: String; Const Data: Array Of Byte; DataLen: Integer);
+Procedure WritePngChunk(Var F: File; ChunkType: String; Const Data: Array Of Byte; DataLen: LongInt);
 { Ecrit un chunk PNG complet avec CRC }
 Var
-  TypeAndData: Array[0..65535] Of Byte;
-  I: Integer;
+  TypeAndData: Array Of Byte;
+  I: LongInt;
   Crc: LongInt;
 Begin
   { Longueur des donnees }
   WritePngDWord(F, DataLen);
+  
+  { Allouer le buffer pour type + donnees }
+  SetLength(TypeAndData, DataLen + 4);
   
   { Type du chunk (4 caracteres) }
   For I := 1 To 4 Do
@@ -11825,6 +11864,9 @@ Begin
   { Calculer et ecrire le CRC }
   Crc := CalcCrc(TypeAndData, DataLen + 4);
   WritePngDWord(F, Crc);
+  
+  { Liberer la memoire }
+  SetLength(TypeAndData, 0);
 End;
 
 Procedure WritePngIHDR(Var F: File; Width, Height: Integer);
@@ -11869,9 +11911,11 @@ Var
   CompData: Array Of Byte;
   RawLen, CompLen: LongInt;
   X, Y, Idx: Integer;
-  BlockLen: Word;
   Adler32: LongInt;
   S1, S2: LongInt;
+  NumBlocks, BlockNum: Integer;
+  CompIdx, SrcIdx: LongInt;
+  ActualBlockLen, Remaining: LongInt;
 Begin
   { Taille des donnees brutes: (1 + Width * 3) * Height }
   RawLen := (1 + Width * 3) * Height;
@@ -11908,36 +11952,67 @@ Begin
   Adler32 := (S2 Shl 16) Or S1;
   
   { Creer le flux zlib non-compresse (stored blocks) }
+  { Les donnees sont divisees en blocs de 65535 bytes max }
   { Format: zlib header (2 bytes) + stored blocks + Adler-32 (4 bytes) }
-  CompLen := 2 + 5 + RawLen + 4; { Header + block header + data + adler }
+  
+  { Calculer le nombre de blocs necessaires }
+  NumBlocks := (RawLen + 65534) Div 65535;
+  If NumBlocks < 1 Then NumBlocks := 1;
+  
+  { Calculer la taille totale: header + (5 bytes header * nb blocs) + data + adler }
+  CompLen := 2 + (5 * NumBlocks) + RawLen + 4;
   SetLength(CompData, CompLen);
   
   { En-tete zlib }
   CompData[0] := $78; { CMF: deflate, 32K window }
   CompData[1] := $01; { FLG: no dict, check bits }
   
-  { Bloc stored (non-compresse) }
-  CompData[2] := $01; { BFINAL=1 (dernier bloc), BTYPE=00 (stored) }
+  CompIdx := 2;
+  SrcIdx := 0;
   
-  { Longueur du bloc (little-endian) }
-  BlockLen := RawLen;
-  CompData[3] := Lo(BlockLen);
-  CompData[4] := Hi(BlockLen);
-  
-  { Complement de la longueur }
-  CompData[5] := Lo(Not BlockLen);
-  CompData[6] := Hi(Not BlockLen);
-  
-  { Copier les donnees brutes }
-  For Idx := 0 To RawLen - 1 Do
-    CompData[7 + Idx] := RawData[Idx];
+  { Ecrire les blocs stored }
+  For BlockNum := 1 To NumBlocks Do
+  Begin
+    { Calculer la taille de ce bloc }
+    Remaining := RawLen - SrcIdx;
+    If Remaining > 65535 Then
+      ActualBlockLen := 65535
+    Else
+      ActualBlockLen := Remaining;
+    
+    { BFINAL=1 si dernier bloc, BTYPE=00 (stored) }
+    If BlockNum = NumBlocks Then
+      CompData[CompIdx] := $01  { BFINAL=1 }
+    Else
+      CompData[CompIdx] := $00; { BFINAL=0 }
+    Inc(CompIdx);
+    
+    { Longueur du bloc (little-endian) }
+    CompData[CompIdx] := ActualBlockLen And $FF;
+    Inc(CompIdx);
+    CompData[CompIdx] := (ActualBlockLen Shr 8) And $FF;
+    Inc(CompIdx);
+    
+    { Complement de la longueur }
+    CompData[CompIdx] := (Not ActualBlockLen) And $FF;
+    Inc(CompIdx);
+    CompData[CompIdx] := ((Not ActualBlockLen) Shr 8) And $FF;
+    Inc(CompIdx);
+    
+    { Copier les donnees de ce bloc }
+    For Idx := 0 To ActualBlockLen - 1 Do
+    Begin
+      CompData[CompIdx] := RawData[SrcIdx];
+      Inc(CompIdx);
+      Inc(SrcIdx);
+    End;
+  End;
   
   { Adler-32 (big-endian) }
-  Idx := 7 + RawLen;
-  CompData[Idx] := (Adler32 Shr 24) And $FF;
-  CompData[Idx + 1] := (Adler32 Shr 16) And $FF;
-  CompData[Idx + 2] := (Adler32 Shr 8) And $FF;
-  CompData[Idx + 3] := Adler32 And $FF;
+  CompData[CompIdx] := (Adler32 Shr 24) And $FF;
+  CompData[CompIdx + 1] := (Adler32 Shr 16) And $FF;
+  CompData[CompIdx + 2] := (Adler32 Shr 8) And $FF;
+  CompData[CompIdx + 3] := Adler32 And $FF;
   
   WritePngChunk(F, 'IDAT', CompData, CompLen);
   
