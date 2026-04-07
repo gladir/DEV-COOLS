@@ -217,15 +217,16 @@ Const
   PNG_FILTER_UP         = 2;         { Filtre: up }
   PNG_COMPRESSION       = 0;         { Compression zlib }
   PNG_INTERLACE_NONE    = 0;         { Pas d'entrelacement }
-  PNG_MAX_WIDTH         = 1024;      { Largeur maximale }
-  PNG_MAX_HEIGHT        = 1024;      { Hauteur maximale }
-  PNG_DEFAULT_WIDTH     = 400;       { Largeur par defaut }
-  PNG_DEFAULT_HEIGHT    = 300;       { Hauteur par defaut }
-  PNG_NODE_WIDTH        = 120;       { Largeur d'un noeud }
-  PNG_NODE_HEIGHT       = 40;        { Hauteur d'un noeud }
-  PNG_NODE_MARGIN       = 30;        { Marge entre les noeuds }
-  PNG_FONT_WIDTH        = 7;         { Largeur approximative d'un caractere }
-  PNG_FONT_HEIGHT       = 12;        { Hauteur approximative d'un caractere }
+  PNG_MAX_WIDTH         = 4096;      { Largeur maximale }
+  PNG_MAX_HEIGHT        = 4096;      { Hauteur maximale }
+  PNG_DEFAULT_WIDTH     = 1200;      { Largeur par defaut }
+  PNG_DEFAULT_HEIGHT    = 800;       { Hauteur par defaut }
+  PNG_NODE_WIDTH        = 300;       { Largeur d'un noeud }
+  PNG_NODE_HEIGHT       = 80;        { Hauteur d'un noeud }
+  PNG_NODE_MARGIN       = 50;        { Marge entre les noeuds }
+  PNG_FONT_WIDTH        = 18;        { Largeur approximative d'un caractere (5*3+3) }
+  PNG_FONT_HEIGHT       = 24;        { Hauteur approximative d'un caractere (7*3+3) }
+  PNG_FONT_SCALE        = 3;         { Facteur d'echelle de la police bitmap }
   MAX_PNG_NODES         = 256;       { Nombre max de noeuds dans un graphe }
   MAX_PNG_EDGES         = 512;       { Nombre max d'aretes dans un graphe }
 
@@ -10792,7 +10793,7 @@ Begin
 
   PngGraph.Nodes[Idx].Id := Id;
   PngGraph.Nodes[Idx].Name := Name;
-  PngGraph.Nodes[Idx].W := Length(Name) * PNG_FONT_WIDTH + 20;
+  PngGraph.Nodes[Idx].W := Length(Name) * PNG_FONT_WIDTH + 30;
   If PngGraph.Nodes[Idx].W < PNG_NODE_WIDTH Then
     PngGraph.Nodes[Idx].W := PNG_NODE_WIDTH;
   PngGraph.Nodes[Idx].H := PNG_NODE_HEIGHT;
@@ -11310,6 +11311,7 @@ Var
   I, J, K, CharX: Integer;
   Ch: Char;
   Bits: Byte;
+  SX, SY, PX, PY: Integer;
 Begin
   CharX := X;
   For I := 1 To Length(Text) Do
@@ -11317,21 +11319,33 @@ Begin
     Ch := Text[I];
     If (Ch >= '0') And (Ch <= 'z') Then
     Begin
-      For J := 0 To 6 Do
+      { J = colonne de la police (0..4), K = ligne (0..6) }
+      For J := 0 To 4 Do
       Begin
         Bits := Font5x7[Ch][J];
-        For K := 0 To 4 Do
+        For K := 0 To 6 Do
         Begin
           If (Bits And (1 Shl K)) <> 0 Then
           Begin
-            If (CharX + K >= 0) And (CharX + K < Width) And
-               (Y + J >= 0) And (Y + J < Height) Then
-              Pixels[Y + J][CharX + K] := Color;
+            { Dessiner un bloc Scale x Scale pour chaque pixel }
+            For SY := 0 To PNG_FONT_SCALE - 1 Do
+              For SX := 0 To PNG_FONT_SCALE - 1 Do
+              Begin
+                PX := CharX + J * PNG_FONT_SCALE + SX;
+                PY := Y + K * PNG_FONT_SCALE + SY;
+                If (PX >= 0) And (PX < Width) And
+                   (PY >= 0) And (PY < Height) Then
+                  Pixels[PY][PX] := Color;
+              End;
           End;
         End;
       End;
+    End
+    Else If Ch = ' ' Then
+    Begin
+      { Espace: pas de dessin, juste avancer }
     End;
-    CharX := CharX + 6; { 5 pixels + 1 espace }
+    CharX := CharX + 6 * PNG_FONT_SCALE;
   End;
 End;
 
@@ -11541,8 +11555,8 @@ Begin
 
     { Dessiner le texte du noeud }
     DrawPngText(Pixels,
-                PngGraph.Nodes[I].X + 5,
-                PngGraph.Nodes[I].Y + (PngGraph.Nodes[I].H - 7) Div 2,
+                PngGraph.Nodes[I].X + 10,
+                PngGraph.Nodes[I].Y + (PngGraph.Nodes[I].H - 7 * PNG_FONT_SCALE) Div 2,
                 PngGraph.Nodes[I].Name,
                 PngGraph.Width, PngGraph.Height, TextColor);
   End;
