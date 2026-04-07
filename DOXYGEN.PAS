@@ -3928,7 +3928,10 @@ Var
   Name: String;
   InComment, InBraceComment: Boolean;
   InClass, InInterface: Boolean;
+  InRecord: Boolean;
   CurrentClass: String;
+  CurrentRecordIdx: Integer;
+  RecordFields: String;
 Begin
   Assign(F, FileName);
   {$I-}
@@ -3941,7 +3944,10 @@ Begin
   InBraceComment := False;
   InClass := False;
   InInterface := False;
+  InRecord := False;
   CurrentClass := '';
+  CurrentRecordIdx := 0;
+  RecordFields := '';
   
   While Not Eof(F) Do
   Begin
@@ -4032,7 +4038,39 @@ Begin
         Dec(P);
       End;
       If Name <> '' Then
+      Begin
         AddEntity(ENT_STRUCT, Name, Name, FileName, LineNum, VIS_PUBLIC);
+        InRecord := True;
+        CurrentRecordIdx := EntityCount;
+        RecordFields := '';
+      End;
+      Continue;
+    End;
+    
+    { Collecter les champs si dans un record }
+    If InRecord Then
+    Begin
+      { Detecter la fin du record }
+      If (UpperLine = 'END;') Or (Copy(UpperLine, 1, 4) = 'END;') Or
+         (Copy(UpperLine, 1, 3) = 'END') Then
+      Begin
+        { Stocker les champs dans la signature de l'entite }
+        If (CurrentRecordIdx > 0) And (CurrentRecordIdx <= EntityCount) Then
+          Entities[CurrentRecordIdx].Signature := RecordFields;
+        InRecord := False;
+        CurrentRecordIdx := 0;
+        RecordFields := '';
+      End
+      Else
+      Begin
+        { Ajouter le champ a la liste }
+        If (TrimmedLine <> '') And (Pos(':', TrimmedLine) > 0) Then
+        Begin
+          If RecordFields <> '' Then
+            RecordFields := RecordFields + '; ';
+          RecordFields := RecordFields + TrimmedLine;
+        End;
+      End;
       Continue;
     End;
     
@@ -8946,6 +8984,8 @@ End;
 
 Procedure GenerateHtmlFile(Const Entity: TEntity; Var OutFile: Text);
 { Genere la page HTML pour une entite }
+Var
+  IsStruct: Boolean;
 Begin
   WriteHtmlHeader(OutFile, Entity.Name);
   
@@ -8953,11 +8993,16 @@ Begin
   WriteLn(OutFile, '<h2>', EscapeHtml(EntityKindToStr(Entity.Kind)), ': ',
     EscapeHtml(Entity.Name), '</h2>');
   
-  { Signature }
+  IsStruct := Entity.Kind In [ENT_STRUCT, ENT_CLASS, ENT_UNION];
+  
+  { Signature ou Champs selon le type d'entite }
   If Entity.Signature <> '' Then
   Begin
     WriteLn(OutFile, '<div class="signature">');
-    WriteLn(OutFile, '<h3>Signature</h3>');
+    If IsStruct Then
+      WriteLn(OutFile, '<h3>Champs</h3>')
+    Else
+      WriteLn(OutFile, '<h3>Signature</h3>');
     WriteLn(OutFile, '<pre><code>', EscapeHtml(Entity.Signature), '</code></pre>');
     WriteLn(OutFile, '</div>');
   End;
