@@ -7752,7 +7752,7 @@ Begin
 End;
 
 Procedure ShowHelp;Begin
-  WriteLn('DOXYGEN - Cette commande permet de lancer le g�n�rateur ',
+  WriteLn('DOXYGEN - Cette commande permet de lancer le generateur ',
           'de documentation.');
   WriteLn;
   WriteLn('Syntaxe: DOXYGEN [options] [config-file]');
