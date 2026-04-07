@@ -19014,31 +19014,38 @@ Begin
 
   While I <= LastNonZero Do
   Begin
+    If RLEBlock.Count >= JPEG_RLE_MAX_PAIRS Then Break;
     If Zigzag[I] = 0 Then
     Begin
       Inc(ZeroRun);
       { Si plus de 15 zeros, emettre ZRL }
       If ZeroRun > 15 Then
       Begin
-        JPEG_SetRLEPairZRL(RLEBlock.Pairs[RLEBlock.Count]);
-        Inc(RLEBlock.Count);
-        Inc(JPEG_RLETotalPairs);
+        If RLEBlock.Count < JPEG_RLE_MAX_PAIRS Then
+        Begin
+          JPEG_SetRLEPairZRL(RLEBlock.Pairs[RLEBlock.Count]);
+          Inc(RLEBlock.Count);
+          Inc(JPEG_RLETotalPairs);
+        End;
         ZeroRun := ZeroRun - 16;
       End;
     End
     Else
     Begin
       { Coefficient non-nul: encoder avec le run de zeros }
-      JPEG_SetRLEPair(RLEBlock.Pairs[RLEBlock.Count], ZeroRun, Zigzag[I]);
-      Inc(RLEBlock.Count);
-      Inc(JPEG_RLETotalPairs);
+      If RLEBlock.Count < JPEG_RLE_MAX_PAIRS Then
+      Begin
+        JPEG_SetRLEPair(RLEBlock.Pairs[RLEBlock.Count], ZeroRun, Zigzag[I]);
+        Inc(RLEBlock.Count);
+        Inc(JPEG_RLETotalPairs);
+      End;
       ZeroRun := 0;
     End;
     Inc(I);
   End;
 
   { Ajouter EOB apres le dernier coefficient non-nul }
-  If LastNonZero < 63 Then
+  If (LastNonZero < 63) And (RLEBlock.Count < JPEG_RLE_MAX_PAIRS) Then
   Begin
     JPEG_SetRLEPairEOB(RLEBlock.Pairs[RLEBlock.Count]);
     Inc(RLEBlock.Count);
@@ -20317,6 +20324,13 @@ Begin
   If Not JPEG_HuffInitialized Then JPEG_InitHuffman;
   If Not JPEG_ColorInitialized Then JPEG_InitColorConversion;
   If Not JPEG_SubsampInitialized Then JPEG_InitSubsampling(SubsampMode);
+
+  { Toujours reinitialiser le buffer de bits entre chaque image }
+  JPEG_BitBuffer.Buffer := 0;
+  JPEG_BitBuffer.BitCount := 0;
+  JPEG_BitBuffer.ByteCount := 0;
+  JPEG_BitBuffer.TotalBits := 0;
+  JPEG_BitBuffer.TotalBytes := 0;
 
   { Configurer l'etat de l'encodeur }
   JPEG_EncoderState.Quality := Quality;
