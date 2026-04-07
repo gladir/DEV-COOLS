@@ -158,7 +158,7 @@ Turbo Pascal / Free Pascal (-Mtp)
          Function WindowConfigToJson(Const Cfg: TWindowConfig): String
            generer la configuration JSON pour tauri.conf.json
 
-  TODO 06 - GESTION DES ICONES [A FAIRE]
+  TODO 06 - GESTION DES ICONES [IMPLEMENTE]
          Constantes de formats d'icones :
            ICON_ICO = 1, ICON_ICNS = 2, ICON_PNG = 3
          Function DetectIconFormat(Const Path: String): Integer

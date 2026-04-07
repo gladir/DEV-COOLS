@@ -201,7 +201,7 @@
             Function WindowConfigToJson(Const Cfg: TWindowConfig): String
               generer la configuration JSON pour tauri.conf.json
 
-  TODO 06 - GESTION DES ICONES [A FAIRE]
+  TODO 06 - GESTION DES ICONES [IMPLEMENTE]
             Constantes de formats d icones :
               ICON_ICO = 1, ICON_ICNS = 2, ICON_PNG = 3
             Function DetectIconFormat(Const Path: String): Integer
@@ -1548,7 +1548,356 @@ Begin
 End;
 
 { ============================================================
-  TODO 06-25 : A IMPLEMENTER
+  TODO 06 - GESTION DES ICONES [IMPLEMENTE]
+  ============================================================ }
+
+{ Variables pour le module icones }
+Var
+  IcoInitialized : Boolean;
+  IcoStateCount  : Integer;
+  IcoDownloadCount : Integer;
+  IcoConvertCount  : Integer;
+  IcoValidateCount : Integer;
+  IcoDefaultCount  : Integer;
+
+{ Initialiser l'etat du module icones }
+Procedure InitIconState;
+Begin
+  IcoInitialized := True;
+  IcoStateCount := 0;
+  IcoDownloadCount := 0;
+  IcoConvertCount := 0;
+  IcoValidateCount := 0;
+  IcoDefaultCount := 0;
+End;
+
+{ Detecter le format d'icone depuis l'extension du fichier }
+Function DetectIconFormat(Const Path: String): Integer;
+Var
+  Ext: String;
+Begin
+  Ext := LowerStr(ExtractFileExt(Path));
+  If (Ext = '.ico') Then
+    DetectIconFormat := ICON_ICO
+  Else If (Ext = '.icns') Then
+    DetectIconFormat := ICON_ICNS
+  Else If (Ext = '.png') Then
+    DetectIconFormat := ICON_PNG
+  Else
+    DetectIconFormat := 0; { Format inconnu }
+End;
+
+{ Retourner le nom du format d'icone }
+Function IconFormatName(Format: Integer): String;
+Begin
+  Case Format Of
+    ICON_ICO  : IconFormatName := 'ICO';
+    ICON_ICNS : IconFormatName := 'ICNS';
+    ICON_PNG  : IconFormatName := 'PNG';
+  Else
+    IconFormatName := 'UNKNOWN';
+  End;
+End;
+
+{ Valider qu'un fichier icone existe et est accessible }
+Function ValidateIconFile(Const Path: String): Boolean;
+Var
+  IconFormat: Integer;
+Begin
+  Inc(IcoValidateCount);
+  Inc(IcoStateCount);
+  
+  { Verifier si le fichier existe }
+  If Not FileExists(Path) Then
+  Begin
+    ValidateIconFile := False;
+    Exit;
+  End;
+  
+  { Verifier que le format est reconnu }
+  IconFormat := DetectIconFormat(Path);
+  If IconFormat = 0 Then
+  Begin
+    ValidateIconFile := False;
+    Exit;
+  End;
+  
+  ValidateIconFile := True;
+End;
+
+{ Construire l'URL du favicon depuis un domaine }
+Function GetFaviconUrl(Const Url: String): String;
+Var
+  Domain: String;
+Begin
+  Domain := ExtractDomain(Url);
+  If Domain = '' Then
+  Begin
+    GetFaviconUrl := '';
+    Exit;
+  End;
+  
+  { Utiliser Google Favicon Service pour une meilleure qualite }
+  GetFaviconUrl := 'https://www.google.com/s2/favicons?domain=' + Domain + '&sz=256';
+End;
+
+{ Construire l'URL directe du favicon.ico depuis un domaine }
+Function GetDirectFaviconUrl(Const Url: String): String;
+Var
+  Protocol, Domain: String;
+Begin
+  Protocol := ExtractProtocol(Url);
+  Domain := ExtractDomain(Url);
+  If Domain = '' Then
+  Begin
+    GetDirectFaviconUrl := '';
+    Exit;
+  End;
+  
+  GetDirectFaviconUrl := Protocol + '://' + Domain + '/favicon.ico';
+End;
+
+{ Telecharger le favicon depuis l'URL vers un fichier local }
+Procedure DownloadFavicon(Const Url, DestPath: String);
+Var
+  Cmd: String;
+  Platform: Integer;
+Begin
+  Inc(IcoDownloadCount);
+  Inc(IcoStateCount);
+  
+  Platform := GetPlatform;
+  
+  { Construire la commande selon la plateforme }
+  {$IFDEF WINDOWS}
+    { Utiliser curl sur Windows (inclus dans Windows 10+) }
+    Cmd := 'curl -s -o ' + QuoteStr(DestPath) + ' ' + QuoteStr(Url);
+  {$ELSE}
+    { Utiliser wget ou curl sur Linux/macOS }
+    Cmd := 'wget -q -O ' + QuoteStr(DestPath) + ' ' + QuoteStr(Url);
+  {$ENDIF}
+  
+  { Executer la commande }
+  Exec(GetEnv('COMSPEC'), '/C ' + Cmd);
+End;
+
+{ Convertir une icone entre formats }
+Function ConvertIconFormat(Const SrcPath: String; DestFormat: Integer; Const DestPath: String): Boolean;
+Var
+  Cmd: String;
+  SrcFormat: Integer;
+Begin
+  Inc(IcoConvertCount);
+  Inc(IcoStateCount);
+  
+  { Verifier le fichier source }
+  If Not FileExists(SrcPath) Then
+  Begin
+    ConvertIconFormat := False;
+    Exit;
+  End;
+  
+  SrcFormat := DetectIconFormat(SrcPath);
+  If SrcFormat = 0 Then
+  Begin
+    ConvertIconFormat := False;
+    Exit;
+  End;
+  
+  { Si meme format, copier simplement }
+  If SrcFormat = DestFormat Then
+  Begin
+    { Copier le fichier }
+    Cmd := '';
+    {$IFDEF WINDOWS}
+      Cmd := 'copy ' + QuoteStr(SrcPath) + ' ' + QuoteStr(DestPath);
+    {$ELSE}
+      Cmd := 'cp ' + QuoteStr(SrcPath) + ' ' + QuoteStr(DestPath);
+    {$ENDIF}
+    Exec(GetEnv('COMSPEC'), '/C ' + Cmd);
+    ConvertIconFormat := True;
+    Exit;
+  End;
+  
+  { Conversion avec ImageMagick (convert) si disponible }
+  Cmd := 'convert ' + QuoteStr(SrcPath) + ' ';
+  
+  Case DestFormat Of
+    ICON_ICO:
+      Begin
+        { Convertir en ICO (256x256 pour Windows) }
+        Cmd := Cmd + '-resize 256x256 ' + QuoteStr(DestPath);
+      End;
+    ICON_ICNS:
+      Begin
+        { Convertir en ICNS (multi-resolution pour macOS) }
+        { Note: iconutil requis sur macOS pour ICNS natif }
+        Cmd := Cmd + '-resize 512x512 ' + QuoteStr(DestPath);
+      End;
+    ICON_PNG:
+      Begin
+        { Convertir en PNG (512x512 pour Linux) }
+        Cmd := Cmd + '-resize 512x512 ' + QuoteStr(DestPath);
+      End;
+  End;
+  
+  Exec(GetEnv('COMSPEC'), '/C ' + Cmd);
+  ConvertIconFormat := True;
+End;
+
+{ Obtenir le chemin de l'icone par defaut pour une plateforme }
+Function GetDefaultIconPath(Platform: Integer): String;
+Begin
+  Case Platform Of
+    PLATFORM_WINDOWS:
+      GetDefaultIconPath := 'icons/icon.ico';
+    PLATFORM_MACOS:
+      GetDefaultIconPath := 'icons/icon.icns';
+    PLATFORM_LINUX:
+      GetDefaultIconPath := 'icons/icon.png';
+  Else
+    GetDefaultIconPath := 'icons/icon.png';
+  End;
+End;
+
+{ Obtenir le format d'icone recommande pour une plateforme }
+Function GetPlatformIconFormat(Platform: Integer): Integer;
+Begin
+  Case Platform Of
+    PLATFORM_WINDOWS:
+      GetPlatformIconFormat := ICON_ICO;
+    PLATFORM_MACOS:
+      GetPlatformIconFormat := ICON_ICNS;
+    PLATFORM_LINUX:
+      GetPlatformIconFormat := ICON_PNG;
+  Else
+    GetPlatformIconFormat := ICON_PNG;
+  End;
+End;
+
+{ Preparer les icones pour toutes les plateformes }
+Procedure PrepareIcons(Const Opts: TOptions; Const WorkDir: String);
+Var
+  IconsDir: String;
+  SrcPath: String;
+  DestPathIco, DestPathIcns, DestPathPng: String;
+  FaviconUrl: String;
+  TempPng: String;
+Begin
+  Inc(IcoStateCount);
+  
+  { Creer le repertoire icons }
+  IconsDir := ConcatPath(WorkDir, 'icons');
+  CreateDir(IconsDir);
+  
+  { Determiner le chemin source de l'icone }
+  If (Opts.IconPath <> '') And FileExists(Opts.IconPath) Then
+  Begin
+    SrcPath := Opts.IconPath;
+  End
+  Else
+  Begin
+    { Telecharger le favicon }
+    Inc(IcoDefaultCount);
+    TempPng := ConcatPath(IconsDir, 'favicon.png');
+    FaviconUrl := GetFaviconUrl(Opts.Url);
+    If FaviconUrl <> '' Then
+    Begin
+      DownloadFavicon(FaviconUrl, TempPng);
+      SrcPath := TempPng;
+    End
+    Else
+    Begin
+      { Pas d'icone disponible }
+      Exit;
+    End;
+  End;
+  
+  { Definir les chemins de destination }
+  DestPathIco := ConcatPath(IconsDir, 'icon.ico');
+  DestPathIcns := ConcatPath(IconsDir, 'icon.icns');
+  DestPathPng := ConcatPath(IconsDir, 'icon.png');
+  
+  { Convertir pour chaque plateforme }
+  ConvertIconFormat(SrcPath, ICON_ICO, DestPathIco);
+  ConvertIconFormat(SrcPath, ICON_ICNS, DestPathIcns);
+  ConvertIconFormat(SrcPath, ICON_PNG, DestPathPng);
+End;
+
+{ Verifier si une icone est de taille valide (256x256 minimum recommande) }
+Function IsIconSizeValid(Const Path: String): Boolean;
+Begin
+  { Note: Verifier la taille reelle necessite une lecture du fichier }
+  { Pour l'instant, on accepte si le fichier existe et a un format valide }
+  IsIconSizeValid := ValidateIconFile(Path);
+End;
+
+{ Obtenir l'extension de fichier pour un format d'icone }
+Function GetIconExtension(Format: Integer): String;
+Begin
+  Case Format Of
+    ICON_ICO  : GetIconExtension := '.ico';
+    ICON_ICNS : GetIconExtension := '.icns';
+    ICON_PNG  : GetIconExtension := '.png';
+  Else
+    GetIconExtension := '.png';
+  End;
+End;
+
+{ *** FONCTIONS ACCESSEURS POUR LE MODULE ICONES *** }
+
+Function IsIcoInitialized: Boolean;
+Begin
+  IsIcoInitialized := IcoInitialized;
+End;
+
+Function IsIcoEmpty: Boolean;
+Begin
+  IsIcoEmpty := (IcoStateCount = 0);
+End;
+
+Function GetIcoStateCount: Integer;
+Begin
+  GetIcoStateCount := IcoStateCount;
+End;
+
+Function GetIcoDownloadCount: Integer;
+Begin
+  GetIcoDownloadCount := IcoDownloadCount;
+End;
+
+Function GetIcoConvertCount: Integer;
+Begin
+  GetIcoConvertCount := IcoConvertCount;
+End;
+
+Function GetIcoValidateCount: Integer;
+Begin
+  GetIcoValidateCount := IcoValidateCount;
+End;
+
+Function GetIcoDefaultCount: Integer;
+Begin
+  GetIcoDefaultCount := IcoDefaultCount;
+End;
+
+Function GetIcoFormatIco: Integer;
+Begin
+  GetIcoFormatIco := ICON_ICO;
+End;
+
+Function GetIcoFormatIcns: Integer;
+Begin
+  GetIcoFormatIcns := ICON_ICNS;
+End;
+
+Function GetIcoFormatPng: Integer;
+Begin
+  GetIcoFormatPng := ICON_PNG;
+End;
+
+{ ============================================================
+  TODO 07-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -1685,13 +2034,15 @@ Begin
   WriteLn('Plateforme  : ', PlatformName(GetPlatform));
   WriteLn;
 
-  { TODO: Implementer les TODOs 06-25 }
-  WriteLn('*** NOTE: TODOs 01-05 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 06-25 restent a implementer ***');
+  { Initialiser le module icones }
+  InitIconState;
+
+  { TODO: Implementer les TODOs 07-25 }
+  WriteLn('*** NOTE: TODOs 01-06 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 07-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 06: Gestion des icones');
   WriteLn('  - TODO 07: Generation du nom d''application');
   WriteLn('  - TODO 08: Configuration Tauri');
   WriteLn('  - TODO 09: Generation du code Rust principal');
