@@ -1316,6 +1316,125 @@ Begin
   End;
 End;
 
+Function GetArchitecture: String;
+{ Retourne l'architecture du systeme : x64, arm64 ou x86 }
+Begin
+  {$IFDEF CPU64}
+    {$IFDEF CPUAARCH64}
+    GetArchitecture := 'arm64';
+    {$ELSE}
+    GetArchitecture := 'x64';
+    {$ENDIF}
+  {$ELSE}
+    {$IFDEF CPUARM}
+    GetArchitecture := 'arm';
+    {$ELSE}
+    GetArchitecture := 'x86';
+    {$ENDIF}
+  {$ENDIF}
+End;
+
+Function IsRustInstalled: Boolean;
+{ Verifie si Rust/Cargo est installe en testant cargo --version }
+Var
+  ExitCode: Integer;
+Begin
+  {$IFDEF WINDOWS}
+  ExitCode := ExecuteProcess('cmd', '/c cargo --version >nul 2>&1');
+  {$ELSE}
+  ExitCode := ExecuteProcess('/bin/sh', '-c "cargo --version >/dev/null 2>&1"');
+  {$ENDIF}
+  IsRustInstalled := (ExitCode = 0);
+End;
+
+Function IsTauriInstalled: Boolean;
+{ Verifie si Tauri CLI est installe en testant cargo tauri --version }
+Var
+  ExitCode: Integer;
+Begin
+  {$IFDEF WINDOWS}
+  ExitCode := ExecuteProcess('cmd', '/c cargo tauri --version >nul 2>&1');
+  {$ELSE}
+  ExitCode := ExecuteProcess('/bin/sh', '-c "cargo tauri --version >/dev/null 2>&1"');
+  {$ENDIF}
+  IsTauriInstalled := (ExitCode = 0);
+End;
+
+Procedure CheckPrerequisites;
+{ Verifie les prerequis : Rust, Tauri et dependances systeme }
+Var
+  Platform: Integer;
+  MissingDeps: Boolean;
+Begin
+  MissingDeps := False;
+  Platform := GetPlatform;
+  
+  WriteLn('Verification des prerequis...');
+  WriteLn;
+  
+  { Verifier Rust }
+  Write('  Rust/Cargo: ');
+  If IsRustInstalled Then
+    WriteLn('OK')
+  Else
+  Begin
+    WriteLn('NON INSTALLE');
+    WriteLn('    Pour installer Rust, visitez: https://rustup.rs/');
+    MissingDeps := True;
+  End;
+  
+  { Verifier Tauri CLI }
+  Write('  Tauri CLI:  ');
+  If IsTauriInstalled Then
+    WriteLn('OK')
+  Else
+  Begin
+    WriteLn('NON INSTALLE');
+    WriteLn('    Pour installer: cargo install tauri-cli');
+    MissingDeps := True;
+  End;
+  
+  { Dependances specifiques au systeme }
+  WriteLn;
+  WriteLn('  Dependances systeme pour ', PlatformName(Platform), ':');
+  
+  Case Platform Of
+    PLATFORM_WINDOWS:
+    Begin
+      WriteLn('    - WebView2 (inclus dans Windows 10/11)');
+      WriteLn('    - Visual Studio Build Tools 2019+');
+    End;
+    PLATFORM_MACOS:
+    Begin
+      WriteLn('    - Xcode Command Line Tools');
+      WriteLn('    - CLang/LLVM');
+    End;
+    PLATFORM_LINUX:
+    Begin
+      WriteLn('    - webkit2gtk-4.0');
+      WriteLn('    - libayatana-appindicator3-1 ou libappindicator3-1');
+      WriteLn('    - librsvg2-dev');
+      WriteLn('    Sur Ubuntu/Debian:');
+      WriteLn('      sudo apt install libwebkit2gtk-4.0-dev \');
+      WriteLn('        build-essential curl wget libssl-dev \');
+      WriteLn('        libgtk-3-dev libayatana-appindicator3-dev \');
+      WriteLn('        librsvg2-dev');
+    End;
+  Else
+    WriteLn('    Plateforme non supportee');
+    MissingDeps := True;
+  End;
+  
+  WriteLn;
+  If MissingDeps Then
+  Begin
+    WriteLn('ATTENTION: Certains prerequis sont manquants.');
+    WriteLn('Veuillez les installer avant de continuer.');
+  End
+  Else
+    WriteLn('Tous les prerequis sont satisfaits.');
+End;
+
 { ============================================================
   TODO 05-25 : A IMPLEMENTER
   ============================================================ }
