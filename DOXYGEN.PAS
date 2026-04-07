@@ -3078,7 +3078,7 @@ Begin
         If (TrimmedLine <> '') And (Pos(':', TrimmedLine) > 0) Then
         Begin
           If RecordFields <> '' Then
-            RecordFields := RecordFields + '; ';
+            RecordFields := RecordFields + #10;
           RecordFields := RecordFields + TrimmedLine;
         End;
       End;
