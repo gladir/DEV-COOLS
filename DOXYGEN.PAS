@@ -1,7 +1,7 @@
 { @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal, Free Pascal)
+  @abstract(Target: Free Pascal)
   @description: Clone de la commande doxygen - generateur de documentation
                 a partir de code source annote.
                 Supporte C, C++, Pascal, Ada, Fortran, Java, Python, ...
