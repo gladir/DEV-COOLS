@@ -1981,8 +1981,8 @@ Var
 
   { Variables pour l'encodage RLE JPEG (Partie 6) }
   JPEG_RLEInitialized: Boolean;           { Module RLE initialise? }
-  JPEG_RLEBlockCount : Integer;           { Compteur de blocs encodes }
-  JPEG_RLETotalPairs : Integer;           { Total de paires RLE generees }
+  JPEG_RLEBlockCount : LongInt;           { Compteur de blocs encodes }
+  JPEG_RLETotalPairs : LongInt;           { Total de paires RLE generees }
   JPEG_RLECategoryTable: Array[0..1023] Of Byte; { Table categorie pre-calculee }
 
   { Variables pour l'encodeur Huffman JPEG (Partie 7) }
@@ -19224,13 +19224,13 @@ Begin
   JPEG_IsRLEInitialized := JPEG_RLEInitialized;
 End;
 
-Function JPEG_GetRLEBlockCount: Integer;
+Function JPEG_GetRLEBlockCount: LongInt;
 { Retourne le nombre total de blocs encodes }
 Begin
   JPEG_GetRLEBlockCount := JPEG_RLEBlockCount;
 End;
 
-Function JPEG_GetRLETotalPairs: Integer;
+Function JPEG_GetRLETotalPairs: LongInt;
 { Retourne le nombre total de paires RLE generees }
 Begin
   JPEG_GetRLETotalPairs := JPEG_RLETotalPairs;
@@ -21199,9 +21199,9 @@ Begin
       JPEG_RGB_to_YCbCr_Block(RGBBlock, YBlock, CbBlock, CrBlock);
 
       { Centrer les valeurs (soustraire 128) et convertir en blocs pixels }
-      JPEG_ComponentBlockToPixelBlock(YBlock, YPixBlock, True);
-      JPEG_ComponentBlockToPixelBlock(CbBlock, CbPixBlock, True);
-      JPEG_ComponentBlockToPixelBlock(CrBlock, CrPixBlock, True);
+      JPEG_ComponentBlockToPixelBlock(YBlock, YPixBlock, False);
+      JPEG_ComponentBlockToPixelBlock(CbBlock, CbPixBlock, False);
+      JPEG_ComponentBlockToPixelBlock(CrBlock, CrPixBlock, False);
 
       { DCT avant }
       JPEG_DCT_Forward(YPixBlock, YDct);
