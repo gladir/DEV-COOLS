@@ -363,7 +363,10 @@
             GetWmdJsGenCount/GetWmdNormalCount/GetWmdFramelessCount/
             GetWmdMaxStyles)
 
-  TODO 12 - INJECTION CSS PERSONNALISE [A FAIRE]
+  TODO 12 - INJECTION CSS PERSONNALISE [IMPLEMENTE]
+            CssInitialized/CssStateCount/CssLoadCount/CssMinifyCount/
+            CssValidateCount/CssInjectCount/CssErrorCount vars
+            Procedure InitCssInjectionState
             Function LoadCssFile(Const Path: String): String
               charger le contenu d un fichier CSS
               verifier l existence du fichier
@@ -379,6 +382,10 @@
             Procedure PrepareCssInjection(Const Opts: TOptions;
               Var InjectionScript: String)
               preparer le script d injection CSS si specifie
+            10 accesseurs (IsCssInitialized/IsCssEmpty/GetCssStateCount/
+            GetCssLoadCount/GetCssMinifyCount/GetCssValidateCount/
+            GetCssInjectCount/GetCssErrorCount/GetCssMaxFileSize/
+            GetCssDefaultScope)
 
   TODO 13 - INJECTION JAVASCRIPT PERSONNALISE [A FAIRE]
             Function LoadJsFile(Const Path: String): String
@@ -3530,7 +3537,356 @@ Begin
 End;
 
 { ============================================================
-  TODO 12-25 : A IMPLEMENTER
+  TODO 12 - INJECTION CSS PERSONNALISE
+  ============================================================ }
+
+Const
+  { Constantes pour l'injection CSS }
+  CSS_MAX_FILE_SIZE = 65536;       { Taille max d'un fichier CSS }
+  CSS_DEFAULT_SCOPE = 'document';  { Scope par defaut }
+
+Var
+  { Variables d'etat pour l'injection CSS }
+  CssInitialized: Boolean;
+  CssStateCount: Integer;
+  CssLoadCount: Integer;
+  CssMinifyCount: Integer;
+  CssValidateCount: Integer;
+  CssInjectCount: Integer;
+  CssErrorCount: Integer;
+
+Procedure InitCssInjectionState;
+Begin
+  CssInitialized := True;
+  CssStateCount := 1;
+  CssLoadCount := 0;
+  CssMinifyCount := 0;
+  CssValidateCount := 0;
+  CssInjectCount := 0;
+  CssErrorCount := 0;
+End;
+
+Function LoadCssFile(Const Path: String): String;
+Var
+  F: Text;
+  Line, Content: String;
+Begin
+  Content := '';
+  If Path = '' Then
+  Begin
+    Inc(CssErrorCount);
+    LoadCssFile := '';
+    Exit;
+  End;
+
+  {$I-}
+  Assign(F, Path);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    Inc(CssErrorCount);
+    LoadCssFile := '';
+    Exit;
+  End;
+
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    If Content <> '' Then
+      Content := Content + #10;
+    Content := Content + Line;
+  End;
+  Close(F);
+
+  Inc(CssLoadCount);
+  LoadCssFile := Content;
+End;
+
+Function MinifyCss(Const Css: String): String;
+Var
+  I, Len: Integer;
+  C, PrevC: Char;
+  InComment, InString: Boolean;
+  Quote: Char;
+  Result: String;
+Begin
+  Result := '';
+  Len := Length(Css);
+  InComment := False;
+  InString := False;
+  Quote := #0;
+  PrevC := #0;
+
+  I := 1;
+  While I <= Len Do
+  Begin
+    C := Css[I];
+
+    { Detection des commentaires /* ... */ }
+    If (Not InString) And (Not InComment) And (C = '/') And (I < Len) And (Css[I + 1] = '*') Then
+    Begin
+      InComment := True;
+      Inc(I, 2);
+      Continue;
+    End;
+
+    If InComment And (C = '*') And (I < Len) And (Css[I + 1] = '/') Then
+    Begin
+      InComment := False;
+      Inc(I, 2);
+      Continue;
+    End;
+
+    If InComment Then
+    Begin
+      Inc(I);
+      Continue;
+    End;
+
+    { Gestion des strings }
+    If (C = '"') Or (C = '''') Then
+    Begin
+      If Not InString Then
+      Begin
+        InString := True;
+        Quote := C;
+      End
+      Else If C = Quote Then
+        InString := False;
+      Result := Result + C;
+      PrevC := C;
+      Inc(I);
+      Continue;
+    End;
+
+    If InString Then
+    Begin
+      Result := Result + C;
+      PrevC := C;
+      Inc(I);
+      Continue;
+    End;
+
+    { Retirer les espaces inutiles }
+    If (C = ' ') Or (C = #9) Or (C = #10) Or (C = #13) Then
+    Begin
+      { Garder un seul espace si necessaire }
+      If (Result <> '') And (Result[Length(Result)] <> ' ') And
+         (Result[Length(Result)] <> '{') And (Result[Length(Result)] <> '}') And
+         (Result[Length(Result)] <> ':') And (Result[Length(Result)] <> ';') And
+         (Result[Length(Result)] <> ',') Then
+      Begin
+        { Verifier si le prochain caractere non-blanc est special }
+        While (I < Len) And ((Css[I + 1] = ' ') Or (Css[I + 1] = #9) Or
+              (Css[I + 1] = #10) Or (Css[I + 1] = #13)) Do
+          Inc(I);
+        If (I < Len) And (Css[I + 1] <> '{') And (Css[I + 1] <> '}') And
+           (Css[I + 1] <> ':') And (Css[I + 1] <> ';') And (Css[I + 1] <> ',') Then
+          Result := Result + ' ';
+      End;
+      Inc(I);
+      Continue;
+    End;
+
+    Result := Result + C;
+    PrevC := C;
+    Inc(I);
+  End;
+
+  Inc(CssMinifyCount);
+  MinifyCss := Result;
+End;
+
+Function ValidateCss(Const Css: String): Boolean;
+Var
+  I, Len: Integer;
+  BraceCount, ParenCount, BracketCount: Integer;
+  InString: Boolean;
+  Quote, C: Char;
+Begin
+  BraceCount := 0;
+  ParenCount := 0;
+  BracketCount := 0;
+  InString := False;
+  Quote := #0;
+  Len := Length(Css);
+
+  For I := 1 To Len Do
+  Begin
+    C := Css[I];
+
+    { Gestion des strings }
+    If (C = '"') Or (C = '''') Then
+    Begin
+      If Not InString Then
+      Begin
+        InString := True;
+        Quote := C;
+      End
+      Else If C = Quote Then
+        InString := False;
+      Continue;
+    End;
+
+    If InString Then
+      Continue;
+
+    { Compter les accolades, parentheses et crochets }
+    Case C Of
+      '{': Inc(BraceCount);
+      '}': Dec(BraceCount);
+      '(': Inc(ParenCount);
+      ')': Dec(ParenCount);
+      '[': Inc(BracketCount);
+      ']': Dec(BracketCount);
+    End;
+
+    { Verifier les desequilibres }
+    If (BraceCount < 0) Or (ParenCount < 0) Or (BracketCount < 0) Then
+    Begin
+      Inc(CssErrorCount);
+      ValidateCss := False;
+      Exit;
+    End;
+  End;
+
+  Inc(CssValidateCount);
+
+  { Verifier l'equilibre final }
+  If (BraceCount = 0) And (ParenCount = 0) And (BracketCount = 0) Then
+    ValidateCss := True
+  Else
+  Begin
+    Inc(CssErrorCount);
+    ValidateCss := False;
+  End;
+End;
+
+Function GenerateCssInjectionJs(Const Css: String): String;
+Var
+  EscapedCss, Result: String;
+  I: Integer;
+  C: Char;
+Begin
+  { Echapper le CSS pour JavaScript }
+  EscapedCss := '';
+  For I := 1 To Length(Css) Do
+  Begin
+    C := Css[I];
+    Case C Of
+      '\': EscapedCss := EscapedCss + '\\';
+      '''': EscapedCss := EscapedCss + '\''';
+      #10: EscapedCss := EscapedCss + '\n';
+      #13: ; { Ignorer les retours chariot }
+      #9: EscapedCss := EscapedCss + '\t';
+    Else
+      EscapedCss := EscapedCss + C;
+    End;
+  End;
+
+  Result := '(function() {' + #10;
+  Result := Result + '  const style = document.createElement(''style'');' + #10;
+  Result := Result + '  style.setAttribute(''data-pake-injected'', ''true'');' + #10;
+  Result := Result + '  style.textContent = ''' + EscapedCss + ''';' + #10;
+  Result := Result + '  if (document.head) {' + #10;
+  Result := Result + '    document.head.appendChild(style);' + #10;
+  Result := Result + '  } else {' + #10;
+  Result := Result + '    document.addEventListener(''DOMContentLoaded'', function() {' + #10;
+  Result := Result + '      document.head.appendChild(style);' + #10;
+  Result := Result + '    });' + #10;
+  Result := Result + '  }' + #10;
+  Result := Result + '})();';
+
+  Inc(CssInjectCount);
+  GenerateCssInjectionJs := Result;
+End;
+
+Procedure PrepareCssInjection(Const Opts: TOptions; Var InjectionScript: String);
+Var
+  CssContent, MinifiedCss: String;
+Begin
+  InjectionScript := '';
+
+  { Verifier si un fichier CSS est specifie }
+  If Opts.InjectCss = '' Then
+    Exit;
+
+  { Charger le fichier CSS }
+  CssContent := LoadCssFile(Opts.InjectCss);
+  If CssContent = '' Then
+  Begin
+    WriteLn('Erreur: Impossible de charger le fichier CSS: ', Opts.InjectCss);
+    Exit;
+  End;
+
+  { Valider le CSS }
+  If Not ValidateCss(CssContent) Then
+  Begin
+    WriteLn('Avertissement: Le CSS peut contenir des erreurs de syntaxe');
+  End;
+
+  { Minifier le CSS }
+  MinifiedCss := MinifyCss(CssContent);
+
+  { Generer le script d'injection }
+  InjectionScript := GenerateCssInjectionJs(MinifiedCss);
+End;
+
+{ Accesseurs pour TODO 12 - INJECTION CSS PERSONNALISE }
+
+Function IsCssInitialized: Boolean;
+Begin
+  IsCssInitialized := CssInitialized;
+End;
+
+Function IsCssEmpty: Boolean;
+Begin
+  IsCssEmpty := (CssLoadCount = 0) And (CssInjectCount = 0);
+End;
+
+Function GetCssStateCount: Integer;
+Begin
+  GetCssStateCount := CssStateCount;
+End;
+
+Function GetCssLoadCount: Integer;
+Begin
+  GetCssLoadCount := CssLoadCount;
+End;
+
+Function GetCssMinifyCount: Integer;
+Begin
+  GetCssMinifyCount := CssMinifyCount;
+End;
+
+Function GetCssValidateCount: Integer;
+Begin
+  GetCssValidateCount := CssValidateCount;
+End;
+
+Function GetCssInjectCount: Integer;
+Begin
+  GetCssInjectCount := CssInjectCount;
+End;
+
+Function GetCssErrorCount: Integer;
+Begin
+  GetCssErrorCount := CssErrorCount;
+End;
+
+Function GetCssMaxFileSize: Integer;
+Begin
+  GetCssMaxFileSize := CSS_MAX_FILE_SIZE;
+End;
+
+Function GetCssDefaultScope: String;
+Begin
+  GetCssDefaultScope := CSS_DEFAULT_SCOPE;
+End;
+
+{ ============================================================
+  TODO 13-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -3664,6 +4020,9 @@ Begin
   { Initialiser le module mode fenetre }
   InitWindowModeState;
 
+  { Initialiser le module injection CSS }
+  InitCssInjectionState;
+
   { Generer le nom de l'application si non specifie }
   O.AppName := GenerateAppName(O);
 
@@ -3693,13 +4052,12 @@ Begin
   WriteLn('Raccourcis  : ', GetKbdActiveCount, ' actifs');
   WriteLn;
 
-  { TODO: Implementer les TODOs 12-25 }
-  WriteLn('*** NOTE: TODOs 01-11 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 12-25 restent a implementer ***');
+  { TODO: Implementer les TODOs 13-25 }
+  WriteLn('*** NOTE: TODOs 01-12 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 13-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 12: Injection CSS personnalise');
   WriteLn('  - TODO 13: Injection JavaScript personnalise');
   WriteLn('  - TODO 14: Suppression des pubs (AdBlock)');
   WriteLn('  - TODO 15: Gestion des permissions');
