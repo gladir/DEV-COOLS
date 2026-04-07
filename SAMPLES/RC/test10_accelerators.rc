@@ -1,0 +1,33 @@
+// test10_accelerators.rc - Test ACCELERATORS
+// Test: Compilation des raccourcis clavier
+
+100 ACCELERATORS
+BEGIN
+    "N", 101, VIRTKEY, CONTROL
+    "O", 102, VIRTKEY, CONTROL
+    "S", 103, VIRTKEY, CONTROL
+    "Z", 201, VIRTKEY, CONTROL
+    "X", 202, VIRTKEY, CONTROL
+    "C", 203, VIRTKEY, CONTROL
+    "V", 204, VIRTKEY, CONTROL
+    VK_F1, 301, VIRTKEY
+    VK_F2, 302, VIRTKEY
+    VK_F3, 303, VIRTKEY
+END
+
+// Accelerateurs avec nom de chaine
+MAINACCEL ACCELERATORS
+BEGIN
+    "A", 1, VIRTKEY, CONTROL, ALT
+    "B", 2, VIRTKEY, CONTROL, SHIFT
+    VK_DELETE, 3, VIRTKEY, SHIFT
+    VK_INSERT, 4, VIRTKEY, CONTROL
+END
+
+// Un autre ensemble d'accelerateurs
+200 ACCELERATORS
+BEGIN
+    VK_ESCAPE, 500, VIRTKEY
+    VK_RETURN, 501, VIRTKEY
+    VK_TAB, 502, VIRTKEY, CONTROL
+END

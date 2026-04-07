@@ -1,10 +1,7 @@
+# Fichiers objet et sortie compilers
 *.S68
 *.class
 *.deb
 *.o
 *.obj
 *.ppu
-*.prg
-DISRES
-DOXYGEN
-html/

@@ -1,0 +1,41 @@
+// test04_dialog.rc - Test DIALOG
+// Test: Compilation des ressources DIALOG
+
+100 DIALOG 10, 10, 200, 150
+CAPTION "Ma boite de dialogue"
+STYLE WS_POPUP | WS_CAPTION | WS_SYSMENU
+BEGIN
+    LTEXT "Entrez votre nom:", 101, 10, 10, 80, 10
+    EDITTEXT 102, 10, 25, 180, 12
+    LTEXT "Entrez votre age:", 103, 10, 45, 80, 10
+    EDITTEXT 104, 10, 60, 180, 12
+    PUSHBUTTON "OK", 1, 50, 120, 50, 14
+    PUSHBUTTON "Annuler", 2, 110, 120, 50, 14
+END
+
+// Dialog avec checkboxes et radiobuttons
+200 DIALOG 0, 0, 220, 180
+CAPTION "Options"
+STYLE WS_POPUP | WS_CAPTION | WS_SYSMENU
+BEGIN
+    GROUPBOX "Options principales", 301, 10, 10, 200, 80
+    CHECKBOX "Option 1", 302, 20, 25, 100, 10
+    CHECKBOX "Option 2", 303, 20, 40, 100, 10
+    CHECKBOX "Option 3", 304, 20, 55, 100, 10
+    RADIOBUTTON "Choix A", 305, 120, 25, 80, 10
+    RADIOBUTTON "Choix B", 306, 120, 40, 80, 10
+    RADIOBUTTON "Choix C", 307, 120, 55, 80, 10
+    PUSHBUTTON "OK", 1, 60, 150, 50, 14
+    PUSHBUTTON "Annuler", 2, 120, 150, 50, 14
+END
+
+// Dialog avec nom de chaine
+ABOUTDIALOG DIALOG 20, 20, 180, 100
+CAPTION "A propos"
+STYLE WS_POPUP | WS_CAPTION | WS_SYSMENU
+BEGIN
+    CTEXT "Mon Application", 401, 10, 10, 160, 10
+    CTEXT "Version 1.0", 402, 10, 25, 160, 10
+    CTEXT "Copyright 2026", 403, 10, 40, 160, 10
+    DEFPUSHBUTTON "OK", 1, 65, 70, 50, 14
+END

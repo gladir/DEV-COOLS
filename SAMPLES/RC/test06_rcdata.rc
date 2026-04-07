@@ -1,0 +1,26 @@
+// test06_rcdata.rc - Test RCDATA
+// Test: Compilation des ressources RCDATA (donnees brutes)
+
+// RCDATA avec bloc de donnees inline
+100 RCDATA
+BEGIN
+    0x0001, 0x0002, 0x0003, 0x0004,
+    "Donnees texte inline\0",
+    0xFF, 0xFE, 0xFD, 0xFC
+END
+
+// RCDATA avec nom de chaine
+MYDATA RCDATA
+BEGIN
+    1, 2, 3, 4, 5, 6, 7, 8,
+    "Chaine de test\0"
+END
+
+// Un autre bloc RCDATA
+200 RCDATA
+BEGIN
+    "Configuration:\0",
+    0x0100,
+    0x0200,
+    "Fin\0"
+END

@@ -599,7 +599,7 @@ Begin
      _LongInt:Str(GetVariableLongInt(VarName),Value);
      _Real:Str(GetVariableReal(VarName),Value);
      Else Begin
-      WriteLine('Type incompatiable');
+      WriteLine('Type incompatible');
       Exit;
      End;
     End;
@@ -801,7 +801,7 @@ Begin
   AddVariableReal(ForStack[ForPos].VarName,Trunc(R1));
  SkipSpace;
  If StrToUpper(ReadWord)<>'TO'Then Begin
-  WriteLine('Mot r‚serv‚ "TO" attendu');
+  WriteLine('Mot rï¿½servï¿½ "TO" attendu');
   Exit;
  End;
  SkipSpace;
@@ -809,7 +809,7 @@ Begin
  R2:=GetNumberValue(1);
  SkipSpace;
  If StrToUpper(ReadWord)<>'DO'Then Begin
-  WriteLine('Mot r‚serv‚ "DO" attendu');
+  WriteLine('Mot rï¿½servï¿½ "DO" attendu');
   Exit;
  End;
  ForCommand:=True;
@@ -878,7 +878,7 @@ Begin
   While Not EOF(FileLoad) do Begin
    ReadLn(FileLoad,S);
    If Not AddLine(LTrim(S))Then Begin
-    WriteLn('Manque de m‚moire');
+    WriteLn('Manque de mï¿½moire');
     Break;
    End;
   End;
@@ -1159,7 +1159,7 @@ Begin
  End
   Else
  If(NoImplementation)Then Begin
-  WriteLine('Cette commande n''a pas ‚t‚ impl‚ment‚');
+  WriteLine('Cette commande n''a pas ï¿½tï¿½ implï¿½mentï¿½');
   Exit;
  End;
  RunCommand:=True;

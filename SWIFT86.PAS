@@ -812,17 +812,19 @@ Begin
   WriteLn;
 End;
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: SWIFT86 <source.swift> [sortie.asm] [-v] [-d] [-w]');
-  WriteLn;
-  WriteLn('  source.swift : fichier Swift source');
-  WriteLn('  sortie.asm   : fichier assembleur de sortie (defaut: source.asm)');
-  WriteLn('  -v           : mode verbeux (banniere + statistiques)');
-  WriteLn('  -d           : debug tokens (affiche chaque token)');
-  WriteLn('  -w           : activer les avertissements');
-  WriteLn;
-  Halt(EXIT_USAGE);
+Procedure ShowUsage;Begin
+ WriteLn('SWIFT86 - Cette commande permet de lancer le compilateur ',
+         'Swift pour l''assembleur du microprocesseur 8086.');
+ WriteLn;
+ WriteLn('Syntaxe: SWIFT86 <source.swift> [sortie.asm] [-v] [-d] [-w]');
+ WriteLn;
+ WriteLn('  source.swift : fichier Swift source');
+ WriteLn('  sortie.asm   : fichier assembleur de sortie (defaut: source.asm)');
+ WriteLn('  -v           : mode verbeux (banniere + statistiques)');
+ WriteLn('  -d           : debug tokens (affiche chaque token)');
+ WriteLn('  -w           : activer les avertissements');
+ WriteLn;
+ Halt(EXIT_USAGE);
 End;
 
 Function StrLowerCase(Const S : TString) : TString;

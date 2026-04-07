@@ -3,6 +3,12 @@ Suite de commandes pour les développeur écrit en Pascal (Turbo Pascal ou Free 
 
 Le projet DEV-COOLS se veut un peu comme une solution de remplacement de BINUTILS des distributions Linux en Pascal.
 
+Il possède également des idées, comme DEVENV :
+
+<img width="639" height="479" alt="image" src="https://github.com/user-attachments/assets/bc6193a5-1ae5-471b-a9d5-54619b45407b" />
+
+Lequel supporte, les langages de programmations comme ABAP/4, Ada, C, C#, Pascal,...
+
 <h2>Liste des fichiers</h2>
 
 Voici la liste des différents fichiers proposés dans DEV-COOLS :
@@ -31,6 +37,18 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>ABAPCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur ABAP/4 pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
+			<td><b>AL58C86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur de langage de programmation Algol 58 pour l'assembleur des microprocesseurs 8086.</td>
+		</tr>
+		<tr>
+			<td><b>AL60C86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Algol 60 pour l'assembleur du microprocesseur 8086 ou 8088.</td>
+		</tr>
+		<tr>
+			<td><b>AL68C86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Algol 68 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
 			<td><b>ASC2ABAP.PAS</b></td>
@@ -161,6 +179,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur AWK vers l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>AWKCW32.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur AWK pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+		</tr>
+		<tr>
 			<td><b>BASIC.PAS</b></td>
 			<td>Cette commande permet de lancer l'interpréteur de langage de programmation BASIC.</td>
 		</tr>
@@ -229,6 +251,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur ColdFusion pour l'assembleur du microprocesseur 8086 ou 8088.</td>
 		</tr>
 		<tr>
+			<td><b>CLIPPER86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Clipper pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>CLOJ86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Clojure pour de l'assembleur de microprocesseur 8086 ou 8088.</td>
 		</tr>
@@ -255,6 +281,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>CSC86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur C# (C Sharp) pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
+			<td><b>CSMITH.PAS</b></td>
+			<td>Cette commande permet de lancer un générateur de code C aleatoire.</td>
 		</tr>
 		<tr>
 			<td><b>CSCW32.PAS</b></td>
@@ -316,7 +346,15 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>DISOBJ.PAS</b></td>
 			<td>Cette commande permet d'analyser et de désassembler un fichier d'extension «.OBJ».</td>
 		</tr>
-			<tr>
+		<tr>
+			<td><b>DISPRG.PAS</b></td>
+			<td>Cette commande permet de lancer le désassembler de fichiers .PRG du Atari ST.</td>
+		</tr>
+		<tr>
+			<td><b>DISRES.PAS</b></td>
+			<td>Cette commande permert de lancer le desassembleur de fichiers .RES (ressources Windows) vers .RC</td>
+		</tr>
+		<tr>
 			<td><b>DISZ80.PAS</b></td>
 			<td>Cette commande permet de désassembler un code binaire de microprocesseur Z80 en langage de programmation assembleur Z80.</td>
 		</tr>
@@ -365,6 +403,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur JavaScript pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>KOTLIN86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Kotlin pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>LINK.PAS</b></td>
 			<td>Cette commande permet de lancer le fabricant de liaison.</td>
 		</tr>
@@ -377,12 +419,20 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer l'interpréteur de commande du langage de programmation LOGO. Il supporte aussi la tortue.</td>
 		</tr>
 		<tr>
+			<td><b>LUA86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur de langage de programmation Lua pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>MASM.PAS</b></td>
 			<td>Cette commande permet de lancer le Macro Assembler (compilateur assembleur 8086 créant des fichiers .OBJ).</td>
 		</tr>
 		<tr>
 			<td><b>MODII86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Modula-2 pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
+			<td><b>MODIII86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Modula-3 pour de l'assembleur de microprocesseur 8086 ou 8088.</td>
 		</tr>
 		<tr>
 			<td><b>OBERON86.PAS</b></td>
@@ -403,6 +453,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>PERL86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Perl pour l'assembleur du microprocesseur 8086 ou 8088.</td>
+		</tr>
+		<tr>
+			<td><b>PHP2CS.PAS</b></td>
+			<td>Cette commande permet de lancer le transpileur PHP vers C#.</td>
 		</tr>
 		<tr>
 			<td><b>PHP86.PAS</b></td>
@@ -441,6 +495,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier .QPU de QuickPascal en code source Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>RC.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur de ressources Windows (.RC -> .RES).</td>
+		</tr>
+		<tr>
 			<td><b>READELF.PAS</b></td>
 			<td>Cette commande permet d'afficher des informations sur un ELF.</td>
 		</tr>
@@ -457,8 +515,20 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Rust vers l'assembleur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>SAS86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur SAS vers l'assembleur du microprocesseur 8086 (MASM/TASM).</td>
+		</tr>
+		<tr>
 			<td><b>SNOBOL86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Snobol 4 pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
+			<td><b>SQLCMD.PAS</b></td>
+			<td>Cette commande permet de lancer un clone SQL Server en ligne de commande. Lit directement dans un fichier «.MDF».</td>
+		</tr>
+		<tr>
+			<td><b>SWIFT86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Swift pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
     	<tr>
 			<td><b>SYMDEB.PAS</b></td>

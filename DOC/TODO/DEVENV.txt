@@ -1,0 +1,346 @@
+  FEUILLE DE ROUTE - 30 TODOS
+  ============================================================
+
+  DEVENV.PAS - Clone de Visual Studio en mode graphique
+  Turbo Pascal / Free Pascal (-Mtp)
+
+  IDE integre multi-fenetre avec coloration syntaxique, menus
+  deroulants, explorateur de solution, integration des compilateurs
+  C#, VB.NET et Pascal du projet DEV-COOLS. L affichage repose
+  entierement sur le graphisme Turbo Pascal / Free Pascal
+  (PtcGraph sous FPC, Graph sous TP7). Aucun appel aux API
+  Windows : compatible Windows, Linux, DOS.
+
+  TODO 01 - INFRASTRUCTURE, CONSTANTES ET OPTIONS [IMPLEMENTE]
+            DEVENV_VERSION ('1.0') et DEVENV_DATE ('2026-04-03').
+            Constantes de dimensionnement : MAX_WINDOWS (32),
+              MAX_TABS (64), MAX_MENUS (16), MAX_MENU_ITEMS (32),
+              MAX_LINES (65536), MAX_LINE_LEN (1024), MAX_UNDO (512),
+              MAX_SOLUTION_PROJECTS (64), MAX_PROJECT_FILES (256),
+              MAX_BOOKMARKS (128), MAX_BREAKPOINTS (256),
+              MAX_ERRORS (1024), MAX_FIND_RESULTS (4096),
+              BUFFER_SIZE (65536), TOOLBAR_HEIGHT (28),
+              MENUBAR_HEIGHT (20), STATUSBAR_HEIGHT (20),
+              EXPLORER_WIDTH (220), OUTPUT_HEIGHT (150).
+            Codes de retour : EXIT_OK = 0, EXIT_ERROR = 1,
+              EXIT_USAGE = 2.
+            TDevEnvOptions : SolutionFile, Verbose, DebugMode,
+              ThemeName, FontSize, TabSize, AutoSave,
+              ShowLineNumbers, WordWrap, AutoIndent, ShowWhitespace.
+            FatalError, ShowVersion, ShowHelp, InitOptions,
+              ParseCommandLine.
+            Fonctions utilitaires : IntToStr, StrToInt, UpCaseStr,
+              LowerCaseStr, TrimStr, ExtractFileName, ExtractFileExt,
+              ExtractFilePath, ChangeFileExt, FileExists,
+              DirectoryExists, HexByte, HexWord, HexLong,
+              Min, Max, Clamp, PadLeft, PadRight, StringReplace.
+
+  TODO 02 - INITIALISATION GRAPHIQUE MULTIPLATEFORME [IMPLEMENTE]
+            Abstraction du mode graphique pour Turbo Pascal 7 et
+            Free Pascal (PtcGraph). Resolution 800x600 ou 1024x768.
+            InitializeGraphics, ShutdownGraphics, SetResolution,
+            GetScreenWidth, GetScreenHeight, GetMaxColors,
+            SetClipRect, ResetClipRect, ClearScreen.
+            Constantes de couleurs du theme Visual Studio :
+              CLR_BACKGROUND, CLR_TITLEBAR, CLR_TITLEBAR_ACTIVE,
+              CLR_MENUBAR, CLR_MENU_HIGHLIGHT, CLR_MENU_TEXT,
+              CLR_TOOLBAR, CLR_EDITOR_BG, CLR_EDITOR_TEXT,
+              CLR_EDITOR_GUTTER, CLR_EXPLORER_BG, CLR_OUTPUT_BG,
+              CLR_STATUSBAR, CLR_SCROLLBAR, CLR_SELECTION,
+              CLR_CURSOR, CLR_LINE_HIGHLIGHT, CLR_BORDER.
+
+  TODO 03 - GESTION DE LA SOURIS ET SYSTEME D EVENEMENTS [IMPLEMENTE]
+            Abstraction souris multiplateforme :
+              Turbo Pascal : INT $33 (init, show, hide, position).
+              Free Pascal : PtcMouse (InitMouse, GetMouseState).
+            TEventKind : EV_NONE, EV_MOUSE_MOVE, EV_MOUSE_DOWN,
+              EV_MOUSE_UP, EV_MOUSE_DBLCLICK, EV_KEY_DOWN,
+              EV_KEY_CHAR, EV_TIMER, EV_RESIZE, EV_CLOSE.
+            TMouseButton : MB_LEFT, MB_RIGHT, MB_MIDDLE.
+            TEvent : Kind, MouseX, MouseY, MouseBtn, KeyCode,
+              KeyChar, ShiftState, Timestamp.
+            TEventQueue : file circulaire (256 entrees).
+            InitMouse, MouseDriverFound, ShowMouse, HideMouse,
+            GetMouseState, PollEvents, PushEvent, PopEvent,
+            PeekEvent, FlushEvents.
+            Double-clic par delai (300 ms).
+            Touches speciales : F1-F12, fleches, Home, End,
+            PgUp, PgDn, Insert, Delete, Ctrl+A..Z, Alt+A..Z.
+
+  TODO 04 - SYSTEME DE WIDGETS GUI (BASE) [IMPLEMENTE]
+            TWidget : X, Y, Width, Height, Visible, Enabled,
+              Focused, Parent, Tag, Name.
+              Draw, HandleEvent, SetBounds, Contains, Show, Hide,
+              Enable, Disable, Invalidate, Repaint.
+            TPanel, TLabel, TButton, TCheckBox, TRadioButton,
+            TEditField, TListBox, TComboBox, TScrollBar,
+            TProgressBar, TSplitter, TTreeNode, TTreeView,
+            TTabControl.
+            RegisterWidget, UnregisterWidget, DrawAllWidgets,
+            DispatchEvent, SetFocus, GetFocusedWidget.
+
+  TODO 05 - BARRE DE MENUS ET MENUS DEROULANTS [IMPLEMENTE]
+            TMenuItem, TMenu, TMenuBar.
+            Menus : Fichier, Edition, Affichage, Projet, Generer,
+              Deboguer, Outils, Fenetre, Aide.
+            InitMenuBar, DrawMenuBar, OpenMenu, CloseMenu,
+            HandleMenuEvent, ExecuteMenuItem.
+            Raccourcis clavier (Ctrl+S, Ctrl+O, etc.).
+            Sous-menus imbriques (cascade).
+            Barres de separation entre groupes.
+
+  TODO 06 - BARRE D OUTILS ET BOUTONS D ICONES [IMPLEMENTE]
+            TToolBar, TToolButton.
+            Boutons : Nouveau, Ouvrir, Enregistrer, Enregistrer tout,
+              Couper, Copier, Coller, Annuler, Retablir,
+              Demarrer (F5), Arreter, Pas a pas (F10),
+              Point d arret, Rechercher.
+            DrawToolBar, HandleToolBarEvent, DrawIcon16x16.
+            TIcon16 : matrice 16x16 de pixels.
+            InitToolBarIcons. Infobulles (500 ms).
+
+  TODO 07 - GESTIONNAIRE DE FENETRES MULTIPLES (MDI) [IMPLEMENTE]
+            TEditorWindow, TWindowManager.
+            CreateEditorWindow, CloseEditorWindow, ActivateWindow,
+            DrawWindowTabs, HandleTabEvent, SplitView,
+            ArrangeTile, ArrangeCascade, NextWindow, PreviousWindow,
+            SaveAllWindows, CloseAllWindows.
+            Onglets avec nom de fichier et bouton de fermeture.
+            Indicateur de modification (*).
+            Maximum MAX_WINDOWS fenetres simultanees.
+
+  TODO 08 - TAMPON DE TEXTE ET GESTION DES LIGNES [IMPLEMENTE]
+            TTextBuffer : Lines, LineCount, Modified, FileName,
+              FileEncoding, LineEnding.
+            InitBuffer, FreeBuffer, LoadFile, SaveFile,
+            GetLine, SetLine, InsertLine, DeleteLine,
+            InsertChar, DeleteChar, InsertText, DeleteRange,
+            GetTextRange, GetLineCount, GetTotalChars,
+            IsModified, MarkSaved.
+            Fichiers jusqu a MAX_LINES lignes.
+            Detection automatique encodage et fins de ligne.
+
+  TODO 09 - EDITEUR DE TEXTE : EDITION DE BASE [IMPLEMENTE]
+            TEditor : Buffer, CursorLine, CursorCol, ScrollLine,
+              ScrollCol, InsertMode, TabSize, AutoIndent,
+              ShowLineNumbers, ShowWhitespace, GutterWidth,
+              CharWidth, CharHeight, VisibleLines, VisibleCols.
+            InitEditor, DrawEditor, HandleEditorKey.
+            Gestion du curseur : fleches, Home, End, Ctrl+Home,
+              Ctrl+End, PgUp, PgDn.
+            Insertion, Enter, Tab, Backspace, Delete.
+            Mode insertion / remplacement.
+            EnsureCursorVisible, GotoLine, GotoColumn.
+            DrawCursor, DrawGutter, DrawLineHighlight.
+
+  TODO 10 - EDITEUR DE TEXTE : SELECTION, PRESSE-PAPIER, ANNULER [IMPLEMENTE]
+            TSelection, Shift+Fleches, Ctrl+A, clic souris,
+              double-clic, triple-clic.
+            DrawSelection.
+            TClipboard : ClipboardCopy, ClipboardCut, ClipboardPaste.
+            TUndoAction, TUndoRecord, TUndoStack.
+            PushUndo, Undo, Redo, ClearUndoStack.
+            Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+Z, Ctrl+Y.
+
+  TODO 11 - MOTEUR DE COLORATION SYNTAXIQUE [IMPLEMENTE]
+            TTokenClass : TC_NORMAL, TC_KEYWORD, TC_STRING,
+              TC_CHAR, TC_NUMBER, TC_COMMENT, TC_DIRECTIVE,
+              TC_OPERATOR, TC_IDENTIFIER, TC_TYPE,
+              TC_PREPROCESSOR, TC_ATTRIBUTE, TC_XMLDOC.
+            TSyntaxHighlighter : Language, InBlockComment,
+              InString, StateStack.
+            InitHighlighter, GetTokenClass, TokenClassToColor,
+            ResetState, HighlightLine.
+            Commentaires multi-lignes, chaines multi-lignes.
+            Couleurs theme Visual Studio.
+
+  TODO 12 - COLORATION SYNTAXIQUE C# [IMPLEMENTE]
+            TCSharpHighlighter.
+            79 mots-cles C# + 28 mots-cles contextuels.
+            Commentaires : //, /* */, ///.
+            Chaines : "...", @"...", $"...".
+            Nombres, attributs [Attribute].
+            Directives : #if, #else, #endif, #region, etc.
+
+  TODO 13 - COLORATION SYNTAXIQUE VB.NET [IMPLEMENTE]
+            TVBNetHighlighter.
+            Mots-cles VB.NET (insensible a la casse).
+            Commentaires : ' et REM.
+            Chaines : "..." avec "" pour echapper.
+            Nombres : &HFF, &O77, &B1010.
+            Directives : #If, #Else, #End If, #Region.
+
+  TODO 14 - COLORATION SYNTAXIQUE PASCAL [IMPLEMENTE]
+            TPascalHighlighter.
+            Mots-cles Turbo Pascal + Free Pascal.
+            Commentaires : { }, (* *), //.
+            Chaines : '...', #nn.
+            Nombres : $FF, %1010, &77.
+            Directives : {$IFDEF}, {$MODE}, etc.
+
+  TODO 14b - COLORATION SYNTAXIQUE XML [IMPLEMENTE]
+            TXMLHighlighter.
+            Tags HTML/XML/XSL/XSD predefinies.
+            Commentaires : <!-- -->.
+            Chaines : "..." et '...'.
+            Tags : <tag>, </tag>, <tag />.
+            CDATA : <![CDATA[...]]>.
+            Entites : &amp;, &lt;, &gt;, etc.
+            Declarations : <?xml ...?>.
+            DOCTYPE : <!DOCTYPE ...>.
+            Attributs : nom="valeur".
+
+  TODO 15 - PARSEUR DE FICHIERS SOLUTION (.SLN) [IMPLEMENTE]
+            TSolutionInfo, TProjectEntry, TSolution.
+            ParseSolutionFile, SaveSolutionFile, FreeSolution,
+            CreateNewSolution, AddProjectToSolution,
+            RemoveProjectFromSolution.
+            Sections : Project/EndProject, Global/EndGlobal,
+              GlobalSection (SolutionConfigurationPlatforms,
+              ProjectConfigurationPlatforms, SolutionProperties).
+            GUIDs projets C#, VB.NET, Pascal.
+            Configurations : Debug|AnyCPU, Release|AnyCPU.
+
+  TODO 16 - PARSEUR DE FICHIERS PROJET (.CSPROJ, .VBPROJ, .DPPROJ) [IMPLEMENTE]
+            TProjectInfo, TProjectFile, TProjectRef, TProject.
+            ParseProjectFile, SaveProjectFile, FreeProject,
+            CreateNewProject, AddFileToProject,
+            RemoveFileFromProject.
+            Parseur XML minimal : <Project>, <PropertyGroup>,
+              <ItemGroup>, <Compile>, <Reference>,
+              <ProjectReference>, <OutputType>, etc.
+
+  TODO 17 - EXPLORATEUR DE SOLUTION (PANNEAU DROIT) [IMPLEMENTE]
+            TSolutionExplorer : arbre hierarchique.
+            InitExplorer, DrawExplorer, HandleExplorerEvent,
+            RefreshExplorer, ExpandNode, CollapseNode.
+            Double-clic : ouvrir dans l editeur.
+            Clic droit : menu contextuel.
+            Icones par type de fichier (.cs, .vb, .pas).
+            Barre de defilement verticale.
+            Splitter vertical redimensionnable.
+
+  TODO 18 - PANNEAU DE PROPRIETES [IMPLEMENTE]
+            TPropertiesPanel : grille nom/valeur.
+            InitPropertiesPanel, DrawPropertiesPanel,
+            HandlePropertiesEvent, SetPropertySource.
+            Proprietes du projet et du fichier.
+            Tri alphabetique ou par categorie.
+
+  TODO 19 - PANNEAU DE SORTIE (OUTPUT) [IMPLEMENTE]
+            TOutputPanel : onglets Sortie de build, Sortie de
+              debogage, Recherche de resultats.
+            InitOutputPanel, DrawOutputPanel, HandleOutputEvent,
+            AppendOutput, ClearOutput.
+            Coloration des messages (erreur, avertissement, info).
+            Clic sur erreur : naviguer vers la source.
+            Splitter horizontal redimensionnable.
+
+  TODO 20 - PANNEAU LISTE D ERREURS (ERROR LIST) [IMPLEMENTE]
+            TErrorEntry, TErrorListPanel.
+            InitErrorList, DrawErrorList, HandleErrorListEvent,
+            AddError, ClearErrors, SortErrors.
+            Compteurs : erreurs, avertissements, messages.
+            Filtres par severite.
+            Double-clic : naviguer vers la source.
+            Parsing des sorties compilateurs DEV-COOLS.
+
+  TODO 21 - BOITES DE DIALOGUE : FICHIERS [IMPLEMENTE]
+            TDialog, TFileDialog, TFolderDialog, TMessageBox,
+            TInputBox.
+            ShowOpenDialog, ShowSaveDialog, ShowFolderDialog,
+            ShowMessageBox, ShowInputBox.
+            Constantes MB_OK, MB_OKCANCEL, MB_YESNO, etc.
+            Entierement dessinees en mode graphique.
+
+  TODO 22 - BOITES DE DIALOGUE : PROJET ET SOLUTION [IMPLEMENTE]
+            TNewProjectDialog : types (console C#, console VB,
+              console Pascal, bibliotheque C#, bibliotheque VB).
+            TNewFileDialog : types (.cs, .vb, .pas, .txt, .xml).
+            TAddReferenceDialog : onglets Assemblies, Projets.
+            TProjectPropertiesDialog : onglets Application,
+              Build, Build Events, Debug.
+            ShowNewProjectDialog, ShowNewFileDialog,
+            ShowAddReferenceDialog, ShowProjectPropertiesDialog.
+
+  TODO 23 - BOITES DE DIALOGUE : OPTIONS DE L IDE [IMPLEMENTE]
+            TOptionsDialog : arbre de categories + panneau
+              parametres.
+            Categories : Environnement (General, Polices/Couleurs,
+              Clavier, Demarrage, Enregistrement auto),
+              Editeur de texte (General, Tabulations, Defilement,
+              Mise en forme), Projets et solutions (General,
+              Build et execution), Debogage (General, Sortie).
+            ShowOptionsDialog, SaveOptions, LoadOptions.
+            Fichier de configuration : DEVENV.CFG (format INI).
+
+  TODO 24 - RECHERCHER ET REMPLACER [IMPLEMENTE]
+            TFindReplaceDialog (non modale).
+            FindNext, FindPrevious, ReplaceNext, ReplaceAll,
+            FindInFiles.
+            Options : MatchCase, WholeWord, UseRegex (stub),
+              SearchScope (document, tous, projet, solution).
+            Surbrillance des occurrences.
+            Resultats dans le panneau de sortie.
+            Ctrl+F, Ctrl+H, F3, Shift+F3, Ctrl+Shift+F.
+            TGoToLineDialog : ShowGoToLineDialog.
+
+  TODO 25 - INTEGRATION COMPILATEUR C# (CSCW32/CSC86) [IMPLEMENTE]
+            CompileCSharp, FindCompiler.
+            Ligne de commande : CSCW32 source.cs [-o sortie.exe]
+              ou CSC86 source.cs.
+            Execution processus externe (Exec ou ExecuteProcess).
+            Capture et parsing de la sortie.
+            ParseCSCOutput : "filename(line,col): error CSnnnn: msg"
+            Configurations Debug/Release.
+
+  TODO 26 - INTEGRATION COMPILATEUR VB.NET (VBCW32/VBC86) [IMPLEMENTE]
+            CompileVBNet.
+            Ligne de commande : VBCW32 source.vb [-o sortie.exe]
+              ou VBC86 source.vb.
+            ParseVBCOutput : "filename(line): error BCnnnn: msg"
+            Gestion de l absence du compilateur.
+
+  TODO 27 - INTEGRATION COMPILATEUR PASCAL (TPCW32/VAXPAS86) [IMPLEMENTE]
+            CompilePascal.
+            Ligne de commande : TPCW32 source.pas [-o sortie.exe]
+              ou VAXPAS86 source.pas ou VAXPCW32 source.pas.
+            ParseTPCOutput : "filename(line,col) Error: msg"
+            Detection des unites Pascal (uses).
+
+  TODO 28 - SYSTEME DE BUILD ET CONFIGURATION [IMPLEMENTE]
+            TBuildConfig, TBuildManager.
+            BuildSolution, BuildProject, RebuildSolution,
+            CleanSolution, CleanProject.
+            ResolveBuildOrder : respect des dependances.
+            TConfigurationManager : ShowConfigurationManager.
+            F6 (solution), F7 (projet), Ctrl+Shift+B (regener).
+            Liste deroulante Debug/Release dans la barre d outils.
+
+  TODO 29 - SUPPORT DU DEBOGAGE ET POINTS D ARRET [IMPLEMENTE]
+            TBreakpoint, TBreakpointManager.
+            AddBreakpoint, RemoveBreakpoint, ToggleBreakpoint,
+            EnableBreakpoint, DisableBreakpoint, ClearAllBreakpoints,
+            DrawBreakpointMarker.
+            Demarrer sans debogage (Ctrl+F5) : lancer l executable.
+            Demarrer avec debogage (F5) : stub.
+            Panneaux Points d arret, Espion (stub),
+              Pile d appels (stub).
+            F5, Ctrl+F5, F9, F10, F11, Shift+F5.
+
+  TODO 30 - BARRE D ETAT, INTEGRATION FINALE ET POLISSAGE [IMPLEMENTE]
+            TStatusBar : position curseur, mode INS/OVR,
+              encodage, fin de ligne, langage, fichier, etat build.
+            InitStatusBar, DrawStatusBar, UpdateStatusBar.
+            Page de demarrage (Start Page) : projets recents,
+              boutons Nouveau/Ouvrir, logo DEV-COOLS.
+            DrawStartPage, HandleStartPageEvent.
+            Boucle principale de l IDE : MainLoop, Run.
+            Gestion de la fermeture (fichiers non enregistres).
+            Raccourcis clavier globaux.
+            Fichier MRU : DEVENV.MRU.
+            SaveMRUList, LoadMRUList.
+            Gestion des erreurs globales.
+            Rapport de version dans A propos.
+
+  ============================================================

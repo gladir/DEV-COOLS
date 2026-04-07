@@ -1,0 +1,78 @@
+// test07_mixed.rc - Test ressources mixtes
+// Test: Compilation de plusieurs types de ressources dans le meme fichier
+
+// ==========================================
+// Section STRINGTABLE
+// ==========================================
+STRINGTABLE
+BEGIN
+    1 "Titre de l'application"
+    2 "Message d'erreur standard"
+    3 "Message de confirmation"
+END
+
+// ==========================================
+// Section MENU
+// ==========================================
+IDR_MAINMENU MENU
+BEGIN
+    POPUP "&Fichier"
+    BEGIN
+        MENUITEM "&Nouveau",   1001
+        MENUITEM "&Ouvrir",    1002
+        MENUITEM SEPARATOR
+        MENUITEM "&Quitter",   1003
+    END
+    POPUP "&Aide"
+    BEGIN
+        MENUITEM "&A propos",  2001
+    END
+END
+
+// ==========================================
+// Section DIALOG
+// ==========================================
+IDD_MAIN DIALOG 10, 10, 300, 200
+CAPTION "Fenetre principale"
+STYLE WS_POPUP | WS_CAPTION | WS_SYSMENU
+BEGIN
+    LTEXT "Bienvenue!", 101, 10, 10, 280, 20
+    PUSHBUTTON "Continuer", 1, 125, 170, 50, 14
+END
+
+// ==========================================
+// Section RCDATA
+// ==========================================
+IDR_CONFIG RCDATA
+BEGIN
+    "VERSION=1.0\0",
+    0x0001,
+    0x0002
+END
+
+// ==========================================
+// Section VERSIONINFO
+// ==========================================
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 2,0,0,0
+PRODUCTVERSION 2,0,0,0
+FILEFLAGSMASK 0x3F
+FILEFLAGS 0x0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "Mixed Resource Test"
+            VALUE "FileVersion", "2.0.0.0"
+            VALUE "ProductName", "Test App"
+            VALUE "ProductVersion", "2.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

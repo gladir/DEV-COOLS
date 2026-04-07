@@ -1,0 +1,39 @@
+<%@ Language="PascalScript" %>
+<html>
+<head><title>Test obj := NIL</title></head>
+<body>
+<h1>Test assignation NIL pour liberation objet COM</h1>
+<%
+{ Test de la liberation d'objet via obj := NIL }
+Var
+  fso1, fso2 : Object;
+  
+Begin
+  WriteLn('<p>Test 1: Creation et liberation immediate...</p>');
+  fso1 := CreateObject('Scripting.FileSystemObject');
+  If fso1 <> NIL Then
+  Begin
+    WriteLn('<p>fso1 cree.</p>');
+    fso1 := NIL;  { Doit appeler OBJRELEASE }
+    WriteLn('<p style="color:green">fso1 libere via := NIL</p>');
+  End;
+  
+  WriteLn('<p>Test 2: Deux objets...</p>');
+  fso1 := CreateObject('Scripting.FileSystemObject');
+  fso2 := CreateObject('Scripting.FileSystemObject');
+  
+  If (fso1 <> NIL) And (fso2 <> NIL) Then
+  Begin
+    WriteLn('<p>Les deux objets crees.</p>');
+    fso1 := NIL;
+    WriteLn('<p>fso1 libere.</p>');
+    fso2 := NIL;
+    WriteLn('<p>fso2 libere.</p>');
+    WriteLn('<p style="color:green">Test reussi!</p>');
+  End
+  Else
+    WriteLn('<p style="color:red">Echec creation objets.</p>');
+End.
+%>
+</body>
+</html>
