@@ -3540,6 +3540,182 @@ End;
 { Declaration forward pour ExtractFileName }
 Function ExtractFileName(Const Path: String): String; Forward;
 
+Procedure ExtractFileHeader(Const FileName: String; EntityIdx: Integer);
+(* Extrait les metadonnees de l'en-tete du fichier source.
+   Reconnait les balises @author, @created, @version, @description,
+   @license, @website, @abstract dans un commentaire ouvert par accolade
+   sur la premiere ligne du fichier. *)
+Var
+  F: Text;
+  Line, TLine, HeaderText: String;
+  InHeader: Boolean;
+  P, PEnd: Integer;
+  Author, Created, Version, Description, License: String;
+  Website, AbstractTxt: String;
+  Details: String;
+
+  Procedure ParseTag(Const Tag: String; Var Dest: String);
+  Var
+    TP, TStart: Integer;
+    Tmp, Rest: String;
+    IsKnownTag: Boolean;
+  Begin
+    TP := Pos(Tag, HeaderText);
+    If TP > 0 Then
+    Begin
+      TStart := TP + Length(Tag);
+      (* Detecter si la balise utilise des parentheses: @tag(...) *)
+      If (TStart <= Length(HeaderText)) And
+         (HeaderText[TStart] = '(') Then
+      Begin
+        Inc(TStart);
+        (* Lire jusqu'a la parenthese fermante *)
+        Tmp := '';
+        While (TStart <= Length(HeaderText)) And
+              (HeaderText[TStart] <> ')') Do
+        Begin
+          If HeaderText[TStart] = #10 Then
+            Tmp := Tmp + ' '
+          Else
+            Tmp := Tmp + HeaderText[TStart];
+          Inc(TStart);
+        End;
+      End
+      Else
+      Begin
+        (* Sauter les deux-points et espaces *)
+        While (TStart <= Length(HeaderText)) And
+              (HeaderText[TStart] In [':', ' ']) Do
+          Inc(TStart);
+        (* Lire jusqu'a la prochaine balise connue ou fin *)
+        Tmp := '';
+        While TStart <= Length(HeaderText) Do
+        Begin
+          If HeaderText[TStart] = '@' Then
+          Begin
+            Rest := Copy(HeaderText, TStart, Length(HeaderText) - TStart + 1);
+            IsKnownTag := (Pos('@author', Rest) = 1) Or
+                          (Pos('@created', Rest) = 1) Or
+                          (Pos('@version', Rest) = 1) Or
+                          (Pos('@description', Rest) = 1) Or
+                          (Pos('@license', Rest) = 1) Or
+                          (Pos('@website', Rest) = 1) Or
+                          (Pos('@abstract', Rest) = 1);
+            If IsKnownTag Then Break;
+          End;
+          If HeaderText[TStart] = #10 Then
+            Tmp := Tmp + ' '
+          Else
+            Tmp := Tmp + HeaderText[TStart];
+          Inc(TStart);
+        End;
+      End;
+      (* Nettoyer les espaces multiples *)
+      While Pos('  ', Tmp) > 0 Do
+      Begin
+        P := Pos('  ', Tmp);
+        Delete(Tmp, P, 1);
+      End;
+      Dest := TrimLine(Tmp);
+    End;
+  End;
+
+Begin
+  Author := '';
+  Created := '';
+  Version := '';
+  Description := '';
+  License := '';
+  Website := '';
+  AbstractTxt := '';
+  HeaderText := '';
+
+  Assign(F, FileName);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+
+  InHeader := False;
+
+  While Not Eof(F) Do
+  Begin
+    ReadLn(F, Line);
+    TLine := TrimLine(Line);
+
+    If Not InHeader Then
+    Begin
+      (* Chercher le debut d'un commentaire avec balise @ *)
+      P := Pos('{', TLine);
+      If (P > 0) And (Pos('@', TLine) > 0) Then
+      Begin
+        InHeader := True;
+        PEnd := Pos('}', TLine);
+        If PEnd > P Then
+        Begin
+          (* Commentaire sur une seule ligne *)
+          HeaderText := Copy(TLine, P + 1, PEnd - P - 1);
+          Break;
+        End
+        Else
+          HeaderText := Copy(TLine, P + 1, Length(TLine) - P);
+      End
+      Else
+        (* Pas de commentaire sur la 1ere ligne pertinente, sortir *)
+        If (TLine <> '') And (P = 0) Then Break;
+    End
+    Else
+    Begin
+      PEnd := Pos('}', TLine);
+      If PEnd > 0 Then
+      Begin
+        HeaderText := HeaderText + #10 + Copy(TLine, 1, PEnd - 1);
+        Break;
+      End
+      Else
+        HeaderText := HeaderText + #10 + TLine;
+    End;
+  End;
+
+  Close(F);
+
+  If HeaderText = '' Then Exit;
+
+  (* Parser les balises *)
+  ParseTag('@author', Author);
+  ParseTag('@created', Created);
+  ParseTag('@version', Version);
+  ParseTag('@description', Description);
+  ParseTag('@license', License);
+  ParseTag('@website', Website);
+  ParseTag('@abstract', AbstractTxt);
+
+  (* Remplir BriefDesc avec la description *)
+  If Description <> '' Then
+    Entities[EntityIdx].BriefDesc := Description
+  Else If AbstractTxt <> '' Then
+    Entities[EntityIdx].BriefDesc := AbstractTxt;
+
+  (* Construire DetailedDesc avec les metadonnees *)
+  Details := '';
+  If Author <> '' Then
+    Details := Details + 'Auteur: ' + Author + #10;
+  If Created <> '' Then
+    Details := Details + 'Date de creation: ' + Created + #10;
+  If Version <> '' Then
+    Details := Details + 'Version: ' + Version + #10;
+  If License <> '' Then
+    Details := Details + 'Licence: ' + License + #10;
+  If Website <> '' Then
+    Details := Details + 'Site web: ' + Website + #10;
+  If AbstractTxt <> '' Then
+    Details := Details + 'Cible: ' + AbstractTxt + #10;
+
+  If Details <> '' Then
+    Entities[EntityIdx].DetailedDesc := TrimLine(Details);
+  Entities[EntityIdx].DocComment := HeaderText;
+End;
+
 Procedure ExtractEntities(Const FileName: String; Lang: TSourceLanguage);
 { Dispatcher vers l extracteur specifique au langage }
 Var
@@ -3548,6 +3724,7 @@ Begin
   { Creer une entite ENT_FILE pour le fichier lui-meme }
   BaseName := ExtractFileName(FileName);
   AddEntity(ENT_FILE, BaseName, FileName, FileName, 1, VIS_PUBLIC);
+  ExtractFileHeader(FileName, EntityCount);
 
   Case Lang Of
     LANG_C, LANG_CPP, LANG_CSHARP, LANG_D, LANG_OBJC:
@@ -8137,6 +8314,8 @@ Procedure GenerateHtmlFile(Const Entity: TEntity; Var OutFile: Text);
 Var
   IsStruct: Boolean;
   ImgExt: String;
+  P, ColonPos: Integer;
+  DetailLine: String;
 Begin
   WriteHtmlHeader(OutFile, Entity.Name);
 
@@ -8171,8 +8350,47 @@ Begin
   If Entity.DetailedDesc <> '' Then
   Begin
     WriteLn(OutFile, '<div class="detailed">');
-    WriteLn(OutFile, '<h3>Description detaillee</h3>');
-    WriteLn(OutFile, '<p>', EscapeHtml(Entity.DetailedDesc), '</p>');
+    If Entity.Kind = ENT_FILE Then
+    Begin
+      WriteLn(OutFile, '<h3>Informations</h3>');
+      WriteLn(OutFile, '<table>');
+      (* Parser les lignes separees par #10 *)
+      P := 1;
+      While P <= Length(Entity.DetailedDesc) Do
+      Begin
+        DetailLine := '';
+        While (P <= Length(Entity.DetailedDesc)) And
+              (Entity.DetailedDesc[P] <> #10) Do
+        Begin
+          DetailLine := DetailLine + Entity.DetailedDesc[P];
+          Inc(P);
+        End;
+        Inc(P); (* Passer le #10 *)
+        DetailLine := TrimLine(DetailLine);
+        If DetailLine <> '' Then
+        Begin
+          ColonPos := Pos(':', DetailLine);
+          If ColonPos > 0 Then
+          Begin
+            WriteLn(OutFile, '<tr><td><strong>',
+              EscapeHtml(TrimLine(Copy(DetailLine, 1, ColonPos - 1))),
+              '</strong></td><td>',
+              EscapeHtml(TrimLine(Copy(DetailLine, ColonPos + 1,
+                Length(DetailLine) - ColonPos))),
+              '</td></tr>');
+          End
+          Else
+            WriteLn(OutFile, '<tr><td colspan="2">',
+              EscapeHtml(DetailLine), '</td></tr>');
+        End;
+      End;
+      WriteLn(OutFile, '</table>');
+    End
+    Else
+    Begin
+      WriteLn(OutFile, '<h3>Description detaillee</h3>');
+      WriteLn(OutFile, '<p>', EscapeHtml(Entity.DetailedDesc), '</p>');
+    End;
     WriteLn(OutFile, '</div>');
   End;
 
