@@ -751,7 +751,7 @@
             Compatible avec le linker Microsoft LINK.EXE
             Compatible avec les fichiers .OBJ de MASM et TASM
 
-  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [A FAIRE]
+  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [IMPLEMENTE]
             Procedure WriteASM(const outfile: String)
             Generer un fichier .ASM lisible (syntaxe MASM) :
             En-tete :

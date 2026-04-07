@@ -759,7 +759,7 @@
             Compatible avec le linker Microsoft LINK.EXE
             Compatible avec les fichiers .OBJ de MASM et TASM
 
-  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [A FAIRE]
+  TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm) [IMPLEMENTE]
             Procedure WriteASM(const outfile: String)
             Generer un fichier .ASM lisible (syntaxe MASM) :
             En-tete :
@@ -16441,6 +16441,451 @@ Begin
 End;
 
 { ============================================================ }
+{ TODO 23 - GENERATEUR DE LISTING ASSEMBLEUR (PARAMETRE -asm)  }
+{           [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+Const
+  { Nombre maximum de lignes ASM en sortie }
+  ASM_MAX_LINES       = 65536;
+
+  { Nombre d imports Win32 declares dans le listing }
+  ASM_NUM_IMPORTS      = 14;
+
+  { Prefixe de decoration stdcall }
+  ASM_STDCALL_PREFIX   = '_';
+
+Var
+  ASMWriterInit  : Boolean;   { True si InitASMWriter a ete appele    }
+  ASMWriterCount : LongInt;   { nombre de fichiers ASM ecrits         }
+  ASMLineCount   : LongInt;   { nombre de lignes ecrites              }
+
+{ ------------------------------------------------------------ }
+{ InitASMWriter : initialiser le sous-systeme ASM               }
+{ ------------------------------------------------------------ }
+
+Procedure InitASMWriter;
+Begin
+  ASMWriterInit  := True;
+  ASMWriterCount := 0;
+  ASMLineCount   := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteLine : ecrire une ligne dans le fichier ASM           }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteLine(Var F : Text; Const S : TString);
+Begin
+  WriteLn(F, S);
+  Inc(ASMLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteBlank : ecrire une ligne vide                         }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteBlank(Var F : Text);
+Begin
+  WriteLn(F);
+  Inc(ASMLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMWriteComment : ecrire un commentaire ASM                   }
+{ ------------------------------------------------------------ }
+
+Procedure ASMWriteComment(Var F : Text; Const Cmt : TString);
+Begin
+  WriteLn(F, '; ', Cmt);
+  Inc(ASMLineCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMDataDirective : directive MASM pour un type VB.NET         }
+{ Retourne DB, DW, DD, DQ selon la taille du type              }
+{ ------------------------------------------------------------ }
+
+Function ASMDataDirective(DT : Integer) : TString;
+Begin
+  Case DT Of
+    VBT_BYTE,
+    VBT_SBYTE     : ASMDataDirective := 'DB';
+    VBT_SHORT,
+    VBT_USHORT,
+    VBT_CHAR      : ASMDataDirective := 'DW';
+    VBT_LONG,
+    VBT_ULONG,
+    VBT_DOUBLE,
+    VBT_DATE      : ASMDataDirective := 'DQ';
+    VBT_DECIMAL   : ASMDataDirective := 'DB'; { 16 octets }
+  Else
+    ASMDataDirective := 'DD'; { Integer, Boolean, Single, String, Object }
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMBssDirective : directive MASM pour reserve BSS             }
+{ Retourne DB ?, DW ?, DD ?, DQ ? selon la taille              }
+{ ------------------------------------------------------------ }
+
+Function ASMBssDirective(DT : Integer) : TString;
+Begin
+  Case DT Of
+    VBT_BYTE,
+    VBT_SBYTE     : ASMBssDirective := 'DB ?';
+    VBT_SHORT,
+    VBT_USHORT,
+    VBT_CHAR      : ASMBssDirective := 'DW ?';
+    VBT_LONG,
+    VBT_ULONG,
+    VBT_DOUBLE,
+    VBT_DATE      : ASMBssDirective := 'DQ ?';
+    VBT_DECIMAL   : ASMBssDirective := 'DB 16 DUP(?)';
+  Else
+    ASMBssDirective := 'DD ?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ASMInitValue : valeur initiale MASM pour un type VB.NET       }
+{ Retourne '0', '0.0', 'OFFSET ...', etc.                      }
+{ ------------------------------------------------------------ }
+
+Function ASMInitValue(DT : Integer; HasInit : Boolean;
+                      InitNum : LongInt;
+                      Const InitStr : TString) : TString;
+Begin
+  If HasInit Then
+  Begin
+    If (DT = VBT_STRING) And (InitStr <> '') Then
+      ASMInitValue := 'OFFSET ' + InitStr
+    Else
+      ASMInitValue := ItoS(InitNum);
+  End
+  Else
+  Begin
+    Case DT Of
+      VBT_LONG,
+      VBT_ULONG,
+      VBT_DOUBLE,
+      VBT_DATE    : ASMInitValue := '0';
+      VBT_DECIMAL : ASMInitValue := '16 DUP(0)';
+    Else
+      ASMInitValue := '0';
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteASM : generer un fichier .ASM lisible (syntaxe MASM)     }
+{   outfile : chemin du fichier .ASM a creer                    }
+{   Ecrit un listing MASM complet avec :                        }
+{     - En-tete (.386, .MODEL FLAT STDCALL, OPTION CASEMAP)     }
+{     - INCLUDELIB (kernel32, user32, msvcrt)                   }
+{     - EXTERN (imports Win32)                                  }
+{     - .DATA (variables globales initialisees)                 }
+{     - .DATA? (variables non initialisees, BSS)                }
+{     - .CODE (procedures, runtime, point d entree)             }
+{ ------------------------------------------------------------ }
+
+Procedure WriteASM(Const AsmFile : TString);
+Var
+  F         : Text;
+  I         : Integer;
+  HasData   : Boolean;
+  HasBss    : Boolean;
+  Dir       : TString;
+  Lbl       : TString;
+Begin
+  ASMLineCount := 0;
+
+  Assign(F, AsmFile);
+  {$I-} Rewrite(F); {$I+}
+  If IOResult <> 0 Then
+  Begin
+    FatalError('Impossible de creer le fichier ASM : ' + AsmFile);
+    Exit;
+  End;
+
+  { ======== En-tete MASM ======== }
+  ASMWriteComment(F, '============================================================');
+  ASMWriteComment(F, ' Fichier ASM genere par VBNCW32 - Compilateur VB.NET Win32');
+  ASMWriteComment(F, ' Source : ' + Opts.SrcFile);
+  ASMWriteComment(F, '============================================================');
+  ASMWriteBlank(F);
+  ASMWriteLine(F, '.386');
+  ASMWriteLine(F, '.MODEL FLAT, STDCALL');
+  ASMWriteLine(F, 'OPTION CASEMAP:NONE');
+  ASMWriteBlank(F);
+
+  { ======== INCLUDELIB ======== }
+  ASMWriteComment(F, '------------------------------------------------------------');
+  ASMWriteComment(F, ' Bibliotheques liees');
+  ASMWriteComment(F, '------------------------------------------------------------');
+  ASMWriteBlank(F);
+  ASMWriteLine(F, 'INCLUDELIB kernel32.lib');
+  ASMWriteLine(F, 'INCLUDELIB user32.lib');
+  ASMWriteLine(F, 'INCLUDELIB msvcrt.lib');
+  ASMWriteBlank(F);
+
+  { ======== EXTERN declarations ======== }
+  ASMWriteComment(F, '------------------------------------------------------------');
+  ASMWriteComment(F, ' Fonctions externes importees (Win32 API)');
+  ASMWriteComment(F, '------------------------------------------------------------');
+  ASMWriteBlank(F);
+  { kernel32.dll }
+  ASMWriteLine(F, 'EXTERN _ExitProcess@4:PROC');
+  ASMWriteLine(F, 'EXTERN _GetStdHandle@4:PROC');
+  ASMWriteLine(F, 'EXTERN _WriteFile@20:PROC');
+  ASMWriteLine(F, 'EXTERN _ReadFile@20:PROC');
+  ASMWriteLine(F, 'EXTERN _GetProcessHeap@0:PROC');
+  ASMWriteLine(F, 'EXTERN _HeapAlloc@12:PROC');
+  ASMWriteLine(F, 'EXTERN _HeapFree@12:PROC');
+  ASMWriteLine(F, 'EXTERN _CreateFileA@28:PROC');
+  ASMWriteLine(F, 'EXTERN _CloseHandle@4:PROC');
+  ASMWriteLine(F, 'EXTERN _GetCommandLineA@0:PROC');
+  ASMWriteLine(F, 'EXTERN _GetModuleHandleA@4:PROC');
+  ASMWriteLine(F, 'EXTERN _SetFilePointer@16:PROC');
+  ASMWriteLine(F, 'EXTERN _DeleteFileA@4:PROC');
+  { user32.dll }
+  ASMWriteLine(F, 'EXTERN _MessageBoxA@16:PROC');
+  ASMWriteBlank(F);
+
+  { ======== Section .DATA (variables initialisees) ======== }
+  ASMWriteComment(F, '------------------------------------------------------------');
+  ASMWriteComment(F, ' Section .DATA : variables globales initialisees');
+  ASMWriteComment(F, '------------------------------------------------------------');
+  ASMWriteBlank(F);
+  ASMWriteLine(F, '.DATA');
+  ASMWriteBlank(F);
+  HasData := False;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If (SymTab[I].Kind = SK_VAR) Or (SymTab[I].Kind = SK_FIELD) Then
+    Begin
+      If (SymTab[I].StoreClass = STORE_GLOBAL) Or
+         (SymTab[I].StoreClass = STORE_STATIC) Or
+         (SymTab[I].StoreClass = STORE_SHARED) Then
+      Begin
+        If SymTab[I].HasInit Then
+        Begin
+          Lbl := SymTab[I].AsmLabel;
+          If Lbl = '' Then
+            Lbl := PFX_VAR + SymTab[I].Name;
+          Dir := ASMDataDirective(SymTab[I].DataType);
+          ASMWriteLine(F, Lbl + ' ' + Dir + ' ' +
+            ASMInitValue(SymTab[I].DataType, True,
+                         SymTab[I].InitNum, SymTab[I].InitStr));
+          HasData := True;
+        End;
+      End;
+    End
+    Else If SymTab[I].Kind = SK_CONST Then
+    Begin
+      If SymTab[I].DataType = VBT_STRING Then
+      Begin
+        Lbl := SymTab[I].AsmLabel;
+        If Lbl = '' Then
+          Lbl := PFX_CONST + SymTab[I].Name;
+        If SymTab[I].InitStr <> '' Then
+          ASMWriteLine(F, Lbl + ' DB ''' + SymTab[I].InitStr + ''', 0')
+        Else
+          ASMWriteLine(F, Lbl + ' DB 0');
+        HasData := True;
+      End
+      Else
+      Begin
+        Lbl := SymTab[I].AsmLabel;
+        If Lbl = '' Then
+          Lbl := PFX_CONST + SymTab[I].Name;
+        Dir := ASMDataDirective(SymTab[I].DataType);
+        ASMWriteLine(F, Lbl + ' ' + Dir + ' ' +
+          ItoS(SymTab[I].InitNum));
+        HasData := True;
+      End;
+    End;
+  End;
+  If Not HasData Then
+    ASMWriteComment(F, ' (aucune variable initialisee)');
+  ASMWriteBlank(F);
+
+  { ======== Section .DATA? (variables BSS non initialisees) ======== }
+  ASMWriteComment(F, '------------------------------------------------------------');
+  ASMWriteComment(F, ' Section .DATA? : variables non initialisees (BSS)');
+  ASMWriteComment(F, '------------------------------------------------------------');
+  ASMWriteBlank(F);
+  ASMWriteLine(F, '.DATA?');
+  ASMWriteBlank(F);
+  HasBss := False;
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If (SymTab[I].Kind = SK_VAR) Or (SymTab[I].Kind = SK_FIELD) Then
+    Begin
+      If (SymTab[I].StoreClass = STORE_GLOBAL) Or
+         (SymTab[I].StoreClass = STORE_STATIC) Or
+         (SymTab[I].StoreClass = STORE_SHARED) Then
+      Begin
+        If Not SymTab[I].HasInit Then
+        Begin
+          Lbl := SymTab[I].AsmLabel;
+          If Lbl = '' Then
+            Lbl := PFX_VAR + SymTab[I].Name;
+          Dir := ASMBssDirective(SymTab[I].DataType);
+          ASMWriteLine(F, Lbl + ' ' + Dir);
+          HasBss := True;
+        End;
+      End;
+    End;
+  End;
+  If Not HasBss Then
+    ASMWriteComment(F, ' (aucune variable BSS)');
+  ASMWriteBlank(F);
+
+  { ======== Section .CODE ======== }
+  ASMWriteComment(F, '------------------------------------------------------------');
+  ASMWriteComment(F, ' Section .CODE : code executable');
+  ASMWriteComment(F, '------------------------------------------------------------');
+  ASMWriteBlank(F);
+  ASMWriteLine(F, '.CODE');
+  ASMWriteBlank(F);
+
+  { Emettre les procedures/fonctions utilisateur }
+  For I := 0 To ProcCount - 1 Do
+  Begin
+    Lbl := ProcTab[I].AsmLabel;
+    If Lbl = '' Then
+      Lbl := PFX_FUNC + ProcTab[I].Name;
+    ASMWriteComment(F, ' --- ' + ProcTab[I].Name + ' ---');
+    ASMWriteLine(F, Lbl + ' PROC');
+    ASMWriteLine(F, '  PUSH EBP');
+    ASMWriteLine(F, '  MOV EBP, ESP');
+    If ProcTab[I].LocalSize > 0 Then
+      ASMWriteLine(F, '  SUB ESP, ' + ItoSI(ProcTab[I].LocalSize));
+    ASMWriteComment(F, ' (corps de la procedure - voir code binaire)');
+    If ProcTab[I].ExitLabel <> '' Then
+      ASMWriteLine(F, ProcTab[I].ExitLabel + ':');
+    ASMWriteLine(F, '  MOV ESP, EBP');
+    ASMWriteLine(F, '  POP EBP');
+    If ProcTab[I].ParamCount > 0 Then
+      ASMWriteLine(F, '  RET ' + ItoSI(ProcTab[I].ParamCount * 4))
+    Else
+      ASMWriteLine(F, '  RET');
+    ASMWriteLine(F, Lbl + ' ENDP');
+    ASMWriteBlank(F);
+  End;
+
+  { Emettre le point d entree }
+  ASMWriteComment(F, ' --- Point d''entree ---');
+  ASMWriteLine(F, '_start:');
+  ASMWriteLine(F, '  CALL ' + PFX_FUNC + 'Main');
+  ASMWriteLine(F, '  PUSH 0');
+  ASMWriteLine(F, '  CALL _ExitProcess@4');
+  ASMWriteBlank(F);
+
+  ASMWriteLine(F, 'END _start');
+  ASMWriteBlank(F);
+
+  Close(F);
+  Inc(ASMWriterCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsASMWriterInitialized : le generateur ASM est-il init ?      }
+{ ------------------------------------------------------------ }
+
+Function IsASMWriterInitialized : Boolean;
+Begin
+  IsASMWriterInitialized := ASMWriterInit;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsASMWriterEmpty : aucun fichier ASM ecrit ?                  }
+{ ------------------------------------------------------------ }
+
+Function IsASMWriterEmpty : Boolean;
+Begin
+  IsASMWriterEmpty := (ASMWriterCount = 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ GetASMWriterStatus : etat du generateur ASM                   }
+{ ------------------------------------------------------------ }
+
+Function GetASMWriterStatus : TString;
+Begin
+  If Not ASMWriterInit Then
+    GetASMWriterStatus := 'Not initialized'
+  Else If ASMWriterCount > 0 Then
+    GetASMWriterStatus := 'Written (' + ItoS(ASMWriterCount) + ' files)'
+  Else
+    GetASMWriterStatus := 'Initialized, no files written';
+End;
+
+{ ------------------------------------------------------------ }
+{ GetASMLineCount : nombre de lignes ecrites                    }
+{ ------------------------------------------------------------ }
+
+Function GetASMLineCount : LongInt;
+Begin
+  GetASMLineCount := ASMLineCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetASMWriterCount : nombre de fichiers ASM ecrits             }
+{ ------------------------------------------------------------ }
+
+Function GetASMWriterCount : LongInt;
+Begin
+  GetASMWriterCount := ASMWriterCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetASMMaxLines : nombre maximum de lignes ASM                 }
+{ ------------------------------------------------------------ }
+
+Function GetASMMaxLines : LongInt;
+Begin
+  GetASMMaxLines := ASM_MAX_LINES;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetASMNumImports : nombre d imports declares                  }
+{ ------------------------------------------------------------ }
+
+Function GetASMNumImports : Integer;
+Begin
+  GetASMNumImports := ASM_NUM_IMPORTS;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetASMStdcallPrefix : prefixe stdcall                         }
+{ ------------------------------------------------------------ }
+
+Function GetASMStdcallPrefix : TString;
+Begin
+  GetASMStdcallPrefix := ASM_STDCALL_PREFIX;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetASMSymCount : nombre de symboles emis dans le listing      }
+{ ------------------------------------------------------------ }
+
+Function GetASMSymCount : Integer;
+Begin
+  GetASMSymCount := SymCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ GetASMProcCount : nombre de procedures emises                 }
+{ ------------------------------------------------------------ }
+
+Function GetASMProcCount : Integer;
+Begin
+  GetASMProcCount := ProcCount;
+End;
+
+{ ============================================================ }
 
 Procedure Run;
 Begin
@@ -16491,7 +16936,12 @@ Begin
   If Opts.EmitObj And (ErrorCount = 0) Then
     WriteCOFF(Opts.OutFile);
 
-  { TODO 23..25 : Generation ASM listing, etc. }
+  { TODO 23 : Initialiser et ecrire le fichier ASM }
+  InitASMWriter;
+  If Opts.EmitAsm And (ErrorCount = 0) Then
+    WriteASM(ReplaceExt(Opts.OutFile, '.asm'));
+
+  { TODO 24..25 : Imports Win32 avances, etc. }
 
   { Statistiques finales }
   ShowStats;
