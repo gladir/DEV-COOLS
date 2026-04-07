@@ -184,7 +184,7 @@ Turbo Pascal / Free Pascal (-Mtp)
            - macOS : icon.icns (multi-resolution)
            - Linux : icon.png (512x512)
 
-  TODO 07 - GENERATION DU NOM D'APPLICATION [A FAIRE]
+  TODO 07 - GENERATION DU NOM D'APPLICATION [IMPLEMENTE]
          Function SanitizeAppName(Const Name: String): String
            retirer les caracteres invalides pour un nom de fichier
            remplacer espaces par tirets ou underscores

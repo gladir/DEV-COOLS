@@ -227,7 +227,7 @@
               - macOS : icon.icns (multi-resolution)
               - Linux : icon.png (512x512)
 
-  TODO 07 - GENERATION DU NOM D'APPLICATION [A FAIRE]
+  TODO 07 - GENERATION DU NOM D'APPLICATION [IMPLEMENTE]
             Function SanitizeAppName(Const Name: String): String
               retirer les caracteres invalides pour un nom de fichier
               remplacer espaces par tirets ou underscores
@@ -1897,7 +1897,244 @@ Begin
 End;
 
 { ============================================================
-  TODO 07-25 : A IMPLEMENTER
+  TODO 07 - GENERATION DU NOM D'APPLICATION [IMPLEMENTE]
+  ============================================================ }
+
+Var
+  { Variables d'etat du module AppName }
+  AnmInitialized     : Boolean;
+  AnmStateCount      : Integer;
+  AnmSanitizeCount   : Integer;
+  AnmGenerateCount   : Integer;
+  AnmIdentifierCount : Integer;
+  AnmPackageCount    : Integer;
+  AnmValidateCount   : Integer;
+
+{ Initialiser l'etat du module AppName }
+Procedure InitAppNameState;
+Begin
+  AnmInitialized := True;
+  AnmStateCount := 0;
+  AnmSanitizeCount := 0;
+  AnmGenerateCount := 0;
+  AnmIdentifierCount := 0;
+  AnmPackageCount := 0;
+  AnmValidateCount := 0;
+End;
+
+{ Verifier si un caractere est valide pour un nom de fichier }
+Function IsValidFileNameChar(C: Char): Boolean;
+Begin
+  IsValidFileNameChar := (C In ['A'..'Z', 'a'..'z', '0'..'9', '-', '_', '.']);
+End;
+
+{ Sanitize un nom d'application - retirer caracteres invalides }
+Function SanitizeAppName(Const Name: String): String;
+Var
+  I: Integer;
+  R: String;
+  C: Char;
+Begin
+  Inc(AnmStateCount);
+  Inc(AnmSanitizeCount);
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    C := Name[I];
+    If C = ' ' Then
+      R := R + '-'
+    Else If IsValidFileNameChar(C) Then
+      R := R + C;
+    { Ignorer les autres caracteres }
+  End;
+  { Limiter la taille }
+  If Length(R) > MAX_NAME_LEN Then
+    R := Copy(R, 1, MAX_NAME_LEN);
+  { Retourner un nom par defaut si vide }
+  If Length(R) = 0 Then
+    R := 'WebApp';
+  SanitizeAppName := R;
+End;
+
+{ Generer un nom d'application a partir des options }
+Function GenerateAppName(Const Opts: TOptions): String;
+Var
+  Name, Domain: String;
+Begin
+  Inc(AnmStateCount);
+  Inc(AnmGenerateCount);
+  If Opts.AppName <> '' Then
+    Name := SanitizeAppName(Opts.AppName)
+  Else
+  Begin
+    { Extraire du domaine }
+    Domain := ExtractDomain(Opts.Url);
+    Domain := NormalizeDomain(Domain);
+    Name := DomainToAppName(Domain);
+    Name := SanitizeAppName(Name);
+  End;
+  GenerateAppName := Name;
+End;
+
+{ Generer un identifiant de bundle (com.pake.APPNAME) }
+Function GenerateIdentifier(Const AppName: String): String;
+Var
+  Name: String;
+  I: Integer;
+Begin
+  Inc(AnmStateCount);
+  Inc(AnmIdentifierCount);
+  { Convertir en minuscules et remplacer caracteres invalides }
+  Name := '';
+  For I := 1 To Length(AppName) Do
+  Begin
+    If AppName[I] In ['A'..'Z'] Then
+      Name := Name + Chr(Ord(AppName[I]) + 32)
+    Else If AppName[I] In ['a'..'z', '0'..'9'] Then
+      Name := Name + AppName[I]
+    Else If AppName[I] In ['-', '_'] Then
+      Name := Name + '-';
+  End;
+  If Length(Name) = 0 Then
+    Name := 'webapp';
+  GenerateIdentifier := 'com.pake.' + Name;
+End;
+
+{ Generer un nom de package valide (minuscules, tirets) }
+Function GeneratePackageName(Const AppName: String): String;
+Var
+  Name: String;
+  I: Integer;
+Begin
+  Inc(AnmStateCount);
+  Inc(AnmPackageCount);
+  Name := '';
+  For I := 1 To Length(AppName) Do
+  Begin
+    If AppName[I] In ['A'..'Z'] Then
+      Name := Name + Chr(Ord(AppName[I]) + 32)
+    Else If AppName[I] In ['a'..'z', '0'..'9'] Then
+      Name := Name + AppName[I]
+    Else If AppName[I] In ['-', '_', ' '] Then
+      Name := Name + '-';
+  End;
+  { Retirer les tirets en debut et fin }
+  While (Length(Name) > 0) And (Name[1] = '-') Do
+    Name := Copy(Name, 2, Length(Name) - 1);
+  While (Length(Name) > 0) And (Name[Length(Name)] = '-') Do
+    Name := Copy(Name, 1, Length(Name) - 1);
+  If Length(Name) = 0 Then
+    Name := 'webapp';
+  GeneratePackageName := Name;
+End;
+
+{ Verifier si un nom est reserve (Windows) }
+Function IsReservedName(Const Name: String): Boolean;
+Var
+  UpName: String;
+Begin
+  UpName := UpCaseStr(Name);
+  IsReservedName := (UpName = 'CON') Or (UpName = 'PRN') Or
+                    (UpName = 'AUX') Or (UpName = 'NUL') Or
+                    (UpName = 'COM1') Or (UpName = 'COM2') Or
+                    (UpName = 'COM3') Or (UpName = 'COM4') Or
+                    (UpName = 'COM5') Or (UpName = 'COM6') Or
+                    (UpName = 'COM7') Or (UpName = 'COM8') Or
+                    (UpName = 'COM9') Or (UpName = 'LPT1') Or
+                    (UpName = 'LPT2') Or (UpName = 'LPT3') Or
+                    (UpName = 'LPT4') Or (UpName = 'LPT5') Or
+                    (UpName = 'LPT6') Or (UpName = 'LPT7') Or
+                    (UpName = 'LPT8') Or (UpName = 'LPT9');
+End;
+
+{ Valider un nom d'application }
+Procedure ValidateAppName(Const Name: String);
+Var
+  I: Integer;
+  C: Char;
+  HasInvalid: Boolean;
+Begin
+  Inc(AnmStateCount);
+  Inc(AnmValidateCount);
+  { Verifier si vide }
+  If Length(Name) = 0 Then
+    FatalError('Le nom d''application ne peut pas etre vide');
+  { Verifier si trop long }
+  If Length(Name) > MAX_NAME_LEN Then
+    FatalError('Le nom d''application est trop long (max ' + IntToStr(MAX_NAME_LEN) + ' caracteres)');
+  { Verifier les caracteres interdits }
+  HasInvalid := False;
+  For I := 1 To Length(Name) Do
+  Begin
+    C := Name[I];
+    If C In ['<', '>', ':', '"', '/', '\', '|', '?', '*'] Then
+    Begin
+      HasInvalid := True;
+      Break;
+    End;
+  End;
+  If HasInvalid Then
+    FatalError('Le nom d''application contient des caracteres interdits: < > : " / \ | ? *');
+  { Verifier si nom reserve Windows }
+  If IsReservedName(Name) Then
+    FatalError('Le nom d''application "' + Name + '" est un nom reserve Windows');
+End;
+
+{ *** FONCTIONS ACCESSEURS POUR LE MODULE APPNAME *** }
+
+Function IsAnmInitialized: Boolean;
+Begin
+  IsAnmInitialized := AnmInitialized;
+End;
+
+Function IsAnmEmpty: Boolean;
+Begin
+  IsAnmEmpty := (AnmStateCount = 0);
+End;
+
+Function GetAnmStateCount: Integer;
+Begin
+  GetAnmStateCount := AnmStateCount;
+End;
+
+Function GetAnmSanitizeCount: Integer;
+Begin
+  GetAnmSanitizeCount := AnmSanitizeCount;
+End;
+
+Function GetAnmGenerateCount: Integer;
+Begin
+  GetAnmGenerateCount := AnmGenerateCount;
+End;
+
+Function GetAnmIdentifierCount: Integer;
+Begin
+  GetAnmIdentifierCount := AnmIdentifierCount;
+End;
+
+Function GetAnmPackageCount: Integer;
+Begin
+  GetAnmPackageCount := AnmPackageCount;
+End;
+
+Function GetAnmValidateCount: Integer;
+Begin
+  GetAnmValidateCount := AnmValidateCount;
+End;
+
+Function GetAnmMaxNameLen: Integer;
+Begin
+  GetAnmMaxNameLen := MAX_NAME_LEN;
+End;
+
+Function GetAnmReservedCount: Integer;
+Begin
+  { Nombre de noms reserves Windows (CON, PRN, AUX, NUL, COM1-9, LPT1-9) }
+  GetAnmReservedCount := 22;
+End;
+
+{ ============================================================
+  TODO 08-25 : A IMPLEMENTER
   ============================================================ }
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -2003,7 +2240,7 @@ End;
 
 Procedure Run(Var O: TOptions);
 Var
-  Domain: String;
+  AppId, PkgName: String;
 Begin
   If O.Verbose Then
   Begin
@@ -2011,39 +2248,36 @@ Begin
     WriteLn;
   End;
 
-  { Extraire le nom de l'application si non specifie }
-  If O.AppName = '' Then
-  Begin
-    Domain := ExtractDomain(O.Url);
-    Domain := NormalizeDomain(Domain);
-    { Capitaliser la premiere lettre }
-    If Length(Domain) > 0 Then
-    Begin
-      Domain[1] := UpCase(Domain[1]);
-      { Retirer l'extension de domaine }
-      If Pos('.', Domain) > 0 Then
-        O.AppName := Copy(Domain, 1, Pos('.', Domain) - 1)
-      Else
-        O.AppName := Domain;
-    End;
-  End;
+  { Initialiser le module icones }
+  InitIconState;
+
+  { Initialiser le module AppName }
+  InitAppNameState;
+
+  { Generer le nom de l'application si non specifie }
+  O.AppName := GenerateAppName(O);
+
+  { Valider le nom d'application }
+  ValidateAppName(O.AppName);
+
+  { Generer l'identifiant et le nom de package }
+  AppId := GenerateIdentifier(O.AppName);
+  PkgName := GeneratePackageName(O.AppName);
 
   WriteLn('Application : ', O.AppName);
+  WriteLn('Identifiant : ', AppId);
+  WriteLn('Package     : ', PkgName);
   WriteLn('URL         : ', O.Url);
   WriteLn('Fenetre     : ', O.Width, 'x', O.Height);
   WriteLn('Plateforme  : ', PlatformName(GetPlatform));
   WriteLn;
 
-  { Initialiser le module icones }
-  InitIconState;
-
-  { TODO: Implementer les TODOs 07-25 }
-  WriteLn('*** NOTE: TODOs 01-06 [IMPLEMENTE] ***');
-  WriteLn('*** Les TODOs 07-25 restent a implementer ***');
+  { TODO: Implementer les TODOs 08-25 }
+  WriteLn('*** NOTE: TODOs 01-07 [IMPLEMENTE] ***');
+  WriteLn('*** Les TODOs 08-25 restent a implementer ***');
   WriteLn;
   WriteLn('Pour generer une application de bureau complete,');
   WriteLn('il faut implementer:');
-  WriteLn('  - TODO 07: Generation du nom d''application');
   WriteLn('  - TODO 08: Configuration Tauri');
   WriteLn('  - TODO 09: Generation du code Rust principal');
   WriteLn('  - TODO 10: Gestion des raccourcis clavier');
