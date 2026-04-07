@@ -251,7 +251,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
               OCCURS n TO m DEPENDING ON var)
             10 fonctions accesseurs
 
-  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET CONDITIONS [A FAIRE]
+  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET CONDITIONS [IMPLEMENTE]
             Expressions arithmetiques COBOL :
               Operateurs : + - * / ** (puissance)
               Parentheses pour regroupement

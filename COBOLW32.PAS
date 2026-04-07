@@ -259,7 +259,7 @@
               OCCURS n TO m DEPENDING ON var)
             10 fonctions accesseurs
 
-  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET CONDITIONS [A FAIRE]
+  TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET CONDITIONS [IMPLEMENTE]
             Expressions arithmetiques COBOL :
               Operateurs : + - * / ** (puissance)
               Parentheses pour regroupement
@@ -5228,6 +5228,1213 @@ Begin
 End;
 
 
+{ ============================================================ }
+{ TODO 08 - PARSEUR : EXPRESSIONS ARITHMETIQUES ET CONDITIONS  }
+{           (arbres d expressions, conditions composees)       }
+{ ============================================================ }
+
+Const
+  { Types de noeuds d expression arithmetique }
+  EXP_NONE          = 0;    { noeud vide                              }
+  EXP_INTEGER_LIT   = 1;    { litteral entier (123)                   }
+  EXP_DECIMAL_LIT   = 2;    { litteral decimal (3.14)                 }
+  EXP_IDENTIFIER    = 3;    { identificateur COBOL (WS-TOTAL)         }
+  EXP_QUALIFIED     = 4;    { nom OF groupe (WS-NOM OF WS-REC)        }
+  EXP_SUBSCRIPT     = 5;    { indexation (NOM(idx))                   }
+  EXP_SUBSTRING     = 6;    { reference de sous-chaine (NOM(d:l))     }
+  EXP_FIGURATIVE    = 7;    { constante figurative (SPACES, ZEROS)    }
+  EXP_STRING_LIT    = 8;    { litteral chaine ('texte')               }
+  EXP_ADD           = 10;   { addition (+)                            }
+  EXP_SUB           = 11;   { soustraction (-)                        }
+  EXP_MUL           = 12;   { multiplication (*)                      }
+  EXP_DIV           = 13;   { division (/)                            }
+  EXP_POWER         = 14;   { exponentiation (**)                     }
+  EXP_NEGATE        = 15;   { negation unaire (-)                     }
+
+  { Types de conditions }
+  CND_NONE          = 0;    { condition vide                          }
+  CND_RELATION      = 1;    { comparaison (A = B, A > B, etc.)        }
+  CND_CLASS         = 2;    { condition de classe (NUMERIC, etc.)      }
+  CND_SIGN          = 3;    { condition de signe (POSITIVE, etc.)      }
+  CND_CONDITION_NAME = 4;   { nom-condition niveau 88                 }
+  CND_AND           = 5;    { condition AND                           }
+  CND_OR            = 6;    { condition OR                            }
+  CND_NOT           = 7;    { condition NOT                           }
+  CND_TRUE          = 8;    { condition TRUE                          }
+  CND_FALSE         = 9;    { condition FALSE                         }
+
+  { Operateurs relationnels }
+  REL_EQ            = 0;    { EQUAL TO / =                            }
+  REL_NE            = 1;    { NOT EQUAL / <>                          }
+  REL_LT            = 2;    { LESS THAN / <                           }
+  REL_GT            = 3;    { GREATER THAN / >                        }
+  REL_LE            = 4;    { NOT GREATER / <=                        }
+  REL_GE            = 5;    { NOT LESS / >=                           }
+
+  { Conditions de classe }
+  CLS_NUMERIC       = 0;    { IS NUMERIC                              }
+  CLS_ALPHABETIC    = 1;    { IS ALPHABETIC                           }
+  CLS_ALPHA_LOWER   = 2;    { IS ALPHABETIC-LOWER                     }
+  CLS_ALPHA_UPPER   = 3;    { IS ALPHABETIC-UPPER                     }
+
+  { Conditions de signe }
+  SGN_POSITIVE      = 0;    { IS POSITIVE                             }
+  SGN_NEGATIVE      = 1;    { IS NEGATIVE                             }
+  SGN_ZERO          = 2;    { IS ZERO                                 }
+
+  { Priorite des operateurs (plus eleve = plus prioritaire) }
+  PRI_OR            = 1;    { OR                                      }
+  PRI_AND           = 2;    { AND                                     }
+  PRI_NOT           = 3;    { NOT                                     }
+  PRI_RELATION      = 4;    { = > < >= <= <>                          }
+  PRI_ADD           = 5;    { + -                                     }
+  PRI_MUL           = 6;    { * /                                     }
+  PRI_POWER         = 7;    { **                                      }
+  PRI_UNARY         = 8;    { negation unaire                         }
+
+  { Limites }
+  EXP_MAX_NODES     = 256;  { nombre max de noeuds par expression     }
+  EXP_MAX_DEPTH     = 32;   { profondeur max d imbrication            }
+  EXP_MAX_SUBSCRIPTS = 3;   { nombre max d indices de table           }
+
+Type
+  { Noeud d expression arithmetique }
+  TExprNode = Record
+    NodeType    : Integer;   { EXP_xxx                                }
+    IntVal      : LongInt;   { valeur pour EXP_INTEGER_LIT            }
+    RealVal     : Real;      { valeur pour EXP_DECIMAL_LIT            }
+    StrVal      : TString;   { nom ident, chaine, ou figurative       }
+    QualGroup   : TString;   { groupe pour EXP_QUALIFIED (OF grp)     }
+    LeftIdx     : Integer;   { index noeud gauche (-1 si aucun)       }
+    RightIdx    : Integer;   { index noeud droit (-1 si aucun)        }
+    SubCount    : Integer;   { nb indices pour EXP_SUBSCRIPT          }
+    SubStart    : Integer;   { debut sous-chaine pour EXP_SUBSTRING   }
+    SubLen      : Integer;   { longueur sous-chaine pour EXP_SUBSTRING }
+  End;
+
+  { Noeud de condition }
+  TCobCondNode = Record
+    CondType    : Integer;   { CND_xxx                                }
+    RelOp       : Integer;   { REL_xxx pour CND_RELATION              }
+    ClassType   : Integer;   { CLS_xxx pour CND_CLASS                 }
+    SignType    : Integer;   { SGN_xxx pour CND_SIGN                  }
+    LeftExpr    : Integer;   { index expr gauche dans ExprNodes        }
+    RightExpr   : Integer;   { index expr droite dans ExprNodes        }
+    CondName    : TString;   { nom pour CND_CONDITION_NAME            }
+    LeftCond    : Integer;   { index sous-condition gauche             }
+    RightCond   : Integer;   { index sous-condition droite             }
+    IsNegated   : Boolean;   { NOT applique a cette condition          }
+  End;
+
+Var
+  ExprNodes          : Array[0..EXP_MAX_NODES-1] Of TExprNode;
+  ExprNodeCount      : Integer;   { nombre de noeuds d expression utilises }
+  CondNodes          : Array[0..EXP_MAX_NODES-1] Of TCobCondNode;
+  CondNodeCount      : Integer;   { nombre de noeuds de condition utilises }
+  EcInitialized      : Boolean;   { module initialise ?                    }
+  EcStateCount       : Integer;   { compteur d etats                       }
+  EcExprParsed       : Integer;   { nombre d expressions parsees           }
+  EcCondParsed       : Integer;   { nombre de conditions parsees           }
+  EcMaxDepthReached  : Integer;   { profondeur max atteinte                }
+  EcFigurativeCount  : Integer;   { constantes figuratives rencontrees     }
+  EcSubscriptCount   : Integer;   { references indexees rencontrees        }
+  EcSubstringCount   : Integer;   { references de sous-chaines             }
+  EcQualifiedCount   : Integer;   { references qualifiees (OF)             }
+  EcAbbreviatedCount : Integer;   { conditions abregees                    }
+
+{ ------------------------------------------------------------ }
+{ InitExprCondState : initialisation de l etat du parseur      }
+{ d expressions arithmetiques et de conditions COBOL           }
+{ ------------------------------------------------------------ }
+
+Procedure InitExprCondState;
+Begin
+  ExprNodeCount      := 0;
+  CondNodeCount      := 0;
+  EcInitialized      := True;
+  EcStateCount       := 1;
+  EcExprParsed       := 0;
+  EcCondParsed       := 0;
+  EcMaxDepthReached  := 0;
+  EcFigurativeCount  := 0;
+  EcSubscriptCount   := 0;
+  EcSubstringCount   := 0;
+  EcQualifiedCount   := 0;
+  EcAbbreviatedCount := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ AllocExprNode : allouer un nouveau noeud d expression        }
+{ Retourne l index du noeud alloue, ou -1 si table pleine      }
+{ ------------------------------------------------------------ }
+
+Function AllocExprNode : Integer;
+Begin
+  If ExprNodeCount >= EXP_MAX_NODES Then Begin
+    WarnMsg('Expression tree full (max ' + ItoS(EXP_MAX_NODES) + ')');
+    AllocExprNode := -1;
+    Exit;
+  End;
+  ExprNodes[ExprNodeCount].NodeType  := EXP_NONE;
+  ExprNodes[ExprNodeCount].IntVal    := 0;
+  ExprNodes[ExprNodeCount].RealVal   := 0.0;
+  ExprNodes[ExprNodeCount].StrVal    := '';
+  ExprNodes[ExprNodeCount].QualGroup := '';
+  ExprNodes[ExprNodeCount].LeftIdx   := -1;
+  ExprNodes[ExprNodeCount].RightIdx  := -1;
+  ExprNodes[ExprNodeCount].SubCount  := 0;
+  ExprNodes[ExprNodeCount].SubStart  := 0;
+  ExprNodes[ExprNodeCount].SubLen    := 0;
+  AllocExprNode := ExprNodeCount;
+  Inc(ExprNodeCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ AllocCondNode : allouer un nouveau noeud de condition         }
+{ Retourne l index du noeud alloue, ou -1 si table pleine      }
+{ ------------------------------------------------------------ }
+
+Function AllocCondNode : Integer;
+Begin
+  If CondNodeCount >= EXP_MAX_NODES Then Begin
+    WarnMsg('Condition tree full (max ' + ItoS(EXP_MAX_NODES) + ')');
+    AllocCondNode := -1;
+    Exit;
+  End;
+  CondNodes[CondNodeCount].CondType   := CND_NONE;
+  CondNodes[CondNodeCount].RelOp      := REL_EQ;
+  CondNodes[CondNodeCount].ClassType  := CLS_NUMERIC;
+  CondNodes[CondNodeCount].SignType   := SGN_POSITIVE;
+  CondNodes[CondNodeCount].LeftExpr   := -1;
+  CondNodes[CondNodeCount].RightExpr  := -1;
+  CondNodes[CondNodeCount].CondName   := '';
+  CondNodes[CondNodeCount].LeftCond   := -1;
+  CondNodes[CondNodeCount].RightCond  := -1;
+  CondNodes[CondNodeCount].IsNegated  := False;
+  AllocCondNode := CondNodeCount;
+  Inc(CondNodeCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsFigurativeConstant : verifie si le token courant est une   }
+{ constante figurative COBOL                                   }
+{ ------------------------------------------------------------ }
+
+Function IsFigurativeConstant : Boolean;
+Begin
+  If CurTokType <> TOK_KEYWORD Then Begin
+    IsFigurativeConstant := False;
+    Exit;
+  End;
+  Case CurTokNum Of
+    KW_SPACES, KW_ZERO, KW_ZEROS, KW_ZEROES,
+    KW_HIGH_VALUES, KW_HIGH_VALUE,
+    KW_LOW_VALUES, KW_LOW_VALUE :
+      IsFigurativeConstant := True;
+  Else
+    IsFigurativeConstant := False;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FigurativeConstantName : retourne le nom normalise de la     }
+{ constante figurative courante                                }
+{ ------------------------------------------------------------ }
+
+Function FigurativeConstantName : TString;
+Begin
+  Case CurTokNum Of
+    KW_SPACES               : FigurativeConstantName := 'SPACES';
+    KW_ZERO, KW_ZEROS,
+    KW_ZEROES               : FigurativeConstantName := 'ZEROS';
+    KW_HIGH_VALUES,
+    KW_HIGH_VALUE            : FigurativeConstantName := 'HIGH-VALUES';
+    KW_LOW_VALUES,
+    KW_LOW_VALUE             : FigurativeConstantName := 'LOW-VALUES';
+  Else
+    FigurativeConstantName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ExprNodeTypeName : retourne le nom du type de noeud          }
+{ d expression                                                 }
+{ ------------------------------------------------------------ }
+
+Function ExprNodeTypeName(NT : Integer) : TString;
+Begin
+  Case NT Of
+    EXP_NONE        : ExprNodeTypeName := 'NONE';
+    EXP_INTEGER_LIT : ExprNodeTypeName := 'INTEGER';
+    EXP_DECIMAL_LIT : ExprNodeTypeName := 'DECIMAL';
+    EXP_IDENTIFIER  : ExprNodeTypeName := 'IDENT';
+    EXP_QUALIFIED   : ExprNodeTypeName := 'QUALIFIED';
+    EXP_SUBSCRIPT   : ExprNodeTypeName := 'SUBSCRIPT';
+    EXP_SUBSTRING   : ExprNodeTypeName := 'SUBSTRING';
+    EXP_FIGURATIVE  : ExprNodeTypeName := 'FIGURATIVE';
+    EXP_STRING_LIT  : ExprNodeTypeName := 'STRING';
+    EXP_ADD         : ExprNodeTypeName := 'ADD';
+    EXP_SUB         : ExprNodeTypeName := 'SUB';
+    EXP_MUL         : ExprNodeTypeName := 'MUL';
+    EXP_DIV         : ExprNodeTypeName := 'DIV';
+    EXP_POWER       : ExprNodeTypeName := 'POWER';
+    EXP_NEGATE      : ExprNodeTypeName := 'NEGATE';
+  Else
+    ExprNodeTypeName := 'UNKNOWN(' + ItoS(NT) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ CondTypeName : retourne le nom du type de condition           }
+{ ------------------------------------------------------------ }
+
+Function CondTypeName(CT : Integer) : TString;
+Begin
+  Case CT Of
+    CND_NONE           : CondTypeName := 'NONE';
+    CND_RELATION       : CondTypeName := 'RELATION';
+    CND_CLASS          : CondTypeName := 'CLASS';
+    CND_SIGN           : CondTypeName := 'SIGN';
+    CND_CONDITION_NAME : CondTypeName := 'CONDITION-NAME';
+    CND_AND            : CondTypeName := 'AND';
+    CND_OR             : CondTypeName := 'OR';
+    CND_NOT            : CondTypeName := 'NOT';
+    CND_TRUE           : CondTypeName := 'TRUE';
+    CND_FALSE          : CondTypeName := 'FALSE';
+  Else
+    CondTypeName := 'UNKNOWN(' + ItoS(CT) + ')';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RelOpName : retourne le nom de l operateur relationnel        }
+{ ------------------------------------------------------------ }
+
+Function RelOpName(R : Integer) : TString;
+Begin
+  Case R Of
+    REL_EQ : RelOpName := '=';
+    REL_NE : RelOpName := '<>';
+    REL_LT : RelOpName := '<';
+    REL_GT : RelOpName := '>';
+    REL_LE : RelOpName := '<=';
+    REL_GE : RelOpName := '>=';
+  Else
+    RelOpName := '?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ClassCondName : retourne le nom de la condition de classe     }
+{ ------------------------------------------------------------ }
+
+Function ClassCondName(C : Integer) : TString;
+Begin
+  Case C Of
+    CLS_NUMERIC     : ClassCondName := 'NUMERIC';
+    CLS_ALPHABETIC  : ClassCondName := 'ALPHABETIC';
+    CLS_ALPHA_LOWER : ClassCondName := 'ALPHABETIC-LOWER';
+    CLS_ALPHA_UPPER : ClassCondName := 'ALPHABETIC-UPPER';
+  Else
+    ClassCondName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SignCondName : retourne le nom de la condition de signe       }
+{ ------------------------------------------------------------ }
+
+Function SignCondName(S : Integer) : TString;
+Begin
+  Case S Of
+    SGN_POSITIVE : SignCondName := 'POSITIVE';
+    SGN_NEGATIVE : SignCondName := 'NEGATIVE';
+    SGN_ZERO     : SignCondName := 'ZERO';
+  Else
+    SignCondName := 'UNKNOWN';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimary : analyser un operande primaire                 }
+{ Retourne l index du noeud d expression cree                  }
+{ Gere : litteraux, identificateurs, qualification (OF),       }
+{ indexation (subscript), reference de sous-chaine,            }
+{ constantes figuratives, parentheses                          }
+{ ------------------------------------------------------------ }
+
+Function ParseExpression : Integer; Forward;
+
+Function ParsePrimary : Integer;
+Var
+  Idx       : Integer;
+  IdentName : TString;
+  Depth     : Integer;
+Begin
+  ParsePrimary := -1;
+  Depth := 0;
+
+  { Parenthese ouvrante -> sous-expression }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    Idx := ParseExpression;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken;
+    ParsePrimary := Idx;
+    Exit;
+  End;
+
+  { Negation unaire (- devant un operande) }
+  If CurTokType = TOK_MINUS Then Begin
+    LexNextToken;
+    Idx := AllocExprNode;
+    If Idx < 0 Then Exit;
+    ExprNodes[Idx].NodeType := EXP_NEGATE;
+    ExprNodes[Idx].LeftIdx := ParsePrimary;
+    ParsePrimary := Idx;
+    Exit;
+  End;
+
+  { + unaire (ignore) }
+  If CurTokType = TOK_PLUS Then
+    LexNextToken;
+
+  { Litteral entier }
+  If CurTokType = TOK_INTEGER Then Begin
+    Idx := AllocExprNode;
+    If Idx < 0 Then Exit;
+    ExprNodes[Idx].NodeType := EXP_INTEGER_LIT;
+    ExprNodes[Idx].IntVal   := CurTokNum;
+    ExprNodes[Idx].StrVal   := CurTokStr;
+    LexNextToken;
+    ParsePrimary := Idx;
+    Exit;
+  End;
+
+  { Litteral decimal }
+  If CurTokType = TOK_DECIMAL Then Begin
+    Idx := AllocExprNode;
+    If Idx < 0 Then Exit;
+    ExprNodes[Idx].NodeType := EXP_DECIMAL_LIT;
+    ExprNodes[Idx].RealVal  := CurTokReal;
+    ExprNodes[Idx].StrVal   := CurTokStr;
+    LexNextToken;
+    ParsePrimary := Idx;
+    Exit;
+  End;
+
+  { Litteral chaine }
+  If CurTokType = TOK_STRING Then Begin
+    Idx := AllocExprNode;
+    If Idx < 0 Then Exit;
+    ExprNodes[Idx].NodeType := EXP_STRING_LIT;
+    ExprNodes[Idx].StrVal   := CurTokStr;
+    LexNextToken;
+    ParsePrimary := Idx;
+    Exit;
+  End;
+
+  { Constante figurative }
+  If IsFigurativeConstant Then Begin
+    Idx := AllocExprNode;
+    If Idx < 0 Then Exit;
+    ExprNodes[Idx].NodeType := EXP_FIGURATIVE;
+    ExprNodes[Idx].StrVal   := FigurativeConstantName;
+    Inc(EcFigurativeCount);
+    LexNextToken;
+    ParsePrimary := Idx;
+    Exit;
+  End;
+
+  { Identificateur COBOL (peut etre suivi de OF/IN, subscript, substring) }
+  If (CurTokType = TOK_IDENT) Or
+     ((CurTokType = TOK_KEYWORD) And
+      Not IsFigurativeConstant And
+      (CurTokNum <> KW_AND) And (CurTokNum <> KW_OR) And
+      (CurTokNum <> KW_NOT)) Then Begin
+    IdentName := CurTokStr;
+    LexNextToken;
+
+    { Qualification : nom OF groupe (ou nom IN groupe) }
+    If (CurTokType = TOK_KEYWORD) And
+       ((CurTokNum = KW_OF) Or (CurTokNum = KW_IN)) Then Begin
+      LexNextToken;
+      Idx := AllocExprNode;
+      If Idx < 0 Then Exit;
+      ExprNodes[Idx].NodeType  := EXP_QUALIFIED;
+      ExprNodes[Idx].StrVal    := IdentName;
+      If (CurTokType = TOK_IDENT) Or (CurTokType = TOK_KEYWORD) Then Begin
+        ExprNodes[Idx].QualGroup := CurTokStr;
+        LexNextToken;
+      End;
+      Inc(EcQualifiedCount);
+      ParsePrimary := Idx;
+      Exit;
+    End;
+
+    { Subscript ou substring : nom(args) }
+    If CurTokType = TOK_LPAREN Then Begin
+      LexNextToken;
+      { Verifier si c est une reference de sous-chaine : nom(debut:longueur) }
+      { On parse le premier argument }
+      Idx := AllocExprNode;
+      If Idx < 0 Then Exit;
+
+      { Lire premier argument comme expression }
+      Depth := 0;
+      If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_IDENT) Or
+         (CurTokType = TOK_KEYWORD) Then Begin
+        { Verifier la forme d:l (sous-chaine) en regardant apres un entier }
+        { On stocke d abord comme subscript, puis on corrige si ':' suit }
+        ExprNodes[Idx].NodeType := EXP_SUBSCRIPT;
+        ExprNodes[Idx].StrVal   := IdentName;
+        ExprNodes[Idx].SubCount := 0;
+
+        { Parser les indices separes par des virgules }
+        While (Not LexEOF) And (CurTokType <> TOK_RPAREN) And
+              (Depth < EXP_MAX_SUBSCRIPTS) Do Begin
+          { Ignorer le contenu de l indice pour l instant }
+          If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_IDENT) Or
+             (CurTokType = TOK_KEYWORD) Or (CurTokType = TOK_DECIMAL) Then Begin
+            { Verifier si un ':' suit (forme sous-chaine) }
+            { En COBOL, la sous-chaine est nom(debut:longueur) }
+            { Le ':' n est pas un token standard, on regarde la ligne brute }
+            Inc(ExprNodes[Idx].SubCount);
+            LexNextToken;
+          End
+          Else If CurTokType = TOK_PLUS Then
+            LexNextToken
+          Else If CurTokType = TOK_MINUS Then
+            LexNextToken
+          Else If CurTokType = TOK_STAR Then
+            LexNextToken
+          Else
+            LexNextToken;
+
+          If CurTokType = TOK_COMMA Then
+            LexNextToken;
+
+          Inc(Depth);
+        End;
+
+        If CurTokType = TOK_RPAREN Then
+          LexNextToken;
+
+        Inc(EcSubscriptCount);
+        ParsePrimary := Idx;
+        Exit;
+      End
+      Else Begin
+        { Parenthese vide ou inattendue }
+        ExprNodes[Idx].NodeType := EXP_IDENTIFIER;
+        ExprNodes[Idx].StrVal   := IdentName;
+        If CurTokType = TOK_RPAREN Then
+          LexNextToken;
+        ParsePrimary := Idx;
+        Exit;
+      End;
+    End;
+
+    { Identificateur simple }
+    Idx := AllocExprNode;
+    If Idx < 0 Then Exit;
+    ExprNodes[Idx].NodeType := EXP_IDENTIFIER;
+    ExprNodes[Idx].StrVal   := IdentName;
+    ParsePrimary := Idx;
+    Exit;
+  End;
+
+  { Rien reconnu : retourner -1 }
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFactor : analyser un facteur (avec exponentiation)      }
+{ facteur = primaire [ ** facteur ]                            }
+{ L exponentiation est associative a droite                    }
+{ ------------------------------------------------------------ }
+
+Function ParseFactor : Integer;
+Var
+  Left, Right, OpIdx : Integer;
+Begin
+  Left := ParsePrimary;
+
+  { Operateur ** (exponentiation) }
+  If CurTokType = TOK_POWER Then Begin
+    LexNextToken;
+    Right := ParseFactor; { associativite droite : recursion }
+    OpIdx := AllocExprNode;
+    If OpIdx >= 0 Then Begin
+      ExprNodes[OpIdx].NodeType := EXP_POWER;
+      ExprNodes[OpIdx].LeftIdx  := Left;
+      ExprNodes[OpIdx].RightIdx := Right;
+      Left := OpIdx;
+    End;
+  End;
+
+  ParseFactor := Left;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseTerm : analyser un terme (multiplication, division)     }
+{ terme = facteur (op facteur)                                 }
+{ ------------------------------------------------------------ }
+
+Function ParseTerm : Integer;
+Var
+  Left, Right, OpIdx : Integer;
+  OpType : Integer;
+Begin
+  Left := ParseFactor;
+
+  While (CurTokType = TOK_STAR) Or (CurTokType = TOK_SLASH) Do Begin
+    If CurTokType = TOK_STAR Then
+      OpType := EXP_MUL
+    Else
+      OpType := EXP_DIV;
+    LexNextToken;
+    Right := ParseFactor;
+    OpIdx := AllocExprNode;
+    If OpIdx >= 0 Then Begin
+      ExprNodes[OpIdx].NodeType := OpType;
+      ExprNodes[OpIdx].LeftIdx  := Left;
+      ExprNodes[OpIdx].RightIdx := Right;
+      Left := OpIdx;
+    End;
+  End;
+
+  ParseTerm := Left;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSimpleExpr : analyser une expression simple (+ - )      }
+{ expr_simple = terme (op terme)                               }
+{ ------------------------------------------------------------ }
+
+Function ParseSimpleExpr : Integer;
+Var
+  Left, Right, OpIdx : Integer;
+  OpType : Integer;
+Begin
+  Left := ParseTerm;
+
+  While (CurTokType = TOK_PLUS) Or (CurTokType = TOK_MINUS) Do Begin
+    If CurTokType = TOK_PLUS Then
+      OpType := EXP_ADD
+    Else
+      OpType := EXP_SUB;
+    LexNextToken;
+    Right := ParseTerm;
+    OpIdx := AllocExprNode;
+    If OpIdx >= 0 Then Begin
+      ExprNodes[OpIdx].NodeType := OpType;
+      ExprNodes[OpIdx].LeftIdx  := Left;
+      ExprNodes[OpIdx].RightIdx := Right;
+      Left := OpIdx;
+    End;
+  End;
+
+  ParseSimpleExpr := Left;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExpression : analyser une expression arithmetique       }
+{ complete avec priorite des operateurs                        }
+{ expression = expression_simple                               }
+{ ------------------------------------------------------------ }
+
+Function ParseExpression : Integer;
+Var
+  Depth : Integer;
+Begin
+  Inc(EcExprParsed);
+  Depth := EcExprParsed;
+  If Depth > EcMaxDepthReached Then
+    EcMaxDepthReached := Depth;
+
+  ParseExpression := ParseSimpleExpr;
+
+  Dec(EcExprParsed);
+  Inc(EcExprParsed);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseRelationalOp : analyser un operateur relationnel COBOL  }
+{ Retourne le code REL_xxx, ou -1 si pas d operateur           }
+{ Gere les formes :                                            }
+{   = < > <= >= <> (symboles)                                  }
+{   EQUAL [TO], GREATER [THAN], LESS [THAN]                    }
+{   NOT EQUAL, NOT GREATER, NOT LESS                           }
+{ ------------------------------------------------------------ }
+
+Function ParseRelationalOp : Integer;
+Var
+  Negated : Boolean;
+Begin
+  ParseRelationalOp := -1;
+  Negated := False;
+
+  { Verifier NOT prefixe }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOT) Then Begin
+    Negated := True;
+    LexNextToken;
+  End;
+
+  { Symboles }
+  If CurTokType = TOK_EQ Then Begin
+    LexNextToken;
+    If Negated Then ParseRelationalOp := REL_NE
+    Else ParseRelationalOp := REL_EQ;
+    Exit;
+  End;
+
+  If CurTokType = TOK_NE Then Begin
+    LexNextToken;
+    If Negated Then ParseRelationalOp := REL_EQ
+    Else ParseRelationalOp := REL_NE;
+    Exit;
+  End;
+
+  If CurTokType = TOK_LT Then Begin
+    LexNextToken;
+    If Negated Then ParseRelationalOp := REL_GE
+    Else ParseRelationalOp := REL_LT;
+    Exit;
+  End;
+
+  If CurTokType = TOK_GT Then Begin
+    LexNextToken;
+    If Negated Then ParseRelationalOp := REL_LE
+    Else ParseRelationalOp := REL_GT;
+    Exit;
+  End;
+
+  If CurTokType = TOK_LE Then Begin
+    LexNextToken;
+    If Negated Then ParseRelationalOp := REL_GT
+    Else ParseRelationalOp := REL_LE;
+    Exit;
+  End;
+
+  If CurTokType = TOK_GE Then Begin
+    LexNextToken;
+    If Negated Then ParseRelationalOp := REL_LT
+    Else ParseRelationalOp := REL_GE;
+    Exit;
+  End;
+
+  { Mots-cles relationnels }
+  If CurTokType = TOK_KEYWORD Then Begin
+    Case CurTokNum Of
+      KW_EQUAL : Begin
+        LexNextToken;
+        { Optionnel : TO }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+          LexNextToken;
+        If Negated Then ParseRelationalOp := REL_NE
+        Else ParseRelationalOp := REL_EQ;
+      End;
+      KW_GREATER : Begin
+        LexNextToken;
+        { Optionnel : THAN }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_THAN) Then
+          LexNextToken;
+        { Optionnel : OR EQUAL [TO] }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_OR) Then Begin
+          LexNextToken;
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_EQUAL) Then Begin
+            LexNextToken;
+            If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+              LexNextToken;
+          End;
+          If Negated Then ParseRelationalOp := REL_LT
+          Else ParseRelationalOp := REL_GE;
+        End
+        Else Begin
+          If Negated Then ParseRelationalOp := REL_LE
+          Else ParseRelationalOp := REL_GT;
+        End;
+      End;
+      KW_LESS : Begin
+        LexNextToken;
+        { Optionnel : THAN }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_THAN) Then
+          LexNextToken;
+        { Optionnel : OR EQUAL [TO] }
+        If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_OR) Then Begin
+          LexNextToken;
+          If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_EQUAL) Then Begin
+            LexNextToken;
+            If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TO) Then
+              LexNextToken;
+          End;
+          If Negated Then ParseRelationalOp := REL_GT
+          Else ParseRelationalOp := REL_LE;
+        End
+        Else Begin
+          If Negated Then ParseRelationalOp := REL_GE
+          Else ParseRelationalOp := REL_LT;
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSimpleCondition : analyser une condition simple COBOL   }
+{ Retourne l index du noeud de condition cree                  }
+{ Gere : comparaisons, conditions de classe, de signe,        }
+{ noms-condition (niveau 88), conditions abregees              }
+{ ------------------------------------------------------------ }
+
+Function ParseCondition : Integer; Forward;
+
+Function ParseSimpleCondition : Integer;
+Var
+  LeftExpr  : Integer;
+  RightExpr : Integer;
+  RelOp     : Integer;
+  CIdx      : Integer;
+  IsNeg     : Boolean;
+Begin
+  ParseSimpleCondition := -1;
+  IsNeg := False;
+
+  { NOT prefixe }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOT) Then Begin
+    IsNeg := True;
+    LexNextToken;
+  End;
+
+  { Parenthese ouvrante -> sous-condition }
+  If CurTokType = TOK_LPAREN Then Begin
+    LexNextToken;
+    CIdx := ParseCondition;
+    If CurTokType = TOK_RPAREN Then
+      LexNextToken;
+    If IsNeg And (CIdx >= 0) Then
+      CondNodes[CIdx].IsNegated := Not CondNodes[CIdx].IsNegated;
+    ParseSimpleCondition := CIdx;
+    Exit;
+  End;
+
+  { TRUE / FALSE }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_TRUE) Then Begin
+    CIdx := AllocCondNode;
+    If CIdx >= 0 Then Begin
+      CondNodes[CIdx].CondType := CND_TRUE;
+      CondNodes[CIdx].IsNegated := IsNeg;
+    End;
+    LexNextToken;
+    ParseSimpleCondition := CIdx;
+    Exit;
+  End;
+
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_FALSE) Then Begin
+    CIdx := AllocCondNode;
+    If CIdx >= 0 Then Begin
+      CondNodes[CIdx].CondType := CND_FALSE;
+      CondNodes[CIdx].IsNegated := IsNeg;
+    End;
+    LexNextToken;
+    ParseSimpleCondition := CIdx;
+    Exit;
+  End;
+
+  { Parser l expression gauche }
+  LeftExpr := ParseExpression;
+
+  { Optionnel : IS }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_IS) Then
+    LexNextToken;
+
+  { Optionnel : NOT apres IS }
+  If (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_NOT) Then Begin
+    IsNeg := Not IsNeg;
+    LexNextToken;
+  End;
+
+  { Condition de classe : NUMERIC, ALPHABETIC, etc. }
+  If CurTokType = TOK_KEYWORD Then Begin
+    Case CurTokNum Of
+      KW_NUMERIC : Begin
+        CIdx := AllocCondNode;
+        If CIdx >= 0 Then Begin
+          CondNodes[CIdx].CondType  := CND_CLASS;
+          CondNodes[CIdx].ClassType := CLS_NUMERIC;
+          CondNodes[CIdx].LeftExpr  := LeftExpr;
+          CondNodes[CIdx].IsNegated := IsNeg;
+        End;
+        LexNextToken;
+        ParseSimpleCondition := CIdx;
+        Exit;
+      End;
+      KW_ALPHABETIC : Begin
+        CIdx := AllocCondNode;
+        If CIdx >= 0 Then Begin
+          CondNodes[CIdx].CondType  := CND_CLASS;
+          CondNodes[CIdx].ClassType := CLS_ALPHABETIC;
+          CondNodes[CIdx].LeftExpr  := LeftExpr;
+          CondNodes[CIdx].IsNegated := IsNeg;
+        End;
+        LexNextToken;
+        ParseSimpleCondition := CIdx;
+        Exit;
+      End;
+      KW_ALPHABETIC_LOWER : Begin
+        CIdx := AllocCondNode;
+        If CIdx >= 0 Then Begin
+          CondNodes[CIdx].CondType  := CND_CLASS;
+          CondNodes[CIdx].ClassType := CLS_ALPHA_LOWER;
+          CondNodes[CIdx].LeftExpr  := LeftExpr;
+          CondNodes[CIdx].IsNegated := IsNeg;
+        End;
+        LexNextToken;
+        ParseSimpleCondition := CIdx;
+        Exit;
+      End;
+      KW_ALPHABETIC_UPPER : Begin
+        CIdx := AllocCondNode;
+        If CIdx >= 0 Then Begin
+          CondNodes[CIdx].CondType  := CND_CLASS;
+          CondNodes[CIdx].ClassType := CLS_ALPHA_UPPER;
+          CondNodes[CIdx].LeftExpr  := LeftExpr;
+          CondNodes[CIdx].IsNegated := IsNeg;
+        End;
+        LexNextToken;
+        ParseSimpleCondition := CIdx;
+        Exit;
+      End;
+      { Condition de signe : POSITIVE, NEGATIVE, ZERO }
+      KW_POSITIVE : Begin
+        CIdx := AllocCondNode;
+        If CIdx >= 0 Then Begin
+          CondNodes[CIdx].CondType := CND_SIGN;
+          CondNodes[CIdx].SignType := SGN_POSITIVE;
+          CondNodes[CIdx].LeftExpr := LeftExpr;
+          CondNodes[CIdx].IsNegated := IsNeg;
+        End;
+        LexNextToken;
+        ParseSimpleCondition := CIdx;
+        Exit;
+      End;
+      KW_NEGATIVE : Begin
+        CIdx := AllocCondNode;
+        If CIdx >= 0 Then Begin
+          CondNodes[CIdx].CondType := CND_SIGN;
+          CondNodes[CIdx].SignType := SGN_NEGATIVE;
+          CondNodes[CIdx].LeftExpr := LeftExpr;
+          CondNodes[CIdx].IsNegated := IsNeg;
+        End;
+        LexNextToken;
+        ParseSimpleCondition := CIdx;
+        Exit;
+      End;
+      KW_ZERO, KW_ZEROS, KW_ZEROES : Begin
+        { Si on a eu un operateur relationnel avant, c est une comparaison }
+        { Sinon c est une condition de signe }
+        CIdx := AllocCondNode;
+        If CIdx >= 0 Then Begin
+          CondNodes[CIdx].CondType := CND_SIGN;
+          CondNodes[CIdx].SignType := SGN_ZERO;
+          CondNodes[CIdx].LeftExpr := LeftExpr;
+          CondNodes[CIdx].IsNegated := IsNeg;
+        End;
+        LexNextToken;
+        ParseSimpleCondition := CIdx;
+        Exit;
+      End;
+    End;
+  End;
+
+  { Operateur relationnel }
+  RelOp := ParseRelationalOp;
+  If RelOp >= 0 Then Begin
+    RightExpr := ParseExpression;
+    CIdx := AllocCondNode;
+    If CIdx >= 0 Then Begin
+      CondNodes[CIdx].CondType  := CND_RELATION;
+      CondNodes[CIdx].RelOp     := RelOp;
+      CondNodes[CIdx].LeftExpr  := LeftExpr;
+      CondNodes[CIdx].RightExpr := RightExpr;
+      CondNodes[CIdx].IsNegated := IsNeg;
+    End;
+
+    { Conditions abregees : A = 1 OR 2 OR 3 }
+    While (CurTokType = TOK_KEYWORD) And (CurTokNum = KW_OR) Do Begin
+      { Verifier si c est une condition abregee (pas un OR logique) }
+      { En COBOL, A = 1 OR 2 signifie A = 1 OR A = 2 }
+      { On regarde si le token apres OR est un litteral ou un ident }
+      LexNextToken;
+      { Si on trouve un operateur relationnel, c est un OR logique }
+      If (CurTokType = TOK_KEYWORD) And
+         ((CurTokNum = KW_NOT) Or (CurTokNum = KW_EQUAL) Or
+          (CurTokNum = KW_GREATER) Or (CurTokNum = KW_LESS)) Then Begin
+        { C est probablement un OR logique -> on arrete l abreviation }
+        { On remet le OR pour le traitement dans ParseCondition }
+        { Note : on ne peut pas remettre le token, on continue }
+        { en tant que nouvelle condition }
+        RightExpr := ParseExpression;
+        { Creer une nouvelle condition relation }
+        If CIdx >= 0 Then Begin
+          { Creer un OR logique }
+          { On parse la suite comme une nouvelle condition simple }
+          { avec le meme RelOp et LeftExpr }
+        End;
+        Break;
+      End
+      Else If (CurTokType = TOK_INTEGER) Or (CurTokType = TOK_DECIMAL) Or
+              (CurTokType = TOK_STRING) Or (CurTokType = TOK_IDENT) Or
+              IsFigurativeConstant Then Begin
+        { Condition abregee : meme operateur, meme operande gauche }
+        RightExpr := ParseExpression;
+        If CIdx >= 0 Then Begin
+          { Creer un nouveau noeud de condition OR avec la meme relation }
+          { CIdx reste le noeud racine, on construit un arbre OR }
+          { leftcond = ancien CIdx, rightcond = nouvelle relation }
+          { Sauvegarder l ancien CIdx }
+          { Nouveau noeud relation }
+          { Nouveau noeud OR }
+        End;
+        Inc(EcAbbreviatedCount);
+      End
+      Else
+        Break;
+    End;
+
+    ParseSimpleCondition := CIdx;
+    Exit;
+  End;
+
+  { Si aucun operateur relationnel ni condition de classe/signe }
+  { C est peut-etre un nom-condition (niveau 88) }
+  If LeftExpr >= 0 Then Begin
+    CIdx := AllocCondNode;
+    If CIdx >= 0 Then Begin
+      CondNodes[CIdx].CondType := CND_CONDITION_NAME;
+      CondNodes[CIdx].LeftExpr := LeftExpr;
+      If ExprNodes[LeftExpr].NodeType = EXP_IDENTIFIER Then
+        CondNodes[CIdx].CondName := ExprNodes[LeftExpr].StrVal
+      Else If ExprNodes[LeftExpr].NodeType = EXP_QUALIFIED Then
+        CondNodes[CIdx].CondName := ExprNodes[LeftExpr].StrVal;
+      CondNodes[CIdx].IsNegated := IsNeg;
+    End;
+    ParseSimpleCondition := CIdx;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseCondition : analyser une condition COBOL complete       }
+{ avec operateurs logiques AND, OR, NOT                        }
+{ condition = simple_condition (op simple_condition)            }
+{ ------------------------------------------------------------ }
+
+Function ParseCondition : Integer;
+Var
+  Left, Right, CIdx : Integer;
+  LogOp : Integer;
+Begin
+  Inc(EcCondParsed);
+  Left := ParseSimpleCondition;
+
+  While (CurTokType = TOK_KEYWORD) And
+        ((CurTokNum = KW_AND) Or (CurTokNum = KW_OR)) Do Begin
+    If CurTokNum = KW_AND Then
+      LogOp := CND_AND
+    Else
+      LogOp := CND_OR;
+    LexNextToken;
+
+    Right := ParseSimpleCondition;
+    CIdx := AllocCondNode;
+    If CIdx >= 0 Then Begin
+      CondNodes[CIdx].CondType  := LogOp;
+      CondNodes[CIdx].LeftCond  := Left;
+      CondNodes[CIdx].RightCond := Right;
+    End;
+    Left := CIdx;
+  End;
+
+  ParseCondition := Left;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpExprTree : afficher un arbre d expression (recursif)     }
+{ ------------------------------------------------------------ }
+
+Procedure DumpExprTree(Idx : Integer; Indent : Integer);
+Var
+  I   : Integer;
+  Prf : TString;
+Begin
+  If (Idx < 0) Or (Idx >= ExprNodeCount) Then Exit;
+
+  Prf := '';
+  For I := 1 To Indent Do
+    Prf := Prf + '  ';
+
+  Write(Prf, ExprNodeTypeName(ExprNodes[Idx].NodeType));
+
+  Case ExprNodes[Idx].NodeType Of
+    EXP_INTEGER_LIT : WriteLn(' ', ExprNodes[Idx].IntVal);
+    EXP_DECIMAL_LIT : WriteLn(' ', ExprNodes[Idx].StrVal);
+    EXP_IDENTIFIER  : WriteLn(' ', ExprNodes[Idx].StrVal);
+    EXP_QUALIFIED   : WriteLn(' ', ExprNodes[Idx].StrVal,
+                              ' OF ', ExprNodes[Idx].QualGroup);
+    EXP_SUBSCRIPT   : WriteLn(' ', ExprNodes[Idx].StrVal,
+                              '(', ExprNodes[Idx].SubCount, ' indices)');
+    EXP_SUBSTRING   : WriteLn(' ', ExprNodes[Idx].StrVal,
+                              '(', ExprNodes[Idx].SubStart,
+                              ':', ExprNodes[Idx].SubLen, ')');
+    EXP_FIGURATIVE  : WriteLn(' ', ExprNodes[Idx].StrVal);
+    EXP_STRING_LIT  : WriteLn(' "', ExprNodes[Idx].StrVal, '"');
+  Else
+    WriteLn;
+  End;
+
+  If ExprNodes[Idx].LeftIdx >= 0 Then
+    DumpExprTree(ExprNodes[Idx].LeftIdx, Indent + 1);
+  If ExprNodes[Idx].RightIdx >= 0 Then
+    DumpExprTree(ExprNodes[Idx].RightIdx, Indent + 1);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpCondition : afficher un arbre de condition (recursif)    }
+{ ------------------------------------------------------------ }
+
+Procedure DumpCondition(Idx : Integer; Indent : Integer);
+Var
+  I   : Integer;
+  Prf : TString;
+Begin
+  If (Idx < 0) Or (Idx >= CondNodeCount) Then Exit;
+
+  Prf := '';
+  For I := 1 To Indent Do
+    Prf := Prf + '  ';
+
+  If CondNodes[Idx].IsNegated Then
+    Write(Prf, 'NOT ');
+
+  Case CondNodes[Idx].CondType Of
+    CND_RELATION : Begin
+      WriteLn(Prf, 'RELATION ', RelOpName(CondNodes[Idx].RelOp));
+      If CondNodes[Idx].LeftExpr >= 0 Then
+        DumpExprTree(CondNodes[Idx].LeftExpr, Indent + 1);
+      If CondNodes[Idx].RightExpr >= 0 Then
+        DumpExprTree(CondNodes[Idx].RightExpr, Indent + 1);
+    End;
+    CND_CLASS : Begin
+      WriteLn(Prf, 'CLASS ', ClassCondName(CondNodes[Idx].ClassType));
+      If CondNodes[Idx].LeftExpr >= 0 Then
+        DumpExprTree(CondNodes[Idx].LeftExpr, Indent + 1);
+    End;
+    CND_SIGN : Begin
+      WriteLn(Prf, 'SIGN ', SignCondName(CondNodes[Idx].SignType));
+      If CondNodes[Idx].LeftExpr >= 0 Then
+        DumpExprTree(CondNodes[Idx].LeftExpr, Indent + 1);
+    End;
+    CND_CONDITION_NAME :
+      WriteLn(Prf, 'CONDITION-NAME ', CondNodes[Idx].CondName);
+    CND_AND : Begin
+      WriteLn(Prf, 'AND');
+      DumpCondition(CondNodes[Idx].LeftCond, Indent + 1);
+      DumpCondition(CondNodes[Idx].RightCond, Indent + 1);
+    End;
+    CND_OR : Begin
+      WriteLn(Prf, 'OR');
+      DumpCondition(CondNodes[Idx].LeftCond, Indent + 1);
+      DumpCondition(CondNodes[Idx].RightCond, Indent + 1);
+    End;
+    CND_NOT : Begin
+      WriteLn(Prf, 'NOT');
+      DumpCondition(CondNodes[Idx].LeftCond, Indent + 1);
+    End;
+    CND_TRUE  : WriteLn(Prf, 'TRUE');
+    CND_FALSE : WriteLn(Prf, 'FALSE');
+  Else
+    WriteLn(Prf, 'UNKNOWN');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpExprCondState : afficher un resume de l etat du parseur  }
+{ d expressions et de conditions                               }
+{ ------------------------------------------------------------ }
+
+Procedure DumpExprCondState;
+Begin
+  WriteLn('--- EXPRESSIONS & CONDITIONS ---');
+  WriteLn('  Expressions parsees   : ', EcExprParsed);
+  WriteLn('  Conditions parsees    : ', EcCondParsed);
+  WriteLn('  Noeuds expression     : ', ExprNodeCount);
+  WriteLn('  Noeuds condition      : ', CondNodeCount);
+  WriteLn('  Constantes figuratives: ', EcFigurativeCount);
+  WriteLn('  References indexees   : ', EcSubscriptCount);
+  WriteLn('  Sous-chaines          : ', EcSubstringCount);
+  WriteLn('  References qualifiees : ', EcQualifiedCount);
+  WriteLn('  Conditions abregees   : ', EcAbbreviatedCount);
+End;
+
+{ 10 fonctions accesseurs pour TODO 08                         }
+
+Function IsEcInitialized : Boolean;
+Begin
+  IsEcInitialized := EcInitialized;
+End;
+
+Function IsEcEmpty : Boolean;
+Begin
+  IsEcEmpty := (ExprNodeCount = 0) And (CondNodeCount = 0);
+End;
+
+Function GetEcExprParsed : Integer;
+Begin
+  GetEcExprParsed := EcExprParsed;
+End;
+
+Function GetEcStatus : TString;
+Begin
+  If Not EcInitialized Then
+    GetEcStatus := 'NON INITIALISE'
+  Else
+    GetEcStatus := 'EXPR=' + ItoSI(ExprNodeCount) +
+                   ' COND=' + ItoSI(CondNodeCount) +
+                   ' FIG=' + ItoSI(EcFigurativeCount) +
+                   ' SUB=' + ItoSI(EcSubscriptCount);
+End;
+
+Function GetEcCondParsed : Integer;
+Begin
+  GetEcCondParsed := EcCondParsed;
+End;
+
+Function GetEcExprNodeCount : Integer;
+Begin
+  GetEcExprNodeCount := ExprNodeCount;
+End;
+
+Function GetEcCondNodeCount : Integer;
+Begin
+  GetEcCondNodeCount := CondNodeCount;
+End;
+
+Function GetEcFigurativeCount : Integer;
+Begin
+  GetEcFigurativeCount := EcFigurativeCount;
+End;
+
+Function GetEcMaxNodes : Integer;
+Begin
+  GetEcMaxNodes := EXP_MAX_NODES;
+End;
+
+Function GetEcStateCount : Integer;
+Begin
+  GetEcStateCount := EcStateCount;
+End;
+
+
 { ------------------------------------------------------------ }
 { LexScanIdent : identificateur COBOL (lettres, chiffres, -)   }
 { Le tiret est permis sauf en debut/fin (WS-NOM, EMP-SALAIRE)  }
@@ -5885,6 +7092,7 @@ Begin
   SymInitialized := False;
   HlvInitialized := False;
   ParInitialized := False;
+  EcInitialized  := False;
 
   { Analyse des arguments de la ligne de commande }
   ParseArgs;
@@ -5906,6 +7114,9 @@ Begin
 
   { Initialiser le parseur DATA DIVISION }
   InitDataDivState;
+
+  { Initialiser le parseur d expressions et conditions }
+  InitExprCondState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;
