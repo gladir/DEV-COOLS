@@ -2947,6 +2947,8 @@ Var
   LastEntityIdx: Integer;
   CommentText: String;
   PBrace: Integer;
+  PrevComment: String;
+  PrevCommentLine: Integer;
 Begin
   Assign(F, FileName);
   {$I-}
@@ -2965,6 +2967,8 @@ Begin
   RecordFields := '';
   LastEntityLine := 0;
   LastEntityIdx := 0;
+  PrevComment := '';
+  PrevCommentLine := 0;
 
   While Not Eof(F) Do
   Begin
@@ -3048,6 +3052,21 @@ Begin
       InBraceComment := True;
       Continue;
     End;
+    (* Memoriser les commentaires mono-ligne pour les records/classes *)
+    If Not InRecord Then
+    Begin
+      PBrace := Pos('{', TrimmedLine);
+      If (PBrace > 0) And (Copy(TrimmedLine, PBrace, 2) <> '{$') Then
+      Begin
+        P := Pos('}', TrimmedLine);
+        If P > PBrace Then
+        Begin
+          PrevComment := TrimLine(Copy(TrimmedLine, PBrace + 1, P - PBrace - 1));
+          PrevCommentLine := LineNum;
+          Continue;
+        End;
+      End;
+    End;
 
     { Detecter unit }
     If Copy(UpperLine, 1, 5) = 'UNIT ' Then
@@ -3085,6 +3104,13 @@ Begin
         AddEntity(ENT_CLASS, Name, Name, FileName, LineNum, VIS_PUBLIC);
         InClass := True;
         CurrentClass := Name;
+        (* Associer le commentaire precedent si present *)
+        If (PrevComment <> '') And (PrevCommentLine = LineNum - 1) Then
+        Begin
+          Entities[EntityCount].BriefDesc := PrevComment;
+          Entities[EntityCount].DocComment := PrevComment;
+        End;
+        PrevComment := '';
       End;
       Continue;
     End;
@@ -3107,6 +3133,13 @@ Begin
         InRecord := True;
         CurrentRecordIdx := EntityCount;
         RecordFields := '';
+        (* Associer le commentaire precedent si present *)
+        If (PrevComment <> '') And (PrevCommentLine = LineNum - 1) Then
+        Begin
+          Entities[EntityCount].BriefDesc := PrevComment;
+          Entities[EntityCount].DocComment := PrevComment;
+        End;
+        PrevComment := '';
       End;
       Continue;
     End;
@@ -3154,6 +3187,13 @@ Begin
       Begin
         AddEntity(ENT_INTERFACE, Name, Name, FileName, LineNum, VIS_PUBLIC);
         InInterface := True;
+        (* Associer le commentaire precedent si present *)
+        If (PrevComment <> '') And (PrevCommentLine = LineNum - 1) Then
+        Begin
+          Entities[EntityCount].BriefDesc := PrevComment;
+          Entities[EntityCount].DocComment := PrevComment;
+        End;
+        PrevComment := '';
       End;
       Continue;
     End;
