@@ -8379,10 +8379,13 @@ Begin
   WriteLn('                    (equivalent a -D DOT_IMAGE_FORMAT=png)');
   WriteLn('  --jpeg, -jpg      Generer la sortie au format JPEG');
   WriteLn('                    (equivalent a -D DOT_IMAGE_FORMAT=jpeg)');
+  WriteLn('  --visio           Generer la sortie au format Microsoft Visio (VDX)');
+  WriteLn('                    (equivalent a -D DOT_IMAGE_FORMAT=visio)');
   WriteLn('  -D NOM=VALEUR     Definir une option de configuration');
   WriteLn('                    Ex: -D DOT_IMAGE_FORMAT=svg');
   WriteLn('                    Ex: -D DOT_IMAGE_FORMAT=png');
   WriteLn('                    Ex: -D DOT_IMAGE_FORMAT=jpeg');
+  WriteLn('                    Ex: -D DOT_IMAGE_FORMAT=visio');
   WriteLn;
   WriteLn('Exemples:');
   WriteLn('  doxygen                     Utiliser le Doxyfile du repertoire courant');
@@ -8395,9 +8398,11 @@ Begin
   WriteLn('  doxygen --png -INPUT test.c Generer la doc en PNG pour test.c');
   WriteLn('  doxygen --jpeg -INPUT test.c Generer la doc en JPEG pour test.c');
   WriteLn('  doxygen -jpg -INPUT test.c  Generer la doc en JPEG pour test.c');
+  WriteLn('  doxygen --visio -INPUT test.c Generer la doc en Visio pour test.c');
   WriteLn('  doxygen -D DOT_IMAGE_FORMAT=svg  Utiliser le format SVG');
   WriteLn('  doxygen -D DOT_IMAGE_FORMAT=png  Utiliser le format PNG');
   WriteLn('  doxygen -D DOT_IMAGE_FORMAT=jpeg Utiliser le format JPEG');
+  WriteLn('  doxygen -D DOT_IMAGE_FORMAT=visio Utiliser le format Visio');
   WriteLn;
   WriteLn('Langages supportes pour -INPUT:');
   WriteLn('  C (.c, .h), C++ (.cpp, .hpp), Pascal (.pas, .pp)');
@@ -8444,6 +8449,8 @@ Begin
   O.ShowHelp     := False;
   O.SvgOutput    := False;
   O.PngOutput    := False;
+  O.VdxOutput    := False;
+  O.JpegOutput   := False;
 End;
 
 Procedure ParseCommandLine(Var O: TOptions);
@@ -8550,6 +8557,11 @@ Begin
       { Extension DEV-COOLS : format de sortie JPEG }
       O.JpegOutput := True;
     End
+    Else If (Arg = '--visio') Then
+    Begin
+      { Extension DEV-COOLS : format de sortie Microsoft Visio (VDX) }
+      O.VdxOutput := True;
+    End
     Else If (UpperArg = '-D') Then
     Begin
       { Option de definition : -D NOM=VALEUR }
@@ -8557,7 +8569,7 @@ Begin
       Begin
         Inc(I);
         Arg := ParamStr(I);
-        { Verifier si c'est DOT_IMAGE_FORMAT=svg, png ou jpeg }
+        { Verifier si c'est DOT_IMAGE_FORMAT=svg, png, jpeg ou visio }
         If Pos('DOT_IMAGE_FORMAT=', UpStr(Arg)) = 1 Then
         Begin
           If UpStr(Copy(Arg, 18, Length(Arg))) = 'SVG' Then
@@ -8566,7 +8578,10 @@ Begin
             O.PngOutput := True
           Else If (UpStr(Copy(Arg, 18, Length(Arg))) = 'JPEG') Or
                   (UpStr(Copy(Arg, 18, Length(Arg))) = 'JPG') Then
-            O.JpegOutput := True;
+            O.JpegOutput := True
+          Else If (UpStr(Copy(Arg, 18, Length(Arg))) = 'VISIO') Or
+                  (UpStr(Copy(Arg, 18, Length(Arg))) = 'VDX') Then
+            O.VdxOutput := True;
         End;
         { On pourrait ajouter d'autres definitions ici }
       End
@@ -21327,6 +21342,14 @@ Begin
       SetConfigOption('DOT_IMAGE_FORMAT', 'jpeg', 0, False);
       If Not Opts.Quiet Then
         WriteLn('Format de sortie JPEG active');
+    End
+    { Appliquer l'option Visio si specifiee pour le mode InputFile }
+    Else If Opts.VdxOutput Then
+    Begin
+      SetConfigOption('HAVE_DOT', 'YES', 0, False);
+      SetConfigOption('DOT_IMAGE_FORMAT', 'vdx', 0, False);
+      If Not Opts.Quiet Then
+        WriteLn('Format de sortie Microsoft Visio (VDX) active');
     End;
     ProcessInputFile(Opts.InputFile);
     Halt(EXIT_OK);
@@ -21430,6 +21453,14 @@ Begin
     SetConfigOption('DOT_IMAGE_FORMAT', 'jpeg', 0, False);
     If Not Opts.Quiet Then
       WriteLn('Format de sortie JPEG active');
+  End
+  { Appliquer l'option Visio si specifiee en ligne de commande }
+  Else If Opts.VdxOutput Then
+  Begin
+    SetConfigOption('HAVE_DOT', 'YES', 0, False);
+    SetConfigOption('DOT_IMAGE_FORMAT', 'vdx', 0, False);
+    If Not Opts.Quiet Then
+      WriteLn('Format de sortie Microsoft Visio (VDX) active');
   End;
   
   { Mode expansion de configuration (TODO 06) }
