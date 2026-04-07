@@ -602,7 +602,7 @@
               fichiers temporaires Win32 (GetTempPathA/CreateFileA)
             10 fonctions accesseurs
 
-  TODO 20 - BIBLIOTHEQUE RUNTIME COBOL (CHAINES, BCD, E/S VIA WIN32) [A FAIRE]
+  TODO 20 - BIBLIOTHEQUE RUNTIME COBOL (CHAINES, BCD, E/S VIA WIN32) [IMPLEMENTE]
             Routines de conversion numerique :
               _COBRT_DISPLAY_TO_INT : PIC 9 DISPLAY -> registre 32 bits
               _COBRT_INT_TO_DISPLAY : registre 32 bits -> PIC 9 DISPLAY
@@ -1786,8 +1786,12 @@ Const
   KW_ORDER             = 246;  { ORDER }
   KW_END_SORT          = 247;  { END-SORT }
 
+  { Mots-cles pour TODO 20 : RUNTIME LIBRARY }
+  KW_FUNCTION          = 248;  { FUNCTION }
+  KW_STDCALL           = 249;  { STDCALL }
+
   { Nombre total de mots-cles definis }
-  KW_TOTAL_KEYWORDS    = 179;  { nombre approximatif de mots-cles }
+  KW_TOTAL_KEYWORDS    = 181;  { nombre approximatif de mots-cles }
 
 Var
   { Variables du module de mots-cles }
@@ -2044,6 +2048,8 @@ Begin
   Else If S = 'DOWN'              Then LookupKeyword := KW_DOWN
   Else If S = 'ORDER'             Then LookupKeyword := KW_ORDER
   Else If S = 'END-SORT'          Then LookupKeyword := KW_END_SORT
+  Else If S = 'FUNCTION'          Then LookupKeyword := KW_FUNCTION
+  Else If S = 'STDCALL'           Then LookupKeyword := KW_STDCALL
   Else LookupKeyword := KW_NONE;
 End;
 
@@ -2271,6 +2277,8 @@ Begin
     KW_DOWN              : KeywordName := 'DOWN';
     KW_ORDER             : KeywordName := 'ORDER';
     KW_END_SORT          : KeywordName := 'END-SORT';
+    KW_FUNCTION          : KeywordName := 'FUNCTION';
+    KW_STDCALL           : KeywordName := 'STDCALL';
   Else
     KeywordName := '?KW' + ItoSI(KW);
   End;
@@ -17030,9 +17038,1759 @@ Begin
   GetSrtStateCount := SrtStateCount;
 End;
 
-{ COBOL est insensible a la casse : tout est converti en       }
-{ majuscules dans CurTokStr                                     }
+{ ============================================================ }
+{ TODO 20 - BIBLIOTHEQUE RUNTIME COBOL                         }
+{           (CHAINES, BCD, E/S VIA WIN32)                      }
+{ ============================================================ }
+
+Const
+  { Categories de routines runtime }
+  RTL_CAT_NONE         = 0;   { pas de categorie                            }
+  RTL_CAT_CONVERSION   = 1;   { conversion numerique                        }
+  RTL_CAT_TRANSFER     = 2;   { transfert de donnees (MOVE)                 }
+  RTL_CAT_STRING       = 3;   { operations sur chaines                      }
+  RTL_CAT_IO           = 4;   { entrees/sorties                             }
+  RTL_CAT_ARITHMETIC   = 5;   { operations arithmetiques                    }
+
+  { Types de conversion numerique }
+  RTL_CONV_NONE        = 0;   { pas de conversion                           }
+  RTL_CONV_DISP_TO_INT = 1;   { DISPLAY -> entier 32 bits                   }
+  RTL_CONV_INT_TO_DISP = 2;   { entier 32 bits -> DISPLAY                   }
+  RTL_CONV_PACK_TO_INT = 3;   { COMP-3 BCD -> entier 32 bits                }
+  RTL_CONV_INT_TO_PACK = 4;   { entier 32 bits -> COMP-3 BCD                }
+  RTL_CONV_DISP_TO_EDT = 5;   { DISPLAY -> format edite                     }
+  RTL_CONV_VALIDATE    = 6;   { validation NUMERIC                          }
+
+  { Types de transfert }
+  RTL_XFER_NONE        = 0;   { pas de transfert                            }
+  RTL_XFER_ALPHA       = 1;   { transfert alphanumerique                    }
+  RTL_XFER_NUMERIC     = 2;   { transfert numerique                         }
+  RTL_XFER_CORR        = 3;   { MOVE CORRESPONDING                         }
+  RTL_XFER_INIT        = 4;   { INITIALIZE record                           }
+
+  { Types d E/S console }
+  RTL_IO_NONE          = 0;   { pas d E/S                                   }
+  RTL_IO_DISPLAY       = 1;   { DISPLAY sur console                         }
+  RTL_IO_ACCEPT        = 2;   { ACCEPT depuis console                       }
+  RTL_IO_ACCEPT_DATE   = 3;   { ACCEPT FROM DATE                            }
+  RTL_IO_FILE_OPEN     = 4;   { ouvrir fichier                              }
+  RTL_IO_FILE_CLOSE    = 5;   { fermer fichier                              }
+  RTL_IO_FILE_READ     = 6;   { lire enregistrement                         }
+  RTL_IO_FILE_WRITE    = 7;   { ecrire enregistrement                       }
+
+  { Limites }
+  RTL_MAX_ROUTINES     = 64;  { nombre max de routines runtime referenciees }
+  RTL_MAX_FILE_HANDLES = 16;  { nombre max de handles fichier Win32         }
+  RTL_MAX_PARAMS       = 8;   { nombre max de parametres par routine        }
+  RTL_MAX_EDIT_SIZE    = 64;  { taille max d un champ edite                 }
+  RTL_BUFFER_SIZE      = 4096;{ taille du buffer E/S console                }
+
+Type
+  TRtlRoutineEntry = Record
+    Name       : TString;     { nom de la routine (_COBRT_xxx)              }
+    Category   : Integer;     { RTL_CAT_* categorie                         }
+    ParamCount : Integer;     { nombre de parametres                        }
+    EmitDone   : Boolean;     { True si le code a ete emis                  }
+    RefCount   : Integer;     { nombre de references                        }
+  End;
+
+Var
+  RtlInitialized        : Boolean;   { True si InitRuntimeState appele     }
+  RtlStateCount         : Integer;   { compteur d etat general             }
+  RtlLabelNum           : Integer;   { compteur de labels internes         }
+  RtlRoutines           : Array[0..RTL_MAX_ROUTINES-1] Of TRtlRoutineEntry;
+  RtlRoutineCount       : Integer;   { nombre de routines enregistrees     }
+  RtlConvDispToIntCount : Integer;   { appels _COBRT_DISPLAY_TO_INT        }
+  RtlConvIntToDispCount : Integer;   { appels _COBRT_INT_TO_DISPLAY        }
+  RtlConvPackToIntCount : Integer;   { appels _COBRT_PACK_TO_INT           }
+  RtlConvIntToPackCount : Integer;   { appels _COBRT_INT_TO_PACK           }
+  RtlConvDispToEdtCount : Integer;   { appels _COBRT_DISPLAY_TO_EDITED     }
+  RtlConvValidateCount  : Integer;   { appels _COBRT_NUMERIC_VALIDATE      }
+  RtlXferAlphaCount     : Integer;   { appels _COBRT_MOVE_ALPHA            }
+  RtlXferNumericCount   : Integer;   { appels _COBRT_MOVE_NUMERIC          }
+  RtlXferCorrCount      : Integer;   { appels _COBRT_MOVE_CORRESPONDING    }
+  RtlXferInitCount      : Integer;   { appels _COBRT_INITIALIZE            }
+  RtlStrStringCount     : Integer;   { appels _COBRT_STRING_OP             }
+  RtlStrUnstringCount   : Integer;   { appels _COBRT_UNSTRING_OP           }
+  RtlStrInspTallyCount  : Integer;   { appels _COBRT_INSPECT_TALLY         }
+  RtlStrInspReplCount   : Integer;   { appels _COBRT_INSPECT_REPLACE       }
+  RtlStrInspConvCount   : Integer;   { appels _COBRT_INSPECT_CONVERT       }
+  RtlIoDisplayCount     : Integer;   { appels _COBRT_DISPLAY               }
+  RtlIoAcceptCount      : Integer;   { appels _COBRT_ACCEPT                }
+  RtlIoAcceptDateCount  : Integer;   { appels _COBRT_ACCEPT_DATE           }
+  RtlIoFileOpenCount    : Integer;   { appels _COBRT_FILE_OPEN             }
+  RtlIoFileCloseCount   : Integer;   { appels _COBRT_FILE_CLOSE            }
+  RtlIoFileReadCount    : Integer;   { appels _COBRT_FILE_READ             }
+  RtlIoFileWriteCount   : Integer;   { appels _COBRT_FILE_WRITE            }
+  RtlArithRoundCount    : Integer;   { appels _COBRT_ADD_ROUNDED           }
+  RtlArithSizeErrCount  : Integer;   { appels _COBRT_CHECK_SIZE_ERROR      }
+  RtlArithPowerCount    : Integer;   { appels _COBRT_POWER                 }
+  RtlTotalGenerated     : Integer;   { total d instructions generees       }
+
 { ------------------------------------------------------------ }
+{ InitRuntimeState : initialiser l etat du module runtime       }
+{ ------------------------------------------------------------ }
+
+Procedure InitRuntimeState;
+Var I : Integer;
+Begin
+  RtlInitialized        := True;
+  RtlStateCount         := 0;
+  RtlLabelNum           := 0;
+  RtlRoutineCount       := 0;
+  RtlConvDispToIntCount := 0;
+  RtlConvIntToDispCount := 0;
+  RtlConvPackToIntCount := 0;
+  RtlConvIntToPackCount := 0;
+  RtlConvDispToEdtCount := 0;
+  RtlConvValidateCount  := 0;
+  RtlXferAlphaCount     := 0;
+  RtlXferNumericCount   := 0;
+  RtlXferCorrCount      := 0;
+  RtlXferInitCount      := 0;
+  RtlStrStringCount     := 0;
+  RtlStrUnstringCount   := 0;
+  RtlStrInspTallyCount  := 0;
+  RtlStrInspReplCount   := 0;
+  RtlStrInspConvCount   := 0;
+  RtlIoDisplayCount     := 0;
+  RtlIoAcceptCount      := 0;
+  RtlIoAcceptDateCount  := 0;
+  RtlIoFileOpenCount    := 0;
+  RtlIoFileCloseCount   := 0;
+  RtlIoFileReadCount    := 0;
+  RtlIoFileWriteCount   := 0;
+  RtlArithRoundCount    := 0;
+  RtlArithSizeErrCount  := 0;
+  RtlArithPowerCount    := 0;
+  RtlTotalGenerated     := 0;
+  For I := 0 To RTL_MAX_ROUTINES - 1 Do Begin
+    RtlRoutines[I].Name       := '';
+    RtlRoutines[I].Category   := RTL_CAT_NONE;
+    RtlRoutines[I].ParamCount := 0;
+    RtlRoutines[I].EmitDone   := False;
+    RtlRoutines[I].RefCount   := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtlLabel : genere un label unique pour le module runtime    }
+{ ------------------------------------------------------------ }
+
+Function GenRtlLabel : TString;
+Begin
+  Inc(RtlLabelNum);
+  GenRtlLabel := '_COBRTL_L' + ItoSI(RtlLabelNum);
+End;
+
+{ ------------------------------------------------------------ }
+{ RtlCategoryName : nom de la categorie de routine              }
+{ ------------------------------------------------------------ }
+
+Function RtlCategoryName(Cat : Integer) : TString;
+Begin
+  Case Cat Of
+    RTL_CAT_NONE       : RtlCategoryName := 'NONE';
+    RTL_CAT_CONVERSION : RtlCategoryName := 'CONVERSION';
+    RTL_CAT_TRANSFER   : RtlCategoryName := 'TRANSFER';
+    RTL_CAT_STRING     : RtlCategoryName := 'STRING';
+    RTL_CAT_IO         : RtlCategoryName := 'IO';
+    RTL_CAT_ARITHMETIC : RtlCategoryName := 'ARITHMETIC';
+  Else
+    RtlCategoryName := '?CAT' + ItoSI(Cat);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RtlConvTypeName : nom du type de conversion numerique         }
+{ ------------------------------------------------------------ }
+
+Function RtlConvTypeName(CT : Integer) : TString;
+Begin
+  Case CT Of
+    RTL_CONV_NONE        : RtlConvTypeName := 'NONE';
+    RTL_CONV_DISP_TO_INT : RtlConvTypeName := 'DISPLAY-TO-INT';
+    RTL_CONV_INT_TO_DISP : RtlConvTypeName := 'INT-TO-DISPLAY';
+    RTL_CONV_PACK_TO_INT : RtlConvTypeName := 'PACK-TO-INT';
+    RTL_CONV_INT_TO_PACK : RtlConvTypeName := 'INT-TO-PACK';
+    RTL_CONV_DISP_TO_EDT : RtlConvTypeName := 'DISPLAY-TO-EDITED';
+    RTL_CONV_VALIDATE    : RtlConvTypeName := 'NUMERIC-VALIDATE';
+  Else
+    RtlConvTypeName := '?CONV' + ItoSI(CT);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RtlXferTypeName : nom du type de transfert                    }
+{ ------------------------------------------------------------ }
+
+Function RtlXferTypeName(XT : Integer) : TString;
+Begin
+  Case XT Of
+    RTL_XFER_NONE    : RtlXferTypeName := 'NONE';
+    RTL_XFER_ALPHA   : RtlXferTypeName := 'ALPHA';
+    RTL_XFER_NUMERIC : RtlXferTypeName := 'NUMERIC';
+    RTL_XFER_CORR    : RtlXferTypeName := 'CORRESPONDING';
+    RTL_XFER_INIT    : RtlXferTypeName := 'INITIALIZE';
+  Else
+    RtlXferTypeName := '?XFER' + ItoSI(XT);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RtlIoTypeName : nom du type d E/S                             }
+{ ------------------------------------------------------------ }
+
+Function RtlIoTypeName(IT : Integer) : TString;
+Begin
+  Case IT Of
+    RTL_IO_NONE       : RtlIoTypeName := 'NONE';
+    RTL_IO_DISPLAY    : RtlIoTypeName := 'DISPLAY';
+    RTL_IO_ACCEPT     : RtlIoTypeName := 'ACCEPT';
+    RTL_IO_ACCEPT_DATE: RtlIoTypeName := 'ACCEPT-DATE';
+    RTL_IO_FILE_OPEN  : RtlIoTypeName := 'FILE-OPEN';
+    RTL_IO_FILE_CLOSE : RtlIoTypeName := 'FILE-CLOSE';
+    RTL_IO_FILE_READ  : RtlIoTypeName := 'FILE-READ';
+    RTL_IO_FILE_WRITE : RtlIoTypeName := 'FILE-WRITE';
+  Else
+    RtlIoTypeName := '?IO' + ItoSI(IT);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindRtlRoutine : cherche une routine runtime par nom          }
+{ Retourne l index dans RtlRoutines ou -1 si non trouve         }
+{ ------------------------------------------------------------ }
+
+Function FindRtlRoutine(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  FindRtlRoutine := -1;
+  For I := 0 To RtlRoutineCount - 1 Do
+    If RtlRoutines[I].Name = Name Then Begin
+      FindRtlRoutine := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ AddRtlRoutine : ajoute une routine runtime dans la table      }
+{ Retourne l index de la routine ajoutee                        }
+{ ------------------------------------------------------------ }
+
+Function AddRtlRoutine(Const Name : TString; Cat : Integer;
+                       Params : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  { Verifier si elle existe deja }
+  Idx := FindRtlRoutine(Name);
+  If Idx >= 0 Then Begin
+    Inc(RtlRoutines[Idx].RefCount);
+    AddRtlRoutine := Idx;
+    Exit;
+  End;
+  If RtlRoutineCount >= RTL_MAX_ROUTINES Then Begin
+    WarnMsg('Nombre maximal de routines runtime atteint (' +
+            ItoSI(RTL_MAX_ROUTINES) + ')');
+    AddRtlRoutine := -1;
+    Exit;
+  End;
+  RtlRoutines[RtlRoutineCount].Name       := Name;
+  RtlRoutines[RtlRoutineCount].Category   := Cat;
+  RtlRoutines[RtlRoutineCount].ParamCount := Params;
+  RtlRoutines[RtlRoutineCount].EmitDone   := False;
+  RtlRoutines[RtlRoutineCount].RefCount   := 1;
+  AddRtlRoutine := RtlRoutineCount;
+  Inc(RtlRoutineCount);
+  Inc(RtlStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlDisplayToInt : emettre _COBRT_DISPLAY_TO_INT           }
+{ Convertit un champ PIC 9 DISPLAY (ASCII) en registre EAX     }
+{ ESI = adresse source, ECX = nombre de chiffres                }
+{ Retour : EAX = valeur entiere, CF si erreur                   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlDisplayToInt;
+Var LblLoop, LblDone, LblErr : TString;
+Begin
+  LblLoop := GenRtlLabel;
+  LblDone := GenRtlLabel;
+  LblErr  := GenRtlLabel;
+  WriteLn('_COBRT_DISPLAY_TO_INT:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH ESI');
+  WriteLn('    XOR EAX, EAX                 ; resultat = 0');
+  WriteLn('    XOR EBX, EBX');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    MOVZX EBX, BYTE [ESI]');
+  WriteLn('    SUB EBX, 30h                  ; ASCII ''0'' = 30h');
+  WriteLn('    CMP EBX, 9');
+  WriteLn('    JA ', LblErr);
+  WriteLn('    IMUL EAX, 10');
+  WriteLn('    ADD EAX, EBX');
+  WriteLn('    INC ESI');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblErr, ':');
+  WriteLn('    STC                            ; erreur : caractere non numerique');
+  WriteLn('    JMP ', LblDone);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 22);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlIntToDisplay : emettre _COBRT_INT_TO_DISPLAY           }
+{ Convertit un registre EAX en champ PIC 9 DISPLAY (ASCII)     }
+{ EAX = valeur, EDI = adresse destination, ECX = nombre digits  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlIntToDisplay;
+Var LblLoop, LblDone, LblPad : TString;
+Begin
+  LblLoop := GenRtlLabel;
+  LblDone := GenRtlLabel;
+  LblPad  := GenRtlLabel;
+  WriteLn('_COBRT_INT_TO_DISPLAY:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH EDX');
+  WriteLn('    PUSH EDI');
+  WriteLn('    ; Positionner EDI a la fin du champ');
+  WriteLn('    ADD EDI, ECX');
+  WriteLn('    DEC EDI');
+  WriteLn('    MOV EBX, 10');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    XOR EDX, EDX');
+  WriteLn('    DIV EBX                       ; EAX / 10, reste dans EDX');
+  WriteLn('    ADD DL, 30h                   ; convertir en ASCII');
+  WriteLn('    MOV [EDI], DL');
+  WriteLn('    DEC EDI');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP EDI');
+  WriteLn('    POP EDX');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 22);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlPackToInt : emettre _COBRT_PACK_TO_INT                 }
+{ Convertit un champ COMP-3 (BCD compacte) en entier EAX       }
+{ ESI = adresse source, ECX = nombre d octets BCD               }
+{ Retour : EAX = valeur entiere                                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlPackToInt;
+Var LblLoop, LblDone, LblSign : TString;
+Begin
+  LblLoop := GenRtlLabel;
+  LblDone := GenRtlLabel;
+  LblSign := GenRtlLabel;
+  WriteLn('_COBRT_PACK_TO_INT:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH EDX');
+  WriteLn('    PUSH ESI');
+  WriteLn('    XOR EAX, EAX                 ; resultat = 0');
+  WriteLn('    XOR EBX, EBX');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 1');
+  WriteLn('    JLE ', LblSign);
+  WriteLn('    MOVZX EBX, BYTE [ESI]');
+  WriteLn('    MOV EDX, EBX');
+  WriteLn('    SHR EDX, 4                    ; quartet haut');
+  WriteLn('    IMUL EAX, 10');
+  WriteLn('    ADD EAX, EDX');
+  WriteLn('    AND EBX, 0Fh                  ; quartet bas');
+  WriteLn('    IMUL EAX, 10');
+  WriteLn('    ADD EAX, EBX');
+  WriteLn('    INC ESI');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblSign, ':');
+  WriteLn('    ; Dernier octet : quartet haut = dernier chiffre, bas = signe');
+  WriteLn('    MOVZX EBX, BYTE [ESI]');
+  WriteLn('    MOV EDX, EBX');
+  WriteLn('    SHR EDX, 4');
+  WriteLn('    IMUL EAX, 10');
+  WriteLn('    ADD EAX, EDX');
+  WriteLn('    AND EBX, 0Fh');
+  WriteLn('    ; Signe : 0Dh = negatif, 0Ch = positif, 0Fh = non signe');
+  WriteLn('    CMP BL, 0Dh');
+  WriteLn('    JNE ', LblDone);
+  WriteLn('    NEG EAX');
+  WriteLn(LblDone, ':');
+  WriteLn('    POP ESI');
+  WriteLn('    POP EDX');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 35);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlIntToPack : emettre _COBRT_INT_TO_PACK                 }
+{ Convertit un entier EAX en champ COMP-3 (BCD compacte)       }
+{ EAX = valeur, EDI = adresse destination, ECX = nombre octets  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlIntToPack;
+Var LblLoop, LblDone, LblPos : TString;
+Begin
+  LblLoop := GenRtlLabel;
+  LblDone := GenRtlLabel;
+  LblPos  := GenRtlLabel;
+  WriteLn('_COBRT_INT_TO_PACK:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH EDX');
+  WriteLn('    PUSH EDI');
+  WriteLn('    ; Determiner le signe');
+  WriteLn('    MOV EBX, 0Ch                  ; signe positif par defaut');
+  WriteLn('    CMP EAX, 0');
+  WriteLn('    JGE ', LblPos);
+  WriteLn('    NEG EAX');
+  WriteLn('    MOV EBX, 0Dh                  ; signe negatif');
+  WriteLn(LblPos, ':');
+  WriteLn('    ; Positionner a la fin du champ BCD');
+  WriteLn('    ADD EDI, ECX');
+  WriteLn('    DEC EDI');
+  WriteLn('    ; Dernier octet : dernier chiffre + signe');
+  WriteLn('    PUSH EBX                      ; sauvegarder signe');
+  WriteLn('    XOR EDX, EDX');
+  WriteLn('    MOV EBX, 10');
+  WriteLn('    DIV EBX');
+  WriteLn('    SHL DL, 4                     ; dernier chiffre en quartet haut');
+  WriteLn('    POP EBX');
+  WriteLn('    OR DL, BL                     ; combiner avec signe');
+  WriteLn('    MOV [EDI], DL');
+  WriteLn('    DEC EDI');
+  WriteLn('    DEC ECX');
+  WriteLn('    MOV EBX, 10');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    XOR EDX, EDX');
+  WriteLn('    DIV EBX                       ; EAX / 10');
+  WriteLn('    PUSH EDX                      ; chiffre bas');
+  WriteLn('    XOR EDX, EDX');
+  WriteLn('    DIV EBX                       ; EAX / 10');
+  WriteLn('    SHL DL, 4                     ; chiffre haut');
+  WriteLn('    POP ECX');
+  WriteLn('    OR DL, CL                     ; combiner les deux quartets');
+  WriteLn('    MOV [EDI], DL');
+  WriteLn('    DEC EDI');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP EDI');
+  WriteLn('    POP EDX');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 42);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlDisplayToEdited : emettre _COBRT_DISPLAY_TO_EDITED     }
+{ Convertit un champ DISPLAY en format edite (Z, *, $, etc.)   }
+{ ESI = source, EDI = dest, ECX = taille, EDX = pic edite addr  }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlDisplayToEdited;
+Var LblLoop, LblDone, LblZero, LblCopy, LblStar, LblSuppress : TString;
+Begin
+  LblLoop     := GenRtlLabel;
+  LblDone     := GenRtlLabel;
+  LblZero     := GenRtlLabel;
+  LblCopy     := GenRtlLabel;
+  LblStar     := GenRtlLabel;
+  LblSuppress := GenRtlLabel;
+  WriteLn('_COBRT_DISPLAY_TO_EDITED:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH ESI');
+  WriteLn('    PUSH EDI');
+  WriteLn('    XOR EBX, EBX                 ; flag zero-suppress actif');
+  WriteLn('    MOV EBX, 1                    ; commencer en mode suppression');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    MOVZX EAX, BYTE [EDX]        ; lire caractere du PIC edite');
+  WriteLn('    CMP AL, 5Ah                   ; Z = zero-suppress');
+  WriteLn('    JE ', LblSuppress);
+  WriteLn('    CMP AL, 2Ah                   ; * = check-protect');
+  WriteLn('    JE ', LblStar);
+  WriteLn('    JMP ', LblCopy);
+  WriteLn(LblSuppress, ':');
+  WriteLn('    MOVZX EAX, BYTE [ESI]');
+  WriteLn('    CMP AL, 30h                   ; est-ce un zero ?');
+  WriteLn('    JNE ', LblZero);
+  WriteLn('    CMP EBX, 1                    ; mode suppression actif ?');
+  WriteLn('    JNE ', LblCopy);
+  WriteLn('    MOV BYTE [EDI], 20h           ; remplacer par espace');
+  WriteLn('    JMP ', LblCopy);
+  WriteLn(LblZero, ':');
+  WriteLn('    XOR EBX, EBX                  ; desactiver zero-suppress');
+  WriteLn('    MOV AL, [ESI]');
+  WriteLn('    MOV [EDI], AL');
+  WriteLn('    JMP ', LblCopy);
+  WriteLn(LblStar, ':');
+  WriteLn('    MOVZX EAX, BYTE [ESI]');
+  WriteLn('    CMP AL, 30h');
+  WriteLn('    JNE ', LblZero);
+  WriteLn('    MOV BYTE [EDI], 2Ah           ; remplacer par *');
+  WriteLn(LblCopy, ':');
+  WriteLn('    INC ESI');
+  WriteLn('    INC EDI');
+  WriteLn('    INC EDX');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP EDI');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 40);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlNumericValidate : emettre _COBRT_NUMERIC_VALIDATE      }
+{ Verifie si un champ contient uniquement des chiffres          }
+{ ESI = adresse, ECX = taille                                   }
+{ Retour : EAX = 1 si valide, 0 sinon                          }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlNumericValidate;
+Var LblLoop, LblDone, LblFail : TString;
+Begin
+  LblLoop := GenRtlLabel;
+  LblDone := GenRtlLabel;
+  LblFail := GenRtlLabel;
+  WriteLn('_COBRT_NUMERIC_VALIDATE:');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH ESI');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    MOVZX EAX, BYTE [ESI]');
+  WriteLn('    CMP AL, 30h                   ; ''0''');
+  WriteLn('    JB ', LblFail);
+  WriteLn('    CMP AL, 39h                   ; ''9''');
+  WriteLn('    JA ', LblFail);
+  WriteLn('    INC ESI');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    MOV EAX, 1                    ; valide');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    RET');
+  WriteLn(LblFail, ':');
+  WriteLn('    XOR EAX, EAX                  ; invalide');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 20);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlMoveAlpha : emettre _COBRT_MOVE_ALPHA                  }
+{ Transfert alphanumerique : cadrage gauche, padding espaces    }
+{ ESI = source, ECX = taille source, EDI = dest, EDX = taille d }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlMoveAlpha;
+Var LblCopy, LblPad, LblDone : TString;
+Begin
+  LblCopy := GenRtlLabel;
+  LblPad  := GenRtlLabel;
+  LblDone := GenRtlLabel;
+  WriteLn('_COBRT_MOVE_ALPHA:');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH ESI');
+  WriteLn('    PUSH EDI');
+  WriteLn('    ; Copier min(source, dest) caracteres');
+  WriteLn('    CMP ECX, EDX');
+  WriteLn('    JLE ', LblCopy);
+  WriteLn('    MOV ECX, EDX                  ; tronquer si source > dest');
+  WriteLn(LblCopy, ':');
+  WriteLn('    PUSH ECX');
+  WriteLn('    REP MOVSB                     ; copier les caracteres');
+  WriteLn('    POP ECX');
+  WriteLn('    ; Padding avec des espaces si dest > source');
+  WriteLn('    SUB EDX, ECX');
+  WriteLn('    CMP EDX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    MOV ECX, EDX');
+  WriteLn('    MOV AL, 20h                   ; espace');
+  WriteLn('    REP STOSB');
+  WriteLn(LblDone, ':');
+  WriteLn('    POP EDI');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 20);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlMoveNumeric : emettre _COBRT_MOVE_NUMERIC              }
+{ Transfert numerique : alignement decimal, zero-fill           }
+{ ESI = source, ECX = digits src, EDI = dest, EDX = digits dst  }
+{ Pile : [ESP+4] = decimales src, [ESP+8] = decimales dst       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlMoveNumeric;
+Var LblDone : TString;
+Begin
+  LblDone := GenRtlLabel;
+  WriteLn('_COBRT_MOVE_NUMERIC:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH ESI');
+  WriteLn('    PUSH EDI');
+  WriteLn('    ; Remplir la destination avec des zeros');
+  WriteLn('    PUSH ECX');
+  WriteLn('    MOV ECX, EDX');
+  WriteLn('    MOV AL, 30h                   ; zero ASCII');
+  WriteLn('    REP STOSB');
+  WriteLn('    POP ECX');
+  WriteLn('    ; Repositionner EDI');
+  WriteLn('    SUB EDI, EDX');
+  WriteLn('    ; Copier les chiffres avec alignement');
+  WriteLn('    ; (simplifie : copie directe byte par byte)');
+  WriteLn('    CMP ECX, EDX');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    MOV ECX, EDX');
+  WriteLn(LblDone, ':');
+  WriteLn('    REP MOVSB');
+  WriteLn('    POP EDI');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 20);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlMoveCorresponding : emettre _COBRT_MOVE_CORRESPONDING  }
+{ Effectue un MOVE CORRESPONDING entre deux groupes             }
+{ ESI = adresse table de correspondance, ECX = nombre de paires }
+{ Chaque paire : (offset_src, offset_dst, taille)               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlMoveCorresponding;
+Var LblLoop, LblDone : TString;
+Begin
+  LblLoop := GenRtlLabel;
+  LblDone := GenRtlLabel;
+  WriteLn('_COBRT_MOVE_CORRESPONDING:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH EDX');
+  WriteLn('    PUSH ESI');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    ; Lire paire (offset_src, offset_dst, taille)');
+  WriteLn('    MOV EAX, [ESI]               ; offset source');
+  WriteLn('    MOV EBX, [ESI + 4]           ; offset destination');
+  WriteLn('    MOV EDX, [ESI + 8]           ; taille');
+  WriteLn('    ADD ESI, 12');
+  WriteLn('    ; Effectuer la copie');
+  WriteLn('    PUSH ESI');
+  WriteLn('    PUSH ECX');
+  WriteLn('    MOV ESI, EAX');
+  WriteLn('    MOV EDI, EBX');
+  WriteLn('    MOV ECX, EDX');
+  WriteLn('    REP MOVSB');
+  WriteLn('    POP ECX');
+  WriteLn('    POP ESI');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP ESI');
+  WriteLn('    POP EDX');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 25);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlInitialize : emettre _COBRT_INITIALIZE                 }
+{ Initialise un record : espaces pour alpha, zeros pour numeric }
+{ ESI = table de description (type, offset, taille), ECX = nb   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlInitialize;
+Var LblLoop, LblDone, LblAlpha, LblNum, LblNext : TString;
+Begin
+  LblLoop  := GenRtlLabel;
+  LblDone  := GenRtlLabel;
+  LblAlpha := GenRtlLabel;
+  LblNum   := GenRtlLabel;
+  LblNext  := GenRtlLabel;
+  WriteLn('_COBRT_INITIALIZE:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH ESI');
+  WriteLn('    PUSH EDI');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    MOV EAX, [ESI]               ; type (0=alpha, 1=numeric)');
+  WriteLn('    MOV EDI, [ESI + 4]           ; offset');
+  WriteLn('    MOV EBX, [ESI + 8]           ; taille');
+  WriteLn('    ADD ESI, 12');
+  WriteLn('    CMP EAX, 0');
+  WriteLn('    JE ', LblAlpha);
+  WriteLn('    JMP ', LblNum);
+  WriteLn(LblAlpha, ':');
+  WriteLn('    PUSH ECX');
+  WriteLn('    MOV ECX, EBX');
+  WriteLn('    MOV AL, 20h                   ; espace');
+  WriteLn('    REP STOSB');
+  WriteLn('    POP ECX');
+  WriteLn('    JMP ', LblNext);
+  WriteLn(LblNum, ':');
+  WriteLn('    PUSH ECX');
+  WriteLn('    MOV ECX, EBX');
+  WriteLn('    MOV AL, 30h                   ; zero');
+  WriteLn('    REP STOSB');
+  WriteLn('    POP ECX');
+  WriteLn(LblNext, ':');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP EDI');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 30);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlStringOp : emettre _COBRT_STRING_OP                    }
+{ Operation STRING : concatenation avec delimiteurs             }
+{ ESI = table de sources, EDI = destination, ECX = nb sources   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlStringOp;
+Var LblLoop, LblDone, LblInner, LblCheck : TString;
+Begin
+  LblLoop  := GenRtlLabel;
+  LblDone  := GenRtlLabel;
+  LblInner := GenRtlLabel;
+  LblCheck := GenRtlLabel;
+  WriteLn('_COBRT_STRING_OP:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH EDX');
+  WriteLn('    PUSH ESI');
+  WriteLn('    PUSH EDI');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    ; Lire entree (adresse source, taille, delimiteur)');
+  WriteLn('    MOV EAX, [ESI]               ; adresse source');
+  WriteLn('    MOV EBX, [ESI + 4]           ; taille');
+  WriteLn('    MOV EDX, [ESI + 8]           ; delimiteur (0 = pas de delim)');
+  WriteLn('    ADD ESI, 12');
+  WriteLn('    ; Copier la source dans la destination');
+  WriteLn('    PUSH ESI');
+  WriteLn('    PUSH ECX');
+  WriteLn('    MOV ESI, EAX');
+  WriteLn('    MOV ECX, EBX');
+  WriteLn(LblInner, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblCheck);
+  WriteLn('    LODSB');
+  WriteLn('    CMP EDX, 0');
+  WriteLn('    JE ', LblCheck);
+  WriteLn('    CMP AL, DL                   ; comparer au delimiteur');
+  WriteLn('    JE ', LblCheck);
+  WriteLn('    STOSB');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblInner);
+  WriteLn(LblCheck, ':');
+  WriteLn('    POP ECX');
+  WriteLn('    POP ESI');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP EDI');
+  WriteLn('    POP ESI');
+  WriteLn('    POP EDX');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 35);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlUnstringOp : emettre _COBRT_UNSTRING_OP                }
+{ Operation UNSTRING : decoupe d une chaine avec delimiteurs    }
+{ ESI = source, ECX = taille, EDI = table de destinations       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlUnstringOp;
+Var LblLoop, LblDone, LblDelim, LblCopy : TString;
+Begin
+  LblLoop  := GenRtlLabel;
+  LblDone  := GenRtlLabel;
+  LblDelim := GenRtlLabel;
+  LblCopy  := GenRtlLabel;
+  WriteLn('_COBRT_UNSTRING_OP:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH ESI');
+  WriteLn('    PUSH EDI');
+  WriteLn('    ; Parcourir la source et decouper');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    LODSB');
+  WriteLn('    DEC ECX');
+  WriteLn('    ; Verifier si c est un delimiteur');
+  WriteLn('    CMP AL, [EDI + 4]            ; delimiteur de cette dest');
+  WriteLn('    JE ', LblDelim);
+  WriteLn(LblCopy, ':');
+  WriteLn('    ; Copier dans la destination courante');
+  WriteLn('    MOV EBX, [EDI]               ; adresse destination');
+  WriteLn('    MOV [EBX], AL');
+  WriteLn('    INC DWORD [EDI]');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDelim, ':');
+  WriteLn('    ; Passer a la destination suivante');
+  WriteLn('    ADD EDI, 8');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP EDI');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 25);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlInspectTally : emettre _COBRT_INSPECT_TALLY            }
+{ INSPECT TALLYING : compte les occurrences                     }
+{ ESI = source, ECX = taille, EBX = char/str a compter          }
+{ Retour : EAX = nombre d occurrences                           }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlInspectTally;
+Var LblLoop, LblDone, LblNoMatch : TString;
+Begin
+  LblLoop    := GenRtlLabel;
+  LblDone    := GenRtlLabel;
+  LblNoMatch := GenRtlLabel;
+  WriteLn('_COBRT_INSPECT_TALLY:');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH ESI');
+  WriteLn('    XOR EAX, EAX                 ; compteur = 0');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    MOVZX EDX, BYTE [ESI]');
+  WriteLn('    CMP DL, BL                   ; comparer au caractere cherche');
+  WriteLn('    JNE ', LblNoMatch);
+  WriteLn('    INC EAX');
+  WriteLn(LblNoMatch, ':');
+  WriteLn('    INC ESI');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 16);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlInspectReplace : emettre _COBRT_INSPECT_REPLACE        }
+{ INSPECT REPLACING : remplace les occurrences                  }
+{ ESI = source/dest, ECX = taille, BL = chercher, BH = remplacer}
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlInspectReplace;
+Var LblLoop, LblDone, LblNoMatch : TString;
+Begin
+  LblLoop    := GenRtlLabel;
+  LblDone    := GenRtlLabel;
+  LblNoMatch := GenRtlLabel;
+  WriteLn('_COBRT_INSPECT_REPLACE:');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH ESI');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    CMP BYTE [ESI], BL           ; comparer');
+  WriteLn('    JNE ', LblNoMatch);
+  WriteLn('    MOV BYTE [ESI], BH           ; remplacer');
+  WriteLn(LblNoMatch, ':');
+  WriteLn('    INC ESI');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 14);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlInspectConvert : emettre _COBRT_INSPECT_CONVERT        }
+{ INSPECT CONVERTING : conversion caractere par caractere       }
+{ ESI = source/dest, ECX = taille, EDX = table de conversion    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlInspectConvert;
+Var LblLoop, LblDone : TString;
+Begin
+  LblLoop := GenRtlLabel;
+  LblDone := GenRtlLabel;
+  WriteLn('_COBRT_INSPECT_CONVERT:');
+  WriteLn('    PUSH ECX');
+  WriteLn('    PUSH ESI');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    MOVZX EAX, BYTE [ESI]');
+  WriteLn('    MOV AL, [EDX + EAX]          ; table de conversion');
+  WriteLn('    MOV [ESI], AL');
+  WriteLn('    INC ESI');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblDone, ':');
+  WriteLn('    POP ESI');
+  WriteLn('    POP ECX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 13);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlDisplay : emettre _COBRT_DISPLAY                       }
+{ Affiche une chaine sur la console via WriteFile(GetStdHandle) }
+{ ESI = adresse du texte, ECX = longueur                        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlDisplay;
+Begin
+  WriteLn('_COBRT_DISPLAY:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    ; GetStdHandle(-11) pour STD_OUTPUT_HANDLE');
+  WriteLn('    PUSH DWORD 0FFFFFFF5h        ; STD_OUTPUT_HANDLE = -11');
+  WriteLn('    CALL _GetStdHandle@4');
+  WriteLn('    MOV EBX, EAX                  ; handle dans EBX');
+  WriteLn('    ; WriteFile(handle, buffer, length, &written, NULL)');
+  WriteLn('    PUSH DWORD 0                  ; lpOverlapped = NULL');
+  WriteLn('    SUB ESP, 4                    ; espace pour lpNumberOfBytesWritten');
+  WriteLn('    MOV EDX, ESP');
+  WriteLn('    PUSH EDX');
+  WriteLn('    PUSH ECX                      ; nNumberOfBytesToWrite');
+  WriteLn('    PUSH ESI                      ; lpBuffer');
+  WriteLn('    PUSH EBX                      ; hFile');
+  WriteLn('    CALL _WriteFile@20');
+  WriteLn('    ADD ESP, 4                    ; liberer espace written');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 18);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlAccept : emettre _COBRT_ACCEPT                         }
+{ Lit une ligne depuis la console via ReadFile(GetStdHandle)    }
+{ EDI = adresse buffer, ECX = taille max                        }
+{ Retour : EAX = nombre de caracteres lus                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlAccept;
+Begin
+  WriteLn('_COBRT_ACCEPT:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    ; GetStdHandle(-10) pour STD_INPUT_HANDLE');
+  WriteLn('    PUSH DWORD 0FFFFFFF6h        ; STD_INPUT_HANDLE = -10');
+  WriteLn('    CALL _GetStdHandle@4');
+  WriteLn('    MOV EBX, EAX                  ; handle dans EBX');
+  WriteLn('    ; ReadFile(handle, buffer, length, &read, NULL)');
+  WriteLn('    PUSH DWORD 0                  ; lpOverlapped = NULL');
+  WriteLn('    SUB ESP, 4                    ; espace pour lpNumberOfBytesRead');
+  WriteLn('    MOV EDX, ESP');
+  WriteLn('    PUSH EDX');
+  WriteLn('    PUSH ECX                      ; nNumberOfBytesToRead');
+  WriteLn('    PUSH EDI                      ; lpBuffer');
+  WriteLn('    PUSH EBX                      ; hFile');
+  WriteLn('    CALL _ReadFile@20');
+  WriteLn('    POP EAX                       ; nombre de caracteres lus');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 18);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlAcceptDate : emettre _COBRT_ACCEPT_DATE                }
+{ Obtient la date systeme via GetLocalTime                      }
+{ EDI = adresse destination (6 octets : YYMMDD en ASCII)        }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlAcceptDate;
+Begin
+  WriteLn('_COBRT_ACCEPT_DATE:');
+  WriteLn('    PUSH EDI');
+  WriteLn('    ; Allouer SYSTEMTIME (16 octets) sur la pile');
+  WriteLn('    SUB ESP, 16');
+  WriteLn('    MOV EAX, ESP');
+  WriteLn('    PUSH EAX');
+  WriteLn('    CALL _GetLocalTime@4');
+  WriteLn('    ; SYSTEMTIME : [ESP]=wYear, [ESP+2]=wMonth, [ESP+6]=wDay');
+  WriteLn('    MOVZX EAX, WORD [ESP]        ; wYear');
+  WriteLn('    ; Convertir annee en 2 chiffres (modulo 100)');
+  WriteLn('    XOR EDX, EDX');
+  WriteLn('    MOV ECX, 100');
+  WriteLn('    DIV ECX                       ; EDX = annee mod 100');
+  WriteLn('    ; Ecrire YY');
+  WriteLn('    MOV EAX, EDX');
+  WriteLn('    XOR EDX, EDX');
+  WriteLn('    MOV ECX, 10');
+  WriteLn('    DIV ECX');
+  WriteLn('    ADD AL, 30h');
+  WriteLn('    MOV [EDI], AL');
+  WriteLn('    ADD DL, 30h');
+  WriteLn('    MOV [EDI + 1], DL');
+  WriteLn('    ; Ecrire MM');
+  WriteLn('    MOVZX EAX, WORD [ESP + 2]    ; wMonth');
+  WriteLn('    XOR EDX, EDX');
+  WriteLn('    DIV ECX');
+  WriteLn('    ADD AL, 30h');
+  WriteLn('    MOV [EDI + 2], AL');
+  WriteLn('    ADD DL, 30h');
+  WriteLn('    MOV [EDI + 3], DL');
+  WriteLn('    ; Ecrire DD');
+  WriteLn('    MOVZX EAX, WORD [ESP + 6]    ; wDay');
+  WriteLn('    XOR EDX, EDX');
+  WriteLn('    DIV ECX');
+  WriteLn('    ADD AL, 30h');
+  WriteLn('    MOV [EDI + 4], AL');
+  WriteLn('    ADD DL, 30h');
+  WriteLn('    MOV [EDI + 5], DL');
+  WriteLn('    ADD ESP, 16');
+  WriteLn('    POP EDI');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 35);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlFileOpen : emettre _COBRT_FILE_OPEN                    }
+{ Ouvre un fichier via CreateFileA                               }
+{ ESI = nom du fichier (ASCIIZ), ECX = mode d ouverture         }
+{ Retour : EAX = handle ou INVALID_HANDLE_VALUE                 }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlFileOpen;
+Begin
+  WriteLn('_COBRT_FILE_OPEN:');
+  WriteLn('    ; CreateFileA(lpFileName, dwAccess, dwShare, lpSecurity,');
+  WriteLn('    ;             dwCreation, dwFlags, hTemplate)');
+  WriteLn('    PUSH DWORD 0                  ; hTemplateFile = NULL');
+  WriteLn('    PUSH DWORD 80h                ; FILE_ATTRIBUTE_NORMAL');
+  WriteLn('    PUSH ECX                      ; dwCreationDisposition');
+  WriteLn('    PUSH DWORD 0                  ; lpSecurityAttributes = NULL');
+  WriteLn('    PUSH DWORD 3                  ; FILE_SHARE_READ|WRITE');
+  WriteLn('    PUSH DWORD 0C0000000h         ; GENERIC_READ|GENERIC_WRITE');
+  WriteLn('    PUSH ESI                      ; lpFileName');
+  WriteLn('    CALL _CreateFileA@28');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 10);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlFileClose : emettre _COBRT_FILE_CLOSE                  }
+{ Ferme un fichier via CloseHandle                              }
+{ EAX = handle du fichier                                       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlFileClose;
+Begin
+  WriteLn('_COBRT_FILE_CLOSE:');
+  WriteLn('    PUSH EAX                      ; hObject');
+  WriteLn('    CALL _CloseHandle@4');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 3);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlFileRead : emettre _COBRT_FILE_READ                    }
+{ Lit un enregistrement via ReadFile                            }
+{ EAX = handle, EDI = buffer, ECX = taille                      }
+{ Retour : EAX = nombre d octets lus (0 = fin de fichier)       }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlFileRead;
+Begin
+  WriteLn('_COBRT_FILE_READ:');
+  WriteLn('    PUSH DWORD 0                  ; lpOverlapped = NULL');
+  WriteLn('    SUB ESP, 4                    ; espace pour lpNumberOfBytesRead');
+  WriteLn('    MOV EDX, ESP');
+  WriteLn('    PUSH EDX');
+  WriteLn('    PUSH ECX                      ; nNumberOfBytesToRead');
+  WriteLn('    PUSH EDI                      ; lpBuffer');
+  WriteLn('    PUSH EAX                      ; hFile');
+  WriteLn('    CALL _ReadFile@20');
+  WriteLn('    POP EAX                       ; nombre d octets lus');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 10);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlFileWrite : emettre _COBRT_FILE_WRITE                  }
+{ Ecrit un enregistrement via WriteFile                         }
+{ EAX = handle, ESI = buffer, ECX = taille                      }
+{ Retour : EAX = nombre d octets ecrits                         }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlFileWrite;
+Begin
+  WriteLn('_COBRT_FILE_WRITE:');
+  WriteLn('    PUSH DWORD 0                  ; lpOverlapped = NULL');
+  WriteLn('    SUB ESP, 4                    ; espace pour lpNumberOfBytesWritten');
+  WriteLn('    MOV EDX, ESP');
+  WriteLn('    PUSH EDX');
+  WriteLn('    PUSH ECX                      ; nNumberOfBytesToWrite');
+  WriteLn('    PUSH ESI                      ; lpBuffer');
+  WriteLn('    PUSH EAX                      ; hFile');
+  WriteLn('    CALL _WriteFile@20');
+  WriteLn('    POP EAX                       ; nombre d octets ecrits');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 10);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlAddRounded : emettre _COBRT_ADD_ROUNDED                }
+{ Addition avec arrondi : EAX = a, EBX = b, ECX = decimales     }
+{ Retour : EAX = (a + b) arrondi selon les decimales            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlAddRounded;
+Var LblNoRound, LblDone : TString;
+Begin
+  LblNoRound := GenRtlLabel;
+  LblDone    := GenRtlLabel;
+  WriteLn('_COBRT_ADD_ROUNDED:');
+  WriteLn('    ADD EAX, EBX                  ; a + b');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblNoRound);
+  WriteLn('    ; Calculer la puissance de 10 pour les decimales');
+  WriteLn('    PUSH ECX');
+  WriteLn('    MOV EBX, 1');
+  WriteLn('    MOV EDX, 10');
+  WriteLn(GenRtlLabel, ':');
+  WriteLn('    IMUL EBX, EDX');
+  WriteLn('    DEC ECX');
+  WriteLn('    JNZ ', GenRtlLabel);
+  WriteLn('    ; Arrondir : ajouter half et diviser');
+  WriteLn('    MOV ECX, EBX');
+  WriteLn('    SHR ECX, 1                    ; half = pow10 / 2');
+  WriteLn('    ADD EAX, ECX');
+  WriteLn('    CDQ');
+  WriteLn('    IDIV EBX');
+  WriteLn('    IMUL EAX, EBX');
+  WriteLn('    POP ECX');
+  WriteLn(LblNoRound, ':');
+  WriteLn(LblDone, ':');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 18);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlCheckSizeError : emettre _COBRT_CHECK_SIZE_ERROR       }
+{ Verifie si un resultat depasse la capacite du champ           }
+{ EAX = valeur, ECX = nombre de chiffres max                    }
+{ Retour : EAX = 1 si debordement, 0 sinon                     }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlCheckSizeError;
+Var LblLoop, LblOk, LblOverflow : TString;
+Begin
+  LblLoop     := GenRtlLabel;
+  LblOk       := GenRtlLabel;
+  LblOverflow := GenRtlLabel;
+  WriteLn('_COBRT_CHECK_SIZE_ERROR:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    ; Calculer 10^ECX (valeur max + 1)');
+  WriteLn('    MOV EBX, 1');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblOk);
+  WriteLn('    IMUL EBX, 10');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblOk, ':');
+  WriteLn('    ; Comparer valeur absolue');
+  WriteLn('    PUSH EAX');
+  WriteLn('    CMP EAX, 0');
+  WriteLn('    JGE ', GenRtlLabel);
+  WriteLn('    NEG EAX');
+  WriteLn(GenRtlLabel, ':');
+  WriteLn('    CMP EAX, EBX');
+  WriteLn('    POP EAX');
+  WriteLn('    JGE ', LblOverflow);
+  WriteLn('    XOR EAX, EAX                  ; pas de debordement');
+  WriteLn('    JMP ', GenRtlLabel);
+  WriteLn(LblOverflow, ':');
+  WriteLn('    MOV EAX, 1                    ; debordement');
+  WriteLn(GenRtlLabel, ':');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 22);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlPower : emettre _COBRT_POWER                           }
+{ Exponentiation : EAX = base, ECX = exposant                   }
+{ Retour : EAX = base ** exposant                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlPower;
+Var LblLoop, LblDone, LblZero : TString;
+Begin
+  LblLoop := GenRtlLabel;
+  LblDone := GenRtlLabel;
+  LblZero := GenRtlLabel;
+  WriteLn('_COBRT_POWER:');
+  WriteLn('    PUSH EBX');
+  WriteLn('    PUSH ECX');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JE ', LblZero);
+  WriteLn('    MOV EBX, EAX                  ; base dans EBX');
+  WriteLn('    MOV EAX, 1                    ; resultat = 1');
+  WriteLn(LblLoop, ':');
+  WriteLn('    CMP ECX, 0');
+  WriteLn('    JLE ', LblDone);
+  WriteLn('    IMUL EAX, EBX                 ; resultat *= base');
+  WriteLn('    DEC ECX');
+  WriteLn('    JMP ', LblLoop);
+  WriteLn(LblZero, ':');
+  WriteLn('    MOV EAX, 1                    ; x^0 = 1');
+  WriteLn(LblDone, ':');
+  WriteLn('    POP ECX');
+  WriteLn('    POP EBX');
+  WriteLn('    RET');
+  Inc(RtlTotalGenerated, 15);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRtlVariables : emettre les variables runtime              }
+{ _COB_STDOUT, _COB_STDIN, _COB_FILE_HANDLES,                  }
+{ _COB_FILE_STATUS, _COB_RETURN_CODE                            }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRtlVariables;
+Begin
+  WriteLn('    ; Variables runtime COBOL');
+  WriteLn('_COB_STDOUT      DD 0             ; handle de sortie standard');
+  WriteLn('_COB_STDIN       DD 0             ; handle d entree standard');
+  WriteLn('_COB_FILE_HANDLES:');
+  WriteLn('    TIMES ', RTL_MAX_FILE_HANDLES, ' DD 0  ; tableau de handles fichier');
+  WriteLn('_COB_FILE_STATUS:');
+  WriteLn('    TIMES ', RTL_MAX_FILE_HANDLES, ' DB 0,0 ; codes status fichier');
+  WriteLn('_COB_RETURN_CODE DD 0             ; code retour du programme');
+  WriteLn('_COB_CONSOLE_BUF:');
+  WriteLn('    TIMES ', RTL_BUFFER_SIZE, ' DB 0    ; buffer console');
+  Inc(RtlTotalGenerated, 5);
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitAllRuntimeRoutines : emettre toutes les routines runtime  }
+{ qui ont ete referencees pendant la compilation                }
+{ ------------------------------------------------------------ }
+
+Procedure EmitAllRuntimeRoutines;
+Var I : Integer;
+Begin
+  WriteLn('; === Debut de la bibliotheque runtime COBOL ===');
+  { Emettre les variables }
+  EmitRtlVariables;
+  { Emettre les routines referencees }
+  For I := 0 To RtlRoutineCount - 1 Do Begin
+    If RtlRoutines[I].RefCount > 0 Then Begin
+      If RtlRoutines[I].Name = '_COBRT_DISPLAY_TO_INT' Then
+        EmitRtlDisplayToInt
+      Else If RtlRoutines[I].Name = '_COBRT_INT_TO_DISPLAY' Then
+        EmitRtlIntToDisplay
+      Else If RtlRoutines[I].Name = '_COBRT_PACK_TO_INT' Then
+        EmitRtlPackToInt
+      Else If RtlRoutines[I].Name = '_COBRT_INT_TO_PACK' Then
+        EmitRtlIntToPack
+      Else If RtlRoutines[I].Name = '_COBRT_DISPLAY_TO_EDITED' Then
+        EmitRtlDisplayToEdited
+      Else If RtlRoutines[I].Name = '_COBRT_NUMERIC_VALIDATE' Then
+        EmitRtlNumericValidate
+      Else If RtlRoutines[I].Name = '_COBRT_MOVE_ALPHA' Then
+        EmitRtlMoveAlpha
+      Else If RtlRoutines[I].Name = '_COBRT_MOVE_NUMERIC' Then
+        EmitRtlMoveNumeric
+      Else If RtlRoutines[I].Name = '_COBRT_MOVE_CORRESPONDING' Then
+        EmitRtlMoveCorresponding
+      Else If RtlRoutines[I].Name = '_COBRT_INITIALIZE' Then
+        EmitRtlInitialize
+      Else If RtlRoutines[I].Name = '_COBRT_STRING_OP' Then
+        EmitRtlStringOp
+      Else If RtlRoutines[I].Name = '_COBRT_UNSTRING_OP' Then
+        EmitRtlUnstringOp
+      Else If RtlRoutines[I].Name = '_COBRT_INSPECT_TALLY' Then
+        EmitRtlInspectTally
+      Else If RtlRoutines[I].Name = '_COBRT_INSPECT_REPLACE' Then
+        EmitRtlInspectReplace
+      Else If RtlRoutines[I].Name = '_COBRT_INSPECT_CONVERT' Then
+        EmitRtlInspectConvert
+      Else If RtlRoutines[I].Name = '_COBRT_DISPLAY' Then
+        EmitRtlDisplay
+      Else If RtlRoutines[I].Name = '_COBRT_ACCEPT' Then
+        EmitRtlAccept
+      Else If RtlRoutines[I].Name = '_COBRT_ACCEPT_DATE' Then
+        EmitRtlAcceptDate
+      Else If RtlRoutines[I].Name = '_COBRT_FILE_OPEN' Then
+        EmitRtlFileOpen
+      Else If RtlRoutines[I].Name = '_COBRT_FILE_CLOSE' Then
+        EmitRtlFileClose
+      Else If RtlRoutines[I].Name = '_COBRT_FILE_READ' Then
+        EmitRtlFileRead
+      Else If RtlRoutines[I].Name = '_COBRT_FILE_WRITE' Then
+        EmitRtlFileWrite
+      Else If RtlRoutines[I].Name = '_COBRT_ADD_ROUNDED' Then
+        EmitRtlAddRounded
+      Else If RtlRoutines[I].Name = '_COBRT_CHECK_SIZE_ERROR' Then
+        EmitRtlCheckSizeError
+      Else If RtlRoutines[I].Name = '_COBRT_POWER' Then
+        EmitRtlPower;
+      RtlRoutines[I].EmitDone := True;
+    End;
+  End;
+  WriteLn('; === Fin de la bibliotheque runtime COBOL ===');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtlCallConversion : genere un appel a une routine de conv   }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtlCallConversion(ConvType : Integer;
+                                Const SrcAddr : TString;
+                                SrcSize : Integer;
+                                Const DstAddr : TString;
+                                DstSize : Integer);
+Begin
+  Case ConvType Of
+    RTL_CONV_DISP_TO_INT : Begin
+      WriteLn('    LEA ESI, [', SrcAddr, ']');
+      WriteLn('    MOV ECX, ', SrcSize);
+      WriteLn('    CALL _COBRT_DISPLAY_TO_INT');
+      AddRtlRoutine('_COBRT_DISPLAY_TO_INT', RTL_CAT_CONVERSION, 2);
+      Inc(RtlConvDispToIntCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    RTL_CONV_INT_TO_DISP : Begin
+      WriteLn('    LEA EDI, [', DstAddr, ']');
+      WriteLn('    MOV ECX, ', DstSize);
+      WriteLn('    CALL _COBRT_INT_TO_DISPLAY');
+      AddRtlRoutine('_COBRT_INT_TO_DISPLAY', RTL_CAT_CONVERSION, 2);
+      Inc(RtlConvIntToDispCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    RTL_CONV_PACK_TO_INT : Begin
+      WriteLn('    LEA ESI, [', SrcAddr, ']');
+      WriteLn('    MOV ECX, ', SrcSize);
+      WriteLn('    CALL _COBRT_PACK_TO_INT');
+      AddRtlRoutine('_COBRT_PACK_TO_INT', RTL_CAT_CONVERSION, 2);
+      Inc(RtlConvPackToIntCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    RTL_CONV_INT_TO_PACK : Begin
+      WriteLn('    LEA EDI, [', DstAddr, ']');
+      WriteLn('    MOV ECX, ', DstSize);
+      WriteLn('    CALL _COBRT_INT_TO_PACK');
+      AddRtlRoutine('_COBRT_INT_TO_PACK', RTL_CAT_CONVERSION, 2);
+      Inc(RtlConvIntToPackCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    RTL_CONV_DISP_TO_EDT : Begin
+      WriteLn('    LEA ESI, [', SrcAddr, ']');
+      WriteLn('    LEA EDI, [', DstAddr, ']');
+      WriteLn('    MOV ECX, ', DstSize);
+      WriteLn('    CALL _COBRT_DISPLAY_TO_EDITED');
+      AddRtlRoutine('_COBRT_DISPLAY_TO_EDITED', RTL_CAT_CONVERSION, 3);
+      Inc(RtlConvDispToEdtCount);
+      Inc(RtlTotalGenerated, 4);
+    End;
+    RTL_CONV_VALIDATE : Begin
+      WriteLn('    LEA ESI, [', SrcAddr, ']');
+      WriteLn('    MOV ECX, ', SrcSize);
+      WriteLn('    CALL _COBRT_NUMERIC_VALIDATE');
+      AddRtlRoutine('_COBRT_NUMERIC_VALIDATE', RTL_CAT_CONVERSION, 2);
+      Inc(RtlConvValidateCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+  End;
+  Inc(RtlStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtlCallTransfer : genere un appel a une routine de transfert}
+{ ------------------------------------------------------------ }
+
+Procedure GenRtlCallTransfer(XferType : Integer;
+                              Const SrcAddr : TString;
+                              SrcSize : Integer;
+                              Const DstAddr : TString;
+                              DstSize : Integer);
+Begin
+  Case XferType Of
+    RTL_XFER_ALPHA : Begin
+      WriteLn('    LEA ESI, [', SrcAddr, ']');
+      WriteLn('    MOV ECX, ', SrcSize);
+      WriteLn('    LEA EDI, [', DstAddr, ']');
+      WriteLn('    MOV EDX, ', DstSize);
+      WriteLn('    CALL _COBRT_MOVE_ALPHA');
+      AddRtlRoutine('_COBRT_MOVE_ALPHA', RTL_CAT_TRANSFER, 4);
+      Inc(RtlXferAlphaCount);
+      Inc(RtlTotalGenerated, 5);
+    End;
+    RTL_XFER_NUMERIC : Begin
+      WriteLn('    LEA ESI, [', SrcAddr, ']');
+      WriteLn('    MOV ECX, ', SrcSize);
+      WriteLn('    LEA EDI, [', DstAddr, ']');
+      WriteLn('    MOV EDX, ', DstSize);
+      WriteLn('    CALL _COBRT_MOVE_NUMERIC');
+      AddRtlRoutine('_COBRT_MOVE_NUMERIC', RTL_CAT_TRANSFER, 4);
+      Inc(RtlXferNumericCount);
+      Inc(RtlTotalGenerated, 5);
+    End;
+    RTL_XFER_CORR : Begin
+      WriteLn('    LEA ESI, [', SrcAddr, ']');
+      WriteLn('    MOV ECX, ', SrcSize);
+      WriteLn('    CALL _COBRT_MOVE_CORRESPONDING');
+      AddRtlRoutine('_COBRT_MOVE_CORRESPONDING', RTL_CAT_TRANSFER, 2);
+      Inc(RtlXferCorrCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    RTL_XFER_INIT : Begin
+      WriteLn('    LEA ESI, [', SrcAddr, ']');
+      WriteLn('    MOV ECX, ', SrcSize);
+      WriteLn('    CALL _COBRT_INITIALIZE');
+      AddRtlRoutine('_COBRT_INITIALIZE', RTL_CAT_TRANSFER, 2);
+      Inc(RtlXferInitCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+  End;
+  Inc(RtlStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtlCallIO : genere un appel a une routine d E/S             }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtlCallIO(IoType : Integer;
+                        Const Addr : TString;
+                        Size : Integer);
+Begin
+  Case IoType Of
+    RTL_IO_DISPLAY : Begin
+      WriteLn('    LEA ESI, [', Addr, ']');
+      WriteLn('    MOV ECX, ', Size);
+      WriteLn('    CALL _COBRT_DISPLAY');
+      AddRtlRoutine('_COBRT_DISPLAY', RTL_CAT_IO, 2);
+      Inc(RtlIoDisplayCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    RTL_IO_ACCEPT : Begin
+      WriteLn('    LEA EDI, [', Addr, ']');
+      WriteLn('    MOV ECX, ', Size);
+      WriteLn('    CALL _COBRT_ACCEPT');
+      AddRtlRoutine('_COBRT_ACCEPT', RTL_CAT_IO, 2);
+      Inc(RtlIoAcceptCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    RTL_IO_ACCEPT_DATE : Begin
+      WriteLn('    LEA EDI, [', Addr, ']');
+      WriteLn('    CALL _COBRT_ACCEPT_DATE');
+      AddRtlRoutine('_COBRT_ACCEPT_DATE', RTL_CAT_IO, 1);
+      Inc(RtlIoAcceptDateCount);
+      Inc(RtlTotalGenerated, 2);
+    End;
+    RTL_IO_FILE_OPEN : Begin
+      WriteLn('    LEA ESI, [', Addr, ']');
+      WriteLn('    MOV ECX, ', Size);
+      WriteLn('    CALL _COBRT_FILE_OPEN');
+      AddRtlRoutine('_COBRT_FILE_OPEN', RTL_CAT_IO, 2);
+      Inc(RtlIoFileOpenCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    RTL_IO_FILE_CLOSE : Begin
+      WriteLn('    MOV EAX, [', Addr, ']');
+      WriteLn('    CALL _COBRT_FILE_CLOSE');
+      AddRtlRoutine('_COBRT_FILE_CLOSE', RTL_CAT_IO, 1);
+      Inc(RtlIoFileCloseCount);
+      Inc(RtlTotalGenerated, 2);
+    End;
+    RTL_IO_FILE_READ : Begin
+      WriteLn('    MOV EAX, [', Addr, ']');
+      WriteLn('    LEA EDI, [', Addr, '_buffer]');
+      WriteLn('    MOV ECX, ', Size);
+      WriteLn('    CALL _COBRT_FILE_READ');
+      AddRtlRoutine('_COBRT_FILE_READ', RTL_CAT_IO, 3);
+      Inc(RtlIoFileReadCount);
+      Inc(RtlTotalGenerated, 4);
+    End;
+    RTL_IO_FILE_WRITE : Begin
+      WriteLn('    MOV EAX, [', Addr, ']');
+      WriteLn('    LEA ESI, [', Addr, '_buffer]');
+      WriteLn('    MOV ECX, ', Size);
+      WriteLn('    CALL _COBRT_FILE_WRITE');
+      AddRtlRoutine('_COBRT_FILE_WRITE', RTL_CAT_IO, 3);
+      Inc(RtlIoFileWriteCount);
+      Inc(RtlTotalGenerated, 4);
+    End;
+  End;
+  Inc(RtlStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtlCallString : genere un appel a une routine de chaines    }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtlCallString(StrType : Integer;
+                            Const Addr : TString;
+                            Size : Integer);
+Begin
+  Case StrType Of
+    1 : Begin { STRING_OP }
+      WriteLn('    LEA ESI, [', Addr, ']');
+      WriteLn('    MOV ECX, ', Size);
+      WriteLn('    CALL _COBRT_STRING_OP');
+      AddRtlRoutine('_COBRT_STRING_OP', RTL_CAT_STRING, 2);
+      Inc(RtlStrStringCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    2 : Begin { UNSTRING_OP }
+      WriteLn('    LEA ESI, [', Addr, ']');
+      WriteLn('    MOV ECX, ', Size);
+      WriteLn('    CALL _COBRT_UNSTRING_OP');
+      AddRtlRoutine('_COBRT_UNSTRING_OP', RTL_CAT_STRING, 2);
+      Inc(RtlStrUnstringCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    3 : Begin { INSPECT_TALLY }
+      WriteLn('    LEA ESI, [', Addr, ']');
+      WriteLn('    MOV ECX, ', Size);
+      WriteLn('    CALL _COBRT_INSPECT_TALLY');
+      AddRtlRoutine('_COBRT_INSPECT_TALLY', RTL_CAT_STRING, 2);
+      Inc(RtlStrInspTallyCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    4 : Begin { INSPECT_REPLACE }
+      WriteLn('    LEA ESI, [', Addr, ']');
+      WriteLn('    MOV ECX, ', Size);
+      WriteLn('    CALL _COBRT_INSPECT_REPLACE');
+      AddRtlRoutine('_COBRT_INSPECT_REPLACE', RTL_CAT_STRING, 2);
+      Inc(RtlStrInspReplCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+    5 : Begin { INSPECT_CONVERT }
+      WriteLn('    LEA ESI, [', Addr, ']');
+      WriteLn('    MOV ECX, ', Size);
+      WriteLn('    CALL _COBRT_INSPECT_CONVERT');
+      AddRtlRoutine('_COBRT_INSPECT_CONVERT', RTL_CAT_STRING, 2);
+      Inc(RtlStrInspConvCount);
+      Inc(RtlTotalGenerated, 3);
+    End;
+  End;
+  Inc(RtlStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenRtlCallArithmetic : genere un appel a une routine arith     }
+{ ------------------------------------------------------------ }
+
+Procedure GenRtlCallArithmetic(ArithType : Integer);
+Begin
+  Case ArithType Of
+    1 : Begin { ADD_ROUNDED }
+      WriteLn('    CALL _COBRT_ADD_ROUNDED');
+      AddRtlRoutine('_COBRT_ADD_ROUNDED', RTL_CAT_ARITHMETIC, 3);
+      Inc(RtlArithRoundCount);
+      Inc(RtlTotalGenerated, 1);
+    End;
+    2 : Begin { CHECK_SIZE_ERROR }
+      WriteLn('    CALL _COBRT_CHECK_SIZE_ERROR');
+      AddRtlRoutine('_COBRT_CHECK_SIZE_ERROR', RTL_CAT_ARITHMETIC, 2);
+      Inc(RtlArithSizeErrCount);
+      Inc(RtlTotalGenerated, 1);
+    End;
+    3 : Begin { POWER }
+      WriteLn('    CALL _COBRT_POWER');
+      AddRtlRoutine('_COBRT_POWER', RTL_CAT_ARITHMETIC, 2);
+      Inc(RtlArithPowerCount);
+      Inc(RtlTotalGenerated, 1);
+    End;
+  End;
+  Inc(RtlStateCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ IsRuntimeKeyword : True si le mot-cle est gere par ce module  }
+{ ------------------------------------------------------------ }
+
+Function IsRuntimeKeyword(KW : Integer) : Boolean;
+Begin
+  IsRuntimeKeyword := (KW = KW_FUNCTION) Or (KW = KW_STDCALL);
+End;
+
+{ ------------------------------------------------------------ }
+{ DumpRuntimeState : affiche l etat du module runtime           }
+{ ------------------------------------------------------------ }
+
+Procedure DumpRuntimeState;
+Var I : Integer;
+Begin
+  WriteLn('=== Runtime Library State ===');
+  WriteLn('  Initialized       : ', RtlInitialized);
+  WriteLn('  StateCount        : ', RtlStateCount);
+  WriteLn('  Routines registered: ', RtlRoutineCount);
+  WriteLn('  --- Conversions ---');
+  WriteLn('  DISPLAY_TO_INT    : ', RtlConvDispToIntCount);
+  WriteLn('  INT_TO_DISPLAY    : ', RtlConvIntToDispCount);
+  WriteLn('  PACK_TO_INT       : ', RtlConvPackToIntCount);
+  WriteLn('  INT_TO_PACK       : ', RtlConvIntToPackCount);
+  WriteLn('  DISPLAY_TO_EDITED : ', RtlConvDispToEdtCount);
+  WriteLn('  NUMERIC_VALIDATE  : ', RtlConvValidateCount);
+  WriteLn('  --- Transferts ---');
+  WriteLn('  MOVE_ALPHA        : ', RtlXferAlphaCount);
+  WriteLn('  MOVE_NUMERIC      : ', RtlXferNumericCount);
+  WriteLn('  MOVE_CORRESPONDING: ', RtlXferCorrCount);
+  WriteLn('  INITIALIZE        : ', RtlXferInitCount);
+  WriteLn('  --- Chaines ---');
+  WriteLn('  STRING_OP         : ', RtlStrStringCount);
+  WriteLn('  UNSTRING_OP       : ', RtlStrUnstringCount);
+  WriteLn('  INSPECT_TALLY     : ', RtlStrInspTallyCount);
+  WriteLn('  INSPECT_REPLACE   : ', RtlStrInspReplCount);
+  WriteLn('  INSPECT_CONVERT   : ', RtlStrInspConvCount);
+  WriteLn('  --- E/S ---');
+  WriteLn('  DISPLAY           : ', RtlIoDisplayCount);
+  WriteLn('  ACCEPT            : ', RtlIoAcceptCount);
+  WriteLn('  ACCEPT_DATE       : ', RtlIoAcceptDateCount);
+  WriteLn('  FILE_OPEN         : ', RtlIoFileOpenCount);
+  WriteLn('  FILE_CLOSE        : ', RtlIoFileCloseCount);
+  WriteLn('  FILE_READ         : ', RtlIoFileReadCount);
+  WriteLn('  FILE_WRITE        : ', RtlIoFileWriteCount);
+  WriteLn('  --- Arithmetique ---');
+  WriteLn('  ADD_ROUNDED       : ', RtlArithRoundCount);
+  WriteLn('  CHECK_SIZE_ERROR  : ', RtlArithSizeErrCount);
+  WriteLn('  POWER             : ', RtlArithPowerCount);
+  WriteLn('  Total generated   : ', RtlTotalGenerated);
+  If RtlRoutineCount > 0 Then Begin
+    WriteLn('  --- Routines ---');
+    For I := 0 To RtlRoutineCount - 1 Do
+      WriteLn('  [', I, '] ', RtlRoutines[I].Name,
+              ' cat=', RtlCategoryName(RtlRoutines[I].Category),
+              ' params=', RtlRoutines[I].ParamCount,
+              ' refs=', RtlRoutines[I].RefCount,
+              ' emitted=', RtlRoutines[I].EmitDone);
+  End;
+End;
+
+{ 10 fonctions accesseurs pour TODO 20                         }
+
+Function IsRtlInitialized : Boolean;
+Begin
+  IsRtlInitialized := RtlInitialized;
+End;
+
+Function IsRtlEmpty : Boolean;
+Begin
+  IsRtlEmpty := (RtlTotalGenerated = 0);
+End;
+
+Function GetRtlTotalGenerated : Integer;
+Begin
+  GetRtlTotalGenerated := RtlTotalGenerated;
+End;
+
+Function GetRtlStatus : TString;
+Begin
+  If Not RtlInitialized Then
+    GetRtlStatus := 'NON INITIALISE'
+  Else
+    GetRtlStatus := 'ROUTINES=' + ItoSI(RtlRoutineCount) +
+                    ' CONV=' + ItoSI(RtlConvDispToIntCount +
+                      RtlConvIntToDispCount + RtlConvPackToIntCount +
+                      RtlConvIntToPackCount + RtlConvDispToEdtCount +
+                      RtlConvValidateCount) +
+                    ' IO=' + ItoSI(RtlIoDisplayCount +
+                      RtlIoAcceptCount + RtlIoAcceptDateCount +
+                      RtlIoFileOpenCount + RtlIoFileCloseCount +
+                      RtlIoFileReadCount + RtlIoFileWriteCount);
+End;
+
+Function GetRtlRoutineCount : Integer;
+Begin
+  GetRtlRoutineCount := RtlRoutineCount;
+End;
+
+Function GetRtlConversionCount : Integer;
+Begin
+  GetRtlConversionCount := RtlConvDispToIntCount + RtlConvIntToDispCount +
+                           RtlConvPackToIntCount + RtlConvIntToPackCount +
+                           RtlConvDispToEdtCount + RtlConvValidateCount;
+End;
+
+Function GetRtlTransferCount : Integer;
+Begin
+  GetRtlTransferCount := RtlXferAlphaCount + RtlXferNumericCount +
+                          RtlXferCorrCount + RtlXferInitCount;
+End;
+
+Function GetRtlIoCount : Integer;
+Begin
+  GetRtlIoCount := RtlIoDisplayCount + RtlIoAcceptCount +
+                    RtlIoAcceptDateCount + RtlIoFileOpenCount +
+                    RtlIoFileCloseCount + RtlIoFileReadCount +
+                    RtlIoFileWriteCount;
+End;
+
+Function GetRtlArithCount : Integer;
+Begin
+  GetRtlArithCount := RtlArithRoundCount + RtlArithSizeErrCount +
+                       RtlArithPowerCount;
+End;
+
+Function GetRtlStateCount : Integer;
+Begin
+  GetRtlStateCount := RtlStateCount;
+End;
 
 Procedure LexScanIdent;
 Var
@@ -17694,8 +19452,7 @@ Begin
   CalInitialized := False;
   TblInitialized := False;
   SrtInitialized := False;
-
-  { Analyse des arguments de la ligne de commande }
+  RtlInitialized := False;
   ParseArgs;
 
   { Affichage de la banniere en mode verbeux }
@@ -17751,6 +19508,9 @@ Begin
 
   { Initialiser le module Sort/Merge (SORT, MERGE, RELEASE, RETURN) }
   InitSortMergeState;
+
+  { Initialiser le module Runtime Library COBOL (chaines, BCD, E/S) }
+  InitRuntimeState;
 
   { Ouvrir le fichier source et initialiser le lexeur }
   LexInit;

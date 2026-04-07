@@ -594,7 +594,7 @@ COBOLW32.PAS - Compilateur COBOL vers assembleur
               fichiers temporaires Win32 (GetTempPathA/CreateFileA)
             10 fonctions accesseurs
 
-  TODO 20 - BIBLIOTHEQUE RUNTIME COBOL (CHAINES, BCD, E/S VIA WIN32) [A FAIRE]
+  TODO 20 - BIBLIOTHEQUE RUNTIME COBOL (CHAINES, BCD, E/S VIA WIN32) [IMPLEMENTE]
             Routines de conversion numerique :
               _COBRT_DISPLAY_TO_INT : PIC 9 DISPLAY -> registre 32 bits
               _COBRT_INT_TO_DISPLAY : registre 32 bits -> PIC 9 DISPLAY
